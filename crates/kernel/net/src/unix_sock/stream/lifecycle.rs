@@ -169,7 +169,7 @@ impl UnixPair {
         (g.closed_writer || g.reader_shutdown) && g.buf.is_empty() && !self.reset_pending(end)
     }
 
-    /// Linux `unix_poll` (`net/unix/af_unix.c:3353-3396`) for a stream end:
+    /// Stream-end readiness:
     /// readability from both directional halves, writability from
     /// `unix_writable(sk, state)` alone — the local send queue against
     /// `sndbuf_cap`, never the peer's state. An unconditional `POLL_OUT` here

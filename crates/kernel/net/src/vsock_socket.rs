@@ -86,15 +86,12 @@ pub struct VsockSocket {
     pub buffer_min_size: core::sync::atomic::AtomicU64,
     pub buffer_max_size: core::sync::atomic::AtomicU64,
     /// Linux SOL_VSOCK connect timeout in nanoseconds. NOT SO_SNDTIMEO: this
-    /// is `vsk->connect_timeout`, always finite (`af_vsock.c:1777`, default
-    /// `2*HZ`; `:2095-2099` forces a 0 back to the default), which is why the
-    /// connect wait reports `-EINTR` and not `-ERESTARTSYS`
-    /// (`af_vsock.c:1829`).
+    /// is always finite, which is why the connect wait reports `-EINTR` and
+    /// not `-ERESTARTSYS`.
     pub connect_timeout_ns: core::sync::atomic::AtomicU64,
     /// Linux `sk->sk_rcvtimeo` / `sk->sk_sndtimeo`. AF_VSOCK carries no
     /// setsockopt of its own for these: they are SOL_SOCKET options handled by
-    /// the generic `sock_setsockopt`, and `vsock_connectible_recvmsg`
-    /// (`af_vsock.c:2384`) / `_sendmsg` (`:2267`) read them back through
+    /// the generic `sock_setsockopt`, and VSOCK receive/send paths read them through
     /// `sock_rcvtimeo`/`sock_sndtimeo` and hand them to `sock_intr_errno`.
     /// `0` means "no timeout" — Linux's `MAX_SCHEDULE_TIMEOUT`.
     pub rcvtimeo_ns: core::sync::atomic::AtomicU64,
@@ -119,7 +116,7 @@ pub struct VsockSocket {
 impl VsockSocket {
     /// Absolute monotonic deadline for a receive, or `sock_intr::NO_TIMEOUT`
     /// when SO_RCVTIMEO is unset — the `timeo == MAX_SCHEDULE_TIMEOUT` case
-    /// `sock_intr_errno` keys on (`include/net/sock.h:2759`).
+    /// `sock_intr_errno` keys on.
     /// # C: O(1)
     pub fn recv_deadline_ns(&self) -> u64 {
         crate::sock_intr::deadline_from_timeo(self.rcvtimeo_ns.load(core::sync::atomic::Ordering::Acquire))
@@ -385,16 +382,13 @@ impl VsockSocket {
                     }
                     #[cfg(target_os = "oxide-kernel")]
                     {
-                        // Linux `vsock_connectible_recvmsg` (`af_vsock.c:2384`):
-                        // `err = sock_intr_errno(timeout);`.
+                        // A signal uses `sock_intr_errno(timeout)`.
                         // NOTE: AF_VSOCK carries no SO_RCVTIMEO/SO_SNDTIMEO here (`VsockSocket` has
                         // no timeo fields), so the wait is always untimed and `sock_intr_errno`
-                        // necessarily yields ERESTARTSYS. Linux DOES honour them on this path
-                        // (`af_vsock.c:2267` send, `:2384` recv, both off sock_{snd,rcv}timeo);
+                        // necessarily yields ERESTARTSYS. Timed waits use their socket timeouts;
                         // wiring those options is a separate gap, tracked in the plan.
                         if sched::live::deliverable_signals_self() != 0 {
-                            // Linux `vsock_connectible_recvmsg` (`af_vsock.c:2384`):
-                            // `err = sock_intr_errno(timeout)` off `sock_rcvtimeo`.
+                            // A signal uses the receive timeout's shared rule.
                             return Err(crate::sock_intr::sock_intr_vfs(
                                 self.recv_deadline_ns()));
                         }

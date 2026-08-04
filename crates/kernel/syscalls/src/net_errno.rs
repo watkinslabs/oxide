@@ -4,7 +4,7 @@ use syscall::errno::Errno;
 pub(crate) fn errno_from_neterr(error: net::NetError) -> i64 {
     // See `namei_common::errno`: the restart sentinel passes through raw so the
     // dispatch tail owns the restart decision. `sock_intr_errno`
-    // (`include/net/sock.h:2759`) chose it precisely because the wait had no
+    // chooses it precisely because the wait had no
     // SO_{RCV,SND}TIMEO and therefore IS restartable.
     -(match error {
         net::NetError::Erestartsys => return syscall::restart::restart_sys(),
@@ -47,7 +47,7 @@ pub(crate) fn errno_from_neterr(error: net::NetError) -> i64 {
     } as i32 as i64)
 }
 
-/// Linux `sock_intr_errno(timeo)` (`include/net/sock.h:2755-2761`) as the
+/// `sock_intr_errno(timeo)` as the
 /// negated i64 a blocking socket-receive ABI shim returns: the ERESTARTSYS
 /// sentinel passes through raw for the dispatch tail when the wait carried no
 /// SO_{RCV,SND}TIMEO, a real EINTR when it did. ONE owner so a shim never
@@ -63,7 +63,7 @@ pub(crate) fn sock_intr_errno(deadline_ns: u64) -> i64 {
 /// `tcp_recvmsg_locked`'s loop with the bytes already copied whenever any were
 /// (`net/ipv4/tcp.c:2735-2742`) and reports `sock_intr_errno(timeo)` only on the
 /// nothing-copied arm (`tcp.c:2783-2786`); `unix_stream_read_generic` has the
-/// same split (`net/unix/af_unix.c:2997-2999` against the `total`-carrying
+/// same split against the `total`-carrying
 /// caller). # C: O(1)
 pub(crate) fn recv_interrupted(deadline_ns: u64, transferred: usize) -> Result<usize, i64> {
     if transferred != 0 { return Ok(transferred); }

@@ -291,7 +291,7 @@ impl InetSocket {
         self.write(_off, buf)
     }
 
-    /// `unix_dgram_poll`'s writability tail (`net/unix/af_unix.c:3437-3450`):
+    /// Datagram writability:
     /// writable unless a CONNECTED, non-symmetrically-paired peer's receive
     /// queue is full. `true` for every non-datagram kind so the caller can
     /// evaluate this once, outside the `kind` lock.

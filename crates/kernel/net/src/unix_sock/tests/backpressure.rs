@@ -84,7 +84,7 @@ fn datagram_shutdown_transition_has_one_generation() {
     assert_eq!(queue.shutdown_generation(), queue_generation.wrapping_add(1));
 }
 
-// --- symmetric-pair flow control (net/unix/af_unix.c) ------------------------
+// --- symmetric-pair flow control ---------------------------------------------
 // `unix_dgram_sendmsg` refuses with EAGAIN only when
 //   `other != sk && unix_peer(other) != sk && unix_recvq_full_lockless(other)`,
 // and `unix_dgram_poll` clears writability under the IDENTICAL guard. The guard

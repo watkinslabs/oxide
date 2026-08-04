@@ -46,7 +46,7 @@ impl EncodedSockaddr {
     }
 }
 
-/// Linux `unix_getname` (`net/unix/af_unix.c`) returns:
+/// AF_UNIX name encoding returns:
 ///   * `offsetof(struct sockaddr_un, sun_path)` == 2 for a socket with no
 ///     bound address — family only, no path byte at all;
 ///   * `addr->len` otherwise, which `unix_mkname_bsd` set to
