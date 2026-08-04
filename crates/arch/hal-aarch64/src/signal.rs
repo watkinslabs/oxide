@@ -455,27 +455,27 @@ unsafe fn restore_fpsimd(reserved: &[u8], frame_base: u64, fpu: &mut [u8]) -> Op
     let reserved_va = frame_base.checked_add(RESERVED_IN_FRAME as u64)?;
     let poe_enabled = crate::por::poe_enabled();
     let scan = records::scan_region(reserved, reserved_va, frame_base, false, false, false, poe_enabled).ok()?;
-    let por = match scan.poe { Some((off, size)) => Some(records::read_poe(reserved, off, size).ok()?), None => None };
-    let (region, base, hit) = match scan.rebase {
-        None => (reserved, reserved_va, scan.fpsimd),
+    let (region, hit, por) = match scan.rebase {
+        None => (reserved, scan.fpsimd, match scan.poe { Some((off, size)) => Some(records::read_poe(reserved, off, size).ok()?), None => None }),
         Some((datap, size)) => {
-            // Linux `access_ok(base, limit)` on the extra area before walking
-            // it. `scan_region` already proved `datap` 16-aligned, contiguous
-            // with the terminator, and within `SIGFRAME_MAXSZ`.
             datap.checked_add(size as u64).filter(|e| *e <= hal::USER_VA_END)?;
             // SAFETY: `[datap, datap+size)` was just proved to end at or below USER_VA_END and EL1 reads run through the caller's active TTBR0, so this reads the calling process's own memory.
             let extra = unsafe { core::slice::from_raw_parts(datap as *const u8, size) };
             let s2 = records::scan_region(extra, datap, frame_base, scan.fpsimd.is_some(), scan.poe.is_some(), true, poe_enabled).ok()?;
-            match (scan.fpsimd, s2.fpsimd) {
-                (Some(h), None) => (reserved, reserved_va, Some(h)),
-                (None, Some(h)) => (extra, datap, Some(h)),
-                (None, None)    => (reserved, reserved_va, None),
-                // A duplicate across regions is `if (user->fpsimd) goto invalid`.
+            let por = match (scan.poe, s2.poe) {
+                (Some((off, size)), None) => Some(records::read_poe(reserved, off, size).ok()?),
+                (None, Some((off, size))) => Some(records::read_poe(extra, off, size).ok()?),
+                (None, None) => None, (Some(_), Some(_)) => return None,
+            };
+            let (region, hit) = match (scan.fpsimd, s2.fpsimd) {
+                (Some(h), None) => (reserved, Some(h)),
+                (None, Some(h)) => (extra, Some(h)),
+                (None, None)    => (reserved, None),
                 (Some(_), Some(_)) => return None,
-            }
+            };
+            (region, hit, por)
         }
     };
-    let _ = base;
     let (off, size) = hit?;   // `!user.fpsimd` ⇒ -EINVAL
     let (fpsr, fpcr, vregs) = records::read_fpsimd(region, off, size).ok()?;
     fpu[..32 * 16].copy_from_slice(&region[vregs..vregs + 32 * 16]);
