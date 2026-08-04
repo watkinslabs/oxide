@@ -58,6 +58,23 @@ fn scanf_match_bit_and_unicode_helpers_cover_runtime_utility_surface() {
     let mut mv = 0i32;
     assert_eq!(unsafe { match_parser::match_int(args.as_ptr(), &mut mv) }, 0);
     assert_eq!(mv, 42);
+
+    let table = [
+        match_parser::MatchToken { token: 4, pattern: b"rate=100%%\0".as_ptr() },
+        match_parser::MatchToken { token: 5, pattern: b"name=%3s!\0".as_ptr() },
+        match_parser::MatchToken { token: 6, pattern: b"mask=%x\0".as_ptr() },
+        match_parser::MatchToken { token: 0, pattern: core::ptr::null() },
+    ];
+    let mut args = [
+        match_parser::Substring { from: core::ptr::null(), to: core::ptr::null() },
+        match_parser::Substring { from: core::ptr::null(), to: core::ptr::null() },
+        match_parser::Substring { from: core::ptr::null(), to: core::ptr::null() },
+    ];
+    assert_eq!(unsafe { match_parser::match_token(b"rate=100%\0".as_ptr(), table.as_ptr(), args.as_mut_ptr()) }, 4);
+    assert_eq!(unsafe { match_parser::match_token(b"name=abc!\0".as_ptr(), table.as_ptr(), args.as_mut_ptr()) }, 5);
+    assert_eq!(unsafe { args[0].to.offset_from(args[0].from) }, 3);
+    assert_eq!(unsafe { match_parser::match_token(b"mask=0x2a\0".as_ptr(), table.as_ptr(), args.as_mut_ptr()) }, 6);
+    assert_eq!(unsafe { args[0].to.offset_from(args[0].from) }, 4);
 }
 
 #[test]
