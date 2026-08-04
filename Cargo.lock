@@ -318,6 +318,7 @@ dependencies = [
  "firmware",
  "hal",
  "hal-x86_64",
+ "sync",
 ]
 
 [[package]]
@@ -327,6 +328,7 @@ dependencies = [
  "arch-irq",
  "drv",
  "hal-aarch64",
+ "sync",
 ]
 
 [[package]]
