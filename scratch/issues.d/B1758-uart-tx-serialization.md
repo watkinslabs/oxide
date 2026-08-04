@@ -2,4 +2,4 @@
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| CLAIMED B1758 2026-08-03 | DEFECT | med | The 16550 console has no port transaction lock: concurrent `emit` calls can both observe `LSR.THRE`, and `set_baud` can expose DLL/DLM while another emitter writes THR. Startup also never enables or clears the FIFOs. One UART-owned lock must serialize TX and divisor programming; startup must establish the FIFO state before RX interrupts are enabled. | `drv-uart-16550/src/lib.rs`: `emit`, `set_baud`, and `init`; measured serial echo duplication blocks trustworthy guest probes. | B1758-uart-tx-serialization |
+| FIXED ccca25489 | DEFECT | med | The 16550 console had no port transaction lock: concurrent `emit` calls could both observe `LSR.THRE`, and `set_baud` could expose DLL/DLM while another emitter wrote THR. Startup also never enabled or cleared the FIFOs. Both UART backends now serialize TX and divisor programming with an IRQ-safe port lock; 16550 startup clears and enables its FIFO before RX interrupts. | `drv-uart-16550` hosted FIFO test; both-arch `make smoke`; x86 serial-only long command stress probe passed. | — |
