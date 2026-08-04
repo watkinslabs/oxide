@@ -20,16 +20,26 @@ fn ipv4_multicast_source_filter_drops_denied_udp_source() {
         crate::mcast_filter::FilterMode::Include, &[allowed]).unwrap();
     let endpoint = stack.bind_udp_socket(
         Ipv4Addr::ANY, port, None, alloc::sync::Arc::new(crate::SocketError::new()),
-        alloc::sync::Arc::new(core::sync::atomic::AtomicI32::new(0)),
+        alloc::sync::Arc::new(core::sync::atomic::AtomicI32::new(1)),
         alloc::sync::Arc::new(core::sync::atomic::AtomicI32::new(0)),
         alloc::sync::Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)), 0,
         alloc::sync::Arc::new(sync::Spinlock::new(None)),
         alloc::sync::Arc::new(crate::bpf_filter::SocketFilter::new()), state,
     ).unwrap();
+    let unrestricted = stack.bind_udp_socket(
+        Ipv4Addr::ANY, port, None, alloc::sync::Arc::new(crate::SocketError::new()),
+        alloc::sync::Arc::new(core::sync::atomic::AtomicI32::new(1)),
+        alloc::sync::Arc::new(core::sync::atomic::AtomicI32::new(0)),
+        alloc::sync::Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)), 0,
+        alloc::sync::Arc::new(sync::Spinlock::new(None)),
+        alloc::sync::Arc::new(crate::bpf_filter::SocketFilter::new()),
+        alloc::sync::Arc::new(crate::mcast_filter::SocketMcast::new()),
+    ).unwrap();
 
     let blocked = udp_packet(denied, group, 32000, port, b"blocked");
     stack.deliver_rx(id, &blocked).unwrap();
     assert!(endpoint.recv(false).is_none());
+    assert!(unrestricted.recv(false).is_none());
 
     let accepted = udp_packet(allowed, group, 32001, port, b"accepted");
     stack.deliver_rx(id, &accepted).unwrap();
@@ -40,6 +50,7 @@ fn ipv4_multicast_source_filter_drops_denied_udp_source() {
     assert_eq!(dst, group);
     assert_eq!(iface, id);
     assert_eq!(&body, b"accepted");
+    assert_eq!(unrestricted.recv(false).unwrap().src, allowed);
 }
 
 #[test]
@@ -72,6 +83,40 @@ fn ipv4_multicast_delivery_is_endpoint_local() {
     stack.deliver_rx(id, &udp_packet(Ipv4Addr::new(10, 0, 0, 7), group, 32000, port, b"one")).unwrap();
     assert_eq!(joined.queued_len(), 1);
     assert_eq!(other.queued_len(), 0);
+    assert_eq!(unrestricted.queued_len(), 1);
+}
+
+#[test]
+fn ipv4_multicast_host_admission_requires_interface_membership() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    use alloc::sync::Arc;
+    use core::sync::atomic::AtomicI32;
+    use sync::Spinlock;
+    let stack = NetStack::new();
+    let (id, _) = stack.register_loopback();
+    let group = Ipv4Addr::new(239, 4, 3, 4);
+    let port = 47119;
+    let bind = |state| stack.bind_udp_socket(
+        Ipv4Addr::ANY, port, None, Arc::new(crate::SocketError::new()),
+        Arc::new(AtomicI32::new(1)), Arc::new(AtomicI32::new(0)),
+        Arc::new(AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)), 1000,
+        Arc::new(Spinlock::new(None)), Arc::new(crate::bpf_filter::SocketFilter::new()), state,
+    ).unwrap();
+    let unrestricted = bind(Arc::new(crate::mcast_filter::SocketMcast::new()));
+
+    stack.deliver_rx(id, &udp_packet(Ipv4Addr::new(10, 0, 0, 7), group, 32000, port, b"drop")).unwrap();
+    assert_eq!(unrestricted.queued_len(), 0);
+
+    let joined_state = Arc::new(crate::mcast_filter::SocketMcast::new());
+    joined_state.change_v4(&stack, id, group, Ipv4Addr::LOOPBACK, true).unwrap();
+    let joined = bind(joined_state.clone());
+    stack.deliver_rx(id, &udp_packet(Ipv4Addr::new(10, 0, 0, 7), group, 32001, port, b"deliver")).unwrap();
+    assert_eq!(joined.queued_len(), 1);
+    assert_eq!(unrestricted.queued_len(), 1);
+
+    joined_state.change_v4(&stack, id, group, Ipv4Addr::LOOPBACK, false).unwrap();
+    stack.deliver_rx(id, &udp_packet(Ipv4Addr::new(10, 0, 0, 7), group, 32002, port, b"drop-again")).unwrap();
+    assert_eq!(joined.queued_len(), 1);
     assert_eq!(unrestricted.queued_len(), 1);
 }
 
