@@ -38,6 +38,7 @@ use alloc::sync::Arc;
 use sync::{Spinlock, Socket as LockClass};
 
 use crate::mcast_filter::SocketMcast;
+use crate::sock_anycast::SocketAnycast;
 use crate::sock::PendingPacketRelease;
 use crate::stack::NetStack;
 
@@ -47,6 +48,7 @@ use crate::stack::NetStack;
 /// (`defer` skips it).
 struct Pending {
     mcast: Option<Arc<SocketMcast>>,
+    anycast: Option<Arc<SocketAnycast>>,
     packet: Option<PendingPacketRelease>,
 }
 
@@ -73,9 +75,10 @@ static WAIT: sched::live::WaitList = sched::live::WaitList::new();
 /// Safe from ANY context including hard-IRQ: no RTNL, no sleep, bounded
 /// work (irqsave push + wake). # C: O(1)
 /// # Ctx: any, including softirq/hard-IRQ
-pub(crate) fn defer(mcast: Option<Arc<SocketMcast>>, packet: Option<PendingPacketRelease>) {
-    if mcast.is_none() && packet.is_none() { return; }
-    PENDING.lock_irqsave::<DeferIrq>().push_back(Pending { mcast, packet });
+pub(crate) fn defer(mcast: Option<Arc<SocketMcast>>, anycast: Option<Arc<SocketAnycast>>,
+                    packet: Option<PendingPacketRelease>) {
+    if mcast.is_none() && anycast.is_none() && packet.is_none() { return; }
+    PENDING.lock_irqsave::<DeferIrq>().push_back(Pending { mcast, anycast, packet });
     #[cfg(target_os = "oxide-kernel")]
     WAIT.wake_one();
 }
@@ -91,6 +94,7 @@ pub(crate) fn drain_all(stack: &NetStack) -> usize {
         let next = PENDING.lock_irqsave::<DeferIrq>().pop_front();
         let Some(item) = next else { return done };
         if let Some(mcast) = item.mcast { mcast.release(stack); }
+        if let Some(anycast) = item.anycast { anycast.release(stack); }
         if let Some(packet) = item.packet { crate::sock::finish_pending_packet_release(packet); }
         done += 1;
     }

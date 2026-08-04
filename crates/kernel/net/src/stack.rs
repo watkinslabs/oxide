@@ -64,6 +64,8 @@ mod inet_tables;
 mod pmtu_cache;
 pub(crate) use pmtu_cache::IPV4_MIN_PMTU;
 mod core;
+#[path = "stack_anycast.rs"]
+pub(crate) mod anycast;
 mod lifecycle;
 mod udp_endpoint;
 mod udp_bind;
