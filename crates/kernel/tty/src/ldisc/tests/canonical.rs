@@ -55,7 +55,7 @@ fn echo_printable() {
     let mut n = NTty::new();
     let mut d = RecordingDriver::default();
     n.receive_buf(&mut d, b"hi\n");
-    assert_eq!(d.out, b"hi\n");
+    assert_eq!(d.out, b"hi\r\n");
 }
 
 #[test]
@@ -64,7 +64,7 @@ fn echo_control_as_caret_with_echoctl() {
     let mut d = RecordingDriver::default();
     // 0x01 = ^A. ECHOCTL on by default.
     n.receive_buf(&mut d, &[0x01, b'\n']);
-    assert_eq!(d.out, b"^A\n");
+    assert_eq!(d.out, b"^A\r\n");
 }
 
 #[test]
@@ -93,7 +93,7 @@ fn verase_del_erases_last_char() {
     n.receive_buf(&mut d, b"\n");
     assert_eq!(drain(&mut n), b"ab\n");
     // ECHOE emits "\b \b" once for the erase.
-    assert_eq!(d.out, b"abc\x08 \x08\n");
+    assert_eq!(d.out, b"abc\x08 \x08\r\n");
 }
 
 #[test]

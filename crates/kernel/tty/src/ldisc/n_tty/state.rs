@@ -1,7 +1,7 @@
 use alloc::collections::VecDeque;
 
 use super::super::{Sig, TtyDriverHooks};
-use super::timing::{CANON_CAP, TAB_WIDTH};
+use super::timing::{CANON_CAP, HOLD_CAP, TAB_WIDTH};
 use crate::pty::{
     cc, default_termios, iflag, lflag, oflag, read_iflag, read_lflag, read_oflag,
     TERMIOS_BYTES, TERMIOS_OFF_CC,
@@ -137,24 +137,24 @@ impl NTty {
     /// Echo one input byte the Linux way: printable verbatim, control as
     /// `^X` when ECHOCTL, CR/NL as the configured line ending. Goes
     /// through `driver_write`.
-    pub(super) fn echo_byte<D: TtyDriverHooks>(&self, drv: &mut D, b: u8) {
+    pub(super) fn echo_byte<D: TtyDriverHooks>(&mut self, drv: &mut D, b: u8) {
         let lf = self.lflag();
         if lf & lflag::ECHO == 0 {
             // ECHONL: NL still echoed with ECHO off.
             if b == b'\n' && lf & lflag::ECHONL != 0 {
-                drv.driver_write(b"\n");
+                self.emit_output(drv, b"\n");
             }
             return;
         }
         match b {
-            b'\n' => drv.driver_write(b"\n"),
-            b'\t' => drv.driver_write(b"\t"),
-            0x20..=0x7e => drv.driver_write(&[b]),
+            b'\n' => self.emit_output(drv, b"\n"),
+            b'\t' => self.emit_output(drv, b"\t"),
+            0x20..=0x7e => self.emit_output(drv, &[b]),
             // Control char (incl DEL): show ^X when ECHOCTL.
             _ => {
                 if lf & lflag::ECHOCTL != 0 && b != b'\n' {
                     let sym = if b == 0x7f { b'?' } else { b ^ 0x40 };
-                    drv.driver_write(&[b'^', sym]);
+                    self.emit_output(drv, &[b'^', sym]);
                 }
             }
         }
@@ -427,6 +427,22 @@ impl NTty {
                 }
                 out.push(raw);
             }
+        }
+    }
+
+    /// One canonical output path for user writes and input echo. Applies OPOST
+    /// before IXON buffering so both producers have identical terminal state.
+    pub(super) fn emit_output<D: TtyDriverHooks>(&mut self, drv: &mut D, buf: &[u8]) {
+        let mut out = alloc::vec::Vec::with_capacity(buf.len() + 8);
+        if self.oflag() & oflag::OPOST == 0 {
+            out.extend_from_slice(buf);
+        } else {
+            for &b in buf { self.output_byte(b, &mut out); }
+        }
+        if self.stopped {
+            for b in out { if self.out_hold.len() < HOLD_CAP { self.out_hold.push_back(b); } }
+        } else {
+            drv.driver_write(&out);
         }
     }
 }
