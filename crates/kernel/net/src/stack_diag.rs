@@ -113,6 +113,15 @@ impl NetStack {
         self.inet_diag_snapshot_in(0, protocol)
     }
 
+    /// TCP connections in `TCP_ESTABLISHED`, the `CurrEstab` column of
+    /// `/proc/net/snmp`. Derived from the one connection table the diag
+    /// snapshot already reports, so it cannot disagree with `/proc/net/tcp`.
+    /// # C: O(N connections)
+    pub fn tcp_established_count_in(&self, net_ns: u64) -> u64 {
+        self.inet_diag_snapshot_in(net_ns, IPPROTO_TCP)
+            .iter().filter(|row| row.state == TCP_ESTABLISHED).count() as u64
+    }
+
     /// Snapshot transport state visible in one network namespace. # C: O(TCP + UDP sockets)
     pub fn inet_diag_snapshot_in(&self, net_ns: u64, protocol: u8) -> Vec<InetDiagSnapshot> {
         let mut out = Vec::new();

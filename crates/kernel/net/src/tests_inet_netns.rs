@@ -278,3 +278,32 @@ fn namespace_teardown_wakes_tcp_listener_poll_observers() {
     assert!(claimed.contains(&id));
     crate::net_ns::test_support::finish_claimed(&stack, &claimed);
 }
+
+/// The SNMP counters must move where the events happen, not merely render.
+///
+/// A test that bumps a counter and reads it back proves only that the
+/// rendering works; it cannot fail if the receive path stops counting. This
+/// drives a real datagram through `deliver_rx_in` and asserts the columns a
+/// tool reads actually moved — which is what the hardcoded table of zeroes
+/// could never do.
+#[test]
+fn the_receive_path_counts_what_it_delivers() {
+    use crate::mib::{get, forget, Mib};
+    let stack = NetStack::new();
+    let (owner, _) = owners();
+    let ns = owner.id().as_u64();
+    let (iface, _) = stack.register_loopback_in(ns);
+    let _bound = bind_udp(&stack, ns, Ipv4Addr::ANY, PORT).unwrap();
+    forget(ns);
+
+    let lease = stack.ifaces.acquire_ingress(iface).unwrap();
+    stack.deliver_rx_in(&lease, &udp4_packet(
+        Ipv4Addr::new(192, 0, 2, 1), Ipv4Addr::LOOPBACK, 50_000, PORT,
+    )).unwrap();
+
+    assert_eq!(get(ns, Mib::IpInReceives), 1, "the datagram was received");
+    assert_eq!(get(ns, Mib::IpInDelivers), 1, "and delivered locally");
+    assert_eq!(get(ns, Mib::UdpInDatagrams), 1, "and counted as UDP");
+    assert_eq!(get(ns, Mib::TcpInSegs), 0, "a UDP datagram is not a TCP segment");
+    forget(ns);
+}
