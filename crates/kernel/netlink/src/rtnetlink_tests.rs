@@ -31,6 +31,8 @@
     mod addr_fields;
     #[path = "rtnetlink_tests/link_operstate.rs"]
     mod link_operstate;
+    #[path = "rtnetlink_tests/dump_only.rs"]
+    mod dump_only;
 
     fn visible_ifindex(iface: net::NetIfaceId, ns: u64) -> u32 {
         net::global_stack().ifaces.ifindex_in_ns(iface, ns).unwrap()
