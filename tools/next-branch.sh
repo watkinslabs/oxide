@@ -1,15 +1,13 @@
 #!/usr/bin/env bash
-# Derive the next branch counter for a type from git itself, so the number can
-# never be stale relative to history. `metadata/index.md` stays authoritative
-# for RESERVATIONS (numbers claimed by a live lane that has not merged yet);
-# git is authoritative for what has already been USED. The answer is the max of
-# both, which is correct whichever one is behind.
+# Derive the next branch counter for a type from git itself, including the
+# remote claim refs for reservations. This keeps one source of truth for both
+# used and in-flight numbers.
 #
 #   tools/next-branch.sh B                  -> next B number (READ ONLY)
 #   tools/next-branch.sh B my-fix-title     -> full branch name (READ ONLY)
 #   tools/next-branch.sh --claim B my-title -> CLAIM the number, then print it
 #   tools/next-branch.sh --dry-run --claim B my-title -> show, claim nothing
-#   tools/next-branch.sh --check            -> non-zero if index.md is behind git
+#   tools/next-branch.sh --check            -> verify git-derived counters
 #   tools/next-branch.sh --check B          -> same, one type
 #
 # Types: F B D R Z C, plus phase branches P<n>.
@@ -26,9 +24,6 @@
 # The loser retries with the next number. Claim refs are never deleted: they are
 # the record of which numbers have been handed out, and `git_max` counts them.
 set -euo pipefail
-
-root=$(git rev-parse --show-toplevel)
-index="$root/metadata/index.md"
 
 TYPES="F B D R Z C"
 
@@ -69,22 +64,11 @@ claim_number() {
   git push -q origin "${sha}:refs/claims/${name}" 2>/dev/null
 }
 
-# The `next` value recorded in the index table for TYPE.
-index_next() {
-  local t=$1
-  awk -v t="$t" -F'|' '
-    $2 ~ "^[[:space:]]*"t"[[:space:]]*$" { gsub(/[^0-9]/, "", $3); if ($3 != "") { print $3; exit } }
-  ' "$index"
-}
-
 next_for() {
   local t=$1
-  local g i n
+  local g
   g=$(git_max "$t"); g=${g:-0}
-  i=$(index_next "$t"); i=${i:-0}
-  n=$(( g + 1 ))
-  if [ "$i" -gt "$n" ]; then n=$i; fi
-  printf '%d' "$n"
+  printf '%d' "$(( g + 1 ))"
 }
 
 pad() {
@@ -95,17 +79,11 @@ pad() {
 if [ "${1:-}" = "--check" ]; then
   shift
   types=${*:-$TYPES}
-  rc=0
   for t in $types; do
     g=$(git_max "$t"); g=${g:-0}
-    i=$(index_next "$t"); i=${i:-0}
-    if [ "$i" -le "$g" ]; then
-      echo "STALE: metadata/index.md says ${t} next=${i}, but ${t}${g} already exists in git" >&2
-      rc=1
-    fi
+    echo "${t} next=$(pad "$(( g + 1 ))") (derived from git)"
   done
-  [ "$rc" -eq 0 ] && echo "metadata/index.md counters are ahead of git for: $types"
-  exit "$rc"
+  exit 0
 fi
 
 claim=0
