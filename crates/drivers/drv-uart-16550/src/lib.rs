@@ -16,6 +16,19 @@ extern crate alloc;
 
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use sync::{LockClass, Spinlock};
+
+struct UartPort;
+impl LockClass for UartPort {
+    fn rank() -> u16 { 121 }
+    fn name() -> &'static str { "UartPort" }
+}
+
+/// Serializes every transaction against the port's aliased register window.
+/// `emit` and `set_baud` may run from unrelated kernel contexts; a divisor
+/// transaction with DLAB set must exclude THR writes, and THR readiness must
+/// be consumed by only one writer.
+static PORT: Spinlock<(), UartPort> = Spinlock::new(());
 
 /// Detected COM I/O base (x86 port). 0 ⇒ no UART bound.
 #[cfg(target_arch = "x86_64")]
@@ -86,9 +99,17 @@ mod imp {
     // 8250 register offsets from the port base.
     const RBR: u16 = 0; // THR on write
     const IER: u16 = 1;
+    const FCR: u16 = 2;
     const LCR: u16 = 3; // line control; bit7 = DLAB (selects DLL/DLM at base+0/+1)
     const LSR: u16 = 5; // bit0 = RX data ready, bit5 = THR empty
     const SCR: u16 = 7; // scratch
+    const FCR_ENABLE: u8 = 0x01;
+    const FCR_CLEAR_RX: u8 = 0x02;
+    const FCR_CLEAR_TX: u8 = 0x04;
+    const FCR_RX_TRIGGER_8: u8 = 0x80;
+
+    /// Steady 16550 FIFO configuration after the startup clear. # C: O(1)
+    pub(super) const fn fifo_mode() -> u8 { FCR_ENABLE | FCR_RX_TRIGGER_8 }
 
     /// Legacy 8250 detection: round-trip a sentinel through the scratch
     /// register. A responding UART returns it; empty I/O space reads 0xFF.
@@ -119,6 +140,7 @@ mod imp {
     pub fn emit(bytes: &[u8]) {
         let b = base();
         if b == 0 { return; }
+        let _port = PORT.lock_irqsave::<hal_x86_64::X86IrqGate>();
         for &c in bytes {
             let mut n = 0u32;
             // SAFETY: LSR port read at CPL=0 to the detected COM base.
@@ -136,6 +158,7 @@ mod imp {
         let b = base();
         if b == 0 || baud == 0 { return; }
         let divisor = (115_200 / baud).clamp(1, 0xFFFF) as u16;
+        let _port = PORT.lock_irqsave::<hal_x86_64::X86IrqGate>();
         // SAFETY: DLAB toggle + divisor-latch writes at CPL=0 to the detected
         // COM base; DLL/DLM alias base+0/+1 only while DLAB=1, restored after.
         unsafe {
@@ -182,6 +205,13 @@ mod imp {
         BASE.store(port as u64, Ordering::Release);
         DELIVER.store(dlv as usize as u64, Ordering::Release);
         PRESENT.store(true, Ordering::Release);
+        // Clear stale hardware state, then enable the FIFO with the standard
+        // eight-byte receive trigger before exposing RX interrupts.
+        // SAFETY: detected 16550 port, single-CPU probe before its IRQ is enabled.
+        unsafe {
+            outb(port + FCR, FCR_ENABLE | FCR_CLEAR_RX | FCR_CLEAR_TX);
+            outb(port + FCR, fifo_mode());
+        }
         // Route IRQ4 → an RX-drain vector via the I/O APIC, if present.
         use hal::{MmuOps, Pa, PageFlags, PageSize, Va};
         let ioapic_pa = firmware::ioapic_pa();
@@ -330,3 +360,13 @@ impl drv::Driver for Uart16550Drv {
 /// device kmain registers. Exposed so `drv-serial::init` registers the
 /// per-arch UART driver uniformly.
 pub static UART_DRIVER: &dyn drv::Driver = &Uart16550Drv;
+
+#[cfg(test)]
+mod tests {
+    use super::imp::fifo_mode;
+
+    #[test]
+    fn steady_fifo_mode_keeps_fifo_enabled_with_eight_byte_rx_trigger() {
+        assert_eq!(fifo_mode(), 0x81);
+    }
+}

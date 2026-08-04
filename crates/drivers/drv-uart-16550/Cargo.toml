@@ -9,6 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 drv = { path = "../drv" }
+sync = { path = "../../shared/sync" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal        = { path = "../../arch/hal" }
