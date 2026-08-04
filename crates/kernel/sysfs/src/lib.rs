@@ -166,7 +166,7 @@ pub fn init() {
     register("/sys/class/net", net_class::make_sys_class_net_inode());
     register("/sys/devices/virtual/net", net_class::make_sys_devices_virtual_net_inode());
     #[cfg(target_os = "oxide-kernel")]
-    net::netdev::set_remove_hook(net_class::invalidate_netdev_paths);
+    net::netdev::set_change_hook(net_class::invalidate_netdev_paths);
     register("/sys/class/tty", tty::make_sys_class_tty_inode());
     register("/sys/devices/virtual/tty", tty::make_sys_devices_virtual_tty_inode());
     bus::init();

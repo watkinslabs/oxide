@@ -18,7 +18,7 @@ const ARPHRD_LOOPBACK: u16 = 772;
 const INITIAL_NET_NS: u64 = 0;
 const IFACE_BODY_CAPACITY: usize = 32;
 
-const CLASS_TARGET_PREFIX: &str = "../../devices/virtual/net/";
+const CLASS_TARGET_PREFIX: &str = "../../";
 #[cfg(target_os = "oxide-kernel")]
 const CLASS_NET_PATH: &str = "/sys/class/net";
 #[cfg(target_os = "oxide-kernel")]
@@ -42,17 +42,33 @@ const LOOPBACK_SPEED: &[u8] = b"-1\n";
 const NAME_ASSIGN_ENUM: &[u8] = b"4\n";
 
 #[cfg(target_os = "oxide-kernel")]
-fn snapshot_net_devs() -> Vec<(net::NetIfaceId, String, Arc<dyn net::NetDev>)> {
+fn snapshot_net_devs() -> Vec<(net::NetIfaceId, String, Arc<dyn net::NetDev>, Option<Arc<drv::Device>>)> {
     let stack = net::sock::stack();
-    stack.ifaces.snapshot_in_ns(INITIAL_NET_NS).into_iter().filter_map(|snap| {
-        stack.ifaces.lookup_in_ns(snap.id, INITIAL_NET_NS)
-            .map(|dev| (snap.id, snap.name, dev))
-    }).collect()
+    stack.ifaces.snapshot_sysfs_in_ns(INITIAL_NET_NS)
 }
 
 #[cfg(not(target_os = "oxide-kernel"))]
-fn snapshot_net_devs() -> Vec<(net::NetIfaceId, String, Arc<dyn net::NetDev>)> {
+fn snapshot_net_devs() -> Vec<(net::NetIfaceId, String, Arc<dyn net::NetDev>, Option<Arc<drv::Device>>)> {
     Vec::new()
+}
+
+fn iface_canon(parent: &drv::Device, name: &str) -> Option<String> {
+    Some(alloc::format!("{}/net/{}", drv::device_canon_exact(parent)?, name))
+}
+
+/// Relative class symlink target for one live network interface. # C: O(depth)
+pub(crate) fn class_target(name: &str, parent: Option<&Arc<drv::Device>>) -> Option<String> {
+    match parent {
+        Some(parent) => Some(alloc::format!("{CLASS_TARGET_PREFIX}{}", iface_canon(parent, name)?)),
+        None => Some(alloc::format!("../../devices/virtual/net/{name}")),
+    }
+}
+
+fn iface_devpath(data: &NetIfaceData) -> Option<String> {
+    match data.parent.as_ref() {
+        Some(parent) => Some(alloc::format!("/{}", iface_canon(parent, &data.name)?)),
+        None => Some(alloc::format!("/devices/virtual/net/{}", data.name)),
+    }
 }
 
 #[cfg(target_os = "oxide-kernel")]
@@ -66,19 +82,28 @@ fn lookup_net_ifindex(_name: &str) -> u32 {
 }
 
 #[cfg(target_os = "oxide-kernel")]
-pub(crate) fn invalidate_netdev_paths(name: &str) {
+/// Drop stale class and exact physical-parent netdev dentries. # C: O(depth)
+pub(crate) fn invalidate_netdev_paths(name: &str, parent: Option<&Arc<drv::Device>>) {
     for path in [CLASS_NET_PATH, DEVICES_NET_PATH] {
         crate::drop_cached(&alloc::format!("{path}/{name}"));
     }
+    let Some(parent) = parent else { return; };
+    let Some(canon) = iface_canon(parent, name) else { return; };
+    let physical = alloc::format!("/sys/{canon}");
+    crate::drop_cached(&physical);
+    let net_dir = physical.rsplit_once('/').map(|(dir, _)| dir).unwrap_or(physical.as_str());
+    crate::drop_cached(net_dir);
 }
 
 struct SysClassNetOps;
 
 impl InodeOps for SysClassNetOps {
     fn lookup(&self, _inode: &Inode, name: &str) -> KResult<InodeRef> {
-        if snapshot_net_devs().iter().any(|(_, current, _)| current == name) {
+        if let Some((_, current, _, parent)) = snapshot_net_devs().iter()
+            .find(|(_, current, _, _)| current == name)
+        {
             return Ok(crate::make_symlink_inode(
-                alloc::format!("{CLASS_TARGET_PREFIX}{name}").into_bytes(),
+                class_target(current, parent.as_ref()).ok_or(VfsError::Enoent)?.into_bytes(),
             ));
         }
         Err(VfsError::Enoent)
@@ -114,10 +139,10 @@ struct SysDevicesVirtualNetOps;
 
 impl InodeOps for SysDevicesVirtualNetOps {
     fn lookup(&self, _inode: &Inode, name: &str) -> KResult<InodeRef> {
-        let (_, _, dev) = snapshot_net_devs().into_iter()
-            .find(|(_, current, _)| current == name)
+        let (_, _, dev, parent) = snapshot_net_devs().into_iter()
+            .find(|(_, current, _, parent)| current == name && parent.is_none())
             .ok_or(VfsError::Enoent)?;
-        Ok(make_net_iface_inode(String::from(name), dev))
+        Ok(make_net_iface_inode(String::from(name), dev, parent))
     }
 }
 
@@ -132,7 +157,7 @@ impl FileOps for SysDevicesVirtualNetOps {
             klog::write_dec_u64(snap.len() as u64);
             klog::write_raw(b"]\n");
         }
-        crate::readdir::emit_names(inode, ctx, snap.iter().map(|d| d.1.as_str()),
+        crate::readdir::emit_names(inode, ctx, snap.iter().filter(|d| d.3.is_none()).map(|d| d.1.as_str()),
             FileType::Directory)
     }
 }
@@ -149,6 +174,7 @@ pub(crate) fn make_sys_devices_virtual_net_inode() -> InodeRef {
 struct NetIfaceData {
     name: String,
     dev: Arc<dyn net::NetDev>,
+    parent: Option<Arc<drv::Device>>,
 }
 
 fn arphrd(name: &str) -> u16 {
@@ -263,7 +289,7 @@ impl SysfsOps for NetIfaceData {
             klog::write_raw(crate::uevent_action(buf).as_bytes());
             klog::write_raw(b"]\n");
         }
-        let devpath = alloc::format!("/devices/virtual/net/{}", self.name);
+        let devpath = iface_devpath(self).ok_or(VfsError::Enoent)?;
         let iface = alloc::format!("INTERFACE={}", self.name);
         let ifindex = alloc::format!("IFINDEX={}", lookup_net_ifindex(&self.name));
         ::netlink::emit_uevent_with_env(
@@ -283,6 +309,7 @@ impl NetIfaceOps {
         Arc::new(NetIfaceData {
             name: data.name.clone(),
             dev: Arc::clone(&data.dev),
+            parent: data.parent.clone(),
         })
     }
 }
@@ -295,6 +322,10 @@ impl InodeOps for NetIfaceOps {
         }
         if name == "subsystem" {
             return Ok(crate::make_symlink_inode(NET_SUBSYSTEM_TARGET.to_vec()));
+        }
+        if name == "device" {
+            let parent = data.parent.as_ref().ok_or(VfsError::Enoent)?;
+            return Ok(crate::bus::make_device_link_inode(Arc::clone(parent), b"../..".to_vec()));
         }
         let attr = NET_IFACE_GROUP.find(name).ok_or(VfsError::Enoent)?;
         let ino: Ino = if name == "uevent" { ids::UEVENT } else { ids::ATTR };
@@ -310,17 +341,69 @@ impl FileOps for NetIfaceOps {
         for attr in NET_IFACE_GROUP.attrs.iter() { es.push(attr.name, FileType::Regular); }
         es.push("statistics", FileType::Directory);
         es.push("subsystem", FileType::Symlink);
+        if inode.private::<NetIfaceData>().and_then(|data| data.parent.as_ref()).is_some() {
+            es.push("device", FileType::Symlink);
+        }
         es.emit(ctx)
     }
 }
 
-pub(crate) fn make_net_iface_inode(name: String, dev: Arc<dyn net::NetDev>) -> InodeRef {
+pub(crate) fn make_net_iface_inode(name: String, dev: Arc<dyn net::NetDev>,
+                                   parent: Option<Arc<drv::Device>>) -> InodeRef {
     InodeBuilder::new(
         ids::KOBJ_ROOT,
         mk_mode(FileType::Directory, DIR_PERM),
         Arc::new(NetIfaceOps),
         Arc::new(NetIfaceOps),
     )
-    .private(Arc::new(NetIfaceData { name, dev }))
+    .private(Arc::new(NetIfaceData { name, dev, parent }))
     .build()
+}
+
+fn parented_iface(parent: &Arc<drv::Device>, name: &str)
+    -> Option<(Arc<dyn net::NetDev>, Arc<drv::Device>)>
+{
+    snapshot_net_devs().into_iter().find_map(|(_, current, dev, iface_parent)| {
+        if current != name { return None; }
+        let iface_parent = iface_parent?;
+        Arc::ptr_eq(&iface_parent, parent).then_some((dev, iface_parent))
+    })
+}
+
+/// Whether a model device currently owns a physical network interface. # C: O(N)
+pub(crate) fn has_parented_net(parent: &Arc<drv::Device>) -> bool {
+    snapshot_net_devs().iter().any(|(_, _, _, iface_parent)| {
+        iface_parent.as_ref().is_some_and(|iface_parent| Arc::ptr_eq(iface_parent, parent))
+    })
+}
+
+struct ParentNetData { parent: Arc<drv::Device> }
+
+struct ParentNetOps;
+impl InodeOps for ParentNetOps {
+    fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
+        let parent = &inode.private::<ParentNetData>().ok_or(VfsError::Einval)?.parent;
+        let (dev, parent) = parented_iface(parent, name).ok_or(VfsError::Enoent)?;
+        iface_canon(&parent, name).ok_or(VfsError::Enoent)?;
+        Ok(make_net_iface_inode(String::from(name), dev, Some(parent)))
+    }
+}
+impl FileOps for ParentNetOps {
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
+    fn iterate(&self, inode: &Inode, ctx: &mut DirContext) -> KResult<()> {
+        let parent = &inode.private::<ParentNetData>().ok_or(VfsError::Einval)?.parent;
+        drv::device_canon_exact(parent).ok_or(VfsError::Enoent)?;
+        let names = snapshot_net_devs().into_iter().filter_map(|(_, name, _, iface_parent)| {
+            iface_parent.filter(|iface_parent| Arc::ptr_eq(iface_parent, parent)).map(|_| name)
+        }).collect::<Vec<_>>();
+        crate::readdir::emit_names(inode, ctx, names.iter().map(|name| name.as_str()), FileType::Directory)
+    }
+}
+
+/// Build the `net` directory nested below one transport device. # C: O(1)
+pub(crate) fn make_parent_net_inode(parent: Arc<drv::Device>) -> InodeRef {
+    InodeBuilder::new(ids::KOBJ_ROOT, mk_mode(FileType::Directory, DIR_PERM),
+        Arc::new(ParentNetOps), Arc::new(ParentNetOps))
+        .private(Arc::new(ParentNetData { parent }))
+        .build()
 }

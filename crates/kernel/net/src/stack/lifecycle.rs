@@ -65,6 +65,15 @@ impl NetStack {
         self.ifaces.prepare_in_ns(&rtnl, dev, owner)
     }
 
+    /// Prepare an interface anchored below its driver-model parent. # C: O(1)
+    pub fn prepare_parented_iface(&self, dev: Arc<dyn NetDev>, parent: Arc<drv::Device>,
+        owner: &network_namespace::NetworkNamespaceRef)
+        -> Option<crate::netdev::IfaceRegistration<'_>>
+    {
+        let rtnl = self.rtnl_lock();
+        self.ifaces.prepare_parented_in_ns(&rtnl, dev, parent, owner)
+    }
+
     /// Publish a fully initialized interface generation. # C: O(N)
     pub fn publish_iface(&self, reg: crate::netdev::IfaceRegistration<'_>) -> bool {
         let namespace = crate::control_event::NamespaceOwner::Live(reg.namespace());
@@ -236,8 +245,8 @@ impl NetStack {
             (removed, ticket)
         };
         if let Some(ticket) = removed.1 { crate::control_event::publish(ticket); }
-        if let Some(dev) = removed.0.as_ref() {
-            crate::netdev::IfaceRegistry::notify_destroyed(dev);
+        if let Some((dev, parent)) = removed.0.as_ref() {
+            crate::netdev::IfaceRegistry::notify_destroyed(dev, parent.as_ref());
         }
         if removed.0.is_some() { crate::netdev::IfaceRegistry::complete_destroy(&teardown); }
         removed.0.is_some()
@@ -284,8 +293,8 @@ impl NetStack {
                         (removed, ticket)
                     };
                     if let Some(ticket) = removed.1 { crate::control_event::publish(ticket); }
-                    if let Some(dev) = removed.0.as_ref() {
-                        crate::netdev::IfaceRegistry::notify_destroyed(dev);
+                    if let Some((dev, parent)) = removed.0.as_ref() {
+                        crate::netdev::IfaceRegistry::notify_destroyed(dev, parent.as_ref());
                     }
                     if removed.0.is_some() {
                         crate::netdev::IfaceRegistry::complete_destroy(&teardown);
@@ -344,8 +353,8 @@ impl NetStack {
                 (removed, ticket)
             };
             if let Some(ticket) = removed.1 { crate::control_event::publish(ticket); }
-            if let Some(dev) = removed.0.as_ref() {
-                crate::netdev::IfaceRegistry::notify_destroyed(dev);
+            if let Some((dev, parent)) = removed.0.as_ref() {
+                crate::netdev::IfaceRegistry::notify_destroyed(dev, parent.as_ref());
             }
             if removed.0.is_some() {
                 crate::netdev::IfaceRegistry::complete_destroy(teardown);

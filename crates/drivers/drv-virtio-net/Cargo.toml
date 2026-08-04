@@ -18,6 +18,7 @@ net      = { path = "../../kernel/net" }
 pmm      = { path = "../../kernel/mm-pmm" }
 sync     = { path = "../../shared/sync" }
 virtio   = { path = "../virtio" }
+drv      = { path = "../drv" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../../arch/hal-x86_64" }
