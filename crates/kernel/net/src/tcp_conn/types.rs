@@ -223,6 +223,9 @@ pub struct TcpConn {
     /// `TCP_RTO_MAX_MS` / `TCP_DELACK_MAX_US` as the timer ceilings they set.
     pub rto_max_ns: u64,
     pub delack_max_ns: u64,
+    /// Adaptive delayed-ACK interval from validated payload arrivals; zero
+    /// means the delayed-ACK engine has not yet seen data.
+    pub delack_ato_ns: u64,
     /// Repair-visible window state: the sequence of the last window update,
     /// the largest window the peer ever advertised, and the receive window
     /// with the sequence it was advertised from.
@@ -266,6 +269,7 @@ pub const OWN_WSCALE: u8 = 7;
 /// runs with until `TCP_RTO_MAX_MS` / `TCP_DELACK_MAX_US` name others.
 pub const RTO_MAX_DEFAULT_NS: u64 = 120_000_000_000;
 pub const DELACK_MAX_DEFAULT_NS: u64 = 200_000_000;
+pub const DELACK_ATO_MIN_NS: u64 = 40_000_000;
 /// SYN retransmits before an unanswered connection attempt is abandoned, and
 /// data retransmits before an established connection is.
 pub const SYN_RETRIES_DEFAULT: u32 = 6;

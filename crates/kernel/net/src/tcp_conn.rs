@@ -34,7 +34,7 @@ pub mod reqsk;
 pub use types::passive_rcv_header;
 pub use types::{
     Endpoint, OutOfOrderSegment, TcpCongestionControl, TcpConn, TcpConnError, UnackedSegment, OWN_MSS_DEFAULT,
-    OWN_WSCALE, DATA_RETRIES_DEFAULT, DELACK_MAX_DEFAULT_NS, LINGER2_DEFAULT_NS,
+    OWN_WSCALE, DATA_RETRIES_DEFAULT, DELACK_ATO_MIN_NS, DELACK_MAX_DEFAULT_NS, LINGER2_DEFAULT_NS,
     RTO_MAX_DEFAULT_NS, SYN_RETRIES_DEFAULT,
 };
 pub use timing::{ka_now_ns, tcp_now_ms};
