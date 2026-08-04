@@ -28,6 +28,24 @@ pub fn midr_el1() -> u64 {
     { 0 }
 }
 
+/// Read the boot CPU's `MPIDR_EL1` hardware identity.
+/// # C: O(1)
+pub fn mpidr_el1() -> u64 {
+    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+    {
+        let v: u64;
+        // SAFETY: `mrs MPIDR_EL1` reads the EL1 CPU identity register and
+        // has no memory side effects.
+        unsafe {
+            core::arch::asm!("mrs {v}, mpidr_el1", v = out(reg) v,
+                options(nomem, nostack, preserves_flags));
+        }
+        return v;
+    }
+    #[cfg(not(all(target_arch = "aarch64", target_os = "oxide-kernel")))]
+    { 0 }
+}
+
 /// Read `ID_AA64ISAR0_EL1` (Instruction Set Attribute Register 0): the
 /// crypto/CRC feature fields. Privileged at EL1, no memory effects.
 /// # C: O(1)
@@ -216,6 +234,11 @@ mod tests {
     #[test]
     fn midr_el1_returns_zero_on_host() {
         assert_eq!(midr_el1(), 0);
+    }
+
+    #[test]
+    fn mpidr_el1_returns_zero_on_host() {
+        assert_eq!(mpidr_el1(), 0);
     }
 
     #[test]

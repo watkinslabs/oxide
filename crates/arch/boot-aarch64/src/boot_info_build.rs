@@ -414,6 +414,9 @@ pub(crate) unsafe fn build_boot_info() -> BootInfo {
     unsafe { build_selfboot_memmap(&mut info); }
     use hal::TimerOps;
     info.boot_ns = hal_aarch64::ArmTimerOps::monotonic_ns().0;
+    // The boot handoff has no CPU table. Keep the same u32 representation
+    // consumed by ACPI CPU topology while deriving it from this boot CPU.
+    info.bsp_lapic_id = hal_aarch64::mpidr_el1() as u32;
     // ACPI RSDP from the EFI config table (efi_stub) → the kernel decodes
     // MCFG (PCI ECAM → virtio-blk/net/gpu) + MADT. 0 on the booti/-kernel
     // path (which has no ACPI). The kernel reads `rsdp_pa` AS A VA (only the
