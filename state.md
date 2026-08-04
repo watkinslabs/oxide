@@ -1,78 +1,80 @@
 # state.md — session hand-off
 
-Main `db658b904`. Tree is clean: 1 worktree, 1 local branch, 1 remote branch,
-0 open PRs, 0 stray QEMU. Every gate green, both arches boot first attempt.
+Main `2b69e2921`. Tree clean, 0 open PRs, 0 stray QEMU. 13,228 tests / 0 failed,
+both arches build warning-free, boot smokes PASS.
 
-## Gate status on this commit
+## What this session fixed
 
-| gate | result |
+Networking was dead for all unicast traffic and DNS did not resolve. Root cause
+and every follow-on defect found on the way:
+
+| PR | Fix |
 |---|---|
-| `make hosted-gate` | PASS — 103 crates type-check in isolation |
-| `make test-build-gate` | PASS — 103 crates build their **test** targets |
-| `make feature-gate` | clean both arches (only rustc's upstream-`core` future-incompat note) |
-| `make matrix-gate` | ok — 385 rows, 385 distinct syscalls |
-| `make lint-ratchet` | PASS — at baseline |
-| `cargo build --workspace` | **0 warnings** |
-| `make smoke-x86` / `smoke-arm` | PASS 66s / 100s, attempt 1 |
+| 4514 | **A zero `RTA_GATEWAY` was stored as a gateway.** Every on-link transmit solicited `who-has 0.0.0.0`, ARP never resolved, and the guest received only its 2 broadcast DHCP replies for its whole life. The reference reads a zero nexthop as directly-connected. |
+| 4516 | A packet parked on an unresolved neighbour was re-dispatched with **no link-layer address** — the thing it waited for. First packet to every new neighbour was lost. |
+| 4518, 4519 | **One neighbour subsystem for both families.** IPv6 had a bare `BTreeMap` beside IPv4's state machine: no NUD states, no policy, no unresolved queue. Now `net::neigh` generic over the address; the driver's private table and 2 of 3 copies of the RFC 2464 mapping deleted. |
+| 4510 | `RTM_NEWADDR` discarded `IFA_BROADCAST` and never parsed `IFA_PROTO`/`IFA_RT_PRIORITY`; the dump synthesized a broadcast. NetworkManager re-applied the address every 4 s forever. Lifetimes are now aged. |
+| 4504–4506 | rtnetlink notifications carried the process-global device id while dumps carried the namespace ifindex; `setsockopt(SOL_NETLINK)` returned success for 8 options it never implemented; `RTM_GETADDR` ignored `ifa_index`. |
+| 4507, 4508 | All 82 raw user-pointer dereferences in DRM — any process with a DRM fd could halt the CPU with a bogus ioctl pointer. Lint added. |
+| 4512, 4520, 4521 | `/proc/net/netlink` and `/proc/net/snmp` were stubs reporting nothing and zeroes; both now report real state. An ICMP match arm used an unqualified constant, making it a catch-all binding. |
+| 4509, 4513, 4515 | rtnetlink multicast trace; virtio-net carrier from `VIRTIO_NET_F_STATUS`; `OXIDE_QEMU_PCAP` and `OXIDE_CMDLINE_EXTRA`. |
 
-## Counts
+Verified on the guest: `ping` 0% loss both hosts, `ip neigh` REACHABLE/STALE,
+`dig @10.0.2.3 example.com` returns addresses.
 
-- Ledger: **253 open (10 high), 277 archived**.
-- Syscall matrix: **291 IMPL / 56 PARTIAL / 16 NEEDS-REWORK / 22 LINUX-ENOSYS** of 385.
-- Default boot output: **3379 -> 513 lines**; `qemu-*` build with no debug features.
+## The one thing still broken: systemd-resolved allocates no DNS scope
 
-## Rules earned this session — read before working
+`getent hosts` and `ping <name>` fail; `dig` against the server works. resolved
+shows `Link 2 (eth0)`, `DNS Servers: 10.0.2.3`, `Default Route: yes`, but
+`Current Scopes: none`. **Restarting resolved fixes it** — scopes appear and it
+puts real query packets on the wire.
 
-- **The framing question (HARD RULE):** "is this how Linux does it?" — before the
-  design, not after the diff. Reference tree is `../linux-master`. It has caught a
-  coordinator error, an EEXIST "fix" that would have broken seven syscalls, and a
-  `/sys/subsystem` shape that would have suppressed udev's three-root scan.
-- **Boot only what can break the boot.** Docs, `scratch/**`, `cfg(test)`-only,
-  harness edits and lint baselines get no boot; say why in the PR body.
-- **Investigative agents run on Sonnet**; Opus for implementation, root-causing
-  without a hypothesis, and ABI semantics.
-- **One lane, one item, then it closes.** Follow-on work gets a fresh lane.
-- Never `git stash` (shared stack across worktrees). Never `git reset` onto a
-  remote ref. Never `git add -A`/`-u`. Claim numbers with
-  `tools/next-branch.sh --claim <T> <title>`; claims live in `refs/claims/*`,
-  never the branch namespace.
-- Reap your own stale QEMU by PID with the sandbox disabled; do not ask the user.
+NOT root-caused. What is measured, so it is not re-investigated:
 
-## Open work, highest value first
+- Kernel-side delivery is correct. resolved subscribes via `NETLINK_ADD_MEMBERSHIP`
+  to groups 1/5/9 exactly as its source does; every notification reaches it
+  (`[NL-MCAST … subscribed=2 reached=2]`, 63/63) and is read, not queued
+  (`/proc/net/netlink` shows its socket `Rmem=0 Drops=0`).
+- Notification content is correct: `ip monitor` decodes the right ifindex, global
+  scope, `UP,LOWER_UP`, operstate up — every field `link_relevant()` gates on.
+- Not a networkd-managed-link problem: no `systemd-networkd.service` in the image.
+- **D-Bus latency is intermittent and unexplained.** Same `Peer.Ping` into
+  resolved: 0.031 s on one boot, `Connection timed out` (>25 s) on the next.
+  logind and systemd1 answered in 0.05–0.07 s on the fast boot. Two samples only —
+  a distribution was not obtained (see harness limit below).
 
-1. **`name_to_handle_at` on cgroupfs returns EOVERFLOW** — 74 lines per boot of
-   `Failed to get cgroup ID of cgroup ...`, the largest remaining log source and a
-   real systemd-visible defect.
-2. **`systemd-resolved` and `systemd-sysctl` fail to start** — pre-existing on the
-   baseline, never investigated.
-3. **Net interfaces have no `device`/`driver` symlink.** They project under
-   `/sys/devices/virtual/net/` even for the real virtio-net NIC, so udev's
-   `path_id`/`net_id` builtins cannot compute `ID_NET_NAME_PATH` — which is why the
-   interface is `eth0` and not a predictable name. Needs the netdev registry wired
-   to the bus device registry.
-4. **Generic `SOL_SOCKET` is typed to `InetSocket`**, so netlink/vsock hand-roll
-   their own option tables. Linux keeps one `struct sock` base. This is why the
-   netlink `SO_PASSCRED` fix first shipped as four parallel copies.
-5. **The `boot-smoke` marker rides on systemd output**, not the unconditional
-   console path. It works today; it is fragile to exactly the quieting just done.
-6. Matrix: 56 PARTIAL + 16 NEEDS-REWORK rows.
-7. `pidfd/src/tests.rs` is red under `--features hosted` and uncovered — the new
-   test-build gate uses default features only.
+Best remaining hypothesis, untested: resolved's event loop wakes unreliably,
+which would explain both the D-Bus timeouts and a notification read but never
+acted on. Next step is to quantify the latency distribution, then test epoll
+wake delivery on the fds resolved uses.
 
-## Traps that cost real time today
+## Harness limits that cost time this session
 
-- **A stale ledger row reads as fact.** Two audit passes found 41 stale/duplicate
-  rows; several lanes chased blockers fixed hours earlier. Re-check a row's claim
-  before acting on it.
-- **`make boot` boots `target/artifacts/`, and `xtask kernel` does NOT export
-  there** — `xtask artifacts` is a separate step. Check the mtime before trusting
-  any boot result.
-- **Concurrent boots contend for the rootfs image lock** and produce
-  zero-kernel-output logs that read exactly like a boot failure. Confirm the log
-  has kernel lines before believing a red result.
-- **Bulk ledger edits by substring close rows nobody audited.** Match on exact row
-  text, and read the diff before pushing.
+- **Guest serial RX duplicates characters on long typed lines** — `sleep 1`
+  arrived as `sleep 11`, `busctl` as `busscl`, `--system` as `--systemm`. Any
+  console-driven probe must use short commands, and a corrupted command produces
+  a false result. This blocked the latency measurement above.
+- `/dev/console` is `tty0` (last `console=` wins), so a service logging to the
+  console does not reach the serial log. `SYSTEMD_LOG_TARGET=kmsg` does.
+- `/proc/net/snmp` was a hardcoded zero table and produced a wrong conclusion
+  mid-investigation. Fixed; check what a `/proc` file actually implements before
+  drawing inferences from it.
 
-## First command
+## Two process failures worth not repeating
 
-    make hosted-gate && make test-build-gate && tools/issues.sh --count
+1. **`git add` aborts the whole staging operation on one stale pathspec.** A
+   commit merged containing only a file rename while every gate was green in the
+   worktree — on code that never landed — and `main` went red. Reverted in
+   `f1ab81fb6`. Verify the staged set against the working set, and `git show
+   --stat HEAD`, before pushing.
+2. **Nothing ratchets compiler warnings.** An ICMP catch-all binding merged with
+   three warnings naming it and every gate green. A warnings ratchet like
+   spec-lint's is filed.
+
+## First task next session
+
+    git pull
+    tools/issues.sh --count
+
+Then quantify the resolved D-Bus latency with SHORT serial commands (one
+`busctl` call per typed line, results appended to a file, read at the end).
