@@ -161,6 +161,7 @@ pub mod sock_v6;
 pub mod sock_v6_name;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub mod sock_mcast;
+pub mod sock_anycast;
 pub mod stack_ipv6;
 pub mod stack_igmp;
 pub mod tcp_cc;

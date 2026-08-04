@@ -45,6 +45,7 @@ impl InetSocket {
             udp4: Spinlock::new(None), udp6: Spinlock::new(None), tcp_bind: Spinlock::new(None),
             bpf_filter, reuseport_group: crate::reuseport::new_slot(),
             mcast: Arc::new(crate::mcast_filter::SocketMcast::new()), kind: Spinlock::new(kind),
+            anycast: Arc::new(crate::sock_anycast::SocketAnycast::new()),
             packet_memberships: crate::sock::PacketMemberships::new(),
             packet_fanout: Spinlock::new(None),
             packet_rings: Spinlock::new(PacketRings::default()),

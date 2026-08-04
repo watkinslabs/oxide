@@ -445,7 +445,10 @@ pub struct NetStack {
     /// IPv6 Fragment extension reassembly table.
     pub ipv6_reasm: crate::ipv6_reasm::ReasmTable,
     /// F180c: per-iface IPv6 address registry (NS responder).
-    pub(crate) v6_addrs: Spinlock<BTreeMap<NetIfaceId, Vec<crate::stack_ipv6::Ipv6IfaceAddr>>, StackLockClass>, pub(crate) v6_mcast: Spinlock<BTreeMap<NetIfaceId, Vec<crate::mcast_state::V6IfaceGroup>>, StackLockClass>, pub(crate) v4_mcast: Spinlock<BTreeMap<NetIfaceId, Vec<crate::mcast_state::V4IfaceGroup>>, StackLockClass>,
+    pub(crate) v6_addrs: Spinlock<BTreeMap<NetIfaceId, Vec<crate::stack_ipv6::Ipv6IfaceAddr>>, StackLockClass>,
+    /// IPv6 anycast address ownership, one ref for each socket membership.
+    pub(crate) v6_anycast: Spinlock<BTreeMap<NetIfaceId, Vec<super::anycast::AnycastAddr>>, StackLockClass>,
+    pub(crate) v6_mcast: Spinlock<BTreeMap<NetIfaceId, Vec<crate::mcast_state::V6IfaceGroup>>, StackLockClass>, pub(crate) v4_mcast: Spinlock<BTreeMap<NetIfaceId, Vec<crate::mcast_state::V4IfaceGroup>>, StackLockClass>,
     pub(crate) v6_ra_pending: Spinlock<Vec<crate::stack_ipv6::PendingRa>, StackLockClass>,
     /// Per-CPU receive backlog. Frames land here from a device's transmit-side
     /// caller and leave on the NET_RX bottom half's own stack, which is what

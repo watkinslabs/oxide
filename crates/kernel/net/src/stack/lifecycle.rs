@@ -167,6 +167,9 @@ impl NetStack {
                     })));
             }
         }
+        // The interface is going away, so device anycast ownership vanishes
+        // before sockets later run their best-effort final releases.
+        self.v6_anycast.lock().remove(&iface);
         self.v6_mcast.lock().remove(&iface);
         self.v4_mcast.lock().remove(&iface);
         if let Some(tables) = self.try_inet_tables(net_ns) {

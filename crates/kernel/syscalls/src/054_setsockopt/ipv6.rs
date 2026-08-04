@@ -18,7 +18,7 @@ use net::sock_opts::sol_ipv6::{flowlabel, hdr};
 
 use crate::net_errno::errno_from_neterr;
 use super::multicast::{
-    SourceOp, ipv6_group_filter, ipv6_mcast_group_req, ipv6_mcast_group_source_req,
+    SourceOp, ipv6_anycast_membership, ipv6_group_filter, ipv6_mcast_group_req, ipv6_mcast_group_source_req,
     ipv6_mcast_membership,
 };
 
@@ -345,10 +345,8 @@ fn delegated(sock: &Arc<InetSocket>, optname: u64, optval: u64, optlen: u32) -> 
     match optname {
         IPV6_ADD_MEMBERSHIP => ipv6_mcast_membership(sock, optval, optlen, true),
         IPV6_DROP_MEMBERSHIP => ipv6_mcast_membership(sock, optval, optlen, false),
-        // An anycast address is joined the same way a multicast group is: the
-        // stack tracks one membership per interface and address.
-        IPV6_JOIN_ANYCAST => ipv6_mcast_membership(sock, optval, optlen, true),
-        IPV6_LEAVE_ANYCAST => ipv6_mcast_membership(sock, optval, optlen, false),
+        IPV6_JOIN_ANYCAST => ipv6_anycast_membership(sock, optval, optlen, true),
+        IPV6_LEAVE_ANYCAST => ipv6_anycast_membership(sock, optval, optlen, false),
         MCAST_JOIN_GROUP => ipv6_mcast_group_req(sock, optval, optlen, true),
         MCAST_LEAVE_GROUP => ipv6_mcast_group_req(sock, optval, optlen, false),
         MCAST_JOIN_SOURCE_GROUP =>

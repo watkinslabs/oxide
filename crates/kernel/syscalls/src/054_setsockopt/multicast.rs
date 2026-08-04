@@ -194,6 +194,27 @@ pub(super) fn ipv6_mcast_membership(sock: &Arc<net::sock::InetSocket>, optval: u
     encode(sock.change_v6_mcast_membership(req_if, group, join))
 }
 
+/// `IPV6_JOIN_ANYCAST` / `IPV6_LEAVE_ANYCAST`: same `ipv6_mreq` wire layout
+/// as multicast, but a completely distinct socket and device owner.
+pub(super) fn ipv6_anycast_membership(sock: &Arc<net::sock::InetSocket>, optval: u64,
+                                      optlen: u32, join: bool) -> i64 {
+    const IPV6_MREQ_LEN: u64 = 20;
+    if (optlen as u64) < IPV6_MREQ_LEN { return -(Errno::Einval.as_i32() as i64); }
+    let Some(end) = optval.checked_add(IPV6_MREQ_LEN) else { return -(Errno::Efault.as_i32() as i64); };
+    if optval == 0 || end > USER_VA_END { return -(Errno::Efault.as_i32() as i64); }
+    let Some(addr) = read_ipv6_at(optval) else { return -(Errno::Efault.as_i32() as i64); };
+    let Some(req_if) = read_u32_at(optval + 16) else { return -(Errno::Efault.as_i32() as i64); };
+    // Linux privileges acquisition, not release: an unprivileged task that
+    // inherited an already-joined socket must be able to relinquish it.
+    if join {
+        let Some(current) = sched::live::current() else { return -(Errno::Eperm.as_i32() as i64); };
+        if !nscg::has_net_admin_for(current, &sock.net_namespace) {
+            return -(Errno::Eperm.as_i32() as i64);
+        }
+    }
+    encode(sock.change_v6_anycast(req_if, addr, join))
+}
+
 pub(super) fn ipv6_mcast_group_req(sock: &Arc<net::sock::InetSocket>, optval: u64,
                                    optlen: u32, join: bool) -> i64 {
     if let Err(error) = preflight(sock, net::sock_mcast::McastSetOp::V6Other) { return error; }
