@@ -108,6 +108,7 @@ impl NetStack {
         full.iface = Some(iface_id);
         full.next_hop = Some(crate::pkt::TxNextHop::V4(next_hop));
         let net_ns = owner.map_or_else(crate::netdev::current_net_ns, crate::SocketOwner::net_ns);
+        crate::mib::bump(net_ns, crate::mib::Mib::IpOutRequests);
         if !crate::netfilter_hook::nf_output_in(net_ns, &full, NFPROTO_IPV4) {
             return Ok(crate::cgroup_bpf::EgressVerdict::Allow);
         }
@@ -252,10 +253,16 @@ impl NetStack {
         // decision. Non-local destinations are forwarded only when
         // `net.ipv4.ip_forward` enables router mode.
         if crate::netfilter_hook::nf_hook_eval_in(net_ns, NF_INET_PRE_ROUTING, l3, NFPROTO_IPV4) == 0 { return Ok(()); }
-        let hdr = Ipv4Hdr::parse(l3).map_err(|_| NetError::Einval)?;
+        crate::mib::bump(net_ns, crate::mib::Mib::IpInReceives);
+        let hdr = Ipv4Hdr::parse(l3).map_err(|e| {
+            crate::mib::bump(net_ns, crate::mib::Mib::IpInHdrErrors);
+            let _ = e; NetError::Einval
+        })?;
         if !self.ipv4_dst_is_local_in(net_ns, hdr.dst) {
+            crate::mib::bump(net_ns, crate::mib::Mib::IpForwDatagrams);
             return self.forward_ipv4_in(net_ns, iface, l3);
         }
+        crate::mib::bump(net_ns, crate::mib::Mib::IpInDelivers);
         if crate::netfilter_hook::nf_hook_eval_in(net_ns, NF_INET_LOCAL_IN, l3, NFPROTO_IPV4) == 0 { return Ok(()); }
         let total = hdr.total_len as usize;
         if total > l3.len() { return Err(NetError::Einval); }
@@ -306,9 +313,21 @@ impl NetStack {
         };
         match hdr.proto {
             p if p == IpProto::Icmp as u8 => {
+                crate::mib::bump(net_ns, crate::mib::Mib::IcmpInMsgs);
                 let echo = match icmp::IcmpEcho::parse(payload) {
-                    Ok(h) => h, Err(_) => return Ok(()),
+                    Ok(h) => h,
+                    Err(_) => {
+                        crate::mib::bump(net_ns, crate::mib::Mib::IcmpInErrors);
+                        return Ok(());
+                    }
                 };
+                match echo.typ {
+                    ICMP_TYPE_ECHO_REQUEST =>
+                        crate::mib::bump(net_ns, crate::mib::Mib::IcmpInEchos),
+                    ICMP_TYPE_ECHO_REPLY =>
+                        crate::mib::bump(net_ns, crate::mib::Mib::IcmpInEchoReps),
+                    _ => {}
+                }
                 if echo.typ == ICMP_TYPE_ECHO_REQUEST {
                     let reply = match icmp::build_echo_reply(payload) {
                         Ok(r) => r, Err(_) => return Ok(()),
@@ -339,8 +358,12 @@ impl NetStack {
                 }
             }
             p if p == IpProto::Udp as u8 => {
+                crate::mib::bump(net_ns, crate::mib::Mib::UdpInDatagrams);
                 let udp = UdpHdr::parse(payload, hdr.src, hdr.dst)
-                    .map_err(|_| NetError::Einval)?;
+                    .map_err(|_| {
+                        crate::mib::bump(net_ns, crate::mib::Mib::UdpInErrors);
+                        NetError::Einval
+                    })?;
                 // Clone the queue Arc out of the map then drop the
                 // map lock before touching the queue itself. wake_all
                 // takes the waitlist lock + runqueue inner; we must
@@ -409,9 +432,11 @@ impl NetStack {
                     }, udp.checksum == 0, gro_offered);
                 }
             }
-            p if p == IpProto::Tcp as u8 =>
+            p if p == IpProto::Tcp as u8 => {
+                crate::mib::bump(net_ns, crate::mib::Mib::TcpInSegs);
                 self.deliver_tcp_packet_hop(net_ns, iface, IpAddr::V4(hdr.src), IpAddr::V4(hdr.dst),
-                    payload, full_packet, hdr.ttl)?,
+                    payload, full_packet, hdr.ttl)?
+            }
             p if p == IpProto::Igmp as u8 => {
                 if hdr.ttl == 1 && ipv4_has_router_alert(&l3[IPV4_HDR_LEN..hdr.ihl_bytes()]) {
                     self.handle_igmp(iface, hdr.src, hdr.dst, payload)?;

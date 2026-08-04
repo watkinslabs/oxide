@@ -5,6 +5,7 @@
 
 use alloc::string::String;
 use crate::ids;
+
 use vfs::{Ino, InodeRef};
 
 /// `/proc/net/dev` — Linux text format: header + per-iface line.
@@ -236,15 +237,10 @@ pub fn make_proc_net_if_inet6() -> InodeRef { make_net_file(ids::NET_IF_INET6 as
 
 /// `/proc/net/snmp` — protocol-level counters. netstat -s probes
 /// this. v1 returns just the header rows; counters all zero.
-fn net_snmp_body(_net_ns: u64) -> alloc::vec::Vec<u8> {
-    (b"Ip: Forwarding DefaultTTL InReceives InHdrErrors InAddrErrors ForwDatagrams InUnknownProtos InDiscards InDelivers OutRequests OutDiscards OutNoRoutes ReasmTimeout ReasmReqds ReasmOKs ReasmFails FragOKs FragFails FragCreates\n\
-         Ip: 1 64 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n\
-         Icmp: InMsgs InErrors InCsumErrors InDestUnreachs InTimeExcds InParmProbs InSrcQuenchs InRedirects InEchos InEchoReps InTimestamps InTimestampReps InAddrMasks InAddrMaskReps OutMsgs OutErrors OutDestUnreachs OutTimeExcds OutParmProbs OutSrcQuenchs OutRedirects OutEchos OutEchoReps OutTimestamps OutTimestampReps OutAddrMasks OutAddrMaskReps\n\
-         Icmp: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n\
-         Tcp: RtoAlgorithm RtoMin RtoMax MaxConn ActiveOpens PassiveOpens AttemptFails EstabResets CurrEstab InSegs OutSegs RetransSegs InErrs OutRsts InCsumErrors\n\
-         Tcp: 1 200 120000 -1 0 0 0 0 0 0 0 0 0 0 0\n\
-         Udp: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti\n\
-         Udp: 0 0 0 0 0 0 0 0\n" as &[u8]).to_vec()
+fn net_snmp_body(net_ns: u64) -> alloc::vec::Vec<u8> {
+    net::mib::render_proc_snmp(net_ns,
+        net::forwarding::ipv4_enabled_in(net_ns).unwrap_or(false),
+        net::sock::stack().tcp_established_count_in(net_ns))
 }
 /// `/proc/net/snmp` inode. # C: O(1)
 pub fn make_proc_net_snmp() -> InodeRef { make_net_file(ids::NET_SNMP as Ino, net_snmp_body) }
