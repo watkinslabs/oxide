@@ -9,6 +9,12 @@ use super::uapi::*;
 pub(super) fn raw_setsockopt(sock: &Arc<net::sock::InetSocket>, level: u64,
                             optname: u64, optval: u64, optlen: u32) -> Option<i64> {
     let kind = sock.kind.lock();
+    // `ipv6_setsockopt` delegates SOL_IP only for non-raw sockets.  In
+    // particular, an AF_INET6 raw socket must not acquire IPv4 option state
+    // or an IPv4 Router Alert chain slot.
+    if level == IPPROTO_IP && matches!(&*kind, net::sock::SockKind::Raw6(_)) {
+        return Some(errno(Errno::Enoprotoopt));
+    }
     // An ICMP datagram endpoint is not a raw socket: the caller-supplied-header
     // and message-filter options are not registered for it at any level.
     let ping = match &*kind {
