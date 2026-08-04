@@ -99,6 +99,7 @@ fn populate_conn(c: &net::tcp_conn::TcpConn, info: &mut TcpInfo) {
     info.tcpi_snd_mss = snd_mss;
     info.tcpi_rcv_mss = if c.peer_mss != 0 { c.peer_mss as u32 } else { snd_mss };
     info.tcpi_advmss = snd_mss;
+    info.tcpi_pmtu = c.path_mtu;
     info.tcpi_unacked = c.retx_q.len() as u32;
     info.tcpi_retrans = c.retx_q.iter().map(|s| s.retries).sum::<u32>();
     info.tcpi_total_retrans = info.tcpi_retrans;
@@ -186,6 +187,7 @@ mod tests {
         conn.sack_ok = true;
         conn.wscale_ok = true;
         conn.ecn_enabled = true;
+        conn.path_mtu = 1_300;
         conn.send(b"unsent");
         let mut info = TcpInfo::default();
         populate_conn(&conn, &mut info);
@@ -200,6 +202,7 @@ mod tests {
         assert_eq!(info.tcpi_notsent_bytes, 6);
         assert_eq!(info.tcpi_snd_wnd, 12_345);
         assert_eq!(info.tcpi_rcv_wnd, 32_768);
+        assert_eq!(info.tcpi_pmtu, 1_300);
         assert_eq!(info.tcpi_options, TCPI_OPT_TIMESTAMPS | TCPI_OPT_SACK
             | TCPI_OPT_WSCALE | TCPI_OPT_ECN);
     }

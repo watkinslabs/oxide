@@ -94,10 +94,14 @@ impl NetStack {
         let ip_mode = entry.ip_mtu_discover.load(Ordering::Acquire);
         let ipv6_mode = entry.ipv6_mtu_discover.load(Ordering::Acquire);
         let dst = entry.conn.lock().remote.ip;
+        let path_mtu = self.tcp_path_mtu_in(
+            entry.net_ns(), dst, entry.bound_iface(), ip_mode, ipv6_mode).unwrap_or(0);
         let mss = crate::tcp_ext_hdr::mss_minus_ext_hdr(
             self.mss_for_dst_on_iface_pmtu_modes_in(
                 entry.net_ns(), dst, entry.bound_iface(), ip_mode, ipv6_mode), ext);
-        if mss != 0 { entry.conn.lock().own_mss = mss; }
+        let mut conn = entry.conn.lock();
+        if mss != 0 { conn.own_mss = mss; }
+        conn.path_mtu = path_mtu;
     }
 
     /// Apply learned IPv4 PMTU and immediately retransmit resegmented data. # C: O(retx_q + xmit)
@@ -105,6 +109,7 @@ impl NetStack {
         if !entry.reduces_mss_for_frag_needed() { return; }
         let (segments, src, dst, tos) = {
             let mut c = entry.conn.lock();
+            c.path_mtu = path_mtu;
             let segments = c.resegment_for_pmtu(
                 ipv4_tcp_mss(path_mtu, crate::tcp_ext_hdr::ext_hdr_len(
                     entry.ip_opts.options().as_ref())),
@@ -286,6 +291,7 @@ mod tests {
         assert!(loopback.rx_pop().is_some());
         assert!(loopback.rx_pop().is_none());
         assert_eq!(entry.conn.lock().state, crate::tcp_state::TcpState::Established);
+        assert_eq!(entry.conn.lock().path_mtu, 140);
         assert!(!entry.error.has());
     }
 }

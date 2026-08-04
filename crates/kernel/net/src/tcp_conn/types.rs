@@ -105,6 +105,8 @@ pub struct TcpConn {
     /// uptime and letting an off-path observer correlate connections.
     pub ts_off:     u32,
     pub own_mss: u16,
+    /// Last path MTU synchronized onto this connection's send state.
+    pub path_mtu: u32,
     pub congestion: TcpCongestionControl,
     pub cc_locked: bool,
     pub cwnd:     u32,
