@@ -63,6 +63,17 @@ pub(crate) fn scoped_iface(sock: &InetSocket, dst: crate::Ipv6Addr, scope_id: u3
     Ok(Some(iface))
 }
 
+/// Apply sticky `IPV6_PKTINFO` after the explicit scope/device choice. # C: O(1)
+fn sticky_pktinfo_choice(local: crate::Ipv6Addr, sticky: ([u8; 16], u32),
+                         explicit: Option<crate::NetIfaceId>)
+    -> (crate::Ipv6Addr, Option<crate::NetIfaceId>)
+{
+    let source = crate::Ipv6Addr(sticky.0);
+    let source = if source.is_unspecified() { local } else { source };
+    let iface = explicit.or_else(|| (sticky.1 != 0).then(|| crate::NetIfaceId::from_raw(sticky.1)));
+    (source, iface)
+}
+
 /// Resolve the outbound hop limit for a v6 datagram from the socket's
 /// IPV6_MULTICAST_HOPS (multicast dst) or IPV6_UNICAST_HOPS (unicast dst).
 /// The `-1` sentinel means "unset" → Linux default: 1 for multicast,
@@ -125,6 +136,11 @@ fn merge_sticky_raw6_control(sock: &InetSocket, control: &crate::send_control::R
         let sticky = sock.opts.ipv6_tclass.load(core::sync::atomic::Ordering::Acquire);
         if sticky >= 0 { effective.traffic_class = Some(sticky); }
     }
+    if effective.source.is_none() {
+        let (addr, _) = sock.opts.ipv6.sticky_pktinfo();
+        let addr = crate::Ipv6Addr(addr);
+        if !addr.is_unspecified() { effective.source = Some(addr); }
+    }
     effective
 }
 
@@ -143,6 +159,8 @@ fn xmit_raw6_with_sticky(sock: &InetSocket, endpoint: &crate::raw6::Raw6Endpoint
     let scoped = if control.iface.is_some() && scope_id == 0 {
         crate::sock::bound_iface(sock)?
     } else { scoped_iface(sock, dst_ip, scope_id)? };
+    let (_, scoped) = sticky_pktinfo_choice(crate::Ipv6Addr::ANY,
+        sock.opts.ipv6.sticky_pktinfo(), scoped);
     stack().send_raw6(endpoint, dst_ip, scoped,
         protocol_override, payload, hop, pmtudisc, &effective)
 }
@@ -252,11 +270,23 @@ pub fn sendto_v6(sock: &InetSocket,
     }
     if crate::udp::udp6_payload_too_large(payload.len()) { return Err(NetError::Emsgsize); }
     let src_port = ensure_udp6_bound(sock, dst_ip, scope_id)?;
-    let src_ip = *sock.local_ip6.lock();
+    let sticky = sock.opts.ipv6.sticky_pktinfo();
     let hop = resolve_v6_hop_limit(sock, dst_ip);
     let tclass = resolve_v6_tclass(sock);
     let pmtudisc = sock.opts.ipv6_mtu_discover.load(core::sync::atomic::Ordering::Acquire);
-    let iface = scoped_iface(sock, dst_ip, scope_id)?;
+    // Linux gives the explicit scope/device choice precedence, then applies
+    // sticky IPV6_PKTINFO's output interface before route lookup.
+    let (src_ip, iface) = sticky_pktinfo_choice(*sock.local_ip6.lock(), sticky,
+        scoped_iface(sock, dst_ip, scope_id)?);
+    let iface = match iface {
+        Some(iface) if sticky.1 != 0 && iface.raw() == sticky.1 => {
+            if stack().ifaces.lookup_in_ns(iface, sock.net_ns()).is_none() {
+                return Err(NetError::Enodev);
+            }
+            Some(iface)
+        }
+        other => other,
+    };
     let no_check = sock.opts.udp.no_check6_tx();
     // UDP_SEGMENT: one write becomes N wire datagrams of the segmentation
     // size, the last carrying the remainder.
@@ -283,4 +313,22 @@ pub fn sendto_v6(sock: &InetSocket,
     )?;
     drain_loopback();
     Ok(payload.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sticky_pktinfo_selects_source_and_interface_unless_explicitly_bound() {
+        let local = crate::Ipv6Addr::LOOPBACK;
+        let sticky = crate::Ipv6Addr::from_segments([0x2001, 0xdb8, 0, 0, 0, 0, 0, 9]);
+        let (source, iface) = sticky_pktinfo_choice(local, (sticky.0, 7), None);
+        assert_eq!(source, sticky);
+        assert_eq!(iface, Some(crate::NetIfaceId::from_raw(7)));
+        let (source, iface) = sticky_pktinfo_choice(local, (sticky.0, 7),
+            Some(crate::NetIfaceId::from_raw(3)));
+        assert_eq!(source, sticky);
+        assert_eq!(iface, Some(crate::NetIfaceId::from_raw(3)));
+    }
 }
