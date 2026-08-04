@@ -97,6 +97,27 @@ fn obtain_cookie(stack: &NetStack, iface: NetIfaceId, port: u16, client_port: u1
 }
 
 #[test]
+fn a_loopback_fast_open_success_does_not_clear_the_blackhole_recurrence() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let stack = NetStack::new();
+    let (_iface, _lo) = stack.register_loopback();
+    let entry = TcpEntry::new(TcpConn::new_client(
+        Endpoint { ip: IpAddr::V4(SERVER), port: 40_001 },
+        Endpoint { ip: IpAddr::V4(SERVER), port: 40_002 }, 1));
+    assert!(super::confirmed_on_loopback(&stack, &entry));
+}
+
+#[test]
+fn an_absent_egress_is_not_treated_as_loopback_for_blackhole_reset() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let stack = NetStack::new();
+    let entry = TcpEntry::new(TcpConn::new_client(
+        Endpoint { ip: IpAddr::V4(SERVER), port: 40_003 },
+        Endpoint { ip: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)), port: 40_004 }, 1));
+    assert!(!super::confirmed_on_loopback(&stack, &entry));
+}
+
+#[test]
 fn a_cookie_request_is_answered_on_the_syn_ack_without_completing_anything() {
     let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
