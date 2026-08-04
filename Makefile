@@ -468,6 +468,15 @@ smoke-kbd-login-arm: arm
 	./tools/boot-smoke-kbd-login.sh arm $(KBD_LOGIN_SMOKE_TIMEOUT)
 smoke-kbd-login: smoke-kbd-login-x86 smoke-kbd-login-arm
 
+# Request-key construction smoke. The probe reports both PASS and FAIL, so the
+# success marker must include PASS; a prefix marker accepts either verdict.
+REQUEST_KEY_SMOKE_TIMEOUT ?= 600
+smoke-request-key-x86: x86
+	OXIDE_REQUEST_KEY_SMOKE=1 SMOKE_MARKER='REQUEST-KEY-PROBE: PASS' ./tools/boot-smoke.sh x86 $(REQUEST_KEY_SMOKE_TIMEOUT)
+smoke-request-key-arm: arm
+	OXIDE_REQUEST_KEY_SMOKE=1 SMOKE_MARKER='REQUEST-KEY-PROBE: PASS' ./tools/boot-smoke.sh arm $(REQUEST_KEY_SMOKE_TIMEOUT)
+smoke-request-key: smoke-request-key-x86 smoke-request-key-arm
+
 LOGIN_SMOKE_TIMEOUT ?= 600
 smoke-login-x86: x86
 	./tools/boot-smoke-login.sh x86 $(LOGIN_SMOKE_TIMEOUT)
