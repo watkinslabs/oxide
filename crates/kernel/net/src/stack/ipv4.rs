@@ -258,6 +258,9 @@ impl NetStack {
             crate::mib::bump(net_ns, crate::mib::Mib::IpInHdrErrors);
             let _ = e; NetError::Einval
         })?;
+        if hdr.dst.is_multicast()
+            && !self.v4_mcast_owned_by(net_ns, iface, hdr.dst, hdr.src, hdr.proto)
+        { return Ok(()); }
         if !self.ipv4_dst_is_local_in(net_ns, hdr.dst) {
             crate::mib::bump(net_ns, crate::mib::Mib::IpForwDatagrams);
             return self.forward_ipv4_in(net_ns, iface, l3);
