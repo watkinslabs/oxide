@@ -92,6 +92,7 @@ impl InetSocket {
         use core::sync::atomic::Ordering;
         if self.released.load(Ordering::Acquire) { return Err(NetError::Einval); }
         if let Some(port) = *local_port { return Ok(port); }
+        crate::landlock_addr::check_autobind_udp(self)?;
         let net_ns = self.net_ns();
         let iface = stack().bound_iface_in(net_ns, self.opts.bound_ifindex.load(Ordering::Acquire))?;
         // Linux `inet_autobind` keeps whatever local address the socket already
