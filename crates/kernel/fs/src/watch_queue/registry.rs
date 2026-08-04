@@ -42,7 +42,9 @@ pub fn queue_of(inode: &Inode) -> Option<Arc<WatchQueue>> {
 /// Is this inode a notification pipe? # C: O(log N)
 pub fn is_notification_pipe(inode: &Inode) -> bool { QUEUES.lock().contains_key(&key(inode)) }
 
-/// Drop the queue when the pipe is gone. Watches still pointing at it hold
-/// their own reference, so a watch outliving the pipe keeps posting into a
-/// queue nobody reads rather than into freed memory. # C: O(log N)
-pub fn detach(inode: &Inode) { QUEUES.lock().remove(&key(inode)); }
+/// Clear the queue's watches, then drop it when the pipe is gone. # C: O(watches log N)
+pub fn detach(inode: &Inode) {
+    if let Some(queue) = QUEUES.lock().remove(&key(inode)) {
+        crate::keyring::detach_watch_queue(&queue);
+    }
+}

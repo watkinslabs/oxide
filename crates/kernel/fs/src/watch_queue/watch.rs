@@ -44,6 +44,7 @@ impl WatchList {
         }
         let info_id = (watch_id as u32) << WATCH_INFO_ID_SHIFT;
         self.watches.push(Watch { queue, id, info_id });
+        self.watches.last().expect("the watch was just pushed").queue.add_watched_key(id as i32);
         Ok(())
     }
 
@@ -57,6 +58,7 @@ impl WatchList {
         let idx = self.watches.iter().position(|w| w.id == id && Arc::ptr_eq(&w.queue, queue))
             .ok_or(Errno::Ebadslt)?;
         let w = self.watches.remove(idx);
+        w.queue.remove_watched_key(id as i32);
         w.queue.post(&queue::removal_record(w.id, w.info_id));
         Ok(())
     }
@@ -65,7 +67,16 @@ impl WatchList {
     /// runs when the watched object itself dies. # C: O(watches)
     pub fn remove_all(&mut self) {
         for w in core::mem::take(&mut self.watches) {
+            w.queue.remove_watched_key(w.id as i32);
             w.queue.post(&queue::removal_record(w.id, w.info_id));
+        }
+    }
+
+    /// Remove this queue's watch without posting to it: its pipe is gone.
+    /// # C: O(watches)
+    pub fn detach_queue(&mut self, queue: &Arc<WatchQueue>, id: u64) {
+        if let Some(idx) = self.watches.iter().position(|w| w.id == id && Arc::ptr_eq(&w.queue, queue)) {
+            self.watches.remove(idx);
         }
     }
 
