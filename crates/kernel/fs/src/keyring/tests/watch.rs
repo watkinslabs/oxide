@@ -88,6 +88,23 @@ fn add_and_remove_bookkeeping() {
     assert_eq!(subtypes(&drain(&q)), alloc::vec![WATCH_META_REMOVAL_NOTIFICATION]);
 }
 
+#[test]
+fn closing_a_notification_queue_removes_its_key_watches() {
+    let t = ctx(1748, 7748);
+    join_session(&t, None);
+    let k = add_key_core(&t, "user", "w-close", alloc::vec![1], true, KEY_SPEC_SESSION_KEYRING) as i32;
+    let inode = vfs::StaticFileInode::new(b"");
+    let q = crate::watch_queue::attach(&inode);
+    assert_eq!(opwatch::watch_key_core(&t, k, q.clone(), 7), 0);
+
+    crate::watch_queue::detach(&inode);
+    assert!(STORE.lock().keys.get(&k).expect("key remains live").watchers.is_empty());
+    assert_eq!(update_core(&t, k, alloc::vec![2], true), 0);
+    assert!(q.read(64).expect("the closed queue receives no event").is_empty());
+    assert_eq!(opwatch::watch_key_core(&t, k, q, 8), 0,
+        "teardown leaves no stale watch blocking a future registration");
+}
+
 // The single-key events: update, revoke, and the attribute changes.
 #[test]
 fn single_key_events_reach_the_watcher() {

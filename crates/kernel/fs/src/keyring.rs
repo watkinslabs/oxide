@@ -76,6 +76,12 @@ pub use store::{persistent_expiry, quota_limit, set_persistent_expiry, set_quota
 use ops::Ctx;
 use uapi::*;
 
+/// Drop every key watch held by a notification queue whose pipe closed.
+/// # C: O(watches log N)
+pub(crate) fn detach_watch_queue(queue: &alloc::sync::Arc<crate::watch_queue::WatchQueue>) {
+    ops::watch::detach_queue(queue);
+}
+
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
 fn key_string_from_bytes(bytes: &[u8]) -> String {
