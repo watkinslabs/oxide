@@ -61,6 +61,9 @@ pub(super) fn release_rx_shared_runtime_if_last(last_runtime: bool) {
 /// # C: O(rx_drain)
 #[cfg(target_os = "oxide-kernel")]
 pub fn rx_drain_softirq() {
+    if super::CONFIG_REFRESH_PENDING.swap(false, Ordering::AcqRel) {
+        super::state::refresh_carriers();
+    }
     for runtime in runtime::snapshot() {
         let _ = poll_into_stack_for(runtime.device_key, runtime.iface, &runtime.owner,
             runtime.generation, runtime.ip);

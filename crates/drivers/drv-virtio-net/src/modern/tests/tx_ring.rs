@@ -47,6 +47,7 @@ fn ring_state(arena: &Arena) -> ModernNetState {
     ModernNetState {
         device_key: key(70),
         cfg_va: arena.base,
+        device_cfg_va: 0,
         drv_features: 0,
         hhdm: arena.base,
         rxq: virtio::VirtQueueResource {

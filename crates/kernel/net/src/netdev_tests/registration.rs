@@ -1,4 +1,14 @@
 use super::*;
+use core::sync::atomic::{AtomicUsize, Ordering};
+
+static CARRIER_NEWLINKS: AtomicUsize = AtomicUsize::new(0);
+
+fn record_carrier_newlink(event: &crate::control_event::ControlEvent) {
+    if matches!(event, crate::control_event::ControlEvent::Link(link)
+        if link.kind == crate::control_event::EventKind::New && link.name == "carrier0") {
+        CARRIER_NEWLINKS.fetch_add(1, Ordering::Relaxed);
+    }
+}
 
 #[test]
 fn prepared_generation_is_invisible_until_publish() {
@@ -17,6 +27,38 @@ fn prepared_generation_is_invisible_until_publish() {
     assert!(stack.publish_iface(reg));
     assert!(stack.ifaces.lookup_in_ns(id, ns).is_some());
     assert_eq!(stack.ifaces.snapshot_in_ns(ns).len(), 1);
+}
+
+#[test]
+fn driver_carrier_transition_updates_the_reported_link_state() {
+    let domain = crate::hosted_fixture::init_net_domain();
+    domain.set_notifier(record_carrier_newlink);
+    CARRIER_NEWLINKS.store(0, Ordering::Relaxed);
+    let stack = crate::NetStack::new();
+    let owner = owner();
+    let reg = stack.prepare_iface(Arc::new(DummyDev {
+        name: "carrier0", mtu: 1500, stats: NetStats::default(),
+    }), &owner).unwrap();
+    let id = reg.id();
+    assert!(stack.publish_iface(reg));
+    CARRIER_NEWLINKS.store(0, Ordering::Relaxed);
+    let rtnl = stack.rtnl_lock();
+    assert!(stack.ifaces.set_iface_flags_in_ns(&rtnl, id, owner.id().as_u64(),
+        crate::netdev::iff::IFF_UP, crate::netdev::iff::IFF_UP).is_some());
+    drop(rtnl);
+    assert_eq!(stack.ifaces.iface_carrier(id), Some(true));
+    assert!(stack.set_iface_carrier(id, false));
+    assert_eq!(stack.ifaces.iface_carrier(id), Some(false));
+    assert_eq!(stack.ifaces.iface_flags(id).unwrap() & crate::netdev::iff::IFF_LOWER_UP, 0);
+    assert_eq!(CARRIER_NEWLINKS.load(Ordering::Relaxed), 1,
+        "a carrier transition must emit RTM_NEWLINK");
+    assert!(stack.set_iface_carrier(id, false), "repeating the current state is harmless");
+    assert_eq!(CARRIER_NEWLINKS.load(Ordering::Relaxed), 1,
+        "a no-op carrier update must not emit RTM_NEWLINK");
+    assert!(stack.set_iface_carrier(id, true));
+    assert_eq!(stack.ifaces.iface_carrier(id), Some(true));
+    assert_ne!(stack.ifaces.iface_flags(id).unwrap() & crate::netdev::iff::IFF_LOWER_UP, 0);
+    assert_eq!(CARRIER_NEWLINKS.load(Ordering::Relaxed), 2);
 }
 
 #[test]
