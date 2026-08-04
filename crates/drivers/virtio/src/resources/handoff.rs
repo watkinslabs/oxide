@@ -26,6 +26,10 @@ impl VirtQueueResource {
 
     pub const fn is_runtime_valid(&self) -> bool {
         self.size != 0
+            // Every split-ring area is one `QUEUE_FRAME_BYTES` frame allocated
+            // by the common-cfg transport. This canonical limit also protects
+            // every driver that consumes a handed-off queue resource.
+            && self.size <= crate::queue_cfg::MAX_QUEUE_SIZE
             && self.desc_pa != 0
             && self.driver_pa != 0
             && self.device_pa != 0
