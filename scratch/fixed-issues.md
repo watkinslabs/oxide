@@ -405,6 +405,8 @@ open issue. Live rows that still need the work carry it in their own row.
 
 ### Tooling / gates
 
+| FIXED C279 | low | `project-stats.md` was a hand-committed snapshot of `make stats` and had drifted from the tree. | Removed the snapshot and its stale process-doc entry; `make stats` remains the sole derived view. | C279-remove-project-stats-snapshot |
+
 
 ### Net / socket
 
