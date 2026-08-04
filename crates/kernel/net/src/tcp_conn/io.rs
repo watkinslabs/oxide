@@ -146,7 +146,8 @@ impl TcpConn {
                          dst_ip: crate::addr::IpAddr, seg: &[u8], hdr: crate::tcp_hdr::TcpHdr)
         -> Result<Option<Vec<u8>>, TcpConnError>
     {
-        self.last_rx_ns = crate::tcp_conn::ka_now_ns();
+        self.note_info_receive_at(crate::tcp_conn::ka_now_ns(), hdr.flags,
+            seg.len().saturating_sub(hdr.payload_offset()));
         self.ka_count = 0;
         if (hdr.flags & flags::RST) != 0 {
             if !self.rst_acceptable(hdr) {
