@@ -86,10 +86,20 @@ fn populate(sock: &InetSocket, info: &mut TcpInfo) {
         _ => { info.tcpi_state = state_to_byte(net::tcp_state::TcpState::Closed); return; }
     };
     let c = entry.conn.lock();
-    populate_conn(&c, info);
+    populate_conn_at(&c, net::tcp_conn::ka_now_ns(), info);
 }
 
+#[cfg(test)]
 fn populate_conn(c: &net::tcp_conn::TcpConn, info: &mut TcpInfo) {
+    populate_conn_at(c, net::tcp_conn::ka_now_ns(), info);
+}
+
+fn tcp_info_age_ms(now_ns: u64, then_ns: u64) -> u32 {
+    if now_ns == 0 || then_ns == 0 { return 0; }
+    core::cmp::min(now_ns.saturating_sub(then_ns) / 1_000_000, u64::from(u32::MAX)) as u32
+}
+
+fn populate_conn_at(c: &net::tcp_conn::TcpConn, now_ns: u64, info: &mut TcpInfo) {
     info.tcpi_state = state_to_byte(c.state);
     info.tcpi_options = tcp_info_options(c);
     info.tcpi_retransmits = c.retx_q.iter().map(|s| s.retries).max().unwrap_or(0) as u8;
@@ -103,6 +113,9 @@ fn populate_conn(c: &net::tcp_conn::TcpConn, info: &mut TcpInfo) {
     info.tcpi_unacked = c.retx_q.len() as u32;
     info.tcpi_retrans = c.retx_q.iter().map(|s| s.retries).sum::<u32>();
     info.tcpi_total_retrans = info.tcpi_retrans;
+    info.tcpi_last_data_sent = tcp_info_age_ms(now_ns, c.last_data_sent_ns);
+    info.tcpi_last_data_recv = tcp_info_age_ms(now_ns, c.last_data_recv_ns);
+    info.tcpi_last_ack_recv = tcp_info_age_ms(now_ns, c.last_ack_recv_ns);
     info.tcpi_rtt = (c.srtt_ns / 1_000) as u32;
     info.tcpi_rttvar = (c.rttvar_ns / 1_000) as u32;
     info.tcpi_snd_ssthresh = c.ssthresh / core::cmp::max(snd_mss, 1);
@@ -146,7 +159,7 @@ fn state_to_byte(s: net::tcp_state::TcpState) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::{copy_tcp_info, populate_conn, tcp_info_options, TcpInfo, TCPI_OPT_ECN,
+    use super::{copy_tcp_info, populate_conn, populate_conn_at, tcp_info_options, TcpInfo, TCPI_OPT_ECN,
         TCPI_OPT_SACK, TCPI_OPT_TIMESTAMPS, TCPI_OPT_WSCALE, TCP_INFO_LEN, TCP_INFO_PREFIX_LEN};
 
     fn conn() -> net::tcp_conn::TcpConn {
@@ -205,6 +218,19 @@ mod tests {
         assert_eq!(info.tcpi_pmtu, 1_300);
         assert_eq!(info.tcpi_options, TCPI_OPT_TIMESTAMPS | TCPI_OPT_SACK
             | TCPI_OPT_WSCALE | TCPI_OPT_ECN);
+    }
+
+    #[test]
+    fn activity_ages_are_derived_from_the_connection_owned_clocks() {
+        let mut conn = conn();
+        conn.last_data_sent_ns = 9_000_000;
+        conn.last_data_recv_ns = 8_000_000;
+        conn.last_ack_recv_ns = 7_000_000;
+        let mut info = TcpInfo::default();
+        populate_conn_at(&conn, 12_000_000, &mut info);
+        assert_eq!(info.tcpi_last_data_sent, 3);
+        assert_eq!(info.tcpi_last_data_recv, 4);
+        assert_eq!(info.tcpi_last_ack_recv, 5);
     }
 
     #[test]
