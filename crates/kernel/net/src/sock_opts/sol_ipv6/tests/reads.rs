@@ -13,7 +13,7 @@ use super::*;
 fn state() -> Ipv6GetState {
     Ipv6GetState { hop_limit: -1, mcast_hops: 1, route_hoplimit: -1,
         default_hoplimit: IPV6_DEFAULT_HOPLIMIT, pmtudisc: IPV6_PMTUDISC_WANT,
-        use_min_mtu: -1, ..Default::default() }
+        ..Default::default() }
 }
 
 #[test]

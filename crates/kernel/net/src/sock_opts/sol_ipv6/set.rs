@@ -69,7 +69,6 @@ pub enum Action {
     MtuDiscover(i32),
     /// `IPV6_MTU` — the fragmentation size the socket names.
     FragSize(i32),
-    UseMinMtu(i32),
     MinHopCount(i32),
     Tclass(i32),
     SrcPrefs(i32),
@@ -165,12 +164,6 @@ pub fn admit(optname: u64, val: i32, optlen: u32, sock: Ipv6Sock, caps: OptCaps)
         }
         IPV6_FLOWINFO_SEND => { wide()?; Ok(Action::Flag { bit: flag::SNDFLOW, on }) }
         IPV6_ADDR_PREFERENCES => { wide()?; src_prefs(val)?; Ok(Action::SrcPrefs(val)) }
-        IPV6_USE_MIN_MTU => {
-            wide()?;
-            if !(-1..=1).contains(&val) { return Err(Errno::Einval); }
-            Ok(Action::UseMinMtu(val))
-        }
-
         IPV6_ADDRFORM => {
             wide()?;
             if val != PF_INET { return Err(Errno::Einval); }
