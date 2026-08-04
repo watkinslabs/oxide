@@ -168,8 +168,7 @@ fn vsock_accept(vs: &Arc<net::vsock_socket::VsockSocket>, addr_p: u64, len_p: u6
     let conn = loop {
         if let Some(c) = net::vsock::TABLE.pop_accept_exact(&listener) { break c; }
         if nonblock { return -(Errno::Eagain.as_i32() as i64); }
-        // Linux `vsock_accept` (`net/vmw_vsock/af_vsock.c:1903-1905`):
-        // `err = sock_intr_errno(timeout)` off `sock_rcvtimeo`.
+        // A signal interrupts this receive-timeout wait through the shared rule.
         if sched::live::deliverable_signals_self() != 0 {
             return crate::net_errno::sock_intr_errno(vs.recv_deadline_ns());
         }

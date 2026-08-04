@@ -1,4 +1,4 @@
-// Linux `sock_intr_errno` (`include/net/sock.h:2755-2761`) — the ONE rule every
+// One rule every
 // interrupted socket wait uses:
 //
 //     /* Alas, with timeout socket operations are not restartable.
@@ -13,12 +13,7 @@
 // `__skb_wait_for_more_packets` (`net/core/datagram.c:128`), `tcp_recvmsg_locked`
 // (`net/ipv4/tcp.c:2784`), `sk_stream_wait_memory` (`net/core/stream.c:184`),
 // `sock_alloc_send_pskb` (`net/core/sock.c:3010`), `inet_wait_for_connect`
-// (`net/ipv4/af_inet.c:713`), `inet_csk_wait_for_connect`
-// (`net/ipv4/inet_connection_sock.c:635`), `unix_stream_connect`
-// (`net/unix/af_unix.c:1705`), `unix_dgram_sendmsg` (`af_unix.c:2258`),
-// `unix_stream_read_generic` (`af_unix.c:2997`), `vsock_connect`
-// (`net/vmw_vsock/af_vsock.c:1829`), `netlink_attachskb`
-// (`net/netlink/af_netlink.c:1250`).
+// applies to every blocking INET, AF_UNIX, VSOCK, and netlink socket path.
 //
 // ~30 oxide sites each hard-coded `Eintr`, which is right ONLY for the
 // SO_RCVTIMEO/SO_SNDTIMEO case and drops the restart for every untimed wait.

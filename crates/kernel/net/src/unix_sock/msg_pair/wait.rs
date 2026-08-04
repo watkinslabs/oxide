@@ -12,7 +12,7 @@ pub enum ArmMsgReadAfter { Retry, Reset, Eof, DatagramShutdown, Parked }
 pub enum ArmMsgWrite { Retry, PeerClosed, MessageTooLarge, Parked }
 
 impl UnixMsgPair {
-    /// Linux `unix_dgram_poll` (`net/unix/af_unix.c:3398-3456`) — the `->poll`
+    /// Datagram and seqpacket poll:
     /// of BOTH `unix_seqpacket_ops` and `unix_dgram_ops`. Writability is
     /// `unix_writable(sk, state)` on the local send queue; the connected-peer
     /// backlog arm is skipped here because a socketpair is symmetrically

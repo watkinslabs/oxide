@@ -1,5 +1,4 @@
-// AF_UNIX write-readiness predicate — Linux `unix_writable`
-// (`net/unix/af_unix.c:591-595`):
+// AF_UNIX write-readiness predicate:
 //
 //     static int unix_writable(const struct sock *sk, unsigned char state)
 //     {
@@ -31,7 +30,7 @@ pub fn unix_writable(queued: usize, sndbuf: usize) -> bool {
     queued <= sndbuf / 4
 }
 
-/// Linux `unix_recvq_full_lockless` (`net/unix/af_unix.c:288-291`) applied to
+/// Applied to
 /// the byte-charged destination queue this kernel uses: a connected datagram
 /// sender is not writable once the peer's receive queue cannot take more.
 /// Only `unix_dgram_poll` uses it, and only when a peer is connected AND the
@@ -50,7 +49,7 @@ pub fn dgram_peer_writable(peer_queued: usize, sndbuf: usize) -> bool {
 /// `unix_dgram_sendmsg` refuses with EAGAIN only `if (other != sk &&
 /// unix_peer(other) != sk && unix_recvq_full_lockless(other))`, and
 /// `unix_dgram_poll` clears writability under the identical guard
-/// (`net/unix/af_unix.c`). Applying it to one side alone is what tells a writer
+/// . Applying it to one side alone is what tells a writer
 /// "writable" and then hands it EAGAIN forever.
 /// # C: O(1)
 pub fn dgram_symmetric_pair(peer_peer: Option<&crate::UnixAddr>, local_bound: Option<&crate::UnixAddr>) -> bool {

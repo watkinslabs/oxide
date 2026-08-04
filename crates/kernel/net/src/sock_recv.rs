@@ -17,7 +17,7 @@ pub fn recv_blocking(sock: &Arc<InetSocket>, max_len: usize, opts: RecvOptions, 
         // Linux `__skb_wait_for_more_packets` (`net/core/datagram.c:128`):
         // `sock_intr_errno(*timeo)` — ERESTARTSYS with no SO_RCVTIMEO,
         // EINTR with one, because a timed wait cannot carry its remaining
-        // time across a restart (`include/net/sock.h:2755-2761`).
+        // time across a restart.
         if sched::live::deliverable_signals_self() != 0 {
             return Err(crate::sock_intr::sock_intr_net(deadline_ns));
         }

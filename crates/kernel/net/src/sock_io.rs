@@ -136,8 +136,7 @@ pub(crate) fn read_unix_stream_blocking(
         if pair.take_reset(end) { return Err(vfs::VfsError::Econnreset); }
         if pair.is_eof(end) { return Ok(0); }
         #[cfg(target_os = "oxide-kernel")]
-        // Linux `unix_stream_read_generic` (`net/unix/af_unix.c:2997`):
-        // `err = sock_intr_errno(timeo);`.
+        // A signal interrupts this blocking socket wait through the shared rule.
         if sched::live::deliverable_signals_self() != 0 {
             return Err(crate::sock_intr::sock_intr_vfs(deadline_ns));
         }
@@ -200,8 +199,7 @@ pub(crate) fn read_unix_msg_blocking(
         // recv returns None only when nothing pending AND not EOF
         // (EOF returns Some(empty)). So fall through to park.
         #[cfg(target_os = "oxide-kernel")]
-        // Linux `unix_stream_read_generic` (`net/unix/af_unix.c:2997`):
-        // `err = sock_intr_errno(timeo);`.
+        // A signal interrupts this blocking socket wait through the shared rule.
         if sched::live::deliverable_signals_self() != 0 {
             return Err(crate::sock_intr::sock_intr_vfs(deadline_ns));
         }
