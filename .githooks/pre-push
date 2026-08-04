@@ -40,7 +40,9 @@
 #   4. boot-smoke (direct main pushes only): capped at 180 seconds per arch.
 #      Bypass: SKIP_SMOKE=1.
 #
-# Documentation-only, CI-only, and tooling-only pushes trigger neither.
+# Documentation-only and CI-only pushes skip the build gates. Gate definitions
+# themselves are in scope: a broken Makefile, tool, or hook must exercise the
+# gates it changed before it can be pushed.
 #
 # Install once per clone:
 #   git config core.hooksPath .githooks
@@ -103,8 +105,8 @@ else
     fi
 fi
 
-# Trigger paths — anything that can break the build or the boot. Pure-doc,
-# pure-CI, and pure-tooling changes skip.
+# Trigger paths — anything that can break a build, boot, or gate. Pure-doc and
+# pure-CI changes skip; Makefile, tooling, and this hook are gate definitions.
 need_gate=0
 while read -r f; do
     [ -z "$f" ] && continue
@@ -112,10 +114,9 @@ while read -r f; do
         # crates/drivers/* matters too: virtio-net/blk/gpu/input/etc.
         # are part of the boot path; a regression there breaks the
         # same way a kernel-side regression does.
-        # tools/xtask/* builds the rootfs (l2_deps staging, main.rs, the
-        # rcS oxide-smokes asset) — a change there alters the booted image,
-        # so it must gate too (F349 pushed un-gated otherwise).
-        kernel/*|crates/*|userspace/*|targets/*|vendor/*|tools/xtask/*|rust-toolchain.toml|Cargo.toml|Cargo.lock)
+        # Every tool and the Makefile can alter a gate command or its oracle;
+        # this hook is included so its own trigger predicate cannot bypass it.
+        kernel/*|crates/*|userspace/*|targets/*|vendor/*|tools/*|Makefile|.githooks/pre-push|rust-toolchain.toml|Cargo.toml|Cargo.lock)
             need_gate=1
             break
             ;;
@@ -123,7 +124,7 @@ while read -r f; do
 done <<< "$changed"
 
 if [ "$need_gate" = "0" ]; then
-    echo "pre-push: no kernel/userspace/arch changes — skipping feature-gate and boot-smoke"
+    echo "pre-push: no kernel/userspace/tooling gate changes — skipping feature-gate and boot-smoke"
     exit 0
 fi
 
