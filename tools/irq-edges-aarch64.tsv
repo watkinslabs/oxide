@@ -31,7 +31,7 @@
 # Format: `<caller>\t<callee>`, demangled identities, caller repeated per
 # target. An entry that no longer resolves FAILS the gate.
 oxide_arm_irq_dispatch	drv_uart_pl011::imp::rx_isr_irq
-oxide_arm_irq_dispatch	drv_virtio_net::modern::rx::raise_rx
+oxide_arm_irq_dispatch	drv_virtio_net::modern::config_changed
 oxide_arm_irq_dispatch	drv_virtio_blk::modern::state::wake_completions
 oxide_arm_irq_dispatch	drv_virtio_snd::event::raise_event
 oxide_arm_irq_dispatch	drv_virtio_vsock::registry::raise_rx

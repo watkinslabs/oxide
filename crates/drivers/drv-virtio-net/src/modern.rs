@@ -41,7 +41,7 @@ pub const fn wanted_features() -> u64 {
 /// consumes this profile; the PCI transport only executes it.
 /// # C: O(1)
 pub const fn transport_profile() -> virtio::VirtioTransportProfile {
-    virtio::VirtioTransportProfile::net(wanted_features(), Some(raise_rx))
+    virtio::VirtioTransportProfile::net(wanted_features(), Some(config_changed))
 }
 
 /// Persistent runtime state for one modern virtio-net device. Queue resources
@@ -53,6 +53,7 @@ pub struct ModernNetState {
     /// Owning virtio child identity supplied by the transport bus.
     pub device_key: DeviceKey,
     pub cfg_va:   u64,
+    pub device_cfg_va: u64,
     pub hhdm:     u64,
     /// Features the transport negotiated. `VIRTIO_NET_F_STATUS` decides
     /// whether `virtio_net_config.status` exists to read carrier from.
@@ -82,6 +83,7 @@ pub struct ModernNetState {
 static MODERN_DEVS: Spinlock<alloc::vec::Vec<ModernNetState>, DriverLockClass> =
     Spinlock::new(alloc::vec::Vec::new());
 static SOFTIRQ_INSTALLED: AtomicBool = AtomicBool::new(false);
+static CONFIG_REFRESH_PENDING: AtomicBool = AtomicBool::new(false);
 static REGISTERED_NETDEVS: Spinlock<alloc::vec::Vec<(DeviceKey, net::NetIfaceId)>, DriverLockClass> =
     Spinlock::new(alloc::vec::Vec::new());
 
@@ -127,6 +129,14 @@ use rx::{clear_rx_runtime, first_iface_ip_for, set_softirq_iface};
 
 mod neighbor;
 use neighbor::link_address_for;
+
+/// Defer a virtio-net configuration interrupt to the shared network bottom
+/// half. Queue zero shares this MSI-X vector, so RX still needs the same wake.
+/// # C: O(1)
+pub fn config_changed() {
+    CONFIG_REFRESH_PENDING.store(true, Ordering::Release);
+    raise_rx();
+}
 
 #[cfg(test)]
 mod tests;
