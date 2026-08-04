@@ -32,7 +32,8 @@ pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &
     if eno != 0 { return Err(crate::sock_io::pending_net_error(eno)); }
     if crate::udp::udp4_payload_too_large(payload.len()) { return Err(NetError::Emsgsize); }
     let src_port = sock.ensure_bound()?; let src_ip = *sock.local_ip.lock();
-    let bound_iface = if dst.is_multicast() { crate::sock_mcast::bound_iface(sock, dst)? } else { bound_iface(sock)? };
+    let bound_iface = if dst.is_multicast() { crate::sock_mcast::bound_iface(sock, dst)? }
+        else { super::iface::v4_egress_iface(sock)? };
     // F150: pick the right source IP for outbound. ANY-bound socket
     // → use loopback only when dst is loopback; else consult the
     // route table for the outbound iface and use ITS configured IP.
@@ -44,8 +45,10 @@ pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &
         crate::inet_tx::SourceChoice::Multicast => crate::sock_mcast::src_ip(sock, dst, bound_iface),
         crate::inet_tx::SourceChoice::Loopback => Ipv4Addr::LOOPBACK,
         // The outbound interface's primary IPv4, via the route table.
-        crate::inet_tx::SourceChoice::Route => stack().routes.lookup_in(net_ns, dst)
-            .and_then(|r| r.src_hint)
+        crate::inet_tx::SourceChoice::Route => bound_iface
+            .and_then(|iface| stack().route_v4_on_iface_in(net_ns, dst, iface).ok().flatten()
+                .and_then(|route| route.src_hint))
+            .or_else(|| stack().routes.lookup_in(net_ns, dst).and_then(|route| route.src_hint))
             .or_else(|| iface_primary_ip(bound_iface.or_else(|| stack().routes.lookup_in(net_ns, dst).map(|r| r.iface))))
             .unwrap_or(Ipv4Addr::LOOPBACK),
     };
