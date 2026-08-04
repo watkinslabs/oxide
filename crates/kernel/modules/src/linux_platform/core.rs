@@ -120,7 +120,7 @@ extern "C" fn platform_device_add(dev: *mut PlatformDevice) -> i32 {
         if g.iter().any(|p| *p == dev as usize) { return -LINUX_EBUSY; }
         g.push(dev as usize);
     }
-    // SAFETY: dev points at a caller-owned Linux struct platform_device.
+    // SAFETY: platform_device_add rejected null; the caller retains dev while it is registered, and this call serializes its registration-field writes.
     unsafe {
         (*dev).registered = PLATFORM_DEVICE_REGISTERED;
         (*dev).dev.init_name = (*dev).name;
@@ -133,7 +133,7 @@ extern "C" fn platform_device_del(dev: *mut PlatformDevice) {
     if dev.is_null() { return; }
     unbind_device(dev);
     DEVICES.lock().retain(|p| *p != dev as usize);
-    // SAFETY: dev points at a caller-owned Linux struct platform_device.
+    // SAFETY: platform_device_del rejected null and removed dev from DEVICES before clearing its registration field; the caller still owns the object.
     unsafe { (*dev).registered = 0; }
 }
 
@@ -321,7 +321,7 @@ fn bind_driver_to_device(driver: *mut PlatformDriver, dev: *mut PlatformDevice) 
 
 fn unbind_device(dev: *mut PlatformDevice) {
     if dev.is_null() { return; }
-    // SAFETY: dev points at a caller-owned Linux struct platform_device.
+    // SAFETY: unbind_device rejected null; a registered device remains live until platform_device_put, which follows this unbind operation.
     let driver = unsafe { (*dev).driver };
     if driver.is_null() { return; }
     // SAFETY: driver is the pointer read out of (*dev).driver and returned early when null; only bind_driver_to_device stores it there, and it stores a live DRIVERS entry.
@@ -338,7 +338,7 @@ fn unbind_device(dev: *mut PlatformDevice) {
 }
 
 fn platform_match(driver: *mut PlatformDriver, dev: *mut PlatformDevice) -> Option<*const PlatformDeviceId> {
-    // SAFETY: driver/dev are validated before matching.
+    // SAFETY: bind_driver_to_device rejected both null pointers; its DRIVERS and DEVICES snapshots retain these registered objects throughout matching.
     unsafe {
         if !of_match_device((*driver).driver.of_match_table as *const OfDeviceId, &(*dev).dev).is_null() {
             return Some(null());
@@ -388,9 +388,9 @@ fn cstr_eq(a: *const c_char, b: *const c_char) -> bool {
     if a.is_null() || b.is_null() { return false; }
     let mut i = 0usize;
     loop {
-        // SAFETY: callers pass valid NUL-terminated Linux strings.
+        // SAFETY: cstr_eq's C-KPI callers provide a readable NUL-terminated first string, so index i remains in-bounds until this loop returns.
         let av = unsafe { *a.add(i) };
-        // SAFETY: callers pass valid NUL-terminated Linux strings.
+        // SAFETY: cstr_eq's C-KPI callers provide a readable NUL-terminated second string, so index i remains in-bounds until this loop returns.
         let bv = unsafe { *b.add(i) };
         if av != bv { return false; }
         if av == 0 { return true; }

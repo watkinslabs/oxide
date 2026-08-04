@@ -59,13 +59,13 @@ extern "C" fn dev_pm_resume(dev: *mut LinuxDevice) -> i32 {
 
 extern "C" fn pm_runtime_enable(dev: *mut LinuxDevice) {
     if dev.is_null() { return; }
-    // SAFETY: dev points at a caller-owned Linux struct device.
+    // SAFETY: pm_runtime_enable rejected null; the C-KPI caller retains dev and serializes this write to its embedded power.disable_depth.
     unsafe { (*dev).power.disable_depth = 0; }
 }
 
 extern "C" fn pm_runtime_disable(dev: *mut LinuxDevice) {
     if dev.is_null() { return; }
-    // SAFETY: dev points at a caller-owned Linux struct device.
+    // SAFETY: pm_runtime_disable rejected null; the C-KPI caller retains dev and serializes this update of embedded power.disable_depth.
     unsafe { (*dev).power.disable_depth = (*dev).power.disable_depth.saturating_add(1); }
 }
 
@@ -96,7 +96,7 @@ extern "C" fn pm_runtime_put_sync(dev: *mut LinuxDevice) -> i32 {
 
 extern "C" fn pm_runtime_put_noidle(dev: *mut LinuxDevice) -> i32 {
     if dev.is_null() { return -LINUX_EINVAL; }
-    // SAFETY: dev points at a caller-owned Linux struct device.
+    // SAFETY: pm_runtime_put_noidle rejected null; the C-KPI caller retains dev and serializes the embedded power.usage_count decrement.
     unsafe {
         if (*dev).power.usage_count == 0 { return -LINUX_EBUSY; }
         (*dev).power.usage_count -= 1;
@@ -106,13 +106,13 @@ extern "C" fn pm_runtime_put_noidle(dev: *mut LinuxDevice) -> i32 {
 
 extern "C" fn pm_runtime_get_noresume(dev: *mut LinuxDevice) {
     if dev.is_null() { return; }
-    // SAFETY: dev points at a caller-owned Linux struct device.
+    // SAFETY: pm_runtime_get_noresume rejected null; the C-KPI caller retains dev and serializes the embedded power.usage_count increment.
     unsafe { (*dev).power.usage_count = (*dev).power.usage_count.saturating_add(1); }
 }
 
 extern "C" fn pm_runtime_get_if_in_use(dev: *mut LinuxDevice) -> i32 {
     if dev.is_null() { return LINUX_FALSE; }
-    // SAFETY: dev points at a caller-owned Linux struct device.
+    // SAFETY: pm_runtime_get_if_in_use rejected null; the C-KPI caller retains dev and serializes both embedded power-field reads and the count increment.
     unsafe {
         if (*dev).power.disable_depth != 0 || (*dev).power.usage_count == 0 { return LINUX_FALSE; }
         (*dev).power.usage_count = (*dev).power.usage_count.saturating_add(1);
@@ -152,31 +152,31 @@ extern "C" fn pm_runtime_allow(dev: *mut LinuxDevice) { pm_runtime_enable(dev); 
 
 extern "C" fn pm_runtime_mark_last_busy(dev: *mut LinuxDevice) {
     if dev.is_null() { return; }
-    // SAFETY: dev points at a caller-owned Linux struct device.
+    // SAFETY: pm_runtime_mark_last_busy rejected null; the C-KPI caller retains dev and serializes its embedded power.last_busy update.
     unsafe { (*dev).power.last_busy = (*dev).power.last_busy.saturating_add(PM_BUSY_TICK); }
 }
 
 extern "C" fn pm_runtime_autosuspend_expiration(dev: *mut LinuxDevice) -> usize {
     if dev.is_null() { return 0; }
-    // SAFETY: dev points at a caller-owned Linux struct device.
+    // SAFETY: pm_runtime_autosuspend_expiration rejected null; the C-KPI caller retains dev and serializes these embedded power-field reads.
     unsafe { (*dev).power.last_busy.saturating_add((*dev).power.autosuspend_delay.max(0) as usize) }
 }
 
 extern "C" fn pm_runtime_set_autosuspend_delay(dev: *mut LinuxDevice, delay: i32) {
     if dev.is_null() { return; }
-    // SAFETY: dev points at a caller-owned Linux struct device.
+    // SAFETY: pm_runtime_set_autosuspend_delay rejected null; the C-KPI caller retains dev and serializes its embedded power.autosuspend_delay write.
     unsafe { (*dev).power.autosuspend_delay = delay; }
 }
 
 extern "C" fn pm_runtime_use_autosuspend(dev: *mut LinuxDevice) {
     if dev.is_null() { return; }
-    // SAFETY: dev points at a caller-owned Linux struct device.
+    // SAFETY: pm_runtime_use_autosuspend rejected null; the C-KPI caller retains dev and serializes its embedded power.use_autosuspend write.
     unsafe { (*dev).power.use_autosuspend = true; }
 }
 
 extern "C" fn pm_runtime_dont_use_autosuspend(dev: *mut LinuxDevice) {
     if dev.is_null() { return; }
-    // SAFETY: dev points at a caller-owned Linux struct device.
+    // SAFETY: pm_runtime_dont_use_autosuspend rejected null; the C-KPI caller retains dev and serializes its embedded power.use_autosuspend write.
     unsafe { (*dev).power.use_autosuspend = false; }
 }
 
@@ -192,7 +192,7 @@ extern "C" fn device_init_wakeup(dev: *mut LinuxDevice, enable: bool) -> i32 {
 
 extern "C" fn device_set_wakeup_capable(dev: *mut LinuxDevice, capable: bool) {
     if dev.is_null() { return; }
-    // SAFETY: dev points at a caller-owned Linux struct device.
+    // SAFETY: device_set_wakeup_capable rejected null; the C-KPI caller retains dev and serializes both embedded wakeup-state writes.
     unsafe {
         (*dev).power.can_wakeup = capable;
         if !capable { (*dev).power.wakeup_enabled = false; }
@@ -212,14 +212,14 @@ extern "C" fn device_may_wakeup(dev: *mut LinuxDevice) -> bool {
 extern "C" fn device_wakeup_enable(dev: *mut LinuxDevice) -> i32 {
     if dev.is_null() { return -LINUX_EINVAL; }
     if !device_can_wakeup(dev) { return -LINUX_EINVAL; }
-    // SAFETY: dev points at a caller-owned Linux struct device.
+    // SAFETY: device_wakeup_enable rejected null and capability; the C-KPI caller retains dev and serializes its embedded wakeup_enabled write.
     unsafe { (*dev).power.wakeup_enabled = true; }
     LINUX_OK
 }
 
 extern "C" fn device_wakeup_disable(dev: *mut LinuxDevice) -> i32 {
     if dev.is_null() { return -LINUX_EINVAL; }
-    // SAFETY: dev points at a caller-owned Linux struct device.
+    // SAFETY: device_wakeup_disable rejected null; the C-KPI caller retains dev and serializes its embedded wakeup_enabled write.
     unsafe { (*dev).power.wakeup_enabled = false; }
     LINUX_OK
 }
@@ -240,26 +240,26 @@ fn pm_call(dev: *mut LinuxDevice, f: fn(&LinuxDevPmOps) -> Option<PmCb>) -> Opti
 
 fn set_status(dev: *mut LinuxDevice, st: i32) {
     if dev.is_null() { return; }
-    // SAFETY: dev points at a caller-owned Linux struct device.
+    // SAFETY: set_status rejected null; the C-KPI caller retains dev and serializes its embedded power.runtime_status write.
     unsafe { (*dev).power.runtime_status = st; }
 }
 
 fn set_error(dev: *mut LinuxDevice, rc: i32) {
     if dev.is_null() { return; }
-    // SAFETY: dev points at a caller-owned Linux struct device.
+    // SAFETY: set_error rejected null; the C-KPI caller retains dev and serializes its embedded power.runtime_error write.
     unsafe { (*dev).power.runtime_error = if rc == LINUX_OK { LINUX_OK } else { rc }; }
 }
 
 fn status(dev: *mut LinuxDevice) -> Option<i32> {
     if dev.is_null() { None } else {
-        // SAFETY: dev points at a caller-owned Linux struct device.
+        // SAFETY: status rejected null; the C-KPI caller retains dev and serializes this embedded power.runtime_status read.
         Some(unsafe { (*dev).power.runtime_status })
     }
 }
 
 fn usage(dev: *mut LinuxDevice) -> i32 {
     if dev.is_null() { 0 } else {
-        // SAFETY: dev points at a caller-owned Linux struct device.
+        // SAFETY: usage rejected null; the C-KPI caller retains dev and serializes this embedded power.usage_count read.
         unsafe { (*dev).power.usage_count }
     }
 }
