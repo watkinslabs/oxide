@@ -35,6 +35,7 @@ shape they were retired in.
 
 | Status | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|
+| FIXED 566b906a2 | med | `IPV6_USE_MIN_MTU` was accepted and retained as private socket state although no current socket option handler exists. | The option now returns `ENOPROTOOPT`; unreachable state and get/set plumbing are removed. An IPv6 admission regression and full pre-push gates passed. | B1799-ipv6-use-min-mtu-admission |
 | FIXED 217c98804 | med | `IPV6_MTU` was validated and stored but never capped IPv6 output fragmentation. | UDP, raw IPv6, and TCP now apply the socket request after route PMTU selection; listener children inherit the TCP request. Hosted wire-level cap regressions and full pre-push gates passed. | B1798-ipv6-mtu-output-cap |
 | FIXED d8e67a793 | med | `IPV6_UNICAST_IF` was validated and stored but did not constrain IPv6 egress. | IPv6 UDP/raw scope resolution and TCP bind reservations now resolve the namespace-local ifindex, while explicit scope and `SO_BINDTODEVICE` retain precedence. Focused regressions and full pre-push gates passed. | B1797-ipv6-unicast-if |
 | FIXED 3fa333123 | low | `PACKET_COPY_THRESH`, `PACKET_TX_HAS_OFF`, and `PACKET_QDISC_BYPASS` were recorded as stored but unconsumed. | Re-audit: RX-ring fallback consumes `COPY_THRESH`, TX-ring parsing consumes `TX_HAS_OFF`, and packet transmit selects the qdisc path from `QDISC_BYPASS`. Focused receive, transmit, and option suites passed. | D488-packet-options-reaudit |
