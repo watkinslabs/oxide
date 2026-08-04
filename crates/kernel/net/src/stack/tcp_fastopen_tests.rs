@@ -320,12 +320,14 @@ fn a_fast_open_child_is_published_once_and_gives_its_charge_back_on_completion()
     let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, listener) = fixture(&stack, 713, 4);
+    listener.defer_accept.store(4, Ordering::Release);
     let cookie = obtain_cookie(&stack, iface, 713, 50_721);
     let server = syn(&stack, iface, 713, 50_722, Some(cookie), b"GET /").expect("a child");
     let accepted = stack.tcp_accept(&listener).expect("acceptable at its SYN");
     assert_eq!(listener.fastopen.qlen(), 1);
 
-    // The acknowledgement that finishes the handshake.
+    // A fast-open child is already acceptable; unlike an ordinary request,
+    // TCP_DEFER_ACCEPT must not drop the acknowledgement that finishes it.
     let snd_nxt = server.conn.lock().snd_nxt;
     let rcv_nxt = server.conn.lock().rcv_nxt;
     let mut buf = alloc::vec![0u8; crate::tcp_hdr::TCP_HDR_MIN_LEN];
