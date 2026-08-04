@@ -53,3 +53,17 @@ pub fn watch_key_core(c: &Ctx, serial: i32, queue: Arc<WatchQueue>, watch_id: i3
     };
     match r { Ok(()) => 0, Err(err) => e(err) }
 }
+
+/// Remove every key watch held by a queue whose notification pipe closed.
+/// No later key event may be delivered into an unreachable queue.
+/// # C: O(watches log N)
+pub(crate) fn detach_queue(queue: &Arc<WatchQueue>) {
+    let watched = queue.take_watched_keys();
+    if watched.is_empty() { return; }
+    let mut g = STORE.lock();
+    for serial in watched {
+        if let Some(key) = g.keys.get_mut(&serial) {
+            key.watchers.detach_queue(queue, serial as u64);
+        }
+    }
+}
