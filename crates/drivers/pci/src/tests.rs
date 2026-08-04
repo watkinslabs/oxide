@@ -44,6 +44,22 @@ impl ConfigSpaceReader for ReadOnlyReader {
 }
 
 #[test]
+fn bridge_windows_decode_into_their_three_distinct_resource_kinds() {
+    let r = MapReader { m: Mutex::new(HashMap::new()) };
+    let bdf = Bdf { bus: 0, device: 1, function: 0 };
+    r.write32(bdf, 0x1c, 0x0000_3121);
+    r.write32(bdf, 0x20, 0x4ff0_4000);
+    r.write32(bdf, 0x24, 0x50f1_5001);
+    r.write32(bdf, 0x28, 1);
+    r.write32(bdf, 0x2c, 2);
+    r.write32(bdf, 0x30, 0x0001_0001);
+    let windows = bridge_window_resources(&r, bdf);
+    assert_eq!(windows[0], Some(Resource { start: 0x1_2000, end: 0x1_3fff, flags: IORESOURCE_IO }));
+    assert_eq!(windows[1], Some(Resource { start: 0x4000_0000, end: 0x4fff_ffff, flags: IORESOURCE_MEM }));
+    assert_eq!(windows[2], Some(Resource { start: 0x1_5000_0000, end: 0x2_50ff_ffff, flags: IORESOURCE_MEM | IORESOURCE_PREFETCH }));
+}
+
+#[test]
 fn enumerate_finds_one_device() {
     let r = MapReader {
         m: Mutex::new(HashMap::new()),

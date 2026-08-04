@@ -1,4 +1,7 @@
-use crate::{Bdf, ConfigSpaceReader};
+use crate::{read16, Bdf, ConfigSpaceReader};
+use crate::uapi::{BRIDGE_IO_BASE_OFF, BRIDGE_IO_BASE_UPPER_OFF, BRIDGE_IO_LIMIT_UPPER_OFF,
+    BRIDGE_MEM_BASE_OFF, BRIDGE_MEM_LIMIT_OFF, BRIDGE_PREF_BASE_UPPER_OFF,
+    BRIDGE_PREF_LIMIT_UPPER_OFF, BRIDGE_PREF_MEM_BASE_OFF, BRIDGE_PREF_MEM_LIMIT_OFF};
 
 /// One decoded BAR. Header-type-0 devices have BAR0..BAR5.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -175,4 +178,36 @@ pub fn probe_bar_resources<R: ConfigSpaceReader>(r: &R, bdf: Bdf) -> [Option<Res
 
     r.write32(bdf, 0x04, cmd_status);
     out
+}
+
+/// Decode the three forwarding windows a PCI-to-PCI bridge owns. Empty or
+/// disabled windows return `None`; their fixed resource slots remain visible
+/// through the sysfs renderer.
+/// # C: O(1)
+pub fn bridge_window_resources<R: ConfigSpaceReader>(r: &R, bdf: Bdf) -> [Option<Resource>; 3] {
+    let io = r.read32(bdf, BRIDGE_IO_BASE_OFF);
+    let io_base_lo = (io & 0xff) as u8;
+    let io_limit_lo = ((io >> 8) & 0xff) as u8;
+    let mut io_base = u64::from(io_base_lo & 0xf0) << 8;
+    let mut io_limit = u64::from(io_limit_lo & 0xf0) << 8;
+    if io_base_lo & 0x0f == 1 {
+        io_base |= u64::from(read16(r, bdf, BRIDGE_IO_BASE_UPPER_OFF)) << 16;
+        io_limit |= u64::from(read16(r, bdf, BRIDGE_IO_LIMIT_UPPER_OFF)) << 16;
+    }
+    let io = (io_base <= io_limit).then_some(Resource { start: io_base, end: io_limit + 0xfff, flags: IORESOURCE_IO });
+
+    let mem_base = u64::from(read16(r, bdf, BRIDGE_MEM_BASE_OFF) & 0xfff0) << 16;
+    let mem_limit = u64::from(read16(r, bdf, BRIDGE_MEM_LIMIT_OFF) & 0xfff0) << 16;
+    let mem = (mem_base <= mem_limit).then_some(Resource { start: mem_base, end: mem_limit + 0xfffff, flags: IORESOURCE_MEM });
+
+    let pref_base_lo = read16(r, bdf, BRIDGE_PREF_MEM_BASE_OFF);
+    let pref_limit_lo = read16(r, bdf, BRIDGE_PREF_MEM_LIMIT_OFF);
+    let mut pref_base = u64::from(pref_base_lo & 0xfff0) << 16;
+    let mut pref_limit = u64::from(pref_limit_lo & 0xfff0) << 16;
+    if pref_base_lo & 0x000f == 1 {
+        pref_base |= u64::from(r.read32(bdf, BRIDGE_PREF_BASE_UPPER_OFF)) << 32;
+        pref_limit |= u64::from(r.read32(bdf, BRIDGE_PREF_LIMIT_UPPER_OFF)) << 32;
+    }
+    let pref = (pref_base <= pref_limit).then_some(Resource { start: pref_base, end: pref_limit + 0xfffff, flags: IORESOURCE_MEM | IORESOURCE_PREFETCH });
+    [io, mem, pref]
 }
