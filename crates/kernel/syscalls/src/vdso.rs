@@ -197,7 +197,7 @@ pub fn map_into_current() -> Option<u64> {
         mm.mmap(Some(hint), seg_len_pages, prot, VmaFlags::PRIVATE,
             VmaBacking::KernelBytes { data: slice, off: 0 }, true).ok()?;
     }
-    mm.set_vdso_ehdr(base);
+    mm.set_vdso_range(vvar_va, vvar_va + reserve as u64);
     Some(base)
 }
 
