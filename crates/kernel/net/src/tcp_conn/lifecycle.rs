@@ -35,7 +35,6 @@ impl TcpConn {
             rcv_wscale: 0,
             snd_wnd: 65535,
             ooo_buf: alloc::collections::BTreeMap::new(),
-            ooo_urgent: alloc::collections::BTreeMap::new(),
             ts_enabled: false,
             ts_recent:  0,
             ts_off:     0,
@@ -129,7 +128,6 @@ impl TcpConn {
             rcv_wscale: 0,
             snd_wnd: 65535,
             ooo_buf: alloc::collections::BTreeMap::new(),
-            ooo_urgent: alloc::collections::BTreeMap::new(),
             ts_enabled: false,
             ts_recent:  0,
             ts_off:     0,
@@ -223,6 +221,7 @@ impl TcpConn {
         let seg = self.build_segment(flags::FIN | flags::ACK, &[]);
         self.snd_nxt = self.snd_nxt.wrapping_add(1);
         self.state = new_state;
+        self.note_fastopen_ofo_fin_blackhole();
         Ok(seg)
     }
 

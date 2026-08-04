@@ -44,6 +44,18 @@ fn deliver(c: &mut TcpConn, seg: &[u8]) -> Option<Vec<u8>> {
     c.input(remote().ip, local().ip, seg).expect("a well-formed SYN-ACK")
 }
 
+fn bare_fin(seq: u32, ack: u32) -> Vec<u8> {
+    let mut wire = alloc::vec![0u8; crate::tcp_hdr::TCP_HDR_MIN_LEN];
+    let mut hdr = crate::tcp_hdr::TcpHdr {
+        src_port: remote().port, dst_port: local().port, seq, ack, data_offset: 5,
+        flags: flags::ACK | flags::FIN, window: 65_535, checksum: 0, urg_ptr: 0,
+    };
+    let (IpAddr::V4(src), IpAddr::V4(dst)) = (remote().ip, local().ip)
+        else { unreachable!("the fixture is IPv4") };
+    hdr.build_into(src, dst, &mut wire);
+    wire
+}
+
 #[test]
 fn a_fast_open_syn_carries_the_cookie_and_the_data() {
     let mut c = client();
@@ -181,6 +193,31 @@ fn a_third_consecutive_timeout_on_a_fast_open_names_the_path_a_blackhole() {
         c.retransmit_due(now);
     }
     assert!(c.fastopen_blackholed(false));
+}
+
+#[test]
+fn a_bare_fin_stranded_before_local_close_names_a_fast_open_blackhole() {
+    let mut c = client();
+    c.active_open_fastopen(Some(cookie()), DATA).expect("the open");
+    deliver(&mut c, &synack(ISN.wrapping_add(1), None));
+    let fin = bare_fin(c.rcv_nxt.wrapping_add(1), c.snd_nxt);
+    assert!(c.input(remote().ip, local().ip, &fin).unwrap().is_none());
+    assert!(!c.fastopen_blackhole_seen, "the gap may still be filled before close");
+
+    c.local_close().expect("the local FIN");
+    assert!(c.fastopen_blackhole_seen);
+}
+
+#[test]
+fn a_bare_fin_arriving_after_local_close_names_a_fast_open_blackhole() {
+    let mut c = client();
+    c.active_open_fastopen(Some(cookie()), DATA).expect("the open");
+    deliver(&mut c, &synack(ISN.wrapping_add(1), None));
+    c.local_close().expect("the local FIN");
+
+    let fin = bare_fin(c.rcv_nxt.wrapping_add(1), c.snd_nxt);
+    assert!(c.input(remote().ip, local().ip, &fin).unwrap().is_none());
+    assert!(c.fastopen_blackhole_seen);
 }
 
 #[test]

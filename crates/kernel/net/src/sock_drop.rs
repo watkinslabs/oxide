@@ -58,6 +58,7 @@ impl InetSocket {
                 };
                 (s, c.local.ip, c.remote.ip, crate::stack::ecn_tos(&c))
             };
+            stk.drain_tcp_fastopen_client(entry);
             if let Some(seg_bytes) = seg {
                 let _ = stk.send_tcp_entry_segment_in(entry, src, dst, &seg_bytes, tos);
                 drain_loopback();

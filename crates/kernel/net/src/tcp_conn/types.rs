@@ -28,6 +28,30 @@ pub struct UnackedSegment {
     pub sacked:      bool,
 }
 
+/// One received segment retained until the gap before it arrives.
+///
+/// Payload, urgent metadata, and FIN occupy the same TCP sequence space, so
+/// they must remain one record while the segment is out of order.
+#[derive(Clone, Debug)]
+pub struct OutOfOrderSegment {
+    pub payload: Vec<u8>,
+    pub urgent: Option<(u32, u8)>,
+    pub fin: bool,
+}
+
+impl OutOfOrderSegment {
+    /// Build a payload-only retained segment for the SACK test fixtures. # C: O(1)
+    #[cfg(test)]
+    pub(crate) fn data(payload: Vec<u8>) -> Self {
+        Self { payload, urgent: None, fin: false }
+    }
+
+    /// Count the TCP sequence space retained by this segment. # C: O(1)
+    pub(crate) fn sequence_len(&self) -> u32 {
+        self.payload.len() as u32 + u32::from(self.fin)
+    }
+}
+
 #[derive(Debug)]
 pub struct TcpConn {
     pub local:  Endpoint,
@@ -54,9 +78,9 @@ pub struct TcpConn {
     pub snd_wscale: u8,
     pub rcv_wscale: u8,
     pub snd_wnd: u32,
-    pub ooo_buf: BTreeMap<u32, Vec<u8>>,
-    /// URG metadata retained with an out-of-order payload until promotion.
-    pub ooo_urgent: BTreeMap<u32, Option<(u32, u8)>>,
+    /// Complete out-of-order segments, including control flags that consume
+    /// sequence space such as FIN.
+    pub ooo_buf: BTreeMap<u32, OutOfOrderSegment>,
     pub ts_enabled: bool,
     pub ts_recent:  u32,
     /// Linux `tp->tsoffset` — the per-connection TSval bias from

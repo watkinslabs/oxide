@@ -120,6 +120,27 @@ impl TcpConn {
     pub fn fastopen_reset_is_blackhole(&self) -> bool {
         self.syn_fastopen && self.state == TcpState::Established && self.data_segs_in == 0
     }
+
+    /// A sole bare FIN stranded behind a receive gap when an active Fast Open
+    /// connection closes is another middlebox-blackhole signature Linux
+    /// records. The queue owns the FIN flag, so this consults no shadow state.
+    /// # C: O(1)
+    pub(crate) fn fastopen_ofo_fin_is_blackhole(&self) -> bool {
+        self.syn_fastopen
+            && self.data_segs_in == 0
+            && self.ooo_buf.len() == 1
+            && self.ooo_buf.values().next().is_some_and(|segment| {
+                segment.fin && segment.payload.is_empty()
+            })
+    }
+
+    /// Record the close-time out-of-order FIN signature once. # C: O(1)
+    pub(crate) fn note_fastopen_ofo_fin_blackhole(&mut self) {
+        if self.state != TcpState::Established && self.fastopen_ofo_fin_is_blackhole() {
+            self.fastopen_confirming = false;
+            self.fastopen_blackhole_seen = true;
+        }
+    }
 }
 
 #[cfg(test)]
