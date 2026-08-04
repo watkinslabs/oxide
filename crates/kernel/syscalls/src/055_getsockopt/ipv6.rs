@@ -51,7 +51,6 @@ fn view(sock: &Arc<InetSocket>) -> Ipv6GetState {
         min_hopcount: sock.opts.min_hop.hopcount(),
         srcprefs: sock.opts.ipv6.srcprefs(),
         frag_size: sock.opts.ipv6.frag_size(),
-        use_min_mtu: sock.opts.ipv6.use_min_mtu(),
         default_autoflowlabel: false,
         // The path-MTU reads own their route lookup and their own copyout.
         mtu: 0,
