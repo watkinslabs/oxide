@@ -21,6 +21,7 @@ fn this_level_reads_a_whole_int_or_nothing() {
     assert_eq!(set::arg_class(IPV6_RTHDR), ArgClass::Header);
     assert_eq!(set::arg_class(IPV6_PKTINFO), ArgClass::PktInfo);
     assert_eq!(set::arg_class(IPV6_FLOWLABEL_MGR), ArgClass::FlowLabel);
+    assert_eq!(set::arg_class(IPV6_NEXTHOP), ArgClass::Unsupported);
     assert_eq!(set::arg_class(IPV6_XFRM_POLICY), ArgClass::Policy);
     assert_eq!(set::arg_class(MCAST_JOIN_GROUP), ArgClass::Delegated);
 }
