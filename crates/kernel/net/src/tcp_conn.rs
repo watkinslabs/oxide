@@ -33,7 +33,7 @@ pub mod reqsk;
 
 pub use types::passive_rcv_header;
 pub use types::{
-    Endpoint, TcpCongestionControl, TcpConn, TcpConnError, UnackedSegment, OWN_MSS_DEFAULT,
+    Endpoint, OutOfOrderSegment, TcpCongestionControl, TcpConn, TcpConnError, UnackedSegment, OWN_MSS_DEFAULT,
     OWN_WSCALE, DATA_RETRIES_DEFAULT, DELACK_MAX_DEFAULT_NS, LINGER2_DEFAULT_NS,
     RTO_MAX_DEFAULT_NS, SYN_RETRIES_DEFAULT,
 };

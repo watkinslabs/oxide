@@ -110,14 +110,21 @@ impl NetStack {
     }
 
     /// Graceful close: emit FIN; demux drives the rest. # C: O(1)
-    pub fn tcp_close(&self, entry: &TcpEntry) -> NetResult<()> {
+    pub fn tcp_close(&self, entry: &Arc<TcpEntry>) -> NetResult<()> {
         let (seg, src, dst, tos) = {
             let mut c = entry.conn.lock();
             let s = c.local_close().map_err(|_| NetError::Eio)?;
             (s, c.local.ip, c.remote.ip, ecn_tos(&c))
         };
+        super::tcp_fastopen::drain_client(self, entry, crate::tcp_conn::ka_now_ns());
         self.send_tcp_segment_in(entry.net_ns(), src, dst, &seg, tos, entry.bound_iface(),
             TcpTxPolicy::Entry(entry))
+    }
+
+    /// Publish an active Fast Open result produced by socket teardown.
+    /// # C: O(log N)
+    pub(crate) fn drain_tcp_fastopen_client(&self, entry: &Arc<TcpEntry>) {
+        super::tcp_fastopen::drain_client(self, entry, crate::tcp_conn::ka_now_ns());
     }
 
     /// Apply Linux TCP shutdown; pending active open closes without FIN, send shutdown otherwise publishes one FIN.

@@ -305,37 +305,47 @@ impl TcpConn {
                     let index = hdr.urg_ptr.saturating_sub(1) as usize;
                     (index < payload.len()).then(|| (hdr.seq.wrapping_add(index as u32), payload[index]))
                 } else { None };
-                if !payload.is_empty() {
-                    self.data_segs_in = self.data_segs_in.saturating_add(1);
+                let has_fin = (hdr.flags & flags::FIN) != 0;
+                let mut received_fin = false;
+                if !payload.is_empty() || has_fin {
+                    if !payload.is_empty() {
+                        self.data_segs_in = self.data_segs_in.saturating_add(1);
+                    }
                     if hdr.seq == self.rcv_nxt {
-                        self.append_recv_payload(hdr.seq, payload);
+                        if !payload.is_empty() {
+                            self.append_recv_payload(hdr.seq, payload);
+                        }
                         if let Some(urgent) = urgent {
                             self.urgent = Some(urgent);
                             self.oob_consumed = None;
                         }
                         self.rcv_nxt = self.rcv_nxt.wrapping_add(payload.len() as u32);
-                        while let Some((&seq, _)) = self.ooo_buf.iter().next() {
+                        received_fin = has_fin;
+                        while !received_fin {
+                            let Some((&seq, _)) = self.ooo_buf.iter().next() else { break; };
                             if seq != self.rcv_nxt { break; }
-                            let chunk = self.ooo_buf.remove(&seq).unwrap();
-                            let chunk_urgent = self.ooo_urgent.remove(&seq).flatten();
-                            let len = chunk.len() as u32;
-                            self.append_recv_payload(seq, &chunk);
-                            if let Some(urgent) = chunk_urgent {
+                            let segment = self.ooo_buf.remove(&seq).unwrap();
+                            let len = segment.payload.len() as u32;
+                            self.append_recv_payload(seq, &segment.payload);
+                            if let Some(urgent) = segment.urgent {
                                 self.urgent = Some(urgent);
                                 self.oob_consumed = None;
                             }
                             self.rcv_nxt = self.rcv_nxt.wrapping_add(len);
+                            received_fin = segment.fin;
                         }
                         self.rcv_autotune();
                     } else {
                         let diff = hdr.seq.wrapping_sub(self.rcv_nxt);
                         if (diff & 0x8000_0000) == 0 && diff != 0 {
                             const OOO_CAP: usize = 64 * 1024;
-                            let used: usize = self.ooo_buf.values().map(|v| v.len()).sum();
+                            let used: usize = self.ooo_buf.values().map(|segment| segment.payload.len()).sum();
                             if used + payload.len() <= OOO_CAP {
                                 if let alloc::collections::btree_map::Entry::Vacant(entry) = self.ooo_buf.entry(hdr.seq) {
-                                    entry.insert(payload.to_vec());
-                                    self.ooo_urgent.insert(hdr.seq, urgent);
+                                    entry.insert(crate::tcp_conn::OutOfOrderSegment {
+                                        payload: payload.to_vec(), urgent, fin: has_fin,
+                                    });
+                                    self.note_fastopen_ofo_fin_blackhole();
                                 }
                             }
                         }
@@ -360,7 +370,7 @@ impl TcpConn {
                     self.trim_retx_acked(hdr.ack);
                 }
                 let mut emit_fin_ack = None;
-                if (hdr.flags & flags::FIN) != 0 {
+                if received_fin {
                     self.rcv_nxt = self.rcv_nxt.wrapping_add(1);
                     let evt = match self.state {
                         TcpState::Established => TcpEvent::RecvFin,
