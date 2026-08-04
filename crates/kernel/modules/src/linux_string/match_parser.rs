@@ -102,36 +102,103 @@ unsafe fn pattern_match(s: *const u8, pat: *const u8, args: *mut Substring) -> b
     let mut si = 0usize;
     let mut ai = 0usize;
     while pi < plen {
-        // SAFETY: the loop guard keeps pi < plen == strlen(pat), so this byte precedes pat's terminator.
-        let pc = unsafe { *pat.add(pi) };
-        if pc != b'%' {
-            // SAFETY: si >= slen short-circuits first, so si < strlen(s) and this byte precedes s's terminator.
-            if si >= slen || unsafe { *s.add(si) } != pc { return false; }
-            pi += 1; si += 1; continue;
-        }
-        pi += 1;
-        // SAFETY: pat[pi-1] was '%' so pi is at most plen, the index of pat's own terminator.
-        let kind = unsafe { *pat.add(pi) };
-        if !matches!(kind, b's' | b'd' | b'u') { return false; }
-        pi += 1;
-        let start = si;
-        while si < slen {
-            // SAFETY: si < slen bounds the s read, and the pi < plen guard short-circuits before the pat read, so both precede their terminators.
-            if pi < plen && unsafe { *s.add(si) } == unsafe { *pat.add(pi) } { break; }
+        // SAFETY: pi < plen keeps this read before pat's terminator.
+        if unsafe { *pat.add(pi) } != b'%' {
+            // SAFETY: si < slen is checked before this read, and pi < plen is the loop invariant.
+            if si >= slen || unsafe { *s.add(si) } != unsafe { *pat.add(pi) } { return false; }
+            pi += 1;
             si += 1;
+            continue;
         }
-        if start == si { return false; }
+        pi += 1;
+        let mut width = None;
+        while pi < plen {
+            // SAFETY: pi < plen keeps this read before pat's terminator.
+            let digit = unsafe { *pat.add(pi) };
+            if !digit.is_ascii_digit() { break; }
+            width = Some(width.unwrap_or(0usize).saturating_mul(10).saturating_add((digit - b'0') as usize));
+            pi += 1;
+        }
+        if pi >= plen { return false; }
+        // SAFETY: pi < plen keeps this read before pat's terminator.
+        let kind = unsafe { *pat.add(pi) };
+        pi += 1;
+        if kind == b'%' {
+            if width.is_some() { return false; }
+            // SAFETY: si < slen is checked before this read.
+            if si >= slen || unsafe { *s.add(si) } != b'%' { return false; }
+            si += 1;
+            continue;
+        }
         if ai >= MAX_OPT_ARGS { return false; }
-        if !args.is_null() {
-            // SAFETY: ai < MAX_OPT_ARGS was just checked and the caller's args array holds that many substrings; start and si are both <= strlen(s), so the recorded bounds stay inside s.
-            unsafe {
-                (*args.add(ai)).from = s.add(start);
-                (*args.add(ai)).to = s.add(si);
+        let start = si;
+        let end = match kind {
+            b's' => {
+                if si == slen { return false; }
+                Some(core::cmp::min(slen, si.saturating_add(width.unwrap_or(slen))))
             }
+            // SAFETY: s is NUL-terminated and si..slen is its validated contents.
+            b'd' => unsafe { scan_number(s, si, slen, 0, true) },
+            // SAFETY: s is NUL-terminated and si..slen is its validated contents.
+            b'u' => unsafe { scan_number(s, si, slen, 0, false) },
+            // SAFETY: s is NUL-terminated and si..slen is its validated contents.
+            b'o' => unsafe { scan_number(s, si, slen, 8, false) },
+            // SAFETY: s is NUL-terminated and si..slen is its validated contents.
+            b'x' => unsafe { scan_number(s, si, slen, 16, false) },
+            _ => return false,
+        };
+        let Some(end) = end else { return false; };
+        if !args.is_null() {
+            // SAFETY: ai < MAX_OPT_ARGS was checked and start..end lies within s's NUL-terminated contents.
+            unsafe { (*args.add(ai)).from = s.add(start); (*args.add(ai)).to = s.add(end); }
         }
+        si = end;
         ai += 1;
     }
     si == slen
+}
+
+// Returns the end of the simple_strto* compatible numeric prefix, if any.
+unsafe fn scan_number(s: *const u8, mut at: usize, slen: usize, mut base: u8, signed: bool) -> Option<usize> {
+    if at < slen {
+        // SAFETY: at < slen keeps this sign read before s's terminator.
+        let sign = unsafe { *s.add(at) };
+        if sign == b'+' || (signed && sign == b'-') { at += 1; }
+    }
+    let start = at;
+    if base == 0 {
+        base = 10;
+        if at < slen {
+            // SAFETY: at < slen keeps this radix-prefix read before s's terminator.
+            let first = unsafe { *s.add(at) };
+            if first == b'0' {
+                base = 8;
+                if at + 1 < slen {
+                    // SAFETY: at + 1 < slen keeps this radix tag read before s's terminator.
+                    let tag = unsafe { *s.add(at + 1) };
+                    if matches!(tag, b'x' | b'X') { base = 16; at += 2; }
+                }
+            }
+        }
+    } else if base == 16 && at + 1 < slen {
+        // SAFETY: at + 1 < slen keeps both hexadecimal-prefix reads before s's terminator.
+        let (first, tag) = unsafe { (*s.add(at), *s.add(at + 1)) };
+        if first == b'0' && matches!(tag, b'x' | b'X') { at += 2; }
+    }
+    let digits = at;
+    while at < slen {
+        // SAFETY: at < slen keeps this read before s's terminator.
+        let c = unsafe { *s.add(at) };
+        let value = match c {
+            b'0'..=b'9' => c - b'0',
+            b'a'..=b'f' => c - b'a' + 10,
+            b'A'..=b'F' => c - b'A' + 10,
+            _ => break,
+        };
+        if value >= base { break; }
+        at += 1;
+    }
+    if at == digits || (digits == start && at == start) { None } else { Some(at) }
 }
 
 // Precondition: `sub` is a readable Substring and `dst` is writable for `cap` bytes.
