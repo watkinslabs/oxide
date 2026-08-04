@@ -79,6 +79,28 @@ fn poe_context_is_exactly_sized_feature_gated_and_unique() {
     assert_eq!(scan_region(&duplicate, RESERVED_VA, FRAME_VA, false, false, false, true), Err(()));
 }
 
+#[test]
+fn poe_context_in_extra_context_is_selected_for_restore() {
+    let mut reserved = [0u8; RESERVED_BYTES];
+    let extra_off = EXTRA_CONTEXT_SIZE + TERMINATOR_SIZE;
+    let extra_va = RESERVED_VA + extra_off as u64;
+    head(&mut reserved, 0, EXTRA_MAGIC, EXTRA_CONTEXT_SIZE as u32);
+    put_u64(&mut reserved, CTX_HEAD_BYTES, extra_va);
+    put_u32(&mut reserved, CTX_HEAD_BYTES + 8, 64);
+    head(&mut reserved, EXTRA_CONTEXT_SIZE, 0, 0);
+    {
+        let extra = &mut reserved[extra_off..extra_off + 64];
+        head(extra, 0, POE_MAGIC, POE_CONTEXT_BYTES as u32);
+        put_u64(extra, CTX_HEAD_BYTES, 0x7654_3210_fedc_ba98);
+        head(extra, POE_CONTEXT_BYTES, 0, 0);
+    }
+    let first = scan_region(&reserved, RESERVED_VA, FRAME_VA, false, false, false, true).unwrap();
+    let extra = &reserved[extra_off..extra_off + 64];
+    let second = scan_region(extra, extra_va, FRAME_VA, first.fpsimd.is_some(), first.poe.is_some(), true, true).unwrap();
+    let (off, size) = second.poe.expect("POE record in the extra area was lost");
+    assert_eq!(read_poe(extra, off, size), Ok(0x7654_3210_fedc_ba98));
+}
+
 /// Linux `init_user_layout`: the cursor stops `TERMINATOR_SIZE +
 /// EXTRA_CONTEXT_SIZE` short of the end so an overflow can always be spilled.
 /// Our record set fits with room to spare; an oversized one reports `-ENOMEM`
