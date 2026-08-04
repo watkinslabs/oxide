@@ -405,6 +405,8 @@ open issue. Live rows that still need the work carry it in their own row.
 
 ### Tooling / gates
 
+| FIXED B1819 | low | Four ext4 e2fsck repros copied multi-gigabyte images to fixed `/tmp` names and only attempted cleanup on their success path. Concurrent runs collided, and assertion failures leaked the images. | Each repro now owns a PID+sequence-named `TempImage` whose `Drop` removes it on all exits; paths cannot collide across processes. | B1819-isolate-ext4-e2fsck-images |
+
 | FIXED C281 | low | `qemu-x86-grub` duplicated the x86 QEMU target and silently discarded `FEATURES=`; smoke scripts kept a redundant `grub` architecture alias. | Kept the public target as a compatibility dependency on canonical `qemu-x86`, so feature handling cannot diverge; migrated internal GRUB smoke callers to `x86`. | C281-canonicalize-x86-qemu-alias |
 
 | FIXED B1818 | med | `match_token` did not recognise literal percent escapes or string widths, and it did not parse the full reference conversion set. | Reworked the parser around the reference's literal/format sequence: `%%`, field widths, and `%s`/`%d`/`%u`/`%o`/`%x` now consume their defined input before the remaining pattern is matched. Hosted tests cover literal percent, width, and hexadecimal cases. | B1818-align-match-token-parser |

@@ -12,7 +12,7 @@ use alloc::sync::Arc;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::process::Command;
-use std::sync::Mutex;
+use std::sync::{atomic::{AtomicU32, Ordering}, Mutex};
 
 use block::{BlockDevice, BlockRequest, BlockOp, KResult};
 
@@ -21,6 +21,36 @@ const ARM_ROOT: &str = "/home/nd/oxide/kernel/target/builds/default/root-aarch64
 const SECTOR: u32 = 512;
 
 struct RwFileDisk { f: Mutex<File>, cap: u64 }
+
+struct TempImage { path: std::path::PathBuf }
+
+impl TempImage {
+    fn new(tag: &str) -> Self {
+        static SEQ: AtomicU32 = AtomicU32::new(0);
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(std::format!("oxide-ext4-{tag}-{}-{seq}.img", std::process::id()));
+        Self { path }
+    }
+}
+
+impl AsRef<std::path::Path> for TempImage {
+    fn as_ref(&self) -> &std::path::Path { &self.path }
+}
+
+impl Drop for TempImage {
+    fn drop(&mut self) { let _ = std::fs::remove_file(&self.path); }
+}
+
+#[test]
+fn temp_images_are_unique_and_drop_cleanup() {
+    let first = TempImage::new("cleanup");
+    let second = TempImage::new("cleanup");
+    assert_ne!(first.path, second.path);
+    File::create(&first.path).expect("create temporary image");
+    let path = first.path.clone();
+    drop(first);
+    assert!(!path.exists(), "temporary image must be removed on drop");
+}
 
 impl BlockDevice for RwFileDisk {
     fn block_size(&self) -> u32 { SECTOR }
@@ -43,24 +73,24 @@ impl BlockDevice for RwFileDisk {
     fn flush(&self) -> KResult<()> { self.f.lock().unwrap().flush().unwrap(); Ok(()) }
 }
 
-fn e2fsck_clean(path: &str) -> (bool, String) {
+fn e2fsck_clean(path: impl AsRef<std::path::Path>) -> (bool, String) {
     // -f force, -n no-changes (read-only check). exit 0 = clean.
-    let out = Command::new("e2fsck").args(["-fn", path]).output().expect("e2fsck");
+    let out = Command::new("e2fsck").arg("-fn").arg(path.as_ref()).output().expect("e2fsck");
     let s = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     (out.status.success(), s)
 }
 
-fn copy_checked(src: &str, tag: &str) -> Option<String> {
+fn copy_checked(src: &str, tag: &str) -> Option<TempImage> {
     if File::open(src).is_err() { eprintln!("SKIP: no image at {src}"); return None; }
     if Command::new("e2fsck").arg("-V").output().is_err() { eprintln!("SKIP: no e2fsck"); return None; }
-    let tmp = format!("{}/{}", std::env::temp_dir().display(), tag);
+    let tmp = TempImage::new(tag);
     std::fs::copy(src, &tmp).expect("copy image");
     let (ok0, log0) = e2fsck_clean(&tmp);
     assert!(ok0, "source image copy already dirty:\n{log0}");
     Some(tmp)
 }
 
-fn open_rw(path: &str) -> (Arc<dyn BlockDevice>, ext4::Mount) {
+fn open_rw(path: impl AsRef<std::path::Path>) -> (Arc<dyn BlockDevice>, ext4::Mount) {
     let f = OpenOptions::new().read(true).write(true).open(path).unwrap();
     let cap = f.metadata().unwrap().len() / SECTOR as u64;
     let disk: Arc<dyn BlockDevice> = Arc::new(RwFileDisk { f: Mutex::new(f), cap });
@@ -74,7 +104,7 @@ fn boot_like_balloc_into_uninit_group_keeps_fsck_clean() {
     if Command::new("e2fsck").arg("-V").output().is_err() { eprintln!("SKIP: no e2fsck"); return; }
 
     // Work on a private copy so we never touch the pristine image.
-    let tmp = format!("{}/balloc_uninit_repro.img", std::env::temp_dir().display());
+    let tmp = TempImage::new("balloc-uninit");
     std::fs::copy(CLEAN, &tmp).expect("copy image");
 
     // Baseline: the clean copy must fsck clean.
@@ -121,7 +151,6 @@ fn boot_like_balloc_into_uninit_group_keeps_fsck_clean() {
     }
 
     let (ok1, log1) = e2fsck_clean(&tmp);
-    let _ = std::fs::remove_file(&tmp);
     assert!(ok1, "POST-balloc image is CORRUPT (reproduced the boot corruption):\n{log1}");
 }
 
@@ -133,7 +162,7 @@ fn boot_like_balloc_into_uninit_group_keeps_fsck_clean() {
 fn concurrent_churn_keeps_fsck_clean() {
     if File::open(CLEAN).is_err() { eprintln!("SKIP: no clean image"); return; }
     if Command::new("e2fsck").arg("-V").output().is_err() { eprintln!("SKIP: no e2fsck"); return; }
-    let tmp = format!("{}/balloc_concurrent_repro.img", std::env::temp_dir().display());
+    let tmp = TempImage::new("balloc-concurrent");
     std::fs::copy(CLEAN, &tmp).expect("copy image");
     let (ok0, log0) = e2fsck_clean(&tmp);
     assert!(ok0, "PRE image dirty:\n{log0}");
@@ -170,13 +199,12 @@ fn concurrent_churn_keeps_fsck_clean() {
         for h in hs { let _ = h.join(); }
     }
     let (ok1, log1) = e2fsck_clean(&tmp);
-    let _ = std::fs::remove_file(&tmp);
     assert!(ok1, "POST concurrent churn image is CORRUPT (SMP ext4 race reproduced):\n{log1}");
 }
 
 #[test]
 fn arm_hwdb_rewrite_and_replacement_keep_fsck_clean() {
-    let Some(tmp) = copy_checked(ARM_ROOT, "arm_hwdb_rewrite_repro.img") else { return; };
+    let Some(tmp) = copy_checked(ARM_ROOT, "arm-hwdb-rewrite") else { return; };
     {
         let (disk, m) = open_rw(&tmp);
         let udev = m.lookup_path(b"/etc/udev").expect("/etc/udev");
@@ -198,14 +226,13 @@ fn arm_hwdb_rewrite_and_replacement_keep_fsck_clean() {
         disk.flush().expect("flush image");
     }
     let (ok1, log1) = e2fsck_clean(&tmp);
-    let _ = std::fs::remove_file(&tmp);
     assert!(ok1, "POST hwdb rewrite/replacement image is CORRUPT:\n{log1}");
 }
 
 #[test]
 fn arm_hwdb_batched_framecache_rewrite_keeps_fsck_clean() {
     common::boot_hosted_pmm();
-    let Some(tmp) = copy_checked(ARM_ROOT, "arm_hwdb_framecache_repro.img") else { return; };
+    let Some(tmp) = copy_checked(ARM_ROOT, "arm-hwdb-framecache") else { return; };
     {
         let (disk, raw) = open_rw(&tmp);
         let m = Arc::new(raw);
@@ -235,6 +262,5 @@ fn arm_hwdb_batched_framecache_rewrite_keeps_fsck_clean() {
         disk.flush().expect("flush image");
     }
     let (ok1, log1) = e2fsck_clean(&tmp);
-    let _ = std::fs::remove_file(&tmp);
     assert!(ok1, "POST batched framecache hwdb rewrite image is CORRUPT:\n{log1}");
 }
