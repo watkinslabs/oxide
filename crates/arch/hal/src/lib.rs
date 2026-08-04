@@ -316,6 +316,11 @@ pub trait CpuOps {
     /// lacks (→ SIGILL). # C: O(1)
     fn cpu_hwcap() -> u64;
 
+    /// ELF `AT_HWCAP2` advertised to userspace in the initial auxiliary
+    /// vector. A capability belongs here only when the kernel enabled the
+    /// matching userspace ABI. # C: O(1)
+    fn cpu_hwcap2() -> u64;
+
     /// ELF `AT_MINSIGSTKSZ` (Linux `get_sigframe_size()` on x86_64,
     /// `signal_minsigstksz` on arm64): bytes of stack ONE signal delivery
     /// needs, worst case. Dynamic because the frame carries the CPU's

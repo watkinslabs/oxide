@@ -31,6 +31,15 @@ pub fn cpu_hwcap() -> u64 {
     { hal_aarch64::ArmCpuOps::cpu_hwcap() }
 }
 
+/// Second hardware capability word the auxiliary vector advertises. # C: O(1)
+pub fn cpu_hwcap2() -> u64 {
+    use hal::CpuOps;
+    #[cfg(target_arch = "x86_64")]
+    { hal_x86_64::X86CpuOps::cpu_hwcap2() }
+    #[cfg(target_arch = "aarch64")]
+    { hal_aarch64::ArmCpuOps::cpu_hwcap2() }
+}
+
 /// Minimum signal-stack size the auxiliary vector advertises. # C: O(1)
 pub fn cpu_min_sigstksz() -> u64 {
     use hal::CpuOps;

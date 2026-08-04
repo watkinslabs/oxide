@@ -154,6 +154,9 @@ impl CpuOps for X86CpuOps {
     /// # C: O(1)
     fn cpu_hwcap() -> u64 { 0 }
 
+    /// x86_64 has no second ELF hardware-capability word. # C: O(1)
+    fn cpu_hwcap2() -> u64 { 0 }
+
     /// # C: O(1)
     fn cpu_min_sigstksz() -> u64 { crate::min_sigstksz() as u64 }
 

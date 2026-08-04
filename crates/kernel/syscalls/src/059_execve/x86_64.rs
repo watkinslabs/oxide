@@ -405,6 +405,7 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
             &path_owned,
             vdso_ehdr,
             <hal_x86_64::X86CpuOps as hal::CpuOps>::cpu_hwcap(),
+            <hal_x86_64::X86CpuOps as hal::CpuOps>::cpu_hwcap2(),
             elf_load::stack::AuxCreds {
                 uid: creds.new.ruid, euid: creds.new.euid,
                 gid: creds.new.rgid, egid: creds.new.egid,
