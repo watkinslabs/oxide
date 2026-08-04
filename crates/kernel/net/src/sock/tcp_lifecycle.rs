@@ -231,6 +231,9 @@ pub(crate) fn connect_tcp6_locked(sock: &InetSocket, local_port: &mut Option<u16
     dst_ip: crate::Ipv6Addr, remote_port: u16, source: crate::tcp_fastopen::Source, data: &[u8])
     -> Result<TcpOpen, NetError> {
     let configured = *sock.local_ip6.lock();
+    let (sticky, _) = sock.opts.ipv6.sticky_pktinfo();
+    let sticky = crate::Ipv6Addr(sticky);
+    let configured = if sticky.is_unspecified() { configured } else { sticky };
     let local_ip = if configured != crate::Ipv6Addr::ANY {
         configured
     } else if dst_ip == crate::Ipv6Addr::LOOPBACK {
