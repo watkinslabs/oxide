@@ -192,6 +192,11 @@ impl TcpConn {
                     let payload = &seg[hdr.payload_offset()..];
                     self.append_recv_payload(self.rcv_nxt, payload);
                     self.rcv_nxt = self.rcv_nxt.wrapping_add(payload.len() as u32);
+                    if (hdr.flags & flags::FIN) != 0 {
+                        self.rcv_nxt = self.rcv_nxt.wrapping_add(1);
+                        self.state = crate::tcp_state::transition(self.state, TcpEvent::RecvFin)
+                            .ok_or(TcpConnError::BadState)?;
+                    }
                 }
                 let resp = self.build_syn_with_opts(sa_flags);
                 self.snd_nxt = self.snd_nxt.wrapping_add(1);
