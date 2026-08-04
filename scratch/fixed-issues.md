@@ -72,6 +72,7 @@ shape they were retired in.
 | Status | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|
 | FIXED 51f9f6709 | low | `mount -t proc -o hidepid=…` / `-o subset=…` had been recorded as returning `EINVAL` instead of applying its confinement. | Procfs declares and consumes the `gid`, `hidepid`, and `subset` mount parameters into per-mount state; root lookup, readdir, and PID access enforce that state. Current hosted parser and mount-admission regressions pass. | D498-procfs-hidepid-subset-ledger |
+| FIXED 0c6257856 | med | `read(2)` on an fscontext fd had been recorded as returning `EINVAL` while its diagnostic ring was unreachable. | Context inodes use dedicated file operations: each read returns the oldest newline-terminated message, an empty ring yields `ENODATA`, and a short buffer yields `EMSGSIZE` without consuming the message. `cargo test -p vfs --test fs_context_log` passes all 9 regressions. | D499-fscontext-read-error-log-ledger |
 
 ## Process
 
