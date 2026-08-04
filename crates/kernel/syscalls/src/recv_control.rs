@@ -113,11 +113,13 @@ fn cred_bytes(cred: (u32, u32, u32)) -> [u8; 12] {
 /// Emit credentials, then reserve, copy, and publish each received fd. # C: O(files + faults)
 #[cfg(target_os = "oxide-kernel")]
 pub(crate) fn deliver(user: &RecvUser, files: Vec<Arc<File>>, cred: Option<(u32, u32, u32)>,
-    inq: Option<InqCmsg>, recv_flags: u64) -> Result<DeliveredControl, i64>
+    inq: Option<InqCmsg>, protocol: Option<(i32, i32, &[u8])>, recv_flags: u64)
+    -> Result<DeliveredControl, i64>
 {
     let mut flags = output_flags(recv_flags);
     let cap = if user.control == 0 { 0 } else { user.controllen };
     let mut control = Control::new(cap);
+    if let Some((level, ty, data)) = protocol { control.push(level, ty, data); }
     if let Some(cred) = cred { control.push(SOL_SOCKET, SCM_CREDENTIALS, &cred_bytes(cred)); }
     control.push_inq(inq);
     let off = control.copy_to(user)?;

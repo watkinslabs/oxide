@@ -181,7 +181,7 @@ pub fn rtnl_multicast_in(net_ns: u64, group: u32, msg: &[u8]) -> usize {
     let subscribed = targets.len();
     let mut n = 0;
     for s in targets {
-        if s.enqueue_multicast(msg.to_vec()) { n += 1; }
+        if s.enqueue_multicast(msg.to_vec(), group) { n += 1; }
     }
     // A notification nobody receives is indistinguishable from one never sent:
     // the three counts separate "no rtnetlink socket exists" from "none
@@ -209,6 +209,23 @@ fn trace_mcast(net_ns: u64, group: u32, live: usize, subscribed: usize, reached:
     klog::write_dec_u64(reached as u64);
     klog::write_raw(b" type=");
     klog::write_dec_u64(typ as u64);
+    if typ == crate::rtnetlink::RTM_NEWADDR || typ == crate::rtnetlink::RTM_DELADDR {
+        let off = crate::Nlmsghdr::SIZE;
+        if msg.len() >= off + crate::rtnetlink::Ifaddrmsg::SIZE {
+            let ifa = &msg[off..off + crate::rtnetlink::Ifaddrmsg::SIZE];
+            let index = u32::from_ne_bytes([ifa[4], ifa[5], ifa[6], ifa[7]]);
+            klog::write_raw(b" fam=");
+            klog::write_dec_u64(ifa[0] as u64);
+            klog::write_raw(b" prefix=");
+            klog::write_dec_u64(ifa[1] as u64);
+            klog::write_raw(b" flags=");
+            klog::write_dec_u64(ifa[2] as u64);
+            klog::write_raw(b" scope=");
+            klog::write_dec_u64(ifa[3] as u64);
+            klog::write_raw(b" ifidx=");
+            klog::write_dec_u64(index as u64);
+        }
+    }
     klog::write_raw(b" bytes=");
     klog::write_dec_u64(msg.len() as u64);
     klog::write_raw(b"]\n");
