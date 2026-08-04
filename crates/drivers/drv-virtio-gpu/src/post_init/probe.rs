@@ -16,8 +16,8 @@ pub fn get_display_info(
     drv_features: u64,
     resources: virtio::VirtioResources,
 ) -> bool {
-    let Some(ctrlq) = resources.require_queue(0) else { return false };
-    let Some(cursorq) = resources.require_queue(1) else { return false };
+    let Some(ctrlq) = resources.require_queue_at_least(0, 4) else { return false };
+    let Some(cursorq) = resources.require_queue_at_least(1, 2) else { return false };
     if !resources.common_cfg_valid() {
         return false;
     }

@@ -108,7 +108,7 @@ pub fn present_for(device_key: virtio::VirtioChildDeviceKey) -> bool {
 pub fn install(device_key: virtio::VirtioChildDeviceKey, resources: virtio::VirtioResources,
     features: u64) -> bool
 {
-    let Some(rxq) = resources.require_queue(0) else {
+    let Some(rxq) = resources.require_queue_at_least(0, RX_RING_BUFS as u16) else {
         return false;
     };
     let Some(txq) = resources.require_queue(1) else {
