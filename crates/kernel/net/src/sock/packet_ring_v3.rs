@@ -217,8 +217,10 @@ pub(crate) fn service_packet_ring_timers(now_ns: u64) {
         // Safe to release here — the guard is scoped to this block, so
         // `local_bh_enable`'s inline drain holds no other lock.
         let mut registry = PACKET_REGISTRY.lock_bh::<sched::bh::SchedBh>();
-        registry.retain(|weak| weak.upgrade().is_some());
-        registry.iter().filter_map(alloc::sync::Weak::upgrade).collect::<Vec<_>>()
+        registry.values_mut().flat_map(|sockets| {
+            sockets.retain(|weak| weak.upgrade().is_some());
+            sockets.iter().filter_map(alloc::sync::Weak::upgrade)
+        }).collect::<Vec<_>>()
     };
     for socket in sockets {
         if socket.released.load(Ordering::Acquire) { continue; }

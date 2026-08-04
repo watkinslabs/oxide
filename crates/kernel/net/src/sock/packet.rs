@@ -42,9 +42,12 @@ struct Observation<'a> {
     inline_vlan: Option<PacketVlan>,
 }
 
-/// Process-global weak AF_PACKET socket registry; dead rows are collected on use.
-pub static PACKET_REGISTRY: Spinlock<Vec<alloc::sync::Weak<InetSocket>>, SockLockClass>
-    = Spinlock::new(Vec::new());
+/// AF_PACKET socket lists partitioned by network namespace; dead rows are
+/// collected on use. Delivery and device teardown retain only sockets from
+/// the namespace whose state they can change.
+pub static PACKET_REGISTRY: Spinlock<alloc::collections::BTreeMap<u64,
+    Vec<alloc::sync::Weak<InetSocket>>>, SockLockClass>
+    = Spinlock::new(alloc::collections::BTreeMap::new());
 
 /// Add one packet socket idempotently. # C: O(N)
 pub fn register_packet(sock: &Arc<InetSocket>) {
@@ -54,10 +57,11 @@ pub fn register_packet(sock: &Arc<InetSocket>) {
     // Safe to release here — the guard is scoped to this block, so
     // `local_bh_enable`'s inline drain holds no other lock.
     let mut registry = PACKET_REGISTRY.lock_bh::<sched::bh::SchedBh>();
-    registry.retain(|weak| weak.upgrade().is_some());
-    if registry.iter().filter_map(alloc::sync::Weak::upgrade)
+    let sockets = registry.entry(sock.net_ns()).or_default();
+    sockets.retain(|weak| weak.upgrade().is_some());
+    if sockets.iter().filter_map(alloc::sync::Weak::upgrade)
         .any(|registered| Arc::ptr_eq(&registered, sock)) { return; }
-    registry.push(Arc::downgrade(sock));
+    sockets.push(Arc::downgrade(sock));
 }
 
 /// Close packet sockets owned by one network namespace before its state drops. # C: O(N)
@@ -69,9 +73,8 @@ pub(crate) fn teardown_packet_namespace(net_ns: u64) -> bool {
         // Safe to release here — the guard is scoped to this block, so
         // `local_bh_enable`'s inline drain holds no other lock.
         let mut registry = PACKET_REGISTRY.lock_bh::<sched::bh::SchedBh>();
-        registry.retain(|weak| weak.upgrade().is_some());
-        registry.iter().filter_map(alloc::sync::Weak::upgrade)
-            .filter(|socket| socket.net_ns() == net_ns).collect::<Vec<_>>()
+        registry.remove(&net_ns).into_iter().flatten()
+            .filter_map(|weak| weak.upgrade()).collect::<Vec<_>>()
     };
     let mut removed = false;
     for socket in sockets {
@@ -209,14 +212,14 @@ pub(crate) fn deliver_packet_egress_in(lease: &crate::EgressLease, bytes: &[u8],
 fn deliver(net_ns: u64, iface: NetIfaceId, observation: Observation<'_>, origin: Option<usize>) {
     let sockets = {
         let mut registry = PACKET_REGISTRY.lock();
-        registry.retain(|weak| weak.upgrade().is_some());
-        registry.iter().filter_map(alloc::sync::Weak::upgrade).collect::<Vec<_>>()
+        let Some(sockets) = registry.get_mut(&net_ns) else { return; };
+        sockets.retain(|weak| weak.upgrade().is_some());
+        sockets.iter().filter_map(alloc::sync::Weak::upgrade).collect::<Vec<_>>()
     };
     let mut ordinary = Vec::new();
     let mut groups = Vec::new();
     let mut origin_group = None;
     for sock in sockets {
-        if sock.net_ns() != net_ns { continue; }
         let is_origin = origin == Some(Arc::as_ptr(&sock) as usize);
         if let Some(member) = packet_fanout_membership(&sock) {
             let group = packet_fanout_group(&member);
