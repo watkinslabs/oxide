@@ -51,6 +51,10 @@ mod tests {
     fn a_fresh_pipe_holds_sixteen_pages_and_stays_atomic_for_one() {
         assert_eq!(PIPE_DEF_SIZE, 65536);
         assert_eq!(PIPE_BUF, 4096);
+        assert_eq!(PIPE_GROW_STEP, PIPE_BUF,
+            "the minimum rounded capacity must hold one atomic write");
+        assert!(round_pipe_size(0) >= PIPE_BUF,
+            "a pipe capacity may never be smaller than an atomic write");
         assert!(PIPE_DEF_SIZE > PIPE_BUF, "a pipe must hold more than one atomic write");
         assert!(PIPE_MAX_SIZE > PIPE_DEF_SIZE);
     }
