@@ -33,6 +33,7 @@ shape they were retired in.
 
 | Status | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|
+| FIXED dcf0e7dbf | high | `systemd-resolved` allocated no DNS scope during boot despite a valid link, DHCP address, DNS server and route. The stale B1760/B1749/B1738/C275/D476 rows all described this one defect from different probes. | B1761 identified the Linux ABI omission: multicast delivery discarded `NETLINK_CB(skb).dst_group` and `recvmsg` emitted no `SOL_NETLINK` / `NETLINK_PKTINFO` cmsg. systemd-resolved enables that option and dispatches its route callbacks by packet-info group, so it classified every notification as group zero. Queueing and copyout now preserve the group. Serial-only x86 verification reports `Current Scopes: DNS LLMNR/IPv4` and `Current DNS Server: 10.0.2.3` without restarting resolved; x86_64 and aarch64 kernel checks pass. | B1761 |
 | FIXED B1655 | med | `TCP_ZEROCOPY_RECEIVE` returned ENOPROTOOPT. Needed mm-side page mapping into the caller's address space. | B1655. `mmap(2)` on a TCP socket fd now builds a receive window (read-only, `EPERM` on write/exec, `ENODEV` for every other socket); the option remaps whole receive-queue pages into it. Operand layout, optlen versioning, errno ordering, copy-buffer fallback and straggler, `length`/`recv_skip_hint`/`inq`/`err` rules covered by 26 hosted tests in `net::sock_opts::sol_tcp::zerocopy::tests` plus 6 in `syscalls::tcp_zerocopy::window::tests`. | B1655 |
 
 ## Process
