@@ -7,9 +7,4 @@
 # from here spends the interrupt stack's 16 KiB, and a nested interrupt lands
 # on top of whatever has already been spent.
 #
-# `oxide_irq_exit_to_user` carries the same symbol name on both arches. It runs
-# after SP has switched back to the interrupted stack, and is also reached from
-# the fault / undef / soft-step save blocks, so it is rooted here for parity
-# with the x86 file rather than left to the task domain.
 oxide_arm_irq_dispatch
-oxide_irq_exit_to_user
