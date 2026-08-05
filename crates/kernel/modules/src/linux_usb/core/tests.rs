@@ -41,6 +41,7 @@ fn register_driver_binds_matching_interface() {
     PROBES.store(0, Ordering::Relaxed);
     DRIVERS.lock().clear();
     INTERFACES.lock().clear();
+    MINORS.lock().fill(0);
     let mut dev = test_device();
     let mut alt = test_alt();
     let mut intf = test_interface(&mut dev, &mut alt);
@@ -68,6 +69,7 @@ fn uninstall_interface_disconnects_bound_driver() {
     DISCONNECTS.store(0, Ordering::Relaxed);
     DRIVERS.lock().clear();
     INTERFACES.lock().clear();
+    MINORS.lock().fill(0);
     let mut dev = test_device();
     let mut alt = test_alt();
     let mut intf = test_interface(&mut dev, &mut alt);
@@ -160,8 +162,50 @@ fn test_interface(dev: &mut UsbDevice, alt: &mut UsbHostInterface) -> UsbInterfa
         cur_altsetting: alt,
         num_altsetting: 1,
         usb_dev: dev,
+        minor: -1,
         intfdata: null_mut(),
         registered: 0,
         driver: null_mut(),
     }
+}
+
+#[test]
+fn class_registration_assigns_and_releases_the_interface_minor() {
+    let _modules = crate::test_serial::claim();
+    DRIVERS.lock().clear();
+    INTERFACES.lock().clear();
+    MINORS.lock().fill(0);
+    let mut dev = test_device();
+    let mut alt = test_alt();
+    let mut intf = test_interface(&mut dev, &mut alt);
+    let mut second_dev = test_device();
+    let mut second_alt = test_alt();
+    let mut second = test_interface(&mut second_dev, &mut second_alt);
+    let ids = [
+        UsbDeviceId {
+            match_flags: USB_DEVICE_ID_MATCH_VENDOR | USB_DEVICE_ID_MATCH_PRODUCT | USB_DEVICE_ID_MATCH_INT_CLASS,
+            id_vendor: TEST_VENDOR,
+            id_product: TEST_PRODUCT,
+            b_interface_class: USB_CLASS_HID,
+            ..UsbDeviceId::default()
+        },
+        UsbDeviceId::default(),
+    ];
+    let mut driver = UsbDriver { name: c"usb-test".as_ptr(), probe: None, disconnect: None, id_table: ids.as_ptr() };
+    let fops = core::ptr::dangling::<c_void>();
+    let mut class = UsbClassDriver { name: c"usb-test%d".as_ptr(), devnode: null(), fops, minor_base: 42 };
+    unsafe { assert_eq!(install_interface(&mut intf), LINUX_OK); }
+    assert_eq!(usb_register_driver(&mut driver), LINUX_OK);
+    unsafe { assert_eq!(usb_register_dev(&mut intf, &mut class), LINUX_OK); }
+    assert_eq!(intf.minor, 42);
+    unsafe { assert_eq!(usb_register_dev(&mut intf, &mut class), -LINUX_EADDRINUSE); }
+    unsafe { assert_eq!(install_interface(&mut second), LINUX_OK); }
+    unsafe { assert_eq!(usb_register_dev(&mut second, &mut class), LINUX_OK); }
+    assert_eq!(second.minor, 43);
+    assert!(core::ptr::eq(usb_find_interface(&mut driver, 42), &mut intf));
+    unsafe { usb_deregister_dev(&mut intf, &mut class); }
+    assert_eq!(intf.minor, -1);
+    assert!(usb_find_interface(&mut driver, 42).is_null());
+    unsafe { assert_eq!(usb_register_dev(&mut intf, &mut class), LINUX_OK); }
+    assert_eq!(intf.minor, 42);
 }

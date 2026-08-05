@@ -16,6 +16,9 @@ const NO_USB_TRANSPORT: UsbTransport = UsbTransport {
 
 static DRIVERS: Spinlock<Vec<usize>, ModulesLockClass> = Spinlock::new(Vec::new());
 static INTERFACES: Spinlock<Vec<usize>, ModulesLockClass> = Spinlock::new(Vec::new());
+/// `usb_minors`: the allocated class-file operations by minor.  The interface
+/// itself remains the sole owner of its assigned minor and driver binding.
+static MINORS: Spinlock<[usize; USB_MAX_MINORS], ModulesLockClass> = Spinlock::new([0; USB_MAX_MINORS]);
 static TRANSPORT: Spinlock<UsbTransport, ModulesLockClass> = Spinlock::new(NO_USB_TRANSPORT);
 
 /// Register Linux USB KPI symbols.
@@ -46,6 +49,8 @@ pub(super) fn export_symbols() {
         ("usb_put_intf",           usb_put_intf           as *const () as usize),
         ("usb_match_id",           usb_match_id           as *const () as usize),
         ("usb_find_interface",     usb_find_interface     as *const () as usize),
+        ("usb_register_dev",       usb_register_dev       as *const () as usize),
+        ("usb_deregister_dev",     usb_deregister_dev     as *const () as usize),
     ] { export(name, addr, false); }
 }
 
@@ -73,8 +78,14 @@ pub unsafe fn install_interface(intf: *mut UsbInterface) -> i32 {
         if g.iter().any(|p| *p == intf as usize) { return -LINUX_EBUSY; }
         g.push(intf as usize);
     }
-    // SAFETY: intf was null-checked and install_interface's contract makes it a live UsbInterface owned by the caller until uninstall_interface.
-    unsafe { (*intf).registered = 1; }
+    // SAFETY: intf was null-checked and install_interface's contract makes it
+    // a live UsbInterface owned by the caller until uninstall_interface.  A
+    // newly published interface has no class-device minor until its driver
+    // explicitly registers one.
+    unsafe {
+        (*intf).registered = 1;
+        (*intf).minor = -1;
+    }
     // SAFETY: same live intf; the INTERFACES lock was released above so bind_interface can take it without deadlocking.
     unsafe { bind_interface(intf); }
     LINUX_OK
@@ -289,15 +300,50 @@ unsafe extern "C" fn usb_match_id(intf: *mut UsbInterface, ids: *const UsbDevice
 }
 
 extern "C" fn usb_find_interface(driver: *mut UsbDriver, minor: i32) -> *mut UsbInterface {
-    if driver.is_null() { return null_mut(); }
+    if driver.is_null() || minor < 0 { return null_mut(); }
     for p in INTERFACES.lock().iter().copied() {
         let intf = p as *mut UsbInterface;
         // SAFETY: INTERFACES only holds interfaces install_interface registered and uninstall_interface has not removed, so intf is live under the lock.
-        if unsafe { (*intf).driver == driver && (*intf).registered as i32 == minor } {
+        if unsafe { (*intf).driver == driver && (*intf).minor == minor } {
             return intf;
         }
     }
     null_mut()
+}
+
+/// Reserve one class-device minor and publish it on the interface. # C: O(USB_MAX_MINORS)
+unsafe extern "C" fn usb_register_dev(intf: *mut UsbInterface,
+                                       class: *mut UsbClassDriver) -> i32 {
+    if intf.is_null() || class.is_null() { return -LINUX_EINVAL; }
+    // SAFETY: both pointers were null-checked; the KPI contract keeps their
+    // pointed-to records live and initialized for this registration call.
+    let (base, fops, assigned) = unsafe { ((*class).minor_base, (*class).fops, (*intf).minor) };
+    if fops.is_null() || base < 0 || base as usize >= USB_MAX_MINORS { return -LINUX_EINVAL; }
+    if assigned >= 0 { return -LINUX_EADDRINUSE; }
+    let mut minors = MINORS.lock();
+    for minor in base as usize..USB_MAX_MINORS {
+        if minors[minor] != 0 { continue; }
+        minors[minor] = fops as usize;
+        // SAFETY: intf remains live under usb_register_dev's KPI contract;
+        // assignment follows reservation while the sole minor owner is locked.
+        unsafe { (*intf).minor = minor as i32; }
+        return LINUX_OK;
+    }
+    -LINUX_EXFULL
+}
+
+/// Release the exact class-device minor held by an interface. # C: O(1)
+unsafe extern "C" fn usb_deregister_dev(intf: *mut UsbInterface,
+                                         _class: *mut UsbClassDriver) {
+    if intf.is_null() { return; }
+    // SAFETY: intf was null-checked and remains owned by the calling driver
+    // until deregistration finishes, so its assigned minor is readable.
+    let minor = unsafe { (*intf).minor };
+    if minor < 0 || minor as usize >= USB_MAX_MINORS { return; }
+    MINORS.lock()[minor as usize] = 0;
+    // SAFETY: the calling driver still owns intf; clearing after table removal
+    // prevents any future lookup from observing a released assignment.
+    unsafe { (*intf).minor = -1; }
 }
 
 fn transfer_msg(
