@@ -427,6 +427,18 @@ fn time_setns_rejects_released_destination_without_freezing_target() {
 #[cfg(test)]
 fn final_drop_notify() {}
 
+/// The hosted test binary owns one immutable network-namespace callback.
+/// Keeping the install at one `Once` call site matters: separate codegen units
+/// may emit distinct addresses for the same private Rust function, while the
+/// production callback slot intentionally compares the published code pointer.
+#[cfg(test)]
+fn install_test_final_drop_callback() {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        network_namespace::install_final_drop_callback(final_drop_notify).unwrap();
+    });
+}
+
 #[cfg(test)]
 mod setns_fd_tests;
 
