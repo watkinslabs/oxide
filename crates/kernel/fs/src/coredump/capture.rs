@@ -127,9 +127,20 @@ pub unsafe fn build_image(
     hal::write_siginfo(&mut si, cx.signo as u32, payload);
     let cmdline = cur.cmdline().unwrap_or_default();
     let psargs = if cmdline.is_empty() { cx.comm.clone() } else { cmdline.into_bytes() };
-    let runtime = cur.sum_exec_runtime_ns.load(Ordering::Acquire);
+    let (utime_ns, stime_ns) = if cur.tid == cur.tgid.load(Ordering::Acquire) {
+        cur.thread_group.cpu_sample()
+    } else {
+        (cur.utime_ns.load(Ordering::Acquire), cur.stime_ns.load(Ordering::Acquire))
+    };
+    let (cutime_ns, cstime_ns) = cur.thread_group.child_acct().cpu_ns();
 
-    let threads = [CoreThread { tid: cx.vtid as i32, regs: &gregs, fpregs: Some(&fpregs), xstate: None }];
+    let threads = [CoreThread {
+        tid: cx.vtid as i32, regs: &gregs, fpregs: Some(&fpregs), xstate: None,
+        times: CoreTimes {
+            utime: timeval_of_ns(utime_ns), stime: timeval_of_ns(stime_ns),
+            ..CoreTimes::default()
+        },
+    }];
     let input = CoreImageInput {
         arch,
         identity: CoreIdentity {
@@ -145,7 +156,10 @@ pub unsafe fn build_image(
             nice: cur.nice.load(Ordering::Acquire),
             flag: 0,
             comm: &cx.comm, psargs: &psargs,
-            times: CoreTimes { utime: timeval_of_ns(runtime), ..CoreTimes::default() },
+            times: CoreTimes {
+                cutime: timeval_of_ns(cutime_ns), cstime: timeval_of_ns(cstime_ns),
+                ..CoreTimes::default()
+            },
         },
         threads: &threads,
         segments: &segs,

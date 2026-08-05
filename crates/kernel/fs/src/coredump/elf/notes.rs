@@ -88,8 +88,8 @@ pub fn prstatus(arch: CoreArch, id: &CoreIdentity<'_>, t: &CoreThread<'_>) -> Ve
     put_i32(&mut d, PR_PPID_OFF, id.ppid);
     put_i32(&mut d, PR_PGRP_OFF, id.pgrp);
     put_i32(&mut d, PR_SID_OFF,  id.sid);
-    put_timeval(&mut d, PR_UTIME_OFF,  id.times.utime);
-    put_timeval(&mut d, PR_STIME_OFF,  id.times.stime);
+    put_timeval(&mut d, PR_UTIME_OFF,  t.times.utime);
+    put_timeval(&mut d, PR_STIME_OFF,  t.times.stime);
     put_timeval(&mut d, PR_CUTIME_OFF, id.times.cutime);
     put_timeval(&mut d, PR_CSTIME_OFF, id.times.cstime);
     d[PR_REG_OFF..PR_REG_OFF + t.regs.len()].copy_from_slice(t.regs);

@@ -47,6 +47,7 @@ fn extended_state_is_owned_by_a_different_string() {
     let xs = alloc::vec![0xABu8; 64];
     let threads = [crate::coredump::elf::input::CoreThread {
         tid: fixture::TID_MAIN, regs: &r, fpregs: None, xstate: Some(&xs),
+        times: crate::coredump::elf::input::CoreTimes::default(),
     }];
     let input = CoreImageInput {
         arch, identity: fixture::identity(), threads: &threads, segments: &[], auxv: &[],
@@ -132,6 +133,13 @@ fn a_thread_without_fp_state_says_so() {
     let second = ns.iter().filter(|n| n.ty == NT_PRSTATUS).nth(1).expect("second thread");
     assert_eq!(rd32(&second.desc, CoreArch::X86_64.pr_fpvalid_off()), 0);
     assert_eq!(rd32(&second.desc, PR_PID_OFF) as i32, fixture::TID_WORKER);
+    assert_eq!(rd64(&second.desc, PR_UTIME_OFF), 7);
+    assert_eq!(rd64(&second.desc, PR_UTIME_OFF + 8), 8);
+    assert_eq!(rd64(&second.desc, PR_STIME_OFF), 9);
+    assert_eq!(rd64(&second.desc, PR_STIME_OFF + 8), 10);
+    let id = fixture::identity();
+    assert_eq!(rd64(&second.desc, PR_CUTIME_OFF), id.times.cutime.sec as u64);
+    assert_eq!(rd64(&second.desc, PR_CSTIME_OFF + 8), id.times.cstime.usec as u64);
 }
 
 #[test]

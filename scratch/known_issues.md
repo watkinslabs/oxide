@@ -33,11 +33,11 @@ reclassified.
 
 | Class \ Sev | blocker | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|
-| `DEFECT` | 0 | 5 | 18 | 29 | 52 |
+| `DEFECT` | 0 | 5 | 18 | 28 | 51 |
 | `MISSING` | 0 | 0 | 11 | 12 | 23 |
 | `COVERAGE` | 0 | 2 | 12 | 12 | 26 |
 | `INFRA` | 0 | 1 | 13 | 11 | 25 |
-| **Total** | **0** | **8** | **54** | **64** | **126** |
+| **Total** | **0** | **8** | **54** | **63** | **125** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -139,7 +139,6 @@ row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 | OPEN | DEFECT | med | Data segments still carry timestamps keyed on `ts_enabled` alone (`build_segment_at`), which is correct, but the SACK-block writer in `sack.rs` and the timestamp writer in `segment.rs` each assemble their own option area by hand rather than through `syn_opts`. Two more hand-rolled option writers remain; a non-SYN option assembler should absorb them. | Not a live defect — both currently emit correct bytes. Flagged so the next lane in this area does not add a fourth. | — |
 | OPEN | DEFECT | med | No `NT_X86_XSTATE` is produced for x86-64 even though the note is plumbed: `CoreThread::xstate` is emitted verbatim when supplied and nothing supplies it. Emitting a wrong `xsave` header would make gdb decode garbage registers, so the note is left absent until the FPU lane can hand over a real save area with its `xstate_bv`/`xcomp_bv` intact. | `push_fp_notes` in `crates/kernel/fs/src/coredump/elf/notes.rs`; `xstate: None` at every call site. | — |
 | OPEN | DEFECT | med | `blk_execute_rq` has no wait primitive. It is synchronous for every completion path this shim drives, but a driver whose `queue_rq` completes asynchronously would return before the completion runs. That case returns `BLK_STS_IOERR` and deliberately leaks the small `SyncWait` record rather than leave the driver's `end_io_data` dangling. A real wait (completion + sleep) is the correct fix. | `mq/request.rs`, the `if !done` arm. No in-tree caller exercises it. | unowned |
-| IN-PROGRESS F825-coredump-thread-times | DEFECT | low | Only the dumping thread's identity is per-thread: every `NT_PRSTATUS` past the first repeats the process-wide `pr_ppid`/`pr_pgrp`/`pr_sid`/times and the killing signal, varying only `pr_pid` and the register block. Correct for the fields that are process-wide by definition, but per-thread CPU times are lost. | `prstatus()` takes one `CoreIdentity` for all threads. | F825-coredump-thread-times |
 | OPEN | DEFECT | low | `ru_utime`/`ru_stime` and `times(2)`'s `tms_utime`/`tms_stime` are tick-sampled per-task counters, not the scaled pair upstream derives so that user+system exactly equals the task's total run time. The two can therefore differ from `sum_exec_runtime` by up to a tick per thread. Deliberate: the sampled values are the more direct measurement and no known consumer depends on the identity. Revisit if a benchmark or a `getrusage`-based profiler reports the discrepancy. | F779, negative result — no test asserts the identity because it does not hold. | — |
 | OPEN | DEFECT | low | A mapping whose contents cannot be read is written as zeroes rather than reported. A reader returning 0 for a resident page is indistinguishable in the image from a genuinely zero page. Linux behaves the same way (a skipped range becomes a file hole), so this is faithful, but it means a dump cannot tell an operator that memory was lost. | `push_segment_data` in `crates/kernel/fs/src/coredump/elf/build.rs`; `tests/segments.rs::a_hole_is_zero_filled_rather_than_shortening_the_segment`. | — |
 | OPEN | DEFECT | low | `dma_mask_bits`/`consistent_dma_mask_bits` report the PCI default 32 for every function because no per-device DMA mask is tracked anywhere in the tree. A driver that would set a 64-bit mask is not represented. | `bus/pci_attrs/show.rs` `DEFAULT_DMA_MASK_BITS` | unowned |
