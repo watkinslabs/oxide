@@ -238,6 +238,30 @@ fn the_copy_buffer_takes_what_could_not_be_mapped() {
 }
 
 #[test]
+fn donation_transfers_pages_and_releases_only_a_rejected_page() {
+    let page = PAGE as u32;
+    let mut pages = alloc::collections::VecDeque::from([11u64, 22, 33]);
+    let mut installed = alloc::vec::Vec::new();
+    let mut released = alloc::vec::Vec::new();
+    let mapped = donate_pages(3 * page, page, || pages.pop_front(), |off, pa| {
+        installed.push((off, pa));
+        pa != 22
+    }, |pa| released.push(pa));
+
+    assert_eq!(mapped, page);
+    assert_eq!(installed, alloc::vec![(0, 11), (PAGE as u64, 22)]);
+    assert_eq!(released, alloc::vec![22]);
+    assert_eq!(pages, alloc::collections::VecDeque::from([33]));
+}
+
+#[test]
+fn donation_stops_cleanly_when_the_receive_queue_runs_out() {
+    let page = PAGE as u32;
+    let mut pages = alloc::collections::VecDeque::from([44u64]);
+    assert_eq!(donate_pages(2 * page, page, || pages.pop_front(), |_, _| true, |_| {}), page);
+}
+
+#[test]
 fn a_fully_mapped_window_retires_the_hint() {
     assert_eq!(finish(4 * PAGE as u32, 4 * PAGE as u32, 0, 0, false),
                Ok(ZcFinish { length: 4 * PAGE as u32, recv_skip_hint: 0, copybuf_len: 0 }));
