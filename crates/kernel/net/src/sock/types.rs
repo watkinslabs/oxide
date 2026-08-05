@@ -128,6 +128,9 @@ pub struct InetSocket {
     /// AF_UNIX stream address reserved by `bind(2)`, independent of whether
     /// this socket later listens or actively connects.
     pub unix_bound: Spinlock<Option<Arc<crate::UnixListener>>, SockLockClass>,
+    /// The socket's canonical open-file description.  AF_UNIX policy checks
+    /// read its immutable `f_cred`, just as the kernel socket path does.
+    pub(crate) file: Spinlock<alloc::sync::Weak<vfs::File>, SockLockClass>,
 }
 
 impl core::ops::Deref for InetSocket {
@@ -137,6 +140,16 @@ impl core::ops::Deref for InetSocket {
 }
 
 impl InetSocket {
+    /// Associate the socket with its owning open file description. # C: O(1)
+    pub fn set_file(&self, file: &Arc<vfs::File>) {
+        *self.file.lock() = Arc::downgrade(file);
+    }
+
+    /// Landlock domain in this socket's retained file credentials. # C: O(1)
+    pub fn file_domain(&self) -> Option<Arc<landlock::Domain>> {
+        self.file.lock().upgrade()?.file_cred().security::<landlock::Domain>()
+    }
+
     /// Record the realtime timestamp attached to one delivered receive record.
     /// # C: O(1)
     pub fn note_receive_timestamp(&self, timestamp_ns: u64) {
