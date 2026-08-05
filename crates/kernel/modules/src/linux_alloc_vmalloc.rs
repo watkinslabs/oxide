@@ -156,7 +156,12 @@ pub fn free(base: *mut u8) -> bool {
 #[cfg(not(target_os = "oxide-kernel"))]
 pub fn alloc(size: usize, zero: bool) -> *mut u8 { super::alloc_bytes(size, PAGE_BYTES, zero) }
 #[cfg(not(target_os = "oxide-kernel"))]
-pub fn free(base: *mut u8) -> bool { if base.is_null() { true } else { super::free_bytes(base); true } }
+pub fn free(base: *mut u8) -> bool {
+    if base.is_null() { return true; }
+    // SAFETY: hosted vmalloc::alloc returns the allocation pointer its free counterpart receives.
+    unsafe { super::free_bytes(base); }
+    true
+}
 
 /// Snapshot exact live virtual allocator state. # C: O(live ranges)
 pub fn snapshot() -> Snapshot {

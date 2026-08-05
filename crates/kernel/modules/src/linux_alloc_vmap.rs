@@ -52,7 +52,8 @@ fn map_page_array(pages: *mut *mut LinuxPage, count: usize) -> Option<*mut u8> {
         for i in 0..count {
             // SAFETY: vmap caller supplies an array of count struct page pointers.
             let page = unsafe { *pages.add(i) };
-            phys.push(linux_page_phys(page)?);
+            // SAFETY: vmap's KPI requires each array entry to be a live struct page descriptor.
+            phys.push(unsafe { linux_page_phys(page)? });
         }
         // SAFETY: vmap validated every struct page and keeps the alias tracked for vunmap.
         Some(unsafe {
@@ -63,11 +64,13 @@ fn map_page_array(pages: *mut *mut LinuxPage, count: usize) -> Option<*mut u8> {
     {
         // SAFETY: caller supplies at least one struct page pointer.
         let first = unsafe { *pages };
-        let first_pa = linux_page_phys(first)?;
+        // SAFETY: vmap's KPI requires the first array entry to be a live struct page descriptor.
+        let first_pa = unsafe { linux_page_phys(first)? };
         for i in 0..count {
             // SAFETY: caller supplies an array of count struct page pointers.
             let page = unsafe { *pages.add(i) };
-            let pa = linux_page_phys(page)?;
+            // SAFETY: vmap's KPI requires each array entry to be a live struct page descriptor.
+            let pa = unsafe { linux_page_phys(page)? };
             if pa != first_pa + (i * PAGE_SIZE) as u64 { return None; }
         }
         Some(page_address(first))

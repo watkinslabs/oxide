@@ -58,7 +58,10 @@ pub(super) extern "C" fn kmem_cache_alloc_noprof(cache: *mut LinuxKmemCache, fla
 }
 
 pub(super) extern "C" fn kmem_cache_free(cache: *mut LinuxKmemCache, obj: *mut c_void) {
-    if valid_cache(cache) { free_bytes(obj as *mut u8); }
+    if valid_cache(cache) {
+        // SAFETY: kmem_cache_free requires obj to be a live allocation from cache's allocation surface.
+        unsafe { free_bytes(obj as *mut u8); }
+    }
 }
 
 pub(super) extern "C" fn kmem_cache_destroy(cache: *mut LinuxKmemCache) {

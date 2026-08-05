@@ -129,18 +129,25 @@ extern "C" fn kcalloc(n: usize, size: usize, flags: u32) -> *mut u8 {
 }
 
 extern "C" fn kfree(ptr: *mut u8) {
-    free_bytes(ptr);
+    // SAFETY: the kfree KPI requires ptr to be NULL or the live result of this allocator's allocation surface.
+    unsafe { free_bytes(ptr); }
 }
 
 extern "C" fn kvfree(ptr: *mut u8) {
-    if !vmalloc::free(ptr) { free_bytes(ptr); }
+    if !vmalloc::free(ptr) {
+        // SAFETY: kvfree's non-vmalloc path has the same allocator-pointer contract as kfree.
+        unsafe { free_bytes(ptr); }
+    }
 }
 
 extern "C" fn kvfree_call_rcu(_head: *mut c_void, ptr: *mut c_void) {
     let addr = ptr as usize;
     sync::call_rcu(Box::new(move || {
         let ptr = addr as *mut u8;
-        if !vmalloc::free(ptr) { free_bytes(ptr); }
+        if !vmalloc::free(ptr) {
+            // SAFETY: kvfree_call_rcu retains the same allocator-pointer contract until this callback frees ptr.
+            unsafe { free_bytes(ptr); }
+        }
     }));
 }
 
@@ -277,13 +284,12 @@ pub(crate) fn page_put(page: *mut LinuxPage) {
 }
 
 extern "C" fn page_to_phys(page: *mut LinuxPage) -> u64 {
-    linux_page_phys(page).unwrap_or(0)
+    // SAFETY: page_to_phys accepts a live struct page descriptor from the page allocator KPI.
+    unsafe { linux_page_phys(page).unwrap_or(0) }
 }
 
-pub(crate) fn linux_page_phys(page: *const LinuxPage) -> Option<u64> {
-    // SAFETY: every caller (page_to_phys, vmap, dma_map_page) forwards a descriptor obtained from
-    // alloc_pages and not yet passed to __free_pages, so valid_page may read its magic; a
-    // PAGE_MAGIC match means pa is the alloc_contig_object address recorded for that run.
+pub(crate) unsafe fn linux_page_phys(page: *const LinuxPage) -> Option<u64> {
+    // SAFETY: caller supplies a readable live page descriptor, so valid_page may read its magic.
     if unsafe { valid_page(page as *mut LinuxPage) } { Some(unsafe { (*page).pa }) } else { None }
 }
 
@@ -359,13 +365,11 @@ pub(crate) fn alloc_bytes(size: usize, align: usize, zero: bool) -> *mut u8 {
     user
 }
 
-fn free_bytes(ptr: *mut u8) {
+unsafe fn free_bytes(ptr: *mut u8) {
     if ptr.is_null() { return; }
-    // SAFETY: kfree/kvfree/kmem_cache_free's KPI contract is that ptr came from alloc_bytes, which
-    // always writes a Header in the size_of::<Header>() bytes immediately below the returned
-    // pointer and aligns it to at least align_of::<usize>(); that word is what is read here.
+    // SAFETY: caller supplies the live result of alloc_bytes, so its immediately preceding Header is readable.
     let hp = unsafe { ptr.sub(size_of::<Header>()) as *mut Header };
-    // SAFETY: Linux KPI callers must pass a pointer returned by this allocator.
+    // SAFETY: the Header belongs to the live allocation supplied by the caller.
     let h = unsafe { *hp };
     if h.magic != ALLOC_MAGIC { return; }
     let layout = match Layout::from_size_align(h.total, h.align) {
@@ -458,14 +462,16 @@ pub(crate) fn page_run_alloc(order: u32, zero: bool) -> Option<(u64, *mut u8)> {
 /// Free a hosted page-aligned run by pseudo-physical address.
 /// # C: O(1)
 pub(crate) fn page_run_free_pa(pa: u64, _order: u32) {
-    free_bytes(pa as *mut u8);
+    // SAFETY: hosted page_run_alloc returns this pointer value and its owner transfers it here exactly once.
+    unsafe { free_bytes(pa as *mut u8); }
 }
 
 #[cfg(not(target_os = "oxide-kernel"))]
 /// Free a hosted page-aligned run by virtual address.
 /// # C: O(1)
 pub(crate) fn page_run_free_va(va: *mut u8, _order: u32) {
-    free_bytes(va);
+    // SAFETY: hosted page_run_alloc returned va and its owner transfers it here exactly once.
+    unsafe { free_bytes(va); }
 }
 
 #[cfg(target_os = "oxide-kernel")]
