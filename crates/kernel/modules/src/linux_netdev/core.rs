@@ -3,6 +3,7 @@ extern crate alloc;
 use super::alloc as netalloc;
 use super::skb;
 use super::types::*;
+use alloc::borrow::ToOwned;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::boxed::Box;
@@ -15,7 +16,9 @@ use sync::{Modules as ModulesLockClass, Spinlock};
 #[path = "rx_helpers.rs"]
 mod rx_helpers;
 #[cfg(any(target_os = "oxide-kernel", feature = "hosted", test))]
-use rx_helpers::{l2_frame, l3_payload, resolved_protocol};
+use rx_helpers::{l2_frame, resolved_protocol};
+#[cfg(test)]
+use rx_helpers::l3_payload;
 
 const NETDEV_STATE_QUEUE_STOPPED: u32 = 1 << 0;
 const NETDEV_STATE_CARRIER_OFF: u32 = 1 << 1;
@@ -139,19 +142,20 @@ unsafe extern "C" fn netif_rx(skbp: *mut LinuxSkBuff) -> i32 {
             None => stack.ifaces.acquire_ingress(iface),
         };
         let Some(lease) = lease else { return NET_RX_DROP };
-        #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
-        if let Some(l2) = link.as_deref().or_else(|| l2_frame(&frame, proto)) {
-            net::sock::deliver_packet_ingress_meta_in(&lease, l2, metadata);
-        }
+        let generation = lease.generation();
+        drop(lease);
         let actual_proto = resolved_protocol(&frame, proto);
-        let l3 = l3_payload(&frame, actual_proto);
-        let r = match actual_proto {
-            net::addr::eth_p::IPV4 => stack.deliver_rx_in(&lease, l3),
-            net::addr::eth_p::IPV6 => stack.deliver_rx_ipv6_in(&lease, l3),
-            net::addr::eth_p::ARP => stack.deliver_arp_in(&lease, l3),
-            _ => Ok(()),
+        let verdict = if let Some(link) = link.or_else(|| l2_frame(&frame, proto).map(ToOwned::to_owned)) {
+            stack.netif_rx_ethernet(iface, generation, net::Pkt::from_owned(link), metadata)
+        } else {
+            let mut pkt = net::Pkt::from_owned(frame);
+            pkt.proto = actual_proto;
+            stack.netif_rx(iface, pkt)
         };
-        if r.is_ok() { NET_RX_SUCCESS } else { NET_RX_DROP }
+        if verdict == net::backlog::RxVerdict::Success {
+            net::backlog::net_rx_schedule_ingress();
+            NET_RX_SUCCESS
+        } else { NET_RX_DROP }
     }
     #[cfg(all(not(target_os = "oxide-kernel"), not(feature = "hosted")))]
     {

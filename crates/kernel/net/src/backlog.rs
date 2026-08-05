@@ -34,7 +34,7 @@ pub mod softnet;
 #[path = "backlog/tests.rs"]
 mod tests;
 
-pub use action::{install, net_rx_action, net_rx_schedule};
+pub use action::{install, net_rx_action, net_rx_schedule, net_rx_schedule_ingress};
 pub use limits::{DEV_RX_WEIGHT, NETDEV_BUDGET, NETDEV_MAX_BACKLOG};
 pub use napi::{poll_all, register_poll, unregister_poll};
 pub use queue::{BacklogItem, RxVerdict, SoftnetData, SoftnetRow};
