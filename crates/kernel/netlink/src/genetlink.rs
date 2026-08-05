@@ -8,6 +8,7 @@
 // - `dispatch`: request admission (ENOENT/EINVAL/EOPNOTSUPP/EPERM) + routing.
 // - `mcast`:    multicast listener registry and the group fan-out.
 // - `quota`:    the `VFS_DQUOT` family — quota warnings out to `quota_nld`.
+// - `tcp_metrics`: TCP destination metrics projected from the canonical cache.
 //
 // A client cannot address a family until `nlctrl` has told it the family's id,
 // so `init` registers the controller before anything else.
@@ -19,6 +20,7 @@ pub mod family;
 pub mod mcast;
 pub mod message;
 pub mod quota;
+pub mod tcp_metrics;
 pub mod uapi;
 
 #[cfg(test)]
@@ -41,4 +43,5 @@ pub use uapi::{ctrl_attr, ctrl_cmd, Genlmsghdr, CTRL_FAMILY_NAME, GENL_ID_CTRL};
 pub fn init() {
     let _ = ctrl::register();
     let _ = quota::init();
+    let _ = tcp_metrics::init();
 }
