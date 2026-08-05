@@ -55,6 +55,18 @@ impl SendControl {
 }
 
 impl Raw6Control {
+    /// Fill absent extension-header controls from one socket's canonical sticky state.
+    /// # C: O(total header bytes)
+    pub fn merge_sticky_headers(&mut self, opts: &crate::sock_opts::sol_ipv6::Ipv6Opts) {
+        use crate::sock_opts::sol_ipv6::Sticky;
+        if self.hop_options.is_none() { self.hop_options = opts.header(Sticky::HopOpts); }
+        if self.dst_before_routing.is_none() {
+            self.dst_before_routing = opts.header(Sticky::RthdrDstOpts);
+        }
+        if self.routing.is_none() { self.routing = opts.header(Sticky::Rthdr); }
+        if self.dst_after_routing.is_none() { self.dst_after_routing = opts.header(Sticky::DstOpts); }
+    }
+
     /// Destination used for route lookup before a type-2 routing header is emitted. # C: O(1)
     pub fn route_destination(&self, final_dst: Ipv6Addr) -> Ipv6Addr {
         let Some(header) = self.routing.as_ref() else { return final_dst };
@@ -72,7 +84,7 @@ pub fn should_drain_loopback(multicast: bool, message: Option<bool>, socket: boo
 
 #[cfg(test)]
 mod tests {
-    use super::should_drain_loopback;
+    use super::{should_drain_loopback, Raw6Control};
 
     #[test]
     fn multicast_loop_policy_honors_message_then_socket() {
@@ -81,5 +93,19 @@ mod tests {
         assert!(should_drain_loopback(true, None, true));
         assert!(!should_drain_loopback(true, Some(false), true));
         assert!(should_drain_loopback(true, Some(true), false));
+    }
+
+    #[test]
+    fn sticky_extension_headers_fill_only_absent_message_slots() {
+        use crate::sock_opts::sol_ipv6::{Ipv6Opts, Sticky};
+        let opts = Ipv6Opts::default();
+        opts.set_header(Sticky::HopOpts, Some(alloc::vec![0; 8]));
+        opts.set_header(Sticky::DstOpts, Some(alloc::vec![0; 8]));
+        let message_hop = alloc::vec![1; 8];
+        let mut control = Raw6Control { hop_options: Some(message_hop.clone()),
+            ..Raw6Control::default() };
+        control.merge_sticky_headers(&opts);
+        assert_eq!(control.hop_options, Some(message_hop));
+        assert_eq!(control.dst_after_routing, Some(alloc::vec![0; 8]));
     }
 }

@@ -147,6 +147,7 @@ fn merge_sticky_raw6_control(sock: &InetSocket, control: &crate::send_control::R
     }
     effective.automatic_flow_label = sock.opts.ipv6.flag(
         crate::sock_opts::sol_ipv6::flag::AUTOFLOWLABEL);
+    effective.merge_sticky_headers(&sock.opts.ipv6);
     effective
 }
 
@@ -297,6 +298,8 @@ pub fn sendto_v6(sock: &InetSocket,
         other => other,
     };
     let no_check = sock.opts.udp.no_check6_tx();
+    let mut control = crate::send_control::Raw6Control::default();
+    control.merge_sticky_headers(&sock.opts.ipv6);
     // UDP_SEGMENT: one write becomes N wire datagrams of the segmentation
     // size, the last carrying the remainder.
     let gso = sock.opts.udp.gso_size();
@@ -311,7 +314,7 @@ pub fn sendto_v6(sock: &InetSocket,
                     &sock.owner, src_ip, src_port, dst_ip, dst_port, segment, iface, hop, tclass,
                     pmtudisc, frag_size, no_check, sock.opts.ipv6.flow_label(),
                     sock.opts.ipv6.flag(crate::sock_opts::sol_ipv6::flag::AUTOFLOWLABEL),
-                    sock.opts.ipv6.srcprefs(),
+                    sock.opts.ipv6.srcprefs(), &control,
                 )?;
             }
             drain_loopback();
@@ -322,7 +325,7 @@ pub fn sendto_v6(sock: &InetSocket,
         &sock.owner, src_ip, src_port, dst_ip, dst_port, payload,
         iface, hop, tclass, pmtudisc, frag_size, no_check, sock.opts.ipv6.flow_label(),
         sock.opts.ipv6.flag(crate::sock_opts::sol_ipv6::flag::AUTOFLOWLABEL),
-        sock.opts.ipv6.srcprefs(),
+        sock.opts.ipv6.srcprefs(), &control,
     )?;
     drain_loopback();
     Ok(payload.len())
