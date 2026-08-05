@@ -12,8 +12,6 @@
 // Decisions live here, with no target gate, so they are testable without a
 // kernel; `load` owns the mapping calls.
 
-use elf::ElfType;
-
 /// The VA at which one segment stops being a mapping of its file, and the file
 /// offset that mapping starts from.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -28,17 +26,6 @@ pub struct SegmentSplit {
     pub file_zero_from: Option<u64>,
 }
 
-/// Whether the loader edits an image's bytes before it runs.
-///
-/// A position-independent image with no interpreter has nothing else to apply
-/// its own `R_*_RELATIVE` entries before `_start`, so the loader applies them.
-/// The result differs from the file on disk, so those segments cannot be a
-/// mapping of it.
-/// # C: O(1)
-pub fn relocs_precede_file_backing(apply_self_relocs: bool, et: ElfType, bias: u64) -> bool {
-    apply_self_relocs && matches!(et, ElfType::Dyn) && bias != 0
-}
-
 /// A loadable segment's file offset and virtual address must agree modulo the
 /// page size for a mapping of the file to land its bytes where the segment
 /// wants them. Every toolchain-produced object satisfies this, because the
@@ -50,8 +37,8 @@ pub fn congruent(file_off: u64, vaddr: u64, page: u64) -> bool {
 
 /// Divide `[vstart, vend)` for one segment.
 ///
-/// `file_backed` is false when the image has no file behind it or the loader
-/// rewrote its bytes; the whole segment is then kernel-owned. A segment with
+/// `file_backed` is false when the image has no file behind it; the whole
+/// segment is then kernel-owned. A segment with
 /// no `.bss` is a mapping of the file to its very last page: the bytes past its
 /// file size in that page are the file's, exactly as a mapping of it serves
 /// them. A segment with `.bss` gives up its boundary page.
@@ -130,11 +117,4 @@ mod tests {
         assert_eq!(s.file_end, 0x400000);
     }
 
-    #[test]
-    fn only_a_biased_dyn_image_the_loader_relocates_loses_its_file_backing() {
-        assert!(relocs_precede_file_backing(true, ElfType::Dyn, 0x1000));
-        assert!(!relocs_precede_file_backing(true, ElfType::Dyn, 0));
-        assert!(!relocs_precede_file_backing(true, ElfType::Exec, 0x1000));
-        assert!(!relocs_precede_file_backing(false, ElfType::Dyn, 0x1000));
-    }
 }
