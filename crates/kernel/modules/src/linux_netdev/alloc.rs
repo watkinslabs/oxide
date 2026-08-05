@@ -88,7 +88,7 @@ pub(super) unsafe extern "C" fn free_netdev(dev: *mut LinuxNetDevice) {
     if dev.is_null() { return; }
     // SAFETY: free_netdev's KPI contract is a pointer returned by alloc_netdev*; netdev_alloc writes the NetdevHeader in the bytes immediately below the returned dev, so this sub() lands inside that same allocation.
     let hp = unsafe { (dev as *mut u8).sub(size_of::<NetdevHeader>()) as *mut NetdevHeader };
-    // SAFETY: hp is the header slot netdev_alloc initialized with write(); NETDEV_MAGIC is re-checked below so a foreign pointer is rejected before the dealloc.
+    // SAFETY: the KPI precondition proves hp is the header slot netdev_alloc initialized; the magic check detects allocator corruption, not a foreign pointer.
     let h = unsafe { *hp };
     if h.magic != NETDEV_MAGIC { return; }
     let layout = match Layout::from_size_align(h.total, h.align) {
