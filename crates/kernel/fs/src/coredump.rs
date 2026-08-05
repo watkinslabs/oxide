@@ -4,6 +4,9 @@
 //   plan        walking a live VMA tree through that ladder into segments
 //   gregset     the register and floating-point blocks a thread's notes carry
 //   pattern     `kernel.core_pattern` storage and expansion; destination choice
+//   socket_uapi coredump socket request/ack wire ABI
+//   socket_protocol hosted request/ack validation and ownership decision
+//   socket_target target-side connection, handshake, delivery and wait
 //   limits      `kernel.core_pipe_limit` — how many collectors may run at once
 //   stream      chunked delivery shared by every destination
 //   file        the file destination's admission rules
@@ -19,6 +22,8 @@ pub mod filter;
 pub mod plan;
 pub mod gregset;
 pub mod pattern;
+pub mod socket_uapi;
+pub mod socket_protocol;
 pub mod limits;
 pub mod stream;
 pub mod file;
@@ -29,6 +34,8 @@ pub mod pipe;
 mod file_target;
 #[cfg(target_os = "oxide-kernel")]
 mod capture;
+#[cfg(target_os = "oxide-kernel")]
+mod socket_target;
 #[cfg(target_os = "oxide-kernel")]
 mod current;
 
