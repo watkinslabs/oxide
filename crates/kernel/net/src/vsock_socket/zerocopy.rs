@@ -1,0 +1,130 @@
+use alloc::collections::VecDeque;
+
+use super::*;
+
+/// One Linux `SO_EE_ORIGIN_ZEROCOPY` completion range. # C: O(1)
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct Completion {
+    pub first: u32,
+    pub last: u32,
+    pub copied: bool,
+    count: u64,
+}
+
+pub(super) struct State {
+    enabled: bool,
+    next_id: u32,
+    queue: VecDeque<Completion>,
+}
+
+impl State {
+    pub(super) const fn new() -> Self {
+        Self { enabled: false, next_id: 0, queue: VecDeque::new() }
+    }
+}
+
+impl VsockSocket {
+    /// Apply connectible-VSOCK's boolean `SO_ZEROCOPY` policy. # C: O(1)
+    pub fn set_zerocopy(&self, value: i32) -> Result<(), crate::NetError> {
+        if self.is_datagram() { return Err(crate::NetError::Enoprotoopt); }
+        if !(0..=1).contains(&value) { return Err(crate::NetError::Einval); }
+        self.zerocopy.lock().enabled = value != 0;
+        Ok(())
+    }
+
+    /// Read connectible-VSOCK's `SO_ZEROCOPY` flag. # C: O(1)
+    pub fn zerocopy_enabled(&self) -> bool { self.zerocopy.lock().enabled }
+
+    pub(super) fn inherit_zerocopy(&self, parent: &Self) {
+        self.zerocopy.lock().enabled = parent.zerocopy_enabled();
+    }
+
+    /// Publish one completed `MSG_ZEROCOPY` send. Oxide's VSOCK importer has
+    /// already copied the payload, so every completion carries Linux's
+    /// `SO_EE_CODE_ZEROCOPY_COPIED` fallback bit. # C: O(1) amortized
+    pub fn complete_zerocopy_send(&self, requested: bool, bytes: usize) {
+        if !requested || bytes == 0 { return; }
+        let mut state = self.zerocopy.lock();
+        if !state.enabled { return; }
+        let id = state.next_id;
+        state.next_id = state.next_id.wrapping_add(1);
+        if let Some(last) = state.queue.back_mut() {
+            if last.copied && last.last.wrapping_add(1) == id && last.count + 1 < (1u64 << 32) {
+                last.last = id;
+                last.count += 1;
+                drop(state);
+                self.poll_subs.notify_mask(vfs::POLL_ERR);
+                return;
+            }
+        }
+        state.queue.push_back(Completion { first: id, last: id, copied: true, count: 1 });
+        drop(state);
+        self.poll_subs.notify_mask(vfs::POLL_ERR);
+    }
+
+    /// Consume the oldest completion range. # C: O(1)
+    pub fn take_zerocopy_completion(&self) -> Option<(u32, u32, bool)> {
+        self.zerocopy.lock().queue.pop_front()
+            .map(|completion| (completion.first, completion.last, completion.copied))
+    }
+
+    /// Observe whether `MSG_ERRQUEUE` can consume a completion. # C: O(1)
+    pub fn has_zerocopy_completion(&self) -> bool { !self.zerocopy.lock().queue.is_empty() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn owner(raw: u32) -> vsock::VsockOwner {
+        vsock::VsockOwner::from_raw(raw).expect("nonzero transport owner")
+    }
+
+    fn tx_ok(_: vsock::VsockOwner, _: &[u8]) -> bool { true }
+    fn rx_noop(_: vsock::VsockOwner) -> usize { 0 }
+
+    #[test]
+    fn option_is_boolean_connectible_and_inherited_without_inheriting_completions() {
+        let listener = VsockSocket::new();
+        assert_eq!(listener.get_socket_option(crate::uapi::SOL_SOCKET, crate::uapi::SO_ZEROCOPY),
+            Ok(0));
+        assert_eq!(listener.set_zerocopy(-1), Err(crate::NetError::Einval));
+        assert_eq!(listener.set_zerocopy(2), Err(crate::NetError::Einval));
+        assert_eq!(listener.set_zerocopy(1), Ok(()));
+        assert_eq!(listener.get_socket_option(crate::uapi::SOL_SOCKET, crate::uapi::SO_ZEROCOPY),
+            Ok(1));
+        listener.complete_zerocopy_send(true, 1);
+        let child = VsockSocket::new_accepted(&listener);
+        assert!(child.zerocopy_enabled());
+        assert_eq!(child.take_zerocopy_completion(), None);
+        assert_eq!(VsockSocket::new_type(crate::socket_args::SOCK_DGRAM).set_zerocopy(1),
+            Err(crate::NetError::Enoprotoopt));
+    }
+
+    #[test]
+    fn successful_copy_fallback_sends_publish_linux_completion_ranges() {
+        let _guard = vsock::tests::test_domain();
+        let transport = owner(0x0e00_0001);
+        let _ = vsock::driver_uninstall(transport);
+        assert!(vsock::driver_install(transport, 3, tx_ok, rx_noop));
+        let conn = Arc::new(vsock::VsockConn::new(transport, 3, 64_001, 2, 1024,
+            vsock::VsockState::Connected));
+        conn.tx.lock().credit.peer_buf_alloc = 8192;
+        let socket = VsockSocket::new();
+        *socket.kind.lock() = VsockKind::Conn(conn);
+
+        assert_eq!(socket.send_message_flags(b"off", false, true, crate::uapi::MSG_ZEROCOPY),
+            Ok(3));
+        assert_eq!(socket.take_zerocopy_completion(), None,
+            "MSG_ZEROCOPY is ignored until SO_ZEROCOPY is enabled");
+        socket.set_zerocopy(1).unwrap();
+        assert_eq!(socket.send_message_flags(b"a", false, true, crate::uapi::MSG_ZEROCOPY), Ok(1));
+        assert_eq!(socket.send_message_flags(b"b", false, true, crate::uapi::MSG_ZEROCOPY), Ok(1));
+        assert_eq!(socket.take_pending_recv_error(), 0,
+            "zero-errno completions do not become SO_ERROR");
+        assert_ne!(socket.poll() & vfs::POLL_ERR, 0);
+        assert_eq!(socket.take_zerocopy_completion(), Some((0, 1, true)));
+        assert_eq!(socket.poll() & vfs::POLL_ERR, 0);
+        assert!(vsock::driver_uninstall(transport));
+    }
+}

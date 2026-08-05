@@ -12,7 +12,8 @@
 
 // The six numbers `vsock_socket` also needs live in the crate's ungated UAPI
 // owner; re-exported here so this table stays the single place to look.
-pub use crate::uapi::{SOL_SOCKET, SO_ACCEPTCONN, SO_DOMAIN, SO_OOBINLINE, SO_PROTOCOL, SO_TYPE};
+pub use crate::uapi::{SOL_SOCKET, SO_ACCEPTCONN, SO_DOMAIN, SO_OOBINLINE, SO_PROTOCOL, SO_TYPE,
+    SO_ZEROCOPY};
 
 pub mod set;
 pub mod get;
@@ -73,7 +74,6 @@ pub const SO_MEMINFO: u64 = 55;
 pub const SO_INCOMING_NAPI_ID: u64 = 56;
 pub const SO_COOKIE: u64 = 57;
 pub const SO_PEERGROUPS: u64 = 59;
-pub const SO_ZEROCOPY: u64 = 60;
 pub const SO_TXTIME: u64 = 61;
 pub const SO_BINDTOIFINDEX: u64 = 62;
 pub const SO_TIMESTAMP_NEW: u64 = 63;
