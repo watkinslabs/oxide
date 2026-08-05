@@ -13,6 +13,11 @@ pub struct BatchSpec {
     pub flags: u32,
 }
 
+/// Send flags for one entry of a batch. # C: O(1)
+pub(crate) fn entry_flags(flags: u32, index: u32, len: u32) -> u32 {
+    if index + 1 < len { flags | MSG_BATCH } else { flags }
+}
+
 pub trait BatchIo {
     /// Fetch one open file description for the complete batch. # C: O(1)
     fn file(&mut self) -> KResult<Arc<vfs::File>>;
@@ -47,7 +52,7 @@ pub fn send_batch<I: BatchIo>(ctx: &SendContext<'_>, spec: BatchSpec, io: &mut I
     };
     let mut sent = 0u32;
     for index in 0..len {
-        let flags = if index + 1 < len { spec.flags | MSG_BATCH } else { spec.flags };
+        let flags = entry_flags(spec.flags, index, len);
         let attempt = (|| {
             if mode == ImportMode::RawOobEnvelope {
                 return send_retained(ctx, &target, io.import(index, mode)?, flags,
