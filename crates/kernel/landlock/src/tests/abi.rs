@@ -55,7 +55,8 @@ fn the_reported_abi_version_matches_the_rights_actually_accepted() {
     assert_eq!(MASK_RESTRICT_SELF, (RESTRICT_SELF_TSYNC << 1) - 1);
     assert_eq!(MASK_ADD_RULE, ADD_RULE_QUIET);
     // Only the errata whose behaviour this kernel actually has.
-    assert_eq!(ERRATA, ERRATUM_TCP_ONLY | ERRATUM_SAME_THREAD_GROUP_SIGNAL);
+    assert_eq!(ERRATA, ERRATUM_TCP_ONLY | ERRATUM_SAME_THREAD_GROUP_SIGNAL
+               | ERRATUM_DISCONNECTED_HIERARCHY);
 }
 
 #[test]
@@ -70,6 +71,9 @@ fn the_security_spec_pins_the_same_landlock_target() {
     let tsync = "| 8 | `LANDLOCK_RESTRICT_SELF_TSYNC` | enforced; pseudo-signal task work, repeated clone discovery, and two commit barriers make the live thread group all-or-nothing |";
     assert!(spec.lines().any(|line| line == tsync),
             "ABI 10 cannot stay advertised while its cumulative ABI-8 TSYNC rung is open");
+    let errata = "Oxide advertises errata 1 (TCP-only port rights), 2 (same-process signal scope), and 3 (disconnected directory hierarchy handling).";
+    assert!(spec.lines().any(|line| line == errata),
+            "erratum 3 cannot be reported while the security contract says it is open");
 }
 
 #[test]
