@@ -220,8 +220,7 @@ fn register_filesystems() {
     // the requested mode, with no owner set at all.
     let _ = register_fs(FsType::with_parameters("devpts", devpts::DEVPTS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, d: &str, sb_flags, p: &[vfs::fs::FsParameter]| -> R {
         let opts = devpts::mount_opts::opts_for_mount(d, p)?;
-        let dfs = devpts::devpts_fs();
-        dfs.set_opts(opts);
+        let dfs = devpts::DevptsFs::new(opts);
         let fs: Arc<dyn vfs::fs::FileSystem> = dfs;
         mounted(ty, fs, None, "devpts", sb_flags)
     }), Some(devpts::mount_opts::DEVPTS_PARAMS)));

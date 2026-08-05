@@ -1,12 +1,11 @@
-// The pty pair object both endpoint inodes share, and the index → pair table.
+// The pty pair object both endpoint inodes share.
 //
 // Locking: each pair lives behind a single Spinlock<tty::Pair>. v1 doesn't
 // split per-direction locks (master and slave I/O can stall briefly across the
 // pair); per-ring locks ride a follow-up once we measure contention.
 
 use alloc::sync::Arc;
-use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use sync::{Spinlock, TaskList, Tty as TtyClass};
 use tty::Pair as TtyPair;
@@ -14,11 +13,21 @@ use vfs::{Ino, KResult, VfsError};
 
 use crate::ids;
 
+struct PairLifetime {
+    master_opens: u32,
+    slave_opens: u32,
+    released: bool,
+}
+
 /// Spinlock-wrapped pair shared between the master and slave inodes.
 pub struct LockedPair {
     pub(crate) inner: Spinlock<TtyPair, TtyClass>,
     ino_master: Ino,
     ino_slave:  Ino,
+    pts_num: u32,
+    instance: Arc<crate::DevptsFs>,
+    devpts_mnt_id: u64,
+    lifetime: Spinlock<PairLifetime, TaskList>,
     /// `TIOCSPTLCK` slave lock (Linux `TTY_PTY_LOCK`). Allocated LOCKED:
     /// glibc/musl `unlockpt(master)` (= `TIOCSPTLCK` with 0) must clear it
     /// before the slave can be opened, matching `pts_unix98_lookup`'s
@@ -26,8 +35,6 @@ pub struct LockedPair {
     locked: AtomicBool,
     master_exclusive: AtomicBool,
     slave_exclusive: AtomicBool,
-    master_opens: AtomicU32,
-    slave_opens: AtomicU32,
     /// Linux `tty->read_wait`/`tty->write_wait` for the MASTER half — the
     /// queues `n_tty_poll` registers on. Each pty half is its OWN
     /// `tty_struct` with its own queues, so master and slave get separate
@@ -40,16 +47,20 @@ pub struct LockedPair {
 
 impl LockedPair {
     /// Build the pair backing pty `pts_num`. # C: O(1)
-    pub(crate) fn new(pts_num: u32) -> Arc<Self> {
+    pub(crate) fn new(pts_num: u32, instance: Arc<crate::DevptsFs>, devpts_mnt_id: u64) -> Arc<Self> {
         Arc::new(Self {
             inner: Spinlock::new(TtyPair::new(pts_num)),
             ino_master: ids::master_ino(pts_num),
             ino_slave:  ids::slave_ino(pts_num),
+            pts_num,
+            instance,
+            devpts_mnt_id,
+            lifetime: Spinlock::new(PairLifetime {
+                master_opens: 0, slave_opens: 0, released: false,
+            }),
             locked: AtomicBool::new(true),
             master_exclusive: AtomicBool::new(false),
             slave_exclusive: AtomicBool::new(false),
-            master_opens: AtomicU32::new(0),
-            slave_opens: AtomicU32::new(0),
             master_subs: Arc::new(vfs::PollSubscribers::new()),
             slave_subs: Arc::new(vfs::PollSubscribers::new()),
         })
@@ -80,7 +91,26 @@ impl LockedPair {
     }
 
     /// # C: O(1)
-    pub fn pts_num(&self) -> u32 { self.inner.lock().pts_num }
+    pub fn pts_num(&self) -> u32 { self.pts_num }
+
+    /// The slave node created with this pair, from its owning instance.
+    /// # C: O(log N)
+    pub fn slave_inode(&self) -> Option<vfs::InodeRef> { self.instance.slave_inode(self.pts_num) }
+
+    /// Mount identity the pair's ptmx open selected. # C: O(1)
+    pub fn devpts_mnt_id(&self) -> u64 { self.devpts_mnt_id }
+
+    /// Existing slave path in the selected devpts mount. # C: O(log N)
+    pub fn slave_path(&self) -> Option<(vfs::InodeRef, Arc<vfs::Dentry>, u64)> {
+        use alloc::string::ToString;
+        let m = vfs::mount::mount_by_id(self.devpts_mnt_id)?;
+        let root = m.mnt_root()?;
+        let inode = self.slave_inode()?;
+        let name = self.pts_num.to_string();
+        let dentry = vfs::dcache::d_lookup(&root, &name)
+            .unwrap_or_else(|| vfs::dcache::d_add(&root, &name, Arc::clone(&inode)));
+        Some((inode, dentry, self.devpts_mnt_id))
+    }
 
     /// `TIOCGPTLCK` read-back: 1 = locked, 0 = unlocked. # C: O(1)
     pub fn is_locked(&self) -> bool { self.locked.load(Ordering::Acquire) }
@@ -99,11 +129,13 @@ impl LockedPair {
     /// Linux `tty_reopen` TTY_EXCLUSIVE admission for one pty endpoint. # C: O(1)
     pub fn open_endpoint(&self, master: bool, cap_sys_admin: bool) -> KResult<()> {
         let excl = if master { &self.master_exclusive } else { &self.slave_exclusive };
-        let opens = if master { &self.master_opens } else { &self.slave_opens };
-        if excl.load(Ordering::Acquire) && opens.load(Ordering::Acquire) != 0 && !cap_sys_admin {
+        let mut life = self.lifetime.lock();
+        if life.released { return Err(VfsError::Eio); }
+        let opens = if master { life.master_opens } else { life.slave_opens };
+        if excl.load(Ordering::Acquire) && opens != 0 && !cap_sys_admin {
             return Err(VfsError::Ebusy);
         }
-        opens.fetch_add(1, Ordering::AcqRel);
+        if master { life.master_opens += 1; } else { life.slave_opens += 1; }
         Ok(())
     }
 
@@ -111,14 +143,36 @@ impl LockedPair {
     /// master fd is a permanent carrier loss; anything else is recoverable by
     /// a fresh open. # C: O(1)
     pub fn master_is_open(&self) -> bool {
-        self.master_opens.load(Ordering::Acquire) != 0
+        self.lifetime.lock().master_opens != 0
     }
 
-    /// Last-close release for one pty endpoint. # C: O(1)
-    pub fn close_endpoint(&self, master: bool) {
-        let opens = if master { &self.master_opens } else { &self.slave_opens };
-        let prev = opens.load(Ordering::Acquire);
-        if prev != 0 { opens.fetch_sub(1, Ordering::AcqRel); }
+    /// Decrement one endpoint's open-description count. Returns whether this
+    /// was that endpoint's last close. # C: O(1)
+    pub fn close_endpoint(&self, master: bool) -> bool {
+        let mut life = self.lifetime.lock();
+        let opens = if master { &mut life.master_opens } else { &mut life.slave_opens };
+        if *opens == 0 { return false; }
+        *opens -= 1;
+        *opens == 0
+    }
+
+    /// Remove the slave and free the index once neither endpoint is open.
+    /// # C: O(log N)
+    pub fn release_if_unused(&self) {
+        let mut life = self.lifetime.lock();
+        if life.master_opens != 0 || life.slave_opens != 0 || life.released { return; }
+        life.released = true;
+        drop(life);
+        self.instance.release_pair(self.pts_num);
+    }
+
+    /// Roll back an allocation that never became an open file. # C: O(log N)
+    pub(crate) fn release_now(&self) {
+        let mut life = self.lifetime.lock();
+        if life.released { return; }
+        life.released = true;
+        drop(life);
+        self.instance.release_pair(self.pts_num);
     }
 
     /// Run `f` against the locked pair. # C: O(closure)
@@ -126,28 +180,4 @@ impl LockedPair {
         let mut g = self.inner.lock();
         f(&mut *g)
     }
-}
-
-/// pts index → pair table, so a handler holding only an index (`TIOCGPTPEER`
-/// on a freshly allocated pair, the boot smoke) can reach the pair. Indexed by
-/// pts_num, kept small + dense by [`next_index`].
-static PAIRS: Spinlock<Vec<Arc<LockedPair>>, TaskList> = Spinlock::new(Vec::new());
-
-/// Monotonic pts index source. # C: O(1)
-static NEXT_PTS: AtomicU32 = AtomicU32::new(0);
-
-/// Claim the next pts index. # C: O(1)
-pub(crate) fn next_index() -> u32 { NEXT_PTS.fetch_add(1, Ordering::Relaxed) }
-
-/// Publish `pair` at its index. # C: O(1) amortized
-pub(crate) fn publish(idx: u32, pair: &Arc<LockedPair>) {
-    let mut g = PAIRS.lock();
-    if g.len() <= idx as usize { g.resize_with(idx as usize + 1, || Arc::clone(pair)); }
-    else { g[idx as usize] = Arc::clone(pair); }
-}
-
-/// Resolve a pts index to its locked pair. # C: O(1)
-pub fn pair_for(pts_num: u32) -> Option<Arc<LockedPair>> {
-    let g = PAIRS.lock();
-    g.get(pts_num as usize).cloned()
 }

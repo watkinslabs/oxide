@@ -256,9 +256,9 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
             Err(rv) => return rv,
         }
     };
-    // O_TMPFILE short-circuits to anonymous inode creation. Each branch
-    // also yields the `mnt_id` the file is opened through (Linux
-    // `f_path.mnt`): the resolved mount for FS paths, 0 only for anon fds.
+    let mut pty_allocation: Option<devpts::PtyAllocation> = None;
+    // O_TMPFILE short-circuits to anonymous inode creation. Each branch also
+    // yields the mount identity the file was opened through.
     let (inode, mnt_id, dentry, created, _path_display) = if (flags & O_TMPFILE) != 0 {
         let cur = match sched::live::current() {
             Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
@@ -310,21 +310,19 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
             return -(Errno::Eftype.as_i32() as i64);
         }
         let display = vfs::mount::render_path_for_mount(vp.mnt_id, &vp.dentry);
-        // `/dev/ptmx` and `/dev/tty` are device identities, not string paths:
-        // bind mounts, chroot, and `openat(devfd,"ptmx")` must route the same
-        // as `/dev/ptmx`. O_PATH remains a pure path fd and never runs the
-        // device-open side effect (PTY allocation / controlling-tty lookup).
+        // Device identity, not path text, selects ptmx and /dev/tty.
         if (flags & O_PATH) == 0 && is_chr_rdev(&vp.inode, DEV_PTMX_RDEV) {
-            // The slave node's owner when the mount did not name one is the
-            // OPENER's fs credentials (Linux `devpts_pty_new`: `current_fsuid()`
-            // / `current_fsgid()`), which is why they are read here rather than
-            // inside devpts.
             let opener = crate::pathresolve::current_cred();
-            let (fsuid, fsgid) = (opener.uid, opener.gid);
-            let (master, _n) = match devpts::allocate_pair(fsuid, fsgid) {
+            let binding = match devpts::devpts_for_ptmx(vp.mnt_id, &vp.dentry) {
                 Ok(v) => v,
                 Err(e) => return crate::namei_common::errno_from_vfs(e),
             };
+            let allocation = match devpts::allocate_pair(binding.fs(), binding.mnt_id(),
+                opener.uid, opener.gid) {
+                Ok(v) => v, Err(e) => return crate::namei_common::errno_from_vfs(e),
+            };
+            let master = allocation.master();
+            pty_allocation = Some(allocation);
             (master, vp.mnt_id, vp.dentry, false, display)
         } else if (flags & O_PATH) == 0 && is_chr_rdev(&vp.inode, DEV_TTY_RDEV) {
             // F200: caller's controlling terminal; ENXIO when none.
@@ -556,6 +554,7 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
         file_cred, nofile, fifo_fop)
     {
         Ok(fd)  => {
+            if let Some(allocation) = pty_allocation.as_mut() { allocation.commit(); }
             // `FMODE_CREATED` (Linux `do_dentry_open`): this open is the one
             // that created the file. `fcntl(F_CREATED_QUERY)` reads it back;
             // before this the bit was defined but never set by any path.

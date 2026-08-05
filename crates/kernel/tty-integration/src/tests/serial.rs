@@ -32,8 +32,8 @@ fn ser_rx_reads_and_echoes_to_uart() {
     let mut buf = [0u8; 32];
     let n = tty.read(&mut buf).bytes_or_zero();
     assert_eq!(&buf[..n], b"cmd\n", "cooked line to program");
-    // Echo (the typed bytes) reaches the wire.
-    assert_eq!(out.tx(), b"cmd\n", "echo on the UART");
+    // Canonical input stays LF; the shared output policy applies ONLCR to echo.
+    assert_eq!(out.tx(), b"cmd\r\n", "echo on the UART");
 }
 
 /// Password ECHO off: type "secret\n" → read() == "secret\n" but the
