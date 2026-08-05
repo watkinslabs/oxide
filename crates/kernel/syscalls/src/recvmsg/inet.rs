@@ -337,7 +337,7 @@ fn tcp_inq(sock: &Arc<InetSocket>) -> Option<net::sock_opts::inq::InqCmsg> {
         SockKind::TcpConn(entry) => entry.clone(),
         _ => return None,
     };
-    let queued = entry.conn.lock().recv_buf.len();
+    let queued = entry.conn.lock().recv_buf.len;
     let eof = sock.read_shut.load(Ordering::Acquire)
         || net::sock_io::tcp_recv_eof(entry.conn.lock().state);
     Some(net::sock_opts::inq::InqCmsg::tcp(net::sock_opts::inq::tcp_inq(queued, eof)))

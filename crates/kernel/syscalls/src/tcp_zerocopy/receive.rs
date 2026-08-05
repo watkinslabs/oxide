@@ -107,7 +107,7 @@ fn run(sock: &Arc<InetSocket>, op: &mut zc::Zc) -> Result<Option<u64>, Errno> {
         _ => return Err(Errno::Enotconn),
     };
     let listening = entry.is_none();
-    let queued = entry.as_ref().map(|e| e.conn.lock().recv_buf.len()).unwrap_or(0);
+    let queued = entry.as_ref().map(|e| e.conn.lock().recv_buf.len).unwrap_or(0);
     let done = entry.as_ref().map(|e| {
         sock.read_shut.load(Ordering::Acquire) || net::sock_io::tcp_recv_eof(e.conn.lock().state)
     }).unwrap_or(false);
@@ -198,30 +198,15 @@ fn window_at(address: u64) -> Option<Window> {
     Some(Window { backing, start: vma.start.as_u64(), end: vma.end.as_u64() })
 }
 
-/// Publish `bytes` of the receive queue as whole pages of the window at
-/// `address`. Returns how many bytes reached the window.
-///
-/// A page is only ever published complete: the receive prefix is inspected
-/// first and consumed only once a full page of it is there, so a short queue
-/// leaves the bytes where the ordinary receive path can still take them rather
-/// than publishing a page whose tail is not stream data. # C: O(bytes)
+/// Publish complete page segments from the canonical receive queue at
+/// `address`.  The queue transfers its existing object-frame reference to the
+/// receive window; no syscall-side receive page is allocated or copied. # C: O(bytes)
 fn remap(entry: &Arc<TcpEntry>, w: &Window, address: u64, bytes: u32, inline: bool) -> u32 {
     let mut done = 0u32;
     while done < bytes {
-        let pa = match pmm::setup::alloc_object_frame() { Some(pa) => pa, None => break };
-        let va = pa + pmm::user_as::hhdm_offset();
-        let filled = net::sock::stack().tcp_recv_with_offset_oob::<usize, ()>(
-            entry, PAGE as usize, false, 0, inline,
-            |src| {
-                if src.len() < PAGE as usize { return Ok((0usize, 0usize)); }
-                // SAFETY: `va` is the HHDM alias of the frame allocated by this call — page sized, kernel private, not yet reachable from any user page table; the copy length is exactly one page.
-                unsafe { core::ptr::copy_nonoverlapping(src.as_ptr(), va as *mut u8, PAGE as usize); }
-                Ok((PAGE as usize, PAGE as usize))
-            });
-        let filled = match filled { Ok(Some(n)) => n, _ => 0 };
-        if filled != PAGE as usize || !w.install(address + done as u64, pa) {
-            // SAFETY: the frame was allocated by this call, was never published to the window or to any page table, and holds exactly the one object reference released here.
-            unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(pa); }
+        let pa = match entry.conn.lock().take_zerocopy_page(inline) { Some(pa) => pa, None => break };
+        if !w.install(address + done as u64, pa) {
+            pmm::setup::release_object_frame(pa);
             break;
         }
         done += PAGE as u32;
@@ -249,7 +234,7 @@ fn inq(sock: &Arc<InetSocket>) -> i32 {
         SockKind::TcpConn(entry) => entry.clone(),
         _ => return 0,
     };
-    let queued = entry.conn.lock().recv_buf.len();
+    let queued = entry.conn.lock().recv_buf.len;
     let eof = sock.read_shut.load(Ordering::Acquire)
         || net::sock_io::tcp_recv_eof(entry.conn.lock().state);
     net::sock_opts::inq::tcp_inq(queued, eof)

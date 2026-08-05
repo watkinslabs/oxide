@@ -36,11 +36,14 @@ impl TcpConn {
     }
 
     fn append_recv_payload(&mut self, seq: u32, payload: &[u8], timestamp_ns: u64) {
-        for (index, byte) in payload.iter().copied().enumerate() {
-            if self.oob_consumed == Some(seq.wrapping_add(index as u32)) {
-                self.oob_consumed = None;
-            } else { self.recv_buf.push_back(crate::tcp_conn::RecvByte { byte, timestamp_ns }); }
+        let mut start = 0usize;
+        for index in 0..payload.len() {
+            if self.oob_consumed != Some(seq.wrapping_add(index as u32)) { continue; }
+            if start != index { self.recv_buf.push_payload(&payload[start..index], timestamp_ns); }
+            self.oob_consumed = None;
+            start = index + 1;
         }
+        if start != payload.len() { self.recv_buf.push_payload(&payload[start..], timestamp_ns); }
     }
 
     /// Accept payload into the contiguous receive stream. # C: O(payload)

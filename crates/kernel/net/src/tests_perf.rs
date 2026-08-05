@@ -331,7 +331,7 @@ fn f186_current_rcv_window_scales_with_snd_wscale() {
 fn f186_autotune_doubles_cap_when_peak_exceeds_half() {
     let mut c = client_established();
     c.rcv_buf_cap = 65_536;
-    c.recv_buf.extend(core::iter::repeat(0u8).take(40_000));
+    c.recv_buf.push_payload(&alloc::vec![0u8; 40_000], 0);
     c.rcv_autotune();
     assert_eq!(c.rcv_buf_cap, 131_072);
 }
@@ -341,7 +341,7 @@ fn f186_autotune_caps_at_rcv_buf_max() {
     let mut c = client_established();
     c.rcv_buf_cap = 2 * 1024 * 1024;
     c.rcv_buf_max = 4 * 1024 * 1024;
-    c.recv_buf.extend(core::iter::repeat(0u8).take(2 * 1024 * 1024 - 10));
+    c.recv_buf.push_payload(&alloc::vec![0u8; 2 * 1024 * 1024 - 10], 0);
     c.rcv_autotune();
     assert_eq!(c.rcv_buf_cap, 4 * 1024 * 1024, "cap clamps at max");
 }

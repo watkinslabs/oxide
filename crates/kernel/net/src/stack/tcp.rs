@@ -20,7 +20,7 @@ impl NetStack {
     }
 
     /// Application drains up to `max` bytes from the recv buffer.
-    /// # C: O(min(max, recv_buf.len()))
+    /// # C: O(min(max, recv_buf.len))
     pub fn tcp_recv(&self, entry: &TcpEntry, max: usize) -> Vec<u8> {
         entry.conn.lock().recv(max)
     }
@@ -389,7 +389,7 @@ impl NetStack {
             // F158: wake on either recv_buf growth or terminal state
             let (_pre_len, pre_state, input, _post_len, post_state, fastopen_child) = {
                 let mut c = entry.conn.lock();
-                let pre_len = c.recv_buf.len();
+                let pre_len = c.recv_buf.len;
                 let pre_state = c.state;
                 let fastopen_child = c.fastopen_child;
                 if pre_state == crate::tcp_state::TcpState::SynRecv {
@@ -398,7 +398,7 @@ impl NetStack {
                     }
                 }
                 let input = c.input_prevalidated(src_ip, dst_ip, seg);
-                (pre_len, pre_state, input, c.recv_buf.len(), c.state, fastopen_child)
+                (pre_len, pre_state, input, c.recv_buf.len, c.state, fastopen_child)
             };
             super::tcp_fastopen::drain_client(self, &entry, crate::tcp_conn::ka_now_ns());
             let pre_syn = pre_state == crate::tcp_state::TcpState::SynSent;
