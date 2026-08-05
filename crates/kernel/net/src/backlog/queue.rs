@@ -20,7 +20,19 @@ use super::limits::NETDEV_MAX_BACKLOG;
 /// its queued frames dropped, which is exactly what a failed re-acquire gives.
 pub struct BacklogItem {
     pub iface: NetIfaceId,
-    pub pkt: Pkt,
+    /// The generation accepted at ingress. `None` is the synthetic loopback
+    /// path, which re-acquires the current generation at delivery.
+    pub generation: Option<u64>,
+    pub packet: BacklogPacket,
+}
+
+/// The one canonical backlog can carry both loopback L3 packets and a module
+/// driver's complete Ethernet frame. The latter keeps packet-socket fanout,
+/// bridge admission and L3 delivery on the NET_RX stack rather than running
+/// them under the driver's caller.
+pub enum BacklogPacket {
+    L3(Pkt),
+    Ethernet { pkt: Pkt, metadata: crate::PacketRxMetadata },
 }
 
 /// Outcome of an enqueue — the reference `NET_RX_SUCCESS` / `NET_RX_DROP`.
