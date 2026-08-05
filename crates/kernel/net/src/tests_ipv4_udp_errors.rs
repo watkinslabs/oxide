@@ -63,6 +63,14 @@ fn quote() -> alloc::vec::Vec<u8> {
     out
 }
 
+fn rfc4884_quote() -> alloc::vec::Vec<u8> {
+    let mut out = quote();
+    out.resize(8 + 128 + 4, 0);
+    out[5] = 32;
+    out[8 + 128] = 0x20;
+    out
+}
+
 fn frag_needed_quote(total_len: u16, mtu: u16) -> alloc::vec::Vec<u8> {
     frag_needed_quote_to(REMOTE, total_len, mtu)
 }
@@ -142,6 +150,45 @@ fn unconnected_udp_requires_recverr_for_hard_icmp() {
     );
     assert_eq!(error.take(), syscall::errno::Errno::Econnrefused as i32);
     assert!(error.take_extended().is_some());
+}
+
+#[test]
+fn recverr_rfc4884_controls_the_queued_extension_offset() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let stack = NetStack::new();
+    let (iface, _) = stack.register_loopback();
+    let error = Arc::new(SocketError::new());
+    error.set_recverr4(true);
+    bind(&stack, error.clone(), false, crate::uapi::IP_PMTUDISC_WANT);
+
+    crate::stack_icmp::handle_error(&stack, iface, REMOTE,
+        crate::icmp::ICMP_TYPE_DEST_UNREACH, 3, &rfc4884_quote());
+    assert_eq!(error.take_extended().unwrap().data, 0);
+
+    error.set_recverr_rfc4884_4(true);
+    crate::stack_icmp::handle_error(&stack, iface, REMOTE,
+        crate::icmp::ICMP_TYPE_DEST_UNREACH, 3, &rfc4884_quote());
+    assert_eq!(error.take_extended().unwrap().data,
+        u32::from_ne_bytes([100, 0, 0, 0]));
+}
+
+#[test]
+fn recverr_rfc4884_marks_a_malformed_extension_invalid() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let stack = NetStack::new();
+    let (iface, _) = stack.register_loopback();
+    let error = Arc::new(SocketError::new());
+    error.set_recverr4(true);
+    error.set_recverr_rfc4884_4(true);
+    bind(&stack, error.clone(), false, crate::uapi::IP_PMTUDISC_WANT);
+    let mut quoted = rfc4884_quote();
+    quoted.resize(8 + 128 + 8, 0);
+    quoted[8 + 132..8 + 134].copy_from_slice(&3u16.to_be_bytes());
+
+    crate::stack_icmp::handle_error(&stack, iface, REMOTE,
+        crate::icmp::ICMP_TYPE_DEST_UNREACH, 3, &quoted);
+    assert_eq!(error.take_extended().unwrap().data,
+        u32::from_ne_bytes([100, 0, 1, 0]));
 }
 
 #[test]

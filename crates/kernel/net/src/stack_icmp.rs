@@ -10,6 +10,29 @@ use crate::stack::{NetStack, TcpKey};
 
 const IPV6_MIN_MTU: u32 = 1_280;
 
+fn rfc4884_data(kind: u8, icmp: &[u8], quote_data_at: usize) -> u32 {
+    if !matches!(kind, crate::icmp::ICMP_TYPE_DEST_UNREACH | crate::icmp::ICMP_TYPE_TIME_EXC | 12)
+        || icmp.len() < 8 { return 0; }
+    let wire_len = usize::from(icmp[5]) * 4;
+    if wire_len < 128 || wire_len < quote_data_at { return 0; }
+    let ext_at = 8usize.saturating_add(wire_len);
+    if ext_at.saturating_add(4) > icmp.len() { return 0; }
+    let ext = &icmp[ext_at..];
+    let mut flags = 0u8;
+    if ext[0] >> 4 == 2 {
+        if ext[2..4] != [0, 0] && crate::ipv4::ip_checksum(ext) != 0 { flags = 1; }
+        let mut at = 4usize;
+        while at < ext.len() {
+            if at.saturating_add(4) > ext.len() { flags = 1; break; }
+            let len = usize::from(u16::from_be_bytes([ext[at], ext[at + 1]]));
+            if len < 4 || at.saturating_add(len) > ext.len() { flags = 1; break; }
+            at += len;
+        }
+    }
+    let len = (wire_len - quote_data_at) as u16;
+    u32::from_ne_bytes([len.to_ne_bytes()[0], len.to_ne_bytes()[1], flags, 0])
+}
+
 fn cached_pmtu(stack: &NetStack, net_ns: u64, iface: NetIfaceId, dst: IpAddr, link_mtu: u32) -> u32 {
     stack.inet_tables(net_ns).pmtu.get(iface, dst, link_mtu)
 }
@@ -240,7 +263,8 @@ pub fn handle_error_in(stack: &NetStack, net_ns: u64, iface: crate::NetIfaceId, 
     };
     let raw_entry = crate::SocketErrorEntry {
         errno: eno, origin: crate::socket_error::SO_EE_ORIGIN_ICMP,
-        kind, code, info: frag_mtu.map_or(0, |_| u32::from(reported_mtu)), data: 0,
+        kind, code, info: frag_mtu.map_or(0, |_| u32::from(reported_mtu)),
+        data: rfc4884_data(kind, payload, orig_l4_off),
         offender: IpAddr::V4(offender), destination: IpAddr::V4(orig_hdr.dst),
         destination_port: 0, ifindex: iface.raw(),
         payload: orig_ip[orig_l4_off..].to_vec(),
@@ -292,7 +316,7 @@ pub fn handle_error_in(stack: &NetStack, net_ns: u64, iface: crate::NetIfaceId, 
                     kind,
                     code,
                     info: if frag_mtu.is_some() { u32::from(reported_mtu) } else { 0 },
-                    data: 0,
+                    data: rfc4884_data(kind, payload, orig_l4_off + 8),
                     offender: IpAddr::V4(offender),
                     destination: IpAddr::V4(orig_hdr.dst),
                     destination_port: dst_port,

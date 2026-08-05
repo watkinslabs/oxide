@@ -57,6 +57,7 @@ fn apply(sock: &Arc<InetSocket>, action: Action) -> i64 {
     match action {
         Action::Flag { bit, on } => {
             sock.opts.ip.set_flag(bit, on);
+            if bit == flag::RECVERR_RFC4884 { sock.error.set_recverr_rfc4884_4(on); }
             // Multicast delivery consults the shared membership object, which
             // the receive path already reaches, so there is nothing to mirror.
             if bit == flag::MC_ALL_OFF { sock.mcast.set_multicast_all_v4(!on); }
