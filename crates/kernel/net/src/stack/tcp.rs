@@ -16,10 +16,14 @@ impl NetStack {
             let in_flight: usize = c.retx_q.iter().map(|s| s.payload.len()).sum();
             let used = c.send_buf.len() + in_flight;
             let avail = sndbuf_cap.saturating_sub(used);
-            if avail == 0 && !data.is_empty() { return Err(NetError::Eagain); }
+            if avail == 0 && !data.is_empty() {
+                c.note_sndbuf_limited_at(crate::tcp_conn::ka_now_ns());
+                return Err(NetError::Eagain);
+            }
             let accept = ::core::cmp::min(avail, data.len());
             c.send(&data[..accept]);
             let segs = c.output(1500, nodelay, cork);
+            c.refresh_chrono_at(crate::tcp_conn::ka_now_ns());
             (segs, accept, c.local.ip, c.remote.ip, ecn_tos(&c))
         };
         let n = segs.len();

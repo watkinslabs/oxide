@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use crate::tcp_conn::{TcpConn, TcpConnError};
 use crate::tcp_state::{TcpEvent, TcpState};
-use crate::tcp_conn::types::{TcpCongestionControl, OWN_MSS_DEFAULT, RCV_MSS_DEFAULT, RCV_MSS_MIN};
+use crate::tcp_conn::types::{TcpCongestionControl, TcpTelemetry, OWN_MSS_DEFAULT, RCV_MSS_DEFAULT, RCV_MSS_MIN};
 use crate::tcp_hdr::flags;
 
 impl TcpConn {
@@ -43,11 +43,7 @@ impl TcpConn {
             data_segs_out: 0,
             bytes_sent: 0,
             bytes_retrans: 0,
-            delivered: 0,
-            delivered_mstamp_ns: 0,
-            rate_delivered: 0,
-            rate_interval_ns: 0,
-            rate_app_limited: false,
+            telemetry: alloc::boxed::Box::new(TcpTelemetry::default()),
             ooo_buf: alloc::collections::BTreeMap::new(),
             ts_enabled: false,
             ts_recent:  0,
@@ -162,11 +158,7 @@ impl TcpConn {
             data_segs_out: 0,
             bytes_sent: 0,
             bytes_retrans: 0,
-            delivered: 0,
-            delivered_mstamp_ns: 0,
-            rate_delivered: 0,
-            rate_interval_ns: 0,
-            rate_app_limited: false,
+            telemetry: alloc::boxed::Box::new(TcpTelemetry::default()),
             ooo_buf: alloc::collections::BTreeMap::new(),
             ts_enabled: false,
             ts_recent:  0,
