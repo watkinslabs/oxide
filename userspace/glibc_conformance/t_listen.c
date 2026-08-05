@@ -1,6 +1,7 @@
 /* Linux row-50 listen(2) corpus; output is compared verbatim by N14. */
 #define _GNU_SOURCE
 #include <errno.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <stdio.h>
 #include <string.h>
@@ -54,5 +55,10 @@ int main(void) {
 
     /* Bad fd. */
     errno = 0; r("badfd", listen(-1, 5));
+
+    /* A valid fd that is not a socket is ENOTSOCK, not EBADF. */
+    int file = open("/dev/null", O_RDONLY);
+    errno = 0; r("regular_file", listen(file, 5));
+    close(file);
     return 0;
 }
