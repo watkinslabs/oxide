@@ -158,7 +158,7 @@ impl NetStack {
                         remote_ip: conn.remote.ip,
                         remote_port: conn.remote.port,
                         ifindex: entry.bound_iface().map(|id| id.raw()).unwrap_or(0),
-                        rqueue: conn.recv_buf.len() as u32,
+                        rqueue: conn.recv_buf.len as u32,
                         wqueue: conn.send_buf.len() as u32,
                     });
                 }

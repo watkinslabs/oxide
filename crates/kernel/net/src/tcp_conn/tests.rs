@@ -416,8 +416,7 @@ fn rst_sequence_acceptance_wraps_at_u32_boundary() {
 fn recv_with_fault_and_peek_preserve_stream_bytes() {
     let lo = crate::addr::Ipv4Addr::LOOPBACK;
     let mut conn = TcpConn::new_client(ep(lo, 5000), ep(lo, 80), 1000);
-    conn.recv_buf.extend(b"transaction".iter().copied().map(|byte|
-        crate::tcp_conn::RecvByte { byte, timestamp_ns: 0 }));
+    conn.recv_buf.push_payload(b"transaction", 0);
     assert!(matches!(conn.recv_with(64, false, |_| Err::<((), usize), _>(7u8)), Err(7)));
     let partial = conn.recv_with(64, false, |bytes| Ok::<_, ()>((bytes[..4].to_vec(), 4))).unwrap().unwrap();
     assert_eq!(partial, b"tran");
@@ -432,8 +431,7 @@ fn recv_with_fault_and_peek_preserve_stream_bytes() {
 fn peek_offset_reads_waitall_suffix_without_consuming() {
     let lo = crate::addr::Ipv4Addr::LOOPBACK;
     let mut conn = TcpConn::new_client(ep(lo, 5001), ep(lo, 80), 1000);
-    conn.recv_buf.extend(b"abcdef".iter().copied().map(|byte|
-        crate::tcp_conn::RecvByte { byte, timestamp_ns: 0 }));
+    conn.recv_buf.push_payload(b"abcdef", 0);
     let first = conn.recv_with_offset(3, true, 0, |bytes| Ok::<_, ()>((bytes.to_vec(), 0))).unwrap().unwrap();
     let second = conn.recv_with_offset(3, true, 3, |bytes| Ok::<_, ()>((bytes.to_vec(), 0))).unwrap().unwrap();
     assert_eq!(first, b"abc");

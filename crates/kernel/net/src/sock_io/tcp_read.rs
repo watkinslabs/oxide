@@ -80,7 +80,7 @@ pub(crate) fn arm_tcp_read_after_mode(sock: &InetSocket, entry: &alloc::sync::Ar
     deadline_ns: u64, include_urgent: bool) -> bool {
     let c = entry.conn.lock();
     let inline = sock.opts.oobinline.load(core::sync::atomic::Ordering::Acquire) != 0;
-    let stream_ready = c.recv_buf.len() > offset && (inline || c.urgent
+    let stream_ready = c.recv_buf.len > offset && (inline || c.urgent
         .map(|(seq, _)| seq.wrapping_sub(c.rcv_read_seq) as usize > offset)
         .unwrap_or(true));
     if sock.read_shut.load(core::sync::atomic::Ordering::Acquire)

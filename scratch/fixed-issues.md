@@ -451,6 +451,8 @@ open issue. Live rows that still need the work carry it in their own row.
 
 ### Net / socket
 
+| FIXED F808 | low | `TCP_ZEROCOPY_RECEIVE` copied stream bytes into freshly allocated window pages because the TCP receive queue had no page-granular owner to donate. | TCP now owns page-backed receive segments, coalesces contiguous arrival data while preserving timestamp boundaries, and transfers an aligned full-page object-frame reference directly to the receive window. Ordinary reads, OOB removal, queue accounting, and low-memory fallback retain the same canonical stream. Targeted TCP tests (111), modules tests (213), and both feature-gate architectures passed. | F808-tcp-zerocopy-receive-page-donation |
+
 | FIXED ae95e44da | low | A pathname or abstract AF_UNIX server cached its publishing Landlock domain at `bind(2)`, rather than consulting the server socket's retained file credentials at each check. | The registry now retains only a weak link to the bound socket; pathname resolution and abstract-scope checks read the domain from its canonical `f_cred`. Socket creation, accept, and socketpair capture that immutable security credential; focused Landlock tests, all 2,027 net tests, 1,224 syscall tests, and both feature-gate architectures passed. | B1837-unix-owner-domain-live |
 
 | FIXED a06dbab2b | med | Fast Open now implements all four reference blackhole-detection rungs. The out-of-order receive queue retains payload, urgent metadata, and FIN together, so a sole bare FIN is detected both when it was queued before local close and when it arrives after close. | `TcpConn::ooo_buf` owns complete out-of-order segments; `tcp_conn::active_fastopen` tests both close orderings; x86 and ARM smoke pass. | F807-fold-f806-ledger |
