@@ -10,6 +10,7 @@
 // - segment.rs    : wire-segment builders (ACK/data/SYN variants).
 // - timing.rs     : monotonic clocks used by TS/keepalive.
 // - delivery.rs   : transmit snapshots and ACK-derived delivery-rate samples.
+// - chrono.rs     : send-state duration accounting for TCP_INFO.
 // - route_policy.rs: selected IPv4 route metrics applied to a new TCB.
 // - active_fastopen.rs: the client half of fast open — a SYN carrying data,
 //                   and what its answer teaches.
@@ -30,12 +31,13 @@ pub mod fastopen;
 pub mod active_fastopen;
 pub mod timing;
 pub mod delivery;
+pub mod chrono;
 pub mod route_policy;
 pub mod reqsk;
 
 pub use types::passive_rcv_header;
 pub use types::{
-    Endpoint, OutOfOrderSegment, TcpCongestionControl, TcpConn, TcpConnError, UnackedSegment, OWN_MSS_DEFAULT,
+    Endpoint, OutOfOrderSegment, TcpChrono, TcpCongestionControl, TcpConn, TcpConnError, UnackedSegment, OWN_MSS_DEFAULT,
     OWN_WSCALE, DATA_RETRIES_DEFAULT, DELACK_ATO_MIN_NS, DELACK_MAX_DEFAULT_NS, LINGER2_DEFAULT_NS,
     RTO_MAX_DEFAULT_NS, SYN_RETRIES_DEFAULT,
 };

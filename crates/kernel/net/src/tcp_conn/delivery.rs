@@ -5,10 +5,10 @@ use crate::tcp_conn::TcpConn;
 impl TcpConn {
     /// Snapshot delivery state after queue entries reach the transmit owner. # C: O(n)
     pub(crate) fn note_delivery_sent_at(&mut self, start: usize, now_ns: u64) {
-        let delivered_mstamp_ns = if self.delivered_mstamp_ns == 0 { now_ns } else { self.delivered_mstamp_ns };
+        let delivered_mstamp_ns = if self.telemetry.delivered_mstamp_ns == 0 { now_ns } else { self.telemetry.delivered_mstamp_ns };
         let app_limited = self.send_buf.is_empty();
         for segment in self.retx_q.iter_mut().skip(start) {
-            segment.delivered_at_send = self.delivered;
+            segment.delivered_at_send = self.telemetry.delivered;
             segment.delivered_mstamp_ns = delivered_mstamp_ns;
             segment.first_sent_ns = now_ns;
             segment.delivery_app_limited = app_limited;
@@ -31,16 +31,16 @@ impl TcpConn {
             }
         }
         if delivered == 0 { return; }
-        self.delivered = self.delivered.saturating_add(delivered);
-        self.delivered_mstamp_ns = now_ns;
+        self.telemetry.delivered = self.telemetry.delivered.saturating_add(delivered);
+        self.telemetry.delivered_mstamp_ns = now_ns;
         let Some((prior_delivered, prior_mstamp_ns, first_sent_ns, app_limited)) = sample else { return };
         let ack_phase = now_ns.saturating_sub(prior_mstamp_ns);
         let send_phase = now_ns.saturating_sub(first_sent_ns);
         let interval_ns = core::cmp::max(ack_phase, send_phase);
         if interval_ns == 0 { return; }
-        self.rate_delivered = self.delivered.saturating_sub(prior_delivered);
-        self.rate_interval_ns = interval_ns;
-        self.rate_app_limited = app_limited;
+        self.telemetry.rate_delivered = self.telemetry.delivered.saturating_sub(prior_delivered);
+        self.telemetry.rate_interval_ns = interval_ns;
+        self.telemetry.rate_app_limited = app_limited;
     }
 }
 
@@ -60,9 +60,9 @@ mod tests {
         assert_eq!(conn.output(1_500, true, false).len(), 1);
         conn.note_delivery_sent_at(0, 1_000_000);
         conn.note_delivery_acked_at(conn.snd_nxt, 3_000_000);
-        assert_eq!(conn.delivered, 1);
-        assert_eq!(conn.rate_delivered, 1);
-        assert_eq!(conn.rate_interval_ns, 2_000_000);
-        assert!(conn.rate_app_limited);
+        assert_eq!(conn.telemetry.delivered, 1);
+        assert_eq!(conn.telemetry.rate_delivered, 1);
+        assert_eq!(conn.telemetry.rate_interval_ns, 2_000_000);
+        assert!(conn.telemetry.rate_app_limited);
     }
 }

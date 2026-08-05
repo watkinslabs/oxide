@@ -1,3 +1,4 @@
+use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
 
@@ -15,6 +16,28 @@ pub struct Endpoint {
 pub enum TcpCongestionControl {
     Reno,
     Cubic,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum TcpChrono {
+    None,
+    Busy,
+    RwndLimited,
+    SndbufLimited,
+}
+
+#[derive(Debug)]
+pub struct TcpTelemetry {
+    pub delivered: u32, pub delivered_mstamp_ns: u64, pub rate_delivered: u32,
+    pub rate_interval_ns: u64, pub rate_app_limited: bool,
+    pub chrono: TcpChrono, pub chrono_start_ns: u64, pub busy_time_ns: u64,
+    pub rwnd_limited_ns: u64, pub sndbuf_limited_ns: u64,
+}
+
+impl Default for TcpTelemetry {
+    fn default() -> Self { Self { delivered: 0, delivered_mstamp_ns: 0, rate_delivered: 0,
+        rate_interval_ns: 0, rate_app_limited: false, chrono: TcpChrono::None,
+        chrono_start_ns: 0, busy_time_ns: 0, rwnd_limited_ns: 0, sndbuf_limited_ns: 0 } }
 }
 
 /// One unacked segment on the retransmission queue.
@@ -101,12 +124,8 @@ pub struct TcpConn {
     pub bytes_sent: u64,
     /// Payload bytes handed to retransmission.
     pub bytes_retrans: u64,
-    /// ACKed data-segment count and the latest ACK-derived delivery sample.
-    pub delivered: u32,
-    pub delivered_mstamp_ns: u64,
-    pub rate_delivered: u32,
-    pub rate_interval_ns: u64,
-    pub rate_app_limited: bool,
+    /// ACK-derived delivery and send-duration telemetry owned by this TCB.
+    pub telemetry: Box<TcpTelemetry>,
     /// Complete out-of-order segments, including control flags that consume
     /// sequence space such as FIN.
     pub ooo_buf: BTreeMap<u32, OutOfOrderSegment>,
