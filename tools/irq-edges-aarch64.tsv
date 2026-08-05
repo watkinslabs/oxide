@@ -39,15 +39,15 @@ oxide_arm_irq_dispatch	drv_virtio_input::drain::queue::raise_drain
 oxide_arm_irq_dispatch	drv_ahci::irq::hard_handler
 oxide_arm_irq_dispatch	modules::linux_irq::linux_irq_dispatch
 oxide_arm_irq_dispatch	kmain::kmain::hooks::tick_poll_combined
-softirq::run_pending_mode	fbcon::kernel::shared::flush_softirq
-softirq::run_pending_mode	drv_virtio_input::drain::queue::drain_softirq
-softirq::run_pending_mode	net::backlog::action::net_rx_action
-softirq::run_pending_mode	drv_virtio_vsock::registry::rx_drain_softirq
-softirq::run_pending_mode	drv_virtio_snd::event::event_softirq
-softirq::run_pending_mode	net::net_ns::teardown::wake_namespace_reaper
-softirq::run_pending_mode	block::completion::dispatch
-softirq::run_pending_mode	net::stack::stp_softirq::stp_softirq
-softirq::run_pending_mode	sched::live::tasklet::drain_softirq
+softirq::run_pending_mode::<sched::bh::SchedHandlerAccounting>	fbcon::kernel::shared::flush_softirq
+softirq::run_pending_mode::<sched::bh::SchedHandlerAccounting>	drv_virtio_input::drain::queue::drain_softirq
+softirq::run_pending_mode::<sched::bh::SchedHandlerAccounting>	net::backlog::action::net_rx_action
+softirq::run_pending_mode::<sched::bh::SchedHandlerAccounting>	drv_virtio_vsock::registry::rx_drain_softirq
+softirq::run_pending_mode::<sched::bh::SchedHandlerAccounting>	drv_virtio_snd::event::event_softirq
+softirq::run_pending_mode::<sched::bh::SchedHandlerAccounting>	net::net_ns::teardown::wake_namespace_reaper
+softirq::run_pending_mode::<sched::bh::SchedHandlerAccounting>	block::completion::dispatch
+softirq::run_pending_mode::<sched::bh::SchedHandlerAccounting>	net::stack::stp_softirq::stp_softirq
+softirq::run_pending_mode::<sched::bh::SchedHandlerAccounting>	sched::live::tasklet::drain_softirq
 drv_serial::deliver	sched::diag::emit::sysrq_rx
 drv_serial::deliver	console::static_console::rx_byte
 # NAPI poll list, one level BELOW the softirq table: `net_rx_action` walks the

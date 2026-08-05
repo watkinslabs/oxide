@@ -1,5 +1,6 @@
 // Module manifest:
 // - `active_mm` owns per-CPU lazy-TLB `active_mm` tracking + parked-mm handoff.
+// - `atomic` owns atomic-schedule diagnosis and preempt-count recovery.
 // - `hooks` owns sched_switch tracing and teardown stats surface.
 // - `lifecycle` owns runqueue install/current-task helpers and teardown glue.
 // - `migrate` owns switch-time affinity eviction of the outgoing task.
@@ -9,6 +10,7 @@
 //   post-mortem: the context save/restore ring + the hal fault-dump hook.
 
 mod active_mm;
+mod atomic;
 #[cfg(all(target_arch = "aarch64", feature = "debug-armctx"))]
 pub mod ctxprobe;
 mod hooks;
