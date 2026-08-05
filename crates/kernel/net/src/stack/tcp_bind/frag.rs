@@ -27,6 +27,22 @@ impl NetStack {
         min_hop: Arc<crate::min_hop::MinHop>,
         fastopen: Arc<crate::tcp_fastopen::FastOpenQueue>) -> NetResult<Arc<TcpListenEntry>>
     {
+        self.tcp_listen_reserved_fastopen_frag_pacing(bind, bpf_filter, ip_mtu_discover,
+            ipv6_mtu_discover, ipv6_frag_size, min_hop, fastopen,
+            Arc::new(::core::sync::atomic::AtomicU64::new(u64::MAX)))
+    }
+
+    /// Publish a listener sharing its IPv6 fragmentation, fast-open, and pacing state. # C: O(N)
+    #[allow(clippy::too_many_arguments)]
+    pub fn tcp_listen_reserved_fastopen_frag_pacing(&self, bind: &Arc<TcpBindReservation>,
+        bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+        ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+        ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+        ipv6_frag_size: Arc<::core::sync::atomic::AtomicI32>,
+        min_hop: Arc<crate::min_hop::MinHop>,
+        fastopen: Arc<crate::tcp_fastopen::FastOpenQueue>,
+        max_pacing_rate: Arc<::core::sync::atomic::AtomicU64>) -> NetResult<Arc<TcpListenEntry>>
+    {
         let tables = self.inet_tables(bind.net_ns());
         let mut binds = tables.tcp_binds.lock();
         if !self.tcp_bind_registered_locked(&mut binds, bind) { return Err(NetError::Einval); }
@@ -49,8 +65,8 @@ impl NetStack {
                         && iface_overlap(old.bound_iface(), bind.bound_iface())));
             if conflict { return Err(NetError::Eaddrinuse); }
         }
-        let entry = Arc::new(TcpListenEntry::new_with_fastopen_frag(bind.clone(), bpf_filter,
-            ip_mtu_discover, ipv6_mtu_discover, ipv6_frag_size, min_hop, fastopen));
+        let entry = Arc::new(TcpListenEntry::new_with_fastopen_frag_pacing(bind.clone(), bpf_filter,
+            ip_mtu_discover, ipv6_mtu_discover, ipv6_frag_size, min_hop, fastopen, max_pacing_rate));
         let key = TcpListenKey { local_ip: bind.local.ip, local_port: bind.local.port };
         listeners.entry(key).or_default().push(entry.clone());
         bind.role.store(TCP_BIND_LISTEN, Ordering::Release);

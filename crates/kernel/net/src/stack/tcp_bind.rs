@@ -373,6 +373,7 @@ impl NetStack {
             Arc::new(::core::sync::atomic::AtomicI32::new(0)),
             Arc::new(crate::min_hop::MinHop::new()),
             Arc::new(crate::sock_opts::sol_ip::IpOpts::default()),
+            Arc::new(::core::sync::atomic::AtomicU64::new(u64::MAX)),
             crate::sock::tcp_fastopen::ActiveOpen::default(), &[]).map(|(entry, _)| entry)
     }
 
@@ -387,6 +388,7 @@ impl NetStack {
         ipv6_frag_size: Arc<::core::sync::atomic::AtomicI32>,
         min_hop: Arc<crate::min_hop::MinHop>,
         ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>,
+        max_pacing_rate: Arc<::core::sync::atomic::AtomicU64>,
         fastopen: crate::sock::tcp_fastopen::ActiveOpen,
         data: &[u8]) -> NetResult<(Arc<TcpEntry>, usize)>
     {
@@ -399,7 +401,7 @@ impl NetStack {
         if conns.contains_key(&key) { return Err(NetError::Eaddrnotavail); }
         let (entry, syn, carried) = self.build_active_child(bind, local_ip, remote_ip, remote_port,
             error, bpf_filter, ip_mtu_discover, ipv6_mtu_discover, ipv6_frag_size, min_hop, ip_opts,
-            fastopen, data)?;
+            max_pacing_rate, fastopen, data)?;
         conns.insert(key, entry.clone());
         drop(conns);
         if let Err(error) = self.send_tcp_segment_in(
@@ -434,6 +436,7 @@ impl NetStack {
         ipv6_frag_size: Arc<::core::sync::atomic::AtomicI32>,
         min_hop: Arc<crate::min_hop::MinHop>,
         ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>,
+        max_pacing_rate: Arc<::core::sync::atomic::AtomicU64>,
         fastopen: crate::sock::tcp_fastopen::ActiveOpen,
         data: &[u8])
         -> NetResult<(Arc<TcpEntry>, alloc::vec::Vec<u8>, usize)>
@@ -463,9 +466,9 @@ impl NetStack {
             bind.net_ns(), remote_ip, bind.bound_iface()));
         let (syn, carried) = conn.active_open_fastopen(fastopen.option, fastopen.payload(data))
             .map_err(|_| NetError::Eio)?;
-        Ok((Arc::new(TcpEntry::new_bound_ip_opts(
+        Ok((Arc::new(TcpEntry::new_bound_ip_opts_pacing(
             conn, error, Some(bind.clone()), bpf_filter, ip_mtu_discover,
-            ipv6_mtu_discover, ipv6_frag_size, None, min_hop, ip_opts)), syn, carried))
+            ipv6_mtu_discover, ipv6_frag_size, None, min_hop, ip_opts, max_pacing_rate)), syn, carried))
     }
 }
 
