@@ -3,7 +3,6 @@
 
 #![cfg(target_os = "oxide-kernel")]
 
-use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 
 use syscall::SyscallArgs;
@@ -36,7 +35,13 @@ pub fn sys_landlock_restrict_self(args: &SyscallArgs) -> i64 {
     // subsystem there is nothing for it to configure, so it succeeds having
     // changed nothing — which is what a caller quietening its own logs expects.
     if !plan.needs_ruleset {
-        if plan.propagate_no_new_privs { propagate_no_new_privs(&cur); }
+        if plan.propagate_no_new_privs {
+            if let Err(sched::landlock_tsync::StartError::Restart) =
+                sched::landlock_tsync::restrict_siblings(cur, None, true)
+            {
+                return syscall::restart::restart_nointr();
+            }
+        }
         return 0;
     }
 
@@ -47,10 +52,16 @@ pub fn sys_landlock_restrict_self(args: &SyscallArgs) -> i64 {
     let dom = match Domain::merge(parent.as_ref(), &rs) {
         Ok(d) => d, Err(e) => return -(e.as_i32() as i64),
     };
-    if let Err(e) = crate::landlock::set_current_domain(dom.clone()) {
+    if plan.tsync {
+        if let Err(sched::landlock_tsync::StartError::Restart) =
+            sched::landlock_tsync::restrict_siblings(
+                cur, Some(dom), plan.propagate_no_new_privs)
+        {
+            return syscall::restart::restart_nointr();
+        }
+    } else if let Err(e) = crate::landlock::set_current_domain(dom) {
         return -(e.as_i32() as i64);
     }
-    if plan.tsync { sync_siblings(&cur, &dom, plan.propagate_no_new_privs); }
     0
 }
 
@@ -64,31 +75,5 @@ fn cap_sys_admin_in_own_user_ns(cur: &sched::Task) -> bool {
     match cur.namespace_owner(namespace_identity::NamespaceKind::User) {
         Some(own) => nscg::proc_ns::has_cap_for(cur, &own.pin(), sched::cap::SYS_ADMIN),
         None => cur.has_cap(sched::cap::SYS_ADMIN),
-    }
-}
-
-/// Replace every sibling thread's domain with `dom`.
-///
-/// The new domain replaces whatever a sibling had rather than stacking on it:
-/// the point of synchronising is that the whole process ends up under one
-/// policy, and a sibling that had sandboxed itself separately would otherwise
-/// end up under a different one. Each thread's domain is its own lock, and the
-/// caller's own was already set, so the caller is skipped here.
-/// # C: O(N_threads)
-fn sync_siblings(cur: &sched::Task, dom: &Arc<Domain>, nnp: bool) {
-    let tgid = cur.tgid.load(Ordering::Acquire);
-    for t in sched::registry::thread_group(tgid) {
-        if t.tid == cur.tid { continue; }
-        *t.landlock_domain.lock() = Some(dom.clone());
-        if nnp { t.no_new_privs.store(true, Ordering::Release); }
-    }
-}
-
-/// Turn on `no_new_privs` across the thread group without touching policy.
-/// # C: O(N_threads)
-fn propagate_no_new_privs(cur: &sched::Task) {
-    let tgid = cur.tgid.load(Ordering::Acquire);
-    for t in sched::registry::thread_group(tgid) {
-        t.no_new_privs.store(true, Ordering::Release);
     }
 }

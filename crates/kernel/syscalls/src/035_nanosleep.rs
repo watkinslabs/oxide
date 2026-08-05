@@ -18,7 +18,6 @@ fn validate_user_buf_writable(ptr: u64, len: u64, align: u64) -> Result<(), i64>
     validate_user_buf(ptr, len, align)
 }
 
-use sched::SleepWake;
 
 #[cfg(target_os = "oxide-kernel")]
 fn current_task() -> Option<&'static sched::Task> { sched::live::current() }
@@ -140,7 +139,7 @@ pub(crate) fn sleep_until_deadline(cur: &sched::Task, deadline: u64, rem: u64, i
         // `get_signal`; SIGCONT then resumes via `restart_syscall(2)` against
         // the SAME absolute expiry. B1456: stopping inside this loop reached
         // neither `write_remaining` nor `arm_restart_block`.
-        if cur.sleep_wake() == SleepWake::Deliver {
+        if cur.sleep_wake().interrupted() {
             return interrupt_result(cur, rem, deadline, is_abs);
         }
         // SAFETY: process context; the current task is enqueued on a scheduler
@@ -155,7 +154,7 @@ pub(crate) fn sleep_until_deadline(cur: &sched::Task, deadline: u64, rem: u64, i
 #[cfg(not(target_os = "oxide-kernel"))]
 pub(crate) fn sleep_until_deadline(cur: &sched::Task, deadline: u64, rem: u64, is_abs: bool) -> i64 {
     if monotonic_ns() >= deadline { return 0; }
-    if cur.sleep_wake() == SleepWake::Deliver {
+    if cur.sleep_wake().interrupted() {
         interrupt_result(cur, rem, deadline, is_abs)
     } else {
         -(syscall::Errno::Eintr.as_i32() as i64)
@@ -188,5 +187,5 @@ pub fn sys_nanosleep(args: &SyscallArgs) -> i64 {
 
 #[cfg(test)]
 pub fn nanosleep_actionable_signal_pending_for_test(cur: &sched::Task) -> bool {
-    cur.sleep_wake() == SleepWake::Deliver
+    cur.sleep_wake().interrupted()
 }

@@ -22,6 +22,15 @@ pub enum SleepWake {
     /// Linux `get_signal` (handler frame, job-control stop, SIG_DFL terminate,
     /// or an ERESTART* restart decision).
     Deliver,
+    /// Linux `TIF_NOTIFY_SIGNAL`: pseudo-signal task work must run before the
+    /// syscall is restarted, but there is no userspace signal to deliver.
+    Notify,
+}
+
+impl SleepWake {
+    /// Whether an interruptible wait must return to the common user tail.
+    /// # C: O(1)
+    pub const fn interrupted(self) -> bool { !matches!(self, Self::None) }
 }
 
 impl Task {
@@ -49,6 +58,7 @@ impl Task {
     /// # C: O(N_sig)
     pub fn sleep_wake(&self) -> SleepWake {
         use core::sync::atomic::Ordering;
+        if self.notify_signal.load(Ordering::Acquire) { return SleepWake::Notify; }
         let deliverable = self.deliverable_signals();
         let unmasked = self.pending_signals() & !self.sigmask.load(Ordering::Acquire);
         let mut ignored = unmasked & !deliverable;
@@ -110,6 +120,9 @@ impl WaitOutcome {
 /// a killable sleeper must stay asleep across a job-control stop.
 /// # C: O(N_sig)
 pub fn signal_pending_state(task: &Task, state: WaitState) -> bool {
+    if task.notify_signal.load(core::sync::atomic::Ordering::Acquire) {
+        return matches!(state, WaitState::Interruptible);
+    }
     let deliverable = task.deliverable_signals();
     if deliverable == 0 { return false; }
     match state {
@@ -139,6 +152,17 @@ mod tests {
     #[test]
     fn empty_pending_set_keeps_sleeping() {
         assert_eq!(task().sleep_wake(), SleepWake::None);
+    }
+
+    #[test]
+    fn notify_signal_breaks_interruptible_waits_without_becoming_a_real_signal() {
+        let t = task();
+        t.notify_signal.store(true, Ordering::Release);
+        assert_eq!(t.sleep_wake(), SleepWake::Notify);
+        assert!(t.sleep_wake().interrupted());
+        assert!(signal_pending_state(&t, WaitState::Interruptible));
+        assert!(!signal_pending_state(&t, WaitState::Killable));
+        assert_eq!(t.deliverable_signals(), 0);
     }
 
     #[test]

@@ -74,7 +74,7 @@ pub fn read_events(ctx_id: u64, min_nr: i64, nr: i64, events: u64, until: Until)
     let c = match crate::aio::ctx::lookup(ctx_id) { Some(c) => c, None => return (err(Errno::Einval), false) };
     if let Err(e) = validate_reap_counts(min_nr, nr) { return (err(e), false); }
     let cur = sched::live::current();
-    let signalled = || cur.map(|t| t.deliverable_signals() != 0).unwrap_or(false);
+    let signalled = || cur.as_ref().is_some_and(|t| t.sleep_wake().interrupted());
 
     let deadline = match until {
         Until::Forever => None,
