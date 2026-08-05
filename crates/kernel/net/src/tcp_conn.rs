@@ -9,6 +9,7 @@
 // - sack.rs       : SACK block helpers and ACK-with-SACK encoding.
 // - segment.rs    : wire-segment builders (ACK/data/SYN variants).
 // - timing.rs     : monotonic clocks used by TS/keepalive.
+// - delivery.rs   : transmit snapshots and ACK-derived delivery-rate samples.
 // - route_policy.rs: selected IPv4 route metrics applied to a new TCB.
 // - active_fastopen.rs: the client half of fast open — a SYN carrying data,
 //                   and what its answer teaches.
@@ -28,6 +29,7 @@ pub mod syn_opts;
 pub mod fastopen;
 pub mod active_fastopen;
 pub mod timing;
+pub mod delivery;
 pub mod route_policy;
 pub mod reqsk;
 
