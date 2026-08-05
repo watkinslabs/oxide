@@ -2,7 +2,7 @@ use super::*;
 use alloc::sync::Weak;
 
 use crate::backlog::limits::{DEV_RX_WEIGHT, NETDEV_BUDGET, NETDEV_MAX_BACKLOG};
-use crate::backlog::queue::{BacklogItem, RxVerdict, SoftnetRow};
+use crate::backlog::queue::{BacklogItem, BacklogPacket, RxVerdict, SoftnetRow};
 pub(crate) use crate::backlog::queue::SoftnetData;
 
 /// One receive source on this stack's poll list. `Weak` so a namespace that
@@ -33,7 +33,20 @@ impl NetStack {
     /// is done with it at this point; everything after is bottom-half work.
     /// # C: O(1)
     pub fn netif_rx(&self, iface: NetIfaceId, pkt: Pkt) -> RxVerdict {
-        self.softnet_this_cpu().lock().enqueue(BacklogItem { iface, pkt })
+        self.softnet_this_cpu().lock().enqueue(BacklogItem {
+            iface, generation: None, packet: BacklogPacket::L3(pkt),
+        })
+    }
+
+    /// Queue one complete Ethernet frame from a loadable module. Its ingress
+    /// generation is part of the item: an interface recycled before NET_RX
+    /// drains it must not receive the former device's packet. # C: O(1)
+    pub fn netif_rx_ethernet(&self, iface: NetIfaceId, generation: u64, pkt: Pkt,
+        metadata: crate::PacketRxMetadata) -> RxVerdict
+    {
+        self.softnet_this_cpu().lock().enqueue(BacklogItem {
+            iface, generation: Some(generation), packet: BacklogPacket::Ethernet { pkt, metadata },
+        })
     }
 
     /// Move every frame waiting on a poll-list device into the backlog.
@@ -81,11 +94,22 @@ impl NetStack {
     /// no longer running rather than delivering into a retired generation.
     /// # C: O(1) + protocol delivery
     fn deliver_backlog_item(&self, item: BacklogItem) {
-        let Some(lease) = self.ifaces.acquire_ingress(item.iface) else {
+        let lease = match item.generation {
+            Some(generation) => self.ifaces.acquire_ingress_generation(item.iface, generation),
+            None => self.ifaces.acquire_ingress(item.iface),
+        };
+        let Some(lease) = lease else {
             self.softnet_this_cpu().lock().note_dropped(1);
             return;
         };
-        self.deliver_loopback_pkt_in(&lease, item.pkt);
+        match item.packet {
+            BacklogPacket::L3(pkt) => self.deliver_loopback_pkt_in(&lease, pkt),
+            BacklogPacket::Ethernet { pkt, metadata } => {
+                if self.deliver_ethernet_meta_in(&lease, pkt.data(), metadata).is_err() {
+                    lease.device().record_rx_error();
+                }
+            }
+        }
     }
 
     /// True while any poll-list device still holds frames. # C: O(N poll entries)

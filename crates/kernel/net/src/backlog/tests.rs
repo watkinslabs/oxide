@@ -9,7 +9,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use super::limits::{NETDEV_BUDGET, NETDEV_MAX_BACKLOG, SOFTNET_COLUMNS};
-use super::queue::{BacklogItem, RxVerdict, SoftnetData, SoftnetRow};
+use super::queue::{BacklogItem, BacklogPacket, RxVerdict, SoftnetData, SoftnetRow};
 use super::softnet::render_softnet_stat;
 use crate::addr::NetIfaceId;
 use crate::loopback::LoopbackDev;
@@ -21,7 +21,7 @@ const IFACE: NetIfaceId = NetIfaceId::from_raw(1);
 fn item(byte: u8) -> BacklogItem {
     let mut pkt = Pkt::with_capacity(0, 1);
     pkt.put(1).unwrap()[0] = byte;
-    BacklogItem { iface: IFACE, pkt }
+    BacklogItem { iface: IFACE, generation: None, packet: BacklogPacket::L3(pkt) }
 }
 
 /// One packet that reaches protocol delivery and is rejected there: a
@@ -73,14 +73,17 @@ fn dequeue_splices_input_into_process_and_preserves_order() {
     assert_eq!(sd.row().process_qlen, 0);
 
     let first = sd.dequeue().expect("frame");
-    assert_eq!(first.pkt.data(), &[0]);
+    let BacklogPacket::L3(pkt) = first.packet else { panic!("loopback packet") };
+    assert_eq!(pkt.data(), &[0]);
     // The whole input queue moved across in one splice, as the reference does,
     // so producers append behind the drain rather than in front of it.
     assert_eq!(sd.row().input_qlen, 0);
     assert_eq!(sd.row().process_qlen, 3);
 
     for expect in 1..4u8 {
-        assert_eq!(sd.dequeue().expect("frame").pkt.data(), &[expect]);
+        let item = sd.dequeue().expect("frame");
+        let BacklogPacket::L3(pkt) = item.packet else { panic!("loopback packet") };
+        assert_eq!(pkt.data(), &[expect]);
     }
     assert!(sd.dequeue().is_none());
     assert!(sd.is_empty());
@@ -90,11 +93,15 @@ fn dequeue_splices_input_into_process_and_preserves_order() {
 fn frames_enqueued_during_a_drain_are_taken_on_the_next_splice() {
     let mut sd = SoftnetData::new();
     sd.enqueue(item(1));
-    assert_eq!(sd.dequeue().expect("frame").pkt.data(), &[1]);
+    let queued = sd.dequeue().expect("frame");
+    let BacklogPacket::L3(pkt) = queued.packet else { panic!("loopback packet") };
+    assert_eq!(pkt.data(), &[1]);
     // Process queue now empty, input queue empty. A frame produced by receive
     // processing itself (an ACK looped straight back) must still be picked up.
     sd.enqueue(item(2));
-    assert_eq!(sd.dequeue().expect("frame").pkt.data(), &[2]);
+    let queued = sd.dequeue().expect("frame");
+    let BacklogPacket::L3(pkt) = queued.packet else { panic!("loopback packet") };
+    assert_eq!(pkt.data(), &[2]);
 }
 
 #[test]
