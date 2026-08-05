@@ -27,3 +27,7 @@ control	guest-loader	glibc runtime	t_inet2	control-only	runner/loader control; n
 zram-lifecycle	swapon,swapoff	zram block/sysfs	t_zram_lifecycle	lifecycle	disposable hot-added zram attributes, initialized swap header, activation visibility, deactivation, reset, and hot-remove	--live	root	target-pass-exact	zram_lifecycle: PASS sysfs swap swapon swapoff reset
 ptrace-liveregs	ptrace	PTRACE_GETREGSET/SETREGSET NT_PRSTATUS	t_ptrace_getregs	partial-ordering	tracer sees the live program counter at a fault stop, not another register; PTRACE_SETREGSET redirects it
 ptrace-siginfo	ptrace	PTRACE_GETSIGINFO siginfo_t union arms	t_ptrace_siginfo	partial-ordering	a fault stop reports a fault si_code and the address the tracee dereferenced, not SI_USER with the tracer pid in si_addr
+444	landlock_create_ruleset	Landlock ABI 10	t_landlock	partial-ordering	ABI query, query admission, null/short buffers, cross-page head and extension-tail faults, zero/nonzero extension tails
+445	landlock_add_rule	path and network rules	t_landlock	partial-ordering	flags/fd/type precedence and cross-page path/network attribute faults
+446	landlock_restrict_self	Landlock domain	t_landlock	partial-ordering	privilege/flags/fd precedence and successful unprivileged restriction
+landlock-abi	landlock_create_ruleset	Landlock ABI 10	t_landlock_abi	complete	runtime query exactly matches the pinned target	-	unprivileged	target-pass-exact	landlock_abi: PASS 10
