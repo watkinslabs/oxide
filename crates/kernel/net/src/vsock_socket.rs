@@ -98,6 +98,7 @@ pub struct VsockSocket {
     pub sndtimeo_ns: core::sync::atomic::AtomicU64,
     /// Canonical Linux `sk_err`.
     pub error: crate::SocketError,
+    zerocopy: Spinlock<zerocopy::State, SockLockClass>,
     pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
     /// SHUT_RD latch → read returns EOF.
     pub read_shut: core::sync::atomic::AtomicBool,
@@ -153,6 +154,7 @@ impl VsockSocket {
             sndtimeo_ns: core::sync::atomic::AtomicU64::new(0),
             connect_timeout_ns: core::sync::atomic::AtomicU64::new(vsock::VSOCK_CONNECT_TIMEOUT_NS),
             error: crate::SocketError::new(),
+            zerocopy: Spinlock::new(zerocopy::State::new()),
             bpf_filter: Arc::new(crate::bpf_filter::SocketFilter::new()),
             read_shut: core::sync::atomic::AtomicBool::new(false),
             dgram_write_shut: core::sync::atomic::AtomicBool::new(false),
@@ -187,6 +189,7 @@ impl VsockSocket {
             core::sync::atomic::Ordering::Release);
         child.connect_timeout_ns.store(listener.connect_timeout_ns.load(core::sync::atomic::Ordering::Acquire),
             core::sync::atomic::Ordering::Release);
+        child.inherit_zerocopy(listener);
         child
     }
 
@@ -319,6 +322,7 @@ impl VsockSocket {
 
 mod lifecycle;
 mod io;
+mod zerocopy;
 mod file_ops;
 mod shutdown;
 pub use file_ops::{make_vsock_socket_inode, vsock_arc_from_inode, vsock_from_inode};
@@ -446,10 +450,12 @@ impl VsockSocket {
             let mut mask = if read_shut { POLL_IN | POLL_RDHUP } else { 0 };
             if !write_shut { mask |= POLL_OUT; }
             if read_shut && write_shut { mask |= POLL_HUP; }
-            return if self.has_pending_recv_error() { mask | POLL_ERR } else { mask };
+            return if self.has_pending_recv_error() || self.has_zerocopy_completion()
+                { mask | POLL_ERR } else { mask };
         }
         let kind = self.kind.lock();
-        let pending = if self.has_pending_recv_error() { POLL_ERR } else { 0 };
+        let pending = if self.has_pending_recv_error() || self.has_zerocopy_completion()
+            { POLL_ERR } else { 0 };
         match &*kind {
             VsockKind::Conn(c) => {
                 let mut mask = 0;

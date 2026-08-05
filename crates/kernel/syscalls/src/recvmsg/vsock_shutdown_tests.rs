@@ -45,6 +45,46 @@ fn connected_recvmsg_clears_source_length_without_synthesizing_a_peer_address() 
 }
 
 #[test]
+fn zerocopy_completion_uses_the_vsock_error_queue_abi() {
+    let (sock, _) = connected();
+    sock.set_zerocopy(1).unwrap();
+    sock.complete_zerocopy_send(true, 1);
+    let mut name = [0xa5u8; 16];
+    let mut control = [0u8; 32];
+    let mut header = [0u8; 56];
+    header[8..12].copy_from_slice(&(name.len() as u32).to_ne_bytes());
+    let user = RecvUser {
+        msgp: header.as_mut_ptr() as u64,
+        name: name.as_mut_ptr() as u64,
+        namelen: name.len() as u32,
+        name_len_ptr: 0,
+        control: control.as_mut_ptr() as u64,
+        controllen: control.len(),
+        iov: alloc::vec![],
+        capacity: 0,
+    };
+
+    assert_eq!(recv_pinned(&sock, false, &user, net::uapi::MSG_ERRQUEUE), 0);
+    assert_eq!(u32::from_ne_bytes(header[8..12].try_into().unwrap()), 0);
+    assert_eq!(name, [0xa5; 16]);
+    assert_eq!(u64::from_ne_bytes(header[40..48].try_into().unwrap()), 32);
+    assert_eq!(u32::from_ne_bytes(header[48..52].try_into().unwrap()),
+        net::uapi::MSG_ERRQUEUE as u32);
+    assert_eq!(u64::from_ne_bytes(control[..8].try_into().unwrap()), 32);
+    assert_eq!(i32::from_ne_bytes(control[8..12].try_into().unwrap()),
+        net::uapi::SOL_VSOCK as i32);
+    assert_eq!(i32::from_ne_bytes(control[12..16].try_into().unwrap()),
+        net::uapi::VSOCK_RECVERR as i32);
+    assert_eq!(u32::from_ne_bytes(control[16..20].try_into().unwrap()), 0);
+    assert_eq!(control[20], net::socket_error::SO_EE_ORIGIN_ZEROCOPY);
+    assert_eq!(control[21], 0);
+    assert_eq!(control[22], net::socket_error::SO_EE_CODE_ZEROCOPY_COPIED);
+    assert_eq!(u32::from_ne_bytes(control[24..28].try_into().unwrap()), 0);
+    assert_eq!(u32::from_ne_bytes(control[28..32].try_into().unwrap()), 0);
+    assert_eq!(recv_pinned(&sock, false, &user, net::uapi::MSG_ERRQUEUE), err(Errno::Eagain));
+}
+
+#[test]
 fn zero_length_recvmsg_checks_connection_before_returning() {
     for typ in [net::socket_args::SOCK_STREAM, net::socket_args::SOCK_SEQPACKET] {
         let sock = Arc::new(net::vsock_socket::VsockSocket::new_type(typ));
