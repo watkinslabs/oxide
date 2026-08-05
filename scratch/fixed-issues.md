@@ -480,3 +480,4 @@ open issue. Live rows that still need the work carry it in their own row.
 
 
 ### Process / exec
+| FIXED F80902 | low | accept4 copy-out failure relied on implicit `Drop` and had no hosted proof that the accepted child was released while returning the original copy error. | `net::sock::complete_accepted` is the canonical ungated finalization owner; it releases the child before returning the ABI copy-out error, and hosted tests pin both failure release and successful retention. | F80902-accept4-copyout-coverage |

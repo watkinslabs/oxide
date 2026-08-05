@@ -26,6 +26,7 @@
 // - tcp_lifecycle: TCP bind, listen, and active-open reservation transitions.
 // - bind_admission: canonical security admission for bind side effects.
 // - connect_security: canonical generic connect security admission token.
+// - accept_finalize: accepted-child copy-out completion and failure release.
 // - connect_admission: lifecycle-locked INET connect preflight and commit.
 // - legacy_ioctl: protocol-owned terminal results for legacy socket ioctls.
 // - ops: bind/connect/listen/accept lifecycle work functions.
@@ -77,6 +78,7 @@ mod raw_bind;
 mod bind_admission;
 pub mod nonlocal;
 mod connect_security;
+mod accept_finalize;
 #[cfg(target_os = "oxide-kernel")]
 mod connect_admission;
 mod tcp_rcvbuf;
@@ -130,6 +132,7 @@ pub use iface::*;
 pub use bind_admission::{admit_bind, BindAdmission};
 pub use nonlocal::permission as nonlocal_permission;
 pub use connect_security::{admit_connect, ConnectAdmission};
+pub use accept_finalize::{Accepted, complete_accepted};
 #[cfg(target_os = "oxide-kernel")]
 pub use connect_admission::{
     preflight_connect, preflight_connect_admitted, ConnectTransaction,
