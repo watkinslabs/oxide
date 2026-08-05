@@ -27,6 +27,7 @@
 // - bind_admission: canonical security admission for bind side effects.
 // - connect_security: canonical generic connect security admission token.
 // - admission: canonical listen and accept security admission tokens.
+// - bind_policy: IP bind-port option snapshot shared by UDP and TCP.
 // - accept_finalize: accepted-child copy-out completion and failure release.
 // - connect_admission: lifecycle-locked INET connect preflight and commit.
 // - legacy_ioctl: protocol-owned terminal results for legacy socket ioctls.
@@ -80,6 +81,7 @@ mod bind_admission;
 pub mod nonlocal;
 mod connect_security;
 mod admission;
+mod bind_policy;
 mod accept_finalize;
 #[cfg(target_os = "oxide-kernel")]
 mod connect_admission;
@@ -135,6 +137,7 @@ pub use bind_admission::{admit_bind, BindAdmission};
 pub use nonlocal::permission as nonlocal_permission;
 pub use connect_security::{admit_connect, ConnectAdmission};
 pub use admission::{admit_accept, admit_listen, AcceptAdmission, ListenAdmission};
+pub use bind_policy::{BindPortPolicy, bind_port_policy};
 pub use accept_finalize::{Accepted, complete_accepted};
 #[cfg(target_os = "oxide-kernel")]
 pub use connect_admission::{

@@ -13,12 +13,6 @@ pub enum BoundAddr {
     Inet6 { ip: crate::Ipv6Addr, port: u16, scope_id: u32 },
 }
 
-/// Whether this bind leaves its port to connect time. # C: O(1)
-fn defers_port(sock: &InetSocket, requested_port: u16) -> bool {
-    crate::local_port::defers_port(requested_port,
-        sock.opts.ip.flag(crate::sock_opts::sol_ip::flag::BIND_ADDRESS_NO_PORT))
-}
-
 /// Bind a socket to a typed address per `bind(2)`.
 /// # C: O(1) for inet, O(N_unix_listeners) for unix
 pub fn bind(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr) -> Result<(), NetError> {
@@ -70,13 +64,14 @@ pub fn bind_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr,
                 let iface = bound_iface(sock)?;
                 // `IP_BIND_ADDRESS_NO_PORT`: the address is claimed now, the
                 // port at connect/send time.
-                if defers_port(sock, port) { *sock.local_ip.lock() = ip; return Ok(()); }
+                let policy = super::bind_port_policy(sock, port);
+                if policy.defer { *sock.local_ip.lock() = ip; return Ok(()); }
                 let (port, endpoint) = if port == 0 {
                     alloc_ephemeral_udp4_owned(sock.owner.clone(), ip, sock.error.clone(), iface,
                                          sock.opts.reuseaddr.clone(), sock.opts.reuseport.clone(),
                                          sock.opts.ip_mtu_discover.clone(), sock.opts.udp.gro.clone(),
                                          sock.peer.clone(), sock.bpf_filter.clone(), sock.mcast.clone(),
-                                         sock.opts.ip.local_port_range())?
+                                         policy.range)?
                 } else {
                     (port, stack().bind_udp_socket_owned(
                         sock.owner.clone(), ip, port, iface, sock.error.clone(),
@@ -104,7 +99,8 @@ pub fn bind_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr,
                 if sock.released.load(core::sync::atomic::Ordering::Acquire) { return Err(NetError::Einval); }
                 if local_port.is_some() || sock.udp6.lock().is_some() { return Err(NetError::Einval); }
                 let iface = crate::sock_v6::scoped_iface(sock, ip, scope_id)?;
-                if defers_port(sock, port) { *sock.local_ip6.lock() = ip; return Ok(()); }
+                let policy = super::bind_port_policy(sock, port);
+                if policy.defer { *sock.local_ip6.lock() = ip; return Ok(()); }
                 let (port, endpoint) = if port == 0 {
                     alloc_ephemeral_udp6_owned(sock.owner.clone(), ip, sock.error.clone(), iface,
                                          sock.opts.reuseaddr.clone(), sock.opts.reuseport.clone(),
@@ -113,7 +109,7 @@ pub fn bind_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr,
                                          sock.opts.ipv6_mtu_discover.clone(),
                                          sock.opts.udp.no_check6_rx.clone(), sock.opts.udp.gro.clone(),
                                          sock.bpf_filter.clone(), sock.mcast.clone(),
-                                         sock.opts.ip.local_port_range())?
+                                         policy.range)?
                 } else {
                     (port, stack().bind_udp6_socket_owned(
                         sock.owner.clone(), ip, port, iface, sock.error.clone(),

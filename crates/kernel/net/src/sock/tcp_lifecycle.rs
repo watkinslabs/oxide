@@ -22,11 +22,10 @@ pub(super) fn bind_tcp(sock: &alloc::sync::Arc<InetSocket>, ip: crate::IpAddr,
     // `IP_BIND_ADDRESS_NO_PORT`: claim the address now and leave the port to
     // `connect`, so the 4-tuple hash may reuse a port another connection to a
     // different destination already holds.
-    let defer = crate::local_port::defers_port(requested_port,
-        sock.opts.ip.flag(crate::sock_opts::sol_ip::flag::BIND_ADDRESS_NO_PORT));
-    if !defer {
+    let policy = super::bind_port_policy(sock, requested_port);
+    if !policy.defer {
         let bind = stack().tcp_reserve_owned(sock.owner.clone(), ip, requested_port, iface,
-            reuseaddr, reuseport, tcp_v6only(sock, ip), sock.opts.ip.local_port_range())?;
+            reuseaddr, reuseport, tcp_v6only(sock, ip), policy.range)?;
         *local_port = Some(bind.local.port);
         *sock.tcp_bind.lock() = Some(bind);
     }
@@ -51,11 +50,12 @@ fn ensure_tcp_bind(sock: &InetSocket, local_ip: crate::IpAddr,
     let reuseaddr = sock.opts.reuseaddr.load(Ordering::Acquire) != 0;
     let reuseport = sock.opts.reuseport.load(Ordering::Acquire) != 0;
     let v6only = tcp_v6only(sock, local_ip);
+    let policy = super::bind_port_policy(sock, 0);
     let bind = match peer {
         Some(peer) => stack().tcp_reserve_connect_owned(sock.owner.clone(), local_ip, 0, iface,
-            reuseaddr, reuseport, v6only, peer, sock.opts.ip.local_port_range())?,
+            reuseaddr, reuseport, v6only, peer, policy.range)?,
         None => stack().tcp_reserve_owned(sock.owner.clone(), local_ip, 0, iface,
-            reuseaddr, reuseport, v6only, sock.opts.ip.local_port_range())?,
+            reuseaddr, reuseport, v6only, policy.range)?,
     };
     *local_port = Some(bind.local.port);
     *sock.tcp_bind.lock() = Some(bind.clone());
