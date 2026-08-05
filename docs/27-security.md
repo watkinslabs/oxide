@@ -91,11 +91,11 @@ foreign CPUs never overwrite a running task's security state. Discovery repeats
 until a full scan finds no new child, then all parked siblings cross the commit
 barrier together and the caller commits last.
 
-Errata are tracked separately from the ABI number. Oxide advertises errata 1
-(TCP-only port rights) and 2 (same-process signal scope). Erratum 3
-(disconnected directory hierarchy handling) stays unadvertised until its
-known-issue row is fixed. The absence of an errata bit is an intentional,
-userspace-visible statement, not permission to remove the goal.
+Errata are tracked separately from the ABI number.
+Oxide advertises errata 1 (TCP-only port rights), 2 (same-process signal scope), and 3 (disconnected directory hierarchy handling).
+Refer checks combine rights from a hierarchy disconnected by a move outside a
+bind mount with rights from the saved bind-mount root and its mount-point
+ancestry, so neither half can widen `LANDLOCK_ACCESS_FS_REFER` policy.
 
 Rulesets are inherited and cannot be loosened. Filesystem, network, and scope
 decisions all consume one immutable per-task domain; no second policy registry
