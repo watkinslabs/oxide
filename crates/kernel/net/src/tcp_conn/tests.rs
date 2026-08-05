@@ -69,6 +69,18 @@ fn receiver_mss_uses_live_policy_then_validated_payload() {
 }
 
 #[test]
+fn receive_ssthresh_caps_the_advertised_window_and_tracks_growth() {
+    let lo = crate::addr::Ipv4Addr::LOOPBACK;
+    let mut c = TcpConn::new_client(ep(lo, 5000), ep(lo, 80), 1);
+    c.rcv_buf_cap = 4_000;
+    c.rcv_ssthresh = 1_000;
+    assert_eq!(c.advertised_rcv_wnd(), 1_000);
+    c.rcv_peak = 3_000;
+    c.rcv_autotune();
+    assert_eq!(c.rcv_ssthresh, 8_000);
+}
+
+#[test]
 fn tcp_info_notsent_bytes_follow_the_canonical_send_queue() {
     let lo = crate::addr::Ipv4Addr::LOOPBACK;
     let mut client = TcpConn::new_client(ep(lo, 5001), ep(lo, 80), 1000);
