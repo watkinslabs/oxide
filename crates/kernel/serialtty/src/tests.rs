@@ -98,10 +98,9 @@ fn rx_line_reads_and_echoes_to_uart() {
     let mut buf = [0u8; 32];
     let n = tty.read(&mut buf).bytes_or_zero();
     assert_eq!(&buf[..n], b"cmd\n");
-    // Echo went out driver_write → UART. N_TTY echoes the typed bytes
-    // (the newline echoes as the canonical line terminator); OPOST is the
-    // output-write path, not the echo path, so the echo is "cmd\n".
-    assert_eq!(out.tx(), b"cmd\n");
+    // Echo and user writes share the output policy: default OPOST|ONLCR maps
+    // the echoed newline to CRLF while the canonical input remains LF.
+    assert_eq!(out.tx(), b"cmd\r\n");
 }
 
 #[test]

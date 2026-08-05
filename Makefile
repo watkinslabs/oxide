@@ -38,6 +38,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         qemu-x86 qemu-arm qemu-x86-debug qemu-arm-debug qemu-mcp \
         qemu-x86-grub \
         smoke-cmdline-x86 smoke-cmdline-arm smoke-cmdline \
+        smoke-devpts-x86 smoke-devpts-arm smoke-devpts \
         smoke-af-packet-diff-x86 smoke-af-packet-diff-arm smoke-af-packet-diff \
         smoke-wait-diff-x86 smoke-wait-diff-arm smoke-wait-diff wait-diff-selftest \
         frame-gate frame-gate-x86 frame-gate-arm \
@@ -121,7 +122,11 @@ counters:
 # (C255), so `make ci` has been unconditionally red and therefore unread. The
 # ratchet holds the line while the backlog is burned down; swap it back to
 # `lint` once the count reaches zero.
-ci: lint-ratchet audit-counts matrix-gate hosted-gate test-build-gate test build build-debug frame-gate stack-gate irq-gate
+# Keep this prerequisite order even under `make -j`: debug-all and default use
+# the same canonical ELF paths, and the size/depth gates contractually inspect
+# the default binary. Build debug-all first, then overwrite it with default.
+.NOTPARALLEL: ci
+ci: lint-ratchet audit-counts matrix-gate hosted-gate test-build-gate test build-debug build frame-gate stack-gate irq-gate
 
 # Structural gate on the syscall compliance ledger: one row per syscall number,
 # the declared column count on every row (escape-aware, so `\|` inside a cell is
@@ -224,6 +229,22 @@ smoke: x86 arm
 	@rc=0; \
 	./tools/boot-smoke.sh x86 $(SMOKE_TIMEOUT) & p1=$$!; \
 	./tools/boot-smoke.sh arm $(SMOKE_TIMEOUT) & p2=$$!; \
+	wait $$p1 || rc=1; \
+	wait $$p2 || rc=1; \
+	exit $$rc
+
+# Devpts mount-instance gate. The guest opens a real PTY through /dev/ptmx and
+# reports the created slave's mode/owner; the probe cannot pass on command echo
+# because the complete marker exists only in Python's formatted output.
+DEVPTS_SMOKE_TIMEOUT ?= 600
+smoke-devpts-x86: x86
+	./tools/boot-smoke-devpts.sh x86 $(DEVPTS_SMOKE_TIMEOUT)
+smoke-devpts-arm: arm
+	./tools/boot-smoke-devpts.sh arm $(DEVPTS_SMOKE_TIMEOUT)
+smoke-devpts: x86 arm
+	@rc=0; \
+	./tools/boot-smoke-devpts.sh x86 $(DEVPTS_SMOKE_TIMEOUT) & p1=$$!; \
+	./tools/boot-smoke-devpts.sh arm $(DEVPTS_SMOKE_TIMEOUT) & p2=$$!; \
 	wait $$p1 || rc=1; \
 	wait $$p2 || rc=1; \
 	exit $$rc

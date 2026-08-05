@@ -12,6 +12,10 @@ use crate::ids;
 use crate::inodes::{make_master_inode, make_ptmx_sentinel_inode, make_slave_inode};
 use crate::pair::LockedPair;
 
+fn pair(n: u32) -> Arc<LockedPair> {
+    LockedPair::new(n, crate::DevptsFs::new(crate::mount_opts::PtsMountOpts::default()), 1)
+}
+
 /// An inode that copies a devpts endpoint's NUMBER, fsid and CharDev type but
 /// carries no devpts backend state — the shape the `ino & KIND_MASK` resolver
 /// accepted as a live pty.
@@ -23,8 +27,8 @@ fn foreign_lookalike(ino: u64, ty: FileType, fsid: u64) -> InodeRef {
 
 #[test]
 fn both_halves_resolve_to_their_own_pair_and_side() {
-    let a = LockedPair::new(0);
-    let b = LockedPair::new(1);
+    let a = pair(0);
+    let b = pair(1);
     let (ma, sa) = (make_master_inode(Arc::clone(&a)), make_slave_inode(Arc::clone(&a), &crate::mount_opts::PtsMountOpts::default(), 0, 0));
     let mb = make_master_inode(Arc::clone(&b));
 
@@ -42,7 +46,7 @@ fn both_halves_resolve_to_their_own_pair_and_side() {
 
 #[test]
 fn foreign_inode_with_the_same_number_is_rejected() {
-    let pair = LockedPair::new(7);
+    let pair = pair(7);
     let master = make_master_inode(Arc::clone(&pair));
     let slave = make_slave_inode(Arc::clone(&pair), &crate::mount_opts::PtsMountOpts::default(), 0, 0);
 

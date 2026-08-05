@@ -12,7 +12,7 @@ cd "$(dirname "$0")/../vendor"
 mkdir -p grub
 cd grub
 
-if [ -f arm64-efi/modinfo.sh ] && [ -f arm64-efi/linux.mod ]; then
+if [ -f arm64-efi/modinfo.sh ] && [ -f arm64-efi/linux.mod ] && [ -f arm64-efi/archelp.mod ]; then
   echo "fetch-grub: arm64-efi modules already vendored"
   exit 0
 fi

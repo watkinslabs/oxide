@@ -3,18 +3,17 @@
 // `crate::identity` resolves against — a pty inode built anywhere else would
 // be invisible to every ioctl and ctty path, by design.
 
-use alloc::format;
 use alloc::sync::Arc;
+use alloc::string::ToString;
 
 use vfs::{FileOps, FileType, Inode, InodeBuilder, InodeRef, KResult, VfsError};
 use vfs::{default_inode_ops, mk_mode};
 
 use crate::ids;
 use crate::identity::PtyEndpointData;
-use crate::pair::{self, LockedPair};
+use crate::pair::LockedPair;
 
 const PTY_MASTER_MODE: u16 = 0o666;
-const PTY_SLAVE_MODE: u16 = 0o620;
 
 /// The pty `file_operations` vectors. Kernel-only: they run the job-control
 /// gate and the yield-block read loop, which live in `tty::jobctl::check` /
@@ -86,33 +85,48 @@ fn endpoint_inode_owned(
     b.build()
 }
 
-/// Allocate a fresh PTY pair. Registers a slave inode at `/dev/pts/<n>` and
-/// returns the master inode + pts number. `ENOSPC` once the pts index space is
-/// exhausted (Linux `devpts_new_index` returns `-ENOSPC` past `pty.max`) —
-/// wrapping instead would give two live ptys one `st_ino`.
-/// # C: O(N_devfs_entries)
-pub fn allocate_pair(fsuid: u32, fsgid: u32) -> KResult<(InodeRef, u32)> {
-    let opts = crate::fs::devpts_fs().opts();
-    let n = pair::next_index();
-    if n >= ids::MAX_PTY_PAIRS { return Err(VfsError::Enospc); }
-    // `max=` is this mount's pty ceiling (Linux allocates the index with
-    // `ida_alloc_max(.., opts->max - 1)`), on top of the build-time bound above.
-    if !opts.index_permitted(n) { return Err(VfsError::Enospc); }
-    let pair = LockedPair::new(n);
+/// Rollback guard for a pair allocated before its master file is installed.
+/// A failed fd reservation, permission check, or open hook drops this guard and
+/// removes the slave/index; a successful install commits lifetime to endpoint
+/// last-close.
+pub struct PtyAllocation {
+    pair: Arc<LockedPair>,
+    master: InodeRef,
+    committed: bool,
+}
+
+impl PtyAllocation {
+    /// Master inode returned by the ptmx open. # C: O(1)
+    pub fn master(&self) -> InodeRef { Arc::clone(&self.master) }
+    /// Shared pair for tests and in-kernel consumers. # C: O(1)
+    pub fn pair(&self) -> Arc<LockedPair> { Arc::clone(&self.pair) }
+    /// Allocated per-instance index. # C: O(1)
+    pub fn index(&self) -> u32 { self.pair.pts_num() }
+    /// Transfer cleanup to endpoint last-close. # C: O(1)
+    pub fn commit(&mut self) { self.committed = true; }
+}
+
+impl Drop for PtyAllocation {
+    fn drop(&mut self) { if !self.committed { self.pair.release_now(); } }
+}
+
+/// Allocate a pair in one devpts mount and publish its one slave node there.
+/// # C: O(max / 64 + log N)
+pub fn allocate_pair(instance: &Arc<crate::DevptsFs>, devpts_mnt_id: u64,
+                     fsuid: u32, fsgid: u32) -> KResult<PtyAllocation> {
+    let opts = instance.opts();
+    let n = instance.alloc_index()?;
+    let pair = LockedPair::new(n, Arc::clone(instance), devpts_mnt_id);
     // Linux pty default: ICANON | ECHO | ISIG. tty::Pair::new starts raw; flip
     // to cooked here so userspace sees the expected default.
     pair.with_pair(|p| p.termios = tty::pty::default_termios());
-    pair::publish(n, &pair);
     let master = make_master_inode(Arc::clone(&pair));
-    let slave  = make_slave_inode(pair, &opts, fsuid, fsgid);
-    // Mirror the slave into BOTH: (a) the devfs registry at `/dev/pts/<n>`
-    // (the legacy fallback the boot /dev/pts setup still resolves through when
-    // no real devpts is mounted), and (b) THIS instance's first-class devpts
-    // root under the mount-relative name `<n>` (so a `mount -t devpts` at
-    // /dev/pts resolves the same slave through its own SuperBlock). D36/D37.
-    devfs::register_owned(format!("/dev/pts/{}", n), Arc::clone(&slave));
-    crate::fs::devpts_fs().root_dir().insert_path(&format!("{}", n), slave);
-    Ok((master, n))
+    let slave  = make_slave_inode(Arc::clone(&pair), &opts, fsuid, fsgid);
+    if let Err(e) = instance.root_dir().insert_leaf(&n.to_string(), slave) {
+        pair.release_now();
+        return Err(e);
+    }
+    Ok(PtyAllocation { pair, master, committed: false })
 }
 
 /// `file_operations` for the `/dev/ptmx` sentinel — read/write return EIO
@@ -145,8 +159,8 @@ pub fn make_ptmx_sentinel_inode() -> InodeRef {
 /// working pty factory stays the `/dev/ptmx` open-path special-case
 /// (preserving current semantics, `28§5`); this node exists so the devpts root
 /// is structurally complete (it stats/lists as a 0o666 chardev). # C: O(1)
-pub(crate) fn make_pts_ptmx_inode() -> InodeRef {
-    InodeBuilder::new(ids::PTMX_MOUNT_INO, mk_mode(FileType::CharDev, PTY_MASTER_MODE),
+pub(crate) fn make_pts_ptmx_inode(mode: u16) -> InodeRef {
+    InodeBuilder::new(ids::PTMX_MOUNT_INO, mk_mode(FileType::CharDev, mode),
                       default_inode_ops(), Arc::new(PtmxSentinelFileOps))
         .fsid(ids::DEVPTS_FSID).rdev(ids::PTMX_RDEV)
         .build()
@@ -161,12 +175,16 @@ mod slave_stamp_tests {
         crate::mount_opts::opts_for_mount(data, &[]).expect("valid devpts options")
     }
 
+    fn pair(n: u32) -> Arc<LockedPair> {
+        LockedPair::new(n, crate::DevptsFs::new(PtsMountOpts::default()), 1)
+    }
+
     /// The mount's `mode=`/`gid=` land ON the slave node. This is the whole
     /// user-visible point: `mode=620,gid=5` is what makes a terminal writable
     /// by the `tty` group and nobody else.
     #[test]
     fn a_slave_node_carries_the_mounts_mode_and_group() {
-        let pair = LockedPair::new(0);
+        let pair = pair(0);
         let i = make_slave_inode(pair, &opts("gid=5,mode=620"), 1000, 1000);
         assert_eq!(i.perm(), Some(0o620));
         assert_eq!(i.gid(), Some(5), "gid= from the mount");
@@ -177,7 +195,7 @@ mod slave_stamp_tests {
     /// the opener — NOT the 0o620 that used to be hardcoded here.
     #[test]
     fn an_option_less_mount_gives_an_owner_only_slave() {
-        let pair = LockedPair::new(1);
+        let pair = pair(1);
         let i = make_slave_inode(pair, &PtsMountOpts::default(), 1000, 1000);
         assert_eq!(i.perm(), Some(0o600), "DEVPTS_DEFAULT_MODE, not the old hardcode");
         assert_eq!((i.uid(), i.gid()), (Some(1000), Some(1000)));
@@ -186,7 +204,7 @@ mod slave_stamp_tests {
     /// An explicit `uid=`/`gid=` overrides the opener entirely, including to 0.
     #[test]
     fn explicit_ownership_overrides_the_opener() {
-        let pair = LockedPair::new(2);
+        let pair = pair(2);
         let i = make_slave_inode(pair, &opts("uid=0,gid=0,mode=666"), 1000, 1000);
         assert_eq!((i.uid(), i.gid()), (Some(0), Some(0)));
         assert_eq!(i.perm(), Some(0o666));
@@ -196,7 +214,7 @@ mod slave_stamp_tests {
     /// the stamping must not disturb the node's identity.
     #[test]
     fn the_node_is_still_a_pty_char_device() {
-        let pair = LockedPair::new(3);
+        let pair = pair(3);
         let i = make_slave_inode(pair, &opts("mode=620"), 0, 0);
         assert_eq!(i.file_type(), FileType::CharDev);
         assert_eq!(i.fsid(), ids::DEVPTS_FSID);
