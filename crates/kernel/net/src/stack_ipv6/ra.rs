@@ -81,7 +81,7 @@ impl NetStack {
                 && route.iface == iface && route.prefix_len == p.prefix_len && route.dst == prefix));
             if onlink && p.valid_lifetime != 0 {
                 let src_hint = self.v6_select_source_current(iface, prefix,
-                    autoconf.then_some(addr));
+                    autoconf.then_some(addr), 0);
                 replacements.push(Route6Entry { table: crate::policy_rule::RT_TABLE_MAIN,
                     dst: prefix, prefix_len: p.prefix_len,
                     iface, gateway: None, src_hint,
@@ -93,7 +93,7 @@ impl NetStack {
             replacements.push(Route6Entry { table: crate::policy_rule::RT_TABLE_MAIN,
                 dst: Ipv6Addr::ANY, prefix_len: 0, iface,
                 gateway: Some(router), src_hint: self.v6_select_source_current(iface, router,
-                    slaac_hints.last().map(|(_, addr)| *addr)),
+                    slaac_hints.last().map(|(_, addr)| *addr), 0),
                 origin: Route6Origin::RouterAdvertisementDefault { router,
                     valid_until_ns: lifetime_deadline(now_ns, ra.router_lifetime as u32) } });
         }

@@ -168,7 +168,8 @@ fn xmit_raw6_with_sticky(sock: &InetSocket, endpoint: &crate::raw6::Raw6Endpoint
     let (_, scoped) = sticky_pktinfo_choice(crate::Ipv6Addr::ANY,
         sock.opts.ipv6.sticky_pktinfo(), scoped);
     stack().send_raw6_with_frag_size(endpoint, dst_ip, scoped,
-        protocol_override, payload, hop, pmtudisc, sock.opts.ipv6.frag_size(), &effective)
+        protocol_override, payload, hop, pmtudisc, sock.opts.ipv6.frag_size(), &effective,
+        sock.opts.ipv6.srcprefs())
 }
 
 fn ensure_udp6_bound(sock: &InetSocket, dst_ip: crate::Ipv6Addr, scope_id: u32)
@@ -310,6 +311,7 @@ pub fn sendto_v6(sock: &InetSocket,
                     &sock.owner, src_ip, src_port, dst_ip, dst_port, segment, iface, hop, tclass,
                     pmtudisc, frag_size, no_check, sock.opts.ipv6.flow_label(),
                     sock.opts.ipv6.flag(crate::sock_opts::sol_ipv6::flag::AUTOFLOWLABEL),
+                    sock.opts.ipv6.srcprefs(),
                 )?;
             }
             drain_loopback();
@@ -320,6 +322,7 @@ pub fn sendto_v6(sock: &InetSocket,
         &sock.owner, src_ip, src_port, dst_ip, dst_port, payload,
         iface, hop, tclass, pmtudisc, frag_size, no_check, sock.opts.ipv6.flow_label(),
         sock.opts.ipv6.flag(crate::sock_opts::sol_ipv6::flag::AUTOFLOWLABEL),
+        sock.opts.ipv6.srcprefs(),
     )?;
     drain_loopback();
     Ok(payload.len())
