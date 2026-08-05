@@ -36,8 +36,8 @@ reclassified.
 | `DEFECT` | 0 | 3 | 15 | 28 | 46 |
 | `MISSING` | 0 | 0 | 10 | 11 | 21 |
 | `COVERAGE` | 0 | 2 | 8 | 13 | 23 |
-| `INFRA` | 0 | 1 | 12 | 11 | 24 |
-| **Total** | **0** | **6** | **46** | **62** | **114** |
+| `INFRA` | 0 | 1 | 11 | 11 | 23 |
+| **Total** | **0** | **6** | **45** | **62** | **113** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
