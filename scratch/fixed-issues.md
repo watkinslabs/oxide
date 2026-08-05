@@ -108,6 +108,14 @@ shape they were retired in.
 | FIXED 118603986 | low | `AT_HWCAP2`'s `HWCAP2_POE` bit was not published, so a userspace library probing permission-overlay support saw nothing even once the overlay was on. | The canonical CPU-to-exec auxiliary-vector path now emits `AT_HWCAP2`; bit 63 appears only after the EL0 permission-overlay ABI is enabled. Ordinary exec, usermode helpers, and both smoke loaders carry the same word. Hosted ARM capability tests, the full pre-push gate, and post-merge UART smokes passed. | D503-arm64-poe-hwcap2-ledger |
 | FIXED dc170eb04 | med | A valid `POE_MAGIC` record placed in a signal frame's permitted `extra_context` area was accepted but its `POR_EL0` value was discarded on `rt_sigreturn`. | Restore now selects the POE record from the same primary-or-extension region scan as the FPSIMD record, while retaining cross-region duplicate rejection. Focused ARM signal tests, the full pre-push gate, and post-merge UART smokes passed. | D504-arm64-poe-extra-context-restore-ledger |
 
+## Memory / MM
+
+| Status | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|
+| FIXED F822 | med | A private file mapping's COW pages had no anonymous reverse-map owner, so the default core filter could reduce modified data to an identifying header page. | Private COW installation now creates and attaches the VMA's canonical anonymous rmap owner, records the new page there, and marks VMA-owned private-page history. VMM and coredump selection regressions cover the classification. | F822-coredump-mapping-classification |
+| FIXED F822 | med | io_uring and aio ring mappings backed by a kernel frame classified as private memory with no backing and were omitted from core dumps. | The canonical KernelFrame backing is classified as its shared mapped object class; the coredump adapter regression pins the mapped-shared filter decision. | F822-coredump-mapping-classification |
+| FIXED F822 | low | An anonymous mapping became indistinguishable from untouched memory after all resident pages were evicted, so the default filter omitted it. | VMA-owned anonymous-page history, rather than RSS, now drives the private filter class and survives reclaim. | F822-coredump-mapping-classification |
+
 ## Process
 
 Retired to CLAUDE.md as standing hard rules (`Conflict resolution is where

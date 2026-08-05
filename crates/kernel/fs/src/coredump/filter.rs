@@ -174,6 +174,7 @@ pub fn describe_vma_in_range(vma: &Vma, vdso_start: u64, vdso_end: u64) -> VmaDu
     let always_dump = matches!(vma.backing, VmaBacking::Special)
         || (vdso_end > vdso_start && start < vdso_end && vdso_start < end);
     let file = match &vma.backing { VmaBacking::File { backing, off } => Some((backing, *off)), _ => None };
+    let kernel_frame = matches!(vma.backing, VmaBacking::KernelFrame { .. });
     VmaDumpDesc {
         start,
         end,
@@ -186,14 +187,15 @@ pub fn describe_vma_in_range(vma: &Vma, vdso_start: u64, vdso_end: u64) -> VmaDu
         // kernel yet, so no live mapping can set these.
         dax: false,
         hugetlb: false,
-        shared: vma.flags.contains(VmaFlags::SHARED),
-        file_backed: file.is_some(),
+        // KernelFrame is a shared kernel-owned object even when an internal
+        // caller did not retain MAP_SHARED in the VMA flags.
+        shared: vma.flags.contains(VmaFlags::SHARED) || kernel_frame,
+        file_backed: file.is_some() || kernel_frame,
         // Anonymous shared memory has no directory entry by construction.
-        unlinked_backing: match &file { Some((b, _)) => b.i_nlink() == 0, None => true },
-        // "Has private anonymous pages of its own": an anonymous mapping that
-        // has faulted at least one page in. An anonymous mapping that has never
-        // been touched holds nothing worth writing out.
-        anon_vma: vma.anon_vma.is_some() && vma.rss.load(core::sync::atomic::Ordering::Relaxed) != 0,
+        unlinked_backing: match &file { Some((b, _)) => b.i_nlink() == 0, None => !kernel_frame },
+        // This VMA-owned state survives reclaim, so an evicted private page
+        // remains dumpable without borrowing meaning from resident-page count.
+        anon_vma: vma.anon_pages.load(core::sync::atomic::Ordering::Acquire),
         readable: vma.prot.contains(VmaProt::READ),
         pgoff_zero: matches!(file, Some((_, 0))),
         backing_executable: match &file { Some((b, _)) => b.i_mode() & MODE_ANY_EXEC != 0, None => false },

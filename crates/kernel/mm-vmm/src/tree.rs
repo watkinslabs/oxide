@@ -22,6 +22,7 @@ use crate::vma::Vma;
 use crate::Error;
 
 mod anon_name;
+mod lookup;
 // Module manifest: anon_name = PR_SET_VMA_ANON_NAME range writer;
 // policy = mbind(2)/set_mempolicy_home_node(2) range writers.
 mod policy;

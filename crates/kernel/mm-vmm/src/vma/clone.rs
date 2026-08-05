@@ -1,6 +1,6 @@
 use super::{Vma, VmaBacking, VmaFlags};
 use hal::UserVirtAddr;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use alloc::sync::Arc;
 
 impl Clone for Vma {
@@ -17,6 +17,7 @@ impl Clone for Vma {
             flags: self.flags.difference(VmaFlags::UFFD_MISSING),
             backing: self.backing.clone(),
             rss: AtomicU64::new(self.rss.load(Ordering::Relaxed)),
+            anon_pages: AtomicBool::new(self.anon_pages.load(Ordering::Relaxed)),
             // VmaTree::insert clones VMAs into the destination tree at fork;
             // we keep the SAME anon_vma so all forked descendants share the
             // chain. The file_rmap owner is shared for the same reason.
@@ -65,6 +66,7 @@ impl Vma {
             flags: self.flags,
             backing,
             rss: AtomicU64::new(0),
+            anon_pages: AtomicBool::new(self.anon_pages.load(Ordering::Relaxed)),
             // Sub-range stays in the same anon_vma family — Linux
             // `__split_vma` keeps both halves on the parent's anon_vma
             // (and adds a chain entry for the new half).
