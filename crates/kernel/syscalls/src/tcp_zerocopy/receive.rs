@@ -50,13 +50,11 @@ pub fn get(sock: &Arc<InetSocket>, optval: u64, optlen_p: u64) -> i64 {
 
     // A failed call publishes no operand at all: the caller's struct is only
     // written once bytes have actually moved.
-    if let Err(e) = run(sock, &mut op) { return errno(e); }
+    let timestamp = match run(sock, &mut op) { Ok(timestamp) => timestamp, Err(e) => return errno(e) };
 
     let stage = zc::output_stage(len);
     if stage >= zc::Stage::Cmsg {
-        // No receive timestamp is recorded per queued byte, so no ancillary
-        // report is ever owed and the request is answered as "none published".
-        op.msg_flags = 0;
+        publish_timestamp(sock, &mut op, timestamp);
     }
     if stage >= zc::Stage::SkErr { op.err = -sock.error.take(); }
     if stage >= zc::Stage::Inq { op.inq = inq(sock) as u32; }
@@ -102,7 +100,7 @@ impl Window {
 
 /// Drive one call: plan against the live socket, then execute the plan.
 /// # C: O(mapped bytes)
-fn run(sock: &Arc<InetSocket>, op: &mut zc::Zc) -> Result<(), Errno> {
+fn run(sock: &Arc<InetSocket>, op: &mut zc::Zc) -> Result<Option<u64>, Errno> {
     let entry = match &*sock.kind.lock() {
         SockKind::TcpConn(entry) => Some(entry.clone()),
         SockKind::TcpListener(_) => None,
@@ -114,6 +112,7 @@ fn run(sock: &Arc<InetSocket>, op: &mut zc::Zc) -> Result<(), Errno> {
         sock.read_shut.load(Ordering::Acquire) || net::sock_io::tcp_recv_eof(e.conn.lock().state)
     }).unwrap_or(false);
     let inline = sock.opts.oobinline.load(Ordering::Acquire) != 0;
+    let timestamp = entry.as_ref().and_then(|entry| entry.conn.lock().recv_timestamp());
     let window = window_at(op.address);
     let offered = op.copybuf_len;
     let query = zc::ZcQuery {
@@ -130,12 +129,12 @@ fn run(sock: &Arc<InetSocket>, op: &mut zc::Zc) -> Result<(), Errno> {
             op.recv_skip_hint = 0;
             let entry = entry.ok_or(Errno::Enotconn)?;
             op.copybuf_len = copy_out(&entry, op.copybuf_address, bytes, inline)? as i32;
-            Ok(())
+            Ok((op.copybuf_len != 0).then_some(timestamp).flatten())
         }
         zc::ZcAction::Short { recv_skip_hint } => {
             op.length = 0;
             op.recv_skip_hint = recv_skip_hint;
-            Ok(())
+            Ok(None)
         }
         zc::ZcAction::Map { zap_bytes, map_bytes, length, recv_skip_hint } => {
             let entry = entry.ok_or(Errno::Enotconn)?;
@@ -150,9 +149,36 @@ fn run(sock: &Arc<InetSocket>, op: &mut zc::Zc) -> Result<(), Errno> {
             op.length = fin.length;
             op.recv_skip_hint = fin.recv_skip_hint;
             op.copybuf_len = fin.copybuf_len;
-            Ok(())
+            Ok((mapped != 0 || copied != 0).then_some(timestamp).flatten())
         }
     }
+}
+
+/// Publish the timestamp belonging to the first byte this call consumed. The
+/// receive queue owns that association; socket options only choose its ABI
+/// personality. Ancillary output never undoes stream bytes already consumed.
+/// # C: O(1)
+fn publish_timestamp(sock: &InetSocket, op: &mut zc::Zc, timestamp: Option<u64>) {
+    use net::sock_opts::sol_socket::{self as sol, flag};
+    let Some(timestamp) = timestamp else { op.msg_flags = 0; return; };
+    sock.note_receive_timestamp(timestamp);
+    if !sock.opts.generic.flag(flag::RCVTSTAMP) { op.msg_flags = 0; return; }
+    let sec = (timestamp / 1_000_000_000) as i64;
+    let subsec = timestamp % 1_000_000_000;
+    let nanoseconds = sock.opts.generic.flag(flag::RCVTSTAMPNS);
+    let kind = if nanoseconds {
+        if sock.opts.generic.flag(flag::TSTAMP_NEW) { sol::SO_TIMESTAMPNS_NEW } else { sol::SO_TIMESTAMPNS_OLD }
+    } else if sock.opts.generic.flag(flag::TSTAMP_NEW) { sol::SO_TIMESTAMP_NEW } else { sol::SO_TIMESTAMP_OLD };
+    let frac = if nanoseconds { subsec as i64 } else { (subsec / 1_000) as i64 };
+    let mut data = [0u8; 16];
+    data[..8].copy_from_slice(&sec.to_ne_bytes());
+    data[8..].copy_from_slice(&frac.to_ne_bytes());
+    let mut control = crate::recv_control::Control::new(op.msg_controllen as usize);
+    control.push(sol::SOL_SOCKET as i32, kind as i32, &data);
+    let written = control.copy_to_raw(op.msg_control).unwrap_or(0);
+    op.msg_control = op.msg_control.saturating_add(written as u64);
+    op.msg_controllen = op.msg_controllen.saturating_sub(written as u64);
+    op.msg_flags = control.flags;
 }
 
 /// Resolve `address` to a receive window in the calling task's address space.

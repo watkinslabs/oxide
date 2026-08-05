@@ -70,7 +70,7 @@ fn f179_in_order_delivers_immediately() {
     let mut c = client_established();
     let seg = build_data_segment(c.rcv_nxt, c.snd_nxt, b"hello");
     let _ = c.input(lo_ip(), lo_ip(), &seg);
-    assert_eq!(c.recv_buf.iter().copied().collect::<Vec<u8>>(), b"hello");
+    assert_eq!(c.recv_buf.iter().map(|b| b.byte).collect::<Vec<u8>>(), b"hello");
 }
 
 #[test]
@@ -85,7 +85,7 @@ fn f179_ooo_buffered_until_gap_fills() {
     // Now push the gap: seq = base..base+5 ("hello").
     let fill = build_data_segment(base, c.snd_nxt, b"hello");
     let _ = c.input(lo_ip(), lo_ip(), &fill);
-    let got: Vec<u8> = c.recv_buf.iter().copied().collect();
+    let got: Vec<u8> = c.recv_buf.iter().map(|b| b.byte).collect();
     assert_eq!(got, b"helloworld",
         "in-order arrival must drain contiguous OOO chunks");
     assert!(c.ooo_buf.is_empty());
@@ -101,4 +101,3 @@ fn f179_past_window_data_ignored() {
     assert!(c.recv_buf.is_empty());
     assert!(c.ooo_buf.is_empty(), "past-window data must not enter ooo_buf");
 }
-
