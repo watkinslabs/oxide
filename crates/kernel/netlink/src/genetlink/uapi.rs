@@ -103,6 +103,7 @@ pub mod policy_attr {
 pub mod policy_type {
     pub const NL_ATTR_TYPE_U16:        u32 = 4;
     pub const NL_ATTR_TYPE_U32:        u32 = 5;
+    pub const NL_ATTR_TYPE_BINARY:     u32 = 13;
     pub const NL_ATTR_TYPE_NUL_STRING: u32 = 11;
 }
 
