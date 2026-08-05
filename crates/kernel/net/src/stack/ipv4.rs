@@ -415,6 +415,7 @@ impl NetStack {
                     self.udp6_demux_v4_in(net_ns, hdr.src, udp.src_port, hdr.dst, udp.dst_port,
                         iface, datagram_body)
                 } else { Vec::new() };
+                let has_v6 = !endpoints6.is_empty();
                 for q in endpoints6 {
                     if !crate::cgroup_bpf::ingress(
                         &q.owner, full_packet, crate::addr::eth_p::IPV4, iface,
@@ -437,6 +438,17 @@ impl NetStack {
                         flowinfo: 0, ext_headers: alloc::vec::Vec::new(), frag_max,
                         payload: body[..keep].to_vec(),
                     }, udp.checksum == 0, gro_offered);
+                }
+                // Linux answers an otherwise valid unicast UDP datagram for
+                // which no IPv4 or v4-mapped IPv6 endpoint exists with ICMP
+                // destination-unreachable/port-unreachable. Loopback takes
+                // the same queued transmit path as every other interface, so
+                // the quoted packet is subsequently demultiplexed back to the
+                // originating socket's IP_RECVERR queue.
+                if !has_v4 && !has_v6 && !hdr.dst.is_multicast() && !hdr.dst.is_broadcast() {
+                    crate::mib::bump(net_ns, crate::mib::Mib::UdpNoPorts);
+                    self.send_ipv4_error(iface, hdr.dst, hdr.src,
+                        icmp::ICMP_TYPE_DEST_UNREACH, icmp::unreach_code::PORT, full_packet)?;
                 }
             }
             p if p == IpProto::Tcp as u8 => {
