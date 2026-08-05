@@ -6,12 +6,11 @@
 // per `11§4`. `rss` is per-VMA resident-page count; updates land with
 // the page-fault handler in a later P1-N.
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use alloc::sync::Arc;
 use hal::UserVirtAddr;
 
-use crate::anon_vma::AnonVma;
 use crate::file_rmap::FileRmap;
 
 mod clone;
@@ -384,13 +383,9 @@ impl Eq for VmaBacking {}
 /// Single virtual memory area. `start` ≤ `va` < `end` covers this VMA.
 /// Per `11§4`. `rss` is the per-VMA resident-page count.
 ///
-/// `anon_vma` is the rmap reverse-link for `VmaBacking::Anonymous` —
-/// every anonymous VMA in a fork family shares one `Arc<AnonVma>`,
-/// which carries the chain of (mm, vma_range) edges so that a page
-/// fault handler / migration / KSM pass can enumerate every PTE
-/// referencing a frame. `None` for non-anonymous backings; rmap for
-/// file-backed lives in the future `address_space::i_mmap` interval
-/// tree (see `anon_vma.rs` header).
+/// `anon_vma` is the rmap reverse-link for the mapping's anonymous family.
+/// `anon_pages` records whether that family has received a page; reclaim does
+/// not clear it, so the mapping's private-data classification remains stable.
 pub struct Vma {
     pub start: UserVirtAddr,
     pub end:   UserVirtAddr,
@@ -399,7 +394,8 @@ pub struct Vma {
     pub flags: VmaFlags,
     pub backing: VmaBacking,
     pub rss: AtomicU64,
-    pub anon_vma: Option<Arc<AnonVma>>,
+    pub anon_vma: Option<Arc<crate::anon_vma::AnonVma>>,
+    pub anon_pages: AtomicBool,
     /// File-backed counterpart of `anon_vma`: one shared inode owner whose
     /// interval edges name MAP_SHARED mappings. Never synthesized from inode
     /// numbers or VAs.
@@ -430,6 +426,7 @@ impl core::fmt::Debug for Vma {
             .field("backing", &self.backing)
             .field("rss", &self.rss.load(Ordering::Relaxed))
             .field("anon_vma_id", &self.anon_vma.as_ref().map(|a| a.id))
+            .field("anon_pages", &self.anon_pages.load(Ordering::Relaxed))
             .field("file_rmap", &self.file_rmap.is_some())
             .field("anon_name", &self.anon_name)
             .field("uffd", &self.uffd.is_some())
@@ -463,16 +460,11 @@ impl Vma {
         flags: VmaFlags,
         backing: VmaBacking,
     ) -> Self {
-        // Anonymous VMAs: allocate a fresh anon_vma family. The
-        // chain edge for *this* VMA gets attached by the caller
-        // (`AddressSpace::mmap`) once the VMA is in the tree and
-        // we have the AS Arc to weak-ref. File VMAs take the canonical
-        // address_space->i_mmap owner supplied by the backing.
+        // Anonymous VMAs get their family at map time. Private file mappings
+        // acquire one at their first COW page in the fault path.
         let anon_vma = if matches!(backing, VmaBacking::Anonymous) {
-            Some(AnonVma::new())
-        } else {
-            None
-        };
+            Some(crate::anon_vma::AnonVma::new())
+        } else { None };
         let file_rmap = match &backing {
             VmaBacking::File { backing, .. } if flags.contains(VmaFlags::SHARED) => backing.file_rmap(),
             _ => None,
@@ -481,6 +473,7 @@ impl Vma {
             start, end, prot, may_prot, flags, backing,
             rss: AtomicU64::new(0),
             anon_vma,
+            anon_pages: AtomicBool::new(false),
             file_rmap,
             anon_name: None,
             uffd: None,

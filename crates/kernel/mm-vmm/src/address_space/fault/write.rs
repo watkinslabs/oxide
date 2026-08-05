@@ -193,11 +193,6 @@ impl AddressSpace {
             };
             // Shared frame (refcount > 1): alloc fresh + copy the current bytes
             // + install writable + dec_ref the shared source below.
-            let anon_vma = if matches!(vma.backing, VmaBacking::Anonymous) {
-                Some(vma.anon_vma.as_ref().ok_or(Error::Inval)?)
-            } else {
-                None
-            };
             charge_anon()?;
             let new_pa = match alloc_frame() {
                 Some(pa) => pa,
@@ -228,9 +223,11 @@ impl AddressSpace {
             // family with the page-offset index per Linux
             // `page_add_anon_rmap`. Caller's `set_rmap` is the kernel
             // adapter that bumps the Arc and stashes it in PageMeta.
-            if let Some(av) = anon_vma {
+            if vma.flags.contains(VmaFlags::PRIVATE) {
+                let av = self.prepare_anon_vma(va)?;
                 let idx = ((va_page - vma.start.as_u64()) / PAGE_SIZE_BYTES) as u32;
-                set_rmap(new_pa, av, idx);
+                set_rmap(new_pa, &av, idx);
+                self.mark_anon_page(va)?;
             }
             // SMP TLB coherence (`20§5`): this COW split rewrote the shared
             // page-table entry `va_page -> new_pa` (writable). Peer threads of

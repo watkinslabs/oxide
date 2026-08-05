@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::thread_local;
 
-use hal::{MmuOps, Pa, PageFlags, PageSize, Va};
+use hal::{MmuOps, Pa, PageFlags, PageSize, UserVirtAddr, Va};
 
 use crate::address_space::AddressSpace;
 use crate::vma::{FaultAccess, FaultKind, FileBacking, FileBackingError, SharedFrame, VmaBacking, VmaFlags, VmaProt};
@@ -275,6 +275,8 @@ fn private_write_does_not_touch_cache() {
 
     assert_ne!(priv2, f, "the COW copy must be private, not the cache frame");
     assert_eq!(&read_tag(f), &[0xCC; 4], "the inode cache must be UNCHANGED by a private write");
+    let vma = as_.find_vma(UserVirtAddr::new(va).unwrap()).expect("private mapping");
+    assert!(vma.anon_vma.is_some() && vma.anon_pages.load(core::sync::atomic::Ordering::Acquire));
 }
 
 /// A failed memcg admission is not a missing cache page.  In particular it

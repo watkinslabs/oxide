@@ -72,7 +72,7 @@ fn tree() -> Vec<Vma> {
     let libd = map(LIBD, 1, VmaProt::READ | VmaProt::WRITE, VmaFlags::PRIVATE,
         file(REGULAR_DATA, LIB, 3 * PAGE));
     let heap = map(HEAP, 2, VmaProt::READ | VmaProt::WRITE, VmaFlags::PRIVATE, VmaBacking::Anonymous);
-    heap.rss.store(2, Ordering::Relaxed);
+    heap.anon_pages.store(true, Ordering::Release);
     alloc::vec![text, data, libd, heap]
 }
 
