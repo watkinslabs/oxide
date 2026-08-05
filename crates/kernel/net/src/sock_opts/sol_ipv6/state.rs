@@ -3,7 +3,7 @@
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 use sync::{Socket as LockClass, Spinlock};
 
 /// `ipv6_pinfo` boolean fields this level owns. Option numbers are ABI; the bit
@@ -36,6 +36,8 @@ pub mod flag {
     /// the same question as whether the socket holds a chain slot — a zero
     /// selector joins the chain and reads back as off.
     pub const RTALERT: u64 = 1 << 18;
+    /// Snapshot-only bit used by getsockopt; the canonical value lives in the
+    /// router-alert state shared with its raw endpoint.
     pub const RTALERT_ISOLATE: u64 = 1 << 19;
     pub const RECVERR_RFC4884: u64 = 1 << 20;
     pub const REPFLOW: u64 = 1 << 21;
@@ -69,10 +71,22 @@ pub struct Ipv6Opts {
     headers: Spinlock<[Option<Vec<u8>>; Sticky::COUNT], LockClass>,
     /// Flow labels this socket holds a reference on.
     labels: Spinlock<Vec<u32>, LockClass>,
-    /// `IPV6_ROUTER_ALERT` chain slot: the selector the socket joined with,
-    /// negative when it holds no slot. Chain membership is this value, not the
-    /// `RTALERT` flag — a zero selector joins and reads back as off.
-    ra_selector: AtomicI32,
+    router_alert: Arc<Ipv6RouterAlert>,
+}
+
+/// Shared router-alert state retained by the raw endpoint that consumes it.
+/// # C: O(1)
+pub struct Ipv6RouterAlert { selector: AtomicI32, isolate: AtomicBool }
+
+impl Ipv6RouterAlert {
+    /// # C: O(1)
+    pub fn selector(&self) -> i32 { self.selector.load(Ordering::Acquire) }
+    /// # C: O(1)
+    pub fn set_selector(&self, selector: i32) { self.selector.store(selector, Ordering::Release); }
+    /// # C: O(1)
+    pub fn isolate(&self) -> bool { self.isolate.load(Ordering::Acquire) }
+    /// # C: O(1)
+    pub fn set_isolate(&self, isolate: bool) { self.isolate.store(isolate, Ordering::Release); }
 }
 
 impl Default for Ipv6Opts {
@@ -87,21 +101,35 @@ impl Default for Ipv6Opts {
             sticky_pktinfo: Spinlock::new(([0u8; 16], 0)),
             headers: Spinlock::new([const { None }; Sticky::COUNT]),
             labels: Spinlock::new(Vec::new()),
-            ra_selector: AtomicI32::new(crate::router_alert::V6_NO_SLOT),
+            router_alert: Arc::new(Ipv6RouterAlert {
+                selector: AtomicI32::new(crate::router_alert::V6_NO_SLOT),
+                isolate: AtomicBool::new(false),
+            }),
         }
     }
 }
 
 impl Ipv6Opts {
     /// The `IPV6_ROUTER_ALERT` selector this socket joined with. # C: O(1)
-    pub fn ra_selector(&self) -> i32 { self.ra_selector.load(Ordering::Acquire) }
+    pub fn ra_selector(&self) -> i32 { self.router_alert.selector() }
     /// # C: O(1)
     pub fn set_ra_selector(&self, selector: i32) {
-        self.ra_selector.store(selector, Ordering::Release);
+        self.router_alert.set_selector(selector);
     }
     /// Whether the socket holds a router-alert chain slot. # C: O(1)
     pub fn on_ra_chain(&self) -> bool {
         self.ra_selector() >= crate::router_alert::V6_FIRST_SLOT
+    }
+    /// Shared state an IPPROTO_RAW endpoint observes without a mirrored slot. # C: O(1)
+    pub fn router_alert(&self) -> Arc<Ipv6RouterAlert> { self.router_alert.clone() }
+    /// # C: O(1)
+    pub fn router_alert_isolate(&self) -> bool { self.router_alert.isolate() }
+    /// # C: O(1)
+    pub fn set_router_alert_isolate(&self, isolate: bool) { self.router_alert.set_isolate(isolate); }
+    /// Retire both router-alert controls during an AF_INET conversion. # C: O(1)
+    pub fn clear_router_alert(&self) {
+        self.router_alert.set_selector(crate::router_alert::V6_NO_SLOT);
+        self.router_alert.set_isolate(false);
     }
 }
 

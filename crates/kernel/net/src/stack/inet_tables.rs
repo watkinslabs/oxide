@@ -67,6 +67,15 @@ impl InetTables {
 }
 
 impl NetStack {
+    /// Snapshot raw IPv6 endpoints from every live namespace-owned table.
+    /// Router Alert is the sole cross-namespace raw delivery path. # C: O(N endpoints)
+    pub(crate) fn raw6_endpoints_all_namespaces(&self) -> Vec<Arc<crate::raw6::Raw6Endpoint>> {
+        let tables: Vec<Arc<InetTables>> = self.inet.lock().values().cloned().collect();
+        let mut endpoints = Vec::new();
+        for table in tables { endpoints.extend(table.raw6.all_endpoints()); }
+        endpoints
+    }
+
     /// Resolve the sole transport-table owner for `net_ns`. # C: O(log N)
     pub(crate) fn try_inet_tables(&self, net_ns: u64) -> Option<InetTablesRef> {
         let owner = network_namespace::lookup_u64(net_ns)?;
