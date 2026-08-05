@@ -66,6 +66,8 @@ pub struct UnackedSegment {
 #[derive(Clone, Debug)]
 pub struct OutOfOrderSegment {
     pub payload: Vec<u8>,
+    /// Realtime arrival stamp retained until this segment becomes contiguous.
+    pub timestamp_ns: u64,
     pub urgent: Option<(u32, u8)>,
     pub fin: bool,
 }
@@ -74,7 +76,7 @@ impl OutOfOrderSegment {
     /// Build a payload-only retained segment for the SACK test fixtures. # C: O(1)
     #[cfg(test)]
     pub(crate) fn data(payload: Vec<u8>) -> Self {
-        Self { payload, urgent: None, fin: false }
+        Self { payload, timestamp_ns: 0, urgent: None, fin: false }
     }
 
     /// Count the TCP sequence space retained by this segment. # C: O(1)
@@ -82,6 +84,12 @@ impl OutOfOrderSegment {
         self.payload.len() as u32 + u32::from(self.fin)
     }
 }
+
+/// One byte of the canonical TCP receive stream. Its arrival stamp belongs to
+/// the byte it describes, so ordinary reads, urgent-byte removal and zero-copy
+/// consumption retire payload and timestamp together.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct RecvByte { pub byte: u8, pub timestamp_ns: u64 }
 
 #[derive(Debug)]
 pub struct TcpConn {
@@ -95,7 +103,7 @@ pub struct TcpConn {
     pub rcv_read_seq: u32,
     pub window:  u16,
     pub send_buf: VecDeque<u8>,
-    pub recv_buf: VecDeque<u8>,
+    pub recv_buf: VecDeque<RecvByte>,
     /// Latest TCP urgent byte and its stream sequence; syscall OOB delivery consumes it later.
     pub urgent: Option<(u32, u8)>,
     /// Urgent stream sequence consumed before out-of-order data promotion.
