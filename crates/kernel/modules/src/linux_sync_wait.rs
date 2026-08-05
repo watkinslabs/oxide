@@ -83,8 +83,3 @@ pub(crate) fn wait_cell(key: usize, kind: u8) -> &'static WaitCell {
     // SAFETY: cells are heap-owned by the global table and are never removed, so the returned reference is stable.
     unsafe { &*ptr }
 }
-
-#[cfg(test)]
-pub(crate) fn reset_wait_cells() {
-    CELLS.lock().clear();
-}
