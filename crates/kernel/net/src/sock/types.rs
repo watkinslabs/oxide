@@ -270,8 +270,10 @@ pub struct SockOpts {
     /// `IPPROTO_IP` option state (`sock_opts::sol_ip`), shared with the TCP
     /// transport entry so a connection's sticky option area has one home.
     pub ip: Arc<crate::sock_opts::sol_ip::IpOpts>,
-    /// `IPPROTO_IPV6` option state (`sock_opts::sol_ipv6`).
-    pub ipv6: crate::sock_opts::sol_ipv6::Ipv6Opts,
+    /// `IPPROTO_IPV6` option state. TCP transport entries retain this same
+    /// object, so a post-connect option write reaches the packet builder
+    /// without a second socket lookup.
+    pub ipv6: Arc<crate::sock_opts::sol_ipv6::Ipv6Opts>,
     /// `IPPROTO_TCP` option state (`sock_opts::sol_tcp`).
     pub tcp: crate::sock_opts::sol_tcp::TcpOpts,
     /// `IPPROTO_UDP` option state (`sock_opts::sol_udp`).
@@ -326,7 +328,7 @@ impl Default for SockOpts {
             generic: crate::sock_opts::sol_socket::GenericSockOpts::default(),
             min_hop: Arc::new(crate::min_hop::MinHop::new()),
             ip: Arc::new(crate::sock_opts::sol_ip::IpOpts::default()),
-            ipv6: crate::sock_opts::sol_ipv6::Ipv6Opts::default(),
+            ipv6: Arc::new(crate::sock_opts::sol_ipv6::Ipv6Opts::default()),
             tcp: crate::sock_opts::sol_tcp::TcpOpts::default(),
             udp: crate::sock_opts::sol_udp::UdpOpts::default(),
         }
