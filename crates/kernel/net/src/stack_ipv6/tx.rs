@@ -145,7 +145,7 @@ impl NetStack {
     ) -> NetResult<()> {
         self.xmit_ipv6_l4_with_policy(
             iface_id, iface, next_hop, src, dst, proto, l4, hop_limit, traffic_class,
-            usize::MAX, true, None,
+            0, false, usize::MAX, true, None,
         ).map(|_| ())
     }
 
@@ -160,12 +160,15 @@ impl NetStack {
         l4: &[u8],
         hop_limit: u8,
         traffic_class: u8,
+        flow_label: u32,
+        automatic_flow_label: bool,
         policy_mtu: usize,
         may_fragment: bool,
         owner: Option<&crate::SocketOwner>,
     ) -> NetResult<crate::cgroup_bpf::EgressVerdict> {
         self.xmit_ipv6_payload_with_policy(iface_id, iface, next_hop, src, dst,
-            proto as u8, l4, hop_limit, traffic_class, policy_mtu, may_fragment, owner)
+            proto as u8, l4, hop_limit, traffic_class, flow_label, automatic_flow_label,
+            policy_mtu, may_fragment, owner)
     }
 
     fn xmit_ipv6_payload_with_policy(
@@ -179,6 +182,8 @@ impl NetStack {
         payload: &[u8],
         hop_limit: u8,
         traffic_class: u8,
+        flow_label: u32,
+        automatic_flow_label: bool,
         policy_mtu: usize,
         may_fragment: bool,
         owner: Option<&crate::SocketOwner>,
@@ -186,12 +191,15 @@ impl NetStack {
         let src = if src.is_unspecified() {
             self.v6_select_source(iface_id, dst, None).ok_or(NetError::Eaddrnotavail)?
         } else { src };
+        let flow_label = crate::inet_tx::ipv6_flow_label(flow_label, automatic_flow_label,
+            src, dst, next_header, payload);
         let mtu = core::cmp::min(iface.mtu() as usize, policy_mtu);
         let total = IPV6_HDR_LEN + payload.len();
         if payload.len() > u16::MAX as usize { return Err(NetError::Emsgsize); }
         let mut full = crate::pkt::Pkt::with_capacity(IPV6_HDR_LEN, total + IPV6_HDR_LEN);
         full.put(payload.len()).map_err(|_| NetError::Enobufs)?.copy_from_slice(payload);
         push_ipv6_raw_header(&mut full, src, dst, next_header, hop_limit, traffic_class)?;
+        set_ipv6_flow_label(&mut full, traffic_class, flow_label);
         prepare_ipv6(iface_id, next_hop, src, &mut full);
         let net_ns = owner.map_or_else(crate::netdev::current_net_ns, crate::SocketOwner::net_ns);
         if !crate::netfilter_hook::nf_output_in(net_ns, &full, NFPROTO_IPV6) {
@@ -232,6 +240,7 @@ impl NetStack {
             body[4..8].copy_from_slice(&frag_id.to_be_bytes());
             body[8..].copy_from_slice(&payload[off..off + take]);
             push_ipv6_raw_header(&mut p, src, dst, IpProto::Fragment as u8, hop_limit, traffic_class)?;
+            set_ipv6_flow_label(&mut p, traffic_class, flow_label);
             emit_ipv6_fragment(iface_id, iface.clone(), next_hop, src, p)?;
             off += take;
         }
@@ -260,22 +269,24 @@ impl NetStack {
         hop_limit: u8, traffic_class: u8, mode: i32) -> NetResult<()>
     {
         self.send_udp6_pmtu_to_bound_opts_owner(None, net_ns, src, src_port, dst, dst_port,
-            payload, bound, hop_limit, traffic_class, mode, 0, false)
+            payload, bound, hop_limit, traffic_class, mode, 0, false, 0, false)
     }
 
     /// Build and transmit socket-owned UDP/IPv6. # C: O(payload + N)
     pub fn send_udp6_pmtu_to_bound_opts_owned(&self, owner: &crate::SocketOwner,
         src: Ipv6Addr, src_port: u16, dst: Ipv6Addr, dst_port: u16, payload: &[u8],
         bound: Option<NetIfaceId>, hop_limit: u8, traffic_class: u8, mode: i32,
-        frag_size: i32, no_check: bool) -> NetResult<()> {
+        frag_size: i32, no_check: bool, flow_label: u32, automatic_flow_label: bool) -> NetResult<()> {
         self.send_udp6_pmtu_to_bound_opts_owner(Some(owner), owner.net_ns(), src, src_port,
-            dst, dst_port, payload, bound, hop_limit, traffic_class, mode, frag_size, no_check)
+            dst, dst_port, payload, bound, hop_limit, traffic_class, mode, frag_size, no_check,
+            flow_label, automatic_flow_label)
     }
 
     fn send_udp6_pmtu_to_bound_opts_owner(&self, owner: Option<&crate::SocketOwner>,
         net_ns: u64, src: Ipv6Addr, src_port: u16, dst: Ipv6Addr, dst_port: u16,
         payload: &[u8], bound: Option<NetIfaceId>, hop_limit: u8, traffic_class: u8,
-        mode: i32, frag_size: i32, no_check: bool) -> NetResult<()> {
+        mode: i32, frag_size: i32, no_check: bool, flow_label: u32,
+        automatic_flow_label: bool) -> NetResult<()> {
         let src = if src == Ipv6Addr::ANY && dst == Ipv6Addr::LOOPBACK {
             Ipv6Addr::LOOPBACK
         } else { src };
@@ -294,7 +305,7 @@ impl NetStack {
         crate::udp::build_into_v6_opts(src_port, dst_port, src, dst, payload, body, no_check);
         self.xmit_ipv6_l4_with_policy(
             iface_id, iface, next_hop, src, dst, IpProto::Udp, packet.data(), hop_limit,
-            traffic_class, mtu,
+            traffic_class, flow_label, automatic_flow_label, mtu,
             crate::uapi::ipv6_pmtudisc_allows_fragmentation(mode),
             owner,
         ).map(|_| ())
@@ -374,6 +385,11 @@ pub(super) fn push_ipv6_raw_header(p: &mut crate::pkt::Pkt, src: Ipv6Addr, dst: 
     let slot = p.push(IPV6_HDR_LEN).map_err(|_| NetError::Enobufs)?;
     header.write_to(slot);
     Ok(())
+}
+
+fn set_ipv6_flow_label(p: &mut crate::pkt::Pkt, traffic_class: u8, flow_label: u32) {
+    let bits = (6u32 << 28) | ((traffic_class as u32) << 20) | (flow_label & 0x000f_ffff);
+    p.data_mut()[..4].copy_from_slice(&bits.to_be_bytes());
 }
 
 pub(super) fn admit_ipv6_owned(owner: &crate::SocketOwner, iface_id: NetIfaceId,
