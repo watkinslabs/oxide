@@ -98,12 +98,13 @@ impl InetSocket {
         // Linux `inet_autobind` keeps whatever local address the socket already
         // named; only the port is chosen here.
         let bind_ip = *self.local_ip.lock();
+        let policy = super::bind_port_policy(self, 0);
         let (port, endpoint) = alloc_ephemeral_udp4_owned(
             self.owner.clone(), bind_ip, self.error.clone(), iface,
             self.opts.reuseaddr.clone(), self.opts.reuseport.clone(),
             self.opts.ip_mtu_discover.clone(), self.opts.udp.gro.clone(),
             self.peer.clone(), self.bpf_filter.clone(), self.mcast.clone(),
-            self.opts.ip.local_port_range(),
+            policy.range,
         ).map_err(|error| if error == NetError::Eaddrinuse { NetError::Eagain } else { error })?;
         endpoint.register_poll_subs(&self.poll_subs);
         *self.udp4.lock() = Some(endpoint);
