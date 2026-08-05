@@ -41,6 +41,7 @@ pkey     = { path = "../../shared/pkey" }
 # Encryption padding must be unpredictable, so it comes from the kernel's
 # random pool rather than from anything the caller can influence.
 crng     = { path = "../crng" }
+net      = { path = "../net" }
 
 [dev-dependencies]
 # TEMPORARY (B1659): `net` leaves `ipv4_options`, `raw4`, `send_control` and
