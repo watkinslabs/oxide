@@ -75,12 +75,7 @@ pub fn send(sock: &Arc<InetSocket>, payload: &[u8], dest: Option<RemoteAddr>, no
     let admission = super::admit_connect(sock)?;
     let transaction = super::preflight_connect_admitted(sock, admission)?;
     let (entry, carried) = transaction.commit_write(addr, payload)?;
-    if nonblock {
-        // Nothing rode the SYN, so there is nothing to report but the
-        // handshake — the same answer a non-blocking `connect` gives.
-        if carried == 0 { return Err(NetError::Einprogress); }
-        return Ok(carried);
-    }
+    if nonblock { return super::fastopen_result::nonblock_write_result(carried); }
     crate::sock_io::connect_wait_established(sock, &entry)?;
     let rest = &payload[carried..];
     if rest.is_empty() { return Ok(carried); }

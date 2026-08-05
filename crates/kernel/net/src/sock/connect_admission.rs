@@ -113,11 +113,13 @@ impl ConnectTransaction<'_> {
             _ => return Err(NetError::Eopnotsupp),
         };
         drop(local_port);
+        let opened = if matches!(open, super::tcp_lifecycle::TcpOpen::Deferred) {
+            super::fastopen_result::Opened::Deferred
+        } else { super::fastopen_result::Opened::Started };
+        super::fastopen_result::write_open_result(opened)?;
         match open {
-            // A write never defers: it is holding the payload the deferral
-            // was waiting for.
-            super::tcp_lifecycle::TcpOpen::Deferred => Err(NetError::Eopnotsupp),
             super::tcp_lifecycle::TcpOpen::Opened { entry, carried } => Ok((entry, carried)),
+            super::tcp_lifecycle::TcpOpen::Deferred => unreachable!(),
         }
     }
 
@@ -154,9 +156,7 @@ impl ConnectTransaction<'_> {
                     sock, &mut local_port, ip, port, crate::tcp_fastopen::Source::Connect, &[],
                 )?;
                 drop(local_port);
-                let Some(entry) = open.entry() else { return Ok(()); };
-                if nonblock { return Err(NetError::Einprogress); }
-                crate::sock_io::connect_wait_established(sock, entry)
+                finish_tcp_connect(sock, open, nonblock)
             }
             (ConnectKind::Tcp, RemoteAddr::Inet6 { ip, port, scope_id }) => {
                 if let Some(ip) = crate::inet_tx::tcp6_mapped_destination(
@@ -169,9 +169,7 @@ impl ConnectTransaction<'_> {
                         sock, &mut local_port, ip, port, crate::tcp_fastopen::Source::Connect, &[],
                     )?;
                     drop(local_port);
-                    let Some(entry) = open.entry() else { return Ok(()); };
-                    if nonblock { return Err(NetError::Einprogress); }
-                    return crate::sock_io::connect_wait_established(sock, entry);
+                    return finish_tcp_connect(sock, open, nonblock);
                 }
                 let _ = crate::sock_v6::scoped_iface(sock, ip, scope_id)?;
                 sock.peer6_scope.store(scope_id, core::sync::atomic::Ordering::Release);
@@ -179,9 +177,7 @@ impl ConnectTransaction<'_> {
                     sock, &mut local_port, ip, port, crate::tcp_fastopen::Source::Connect, &[],
                 )?;
                 drop(local_port);
-                let Some(entry) = open.entry() else { return Ok(()); };
-                if nonblock { return Err(NetError::Einprogress); }
-                crate::sock_io::connect_wait_established(sock, entry)
+                finish_tcp_connect(sock, open, nonblock)
             }
             (ConnectKind::Raw4(endpoint), RemoteAddr::Inet { ip, .. }) => {
                 let iface = super::iface::v4_egress_iface(sock)?;
@@ -198,5 +194,18 @@ impl ConnectTransaction<'_> {
             }
             _ => Err(NetError::Eafnosupport),
         }
+    }
+}
+
+fn finish_tcp_connect(sock: &InetSocket, open: super::tcp_lifecycle::TcpOpen,
+                      nonblock: bool) -> Result<(), NetError> {
+    let opened = if open.entry().is_none() {
+        super::fastopen_result::Opened::Deferred
+    } else { super::fastopen_result::Opened::Started };
+    match super::fastopen_result::connect_result(opened, nonblock) {
+        super::fastopen_result::ConnectResult::Return => Ok(()),
+        super::fastopen_result::ConnectResult::Einprogress => Err(NetError::Einprogress),
+        super::fastopen_result::ConnectResult::Wait =>
+            crate::sock_io::connect_wait_established(sock, open.entry().unwrap()),
     }
 }
