@@ -1,9 +1,11 @@
 /* Linux rows 46/47 sendmsg/recvmsg corpus; compared verbatim by N09/N10. */
 #define _GNU_SOURCE
 #include <errno.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -23,6 +25,27 @@ static int bound_udp(struct sockaddr_in *addr) {
         return -1;
     }
     return fd;
+}
+
+static void *guard_pair(size_t page) {
+    void *p = mmap(NULL, page * 2, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED || mprotect((char *)p + page, page, PROT_NONE) != 0) {
+        if (p != MAP_FAILED) munmap(p, page * 2);
+        return MAP_FAILED;
+    }
+    return p;
+}
+
+static int send_bytes(int fd, const struct sockaddr_in *to,
+                      const void *data, size_t len) {
+    return sendto(fd, data, len, 0, (const struct sockaddr *)to, sizeof(*to)) == (ssize_t)len;
+}
+
+static int queue_empty(int fd) {
+    char c;
+    errno = 0;
+    return recv(fd, &c, 1, MSG_DONTWAIT) < 0 && errno == EAGAIN;
 }
 
 int main(void) {
@@ -105,6 +128,102 @@ int main(void) {
     errno = 0; r("sendmsg_badfd", sendmsg(-1, &smsg, 0));
     /* recvmsg bad fd: EBADF. */
     errno = 0; r("recvmsg_badfd", recvmsg(-1, &rmsg, 0));
+
+    /* A resolved non-socket fd is rejected before the msghdr is imported. */
+    int file = open("/dev/null", O_RDONLY);
+    errno = 0; r("recvmsg_file_badmsg", recvmsg(file, (struct msghdr *)1, 0));
+    close(file);
+    errno = 0; r("recvmsg_null_msg", recvmsg(b, NULL, MSG_DONTWAIT));
+
+    size_t page = (size_t)sysconf(_SC_PAGESIZE);
+    void *guard = guard_pair(page);
+    void *guard2 = guard_pair(page);
+    void *ro = mmap(NULL, page, PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (guard == MAP_FAILED || guard2 == MAP_FAILED || ro == MAP_FAILED) {
+        puts("mmap=failed"); close(a); close(b); return 0;
+    }
+
+    /* Import faults happen before dequeue, including a split msghdr and a
+       split iovec metadata record. */
+    struct msghdr *split_hdr = (struct msghdr *)((char *)guard + page - sizeof(*split_hdr) / 2);
+    memset(split_hdr, 0, sizeof(*split_hdr) / 2);
+    send_bytes(a, &ba, "h", 1);
+    errno = 0;
+    int rc = recvmsg(b, split_hdr, MSG_DONTWAIT);
+    int saved = errno;
+    char kept = 0;
+    int kept_n = recv(b, &kept, 1, MSG_DONTWAIT);
+    printf("recvmsg_split_hdr rc=%d errno=%d preserved=%d\n",
+        rc < 0 ? -1 : rc, rc < 0 ? saved : 0, kept_n == 1 && kept == 'h');
+
+    struct iovec *split_iov = (struct iovec *)((char *)guard + page - 8);
+    split_iov->iov_base = &kept;
+    struct msghdr import;
+    memset(&import, 0, sizeof(import));
+    import.msg_iov = split_iov; import.msg_iovlen = 1;
+    send_bytes(a, &ba, "i", 1);
+    errno = 0;
+    rc = recvmsg(b, &import, MSG_DONTWAIT);
+    saved = errno;
+    kept = 0; kept_n = recv(b, &kept, 1, MSG_DONTWAIT);
+    printf("recvmsg_split_iov rc=%d errno=%d preserved=%d\n",
+        rc < 0 ? -1 : rc, rc < 0 ? saved : 0, kept_n == 1 && kept == 'i');
+
+    /* Payload faults retire a UDP datagram. A cross-page destination also
+       detects whether a copied prefix is incorrectly reported as success. */
+    struct iovec bad_iov = { .iov_base = (void *)1, .iov_len = 1 };
+    struct msghdr bad_payload;
+    memset(&bad_payload, 0, sizeof(bad_payload));
+    bad_payload.msg_iov = &bad_iov; bad_payload.msg_iovlen = 1;
+    send_bytes(a, &ba, "p", 1);
+    errno = 0; rc = recvmsg(b, &bad_payload, MSG_DONTWAIT);
+    saved = errno;
+    printf("recvmsg_bad_payload rc=%d errno=%d consumed=%d\n",
+        rc < 0 ? -1 : rc, rc < 0 ? saved : 0, queue_empty(b));
+
+    char *split_payload = (char *)guard2 + page - 1;
+    struct iovec split_payload_iov = { .iov_base = split_payload, .iov_len = 2 };
+    struct msghdr split_payload_msg;
+    memset(&split_payload_msg, 0, sizeof(split_payload_msg));
+    split_payload_msg.msg_iov = &split_payload_iov;
+    split_payload_msg.msg_iovlen = 1;
+    send_bytes(a, &ba, "xy", 2);
+    errno = 0; rc = recvmsg(b, &split_payload_msg, MSG_DONTWAIT);
+    saved = errno;
+    printf("recvmsg_split_payload rc=%d errno=%d prefix=%c consumed=%d\n",
+        rc < 0 ? -1 : rc, rc < 0 ? saved : 0, split_payload[0], queue_empty(b));
+
+    /* Output faults occur after payload dequeue. Source-length publication
+       precedes the source-address copy, and flags precede controllen. */
+    char named_payload = 0;
+    struct iovec named_iov = { .iov_base = &named_payload, .iov_len = 1 };
+    struct msghdr bad_name;
+    memset(&bad_name, 0, sizeof(bad_name));
+    bad_name.msg_name = (void *)1; bad_name.msg_namelen = sizeof(struct sockaddr_in);
+    bad_name.msg_iov = &named_iov; bad_name.msg_iovlen = 1;
+    send_bytes(a, &ba, "n", 1);
+    errno = 0; rc = recvmsg(b, &bad_name, MSG_DONTWAIT);
+    saved = errno;
+    printf("recvmsg_bad_name rc=%d errno=%d payload=%c namelen=%u consumed=%d\n",
+        rc < 0 ? -1 : rc, rc < 0 ? saved : 0, named_payload,
+        (unsigned)bad_name.msg_namelen, queue_empty(b));
+
+    char ro_payload = 0;
+    struct iovec ro_iov = { .iov_base = &ro_payload, .iov_len = 1 };
+    struct msghdr *ro_hdr = (struct msghdr *)ro;
+    memset(ro_hdr, 0, sizeof(*ro_hdr));
+    ro_hdr->msg_iov = &ro_iov; ro_hdr->msg_iovlen = 1;
+    mprotect(ro, page, PROT_READ);
+    send_bytes(a, &ba, "f", 1);
+    errno = 0; rc = recvmsg(b, ro_hdr, MSG_DONTWAIT);
+    saved = errno;
+    printf("recvmsg_readonly_header rc=%d errno=%d payload=%c consumed=%d\n",
+        rc < 0 ? -1 : rc, rc < 0 ? saved : 0, ro_payload, queue_empty(b));
+
+    munmap(guard, page * 2);
+    munmap(guard2, page * 2);
+    munmap(ro, page);
 
     close(a); close(b);
     return 0;
