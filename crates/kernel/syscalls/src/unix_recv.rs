@@ -209,7 +209,7 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
             let sa = encoded_sockaddr_un(None);
             loop {
             match pair.recv_msg_with(end, user.capacity, peek, |payload, _, _, _| {
-                let copied = user.copy_payload(payload)?;
+                let copied = user.copy_payload_record(payload)?;
                 Ok::<_, i64>(copied)
             }) {
                 Err(e) => return e,
@@ -243,7 +243,8 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
         }},
         Target::Dgram(q) => loop {
             match q.recv_with(peek, |msg, sender, _| {
-                let copied = user.copy_payload(&msg.payload[..core::cmp::min(user.capacity, msg.payload.len())])?;
+                let copied = user.copy_payload_record(
+                    &msg.payload[..core::cmp::min(user.capacity, msg.payload.len())])?;
                 let _ = sender;
                 Ok::<_, i64>(copied)
             }) {
