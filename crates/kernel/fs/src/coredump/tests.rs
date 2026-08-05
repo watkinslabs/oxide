@@ -4,12 +4,14 @@
 //   selection  which mappings the dump contains, and how much of each
 //   walk       a live VMA tree through that ladder, and the image it produces
 //   gregset    the register and floating-point blocks a thread's notes carry
+//   socket     coredump socket request/ack wire decisions
 
 mod expansion;
 mod destination;
 mod selection;
 mod walk;
 mod gregset;
+mod socket;
 
 use super::pattern::CoreContext;
 use alloc::vec::Vec;

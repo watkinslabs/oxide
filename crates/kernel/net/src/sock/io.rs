@@ -261,6 +261,25 @@ impl InetSocket {
         pair.write(end, buf).map_err(|_| vfs::VfsError::Epipe)
     }
 
+    /// Read a kernel-owned AF_UNIX stream through its canonical blocking
+    /// receive path without pulling unrelated protocol backends into callers.
+    /// # C: O(buf.len()) or O(wait)
+    pub fn read_kernel(&self, buf: &mut [u8]) -> vfs::KResult<usize> {
+        let (pair, end) = match &*self.kind.lock() {
+            SockKind::Unix(pair, end) => (pair.clone(), *end),
+            _ => return Err(vfs::VfsError::Eopnotsupp),
+        };
+        crate::sock_opts::check_receive(self).map_err(vfs_from_neterr)?;
+        let timeo = self.opts.rcvtimeo_ns.load(core::sync::atomic::Ordering::Acquire);
+        let deadline_ns = compute_deadline_ns(timeo);
+        let passcred = self.opts.passcred.on();
+        let inline = self.opts.oobinline.load(core::sync::atomic::Ordering::Acquire) != 0;
+        let result = crate::sock_io::read_unix_stream_blocking(&pair, end, buf, deadline_ns,
+            passcred, inline);
+        if matches!(result, Ok(n) if n != 0) { self.note_receive_now(); }
+        result
+    }
+
     /// F164: non-blocking write per O_NONBLOCK. Returns Eagain when
     /// the connection's send buffer is at SO_SNDBUF; else writes as
     /// many bytes as fit. UDP / AF_UNIX delegate to their existing

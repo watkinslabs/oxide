@@ -66,37 +66,40 @@ pub unsafe fn write_for_current(signo: i32, regs: *const crate::sig_dispatch::Us
     // no longer exists. `process_mrelease` reads the same flag and refuses.
     // SAFETY: `cur` is the running task, so its mm slot cannot be replaced under us; the flag is the only field touched.
     if let Some(mm) = unsafe { cur.mm_ref() } { mm.set_coredumping(true); }
-    // SAFETY: caller's contract — `regs` is this thread's live entry frame, and the address space it describes is still this task's own.
-    let body = unsafe { super::capture::build_image(&cx, regs, payload) };
-    trace(b"image", body.len() as u64, 0);
     match kind {
-        CoreKind::Pipe => { super::pipe::dump_to_program(trim(&raw), &cx, &body); }
+        CoreKind::Pipe => {
+            // SAFETY: caller's contract — `regs` is this thread's live entry frame, and the address space it describes is still this task's own.
+            let body = unsafe { super::capture::build_image(&cx, regs, payload) };
+            trace(b"image", body.len() as u64, 0);
+            super::pipe::dump_to_program(trim(&raw), &cx, &body);
+        }
         // Linux `dump_emit` refuses the first chunk that would cross the limit,
         // so an over-limit dump is TRUNCATED rather than dropped — a partial
         // core is still worth having, and gdb reads it.
         CoreKind::File => {
+            // SAFETY: caller's contract — `regs` is this thread's live entry frame, and the address space it describes is still this task's own.
+            let body = unsafe { super::capture::build_image(&cx, regs, payload) };
+            trace(b"image", body.len() as u64, 0);
             let n = sched::rlimit::dump::prefix_len(body.len(), cx.rlimit_core, DUMP_CHUNK);
             let ok = super::file_target::write_to_file(&pattern::file_path(&raw, &cx), &body[..n],
                 cx.uid, cx.gid, suid_safe_required(cx.dumpable));
             trace(b"file", n as u64, u64::from(ok));
         }
-        CoreKind::Socket => { dump_to_socket(trim(&raw), &cx, &body); }
+        CoreKind::Socket => match super::socket_target::prepare(trim(&raw), &cx) {
+            Some(super::socket_target::Target::Kernel { sock, wait }) => {
+                // SAFETY: caller's contract — `regs` is this thread's live entry frame, and the address space it describes is still this task's own.
+                let body = unsafe { super::capture::build_image(&cx, regs, payload) };
+                trace(b"image", body.len() as u64, 0);
+                super::socket_target::deliver(&sock, &body, wait);
+            }
+            Some(super::socket_target::Target::Userspace { sock, wait }) => {
+                super::socket_target::finish_userspace(&sock, wait);
+            }
+            Some(super::socket_target::Target::Reject) | None => {}
+        },
     }
     // SAFETY: same running-task mm access as the latch above.
     if let Some(mm) = unsafe { cur.mm_ref() } { mm.set_coredumping(false); }
-}
-
-fn dump_to_socket(pattern: &[u8], cx: &CoreContext, body: &[u8]) {
-    let Some(path) = pattern::socket_path(pattern, cx) else { return };
-    let ns = vfs::mntns::initial().id();
-    let Some(root) = vfs::mount::root_path_for_ns(ns) else { return };
-    let Ok(found) = vfs::path_lookup_at_root_cred(root.dentry.clone(), root.mnt_id,
-        root.dentry, root.mnt_id, &path, vfs::LookupFlags::default(), vfs::Cred::root()) else { return };
-    if found.inode.file_type() != vfs::FileType::Socket { return }
-    let addr = net::UnixAddr::from_inode_bytes(path.as_bytes().to_vec(), &found.inode);
-    let Ok(sock) = net::sock::connect_kernel_unix(addr) else { return };
-    if sock.write_kernel(body).ok() != Some(body.len()) { return }
-    let _ = net::sock::shutdown(&sock, net::uapi::ShutdownHow::Write);
 }
 
 /// DIAG (`debug-boot`): why a crash produced the dump it did, or produced

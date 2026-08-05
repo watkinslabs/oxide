@@ -203,18 +203,39 @@ pub fn pipe_argv(pattern: &[u8], cx: &CoreContext) -> Option<(Vec<Vec<u8>>, bool
     Some((argv, wants_pidfd))
 }
 
-/// Expand and validate the pathname after a direct `@` core destination.
+/// Socket protocol selected by the pattern prefix.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SocketProtocol {
+    /// Send the core image immediately after connecting.
+    Direct,
+    /// Negotiate who owns core generation before producing an image.
+    RequestAck,
+}
+
+/// Validated socket destination.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SocketPattern {
+    pub path: String,
+    pub protocol: SocketProtocol,
+}
+
+/// Expand and validate the pathname after an `@` or `@@` destination.
 /// # C: O(len)
-pub fn socket_path(pattern: &[u8], cx: &CoreContext) -> Option<String> {
+pub fn socket_pattern(pattern: &[u8], cx: &CoreContext) -> Option<SocketPattern> {
     let trimmed = trim_newline(pattern);
     if kind_of(trimmed) != CoreKind::Socket { return None; }
-    let body = trimmed.strip_prefix(b"@")?;
+    let after_at = trimmed.strip_prefix(b"@")?;
+    let (protocol, body) = if let Some(body) = after_at.strip_prefix(b"@") {
+        (SocketProtocol::RequestAck, body)
+    } else {
+        (SocketProtocol::Direct, after_at)
+    };
     if body.starts_with(b"@") { return None; }
     let text = expand(body, cx, CoreKind::Socket).text;
     if text.is_empty() || text[0] != b'/' || text.len() > UNIX_SOCKET_PATH_MAX
         || text.contains(&0) || text.contains(&b' ') { return None; }
     if text.split(|b| *b == b'/').any(|part| part == b"..") { return None; }
-    String::from_utf8(text).ok()
+    Some(SocketPattern { path: String::from_utf8(text).ok()?, protocol })
 }
 
 fn is_space(b: u8) -> bool { matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c) }
