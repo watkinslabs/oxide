@@ -165,6 +165,16 @@ pub struct TcpConn {
     pub rcv_buf_cap: u32,
     pub rcv_buf_max: u32,
     pub rcv_peak: u32,
+    /// Receive-window slow-start threshold; caps the advertised free space.
+    pub rcv_ssthresh: u32,
+    /// Receiver-side RTT sample measured over one advertised receive window.
+    pub rcv_rtt_ns: u64,
+    pub rcv_rtt_stamp_ns: u64,
+    pub rcv_rtt_seq: u32,
+    /// Bytes copied to the application during the latest receiver RTT sample.
+    pub rcv_space: u32,
+    pub rcv_space_stamp_ns: u64,
+    pub rcv_space_read_seq: u32,
     /// Linux `sk->sk_userlocks & SOCK_RCVBUF_LOCK` (`net/core/sock.c:975`):
     /// once `setsockopt(SO_RCVBUF)` names a size, receive-window autotuning
     /// stops and the advertised window follows the caller's number.

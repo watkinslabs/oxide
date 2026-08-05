@@ -211,6 +211,7 @@ impl TcpConn {
                     self.data_segs_in = self.data_segs_in.saturating_add(1);
                     self.receive_payload(self.rcv_nxt, payload);
                     self.rcv_nxt = self.rcv_nxt.wrapping_add(payload.len() as u32);
+                    self.note_rcv_rtt_at(crate::tcp_conn::ka_now_ns());
                     if (hdr.flags & flags::FIN) != 0 {
                         self.rcv_nxt = self.rcv_nxt.wrapping_add(1);
                         self.state = crate::tcp_state::transition(self.state, TcpEvent::RecvFin)
@@ -355,6 +356,7 @@ impl TcpConn {
                             received_fin = segment.fin;
                         }
                         self.rcv_autotune();
+                        self.note_rcv_rtt_at(crate::tcp_conn::ka_now_ns());
                     } else {
                         let diff = hdr.seq.wrapping_sub(self.rcv_nxt);
                         if (diff & 0x8000_0000) == 0 && diff != 0 {

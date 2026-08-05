@@ -73,6 +73,13 @@ impl TcpConn {
             rcv_buf_max: 4 * 1024 * 1024,
             rcv_buf_locked: false,
             rcv_peak:    0,
+            rcv_ssthresh: 65_536,
+            rcv_rtt_ns: 0,
+            rcv_rtt_stamp_ns: 0,
+            rcv_rtt_seq: 0,
+            rcv_space: 0,
+            rcv_space_stamp_ns: 0,
+            rcv_space_read_seq: 0,
             cubic_w_max:    0,
             cubic_epoch_ms: 0,
             cubic_k_ms:     0,
@@ -180,6 +187,13 @@ impl TcpConn {
             rcv_buf_max: 4 * 1024 * 1024,
             rcv_buf_locked: false,
             rcv_peak:    0,
+            rcv_ssthresh: 65_536,
+            rcv_rtt_ns: 0,
+            rcv_rtt_stamp_ns: 0,
+            rcv_rtt_seq: 0,
+            rcv_space: 0,
+            rcv_space_stamp_ns: 0,
+            rcv_space_read_seq: 0,
             cubic_w_max:    0,
             cubic_epoch_ms: 0,
             cubic_k_ms:     0,
@@ -308,7 +322,8 @@ impl TcpConn {
     /// # C: O(1)
     pub fn current_rcv_window(&self) -> u16 {
         let free = (self.rcv_buf_cap as usize).saturating_sub(self.recv_buf.len()) as u32;
-        let scaled = core::cmp::min(free, self.window_clamp) >> self.snd_wscale;
+        let scaled = core::cmp::min(core::cmp::min(free, self.window_clamp), self.rcv_ssthresh)
+            >> self.snd_wscale;
         if scaled > u16::MAX as u32 { u16::MAX } else { scaled as u16 }
     }
 
@@ -342,6 +357,7 @@ impl TcpConn {
         self.rcv_buf_cap = bytes;
         self.rcv_buf_max = bytes;
         self.rcv_peak = 0;
+        self.rcv_ssthresh = bytes.min(self.window_clamp);
         self.rcv_buf_locked = true;
     }
 
@@ -357,6 +373,7 @@ impl TcpConn {
         }
         if self.rcv_peak > self.rcv_buf_cap / 2 && self.rcv_buf_cap < self.rcv_buf_max {
             self.rcv_buf_cap = core::cmp::min(self.rcv_buf_cap.saturating_mul(2), self.rcv_buf_max);
+            self.rcv_ssthresh = self.rcv_buf_cap.min(self.window_clamp);
             self.rcv_peak = 0;
         }
     }
