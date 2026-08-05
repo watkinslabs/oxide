@@ -1,11 +1,38 @@
 use alloc::sync::Arc;
 
-use net::uapi::{MSG_DONTWAIT, MSG_EOR, MSG_PEEK, MSG_TRUNC, MSG_WAITALL};
+use net::uapi::{MSG_DONTWAIT, MSG_EOR, MSG_ERRQUEUE, MSG_PEEK, MSG_TRUNC, MSG_WAITALL};
 use syscall::errno::Errno;
 
 use crate::recv_user::RecvUser;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
+
+fn zerocopy_error_data((first, last, copied): (u32, u32, bool)) -> [u8; 16] {
+    let mut out = [0u8; 16];
+    out[4] = net::socket_error::SO_EE_ORIGIN_ZEROCOPY;
+    if copied { out[6] = net::socket_error::SO_EE_CODE_ZEROCOPY_COPIED; }
+    out[8..12].copy_from_slice(&first.to_ne_bytes());
+    out[12..16].copy_from_slice(&last.to_ne_bytes());
+    out
+}
+
+/// Consume one VSOCK zerocopy completion through Linux's standard error queue.
+/// # C: O(control copy)
+pub(crate) fn recv_error(sock: &Arc<net::vsock_socket::VsockSocket>, user: &RecvUser,
+    flags: u64) -> i64
+{
+    if let Err(error) = sock.check_receive() { return crate::net_errno::errno_from_neterr(error); }
+    let Some(completion) = sock.take_zerocopy_completion() else { return err(Errno::Eagain); };
+    if let Err(error) = user.copy_name(&[]) { return error; }
+    let mut control = crate::recv_control::Control::new(
+        if user.control == 0 { 0 } else { user.controllen });
+    control.push(net::uapi::SOL_VSOCK as i32, net::uapi::VSOCK_RECVERR as i32,
+        &zerocopy_error_data(completion));
+    let control_len = control.copy_to_recv(user);
+    let output = control.flags | MSG_ERRQUEUE as u32 | crate::recv_control::output_flags(flags);
+    if let Err(error) = user.finish(control_len, output) { return error; }
+    0
+}
 
 /// Linux-ordered state selected before one connectible VSOCK `recvmsg`.
 enum RecvmsgState {
@@ -120,6 +147,9 @@ where F: FnMut(usize, &[u8]) -> Result<usize, i64>, R: FnMut(&Arc<net::vsock_soc
 
 /// AF_VSOCK stream recvmsg through its transactional RX queue. # C: O(payload)
 pub(crate) fn recv_pinned(sock: &Arc<net::vsock_socket::VsockSocket>, file_nonblock: bool, user: &RecvUser, flags: u64) -> i64 {
+    if flags & MSG_ERRQUEUE != 0 {
+        return recv_error(sock, user, flags);
+    }
     let state = match recvmsg_preflight(sock, user.capacity, flags) {
         Ok(state) => state,
         Err(error) => return error,

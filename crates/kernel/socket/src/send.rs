@@ -447,7 +447,8 @@ pub(crate) fn send_prepared(ctx: &SendContext<'_>, target: &SendFile, message: M
             if message.payload_faulted && message.payload.is_empty() { return Err(Error::Efault); }
             let nonblock = target.nonblock() || flags as u64 & net::uapi::MSG_DONTWAIT != 0;
             let end_of_record = flags as u64 & net::uapi::MSG_EOR != 0;
-            let result = socket.send_message(&message.payload, end_of_record, nonblock)
+            let result = socket.send_message_flags(&message.payload, end_of_record, nonblock,
+                flags as u64)
                 .map_err(Error::from);
             complete(ctx, flags, result)
         }

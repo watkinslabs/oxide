@@ -13,6 +13,19 @@ pub(super) fn vsock_setsockopt(socket: &net::vsock_socket::VsockSocket, level: u
     const VSOCK_BUFFER_OPTION_BYTES: i32 = core::mem::size_of::<u64>() as i32;
     const VSOCK_TIMEVAL_FIELD_BYTES: usize = core::mem::size_of::<i64>();
     const VSOCK_TIMEVAL_BYTES: i32 = (VSOCK_TIMEVAL_FIELD_BYTES * 2) as i32;
+    if level == net::uapi::SOL_SOCKET && optname == net::uapi::SO_ZEROCOPY {
+        if signed_optlen < core::mem::size_of::<i32>() as i32 {
+            return -(Errno::Einval.as_i32() as i64);
+        }
+        let mut bytes = [0u8; core::mem::size_of::<i32>()];
+        if uaccess::copy_from_user(&mut bytes, optval).is_err() {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+        return match socket.set_zerocopy(i32::from_ne_bytes(bytes)) {
+            Ok(()) => 0,
+            Err(e) => errno_from_neterr(e),
+        };
+    }
     // AF_VSOCK has no setsockopt of its own for SOL_SOCKET options: Linux
     // routes them through the generic `sock_setsockopt`, so SO_RCVTIMEO /
     // SO_SNDTIMEO land on `sk->sk_{rcv,snd}timeo` and are read back by

@@ -9,6 +9,8 @@ pub const MSG_WAITALL: u64 = 0x100;
 pub const MSG_OOB: u64 = 0x01;
 pub const MSG_DONTROUTE: u64 = 0x04;
 pub const MSG_ERRQUEUE: u64 = 0x2000;
+/// Ask a supported transport to retain user pages until transmit completion.
+pub const MSG_ZEROCOPY: u64 = 0x400_0000;
 /// Open the connection with this message's first bytes in the SYN.
 pub const MSG_FASTOPEN: u64 = 0x2000_0000;
 pub const MSG_NOSIGNAL: u64 = 0x4000;
@@ -124,9 +126,11 @@ pub const SO_OOBINLINE: u64 = 10;
 pub const SO_ACCEPTCONN: u64 = 30;
 pub const SO_PROTOCOL: u64 = 38;
 pub const SO_DOMAIN: u64 = 39;
+pub const SO_ZEROCOPY: u64 = 60;
 
 /// Linux AF_VSOCK socket-option ABI values (`include/uapi/linux/vm_sockets.h`).
 pub const SOL_VSOCK: u64 = 287;
+pub const VSOCK_RECVERR: u64 = 1;
 pub const SO_VM_SOCKETS_BUFFER_SIZE: u64 = 0;
 pub const SO_VM_SOCKETS_BUFFER_MIN_SIZE: u64 = 1;
 pub const SO_VM_SOCKETS_BUFFER_MAX_SIZE: u64 = 2;
