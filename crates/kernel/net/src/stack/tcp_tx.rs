@@ -43,6 +43,12 @@ impl TcpTxPolicy<'_> {
         match self { Self::Entry(entry) => entry.ipv6_opts.srcprefs() }
     }
 
+    fn ipv6_headers(&self) -> crate::send_control::Raw6Control {
+        let mut control = crate::send_control::Raw6Control::default();
+        match self { Self::Entry(entry) => control.merge_sticky_headers(&entry.ipv6_opts) }
+        control
+    }
+
     /// The sticky IPv4 option area every segment this socket emits carries.
     /// # C: O(optlen)
     fn ipv4_options(&self) -> Option<crate::ipv4_options::Compiled> {
@@ -106,7 +112,7 @@ impl NetStack {
                     policy.ipv6_flow_label().0, policy.ipv6_flow_label().1,
                     policy.ipv6_source_prefs(), mtu,
                     crate::uapi::ipv6_pmtudisc_allows_fragmentation(mode),
-                    Some(policy.owner()),
+                    Some(policy.owner()), &policy.ipv6_headers(),
                 )
             }
             _ => Err(NetError::Einval),
@@ -174,5 +180,19 @@ mod tests {
         entry.ipv6_opts.set_flow_label(0x34567);
         entry.ipv6_opts.set_flag(crate::sock_opts::sol_ipv6::flag::AUTOFLOWLABEL, true);
         assert_eq!(TcpTxPolicy::Entry(&entry).ipv6_flow_label(), (0x34567, true));
+    }
+
+    #[test]
+    fn tcp_transmit_policy_publishes_sticky_extension_headers() {
+        let entry = TcpEntry::new(TcpConn::new_client(
+            Endpoint { ip: IpAddr::V6(Ipv6Addr::LOOPBACK), port: 40_011 },
+            Endpoint { ip: IpAddr::V6(Ipv6Addr::LOOPBACK), port: 40_012 }, 1));
+        entry.ipv6_opts.set_header(crate::sock_opts::sol_ipv6::Sticky::HopOpts,
+            Some(alloc::vec![0; 8]));
+        entry.ipv6_opts.set_header(crate::sock_opts::sol_ipv6::Sticky::DstOpts,
+            Some(alloc::vec![2; 8]));
+        let headers = TcpTxPolicy::Entry(&entry).ipv6_headers();
+        assert_eq!(headers.hop_options, Some(alloc::vec![0; 8]));
+        assert_eq!(headers.dst_after_routing, Some(alloc::vec![2; 8]));
     }
 }
