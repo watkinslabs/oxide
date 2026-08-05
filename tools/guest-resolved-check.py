@@ -26,6 +26,9 @@ SETTLE = 8 if ARCH == "x86" else 20
 SOCK = f"/tmp/oxide-resolved-uart-{ARCH}-{os.getpid()}.sock"
 LOG = f"/tmp/oxide-resolved-uart-{ARCH}-{os.getpid()}.log"
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+KERNEL_FAULT = re.compile(
+    r"\[BUG\] scheduling while atomic|IRQ stack guard page|\[BADSTACK\]|#DF|Kernel panic"
+)
 
 
 env = dict(os.environ, OXIDE_QEMU_UART_SOCK=SOCK, OXIDE_QEMU_HEADLESS="1")
@@ -129,6 +132,19 @@ try:
         ok = False
         print("guest-resolved-check: FAIL — stub DNS query", flush=True)
         print(query[-3000:], flush=True)
+
+    missing = run(conn, buf, "getent ahostsv4 oxide-no-such-host.invalid")
+    if re.search(r"OXIDE-RC-2", missing) and not re.search(r"^[0-9].*STREAM", missing, re.MULTILINE):
+        print("guest-resolved-check: negative DNS query OK", flush=True)
+    else:
+        ok = False
+        print("guest-resolved-check: FAIL — negative DNS query", flush=True)
+        print(missing[-3000:], flush=True)
+
+    fault = KERNEL_FAULT.search(buf.decode("utf-8", "replace"))
+    if fault:
+        ok = False
+        print(f"guest-resolved-check: FAIL — kernel fault: {fault.group(0)}", flush=True)
 except RuntimeError as exc:
     ok = False
     print(f"guest-resolved-check: FAIL — {exc}", flush=True)

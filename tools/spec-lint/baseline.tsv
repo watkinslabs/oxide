@@ -58,7 +58,7 @@ crates/kernel/pidfd	code/pub-fn-complexity	1
 crates/kernel/power	code/klog-ungated	6
 crates/kernel/procfs	code/klog-ungated	21
 crates/kernel/procfs	code/pub-fn-complexity	14
-crates/kernel/sched	code/klog-ungated	165
+crates/kernel/sched	code/klog-ungated	163
 crates/kernel/sched	code/pub-fn-complexity	54
 crates/kernel/security	code/pub-fn-complexity	24
 crates/kernel/smoke	code/klog-ungated	5

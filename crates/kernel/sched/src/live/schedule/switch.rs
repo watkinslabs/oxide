@@ -243,70 +243,17 @@ fn publish_forked_child_tid() {
     let _ = uaccess::copy_to_user(addr, &(tid as i32).to_le_bytes());
 }
 
-/// This CPU's architectural stack pointer, for the scheduling-while-atomic
-/// report: an SP inside the per-CPU IRQ-stack window is the proof of the second
-/// `in_atomic` reason. # C: O(1)
-fn current_sp() -> u64 {
-    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
-    {
-        let v: u64;
-        // SAFETY: reads the architectural SP into a GPR; no memory operand, no
-        // flag effects, and `nostack` asserts the asm itself pushes nothing.
-        unsafe { core::arch::asm!("mov {v}, sp", v = out(reg) v, options(nomem, nostack, preserves_flags)); }
-        v
-    }
-    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-    {
-        let v: u64;
-        // SAFETY: reads RSP into a GPR; no memory operand, no flag effects.
-        unsafe { core::arch::asm!("mov {v}, rsp", v = out(reg) v, options(nomem, nostack, preserves_flags)); }
-        v
-    }
-    #[cfg(not(all(any(target_arch = "aarch64", target_arch = "x86_64"), target_os = "oxide-kernel")))]
-    { 0 }
-}
-
 /// The ONE task-switch primitive `schedule()` per `13§8`.
 /// # SAFETY: caller is at a safe schedule point per `13§9`.
 /// # C: O(log N) CFS pick + O(1) ctx switch
 /// # Ctx: process|kthread|irq-exit-to-user; enters preempt-off
 #[track_caller]
 pub unsafe fn schedule() {
-    // Linux `schedule_debug` -> `__schedule_bug`: switching away from atomic
-    // context is a bug, not a policy choice. Parking here would record the
-    // shared per-CPU IRQ stack (or an in-progress softirq drain's frames) in
-    // `Context.sp`, and the next IRQ on this CPU would overwrite them.
-    //
-    // `panic = "abort"` on every kernel profile rules out Linux's `BUG()`, and
-    // aborting the boot is worse than declining: every existing caller of a
-    // blocking primitive already has a busy-poll fallback for exactly this case
-    // (`drv-virtio-blk`'s `can_sleep()` is the pattern). So report loudly and
-    // return without switching — the caller re-polls, and the offending call
-    // site is named on the first occurrence instead of corrupting memory.
-    if crate::preempt::in_atomic() {
-        klog::write_raw(b"[BUG] scheduling while atomic: preempt_count=");
-        klog::write_hex_u64(crate::preempt::preempt_count() as u64);
-        // Which of the two reasons, and the SP that proves the second. No
-        // caller IP: `targets/aarch64-unknown-oxide-kernel.json` does not pin
-        // `frame-pointer: always` (only the x86_64 target does), so a
-        // frame-pointer walk here would print a plausible-but-wrong address on
-        // aarch64 — worse than printing none. `[BADSTACK]`/`[ARMCTX]` name the
-        // context, and the klog line ordering names the subsystem.
-        klog::write_raw(if crate::preempt::in_interrupt() { b" in_interrupt=1" } else { b" in_interrupt=0" });
-        klog::write_raw(b" sp=0x");
-        klog::write_hex_u64(current_sp());
-        #[cfg(feature = "debug-preempt")]
-        {
-            let caller = core::panic::Location::caller();
-            klog::write_raw(b" caller=");
-            klog::write_raw(caller.file().as_bytes());
-            klog::write_raw(b":");
-            klog::write_dec_u64(caller.line() as u64);
-        }
-        klog::write_raw(b"\n");
+    crate::preempt::preempt_disable();
+    if !super::atomic::recover() {
+        crate::preempt::preempt_enable_no_check();
         return;
     }
-    crate::preempt::preempt_disable();
 
     let rq = match global() {
         Some(r) => r,
