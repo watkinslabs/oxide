@@ -460,6 +460,7 @@ open issue. Live rows that still need the work carry it in their own row.
 ### Drivers / devices
 
 | FIXED fbf4eb380 | med | `usb_find_interface` compared the interface registration flag to the requested minor, while `UsbInterface` carried no class-device minor and the class-device registration surface was absent. | Interfaces now own the assigned minor; `usb_register_dev`/`usb_deregister_dev` reserve and release the canonical USB minor table, and lookup requires both the bound driver and assigned minor. Regression covers allocation, duplicate rejection, lookup, release, and reuse. `cargo test -p modules --lib` (213 passed) and both feature-gate architectures passed. | B1838-linux-usb-interface-minor |
+| FIXED 20f3cf186 | med | `usb_ep_free_request` could drop a UDC-owned request as a shim-owned `Box` when the endpoint or its free hook was absent. | Request destruction now always dispatches to the endpoint's paired `free_request` operation; an invalid endpoint violates the USB gadget KPI rather than selecting a second allocator. The gadget regression proves the endpoint hook runs exactly once; all 213 modules tests passed. | B1839-usb-gadget-request-allocator |
 
 
 ### Memory / page cache

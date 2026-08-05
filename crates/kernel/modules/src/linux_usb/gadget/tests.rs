@@ -3,6 +3,7 @@ use core::ptr::{null, null_mut};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 static QUEUES: AtomicUsize = AtomicUsize::new(0);
+static FREES: AtomicUsize = AtomicUsize::new(0);
 
 unsafe extern "C" fn queue(_ep: *mut UsbEndpoint, req: *mut UsbRequest, _gfp: u32) -> i32 {
     unsafe {
@@ -13,11 +14,18 @@ unsafe extern "C" fn queue(_ep: *mut UsbEndpoint, req: *mut UsbRequest, _gfp: u3
     LINUX_OK
 }
 
+unsafe extern "C" fn free_box_request(_ep: *mut UsbEndpoint, req: *mut UsbRequest) {
+    FREES.fetch_add(1, Ordering::Relaxed);
+    // SAFETY: request_alloc_queue_free_uses_endpoint_ops allocated req through the shim's Box branch and frees it exactly once here.
+    unsafe { drop(Box::from_raw(req)); }
+}
+
 #[test]
 fn request_alloc_queue_free_uses_endpoint_ops() {
     let _modules = crate::test_serial::claim();
     QUEUES.store(0, Ordering::Relaxed);
-    let ops = UsbEpOps { enable: None, disable: None, alloc_request: None, free_request: None, queue: Some(queue), dequeue: None };
+    FREES.store(0, Ordering::Relaxed);
+    let ops = UsbEpOps { enable: None, disable: None, alloc_request: None, free_request: Some(free_box_request), queue: Some(queue), dequeue: None };
     let mut ep = test_ep(&ops);
     let req = unsafe { usb_ep_alloc_request(&mut ep, 0) };
     assert!(!req.is_null());
@@ -30,6 +38,7 @@ fn request_alloc_queue_free_uses_endpoint_ops() {
         usb_ep_free_request(&mut ep, req);
     }
     assert_eq!(QUEUES.load(Ordering::Relaxed), 1);
+    assert_eq!(FREES.load(Ordering::Relaxed), 1);
 }
 
 #[test]
