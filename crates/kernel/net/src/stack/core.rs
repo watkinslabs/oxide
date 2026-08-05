@@ -116,7 +116,16 @@ impl NetStack {
     pub(crate) fn v6_select_source(&self, iface: NetIfaceId, dst: crate::addr::Ipv6Addr,
         hint: Option<crate::addr::Ipv6Addr>) -> Option<crate::addr::Ipv6Addr>
     {
-        self.v6_select_source_current(iface, dst, hint)
+        self.v6_select_source_with_prefs(iface, dst, hint, 0)
+    }
+
+    /// Select a source using this socket's `IPV6_ADDR_PREFERENCES` policy.
+    /// # C: O(N addrs)
+    pub(crate) fn v6_select_source_with_prefs(&self, iface: NetIfaceId,
+        dst: crate::addr::Ipv6Addr, hint: Option<crate::addr::Ipv6Addr>, prefs: i32)
+        -> Option<crate::addr::Ipv6Addr>
+    {
+        self.v6_select_source_current(iface, dst, hint, prefs)
     }
 
     /// Learn or update an IPv6 neighbor binding scoped to `iface`.

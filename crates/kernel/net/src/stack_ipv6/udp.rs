@@ -23,11 +23,26 @@ impl NetStack {
         valid: u32,
         preferred: u32,
     ) {
+        self.add_v6_addr_meta_with_temporary(iface, ip, prefixlen, valid, preferred, false);
+    }
+
+    /// Insert a static IPv6 address with its privacy-address classification.
+    /// # C: O(N)
+    pub fn add_v6_addr_meta_with_temporary(
+        &self,
+        iface: NetIfaceId,
+        ip: Ipv6Addr,
+        prefixlen: u8,
+        valid: u32,
+        preferred: u32,
+        temporary: bool,
+    ) {
         let mut all = self.v6_addrs.lock();
         let addrs = all.entry(iface).or_default();
         let row = Ipv6IfaceAddr {
             addr: ip, prefixlen, preferred, valid, origin: Ipv6AddrOrigin::Static,
-            state: Ipv6AddrState::Assigned, deprecated: preferred == 0, notify_pending: false,
+            state: Ipv6AddrState::Assigned, deprecated: preferred == 0, temporary,
+            notify_pending: false,
         };
         match addrs.iter().position(|addr| addr.addr == ip) {
             Some(i) => addrs[i] = row,
@@ -72,7 +87,7 @@ impl NetStack {
                     state: Ipv6AddrState::Tentative {
                         dad_until_ns: None, retry_at_ns: now_ns,
                         retrans_timer_ns: retrans_timer_ns.unwrap_or(super::ra::DAD_DELAY_NS) },
-                    deprecated: preferred == 0, notify_pending: false,
+                    deprecated: preferred == 0, temporary: false, notify_pending: false,
                 });
                 return Some(true);
             }

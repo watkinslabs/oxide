@@ -106,6 +106,9 @@ pub struct Ipv6IfaceAddr {
     pub origin: Ipv6AddrOrigin,
     pub state: Ipv6AddrState,
     pub deprecated: bool,
+    /// Privacy address generated for this prefix rather than the stable
+    /// public address. Source selection owns the interpretation of this bit.
+    pub temporary: bool,
     pub(crate) notify_pending: bool,
 }
 
@@ -142,6 +145,7 @@ impl Ipv6IfaceAddr {
         let mut flags = if matches!(self.origin, Ipv6AddrOrigin::Static) {
             crate::iface_addr::IFA_F_PERMANENT
         } else { 0 };
+        if self.temporary { flags |= crate::iface_addr::IFA_F_TEMPORARY; }
         if self.deprecated { flags |= crate::iface_addr::IFA_F_DEPRECATED; }
         flags |= match self.state {
             Ipv6AddrState::Tentative { .. } => crate::iface_addr::IFA_F_TENTATIVE,

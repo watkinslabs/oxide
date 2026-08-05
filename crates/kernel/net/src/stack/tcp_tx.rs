@@ -39,6 +39,10 @@ impl TcpTxPolicy<'_> {
         }
     }
 
+    fn ipv6_source_prefs(&self) -> i32 {
+        match self { Self::Entry(entry) => entry.ipv6_opts.srcprefs() }
+    }
+
     /// The sticky IPv4 option area every segment this socket emits carries.
     /// # C: O(optlen)
     fn ipv4_options(&self) -> Option<crate::ipv4_options::Compiled> {
@@ -99,7 +103,8 @@ impl NetStack {
                 self.xmit_ipv6_l4_with_policy(
                     iface_id, iface, next_hop, src, dst, IpProto::Tcp, segment,
                     crate::ipv6::IPV6_DEFAULT_HOP_LIMIT, 0,
-                    policy.ipv6_flow_label().0, policy.ipv6_flow_label().1, mtu,
+                    policy.ipv6_flow_label().0, policy.ipv6_flow_label().1,
+                    policy.ipv6_source_prefs(), mtu,
                     crate::uapi::ipv6_pmtudisc_allows_fragmentation(mode),
                     Some(policy.owner()),
                 )

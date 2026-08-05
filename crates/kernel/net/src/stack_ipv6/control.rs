@@ -242,7 +242,7 @@ impl NetStack {
     }
 
     pub(crate) fn v6_select_source_current(&self, iface: crate::NetIfaceId,
-        dst: crate::Ipv6Addr, hint: Option<crate::Ipv6Addr>) -> Option<crate::Ipv6Addr>
+        dst: crate::Ipv6Addr, hint: Option<crate::Ipv6Addr>, prefs: i32) -> Option<crate::Ipv6Addr>
     {
         let now_ns = self.ra_now_ns();
         let all = self.v6_addrs.lock();
@@ -254,9 +254,17 @@ impl NetStack {
                 16u8.saturating_add(dst_scope - src_scope)
             } else { src_scope - dst_scope };
             (row.addr != dst, scope_penalty, !row.preferred_at(now_ns),
-                hint != Some(row.addr), u8::MAX - common_prefix_len(row.addr, dst))
+                source_preference_penalty(row.temporary, prefs), hint != Some(row.addr),
+                u8::MAX - common_prefix_len(row.addr, dst))
         }).map(|row| row.addr)
     }
+}
+
+fn source_preference_penalty(temporary: bool, prefs: i32) -> bool {
+    use crate::sock_opts::sol_ipv6::uapi::{IPV6_PREFER_SRC_PUBLIC, IPV6_PREFER_SRC_TMP};
+    if prefs & IPV6_PREFER_SRC_TMP != 0 { return !temporary; }
+    if prefs & IPV6_PREFER_SRC_PUBLIC != 0 { return temporary; }
+    false
 }
 
 fn ipv6_scope(addr: crate::Ipv6Addr) -> u8 {
