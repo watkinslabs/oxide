@@ -55,7 +55,7 @@ impl FileBacking for RampFile {
 
 /// ET_EXEC with an RX segment and an RW segment that ends in `.bss`. ET_EXEC
 /// keeps the placement fixed, so the assertions can name absolute addresses.
-fn two_segment_elf() -> Vec<u8> {
+fn two_segment_elf(et_dyn: bool) -> Vec<u8> {
     let phoff = EHDR;
     let total = (DATA_OFF + DATA_FILE_SZ) as usize;
     let mut v = alloc::vec![0u8; total];
@@ -64,7 +64,7 @@ fn two_segment_elf() -> Vec<u8> {
     v[4] = 2;
     v[5] = 1;
     v[6] = 1;
-    v[16..18].copy_from_slice(&2u16.to_le_bytes());  // ET_EXEC
+    v[16..18].copy_from_slice(&(if et_dyn { 3u16 } else { 2u16 }).to_le_bytes());
     v[18..20].copy_from_slice(&crate::ARCH_MACHINE.to_le_bytes());
     v[20..24].copy_from_slice(&1u32.to_le_bytes());
     v[24..32].copy_from_slice(&(BASE + 0x100).to_le_bytes());
@@ -115,7 +115,7 @@ fn at(as_: &AddressSpace, va: u64) -> (VmaBacking, u64) {
 /// same image with its file present must put that file behind the text.
 #[test]
 fn text_is_a_mapping_of_the_file_it_was_loaded_from() {
-    let blob = two_segment_elf();
+    let blob = two_segment_elf(false);
     let as_ = fresh_as();
     load_image(Image { blob: &blob, file: Some(ramp()) }, None, &as_, &rnd_fixed()).expect("load");
 
@@ -131,11 +131,30 @@ fn text_is_a_mapping_of_the_file_it_was_loaded_from() {
     assert_eq!(end, BASE + 0x2000);
 }
 
+/// ET_DYN without PT_INTERP chooses an unmapped bias, but its entry code
+/// performs any required relocation itself. The kernel therefore still maps
+/// the executable's original file bytes.
+#[test]
+fn a_no_interpreter_pie_keeps_its_file_backed_text() {
+    let blob = two_segment_elf(true);
+    let as_ = fresh_as();
+    let img = load_image(Image { blob: &blob, file: Some(ramp()) }, None, &as_, &rnd_fixed())
+        .expect("load");
+
+    match at(&as_, img.load_base + BASE).0 {
+        VmaBacking::File { backing, off } => {
+            assert_eq!(off, TEXT_OFF);
+            assert_eq!(backing.ino(), 4242);
+        }
+        other => panic!("PIE text is not file-backed: {other:?}"),
+    }
+}
+
 /// Control: the same load with no file behind it keeps the kernel-owned
 /// backing, which is what makes the assertion above able to fail.
 #[test]
 fn an_image_the_kernel_carries_has_no_file_behind_its_text() {
-    let blob = two_segment_elf();
+    let blob = two_segment_elf(false);
     let as_ = fresh_as();
     load_static_blob(&blob, &as_, &rnd_fixed()).expect("load");
     assert!(matches!(at(&as_, BASE).0, VmaBacking::KernelBytes { .. }));
@@ -145,7 +164,7 @@ fn an_image_the_kernel_carries_has_no_file_behind_its_text() {
 /// mapping supplies zeroes beyond the file portion.
 #[test]
 fn a_data_segment_keeps_its_file_backed_boundary_page() {
-    let blob = two_segment_elf();
+    let blob = two_segment_elf(false);
     let as_ = fresh_as();
     load_image(Image { blob: &blob, file: Some(ramp()) }, None, &as_, &rnd_fixed()).expect("load");
 
@@ -168,7 +187,7 @@ fn a_data_segment_keeps_its_file_backed_boundary_page() {
 /// where the same load without a file copies every page of it.
 #[test]
 fn a_file_backed_segment_keeps_no_kernel_copy_of_its_bytes() {
-    let blob = two_segment_elf();
+    let blob = two_segment_elf(false);
     let as_ = fresh_as();
     load_image(Image { blob: &blob, file: Some(ramp()) }, None, &as_, &rnd_fixed()).expect("load");
     // Text has no kernel-owned mapping anywhere in its range.
