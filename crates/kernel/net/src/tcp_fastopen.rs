@@ -42,7 +42,7 @@ mod queue;
 mod server;
 
 pub use blackhole::{detect, pause_at, pause_ns, Blackhole, Pause};
-pub use cache::{Cached, ClientCache, BUCKETS, ENTRY_TIMEOUT_NS, RECLAIM_DEPTH,
+pub use cache::{Cached, ClientCache, Metrics, BUCKETS, ENTRY_TIMEOUT_NS, RECLAIM_DEPTH,
     TRY_EXP_ASSIGNED, TRY_EXP_EXPERIMENTAL, TRY_EXP_NONE};
 pub use client::{admit_send, carries_data, decide as decide_active, syn_option, Active, Open,
     SendAdmit, Source, TFO_COOKIE_UNAVAILABLE, TFO_DATA_NOT_ACKED, TFO_STATUS_NONE,
@@ -55,6 +55,6 @@ pub use keys::{format_hex, parse_hex, Key, KeyCtx, KEY_BUF_LEN, KEY_LEN};
 pub use learn::{learn, Learned, Synack};
 pub use ns::{blackhole_disable, blackhole_pause, blackhole_reset, blackhole_timeout,
     blackhole_times, cache_learned, cached_cookie, enable_bits, enable_bits_in, init_key_once,
-    ns_keys, set_ns_keys, NsKeys};
+    cache_metrics, ns_keys, set_ns_keys, NsKeys};
 pub use queue::{clamp_qlen, on_listen, Admission, FastOpenQueue, RST_PENALTY_NS};
 pub use server::{decide, decide_counted, Counter, Decision, Passive, Syn};

@@ -85,6 +85,18 @@ pub struct Cached {
     pub try_exp: bool,
 }
 
+/// One fast-open cache row projected for the TCP metrics ABI.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Metrics {
+    pub src: IpAddr,
+    pub dst: IpAddr,
+    pub age_ns: u64,
+    pub mss: u16,
+    pub syn_loss: u16,
+    pub syn_loss_age_ns: u64,
+    pub cookie: Option<Cookie>,
+}
+
 /// One namespace's client cookie cache.
 ///
 /// The bucket array is a separate heap allocation reached by pointer, not an
@@ -203,6 +215,21 @@ impl ClientCache {
         self.chains[bucket(dst)].lock().iter()
             .find(|e| e.src == Some(src) && e.dst == Some(dst))
             .map(|e| e.syn_loss).unwrap_or(0)
+    }
+
+    /// The live metrics row for `dst`, narrowed by `src` when supplied.
+    /// # C: O(depth)
+    pub fn metrics(&self, src: Option<IpAddr>, dst: IpAddr, now_ns: u64) -> Option<Metrics> {
+        let chain = self.chains[bucket(dst)].lock();
+        let entry = chain.iter().find(|e| e.dst == Some(dst)
+            && (src.is_none() || e.src == src))?;
+        Some(Metrics {
+            src: entry.src?, dst: entry.dst?,
+            age_ns: now_ns.wrapping_sub(entry.stamp_ns),
+            mss: entry.mss, syn_loss: entry.syn_loss,
+            syn_loss_age_ns: now_ns.wrapping_sub(entry.last_syn_loss_ns),
+            cookie: entry.cookie.filter(|cookie| !cookie.is_request()),
+        })
     }
 }
 
