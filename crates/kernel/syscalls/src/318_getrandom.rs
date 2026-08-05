@@ -22,9 +22,8 @@ fn current_task() -> Option<&'static sched::Task> { sched::live::current() }
 /// behaviour userspace expects when it asks for secure bytes.
 /// # C: O(schedules until seeded or signal)
 fn wait_for_random_bytes(cur: &sched::Task) -> WaitOutcome {
-    use sched::SleepWake;
     loop {
-        let pending = cur.sleep_wake() == SleepWake::Deliver;
+        let pending = cur.sleep_wake().interrupted();
         if let Some(out) = wait_step(crng::is_initialized(), pending) { return out; }
         // Linux calls `try_to_generate_entropy()` each pass; our equivalent is
         // re-polling every source, which also folds fresh cycle-counter jitter.

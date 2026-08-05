@@ -244,7 +244,7 @@ pub(crate) fn sys_select_with_deadline(args: &SyscallArgs, deadline_ns: Option<u
         // waking dropbear's pselect-style relay so it can wait4 the shell
         // child and let the pipe close-hook fire).
         let timed_out = deadline_ns.map(|dl| monotonic_ns() >= dl).unwrap_or(false);
-        let sig = cur.deliverable_signals() != 0;
+        let sig = cur.sleep_wake().interrupted();
         if let Some(out) = wait_verdict(ready, timed_out, sig) {
             debug_ssh! {
                 klog::write_raw(b"[INFO]  ssh-trace: select out=");

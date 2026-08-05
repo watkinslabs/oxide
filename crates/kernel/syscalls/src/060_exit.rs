@@ -133,6 +133,10 @@ pub fn do_exit(status: i32) -> i64 {
             // cgroup v2 (`26§4`): drop the exiting task from its
             // cgroup so cgroup.procs / cgroup.events `populated`
             // reflect reality — systemd keys service liveness on it.
+            // A queued Landlock TSYNC task-work can no longer reach the
+            // return-to-user hook after do_exit. Retire its two barrier debts
+            // before publishing PF_EXITING so the initiator cannot hang.
+            sched::landlock_tsync::cancel_current_on_exit(task);
             sched::cgroup::exit_task(task);
             // Linux `do_exit` -> `acct_collect()` + `acct_process()`: BSD
             // process accounting appends one `acct_v3` record per exit. Runs

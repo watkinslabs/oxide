@@ -33,23 +33,25 @@ pub mod work {
     /// Linux `_TIF_SIGPENDING` — a deliverable signal is queued. Serviced by
     /// `arch_do_signal_or_restart`.
     pub const SIGPENDING: u32 = 1 << 1;
+    /// Linux `_TIF_NOTIFY_SIGNAL` — pseudo-signal task work is queued. It
+    /// breaks interruptible waits and is consumed before ordinary signals.
+    pub const NOTIFY_SIGNAL: u32 = 1 << 2;
     /// Linux `_TIF_NOTIFY_RESUME` — `resume_user_mode_work()`. On this port
-    /// the only resume work is the rseq user-area writeback; there is no
-    /// `task_work` queue and no blkcg/memcg association to release.
-    pub const NOTIFY_RESUME: u32 = 1 << 2;
+    /// the only resume work is the rseq user-area writeback; Landlock task
+    /// work uses `NOTIFY_SIGNAL`, and there is no blkcg/memcg association.
+    pub const NOTIFY_RESUME: u32 = 1 << 3;
     /// Linux `_TIF_RSEQ` — a restartable-sequence fixup is owed because the
     /// thread lost the CPU (or is about to) inside a declared critical
     /// section. Split from `NOTIFY_RESUME` exactly as Linux split it out of
     /// `_TIF_NOTIFY_RESUME`.
-    pub const RSEQ: u32 = 1 << 3;
+    pub const RSEQ: u32 = 1 << 4;
 
     /// Linux `EXIT_TO_USER_MODE_WORK` — the set tested to decide whether the
     /// loop is entered at all. `_TIF_UPROBE` and `_TIF_PATCH_PENDING` are
     /// deliberately absent: this kernel has neither uprobes nor livepatching,
-    /// so there is no state a bit could describe. `_TIF_NOTIFY_SIGNAL` is
-    /// absent for the same reason — it exists in Linux to let `task_work` wake
-    /// a task without a real signal, and there is no `task_work` queue here.
-    pub const MASK: u32 = NEED_RESCHED | SIGPENDING | NOTIFY_RESUME | RSEQ;
+    /// so there is no state a bit could describe. `_TIF_NOTIFY_SIGNAL` is the
+    /// Landlock TSYNC task-work wakeup implemented by this port.
+    pub const MASK: u32 = NEED_RESCHED | SIGPENDING | NOTIFY_SIGNAL | NOTIFY_RESUME | RSEQ;
 
     /// Linux `EXIT_TO_USER_MODE_WORK_LOOP` = `EXIT_TO_USER_MODE_WORK &
     /// ~_TIF_RSEQ` (`kernel/entry/common.c`, `CONFIG_HAVE_GENERIC_TIF_BITS`).
@@ -75,10 +77,11 @@ pub fn signal_pending(pending: u64, blocked: u64) -> bool {
 /// already read with interrupts disabled.
 /// # C: O(1)
 pub fn work_flags(need_resched: bool, sigpending: u64, blocked: u64,
-                  notify_resume: bool, rseq: bool) -> u32 {
+                  notify_signal: bool, notify_resume: bool, rseq: bool) -> u32 {
     let mut w = 0;
     if need_resched { w |= work::NEED_RESCHED; }
     if signal_pending(sigpending, blocked) { w |= work::SIGPENDING; }
+    if notify_signal { w |= work::NOTIFY_SIGNAL; }
     if notify_resume { w |= work::NOTIFY_RESUME; }
     if rseq { w |= work::RSEQ; }
     w
@@ -122,8 +125,9 @@ pub fn runs_on_return(from_user: bool, w: u32) -> bool { from_user && enters_loo
 /// resume work. rseq is serviced last because `rseq_exit_to_user_mode_restart`
 /// re-runs the whole loop when it fires.
 /// # C: O(1)
-pub fn pass_order() -> [u32; 4] {
-    [work::NEED_RESCHED, work::SIGPENDING, work::NOTIFY_RESUME, work::RSEQ]
+pub fn pass_order() -> [u32; 5] {
+    [work::NEED_RESCHED, work::NOTIFY_SIGNAL, work::SIGPENDING,
+     work::NOTIFY_RESUME, work::RSEQ]
 }
 
 /// Linux caps nothing here — `__exit_to_user_mode_loop` spins until the flags

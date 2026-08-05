@@ -67,6 +67,9 @@ fn the_security_spec_pins_the_same_landlock_target() {
     let spec = include_str!("../../../../../docs/27-security.md");
     let target = alloc::format!("Landlock target: ABI {TARGET_ABI_VERSION} (Linux 7.2 UAPI).");
     assert!(spec.lines().any(|line| line == target), "docs/27 Landlock target drifted");
+    let tsync = "| 8 | `LANDLOCK_RESTRICT_SELF_TSYNC` | enforced; pseudo-signal task work, repeated clone discovery, and two commit barriers make the live thread group all-or-nothing |";
+    assert!(spec.lines().any(|line| line == tsync),
+            "ABI 10 cannot stay advertised while its cumulative ABI-8 TSYNC rung is open");
 }
 
 #[test]
