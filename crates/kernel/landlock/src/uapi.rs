@@ -105,14 +105,16 @@ pub const RULE_NET_PORT:     u64 = 2;
 
 // ---- ABI negotiation ------------------------------------------------------
 
-/// Value reported for `LANDLOCK_CREATE_RULESET_VERSION`. Every right, scope and
-/// flag defined at this level is enforced; feature-detecting programs use this
-/// number to decide which rights to request, so it may only rise once the
-/// corresponding enforcement exists. Raising it past what is enforced is the
-/// one failure mode that silently turns a working sandbox into no sandbox.
-///
-/// Every right, scope and flag of every level up to this one is enforced.
-pub const ABI_VERSION: i64 = 10;
+/// Pinned Landlock conformance target from `docs/27§6`. This is independent of
+/// the compatibility release returned by `uname(2)`; Landlock negotiates its
+/// own cumulative ABI at runtime.
+pub const TARGET_ABI_VERSION: i64 = 10;
+
+/// Value reported for `LANDLOCK_CREATE_RULESET_VERSION`. Feature-detecting
+/// programs use this number to decide which rights and flags to request, so it
+/// must never exceed [`TARGET_ABI_VERSION`] or the highest completely enforced
+/// cumulative rung.
+pub const ABI_VERSION: i64 = TARGET_ABI_VERSION;
 
 // Errata bits: erratum N is reported as bit N-1.
 //
