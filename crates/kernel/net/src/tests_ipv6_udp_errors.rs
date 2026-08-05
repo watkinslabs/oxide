@@ -381,7 +381,8 @@ fn socket_fragment_size_caps_udp6_after_route_selection() {
 
     stack.send_udp6_pmtu_to_bound_opts_owned(&owner, Ipv6Addr::LOOPBACK, LOCAL_PORT,
         remote, REMOTE_PORT, &[0; 1_300], Some(iface), crate::ipv6::IPV6_DEFAULT_HOP_LIMIT,
-        0, crate::uapi::IPV6_PMTUDISC_WANT, 1280, false, 0, false, 0).unwrap();
+        0, crate::uapi::IPV6_PMTUDISC_WANT, 1280, false, 0, false, 0,
+        &crate::send_control::Raw6Control::default()).unwrap();
 
     assert_eq!((dev.tx.load(Ordering::Relaxed), dev.fragments.load(Ordering::Relaxed)), (2, 2));
 }

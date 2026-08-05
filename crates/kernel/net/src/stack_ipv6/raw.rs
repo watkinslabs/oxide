@@ -6,7 +6,7 @@ use crate::netdev::{NetError, NetResult};
 use crate::send_control::Raw6Control;
 use crate::stack::NetStack;
 
-use super::tx::{admit_ipv6_owned, emit_ipv6_fragment, push_ipv6_raw_header};
+use super::tx::{admit_ipv6_owned, emit_ipv6_fragment, prepare_ipv6, push_ipv6_raw_header};
 
 const NH_HOP: u8 = 0;
 const NH_ROUTING: u8 = 43;
@@ -94,9 +94,10 @@ impl NetStack {
             &prepared.bytes);
         let may_fragment = crate::uapi::ipv6_pmtudisc_allows_fragmentation(pmtudisc)
             && control.dontfrag != Some(true);
-        self.xmit_raw6_controlled(endpoint, iface_id, iface, next_hop, prepared.src, final_dst,
+        self.xmit_ipv6_with_extensions(Some(&endpoint.owner), iface_id, iface, next_hop, prepared.src, final_dst,
             route_dst, prepared.next_header, &prepared.bytes, hop, tclass, flow, mtu,
             may_fragment, control)
+            .map(|_| ())
     }
 
     /// Best route to `dst` restricted to one interface, longest prefix wins.
@@ -114,22 +115,30 @@ impl NetStack {
             .reduce(|best, route| if route.prefix_len > best.prefix_len { route } else { best })
     }
 
-    fn xmit_raw6_controlled(&self, endpoint: &crate::raw6::Raw6Endpoint,
+    /// Transmit an IPv6 upper-layer payload through the canonical extension chain. # C: O(payload + N)
+    pub(super) fn xmit_ipv6_with_extensions(&self, owner: Option<&crate::SocketOwner>,
         iface_id: NetIfaceId, iface: crate::EgressLease,
         next_hop: Ipv6Addr, src: Ipv6Addr, final_dst: Ipv6Addr, base_dst: Ipv6Addr,
         upper: u8, payload: &[u8], hop: u8, tclass: u8, flow: u32, policy_mtu: usize,
-        may_fragment: bool, control: &Raw6Control) -> NetResult<()>
+        may_fragment: bool, control: &Raw6Control) -> NetResult<crate::cgroup_bpf::EgressVerdict>
     {
         let mtu = core::cmp::min(iface.mtu() as usize, policy_mtu);
         let (base_next, wire) = wire_payload(control, final_dst, upper, payload, None)?;
         if wire.len() > u16::MAX as usize { return Err(NetError::Emsgsize); }
-        let full = build_packet(src, base_dst, base_next, &wire, hop, tclass, flow)?;
-        if !admit_ipv6_owned(&endpoint.owner, iface_id, next_hop, src, full)? {
-            return Ok(());
+        let mut full = build_packet(src, base_dst, base_next, &wire, hop, tclass, flow)?;
+        prepare_ipv6(iface_id, next_hop, src, &mut full);
+        let net_ns = owner.map_or_else(crate::netdev::current_net_ns, crate::SocketOwner::net_ns);
+        if !crate::netfilter_hook::nf_output_in(net_ns, &full, crate::netfilter_hook::NFPROTO_IPV6) {
+            return Ok(crate::cgroup_bpf::EgressVerdict::Allow);
         }
+        let verdict = match owner {
+            Some(owner) => crate::cgroup_bpf::egress(owner, full.data(), crate::addr::eth_p::IPV6, iface_id)?,
+            None => crate::cgroup_bpf::EgressVerdict::Allow,
+        };
         if IPV6_HDR_LEN + wire.len() <= mtu {
-            return emit_packet_fragment(iface_id, iface, next_hop, src, base_dst,
-                base_next, &wire, hop, tclass, flow);
+            emit_packet_fragment(iface_id, iface, next_hop, src, base_dst,
+                base_next, &wire, hop, tclass, flow)?;
+            return Ok(verdict);
         }
         if !may_fragment { return Err(NetError::Emsgsize); }
         let nonfrag_len = nonfragment_len(control);
@@ -156,7 +165,7 @@ impl NetStack {
                 &wire, hop, tclass, flow)?;
             off += take;
         }
-        Ok(())
+        Ok(verdict)
     }
 }
 
