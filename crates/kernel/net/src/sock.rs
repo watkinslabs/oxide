@@ -89,7 +89,7 @@ mod accept_finalize;
 mod connect_admission;
 mod tcp_rcvbuf;
 mod legacy_ioctl;
-pub(crate) mod tcp_fastopen;
+pub mod tcp_fastopen;
 #[cfg(target_os = "oxide-kernel")]
 pub mod send_fastopen;
 #[cfg(target_os = "oxide-kernel")]

@@ -109,7 +109,7 @@ fn env_for(sock: &Arc<InetSocket>) -> SetEnv {
         bytes_sent: false,
         cc_locked: false,
         current_algo: tcp.algo(),
-        fastopen_sysctl: net::tcp_fastopen::enable_bits(&sock.net_namespace),
+        fastopen_sysctl: net::sock::tcp_fastopen::setsockopt_bits(sock),
         somaxconn: net::sysctl::somaxconn() as i32,
         rcv_nxt: 0,
         clock_ts_ms: now_ms,
@@ -144,7 +144,7 @@ fn net_admin(sock: &InetSocket) -> bool {
 fn apply(sock: &Arc<InetSocket>, action: &Action) -> i64 {
     use net::sock_opts::sol_tcp::apply as install;
     let effects = install::store(&sock.opts, action);
-    if effects.fastopen_keys { net::tcp_fastopen::init_key_once(&sock.net_namespace); }
+    net::sock::tcp_fastopen::complete_setsockopt(sock, &effects);
     let entry = match &*sock.kind.lock() {
         SockKind::TcpConn(entry) => Some(entry.clone()),
         SockKind::TcpListener(listener) => {
