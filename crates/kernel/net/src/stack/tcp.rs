@@ -2,41 +2,9 @@ use super::*;
 
 use super::tcp_tx::TcpTxPolicy;
 
-impl NetStack {
-    /// F164: send `data`; bounded by `sndbuf_cap`. Returns Eagain
-    /// when full. # C: O(data + N segments)
-    pub fn tcp_send(&self, entry: &TcpEntry, data: &[u8], sndbuf_cap: usize, nodelay: bool, cork: bool)
-        -> NetResult<usize>
-    {
-        let (segs, accepted, src, dst, tos) = {
-            let mut c = entry.conn.lock();
-            // Quotas: send_buf bytes + retx_q bytes both count
-            // against SO_SNDBUF (unACKed data total — RFC 1122
-            // §4.2.2.1 / Linux sk_wmem_queued).
-            let in_flight: usize = c.retx_q.iter().map(|s| s.payload.len()).sum();
-            let used = c.send_buf.len() + in_flight;
-            let avail = sndbuf_cap.saturating_sub(used);
-            if avail == 0 && !data.is_empty() {
-                c.note_sndbuf_limited_at(crate::tcp_conn::ka_now_ns());
-                return Err(NetError::Eagain);
-            }
-            let accept = ::core::cmp::min(avail, data.len());
-            c.send(&data[..accept]);
-            let segs = c.output(1500, nodelay, cork);
-            c.refresh_chrono_at(crate::tcp_conn::ka_now_ns());
-            (segs, accept, c.local.ip, c.remote.ip, ecn_tos(&c))
-        };
-        let n = segs.len();
-        for s in &segs {
-            self.send_tcp_segment_in(entry.net_ns(), src, dst, s, tos, entry.bound_iface(),
-                TcpTxPolicy::Entry(entry))?;
-        }
-        // F159: stamp the last N retx_q entries (one per emitted segment)
-        // with the actual xmit time.
-        stamp_last_sent(entry, n);
-        Ok(accepted)
-    }
+mod send;
 
+impl NetStack {
     /// Emit one TCP urgent byte with the URG flag and pointer. # C: O(1) xmit
     pub fn tcp_send_urgent(&self, entry: &TcpEntry, byte: u8) -> NetResult<usize> {
         let (seg, src, dst, tos) = {
@@ -266,6 +234,28 @@ impl NetStack {
                 let _ = self.send_tcp_segment_in(entry.net_ns(), src, dst, s, 0,
                     entry.bound_iface(), TcpTxPolicy::Entry(entry));
             }
+            // The retransmit timer is also the transport's output scheduler:
+            // queued application bytes remain in the canonical send queue until
+            // the deadline, then exactly one paced payload segment is released.
+            let (paced, pace_src, pace_dst, pace_tos, max_pacing_rate) = {
+                let mut c = entry.conn.lock();
+                let max_pacing_rate = entry.max_pacing_rate.load(::core::sync::atomic::Ordering::Acquire);
+                let pacing_active = max_pacing_rate != u64::MAX || c.telemetry.pacing_next_ns != 0;
+                let paced = if pacing_active && c.pacing_ready_at(now_ns, max_pacing_rate) {
+                    c.output_limit(1500, true, false,
+                        if max_pacing_rate == u64::MAX { usize::MAX } else { 1 })
+                } else { Vec::new() };
+                (paced, c.local.ip, c.remote.ip, ecn_tos(&c), max_pacing_rate)
+            };
+            for s in &paced {
+                let _ = self.send_tcp_segment_in(entry.net_ns(), pace_src, pace_dst, s, pace_tos,
+                    entry.bound_iface(), TcpTxPolicy::Entry(entry));
+            }
+            if !paced.is_empty() {
+                stamp_last_sent(entry, paced.len());
+                let bytes = entry.conn.lock().retx_q.back().map_or(0, |seg| seg.payload.len());
+                entry.conn.lock().note_paced_output_at(now_ns, bytes, max_pacing_rate);
+            }
             // A ping-pong-mode socket held its acknowledgement back so it
             // could ride the application's reply; once `TCP_DELACK_MAX_US`
             // elapses it goes out on its own.
@@ -463,15 +453,24 @@ impl NetStack {
             let drain_segs = {
                 let mut c = entry.conn.lock();
                 let (src, dst, tos) = (c.local.ip, c.remote.ip, ecn_tos(&c));
-                let segs = c.output(1500, true, false);
-                (segs, src, dst, tos)
+                let max_pacing_rate = entry.max_pacing_rate.load(::core::sync::atomic::Ordering::Acquire);
+                let now_ns = crate::tcp_conn::ka_now_ns();
+                let segs = if c.pacing_ready_at(now_ns, max_pacing_rate) {
+                    c.output_limit(1500, true, false,
+                        if max_pacing_rate == u64::MAX { usize::MAX } else { 1 })
+                } else { Vec::new() };
+                (segs, src, dst, tos, max_pacing_rate, now_ns)
             };
-            let (segs, src, dst, tos) = drain_segs;
+            let (segs, src, dst, tos, max_pacing_rate, now_ns) = drain_segs;
             for s in &segs {
                 self.send_tcp_segment_in(net_ns, src, dst, s, tos, entry.bound_iface(),
                     TcpTxPolicy::Entry(&entry))?;
             }
             stamp_last_sent(&entry, segs.len());
+            if !segs.is_empty() {
+                let bytes = entry.conn.lock().retx_q.back().map_or(0, |seg| seg.payload.len());
+                entry.conn.lock().note_paced_output_at(now_ns, bytes, max_pacing_rate);
+            }
             // F159+F181a: wake conn rx + targeted epoll.
             #[cfg(target_os = "oxide-kernel")]
             {

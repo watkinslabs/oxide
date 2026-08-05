@@ -137,6 +137,7 @@ fn populate_conn_at(c: &net::tcp_conn::TcpConn, now_ns: u64, info: &mut TcpInfo)
     info.tcpi_notsent_bytes = c.notsent_bytes();
     info.tcpi_data_segs_in = c.data_segs_in;
     info.tcpi_data_segs_out = c.data_segs_out;
+    info.tcpi_pacing_rate = c.telemetry.pacing_rate;
     info.tcpi_delivery_rate_app_limited |= u8::from(c.telemetry.rate_app_limited);
     if c.telemetry.rate_delivered != 0 && c.telemetry.rate_interval_ns != 0 {
         info.tcpi_delivery_rate = u64::from(c.telemetry.rate_delivered)
@@ -236,6 +237,15 @@ mod tests {
         assert_eq!(info.tcpi_pmtu, 1_300);
         assert_eq!(info.tcpi_options, TCPI_OPT_TIMESTAMPS | TCPI_OPT_SACK
             | TCPI_OPT_WSCALE | TCPI_OPT_ECN);
+    }
+
+    #[test]
+    fn pacing_rate_projects_the_transport_output_owner() {
+        let mut conn = conn();
+        conn.telemetry.pacing_rate = 1_234_567;
+        let mut info = TcpInfo::default();
+        populate_conn(&conn, &mut info);
+        assert_eq!(info.tcpi_pacing_rate, 1_234_567);
     }
 
     #[test]

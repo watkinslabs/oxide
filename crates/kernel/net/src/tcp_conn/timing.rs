@@ -126,6 +126,23 @@ mod tests {
     }
 
     #[test]
+    fn pacing_deadline_is_owned_by_the_transport_and_honors_the_live_cap() {
+        let mut c = conn();
+        c.cwnd = 1_000;
+        c.ssthresh = 500;
+        c.srtt_ns = 1_000;
+        assert!(c.pacing_ready_at(10, 100));
+        assert_eq!(c.telemetry.pacing_rate, 100);
+        c.note_paced_output_at(10, 100, 100);
+        assert_eq!(c.telemetry.pacing_next_ns, 1_000_000_010);
+        assert!(!c.pacing_ready_at(1_000_000_009, 100));
+        assert!(c.pacing_ready_at(1_000_000_010, 100));
+        c.note_paced_output_at(1_000_000_010, 100, 100);
+        assert!(c.pacing_ready_at(1_000_000_011, u64::MAX));
+        assert_eq!(c.telemetry.pacing_next_ns, 0);
+    }
+
+    #[test]
     fn receiver_rtt_is_measured_over_the_advertised_window() {
         let mut c = conn();
         c.rcv_nxt = 1_000;
