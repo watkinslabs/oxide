@@ -65,19 +65,10 @@ unsafe extern "C" fn usb_ep_alloc_request(ep: *mut UsbEndpoint, gfp_flags: u32) 
 
 unsafe extern "C" fn usb_ep_free_request(ep: *mut UsbEndpoint, req: *mut UsbRequest) {
     if req.is_null() { return; }
-    // SAFETY: ep is null-checked first, and a non-null ep is the same live UDC endpoint the request was allocated on per Linux's alloc/free pairing rule.
-    if !ep.is_null() && !unsafe { (*ep).ops }.is_null() {
-        // SAFETY: ops was just found non-null and is the UDC's 'static usb_ep_ops table, so its free_request slot is readable.
-        if let Some(free) = unsafe { (*(*ep).ops).free_request } {
-            // SAFETY: free is this ep's own deallocator, which is the one that produced req in usb_ep_alloc_request's ops branch above.
-            unsafe { free(ep, req); }
-            return;
-        }
-    }
-    // Precondition (Linux KPI): req must have been produced by usb_ep_alloc_request on this same ep. Reaching here means that call took
-    // the Box branch (no ops/no alloc_request hook), so the pointer is a Box<UsbRequest>::into_raw of the identical layout.
-    // SAFETY: per the precondition above, req is our own Box::into_raw allocation and is being freed exactly once.
-    unsafe { drop(Box::from_raw(req)); }
+    // SAFETY: the USB gadget KPI requires a live endpoint with an ops table and free_request hook matching the allocator that produced req.
+    let free = unsafe { (*(*ep).ops).free_request.unwrap_unchecked() };
+    // SAFETY: free is the endpoint's paired request deallocator; req is unqueued and no longer used after this call by the KPI contract.
+    unsafe { free(ep, req); }
 }
 
 unsafe extern "C" fn usb_ep_queue(ep: *mut UsbEndpoint, req: *mut UsbRequest, gfp_flags: u32) -> i32 {
