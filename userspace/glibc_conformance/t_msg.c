@@ -2,11 +2,13 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <linux/errqueue.h>
 #include <netinet/in.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 static void r(const char *label, long rc) {
@@ -46,6 +48,131 @@ static int queue_empty(int fd) {
     char c;
     errno = 0;
     return recv(fd, &c, 1, MSG_DONTWAIT) < 0 && errno == EAGAIN;
+}
+
+static void unix_control_and_oob(void) {
+    int fd[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, fd) != 0) {
+        puts("recvmsg_unix setup=failed"); return;
+    }
+    int on = 1;
+    setsockopt(fd[1], SOL_SOCKET, SO_PASSCRED, &on, sizeof(on));
+
+    char data = 0;
+    struct iovec iov = { .iov_base = &data, .iov_len = 1 };
+    union { struct cmsghdr align; char bytes[CMSG_SPACE(sizeof(struct ucred))]; } ctrl;
+    struct msghdr msg;
+    memset(&msg, 0, sizeof(msg));
+    memset(&ctrl, 0, sizeof(ctrl));
+    msg.msg_iov = &iov; msg.msg_iovlen = 1;
+    msg.msg_control = ctrl.bytes; msg.msg_controllen = sizeof(ctrl.bytes);
+    send(fd[0], "c", 1, 0);
+    errno = 0;
+    int rc = recvmsg(fd[1], &msg, 0);
+    int cred_ok = 0;
+    for (struct cmsghdr *c = CMSG_FIRSTHDR(&msg); c; c = CMSG_NXTHDR(&msg, c)) {
+        if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_CREDENTIALS &&
+            c->cmsg_len >= CMSG_LEN(sizeof(struct ucred))) {
+            struct ucred *u = (struct ucred *)CMSG_DATA(c);
+            cred_ok = u->pid == getpid() && u->uid == getuid() && u->gid == getgid();
+        }
+    }
+    printf("recvmsg_scm rc=%d data=%c cred=%d ctrunc=%d\n",
+        rc, data, cred_ok, !!(msg.msg_flags & MSG_CTRUNC));
+
+    data = 0;
+    memset(&msg, 0, sizeof(msg));
+    msg.msg_iov = &iov; msg.msg_iovlen = 1;
+    msg.msg_control = (void *)1; msg.msg_controllen = sizeof(ctrl.bytes);
+    send(fd[0], "e", 1, 0);
+    errno = 0; rc = recvmsg(fd[1], &msg, MSG_DONTWAIT);
+    int saved = errno;
+    printf("recvmsg_bad_control rc=%d errno=%d data=%c consumed=%d ctrunc=%d\n",
+        rc < 0 ? -1 : rc, rc < 0 ? saved : 0, data, queue_empty(fd[1]),
+        !!(msg.msg_flags & MSG_CTRUNC));
+
+    data = 0;
+    memset(&msg, 0, sizeof(msg));
+    msg.msg_iov = &iov; msg.msg_iovlen = 1;
+    errno = 0;
+    int sent = send(fd[0], "!", 1, MSG_OOB | MSG_DONTWAIT);
+    saved = errno;
+    printf("sendmsg_oob rc=%d errno=%d\n",
+        sent < 0 ? -1 : sent, sent < 0 ? saved : 0);
+    errno = 0; rc = recvmsg(fd[1], &msg, MSG_OOB | MSG_DONTWAIT);
+    saved = errno;
+    printf("recvmsg_oob rc=%d errno=%d data=%c flag=%d\n",
+        rc < 0 ? -1 : rc, rc < 0 ? saved : 0, data, !!(msg.msg_flags & MSG_OOB));
+    close(fd[0]); close(fd[1]);
+}
+
+static void udp_pktinfo(int tx, int rx, const struct sockaddr_in *to) {
+    int on = 1;
+    setsockopt(rx, IPPROTO_IP, IP_PKTINFO, &on, sizeof(on));
+    char data = 0;
+    struct iovec iov = { .iov_base = &data, .iov_len = 1 };
+    union { struct cmsghdr align; char bytes[CMSG_SPACE(sizeof(struct in_pktinfo))]; } ctrl;
+    struct msghdr msg;
+    memset(&msg, 0, sizeof(msg));
+    memset(&ctrl, 0, sizeof(ctrl));
+    msg.msg_iov = &iov; msg.msg_iovlen = 1;
+    msg.msg_control = ctrl.bytes; msg.msg_controllen = sizeof(ctrl.bytes);
+    send_bytes(tx, to, "k", 1);
+    errno = 0;
+    int rc = recvmsg(rx, &msg, MSG_DONTWAIT);
+    int found = 0;
+    for (struct cmsghdr *c = CMSG_FIRSTHDR(&msg); c; c = CMSG_NXTHDR(&msg, c)) {
+        found |= c->cmsg_level == IPPROTO_IP && c->cmsg_type == IP_PKTINFO &&
+            c->cmsg_len >= CMSG_LEN(sizeof(struct in_pktinfo));
+    }
+    printf("recvmsg_pktinfo rc=%d data=%c found=%d ctrunc=%d\n",
+        rc, data, found, !!(msg.msg_flags & MSG_CTRUNC));
+}
+
+static void udp_error_queue(void) {
+    struct sockaddr_in target;
+    int reserve = bound_udp(&target);
+    if (reserve < 0) { puts("recvmsg_errqueue setup=failed"); return; }
+    close(reserve);
+
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    int on = 1;
+    if (fd < 0 || setsockopt(fd, IPPROTO_IP, IP_RECVERR, &on, sizeof(on)) != 0 ||
+        connect(fd, (struct sockaddr *)&target, sizeof(target)) != 0) {
+        puts("recvmsg_errqueue setup=failed"); if (fd >= 0) close(fd); return;
+    }
+    send(fd, "q", 1, 0);
+
+    char data = 0;
+    struct iovec iov = { .iov_base = &data, .iov_len = 1 };
+    struct sockaddr_in name;
+    union { struct cmsghdr align; char bytes[128]; } ctrl;
+    struct msghdr msg;
+    memset(&msg, 0, sizeof(msg));
+    memset(&name, 0, sizeof(name));
+    memset(&ctrl, 0, sizeof(ctrl));
+    msg.msg_name = &name; msg.msg_namelen = sizeof(name);
+    msg.msg_iov = &iov; msg.msg_iovlen = 1;
+    msg.msg_control = ctrl.bytes; msg.msg_controllen = sizeof(ctrl.bytes);
+    errno = 0;
+    int rc = recvmsg(fd, &msg, MSG_ERRQUEUE | MSG_DONTWAIT);
+    int saved = errno;
+    int ee_errno = 0, origin = 0, type = 0, code = 0, offender_loopback = 0;
+    for (struct cmsghdr *c = CMSG_FIRSTHDR(&msg); c; c = CMSG_NXTHDR(&msg, c)) {
+        if (c->cmsg_level == IPPROTO_IP && c->cmsg_type == IP_RECVERR &&
+            c->cmsg_len >= CMSG_LEN(sizeof(struct sock_extended_err))) {
+            struct sock_extended_err *ee = (struct sock_extended_err *)CMSG_DATA(c);
+            struct sockaddr_in *offender = (struct sockaddr_in *)SO_EE_OFFENDER(ee);
+            ee_errno = (int)ee->ee_errno; origin = ee->ee_origin;
+            type = ee->ee_type; code = ee->ee_code;
+            offender_loopback = offender->sin_family == AF_INET &&
+                offender->sin_addr.s_addr == htonl(INADDR_LOOPBACK);
+        }
+    }
+    printf("recvmsg_errqueue rc=%d errno=%d data=%c ee=%d origin=%d type=%d code=%d offender_loopback=%d flag=%d\n",
+        rc < 0 ? -1 : rc, rc < 0 ? saved : 0, data, ee_errno, origin, type, code,
+        offender_loopback, !!(msg.msg_flags & MSG_ERRQUEUE));
+    close(fd);
 }
 
 int main(void) {
@@ -224,6 +351,10 @@ int main(void) {
     munmap(guard, page * 2);
     munmap(guard2, page * 2);
     munmap(ro, page);
+
+    udp_pktinfo(a, b, &ba);
+    unix_control_and_oob();
+    udp_error_queue();
 
     close(a); close(b);
     return 0;

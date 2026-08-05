@@ -241,14 +241,21 @@ fn icmp_echo_round_trip_via_loopback() {
 }
 
 #[test]
-fn unbound_port_drops_silently() {
+fn unbound_udp_port_emits_linux_port_unreachable() {
     let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (id, lo) = stack.register_loopback();
     stack.send_udp_to(
         Ipv4Addr::LOOPBACK, 1, Ipv4Addr::LOOPBACK, 9999, b"x",
     ).unwrap();
-    stack.drain_loopback(id, &lo);
+    let request = lo.rx_pop().expect("UDP request queued on loopback");
+    stack.deliver_rx(id, request.data()).unwrap();
+    let reply = lo.rx_pop().expect("closed UDP port returns an ICMP error");
+    let ip = Ipv4Hdr::parse(reply.data()).unwrap();
+    let body = &reply.data()[ip.ihl_bytes()..ip.total_len as usize];
+    let error = icmp::IcmpEcho::parse(body).unwrap();
+    assert_eq!((error.typ, error.code),
+        (icmp::ICMP_TYPE_DEST_UNREACH, icmp::unreach_code::PORT));
     assert!(stack.udp_demux(Ipv4Addr::LOOPBACK, 1, Ipv4Addr::LOOPBACK, 9999, id).is_empty());
 }
 
