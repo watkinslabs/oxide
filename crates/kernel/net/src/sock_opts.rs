@@ -250,7 +250,7 @@ pub fn meminfo(sock: &InetSocket) -> sol_socket::varlen::MemInfo {
         SockKind::TcpConn(entry) => {
             let c = entry.conn.lock();
             let retx: usize = c.retx_q.iter().map(|s| s.payload.len()).sum();
-            (c.recv_buf.len(), c.send_buf.len() + retx, 0)
+            (c.recv_buf.len, c.send_buf.len() + retx, 0)
         }
         SockKind::TcpListener(listener) => (listener.accept_q.lock().len(), 0, 0),
         SockKind::Udp => {

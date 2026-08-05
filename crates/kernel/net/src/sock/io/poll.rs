@@ -154,7 +154,7 @@ impl InetSocket {
                     q.recv(true).map(|d| d.payload.len()).unwrap_or(0)
                 } else { 0 }
             }
-            SockKind::TcpConn(entry) => { drain_loopback(); entry.conn.lock().recv_buf.len() }
+            SockKind::TcpConn(entry) => { drain_loopback(); entry.conn.lock().recv_buf.len }
             // A spent out-of-band record still holds a queue slot but delivers
             // nothing, so it is not a byte the reader can ask for.
             SockKind::Unix(pair, end) => pair.readable_len(*end),

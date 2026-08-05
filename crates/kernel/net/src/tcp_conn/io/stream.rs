@@ -119,7 +119,7 @@ impl TcpConn {
         let urgent = self.urgent.take()?;
         self.oob_consumed = Some(urgent.0);
         let offset = urgent.0.wrapping_sub(self.rcv_read_seq) as usize;
-        if offset < self.recv_buf.len() {
+        if offset < self.recv_buf.len {
             self.recv_buf.remove(offset);
             self.oob_consumed = None;
         }
@@ -134,11 +134,9 @@ impl TcpConn {
 
     /// Application drains up to `max` bytes from recv_buf.
     pub fn recv(&mut self, max: usize) -> Vec<u8> {
-        let take = core::cmp::min(max, self.recv_buf.len());
-        let mut out = Vec::with_capacity(take);
-        for _ in 0..take {
-            out.push(self.recv_buf.pop_front().unwrap().byte);
-        }
+        let take = core::cmp::min(max, self.recv_buf.len);
+        let out = self.recv_buf.bytes(0, take);
+        self.recv_buf.consume(out.len());
         self.rcv_read_seq = self.rcv_read_seq.wrapping_add(take as u32);
         if take != 0 { self.note_rcv_space_at(crate::tcp_conn::ka_now_ns()); }
         out
@@ -153,13 +151,13 @@ impl TcpConn {
     pub fn recv_with_offset<R, E>(&mut self, max: usize, peek: bool, offset: usize, copy: impl FnOnce(&[u8]) -> Result<(R, usize), E>)
         -> Result<Option<R>, E>
     {
-        if offset >= self.recv_buf.len() { return Ok(None); }
-        let take = core::cmp::min(max, self.recv_buf.len() - offset);
-        let out: Vec<u8> = self.recv_buf.iter().skip(offset).take(take).map(|b| b.byte).collect();
+        if offset >= self.recv_buf.len { return Ok(None); }
+        let take = core::cmp::min(max, self.recv_buf.len - offset);
+        let out = self.recv_buf.bytes(offset, take);
         let (copied, commit) = copy(&out)?;
         if !peek {
             let consumed = core::cmp::min(commit, take);
-            for _ in 0..consumed { self.recv_buf.pop_front(); }
+            self.recv_buf.consume(consumed);
             self.rcv_read_seq = self.rcv_read_seq.wrapping_add(consumed as u32);
             if consumed != 0 { self.note_rcv_space_at(crate::tcp_conn::ka_now_ns()); }
         }
@@ -170,7 +168,7 @@ impl TcpConn {
     pub fn recv_with_offset_oob<R, E>(&mut self, max: usize, peek: bool, offset: usize,
         inline: bool, copy: impl FnOnce(&[u8]) -> Result<(R, usize), E>) -> Result<Option<R>, E>
     {
-        let mut limit = self.recv_buf.len();
+        let mut limit = self.recv_buf.len;
         if !inline {
             if let Some((seq, _)) = self.urgent {
                 let mark = seq.wrapping_sub(self.rcv_read_seq) as usize;
@@ -179,11 +177,11 @@ impl TcpConn {
         }
         if offset >= limit { return Ok(None); }
         let take = core::cmp::min(max, limit - offset);
-        let out: Vec<u8> = self.recv_buf.iter().skip(offset).take(take).map(|b| b.byte).collect();
+        let out = self.recv_buf.bytes(offset, take);
         let (copied, commit) = copy(&out)?;
         if !peek {
             let consumed = core::cmp::min(commit, take);
-            for _ in 0..consumed { self.recv_buf.pop_front(); }
+            self.recv_buf.consume(consumed);
             self.rcv_read_seq = self.rcv_read_seq.wrapping_add(consumed as u32);
             if consumed != 0 { self.note_rcv_space_at(crate::tcp_conn::ka_now_ns()); }
             if inline {
@@ -197,6 +195,27 @@ impl TcpConn {
         Ok(Some(copied))
     }
 
+    /// Donate the next complete receive page to a zero-copy mapping.
+    /// # C: O(1)
+    #[cfg(target_os = "oxide-kernel")]
+    pub fn take_zerocopy_page(&mut self, inline: bool) -> Option<u64> {
+        if !inline {
+            if let Some((seq, _)) = self.urgent {
+                let mark = seq.wrapping_sub(self.rcv_read_seq) as usize;
+                if mark < hal::PAGE_SIZE_BYTES as usize { return None; }
+            }
+        }
+        let pa = self.recv_buf.take_page()?;
+        self.rcv_read_seq = self.rcv_read_seq.wrapping_add(hal::PAGE_SIZE_BYTES as u32);
+        self.note_rcv_space_at(crate::tcp_conn::ka_now_ns());
+        if inline {
+            if let Some((seq, _)) = self.urgent {
+                if (seq.wrapping_sub(self.rcv_read_seq) as i32) < 0 { self.urgent = None; }
+            }
+        }
+        Some(pa)
+    }
+
     /// Report whether the next normal stream byte is the urgent mark. # C: O(1)
     pub fn at_urgent_mark(&self) -> bool {
         self.urgent.map(|(seq, _)| seq == self.rcv_read_seq).unwrap_or(false)
@@ -204,6 +223,6 @@ impl TcpConn {
 
     /// Realtime stamp of the first unread normal-stream byte. # C: O(1)
     pub fn recv_timestamp(&self) -> Option<u64> {
-        self.recv_buf.front().map(|b| b.timestamp_ns)
+        self.recv_buf.timestamp()
     }
 }
