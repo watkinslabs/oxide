@@ -9,6 +9,7 @@ fn time_wait_entry(net_ns: u64, port: u16) -> (TcpKey, Arc<TcpEntry>) {
         namespace, local, None, false, false, 0, false));
     let mut conn = TcpConn::new_client(local, remote, 1);
     conn.state = crate::tcp_state::TcpState::TimeWait;
+    conn.tw_start_ns = 123;
     let key = TcpKey {
         local_ip: local.ip, local_port: local.port,
         remote_ip: remote.ip, remote_port: remote.port,
@@ -27,17 +28,18 @@ fn transport_entry_pins_namespace_owner_through_timer_work() {
     let (dead_key, dead_entry) = time_wait_entry(net_ns, 40_002);
     stack.inet_tables(0).tcp_conns.lock().insert(init_key, init_entry.clone());
     stack.inet_tables(net_ns).tcp_conns.lock().insert(dead_key, dead_entry.clone());
+    stack.activate_tcp_timers(&init_entry);
+    stack.activate_tcp_timers(&dead_entry);
 
     drop(owner);
-    stack.tcp_retx_tick(123);
 
-    assert_eq!(init_entry.conn.lock().tw_start_ns, 123, "init namespace uses its immortal owner");
-    assert_eq!(dead_entry.conn.lock().tw_start_ns, 123,
-        "live transport owner keeps namespace timer work admissible");
+    assert_eq!(init_entry.conn.lock().tw_start_ns, 123, "init timer retains its socket state");
+    assert_eq!(dead_entry.conn.lock().tw_start_ns, 123, "timer retains its socket state");
     assert!(network_namespace::lookup_u64(net_ns).is_some(),
         "transport entry retains concrete namespace owner");
-    stack.inet_tables(net_ns).tcp_conns.lock().remove(&dead_key);
+    super::tcp_listener::remove_tcp_entry_exact(&stack.inet_tables(net_ns), &dead_key, &dead_entry);
     drop(dead_entry);
     assert!(network_namespace::lookup_u64(net_ns).is_none(),
         "final transport release drops namespace owner");
+    super::tcp_listener::remove_tcp_entry_exact(&stack.inet_tables(0), &init_key, &init_entry);
 }

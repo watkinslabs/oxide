@@ -60,6 +60,7 @@ impl InetTables {
             }
         }
         for entry in ::core::mem::take(&mut *self.tcp_conns.lock()).into_values() {
+            super::tcp_timer::cancel(&entry);
             entry.close_and_wake();
         }
         self.tcp_binds.lock().clear();

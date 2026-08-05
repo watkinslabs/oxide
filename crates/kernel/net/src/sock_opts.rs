@@ -18,6 +18,7 @@ pub mod sol_udp;
 
 use crate::sock::InetSocket;
 use crate::stack::TcpEntry;
+use alloc::sync::Arc;
 
 pub const TCP_KEEPIDLE_DEFAULT_S: i32 = 7200;
 pub const TCP_KEEPINTVL_DEFAULT_S: i32 = 75;
@@ -147,7 +148,7 @@ pub fn inherit_tcp_oobinline(dst: &InetSocket, src: &InetSocket) {
 }
 
 /// Apply socket-level keepalive configuration to a live TCP TCB. # C: O(1)
-pub fn apply_tcp_keepalive_opts(sock: &InetSocket, entry: &TcpEntry) {
+pub fn apply_tcp_keepalive_opts(sock: &InetSocket, entry: &Arc<TcpEntry>) {
     use core::sync::atomic::Ordering;
     let mut c = entry.conn.lock();
     c.ka_enabled = sock.opts.keepalive.load(Ordering::Acquire) != 0;
@@ -156,6 +157,8 @@ pub fn apply_tcp_keepalive_opts(sock: &InetSocket, entry: &TcpEntry) {
     c.ka_cnt_max = sock.opts.tcp_keepcnt.load(Ordering::Acquire).max(1) as u32;
     c.ka_count = 0;
     c.next_ka_ns = 0;
+    drop(c);
+    crate::sock::stack().refresh_tcp_timers(entry);
 }
 
 /// Socket personality the generic SOL_SOCKET table branches on. # C: O(1)

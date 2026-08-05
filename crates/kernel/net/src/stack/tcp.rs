@@ -6,16 +6,18 @@ mod send;
 
 impl NetStack {
     /// Emit one TCP urgent byte with the URG flag and pointer. # C: O(1) xmit
-    pub fn tcp_send_urgent(&self, entry: &TcpEntry, byte: u8) -> NetResult<usize> {
+    pub fn tcp_send_urgent(&self, entry: &Arc<TcpEntry>, byte: u8) -> NetResult<usize> {
         let (seg, src, dst, tos) = {
             let mut c = entry.conn.lock();
             if !c.state.is_established() { return Err(NetError::Epipe); }
             let seg = c.send_urgent(byte);
             (seg, c.local.ip, c.remote.ip, ecn_tos(&c))
         };
-        self.send_tcp_segment_in(entry.net_ns(), src, dst, &seg, tos, entry.bound_iface(),
-            TcpTxPolicy::Entry(entry))?;
-        stamp_last_sent(entry, 1);
+        let result = self.send_tcp_segment_in(entry.net_ns(), src, dst, &seg, tos,
+            entry.bound_iface(), TcpTxPolicy::Entry(entry));
+        if result.is_ok() { stamp_last_sent(entry, 1); }
+        self.refresh_tcp_timers(entry);
+        result?;
         Ok(1)
     }
 
@@ -90,9 +92,11 @@ impl NetStack {
             (s, c.local.ip, c.remote.ip, ecn_tos(&c))
         };
         super::tcp_fastopen::drain_client(self, entry, crate::tcp_conn::ka_now_ns());
-        self.send_tcp_segment_in(entry.net_ns(), src, dst, &seg, tos, entry.bound_iface(),
-            TcpTxPolicy::Entry(entry))?;
-        stamp_last_sent(entry, 1);
+        let result = self.send_tcp_segment_in(entry.net_ns(), src, dst, &seg, tos,
+            entry.bound_iface(), TcpTxPolicy::Entry(entry));
+        if result.is_ok() { stamp_last_sent(entry, 1); }
+        self.refresh_tcp_timers(entry);
+        result?;
         Ok(())
     }
 
@@ -115,9 +119,13 @@ impl NetStack {
         };
         if cancel_open { self.tcp_disconnect_entry(entry); return Ok(true); }
         if let Some(segment) = segment {
-            self.send_tcp_segment_in(entry.net_ns(), src, dst, &segment, tos, entry.bound_iface(),
-                TcpTxPolicy::Entry(entry.as_ref()))?;
+            let result = self.send_tcp_segment_in(entry.net_ns(), src, dst, &segment, tos,
+                entry.bound_iface(), TcpTxPolicy::Entry(entry.as_ref()));
+            if result.is_ok() { stamp_last_sent(entry, 1); }
+            self.refresh_tcp_timers(entry);
+            result?;
         }
+        self.refresh_tcp_timers(entry);
         Ok(false)
     }
 
@@ -129,9 +137,12 @@ impl NetStack {
         crate::stack_icmp::handle_error_in(self, net_ns, iface, offender, kind, code, payload)
     }
 
-    /// Every connection a timer pass may touch, snapshotted so the tables stay
-    /// unlocked while each entry is worked on. # C: O(N_conns)
-    pub(crate) fn tcp_tick_entries(&self) -> Vec<super::tcp_reqsk::TickEntry> {
+    /// Hosted-test snapshot used to drive compatibility timer helpers.
+    /// Production callbacks own exactly one connection and never call this.
+    /// # C: O(N_conns)
+    #[cfg(test)]
+    pub(crate) fn tcp_tick_entries(&self) -> Vec<(network_namespace::NetworkNamespaceRef,
+        Arc<super::inet_tables::InetTables>, TcpKey, Arc<TcpEntry>)> {
         let table_sets: Vec<(u64, Arc<super::inet_tables::InetTables>)> = self.inet.lock().iter()
             .map(|(&net_ns, tables)| (net_ns, tables.clone())).collect();
         let table_sets: Vec<(network_namespace::NetworkNamespaceRef,
@@ -141,7 +152,7 @@ impl NetStack {
                     else { network_namespace::lookup_u64(net_ns)? };
                 Some((owner, tables))
             }).collect();
-        let mut entries: Vec<super::tcp_reqsk::TickEntry> = Vec::new();
+        let mut entries = Vec::new();
         for (owner, tables) in table_sets {
             let snapshot: Vec<(TcpKey, Arc<TcpEntry>)> = tables.tcp_conns.lock().iter()
                 .map(|(key, entry)| (*key, entry.clone())).collect();
@@ -149,167 +160,6 @@ impl NetStack {
                 .map(|(key, entry)| (owner.clone(), tables.clone(), key, entry)));
         }
         entries
-    }
-
-    /// F159: RTO scanner. Re-emits expired segs; drops conns past
-    /// retry ceilings (SYN=6, data=15). # C: O(N_conns·retx_q).
-    pub fn tcp_retx_tick(&self, now_ns: u64) {
-        let entries = self.tcp_tick_entries();
-        let mut to_drop: Vec<(Arc<super::inet_tables::InetTables>, TcpKey, Arc<TcpEntry>)>
-            = Vec::new();
-        // F161: 2*MSL linger before reclaiming a TIME_WAIT 4-tuple
-        // (Linux tcp_fin_timeout default 60 s). Closed conns are
-        // dropped immediately — no 4-tuple reservation needed once
-        // both sides agree the connection is gone.
-        const TW_TIMEOUT_NS: u64 = 60_000_000_000;
-        // Half-open requests run on their own timer, with their own ceiling
-        // and the deferring period's suppression of retransmits.
-        self.tcp_reqsk_tick(&entries, now_ns);
-        for (_owner, tables, key, entry) in entries.iter() {
-            // Per-entry: decide retx + drop under the conn lock,
-            // collect segments to emit after dropping it.
-            let (segs, abort, src, dst) = {
-                let mut c = entry.conn.lock();
-                // F161: TIME_WAIT timer + Closed-cleanup. Reap any
-                // conn that has reached Closed, or has lingered in
-                // TimeWait past 2*MSL. Stamp tw_start_ns on first
-                // observation if zero.
-                if c.state == crate::tcp_state::TcpState::Closed {
-                    (Vec::new(), true, c.local.ip, c.remote.ip)
-                } else if c.state == crate::tcp_state::TcpState::SynRecv && c.rsk.armed() {
-                    // A request's SYN-ACK belongs to the request timer.
-                    (Vec::new(), false, c.local.ip, c.remote.ip)
-                } else if c.state == crate::tcp_state::TcpState::TimeWait {
-                    if c.tw_start_ns == 0 { c.tw_start_ns = now_ns; }
-                    if now_ns.saturating_sub(c.tw_start_ns) >= TW_TIMEOUT_NS {
-                        c.state = crate::tcp_state::TcpState::Closed;
-                        (Vec::new(), true, c.local.ip, c.remote.ip)
-                    } else {
-                        (Vec::new(), false, c.local.ip, c.remote.ip)
-                    }
-                } else if c.state == crate::tcp_state::TcpState::FinWait2
-                    && c.linger2_expired(
-                        if c.tw_start_ns == 0 { now_ns } else { c.tw_start_ns }, now_ns)
-                {
-                    // `TCP_LINGER2` bounds how long the orphan may wait for
-                    // the peer's FIN; past it the connection is torn down
-                    // rather than held open indefinitely.
-                    if c.tw_start_ns == 0 { c.tw_start_ns = now_ns; }
-                    c.state = crate::tcp_state::TcpState::Closed;
-                    (Vec::new(), true, c.local.ip, c.remote.ip)
-                } else if c.state == crate::tcp_state::TcpState::FinWait2 {
-                    if c.tw_start_ns == 0 { c.tw_start_ns = now_ns; }
-                    (Vec::new(), false, c.local.ip, c.remote.ip)
-                } else if c.repair || c.retx_q.is_empty() {
-                    (Vec::new(), false, c.local.ip, c.remote.ip)
-                } else {
-                    let front_is_syn = (c.retx_q.front().unwrap().flags
-                        & crate::tcp_hdr::flags::SYN) != 0;
-                    let max = if front_is_syn { c.syn_retries }
-                        else { crate::tcp_conn::DATA_RETRIES_DEFAULT };
-                    let max_retries = c.retx_q.iter().map(|s| s.retries).max().unwrap_or(0);
-                    let out_of_budget = max_retries >= max || c.user_timeout_expired(now_ns);
-                    // Read before the retransmit that would advance the count:
-                    // the third consecutive timeout on a connection that fast
-                    // opened names its path a blackhole.
-                    if c.fastopen_blackholed(out_of_budget) { c.fastopen_blackhole_seen = true; }
-                    if out_of_budget {
-                        // Give up on this connection. F163: surface as
-                        // SO_ERROR = ETIMEDOUT so a getsockopt after
-                        // async-connect's EPOLLOUT can report the cause.
-                        c.state = crate::tcp_state::TcpState::Closed;
-                        c.retx_q.clear();
-                        let src = c.local.ip; let dst = c.remote.ip;
-                        drop(c);
-                        entry.set_error(syscall::errno::Errno::Etimedout as i32);
-                        (Vec::new(), true, src, dst)
-                    } else {
-                        let segs = c.retransmit_due(now_ns);
-                        (segs, false, c.local.ip, c.remote.ip)
-                    }
-                }
-            };
-            super::tcp_fastopen::drain_client(self, entry, now_ns);
-            for s in &segs {
-                let _ = self.send_tcp_segment_in(entry.net_ns(), src, dst, s, 0,
-                    entry.bound_iface(), TcpTxPolicy::Entry(entry));
-            }
-            // The retransmit timer is also the transport's output scheduler:
-            // queued application bytes remain in the canonical send queue until
-            // the deadline, then exactly one paced payload segment is released.
-            let (paced, pace_src, pace_dst, pace_tos, max_pacing_rate) = {
-                let mut c = entry.conn.lock();
-                let max_pacing_rate = entry.max_pacing_rate.load(::core::sync::atomic::Ordering::Acquire);
-                let pacing_active = max_pacing_rate != u64::MAX || c.telemetry.pacing_next_ns != 0;
-                let paced = if pacing_active && c.pacing_ready_at(now_ns, max_pacing_rate) {
-                    c.output_limit(1500, true, false,
-                        if max_pacing_rate == u64::MAX { usize::MAX } else { 1 })
-                } else { Vec::new() };
-                (paced, c.local.ip, c.remote.ip, ecn_tos(&c), max_pacing_rate)
-            };
-            for s in &paced {
-                let _ = self.send_tcp_segment_in(entry.net_ns(), pace_src, pace_dst, s, pace_tos,
-                    entry.bound_iface(), TcpTxPolicy::Entry(entry));
-            }
-            if !paced.is_empty() {
-                stamp_last_sent(entry, paced.len());
-                let bytes = entry.conn.lock().retx_q.back().map_or(0, |seg| seg.payload.len());
-                entry.conn.lock().note_paced_output_at(now_ns, bytes, max_pacing_rate);
-            }
-            // A ping-pong-mode socket held its acknowledgement back so it
-            // could ride the application's reply; once `TCP_DELACK_MAX_US`
-            // elapses it goes out on its own.
-            let (delack, da_src, da_dst) = {
-                let mut c = entry.conn.lock();
-                (c.delayed_ack_due(now_ns), c.local.ip, c.remote.ip)
-            };
-            if let Some(s) = &delack {
-                let _ = self.send_tcp_segment_in(entry.net_ns(), da_src, da_dst, s, 0,
-                    entry.bound_iface(), TcpTxPolicy::Entry(entry));
-            }
-            // F193: keepalive probe scheduling. Idle for ka_idle_ns →
-            // fire probes at ka_intvl_ns cadence; abort after ka_cnt_max.
-            let (ka_seg, ka_abort, ka_src, ka_dst) = {
-                let mut c = entry.conn.lock();
-                let probe = c.keepalive_due(now_ns);
-                let abort_ka = c.ka_count > c.ka_cnt_max;
-                if abort_ka {
-                    c.state = crate::tcp_state::TcpState::Closed;
-                }
-                let src = c.local.ip; let dst = c.remote.ip;
-                drop(c);
-                if abort_ka { entry.set_error(syscall::errno::Errno::Etimedout as i32); }
-                (probe, abort_ka, src, dst)
-            };
-            if let Some(s) = &ka_seg {
-                let _ = self.send_tcp_segment_in(entry.net_ns(), ka_src, ka_dst, s, 0,
-                    entry.bound_iface(), TcpTxPolicy::Entry(entry));
-            }
-            if ka_abort {
-                entry.release_backlog();
-                to_drop.push((tables.clone(), *key, entry.clone()));
-                #[cfg(target_os = "oxide-kernel")]
-                entry.rx_waiters.wake_all();
-                continue;
-            }
-            if abort {
-                entry.release_backlog();
-                to_drop.push((tables.clone(), *key, entry.clone()));
-                #[cfg(target_os = "oxide-kernel")]
-                entry.rx_waiters.wake_all();
-            } else if !segs.is_empty() {
-                // Wake too — connect waiters might have been parked
-                // forever otherwise on a successful retx that revives
-                // the handshake.
-                #[cfg(target_os = "oxide-kernel")]
-                entry.rx_waiters.wake_all();
-            }
-        }
-        if !to_drop.is_empty() {
-            for (tables, key, entry) in to_drop {
-                super::tcp_listener::remove_tcp_entry_exact(&tables, &key, &entry);
-            }
-        }
     }
 
     /// TCP demux. Look up an established connection by 4-tuple
@@ -442,8 +292,12 @@ impl NetStack {
                 }
             }
             if let Some(r) = resp {
-                self.send_tcp_segment_in(net_ns, dst_ip, src_ip, &r, 0, entry.bound_iface(),
-                    TcpTxPolicy::Entry(&entry))?;
+                if let Err(error) = self.send_tcp_segment_in(net_ns, dst_ip, src_ip, &r, 0,
+                    entry.bound_iface(), TcpTxPolicy::Entry(&entry))
+                {
+                    self.refresh_tcp_timers(&entry);
+                    return Err(error);
+                }
             }
             // F175: post-input output drain. ACK that clears retx_q
             // unblocks Nagle-held sends; pump them out now. Use
@@ -463,14 +317,19 @@ impl NetStack {
             };
             let (segs, src, dst, tos, max_pacing_rate, now_ns) = drain_segs;
             for s in &segs {
-                self.send_tcp_segment_in(net_ns, src, dst, s, tos, entry.bound_iface(),
-                    TcpTxPolicy::Entry(&entry))?;
+                if let Err(error) = self.send_tcp_segment_in(net_ns, src, dst, s, tos,
+                    entry.bound_iface(), TcpTxPolicy::Entry(&entry))
+                {
+                    self.refresh_tcp_timers(&entry);
+                    return Err(error);
+                }
             }
             stamp_last_sent(&entry, segs.len());
             if !segs.is_empty() {
                 let bytes = entry.conn.lock().retx_q.back().map_or(0, |seg| seg.payload.len());
                 entry.conn.lock().note_paced_output_at(now_ns, bytes, max_pacing_rate);
             }
+            self.refresh_tcp_timers(&entry);
             // F159+F181a: wake conn rx + targeted epoll.
             #[cfg(target_os = "oxide-kernel")]
             {

@@ -54,10 +54,12 @@ impl TcpEntry {
         Self { owner, conn: Spinlock::new(conn), error, ip_mtu_discover, ipv6_mtu_discover,
             ipv6_frag_size, ipv6_opts, max_pacing_rate, ip_opts, min_hop, bind, bpf_filter, passive_listener,
             syn_backlog_reserved: ::core::sync::atomic::AtomicBool::new(syn_backlog_reserved),
+            syn_backlog_young_reserved: ::core::sync::atomic::AtomicBool::new(syn_backlog_reserved),
             accept_backlog_reserved: ::core::sync::atomic::AtomicBool::new(false),
             accepted: ::core::sync::atomic::AtomicBool::new(false),
             fastopen_qlen: ::core::sync::atomic::AtomicBool::new(false),
             #[cfg(target_os = "oxide-kernel")]
-            rx_waiters: sched::live::WaitList::new(), poll_subs: Spinlock::new(None) }
+            rx_waiters: sched::live::WaitList::new(),
+            poll_subs: alloc::boxed::Box::new(super::super::tcp_timer::TcpAsyncState::new()) }
     }
 }

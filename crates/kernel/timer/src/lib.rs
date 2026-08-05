@@ -15,6 +15,8 @@ use sync::{Spinlock, Timer as TimerLock};
 /// Periodic callback. Receives the current monotonic time (ns).
 pub type TimerFn = fn(u64);
 pub type OneShotFn = fn(usize);
+pub type OwnedOneShotFn = fn(usize, TimerId);
+pub type OwnedOneShotDropFn = fn(usize);
 
 /// Opaque id for a registered periodic timer.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -33,7 +35,14 @@ impl TimerId {
 }
 
 struct Entry { id: TimerId, interval_ns: u64, last_ns: u64, f: TimerFn }
-struct OneShot { id: TimerId, deadline_ns: u64, arg: usize, f: OneShotFn }
+struct OneShot {
+    id: TimerId,
+    deadline_ns: u64,
+    arg: usize,
+    f: Option<OneShotFn>,
+    owned_f: Option<OwnedOneShotFn>,
+    owned_drop: Option<OwnedOneShotDropFn>,
+}
 
 static TIMERS: Spinlock<Vec<Entry>, TimerLock> = Spinlock::new(Vec::new());
 static ONESHOTS: Spinlock<Vec<OneShot>, TimerLock> = Spinlock::new(Vec::new());
@@ -76,7 +85,23 @@ pub fn unregister_periodic(id: TimerId) -> bool {
 /// # C: O(1) amortized
 pub fn register_oneshot(deadline_ns: u64, arg: usize, f: OneShotFn) -> TimerId {
     let id = next_id();
-    ONESHOTS.lock().push(OneShot { id, deadline_ns, arg, f });
+    ONESHOTS.lock().push(OneShot {
+        id, deadline_ns, arg, f: Some(f), owned_f: None, owned_drop: None,
+    });
+    id
+}
+
+/// Register a one-shot whose opaque argument is owned by the timer. `drop_arg`
+/// runs exactly once when the timer fires or is cancelled, including a cancel
+/// racing the drain-to-fire window. This is the safe form for callbacks that
+/// retain an `Arc` or boxed context beyond their caller's lifetime.
+/// # C: O(1) amortized
+pub fn register_oneshot_owned(deadline_ns: u64, arg: usize, f: OwnedOneShotFn,
+                              drop_arg: OwnedOneShotDropFn) -> TimerId {
+    let id = next_id();
+    ONESHOTS.lock().push(OneShot {
+        id, deadline_ns, arg, f: None, owned_f: Some(f), owned_drop: Some(drop_arg),
+    });
     id
 }
 
@@ -85,10 +110,10 @@ pub fn register_oneshot(deadline_ns: u64, arg: usize, f: OneShotFn) -> TimerId {
 /// # C: O(N registered)
 pub fn unregister_oneshot(id: TimerId) -> bool {
     let mut g = ONESHOTS.lock();
-    let before = g.len();
-    g.retain(|entry| entry.id != id);
-    let was_pending = g.len() != before;
+    let removed = g.iter().position(|entry| entry.id == id).map(|pos| g.remove(pos));
+    let was_pending = removed.is_some();
     drop(g);
+    if let Some(entry) = removed { drop_oneshot_arg(&entry); }
     if !was_pending {
         // B1347: not in ONESHOTS ⇒ either already fired (harmless: arg was live
         // during that fire) or drained-in-flight by run_due (about to fire on an
@@ -125,12 +150,22 @@ pub fn run_state() -> (usize, usize) {
 /// registry lock held, so a callback may itself arm timers.
 /// # C: O(N registered) + callback cost
 pub fn run_due(now_ns: u64) {
+    let _ = run_due_budgeted(now_ns, usize::MAX);
+}
+
+/// Fire at most `budget` elapsed callbacks. The return value says another
+/// callback is already due, allowing a process-context driver to yield before
+/// continuing instead of monopolising a voluntary-preemption kernel.
+/// Callbacks run without either registry lock held.
+/// # C: O(N registered) + O(`budget` callback cost)
+pub fn run_due_budgeted(now_ns: u64, budget: usize) -> bool {
     let mut due: Vec<TimerFn> = Vec::new();
-    let mut one: Vec<(OneShotFn, usize, u64)> = Vec::new();
+    let mut one: Vec<OneShot> = Vec::new();
     RUN_PHASE.store(PHASE_SCAN_PERIODIC, Ordering::Relaxed);
     {
         let mut g = TIMERS.lock();
         for e in g.iter_mut() {
+            if due.len() >= budget { break; }
             if now_ns.saturating_sub(e.last_ns) >= e.interval_ns {
                 e.last_ns = now_ns;
                 due.push(e.f);
@@ -141,10 +176,9 @@ pub fn run_due(now_ns: u64) {
     {
         let mut g = ONESHOTS.lock();
         let mut i = 0;
-        while i < g.len() {
+        while i < g.len() && due.len() + one.len() < budget {
             if now_ns >= g[i].deadline_ns {
-                let e = g.remove(i);
-                one.push((e.f, e.arg, e.id.0));
+                one.push(g.remove(i));
             } else {
                 i += 1;
             }
@@ -161,21 +195,39 @@ pub fn run_due(now_ns: u64) {
     // drain→fire window (checked live per-fire — the owner may cancel between
     // earlier fires and this one). A cancelled one-shot's arg object is being
     // released by its owner; firing f(arg) on it would be a stale-pointer write.
-    for (f, arg, id) in one {
+    for entry in one {
         let cancelled = {
             let mut c = CANCELLED_ONESHOTS.lock();
-            match c.iter().position(|&x| x == id) {
+            match c.iter().position(|&x| x == entry.id.0) {
                 Some(pos) => { c.swap_remove(pos); true }
                 None => false,
             }
         };
-        if !cancelled {
+        if cancelled {
+            drop_oneshot_arg(&entry);
+        } else if let Some(f) = entry.f {
             RUN_FN.store(f as usize, Ordering::Relaxed);
-            f(arg);
+            f(entry.arg);
+        } else if let Some(f) = entry.owned_f {
+            RUN_FN.store(f as usize, Ordering::Relaxed);
+            f(entry.arg, entry.id);
+            drop_oneshot_arg(&entry);
         }
     }
     RUN_FN.store(0, Ordering::Relaxed);
     RUN_PHASE.store(PHASE_IDLE, Ordering::Relaxed);
+    has_due(now_ns)
+}
+
+fn drop_oneshot_arg(entry: &OneShot) {
+    if let Some(drop_arg) = entry.owned_drop { drop_arg(entry.arg); }
+}
+
+fn has_due(now_ns: u64) -> bool {
+    if TIMERS.lock().iter().any(|e| now_ns.saturating_sub(e.last_ns) >= e.interval_ns) {
+        return true;
+    }
+    ONESHOTS.lock().iter().any(|e| now_ns >= e.deadline_ns)
 }
 
 fn next_id() -> TimerId {
@@ -213,6 +265,8 @@ mod tests {
     // and a flag it sets if it (wrongly) fires.
     static VICTIM_ONESHOT_ID: AtomicU64 = AtomicU64::new(0);
     static VICTIM_ONESHOT_FIRED: AtomicU64 = AtomicU64::new(0);
+    static OWNED_FIRED: AtomicU64 = AtomicU64::new(0);
+    static OWNED_DROPPED: AtomicU64 = AtomicU64::new(0);
 
     fn reset() {
         TIMERS.lock().clear();
@@ -223,6 +277,8 @@ mod tests {
         B.store(0, Ordering::Relaxed);
         VICTIM_ONESHOT_ID.store(0, Ordering::Relaxed);
         VICTIM_ONESHOT_FIRED.store(0, Ordering::Relaxed);
+        OWNED_FIRED.store(0, Ordering::Relaxed);
+        OWNED_DROPPED.store(0, Ordering::Relaxed);
     }
 
     fn tick_a(now_ns: u64) { A.fetch_add(now_ns, Ordering::Relaxed); }
@@ -236,6 +292,11 @@ mod tests {
         }
     }
     fn victim_oneshot_fire(_arg: usize) { VICTIM_ONESHOT_FIRED.store(1, Ordering::Relaxed); }
+    fn owned_fire(arg: usize, id: TimerId) {
+        assert_ne!(id.raw(), 0);
+        OWNED_FIRED.fetch_add(arg as u64, Ordering::Relaxed);
+    }
+    fn owned_drop(arg: usize) { OWNED_DROPPED.fetch_add(arg as u64, Ordering::Relaxed); }
 
     /// B1347: a one-shot drained by `run_due` but cancelled (by a periodic
     /// callback that runs before the one-shot fire loop) MUST NOT fire — else it
@@ -313,5 +374,29 @@ mod tests {
         assert_eq!(A.load(Ordering::Relaxed), 3);
         assert_eq!(B.load(Ordering::Relaxed), 0);
         assert!(!unregister_oneshot(a));
+    }
+
+    #[test]
+    fn owned_oneshot_releases_context_after_fire_or_cancel() {
+        let _wheel = claim_wheel();
+        register_oneshot_owned(10, 3, owned_fire, owned_drop);
+        let cancelled = register_oneshot_owned(20, 7, owned_fire, owned_drop);
+        assert!(unregister_oneshot(cancelled));
+        assert_eq!(OWNED_DROPPED.load(Ordering::Relaxed), 7);
+
+        run_due(10);
+        assert_eq!(OWNED_FIRED.load(Ordering::Relaxed), 3);
+        assert_eq!(OWNED_DROPPED.load(Ordering::Relaxed), 10);
+    }
+
+    #[test]
+    fn callback_budget_leaves_expired_work_for_the_next_dispatch() {
+        let _wheel = claim_wheel();
+        for _ in 0..3 { register_oneshot(10, 1, |v| { A.fetch_add(v as u64, Ordering::Relaxed); }); }
+
+        assert!(run_due_budgeted(10, 2));
+        assert_eq!(A.load(Ordering::Relaxed), 2);
+        assert!(!run_due_budgeted(10, 2));
+        assert_eq!(A.load(Ordering::Relaxed), 3);
     }
 }

@@ -13,6 +13,7 @@
 // - tcp_bind: TCP local bind reservations and lifecycle transitions.
 // - tcp_listener: TCP listener publication, accept, and passive-child teardown.
 // - tcp: TCP active open, send/recv/close, retry, and demux.
+// - tcp_timer: socket-owned write, delayed-ACK, keepalive, and cleanup timers.
 // - tcp_open: public active-open and disconnect entry points.
 // - tcp_tx: socket-owned TCP PMTU policy and family transmit dispatch.
 // - tcp_pmtu: validated TCP path-MTU reduction and immediate retransmit.
@@ -74,6 +75,7 @@ mod tcp_bind;
 pub(crate) mod tcp_listener;
 pub use tcp_listener::TcpAcceptWait;
 mod tcp;
+mod tcp_timer;
 mod tcp_fastopen;
 mod tcp_listener_deliver;
 mod tcp_reqsk;
