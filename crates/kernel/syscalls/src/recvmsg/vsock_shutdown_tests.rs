@@ -17,6 +17,34 @@ fn connected_type(typ: u32) -> (Arc<net::vsock_socket::VsockSocket>, Arc<net::vs
 }
 
 #[test]
+fn connected_recvmsg_clears_source_length_without_synthesizing_a_peer_address() {
+    let (sock, conn) = connected();
+    conn.rx.lock().extend([b'v']);
+    let mut payload = [0u8; 1];
+    let mut name = [0xa5u8; 16];
+    let mut header = [0u8; 56];
+    header[8..12].copy_from_slice(&(name.len() as u32).to_ne_bytes());
+    let user = RecvUser {
+        msgp: header.as_mut_ptr() as u64,
+        name: name.as_mut_ptr() as u64,
+        namelen: name.len() as u32,
+        name_len_ptr: 0,
+        control: 0,
+        controllen: 0,
+        iov: alloc::vec![crate::recv_user::IoVec {
+            base: payload.as_mut_ptr() as u64,
+            len: payload.len(),
+        }],
+        capacity: payload.len(),
+    };
+
+    assert_eq!(recv_pinned(&sock, false, &user, net::uapi::MSG_DONTWAIT), 1);
+    assert_eq!(payload, *b"v");
+    assert_eq!(u32::from_ne_bytes(header[8..12].try_into().unwrap()), 0);
+    assert_eq!(name, [0xa5; 16], "Linux publishes no source sockaddr for connectible VSOCK");
+}
+
+#[test]
 fn zero_length_recvmsg_checks_connection_before_returning() {
     for typ in [net::socket_args::SOCK_STREAM, net::socket_args::SOCK_SEQPACKET] {
         let sock = Arc::new(net::vsock_socket::VsockSocket::new_type(typ));
