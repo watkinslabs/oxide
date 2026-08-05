@@ -91,13 +91,16 @@ pub fn build_echo_reply(request: &[u8]) -> Result<alloc::vec::Vec<u8>, IcmpError
     Ok(out)
 }
 
-/// Build an ICMP error body quoting the invoking IPv4 header and first 8
-/// payload bytes. `invoking` starts at the original IPv4 header. # C: O(N)
+/// Build an ICMP error body quoting as much of the invoking datagram as fits in
+/// Linux's RFC 1812 576-byte ceiling. The outer IPv4 and ICMP headers consume
+/// 28 bytes, leaving at most 548 bytes of the original packet. `invoking`
+/// starts at the original IPv4 header. # C: O(N)
 pub fn build_ipv4_error(typ: u8, code: u8, invoking: &[u8]) -> Result<alloc::vec::Vec<u8>, IcmpError> {
     if invoking.len() < crate::ipv4::IPV4_HDR_LEN { return Err(IcmpError::Short); }
     let total = u16::from_be_bytes([invoking[2], invoking[3]]) as usize;
     if total < crate::ipv4::IPV4_HDR_LEN { return Err(IcmpError::Short); }
-    let quote_len = core::cmp::min(total, invoking.len()).min(crate::ipv4::IPV4_HDR_LEN + 8);
+    const MAX_QUOTE: usize = 576 - crate::ipv4::IPV4_HDR_LEN - ICMP_HDR_LEN;
+    let quote_len = core::cmp::min(total, invoking.len()).min(MAX_QUOTE);
     let mut out = alloc::vec![0u8; ICMP_HDR_LEN + quote_len];
     out[0] = typ;
     out[1] = code;
@@ -163,7 +166,7 @@ mod tests {
     }
 
     #[test]
-    fn ipv4_error_quotes_header_and_eight_bytes() {
+    fn ipv4_error_quotes_the_datagram_up_to_linux_576_byte_ceiling() {
         let mut invoking = [0u8; crate::ipv4::IPV4_HDR_LEN + 12];
         let hdr = crate::ipv4::Ipv4Hdr::build(
             crate::Ipv4Addr::new(192, 0, 2, 1),
@@ -179,6 +182,17 @@ mod tests {
         assert_eq!(out[0], ICMP_TYPE_TIME_EXC);
         assert_eq!(out[1], time_exceeded_code::TTL);
         assert_eq!(ip_checksum(&out), 0);
-        assert_eq!(&out[ICMP_HDR_LEN..], &invoking[..crate::ipv4::IPV4_HDR_LEN + 8]);
+        assert_eq!(&out[ICMP_HDR_LEN..], &invoking);
+
+        let mut large = alloc::vec![0u8; 700];
+        let hdr = crate::Ipv4Hdr::build(
+            crate::Ipv4Addr::new(192, 0, 2, 1),
+            crate::Ipv4Addr::new(198, 51, 100, 1),
+            crate::IpProto::Udp, 680, 100,
+        );
+        hdr.write_to(&mut large[..crate::ipv4::IPV4_HDR_LEN]);
+        let out = build_ipv4_error(ICMP_TYPE_DEST_UNREACH, unreach_code::PORT, &large).unwrap();
+        assert_eq!(out.len(), 576 - crate::ipv4::IPV4_HDR_LEN);
+        assert_eq!(&out[ICMP_HDR_LEN..], &large[..548]);
     }
 }
