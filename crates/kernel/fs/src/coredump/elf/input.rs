@@ -99,6 +99,8 @@ pub struct CoreThread<'a> {
     pub fpregs: Option<&'a [u8]>,
     /// Extended state, emitted as `NT_X86_XSTATE`. Meaningful on x86-64 only.
     pub xstate: Option<&'a [u8]>,
+    /// User and system CPU time for this thread's `NT_PRSTATUS` record.
+    pub times: CoreTimes,
 }
 
 /// Who the dying process was.

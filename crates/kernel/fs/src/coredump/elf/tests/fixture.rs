@@ -69,7 +69,12 @@ pub fn identity() -> CoreIdentity<'static> {
 }
 
 pub fn thread<'a>(tid: i32, regs: &'a [u8], fp: Option<&'a [u8]>) -> CoreThread<'a> {
-    CoreThread { tid, regs, fpregs: fp, xstate: None }
+    let times = if tid == TID_MAIN {
+        CoreTimes { utime: CoreTimeval { sec: 12, usec: 345_678 }, stime: CoreTimeval { sec: 3, usec: 111_222 }, ..CoreTimes::default() }
+    } else {
+        CoreTimes { utime: CoreTimeval { sec: 7, usec: 8 }, stime: CoreTimeval { sec: 9, usec: 10 }, ..CoreTimes::default() }
+    };
+    CoreThread { tid, regs, fpregs: fp, xstate: None, times }
 }
 
 pub const TEXT_START: u64 = 0x0040_0000;
