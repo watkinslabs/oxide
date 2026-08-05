@@ -243,6 +243,23 @@ mod tests {
     }
 
     #[test]
+    fn record_copy_rejects_a_landed_prefix_while_stream_copy_returns_it() {
+        let mut stream = [0u8; 1];
+        let stream_user = RecvUser { msgp: 0, name: 0, namelen: 0, name_len_ptr: 0,
+            control: 0, controllen: 0,
+            iov: vec![IoVec { base: stream.as_mut_ptr() as u64, len: 1 }], capacity: 2 };
+        assert_eq!(stream_user.copy_payload(b"ab"), Ok(1));
+        assert_eq!(stream, *b"a");
+
+        let mut record = [0u8; 1];
+        let record_user = RecvUser { msgp: 0, name: 0, namelen: 0, name_len_ptr: 0,
+            control: 0, controllen: 0,
+            iov: vec![IoVec { base: record.as_mut_ptr() as u64, len: 1 }], capacity: 2 };
+        assert_eq!(record_user.copy_payload_record(b"ab"), Err(errno(Errno::Efault)));
+        assert_eq!(record, *b"a");
+    }
+
+    #[test]
     fn rejects_iov_count_with_linux_emsgsize() {
         let h = hdr(0, (UIO_MAXIOV + 1) as u64);
         assert_eq!(import(h.as_ptr() as u64).err(), Some(errno(Errno::Emsgsize)));

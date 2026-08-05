@@ -51,7 +51,7 @@ pub(crate) fn recv_pinned(file: &alloc::sync::Arc<vfs::File>, file_nonblock: boo
             }
             ::netlink::ReceiveState::Error(error) => return -(error as i64),
             ::netlink::ReceiveState::Datagram(received) => {
-                let copied = user.copy_payload(
+                let copied = user.copy_payload_record(
                     &received.bytes[..core::cmp::min(user.capacity, received.bytes.len())]);
                 match copied {
                     Ok(copied) => break (received.bytes, copied, received.src_port,
