@@ -163,7 +163,8 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, nonblock: 
 /// # C: O(1) or O(wait)
 pub fn connect_kernel_unix(addr: crate::UnixAddr) -> Result<alloc::sync::Arc<InetSocket>, NetError> {
     let sock = alloc::sync::Arc::new(InetSocket::new_unix_in(network_namespace::initial()));
-    connect(&sock, RemoteAddr::Unix(addr), true)?;
+    let _admission = super::admit_connect(&sock)?;
+    super::unix::connect(&sock, addr, true)?;
     Ok(sock)
 }
 
