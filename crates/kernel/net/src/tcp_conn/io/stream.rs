@@ -111,6 +111,7 @@ impl TcpConn {
             out.push(self.recv_buf.pop_front().unwrap());
         }
         self.rcv_read_seq = self.rcv_read_seq.wrapping_add(take as u32);
+        if take != 0 { self.note_rcv_space_at(crate::tcp_conn::ka_now_ns()); }
         out
     }
 
@@ -131,6 +132,7 @@ impl TcpConn {
             let consumed = core::cmp::min(commit, take);
             for _ in 0..consumed { self.recv_buf.pop_front(); }
             self.rcv_read_seq = self.rcv_read_seq.wrapping_add(consumed as u32);
+            if consumed != 0 { self.note_rcv_space_at(crate::tcp_conn::ka_now_ns()); }
         }
         Ok(Some(copied))
     }
@@ -154,6 +156,7 @@ impl TcpConn {
             let consumed = core::cmp::min(commit, take);
             for _ in 0..consumed { self.recv_buf.pop_front(); }
             self.rcv_read_seq = self.rcv_read_seq.wrapping_add(consumed as u32);
+            if consumed != 0 { self.note_rcv_space_at(crate::tcp_conn::ka_now_ns()); }
             if inline {
                 if let Some((seq, _)) = self.urgent {
                     if (seq.wrapping_sub(self.rcv_read_seq) as i32) < 0 {

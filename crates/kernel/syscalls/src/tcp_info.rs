@@ -127,7 +127,9 @@ fn populate_conn_at(c: &net::tcp_conn::TcpConn, now_ns: u64, info: &mut TcpInfo)
     info.tcpi_snd_ssthresh = c.ssthresh / core::cmp::max(snd_mss, 1);
     info.tcpi_snd_cwnd = c.cwnd / core::cmp::max(snd_mss, 1);
     info.tcpi_reordering = c.reordering;
-    info.tcpi_rcv_space = c.rcv_buf_cap;
+    info.tcpi_rcv_ssthresh = c.rcv_ssthresh;
+    info.tcpi_rcv_rtt = (c.rcv_rtt_ns / 1_000).min(u64::from(u32::MAX)) as u32;
+    info.tcpi_rcv_space = c.rcv_space;
     info.tcpi_bytes_received = c.bytes_received;
     info.tcpi_bytes_acked = c.bytes_acked;
     info.tcpi_segs_out = c.segs_out;
@@ -261,6 +263,33 @@ mod tests {
         let mut info = TcpInfo::default();
         populate_conn_at(&conn, 0, &mut info);
         assert_eq!(info.tcpi_ato, 20_000);
+    }
+
+    #[test]
+    fn receiver_rtt_projects_the_receive_window_sample() {
+        let mut conn = conn();
+        conn.rcv_rtt_ns = 17_000;
+        let mut info = TcpInfo::default();
+        populate_conn_at(&conn, 0, &mut info);
+        assert_eq!(info.tcpi_rcv_rtt, 17);
+    }
+
+    #[test]
+    fn receiver_space_projects_the_application_copy_sample() {
+        let mut conn = conn();
+        conn.rcv_space = 4_096;
+        let mut info = TcpInfo::default();
+        populate_conn_at(&conn, 0, &mut info);
+        assert_eq!(info.tcpi_rcv_space, 4_096);
+    }
+
+    #[test]
+    fn receiver_ssthresh_projects_the_advertised_window_threshold() {
+        let mut conn = conn();
+        conn.rcv_ssthresh = 8_192;
+        let mut info = TcpInfo::default();
+        populate_conn_at(&conn, 0, &mut info);
+        assert_eq!(info.tcpi_rcv_ssthresh, 8_192);
     }
 
     #[test]
