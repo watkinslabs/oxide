@@ -250,6 +250,24 @@ pub fn straggler_bytes(copybuf_len: i32, recv_skip_hint: u32) -> u32 {
     (copybuf_len as u32).min(recv_skip_hint)
 }
 
+/// Transfer complete receive pages into a receive window. A failed install
+/// consumes and releases its page, then leaves later queue pages untouched.
+/// # C: O(page count)
+pub fn donate_pages(bytes: u32, page: u32, mut take: impl FnMut() -> Option<u64>,
+                    mut install: impl FnMut(u64, u64) -> bool,
+                    mut release: impl FnMut(u64)) -> u32 {
+    let mut done = 0;
+    while done < bytes {
+        let Some(pa) = take() else { break; };
+        if !install(done as u64, pa) {
+            release(pa);
+            break;
+        }
+        done += page;
+    }
+    done
+}
+
 /// The operand's output fields after the mapping and the straggler copy.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct ZcFinish {
