@@ -45,110 +45,82 @@ fn synack_retries(listener: &TcpListenEntry) -> u8 {
     }
 }
 
-/// One connection as a timer pass sees it: its namespace, its tables, its key
-/// and the entry itself.
-pub(crate) type TickEntry = (network_namespace::NetworkNamespaceRef,
-                             Arc<super::inet_tables::InetTables>, TcpKey, Arc<TcpEntry>);
-
 /// The listener a passive child belongs to, while it is still a request. # C: O(1)
 fn request_listener(entry: &TcpEntry) -> Option<Arc<TcpListenEntry>> {
     entry.passive_listener.as_ref().and_then(alloc::sync::Weak::upgrade)
 }
 
-/// Requests on each listener that have not timed out yet — the young half the
-/// pressure rule protects. Keyed by listener identity, since one tick sees
-/// every namespace's requests at once. # C: O(N_conns)
-fn young_per_listener(entries: &[TickEntry]) -> Vec<(usize, usize)> {
-    let mut young: Vec<(usize, usize)> = Vec::new();
-    for (_, _, _, entry) in entries {
-        let Some(listener) = request_listener(entry) else { continue; };
-        let c = entry.conn.lock();
-        if c.state != crate::tcp_state::TcpState::SynRecv || !c.rsk.armed() { continue; }
-        if c.rsk.num_timeout != 0 { continue; }
-        drop(c);
-        let id = Arc::as_ptr(&listener) as usize;
-        match young.iter_mut().find(|(key, _)| *key == id) {
-            Some((_, count)) => *count += 1,
-            None => young.push((id, 1)),
-        }
-    }
-    young
-}
-
 impl NetStack {
-    /// Fire every request timer that has come due: retransmit the SYN-ACK
-    /// unless a deferring listener is waiting for data instead, count the
-    /// firing, and abandon the request once it has run out of both.
-    /// # C: O(N_conns)
-    /// Fire every request timer due at `now_ns`, taking the snapshot itself.
+    /// Hosted compatibility helper: fire each request through the same
+    /// per-socket callback production uses.
     /// # C: O(N_conns)
     #[cfg(test)]
     pub(crate) fn tcp_reqsk_tick_at(&self, now_ns: u64) {
         let entries = self.tcp_tick_entries();
-        self.tcp_reqsk_tick(&entries, now_ns);
+        for (_, tables, key, entry) in entries {
+            self.tcp_reqsk_timer(&tables, &key, &entry, now_ns);
+        }
     }
 
-    pub(crate) fn tcp_reqsk_tick(&self, entries: &[TickEntry], now_ns: u64) {
-        let young = young_per_listener(entries);
-        for (_owner, tables, key, entry) in entries {
-            let Some(listener) = request_listener(entry) else {
-                // The listener is gone, so nothing can ever accept this
-                // request; it is dropped rather than left half-open forever.
-                let mut c = entry.conn.lock();
-                if c.state != crate::tcp_state::TcpState::SynRecv || !c.rsk.armed() { continue; }
-                c.state = crate::tcp_state::TcpState::Closed;
-                drop(c);
-                drop_request(tables, key, entry);
-                continue;
-            };
-            let young_here = young.iter()
-                .find(|(id, _)| *id == Arc::as_ptr(&listener) as usize)
-                .map_or(0, |(_, count)| *count);
-            let ceiling = reqsk::synack_retries_under_pressure(
-                synack_retries(&listener),
-                listener.syn_backlog_used.load(::core::sync::atomic::Ordering::Acquire),
-                listener.backlog.load(::core::sync::atomic::Ordering::Acquire),
-                young_here);
-            let defer_accept = listener.defer_accept.load(
-                ::core::sync::atomic::Ordering::Acquire);
-            let outcome = {
-                let mut c = entry.conn.lock();
-                if c.state != crate::tcp_state::TcpState::SynRecv || !c.rsk.due(now_ns) {
-                    continue;
-                }
-                let recalc = c.rsk.recalc(ceiling, defer_accept);
-                let synack = if recalc.resend {
-                    c.retx_q.front().map(|segment| c.build_retx(segment))
-                } else { None };
-                if !reqsk::reschedules(recalc, synack.is_some(), c.rsk.acked) {
-                    c.state = crate::tcp_state::TcpState::Closed;
-                    None
-                } else {
-                    let rto_max = c.rto_max_ns;
-                    c.rsk.on_timeout(now_ns, rto_max);
-                    if synack.is_some() {
-                        if let Some(front) = c.retx_q.front_mut() {
-                            front.retries = front.retries.saturating_add(1);
-                            front.last_sent_ns = now_ns;
-                        }
-                    }
-                    Some((synack, c.local.ip, c.remote.ip))
-                }
-            };
-            let Some((synack, src, dst)) = outcome else {
-                drop_request(tables, key, entry);
-                continue;
-            };
-            if let Some(segment) = &synack {
-                let _ = self.send_tcp_segment_in(entry.net_ns(), src, dst, segment, 0,
-                    entry.bound_iface(), TcpTxPolicy::Entry(entry));
+    /// Fire one passive request's write timer. Listener-owned counters provide
+    /// queue pressure in O(1), so this path never scans unrelated sockets.
+    /// # C: O(log N + one segment xmit)
+    pub(crate) fn tcp_reqsk_timer(&self, tables: &super::inet_tables::InetTables,
+        key: &TcpKey, entry: &Arc<TcpEntry>, now_ns: u64)
+    {
+        let Some(listener) = request_listener(entry) else {
+            let mut c = entry.conn.lock();
+            if c.state != crate::tcp_state::TcpState::SynRecv || !c.rsk.armed() { return; }
+            c.state = crate::tcp_state::TcpState::Closed;
+            drop(c);
+            drop_request(tables, key, entry);
+            return;
+        };
+        let ceiling = reqsk::synack_retries_under_pressure(
+            synack_retries(&listener),
+            listener.syn_backlog_used.load(::core::sync::atomic::Ordering::Acquire),
+            listener.backlog.load(::core::sync::atomic::Ordering::Acquire),
+            listener.syn_backlog_young.load(::core::sync::atomic::Ordering::Acquire));
+        let defer_accept = listener.defer_accept.load(
+            ::core::sync::atomic::Ordering::Acquire);
+        let outcome = {
+            let mut c = entry.conn.lock();
+            if c.state != crate::tcp_state::TcpState::SynRecv || !c.rsk.due(now_ns) {
+                return;
             }
+            entry.release_syn_backlog_young();
+            let recalc = c.rsk.recalc(ceiling, defer_accept);
+            let synack = if recalc.resend {
+                c.retx_q.front().map(|segment| c.build_retx(segment))
+            } else { None };
+            if !reqsk::reschedules(recalc, synack.is_some(), c.rsk.acked) {
+                c.state = crate::tcp_state::TcpState::Closed;
+                None
+            } else {
+                let rto_max = c.rto_max_ns;
+                c.rsk.on_timeout(now_ns, rto_max);
+                if synack.is_some() {
+                    if let Some(front) = c.retx_q.front_mut() {
+                        front.retries = front.retries.saturating_add(1);
+                        front.last_sent_ns = now_ns;
+                    }
+                }
+                Some((synack, c.local.ip, c.remote.ip))
+            }
+        };
+        let Some((synack, src, dst)) = outcome else {
+            drop_request(tables, key, entry);
+            return;
+        };
+        if let Some(segment) = &synack {
+            let _ = self.send_tcp_segment_in(entry.net_ns(), src, dst, segment, 0,
+                entry.bound_iface(), TcpTxPolicy::Entry(entry));
         }
     }
 }
 
 /// Unhook a request nobody will complete. # C: O(log N)
-fn drop_request(tables: &Arc<super::inet_tables::InetTables>, key: &TcpKey,
+fn drop_request(tables: &super::inet_tables::InetTables, key: &TcpKey,
                 entry: &Arc<TcpEntry>)
 {
     entry.release_backlog();

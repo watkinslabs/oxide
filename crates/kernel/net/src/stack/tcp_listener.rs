@@ -85,6 +85,8 @@ pub(super) fn remove_tcp_entry_exact(tables: &super::inet_tables::InetTables,
     let mut conns = tables.tcp_conns.lock();
     if !conns.get(key).is_some_and(|current| Arc::ptr_eq(current, entry)) { return false; }
     conns.remove(key);
+    drop(conns);
+    super::tcp_timer::cancel(entry);
     true
 }
 
@@ -190,6 +192,7 @@ impl TcpListenEntry {
             ip_mtu_discover, ipv6_mtu_discover, ipv6_frag_size, ipv6_opts, max_pacing_rate, min_hop,
             backlog: ::core::sync::atomic::AtomicUsize::new(128),
             syn_backlog_used: ::core::sync::atomic::AtomicUsize::new(0),
+            syn_backlog_young: ::core::sync::atomic::AtomicUsize::new(0),
             accept_backlog_used: ::core::sync::atomic::AtomicUsize::new(0),
             defer_accept: ::core::sync::atomic::AtomicU8::new(0),
             synack_retries: ::core::sync::atomic::AtomicU8::new(0),
@@ -215,6 +218,9 @@ impl TcpListenEntry {
         if reserved && self.closed.load(::core::sync::atomic::Ordering::Acquire) {
             self.syn_backlog_used.fetch_sub(1, ::core::sync::atomic::Ordering::AcqRel);
             return false;
+        }
+        if reserved {
+            self.syn_backlog_young.fetch_add(1, ::core::sync::atomic::Ordering::AcqRel);
         }
         reserved
     }

@@ -169,8 +169,8 @@ fn connect_tcp(sock: &InetSocket, local_port: &mut Option<u16>, local_ip: crate:
     )?;
     entry.conn.lock().fastopen_confirming = confirming;
     entry.register_poll_subs(&sock.poll_subs);
-    apply_tcp_keepalive_opts(sock, &entry);
     crate::sock_opts::sol_tcp::apply::to_conn(&sock.opts, &mut entry.conn.lock());
+    apply_tcp_keepalive_opts(sock, &entry);
     super::tcp_rcvbuf::apply_tcp_rcvbuf_opt(sock, &entry);
     *sock.kind.lock() = SockKind::TcpConn(entry.clone());
     *sock.fastopen_deferred.lock() = None;

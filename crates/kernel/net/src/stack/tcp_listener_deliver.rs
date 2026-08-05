@@ -58,7 +58,7 @@ impl NetStack {
         let resp = match new_entry.conn.lock().input_prevalidated(src_ip, dst_ip, seg) {
             Ok(resp) => resp,
             Err(_) => {
-                listener.syn_backlog_used.fetch_sub(1, ::core::sync::atomic::Ordering::AcqRel);
+                new_entry.release_syn_backlog();
                 return Err(NetError::Einval);
             }
         };
@@ -82,6 +82,7 @@ impl NetStack {
             }
             super::stamp_last_sent(&new_entry, 1);
         }
+        self.activate_tcp_timers(&new_entry);
         Ok(())
     }
 }

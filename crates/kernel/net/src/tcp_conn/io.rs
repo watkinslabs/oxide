@@ -431,8 +431,10 @@ impl TcpConn {
                     }
                     // Ping-pong mode: the acknowledgement waits for either the
                     // reply it can ride on or the delayed-ACK deadline, which
-                    // the retransmit scan stamps and enforces.
+                    // its socket-owned delayed-ACK timer stamps and enforces.
                     self.ack_pending = true;
+                    self.ack_deadline_ns = crate::tcp_conn::ka_now_ns()
+                        .saturating_add(self.delack_ato_ns());
                     return Ok(None);
                 }
                 if emit_fin_ack.is_some() {
