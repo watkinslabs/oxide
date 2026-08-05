@@ -1,6 +1,0 @@
-# B1768 — resolved stub DNS serial probe
-
-| Status | Class | Sev | Issue | Evidence | Owner |
-|---|---|---|---|---|---|
-| FIXED 068551621, dcf0e7dbf | DEFECT | high | B1737's remaining systemd-resolved stub DNS failure. | Serial-only x86 query `getent hosts one.one.one.one` returned public resolver answers on current main, after B1731's loopback-bind fix and B1761's packet-info fix. | B1768 |
-| FIXED 040167850, c73b49d27 | DEFECT | high | A normal serial-console interaction triggered repeated `[BUG] scheduling while atomic: preempt_count=0000000000000100 in_interrupt=1` reports, then the boot harness declared the guest dead. This was independent of DNS: the resolver query succeeded four times before the first fault. | Linux-shaped recovery now normalizes a task-stack count and continues, restores the expected count after every softirq handler, and carries an IRQ-stack schedule request through `TIF_NEED_RESCHED` to task-stack IRQ return. Both-arch smoke passed first attempt; the final x86 serial probe completed five resolver D-Bus pings, a public lookup, and `oxide-no-such-host.invalid` with no atomic-schedule, bad-stack, double-fault, or panic signature. | B1857-irq-softirq-schedule-fault |
