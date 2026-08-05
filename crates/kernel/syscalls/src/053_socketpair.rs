@@ -71,7 +71,7 @@ fn create_files(domain: u32, raw_type: u32, protocol: u32, has_net_raw: bool, cu
         p.set_end_identity(net::UnixEnd::A, Some(identity.clone()));
         p.set_end_identity(net::UnixEnd::B, Some(identity));
     }
-    let make_file = |end: net::UnixEnd| {
+    let make_file = |end: net::UnixEnd| -> Result<Arc<vfs::File>, i64> {
         let error = if let Some(p) = &stream { p.end_error(end) }
             else if let Some(p) = &msg { p.end_error(end) }
             else { Arc::new(net::SocketError::new()) };
@@ -91,10 +91,12 @@ fn create_files(domain: u32, raw_type: u32, protocol: u32, has_net_raw: bool, cu
         let dentry = vfs::dcache::d_alloc_pseudo("socket", Arc::clone(&inode), &crate::anon_dname::SOCKET_OPS);
         let mut flags = vfs::OpenFlags::O_RDWR;
         if spec.nonblock { flags |= vfs::OpenFlags::O_NONBLOCK; }
-        let f = vfs::File::new(inode, dentry, flags);
+        let file_cred = crate::pathresolve::file_cred_for(&cur)
+            .ok_or(-(Errno::Esrch.as_i32() as i64))?;
+        let f = vfs::File::new_at(inode, dentry, flags, 0, file_cred);
         let sock = crate::net_common::inode_as_inet_socket(f.inode()).expect("socketpair inode");
         net::bind_file(&f, &sock);
-        f
+        Ok(f)
     };
-    Ok((make_file(net::UnixEnd::A), make_file(net::UnixEnd::B)))
+    Ok((make_file(net::UnixEnd::A)?, make_file(net::UnixEnd::B)?))
 }

@@ -113,7 +113,10 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
     // F198: sockets are RW by spec — File::write needs O_RDWR.
     let mut fl = OpenFlags::O_RDWR;
     if spec.nonblock { fl |= OpenFlags::O_NONBLOCK; }
-    let file = File::new(inode, dentry, fl);
+    let file_cred = match crate::pathresolve::file_cred_for(&cur) {
+        Some(cred) => cred, None => return -(Errno::Esrch.as_i32() as i64),
+    };
+    let file = File::new_at(inode, dentry, fl, 0, file_cred);
     if let Some(sock) = crate::net_common::inode_as_inet_socket(file.inode()) {
         net::bind_file(&file, &sock);
     }

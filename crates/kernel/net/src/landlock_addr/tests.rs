@@ -159,22 +159,36 @@ fn resolve_domain(parent: Option<&Arc<Domain>>, rules: &[InodeRef]) -> Arc<Domai
     Domain::merge(parent, &rs).expect("layer budget")
 }
 
+/// Keep a bound socket file alive with the domain its `f_cred` captured.
+fn owner_socket(owner: Option<Arc<Domain>>) -> (Arc<crate::sock::InetSocket>, Arc<vfs::File>) {
+    let sock = Arc::new(crate::sock::InetSocket::new_unix());
+    let inode = crate::sock::make_inet_socket_inode(sock.clone());
+    let dentry = Dentry::new(None, alloc::string::String::from("socket"), inode.clone());
+    let file = vfs::File::new_at(inode, dentry, vfs::OpenFlags::O_RDWR, 0,
+        vfs::FileCred::root().with_security(owner));
+    assert!(crate::bind_file(&file, &sock));
+    (sock, file)
+}
+
 /// Bind a pathname listener at a private inode and hand back its address and
 /// the socket's own path. # C: O(log N_bindings)
-fn published(ino: u64, owner: Option<Arc<Domain>>) -> (crate::UnixAddr, VfsPath, Arc<Dentry>) {
+fn published(ino: u64, owner: Option<Arc<Domain>>)
+    -> (crate::UnixAddr, VfsPath, Arc<Dentry>, Arc<vfs::File>)
+{
     let root = Dentry::new_root(dir_inode(ino));
     let run  = vfs::d_add(&root, "run", dir_inode(ino + 1));
     let node = vfs::d_add(&run, "sock", sock_inode(ino + 2));
     let inode = node.inode().expect("socket inode");
     let addr = crate::UnixAddr::from_inode_bytes(alloc::vec![b'/', b's'], &inode);
     let listener = crate::sock::UNIX_REGISTRY.bind_addr(addr.clone()).expect("free address");
-    listener.set_owner_domain(owner);
-    (addr, path_of(node), run)
+    let (sock, file) = owner_socket(owner);
+    listener.set_owner_socket(&sock);
+    (addr, path_of(node), run, file)
 }
 
 #[test]
 fn a_pathname_socket_published_outside_the_domain_needs_a_hierarchy_rule() {
-    let (addr, path, run) = published(1000, None);
+    let (addr, path, run, _file) = published(1000, None);
     let client = resolve_domain(None, &[]);
     assert_eq!(unix_resolve_verdict(Some(&client), &path, &addr), Err(NetError::Eacces));
     // A rule on a directory above the socket admits it.
@@ -185,10 +199,10 @@ fn a_pathname_socket_published_outside_the_domain_needs_a_hierarchy_rule() {
 #[test]
 fn a_pathname_socket_published_inside_the_domain_stays_reachable() {
     let client = resolve_domain(None, &[]);
-    let (addr, path, _run) = published(1010, Some(client.clone()));
+    let (addr, path, _run, _file) = published(1010, Some(client.clone()));
     assert_eq!(unix_resolve_verdict(Some(&client), &path, &addr), Ok(()));
     // A server published deeper than the client is still inside it.
-    let (deep_addr, deep_path, _) = published(1020, Some(resolve_domain(Some(&client), &[])));
+    let (deep_addr, deep_path, _, _deep_file) = published(1020, Some(resolve_domain(Some(&client), &[])));
     assert_eq!(unix_resolve_verdict(Some(&client), &deep_path, &deep_addr), Ok(()));
     // The nested client cannot reach back out to the outer domain's server.
     let nested = resolve_domain(Some(&client), &[]);
@@ -197,7 +211,7 @@ fn a_pathname_socket_published_inside_the_domain_stays_reachable() {
 
 #[test]
 fn an_unconfined_client_resolves_any_pathname_socket() {
-    let (addr, path, _run) = published(1030, Some(resolve_domain(None, &[])));
+    let (addr, path, _run, _file) = published(1030, Some(resolve_domain(None, &[])));
     assert_eq!(unix_resolve_verdict(None, &path, &addr), Ok(()));
 }
 
@@ -233,7 +247,8 @@ fn a_datagram_queue_publisher_is_found_like_a_listener() {
                                                  &node.inode().unwrap());
     let queue = crate::UnixDgramQueue::new();
     let owner = resolve_domain(None, &[]);
-    queue.set_owner_domain(Some(owner.clone()));
+    let (sock, _file) = owner_socket(Some(owner.clone()));
+    queue.set_owner_socket(&sock);
     crate::sock::UNIX_REGISTRY.dgram_bind_addr(addr.clone(), queue).expect("free address");
     assert_eq!(unix_resolve_verdict(Some(&owner), &path_of(node.clone()), &addr), Ok(()));
     assert_eq!(unix_resolve_verdict(Some(&resolve_domain(None, &[])), &path_of(node), &addr),

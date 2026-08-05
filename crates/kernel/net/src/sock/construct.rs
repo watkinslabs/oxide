@@ -67,6 +67,7 @@ impl InetSocket {
             receive_timestamp_ns: core::sync::atomic::AtomicU64::new(crate::sock::SOCKET_TIMESTAMP_UNSET),
             receive_timestamp_enabled: core::sync::atomic::AtomicBool::new(false),
             unix_bound: Spinlock::new(None),
+            file: Spinlock::new(alloc::sync::Weak::new()),
         };
         sock.opts.sndbuf.store(sndbuf, core::sync::atomic::Ordering::Release);
         sock.opts.rcvbuf.store(rcvbuf, core::sync::atomic::Ordering::Release);
