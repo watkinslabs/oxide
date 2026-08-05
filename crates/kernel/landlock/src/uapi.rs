@@ -124,12 +124,16 @@ pub const ERRATUM_TCP_ONLY: i64 = 1 << 0;
 /// A thread may always signal another thread of its own process, whatever
 /// domain either is in.
 pub const ERRATUM_SAME_THREAD_GROUP_SIGNAL: i64 = 1 << 1;
+/// A refer check on a hierarchy disconnected from its bind-mount root combines
+/// both the disconnected ancestry and the saved mount-point ancestry.
+pub const ERRATUM_DISCONNECTED_HIERARCHY: i64 = 1 << 2;
 
 /// Value reported for `LANDLOCK_CREATE_RULESET_ERRATA`: a bitmask of the fixed
 /// issues this implementation carries. A bit is set only where the behaviour
 /// the erratum describes is the behaviour here, because a feature-detecting
 /// program uses the absence of a bit to work around the unfixed behaviour.
-pub const ERRATA: i64 = ERRATUM_TCP_ONLY | ERRATUM_SAME_THREAD_GROUP_SIGNAL;
+pub const ERRATA: i64 = ERRATUM_TCP_ONLY | ERRATUM_SAME_THREAD_GROUP_SIGNAL
+    | ERRATUM_DISCONNECTED_HIERARCHY;
 
 // ---- limits and struct sizes ---------------------------------------------
 

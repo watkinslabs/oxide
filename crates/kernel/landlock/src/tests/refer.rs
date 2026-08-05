@@ -160,3 +160,31 @@ fn an_exchange_with_no_destination_object_is_refused_as_missing() {
     assert_eq!(check(&d, &path(a), &target(&f), &path(b), None, true, true),
                Err(Errno::Enoent));
 }
+
+#[test]
+fn disconnected_source_and_saved_mount_root_rights_are_combined() {
+    // `old_dir` has been moved out from under the bind mount represented by
+    // `mount_root`: the two dentries deliberately belong to disjoint trees.
+    // Removal is granted only on the disconnected filesystem ancestry, while
+    // creation and REFER are granted only on the saved mount-root ancestry.
+    // The operation is valid only when the real refer path evaluates both.
+    let old_root = Dentry::new_root(dir_inode(10));
+    let old_dir = vfs::d_add(&old_root, "outside", dir_inode(11));
+    let file = vfs::d_add(&old_dir, "f", reg_inode(12));
+    let mount_root = Dentry::new_root(dir_inode(20));
+    let new_dir = vfs::d_add(&mount_root, "inside", dir_inode(21));
+
+    let mount_rights = ACCESS_FS_REFER | ACCESS_FS_MAKE_REG;
+    let d = dom(&[(&old_root, ACCESS_FS_REMOVE_FILE), (&mount_root, mount_rights)], ALL);
+    assert_eq!(check(&d, &path(old_dir.clone()), &target(&file), &path(new_dir.clone()),
+                     None, true, false), Ok(()));
+
+    let d = dom(&[(&mount_root, mount_rights)], ALL);
+    assert_eq!(check(&d, &path(old_dir.clone()), &target(&file), &path(new_dir.clone()),
+                     None, true, false),
+               Err(Errno::Eacces));
+
+    let d = dom(&[(&old_root, ACCESS_FS_REMOVE_FILE)], ALL);
+    assert_eq!(check(&d, &path(old_dir), &target(&file), &path(new_dir), None, true, false),
+               Err(Errno::Eacces));
+}
