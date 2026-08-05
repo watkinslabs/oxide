@@ -6,13 +6,20 @@ use crate::preempt::{self, PREEMPT_DISABLED};
 enum Recovery {
     Clean,
     Normalize,
-    RefuseSharedStack,
+    DeferSharedStack,
 }
 
 fn classify(count: u32, shared_stack: bool) -> Recovery {
-    if shared_stack { Recovery::RefuseSharedStack }
+    if shared_stack { Recovery::DeferSharedStack }
     else if count != PREEMPT_DISABLED { Recovery::Normalize }
     else { Recovery::Clean }
+}
+
+fn defer_schedule(task: Option<&crate::Task>) {
+    match task {
+        Some(task) => preempt::resched::set_tsk_need_resched(task),
+        None => preempt::set_need_resched(),
+    }
 }
 
 #[cfg(feature = "debug-preempt")]
@@ -59,7 +66,8 @@ fn report(count: u32, shared_stack: bool) {
 /// Validate the scheduler-owned preempt-disable level. A bad count on a task
 /// stack is normalized so the switch proceeds; the softirq dispatcher repairs
 /// its expected count when the handler returns. A shared IRQ stack cannot be
-/// saved in a task context, so that architecture-invalid switch is refused.
+/// saved in a task context, so the switch is deferred to the IRQ-return path,
+/// which reaches the same schedule decision on the interrupted task's stack.
 /// # C: O(1)
 #[track_caller]
 pub(super) fn recover() -> bool {
@@ -72,8 +80,9 @@ pub(super) fn recover() -> bool {
             preempt::preempt_count_set(PREEMPT_DISABLED);
             true
         }
-        Recovery::RefuseSharedStack => {
+        Recovery::DeferSharedStack => {
             report(count, true);
+            defer_schedule(crate::live::current());
             false
         }
     }
@@ -95,9 +104,17 @@ mod tests {
     }
 
     #[test]
-    fn shared_irq_stack_is_never_saved_as_a_task_stack() {
+    fn shared_irq_stack_schedule_is_deferred() {
         assert_eq!(classify(preempt::SOFTIRQ_OFFSET + PREEMPT_DISABLED, true),
-                   Recovery::RefuseSharedStack);
+                   Recovery::DeferSharedStack);
+        let task = crate::Task::new(1857, "atomic-defer",
+            crate::SchedClass::Normal { weight: 1024 });
+        task.set_state(crate::TaskState::Sleeping);
+        defer_schedule(Some(&task));
+        assert_eq!(task.state(), crate::TaskState::Sleeping,
+            "defer must preserve the caller's intended sleep state");
+        assert!(preempt::resched::test_tsk_need_resched(&task));
+        assert!(preempt::resched::clear_tsk_need_resched(&task));
     }
 
     #[test]
