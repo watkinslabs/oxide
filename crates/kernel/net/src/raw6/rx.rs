@@ -25,12 +25,21 @@ pub enum Raw6RxDisposition { NoMatch, PolicyDrop, QueueFull, Queued }
 impl Raw6Endpoint {
     /// Match, filter, truncate, and publish one upper-layer packet. # C: O(payload)
     pub fn receive(&self, packet: Raw6RxPacket<'_>) -> Raw6RxDisposition {
+        self.receive_inner(packet, true)
+    }
+
+    /// Receive one router-alert packet after its selector admitted this endpoint. # C: O(payload)
+    pub(crate) fn receive_router_alert(&self, packet: Raw6RxPacket<'_>) -> Raw6RxDisposition {
+        self.receive_inner(packet, false)
+    }
+
+    fn receive_inner(&self, packet: Raw6RxPacket<'_>, tuple_check: bool) -> Raw6RxDisposition {
         let mut state = self.state.lock();
         let tuple = MatchInput {
             net_ns: packet.net_ns, protocol: packet.protocol, src: packet.src,
             dst: packet.dst, iface: packet.iface,
         };
-        if !tuple_matches(self.net_ns(), self.protocol(), &state, &tuple) {
+        if tuple_check && !tuple_matches(self.net_ns(), self.protocol(), &state, &tuple) {
             return Raw6RxDisposition::NoMatch;
         }
         if packet.dst.is_multicast()

@@ -7,7 +7,7 @@
 // - chain membership (`v4_join` / `v4_leave` / `v4_forget`)
 // - the admission answers both option levels share (`admit`)
 // - the `IPV6_ROUTER_ALERT` selector shape (`v6_selector`)
-// - delivery fan-out (`v4_deliver`)
+// - delivery fan-out (`v4_deliver` / `v6_deliver`)
 //
 // No target gate: the decision logic must run under hosted `cargo test`.
 
@@ -54,6 +54,53 @@ pub fn admit(joining: bool, already_joined: bool) -> Result<(), Errno> {
 /// packets carrying exactly that value. # C: O(1)
 pub fn v6_selector(val: i32) -> Option<i32> {
     if val < V6_FIRST_SLOT { None } else { Some(val) }
+}
+
+/// Router Alert selector carried in the first IPv6 Hop-by-Hop header. # C: O(headers)
+pub fn v6_packet_selector(next_header: u8, payload: &[u8]) -> Option<i32> {
+    if next_header != 0 || payload.len() < 8 { return None; }
+    let len = (payload[1] as usize + 1) * 8;
+    if len > payload.len() { return None; }
+    let mut offset = 2usize;
+    while offset < len {
+        let typ = payload[offset];
+        if typ == 0 { offset += 1; continue; }
+        if offset + 2 > len { return None; }
+        let option_len = payload[offset + 1] as usize;
+        if offset + 2 + option_len > len { return None; }
+        if typ == 5 && option_len == 2 {
+            return Some(u16::from_be_bytes([payload[offset + 2], payload[offset + 3]]) as i32);
+        }
+        offset += 2 + option_len;
+    }
+    None
+}
+
+/// Deliver a transit IPv6 Router Alert through canonical raw endpoint tables.
+/// An isolate receiver excludes packets that entered a different namespace;
+/// otherwise raw sockets in every live namespace may observe the packet.
+/// # C: O(N endpoints * packet)
+pub fn v6_deliver(stack: &crate::stack::NetStack, ingress_ns: u64, iface: NetIfaceId,
+    l3: &[u8]) -> bool
+{
+    let Ok(hdr) = crate::ipv6::Ipv6Hdr::parse(l3) else { return false; };
+    let total = crate::ipv6::IPV6_HDR_LEN + hdr.payload_length as usize;
+    if total > l3.len() { return false; }
+    let payload = &l3[crate::ipv6::IPV6_HDR_LEN..total];
+    let Some(selector) = v6_packet_selector(hdr.next_header, payload) else { return false; };
+    let Ok(crate::ipv6_ext::ExtWalk::Done { next_header, payload }) =
+        crate::ipv6_ext::walk(hdr.next_header, payload) else { return false; };
+    let hatype = stack.ifaces.lookup_in_ns(iface, ingress_ns).map_or(0, |dev| dev.hardware_type());
+    let mut delivered = false;
+    for endpoint in stack.raw6_endpoints_all_namespaces() {
+        if !endpoint.router_alert_matches(selector, ingress_ns, iface) { continue; }
+        delivered |= endpoint.receive_router_alert(crate::raw6::Raw6RxPacket {
+            net_ns: ingress_ns, protocol: next_header, src: hdr.src, dst: hdr.dst, iface,
+            hop_limit: hdr.hop_limit, traffic_class: hdr.traffic_class,
+            flow_label: hdr.flow_label, hatype, payload, packet: &l3[..total],
+        }) == crate::raw6::Raw6RxDisposition::Queued;
+    }
+    delivered
 }
 
 /// Whether a received IPv4 header carries a Router Alert option asking routers

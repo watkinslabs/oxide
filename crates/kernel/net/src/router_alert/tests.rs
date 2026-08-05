@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::addr::IpProto;
-use crate::Ipv4Addr;
+use crate::{Ipv4Addr, Ipv6Addr};
 
 const PROTO_UNDER_TEST: u8 = IpProto::Icmp as u8;
 const OTHER_PROTO: u8 = IpProto::Tcp as u8;
@@ -83,6 +83,72 @@ fn the_v6_operand_is_a_selector_and_only_a_negative_value_releases_a_slot() {
     assert_eq!(v6_selector(1), Some(1));
     assert_eq!(v6_selector(-1), None);
     assert_eq!(v6_selector(i32::MIN), None);
+}
+
+#[test]
+fn v6_packet_selector_accepts_one_well_formed_hop_by_hop_alert() {
+    let payload = [IpProto::Udp as u8, 0, 5, 2, 0, 7, 0, 0];
+    assert_eq!(v6_packet_selector(0, &payload), Some(7));
+    assert_eq!(v6_packet_selector(IpProto::Udp as u8, &payload), None);
+    assert_eq!(v6_packet_selector(0, &payload[..7]), None);
+}
+
+#[test]
+fn v6_delivery_uses_the_raw_table_and_shared_socket_option_state() {
+    let ns = network_namespace::initial();
+    let stack = crate::stack::NetStack::new();
+    let options = crate::sock_opts::sol_ipv6::Ipv6Opts::default();
+    options.set_ra_selector(7);
+    let endpoint = alloc::sync::Arc::new(crate::raw6::Raw6Endpoint::new_owned(
+        crate::SocketOwner::root(ns.clone(), 0), IpProto::Raw as u8,
+        alloc::sync::Arc::new(crate::bpf_filter::SocketFilter::new()),
+        alloc::sync::Arc::new(crate::mcast_filter::SocketMcast::new()),
+        alloc::sync::Arc::new(crate::socket_error::SocketError::new()),
+        Some(options.router_alert()),
+    ));
+    stack.register_raw6(&endpoint);
+    let src = Ipv6Addr::from_segments([0x2001, 0xdb8, 0, 1, 0, 0, 0, 1]);
+    let dst = Ipv6Addr::from_segments([0x2001, 0xdb8, 0, 1, 0, 0, 0, 2]);
+    let mut packet = alloc::vec![0u8; crate::ipv6::IPV6_HDR_LEN + 8];
+    let mut header = crate::ipv6::Ipv6Hdr::build(src, dst, IpProto::Udp, 8);
+    header.next_header = 0;
+    header.write_to(&mut packet);
+    packet[crate::ipv6::IPV6_HDR_LEN..].copy_from_slice(&[IpProto::Udp as u8, 0, 5, 2, 0, 7, 0, 0]);
+
+    assert!(v6_deliver(&stack, ns.id().as_u64(), crate::NetIfaceId::from_raw(1), &packet));
+    assert_eq!(endpoint.recv(false).unwrap().payload, b"");
+}
+
+#[test]
+fn v6_isolate_excludes_a_receiver_owned_by_another_namespace() {
+    let ingress = network_namespace::initial();
+    let receiver = crate::net_ns::test_support::allocate_namespace();
+    crate::net_ns::materialize_state(&receiver);
+    let stack = crate::stack::NetStack::new();
+    let options = crate::sock_opts::sol_ipv6::Ipv6Opts::default();
+    options.set_ra_selector(7);
+    let endpoint = alloc::sync::Arc::new(crate::raw6::Raw6Endpoint::new_owned(
+        crate::SocketOwner::root(receiver, 0), IpProto::Raw as u8,
+        alloc::sync::Arc::new(crate::bpf_filter::SocketFilter::new()),
+        alloc::sync::Arc::new(crate::mcast_filter::SocketMcast::new()),
+        alloc::sync::Arc::new(crate::socket_error::SocketError::new()),
+        Some(options.router_alert()),
+    ));
+    stack.register_raw6(&endpoint);
+    let src = Ipv6Addr::from_segments([0x2001, 0xdb8, 0, 1, 0, 0, 0, 1]);
+    let dst = Ipv6Addr::from_segments([0x2001, 0xdb8, 0, 1, 0, 0, 0, 2]);
+    let mut packet = alloc::vec![0u8; crate::ipv6::IPV6_HDR_LEN + 8];
+    let mut header = crate::ipv6::Ipv6Hdr::build(src, dst, IpProto::Udp, 8);
+    header.next_header = 0;
+    header.write_to(&mut packet);
+    packet[crate::ipv6::IPV6_HDR_LEN..].copy_from_slice(&[IpProto::Udp as u8, 0, 5, 2, 0, 7, 0, 0]);
+    let iface = crate::NetIfaceId::from_raw(1);
+
+    assert!(v6_deliver(&stack, ingress.id().as_u64(), iface, &packet));
+    assert!(endpoint.recv(false).is_some());
+    options.set_router_alert_isolate(true);
+    assert!(!v6_deliver(&stack, ingress.id().as_u64(), iface, &packet));
+    assert!(endpoint.recv(false).is_none());
 }
 
 #[test]

@@ -1,10 +1,10 @@
-use crate::addr::{Ipv4Addr, NetIfaceId};
+use crate::addr::{Ipv4Addr, Ipv6Addr, NetIfaceId};
 use crate::addr::IpProto;
 use crate::icmp::{self, time_exceeded_code, unreach_code};
 use crate::ipv4::{ip_checksum, push_ipv4_header, IPV4_HDR_LEN};
 use crate::netdev::{NetError, NetResult};
 use crate::netfilter_hook::{
-        nf_hook_eval_in, nf_output, NFPROTO_IPV4, NF_INET_FORWARD, NF_INET_POST_ROUTING,
+        nf_hook_eval_in, nf_output, NFPROTO_IPV4, NFPROTO_IPV6, NF_INET_FORWARD, NF_INET_POST_ROUTING,
 };
 use crate::pkt::Pkt;
 use crate::stack::NetStack;
@@ -161,6 +161,34 @@ impl NetStack {
         p.next_hop = Some(crate::pkt::TxNextHop::V4(crate::route::RouteRecord::next_hop_for(route.gateway, dst)));
         if nf_hook_eval_in(net_ns, NF_INET_FORWARD, p.data(), NFPROTO_IPV4) == 0 { return Ok(()); }
         if nf_hook_eval_in(net_ns, NF_INET_POST_ROUTING, p.data(), NFPROTO_IPV4) == 0 { return Ok(()); }
+        dev.xmit(p)
+    }
+}
+
+impl NetStack {
+    /// Forward one IPv6 packet within the ingress namespace. # C: O(N routes + len)
+    pub(crate) fn forward_ipv6_in(&self, net_ns: u64, ingress: NetIfaceId, l3: &[u8]) -> NetResult<()> {
+        if crate::forwarding::ipv6_enabled_in(net_ns) != Some(true) { return Ok(()); }
+        let header = crate::ipv6::Ipv6Hdr::parse(l3).map_err(|_| NetError::Einval)?;
+        let total = crate::ipv6::IPV6_HDR_LEN + header.payload_length as usize;
+        if total > l3.len() { return Err(NetError::Einval); }
+        if crate::router_alert::v6_deliver(self, net_ns, ingress, &l3[..total]) { return Ok(()); }
+        if header.hop_limit <= 1 { return Ok(()); }
+        let route = self.routes6.lookup_policy_in(net_ns, header.dst, self.policy_rules())
+            .ok_or(NetError::Enetunreach)?;
+        let dev = self.ifaces.acquire_egress_in_ns(route.iface, net_ns).ok_or(NetError::Enetunreach)?;
+        let mut p = Pkt::with_capacity(crate::pkt::DEFAULT_HEADROOM,
+            crate::pkt::DEFAULT_HEADROOM + total);
+        p.put(total).map_err(|_| NetError::Enobufs)?.copy_from_slice(&l3[..total]);
+        p.data_mut()[7] -= 1;
+        p.proto = crate::addr::eth_p::IPV6;
+        p.iface = Some(route.iface);
+        p.next_hop = Some(crate::pkt::TxNextHop::V6 {
+            addr: crate::route6::next_hop6_for(route.gateway, header.dst), src: Ipv6Addr::ANY,
+        });
+        if nf_hook_eval_in(net_ns, NF_INET_FORWARD, p.data(), NFPROTO_IPV6) == 0 { return Ok(()); }
+        if nf_hook_eval_in(net_ns, NF_INET_POST_ROUTING, p.data(), NFPROTO_IPV6) == 0 { return Ok(()); }
+        let _ = ingress;
         dev.xmit(p)
     }
 }

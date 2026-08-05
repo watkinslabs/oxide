@@ -22,4 +22,4 @@ pub mod flowlabel;
 #[cfg(test)]
 mod tests;
 
-pub use state::{Ipv6Opts, Sticky, flag};
+pub use state::{Ipv6Opts, Ipv6RouterAlert, Sticky, flag};

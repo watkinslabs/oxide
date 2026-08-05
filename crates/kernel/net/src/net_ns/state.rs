@@ -90,6 +90,9 @@ pub enum NetSysctlKey {
     /// autotuning ceiling.
     TcpWmem(BufWindow), TcpRmem(BufWindow),
     Ipv4Conf(Ipv4ConfDev, Ipv4ConfKey),
+    /// `net.ipv6.conf.all.forwarding` — IPv6 transit admission is independent
+    /// from the IPv4 router-mode knob.
+    Ipv6Forwarding,
 }
 
 /// One slot of a three-value socket-buffer window. # C: O(1)
@@ -110,7 +113,8 @@ impl NetSysctlKey {
     const WMEM_BASE: usize = 13;
     const RMEM_BASE: usize = Self::WMEM_BASE + BufWindow::COUNT;
     const BASE_COUNT: usize = Self::RMEM_BASE + BufWindow::COUNT;
-    const COUNT: usize = Self::BASE_COUNT + Ipv4ConfDev::COUNT * Ipv4ConfKey::COUNT;
+    const IPV6_FORWARDING: usize = Self::BASE_COUNT + Ipv4ConfDev::COUNT * Ipv4ConfKey::COUNT;
+    const COUNT: usize = Self::IPV6_FORWARDING + 1;
 
     const fn index(self) -> usize {
         match self {
@@ -126,6 +130,7 @@ impl NetSysctlKey {
             Self::TcpRmem(slot) => Self::RMEM_BASE + slot.index(),
             Self::Ipv4Conf(dev, key) => Self::BASE_COUNT
                 + dev.index() * Ipv4ConfKey::COUNT + key.index(),
+            Self::Ipv6Forwarding => Self::IPV6_FORWARDING,
         }
     }
 
@@ -147,6 +152,7 @@ impl NetSysctlKey {
             _ if index < Self::BASE_COUNT => match BufWindow::from_index(index - Self::RMEM_BASE) {
                 Some(slot) => Self::TcpRmem(slot), None => return None,
             },
+            Self::IPV6_FORWARDING => Self::Ipv6Forwarding,
             _ => {
                 let relative = index - Self::BASE_COUNT;
                 let dev = match Ipv4ConfDev::from_index(relative / Ipv4ConfKey::COUNT) {
