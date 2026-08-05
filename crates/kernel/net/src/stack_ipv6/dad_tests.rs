@@ -198,7 +198,7 @@ fn dad_promotion_reannounces_joined_groups_with_link_local_source() {
         state: super::Ipv6AddrState::Tentative {
             dad_until_ns: Some(1), retry_at_ns: 0, retrans_timer_ns: SEC,
         },
-        deprecated: false, notify_pending: false,
+        deprecated: false, temporary: false, notify_pending: false,
     });
     stack.join_ipv6_multicast(iface, group, Ipv6Addr::ANY).unwrap();
     let initial = lo.rx_pop().unwrap();
@@ -287,6 +287,23 @@ fn source_selection_uses_destination_scope_and_longest_prefix() {
     let global_dst = Ipv6Addr::from_segments([0x2001,0xdb8,0x1234,0,0,0,0,20]);
     assert_eq!(stack.v6_select_source(iface, link_dst, None), Some(link));
     assert_eq!(stack.v6_select_source(iface, global_dst, None), Some(near));
+}
+
+#[test]
+fn source_selection_honors_public_and_temporary_preferences() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let stack = NetStack::new();
+    let (iface, _) = stack.register_loopback();
+    let public = Ipv6Addr::from_segments([0x2001,0xdb8,0x10,0,0,0,0,1]);
+    let temporary = Ipv6Addr::from_segments([0x2001,0xdb8,0x20,0,0,0,0,1]);
+    let dst = Ipv6Addr::from_segments([0x2001,0xdb8,0x30,0,0,0,0,1]);
+    stack.add_v6_addr_meta(iface, public, 64, u32::MAX, u32::MAX);
+    stack.add_v6_addr_meta_with_temporary(iface, temporary, 64, u32::MAX, u32::MAX, true);
+
+    assert_eq!(stack.v6_select_source_with_prefs(iface, dst, None,
+        crate::sock_opts::sol_ipv6::uapi::IPV6_PREFER_SRC_PUBLIC), Some(public));
+    assert_eq!(stack.v6_select_source_with_prefs(iface, dst, None,
+        crate::sock_opts::sol_ipv6::uapi::IPV6_PREFER_SRC_TMP), Some(temporary));
 }
 
 #[test]

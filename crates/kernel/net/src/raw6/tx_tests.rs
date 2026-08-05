@@ -96,7 +96,7 @@ fn socket_fragment_size_caps_raw6_after_route_selection() {
 
     stack.send_raw6_with_frag_size(&endpoint, ROUTE_DST, None, None, &[0x5a; 2_000], 64,
         crate::uapi::IPV6_PMTUDISC_WANT, 1280,
-        &crate::send_control::Raw6Control::default()).unwrap();
+        &crate::send_control::Raw6Control::default(), 0).unwrap();
 
     let packets = dev.packets.lock();
     assert_eq!(packets.len(), 2);
