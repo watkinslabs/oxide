@@ -60,17 +60,21 @@ fn accept_common(args: &SyscallArgs, flags: u64) -> i64 {
         match net::sock::accept(&sock) {
             Ok(a)  => break a,
             Err(net::NetError::Eagain) => {
-                if nonblock { return -(Errno::Eagain.as_i32() as i64); }
                 // Linux `inet_csk_wait_for_connect`
                 // (`net/ipv4/inet_connection_sock.c:635-637`) and, for AF_UNIX,
                 // `unix_accept` -> `skb_recv_datagram` ->
                 // `__skb_wait_for_more_packets` (`net/core/datagram.c:128`):
                 // `err = sock_intr_errno(timeo)` off `sock_rcvtimeo`.
-                if sched::live::deliverable_signals_self() != 0 {
-                    return crate::net_errno::sock_intr_errno(
-                        deadline.unwrap_or(net::sock_intr::NO_TIMEOUT));
+                let wait = net::sock_intr::accept_wait_verdict(nonblock,
+                    sched::live::deliverable_signals_self() != 0,
+                    deadline.is_some_and(|dl| now() >= dl),
+                    deadline.unwrap_or(net::sock_intr::NO_TIMEOUT));
+                match wait {
+                    net::sock_intr::AcceptWaitVerdict::Eagain => return -(Errno::Eagain.as_i32() as i64),
+                    net::sock_intr::AcceptWaitVerdict::Interrupted(_) =>
+                        return crate::net_errno::sock_intr_errno(deadline.unwrap_or(net::sock_intr::NO_TIMEOUT)),
+                    net::sock_intr::AcceptWaitVerdict::Park => {}
                 }
-                if let Some(dl) = deadline { if now() >= dl { return -(Errno::Eagain.as_i32() as i64); } }
                 // F160/F170: per-listener waitq park — TCP or AF_UNIX.
                 enum LW { Tcp(Arc<net::stack::TcpListenEntry>), Unix(Arc<net::UnixListener>), None }
                 let lw = match &*sock.kind.lock() {
@@ -175,10 +179,12 @@ fn vsock_accept(vs: &Arc<net::vsock_socket::VsockSocket>, addr_p: u64, len_p: u6
     };
     let conn = loop {
         if let Some(c) = net::vsock::TABLE.pop_accept_exact(&listener) { break c; }
-        if nonblock { return -(Errno::Eagain.as_i32() as i64); }
-        // A signal interrupts this receive-timeout wait through the shared rule.
-        if sched::live::deliverable_signals_self() != 0 {
-            return crate::net_errno::sock_intr_errno(vs.recv_deadline_ns());
+        match net::sock_intr::accept_wait_verdict(nonblock,
+            sched::live::deliverable_signals_self() != 0, false, vs.recv_deadline_ns()) {
+            net::sock_intr::AcceptWaitVerdict::Eagain => return -(Errno::Eagain.as_i32() as i64),
+            net::sock_intr::AcceptWaitVerdict::Interrupted(_) =>
+                return crate::net_errno::sock_intr_errno(vs.recv_deadline_ns()),
+            net::sock_intr::AcceptWaitVerdict::Park => {}
         }
         match net::vsock::TABLE.arm_accept_wait_exact(&listener, 0) {
             net::vsock::AcceptWait::Ready => continue,
