@@ -6,6 +6,8 @@ use crate::addr::IpAddr;
 
 pub const SO_EE_ORIGIN_ICMP: u8 = 2;
 pub const SO_EE_ORIGIN_ICMP6: u8 = 3;
+pub const SO_EE_ORIGIN_ZEROCOPY: u8 = 5;
+pub const SO_EE_CODE_ZEROCOPY_COPIED: u8 = 1;
 
 /// One Linux extended-error queue record for `MSG_ERRQUEUE`.
 #[derive(Clone, Debug, Eq, PartialEq)]

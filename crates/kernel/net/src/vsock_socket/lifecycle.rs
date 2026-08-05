@@ -31,13 +31,14 @@ impl VsockSocket {
 
     /// Resolve one SOL_SOCKET VSOCK value without UAPI memory access. # C: O(1)
     pub fn get_socket_option(&self, level: u64, optname: u64) -> Result<i32, crate::NetError> {
-        use crate::uapi::{SOL_SOCKET, SO_ACCEPTCONN, SO_DOMAIN, SO_PROTOCOL, SO_TYPE};
+        use crate::uapi::{SOL_SOCKET, SO_ACCEPTCONN, SO_DOMAIN, SO_PROTOCOL, SO_TYPE, SO_ZEROCOPY};
         if level != SOL_SOCKET { return Err(crate::NetError::Enoprotoopt); }
         match optname {
             SO_TYPE => Ok(self.so_type.load(core::sync::atomic::Ordering::Acquire) as i32),
             SO_DOMAIN => Ok(crate::socket_args::AF_VSOCK as i32),
             SO_PROTOCOL => Ok(0),
             SO_ACCEPTCONN => Ok(i32::from(matches!(*self.kind.lock(), VsockKind::Listener(_)))),
+            SO_ZEROCOPY if !self.is_datagram() => Ok(i32::from(self.zerocopy_enabled())),
             _ => Err(crate::NetError::Enoprotoopt),
         }
     }

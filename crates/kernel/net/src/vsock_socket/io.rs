@@ -65,6 +65,18 @@ impl VsockSocket {
         self.send_message(buf, false, true)
     }
 
+    /// Send one `sendmsg` payload and publish a zerocopy completion when the
+    /// caller requested it and `SO_ZEROCOPY` is enabled. # C: O(buf len) + waits
+    pub fn send_message_flags(&self, buf: &[u8], end_of_record: bool, nonblock: bool,
+        flags: u64) -> vfs::KResult<usize>
+    {
+        let result = self.send_message(buf, end_of_record, nonblock);
+        if let Ok(bytes) = result {
+            self.complete_zerocopy_send(flags & crate::uapi::MSG_ZEROCOPY != 0, bytes);
+        }
+        result
+    }
+
     /// Send one payload through the immutable VSOCK protocol personality.
     /// `end_of_record` is meaningful only for `SOCK_SEQPACKET` and originates
     /// from `sendmsg(MSG_EOR)`. # C: O(buf len) + waits
