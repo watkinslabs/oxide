@@ -2,7 +2,6 @@
 
 use syscall::SyscallArgs;
 
-use sched::SleepWake;
 
 #[cfg(target_os = "oxide-kernel")]
 fn current_task() -> Option<&'static sched::Task> { sched::live::current() }
@@ -23,9 +22,9 @@ fn current_task() -> Option<&'static sched::Task> { sched::current() }
 fn sleep_until_actionable_signal(cur: &sched::Task) -> i64 {
     use sched::TaskState;
     loop {
-        if cur.sleep_wake() == SleepWake::Deliver { return syscall::restart::restart_nohand(); }
+        if cur.sleep_wake().interrupted() { return syscall::restart::restart_nohand(); }
         cur.set_state(TaskState::Sleeping);
-        if cur.sleep_wake() == SleepWake::Deliver {
+        if cur.sleep_wake().interrupted() {
             cur.set_state(TaskState::Runnable);
             return syscall::restart::restart_nohand();
         }
@@ -37,7 +36,7 @@ fn sleep_until_actionable_signal(cur: &sched::Task) -> i64 {
 
 #[cfg(not(target_os = "oxide-kernel"))]
 fn sleep_until_actionable_signal(cur: &sched::Task) -> i64 {
-    if cur.sleep_wake() == SleepWake::Deliver { syscall::restart::restart_nohand() }
+    if cur.sleep_wake().interrupted() { syscall::restart::restart_nohand() }
     else { -(syscall::Errno::Eintr.as_i32() as i64) }
 }
 
@@ -53,5 +52,5 @@ pub fn sys_pause(_args: &SyscallArgs) -> i64 {
 
 #[cfg(test)]
 pub fn pause_actionable_signal_pending_for_test(cur: &sched::Task) -> bool {
-    cur.sleep_wake() == SleepWake::Deliver
+    cur.sleep_wake().interrupted()
 }

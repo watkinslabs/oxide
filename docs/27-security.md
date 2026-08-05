@@ -80,9 +80,16 @@ rung never permits skipping an earlier mismatch.
 | 5 | `LANDLOCK_ACCESS_FS_IOCTL_DEV` | enforced |
 | 6 | abstract-UNIX-socket and signal scopes | enforced |
 | 7 | denial-logging controls | accepted; audit-disabled behaviour is intentional until an audit subsystem exists |
-| 8 | `LANDLOCK_RESTRICT_SELF_TSYNC` | open correctness blocker: enforcement must be all-or-nothing across the live thread group |
-| 9 | pathname UNIX-socket resolution | implemented; ABI-8 blocker still gates the cumulative claim |
-| 10 | UDP port rights, quiet rules, and quiet masks | implemented; ABI-8 blocker still gates the cumulative claim |
+| 8 | `LANDLOCK_RESTRICT_SELF_TSYNC` | enforced; pseudo-signal task work, repeated clone discovery, and two commit barriers make the live thread group all-or-nothing |
+| 9 | pathname UNIX-socket resolution | enforced |
+| 10 | UDP port rights, quiet rules, and quiet masks | enforced |
+
+TSYNC and `execve(2)` share the process's one `exec_update_lock`, matching
+Linux. A concurrent writer restarts before committing anything. Every sibling
+performs its own credential update in the common return-to-user work loop;
+foreign CPUs never overwrite a running task's security state. Discovery repeats
+until a full scan finds no new child, then all parked siblings cross the commit
+barrier together and the caller commits last.
 
 Errata are tracked separately from the ABI number. Oxide advertises errata 1
 (TCP-only port rights) and 2 (same-process signal scope). Erratum 3

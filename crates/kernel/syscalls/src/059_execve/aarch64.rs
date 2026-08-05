@@ -187,6 +187,13 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
         Ok(i) => i,
         Err(_) => return -(Errno::Enoexec.as_i32() as i64),
     };
+    // Linux `exec_mmap()` takes `signal_struct::exec_update_lock` for writing,
+    // the same lock Landlock TSYNC holds. Contention restarts before the point
+    // of no return so this thread can run any queued pseudo-signal task work.
+    let _exec_update = match cur.thread_group.try_exec_update() {
+        Some(guard) => guard,
+        None => return syscall::restart::restart_nointr(),
+    };
     // Linux `load_elf_binary` tail: SVr4 `MMAP_PAGE_ZERO` emulation, mapped
     // after every PT_LOAD so a segment can never be displaced by it.
     crate::exec_persona::map_page_zero(&cur, &new_as, creds.per_clear);

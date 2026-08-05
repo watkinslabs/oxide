@@ -105,6 +105,7 @@ shape they were retired in.
 
 | Status | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|
+| FIXED a313bde28 | high | `LANDLOCK_RESTRICT_SELF_TSYNC` directly overwrote sibling domains during one best-effort registry walk, so a concurrent clone escaped the policy and racing TSYNC callers could leave a mixed thread group. | Siblings now run pseudo-signal task work on their own return-to-user path, park at preparation and commit barriers, and are rediscovered until a full scan is empty. TSYNC and exec share one process writer exclusion; contenders restart before mutation. The clone-round and ABI-status positive controls fail with the defect restored; 1,193 scheduler tests, 107 Landlock tests, both kernel builds, and both frame/stack gates pass. | B1847-landlock-tsync-atomic |
 | FIXED 4ecabf32d | med | Landlock's target ABI was not pinned independently of the kernel's `uname(2)` release, and the live ledger still claimed ABI 8 after the implementation had advanced to ABI 10. | `docs/27§6` pins Linux 7.2 / Landlock ABI 10, records every cumulative rung and open mismatch, and names `uapi::TARGET_ABI_VERSION` as the code owner. A regression test reads the documented target and fails on drift; its red/green positive control passed. | B1846-landlock-abi-10-contract |
 
 ## Filesystem / mount

@@ -96,6 +96,10 @@ pub struct ThreadGroup {
     /// is what makes `systemd --user` collect its session's orphans instead of
     /// leaking them to PID 1.
     is_child_subreaper: AtomicBool,
+    /// Linux `signal_struct::exec_update_lock` writer exclusion shared by
+    /// execve and Landlock TSYNC. Contention makes the later caller restart so
+    /// it can first run task work queued by the current transaction.
+    exec_update_busy: AtomicBool,
     state: Spinlock<ThreadGroupState, TaskListClass>,
     /// Linux `signal_struct::group_exit_code` and its `SIGNAL_GROUP_EXIT`
     /// flag fused into one word: the status EVERY thread of this group
@@ -182,6 +186,13 @@ struct ThreadGroupState {
 // applied when the array lived on `Task` (which is `Sync` for the same reason).
 unsafe impl Sync for ThreadGroup {}
 
+/// Writer guard for Linux `signal_struct::exec_update_lock`.
+pub struct ExecUpdateGuard<'a> { group: &'a ThreadGroup }
+
+impl Drop for ExecUpdateGuard<'_> {
+    fn drop(&mut self) { self.group.exec_update_busy.store(false, Ordering::Release); }
+}
+
 impl ThreadGroup {
     /// Create a one-task group around its leader PID identity. # C: O(1)
     pub fn new(leader: Arc<PidIdentity>) -> Self {
@@ -195,6 +206,7 @@ impl ThreadGroup {
             sid:  AtomicU32::new(seed),
             session_leader: AtomicBool::new(false),
             is_child_subreaper: AtomicBool::new(false),
+            exec_update_busy: AtomicBool::new(false),
             state: Spinlock::new(ThreadGroupState { live: 1, pending_leader: None }),
             group_exit_code: AtomicI32::new(GROUP_EXIT_UNSET),
             group_stop_count: AtomicU32::new(0),
@@ -293,6 +305,17 @@ impl ThreadGroup {
     /// Commit one fully initialized clone-thread member. # C: O(1)
     pub fn commit_member(&self) {
         self.state.lock().live += 1;
+    }
+
+    /// Try Linux `signal_struct::exec_update_lock` for writing. Landlock TSYNC
+    /// restarts on contention; execve likewise retries before crossing its
+    /// point of no return. The guard makes every later error path release it.
+    /// # C: O(1)
+    pub fn try_exec_update(&self) -> Option<ExecUpdateGuard<'_>> {
+        self.exec_update_busy
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| ExecUpdateGuard { group: self })
     }
 
     /// Whether exactly one live task remains in this thread group. # C: O(1)

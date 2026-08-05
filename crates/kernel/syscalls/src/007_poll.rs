@@ -312,5 +312,5 @@ fn min_deadline(a: Option<u64>, b: Option<u64>) -> Option<u64> {
 /// path uses, so there is one definition of "deliverable".
 /// # C: O(N_sig)
 fn deliverable_signal_pending(cur: &sched::Task) -> bool {
-    cur.deliverable_signals() != 0
+    cur.sleep_wake().interrupted()
 }
