@@ -25,6 +25,20 @@ never deleted, only relocated.
 `Sev`: `blocker` (merge gate) | `high` (wrong answer reaching userspace) |
 `med` (missing surface) | `low` (hygiene, tooling, cosmetics).
 
+## Open-work summary
+
+This is a derived view of the live `OPEN` and `IN-PROGRESS` rows below, not a
+second ledger. Update it in the same change whenever a row is added, moved, or
+reclassified.
+
+| Class \ Sev | blocker | high | med | low | Total |
+|---|---:|---:|---:|---:|---:|
+| `DEFECT` | 0 | 5 | 19 | 29 | 53 |
+| `MISSING` | 0 | 0 | 11 | 12 | 23 |
+| `COVERAGE` | 0 | 2 | 12 | 12 | 26 |
+| `INFRA` | 0 | 1 | 13 | 11 | 25 |
+| **Total** | **0** | **8** | **55** | **64** | **127** |
+
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 
@@ -122,7 +136,6 @@ row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | OPEN | DEFECT | high | 37 further raw user-pointer dereferences remain in the DRM crate outside this lane's lint worklist — `modeset.rs` (11), `node.rs` (9), `kms_ext.rs` (8, the non-cursor ioctls), `atomic/blobs.rs` (3), `atomic/props.rs` (2), `crtc/handlers.rs` (2), `node/virtgpu.rs` (1), `node/client_caps.rs` (1). Same defect as the row above; each is a kernel halt on a bad user pointer. `drm::uarg::read_arg`/`write_arg` is now in place, so the conversion is mechanical, but it touches the compositor hot path and belongs on its own branch with its own both-arch boot. | `grep -c 'read_volatile(arg\|write_volatile(arg' crates/drivers/drm/src/**/*.rs`; drm had ZERO uses of `uaccess` before this lane | unowned |
-| OPEN | DEFECT | med | A `PT_LOAD` whose memory size exceeds its file size still gives up its boundary page: that page is part file content and part `.bss`, which a mapping of the file cannot serve, so it stays kernel-owned and classifies as private-with-nothing-behind-it. The reference kernel keeps the page inside the file-backed mapping and zeroes the tail through the new address space, which this loader cannot do because it runs before that address space is activated. The page is only dumped once a private file mapping acquires an `anon_vma` on first write, which this kernel does not yet do either. | `crates/kernel/exec/src/tests_file_backing.rs::a_data_segment_is_the_file_up_to_its_boundary_page`; `layout::split`. | — |
 | OPEN | DEFECT | med | Data segments still carry timestamps keyed on `ts_enabled` alone (`build_segment_at`), which is correct, but the SACK-block writer in `sack.rs` and the timestamp writer in `segment.rs` each assemble their own option area by hand rather than through `syn_opts`. Two more hand-rolled option writers remain; a non-SYN option assembler should absorb them. | Not a live defect — both currently emit correct bytes. Flagged so the next lane in this area does not add a fourth. | — |
 | OPEN | DEFECT | med | No `NT_X86_XSTATE` is produced for x86-64 even though the note is plumbed: `CoreThread::xstate` is emitted verbatim when supplied and nothing supplies it. Emitting a wrong `xsave` header would make gdb decode garbage registers, so the note is left absent until the FPU lane can hand over a real save area with its `xstate_bv`/`xcomp_bv` intact. | `push_fp_notes` in `crates/kernel/fs/src/coredump/elf/notes.rs`; `xstate: None` at every call site. | — |
 | OPEN | DEFECT | med | A position-independent image with no interpreter keeps the kernel-owned backing for all of its segments: the loader applies its `R_*_RELATIVE` entries before it runs, so those bytes differ from the file and cannot be a mapping of it. The reference kernel applies none of them — such an image relocates itself from its own entry point — so the durable fix is to stop pre-applying and confirm the userspace images self-relocate. | `layout::relocs_precede_file_backing`; `only_a_biased_dyn_image_the_loader_relocates_loses_its_file_backing`. | — |

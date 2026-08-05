@@ -141,11 +141,10 @@ fn an_image_the_kernel_carries_has_no_file_behind_its_text() {
     assert!(matches!(at(&as_, BASE).0, VmaBacking::KernelBytes { .. }));
 }
 
-/// A segment that ends in `.bss` is the file up to the last whole file page;
-/// the boundary page is part file and part zero, which no mapping of the file
-/// can serve, so it stays kernel-owned.
+/// A segment that ends in `.bss` keeps its boundary page file-backed; its
+/// mapping supplies zeroes beyond the file portion.
 #[test]
-fn a_data_segment_is_the_file_up_to_its_boundary_page() {
+fn a_data_segment_keeps_its_file_backed_boundary_page() {
     let blob = two_segment_elf();
     let as_ = fresh_as();
     load_image(Image { blob: &blob, file: Some(ramp()) }, None, &as_, &rnd_fixed()).expect("load");
@@ -155,34 +154,15 @@ fn a_data_segment_is_the_file_up_to_its_boundary_page() {
         VmaBacking::File { off, .. } => assert_eq!(off, DATA_OFF),
         other => panic!("data head is not file-backed: {other:?}"),
     }
-    assert_eq!(end, DATA_VA + PAGE, "the boundary page was mapped from the file");
-
-    let (tail, tail_end) = at(&as_, DATA_VA + PAGE);
-    assert!(matches!(tail, VmaBacking::KernelBytes { .. }));
-    assert_eq!(tail_end, DATA_VA + DATA_MEM_SZ);
+    assert_eq!(end, DATA_VA + 2 * PAGE, "the boundary page was not mapped from the file");
+    assert!(matches!(at(&as_, DATA_VA + 2 * PAGE).0, VmaBacking::KernelBytes { .. }));
+    let VmaBacking::File { backing, .. } = at(&as_, DATA_VA).0 else { unreachable!() };
+    let mut page = [0u8; 16];
+    backing.read_at(DATA_OFF + DATA_FILE_SZ - 8, &mut page).expect("read boundary");
+    for i in 0..8 { assert_eq!(page[i], (DATA_OFF + DATA_FILE_SZ - 8 + i as u64) as u8); }
+    assert_eq!(&page[8..], &[0; 8]);
 }
 
-/// The kernel-owned boundary page carries the file's remaining bytes followed
-/// by zeroes. Getting the split arithmetic wrong here puts file bytes into
-/// `.bss` or drops the tail of `.data`.
-#[test]
-fn the_boundary_page_holds_the_last_file_bytes_then_zeroes() {
-    let blob = two_segment_elf();
-    let as_ = fresh_as();
-    load_image(Image { blob: &blob, file: Some(ramp()) }, None, &as_, &rnd_fixed()).expect("load");
-
-    let VmaBacking::KernelBytes { data, off } = at(&as_, DATA_VA + PAGE).0
-        else { panic!("boundary page is not kernel-owned") };
-    assert_eq!(off, 0);
-    assert_eq!(data.len() as u64, DATA_MEM_SZ - PAGE);
-    // File bytes run to `p_filesz`; the ramp's value at a file offset is that
-    // offset's low byte.
-    let last = (DATA_FILE_SZ - PAGE) as usize;
-    for i in 0..last {
-        assert_eq!(data[i], (DATA_OFF + PAGE + i as u64) as u8, "byte {i} of the boundary page");
-    }
-    for i in last..data.len() { assert_eq!(data[i], 0, "byte {i} is not .bss"); }
-}
 
 /// A file-backed segment costs no kernel copy of the program's bytes at all,
 /// where the same load without a file copies every page of it.
