@@ -602,6 +602,18 @@ pub struct Task {
     /// domain object is immutable, so a live check can never observe a policy
     /// being widened underneath it.
     pub landlock_domain: Spinlock<Option<alloc::sync::Arc<landlock::Domain>>, TaskListClass>,
+    /// Linux `task_struct::task_works` subset used by Landlock TSYNC.  The
+    /// target thread takes and executes this work on its own return-to-user
+    /// path; a foreign CPU never writes that thread's credentials directly.
+    pub landlock_tsync_work:
+        Spinlock<Option<alloc::sync::Arc<crate::landlock_tsync::Transaction>>, TaskListClass>,
+    /// Transaction generation already enrolled on this task.  It remains
+    /// stamped after the work starts so the initiator's repeated thread-group
+    /// scans cannot enqueue the same task twice.
+    pub landlock_tsync_id: AtomicU64,
+    /// Linux `TIF_NOTIFY_SIGNAL`: not a real signal, but it breaks
+    /// interruptible waits and forces the shared return-to-user work loop.
+    pub notify_signal: AtomicBool,
     /// Per-arch FPU/SIMD snapshot for PTRACE_GETFPREGS/SETFPREGS.
     pub fpu_state: UnsafeCell<ArchFpuBuf>,
     /// Immutable construction-time raw FP/SIMD-area address. Diagnostic-only:

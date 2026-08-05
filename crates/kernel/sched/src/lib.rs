@@ -46,6 +46,7 @@ pub mod kthread;
 pub mod kstack;
 pub mod preempt;
 pub mod exit_to_user;
+pub mod landlock_tsync;
 pub mod pid;
 pub mod thread_group;
 pub mod rusage_charge;
