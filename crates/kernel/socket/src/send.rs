@@ -174,7 +174,9 @@ pub(crate) fn prepare(ctx: &SendContext<'_>, target: &SendFile, message: &Messag
             // the family and length parse so a malformed address reports its
             // own error rather than a permission one.
             if let Some(name) = message.name.as_deref() {
-                net::landlock_addr::check_send_addr(socket, name).map_err(Error::from)?;
+                if flags as u64 & net::uapi::MSG_FASTOPEN != 0 {
+                    net::landlock_addr::check_fastopen_addr(socket, name).map_err(Error::from)?;
+                } else { net::landlock_addr::check_send_addr(socket, name).map_err(Error::from)?; }
             }
             let raw_family = match &*socket.kind.lock() {
                 net::sock::SockKind::Raw4(_) => Some(false),

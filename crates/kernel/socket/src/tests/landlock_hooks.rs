@@ -30,6 +30,16 @@ fn a_send_that_names_a_recipient_asks_for_its_port_rights() {
 }
 
 #[test]
+fn a_fastopen_send_asks_for_tcp_connect_before_its_send_leg() {
+    let source = include_str!("../send.rs");
+    let body = &source[at(source, "pub(crate) fn prepare(")..];
+    let fastopen = at(body, "flags as u64 & net::uapi::MSG_FASTOPEN != 0");
+    let hook = at(body, "net::landlock_addr::check_fastopen_addr(socket, name)");
+    assert!(fastopen < hook);
+    assert_eq!(body.matches("check_fastopen_addr").count(), 1);
+}
+
+#[test]
 fn resolving_a_pathname_unix_recipient_is_gated_after_the_socket_type_check() {
     let source = include_str!("../address.rs");
     let body = &source[at(source, "fn resolve_unix(")..];

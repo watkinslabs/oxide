@@ -75,6 +75,13 @@ pub fn check_send_addr(sock: &crate::sock::InetSocket, name: &[u8]) -> Result<()
                  sock.family.load(core::sync::atomic::Ordering::Acquire))
 }
 
+/// Gate a Fast Open send that names its connection peer. The payload travels
+/// through sendmsg, but the named address creates a TCP connection. # C: O(N_layers × N_rules)
+pub fn check_fastopen_addr(sock: &crate::sock::InetSocket, name: &[u8]) -> Result<(), NetError> {
+    addr_verdict(current_domain().as_ref(), Proto::Tcp, Op::Connect, name,
+                 sock.family.load(core::sync::atomic::Ordering::Acquire))
+}
+
 /// Gate UDP's implicit local-port allocation as though the caller had bound
 /// port zero on this socket family. # C: O(N_layers × N_rules)
 pub fn check_autobind_udp(sock: &crate::sock::InetSocket) -> Result<(), NetError> {
