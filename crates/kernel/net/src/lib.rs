@@ -228,7 +228,6 @@ mod route_metrics_tests;
 /// modules + their tests without the socket/timer runtime.
 /// # C: O(open connections)
 #[cfg(target_os = "oxide-kernel")]
-fn tcp_retx_timer(now_ns: u64) { sock::stack().tcp_retx_tick(now_ns); }
 
 #[cfg(target_os = "oxide-kernel")]
 fn mcast_retry_timer(now_ns: u64) { sock::stack().retry_multicast_reports(now_ns); }
@@ -256,7 +255,6 @@ pub fn register_timers() {
     use core::sync::atomic::{AtomicBool, Ordering};
     static DONE: AtomicBool = AtomicBool::new(false);
     if DONE.swap(true, Ordering::AcqRel) { return; }
-    timer::register_periodic(100_000_000, tcp_retx_timer);
     timer::register_periodic(MCAST_RETRY_INTERVAL_NS, mcast_retry_timer);
     timer::register_periodic(100_000_000, ipv6_control_timer);
     timer::register_periodic(100_000_000, arp_timer);

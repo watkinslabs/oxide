@@ -415,6 +415,7 @@ impl NetStack {
         }
         bind.role.store(TCP_BIND_CONNECT, Ordering::Release);
         crate::stack::stamp_last_sent_public(&entry, 1);
+        self.activate_tcp_timers(&entry);
         Ok((entry, carried))
     }
 

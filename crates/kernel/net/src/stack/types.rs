@@ -100,9 +100,8 @@ impl ::core::ops::Deref for TcpBindReservation {
     fn deref(&self) -> &Self::Target { &self.owner }
 }
 
-/// Stack-owned per-connection record. Wraps the TcpConn TCB in
-/// its own Spinlock so demux + app calls don't contend with the
-/// listener table lock. Cheap to clone the Arc.
+/// Stack-owned per-connection record. Wraps the TcpConn TCB in its own
+/// Spinlock so demux + app calls don't contend with the listener table lock.
 pub struct TcpEntry {
     /// Socket identity retained across asynchronous transport processing.
     pub owner: Arc<crate::SocketOwner>,
@@ -135,6 +134,9 @@ pub struct TcpEntry {
     /// Listener retained weakly until a passive child completes its handshake.
     pub passive_listener: Option<alloc::sync::Weak<TcpListenEntry>>,
     pub syn_backlog_reserved: ::core::sync::atomic::AtomicBool,
+    /// This request is still in the listener's young population: it has not
+    /// experienced its first request-timer expiry.
+    pub syn_backlog_young_reserved: ::core::sync::atomic::AtomicBool,
     pub accept_backlog_reserved: ::core::sync::atomic::AtomicBool,
     /// Passive child has crossed accept and is no longer listener-owned.
     pub accepted: ::core::sync::atomic::AtomicBool,
@@ -147,7 +149,7 @@ pub struct TcpEntry {
     #[cfg(target_os = "oxide-kernel")]
     pub rx_waiters: sched::live::WaitList,
     /// F181a: per-fd epoll subscribers (deliver_tcp wakes).
-    pub poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,
+    pub(crate) poll_subs: alloc::boxed::Box<super::tcp_timer::TcpAsyncState>,
 }
 
 impl TcpEntry {
@@ -270,9 +272,25 @@ impl TcpEntry {
 
     /// Release this passive child's SYN-RECV reservation once. # C: O(1)
     pub fn release_syn_backlog(&self) {
+        self.release_syn_backlog_young();
         if self.syn_backlog_reserved.swap(false, ::core::sync::atomic::Ordering::AcqRel) {
             if let Some(listener) = self.passive_listener.as_ref().and_then(alloc::sync::Weak::upgrade) {
                 listener.syn_backlog_used.fetch_sub(1, ::core::sync::atomic::Ordering::AcqRel);
+            }
+        }
+    }
+
+    /// Move a request out of the listener's young population exactly once.
+    /// # C: O(1)
+    pub(crate) fn release_syn_backlog_young(&self) {
+        if self.syn_backlog_young_reserved.swap(false,
+            ::core::sync::atomic::Ordering::AcqRel)
+        {
+            if let Some(listener) = self.passive_listener.as_ref()
+                .and_then(alloc::sync::Weak::upgrade)
+            {
+                listener.syn_backlog_young.fetch_sub(1,
+                    ::core::sync::atomic::Ordering::AcqRel);
             }
         }
     }
@@ -403,6 +421,8 @@ pub struct TcpListenEntry {
     pub backlog: ::core::sync::atomic::AtomicUsize,
     /// Half-open plus completed children not yet removed by accept.
     pub syn_backlog_used: ::core::sync::atomic::AtomicUsize,
+    /// Requests that have not yet experienced their first timeout.
+    pub syn_backlog_young: ::core::sync::atomic::AtomicUsize,
     pub accept_backlog_used: ::core::sync::atomic::AtomicUsize,
     /// `TCP_DEFER_ACCEPT` as the retransmit count the option stores — the
     /// number of request-timer firings a completed handshake is held at the

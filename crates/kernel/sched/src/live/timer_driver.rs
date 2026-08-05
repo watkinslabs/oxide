@@ -22,6 +22,9 @@ use super::WaitList;
 
 static WAIT: WaitList = WaitList::new();
 const TICK_NS: u64 = 100_000_000;
+/// Bound one process-context dispatch pass. Expired socket timers can arrive in
+/// large cohorts; yielding between cohorts keeps timer work preemptible.
+const CALLBACK_BUDGET: usize = 16;
 
 /// ktimers' Task, published once at spawn (a permanent kthread; one ref is
 /// leaked so this pointer is valid for the machine's life). Read lock-free by
@@ -48,7 +51,12 @@ fn this_cpu() -> u32 { 0 }
 extern "C" fn driver(_arg: usize) -> ! {
     loop {
         let now = now_ns();
-        timer::run_due(now);
+        while timer::run_due_budgeted(now, CALLBACK_BUDGET) {
+            // SAFETY: ktimers is runnable process context with no registry or
+            // subsystem lock held; class-specific yield prevents a cohort of
+            // expired timers monopolising a voluntary-preemption CPU.
+            unsafe { super::sched_yield(); }
+        }
         // Arm the tick-waker BEFORE parking so a tick between this store and the
         // park still observes the (future) deadline; a spurious early wake is
         // harmless (run_due is idempotent and re-arms).
