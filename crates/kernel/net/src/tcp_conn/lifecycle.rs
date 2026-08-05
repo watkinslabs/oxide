@@ -22,7 +22,7 @@ impl TcpConn {
             rcv_read_seq: 0,
             window: 65535,
             send_buf: alloc::collections::VecDeque::new(),
-            recv_buf: alloc::collections::VecDeque::new(),
+            recv_buf: crate::tcp_conn::types::RecvBuf::default(),
             urgent: None,
             oob_consumed: None,
             retx_q:   alloc::collections::VecDeque::new(),
@@ -137,7 +137,7 @@ impl TcpConn {
             rcv_read_seq: 0,
             window: 65535,
             send_buf: alloc::collections::VecDeque::new(),
-            recv_buf: alloc::collections::VecDeque::new(),
+            recv_buf: crate::tcp_conn::types::RecvBuf::default(),
             urgent: None,
             oob_consumed: None,
             retx_q:   alloc::collections::VecDeque::new(),
@@ -323,7 +323,7 @@ impl TcpConn {
     /// F186: advertised window = free recv-buf bytes, shifted right by snd_wscale.
     /// # C: O(1)
     pub fn current_rcv_window(&self) -> u16 {
-        let free = (self.rcv_buf_cap as usize).saturating_sub(self.recv_buf.len()) as u32;
+        let free = (self.rcv_buf_cap as usize).saturating_sub(self.recv_buf.len) as u32;
         let scaled = core::cmp::min(core::cmp::min(free, self.window_clamp), self.rcv_ssthresh)
             >> self.snd_wscale;
         if scaled > u16::MAX as u32 { u16::MAX } else { scaled as u16 }
@@ -369,7 +369,7 @@ impl TcpConn {
         // `tcp_rcv_space_adjust` is a no-op once the application locked the
         // buffer with `setsockopt(SO_RCVBUF)`.
         if self.rcv_buf_locked { return; }
-        let len = self.recv_buf.len() as u32;
+        let len = self.recv_buf.len as u32;
         if len > self.rcv_peak {
             self.rcv_peak = len;
         }
