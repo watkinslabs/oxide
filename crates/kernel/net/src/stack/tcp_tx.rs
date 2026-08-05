@@ -32,6 +32,13 @@ impl TcpTxPolicy<'_> {
         }
     }
 
+    fn ipv6_flow_label(&self) -> (u32, bool) {
+        match self {
+            Self::Entry(entry) => (entry.ipv6_opts.flow_label(),
+                entry.ipv6_opts.flag(crate::sock_opts::sol_ipv6::flag::AUTOFLOWLABEL)),
+        }
+    }
+
     /// The sticky IPv4 option area every segment this socket emits carries.
     /// # C: O(optlen)
     fn ipv4_options(&self) -> Option<crate::ipv4_options::Compiled> {
@@ -91,7 +98,8 @@ impl NetStack {
                     policy.ipv6_frag_size());
                 self.xmit_ipv6_l4_with_policy(
                     iface_id, iface, next_hop, src, dst, IpProto::Tcp, segment,
-                    crate::ipv6::IPV6_DEFAULT_HOP_LIMIT, 0, mtu,
+                    crate::ipv6::IPV6_DEFAULT_HOP_LIMIT, 0,
+                    policy.ipv6_flow_label().0, policy.ipv6_flow_label().1, mtu,
                     crate::uapi::ipv6_pmtudisc_allows_fragmentation(mode),
                     Some(policy.owner()),
                 )
@@ -151,5 +159,15 @@ mod tests {
             Endpoint { ip: IpAddr::V6(Ipv6Addr::LOOPBACK), port: 40_002 }, 1));
         entry.ipv6_frag_size.store(1280, Ordering::Release);
         assert_eq!(TcpTxPolicy::Entry(&entry).ipv6_frag_size(), 1280);
+    }
+
+    #[test]
+    fn tcp_transmit_policy_uses_its_retained_ipv6_option_owner() {
+        let entry = TcpEntry::new(TcpConn::new_client(
+            Endpoint { ip: IpAddr::V6(Ipv6Addr::LOOPBACK), port: 40_005 },
+            Endpoint { ip: IpAddr::V6(Ipv6Addr::LOOPBACK), port: 40_006 }, 1));
+        entry.ipv6_opts.set_flow_label(0x34567);
+        entry.ipv6_opts.set_flag(crate::sock_opts::sol_ipv6::flag::AUTOFLOWLABEL, true);
+        assert_eq!(TcpTxPolicy::Entry(&entry).ipv6_flow_label(), (0x34567, true));
     }
 }

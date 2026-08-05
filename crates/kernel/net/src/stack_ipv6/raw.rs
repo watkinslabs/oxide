@@ -88,7 +88,9 @@ impl NetStack {
             Some(value) if value >= 0 => value as u8,
             _ => ((flowinfo >> 20) & 0xff) as u8,
         };
-        let flow = flowinfo & 0x000f_ffff;
+        let flow = crate::inet_tx::ipv6_flow_label(flowinfo & 0x000f_ffff,
+            control.automatic_flow_label, prepared.src, final_dst, prepared.next_header,
+            &prepared.bytes);
         let may_fragment = crate::uapi::ipv6_pmtudisc_allows_fragmentation(pmtudisc)
             && control.dontfrag != Some(true);
         self.xmit_raw6_controlled(endpoint, iface_id, iface, next_hop, prepared.src, final_dst,

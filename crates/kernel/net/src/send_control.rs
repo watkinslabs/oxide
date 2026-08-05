@@ -35,6 +35,9 @@ pub struct Raw6Control {
     pub hop_limit: Option<i32>,
     pub traffic_class: Option<i32>,
     pub flowinfo: Option<u32>,
+    /// Socket `IPV6_AUTOFLOWLABEL` applies only when the message named no
+    /// explicit flowinfo label.
+    pub automatic_flow_label: bool,
     pub dontfrag: Option<bool>,
     pub hop_options: Option<Vec<u8>>,
     pub dst_before_routing: Option<Vec<u8>>,

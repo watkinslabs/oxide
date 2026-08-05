@@ -52,6 +52,18 @@ fn an_unset_traffic_class_is_zero_and_does_not_consult_the_destination() {
 }
 
 #[test]
+fn an_explicit_flow_label_wins_and_automatic_labels_are_stable() {
+    let src = Ipv6Addr::from_segments([0x2001, 0xdb8, 0, 0, 0, 0, 0, 1]);
+    let dst = Ipv6Addr::from_segments([0x2001, 0xdb8, 0, 0, 0, 0, 0, 2]);
+    assert_eq!(ipv6_flow_label(0x54321, true, src, dst, 17, b"payload"), 0x54321);
+    assert_eq!(ipv6_flow_label(0, false, src, dst, 17, b"payload"), 0);
+    let first = ipv6_flow_label(0, true, src, dst, 17, b"payload");
+    assert_ne!(first, 0, "an automatic label is a real wire label");
+    assert_eq!(first, ipv6_flow_label(0, true, src, dst, 17, b"payload"));
+    assert_ne!(first, ipv6_flow_label(0, true, src, dst, 17, b"other"));
+}
+
+#[test]
 fn a_multicast_send_with_loopback_off_reaches_nobody_but_still_succeeds() {
     assert!(multicast_delivers_nowhere(true, false, true));
     assert!(!multicast_delivers_nowhere(true, true, true), "loopback on delivers it");

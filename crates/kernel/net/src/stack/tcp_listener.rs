@@ -166,10 +166,28 @@ impl TcpListenEntry {
                            min_hop: Arc<crate::min_hop::MinHop>,
                            fastopen: Arc<crate::tcp_fastopen::FastOpenQueue>,
                            max_pacing_rate: Arc<::core::sync::atomic::AtomicU64>) -> Self {
+        Self::new_with_fastopen_frag_pacing_ipv6(bind, bpf_filter, ip_mtu_discover,
+            ipv6_mtu_discover, ipv6_frag_size,
+            Arc::new(crate::sock_opts::sol_ipv6::Ipv6Opts::default()), min_hop, fastopen,
+            max_pacing_rate)
+    }
+
+    /// Build a listener retaining the socket's canonical IPv6 option state.
+    /// # C: O(1)
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_fastopen_frag_pacing_ipv6(bind: Arc<TcpBindReservation>,
+                           bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+                           ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+                           ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+                           ipv6_frag_size: Arc<::core::sync::atomic::AtomicI32>,
+                           ipv6_opts: Arc<crate::sock_opts::sol_ipv6::Ipv6Opts>,
+                           min_hop: Arc<crate::min_hop::MinHop>,
+                           fastopen: Arc<crate::tcp_fastopen::FastOpenQueue>,
+                           max_pacing_rate: Arc<::core::sync::atomic::AtomicU64>) -> Self {
         let owner = bind.owner.clone();
         Self {
             owner, accept_q: Spinlock::new(VecDeque::new()), local: bind.local, bind, bpf_filter,
-            ip_mtu_discover, ipv6_mtu_discover, ipv6_frag_size, max_pacing_rate, min_hop,
+            ip_mtu_discover, ipv6_mtu_discover, ipv6_frag_size, ipv6_opts, max_pacing_rate, min_hop,
             backlog: ::core::sync::atomic::AtomicUsize::new(128),
             syn_backlog_used: ::core::sync::atomic::AtomicUsize::new(0),
             accept_backlog_used: ::core::sync::atomic::AtomicUsize::new(0),

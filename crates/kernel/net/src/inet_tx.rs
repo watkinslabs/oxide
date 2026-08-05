@@ -75,6 +75,25 @@ pub fn ipv6_hop_limit(mcast_hops: i32, unicast_hops: i32, multicast: bool) -> u8
 /// the destination, and its unset default is 0. # C: O(1)
 pub fn ipv6_tclass(tclass: i32) -> u8 { if tclass < 0 { 0 } else { tclass as u8 } }
 
+/// Select the IPv6 flow label for one socket packet. A label leased through
+/// `IPV6_FLOWLABEL_MGR` wins; otherwise an opted-in automatic policy derives
+/// a stable, nonzero label from the wire flow tuple. # C: O(payload prefix)
+pub fn ipv6_flow_label(explicit: u32, automatic: bool, src: Ipv6Addr, dst: Ipv6Addr,
+                       next_header: u8, payload: &[u8]) -> u32 {
+    const MASK: u32 = 0x000f_ffff;
+    if explicit & MASK != 0 { return explicit & MASK; }
+    if !automatic { return 0; }
+    let mut hash = 0x811c_9dc5u32;
+    for byte in src.0.iter().chain(dst.0.iter()).chain([next_header].iter())
+        .chain(payload.iter().take(4))
+    {
+        hash ^= *byte as u32;
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    let label = hash.rotate_left(16) & MASK;
+    if label == 0 { 1 } else { label }
+}
+
 /// Whether a multicast send is accepted and delivered nowhere: loopback is the
 /// only interface it could reach, and this socket turned loopback off.
 /// # C: O(1)
