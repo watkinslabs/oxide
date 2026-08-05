@@ -54,4 +54,4 @@ codegen-units = 16
 panic = "abort"
 debug = "line-tables-only"
 overflow-checks = true
-incremental = true
+incremental = false

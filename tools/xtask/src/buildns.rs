@@ -100,8 +100,8 @@ pub(crate) fn kernel_elf(repo: &Path, id: Option<&str>, arch: &str, prof_dir: &s
 /// SHARED build output path — where cargo actually writes the kernel ELF when
 /// building in the plain `target/` (no `CARGO_TARGET_DIR` override):
 /// `target/<arch>-unknown-oxide-kernel/<prof_dir>/oxide-<arch>`. This is the
-/// cargo working dir, NOT a namespace (so cargo's incremental cache is reused
-/// across ids); EVERY build — including the `default` no-id one — then snapshots
+/// cargo working dir, NOT a namespace (so Cargo artifacts are reused across
+/// ids); EVERY build — including the `default` no-id one — then snapshots
 /// this ELF into `kernel_elf(repo, id, ..)` under `target/builds/<id>/`.
 pub(crate) fn kernel_elf_build(repo: &Path, arch: &str, prof_dir: &str) -> PathBuf {
     repo.join("target").join(format!("{arch}-unknown-oxide-kernel/{prof_dir}/oxide-{arch}"))
