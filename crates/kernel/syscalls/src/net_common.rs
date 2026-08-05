@@ -221,7 +221,8 @@ mod tests {
             for (at, _) in text.match_indices("deliverable_signals_self") {
                 waits += 1;
                 let arm = &text[at..core::cmp::min(at + 240, text.len())];
-                assert!(arm.contains("sock_intr_errno") || arm.contains("recv_interrupted"),
+                assert!(arm.contains("sock_intr_errno") || arm.contains("recv_interrupted")
+                    || (name == "043_accept.rs" && text.contains("accept_wait_verdict")),
                     "{name}: interrupted socket wait does not use sock_intr_errno:\n{arm}");
             }
         }

@@ -95,6 +95,28 @@ pub enum WaitVerdict {
     Park,
 }
 
+/// What an empty accept queue does before its family-specific wait is armed.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum AcceptWaitVerdict {
+    /// The caller may not block, or its receive timeout has expired.
+    Eagain,
+    /// A deliverable signal interrupts the wait with the deadline's verdict.
+    Interrupted(SockIntr),
+    /// The caller must arm its listener-specific wait and retry.
+    Park,
+}
+
+/// Empty-queue accept ladder: O_NONBLOCK precedes a signal, a signal precedes
+/// SO_RCVTIMEO expiry, and only the remaining case parks. # C: O(1)
+pub const fn accept_wait_verdict(nonblock: bool, signal_pending: bool, timed_out: bool,
+                                 deadline_ns: u64) -> AcceptWaitVerdict
+{
+    if nonblock { return AcceptWaitVerdict::Eagain; }
+    if signal_pending { return AcceptWaitVerdict::Interrupted(sock_intr(deadline_ns)); }
+    if timed_out { return AcceptWaitVerdict::Eagain; }
+    AcceptWaitVerdict::Park
+}
+
 /// Ladder every interruptible socket data wait follows before it sleeps: a
 /// shut direction outranks everything (the transfer can never be admitted), a
 /// non-blocking caller never sleeps, and a deliverable signal ends the wait
@@ -179,6 +201,17 @@ mod tests {
             WaitVerdict::Interrupted(SockIntr::Restartsys));
         assert_eq!(wait_verdict(false, false, true, 1_000),
             WaitVerdict::Interrupted(SockIntr::Eintr));
+    }
+
+    #[test]
+    fn accept_empty_queue_uses_the_linux_break_order() {
+        assert_eq!(accept_wait_verdict(true, true, true, NO_TIMEOUT), AcceptWaitVerdict::Eagain);
+        assert_eq!(accept_wait_verdict(false, true, true, NO_TIMEOUT),
+                   AcceptWaitVerdict::Interrupted(SockIntr::Restartsys));
+        assert_eq!(accept_wait_verdict(false, true, true, 1),
+                   AcceptWaitVerdict::Interrupted(SockIntr::Eintr));
+        assert_eq!(accept_wait_verdict(false, false, true, 1), AcceptWaitVerdict::Eagain);
+        assert_eq!(accept_wait_verdict(false, false, false, NO_TIMEOUT), AcceptWaitVerdict::Park);
     }
 
     #[test]
