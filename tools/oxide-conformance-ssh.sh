@@ -15,6 +15,9 @@ case "$ARCH" in
     aarch64) QEMU_ARCH=aarch64; GUEST_TRIPLE=aarch64-unknown-linux-gnu ;;
     *) echo "usage: $0 <x86_64|aarch64> <test[,test...]> [timeout]" >&2; exit 2 ;;
 esac
+if [ "$ARCH" = aarch64 ] && [ "${OXIDE_CONFORMANCE_TRANSPORT:-serial}" != ssh ]; then
+    exec "$(dirname "$0")/oxide-conformance-serial.sh" "$@"
+fi
 if ! [[ "$TIMEOUT" =~ ^[0-9]+$ ]] || [ "$TIMEOUT" -eq 0 ] || [ "$TIMEOUT" -gt "$QEMU_TIMEOUT_MAX" ]; then
     echo "oxide-conformance: timeout must be 1..$QEMU_TIMEOUT_MAX seconds" >&2
     exit 2
