@@ -34,7 +34,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
 
 .PHONY: all build x86 arm \
         build-debug x86-debug arm-debug \
-        test lint lint-ratchet lint-ratchet-update audit-counts stats ci \
+        test lint lint-ratchet lint-ratchet-update audit-counts profile-policy stats ci \
         qemu-x86 qemu-arm qemu-x86-debug qemu-arm-debug qemu-mcp \
         qemu-x86-grub \
         smoke-cmdline-x86 smoke-cmdline-arm smoke-cmdline \
@@ -92,8 +92,13 @@ lint:
 # The baseline only ever shrinks: `--update` writes `min(current, baseline)` per
 # key and refuses to raise one without `--allow-growth`, which prints every
 # loosened key.
-lint-ratchet:
+lint-ratchet: profile-policy
 	$(CARGO) run --quiet -p spec-lint -- ratchet
+
+# Wrong-code prevention for the pinned nightly. B1855 reproduced a neighbouring
+# match arm returning the edited arm's value only with incremental codegen.
+profile-policy:
+	python3 tools/profile-policy.py
 
 # Enforced-vs-raw-grep counts for the rules `07§5` scopes to the kernel build.
 # An audit must quote the enforced column: a `grep -c` does not apply the cfg
