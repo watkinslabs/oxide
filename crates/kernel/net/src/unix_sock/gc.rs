@@ -160,6 +160,7 @@ pub fn register_file(file: &Arc<vfs::File>, receiver: &GcNode) {
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub fn bind_file(file: &Arc<vfs::File>, sock: &crate::sock::InetSocket) -> bool {
     use crate::sock::SockKind;
+    sock.set_file(file);
     let receiver = match &*sock.kind.lock() {
         SockKind::UnixUnbound(pair, end) => Some(pair.gc_node(*end)),
         SockKind::Unix(pair, end) => Some(pair.gc_node(*end)),

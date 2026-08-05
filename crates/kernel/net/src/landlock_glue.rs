@@ -86,6 +86,16 @@ mod tests {
         Domain::merge(Some(parent), &rs).unwrap()
     }
 
+    fn socket_file(domain: Option<Arc<Domain>>) -> (Arc<crate::sock::InetSocket>, Arc<vfs::File>) {
+        let sock = Arc::new(crate::sock::InetSocket::new_unix());
+        let inode = crate::sock::make_inet_socket_inode(sock.clone());
+        let dentry = vfs::Dentry::new(None, alloc::string::String::from("socket"), inode.clone());
+        let file = vfs::File::new_at(inode, dentry, vfs::OpenFlags::O_RDWR, 0,
+            vfs::FileCred::root().with_security(domain));
+        assert!(crate::bind_file(&file, &sock));
+        (sock, file)
+    }
+
     #[test]
     fn a_socket_published_by_an_unconfined_process_is_outside_every_domain() {
         // The case the scope exists for: a sandbox must not be able to reach a
@@ -121,13 +131,12 @@ mod tests {
 
     #[test]
     fn a_listener_hands_back_the_domain_that_published_it() {
-        // Proves the recorded domain is the one the check consumes, rather
-        // than being stored and ignored.
         let l = crate::UnixListener::new(crate::UnixAddr::from_abstract_or_test_path(
             alloc::string::String::from("\0ll-test")));
         assert!(l.owner_domain().is_none());
         let d = scoped();
-        l.set_owner_domain(Some(d.clone()));
+        let (sock, _file) = socket_file(Some(d.clone()));
+        l.set_owner_socket(&sock);
         assert!(!abstract_socket_denied_for(Some(&d), l.owner_domain().as_ref()));
         assert!(abstract_socket_denied_for(Some(&scoped()), l.owner_domain().as_ref()));
     }
@@ -137,7 +146,8 @@ mod tests {
         let q = crate::UnixDgramQueue::new();
         assert!(q.owner_domain().is_none());
         let d = scoped();
-        q.set_owner_domain(Some(d.clone()));
+        let (sock, _file) = socket_file(Some(d.clone()));
+        q.set_owner_socket(&sock);
         assert!(!abstract_socket_denied_for(Some(&d), q.owner_domain().as_ref()));
         assert!(abstract_socket_denied_for(Some(&scoped()), q.owner_domain().as_ref()));
     }
