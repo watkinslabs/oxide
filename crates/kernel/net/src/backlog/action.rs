@@ -49,3 +49,16 @@ pub fn net_rx_schedule() {
     install();
     super::bh::schedule();
 }
+
+/// Publish ingress work from a driver's receive context. A hardware IRQ or a
+/// NAPI poll must only raise NET_RX; it cannot enter the bottom half by taking
+/// a process-context BH guard on the driver's stack. Hosted tests have no IRQ
+/// return path, so they run the same bounded drain as `net_rx_schedule`.
+/// # C: O(1)
+pub fn net_rx_schedule_ingress() {
+    install();
+    #[cfg(target_os = "oxide-kernel")]
+    softirq::raise(softirq::Slot::NetRx);
+    #[cfg(not(target_os = "oxide-kernel"))]
+    super::bh::schedule();
+}

@@ -28,6 +28,8 @@ fn rx_skb(dev: *mut LinuxNetDevice) -> *mut LinuxSkBuff {
 fn netif_rx_accepts_exact_live_generation() {
     let _modules = crate::test_serial::claim();
     let iface = net::sock::stack().ifaces.register(Arc::new(RxDev));
+    let processed_before: u64 = net::sock::stack().softnet_rows()
+        .iter().map(|row| row.processed).sum();
     // SAFETY: test owns this allocation until explicit free.
     let dev = unsafe { netalloc::alloc_etherdev(0) };
     assert!(!dev.is_null());
@@ -35,6 +37,10 @@ fn netif_rx_accepts_exact_live_generation() {
     unsafe {
         (*dev).ifindex = iface.raw();
         assert_eq!(netif_rx(rx_skb(dev)), NET_RX_SUCCESS);
+        let processed_after: u64 = net::sock::stack().softnet_rows()
+            .iter().map(|row| row.processed).sum();
+        assert_eq!(processed_after, processed_before + 1,
+            "the driver frame traverses the NET_RX backlog before delivery");
         assert!(net::sock::stack().unregister_iface(iface));
         netalloc::free_netdev(dev);
     }
