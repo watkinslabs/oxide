@@ -7,6 +7,24 @@ use vmm::{AddressSpace, FileBacking, VmaBacking, VmaFlags, VmaProt};
 use crate::place::{self, Placement};
 use crate::{ARCH_MACHINE, LoadError, LoadStaging, LoadedImage, PAGE};
 
+struct ZeroTailBacking { inner: Arc<dyn FileBacking>, zero_from: u64 }
+impl FileBacking for ZeroTailBacking {
+    fn read_at(&self, off: u64, dst: &mut [u8]) -> Result<usize, vmm::FileBackingError> {
+        if off >= self.zero_from { dst.fill(0); return Ok(dst.len()); }
+        let n = (self.zero_from - off).min(dst.len() as u64) as usize;
+        let got = self.inner.read_at(off, &mut dst[..n])?;
+        if got < n { return Ok(got); }
+        dst[n..].fill(0);
+        Ok(dst.len())
+    }
+    fn size_hint(&self) -> u64 { self.inner.size_hint() }
+    fn ino(&self) -> u64 { self.inner.ino() }
+    fn i_nlink(&self) -> u32 { self.inner.i_nlink() }
+    fn i_mode(&self) -> u16 { self.inner.i_mode() }
+    fn map_path(&self) -> Option<&[u8]> { self.inner.map_path() }
+    fn object_id(&self) -> u64 { self.inner.object_id() }
+}
+
 pub(crate) fn place_image(
     blob: &[u8],
     as_: &AddressSpace,
@@ -82,7 +100,7 @@ pub(crate) fn place_image(
         }
         staging.push(LoadStaging {
             vstart, vend, prot, padded, head_pad,
-            file_end: sp.file_end, file_pgoff: sp.file_pgoff,
+            file_end: sp.file_end, file_pgoff: sp.file_pgoff, file_zero_from: sp.file_zero_from,
         });
     }
 
@@ -95,6 +113,10 @@ pub(crate) fn place_image(
         // from, so the segment classifies as file-backed everywhere a mapping
         // is classified by what stands behind it.
         if let (Some(b), true) = (file, s.file_end > s.vstart) {
+            let backing: Arc<dyn FileBacking> = match s.file_zero_from {
+                Some(zero_from) => Arc::new(ZeroTailBacking { inner: Arc::clone(b), zero_from }),
+                None => Arc::clone(b),
+            };
             let hint = UserVirtAddr::new(s.vstart).ok_or(LoadError::Einval)?;
             let _ = as_
                 .mmap(
@@ -102,7 +124,7 @@ pub(crate) fn place_image(
                     (s.file_end - s.vstart) as usize,
                     s.prot,
                     VmaFlags::PRIVATE,
-                    VmaBacking::File { backing: Arc::clone(b), off: s.file_pgoff },
+                    VmaBacking::File { backing, off: s.file_pgoff },
                     true,
                 )
                 .map_err(|_| LoadError::Enomem)?;
