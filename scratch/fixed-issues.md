@@ -457,6 +457,11 @@ open issue. Live rows that still need the work carry it in their own row.
 | FIXED 29cd0cbd6 | med | Hosted preemption state reused a 64-slot CPU array across more test workers, making one worker observe another's softirq context. | Hosted preemption and pre-task reschedule state are thread-local; regression test holds 128 contexts simultaneously. | B1824-hosted-preempt-thread-state |
 
 
+### Drivers / devices
+
+| FIXED fbf4eb380 | med | `usb_find_interface` compared the interface registration flag to the requested minor, while `UsbInterface` carried no class-device minor and the class-device registration surface was absent. | Interfaces now own the assigned minor; `usb_register_dev`/`usb_deregister_dev` reserve and release the canonical USB minor table, and lookup requires both the bound driver and assigned minor. Regression covers allocation, duplicate rejection, lookup, release, and reuse. `cargo test -p modules --lib` (213 passed) and both feature-gate architectures passed. | B1838-linux-usb-interface-minor |
+
+
 ### Memory / page cache
 
 
