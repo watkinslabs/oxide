@@ -25,6 +25,10 @@ pub const DEFAULT_PATTERN: &[u8] = b"core\n";
 /// process descriptor.
 pub const COREDUMP_PIDFD_NUMBER: i32 = 3;
 
+/// Maximum byte count in a pathname AF_UNIX socket name, excluding its
+/// terminating NUL.
+const UNIX_SOCKET_PATH_MAX: usize = 107;
+
 /// `/proc/sys/kernel/core_pattern` read hook. # C: O(len)
 pub fn core_pattern() -> Vec<u8> {
     let g = CORE_PATTERN.lock();
@@ -197,6 +201,20 @@ pub fn pipe_argv(pattern: &[u8], cx: &CoreContext) -> Option<(Vec<Vec<u8>>, bool
     // the initial namespace with no search path of its own to fall back on.
     if argv[0][0] != b'/' { return None; }
     Some((argv, wants_pidfd))
+}
+
+/// Expand and validate the pathname after a direct `@` core destination.
+/// # C: O(len)
+pub fn socket_path(pattern: &[u8], cx: &CoreContext) -> Option<String> {
+    let trimmed = trim_newline(pattern);
+    if kind_of(trimmed) != CoreKind::Socket { return None; }
+    let body = trimmed.strip_prefix(b"@")?;
+    if body.starts_with(b"@") { return None; }
+    let text = expand(body, cx, CoreKind::Socket).text;
+    if text.is_empty() || text[0] != b'/' || text.len() > UNIX_SOCKET_PATH_MAX
+        || text.contains(&0) || text.contains(&b' ') { return None; }
+    if text.split(|b| *b == b'/').any(|part| part == b"..") { return None; }
+    String::from_utf8(text).ok()
 }
 
 fn is_space(b: u8) -> bool { matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c) }

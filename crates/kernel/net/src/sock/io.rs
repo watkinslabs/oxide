@@ -248,6 +248,19 @@ impl InetSocket {
         }
     }
 
+    /// Write a kernel-owned AF_UNIX stream without delivering SIGPIPE to the
+    /// current task when its peer has gone away. Kernel producers have no
+    /// userspace signal disposition to consult, so the caller receives EPIPE.
+    /// # C: O(buf.len())
+    pub fn write_kernel(&self, buf: &[u8]) -> vfs::KResult<usize> {
+        let (pair, end) = match &*self.kind.lock() {
+            SockKind::Unix(pair, end) => (pair.clone(), *end),
+            _ => return Err(vfs::VfsError::Eopnotsupp),
+        };
+        crate::sock_opts::check_send(self).map_err(vfs_from_neterr)?;
+        pair.write(end, buf).map_err(|_| vfs::VfsError::Epipe)
+    }
+
     /// F164: non-blocking write per O_NONBLOCK. Returns Eagain when
     /// the connection's send buffer is at SO_SNDBUF; else writes as
     /// many bytes as fit. UDP / AF_UNIX delegate to their existing

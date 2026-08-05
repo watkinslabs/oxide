@@ -1,6 +1,6 @@
 // Where a pattern sends the dump: a pathname, or a program with arguments.
 
-use crate::coredump::pattern::{file_path, kind_of, pipe_argv, CoreKind};
+use crate::coredump::pattern::{file_path, kind_of, pipe_argv, socket_path, CoreKind};
 
 use super::victim;
 
@@ -85,6 +85,15 @@ fn a_program_pattern_naming_nothing_runnable_is_refused() {
 fn a_file_pattern_is_not_a_program_pattern() {
     assert!(pipe_argv(b"/var/crash/core", &victim()).is_none());
     assert!(pipe_argv(b"@/run/systemd/coredump", &victim()).is_none());
+}
+
+#[test]
+fn a_socket_pattern_requires_one_safe_absolute_unix_path() {
+    assert_eq!(socket_path(b"@/run/core.%p\n", &victim()).as_deref(), Some("/run/core.42"));
+    assert!(socket_path(b"@relative", &victim()).is_none());
+    assert!(socket_path(b"@/run/../core", &victim()).is_none());
+    assert!(socket_path(b"@/run/core name", &victim()).is_none());
+    assert!(socket_path(b"@@/run/core", &victim()).is_none());
 }
 
 #[test]
