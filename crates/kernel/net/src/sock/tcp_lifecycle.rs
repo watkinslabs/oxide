@@ -89,10 +89,10 @@ pub(super) fn listen_tcp(sock: &alloc::sync::Arc<InetSocket>, backlog: i32,
         crate::tcp_fastopen::init_key_once(&sock.net_namespace);
     }
     let bind = ensure_tcp_bind(sock, local_ip, &mut local_port, None)?;
-    let listener = stack().tcp_listen_reserved_fastopen_frag(
+    let listener = stack().tcp_listen_reserved_fastopen_frag_pacing(
         &bind, sock.bpf_filter.clone(), sock.opts.ip_mtu_discover.clone(),
         sock.opts.ipv6_mtu_discover.clone(), sock.opts.ipv6.frag_size_cell(), sock.opts.min_hop.clone(),
-        sock.opts.tcp.fastopen.clone())?;
+        sock.opts.tcp.fastopen.clone(), sock.opts.generic.max_pacing_rate_cell())?;
     listener.set_backlog(backlog, somaxconn);
     crate::sock_opts::sol_tcp::apply::to_listener(&sock.opts, &listener);
     listener.register_poll_subs(&sock.poll_subs);
@@ -162,6 +162,7 @@ fn connect_tcp(sock: &InetSocket, local_port: &mut Option<u16>, local_ip: crate:
         &bind, local_ip, remote_ip, remote_port, sock.error.clone(), sock.bpf_filter.clone(),
         sock.opts.ip_mtu_discover.clone(), sock.opts.ipv6_mtu_discover.clone(),
         sock.opts.ipv6.frag_size_cell(), sock.opts.min_hop.clone(), sock.opts.ip.clone(),
+        sock.opts.generic.max_pacing_rate_cell(),
         super::tcp_fastopen::ActiveOpen::from(open), data,
     )?;
     entry.conn.lock().fastopen_confirming = confirming;

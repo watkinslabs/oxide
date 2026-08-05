@@ -32,12 +32,15 @@ pub struct TcpTelemetry {
     pub rate_interval_ns: u64, pub rate_app_limited: bool,
     pub chrono: TcpChrono, pub chrono_start_ns: u64, pub busy_time_ns: u64,
     pub rwnd_limited_ns: u64, pub sndbuf_limited_ns: u64,
+    /// Current output pacing rate and next output eligibility, owned by this TCB.
+    pub pacing_rate: u64, pub pacing_next_ns: u64,
 }
 
 impl Default for TcpTelemetry {
     fn default() -> Self { Self { delivered: 0, delivered_mstamp_ns: 0, rate_delivered: 0,
         rate_interval_ns: 0, rate_app_limited: false, chrono: TcpChrono::None,
-        chrono_start_ns: 0, busy_time_ns: 0, rwnd_limited_ns: 0, sndbuf_limited_ns: 0 } }
+        chrono_start_ns: 0, busy_time_ns: 0, rwnd_limited_ns: 0, sndbuf_limited_ns: 0,
+        pacing_rate: 0, pacing_next_ns: 0 } }
 }
 
 /// One unacked segment on the retransmission queue.

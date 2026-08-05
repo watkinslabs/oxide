@@ -16,6 +16,13 @@ impl TcpConn {
     /// Convert queued send_buf into wire segments.
     /// # C: O(send_buf)
     pub fn output(&mut self, mtu: usize, nodelay: bool, cork: bool) -> Vec<Vec<u8>> {
+        self.output_limit(mtu, nodelay, cork, usize::MAX)
+    }
+
+    /// Convert at most `limit` queued payload segments into wire segments. # C: O(limit * MSS)
+    pub fn output_limit(&mut self, mtu: usize, nodelay: bool, cork: bool, limit: usize)
+        -> Vec<Vec<u8>>
+    {
         let configured_mss = if self.own_mss != 0 {
             self.own_mss as usize
         } else {
@@ -40,7 +47,7 @@ impl TcpConn {
         let in_flight: u32 = self.retx_q.iter().map(|s| s.payload.len() as u32).sum();
         let effective_wnd = core::cmp::min(self.snd_wnd, self.cwnd);
         let mut avail = effective_wnd.saturating_sub(in_flight);
-        while !self.send_buf.is_empty() && avail > 0 {
+        while !self.send_buf.is_empty() && avail > 0 && out.len() < limit {
             let chunk_cap = core::cmp::min(mss as u32, avail) as usize;
             let take = core::cmp::min(chunk_cap, self.send_buf.len());
             if cork && take < mss { break; }
@@ -64,6 +71,26 @@ impl TcpConn {
             avail = avail.saturating_sub(take as u32);
         }
         out
+    }
+
+    /// Refresh cwnd/RTT pacing and return whether output is eligible now. # C: O(1)
+    pub fn pacing_ready_at(&mut self, now_ns: u64, max_rate: u64) -> bool {
+        let mss = u64::from(if self.own_mss == 0 { crate::tcp_conn::OWN_MSS_DEFAULT } else { self.own_mss });
+        let cwnd_rate = u64::from(self.cwnd).saturating_mul(1_000_000_000) / self.srtt_ns.max(1);
+        let gain = if self.cwnd < self.ssthresh { 2 } else { 1 };
+        self.telemetry.pacing_rate = cwnd_rate.saturating_mul(gain).max(mss);
+        if max_rate != u64::MAX { self.telemetry.pacing_rate = self.telemetry.pacing_rate.min(max_rate); }
+        if max_rate == u64::MAX { self.telemetry.pacing_next_ns = 0; return true; }
+        self.telemetry.pacing_next_ns == 0
+            || now_ns == 0 || now_ns >= self.telemetry.pacing_next_ns
+    }
+
+    /// Advance the output deadline after one paced payload segment left the TCB. # C: O(1)
+    pub fn note_paced_output_at(&mut self, now_ns: u64, bytes: usize, max_rate: u64) {
+        if max_rate == u64::MAX || now_ns == 0 || self.telemetry.pacing_rate == 0 { return; }
+        let delay = (bytes as u64).saturating_mul(1_000_000_000)
+            .saturating_add(self.telemetry.pacing_rate - 1) / self.telemetry.pacing_rate;
+        self.telemetry.pacing_next_ns = now_ns.saturating_add(delay.max(1));
     }
 
     /// Application enqueues `data` for transmission.

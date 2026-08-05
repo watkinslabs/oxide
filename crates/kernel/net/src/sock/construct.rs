@@ -118,10 +118,12 @@ impl InetSocket {
                                         bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
                                         ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
                                         ipv6_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
+                                        max_pacing_rate: Arc<core::sync::atomic::AtomicU64>,
                                         owner: Arc<crate::SocketOwner>) -> Self {
         let mut sock = Self::new_owned(owner, bpf_filter, error, SockKind::TcpInit);
         sock.opts.ip_mtu_discover = ip_mtu_discover;
         sock.opts.ipv6_mtu_discover = ipv6_mtu_discover;
+        sock.opts.generic.use_max_pacing_rate_cell(max_pacing_rate);
         sock
     }
 
@@ -175,7 +177,7 @@ impl InetSocket {
                                     entry: Arc<crate::stack::TcpEntry>) -> Arc<Self> {
         let sock = Arc::new(Self::new_tcp_with_transport_state_owned(
             entry.error.clone(), entry.bpf_filter.clone(), entry.ip_mtu_discover.clone(),
-            entry.ipv6_mtu_discover.clone(), listener.owner.clone()));
+            entry.ipv6_mtu_discover.clone(), entry.max_pacing_rate.clone(), listener.owner.clone()));
         let family = listener.family.load(core::sync::atomic::Ordering::Acquire);
         sock.family.store(family, core::sync::atomic::Ordering::Release);
         entry.register_poll_subs(&sock.poll_subs);
