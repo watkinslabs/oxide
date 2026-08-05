@@ -15,6 +15,7 @@ use crate::{flags, Nlmsghdr};
 use super::ctrl;
 use super::family::{self, GenlFamily, GenlOp};
 use super::message;
+use super::tcp_metrics;
 use super::uapi::*;
 
 /// Capability answers the permission ladder consumes, resolved against the
@@ -106,6 +107,8 @@ pub fn handle(full_msg: &[u8], net_ns: u64, cred: GenlCred) -> Vec<u8> {
             ctrl::dumpfamily(&hdr, net_ns),
         (GENL_ID_CTRL, ctrl_cmd::CTRL_CMD_GETPOLICY, true) =>
             ctrl::dumppolicy(&hdr, attrs),
+        (_, tcp_metrics::cmd::GET, false) if fam.name == tcp_metrics::TCP_METRICS_FAMILY_NAME =>
+            tcp_metrics::get(&hdr, attrs, net_ns),
         // A family whose op table admitted the command but whose handler lives
         // outside the controller has no in-kernel producer yet.
         _ => message::error(&hdr, Err(Errno::Eopnotsupp)),

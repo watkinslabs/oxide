@@ -78,6 +78,14 @@ pub fn cache_learned(namespace: &NetworkNamespaceRef, src: crate::addr::IpAddr,
         src, dst, now_ns, mss, learned.cookie, learned.syn_lost, learned.try_exp);
 }
 
+/// The live fast-open metrics row for one destination in this namespace.
+/// # C: O(log N)
+pub fn cache_metrics(namespace: &NetworkNamespaceRef, src: Option<crate::addr::IpAddr>,
+                     dst: crate::addr::IpAddr, now_ns: u64) -> Option<super::cache::Metrics>
+{
+    crate::net_ns::materialize_state(namespace).fastopen_cache.metrics(src, dst, now_ns)
+}
+
 /// The namespace's default keys, or `None` while it has drawn none.
 /// # C: O(log N)
 pub fn ns_keys(namespace: &NetworkNamespaceRef) -> Option<KeyCtx> {
