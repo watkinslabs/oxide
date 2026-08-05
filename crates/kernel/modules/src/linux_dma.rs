@@ -144,7 +144,8 @@ pub(crate) extern "C" fn dma_unmap_single(_dev: *mut LinuxDevice, dma_addr: u64,
 
 pub(crate) extern "C" fn dma_map_page(dev: *mut LinuxDevice, page: *mut LinuxPage, offset: usize, size: usize, dir: i32) -> u64 {
     if size == 0 || !valid_dir(dir) { return DMA_MAPPING_ERROR; }
-    let base = match linux_alloc::linux_page_phys(page) { Some(v) => v, None => return DMA_MAPPING_ERROR };
+    // SAFETY: dma_map_page's KPI requires page to be a live descriptor while the mapping is installed.
+    let base = match unsafe { linux_alloc::linux_page_phys(page) } { Some(v) => v, None => return DMA_MAPPING_ERROR };
     let pa = match base.checked_add(offset as u64) { Some(v) => v, None => return DMA_MAPPING_ERROR };
     if !fits_mask(pa, size, device_dma_mask(dev, false)) { return DMA_MAPPING_ERROR; }
     sync_for_device(dir);
@@ -373,7 +374,8 @@ fn map_sg_entry(dev: *mut LinuxDevice, ent: &ScatterList, dir: i32) -> u64 {
     if ent.length == 0 { return DMA_MAPPING_ERROR; }
     let page = ent.page_link & !SG_END;
     let pa = if page != 0 {
-        let base = match linux_alloc::linux_page_phys(page as *const LinuxPage) { Some(v) => v, None => return DMA_MAPPING_ERROR };
+        // SAFETY: a nonzero scatterlist page link names a live struct page descriptor for the map operation.
+        let base = match unsafe { linux_alloc::linux_page_phys(page as *const LinuxPage) } { Some(v) => v, None => return DMA_MAPPING_ERROR };
         match base.checked_add(ent.offset as u64) { Some(v) => v, None => return DMA_MAPPING_ERROR }
     } else {
         match linux_alloc::direct_pa_for_va(ent.dma_address as *const u8) { Some(v) => v, None => return DMA_MAPPING_ERROR }
