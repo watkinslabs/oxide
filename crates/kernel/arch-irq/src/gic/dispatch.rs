@@ -206,9 +206,9 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
 ///
 /// The hazard that motivated moving it — the dispatcher spills `x19`, the frame
 /// base the vector's `mov sp, x19` consumes, at the FIXED `irq_stack_top - 8`,
-/// so a task parking here would resume on a foreign frame base — is now closed
-/// at the source: `schedule()` refuses to switch when `preempt::in_atomic()`,
-/// which includes `on_irq_stack()`.
+/// so a task parking here would resume on a foreign frame base — is closed in
+/// `schedule()`: a request made on this shared stack is carried by
+/// `TIF_NEED_RESCHED` to IRQ return, where the interrupted task stack is active.
 ///
 /// # SAFETY: called from the dispatcher tail, on this CPU's IRQ stack, IRQs
 /// masked, after EOI was issued.
