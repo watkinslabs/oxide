@@ -71,8 +71,8 @@ pub(crate) fn cmd_kernel(rest: &[String]) -> Result<(), u8> {
         _ => unreachable!(),
     };
     // `--clean-kernel`: `cargo clean -p <pkg>` the kernel packages in the SHARED
-    // target/ so they recompile from scratch (rules out incremental-cache
-    // corruption). Default absent = incremental, no clean.
+    // target/ so they recompile from scratch (rules out stale compiled
+    // artifacts). Default absent reuses valid Cargo artifacts without cleaning.
     let clean_kernel = rest.iter().any(|a| a == "--clean-kernel");
     if clean_kernel {
         let mut k = Command::new("cargo");
@@ -89,9 +89,9 @@ pub(crate) fn cmd_kernel(rest: &[String]) -> Result<(), u8> {
         run(k)?;
     }
     // Always build in the DEFAULT target/ (no CARGO_TARGET_DIR override) so
-    // cargo's incremental cache is reused across ids — only crates that
-    // actually changed recompile. Build lock serializes builds, so sharing
-    // target/ is safe. An id'd build then snapshots its ELF below.
+    // Cargo reuses compiled artifacts across ids — only crates that changed
+    // recompile. Build lock serializes builds, so sharing target/ is safe. An
+    // id'd build then snapshots its ELF below. Profile codegen is non-incremental.
     let mut c = Command::new("cargo");
     c.args([
         if check_only { "check" } else { "build" },
