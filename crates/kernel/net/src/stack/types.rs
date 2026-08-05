@@ -385,6 +385,7 @@ pub(crate) fn stamp_last_sent(entry: &TcpEntry, n: usize) {
     for i in start..len {
         c.retx_q[i].last_sent_ns = now;
     }
+    c.note_delivery_sent_at(start, now);
     c.note_info_data_sent_at(now);
 }
 

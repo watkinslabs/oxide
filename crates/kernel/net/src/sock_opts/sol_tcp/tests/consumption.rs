@@ -185,12 +185,14 @@ fn linear_timeouts_stop_the_retransmit_timer_from_doubling_on_a_thin_stream() {
     let (opts, mut c) = (SockOpts::default(), conn());
     c.rto_ns = 1_000_000_000;
     c.retx_q.push_back(UnackedSegment { seq: 42, flags: 0, payload: alloc::vec![1u8; 10],
-        last_sent_ns: 0, retries: 0, sacked: false });
+        last_sent_ns: 0, delivered_at_send: 0, delivered_mstamp_ns: 0, first_sent_ns: 0,
+        delivery_app_limited: false, retries: 0, sacked: false });
     let doubled = {
         let mut plain = conn();
         plain.rto_ns = 1_000_000_000;
         plain.retx_q.push_back(UnackedSegment { seq: 42, flags: 0,
-            payload: alloc::vec![1u8; 10], last_sent_ns: 0, retries: 0, sacked: false });
+            payload: alloc::vec![1u8; 10], last_sent_ns: 0, delivered_at_send: 0, delivered_mstamp_ns: 0,
+            first_sent_ns: 0, delivery_app_limited: false, retries: 0, sacked: false });
         plain.retransmit_due(2_000_000_000);
         plain.rto_ns
     };
@@ -208,7 +210,8 @@ fn a_stream_thick_enough_for_duplicate_ack_recovery_still_backs_off() {
     c.rto_ns = 1_000_000_000;
     for i in 0..6u32 {
         c.retx_q.push_back(UnackedSegment { seq: 42 + i, flags: 0,
-            payload: alloc::vec![1u8; 10], last_sent_ns: 0, retries: 0, sacked: false });
+            payload: alloc::vec![1u8; 10], last_sent_ns: 0, delivered_at_send: 0, delivered_mstamp_ns: 0,
+            first_sent_ns: 0, delivery_app_limited: false, retries: 0, sacked: false });
     }
     write(&opts, &mut c, TCP_THIN_LINEAR_TIMEOUTS, 1);
     assert!(!c.is_thin_stream());
@@ -223,7 +226,8 @@ fn the_user_timeout_gives_up_on_the_connection_independently_of_the_retry_count(
     assert_eq!(c.user_timeout_ns, 3_000 * NS_PER_MS);
     assert!(!c.user_timeout_expired(10 * NS_PER_S), "with nothing unacknowledged");
     c.retx_q.push_back(UnackedSegment { seq: 42, flags: 0, payload: alloc::vec![1u8; 10],
-        last_sent_ns: 0, retries: 0, sacked: false });
+        last_sent_ns: 0, delivered_at_send: 0, delivered_mstamp_ns: 0, first_sent_ns: 0,
+        delivery_app_limited: false, retries: 0, sacked: false });
     // The mark is taken the first time the queue is seen unacknowledged.
     c.retransmit_due(1 * NS_PER_S);
     assert_eq!(c.first_unacked_ns, 1 * NS_PER_S);
@@ -238,7 +242,8 @@ fn the_user_timeout_gives_up_on_the_connection_independently_of_the_retry_count(
 fn repair_stands_the_retransmit_timer_down() {
     let (opts, mut c) = (SockOpts::default(), conn());
     c.retx_q.push_back(UnackedSegment { seq: 42, flags: 0, payload: alloc::vec![1u8; 10],
-        last_sent_ns: 0, retries: 0, sacked: false });
+        last_sent_ns: 0, delivered_at_send: 0, delivered_mstamp_ns: 0, first_sent_ns: 0,
+        delivery_app_limited: false, retries: 0, sacked: false });
     assert!(!c.retransmit_due(10 * NS_PER_S).is_empty());
     write(&opts, &mut c, TCP_REPAIR, TCP_REPAIR_ON);
     assert!(c.repair);
@@ -287,7 +292,8 @@ fn a_lowered_retransmit_ceiling_caps_the_backoff() {
     assert_eq!(c.rto_max_ns, 2 * NS_PER_S);
     c.rto_ns = 2 * NS_PER_S;
     c.retx_q.push_back(UnackedSegment { seq: 42, flags: 0, payload: alloc::vec![1u8; 10],
-        last_sent_ns: 0, retries: 0, sacked: false });
+        last_sent_ns: 0, delivered_at_send: 0, delivered_mstamp_ns: 0, first_sent_ns: 0,
+        delivery_app_limited: false, retries: 0, sacked: false });
     c.retransmit_due(10 * NS_PER_S);
     assert_eq!(c.rto_ns, 2 * NS_PER_S, "the backoff may not pass the caller's ceiling");
 }

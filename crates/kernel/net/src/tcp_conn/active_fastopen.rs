@@ -55,6 +55,7 @@ impl TcpConn {
         self.retx_q.push_back(UnackedSegment {
             seq: seq_start, flags: flags::SYN, payload: Vec::new(),
             last_sent_ns: 0, retries: 0, sacked: false,
+            delivered_at_send: 0, delivered_mstamp_ns: 0, first_sent_ns: 0, delivery_app_limited: false,
         });
         if carried > 0 {
             self.retx_q.push_back(UnackedSegment {
@@ -62,6 +63,7 @@ impl TcpConn {
                 flags: flags::ACK | flags::PSH,
                 payload: data[..carried].to_vec(),
                 last_sent_ns: 0, retries: 0, sacked: false,
+                delivered_at_send: 0, delivered_mstamp_ns: 0, first_sent_ns: 0, delivery_app_limited: false,
             });
         }
         Ok((seg, carried))
