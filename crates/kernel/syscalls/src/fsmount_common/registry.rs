@@ -81,10 +81,8 @@ pub fn ensure_filesystems_registered() {
 /// Every other type here takes `None`: its constructor discards the data
 /// string entirely, so it has no option surface to describe. `None` keeps the
 /// pre-table behaviour exactly — the blob travels whole and nothing in it is
-/// refused. That is deliberate for `devpts` (`-o gid=5,mode=620,ptmxmode=000`
-/// on every boot) and `cgroup2` (`-o nsdelegate,memory_recursiveprot`): a
-/// table for either would reject nothing they are given today, but it would
-/// also claim an option surface neither implements.
+/// refused. `devpts` and `cgroup2` are no longer in that set: each publishes
+/// and consumes its reference parameter table below.
 ///
 /// `proc` is the exception, and `Some(&[])` is a real declaration rather than
 /// a default — see its registration below.
@@ -220,8 +218,7 @@ fn register_filesystems() {
     // the requested mode, with no owner set at all.
     let _ = register_fs(FsType::with_parameters("devpts", devpts::DEVPTS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, d: &str, sb_flags, p: &[vfs::fs::FsParameter]| -> R {
         let opts = devpts::mount_opts::opts_for_mount(d, p)?;
-        let dfs = devpts::devpts_fs();
-        dfs.set_opts(opts);
+        let dfs = devpts::DevptsFs::new(opts);
         let fs: Arc<dyn vfs::fs::FileSystem> = dfs;
         mounted(ty, fs, None, "devpts", sb_flags)
     }), Some(devpts::mount_opts::DEVPTS_PARAMS)));

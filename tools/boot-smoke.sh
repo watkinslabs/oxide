@@ -37,12 +37,32 @@ TIMEOUT="${2:-${SMOKE_TIMEOUT:-600}}"
 # tree. Fetch instead: fetch-vendor.sh restores firmware from the shared cache
 # and delegates the GRUB modules to fetch-grub.sh.
 SMOKE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if [ ! -d "$SMOKE_ROOT/vendor/grub/arm64-efi" ] || [ ! -f "$SMOKE_ROOT/vendor/firmware/ovmf-aarch64.fd" ]; then
+vendor_ready() {
+    [ "$ARCH" != arm ] || {
+        [ -f "$SMOKE_ROOT/vendor/grub/arm64-efi/modinfo.sh" ] \
+            && [ -f "$SMOKE_ROOT/vendor/grub/arm64-efi/linux.mod" ] \
+            && [ -f "$SMOKE_ROOT/vendor/grub/arm64-efi/archelp.mod" ] \
+            && [ -f "$SMOKE_ROOT/vendor/firmware/ovmf-aarch64.fd" ]
+    }
+}
+if ! vendor_ready; then
+    mkdir -p "$SMOKE_ROOT/target"
+    exec {VENDOR_LOCK_FD}>"$SMOKE_ROOT/target/.vendor-fetch.lock"
+    if ! flock "$VENDOR_LOCK_FD"; then
+        echo "boot-smoke: could not lock vendor preflight" >&2
+        exit 2
+    fi
     echo "boot-smoke: vendor/ incomplete in this tree — running tools/fetch-vendor.sh" >&2
-    if ! sh "$SMOKE_ROOT/tools/fetch-vendor.sh" >&2; then
+    if ! vendor_ready && ! sh "$SMOKE_ROOT/tools/fetch-vendor.sh" >&2; then
         echo "boot-smoke: vendor fetch FAILED — boot would fail on missing boot artifacts, not on kernel code" >&2
         exit 2
     fi
+    if ! vendor_ready; then
+        echo "boot-smoke: vendor fetch incomplete — required ARM GRUB/firmware artifacts still absent" >&2
+        exit 2
+    fi
+    flock -u "$VENDOR_LOCK_FD"
+    exec {VENDOR_LOCK_FD}>&-
 fi
 
 # Serial marker signalling success. The quick-boot root is now a glibc

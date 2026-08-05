@@ -107,7 +107,8 @@ impl FileOps for PtyMasterFileOps {
     /// # C: O(1)
     fn on_release(&self, inode: &Inode) {
         let pair = match pair_of(inode) { Ok(p) => p, Err(_) => return };
-        pair.close_endpoint(true);
+        let last_master = pair.close_endpoint(true);
+        if !last_master { return; }
         let fg = {
             let mut g = pair.inner.lock();
             g.master_hangup();
@@ -126,6 +127,7 @@ impl FileOps for PtyMasterFileOps {
             let bits = sched::Signum::Sighup.bit() | sched::Signum::Sigcont.bit();
             post_signal_pgrp(fg, bits);
         }
+        pair.release_if_unused();
     }
 }
 
@@ -148,7 +150,10 @@ impl FileOps for PtySlaveFileOps {
     }
 
     fn on_release(&self, inode: &Inode) {
-        if let Ok(pair) = pair_of(inode) { pair.close_endpoint(false); }
+        if let Ok(pair) = pair_of(inode) {
+            pair.close_endpoint(false);
+            pair.release_if_unused();
+        }
     }
     fn read(&self, inode: &Inode, _o: u64, buf: &mut [u8]) -> KResult<usize> {
         let pair = pair_of(inode)?;

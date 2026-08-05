@@ -2,9 +2,7 @@ use alloc::format;
 use alloc::sync::Arc;
 
 use super::*;
-use crate::fs::devpts_fs;
 use crate::inodes::allocate_pair;
-use crate::pair::pair_for;
 use vfs::{FileType, SuperBlock};
 
 struct DevptsType;
@@ -16,7 +14,9 @@ impl vfs::FileSystemType for DevptsType {
 pub fn smoke_test() {
     use hal::kassert;
 
-    let (master, n) = allocate_pair(0, 0).expect("pty index space");
+    let fs = DevptsFs::new(crate::mount_opts::PtsMountOpts::default());
+    let allocation = allocate_pair(&fs, 0, 0, 0).expect("pty index space");
+    let (master, n) = (allocation.master(), allocation.index());
     let ino = master.ino();
     kassert!(vfs::pseudo_ino::DEVPTS.contains(ino), "master ino inside the devpts region");
     kassert!(crate::is_master_inode(&master), "master inode resolves as the master half");
@@ -24,7 +24,7 @@ pub fn smoke_test() {
 
     let mut name: alloc::string::String = alloc::string::String::with_capacity(8);
     push_dec(&mut name, n);
-    let slave = devpts_fs().root_dir().lookup_path(&name).expect("pts slave registered");
+    let slave = fs.root_dir().lookup_path(&name).expect("pts slave registered");
     kassert!(slave.file_type() == FileType::CharDev, "pts slave is chardev");
 
     let n1 = master.write(0, b"keys\n").expect("master write");
@@ -43,7 +43,7 @@ pub fn smoke_test() {
     kassert!(r2 == 6, "master read len");
     kassert!(&buf[..6] == b"output", "slave→master bytes");
 
-    sigint_chain_smoke();
+    sigint_chain_smoke(&fs);
     devpts_fs_smoke();
 
     debug_boot! { klog::write_raw(b"[INFO]  pty-smoke: ok\n"); }
@@ -53,7 +53,7 @@ fn devpts_fs_smoke() {
     use hal::kassert;
     use vfs::fs::FileSystem;
 
-    let fs = devpts_fs();
+    let fs = DevptsFs::new(crate::mount_opts::PtsMountOpts::default());
     kassert!(fs.name() == "devpts", "devpts name");
     kassert!(fs.magic() == DEVPTS_MAGIC, "devpts magic");
     let root = fs.root().expect("devpts root");
@@ -62,7 +62,8 @@ fn devpts_fs_smoke() {
     kassert!(ptmx.file_type() == FileType::CharDev, "pts/ptmx is chardev");
     kassert!(ptmx.fsid() == DEVPTS_FSID, "pts/ptmx on devpts fsid");
 
-    let (_m, n) = allocate_pair(0, 0).expect("pty index space");
+    let allocation = allocate_pair(&fs, 0, 0, 0).expect("pty index space");
+    let n = allocation.index();
     let name = format!("{}", n);
     let slave = fs.root_dir().lookup_path(&name).expect("slave mirrored in devpts root");
     kassert!(slave.file_type() == FileType::CharDev, "mirrored slave is chardev");
@@ -80,7 +81,7 @@ fn devpts_fs_smoke() {
     debug_boot! { klog::write_raw(b"[INFO]  devpts-fs: ok\n"); }
 }
 
-fn sigint_chain_smoke() {
+fn sigint_chain_smoke(fs: &Arc<DevptsFs>) {
     use hal::kassert;
     use sched::{SchedClass, Task};
 
@@ -91,8 +92,9 @@ fn sigint_chain_smoke() {
     fake.set_pgid(fake_tid);
     sched::live::registry::insert(&fake);
 
-    let (master, n) = allocate_pair(0, 0).expect("pty index space");
-    let pair = pair_for(n).expect("pair_for");
+    let allocation = allocate_pair(fs, 0, 0, 0).expect("pty index space");
+    let master = allocation.master();
+    let pair = allocation.pair();
     pair.with_pair(|p| {
         kassert!(p.lflag() != 0, "cooked default");
         p.foreground_pgid = fake_tid;
@@ -125,14 +127,14 @@ fn sigint_chain_smoke() {
     debug_boot! { klog::write_raw(b"[INFO]  pty-sigint-chain: ok\n"); }
     drop(fake);
 
-    termios_winsize_smoke();
+    termios_winsize_smoke(fs);
 }
 
-fn termios_winsize_smoke() {
+fn termios_winsize_smoke(fs: &Arc<DevptsFs>) {
     use hal::kassert;
 
-    let (_master, n) = allocate_pair(0, 0).expect("pty index space");
-    let pair = pair_for(n).expect("pair_for");
+    let allocation = allocate_pair(fs, 0, 0, 0).expect("pty index space");
+    let pair = allocation.pair();
 
     pair.with_pair(|p| {
         kassert!(p.lflag() == tty::pty::DEFAULT_LFLAG, "default cooked lflag");

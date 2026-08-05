@@ -5,17 +5,17 @@
 #[cfg(target_os = "oxide-kernel")] #[macro_use] extern crate kmacros;
 extern crate alloc;
 
-// /dev/ptmx + /dev/pts/<n> per `28§5`. Each open of /dev/ptmx allocates a
-// fresh `tty::Pair`, registers a slave inode at /dev/pts/<n> in the devfs
-// registry, and returns the master fd. Subsequent open of /dev/pts/<n> binds
-// to the same pair.
+// /dev/ptmx + /dev/pts/<n> per `28§5`. Each devpts superblock owns its mount
+// options, PTY index allocator, `ptmx` node, and slave namespace.
 //
 // Module manifest:
 // - `ids`:      inode NUMBERS + device identities, from `vfs::pseudo_ino`.
 // - `identity`: who an endpoint inode IS — `i_private`, never its number.
-// - `pair`:     the shared `LockedPair` object + the index → pair table.
+// - `pair`:     the shared `LockedPair` object + endpoint lifetime.
+// - `index`:    the per-instance reusable PTY index allocator.
 // - `inodes`:   the ONE endpoint constructor, the ptmx nodes, `allocate_pair`.
 // - `fs`:       the first-class `DevptsFs` SuperBlock backend.
+// - `mount`:    resolve the devpts instance associated with an opened ptmx path.
 // - `fileops`:  master + slave `file_operations`, including the job-control gate.
 // - `ctty`:     controlling-terminal acquisition when a pty half is opened.
 // - `smoke`:    boot-time pair round-trip check.
@@ -27,10 +27,12 @@ extern crate alloc;
 pub mod ids;
 pub mod identity;
 pub mod pair;
+mod index;
 
 pub mod fs;
 pub mod inodes;
 pub mod mount_opts;
+pub mod mount;
 
 #[cfg(target_os = "oxide-kernel")] pub mod ctty;
 #[cfg(target_os = "oxide-kernel")] mod fileops;
@@ -38,17 +40,18 @@ pub mod mount_opts;
 
 pub use ids::{DEVPTS_FSID, DEVPTS_MAGIC, MAX_PTY_PAIRS};
 pub use identity::{endpoint_of, is_master_inode, is_pty_endpoint, pair_for_inode, PtyEndpointData};
-pub use pair::{pair_for, LockedPair};
+pub use pair::LockedPair;
 
-pub use fs::{devpts_fs, DevptsFs};
-pub use inodes::{allocate_pair, make_master_inode, make_ptmx_sentinel_inode, make_slave_inode};
+pub use fs::DevptsFs;
+pub use inodes::{allocate_pair, make_master_inode, make_ptmx_sentinel_inode, make_slave_inode,
+    PtyAllocation};
+pub use mount::{devpts_for_ptmx, DevptsMount};
 
 #[cfg(target_os = "oxide-kernel")]
 pub use ctty::acquire_ctty_on_open;
 
-/// Boot-time registration: register `/dev/ptmx` (sentinel inode — the real
-/// factory work happens in sys_open) and the `/dev/pts` directory inode so
-/// getdents64 enumerates allocated slaves.
+/// Boot-time registration: register `/dev/ptmx` plus the underlay `/dev/pts`
+/// directory. A devpts mount supplies the only slave namespace.
 /// # SAFETY: caller is the boot path; single-CPU pre-init.
 /// # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
@@ -57,9 +60,7 @@ pub fn init() {
     devfs::register_dir("/dev/pts");
 }
 
-/// Boot-time smoke for the PTY pair surface: allocates a fresh pair, verifies
-/// the slave inode is reachable in devfs at `/dev/pts/<n>`, and round-trips
-/// bytes both directions.
+/// Boot-time smoke for the per-instance PTY pair surface.
 /// # SAFETY: caller is the boot path; PMM up; pre-userspace.
 /// # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
