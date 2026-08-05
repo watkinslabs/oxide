@@ -64,6 +64,12 @@ impl Control {
         self.copy_to_at(user, 0)
     }
 
+    /// Emit the control stream at the option ABI's raw user pointer. # C: O(entries + data + faults)
+    pub fn copy_to_raw(&mut self, control: u64) -> Result<usize, i64> {
+        self.copy_to(&RecvUser { msgp: 0, name: 0, namelen: 0, name_len_ptr: 0,
+            control, controllen: self.cap, iov: Vec::new(), capacity: 0 })
+    }
+
     fn copy_to_at(&mut self, user: &RecvUser, at: usize) -> Result<usize, i64> {
         let mut copied = 0usize;
         for (level, ty, data) in &self.entries {

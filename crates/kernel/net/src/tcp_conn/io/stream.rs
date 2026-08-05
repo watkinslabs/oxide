@@ -137,7 +137,7 @@ impl TcpConn {
         let take = core::cmp::min(max, self.recv_buf.len());
         let mut out = Vec::with_capacity(take);
         for _ in 0..take {
-            out.push(self.recv_buf.pop_front().unwrap());
+            out.push(self.recv_buf.pop_front().unwrap().byte);
         }
         self.rcv_read_seq = self.rcv_read_seq.wrapping_add(take as u32);
         if take != 0 { self.note_rcv_space_at(crate::tcp_conn::ka_now_ns()); }
@@ -155,7 +155,7 @@ impl TcpConn {
     {
         if offset >= self.recv_buf.len() { return Ok(None); }
         let take = core::cmp::min(max, self.recv_buf.len() - offset);
-        let out: Vec<u8> = self.recv_buf.iter().skip(offset).take(take).copied().collect();
+        let out: Vec<u8> = self.recv_buf.iter().skip(offset).take(take).map(|b| b.byte).collect();
         let (copied, commit) = copy(&out)?;
         if !peek {
             let consumed = core::cmp::min(commit, take);
@@ -179,7 +179,7 @@ impl TcpConn {
         }
         if offset >= limit { return Ok(None); }
         let take = core::cmp::min(max, limit - offset);
-        let out: Vec<u8> = self.recv_buf.iter().skip(offset).take(take).copied().collect();
+        let out: Vec<u8> = self.recv_buf.iter().skip(offset).take(take).map(|b| b.byte).collect();
         let (copied, commit) = copy(&out)?;
         if !peek {
             let consumed = core::cmp::min(commit, take);
@@ -200,5 +200,10 @@ impl TcpConn {
     /// Report whether the next normal stream byte is the urgent mark. # C: O(1)
     pub fn at_urgent_mark(&self) -> bool {
         self.urgent.map(|(seq, _)| seq == self.rcv_read_seq).unwrap_or(false)
+    }
+
+    /// Realtime stamp of the first unread normal-stream byte. # C: O(1)
+    pub fn recv_timestamp(&self) -> Option<u64> {
+        self.recv_buf.front().map(|b| b.timestamp_ns)
     }
 }
