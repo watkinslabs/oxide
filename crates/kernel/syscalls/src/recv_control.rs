@@ -43,6 +43,10 @@ pub(crate) struct Control {
 
 fn aligned(n: usize) -> usize { (n + CMSG_ALIGN - 1) & !(CMSG_ALIGN - 1) }
 
+/// Linux receive paths generally ignore `put_cmsg`'s EFAULT after payload
+/// delivery; the failed entry advances no control cursor. # C: O(1)
+fn recv_copy_result(result: Result<usize, i64>) -> usize { result.unwrap_or(0) }
+
 impl Control {
     /// Create one receive-control cursor with the imported user capacity. # C: O(1)
     pub fn new(cap: usize) -> Self { Self { flags: 0, cap, entries: Vec::new() } }
@@ -62,6 +66,12 @@ impl Control {
     /// Emit queued cmsgs through one Linux-style advancing cursor. # C: O(entries + data + faults)
     pub fn copy_to(&mut self, user: &RecvUser) -> Result<usize, i64> {
         self.copy_to_at(user, 0)
+    }
+
+    /// Emit receive ancillary data without undoing an already delivered payload.
+    /// # C: O(entries + data + faults)
+    pub fn copy_to_recv(&mut self, user: &RecvUser) -> usize {
+        recv_copy_result(self.copy_to(user))
     }
 
     /// Emit the control stream at the option ABI's raw user pointer. # C: O(entries + data + faults)
@@ -146,7 +156,7 @@ pub(crate) fn deliver(user: &RecvUser, files: Vec<Arc<File>>, scm: ScmReceive,
     if let Some(cred) = scm.credentials { control.push(SOL_SOCKET, SCM_CREDENTIALS, &cred_bytes(cred)); }
     if let Some(label) = scm.security.as_deref() { control.push(SOL_SOCKET, SCM_SECURITY, label); }
     control.push_inq(inq);
-    let mut off = control.copy_to(user)?;
+    let mut off = control.copy_to_recv(user);
     flags |= control.flags;
     let remaining = cap.saturating_sub(off);
     let rights_cap = remaining.saturating_sub(CMSG_HDR) / 4;
@@ -188,7 +198,7 @@ pub(crate) fn deliver(user: &RecvUser, files: Vec<Arc<File>>, scm: ScmReceive,
             let fd = prepared.as_ref().map_or(-1, pidfd::Prepared::fd);
             let mut pidfd = Control::new(cap - off);
             pidfd.push(SOL_SOCKET, SCM_PIDFD, &fd.to_ne_bytes());
-            let copied = pidfd.copy_to_at(user, off)?;
+            let copied = recv_copy_result(pidfd.copy_to_at(user, off));
             if copied != 0 {
                 if let Some(prepared) = prepared { prepared.commit(); }
                 off += copied;
@@ -290,5 +300,11 @@ mod tests {
     fn recv_output_preserves_cmsg_cloexec_only() {
         assert_eq!(output_flags(MSG_CMSG_CLOEXEC | net::uapi::MSG_PEEK), MSG_CMSG_CLOEXEC as u32);
         assert_eq!(output_flags(net::uapi::MSG_PEEK), 0);
+    }
+
+    #[test]
+    fn a_put_cmsg_fault_does_not_undo_an_already_delivered_payload() {
+        assert_eq!(recv_copy_result(Err(errno(syscall::errno::Errno::Efault))), 0);
+        assert_eq!(recv_copy_result(Ok(32)), 32);
     }
 }

@@ -105,17 +105,28 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
         Msg(Arc<net::UnixMsgPair>, net::UnixEnd),
         Dgram(Arc<net::UnixDgramQueue>),
     }
+    enum Selection {
+        Urgent(Arc<net::UnixPair>, net::UnixEnd),
+        Normal(Target),
+    }
     let inline = sock.opts.oobinline.load(Ordering::Acquire) != 0;
+    // Classify under the socket-kind lock, but always drop it before entering
+    // a receive path. In particular, `recv_urgent` obtains the peer path and
+    // therefore needs to inspect `sock.kind` itself.
     let target = match &*sock.kind.lock() {
         SockKind::Unix(pair, end) if flags & MSG_OOB != 0 =>
-            return recv_urgent(&pair.clone(), *end, sock, user, flags, inline),
+            Selection::Urgent(pair.clone(), *end),
         SockKind::UnixMsgPair(_, _) | SockKind::UnixDgram(_) if flags & MSG_OOB != 0 => {
             return err(Errno::Eopnotsupp);
         }
-        SockKind::Unix(pair, end) => Target::Stream(pair.clone(), *end),
-        SockKind::UnixMsgPair(pair, end) => Target::Msg(pair.clone(), *end),
-        SockKind::UnixDgram(q) => Target::Dgram(q.clone()),
+        SockKind::Unix(pair, end) => Selection::Normal(Target::Stream(pair.clone(), *end)),
+        SockKind::UnixMsgPair(pair, end) => Selection::Normal(Target::Msg(pair.clone(), *end)),
+        SockKind::UnixDgram(q) => Selection::Normal(Target::Dgram(q.clone())),
         _ => return err(Errno::Einval),
+    };
+    let target = match target {
+        Selection::Urgent(pair, end) => return recv_urgent(&pair, end, sock, user, flags, inline),
+        Selection::Normal(target) => target,
     };
     let _transfer = net::transfer_guard();
     let peek = flags & MSG_PEEK != 0;

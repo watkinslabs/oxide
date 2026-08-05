@@ -77,7 +77,7 @@ impl NetStack {
         !matches!(l3[IPV4_HDR_LEN], icmp::ICMP_TYPE_DEST_UNREACH | icmp::ICMP_TYPE_TIME_EXC)
     }
 
-    fn send_ipv4_forward_error(
+    pub(super) fn send_ipv4_error(
         &self,
         ingress: NetIfaceId,
         src: Ipv4Addr,
@@ -100,7 +100,13 @@ impl NetStack {
         p.proto = crate::addr::eth_p::IPV4;
         p.iface = Some(ingress);
         p.next_hop = Some(crate::pkt::TxNextHop::V4(dst));
-        if nf_output(&p, NFPROTO_IPV4) { dev.xmit(p)?; }
+        if nf_output(&p, NFPROTO_IPV4) {
+            crate::mib::bump(net_ns, crate::mib::Mib::IcmpOutMsgs);
+            if typ == icmp::ICMP_TYPE_DEST_UNREACH {
+                crate::mib::bump(net_ns, crate::mib::Mib::IcmpOutDestUnreachs);
+            }
+            dev.xmit(p)?;
+        }
         Ok(())
     }
 
@@ -118,7 +124,7 @@ impl NetStack {
         let dst = Ipv4Addr::from_u32(u32::from_be_bytes([l3[16], l3[17], l3[18], l3[19]]));
         let error_src = self.ipv4_iface_addr(net_ns, ingress).unwrap_or(dst);
         if l3[8] <= 1 {
-            return self.send_ipv4_forward_error(
+            return self.send_ipv4_error(
                 ingress, error_src, src, icmp::ICMP_TYPE_TIME_EXC, time_exceeded_code::TTL, l3,
             );
         }
@@ -126,18 +132,18 @@ impl NetStack {
             Ok(route) => route,
             Err(NetError::Einval) => return Ok(()),
             Err(NetError::Ehostunreach) => {
-                return self.send_ipv4_forward_error(
+                return self.send_ipv4_error(
                     ingress, error_src, src, icmp::ICMP_TYPE_DEST_UNREACH, unreach_code::HOST, l3,
                 );
             }
             Err(NetError::Eacces) => {
-                return self.send_ipv4_forward_error(
+                return self.send_ipv4_error(
                     ingress, error_src, src, icmp::ICMP_TYPE_DEST_UNREACH,
                     ICMP_DEST_UNREACH_ADMIN_PROHIBITED, l3,
                 );
             }
             Err(NetError::Enetunreach) => {
-                return self.send_ipv4_forward_error(
+                return self.send_ipv4_error(
                     ingress, error_src, src, icmp::ICMP_TYPE_DEST_UNREACH, unreach_code::NET, l3,
                 );
             }
