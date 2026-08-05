@@ -4,7 +4,7 @@ use super::*;
 
 impl NetStack {
     /// F164: send `data`; bounded by `sndbuf_cap`. Returns Eagain. # C: O(data + N segments)
-    pub fn tcp_send(&self, entry: &TcpEntry, data: &[u8], sndbuf_cap: usize, nodelay: bool, cork: bool)
+    pub fn tcp_send(&self, entry: &Arc<TcpEntry>, data: &[u8], sndbuf_cap: usize, nodelay: bool, cork: bool)
         -> NetResult<usize>
     {
         let (segs, accepted, src, dst, tos, max_pacing_rate, now_ns) = {
@@ -27,14 +27,19 @@ impl NetStack {
             (segs, accepted, c.local.ip, c.remote.ip, ecn_tos(&c), max_pacing_rate, now_ns)
         };
         for s in &segs {
-            self.send_tcp_segment_in(entry.net_ns(), src, dst, s, tos, entry.bound_iface(),
-                TcpTxPolicy::Entry(entry))?;
+            if let Err(error) = self.send_tcp_segment_in(entry.net_ns(), src, dst, s, tos,
+                entry.bound_iface(), TcpTxPolicy::Entry(entry))
+            {
+                self.refresh_tcp_timers(entry);
+                return Err(error);
+            }
         }
         stamp_last_sent(entry, segs.len());
         if !segs.is_empty() {
             let bytes = entry.conn.lock().retx_q.back().map_or(0, |seg| seg.payload.len());
             entry.conn.lock().note_paced_output_at(now_ns, bytes, max_pacing_rate);
         }
+        self.refresh_tcp_timers(entry);
         Ok(accepted)
     }
 }
