@@ -58,11 +58,8 @@ Landlock target: ABI 10 (Linux 7.2 UAPI).
 The target is independent of the compatibility release returned by `uname(2)`.
 Landlock has its own runtime negotiation through
 `landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION)`; changing a
-UTS release does not raise or lower this contract. The upstream references are
-Linux `security/landlock/`, `include/uapi/linux/landlock.h`, and the
-[Landlock userspace ABI documentation](https://docs.kernel.org/userspace-api/landlock.html).
-The checked-in source snapshot is Linux 7.2-rc4; ABI 10 was re-verified against
-current Linux 7.2 mainline on 2026-08-05.
+UTS release does not raise or lower this contract. ABI 10 was re-verified
+against Linux 7.2 on 2026-08-05.
 
 `landlock::uapi::TARGET_ABI_VERSION` is the code source of truth and
 `ABI_VERSION` is the value returned to userspace. The ABI test reads the exact
