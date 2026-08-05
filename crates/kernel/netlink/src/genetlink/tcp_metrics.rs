@@ -10,7 +10,7 @@ use syscall::errno::Errno;
 use super::attr;
 use super::family::{self, GenlFamilySpec, GenlOp, PolicyEntry};
 use super::message;
-use super::uapi::op_flags;
+use super::uapi::{op_flags, policy_type};
 use crate::Nlmsghdr;
 
 /// Family name userspace resolves through `nlctrl`.
@@ -41,10 +41,10 @@ pub mod attr_id {
 
 const NS_PER_MS: u64 = 1_000_000;
 const GET_POLICY: &[PolicyEntry] = &[
-    PolicyEntry { attr: attr_id::ADDR_IPV4, kind: 5, min_len: 4, max_len: 4 },
-    PolicyEntry { attr: attr_id::ADDR_IPV6, kind: 13, min_len: 16, max_len: 16 },
-    PolicyEntry { attr: attr_id::SADDR_IPV4, kind: 5, min_len: 4, max_len: 4 },
-    PolicyEntry { attr: attr_id::SADDR_IPV6, kind: 13, min_len: 16, max_len: 16 },
+    PolicyEntry { attr: attr_id::ADDR_IPV4, kind: policy_type::NL_ATTR_TYPE_U32, min_len: 4, max_len: 4 },
+    PolicyEntry { attr: attr_id::ADDR_IPV6, kind: policy_type::NL_ATTR_TYPE_BINARY, min_len: 16, max_len: 16 },
+    PolicyEntry { attr: attr_id::SADDR_IPV4, kind: policy_type::NL_ATTR_TYPE_U32, min_len: 4, max_len: 4 },
+    PolicyEntry { attr: attr_id::SADDR_IPV6, kind: policy_type::NL_ATTR_TYPE_BINARY, min_len: 16, max_len: 16 },
 ];
 
 /// Register the TCP metrics family. # C: O(N families)
