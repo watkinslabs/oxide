@@ -116,11 +116,16 @@ fn accept_common(args: &SyscallArgs, flags: u64) -> i64 {
             Err(e) => return errno_from_neterr(e),
         }
     };
-    if addr_p != 0 {
-        let sa = accepted_peer_sockaddr(&accepted.new_sock);
-        let rv = copy_sockaddr_to_user(addr_p, len_p, &sa);
-        if rv < 0 { return rv; }
-    }
+    let accepted = if addr_p != 0 {
+        match net::sock::complete_accepted(accepted, |socket| {
+            let sa = accepted_peer_sockaddr(socket);
+            let rv = copy_sockaddr_to_user(addr_p, len_p, &sa);
+            if rv < 0 { Err(rv) } else { Ok(()) }
+        }, |accepted| accepted.new_sock.release_file()) {
+            Ok(accepted) => accepted,
+            Err(error) => return error,
+        }
+    } else { accepted };
     let unix_gc_pin = accepted.unix_gc_pin;
     let inode: vfs::InodeRef = net::sock::make_inet_socket_inode(accepted.new_sock);
     let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
