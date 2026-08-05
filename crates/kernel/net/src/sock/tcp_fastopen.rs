@@ -10,6 +10,19 @@ use crate::addr::IpAddr;
 use crate::tcp_conn::fastopen::Cookie;
 use crate::tcp_fastopen::{self, Open, Source};
 
+/// The Fast Open enable bits this socket's option write is judged against.
+/// # C: O(log N)
+pub fn setsockopt_bits(sock: &InetSocket) -> i32 {
+    tcp_fastopen::enable_bits(&sock.net_namespace)
+}
+
+/// Complete the namespace action an accepted TCP option write requested.
+/// # C: O(log N)
+pub fn complete_setsockopt(sock: &InetSocket,
+                           effects: &crate::sock_opts::sol_tcp::apply::Effects) {
+    if effects.fastopen_keys { tcp_fastopen::init_key_once(&sock.net_namespace); }
+}
+
 /// What the decision left for the open to carry out.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Default)]
 pub(crate) struct ActiveOpen {
