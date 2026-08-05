@@ -9,6 +9,7 @@ use super::AddressSpace;
 
 mod fill;
 mod device;
+mod anon;
 mod write;
 
 impl AddressSpace {

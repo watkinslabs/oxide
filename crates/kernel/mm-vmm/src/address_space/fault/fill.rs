@@ -47,10 +47,6 @@ impl AddressSpace {
 
         match &vma.backing {
             VmaBacking::Anonymous => {
-                // An anonymous VMA is created with its reverse-map family.
-                // Treat an absent family as corrupted VM metadata rather than
-                // allocating a page whose accounting ownership cannot be made
-                // canonical.
                 let av = vma.anon_vma.as_ref().ok_or(Error::Inval)?;
                 charge_anon()?;
                 let pa = match alloc_frame() {
@@ -111,6 +107,7 @@ impl AddressSpace {
                 // page to its VMA family per `page_add_anon_rmap`.
                 let idx = ((va_page - vma.start.as_u64()) / PAGE_SIZE_BYTES) as u32;
                 set_rmap(pa, av, idx);
+                self.mark_anon_page(va)?;
                 Ok(())
             }
             VmaBacking::KernelBytes { data, off: backing_off } => {
