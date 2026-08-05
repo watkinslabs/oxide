@@ -33,6 +33,7 @@ struct SocketErrorState {
     errno_from_queue: bool,
     recverr4: bool,
     recverr6: bool,
+    recverr_rfc4884_4: bool,
     queue: VecDeque<SocketErrorEntry>,
 }
 
@@ -42,7 +43,7 @@ impl SocketError {
         Self {
             state: Spinlock::new(SocketErrorState {
                 errno: 0, errno_from_queue: false,
-                recverr4: false, recverr6: false, queue: VecDeque::new(),
+                recverr4: false, recverr6: false, recverr_rfc4884_4: false, queue: VecDeque::new(),
             }),
         }
     }
@@ -100,11 +101,17 @@ impl SocketError {
     /// Read Linux IPv6 extended-error delivery state. # C: O(1)
     pub fn recverr6(&self) -> bool { self.state.lock().recverr6 }
 
+    /// Enable RFC4884 metadata on queued IPv4 ICMP errors. # C: O(1)
+    pub fn set_recverr_rfc4884_4(&self, enabled: bool) {
+        self.state.lock().recverr_rfc4884_4 = enabled;
+    }
+
     /// Publish one ICMP error according to connected/RECVERR UDP rules. # C: O(1) amortized
-    pub fn publish(&self, entry: SocketErrorEntry, connected: bool, hard: bool) -> bool {
+    pub fn publish(&self, mut entry: SocketErrorEntry, connected: bool, hard: bool) -> bool {
         let mut state = self.state.lock();
         let recverr = if entry.origin == SO_EE_ORIGIN_ICMP6 { state.recverr6 } else { state.recverr4 };
         if !recverr && (!connected || !hard) { return false; }
+        if entry.origin == SO_EE_ORIGIN_ICMP && !state.recverr_rfc4884_4 { entry.data = 0; }
         if recverr { state.queue.push_back(entry.clone()); }
         state.errno = entry.errno;
         state.errno_from_queue = recverr;
