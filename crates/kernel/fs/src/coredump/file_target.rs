@@ -32,7 +32,10 @@ pub fn write_to_file(path: &str, body: &[u8], fsuid: u32, fsgid: u32, force_suid
     // Refused before the namespace is walked: a path naming no final component
     // names a directory, and a dump is not a directory.
     if split_parent(path).is_none() { return false }
-    let ns = vfs::mount::current_ns();
+    // A privilege-downgraded dump must resolve from the initial task's root:
+    // the crashing task may have repointed its own namespace root to a
+    // directory it controls, which would defeat the absolute-path rule.
+    let ns = if force_suid_safe { vfs::mntns::initial().id() } else { vfs::mount::current_ns() };
     let Some(root) = vfs::mount::root_path_for_ns(ns) else { return false };
     // The dump belongs to whoever crashed, not to the kernel: it must end up
     // owned by them, and the ladder below refuses it if it did not.
