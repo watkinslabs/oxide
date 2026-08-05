@@ -184,7 +184,8 @@ fn a_backing_with_no_name_contributes_no_mapping_table_entry() {
 fn image(p: &[PlannedSegment]) -> Vec<u8> {
     let arch = CoreArch::native();
     let regs = alloc::vec![0u8; arch.gregset_bytes()];
-    let threads = [CoreThread { tid: 7, regs: &regs, fpregs: None, xstate: None }];
+    let threads = [CoreThread { tid: 7, regs: &regs, fpregs: None, xstate: None,
+        times: CoreTimes::default() }];
     let segs: Vec<CoreSegment<'_>> = p.iter().map(|s| CoreSegment {
         start: s.start, end: s.end, prot: s.prot, dump_size: s.dump_size,
         file: s.file.as_ref().map(|f| CoreSegFile { path: &f.path, pgoff_pages: f.pgoff_pages }),
