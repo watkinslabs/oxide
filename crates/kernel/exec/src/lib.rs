@@ -178,6 +178,7 @@ struct LoadStaging {
     head_pad: usize,
     file_end:   u64,
     file_pgoff: u64,
+    file_zero_from: Option<u64>,
 }
 
 /// One image the loader places: its bytes, and the file they were read from.

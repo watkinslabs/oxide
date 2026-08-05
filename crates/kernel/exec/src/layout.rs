@@ -24,6 +24,8 @@ pub struct SegmentSplit {
     /// Page-aligned file offset the prefix maps from. Meaningless when
     /// `file_end` equals the segment start.
     pub file_pgoff: u64,
+    /// File offset at which this mapping returns zeroes for `.bss`.
+    pub file_zero_from: Option<u64>,
 }
 
 /// Whether the loader edits an image's bytes before it runs.
@@ -64,16 +66,12 @@ pub fn split(
     page: u64,
     file_backed: bool,
 ) -> SegmentSplit {
-    let none = SegmentSplit { file_end: vstart, file_pgoff: 0 };
+    let none = SegmentSplit { file_end: vstart, file_pgoff: 0, file_zero_from: None };
     if !file_backed || !congruent(file_off, vaddr, page) { return none; }
-    let file_end = if mem_sz <= file_sz {
-        vend
-    } else {
-        let boundary = vaddr.saturating_add(file_sz) & !(page - 1);
-        if boundary <= vstart { return none; }
-        boundary
-    };
-    SegmentSplit { file_end, file_pgoff: file_off & !(page - 1) }
+    let boundary = vaddr.saturating_add(file_sz);
+    let file_end = if mem_sz <= file_sz { vend } else { ((boundary + page - 1) & !(page - 1)).min(vend) };
+    SegmentSplit { file_end, file_pgoff: file_off & !(page - 1),
+        file_zero_from: (mem_sz > file_sz).then_some(file_off + file_sz) }
 }
 
 #[cfg(test)]
@@ -88,23 +86,25 @@ mod tests {
     #[test]
     fn a_segment_without_bss_is_mapped_from_the_file_to_its_last_page() {
         let s = split(0x400000, 0x403000, 0x400000, 0, 0x2abc, 0x2abc, PAGE, true);
-        assert_eq!(s, SegmentSplit { file_end: 0x403000, file_pgoff: 0 });
+        assert_eq!(s, SegmentSplit { file_end: 0x403000, file_pgoff: 0, file_zero_from: None });
     }
 
     /// Data: the page holding the file/memory boundary is part file, part
     /// zero, so it stops being a mapping of the file.
     #[test]
-    fn a_segment_with_bss_gives_up_its_boundary_page() {
+    fn a_segment_with_bss_keeps_its_boundary_page_and_zeroes_its_tail() {
         let s = split(0x600000, 0x604000, 0x600000, 0x5000, 0x2abc, 0x3fff, PAGE, true);
-        assert_eq!(s.file_end, 0x602000);
+        assert_eq!(s.file_end, 0x603000);
         assert_eq!(s.file_pgoff, 0x5000);
+        assert_eq!(s.file_zero_from, Some(0x7abc));
     }
 
     /// The boundary lands in the first page, so no whole page is the file.
     #[test]
     fn a_segment_whose_file_part_is_under_a_page_maps_nothing_from_the_file() {
         let s = split(0x600000, 0x603000, 0x600000, 0x5000, 0x800, 0x2000, PAGE, true);
-        assert_eq!(s, SegmentSplit { file_end: 0x600000, file_pgoff: 0 });
+        assert_eq!(s.file_end, 0x601000);
+        assert_eq!(s.file_zero_from, Some(0x5800));
     }
 
     /// A segment starting mid-page maps from the page the file offset sits in,
@@ -112,7 +112,7 @@ mod tests {
     #[test]
     fn an_unaligned_segment_maps_from_the_page_its_file_offset_sits_in() {
         let s = split(0x400000, 0x402000, 0x400120, 0x120, 0x1e00, 0x1e00, PAGE, true);
-        assert_eq!(s, SegmentSplit { file_end: 0x402000, file_pgoff: 0 });
+        assert_eq!(s, SegmentSplit { file_end: 0x402000, file_pgoff: 0, file_zero_from: None });
     }
 
     /// Offset and address that disagree modulo the page size cannot be
