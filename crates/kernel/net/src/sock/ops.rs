@@ -297,14 +297,6 @@ pub fn listen(sock: &alloc::sync::Arc<InetSocket>, backlog: i32) -> Result<(), N
     super::tcp_lifecycle::listen_tcp(sock, backlog, somaxconn)
 }
 
-/// Result of `accept` — a new socket plus optionally the peer
-/// address for the ABI layer to write back to the user `sockaddr`.
-pub struct Accepted {
-    pub new_sock: alloc::sync::Arc<InetSocket>,
-    pub peer: Option<(Ipv4Addr, u16)>,
-    pub unix_gc_pin: Option<crate::GcPin>,
-}
-
 /// `accept` per `accept(2)`. Non-blocking: returns Err(Eagain) when
 /// no connection is ready. work fn — caller (ABI shim)
 /// wraps the returned `InetSocket` in a vfs::File and allocates a fd.
