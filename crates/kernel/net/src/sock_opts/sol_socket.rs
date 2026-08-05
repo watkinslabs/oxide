@@ -20,6 +20,7 @@ pub mod varlen;
 #[cfg(test)]
 mod tests;
 
+use alloc::sync::Arc;
 use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU64, Ordering};
 
 
@@ -228,7 +229,7 @@ impl Scalar { pub const COUNT: usize = 12; }
 pub struct GenericSockOpts {
     flags: AtomicU64,
     scalars: [AtomicI32; Scalar::COUNT],
-    max_pacing_rate: AtomicU64,
+    max_pacing_rate: Arc<AtomicU64>,
     cookie: AtomicI64,
 }
 
@@ -241,7 +242,7 @@ impl Default for GenericSockOpts {
                 slots[Scalar::RcvLowat as usize].store(1, Ordering::Relaxed);
                 slots
             },
-            max_pacing_rate: AtomicU64::new(u64::MAX),
+            max_pacing_rate: Arc::new(AtomicU64::new(u64::MAX)),
             cookie: AtomicI64::new(0),
         }
     }
@@ -269,6 +270,14 @@ impl GenericSockOpts {
 
     /// # C: O(1)
     pub fn max_pacing_rate(&self) -> u64 { self.max_pacing_rate.load(Ordering::Acquire) }
+
+    /// Share the sole `SO_MAX_PACING_RATE` cell with a transport owner. # C: O(1)
+    pub fn max_pacing_rate_cell(&self) -> Arc<AtomicU64> { self.max_pacing_rate.clone() }
+
+    /// Adopt the canonical transport pacing cap after a passive open. # C: O(1)
+    pub fn use_max_pacing_rate_cell(&mut self, cell: Arc<AtomicU64>) {
+        self.max_pacing_rate = cell;
+    }
 
     /// # C: O(1)
     pub fn set_max_pacing_rate(&self, value: u64) {
