@@ -25,6 +25,20 @@ never deleted, only relocated.
 `Sev`: `blocker` (merge gate) | `high` (wrong answer reaching userspace) |
 `med` (missing surface) | `low` (hygiene, tooling, cosmetics).
 
+## Open-work summary
+
+This is a derived view of the live `OPEN` and `IN-PROGRESS` rows below, not a
+second ledger. Update it in the same change whenever a row is added, moved, or
+reclassified.
+
+| Class \ Sev | blocker | high | med | low | Total |
+|---|---:|---:|---:|---:|---:|
+| `DEFECT` | 0 | 5 | 19 | 29 | 53 |
+| `MISSING` | 0 | 0 | 11 | 12 | 23 |
+| `COVERAGE` | 0 | 2 | 12 | 12 | 26 |
+| `INFRA` | 0 | 1 | 13 | 11 | 25 |
+| **Total** | **0** | **8** | **55** | **64** | **127** |
+
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 
