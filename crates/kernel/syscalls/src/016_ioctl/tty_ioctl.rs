@@ -386,20 +386,16 @@ pub(super) fn handle_tty_ioctl(
             };
             if pair.is_locked() { return -(Errno::Eio.as_i32() as i64); }
             let flags = vfs::OpenFlags::from_bits_truncate(arg as u32);
-            // TIOCGPTPEER hands back the SAME slave the mount would have made,
-            // so it takes the mount's mode/ownership too — a peer opened this
-            // way must not differ from `/dev/pts/<n>` in its permissions.
-            let pts_opts = devpts::devpts_fs().opts();
-            let opener = crate::pathresolve::current_cred();
-            let slave = devpts::make_slave_inode(alloc::sync::Arc::clone(pair), &pts_opts,
-                opener.uid, opener.gid);
+            let (slave, dentry, peer_mnt_id) = match pair.slave_path() {
+                Some(path) => path, None => return -(Errno::Eio.as_i32() as i64),
+            };
             devpts::acquire_ctty_on_open(&slave, flags.bits());
             let cred = match crate::pathresolve::file_cred_for(cur) {
                 Some(cred) => cred,
                 None => return -(Errno::Esrch.as_i32() as i64),
             };
-            let dentry = vfs::dcache::d_alloc_pseudo("[pts]", slave.clone(), &crate::anon_dname::ANON_INODE_OPS);
-            let file = vfs::File::new_at(slave, dentry, flags - vfs::OpenFlags::O_CLOEXEC, file.mnt_id(), cred);
+            let file = vfs::File::new_at(slave, dentry, flags - vfs::OpenFlags::O_CLOEXEC,
+                peer_mnt_id, cred);
             if let Err(error) = file.open_hook() { return -(error as i64); }
             match fdt.alloc_limit(file, cur.nofile_soft()) {
                 Ok(fd) => {
