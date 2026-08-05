@@ -95,6 +95,7 @@ impl TcpConn {
             flags: flags::SYN,
             payload: Vec::new(),
             last_sent_ns: 0,
+            delivered_at_send: 0, delivered_mstamp_ns: 0, first_sent_ns: 0, delivery_app_limited: false,
             retries: 0,
             sacked: false,
         });
@@ -225,6 +226,7 @@ impl TcpConn {
                     flags: sa_flags,
                     payload: Vec::new(),
                     last_sent_ns: 0,
+                    delivered_at_send: 0, delivered_mstamp_ns: 0, first_sent_ns: 0, delivery_app_limited: false,
                     retries: 0,
                     sacked: false,
                 });
@@ -243,6 +245,7 @@ impl TcpConn {
                 self.rcv_nxt = hdr.seq.wrapping_add(1);
                 self.rcv_read_seq = self.rcv_nxt;
                 self.advance_snd_una(hdr.ack);
+                self.note_delivery_acked_at(hdr.ack, crate::tcp_conn::ka_now_ns());
                 if let Some(m) = crate::tcp_hdr::parse_mss_option(seg) { self.peer_mss = m; }
                 match crate::tcp_hdr::parse_wscale_option(seg) {
                     Some(s) => { self.wscale_ok = true; self.rcv_wscale = s; }
@@ -288,6 +291,7 @@ impl TcpConn {
                 // and `tcp_retx_tick` re-sends a segment the peer already ACKed
                 // (B1454).
                 self.advance_snd_una(hdr.ack);
+                self.note_delivery_acked_at(hdr.ack, crate::tcp_conn::ka_now_ns());
                 self.trim_retx_acked(hdr.ack);
                 self.snd_wnd = (hdr.window as u32) << self.rcv_wscale;
                 self.state = crate::tcp_state::transition(self.state, TcpEvent::RecvAckEstablish)
@@ -377,6 +381,7 @@ impl TcpConn {
                 if (hdr.flags & flags::ACK) != 0 {
                     let acked = hdr.ack.wrapping_sub(self.snd_una);
                     self.advance_snd_una(hdr.ack);
+                    self.note_delivery_acked_at(hdr.ack, crate::tcp_conn::ka_now_ns());
                     self.cc_on_ack(acked, payload.len() as u32);
                     if self.ecn_enabled && (hdr.flags & flags::ECE) != 0 {
                         crate::tcp_cc::on_ece(self);
