@@ -45,7 +45,7 @@ crates/kernel/mm-pmm	code/klog-ungated	76
 crates/kernel/mm-pmm	code/pub-fn-complexity	9
 crates/kernel/mm-vmm	code/pub-fn-complexity	7
 crates/kernel/modules	code/klog-ungated	7
-crates/kernel/modules	code/pub-fn-complexity	35
+crates/kernel/modules	code/pub-fn-complexity	34
 crates/kernel/namespace-identity	code/pub-fn-complexity	24
 crates/kernel/net	code/klog-ungated	14
 crates/kernel/net	code/pub-fn-complexity	189

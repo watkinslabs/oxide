@@ -69,7 +69,6 @@ fn export_symbols_registers_sync_surface() {
 #[test]
 fn waitqueue_prepare_tracks_active_until_finish() {
     let _modules = crate::test_serial::claim();
-    wait::reset_wait_cells();
     let mut wq = LinuxWaitQueueHead { seq: 0 };
     let mut ent = LinuxWaitQueueEntry {
         flags: 0,
