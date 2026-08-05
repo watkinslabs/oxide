@@ -6,6 +6,9 @@ pub(super) const LINUX_EINVAL: i32 = 22;
 pub(super) const LINUX_ENODEV: i32 = 19;
 pub(super) const LINUX_EBUSY: i32 = 16;
 pub(super) const LINUX_ENOENT: i32 = 2;
+pub(super) const LINUX_EADDRINUSE: i32 = 98;
+pub(super) const LINUX_EXFULL: i32 = 54;
+pub(super) const USB_MAX_MINORS: usize = 256;
 
 pub(super) const USB_DEVICE_ID_MATCH_VENDOR: u16 = 0x0001;
 pub(super) const USB_DEVICE_ID_MATCH_PRODUCT: u16 = 0x0002;
@@ -122,9 +125,20 @@ pub(super) struct UsbInterface {
     pub(super) cur_altsetting: *mut UsbHostInterface,
     pub(super) num_altsetting: u32,
     pub(super) usb_dev: *mut UsbDevice,
+    /// Class-device minor; `-1` until `usb_register_dev` assigns it.
+    pub(super) minor: i32,
     pub(super) intfdata: *mut c_void,
     pub(super) registered: u32,
     pub(super) driver: *mut UsbDriver,
+}
+
+/// USB class-device registration contract used by `usb_register_dev`.
+#[repr(C)]
+pub(super) struct UsbClassDriver {
+    pub(super) name: *const c_char,
+    pub(super) devnode: *const c_void,
+    pub(super) fops: *const c_void,
+    pub(super) minor_base: i32,
 }
 
 #[repr(C)]
