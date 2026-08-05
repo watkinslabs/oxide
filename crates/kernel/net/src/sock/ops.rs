@@ -237,15 +237,7 @@ pub fn connect_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, n
 /// call publishes it as connectable. F176: SO_REUSEADDR forwarded.
 /// # C: O(1)
 pub fn listen(sock: &alloc::sync::Arc<InetSocket>, backlog: i32) -> Result<(), NetError> {
-    let context = security::network::Context {
-        namespace: sock.net_ns(),
-        family: sock.family.load(core::sync::atomic::Ordering::Acquire),
-        socket_type: 0, protocol: 0,
-        operation: security::network::Operation::Listen,
-    };
-    if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
-        return Err(NetError::Eacces);
-    }
+    super::admit_listen(sock)?;
     let net_ns = sock.net_ns();
     let somaxconn = crate::sysctl::somaxconn_in(net_ns).ok_or(NetError::Enodev)?;
     // AF_UNIX listener (incl. socket-activated /run/udev/control passed to
@@ -302,15 +294,7 @@ pub fn listen(sock: &alloc::sync::Arc<InetSocket>, backlog: i32) -> Result<(), N
 /// wraps the returned `InetSocket` in a vfs::File and allocates a fd.
 /// # C: O(1) + drain
 pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError> {
-    let context = security::network::Context {
-        namespace: sock.net_ns(),
-        family: sock.family.load(core::sync::atomic::Ordering::Acquire),
-        socket_type: 0, protocol: 0,
-        operation: security::network::Operation::Accept,
-    };
-    if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
-        return Err(NetError::Eacces);
-    }
+    super::admit_accept(sock)?;
     drain_loopback();
     // AF_UNIX listener: pop one queued UnixPair.
     let unix_listener = {
