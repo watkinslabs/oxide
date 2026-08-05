@@ -25,6 +25,7 @@ pub(crate) fn connect_udp6_locked(sock: &InetSocket, local_port: &mut Option<u16
         .map(|ip| mapped_v4_source(sock, ip, iface))
         .transpose()?;
     if local_port.is_none() {
+        let policy = crate::sock::bind_port_policy(sock, 0);
         let (port, endpoint) = alloc_ephemeral_udp6_owned(
             sock.owner.clone(), mapped_source.map(crate::Ipv6Addr::from_v4_mapped)
                 .unwrap_or_else(|| *sock.local_ip6.lock()), sock.error.clone(), iface,
@@ -33,7 +34,7 @@ pub(crate) fn connect_udp6_locked(sock: &InetSocket, local_port: &mut Option<u16
             sock.peer6.clone(), sock.opts.ip_mtu_discover.clone(),
             sock.opts.ipv6_mtu_discover.clone(), sock.opts.udp.no_check6_rx.clone(),
             sock.opts.udp.gro.clone(), sock.bpf_filter.clone(), sock.mcast.clone(),
-            sock.opts.ip.local_port_range(),
+            policy.range,
         ).map_err(|error| if error == NetError::Eaddrinuse { NetError::Eagain } else { error })?;
         endpoint.register_poll_subs(&sock.poll_subs);
         *sock.udp6.lock() = Some(endpoint);
@@ -181,6 +182,7 @@ fn ensure_udp6_bound(sock: &InetSocket, dst_ip: crate::Ipv6Addr, scope_id: u32)
             None    => {
                 // Linux `inet6_autobind` keeps the local address already named.
                 let bind_ip = *sock.local_ip6.lock();
+                let policy = crate::sock::bind_port_policy(sock, 0);
                 let (p, endpoint) = alloc_ephemeral_udp6_owned(
                     sock.owner.clone(), bind_ip, sock.error.clone(),
                     scoped_iface(sock, dst_ip, scope_id)?,
@@ -189,7 +191,7 @@ fn ensure_udp6_bound(sock: &InetSocket, dst_ip: crate::Ipv6Addr, scope_id: u32)
                     sock.peer6.clone(), sock.opts.ip_mtu_discover.clone(),
                     sock.opts.ipv6_mtu_discover.clone(), sock.opts.udp.no_check6_rx.clone(),
                     sock.opts.udp.gro.clone(), sock.bpf_filter.clone(), sock.mcast.clone(),
-                    sock.opts.ip.local_port_range(),
+                    policy.range,
                 ).map_err(|error| if error == NetError::Eaddrinuse { NetError::Eagain } else { error })?;
                 endpoint.register_poll_subs(&sock.poll_subs);
                 *sock.udp6.lock() = Some(endpoint);
