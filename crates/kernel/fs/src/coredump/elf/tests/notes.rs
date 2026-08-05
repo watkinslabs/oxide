@@ -42,9 +42,12 @@ fn every_note_carries_its_owner_string() {
 
 #[test]
 fn extended_state_is_owned_by_a_different_string() {
+    const XSAVE_HEADER_OFF: usize = 512;
     let arch = CoreArch::X86_64;
     let r = fixture::regs(arch, 1);
-    let xs = alloc::vec![0xABu8; 64];
+    let mut xs = alloc::vec![0xABu8; XSAVE_HEADER_OFF + 64];
+    xs[XSAVE_HEADER_OFF..XSAVE_HEADER_OFF + 8].copy_from_slice(&0xE7u64.to_le_bytes());
+    xs[XSAVE_HEADER_OFF + 8..XSAVE_HEADER_OFF + 16].copy_from_slice(&0x8000_0000_0000_0000u64.to_le_bytes());
     let threads = [crate::coredump::elf::input::CoreThread {
         tid: fixture::TID_MAIN, regs: &r, fpregs: None, xstate: Some(&xs),
         times: crate::coredump::elf::input::CoreTimes::default(),
@@ -58,6 +61,7 @@ fn extended_state_is_owned_by_a_different_string() {
     let n = Image::new(&img).note(NT_X86_XSTATE);
     assert_eq!(n.name, NOTE_NAME_LINUX);
     assert_eq!(n.desc, xs);
+    assert_eq!(&n.desc[XSAVE_HEADER_OFF..XSAVE_HEADER_OFF + 16], &xs[XSAVE_HEADER_OFF..XSAVE_HEADER_OFF + 16]);
 }
 
 #[test]
