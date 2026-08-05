@@ -137,12 +137,16 @@ fn populate_conn_at(c: &net::tcp_conn::TcpConn, now_ns: u64, info: &mut TcpInfo)
     info.tcpi_notsent_bytes = c.notsent_bytes();
     info.tcpi_data_segs_in = c.data_segs_in;
     info.tcpi_data_segs_out = c.data_segs_out;
-    info.tcpi_delivery_rate_app_limited |= u8::from(c.rate_app_limited);
-    if c.rate_delivered != 0 && c.rate_interval_ns != 0 {
-        info.tcpi_delivery_rate = u64::from(c.rate_delivered)
-            .saturating_mul(u64::from(snd_mss)).saturating_mul(1_000_000_000) / c.rate_interval_ns;
+    info.tcpi_delivery_rate_app_limited |= u8::from(c.telemetry.rate_app_limited);
+    if c.telemetry.rate_delivered != 0 && c.telemetry.rate_interval_ns != 0 {
+        info.tcpi_delivery_rate = u64::from(c.telemetry.rate_delivered)
+            .saturating_mul(u64::from(snd_mss)).saturating_mul(1_000_000_000) / c.telemetry.rate_interval_ns;
     }
-    info.tcpi_delivered = c.delivered;
+    info.tcpi_delivered = c.telemetry.delivered;
+    let (busy, rwnd_limited, sndbuf_limited) = c.chrono_totals_at(now_ns);
+    info.tcpi_busy_time = busy / 1_000;
+    info.tcpi_rwnd_limited = rwnd_limited / 1_000;
+    info.tcpi_sndbuf_limited = sndbuf_limited / 1_000;
     info.tcpi_bytes_sent = c.bytes_sent;
     info.tcpi_bytes_retrans = c.bytes_retrans;
     info.tcpi_rcv_ooopack = c.rcv_ooopack;
@@ -313,16 +317,27 @@ mod tests {
     fn delivery_rate_projects_the_ack_derived_connection_sample() {
         let mut conn = conn();
         conn.own_mss = 1_000;
-        conn.delivered = 9;
-        conn.rate_delivered = 4;
-        conn.rate_interval_ns = 2_000_000;
-        conn.rate_app_limited = true;
+        conn.telemetry.delivered = 9;
+        conn.telemetry.rate_delivered = 4;
+        conn.telemetry.rate_interval_ns = 2_000_000;
+        conn.telemetry.rate_app_limited = true;
         conn.fastopen_client_fail = 2;
         let mut info = TcpInfo::default();
         populate_conn_at(&conn, 0, &mut info);
         assert_eq!(info.tcpi_delivered, 9);
         assert_eq!(info.tcpi_delivery_rate, 2_000_000);
         assert_eq!(info.tcpi_delivery_rate_app_limited, 5);
+    }
+
+    #[test]
+    fn chrono_totals_project_the_active_connection_duration() {
+        let mut conn = conn();
+        conn.telemetry.busy_time_ns = 2_000;
+        conn.telemetry.rwnd_limited_ns = 3_000;
+        conn.telemetry.sndbuf_limited_ns = 4_000;
+        let mut info = TcpInfo::default();
+        populate_conn_at(&conn, 0, &mut info);
+        assert_eq!((info.tcpi_busy_time, info.tcpi_rwnd_limited, info.tcpi_sndbuf_limited), (2, 3, 4));
     }
 
     #[test]

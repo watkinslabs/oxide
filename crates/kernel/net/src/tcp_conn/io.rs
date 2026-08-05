@@ -265,6 +265,7 @@ impl TcpConn {
                     self.ecn_enabled = true;
                 }
                 self.trim_retx_acked(hdr.ack);
+                self.refresh_chrono_at(crate::tcp_conn::ka_now_ns());
                 self.state = crate::tcp_state::transition(self.state, TcpEvent::RecvSynAck)
                     .ok_or(TcpConnError::BadState)?;
                 let resp = self.build_segment(flags::ACK, &[]);
@@ -294,6 +295,7 @@ impl TcpConn {
                 self.note_delivery_acked_at(hdr.ack, crate::tcp_conn::ka_now_ns());
                 self.trim_retx_acked(hdr.ack);
                 self.snd_wnd = (hdr.window as u32) << self.rcv_wscale;
+                self.refresh_chrono_at(crate::tcp_conn::ka_now_ns());
                 self.state = crate::tcp_state::transition(self.state, TcpEvent::RecvAckEstablish)
                     .ok_or(TcpConnError::BadState)?;
                 // The request became a connection; its timer stops here.
@@ -394,6 +396,7 @@ impl TcpConn {
                         self.apply_sack(&blocks);
                     }
                     self.trim_retx_acked(hdr.ack);
+                    self.refresh_chrono_at(crate::tcp_conn::ka_now_ns());
                 }
                 let mut emit_fin_ack = None;
                 if received_fin {
