@@ -23,14 +23,14 @@ impl NetStack {
         hop_limit: u8, pmtudisc: i32, control: &Raw6Control) -> NetResult<()>
     {
         self.send_raw6_with_frag_size(endpoint, final_dst, scoped, protocol_override, payload,
-            hop_limit, pmtudisc, 0, control)
+            hop_limit, pmtudisc, 0, control, 0)
     }
 
     /// Route and transmit one socket-owned raw IPv6 message. # C: O(payload + N)
     pub fn send_raw6_with_frag_size(&self, endpoint: &crate::raw6::Raw6Endpoint,
         final_dst: Ipv6Addr, scoped: Option<NetIfaceId>, protocol_override: Option<u8>,
         payload: &[u8], hop_limit: u8, pmtudisc: i32, frag_size: i32,
-        control: &Raw6Control) -> NetResult<()>
+        control: &Raw6Control, source_prefs: i32) -> NetResult<()>
     {
         if final_dst.is_unspecified() { return Err(NetError::Edestaddrreq); }
         let route_dst = control.route_destination(final_dst);
@@ -62,7 +62,8 @@ impl NetStack {
             .or_else(|| self.routes6.lookup_in(endpoint.net_ns(), route_dst)
                 .filter(|route| route.iface == iface_id).and_then(|route| route.src_hint));
         let source = control.source.or((!local.addr.is_unspecified()).then_some(local.addr))
-            .or_else(|| self.v6_select_source(iface_id, final_dst, route_hint))
+            .or_else(|| self.v6_select_source_with_prefs(iface_id, final_dst, route_hint,
+                source_prefs))
             .unwrap_or(Ipv6Addr::ANY);
         let prepared = endpoint.prepare_send(source, final_dst, protocol_override, payload)?;
         if prepared.mode == crate::raw6::Raw6SendMode::KernelHeader

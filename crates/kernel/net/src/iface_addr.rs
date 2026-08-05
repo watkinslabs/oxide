@@ -10,6 +10,8 @@ use sync::{Spinlock, Socket as SockLockClass};
 use crate::{Ipv4Addr, NetIfaceId};
 
 pub const IFA_F_PERMANENT: u32 = 0x80;
+/// IPv6 privacy-address flag (`IFA_F_SECONDARY` for IPv4).
+pub const IFA_F_TEMPORARY: u32 = 0x01;
 pub const IFA_F_DADFAILED: u32 = 0x08;
 pub const IFA_F_DEPRECATED: u32 = 0x20;
 pub const IFA_F_TENTATIVE: u32 = 0x40;
