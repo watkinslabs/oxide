@@ -33,14 +33,16 @@ impl NetStack {
             return Ok(());
         }
         let hdr = Ipv6Hdr::parse(l3).map_err(|_| crate::netdev::NetError::Einval)?;
-        if !self.v6_dst_is_local_in(net_ns, iface, hdr.dst) { return Ok(()); }
+        if !self.v6_dst_is_local_in(net_ns, iface, hdr.dst) {
+            return self.forward_ipv6_in(net_ns, iface, l3);
+        }
         if crate::netfilter_hook::nf_hook_eval_in(net_ns, NF_INET_LOCAL_IN, l3, NFPROTO_IPV6) == 0 { return Ok(()); }
         let payload_end = crate::ipv6::IPV6_HDR_LEN + hdr.payload_length as usize;
         if payload_end > l3.len() {
             return Err(crate::netdev::NetError::Einval);
         }
         let payload = &l3[crate::ipv6::IPV6_HDR_LEN..payload_end];
-        let mld_router_alert = hbh_has_mld_router_alert(hdr.next_header, payload);
+        let mld_router_alert = crate::router_alert::v6_packet_selector(hdr.next_header, payload) == Some(0);
         let mut ancillary = RxAncillary {
             flow_label: hdr.flow_label,
             ext_headers: crate::ipv6_ext::collect(hdr.next_header, payload),
@@ -363,24 +365,6 @@ impl NetStack {
             self.report_ping_error_v6(net_ns, iface, hdr.src, body, entry, hard);
         }
     }
-}
-
-fn hbh_has_mld_router_alert(next_header: u8, payload: &[u8]) -> bool {
-    if next_header != 0 || payload.len() < 8 { return false; }
-    let len = ((payload[1] as usize) + 1) * 8;
-    if len > payload.len() { return false; }
-    let mut offset = 2usize;
-    while offset < len {
-        let typ = payload[offset];
-        if typ == 0 { offset += 1; continue; }
-        if offset + 2 > len { return false; }
-        let option_len = payload[offset + 1] as usize;
-        if offset + 2 + option_len > len { return false; }
-        if typ == 5 && option_len == 2 && payload[offset + 2] == 0
-            && payload[offset + 3] == 0 { return true; }
-        offset += 2 + option_len;
-    }
-    false
 }
 
 const ICMPV6_TYPE_DEST_UNREACHABLE: u8 = 1;

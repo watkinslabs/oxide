@@ -32,6 +32,7 @@ struct CountDev {
     len2: AtomicUsize,
     tos0: AtomicUsize,
     ttl0: AtomicUsize,
+    hop_limit0: AtomicUsize,
     icmp_type0: AtomicUsize,
     icmp_code0: AtomicUsize,
 }
@@ -53,6 +54,7 @@ impl CountDev {
             len2: AtomicUsize::new(0),
             tos0: AtomicUsize::new(0),
             ttl0: AtomicUsize::new(0),
+            hop_limit0: AtomicUsize::new(0),
             icmp_type0: AtomicUsize::new(usize::MAX),
             icmp_code0: AtomicUsize::new(usize::MAX),
         }
@@ -102,6 +104,7 @@ impl NetDev for CountDev {
                 _ => return Ok(()),
             };
             len.store(IPV6_HDR_LEN + hdr.payload_length as usize, Ordering::Relaxed);
+            if idx == 0 { self.hop_limit0.store(hdr.hop_limit as usize, Ordering::Relaxed); }
             if hdr.next_header == IpProto::Fragment as u8 && pkt.data().len() >= IPV6_HDR_LEN + 8 {
                 let frag = &pkt.data()[IPV6_HDR_LEN..IPV6_HDR_LEN + 8];
                 flags.store(u16::from_be_bytes([frag[2], frag[3]]) as usize, Ordering::Relaxed);

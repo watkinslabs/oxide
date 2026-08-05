@@ -53,6 +53,14 @@ fn transit_ipv4(src: Ipv4Addr, dst: Ipv4Addr, ttl: u8) -> alloc::vec::Vec<u8> {
     frame
 }
 
+fn transit_ipv6(src: Ipv6Addr, dst: Ipv6Addr, hop_limit: u8) -> alloc::vec::Vec<u8> {
+    let mut frame = alloc::vec![0u8; IPV6_HDR_LEN];
+    let mut ip = Ipv6Hdr::build(src, dst, IpProto::Udp, 0);
+    ip.hop_limit = hop_limit;
+    ip.write_to(&mut frame);
+    frame
+}
+
 #[test]
 fn ipv4_forwarding_sysctl_gates_transit_packets() {
     let fixture = ForwardingFixture::new();
@@ -141,5 +149,31 @@ fn ipv4_forwarding_no_route_emits_net_unreachable() {
     assert_eq!(in_dev.tx.load(Ordering::Relaxed), 1);
     assert_eq!(in_dev.icmp_type0.load(Ordering::Relaxed), icmp::ICMP_TYPE_DEST_UNREACH as usize);
     assert_eq!(in_dev.icmp_code0.load(Ordering::Relaxed), icmp::unreach_code::NET as usize);
+    fixture.finish();
+}
+
+#[test]
+fn ipv6_forwarding_is_gated_and_decrements_hop_limit() {
+    let fixture = ForwardingFixture::new();
+    let net_ns = fixture.net_ns();
+    let in_dev = Arc::new(CountDev::new());
+    let out_dev = Arc::new(CountDev::new());
+    let in_id = fixture.stack.ifaces.register_in_ns(in_dev, net_ns);
+    let out_id = fixture.stack.ifaces.register_in_ns(out_dev.clone(), net_ns);
+    let dst = Ipv6Addr::from_segments([0x2001, 0xdb8, 0x820, 0, 0, 0, 0, 2]);
+    fixture.stack.routes6.add_in(net_ns, Route6Entry {
+        table: crate::policy_rule::RT_TABLE_MAIN, dst, prefix_len: 128, iface: out_id,
+        gateway: None, src_hint: None, origin: crate::route6::Route6Origin::Static,
+    });
+    let frame = transit_ipv6(Ipv6Addr::from_segments([0x2001, 0xdb8, 0x820, 0, 0, 0, 0, 1]),
+        dst, 9);
+
+    fixture.stack.deliver_rx_ipv6(in_id, &frame).unwrap();
+    assert_eq!(out_dev.tx.load(Ordering::Relaxed), 0);
+
+    crate::forwarding::set_ipv6_enabled_for(fixture.namespace(), true).unwrap();
+    fixture.stack.deliver_rx_ipv6(in_id, &frame).unwrap();
+    assert_eq!(out_dev.tx.load(Ordering::Relaxed), 1);
+    assert_eq!(out_dev.hop_limit0.load(Ordering::Relaxed), 8);
     fixture.finish();
 }

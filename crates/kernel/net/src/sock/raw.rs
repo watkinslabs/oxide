@@ -35,6 +35,7 @@ impl InetSocket {
         let endpoint = Arc::new(crate::raw6::Raw6Endpoint::new_owned(
             sock.owner.clone(), protocol,
             sock.bpf_filter.clone(), sock.mcast.clone(), sock.error.clone(),
+            Some(sock.opts.ipv6.router_alert()),
         ));
         endpoint.register_poll_subs(&sock.poll_subs);
         stack().register_raw6(&endpoint);
