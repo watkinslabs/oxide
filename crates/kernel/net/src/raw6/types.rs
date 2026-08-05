@@ -78,6 +78,7 @@ pub struct Raw6Endpoint {
     pub bpf_filter: Arc<SocketFilter>,
     pub mcast: Arc<SocketMcast>,
     pub error: Arc<SocketError>,
+    pub(crate) router_alert: Option<Arc<crate::sock_opts::sol_ipv6::Ipv6RouterAlert>>,
     pub(super) state: Spinlock<Raw6State, LockClass>,
     #[cfg(target_os = "oxide-kernel")]
     pub waiters: sched::live::WaitList,
@@ -89,14 +90,14 @@ impl Raw6Endpoint {
     pub fn new(net_namespace: network_namespace::NetworkNamespaceRef, protocol: u8, bpf_filter: Arc<SocketFilter>,
                mcast: Arc<SocketMcast>, error: Arc<SocketError>) -> Self {
         Self::new_owned(crate::SocketOwner::root(net_namespace, 0), protocol, bpf_filter,
-            mcast, error)
+            mcast, error, None)
     }
 
     /// Build an endpoint retaining the socket's canonical owner. # C: O(1)
     pub fn new_owned(owner: Arc<crate::SocketOwner>, protocol: u8,
                bpf_filter: Arc<SocketFilter>, mcast: Arc<SocketMcast>,
-               error: Arc<SocketError>) -> Self {
-        Self::new_inner(owner, protocol, None, bpf_filter, mcast, error)
+               error: Arc<SocketError>, router_alert: Option<Arc<crate::sock_opts::sol_ipv6::Ipv6RouterAlert>>) -> Self {
+        Self::new_inner(owner, protocol, None, bpf_filter, mcast, error, router_alert)
     }
 
     /// Build one ICMP datagram endpoint whose identifier the kernel owns. # C: O(1)
@@ -104,15 +105,15 @@ impl Raw6Endpoint {
                mcast: Arc<SocketMcast>, error: Arc<SocketError>,
                reuse: Arc<core::sync::atomic::AtomicI32>) -> Self {
         let ident = crate::ping::new_ident(crate::ping::PingFamily::V6, reuse);
-        Self::new_inner(owner, crate::icmpv6::IPPROTO_ICMPV6, Some(ident), bpf_filter, mcast, error)
+        Self::new_inner(owner, crate::icmpv6::IPPROTO_ICMPV6, Some(ident), bpf_filter, mcast, error, None)
     }
 
     fn new_inner(owner: Arc<crate::SocketOwner>, protocol: u8,
                ping: Option<Arc<crate::ping::PingIdent>>,
                bpf_filter: Arc<SocketFilter>, mcast: Arc<SocketMcast>,
-               error: Arc<SocketError>) -> Self {
+               error: Arc<SocketError>, router_alert: Option<Arc<crate::sock_opts::sol_ipv6::Ipv6RouterAlert>>) -> Self {
         Self {
-            owner, protocol, ping, bpf_filter, mcast, error,
+            owner, protocol, ping, bpf_filter, mcast, error, router_alert,
             state: Spinlock::new(Raw6State {
                 accepting: true, local: Raw6Address::UNSPECIFIED, explicit_local: false, peer: None,
                 bound_iface: None, datagrams: VecDeque::new(), queued_bytes: 0,
@@ -128,6 +129,17 @@ impl Raw6Endpoint {
 
     /// Exact IPv6 Next Header selected at socket creation. # C: O(1)
     pub const fn protocol(&self) -> u8 { self.protocol }
+
+    /// Whether this raw endpoint selected an ingress router-alert packet. # C: O(1)
+    pub(crate) fn router_alert_matches(&self, selector: i32, ingress_ns: u64,
+        iface: NetIfaceId) -> bool
+    {
+        let Some(alert) = &self.router_alert else { return false; };
+        if self.protocol != crate::addr::IpProto::Raw as u8 || alert.selector() != selector { return false; }
+        if alert.isolate() && self.net_ns() != ingress_ns { return false; }
+        let state = self.state.lock();
+        state.accepting && state.bound_iface.is_none_or(|bound| bound == iface)
+    }
 
     /// Whether this endpoint is an ICMP datagram endpoint rather than a raw
     /// one: it owns an echo identifier and rejects the raw-only options. # C: O(1)

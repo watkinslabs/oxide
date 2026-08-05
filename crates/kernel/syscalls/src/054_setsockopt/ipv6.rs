@@ -79,7 +79,8 @@ fn apply(sock: &Arc<InetSocket>, action: Action, raw_val: i32) -> i64 {
     use net::sock_opts::sol_ipv6::flag;
     match action {
         Action::Flag { bit, on } => {
-            sock.opts.ipv6.set_flag(bit, on);
+            if bit == flag::RTALERT_ISOLATE { sock.opts.ipv6.set_router_alert_isolate(on); }
+            else { sock.opts.ipv6.set_flag(bit, on); }
             match bit {
                 v6set::RECVPKTINFO =>
                     sock.opts.ipv6_recvpktinfo.store(i32::from(on), Ordering::Release),
@@ -125,6 +126,7 @@ fn apply(sock: &Arc<InetSocket>, action: Action, raw_val: i32) -> i64 {
         // before it swaps the protocol operations.
         Action::AddrForm => {
             sock.opts.ipv6.set_flag(u64::MAX, false);
+            sock.opts.ipv6.clear_router_alert();
             for slot in [Sticky::HopOpts, Sticky::RthdrDstOpts, Sticky::Rthdr, Sticky::DstOpts] {
                 sock.opts.ipv6.set_header(slot, None);
             }
