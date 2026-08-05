@@ -2,9 +2,12 @@
 // namespace's real state, and that its answer reaches the open.
 
 use super::*;
+use network_namespace::NetworkNamespaceRef;
 use crate::addr::Ipv4Addr;
 use crate::tcp_conn::fastopen::Cookie;
-use crate::tcp_fastopen::{self, Open, Source, TFO_CLIENT_NO_COOKIE};
+use crate::tcp_fastopen::{self, Open, Source, TFO_CLIENT_ENABLE, TFO_CLIENT_NO_COOKIE, TFO_DEFAULT,
+    TFO_SERVER_ENABLE};
+use crate::sock_opts::sol_tcp::apply::Effects;
 
 fn src() -> IpAddr { IpAddr::V4(Ipv4Addr::new(192, 0, 2, 5)) }
 fn dst() -> IpAddr { IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1)) }
@@ -13,7 +16,32 @@ fn cookie() -> Cookie { Cookie::minted([6; 8], false) }
 fn socket() -> alloc::sync::Arc<InetSocket> {
     let namespace = crate::net_ns::test_support::allocate_namespace();
     crate::net_ns::materialize_state(&namespace);
+    socket_in(namespace)
+}
+
+fn socket_in(namespace: NetworkNamespaceRef) -> alloc::sync::Arc<InetSocket> {
+    crate::net_ns::materialize_state(&namespace);
     alloc::sync::Arc::new(InetSocket::new_tcp_in(namespace))
+}
+
+#[test]
+fn setsockopt_uses_its_socket_namespace_for_bits_and_key_initialization() {
+    let first = crate::net_ns::test_support::allocate_namespace();
+    let second = crate::net_ns::test_support::allocate_namespace();
+    crate::net_ns::materialize_state(&first);
+    crate::net_ns::materialize_state(&second);
+    crate::sysctl::set_value(&first, crate::net_ns::NetSysctlKey::TcpFastopen,
+        (TFO_CLIENT_ENABLE | TFO_SERVER_ENABLE) as i64).expect("the first namespace write");
+    let first_sock = socket_in(first.clone());
+    let second_sock = socket_in(second.clone());
+
+    assert_eq!(setsockopt_bits(&first_sock), TFO_CLIENT_ENABLE | TFO_SERVER_ENABLE);
+    assert_eq!(setsockopt_bits(&second_sock), TFO_DEFAULT);
+    complete_setsockopt(&first_sock, &Effects { fastopen_keys: true, ..Effects::default() });
+    assert!(crate::tcp_fastopen::ns_keys(&first).is_some());
+    assert_eq!(crate::tcp_fastopen::ns_keys(&second), None);
+    complete_setsockopt(&second_sock, &Effects::default());
+    assert_eq!(crate::tcp_fastopen::ns_keys(&second), None);
 }
 
 fn cache(sock: &InetSocket, cookie: Option<Cookie>) {
