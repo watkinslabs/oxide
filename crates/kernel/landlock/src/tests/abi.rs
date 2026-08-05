@@ -42,7 +42,8 @@ fn the_reported_abi_version_matches_the_rights_actually_accepted() {
     // The version number is a promise about which rights are enforced. Raising
     // it past what is enforced silently disables a well-written caller's
     // sandbox, so every mask below must stop exactly where enforcement does.
-    assert_eq!(ABI_VERSION, 10);
+    assert_eq!(TARGET_ABI_VERSION, 10);
+    assert_eq!(ABI_VERSION, TARGET_ABI_VERSION);
     // Resolving a pathname socket is the last filesystem right of this level.
     assert_eq!(MASK_ACCESS_FS, (ACCESS_FS_RESOLVE_UNIX << 1) - 1);
     // Both scopes are enforced, so both are accepted.
@@ -55,6 +56,17 @@ fn the_reported_abi_version_matches_the_rights_actually_accepted() {
     assert_eq!(MASK_ADD_RULE, ADD_RULE_QUIET);
     // Only the errata whose behaviour this kernel actually has.
     assert_eq!(ERRATA, ERRATUM_TCP_ONLY | ERRATUM_SAME_THREAD_GROUP_SIGNAL);
+}
+
+#[test]
+fn the_security_spec_pins_the_same_landlock_target() {
+    // The release string and the Landlock ABI are independent contracts. Keep
+    // the human-facing target beside the security invariants, but make drift
+    // from the runtime constant fail here instead of surviving as a stale
+    // known-issue row.
+    let spec = include_str!("../../../../../docs/27-security.md");
+    let target = alloc::format!("Landlock target: ABI {TARGET_ABI_VERSION} (Linux 7.2 UAPI).");
+    assert!(spec.lines().any(|line| line == target), "docs/27 Landlock target drifted");
 }
 
 #[test]
