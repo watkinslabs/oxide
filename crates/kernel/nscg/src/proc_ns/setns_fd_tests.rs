@@ -204,7 +204,7 @@ fn nsfd_only_owner_retains_uts_state_until_close() {
 
 #[test]
 fn network_setns_pin_survives_close_and_exact_fd_reuse() {
-    network_namespace::install_final_drop_callback(final_drop_notify).unwrap();
+    install_test_final_drop_callback();
     let fdt = vfs::FdTable::new();
     let user = namespace_identity::initial(NamespaceKind::User);
     let original_namespace = network_namespace::allocate(user.clone()).unwrap();
