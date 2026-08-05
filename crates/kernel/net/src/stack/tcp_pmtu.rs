@@ -63,6 +63,10 @@ impl TcpConn {
                     flags,
                     payload: segment.payload[offset..offset + take].to_vec(),
                     last_sent_ns: now_ns,
+                    delivered_at_send: segment.delivered_at_send,
+                    delivered_mstamp_ns: segment.delivered_mstamp_ns,
+                    first_sent_ns: segment.first_sent_ns,
+                    delivery_app_limited: segment.delivery_app_limited,
                     retries: segment.retries,
                     sacked: segment.sacked,
                 };
@@ -191,7 +195,8 @@ mod tests {
             c.own_mss = 1_460;
             c.retx_q.push_back(crate::tcp_conn::UnackedSegment {
                 seq: 1_000, flags: crate::tcp_hdr::flags::ACK | crate::tcp_hdr::flags::PSH,
-                payload: alloc::vec![7; 240], last_sent_ns: 11, retries: 2, sacked: false,
+                payload: alloc::vec![7; 240], last_sent_ns: 11, delivered_at_send: 0,
+                delivered_mstamp_ns: 0, first_sent_ns: 0, delivery_app_limited: false, retries: 2, sacked: false,
             });
             let retransmit = c.resegment_for_pmtu(100, 99);
             assert_eq!(retransmit.len(), 3);
@@ -224,7 +229,8 @@ mod tests {
         c.own_mss = 1_460;
         c.retx_q.push_back(crate::tcp_conn::UnackedSegment {
             seq: first_seq, flags: crate::tcp_hdr::flags::ACK | crate::tcp_hdr::flags::PSH,
-            payload: alloc::vec![7; 240], last_sent_ns: 11, retries: 2, sacked: false,
+            payload: alloc::vec![7; 240], last_sent_ns: 11, delivered_at_send: 0,
+            delivered_mstamp_ns: 0, first_sent_ns: 0, delivery_app_limited: false, retries: 2, sacked: false,
         });
 
         let retransmit = c.resegment_for_pmtu(100, 99);
@@ -280,7 +286,8 @@ mod tests {
             c.own_mss = 1_460;
             c.retx_q.push_back(crate::tcp_conn::UnackedSegment {
                 seq: 1_000, flags: crate::tcp_hdr::flags::ACK | crate::tcp_hdr::flags::PSH,
-                payload: alloc::vec![7; 240], last_sent_ns: 11, retries: 0, sacked: false,
+                payload: alloc::vec![7; 240], last_sent_ns: 11, delivered_at_send: 0,
+                delivered_mstamp_ns: 0, first_sent_ns: 0, delivery_app_limited: false, retries: 0, sacked: false,
             });
         }
 

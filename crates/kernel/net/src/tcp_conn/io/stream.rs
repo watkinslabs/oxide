@@ -56,6 +56,7 @@ impl TcpConn {
                 flags: flags::PSH | flags::ACK,
                 payload: chunk,
                 last_sent_ns: 0,
+                delivered_at_send: 0, delivered_mstamp_ns: 0, first_sent_ns: 0, delivery_app_limited: false,
                 retries: 0,
                 sacked: false,
             });
@@ -81,6 +82,7 @@ impl TcpConn {
             seq, flags: crate::tcp_hdr::flags::PSH | crate::tcp_hdr::flags::ACK
                 | crate::tcp_hdr::flags::URG, payload: alloc::vec![byte],
             last_sent_ns: 0, retries: 0, sacked: false,
+            delivered_at_send: 0, delivered_mstamp_ns: 0, first_sent_ns: 0, delivery_app_limited: false,
         });
         seg
     }

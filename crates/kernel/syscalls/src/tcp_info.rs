@@ -137,6 +137,12 @@ fn populate_conn_at(c: &net::tcp_conn::TcpConn, now_ns: u64, info: &mut TcpInfo)
     info.tcpi_notsent_bytes = c.notsent_bytes();
     info.tcpi_data_segs_in = c.data_segs_in;
     info.tcpi_data_segs_out = c.data_segs_out;
+    info.tcpi_delivery_rate_app_limited |= u8::from(c.rate_app_limited);
+    if c.rate_delivered != 0 && c.rate_interval_ns != 0 {
+        info.tcpi_delivery_rate = u64::from(c.rate_delivered)
+            .saturating_mul(u64::from(snd_mss)).saturating_mul(1_000_000_000) / c.rate_interval_ns;
+    }
+    info.tcpi_delivered = c.delivered;
     info.tcpi_bytes_sent = c.bytes_sent;
     info.tcpi_bytes_retrans = c.bytes_retrans;
     info.tcpi_rcv_ooopack = c.rcv_ooopack;
@@ -144,7 +150,7 @@ fn populate_conn_at(c: &net::tcp_conn::TcpConn, now_ns: u64, info: &mut TcpInfo)
     info.tcpi_rcv_wnd = c.advertised_rcv_wnd();
     // Linux packs this byte as `delivery_rate_app_limited:1,
     // fastopen_client_fail:2`, so the reason rides bits 1-2.
-    info.tcpi_delivery_rate_app_limited =
+    info.tcpi_delivery_rate_app_limited |=
         (c.fastopen_client_fail & FASTOPEN_CLIENT_FAIL_MASK) << FASTOPEN_CLIENT_FAIL_SHIFT;
 }
 
@@ -301,6 +307,22 @@ mod tests {
         opts.set_max_pacing_rate(1 << 40);
         populate_max_pacing_rate(&opts, &mut info);
         assert_eq!(info.tcpi_max_pacing_rate, 1 << 40);
+    }
+
+    #[test]
+    fn delivery_rate_projects_the_ack_derived_connection_sample() {
+        let mut conn = conn();
+        conn.own_mss = 1_000;
+        conn.delivered = 9;
+        conn.rate_delivered = 4;
+        conn.rate_interval_ns = 2_000_000;
+        conn.rate_app_limited = true;
+        conn.fastopen_client_fail = 2;
+        let mut info = TcpInfo::default();
+        populate_conn_at(&conn, 0, &mut info);
+        assert_eq!(info.tcpi_delivered, 9);
+        assert_eq!(info.tcpi_delivery_rate, 2_000_000);
+        assert_eq!(info.tcpi_delivery_rate_app_limited, 5);
     }
 
     #[test]

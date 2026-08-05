@@ -24,6 +24,11 @@ pub struct UnackedSegment {
     pub flags:       u8,
     pub payload:     Vec<u8>,
     pub last_sent_ns: u64,
+    /// Delivery counter and clock captured when this segment reached output.
+    pub delivered_at_send: u32,
+    pub delivered_mstamp_ns: u64,
+    pub first_sent_ns: u64,
+    pub delivery_app_limited: bool,
     pub retries:     u32,
     pub sacked:      bool,
 }
@@ -96,6 +101,12 @@ pub struct TcpConn {
     pub bytes_sent: u64,
     /// Payload bytes handed to retransmission.
     pub bytes_retrans: u64,
+    /// ACKed data-segment count and the latest ACK-derived delivery sample.
+    pub delivered: u32,
+    pub delivered_mstamp_ns: u64,
+    pub rate_delivered: u32,
+    pub rate_interval_ns: u64,
+    pub rate_app_limited: bool,
     /// Complete out-of-order segments, including control flags that consume
     /// sequence space such as FIN.
     pub ooo_buf: BTreeMap<u32, OutOfOrderSegment>,
