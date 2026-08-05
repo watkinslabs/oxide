@@ -29,7 +29,6 @@ pub(crate) fn place_image(
     blob: &[u8],
     as_: &AddressSpace,
     placement: Placement,
-    apply_self_relocs: bool,
     file: Option<&Arc<dyn FileBacking>>,
 ) -> Result<LoadedImage, LoadError> {
     let parsed = elf::parse(blob, ARCH_MACHINE)?;
@@ -37,12 +36,6 @@ pub(crate) fn place_image(
         return Err(LoadError::Enoexec);
     }
     let bias = place::resolve(placement, parsed.elf_type, &parsed.loads, as_)?;
-    // Relocating the image before it runs means editing its bytes, which a
-    // mapping of the unmodified file cannot express. That case keeps the
-    // kernel-byte backing; see `crate::relocs_precede_file_backing`.
-    let file = if crate::relocs_precede_file_backing(apply_self_relocs, parsed.elf_type, bias)
-        { None } else { file };
-
     let mut max_end: u64 = 0;
     // Linux `mm->start_code`..`end_data`: first executable PT_LOAD is
     // code, first writable PT_LOAD is data. Recorded page-aligned.
@@ -102,10 +95,6 @@ pub(crate) fn place_image(
             vstart, vend, prot, padded, head_pad,
             file_end: sp.file_end, file_pgoff: sp.file_pgoff, file_zero_from: sp.file_zero_from,
         });
-    }
-
-    if apply_self_relocs && matches!(parsed.elf_type, ElfType::Dyn) && bias != 0 {
-        apply_relative_relocs_into(blob, &parsed, bias, &mut staging)?;
     }
 
     for s in staging {
@@ -180,95 +169,3 @@ fn align_down(v: u64, a: u64) -> u64 { v & !(a - 1) }
 
 #[inline]
 fn align_up(v: u64, a: u64) -> u64 { (v + (a - 1)) & !(a - 1) }
-
-fn apply_relative_relocs_into(
-    blob: &[u8],
-    parsed: &elf::ParsedElf,
-    bias: u64,
-    staging: &mut [LoadStaging],
-) -> Result<(), LoadError> {
-    let mut dyn_off: usize = 0;
-    let mut dyn_sz: usize = 0;
-    for i in 0..(parsed.phnum as usize) {
-        let base = parsed.phoff as usize + i * (parsed.phentsize as usize);
-        let p_type = u32::from_le_bytes(blob[base..base + 4].try_into().unwrap_or([0; 4]));
-        if p_type == 2 {
-            dyn_off =
-                u64::from_le_bytes(blob[base + 8..base + 16].try_into().unwrap_or([0; 8])) as usize;
-            dyn_sz =
-                u64::from_le_bytes(blob[base + 32..base + 40].try_into().unwrap_or([0; 8])) as usize;
-            break;
-        }
-    }
-    if dyn_sz == 0 {
-        return Ok(());
-    }
-    if dyn_off + dyn_sz > blob.len() {
-        return Err(LoadError::Einval);
-    }
-    let mut rela_off: u64 = 0;
-    let mut rela_sz: u64 = 0;
-    let mut rela_ent: u64 = 24;
-    let mut p = dyn_off;
-    while p + 16 <= dyn_off + dyn_sz {
-        let tag = i64::from_le_bytes(blob[p..p + 8].try_into().unwrap_or([0; 8]));
-        let val = u64::from_le_bytes(blob[p + 8..p + 16].try_into().unwrap_or([0; 8]));
-        match tag {
-            0 => break,
-            7 => rela_off = val,
-            8 => rela_sz = val,
-            9 => rela_ent = val,
-            _ => {}
-        }
-        p += 16;
-    }
-    if rela_sz == 0 {
-        return Ok(());
-    }
-    let mut file_rela: u64 = 0;
-    for seg in &parsed.loads {
-        if rela_off >= seg.vaddr && rela_off < seg.vaddr + seg.file_sz {
-            file_rela = seg.file_off + (rela_off - seg.vaddr);
-            break;
-        }
-    }
-    if file_rela == 0 {
-        return Ok(());
-    }
-    let n = (rela_sz / rela_ent) as usize;
-    for i in 0..n {
-        let r = (file_rela as usize) + i * (rela_ent as usize);
-        if r + 24 > blob.len() {
-            return Err(LoadError::Einval);
-        }
-        let r_off = u64::from_le_bytes(blob[r..r + 8].try_into().unwrap_or([0; 8]));
-        let r_info = u64::from_le_bytes(blob[r + 8..r + 16].try_into().unwrap_or([0; 8]));
-        let r_add = i64::from_le_bytes(blob[r + 16..r + 24].try_into().unwrap_or([0; 8]));
-        let r_type = (r_info & 0xffff_ffff) as u32;
-        if r_type != 8 && r_type != 0x403 {
-            continue;
-        }
-        let dst_va = bias.checked_add(r_off).ok_or(LoadError::Einval)?;
-        let val = (bias as i64).wrapping_add(r_add) as u64;
-        if dst_va == 0 {
-            return Err(LoadError::Einval);
-        }
-        let mut placed = false;
-        for s in staging.iter_mut() {
-            // `padded` starts at `file_end`, not at the segment start: the
-            // bytes below it are a mapping of the file and are not the
-            // loader's to edit.
-            if dst_va >= s.file_end && dst_va + 8 <= s.vend {
-                let off = (dst_va - s.file_end) as usize;
-                if off + 8 > s.padded.len() {
-                    return Err(LoadError::Einval);
-                }
-                s.padded[off..off + 8].copy_from_slice(&val.to_le_bytes());
-                placed = true;
-                break;
-            }
-        }
-        let _ = placed;
-    }
-    Ok(())
-}

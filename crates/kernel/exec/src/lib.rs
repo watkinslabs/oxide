@@ -7,7 +7,7 @@
 // the entry-point VA the caller drops to user mode at.
 //
 // Module manifest:
-//   `load`  — PT_LOAD placement + R_*_RELATIVE self-relocation staging.
+//   `load`  — PT_LOAD placement and file-backed mapping.
 //   `layout` — how a segment divides between its file and kernel-owned bytes.
 //   `place` — the two Linux placement strategies and the phdr scans they need.
 //   `brk`     — `start_brk` selection and the heap window.
@@ -224,16 +224,9 @@ pub fn load_image(
     rnd: &aslr::ExecRnd,
 ) -> Result<LoadedImage, LoadError> {
     let blob = exec_image.blob;
-    // Two cases per Linux execve:
-    //   * No PT_INTERP (static, static-PIE): the kernel is the
-    //     only thing that runs before user `_start`, so we apply
-    //     R_*_RELATIVE self-relocs to the exec image now.
-    //   * PT_INTERP present (dynamic): musl's `_dlstart` self-
-    //     relocates the loader, then walks the exec's PT_DYNAMIC
-    //     and applies its relocs. Kernel pre-application would
-    //     be a DOUBLE-relocation — every R_RELATIVE entry would
-    //     be biased twice and the program crashes. Skip pre-reloc
-    //     on both images in this case.
+    // The kernel maps program bytes and transfers control. An ET_DYN image
+    // without an interpreter relocates itself from its entry point; the
+    // kernel must leave its file bytes untouched.
     let exec_parsed = parse(blob, ARCH_MACHINE)?;
     let has_interp = exec_parsed.interp.is_some();
 
@@ -250,7 +243,7 @@ pub fn load_image(
         (ElfType::Dyn, false) => Placement::Unmapped,
         _ => return Err(LoadError::Enoexec),
     };
-    let exec = place_image(blob, as_, placement, !has_interp, exec_image.file.as_ref())?;
+    let exec = place_image(blob, as_, placement, exec_image.file.as_ref())?;
 
     let parsed = exec_parsed;
     let mut interp_base: u64 = 0;
@@ -279,7 +272,7 @@ pub fn load_image(
             },
         };
         let interp =
-            match place_image(&interp_blob, as_, Placement::Unmapped, false, interp_file.as_ref()) {
+            match place_image(&interp_blob, as_, Placement::Unmapped, interp_file.as_ref()) {
             Ok(img) => {
                 #[cfg(feature = "debug-execload")]
                 klog::write_raw(b"[INFO]  elf-load: interp place ok\n");
@@ -329,7 +322,6 @@ fn load_error_name(err: LoadError) -> &'static [u8] {
     }
 }
 
-use layout::relocs_precede_file_backing;
 use load::place_image;
 use place::Placement;
 
