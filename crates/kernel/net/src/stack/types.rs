@@ -115,6 +115,9 @@ pub struct TcpEntry {
     pub ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
     /// Canonical `IPV6_MTU` request, shared with the owning socket.
     pub ipv6_frag_size: Arc<::core::sync::atomic::AtomicI32>,
+    /// Canonical `IPPROTO_IPV6` state, retained by the transport entry so
+    /// packet construction observes the live socket policy after connect.
+    pub ipv6_opts: Arc<crate::sock_opts::sol_ipv6::Ipv6Opts>,
     /// Canonical `SO_MAX_PACING_RATE` cap, shared with the owning socket.
     pub max_pacing_rate: Arc<::core::sync::atomic::AtomicU64>,
     /// Sticky `IPPROTO_IP` option state, shared with the owning socket: the
@@ -390,6 +393,8 @@ pub struct TcpListenEntry {
     pub ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
     /// Live listening-socket `IPV6_MTU`; passive children snapshot this cell.
     pub ipv6_frag_size: Arc<::core::sync::atomic::AtomicI32>,
+    /// Canonical `IPPROTO_IPV6` state inherited by passive TCP children.
+    pub ipv6_opts: Arc<crate::sock_opts::sol_ipv6::Ipv6Opts>,
     /// Live listening-socket `SO_MAX_PACING_RATE`; passive children inherit it.
     pub max_pacing_rate: Arc<::core::sync::atomic::AtomicU64>,
     /// Live listening-socket hop-limit minimums; each passive child shares them.
