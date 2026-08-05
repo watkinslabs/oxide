@@ -1,6 +1,6 @@
 # 07 Toolchain + Targets
 
-FROZEN 2026-05-02. Dep:`02`,`08`.
+FROZEN 2026-08-05. Dep:`02`,`08`.
 
 One pinned nightly. Two custom target JSONs (kernel×2). Three build profiles. `panic=abort` everywhere kernel.
 
@@ -34,13 +34,13 @@ panic="abort" debug="limited" overflow-checks=false incremental=false
 
 [profile.dev]
 opt-level=1 lto="off" codegen-units=16
-panic="abort" debug="full" overflow-checks=true incremental=true
+panic="abort" debug="line-tables-only" overflow-checks=true incremental=false
 
 [profile.debug-build]
 inherits="dev"  # + --features debug-all (`04§3`)
 ```
 
-Rules: all kernel profiles `panic="abort"`. `release` IS the perf profile (no separate one). `opt-level=0` not used (10–50× slower; kernel unrunnable).
+Rules: all kernel profiles `panic="abort"`; release and development builds disable incremental codegen. The pinned nightly produced incorrect neighbouring-arm code after a cross-module incremental edit, while a non-incremental rebuild of identical source was correct. `make profile-policy` gates both profiles and this contract. `release` IS the perf profile (no separate one). `opt-level=0` not used (10–50× slower; kernel unrunnable).
 
 No userspace profile here: userspace binaries are Fedora RPM builds (`29a§2`), not built by this repo.
 
@@ -187,6 +187,7 @@ xtask doc-check
 ## 9 Test contract (frozen)
 
 - Two kernel target JSONs in `targets/`; hello-world `no_std` kernel builds for each.
+- `make profile-policy` passes; changing either development or release `incremental` to `true` fails.
 - `xtask kernel --arch x86_64` and `--arch aarch64` clean-checkout success.
 - §5 lints in `tools/spec-lint/`; clean kernel passes.
 - `static mut FOO` injected → build fail with clear msg.
@@ -202,4 +203,4 @@ xtask doc-check
 
 ## 11 Changelog
 
-(none)
+- 2026-08-05: disabled incremental codegen after a reproducible wrong-code result; added the profile-policy gate.
