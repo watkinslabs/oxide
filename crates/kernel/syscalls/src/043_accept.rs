@@ -129,7 +129,10 @@ fn accept_common(args: &SyscallArgs, flags: u64) -> i64 {
     let dentry = vfs::dcache::d_alloc_pseudo("socket", Arc::clone(&inode), &crate::anon_dname::SOCKET_OPS);
     let mut fl = vfs::OpenFlags::O_RDWR;
     if acc_flags.nonblock { fl |= vfs::OpenFlags::O_NONBLOCK; }
-    let file = vfs::File::new(inode, dentry, fl);
+    let file_cred = match crate::pathresolve::file_cred_for(&cur) {
+        Some(cred) => cred, None => return -(Errno::Esrch.as_i32() as i64),
+    };
+    let file = vfs::File::new_at(inode, dentry, fl, 0, file_cred);
     if let Some(sock) = crate::net_common::inode_as_inet_socket(file.inode()) {
         net::bind_file(&file, &sock);
     }

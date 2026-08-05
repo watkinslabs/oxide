@@ -13,7 +13,8 @@ pub fn file_cred_for(c: &sched::Task) -> Option<vfs::FileCred> {
     use core::sync::atomic::Ordering;
     let user_namespace = c.namespace_owner(namespace_identity::NamespaceKind::User)?;
     let effective = c.creds.cap_effective.load(Ordering::Acquire);
-    Some(vfs::FileCred::new(cred_for_effective(c, false, effective), user_namespace, effective))
+    Some(vfs::FileCred::new(cred_for_effective(c, false, effective), user_namespace, effective)
+        .with_security(c.landlock_domain.lock().clone()))
 }
 
 /// Like `current_cred()` but built from the task's REAL uid/gid.
