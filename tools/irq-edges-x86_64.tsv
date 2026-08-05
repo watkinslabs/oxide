@@ -29,7 +29,6 @@ softirq::run_pending_mode	net::net_ns::teardown::wake_namespace_reaper
 softirq::run_pending_mode	block::completion::dispatch
 softirq::run_pending_mode	net::stack::stp_softirq::stp_softirq
 softirq::run_pending_mode	sched::live::tasklet::drain_softirq
-oxide_irq_exit_to_user	syscalls::exit_to_user::irqentry_exit
 drv_serial::deliver	sched::diag::emit::sysrq_rx
 drv_serial::deliver	console::static_console::rx_byte
 # NAPI poll list, one level BELOW the softirq table: `net_rx_action` walks the
