@@ -22,10 +22,13 @@ ARCH = sys.argv[1] if len(sys.argv) > 1 else "x86"
 if ARCH not in ("x86", "arm"):
     raise SystemExit("usage: guest-resolved-check.py <x86|arm> [boot_timeout_s]")
 BOOT_TIMEOUT = int(sys.argv[2]) if len(sys.argv) > 2 else 600
-SETTLE = 8 if ARCH == "x86" else 20
+COMMAND_TIMEOUT = 35
 SOCK = f"/tmp/oxide-resolved-uart-{ARCH}-{os.getpid()}.sock"
 LOG = f"/tmp/oxide-resolved-uart-{ARCH}-{os.getpid()}.log"
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+KERNEL_FAULT = re.compile(
+    r"\[BUG\] scheduling while atomic|IRQ stack guard page|\[BADSTACK\]|#DF|Kernel panic"
+)
 
 
 env = dict(os.environ, OXIDE_QEMU_UART_SOCK=SOCK, OXIDE_QEMU_HEADLESS="1")
@@ -61,7 +64,7 @@ def wait_for(conn, buf, pattern, seconds):
     return False
 
 
-def run(conn, buf, command, settle=SETTLE):
+def run(conn, buf, command, settle=COMMAND_TIMEOUT):
     """Run one command and return only bytes produced after its submission.
 
     The marker contains `$?` in the transmitted source and a numeric result in
@@ -69,7 +72,13 @@ def run(conn, buf, command, settle=SETTLE):
     """
     start = len(buf)
     conn.sendall(("\n" + command + "; printf 'OXIDE-RC-%d\\n' $?\n").encode())
-    pump(conn, buf, settle)
+    deadline = time.time() + settle
+    while time.time() < deadline:
+        output = ANSI.sub("", buf[start:].decode("utf-8", "replace"))
+        if re.search(r"OXIDE-RC-[0-9]+\r?\n", output):
+            return output
+        if not pump(conn, buf, min(1, deadline - time.time())):
+            break
     return ANSI.sub("", buf[start:].decode("utf-8", "replace"))
 
 
@@ -129,6 +138,19 @@ try:
         ok = False
         print("guest-resolved-check: FAIL — stub DNS query", flush=True)
         print(query[-3000:], flush=True)
+
+    missing = run(conn, buf, "getent ahostsv4 oxide-no-such-host.invalid")
+    if re.search(r"OXIDE-RC-2", missing) and not re.search(r"^[0-9].*STREAM", missing, re.MULTILINE):
+        print("guest-resolved-check: negative DNS query OK", flush=True)
+    else:
+        ok = False
+        print("guest-resolved-check: FAIL — negative DNS query", flush=True)
+        print(missing[-3000:], flush=True)
+
+    fault = KERNEL_FAULT.search(buf.decode("utf-8", "replace"))
+    if fault:
+        ok = False
+        print(f"guest-resolved-check: FAIL — kernel fault: {fault.group(0)}", flush=True)
 except RuntimeError as exc:
     ok = False
     print(f"guest-resolved-check: FAIL — {exc}", flush=True)

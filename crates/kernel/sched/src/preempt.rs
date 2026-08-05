@@ -119,14 +119,6 @@ fn preempt_count_sub_local(n: u32) -> u32 {
     { preempt_count_slot().fetch_sub(n, Ordering::AcqRel) }
 }
 
-#[cfg(any(test, feature = "hosted"))]
-fn preempt_count_store_local(value: u32) {
-    #[cfg(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted")))]
-    { hosted_preempt(|count| count.set(value)); }
-    #[cfg(not(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted"))))]
-    { preempt_count_slot().store(value, Ordering::Release); }
-}
-
 /// Live count of an ARBITRARY CPU. The per-CPU state is a plain array, so a
 /// CPU that is still ticking can read a wedged one's — which is the only way
 /// to observe a leaked HARDIRQ/SOFTIRQ field on a CPU that has stopped taking
@@ -166,6 +158,16 @@ pub fn preempt_count() -> u32 { preempt_count_load() }
 /// # C: O(1)
 pub fn preempt_count_swap(incoming: u32) -> u32 {
     preempt_count_swap_local(incoming)
+}
+
+/// Replace this CPU's live count after a diagnosed accounting violation.
+/// The scheduler and softirq runner are the only recovery owners; ordinary
+/// nesting must use the paired add/sub helpers. # C: O(1)
+pub(crate) fn preempt_count_set(value: u32) {
+    #[cfg(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted")))]
+    { hosted_preempt(|count| count.set(value)); }
+    #[cfg(not(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted"))))]
+    { preempt_count_slot().store(value, Ordering::Release); }
 }
 
 // ---- Linux preempt_count bit-field layout (`include/linux/preempt.h`) ----
@@ -303,6 +305,11 @@ pub fn install_lockdep() {
 /// # C: O(1) — one per-CPU atomic read plus one SP compare
 pub fn in_atomic() -> bool {
     if in_interrupt() { return true; }
+    on_irq_stack()
+}
+
+/// True when SP belongs to this CPU's shared hard-IRQ stack. # C: O(1)
+pub(crate) fn on_irq_stack() -> bool {
     #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
     { if hal_aarch64::on_irq_stack() { return true; } }
     #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
@@ -461,7 +468,7 @@ impl Drop for PreemptGuard {
 /// # C: O(1)
 #[cfg(any(test, feature = "hosted"))]
 pub fn _test_reset() {
-    preempt_count_store_local(0);
+    preempt_count_set(0);
     resched::_test_reset_anchor(this_cpu());
     if let Some(t) = crate::live::current() { t.need_resched.store(false, Ordering::Release); }
 }

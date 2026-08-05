@@ -13,6 +13,28 @@ use crate::preempt::{
     self, SOFTIRQ_DISABLE_OFFSET, SOFTIRQ_OFFSET,
 };
 
+struct SchedHandlerAccounting;
+
+impl softirq::HandlerAccounting for SchedHandlerAccounting {
+    type Snapshot = u32;
+
+    fn before() -> u32 { preempt::preempt_count() }
+
+    fn after(expected: u32) {
+        let actual = preempt::preempt_count();
+        if actual == expected { return; }
+        #[cfg(feature = "debug-preempt")]
+        {
+            klog::write_raw(b"[BUG] softirq changed preempt_count: entered=");
+            klog::write_hex_u64(expected as u64);
+            klog::write_raw(b" exited=");
+            klog::write_hex_u64(actual as u64);
+            klog::write_raw(b"\n");
+        }
+        preempt::preempt_count_set(expected);
+    }
+}
+
 /// Linux `local_bh_disable`: disable softirq processing on THIS CPU by raising
 /// its preempt_count softirq field. Pairs with `local_bh_enable`. Cheap; the
 /// running task can't migrate while bh-disabled (count blocks resched).
@@ -44,7 +66,7 @@ pub unsafe fn local_bh_enable() {
         // across the do_softirq call in __local_bh_enable_ip).
         preempt::preempt_count_sub(SOFTIRQ_DISABLE_OFFSET - SOFTIRQ_OFFSET);
         // SAFETY: bh-accounted; drains this CPU's mask with the restart gate.
-        unsafe { softirq::run_pending(); }
+        unsafe { softirq::run_pending_accounted::<SchedHandlerAccounting>(); }
         preempt::preempt_count_sub(SOFTIRQ_OFFSET);
     } else {
         preempt::preempt_count_sub(SOFTIRQ_DISABLE_OFFSET);
@@ -80,7 +102,7 @@ pub unsafe fn do_softirq() {
     if !softirq::pending() { return; }
     preempt::preempt_count_add(SOFTIRQ_OFFSET); // in_serving_softirq = true
     // SAFETY: bh-accounted; the core drains this CPU's mask (restart gate).
-    unsafe { softirq::run_pending(); }
+    unsafe { softirq::run_pending_accounted::<SchedHandlerAccounting>(); }
     preempt::preempt_count_sub(SOFTIRQ_OFFSET);
 }
 
@@ -117,7 +139,7 @@ pub fn softirq_tail_begin() -> bool {
 /// # C: O(pending softirq work)
 pub unsafe fn softirq_tail_run() {
     // SAFETY: bh-accounted by softirq_tail_begin; drains this CPU's mask.
-    unsafe { softirq::run_pending(); }
+    unsafe { softirq::run_pending_accounted::<SchedHandlerAccounting>(); }
 }
 
 /// Release the bottom-half count. Call with interrupts OFF again, so the count
@@ -132,7 +154,7 @@ pub unsafe fn do_softirq_process() {
     if !softirq::pending() { return; }
     preempt::preempt_count_add(SOFTIRQ_OFFSET);
     // SAFETY: process-context bh-accounted drain.
-    unsafe { softirq::run_pending_process(); }
+    unsafe { softirq::run_pending_process_accounted::<SchedHandlerAccounting>(); }
     preempt::preempt_count_sub(SOFTIRQ_OFFSET);
 }
 
@@ -221,7 +243,16 @@ mod tests {
     use alloc::sync::Arc;
     use super::*;
     use crate::preempt;
-    use std::sync::Barrier;
+    use std::sync::{Barrier, Mutex, MutexGuard};
+
+    static SOFTIRQ_STATE: Mutex<()> = Mutex::new(());
+
+    fn own_softirq_state() -> MutexGuard<'static, ()> {
+        match SOFTIRQ_STATE.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => { SOFTIRQ_STATE.clear_poison(); poisoned.into_inner() }
+        }
+    }
 
     #[test]
     fn bh_disable_enable_balances_and_marks_in_interrupt() {
@@ -259,6 +290,7 @@ mod tests {
     fn enable_from_hard_irq_defers_the_drain_to_the_irq_tail() {
         static RAN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
         fn handler() { RAN.fetch_add(1, core::sync::atomic::Ordering::Relaxed); }
+        let _state = own_softirq_state();
         preempt::_test_reset();
         RAN.store(0, core::sync::atomic::Ordering::Relaxed);
         softirq::set_handler(softirq::Slot::Tasklet, handler);
@@ -275,6 +307,22 @@ mod tests {
         // SAFETY: pairs the disable above; process context, no lock held.
         unsafe { local_bh_enable(); }
         assert_eq!(RAN.load(core::sync::atomic::Ordering::Relaxed), 1);
+        softirq::clear_handler(softirq::Slot::Tasklet);
+        preempt::_test_reset();
+    }
+
+    fn corrupt_preempt_count() { preempt::preempt_count_set(0); }
+
+    #[test]
+    fn handler_count_violation_is_repaired_before_outer_softirq_exit() {
+        let _state = own_softirq_state();
+        preempt::_test_reset();
+        softirq::set_handler(softirq::Slot::Tasklet, corrupt_preempt_count);
+        softirq::raise(softirq::Slot::Tasklet);
+        // SAFETY: hosted process-context drain; handler deliberately models a
+        // schedule-bug recovery that returned with its softirq count cleared.
+        unsafe { do_softirq_process(); }
+        assert_eq!(preempt::preempt_count(), 0);
         softirq::clear_handler(softirq::Slot::Tasklet);
         preempt::_test_reset();
     }
