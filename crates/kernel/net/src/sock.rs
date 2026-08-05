@@ -31,6 +31,7 @@
 // - tcp_ip_options: TCP-entry ownership handoff for sticky IPv4 options.
 // - fastopen_result: TCP Fast Open connect and write result policy.
 // - accept_finalize: accepted-child copy-out completion and failure release.
+// - accept_admit: protocol accept-operation and state refusal ladder.
 // - connect_admission: lifecycle-locked INET connect preflight and commit.
 // - legacy_ioctl: protocol-owned terminal results for legacy socket ioctls.
 // - ops: bind/connect/listen/accept lifecycle work functions.
@@ -87,6 +88,7 @@ mod bind_policy;
 mod tcp_ip_options;
 mod fastopen_result;
 mod accept_finalize;
+mod accept_admit;
 #[cfg(target_os = "oxide-kernel")]
 mod connect_admission;
 mod tcp_rcvbuf;
@@ -143,6 +145,7 @@ pub use connect_security::{admit_connect, ConnectAdmission};
 pub use admission::{admit_accept, admit_listen, AcceptAdmission, ListenAdmission};
 pub use bind_policy::{BindPortPolicy, bind_port_policy};
 pub use accept_finalize::{Accepted, complete_accepted};
+pub use accept_admit::{AcceptShape, AcceptAdmit, admit_accept_shape};
 #[cfg(target_os = "oxide-kernel")]
 pub use connect_admission::{
     preflight_connect, preflight_connect_admitted, ConnectTransaction,
