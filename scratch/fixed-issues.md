@@ -451,6 +451,8 @@ open issue. Live rows that still need the work carry it in their own row.
 
 ### Net / socket
 
+| FIXED F80901 | med | The `sendmmsg` differential covered only the `UIO_MAXIOV` limit. | `socket::send_batch` now exposes and tests its actual per-entry batch-flag decision; hosted cases cover interrupted first-entry propagation and completed-prefix return after a later restart. Native compat refusal and the compat importer layout are already covered, and the mmsg host-oracle corpus passes. | F80901-sendmmsg-batch-semantic-coverage |
+
 | FIXED F808 | low | `TCP_ZEROCOPY_RECEIVE` copied stream bytes into freshly allocated window pages because the TCP receive queue had no page-granular owner to donate. | TCP now owns page-backed receive segments, coalesces contiguous arrival data while preserving timestamp boundaries, and transfers an aligned full-page object-frame reference directly to the receive window. Ordinary reads, OOB removal, queue accounting, and low-memory fallback retain the same canonical stream. Targeted TCP tests (111), modules tests (213), and both feature-gate architectures passed. | F808-tcp-zerocopy-receive-page-donation |
 
 | FIXED ae95e44da | low | A pathname or abstract AF_UNIX server cached its publishing Landlock domain at `bind(2)`, rather than consulting the server socket's retained file credentials at each check. | The registry now retains only a weak link to the bound socket; pathname resolution and abstract-scope checks read the domain from its canonical `f_cred`. Socket creation, accept, and socketpair capture that immutable security credential; focused Landlock tests, all 2,027 net tests, 1,224 syscall tests, and both feature-gate architectures passed. | B1837-unix-owner-domain-live |
