@@ -4,8 +4,6 @@
 // test rather than shipping quietly.
 
 use alloc::sync::Arc;
-use core::sync::atomic::Ordering;
-
 use vmm::coredump_filter::CoredumpFilter as F;
 use hal::UserVirtAddr;
 use vmm::{FileBacking, FileBackingError, SharedFrame, Vma, VmaBacking, VmaFlags, VmaProt};
@@ -274,9 +272,23 @@ fn the_adapter_reports_an_anonymous_mapping_as_written_only_once_it_has_pages() 
     let v = vma(VmaFlags::PRIVATE, VmaBacking::Anonymous);
     assert!(!describe_vma(&v, 0).anon_vma);
     assert_eq!(vma_dump_verdict(&describe_vma(&v, 0), F::DEFAULT), Skipped);
-    v.rss.store(1, Ordering::Relaxed);
+    v.anon_pages.store(true, core::sync::atomic::Ordering::Release);
     assert!(describe_vma(&v, 0).anon_vma);
     assert_eq!(vma_dump_verdict(&describe_vma(&v, 0), F::DEFAULT), Whole);
+}
+
+#[test]
+fn the_adapter_keeps_an_evicted_anonymous_mapping_in_the_private_class() {
+    let v = vma(VmaFlags::PRIVATE, VmaBacking::Anonymous);
+    v.anon_pages.store(true, core::sync::atomic::Ordering::Release);
+    assert_eq!(vma_dump_verdict(&describe_vma(&v, 0), F::DEFAULT), Whole);
+}
+
+#[test]
+fn the_adapter_classes_a_kernel_frame_as_a_mapped_shared_object() {
+    let d = describe_vma(&vma(VmaFlags::PRIVATE, VmaBacking::KernelFrame { pa: 0x2000 }), 0);
+    assert!(d.shared && d.file_backed && !d.unlinked_backing);
+    assert_eq!(vma_dump_verdict(&d, F::MAPPED_SHARED), Whole);
 }
 
 #[test]
