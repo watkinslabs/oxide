@@ -29,6 +29,7 @@
 // - admission: canonical listen and accept security admission tokens.
 // - bind_policy: IP bind-port option snapshot shared by UDP and TCP.
 // - tcp_ip_options: TCP-entry ownership handoff for sticky IPv4 options.
+// - fastopen_result: TCP Fast Open connect and write result policy.
 // - accept_finalize: accepted-child copy-out completion and failure release.
 // - connect_admission: lifecycle-locked INET connect preflight and commit.
 // - legacy_ioctl: protocol-owned terminal results for legacy socket ioctls.
@@ -84,6 +85,7 @@ mod connect_security;
 mod admission;
 mod bind_policy;
 mod tcp_ip_options;
+mod fastopen_result;
 mod accept_finalize;
 #[cfg(target_os = "oxide-kernel")]
 mod connect_admission;
