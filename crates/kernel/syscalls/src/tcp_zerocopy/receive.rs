@@ -202,16 +202,10 @@ fn window_at(address: u64) -> Option<Window> {
 /// `address`.  The queue transfers its existing object-frame reference to the
 /// receive window; no syscall-side receive page is allocated or copied. # C: O(bytes)
 fn remap(entry: &Arc<TcpEntry>, w: &Window, address: u64, bytes: u32, inline: bool) -> u32 {
-    let mut done = 0u32;
-    while done < bytes {
-        let pa = match entry.conn.lock().take_zerocopy_page(inline) { Some(pa) => pa, None => break };
-        if !w.install(address + done as u64, pa) {
-            pmm::setup::release_object_frame(pa);
-            break;
-        }
-        done += PAGE as u32;
-    }
-    done
+    zc::donate_pages(bytes, PAGE as u32,
+        || entry.conn.lock().take_zerocopy_page(inline),
+        |off, pa| w.install(address + off, pa),
+        pmm::setup::release_object_frame)
 }
 
 /// Move `bytes` of the receive queue into the caller's copy buffer.
