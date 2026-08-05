@@ -116,6 +116,10 @@ impl NetStack {
     }
 
     /// Transmit an IPv6 upper-layer payload through the canonical extension chain. # C: O(payload + N)
+    ///
+    /// `#[inline(never)]`: this owns the extension-chain and fragmentation buffers;
+    /// callers keep only their transport payload frame while it runs.
+    #[inline(never)]
     pub(super) fn xmit_ipv6_with_extensions(&self, owner: Option<&crate::SocketOwner>,
         iface_id: NetIfaceId, iface: crate::EgressLease,
         next_hop: Ipv6Addr, src: Ipv6Addr, final_dst: Ipv6Addr, base_dst: Ipv6Addr,

@@ -1,4 +1,5 @@
 use super::*;
+use alloc::boxed::Box;
 
 pub(super) enum TcpTxPolicy<'a> {
     Entry(&'a TcpEntry),
@@ -43,10 +44,10 @@ impl TcpTxPolicy<'_> {
         match self { Self::Entry(entry) => entry.ipv6_opts.srcprefs() }
     }
 
-    fn ipv6_headers(&self) -> crate::send_control::Raw6Control {
+    fn ipv6_headers(&self) -> Box<crate::send_control::Raw6Control> {
         let mut control = crate::send_control::Raw6Control::default();
         match self { Self::Entry(entry) => control.merge_sticky_headers(&entry.ipv6_opts) }
-        control
+        Box::new(control)
     }
 
     /// The sticky IPv4 option area every segment this socket emits carries.
@@ -106,13 +107,14 @@ impl NetStack {
                     self.path_mtu_in(net_ns, IpAddr::V6(dst), Some(iface_id),
                         crate::uapi::ipv6_pmtudisc_uses_interface(mode))? as usize,
                     policy.ipv6_frag_size());
+                let headers = policy.ipv6_headers();
                 self.xmit_ipv6_l4_with_policy(
                     iface_id, iface, next_hop, src, dst, IpProto::Tcp, segment,
                     crate::ipv6::IPV6_DEFAULT_HOP_LIMIT, 0,
                     policy.ipv6_flow_label().0, policy.ipv6_flow_label().1,
                     policy.ipv6_source_prefs(), mtu,
                     crate::uapi::ipv6_pmtudisc_allows_fragmentation(mode),
-                    Some(policy.owner()), &policy.ipv6_headers(),
+                    Some(policy.owner()), &headers,
                 )
             }
             _ => Err(NetError::Einval),
