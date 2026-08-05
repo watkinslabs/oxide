@@ -80,13 +80,23 @@ pub unsafe fn write_for_current(signo: i32, regs: *const crate::sig_dispatch::Us
                 cx.uid, cx.gid, suid_safe_required(cx.dumpable));
             trace(b"file", n as u64, u64::from(ok));
         }
-        // A socket destination needs a connection to a listener that this
-        // kernel has no path to yet, so nothing is delivered. Writing a file
-        // instead would put the dump somewhere the operator did not ask for.
-        CoreKind::Socket => {}
+        CoreKind::Socket => { dump_to_socket(trim(&raw), &cx, &body); }
     }
     // SAFETY: same running-task mm access as the latch above.
     if let Some(mm) = unsafe { cur.mm_ref() } { mm.set_coredumping(false); }
+}
+
+fn dump_to_socket(pattern: &[u8], cx: &CoreContext, body: &[u8]) {
+    let Some(path) = pattern::socket_path(pattern, cx) else { return };
+    let ns = vfs::mntns::initial().id();
+    let Some(root) = vfs::mount::root_path_for_ns(ns) else { return };
+    let Ok(found) = vfs::path_lookup_at_root_cred(root.dentry.clone(), root.mnt_id,
+        root.dentry, root.mnt_id, &path, vfs::LookupFlags::default(), vfs::Cred::root()) else { return };
+    if found.inode.file_type() != vfs::FileType::Socket { return }
+    let addr = net::UnixAddr::from_inode_bytes(path.as_bytes().to_vec(), &found.inode);
+    let Ok(sock) = net::sock::connect_kernel_unix(addr) else { return };
+    if sock.write_kernel(body).ok() != Some(body.len()) { return }
+    let _ = net::sock::shutdown(&sock, net::uapi::ShutdownHow::Write);
 }
 
 /// DIAG (`debug-boot`): why a crash produced the dump it did, or produced

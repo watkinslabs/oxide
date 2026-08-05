@@ -157,6 +157,16 @@ pub fn connect(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, nonblock: 
     connect_admitted(sock, addr, nonblock, admission)
 }
 
+/// Open a kernel-owned AF_UNIX stream connection in the initial network
+/// namespace. The caller owns the resulting stream and may use the ordinary
+/// socket I/O and shutdown owners without manufacturing a second transport.
+/// # C: O(1) or O(wait)
+pub fn connect_kernel_unix(addr: crate::UnixAddr) -> Result<alloc::sync::Arc<InetSocket>, NetError> {
+    let sock = alloc::sync::Arc::new(InetSocket::new_unix_in(network_namespace::initial()));
+    connect(&sock, RemoteAddr::Unix(addr), true)?;
+    Ok(sock)
+}
+
 /// Connect after canonical generic security admission. # C: O(1) or O(wait)
 pub fn connect_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, nonblock: bool,
                         admission: ConnectAdmission) -> Result<(), NetError> {
