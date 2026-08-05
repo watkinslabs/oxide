@@ -78,7 +78,9 @@ pub(crate) fn recv_error(sock: &Arc<InetSocket>, user: &RecvUser, flags: u64) ->
     if let Some(e) = oob_error(sock, flags) { return err(e); }
     let Some(entry) = sock.take_extended_error() else { return err(Errno::Eagain); };
     let family = sock.family.load(Ordering::Acquire);
-    let copied = match user.copy_payload(&entry.payload) { Ok(n) => n, Err(e) => return e };
+    let copied = match user.copy_payload_record(
+        &entry.payload[..core::cmp::min(user.capacity, entry.payload.len())])
+    { Ok(n) => n, Err(e) => return e };
     if let Err(e) = user.copy_name(&sockaddr(
         entry.destination, entry.destination_port, family, entry.ifindex,
     )) { return e; }
@@ -383,7 +385,7 @@ pub(crate) fn recv_pinned(sock: &Arc<InetSocket>, file_nonblock: bool, user: &Re
         return copied as i64;
     }
     let rcv = match receive(sock, user.capacity, flags, file_nonblock) { Ok(rcv) => rcv, Err(e) => return e };
-    let copied = match user.copy_payload(&rcv.payload) { Ok(n) => n, Err(e) => return e };
+    let copied = match user.copy_payload_record(&rcv.payload) { Ok(n) => n, Err(e) => return e };
     let mut ctrl = control(sock, &rcv, if user.control == 0 { 0 } else { user.controllen });
     let ctrl_len = match ctrl.copy_to(user) { Ok(len) => len, Err(e) => return e };
     if let Err(e) = copy_name(user, sock, &rcv) { return e; }
