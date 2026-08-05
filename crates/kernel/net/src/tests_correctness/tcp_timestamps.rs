@@ -104,7 +104,7 @@ fn f182_paws_accepts_newer_tsval_and_updates_recent() {
     let base = c.rcv_nxt;
     let fresh = build_data_segment_with_ts(base, c.snd_nxt, b"new", 2_000, 0);
     let _ = c.input(lo_ip(), lo_ip(), &fresh).unwrap();
-    let got: Vec<u8> = c.recv_buf.iter().copied().collect();
+    let got: Vec<u8> = c.recv_buf.iter().map(|b| b.byte).collect();
     assert_eq!(got, b"new");
     assert_eq!(c.ts_recent, 2_000);
 }

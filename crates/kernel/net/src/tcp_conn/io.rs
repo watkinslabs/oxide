@@ -35,17 +35,17 @@ impl TcpConn {
         }
     }
 
-    fn append_recv_payload(&mut self, seq: u32, payload: &[u8]) {
+    fn append_recv_payload(&mut self, seq: u32, payload: &[u8], timestamp_ns: u64) {
         for (index, byte) in payload.iter().copied().enumerate() {
             if self.oob_consumed == Some(seq.wrapping_add(index as u32)) {
                 self.oob_consumed = None;
-            } else { self.recv_buf.push_back(byte); }
+            } else { self.recv_buf.push_back(crate::tcp_conn::RecvByte { byte, timestamp_ns }); }
         }
     }
 
     /// Accept payload into the contiguous receive stream. # C: O(payload)
-    fn receive_payload(&mut self, seq: u32, payload: &[u8]) {
-        self.append_recv_payload(seq, payload);
+    fn receive_payload(&mut self, seq: u32, payload: &[u8], timestamp_ns: u64) {
+        self.append_recv_payload(seq, payload, timestamp_ns);
         self.bytes_received = self.bytes_received.saturating_add(payload.len() as u64);
     }
 
@@ -108,7 +108,7 @@ impl TcpConn {
     {
         let hdr = crate::tcp_hdr::parse_ip(seg, src_ip, dst_ip)
             .map_err(|_| TcpConnError::BadHdr)?;
-        self.input_completing_request(src_ip, dst_ip, seg, hdr)
+        self.input_completing_request(src_ip, dst_ip, seg, hdr, vfs::inode_times::realtime_now_ns())
     }
 
     /// Apply a filter-trimmed segment whose original checksum passed. # C: O(payload)
@@ -116,8 +116,16 @@ impl TcpConn {
                               dst_ip: crate::addr::IpAddr, seg: &[u8])
         -> Result<Option<Vec<u8>>, TcpConnError>
     {
+        self.input_prevalidated_at(src_ip, dst_ip, seg, vfs::inode_times::realtime_now_ns())
+    }
+
+    /// Apply a checksummed segment with its ingress realtime timestamp. # C: O(payload)
+    pub fn input_prevalidated_at(&mut self, src_ip: crate::addr::IpAddr,
+        dst_ip: crate::addr::IpAddr, seg: &[u8], timestamp_ns: u64)
+        -> Result<Option<Vec<u8>>, TcpConnError>
+    {
         let hdr = crate::tcp_hdr::parse_prevalidated(seg).map_err(|_| TcpConnError::BadHdr)?;
-        self.input_completing_request(src_ip, dst_ip, seg, hdr)
+        self.input_completing_request(src_ip, dst_ip, seg, hdr, timestamp_ns)
     }
 
     /// The segment that turns a request into a connection is applied twice:
@@ -131,20 +139,21 @@ impl TcpConn {
     /// # C: O(payload)
     fn input_completing_request(&mut self, src_ip: crate::addr::IpAddr,
                                 dst_ip: crate::addr::IpAddr, seg: &[u8],
-                                hdr: crate::tcp_hdr::TcpHdr)
+                                hdr: crate::tcp_hdr::TcpHdr, timestamp_ns: u64)
         -> Result<Option<Vec<u8>>, TcpConnError>
     {
         self.segs_in = self.segs_in.saturating_add(1);
         let was_request = self.state == TcpState::SynRecv;
-        let resp = self.input_with_header(src_ip, dst_ip, seg, hdr)?;
+        let resp = self.input_with_header(src_ip, dst_ip, seg, hdr, timestamp_ns)?;
         if !was_request || self.state != TcpState::Established { return Ok(resp); }
         let carries = seg.len() > hdr.payload_offset() || (hdr.flags & flags::FIN) != 0;
         if !carries { return Ok(resp); }
-        self.input_with_header(src_ip, dst_ip, seg, hdr)
+        self.input_with_header(src_ip, dst_ip, seg, hdr, timestamp_ns)
     }
 
     fn input_with_header(&mut self, src_ip: crate::addr::IpAddr,
-                         dst_ip: crate::addr::IpAddr, seg: &[u8], hdr: crate::tcp_hdr::TcpHdr)
+                         dst_ip: crate::addr::IpAddr, seg: &[u8], hdr: crate::tcp_hdr::TcpHdr,
+                         timestamp_ns: u64)
         -> Result<Option<Vec<u8>>, TcpConnError>
     {
         self.note_info_receive_at(crate::tcp_conn::ka_now_ns(), hdr.flags,
@@ -210,7 +219,7 @@ impl TcpConn {
                     let payload = &seg[hdr.payload_offset()..];
                     self.note_rcv_mss(payload.len());
                     self.data_segs_in = self.data_segs_in.saturating_add(1);
-                    self.receive_payload(self.rcv_nxt, payload);
+                    self.receive_payload(self.rcv_nxt, payload, timestamp_ns);
                     self.rcv_nxt = self.rcv_nxt.wrapping_add(payload.len() as u32);
                     self.note_rcv_rtt_at(crate::tcp_conn::ka_now_ns());
                     if (hdr.flags & flags::FIN) != 0 {
@@ -340,7 +349,7 @@ impl TcpConn {
                     }
                     if hdr.seq == self.rcv_nxt {
                         if !payload.is_empty() {
-                            self.receive_payload(hdr.seq, payload);
+                            self.receive_payload(hdr.seq, payload, timestamp_ns);
                         }
                         if let Some(urgent) = urgent {
                             self.urgent = Some(urgent);
@@ -353,7 +362,7 @@ impl TcpConn {
                             if seq != self.rcv_nxt { break; }
                             let segment = self.ooo_buf.remove(&seq).unwrap();
                             let len = segment.payload.len() as u32;
-                            self.receive_payload(seq, &segment.payload);
+                            self.receive_payload(seq, &segment.payload, segment.timestamp_ns);
                             if let Some(urgent) = segment.urgent {
                                 self.urgent = Some(urgent);
                                 self.oob_consumed = None;
@@ -371,7 +380,7 @@ impl TcpConn {
                             if used + payload.len() <= OOO_CAP {
                                 if let alloc::collections::btree_map::Entry::Vacant(entry) = self.ooo_buf.entry(hdr.seq) {
                                     entry.insert(crate::tcp_conn::OutOfOrderSegment {
-                                        payload: payload.to_vec(), urgent, fin: has_fin,
+                                        payload: payload.to_vec(), timestamp_ns, urgent, fin: has_fin,
                                     });
                                     self.rcv_ooopack = self.rcv_ooopack.saturating_add(1);
                                     self.note_fastopen_ofo_fin_blackhole();
