@@ -53,9 +53,46 @@ Phase 23: ship the BPF subset needed for seccomp filters.
 
 ## 6 Landlock
 
-Filesystem sandbox: ruleset of allowed filesystem ops (read_file, write_file, read_dir, ...) under named paths. Apply via `landlock_restrict_self`. Inherited; cannot be loosened.
+Landlock target: ABI 10 (Linux 7.2 UAPI).
 
-Implement now; modern container sandbox primitive, stand-alone of BPF.
+The target is independent of the compatibility release returned by `uname(2)`.
+Landlock has its own runtime negotiation through
+`landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION)`; changing a
+UTS release does not raise or lower this contract. The upstream references are
+Linux `security/landlock/`, `include/uapi/linux/landlock.h`, and the
+[Landlock userspace ABI documentation](https://docs.kernel.org/userspace-api/landlock.html).
+The checked-in source snapshot is Linux 7.2-rc4; ABI 10 was re-verified against
+current Linux 7.2 mainline on 2026-08-05.
+
+`landlock::uapi::TARGET_ABI_VERSION` is the code source of truth and
+`ABI_VERSION` is the value returned to userspace. The ABI test reads the exact
+target line above, so changing either side alone fails. An ABI number is a
+cumulative security claim: it may advance only when every rung through that
+number is implemented and its behavioural tests pass. Implementing a later
+rung never permits skipping an earlier mismatch.
+
+| ABI | Cumulative addition | Oxide goal |
+|---:|---|---|
+| 1 | filesystem hierarchy rules and base filesystem rights | enforced |
+| 2 | `LANDLOCK_ACCESS_FS_REFER` | enforced |
+| 3 | `LANDLOCK_ACCESS_FS_TRUNCATE` | enforced |
+| 4 | TCP bind/connect port rights | enforced |
+| 5 | `LANDLOCK_ACCESS_FS_IOCTL_DEV` | enforced |
+| 6 | abstract-UNIX-socket and signal scopes | enforced |
+| 7 | denial-logging controls | accepted; audit-disabled behaviour is intentional until an audit subsystem exists |
+| 8 | `LANDLOCK_RESTRICT_SELF_TSYNC` | open correctness blocker: enforcement must be all-or-nothing across the live thread group |
+| 9 | pathname UNIX-socket resolution | implemented; ABI-8 blocker still gates the cumulative claim |
+| 10 | UDP port rights, quiet rules, and quiet masks | implemented; ABI-8 blocker still gates the cumulative claim |
+
+Errata are tracked separately from the ABI number. Oxide advertises errata 1
+(TCP-only port rights) and 2 (same-process signal scope). Erratum 3
+(disconnected directory hierarchy handling) stays unadvertised until its
+known-issue row is fixed. The absence of an errata bit is an intentional,
+userspace-visible statement, not permission to remove the goal.
+
+Rulesets are inherited and cannot be loosened. Filesystem, network, and scope
+decisions all consume one immutable per-task domain; no second policy registry
+or release-derived feature table is permitted.
 
 ## 7 Sigverify (modules + kexec)
 
