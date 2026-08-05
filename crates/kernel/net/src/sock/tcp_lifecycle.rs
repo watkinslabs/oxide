@@ -161,7 +161,8 @@ fn connect_tcp(sock: &InetSocket, local_port: &mut Option<u16>, local_ip: crate:
     let (entry, carried) = stack().tcp_connect_reserved_min_hop(
         &bind, local_ip, remote_ip, remote_port, sock.error.clone(), sock.bpf_filter.clone(),
         sock.opts.ip_mtu_discover.clone(), sock.opts.ipv6_mtu_discover.clone(),
-        sock.opts.ipv6.frag_size_cell(), sock.opts.min_hop.clone(), sock.opts.ip.clone(),
+        sock.opts.ipv6.frag_size_cell(), sock.opts.min_hop.clone(),
+        super::tcp_ip_options::tcp_entry_ip_options(sock),
         sock.opts.generic.max_pacing_rate_cell(),
         super::tcp_fastopen::ActiveOpen::from(open), data,
     )?;
