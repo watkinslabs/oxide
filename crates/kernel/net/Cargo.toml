@@ -62,7 +62,7 @@ debug-tcprx = []  # [TCPRX] TCP delivery wake trace — did the receiver publish
 debug-boot = []
 debug-journal = []  # [B288 dgram] full journald record, one line per datagram. NOT on debug-boot: it is per-datagram volume (B1474)
 debug-scmfd = []  # [SCMW]/[SCMR] AF_UNIX SOCK_STREAM SCM_RIGHTS send/recv probe (vpid+nfds) — trace dbus-broker two-hop fd relay (logind CreateSessionWithPIDFD)
-debug-syscost = []  # [UXWRITE] connected-socket write trace for polkit<->dbus-broker reply-delivery hunt
+debug-syscost = []  # [UXWRITE] serial-heavy workload trace (kmain/debug-syscost-trace), not the profiler
 debug-dbus = []  # [DBUS] dump AF_UNIX stream messages touching login1 session iface / D-Bus errors — mutter get_session_proxy failure hunt
 debug-dbus-verbose = ["debug-dbus"]  # retain the complete broker-frame stream; debug-dbus itself stays focused on login/session traffic
 

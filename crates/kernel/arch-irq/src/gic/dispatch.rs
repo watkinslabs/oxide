@@ -60,6 +60,18 @@ pub unsafe fn eoi(intid: u32) {
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 #[no_mangle]
 unsafe extern "C" fn oxide_arm_irq_dispatch() {
+    // SPSR_EL1 still describes the interrupted context at dispatcher entry.
+    // Linux generic vtime closes the EL0 interval before hardirq accounting;
+    // the common return hook starts it again immediately before eret.
+    // SAFETY: dispatcher entry runs at EL1 and SPSR_EL1 is the architectural
+    // saved state for the interrupted context until the exception returns.
+    let entered_from_user = unsafe {
+        let spsr: u64;
+        core::arch::asm!("mrs {}, spsr_el1", out(reg) spsr,
+            options(nomem, nostack, preserves_flags));
+        (spsr & 0xf) == 0
+    };
+    if entered_from_user { sched::cpustat::user_exit(); }
     // Linux `irq_enter`: hardirq-account the whole dispatcher. While the
     // HARDIRQ field is set, no `preempt_enable` pair inside any handler can
     // fire `schedule()` — so a context switch can never happen on the per-CPU
@@ -131,8 +143,7 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
                 core::arch::asm!("mrs {}, spsr_el1", out(reg) spsr, options(nomem, nostack, preserves_flags));
                 (spsr & 0xf) == 0
             };
-            sched::cpustat::account(
-                if from_user { sched::cpustat::TickKind::User } else { sched::cpustat::TickKind::Idle });
+            sched::cpustat::account(sched::cpustat::tick_kind(from_user));
             // G3: per-task utime/stime — charge the real inter-tick delta to
             // the interrupted task's user/kernel CPU-time bucket (getrusage/
             // times). Hard-IRQ safe: per-task atomics plus a NON-BLOCKING

@@ -19,11 +19,12 @@ pub fn body(tid: u32) -> Vec<u8> {
     push(&mut out, b" ("); push(&mut out, comm.as_bytes()); push(&mut out, b") ");
     out.push(task.state().linux_char()); out.push(b' ');
     push_u64(&mut out, ppid);
-    // Fields 5..52 (pgrp..). utime is field 14 → 10th of these; report the
-    // task's accounted CPU time in CLK_TCK ticks (stime field 15 stays 0 —
-    // v1 doesn't split user/sys). Makes the scheduler's real runtime
-    // accounting observable via `ps`/`top`/`cat /proc/<pid>/stat`.
-    let utime = sched::clock::ns_to_clk_tck(task.sum_exec_runtime_ns.load(Ordering::Acquire));
+    // Fields 14/15 are Linux's split user/system CPU clocks, converted to
+    // USER_HZ. `sum_exec_runtime` is scheduler runtime, not a substitute for
+    // utime; reporting it in field 14 and hardcoding field 15 made every
+    // syscall-heavy process appear to spend zero time in the kernel.
+    let utime = sched::clock::ns_to_clk_tck(task.utime_ns.load(Ordering::Acquire));
+    let stime = sched::clock::ns_to_clk_tck(task.stime_ns.load(Ordering::Acquire));
     let starttime = crate::proc_clock::ReaderClock::current()
         .starttime_ticks(task.start_boottime_ns);
     // mm-layout numeric fields (Linux `/proc/pid/stat`): 26 startcode,
@@ -58,6 +59,7 @@ pub fn body(tid: u32) -> Vec<u8> {
     let rsslim = task.rlimit(sched::rlimit::rlim::RSS).0;
     for f in 5u32..=52 {
         if f == 14 { push(&mut out, b" "); push_u64(&mut out, utime); }
+        else if f == 15 { push(&mut out, b" "); push_u64(&mut out, stime); }
         else if f == 22 { push(&mut out, b" "); push_u64(&mut out, starttime); }
         else if f == 25 { push(&mut out, b" "); push_u64(&mut out, rsslim); }
         else if f == 40 { push(&mut out, b" "); push_u64(&mut out, rt_priority); }
