@@ -35,6 +35,7 @@ pub fn handle(owner: crate::SoundOwnerKey, card: u32, nr: u64, arg: u64) -> i64 
 /// File-carrying control dispatch. ALSA subscription is state of the open
 /// description (`snd_ctl_file`), so dup shares it and a separate open does
 /// not. All other control commands retain their card-owned semantics.
+/// # C: O(1)
 pub(crate) fn handle_open(
     owner: crate::SoundOwnerKey,
     card: u32,
