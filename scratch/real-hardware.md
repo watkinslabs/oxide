@@ -17,11 +17,11 @@ usable without it.
 
 | Status | System | Blocking | Finding | Branch |
 |---|---|---|---|---|
-| OPEN | Console (framebuffer) | yes | Full VT/fbcon stack built; only producer of a framebuffer is virtio-gpu. No output on bare metal. | — |
+| CLAIMED B1875-physical-framebuffer-source | Console (framebuffer) | yes | Full VT/fbcon stack built; only producer of a framebuffer is virtio-gpu. No output on bare metal. | B1875-physical-framebuffer-source |
 | OPEN | UEFI boot | yes | x86 boots multiboot2 (BIOS/CSM) only. Modern boards are UEFI, many without CSM. | — |
 | OPEN | Input | yes | Only PS/2 keyboard. No xHCI host controller anywhere. | — |
 | DONE 2b44a8a29 | Cache attributes (WC) | no | x86 PAT and arm64 Normal-NC are wired through driver-owned raw-PFN VMA policy. | B1874-x86-write-combining |
-| OPEN | SMP AP bringup | no | `bring_up_aps()` counts APs and returns; never starts one. Runs on 1 core. | — |
+| DONE 18936f7b5, 667c8a2da | SMP AP bringup | no | x86 INIT/SIPI and arm64 PSCI paths bring APs into the scheduler. | F425/F428 |
 | OPEN | x2APIC + CPU count | no¹ | `MAX_CPUS = 64`, `u64` online mask, no x2APIC enablement. | — |
 | OPEN | ACPI depth | no² | APIC/HPET/MCFG/SPCR parsed. No DSDT/AML, no FADT. | — |
 | OPEN | Ethernet | no | Only virtio-net. No driver for any physical NIC. | — |
@@ -143,28 +143,16 @@ there is no device range to measure before that live blocker is implemented.
 
 ## 6 SMP AP bringup
 
-**Finding.** `crates/kernel/cpu/src/smp.rs:121` — `bring_up_aps()` calls
-`enumerate_aps().len()` and returns the count. Its own doc comment says "v1
-does no actual startup — the per-AP INIT-IPI / PSCI CPU_ON sequence lands in
-P4-08+". No INIT-SIPI sequence exists; grep for SIPI/trampoline across
-`crates/` finds no x86 AP entry path.
+**Done.** The audit followed the unused generic `cpu::smp::bring_up_aps`
+scaffold and missed both live architecture owners. `kmain` calls
+`arch_irq::smp_x86::bring_up_aps_x86` and
+`hal_aarch64::smp::bring_up_aps_psci` directly.
 
-Consequence: one core, whatever the part. On a 64-core Threadripper that is
-1/64 of the machine, and it compounds the separate per-syscall overhead
-finding.
-
-**Work.**
-
-1. AP trampoline: real-mode entry page below 1 MiB, to protected then long
-   mode, onto the shared page tables.
-2. INIT-SIPI-SIPI per AP with the spec's delays; wait on the arrival ack
-   (`ap_arrived()` already exists and increments `ONLINE`).
-3. Per-CPU area, GDT/IDT/TSS, and syscall MSRs per AP — the syscall entry path
-   reads `gs:[8]`/`gs:[16]` from the per-CPU base, so an AP without this
-   faults on its first syscall.
-4. Per-CPU PAT programming (§5).
-5. Then re-check the locks the syscall path takes per call — a global registry
-   lock that is uncontended at 1 core is a serialisation point at 64.
+x86 copies its 16-to-64-bit trampoline below 1 MiB, sends INIT/SIPI, waits for
+arrival, and installs per-CPU GS, GDT/IDT/TSS, syscall and IRQ stacks, LAPIC
+timer, runqueue, and online state. arm64 uses PSCI CPU_ON and joins the same
+scheduler lifecycle. SMP=2 boot and watchdog output exercise both paths. The
+remaining scale blocker is §7: the 64-CPU mask and lack of x2APIC.
 
 ## 7 x2APIC and CPU count
 
