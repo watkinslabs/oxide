@@ -94,7 +94,7 @@ impl FileOps for FilterFileOps {
 
 fn make_filter_inode(slot: &'static FilterSlot) -> InodeRef {
     InodeBuilder::new(ring_alloc_ino(), mk_mode(FileType::Regular, 0o644),
-                      default_inode_ops(), Arc::new(FilterFileOps))
+                      ring::control_inode_ops(), Arc::new(FilterFileOps))
         .private(Arc::new(FilterData { slot }))
         .build()
 }
@@ -128,7 +128,7 @@ impl FileOps for AggFilterFileOps {
 
 fn make_agg_filter_inode() -> InodeRef {
     InodeBuilder::new(ring_alloc_ino(), mk_mode(FileType::Regular, 0o644),
-                      default_inode_ops(), Arc::new(AggFilterFileOps))
+                      ring::control_inode_ops(), Arc::new(AggFilterFileOps))
         .private(Arc::new(AggFilterData { val: Spinlock::new(b"none\n".to_vec()) }))
         .build()
 }
@@ -176,7 +176,7 @@ impl FileOps for AggEnableFileOps {
 
 fn make_agg_enable_inode(subsys: Option<&'static str>) -> InodeRef {
     InodeBuilder::new(ring_alloc_ino(), mk_mode(FileType::Regular, 0o644),
-                      default_inode_ops(), Arc::new(AggEnableFileOps))
+                      ring::control_inode_ops(), Arc::new(AggEnableFileOps))
         .private(Arc::new(AggEnableData { subsys }))
         .build()
 }

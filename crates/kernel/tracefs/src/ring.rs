@@ -14,7 +14,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use sync::{Spinlock, TaskList as TraceClass, Tracepoint as TracepointClass};
 use vfs::inode::{Inode, InodeBuilder};
-use vfs::inode_ops::{default_inode_ops, mk_mode};
+use vfs::inode_ops::{mk_mode, InodeOps};
 use vfs::file_ops::FileOps;
 use vfs::{FileType, Ino, InodeRef, KResult, VfsError};
 
@@ -329,6 +329,21 @@ fn read_at(body: &[u8], off: u64, buf: &mut [u8]) -> usize {
 
 fn alloc_ino() -> Ino { NEXT_INO.alloc() }
 
+/// Linux tracefs regular files use `tracefs_file_inode_operations` whose
+/// `setattr` delegates to `simple_setattr`. In particular, the `O_TRUNC` in
+/// ordinary `echo 1 > .../enable` opens is admitted before the control-file
+/// write runs. Trace control files have no persistent byte length, so Oxide's
+/// truncate half of that contract is a no-op. # C: O(1)
+struct TraceControlInodeOps;
+impl InodeOps for TraceControlInodeOps {
+    fn truncate(&self, _inode: &Inode, _len: u64) -> KResult<()> { Ok(()) }
+}
+
+/// Shared tracefs control-file inode operations. # C: O(1)
+pub(crate) fn control_inode_ops() -> Arc<dyn InodeOps> {
+    Arc::new(TraceControlInodeOps)
+}
+
 pub(crate) fn sched_switch_on() -> bool { SCHED_SWITCH_ON.load(Ordering::Acquire) }
 pub(crate) fn sys_enter_on() -> bool { *SYSCALL_EVENTS_ON.lock() & SYSCALL_EVENT_ENTER != 0 }
 pub(crate) fn sys_exit_on() -> bool { *SYSCALL_EVENTS_ON.lock() & SYSCALL_EVENT_EXIT != 0 }
@@ -473,7 +488,7 @@ impl FileOps for TraceFileOps {
 /// `i_size`. # C: O(1)
 fn make_trace_inode(file: TraceFile, size: u64) -> InodeRef {
     InodeBuilder::new(alloc_ino(), mk_mode(FileType::Regular, 0o644),
-                      default_inode_ops(), Arc::new(TraceFileOps))
+                      control_inode_ops(), Arc::new(TraceFileOps))
         .size(size)
         .private(Arc::new(TraceData { file }))
         .build()
@@ -532,5 +547,16 @@ mod tests {
 
         set_sys_exit(false);
         assert!(!sched::syscall_work::tracepoint_active());
+    }
+
+    #[test]
+    fn shell_redirection_truncate_is_admitted_on_trace_controls() {
+        let inode = make_enable_inode(sys_enter_on, set_sys_enter);
+        assert_eq!(inode.truncate(0), Ok(()),
+            "Linux tracefs simple_setattr admits O_TRUNC before echo writes");
+        assert_eq!(inode.write(0, b"1\n"), Ok(2));
+        assert!(sys_enter_on());
+        assert_eq!(inode.write(0, b"0\n"), Ok(2));
+        assert!(!sys_enter_on());
     }
 }
