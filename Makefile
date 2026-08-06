@@ -46,7 +46,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         stack-gate stack-gate-x86 stack-gate-arm \
         irq-gate irq-gate-x86 irq-gate-arm \
         feature-gate feature-gate-x86 feature-gate-arm feature-gate-atexit \
-        hosted-gate test-build-gate \
+        hosted-gate test-build-gate loom-gate \
         smoke-ping smoke-ping-x86 smoke-ping-arm \
         stack-gate-baseline-x86 stack-gate-baseline-arm stack-report \
         clean clean-builds help
@@ -139,7 +139,7 @@ counters:
 # the same canonical ELF paths, and the size/depth gates contractually inspect
 # the default binary. Build debug-all first, then overwrite it with default.
 .NOTPARALLEL: ci
-ci: warnings-control lint-ratchet audit-counts matrix-gate hosted-gate test-build-gate test build-debug build frame-gate stack-gate irq-gate
+ci: warnings-control lint-ratchet audit-counts matrix-gate hosted-gate test-build-gate loom-gate test build-debug build frame-gate stack-gate irq-gate
 
 # Structural gate on the syscall compliance ledger: one row per syscall number,
 # the declared column count on every row (escape-aware, so `\|` inside a cell is
@@ -425,6 +425,11 @@ hosted-gate:
 # ~2 s when nothing changed, ~2.5 min from a fully cold target directory.
 test-build-gate:
 	$(WARNING_RUN) ./tools/test-build-check.sh
+
+# Exercise the concurrency models under cfg(loom). The xtask owns the exact
+# crate set and preemption bound so local and required PR checks cannot drift.
+loom-gate:
+	$(WARNING_RUN) $(XTASK) test --loom --quiet
 
 # Regenerate the allowlists. Reasons must be edited in by hand afterwards —
 # the gate refuses an entry that is not under a `#` reason block.

@@ -10,8 +10,10 @@ const INIT_ID: NetworkNamespaceId = NetworkNamespaceId(0);
 
 struct Registry {
     init: Option<NetworkNamespaceRef>,
-    by_id: BTreeMap<NetworkNamespaceId, RegistryEntry>,
+    by_id: BTreeMap<NetworkNamespaceId, LiveRegistryEntry>,
 }
+
+type LiveRegistryEntry = RegistryEntry<Weak<NetworkNamespace>, Arc<FinalDropPublication>>;
 
 pub trait WeakOwner {
     type Strong;
@@ -33,7 +35,7 @@ impl FinalDropCompleted for Arc<FinalDropPublication> {
     fn completed(&self) -> bool { FinalDropPublication::completed(self) }
 }
 
-pub enum RegistryEntry<W = Weak<NetworkNamespace>, P = Arc<FinalDropPublication>> {
+pub enum RegistryEntry<W, P> {
     Live { owner: W, final_drop: P },
     TeardownClaimed,
 }

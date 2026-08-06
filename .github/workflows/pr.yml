@@ -58,6 +58,8 @@ jobs:
         run: make hosted-gate
       - name: isolated test-target builds
         run: make test-build-gate
+      - name: loom model checks
+        run: make loom-gate
 
   test-hosted:
     name: test --hosted
