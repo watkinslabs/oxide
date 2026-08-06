@@ -21,7 +21,7 @@ jobs:
     if: ${{ vars.OXIDE_RUN_SPEC_LINT == '1' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: install rust toolchain
         run: rustup show
       - name: spec-lint all
@@ -37,7 +37,7 @@ jobs:
     name: lint-ratchet
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: install rust toolchain
         run: rustup show
       - name: spec-lint ratchet
@@ -47,7 +47,7 @@ jobs:
     name: warnings --hosted
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: install rust toolchain
         run: rustup show
       - name: warnings-gate controls
@@ -62,7 +62,7 @@ jobs:
     if: ${{ vars.OXIDE_RUN_HOSTED_TESTS == '1' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: install rust toolchain
         run: rustup show
       - name: cargo test workspace
@@ -85,11 +85,18 @@ jobs:
           - { name: default,   features: "" }
           - { name: debug-all, features: "debug-all" }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: install rust toolchain
         run: rustup show
       - name: install rust-src
         run: rustup component add rust-src --toolchain $(rustup show active-toolchain | awk '{print $1}')
+      - name: expose pinned ld.lld
+        if: ${{ matrix.arch == 'aarch64' }}
+        run: |
+          rust_lld=$(find "$(rustc --print sysroot)" -type f -name rust-lld -print -quit)
+          test -n "$rust_lld"
+          ln -s "$rust_lld" "$RUNNER_TEMP/ld.lld"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
       - name: xtask kernel --arch ${{ matrix.arch }} (${{ matrix.profile.name }})
         # Compile-check only: build and validate the real per-arch vDSO, then
         # skip rootfs generation because CI does not boot.
@@ -120,11 +127,18 @@ jobs:
       matrix:
         arch: [x86_64, aarch64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: install rust toolchain
         run: rustup show
       - name: install rust-src
         run: rustup component add rust-src --toolchain $(rustup show active-toolchain | awk '{print $1}')
+      - name: expose pinned ld.lld
+        if: ${{ matrix.arch == 'aarch64' }}
+        run: |
+          rust_lld=$(find "$(rustc --print sysroot)" -type f -name rust-lld -print -quit)
+          test -n "$rust_lld"
+          ln -s "$rust_lld" "$RUNNER_TEMP/ld.lld"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
       # No `rustfilt` install: both gates demangle in-process via
       # tools/rust_symbol_identity.py, so their output and their allowlist
       # keys cannot depend on whether a demangler happened to be present.
