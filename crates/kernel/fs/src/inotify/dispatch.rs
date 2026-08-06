@@ -284,6 +284,7 @@ fn fire_with_parent(inode: &InodeRef, mask_bit: u32, dentry: &Arc<vfs::Dentry>) 
 }
 
 #[cfg(test)]
+/// Exercise the production inode/parent admission path. # C: O(matching marks)
 pub(crate) fn fire_with_parent_for_test(inode: &InodeRef, mask_bit: u32,
                                         dentry: &Arc<vfs::Dentry>) {
     fire_with_parent(inode, mask_bit, dentry);
