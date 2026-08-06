@@ -107,7 +107,7 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
         return rv;
     }
     // ALSA /dev/snd/* + OSS /dev/dsp,/dev/mixer — the `sound` ALSA core.
-    if let Some(rv) = sound::handle_ioctl(file.inode(), req, arg) { return rv; }
+    if let Some(rv) = sound::handle_ioctl(&file, req, arg) { return rv; }
     if let Some(rv) = handle_autofs_dev_ioctl(file.inode(), req, arg) {
         return rv;
     }

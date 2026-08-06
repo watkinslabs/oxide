@@ -27,7 +27,21 @@ pub(crate) fn unregister_card(owner: crate::SoundOwnerKey) {
 }
 
 /// Handle one `SNDRV_CTL_IOCTL_*` (magic 'U' stripped → `nr`). # C: O(1)
+#[cfg(test)]
 pub fn handle(owner: crate::SoundOwnerKey, card: u32, nr: u64, arg: u64) -> i64 {
+    handle_open(owner, card, None, nr, arg)
+}
+
+/// File-carrying control dispatch. ALSA subscription is state of the open
+/// description (`snd_ctl_file`), so dup shares it and a separate open does
+/// not. All other control commands retain their card-owned semantics.
+pub(crate) fn handle_open(
+    owner: crate::SoundOwnerKey,
+    card: u32,
+    file: Option<&vfs::File>,
+    nr: u64,
+    arg: u64,
+) -> i64 {
     if crate::ops::ops_for(owner).is_none() {
         return err(Errno::Enodev);
     }
@@ -39,7 +53,10 @@ pub fn handle(owner: crate::SoundOwnerKey, card: u32, nr: u64, arg: u64) -> i64 
         CTL_PCM_NEXT_DEVICE => pcm_next_device(owner, arg),
         CTL_PCM_INFO => pcm_info(owner, card, arg),
         CTL_ELEM_LIST => elem_list(arg),
-        CTL_SUBSCRIBE => subscribe(owner, arg),
+        CTL_SUBSCRIBE => match file {
+            Some(file) => subscribe(file, arg),
+            None => err(Errno::Ebadfd),
+        },
         CTL_ELEM_INFO => elem_info(arg),
         CTL_ELEM_READ => elem_read(owner, arg),
         CTL_ELEM_WRITE => elem_write(owner, arg),
@@ -126,9 +143,14 @@ fn elem_write(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
     err(Errno::Enoent)
 }
 
-fn subscribe(owner: crate::SoundOwnerKey, arg: u64) -> i64 {
-    let _ = owner;
-    let _ = match UserBuf::new(arg, 4) { Some(b) => b, None => return err(Errno::Efault) };
+fn subscribe(file: &vfs::File, arg: u64) -> i64 {
+    let b = match UserBuf::new(arg, 4) { Some(b) => b, None => return err(Errno::Efault) };
+    let requested = b.r32(0) as i32;
+    if requested < 0 {
+        b.w32(0, u32::from(file.private_data() != 0));
+        return 0;
+    }
+    file.set_private_data(u64::from(requested != 0));
     0
 }
 
