@@ -1,12 +1,8 @@
 name: pr
 
+# On-demand diagnostics only. Local gates own merge verification per docs/40.
 on:
-  pull_request:
-    branches: [main]
   workflow_dispatch:
-
-permissions:
-  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -21,7 +17,7 @@ jobs:
     if: ${{ vars.OXIDE_RUN_SPEC_LINT == '1' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       - name: install rust toolchain
         run: rustup show
       - name: spec-lint all
@@ -37,7 +33,7 @@ jobs:
     name: lint-ratchet
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       - name: install rust toolchain
         run: rustup show
       - name: spec-lint ratchet
@@ -47,17 +43,13 @@ jobs:
     name: warnings --hosted
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       - name: install rust toolchain
         run: rustup show
       - name: warnings-gate controls
         run: python3 tools/warnings-gate.py --self-test
       - name: workspace build with warnings denied
         run: python3 tools/warnings-gate.py -- cargo build --workspace
-      - name: isolated host crate checks
-        run: make hosted-gate
-      - name: isolated test-target builds
-        run: make test-build-gate
 
   test-hosted:
     name: test --hosted
@@ -66,7 +58,7 @@ jobs:
     if: ${{ vars.OXIDE_RUN_HOSTED_TESTS == '1' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       - name: install rust toolchain
         run: rustup show
       - name: cargo test workspace
@@ -89,19 +81,11 @@ jobs:
           - { name: default,   features: "" }
           - { name: debug-all, features: "debug-all" }
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       - name: install rust toolchain
         run: rustup show
       - name: install rust-src
         run: rustup component add rust-src --toolchain $(rustup show active-toolchain | awk '{print $1}')
-      - name: expose pinned LLVM tools
-        if: ${{ matrix.arch == 'aarch64' }}
-        run: |
-          rust_lld=$(find "$(rustc --print sysroot)" -type f -name rust-lld -print -quit)
-          test -n "$rust_lld"
-          ln -s "$rust_lld" "$RUNNER_TEMP/ld.lld"
-          echo "$(dirname "$rust_lld")" >> "$GITHUB_PATH"
-          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
       - name: xtask kernel --arch ${{ matrix.arch }} (${{ matrix.profile.name }})
         # Compile-check only: build and validate the real per-arch vDSO, then
         # skip rootfs generation because CI does not boot.
@@ -132,19 +116,11 @@ jobs:
       matrix:
         arch: [x86_64, aarch64]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       - name: install rust toolchain
         run: rustup show
       - name: install rust-src
         run: rustup component add rust-src --toolchain $(rustup show active-toolchain | awk '{print $1}')
-      - name: expose pinned LLVM tools
-        if: ${{ matrix.arch == 'aarch64' }}
-        run: |
-          rust_lld=$(find "$(rustc --print sysroot)" -type f -name rust-lld -print -quit)
-          test -n "$rust_lld"
-          ln -s "$rust_lld" "$RUNNER_TEMP/ld.lld"
-          echo "$(dirname "$rust_lld")" >> "$GITHUB_PATH"
-          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
       # No `rustfilt` install: both gates demangle in-process via
       # tools/rust_symbol_identity.py, so their output and their allowlist
       # keys cannot depend on whether a demangler happened to be present.
@@ -176,9 +152,3 @@ jobs:
           python3 tools/stack-depth-gate.py "${{ steps.elf.outputs.path }}" \
             --arch ${{ matrix.arch }} --fail 13000 \
             --allowlist tools/stack-depth-allow-${{ matrix.arch }}.txt
-      - name: hard-IRQ stack-depth gate
-        run: |
-          python3 tools/stack-depth-gate.py "${{ steps.elf.outputs.path }}" \
-            --arch ${{ matrix.arch }} --fail 99999 \
-            --indirect-map tools/irq-edges-${{ matrix.arch }}.tsv \
-            --irq-roots tools/irq-roots-${{ matrix.arch }}.txt --irq-fail 12000
