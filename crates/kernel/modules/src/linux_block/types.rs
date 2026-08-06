@@ -1,10 +1,12 @@
+use crate::linux_alloc::LinuxPage;
 use crate::linux_device::types::LinuxDevice;
 use core::ffi::{c_char, c_void};
 
 pub(super) type MakeRequestFn = unsafe extern "C" fn(*mut LinuxRequestQueue, *mut LinuxBio) -> i32;
 pub(super) type RequestFn = unsafe extern "C" fn(*mut LinuxRequestQueue);
 pub(super) type BioEndIoFn = unsafe extern "C" fn(*mut LinuxBio);
-pub(super) type RqEndIoFn = unsafe extern "C" fn(*mut LinuxRequest, u8, *const c_void) -> i32;
+pub(super) type RqEndIoFn = unsafe extern "C" fn(*mut LinuxRequest, u8, *const LinuxIoCompBatch) -> i32;
+pub(super) type IoCompCompleteFn = unsafe extern "C" fn(*mut LinuxIoCompBatch);
 pub(super) type QueueRqFn = unsafe extern "C" fn(*mut LinuxBlkMqHwCtx, *const LinuxBlkMqQueueData) -> u8;
 pub(super) type CompleteFn = unsafe extern "C" fn(*mut LinuxRequest);
 pub(super) type InitRequestFn = unsafe extern "C" fn(*mut LinuxBlkMqTagSet, *mut LinuxRequest, u32, u32) -> i32;
@@ -80,6 +82,14 @@ pub(super) struct LinuxGendisk {
 }
 
 #[repr(C)]
+#[derive(Copy, Clone)]
+pub(super) struct LinuxBioVec {
+    pub(super) bv_page: *mut LinuxPage,
+    pub(super) bv_len: u32,
+    pub(super) bv_offset: u32,
+}
+
+#[repr(C)]
 pub(super) struct LinuxBio {
     pub(super) bi_disk: *mut LinuxGendisk,
     pub(super) bi_bdev: *mut LinuxBlockDevice,
@@ -88,7 +98,9 @@ pub(super) struct LinuxBio {
     pub(super) bi_opf: u32,
     pub(super) bi_status: u8,
     pub(super) bi_size: u32,
-    pub(super) bi_data: *mut u8,
+    pub(super) bi_io_vec: *mut LinuxBioVec,
+    pub(super) bi_vcnt: u16,
+    pub(super) bi_max_vecs: u16,
     pub(super) bi_end_io: Option<BioEndIoFn>,
     pub(super) owner: *mut c_void,
 }
@@ -154,10 +166,26 @@ pub(super) struct LinuxBlkMqQueueData {
 }
 
 #[repr(C)]
+pub(super) struct LinuxRqList {
+    pub(super) head: *mut LinuxRequest,
+    pub(super) tail: *mut LinuxRequest,
+}
+
+#[repr(C)]
+pub(super) struct LinuxIoCompBatch {
+    pub(super) req_list: LinuxRqList,
+    pub(super) need_ts: bool,
+    pub(super) complete: Option<IoCompCompleteFn>,
+    pub(super) poll_ctx: *mut c_void,
+}
+
+#[repr(C)]
 pub(super) struct LinuxRequest {
     pub(super) q: *mut LinuxRequestQueue,
     pub(super) mq_ctx: *mut c_void,
     pub(super) mq_hctx: *mut LinuxBlkMqHwCtx,
+    pub(super) bio: *mut LinuxBio,
+    pub(super) biotail: *mut LinuxBio,
     pub(super) cmd_flags: u32,
     pub(super) rq_flags: u32,
     pub(super) tag: i32,
@@ -165,11 +193,38 @@ pub(super) struct LinuxRequest {
     pub(super) timeout: u32,
     pub(super) data_len: u32,
     pub(super) sector: u64,
-    pub(super) bio: *mut LinuxBio,
-    pub(super) biotail: *mut LinuxBio,
     pub(super) part: *mut LinuxBlockDevice,
     pub(super) state: u32,
     pub(super) status: u8,
     pub(super) end_io: Option<RqEndIoFn>,
     pub(super) end_io_data: *mut c_void,
+    pub(super) rq_next: *mut LinuxRequest,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::mem::{offset_of, size_of};
+
+    #[test]
+    fn bio_layout_matches_the_module_header_contract() {
+        assert_eq!(size_of::<LinuxBioVec>(), 16);
+        assert_eq!(size_of::<LinuxBio>(), 80);
+        assert_eq!(offset_of!(LinuxBio, bi_size), 40);
+        assert_eq!(offset_of!(LinuxBio, bi_io_vec), 48);
+        assert_eq!(offset_of!(LinuxBio, bi_vcnt), 56);
+        assert_eq!(offset_of!(LinuxBio, bi_end_io), 64);
+    }
+
+    #[test]
+    fn request_and_batch_layouts_match_the_module_header_contract() {
+        assert_eq!(size_of::<LinuxRequest>(), 112);
+        assert_eq!(offset_of!(LinuxRequest, bio), 24);
+        assert_eq!(offset_of!(LinuxRequest, cmd_flags), 40);
+        assert_eq!(offset_of!(LinuxRequest, sector), 64);
+        assert_eq!(offset_of!(LinuxRequest, end_io), 88);
+        assert_eq!(offset_of!(LinuxRequest, rq_next), 104);
+        assert_eq!(size_of::<LinuxIoCompBatch>(), 40);
+        assert_eq!(offset_of!(LinuxIoCompBatch, complete), 24);
+    }
 }

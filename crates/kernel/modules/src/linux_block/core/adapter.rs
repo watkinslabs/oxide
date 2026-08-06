@@ -75,8 +75,8 @@ impl BlockDevice for LinuxBlockAdapter {
         // and bi_status is the u8 field the callback wrote.
         let ok = unsafe { bio_status_ok(bio) };
         if req.op == BlockOp::Read {
-            // SAFETY: bio is still the live owner-interior bio and its bi_data covers bi_size bytes by
-            // construction in bio_alloc_with_len; copy_bio_to_request clamps to the request buffer.
+            // SAFETY: bio is still live and its accepted vector windows cover the declared payload;
+            // copy_bio_to_request clamps to the request buffer.
             unsafe { copy_bio_to_request(bio, req); }
         }
         // SAFETY: bio is the interior pointer of the BioOwner Box bio_from_request allocated, nothing

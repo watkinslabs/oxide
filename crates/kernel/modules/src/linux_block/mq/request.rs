@@ -3,6 +3,7 @@ use super::queue::mq_ops;
 use crate::linux_block::contract::{rq_owner_after_end_io, RqOwner};
 use crate::linux_block::core;
 use crate::linux_block::types::*;
+use crate::linux_sync::{complete, wait_for_completion, LinuxCompletion};
 use alloc::boxed::Box;
 use ::core::ffi::c_void;
 use ::core::ptr::null_mut;
@@ -99,6 +100,11 @@ unsafe extern "C" fn blk_mq_start_request(rq: *mut LinuxRequest) {
 /// does not dispatch the `complete` op, which belongs to blk_mq_complete_request.
 /// # C: O(1) plus the module's callbacks
 pub(super) unsafe extern "C" fn blk_mq_end_request(rq: *mut LinuxRequest, status: u8) {
+    // SAFETY: forwards the live request/status contract and supplies the non-batched null batch marker.
+    unsafe { end_request(rq, status, null_mut()); }
+}
+
+unsafe fn end_request(rq: *mut LinuxRequest, status: u8, iob: *const LinuxIoCompBatch) {
     if rq.is_null() { return; }
     // SAFETY: rq is null-checked and is a live alloc_request Box; status/state/end_io are its own fields,
     // end_io being the Option<fn> the module installed. Every read of rq happens here, before the callback
@@ -111,9 +117,9 @@ pub(super) unsafe extern "C" fn blk_mq_end_request(rq: *mut LinuxRequest, status
     let ret = match end_io {
         None => None,
         // SAFETY: rq is still the live request — nothing has freed it yet — and `end` is the rq_end_io_fn
-        // the module installed on it. A non-batched completion passes a null io_comp_batch, which is the
-        // only completion shape this shim produces.
-        Some(end) => Some(unsafe { end(rq, status, null_mut::<c_void>() as *const c_void) }),
+        // the module installed on it. iob is null for an ordinary completion and names the active batch
+        // while blk_mq_end_request_batch drains one.
+        Some(end) => Some(unsafe { end(rq, status, iob) }),
     };
     match rq_owner_after_end_io(ret) {
         // SAFETY: the callback either did not exist or returned RQ_END_IO_FREE, so the request is still the
@@ -147,7 +153,27 @@ pub(super) unsafe extern "C" fn blk_mq_complete_request(rq: *mut LinuxRequest) {
     }
 }
 
-unsafe extern "C" fn blk_mq_end_request_batch(_ib: *mut c_void) {}
+pub(super) unsafe extern "C" fn blk_mq_end_request_batch(iob: *mut LinuxIoCompBatch) {
+    if iob.is_null() { return; }
+    loop {
+        // SAFETY: iob is the caller's live batch and req_list is its intrusive request list head.
+        let rq = unsafe { (*iob).req_list.head };
+        if rq.is_null() {
+            // SAFETY: an empty intrusive list has both links null; iob remains live for the call.
+            unsafe { (*iob).req_list.tail = null_mut(); }
+            return;
+        }
+        // SAFETY: rq is the live list head and rq_next was linked by the batch producer before this call.
+        let next = unsafe { (*rq).rq_next };
+        // SAFETY: iob and rq remain live before end_request; detach rq so no freed request stays linked.
+        unsafe {
+            (*iob).req_list.head = next;
+            if next.is_null() { (*iob).req_list.tail = null_mut(); }
+            (*rq).rq_next = null_mut();
+            end_request(rq, BLK_STS_OK, iob as *const LinuxIoCompBatch);
+        }
+    }
+}
 
 unsafe extern "C" fn blk_update_request(rq: *mut LinuxRequest, status: u8, bytes: u32) -> bool {
     if rq.is_null() { return false; }
@@ -200,30 +226,32 @@ pub(super) unsafe extern "C" fn blk_execute_rq_nowait(rq: *mut LinuxRequest, _at
 // write; the request itself may belong to another owner by then and cannot carry the answer.
 struct SyncWait {
     status: u8,
-    done: bool,
+    done: LinuxCompletion,
 }
 
-unsafe extern "C" fn sync_end_io(rq: *mut LinuxRequest, status: u8, _iob: *const c_void) -> i32 {
+unsafe extern "C" fn sync_end_io(rq: *mut LinuxRequest, status: u8, _iob: *const LinuxIoCompBatch) -> i32 {
     if rq.is_null() { return RQ_END_IO_NONE; }
     // SAFETY: sync_end_io is installed only by blk_execute_rq, which writes end_io_data with the pointer to
     // its own SyncWait allocation immediately before submitting, so the field holds that pointer or null.
     let wait = unsafe { (*rq).end_io_data as *mut SyncWait };
     if wait.is_null() { return RQ_END_IO_NONE; }
     // SAFETY: wait is the SyncWait Box::into_raw pointer blk_execute_rq installed and has not been
-    // reclaimed — blk_execute_rq only reclaims it once this callback has set `done`.
+    // reclaimed — blk_execute_rq only reclaims it after this callback completes the wait primitive.
     unsafe {
         (*wait).status = status;
-        (*wait).done = true;
+        complete(&mut (*wait).done);
     }
     // Ownership stays with blk_execute_rq's caller, which frees the request after reading the status.
     RQ_END_IO_NONE
 }
 
 /// Execute a passthrough request and report the status its completion recorded.
-/// # C: O(1) plus the module's callbacks
+/// # Ctx: process
+/// # Sleeps: yes
+/// # C: O(1) plus the module's callbacks and completion wait
 pub(super) unsafe extern "C" fn blk_execute_rq(rq: *mut LinuxRequest, at_head: bool) -> u8 {
     if rq.is_null() { return BLK_STS_IOERR; }
-    let wait = Box::into_raw(Box::new(SyncWait { status: BLK_STS_IOERR, done: false }));
+    let wait = Box::into_raw(Box::new(SyncWait { status: BLK_STS_IOERR, done: LinuxCompletion::pending() }));
     // SAFETY: rq is null-checked and is the module's live request from blk_mq_alloc_request; end_io and
     // end_io_data are its own fields, which blk_execute_rq owns for the call's duration. `wait` is a live
     // Box::into_raw allocation that outlives the submission on every path below.
@@ -232,14 +260,9 @@ pub(super) unsafe extern "C" fn blk_execute_rq(rq: *mut LinuxRequest, at_head: b
         (*rq).end_io_data = wait as *mut c_void;
         blk_execute_rq_nowait(rq, at_head);
     }
-    // SAFETY: wait is that same allocation, written only by sync_end_io and only in its two fields. rq is
-    // deliberately NOT read here — its completion may already have handed it to another owner.
-    let done = unsafe { (*wait).done };
-    if !done {
-        // The request has not completed and its end_io_data still names this allocation, so reclaiming it
-        // would leave the callback a dangling pointer. It stays allocated and the caller sees an I/O error.
-        return BLK_STS_IOERR;
-    }
+    // SAFETY: wait is the live heap record installed in end_io_data; completion owns its wake and the
+    // current process holds no driver lock while sleeping for sync_end_io.
+    unsafe { wait_for_completion(&mut (*wait).done); }
     // SAFETY: the completion has run and cannot run again for this submission, so this Box::from_raw is the
     // sole reclaim of the allocation made at the top of this function.
     let wait = unsafe { Box::from_raw(wait) };
@@ -271,6 +294,8 @@ pub(super) unsafe fn alloc_request(q: *mut LinuxRequestQueue, opf: u32, hctx_idx
         q,
         mq_ctx: null_mut(),
         mq_hctx: hctx,
+        bio: null_mut(),
+        biotail: null_mut(),
         cmd_flags: opf,
         rq_flags: 0,
         tag: RQ_ALLOC_TAG,
@@ -280,13 +305,12 @@ pub(super) unsafe fn alloc_request(q: *mut LinuxRequestQueue, opf: u32, hctx_idx
         timeout: unsafe { (*q).rq_timeout },
         data_len: 0,
         sector: 0,
-        bio: null_mut(),
-        biotail: null_mut(),
         part: null_mut(),
         state: REQ_STATE_ALLOCATED,
         status: BLK_STS_OK,
         end_io: None,
         end_io_data: null_mut(),
+        rq_next: null_mut(),
     });
     let ptr = &mut *rq as *mut LinuxRequest;
     // SAFETY: q is the non-null queue from the entry check; mq_ops re-checks it and yields only a vtable the
