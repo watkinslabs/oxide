@@ -1,4 +1,4 @@
-use super::{allocation_policy, default_min_free_kbytes, derive_zone_watermarks, AllocationPolicy, WatermarkTunables, DEFAULT_WATERMARK_SCALE_FACTOR, KIB_BYTES, MIN_FREE_KBYTES_CEILING, MIN_FREE_KBYTES_FLOOR};
+use super::{allocation_policy, default_min_free_kbytes, derive_zone_watermarks, direct_reclaim_allowed, AllocationPolicy, WatermarkTunables, DEFAULT_WATERMARK_SCALE_FACTOR, KIB_BYTES, MIN_FREE_KBYTES_CEILING, MIN_FREE_KBYTES_FLOOR};
 
 const PAGE_BYTES: u64 = 4096;
 
@@ -27,4 +27,12 @@ fn allocation_wakes_at_low_and_reclaims_only_before_min() {
     assert_eq!(allocation_policy(500, 1), AllocationPolicy::Allow);
     assert_eq!(allocation_policy(150, 1), AllocationPolicy::WakeBackground);
     assert_eq!(allocation_policy(100, 1), AllocationPolicy::DirectReclaim);
+}
+
+#[test]
+fn direct_reclaim_requires_blockable_non_flusher_context() {
+    assert!(direct_reclaim_allowed(false, false));
+    assert!(!direct_reclaim_allowed(true, false));
+    assert!(!direct_reclaim_allowed(false, true));
+    assert!(!direct_reclaim_allowed(true, true));
 }

@@ -80,10 +80,17 @@ pub struct ModernNetState {
     pub rx_next_avail: u16,
 }
 
-static MODERN_DEVS: Spinlock<alloc::vec::Vec<ModernNetState>, DriverLockClass> =
-    Spinlock::new(alloc::vec::Vec::new());
+mod bh_lock;
+use bh_lock::DriverBhLock;
+
+static MODERN_DEVS: DriverBhLock<alloc::vec::Vec<ModernNetState>> =
+    DriverBhLock::new(alloc::vec::Vec::new());
 static SOFTIRQ_INSTALLED: AtomicBool = AtomicBool::new(false);
 static CONFIG_REFRESH_PENDING: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "oxide-kernel")]
+static CONFIG_WORK_QUEUED: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "oxide-kernel")]
+static CONFIG_RETRY_INSTALLED: AtomicBool = AtomicBool::new(false);
 static REGISTERED_NETDEVS: Spinlock<alloc::vec::Vec<(DeviceKey, net::NetIfaceId)>, DriverLockClass> =
     Spinlock::new(alloc::vec::Vec::new());
 
@@ -130,11 +137,68 @@ use rx::{clear_rx_runtime, first_iface_ip_for, set_softirq_iface};
 mod neighbor;
 use neighbor::link_address_for;
 
-/// Defer a virtio-net configuration interrupt to the shared network bottom
-/// half. Queue zero shares this MSI-X vector, so RX still needs the same wake.
+/// Process coalesced configuration changes from a kworker. Linux's
+/// `virtnet_config_changed_work` uses this process-context boundary because
+/// carrier publication takes RTNL and may sleep.
+#[cfg(target_os = "oxide-kernel")]
+fn config_refresh_work(_arg: usize) {
+    loop {
+        if CONFIG_REFRESH_PENDING.swap(false, Ordering::AcqRel) {
+            state::refresh_carriers();
+        }
+        CONFIG_WORK_QUEUED.store(false, Ordering::Release);
+        if !CONFIG_REFRESH_PENDING.load(Ordering::Acquire)
+            || CONFIG_WORK_QUEUED.compare_exchange(false, true, Ordering::AcqRel,
+                Ordering::Acquire).is_err()
+        {
+            return;
+        }
+    }
+}
+
+/// Queue the coalesced configuration work item. A full bounded workqueue leaves
+/// `PENDING` set; the process-context retry timer below claims it later.
+#[cfg(target_os = "oxide-kernel")]
+fn queue_config_refresh() {
+    if CONFIG_WORK_QUEUED.compare_exchange(false, true, Ordering::AcqRel,
+        Ordering::Acquire).is_err()
+    {
+        return;
+    }
+    if !sched::live::workqueue::queue_work(config_refresh_work, 0) {
+        CONFIG_WORK_QUEUED.store(false, Ordering::Release);
+    }
+}
+
+/// Never-drop retry for the bounded workqueue. Timer callbacks run on
+/// `ktimers`, so directly claiming and running this work is legal.
+#[cfg(target_os = "oxide-kernel")]
+fn config_refresh_retry(_now_ns: u64) {
+    if CONFIG_REFRESH_PENDING.load(Ordering::Acquire)
+        && CONFIG_WORK_QUEUED.compare_exchange(false, true, Ordering::AcqRel,
+            Ordering::Acquire).is_ok()
+    {
+        config_refresh_work(0);
+    }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn ensure_config_refresh_retry() {
+    if !CONFIG_RETRY_INSTALLED.swap(true, Ordering::AcqRel) {
+        timer::register_periodic(100_000_000, config_refresh_retry);
+    }
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+fn ensure_config_refresh_retry() {}
+
+/// Defer a virtio-net configuration interrupt to process context. Queue zero
+/// shares this MSI-X vector, so RX still needs the same bottom-half wake.
 /// # C: O(1)
 pub fn config_changed() {
     CONFIG_REFRESH_PENDING.store(true, Ordering::Release);
+    #[cfg(target_os = "oxide-kernel")]
+    queue_config_refresh();
     raise_rx();
 }
 

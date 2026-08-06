@@ -185,8 +185,9 @@ fn wake_selecting_a_remote_cpu_is_deferred_through_its_wake_list() {
     assert_eq!(deferred[0].tid, 2005);
 }
 
-/// `force_defer` (the timer-ISR contract: never touch an rq lock from IF=0)
-/// defers even a settled, local wake.
+/// `force_defer` (the interrupt-context contract: never touch an rq lock from
+/// a context that may have interrupted its owner) defers even a settled,
+/// local wake.
 #[test]
 fn force_defer_never_takes_the_local_runqueue_lock() {
     const ME: u32 = 30;
@@ -201,6 +202,27 @@ fn force_defer_never_takes_the_local_runqueue_lock() {
     let deferred = wake_list_drain(ME);
     assert_eq!(deferred.len(), 1);
     assert_eq!(deferred[0].tid, 2006);
+}
+
+/// Ordinary WaitList wakes are used by both process and softirq callers. The
+/// public `try_to_wake_up` entry must recognize the latter and select the same
+/// deferred path as an explicit timer wake; otherwise block-completion softirq
+/// can interrupt a process holding `rq.inner` and spin on that same lock.
+#[test]
+fn interrupt_context_requires_deferred_wake_placement() {
+    crate::preempt::_test_reset();
+    assert!(!wake_context_requires_defer());
+
+    crate::preempt::irq_enter();
+    assert!(wake_context_requires_defer(),
+        "hardirq/softirq wake must use the lock-free wake list");
+    crate::preempt::irq_exit();
+
+    crate::preempt::preempt_count_add(crate::preempt::SOFTIRQ_OFFSET);
+    assert!(wake_context_requires_defer(),
+        "softirq wake must use the lock-free wake list");
+    crate::preempt::preempt_count_sub(crate::preempt::SOFTIRQ_OFFSET);
+    crate::preempt::_test_reset();
 }
 
 /// The wake-list drain re-defers a task that is STILL `on_cpu` when its owner

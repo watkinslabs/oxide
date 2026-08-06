@@ -52,7 +52,7 @@ pub(crate) unsafe fn rdmsr(sel: u32) -> u64 {
 /// user-mode FS_BASE on this CPU. Caller validates `va` is canonical
 /// and below `USER_VA_END` if user-supplied.
 /// # C: O(1)
-/// # Ctx: syscall context, IRQs off (FMASK clears IF on entry)
+/// # Ctx: syscall process context, IRQs enabled
 pub unsafe fn set_user_fs_base(va: u64) {
     #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
     // SAFETY: per fn contract — privileged write of the architectural FS_BASE register with a caller-validated user VA.

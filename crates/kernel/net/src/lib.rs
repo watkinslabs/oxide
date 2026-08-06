@@ -90,6 +90,7 @@ pub mod control_event;
 #[cfg(any(test, feature = "hosted"))]
 pub mod hosted_fixture;
 mod rtnl;
+mod fib_lock;
 pub use rtnl::RtnlGuard;
 pub mod route;
 pub mod route_metrics;

@@ -426,6 +426,11 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     // Linux `vtime_user_exit`: the architectural syscall entry has crossed
     // into kernel mode; close the user interval before any dispatch work.
     sched::cpustat::user_exit();
+    // Architectural entry masks IRQs while it saves the user frame. Ordinary
+    // syscall work is process context: timers, completion IRQs and wakeups
+    // must run while it blocks. Dropping this guard restores the entry mask
+    // before the return-to-user work loop starts its flag-check discipline.
+    let process_irqs = super::process_irq::ProcessIrqs::enable();
     let dispatch_task = sched::current();
     let orig_nr = nr;
     #[cfg(target_arch = "aarch64")]
@@ -475,6 +480,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     // handler emulates, so neither a tracer nor a cBPF filter compiled for
     // THIS ABI may be shown its arguments.
     if let Some(rv) = super::user_dispatch::user_dispatch_gate(orig_nr, a0) {
+        drop(process_irqs);
         sched::cpustat::user_enter();
         return rv;
     }
@@ -571,6 +577,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     if let Some(task) = return_task {
         sched::diag::syscall_return_stage(task, sched::diag::SYSCALL_RETURN_STAGE_AFTER_PTRACE);
     }
+    // Return-to-user work begins with IRQs masked, enables them only around a
+    // work pass, then masks again before re-reading the pending-work flags.
+    drop(process_irqs);
     // Linux `syscall_exit_to_user_mode_prepare` -> `exit_to_user_mode_loop`:
     // reschedule, deliver signals and apply the restart decision, LOOPING while
     // work remains. The SAME loop runs on the IRQ and exception return paths

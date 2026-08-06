@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use hal::{MmuOps, Pa, PageSize, Va, PAGE_SIZE_BYTES};
-use sync::{RwLock, Spinlock};
+use sync::Spinlock;
 
 use crate::tree::VmaTree;
 use crate::vma::{Vma, VmaBacking, VmaFlags, VmaProt};
@@ -70,7 +70,7 @@ impl AddressSpace {
         }
         let accounting = super::accounting::VmAccounting::from_vmas(new_root_pa, &dst);
         let child = Arc::new_cyclic(|w| Self {
-            vmas: RwLock::new(dst),
+            vmas: super::rwsem::MmapRwsem::new(dst),
             pt_lock: Spinlock::new(()),
             root_pa: new_root_pa,
             brk:     core::sync::atomic::AtomicU64::new(self.brk()),
@@ -371,7 +371,7 @@ impl AddressSpace {
         let accounting = super::accounting::VmAccounting::from_vmas(new_root_pa, &dst);
         accounting.seed_ptes(&tally);
         let child = Arc::new_cyclic(|w| Self {
-            vmas: RwLock::new(dst),
+            vmas: super::rwsem::MmapRwsem::new(dst),
             pt_lock: Spinlock::new(()),
             root_pa: new_root_pa,
             brk:     core::sync::atomic::AtomicU64::new(self.brk()),
@@ -471,7 +471,7 @@ impl AddressSpace {
         let accounting = super::accounting::VmAccounting::from_vmas(new_root_pa, &dst);
         accounting.seed_ptes(&tally);
         let child = Arc::new_cyclic(|w| Self {
-            vmas: RwLock::new(dst),
+            vmas: super::rwsem::MmapRwsem::new(dst),
             pt_lock: Spinlock::new(()),
             root_pa: new_root_pa,
             brk:     core::sync::atomic::AtomicU64::new(self.brk()),

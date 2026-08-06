@@ -5,25 +5,32 @@
 use crate::mount::{MNT_NOATIME, MNT_NODIRATIME, MNT_RELATIME};
 use crate::superblock::{SB_NOATIME, SB_NODIRATIME, SB_RDONLY};
 use crate::timespec::{Timespec64, SECS_PER_DAY};
-use sync::{Spinlock, Timer as ClockClass};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// Wall-clock (`CLOCK_REALTIME`) provider, installed at boot by the syscall
-/// layer — `vfs` owns no time source (Linux `current_time` reads
-/// `ktime_get_coarse_real_ts64`; here the syscall layer owns
-/// `REALTIME_OFFSET_NS + monotonic`). The fn pointer is copied out under the
-/// lock and invoked unlocked, so nothing is held across the provider call.
-static REALTIME_PROVIDER: Spinlock<Option<fn() -> u64>, ClockClass> = Spinlock::new(None);
+/// layer — `vfs` owns no time source. Readers run from filesystem paths and
+/// NET_RX softirq packet timestamping, so publication must be lock-free: an
+/// IRQ can interrupt the installing/reading task and must never spin on that
+/// task's clock-provider lock. Zero is the pre-install sentinel.
+static REALTIME_PROVIDER: AtomicUsize = AtomicUsize::new(0);
 
 /// Install the wall-clock provider (kernel boot). Idempotent, last-writer-wins.
 /// # C: O(1)
-pub fn set_realtime_provider(f: fn() -> u64) { *REALTIME_PROVIDER.lock() = Some(f); }
+pub fn set_realtime_provider(f: fn() -> u64) {
+    REALTIME_PROVIDER.store(f as usize, Ordering::Release);
+}
 
 /// Current `CLOCK_REALTIME` in ns since the Unix epoch via the installed
 /// provider, or 0 when none is installed yet (pre-userspace — matching a
 /// `CLOCK_REALTIME` read before `settimeofday` seeds the offset). # C: O(1)
 pub fn realtime_now_ns() -> u64 {
-    let f = *REALTIME_PROVIDER.lock();
-    f.map(|f| f()).unwrap_or(0)
+    let raw = REALTIME_PROVIDER.load(Ordering::Acquire);
+    if raw == 0 { return 0; }
+    // SAFETY: every non-zero value in this private atomic is published by
+    // `set_realtime_provider` from this exact function-pointer type; both
+    // supported kernel architectures represent it in one usize.
+    let f = unsafe { core::mem::transmute::<usize, fn() -> u64>(raw) };
+    f()
 }
 
 /// `24*60*60` seconds — the relatime staleness window (Linux fs/inode.c

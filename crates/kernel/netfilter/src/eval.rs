@@ -1,8 +1,8 @@
 use alloc::vec::Vec;
 
 use crate::{
-    CHAINS, NFT_CHAIN_POLICY_DROP, NftChain, RULES, counter_bump, nft_expr, set_elem_lookup,
-    sets_snapshot,
+    CHAINS, NFT_CHAIN_POLICY_DROP, NftChain, RULES, counter_bump, hook_active, nft_expr,
+    set_elem_lookup, sets_snapshot,
 };
 
 /// Netfilter verdict per `linux/netfilter.h`.
@@ -30,12 +30,16 @@ impl Verdict {
 
 /// # C: O(N_chains × N_rules × expr_len)
 pub fn eval(hook_id: u32, pkt: &[u8], family: u8) -> Verdict {
+    // The ordinary no-ruleset path mirrors the empty-hook fast path: packet
+    // processing must not enter the mutable nftables control plane at all.
+    if !hook_active(hook_id) { return Verdict::Accept; }
     // STABLE ON PURPOSE: equal hook priorities are ordinary, and chains registered at
     // the same priority must run in registration order. Ordered insertion rather than
     // `sort_by_key` keeps the packet path off `driftsort`'s 4 KiB scratch frame.
     let chains: Vec<NftChain> = net::ordered::collect_stable_by_key(
         CHAINS.lock().iter().filter(|c| c.hook == Some(hook_id)).cloned(),
         |c| c.priority);
+    if chains.is_empty() { return Verdict::Accept; }
     let rules_snap = RULES.lock().clone();
     for c in chains.iter() {
         let mut chain_verdict: Option<Verdict> = None;

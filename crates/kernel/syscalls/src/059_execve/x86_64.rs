@@ -19,7 +19,7 @@ const EXEC_ENTRY_RFLAGS: u64 = 0x202;
 
 /// `sys_execve(path, argv, envp)` per `15§5` / `31§4`. Thin wrapper
 /// that reads the user-space path then delegates to `execve_inner`.
-/// # SAFETY: dispatch ctx, IRQs masked.
+/// # SAFETY: syscall process context, IRQs enabled.
 /// # C: O(64) + execve_inner cost
 pub fn sys_execve(args: &SyscallArgs) -> i64 {
     let path_owned = match read_user_exec_path(args.a0) {
@@ -57,7 +57,7 @@ fn trace_swap_exec_stage(path: &[u8], stage: &[u8]) {
 /// and `sys_execveat` (path resolved from `dirfd` for AT_EMPTY_PATH).
 /// `args.a1` = argv, `args.a2` = envp; `args.a0` is ignored — the
 /// caller has already produced `path_owned` from whatever source.
-/// # SAFETY: dispatch ctx, IRQs masked.
+/// # SAFETY: syscall process context, IRQs enabled.
 /// # C: O(phdrs) + O(N_vmas) + O(1)
 pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 {
     use hal::UserVirtAddr;

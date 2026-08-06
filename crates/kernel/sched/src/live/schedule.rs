@@ -2,6 +2,7 @@
 // - `active_mm` owns per-CPU lazy-TLB `active_mm` tracking + parked-mm handoff.
 // - `atomic` owns atomic-schedule diagnosis and preempt-count recovery.
 // - `hooks` owns sched_switch tracing and teardown stats surface.
+// - `irq` owns switch-time IRQ state preservation and bounded idle waits.
 // - `lifecycle` owns runqueue install/current-task helpers and teardown glue.
 // - `migrate` owns switch-time affinity eviction of the outgoing task.
 // - `switch` owns the context-switch engine, finish-task-switch tail, and yield path.
@@ -14,6 +15,7 @@ mod atomic;
 #[cfg(all(target_arch = "aarch64", feature = "debug-armctx"))]
 pub mod ctxprobe;
 mod hooks;
+mod irq;
 mod lifecycle;
 pub mod migrate;
 mod ownership;

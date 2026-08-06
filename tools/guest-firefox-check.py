@@ -30,6 +30,7 @@ ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 KERNEL_FAULT = re.compile(
     r"\[BUG\] scheduling while atomic|IRQ stack guard page|\[BADSTACK\]|#DF|Kernel panic"
 )
+KERNEL_STALL = re.compile(r"\[WATCHDOG\] (?:soft lockup|no-progress)|\[CPU-STALL\]")
 FIREFOX_ENV = (
     "HOME=/home/oxide XDG_RUNTIME_DIR=/run/user/1000 "
     "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus "
@@ -132,6 +133,15 @@ def qmp_command(qmp, execute, arguments=None):
     return response
 
 
+def qmp_human(qmp, command):
+    """Run one read-only HMP diagnostic through QMP."""
+    return qmp_command(
+        qmp,
+        "human-monitor-command",
+        {"command-line": command},
+    ).get("return", "")
+
+
 def screenshot(qmp, label):
     path = f"{SCREEN_PREFIX}-{label}.ppm"
     try:
@@ -148,6 +158,35 @@ def screenshot(qmp, label):
             return digest
         time.sleep(0.05)
     raise RuntimeError(f"QMP did not produce {label} screenshot")
+
+
+def screen_text(label):
+    """OCR the graphical result so unrelated repainting cannot satisfy a URL check."""
+    path = f"{SCREEN_PREFIX}-{label}.ppm"
+    try:
+        proc = subprocess.run(
+            ["tesseract", path, "stdout"], stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True, timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return proc.stdout
+
+
+def wait_for_screen(qmp, label, timeout, ready):
+    """Return first OCR-confirmed graphical completion latency."""
+    started = time.monotonic()
+    text = ""
+    while time.monotonic() - started < timeout:
+        screenshot(qmp, label)
+        text = screen_text(label)
+        elapsed = time.monotonic() - started
+        if ready(text.lower()):
+            print(f"guest-firefox-check: {label} ready_s={elapsed:.3f}", flush=True)
+            return elapsed, text
+        time.sleep(1)
+    print(f"guest-firefox-check: {label} ready_s=>{timeout}", flush=True)
+    return None, text
 
 
 def sample_rips(qmp, label, duration, samples):
@@ -195,16 +234,33 @@ def write_profile(samples):
             counts = {}
             for _, rip in selected:
                 name = symbols.get(rip, "USER" if rip < 0xFFFF_8000_0000_0000 else "KERNEL_UNKNOWN")
-                counts[name] = counts.get(name, 0) + 1
+                key = (name, rip)
+                counts[key] = counts.get(key, 0) + 1
             output.write(f"[{phase}] samples={len(selected)}\n")
-            for name, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:40]:
-                output.write(f"{count:6d} {count * 100.0 / max(len(selected), 1):6.2f}% {name}\n")
+            for (name, rip), count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:40]:
+                output.write(
+                    f"{count:6d} {count * 100.0 / max(len(selected), 1):6.2f}% "
+                    f"0x{rip:016x} {name}\n"
+                )
     print(f"guest-firefox-check: QMP RIP profile retained at {PROFILE_LOG}", flush=True)
 
 
 def diagnostics(conn, buf):
+    # The debug shell can itself be the blocked workload (for example, waiting
+    # for the foreground runuser used to launch Firefox). Kernel SysRq is a UART
+    # prefilter, so it remains available without a shell prompt: NUL arms it,
+    # then t/c/w dump tasks, per-CPU scheduler state, and the current task.
+    start = len(buf)
+    conn.sendall(b"\x00t\x00c\x00w")
+    pump(conn, buf, 2)
+    sysrq = ANSI.sub("", buf[start:].decode("utf-8", "replace"))
+    print("--- guest SysRq diagnostics ---\n" + sysrq[-24000:], flush=True)
     commands = (
         "timeout 10s ps -eo pid,ppid,stat,wchan:24,comm,args --sort=pid",
+        "timeout 10s ss -tinap",
+        "cat /proc/net/snmp; cat /proc/net/netstat; cat /proc/net/tcp; cat /proc/net/tcp6",
+        "p=$(pgrep -u oxide -o firefox); test -n \"$p\" && for t in /proc/$p/task/*; do "
+        "printf 'TASK %s ' \"${t##*/}\"; cat $t/comm $t/wchan $t/syscall; done",
         "timeout 10s systemctl --no-pager --full status systemd-resolved dbus-broker.service",
         "p=$(pidof systemd-resolved); test -n \"$p\" && { cat /proc/$p/status; cat /proc/$p/wchan; }",
         "timeout 10s journalctl -b --no-pager -n 160",
@@ -220,6 +276,7 @@ qmp = None
 profile_samples = []
 buf = bytearray()
 ok = True
+control_alive = True
 try:
     deadline = time.time() + BOOT_TIMEOUT
     uart = connect_socket(UART_SOCK, deadline, "UART socket")
@@ -244,6 +301,9 @@ try:
             "test -S /run/user/1000/wayland-0",
             settle=5,
         )
+        stall = KERNEL_STALL.search(buf.decode("utf-8", "replace"))
+        if stall:
+            raise RuntimeError(f"kernel stalled before GNOME readiness: {stall.group(0)}")
         if "active" in session and re.search(r"\r?\n[0-9]+\r?\n", session) and rc(session):
             break
         time.sleep(2)
@@ -251,17 +311,25 @@ try:
         raise RuntimeError("GNOME Wayland session did not become ready")
     print("guest-firefox-check: graphical GNOME session ready", flush=True)
 
-    # graphical.target precedes the end of GNOME's background startup.  Let
-    # the run queue settle before measuring steady-state syscall throughput,
-    # then retain the process CPU leaders so a wall/CPU-time gap has an owner.
+    # graphical.target precedes the end of GNOME's background startup. Let the
+    # run queue settle before measuring steady-state syscall throughput. Keep
+    # this snapshot O(1): enumerating every thread through procfs is itself a
+    # large syscall workload and can overrun the command window on the exact
+    # slow builds this harness is meant to diagnose, contaminating every later
+    # command queued on the same debug shell.
     time.sleep(30)
+    stall = KERNEL_STALL.search(buf.decode("utf-8", "replace"))
+    if stall:
+        raise RuntimeError(f"kernel stalled while GNOME settled: {stall.group(0)}")
     runtime = run(
         uart,
         buf,
-        "cat /proc/loadavg; nproc; "
-        "ps -eo pid,stat,psr,pcpu,cputime,comm,args --sort=-pcpu | head -30",
+        "cat /proc/loadavg; nproc",
         settle=15,
     )
+    if not rc(runtime):
+        control_alive = False
+        raise RuntimeError("UART control channel stopped during GNOME settle")
     print("guest-firefox-check: settled runtime snapshot:\n" + runtime[-8000:], flush=True)
 
     if PROFILE:
@@ -284,6 +352,26 @@ try:
         print("guest-firefox-check: FAIL — syscall benchmark did not complete", flush=True)
     print("guest-firefox-check: syscall benchmark:\n" + bench[-1600:], flush=True)
 
+    # Separate transport latency from browser startup/rendering.  This is a
+    # small HTTPS response on the same origin Firefox opens below, forced to
+    # HTTP/1.1 so the measurement exercises DNS + TCP + TLS without depending
+    # on the browser's HTTP/2 implementation.  Keep absence of curl diagnostic,
+    # not fatal, because the graphical Firefox check remains the acceptance
+    # criterion.
+    transfer = run(
+        uart,
+        buf,
+        "if command -v curl >/dev/null; then "
+        "TIMEFORMAT='OXIDE-CURL-SHELL real=%R user=%U sys=%S'; "
+        "time timeout 30s curl -kL --http1.1 -o /dev/null "
+        "-w 'OXIDE-CURL code=%{http_code} bytes=%{size_download} "
+        "start=%{time_starttransfer} total=%{time_total}\\n' "
+        "https://one.one.one.one/cdn-cgi/trace; "
+        "else echo 'OXIDE-CURL unavailable'; fi",
+        settle=45,
+    )
+    print("guest-firefox-check: HTTPS control:\n" + transfer[-2400:], flush=True)
+
     ping = run(
         uart,
         buf,
@@ -294,11 +382,18 @@ try:
         ok = False
         print("guest-firefox-check: FAIL — baseline resolver D-Bus Ping", flush=True)
 
+    control = run(uart, buf, "true", settle=10)
+    if not rc(control):
+        control_alive = False
+        raise RuntimeError("UART control channel stopped after resolver probe")
+
     baseline = screenshot(qmp, "baseline")
     launch = run(
         uart,
         buf,
-        f"runuser -u oxide -- env {FIREFOX_ENV} firefox --new-window "
+        "runuser -u oxide -- mkdir -p /tmp/oxide-firefox-test-profile; "
+        f"runuser -u oxide -- env {FIREFOX_ENV} firefox --new-instance "
+        "--profile /tmp/oxide-firefox-test-profile --new-window "
         "https://one.one.one.one >/tmp/oxide-firefox.log 2>&1 & true",
     )
     if not rc(launch):
@@ -307,7 +402,12 @@ try:
     if PROFILE:
         profile_samples.extend(sample_rips(qmp, "valid-load", 20, 200))
     else:
-        time.sleep(20)
+        wait_for_screen(
+            qmp,
+            "valid-probe",
+            20,
+            lambda text: "internet safer" in text or "dns families" in text,
+        )
 
     valid_health = run(
         uart,
@@ -316,6 +416,8 @@ try:
         "pgrep -u oxide -f '[f]irefox' >/dev/null",
     )
     valid = screenshot(qmp, "valid")
+    valid_text = screen_text("valid")
+    print("guest-firefox-check: valid screen OCR:\n" + valid_text[-2000:], flush=True)
     if not (rc(valid_health) and re.search(r"1\.1\.1\.1", valid_health)):
         ok = False
         print("guest-firefox-check: FAIL — valid page health", flush=True)
@@ -324,12 +426,21 @@ try:
         ok = False
         print("guest-firefox-check: FAIL — graphical screen did not change for Firefox", flush=True)
 
+    valid_net = run(
+        uart,
+        buf,
+        "timeout 10s ss -tinap; cat /proc/net/snmp; cat /proc/net/netstat; "
+        "cat /proc/net/tcp; cat /proc/net/tcp6",
+        settle=20,
+    )
+    print("guest-firefox-check: network state after valid-page window:\n" + valid_net[-12000:], flush=True)
+
     missing_launch = run(
         uart,
         buf,
-        f"timeout 20s runuser -u oxide -- env {FIREFOX_ENV} firefox --new-tab "
-        "http://oxide-no-such-host.invalid",
-        settle=30,
+        f"runuser -u oxide -- env {FIREFOX_ENV} firefox "
+        "--profile /tmp/oxide-firefox-test-profile --new-tab "
+        "http://oxide-no-such-host.invalid >/tmp/oxide-firefox-invalid.log 2>&1 & true",
     )
     if not rc(missing_launch):
         ok = False
@@ -338,7 +449,12 @@ try:
     if PROFILE:
         profile_samples.extend(sample_rips(qmp, "invalid-load", 15, 150))
     else:
-        time.sleep(15)
+        wait_for_screen(
+            qmp,
+            "invalid-probe",
+            15,
+            lambda text: "server not found" in text and "oxide-no-such-host.invalid" in text,
+        )
 
     missing_health = run(
         uart,
@@ -349,6 +465,8 @@ try:
         "/org/freedesktop/resolve1 org.freedesktop.DBus.Peer Ping",
     )
     missing = screenshot(qmp, "invalid")
+    missing_text = screen_text("invalid")
+    print("guest-firefox-check: invalid screen OCR:\n" + missing_text[-2000:], flush=True)
     if not rc(missing_health):
         ok = False
         print("guest-firefox-check: FAIL — invalid-host browser/resolver health", flush=True)
@@ -356,6 +474,9 @@ try:
     if missing == valid:
         ok = False
         print("guest-firefox-check: FAIL — monitor did not change for invalid-host page", flush=True)
+    if "oxide-no-such-host.invalid" not in missing_text.lower():
+        ok = False
+        print("guest-firefox-check: FAIL — invalid-host URL absent from monitor OCR", flush=True)
 
     fault = KERNEL_FAULT.search(buf.decode("utf-8", "replace"))
     if fault:
@@ -365,8 +486,33 @@ except (OSError, RuntimeError, socket.timeout, json.JSONDecodeError) as exc:
     ok = False
     print(f"guest-firefox-check: FAIL — {exc}", flush=True)
 finally:
-    if not ok and uart is not None:
+    if not ok and PROFILE and qmp is not None and not profile_samples:
+        try:
+            print("guest-firefox-check: sampling pre-readiness failure", flush=True)
+            profile_samples.extend(sample_rips(qmp, "readiness-failure", 10, 200))
+        except (OSError, RuntimeError, socket.timeout, json.JSONDecodeError) as exc:
+            print(f"guest-firefox-check: failure sampling unavailable: {exc}", flush=True)
+    if not ok and uart is not None and control_alive:
         diagnostics(uart, buf)
+    if not ok and qmp is not None:
+        dynamic_commands = []
+        try:
+            registers = qmp_human(qmp, "info registers")
+            print(f"--- QMP info registers ---\n{registers}", flush=True)
+            # R14 is the compiled x86 scheduler's per-CPU runqueue base on a
+            # failed rq-lock acquisition. Retaining it makes the lock byte,
+            # current task and switch-handoff token inspectable after teardown.
+            for register in ("RSP", "RBP", "R14", "R15"):
+                match = re.search(rf"\b{register}=([0-9a-fA-F]+)", registers)
+                if match:
+                    dynamic_commands.append(f"x /64gx 0x{match.group(1)}")
+        except (OSError, RuntimeError, socket.timeout, json.JSONDecodeError) as exc:
+            print(f"guest-firefox-check: QMP register diagnostic failed: {exc}", flush=True)
+        for command in dynamic_commands + ["info irq", "info pic", "i /8bx 0x3f8"]:
+            try:
+                print(f"--- QMP {command} ---\n{qmp_human(qmp, command)}", flush=True)
+            except (OSError, RuntimeError, socket.timeout, json.JSONDecodeError) as exc:
+                print(f"guest-firefox-check: QMP diagnostic failed: {exc}", flush=True)
     if uart is not None:
         uart.close()
     if qmp is not None:

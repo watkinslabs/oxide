@@ -47,7 +47,7 @@ impl BlkState {
         let mut spun: u64 = 0;
         loop {
             {
-                let ring = self.inflight.lock();
+                let ring = self.inflight.lock_bh::<sched::bh::SchedBh>();
                 if !ring.busy && ring.pending.is_empty() && ring.deferred.is_empty() {
                     return true;
                 }
@@ -59,7 +59,7 @@ impl BlkState {
                 }
                 // Register-then-recheck (B1426): see wait.rs::acquire_turn.
                 park_blk_checked(&BLK_TURN, deadline, || {
-                    let ring = self.inflight.lock();
+                    let ring = self.inflight.lock_bh::<sched::bh::SchedBh>();
                     !ring.busy && ring.pending.is_empty() && ring.deferred.is_empty()
                 });
             }
@@ -94,7 +94,7 @@ impl BlkState {
     /// buddy allocator.
     fn cancel_owned_requests(&self, reset_confirmed: bool) {
         let (pending, deferred) = {
-            let mut ring = self.inflight.lock();
+            let mut ring = self.inflight.lock_bh::<sched::bh::SchedBh>();
             (core::mem::take(&mut ring.pending), core::mem::take(&mut ring.deferred))
         };
         for request in pending {
@@ -160,7 +160,7 @@ impl BlkState {
         let avail = h.wrapping_add(self.requestq.driver_pa) as *mut u16;
         let qsz = self.requestq.size;
         let target = {
-            let mut g = self.inflight.lock();
+            let mut g = self.inflight.lock_bh::<sched::bh::SchedBh>();
             let slot = g.avail_idx % qsz;
             // `inflight` is held, and the Release fence orders the ring-entry
             // store before the `idx` store that hands the entry to the device.
@@ -298,7 +298,7 @@ impl BlkState {
             return Err((request, completion, BlockError::Enomem));
         };
         let h = hhdm();
-        let mut ring = self.inflight.lock();
+        let mut ring = self.inflight.lock_bh::<sched::bh::SchedBh>();
         if self.poisoned.load(core::sync::atomic::Ordering::Acquire) {
             drop(ring);
             // SAFETY: this allocation has not been published to the device.
@@ -310,7 +310,7 @@ impl BlkState {
             // SAFETY: this allocation has not been published to a device or
             // another CPU; returning it immediately satisfies PMM ownership.
             unsafe { pmm::setup::free_contig(bounce_pa, pmm::Order(BOUNCE_ORDER)); }
-            let mut ring = self.inflight.lock();
+            let mut ring = self.inflight.lock_bh::<sched::bh::SchedBh>();
             if self.poisoned.load(core::sync::atomic::Ordering::Acquire) {
                 return Err((request, completion, BlockError::Eio));
             }
@@ -403,10 +403,10 @@ impl BlkState {
         // is not an owned asynchronous request and must not be consumed here.
         // Leaving it in the used ring lets the synchronous waiter observe it;
         // `run_completion_bottom_half` wakes that waiter after this returns.
-        if self.inflight.lock().busy { return; }
+        if self.inflight.lock_bh::<sched::bh::SchedBh>().busy { return; }
         loop {
             let pending = {
-                let mut ring = self.inflight.lock();
+                let mut ring = self.inflight.lock_bh::<sched::bh::SchedBh>();
                 let used = h.wrapping_add(self.requestq.device_pa) as *const u8;
                 // SAFETY: `device_pa` is this queue's used frame via HHDM,
                 // non-zero per the guard above. Virtio 1.2 §2.7.8 puts `idx` at
@@ -475,7 +475,7 @@ impl BlkState {
     fn start_deferred_requests(&self) {
         loop {
             let deferred = {
-                let mut ring = self.inflight.lock();
+                let mut ring = self.inflight.lock_bh::<sched::bh::SchedBh>();
                 if ring.busy || ring.free_heads.is_empty() || ring.deferred.is_empty() {
                     return;
                 }

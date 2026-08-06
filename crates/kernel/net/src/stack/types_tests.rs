@@ -4,6 +4,25 @@ use super::{NetStack, TcpEntry, UdpRxQueue, tcp_send_closed, tcp_transmit_ready}
 use crate::addr::{IpAddr, Ipv4Addr};
 use crate::tcp_conn::{Endpoint, TcpConn};
 
+#[test]
+fn tcp_connection_lock_excludes_network_bottom_halves() {
+    let source = include_str!("types.rs");
+    assert!(source.contains("self.0.lock_bh::<sched::bh::SchedBh>()"),
+        "TCP state shared by socket syscalls and NET_RX must use spin_lock_bh semantics");
+}
+
+#[test]
+fn shared_network_state_lock_excludes_network_bottom_halves() {
+    sched::preempt::_test_reset();
+    let state = super::StackBhLock::new(0u8);
+    {
+        let _guard = state.lock();
+        assert_eq!(sched::preempt::softirq_count(),
+            sched::preempt::SOFTIRQ_DISABLE_OFFSET);
+    }
+    assert_eq!(sched::preempt::softirq_count(), 0);
+}
+
 const TEST_SNDBUF: usize = crate::sock::TCP_SNDBUF_DEFAULT as usize;
 
 #[test]

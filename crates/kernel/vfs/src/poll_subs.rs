@@ -17,6 +17,28 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use sync::{Spinlock, TaskList as PollLockClass};
 
+/// Wait-queue state can be entered from a device wake callback. Linux protects
+/// the corresponding wait-queue head with irqsave locking, so process-side
+/// subscription changes cannot be interrupted by a callback taking it again.
+struct PollIrqLock<T>(Spinlock<T, PollLockClass>);
+
+impl<T> PollIrqLock<T> {
+    const fn new(value: T) -> Self { Self(Spinlock::new(value)) }
+
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    fn lock(&self) -> sync::IrqGuard<'_, T, PollLockClass, hal_x86_64::X86IrqGate> {
+        self.0.lock_irqsave::<hal_x86_64::X86IrqGate>()
+    }
+
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+    fn lock(&self) -> sync::IrqGuard<'_, T, PollLockClass, hal_aarch64::ArmIrqGate> {
+        self.0.lock_irqsave::<hal_aarch64::ArmIrqGate>()
+    }
+
+    #[cfg(not(target_os = "oxide-kernel"))]
+    fn lock(&self) -> sync::Guard<'_, T, PollLockClass> { self.0.lock() }
+}
+
 /// Wake callback published by an epoll instance (fs::EpollInode).
 /// vfs holds `Weak<dyn EpollNotify>` so it doesn't pin the epoll
 /// alive past its fd's close.
@@ -69,13 +91,13 @@ const ALWAYS_WAKE: u32 = crate::inode::POLL_ERR | crate::inode::POLL_HUP;
 /// epoll_ctl + event-emit can race safely (UP single-CPU today;
 /// SMP-ready when SMP lands).
 pub struct PollSubscribers {
-    subs: Spinlock<Vec<Subscription>, PollLockClass>,
+    subs: PollIrqLock<Vec<Subscription>>,
     /// Linux `pipe->fasync_readers` / `socket_wq->fasync_list`: the open file
     /// descriptions with `O_ASYNC` that want a SIGIO when THIS source becomes
     /// ready. It hangs off the same queue as the pollers precisely so every
     /// readiness site drives both without a second registry to keep in sync.
     /// `Weak<File>` so a closed description drops out on its own.
-    fasync: Spinlock<Vec<Weak<crate::File>>, PollLockClass>,
+    fasync: PollIrqLock<Vec<Weak<crate::File>>>,
     /// Monotonic notification counter for diagnostics and source-level tests.
     /// Epoll edge delivery does not consult this counter: the registered
     /// per-epitem callback itself is the edge identity.
@@ -85,7 +107,7 @@ pub struct PollSubscribers {
 impl PollSubscribers {
     /// # C: O(1)
     pub const fn new() -> Self {
-        Self { subs: Spinlock::new(Vec::new()), fasync: Spinlock::new(Vec::new()),
+        Self { subs: PollIrqLock::new(Vec::new()), fasync: PollIrqLock::new(Vec::new()),
                gen: AtomicU64::new(0) }
     }
 

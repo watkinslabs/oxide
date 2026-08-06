@@ -1,6 +1,7 @@
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use sync::{Socket as SockLockClass, Spinlock};
 
@@ -60,16 +61,49 @@ pub struct NftObject {
     pub data:         Vec<u8>,
 }
 
-pub(crate) static TABLES: Spinlock<Vec<NftTable>, SockLockClass> = Spinlock::new(Vec::new());
-pub(crate) static CHAINS: Spinlock<Vec<NftChain>, SockLockClass> = Spinlock::new(Vec::new());
-pub(crate) static RULES: Spinlock<Vec<NftRule>, SockLockClass> = Spinlock::new(Vec::new());
-pub(crate) static SETS: Spinlock<Vec<NftSet>, SockLockClass> = Spinlock::new(Vec::new());
-static SET_ELEMS: Spinlock<Vec<NftSetElem>, SockLockClass> = Spinlock::new(Vec::new());
-pub(crate) static OBJECTS: Spinlock<Vec<NftObject>, SockLockClass> = Spinlock::new(Vec::new());
-static COUNTERS: Spinlock<BTreeMap<u64, (u64, u64)>, SockLockClass> =
-    Spinlock::new(BTreeMap::new());
-static NFT_GEN: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+/// nftables control state is read by NET_RX and changed from netlink process
+/// context. Keep bottom-half exclusion in the lock type until rule generations
+/// become immutable RCU publications.
+pub(crate) struct NftBhLock<T>(Spinlock<T, SockLockClass>);
+
+impl<T> NftBhLock<T> {
+    const fn new(value: T) -> Self { Self(Spinlock::new(value)) }
+
+    /// # C: O(1)
+    pub(crate) fn lock(
+        &self,
+    ) -> sync::LockBhGuard<'_, T, SockLockClass, sched::bh::SchedBh> {
+        self.0.lock_bh::<sched::bh::SchedBh>()
+    }
+}
+
+pub(crate) static TABLES: NftBhLock<Vec<NftTable>> = NftBhLock::new(Vec::new());
+pub(crate) static CHAINS: NftBhLock<Vec<NftChain>> = NftBhLock::new(Vec::new());
+pub(crate) static RULES: NftBhLock<Vec<NftRule>> = NftBhLock::new(Vec::new());
+pub(crate) static SETS: NftBhLock<Vec<NftSet>> = NftBhLock::new(Vec::new());
+static SET_ELEMS: NftBhLock<Vec<NftSetElem>> = NftBhLock::new(Vec::new());
+pub(crate) static OBJECTS: NftBhLock<Vec<NftObject>> = NftBhLock::new(Vec::new());
+static COUNTERS: NftBhLock<BTreeMap<u64, (u64, u64)>> = NftBhLock::new(BTreeMap::new());
+static NFT_GEN: AtomicU32 = AtomicU32::new(0);
+static HOOK_MASK: AtomicU32 = AtomicU32::new(0);
+static HOOK_OVERFLOW: AtomicBool = AtomicBool::new(false);
 static NEXT_RULE_HANDLE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+
+fn hook_bit(hook: u32) -> u32 { 1u32.checked_shl(hook).unwrap_or(0) }
+
+fn publish_hook_mask(chains: &[NftChain]) {
+    let mask = chains.iter().filter_map(|c| c.hook).fold(0, |mask, hook| mask | hook_bit(hook));
+    let overflow = chains.iter().filter_map(|c| c.hook).any(|hook| hook_bit(hook) == 0);
+    HOOK_MASK.store(mask, Ordering::Release);
+    HOOK_OVERFLOW.store(overflow, Ordering::Release);
+}
+
+/// Whether a base chain is published for this hook. # C: O(1)
+pub(crate) fn hook_active(hook: u32) -> bool {
+    let bit = hook_bit(hook);
+    if bit == 0 { HOOK_OVERFLOW.load(Ordering::Acquire) }
+    else { HOOK_MASK.load(Ordering::Acquire) & bit != 0 }
+}
 
 /// # C: O(log N)
 pub fn counter_bump(handle: u64, packets: u64, bytes: u64) {
@@ -86,12 +120,12 @@ pub fn counter_get(handle: u64) -> (u64, u64) {
 
 /// # C: O(1)
 pub fn gen_current() -> u32 {
-    NFT_GEN.load(core::sync::atomic::Ordering::Acquire)
+    NFT_GEN.load(Ordering::Acquire)
 }
 
 /// # C: O(1)
 pub fn gen_bump() -> u32 {
-    NFT_GEN.fetch_add(1, core::sync::atomic::Ordering::AcqRel) + 1
+    NFT_GEN.fetch_add(1, Ordering::AcqRel) + 1
 }
 
 /// # C: O(1)
@@ -126,6 +160,7 @@ pub fn chain_insert(c: NftChain) {
     if let Some(i) = g.iter().position(|x|
         x.table_family == c.table_family && x.table_name == c.table_name && x.name == c.name)
     { g[i] = c; } else { g.push(c); }
+    publish_hook_mask(&g);
 }
 
 /// # C: O(N)
@@ -133,6 +168,7 @@ pub fn chain_remove(family: u8, table_name: &str, chain_name: &str) -> usize {
     let mut g = CHAINS.lock();
     let before = g.len();
     g.retain(|x| !(x.table_family == family && x.table_name == table_name && x.name == chain_name));
+    publish_hook_mask(&g);
     before - g.len()
 }
 
@@ -241,3 +277,37 @@ pub fn object_remove(family: u8, table_name: &str, obj_name: &str) -> usize {
 
 /// # C: O(N)
 pub fn objects_snapshot() -> Vec<NftObject> { OBJECTS.lock().clone() }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nft_state_lock_disables_bottom_halves_for_guard_lifetime() {
+        sched::preempt::_test_reset();
+        let lock = NftBhLock::new(7u32);
+        {
+            let guard = lock.lock();
+            assert_eq!(*guard, 7);
+            assert_eq!(sched::preempt::softirq_count(), sched::preempt::SOFTIRQ_DISABLE_OFFSET);
+        }
+        assert_eq!(sched::preempt::softirq_count(), 0);
+    }
+
+    #[test]
+    fn hook_mask_tracks_chain_publication() {
+        let name = "hook-mask-state-test";
+        let hook = crate::hook::NF_INET_PRE_ROUTING;
+        let _ = chain_remove(2, name, name);
+        chain_insert(NftChain {
+            table_family: 2,
+            table_name: name.into(),
+            name: name.into(),
+            hook: Some(hook),
+            priority: 0,
+            policy: crate::NFT_CHAIN_POLICY_ACCEPT,
+        });
+        assert!(hook_active(hook));
+        assert_eq!(chain_remove(2, name, name), 1);
+    }
+}

@@ -65,7 +65,7 @@ pub fn init_blk(init: BlkInit) -> u32 {
     let Some(device_cfg) = read_device_config(init.resources, init.drv_features) else {
         return 0;
     };
-    if DEVICES.lock().iter().any(|d| same_device(d, init.device_key)) {
+    if DEVICES.lock_bh::<sched::bh::SchedBh>().iter().any(|d| same_device(d, init.device_key)) {
         return 0;
     }
     let bounce_pa = match pmm::setup::alloc_contig(pmm::Order(BOUNCE_ORDER)) {
@@ -128,7 +128,7 @@ pub fn init_blk(init: BlkInit) -> u32 {
     let idx = block::registry::register_with_driver(
         block::registry::BlockDriver::fixed("virtblk", block::uapi::VIRTIO_BLK_MAJOR), &name, serial_opt, state.clone());
     let published = if idx != 0 && !existed {
-        let mut devices = DEVICES.lock();
+        let mut devices = DEVICES.lock_bh::<sched::bh::SchedBh>();
         if devices.iter().any(|d| same_device(d, init.device_key)) {
             false
         } else {
@@ -166,7 +166,7 @@ pub fn init_blk(init: BlkInit) -> u32 {
 
 pub fn remove_blk(device_key: virtio::VirtioChildDeviceKey) -> bool {
     let rec = {
-        let mut devices = DEVICES.lock();
+        let mut devices = DEVICES.lock_bh::<sched::bh::SchedBh>();
         match devices.iter().position(|d| same_device(d, device_key)) {
             Some(i) => devices.remove(i),
             None => return false,
@@ -178,7 +178,7 @@ pub fn remove_blk(device_key: virtio::VirtioChildDeviceKey) -> bool {
 
 pub fn shutdown_blk(device_key: virtio::VirtioChildDeviceKey) -> bool {
     let state = {
-        DEVICES.lock()
+        DEVICES.lock_bh::<sched::bh::SchedBh>()
             .iter()
             .find(|d| same_device(d, device_key))
             .map(|d| d.state.clone())
@@ -191,7 +191,7 @@ pub fn shutdown_blk(device_key: virtio::VirtioChildDeviceKey) -> bool {
 #[cfg(test)]
 pub(crate) fn test_publish_record(bus: u8, device: u8, function: u8, name: &str) -> u32 {
     let device_key = child_key(bus, device, function);
-    if DEVICES.lock().iter().any(|d| same_device(d, device_key)) {
+    if DEVICES.lock_bh::<sched::bh::SchedBh>().iter().any(|d| same_device(d, device_key)) {
         return 0;
     }
     let state = Arc::new(BlkState {
@@ -218,7 +218,7 @@ pub(crate) fn test_publish_record(bus: u8, device: u8, function: u8, name: &str)
     let idx = block::registry::register_with_driver(
         block::registry::BlockDriver::fixed("virtblk", block::uapi::VIRTIO_BLK_MAJOR), name, None, state.clone());
     if idx != 0 {
-        DEVICES.lock().push(BlkRecord {
+        DEVICES.lock_bh::<sched::bh::SchedBh>().push(BlkRecord {
             device_key,
             name: String::from(name),
             state,
@@ -229,5 +229,5 @@ pub(crate) fn test_publish_record(bus: u8, device: u8, function: u8, name: &str)
 
 #[cfg(test)]
 pub(crate) fn test_has_record(bus: u8, device: u8, function: u8) -> bool {
-    DEVICES.lock().iter().any(|d| same_device(d, child_key(bus, device, function)))
+    DEVICES.lock_bh::<sched::bh::SchedBh>().iter().any(|d| same_device(d, child_key(bus, device, function)))
 }

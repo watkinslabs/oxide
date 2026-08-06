@@ -51,7 +51,7 @@ impl TcpEntry {
         let syn_backlog_reserved = passive_listener.is_some();
         let owner = bind.as_ref().map(|bind| bind.owner.clone())
             .unwrap_or_else(|| crate::SocketOwner::root(network_namespace::initial(), 0));
-        Self { owner, conn: Spinlock::new(conn), error, ip_mtu_discover, ipv6_mtu_discover,
+        Self { owner, conn: TcpConnLock::new(conn), error, ip_mtu_discover, ipv6_mtu_discover,
             ipv6_frag_size, ipv6_opts, max_pacing_rate, ip_opts, min_hop, bind, bpf_filter, passive_listener,
             syn_backlog_reserved: ::core::sync::atomic::AtomicBool::new(syn_backlog_reserved),
             syn_backlog_young_reserved: ::core::sync::atomic::AtomicBool::new(syn_backlog_reserved),

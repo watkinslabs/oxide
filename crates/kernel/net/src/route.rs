@@ -5,9 +5,8 @@
 extern crate alloc;
 use alloc::{collections::BTreeMap, vec::Vec};
 
-use sync::{Spinlock, Socket as RouteLockClass};
-
 use crate::addr::{Ipv4Addr, NetIfaceId};
+use crate::fib_lock::FibLock;
 use crate::netdev::{NetError, NetResult};
 use crate::policy_rule::{self, PolicyRuleTable, RT_TABLE_MAIN};
 use crate::RouteMetrics;
@@ -147,14 +146,14 @@ fn usable_record(record: RouteRecord) -> NetResult<ResolvedRoute> {
 }
 
 pub struct RouteTable {
-    pub(crate) inner: Spinlock<BTreeMap<u64, Vec<RouteRecord>>, RouteLockClass>,
+    pub(crate) inner: FibLock<BTreeMap<u64, Vec<RouteRecord>>>,
     rules: PolicyRuleTable,
 }
 
 impl RouteTable {
     /// # C: O(1)
     pub const fn new() -> Self {
-        Self { inner: Spinlock::new(BTreeMap::new()), rules: PolicyRuleTable::new() }
+        Self { inner: FibLock::new(BTreeMap::new()), rules: PolicyRuleTable::new() }
     }
 
     /// Canonical policy-rule table paired with this route table. # C: O(1)

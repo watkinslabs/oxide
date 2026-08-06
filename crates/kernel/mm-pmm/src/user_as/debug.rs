@@ -189,7 +189,7 @@ pub(super) fn segv_dump(rip: u64, cr2: u64, err: u64) {
     klog::write_raw(b" pid=");       klog::write_dec_u64(tid as u64);
     let mut root = 0u64;
     if let Some(cur) = sched::live::current() {
-        // SAFETY: single-mutator mm slot per 13§5; fault ctx with IRQs off; read-only VMA query.
+        // SAFETY: single-mutator mm slot per 13§5; synchronous fault context; read-only VMA query.
         if let Some(mm) = unsafe { cur.mm_ref() } {
             root = mm.root_pa();
             dump_vma(b" cr2_vma", UserVirtAddr::new(cr2 & !PAGE_MASK).and_then(|u| mm.find_vma(u)));

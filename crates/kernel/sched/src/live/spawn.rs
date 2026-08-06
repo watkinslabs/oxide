@@ -25,6 +25,8 @@ use crate::{SchedClass, Task};
 use crate::task::dup;
 use vmm::AddressSpace;
 
+use super::runqueue::RqIrq;
+
 mod inherit;
 
 #[inline]
@@ -146,7 +148,7 @@ pub unsafe fn spawn_kernel_thread(
     arc.spawn_ns.store(start_boottime_ns, Ordering::Release);
     super::registry::insert(&arc);
     {
-        let mut inner = rq.inner.lock();
+        let mut inner = rq.inner.lock_irqsave::<RqIrq>();
         inner.enqueue(Arc::clone(&arc));
         rq.publish_nr_running(inner.nr_running());
     }
@@ -254,7 +256,7 @@ pub unsafe fn spawn_user_thread_with_vpid(
     arc.spawn_ns.store(start_boottime_ns, Ordering::Release);
     super::registry::insert(&arc);
     {
-        let mut inner = rq.inner.lock();
+        let mut inner = rq.inner.lock_irqsave::<RqIrq>();
         inner.enqueue(Arc::clone(&arc));
         rq.publish_nr_running(inner.nr_running());
     }

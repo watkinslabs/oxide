@@ -2,7 +2,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use sync::{Spinlock, Socket as RuleLockClass};
+use crate::fib_lock::FibLock;
 
 pub const RT_TABLE_DEFAULT: u32 = 253;
 pub const RT_TABLE_MAIN:    u32 = 254;
@@ -36,13 +36,13 @@ struct PolicyRuleState {
 
 /// Canonical policy-rule owner for one network stack.
 pub struct PolicyRuleTable {
-    state: Spinlock<PolicyRuleState, RuleLockClass>,
+    state: FibLock<PolicyRuleState>,
 }
 
 impl PolicyRuleTable {
     /// # C: O(1)
     pub const fn new() -> Self {
-        Self { state: Spinlock::new(PolicyRuleState {
+        Self { state: FibLock::new(PolicyRuleState {
             rows: Vec::new(), initialized: Vec::new(),
         }) }
     }
