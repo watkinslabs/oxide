@@ -31,10 +31,11 @@ pub(crate) const PAGE: u64 = hal::PAGE_SIZE_BYTES;
 /// Briefly raised to 32 KiB while chasing the aarch64 `-smp 2` overflows and put
 /// back: the overflows were softirq depth landing on the wrong stack, not task
 /// frames being too large, and 32 KiB regressed x86 while fixing nothing that
-/// the real fixes did not already fix. Measured peaks now: task ~6.7 KiB,
-/// per-CPU IRQ stack ~14.5 KiB (dispatcher 13.9 KiB / net-RX softirq 14.5 KiB,
-/// no longer summed because the drain cannot nest). Frame de-bloat targets are
-/// ranked in `scratch/arm-smp2-fault.md`.
+/// the real fixes did not already fix. Current task- and IRQ-stack maxima are
+/// derived from each linked kernel by `make stack-gate` and `make irq-gate`;
+/// those routine gates, not a hand-maintained measurement or deleted scratch
+/// file, are the source of truth. The original fault analysis is archived in
+/// `scratch/fixed-issues.md` under B1725/C270.
 pub const KSTACK_BYTES: usize = hal::KERNEL_STACK_BYTES;
 const STACK_PAGES: u64 = KSTACK_BYTES as u64 / PAGE;
 const _: () = assert!(KSTACK_BYTES as u64 % PAGE == 0);
