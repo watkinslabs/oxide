@@ -17,7 +17,7 @@ use core::sync::atomic::Ordering;
 
 use crate::Task;
 
-use super::runqueue::{global_for, Runqueue};
+use super::runqueue::{global_for, RqIrq, Runqueue};
 
 /// Cache-hot window (Linux `sysctl_sched_migration_cost`, 0.5 ms): a task
 /// that last ran within this of now is likely still warm in its CPU's cache,
@@ -47,14 +47,6 @@ fn now_ns() -> u64 {
 
 /// Snapshot of one CPU's load. Captured under the runqueue's
 /// inner lock, then released before the migration decision.
-/// Arch IRQ gate for the runqueue lock on the balancer path.
-#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-type RqIrq = hal_x86_64::X86IrqGate;
-#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
-type RqIrq = hal_aarch64::ArmIrqGate;
-#[cfg(not(target_os = "oxide-kernel"))]
-type RqIrq = sync::NoopIrq;
-
 #[derive(Copy, Clone)]
 struct CpuLoad {
     cpu:        u32,

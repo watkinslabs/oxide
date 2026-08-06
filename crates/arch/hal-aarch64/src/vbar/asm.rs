@@ -202,7 +202,27 @@ core::arch::global_asm!(
     // (the exception-table fixup) patches the frame's ELR slot, since the
     // `kernel_exit` restore below would discard a live-register write.
     "    mov  x7,  sp",
+    // Linux `el0_da` restores DAIF_PROCCTX, while `el1_abort` inherits the
+    // interrupted kernel state. Do the same for instruction/data aborts whose
+    // saved SPSR had IRQ unmasked; every other synchronous exception remains
+    // fully masked. ESR stays live in x0 and the frame owns scratch x9.
+    "    lsr  x9, x0, #26",
+    "    cmp  x9, #0x20",
+    "    b.eq 8f",
+    "    cmp  x9, #0x21",
+    "    b.eq 8f",
+    "    cmp  x9, #0x24",
+    "    b.eq 8f",
+    "    cmp  x9, #0x25",
+    "    b.ne 9f",
+    "8:",
+    "    ldr  x9, [sp, #184]",           // saved SPSR_EL1
+    "    tbnz x9, #7, 9f",               // SPSR.I set => inherit IRQ-off
+    "    msr  daifclr, #2",
+    "9:",
     "    bl   oxide_fault_print_rust",
+    // The shared exception exit and return-to-user work require IRQs masked.
+    "    msr  daifset, #2",
     "    cbz  w0, 1f",             // not handled → wfi forever
     // Linux `el0_da`/`el0_ia` end in `arm64_exit_to_user_mode(regs)`: a
     // RESOLVED exception returning to EL0 runs the same return-to-user work

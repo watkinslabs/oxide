@@ -6,6 +6,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
 mod core;
+mod process_irq;
 mod ptrace;
 mod seccomp;
 mod user_dispatch;

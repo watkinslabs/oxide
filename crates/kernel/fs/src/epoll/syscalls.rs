@@ -154,6 +154,7 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
             let sub_id = NEXT_SUB_ID.fetch_add(1, Ordering::Relaxed);
             let poll_source = target_file.poll_subscribers();
             let item = EpItem::new(&ep, fd, sub_id, events, data, target_file.clone(), poll_source);
+            ep.reserve_ready_for(entries.len() + 1);
             #[cfg(feature = "debug-epoll")]
             if super::diag_slot() {
                 klog::write_raw(b"[EPADD pid="); klog::write_dec_u64(cur.vtgid.load(Ordering::Acquire) as u64);

@@ -28,9 +28,9 @@ pub(super) fn current_cpu_idx() -> usize {
 #[inline]
 pub(super) fn current_mm_cpumask() -> u64 {
     sched::live::current()
-        // SAFETY: read-only borrow of the running task's mm slot; the fault /
-        // syscall caller runs preempt-off in IRQ context per `13§5`, so no
-        // concurrent execve mutates this CPU's mm slot during the read.
+        // SAFETY: read-only borrow of the running task's mm slot; synchronous
+        // fault/syscall context owns that task slot, so execve cannot mutate it
+        // concurrently during this read.
         .and_then(|c| unsafe { c.mm_ref() }.map(|m| m.cpumask()))
         .unwrap_or(0)
 }

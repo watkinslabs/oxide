@@ -209,8 +209,7 @@ pub trait IrqGate: 'static {
     unsafe fn save_disable() -> u64;
     /// Save current IRQ state, ENABLE IRQs, return opaque flags. Inverse of
     /// `save_disable`: pairs with `restore` to run a bounded section with IRQs
-    /// ON inside an IF=0 context (Linux `local_irq_enable` while a syscall/fault
-    /// waits on slow I/O, so the timer tick + wakeups keep firing). Caller must
+    /// ON inside an IRQ-masked entry, exit, or idle context. Caller must
     /// hold no plain lock that IRQ/softirq context also takes (else deadlock).
     /// # SAFETY: hardware-state mutation; caller must pair with `restore`.
     /// # C: O(1)

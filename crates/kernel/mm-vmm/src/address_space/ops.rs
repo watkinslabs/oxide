@@ -2,8 +2,6 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use hal::UserVirtAddr;
-use sync::RwReadGuard;
-
 use crate::tree::VmaTree;
 use crate::vma::{Vma, VmaBacking, VmaFlags, VmaProt};
 use crate::{Error, KResult};
@@ -88,7 +86,7 @@ impl AddressSpace {
     /// read lock).
     /// # C: O(log N)
     pub fn find_vma(&self, va: UserVirtAddr) -> Option<Vma> {
-        let g: RwReadGuard<'_, _, _> = self.vmas.read();
+        let g = self.vmas.read();
         g.find_containing(va).cloned()
     }
 
@@ -154,7 +152,7 @@ impl AddressSpace {
 
     /// # C: O(N)
     pub fn snapshot_vmas(&self) -> alloc::vec::Vec<Vma> {
-        let g: RwReadGuard<'_, _, _> = self.vmas.read();
+        let g = self.vmas.read();
         g.iter().cloned().collect()
     }
 

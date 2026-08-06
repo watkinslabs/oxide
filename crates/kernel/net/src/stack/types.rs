@@ -100,12 +100,49 @@ impl ::core::ops::Deref for TcpBindReservation {
     fn deref(&self) -> &Self::Target { &self.owner }
 }
 
+/// TCP state is touched by both socket syscalls and the NET_RX bottom half.
+/// Keep the Linux `lock_sock`/`bh_lock_sock` exclusion rule at the lock type
+/// boundary so a process cannot be interrupted by a receive softirq that then
+/// spins on the same connection.
+pub struct TcpConnLock(Spinlock<TcpConn, StackLockClass>);
+
+impl TcpConnLock {
+    /// Build one bottom-half-safe transport lock. # C: O(1)
+    pub const fn new(conn: TcpConn) -> Self { Self(Spinlock::new(conn)) }
+
+    /// Exclude NET_RX while transport state is held in process context. # C: O(1)
+    pub fn lock(&self) -> sync::LockBhGuard<'_, TcpConn, StackLockClass, sched::bh::SchedBh> {
+        self.0.lock_bh::<sched::bh::SchedBh>()
+    }
+}
+
+/// Network control state shared by socket/timer process context and NET_RX.
+///
+/// Linux requires process-context users of these tables to use
+/// `spin_lock_bh()`: otherwise NET_RX can interrupt a local holder and spin
+/// forever on the same lock.  Keep that exclusion rule at the type boundary so
+/// a new call site cannot accidentally regress to a plain spin acquisition.
+pub(crate) struct StackBhLock<T>(Spinlock<T, StackLockClass>);
+
+impl<T> StackBhLock<T> {
+    /// Build one bottom-half-safe network-state lock. # C: O(1)
+    pub(crate) const fn new(value: T) -> Self { Self(Spinlock::new(value)) }
+
+    /// Exclude networking bottom halves while the shared state is held. # C: O(contention)
+    pub(crate) fn lock(
+        &self,
+    ) -> sync::LockBhGuard<'_, T, StackLockClass, sched::bh::SchedBh> {
+        self.0.lock_bh::<sched::bh::SchedBh>()
+    }
+}
+
 /// Stack-owned per-connection record. Wraps the TcpConn TCB in its own
-/// Spinlock so demux + app calls don't contend with the listener table lock.
+/// bottom-half-safe lock so demux + app calls don't contend with the listener
+/// table lock or deadlock when receive processing interrupts a syscall.
 pub struct TcpEntry {
     /// Socket identity retained across asynchronous transport processing.
     pub owner: Arc<crate::SocketOwner>,
-    pub conn: Spinlock<TcpConn, StackLockClass>,
+    pub conn: TcpConnLock,
     /// Canonical Linux `sk_err`, shared with the owning socket.
     pub error: Arc<crate::SocketError>,
     /// Canonical Linux `inet_sk(sk)->pmtudisc`, shared with the owning socket.
@@ -468,7 +505,9 @@ pub struct NetStack {
     /// Packets accepted by a bridge while its next-hop neighbour is unresolved.
     pub(crate) bridge_pending: Spinlock<BTreeMap<(NetIfaceId, IpAddr), BridgePending>, StackLockClass>,
     /// Sole AF_INET/AF_INET6 transport owner, indexed by network namespace.
-    pub(crate) inet: Spinlock<BTreeMap<u64, Arc<super::inet_tables::InetTables>>, StackLockClass>,
+    pub(crate) inet: super::inet_tables::InetTableLock<
+        BTreeMap<u64, Arc<super::inet_tables::InetTables>>,
+    >,
     /// Monotonic id for IP packets we emit.
     pub(crate) next_ip_id: Spinlock<u16, StackLockClass>,
     /// Monotonic ISN base for TCP active opens.
@@ -478,11 +517,12 @@ pub struct NetStack {
     /// IPv6 Fragment extension reassembly table.
     pub ipv6_reasm: crate::ipv6_reasm::ReasmTable,
     /// F180c: per-iface IPv6 address registry (NS responder).
-    pub(crate) v6_addrs: Spinlock<BTreeMap<NetIfaceId, Vec<crate::stack_ipv6::Ipv6IfaceAddr>>, StackLockClass>,
+    pub(crate) v6_addrs: StackBhLock<BTreeMap<NetIfaceId, Vec<crate::stack_ipv6::Ipv6IfaceAddr>>>,
     /// IPv6 anycast address ownership, one ref for each socket membership.
-    pub(crate) v6_anycast: Spinlock<BTreeMap<NetIfaceId, Vec<super::anycast::AnycastAddr>>, StackLockClass>,
-    pub(crate) v6_mcast: Spinlock<BTreeMap<NetIfaceId, Vec<crate::mcast_state::V6IfaceGroup>>, StackLockClass>, pub(crate) v4_mcast: Spinlock<BTreeMap<NetIfaceId, Vec<crate::mcast_state::V4IfaceGroup>>, StackLockClass>,
-    pub(crate) v6_ra_pending: Spinlock<Vec<crate::stack_ipv6::PendingRa>, StackLockClass>,
+    pub(crate) v6_anycast: StackBhLock<BTreeMap<NetIfaceId, Vec<super::anycast::AnycastAddr>>>,
+    pub(crate) v6_mcast: StackBhLock<BTreeMap<NetIfaceId, Vec<crate::mcast_state::V6IfaceGroup>>>,
+    pub(crate) v4_mcast: StackBhLock<BTreeMap<NetIfaceId, Vec<crate::mcast_state::V4IfaceGroup>>>,
+    pub(crate) v6_ra_pending: StackBhLock<Vec<crate::stack_ipv6::PendingRa>>,
     /// Per-CPU receive backlog. Frames land here from a device's transmit-side
     /// caller and leave on the NET_RX bottom half's own stack, which is what
     /// keeps receive traversal off every transmit call chain.

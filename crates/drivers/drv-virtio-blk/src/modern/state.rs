@@ -46,7 +46,8 @@ pub fn wake_completions() {
 /// multiple outstanding descriptor chains.
 #[cfg(target_os = "oxide-kernel")]
 pub(super) fn run_completion_bottom_half() {
-    let devices: Vec<Arc<BlkState>> = DEVICES.lock().iter().map(|record| record.state.clone()).collect();
+    let devices: Vec<Arc<BlkState>> = DEVICES.lock_bh::<sched::bh::SchedBh>()
+        .iter().map(|record| record.state.clone()).collect();
     for device in devices {
         device.drain_owned_completions();
     }
@@ -79,47 +80,12 @@ pub(super) fn now_ns() -> u64 {
     { 0 }
 }
 
-/// Save the current IRQ mask and enable IRQ delivery for the short virtio
-/// completion bridge in `wait_for_completion`. Syscall/fault paths enter with
-/// IRQs masked; on a one-vCPU VM the completion interrupt must run locally
-/// before the waiter can be woken. The caller holds no lock across this window.
-/// # C: O(1)
-#[cfg(target_os = "oxide-kernel")]
-#[inline]
-pub(super) fn irq_save_enable() -> u64 {
-    use sync::IrqGate;
-    // SAFETY: the block wait holds no lock taken by its IRQ/softirq path.
-    #[cfg(target_arch = "x86_64")]
-    unsafe { hal_x86_64::X86IrqGate::save_enable() }
-    // SAFETY: same audited lock-free window as x86_64.
-    #[cfg(target_arch = "aarch64")]
-    unsafe { hal_aarch64::ArmIrqGate::save_enable() }
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    { 0 }
-}
-
-/// Restore the IRQ mask saved by [`irq_save_enable`]. # C: O(1)
-#[cfg(target_os = "oxide-kernel")]
-#[inline]
-pub(super) fn irq_restore(token: u64) {
-    use sync::IrqGate;
-    // SAFETY: token came from the matching gate on this CPU and call frame.
-    #[cfg(target_arch = "x86_64")]
-    unsafe { hal_x86_64::X86IrqGate::restore(token) }
-    // SAFETY: same matching-token contract as x86_64.
-    #[cfg(target_arch = "aarch64")]
-    unsafe { hal_aarch64::ArmIrqGate::restore(token) }
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    { let _ = token; }
-}
-
 #[cfg(target_os = "oxide-kernel")]
 #[inline]
 fn can_sleep() -> bool {
     if sched::live::global().is_none() { return false; }
     // Interrupt context must never sleep (Linux `in_interrupt()` /
-    // `might_sleep()`). The IRQ entry asm runs the dispatcher — including
-    // `do_softirq`'s block/ext4 re-entry, which reaches this wait — on the SHARED
+    // `might_sleep()`). The IRQ entry asm runs the dispatcher on the SHARED
     // per-CPU hard-IRQ stack. Parking from there records a `Context.sp` pointing
     // into that shared stack; the next IRQ on this CPU resets SP to the same top
     // and overwrites the sleeper's frames, so it resumes with garbage return
@@ -137,11 +103,8 @@ fn can_sleep() -> bool {
 
 /// Register-then-recheck park for the block-wait condition variables
 /// (`BLK_COMPL`/`BLK_TURN`). A naive "poll condition, then park" (safe on a
-/// single CPU: the caller's `irq_save_enable`/`irq_restore` window around the
-/// poll means the ONLY source of a completion is a local interrupt, which
-/// cannot run between the poll and the park while IF=0) is a lost-wakeup
-/// under SMP: the completion IRQ can land on a DIFFERENT cpu, entirely
-/// ungated by this cpu's IF flag, so `run_completion_bottom_half` can observe
+/// single CPU is a lost-wakeup under SMP: the completion IRQ can land on a
+/// DIFFERENT cpu, so `run_completion_bottom_half` can observe
 /// the completion and `wake_all()` an EMPTY `BLK_COMPL`/`BLK_TURN` in the gap
 /// between this cpu's last poll and its `park()` call. With exactly one
 /// outstanding turn/completion, no later wake ever arrives to rescue the
@@ -176,12 +139,6 @@ pub(super) fn park_blk_checked(list: &WaitList, deadline_ns: u64, mut done: impl
 
 #[cfg(target_os = "oxide-kernel")]
 pub(super) const IO_TIMEOUT_NS: u64 = 5_000_000_000;
-/// Maximum lock-free used-ring probes while IRQs are briefly enabled. This is
-/// an IRQ-delivery bridge for the current IF=0 kernel entry model, not a block
-/// latency busy-wait: it is deliberately three orders of magnitude below the
-/// removed 200,000-iteration loop and performs no clock conversion per probe.
-#[cfg(target_os = "oxide-kernel")]
-pub(super) const IO_IRQ_POLL_BUDGET: u16 = 64;
 #[cfg(not(target_os = "oxide-kernel"))]
 pub(super) const IO_FALLBACK_SPINS: u64 = 50_000_000;
 
@@ -341,11 +298,11 @@ impl BlkState {
     }
 
     pub(crate) fn hold_inflight_for_tests(&self) {
-        self.inflight.lock().busy = true;
+        self.inflight.lock_bh::<sched::bh::SchedBh>().busy = true;
     }
 
     pub(crate) fn release_inflight_for_tests(&self) {
-        self.inflight.lock().busy = false;
+        self.inflight.lock_bh::<sched::bh::SchedBh>().busy = false;
     }
 
     pub(crate) fn frozen_for_tests(&self) -> bool {

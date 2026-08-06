@@ -202,8 +202,20 @@ core::arch::global_asm!(
 
     ".type  oxide_fault_body, @function",
     "oxide_fault_body:",
+    // Linux `exc_page_fault` inherits the interrupted process IRQ state before
+    // running the memory-fault handler. Enable only for #PF frames whose saved
+    // RFLAGS had IF set: a fault in hard-IRQ/IRQ-off kernel context must remain
+    // atomic, while user faults and uaccess faults from syscalls may sleep.
+    "    cmp  qword ptr [rsp + 0x78], 14",
+    "    jne  4f",
+    "    test qword ptr [rsp + 0x98], 0x200",
+    "    jz   4f",
+    "    sti",
+    "4:",
     "    mov  rdi, rsp",                 // arg 0 = *mut PtRegs (rsp IS the frame base)
     "    call oxide_fault_print_rust",   // returns bool in al
+    // The common exception exit and return-to-user work require IRQs masked.
+    "    cli",
     "    test al, al",
     "    jnz 2f",
     "    cli",

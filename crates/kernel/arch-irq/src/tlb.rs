@@ -35,9 +35,9 @@
 // `lockdep_assert_irqs_enabled()`, "Can deadlock when called with
 // interrupts disabled"; `arch/x86/mm/tlb.c:flush_tlb_mm_range` asserts the
 // same), and no Linux path spins unboundedly with IRQs off, so every target
-// reaches its IPI. THIS port runs syscalls (IA32_FMASK masks IF) and faults
-// (IDT interrupt gates) at IF=0 end to end, so a target inside a long kernel
-// section cannot ACK until it finishes. The wait therefore escalates the way
+// reaches its IPI. Oxide syscall work and process faults now run IRQ-on, but a
+// target inside an explicit atomic section still cannot ACK until it finishes.
+// The wait therefore escalates the way
 // Linux's `csd_lock_wait_toolong` does — warn, re-send the IPI, NMI-backtrace
 // the stuck CPU — and NEVER gives up: abandoning the round and freeing the
 // frame anyway is a use-after-free with a live writable translation on the

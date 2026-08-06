@@ -34,7 +34,7 @@ pub(crate) use nl::{
     find_bytes_attr, find_str_attr, find_u32_attr, find_u64_attr, nlmsg_ack, put_nlattr,
     put_nlattr_str, put_nlattr_u32,
 };
-pub(crate) use state::{CHAINS, OBJECTS, RULES, SETS, TABLES};
+pub(crate) use state::{CHAINS, OBJECTS, RULES, SETS, TABLES, hook_active};
 
 #[cfg(test)]
 mod tests;

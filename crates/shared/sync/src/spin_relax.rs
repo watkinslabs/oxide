@@ -6,9 +6,9 @@
 // interrupts disabled", `kernel/smp.c`), and `mmap_lock` is a sleeping lock, so
 // a CPU waiting for an address-space lock is descheduled and keeps taking IPIs.
 //
-// This port runs syscalls with IF=0 (IA32_FMASK) and faults under interrupt
-// gates, and its address-space lock is a spinning rwlock. That closes a cycle
-// the x86 TLB-shootdown protocol cannot break on its own:
+// This port still has explicit IRQ-off kernel sections and uses a spinning
+// address-space rwlock. A target that reaches that lock from one of those
+// sections can close a cycle the x86 TLB-shootdown protocol cannot break:
 //
 //   CPU A: holds the mm's VMA write lock -> `flush_tlb_others` -> waits for B's
 //          0x42 ACK, interrupts masked.

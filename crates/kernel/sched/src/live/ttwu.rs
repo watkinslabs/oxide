@@ -11,7 +11,7 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 
 use crate::sched_enc::wakeup::{cand_of, wakeup_preempt};
 use crate::task::PendingWake;
-use crate::live::runqueue::Runqueue;
+use crate::live::runqueue::{RqIrq, Runqueue};
 use crate::Task;
 use super::runqueue::global_for;
 
@@ -155,7 +155,7 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
     // strong reference for the duration of this drain.
     let curr = if current.is_null() { None } else { Some(cand_of(unsafe { &*current })) };
     {
-        let mut inner = rq.inner.lock();
+        let mut inner = rq.inner.lock_irqsave::<RqIrq>();
         for task in drained {
             match task.pending_wake(current) {
                 PendingWake::Drop  => {}
@@ -316,7 +316,7 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
         // Try to dequeue it from this disallowed CPU's runqueue (queued, not
         // running). One rq lock at a time — no nesting, no ordering hazard.
         let removed = {
-            let mut inner = rq.inner.lock();
+            let mut inner = rq.inner.lock_irqsave::<RqIrq>();
             let r = inner.remove(tid);
             if r.is_some() { rq.publish_nr_running(inner.nr_running()); }
             r
@@ -347,8 +347,9 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
 }
 
 /// Shared `try_to_wake_up` body. `force_defer` routes placement through the
-/// target's wake_list even when local+settled (the timer-ISR contract: never
-/// take an rq lock from IF=0). See [`try_to_wake_up`] / [`ttwu_deferred`].
+/// target's wake_list even when local+settled (the interrupt-context contract:
+/// never take an rq lock from a hardirq/softirq that may have interrupted its
+/// owner). See [`try_to_wake_up`] / [`ttwu_deferred`].
 ///
 /// Claim-then-place (Linux ttwu): an atomic `Sleeping → Runnable` CAS claims
 /// the wake (exactly one waker wins; losers / already-runnable / exiting tasks
@@ -457,7 +458,7 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
         let curr = if curr.is_null() { None } else { Some(cand_of(unsafe { &*curr })) };
         let preempt;
         {
-            let mut inner = rq.inner.lock();
+            let mut inner = rq.inner.lock_irqsave::<RqIrq>();
             // Sleeper credit on wake (F211).
             task.set_vruntime_to_floor(inner.cfs.min_vruntime());
             // Linux `ttwu_do_activate` -> `wakeup_preempt`: the wake only takes
@@ -482,8 +483,20 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
 /// alive; preempt discipline per the wake path.
 /// # C: O(N_cpus + log N)
 pub unsafe fn try_to_wake_up(task: Arc<Task>) -> bool {
+    // Linux takes the target rq lock with IRQs saved. Oxide's IRQ and softirq
+    // tails instead use the existing `ttwu_queue_wakelist` analogue: an IRQ
+    // can interrupt process context while it owns this CPU's rq lock, so a
+    // direct local enqueue would self-deadlock in `Spinlock::lock`. This is
+    // broader than the timer scanner: block-completion softirq wakes use the
+    // ordinary WaitList path and need the same deferral.
+    let irq_context = wake_context_requires_defer();
     // SAFETY: wake-site context; the Arc keeps `task` alive across placement.
-    unsafe { ttwu_inner(task, false) }
+    unsafe { ttwu_inner(task, irq_context) }
+}
+
+#[inline]
+fn wake_context_requires_defer() -> bool {
+    crate::preempt::in_interrupt() || crate::preempt::on_irq_stack()
 }
 
 /// Timer-ISR / IRQ-context wake (Linux ttwu via `wake_list`, always deferred):

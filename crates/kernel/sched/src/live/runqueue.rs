@@ -20,6 +20,17 @@ use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
 use crate::{RunqueueInner, Task};
 use sync::{Runqueue as RunqueueClass, Spinlock};
+use vmm::AddressSpace;
+
+/// Architecture IRQ gate for Linux's `raw_spin_rq_lock_irqsave()` boundary.
+/// `schedule()` is the sole exception: it disables IRQs explicitly and holds
+/// the plain guard across the context switch for `finish_lock_switch()`.
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+pub(super) type RqIrq = hal_x86_64::X86IrqGate;
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+pub(super) type RqIrq = hal_aarch64::ArmIrqGate;
+#[cfg(not(target_os = "oxide-kernel"))]
+pub(super) type RqIrq = sync::NoopIrq;
 
 /// Per-CPU runqueue. One instance per CPU once SMP lands; v1 is
 /// single-CPU so a single static instance suffices.
@@ -74,6 +85,11 @@ pub struct Runqueue {
     /// INCOMING task's `finish_task_switch` clears that task's `on_cpu` AFTER
     /// the register save completed (it has truly stopped running). Per-CPU.
     pub switched_from: AtomicPtr<Task>,
+
+    /// Lazy-TLB address-space reference awaiting release after the rq lock is
+    /// handed to the incoming task. Destruction can synchronously write back a
+    /// file-backed VMA and sleep, so it must run after `finish_lock_switch`.
+    pub prev_mm: AtomicPtr<AddressSpace>,
 }
 
 impl Runqueue {
@@ -95,6 +111,7 @@ impl Runqueue {
             inner: Spinlock::new(RunqueueInner::new(cpu, idle)),
             reap_pending: AtomicPtr::new(core::ptr::null_mut()),
             switched_from: AtomicPtr::new(core::ptr::null_mut()),
+            prev_mm: AtomicPtr::new(core::ptr::null_mut()),
         }
     }
 
@@ -198,6 +215,12 @@ impl Drop for Runqueue {
             // SAFETY: `r` came from `Arc::into_raw` in schedule()'s zombie
             // path and was never drained; reclaim the strong ref.
             let _ = unsafe { Arc::from_raw(r) };
+        }
+        let mm = self.prev_mm.swap(core::ptr::null_mut(), Ordering::AcqRel);
+        if !mm.is_null() {
+            // SAFETY: `mm` was transferred from the active-mm slot as one
+            // Arc::into_raw reference and was not consumed by switch finish.
+            let _ = unsafe { Arc::from_raw(mm) };
         }
     }
 }
@@ -324,5 +347,5 @@ pub fn has_rt_peer_at_same_level(t: &Task) -> bool {
              // SAFETY: `global_for` is sound for any index and yields `None` for a CPU that has not completed `install_global`.
              else { unsafe { global_for(owner as u32) } };
     let Some(rq) = rq else { return false };
-    rq.inner.lock().rt.has_peer_at(prio)
+    rq.inner.lock_irqsave::<RqIrq>().rt.has_peer_at(prio)
 }

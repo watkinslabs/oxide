@@ -136,6 +136,7 @@ pub fn init_modern_with_rx_pool(
     tx0_buf_pa: u64,
     drv_features: u64,
 ) -> bool {
+    super::ensure_config_refresh_retry();
     let Some(rxq) = resources.require_queue(0) else {
         return false;
     };

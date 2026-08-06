@@ -86,19 +86,32 @@ pub(crate) fn ns_id_error(error: namespace_identity::AllocError) -> AllocError {
 /// # Lk: takes `Namespace` (rank 75)
 /// # Sleeps: no
 pub fn initial() -> NetworkNamespaceRef {
-    let mut registry = REGISTRY.lock();
-    if let Some(namespace) = registry.init.as_ref() { return Arc::clone(namespace); }
+    {
+        let registry = REGISTRY.lock();
+        if let Some(namespace) = registry.init.as_ref() { return Arc::clone(namespace); }
+    }
+    // Construct every allocating part before taking the publication lock.
+    // The first BTree insertion allocates its root node and therefore may enter
+    // direct reclaim; a single-vCPU kernel must never do that while REGISTRY is
+    // held, because another task can then spin forever trying to resolve its
+    // network namespace.
     let canonical = namespace_identity::initial(namespace_identity::NamespaceKind::Net).pin();
     let final_drop = Arc::new(FinalDropPublication::new());
     let final_drop_publisher = FinalDropPublisher::new(INIT_ID, Arc::clone(&final_drop));
     let namespace = Arc::new(NetworkNamespace {
         canonical, active: Spinlock::new(None), _final_drop: final_drop_publisher,
     });
-    registry.by_id.insert(INIT_ID, RegistryEntry::Live {
+    let mut initial_map = BTreeMap::new();
+    initial_map.insert(INIT_ID, RegistryEntry::Live {
         owner: Arc::downgrade(&namespace), final_drop,
     });
-    registry.init = Some(Arc::clone(&namespace));
-    drop(registry);
+    {
+        let mut registry = REGISTRY.lock();
+        if let Some(existing) = registry.init.as_ref() { return Arc::clone(existing); }
+        assert!(registry.by_id.is_empty(), "network namespace registry published child before init");
+        registry.by_id = initial_map;
+        registry.init = Some(Arc::clone(&namespace));
+    }
     *namespace.active.lock() = Some(namespace.canonical.activate());
     namespace
 }

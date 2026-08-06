@@ -36,6 +36,7 @@ pub use address_space::{
     live_address_spaces, AddressSpace, MdweAdmission, MdweRequest, MdweSetError,
     MprotectOutcome, MprotectStep, MIN_USER_VA, UffdVma, VmAccountingSnapshot,
     LockedSpan, MlockOutcome,
+    set_mmap_rwsem_wait_hooks,
 };
 pub use mmap::{MmapError, MmapPlacement};
 pub use address_space::{
