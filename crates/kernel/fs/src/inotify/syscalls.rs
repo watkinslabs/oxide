@@ -210,10 +210,10 @@ pub(crate) fn add_or_update_watch(
         if w.scope == MarkScope::Inode && w.inode_key == key {
             if (mask & IN_MASK_CREATE) != 0 { return Err(Errno::Eexist); }
             if (mask & IN_MASK_ADD) != 0 {
-                w.mask |= event_mask;
+                w.replace_mask(w.mask | event_mask);
                 w.flags |= mark_flags;
             } else {
-                w.mask = event_mask;
+                w.replace_mask(event_mask);
                 w.flags = mark_flags;
             }
             return Ok(w.wd);
@@ -227,7 +227,7 @@ pub(crate) fn add_or_update_watch(
     // is why one watch is budgeted against the per-user ceiling at the cost of
     // a resident inode.
     g.push(Watch::new(wd, key, fsid, 0, MarkScope::Inode, event_mask, mark_flags,
-                      0, false, false, pin));
+                      0, false, false, pin, pin));
     MARK_COUNT.fetch_add(1, Ordering::AcqRel);
     Ok(wd)
 }
@@ -271,7 +271,7 @@ pub fn sys_inotify_rm_watch(args: &syscall::SyscallArgs) -> i64 {
 /// PERM_MARK_COUNT. Returns 0 or the errno. # C: O(N_watches)
 pub(crate) fn apply_mark(inotify: &Arc<InotifyData>, scope: MarkScope, key: usize, fsid: u64,
                          bits: u32, add: bool, ignored: bool, mflags: u32) -> i64 {
-    apply_mark_ns(inotify, scope, key, fsid, 0, bits, add, ignored, mflags, None)
+    apply_mark_ns(inotify, scope, key, fsid, 0, bits, add, ignored, mflags, None, None)
 }
 
 /// [`apply_mark`] for an INODE-scope mark, which pins the inode it is attached
@@ -282,7 +282,7 @@ pub(crate) fn apply_inode_mark(inotify: &Arc<InotifyData>, inode: &vfs::InodeRef
                                bits: u32, add: bool, ignored: bool, mflags: u32) -> i64 {
     let pin = if mflags & FAN_MARK_EVICTABLE != 0 { None } else { Some(inode) };
     apply_mark_ns(inotify, MarkScope::Inode, inode_key(inode), inode.fsid(), 0,
-                  bits, add, ignored, mflags, pin)
+                  bits, add, ignored, mflags, pin, Some(inode))
 }
 
 /// [`apply_mark`] for a mark whose object is a MOUNT NAMESPACE (`ns_id`), which
@@ -290,7 +290,7 @@ pub(crate) fn apply_inode_mark(inotify: &Arc<InotifyData>, inode: &vfs::InodeRef
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn apply_mark_ns(inotify: &Arc<InotifyData>, scope: MarkScope, key: usize, fsid: u64,
                             ns_id: u64, bits: u32, add: bool, ignored: bool, mflags: u32,
-                            pin: Option<&vfs::InodeRef>) -> i64 {
+                            pin: Option<&vfs::InodeRef>, target: Option<&vfs::InodeRef>) -> i64 {
     // `FAN_MARK_IGNORE` means the event flags in the ignore set mean what they
     // say; the legacy `FAN_MARK_IGNORED_MASK` has them reinterpreted (`mask`).
     let ignore_has_flags = mflags & FAN_MARK_IGNORE != 0;
@@ -304,9 +304,11 @@ pub(crate) fn apply_mark_ns(inotify: &Arc<InotifyData>, scope: MarkScope, key: u
     };
     if let Some(i) = g.iter().position(|w| same(w)) {
         let old = g[i].mask;
+        let mut new_mask = old;
         if ignored {
             if add { g[i].ignored |= bits; } else { g[i].ignored &= !bits; }
-        } else if add { g[i].mask |= bits; } else { g[i].mask &= !bits; }
+        } else if add { new_mask |= bits; } else { new_mask &= !bits; }
+        if !ignored { g[i].replace_mask(new_mask); }
         if ignored && add {
             g[i].ignore_has_flags = ignore_has_flags;
             g[i].ignore_survives_modify = survives;
@@ -337,7 +339,7 @@ pub(crate) fn apply_mark_ns(inotify: &Arc<InotifyData>, scope: MarkScope, key: u
     let (mask, ign) = if ignored { (0, bits) } else { (bits, 0) };
     let wd = inotify.next_wd.fetch_add(1, Ordering::Relaxed);
     g.push(Watch::new(wd, key, fsid, ns_id, scope, mask, 0, ign,
-                      ignored && ignore_has_flags, ignored && survives, pin));
+                      ignored && ignore_has_flags, ignored && survives, pin, target));
     MARK_COUNT.fetch_add(1, Ordering::AcqRel);
     if scope == MarkScope::MountNamespace { MNTNS_MARK_COUNT.fetch_add(1, Ordering::AcqRel); }
     perm_delta(0, mask);
@@ -414,7 +416,7 @@ pub fn sys_fanotify_mark(args: &syscall::SyscallArgs) -> i64 {
             return -(Errno::Einval.as_i32() as i64);
         };
         return apply_mark_ns(&inotify, scope, 0, 0, ns, bits,
-                             flags & FAN_MARK_ADD != 0, ignored, flags, None);
+                             flags & FAN_MARK_ADD != 0, ignored, flags, None, None);
     }
     if scope == MarkScope::Inode {
         return apply_inode_mark(&inotify, &inode, bits, flags & FAN_MARK_ADD != 0, ignored, flags);

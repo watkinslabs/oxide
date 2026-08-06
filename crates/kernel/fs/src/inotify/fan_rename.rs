@@ -189,17 +189,17 @@ mod tests {
     #[test]
     fn a_directory_rename_needs_ondir_but_never_needs_on_child() {
         let mut w = Watch::new(1, 0, 0, 0, MarkScope::Inode, FAN_RENAME, 0, 0,
-                               false, false, None);
+                               false, false, None, None);
         assert!(rename_reported(&w, false));
         assert!(!rename_reported(&w, true), "a renamed directory needs FAN_ONDIR");
-        w.mask = FAN_RENAME | FAN_ONDIR;
+        w.replace_mask(FAN_RENAME | FAN_ONDIR);
         assert!(rename_reported(&w, true));
-        w.mask = FAN_RENAME;
+        w.replace_mask(FAN_RENAME);
         w.ignored = FAN_RENAME;
         w.ignore_has_flags = true;
         assert!(!rename_reported(&w, false), "an ignored rename reports nothing");
         w.ignored = 0;
-        w.mask = FAN_CREATE | FAN_EVENT_ON_CHILD;
+        w.replace_mask(FAN_CREATE | FAN_EVENT_ON_CHILD);
         assert!(!rename_reported(&w, false), "a mark that did not ask for renames hears none");
     }
 }

@@ -128,6 +128,7 @@ impl InodeBuilder {
             i_mapping: self.mapping,
             i_wb_err: crate::errseq::Errseq::new(),
             i_file_rmap: vmm::FileRmap::new(),
+            i_fsnotify_mask_counts: [const { AtomicU32::new(0) }; 32],
             i_op: self.i_op,
             i_fop: self.i_fop,
             i_private: self.private,

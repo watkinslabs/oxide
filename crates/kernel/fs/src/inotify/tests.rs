@@ -1,5 +1,5 @@
 use super::*;
-use crate::inotify::types::FAN_DELETE_SELF;
+use crate::inotify::types::{FAN_DELETE_SELF, FAN_EVENT_ON_CHILD};
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use crate::inotify::path::resolve_watch_path_at;
@@ -178,6 +178,44 @@ fn inotify_remove_watch_queues_ignored_and_rejects_missing_wd() {
     assert_eq!(remove_watch(&ino, wd), Ok(()));
     assert_eq!(read_event_pair(&ino), (wd, IN_IGNORED));
     assert_eq!(remove_watch(&ino, wd), Err(syscall::errno::Errno::Einval));
+}
+
+#[test]
+fn file_event_admission_uses_attached_inode_and_parent_marks() {
+    let _notify = crate::inotify::test_claim::claim_notify();
+    let g = InotifyData::new(0);
+    let parent_inode = dir(0x6200, 0o755, 0, &[]);
+    let watched = reg(0x6201, 0o644, 0);
+    let unrelated = reg(0x6202, 0o644, 0);
+    let root = Dentry::new_root(parent_inode.clone());
+    let watched_dentry = Dentry::new_child(&root, "watched", Some(watched.clone()));
+    let unrelated_dentry = Dentry::new_child(&root, "unrelated", Some(unrelated.clone()));
+
+    let direct_wd = add_or_update_watch(&g, inode_key(&watched), watched.fsid(),
+                                        IN_ACCESS, false, Some(&watched)).unwrap();
+    assert!(watched.fsnotify_has_mask(IN_ACCESS));
+    assert!(!unrelated.fsnotify_has_mask(IN_ACCESS));
+    crate::inotify::dispatch::fire_with_parent_for_test(&unrelated, IN_ACCESS, &unrelated_dentry);
+    assert_eq!(g.read(0, &mut [0u8; 64]), Err(vfs::VfsError::Eagain));
+    crate::inotify::dispatch::fire_with_parent_for_test(&watched, IN_ACCESS, &watched_dentry);
+    assert_eq!(read_event_pair(&g), (direct_wd, IN_ACCESS));
+
+    let parent_wd = add_or_update_watch(&g, inode_key(&parent_inode), parent_inode.fsid(),
+                                        IN_MODIFY, true, Some(&parent_inode)).unwrap();
+    crate::inotify::dispatch::fire_with_parent_for_test(&unrelated, IN_MODIFY, &unrelated_dentry);
+    let mut buf = [0u8; 64];
+    let n = g.read(0, &mut buf).unwrap();
+    let events = parse_events(&buf, n);
+    assert_eq!(events, alloc::vec![(parent_wd, IN_MODIFY, 0, b"unrelated".to_vec())]);
+
+    add_or_update_watch(&g, inode_key(&watched), watched.fsid(),
+                        IN_OPEN, false, Some(&watched)).unwrap();
+    assert!(!watched.fsnotify_has_mask(IN_ACCESS));
+    assert!(watched.fsnotify_has_mask(IN_OPEN));
+    remove_watch(&g, direct_wd).unwrap();
+    assert!(!watched.fsnotify_has_mask(IN_OPEN));
+    remove_watch(&g, parent_wd).unwrap();
+    assert!(!parent_inode.fsnotify_has_mask(IN_MODIFY | FAN_EVENT_ON_CHILD));
 }
 
 #[test]
