@@ -99,8 +99,10 @@ impl FileOps for FuseFileOps {
     fn read_file(&self, file: &File, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let d = fuse_data(file.inode())?;
         let fh = ensure_open(file)?;
+        let request_len = buf.len().min(d.conn.max_read() as usize);
         let mut body = Vec::with_capacity(proto::FUSE_READ_IN_SIZE);
-        proto::ReadIn { fh, offset: off, size: buf.len() as u32, read_flags: 0, lock_owner: 0, flags: 0 }
+        proto::ReadIn { fh, offset: off, size: request_len.min(u32::MAX as usize) as u32,
+            read_flags: 0, lock_owner: 0, flags: 0 }
             .encode(&mut body);
         let reply = d.conn.call(proto::FUSE_READ, d.nodeid, &body)?;
         let n = reply.len().min(buf.len());

@@ -7,6 +7,7 @@
 // waiter would return).
 
 extern crate alloc;
+use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -29,9 +30,11 @@ fn reply(unique: u64, error: i32, body: &[u8]) -> Vec<u8> {
 
 #[test]
 fn struct_sizes_match_uapi() {
+    assert_eq!((FUSE_KERNEL_VERSION, FUSE_KERNEL_MINOR_VERSION), (7, 45),
+        "the implemented wire contract is pinned; changing it requires the ABI upgrade gates");
     assert_eq!(FUSE_IN_HEADER_SIZE, 40);
     assert_eq!(FUSE_OUT_HEADER_SIZE, 16);
-    assert_eq!(FUSE_INIT_IN_SIZE, 16);
+    assert_eq!(FUSE_INIT_IN_SIZE, 64);
     assert_eq!(FUSE_INIT_OUT_SIZE, 64);
     assert_eq!(FUSE_ATTR_SIZE, 88);
     assert_eq!(FUSE_ENTRY_OUT_SIZE, 128);
@@ -63,7 +66,8 @@ fn out_header_roundtrip_negative_error() {
 
 #[test]
 fn init_roundtrip() {
-    let i = InitIn { major: 7, minor: 31, max_readahead: 131072, flags: FUSE_ASYNC_READ | FUSE_BIG_WRITES };
+    let i = InitIn { major: 7, minor: 45, max_readahead: 131072,
+        flags: FUSE_ASYNC_READ | FUSE_BIG_WRITES | FUSE_INIT_EXT, flags2: 0 };
     let mut b = Vec::new();
     i.encode(&mut b);
     assert_eq!(b.len(), FUSE_INIT_IN_SIZE);
@@ -274,6 +278,8 @@ fn init_negotiation_compatible_major() {
     assert_eq!(h.opcode, FUSE_INIT);
     let ii = InitIn::decode(&buf[FUSE_IN_HEADER_SIZE..n]).unwrap();
     assert_eq!(ii.major, FUSE_KERNEL_VERSION);
+    assert_eq!(ii.minor, 45);
+    assert_ne!(ii.flags & FUSE_INIT_EXT, 0);
     // Daemon replies with a LOWER minor → negotiated down.
     let out = InitOut { major: 7, minor: 27, max_readahead: 0, flags: FUSE_ASYNC_READ,
         max_background: 0, congestion_threshold: 0, max_write: 1 << 17, time_gran: 1,
@@ -308,7 +314,6 @@ fn canonical_device_routes_published_and_mknod_nodes() {
     use vfs::{File, FileType, OpenFlags};
 
     const CLONE_INO: u64 = 0xF053;
-    const MOUNT_FD: i32 = 1;
     const ROOT_MODE: u32 = 0o40_000;
     const USER_ID: u32 = 1;
     const GROUP_ID: u32 = 1;
@@ -349,13 +354,27 @@ fn canonical_device_routes_published_and_mknod_nodes() {
     ));
     assert!(!Arc::ptr_eq(&dev::conn_for(&published), &dev::conn_for(&cloned)),
             "each open file description owns an independent channel");
-    let mount_data = alloc::format!(
-        "fd={MOUNT_FD},rootmode={ROOT_MODE:o},user_id={USER_ID},group_id={GROUP_ID}",
+    let ty = vfs::fs::FsType::with_context_parameters(
+        "fuse", super::FUSE_SUPER_MAGIC, vfs::fs::FsFlags::empty(),
+        Arc::new(super::FuseContextOps), super::FUSE_PARAMS,
     );
-    let opts = super::fs::parse_mount_opts(&mount_data).unwrap();
-    let (mounted, root) = super::mount_from_opts(opts, &cloned).unwrap();
-    assert_eq!(mounted.name(), "fuse");
-    assert!(Arc::ptr_eq(&mounted.root().expect("mounted root"), &root));
+    let mut fc = vfs::fs::FsContext::for_mount(ty, 0);
+    vfs::fs::vfs_parse_fs_param(&mut fc, &vfs::fs::FsParameter::fd("fd", 77, cloned.clone())).unwrap();
+    for (key, value) in [
+        ("rootmode", alloc::format!("{ROOT_MODE:o}")),
+        ("user_id", USER_ID.to_string()),
+        ("group_id", GROUP_ID.to_string()),
+        ("max_read", String::from("4096")),
+    ] {
+        vfs::fs::vfs_parse_fs_param(&mut fc, &vfs::fs::FsParameter::string(key, &value)).unwrap();
+    }
+    vfs::fs::vfs_parse_fs_param(&mut fc, &vfs::fs::FsParameter::flag("default_permissions")).unwrap();
+    vfs::fs::vfs_get_tree(&mut fc).unwrap();
+    let sb = fc.sb().expect("typed FUSE context built a superblock");
+    assert!(sb.s_root().is_some());
+    assert_eq!(sb.s_op.show_options(), ",user_id=1,group_id=1,default_permissions,max_read=4096");
+    assert_eq!(dev::conn_for(&cloned).max_read(), 4096,
+        "max_read is consumed by the live connection, not merely admitted");
 
     drop(published);
     drop(cloned);
@@ -385,33 +404,6 @@ fn canonical_device_routes_published_and_mknod_nodes() {
     assert!(!dev::is_fuse_dev(&other), "device number alone must not identify the FUSE driver");
     drop(other);
     vfs::unregister_chrdev_region(dev::FUSE_DEV_MAJOR, dev::FUSE_DEV_MINOR, dev::FUSE_DEV_COUNT);
-}
-
-#[test]
-fn parses_exact_libfuse_mount_option_forms() {
-    const FD_WITH_GROUP: i32 = 4;
-    const FD_WITHOUT_GROUP: i32 = 5;
-    const ROOT_MODE: u32 = 0o40_000;
-    const USER_ID: u32 = 1_000;
-    const GROUP_ID: u32 = 1_000;
-
-    let with_group_data = alloc::format!(
-        "fd={FD_WITH_GROUP},rootmode={ROOT_MODE:o},user_id={USER_ID},group_id={GROUP_ID}",
-    );
-    let with_group = super::fs::parse_mount_opts(&with_group_data).unwrap();
-    assert_eq!(with_group.fd, FD_WITH_GROUP);
-    assert_eq!(with_group.rootmode, ROOT_MODE);
-    assert_eq!(with_group.user_id, USER_ID);
-    assert_eq!(with_group.group_id, GROUP_ID);
-
-    let portal_data = alloc::format!(
-        "fd={FD_WITHOUT_GROUP},rootmode={ROOT_MODE:o},user_id={USER_ID},subtype=fuse.portal",
-    );
-    let portal = super::fs::parse_mount_opts(&portal_data).unwrap();
-    assert_eq!(portal.fd, FD_WITHOUT_GROUP);
-    assert_eq!(portal.rootmode, ROOT_MODE);
-    assert_eq!(portal.user_id, USER_ID);
-    assert_eq!(portal.group_id, 0, "omitted group_id uses the caller-neutral default");
 }
 
 /// F767: the `fuse_attr` seconds field is `uint64_t` on the wire, but Linux
@@ -452,7 +444,16 @@ fn attr_time_clamps_an_out_of_range_subsecond_field() {
 #[test]
 fn mnt_force_umount_begin_aborts_the_channel() {
     let c = conn();
-    let ffs = super::fs::build_fuse_fs(c.clone(), 0, 0, 0);
+    let opts = super::fs::MountOpts {
+        rootmode: vfs::S_IFDIR | 0o755,
+        user_id: 0,
+        group_id: 0,
+        default_permissions: false,
+        allow_other: false,
+        max_read: u32::MAX,
+        subtype: None,
+    };
+    let ffs = super::fs::build_fuse_fs(c.clone(), &opts);
     let pending = c.new_request(FUSE_READ, 1, &[0u8; 40]);
     let ty = vfs::fs::FsType::new("fuse", super::FUSE_SUPER_MAGIC, vfs::fs::FsFlags::empty(),
         alloc::boxed::Box::new(|_, _, _, _, _, _| Err(vfs::VfsError::Einval)));

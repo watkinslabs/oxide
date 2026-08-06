@@ -495,6 +495,8 @@ open issue. Live rows that still need the work carry it in their own row.
 
 ### Tooling / gates
 
+| FIXED 6db582ff4 | low | The known-issues type-by-severity summary did not add up: INFRA/med was shown as 11 although 12 rows were live, and Total/low was shown as 62 although the class rows summed to 63. | Recomputed every live `OPEN`/`IN-PROGRESS` row by class and severity during B1859 closure. After moving B1859 to the fixed ledger, the corrected table exactly matches 113 live rows: high 6, med 44, low 63. | B1859-fs-context-autofs-fuse |
+
 | FIXED C283 | low | A one-time B1672 shared-box QEMU observation remained in the live ledger after its build namespace and process disappeared. | Verified no live QEMU and no `b1663boot1` namespace; archived the historical observation rather than presenting it as an active defect. | C283-archive-expired-qemu-observation |
 
 | FIXED C282 | low | `MAX_CLASS_BYTES` was recorded as unused in diagnostic builds despite being intentionally derived from `CLASS_SIZES`. | Verified production routing and its tests consume the derived bound; diagnostic builds deliberately bypass the size-class front end, so no separate value can drift. | C282-archive-derived-kalloc-bound |
@@ -540,6 +542,8 @@ open issue. Live rows that still need the work carry it in their own row.
 
 
 ### Filesystem / mount
+
+| FIXED 6db582ff4 | med | autofs and FUSE published complete parameter tables but their classic constructors scanned the rendered option blob again, so admission and construction could disagree and descriptor values could be resolved too late. | Both filesystem types now install subsystem-owned typed `FsContextOps`; `fd=` is pinned and validated during parse, Linux value/range/required-field rules are enforced once, and `get_tree` consumes that exact state. FUSE `max_read` bounds live reads, subtype and shown options use the parsed values, and the audited wire target is pinned to current ABI 7.45 with extended INIT. Focused suites passed (FUSE 29, autofs 3, VFS parser 13), the full workspace had zero failures, and x86_64/aarch64 smoke passed first attempt. | B1859-fs-context-autofs-fuse |
 
 
 ### Process / exec
