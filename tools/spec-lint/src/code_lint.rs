@@ -103,7 +103,7 @@ fn lint_file(path: &PathBuf, test_gated: bool, ext_gated: &HashSet<PathBuf>, f: 
 
     if is_root { check_no_std(path, &lines, f); }
     check_extern_std(path, &lines, &off_kernel, f);
-    check_drm_user_deref(path, &lines, f);
+    check_driver_user_deref(path, &lines, f);
     if !is_test { check_static_mut(path, &text, &lines, f); }
     check_panic_fmt(path, &lines, &off_kernel, f);
     if !is_test { check_unsafe_safety(path, &lines, f); }
@@ -154,21 +154,20 @@ fn check_extern_std(path: &Path, lines: &[&str], off_kernel: &[bool], f: &mut Fi
     }
 }
 
-/// A raw `read_volatile`/`write_volatile` on a user pointer has no
-/// exception-table entry, so a bogus address any unprivileged process can pass
-/// through an ioctl halts the CPU instead of returning `EFAULT`. The DRM tree
-/// touches no MMIO — every volatile access in it was a user-pointer
-/// dereference — so the pattern has no legitimate use there outside `uarg`,
-/// which owns the fault-recoverable transfer.
-fn check_drm_user_deref(path: &Path, lines: &[&str], f: &mut Findings) {
+/// Driver user-ABI modules transfer through `uaccess`; raw volatile operations
+/// belong to MMIO/DMA modules. Keeping those domains in separate source files
+/// makes a raw ioctl-pointer dereference mechanically distinguishable from a
+/// legitimate device access without a path allowlist that can drift.
+fn check_driver_user_deref(path: &Path, lines: &[&str], f: &mut Findings) {
     let p = path.to_string_lossy().replace('\\', "/");
-    if !p.contains("crates/drivers/drm/src/") { return; }
-    if p.ends_with("/uarg.rs") { return; }
+    if !p.contains("crates/drivers/") { return; }
+    let user_abi = lines.iter().any(|l| strip_for_lint(l).contains("arg: u64"));
+    if !user_abi { return; }
     for (i, l) in lines.iter().enumerate() {
-        let code = match l.find("//") { Some(idx) => &l[..idx], None => l };
+        let code = strip_for_lint(l);
         if code.contains("read_volatile") || code.contains("write_volatile") {
-            f.push(path, i + 1, "code/drm-user-deref",
-                "raw volatile dereference of a user pointer — transfer through `uarg` (no MMIO exists in this tree)");
+            f.push(path, i + 1, "code/driver-user-deref",
+                "raw volatile operation in a driver user-ABI module — transfer user memory through `uaccess` and keep MMIO/DMA in its owning module");
         }
     }
 }
@@ -406,6 +405,46 @@ mod tests {
         let mut f = Findings::default();
         check_unsafe_safety(Path::new("fixture.rs"), lines, &mut f);
         f
+    }
+
+    fn driver_deref_findings(path: &str, lines: &[&str]) -> Findings {
+        let mut f = Findings::default();
+        check_driver_user_deref(Path::new(path), lines, &mut f);
+        f
+    }
+
+    #[test]
+    fn driver_ioctl_raw_volatile_is_rejected_even_through_a_local_pointer() {
+        let f = driver_deref_findings("crates/drivers/example/src/ioctl.rs", &[
+            "pub fn handle_ioctl(arg: u64) -> i64 {",
+            "    let ptr = arg as *const u32;",
+            "    unsafe { core::ptr::read_volatile(ptr) as i64 }",
+            "}",
+        ]);
+        assert_eq!(f.items().len(), 1);
+        assert_eq!(f.items()[0].rule, "code/driver-user-deref");
+    }
+
+    #[test]
+    fn driver_mmio_without_a_user_argument_remains_legal() {
+        let f = driver_deref_findings("crates/drivers/example/src/mmio.rs", &[
+            "fn read_reg(base: u64) -> u32 {",
+            "    unsafe { core::ptr::read_volatile(base as *const u32) }",
+            "}",
+        ]);
+        assert!(f.items().is_empty());
+    }
+
+    #[test]
+    fn driver_usercopy_and_pattern_names_in_text_remain_legal() {
+        let f = driver_deref_findings("crates/drivers/example/src/ioctl.rs", &[
+            "// read_volatile is forbidden here.",
+            "pub fn handle_ioctl(arg: u64) -> Result<(), Errno> {",
+            "    uaccess::copy_to_user(arg, &[0])",
+            "}",
+            "assert!(!source.contains(\"write_volatile\"));",
+        ]);
+        assert!(f.items().is_empty());
     }
 
     #[test]
