@@ -108,19 +108,34 @@ impl NamespaceState {
     }
 }
 
-pub(super) struct NftControlLock<T>(sched::live::Mutex<T>);
+#[cfg(target_os = "oxide-kernel")]
+mod control_lock {
+    pub(super) type Lock<T> = sched::live::Mutex<T>;
+    pub(super) type Guard<'a, T> = sched::live::MutexGuard<'a, T>;
+    pub(super) const fn new<T>(value: T) -> Lock<T> { sched::live::Mutex::new(value) }
+    // SAFETY: the nftables control plane is reachable only from schedulable
+    // netlink process context and never from packet, softirq, or IRQ context.
+    pub(super) fn lock<T>(lock: &Lock<T>) -> Guard<'_, T> { unsafe { lock.lock() } }
+}
+
+#[cfg(not(target_os = "oxide-kernel"))]
+mod control_lock {
+    pub(super) type Lock<T> = sync::Spinlock<T, sync::Socket>;
+    pub(super) type Guard<'a, T> = sync::Guard<'a, T, sync::Socket>;
+    pub(super) const fn new<T>(value: T) -> Lock<T> { sync::Spinlock::new(value) }
+    pub(super) fn lock<T>(lock: &Lock<T>) -> Guard<'_, T> { lock.lock() }
+}
+
+pub(super) struct NftControlLock<T>(control_lock::Lock<T>);
 
 impl<T> NftControlLock<T> {
-    pub(super) const fn new(value: T) -> Self { Self(sched::live::Mutex::new(value)) }
+    pub(super) const fn new(value: T) -> Self { Self(control_lock::new(value)) }
 
-    /// nftables control operations run from NETLINK_NETFILTER process context.
+    /// Kernel control operations sleep on contention; hosted checks use their
+    /// scheduler-free exclusion stand-in.
     /// # C: O(1) uncontended; one context switch per contended round
     /// # Sleeps: yes
-    pub(super) fn lock(&self) -> sched::live::MutexGuard<'_, T> {
-        // SAFETY: all callers are control-plane APIs reached from netlink
-        // process context (or hosted tests), never packet/IRQ/softirq paths.
-        unsafe { self.0.lock() }
-    }
+    pub(super) fn lock(&self) -> control_lock::Guard<'_, T> { control_lock::lock(&self.0) }
 }
 
 pub(crate) struct RuleCounter {

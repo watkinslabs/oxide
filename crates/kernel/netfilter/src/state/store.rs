@@ -13,7 +13,7 @@ struct BatchBackup { namespace: u64, state: Option<NamespaceState> }
 
 static CONTROL: NftControlLock<ControlState> = NftControlLock::new(ControlState::new());
 static NFNL_SERIAL: NftControlLock<()> = NftControlLock::new(());
-static BATCH_BACKUP: NftControlLock<Option<BatchBackup>> = NftControlLock::new(None);
+static BATCH_BACKUP: NftControlLock<Option<BatchBackup>> = NftControlLock::new(None::<BatchBackup>);
 static BATCH_OPEN: AtomicBool = AtomicBool::new(false);
 static BATCH_DIRTY: AtomicBool = AtomicBool::new(false);
 static BATCH_NAMESPACE: AtomicU64 = AtomicU64::new(0);
@@ -36,7 +36,7 @@ fn publish(control: &mut ControlState, namespace: u64) {
 /// Serialize one complete nfnetlink datagram, including its batch markers.
 /// # C: O(1) uncontended; one context switch per contended round
 /// # Sleeps: yes
-pub(crate) fn nfnl_lock() -> sched::live::MutexGuard<'static, ()> { NFNL_SERIAL.lock() }
+pub(crate) fn nfnl_lock() -> impl core::ops::DerefMut<Target = ()> { NFNL_SERIAL.lock() }
 
 /// Snapshot one namespace's canonical state for an atomic nfnetlink batch. # C: O(namespace state)
 pub(crate) fn batch_begin(namespace: u64) -> bool {
