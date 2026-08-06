@@ -14,21 +14,28 @@
 
 extern crate alloc;
 
+#[cfg(any(target_arch = "x86_64", test))]
+mod tx;
+
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+#[cfg(target_arch = "x86_64")]
 use sync::{LockClass, Spinlock};
 
+#[cfg(target_arch = "x86_64")]
 struct UartPort;
+#[cfg(target_arch = "x86_64")]
 impl LockClass for UartPort {
     fn rank() -> u16 { 121 }
     fn name() -> &'static str { "UartPort" }
 }
 
-/// Serializes every transaction against the port's aliased register window.
-/// `emit` and `set_baud` may run from unrelated kernel contexts; a divisor
-/// transaction with DLAB set must exclude THR writes, and THR readiness must
-/// be consumed by only one writer.
-static PORT: Spinlock<(), UartPort> = Spinlock::new(());
+/// Serializes the xmit ring and every transaction against the port's aliased
+/// register window. A divisor transaction with DLAB set excludes both the IRQ
+/// FIFO fill and another writer's IER/THR access.
+#[cfg(target_arch = "x86_64")]
+static PORT: Spinlock<tx::TxEngine<{ tx::TX_RING_CAPACITY }>, UartPort>
+    = Spinlock::new(tx::TxEngine::new());
 
 /// Detected COM I/O base (x86 port). 0 ⇒ no UART bound.
 #[cfg(target_arch = "x86_64")]
@@ -107,6 +114,8 @@ mod imp {
     const FCR_CLEAR_RX: u8 = 0x02;
     const FCR_CLEAR_TX: u8 = 0x04;
     const FCR_RX_TRIGGER_8: u8 = 0x80;
+    const LSR_DATA_READY: u8 = 1 << 0;
+    const LSR_THR_EMPTY: u8 = 1 << 5;
 
     /// Steady 16550 FIFO configuration after the startup clear. # C: O(1)
     pub(super) const fn fifo_mode() -> u8 { FCR_ENABLE | FCR_RX_TRIGGER_8 }
@@ -135,18 +144,36 @@ mod imp {
 
     fn base() -> u16 { BASE.load(Ordering::Acquire) as u16 }
 
-    /// Console TX: write each byte once THR is empty.
-    /// # C: O(len(bytes))
+    /// Poll one byte out through THR. This is the early/late console fallback,
+    /// used only while the runtime IRQ engine is unavailable or quiesced.
+    /// PORT must be held. # C: O(spins)
+    fn poll_byte(base: u16, byte: u8) {
+        let mut n = 0u32;
+        // SAFETY: LSR port read at CPL=0 to the detected COM base.
+        while n < 100_000 && unsafe { inb(base + LSR) } & LSR_THR_EMPTY == 0 { n += 1; }
+        // SAFETY: THR write at CPL=0 to the detected COM base.
+        unsafe { outb(base + RBR, byte); }
+    }
+
+    /// Runtime TX follows Linux serial core: copy into the xmit ring, arm the
+    /// TX-empty interrupt once, and return. The ISR fills the 16-byte hardware
+    /// FIFO without per-byte readiness polls. Early boot and shutdown retain
+    /// the synchronous fallback because interrupts cannot make progress there.
+    /// # C: O(len(bytes)) memory copies; O(1) port I/O
     pub fn emit(bytes: &[u8]) {
         let b = base();
         if b == 0 { return; }
-        let _port = PORT.lock_irqsave::<hal_x86_64::X86IrqGate>();
-        for &c in bytes {
-            let mut n = 0u32;
-            // SAFETY: LSR port read at CPL=0 to the detected COM base.
-            while n < 100_000 && unsafe { inb(b + LSR) } & 0x20 == 0 { n += 1; }
-            // SAFETY: THR write at CPL=0 to the detected COM base.
-            unsafe { outb(b + RBR, c); }
+        let mut port = PORT.lock_irqsave::<hal_x86_64::X86IrqGate>();
+        if port.runtime() {
+            let transition = port.enqueue(bytes);
+            if transition.ier_changed {
+                // SAFETY: the port lock owns the IER shadow/register pair.
+                unsafe { outb(b + IER, port.ier()); }
+            }
+            return;
+        }
+        for &byte in bytes {
+            poll_byte(b, byte);
         }
     }
 
@@ -170,19 +197,42 @@ mod imp {
         }
     }
 
-    /// COM RX interrupt handler — drains the FIFO into `dlv`.
-    /// # C: O(bytes pending)
+    /// COM interrupt handler. Linux services receive before transmit, fills at
+    /// most one hardware FIFO per THRE interrupt, and calls the tty delivery
+    /// path only after dropping the aliased-register lock (delivery may log).
+    /// # C: O(RX bytes + one 16-byte TX FIFO load)
     pub fn rx_isr(dlv: fn(u8)) {
-        if !super::rx_enabled() { return; }
         let b = base(); if b == 0 { return; }
-        let mut n = 0;
-        while n < 64 {
+        let mut received = [0u8; 64];
+        let mut rx_count = 0usize;
+        {
+            let mut port = PORT.lock_irqsave::<hal_x86_64::X86IrqGate>();
             // SAFETY: LSR read at the detected COM base.
-            if unsafe { inb(b + LSR) } & 0x01 == 0 { break; }
-            // SAFETY: LSR.DR set ⇒ RBR has a byte.
-            let c = unsafe { inb(b + RBR) };
-            dlv(c);
-            n += 1;
+            let mut status = unsafe { inb(b + LSR) };
+            if super::rx_enabled() {
+                while rx_count < received.len() && status & LSR_DATA_READY != 0 {
+                    // SAFETY: LSR.DR set means RBR contains one received byte.
+                    received[rx_count] = unsafe { inb(b + RBR) };
+                    rx_count += 1;
+                    // SAFETY: re-sample the same detected UART's line status.
+                    status = unsafe { inb(b + LSR) };
+                }
+            }
+            if status & LSR_THR_EMPTY != 0 && port.ier() & tx::IER_TX_EMPTY != 0 {
+                let mut fifo = [0u8; tx::TX_FIFO_DEPTH];
+                let transition = port.take_fifo(&mut fifo);
+                for &byte in &fifo[..transition.count] {
+                    // SAFETY: one THRE service may fill the enabled 16-byte FIFO.
+                    unsafe { outb(b + RBR, byte); }
+                }
+                if transition.ier_changed {
+                    // SAFETY: the port lock owns the IER shadow/register pair.
+                    unsafe { outb(b + IER, port.ier()); }
+                }
+            }
+        }
+        for &byte in &received[..rx_count] {
+            dlv(byte);
         }
     }
 
@@ -190,7 +240,7 @@ mod imp {
     /// signature has no args, so it pulls `deliver` from the stored
     /// static and drains the FIFO into it.
     /// # C: O(bytes pending)
-    fn rx_isr_msi() { rx_isr(super::deliver); }
+    fn uart_isr_msi() { rx_isr(super::deliver); }
 
     /// Detect + register the serial console (TX sink + RX IRQ4). No-op
     /// when no UART responds. `dev_window_base` is the kernel device-MMIO
@@ -205,10 +255,17 @@ mod imp {
         BASE.store(port as u64, Ordering::Release);
         DELIVER.store(dlv as usize as u64, Ordering::Release);
         PRESENT.store(true, Ordering::Release);
+        RX_ENABLED.store(false, Ordering::Release);
+        {
+            let mut state = PORT.lock_irqsave::<hal_x86_64::X86IrqGate>();
+            state.stop_runtime();
+            state.discard();
+        }
         // Clear stale hardware state, then enable the FIFO with the standard
         // eight-byte receive trigger before exposing RX interrupts.
         // SAFETY: detected 16550 port, single-CPU probe before its IRQ is enabled.
         unsafe {
+            outb(port + IER, 0);
             outb(port + FCR, FCR_ENABLE | FCR_CLEAR_RX | FCR_CLEAR_TX);
             outb(port + FCR, fifo_mode());
         }
@@ -222,7 +279,7 @@ mod imp {
             unsafe { <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::map(Va(va), Pa(ioapic_pa), pf, PageSize::P4K); }
             hal_x86_64::ioapic::set_base_va(va);
             if let Some(vec) = arch_irq::alloc_x86_vector() {
-                if arch_irq::register_msi_handler(vec, rx_isr_msi).is_err() {
+                if arch_irq::register_msi_handler(vec, uart_isr_msi).is_err() {
                     let _ = arch_irq::free_x86_vector(vec);
                     BASE.store(0, Ordering::Release);
                     PRESENT.store(false, Ordering::Release);
@@ -237,9 +294,10 @@ mod imp {
                 unsafe { hal_x86_64::ioapic::program_redirect(pin, vec, bsp_apic, level, active_low); }
                 IRQ_VEC.store(vec as u64, Ordering::Release);
                 IRQ_PIN.store(pin as u64, Ordering::Release);
-                // Unmask UART RX-data-available (IER bit0).
-                // SAFETY: IER write at CPL=0 to the detected COM base.
-                unsafe { outb(port + IER, 0x01); }
+                let mut state = PORT.lock_irqsave::<hal_x86_64::X86IrqGate>();
+                state.start_runtime();
+                // SAFETY: the port lock owns the IER shadow/register pair.
+                unsafe { outb(port + IER, state.ier()); }
                 RX_ENABLED.store(true, Ordering::Release);
             }
         }
@@ -253,8 +311,11 @@ mod imp {
         RX_ENABLED.store(false, Ordering::Release);
         let port = BASE.load(Ordering::Acquire) as u16;
         if port != 0 {
-            // SAFETY: IER write at CPL=0 to the detected COM base disables RX interrupts.
-            unsafe { outb(port + IER, 0x00); }
+            let mut state = PORT.lock_irqsave::<hal_x86_64::X86IrqGate>();
+            state.stop_runtime();
+            state.discard();
+            // SAFETY: the port lock owns the IER shadow/register pair.
+            unsafe { outb(port + IER, state.ier()); }
         }
         let pin = IRQ_PIN.swap(u64::MAX, Ordering::AcqRel);
         if pin != u64::MAX {
@@ -272,13 +333,18 @@ mod imp {
     /// Stop UART RX interrupt delivery for terminal system shutdown while
     /// keeping the console TX path bound for late shutdown logging.
     /// # SAFETY: called by driver-core shutdown; no concurrent probe/remove.
-    /// # C: O(1)
+    /// # C: O(pending TX bytes * bounded THRE polls)
     pub(super) unsafe fn shutdown() {
         RX_ENABLED.store(false, Ordering::Release);
         let port = BASE.load(Ordering::Acquire) as u16;
         if port != 0 {
-            // SAFETY: IER write at CPL=0 to the detected COM base disables RX interrupts.
-            unsafe { outb(port + IER, 0x00); }
+            let mut state = PORT.lock_irqsave::<hal_x86_64::X86IrqGate>();
+            state.stop_runtime();
+            // SAFETY: the port lock owns the IER shadow/register pair.
+            unsafe { outb(port + IER, state.ier()); }
+            while let Some(byte) = state.pop_for_poll() {
+                poll_byte(port, byte);
+            }
         }
         let pin = IRQ_PIN.load(Ordering::Acquire);
         if pin != u64::MAX {

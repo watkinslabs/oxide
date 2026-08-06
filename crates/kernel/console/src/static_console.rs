@@ -108,9 +108,9 @@ static FLUSH_QUEUED: AtomicBool = AtomicBool::new(false);
 /// `uart_insert_char` → `tty_flip_buffer_push`, and NOTHING else.
 ///
 /// This runs in the UART's hard-IRQ handler, on the per-CPU hardirq stack, so
-/// it stages the byte and schedules; the line discipline, the echo (which polls
-/// the UART transmitter up to 100 000 times per byte), the reader wake and the
-/// poll fan-out all run in `flush_input_work` on a kworker. Running them here
+/// it stages the byte and schedules; the line discipline, the echo (which
+/// queues into the UART xmit ring), the reader wake and the poll fan-out all
+/// run in `flush_input_work` on a kworker. Running them here
 /// was the `#DF`: an interrupt taken during a softirq drain nests on the same
 /// 16 KiB stack, whose measured peak was already 14.5 KiB (`sched::kstack`),
 /// and `#PF` has no IST so the guard-page hit escalated straight to a double
