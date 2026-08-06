@@ -96,6 +96,7 @@ const fn select_mode(supported: bool, intel: bool, family: u32, model: u32) -> u
 /// Encode one neutral cache policy against either Linux's PAT layout or the
 /// architectural reset table. `NO_CACHE` wins for the established device
 /// spelling `NO_CACHE|WRITE_THROUGH`; WC and WT are otherwise exclusive.
+/// # C: O(1)
 pub(crate) fn cache_bits_for(flags: PageFlags, pat_mode: u8, large: bool) -> u64 {
     if flags.contains(PageFlags::NO_CACHE) {
         return PCD | PWT;
@@ -113,11 +114,14 @@ pub(crate) fn cache_bits_for(flags: PageFlags, pat_mode: u8, large: bool) -> u64
     0
 }
 
+/// Encode cache policy using the BSP-selected PAT layout.
+/// # C: O(1)
 pub(crate) fn cache_bits(flags: PageFlags, large: bool) -> u64 {
     cache_bits_for(flags, PAT_STATE.load(Ordering::Acquire), large)
 }
 
 /// Reverse Linux's PAT PTE encoding into the neutral cache flags.
+/// # C: O(1)
 pub(crate) fn cache_flags_for(bits: u64, pat_mode: u8, large: bool) -> PageFlags {
     let pat = if large { PAT_LARGE } else { PAT_4K };
     let slot = ((bits & PWT != 0) as u8)
@@ -147,6 +151,8 @@ pub(crate) fn cache_flags_for(bits: u64, pat_mode: u8, large: bool) -> PageFlags
     }
 }
 
+/// Decode cache policy using the BSP-selected PAT layout.
+/// # C: O(1)
 pub(crate) fn cache_flags(bits: u64, large: bool) -> PageFlags {
     cache_flags_for(bits, PAT_STATE.load(Ordering::Acquire), large)
 }
@@ -180,9 +186,8 @@ pub unsafe fn init_for_cpu() -> bool {
             return false;
         }
         hal::kassert!(supported, "PAT missing on secondary CPU");
-        // SAFETY: support was established above; caller owns this CPU's
-        // privileged bring-up state.
         let value = if state == PAT_LEGACY { LINUX_PAT_LEGACY } else { LINUX_PAT };
+        // SAFETY: PAT support is established and bring-up owns this CPU's privileged MSR state.
         unsafe { crate::cpu::wrmsr(crate::msr::IA32_CR_PAT, value); }
         crate::mmu::flush_local_all();
         true

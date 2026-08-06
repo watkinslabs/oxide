@@ -40,7 +40,8 @@ unsafe extern "C" fn _start_rust() -> ! {
     // Linux `pat_cpu_init`: install the same cache-mode table before any
     // driver or user VMA can publish a write-combining leaf. Unsupported
     // hardware retains the architectural table and WC safely falls back to
-    // UC-. SAFETY: BSP bring-up, CPL0, IRQs masked, sole owner of this MSR.
+    // UC-.
+    // SAFETY: BSP bring-up at CPL0 with IRQs masked owns this CPU's PAT MSR.
     let _ = unsafe { hal_x86_64::init_pat_for_cpu() };
     // TSC calibration (`23§3`): measure the real TSC rate against PIT
     // channel 2 so CLOCK_MONOTONIC tracks wall-clock (the hard-coded
