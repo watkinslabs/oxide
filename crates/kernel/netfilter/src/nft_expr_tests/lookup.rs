@@ -33,8 +33,8 @@ fn build_lookup_rule(set_name: &str, invert: bool) -> Vec<u8> {
     fn lookup_hit_drops() {
         let rule = build_lookup_rule("blocked", false);
         let exprs = parse_exprs(&rule);
-        let look = |_set: &str, key: &[u8]| -> Option<Vec<u8>> {
-            if &key[..4] == &[10, 0, 0, 5] { Some(Vec::new()) } else { None }
+        let look = |_id: Option<usize>, _set: &str, key: &[u8]| -> bool {
+            &key[..4] == &[10, 0, 0, 5]
         };
         let pkt = ipv4_pkt_with_src([10, 0, 0, 5]);
         assert_eq!(run_rule_with_lookup(&exprs, &pkt, Some(&look)), Some(NF_DROP));
@@ -44,7 +44,7 @@ fn build_lookup_rule(set_name: &str, invert: bool) -> Vec<u8> {
     fn lookup_miss_falls_through() {
         let rule = build_lookup_rule("blocked", false);
         let exprs = parse_exprs(&rule);
-        let look = |_s: &str, _k: &[u8]| -> Option<Vec<u8>> { None };
+        let look = |_id: Option<usize>, _s: &str, _k: &[u8]| -> bool { false };
         let pkt = ipv4_pkt_with_src([10, 0, 0, 5]);
         assert_eq!(run_rule_with_lookup(&exprs, &pkt, Some(&look)), None);
     }
@@ -53,7 +53,7 @@ fn build_lookup_rule(set_name: &str, invert: bool) -> Vec<u8> {
     fn lookup_inverted_miss_drops() {
         let rule = build_lookup_rule("allowed", true);
         let exprs = parse_exprs(&rule);
-        let look = |_s: &str, _k: &[u8]| -> Option<Vec<u8>> { None };
+        let look = |_id: Option<usize>, _s: &str, _k: &[u8]| -> bool { false };
         let pkt = ipv4_pkt_with_src([10, 0, 0, 5]);
         assert_eq!(run_rule_with_lookup(&exprs, &pkt, Some(&look)), Some(NF_DROP));
     }

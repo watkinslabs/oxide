@@ -52,7 +52,9 @@ fn link_notifications_follow_rtnl_mutation_order() {
     let namespace = crate::netlink_tests::test_namespace();
     let ns = namespace.id().as_u64();
     let stack = net::global_stack();
-    let iface = stack.ifaces.register_in_ns(Arc::new(MovingDev), ns);
+    let reg = stack.prepare_iface(Arc::new(MovingDev), &namespace).unwrap();
+    let iface = reg.id();
+    assert!(stack.publish_iface(reg));
     let _ifindex = visible_ifindex(iface, ns);
     let listener = listener(&namespace, crate::mcast::grp::RTNLGRP_LINK);
     crate::mcast::block_notification(iface.raw());
@@ -433,7 +435,9 @@ fn ra_withdrawal_and_teardown_emit_ipv6_addr_route_events_in_order() {
     let namespace = crate::netlink_tests::test_namespace();
     let ns = namespace.id().as_u64();
     let stack = net::global_stack();
-    let iface = stack.ifaces.register_in_ns(Arc::new(MovingDev), ns);
+    let reg = stack.prepare_iface(Arc::new(MovingDev), &namespace).unwrap();
+    let iface = reg.id();
+    assert!(stack.publish_iface(reg));
     let ifindex = visible_ifindex(iface, ns);
     let listener = Arc::new(crate::NetlinkSocket::new(crate::proto::NETLINK_ROUTE, &namespace));
     let _ = listener.add_membership(crate::mcast::grp::RTNLGRP_IPV6_IFADDR);

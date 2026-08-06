@@ -122,7 +122,7 @@ fn netfilter_hooks_fire_on_rx_and_tx_both_families() {
     // NF_ACCEPT(1) so the path behaves exactly as the no-hook default.
     static SEEN_V4: AtomicU32 = AtomicU32::new(0);
     static SEEN_V6: AtomicU32 = AtomicU32::new(0);
-    fn rec(h: u32, _p: &[u8], fam: u8) -> u32 {
+    fn rec(_namespace: u64, h: u32, _p: &[u8], fam: u8) -> u32 {
         let slot = if fam == NFPROTO_IPV6 { &SEEN_V6 } else { &SEEN_V4 };
         slot.fetch_or(1u32 << h, Ordering::AcqRel);
         1

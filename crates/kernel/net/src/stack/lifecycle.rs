@@ -61,6 +61,7 @@ impl NetStack {
                          owner: &network_namespace::NetworkNamespaceRef)
         -> Option<crate::netdev::IfaceRegistration<'_>>
     {
+        let _tables = self.inet_tables_for(owner);
         let rtnl = self.rtnl_lock();
         self.ifaces.prepare_in_ns(&rtnl, dev, owner)
     }
@@ -70,6 +71,7 @@ impl NetStack {
         owner: &network_namespace::NetworkNamespaceRef)
         -> Option<crate::netdev::IfaceRegistration<'_>>
     {
+        let _tables = self.inet_tables_for(owner);
         let rtnl = self.rtnl_lock();
         self.ifaces.prepare_parented_in_ns(&rtnl, dev, parent, owner)
     }

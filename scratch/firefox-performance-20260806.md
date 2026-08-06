@@ -715,3 +715,63 @@ The HTTPS control completed DNS + TCP + TLS + HTTP in 34.154 ms (204 bytes,
 HTTP 200), or 63 ms including process startup. Both OCR assertions and all
 resolver/control checks passed. UART/QMP log:
 `/tmp/oxide-firefox-uart-1435376.log`.
+
+## B1873 nftables compiled-generation microbenchmark
+
+The durable hosted control measures the packet evaluator itself in a clean
+release build: one IPv4 base chain, 64 installed rules, no matching verdict,
+then the chain's drop policy. Each run evaluates 100,000 packets. The exact
+command is:
+
+`cargo test --release -p netfilter packet_path_benchmark_64_rules -- --ignored --nocapture --test-threads=1`
+
+| Build | Six runs, ns/packet | Median | Change |
+|---|---|---:|---:|
+| `87f32d9da` before B1873 | 3948, 4229, 4001, 3998, 3908, 3946 | 3973 | baseline |
+| B1873 compiled RCU generation | 192, 185, 191, 193, 185, 184 | 188 | **21.1x faster** |
+
+The before path deep-cloned the chain/rule vectors, reparsed each rule's raw
+netlink expression payload, cloned the set registry per rule, and entered the
+mutable counter store from packet context. B1873 moves all of that work to
+control-plane publication. The measured packet path performs an atomic hook
+test, one RCU read section, immutable expression walks, and relaxed atomic
+counter updates. The committed ignored benchmark is the repeatable comparison
+point for later netfilter changes.
+
+## B1873 Firefox namespace-owner acceptance
+
+Pre-fix run `1540519` rendered one.one.one.one in 7.283 s, then the invalid-DNS
+probe locked the only vCPU at 83.423 s. GDB stopped the Firefox Socket Thread
+inside `network_namespace::registry::lookup_u64`, reached from TCP transmit
+through the raw IPv4 delivery/netfilter path. The transport table and ingress
+paths were reconstructing a live namespace owner from a numeric ID on packet
+delivery. The corrected ownership shape carries a concrete namespace owner
+from sockets and devices into per-namespace state; packet delivery upgrades its
+non-owning link and never enters the numeric namespace registry. The reverse
+link is weak, so transport state cannot pin a destroyed namespace.
+
+Profiled run `1578707` passed both graphical OCR assertions, resolver health,
+and the HTTPS control. Its 350 samples found no registry lookup loop: the
+invalid-DNS window was 55.33% the expected idle `sti; hlt` loop, 6.67% IRQ-state
+restore, and every other symbol at or below 1.33%. The syscall controls measured
+0.170–0.175 us kernel time per call; HTTPS completed in 42.075 ms. Saved output:
+`/tmp/b1873-firefox-final-profile.log`, UART
+`/tmp/oxide-firefox-uart-1578707.log`, profile
+`/tmp/oxide-firefox-profile-1578707.txt`.
+
+Unprofiled merge-candidate run `1909894` passed on the exact final release
+kernel after the adjacent IGMP/MLD receive paths were also converted to carried
+ingress ownership. GNOME settled at load `0.55 0.15 0.05` on one vCPU:
+
+| Probe | Result |
+|---|---:|
+| one.one.one.one visually ready | 4.960 s |
+| invalid-DNS error visually ready | 2.700 s |
+| syscall control, run 1 | 0.150 us kernel/call |
+| syscall control, run 2 | 0.150 us kernel/call |
+| syscall control, run 3 | 0.150 us kernel/call |
+| HTTPS DNS + TCP + TLS + HTTP | 54.182 ms, HTTP 200, 203 bytes |
+
+Saved output: `/tmp/b1873-firefox-exact-final.log` and UART
+`/tmp/oxide-firefox-uart-1909894.log`. Both final runs completed without a
+watchdog, fault, resolver/control loss, or stalled invalid-host request.

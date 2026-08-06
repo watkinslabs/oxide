@@ -447,10 +447,9 @@ impl NetStack {
             }));
         }
     }
-    pub fn respond_mld_query(&self, iface: NetIfaceId, dst: Ipv6Addr,
+    pub fn respond_mld_query(&self, lease: &crate::IngressLease, dst: Ipv6Addr,
                              q: crate::icmpv6::Mldv1Query, v1: bool) -> NetResult<()> {
-        let net_ns = self.ifaces.namespace(iface).ok_or(NetError::Enodev)?;
-        let owner = report_owner(net_ns).ok_or(NetError::Enodev)?;
+        let (net_ns, iface, owner) = (lease.net_ns(), lease.iface(), lease.namespace());
         if !q.group.is_unspecified() && !q.group.is_multicast() { return Ok(()); }
         let now_ns = crate::stack::net_now_ns();
         let version = if v1 { 1 } else { 2 };

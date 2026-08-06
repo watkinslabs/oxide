@@ -161,16 +161,19 @@ fn v6_zero_ifindex_uses_bound_mcast_then_route() {
 fn v6_resolution_rejects_foreign_iface_and_uses_namespace_route() {
     use crate::route6::Route6Entry;
     let stack = NetStack::new();
-    let (a, _) = stack.register_loopback_in(51);
-    let (b, _) = stack.register_loopback_in(52);
+    let owner_a = crate::net_ns::test_support::allocate_namespace();
+    let owner_b = crate::net_ns::test_support::allocate_namespace();
+    let ns_a = owner_a.id().as_u64();
+    let (a, _) = stack.register_loopback_for(&owner_a);
+    let (b, _) = stack.register_loopback_for(&owner_b);
     let group = Ipv6Addr::from_segments([0xff02,0,0,0,0,0,0,0x4321]);
-    stack.routes6.add_in(51, Route6Entry {
+    stack.routes6.add_in(ns_a, Route6Entry {
         table: crate::policy_rule::RT_TABLE_MAIN,
         dst: Ipv6Addr::ANY, prefix_len: 0, iface: a, gateway: None, src_hint: None,
         origin: crate::route6::Route6Origin::Static,
     });
-    assert_eq!(resolve_v6_iface(&stack, 51, 0, 0, 0, group), Ok(a));
-    assert_eq!(resolve_v6_iface(&stack, 51, b.raw(), 0, 0, group), Err(NetError::Enodev));
+    assert_eq!(resolve_v6_iface(&stack, ns_a, 0, 0, 0, group), Ok(a));
+    assert_eq!(resolve_v6_iface(&stack, ns_a, b.raw(), 0, 0, group), Err(NetError::Enodev));
 }
 #[test]
 fn socket_gate_closes_admission_and_waits_active_operation() {

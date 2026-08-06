@@ -311,6 +311,7 @@ fn stale_igmp_query_waiting_on_report_serializer_is_dropped() {
     let stack = Arc::new(NetStack::new());
     let dev = Arc::new(OrderedXmitDev::new());
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn crate::NetDev>);
+    let ingress = stack.ifaces.acquire_ingress(iface).unwrap();
     let group = Ipv4Addr::new(239, 7, 8, 49);
     let host = Ipv4Addr::new(10, 0, 0, 1);
     let source = Ipv4Addr::new(10, 0, 0, 9);
@@ -328,7 +329,7 @@ fn stale_igmp_query_waiting_on_report_serializer_is_dropped() {
     });
     dev.wait_until_blocked();
     let query = crate::igmp::build_igmpv3_query(group, 10, &[]);
-    stack.handle_igmp(iface, Ipv4Addr::new(10, 0, 0, 2), group, &query).unwrap();
+    stack.handle_igmp(&ingress, Ipv4Addr::new(10, 0, 0, 2), group, &query).unwrap();
     assert_eq!(stack.v4_mcast.lock()[&iface][0].queries.len(), 1);
     stack.release_ipv4_multicast(7, iface, group, host);
     assert!(stack.v4_mcast.lock()[&iface][0].queries.is_empty());
@@ -346,6 +347,7 @@ fn stale_mld_query_waiting_on_report_serializer_is_dropped() {
     let stack = Arc::new(NetStack::new());
     let dev = Arc::new(OrderedXmitDev::new());
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn crate::NetDev>);
+    let ingress = stack.ifaces.acquire_ingress(iface).unwrap();
     let group = Ipv6Addr::from_segments([0xff3e,0,0,0,0,0,0,0x3349]);
     let host = Ipv6Addr::from_segments([0xfe80,0,0,0,0,0,0,1]);
     let source = Ipv6Addr::from_segments([0x2001,0xdb8,0,0,0,0,0,9]);
@@ -362,7 +364,7 @@ fn stale_mld_query_waiting_on_report_serializer_is_dropped() {
         let _ = done_tx.send(());
     });
     dev.wait_until_blocked();
-    stack.respond_mld_query(iface, group, crate::icmpv6::Mldv1Query {
+    stack.respond_mld_query(&ingress, group, crate::icmpv6::Mldv1Query {
         max_resp_delay: 1000, group, sources: alloc::vec::Vec::new(), qrv: 2, qqic: 125,
     }, false).unwrap();
     assert_eq!(stack.v6_mcast.lock()[&iface][0].queries.len(), 1);

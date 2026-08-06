@@ -506,7 +506,7 @@ pub struct NetStack {
     pub(crate) bridge_pending: Spinlock<BTreeMap<(NetIfaceId, IpAddr), BridgePending>, StackLockClass>,
     /// Sole AF_INET/AF_INET6 transport owner, indexed by network namespace.
     pub(crate) inet: super::inet_tables::InetTableLock<
-        BTreeMap<u64, Arc<super::inet_tables::InetTables>>,
+        BTreeMap<u64, super::inet_tables::InetNamespaceTables>,
     >,
     /// Monotonic id for IP packets we emit.
     pub(crate) next_ip_id: Spinlock<u16, StackLockClass>,

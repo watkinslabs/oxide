@@ -1,9 +1,4 @@
-use alloc::vec::Vec;
-
-use crate::{
-    CHAINS, NFT_CHAIN_POLICY_DROP, NftChain, RULES, counter_bump, hook_active, nft_expr,
-    set_elem_lookup, sets_snapshot,
-};
+use crate::{NFT_CHAIN_POLICY_DROP, active_generation, nft_expr};
 
 /// Netfilter verdict per `linux/netfilter.h`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -28,52 +23,48 @@ impl Verdict {
     }
 }
 
-/// # C: O(N_chains × N_rules × expr_len)
+/// Evaluate the immutable ruleset generation published for `hook_id`.
+/// # C: O(N_chains × N_rules × N_exprs)
 pub fn eval(hook_id: u32, pkt: &[u8], family: u8) -> Verdict {
-    // The ordinary no-ruleset path mirrors the empty-hook fast path: packet
-    // processing must not enter the mutable nftables control plane at all.
-    if !hook_active(hook_id) { return Verdict::Accept; }
-    // STABLE ON PURPOSE: equal hook priorities are ordinary, and chains registered at
-    // the same priority must run in registration order. Ordered insertion rather than
-    // `sort_by_key` keeps the packet path off `driftsort`'s 4 KiB scratch frame.
-    let chains: Vec<NftChain> = net::ordered::collect_stable_by_key(
-        CHAINS.lock().iter().filter(|c| c.hook == Some(hook_id)).cloned(),
-        |c| c.priority);
-    if chains.is_empty() { return Verdict::Accept; }
-    let rules_snap = RULES.lock().clone();
-    for c in chains.iter() {
-        let mut chain_verdict: Option<Verdict> = None;
-        for r in rules_snap.iter().filter(|r| {
-            r.table_family == c.table_family && r.table_name == c.table_name && r.chain_name == c.name
-        }) {
-            let exprs = nft_expr::parse_exprs(&r.raw_expr);
-            let rule_family = r.table_family;
-            let table = r.table_name.clone();
-            let sets = sets_snapshot();
-            let lookup = move |set_name: &str, regbytes: &[u8]| -> Option<Vec<u8>> {
-                let s = sets.iter().find(|s| {
-                    s.table_family == rule_family
-                        && s.table_name.as_str() == table.as_str()
-                        && s.name == set_name
-                })?;
-                let key = regbytes.get(..s.key_len as usize)?;
-                set_elem_lookup(rule_family, &table, set_name, key)
+    eval_in(0, hook_id, pkt, family)
+}
+
+/// Evaluate one network namespace's immutable ruleset generation.
+/// # C: O(log N_namespaces + N_chains × N_rules × N_exprs)
+pub fn eval_in(namespace: u64, hook_id: u32, pkt: &[u8], family: u8) -> Verdict {
+    let Some(generation) = active_generation(hook_id) else { return Verdict::Accept; };
+    let Some(state) = generation.namespace(namespace) else { return Verdict::Accept; };
+    let Some(hook) = state.hooks.iter().find(|hook| hook.id == hook_id) else {
+        return Verdict::Accept;
+    };
+    for chain in hook.chains.iter().filter(|chain| chain.table_family == family) {
+        let mut chain_verdict = None;
+        for rule in &chain.rules {
+            let lookup = |set_id: Option<usize>, _set_name: &str, register: &[u8]| {
+                state.set_contains(set_id.expect("compiled lookup has a set id"), register)
             };
-            let mut pkts = 0u64;
+            let mut packets = 0u64;
             let mut bytes = 0u64;
-            let verdict = nft_expr::run_rule_full(&exprs, pkt, Some(&lookup), family, &mut pkts, &mut bytes);
-            if pkts != 0 { counter_bump(r.handle, pkts, bytes); }
+            let verdict = nft_expr::run_rule_full(
+                &rule.exprs,
+                pkt,
+                Some(&lookup),
+                family,
+                &mut packets,
+                &mut bytes,
+            );
+            if packets != 0 { rule.counter.bump(packets, bytes); }
             match verdict {
                 Some(nft_expr::NF_DROP) => { chain_verdict = Some(Verdict::Drop); break; }
                 Some(nft_expr::NF_ACCEPT) => { chain_verdict = Some(Verdict::Accept); break; }
                 _ => {}
             }
         }
-        let v = chain_verdict.unwrap_or_else(|| match c.policy {
+        let verdict = chain_verdict.unwrap_or_else(|| match chain.policy {
             NFT_CHAIN_POLICY_DROP => Verdict::Drop,
             _ => Verdict::Accept,
         });
-        if v == Verdict::Drop { return Verdict::Drop; }
+        if verdict == Verdict::Drop { return Verdict::Drop; }
     }
     Verdict::Accept
 }

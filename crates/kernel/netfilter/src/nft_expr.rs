@@ -19,6 +19,7 @@
 
 extern crate alloc;
 use alloc::vec::Vec;
+#[cfg(test)]
 use alloc::vec;
 use alloc::string::String;
 
@@ -115,40 +116,56 @@ pub enum Expr {
     Cmp       { sreg: u32, op: u32, data: Vec<u8> },
     Immediate { dreg: u32, verdict: Option<i32>, value: Vec<u8> },
     Meta      { dreg: u32, key: u32 },
-    Lookup    { sreg: u32, set: String, invert: bool },
+    Lookup    { sreg: u32, set: String, set_id: Option<usize>, invert: bool },
     Counter,
     Bitwise   { sreg: u32, dreg: u32, mask: Vec<u8>, xor: Vec<u8> },
     Byteorder { sreg: u32, dreg: u32, len: u32, size: u32 },
 }
 
-/// Parse a `NFTA_RULE_EXPRESSIONS` payload into a list of
-/// expressions. Unknown expressions are skipped (Linux's
-/// `nft_match_init` would EOPNOTSUPP, but this v1 keeps the rule
-/// running so a future PR can land more expression types without
-/// breaking already-loaded rulesets).
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ParseError {
+    Malformed,
+    Unsupported,
+    MissingSet,
+}
+
+/// Parse a `NFTA_RULE_EXPRESSIONS` payload for tests and standalone users.
+/// Invalid input produces no executable expressions; netlink installation
+/// uses `parse_exprs_checked` so it can report the Linux errno and reject the
+/// entire rule.
 /// # C: O(len(payload))
 pub fn parse_exprs(payload: &[u8]) -> Vec<Expr> {
+    parse_exprs_checked(payload).unwrap_or_default()
+}
+
+/// Parse and validate one complete rule expression blob. Unknown expression
+/// types are rejected rather than silently removing policy from the rule.
+/// # C: O(len(payload))
+pub fn parse_exprs_checked(payload: &[u8]) -> Result<Vec<Expr>, ParseError> {
     let mut out = Vec::new();
     let mut off = 0;
-    while off + 4 <= payload.len() {
+    while off < payload.len() {
+        if off + 4 > payload.len() { return Err(ParseError::Malformed); }
         let nla_len = u16::from_ne_bytes([payload[off], payload[off + 1]]) as usize;
         let nla_type = u16::from_ne_bytes([payload[off + 2], payload[off + 3]]) & 0x3fff;
-        if nla_len < 4 || off + nla_len > payload.len() { break; }
+        if nla_len < 4 || off + nla_len > payload.len() { return Err(ParseError::Malformed); }
         let body = &payload[off + 4 .. off + nla_len];
         if mask_nla(nla_type) == NFTA_LIST_ELEM {
-            if let Some(e) = parse_one_expr(body) { out.push(e); }
+            out.push(parse_one_expr_checked(body)?);
         }
-        off += align4(nla_len);
+        let next = off + align4(nla_len);
+        if next > payload.len() { return Err(ParseError::Malformed); }
+        off = next;
     }
-    out
+    Ok(out)
 }
 
 fn mask_nla(t: u16) -> u16 { t & 0x3fff }
 fn align4(n: usize) -> usize { (n + 3) & !3 }
 
-fn parse_one_expr(body: &[u8]) -> Option<Expr> {
-    let name = find_str(body, NFTA_EXPR_NAME)?;
-    let data = find_bytes(body, NFTA_EXPR_DATA)?;
+fn parse_one_expr_checked(body: &[u8]) -> Result<Expr, ParseError> {
+    let name = find_str(body, NFTA_EXPR_NAME).ok_or(ParseError::Malformed)?;
+    let data = find_bytes(body, NFTA_EXPR_DATA).ok_or(ParseError::Malformed)?;
     match name {
         "payload"   => parse_payload(data),
         "cmp"       => parse_cmp(data),
@@ -158,8 +175,8 @@ fn parse_one_expr(body: &[u8]) -> Option<Expr> {
         "counter"   => Some(Expr::Counter),
         "bitwise"   => parse_bitwise(data),
         "byteorder" => parse_byteorder(data),
-        _ => None,
-    }
+        _ => return Err(ParseError::Unsupported),
+    }.ok_or(ParseError::Malformed)
 }
 
 fn parse_payload(d: &[u8]) -> Option<Expr> {
@@ -208,6 +225,7 @@ fn parse_lookup(d: &[u8]) -> Option<Expr> {
     Some(Expr::Lookup {
         sreg,
         set: String::from(set),
+        set_id: None,
         invert,
     })
 }
@@ -260,7 +278,12 @@ fn find_u32_be(attrs: &[u8], target: u16) -> Option<u32> {
 /// rule and stays out of the interpreter. The `key_len` parameter
 /// tells the closure how many bytes to read from the source reg
 /// (closures own set-shape knowledge).
-pub type SetLookupFn<'a> = &'a dyn Fn(&str, &[u8]) -> Option<Vec<u8>>;
+pub type SetLookupFn<'a> = &'a dyn Fn(Option<usize>, &str, &[u8]) -> bool;
+
+/// Validate one register load against the fixed nftables register file. # C: O(1)
+pub(crate) fn register_load_valid(register: u32, len: usize) -> bool {
+    len != 0 && reg_off(register).is_some_and(|offset| offset + len <= REG_BYTES)
+}
 
 /// Thin wrapper around `run_rule_with_lookup` for rules that
 /// don't reference sets.
@@ -292,7 +315,8 @@ pub fn run_rule_with_lookup(exprs: &[Expr], pkt: &[u8], lookup: Option<SetLookup
 pub fn run_rule_full(exprs: &[Expr], pkt: &[u8],
                      lookup: Option<SetLookupFn>, family: u8,
                      packets: &mut u64, bytes: &mut u64) -> Option<i32> {
-    let mut regs = vec![0u8; REG_BYTES];
+    let mut regs = [0u8; REG_BYTES];
+    let mut scratch = [0u8; REG_BYTES];
     for e in exprs {
         match e {
             Expr::Payload { dreg, base, offset, len } => {
@@ -361,11 +385,12 @@ pub fn run_rule_full(exprs: &[Expr], pkt: &[u8],
                 let sz = *size as usize;
                 if sz == 0 || l % sz != 0 { return None; }
                 if src + l > regs.len() || dst + l > regs.len() { return None; }
-                let mut tmp = Vec::with_capacity(l);
-                for chunk in regs[src .. src + l].chunks(sz) {
-                    for &b in chunk.iter().rev() { tmp.push(b); }
+                for (out, chunk) in scratch[..l].chunks_mut(sz)
+                    .zip(regs[src .. src + l].chunks(sz))
+                {
+                    for (dst, &byte) in out.iter_mut().zip(chunk.iter().rev()) { *dst = byte; }
                 }
-                regs[dst .. dst + l].copy_from_slice(&tmp);
+                regs[dst .. dst + l].copy_from_slice(&scratch[..l]);
             }
             Expr::Bitwise { sreg, dreg, mask, xor } => {
                 let src = reg_off(*sreg)?;
@@ -373,25 +398,20 @@ pub fn run_rule_full(exprs: &[Expr], pkt: &[u8],
                 let l = mask.len();
                 if src + l > regs.len() || dst + l > regs.len() { return None; }
                 // Read first to handle aliasing (sreg == dreg).
-                let mut tmp = Vec::with_capacity(l);
                 for i in 0..l {
-                    tmp.push((regs[src + i] & mask[i]) ^ xor[i]);
+                    scratch[i] = (regs[src + i] & mask[i]) ^ xor[i];
                 }
-                regs[dst .. dst + l].copy_from_slice(&tmp);
+                regs[dst .. dst + l].copy_from_slice(&scratch[..l]);
             }
             Expr::Counter => {
                 *packets = packets.wrapping_add(1);
                 *bytes   = bytes.wrapping_add(pkt.len() as u64);
             }
-            Expr::Lookup { sreg, set, invert } => {
+            Expr::Lookup { sreg, set, set_id, invert } => {
                 let src = reg_off(*sreg)?;
-                // Hand the closure a 16-byte register window (the
-                // legacy register width); the closure inspects only
-                // the prefix that matches its set's key_len.
-                if src + 16 > regs.len() { return None; }
-                let key = &regs[src .. src + 16];
+                let key = &regs[src..];
                 let hit = match lookup {
-                    Some(f) => f(set.as_str(), key).is_some(),
+                    Some(f) => f(*set_id, set.as_str(), key),
                     None    => false,
                 };
                 let matched = hit ^ *invert;

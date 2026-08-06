@@ -183,6 +183,7 @@ impl NetStack {
     pub fn register_loopback_for(&self, owner: &network_namespace::NetworkNamespaceRef)
         -> (NetIfaceId, Arc<LoopbackDev>)
     {
+        let _tables = self.inet_tables_for(owner);
         let rtnl = self.rtnl_lock();
         let (id, lo, ticket) = self.register_loopback_in_rtnl(&rtnl, owner);
         drop(rtnl);
@@ -193,6 +194,10 @@ impl NetStack {
     /// Register canonical loopback device, addresses, and routes in one namespace. # C: O(N)
     #[cfg(not(target_os = "oxide-kernel"))]
     pub fn register_loopback_in(&self, net_ns: u64) -> (NetIfaceId, Arc<LoopbackDev>) {
+        let owner = if net_ns == 0 { network_namespace::initial() }
+            else { network_namespace::lookup_u64(net_ns)
+                .expect("hosted loopback namespace must remain live") };
+        let _tables = self.inet_tables_for(&owner);
         let lo = Arc::new(LoopbackDev::new());
         let id = self.ifaces.register_in_ns(lo.clone() as Arc<dyn NetDev>, net_ns);
         let rtnl = self.rtnl_lock();
@@ -207,6 +212,7 @@ impl NetStack {
                                             owner: &network_namespace::NetworkNamespaceRef)
         -> (NetIfaceId, Arc<LoopbackDev>, u64)
     {
+        let _tables = self.inet_tables_for(owner);
         let net_ns = owner.id().as_u64();
         let (reg, lo) = self.prepare_loopback_in_rtnl(rtnl, owner);
         let id = reg.id();

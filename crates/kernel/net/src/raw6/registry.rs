@@ -14,7 +14,7 @@ pub(crate) struct Raw6Table {
 impl NetStack {
     /// Publish one raw IPv6 endpoint in its namespace-owned table. # C: O(N)
     pub fn register_raw6(&self, endpoint: &Arc<Raw6Endpoint>) {
-        self.inet_tables(endpoint.net_ns()).raw6.register(endpoint);
+        self.inet_tables_for(&endpoint.network_namespace()).raw6.register(endpoint);
     }
 
     /// Remove and close one exact raw IPv6 endpoint. # C: O(N)

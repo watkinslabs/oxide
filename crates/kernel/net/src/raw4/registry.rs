@@ -77,7 +77,7 @@ impl Raw4Table {
 impl NetStack {
     /// Publish a raw endpoint in its namespace-owned table. # C: O(N)
     pub fn register_raw4(&self, endpoint: &Arc<Raw4Endpoint>) {
-        self.inet_tables(endpoint.net_ns()).raw4.register(endpoint);
+        self.inet_tables_for(&endpoint.network_namespace()).raw4.register(endpoint);
     }
 
     /// Unpublish and deactivate one exact raw endpoint. # C: O(N)

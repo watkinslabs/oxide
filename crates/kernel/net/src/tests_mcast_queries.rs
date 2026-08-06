@@ -186,8 +186,9 @@ fn first_membership_inherits_older_general_query_mode() {
     let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, _lo) = stack.register_loopback();
+    let ingress = stack.ifaces.acquire_ingress(iface).unwrap();
     let general4 = crate::igmp::build_igmp_query(Ipv4Addr::ANY, 0);
-    stack.handle_igmp(iface, Ipv4Addr::new(127, 0, 0, 2),
+    stack.handle_igmp(&ingress, Ipv4Addr::new(127, 0, 0, 2),
         crate::igmp::IPV4_ALL_HOSTS, &general4).unwrap();
     let group4 = Ipv4Addr::new(239, 1, 3, 6);
     stack.join_ipv4_multicast(iface, group4, Ipv4Addr::LOOPBACK).unwrap();
@@ -198,7 +199,7 @@ fn first_membership_inherits_older_general_query_mode() {
     stack.add_v6_addr(iface, host);
     let general6 = crate::icmpv6::Mldv1Query { max_resp_delay: 1_000, group: Ipv6Addr::ANY,
         sources: alloc::vec::Vec::new(), qrv: 0, qqic: 0 };
-    stack.respond_mld_query(iface, crate::ndp::IPV6_ALL_NODES, general6, true).unwrap();
+    stack.respond_mld_query(&ingress, crate::ndp::IPV6_ALL_NODES, general6, true).unwrap();
     let group6 = Ipv6Addr::from_segments([0xff02,0,0,0,0,0,0,0x1306]);
     stack.join_ipv6_multicast(iface, group6, host).unwrap();
     assert_eq!(stack.v6_mcast.lock()[&iface].iter().find(|state|
@@ -210,16 +211,17 @@ fn group_specific_queries_do_not_downgrade_interface() {
     let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, lo) = stack.register_loopback();
+    let ingress = stack.ifaces.acquire_ingress(iface).unwrap();
     let group4 = Ipv4Addr::new(239, 1, 3, 4);
     stack.join_ipv4_multicast(iface, group4, Ipv4Addr::LOOPBACK).unwrap();
     let _ = lo.rx_pop(); finish_changes(&stack, &lo);
     let specific4 = crate::igmp::build_igmp_query(group4, 0);
-    stack.handle_igmp(iface, Ipv4Addr::new(127, 0, 0, 2), group4, &specific4).unwrap();
+    stack.handle_igmp(&ingress, Ipv4Addr::new(127, 0, 0, 2), group4, &specific4).unwrap();
     let _ = lo.rx_pop();
     assert_eq!(stack.v4_mcast.lock()[&iface].iter().find(|state|
         state.group == group4).unwrap().report_version(0), 3);
     let general4 = crate::igmp::build_igmp_query(Ipv4Addr::ANY, 0);
-    stack.handle_igmp(iface, Ipv4Addr::new(127, 0, 0, 2),
+    stack.handle_igmp(&ingress, Ipv4Addr::new(127, 0, 0, 2),
         crate::igmp::IPV4_ALL_HOSTS, &general4).unwrap();
     let _ = lo.rx_pop();
     let group4b = Ipv4Addr::new(239, 1, 3, 5);
@@ -235,13 +237,13 @@ fn group_specific_queries_do_not_downgrade_interface() {
     let _ = lo.rx_pop(); finish_changes(&stack, &lo);
     let query6 = crate::icmpv6::Mldv1Query { max_resp_delay: 1_000, group: group6,
         sources: alloc::vec::Vec::new(), qrv: 0, qqic: 0 };
-    stack.respond_mld_query(iface, group6, query6, true).unwrap();
+    stack.respond_mld_query(&ingress, group6, query6, true).unwrap();
     let _ = lo.rx_pop();
     assert_eq!(stack.v6_mcast.lock()[&iface].iter().find(|state|
         state.group == group6).unwrap().report_version(0), 2);
     let general6 = crate::icmpv6::Mldv1Query { max_resp_delay: 1_000, group: Ipv6Addr::ANY,
         sources: alloc::vec::Vec::new(), qrv: 0, qqic: 0 };
-    stack.respond_mld_query(iface, crate::ndp::IPV6_ALL_NODES, general6, true).unwrap();
+    stack.respond_mld_query(&ingress, crate::ndp::IPV6_ALL_NODES, general6, true).unwrap();
     let _ = lo.rx_pop();
     let group6b = Ipv6Addr::from_segments([0xff02,0,0,0,0,0,0,0x1305]);
     stack.join_ipv6_multicast(iface, group6b, host).unwrap();
