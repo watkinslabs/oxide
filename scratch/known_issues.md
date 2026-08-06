@@ -37,10 +37,10 @@ reclassified.
 | Class \ Sev | blocker | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|
 | `DEFECT` | 1 | 3 | 13 | 24 | 41 |
-| `MISSING` | 1 | 0 | 10 | 11 | 22 |
+| `MISSING` | 0 | 0 | 10 | 11 | 21 |
 | `COVERAGE` | 0 | 2 | 8 | 13 | 23 |
 | `INFRA` | 0 | 1 | 12 | 11 | 24 |
-| **Total** | **2** | **6** | **43** | **59** | **110** |
+| **Total** | **1** | **6** | **43** | **59** | **109** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -103,7 +103,6 @@ row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| OPEN | MISSING | blocker | File-backed demand faults install exactly one 4 KiB page. There is no Linux `do_fault_around` equivalent to map the adjacent page-cache window, so exec and dynamic-library startup take roughly one fault per page instead of amortising up to the reference's fault-around window. | `crates/kernel/mm-vmm/src/address_space/fault/fill.rs` allocates, fills, and installs only `va_page`; clean KVM measurements show `/bin/true` at 4 ms versus roughly 1 ms on Linux. | NEXT |
 | OPEN | DEFECT | med | PKRU is deliberately kept OUT of `XCR0` (`XCR0_WANT` in `hal-x86_64/src/fpu.rs` does not set bit 9), so `XSAVE`/`XRSTOR` never touch it and the per-task field is the single owner. Upstream puts PKRU in XCR0, which means its signal frame's xstate carries PKRU and `rt_sigreturn` restores it. Consequence here: a handler that changes PKRU keeps that change across `sigreturn`, where upstream would restore the interrupted value. Chosen over the alternative because two owners of one register is the split-source-of-truth this project bans; closing it means adding the `XFEATURE_PKRU` component to the sigframe xstate AND removing the per-task field in the same change, not one of the two. | F785; `crates/arch/hal-x86_64/src/pkru.rs`, `fpu.rs:38`. | — |
 | OPEN | DEFECT | med | `resourceN` is a text triple, not the mmap-able BAR window the reference exposes. A userspace driver that mmaps `/sys/bus/pci/devices/<addr>/resource0` gets a text file instead of the device window. Unchanged by this lane. | `bus/device.rs` `PCI_RESOURCE_ATTRS` render `resource_body` | unowned |
 | OPEN | DEFECT | med | This branch enables the hardware and switches the register, but no PTE carries a protection key yet, so nothing userspace does can be denied by one. `pkey_alloc` still reports the no-OSPKE answer because `PkeyArch::X86_64` has not been re-derived from `arch_max_pkey()`. Both close in the fault-classification + syscall-semantics lane (F787); until then the row stays PARTIAL and this PR changes no user-visible behaviour. | F785, by construction. | F787 |

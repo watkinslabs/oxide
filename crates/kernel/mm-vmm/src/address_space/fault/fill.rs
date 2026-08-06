@@ -47,68 +47,11 @@ impl AddressSpace {
 
         match &vma.backing {
             VmaBacking::Anonymous => {
-                let av = vma.anon_vma.as_ref().ok_or(Error::Inval)?;
-                charge_anon()?;
-                let pa = match alloc_frame() {
-                    Some(pa) => pa,
-                    None => {
-                        uncharge_anon();
-                        return Err(Error::NoMem);
-                    }
-                };
-                // Zero-fill via HHDM kernel mirror per `11§5` "zero_or_loaded".
-                // SAFETY: pa is a freshly-allocated PMM frame; HHDM
-                // mirror at `hhdm_offset + pa` is mapped writable in
-                // the kernel's page tables (boot-installed); 4096
-                // bytes is the page granule.
-                unsafe {
-                    let dst = (hhdm_offset + pa) as *mut u8;
-                    hal::zerotrap::trap((dst) as *const u8, (PAGE_SIZE_BYTES as usize) as usize);
-                    core::ptr::write_bytes(dst, 0, PAGE_SIZE_BYTES as usize);
-                }
-                let pte_flags = vma.prot.to_page_flags();
-                // DIAG (debug-atexit): anon-arm install in the lib arena — this
-                // arm zeros the frame, so if it fires at a library-tail VA the
-                // VMA-tree consulted was wrong (an anon VMA covering what should
-                // be a File page). ino=0 marks the anon origin.
-                #[cfg(feature = "debug-atexit")]
-                if (0x7ffff6000000..0x7ffff8000000).contains(&va_page) {
-                    crate::tailwatch::log_install(b"anon", 0, 0, va_page, pa, self.root_pa);
-                }
-                // SAFETY: va_page is the page-aligned faulting user-half VA per find_containing; pa is a fresh PMM frame; flags carry USER for the leaf U bit per `11§5` to_pte_flags; MmuOps state initialised by the live per-arch impl.
-                // F157-A1: a demand fault normally installs over an empty slot
-                // (`None`); if a stale present leaf is displaced, dec_ref it so
-                // refcount stays == live-PTE count (the RANK-1 fix).
-                let replaced = unsafe { M::map(Va(va_page), Pa(pa), pte_flags, PageSize::P4K) };
-                if replaced.is_none() { self.accounting.install_pte(&vma); }
-                if let Some(old) = replaced {
-                    // LOST-WRITE (the ld.so link_map corruption): a NotPresent
-                    // anon fault just installed a ZERO frame but M::map DISPLACED
-                    // a present leaf `old` — a populated page existed here yet
-                    // translate() reported it absent both times. Name it.
-                    #[cfg(feature = "debug-watchdog")]
-                    {
-                        klog::write_raw(b"[LOSTWRITE] anon-zero displaced present leaf va=");
-                        klog::write_hex_u64(va_page);
-                        klog::write_raw(b" old_pa="); klog::write_hex_u64(old.0 & !(PAGE_SIZE_BYTES - 1));
-                        klog::write_raw(b" newzero_pa="); klog::write_hex_u64(pa);
-                        klog::write_raw(b"\n");
-                    }
-                    // GAP-1 (displaced-frame UAF): this fault displaced a
-                    // present leaf; dec_ref below may free `old`. A peer CPU
-                    // of the same mm with a stale TLB entry for va_page->old
-                    // could touch a freed+realloc'd frame. Flush peers (this
-                    // mm's cpumask only) BEFORE dropping our reference. No-op
-                    // on UP / aarch64 / hosted.
-                    hal::tlb::shootdown_others_va(va_page, self.cpumask());
-                    dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
-                }
-                // F156-rmap: bind the freshly-allocated anonymous
-                // page to its VMA family per `page_add_anon_rmap`.
-                let idx = ((va_page - vma.start.as_u64()) / PAGE_SIZE_BYTES) as u32;
-                set_rmap(pa, av, idx);
-                self.mark_anon_page(va)?;
-                Ok(())
+                // SAFETY: forwards the live MMU and PMM callbacks unchanged.
+                unsafe { self.handle_anonymous_not_present::<M, _, _, _, _, _>(
+                    va, &vma, hhdm_offset, alloc_frame, dec_ref, set_rmap,
+                    charge_anon, uncharge_anon,
+                ) }
             }
             VmaBacking::KernelBytes { data, off: backing_off } => {
                 // ELF-loader-style demand-fault path per docs/31 §4
@@ -234,6 +177,13 @@ impl AddressSpace {
                         // Flush peers before releasing a displaced private frame.
                         hal::tlb::shootdown_others_va(va_page, self.cpumask());
                         dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
+                    }
+                    if !matches!(access, FaultAccess::Write) {
+                        // SAFETY: the demand leaf is committed and the same
+                        // live MMU/PMM callbacks govern adjacent PTE installs.
+                        unsafe { self.map_file_fault_around::<M, _, _>(
+                            &vma, va_page, backing, *backing_off, dec_ref, inc_ref,
+                        ); }
                     }
                     return Ok(());
                 }
@@ -495,6 +445,13 @@ impl AddressSpace {
                     // on UP / aarch64 / hosted.
                     hal::tlb::shootdown_others_va(va_page, self.cpumask());
                     dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
+                }
+                if !matches!(access, FaultAccess::Write) {
+                    // SAFETY: the demand leaf is committed and the same live
+                    // MMU/PMM callbacks govern adjacent PTE installs.
+                    unsafe { self.map_file_fault_around::<M, _, _>(
+                        &vma, va_page, backing, *backing_off, dec_ref, inc_ref,
+                    ); }
                 }
                 Ok(())
             }
