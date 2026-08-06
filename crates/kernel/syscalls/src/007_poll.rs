@@ -206,10 +206,10 @@ pub(crate) fn sys_poll_deadline(fds_ptr: u64, nfds: u64, deadline_ns: Option<u64
             subbed.push(s);
         }
     }
-    // debug-syscost: dump polkitd's polled fd set (fd/events/ino/readiness) +
+    // debug-syscost-trace: dump polkitd's polled fd set (fd/events/ino/readiness) +
     // timeout on entry, so the stuck ~45s ppoll's fds are visible (which fd it
     // waits on, whether it's already ready, infinite vs timed).
-    #[cfg(feature = "debug-syscost")]
+    #[cfg(feature = "debug-syscost-trace")]
     {
         let is_pol = sched::live::current()
             .map(|c| c.with_exe_path(|p| p.map(|s| s.contains("polkit")).unwrap_or(false)))

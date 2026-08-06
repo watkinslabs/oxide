@@ -55,9 +55,8 @@ bitflags::bitflags! {
         /// Linux `PageTable`: this managed frame is a page-table page, not a
         /// reclaimable user or page-cache folio.  Its `memcg` and `mapping`
         /// (the latter carries the root PA only while this flag is set)
-        /// identify the mm that allocated it until the sole
-        /// PMM free path releases the matching `memory.stat pagetables`
-        /// charge.
+        /// identify the mm that allocated it until the sole PMM free path
+        /// releases the matching `memory.stat pagetables` charge.
         const PAGETABLE      = 1 << 14;
         /// Linux `PageSlab` equivalent for physical runs permanently owned by
         /// the kernel allocator.  These frames back allocator arenas, not
@@ -77,13 +76,14 @@ bitflags::bitflags! {
 
 /// One metadata slot per PFN.  `mapping` carries the owning page-table root
 /// only while `PAGETABLE` is set; it is otherwise the normal typed mapping
-/// pointer.  Reusing that mutually-exclusive owner field preserves the fixed
-/// 32-byte struct-page layout while retaining Linux's ptdesc/mm association.
+/// pointer. Reusing that mutually-exclusive owner field retains Linux's
+/// ptdesc/mm association without a second owner pointer.
 ///
 /// `mapping` is a Linux-style tagged raw owner pointer: its low alignment bit
 /// distinguishes file rmap from anon-vma, so type and pointer cannot diverge.
 /// `page_index` is the page-aligned offset within the originating VMA, used by
-/// rmap walkers to compute the VA.
+/// rmap walkers to compute the VA. `lru_prev`/`lru_next` are Linux's embedded
+/// `struct page::lru` equivalent, so exact list deletion never searches by PFN.
 ///
 /// F157-A1: `refcount` and `mapcount` are now SEPARATE, mirroring Linux
 /// `page->_refcount` vs `page->_mapcount`:
@@ -107,6 +107,10 @@ pub struct PageMeta {
     /// Owning cgroup-v2 id for anonymous memory. Zero is unowned/non-anon;
     /// the root cgroup has a nonzero identifier.
     pub memcg:      AtomicU64,
+    /// Previous PFN in the current reclaim LRU, or `u64::MAX`.
+    pub lru_prev:   AtomicU64,
+    /// Next PFN in the current reclaim LRU, or `u64::MAX`.
+    pub lru_next:   AtomicU64,
 }
 
 impl PageMeta {
@@ -119,6 +123,8 @@ impl PageMeta {
             page_index: AtomicU32::new(0),
             mapcount:   AtomicU32::new(0),
             memcg:      AtomicU64::new(cgroup::NO_MEMCG),
+            lru_prev:   AtomicU64::new(u64::MAX),
+            lru_next:   AtomicU64::new(u64::MAX),
         }
     }
 }
@@ -430,9 +436,9 @@ mod tests {
     #[test]
     fn meta_size_matches_spec() {
         // `11§8`: refcount(4) + flags(4) + mapping(8) + page_index(4) +
-        // mapcount(4) + memcg(8) = 32 B/page, still below the 1%-of-RAM
-        // metadata budget.
-        assert_eq!(core::mem::size_of::<PageMeta>(), 32);
+        // mapcount(4) + memcg(8) + reclaim links(16) = 48 B/page, about 1.2%
+        // of RAM. Linux likewise embeds reclaim-list links in `struct page`.
+        assert_eq!(core::mem::size_of::<PageMeta>(), 48);
     }
 
     #[test]

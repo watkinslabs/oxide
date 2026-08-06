@@ -105,6 +105,7 @@ debug-gnome-syscall = ["kmacros/debug-gnome-syscall", "sched/debug-gnome-syscall
 debug-smp = []  # targeted ARM SVC return-frame diagnostics
 debug-startlat = []  # [SLOWSYS] single-call latency probe: prints only dispatches over 50ms (tid/tgid/exe) — names which call eats a service start-up interval
 debug-syscost = []  # [SYSCOST] per-syscall profiler splitting on-CPU kernel path cost from blocking wait, all tasks (top-N every 200k calls)
+debug-syscost-trace = []  # [POLLFDS] serial-heavy workload detail; excluded from the low-distortion profiler
 debug-taskdump = []  # compile the syscall history-ring producer used by sched/debug-taskdump
 debug-polktrace = []  # compile the polkit-only live syscall producer used by sched/debug-polktrace
 debug-fdlife = ["vfs/debug-fdlife"]  # [FDHIST] low-distortion socket-activation fd history

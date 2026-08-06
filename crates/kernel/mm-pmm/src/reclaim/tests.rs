@@ -117,6 +117,27 @@ fn final_free_unlinks_exactly_one_lru_membership() {
 }
 
 #[test]
+fn exact_middle_unlink_preserves_large_lru_fifo() {
+    const PAGES: u64 = 1024;
+    const REMOVED: u64 = 777;
+    let meta = meta(PAGES as usize);
+    let reclaim = Reclaim::new();
+    for pfn in 0..PAGES {
+        meta.set_flags(Pfn(pfn), PageFlags::ANON).unwrap();
+        reclaim.add(&meta, Pfn(pfn), Lru::InactiveAnon).unwrap();
+    }
+
+    reclaim.unlink_for_free(&meta, Pfn(REMOVED)).unwrap();
+    assert_eq!(reclaim.len(Lru::InactiveAnon), PAGES as usize - 1);
+    for expected in (0..PAGES).filter(|pfn| *pfn != REMOVED) {
+        let isolated = reclaim.isolate(&meta, Lru::InactiveAnon).unwrap().unwrap();
+        assert_eq!(isolated.pfn(), Pfn(expected));
+        reclaim.release(&meta, isolated).unwrap();
+    }
+    assert_eq!(reclaim.isolate(&meta, Lru::InactiveAnon), Ok(None));
+}
+
+#[test]
 fn isolated_page_cannot_bypass_reclaim_terminal_transition() {
     let meta = meta(1);
     meta.set_flags(Pfn(0), PageFlags::ANON).unwrap();

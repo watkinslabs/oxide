@@ -19,26 +19,20 @@ impl BlkState {
         {
             let deadline = now_ns().saturating_add(IO_TIMEOUT_NS);
             loop {
-                // The kernel runs this syscall/fault IF=0; a long busy-poll here
-                // would freeze the timer tick + every wakeup for the whole I/O
-                // (B1386 root cause: I/O-storm tick stalls up to seconds). Poll
-                // the lock-free used-ring with IRQs ENABLED so the tick + the
-                // BlockIo completion softirq keep firing. IRQs are restored to
-                // IF=0 before touching `inflight` (the completion softirq also
-                // takes it) and before `park_blk` (schedule()/rq.inner are not
-                // IRQ-safe). The poll below holds NO lock. See 06§3.1 + the
-                // lock-safety audit: no ext4/block caller holds a plain lock
-                // across this wait.
+                // Linux's submit-and-wait path blocks on the request completion;
+                // it does not burn a latency-sized polling budget per I/O. This
+                // kernel still enters syscalls/faults IF=0, so briefly open IRQ
+                // delivery before parking: on a one-vCPU VM the local virtio IRQ
+                // must run to publish the wake. Probe only the DMA index, with no
+                // per-iteration clock conversion.
                 let irq = irq_save_enable();
-                let mut spun: u64 = 0;
                 let mut seen = false;
-                let mut timed_out = false;
-                while spun < IO_SPIN_BUDGET {
+                for _ in 0..IO_IRQ_POLL_BUDGET {
                     // SAFETY: virtio owns the used-ring index at this DMA address.
-                    let uidx = unsafe { core::ptr::read_volatile(used.add(1)) };
-                    if uidx == target { seen = true; break; }
-                    if now_ns() >= deadline { timed_out = true; break; }
-                    spun += 1;
+                    if unsafe { core::ptr::read_volatile(used.add(1)) } == target {
+                        seen = true;
+                        break;
+                    }
                     core::hint::spin_loop();
                 }
                 irq_restore(irq);
@@ -46,18 +40,15 @@ impl BlkState {
                     self.inflight.lock().used_seen = target;
                     return Ok(());
                 }
-                if timed_out || now_ns() >= deadline {
+                if now_ns() >= deadline {
                     self.poisoned.store(true, core::sync::atomic::Ordering::Release);
                     klog::write_raw(b"[BLK-TIMEOUT] device poisoned, used stuck\n");
                     return Err(BlockError::Eio);
                 }
-                // Spin budget exhausted without completion: park off-CPU (IF=0)
-                // on the COMPLETION condition — not the shared list, so a freed
-                // engine turn doesn't rouse this waiter. Register-then-recheck
-                // (`park_blk_checked`, not `park_blk`): the completion IRQ can
-                // land on a DIFFERENT cpu and `wake_all()` an empty `BLK_COMPL`
-                // in the gap between this cpu's last poll and its park (B1426).
-                park_blk_checked(&BLK_COMPL, || {
+                // Park off-CPU on the completion condition immediately. The
+                // register-then-recheck closes the SMP lost-wakeup window, and
+                // the deadline wakes us even if the device interrupt is lost.
+                park_blk_checked(&BLK_COMPL, deadline, || {
                     // SAFETY: virtio owns the used-ring index at this DMA address.
                     unsafe { core::ptr::read_volatile(used.add(1)) == target }
                 });
@@ -74,31 +65,17 @@ impl BlkState {
             }
             #[cfg(target_os = "oxide-kernel")]
             {
-                // Wait for the turn with IRQs ENABLED across the lock-free spin
-                // (holds no lock), IF=0 for the `inflight` probe above and the
-                // park below, so a nested tick never contends `inflight` with
-                // the BlockIo softirq. Same B1386 rationale as wait_for_completion.
-                let irq = irq_save_enable();
-                let mut spun: u64 = 0;
-                while spun < IO_SPIN_BUDGET {
-                    if self.poisoned.load(core::sync::atomic::Ordering::Acquire) { break; }
-                    spun += 1;
-                    core::hint::spin_loop();
-                }
-                irq_restore(irq);
                 // Park on BLK_TURN (turn availability), NOT BLK_COMPL: a
                 // request completion must not wake every turn-waiter.
                 // Register-then-recheck under `inflight` (same B1426 gap:
                 // `release_turn` can run on another cpu between our last poll
                 // and the park registration).
-                if spun >= IO_SPIN_BUDGET {
-                    park_blk_checked(&BLK_TURN, || {
-                        self.poisoned.load(core::sync::atomic::Ordering::Acquire) || {
-                            let g = self.inflight.lock();
-                            !g.busy && g.pending.is_empty() && g.deferred.is_empty()
-                        }
-                    });
-                }
+                park_blk_checked(&BLK_TURN, 0, || {
+                    self.poisoned.load(core::sync::atomic::Ordering::Acquire) || {
+                        let g = self.inflight.lock();
+                        !g.busy && g.pending.is_empty() && g.deferred.is_empty()
+                    }
+                });
             }
             #[cfg(not(target_os = "oxide-kernel"))]
             { core::hint::spin_loop(); }
