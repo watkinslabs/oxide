@@ -87,8 +87,7 @@ pub(crate) fn nlmsg_ack(req: &Nlmsghdr, err: i32) -> Vec<u8> {
     out
 }
 
-/// # C: O(1)
-pub fn handle(full_msg: &[u8]) -> Vec<u8> {
+fn handle_one(full_msg: &[u8], namespace: u64) -> Vec<u8> {
     let hdr = match Nlmsghdr::parse(full_msg) {
         Some(h) => h,
         None => return Vec::new(),
@@ -100,9 +99,77 @@ pub fn handle(full_msg: &[u8]) -> Vec<u8> {
     };
     let attrs = &full_msg[nfg_off + Nfgenmsg::SIZE..];
     match (hdr.nlmsg_type >> 8) as u8 {
-        subsys::NFNL_SUBSYS_NFTABLES => nft_dispatch::handle_nft(&hdr, &nfg, (hdr.nlmsg_type & 0xFF) as u8, attrs),
+        subsys::NFNL_SUBSYS_NFTABLES => nft_dispatch::handle_nft(
+            namespace, &hdr, &nfg, (hdr.nlmsg_type & 0xFF) as u8, attrs),
         _ => nlmsg_ack(&hdr, 0),
     }
+}
+
+fn reply_errno(reply: &[u8]) -> Option<i32> {
+    let header = Nlmsghdr::parse(reply)?;
+    if header.nlmsg_type != msg::NLMSG_ERROR || reply.len() < Nlmsghdr::SIZE + 4 { return None; }
+    Some(i32::from_ne_bytes(reply[Nlmsghdr::SIZE..Nlmsghdr::SIZE + 4].try_into().ok()?))
+}
+
+/// Dispatch one complete nfnetlink datagram. `NFNL_MSG_BATCH_BEGIN` snapshots
+/// the canonical ruleset; `BATCH_END` compiles and publishes all intervening
+/// mutations once. Any command error restores the snapshot.
+/// # C: O(datagram + control-state commit)
+pub fn handle(datagram: &[u8], namespace: u64) -> Vec<u8> {
+    const NFNL_MSG_BATCH_BEGIN: u16 = msg::NLMSG_MIN_TYPE;
+    const NFNL_MSG_BATCH_END: u16 = msg::NLMSG_MIN_TYPE + 1;
+
+    let _serial = crate::nfnl_lock();
+    let mut replies = Vec::new();
+    let mut off = 0usize;
+    let mut in_batch = false;
+    let mut failed_batch = false;
+    while off + Nlmsghdr::SIZE <= datagram.len() {
+        let Some(hdr) = Nlmsghdr::parse(&datagram[off..]) else { break; };
+        let len = hdr.nlmsg_len as usize;
+        if len < Nlmsghdr::SIZE || off + len > datagram.len() { break; }
+        let frame = &datagram[off..off + len];
+        if hdr.nlmsg_flags & flags::NLM_F_REQUEST == 0 {
+            if hdr.nlmsg_flags & flags::NLM_F_ACK != 0 {
+                replies.extend_from_slice(&nlmsg_ack(&hdr, 0));
+            }
+            off += nlmsg_align(len);
+            continue;
+        }
+        match hdr.nlmsg_type {
+            NFNL_MSG_BATCH_BEGIN => {
+                if in_batch || !crate::batch_begin(namespace) {
+                    replies.extend_from_slice(&nlmsg_ack(&hdr, -22 /* EINVAL */));
+                    failed_batch = true;
+                } else {
+                    in_batch = true;
+                }
+            }
+            NFNL_MSG_BATCH_END => {
+                if failed_batch {
+                    if in_batch { crate::batch_abort(); }
+                } else if !in_batch || !crate::batch_commit(namespace) {
+                    replies.extend_from_slice(&nlmsg_ack(&hdr, -22 /* EINVAL */));
+                }
+                in_batch = false;
+                failed_batch = false;
+            }
+            _ if !failed_batch => {
+                let reply = handle_one(frame, namespace);
+                let failed = reply_errno(&reply).is_some_and(|errno| errno < 0);
+                replies.extend_from_slice(&reply);
+                if failed && in_batch {
+                    crate::batch_abort();
+                    in_batch = false;
+                    failed_batch = true;
+                }
+            }
+            _ => {}
+        }
+        off += nlmsg_align(len);
+    }
+    if in_batch { crate::batch_abort(); }
+    replies
 }
 
 /// # C: O(1)

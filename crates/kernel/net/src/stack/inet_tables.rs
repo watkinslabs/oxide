@@ -1,4 +1,5 @@
 use super::*;
+use alloc::sync::Weak;
 
 /// A transport-demux table shared by socket syscalls and NET_RX.
 ///
@@ -48,6 +49,16 @@ pub(crate) struct InetTables {
     pub(crate) tcp_listens: Arc<InetTableLock<BTreeMap<TcpListenKey, Vec<Arc<TcpListenEntry>>>>>,
     pub(crate) tcp_binds: Arc<InetTableLock<BTreeMap<u16, Vec<alloc::sync::Weak<TcpBindReservation>>>>>,
     pub(crate) pmtu: super::pmtu_cache::PmtuCache,
+}
+
+/// One namespace's per-net transport state and non-owning namespace link.
+///
+/// The namespace owns its protocol state conceptually; this reverse link is
+/// weak so the global stack cannot keep a namespace alive. Data paths upgrade
+/// it directly instead of resolving a numeric ID through a second registry.
+pub(crate) struct InetNamespaceTables {
+    owner: Weak<network_namespace::NetworkNamespace>,
+    pub(crate) tables: Arc<InetTables>,
 }
 
 pub(crate) struct InetTablesRef {
@@ -108,36 +119,56 @@ impl NetStack {
     /// Snapshot raw IPv6 endpoints from every live namespace-owned table.
     /// Router Alert is the sole cross-namespace raw delivery path. # C: O(N endpoints)
     pub(crate) fn raw6_endpoints_all_namespaces(&self) -> Vec<Arc<crate::raw6::Raw6Endpoint>> {
-        let tables: Vec<Arc<InetTables>> = self.inet.lock().values().cloned().collect();
+        let tables: Vec<Arc<InetTables>> = self.inet.lock().values()
+            .map(|entry| entry.tables.clone()).collect();
         let mut endpoints = Vec::new();
         for table in tables { endpoints.extend(table.raw6.all_endpoints()); }
         endpoints
     }
 
-    /// Resolve the sole transport-table owner for `net_ns`. # C: O(log N)
-    pub(crate) fn try_inet_tables(&self, net_ns: u64) -> Option<InetTablesRef> {
-        let owner = network_namespace::lookup_u64(net_ns)?;
+    /// Materialize protocol state from its concrete namespace owner. # C: O(log N)
+    pub(crate) fn inet_tables_for(
+        &self,
+        owner: &network_namespace::NetworkNamespaceRef,
+    ) -> InetTablesRef {
+        let net_ns = owner.id().as_u64();
         let mut all = self.inet.lock();
-        let tables = if let Some(tables) = all.get(&net_ns) { tables.clone() }
-        else {
+        let tables = if let Some(entry) = all.get(&net_ns) {
+            entry.tables.clone()
+        } else {
             let tables = Arc::new(InetTables::new());
-            all.insert(net_ns, tables.clone());
+            all.insert(net_ns, InetNamespaceTables {
+                owner: Arc::downgrade(owner), tables: tables.clone(),
+            });
             tables
         };
+        InetTablesRef { _owner: owner.clone(), tables }
+    }
+
+    /// Resolve already-materialized per-net state without a global ID lookup. # C: O(log N)
+    pub(crate) fn try_inet_tables(&self, net_ns: u64) -> Option<InetTablesRef> {
+        let all = self.inet.lock();
+        let entry = all.get(&net_ns)?;
+        let owner = entry.owner.upgrade()?;
+        let tables = entry.tables.clone();
         Some(InetTablesRef { _owner: owner, tables })
     }
 
-    /// Resolve tables for a numeric key whose live owner is retained elsewhere. # C: O(log N)
+    /// Resolve tables for a numeric key whose concrete owner was published earlier. # C: O(log N)
     pub(crate) fn inet_tables(&self, net_ns: u64) -> InetTablesRef {
+        if let Some(tables) = self.try_inet_tables(net_ns) { return tables; }
+        if net_ns == 0 {
+            return self.inet_tables_for(&network_namespace::initial());
+        }
         self.try_inet_tables(net_ns)
-            .expect("network namespace transport owner must remain live")
+            .expect("network namespace transport state must be materialized by its owner")
     }
 
     /// Drop the stack's ownership of a destroyed namespace's transport state. # C: O(log N)
     pub fn remove_inet_namespace(&self, net_ns: u64) -> bool {
         if net_ns == 0 { return false; }
-        let tables = self.inet.lock().remove(&net_ns);
-        if let Some(tables) = &tables { tables.teardown(); }
-        tables.is_some()
+        let entry = self.inet.lock().remove(&net_ns);
+        if let Some(entry) = &entry { entry.tables.teardown(); }
+        entry.is_some()
     }
 }

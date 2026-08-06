@@ -144,7 +144,7 @@ impl NetStack {
     pub(crate) fn tcp_tick_entries(&self) -> Vec<(network_namespace::NetworkNamespaceRef,
         Arc<super::inet_tables::InetTables>, TcpKey, Arc<TcpEntry>)> {
         let table_sets: Vec<(u64, Arc<super::inet_tables::InetTables>)> = self.inet.lock().iter()
-            .map(|(&net_ns, tables)| (net_ns, tables.clone())).collect();
+            .map(|(&net_ns, entry)| (net_ns, entry.tables.clone())).collect();
         let table_sets: Vec<(network_namespace::NetworkNamespaceRef,
                              Arc<super::inet_tables::InetTables>)> = table_sets.into_iter()
             .filter_map(|(net_ns, tables)| {

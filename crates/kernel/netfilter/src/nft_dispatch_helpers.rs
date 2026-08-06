@@ -3,16 +3,16 @@ use alloc::vec::Vec;
 use netlink::{Nlmsghdr, flags, nlmsg_align};
 
 use crate::{
-    Nfgenmsg, NftObject, gen_current, nft_msg, nfta_gen, nfta_obj, nfta_set_elem,
-    put_nlattr, put_nlattr_str, put_nlattr_u32, set_elems_snapshot, subsys,
+    Nfgenmsg, NftObject, gen_current_in, nft_msg, nfta_gen, nfta_obj, nfta_set_elem,
+    put_nlattr, put_nlattr_str, put_nlattr_u32, set_elems_snapshot_in, subsys,
 };
 
-pub(crate) fn build_newgen_reply(seq: u32, pid: u32) -> Vec<u8> {
+pub(crate) fn build_newgen_reply(namespace: u64, seq: u32, pid: u32) -> Vec<u8> {
     let mut body: Vec<u8> = Vec::with_capacity(32);
     let mut nfg_buf = [0u8; Nfgenmsg::SIZE];
     Nfgenmsg { nfgen_family: 0, version: 0, res_id: 0 }.write_to(&mut nfg_buf);
     body.extend_from_slice(&nfg_buf);
-    put_nlattr_u32(&mut body, nfta_gen::NFTA_GEN_ID, gen_current());
+    put_nlattr_u32(&mut body, nfta_gen::NFTA_GEN_ID, gen_current_in(namespace));
 
     let nlmsg_type = ((subsys::NFNL_SUBSYS_NFTABLES as u16) << 8)
         | (nft_msg::NFT_MSG_NEWGEN as u16);
@@ -71,6 +71,7 @@ pub(crate) fn build_newobj_reply(seq: u32, pid: u32, o: &NftObject, multi: bool)
 }
 
 pub(crate) fn build_setelems_reply(
+    namespace: u64,
     seq: u32,
     pid: u32,
     table: &str,
@@ -86,7 +87,7 @@ pub(crate) fn build_setelems_reply(
     put_nlattr_str(&mut body, nfta_set_elem::NFTA_SET_ELEM_LIST_SET, set);
 
     let mut list_payload: Vec<u8> = Vec::new();
-    for e in set_elems_snapshot()
+    for e in set_elems_snapshot_in(namespace)
         .iter()
         .filter(|e| e.table_family == family && e.table_name == table && e.set_name == set)
     {

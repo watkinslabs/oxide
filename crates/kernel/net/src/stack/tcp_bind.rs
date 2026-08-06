@@ -183,7 +183,7 @@ impl NetStack {
         // reservation is sufficient (`secure_seq::prime`).
         crate::secure_seq::prime();
         let net_ns = owner.net_ns();
-        let tables = self.inet_tables(net_ns);
+        let tables = self.inet_tables_for(&owner.net_namespace);
         let mut binds = tables.tcp_binds.lock();
         if requested_port != 0 {
             return self.tcp_try_reserve_locked(&tables, &owner, &mut binds,

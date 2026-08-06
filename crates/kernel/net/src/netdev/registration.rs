@@ -81,7 +81,7 @@ impl IfaceRegistry {
             .map(|entry| entry.ifindex).max().unwrap_or(0).saturating_add(1);
         let dev_hw = dev.hardware_type();
         let flags = initial_flags(dev_hw);
-        let gate = Arc::new(IngressGate::registration_pending(ns, 1));
+        let gate = Arc::new(IngressGate::registration_pending(owner, 1));
         let name = String::from(dev.name());
         g.entries.push(IfaceEntry { id, ifindex, ns, dev, parent, name, flags: AtomicU32::new(flags),
             carrier: core::sync::atomic::AtomicBool::new(initial_carrier(dev_hw)),

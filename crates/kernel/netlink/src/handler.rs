@@ -11,7 +11,7 @@ use crate::Nlmsghdr;
 /// (and any future protocol whose handler lives in a sibling
 /// crate) — netlink can't depend on those crates directly without
 /// circular deps, so they install their handler here.
-pub type ProtoHandler = fn(&[u8]) -> Vec<u8>;
+pub type ProtoHandler = fn(&[u8], u64) -> Vec<u8>;
 
 static NETFILTER_HANDLER: AtomicPtr<()> =
     AtomicPtr::new(core::ptr::null_mut());
@@ -22,7 +22,7 @@ pub fn install_netfilter_handler(f: ProtoHandler) {
     NETFILTER_HANDLER.store(f as *mut (), Ordering::Release);
 }
 
-pub(crate) fn invoke_netfilter(msg: &[u8]) -> Vec<u8> {
+pub(crate) fn invoke_netfilter(msg: &[u8], namespace: u64) -> Vec<u8> {
     let raw = NETFILTER_HANDLER.load(Ordering::Acquire);
     if raw.is_null() {
         if let Some(hdr) = Nlmsghdr::parse(msg) {
@@ -33,7 +33,7 @@ pub(crate) fn invoke_netfilter(msg: &[u8]) -> Vec<u8> {
         return Vec::new();
     }
     // SAFETY: raw was installed via install_netfilter_handler with
-    // the documented `fn(&[u8]) -> Vec<u8>` signature.
+    // the documented namespace-qualified `ProtoHandler` signature.
     let f: ProtoHandler = unsafe { core::mem::transmute(raw) };
-    f(msg)
+    f(msg, namespace)
 }

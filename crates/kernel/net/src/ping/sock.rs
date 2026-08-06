@@ -36,6 +36,11 @@ pub fn admits(namespace: &NetworkNamespaceRef, caller: CallerGroups<'_>) -> bool
 }
 
 impl NetStack {
+    /// Materialize the identifier table from its concrete namespace owner. # C: O(log N)
+    fn ping_table_for(&self, owner: &NetworkNamespaceRef) -> Arc<PingTable> {
+        Arc::clone(&self.inet_tables_for(owner).ping)
+    }
+
     /// Resolve the identifier table owning one namespace. # C: O(log N)
     pub fn ping_table(&self, net_ns: u64) -> Option<Arc<PingTable>> {
         self.try_inet_tables(net_ns).map(|tables| Arc::clone(&tables.ping))
@@ -46,7 +51,7 @@ impl NetStack {
 /// # C: O(N)
 pub fn bind_v4(endpoint: &Arc<crate::raw4::Raw4Endpoint>, requested: u16) -> Result<u16, NetError> {
     let owner = endpoint.ping.as_ref().ok_or(NetError::Einval)?;
-    let table = crate::global_stack().ping_table(endpoint.net_ns()).ok_or(NetError::Enodev)?;
+    let table = crate::global_stack().ping_table_for(&endpoint.network_namespace());
     table.bind(owner, PingSock::V4(Arc::downgrade(endpoint)), requested)
 }
 
@@ -54,7 +59,7 @@ pub fn bind_v4(endpoint: &Arc<crate::raw4::Raw4Endpoint>, requested: u16) -> Res
 /// # C: O(N)
 pub fn bind_v6(endpoint: &Arc<crate::raw6::Raw6Endpoint>, requested: u16) -> Result<u16, NetError> {
     let owner = endpoint.ping.as_ref().ok_or(NetError::Einval)?;
-    let table = crate::global_stack().ping_table(endpoint.net_ns()).ok_or(NetError::Enodev)?;
+    let table = crate::global_stack().ping_table_for(&endpoint.network_namespace());
     table.bind(owner, PingSock::V6(Arc::downgrade(endpoint)), requested)
 }
 

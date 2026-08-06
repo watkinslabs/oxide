@@ -65,6 +65,8 @@ fn udp6_packet(src: Ipv6Addr, dst: Ipv6Addr, sport: u16, dport: u16) -> alloc::v
 }
 
 fn iface_in(stack: &NetStack, ns: u64) -> NetIfaceId {
+    let owner = network_namespace::lookup_u64(ns).expect("test namespace must remain live");
+    let _tables = stack.inet_tables_for(&owner);
     stack.ifaces.register_in_ns(Arc::new(LoopbackDev::new()) as Arc<dyn NetDev>, ns)
 }
 
@@ -179,6 +181,24 @@ fn namespace_teardown_removes_all_transport_visibility() {
     assert!(stack.try_inet_tables(ns).is_none(), "claimed ID cannot recreate transport state");
     crate::net_ns::test_support::finish_claimed(&stack, &claimed);
     assert!(stack.try_inet_tables(ns).is_none(), "finished ID cannot recreate transport state");
+}
+
+#[test]
+fn transport_table_reverse_link_does_not_pin_namespace_lifetime() {
+    let _guard = crate::net_ns::test_support::LIFETIME_LOCK.lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let stack = NetStack::new();
+    let owner = crate::net_ns::test_support::allocate_namespace();
+    let id = owner.id();
+    let tables = stack.inet_tables_for(&owner);
+    drop(tables);
+    drop(owner);
+
+    let claimed = network_namespace::take_dead_namespace_ids();
+    assert!(claimed.contains(&id), "per-net transport map retains only a weak owner");
+    assert!(stack.try_inet_tables(id.as_u64()).is_none(),
+        "numeric packet-path lookup cannot reconstruct a dead namespace");
+    crate::net_ns::test_support::finish_claimed(&stack, &claimed);
 }
 
 #[test]

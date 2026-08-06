@@ -203,14 +203,15 @@ fn concurrent_publish_and_teardown_leave_no_interface() {
 
 #[test]
 fn loopback_publication_includes_addresses_and_routes() {
-    const NS: u64 = 0x8440_102;
     let stack = crate::NetStack::new();
-    let (id, _) = stack.register_loopback_in(NS);
+    let owner = owner();
+    let ns = owner.id().as_u64();
+    let (id, _) = stack.register_loopback_for(&owner);
 
-    assert_eq!(crate::iface_addr::primary(NS, id).map(|row| row.0), Some(crate::Ipv4Addr::LOOPBACK));
-    assert_eq!(stack.routes.lookup_in(NS, crate::Ipv4Addr::LOOPBACK).map(|route| route.iface),
+    assert_eq!(crate::iface_addr::primary(ns, id).map(|row| row.0), Some(crate::Ipv4Addr::LOOPBACK));
+    assert_eq!(stack.routes.lookup_in(ns, crate::Ipv4Addr::LOOPBACK).map(|route| route.iface),
         Some(id));
-    assert_eq!(stack.routes6.lookup_in_table_in(NS, crate::policy_rule::RT_TABLE_LOCAL,
+    assert_eq!(stack.routes6.lookup_in_table_in(ns, crate::policy_rule::RT_TABLE_LOCAL,
         crate::Ipv6Addr::LOOPBACK).map(|route| route.iface), Some(id));
     assert!(stack.v6_addr_owned_by(id, crate::Ipv6Addr::LOOPBACK));
 }

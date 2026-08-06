@@ -73,7 +73,7 @@ impl NetStack {
         let net_ns = owner.net_ns();
         let owner_uid = owner.owner_uid;
         let reuseport_member = reuseport.load(::core::sync::atomic::Ordering::Acquire) != 0;
-        let tables = self.inet_tables(net_ns);
+        let tables = self.inet_tables_for(&owner.net_namespace);
         let mut g = tables.udp.lock();
         let udp6 = tables.udp6.lock();
         if let Some(v6_group) = udp6.get(&port) {

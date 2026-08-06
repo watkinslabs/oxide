@@ -7,9 +7,11 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use network_namespace::NetworkNamespaceRef;
 use sync::{Socket as SockLockClass, Spinlock};
 
-use crate::{flags, genetlink, invoke_netfilter, listeners, proto, rtnetlink, rtnetlink_rule, sock_diag, Nlmsghdr, nlmsg_align};
+use crate::{flags, genetlink, listeners, nlmsg_align, proto, rtnetlink, rtnetlink_rule, sock_diag, Nlmsghdr};
 use crate::receive::ReceiveQueue;
 use crate::wire::alloc_port_id;
+
+mod netfilter;
 
 pub const NETLINK_SNDBUF_DEFAULT: usize = 212_992;
 /// Linux default NETLINK receive budget; one owner keeps loss, `sk_err`, and poll coherent.
@@ -83,7 +85,7 @@ impl NetlinkSocket {
             | rtnetlink::RTM_NEWLINK | rtnetlink::RTM_SETLINK)
     }
 
-    fn may_mutate_rtnl(&self) -> bool {
+    fn may_admin_net(&self) -> bool {
         #[cfg(target_os = "oxide-kernel")]
         { sched::current().is_some_and(|cur| nscg::has_net_admin_for(cur, &self.net_ns)) }
         #[cfg(not(target_os = "oxide-kernel"))]
@@ -186,7 +188,7 @@ impl NetlinkSocket {
             return;
         }
         let reply = if self.protocol == proto::NETLINK_ROUTE && Self::rtnl_mutation(hdr.nlmsg_type)
-            && !self.may_mutate_rtnl() {
+            && !self.may_admin_net() {
             rtnetlink::nlmsg_ack_pub(hdr, -1)
         } else { match (self.protocol, hdr.nlmsg_type) {
             (proto::NETLINK_ROUTE, rtnetlink::RTM_GETLINK) => rtnetlink::handle_getlink_in(net_ns, hdr, msg, strict),
@@ -206,7 +208,6 @@ impl NetlinkSocket {
             | (proto::NETLINK_ROUTE, rtnetlink::RTM_SETLINK) => rtnetlink::handle_setlink_in(net_ns, hdr, msg),
             (proto::NETLINK_GENERIC, _) => genetlink::handle(msg, net_ns, self.genl_cred()),
             (proto::NETLINK_AUDIT, _) => crate::audit::handle(hdr, msg),
-            (proto::NETLINK_NETFILTER, _) => invoke_netfilter(msg),
             (proto::NETLINK_SOCK_DIAG, sock_diag::SOCK_DIAG_BY_FAMILY)
             | (proto::NETLINK_SOCK_DIAG, sock_diag::TCPDIAG_GETSOCK) =>
                 sock_diag::handle_in(net_ns, hdr, msg),
@@ -297,6 +298,9 @@ impl NetlinkSocket {
                 listeners::rebroadcast_cooked_uevent(&datagram, dest_groups, self);
                 return Ok(consumed);
             }
+        }
+        if self.protocol == proto::NETLINK_NETFILTER {
+            return netfilter::dispatch(self, &datagram, consumed);
         }
         // The walk itself never fails the send. Netlink core hands the whole
         // datagram to the protocol receive path and discards its verdict, so a
