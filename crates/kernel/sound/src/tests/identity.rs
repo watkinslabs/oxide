@@ -4,9 +4,11 @@
 // the tag — an errno the dispatch chain reads as "answered", so the stage that
 // actually owned the command never ran.
 
+use alloc::string::String;
 use alloc::sync::Arc;
 use vfs::pseudo_ino::SOUND;
-use vfs::{default_file_ops, default_inode_ops, mk_mode, FileType, Ino, InodeBuilder, InodeRef};
+use vfs::{default_file_ops, default_inode_ops, mk_mode, Dentry, File, FileType,
+          Ino, InodeBuilder, InodeRef, OpenFlags};
 
 use crate::device::{handle_ioctl, make_snd_inode, snd_data_of, MINOR_CONTROL, MINOR_MIXER,
                     MINOR_PCM_C, MINOR_PCM_P};
@@ -28,6 +30,11 @@ fn foreign_inode(ino: Ino) -> InodeRef {
 fn bare_inode(ino: Ino) -> InodeRef {
     InodeBuilder::new(ino, mk_mode(FileType::CharDev, 0), default_inode_ops(), default_file_ops())
         .build()
+}
+
+fn open(inode: InodeRef) -> Arc<File> {
+    let dentry = Dentry::new(None, String::from("sound-test"), Arc::clone(&inode));
+    File::new(inode, dentry, OpenFlags::O_RDWR | OpenFlags::O_NONBLOCK)
 }
 
 #[test]
@@ -57,7 +64,7 @@ fn an_inode_carrying_the_sound_tag_without_backend_state_falls_through() {
     // reply from a handler that does not recognise the file.
     for ino in [SOUND.start(), SOUND.start() | MINOR_PCM_P, SOUND.end()] {
         assert!(snd_data_of(&bare_inode(ino)).is_none(), "{ino:#x}");
-        assert_eq!(handle_ioctl(&bare_inode(ino), CTL_REQUEST, 0), None, "{ino:#x}");
+        assert_eq!(handle_ioctl(&open(bare_inode(ino)), CTL_REQUEST, 0), None, "{ino:#x}");
     }
 }
 
@@ -67,7 +74,7 @@ fn a_foreign_inode_reusing_a_sound_number_is_declined() {
     assert!(snd_data_of(&real).is_some());
     let stranger = foreign_inode(real.ino());
     assert!(snd_data_of(&stranger).is_none());
-    assert_eq!(handle_ioctl(&stranger, CTL_REQUEST, 0), None);
+    assert_eq!(handle_ioctl(&open(stranger), CTL_REQUEST, 0), None);
 }
 
 #[test]
@@ -77,5 +84,38 @@ fn a_sound_inode_outside_the_region_still_resolves() {
     let inode = make_snd_inode(super::key(0x7f03), 0, MINOR_MIXER);
     assert!(snd_data_of(&inode).is_some());
     assert!(snd_data_of(&foreign_inode(0)).is_none());
-    assert_eq!(handle_ioctl(&foreign_inode(0), CTL_REQUEST, 0), None);
+    assert_eq!(handle_ioctl(&open(foreign_inode(0)), CTL_REQUEST, 0), None);
+}
+
+#[test]
+fn control_subscription_is_per_open_and_empty_queue_is_not_ready_or_eof() {
+    let owner = super::key(0x7f04);
+    let _guard = super::test_guard();
+    let _ = crate::ops::clear(owner);
+    let _ = crate::cancel_card_reservation(owner);
+    assert!(crate::reserve_card(owner));
+    assert!(crate::ops::register(owner, &super::TEST_OPS));
+    let inode = make_snd_inode(owner, 0, MINOR_CONTROL);
+    let subscribed = open(Arc::clone(&inode));
+    let separate = open(inode);
+    let mut event = [0u8; crate::uapi::CTL_EVENT_SIZE];
+
+    assert_eq!(subscribed.read(&mut event), Err(vfs::VfsError::Ebadfd));
+    let mut on = 1i32;
+    let subscribe = (CTL_MAGIC << 8) | crate::uapi::CTL_SUBSCRIBE;
+    assert_eq!(handle_ioctl(&subscribed, subscribe, &mut on as *mut i32 as u64), Some(0));
+    assert_eq!(subscribed.poll(), 0, "subscription alone queues no ALSA event");
+    assert_eq!(subscribed.read(&mut event), Err(vfs::VfsError::Eagain));
+    assert_eq!(separate.read(&mut event), Err(vfs::VfsError::Ebadfd),
+        "subscription belongs to the open description");
+
+    let mut query = -1i32;
+    assert_eq!(handle_ioctl(&subscribed, subscribe, &mut query as *mut i32 as u64), Some(0));
+    assert_eq!(query, 1);
+    query = -1;
+    assert_eq!(handle_ioctl(&separate, subscribe, &mut query as *mut i32 as u64), Some(0));
+    assert_eq!(query, 0);
+
+    let _ = crate::ops::clear(owner);
+    let _ = crate::cancel_card_reservation(owner);
 }

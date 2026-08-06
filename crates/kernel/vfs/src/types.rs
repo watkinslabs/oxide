@@ -197,6 +197,10 @@ pub enum VfsError {
     Emsgsize = 90,
     Enoprotoopt = 92,
     Eproto  = 71,
+    /// EBADFD — a descriptor is valid, but is in the wrong protocol state
+    /// for this operation (for example, reading an unsubscribed ALSA control
+    /// file). Distinct from EBADF, which means there is no readable fd.
+    Ebadfd  = 77,
     Ehostdown = 112,
     Eopnotsupp = 95,
     Edestaddrreq = 89,

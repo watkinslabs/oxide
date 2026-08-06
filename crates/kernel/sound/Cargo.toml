@@ -15,6 +15,7 @@ syscall = { path = "../syscall" }
 sync    = { path = "../../shared/sync" }
 hal     = { path = "../../arch/hal" }
 klog    = { path = "../../shared/klog" }
+sched   = { path = "../sched" }
 
 [features]
 default = []
