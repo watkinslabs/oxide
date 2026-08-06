@@ -115,6 +115,9 @@ mod iget;
 mod rename;
 
 #[cfg(test)]
+mod shmem_page;
+
+#[cfg(test)]
 mod rename_overwrite_tests {
     use super::*;
     use vfs::fs::FileSystem;

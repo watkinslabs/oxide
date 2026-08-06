@@ -5,6 +5,20 @@ use vfs::{KResult, VfsError};
 use super::{Ext4FrameStore, PG};
 
 impl Ext4FrameStore {
+    /// Acquire an already-published page for a speculative fault-around PTE.
+    /// Unlike `shared_frame`, a miss is not filled and the page is not marked
+    /// dirty: writable mappings install this frame read-only and take the
+    /// normal write-fault dirty/COW path before modification. # C: O(log N)
+    pub(crate) fn fault_around_frame(&self, off: u64) -> KResult<Option<vfs::SharedFrame>> {
+        let idx = off / PG as u64;
+        let g = self.pages.lock();
+        let Some(page) = g.get(&idx) else { return Ok(None); };
+        // SAFETY: the store lock keeps its object reference published until
+        // the matching prospective PTE reference has been acquired.
+        unsafe { pmm::setup::inc_ref(page.pa); }
+        Ok(Some(vfs::SharedFrame { pa: page.pa, map_ref_held: true }))
+    }
+
     /// Fallible shared lookup preserving memcg admission ENOMEM. # C: O(PG/bs)
     /// Acquire a MAP_SHARED PTE reference while the page-cache store lock
     /// proves the frame remains published, closing reclaim versus fault races.

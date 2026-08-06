@@ -162,6 +162,19 @@ impl FileBacking for InodeFileBacking {
             .map_err(vfs_error)
     }
 
+    /// Cached-only fault-around lookup. Inodes without a frame-backed
+    /// address_space keep using the one-page copy fault path: their generic
+    /// byte-vector cache cannot safely be installed as a PMM PTE.
+    fn fault_around_frame(&self, off: u64) -> Result<Option<SharedFrame>, FileBackingError> {
+        let Some(mapping) = self.inode.i_mapping() else { return Ok(None); };
+        mapping.fault_around_frame(off)
+            .map(|frame| frame.map(|frame| SharedFrame {
+                pa: frame.pa,
+                map_ref_held: frame.map_ref_held,
+            }))
+            .map_err(vfs_error)
+    }
+
     /// `msync(MS_SYNC)`/range fsync writeback over the inode address_space.
     /// Inodes without an address_space have no mapped dirty frame store here.
     /// # C: O(N_dirty in range)

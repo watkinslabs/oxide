@@ -66,14 +66,14 @@ pub struct TmpfsFileData {
     pub(super) pages: Spinlock<BTreeMap<u64, ShmemPage>, TaskListClass>,
     /// Logical size (Linux `i_size`); may exceed the populated pages. Kept in
     /// sync with the owning inode's `i_size` by the file/inode ops.
-    len:  AtomicU64,
+    pub(super) len: AtomicU64,
     /// Owning mount's space accounting (block charge/uncharge). # D33
-    acct: Arc<TmpfsSb>,
+    pub(super) acct: Arc<TmpfsSb>,
     /// memfd `F_*_SEALS` word (Linux `shmem_inode_info.seals`). Lives HERE in the
     /// per-fs inode-info, reached via `vfs::SealCarrier`; the owning `Inode`
     /// exposes it through `fcntl_seals()` only when this data was attached as the
     /// inode's seal carrier (a sealable memfd). # D42
-    seals: AtomicU32,
+    pub(super) seals: AtomicU32,
 }
 
 /// memfd seal-store carrier (`16§2`, Linux `SHMEM_I(inode)->seals`): the tmpfs
@@ -208,7 +208,7 @@ pub fn tmpfs_sealable_file() -> InodeRef { make_tmpfs_file_inode(true, 0o644, 0,
 impl TmpfsFileData {
     /// Copy out cache bytes from `off` (sparse holes read as zero, tail past
     /// `len` short-reads). # C: O(buf.len)
-    fn read_bytes(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
+    pub(super) fn read_bytes(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
         let len = self.len.load(Ordering::Acquire);
         if off >= len { return Ok(0); }
         let n = buf.len().min((len - off) as usize);
@@ -457,143 +457,4 @@ impl FileOps for TmpfsFileOps {
     /// which data could be buffered, so "bypass the page cache" is already
     /// true. # C: O(1)
     fn can_odirect(&self, _inode: &Inode) -> bool { true }
-}
-
-/// The tmpfs inode's `address_space` (Linux shmem mapping). Persistent,
-/// frame-backed, per-inode, sparse (hole = zero) — every mapper of this
-/// inode shares THESE frames, so `MAP_SHARED` writes propagate to
-/// `read`/`write` and to all peers, and `fork` keeps the page shared
-/// (no COW-split) because the backing object, not the PTE, owns the frame.
-impl AddressSpaceOps for TmpfsFileData {
-    /// MAP_SHARED backing: the inode's persistent frame for the page at file
-    /// offset `off` (page-aligned), allocating on first touch. # C: O(log N_pages)
-    fn shared_frame(&self, off: u64) -> KResult<Option<vfs::SharedFrame>> {
-        let idx = off / PG as u64;
-        loop {
-            let migrating = {
-                let mut g = self.pages.lock();
-                match g.get(&idx).copied() {
-                    Some(ShmemPage::Migrating { token, .. }) => Some(token),
-                    _ => {
-                        let pa = ensure_page(&mut g, idx, &self.acct)?;
-                        // SAFETY: index lock keeps this terminal resident
-                        // state live until this map reference is recorded.
-                        unsafe { pmm::setup::inc_ref(pa); }
-                        return Ok(Some(vfs::SharedFrame { pa, map_ref_held: true }));
-                    }
-                }
-            };
-            super::migration::wait_and_restart(migrating.expect("migrating branch token"));
-        }
-    }
-
-    /// Read-fault / MAP_PRIVATE fill: copy cache bytes (sparse holes read as
-    /// zero, tail past `i_size` short-reads). # C: O(dst.len)
-    fn read_at(&self, off: u64, dst: &mut [u8]) -> KResult<usize> { self.read_bytes(off, dst) }
-
-    /// shmem pages ARE the store — nothing to flush. # C: O(1)
-    fn writeback(&self) -> Result<(), ()> { Ok(()) }
-
-    /// MAP_SHARED MADV_PAGEOUT moves only the requested inode indices through
-    /// the canonical shmem migration transaction. # C: O(pages in range)
-    fn madvise_pageout(&self, off: u64, len: u64) -> Option<KResult<usize>> {
-        let _transaction = self.pin_transaction()?;
-        Some(super::reclaim::pageout_range(self, off, len))
-    }
-
-    /// `mincore(2)` must not fault in tmpfs holes; only existing shmem frames
-    /// are resident. # C: O(log N_pages)
-    fn mincore_page(&self, off: u64) -> bool {
-        self.pages.lock().get(&(off / PG as u64)).is_some_and(|page| page.resident_pa().is_some())
-    }
-
-    /// `filemap_cachestat` over a shmem mapping. Resident (and in-flight
-    /// migrating) indices are cache pages; a swapped index is the value entry
-    /// the walk reports as evicted, judged recent by its shadow stamp.
-    ///
-    /// `nr_dirty` is always zero, and that is shmem's real answer rather than
-    /// a missing one: shmem's dirty hook only sets the per-page flag and never
-    /// tags the mapping, because there is no backing store to write back to —
-    /// the pages ARE the store. `nr_writeback` is zero for the same reason.
-    /// # C: O(entries in range)
-    fn cachestat(&self, range: vfs::CachestatRange) -> vfs::CachestatCounts {
-        let mut cs = vfs::CachestatCounts::default();
-        if range.first > range.last { return cs; }
-        let entries: alloc::vec::Vec<(u64, ShmemPage)> = {
-            let g = self.pages.lock();
-            g.range(range.first..=range.last).map(|(&idx, &page)| (idx, page)).collect()
-        };
-        let age = pmm::reclaim::nonresident_age();
-        let size = pmm::reclaim::workingset::file_workingset_size();
-        for (idx, page) in entries {
-            let nr = range.covered(idx, 1);
-            match page {
-                ShmemPage::Resident { .. } | ShmemPage::Migrating { .. } =>
-                    cs.account(vfs::PageState::Cache { dirty: false, writeback: false }, nr),
-                ShmemPage::Swapped { shadow, .. } => {
-                    let recent = pmm::reclaim::workingset::test_recent_sized(shadow, age, size);
-                    cs.account(vfs::PageState::Evicted { recent }, nr);
-                }
-            }
-        }
-        cs
-    }
-
-    /// # C: O(1)
-    fn size(&self) -> u64 { self.len.load(Ordering::Acquire) }
-}
-
-#[cfg(test)]
-mod shmem_page_tests {
-    use super::{ShmemPage, TmpfsFileData};
-    use alloc::collections::BTreeMap;
-    use alloc::sync::Weak;
-    use core::sync::atomic::{AtomicU32, AtomicU64};
-    use sync::{Spinlock, TaskList};
-
-    #[test]
-    fn swapped_index_keeps_immutable_memcg_but_has_no_resident_frame() {
-        let cgid = 0x61;
-        let resident = ShmemPage::Resident { pa: 0x9000, cgid };
-        let entry = hal::pt_walker::SwapEntry::new(1, 7).expect("representable swap entry");
-        let swapped = ShmemPage::Swapped { entry, cgid, shadow: 0 };
-        assert_eq!(resident.resident_pa(), Some(0x9000));
-        assert_eq!(swapped.resident_pa(), None);
-        assert_eq!(resident.cgid(), swapped.cgid());
-    }
-
-    fn migrating_fixture(pa: u64, cgid: u64) -> (TmpfsFileData, hal::pt_walker::MigrationEntry) {
-        let token = vmm::migration_begin(pa).expect("test migration token");
-        let mut pages = BTreeMap::new();
-        pages.insert(7, ShmemPage::Migrating { pa, cgid, token });
-        (TmpfsFileData {
-            self_ref: Spinlock::new(Weak::new()),
-            pages: Spinlock::<BTreeMap<u64, ShmemPage>, TaskList>::new(pages),
-            len: AtomicU64::new(0), acct: super::super::accounting::TmpfsSb::unlimited(),
-            seals: AtomicU32::new(0),
-        }, token)
-    }
-
-    fn assert_failed_mapped_pageout_restores_resident(force: fn(), invoke_failure: impl FnOnce(hal::pt_walker::MigrationEntry) -> bool) {
-        let (data, token) = migrating_fixture(0x70_000, 0x29);
-        force();
-        assert!(!invoke_failure(token), "test hook must force this transaction failure");
-        super::super::reclaim::rollback_mapped_for_test(&data, 7, 0x70_000, 0x29, token);
-        assert!(matches!(data.pages.lock().get(&7), Some(ShmemPage::Resident { pa: 0x70_000, cgid: 0x29 })));
-        assert!(!vmm::migration_pending_then(token, || {}), "rollback must retire the migration token");
-        // Synthetic state owns neither a PMM frame nor a published shmem count.
-        core::mem::forget(data);
-    }
-
-    #[test]
-    fn forced_marker_and_store_failure_restore_the_same_resident_index_and_token() {
-        assert_failed_mapped_pageout_restores_resident(
-            super::super::reclaim::fail_next_marker_for_test,
-            super::super::reclaim::attach_marker_for_test,
-        );
-        assert_failed_mapped_pageout_restores_resident(
-            super::super::reclaim::fail_next_store_for_test,
-            |token| super::super::reclaim::store_page_for_test(&[0; 1], token.token()).is_some(),
-        );
-    }
 }
