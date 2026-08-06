@@ -447,6 +447,9 @@ impl Task {
             pdeathsig:      AtomicU32::new(0),
             io_flusher:     crate::prctl::io_flusher::IoFlusher::new(),
             syscall_dispatch: crate::prctl::sud::SyscallUserDispatch::new(),
+            // Reconciled against the global registration state while the task
+            // is published under REG; an unpublished task cannot enter a syscall.
+            syscall_work: AtomicU32::new(0),
             personality:    AtomicU32::new(0),
             net_namespace:  Spinlock::new(Some(network_namespace::initial())),
             vtgid:          AtomicU32::new(0),

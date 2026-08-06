@@ -16,6 +16,17 @@ use core::sync::atomic::Ordering;
 use super::core::{prune_dead_locked, RegIrq, REG};
 use crate::{Task, TaskState};
 
+/// Stamp or clear the syscall tracepoint work bit on every live task. The
+/// tracepoint registration lock is the outer owner; REG is Linux tasklist_lock.
+/// Dead weak entries need no work and are left for the ordinary prune paths.
+/// # C: O(N_tasks)
+pub(crate) fn set_syscall_tracepoint_work_all(active: bool) {
+    let g = REG.lock_irqsave::<RegIrq>();
+    for task in g.by_tid.values().filter_map(|weak| weak.upgrade()) {
+        crate::syscall_work::set_task_tracepoint(&task, active);
+    }
+}
+
 /// Best-effort snapshot of all live tasks for diagnostics (sysrq /
 /// liveness-watchdog dump). Uses `try_lock` so a hung holder of `REG`
 /// cannot deadlock the dump path itself — returns `None` if the lock

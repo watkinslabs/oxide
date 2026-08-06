@@ -797,6 +797,13 @@ pub struct Task {
     /// syscall the registration claims.
     pub syscall_dispatch: crate::prctl::sud::SyscallUserDispatch,
 
+    /// Linux `thread_info::syscall_work`: one per-task word decides whether
+    /// uncommon syscall entry/exit work runs. The tracepoint bit is stamped on
+    /// every live task when either syscall trace event is registered, so the
+    /// disabled path pays this word's existing flag test rather than entering
+    /// an AtomicPtr hook wrapper twice per syscall.
+    pub(crate) syscall_work: AtomicU32,
+
     /// `personality(2)` execution domain. 0 = PER_LINUX, the v1 default.
     /// Stored per-task; `personality()` returns the previous value and
     /// updates atomically when arg != 0xFFFFFFFF.

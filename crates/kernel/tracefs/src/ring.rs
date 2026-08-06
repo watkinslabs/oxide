@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 use alloc::format;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use sync::{Spinlock, TaskList as TraceClass};
+use sync::{Spinlock, TaskList as TraceClass, Tracepoint as TracepointClass};
 use vfs::inode::{Inode, InodeBuilder};
 use vfs::inode_ops::{default_inode_ops, mk_mode};
 use vfs::file_ops::FileOps;
@@ -171,18 +171,47 @@ fn record_sys_exit(nr: u32, ret: i64) {
     percpu_ring::record(this_cpu(), now_ns(), pid, KIND_SYS_EXIT, &pl[..28]);
 }
 
-static SYS_ENTER_ON: AtomicBool = AtomicBool::new(false);
-static SYS_EXIT_ON: AtomicBool = AtomicBool::new(false);
+const SYSCALL_EVENT_ENTER: u8 = 1 << 0;
+const SYSCALL_EVENT_EXIT: u8 = 1 << 1;
 
-/// Enable/disable the sys_enter tracepoint. # C: O(1)
-pub(crate) fn set_sys_enter(on: bool) {
-    SYS_ENTER_ON.store(on, Ordering::Release);
+/// Linux `sys_tracepoint_refcount` represented as the exact enabled-event
+/// mask. Setter serialization mirrors tracepoints_mutex -> tasklist_lock; the
+/// syscall hot path reads neither this lock nor this mask.
+static SYSCALL_EVENTS_ON: Spinlock<u8, TracepointClass> = Spinlock::new(0);
+
+/// Change one syscall trace event and publish the union's zero/nonzero edge to
+/// every live task. Hook installation precedes setting the work bit; clearing
+/// the work bit precedes hook removal, so a task that observes the bit always
+/// has a callable hook. # C: O(N_tasks) only on the family zero/nonzero edge
+fn set_syscall_event(bit: u8, on: bool, install: fn(bool)) {
+    let mut events = SYSCALL_EVENTS_ON.lock();
+    let was_on = *events & bit != 0;
+    if was_on == on { return; }
+    let family_was_on = *events != 0;
+    if on { install(true); }
+    if on { *events |= bit; } else { *events &= !bit; }
+    let family_is_on = *events != 0;
+    if family_was_on != family_is_on {
+        sched::syscall_work::set_tracepoint_active(family_is_on);
+    }
+    if !on { install(false); }
+}
+
+fn install_sys_enter(on: bool) {
     syscall::tracepoint::install_sys_enter_hook(if on { Some(record_sys_enter) } else { None });
 }
-/// Enable/disable the sys_exit tracepoint. # C: O(1)
-pub(crate) fn set_sys_exit(on: bool) {
-    SYS_EXIT_ON.store(on, Ordering::Release);
+
+fn install_sys_exit(on: bool) {
     syscall::tracepoint::install_sys_exit_hook(if on { Some(record_sys_exit) } else { None });
+}
+
+/// Enable/disable the sys_enter tracepoint. # C: O(N_tasks) on family edge
+pub(crate) fn set_sys_enter(on: bool) {
+    set_syscall_event(SYSCALL_EVENT_ENTER, on, install_sys_enter);
+}
+/// Enable/disable the sys_exit tracepoint. # C: O(N_tasks) on family edge
+pub(crate) fn set_sys_exit(on: bool) {
+    set_syscall_event(SYSCALL_EVENT_EXIT, on, install_sys_exit);
 }
 
 /// Trim a null-padded comm field to its stored bytes. # C: O(n)
@@ -301,8 +330,8 @@ fn read_at(body: &[u8], off: u64, buf: &mut [u8]) -> usize {
 fn alloc_ino() -> Ino { NEXT_INO.alloc() }
 
 pub(crate) fn sched_switch_on() -> bool { SCHED_SWITCH_ON.load(Ordering::Acquire) }
-pub(crate) fn sys_enter_on() -> bool { SYS_ENTER_ON.load(Ordering::Acquire) }
-pub(crate) fn sys_exit_on() -> bool { SYS_EXIT_ON.load(Ordering::Acquire) }
+pub(crate) fn sys_enter_on() -> bool { *SYSCALL_EVENTS_ON.lock() & SYSCALL_EVENT_ENTER != 0 }
+pub(crate) fn sys_exit_on() -> bool { *SYSCALL_EVENTS_ON.lock() & SYSCALL_EVENT_EXIT != 0 }
 
 /// Build an `events/.../enable` inode for the eventfs model (per-event
 /// tracepoint get/set fn pointers). # C: O(1)
@@ -482,5 +511,26 @@ mod tests {
         let mut out = Vec::new();
         append_comm_col(&mut out, b"a\xff\0");
         assert_eq!(&out, b"           a\\xff");
+    }
+
+    #[test]
+    fn either_syscall_event_keeps_the_work_family_registered() {
+        set_sys_enter(false);
+        set_sys_exit(false);
+        assert!(!sched::syscall_work::tracepoint_active());
+
+        set_sys_enter(true);
+        assert!(sys_enter_on());
+        assert!(sched::syscall_work::tracepoint_active());
+
+        set_sys_exit(true);
+        set_sys_enter(false);
+        assert!(!sys_enter_on());
+        assert!(sys_exit_on());
+        assert!(sched::syscall_work::tracepoint_active(),
+            "one remaining event retains the shared syscall-work bit");
+
+        set_sys_exit(false);
+        assert!(!sched::syscall_work::tracepoint_active());
     }
 }
