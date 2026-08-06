@@ -36,11 +36,11 @@ reclassified.
 
 | Class \ Sev | blocker | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|
-| `DEFECT` | 0 | 0 | 16 | 25 | 41 |
+| `DEFECT` | 0 | 0 | 15 | 25 | 40 |
 | `MISSING` | 3 | 2 | 18 | 19 | 42 |
 | `COVERAGE` | 0 | 0 | 10 | 15 | 25 |
 | `INFRA` | 0 | 0 | 15 | 11 | 26 |
-| **Total** | **3** | **2** | **59** | **70** | **134** |
+| **Total** | **3** | **2** | **58** | **70** | **133** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -49,7 +49,6 @@ row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| IN-PROGRESS B1873 | DEFECT | med | **An installed nftables ruleset is interpreted from mutable global vectors on every packet instead of evaluating an immutable compiled generation under RCU.** The empty-hook path is now lock-free and every interim registry lock is bottom-half-safe, closing the observed NET_RX self-deadlock. With active rules, however, evaluation still clones chains/rules/sets, reparses raw expressions, and updates one global counter map on the packet path. Replace this with transaction-time compiled rule blobs and generation publication; readers must run without the netlink control-plane locks. | GDB run `1227546` stopped in `netfilter::eval` spinning on `CHAINS` from NET_RX. Current `eval.rs` calls `parse_exprs` and snapshots mutable stores per evaluation; the Linux-shaped immutable-generation design was verified before the containment fix. | B1873-nft-compiled-generation [CLAIMED 2026-08-06] |
 | OPEN | DEFECT | med | `cargo test --workspace --no-fail-fast` on `main` (`460dc8e89`) is NOT green and its failing set is UNSTABLE run to run — same class as this row (global process state shared by parallel tests), none of them owned here. Run 1 failed `drv-virtio-input` (`devfs::tests::lifetime::{reused_event_number_cannot_retarget_old_open_file, state_reconciliation_flushes_only_querying_client}`, both at `lifetime.rs:24` — a `publish_endpoint` collision on fixed event ids), `fbcon` (`kernel::tests::try_lock_vt_excludes_the_flush_softirq`), `softirq` (`tests::raise_then_run_invokes_handler`), plus `pmm`/`socket`. Run 2 (this branch) failed a DIFFERENT `fbcon` test (`tests::one_line_of_output_damages_only_that_text_row`) and a `net` test that was green in run 1 (`stack::ethernet::tests::ethernet_ingress_rejects_a_truncated_link_header_before_l3`, `Option::unwrap()` on None at `net/src/stack/core.rs:193`), while `drv-virtio-input` and `softirq` passed. So per-package green does not imply workspace green, and one workspace run does not characterize the failing set. | Two full runs captured; failing package lists differ (`drv-virtio-input,fbcon,pmm,socket,softirq` vs `fbcon,net,socket`). | — |
 | OPEN | COVERAGE | low | A live connected AF_VSOCK transport still has no portable host-oracle case. Hosted full-usercopy regressions pin the zero-length source name and the zerocopy completion cmsg, while hosted transport sends pin completion IDs, copied fallback, and `POLLERR`; a real transport differential remains absent. | Native Linux 7.2 option/error-queue oracle; `vsock_shutdown_tests::{connected_recvmsg_clears_source_length_without_synthesizing_a_peer_address,zerocopy_completion_uses_the_vsock_error_queue_abi}`; `vsock_socket::zerocopy::tests`; `tools/network-conformance-manifest.tsv` row 47. | unowned |
 | OPEN | DEFECT | med | med \| User-namespace id translation is wired for the credential syscalls but NOT for `/proc` cross-namespace views. Re-verified for D473: `sched/src/cred/uid.rs` routes `sys_getuid`/`sys_geteuid` and the `setuid`/`setreuid`/`setresuid` setters through `kuid()`/`uid_out()`, so the three clauses `docs/26` R84 recorded for them are closed. The residual is the one it named last: a `/proc/<pid>` owner read seen from another user namespace is not translated, so `26§2` invariant 6 is still unenforced there. | D473 re-verification of the `ledger-audit.md` drop: `grep -n 'kuid()\|uid_out(' crates/kernel/sched/src/cred/uid.rs` → the getuid family and the setters both route through it. Deleted `26` R84 block; `crates/kernel/user-namespace` holds the engine. | unowned |
