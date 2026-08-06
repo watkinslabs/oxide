@@ -8,7 +8,7 @@ the status lands in Branch, the branch overwrites Linux refs, and the evidence
 text spills past the trailing pipe -- damage that reads as plausible in a diff
 and is invisible in the rendered table. That happened; this is the guard.
 """
-import re, subprocess, sys
+import contextlib, io, os, re, subprocess, sys, tempfile
 
 # Split on `|` only where it is NOT backslash-escaped. Naive `str.split("|")`
 # is what let `F784` through: it treated every pipe-bearing row as unparseable,
@@ -55,6 +55,15 @@ PAST_TENSE = re.compile(
     r"(had no counterpart|was absent|were absent|had not been implemented|"
     r"was not implemented|previously (?:absent|unimplemented))", re.I)
 
+
+def current_evidence(ev):
+    """Return the claim after the latest explicit closure marker.
+
+    Matrix evidence is chronological. A gap before `Closed in B...` describes
+    what that branch removed; only the suffix can contradict today's status.
+    """
+    return ev.rsplit("Closed in", 1)[-1]
+
 def check_no_duplicate(path):
     """A second copy of the matrix is a split source of truth in the ledger.
 
@@ -63,7 +72,6 @@ def check_no_duplicate(path):
     would have re-done finished work. CLAUDE.md already says plans live in
     scratch/, never the repo root -- this makes the rule checkable.
     """
-    import os
     other = "syscall-compliance-matrix.md"
     if os.path.basename(path) == other and os.path.dirname(path).endswith("scratch"):
         if os.path.exists(other):
@@ -71,29 +79,6 @@ def check_no_duplicate(path):
                   f"(CLAUDE.md: plans live in scratch/, never the repo root)")
             return 1
     return 0
-
-
-ALLOW_FILE = "tools/matrix-overstated-allow.txt"
-
-
-def load_overstated_allow():
-    """Rows already `IMPL` whose Evidence discloses a gap, each with a reason.
-
-    Same shape as the stack-depth gate: a finding that predates the gate is
-    RECORDED rather than silently tolerated or bulk-flipped, so the gate can go
-    green today and still fail on the next NEW violation. Entries only leave
-    this file when the owning lane resolves the row -- a lane may not add itself
-    to it to make its own row pass.
-    """
-    import os
-    out = set()
-    if not os.path.exists(ALLOW_FILE):
-        return out
-    for l in open(ALLOW_FILE):
-        l = l.split("#", 1)[0].strip()
-        if l.isdigit():
-            out.add(l)
-    return out
 
 
 def table(lines):
@@ -163,7 +148,7 @@ def counts(path):
     return 0
 
 
-def main(path):
+def main(path, live_branches=None):
     lines = open(path).read().split("\n")
     t = table(lines)
     if t is None:
@@ -175,17 +160,16 @@ def main(path):
         print("matrix-lint: could not parse the '## Status Legend' table"); return 1
     bad = check_no_duplicate(path)
     seen_nr = {}
-    overstated_allow = load_overstated_allow()
-    allowed_hit = []
     # Branches that still exist locally or on the remote. An IN-PROGRESS row
     # naming anything else is stale by definition.
-    try:
-        live_branches = set(
-            b.strip().lstrip("* ").split("/")[-1]
-            for b in subprocess.run(["git", "branch", "-a"], capture_output=True,
-                                    text=True).stdout.splitlines())
-    except Exception:
-        live_branches = set()
+    if live_branches is None:
+        try:
+            live_branches = set(
+                b.strip().lstrip("* ").split("/")[-1]
+                for b in subprocess.run(["git", "branch", "-a"], capture_output=True,
+                                        text=True).stdout.splitlines())
+        except Exception:
+            live_branches = set()
     for i, l in enumerate(lines[start:], start=start + 1):
         if not l.startswith("| ") or l.startswith("| Nr |") or set(l) <= set("|-: "):
             continue
@@ -238,23 +222,121 @@ def main(path):
                 bad += 1
         elif st == "IMPL":
             ev = "|".join(f[names.index("Evidence / next audit"):])  # noqa: rejoin cell
-            ev_now = PAST_TENSE.sub("", ev)
+            ev_now = PAST_TENSE.sub("", current_evidence(ev))
             m = OVERSTATED.search(ev_now)
-            if m and nr not in overstated_allow:
+            if m:
                 print(f"{path}:{i}: row {nr} is IMPL but its Evidence admits "
                       f"a gap ({m.group(0)!r}) -- use PARTIAL")
                 bad += 1
-            elif m:
-                allowed_hit.append(nr)
     if bad:
         print(f"matrix-lint: FAIL ({bad} problem(s))")
         return 1
     print(f"matrix-lint: ok ({len(seen_nr)} rows, {len(seen_nr)} distinct syscalls)")
     return 1 if bad else 0
 
+
+SELFTEST_HEAD = """## Status Legend
+| Status | Meaning |
+|---|---|
+| `IMPL` | complete |
+| `PARTIAL` | incomplete |
+| `IN-PROGRESS` | claimed |
+
+## Main Matrix
+| Nr | ABI | Syscall | Linux entry | Subsystem | Systems touched | Oxide route | Status | Branch | Linux refs | Required harness | Evidence / next audit |
+|---:|---|---|---|---|---|---|---|---|---|---|---|"""
+
+
+def selftest_row(nr=900, status="`IMPL`", branch="-", evidence="complete"):
+    return (f"| {nr} | common | `probe` | `sys_probe` | test | test | route | "
+            f"{status} | {branch} | ref | harness | {evidence} |")
+
+
+def selftest_run(rows, live_branches=None):
+    """Run one isolated fixture and normalize its temporary path/line number."""
+    with tempfile.TemporaryDirectory(prefix="matrix-lint-selftest-") as td:
+        path = os.path.join(td, "fixture.md")
+        with open(path, "w") as out:
+            out.write(SELFTEST_HEAD + "\n" + "\n".join(rows) + "\n")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = main(path, set() if live_branches is None else live_branches)
+    lines = []
+    for line in buf.getvalue().splitlines():
+        line = line.replace(path, "<fixture>")
+        lines.append(re.sub(r":\d+: row", ":<LINE>: row", line))
+    return rc, lines
+
+
+def selftest_case(name, rows, want_rc, want_lines, live_branches=None):
+    rc, lines = selftest_run(rows, live_branches)
+    if (rc, lines) != (want_rc, want_lines):
+        print(f"matrix-lint self-test: FAIL {name}: got rc={rc}, lines={lines!r}; "
+              f"want rc={want_rc}, lines={want_lines!r}")
+        return 1
+    return 0
+
+
+def selftest():
+    """Prove each gate invariant fails alone and names its own reason."""
+    fail = 0
+    ok = ["matrix-lint: ok (1 rows, 1 distinct syscalls)"]
+    fail += selftest_case("clean", [selftest_row()], 0, ok)
+    fail += selftest_case("closed-history",
+        [selftest_row(evidence="not implemented. Closed in B1: complete")], 0, ok)
+    fail += selftest_case("past-tense",
+        [selftest_row(evidence="was not implemented before")], 0, ok)
+    fail += selftest_case("duplicate", [selftest_row(), selftest_row()], 1, [
+        "<fixture>:<LINE>: row 900 duplicates the row at line 11 -- one row per syscall number",
+        "matrix-lint: FAIL (1 problem(s))",
+    ])
+    fail += selftest_case("unescaped-pipe",
+        [selftest_row(evidence="bad | split")], 1, [
+        "<fixture>:<LINE>: row 900 has 13 columns, header declares 12 "
+        "(unescaped '|' in a cell (write '\\|'))",
+        "matrix-lint: FAIL (1 problem(s))",
+    ])
+    fail += selftest_case("shifted", [
+        "| 900 | common | `probe` | `sys_probe` | test | test | route | `IMPL` | - | ref | harness |",
+    ], 1, [
+        "<fixture>:<LINE>: row 900 has 11 columns, header declares 12 (shifted)",
+        "matrix-lint: FAIL (1 problem(s))",
+    ])
+    fail += selftest_case("unbackticked", [selftest_row(status="IMPL")], 1, [
+        "<fixture>:<LINE>: row 900 Status='IMPL' is not backticked -- "
+        "it drops out of any count matching `STATUS`",
+        "matrix-lint: FAIL (1 problem(s))",
+    ])
+    fail += selftest_case("invalid-status", [selftest_row(status="`BOGUS`")], 1, [
+        "<fixture>:<LINE>: row 900 Status='BOGUS' not in legend",
+        "matrix-lint: FAIL (1 problem(s))",
+    ])
+    fail += selftest_case("stale-claim", [
+        selftest_row(status="`IN-PROGRESS`", branch="dead-branch"),
+    ], 1, [
+        "<fixture>:<LINE>: row 900 is IN-PROGRESS but branch 'dead-branch' no longer exists "
+        "-- the work merged; use PARTIAL/IMPL",
+        "matrix-lint: FAIL (1 problem(s))",
+    ])
+    fail += selftest_case("overstated", [
+        selftest_row(evidence="this remains open"),
+    ], 1, [
+        "<fixture>:<LINE>: row 900 is IMPL but its Evidence admits a gap ('remains open') "
+        "-- use PARTIAL",
+        "matrix-lint: FAIL (1 problem(s))",
+    ])
+    if fail:
+        return 1
+    print("matrix-lint: self-test PASS (7 isolated mutants, 3 green controls)")
+    return 0
+
 if __name__ == "__main__":
     argv = sys.argv[1:]
     want_counts = "--counts" in argv
-    argv = [a for a in argv if a != "--counts"]
+    want_selftest = "--self-test" in argv
+    argv = [a for a in argv if a not in ("--counts", "--self-test")]
+    if want_counts and want_selftest:
+        print("matrix-lint: --counts and --self-test are mutually exclusive", file=sys.stderr)
+        sys.exit(2)
     path = argv[0] if argv else "scratch/syscall-compliance-matrix.md"
-    sys.exit(counts(path) if want_counts else main(path))
+    sys.exit(selftest() if want_selftest else counts(path) if want_counts else main(path))
