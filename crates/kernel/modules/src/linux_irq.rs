@@ -16,6 +16,8 @@ const LINUX_ENOMEM: i32 = 12;
 const IRQF_SHARED: u64 = 0x80;
 const IRQF_ONESHOT: u64 = 0x0000_2000;
 const IRQF_TRIGGER_NONE: u64 = 0;
+const IRQ_NONE: i32 = 0;
+const IRQ_HANDLED: i32 = 1;
 const IRQ_WAKE_THREAD: i32 = 2;
 #[cfg(target_arch = "aarch64")]
 const IRQF_TRIGGER_HIGH: u64 = 0x0000_0004;
@@ -31,6 +33,7 @@ struct IrqRecord {
     enabled: bool,
     pending: u32,
     running: u32,
+    thread_handled: u32,
 }
 
 #[derive(Copy, Clone)]
@@ -109,6 +112,7 @@ extern "C" fn request_threaded_irq(
         enabled: true,
         pending: 0,
         running: 0,
+        thread_handled: 0,
     });
     arch_enable_irq(irq, flags);
     if thread_fn.is_some() { ensure_irq_thread(); }
@@ -128,7 +132,11 @@ extern "C" fn free_irq(irq: u32, dev_id: *mut c_void) {
         if let Some(idx) = g.iter().position(|r| {
             r.is_some_and(|rec| rec.irq == irq && rec.dev_id == dev_id as usize)
         }) {
-            g[idx] = None;
+            if let Some(removed) = g[idx].take() {
+                if let Some(rec) = g.iter_mut().flatten().find(|rec| rec.irq == irq) {
+                    rec.thread_handled = rec.thread_handled.wrapping_add(removed.thread_handled);
+                }
+            }
         }
         !g.iter().flatten().any(|rec| rec.irq == irq)
     };
@@ -184,7 +192,7 @@ fn set_irq_enabled(irq: u32, enabled: bool) {
     }
 }
 
-fn linux_irq_dispatch(irq: u32) {
+fn linux_irq_dispatch(irq: u32) -> arch_irq::IrqReport {
     let mut calls = [IrqCall { handler: 0, thread_fn: 0, dev_id: 0, slot: 0 }; MAX_IRQ_RECORDS];
     let mut n = 0usize;
     {
@@ -196,17 +204,30 @@ fn linux_irq_dispatch(irq: u32) {
             }
         }
     }
+    let mut action_ret = IRQ_NONE;
     for call in calls.iter().take(n) {
-        let wake = if call.handler == 0 {
-            call.thread_fn != 0
+        let ret = if call.handler == 0 {
+            if call.thread_fn != 0 { IRQ_WAKE_THREAD } else { IRQ_NONE }
         } else {
             // SAFETY: handler was installed from a non-null C irq_handler_t in request_irq.
             let f: IrqHandler = unsafe { core::mem::transmute(call.handler) };
             // SAFETY: Linux IRQ handlers own their dev_id contract.
-            (unsafe { f(irq as i32, call.dev_id as *mut c_void) }) == IRQ_WAKE_THREAD
+            unsafe { f(irq as i32, call.dev_id as *mut c_void) }
         };
-        if wake && call.thread_fn != 0 { wake_irq_thread(call.slot); }
+        action_ret |= ret;
+        if ret == IRQ_WAKE_THREAD && call.thread_fn != 0 { wake_irq_thread(call.slot); }
     }
+    let threads_handled = IRQ_RECORDS.lock().iter().flatten()
+        .filter(|rec| rec.irq == irq)
+        .fold(0u32, |sum, rec| sum.wrapping_add(rec.thread_handled));
+    let ret = if action_ret & IRQ_HANDLED != 0 {
+        arch_irq::IrqRet::Handled
+    } else if action_ret & IRQ_WAKE_THREAD != 0 {
+        arch_irq::IrqRet::WakeThread
+    } else {
+        arch_irq::IrqRet::NotMine
+    };
+    arch_irq::IrqReport { ret, threads_handled }
 }
 
 fn ensure_irq_thread() {
@@ -258,8 +279,8 @@ fn drain_irq_threads() {
         // SAFETY: thread_fn was installed from a non-null C irq_handler_t in request_threaded_irq.
         let f: IrqHandler = unsafe { core::mem::transmute(call.thread_fn) };
         // SAFETY: Linux threaded IRQ handlers own their dev_id contract.
-        let _ = unsafe { f(call.handler as i32, call.dev_id as *mut c_void) };
-        finish_thread(call.slot);
+        let ret = unsafe { f(call.handler as i32, call.dev_id as *mut c_void) };
+        finish_thread(call.slot, ret == IRQ_HANDLED);
     }
 }
 
@@ -275,13 +296,16 @@ fn take_pending_thread() -> Option<IrqCall> {
     None
 }
 
-fn finish_thread(slot: usize) {
+fn finish_thread(slot: usize, handled: bool) {
     let mut g = IRQ_RECORDS.lock();
     if let Some(rec) = g.get_mut(slot).and_then(Option::as_mut) {
+        if handled { rec.thread_handled = rec.thread_handled.wrapping_add(1); }
         rec.running = rec.running.saturating_sub(1);
         if rec.running == 0 && rec.pending == 0 && (rec.flags & IRQF_ONESHOT) != 0 {
             rec.enabled = true;
-            arch_enable_irq(rec.irq, rec.flags);
+            if !arch_irq::irq_line_disabled(rec.irq) {
+                arch_enable_irq(rec.irq, rec.flags);
+            }
         }
     }
 }
