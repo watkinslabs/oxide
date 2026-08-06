@@ -1,8 +1,9 @@
 # state.md — session hand-off
 
-Current integration: `B1875-physical-framebuffer-source`, PR #4737. Code head
-`85421ec51`; base `def0c5718`. Worktree clean, no QEMU remains. The final exact
-commit passed the local pre-push gates and first-attempt x86_64/aarch64 smoke.
+Current integration: `B1876-uart-thre-retrigger`, PR #4738. Code head
+`38d333178`; base `17a3113b2`. The final exact commit passed the full workspace
+test run, local pre-push gates, five forced-path x86 boots, and first-attempt
+x86_64/aarch64 smoke.
 
 ## What just landed
 
@@ -23,18 +24,17 @@ commit passed the local pre-push gates and first-attempt x86_64/aarch64 smoke.
   PSCI were already live. The enlarged boot handoff now lives in static
   architecture-owned storage; x86 boot stack depth improved from its 20,000-byte
   baseline to 19,904, and arm remains at 12,129.
+- B1876 / PR #4738: the 16550 line handler drains the legacy edge-triggered IRQ
+  source to deassertion with a bounded 512-pass limit, and initialization raises
+  the UART's `OUT2` interrupt gate. The hosted positive control fails with the
+  former single-service path; five exact forced-path boots passed with serial RX.
 
 ## Live known-work summary
 
-The canonical type/severity table is in `scratch/known_issues.md`: 131 live
-rows = 2 blockers, 1 high, 58 medium, 70 low. The two blockers are x86 UEFI
-boot and xHCI/USB input. The one high issue is new and reproducible:
-
-- IRQ-driven 16550 TX can stop mid-record and never restart. It occurred before
-  simplefb registration in three forced-framebuffer attempts, under both WC and
-  the temporary UC control. One 240 s run plus serial SysRq produced no output;
-  the retained reproduction stops in the AHCI LBA0 line. Ordinary SMP=2 boots
-  also pass, so this is intermittent, not a deterministic framebuffer failure.
+The canonical type/severity table is in `scratch/known_issues.md`: 130 live
+rows = 2 blockers, 0 high, 58 medium, 70 low. The two blockers are x86 UEFI
+boot and xHCI/USB input. The closed B1876 high row and its failure/pass evidence
+remain in `scratch/fixed-issues.md`.
 
 ## First task next session
 
@@ -43,7 +43,8 @@ git pull
 tools/issues.sh --count
 ```
 
-Then claim the 16550 TX-loss row and compare the local THRE enable/retrigger
-path with Linux `serial8250_start_tx`, `serial8250_THRE_test`, and the THRE
-timer fallback. Preserve Firefox/performance as the top user-facing priority;
-do not alter GitHub CI or merge policy.
+Re-run the release Firefox workload against
+`scratch/firefox-performance-20260806.md` and
+`scratch/write-combining-performance-20260806.md`, save the new comparison,
+then claim and fix the largest measured remaining cost. Firefox/performance
+remains the top user-facing priority; do not alter GitHub CI or merge policy.
