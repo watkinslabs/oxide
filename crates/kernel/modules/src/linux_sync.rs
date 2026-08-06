@@ -46,6 +46,9 @@ pub struct LinuxRwSem { state: i32 }
 pub struct LinuxSeqLock { seq: u32, lock: u32 }
 #[repr(C)]
 pub struct LinuxCompletion { done: u32 }
+impl LinuxCompletion {
+    pub(crate) const fn pending() -> Self { Self { done: 0 } }
+}
 #[repr(C)]
 pub struct LinuxWaitQueueHead { seq: u32 }
 #[repr(C)]
@@ -356,7 +359,7 @@ extern "C" fn init_completion(c: *mut LinuxCompletion) {
     unsafe { (*c).done = 0; }
 }
 extern "C" fn reinit_completion(c: *mut LinuxCompletion) { init_completion(c); }
-extern "C" fn complete(c: *mut LinuxCompletion) {
+pub(crate) extern "C" fn complete(c: *mut LinuxCompletion) {
     if c.is_null() { return; }
     let cell = wait_cell(c as usize, WAIT_COMPLETION);
     let gate = cell.gate.lock();
@@ -372,7 +375,7 @@ extern "C" fn complete_all(c: *mut LinuxCompletion) {
     drop(gate);
     cell.wake_all();
 }
-extern "C" fn wait_for_completion(c: *mut LinuxCompletion) { let _ = completion_wait_common(c, false); }
+pub(crate) extern "C" fn wait_for_completion(c: *mut LinuxCompletion) { let _ = completion_wait_common(c, false); }
 extern "C" fn wait_for_completion_interruptible(c: *mut LinuxCompletion) -> i32 { completion_wait_common(c, true) }
 extern "C" fn wait_for_completion_timeout(c: *mut LinuxCompletion, timeout: usize) -> usize {
     if timeout == 0 { return try_wait_for_completion(c) as usize; }
