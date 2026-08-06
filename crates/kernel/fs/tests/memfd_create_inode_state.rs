@@ -20,6 +20,8 @@ use vfs::{CreateCtx, FileType, InodeRef};
 
 #[path = "../../syscalls/src/memfd_flags.rs"]
 mod memfd_flags;
+// This fixture includes the production owner but exercises only its memfd table.
+#[allow(unused_imports)]
 #[path = "../../syscalls/src/anon_dname.rs"]
 mod anon_dname;
 
