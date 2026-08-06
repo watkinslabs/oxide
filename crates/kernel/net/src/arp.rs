@@ -25,7 +25,6 @@ pub use crate::neigh::{NeighAddr, NudState};
 pub type ArpEntry = crate::neigh::NeighEntry<Ipv4Addr>;
 pub type ArpCache = crate::neigh::NeighCache<Ipv4Addr>;
 pub(crate) type ArpProbe = crate::neigh::NeighProbe<Ipv4Addr>;
-pub(crate) type ArpTick = crate::neigh::NeighTick<Ipv4Addr>;
 pub use crate::neigh::{ARP_BASE_REACHABLE_NS, ARP_DELAY_FIRST_PROBE_NS, ARP_MCAST_SOLICIT,
     ARP_RETRANS_TIME_NS, ARP_STALE_NS, ARP_UCAST_SOLICIT, ARP_UNRESOLVED_QUEUE_BYTES};
 

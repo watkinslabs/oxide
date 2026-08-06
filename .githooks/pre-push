@@ -10,6 +10,9 @@
 #      feature unification with a dependant. B1660 reached main red for
 #      `cargo check -p net` with all of them green.
 #      Bypass: SKIP_HOSTED_GATE=1.
+#      All routine compile targets run through tools/warnings-gate.py, Rust's
+#      CONFIG_WERROR equivalent. Its red/green control runs before the build
+#      gates; a warning is an error, not text the hook expects a human to read.
 #   1b. test-build-gate (EVERY push that touches those surfaces): BUILD every
 #      crate's test targets on its own. `cargo check -p <crate>` compiles no
 #      test targets at all, so gate 1 is silent about `#[cfg(test)]` trees,
@@ -126,6 +129,12 @@ done <<< "$changed"
 if [ "$need_gate" = "0" ]; then
     echo "pre-push: no kernel/userspace/tooling gate changes — skipping feature-gate and boot-smoke"
     exit 0
+fi
+
+# ---- gate control: warnings really are compiler errors -------------------
+if ! make warnings-control; then
+    echo "pre-push: FAIL — warnings-gate red/green control failed" >&2
+    exit 1
 fi
 
 # ---- gate 1: every crate type-checks on its own, for the host -------------

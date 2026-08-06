@@ -63,11 +63,15 @@ fn f180c_unregister_iface_drops_only_its_ndp_entries() {
     let target = Ipv6Addr::from_segments([0xFE80,0,0,0,0,0,0,2]);
     let mac1 = MacAddr([0x02,0,0,0,0,1]);
     let mac2 = MacAddr([0x02,0,0,0,0,2]);
+    let retired_cache = stack.ifaces.ndp_cache_for(id1).unwrap();
 
     stack.ndp_insert(id1, target, mac1);
     stack.ndp_insert(id2, target, mac2);
+    assert_eq!(retired_cache.lookup(target), Some(mac1));
     assert!(stack.unregister_iface(id1));
 
+    assert_eq!(retired_cache.lookup(target), None,
+        "a retained handle to the retired generation must be closed and empty");
     assert_eq!(stack.ndp_lookup(id1, target), None);
     assert_eq!(stack.ndp_lookup(id2, target), Some(mac2));
 }
