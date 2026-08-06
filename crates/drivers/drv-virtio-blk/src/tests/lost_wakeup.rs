@@ -182,3 +182,15 @@ fn concurrent_turn_release_never_leaves_acquirer_parked() {
         });
     }
 }
+
+#[test]
+fn kernel_wait_path_parks_without_a_fixed_spin_budget() {
+    let wait = include_str!("../modern/wait.rs");
+    let state = include_str!("../modern/state.rs");
+    assert!(!wait.contains("IO_SPIN_BUDGET"));
+    assert!(!state.contains("IO_SPIN_BUDGET"));
+    assert!(state.contains("IO_IRQ_POLL_BUDGET: u16 = 64"));
+    assert!(!wait.contains("while spun <"));
+    assert!(wait.contains("park_blk_checked(&BLK_COMPL, deadline"));
+    assert!(wait.contains("park_blk_checked(&BLK_TURN, 0"));
+}

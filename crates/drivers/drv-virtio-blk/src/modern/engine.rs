@@ -43,6 +43,7 @@ impl BlkState {
     fn wait_idle_for_remove(&self) -> bool {
         #[cfg(target_os = "oxide-kernel")]
         let deadline = now_ns().saturating_add(IO_TIMEOUT_NS);
+        #[cfg(not(target_os = "oxide-kernel"))]
         let mut spun: u64 = 0;
         loop {
             {
@@ -56,16 +57,11 @@ impl BlkState {
                 if now_ns() >= deadline {
                     return false;
                 }
-                if spun < IO_SPIN_BUDGET {
-                    spun += 1;
-                    core::hint::spin_loop();
-                } else {
-                    // Register-then-recheck (B1426): see wait.rs::acquire_turn.
-                    park_blk_checked(&BLK_TURN, || {
-                        let ring = self.inflight.lock();
-                        !ring.busy && ring.pending.is_empty() && ring.deferred.is_empty()
-                    });
-                }
+                // Register-then-recheck (B1426): see wait.rs::acquire_turn.
+                park_blk_checked(&BLK_TURN, deadline, || {
+                    let ring = self.inflight.lock();
+                    !ring.busy && ring.pending.is_empty() && ring.deferred.is_empty()
+                });
             }
             #[cfg(not(target_os = "oxide-kernel"))]
             {
