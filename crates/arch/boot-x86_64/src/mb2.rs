@@ -60,6 +60,14 @@ mb2_hdr_start:
     .short 0
     .long 12
     .long _mb2_entry - KB + KP
+    /* optional framebuffer request (type 5): accept loader-selected geometry. */
+    .align 8
+    .short 5
+    .short 1
+    .long 20
+    .long 0
+    .long 0
+    .long 0
     /* end tag (type 0, size 8). */
     .align 8
     .short 0
@@ -295,13 +303,15 @@ _mb2_high:
     options(att_syntax)
 );
 
+mod framebuffer;
+
 // MB2 info-struct parsing. The trampoline stashed GRUB's bootloader
 // magic + the physical address of the MB2 info struct; this module
 // turns the info tags into the uniform `BootInfo` the kernel consumes,
 // reachable via the HHDM the trampoline installed (`MB2_HHDM`).
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub mod info {
-    use boot_info::{BootMemKind, BootMemRegion};
+    use boot_info::{BootFramebuffer, BootMemKind, BootMemRegion};
 
     /// Value a multiboot2-compliant loader leaves in EAX at handoff.
     pub const MB2_BOOTLOADER_MAGIC: u32 = 0x36d7_6289;
@@ -355,6 +365,10 @@ pub mod info {
     fn rd64(va: u64) -> u64 {
         // SAFETY: `va` is a HHDM-mapped address in the trampoline's HHDM range (phys < 1 GiB); the MB2 info struct is live reclaimable RAM during boot parsing.
         unsafe { core::ptr::read_volatile(va as *const u64) }
+    }
+    fn rd8(va: u64) -> u8 {
+        // SAFETY: same HHDM-mapped MB2-info lifetime as rd32/rd64.
+        unsafe { core::ptr::read_volatile(va as *const u8) }
     }
 
     fn align8(x: u64) -> u64 { (x + 7) & !7 }
@@ -411,14 +425,14 @@ pub mod info {
     }
 
     /// Walk MB2 tags, fill `storage` with the (carved) memory map, and
-    /// return `(region_count, rsdp_pa)`. `rsdp_pa` is the physical
+    /// return `(region_count, rsdp_pa, framebuffer)`. `rsdp_pa` is the physical
     /// address of the RSDP copy MB2 embeds in its ACPI tag (0 if absent).
     ///
     /// # SAFETY: the trampoline wrote a valid MB2-info physical pointer;
     /// the struct lives in HHDM-mapped reclaimable RAM and is parsed here
     /// before the PMM can recycle it.
     /// # C: O(tags + mmap entries)
-    pub unsafe fn build_memmap(storage: &mut [BootMemRegion]) -> (usize, u64) {
+    pub unsafe fn build_memmap(storage: &mut [BootMemRegion]) -> (usize, u64, BootFramebuffer) {
         let base = info_va();
         // total_size at +0; tags start at +8.
         let total = rd32(base) as u64;
@@ -431,10 +445,13 @@ pub mod info {
         // MB2 ACPI tag is already HHDM-mapped, so its VA is what we
         // return.
         let mut rsdp_va = 0u64;
+        let mut framebuffer = BootFramebuffer::EMPTY;
         while p + 8 <= end {
             let ty = rd32(p);
             let size = rd32(p + 4) as u64;
             if size < 8 { break; }
+            let Some(tag_end) = p.checked_add(size) else { break };
+            if tag_end > end { break; }
             if ty == 0 { break; } // end tag
             match ty {
                 6 => {
@@ -442,7 +459,7 @@ pub mod info {
                     let esz = rd32(p + 8) as u64;
                     if esz >= 24 {
                         let mut e = p + 16;
-                        while e + esz <= p + size {
+                        while e + esz <= tag_end {
                             let b = rd64(e);
                             let l = rd64(e + 8);
                             let mty = rd32(e + 16);
@@ -465,11 +482,18 @@ pub mod info {
                         rsdp_va = p + 8;
                     }
                 }
+                8 if framebuffer == BootFramebuffer::EMPTY && size >= 38 => {
+                    let mut tag = [0u8; 38];
+                    for (i, byte) in tag.iter_mut().enumerate() {
+                        *byte = rd8(p + i as u64);
+                    }
+                    framebuffer = super::framebuffer::parse_tag(&tag).unwrap_or(BootFramebuffer::EMPTY);
+                }
                 _ => {}
             }
             p += align8(size);
         }
-        (n, rsdp_va)
+        (n, rsdp_va, framebuffer)
     }
 
     /// HHDM virtual pointer to GRUB's NUL-terminated boot cmdline (tag

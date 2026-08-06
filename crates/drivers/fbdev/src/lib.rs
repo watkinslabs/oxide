@@ -20,7 +20,7 @@ pub use uapi::*;
 mod registry;
 pub use registry::{
     apply_blank, backing_of, backing_with_cache_of, blank_of, clear_ops, count, fix_of, flush,
-    init_scanout, init_scanout_with_cache, is_blank_level, kva_of, line_length, pack_pseudo,
+    init_scanout, init_scanout_configured, init_scanout_with_cache, is_blank_level, kva_of, line_length, pack_pseudo,
     palette_at, pan_check, register,
     set_blank, set_ops, set_palette, set_var, unregister, unregister_by_base, unpack_pseudo,
     var_of, Error, FbDev, FbDriverKey, FbOps, KResult, FBS, INVALID_FB_INDEX,

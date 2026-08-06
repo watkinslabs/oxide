@@ -45,6 +45,7 @@ fn boot_hosted_pmm() {
             boot_ns: 0,
             rsdp_pa: 0,
             hhdm_offset: buf,
+            framebuffer: boot_info::BootFramebuffer::EMPTY,
             bsp_lapic_id: 0,
             _pad: 0,
         };

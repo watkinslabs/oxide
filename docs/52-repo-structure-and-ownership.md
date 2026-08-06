@@ -94,6 +94,10 @@ must use grouped paths from day one.
    immutable cgroup-owned effective snapshot; it cannot keep a second
    attachment registry. VFS and mknod paths are enforcement adapters, never
    policy owners.
+10. `crates/drivers/drv-simplefb` owns firmware-framebuffer validation after
+    handoff, WC mapping, format conversion, and fbdev/fbcon lifetime. Boot
+    parsers only populate `BootInfo.framebuffer`; `kmain` only sequences the
+    post-PCI fallback platform-device registration.
 
 ## 6 Naming rules (frozen)
 

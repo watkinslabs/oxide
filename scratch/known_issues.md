@@ -36,11 +36,11 @@ reclassified.
 
 | Class \ Sev | blocker | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|
-| `DEFECT` | 0 | 0 | 15 | 25 | 40 |
-| `MISSING` | 3 | 1 | 18 | 19 | 41 |
+| `DEFECT` | 0 | 1 | 15 | 25 | 41 |
+| `MISSING` | 2 | 0 | 18 | 19 | 39 |
 | `COVERAGE` | 0 | 0 | 10 | 15 | 25 |
 | `INFRA` | 0 | 0 | 15 | 11 | 26 |
-| **Total** | **3** | **1** | **58** | **70** | **132** |
+| **Total** | **2** | **1** | **58** | **70** | **131** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -329,10 +329,9 @@ here now.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| OPEN | MISSING | blocker | **No framebuffer source on physical hardware.** The whole VT/fbcon/fbdev console stack is built and works, but `fbdev::init_scanout` has exactly one non-test caller — virtio-gpu. The multiboot2 header requests no framebuffer (type-5 tag absent), the info walk drops tag 8 (`_ => {}`), and `BootInfo` has no framebuffer fields. Bare metal therefore has no display output at all. Machinery-without-callers class. | `mb2.rs:52-68` (header tags), `mb2.rs:440-468` (tag walk), `boot-info/src/lib.rs:21` (struct), `drv-virtio-gpu/src/post_init/scanout.rs:171` (sole caller) | — |
+| OPEN | DEFECT | high | **The IRQ-driven 16550 TX path can stop in the middle of a record and never restart.** Forced-simplefb validation saw three pre-simplefb stalls: one halfway through `i8042 keyboard detected`, one halfway through the AHCI LBA0 result, and one earlier UC-control attempt. A 240 s wait plus serial SysRq on the first produced no output. Other boots of the same kernel and display path pass, and every failure begins before simplefb registration; both production WC and the temporary UC control reproduced it, so neither framebuffer cache policy causes it. The visible shape is a lost/retriggered THRE interrupt: the queued suffix and every later log remain silent. | `/tmp/b1875-simplefb-wc1-bench.log` retains the AHCI reproduction; `drv-uart-16550/src/lib.rs::rx_isr_claimed` services one 16-byte FIFO per THRE interrupt. Reproduce with `OXIDE_QEMU_SIMPLEFB=1 SMP=1 FEATURES=debug-boot OXIDE_SMOKE_ATTEMPTS=1 SMOKE_TIMEOUT=240 tools/boot-smoke.sh x86`. | unowned |
 | OPEN | MISSING | blocker | **x86 boots multiboot2 (BIOS/CSM) only.** No UEFI path. Modern TRX40/WRX80/WRX90 and Z790/X870 boards are UEFI and many ship without CSM, so the kernel cannot be loaded at all. aarch64 already boots EFI-stub. | `tools/xtask/src/image_qemu/x86_64.rs:23-24` | — |
 | OPEN | MISSING | blocker | **No USB host controller.** `modules/src/linux_usb/` is a module-registry shim (types/core/gadget, 945 lines) with no xHCI driver; grep for xHCI across `crates/` is empty. Only physical input driver is `drv-ps2-keyboard`, so a board without PS/2 has no keyboard. | `crates/kernel/modules/src/linux_usb/`, `crates/drivers/` listing | — |
-| OPEN | MISSING | high | **AP bringup is a counting stub.** `bring_up_aps()` returns `enumerate_aps().len()` and starts nothing; its own comment defers the INIT-IPI/PSCI sequence to "P4-08+". No x86 AP trampoline exists. The kernel runs on one core on every machine, virtual or physical. | `crates/kernel/cpu/src/smp.rs:121` | — |
 | OPEN | MISSING | med | **CPU count capped below Threadripper part counts, no x2APIC.** `MAX_CPUS = 64` with a `u64` online mask; MADT decode reads x2APIC entries but nothing enables x2APIC MSR mode, so APIC IDs above 255 are unaddressable. A 64C/128T part is at or over the mask width. | `crates/kernel/cpu/src/lib.rs:20`, `firmware/src/acpi/tables.rs:123-133` | — |
 | OPEN | MISSING | med | **No FADT parse — no ACPI poweroff or reset.** `crates/kernel/power/` carries the `reboot(2)` policy with no hardware path beneath it. Parsed tables are APIC/HPET/MCFG/SPCR only. | `crates/kernel/firmware/src/acpi/`, `crates/kernel/power/src/cad.rs` | — |
 | OPEN | MISSING | med | **No AML interpreter, so no `_PRT`.** Legacy INTx routing cannot be resolved on physical hardware; every device must use MSI/MSI-X. Workable (MSI and MSI-X cap programming exist) but it is an unrecorded hard constraint on the driver model, not a preference. | `crates/drivers/pci/src/caps.rs`, absent DSDT/SSDT parse | — |

@@ -154,6 +154,30 @@ fn physical_scanout_owns_write_combining_policy() {
 }
 
 #[test]
+fn configured_scanout_preserves_firmware_pixel_format() {
+    let _fbdev = crate::test_claim::claim_fbdev();
+    let mut var = FbVarScreeninfo::default();
+    var.xres = 640; var.yres = 480;
+    var.xres_virtual = 640; var.yres_virtual = 480;
+    var.bits_per_pixel = 16;
+    var.red = FbBitfield { offset: 11, length: 5, msb_right: 0 };
+    var.green = FbBitfield { offset: 5, length: 6, msb_right: 0 };
+    var.blue = FbBitfield { offset: 0, length: 5, msb_right: 0 };
+    var.transp = FbBitfield::default();
+    let idx = init_scanout_configured(
+        0xe000_0000, 0xffff_fd00_0000_0000, 640 * 480 * 2, 640 * 2,
+        var, vmm::PhysCacheMode::WriteCombine,
+    );
+    let got = var_of(idx).expect("registered framebuffer");
+    assert_eq!(got.bits_per_pixel, 16);
+    assert_eq!((got.red.offset, got.red.length), (11, 5));
+    assert_eq!((got.green.offset, got.green.length), (5, 6));
+    assert_eq!((got.blue.offset, got.blue.length), (0, 5));
+    assert_eq!(backing_with_cache_of(idx),
+        Some((0xe000_0000, 640 * 480 * 2, vmm::PhysCacheMode::WriteCombine)));
+}
+
+#[test]
 fn backing_none_without_real_fb() {
     let _fbdev = crate::test_claim::claim_fbdev();
     register(0, 1, FbVarScreeninfo::default(), FbFixScreeninfo::default());

@@ -67,12 +67,12 @@ unsafe extern "C" fn _start_rust() -> ! {
     // SAFETY: capture_cmdline is boot-only, single-CPU, runs before any reader of cmdline can race; reads the loader-owned multiboot2 cmdline tag then publishes the captured bytes through the boot-owned slot.
     unsafe { boot_info_build::capture_cmdline(); }
     // SAFETY: boot path per fn contract; build_boot_info reads
-    // bootloader-owned static state and produces an owned BootInfo.
+    // bootloader-owned state and returns the boot-owned static BootInfo.
     let info = unsafe { boot_info_build::build_boot_info() };
     // SAFETY: kernel_main's safety contract is satisfied by the
     // boot environment we just established (kernel stack installed,
     // IRQs masked, single CPU, `info` valid).
-    unsafe { kmain::kernel_main(&info) }
+    unsafe { kmain::kernel_main(info) }
 }
 
 /// Entry point the multiboot2 trampoline tail-calls once long mode is

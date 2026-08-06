@@ -65,6 +65,11 @@ pub(super) fn qemu_run_grub_x86_64(
     // Interactive: mux=on so Ctrl-A C reaches the QEMU monitor.
     let headless = std::env::var("OXIDE_QEMU_HEADLESS").is_ok();
     let gpu_dev = super::common::virtio_gpu_device_arg(None);
+    // Local physical-framebuffer proof: make std-VGA the firmware display and
+    // omit virtio-gpu so the kernel must consume GRUB's framebuffer handoff.
+    // Ordinary desktop/smoke launches keep their unchanged virtio-gpu path.
+    let simplefb_only = std::env::var_os("OXIDE_QEMU_SIMPLEFB").is_some();
+    let legacy_vga = if simplefb_only { "std" } else { "none" };
     let uart_chardev = match std::env::var("OXIDE_QEMU_UART_SOCK") {
         Ok(p) if !p.is_empty() => {
             let _ = std::fs::remove_file(&p);
@@ -151,10 +156,9 @@ pub(super) fn qemu_run_grub_x86_64(
         // drive it) and the virtio-gpu console is a hidden secondary. Removing
         // it makes virtio-gpu THE display, so fbcon's rendered console is what
         // the window shows. (Verified: virtio-gpu fb carries the glyphs.)
-        "-vga", "none",
+        "-vga", legacy_vga,
         // virtio-gpu scanout + virtio-keyboard for the visual console so
         // fbcon renders + the GTK window takes keyboard input.
-        "-device", gpu_dev.as_str(),
         "-device", "virtio-keyboard-pci,bus=pcie.0",
         // F458: virtio-mouse (relative pointer) → /dev/input/event1. Relative
         // (not absolute/tablet) so QMP input-send-event works headless.
@@ -195,6 +199,9 @@ pub(super) fn qemu_run_grub_x86_64(
         "-display", if headless { "none" } else { "gtk" },
         "-no-reboot",
     ]);
+    if !simplefb_only {
+        c.args(["-device", gpu_dev.as_str()]);
+    }
     if std::env::var_os("OXIDE_VIRTIO_NET_MULTIDEV_SMOKE").is_some() {
         c.args([
             "-netdev", "user,id=net1",
