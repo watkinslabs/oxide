@@ -90,12 +90,13 @@ jobs:
         run: rustup show
       - name: install rust-src
         run: rustup component add rust-src --toolchain $(rustup show active-toolchain | awk '{print $1}')
-      - name: expose pinned ld.lld
+      - name: expose pinned LLVM tools
         if: ${{ matrix.arch == 'aarch64' }}
         run: |
           rust_lld=$(find "$(rustc --print sysroot)" -type f -name rust-lld -print -quit)
           test -n "$rust_lld"
           ln -s "$rust_lld" "$RUNNER_TEMP/ld.lld"
+          echo "$(dirname "$rust_lld")" >> "$GITHUB_PATH"
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
       - name: xtask kernel --arch ${{ matrix.arch }} (${{ matrix.profile.name }})
         # Compile-check only: build and validate the real per-arch vDSO, then
@@ -132,12 +133,13 @@ jobs:
         run: rustup show
       - name: install rust-src
         run: rustup component add rust-src --toolchain $(rustup show active-toolchain | awk '{print $1}')
-      - name: expose pinned ld.lld
+      - name: expose pinned LLVM tools
         if: ${{ matrix.arch == 'aarch64' }}
         run: |
           rust_lld=$(find "$(rustc --print sysroot)" -type f -name rust-lld -print -quit)
           test -n "$rust_lld"
           ln -s "$rust_lld" "$RUNNER_TEMP/ld.lld"
+          echo "$(dirname "$rust_lld")" >> "$GITHUB_PATH"
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
       # No `rustfilt` install: both gates demangle in-process via
       # tools/rust_symbol_identity.py, so their output and their allowlist
