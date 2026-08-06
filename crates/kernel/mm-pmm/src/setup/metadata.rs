@@ -167,7 +167,7 @@ pub fn mark_lru_referenced(pa: u64) -> Result<(), crate::reclaim::ReclaimError> 
 }
 
 /// Move a resident page to or from the unevictable LRU for mlock/munlock.
-/// # C: O(N_lru); # Lk: TaskList
+/// # C: O(1); # Lk: TaskList
 pub fn set_lru_unevictable(pa: u64, enabled: bool) -> Result<(), crate::reclaim::ReclaimError> {
     let meta = page_meta().ok_or(crate::reclaim::ReclaimError::OutOfRange)?;
     let ptr = RECLAIM_PTR.load(core::sync::atomic::Ordering::Acquire);
@@ -178,7 +178,7 @@ pub fn set_lru_unevictable(pa: u64, enabled: bool) -> Result<(), crate::reclaim:
 
 /// Remove the final PMM reference from its reclaim LRU before reuse.  An
 /// isolated page is a reclaim transaction violation and must not reach buddy.
-/// # C: O(N_lru); # Lk: TaskList
+/// # C: O(1); # Lk: TaskList
 pub fn unlink_lru_for_final_free(pa: u64) -> Result<(), crate::reclaim::ReclaimError> {
     let Some(meta) = page_meta() else { return Ok(()); };
     let ptr = RECLAIM_PTR.load(core::sync::atomic::Ordering::Acquire);
@@ -231,7 +231,7 @@ pub fn frame_mapcount(pa: u64) -> u32 {
 /// Isolate a VMA-selected resident anonymous page without creating an
 /// alternate pageout ownership path. The page must already have canonical LRU
 /// membership; nonresident, unevictable, and non-anonymous pages are skipped.
-/// # C: O(N_lru); # Lk: TaskList
+/// # C: O(1); # Lk: TaskList
 pub fn isolate_anon_lru_pfn(pa: u64) -> Result<Option<crate::reclaim::Isolation>, crate::reclaim::ReclaimError> {
     let meta = page_meta().ok_or(crate::reclaim::ReclaimError::OutOfRange)?;
     let ptr = RECLAIM_PTR.load(core::sync::atomic::Ordering::Acquire);
