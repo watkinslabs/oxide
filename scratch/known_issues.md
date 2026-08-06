@@ -36,11 +36,11 @@ reclassified.
 
 | Class \ Sev | blocker | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|
-| `DEFECT` | 0 | 1 | 15 | 25 | 41 |
+| `DEFECT` | 0 | 1 | 16 | 25 | 42 |
 | `MISSING` | 3 | 2 | 18 | 19 | 42 |
 | `COVERAGE` | 0 | 0 | 10 | 15 | 25 |
 | `INFRA` | 0 | 0 | 15 | 11 | 26 |
-| **Total** | **3** | **3** | **58** | **70** | **134** |
+| **Total** | **3** | **3** | **59** | **70** | **135** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -137,6 +137,7 @@ row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
+| OPEN | DEFECT | med | **The synchronous virtio-block path still needs a 64-probe IRQ-enabled bridge before it can sleep, unlike Linux's ordinary completion wait.** The old 200,000-iteration poll plus a clock read per iteration consumed 39.43% of Firefox-profile samples and is gone; parking immediately, however, stranded the one-vCPU boot because Oxide enters syscall/fault I/O with IRQs masked and the local completion interrupt could not publish the wake. The bounded bridge has no clock conversion and disappeared from the follow-up profile, but the Linux-shaped end state is process-context kernel execution with IRQs enabled and direct completion sleep (polling only for explicitly polled I/O). | B1871: direct-sleep release build failed to reach GNOME and was rejected; 64-probe build passed the full graphical Firefox valid/invalid-DNS harness, settled load 0.98, and had zero `rdtsc`/`counter_ns`/block-wait samples out of 350. Contract test forbids the old `IO_SPIN_BUDGET`. | NEXT |
 | OPEN | DEFECT | low | `answerback.rs` keeps a third module-private `SERIAL` for its own queue state. It did not appear in any observed failure and guards a different resource, so it is left alone — but the crate now has one lock that owns the console and one that owns the answerback queue, and nothing states which resource a new test must take. | Not observed failing. | — |
 | OPEN | MISSING | med | The config-space accessor is dword-addressed with an 8-bit register offset, so only the 256-byte conventional space is reachable. Extended PCIe config space (and therefore `serial_number`/DSN and the extended capability list) cannot be read; those attributes are absent rather than wrong. Sub-dword writes are read-modify-write on the containing dword, which re-emits neighbouring write-1-to-clear bits. | `pci::ConfigSpaceReader::read32(bdf, offset: u8)`; `pci::config_space::write_bytes` | unowned |
 | OPEN | COVERAGE | low | Nothing prevents a recurrence: any test that calls `drv_zram::install_page_provider` directly re-creates the same second-provider conflict, and there is no gate that a package's test outcome is invariant to which other packages share the cargo invocation. A workspace-wide `cargo test --workspace` in CI would catch it; per-package runs do not. | This defect survived because the only run that exposes it is the workspace one. | — |
