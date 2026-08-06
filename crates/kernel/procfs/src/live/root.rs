@@ -17,11 +17,6 @@ pub struct ProcRootInode {
     info: Arc<crate::fs_info::ProcFsInfo>,
 }
 
-impl ProcRootInode {
-    /// # C: O(1)
-    pub fn info(&self) -> &Arc<crate::fs_info::ProcFsInfo> { &self.info }
-}
-
 fn proc_root_lookup(d: &ProcRootInode, name: &str) -> KResult<InodeRef> {
     // `subset=pid` (Linux `proc_lookup`: `if (fs_info->pidonly ==
     // PROC_PIDONLY_ON) return ERR_PTR(-ENOENT)`) removes every non-process

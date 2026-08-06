@@ -89,6 +89,7 @@ const RECV_PAGE: usize = hal::PAGE_SIZE_BYTES as usize;
 
 /// Snapshot byte returned by hosted TCP test inspection.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[cfg(test)]
 pub struct RecvByte { pub byte: u8, pub timestamp_ns: u64 }
 
 /// One page-granular receive segment.  Kernel builds retain the received
@@ -208,7 +209,9 @@ impl RecvBuf {
         out
     }
 
-    /// # C: O(recv_buf.len())
+    #[cfg(test)]
+    /// Test-only flattened view. Production reads directly from the page-backed
+    /// buffer so this allocation cannot enter the receive path. # C: O(recv_buf.len())
     pub(crate) fn iter(&self) -> alloc::vec::IntoIter<RecvByte> {
         let mut out = Vec::with_capacity(self.len);
         for page in &self.pages {

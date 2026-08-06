@@ -4,6 +4,7 @@
 
 CARGO    ?= cargo
 XTASK    := $(CARGO) run -p xtask --
+WARNING_RUN := python3 tools/warnings-gate.py --
 FEATURES ?=
 
 # ---- rootfs-cache bounding -------------------------------------------------
@@ -34,7 +35,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
 
 .PHONY: all build x86 arm \
         build-debug x86-debug arm-debug \
-        test lint lint-ratchet lint-ratchet-update audit-counts profile-policy stats ci \
+        test lint lint-ratchet lint-ratchet-update audit-counts profile-policy warnings-control stats ci \
         qemu-x86 qemu-arm qemu-x86-debug qemu-arm-debug qemu-mcp \
         qemu-x86-grub \
         smoke-cmdline-x86 smoke-cmdline-arm smoke-cmdline \
@@ -57,23 +58,23 @@ all: build
 build: x86 arm
 
 x86:
-	$(XTASK) kernel --arch x86_64  $(if $(FEATURES),--features $(FEATURES),)
+	$(WARNING_RUN) $(XTASK) kernel --arch x86_64  $(if $(FEATURES),--features $(FEATURES),)
 
 arm:
-	$(XTASK) kernel --arch aarch64 $(if $(FEATURES),--features $(FEATURES),)
+	$(WARNING_RUN) $(XTASK) kernel --arch aarch64 $(if $(FEATURES),--features $(FEATURES),)
 
 build-debug: x86-debug arm-debug
 
 x86-debug:
-	$(XTASK) kernel --arch x86_64  --features debug-all
+	$(WARNING_RUN) $(XTASK) kernel --arch x86_64  --features debug-all
 
 arm-debug:
-	$(XTASK) kernel --arch aarch64 --features debug-all
+	$(WARNING_RUN) $(XTASK) kernel --arch aarch64 --features debug-all
 
 # ---- checks ---------------------------------------------------------------
 
 test:
-	$(XTASK) test
+	$(WARNING_RUN) $(XTASK) test
 
 lint:
 	$(XTASK) spec-lint
@@ -93,7 +94,7 @@ lint:
 # key and refuses to raise one without `--allow-growth`, which prints every
 # loosened key.
 lint-ratchet: profile-policy
-	$(CARGO) run --quiet -p spec-lint -- ratchet
+	$(WARNING_RUN) $(CARGO) run --quiet -p spec-lint -- ratchet
 
 # Wrong-code prevention for the pinned nightly. B1855 reproduced a neighbouring
 # match arm returning the edited arm's value only with incremental codegen.
@@ -107,10 +108,17 @@ profile-policy:
 # and `panic!(fmt)` as 113 on exactly that mistake; both are enforced at 0.
 # Fails if any scoped rule leaves zero.
 audit-counts:
-	$(CARGO) run --quiet -p spec-lint -- audit
+	$(WARNING_RUN) $(CARGO) run --quiet -p spec-lint -- audit
 
 lint-ratchet-update:
-	$(CARGO) run --quiet -p spec-lint -- ratchet --update
+	$(WARNING_RUN) $(CARGO) run --quiet -p spec-lint -- ratchet --update
+
+# Rust's CONFIG_WERROR equivalent. The red control starts with `-A warnings`
+# and proves the wrapper's final `-Dwarnings` still wins; the green control
+# proves a clean crate passes. Every routine compile target below uses the same
+# wrapper, so warnings are compiler errors rather than unread log text.
+warnings-control:
+	python3 tools/warnings-gate.py --self-test
 
 stats:
 	$(XTASK) stats $(STATS_ARGS)
@@ -131,7 +139,7 @@ counters:
 # the same canonical ELF paths, and the size/depth gates contractually inspect
 # the default binary. Build debug-all first, then overwrite it with default.
 .NOTPARALLEL: ci
-ci: lint-ratchet audit-counts matrix-gate hosted-gate test-build-gate test build-debug build frame-gate stack-gate irq-gate
+ci: warnings-control lint-ratchet audit-counts matrix-gate hosted-gate test-build-gate test build-debug build frame-gate stack-gate irq-gate
 
 # Structural gate on the syscall compliance ledger: one row per syscall number,
 # the declared column count on every row (escape-aware, so `\|` inside a cell is
@@ -384,15 +392,15 @@ GATE_FEATURES = $(shell awk '/^\[features\]/{f=1;next} /^\[/{f=0} f && /^debug-[
 	crates/kernel/kmain/Cargo.toml | grep -v '^debug-atexit$$' | paste -sd,)
 
 feature-gate-x86:
-	cargo run --quiet -p xtask -- kernel --arch x86_64 --features $(GATE_FEATURES) --check
+	$(WARNING_RUN) cargo run --quiet -p xtask -- kernel --arch x86_64 --features $(GATE_FEATURES) --check
 feature-gate-arm:
-	cargo run --quiet -p xtask -- kernel --arch aarch64 --features $(GATE_FEATURES) --check
+	$(WARNING_RUN) cargo run --quiet -p xtask -- kernel --arch aarch64 --features $(GATE_FEATURES) --check
 feature-gate: feature-gate-x86 feature-gate-arm
 
 # The mutually-exclusive half: `debug-atexit` instead of `debug-stderr`.
 feature-gate-atexit:
-	cargo run --quiet -p xtask -- kernel --arch x86_64 --features debug-atexit,debug-all --check
-	cargo run --quiet -p xtask -- kernel --arch aarch64 --features debug-atexit,debug-all --check
+	$(WARNING_RUN) cargo run --quiet -p xtask -- kernel --arch x86_64 --features debug-atexit,debug-all --check
+	$(WARNING_RUN) cargo run --quiet -p xtask -- kernel --arch aarch64 --features debug-atexit,debug-all --check
 
 # Type-check every workspace crate ON ITS OWN for the host, with its own
 # default features. `cargo check --workspace` does NOT cover this: cargo
@@ -404,7 +412,7 @@ feature-gate-atexit:
 #
 # ~5 s when nothing changed, ~12 s after a core crate is touched, on 24 jobs.
 hosted-gate:
-	./tools/hosted-check.sh
+	$(WARNING_RUN) ./tools/hosted-check.sh
 
 # The same isolation, one step further along: BUILD each crate's test targets
 # with only that crate's own features. `cargo check -p <crate>` compiles no
@@ -416,7 +424,7 @@ hosted-gate:
 #
 # ~2 s when nothing changed, ~2.5 min from a fully cold target directory.
 test-build-gate:
-	./tools/test-build-check.sh
+	$(WARNING_RUN) ./tools/test-build-check.sh
 
 # Regenerate the allowlists. Reasons must be edited in by hand afterwards —
 # the gate refuses an entry that is not under a `#` reason block.
