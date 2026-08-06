@@ -39,6 +39,7 @@ pub use snapshot::{
     kernel_stack_bytes_snapshot, live_counts, live_tids, next_live_tid_after, tasks_traced_by,
     thread_entries, thread_group, try_snapshot,
 };
+pub(crate) use snapshot::set_syscall_tracepoint_work_all;
 #[cfg(any(test, feature = "hosted"))]
 pub use tid::clear_for_tests;
 pub use tid::{insert, lookup, try_wake_stopped, LOOKUPS};

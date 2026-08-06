@@ -22,6 +22,7 @@ pub fn insert(task: &Arc<Task>) {
     let tid = task.tid;
     let weak = Arc::downgrade(task);
     let mut g = REG.lock_irqsave::<RegIrq>();
+    crate::syscall_work::reconcile_new_task(task);
     g.by_tid.insert(tid, weak.clone());
     hint_upsert(&mut g.vpid_hint, task, weak);
 }
