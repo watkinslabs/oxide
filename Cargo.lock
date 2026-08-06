@@ -590,6 +590,7 @@ dependencies = [
  "syscall",
  "uaccess",
  "vfs",
+ "vmm",
 ]
 
 [[package]]

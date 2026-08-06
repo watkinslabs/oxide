@@ -281,8 +281,8 @@ pub fn handle_fbdev_ioctl(inode: &InodeRef, req: u64, arg: u64) -> Option<i64> {
 /// PA range straight into the process (VmaBacking::PhysRange) so userspace
 /// draws to the real framebuffer. `None` if the fb has no real backing.
 /// # C: O(1)
-pub fn mmap_backing(inode: &InodeRef) -> Option<(u64, u64)> {
-    crate::backing_of(fb_index_of(inode)?)
+pub fn mmap_backing(inode: &InodeRef) -> Option<(u64, u64, vmm::PhysCacheMode)> {
+    crate::backing_with_cache_of(fb_index_of(inode)?)
 }
 
 /// Boot-time directory setup. Framebuffer nodes are not fabricated here:

@@ -23,6 +23,7 @@ mod irq_gate;
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub mod linux_retpoline;
 mod mmu;
+mod pat;
 pub mod mmu_ops;
 pub mod msr;
 pub mod pci;
@@ -73,6 +74,7 @@ pub use mmu::{
     flush_local_all, flush_local_va, va_to_indices, PteFlags, PteX86_64, PtIndices,
     ENTRIES_PER_TABLE, PD_SHIFT, PDPT_SHIFT, PML4_SHIFT, PT_SHIFT, PTE_PHYS_MASK,
 };
+pub use pat::{enabled as pat_enabled, init_for_cpu as init_pat_for_cpu, LINUX_PAT};
 pub use pt_regs::{PtRegs, PT_REGS_BYTES, PT_REGS_VECTOR_NMI, PT_REGS_VECTOR_SYSCALL};
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub use regs::{read_clear_dr6, set_data_watchpoint};

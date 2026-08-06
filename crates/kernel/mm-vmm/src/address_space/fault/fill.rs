@@ -459,9 +459,9 @@ impl AddressSpace {
                 // SAFETY: same live-MMU and callback contracts as this fault fill path.
                 unsafe { self.map_kernel_frame::<M, _, _>(va, &vma, *pa, dec_ref, inc_ref) }
             }
-            VmaBacking::PhysRange { base_pa } => {
+            VmaBacking::PhysRange { base_pa, cache } => {
                 // SAFETY: same live-MMU and callback contracts as this fault fill path.
-                unsafe { self.map_phys_range::<M, _>(va, &vma, *base_pa, dec_ref) }
+                unsafe { self.map_phys_range::<M, _>(va, &vma, *base_pa, *cache, dec_ref) }
             }
             VmaBacking::Special => Err(Error::NotImplemented),
         }

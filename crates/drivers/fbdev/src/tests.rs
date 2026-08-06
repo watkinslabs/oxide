@@ -128,7 +128,29 @@ fn init_scanout_populates_geometry_and_backing() {
     assert_eq!(f.smem_len, bytes as u32);
     assert_eq!(f.line_length, 800 * 4);
     assert_eq!(backing_of(0), Some((0xdead_0000, bytes)));
+    assert_eq!(
+        backing_with_cache_of(0),
+        Some((0xdead_0000, bytes, vmm::PhysCacheMode::WriteBack)),
+    );
     assert_eq!(kva_of(0), Some((0xffff_8000_dead_0000, bytes)));
+}
+
+#[test]
+fn physical_scanout_owns_write_combining_policy() {
+    let _fbdev = crate::test_claim::claim_fbdev();
+    let idx = init_scanout_with_cache(
+        0xfd00_0000,
+        0xffff_8000_fd00_0000,
+        4096,
+        256,
+        64,
+        16,
+        vmm::PhysCacheMode::WriteCombine,
+    );
+    assert_eq!(
+        backing_with_cache_of(idx),
+        Some((0xfd00_0000, 4096, vmm::PhysCacheMode::WriteCombine)),
+    );
 }
 
 #[test]

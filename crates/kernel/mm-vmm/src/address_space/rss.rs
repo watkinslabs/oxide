@@ -107,7 +107,10 @@ mod tests {
         assert_eq!(class_of(&VmaBacking::KernelFrame { pa: 0x1000 }), RssClass::Shmem);
         // `VM_PFNMAP` device memory has no `struct page`, so it is nobody's
         // resident set; a `Special` leaf has no frame at all.
-        assert_eq!(class_of(&VmaBacking::PhysRange { base_pa: 0x1000 }), RssClass::Device);
+        assert_eq!(class_of(&VmaBacking::PhysRange {
+            base_pa: 0x1000,
+            cache: crate::PhysCacheMode::Device,
+        }), RssClass::Device);
         assert_eq!(class_of(&VmaBacking::Special), RssClass::Untracked);
     }
 

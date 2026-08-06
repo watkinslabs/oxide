@@ -6,7 +6,7 @@ use hal::UserVirtAddr;
 use crate::mempolicy::nodemask::NodeMask;
 use crate::mempolicy::scan::*;
 use crate::mempolicy::uapi::*;
-use crate::vma::{Vma, VmaBacking, VmaFlags, VmaProt};
+use crate::{PhysCacheMode, vma::{Vma, VmaBacking, VmaFlags, VmaProt}};
 use crate::Error;
 use alloc::vec::Vec;
 
@@ -23,7 +23,10 @@ fn anon(start: u64, end: u64) -> Vma {
 
 fn device(start: u64, end: u64) -> Vma {
     Vma::new(uva(start), uva(end), VmaProt::READ | VmaProt::WRITE,
-             VmaFlags::SHARED, VmaBacking::PhysRange { base_pa: 0 })
+             VmaFlags::SHARED, VmaBacking::PhysRange {
+                 base_pa: 0,
+                 cache: PhysCacheMode::Device,
+             })
 }
 
 /// Every page resident — the state that makes STRICT observable.
