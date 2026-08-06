@@ -354,6 +354,13 @@ impl AddressSpaceOps for Ext4FileMapping {
         { let _ = off; Ok(None) }
     }
 
+    fn fault_around_frame(&self, off: u64) -> KResult<Option<vfs::SharedFrame>> {
+        #[cfg(feature = "ext4-frame-cache")]
+        { return self.data.frames.fault_around_frame(off); }
+        #[cfg(not(feature = "ext4-frame-cache"))]
+        { let _ = off; Ok(None) }
+    }
+
     fn read_at(&self, off: u64, dst: &mut [u8]) -> KResult<usize> {
         #[cfg(feature = "ext4-frame-cache")]
         { return self.data.frames.read_framed(off, dst); }
