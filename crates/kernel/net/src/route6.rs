@@ -4,9 +4,8 @@
 extern crate alloc;
 use alloc::{collections::BTreeMap, vec::Vec};
 
-use sync::{Spinlock, Socket as RouteLockClass};
-
 use crate::addr::{Ipv6Addr, NetIfaceId};
+use crate::fib_lock::FibLock;
 use crate::policy_rule::{PolicyRuleTable, AF_INET6, RT_TABLE_MAIN};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -71,7 +70,7 @@ impl Route6Entry {
 }
 
 pub struct Route6Table {
-    pub(crate) inner: Spinlock<BTreeMap<u64, Vec<Route6Entry>>, RouteLockClass>,
+    pub(crate) inner: FibLock<BTreeMap<u64, Vec<Route6Entry>>>,
     #[cfg(not(target_os = "oxide-kernel"))]
     now_ns: core::sync::atomic::AtomicU64,
 }
@@ -80,7 +79,7 @@ impl Route6Table {
     /// # C: O(1)
     pub const fn new() -> Self {
         Self {
-            inner: Spinlock::new(BTreeMap::new()),
+            inner: FibLock::new(BTreeMap::new()),
             #[cfg(not(target_os = "oxide-kernel"))]
             now_ns: core::sync::atomic::AtomicU64::new(0),
         }
@@ -141,10 +140,11 @@ impl Route6Table {
                                   iface: NetIfaceId, rules: &PolicyRuleTable)
         -> Option<Route6Entry>
     {
+        let rules = rules.snapshot_effective(net_ns, AF_INET6);
         let now_ns = self.now_ns();
         let all = self.inner.lock();
         let routes = all.get(&net_ns).map(Vec::as_slice).unwrap_or(&[]);
-        for rule in rules.snapshot_effective(net_ns, AF_INET6) {
+        for rule in rules {
             let mut best = None;
             for route in routes {
                 if route.table != rule.table || route.iface != iface

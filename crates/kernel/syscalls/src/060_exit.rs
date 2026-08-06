@@ -8,7 +8,7 @@ use syscall::SyscallArgs;
 
 /// `sys_exit_group(2)` (slot 231). Linux
 /// `SYSCALL_DEFINE1(exit_group)` → `do_group_exit((error_code & 0xff) << 8)`.
-/// # SAFETY: dispatch ctx on task's syscall kstack, IRQs masked.
+/// # SAFETY: dispatch ctx on task's syscall kstack, IRQs enabled.
 /// # C: O(N_threads) + O(log N)
 pub fn sys_exit_group(args: &SyscallArgs) -> i64 {
     do_group_exit(status::from_exit_code(args.a0))
@@ -17,7 +17,7 @@ pub fn sys_exit_group(args: &SyscallArgs) -> i64 {
 /// `sys_exit(2)` (slot 60). Linux `SYSCALL_DEFINE1(exit)` →
 /// `do_exit((error_code & 0xff) << 8)`: only the CALLING thread dies, which is
 /// what `pthread_exit` needs; the thread group survives.
-/// # SAFETY: dispatch ctx on task's syscall kstack, IRQs masked.
+/// # SAFETY: dispatch ctx on task's syscall kstack, IRQs enabled.
 /// # C: O(log N) + O(1)
 pub fn sys_exit(args: &SyscallArgs) -> i64 {
     do_exit(status::from_exit_code(args.a0))
@@ -34,7 +34,7 @@ pub fn sys_exit(args: &SyscallArgs) -> i64 {
 /// Before the latch existed the parent's `waitpid` saw `WIFSIGNALED` /
 /// `SIGKILL` for every multi-threaded `exit_group`, and a fatal `SIGSEGV` in a
 /// worker thread was reported as `SIGKILL`.
-/// # SAFETY: dispatch ctx on task's syscall kstack, IRQs masked.
+/// # SAFETY: dispatch ctx on task's syscall kstack, IRQs enabled.
 /// # C: O(N_threads) + O(log N)
 pub fn do_group_exit(requested: i32) -> i64 {
     let decision = match sched::live::current() {
@@ -51,7 +51,7 @@ pub fn do_group_exit(requested: i32) -> i64 {
 /// Linux `do_exit`: mark Zombie, publish the exit status, tear the task's
 /// resources down in Linux's order, notify the parent, schedule away.
 /// `status` is already in `sched::exit::status`' internal encoding.
-/// # SAFETY: dispatch ctx on task's syscall kstack, IRQs masked.
+/// # SAFETY: dispatch ctx on task's syscall kstack, IRQs enabled.
 /// # C: O(N_tasks) reparent + O(log N) schedule
 pub fn do_exit(status: i32) -> i64 {
     use core::sync::atomic::Ordering;

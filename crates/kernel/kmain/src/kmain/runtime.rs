@@ -157,6 +157,11 @@ fn init_runtime_subsystems() {
     // SAFETY: same boot-path, single-CPU, called-once window as `power::init`.
     let _ = unsafe { firmware::init() };
     ::sched::set_current_hook(|| sched::live::current());
+    vmm::set_mmap_rwsem_wait_hooks(
+        sched::live::inode_wait::park,
+        sched::live::inode_wait::schedule_after_park,
+        sched::live::inode_wait::wake,
+    );
     // RCU CPU-topology hooks. WITHOUT these, `sync::rcu` runs its documented
     // effectively-UP defaults — `online()` returns 1 (boot CPU only) and
     // `cur_cpu()` returns 0 for EVERY caller. On an SMP boot that is a

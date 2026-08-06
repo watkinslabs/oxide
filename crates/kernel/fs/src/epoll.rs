@@ -14,11 +14,13 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::{File, FileType, Ino, InodeRef};
 use vfs::{InodeBuilder, default_inode_ops, mk_mode};
+use irq_lock::EpollIrqLock;
 
 // Module manifest:
 //   policy   — pure epoll_ctl / ioctl decision rules (ungated, hosted-tested)
 //   nest     — ep_loop_check graph walks feeding policy::nesting_admits
 //   scan     — ready-list drain + level requeue for one epoll_wait batch
+//   irq_lock — IRQ-safe callback state + preallocated ready-list capacity
 //   fileops  — the epoll inode's i_fop: release, poll, fdinfo, EPIOC* ioctls
 //   syscalls — the six ABI entry points: fd resolution, usercopy, mutation
 #[path = "epoll/policy.rs"]
@@ -27,6 +29,8 @@ pub mod policy;
 mod nest;
 #[path = "epoll/scan.rs"]
 mod scan;
+#[path = "epoll/irq_lock.rs"]
+mod irq_lock;
 #[path = "epoll/fileops.rs"]
 mod fileops;
 #[path = "epoll/syscalls.rs"]
@@ -100,7 +104,7 @@ pub struct EpItem {
     /// Uid whose `max_user_watches` budget this interest is charged against;
     /// released exactly once, by `detach`.
     charged_uid: u32,
-    pub state: Spinlock<EpItemState, TaskListClass>,
+    state: EpollIrqLock<EpItemState>,
     pub queued: AtomicBool,
     /// `debug-displaystack` records only interests created by Mutter.  The
     /// owner is captured at ADD time because a source callback runs in the
@@ -160,7 +164,7 @@ impl EpItem {
         Arc::new_cyclic(|item| Self {
             fd, sub_id, file: Arc::downgrade(&file), poll_source,
             charged_uid: ep.owner_uid,
-            state: Spinlock::new(EpItemState { events, data, active: true, armed: true }),
+            state: EpollIrqLock::new(EpItemState { events, data, active: true, armed: true }),
             queued: AtomicBool::new(false),
             #[cfg(all(target_os = "oxide-kernel", feature = "debug-displaystack"))]
             display_owner,
@@ -193,9 +197,14 @@ impl EpItem {
 
     /// Put this epitem on its epoll ready list at most once. # C: O(1)
     pub(super) fn queue(item: &Arc<Self>, wake: bool) {
-        let state = item.state.lock();
-        if !state.active || !state.armed { return; }
+        // A callback that interrupts an in-flight queue of this same item sees
+        // the published queued bit and returns without touching its state lock.
         if item.queued.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() { return; }
+        let state = item.state.lock();
+        if !state.active || !state.armed {
+            item.queued.store(false, Ordering::Release);
+            return;
+        }
         let Some(ep) = item.ep.upgrade() else { item.queued.store(false, Ordering::Release); return; };
         ep.ready.lock().push_back(Arc::clone(item));
         drop(state);
@@ -250,7 +259,7 @@ pub struct EpollData {
     pub busy_poll_budget: AtomicU32,
     pub prefer_busy_poll: AtomicU32,
     pub entries: Spinlock<Vec<Arc<EpItem>>, TaskListClass>,
-    pub ready:   Spinlock<VecDeque<Arc<EpItem>>, TaskListClass>,
+    ready:       EpollIrqLock<VecDeque<Arc<EpItem>>>,
     poll_subs:   Arc<vfs::PollSubscribers>,
     /// F181: per-EpollData WaitList (Arc'd so subscribers can hold
     /// Weak). epoll_wait parks here; F181-aware event sites wake
@@ -428,7 +437,7 @@ pub fn make_epoll_inode() -> InodeRef {
         busy_poll_budget: AtomicU32::new(0),
         prefer_busy_poll: AtomicU32::new(0),
         entries: Spinlock::new(Vec::new()),
-        ready: Spinlock::new(VecDeque::new()),
+        ready: EpollIrqLock::new(VecDeque::new()),
         poll_subs: Arc::clone(&poll_subs),
         #[cfg(target_os = "oxide-kernel")]
         waiters: Arc::new(sched::live::WaitList::new()),

@@ -11,16 +11,17 @@ impl NetStack {
             arp_proxy: crate::arp::proxy::ProxyTable::new(),
             bridges: crate::stack::bridge::BridgeTable::new(),
             bridge_pending: Spinlock::new(BTreeMap::new()),
-            inet: Spinlock::new(BTreeMap::new()),
+            inet: super::inet_tables::InetTableLock::new(BTreeMap::new()),
             next_ip_id: Spinlock::new(1),
             ipv4_reasm: crate::ipv4_reasm::ReasmTable::new(),
             ipv6_reasm: crate::ipv6_reasm::ReasmTable::new(),
-            v6_addrs:   Spinlock::new(BTreeMap::new()),
-            v6_anycast: Spinlock::new(BTreeMap::new()),
-            v6_ra_pending: Spinlock::new(Vec::new()),
+            v6_addrs:   super::types::StackBhLock::new(BTreeMap::new()),
+            v6_anycast: super::types::StackBhLock::new(BTreeMap::new()),
+            v6_ra_pending: super::types::StackBhLock::new(Vec::new()),
             softnet: [const { Spinlock::new(crate::backlog::queue::SoftnetData::new()) }; cpu::MAX_CPUS],
             rx_poll: Spinlock::new(Vec::new()),
-            v6_mcast:   Spinlock::new(BTreeMap::new()), v4_mcast: Spinlock::new(BTreeMap::new()),
+            v6_mcast:   super::types::StackBhLock::new(BTreeMap::new()),
+            v4_mcast:   super::types::StackBhLock::new(BTreeMap::new()),
             #[cfg(not(target_os = "oxide-kernel"))]
             ra_now_ns: ::core::sync::atomic::AtomicU64::new(0),
         }
@@ -411,17 +412,17 @@ impl NetStack {
     }
 
     #[cfg(test)]
-    pub(crate) fn udp_map(&self) -> Arc<Spinlock<BTreeMap<u16, Vec<Arc<UdpRxQueue>>>, StackLockClass>> {
+    pub(crate) fn udp_map(&self) -> Arc<super::inet_tables::InetTableLock<BTreeMap<u16, Vec<Arc<UdpRxQueue>>>>> {
         self.inet_tables(0).udp.clone()
     }
 
     #[cfg(test)]
-    pub(crate) fn udp6_map(&self) -> Arc<Spinlock<BTreeMap<u16, Vec<Arc<crate::stack_ipv6::Udp6RxQueue>>>, StackLockClass>> {
+    pub(crate) fn udp6_map(&self) -> Arc<super::inet_tables::InetTableLock<BTreeMap<u16, Vec<Arc<crate::stack_ipv6::Udp6RxQueue>>>>> {
         self.inet_tables(0).udp6.clone()
     }
 
     #[cfg(test)]
-    pub(crate) fn tcp_conns_map(&self) -> Arc<Spinlock<BTreeMap<TcpKey, Arc<TcpEntry>>, StackLockClass>> {
+    pub(crate) fn tcp_conns_map(&self) -> Arc<super::inet_tables::InetTableLock<BTreeMap<TcpKey, Arc<TcpEntry>>>> {
         self.inet_tables(0).tcp_conns.clone()
     }
 

@@ -358,7 +358,7 @@ pub(super) fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault: FaultKind,
             vmm::debug_cow::check_write(p.0 & !PAGE_MASK, va_page, hhdm, tid, cpu);
         }
     }
-    // SAFETY: live per-arch MmuOps state initialised by kernel_main; alloc closure wraps the global PMM; fault context has IRQs masked; `as_` is borrowed read-only at entry (the AS takes its own RwLock internally). `set_rmap` invokes Linux-shape `page_add_anon_rmap` against the kernel's PageMeta-backed AnonVma slot.
+    // SAFETY: live per-arch MmuOps state initialised by kernel_main; alloc closure wraps the global PMM; synchronous fault context owns this task's frame; `as_` is borrowed read-only at entry (the AS takes its own RwLock internally). `set_rmap` invokes Linux-shape `page_add_anon_rmap` against the kernel's PageMeta-backed AnonVma slot.
     unsafe {
         #[cfg(target_arch = "x86_64")]
         let admitted_memcg = core::cell::Cell::new(cgroup::NO_MEMCG);
@@ -569,12 +569,12 @@ fn handle(va_raw: u64, fault: FaultKind, user_mode: bool) -> bool {
     let cur = sched::live::current();
     let major = matches!(fault, FaultKind::NotPresent { .. })
         && cur.as_ref().is_some_and(|c| {
-            // SAFETY: fault dispatcher with IRQs masked; single-mutator mm slot per 13§5; read-only VMA query.
+            // SAFETY: synchronous fault on the running task; single-mutator mm slot per 13§5; read-only VMA query.
             unsafe { c.mm_ref() }.and_then(|mm| mm.find_vma(uva))
                 .is_some_and(|v| matches!(v.backing, VmaBacking::File { .. }))
         });
     let r = match cur.as_ref() {
-        // SAFETY: fault dispatcher with IRQs masked; cur is the running task on this CPU; no concurrent mm writer.
+        // SAFETY: synchronous fault; cur is the running task and no concurrent mm writer owns its slot.
         Some(cur) => unsafe { cur.mm_ref() }.map(|mm| do_handle(mm, uva, fault, hhdm, user_mode)),
         None => None,
     };

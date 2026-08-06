@@ -1,11 +1,11 @@
 // Per-CPU lockless trace ring buffer — the substrate static tracepoints
 // (sched_switch / sys_enter) need: recording must be wait-free and
 // allocation-free because it runs in hot paths (scheduler context switch,
-// syscall entry) under rq locks with IRQs off, where taking a Spinlock or
-// allocating would deadlock or wreck latency.
+// syscall entry), where taking a Spinlock or allocating would deadlock or
+// wreck latency.
 //
 // Model: one SPSC ring per CPU. The ONLY producer of CPU N's ring is CPU N
-// itself (IRQs off during a record → no same-CPU re-entrancy), so the
+// itself. A short irqsave section prevents same-CPU IRQ re-entrancy, so the
 // producer is single + wait-free: bounds-check against the consumer's tail,
 // write the fixed-size slot, publish head with a Release store. Drop-on-full
 // (count drops) — never overwrite unconsumed slots, so the consumer never
@@ -59,6 +59,43 @@ struct CpuRing {
 // the slot writes against the reader.
 unsafe impl Sync for CpuRing {}
 
+#[inline]
+fn irq_save_disable() -> u64 {
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    {
+        use sync::IrqGate;
+        // SAFETY: record restores this token after its bounded allocation-free
+        // slot write; no lock or call into another subsystem occurs inside.
+        unsafe { hal_x86_64::X86IrqGate::save_disable() }
+    }
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+    {
+        use sync::IrqGate;
+        // SAFETY: same bounded per-CPU slot-write section as the x86_64 arm.
+        unsafe { hal_aarch64::ArmIrqGate::save_disable() }
+    }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { 0 }
+}
+
+#[inline]
+fn irq_restore(flags: u64) {
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    {
+        use sync::IrqGate;
+        // SAFETY: token came from `irq_save_disable` in this record call.
+        unsafe { hal_x86_64::X86IrqGate::restore(flags); }
+    }
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+    {
+        use sync::IrqGate;
+        // SAFETY: token came from `irq_save_disable` in this record call.
+        unsafe { hal_aarch64::ArmIrqGate::restore(flags); }
+    }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { let _ = flags; }
+}
+
 static RINGS: [CpuRing; NCPU] = [const {
     CpuRing {
         head: AtomicU32::new(0), tail: AtomicU32::new(0), dropped: AtomicU32::new(0),
@@ -80,11 +117,13 @@ fn slot_ptr(c: usize, idx: u32) -> *mut Record {
 /// # C: O(1)
 pub fn record(c: usize, ts_ns: u64, pid: u32, kind: u8, payload: &[u8]) {
     if c >= NCPU { return; }
+    let flags = irq_save_disable();
     let r = &RINGS[c];
     let h = r.head.load(Ordering::Relaxed);
     let t = r.tail.load(Ordering::Acquire);
     if h.wrapping_sub(t) >= SLOTS as u32 {
         r.dropped.fetch_add(1, Ordering::Relaxed);
+        irq_restore(flags);
         return;
     }
     let n = payload.len().min(PAYLOAD);
@@ -101,6 +140,7 @@ pub fn record(c: usize, ts_ns: u64, pid: u32, kind: u8, payload: &[u8]) {
         core::ptr::copy_nonoverlapping(payload.as_ptr(), pl, n);
     }
     r.head.store(h.wrapping_add(1), Ordering::Release);
+    irq_restore(flags);
 }
 
 /// Total records dropped (ring-full) across all CPUs. # C: O(NCPU)
@@ -150,6 +190,21 @@ pub fn any_pending() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn producer_write_is_irqsave_against_same_cpu_nesting() {
+        let source = include_str!("percpu_ring.rs");
+        let record = source.split("pub fn record(").nth(1).expect("record body")
+            .split("pub fn dropped_total").next().expect("record end");
+        let save = record.find("irq_save_disable()").expect("IRQ save");
+        let write = record.find("copy_nonoverlapping").expect("slot write");
+        let publish = record.find("r.head.store").expect("head publish");
+        let restore = record.rfind("irq_restore(flags)").expect("IRQ restore");
+        assert!(save < write && write < publish && publish < restore);
+        assert!(record.contains("r.dropped.fetch_add"));
+        assert_eq!(record.matches("irq_restore(flags)").count(), 2,
+            "full-ring return and successful publish both restore IRQ state");
+    }
 
     // Tests share the global RINGS static and run in parallel, so each test
     // operates on its OWN cpu index + drains only that ring (no cross-test

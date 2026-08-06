@@ -1,15 +1,52 @@
 use super::*;
 
+/// A transport-demux table shared by socket syscalls and NET_RX.
+///
+/// Linux takes the corresponding inet hash locks with `spin_lock_bh()` from
+/// process context.  Keeping that rule at the type boundary prevents a task
+/// holding a table lock from being interrupted by NET_RX on the same CPU and
+/// deadlocking against itself.
+pub(crate) struct InetTableLock<T>(Spinlock<T, StackLockClass>);
+
+impl<T> InetTableLock<T> {
+    /// Build one bottom-half-safe transport table. # C: O(1)
+    pub(crate) const fn new(value: T) -> Self { Self(Spinlock::new(value)) }
+
+    /// Exclude NET_RX while the transport registry is held. # C: O(1)
+    pub(crate) fn lock(
+        &self,
+    ) -> sync::LockBhGuard<'_, T, StackLockClass, sched::bh::SchedBh> {
+        self.0.lock_bh::<sched::bh::SchedBh>()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transport_table_lock_excludes_network_bottom_halves() {
+        sched::preempt::_test_reset();
+        let table = InetTableLock::new(BTreeMap::<u16, u16>::new());
+        {
+            let _guard = table.lock();
+            assert_eq!(sched::preempt::softirq_count(),
+                sched::preempt::SOFTIRQ_DISABLE_OFFSET);
+        }
+        assert_eq!(sched::preempt::softirq_count(), 0);
+    }
+}
+
 /// Canonical AF_INET/AF_INET6 transport state owned by one network namespace.
 pub(crate) struct InetTables {
     pub(crate) raw4: Arc<crate::raw4::Raw4Table>,
     pub(crate) raw6: Arc<crate::raw6::Raw6Table>,
     pub(crate) ping: Arc<crate::ping::PingTable>,
-    pub(crate) udp: Arc<Spinlock<BTreeMap<u16, Vec<Arc<UdpRxQueue>>>, StackLockClass>>,
-    pub(crate) udp6: Arc<Spinlock<BTreeMap<u16, Vec<Arc<crate::stack_ipv6::Udp6RxQueue>>>, StackLockClass>>,
-    pub(crate) tcp_conns: Arc<Spinlock<BTreeMap<TcpKey, Arc<TcpEntry>>, StackLockClass>>,
-    pub(crate) tcp_listens: Arc<Spinlock<BTreeMap<TcpListenKey, Vec<Arc<TcpListenEntry>>>, StackLockClass>>,
-    pub(crate) tcp_binds: Arc<Spinlock<BTreeMap<u16, Vec<alloc::sync::Weak<TcpBindReservation>>>, StackLockClass>>,
+    pub(crate) udp: Arc<InetTableLock<BTreeMap<u16, Vec<Arc<UdpRxQueue>>>>>,
+    pub(crate) udp6: Arc<InetTableLock<BTreeMap<u16, Vec<Arc<crate::stack_ipv6::Udp6RxQueue>>>>>,
+    pub(crate) tcp_conns: Arc<InetTableLock<BTreeMap<TcpKey, Arc<TcpEntry>>>>,
+    pub(crate) tcp_listens: Arc<InetTableLock<BTreeMap<TcpListenKey, Vec<Arc<TcpListenEntry>>>>>,
+    pub(crate) tcp_binds: Arc<InetTableLock<BTreeMap<u16, Vec<alloc::sync::Weak<TcpBindReservation>>>>>,
     pub(crate) pmtu: super::pmtu_cache::PmtuCache,
 }
 
@@ -31,11 +68,11 @@ impl InetTables {
             raw4: Arc::new(crate::raw4::Raw4Table::new()),
             raw6: Arc::new(crate::raw6::Raw6Table::new()),
             ping: Arc::new(crate::ping::PingTable::new()),
-            udp: Arc::new(Spinlock::new(BTreeMap::new())),
-            udp6: Arc::new(Spinlock::new(BTreeMap::new())),
-            tcp_conns: Arc::new(Spinlock::new(BTreeMap::new())),
-            tcp_listens: Arc::new(Spinlock::new(BTreeMap::new())),
-            tcp_binds: Arc::new(Spinlock::new(BTreeMap::new())),
+            udp: Arc::new(InetTableLock::new(BTreeMap::new())),
+            udp6: Arc::new(InetTableLock::new(BTreeMap::new())),
+            tcp_conns: Arc::new(InetTableLock::new(BTreeMap::new())),
+            tcp_listens: Arc::new(InetTableLock::new(BTreeMap::new())),
+            tcp_binds: Arc::new(InetTableLock::new(BTreeMap::new())),
             pmtu: super::pmtu_cache::PmtuCache::new(),
         }
     }

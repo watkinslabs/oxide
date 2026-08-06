@@ -1,11 +1,7 @@
 // B1426 regression: virtio-blk's `wait_for_completion`/`acquire_turn` used to
 // poll a lock-free condition, THEN register on `BLK_COMPL`/`BLK_TURN`
-// (`park_blk`). That ordering is correct only on a single CPU — the caller's
-// `irq_save_enable`/`irq_restore` window means the ONLY source of a
-// completion is a local interrupt, which cannot run between the poll and the
-// park while this CPU's IF=0. Under SMP the completion IRQ lands on a
-// DIFFERENT cpu, entirely ungated by this cpu's IF flag: the completion
-// softirq can observe the condition and `wake_all()` an EMPTY wait list in
+// (`park_blk`). Under SMP the completion IRQ can land on a DIFFERENT cpu: the
+// completion softirq can observe the condition and `wake_all()` an EMPTY wait list in
 // the gap between this cpu's last poll and its park() call. With exactly one
 // outstanding turn/completion, no later wake ever arrives — a permanent hang
 // (`fstat` parked forever under `SMP=4`, reproducing every time; never under
@@ -184,13 +180,32 @@ fn concurrent_turn_release_never_leaves_acquirer_parked() {
 }
 
 #[test]
-fn kernel_wait_path_parks_without_a_fixed_spin_budget() {
+fn kernel_wait_path_parks_without_driver_owned_polling() {
     let wait = include_str!("../modern/wait.rs");
     let state = include_str!("../modern/state.rs");
     assert!(!wait.contains("IO_SPIN_BUDGET"));
     assert!(!state.contains("IO_SPIN_BUDGET"));
-    assert!(state.contains("IO_IRQ_POLL_BUDGET: u16 = 64"));
+    assert!(!state.contains("IO_IRQ_POLL_BUDGET"));
+    assert!(!state.contains("irq_save_enable"));
+    assert!(!wait.contains("for _ in 0.."));
     assert!(!wait.contains("while spun <"));
     assert!(wait.contains("park_blk_checked(&BLK_COMPL, deadline"));
     assert!(wait.contains("park_blk_checked(&BLK_TURN, 0"));
+}
+
+#[test]
+fn softirq_shared_queue_state_is_bottom_half_safe() {
+    let sources = [
+        include_str!("../modern/state.rs"),
+        include_str!("../modern/init.rs"),
+        include_str!("../modern/engine.rs"),
+        include_str!("../modern/wait.rs"),
+    ];
+    let joined = sources.join("\n");
+    assert!(!joined.contains("inflight.lock()"),
+        "plain queue-state lock can deadlock when block softirq interrupts it");
+    assert!(!joined.contains("DEVICES.lock()"),
+        "plain device registry lock can deadlock against block softirq");
+    assert!(joined.contains("inflight.lock_bh::<sched::bh::SchedBh>()"));
+    assert!(joined.contains("DEVICES.lock_bh::<sched::bh::SchedBh>()"));
 }

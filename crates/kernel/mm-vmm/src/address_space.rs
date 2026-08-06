@@ -1,6 +1,6 @@
 // Per-process address space per `11§3` + `11§9`.
 //
-// Wraps `VmaTree` in a `RwLock` (class `AddressSpace` per `06§3.6`).
+// Wraps `VmaTree` in a sleepable mmap rwsem (class `AddressSpace` per `06§3.6`).
 // `mmap` / `munmap` / `mprotect` execute under the write lock; lookup
 // (`find_vma`) takes the read lock so multiple page-fault handlers can
 // run concurrently once that path lands.
@@ -19,7 +19,7 @@ use alloc::collections::BTreeMap;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 
-use sync::{AddressSpace as AddressSpaceClass, Guard, KMalloc, PageTable, RwLock, RwReadGuard, Spinlock};
+use sync::{AddressSpace as AddressSpaceClass, Guard, KMalloc, PageTable, Spinlock};
 
 use crate::tree::VmaTree;
 use crate::vma::{Vma, VmaBacking};
@@ -110,6 +110,7 @@ mod mlock;
 mod mmfields;
 mod saved_auxv;
 mod ops;
+mod rwsem;
 mod uffd;
 pub mod pkeys;
 
@@ -118,6 +119,7 @@ pub use mdwe::{MdweAdmission, MdweRequest, MdweSetError};
 pub use saved_auxv::{saved_auxv_blob, SAVED_AUXV_BYTES};
 pub use ops::{MprotectOutcome, MprotectStep};
 pub use mlock::{LockedSpan, MlockOutcome};
+pub use rwsem::set_mmap_rwsem_wait_hooks;
 pub use uffd::UffdVma;
 pub use accounting::{global_accounting_snapshot, page_table_frame_allocated, page_table_frame_released, swap_pte_teardown, VmAccountingSnapshot};
 pub use mmfields::{
@@ -142,7 +144,7 @@ pub use mmfields::{
 /// (PML4 on x86_64; L0 on aarch64). `MmuOps::activate(root_pa)`
 /// installs it as the active CR3 / TTBR0_EL1 per `13§8`.
 pub struct AddressSpace {
-    vmas:    RwLock<VmaTree, AddressSpaceClass>,
+    vmas:    rwsem::MmapRwsem<VmaTree>,
     /// Serializes page-table leaf inspection and rewrite for this address
     /// space. It is deliberately distinct from `vmas`: page faults drop the
     /// VMA lock before backing I/O, then take this lock only for PTE commit and
@@ -316,7 +318,7 @@ impl AddressSpace {
     /// # C: O(1)
     pub fn new(root_pa: u64) -> KResult<Arc<Self>> {
         let as_ = Arc::new_cyclic(|w| Self {
-            vmas: RwLock::new(VmaTree::new()),
+            vmas: rwsem::MmapRwsem::new(VmaTree::new()),
             pt_lock: Spinlock::new(()),
             root_pa,
             brk:     core::sync::atomic::AtomicU64::new(0),
@@ -461,7 +463,7 @@ impl AddressSpace {
     /// is a coarse read borrow used by hosted tests in tests_rmap_cow
     /// to assert chain attach/detach invariants.
     /// # C: O(1) lock acquire
-    pub fn vmas_for_test(&self) -> RwReadGuard<'_, VmaTree, AddressSpaceClass> {
+    pub fn vmas_for_test(&self) -> rwsem::MmapReadGuard<'_, VmaTree> {
         self.vmas.read()
     }
 

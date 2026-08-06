@@ -406,6 +406,7 @@ dependencies = [
  "klog",
  "net",
  "pmm",
+ "sched",
  "softirq",
  "sync",
  "timer",
@@ -1091,6 +1092,7 @@ version = "0.1.0"
 dependencies = [
  "net",
  "netlink",
+ "sched",
  "sync",
 ]
 
@@ -2002,6 +2004,8 @@ dependencies = [
  "bitflags",
  "conformance",
  "hal",
+ "hal-aarch64",
+ "hal-x86_64",
  "klog",
  "libc",
  "namespace-identity",

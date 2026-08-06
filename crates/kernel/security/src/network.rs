@@ -3,8 +3,8 @@
 //! Policy is keyed by the concrete network-namespace id.  Callers pass only
 //! operation metadata; syscall shims must not duplicate policy decisions.
 
-use alloc::{collections::BTreeMap, vec::Vec};
-use core::sync::atomic::{AtomicU64, Ordering};
+use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use sync::{Namespace, Spinlock};
 
 #[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -22,26 +22,61 @@ pub type Hook = fn(Context) -> Verdict;
 
 struct Entry { hook: Hook, allowed: AtomicU64, denied: AtomicU64 }
 
-static HOOKS: Spinlock<BTreeMap<u64, BTreeMap<Operation, Entry>>, Namespace> =
-    Spinlock::new(BTreeMap::new());
+/// Network policy is read from NET_RX softirq context and changed from process
+/// context. Keep Linux `spin_lock_bh` exclusion in the type so a packet cannot
+/// interrupt a same-CPU control-path holder and spin on itself.
+struct NetworkBhLock<T>(Spinlock<T, Namespace>);
+
+impl<T> NetworkBhLock<T> {
+    const fn new(value: T) -> Self { Self(Spinlock::new(value)) }
+
+    fn lock(&self) -> sync::LockBhGuard<'_, T, Namespace, sched::bh::SchedBh> {
+        self.0.lock_bh::<sched::bh::SchedBh>()
+    }
+}
+
+static HOOKS: NetworkBhLock<BTreeMap<u64, BTreeMap<Operation, Arc<Entry>>>> =
+    NetworkBhLock::new(BTreeMap::new());
+
+/// Linux's LSM hook static keys: when no hook exists for an operation, the
+/// datapath does one acquire load and never touches the mutable registry.
+static ACTIVE_OPERATIONS: AtomicU32 = AtomicU32::new(0);
+
+impl Operation {
+    const fn bit(self) -> u32 { 1 << self as u32 }
+}
+
+fn publish_active_operations(all: &BTreeMap<u64, BTreeMap<Operation, Arc<Entry>>>) {
+    let mask = all.values().flat_map(|ops| ops.keys())
+        .fold(0u32, |mask, operation| mask | operation.bit());
+    ACTIVE_OPERATIONS.store(mask, Ordering::Release);
+}
 
 pub fn install(namespace: u64, operation: Operation, hook: Hook) -> Option<Hook> {
     let mut all = HOOKS.lock();
-    all.entry(namespace).or_default().insert(operation, Entry {
+    let old = all.entry(namespace).or_default().insert(operation, Arc::new(Entry {
         hook, allowed: AtomicU64::new(0), denied: AtomicU64::new(0),
-    }).map(|old| old.hook)
+    }));
+    publish_active_operations(&all);
+    old.map(|entry| entry.hook)
 }
 
 pub fn remove(namespace: u64, operation: Operation) -> Option<Hook> {
     let mut all = HOOKS.lock();
-    let old = all.get_mut(&namespace)?.remove(&operation).map(|entry| entry.hook);
+    let old = all.get_mut(&namespace)?.remove(&operation);
     if all.get(&namespace).is_some_and(BTreeMap::is_empty) { all.remove(&namespace); }
-    old
+    publish_active_operations(&all);
+    old.map(|entry| entry.hook)
 }
 
 /// Remove every network hook and its counters for a destroyed namespace. # C: O(operations)
 pub fn remove_namespace(namespace: u64) -> usize {
-    let removed = HOOKS.lock().remove(&namespace).map_or(0, |ops| ops.len());
+    let removed = {
+        let mut all = HOOKS.lock();
+        let removed = all.remove(&namespace).map_or(0, |ops| ops.len());
+        publish_active_operations(&all);
+        removed
+    };
     PEER_SECURITY.lock().remove(&namespace);
     removed
 }
@@ -104,9 +139,14 @@ pub fn message_security(sender: Option<&sched::pid::PidIdentity>) -> Option<Vec<
 }
 
 pub fn evaluate(context: Context) -> Verdict {
-    let all = HOOKS.lock();
-    let Some(entry) = all.get(&context.namespace).and_then(|ops| ops.get(&context.operation))
-        else { return Verdict::Allow; };
+    if ACTIVE_OPERATIONS.load(Ordering::Acquire) & context.operation.bit() == 0 {
+        return Verdict::Allow;
+    }
+    let entry = {
+        let all = HOOKS.lock();
+        all.get(&context.namespace).and_then(|ops| ops.get(&context.operation)).cloned()
+    };
+    let Some(entry) = entry else { return Verdict::Allow; };
     let verdict = (entry.hook)(context);
     match verdict { Verdict::Allow => { entry.allowed.fetch_add(1, Ordering::Relaxed); }
         Verdict::Deny => { entry.denied.fetch_add(1, Ordering::Relaxed); } }
@@ -242,5 +282,16 @@ mod tests {
             family: 2, socket_type: 1, protocol: 6 }), Verdict::Allow);
         assert_eq!(remove_namespace(21), operations.len());
         assert_eq!(remove_namespace(22), operations.len());
+    }
+
+    #[test]
+    fn network_registry_lock_excludes_bottom_halves_for_the_guard_lifetime() {
+        assert_eq!(sched::preempt::softirq_count(), 0);
+        {
+            let _guard = HOOKS.lock();
+            assert_eq!(sched::preempt::softirq_count(),
+                sched::preempt::SOFTIRQ_DISABLE_OFFSET);
+        }
+        assert_eq!(sched::preempt::softirq_count(), 0);
     }
 }
