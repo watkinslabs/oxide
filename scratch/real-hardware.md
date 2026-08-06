@@ -20,18 +20,16 @@ usable without it.
 | OPEN | Console (framebuffer) | yes | Full VT/fbcon stack built; only producer of a framebuffer is virtio-gpu. No output on bare metal. | — |
 | OPEN | UEFI boot | yes | x86 boots multiboot2 (BIOS/CSM) only. Modern boards are UEFI, many without CSM. | — |
 | OPEN | Input | yes | Only PS/2 keyboard. No xHCI host controller anywhere. | — |
-| OPEN | Cache attributes (WC) | yes¹ | No write-combining. Framebuffer would map Strong UC. | — |
+| DONE 2b44a8a29 | Cache attributes (WC) | no | x86 PAT and arm64 Normal-NC are wired through driver-owned raw-PFN VMA policy. | B1874-x86-write-combining |
 | OPEN | SMP AP bringup | no | `bring_up_aps()` counts APs and returns; never starts one. Runs on 1 core. | — |
-| OPEN | x2APIC + CPU count | no² | `MAX_CPUS = 64`, `u64` online mask, no x2APIC enablement. | — |
-| OPEN | ACPI depth | no³ | APIC/HPET/MCFG/SPCR parsed. No DSDT/AML, no FADT. | — |
+| OPEN | x2APIC + CPU count | no¹ | `MAX_CPUS = 64`, `u64` online mask, no x2APIC enablement. | — |
+| OPEN | ACPI depth | no² | APIC/HPET/MCFG/SPCR parsed. No DSDT/AML, no FADT. | — |
 | OPEN | Ethernet | no | Only virtio-net. No driver for any physical NIC. | — |
 | OPEN | IOMMU | no | Absent. Acceptable while disabled in firmware. | — |
 | — | Storage | no | NVMe + AHCI drivers exist and match by PCI class. Needs hardware validation only. | — |
 
-¹ Not blocking for boot; blocking for the console being usable rather than
-merely present.
-² Not blocking on i9-class part counts; blocking on Threadripper.
-³ Not blocking for boot given the MSI-only constraint below; blocking for
+¹ Not blocking on i9-class part counts; blocking on Threadripper.
+² Not blocking for boot given the MSI-only constraint below; blocking for
 poweroff/reset.
 
 ## 2 Console — the framebuffer chain
@@ -80,7 +78,9 @@ and passes them through the same tag. A simplefb driver written against tag 8
 keeps working unchanged across the port. It is the piece that makes the port
 debuggable, not throwaway work ahead of it.
 
-**Depends on** §5 (write-combining) to be pleasant rather than merely present.
+**Dependency §5 is complete.** The simplefb lane must select its WC policy and
+record the real full-screen fill comparison when it creates the first physical
+framebuffer mapping.
 
 ## 3 UEFI boot
 
@@ -129,28 +129,17 @@ machine.
 
 ## 5 Cache attributes — write-combining
 
-**Finding.** No write-combining anywhere. `hal::PageFlags`
-(`crates/arch/hal/src/lib.rs:119-120`) offers `NO_CACHE` and `WRITE_THROUGH`
-only — there is no `WRITE_COMBINE`. On x86, `PCD|PWT` resolves to PAT slot 3,
-Strong UC (`crates/arch/hal-x86_64/src/vmm.rs:10-12`). The comment there
-allows for "PAT slot 1 if the kernel has reprogrammed PAT", but nothing
-programs `IA32_PAT` — grep returns no writer.
+**Done `2b44a8a29`.** `PageFlags::WRITE_COMBINE` selects the BSP/AP-owned PAT
+WC entry on x86 and MAIR Normal-NC on aarch64. Raw-PFN VMAs retain one
+driver-selected cache policy through every fault. PMM-backed virtio scanout
+stays write-back; a firmware/MMIO framebuffer selects WC at registration, so
+the driver remains the sole cache-policy owner.
 
-Consequence: a firmware framebuffer maps Strong UC. Every character cell
-becomes a separate uncached write across PCIe. Scrolling a text console is
-visibly slow; a desktop compositor on it is not viable.
-
-**Work.**
-
-1. Program `IA32_PAT` at boot to place WC in a known slot, on the BSP and on
-   every AP as it comes up (the MSR is per-CPU).
-2. Add `PageFlags::WRITE_COMBINE` and the per-arch leaf encoding. aarch64 has
-   its own Normal-NC attribute — encode both rather than making the flag
-   x86-only, per the lockstep rule.
-3. Map the simplefb range WC.
-4. Verify by measurement, not inspection: time a full-screen fill UC vs WC and
-   record both numbers. A change this cheap to get wrong silently deserves a
-   positive control.
+Hosted regressions pin all three leaf policies and both architecture
+encodings. Paired release boots and the exact Firefox no-regression workload
+pass; `scratch/write-combining-performance-20260806.md` retains the numbers.
+The UC-versus-WC full-screen fill belongs to §2's first physical framebuffer:
+there is no device range to measure before that live blocker is implemented.
 
 ## 6 SMP AP bringup
 
