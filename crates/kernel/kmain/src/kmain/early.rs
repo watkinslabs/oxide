@@ -167,6 +167,23 @@ fn log_boot_info(info: &BootInfo) {
     } else {
         debug_boot! { klog::kinfo!("rsdp: absent"); }
     }
+    debug_boot! {
+        if info.framebuffer.byte_len().is_some() {
+            klog::write_raw(b"[INFO]  bootfb: base=");
+            klog::write_hex_u64(info.framebuffer.base_pa);
+            klog::write_raw(b" width=");
+            klog::write_dec_u64(info.framebuffer.width as u64);
+            klog::write_raw(b" height=");
+            klog::write_dec_u64(info.framebuffer.height as u64);
+            klog::write_raw(b" pitch=");
+            klog::write_dec_u64(info.framebuffer.pitch as u64);
+            klog::write_raw(b" bpp=");
+            klog::write_dec_u64(info.framebuffer.bpp as u64);
+            klog::write_raw(b"\n");
+        } else {
+            klog::write_raw(b"[INFO]  bootfb: absent\n");
+        }
+    }
     // SMBIOS/DMI decode (independent of ACPI/RSDP): populate /sys/class/dmi/id/*
     // so systemd-detect-virt identifies the QEMU/KVM VM via `sys_vendor`/
     // `product_name`. Without it detect_vm() returns NONE.

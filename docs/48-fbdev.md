@@ -1,19 +1,19 @@
 # 48 fbdev (legacy framebuffer)
 
-FROZEN 2026-05-09. Dep:`01`,`02`,`07`,`13`,`15`,`16`,`19`,`45`,`47`. Provides:`/dev/fb0..fbN`,`49` (fbcon backend),legacy SDL/efifb/`Xorg fbdev` userspace.
+FROZEN 2026-08-06. Dep:`01`,`02`,`07`,`13`,`15`,`16`,`19`,`35`,`36`,`45`,`47`. Provides:`/dev/fb0..fbN`,`49` (fbcon backend),legacy SDL/efifb/`Xorg fbdev` userspace.
 
 Full Linux fbdev UAPI per `linux/include/uapi/linux/fb.h`. No deferrals.
 
 ## 1 Purpose
 
-Linux fbdev UAPI per `linux/include/uapi/linux/fb.h`. `/dev/fb0` is a memory-mapped linear framebuffer with `FBIOGET_FSCREENINFO`/`VSCREENINFO`/`PUT_VSCREENINFO`/`PAN_DISPLAY`/`BLANK` ioctls. Backed by a DRM dumb-buffer + scanout (`47`) bound at boot. Kept for compat with software that hasn't migrated to DRM (fbcon, `fbset`, `Xorg -configure`, raw frame dumpers).
+Linux fbdev UAPI per `linux/include/uapi/linux/fb.h`. `/dev/fb0` is a memory-mapped linear framebuffer with `FBIOGET_FSCREENINFO`/`VSCREENINFO`/`PUT_VSCREENINFO`/`PAN_DISPLAY`/`BLANK` ioctls. Backed by a driver-owned scanout: DRM/virtio guest RAM or the firmware linear framebuffer fallback (`36`).
 
 ## 2 Invariants (frozen)
 
-1. `/dev/fb0` ino = `0x70010000`. devfs registers at boot AFTER `47` (DRM) registers a backing card.
+1. `/dev/fb0` ino = `0x70010000`. devfs registers when the first scanout owner binds.
 2. One `/dev/fbN` per active scanout (CRTC). Multi-head display exposes `/dev/fb0`, `/dev/fb1`, ... in scanout-id order.
-3. The backing buffer is a DRM dumb-buffer + a SETCRTC binding. fbdev does NOT own its own pixel memory; releasing `/dev/fbN` does not free pages.
-4. `mmap(/dev/fbN)` returns the same pa range that DRM's MAP_DUMB returns — userspace dumping pixels via fbdev sees the same memory the DRM client sees.
+3. Pixel-memory and cache policy belong to the registering driver; fbdev holds only the physical extent, kernel alias, geometry, and operations.
+4. `mmap(/dev/fbN)` returns the registering driver's physical range: the same PMM pages as DRM MAP_DUMB or the firmware aperture from `BootInfo.framebuffer`.
 5. Pixel formats: every fb_var_screeninfo configuration that maps to a `45§6` format is accepted: 8/15/16/24/32 bpp; pseudocolor (CMAP) for 8 bpp; truecolor for 15/16/24/32. `FBIOPUT_VSCREENINFO` reallocates the backing dumb-buffer if bpp or resolution changes.
 6. Resolution change via `PUT_VSCREENINFO` performs a DRM modeset; rejected with `EINVAL` only if the requested mode isn't in the connector's mode list.
 
@@ -114,14 +114,14 @@ Visual reported per current fb_var bpp: 8 bpp = `FB_VISUAL_PSEUDOCOLOR`, 15/16/2
 ## 7 mmap semantics
 
 `mmap(fd, len, PROT_RW, MAP_SHARED, /dev/fb0_fd, off=0)`:
-1. Map the underlying DRM dumb-buffer's pa range into the caller's user VA.
-2. PTE flags: read+write+user, write-back cacheable. Userspace + kernel-side fbcon both read+write the same pages; cache coherency is handled by virtio-gpu's `TRANSFER_TO_HOST_2D` issued from the fbcon scroll path or explicit `FBIO_WAITFORVSYNC` / `FBIO_FLUSH` ioctls.
+1. Map the driver-owned physical range into the caller's user VA.
+2. PTE flags: read+write+user with the driver-owned cache mode. PMM-backed virtio scanouts are write-back; firmware/MMIO apertures are write-combined.
 3. Length must equal `smem_len`; partial mappings rejected with `EINVAL`.
 
 ## 8 read/write
 
 `read(/dev/fb0, buf, n)` copies pixel bytes starting at `pos` from the backing pa.
-`write(/dev/fb0, buf, n)` copies into the backing pa AND issues a virtio-gpu `TRANSFER_TO_HOST_2D` + `RESOURCE_FLUSH` for the touched rect (so a `dd if=image > /dev/fb0` workflow shows up on screen).
+`write(/dev/fb0, buf, n)` copies into the backing pa and invokes the driver's flush operation when one exists; direct linear framebuffers need no command.
 `pos` advances by the byte count; supports `lseek(SEEK_SET/CUR/END)`.
 
 ## 9 Concurrency
@@ -131,7 +131,7 @@ Visual reported per current fb_var bpp: 8 bpp = `FB_VISUAL_PSEUDOCOLOR`, 15/16/2
 
 ## 10 Failure modes
 
-- DRM modeset still in progress: `EAGAIN`.
+- Scanout registration still in progress: `EAGAIN`.
 - Requested resolution not in connector mode list: `EINVAL`.
 - mmap len mismatch: `EINVAL`.
 
@@ -145,7 +145,7 @@ Visual reported per current fb_var bpp: 8 bpp = `FB_VISUAL_PSEUDOCOLOR`, 15/16/2
 
 ## 16 Cross-spec
 
-`47` (DRM provides backing buffer + scanout binding), `45` (virtio-gpu issues actual TRANSFER_TO_HOST), `49` (fbcon writes glyphs into the same fb), `19` (devfs node).
+`47` (DRM scanout), `45` (virtio-gpu transfer), `36` (firmware framebuffer handoff), `35` (`drv-simplefb`), `49` (fbcon), `19` (devfs node).
 
 ## 13 Pan-display + double-buffering
 
@@ -162,4 +162,3 @@ struct fb_cmap {
 ```
 
 In `FB_VISUAL_PSEUDOCOLOR` mode (8 bpp), the cmap is the active palette. In truecolor visuals (15/16/24/32 bpp) the cmap is identity and writes are stored but ignored at scanout.
-

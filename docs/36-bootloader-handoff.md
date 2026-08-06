@@ -32,10 +32,11 @@ Multiboot2 info tags consumed:
 | 6 (memory map) | `BootInfo.memmap`, carved around the loaded kernel image |
 | 15 (ACPI 2.0 RSDP) | `BootInfo.rsdp_pa` — preferred; carries the XSDT the MADT walk needs |
 | 14 (ACPI 1.0 RSDP) | fallback only; RSDT-only |
+| 8 (framebuffer information) | `BootInfo.framebuffer`; validated packed-RGB platform fallback |
 
 Not supplied by this handoff, and therefore owned by the kernel:
 - HHDM base: installed by the trampoline, reported as `BootInfo.hhdm_offset`.
-- Framebuffer: from the virtio-gpu / DRM path (`35`), not a boot tag.
+- Framebuffer request: optional type-5 header tag with loader-selected geometry. The type-8 information tag becomes a `simple-framebuffer` platform device only after PCI/native display probing found no scanout; its driver owns the WC mapping and fbdev/fbcon registration (`35`).
 - CPU topology and AP startup: ACPI MADT plus the kernel's own INIT/SIPI trampoline (`13§11`). The handoff carries no CPU table.
 - GDT/IDT/PIC state: the trampoline's GDT is temporary; `_start_rust` installs kernel-owned GDT/TSS/IDT and remaps+masks the legacy 8259 before the first `sti` (`20§3`).
 
@@ -75,6 +76,7 @@ Single-threaded boot until `smp_init`.
 - GRUB multiboot2 boot in QEMU q35 → "hello via UART" + clean QEMU exit (ISA-debug-exit).
 - GRUB EFI-stub boot in QEMU `virt` under OVMF: same sequence.
 - Both arches: `BootInfo.rsdp_pa` non-zero, MADT decodes, memmap total ≈ QEMU `-m`.
+- x86_64: RGB framebuffer tag round-trips base, pitch, geometry, channel masks; native scanout wins, otherwise simplefb registers with WC policy.
 - Cmdline parse: invalid `oxide.smp=abc` logs warn, ignores; valid keys take effect.
 - Memory map sanity: PMM init reports total ≈ QEMU `-m`.
 
@@ -91,4 +93,3 @@ Single-threaded boot until `smp_init`.
 ## 10 Cross-spec
 
 `33` (RSDP/DTB consumption), `20`/`21` (early arch setup), `39§5` (image builder produces the GRUB ISO + root disk), `13§11` (kernel-driven AP startup).
-

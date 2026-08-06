@@ -156,6 +156,20 @@ pub fn init_scanout_with_cache(
     var.yres = h;
     var.xres_virtual = w;
     var.yres_virtual = h;
+    init_scanout_configured(base_pa, fb_va, fb_bytes, pitch, var, mmap_cache)
+}
+
+/// Register a scanout whose boot/firmware owner supplies the exact packed-pixel
+/// format in addition to its cache policy.
+/// # C: O(1)
+pub fn init_scanout_configured(
+    base_pa: u64,
+    fb_va: u64,
+    fb_bytes: u64,
+    pitch: u32,
+    var: FbVarScreeninfo,
+    mmap_cache: vmm::PhysCacheMode,
+) -> u32 {
     let mut fix = FbFixScreeninfo::default();
     fix.smem_start = base_pa;
     fix.smem_len = fb_bytes as u32;

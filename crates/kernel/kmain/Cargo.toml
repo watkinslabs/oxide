@@ -56,6 +56,7 @@ nscg     = { path = "../nscg" }
 cgroup   = { path = "../cgroup" }
 security = { path = "../security" }
 drv             = { path = "../../drivers/drv" }
+drv-simplefb      = { path = "../../drivers/drv-simplefb" }
 drv-virtio-gpu    = { path = "../../drivers/drv-virtio-gpu" }
 drv-virtio-input  = { path = "../../drivers/drv-virtio-input" }
 drv-virtio-net    = { path = "../../drivers/drv-virtio-net" }
@@ -92,7 +93,7 @@ debug-sched = ["sched/debug-sched","fs/debug-sched", "kmacros/debug-sched", "smo
 debug-smp = ["sched/debug-smp", "sync/debug-smp", "syscalls/debug-smp"]  # spin-stall probe: names the lock CLASS rank of any Spinlock::lock() that spins past SPIN_WARN_ITERS (busy-spin livelock hunt)
 debug-task-fpu-provenance = ["sched/debug-task-fpu-provenance"]  # validates each Task's FP/SIMD save-area identity before raw scheduler/ptrace access
 debug-as-lifetime = ["sched/debug-as-lifetime", "vmm/debug-as-lifetime"]  # retained AddressSpace/VMA ownership provenance
-debug-boot = ["sched/debug-boot", "ipc/debug-boot", "fs/debug-boot", "pmm/debug-boot", "drv-virtio-gpu/debug-boot", "drv-virtio-blk/debug-boot", "devfs/debug-boot", "kmacros/debug-boot", "devpts/debug-boot", "smoke/debug-boot", "elf-load/debug-boot", "syscalls/debug-boot", "pci-boot/debug-boot", "drv-ps2-keyboard/debug-boot", "sysfs/debug-zram"]  # operational-pulse trace (init started, pmm: ready, …)
+debug-boot = ["sched/debug-boot", "ipc/debug-boot", "fs/debug-boot", "pmm/debug-boot", "drv-simplefb/debug-boot", "drv-virtio-gpu/debug-boot", "drv-virtio-blk/debug-boot", "devfs/debug-boot", "kmacros/debug-boot", "devpts/debug-boot", "smoke/debug-boot", "elf-load/debug-boot", "syscalls/debug-boot", "pci-boot/debug-boot", "drv-ps2-keyboard/debug-boot", "sysfs/debug-zram"]  # operational-pulse trace (init started, pmm: ready, …)
 # B1474: per-event campaign traces, split out of `debug-boot`. `make qemu-x86`
 # / `qemu-arm` set `debug-boot` unconditionally (the boot UART sink needs it),
 # so a trace that fires per syscall / per signal / per fault / per journald

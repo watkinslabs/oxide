@@ -35,6 +35,7 @@ pub unsafe fn stub_boot_info() -> BootInfo {
         boot_ns: 0,
         hhdm_offset: 0,
         rsdp_pa: 0,
+        framebuffer: boot_info::BootFramebuffer::EMPTY,
         bsp_lapic_id: 0,
         _pad: 0,
     }
