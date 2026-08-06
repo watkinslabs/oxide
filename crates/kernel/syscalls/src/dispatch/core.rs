@@ -406,6 +406,9 @@ fn syscall_entry_work(orig_nr: u64, args: &SyscallArgs) -> (Option<u64>, u64) {
 
 #[no_mangle]
 pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64) -> u64 {
+    // Linux `vtime_user_exit`: the architectural syscall entry has crossed
+    // into kernel mode; close the user interval before any dispatch work.
+    sched::cpustat::user_exit();
     let orig_nr = nr;
     #[cfg(target_arch = "aarch64")]
     let nr = syscall::arm_abi::aarch64_nr_to_x86(nr);
@@ -453,7 +456,10 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     // A dispatched call's ABI is whatever foreign personality the userspace
     // handler emulates, so neither a tracer nor a cBPF filter compiled for
     // THIS ABI may be shown its arguments.
-    if let Some(rv) = super::user_dispatch::user_dispatch_gate(orig_nr, a0) { return rv; }
+    if let Some(rv) = super::user_dispatch::user_dispatch_gate(orig_nr, a0) {
+        sched::cpustat::user_enter();
+        return rv;
+    }
     // The ptrace entry stop runs BEFORE seccomp, and the number is re-read
     // afterwards, so a tracer's rewrite is what the filter judges and what the
     // dispatcher runs. The reverse order let a tracer substitute a call the
@@ -526,15 +532,11 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     crate::startlat::record(nr, __startlat, rv);
     #[cfg(feature = "debug-boot")]
     trace_einval(nr, a0, a1, a2, a3, a4, a5, rv);
+    #[cfg(any(feature = "debug-taskdump", feature = "debug-polktrace"))]
     sched::diag::record_syscall(nr as u32, rv);
     #[cfg(feature = "debug-syscall-return")]
     if let Some(task) = return_task {
         sched::diag::syscall_return_stage(task, sched::diag::SYSCALL_RETURN_STAGE_AFTER_DIAG);
-    }
-    sched::timers::fire_due_timers();
-    #[cfg(feature = "debug-syscall-return")]
-    if let Some(task) = return_task {
-        sched::diag::syscall_return_stage(task, sched::diag::SYSCALL_RETURN_STAGE_AFTER_TIMERS);
     }
     crate::proc::rseq_writeback();
     #[cfg(feature = "debug-syscall-return")]
@@ -550,18 +552,6 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     #[cfg(feature = "debug-syscall-return")]
     if let Some(task) = return_task {
         sched::diag::syscall_return_stage(task, sched::diag::SYSCALL_RETURN_STAGE_AFTER_PTRACE);
-    }
-    // Linux `run_posix_cpu_timers` / `it_real_fn`: a deadline that came due
-    // inside this syscall posts its signal before the return-to-user loop
-    // below looks for one. The expiry policy itself is owned by
-    // `sched::live::service_task_timers`, shared with the tick's registry walk
-    // — this used to be an open-coded second copy of the same rules.
-    {
-        #[cfg(target_arch = "x86_64")]
-        let now = { use hal::TimerOps; hal_x86_64::X86TimerOps::monotonic_ns().0 };
-        #[cfg(target_arch = "aarch64")]
-        let now = { use hal::TimerOps; hal_aarch64::ArmTimerOps::monotonic_ns().0 };
-        sched::live::service_current_timers(now);
     }
     // Linux `syscall_exit_to_user_mode_prepare` -> `exit_to_user_mode_loop`:
     // reschedule, deliver signals and apply the restart decision, LOOPING while
@@ -598,6 +588,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
             klog::write_raw(b"]\n");
         }
     }
+    // Linux `vtime_user_enter`: all exit work is complete and the assembly
+    // epilogue is about to resume userspace.
+    sched::cpustat::user_enter();
     rv_out
 }
 

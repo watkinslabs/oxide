@@ -272,6 +272,7 @@ impl Task {
         class: SchedClass,
         mm: Option<Arc<AddressSpace>>,
     ) -> Self {
+        let starts_in_user = mm.is_some();
         let pid = Arc::new(crate::pid::PidIdentity::new(tid));
         let thread_group = Arc::new(crate::thread_group::ThreadGroup::new(Arc::clone(&pid)));
         // Taken before the group is moved into the struct: every thread of a
@@ -308,6 +309,12 @@ impl Task {
             vruntime: AtomicU64::new(0),
             exec_start_ns: AtomicU64::new(0),
             sum_exec_runtime_ns: AtomicU64::new(0),
+            vtime_start_ns: AtomicU64::new(0),
+            vtime_state: AtomicU8::new(if starts_in_user {
+                crate::cpustat::VTIME_USER
+            } else {
+                crate::cpustat::VTIME_SYSTEM
+            }),
             last_syscall_nr: AtomicU32::new(u32::MAX),
             nsyscalls: AtomicU64::new(0),
             min_flt: AtomicU64::new(0),

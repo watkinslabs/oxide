@@ -162,6 +162,14 @@ pub struct Task {
     pub exec_start_ns: AtomicU64,
     /// Total CPU time (ns) consumed — /proc/<pid>/stat utime + cgroup cpu (`13§3`).
     pub sum_exec_runtime_ns: AtomicU64,
+    /// Linux generic-vtime accounting boundary. While the task owns a CPU,
+    /// this is the monotonic timestamp at which its current user/system
+    /// interval began; zero means the task is off-CPU. Updated only by the
+    /// running task's entry/exit path or its runqueue during a switch.
+    pub vtime_start_ns: AtomicU64,
+    /// Current generic-vtime mode (`cpustat::VTIME_{SYSTEM,USER}`). The mode
+    /// survives a context switch; `vtime_start_ns` excludes the off-CPU gap.
+    pub vtime_state: AtomicU8,
     pub last_syscall_nr: AtomicU32, // diag: last syscall nr entered (u32::MAX=none); stamped in diag::note_syscall
     pub nsyscalls: AtomicU64,        // diag: monotonic syscall-entry count (sysrq/watchdog dump)
     /// Linux `task_struct::min_flt` / `maj_flt` — page faults resolved without

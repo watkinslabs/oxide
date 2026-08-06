@@ -1,7 +1,10 @@
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
+#[cfg(feature = "debug-taskdump")]
+use core::sync::atomic::AtomicU32;
 
 use crate::Task;
 
+#[cfg(any(feature = "debug-taskdump", feature = "debug-polktrace"))]
 use super::current_task;
 #[cfg(feature = "debug-taskdump")]
 use super::format::emit_syscall;
@@ -16,23 +19,32 @@ pub fn switches() -> u64 {
     SWITCHES.load(Ordering::Relaxed)
 }
 
+#[cfg(feature = "debug-taskdump")]
 const RING_N: usize = 512;
+#[cfg(feature = "debug-taskdump")]
 static RING_TID: [AtomicU32; RING_N] = [const { AtomicU32::new(0) }; RING_N];
+#[cfg(feature = "debug-taskdump")]
 static RING_NR: [AtomicU32; RING_N] = [const { AtomicU32::new(u32::MAX) }; RING_N];
+#[cfg(feature = "debug-taskdump")]
 static RING_RET: [core::sync::atomic::AtomicI64; RING_N] =
     [const { core::sync::atomic::AtomicI64::new(0) }; RING_N];
+#[cfg(feature = "debug-taskdump")]
 static RING_POS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
+#[cfg(any(feature = "debug-taskdump", feature = "debug-polktrace"))]
 pub fn record_syscall(nr: u32, ret: i64) {
     let t = match current_task() {
         Some(t) => t,
         None => return,
     };
     let tid = t.tid;
-    let i = RING_POS.fetch_add(1, Ordering::Relaxed) % RING_N;
-    RING_TID[i].store(tid, Ordering::Relaxed);
-    RING_NR[i].store(nr, Ordering::Relaxed);
-    RING_RET[i].store(ret, Ordering::Relaxed);
+    #[cfg(feature = "debug-taskdump")]
+    {
+        let i = RING_POS.fetch_add(1, Ordering::Relaxed) % RING_N;
+        RING_TID[i].store(tid, Ordering::Relaxed);
+        RING_NR[i].store(nr, Ordering::Relaxed);
+        RING_RET[i].store(ret, Ordering::Relaxed);
+    }
     // debug-polktrace: live per-syscall stream for polkitd only, to locate the
     // authority-init stall (never reaches RequestName). exe-filtered so overhead
     // is bounded to one process. # nr/ret only; args live in per-handler traces.

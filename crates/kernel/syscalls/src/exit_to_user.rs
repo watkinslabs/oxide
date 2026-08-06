@@ -240,6 +240,7 @@ pub unsafe extern "C" fn irqentry_exit(regs: *mut u8) {
     // SAFETY: this fn's own contract is forwarded unchanged — `regs` is a live
     // entry frame, checked non-null and user-mode above, with a current task.
     let _ = unsafe { exit_to_user_mode_loop(regs, None) };
+    sched::cpustat::user_enter();
 }
 
 /// Install the loop. Boot path, before the first interrupt can be taken from

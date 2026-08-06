@@ -78,6 +78,7 @@ pub fn do_exit(status: i32) -> i64 {
             // SAFETY: rq.current was installed via Arc::into_raw and is non-null after install_global; the AtomicPtr's strong-ref-via-raw keeps the pointee alive across this borrow; we are running ON this task so no concurrent freer.
             let task: &sched::Task = unsafe { &*raw };
             task.debug_check_canary("sys_exit_current");
+            sched::cpustat::exit_current(task);
             if task.thread_group.is_single_member() {
                 sched::timers::clear_process_timers(task);
             }

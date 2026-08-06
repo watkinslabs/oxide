@@ -38,10 +38,9 @@ const SCAN_PERIOD_NS: u64 = 100_000_000;
 /// the deadline bookkeeping stays separate from the enqueue and a caller
 /// holding only a `&Task` never pays for an `Arc` resolve it does not need.
 ///
-/// ONE owner for the expiry policy: the registry walk below runs it for every
-/// live task, and the return-to-user path runs it for the current task so a
-/// timer that came due inside the last syscall is not held for up to a full
-/// scan period. Before this the syscall tail carried its own open-coded copy.
+/// ONE owner for the expiry policy: the periodic timer worker below runs it
+/// for every live task. POSIX CPU timers use the scheduler tick directly;
+/// blocking waits and POSIX wall timers use their deadline queues.
 /// # C: O(1)
 pub fn service_task_timers(t: &crate::Task, now_ns: u64) -> u64 {
     let mut due = 0u64;
@@ -100,28 +99,13 @@ pub fn post_expired_timer_signals(t: &Arc<crate::Task>, due: u64) {
     }
 }
 
-/// Service + post for the RUNNING task, at the syscall-return tail. The `Arc`
-/// resolve happens only when something actually came due, so the common
-/// "nothing expired" return costs one atomic load per timer.
-/// # C: O(1) when nothing is due
-pub fn service_current_timers(now_ns: u64) {
-    let Some(cur) = super::current() else { return };
-    let due = service_task_timers(cur, now_ns);
-    if due == 0 { return; }
-    let Some(arc) = crate::registry::lookup(cur.tid) else { return };
-    post_expired_timer_signals(&arc, due);
-}
-
 /// Walk the live task registry and service expired `alarm_ns` (alarm(2) /
 /// setitimer ITIMER_REAL) plus the CPU-time itimers. Idempotent.
 ///
-/// B20: the syscall-return tail also checks alarm_ns,
-/// but a task parked in a blocking syscall (e.g. read() on an empty
-/// pipe) issues no further syscalls, so its tail never runs — only
-/// this periodic walker can post SIGALRM and wake it. On expiry we
-/// re-arm by interval (or clear for one-shot), set the SIGALRM
-/// pending bit, and `wake_if_sleeping` so the blocking helper
-/// re-checks deliverable signals and surfaces -EINTR.
+/// A task parked in a blocking syscall (e.g. read() on an empty pipe) issues no
+/// further syscalls, so only this periodic owner can post these legacy coarse
+/// timers consistently. On expiry it re-arms by interval (or clears a one-shot)
+/// and wakes the target so the blocking helper surfaces -EINTR.
 /// # C: O(N_live_tasks)
 pub fn tick_wake_expired(now_ns: u64) {
     if now_ns == 0 { return; }
