@@ -75,6 +75,23 @@ fn malformed_successor_link_is_rejected_before_merge_dereference() {
     assert_eq!(unsafe { holes.dealloc(held, split) }, Err(HoleListError::OutsideOwnedRegion));
 }
 
+#[test]
+fn sorted_region_growth_keeps_ownership_index_balanced() {
+    const REGIONS: usize = 257;
+    let mut backing: Vec<Box<[u8]>> = (0..REGIONS)
+        .map(|_| vec![0u8; TEST_REGION_BYTES].into_boxed_slice())
+        .collect();
+    backing.sort_unstable_by_key(|region| region.as_ptr() as usize);
+    let mut holes = HoleList::new();
+    for region in &mut backing {
+        // SAFETY: every boxed slice is disjoint, remains alive through the
+        // test, and is registered exactly once.
+        assert!(unsafe { holes.add_region(region.as_mut_ptr() as usize, region.len()) }.is_ok());
+    }
+    assert!(holes.region_tree_height() <= 12,
+        "sorted insertion must not degenerate the region ownership index");
+}
+
 // `debug-heappoison`'s redzone check (B1313) runs before the ownership check
 // below and catches a duplicate free earlier, with a different panic message
 // — split by feature so each build's actual first-line-of-defense is tested.
