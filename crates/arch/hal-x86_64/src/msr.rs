@@ -16,6 +16,9 @@ pub const IA32_GS_BASE: u32 = 0xC000_0101;
 /// and the kernel per-CPU base while the CPU is in user mode.
 pub const IA32_KERNEL_GS_BASE: u32 = 0xC000_0102;
 
+/// `IA32_CR_PAT` — eight 8-bit page-attribute entries.
+pub const IA32_CR_PAT: u32 = 0x0000_0277;
+
 /// `CR4.FSGSBASE` (bit 16) — enables the unprivileged `rdfsbase`,
 /// `wrfsbase`, `rdgsbase`, `wrgsbase` instructions at ALL privilege levels.
 ///
@@ -54,6 +57,7 @@ mod tests {
         // segment base instead of faulting.
         assert_eq!(IA32_GS_BASE, IA32_FS_BASE + 1);
         assert_eq!(IA32_KERNEL_GS_BASE, IA32_GS_BASE + 1);
+        assert_eq!(IA32_CR_PAT, 0x277);
     }
 
     #[test]

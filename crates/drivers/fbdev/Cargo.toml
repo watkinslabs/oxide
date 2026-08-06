@@ -17,6 +17,7 @@ drv     = { path = "../drv" }
 syscall = { path = "../../kernel/syscall" }
 uaccess = { path = "../../kernel/uaccess" }
 vfs     = { path = "../../kernel/vfs" }
+vmm     = { path = "../../kernel/mm-vmm" }
 
 [lints]
 workspace = true

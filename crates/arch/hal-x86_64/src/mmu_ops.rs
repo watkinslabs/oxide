@@ -295,8 +295,8 @@ impl MmuOps for X86Mmu {
         let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
         if hhdm == 0 { return None; }
         // SAFETY: HHDM covers page-table memory; reads only.
-        let (pa, leaf, _level) = unsafe { pt_walker::translate_at_va::<PtWalkerX86>(va.0, hhdm)? };
-        Some((Pa(pa), unpack_flags(leaf)))
+        let (pa, leaf, level) = unsafe { pt_walker::translate_at_va::<PtWalkerX86>(va.0, hhdm)? };
+        Some((Pa(pa), unpack_flags(leaf, level != 3)))
     }
 
     /// Local-CPU TLB invalidate of a single 4 KiB page.
@@ -398,12 +398,11 @@ impl MmuOps for X86Mmu {
 
 /// Reverse-translate an x86 leaf entry to `PageFlags`. Drops
 /// ACCESSED/DIRTY/HUGE which have no neutral counterpart.
-fn unpack_flags(leaf: u64) -> PageFlags {
+fn unpack_flags(leaf: u64, large: bool) -> PageFlags {
     let mut n = PageFlags::READ;
     if (leaf & (1 << 1)) != 0 { n |= PageFlags::WRITE; }
     if (leaf & (1 << 2)) != 0 { n |= PageFlags::USER; }
-    if (leaf & (1 << 3)) != 0 { n |= PageFlags::WRITE_THROUGH; }
-    if (leaf & (1 << 4)) != 0 { n |= PageFlags::NO_CACHE; }
+    n |= crate::pat::cache_flags(leaf, large);
     if (leaf & (1 << 8)) != 0 { n |= PageFlags::GLOBAL; }
     if (leaf & (1u64 << 63)) == 0 { n |= PageFlags::EXEC; }
     n
@@ -422,7 +421,7 @@ mod tests {
         let pa = 0xdead_b000_u64;
         let want = PageFlags::READ | PageFlags::WRITE; // EXEC clear → NX set
         let leaf = PtWalkerX86::pack_4k_leaf(pa, want);
-        let got = unpack_flags(leaf);
+        let got = unpack_flags(leaf, false);
         assert_eq!(got, want);
     }
 
@@ -432,7 +431,7 @@ mod tests {
         let pa = 0xcafe_b000_u64;
         let want = PageFlags::READ | PageFlags::WRITE | PageFlags::EXEC | PageFlags::USER;
         let leaf = PtWalkerX86::pack_4k_leaf(pa, want);
-        let got = unpack_flags(leaf);
+        let got = unpack_flags(leaf, false);
         assert_eq!(got, want);
     }
 }

@@ -324,7 +324,10 @@ fn the_adapter_reads_the_object_head_and_execute_bit_off_the_backing() {
 
 #[test]
 fn the_adapter_treats_a_directly_mapped_physical_range_as_device_memory() {
-    let d = describe_vma(&vma(VmaFlags::SHARED, VmaBacking::PhysRange { base_pa: 0xfd00_0000 }), 0);
+    let d = describe_vma(&vma(VmaFlags::SHARED, VmaBacking::PhysRange {
+        base_pa: 0xfd00_0000,
+        cache: vmm::PhysCacheMode::Device,
+    }), 0);
     assert!(d.io);
     assert_eq!(vma_dump_verdict(&d, F::all()), Skipped);
 }

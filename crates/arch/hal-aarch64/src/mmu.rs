@@ -106,6 +106,13 @@ impl PteArm64 {
         if !n.contains(PageFlags::EXEC) {
             f |= PteFlags::PXN | PteFlags::UXN;
         }
+        if n.contains(PageFlags::NO_CACHE) {
+            // AttrIdx0: Device-nGnRE.
+        } else if n.contains(PageFlags::WRITE_COMBINE) {
+            f |= PteFlags::ATTR1; // AttrIdx2: Linux Normal-NC.
+        } else {
+            f |= PteFlags::ATTR0; // AttrIdx1: Normal-WB.
+        }
         // GLOBAL bit on ARM is the *absence* of NG; user mappings
         // get NG above. Kernel mappings keep NG clear → effectively
         // global.
@@ -125,6 +132,11 @@ impl PteArm64 {
             n |= PageFlags::EXEC;
         }
         if !f.contains(PteFlags::NG) { n |= PageFlags::GLOBAL; }
+        match (f.bits() >> 2) & 0b111 {
+            0 => n |= PageFlags::NO_CACHE,
+            2 => n |= PageFlags::WRITE_COMBINE,
+            _ => {}
+        }
         n
     }
 
@@ -252,6 +264,14 @@ mod tests {
         let f = PteArm64::flags_from_native(n);
         assert!(f.contains(PteFlags::PXN), "missing EXEC ⇒ PXN");
         assert!(f.contains(PteFlags::UXN), "missing EXEC ⇒ UXN");
+    }
+
+    #[test]
+    fn pte_write_combine_uses_linux_normal_nc_index() {
+        let n = PageFlags::READ | PageFlags::WRITE | PageFlags::WRITE_COMBINE;
+        let f = PteArm64::flags_from_native(n);
+        assert_eq!((f.bits() >> 2) & 0b111, 2);
+        assert!(PteArm64::flags_to_native(f).contains(PageFlags::WRITE_COMBINE));
     }
 
     #[test]
