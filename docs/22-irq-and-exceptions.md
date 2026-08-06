@@ -101,6 +101,7 @@ Bottom halves. Static set in `SoftIrqKind`. Runs:
 - Synthetic IRQ generator (in HAL): trigger 1M IRQs, verify count, no missed EOI (controller queue empty).
 - Shared-line stress: 8 fake handlers on same line; verify chain iteration + correct `Handled` accounting.
 - Threaded handler: fake slow handler, 10K events, verify `WakeThread` defers correctly.
+- Spurious detector: isolated `NotMine` events reset after 100 ms; 99,900/100,000 unhandled stays enabled; 99,901/100,000 disables the line; a deferred threaded result is charged on the next delivery.
 - IPI loom: 4-CPU loom of cross-CPU IPI delivery; no lost IPI.
 - NMI stress: inject random NMI 100/sec for 1h; no panic, NMI-safe ringlet not lost.
 - softirq saturation: load softirq queue beyond rerun limit; verify ksoftirqd takeover.
@@ -108,7 +109,9 @@ Bottom halves. Static set in `SoftIrqKind`. Runs:
 
 ## 13 Failure modes
 
-- Spurious IRQ (no handler claimed): increment per-line spurious counter; mask line if rate >100/s.
+- Spurious IRQ: `NotMine` increments the line's unhandled burst, resetting it to one after a gap over 100 ms. Once a line with an unhandled event reaches a 100,000-delivery window, disable it only when more than 99,900 deliveries were unhandled, then reset the window.
+- `WakeThread` with no primary `Handled` result defers spurious accounting until the next delivery can observe whether the threaded handler claimed the prior interrupt.
+- Driver-owned repeat-until-quiescent dispatch loops are explicitly bounded; an 8250 shared-port chain permits at most 512 complete passes.
 - Triple fault (or arm double-fault): kernel halt, dump regs to NMI ringlet, drain to UART.
 - `request_irq` on already-busy non-shared line: EBUSY.
 
@@ -119,4 +122,3 @@ Bottom halves. Static set in `SoftIrqKind`. Runs:
 ## 15 Cross-spec
 
 `13` (IPI for resched, preempt_count), `23` (timer IRQ), `34` (MSI-X alloc), `20`/`21` (entry asm + controller backends).
-
