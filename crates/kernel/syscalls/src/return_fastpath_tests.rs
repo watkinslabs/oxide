@@ -7,6 +7,19 @@ fn production_syscall_return_has_no_timer_walk_or_ungated_diag_ring() {
 }
 
 #[test]
+fn disabled_syscall_tracepoints_stop_at_the_per_task_work_test() {
+    let dispatch = include_str!("dispatch/core.rs");
+    assert!(dispatch.contains(
+        "if !sched::syscall_work::tracepoint_pending(task) { return; }\n    syscall::tracepoint::fire_sys_enter"));
+    assert!(dispatch.contains(
+        "if !sched::syscall_work::tracepoint_pending(task) { return; }\n    syscall::tracepoint::fire_sys_exit"));
+    assert_eq!(dispatch.matches("syscall::tracepoint::fire_sys_enter").count(), 1,
+        "entry firing has no bypass around the work-bit owner");
+    assert_eq!(dispatch.matches("syscall::tracepoint::fire_sys_exit").count(), 1,
+        "exit firing has no bypass around the work-bit owner");
+}
+
+#[test]
 fn periodic_timer_rearm_is_owned_by_the_timer_mutation_path() {
     let runtime = include_str!("../../sched/src/timers/runtime.rs");
     assert!(!runtime.contains("pub fn fire_due_timers"));

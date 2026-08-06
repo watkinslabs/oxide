@@ -14,6 +14,23 @@ use super::route_a::dispatch_route_a;
 use super::route_b::dispatch_route_b;
 use super::route_c::dispatch_route_c;
 
+/// Linux `SYSCALL_WORK_SYSCALL_TRACEPOINT` entry side. The disabled path stops
+/// at the current task's syscall-work word and never enters the AtomicPtr hook
+/// wrapper. # C: O(1)
+#[inline]
+fn fire_sys_enter_if_armed(task: Option<&sched::Task>, nr: u32) {
+    if !sched::syscall_work::tracepoint_pending(task) { return; }
+    syscall::tracepoint::fire_sys_enter(nr);
+}
+
+/// Linux `syscall_exit_work` tracepoint leg. Re-read the task word at exit: an
+/// event may have been enabled or disabled while this syscall slept. # C: O(1)
+#[inline]
+fn fire_sys_exit_if_armed(task: Option<&sched::Task>, nr: u32, rv: i64) {
+    if !sched::syscall_work::tracepoint_pending(task) { return; }
+    syscall::tracepoint::fire_sys_exit(nr, rv);
+}
+
 /// Emit a focused syscall ledger for the compositor while diagnosing display
 /// bring-up.  This is deliberately narrower than `debug-syscall`: the latter
 /// makes a full desktop boot too slow to preserve the ordering at the KMS
@@ -409,12 +426,13 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     // Linux `vtime_user_exit`: the architectural syscall entry has crossed
     // into kernel mode; close the user interval before any dispatch work.
     sched::cpustat::user_exit();
+    let dispatch_task = sched::current();
     let orig_nr = nr;
     #[cfg(target_arch = "aarch64")]
     let nr = syscall::arm_abi::aarch64_nr_to_x86(nr);
     debug_ssh! { crate::signal_trace::dispatch_entry(orig_nr, nr); }
     #[cfg(target_arch = "aarch64")]
-    if let Some(c) = sched::current() {
+    if let Some(c) = dispatch_task {
         c.svc_frame.store(hal_aarch64::current_svc_frame() as u64, core::sync::atomic::Ordering::Release);
     }
     // SAFETY: `syscall_a5` reads the sixth argument out of the per-CPU entry
@@ -438,7 +456,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     trace_sshd_listener_enter(nr, &args);
     #[cfg(feature = "debug-swap")]
     trace_swapon_process(b"enter", nr, None);
-    syscall::tracepoint::fire_sys_enter(nr as u32);
+    fire_sys_enter_if_armed(dispatch_task, nr as u32);
     debug_syscall! { sched::trace::entry(nr, a0, a1, a2, a3); }
     debug_gnome_syscall! { sched::trace::entry(nr, a0, a1, a2, a3); }
     #[cfg(feature = "debug-desktop")]
@@ -509,7 +527,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     debug_gnome_syscall! { sched::trace::ret(nr, rv); }
     #[cfg(feature = "debug-desktop")]
     trace_mutter_syscall(b"exit", nr, a0, a1, a2, a3, a4, a5, Some(rv));
-    syscall::tracepoint::fire_sys_exit(nr as u32, rv);
+    fire_sys_exit_if_armed(dispatch_task, nr as u32, rv);
     debug_sched! {
         klog::write_raw(b"[INFO]  syscall: nr=");
         klog::write_hex_u64(nr);

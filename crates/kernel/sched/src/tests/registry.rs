@@ -30,6 +30,36 @@ fn member(tid: u32, leader_tid: u32, vpid: u32, vtid: u32) -> Arc<Task> {
 }
 
 #[test]
+fn syscall_tracepoint_registration_stamps_live_and_new_tasks() {
+    let _g = registry_test_lock();
+    crate::registry::clear_for_tests();
+    crate::syscall_work::set_tracepoint_active(false);
+
+    let existing = Arc::new(Task::new(0x1867, "trace-existing",
+        SchedClass::Normal { weight: 1024 }));
+    crate::registry::insert(&existing);
+    assert!(!crate::syscall_work::tracepoint_pending(Some(&existing)));
+
+    crate::syscall_work::set_tracepoint_active(true);
+    assert!(crate::syscall_work::tracepoint_active());
+    assert!(crate::syscall_work::tracepoint_pending(Some(&existing)),
+        "registration stamps every task already under tasklist ownership");
+
+    let newcomer = Arc::new(Task::new(0x1868, "trace-new",
+        SchedClass::Normal { weight: 1024 }));
+    assert!(!crate::syscall_work::tracepoint_pending(Some(&newcomer)),
+        "an unpublished task cannot enter a syscall");
+    crate::registry::insert(&newcomer);
+    assert!(crate::syscall_work::tracepoint_pending(Some(&newcomer)),
+        "registry publication reconciles the current registration state");
+
+    crate::syscall_work::set_tracepoint_active(false);
+    assert!(!crate::syscall_work::tracepoint_pending(Some(&existing)));
+    assert!(!crate::syscall_work::tracepoint_pending(Some(&newcomer)));
+    crate::registry::clear_for_tests();
+}
+
+#[test]
 fn lookup_present_absent_and_dead_weak_tid() {
     let _g = registry_test_lock();
     crate::registry::clear_for_tests();
