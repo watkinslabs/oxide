@@ -141,6 +141,11 @@ decl_lock_class! {
     // (the sweep drops it before `ttwu_deferred`), so a rank anywhere under
     // `TaskList` is sound and this one keeps the park path ascending.
     Hrtimeout    = 98,
+    // Syscall tracepoint registration. Linux nests tracepoints_mutex outside
+    // tasklist_lock while it stamps SYSCALL_WORK_SYSCALL_TRACEPOINT on every
+    // live task. Tracefs mirrors that order: this setter-only lock (no hot-path
+    // acquisition) may take TaskList while publishing the per-task work bit.
+    Tracepoint   = 99,
     TaskList     = 100,
     Runqueue     = 110,
     // Throttled `SCHED_DEADLINE` entities awaiting replenishment
