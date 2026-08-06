@@ -1,11 +1,11 @@
 # Serial tty driver (T6 of tty-rebuild-plan). The `ttyS0` `tty_driver`
 # (Linux `drivers/tty/serial/serial_core.c`): a `TtyDriver` whose output
-# goes to the UART (`drv_serial::emit`) and whose RX bytes flow
-# UART → flip buffer → `TtyStruct::receive_from_driver` → N_TTY.
+# goes to the UART (`drv_serial::emit`). The console crate owns the one live
+# UART RX registration and feeds this driver through its flip-buffer worker.
 #
 # `drv-serial` is a kernel-target-only dependency (it pulls in hal /
 # arch-irq / firmware which do not build for the host); the actual UART
-# emit + RX-sink registration are `#[cfg(target_os = "oxide-kernel")]`
+# emit adapter is `#[cfg(target_os = "oxide-kernel")]`
 # gated. Host tests use an injected `SerialOut` sink, so this crate is
 # host-testable end-to-end without a real UART. No dep cycle:
 # serialtty → {tty, (oxide-kernel) drv-serial}.

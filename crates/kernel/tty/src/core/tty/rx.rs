@@ -6,7 +6,7 @@
 use crate::core::api::TtyDriver;
 use crate::ldisc::LdiscOps;
 use crate::core::flip;
-use crate::core::tty::{PortInner, TtyStruct};
+use crate::core::tty::{PortInner, TtyStruct, TxCollector};
 use crate::wait::TtyWait;
 
 impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
@@ -58,17 +58,40 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
     }
 
     /// RX path: device delivered `input` (UART RX / kbd). Runs the ldisc
-    /// receive pipeline (cook/echo/ISIG) UNDER the port lock, then wakes
-    /// parked readers OUTSIDE the lock. The under-lock queue + the
-    /// release-then-wake is the producer half of the lost-wakeup-free
-    /// protocol (see module header).
+    /// receive pipeline (cook/echo/ISIG) UNDER the port lock, emits any echo
+    /// through the separate output owner AFTER releasing that irqsave lock,
+    /// then wakes parked readers. The under-lock queue + release-then-wake is
+    /// the producer half of the lost-wakeup-free protocol (module header).
     /// # C: O(N) input bytes + O(W) waiters
     pub fn receive_from_driver(&self, input: &[u8]) {
-        {
+        let Some(sink) = D::detached_sink() else {
             let mut g = self.inner.lock_irqsave::<W::Irq>();
             let PortInner { ldisc, driver } = &mut *g;
             ldisc.receive_buf(driver, input);
-        }
+            drop(g);
+            self.wake_rx();
+            return;
+        };
+        // Same lock order as write: output owner before port state. This is
+        // the local equivalent of N_TTY's output_lock and prevents a program
+        // write from overtaking an echo collected from earlier input.
+        let _tx = self.tx.lock();
+        let pending = {
+            let mut g = self.inner.lock_irqsave::<W::Irq>();
+            let PortInner { ldisc, driver } = &mut *g;
+            let mut tx = TxCollector { drv: driver, buf: alloc::vec::Vec::new() };
+            ldisc.receive_buf(&mut tx, input);
+            tx.buf
+        };
+        // Port guard dropped and IRQ state restored before device submission.
+        if !pending.is_empty() { sink(&pending); }
+        drop(_tx);
+        self.wake_rx();
+    }
+
+    /// Publish an RX readability transition after the port owner released.
+    /// # C: O(W) parked readers + poll subscribers
+    fn wake_rx(&self) {
         // Wake AFTER dropping the lock: a reader that enqueued under the
         // lock (park_prepare) and then re-checked is guaranteed visible to
         // wake_all here, because its enqueue serialized with our queue

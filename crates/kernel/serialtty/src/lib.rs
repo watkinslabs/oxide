@@ -2,7 +2,7 @@
 // `drivers/tty/serial/serial_core.c` `ttyS0` `tty_driver`: a `TtyDriver`
 // whose output goes to the UART and whose RX bytes flow
 //
-//   UART RX ─▶ rx_byte() ─▶ TtyStruct::receive_from_driver ─▶ N_TTY ─▶ read
+//   UART RX ─▶ console-owned flip worker ─▶ N_TTY ─▶ read
 //                                                              │ echo
 //   TtyStruct::write ─▶ N_TTY (OPOST/ONLCR) ─▶ SerialTtyDriver ┘─▶ UART TX
 //
@@ -234,59 +234,6 @@ pub fn set_fg_pgrp<U: SerialOut, S: FgSignal, W: TtyWait>(
 ) {
     tty.set_fg_pgrp(pgrp);
     tty.with_driver(|d| d.set_fg_pgrp(pgrp));
-}
-
-// ----------------------------------------------------------------- kernel
-//
-// RX-sink registration. `drv_serial::set_rx_sink` takes a plain
-// `fn(u8)` (not a closure), so the UART RX byte must reach THIS ttyS0's
-// `TtyStruct::receive_from_driver` through a `static` holder + a free
-// `fn rx_byte(u8)`. Gated to the kernel target; host tests call
-// `receive_from_driver` directly (no static needed).
-#[cfg(target_os = "oxide-kernel")]
-pub mod kernelrx {
-    use super::*;
-    use alloc::sync::Arc;
-    use core::sync::atomic::{AtomicU64, Ordering};
-    use tty::wait::kernel::KernelWait;
-
-    /// The concrete kernel ttyS0 type the RX sink forwards into. Uses
-    /// `NoSignal` for T6 (additive): the real fg-pgrp signal raise is
-    /// wired at the boot cutover (T7+), exactly as the VT console driver.
-    pub type KernelSerialTty = TtyStruct<SerialTtyDriver<KernelUart, NoSignal>, KernelWait>;
-
-    /// Pointer to the boot-installed `Arc<KernelSerialTty>`, stored as a
-    /// raw `Arc::into_raw` pointer (kept alive for the kernel's lifetime
-    /// — the serial line never goes away). 0 = not yet installed.
-    static TTYS0_PTR: AtomicU64 = AtomicU64::new(0);
-
-    /// Install the boot-assembled ttyS0 as the RX target and wire the
-    /// UART RX sink to `rx_byte`. Call once at boot, before RX starts.
-    /// Leaks the `Arc` intentionally: the serial line lives for the whole
-    /// kernel lifetime, so the RX sink may dereference it freely.
-    /// # C: O(1)
-    pub fn install(tty: Arc<KernelSerialTty>) {
-        let raw = Arc::into_raw(tty) as u64;
-        TTYS0_PTR.store(raw, Ordering::Release);
-        drv_serial::set_rx_sink(rx_byte);
-    }
-
-    /// UART RX byte sink (`fn(u8)` for `drv_serial::set_rx_sink`). Pushes
-    /// the byte into ttyS0's flip path → N_TTY → wakes readers. Mirrors
-    /// Linux `uart_insert_char` → `tty_flip_buffer_push`.
-    /// # C: O(1) + O(waiters) wake
-    pub fn rx_byte(b: u8) {
-        let p = TTYS0_PTR.load(Ordering::Acquire);
-        if p == 0 {
-            return;
-        }
-        // SAFETY: p was produced by Arc::into_raw in install() from a
-        // valid Arc<KernelSerialTty> that is never freed (deliberately
-        // leaked for the kernel lifetime); &* yields a shared ref valid
-        // for this call, and receive_from_driver takes &self.
-        let tty: &KernelSerialTty = unsafe { &*(p as *const KernelSerialTty) };
-        tty.receive_from_driver(&[b]);
-    }
 }
 
 #[cfg(test)]

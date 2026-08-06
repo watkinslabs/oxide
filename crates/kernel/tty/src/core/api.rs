@@ -144,11 +144,11 @@ pub trait TtyDriver {
     /// the timer tick (`skizm.md` Step 4e). That is the same disease this
     /// campaign exists to cure, arriving via the fix for 3.1 #6/#7.
     ///
-    /// Returning `Some` lets the core buffer the ldisc's output under the lock
-    /// and push it here AFTER releasing it, with interrupts restored. Only a
-    /// driver whose device is reachable without `&mut self` — a global UART —
-    /// can offer one; `None` (the default) keeps the previous inline
-    /// behaviour, which is what VT and test drivers want.
+    /// Returning `Some` lets both program writes and RX-generated echo buffer
+    /// the ldisc's output under the port lock and push it here AFTER releasing
+    /// it, with interrupts restored. Only a driver whose device is reachable
+    /// without `&mut self` — a global UART — can offer one; `None` (the default)
+    /// keeps inline behaviour, which is what VT and test drivers want.
     /// # C: O(1)
     fn detached_sink() -> Option<fn(&[u8])> { None }
 }

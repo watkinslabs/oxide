@@ -1,9 +1,9 @@
 # state.md — session hand-off
 
-Current integration: `B1876-uart-thre-retrigger`, PR #4738. Code head
-`38d333178`; base `17a3113b2`. The final exact commit passed the full workspace
-test run, local pre-push gates, five forced-path x86 boots, and first-attempt
-x86_64/aarch64 smoke.
+Current integration: `B1877-serial-rx-lock-ownership`, PR #4739. Code head
+`a1e2a08d7`; rewritten base `be5808ec8`. The exact source passed the full
+workspace test run, local pre-push gates, and first-attempt x86_64/aarch64
+smoke including serial RX.
 
 ## What just landed
 
@@ -28,13 +28,17 @@ x86_64/aarch64 smoke.
   source to deassertion with a bounded 512-pass limit, and initialization raises
   the UART's `OUT2` interrupt gate. The hosted positive control fails with the
   former single-service path; five exact forced-path boots passed with serial RX.
+- B1877 / PR #4739: serial RX echo now leaves the IRQ-save port owner before one
+  ordered device submission; the dead duplicate RX registration path is gone,
+  and fbcon tests use one global-state domain. The hosted positive control fails
+  with three inline writes; the fixed path submits one batch at IRQ depth zero.
 
 ## Live known-work summary
 
-The canonical type/severity table is in `scratch/known_issues.md`: 130 live
-rows = 2 blockers, 0 high, 58 medium, 70 low. The two blockers are x86 UEFI
-boot and xHCI/USB input. The closed B1876 high row and its failure/pass evidence
-remain in `scratch/fixed-issues.md`.
+The canonical type/severity table is in `scratch/known_issues.md`: 127 live
+rows = 2 blockers, 0 high, 56 medium, 69 low. The two blockers are x86 UEFI
+boot and xHCI/USB input. Retired rows and their failure/pass evidence remain in
+`scratch/fixed-issues.md`.
 
 ## First task next session
 
