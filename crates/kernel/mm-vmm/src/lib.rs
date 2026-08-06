@@ -19,6 +19,7 @@ pub mod debug_cow;
 pub mod tailwatch;
 mod mremap;
 mod mmap;
+mod phys_cache;
 pub mod anon_vma;
 pub mod file_rmap;
 pub mod mempolicy;
@@ -39,6 +40,7 @@ pub use address_space::{
     set_mmap_rwsem_wait_hooks,
 };
 pub use mmap::{MmapError, MmapPlacement};
+pub use phys_cache::PhysCacheMode;
 pub use address_space::{
     prctl_mm_map_size, validate_mm_map, PrctlMmMap,
     PR_SET_MM_ARG_END, PR_SET_MM_ARG_START, PR_SET_MM_AUXV, PR_SET_MM_BRK,
@@ -148,6 +150,11 @@ mod tests_cow_invariant;
 // refuse to install a partially-zero page (SIGBUS, not silent zeros).
 #[cfg(test)]
 mod tests_shortfill;
+
+// B1874: raw-PFN cache policy is VMA state and survives through the demand
+// fault into the architecture-neutral leaf flags.
+#[cfg(test)]
+mod tests_phys_cache;
 
 // F765: Linux `shm_vm_ops.open`/`.close` — `shm_nattch` counts VMAs, so fork,
 // split, merge and address-space teardown all move it.

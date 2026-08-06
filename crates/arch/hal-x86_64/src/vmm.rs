@@ -7,16 +7,13 @@
 // `map_device_4k` shim is generic-only at the call site and
 // monomorphizes to a single instance per arch.
 //
-// PCD|PWT in the leaf maps to PAT slot 3 (Strong UC) by default,
-// or PAT slot 1 (Write Through) if the kernel has reprogrammed
-// PAT. Either is sound for MMIO.
+// PCD|PWT remains PAT slot 3 (Strong UC) after the kernel installs Linux's
+// PAT layout. Write-combining uses slot 1 and write-through uses slot 7.
 
 use hal::pt_walker::{self, PtWalker, WalkErr};
 
 const P_BIT:  u64 = 1 << 0;
 const RW_BIT: u64 = 1 << 1;
-const PWT:    u64 = 1 << 3;
-const PCD:    u64 = 1 << 4;
 const PS_BIT: u64 = 1 << 7;
 const NX_BIT: u64 = 1 << 63;
 const PHYS_MASK_X86: u64 = 0x000f_ffff_ffff_f000;
@@ -109,28 +106,34 @@ impl PtWalker for PtWalkerX86 {
     }
 
     fn pack_device_leaf(pa: u64) -> u64 {
-        (pa & Self::PHYS_MASK) | P_BIT | RW_BIT | PCD | PWT | NX_BIT
+        (pa & Self::PHYS_MASK) | P_BIT | RW_BIT
+            | crate::pat::PCD | crate::pat::PWT | NX_BIT
     }
 
     fn pack_4k_leaf(pa: u64, flags: hal::PageFlags) -> u64 {
         // P_BIT (PRESENT) implicit on a leaf. RW from WRITE.
-        // USER from USER. NX = clear iff EXEC. PCD/PWT from
-        // NO_CACHE / WRITE_THROUGH. GLOBAL from GLOBAL.
+        // USER from USER. NX = clear iff EXEC. Cache bits come from the one
+        // PAT translator shared with reverse translation. GLOBAL from GLOBAL.
         let mut e = (pa & Self::PHYS_MASK) | P_BIT;
         if flags.contains(hal::PageFlags::WRITE)         { e |= RW_BIT; }
         if flags.contains(hal::PageFlags::USER)          { e |= 1 << 2; }   // U/S
-        if flags.contains(hal::PageFlags::WRITE_THROUGH) { e |= PWT;    }
-        if flags.contains(hal::PageFlags::NO_CACHE)      { e |= PCD;    }
+        e |= crate::pat::cache_bits(flags, false);
         if flags.contains(hal::PageFlags::GLOBAL)        { e |= 1 << 8; }   // G
         if !flags.contains(hal::PageFlags::EXEC)         { e |= NX_BIT; }
         e
     }
 
     fn pack_block_leaf(pa: u64, flags: hal::PageFlags) -> u64 {
-        // Same translation as `pack_4k_leaf` plus PS=1 (bit 7) which
-        // distinguishes a 2 MiB / 1 GiB leaf at PD/PDPT from a table
-        // entry. The CPU keys off PS at the parent level.
-        Self::pack_4k_leaf(pa, flags) | PS_BIT
+        // A huge leaf uses bit 12 for PAT, not the 4 KiB leaf's bit 7 (which
+        // is PS here). Build the non-cache controls directly so WT selects
+        // Linux PAT slot 7 without corrupting the leaf kind.
+        let mut e = (pa & Self::PHYS_MASK) | P_BIT | PS_BIT;
+        if flags.contains(hal::PageFlags::WRITE)         { e |= RW_BIT; }
+        if flags.contains(hal::PageFlags::USER)          { e |= 1 << 2; }
+        e |= crate::pat::cache_bits(flags, true);
+        if flags.contains(hal::PageFlags::GLOBAL)        { e |= 1 << 8; }
+        if !flags.contains(hal::PageFlags::EXEC)         { e |= NX_BIT; }
+        e
     }
 
     fn pack_swap_entry(entry: hal::pt_walker::SwapEntry) -> u64 {

@@ -118,6 +118,10 @@ bitflags::bitflags! {
         const GLOBAL    = 1 << 4;
         const NO_CACHE  = 1 << 5;
         const WRITE_THROUGH = 1 << 6;
+        /// Normal memory with write-combining semantics. On x86 this selects
+        /// the Linux PAT WC entry; on arm64 it selects MAIR Normal-NC, which
+        /// is the architecture's `pgprot_writecombine` mapping.
+        const WRITE_COMBINE = 1 << 7;
     }
 }
 

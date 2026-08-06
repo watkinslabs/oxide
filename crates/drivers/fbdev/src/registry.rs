@@ -12,6 +12,7 @@ pub struct FbDev {
     pub base_pa: u64,
     pub fb_va: u64,
     pub fb_bytes: u64,
+    pub mmap_cache: vmm::PhysCacheMode,
     pub card_id: u32,
     pub crtc_id: u32,
     pub fb_id: u32,
@@ -126,6 +127,30 @@ pub fn unpack_pseudo(v: &FbVarScreeninfo, px: u32) -> (u16, u16, u16) {
 }
 
 pub fn init_scanout(base_pa: u64, fb_va: u64, fb_bytes: u64, pitch: u32, w: u32, h: u32) -> u32 {
+    init_scanout_with_cache(
+        base_pa,
+        fb_va,
+        fb_bytes,
+        pitch,
+        w,
+        h,
+        vmm::PhysCacheMode::WriteBack,
+    )
+}
+
+/// Register a scanout with its driver-owned userspace cache policy. PMM-backed
+/// virtio scanouts use [`init_scanout`] (write-back); physical firmware/MMIO
+/// framebuffers select write-combining, matching Linux `ioremap_wc`/`fb_mmap`.
+/// # C: O(1)
+pub fn init_scanout_with_cache(
+    base_pa: u64,
+    fb_va: u64,
+    fb_bytes: u64,
+    pitch: u32,
+    w: u32,
+    h: u32,
+    mmap_cache: vmm::PhysCacheMode,
+) -> u32 {
     let mut var = FbVarScreeninfo::default();
     var.xres = w;
     var.yres = h;
@@ -145,6 +170,7 @@ pub fn init_scanout(base_pa: u64, fb_va: u64, fb_bytes: u64, pitch: u32, w: u32,
             base_pa,
             fb_va,
             fb_bytes,
+            mmap_cache,
             card_id: 0,
             crtc_id: 0,
             fb_id: 0,
@@ -177,7 +203,16 @@ pub fn unregister_by_base(base_pa: u64) -> bool {
 }
 
 pub fn backing_of(idx: u32) -> Option<(u64, u64)> {
-    FBS.lock().iter().find(|f| f.idx == idx && f.base_pa != 0).map(|f| (f.base_pa, f.fb_bytes))
+    backing_with_cache_of(idx).map(|(pa, len, _)| (pa, len))
+}
+
+/// Return a scanout's physical extent and driver-selected cache policy.
+/// # C: O(N)
+pub fn backing_with_cache_of(idx: u32) -> Option<(u64, u64, vmm::PhysCacheMode)> {
+    FBS.lock()
+        .iter()
+        .find(|f| f.idx == idx && f.base_pa != 0)
+        .map(|f| (f.base_pa, f.fb_bytes, f.mmap_cache))
 }
 
 pub fn kva_of(idx: u32) -> Option<(u64, u64)> {
@@ -195,6 +230,7 @@ pub fn register(card_id: u32, crtc_id: u32, var: FbVarScreeninfo, fix: FbFixScre
             base_pa: 0,
             fb_va: 0,
             fb_bytes: 0,
+            mmap_cache: vmm::PhysCacheMode::Device,
             card_id,
             crtc_id,
             fb_id: 0,

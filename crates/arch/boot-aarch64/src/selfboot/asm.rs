@@ -272,8 +272,10 @@ _arm_entry:
     cmp     x2, x3
     b.lt    13b
 
-    /* MAIR: Attr0=Device-nGnRE(0x04), Attr1=Normal-WB(0xFF)          */
+    /* MAIR: Attr0=Device-nGnRE, Attr1=Normal-WB, Attr2=Normal-NC.    */
+    /* Linux uses Attr2 Normal-NC (0x44) for pgprot_writecombine().  */
     movz    x0, #0xFF04
+    movk    x0, #0x44, lsl #16
     msr     mair_el1, x0
     /* TCR: T0SZ=T1SZ=16, 4 KiB granule both, WB/WA, inner-shareable,
        IPS=48-bit, TBI0 (bit 37, top-byte-ignore for TTBR0/EL0) -> the

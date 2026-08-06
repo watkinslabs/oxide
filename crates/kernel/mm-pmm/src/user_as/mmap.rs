@@ -28,9 +28,9 @@ pub fn glue_mmap(
     fd: i64,
     file_off: u64,
     backing: Option<alloc::sync::Arc<dyn vmm::FileBacking>>,
-    phys_base: Option<u64>,
+    phys_range: Option<(u64, vmm::PhysCacheMode)>,
     // A REFCOUNTED kernel RAM frame shared into userspace (io_uring ring).
-    // Distinct from `phys_base` (PhysRange / remap_pfn_range) which is
+    // Distinct from `phys_range` (PhysRange / remap_pfn_range) which is
     // UNREFCOUNTED device memory: a kframe must map as `VmaBacking::KernelFrame`
     // so the fault path inc_ref's the struct-page and AS-teardown dec's it —
     // otherwise the mapping is invisible to the frame's refcount/mapcount and
@@ -47,7 +47,7 @@ pub fn glue_mmap(
     };
     // A kframe is admission-equivalent to a phys mapping (explicit PA backing,
     // page-aligned offset, not anon).
-    let admission = validate_glue_admission(flags, len, file_off, backing.is_some(), phys_base.is_some() || kframe.is_some())?;
+    let admission = validate_glue_admission(flags, len, file_off, backing.is_some(), phys_range.is_some() || kframe.is_some())?;
     let is_anon = admission.is_anon;
     let is_shared = admission.is_shared;
     let len_aligned = admission.len_aligned;
@@ -125,12 +125,12 @@ pub fn glue_mmap(
     // is the NET growth (`map->pglen - vms->nr_pages`) and re-mapping a range
     // over itself is free.
     admit_current_as_growth(len_aligned as u64)?;
-    let vma_backing = match (kframe, phys_base, backing) {
+    let vma_backing = match (kframe, phys_range, backing) {
         // Refcounted shared kernel RAM frame (single page, io_uring ring):
         // map_kernel_frame inc_ref's on fault, AS-teardown dec's — so the
         // page cannot be freed while a user mapping survives.
         (Some(pa), _, _)       => VmaBacking::KernelFrame { pa },
-        (None, Some(pa), _)    => VmaBacking::PhysRange { base_pa: pa + file_off },
+        (None, Some((pa, cache)), _) => VmaBacking::PhysRange { base_pa: pa + file_off, cache },
         (None, None, Some(b))  => VmaBacking::File { backing: b, off: file_off },
         (None, None, None)     => VmaBacking::Anonymous,
     };

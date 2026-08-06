@@ -1,6 +1,6 @@
 use hal::{MmuOps, Pa, PageSize, UserVirtAddr, Va, PAGE_SIZE_BYTES};
 
-use crate::vma::Vma;
+use crate::{PhysCacheMode, vma::Vma};
 use crate::KResult;
 
 use super::super::AddressSpace;
@@ -53,6 +53,7 @@ impl AddressSpace {
         va: UserVirtAddr,
         vma: &Vma,
         base_pa: u64,
+        cache: PhysCacheMode,
         dec_ref: &mut DR,
     ) -> KResult<()>
     where
@@ -63,7 +64,14 @@ impl AddressSpace {
         // offset O straight to base_pa + O. No PMM frame, no copy, no refcount.
         let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
         let off = va_page - vma.start.as_u64();
-        let pte_flags = vma.prot.to_page_flags();
+        let mut pte_flags = vma.prot.to_page_flags();
+        match cache {
+            PhysCacheMode::WriteBack => {}
+            PhysCacheMode::WriteCombine => pte_flags |= hal::PageFlags::WRITE_COMBINE,
+            PhysCacheMode::Device => {
+                pte_flags |= hal::PageFlags::NO_CACHE | hal::PageFlags::WRITE_THROUGH;
+            }
+        }
         // SAFETY: base_pa+off is device memory owned by the driver; va_page is
         // page-aligned per find_containing; flags carry USER per `11§5`.
         let replaced = unsafe { M::map(Va(va_page), Pa(base_pa + off), pte_flags, PageSize::P4K) };

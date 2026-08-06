@@ -125,7 +125,10 @@ fn special_mappings_are_skipped_not_rejected() {
     let a = AddressSpace::new(0).unwrap();
     anon(&a, BASE, 1);
     a.mmap(Some(uva(BASE + PAGE as u64)), PAGE, r_w(), priv_anon(),
-        VmaBacking::PhysRange { base_pa: 0x1000_0000 }, true).unwrap();
+        VmaBacking::PhysRange {
+            base_pa: 0x1000_0000,
+            cache: PhysCacheMode::Device,
+        }, true).unwrap();
     anon(&a, BASE + 2 * PAGE as u64, 1);
     let out = a.apply_vma_lock_flags(uva(BASE), 3 * PAGE, VmaFlags::LOCKED);
     assert_eq!(out.error, None);

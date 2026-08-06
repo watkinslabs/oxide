@@ -5,21 +5,18 @@
 // file supplies the arm bit semantics + privileged-register access
 // via the `PtWalker` trait.
 //
-// The self-boot trampoline programs MAIR_EL1 = 0xFF04: Attr0 =
-// Device-nGnRE, Attr1 = Normal WB-cacheable. We use AttrIdx = 1 for
-// Normal memory.
+// The self-boot trampoline programs MAIR_EL1 = 0x44FF04: Attr0 =
+// Device-nGnRE, Attr1 = Normal WB, Attr2 = Normal NC. Linux uses Normal NC
+// for `pgprot_writecombine`, so framebuffer mappings select AttrIdx 2.
 
 use hal::pt_walker::{self, PtWalker, WalkErr};
 
 const VALID:    u64 = 1 << 0;
 const TABLE:    u64 = 1 << 1;       // also "PAGE" at L3
-// AttrIndx is descriptor bits[4:2], so AttrIdx 1 = bit 2 (1<<2). The old
-// value (1<<3) is bit 3 = AttrIdx **2**, which is Device under the
-// self-boot MAIR. Self-boot MAIR=0xFF04 puts Normal
-// at AttrIdx1 (=0xFF) and Device at AttrIdx0 (=0x04); selecting AttrIdx2 there
-// (=0x00) is Device too, so every page came out Device → EL0 unaligned reads
-// took a DFSC=0x21 alignment abort. Use the real AttrIdx1 bit.
-const ATTR1:    u64 = 1 << 2;       // AttrIdx 1 = Normal-WB under MAIR=0xFF04
+// AttrIndx is descriptor bits[4:2]. AttrIdx1 is bit 2 and AttrIdx2 is bit 3;
+// those slots are Normal-WB and Normal-NC respectively in the boot MAIR.
+const ATTR_NORMAL_WB: u64 = 1 << 2; // AttrIdx 1
+const ATTR_NORMAL_NC: u64 = 1 << 3; // AttrIdx 2
 const SH0:      u64 = 1 << 8;
 const SH1:      u64 = 1 << 9;       // SH = 0b11 = Inner Shareable
 const AF:       u64 = 1 << 10;
@@ -142,8 +139,8 @@ impl PtWalker for PtWalkerArm {
     }
 
     fn pack_device_leaf(pa: u64) -> u64 {
-        // Device MMIO. Self-boot MAIR_EL1=0xFF04: Attr0=Device-nGnRE,
-        // Attr1=Normal-WB → Device uses AttrIdx0 (no ATTR1 bit). This
+        // Device MMIO. Self-boot MAIR Attr0=Device-nGnRE,
+        // Attr1=Normal-WB → Device uses AttrIdx0 (no AttrIndx bits). This
         // matches the self-boot asm page tables (Device blocks =
         // 0x0401 → AttrIdx0). Mapping device as AttrIdx1 here = Normal-WB
         // (wrong; only TCG-tolerated).
@@ -153,9 +150,9 @@ impl PtWalker for PtWalkerArm {
     fn pack_4k_leaf(pa: u64, flags: hal::PageFlags) -> u64 {
         // L3 page leaf: VALID|TABLE always; AF set so the CPU
         // doesn't trap on first access. Inner-Shareable. AttrIdx picks
-        // the MAIR_EL1 byte. Self-boot MAIR=0xFF04: Attr0=Device-nGnRE,
-        // Attr1=Normal-WB. So cached(Normal) → AttrIdx1 (ATTR1 set),
-        // NO_CACHE(Device) → AttrIdx0. Mapping Normal as AttrIdx0 = Device made every
+        // the MAIR_EL1 byte. Cached Normal uses AttrIdx1, write-combining
+        // uses Linux's Normal-NC AttrIdx2, and NO_CACHE(Device) uses AttrIdx0.
+        // Mapping Normal as AttrIdx0 = Device made every
         // demand-faulted user page Device → unaligned reads took a DFSC
         // 0x21 alignment abort (the arm -smp 2 crash).
         let mut e = (pa & Self::PHYS_MASK) | VALID | TABLE | AF | SH0 | SH1;
@@ -170,7 +167,13 @@ impl PtWalker for PtWalkerArm {
             (true,  false) => 0b11, // user RO
         };
         e |= (ap as u64) << 6;
-        if !flags.contains(hal::PageFlags::NO_CACHE) { e |= ATTR1; }
+        if flags.contains(hal::PageFlags::NO_CACHE) {
+            // AttrIdx0: Device-nGnRE.
+        } else if flags.contains(hal::PageFlags::WRITE_COMBINE) {
+            e |= ATTR_NORMAL_NC;
+        } else {
+            e |= ATTR_NORMAL_WB;
+        }
         // Execute permission. UXN/PXN per `21§5`. Layout per
         // PageFlags::USER:
         //   USER=1, EXEC=1: user-executable.   PXN=1, UXN=0.
