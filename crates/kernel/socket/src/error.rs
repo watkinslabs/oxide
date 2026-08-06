@@ -19,7 +19,7 @@ pub enum Error {
     Enobufs = 105, Eisconn = 106, Enotconn = 107, Etimedout = 110,
     Econnrefused = 111, Ehostdown = 112, Ehostunreach = 113,
     Ealready = 114, Einprogress = 115, Enonet = 64, Eproto = 71,
-    Edestaddrreq = 89, Enotsock = 88, Erange = 34, Euclean = 117,
+    Ebadfd = 77, Edestaddrreq = 89, Enotsock = 88, Erange = 34, Euclean = 117,
     Edquot = 122, Ecanceled = 125,
 }
 
@@ -54,7 +54,8 @@ impl From<vfs::VfsError> for Error {
             vfs::VfsError::Ebade => Self::Ebade, vfs::VfsError::Enodata => Self::Enodata,
             vfs::VfsError::Enonet => Self::Enonet,
             vfs::VfsError::Emsgsize => Self::Emsgsize,
-            vfs::VfsError::Eproto => Self::Eproto, vfs::VfsError::Edestaddrreq => Self::Edestaddrreq,
+            vfs::VfsError::Eproto => Self::Eproto, vfs::VfsError::Ebadfd => Self::Ebadfd,
+            vfs::VfsError::Edestaddrreq => Self::Edestaddrreq,
             vfs::VfsError::Enoprotoopt => Self::Enoprotoopt,
             vfs::VfsError::Eopnotsupp => Self::Eopnotsupp,
             vfs::VfsError::Eaddrnotavail => Self::Eaddrnotavail,

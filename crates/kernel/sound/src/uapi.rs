@@ -82,6 +82,9 @@ pub const CEINFO_INTEGER_STEP: usize = 96;
 pub const CTL_ELEM_VALUE_SIZE: usize = 1224;
 pub const CEV_VALUE: usize = 72;
 
+// `struct snd_ctl_event`: type@0 plus the 64-byte event union.
+pub const CTL_EVENT_SIZE: usize = 72;
+
 // Protocol versions.
 pub const SNDRV_PCM_VERSION: u32 = (2 << 16) | 15; // 2.0.15
 pub const SNDRV_CTL_VERSION: u32 = (2 << 16) | 9;  // 2.0.9
