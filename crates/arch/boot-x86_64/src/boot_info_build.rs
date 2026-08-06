@@ -23,6 +23,7 @@ pub unsafe fn stub_boot_info() -> BootInfo {
         boot_ns: 0,
         hhdm_offset: 0,
         rsdp_pa: 0,
+        framebuffer: boot_info::BootFramebuffer::EMPTY,
         bsp_lapic_id: 0,
         _pad: 0,
     }
@@ -137,7 +138,7 @@ pub(crate) unsafe fn build_boot_info() -> BootInfo {
     let storage = unsafe { &mut *MEMMAP_STORAGE.0.get() };
     // SAFETY: trampoline wrote a valid MB2-info ptr; build_memmap parses
     // the HHDM-mapped struct, filling boot-owned storage.
-    let (n, rsdp_pa) = unsafe { mb2::info::build_memmap(storage) };
+    let (n, rsdp_pa, framebuffer) = unsafe { mb2::info::build_memmap(storage) };
     BootInfo {
         memmap_count: n as u32,
         memmap_ptr:   storage.as_ptr(),
@@ -145,6 +146,7 @@ pub(crate) unsafe fn build_boot_info() -> BootInfo {
         boot_ns:      hal_x86_64::X86TimerOps::monotonic_ns().0,
         hhdm_offset:  mb2::info::MB2_HHDM,
         rsdp_pa,
+        framebuffer,
         // The handoff has no CPU identity. Read the architectural initial
         // APIC id before the LAPIC mapping exists; ACPI supplies the rest.
         bsp_lapic_id: hal_x86_64::initial_apic_id(),

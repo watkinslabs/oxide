@@ -29,6 +29,11 @@ pub unsafe fn init(info: &BootInfo) {
     // install) dropped that event on the floor (control_event.rs notifier=None).
     net::control_event::set_notifier(netlink::mcast::notify_control_event);
     init_network_and_pci();
+    // Generic firmware framebuffer is a fallback, not a competitor to a
+    // native scanout. PCI probing runs first so virtio-gpu remains fb0 in the
+    // desktop VM; physical machines without a supported display driver bind
+    // the bootloader surface here.
+    init_simple_framebuffer(info);
     // NB: the AP master page-table gets each device's MMIO mapping propagated
     // eagerly inside `mmio_map::map_pages` (resync per splice), so APs can't #PF
     // on a virtio notify/config VA mid-enumeration — no post-enum resync needed.
@@ -274,6 +279,38 @@ fn init_network_and_pci() {
     // create a socket, so the protocol tables have no concurrent reader.
     unsafe { net::sock::init(); }
     crate::pci_boot::enumerate_and_log();
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn init_simple_framebuffer(info: &BootInfo) {
+    if fbdev::count() != 0 { return; }
+    let fb = info.framebuffer;
+    let Some(bytes) = fb.byte_len() else { return };
+    let Some(end) = fb.base_pa.checked_add(bytes - 1) else { return };
+    drv_simplefb::configure_probe(fb);
+    let candidate = alloc::sync::Arc::new(
+        drv::Device::new(
+            PLATFORM_BUS,
+            alloc::string::String::from(drv_simplefb::device_addr()),
+            BOOT_PLATFORM_VENDOR_ID,
+            BOOT_PLATFORM_DEVICE_ID,
+            BOOT_PLATFORM_CLASS,
+        ).with_resources(alloc::vec![drv::Resource {
+            bar: 0,
+            start: fb.base_pa,
+            end,
+            flags: drv::IORESOURCE_MEM | drv::IORESOURCE_PREFETCH,
+        }]),
+    );
+    let dev = match drv::try_device_add(alloc::sync::Arc::clone(&candidate)) {
+        Ok(dev) => dev,
+        Err(_) => return,
+    };
+    let simplefb = drv_simplefb::driver();
+    drv::register_driver(simplefb);
+    if dev.bound() != Some(drv::Driver::name(simplefb)) {
+        debug_boot! { klog::write_raw(b"[WARN]  simplefb: platform probe failed\n"); }
+    }
 }
 
 /// Publish a boot-discovered platform device through the driver model.

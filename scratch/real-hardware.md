@@ -17,7 +17,7 @@ usable without it.
 
 | Status | System | Blocking | Finding | Branch |
 |---|---|---|---|---|
-| CLAIMED B1875-physical-framebuffer-source | Console (framebuffer) | yes | Full VT/fbcon stack built; only producer of a framebuffer is virtio-gpu. No output on bare metal. | B1875-physical-framebuffer-source |
+| DONE B1875 | Console (framebuffer) | no | Multiboot2 firmware scanout feeds the full VT/fbcon stack through a WC simple-framebuffer driver when no native fbdev binds. | B1875-physical-framebuffer-source |
 | OPEN | UEFI boot | yes | x86 boots multiboot2 (BIOS/CSM) only. Modern boards are UEFI, many without CSM. | — |
 | OPEN | Input | yes | Only PS/2 keyboard. No xHCI host controller anywhere. | — |
 | DONE 2b44a8a29 | Cache attributes (WC) | no | x86 PAT and arm64 Normal-NC are wired through driver-owned raw-PFN VMA policy. | B1874-x86-write-combining |
@@ -34,43 +34,26 @@ poweroff/reset.
 
 ## 2 Console — the framebuffer chain
 
-**Finding.** The VGA-text-console stack is complete and working: `fbcon`
-(VT parser, 8x16 PSF font, damage tracking, vcrender), `vt` (vc, emulator,
-cp437, palette, wide/EAW), `vtconsole`, `console/{vt_console,vt_tty,vcs,vt_input}`,
-`fbdev` registry with `/dev/fbN` and the FBIO ioctls. It exercises correctly
-under QEMU. Its only pixel source is a virtual device.
+**Done B1875.** The Multiboot2 header requests the loader's preferred
+framebuffer, and the same information-tag walk that owns the memory map and
+RSDP now validates tag 8 and carries an optional packed-RGB mode on `BootInfo`.
+Indexed and text modes are rejected rather than exposed with invented colour
+semantics. The handoff retains physical base, pitch, dimensions, depth, and
+all channel masks exactly.
 
-Four missing links, all at the bottom of the stack:
+`drv-simplefb` binds a platform resource only after PCI probing and only when
+no native fbdev has registered. It maps the page-offset-aware aperture WC,
+owns that mapping for the device lifetime, exposes the firmware format through
+fbdev, and converts fbcon damage when the mode is not canonical XRGB8888.
+Virtio-gpu remains the ordinary QEMU desktop path and its PMM-backed scanout
+remains write-back.
 
-| # | Link | Evidence |
-|---|---|---|
-| 1 | Multiboot2 header never requests a framebuffer | `crates/arch/boot-x86_64/src/mb2.rs:52-68` emits entry-address (type 3) + end (type 0) only; no type-5 tag |
-| 2 | Info parser discards the framebuffer tag | `mb2.rs:440-468` handles tag 6 (mmap) and 14\|15 (RSDP); `_ => {}` drops tag 8 |
-| 3 | `BootInfo` has no framebuffer fields | `crates/shared/boot-info/src/lib.rs:21` — memmap, seed, boot_ns, hhdm_offset, rsdp_pa, bsp_lapic_id |
-| 4 | Nothing but virtio-gpu registers a scanout | `fbdev::init_scanout` has one non-test caller: `crates/drivers/drv-virtio-gpu/src/post_init/scanout.rs:171` |
-
-Consequence on bare metal: no virtio-gpu → no `init_scanout` → no fbdev → no
-fbcon → no `/dev/tty0`. Serial is the only output path, and no modern desktop
-board wires a 16550 at `0x3F8` (§4).
-
-This is the machinery-without-callers class: a complete subsystem whose sole
-producer is a virtual device.
-
-**Work.**
-
-1. Add the framebuffer request tag (type 5) to the multiboot2 header with
-   width/height/depth 0 (loader's preferred mode).
-2. Parse tag 8 (`framebuffer_common`) in the info walk: base, pitch, width,
-   height, bpp, type. Reject indexed-colour and EGA-text types — take the RGB
-   case only, and record which was refused.
-3. Carry the fields on `BootInfo`. New fields are additive; the struct is
-   shared with aarch64, so default them to "absent" rather than making the
-   parse mandatory.
-4. New `drv-simplefb`: consumes the `BootInfo` fields, maps the range, calls
-   `fbdev::init_scanout`. No mode setting, no acceleration — the firmware mode
-   is the only mode.
-5. Register fbcon as a boot console early enough that panics before driver
-   init reach the screen.
+Hosted tests cover handoff validation, RGB565 format retention and conversion,
+pitch, damage bounds, and WC backing. Both release kernels build. A forced
+QEMU std-VGA boot with virtio-gpu omitted registered the 1280x800 firmware
+framebuffer and reached userspace with bidirectional serial. Repeated full-frame
+writes measured 0.27 s WC versus 3.10 s under a temporary UC control; the
+method and durable results are in `scratch/simplefb-performance-20260806.md`.
 
 **Sequencing.** Do this BEFORE the UEFI port (§3), not after. GRUB fills
 multiboot2 tag 8 on both BIOS and EFI — on EFI it takes the numbers from GOP
@@ -78,9 +61,8 @@ and passes them through the same tag. A simplefb driver written against tag 8
 keeps working unchanged across the port. It is the piece that makes the port
 debuggable, not throwaway work ahead of it.
 
-**Dependency §5 is complete.** The simplefb lane must select its WC policy and
-record the real full-screen fill comparison when it creates the first physical
-framebuffer mapping.
+**Dependency §5 is complete and consumed.** The simplefb driver selects the WC
+policy, and its UC-versus-WC acceptance comparison is recorded.
 
 ## 3 UEFI boot
 

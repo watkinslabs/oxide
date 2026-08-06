@@ -59,6 +59,7 @@ Mandatory (must run):
 - `drv-nvme`
 - `drv-ahci`
 - `drv-ps2-keyboard` (x86 only; legacy fallback)
+- `drv-simplefb` (firmware linear-framebuffer fallback after native display probe)
 
 Tracked as later phases:
 - `drv-igc`,`drv-ice` (Intel NIC), `drv-mlx5` (Mellanox).

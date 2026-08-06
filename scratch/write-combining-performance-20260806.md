@@ -41,9 +41,9 @@ placement. arm64 tests pin Normal-NC AttrIdx2.
 
 ## Measurement boundary
 
-The current virtio-GPU scanout is PMM-backed RAM and deliberately remains
-write-back; changing it to WC would create conflicting aliases and would not
-match its memory ownership. The separate live physical-framebuffer blocker
-owns the first firmware/MMIO scanout. Its acceptance must append a real
-full-screen UC-versus-WC fill measurement here once that device range exists.
-No physical-framebuffer speedup is claimed by B1874.
+The virtio-GPU scanout is PMM-backed RAM and deliberately remains write-back;
+changing it to WC would create conflicting aliases and would not match its
+memory ownership. B1875 subsequently added the first firmware/MMIO scanout and
+measured its driver-owned WC policy against a temporary UC control: 0.27 s
+versus 3.10 s for 125 MiB of full-frame writes (11.5x elapsed). The complete
+method and results are retained in `scratch/simplefb-performance-20260806.md`.

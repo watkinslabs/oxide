@@ -26,14 +26,11 @@ fn device_flags() -> PageFlags {
     PageFlags::READ | PageFlags::WRITE | PageFlags::NO_CACHE | PageFlags::WRITE_THROUGH
 }
 
-/// Map `n_pages` of 4K MMIO at physical address `pa` into fresh kernel VA
-/// space and return the base VA.
-///
-/// # Safety
-/// Caller must ensure `pa` names a real device MMIO region it owns, the MMU is
-/// initialized, and `pa` is page-aligned.
-/// # C: O(n_pages * page-table depth)
-pub unsafe fn map_pages(pa: u64, n_pages: u64) -> u64 {
+fn write_combine_flags() -> PageFlags {
+    PageFlags::READ | PageFlags::WRITE | PageFlags::WRITE_COMBINE
+}
+
+unsafe fn map_pages_with_flags(pa: u64, n_pages: u64, flags: PageFlags) -> u64 {
     let bytes = n_pages * PAGE_BYTES;
     let base = DEVICE_BAR_VA_NEXT.fetch_add(bytes, Ordering::AcqRel);
     for i in 0..n_pages {
@@ -43,20 +40,28 @@ pub unsafe fn map_pages(pa: u64, n_pages: u64) -> u64 {
         // global bump allocator and is used once for this mapping.
         unsafe {
             #[cfg(target_arch = "x86_64")]
-            <X86Mmu as MmuOps>::map(Va(va), Pa(pa_i), device_flags(), PageSize::P4K);
+            <X86Mmu as MmuOps>::map(Va(va), Pa(pa_i), flags, PageSize::P4K);
             #[cfg(target_arch = "aarch64")]
-            <ArmMmu as MmuOps>::map(Va(va), Pa(pa_i), device_flags(), PageSize::P4K);
+            <ArmMmu as MmuOps>::map(Va(va), Pa(pa_i), flags, PageSize::P4K);
         }
     }
-    // x86: these MMIO pages were spliced into the ACTIVE AS only; APs run on the
-    // captured `kernel_master()` CR3 and would #PF (NP) if they touched this
-    // device VA (e.g. an fbcon GPU-queue kick or IRQ scheduled on an AP) before
-    // it propagated. Push the kernel-half PML4 into the master now (no-op when
-    // no APs / already master). Closes the intra-PCI-enum virtio-notify #PF race.
     #[cfg(target_arch = "x86_64")]
     // SAFETY: pure PML4 kernel-half copy active→master; safe at any point post-map.
     unsafe { hal_x86_64::mmu_ops::resync_kernel_master(); }
     base
+}
+
+/// Map `n_pages` of 4K MMIO at physical address `pa` into fresh kernel VA
+/// space and return the base VA.
+///
+/// # Safety
+/// Caller must ensure `pa` names a real device MMIO region it owns, the MMU is
+/// initialized, and `pa` is page-aligned.
+/// # C: O(n_pages * page-table depth)
+pub unsafe fn map_pages(pa: u64, n_pages: u64) -> u64 {
+    // SAFETY: caller owns the physical range; flags select the ordinary
+    // strongly-ordered device mapping used by register BARs.
+    unsafe { map_pages_with_flags(pa, n_pages, device_flags()) }
 }
 
 /// Map 4K physical pages into contiguous fresh kernel VA space.
@@ -128,6 +133,20 @@ pub unsafe fn map_owned(pa: u64, n_pages: u64) -> Mapping {
     // no other owner of that window). The returned `Mapping` takes sole
     // ownership of the VA range so only its `unmap`/`Drop` tears it down.
     let base_va = unsafe { map_pages(pa, n_pages) };
+    Mapping { base_va, n_pages }
+}
+
+/// Map framebuffer/video memory write-combined and return its owned kernel
+/// alias. x86 uses PAT WC; arm64 uses Normal-NC.
+///
+/// # Safety
+/// Caller must own a page-aligned non-RAM device-memory range for the mapping
+/// lifetime and must not access it through an alias with a conflicting type.
+/// # C: O(n_pages * page-table depth)
+pub unsafe fn map_owned_wc(pa: u64, n_pages: u64) -> Mapping {
+    // SAFETY: caller carries the physical-range ownership contract; the global
+    // VA allocator gives this mapping a fresh non-aliasing virtual extent.
+    let base_va = unsafe { map_pages_with_flags(pa, n_pages, write_combine_flags()) };
     Mapping { base_va, n_pages }
 }
 
