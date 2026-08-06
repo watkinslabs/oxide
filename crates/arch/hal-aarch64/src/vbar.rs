@@ -61,6 +61,75 @@ const PERCPU_SVC_FRAME_OFF: usize = 24;
 /// the IRQ dispatcher runs on the interrupted stack (safe; only reached before
 /// IRQs are unmasked at boot).
 const PERCPU_IRQ_STACK_TOP_OFF: usize = 32;
+
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+core::arch::global_asm!(
+    ".section .text.oxide_arm_call_on_irq_stack,\"ax\"",
+    ".global oxide_arm_call_on_irq_stack",
+    ".type oxide_arm_call_on_irq_stack, %function",
+    "oxide_arm_call_on_irq_stack:",
+    "    stp  x29, x30, [sp, #-48]!",
+    "    mov  x29, sp",
+    "    stp  x19, x20, [sp, #16]",
+    "    stp  x21, x22, [sp, #32]",
+    "    mov  x19, x0",
+    // Keep hardware IRQs masked while the softirq drain owns the shared IRQ
+    // stack. The current handlers are too deep to permit a nested hard IRQ;
+    // restore the caller's exact DAIF word after returning to its task stack.
+    "    mrs  x21, daif",
+    "    msr  daifset, #2",
+    "    mrs  x9, tpidr_el1",
+    "    cbz  x9, 2f",
+    "    ldr  x10, [x9, #32]",
+    "    cbz  x10, 2f",
+    "    sub  x11, x10, #{stack_bytes}",
+    "    cmp  sp, x11",
+    "    b.lo 1f",
+    "    cmp  sp, x10",
+    "    b.lo 2f",
+    "1:",
+    "    mov  x20, sp",
+    "    mov  sp, x10",
+    "    blr  x19",
+    "    mov  sp, x20",
+    "    b    3f",
+    "2:",
+    "    blr  x19",
+    "3:",
+    "    msr  daif, x21",
+    "    ldp  x21, x22, [sp, #32]",
+    "    ldp  x19, x20, [sp, #16]",
+    "    ldp  x29, x30, [sp], #48",
+    "    ret",
+    ".size oxide_arm_call_on_irq_stack, . - oxide_arm_call_on_irq_stack",
+    stack_bytes = const hal::KERNEL_STACK_BYTES,
+);
+
+/// Run one non-sleeping callback on this CPU's per-CPU IRQ stack.
+///
+/// Linux arm64 uses `call_on_irq_stack()` for process-context softirq drains.
+/// Staying on the task stack would add the complete NET_RX tree to an already
+/// deep syscall or fault frame. If early boot has not armed the stack, or the
+/// caller is already on it, the callback runs in place.
+/// # SAFETY: `callback` must not sleep and must preserve its C ABI contract.
+/// # C: O(callback)
+pub unsafe fn call_on_irq_stack(callback: unsafe extern "C" fn()) {
+    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+    // SAFETY: the caller guarantees a non-sleeping C callback; the trampoline
+    // preserves callee-saved state, restores SP, and restores the saved DAIF.
+    unsafe {
+        unsafe extern "C" {
+            fn oxide_arm_call_on_irq_stack(callback: unsafe extern "C" fn());
+        }
+        oxide_arm_call_on_irq_stack(callback);
+    }
+    #[cfg(not(all(target_arch = "aarch64", target_os = "oxide-kernel")))]
+    // SAFETY: hosted builds have no IRQ stack, so forwarding preserves the
+    // caller's callback contract without changing architectural state.
+    unsafe {
+        callback();
+    }
+}
 /// Per-CPU bounds of the CURRENT task's kernel stack for the entry asm's
 /// bad-stack check (Linux `kernel_ventry` → `__bad_stack`). Only the top is
 /// stored; the low bound is `top - KSTACK_BYTES`. 0 = unarmed, disabling the
