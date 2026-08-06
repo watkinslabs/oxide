@@ -165,9 +165,15 @@ mod imp {
     /// the input line (see `crate::rx`).
     /// # C: O(bytes pending)
     pub fn rx_isr(dlv: fn(u8)) {
-        if !super::rx_enabled() { return; }
-        let va = base(); if va == 0 { return; }
-        crate::rx::service_rx(
+        let _ = rx_isr_claimed(dlv);
+    }
+
+    fn rx_isr_claimed(dlv: fn(u8)) -> bool {
+        if !super::rx_enabled() { return false; }
+        let va = base(); if va == 0 { return false; }
+        // SAFETY: masked interrupt-status read through the published PL011 Device VA.
+        if !unsafe { hal_aarch64::pl011::rx_irq_pending() } { return false; }
+        let _ = crate::rx::service_rx(
             || {
                 // SAFETY: FR/DR reads through the published PL011 Device VA.
                 unsafe {
@@ -179,9 +185,16 @@ mod imp {
             || unsafe { hal_aarch64::pl011::rx_irq_pending() },
             dlv,
         );
+        true
     }
 
-    fn rx_isr_irq() { rx_isr(super::deliver); }
+    fn rx_isr_irq(_irq: u32) -> arch_irq::IrqReport {
+        arch_irq::IrqReport::hard(if rx_isr_claimed(super::deliver) {
+            arch_irq::IrqRet::Handled
+        } else {
+            arch_irq::IrqRet::NotMine
+        })
+    }
 
     /// Detect the PL011 (boot-published base VA) + register the console
     /// TX/RX. `_dev_window_base` unused on arm (PL011 already device-mapped
@@ -193,7 +206,7 @@ mod imp {
         if va == 0 { return false; }
         BASE.store(va, Ordering::Release);
         DELIVER.store(dlv as usize as u64, Ordering::Release);
-        if arch_irq::request_arm_irq_handler(PL011_INTID, rx_isr_irq).is_err() {
+        if arch_irq::request_arm_irq_line_handler(PL011_INTID, rx_isr_irq).is_err() {
             BASE.store(0, Ordering::Release);
             return false;
         }
@@ -216,7 +229,7 @@ mod imp {
         unsafe { hal_aarch64::pl011::disable_rx_irq(); }
         // SAFETY: PL011 owns SPI 33 while bound.
         unsafe { arch_irq::gic::disable_intid(PL011_INTID); }
-        let _ = arch_irq::free_arm_irq_handler(PL011_INTID);
+        let _ = arch_irq::free_arm_irq_line_handler(PL011_INTID);
         BASE.store(0, Ordering::Release);
         PRESENT.store(false, Ordering::Release);
     }

@@ -10,6 +10,8 @@ use core::sync::atomic::{AtomicU64, Ordering};
 /// Kernel VA the I/O APIC MMIO is Device-attr mapped at (0 = unmapped).
 /// Published by the kernel after mapping `firmware::ioapic_pa()`.
 static IOAPIC_VA: AtomicU64 = AtomicU64::new(0);
+static VECTOR_PINS: [AtomicU64; 256] =
+    [const { AtomicU64::new(0) }; 256];
 
 const IOREGSEL: u64 = 0x00;
 const IOWIN: u64 = 0x10;
@@ -18,6 +20,18 @@ const IOWIN: u64 = 0x10;
 pub fn set_base_va(va: u64) { IOAPIC_VA.store(va, Ordering::Release); }
 /// Read the published I/O APIC VA (0 = unmapped). # C: O(1)
 pub fn base_va() -> u64 { IOAPIC_VA.load(Ordering::Acquire) }
+
+/// Forget a vector-to-pin route when the vector is released. # C: O(1)
+pub fn unroute_vector(vector: u8) { VECTOR_PINS[vector as usize].store(0, Ordering::Release); }
+
+fn route_vector(vector: u8, pin: u32) {
+    VECTOR_PINS[vector as usize].store(u64::from(pin) + 1, Ordering::Release);
+}
+
+fn pin_for_vector(vector: u8) -> Option<u32> {
+    let encoded = VECTOR_PINS[vector as usize].load(Ordering::Acquire);
+    (encoded != 0).then_some((encoded.saturating_sub(1)) as u32)
+}
 
 /// # SAFETY: `IOAPIC_VA` is a live Device-attr mapping; single-CPU /
 /// IRQ-off so the IOREGSEL→IOWIN pair is atomic w.r.t. other accessors.
@@ -68,7 +82,8 @@ pub unsafe fn program_redirect(
     if level { lo |= 1 << 15; }
     // high: destination APIC id in bits 56:63 → high-word bits 24:31.
     let hi: u32 = (dest_apic as u32) << 24;
-    // SAFETY: per fn contract — mapped MMIO; write dest, then unmask.
+    route_vector(vector, pin);
+    // SAFETY: per fn contract — mapped MMIO; write destination, then unmask the routed pin.
     unsafe {
         write_reg(hi_idx, hi);
         write_reg(lo_idx, lo);
@@ -83,5 +98,28 @@ pub unsafe fn mask(pin: u32) {
     unsafe {
         let lo = read_reg(lo_idx) | (1 << 16);
         write_reg(lo_idx, lo);
+    }
+}
+
+/// Mask the I/O APIC pin currently routed to `vector`, if any.
+/// # SAFETY: the published route implies a live I/O APIC mapping.
+/// # C: O(1)
+pub unsafe fn mask_vector(vector: u8) {
+    let Some(pin) = pin_for_vector(vector) else { return; };
+    // SAFETY: `program_redirect` publishes the route before it unmasks the low word.
+    unsafe { mask(pin); }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vector_route_round_trips_every_pin_bit() {
+        let vector = 0x71;
+        route_vector(vector, u32::MAX);
+        assert_eq!(pin_for_vector(vector), Some(u32::MAX));
+        unroute_vector(vector);
+        assert_eq!(pin_for_vector(vector), None);
     }
 }

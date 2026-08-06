@@ -14,9 +14,9 @@ use super::state::*;
 /// pipeline. Bounded so one IRQ cannot starve the CPU.
 /// # SAFETY: IRQ context with the i8042 line owned by this driver.
 /// # C: O(bytes pending), <= 64 per interrupt.
-pub(super) unsafe fn drain_irq() {
+pub(super) unsafe fn drain_irq() -> bool {
     if !present() || !irq_enabled() {
-        return;
+        return false;
     }
     let mut n = 0u32;
     loop {
@@ -34,11 +34,16 @@ pub(super) unsafe fn drain_irq() {
             break;
         }
     }
+    n != 0
 }
 
-fn irq1_handler() {
+fn irq1_handler(_irq: u32) -> arch_irq::IrqReport {
     // SAFETY: installed only after probe owns IRQ1 and maps the I/O APIC.
-    unsafe { drain_irq(); }
+    arch_irq::IrqReport::hard(if unsafe { drain_irq() } {
+        arch_irq::IrqRet::Handled
+    } else {
+        arch_irq::IrqRet::NotMine
+    })
 }
 
 /// Program IRQ1 through the I/O APIC and enable the controller IRQ bit.
@@ -76,7 +81,7 @@ pub(super) unsafe fn install_irq() -> bool {
         Some(v) => v,
         None => return false,
     };
-    if arch_irq::register_msi_handler(vec, irq1_handler).is_err() {
+    if arch_irq::register_irq_line_handler(vec as u32, irq1_handler).is_err() {
         let _ = arch_irq::free_x86_vector(vec);
         return false;
     }
