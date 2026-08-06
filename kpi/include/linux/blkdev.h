@@ -13,6 +13,7 @@ typedef u32 blk_mq_req_flags_t;
 
 struct blk_mq_ops;
 struct blk_mq_tag_set;
+struct io_comp_batch;
 
 struct queue_limits {
     u32 logical_block_size;
@@ -69,9 +70,31 @@ struct request {
     struct block_device *part;
     u32 state;
     blk_status_t status;
-    int (*end_io)(struct request *rq, blk_status_t error);
+    int (*end_io)(struct request *rq, blk_status_t error, const struct io_comp_batch *iob);
     void *end_io_data;
+    struct request *rq_next;
 };
+
+struct rq_list {
+    struct request *head;
+    struct request *tail;
+};
+
+struct io_comp_batch {
+    struct rq_list req_list;
+    bool need_ts;
+    void (*complete)(struct io_comp_batch *iob);
+    void *poll_ctx;
+};
+
+_Static_assert(sizeof(struct request) == 112, "request ABI size");
+_Static_assert(__builtin_offsetof(struct request, bio) == 24, "request bio offset");
+_Static_assert(__builtin_offsetof(struct request, cmd_flags) == 40, "request cmd_flags offset");
+_Static_assert(__builtin_offsetof(struct request, __sector) == 64, "request sector offset");
+_Static_assert(__builtin_offsetof(struct request, end_io) == 88, "request end_io offset");
+_Static_assert(__builtin_offsetof(struct request, rq_next) == 104, "request rq_next offset");
+_Static_assert(sizeof(struct io_comp_batch) == 40, "io_comp_batch ABI size");
+_Static_assert(__builtin_offsetof(struct io_comp_batch, complete) == 24, "io_comp_batch complete offset");
 
 struct blk_mq_tag_set {
     const struct blk_mq_ops *ops;

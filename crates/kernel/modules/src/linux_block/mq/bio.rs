@@ -2,7 +2,7 @@ extern crate alloc;
 use crate::linux_block::core;
 use crate::linux_block::types::*;
 use ::core::ffi::c_void;
-use ::core::ptr::{null_mut, write_bytes};
+use ::core::ptr::null_mut;
 
 /// Register the blk-mq-side BIO symbols.
 /// # C: O(1)
@@ -36,28 +36,30 @@ unsafe extern "C" fn submit_bio_wait(bio: *mut LinuxBio) -> i32 {
     unsafe { core::submit_bio(bio) }
 }
 
-unsafe extern "C" fn __bio_add_page(bio: *mut LinuxBio, page: *mut c_void, len: u32, off: u32) -> i32 {
+unsafe extern "C" fn __bio_add_page(bio: *mut LinuxBio, page: *mut c_void, len: u32, off: u32) {
     // SAFETY: forwards the caller-supplied bio/page tuple to the shared BIO helper, which derives its
     // bound from the page descriptor itself and refuses any window that leaves the page.
-    unsafe { core::bio_add_page(bio, page, len, off) }
+    let _ = unsafe { core::bio_add_page(bio, page, len, off) };
 }
 
 extern "C" fn bio_alloc_bioset(gfp: u32, nr: u32, _bs: *mut c_void) -> *mut LinuxBio {
     core::bio_alloc(gfp, nr)
 }
 
-unsafe extern "C" fn bio_init(bio: *mut LinuxBio, _bdev: *mut LinuxBlockDevice, table: *mut c_void, nr: u32, opf: u32) {
+unsafe extern "C" fn bio_init(bio: *mut LinuxBio, bdev: *mut LinuxBlockDevice, table: *mut LinuxBioVec, nr: u32, opf: u32) {
     if bio.is_null() { return; }
     // SAFETY: bio points to caller-provided storage.
     unsafe {
-        (*bio).bi_disk = null_mut();
-        (*bio).bi_bdev = null_mut();
+        (*bio).bi_disk = if bdev.is_null() { null_mut() } else { (*bdev).bd_disk };
+        (*bio).bi_bdev = bdev;
         (*bio).bi_private = null_mut();
         (*bio).bi_sector = 0;
         (*bio).bi_opf = opf;
         (*bio).bi_status = BLK_STS_OK;
-        (*bio).bi_size = nr.saturating_mul(LINUX_SECTOR_SIZE);
-        (*bio).bi_data = table as *mut u8;
+        (*bio).bi_size = 0;
+        (*bio).bi_io_vec = table;
+        (*bio).bi_vcnt = 0;
+        (*bio).bi_max_vecs = nr.min(u16::MAX as u32) as u16;
         (*bio).bi_end_io = None;
         (*bio).owner = null_mut();
     }
@@ -79,13 +81,8 @@ unsafe extern "C" fn bio_associate_blkg(_bio: *mut LinuxBio) -> i32 { LINUX_OK }
 unsafe extern "C" fn bio_blkcg_css(_bio: *mut LinuxBio) -> *mut c_void { null_mut() }
 
 unsafe extern "C" fn zero_fill_bio_iter(bio: *mut LinuxBio) {
-    if bio.is_null() { return; }
-    // SAFETY: bio is null-checked; bi_data and bi_size are the pair every writer of this shim sets together —
-    // bio_alloc_with_len sizes bi_data from the owner's buffer, and bio_add_page only installs a bi_size the
-    // region behind bi_data can hold — so bi_size bytes at bi_data are writable whenever bi_data is non-null.
-    unsafe {
-        if !(*bio).bi_data.is_null() { write_bytes((*bio).bi_data, 0, (*bio).bi_size as usize); }
-    }
+    // SAFETY: zero_bio validates every vector window before writing it and accepts a null bio as a no-op.
+    unsafe { core::zero_bio(bio); }
 }
 
 extern "C" fn trace_block_bio_remap() {}
