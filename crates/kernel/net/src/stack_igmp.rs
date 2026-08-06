@@ -455,10 +455,9 @@ impl NetStack {
         self.retry_mld_reports(now_ns);
     }
     /// Handle IGMP general/group-specific queries. # C: O(N groups)
-    pub(crate) fn handle_igmp(&self, iface: NetIfaceId, _src: Ipv4Addr, dst: Ipv4Addr,
+    pub(crate) fn handle_igmp(&self, lease: &crate::IngressLease, _src: Ipv4Addr, dst: Ipv4Addr,
                               payload: &[u8]) -> NetResult<()> {
-        let net_ns = self.ifaces.namespace(iface).ok_or(NetError::Enodev)?;
-        let owner = report_owner(net_ns).ok_or(NetError::Enodev)?;
+        let (net_ns, iface, owner) = (lease.net_ns(), lease.iface(), lease.namespace());
         let q = match IgmpQuery::parse(payload) { Ok(q) => q, Err(_) => return Ok(()) };
         if !q.group.is_unspecified() && !q.group.is_multicast() { return Ok(()); }
         let version = if payload.len() >= 12 { 3 } else if q.max_resp_time == 0 { 1 } else { 2 };

@@ -26,8 +26,10 @@ fn transport_entry_pins_namespace_owner_through_timer_work() {
     let net_ns = owner.id().as_u64();
     let (init_key, init_entry) = time_wait_entry(0, 40_001);
     let (dead_key, dead_entry) = time_wait_entry(net_ns, 40_002);
-    stack.inet_tables(0).tcp_conns.lock().insert(init_key, init_entry.clone());
-    stack.inet_tables(net_ns).tcp_conns.lock().insert(dead_key, dead_entry.clone());
+    stack.inet_tables_for(&init_entry.owner.net_namespace).tcp_conns.lock()
+        .insert(init_key, init_entry.clone());
+    stack.inet_tables_for(&dead_entry.owner.net_namespace).tcp_conns.lock()
+        .insert(dead_key, dead_entry.clone());
     stack.activate_tcp_timers(&init_entry);
     stack.activate_tcp_timers(&dead_entry);
 

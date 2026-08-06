@@ -54,6 +54,7 @@ fn wire_iface(stack: &NetStack)
 {
     let owner = crate::net_ns::test_support::allocate_namespace();
     let ns = owner.id().as_u64();
+    let _tables = stack.inet_tables_for(&owner);
     let dev = Arc::new(WireDev { mac: LOCAL_MAC, frames: Mutex::new(Vec::new()) });
     let iface = stack.ifaces.register_in_ns(dev.clone(), ns);
     assert!(stack.set_primary_ipv4_in(ns, iface, local_ip(), 0));

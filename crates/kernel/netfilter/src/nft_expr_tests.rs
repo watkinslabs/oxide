@@ -47,6 +47,22 @@ use super::*;
     }
 
     #[test]
+    fn unsupported_expression_rejects_the_complete_rule() {
+        let mut expr = Vec::new();
+        nla_str(&mut expr, NFTA_EXPR_NAME, "ct");
+        nla_nested(&mut expr, NFTA_EXPR_DATA, &[]);
+        let mut rule = Vec::new();
+        nla_nested(&mut rule, NFTA_LIST_ELEM, &expr);
+        assert_eq!(parse_exprs_checked(&rule), Err(ParseError::Unsupported));
+        assert!(parse_exprs(&rule).is_empty(), "invalid policy must never become executable");
+    }
+
+    #[test]
+    fn truncated_expression_blob_is_malformed() {
+        assert_eq!(parse_exprs_checked(&[8, 0, 1, 0]), Err(ParseError::Malformed));
+    }
+
+    #[test]
     fn run_immediate_drop_returns_drop() {
         let bytes = build_immediate_drop();
         let exprs = parse_exprs(&bytes);
