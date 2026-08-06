@@ -35,6 +35,35 @@ fn store_ts(sec: &AtomicI64, nsec: &AtomicU32, t: Timespec64) {
 const I_PUBLIC_DEV: u32 = 1 << 28;
 
 impl Inode {
+    /// Attach event bits from one inode-scoped fsnotify mark. # C: O(bits)
+    pub fn fsnotify_mask_add(&self, mut mask: u32) {
+        while mask != 0 {
+            let bit = mask.trailing_zeros() as usize;
+            self.i_fsnotify_mask_counts[bit].fetch_add(1, Ordering::AcqRel);
+            mask &= mask - 1;
+        }
+    }
+
+    /// Detach event bits from one inode-scoped fsnotify mark. # C: O(bits)
+    pub fn fsnotify_mask_remove(&self, mut mask: u32) {
+        while mask != 0 {
+            let bit = mask.trailing_zeros() as usize;
+            let old = self.i_fsnotify_mask_counts[bit].fetch_sub(1, Ordering::AcqRel);
+            hal::kassert!(old != 0, "fsnotify inode mask counter underflow");
+            mask &= mask - 1;
+        }
+    }
+
+    /// Whether an inode-scoped mark carries every requested bit. # C: O(bits)
+    pub fn fsnotify_has_mask(&self, mut mask: u32) -> bool {
+        while mask != 0 {
+            let bit = mask.trailing_zeros() as usize;
+            if self.i_fsnotify_mask_counts[bit].load(Ordering::Acquire) == 0 { return false; }
+            mask &= mask - 1;
+        }
+        true
+    }
+
     /// Canonical inode-owned advisory-lock context (`inode->i_flctx`). # C: O(1)
     pub fn file_lock_context(&self) -> &super::file_lock::FileLockContext { &self.i_flctx }
 
