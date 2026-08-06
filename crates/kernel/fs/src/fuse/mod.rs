@@ -17,6 +17,8 @@
 // READ, READDIR, RELEASE/RELEASEDIR, FLUSH, INIT). The write/create/mutation
 // family is deliberately OUT of scope and takes the VFS `Erofs` default — it is
 // NOT faked as success.
+//
+// `ABI.md` pins the advertised Linux FUSE wire revision and its change gate.
 
 pub mod proto;
 pub mod conn;
@@ -24,8 +26,10 @@ pub mod dev;
 pub mod fs;
 pub mod fops;
 mod params;
+mod context;
 
-pub use params::{pinned_channel, FUSE_FD_KEY, FUSE_PARAMS};
+pub use context::FuseContextOps;
+pub use params::{FUSE_FD_KEY, FUSE_PARAMS};
 
 #[cfg(test)]
 mod tests;
@@ -60,62 +64,11 @@ pub fn register() {
     devfs::add_device_node("misc", "fuse", Some((dev::FUSE_DEV_MAJOR, dev::FUSE_DEV_MINOR)), Some(factory));
 }
 
-#[cfg(all(target_os = "oxide-kernel", feature = "debug-boot"))]
-fn trace_mount_stage(stage: &'static [u8]) {
-    klog::write_raw(b"[FUSE-MOUNT] ");
-    klog::write_raw(stage);
-    klog::write_raw(b"\n");
-}
-
-#[cfg(all(target_os = "oxide-kernel", not(feature = "debug-boot")))]
-fn trace_mount_stage(_stage: &'static [u8]) {}
-
-/// Build one FUSE superblock from parsed mount options and an opened channel
-/// file. Device identity is checked against the canonical character-device
-/// dispatcher before the channel is retained. # C: O(1)
-fn mount_from_opts(opts: fs::MountOpts, file: &vfs::File)
-    -> vfs::KResult<(alloc::sync::Arc<dyn vfs::fs::FileSystem>, vfs::InodeRef)> {
+/// Build one FUSE filesystem from typed mount options and an opened channel.
+/// Device identity was checked when the context consumed `fd=`. # C: O(1)
+pub(super) fn mount_from_context(opts: fs::MountOpts, file: &vfs::File)
+    -> vfs::KResult<alloc::sync::Arc<fs::FuseFs>> {
     if !dev::is_fuse_dev(file) { return Err(vfs::VfsError::Einval); }
     let conn = dev::conn_for(file);
-    let ffs = fs::build_fuse_fs(conn, opts.rootmode, opts.user_id, opts.group_id);
-    let root = ffs.root_inode();
-    let dyn_fs: alloc::sync::Arc<dyn vfs::fs::FileSystem> = ffs;
-    Ok((dyn_fs, root))
-}
-
-/// `mount("fuse", …, data)` entry — parse the `fd=N,rootmode=…,user_id=…,
-/// group_id=…` option string, resolve the daemon's `/dev/fuse` channel fd (in
-/// the mounting task's context), fire `FUSE_INIT`, and build the `FuseFs` +
-/// root inode. The syscalls fuse-mount ctor calls this. Runs in the daemon's
-/// task, so `proc_fd_file(None, fd)` reaches the daemon's own fd table.
-/// # C: O(1)
-#[cfg(target_os = "oxide-kernel")]
-pub fn mount_from_data(data: &str, pinned: &[vfs::fs::FsParameter])
-    -> vfs::KResult<(alloc::sync::Arc<dyn vfs::fs::FileSystem>, vfs::InodeRef)> {
-    trace_mount_stage(b"parse");
-    let opts = match fs::parse_mount_opts(data) {
-        Ok(opts) => opts,
-        Err(e) => { trace_mount_stage(b"parse-fail"); return Err(e); }
-    };
-    // `fd=` reaches here two ways and BOTH end at one open file description.
-    // `mount -o fd=17` writes the number, which is resolved in the mounting
-    // task exactly as before. `fsconfig(FSCONFIG_SET_FD, "fd", …)` hands over a
-    // description the kernel pinned when the parameter was parsed — use it,
-    // because the caller is free to have closed that descriptor between the
-    // `fsconfig` and the `FSCONFIG_CMD_CREATE` that got here, and re-resolving
-    // the number would then fail a mount the reference completes.
-    let file = match pinned_channel(pinned) {
-        Some(file) => file,
-        None => match sched::proclink::proc_fd_file(None, opts.fd) {
-            Some(file) => file,
-            None => { trace_mount_stage(b"fd-fail"); return Err(vfs::VfsError::Ebadf); }
-        },
-    };
-    let mounted = match mount_from_opts(opts, &file) {
-        Ok(mounted) => mounted,
-        Err(e) => { trace_mount_stage(b"device-fail"); return Err(e); }
-    };
-    trace_mount_stage(b"device-ok");
-    trace_mount_stage(b"construct-ok");
-    Ok(mounted)
+    Ok(fs::build_fuse_fs(conn, &opts))
 }

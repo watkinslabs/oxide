@@ -6,6 +6,8 @@ extern crate alloc;
 
 mod params;
 pub use params::AUTOFS_PARAMS;
+mod context;
+pub use context::AutofsContextOps;
 
 mod autofs_ids {
     /// One autofs root today; the region reserves room for more.
@@ -48,7 +50,23 @@ unsafe fn schedule_now() { unreachable!("autofs schedule under hosted"); }
 pub const AUTOFS_SUPER_MAGIC: u64 = 0x0187;
 const AUTOFS_PROTO_VERSION: u32 = 5;
 const AUTOFS_PROTO_SUBVERSION: u32 = 6;
+const AUTOFS_PTYPE_MISSING_INDIRECT: i32 = 3;
 const AUTOFS_PTYPE_MISSING_DIRECT: i32 = 5;
+
+#[derive(Copy, Clone)]
+pub(super) enum AutofsMountType { Indirect, Direct, Offset }
+
+pub(super) struct AutofsMountOptions {
+    pub pipe: Arc<File>,
+    pub uid: u32,
+    pub gid: u32,
+    pub pgrp: u32,
+    pub pgrp_set: bool,
+    pub max_proto: u32,
+    pub mount_type: AutofsMountType,
+    pub strict_expire: bool,
+    pub ignore: bool,
+}
 
 pub struct AutofsFs {
     root: InodeRef,
@@ -56,16 +74,12 @@ pub struct AutofsFs {
 }
 
 impl AutofsFs {
-    pub fn new(options: &str) -> KResult<Arc<Self>> {
-        let pipe = match parse_fd_option(options) {
-            Some(fd) => Some(resolve_fd(fd)?),
-            None => None,
-        };
-        let state = Arc::new(AutofsState::new(pipe));
-        Ok(Arc::new(Self {
-            root: make_autofs_root(Arc::clone(&state)),
+    pub(super) fn from_context(options: AutofsMountOptions) -> Arc<Self> {
+        let state = Arc::new(AutofsState::new(&options));
+        Arc::new(Self {
+            root: make_autofs_root(Arc::clone(&state), options.uid, options.gid),
             state,
-        }))
+        })
     }
 }
 
@@ -94,9 +108,10 @@ impl vfs::fs::FileSystem for AutofsFs {
 struct AutofsRootData { state: Arc<AutofsState> }
 
 /// `make_autofs_root(state)` — the autofs mount-point directory inode. # C: O(1)
-fn make_autofs_root(state: Arc<AutofsState>) -> InodeRef {
+fn make_autofs_root(state: Arc<AutofsState>, uid: u32, gid: u32) -> InodeRef {
     InodeBuilder::new(autofs_ids::ROOT_INO, mk_mode(FileType::Directory, 0o755),
         Arc::new(AutofsRootInodeOps), Arc::new(AutofsRootFileOps))
+        .owner(uid, gid)
         .private(Arc::new(AutofsRootData { state }))
         .build()
 }
@@ -157,17 +172,30 @@ struct AutofsState {
     next_token: AtomicU32,
     pending: Spinlock<Option<Pending>, LockClass>,
     waiters: WaitList,
+    proto_version: u32,
+    proto_subversion: u32,
+    mount_type: AutofsMountType,
+    _pgrp: u32,
+    _strict_expire: bool,
+    _ignore: bool,
 }
 
 impl AutofsState {
-    fn new(pipe: Option<Arc<File>>) -> Self {
+    fn new(options: &AutofsMountOptions) -> Self {
+        let proto_version = options.max_proto.min(AUTOFS_PROTO_VERSION);
         Self {
             dev: AtomicU64::new(0),
-            pipe: Spinlock::new(pipe),
+            pipe: Spinlock::new(Some(options.pipe.clone())),
             timeout: AtomicU64::new(300),
             next_token: AtomicU32::new(1),
             pending: Spinlock::new(None),
             waiters: WaitList::new(),
+            proto_version,
+            proto_subversion: if proto_version == 5 { AUTOFS_PROTO_SUBVERSION } else { 7 },
+            mount_type: options.mount_type,
+            _pgrp: options.pgrp,
+            _strict_expire: options.strict_expire,
+            _ignore: options.ignore,
         }
     }
 
@@ -217,7 +245,11 @@ impl AutofsState {
         let cur = sched::current().ok_or(VfsError::Ebadf)?;
         let mut packet = [0u8; 304];
         write_i32(&mut packet, 0, AUTOFS_PROTO_VERSION as i32);
-        write_i32(&mut packet, 4, AUTOFS_PTYPE_MISSING_DIRECT);
+        let ptype = match self.mount_type {
+            AutofsMountType::Indirect => AUTOFS_PTYPE_MISSING_INDIRECT,
+            AutofsMountType::Direct | AutofsMountType::Offset => AUTOFS_PTYPE_MISSING_DIRECT,
+        };
+        write_i32(&mut packet, 4, ptype);
         write_u32(&mut packet, 8, token);
         write_u32(&mut packet, 12, self.dev.load(Ordering::Acquire) as u32);
         write_u64(&mut packet, 16, self.ino());
@@ -293,13 +325,11 @@ pub fn openmount(devid: u32) -> Option<InodeRef> {
 }
 
 pub fn ctl_protover(ctl: &AutofsCtlInode) -> u32 {
-    let _ = ctl;
-    AUTOFS_PROTO_VERSION
+    ctl.state.proto_version
 }
 
 pub fn ctl_protosubver(ctl: &AutofsCtlInode) -> u32 {
-    let _ = ctl;
-    AUTOFS_PROTO_SUBVERSION
+    ctl.state.proto_subversion
 }
 
 pub fn ctl_ready(ctl: &AutofsCtlInode, token: u32) -> i64 {
@@ -318,17 +348,7 @@ pub fn ctl_timeout(ctl: &AutofsCtlInode, requested: u64) -> u64 {
     ctl.state.timeout(requested)
 }
 
-fn parse_fd_option(options: &str) -> Option<i32> {
-    for part in options.split(',') {
-        let Some(v) = part.strip_prefix("fd=") else { continue; };
-        if let Ok(fd) = v.parse::<i32>() {
-            return Some(fd);
-        }
-    }
-    None
-}
-
-fn resolve_fd(fd: i32) -> KResult<Arc<File>> {
+pub(super) fn resolve_fd(fd: i32) -> KResult<Arc<File>> {
     let cur = sched::current().ok_or(VfsError::Ebadf)?;
     // SAFETY: `fd_table_ref` borrows the CURRENT task's own fd-table slot, which
     // only that task replaces (execve/unshare), and it is here in a mount option

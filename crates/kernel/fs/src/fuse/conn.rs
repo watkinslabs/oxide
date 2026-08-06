@@ -19,7 +19,7 @@ extern crate alloc;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 
 use alloc::sync::Weak;
 use sync::{Spinlock, Tty as FuseClass};
@@ -147,6 +147,8 @@ pub struct FuseConn {
     /// live inode for a repeated nodeid so the VFS sees one object per node;
     /// `Weak` so an evicted inode does not pin the entry. # consumers: lookup.
     node_inodes: Spinlock<BTreeMap<u64, Weak<Inode>>, FuseClass>,
+    /// `fc->max_read` from the typed mount context; bounds every FUSE_READ.
+    max_read: AtomicU32,
 }
 
 impl FuseConn {
@@ -162,6 +164,7 @@ impl FuseConn {
             init: Spinlock::new(InitState::default()),
             poll_subs,
             node_inodes: Spinlock::new(BTreeMap::new()),
+            max_read: AtomicU32::new(u32::MAX),
         })
     }
 
@@ -187,6 +190,11 @@ impl FuseConn {
 
     /// Poll wait source owned by this channel. # C: O(1)
     pub fn poll_subscribers(&self) -> Arc<PollSubscribers> { self.poll_subs.clone() }
+
+    /// Publish the mount's `max_read=` policy before INIT is queued. # C: O(1)
+    pub fn set_max_read(&self, max_read: u32) { self.max_read.store(max_read, Ordering::Release); }
+    /// Maximum payload requested by one `FUSE_READ`. # C: O(1)
+    pub fn max_read(&self) -> u32 { self.max_read.load(Ordering::Acquire) }
 
     /// Encode a request (`fuse_in_header` + `body`) for `opcode` on `nodeid`,
     /// file it in `slots`, push it to the daemon's `pending` queue, and wake a
@@ -322,7 +330,9 @@ impl FuseConn {
             major: proto::FUSE_KERNEL_VERSION,
             minor: proto::FUSE_KERNEL_MINOR_VERSION,
             max_readahead: super::FUSE_MAX_READAHEAD,
-            flags: proto::FUSE_ASYNC_READ | proto::FUSE_BIG_WRITES | proto::FUSE_DO_READDIRPLUS,
+            flags: proto::FUSE_ASYNC_READ | proto::FUSE_BIG_WRITES
+                | proto::FUSE_DO_READDIRPLUS | proto::FUSE_INIT_EXT,
+            flags2: 0,
         };
         let mut body = Vec::with_capacity(proto::FUSE_INIT_IN_SIZE);
         init.encode(&mut body);

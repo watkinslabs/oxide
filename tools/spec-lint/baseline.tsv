@@ -37,7 +37,7 @@ crates/kernel/exec	code/klog-ungated	1
 crates/kernel/exec	code/pub-fn-complexity	1
 crates/kernel/ext4	code/pub-fn-complexity	23
 crates/kernel/fs	code/klog-ungated	26
-crates/kernel/fs	code/pub-fn-complexity	27
+crates/kernel/fs	code/pub-fn-complexity	26
 crates/kernel/ipc	code/pub-fn-complexity	1
 crates/kernel/kernfs	code/pub-fn-complexity	22
 crates/kernel/kmain	code/klog-ungated	40
