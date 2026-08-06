@@ -197,18 +197,18 @@ fn register_filesystems() {
     pseudo!("fusectl", FUSE_CTL_MAGIC);
     pseudo!("mqueue", MQUEUE_MAGIC);
     pseudo!("hugetlbfs", HUGETLBFS_MAGIC);
-    let _ = register_fs(FsType::with_parameters("autofs", AUTOFS_SUPER_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, data: &str, sb_flags, _p: &[vfs::fs::FsParameter]| -> R {
-        let fs: Arc<dyn vfs::fs::FileSystem> = ::fs::autofs::AutofsFs::new(data)?;
-        mounted(ty, fs, None, "autofs", sb_flags)
-    }), Some(::fs::autofs::AUTOFS_PARAMS)));
+    let _ = register_fs(FsType::with_context_parameters(
+        "autofs", AUTOFS_SUPER_MAGIC, FsFlags::empty(),
+        Arc::new(::fs::autofs::AutofsContextOps), ::fs::autofs::AUTOFS_PARAMS,
+    ));
     let _ = register_fs(FsType::new("binfmt_misc", BINFMTFS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, _, sb_flags, _p: &[vfs::fs::FsParameter]| -> R {
         let fs: Arc<dyn vfs::fs::FileSystem> = ::fs::binfmt_misc::BinfmtMiscFs::new();
         mounted(ty, fs, None, "binfmt_misc", sb_flags)
     })));
-    let _ = register_fs(FsType::with_parameters("fuse", FUSE_SUPER_MAGIC, FsFlags::empty(), Box::new(|ty, _s: Option<&str>, _t: &str, data: &str, sb_flags, pinned: &[vfs::fs::FsParameter]| -> R {
-        let (fs, root) = ::fs::fuse::mount_from_data(data, pinned)?;
-        mounted(ty, fs, Some(root), "fuse", sb_flags)
-    }), Some(::fs::fuse::FUSE_PARAMS)));
+    let _ = register_fs(FsType::with_context_parameters(
+        "fuse", FUSE_SUPER_MAGIC, FsFlags::empty(),
+        Arc::new(::fs::fuse::FuseContextOps), ::fs::fuse::FUSE_PARAMS,
+    ));
     // devpts declares the six options the reference does and ENFORCES all of
     // them: `uid=`/`gid=`/`mode=` stamp every pty slave node, `ptmxmode=` the
     // instance `ptmx`, `max=` bounds index allocation, and `newinstance` is the

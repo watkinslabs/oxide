@@ -66,33 +66,41 @@ impl OutHeader {
     }
 }
 
-/// `struct fuse_init_in`: `major,minor,max_readahead,flags`. The KERNEL sends
-/// this; the daemon replies with `InitOut`. # C: O(1)
+/// `struct fuse_init_in` (7.36+): base fields, `flags2`, and eleven reserved
+/// words. The kernel sends this; the daemon replies with `InitOut`. # C: O(1)
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InitIn {
     pub major: u32,
     pub minor: u32,
     pub max_readahead: u32,
     pub flags: u32,
+    pub flags2: u32,
 }
 
 impl InitIn {
-    /// Append the 16-byte INIT request body. # C: O(1)
+    /// Append the 64-byte extended INIT request body. # C: O(1)
     pub fn encode(&self, out: &mut Vec<u8>) {
         put_u32(out, self.major);
         put_u32(out, self.minor);
         put_u32(out, self.max_readahead);
         put_u32(out, self.flags);
+        put_u32(out, self.flags2);
+        put_pad(out, 4 * 11);
     }
     /// Decode a 16-byte INIT request body (test/daemon side). # C: O(1)
     pub fn decode(b: &[u8]) -> Option<InitIn> {
-        Some(InitIn { major: get_u32(b, 0)?, minor: get_u32(b, 4)?, max_readahead: get_u32(b, 8)?, flags: get_u32(b, 12)? })
+        Some(InitIn {
+            major: get_u32(b, 0)?, minor: get_u32(b, 4)?,
+            max_readahead: get_u32(b, 8)?, flags: get_u32(b, 12)?,
+            flags2: get_u32(b, 16)?,
+        })
     }
 }
 
 /// `struct fuse_init_out` (64 bytes): `major,minor,max_readahead,flags,
 /// max_background,congestion_threshold,max_write,time_gran,max_pages,
-/// map_alignment,flags2,unused[7]`. # C: O(1)
+/// map_alignment,flags2,max_stack_depth,request_timeout,unused[11]`. Fields
+/// after `flags2` are currently zeroed. # C: O(1)
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub struct InitOut {
     pub major: u32,
@@ -108,7 +116,7 @@ pub struct InitOut {
 }
 
 impl InitOut {
-    /// Append the 64-byte INIT reply body (flags2 + unused[7] zeroed). # C: O(1)
+    /// Append the 64-byte INIT reply body (the extension tail zeroed). # C: O(1)
     pub fn encode(&self, out: &mut Vec<u8>) {
         put_u32(out, self.major);
         put_u32(out, self.minor);

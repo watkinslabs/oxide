@@ -6,8 +6,9 @@
 // because fuse names it as a parameter of its own rather than leaving it to
 // the generic fallback.
 
-use alloc::sync::Arc;
-use vfs::fs::{FsParamSpec, FsParamType, FsParameter};
+use vfs::fs::{FsParamSpec, FsParamType};
+#[cfg(test)]
+use vfs::fs::FsParameter;
 
 /// The parameter naming the `/dev/fuse` channel. One spelling, shared by the
 /// table, the option-string parse and the pinned-descriptor lookup.
@@ -26,17 +27,6 @@ pub static FUSE_PARAMS: &[FsParamSpec] = &[
     FsParamSpec::value("blksize", FsParamType::U32),
     FsParamSpec::value("subtype", FsParamType::String),
 ];
-
-/// The `/dev/fuse` channel the mount was given as a PINNED open file, if it was
-/// given one.
-///
-/// `None` is not an error: `mount -o fd=17` supplies the same channel as a
-/// decimal number and is resolved in the mounting task's descriptor table. The
-/// LAST occurrence wins, matching the option string, where a repeated key
-/// overwrites. # C: O(N_pinned)
-pub fn pinned_channel(pinned: &[FsParameter]) -> Option<Arc<vfs::File>> {
-    pinned.iter().rev().find(|p| p.key == FUSE_FD_KEY).and_then(|p| p.as_file()).cloned()
-}
 
 #[cfg(test)]
 mod tests {
