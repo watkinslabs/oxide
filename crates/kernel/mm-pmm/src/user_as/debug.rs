@@ -141,7 +141,7 @@ pub(super) fn segv_dump(rip: u64, cr2: u64, err: u64) {
                         klog::write_raw(b",kframe=");
                         klog::write_hex_u64(*pa);
                     }
-                    VmaBacking::PhysRange { base_pa } => {
+                    VmaBacking::PhysRange { base_pa, .. } => {
                         klog::write_raw(b",phys=");
                         klog::write_hex_u64(*base_pa);
                     }

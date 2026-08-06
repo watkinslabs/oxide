@@ -55,9 +55,9 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
     // File-backed mmap: resolve fd, wrap as FileBacking, pass to glue_mmap.
     // A device exposing a contiguous physical range (e.g. /dev/fbN, the
     // framebuffer) is mapped straight to that PA (Linux remap_pfn_range) via
-    // `phys_base` instead of a page-cache FileBacking. Anonymous → None/None.
+    // `phys_range` instead of a page-cache FileBacking. Anonymous → None/None.
     let mut backing: Option<alloc::sync::Arc<dyn vmm::FileBacking>> = None;
-    let mut phys_base: Option<u64> = None;
+    let mut phys_range: Option<(u64, vmm::PhysCacheMode)> = None;
     let mut seal_write_reservation: Option<vmm::WritableMapReservation> = None;
     // MAP_SHARED|MAP_ANON: Linux `shmem_zero_setup` — back the mapping with a
     // fresh ANONYMOUS tmpfs (shmem) inode so its frames are owned by one
@@ -182,12 +182,12 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
             };
         }
         match fbdev::devfs::mmap_backing(inode) {
-            Some((pa, len)) => {
+            Some((pa, len, cache)) => {
                 // The mapped window must fit within the device's backing.
                 if offset.saturating_add(args.a1) > len {
                     return -(Errno::Einval.as_i32() as i64);
                 }
-                phys_base = Some(pa);
+                phys_range = Some((pa, cache));
             }
             None => {
                 #[cfg(feature = "debug-atexit")]
@@ -226,7 +226,7 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
         }
     }
     let result = pmm::user_as::glue_mmap(
-        args.a0, args.a1, prot, args.a3, fd as i64, offset, backing, phys_base,
+        args.a0, args.a1, prot, args.a3, fd as i64, offset, backing, phys_range,
         None, may_prot,
     );
     drop(seal_write_reservation);

@@ -88,7 +88,7 @@ impl PteX86_64 {
     }
 
     /// # C: O(1)
-    pub const fn is_huge(self) -> bool {
+    pub const fn is_huge_at_nonleaf_level(self) -> bool {
         (self.0 & PteFlags::HUGE.bits()) != 0
     }
 
@@ -104,16 +104,15 @@ impl PteX86_64 {
 
     /// Convert architecture-neutral `hal::PageFlags` → x86 PTE bits.
     /// PRESENT is implicit (always set on a leaf). USER mirrors arch.
-    /// NOCACHE / WRITETHRU mirror; READ is implicit by virtue of the
-    /// entry being present; WRITE/EXEC encode as native + NX flip.
+    /// Cache attributes use the canonical PAT translator; READ is implicit by
+    /// virtue of the entry being present; WRITE/EXEC encode as native + NX.
     /// # C: O(1)
     pub fn flags_from_native(n: PageFlags) -> PteFlags {
         let mut f = PteFlags::PRESENT;
         if n.contains(PageFlags::WRITE)   { f |= PteFlags::WRITABLE;  }
         if n.contains(PageFlags::USER)    { f |= PteFlags::USER;      }
         if n.contains(PageFlags::GLOBAL)  { f |= PteFlags::GLOBAL;    }
-        if n.contains(PageFlags::NO_CACHE) { f |= PteFlags::NOCACHE;  }
-        if n.contains(PageFlags::WRITE_THROUGH) { f |= PteFlags::WRITETHRU; }
+        f |= PteFlags::from_bits_retain(crate::pat::cache_bits(n, false));
         // EXEC bit is the *inverse* of NX in x86 — clear NX iff EXEC is set.
         if !n.contains(PageFlags::EXEC)   { f |= PteFlags::NX;        }
         f
@@ -128,8 +127,7 @@ impl PteX86_64 {
         if f.contains(PteFlags::WRITABLE)  { n |= PageFlags::WRITE;  }
         if f.contains(PteFlags::USER)      { n |= PageFlags::USER;   }
         if f.contains(PteFlags::GLOBAL)    { n |= PageFlags::GLOBAL; }
-        if f.contains(PteFlags::NOCACHE)   { n |= PageFlags::NO_CACHE; }
-        if f.contains(PteFlags::WRITETHRU) { n |= PageFlags::WRITE_THROUGH; }
+        n |= crate::pat::cache_flags(f.bits(), false);
         if !f.contains(PteFlags::NX)       { n |= PageFlags::EXEC;   }
         n
     }
@@ -229,7 +227,7 @@ mod tests {
         let f = PteFlags::PRESENT | PteFlags::WRITABLE | PteFlags::NX;
         let pte = PteX86_64::new_leaf(pa, f);
         assert!(pte.is_present());
-        assert!(!pte.is_huge());
+        assert!(!pte.is_huge_at_nonleaf_level());
         assert_eq!(pte.phys(), pa);
         assert_eq!(pte.flags(), f);
     }

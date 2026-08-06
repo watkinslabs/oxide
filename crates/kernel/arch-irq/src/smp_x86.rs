@@ -131,6 +131,11 @@ unsafe fn ap_main_x86(percpu_base: u64, logical_cpu_id: u32) -> ! {
     unsafe { hal_x86_64::enable_cpu_features(false); }
     ap_stage(logical_cpu_id, AP_STAGE_SSE);
 
+    // PAT is per-CPU. Install the BSP's Linux-compatible table before this AP
+    // can schedule a task that touches a WC framebuffer VMA.
+    // SAFETY: AP bring-up at CPL0 with IRQs masked; sole writer of its PAT MSR.
+    let _ = unsafe { hal_x86_64::init_pat_for_cpu() };
+
     // Force CR4.FSGSBASE off on this AP, matching the BSP. While the bit is
     // set, ring 3 on this CPU can `wrgsbase` the per-CPU base that the
     // syscall/IRQ entry asm dereferences at CPL=0.

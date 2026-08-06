@@ -11,7 +11,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use alloc::sync::Arc;
 use hal::UserVirtAddr;
 
-use crate::file_rmap::FileRmap;
+use crate::{file_rmap::FileRmap, PhysCacheMode};
 
 mod clone;
 
@@ -346,7 +346,7 @@ pub enum VmaBacking {
     /// The page-fault handler maps page at VMA offset `O` to `base_pa + O`
     /// directly — no PMM frame alloc, no refcount, no copy. Used for
     /// `/dev/fbN`: userspace writes hit the real scanout memory.
-    PhysRange { base_pa: u64 },
+    PhysRange { base_pa: u64, cache: PhysCacheMode },
     Special,
 }
 
@@ -359,7 +359,9 @@ impl core::fmt::Debug for VmaBacking {
                 write!(f, "KernelBytes {{ len: {}, off: {} }}", data.len(), off)
             }
             VmaBacking::KernelFrame { pa } => write!(f, "KernelFrame {{ pa: {:#x} }}", pa),
-            VmaBacking::PhysRange { base_pa } => write!(f, "PhysRange {{ base_pa: {:#x} }}", base_pa),
+            VmaBacking::PhysRange { base_pa, cache } => {
+                write!(f, "PhysRange {{ base_pa: {:#x}, cache: {:?} }}", base_pa, cache)
+            }
             VmaBacking::Special => f.write_str("Special"),
         }
     }
@@ -379,6 +381,8 @@ impl PartialEq for VmaBacking {
                 alloc::sync::Arc::ptr_eq(a, b) && ao == bo
             }
             (VmaBacking::KernelFrame { pa: a }, VmaBacking::KernelFrame { pa: b }) => a == b,
+            (VmaBacking::PhysRange { base_pa: a, cache: ac },
+             VmaBacking::PhysRange { base_pa: b, cache: bc }) => a == b && ac == bc,
             _ => false,
         }
     }

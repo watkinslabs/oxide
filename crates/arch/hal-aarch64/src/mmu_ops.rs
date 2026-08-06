@@ -347,8 +347,11 @@ fn unpack_flags(leaf: u64) -> PageFlags {
     let writable = (ap & 0b10) == 0;
     if writable { n |= PageFlags::WRITE; }
     if user     { n |= PageFlags::USER;  }
-    let attr1 = (leaf & (1 << 3)) != 0;
-    if attr1 { n |= PageFlags::NO_CACHE; }
+    match (leaf >> 2) & 0b111 {
+        0 => n |= PageFlags::NO_CACHE,
+        2 => n |= PageFlags::WRITE_COMBINE,
+        _ => {}
+    }
     let pxn = (leaf & (1 << 53)) != 0;
     let uxn = (leaf & (1 << 54)) != 0;
     // For kernel mappings (USER=0): EXEC ↔ !PXN.
@@ -381,5 +384,14 @@ mod tests {
         let leaf = PtWalkerArm::pack_4k_leaf(pa, want);
         let got = unpack_flags(leaf);
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn unpack_flags_roundtrip_write_combine() {
+        use hal::pt_walker::PtWalker;
+        let want = PageFlags::READ | PageFlags::WRITE | PageFlags::USER
+            | PageFlags::WRITE_COMBINE;
+        let leaf = PtWalkerArm::pack_4k_leaf(0xcafe_b000, want);
+        assert_eq!(unpack_flags(leaf), want);
     }
 }
