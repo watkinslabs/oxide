@@ -222,11 +222,13 @@ fn mask_count_delta(counts: &[AtomicUsize; 32], old: u32, new: u32) {
     }
 }
 
+/// Whether any mount or filesystem mark can match the event. # C: O(1)
 pub(crate) fn fs_scope_may_match(mask: u32) -> bool {
     mask != 0 && FS_SCOPE_MARK_MASK_COUNTS[mask.trailing_zeros() as usize]
         .load(Ordering::Acquire) != 0
 }
 
+/// Whether any inode mark can match the event as a child. # C: O(1)
 pub(crate) fn child_mark_may_match(mask: u32) -> bool {
     mask != 0 && CHILD_MARK_MASK_COUNTS[mask.trailing_zeros() as usize]
         .load(Ordering::Acquire) != 0
