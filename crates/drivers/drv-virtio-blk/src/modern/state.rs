@@ -79,47 +79,34 @@ pub(super) fn now_ns() -> u64 {
     { 0 }
 }
 
-/// Save the current IRQ mask and ENABLE IRQs for a block-I/O wait, returning
-/// the prior state token for [`irq_restore`]. The kernel runs syscalls/faults
-/// IF=0; a synchronous block wait can spin+park for up to `IO_TIMEOUT_NS`, and
-/// with IRQs masked that whole window freezes the timer tick, preemption, and
-/// every wakeup (the completion softirq that would `BLK_COMPL.wake_all` a parked
-/// waiter cannot even run). Linux services demand-paging / read / write I/O with
-/// IRQs enabled; this mirrors `local_irq_enable` for the wait. SAFE only because
-/// the wait holds no plain lock an IRQ/softirq path also takes (audited).
+/// Save the current IRQ mask and enable IRQ delivery for the short virtio
+/// completion bridge in `wait_for_completion`. Syscall/fault paths enter with
+/// IRQs masked; on a one-vCPU VM the completion interrupt must run locally
+/// before the waiter can be woken. The caller holds no lock across this window.
 /// # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
 #[inline]
 pub(super) fn irq_save_enable() -> u64 {
     use sync::IrqGate;
-    // SAFETY: unmasking is sound here because the block wait holds no plain
-    // lock that an IRQ or softirq path also takes (audited, see doc above), and
-    // every exit from the wait pairs this with `irq_restore(token)`.
+    // SAFETY: the block wait holds no lock taken by its IRQ/softirq path.
     #[cfg(target_arch = "x86_64")]
     unsafe { hal_x86_64::X86IrqGate::save_enable() }
-    // SAFETY: unmasking is sound here because the block wait holds no plain
-    // lock that an IRQ or softirq path also takes (audited, see doc above), and
-    // every exit from the wait pairs this with `irq_restore(token)`.
+    // SAFETY: same audited lock-free window as x86_64.
     #[cfg(target_arch = "aarch64")]
     unsafe { hal_aarch64::ArmIrqGate::save_enable() }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     { 0 }
 }
 
-/// Restore the IRQ mask saved by [`irq_save_enable`] (re-mask if the caller
-/// entered IF=0). # C: O(1)
+/// Restore the IRQ mask saved by [`irq_save_enable`]. # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
 #[inline]
 pub(super) fn irq_restore(token: u64) {
     use sync::IrqGate;
-    // SAFETY: `token` is the opaque flags word produced by the matching
-    // `irq_save_enable` earlier in this same call frame on this CPU, so
-    // restoring it returns the interrupt mask to the caller's entry state.
+    // SAFETY: token came from the matching gate on this CPU and call frame.
     #[cfg(target_arch = "x86_64")]
     unsafe { hal_x86_64::X86IrqGate::restore(token) }
-    // SAFETY: `token` is the opaque DAIF word produced by the matching
-    // `irq_save_enable` earlier in this same call frame on this CPU, so
-    // restoring it returns the interrupt mask to the caller's entry state.
+    // SAFETY: same matching-token contract as x86_64.
     #[cfg(target_arch = "aarch64")]
     unsafe { hal_aarch64::ArmIrqGate::restore(token) }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
@@ -166,14 +153,16 @@ fn can_sleep() -> bool {
 /// and flips us Runnable before `schedule()` can switch away (same guarantee
 /// `park_interruptible_with_deadline` uses for signal-before-sleep). If `done`
 /// is already true by the time we check, unregister without sleeping — the
-/// `rt_sigtimedwait` park/recheck/`cancel_current_park` idiom. # C: O(1)
+/// `rt_sigtimedwait` park/recheck/`cancel_current_park` idiom. A nonzero
+/// `deadline_ns` also arms the scheduler's timeout queue, so a lost device IRQ
+/// cannot strand the waiter past the I/O deadline. # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
 #[inline]
-pub(super) fn park_blk_checked(list: &WaitList, mut done: impl FnMut() -> bool) {
+pub(super) fn park_blk_checked(list: &WaitList, deadline_ns: u64, mut done: impl FnMut() -> bool) {
     if can_sleep() {
-        // SAFETY: process context (can_sleep() ruled out IRQ-stack/idle);
-        // registration is followed immediately by the recheck below.
-        unsafe { list.park(); }
+        // SAFETY: process context (can_sleep() ruled out IRQ-stack/idle), no
+        // lock held; registration is followed immediately by the recheck.
+        unsafe { list.park_with_deadline(deadline_ns); }
         if done() {
             list.cancel_current_park();
             return;
@@ -187,8 +176,12 @@ pub(super) fn park_blk_checked(list: &WaitList, mut done: impl FnMut() -> bool) 
 
 #[cfg(target_os = "oxide-kernel")]
 pub(super) const IO_TIMEOUT_NS: u64 = 5_000_000_000;
+/// Maximum lock-free used-ring probes while IRQs are briefly enabled. This is
+/// an IRQ-delivery bridge for the current IF=0 kernel entry model, not a block
+/// latency busy-wait: it is deliberately three orders of magnitude below the
+/// removed 200,000-iteration loop and performs no clock conversion per probe.
 #[cfg(target_os = "oxide-kernel")]
-pub(super) const IO_SPIN_BUDGET: u64 = 200_000;
+pub(super) const IO_IRQ_POLL_BUDGET: u16 = 64;
 #[cfg(not(target_os = "oxide-kernel"))]
 pub(super) const IO_FALLBACK_SPINS: u64 = 50_000_000;
 

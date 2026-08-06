@@ -16,6 +16,8 @@ use core::cmp::max;
 use core::mem;
 use core::ptr::NonNull;
 
+mod region_index;
+
 /// Rejection reason for a free-list mutation that would violate ownership.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HoleListError {
@@ -55,6 +57,9 @@ pub struct HoleHdr {
 struct RegionHdr {
     end: usize,
     next: Option<NonNull<RegionHdr>>,
+    left: Option<NonNull<RegionHdr>>,
+    right: Option<NonNull<RegionHdr>>,
+    height: u8,
 }
 
 /// Minimum size of a free region (must hold at least the header).
@@ -162,7 +167,10 @@ pub struct HoleList {
     /// without a separate `head: Option<...>` case.
     first: HoleHdr,
     /// Region descriptors live in reserved prefixes of their backing ranges.
+    /// `regions` retains insertion order for rare diagnostic dumps; ordinary
+    /// ownership checks use the balanced address index rooted at `region_root`.
     regions: Option<NonNull<RegionHdr>>,
+    region_root: Option<NonNull<RegionHdr>>,
     /// See `EvictHistory`.
     #[cfg(feature = "debug-heappoison")]
     evict_history: EvictHistory,
@@ -182,6 +190,7 @@ impl HoleList {
         Self {
             first: HoleHdr { size: 0, next: None },
             regions: None,
+            region_root: None,
             #[cfg(feature = "debug-heappoison")]
             evict_history: EvictHistory::new(),
             #[cfg(any(feature = "debug-heappoison", feature = "debug-dealloc-diag"))]
@@ -277,9 +286,22 @@ impl HoleList {
         let hdr = aligned as *mut RegionHdr;
         // SAFETY: `aligned` starts the caller-owned range and is never exposed
         // as allocatable storage after this descriptor is installed.
-        unsafe { hdr.write(RegionHdr { end, next: self.regions }) };
+        unsafe {
+            hdr.write(RegionHdr {
+                end,
+                next: self.regions,
+                left: None,
+                right: None,
+                height: 1,
+            })
+        };
         // SAFETY: `hdr` is aligned and initialized by the preceding write.
-        self.regions = Some(unsafe { NonNull::new_unchecked(hdr) });
+        let node = unsafe { NonNull::new_unchecked(hdr) };
+        self.regions = Some(node);
+        // SAFETY: the overlap pass above proved `node` has a unique address
+        // interval; all descriptors are permanent and the caller holds the
+        // allocator lock exclusively while the AVL links are mutated.
+        self.region_root = Some(unsafe { Self::insert_region(self.region_root, node) });
         // SAFETY: the usable suffix is contained in the freshly registered range.
         let result = unsafe { self.add_free_region(usable, end - usable) };
         #[cfg(feature = "debug-heappoison")]
@@ -297,24 +319,36 @@ impl HoleList {
         result
     }
 
-    /// True when `[start, end)` is allocatable storage in one registered region.
-    /// # C: O(regions)
+    /// True when `[start, end)` is allocatable storage in one registered
+    /// region. Linux uses address-indexed VM/slab ownership metadata rather
+    /// than rescanning every arena on each allocator operation.
+    /// # C: O(log regions)
     fn owns_range(&self, start: usize, end: usize) -> bool {
         if start >= end { return false; }
-        let mut region = self.regions;
+        let mut region = self.region_root;
         while let Some(node) = region {
             // SAFETY: descriptors are in permanently reserved backing prefixes,
             // never in a free block or a caller-visible allocation.
             let current = unsafe { node.as_ref() };
-            let usable = (node.as_ptr() as usize).checked_add(REGION_HEADER_SIZE);
-            if usable.is_some_and(|base| start >= base && end <= current.end) { return true; }
-            region = current.next;
+            let base = node.as_ptr() as usize;
+            if start < base {
+                region = current.left;
+            } else if start >= current.end {
+                region = current.right;
+            } else {
+                return base.checked_add(REGION_HEADER_SIZE)
+                    .is_some_and(|usable| start >= usable && end <= current.end);
+            }
         }
         false
     }
 
+    /// Test-only height of the production ownership index. # C: O(1)
+    #[cfg(test)]
+    pub(crate) fn region_tree_height(&self) -> u8 { Self::region_height(self.region_root) }
+
     /// Validate a readable free-list header without trusting in-band links.
-    /// # C: O(regions)
+    /// # C: O(log regions)
     fn owns_header(&self, addr: usize) -> bool {
         addr % MIN_HOLE_ALIGN == 0
             && addr.checked_add(MIN_HOLE_SIZE).is_some_and(|end| self.owns_range(addr, end))

@@ -34,5 +34,8 @@ fn periodic_timer_rearm_is_owned_by_the_timer_mutation_path() {
 fn syscost_profiler_does_not_enable_serial_workload_traces() {
     let manifest = include_str!("../../kmain/Cargo.toml");
     assert!(manifest.contains("debug-syscost = [\"syscalls/debug-syscost\"]"));
-    assert!(manifest.contains("debug-syscost-trace = [\"fs/debug-syscost\", \"net/debug-syscost\"]"));
+    assert!(manifest.contains("debug-syscost-trace = [\"fs/debug-syscost\", \"net/debug-syscost\", \"syscalls/debug-syscost-trace\"]"));
+    let poll = include_str!("007_poll.rs");
+    assert!(poll.contains("#[cfg(feature = \"debug-syscost-trace\")]"));
+    assert!(!poll.contains("#[cfg(feature = \"debug-syscost\")]"));
 }

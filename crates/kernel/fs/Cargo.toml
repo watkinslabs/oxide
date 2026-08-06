@@ -80,6 +80,7 @@ debug-inotify = []
 debug-epoll = []
 debug-displaystack = []  # [EP-NOTIFY] per-interest epoll callback trace
 debug-syscost = []  # [ETSUP]/[EPADD]/[LSCAN] serial-heavy workload trace (kmain/debug-syscost-trace), not the profiler
+debug-syscost-trace = []  # cfg catalog for tests that source-include syscalls/007_poll.rs; fs traces remain under debug-syscost
 debug-fdlife = ["vfs/debug-fdlife"]  # [EPBADF]/[FDHIST] identify missing epoll/listener descriptors
 # `#[cfg(any(test, feature = "hosted"))] extern crate std` in src/lib.rs.
 hosted = []

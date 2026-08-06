@@ -1,5 +1,3 @@
-use alloc::collections::VecDeque;
-
 use hal::Pfn;
 use sync::{Spinlock, TaskList};
 
@@ -78,8 +76,117 @@ pub struct ReclaimSnapshot {
     pub deactivated: u64,
 }
 
+const NO_PFN: u64 = u64::MAX;
+
+fn decode_link(raw: u64) -> Option<Pfn> {
+    (raw != NO_PFN).then_some(Pfn(raw))
+}
+
+/// Linux `list_head` embedded in `struct page`, split between this list's
+/// head/tail and each [`crate::PageMeta`]'s PFN links. The reclaim lock owns
+/// every mutation, making exact deletion and FIFO rotation O(1).
+#[derive(Copy, Clone)]
+struct LruList { head: Option<Pfn>, tail: Option<Pfn>, len: usize }
+
+impl LruList {
+    const fn new() -> Self { Self { head: None, tail: None, len: 0 } }
+
+    fn len(&self) -> usize { self.len }
+
+    fn push_back(&mut self, meta: &PageMetaArr, pfn: Pfn) -> Result<(), ReclaimError> {
+        let page = meta.get(pfn).ok_or(ReclaimError::OutOfRange)?;
+        match (self.head, self.tail, self.len) {
+            (None, None, 0) => {}
+            (Some(head), Some(tail), len) if len != 0 => {
+                let head_page = meta.get(head).ok_or(ReclaimError::OutOfRange)?;
+                let tail_page = meta.get(tail).ok_or(ReclaimError::OutOfRange)?;
+                if head_page.lru_prev.load(core::sync::atomic::Ordering::Relaxed) != NO_PFN
+                    || tail_page.lru_next.load(core::sync::atomic::Ordering::Relaxed) != NO_PFN
+                { return Err(ReclaimError::State); }
+            }
+            _ => return Err(ReclaimError::State),
+        }
+        if page.lru_prev.load(core::sync::atomic::Ordering::Relaxed) != NO_PFN
+            || page.lru_next.load(core::sync::atomic::Ordering::Relaxed) != NO_PFN
+            || self.head == Some(pfn) || self.tail == Some(pfn)
+        { return Err(ReclaimError::State); }
+        page.lru_prev.store(self.tail.map_or(NO_PFN, |old| old.0), core::sync::atomic::Ordering::Relaxed);
+        if let Some(tail) = self.tail {
+            meta.get(tail).ok_or(ReclaimError::OutOfRange)?.lru_next
+                .store(pfn.0, core::sync::atomic::Ordering::Relaxed);
+        } else {
+            self.head = Some(pfn);
+        }
+        self.tail = Some(pfn);
+        self.len += 1;
+        Ok(())
+    }
+
+    fn pop_front(&mut self, meta: &PageMetaArr) -> Result<Option<Pfn>, ReclaimError> {
+        let Some(pfn) = self.head else {
+            if self.tail.is_some() || self.len != 0 { return Err(ReclaimError::State); }
+            return Ok(None);
+        };
+        self.remove(meta, pfn)?;
+        Ok(Some(pfn))
+    }
+
+    fn remove(&mut self, meta: &PageMetaArr, pfn: Pfn) -> Result<(), ReclaimError> {
+        if self.len == 0 { return Err(ReclaimError::State); }
+        let page = meta.get(pfn).ok_or(ReclaimError::OutOfRange)?;
+        let prev = decode_link(page.lru_prev.load(core::sync::atomic::Ordering::Relaxed));
+        let next = decode_link(page.lru_next.load(core::sync::atomic::Ordering::Relaxed));
+        if prev == Some(pfn) || next == Some(pfn) { return Err(ReclaimError::State); }
+
+        // Validate the complete splice before mutating either neighbor. A bad
+        // backlink must not leave the LRU half-unlinked.
+        let prev_page = match prev {
+            Some(old) => {
+                let old_page = meta.get(old).ok_or(ReclaimError::OutOfRange)?;
+                if self.head == Some(pfn)
+                    || decode_link(old_page.lru_next.load(core::sync::atomic::Ordering::Relaxed)) != Some(pfn)
+                {
+                    return Err(ReclaimError::State);
+                }
+                Some(old_page)
+            }
+            None if self.head == Some(pfn) => None,
+            None => return Err(ReclaimError::State),
+        };
+        let next_page = match next {
+            Some(new) => {
+                let new_page = meta.get(new).ok_or(ReclaimError::OutOfRange)?;
+                if self.tail == Some(pfn)
+                    || decode_link(new_page.lru_prev.load(core::sync::atomic::Ordering::Relaxed)) != Some(pfn)
+                {
+                    return Err(ReclaimError::State);
+                }
+                Some(new_page)
+            }
+            None if self.tail == Some(pfn) => None,
+            None => return Err(ReclaimError::State),
+        };
+
+        if let Some(old_page) = prev_page {
+            old_page.lru_next.store(next.map_or(NO_PFN, |new| new.0), core::sync::atomic::Ordering::Relaxed);
+        } else {
+            self.head = next;
+        }
+        if let Some(new_page) = next_page {
+            new_page.lru_prev.store(prev.map_or(NO_PFN, |old| old.0), core::sync::atomic::Ordering::Relaxed);
+        } else {
+            self.tail = prev;
+        }
+        page.lru_prev.store(NO_PFN, core::sync::atomic::Ordering::Relaxed);
+        page.lru_next.store(NO_PFN, core::sync::atomic::Ordering::Relaxed);
+        self.len -= 1;
+        if self.len == 0 && (self.head.is_some() || self.tail.is_some()) { return Err(ReclaimError::State); }
+        Ok(())
+    }
+}
+
 struct Queues {
-    q: [VecDeque<Pfn>; Lru::COUNT],
+    q: [LruList; Lru::COUNT],
     pages: [u64; Lru::COUNT],
     isolated: u64,
     scanned: u64,
@@ -90,7 +197,7 @@ struct Queues {
 impl Queues {
     fn new() -> Self {
         Self {
-            q: core::array::from_fn(|_| VecDeque::new()),
+            q: core::array::from_fn(|_| LruList::new()),
             pages: [0; Lru::COUNT], isolated: 0, scanned: 0, stolen: 0,
             activated: 0, deactivated: 0,
         }
@@ -134,8 +241,8 @@ impl Reclaim {
         let mut next = flags | PageFlags::LRU;
         if lru.active() { next.insert(PageFlags::ACTIVE); }
         if lru.unevictable() { next.insert(PageFlags::UNEVICTABLE); }
+        q.q[lru.index()].push_back(meta, pfn)?;
         page.flags.fetch_or(next.bits() & !flags.bits(), core::sync::atomic::Ordering::AcqRel);
-        q.q[lru.index()].push_back(pfn);
         q.pages[lru.index()] += 1;
         Ok(())
     }
@@ -195,7 +302,7 @@ impl Reclaim {
 
     fn age_one_lru(q: &mut Queues, meta: &PageMetaArr, lru: Lru, peer: Lru, budget: usize, aging: &mut Aging) -> Result<(), ReclaimError> {
         for _ in 0..budget {
-            let Some(pfn) = q.q[lru.index()].pop_front() else { break; };
+            let Some(pfn) = q.q[lru.index()].pop_front(meta)? else { break; };
             // Linux's pgscan counts the queue entry as soon as reclaim has
             // inspected it; a later validation failure must not erase that
             // observable work.
@@ -219,7 +326,7 @@ impl Reclaim {
                         (current - PageFlags::REFERENCED - PageFlags::ACTIVE).bits()
                     })
             }).map_err(|_| ReclaimError::State)?;
-            q.q[target.index()].push_back(pfn);
+            q.q[target.index()].push_back(meta, pfn)?;
             aging.scanned += 1;
             if target != lru {
                 q.pages[lru.index()] -= 1;
@@ -240,7 +347,7 @@ impl Reclaim {
     /// Move an LRU page to or from the unevictable list. The ANON/SHMEM vs
     /// FILE classification remains in PageMeta, so munlock returns the page to
     /// its matching inactive generation without a shadow classification.
-    /// # C: O(N_lru); # Lk: TaskList
+    /// # C: O(1); # Lk: TaskList
     pub fn set_unevictable(&self, meta: &PageMetaArr, pfn: Pfn, enabled: bool) -> Result<(), ReclaimError> {
         let page = meta.get(pfn).ok_or(ReclaimError::OutOfRange)?;
         let mut q = self.q.lock();
@@ -266,8 +373,7 @@ impl Reclaim {
         } else {
             Lru::InactiveFile
         };
-        let pos = q.q[source.index()].iter().position(|queued| *queued == pfn).ok_or(ReclaimError::State)?;
-        let _ = q.q[source.index()].remove(pos);
+        q.q[source.index()].remove(meta, pfn)?;
         page.flags.fetch_update(core::sync::atomic::Ordering::AcqRel, core::sync::atomic::Ordering::Acquire, |raw| {
             let now = PageFlags::from_bits_retain(raw);
             (reclaim_state(now) == state).then_some(if enabled {
@@ -278,7 +384,7 @@ impl Reclaim {
         }).map_err(|_| ReclaimError::State)?;
         q.pages[source.index()] -= 1;
         q.pages[target.index()] += 1;
-        q.q[target.index()].push_back(pfn);
+        q.q[target.index()].push_back(meta, pfn)?;
         Ok(())
     }
 
@@ -286,7 +392,7 @@ impl Reclaim {
     /// that is already off-LRU is an ordinary non-reclaim allocation.  An
     /// isolated page is deliberately rejected: reclaim owns its terminal
     /// transition and a final free at that point is an ownership violation.
-    /// # C: O(N_lru); # Lk: TaskList
+    /// # C: O(1); # Lk: TaskList
     pub fn unlink_for_free(&self, meta: &PageMetaArr, pfn: Pfn) -> Result<(), ReclaimError> {
         let page = meta.get(pfn).ok_or(ReclaimError::OutOfRange)?;
         let mut q = self.q.lock();
@@ -300,8 +406,7 @@ impl Reclaim {
                 } else if flags.contains(PageFlags::FILE) && !flags.intersects(PageFlags::ANON | PageFlags::SHMEM) {
                     if active { Lru::ActiveFile } else { Lru::InactiveFile }
                 } else { return Err(ReclaimError::Class); };
-                let pos = q.q[lru.index()].iter().position(|queued| *queued == pfn).ok_or(ReclaimError::State)?;
-                let _ = q.q[lru.index()].remove(pos);
+                q.q[lru.index()].remove(meta, pfn)?;
                 page.flags.fetch_update(core::sync::atomic::Ordering::AcqRel, core::sync::atomic::Ordering::Acquire, |raw| {
                     let current = PageFlags::from_bits_retain(raw);
                     (reclaim_state(current) == ReclaimPageState::OnLru { active, unevictable })
@@ -318,7 +423,7 @@ impl Reclaim {
     /// queue by mistake. # C: O(1); # Lk: TaskList
     pub fn isolate(&self, meta: &PageMetaArr, lru: Lru) -> Result<Option<Isolation>, ReclaimError> {
         let mut q = self.q.lock();
-        let Some(pfn) = q.q[lru.index()].pop_front() else { return Ok(None); };
+        let Some(pfn) = q.q[lru.index()].pop_front(meta)? else { return Ok(None); };
         q.scanned += 1;
         let page = meta.get(pfn).ok_or(ReclaimError::OutOfRange)?;
         let flags = PageFlags::from_bits_retain(page.flags.load(core::sync::atomic::Ordering::Acquire));
@@ -346,14 +451,14 @@ impl Reclaim {
         let mut q = self.q.lock();
         let entries = q.q[lru.index()].len();
         for _ in 0..entries {
-            let Some(pfn) = q.q[lru.index()].pop_front() else { break; };
+            let Some(pfn) = q.q[lru.index()].pop_front(meta)? else { break; };
             let page = meta.get(pfn).ok_or(ReclaimError::OutOfRange)?;
             let flags = PageFlags::from_bits_retain(page.flags.load(core::sync::atomic::Ordering::Acquire));
             if !lru.class_matches(flags)
                 || reclaim_state(flags) != (ReclaimPageState::OnLru { active: lru.active(), unevictable: lru.unevictable() })
             { return Err(if lru.class_matches(flags) { ReclaimError::State } else { ReclaimError::Class }); }
             if page.memcg.load(core::sync::atomic::Ordering::Acquire) != memcg {
-                q.q[lru.index()].push_back(pfn);
+                q.q[lru.index()].push_back(meta, pfn)?;
                 continue;
             }
             q.scanned += 1;
@@ -373,7 +478,7 @@ impl Reclaim {
     /// Isolate one exact evictable anonymous PFN for an explicit page-out
     /// request. Direct reclaim uses [`Self::isolate`] and never searches by
     /// PFN; this operation exists only for a caller that already owns a VMA
-    /// range and has identified a resident target. # C: O(N_lru); # Lk: TaskList
+    /// range and has identified a resident target. # C: O(1); # Lk: TaskList
     pub fn isolate_anon_pfn(&self, meta: &PageMetaArr, pfn: Pfn) -> Result<Option<Isolation>, ReclaimError> {
         let page = meta.get(pfn).ok_or(ReclaimError::OutOfRange)?;
         let mut q = self.q.lock();
@@ -386,8 +491,7 @@ impl Reclaim {
             ReclaimPageState::NotOnLru | ReclaimPageState::Isolated { .. } => return Ok(None),
             _ => return Err(ReclaimError::Class),
         };
-        let pos = q.q[lru.index()].iter().position(|queued| *queued == pfn).ok_or(ReclaimError::State)?;
-        let _ = q.q[lru.index()].remove(pos);
+        q.q[lru.index()].remove(meta, pfn)?;
         q.scanned += 1;
         page.flags.fetch_update(core::sync::atomic::Ordering::AcqRel, core::sync::atomic::Ordering::Acquire, |raw| {
             let current = PageFlags::from_bits_retain(raw);
@@ -413,7 +517,7 @@ impl Reclaim {
                 && reclaim_state(current) == ReclaimPageState::Isolated { active: isolated.lru.active() })
                 .then_some((current - PageFlags::ISOLATED | PageFlags::LRU).bits())
         }).map_err(|_| ReclaimError::State)?;
-        q.q[isolated.lru.index()].push_back(isolated.pfn);
+        q.q[isolated.lru.index()].push_back(meta, isolated.pfn)?;
         q.isolated -= 1;
         q.pages[isolated.lru.index()] += 1;
         Ok(())
