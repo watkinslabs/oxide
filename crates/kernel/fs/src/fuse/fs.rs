@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 
 use vfs::fs::FileSystem;
 use vfs::timespec::NSEC_PER_SEC;
-use vfs::{FileType, Inode, InodeBuilder, InodeRef, KResult, SbStatFs, SuperBlock, SuperOps,
+use vfs::{Inode, InodeBuilder, InodeRef, KResult, SbStatFs, SuperBlock, SuperOps,
     Timespec64, VfsError};
 
 use super::conn::FuseConn;
@@ -85,6 +85,8 @@ pub fn build_inode(conn: &Arc<FuseConn>, nodeid: u64, attr: &Attr) -> InodeRef {
 pub struct FuseFs {
     conn: Arc<FuseConn>,
     root: InodeRef,
+    options: String,
+    name: String,
 }
 
 impl FuseFs {
@@ -125,7 +127,7 @@ impl SuperOps for FuseSuperOps {
 
 impl FileSystem for FuseFs {
     /// # C: O(1)
-    fn name(&self) -> &str { "fuse" }
+    fn name(&self) -> &str { &self.name }
     /// `FUSE_SUPER_MAGIC` — statfs `f_type`. # C: O(1)
     fn magic(&self) -> u64 { FUSE_SUPER_MAGIC }
     /// # C: O(1)
@@ -133,7 +135,7 @@ impl FileSystem for FuseFs {
     /// Mount root = the nodeid-1 inode. # C: O(1)
     fn root(&self) -> Option<InodeRef> { Some(self.root.clone()) }
     /// `/proc/mounts` options tail — the daemon channel is opaque. # C: O(1)
-    fn show_options(&self) -> String { String::from(",user_id=0,group_id=0,default_permissions") }
+    fn show_options(&self) -> String { self.options.clone() }
     /// # C: O(1)
     fn super_ops(&self) -> Option<Arc<dyn SuperOps>> {
         Some(Arc::new(FuseSuperOps::new(self.conn.clone(), self.show_options())))
@@ -144,55 +146,44 @@ impl FileSystem for FuseFs {
 /// the mandatory `FUSE_INIT` (non-blocking — the reply is processed
 /// asynchronously by the daemon's channel writes) and builds the root inode from
 /// `rootmode` (the mount's `rootmode=` option, an `S_IF*|perm` word). # C: O(1)
-pub fn build_fuse_fs(conn: Arc<FuseConn>, rootmode: u32, uid: u32, gid: u32) -> Arc<FuseFs> {
+pub fn build_fuse_fs(conn: Arc<FuseConn>, opts: &MountOpts) -> Arc<FuseFs> {
+    conn.set_max_read(opts.max_read);
     conn.send_init();
     let root_attr = Attr {
         ino: proto::FUSE_ROOT_ID,
-        mode: if rootmode != 0 { rootmode } else { (FileType::Directory.to_ifmt() as u32) | 0o755 },
-        nlink: 2, uid, gid, blksize: FUSE_BLKSIZE, ..Default::default()
+        mode: opts.rootmode,
+        nlink: 2, uid: opts.user_id, gid: opts.group_id, blksize: FUSE_BLKSIZE, ..Default::default()
     };
     let root = build_inode(&conn, proto::FUSE_ROOT_ID, &root_attr);
-    Arc::new(FuseFs { conn, root })
-}
-
-/// Parse the `mount(2)` FUSE options string (`"fd=N,rootmode=M,user_id=U,
-/// group_id=G"`) — libfuse/`fusermount` always supplies these. Values are parsed
-/// as the C library writes them: `fd`/`user_id`/`group_id` DECIMAL, `rootmode`
-/// OCTAL (a raw `umode_t`). Missing `fd` is `Einval`. # C: O(len)
-pub fn parse_mount_opts(data: &str) -> KResult<MountOpts> {
-    let mut opts = MountOpts { fd: -1, rootmode: 0, user_id: 0, group_id: 0 };
-    for kv in data.split(',') {
-        let (k, v) = match kv.split_once('=') { Some(p) => p, None => continue };
-        match k {
-            "fd" => opts.fd = parse_int(v, 10).and_then(|n| i32::try_from(n).ok()).ok_or(VfsError::Einval)?,
-            "rootmode" => opts.rootmode = parse_int(v, 8).ok_or(VfsError::Einval)? as u32,
-            "user_id" => opts.user_id = parse_int(v, 10).ok_or(VfsError::Einval)? as u32,
-            "group_id" => opts.group_id = parse_int(v, 10).ok_or(VfsError::Einval)? as u32,
-            _ => {}
-        }
-    }
-    if opts.fd < 0 { return Err(VfsError::Einval); }
-    Ok(opts)
+    let name = opts.subtype.as_ref().map_or_else(
+        || String::from("fuse"),
+        |subtype| alloc::format!("fuse.{subtype}"),
+    );
+    Arc::new(FuseFs { conn, root, options: opts.show_options(), name })
 }
 
 /// Parsed FUSE mount options. # C: O(1)
 pub struct MountOpts {
-    pub fd: i32,
     pub rootmode: u32,
     pub user_id: u32,
     pub group_id: u32,
+    pub default_permissions: bool,
+    pub allow_other: bool,
+    pub max_read: u32,
+    pub subtype: Option<String>,
 }
 
-/// Parse `s` in `radix` (8 or 10); `None` on any non-digit. # C: O(len)
-fn parse_int(s: &str, radix: u32) -> Option<u64> {
-    let s = s.trim();
-    if s.is_empty() { return None; }
-    let mut acc: u64 = 0;
-    for c in s.chars() {
-        let d = c.to_digit(radix)?;
-        acc = acc.checked_mul(radix as u64)?.checked_add(d as u64)?;
+impl MountOpts {
+    fn show_options(&self) -> String {
+        let mut out = alloc::format!(",user_id={},group_id={}", self.user_id, self.group_id);
+        if self.default_permissions { out.push_str(",default_permissions"); }
+        if self.allow_other { out.push_str(",allow_other"); }
+        if self.max_read != u32::MAX {
+            use core::fmt::Write;
+            let _ = write!(out, ",max_read={}", self.max_read);
+        }
+        out
     }
-    Some(acc)
 }
 
 /// Encode a name as a NUL-terminated FUSE request body operand (LOOKUP /

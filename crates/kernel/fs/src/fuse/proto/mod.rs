@@ -28,7 +28,7 @@ pub use attr::{Attr, EntryOut, AttrOut, OpenOut, OpenIn, GetattrIn, ReadIn, Dire
 pub const FUSE_KERNEL_VERSION: u32 = 7;
 /// `FUSE_KERNEL_MINOR_VERSION` — the highest minor this implementation supports.
 /// We negotiate DOWN to the daemon's minor when it is lower. # C: O(1)
-pub const FUSE_KERNEL_MINOR_VERSION: u32 = 31;
+pub const FUSE_KERNEL_MINOR_VERSION: u32 = 45;
 /// `FUSE_ROOT_ID` — the nodeid of a mount's root inode. # C: O(1)
 pub const FUSE_ROOT_ID: u64 = 1;
 
@@ -65,6 +65,10 @@ pub const FUSE_ASYNC_READ: u32 = 1 << 0;
 pub const FUSE_BIG_WRITES: u32 = 1 << 5;
 /// `FUSE_DO_READDIRPLUS` — daemon may answer READDIRPLUS. # C: O(1)
 pub const FUSE_DO_READDIRPLUS: u32 = 1 << 13;
+/// `FUSE_INIT_EXT` (7.36+) — the INIT request carries `flags2` and the reserved
+/// extension area. Advertising 7.45 without this bit/body would lie about the
+/// negotiated wire layout. # C: O(1)
+pub const FUSE_INIT_EXT: u32 = 1 << 30;
 
 // ---------------------------------------------------------------------------
 // Fixed struct sizes (`sizeof` in libfuse) — the byte lengths the codec reads/
@@ -75,8 +79,8 @@ pub const FUSE_DO_READDIRPLUS: u32 = 1 << 13;
 pub const FUSE_IN_HEADER_SIZE: usize = 40;
 /// `sizeof(struct fuse_out_header)`. # C: O(1)
 pub const FUSE_OUT_HEADER_SIZE: usize = 16;
-/// `sizeof(struct fuse_init_in)` (base, pre-7.36). # C: O(1)
-pub const FUSE_INIT_IN_SIZE: usize = 16;
+/// `sizeof(struct fuse_init_in)` for the pinned 7.45 ABI. # C: O(1)
+pub const FUSE_INIT_IN_SIZE: usize = 64;
 /// `sizeof(struct fuse_init_out)`. # C: O(1)
 pub const FUSE_INIT_OUT_SIZE: usize = 64;
 /// `sizeof(struct fuse_attr)`. # C: O(1)

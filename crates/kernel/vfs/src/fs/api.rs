@@ -9,7 +9,10 @@ use crate::superblock::{FileSystemType, SimpleSuperOps, SuperBlock, SuperOps, ne
 use crate::types::VfsError;
 
 use super::flags::FsFlags;
-use super::fs_context::{apply_sb_flags, FsParameter, SB_FLAGS_USER_MASK};
+use super::fs_context::{
+    apply_sb_flags, parse_monolithic_mount_data, put_fs_context, vfs_get_tree,
+    vfs_parse_fs_param, FsContext, FsContextOps, FsParameter, FsValue, SB_FLAGS_USER_MASK,
+};
 
 pub type KResult<T> = core::result::Result<T, VfsError>;
 
@@ -129,8 +132,9 @@ pub struct FsType {
     pub(super) magic: u64,
     pub(super) flags: FsFlags,
     self_ref:          Weak<FsType>,
-    pub(super) ctor:  Box<FsConstructor>,
+    pub(super) ctor:  Option<Box<FsConstructor>>,
     pub(super) params: Option<&'static [crate::fs::fs_parser::FsParamSpec]>,
+    pub(super) context_ops: Option<Arc<dyn FsContextOps>>,
 }
 
 impl FsType {
@@ -147,7 +151,24 @@ impl FsType {
     pub fn with_parameters(name: &str, magic: u64, flags: FsFlags, ctor: Box<FsConstructor>,
         params: Option<&'static [crate::fs::fs_parser::FsParamSpec]>) -> Arc<Self> {
         Arc::new_cyclic(|self_ref| Self {
-            name: name.to_string(), magic, flags, self_ref: self_ref.clone(), ctor, params,
+            name: name.to_string(), magic, flags, self_ref: self_ref.clone(),
+            ctor: Some(ctor), params, context_ops: None,
+        })
+    }
+    /// Register a filesystem whose typed [`FsContextOps`] owns option parsing
+    /// and tree construction. Unlike [`Self::with_parameters`], this has no
+    /// classic string constructor to fall back to: `mount(2)` and `fsconfig(2)`
+    /// therefore consume the same typed context state. # C: O(1)
+    pub fn with_context_parameters(
+        name: &str,
+        magic: u64,
+        flags: FsFlags,
+        ops: Arc<dyn FsContextOps>,
+        params: &'static [crate::fs::fs_parser::FsParamSpec],
+    ) -> Arc<Self> {
+        Arc::new_cyclic(|self_ref| Self {
+            name: name.to_string(), magic, flags, self_ref: self_ref.clone(),
+            ctor: None, params: Some(params), context_ops: Some(ops),
         })
     }
     fn as_type(&self) -> Arc<dyn FileSystemType> {
@@ -178,7 +199,36 @@ impl FsType {
         sb_flags: u64,
         pinned: &[FsParameter],
     ) -> KResult<Arc<SuperBlock>> {
-        (self.ctor)(self.as_type(), source, target, data, sb_flags, pinned)
+        if let Some(ctor) = &self.ctor {
+            return ctor(self.as_type(), source, target, data, sb_flags, pinned);
+        }
+
+        // Compatibility calls through `file_system_type::mount*` still enter
+        // the SAME fs_context operations as the new mount API. Substitute a
+        // pinned file for its rendered fd before parsing so closing the caller's
+        // numeric descriptor after FSCONFIG_SET_FD cannot change the result.
+        let mut fc = FsContext::for_mount(self.as_type(), sb_flags);
+        if let Some(src) = source { fc.set_source(src); }
+        fc.set_mount_target(target);
+        if pinned.is_empty() {
+            parse_monolithic_mount_data(&mut fc, data)?;
+        } else {
+            for mut param in super::fs_context::split_monolithic(data) {
+                if let FsValue::String(rendered) = &param.value {
+                    if let Some(saved) = pinned.iter().rev().find(|saved| {
+                        saved.key == param.key
+                            && saved.as_fd().is_some_and(|fd| rendered == &fd.to_string())
+                    }) {
+                        param = saved.clone();
+                    }
+                }
+                vfs_parse_fs_param(&mut fc, &param)?;
+            }
+        }
+        vfs_get_tree(&mut fc)?;
+        let sb = fc.sb().cloned().ok_or(VfsError::Einval)?;
+        put_fs_context(fc);
+        Ok(sb)
     }
     pub fn magic(&self) -> u64 { self.magic }
     pub fn fs_flags(&self) -> FsFlags { self.flags }
@@ -202,5 +252,6 @@ impl FileSystemType for FsType {
         self.construct_pinned(src, target, opts, sb_flags, pinned)
     }
     fn fs_flags(&self) -> FsFlags { self.flags }
+    fn init_fs_context(&self) -> Option<Arc<dyn FsContextOps>> { self.context_ops.clone() }
     fn parameters(&self) -> Option<&'static [crate::fs::fs_parser::FsParamSpec]> { self.params }
 }
