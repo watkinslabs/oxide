@@ -39,8 +39,8 @@ reclassified.
 | `DEFECT` | 0 | 0 | 15 | 25 | 40 |
 | `MISSING` | 3 | 3 | 18 | 19 | 43 |
 | `COVERAGE` | 0 | 0 | 10 | 15 | 25 |
-| `INFRA` | 0 | 0 | 16 | 11 | 27 |
-| **Total** | **3** | **3** | **59** | **70** | **135** |
+| `INFRA` | 1 | 0 | 15 | 12 | 28 |
+| **Total** | **4** | **3** | **58** | **71** | **136** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -169,7 +169,7 @@ row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 | OPEN | INFRA | low | The reaper walks `/proc/[0-9]*/fd/*` rather than using `lsof`, to avoid a tool dependency in the boot gate. On a box with thousands of processes that walk is not free; it runs once per attempt, so the cost is bounded, but a very busy runner may notice. | C249. | — |
 | OPEN | INFRA | low | `code/klog-ungated` treats `klog::kfatal!` and `klog::kerror!` as requiring a `debug-<sub>` feature gate, the same as `kdebug!`. A fatal or error log that only exists in a debug build is not a diagnostic anyone will have when it matters, and it makes "log the detail, then abort with a literal" — the natural fix for `code/panic-fmt` — cost a new finding. | `tools/spec-lint/src/code_lint/klog.rs:74-80` lists all five macros in one `MAC_NAMES` table. Worth deciding before the 625-finding `klog-ungated` backlog is worked. | — |
 | OPEN | INFRA | low | Build time is NOT the win and should not be reported as one. Cold `cargo clean && cargo build --workspace`: **17.7 s → 15.0 s** wall (1m39 → 1m25 user, 24 jobs). ~15%. The win is 55,868 LOC leaving the tree and an unconfounded conformance channel (C256), not seconds. | measured in this worktree, both runs from an empty `target/` | C258 |
-| OPEN | INFRA | med | Automatic PR CI still omits the local `hosted-gate`, `test-build-gate` and hard-IRQ depth gate, and has no miri, loom, clippy, dependency, coverage, benchmark, QEMU or acceptance jobs. Full spec-lint and workspace tests remain opt-in because their recorded baselines are red. These are missing gates, not coverage implied by the automatic workflow. | `.github/workflows/pr.yml`; exact current required contexts in `docs/40§2`; local-only gates in `make ci` and `.githooks/pre-push`. | NEXT |
+| OPEN | INFRA | low | **`.github/workflows/pr.yml` does not run `hosted-gate` and now does not run `test-build-gate` either**; both are local-only (pre-push + `make ci`). Adding a CI job was considered and rejected here: the one hosted job that could host it (`test-hosted`) is disabled behind `if: vars.OXIDE_RUN_HOSTED_TESTS == '1'`, so a step added to it would be a gate nothing reads. Recorded so the gap is visible rather than assumed covered. | `.github/workflows/pr.yml`, `test-hosted` job condition. | unclaimed |
 | OPEN | INFRA | low | `crates/shared/kalloc/src/holes.rs` (933) and `src/tests.rs` (651) are over the 500-line split cutoff and were left unsplit by this lane. Both are under the 1000 hard cap. `holes.rs` is the free-list data structure under live corruption-diagnostic work; splitting it is a separate lane's call. | B1690. `wc -l crates/shared/kalloc/src/*.rs`: holes.rs 933, tests.rs 651; every other file ≤ 284. | — |
 | OPEN | INFRA | low | `net` lib tests: one intermittent failure observed in a single run during C246, clean on 3 immediate re-runs. Consistent with the already-filed parallel-execution instability in the curated ledger, not a new defect. | 1538/1538 on three consecutive runs after the one-off. Recorded so the observation is not mistaken for a C246 regression. | — |
 | OPEN | INFRA | low | `/run/udev/data/n1` (loopback) is a stale zero-byte file dated 1970 shipped in the rootfs image; udev never rewrites it. Cosmetic, but it makes "does lo have a udev record" unanswerable by listing alone. | B1717. `ls -l /run/udev/data/` in guest. | images repo |
@@ -302,6 +302,12 @@ here now.
 |---|---|---|---|---|---|
 | OPEN | MISSING | low | Counters with no call site yet read zero honestly but are not yet counted: `IpInAddrErrors`, `IpInUnknownProtos`, `IpInDiscards`, `IpOutNoRoutes`, the fragment counters, `UdpNoPorts`, the TCP open/reset/retransmit counters, and the ICMP output counters. Each needs its event named at the point it occurs. | `crates/kernel/net/src/mib.rs` — `Mib` lists them; `grep -c 'mib::bump'` names the wired ones | — |
 | OPEN | MISSING | low | `/proc/net/netstat`, `/proc/net/snmp6` and `/proc/net/packet` remain header-only or empty stubs of the same shape. | `crates/kernel/procfs/src/static_files.rs` | — |
+
+### C269-stack-gates-in-routine-path
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| OPEN | INFRA | blocker | **Still open from B1727: no CI runs automatically on any PR.** This lane closes the local half — the gates now run on the dev box, which is where the project's stated policy puts verification ("remote CI/CD smoke is not required before merge"). It does not change that `.github/workflows/pr.yml` is `on: workflow_dispatch:` only and that `main` has no branch protection, so every other gate described in `docs/40§2` — both arch builds, hosted tests, miri, loom, clippy, deny, spec-lint, coverage — still runs on nothing. Either those move into the local routine path the way these two just did, or the workflow gets its trigger back; leaving `docs/40§2` describing a PR-time gate that does not exist is the split between spec and reality that this class of bug lives in. | `pr.yml:1-4`; `gh api …/branches/main/protection` → 404. | NEXT |
 
 ### C270-irq-stack-depth-domain
 
