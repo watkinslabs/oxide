@@ -145,6 +145,7 @@ ci: lint-ratchet audit-counts matrix-gate hosted-gate test-build-gate test build
 # it was never wired into a gate, so nobody saw it. A warning nothing reads is
 # not verification.
 matrix-gate:
+	python3 tools/matrix-lint.py --self-test
 	python3 tools/matrix-lint.py
 
 # ---- qemu -----------------------------------------------------------------
