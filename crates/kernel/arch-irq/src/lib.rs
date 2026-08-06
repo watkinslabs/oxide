@@ -390,6 +390,13 @@ pub mod irqstat;
 /// gic / lapic call through here instead of hard-linking to kernel
 /// subsystems, keeping arch-irq free of higher-level integration.
 pub type TickPollFn = unsafe fn(from_user: bool);
+
+/// Architecture exception-entry bridge for Linux generic virtual accounting.
+/// The HAL fault stubs cannot depend upward on the scheduler, so their
+/// user-mode arm calls this link-time hook before handling the exception.
+#[cfg(target_os = "oxide-kernel")]
+#[no_mangle]
+pub extern "C" fn oxide_vtime_user_exit() { sched::cpustat::user_exit(); }
 static TICK_POLL_HOOK: core::sync::atomic::AtomicPtr<()> =
     core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
 

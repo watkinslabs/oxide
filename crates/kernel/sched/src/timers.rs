@@ -24,8 +24,7 @@ mod syscalls;
 mod uapi;
 
 pub use clock::{cpu_clock_sample_ns, cpu_clock_valid};
-pub use runtime::{account_cpu_tick, clear_process_timers, clock_was_set, fire_due_timers,
-    posixtimer_rearm,
+pub use runtime::{account_cpu_tick, clear_process_timers, clock_was_set, posixtimer_rearm,
     install_clock_was_set_hook, install_deadline_programmer, next_interrupt_deadline,
     reprogram_local, reprogram_posix_timers, wall_timer_interrupt, ACCOUNTING_TICK_NS};
 pub use syscalls::{sys_timer_create, sys_timer_delete, sys_timer_getoverrun, sys_timer_gettime,

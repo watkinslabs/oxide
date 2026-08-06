@@ -95,7 +95,7 @@ pub use sigpend::{
     send_signal_self, signal_wake_up,
     wake_if_sleeping, vfork_done, freeze_task, unfreeze_task, zap_other_threads, Signum,
 };
-pub use tick_deadline::{post_expired_timer_signals, service_current_timers, service_task_timers,
+pub use tick_deadline::{post_expired_timer_signals, service_task_timers,
     tick_wake_expired};
 pub use vfs_context::{current_vfs_lookup_context, VfsLookupContext};
 pub use keyring_hooks::{run_fsids_changed, run_keyring_exit, set_fsids_changed_hook,

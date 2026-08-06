@@ -49,6 +49,12 @@ unsafe extern "C" fn oxide_irq_dispatch(regs: *mut hal_x86_64::PtRegs) {
     // the frame outlives this call (`oxide_irq_resume_user` consumes it).
     let r = unsafe { &*regs };
     let vec_tag = r.vector as u8;
+    if r.from_user() && r.vector != hal_x86_64::PT_REGS_VECTOR_NMI {
+        // Linux `irqtime_account_irq` + generic vtime: close the user interval
+        // before any hardirq work. The common return hook begins user time
+        // again immediately before iretq.
+        sched::cpustat::user_exit();
+    }
 
     // B1347: stamp the IRQ arrival BEFORE any handler runs, so kalloc can tell an
     // IRQ fired in the corruption window and name its vector.
@@ -75,8 +81,7 @@ unsafe extern "C" fn oxide_irq_dispatch(regs: *mut hal_x86_64::PtRegs) {
             // kcpustat). Was the timer taken in user mode? Linux
             // `user_mode(regs)` — the interrupted frame's CS RPL.
             let from_user = r.from_user();
-            sched::cpustat::account(
-                if from_user { sched::cpustat::TickKind::User } else { sched::cpustat::TickKind::Idle });
+            sched::cpustat::account(sched::cpustat::tick_kind(from_user));
             // G3: per-task utime/stime — charge the real inter-tick delta to
             // the interrupted task's user/kernel CPU-time bucket (getrusage/
             // times). Hard-IRQ safe: per-task atomics plus a NON-BLOCKING

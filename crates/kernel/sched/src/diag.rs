@@ -37,7 +37,9 @@ pub use syscall_return::{syscall_return_clear, syscall_return_stage,
                          SYSCALL_RETURN_STAGE_AFTER_PTRACE, SYSCALL_RETURN_STAGE_AFTER_RSEQ,
                          SYSCALL_RETURN_STAGE_IN_EXIT_TO_USER,
                          SYSCALL_RETURN_STAGE_AFTER_TIMERS};
-pub use ring::{dump_exit_recent, note_switch, record_syscall, switches};
+pub use ring::{dump_exit_recent, note_switch, switches};
+#[cfg(any(feature = "debug-taskdump", feature = "debug-polktrace"))]
+pub use ring::record_syscall;
 #[cfg(test)]
 pub(crate) use watchdog::TEST_STALL_NS as STALL_NS;
 pub use watchdog::{Beat, WatchdogState, watchdog_tick};

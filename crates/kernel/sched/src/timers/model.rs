@@ -31,10 +31,10 @@ pub(crate) fn next_programmed_interrupt(now_ns: u64, earliest_ns: u64,
 /// The tick is an ABSOLUTE periodic deadline that only moves when it expires.
 /// Deriving it as `now + TICK_NSEC` on every reprogram instead — which is what
 /// this did before B1455 — lets any caller that reprograms the one-shot for an
-/// unrelated reason push the tick further out. `fire_due_timers` reprograms on
-/// EVERY syscall return, so a task syscalling faster than the tick period
-/// postponed the tick forever: no preemption, no CPU accounting, and a
-/// `CLOCK_PROCESS_CPUTIME_ID` sleep that a busy sibling can never complete.
+/// unrelated reason push the tick further out. Before B1861 the syscall return
+/// tail reprogrammed on every call, so a task syscalling faster than the tick
+/// period could postpone the tick forever: no preemption, no CPU accounting,
+/// and a `CLOCK_PROCESS_CPUTIME_ID` sleep that a busy sibling could not finish.
 ///
 /// `0` means "never armed" (boot). A deadline still in the future is returned
 /// unchanged; an expired one advances by whole periods until it is ahead of
@@ -238,8 +238,8 @@ mod tests {
 
     #[test]
     fn a_tick_still_ahead_is_never_pushed_further_out() {
-        // B1455: `fire_due_timers` reprograms on every syscall return. A task
-        // syscalling faster than the period must not postpone its own tick.
+        // A task syscalling faster than the period must not postpone its own
+        // tick, including if an unrelated mutation reprograms the one-shot.
         let armed = advance_tick(0, 1_000, 10_000);
         assert_eq!(armed, 11_000);
         for now in [1_001, 2_000, 5_000, 10_999] {

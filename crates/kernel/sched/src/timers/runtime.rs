@@ -175,7 +175,8 @@ pub(super) fn overrun(timer: &mut PosixTimer, timer_id: usize, current: &Task) -
 pub fn posixtimer_rearm(owner: &Task, rec: &mut SigInfo) {
     if !super::signal::is_timer_record(rec) { return; }
     let id = super::signal::timer_id(rec);
-    let guard = backend::lock();
+    let timer_owner = clock::timer_owner(owner);
+    let mut guard = backend::lock();
     // SAFETY: backend STATE serializes every process timer slot access.
     let slots = unsafe { &mut *owner.thread_group.posix_timers.get() };
     let Some(timer) = slots.get_mut(id) else { return };
@@ -185,26 +186,12 @@ pub fn posixtimer_rearm(owner: &Task, rec: &mut SigInfo) {
     // longer pending no matter what the bitmap still says.
     let overrun = timer.overrun_last(now, false);
     super::signal::stamp_overrun(rec, overrun);
+    // Linux rearms the hrtimer as part of `posixtimer_rearm`; do not leave a
+    // forwarded periodic deadline for an unrelated syscall-return scan to
+    // discover. Timer mutation owns queue synchronization and reprogramming.
+    sync_wall_locked(&mut guard, timer_owner.task().tid, id, timer, timer_owner.weak());
     drop(guard);
-    // `reconcile_delivery` may have forwarded a periodic deadline; the wall
-    // table is re-synced by `fire_due_timers` on the very syscall return this
-    // dequeue is part of, and by `wall_timer_interrupt`'s own restart, so there
-    // is no second place holding a stale copy.
-}
-
-/// Service every POSIX timer owned by the current thread group. # C: O(SLOTS)
-pub fn fire_due_timers() {
-    let Some(current) = crate::live::current() else { return };
-    let owner = clock::timer_owner(current);
-    let mut guard = backend::lock();
-    // SAFETY: STATE serializes all process-wide POSIX timer slot access.
-    let slots = unsafe { &mut *current.thread_group.posix_timers.get() };
-    for (timer_id, timer) in slots.iter_mut().enumerate().filter(|(_, timer)| timer.allocated) {
-        service(timer, timer_id, owner.task());
-        sync_wall_locked(&mut guard, owner.task().tid, timer_id, timer, owner.weak());
-    }
-    drop(guard);
-    program(next_interrupt_deadline());
+    reprogram_posix_timers();
 }
 
 /// One owner with [`clock::now_ns_for`]'s registry-free branch: the filter
@@ -235,9 +222,8 @@ pub fn account_cpu_tick(current: &Task) {
 }
 
 /// Last deadline handed to the hardware per CPU, so a reprogram that resolves
-/// to the already-armed expiry skips the LVT + MSR writes. `fire_due_timers`
-/// reprograms on every syscall return; without this the arm cost rode every
-/// syscall. A cached deadline that `now` has passed is re-armed regardless —
+/// to the already-armed expiry skips the LVT + MSR writes. A cached deadline
+/// that `now` has passed is re-armed regardless —
 /// the hardware disarms itself once it fires, so a stale cache must not be
 /// mistaken for an armed timer.
 static ARMED_NS: [AtomicU64; cpu::MAX_CPUS] = [const { AtomicU64::new(0) }; cpu::MAX_CPUS];

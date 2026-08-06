@@ -353,6 +353,12 @@ pub unsafe fn schedule() {
     let prev_ref = unsafe { &*prev_raw };
     prev_ref.debug_check_canary("schedule_prev_raw");
     next_arc.debug_check_canary("schedule_next_arc");
+    // Linux generic-vtime `vtime_task_switch`: settle the outgoing mode at
+    // the same scheduler timestamp and establish the incoming baseline. The
+    // off-CPU interval is represented by `vtime_start_ns == 0`, never charged
+    // to either task.
+    crate::cpustat::switch_out(prev_ref, now);
+    crate::cpustat::switch_in(&next_arc, now);
     // SAFETY: schedule path holds the runqueue invariant for both prev and next; preempt-off + single-CPU; no concurrent execve.
     let prev_root = unsafe { prev_ref.mm_ref() }.map(|a| a.root_pa()).unwrap_or(0);
     // SAFETY: next_arc is owned by this schedule scope; the runqueue invariant for the picked task; no concurrent execve writer on this CPU.
