@@ -458,7 +458,7 @@ impl NetStack {
             }
             p if p == IpProto::Igmp as u8 => {
                 if hdr.ttl == 1 && ipv4_has_router_alert(&l3[IPV4_HDR_LEN..hdr.ihl_bytes()]) {
-                    self.handle_igmp(iface, hdr.src, hdr.dst, payload)?;
+                    self.handle_igmp(lease, hdr.src, hdr.dst, payload)?;
                 }
             }
             _ => {}

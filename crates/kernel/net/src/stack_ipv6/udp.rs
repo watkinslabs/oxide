@@ -215,7 +215,7 @@ impl NetStack {
         let owner_uid = owner.owner_uid;
         let reuseport_member = reuseport.load(core::sync::atomic::Ordering::Acquire) != 0;
         let v6only_at_bind = v6only.load(core::sync::atomic::Ordering::Acquire) != 0;
-        let tables = self.inet_tables(net_ns);
+        let tables = self.inet_tables_for(&owner.net_namespace);
         let udp4 = tables.udp.lock();
         let mut g = tables.udp6.lock();
         let bind_v4 = bind_ip.to_v4_mapped();

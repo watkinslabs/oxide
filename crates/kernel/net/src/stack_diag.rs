@@ -76,8 +76,8 @@ fn tcp_diag_state(state: TcpState) -> u8 {
 impl NetStack {
     /// Snapshot raw sockets visible in one network namespace. # C: O(raw sockets + queued IPv4 datagrams)
     pub fn raw_diag_snapshot_in(&self, net_ns: u64, family: u8) -> Vec<RawDiagSnapshot> {
-        let tables = self.inet_tables(net_ns);
         let mut out = Vec::new();
+        let Some(tables) = self.try_inet_tables(net_ns) else { return out };
         match family {
             AF_INET => for endpoint in tables.raw4.all_endpoints() {
                 let state = endpoint.snapshot();
@@ -125,7 +125,7 @@ impl NetStack {
     /// Snapshot transport state visible in one network namespace. # C: O(TCP + UDP sockets)
     pub fn inet_diag_snapshot_in(&self, net_ns: u64, protocol: u8) -> Vec<InetDiagSnapshot> {
         let mut out = Vec::new();
-        let tables = self.inet_tables(net_ns);
+        let Some(tables) = self.try_inet_tables(net_ns) else { return out };
         match protocol {
             IPPROTO_TCP => {
                 for entries in tables.tcp_listens.lock().values() {

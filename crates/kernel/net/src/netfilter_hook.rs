@@ -15,7 +15,7 @@ pub const NFPROTO_IPV4: u8 = 2;
 pub const NFPROTO_IPV6: u8 = 10;
 
 /// Netfilter verdict callback. Verdict u32: NF_DROP=0, NF_ACCEPT=1.
-pub type NfHookFn = fn(hook_id: u32, pkt: &[u8], family: u8) -> u32;
+pub type NfHookFn = fn(namespace: u64, hook_id: u32, pkt: &[u8], family: u8) -> u32;
 
 static NF_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 #[cfg(any(test, feature = "hosted"))]
@@ -91,9 +91,10 @@ pub(crate) fn nf_hook_eval_in(namespace: u64, hook_id: u32, pkt: &[u8], family: 
     };
     let raw = NF_HOOK.load(Ordering::Acquire);
     if raw.is_null() { return 1; /* NF_ACCEPT */ }
-    // SAFETY: raw was installed via `install_nf_hook` with the documented `fn(u32, &[u8], u8) -> u32` signature.
+    // SAFETY: raw was installed via `install_nf_hook` with the documented
+    // namespace-qualified `NfHookFn` signature.
     let f: NfHookFn = unsafe { core::mem::transmute(raw) };
-    f(hook_id, pkt, family)
+    f(namespace, hook_id, pkt, family)
 }
 
 // Netfilter hook ids (Linux `NF_INET_*`, uapi netfilter.h). Mirror

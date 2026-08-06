@@ -265,7 +265,7 @@ fn namespace_teardown_removes_owned_state_only() {
     assert!(stack.ipv6_reasm.push(frag6_a, 1, 0, b"aaaaaaaa", true).is_none());
     assert!(stack.ipv6_reasm.push(frag6_b, 1, 0, b"bbbbbbbb", true).is_none());
     let _ = materialize_state(&owner_a);
-    let _ = stack.inet_tables(a);
+    let _ = stack.inet_tables_for(&owner_a);
     assert!(destroy_namespace_into(&stack, a));
     assert!(stack.ifaces.snapshot_devs_in_ns(a).is_empty());
     assert_eq!(stack.ifaces.namespace(persistent_iface), Some(0));

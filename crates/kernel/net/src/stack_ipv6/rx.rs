@@ -106,7 +106,7 @@ impl NetStack {
             }
         };
         self.deliver_rx_ipv6_payload(
-            net_ns, iface, hdr.src, hdr.dst, hdr.hop_limit, hdr.traffic_class,
+            lease, hdr.src, hdr.dst, hdr.hop_limit, hdr.traffic_class,
             &ancillary, mld_router_alert, next_header, payload,
             full_packet,
         )
@@ -123,8 +123,7 @@ impl NetStack {
 
     fn deliver_rx_ipv6_payload(
         &self,
-        net_ns: u64,
-        iface: NetIfaceId,
+        lease: &crate::IngressLease,
         src: Ipv6Addr,
         dst: Ipv6Addr,
         hop_limit: u8,
@@ -135,6 +134,7 @@ impl NetStack {
         payload: &[u8],
         packet: &[u8],
     ) -> NetResult<()> {
+        let (net_ns, iface) = (lease.net_ns(), lease.iface());
         let flow_label = ancillary.flow_label;
         let hatype = self.ifaces.lookup_in_ns(iface, net_ns)
             .map_or(0, |dev| dev.hardware_type());
@@ -154,9 +154,7 @@ impl NetStack {
                         hatype, message: payload,
                     });
                 }
-                self.deliver_rx_icmpv6(
-                    net_ns, iface, src, dst, hop_limit, mld_router_alert, payload,
-                )?;
+                self.deliver_rx_icmpv6(lease, src, dst, hop_limit, mld_router_alert, payload)?;
             }
             n if n == IpProto::Udp as u8 => self.deliver_rx_udp6(
                 net_ns, iface, src, dst, hop_limit, traffic_class, ancillary, payload, packet),
@@ -173,14 +171,14 @@ impl NetStack {
 
     fn deliver_rx_icmpv6(
         &self,
-        net_ns: u64,
-        iface: NetIfaceId,
+        lease: &crate::IngressLease,
         src: Ipv6Addr,
         dst: Ipv6Addr,
         hop_limit: u8,
         mld_router_alert: bool,
         payload: &[u8],
     ) -> NetResult<()> {
+        let (net_ns, iface) = (lease.net_ns(), lease.iface());
         if payload.len() < crate::icmpv6::ICMPV6_HDR_LEN
             || !icmpv6_checksum_valid(payload, src, dst)
         {
@@ -253,7 +251,7 @@ impl NetStack {
             t if t == crate::icmpv6::ICMPV6_TYPE_MLD_QUERY => {
                 if src.is_link_local() && hop_limit == 1 && mld_router_alert {
                     if let Ok(q) = crate::icmpv6::Mldv1Query::parse(payload, src, dst) {
-                        self.respond_mld_query(iface, dst, q, payload.len() == 24)?;
+                        self.respond_mld_query(lease, dst, q, payload.len() == 24)?;
                     }
                 }
             }

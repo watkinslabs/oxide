@@ -1,9 +1,11 @@
 use super::*;
 use super::tx_dispatch::TxDispatch;
+use alloc::sync::Weak;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 pub(crate) struct IngressGate {
     net_ns:     u64,
+    owner:      Option<Weak<network_namespace::NetworkNamespace>>,
     pub(super) generation: u64,
     state:      AtomicUsize,
     ready:      AtomicBool,
@@ -26,7 +28,10 @@ impl IngressGate {
     /// `registration_pending` and publishes via the arm/commit handshake.
     #[cfg(not(target_os = "oxide-kernel"))]
     pub(super) fn new(net_ns: u64, generation: u64) -> Self {
-        Self { net_ns, generation, state: AtomicUsize::new(Self::LIVE),
+        let owner = if net_ns == 0 { Some(network_namespace::initial()) }
+            else { network_namespace::lookup_u64(net_ns) };
+        let owner = owner.as_ref().map(Arc::downgrade);
+        Self { net_ns, owner, generation, state: AtomicUsize::new(Self::LIVE),
             ready: AtomicBool::new(true), complete: AtomicBool::new(false),
             effect_next: AtomicU64::new(0), effect_serving: AtomicU64::new(0),
             tx: TxDispatch::new(),
@@ -34,8 +39,9 @@ impl IngressGate {
             #[cfg(test)] resume_waiters: AtomicUsize::new(0) }
     }
 
-    fn resume_pending(net_ns: u64, generation: u64) -> Self {
-        Self { net_ns, generation, state: AtomicUsize::new(Self::LIVE),
+    fn resume_pending(owner: network_namespace::NetworkNamespaceRef, generation: u64) -> Self {
+        Self { net_ns: owner.id().as_u64(), owner: Some(Arc::downgrade(&owner)), generation,
+            state: AtomicUsize::new(Self::LIVE),
             ready: AtomicBool::new(false), complete: AtomicBool::new(false),
             effect_next: AtomicU64::new(0), effect_serving: AtomicU64::new(0),
             tx: TxDispatch::new(),
@@ -43,14 +49,31 @@ impl IngressGate {
             #[cfg(test)] resume_waiters: AtomicUsize::new(0) }
     }
 
-    pub(super) fn registration_pending(net_ns: u64, generation: u64) -> Self {
-        Self::resume_pending(net_ns, generation)
+    pub(super) fn registration_pending(
+        owner: &network_namespace::NetworkNamespaceRef,
+        generation: u64,
+    ) -> Self {
+        Self::resume_pending(owner.clone(), generation)
     }
 
-    fn acquire(self: &Arc<Self>, iface: NetIfaceId, dev: Arc<dyn NetDev>,
-               owner: network_namespace::NetworkNamespaceRef) -> Option<IngressLease> {
+    fn namespace_owner(&self) -> Option<network_namespace::NetworkNamespaceRef> {
+        if let Some(owner) = self.owner.as_ref().and_then(Weak::upgrade) { return Some(owner); }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        {
+            if self.net_ns == 0 { Some(network_namespace::initial()) }
+            else { network_namespace::lookup_u64(self.net_ns) }
+        }
+        #[cfg(target_os = "oxide-kernel")]
+        { None }
+    }
+
+    fn acquire(self: &Arc<Self>, iface: NetIfaceId, dev: Arc<dyn NetDev>) -> Option<IngressLease> {
         if !self.ready() { return None; }
         if !self.try_enter() { return None; }
+        let Some(owner) = self.namespace_owner() else {
+            self.state.fetch_sub(1, Ordering::Release);
+            return None;
+        };
         Some(IngressLease { iface, dev, gate: self.clone(), _owner: owner })
     }
 
@@ -284,12 +307,14 @@ pub(crate) enum IfaceUnregisterClaim {
 impl IfaceRegistry {
     /// Acquire a device handle whose generation cannot retire before drop. # C: O(N)
     pub fn acquire_egress_in_ns(&self, iface: NetIfaceId, net_ns: u64) -> Option<EgressLease> {
-        let owner = if net_ns == 0 { network_namespace::initial() }
-            else { network_namespace::lookup_u64(net_ns)? };
         let g = self.inner.lock();
         let entry = g.entries.iter().find(|entry| entry.id == iface && entry.ns == net_ns
             && entry.ingress.live() && entry.ingress.ready())?;
         if !entry.ingress.try_enter() { return None; }
+        let Some(owner) = entry.ingress.namespace_owner() else {
+            entry.ingress.state.fetch_sub(1, Ordering::Release);
+            return None;
+        };
         Some(EgressLease { iface, dev: entry.dev.clone(), arp: entry.arp.clone(), ndp: entry.ndp.clone(),
             hold: Arc::new(EgressAdmission {
                 gate: entry.ingress.clone(), _owner: owner,
@@ -322,13 +347,11 @@ impl IfaceRegistry {
                 && entry.ns == net_ns && entry.ingress.live() && entry.ingress.ready())?;
             (entry.id, entry.ingress.clone())
         };
-        let owner = if net_ns == 0 { network_namespace::initial() }
-            else { network_namespace::lookup_u64(net_ns)? };
         let g = self.inner.lock();
         let entry = g.entries.iter().find(|entry| entry.id == iface
             && entry.name == name && entry.ns == net_ns
             && Arc::ptr_eq(&entry.ingress, &gate))?;
-        entry.ingress.acquire(iface, entry.dev.clone(), owner)
+        entry.ingress.acquire(iface, entry.dev.clone())
     }
 
     /// Acquire live ingress ownership for the interface's current generation. # C: O(N)
@@ -339,12 +362,10 @@ impl IfaceRegistry {
                 && entry.ingress.live() && entry.ingress.ready())?;
             (entry.ns, entry.ingress.clone())
         };
-        let owner = if net_ns == 0 { network_namespace::initial() }
-            else { network_namespace::lookup_u64(net_ns)? };
         let g = self.inner.lock();
         let entry = g.entries.iter().find(|entry| entry.id == iface
             && entry.ns == net_ns && Arc::ptr_eq(&entry.ingress, &gate))?;
-        entry.ingress.acquire(iface, entry.dev.clone(), owner)
+        entry.ingress.acquire(iface, entry.dev.clone())
     }
 
     /// Acquire ingress only when `dev` is the exact registered device owner. # C: O(N)
@@ -357,13 +378,11 @@ impl IfaceRegistry {
                 && entry.ingress.live() && entry.ingress.ready())?;
             (entry.ns, entry.ingress.clone())
         };
-        let owner = if net_ns == 0 { network_namespace::initial() }
-            else { network_namespace::lookup_u64(net_ns)? };
         let g = self.inner.lock();
         let entry = g.entries.iter().find(|entry| entry.id == iface
             && entry.ns == net_ns && Arc::ptr_eq(&entry.dev, dev)
             && Arc::ptr_eq(&entry.ingress, &gate))?;
-        entry.ingress.acquire(iface, entry.dev.clone(), owner)
+        entry.ingress.acquire(iface, entry.dev.clone())
     }
 
     /// Acquire ingress only for the interface's exact current generation. # C: O(N)
@@ -452,13 +471,14 @@ impl IfaceRegistry {
         -> Option<Arc<IngressGate>>
     {
         let next_generation = teardown.generation.wrapping_add(1);
+        let initial_owner = network_namespace::initial();
         let mut g = self.inner.lock();
         let entry = g.entries.iter_mut().find(|entry| entry.id == teardown.iface
             && entry.ns == teardown.net_ns
             && entry.ingress.generation == teardown.generation
             && Arc::ptr_eq(&entry.ingress, &teardown.gate)
             && teardown.gate.drained())?;
-        let next = Arc::new(IngressGate::resume_pending(0, next_generation));
+        let next = Arc::new(IngressGate::resume_pending(initial_owner, next_generation));
         entry.ns = 0;
         entry.arp = Arc::new(crate::arp::ArpCache::new());
         entry.ndp = Arc::new(crate::neigh::NeighCache::new());
