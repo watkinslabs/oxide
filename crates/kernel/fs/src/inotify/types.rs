@@ -1,6 +1,6 @@
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering};
 use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::PollSubscribers;
 
@@ -192,6 +192,48 @@ pub(crate) static PERM_MARK_COUNT: core::sync::atomic::AtomicUsize =
 pub(crate) static MARK_COUNT: core::sync::atomic::AtomicUsize =
     core::sync::atomic::AtomicUsize::new(0);
 
+/// Event-bit summaries for marks attached above an inode. Linux reaches these
+/// through mount/superblock connectors; a per-bit count keeps this admission
+/// gate exact across mark replacement and removal.
+static FS_SCOPE_MARK_MASK_COUNTS: [AtomicUsize; 32] =
+    [const { AtomicUsize::new(0) }; 32];
+
+/// Inode marks whose event bit is paired with `FAN_EVENT_ON_CHILD`.
+static CHILD_MARK_MASK_COUNTS: [AtomicUsize; 32] =
+    [const { AtomicUsize::new(0) }; 32];
+
+fn child_event_bits(mask: u32) -> u32 {
+    if mask & FAN_EVENT_ON_CHILD == 0 { 0 } else { mask & !FAN_EVENT_ON_CHILD }
+}
+
+fn mask_count_delta(counts: &[AtomicUsize; 32], old: u32, new: u32) {
+    let mut removed = old & !new;
+    while removed != 0 {
+        let bit = removed.trailing_zeros() as usize;
+        let prev = counts[bit].fetch_sub(1, Ordering::AcqRel);
+        hal::kassert!(prev != 0, "fsnotify mark-mask counter underflow");
+        removed &= removed - 1;
+    }
+    let mut added = new & !old;
+    while added != 0 {
+        let bit = added.trailing_zeros() as usize;
+        counts[bit].fetch_add(1, Ordering::AcqRel);
+        added &= added - 1;
+    }
+}
+
+/// Whether any mount or filesystem mark can match the event. # C: O(1)
+pub(crate) fn fs_scope_may_match(mask: u32) -> bool {
+    mask != 0 && FS_SCOPE_MARK_MASK_COUNTS[mask.trailing_zeros() as usize]
+        .load(Ordering::Acquire) != 0
+}
+
+/// Whether any inode mark can match the event as a child. # C: O(1)
+pub(crate) fn child_mark_may_match(mask: u32) -> bool {
+    mask != 0 && CHILD_MARK_MASK_COUNTS[mask.trailing_zeros() as usize]
+        .load(Ordering::Acquire) != 0
+}
+
 /// Number of live `FAN_MARK_MNTNS` marks. The mount-tree attach/detach/move
 /// choke points early-return when 0, so a system with no mount watcher — every
 /// system that is not running one — pays nothing per mount.
@@ -257,6 +299,9 @@ pub(crate) struct Watch {
     /// last reference runs the inode's eviction, which re-enters the mark
     /// tables through the eviction hook.
     pin: Option<InodeRef>,
+    /// Weak attachment to the canonical inode mark summary. Evictable marks
+    /// keep this without keeping the inode resident.
+    target: Option<Weak<vfs::Inode>>,
 }
 
 impl Watch {
@@ -300,10 +345,14 @@ impl Watch {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(wd: i32, inode_key: usize, fsid: u64, ns_id: u64, scope: MarkScope,
                       mask: u32, flags: u32, ignored: u32, ignore_has_flags: bool,
-                      ignore_survives_modify: bool, pin: Option<&InodeRef>) -> Self {
+                      ignore_survives_modify: bool, pin: Option<&InodeRef>,
+                      target: Option<&InodeRef>) -> Self {
         let pin = pin.map(|i| { i.igrab(); i.clone() });
-        Self { wd, inode_key, fsid, ns_id, scope, mask, flags, ignored, ignore_has_flags,
-               ignore_survives_modify, pin }
+        let target = target.map(Arc::downgrade);
+        let out = Self { wd, inode_key, fsid, ns_id, scope, mask, flags, ignored,
+                         ignore_has_flags, ignore_survives_modify, pin, target };
+        out.apply_mask_delta(0, mask);
+        out
     }
 
     /// This mark holds no reference on its object: either it is not an inode
@@ -324,6 +373,35 @@ impl Watch {
             _ => None,
         }
     }
+
+    /// Replace this mark's event mask and its attached-object summaries.
+    /// # C: O(changed bits)
+    pub(crate) fn replace_mask(&mut self, mask: u32) {
+        let old = self.mask;
+        self.apply_mask_delta(old, mask);
+        self.mask = mask;
+    }
+
+    fn apply_mask_delta(&self, old: u32, new: u32) {
+        match self.scope {
+            MarkScope::Inode => {
+                if let Some(inode) = self.target.as_ref().and_then(Weak::upgrade) {
+                    inode.fsnotify_mask_remove(old & !new);
+                    inode.fsnotify_mask_add(new & !old);
+                }
+                mask_count_delta(&CHILD_MARK_MASK_COUNTS,
+                                 child_event_bits(old), child_event_bits(new));
+            }
+            MarkScope::Mount | MarkScope::Filesystem => {
+                mask_count_delta(&FS_SCOPE_MARK_MASK_COUNTS, old, new);
+            }
+            MarkScope::MountNamespace => {}
+        }
+    }
+}
+
+impl Drop for Watch {
+    fn drop(&mut self) { self.apply_mask_delta(self.mask, 0); }
 }
 
 /// Release inode references detached from destroyed marks. Runs with NO mark
