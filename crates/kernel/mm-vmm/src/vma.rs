@@ -236,6 +236,11 @@ pub trait FileBacking: Send + Sync {
     /// # C: O(log N_pages)
     fn shared_frame(&self, _off: u64) -> Result<Option<SharedFrame>, FileBackingError> { Ok(None) }
 
+    /// Retained cache frame for Linux-style `map_pages` fault-around. This
+    /// MUST be a non-faulting lookup: no allocation, swap-in, or backing I/O.
+    /// `None` means the page is not currently eligible. # C: O(log N_pages)
+    fn fault_around_frame(&self, _off: u64) -> Result<Option<SharedFrame>, FileBackingError> { Ok(None) }
+
     /// Device-owned frame installed directly for either mapping type. # C: O(1)
     fn direct_frame(&self, _off: u64) -> Option<u64> { None }
 

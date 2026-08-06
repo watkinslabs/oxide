@@ -148,6 +148,43 @@ impl FileBacking for DirectMapping {
     fn direct_frame(&self, off: u64) -> Option<u64> { Some(self.inner.frame(off)) }
 }
 
+/// Resident-set-controlled file mapping for fault-around. `read_at` faults
+/// only the demanded page into the mock cache; `fault_around_frame` performs
+/// a lookup only and therefore makes cache misses directly observable.
+struct AroundMapping {
+    frames: Mutex<HashMap<u64, u64>>,
+    size: u64,
+}
+impl AroundMapping {
+    fn new(size: u64) -> Arc<Self> {
+        Arc::new(Self { frames: Mutex::new(HashMap::new()), size })
+    }
+    fn seed(&self, off: u64) -> u64 {
+        let key = off & !(PG - 1);
+        let mut g = self.frames.lock().unwrap();
+        *g.entry(key).or_insert_with(fresh_pa)
+    }
+    fn lookup(&self, off: u64) -> Option<u64> {
+        self.frames.lock().unwrap().get(&(off & !(PG - 1))).copied()
+    }
+}
+impl FileBacking for AroundMapping {
+    fn read_at(&self, off: u64, dst: &mut [u8]) -> Result<usize, FileBackingError> {
+        let frame = self.seed(off);
+        let n = dst.len().min(PG as usize);
+        // SAFETY: frame is a live page and dst owns n non-overlapping bytes.
+        unsafe { core::ptr::copy_nonoverlapping(frame as *const u8, dst.as_mut_ptr(), n); }
+        Ok(n)
+    }
+    fn size_hint(&self) -> u64 { self.size }
+    fn shared_frame(&self, off: u64) -> Result<Option<SharedFrame>, FileBackingError> {
+        Ok(Some(SharedFrame { pa: self.seed(off), map_ref_held: false }))
+    }
+    fn fault_around_frame(&self, off: u64) -> Result<Option<SharedFrame>, FileBackingError> {
+        Ok(self.lookup(off).map(|pa| SharedFrame { pa, map_ref_held: false }))
+    }
+}
+
 fn fault(as_: &AddressSpace, root: u64, va: u64, fk: FaultKind) {
     activate_root(root);
     // SAFETY: hosted; ACTIVE root set; mock frames are live host memory; hhdm=0 identity.
@@ -332,4 +369,84 @@ fn private_direct_mapping_aliases_owner_then_cows_after_fork() {
     fault(&child, cr, va, WR);
     assert_ne!(cur_pa(cr, va), frame, "private child write must COW after fork");
     assert_eq!(cur_pa(pr, va), frame, "parent retains device owner frame");
+}
+
+#[test]
+fn private_read_fault_maps_only_resident_neighbors_read_only() {
+    reset();
+    let root = 0x1000;
+    let va = 0x60_0000u64;
+    let inode = AroundMapping::new(16 * PG);
+    let cached1 = inode.seed(PG);
+    let cached3 = inode.seed(3 * PG);
+    let backing: Arc<dyn FileBacking> = inode.clone();
+    let as_ = AddressSpace::new(root).expect("AS::new");
+    let start = UserVirtAddr::new(va).unwrap();
+    as_.mmap(Some(start), (16 * PG) as usize,
+        VmaProt::READ | VmaProt::WRITE, VmaFlags::PRIVATE,
+        VmaBacking::File { backing, off: 0 }, true).expect("mmap");
+
+    fault(&as_, root, va, RD);
+
+    assert_ne!(cur_pa(root, va), inode.lookup(0).unwrap(),
+        "demand page keeps the established private-copy path");
+    assert_eq!(cur_pa(root, va + PG), cached1, "resident neighbor is installed");
+    activate_root(root);
+    assert!(MultiMmu::translate(Va(va + 2 * PG)).is_none(),
+        "cache miss is skipped without invoking read_at");
+    assert_eq!(cur_pa(root, va + 3 * PG), cached3, "later resident neighbor is installed");
+    for neighbor in [va + PG, va + 3 * PG] {
+        let (_, flags) = MultiMmu::translate(Va(neighbor)).unwrap();
+        assert!(!flags.contains(PageFlags::WRITE),
+            "fault-around PTE must COW/dirty through a write fault");
+    }
+    assert_eq!(rc_get(cached1), 1);
+    assert_eq!(rc_get(cached3), 1);
+}
+
+#[test]
+fn write_fault_does_not_map_neighbors() {
+    reset();
+    let root = 0x1000;
+    let va = 0x70_0000u64;
+    let inode = AroundMapping::new(16 * PG);
+    inode.seed(PG);
+    let backing: Arc<dyn FileBacking> = inode;
+    let as_ = AddressSpace::new(root).expect("AS::new");
+    let start = UserVirtAddr::new(va).unwrap();
+    as_.mmap(Some(start), (16 * PG) as usize,
+        VmaProt::READ | VmaProt::WRITE, VmaFlags::PRIVATE,
+        VmaBacking::File { backing, off: 0 }, true).expect("mmap");
+
+    fault(&as_, root, va, FaultKind::NotPresent { access: FaultAccess::Write });
+    activate_root(root);
+    assert!(MultiMmu::translate(Va(va + PG)).is_none(),
+        "Linux do_fault_around is not used for write faults");
+}
+
+#[test]
+fn shared_neighbor_write_fault_reuses_and_enables_the_cache_frame() {
+    reset();
+    let root = 0x1000;
+    let va = 0x80_0000u64;
+    let inode = AroundMapping::new(16 * PG);
+    let neighbor = inode.seed(PG);
+    let backing: Arc<dyn FileBacking> = inode;
+    let as_ = AddressSpace::new(root).expect("AS::new");
+    let start = UserVirtAddr::new(va).unwrap();
+    as_.mmap(Some(start), (16 * PG) as usize,
+        VmaProt::READ | VmaProt::WRITE, VmaFlags::SHARED,
+        VmaBacking::File { backing, off: 0 }, true).expect("mmap");
+
+    fault(&as_, root, va, RD);
+    assert_eq!(cur_pa(root, va + PG), neighbor);
+    activate_root(root);
+    assert!(!MultiMmu::translate(Va(va + PG)).unwrap().1.contains(PageFlags::WRITE));
+
+    fault(&as_, root, va + PG, WR);
+    assert_eq!(cur_pa(root, va + PG), neighbor,
+        "shared write fault must retain the cache frame rather than COW it");
+    activate_root(root);
+    assert!(MultiMmu::translate(Va(va + PG)).unwrap().1.contains(PageFlags::WRITE));
+    assert_eq!(rc_get(neighbor), 1, "transient shared lookup reference is balanced");
 }

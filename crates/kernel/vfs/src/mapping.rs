@@ -144,6 +144,16 @@ pub trait AddressSpaceOps: Send + Sync {
     /// frame. # C: O(log N_pages)
     fn shared_frame(&self, off: u64) -> KResult<Option<SharedFrame>>;
 
+    /// Retained, already-resident cache frame for fault-around. This lookup
+    /// MUST NOT allocate, swap in, or issue backing I/O: `None` is the normal
+    /// cache-miss answer. A returned frame carries one prospective PTE
+    /// reference, released by the caller if the PTE is not installed.
+    /// # C: O(log N_pages)
+    fn fault_around_frame(&self, off: u64) -> KResult<Option<SharedFrame>> {
+        let _ = off;
+        Ok(None)
+    }
+
     /// Copy bytes from the cache starting at file offset `off` into `dst`
     /// (the `MAP_PRIVATE` / read-fault fill, Linux `do_cow_fault`'s read
     /// of the cache page before the private COW copy). Short reads

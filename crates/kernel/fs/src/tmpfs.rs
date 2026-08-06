@@ -17,7 +17,8 @@
 // - `flags`: memfd seal bits and mode-type masks.
 // - `inode`: shared inode-cache and fsid helpers.
 // - `accounting`: per-instance tmpfs block/inode accounting.
-// - `file`: regular file/memfd data, file ops, and address-space ops.
+// - `file`: regular file/memfd data and file ops.
+// - `mapping`: shmem address-space frames, residency, and cache statistics.
 // - `symlink`: symlink body and inode builder.
 // - `special`: socket/FIFO/device special inode builders.
 // - `dir`: directory tree state and namespace inode ops.
@@ -37,6 +38,7 @@ mod lifetime;
 mod limits;
 mod mount_opts;
 mod migration;
+mod mapping;
 mod params;
 mod reclaim;
 mod special;
