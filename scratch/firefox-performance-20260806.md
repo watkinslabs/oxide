@@ -687,3 +687,31 @@ UART/QMP log: `/tmp/oxide-firefox-uart-1338334.log`.
   `sched` 1204/1204, aarch64 HAL 147/147, x86_64 HAL 150/150, and VMM 334/334.
 - `make lint-ratchet`: PASS at the 1,731-finding baseline.
 - `git diff --check`: PASS.
+
+## Post-own-stack acceptance
+
+The final stack gate exposed one interaction introduced by the bottom-half-safe
+locks: process-context `spin_unlock_bh()` drained pending softirqs on the task
+stack, while Linux x86_64 and arm64 use `do_softirq_own_stack()` on the per-CPU
+IRQ stack. Commit `fe49e882f` adds that architecture stack switch without
+skipping or deferring the drain. The production frame/stack gates then passed:
+x86_64 syscall entry measured 11,928 B and aarch64 measured 12,992 B against the
+13,000 B task-stack ceiling, with no new allowlist entry.
+
+Fresh paired smoke on this exact build passed first attempt: x86_64 reached a
+responsive userspace and serial RX in 74 s; aarch64 did so in 121 s.
+
+Post-switch Firefox run `1435376` passed the complete graphical harness. GNOME
+settled at load `1.71 0.49 0.17`; one.one.one.one was visually ready in 6.105 s
+and the invalid DNS page in 2.679 s. Its syscall controls were:
+
+| Run | Real | User | Kernel | Kernel cost per syscall |
+|---|---:|---:|---:|---:|
+| 1 | 0.095 s | 0.022 s | 0.062 s | 0.155 us |
+| 2 | 0.084 s | 0.022 s | 0.061 s | 0.153 us |
+| 3 | 0.083 s | 0.022 s | 0.061 s | 0.153 us |
+
+The HTTPS control completed DNS + TCP + TLS + HTTP in 34.154 ms (204 bytes,
+HTTP 200), or 63 ms including process startup. Both OCR assertions and all
+resolver/control checks passed. UART/QMP log:
+`/tmp/oxide-firefox-uart-1435376.log`.
