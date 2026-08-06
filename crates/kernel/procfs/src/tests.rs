@@ -338,3 +338,12 @@ fn procfs_fsid_distinct_from_dev_and_sys() {
     assert_ne!(crate::reg::PROCFS_FSID, devfs::DEVFS_FSID);
     assert_ne!(crate::reg::PROCFS_FSID, 0x0102_1994_0000_0002u64);
 }
+
+#[test]
+fn pid_stat_projects_the_split_cpu_clocks_not_scheduler_runtime() {
+    let source = include_str!("pid_stat.rs");
+    assert!(source.contains("task.utime_ns.load"));
+    assert!(source.contains("task.stime_ns.load"));
+    assert!(source.contains("else if f == 15"));
+    assert!(!source.contains("ns_to_clk_tck(task.sum_exec_runtime_ns"));
+}

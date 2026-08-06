@@ -109,6 +109,18 @@ fn current_handler() -> FaultHandler {
 pub unsafe extern "C" fn oxide_fault_print_rust(esr: u64, far: u64, elr: u64,
                                                   x30: u64, sp_el0: u64, x8: u64, x26: u64,
                                                   frame: u64) -> bool {
+    #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+    if frame != 0 {
+        // SAFETY: the vector passes its live, 288-byte SvcFrame base.
+        let spsr = unsafe { (*(frame as *const crate::SvcFrame)).spsr_el1 };
+        let from_user = hal::uregs::aarch64::user_mode(spsr);
+        if from_user {
+            // SAFETY: this declaration matches arch-irq's link-time bridge.
+            unsafe extern "C" { fn oxide_vtime_user_exit(); }
+            // SAFETY: arch-irq supplies the scheduler bridge with this ABI.
+            unsafe { oxide_vtime_user_exit(); }
+        }
+    }
     // Consult the registered handler first. A resolved abort (e.g.
     // demand-page) is normal kernel operation per `11§5` — silent in
     // production, no log line. Only log loudly when the handler can't

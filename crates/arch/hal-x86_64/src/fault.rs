@@ -229,6 +229,13 @@ unsafe extern "C" fn oxide_fault_print_rust(regs: *mut PtRegs) -> bool {
         nmi_backtrace(f);
         return true;
     }
+    if f.from_user() {
+        // SAFETY: this declaration matches arch-irq's link-time bridge.
+        unsafe extern "C" { fn oxide_vtime_user_exit(); }
+        // SAFETY: the kernel links the arch-irq bridge with this exact ABI;
+        // the user CS proves this is a user→kernel transition.
+        unsafe { oxide_vtime_user_exit(); }
+    }
     // Kalloc corruption hunt (`debug-hw-watchpoint`): a KERNEL-mode #DB
     // (vector 1, CPL=0) with a DR0..DR3 data-watchpoint status bit set is a
     // write into a currently-armed just-freed HoleHdr. Print the writer's

@@ -37,6 +37,7 @@ pub fn terminate_current_with_signal(sig: u8) -> ! {
             // SAFETY: rq.current installed via Arc::into_raw, non-null; we run
             // ON this task so no concurrent freer; reads/atomic-stores only.
             let task: &Task = unsafe { &*raw };
+            crate::cpustat::exit_current(task);
             task.thread_group.latch_final_exit(status);
             task.exit_status.store(status, Ordering::Release);
             crate::live::vfork_done(task); // clear + wake a parked vfork parent (signal-death)

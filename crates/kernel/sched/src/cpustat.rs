@@ -1,13 +1,8 @@
-//! Per-CPU CPU-time accounting for `/proc/stat` (htop/btop %CPU). Each timer
-//! tick buckets into user/system/idle by the interrupted task's class, on the
-//! CPU the tick fired on — so `/proc/stat` emits a real `cpuN` line per online
-//! CPU (Linux `kernel/sched/cputime.c` per-CPU `kcpustat`). htop computes %CPU
-//! from deltas between reads, so raw tick counts suffice — the unit cancels in
-//! the ratio (no USER_HZ conversion needed).
-//!
-//! user-vs-system is approximated by task class (a running user task → user, a
-//! kthread → system); a precise split would inspect the timer-IRQ frame's
-//! privilege level (arch-specific) — deferred until it matters.
+//! CPU-time accounting. `/proc/stat` retains Linux tick accounting, while
+//! per-task `utime`/`stime` use Linux generic virtual accounting: charge the
+//! interval at every user↔kernel transition and context switch. Sampling the
+//! whole inter-tick interval from one IRQ frame billed syscall-heavy workloads
+//! almost entirely to user time.
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -17,22 +12,25 @@ static USER: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
 static SYS:  [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
 static IDLE: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
 
-/// Per-CPU monotonic-ns timestamp of the previous timer tick. The
-/// inter-tick wall delta is charged to the interrupted task's user- or
-/// kernel-mode CPU-time bucket (tick-sampled per-task accounting, Linux
-/// CONFIG_TICK_CPU_ACCOUNTING). 0 = no baseline yet (first tick on CPU).
-static LAST_TICK_NS: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
-
-/// Ceiling on a single tick's per-task charge. The LAPIC/CNTV periodic
-/// timer here is NOT a fixed 100 Hz (x86 LAPIC bus freq is unmeasured;
-/// arm CNTV ticks ~62.5 Hz at `timer_periodic(1_000_000)`), so utime is
-/// derived from the real inter-tick monotonic delta rather than a fixed
-/// jiffy. A larger gap (first tick, long IRQ-off window, VM pause) is
-/// capped so accounting can't spike. 100 ms >> any real tick period.
-pub const MAX_TICK_CHARGE_NS: u64 = 100_000_000;
+pub const VTIME_SYSTEM: u8 = 0;
+pub const VTIME_USER: u8 = 1;
 
 /// What the timer tick interrupted.
 pub enum TickKind { User, System, Idle }
+
+/// Classify the interrupted context for Linux `kcpustat`: privilege level
+/// distinguishes user from kernel, and runqueue identity distinguishes real
+/// system work from the per-CPU idle task. # C: O(1)
+pub fn tick_kind(from_user: bool) -> TickKind {
+    if from_user { return TickKind::User; }
+    #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+    {
+        if crate::live::runqueue::global().is_some_and(|rq| rq.curr_is_idle()) {
+            return TickKind::Idle;
+        }
+    }
+    TickKind::System
+}
 
 /// The CPU this code is running on (per-CPU base via gs/TPIDR). 0 off-target.
 /// # C: O(1)
@@ -71,48 +69,92 @@ fn now_ns() -> u64 {
     { 0 }
 }
 
-/// Charge the wall-time elapsed since the previous timer tick on THIS CPU
-/// to the interrupted task's user- or kernel-mode CPU-time bucket. Called
-/// from each arch timer ISR alongside `account`. Tick-sampled: the whole
-/// inter-tick delta is attributed to whichever mode the timer interrupted
-/// (`from_user`), matching Linux CONFIG_TICK_CPU_ACCOUNTING. Reads the
-/// real monotonic delta so utime/stime stay wall-consistent on any timer
-/// frequency (the periodic tick is not a fixed 100 Hz here).
+#[inline]
+fn charge(task: &crate::Task, user: bool, delta: u64) {
+    if delta == 0 { return; }
+    if user { task.utime_ns.fetch_add(delta, Ordering::Relaxed); }
+    else    { task.stime_ns.fetch_add(delta, Ordering::Relaxed); }
+    task.thread_group.charge_cpu(user, delta);
+    if crate::sched_enc::is_rt_class_policy(task.policy.load(Ordering::Relaxed)) {
+        task.rt_timeout_ns.fetch_add(delta, Ordering::Relaxed);
+    }
+}
+
+/// Close the running task's current virtual-time interval at `now`, optionally
+/// changing its mode. `vtime_start_ns == 0` is the off-CPU sentinel, so a
+/// switch-in establishes a baseline without charging the sleep interval.
+/// # C: O(1)
+#[inline]
+fn flush(task: &crate::Task, now: u64, next_state: Option<u8>) -> u64 {
+    let start = task.vtime_start_ns.swap(now, Ordering::AcqRel);
+    let state = task.vtime_state.load(Ordering::Acquire);
+    let delta = if start != 0 && now > start { now - start } else { 0 };
+    charge(task, state == VTIME_USER, delta);
+    if let Some(state) = next_state { task.vtime_state.store(state, Ordering::Release); }
+    delta
+}
+
+/// Linux `vtime_user_exit`: close user time at kernel entry and begin system
+/// time. Syscall and user-mode IRQ entry call this before doing kernel work.
+/// # C: O(1)
+#[inline]
+pub fn user_exit() {
+    #[cfg(target_os = "oxide-kernel")]
+    if let Some(task) = crate::live::current() {
+        let _ = flush(task, now_ns(), Some(VTIME_SYSTEM));
+    }
+}
+
+/// Linux `vtime_user_enter`: close system time immediately before resuming
+/// userspace and begin the next user interval. # C: O(1)
+#[inline]
+pub fn user_enter() {
+    #[cfg(target_os = "oxide-kernel")]
+    if let Some(task) = crate::live::current() {
+        let _ = flush(task, now_ns(), Some(VTIME_USER));
+    }
+}
+
+/// Flush the outgoing task and exclude the following off-CPU interval.
+/// Called under the owning runqueue's switch invariant. # C: O(1)
+pub(crate) fn switch_out(task: &crate::Task, now: u64) {
+    let _ = flush(task, now, None);
+    task.vtime_start_ns.store(0, Ordering::Release);
+}
+
+/// Start the incoming task's preserved user/system mode at this CPU's switch
+/// timestamp. Called under the owning runqueue's switch invariant. # C: O(1)
+pub(crate) fn switch_in(task: &crate::Task, now: u64) {
+    task.vtime_start_ns.store(now, Ordering::Release);
+}
+
+/// Settle the final kernel interval before exit snapshots publish the task's
+/// rusage. The later scheduler switch sees the off-CPU sentinel and cannot
+/// charge it twice. # C: O(1)
+pub fn exit_current(task: &crate::Task) {
+    let _ = flush(task, now_ns(), None);
+    task.vtime_start_ns.store(0, Ordering::Release);
+}
+
+/// Timer-tick checkpoint for CPU-clock timers. The user/system interval is
+/// already owned by the transition state, so the interrupted-frame sample no
+/// longer decides where the whole preceding tick belongs.
 ///
-/// Hard-IRQ safe, but not "atomics only" as this previously claimed: it also
-/// charges the thread group and services process CPU-clock timers, the latter
-/// behind a NON-BLOCKING `try_lock` that bails rather than spinning. What makes
-/// it safe is that nothing here can block — F703 removed the `registry::lookup`
-/// that used to take `REG`, a lock process context holds with IRQs enabled
-/// (`06§3.1`, `skizm.md` 3.1 #1). Keep it that way: any lock added on this path
-/// must be a try-lock or irqsave.
+/// Hard-IRQ safe: atomics plus the POSIX timer backend's non-blocking try-lock.
 /// # C: O(1)
 /// # Ctx: IRQ
 pub fn charge_current_tick(from_user: bool) {
-    let c = this_cpu();
-    let now = now_ns();
-    let prev = LAST_TICK_NS[c].swap(now, Ordering::Relaxed);
-    #[cfg(target_os = "oxide-kernel")]
-    crate::cputime_trace::tick_entry(now, prev, crate::live::current().is_some());
-    if prev == 0 || now <= prev { return; }
-    let delta = (now - prev).min(MAX_TICK_CHARGE_NS);
     #[cfg(target_os = "oxide-kernel")]
     if let Some(t) = crate::live::current() {
-        if from_user { t.utime_ns.fetch_add(delta, Ordering::Relaxed); }
-        else         { t.stime_ns.fetch_add(delta, Ordering::Relaxed); }
-        t.thread_group.charge_cpu(from_user, delta);
-        // Linux `watchdog` (`kernel/sched/rt.c`) bumps `p->rt.timeout` from
-        // `task_tick_rt`, i.e. only while a real-time task is the running one.
-        // Charging the real delta here rather than counting ticks keeps
-        // RLIMIT_RTTIME exact under this kernel's variable tick period. Two
-        // relaxed atomics, no lock — this is hard-IRQ context.
-        if crate::sched_enc::is_rt_class_policy(t.policy.load(Ordering::Relaxed)) {
-            t.rt_timeout_ns.fetch_add(delta, Ordering::Relaxed);
-        }
-        crate::cputime_trace::tick(t, from_user, delta);
+        let now = now_ns();
+        let start = t.vtime_start_ns.load(Ordering::Acquire);
+        crate::cputime_trace::tick_entry(now, start, true);
+        let user = t.vtime_state.load(Ordering::Acquire) == VTIME_USER;
+        let delta = flush(t, now, None);
+        crate::cputime_trace::tick(t, user, delta);
         crate::timers::account_cpu_tick(t);
     }
-    let _ = (delta, from_user);
+    let _ = from_user;
 }
 
 /// `(user, system, idle)` accumulated ticks for CPU `cpu` — `/proc/stat`'s
@@ -134,4 +176,46 @@ pub fn snapshot() -> (u64, u64, u64) {
         i += IDLE[c].load(Ordering::Relaxed);
     }
     (u, s, i)
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::sync::Arc;
+    use core::sync::atomic::Ordering;
+    use crate::{SchedClass, Task};
+    use super::*;
+
+    fn user_task() -> Arc<Task> {
+        Arc::new(Task::new_user(1861, "vtime",
+            SchedClass::Normal { weight: 1024 },
+            vmm::AddressSpace::new(0).expect("test address space")))
+    }
+
+    #[test]
+    fn transitions_charge_the_interval_that_preceded_them() {
+        let task = user_task();
+        switch_in(&task, 100);
+        flush(&task, 160, Some(VTIME_SYSTEM));
+        flush(&task, 225, Some(VTIME_USER));
+        switch_out(&task, 250);
+
+        assert_eq!(task.utime_ns.load(Ordering::Relaxed), 85);
+        assert_eq!(task.stime_ns.load(Ordering::Relaxed), 65);
+        assert_eq!(task.thread_group.cpu_sample(), (85, 65));
+        assert_eq!(task.vtime_start_ns.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn context_switch_excludes_the_off_cpu_gap_and_preserves_mode() {
+        let task = user_task();
+        switch_in(&task, 100);
+        switch_out(&task, 140);
+        assert_eq!(task.vtime_start_ns.load(Ordering::Relaxed), 0,
+            "an off-CPU task has no chargeable interval");
+        switch_in(&task, 10_000);
+        flush(&task, 10_025, Some(VTIME_SYSTEM));
+
+        assert_eq!(task.utime_ns.load(Ordering::Relaxed), 65);
+        assert_eq!(task.stime_ns.load(Ordering::Relaxed), 0);
+    }
 }
