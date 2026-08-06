@@ -109,6 +109,7 @@ mod imp {
     const IIR: u16 = 2; // FCR on write
     const FCR: u16 = 2;
     const LCR: u16 = 3; // line control; bit7 = DLAB (selects DLL/DLM at base+0/+1)
+    const MCR: u16 = 4;
     const LSR: u16 = 5; // bit0 = RX data ready, bit5 = THR empty
     const SCR: u16 = 7; // scratch
     const FCR_ENABLE: u8 = 0x01;
@@ -199,12 +200,13 @@ mod imp {
         }
     }
 
-    /// COM interrupt handler. Linux services receive before transmit, fills at
-    /// most one hardware FIFO per THRE interrupt, and calls the tty delivery
-    /// path only after dropping the aliased-register lock (delivery may log).
-    /// # C: O(RX bytes + one 16-byte TX FIFO load)
+    /// COM interrupt handler. Each IIR pass services receive before transmit,
+    /// fills at most one hardware FIFO, and calls tty delivery only after
+    /// dropping the aliased-register lock. As Linux serial8250 does for an ISA
+    /// IRQ chain, passes continue until the edge-triggered line deasserts.
+    /// # C: O(IRQ_PASS_LIMIT * (RX bytes + one 16-byte TX FIFO load))
     pub fn rx_isr(dlv: fn(u8)) {
-        let _ = rx_isr_claimed(dlv);
+        let _ = service_irq_chain(dlv);
     }
 
     fn rx_isr_claimed(dlv: fn(u8)) -> bool {
@@ -245,11 +247,15 @@ mod imp {
         true
     }
 
-    /// I/O APIC line-handler adapter: reports whether IIR identifies this UART
-    /// as the source and pulls `deliver` from the stored static.
-    /// # C: O(bytes pending)
+    fn service_irq_chain(dlv: fn(u8)) -> bool {
+        tx::service_irq_chain(|| rx_isr_claimed(dlv))
+    }
+
+    /// I/O APIC line-handler adapter: drains IIR until the ISA line deasserts,
+    /// reports whether this UART claimed it, and pulls `deliver` from static.
+    /// # C: O(IRQ_PASS_LIMIT * bytes pending per pass)
     fn uart_isr_line(_irq: u32) -> arch_irq::IrqReport {
-        arch_irq::IrqReport::hard(if rx_isr_claimed(super::deliver) {
+        arch_irq::IrqReport::hard(if service_irq_chain(super::deliver) {
             arch_irq::IrqRet::Handled
         } else {
             arch_irq::IrqRet::NotMine
@@ -282,6 +288,8 @@ mod imp {
             outb(port + IER, 0);
             outb(port + FCR, FCR_ENABLE | FCR_CLEAR_RX | FCR_CLEAR_TX);
             outb(port + FCR, fifo_mode());
+            let mcr = inb(port + MCR);
+            outb(port + MCR, tx::irq_mcr(mcr));
         }
         // Route IRQ4 → an RX-drain vector via the I/O APIC, if present.
         use hal::{MmuOps, Pa, PageFlags, PageSize, Va};

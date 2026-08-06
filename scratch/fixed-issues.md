@@ -825,3 +825,9 @@ evidence has one canonical home.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED C275 | INFRA | med | No way to add kernel parameters for one run, so a service that misbehaves only during boot could not be observed: raising its log level meant restarting it, and restarting is the one thing that changes the state under investigation. systemd-resolved allocates DNS scopes correctly on restart and never during boot, and that asymmetry made its own log unreachable. `OXIDE_CMDLINE_EXTRA` now prepends parameters, e.g. `systemd.setenv=SYSTEMD_LOG_LEVEL=debug`. | `tools/xtask/src/image_qemu/bootargs.rs`; both arches share the builder, so both take it | — |
+
+### B1876-uart-thre-retrigger
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B1876 | DEFECT | high | The IRQ-driven 16550 TX path could stop in the middle of a record and never restart. The handler returned after one IIR service while the legacy ISA line could remain asserted, losing the edge needed to drain the queued suffix; initialization also left the PC UART's `OUT2` interrupt gate down. The line handler now drains IIR to deassertion with the bounded 512-pass contract and initialization preserves MCR state while raising `OUT2`. | Positive control: replacing the drain with one service fails `irq_chain_runs_until_the_edge_triggered_line_deasserts` (1 call vs 4). `cargo test -p drv-uart-16550`: 8/8. Five exact `OXIDE_QEMU_SIMPLEFB=1 OXIDE_SMP=1 FEATURES=debug-boot` boots reached userspace in 80/58/57/56/58 s and passed serial RX; the pre-fix failure survived 240 s plus SysRq. | — |
