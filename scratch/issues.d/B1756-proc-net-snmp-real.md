@@ -1,8 +1,0 @@
-# B1756 — /proc/net/snmp reports real counters
-
-| Status | Class | Sev | Issue | Evidence | Owner |
-|---|---|---|---|---|---|
-| FIXED B1756 | MISSING | med | `/proc/net/snmp` was a hardcoded table of zeroes. That is worse than an absent file: a reader cannot tell a counter that has not moved from one nothing keeps, and `Ip: InReceives 0 OutRequests 0` on a guest that had moved packets read as a dead stack during a live investigation and produced a wrong conclusion. Now a per-namespace MIB counted where each event happens, so a zero means the event has not occurred. | `crates/kernel/net/src/mib.rs` (9 hosted tests); `the_receive_path_counts_what_it_delivers` drives a real datagram through `deliver_rx_in` — positive control: removing the `IpInReceives` bump fails it | — |
-| FIXED B1756 | COVERAGE | med | The rendering first lived in `procfs::net`, which is `#[cfg(target_os = "oxide-kernel")]`: the tests written beside it compiled out entirely and reported `0 passed; 162 filtered out`. Moved into the ungated `net::mib`, where they run; procfs keeps a shim. | `cargo test -p procfs snmp_tests` → 0 passed, before the move | — |
-| OPEN | MISSING | low | Counters with no call site yet read zero honestly but are not yet counted: `IpInAddrErrors`, `IpInUnknownProtos`, `IpInDiscards`, `IpOutNoRoutes`, the fragment counters, `UdpNoPorts`, the TCP open/reset/retransmit counters, and the ICMP output counters. Each needs its event named at the point it occurs. | `crates/kernel/net/src/mib.rs` — `Mib` lists them; `grep -c 'mib::bump'` names the wired ones | — |
-| OPEN | MISSING | low | `/proc/net/netstat`, `/proc/net/snmp6` and `/proc/net/packet` remain header-only or empty stubs of the same shape. | `crates/kernel/procfs/src/static_files.rs` | — |
