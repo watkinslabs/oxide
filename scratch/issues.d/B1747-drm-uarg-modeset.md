@@ -1,7 +1,0 @@
-# B1747 — DRM raw user-pointer dereferences, remainder
-
-| Status | Class | Sev | Issue | Evidence | Owner |
-|---|---|---|---|---|---|
-| FIXED B1747 | DEFECT | high | The remaining 60 raw user-pointer dereferences in the DRM tree — `modeset.rs` (27), `atomic/props.rs` (16), `kms_ext.rs` (10), `atomic/blobs.rs` (5), `node/auth.rs` (2). A range check proves the address is in the user half, not that it is mapped; such a dereference has no exception-table entry, so a bogus ioctl pointer halts the CPU instead of returning `EFAULT`. B1746 converted the first 22. | zero `read_volatile`/`write_volatile` outside `uarg.rs` in `crates/drivers/drm/src`; the new `code/drm-user-deref` lint fails on one reinstated site | — |
-| FIXED B1747 | COVERAGE | med | No lint forbade the pattern. `code/drm-user-deref` now flags any `read_volatile`/`write_volatile` under `crates/drivers/drm/src` outside `uarg.rs` — no MMIO exists in that tree, so the rule has no legitimate exception. | `tools/spec-lint/src/code_lint.rs` `check_drm_user_deref`; positive control: reinstating one site yields exactly one finding | — |
-| OPEN | DEFECT | low | `atomic_property_count` sums the caller's whole `count_props` array before validating any object id. The reference resolves each object as it walks and bails `ENOENT` on the first unknown one, so it cannot be made to walk a large array for an invalid request. Ours reads the array in 256-word chunks — fault-safe, but a caller can still make it walk `count_objs` entries. | `crates/drivers/drm/src/node/auth.rs` `atomic_property_count` | — |
