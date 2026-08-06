@@ -56,8 +56,8 @@ pub fn sys_fsmount(args: &SyscallArgs) -> i64 {
             // holding a mountable tree right now" is a retry condition, and it
             // is what a SECOND fsmount on one context fd reports once the first
             // has cleaned it back to the fspick state.
-            let (sb, root) = match (fc.sb(), fc.root()) {
-                (Some(sb), Some(root)) => (sb.clone(), root.clone()),
+            let sb = match (fc.sb(), fc.root()) {
+                (Some(sb), Some(_)) => sb.clone(),
                 _ => return -(Errno::Einval.as_i32() as i64),
             };
             // Linux `do_fsmount`: `if (mount_too_revealing(fc->root->d_sb,

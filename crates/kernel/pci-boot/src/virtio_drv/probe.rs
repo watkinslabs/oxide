@@ -7,6 +7,7 @@ pub(super) struct VirtioPciAcquisition {
     vcaps: virtio::pci::heapless_v::VCapVec,
     bars: [pci::Bar; 6],
     cmd_orig: u16,
+    #[cfg(feature = "debug-boot")]
     cmd_new: u16,
 }
 
@@ -32,12 +33,15 @@ impl VirtioPciAcquisition {
                 (caps, vcaps, bars, cmd_orig)
             }
         };
-        let cmd_new = (cmd_orig & 0xFFFF) | (pci::COMMAND_MEMORY | pci::COMMAND_BUS_MASTER) as u32;
+        #[cfg(feature = "debug-boot")]
+        let cmd_new = (cmd_orig & 0xFFFF)
+            | (pci::COMMAND_MEMORY | pci::COMMAND_BUS_MASTER) as u32;
         Some(Self {
             caps,
             vcaps,
             bars,
             cmd_orig: (cmd_orig & 0xFFFF) as u16,
+            #[cfg(feature = "debug-boot")]
             cmd_new: (cmd_new & 0xFFFF) as u16,
         })
     }
@@ -52,11 +56,16 @@ impl VirtioPciAcquisition {
         let runtime = VirtioPciRuntime::current();
 
         let bringup = state.negotiate_and_program(d, &self.caps, &self.bars, profile, runtime);
+        #[cfg(feature = "debug-boot")]
         let dev_features = bringup.negotiated.dev_features;
         let drv_features = bringup.negotiated.drv_features;
+        #[cfg(feature = "debug-boot")]
         let post_status = bringup.negotiated.post_status;
+        #[cfg(feature = "debug-boot")]
         let features_ok = bringup.negotiated.features_ok;
+        #[cfg(feature = "debug-boot")]
         let msix_cfg = bringup.negotiated.msix_cfg;
+        #[cfg(feature = "debug-boot")]
         let num_queues = bringup.negotiated.num_queues;
         let queues = bringup.queues;
         let queues_len = bringup.queues_len;

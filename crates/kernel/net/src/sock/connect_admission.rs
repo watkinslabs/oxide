@@ -2,10 +2,7 @@
 
 use alloc::sync::Arc;
 
-use super::{
-    bound_iface, ConnectAdmission, InetSocket, NetError, RemoteAddr, SockKind,
-    SockLockClass,
-};
+use super::{ConnectAdmission, InetSocket, NetError, RemoteAddr, SockKind, SockLockClass};
 
 enum ConnectKind {
     Udp,
