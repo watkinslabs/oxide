@@ -141,6 +141,7 @@ mod tests {
     extern crate alloc;
     use super::*;
     use alloc::vec::Vec;
+    use crate::kernel::CONSOLE_TEST_DOMAIN;
     use vtdata::Emulator;
 
     // Records (vt, bytes) the drain sink delivered into the "input ring".
@@ -148,11 +149,6 @@ mod tests {
     // no_std (no std thread_local). Tests in this module are serialized
     // (each clears LANDED at its end).
     static LANDED: Spinlock<Vec<(u8, Vec<u8>)>, TtyClass> = Spinlock::new(Vec::new());
-
-    // Serializes the two tests — they share the module-global queue +
-    // PENDING flag, so they must not run concurrently. Held for the whole
-    // body of each test (cargo runs tests in parallel by default).
-    static SERIAL: Spinlock<(), TtyClass> = Spinlock::new(());
 
     fn record_sink(vt: u8, bytes: &[u8]) {
         let mut v = Vec::new();
@@ -167,7 +163,7 @@ mod tests {
     // boot wedge (no input injection under the console write lock).
     #[test]
     fn write_queues_tick_drains() {
-        let _serial = SERIAL.lock();
+        let _serial = CONSOLE_TEST_DOMAIN.lock();
         LANDED.lock().clear();
         let _ = drain_with(record_sink); // drain any leftover from a prior test
         LANDED.lock().clear();
@@ -214,7 +210,7 @@ mod tests {
     // the tty the query was written to.
     #[test]
     fn queue_targets_specific_vt() {
-        let _serial = SERIAL.lock();
+        let _serial = CONSOLE_TEST_DOMAIN.lock();
         LANDED.lock().clear();
         let _ = drain_with(record_sink); // drain any leftover from a prior test
         LANDED.lock().clear();

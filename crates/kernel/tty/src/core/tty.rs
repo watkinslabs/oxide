@@ -11,9 +11,9 @@ use crate::wait::TtyWait;
 /// Buffers `driver_write` output instead of emitting it, so the caller can
 /// transmit after dropping the port lock. Every other hook forwards to the
 /// real driver unchanged — only the byte sink is diverted.
-struct TxCollector<'a, D: TtyDriver> {
-    drv: &'a mut D,
-    buf: alloc::vec::Vec<u8>,
+pub(super) struct TxCollector<'a, D: TtyDriver> {
+    pub(super) drv: &'a mut D,
+    pub(super) buf: alloc::vec::Vec<u8>,
 }
 
 impl<D: TtyDriver> crate::ldisc::TtyDriverHooks for TxCollector<'_, D> {
@@ -25,8 +25,9 @@ impl<D: TtyDriver> crate::ldisc::TtyDriverHooks for TxCollector<'_, D> {
 /// The mutable state the port lock protects: the line discipline (which
 /// owns the cooked read queue + the half-built canonical line — Linux's
 /// flip buffer is consumed straight into `n_tty_receive_buf`, so the
-/// ldisc IS the post-flip input store here) and the driver (the
-/// `driver_write` echo path re-enters it under the same lock).
+/// ldisc IS the post-flip input store here) and the driver state. Device I/O
+/// for a detached sink occurs under the separate `tx` owner, outside this
+/// irqsave lock.
 pub(super) struct PortInner<D: TtyDriver> {
     pub(super) ldisc: NTty,
     pub(super) driver: D,

@@ -36,11 +36,11 @@ reclassified.
 
 | Class \ Sev | blocker | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|
-| `DEFECT` | 0 | 0 | 15 | 25 | 40 |
-| `MISSING` | 2 | 0 | 18 | 19 | 39 |
+| `DEFECT` | 0 | 0 | 14 | 24 | 38 |
+| `MISSING` | 2 | 0 | 17 | 19 | 38 |
 | `COVERAGE` | 0 | 0 | 10 | 15 | 25 |
 | `INFRA` | 0 | 0 | 15 | 11 | 26 |
-| **Total** | **2** | **0** | **58** | **70** | **130** |
+| **Total** | **2** | **0** | **56** | **69** | **127** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -136,7 +136,6 @@ row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| IN-PROGRESS B1877-serial-rx-lock-ownership | DEFECT | low | `answerback.rs` keeps a third module-private `SERIAL` for its own queue state. It did not appear in any observed failure and guards a different resource, so it is left alone — but the crate now has one lock that owns the console and one that owns the answerback queue, and nothing states which resource a new test must take. | Not observed failing. | B1877-serial-rx-lock-ownership |
 | OPEN | MISSING | med | The config-space accessor is dword-addressed with an 8-bit register offset, so only the 256-byte conventional space is reachable. Extended PCIe config space (and therefore `serial_number`/DSN and the extended capability list) cannot be read; those attributes are absent rather than wrong. Sub-dword writes are read-modify-write on the containing dword, which re-emits neighbouring write-1-to-clear bits. | `pci::ConfigSpaceReader::read32(bdf, offset: u8)`; `pci::config_space::write_bytes` | unowned |
 | OPEN | COVERAGE | low | Nothing prevents a recurrence: any test that calls `drv_zram::install_page_provider` directly re-creates the same second-provider conflict, and there is no gate that a package's test outcome is invariant to which other packages share the cargo invocation. A workspace-wide `cargo test --workspace` in CI would catch it; per-package runs do not. | This defect survived because the only run that exposes it is the workspace one. | — |
 | OPEN | COVERAGE | low | Two hosted test binaries fail intermittently under the suite's parallelism and pass in isolation and on repeat: `fs::…` (one failure in one `make test` run, 902 passing on rerun and 6/6 clean in a loop) and `drv-zram::tests::control_reuses_removed_index` (one failure, 8/8 clean in a loop). Pre-existing, unrelated to this lane — recorded so a later lane does not attribute them to its own change. | `make test` on `B1697`, two consecutive runs, different crate each time. NARROWED: the `drv-zram::tests::control_reuses_removed_index` half is closed by `1b56032d3` (a crate-wide `CONTROL` claim), measured 0 red/20 runs on current main; only the `fs` half is still open and it has no named owner for its shared resource. | — |
@@ -198,12 +197,6 @@ here now.
 |---|---|---|---|---|---|
 | OPEN | MISSING | med | **Four cgroup2 flags are accepted and stored but cannot yet be acted on, because the mechanism they gate does not exist here.** They are declared because omitting a name fails a mount the reference accepts — a container runtime passing `memory_recursiveprot` would not mount at all — but no code reads them yet: (1) `memory_recursiveprot`: `memory.min`/`memory.low` are stored on the node and read by NOTHING; there is no effective-protection computation of any kind, recursive or not, so there is no behaviour to switch. (2) `pids_localevents`: `pids.events` is the hardcoded literal `"max 0\n"` — no pids-max-breach counter exists to be local or hierarchical. (3) `memory_hugetlb_accounting`: no hugetlb exists in this kernel at all. (4) `favordynmods`: a locking-strategy choice with no user-visible semantics and no dynamic-modification cost model here. Each becomes enforceable when its controller does; `RootFlag`'s own doc comments say which are enforced today. | `crates/kernel/cgroup/src/root_flags.rs` `RootFlag`; `tree/files.rs:44` (`"pids.events" => "max 0\n"`); `mem_low`/`mem_min` have no reader outside their own read/write handlers. | unowned |
 | OPEN | COVERAGE | med | **The cgroup2 flag path has no in-guest proof.** The boot mounts `/sys/fs/cgroup` from the kernel with no options and this image's systemd passes none, so a normal boot exercises only the default. A probe that mounts with `-o nsdelegate` and reads `/proc/mounts` was attempted twice: once it hit the `#DF` above, once it passed spuriously because the marker `^[0-9]` matched a kernel timestamp line rather than the command's output — a probe-design error, recorded because the same loose-marker mistake would pass any future probe. Parse, merge, render and both enforcement paths are hosted-tested; what is unproven is only that the registry constructor receives the blob, which is the same wiring the procfs lane proved in-guest for an identically-shaped constructor. | This lane. Correct probe: a marker that cannot appear in kernel output, e.g. the quote-split nonce the harness itself uses. | unowned |
-
-### B1723-serial-stack-overflow-df
-
-| Status | Class | Sev | Issue | Evidence | Owner |
-|---|---|---|---|---|---|
-| IN-PROGRESS B1877-serial-rx-lock-ownership | DEFECT | med | **`receive_from_driver` still calls the driver per byte under the port lock with IRQs masked, unlike `TtyStruct::write`.** Not the cause of the `#DF` above, but a real divergence found while chasing it: `TtyStruct::write` was fixed to buffer the ldisc's output under the lock and emit it after releasing (`detached_sink` + `TxCollector`, "so the UART's per-byte transmitter poll no longer runs with interrupts off"), and the RX/echo path never got the same treatment — `PortInner`'s doc comment says so outright ("the `driver_write` echo path re-enters it under the same lock"). Linux's echo path only appends to `echo_buf` during `receive_buf`; `__process_echoes` writes to the driver later under `output_lock`, a mutex. Applying the existing `TxCollector` treatment to `receive_from_driver` is the same shape and a small change. | `core/tty/rx.rs:66-85` vs `core/tty.rs:290-318`; Linux `drivers/tty/n_tty.c` `echo_char`/`add_echo_byte`/`commit_echoes`/`__process_echoes`. | B1877-serial-rx-lock-ownership |
 
 ### B1727-nsnet-inline-fastopen-cache
 
@@ -300,12 +293,6 @@ here now.
 |---|---|---|---|---|---|
 | OPEN | MISSING | low | Counters with no call site yet read zero honestly but are not yet counted: `IpInAddrErrors`, `IpInUnknownProtos`, `IpInDiscards`, `IpOutNoRoutes`, the fragment counters, `UdpNoPorts`, the TCP open/reset/retransmit counters, and the ICMP output counters. Each needs its event named at the point it occurs. | `crates/kernel/net/src/mib.rs` — `Mib` lists them; `grep -c 'mib::bump'` names the wired ones | — |
 | OPEN | MISSING | low | `/proc/net/netstat`, `/proc/net/snmp6` and `/proc/net/packet` remain header-only or empty stubs of the same shape. | `crates/kernel/procfs/src/static_files.rs` | — |
-
-### C270-irq-stack-depth-domain
-
-| Status | Class | Sev | Issue | Evidence | Owner |
-|---|---|---|---|---|---|
-| IN-PROGRESS B1877-serial-rx-lock-ownership | MISSING | med | **`serialtty::kernelrx::install` / `rx_byte` have no callers anywhere in the tree.** Found while enumerating the `drv_serial::deliver` sinks: the live sinks are `sched::diag::emit::sysrq_rx` (the RX prefilter) and `console::static_console::rx_byte` (the RX sink), both registered from `kmain::runtime::init`. The `serialtty` pair is a second, unwired candidate for the same slot — machinery without callers, and a second thing that looks like it owns serial RX delivery. Either it is the owner and the console path is the duplicate, or it is dead and goes. | Whole-tree grep for both names returns only the definitions. | B1877-serial-rx-lock-ownership |
 
 ### C274-qemu-pcap-capture
 

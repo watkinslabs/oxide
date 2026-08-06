@@ -13,6 +13,7 @@ use crate::wait::host::HostWait;
 use crate::wait::TtyWait;
 
 mod echo_stream;
+mod detached_rx;
 mod exclusive;
 mod hangup;
 
