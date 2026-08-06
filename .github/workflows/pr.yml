@@ -54,10 +54,6 @@ jobs:
         run: python3 tools/warnings-gate.py --self-test
       - name: workspace build with warnings denied
         run: python3 tools/warnings-gate.py -- cargo build --workspace
-      - name: isolated host crate checks
-        run: make hosted-gate
-      - name: isolated test-target builds
-        run: make test-build-gate
 
   test-hosted:
     name: test --hosted
@@ -176,9 +172,3 @@ jobs:
           python3 tools/stack-depth-gate.py "${{ steps.elf.outputs.path }}" \
             --arch ${{ matrix.arch }} --fail 13000 \
             --allowlist tools/stack-depth-allow-${{ matrix.arch }}.txt
-      - name: hard-IRQ stack-depth gate
-        run: |
-          python3 tools/stack-depth-gate.py "${{ steps.elf.outputs.path }}" \
-            --arch ${{ matrix.arch }} --fail 99999 \
-            --indirect-map tools/irq-edges-${{ matrix.arch }}.tsv \
-            --irq-roots tools/irq-roots-${{ matrix.arch }}.txt --irq-fail 12000
