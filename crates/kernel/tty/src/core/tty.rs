@@ -294,10 +294,9 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
         // The port lock is irqsave (the RX ISR takes it), so anything done
         // under it runs with interrupts masked. When the driver offers a
         // detached sink, buffer the ldisc's output under the lock and push it
-        // to the device AFTER releasing it — so the UART's per-byte
-        // transmitter poll no longer runs with interrupts off (`skizm.md`
-        // Step 4e). Drivers without such a sink (VT, tests) keep the inline
-        // path, which is unchanged.
+        // to the device AFTER releasing it — so device submission never runs
+        // with this tty port's interrupts masked (`skizm.md` Step 4e). Drivers
+        // without such a sink (VT, tests) keep the inline path, unchanged.
         let Some(sink) = D::detached_sink() else {
             let mut g = self.inner.lock_irqsave::<W::Irq>();
             let PortInner { ldisc, driver } = &mut *g;
