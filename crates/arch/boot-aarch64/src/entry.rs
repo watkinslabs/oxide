@@ -109,12 +109,12 @@ unsafe extern "C" fn _start_rust() -> ! {
     // SAFETY: boot path, pre-SMP; publishes the PSCI AP-startup params (page
     // table phys + DTB /cpus MPIDRs) for the kernel's bring_up_aps_psci.
     unsafe { boot_info_build::publish_psci_ap_params(); }
-    // SAFETY: boot path; build_boot_info reads bootloader-owned
-    // static state and produces an owned BootInfo.
+    // SAFETY: boot path; build_boot_info reads bootloader-owned state and
+    // returns the completed boot-owned static BootInfo.
     let info = unsafe { boot_info_build::build_boot_info() };
     // SAFETY: kernel_main's contract is satisfied by the boot env
     // we just established (kernel stack installed, IRQs masked).
-    unsafe { kmain::kernel_main(&info) }
+    unsafe { kmain::kernel_main(info) }
 }
 
 /// Entry. The shared bootloader-agnostic entry the trampoline tail-calls

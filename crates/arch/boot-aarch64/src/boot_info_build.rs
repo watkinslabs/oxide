@@ -6,6 +6,8 @@ use crate::selfboot;
 use core::cell::UnsafeCell;
 use boot_info::{BootInfo, BootMemRegion};
 
+static EMPTY_BOOT_REGIONS: [BootMemRegion; 0] = [];
+
 /// BSS-resident storage for the parsed DTB memmap. ~6 KiB cost
 /// (256 entries × 24 B); QEMU virt rarely exceeds 16 entries.
 const MAX_BOOT_REGIONS: usize = 256;
@@ -27,10 +29,9 @@ static MEMMAP_STORAGE: MemmapStorage = MemmapStorage(UnsafeCell::new([
 /// # C: O(1)
 #[doc(hidden)]
 pub unsafe fn stub_boot_info() -> BootInfo {
-    static EMPTY: [BootMemRegion; 0] = [];
     BootInfo {
         memmap_count: 0,
-        memmap_ptr: EMPTY.as_ptr(),
+        memmap_ptr: EMPTY_BOOT_REGIONS.as_ptr(),
         seed: [0; 32],
         boot_ns: 0,
         hhdm_offset: 0,
@@ -52,6 +53,26 @@ struct KernelStack(UnsafeCell<[u8; STACK_SIZE]>);
 unsafe impl Sync for KernelStack {}
 #[cfg(target_os = "oxide-kernel")]
 static KERNEL_STACK: KernelStack = KernelStack(UnsafeCell::new([0; STACK_SIZE]));
+
+/// Static handoff storage keeps BootInfo growth out of the fixed boot stack.
+/// The boot CPU is the sole writer and publishes one shared reference only
+/// after the DTB/EFI fields are complete.
+#[cfg(target_os = "oxide-kernel")]
+struct BootInfoStorage(UnsafeCell<BootInfo>);
+#[cfg(target_os = "oxide-kernel")]
+unsafe impl Sync for BootInfoStorage {}
+#[cfg(target_os = "oxide-kernel")]
+static BOOT_INFO_STORAGE: BootInfoStorage = BootInfoStorage(UnsafeCell::new(BootInfo {
+    memmap_count: 0,
+    memmap_ptr: EMPTY_BOOT_REGIONS.as_ptr(),
+    seed: [0; 32],
+    boot_ns: 0,
+    hhdm_offset: 0,
+    rsdp_pa: 0,
+    framebuffer: boot_info::BootFramebuffer::EMPTY,
+    bsp_lapic_id: 0,
+    _pad: 0,
+}));
 
 /// One-past-the-end pointer for the boot stack installed by `_start`.
 /// # SAFETY: caller must run on the single-CPU boot path before scheduler init.
@@ -407,12 +428,12 @@ unsafe fn dtb_totalsize(pa: u64) -> u64 {
 /// `_start` from the bootloader-provided x0 register.
 /// # C: O(dtb)
 #[cfg(target_os = "oxide-kernel")]
-pub(crate) unsafe fn build_boot_info() -> BootInfo {
-    // SAFETY: stub returns an owned BootInfo with a static empty
-    // memmap; build_selfboot_memmap overlays HHDM + memmap.
-    let mut info = unsafe { stub_boot_info() };
+pub(crate) unsafe fn build_boot_info() -> &'static BootInfo {
+    // SAFETY: single-CPU boot is the sole writer of this static handoff;
+    // build_selfboot_memmap overlays its initialized empty map in place.
+    let info = unsafe { &mut *BOOT_INFO_STORAGE.0.get() };
     // SAFETY: boot path; reads DTB + linker symbols, fills MEMMAP_STORAGE.
-    unsafe { build_selfboot_memmap(&mut info); }
+    unsafe { build_selfboot_memmap(info); }
     use hal::TimerOps;
     info.boot_ns = hal_aarch64::ArmTimerOps::monotonic_ns().0;
     // The boot handoff has no CPU table. Keep the same u32 representation
