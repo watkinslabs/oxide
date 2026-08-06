@@ -36,11 +36,11 @@ reclassified.
 
 | Class \ Sev | blocker | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|
-| `DEFECT` | 1 | 3 | 13 | 24 | 41 |
+| `DEFECT` | 0 | 3 | 13 | 24 | 40 |
 | `MISSING` | 0 | 0 | 10 | 11 | 21 |
 | `COVERAGE` | 0 | 2 | 8 | 13 | 23 |
 | `INFRA` | 0 | 1 | 12 | 11 | 24 |
-| **Total** | **1** | **6** | **43** | **59** | **109** |
+| **Total** | **0** | **6** | **43** | **59** | **108** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -143,7 +143,6 @@ row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| IN-PROGRESS B1863-x86-16550-tx-irq | DEFECT | blocker | The x86_64 16550 console transmit path holds its port lock and busy-polls `LSR.THRE` before synchronously issuing each byte. Under KVM each port read/write exits the guest, so the writing task pays roughly 1–2 ms per log line instead of copying into a UART ring and returning while the TX interrupt drains it as Linux does. | `crates/drivers/drv-uart-16550/src/lib.rs::emit`; clean boot measurements attribute roughly 3–4 ms per console line. Boot itself reaches `graphical.target` in 3.6 s; the apparent `boot.txt` stop is systemd ceasing console logging, not a hang. | B1863-x86-16550-tx-irq |
 | OPEN | DEFECT | low | `answerback.rs` keeps a third module-private `SERIAL` for its own queue state. It did not appear in any observed failure and guards a different resource, so it is left alone — but the crate now has one lock that owns the console and one that owns the answerback queue, and nothing states which resource a new test must take. | Not observed failing. | — |
 | OPEN | MISSING | med | The config-space accessor is dword-addressed with an 8-bit register offset, so only the 256-byte conventional space is reachable. Extended PCIe config space (and therefore `serial_number`/DSN and the extended capability list) cannot be read; those attributes are absent rather than wrong. Sub-dword writes are read-modify-write on the containing dword, which re-emits neighbouring write-1-to-clear bits. | `pci::ConfigSpaceReader::read32(bdf, offset: u8)`; `pci::config_space::write_bytes` | unowned |
 | OPEN | COVERAGE | high | There is NO hosted coverage of the kernel-only fault-recovery half of `uaccess` — `hal-x86_64/src/uaccess.rs` gates the exception-table asm on `target_os = "oxide-kernel"`, and the hosted shim is a plain `copy_nonoverlapping`. A future lane re-introducing a raw user dereference in a driver passes every hosted gate, exactly as drm and virtio-input did until this lane. A gate that greps driver crates for `read_volatile`/`write_volatile` on a user-supplied address would catch the class. | This lane found the defect in 2 of 13 driver crates by reading, not by any gate firing | unowned |
