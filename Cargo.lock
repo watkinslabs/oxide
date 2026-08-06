@@ -310,6 +310,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "drv-simplefb"
+version = "0.1.0"
+dependencies = [
+ "boot-info",
+ "cmdline",
+ "console",
+ "drv",
+ "fbcon",
+ "fbdev",
+ "klog",
+ "mmio-map",
+ "sync",
+ "tty",
+ "vmm",
+]
+
+[[package]]
 name = "drv-uart-16550"
 version = "0.1.0"
 dependencies = [
@@ -860,6 +877,7 @@ dependencies = [
  "drv",
  "drv-ps2-keyboard",
  "drv-serial",
+ "drv-simplefb",
  "drv-virtio-blk",
  "drv-virtio-gpu",
  "drv-virtio-input",

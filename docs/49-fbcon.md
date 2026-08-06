@@ -1,19 +1,19 @@
 # 49 fbcon (kernel framebuffer console)
 
-FROZEN 2026-05-09. Dep:`01`,`02`,`07`,`08`,`13`,`15`,`28`,`45`,`47`,`48`,`50`. Provides:graphical console glyph backend for `50` (VT).
+FROZEN 2026-08-06. Dep:`01`,`02`,`07`,`08`,`13`,`15`,`28`,`35`,`36`,`45`,`47`,`48`,`50`. Provides:graphical console glyph backend for `50` (VT).
 
 Full Linux fbcon-equivalent surface per `linux/drivers/video/console/fbcon.c` + `linux/drivers/tty/vt/vt.c` console code paths. No deferrals.
 
 ## 1 Purpose
 
-Linux fbcon-equivalent kernel module per `linux/drivers/video/console/fbcon.c`. Renders glyphs from a PSF font into a DRM dumb-buffer via `47`, scrolls in software, exposes ANSI/CSI escape parsing. Consumed by `50` (VT) when a VT is in `KD_TEXT` mode AND a graphics backend is bound; the serial console (`28` tty) stays as fallback when no graphics backend is available.
+Linux fbcon-equivalent kernel module. Renders glyphs into a driver-neutral 0x00RRGGBB damage surface, then the bound scanout sink copies/converts the dirty rectangle to DRM/virtio or firmware framebuffer memory. Consumed by `50` when a VT is in `KD_TEXT` mode and a graphics backend is bound.
 
 ## 2 Invariants (frozen)
 
 1. Font format PSF v1 (`PSF1_MAGIC=0x36 0x04`) and PSF v2 (`PSF2_MAGIC=0x72 0xb5 0x4a 0x86`) per `linux/include/uapi/linux/kd.h` + `pcscreen_font.h`. Compiled-in defaults: 8×16 IBM VGA, 8×8 mini, 16×32 SUN. Runtime font load via `KDFONTOP` (`50` VT layer).
 2. Cell size matches loaded font; cell grid = `(xres / cw, yres / ch)`. Default 8×16 → 80×30 @ 640×480 / 80×25 @ 640×400 / 100×37 @ 800×600 / 128×48 @ 1024×768.
-3. Backing surface: one DRM dumb-buffer per VT (allocated lazily on first write) sized to `xres × yres × bpp/8`; format honours the active fbdev pixel format per `48`.
-4. Scrolling is software memmove on the backing buffer (top→bottom shift, last line cleared); fbcon issues a single virtio-gpu TRANSFER + FLUSH covering the dirty rect after each batch.
+3. Renderer surface: one 32-bit 0x00RRGGBB buffer for the active console; the driver sink preserves or converts the damaged pixels to its native format.
+4. Scrolling rerenders affected cells in software; fbcon issues one driver callback for the merged dirty rectangle.
 5. Full vt102 / xterm-256color emulation per `terminfo` `linux` + `xterm-256color` entries: CSI/OSC/DCS escape parsing, DECSET/DECRST modes, mouse (X10/normal/SGR), bracketed paste, OSC 52 clipboard, OSC 4/10/11/12 palette set/query, CSI `?7`/`?25`/`?47`/`?1049` (alt-screen), CSI `t` (window manipulation).
 6. Color palette: 16-color VGA palette default; 256-color xterm cube; 24-bit truecolor via `CSI 38;2;R;G;B m`. Palette runtime-mutable via OSC 4 / `CSI ] 4 ; n ; rgb:RR/GG/BB ESC \`.
 
@@ -105,10 +105,10 @@ V1 parser supports v2 only (PSF v1 256-glyph 8×y header is half the size; rejec
 
 For each cell at (col, row) writing glyph `g` with fg `F` and bg `B`:
 1. Look up `g`'s row 0..h in the PSF font: 1 bit per pixel.
-2. For each pixel row, write 8 BGRA pixels into the dumb-buffer at byte offset `(row*ch + py) * pitch + (col*cw + 0) * 4`.
+2. For each pixel row, write 8 0x00RRGGBB pixels into the renderer surface at byte offset `(row*ch + py) * stride + (col*cw + 0) * 4`.
 3. Mark the cell rect dirty.
 
-After a batch (e.g. one full line written), issue a single virtio-gpu `TRANSFER_TO_HOST_2D` + `RESOURCE_FLUSH` covering the bounding-box of dirty cells.
+After a batch, invoke the scanout sink once for the bounding box. Virtio issues transfer+flush; simplefb copies to its WC aperture and needs no command.
 
 ## 8 Scroll
 
@@ -131,7 +131,7 @@ Block cursor drawn as inverted cell at `(cursor_col, cursor_row)`. Blinks at 2 H
 
 ## 11 Failure modes
 
-- DRM dumb-buffer alloc fail at boot: fbcon stays disabled; `50` falls back to serial-only output.
+- Scanout mapping/allocation fail at boot: fbcon stays disabled; `50` falls back to serial-only output.
 - Mode change while writing: dropped line of output is acceptable; ANSI parser resyncs on next `\n`.
 - Invalid PSF magic: kassert at boot (compiled-in font must parse).
 
@@ -162,4 +162,4 @@ When a TrueType font is loaded via `KDFONTOP(KD_FONT_OP_SET_DEFAULT)` with a TTF
 
 ## 16 Cross-spec
 
-`47` (DRM dumb-buffer + atomic commit), `48` (fbdev shares the same backing buffer, so `dd > /dev/fb0` and fbcon writes coexist), `50` (VT layer drives this for tty1..6 in KD_TEXT mode), `28` (tty line discipline feeds keystrokes back to the active VT's stdin).
+`47` (DRM scanout), `48` (fbdev shares the driver-owned backing), `35`/`36` (simplefb fallback), `50` (VT), `28` (tty input).

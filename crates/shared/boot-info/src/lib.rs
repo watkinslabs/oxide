@@ -11,6 +11,9 @@
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+mod framebuffer;
+pub use framebuffer::{BootFramebuffer, BootFramebufferBitfield, BootFramebufferKind};
+
 /// Boot info passed by the arch boot stub.
 ///
 /// Layout is bootloader-defined per `36`; the stub parses the
@@ -37,6 +40,9 @@ pub struct BootInfo {
     /// bootloader did not surface one (no UEFI / no ACPI on this
     /// platform).
     pub rsdp_pa: u64,
+    /// Firmware/bootloader-owned linear framebuffer, or [`BootFramebuffer::EMPTY`]
+    /// when the handoff did not provide a usable RGB mode.
+    pub framebuffer: BootFramebuffer,
     /// Boot CPU's APIC id (x86_64) / MPIDR (aarch64). Neither live
     /// handoff carries a CPU table, so AP topology comes from the ACPI
     /// MADT / device tree and AP startup is the kernel's own (`13§11`).

@@ -2,6 +2,8 @@ use core::cell::UnsafeCell;
 
 use boot_info::{BootInfo, BootMemRegion};
 
+static EMPTY_BOOT_REGIONS: [BootMemRegion; 0] = [];
+
 // MB2 tag parsing is reached only from the `oxide-kernel` arms below.
 #[cfg(target_os = "oxide-kernel")]
 use crate::mb2;
@@ -15,14 +17,14 @@ use crate::mb2;
 /// # C: O(1)
 #[doc(hidden)]
 pub unsafe fn stub_boot_info() -> BootInfo {
-    static EMPTY: [BootMemRegion; 0] = [];
     BootInfo {
         memmap_count: 0,
-        memmap_ptr: EMPTY.as_ptr(),
+        memmap_ptr: EMPTY_BOOT_REGIONS.as_ptr(),
         seed: [0; 32],
         boot_ns: 0,
         hhdm_offset: 0,
         rsdp_pa: 0,
+        framebuffer: boot_info::BootFramebuffer::EMPTY,
         bsp_lapic_id: 0,
         _pad: 0,
     }
@@ -66,6 +68,26 @@ static MEMMAP_STORAGE: MemmapStorage = MemmapStorage(UnsafeCell::new([
     };
     MAX_BOOT_REGIONS
 ]));
+
+/// Boot information lives beside the boot memory-map storage rather than in
+/// `_start_rust`'s stack frame. The boot path is its sole writer and all
+/// readers begin only after it hands the shared reference to `kernel_main`.
+#[cfg(target_os = "oxide-kernel")]
+struct BootInfoStorage(UnsafeCell<BootInfo>);
+#[cfg(target_os = "oxide-kernel")]
+unsafe impl Sync for BootInfoStorage {}
+#[cfg(target_os = "oxide-kernel")]
+static BOOT_INFO_STORAGE: BootInfoStorage = BootInfoStorage(UnsafeCell::new(BootInfo {
+    memmap_count: 0,
+    memmap_ptr: EMPTY_BOOT_REGIONS.as_ptr(),
+    seed: [0; 32],
+    boot_ns: 0,
+    hhdm_offset: 0,
+    rsdp_pa: 0,
+    framebuffer: boot_info::BootFramebuffer::EMPTY,
+    bsp_lapic_id: 0,
+    _pad: 0,
+}));
 
 /// Bootloader cmdline storage. Sized for a generous Linux-style
 /// cmdline (CONFIG_CMDLINE_BOOT_MAX=2048); cmdlines that exceed
@@ -125,29 +147,36 @@ pub(crate) unsafe fn capture_cmdline() {
 /// slot stays zero until CRNG bring-up populates it.
 /// # C: O(min(entry_count, MAX_BOOT_REGIONS))
 #[cfg(target_os = "oxide-kernel")]
-pub(crate) unsafe fn build_boot_info() -> BootInfo {
+pub(crate) unsafe fn build_boot_info() -> &'static BootInfo {
     use hal::TimerOps;
     if !mb2::info::is_mb2_boot() {
-        // SAFETY: returns an owned BootInfo whose `memmap_ptr`
-        // references a `&'static` empty slice.
-        return unsafe { stub_boot_info() };
+        // SAFETY: this is the boot-only reader of the initialized static slot;
+        // unsupported loaders leave its static empty memory map intact.
+        return unsafe { &*BOOT_INFO_STORAGE.0.get() };
     }
     // SAFETY: MEMMAP_STORAGE is boot-owned; build_memmap fills it from
     // the MB2 info struct (HHDM-mapped, parsed pre-PMM).
     let storage = unsafe { &mut *MEMMAP_STORAGE.0.get() };
     // SAFETY: trampoline wrote a valid MB2-info ptr; build_memmap parses
     // the HHDM-mapped struct, filling boot-owned storage.
-    let (n, rsdp_pa) = unsafe { mb2::info::build_memmap(storage) };
-    BootInfo {
+    let (n, rsdp_pa, framebuffer) = unsafe { mb2::info::build_memmap(storage) };
+    let slot = BOOT_INFO_STORAGE.0.get();
+    // SAFETY: single-CPU boot is the sole writer; construct directly in the
+    // static return slot so BootInfo growth cannot consume boot-stack budget.
+    unsafe { core::ptr::write(slot, BootInfo {
         memmap_count: n as u32,
         memmap_ptr:   storage.as_ptr(),
         seed:         [0; 32],
         boot_ns:      hal_x86_64::X86TimerOps::monotonic_ns().0,
         hhdm_offset:  mb2::info::MB2_HHDM,
         rsdp_pa,
+        framebuffer,
         // The handoff has no CPU identity. Read the architectural initial
         // APIC id before the LAPIC mapping exists; ACPI supplies the rest.
         bsp_lapic_id: hal_x86_64::initial_apic_id(),
         _pad: 0,
-    }
+    }); }
+    // SAFETY: the write above fully initialized the static slot, whose lifetime
+    // covers every kernel consumer and which is never mutated again.
+    unsafe { &*slot }
 }

@@ -1,0 +1,28 @@
+[package]
+name = "drv-simplefb"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+boot-info = { path = "../../shared/boot-info" }
+cmdline   = { path = "../../kernel/cmdline" }
+console   = { path = "../../kernel/console" }
+drv       = { path = "../drv" }
+fbcon     = { path = "../fbcon" }
+fbdev     = { path = "../fbdev" }
+klog      = { path = "../../shared/klog" }
+mmio-map  = { path = "../../kernel/mmio-map" }
+sync      = { path = "../../shared/sync" }
+tty       = { path = "../../kernel/tty" }
+vmm       = { path = "../../kernel/mm-vmm" }
+
+[features]
+default = []
+debug-boot = []
+
+[lints]
+workspace = true
