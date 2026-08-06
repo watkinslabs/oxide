@@ -1,7 +1,0 @@
-# C275 — per-run kernel cmdline
-
-| Status | Class | Sev | Issue | Evidence | Owner |
-|---|---|---|---|---|---|
-| FIXED C275 | INFRA | med | No way to add kernel parameters for one run, so a service that misbehaves only during boot could not be observed: raising its log level meant restarting it, and restarting is the one thing that changes the state under investigation. systemd-resolved allocates DNS scopes correctly on restart and never during boot, and that asymmetry made its own log unreachable. `OXIDE_CMDLINE_EXTRA` now prepends parameters, e.g. `systemd.setenv=SYSTEMD_LOG_LEVEL=debug`. | `tools/xtask/src/image_qemu/bootargs.rs`; both arches share the builder, so both take it | — |
-| OPEN | INFRA | low | `/dev/console` resolves to `tty0` because it is the last `console=` on the command line, so a service logging to the console writes to the graphical console rather than the serial log a headless run captures. `SYSTEMD_LOG_TARGET=kmsg` reaches the serial log; `console` does not. | boot on `32420e8f3`: `SYSTEMD_LOG_TARGET=console` produced no service output on serial | — |
-| OPEN | DEFECT | med | The first packet to an unresolved neighbour is lost: `ping -c3` reports 2 received, consistently missing the first. The pending-packet queue implements the reference's evict-then-queue policy and the reply handler drains and resumes it, so the loss is elsewhere on the resolution path. Costs a full resolver timeout on a first DNS query. | `ping -c3 -W2 10.0.2.2` → `3 packets transmitted, 2 received`, rtt 0.117-0.130 ms, on `32420e8f3` | — |

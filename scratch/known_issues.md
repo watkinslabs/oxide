@@ -36,11 +36,11 @@ reclassified.
 
 | Class \ Sev | blocker | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|
-| `DEFECT` | 0 | 0 | 11 | 24 | 35 |
-| `MISSING` | 0 | 0 | 10 | 11 | 21 |
-| `COVERAGE` | 0 | 0 | 7 | 13 | 20 |
-| `INFRA` | 0 | 0 | 10 | 10 | 20 |
-| **Total** | **0** | **0** | **38** | **58** | **96** |
+| `DEFECT` | 0 | 0 | 15 | 25 | 40 |
+| `MISSING` | 3 | 3 | 18 | 19 | 43 |
+| `COVERAGE` | 0 | 0 | 10 | 15 | 25 |
+| `INFRA` | 1 | 0 | 15 | 12 | 28 |
+| **Total** | **4** | **3** | **58** | **71** | **136** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -149,7 +149,6 @@ row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 | OPEN | DEFECT | med | A listed-but-ignored parameter is still a false claim of support: any key a table lists that the filesystem does not honour keeps the option-support probe lying about that key. Applies to every option of the 17 filesystems that discard their data string. Each needs an implementation or omission from the table — the choice cannot be made silently. | Same registry listing. | — |
 | OPEN | MISSING | low | `security_watch_key` / `security_post_notification` have no LSM hook here, so watching is gated by `KEY_NEED_VIEW` alone and a record is never withheld from a watcher whose credentials an LSM would reject. Matches a kernel with no LSM stacked, which is what this one is. | B1659, `ops/watch.rs::watch_key_core`. | — |
 | OPEN | MISSING | low | No `/proc/sys/kernel/keys/gc_delay`. Deliberate: `Store::collect()` runs inline with no delay timer, so the knob would gate nothing — and a sysctl that reads back but changes no behaviour is the defect class this project bans. Add the knob only when a deferred gc exists. | B1649, negative result. | — |
-| OPEN | COVERAGE | med | `ipc`'s `futex_core_hosted::wait_timeout_returns_etimedout_not_a_fake_success` is LOAD-sensitive, not racy on shared state: it bounds a cross-thread handoff with `rx.recv_timeout(Duration::from_secs(5))` and reports `must not hang: Timeout` when the box is saturated by a 48-way workspace run. Seen twice, both times only inside a full workspace run, never in 40 runs of the crate alone. Deliberately NOT fixed here: raising the bound hides load sensitivity rather than removing it, and picking a new number is a judgement the futex lane should make. Same shape to look for in any other hosted test that bounds a handoff with a wall-clock deadline. | 1/12 workspace runs; `finished in 5.00s` where the passing run is 0.00s. | — |
 
 ## Tooling, gates, docs, dev box
 
@@ -175,3 +174,175 @@ row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 | OPEN | INFRA | low | `net` lib tests: one intermittent failure observed in a single run during C246, clean on 3 immediate re-runs. Consistent with the already-filed parallel-execution instability in the curated ledger, not a new defect. | 1538/1538 on three consecutive runs after the one-off. Recorded so the observation is not mistaken for a C246 regression. | — |
 | OPEN | INFRA | low | `/run/udev/data/n1` (loopback) is a stale zero-byte file dated 1970 shipped in the rootfs image; udev never rewrites it. Cosmetic, but it makes "does lo have a udev record" unanswerable by listing alone. | B1717. `ls -l /run/udev/data/` in guest. | images repo |
 | OPEN | INFRA | low | The matrix `IMPL` status CANNOT date a release: 72 of 385 rows are `PARTIAL`/`NEEDS-REWORK` and they are spread across every era (`16:ioctl`, `42:connect`, `46:sendmsg` are 1.x/2.x syscalls). Read literally, "newest release where every syscall introduced at or before it is `IMPL`" yields a bound below 2.6 — because the status tracks AUDIT CLOSURE, not presence. Presence is the property a release number claims; audit closure is tracked separately and must not be conflated with it by the next lane that revisits this number. | `scratch/syscall-compliance-matrix.md` status column: 291 IMPL / 56 PARTIAL / 16 NEEDS-REWORK / 22 LINUX-ENOSYS | — |
+
+## Folded historical lane findings
+
+These rows were imported from the remaining lane-local drops by C289. The
+source headings preserve provenance; status, priority, and ownership live only
+here now.
+
+### B1719-procfs-per-superblock-root
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| OPEN | COVERAGE | med | **Nothing in `procfs` can be tested through an actual mount.** `fs_impl`, `static_files` and `live` are all `#[cfg(target_os = "oxide-kernel")]`, so `ProcfsFs::new` / `build_root` / the lookup and readdir enforcement have no hosted reach — a test written against them is a phantom, which is why this lane's mount test was deleted rather than shipped. Every DECISION is ungated and tested (`fs_info`, 16 tests); the WIRING is proven only by the guest probe recorded above. Closing it needs the root-building split so an inode tree can be built hosted, the way `tmpfs` already can be. | `cargo test -p procfs` builds none of `fs_impl`; the deleted `tests/mount_identity.rs` failed to compile with `unresolved import procfs::fs_impl`. | unowned |
+
+### B1720-fsmount-real-vfsmount
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| OPEN | INFRA | med | **A `make feature-gate` can report GREEN for the wrong tree.** `cd <worktree> && (gate) & (smoke) & wait` parses as `{ cd && gate } &` then `{ smoke } &` — `&` binds looser than `&&` — so the second job runs in the shell's original directory, normally the MAIN tree. Observed here: the gate type-checked `main` and passed while this branch's kernel build was broken by a missing re-export (`E0425`), which only `make x86` caught. Not a defect in the gate itself (a correctly-targeted run catches it: exit=2 with the error) but a foot-gun that the newly-mandated parallel-checks rule makes MORE likely. `CLAUDE.md` now carries the shape and says to confirm the gate log names your worktree. A `make` guard that refuses to run when `$(CURDIR)` is not the git worktree root of the checked source would remove it entirely. | This lane, twice: gate-exit=0 with `Checking vfs (/home/nd/oxide/kernel/...)` in the log while the worktree was `/home/nd/oxide/kernel-B1720`; after the fix, gate-exit=0 with the worktree's own paths. | unowned |
+
+### B1722-cgroup2-mount-options
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| OPEN | MISSING | med | **Four cgroup2 flags are accepted and stored but cannot yet be acted on, because the mechanism they gate does not exist here.** They are declared because omitting a name fails a mount the reference accepts — a container runtime passing `memory_recursiveprot` would not mount at all — but no code reads them yet: (1) `memory_recursiveprot`: `memory.min`/`memory.low` are stored on the node and read by NOTHING; there is no effective-protection computation of any kind, recursive or not, so there is no behaviour to switch. (2) `pids_localevents`: `pids.events` is the hardcoded literal `"max 0\n"` — no pids-max-breach counter exists to be local or hierarchical. (3) `memory_hugetlb_accounting`: no hugetlb exists in this kernel at all. (4) `favordynmods`: a locking-strategy choice with no user-visible semantics and no dynamic-modification cost model here. Each becomes enforceable when its controller does; `RootFlag`'s own doc comments say which are enforced today. | `crates/kernel/cgroup/src/root_flags.rs` `RootFlag`; `tree/files.rs:44` (`"pids.events" => "max 0\n"`); `mem_low`/`mem_min` have no reader outside their own read/write handlers. | unowned |
+| OPEN | COVERAGE | med | **The cgroup2 flag path has no in-guest proof.** The boot mounts `/sys/fs/cgroup` from the kernel with no options and this image's systemd passes none, so a normal boot exercises only the default. A probe that mounts with `-o nsdelegate` and reads `/proc/mounts` was attempted twice: once it hit the `#DF` above, once it passed spuriously because the marker `^[0-9]` matched a kernel timestamp line rather than the command's output — a probe-design error, recorded because the same loose-marker mistake would pass any future probe. Parse, merge, render and both enforcement paths are hosted-tested; what is unproven is only that the registry constructor receives the blob, which is the same wiring the procfs lane proved in-guest for an identically-shaped constructor. | This lane. Correct probe: a marker that cannot appear in kernel output, e.g. the quote-split nonce the harness itself uses. | unowned |
+
+### B1723-serial-stack-overflow-df
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| OPEN | DEFECT | med | **`receive_from_driver` still calls the driver per byte under the port lock with IRQs masked, unlike `TtyStruct::write`.** Not the cause of the `#DF` above, but a real divergence found while chasing it: `TtyStruct::write` was fixed to buffer the ldisc's output under the lock and emit it after releasing (`detached_sink` + `TxCollector`, "so the UART's per-byte transmitter poll no longer runs with interrupts off"), and the RX/echo path never got the same treatment — `PortInner`'s doc comment says so outright ("the `driver_write` echo path re-enters it under the same lock"). Linux's echo path only appends to `echo_buf` during `receive_buf`; `__process_echoes` writes to the driver later under `output_lock`, a mutex. Applying the existing `TxCollector` treatment to `receive_from_driver` is the same shape and a small change. | `core/tty/rx.rs:66-85` vs `core/tty.rs:290-318`; Linux `drivers/tty/n_tty.c` `echo_char`/`add_echo_byte`/`commit_echoes`/`__process_echoes`. | unowned |
+
+### B1727-nsnet-inline-fastopen-cache
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| OPEN | MISSING | low | **`current_unix_registry`, `unix_registry_for_addr` and `unix_registry_for_path` have no callers anywhere in the tree.** Defined in `net/src/net_ns/state.rs` and referenced by nothing — the machinery-without-callers class. Either the AF_UNIX registry selection they encode belongs on a path that is currently doing it another way, in which case that is a split source of truth to unify, or they are dead and go. | Whole-tree grep for each name returns only the definitions. | unowned |
+
+### B1729-cgroup-inode-superblock
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| OPEN | COVERAGE | med | **The cgroupfs `open_by_handle_at` repair has no syscall-boundary regression.** The decoder used to read `anchor.inode.i_sb()` and return `ESTALE` for every handle cgroupfs had just minted. Both sites now take the mount's superblock, and cgroup's encode/decode unit tests cover that lower layer, but no test opens a real cgroup by handle through the syscall. | `304_open_by_handle_at.rs` takes the mount superblock at both former inode-back-pointer sites; only cgroup's direct encode/decode tests cover the round trip. | unowned |
+| OPEN | DEFECT | med | **Every pseudo-filesystem builds inodes with no superblock back-pointer.** `.sb(...)` on the inode builder is called by ext4 and devnode only; cgroupfs, procfs and sysfs never call it, so `i_sb()` is `None` for every inode they synthesize. This lane routes the two export paths around it, but `i_sb()` has other readers — `dev_t` reporting, `statfs_magic`, `blksize`, and the writeback-error latch all fall back to a default when it is empty. Each is a silent wrong answer of the same shape as this one. Either the builder should require a superblock, or those readers need the same path-first treatment. | `grep -rn "\.sb("` across `crates/kernel` returns ext4 and devnode only; `i_sb()` readers are in `vfs/src/inode/metadata.rs`. | unowned |
+
+### B1730-irq-nesting-unbounded
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| OPEN | MISSING | high | **No spurious- or storm-protection anywhere, unlike the reference's two layers.** The reference bounds a single interrupt-line pass (`serial8250_interrupt`'s `PASS_LIMIT` of 512) and, in the generic IRQ core, counts unhandled interrupts per line and DISABLES the line once they cross a threshold without an intervening handled one (`kernel/irq/spurious.c` `note_interrupt`). Here there is no per-line unhandled counter, no pass limit and no auto-disable, so a genuinely stuck source has nothing to stop it — this lane removed the mechanism by which a burst became unbounded, but not the failsafe for a device that never deasserts. | Whole-tree search for an unhandled-interrupt counter or pass limit returns nothing. | unowned |
+| OPEN | MISSING | med | **No interrupt-nesting depth bound and no runtime stack high-water mark.** Nesting is now structurally bounded at two levels, but nothing measures or enforces it, so a future change that reopens a window fails the same silent way. The reference reports a stack's deepest use (`CONFIG_DEBUG_STACK_USAGE`: zero-fill at allocation — which `kstack::alloc` already does — then scan upward from the low end to the first non-zero word, reported at task exit by `check_stack_usage`). Adding that plus an explicit nesting counter would make a regression measurable instead of fatal. Design worked out this lane: scan in `Drop for Task`, one global low-water atomic, and an on-demand sysrq key for the interrupt stack, which is never freed and so has no exit point. | Reference: `kernel/exit.c` `stack_not_used`/`check_stack_usage`; `kernel/fork.c` `GFP_VMAP_STACK` zero-fill. Our zero-fill is already at `kstack.rs` `alloc`. | unowned |
+
+### B1731-failed-units-boot-health
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| OPEN | DEFECT | med | **`systemctl` intermittently cannot reach the service manager: `Failed to list units: Transport endpoint is not connected`.** Seen once ~75 s into a live-gnome boot, from a shell that had worked moments earlier; a later run at ~40 s queried cleanly. ENOTCONN on the manager's AF_UNIX socket means the peer went away or the connection was reset, which on a healthy system does not happen. Recorded because it silently turns a verification query into an empty result — an empty `systemctl --failed` was briefly mistaken for "nothing fails". Any probe that reads unit state must check for this line before believing the answer. | `verify2.log`: `Failed to list units: Transport endpoint is not connected`, with the same command succeeding in `verify3.log`. | unowned |
+| OPEN | INFRA | med | **Boot probes were used to answer questions the source answers.** Roughly eight boots went into this lane, several of them to establish facts a grep would have given in seconds, and two produced no usable answer at all because the typed probe was mangled by interleaved kernel output or swallowed by `systemctl`'s pager. The repo's own rule says a harness beats a boot and that more than two boots chasing one bug means the loop is the bug. Practical notes for the next lane: pass `SYSTEMD_PAGER=cat` and `--no-pager` or the probe hangs in `less`; the alive-marker must not appear in the typed command (use the quote-split form); and `rc=$?` after a pipeline reports the LAST command's status, not the one being tested — that mistake produced a false `rc=0` for three mounts here. | This lane. | unowned |
+
+### B1732-mount-setattr-detached
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| OPEN | COVERAGE | med | **A marker placed before a conditional branch reads as if the branch was taken.** A probe line emitted immediately above `if !mounted { return EINVAL; }` printed on every call, so `einval 1` appeared in the log while the check was in fact passing — and the two dentry pointers logged beside it were identical, which is what exposed the contradiction. Cost one build-and-boot round. A branch probe belongs INSIDE the branch. | This lane's `msa6`/`msa7` traces versus `msa8`. | unowned |
+
+### B1735-netdev-iff-up-at-registration
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| OPEN | INFRA | med | **`tools/boot-smoke-dhcp.sh` cannot pass regardless of DHCP correctness — it greps for a marker from the retired userspace.** It waits for `udhcpc: configured eth0` and the Makefile sets `OXIDE_UDHCPC_ENABLE=1` for a busybox `rcS` gate. That pipeline belongs to the musl/busybox rootfs that the glibc staging replaced; the shipped Fedora image has no `/sbin/udhcpc`, no `/etc/init.d/rcS`, and nothing reads `OXIDE_UDHCPC_ENABLE` anywhere in the tree. So its `FAIL — timeout without lease` is not evidence about DHCP either way. It needs to check for a lease the way the current image would show one (an address on `eth0`, or the manager's own log), or be deleted. | `boot-smoke-dhcp.sh` marker vs `debugfs -R stat` on the shipped image: all three paths "File not found". | unowned |
+
+### B1736-getlink-single-device
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| OPEN | DEFECT | med | **The network manager still reports `eth0` as "connected (externally)" even though it now has a lease.** The address, routes and reachability are all correct, so this no longer blocks networking, but the manager's device state is still not derived from the link the way it should be — a device it calls externally-connected is one it will not fully own, which will matter for anything that asks it to reconfigure the link. Worth re-checking now that the single-device query returns real data: the earlier verdict was formed while every by-index query returned loopback, so it may simply be a stale assessment that a fresh probe would clear. | `nmcli -t -f DEVICE,STATE d` → `eth0:connected (externally)` in the same boot that shows the working lease above. | unowned |
+
+### B1737-carrier-model
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| OPEN | INFRA | low | **`cgroup::selftest::run()` is invoked twice, and the first call cannot succeed.** `kmain/rootfs.rs:65` runs it before `sched::cgroup::install()` has wired the pid-resolve and migrate hooks, so it reports `mkdir='fail'`/`rmdir='fail'` every time; the real run is the post-install one at `kmain/runtime.rs:223`. A self-test that always fails in one of its two call sites teaches nothing and looks like a real failure in the log. | Boot log under `debug-cgroup`: failing self-test at t≈14.16 s, succeeding one at t≈15.9 s. | unowned |
+
+### B1739-cgroup-exit-side-table
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| OPEN | INFRA | med | **A `debug-all` boot is impractical to iterate on: ~3000 log lines and t≈28 s of guest time in 10 minutes of wall clock.** The serial port is the bottleneck, and the boot has to reach t≈28 s before the defect above appears. Reproducing it needs either a narrower feature set that still perturbs the timing, or a hosted harness that drives `migrate_hook` directly. Chasing it by repeated `debug-all` boots costs ~10 minutes per observation and should not be the loop. | This lane: two `debug-all` boots, one killed at 10 minutes having reached 85 log lines, one reaching t=28.5 s in ~10 minutes. | unowned |
+
+### B1744-rtnetlink-single-get
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| OPEN | MISSING | med | `NETLINK_F_CAP_ACK`, `NETLINK_F_EXT_ACK`, `NETLINK_F_RECV_PKTINFO`, `NETLINK_F_BROADCAST_SEND_ERROR`, `NETLINK_F_LISTEN_ALL_NSID` are stored and readable but not consumed. Each needs its Linux mechanism: truncate the `NLMSG_ERROR` payload to the request header; append extended-ack attributes; attach `struct nl_pktinfo` as a control message; report broadcast delivery failure to the sender; deliver multicast from every network namespace. | `sockflags.rs` defines the bits; no reader outside `getsockopt` and `receive.rs` (`F_RECV_NO_ENOBUFS`) | — |
+| OPEN | MISSING | low | `RTM_GETNEIGH` has no single-entry (`neigh_get`) form, and non-dump `RTM_GETADDR` for `AF_INET6` has no `inet6_rtm_getaddr` equivalent. Linux registers a `doit` for both; `PF_INET` `RTM_GETADDR` correctly has none (`EOPNOTSUPP`). | `crates/kernel/netlink/src/rtnetlink/neigh.rs`, `dumps.rs` | — |
+
+### B1745-netlink-strict-dump-check
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| OPEN | COVERAGE | low | `getlink_one` and the dump builders return bare errno literals (`-22`, `-19`) rather than `Errno::Einval`/`Errno::Enodev`. New code in this lane uses the typed constants; the pre-existing sites were left alone to keep the diff to one change. | `crates/kernel/netlink/src/rtnetlink/dumps.rs` `getlink_one` | — |
+| OPEN | MISSING | low | Strict validation does not yet reject unknown attributes in a dump request (`nlmsg_parse_deprecated_strict` against `ifa_ipv4_policy`/`ifla_policy`), nor honour `IFA_TARGET_NETNSID`/`IFLA_TARGET_NETNSID`. | `crates/kernel/netlink/src/rtnetlink/dump_req.rs` validates the family header only | — |
+
+### B1748-ipv4-addr-record-fields
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| OPEN | DEFECT | low | The two row types are still a split source of truth: one carries typed `Ipv4Addr`/`NetIfaceId`, the other `[u8; 4]`/`u32`, and every field added to one must be added to the other or it is silently dropped — which is exactly how `broadcast` was lost. Eleven non-test references; the netlink-side type should be deleted and the `net` one used throughout. | `crates/kernel/netlink/src/rtnetlink_addr.rs` `IfaceAddr` | — |
+| OPEN | MISSING | low | `IFA_ANYCAST`, `IFA_MULTICAST` and `IFA_TARGET_NETNSID` are still neither parsed nor reported. The reference carries all three. | `parse_newaddr_attrs` rejects unknown-but-known types only for the ones it names | — |
+
+### B1749-resolved-boot-scope
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| OPEN | MISSING | low | `Wmem` and `Dump` are reported as zero. The reference reports `sk_wmem_alloc` and `cb_running`; neither has a source here yet — netlink sends are synchronous, and dumps are built and enqueued in one call rather than continued across reads. | `proc_rows` | — |
+
+### B1752-arp-first-packet-drop
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| OPEN | COVERAGE | low | `ArpCache::insert_at` and `learn` discard the pending jobs `learn_at` returns, so any future caller silently drops every queued packet. Only tests call them today. | `crates/kernel/net/src/arp.rs` | — |
+
+### B1756-proc-net-snmp-real
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| OPEN | MISSING | low | Counters with no call site yet read zero honestly but are not yet counted: `IpInAddrErrors`, `IpInUnknownProtos`, `IpInDiscards`, `IpOutNoRoutes`, the fragment counters, `UdpNoPorts`, the TCP open/reset/retransmit counters, and the ICMP output counters. Each needs its event named at the point it occurs. | `crates/kernel/net/src/mib.rs` — `Mib` lists them; `grep -c 'mib::bump'` names the wired ones | — |
+| OPEN | MISSING | low | `/proc/net/netstat`, `/proc/net/snmp6` and `/proc/net/packet` remain header-only or empty stubs of the same shape. | `crates/kernel/procfs/src/static_files.rs` | — |
+
+### C269-stack-gates-in-routine-path
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| OPEN | INFRA | blocker | **Still open from B1727: no CI runs automatically on any PR.** This lane closes the local half — the gates now run on the dev box, which is where the project's stated policy puts verification ("remote CI/CD smoke is not required before merge"). It does not change that `.github/workflows/pr.yml` is `on: workflow_dispatch:` only and that `main` has no branch protection, so every other gate described in `docs/40§2` — both arch builds, hosted tests, miri, loom, clippy, deny, spec-lint, coverage — still runs on nothing. Either those move into the local routine path the way these two just did, or the workflow gets its trigger back; leaving `docs/40§2` describing a PR-time gate that does not exist is the split between spec and reality that this class of bug lives in. | `pr.yml:1-4`; `gh api …/branches/main/protection` → 404. | NEXT |
+
+### C270-irq-stack-depth-domain
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| OPEN | MISSING | med | **`serialtty::kernelrx::install` / `rx_byte` have no callers anywhere in the tree.** Found while enumerating the `drv_serial::deliver` sinks: the live sinks are `sched::diag::emit::sysrq_rx` (the RX prefilter) and `console::static_console::rx_byte` (the RX sink), both registered from `kmain::runtime::init`. The `serialtty` pair is a second, unwired candidate for the same slot — machinery without callers, and a second thing that looks like it owns serial RX delivery. Either it is the owner and the console path is the duplicate, or it is dead and goes. | Whole-tree grep for both names returns only the definitions. | unowned |
+
+### C274-qemu-pcap-capture
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| OPEN | MISSING | low | `/proc/interrupts` lists no virtio lines, so per-device interrupt progress cannot be observed from the guest. | probe on `c177484f8` | — |
+
+### C275-cmdline-extra
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| OPEN | INFRA | low | `/dev/console` resolves to `tty0` because it is the last `console=` on the command line, so a service logging to the console writes to the graphical console rather than the serial log a headless run captures. `SYSTEMD_LOG_TARGET=kmsg` reaches the serial log; `console` does not. | boot on `32420e8f3`: `SYSTEMD_LOG_TARGET=console` produced no service output on serial | — |
+
+### D476-session-handoff
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| OPEN | INFRA | med | `git add` aborts the entire staging operation on one stale pathspec, so a commit can silently contain none of the intended work while every gate passes in the worktree. That put a broken `main` on origin once this session (reverted in `f1ab81fb6`). A pre-commit check that the staged set matches the working set would catch it. | `git show --stat 8b2211aa6` = 1 file, 0 insertions | — |
+
+### D513-real-hardware-findings
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| OPEN | MISSING | blocker | **No framebuffer source on physical hardware.** The whole VT/fbcon/fbdev console stack is built and works, but `fbdev::init_scanout` has exactly one non-test caller — virtio-gpu. The multiboot2 header requests no framebuffer (type-5 tag absent), the info walk drops tag 8 (`_ => {}`), and `BootInfo` has no framebuffer fields. Bare metal therefore has no display output at all. Machinery-without-callers class. | `mb2.rs:52-68` (header tags), `mb2.rs:440-468` (tag walk), `boot-info/src/lib.rs:21` (struct), `drv-virtio-gpu/src/post_init/scanout.rs:171` (sole caller) | — |
+| OPEN | MISSING | blocker | **x86 boots multiboot2 (BIOS/CSM) only.** No UEFI path. Modern TRX40/WRX80/WRX90 and Z790/X870 boards are UEFI and many ship without CSM, so the kernel cannot be loaded at all. aarch64 already boots EFI-stub. | `tools/xtask/src/image_qemu/x86_64.rs:23-24` | — |
+| OPEN | MISSING | blocker | **No USB host controller.** `modules/src/linux_usb/` is a module-registry shim (types/core/gadget, 945 lines) with no xHCI driver; grep for xHCI across `crates/` is empty. Only physical input driver is `drv-ps2-keyboard`, so a board without PS/2 has no keyboard. | `crates/kernel/modules/src/linux_usb/`, `crates/drivers/` listing | — |
+| OPEN | MISSING | high | **No write-combining.** `hal::PageFlags` offers `NO_CACHE` and `WRITE_THROUGH` only; `PCD\|PWT` resolves to PAT slot 3 (Strong UC) and nothing programs `IA32_PAT` (no writer in tree). A firmware framebuffer maps Strong UC, making console scroll visibly slow and a compositor non-viable. | `hal/src/lib.rs:119-120`, `hal-x86_64/src/vmm.rs:10-12`, grep `IA32_PAT` empty | — |
+| OPEN | MISSING | high | **AP bringup is a counting stub.** `bring_up_aps()` returns `enumerate_aps().len()` and starts nothing; its own comment defers the INIT-IPI/PSCI sequence to "P4-08+". No x86 AP trampoline exists. The kernel runs on one core on every machine, virtual or physical. | `crates/kernel/cpu/src/smp.rs:121` | — |
+| OPEN | MISSING | med | **CPU count capped below Threadripper part counts, no x2APIC.** `MAX_CPUS = 64` with a `u64` online mask; MADT decode reads x2APIC entries but nothing enables x2APIC MSR mode, so APIC IDs above 255 are unaddressable. A 64C/128T part is at or over the mask width. | `crates/kernel/cpu/src/lib.rs:20`, `firmware/src/acpi/tables.rs:123-133` | — |
+| OPEN | MISSING | med | **No FADT parse — no ACPI poweroff or reset.** `crates/kernel/power/` carries the `reboot(2)` policy with no hardware path beneath it. Parsed tables are APIC/HPET/MCFG/SPCR only. | `crates/kernel/firmware/src/acpi/`, `crates/kernel/power/src/cad.rs` | — |
+| OPEN | MISSING | med | **No AML interpreter, so no `_PRT`.** Legacy INTx routing cannot be resolved on physical hardware; every device must use MSI/MSI-X. Workable (MSI and MSI-X cap programming exist) but it is an unrecorded hard constraint on the driver model, not a preference. | `crates/drivers/pci/src/caps.rs`, absent DSDT/SSDT parse | — |
+| OPEN | MISSING | med | **No driver for any physical NIC.** Only `drv-virtio-net`. Target boards carry Intel I225/I226, Realtek RTL8125, Aquantia AQC113 or Intel X550. | `crates/drivers/` listing | — |
