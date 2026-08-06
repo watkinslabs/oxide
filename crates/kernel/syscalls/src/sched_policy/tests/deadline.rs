@@ -5,9 +5,8 @@
 
 use super::super::*;
 use super::{dl, normal, privileged, task, EINVAL, EPERM};
-use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
-use sched::{SchedClass, Task};
+use sched::SchedClass;
 use crate::sched_attr::SchedAttr;
 use syscall::errno::Errno;
 
@@ -245,4 +244,3 @@ fn a_deadline_child_is_a_plain_fair_task_carrying_no_reservation() {
     // The parent keeps its own reservation.
     assert_eq!(parent.dl.params().runtime, 1_000_000);
 }
-

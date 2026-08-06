@@ -50,6 +50,8 @@ mod userbuf {
     }
 }
 
+// This fixture includes the production owner but exercises only its pipe export.
+#[allow(unused_imports)]
 #[path = "../../syscalls/src/anon_dname.rs"]
 mod anon_dname;
 #[path = "../../syscalls/src/293_pipe2.rs"]

@@ -3,8 +3,6 @@
 // because these need a real `Task`, and `pi_prio.rs` is `#[path]`-included by
 // the `ipc` futex harnesses, which supply their own minimal `Task`.
 
-use core::sync::atomic::Ordering;
-
 use crate::pi_prio::{base_class, is_boosted};
 use crate::{SchedClass, SchedPolicy, Task};
 
