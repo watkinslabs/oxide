@@ -10,6 +10,28 @@ pub(crate) const IER_RX_DATA: u8 = 1 << 0;
 pub(crate) const IER_TX_EMPTY: u8 = 1 << 1;
 pub(crate) const TX_FIFO_DEPTH: usize = 16;
 pub(crate) const TX_RING_CAPACITY: usize = 64 * 1024;
+/// Linux serial8250 shared-IRQ bound. Edge-triggered ISA lines must be
+/// serviced until every port deasserts the line, without trusting broken
+/// hardware to do so forever.
+pub(crate) const IRQ_PASS_LIMIT: usize = 512;
+
+/// Service one 8250 IRQ source until IIR says the edge-triggered line is
+/// deasserted, or until the Linux `PASS_LIMIT` safety bound is reached.
+/// Returns whether any pass claimed the source.
+/// # C: O(IRQ_PASS_LIMIT)
+pub(crate) fn service_irq_chain(mut service_one: impl FnMut() -> bool) -> bool {
+    let mut handled = false;
+    for _ in 0..IRQ_PASS_LIMIT {
+        if !service_one() { break; }
+        handled = true;
+    }
+    handled
+}
+
+/// Preserve modem-control state while raising the PC UART interrupt gate.
+/// Linux sets OUT2 whenever an IRQ-backed 8250 port is initialized.
+/// # C: O(1)
+pub(crate) const fn irq_mcr(current: u8) -> u8 { current | (1 << 3) }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct Transition {
@@ -191,5 +213,34 @@ mod tests {
         assert_eq!(tx.pop_for_poll(), Some(b't'));
         assert_eq!(tx.pop_for_poll(), Some(b'e'));
         assert_eq!(tx.pop_for_poll(), None);
+    }
+
+    #[test]
+    fn irq_chain_runs_until_the_edge_triggered_line_deasserts() {
+        let mut pending = 3usize;
+        let mut calls = 0usize;
+        assert!(service_irq_chain(|| {
+            calls += 1;
+            if pending == 0 { return false; }
+            pending -= 1;
+            true
+        }));
+        assert_eq!(calls, 4);
+        assert_eq!(pending, 0);
+    }
+
+    #[test]
+    fn irq_chain_caps_a_source_that_never_deasserts() {
+        let mut calls = 0usize;
+        assert!(service_irq_chain(|| { calls += 1; true }));
+        assert_eq!(calls, IRQ_PASS_LIMIT);
+        assert!(!service_irq_chain(|| false));
+    }
+
+    #[test]
+    fn irq_modem_control_preserves_lines_and_raises_out2() {
+        assert_eq!(irq_mcr(0), 0x08);
+        assert_eq!(irq_mcr(0x03), 0x0b);
+        assert_eq!(irq_mcr(0xff), 0xff);
     }
 }

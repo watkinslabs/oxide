@@ -39,11 +39,14 @@ logs at measurement time were `/tmp/b1875-simplefb-wc-bench.log`,
 `/tmp/b1875-simplefb-uc-bench.log`, and `/tmp/b1875-simplefb.log`; the durable
 inputs and results are recorded here because `/tmp` is not durable.
 
-## Separate serial observation
+## Closed serial observation
 
 Exact one-vCPU WC reruns exposed an intermittent pre-simplefb serial failure:
 one stopped in the i8042 probe and another in AHCI enumeration; serial SysRq
 produced no response in the bounded first run. One earlier UC attempt showed
-the same pre-driver shape. It is recorded as its own live 16550 TX issue in
-`known_issues.md`; it does not change the completed framebuffer result or get
-hidden as a B1875 failure.
+the same pre-driver shape. B1876 closed it by draining the edge-triggered UART
+IRQ line to deassertion with a bounded pass limit and raising the UART's `OUT2`
+interrupt gate. Five exact one-vCPU forced-framebuffer boots then passed in
+80/58/57/56/58 s with serial RX. The retained row is in `fixed-issues.md`; it
+does not change the completed framebuffer result or hide the original B1875
+observation.
