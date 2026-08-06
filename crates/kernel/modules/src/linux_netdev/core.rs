@@ -3,6 +3,7 @@ extern crate alloc;
 use super::alloc as netalloc;
 use super::skb;
 use super::types::*;
+#[cfg(any(target_os = "oxide-kernel", feature = "hosted"))]
 use alloc::borrow::ToOwned;
 use alloc::string::String;
 use alloc::sync::Arc;

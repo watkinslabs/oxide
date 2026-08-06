@@ -224,7 +224,7 @@ fn handoff_to_userspace(info: &BootInfo) {
     unsafe {
         debug_boot! { klog::write_raw(b"[INFO]  init: handoff begin\n"); }
         fs::ptrace::install();
-        #[cfg(feature = "debug-mount")]
+        #[cfg(feature = "debug-wrotelock")]
         pmm::user_as::install_lock_step_hook();
         smoke::elf::run_as_task(info.hhdm_offset);
     }

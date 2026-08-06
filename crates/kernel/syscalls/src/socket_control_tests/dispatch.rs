@@ -2,13 +2,6 @@
 // Split out of `socket_control_tests` at the per-file size cutoff; the socket
 // option and packet-family coverage stays in the parent.
 
-use super::*;
-
-
-
-
-
-
 #[test]
 fn connect_security_precedes_family_parse_and_unix_lookup_once() {
     let source = include_str!("../042_connect.rs");

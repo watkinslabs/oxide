@@ -38,6 +38,18 @@ jobs:
       - name: spec-lint ratchet
         run: cargo run --quiet -p spec-lint -- ratchet
 
+  warnings-hosted:
+    name: warnings --hosted
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install rust toolchain
+        run: rustup show
+      - name: warnings-gate controls
+        run: python3 tools/warnings-gate.py --self-test
+      - name: workspace build with warnings denied
+        run: python3 tools/warnings-gate.py -- cargo build --workspace
+
   test-hosted:
     name: test --hosted
     # Temporary: hosted tests currently fail on missing fixture state. Set repo
@@ -49,7 +61,7 @@ jobs:
       - name: install rust toolchain
         run: rustup show
       - name: cargo test workspace
-        run: cargo test --workspace --quiet
+        run: python3 tools/warnings-gate.py -- cargo test --workspace --quiet
 
   # Build both arches under both feature configs per `04§3` recipe
   # ("release no-features, release debug-all"). Boot-smoke is a
@@ -80,9 +92,9 @@ jobs:
           OXIDE_STUB_BLOBS: "1"
         run: |
           if [ -z "${{ matrix.profile.features }}" ]; then
-            cargo run --quiet -p xtask -- kernel --arch ${{ matrix.arch }} --profile dev
+            python3 tools/warnings-gate.py -- cargo run --quiet -p xtask -- kernel --arch ${{ matrix.arch }} --profile dev
           else
-            cargo run --quiet -p xtask -- kernel --arch ${{ matrix.arch }} --profile dev --features ${{ matrix.profile.features }}
+            python3 tools/warnings-gate.py -- cargo run --quiet -p xtask -- kernel --arch ${{ matrix.arch }} --profile dev --features ${{ matrix.profile.features }}
           fi
 
   # Kernel stack gates. Both read an already-linked RELEASE ELF — the baselines
@@ -119,7 +131,7 @@ jobs:
       - name: build release kernel ${{ matrix.arch }}
         env:
           OXIDE_STUB_BLOBS: "1"
-        run: cargo run --quiet -p xtask -- kernel --arch ${{ matrix.arch }}
+        run: python3 tools/warnings-gate.py -- cargo run --quiet -p xtask -- kernel --arch ${{ matrix.arch }}
       # The RELEASE, default-feature ELF — the same file `make stack-gate`
       # reads. Never target/artifacts, whose contents depend on which build
       # last exported (B1632).

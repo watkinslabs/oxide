@@ -201,7 +201,7 @@ fn a_member_bound_to_a_device_sees_only_that_devices_packets() {
     let (bound_iface, other_iface) =
         (crate::NetIfaceId::from_raw(7), crate::NetIfaceId::from_raw(8));
     let member = endpoint(&ns, PROTO_UNDER_TEST);
-    member.set_bound_iface(Some(bound_iface));
+    member.set_bound_iface(Some(bound_iface)).unwrap();
     v4_join(&member).unwrap();
 
     let packet = alert(PROTO_UNDER_TEST);

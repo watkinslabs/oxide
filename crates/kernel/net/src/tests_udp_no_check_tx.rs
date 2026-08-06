@@ -10,7 +10,7 @@ use crate::iface_addr::{Ipv4AddrCacheInfo, Ipv4IfaceAddr};
 use crate::ipv4::IPV4_HDR_LEN;
 use crate::route::RouteEntry;
 use crate::stack::NetStack;
-use crate::{Ipv4Addr, MacAddr, NetDev, NetIfaceId, NetResult, Pkt};
+use crate::{Ipv4Addr, MacAddr, NetDev, NetResult, Pkt};
 
 const SRC: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 44);
 const DST: Ipv4Addr = Ipv4Addr::new(198, 51, 100, 8);
