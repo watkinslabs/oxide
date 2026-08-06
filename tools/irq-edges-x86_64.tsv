@@ -11,7 +11,7 @@
 # target. An entry that no longer resolves FAILS the gate — a map that has
 # drifted silently restores the blindness it exists to remove.
 oxide_irq_dispatch	drv_ps2_keyboard::imp::irq::irq1_handler
-oxide_irq_dispatch	drv_uart_16550::imp::rx_isr_msi
+oxide_irq_dispatch	drv_uart_16550::imp::uart_isr_msi
 oxide_irq_dispatch	drv_virtio_net::modern::config_changed
 oxide_irq_dispatch	drv_virtio_blk::modern::state::wake_completions
 oxide_irq_dispatch	drv_virtio_snd::event::raise_event
