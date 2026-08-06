@@ -9,7 +9,7 @@ impl BlkState {
             loop {
                 // SAFETY: virtio owns the used-ring index at this DMA address.
                 let uidx = unsafe { core::ptr::read_volatile(used.add(1)) };
-                if uidx == target { self.inflight.lock().used_seen = uidx; return Ok(()); }
+                if uidx == target { self.inflight.lock_bh::<sched::bh::SchedBh>().used_seen = uidx; return Ok(()); }
                 spun += 1;
                 if spun > IO_FALLBACK_SPINS { return Err(BlockError::Eio); }
                 core::hint::spin_loop();
@@ -19,25 +19,14 @@ impl BlkState {
         {
             let deadline = now_ns().saturating_add(IO_TIMEOUT_NS);
             loop {
-                // Linux's submit-and-wait path blocks on the request completion;
-                // it does not burn a latency-sized polling budget per I/O. This
-                // kernel still enters syscalls/faults IF=0, so briefly open IRQ
-                // delivery before parking: on a one-vCPU VM the local virtio IRQ
-                // must run to publish the wake. Probe only the DMA index, with no
-                // per-iteration clock conversion.
-                let irq = irq_save_enable();
-                let mut seen = false;
-                for _ in 0..IO_IRQ_POLL_BUDGET {
-                    // SAFETY: virtio owns the used-ring index at this DMA address.
-                    if unsafe { core::ptr::read_volatile(used.add(1)) } == target {
-                        seen = true;
-                        break;
-                    }
-                    core::hint::spin_loop();
-                }
-                irq_restore(irq);
-                if seen {
-                    self.inflight.lock().used_seen = target;
+                // Linux's ordinary submit-and-wait path checks completion and
+                // sleeps; only a request explicitly created as polled enters
+                // the block polling loop. Syscall and process-fault dispatch now
+                // run with IRQs enabled, so the local virtio completion can wake
+                // this task without a driver-owned delivery bridge.
+                // SAFETY: virtio owns the used-ring index at this DMA address.
+                if unsafe { core::ptr::read_volatile(used.add(1)) } == target {
+                    self.inflight.lock_bh::<sched::bh::SchedBh>().used_seen = target;
                     return Ok(());
                 }
                 if now_ns() >= deadline {
@@ -60,7 +49,7 @@ impl BlkState {
         loop {
             if self.poisoned.load(core::sync::atomic::Ordering::Acquire) { return; }
             {
-                let mut g = self.inflight.lock();
+                let mut g = self.inflight.lock_bh::<sched::bh::SchedBh>();
                 if !g.busy && g.pending.is_empty() && g.deferred.is_empty() { g.busy = true; return; }
             }
             #[cfg(target_os = "oxide-kernel")]
@@ -72,7 +61,7 @@ impl BlkState {
                 // and the park registration).
                 park_blk_checked(&BLK_TURN, 0, || {
                     self.poisoned.load(core::sync::atomic::Ordering::Acquire) || {
-                        let g = self.inflight.lock();
+                        let g = self.inflight.lock_bh::<sched::bh::SchedBh>();
                         !g.busy && g.pending.is_empty() && g.deferred.is_empty()
                     }
                 });
@@ -83,7 +72,7 @@ impl BlkState {
     }
 
     pub(super) fn release_turn(&self) {
-        self.inflight.lock().busy = false;
+        self.inflight.lock_bh::<sched::bh::SchedBh>().busy = false;
         // Hand the freed turn to exactly ONE FIFO waiter (no herd). The woken
         // task re-checks `acquire_turn`'s condition and re-parks if a concurrent
         // async request took the turn first.

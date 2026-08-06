@@ -127,3 +127,591 @@ allocator fixes and 3.12 before them. GNOME Shell reported 5.8% CPU versus
 8.4% and 9.6%. The syscall control's kernel time remained 0.056–0.057 seconds;
 real times were 0.194, 0.121, and 0.079 seconds because the first two runs were
 descheduled, not because syscall execution regressed.
+
+## B1872 direct-wait IRQ correctness profiles
+
+These are diagnostic failure profiles, not accepted performance results. They
+record the lock cascade exposed when B1872 removed the bounded block polling
+bridge and restored Linux-style IRQ-on syscall execution. Each run used the
+same clean release x86_64 KVM guest and sampled the live vCPU through QMP. Raw
+profiles were written under `/tmp`; the durable results are preserved here.
+
+| Profile | Samples | Dominant exact RIP / symbol | Share | Confirmed conflict |
+|---|---:|---|---:|---|
+| `1135373` | 200 | `sched::live::ttwu::place_runnable` local runqueue lock | 85.5% | hardirq wake interrupted the same CPU while its runqueue lock was held |
+| `1135873` | 200 | `0xffffffff804c3c74`, `ttwu::place_runnable` spin loop | 84.5% | exact reproduction of the local runqueue self-deadlock |
+| `1142782` | 350 | `0xffffffff80076c54`, `run_completion_bottom_half` | 87.14% | block softirq interrupted a process holding the virtio inflight lock |
+| `1161329` | 200 | `0xffffffff803c5c52`, `NetStack::set_iface_carrier` | 88.5% | NET_RX interrupted NetworkManager while the interface registry was held |
+| `1167085` | 200 | `0xffffffff802e29a3`, `NetStack::deliver_tcp_packet_hop` | 87.0% | NET_RX interrupted a socket syscall holding `TcpEntry.conn` |
+| `1172375` | 350 | `0xffffffff80523c3e`, boot idle anchor | 87.43% | no CPU hotspot remained; the post-resolver UART control command was not consumed |
+
+The first two runs led to deferred hardirq/softirq wake placement, matching
+Linux's wake-list path. The next three identify state shared with bottom halves
+and therefore require `spin_lock_bh()` semantics in process context. A run is
+accepted only after the full graphical, valid-DNS, invalid-DNS, and resolver
+health harness passes; its 350-sample distribution and syscall controls will
+be added below for direct comparison.
+
+The `1172375` run reached GNOME at load `0.83`, completed the resolver D-Bus
+probe, and measured the 400,000-call control at 0.139, 0.083, and 0.081 seconds
+real (0.057--0.058 seconds kernel). It is retained as a failed control-path
+run: Firefox never launched, so the 87.43% idle result is evidence that the
+previous spinlocks are gone, not an accepted browser-performance result.
+
+The `1178828` run reproduced a page-fault hard lock after graphical startup.
+Of 200 QMP samples, 188 (94%) stopped at exact RIP `0xffffffff8070f92f` in
+`sync::RwLock::read`, reached by `AddressSpace::find_vma` from the page-fault
+path. A VMA writer could schedule while holding the spin-based per-address-
+space lock, leaving the only vCPU spinning forever. B1872 replaced that lock
+with a scheduler-backed reader/writer semaphore, matching the sleeping
+`mmap_lock` contract.
+
+The first release run after that change was `1183324`. GNOME reached ready at
+load `0.55 0.14 0.04`; valid-page load changed the framebuffer and passed.
+The clean 400,000-syscall control measured:
+
+| Run | Real | User | Kernel | Cost per syscall |
+|---|---:|---:|---:|---:|
+| 1 | 0.091 s | 0.021 s | 0.059 s | 0.228 us |
+| 2 | 0.081 s | 0.021 s | 0.059 s | 0.203 us |
+| 3 | 0.081 s | 0.021 s | 0.059 s | 0.203 us |
+
+The original control was 0.825 seconds, or 2.06 us/syscall. The new result is
+9.1--10.2 times faster and matches the approximately 0.2 us Linux reference.
+The invalid-DNS phase then exposed the next independent lock bug: after about
+105 seconds the watchdog reported no reschedule for ten seconds in Firefox
+`Socket Thread` tid 5178, last syscall `sendto`. QMP stopped at exact RIP
+`0xffffffff802d5ca2` in `RouteTable::lookup_record_in` while acquiring the
+IPv4 FIB spinlock. The stack reached it through `NetStack::route_v4_iface_in`
+and `xmit_ipv4_l4_with_policy`. This run is diagnostic, not an accepted final
+browser profile; it proves the syscall-exit and VMA-lock fixes held while
+isolating the remaining invalid-DNS failure to route lookup synchronization.
+
+Run `1192110` tested bottom-half-safe FIB locks plus atomic-context direct-
+reclaim gating. GNOME reached graphical readiness, but the settle control
+stopped before the browser phase. Its 200-sample failure profile was 79.50%
+exact RIP `0xffffffff8043ad5e` in `network_namespace::registry::initial`,
+spinning on the global namespace registry lock; another 16.00% sampled the
+same acquire loop's compare-exchange instructions. The holder constructed
+`Arc` objects and the first `BTreeMap` node while holding the lock, so a
+pressure allocation could schedule the only vCPU. The initialization path now
+builds all allocating state before its short publication critical section.
+
+Run `1200147` was a deliberately rejected diagnostic experiment: making every
+generic `sync::Spinlock` participate in scheduler preemption accounting, as a
+Linux spinlock does, exposed existing callers that sleep after/through those
+locks. The graphical console repeatedly reported `scheduling while atomic`
+with preempt count 2 from virtio-block `park_blk_checked`, pipe-ring blocking
+I/O, and `park_yield`; the guest then idled before the debug shell appeared.
+The broad change was removed rather than normalizing the count and hiding the
+violations. No performance numbers from this run are accepted. Screenshot:
+`/tmp/oxide-preempt-boot.png` at measurement time.
+
+Run `1206651` verified that the FIB and namespace-publication lockups were gone:
+GNOME reached readiness at settled load `2.67 0.69 0.23`, the valid page loaded
+and changed the framebuffer, and the invalid-host phase progressed to its own
+independent TCP-table failure. The 400,000-syscall control measured:
+
+| Run | Real | User | Kernel | Kernel cost per syscall |
+|---|---:|---:|---:|---:|
+| 1 | 0.149 s | 0.022 s | 0.061 s | 0.153 us |
+| 2 | 0.119 s | 0.021 s | 0.060 s | 0.150 us |
+| 3 | 0.134 s | 0.022 s | 0.060 s | 0.150 us |
+
+The invalid-host phase then reported a ten-second watchdog lockup in Firefox
+`Socket Thread` tid 5180, last syscall `connect`. Of its 150 samples, 124
+(82.67%) were in the one acquisition loop at `0xffffffff802e2810`--`2820`.
+Disassembly maps that loop exactly to `tables.tcp_conns.lock()` in
+`deliver_tcp_packet_hop`: a socket syscall could hold the established-
+connection table and be interrupted by NET_RX on the same CPU, which then
+spun against its interrupted task. This is the inet-hash `spin_lock_bh()`
+contract in Linux. The raw profile is
+`/tmp/oxide-firefox-profile-1206651.txt` at measurement time. The transport
+demux tables now enforce bottom-half exclusion at their lock type boundary;
+the next run must pass the complete graphical, valid-DNS, invalid-DNS, and
+resolver-health harness before this diagnostic sequence is accepted.
+
+Run `1214714` reached graphical readiness after the transport-table change,
+then failed during the 30-second settle window at 65.8 seconds. This was not a
+repeat of the TCP-table lock: the console reported `scheduling while atomic`
+with `preempt_count=0x101`, `in_interrupt=1`, and `irq_stack=1` from the
+sleeping scheduler mutex. The only production scheduler mutex in this path is
+RTNL. Source and Linux-reference comparison found virtio-net configuration
+refresh running from Oxide's `NET_RX` softirq and calling
+`set_iface_carrier()` under RTNL; Linux's `virtnet_config_changed()` instead
+schedules `config_work`, whose process-context worker publishes carrier state.
+The QMP failure profile was dominated by the framebuffer rendering the
+recursive atomic-schedule diagnostics and is therefore not a performance
+sample. Raw profile: `/tmp/oxide-firefox-profile-1214714.txt` at measurement
+time. Oxide now queues the configuration refresh to its process-context
+kworker and retains a pending bit plus process-context timer retry if the
+bounded workqueue is full; `NET_RX` only drains receive packets.
+
+Run `1217749` verified that moving carrier refresh to process work eliminated
+the RTNL `scheduling while atomic` flood. GNOME reached graphical readiness,
+then the guest hard-locked during the settle window before the browser phase.
+Of 200 QMP samples, 173 (86.50%) stopped at exact RIP
+`0xffffffff80090dd8`, with another 25 (12.50%) on adjacent instructions in
+the same acquisition sequence. Kernel disassembly maps the loop to
+`MODERN_DEVS.lock()` in `rx_poll_for()`: NET_RX interrupted process context
+while it held the global virtio-net device registry and spun against the
+interrupted holder. Raw profile:
+`/tmp/oxide-firefox-profile-1217749.txt` at measurement time. Both that
+device registry and the RX-runtime registry now enforce bottom-half exclusion
+at their lock type boundary; hosted verification covers the full guard
+lifetime, and the next release run will record the end-to-end result.
+
+Run `1219338` reached GNOME after both virtio-net registries became BH-safe,
+then reproduced the earlier scheduler symptom during settle. Its 200-sample
+profile placed 174 samples (87.00%) in the CPU-0 runqueue acquisition at
+`schedule()` line 228, reached from a file-backed page fault blocked on
+virtio-block. Raw profile: `/tmp/oxide-firefox-profile-1219338.txt`. Because
+this failure is timing-sensitive and did not identify the prior owner of the
+runqueue lock, the next run armed a GDB conditional breakpoint at that
+acquisition instead of treating the sampled waiter as the owner.
+
+GDB run `1221095` passed the settle window at load `1.07 0.25 0.08` and
+measured the 400,000-syscall control at 0.107, 0.103, and 0.103 seconds real;
+kernel time was 0.068, 0.066, and 0.065 seconds (0.163--0.170 us/syscall).
+Firefox then stalled during valid-page health without hitting the conditional
+runqueue breakpoint. A live GDB stop produced the exact owner stack:
+`NET_RX -> rx_drain_softirq -> deliver_rx_in -> mib::bump -> mib::counters`,
+spinning at `0xffffffff802d42d2` on the global MIB namespace table. Thus a
+process reader of `/proc/net/snmp` (or another process-context counter lookup)
+could be interrupted by receive processing on the same CPU. The initial
+network namespace now uses immortal direct counter storage—removing the global
+BTreeMap lock and Arc clone from every production packet—while dynamic
+namespace table access enforces `spin_lock_bh()` semantics.
+
+Run `1227159`, after the MIB fast path, reached graphical readiness but froze
+during settle. Its 200-sample profile again isolated the CPU-0 runqueue lock:
+169 samples (84.50%) were the inner `spin_relax`, 13 (6.50%) were in
+`schedule`, and 10 (5.00%) were its compare-exchange. This instance entered
+the scheduler from `BlkState::acquire_turn`, rather than the file-backed fault
+seen in `1219338`. Raw profile:
+`/tmp/oxide-firefox-profile-1227159.txt`. This is retained as evidence of the
+unresolved timing-sensitive scheduler handoff defect, not a performance
+result.
+
+GDB run `1227546` passed settle at load `0.39` and measured the clean
+400,000-syscall control as follows:
+
+| Run | Real | User | Kernel | Kernel cost per syscall |
+|---|---:|---:|---:|---:|
+| 1 | 0.096 s | 0.022 s | 0.062 s | 0.155 us |
+| 2 | 0.083 s | 0.022 s | 0.060 s | 0.150 us |
+| 3 | 0.086 s | 0.022 s | 0.061 s | 0.153 us |
+
+The framebuffer changed for the valid page, but the valid-page health phase
+exceeded 20 seconds. At 109.964 seconds Firefox's main thread had accumulated
+247,680 `poll` calls / 3,754 seconds reported syscall time, while its Socket
+Thread had accumulated 11,259 `sendto` calls / 41 seconds reported syscall
+time. These values are diagnostic counters rather than elapsed CPU seconds;
+their retry volume is retained for comparison with the next passing run.
+
+The conditional runqueue breakpoint did not fire. A manual live GDB stop
+instead found the exact freeze:
+`NET_RX -> rx_drain_softirq -> deliver_rx_in -> nf_hook_eval_in -> eval`,
+spinning on the global nftables `CHAINS` lock after interrupting a
+process-context holder. The nftables state locks now enforce bottom-half
+exclusion, and the ordinary no-hook packet path checks an atomic hook mask and
+returns without entering nftables state. The next accepted run must show both
+the complete browser harness and the post-change retry counts.
+
+Run `1229896`, after the nftables containment fix, reached GNOME at load
+`1.62 0.45 0.15`. Its controls were 0.093/0.082/0.082 seconds real and
+0.061/0.060/0.060 seconds kernel (0.150--0.153 us/call). No spinlock hotspot
+remained in 350 samples: 303 (86.57%) were the idle IRQ-restore anchor. The
+invalid-host launcher timed out, but resolver D-Bus, `getent`, and the serial
+shell remained responsive. Screenshot inspection then showed the test itself
+was insufficient: the valid page was still blank and transferring, and the
+invalid screenshot did not prove the invalid URL was selected. Raw profile:
+`/tmp/oxide-firefox-profile-1229896.txt`.
+
+Non-profiled run `1230486` produced a nominal harness PASS with controls
+0.094/0.084/0.083 seconds real and 0.062/0.061/0.060 seconds kernel. Visual
+inspection rejected that PASS: the 20-second valid screenshot was still a
+blank `Waiting for one.one.one.one...` page, while the later “invalid” image
+was the valid Cloudflare page finally rendered after roughly 35--55 seconds;
+no invalid-host tab was visible. The harness now OCR-checks the actual monitor
+and launches the invalid hostname in a separate Firefox profile, so an
+unrelated later repaint cannot satisfy the test.
+
+Corrected run `1231091` reached GNOME at load `0.60 0.17 0.05` and measured
+0.099/0.083/0.083 seconds real, 0.062/0.061/0.061 seconds kernel
+(0.153--0.155 us/call). At 109 seconds the valid framebuffer was still blank,
+the UART command stream stopped, and the invalid framebuffer remained
+bit-identical. The watchdog task dump found Firefox's Socket Thread sleeping
+in `poll`, but QMP identified the kernel owner independently: exact RIP
+`0xffffffff80185b7f` in `EpItem::queue`, with stack
+`TCP receive -> PollSubscribers::notify_mask -> EpItem::queue`. NET_RX had
+interrupted process context while the same epitem's queue/state serialization
+was held. The epoll wait-queue, epitem-state, and ready-list boundaries now use
+IRQ-save locking on both architectures; queue publication precedes mutable
+state acquisition; ready capacity is grown when an interest is added so an RX
+callback does not allocate.
+
+Retained post-epoll run `1264889` failed before graphical readiness rather
+than exercising Firefox. PID 1 reported `Failed to fork off sandboxing
+environment for executing generators: Protocol error` at guest time 46.879 s
+and `Freezing execution` at 46.894 s. The UART continued to echo all injected
+commands but scheduled no shell to execute them. All 200 QMP samples were the
+idle boot anchor (`smoke::elf::run_as_task`, RIP `0xffffffff8052675e`), and the
+final register snapshot confirmed `HLT=1`; this was task-loss / no-runnable-work
+behavior, not a CPU spin. IRQ counts remained live (IRQ4: 21,019; IOAPIC IRR
+10 and 20 pending). Raw profile: `/tmp/oxide-firefox-profile-1264889.txt`.
+Because this old image failed before the benchmark, it contributes no
+throughput result. The next image converts every production runqueue acquisition
+outside the scheduler's explicit IRQ-off context-switch handoff to IRQ-save,
+matching Linux `raw_spin_rq_lock_irqsave`; this is the candidate correction for
+the earlier 84.5% runqueue-spin failure and this runnable-task loss.
+
+Run `1273823`, with the Linux-shaped runqueue IRQ boundary, reached GNOME and
+settled at load `0.56 0.15 0.05`. The 400,000-syscall controls were:
+
+| Run | Real | User | Kernel | Kernel cost per syscall |
+|---|---:|---:|---:|---:|
+| 1 | 0.111 s | 0.023 s | 0.067 s | 0.168 us |
+| 2 | 0.105 s | 0.023 s | 0.067 s | 0.168 us |
+| 3 | 0.112 s | 0.024 s | 0.069 s | 0.173 us |
+
+The prior runqueue freeze/task-loss signature did not recur, and neither the
+epoll nor runqueue spin address appeared in 350 load-window samples. The
+profile was 290/350 (82.86%) at the instruction after the idle anchor's
+`sti; hlt`; disassembly proves this is a halted CPU, not IRQ-restore work.
+The remaining samples were dispersed (no kernel site exceeded 0.86%). Thus
+the remaining Firefox latency is not CPU saturation, syscall-tail overhead,
+or a hidden lock spin.
+
+The valid window painted but remained blank at 20 seconds with Firefox showing
+`Transferring data from one.one.one.one...`. During that window `/proc/net/snmp`
+reported 24,979 IPv4 receives / 24,885 TCP segments and six established TCP
+connections, an unexpectedly large receive volume for a page that had not
+rendered. The invalid-host launcher created PID 1427 but the graphical screen
+remained byte-identical after 15 more seconds. Resolver, D-Bus, the serial
+shell, and the kernel stayed responsive. Raw profile:
+`/tmp/oxide-firefox-profile-1273823.txt`. The next diagnostic run adds a small
+HTTPS timing control, uses the same explicit Firefox profile for both URLs,
+and captures QEMU `net0` packets so duplicate/retransmission/ACK behavior can
+be compared directly.
+
+PCAP attempt `1275108` reached GNOME but lost the UART control task during the
+30-second settle, before either the HTTPS control or Firefox ran. This time the
+retained profile was not idle: 171/200 samples (85.50%) were the runqueue
+spin-relax hook load, 15/200 (7.50%) the runqueue compare-exchange, and 9/200
+(4.50%) `schedule` itself. The frozen task's stack entered `schedule` from
+`BlkState::wait_for_completion` during an ext4 `read_byte_range`. Exact spin
+RIPs were `0xffffffff804baa33` / `0xffffffff804baa2b`.
+
+The root cause is in the scheduler handoff, not virtio-block: the runqueue lock
+is deliberately held across `Context::switch` and released by the incoming
+task's `finish_task_switch`. The code already anticipated an incoming task
+reaching another `schedule()` before that tail hook, but its recovery called
+only `finish_switched_from` (clearing `on_cpu`) and did not release the
+forgotten runqueue guard. The new recovery consumes the non-null
+`switched_from` handoff token, clears ownership, and releases that exact guard
+before the incoming task can add a new scheduling debt; duplicate tails become
+no-ops. A regression test retains a real runqueue guard, proves it cannot be
+acquired, completes the pending handoff, proves the guard is acquirable, and
+proves the token cannot be consumed twice.
+
+Post-handoff-fix run `1282905` passed the complete corrected graphical harness.
+GNOME settled at load `1.19 0.34 0.11`; the controls were:
+
+| Run | Real | User | Kernel | Kernel cost per syscall |
+|---|---:|---:|---:|---:|
+| 1 | 0.096 s | 0.022 s | 0.062 s | 0.155 us |
+| 2 | 0.082 s | 0.022 s | 0.060 s | 0.150 us |
+| 3 | 0.083 s | 0.022 s | 0.060 s | 0.150 us |
+
+The new transport control fetched `https://one.one.one.one/cdn-cgi/trace`
+over DNS + TCP + TLS + HTTP/1.1 in 40.876 ms (205 bytes, HTTP 200), or
+67 ms including curl process startup. Firefox rendered the full
+one.one.one.one page within the 20-second observation window. Navigating the
+same running browser/profile to `oxide-no-such-host.invalid` then painted the
+expected `Server Not Found` page with that exact hostname within the 15-second
+window. Resolver, D-Bus, UART control, and graphical monitor all remained
+responsive.
+
+The 350-sample load profile contained no runqueue/epoll/network lock hotspot.
+The largest bucket was the idle anchor (73, 20.86%); the next was another
+IRQ-enable/halt boundary (20, 5.71%). Kernel `rep_param` memory copying was
+only 4 samples (1.14%); VMA lookup, filesystem, allocation, and Arc operations
+were individually at or below 0.57%. Raw profile:
+`/tmp/oxide-firefox-profile-1282905.txt`.
+
+Host PCAP `/tmp/oxide-firefox-net-next.pcap` retained 95,113 packets over
+101.101 seconds: 47,365 inbound and 47,558 outbound TCP packets, 61,942,680
+inbound TCP payload bytes and 308,152 outbound. Sequence-interval analysis
+found zero retransmitted/overlapping payload segments and zero advertised
+zero-window packets; all 61.94 MB were unique. Traffic arrived in fast bursts
+(20.63 MiB during seconds 30--39 and 19.11 MiB during seconds 80--89), ruling
+out a steady ~500-packet/s kernel cap. The volume is real browser/desktop
+background transfer, not duplicate ACK/sequence behavior.
+
+Non-profiled repeat `1284079` reached GNOME but again lost the control task in
+the settle window, before the benchmark. QMP stopped at exact runqueue spin RIP
+`0xffffffff804baa53`; the retained frame chain again entered `schedule` from
+virtio-block completion wait during an ext4 read. The pending-token recovery
+therefore did not close every stale-rq-lock path and the high-priority issue
+remains open despite run `1282905` passing. The next reproduction uses a GDB
+breakpoint on the failed runqueue CAS itself so lock/token/current-task state is
+captured at first contention rather than inferred from a teardown snapshot.
+
+GDB run `1286315` reached GNOME, settled at load `0.74 0.28 0.09`, rendered
+the complete one.one.one.one page and then rendered the same-profile invalid
+DNS `Server Not Found` page. Its controls were:
+
+| Run | Real | User | Kernel | Kernel cost per syscall |
+|---|---:|---:|---:|---:|
+| 1 | 0.094 s | 0.022 s | 0.062 s | 0.155 us |
+| 2 | 0.082 s | 0.021 s | 0.060 s | 0.150 us |
+| 3 | 0.082 s | 0.022 s | 0.060 s | 0.150 us |
+
+The HTTPS control completed DNS + TCP + TLS + HTTP in 33.654 ms (205 bytes,
+HTTP 200), or 60 ms including process startup. After invalid-page rendering,
+the 10-second watchdog fired on Firefox tid 5188 (`Socket Thread`, last syscall
+`recvfrom`). Live GDB stopped at `net::sock::packet::deliver_packet_link_receive`
+spinning on `vfs::inode_times::REALTIME_PROVIDER`; the complete stack was
+`NET_RX softirq -> virtio-net RX -> packet ingress -> realtime_now_ns ->
+Spinlock::lock`. This is a same-CPU interrupt self-deadlock: process context was
+interrupted in the provider's lock-sized read window and packet timestamping
+tried to acquire the same global lock. The provider is boot-installed and read
+from IRQ/softirq context, so the candidate fix publishes its function pointer
+with release/acquire atomics and makes every timestamp read lock-free. Raw
+profile: `/tmp/oxide-firefox-profile-1286315.txt`; UART/QMP diagnostic log:
+`/tmp/oxide-firefox-uart-1286315.log`.
+
+First post-realtime-fix non-profiled run `1305736` reached GNOME, then lost
+the UART control task during the 30-second settle before any benchmark or
+Firefox launch. QMP retained RIP `0xffffffff804b7d2b`, the failed runqueue
+compare-exchange branch in `schedule`, with the same virtio-block wait -> ext4
+read frame chain as runs `1275108` and `1284079`. No watchdog banner was needed
+to identify it: the CPU was live-spinning with `HLT=0`, the rq base remained in
+R14, and IRQ4 had reached 10,819. This independently confirms that removing the
+realtime-provider softirq self-deadlock does not close the older rq-lock leak.
+The harness now retains R14 memory on failure so the rq lock byte, current task,
+idle task, switch count and pending handoff token survive teardown together.
+UART/QMP log: `/tmp/oxide-firefox-uart-1305736.log`.
+
+Breakpoint run `1306661` stopped on the first failed rq-lock acquisition and
+captured the decisive state before teardown: lock byte `GLOBALS+0x90 = 1`,
+current task `+0xa0 = 0xffff800013b0c050`, and pending switch token
+`+0xc0 = 0`. The 65-frame GDB stack proved this was not a lost switch token.
+An outer `schedule()` held `rq.inner` at `switch.rs:372` while calling
+`active_mm_drop`; the final address-space reference destroyed a file-backed
+VMA, whose ext4 frame-store destructor synchronously wrote back, submitted a
+virtio-block request, and entered a nested `schedule()` that self-spun on the
+outer rq guard. The correction now mirrors the scheduler's deferred-mm
+handoff: move the lazy-TLB reference to per-rq `prev_mm` under the rq lock,
+release the rq lock in the incoming task, then consume/drop `prev_mm` where
+blocking destruction is safe. The regression holds a real rq guard, proves the
+mm reference remains alive through the critical section, then proves the
+post-unlock finish consumes it. This run intentionally stopped before GNOME
+readiness and contributes no performance number.
+
+First post-mm-deferral run `1314402` completed every user-visible workload:
+GNOME reached load `1.68`; the valid one.one.one.one page was visually ready in
+4.930 s; the invalid-name `Server Not Found` page was ready in 2.618 s. Its
+controls were:
+
+| Run | Real | User | Kernel | Kernel cost per syscall |
+|---|---:|---:|---:|---:|
+| 1 | 0.097 s | 0.024 s | 0.061 s | 0.153 us |
+| 2 | 0.083 s | 0.022 s | 0.060 s | 0.150 us |
+| 3 | 0.082 s | 0.021 s | 0.060 s | 0.150 us |
+
+The HTTPS control completed DNS + TCP + TLS + HTTP in 37.165 ms (204 bytes,
+HTTP 200), or 69 ms including process startup. This is performance evidence,
+not a clean acceptance pass: deferred address-space destruction ran after the
+rq unlock but before the switcher's preemption debt was released, so its valid
+nested block reported `[BUG] scheduling while atomic: preempt_count=2` and the
+recovery path later exposed a zero count in `park_yield`. The candidate ordering
+fix now releases that preemption debt immediately after the rq unlock and only
+then consumes `prev_mm`; repeated graphical runs still gate closure.
+
+Clean post-ordering run `1322255` passed the complete harness. GNOME settled at
+load `0.59 0.16 0.05`; one.one.one.one was visually ready in 6.145 s and the
+same-profile invalid DNS page was ready in 3.872 s. Its controls were:
+
+| Run | Real | User | Kernel | Kernel cost per syscall |
+|---|---:|---:|---:|---:|
+| 1 | 0.099 s | 0.022 s | 0.063 s | 0.158 us |
+| 2 | 0.093 s | 0.023 s | 0.064 s | 0.160 us |
+| 3 | 0.090 s | 0.022 s | 0.063 s | 0.158 us |
+
+The HTTPS control completed DNS + TCP + TLS + HTTP in 39.750 ms (205 bytes,
+HTTP 200), or 68 ms including process startup. Both OCR assertions passed, the
+independent serial control remained responsive, and no watchdog, rq-lock spin,
+kernel fault, or scheduling-while-atomic/preemption-count diagnostic appeared.
+UART/QMP log: `/tmp/oxide-firefox-uart-1322255.log`.
+
+Repeat `1323037` rendered one.one.one.one in 4.919 s but then failed the
+post-render health check and never accepted the invalid URL (`>15 s`, unchanged
+screen). Before the freeze, its controls remained fast:
+
+| Run | Real | User | Kernel | Kernel cost per syscall |
+|---|---:|---:|---:|---:|
+| 1 | 0.101 s | 0.022 s | 0.062 s | 0.155 us |
+| 2 | 0.085 s | 0.022 s | 0.061 s | 0.153 us |
+| 3 | 0.083 s | 0.022 s | 0.060 s | 0.150 us |
+
+The HTTPS control completed in 34.807 ms (205 bytes, HTTP 200), or 61 ms with
+process startup. QMP retained live-spin RIP `0xffffffff80520992`, resolved to
+`security::network::evaluate` waiting on the global `HOOKS` spinlock in the
+`NET_RX -> nf_hook_eval_in` path. This was another same-CPU process/softirq
+recursion: the mutable LSM-like registry used a plain lock even though policy
+evaluation runs in NET_RX. The correction gives every registry access Linux
+`spin_lock_bh` exclusion, publishes an acquire/release per-operation active mask
+so the normal no-hook packet path is lock-free (Linux static-key shape), and
+snapshots the active hook so it executes outside the registry lock. UART/QMP
+log: `/tmp/oxide-firefox-uart-1323037.log`.
+
+First post-security-registry run `1325347` reached GNOME and completed the
+micro-controls, but the foreground `runuser` used to launch Firefox never
+returned to the serial shell; the monitor reached only a partial, unreadable
+frame and neither page assertion completed (`>20 s` valid, `>15 s` invalid).
+Controls before the sleep were:
+
+| Run | Real | User | Kernel | Kernel cost per syscall |
+|---|---:|---:|---:|---:|
+| 1 | 0.107 s | 0.023 s | 0.065 s | 0.163 us |
+| 2 | 0.116 s | 0.022 s | 0.062 s | 0.155 us |
+| 3 | 0.105 s | 0.023 s | 0.064 s | 0.160 us |
+
+HTTPS completed in 40.797 ms (205 bytes, HTTP 200), or 58 ms with process
+startup. Unlike the preceding lockups, teardown found the CPU in the normal
+idle anchor at RIP `0xffffffff80523f4e` (`sti; hlt`), runqueue lock clear,
+current equal to idle, null switch token, and 992,791 prior switches. This is
+a lost/unissued wakeup rather than a live spin. The serial shell was itself
+waiting for the foreground launch process, so the old diagnostics could not
+obtain a task dump. The harness now invokes the kernel UART SysRq prefilter
+directly on failure to retain task, wait-channel, and per-CPU scheduler state
+even without a prompt. UART/QMP log: `/tmp/oxide-firefox-uart-1325347.log`.
+
+Post-security-registry acceptance run `1326672` passed the complete harness.
+GNOME settled at load `0.78 0.21 0.07`; one.one.one.one was visually ready in
+4.937 s and the invalid DNS page was ready in 1.450 s. Its controls were:
+
+| Run | Real | User | Kernel | Kernel cost per syscall |
+|---|---:|---:|---:|---:|
+| 1 | 0.103 s | 0.024 s | 0.068 s | 0.170 us |
+| 2 | 0.090 s | 0.022 s | 0.060 s | 0.150 us |
+| 3 | 0.083 s | 0.022 s | 0.060 s | 0.150 us |
+
+The HTTPS control completed in 42.938 ms (205 bytes, HTTP 200), or 75 ms with
+process startup. Both OCR assertions and independent resolver/control checks
+passed, with no watchdog, rq spin, kernel fault, or preemption diagnostic.
+UART/QMP log: `/tmp/oxide-firefox-uart-1326672.log`.
+
+Acceptance repeat `1327044` rendered one.one.one.one in 3.740 s, then froze
+before Firefox accepted the invalid tab (`>15 s`). Its pre-freeze controls were:
+
+| Run | Real | User | Kernel | Kernel cost per syscall |
+|---|---:|---:|---:|---:|
+| 1 | 0.095 s | 0.022 s | 0.062 s | 0.155 us |
+| 2 | 0.084 s | 0.022 s | 0.061 s | 0.153 us |
+| 3 | 0.085 s | 0.022 s | 0.062 s | 0.155 us |
+
+HTTPS completed in 39.328 ms (205 bytes, HTTP 200), or 64 ms with process
+startup. The watchdog reported zero context switches for 40 s with current tid
+5185, Firefox's Socket Thread in `connect`. QMP retained live-spin RIP
+`0xffffffff802bdab2`, resolved to `NetStack::try_inet_tables` waiting on the
+top-level namespace-to-transport-table registry from `NET_RX -> deliver_raw4`.
+The per-protocol tables already used Linux `spin_lock_bh`, but their owning
+namespace registry was still a plain lock: process-side `connect` could be
+interrupted while holding it and NET_RX then self-spun. The correction puts
+that owner registry behind the same `InetTableLock` type as its children, so
+all accesses exclude NET_RX consistently. UART/QMP log:
+`/tmp/oxide-firefox-uart-1327044.log`.
+
+First post-inet-registry run `1332408` failed during the 30-second GNOME
+settle, before the syscall, HTTPS, or Firefox probes ran, so it contributes no
+performance number. QMP retained live-spin RIP `0xffffffff80347373`, resolved
+to the `v6_addrs` acquisition in `NetStack::ipv6_control_tick` while the
+`ktimers` process-context driver ran periodic network control work. The same
+IPv6 address table is acquired by NET_RX for local-address and DAD decisions,
+but was a plain spinlock; its RA-pending, multicast, and anycast companion
+registries had the same process/NET_RX contract defect. All five now use a
+shared `StackBhLock` type whose only acquisition applies Linux
+`spin_lock_bh()` semantics. UART/QMP log:
+`/tmp/oxide-firefox-uart-1332408.log`.
+
+Post-IPv6-control-lock run `1337758` passed the complete harness. GNOME settled
+at load `1.64 0.45 0.15`; one.one.one.one was visually ready in 4.944 s and the
+same-profile invalid DNS page was ready in 1.465 s. Its controls were:
+
+| Run | Real | User | Kernel | Kernel cost per syscall |
+|---|---:|---:|---:|---:|
+| 1 | 0.095 s | 0.022 s | 0.063 s | 0.158 us |
+| 2 | 0.084 s | 0.022 s | 0.061 s | 0.153 us |
+| 3 | 0.086 s | 0.023 s | 0.063 s | 0.158 us |
+
+The HTTPS control completed DNS + TCP + TLS + HTTP in 35.692 ms (204 bytes,
+HTTP 200), or 66 ms including process startup. Both OCR assertions and the
+independent resolver/control checks passed, with no watchdog, kernel fault, or
+preemption diagnostic. UART/QMP log:
+`/tmp/oxide-firefox-uart-1337758.log`.
+
+Independent post-fix repeat `1338334` also passed the complete harness. GNOME
+settled at load `0.39 0.10 0.03`; one.one.one.one was visually ready in
+6.095 s and the same-profile invalid DNS page was ready in 3.854 s. Its
+controls were:
+
+| Run | Real | User | Kernel | Kernel cost per syscall |
+|---|---:|---:|---:|---:|
+| 1 | 0.099 s | 0.023 s | 0.066 s | 0.165 us |
+| 2 | 0.099 s | 0.023 s | 0.066 s | 0.165 us |
+| 3 | 0.094 s | 0.023 s | 0.064 s | 0.160 us |
+
+The HTTPS control completed DNS + TCP + TLS + HTTP in 44.370 ms (205 bytes,
+HTTP 200), or 70 ms including process startup. Both OCR assertions and the
+independent resolver/control checks passed, with no watchdog, kernel fault, or
+preemption diagnostic. Together with `1337758`, this supplies two consecutive
+clean cold-boot acceptance runs after the IPv6 control-state correction. Both
+runs used the final direct virtio-block completion wait: no 64-probe IRQ bridge,
+no driver-owned polling loop, and process syscall/page-fault work inheriting
+IRQs enabled so the one-vCPU completion IRQ can wake the parked task.
+UART/QMP log: `/tmp/oxide-firefox-uart-1338334.log`.
+
+## Final verification
+
+- `make build`: PASS for both production release targets.
+- `make smoke SMOKE_TIMEOUT=900`: PASS on the first attempt for both targets;
+  aarch64 reached userspace in 74 s and x86_64 in 113 s, with serial RX alive.
+- Direct-wait regression: PASS; temporarily restoring the 64-probe bridge made
+  the regression fail, and restoring the direct park made it pass again.
+- x86 process-fault IRQ inheritance regression: PASS; replacing the entry
+  `sti` with `nop` made the regression fail, and restoring it made it pass.
+- Hosted suites: `drv-virtio-blk` 30/30, `net` 2062/2062, `security` 245/245,
+  `sched` 1204/1204, aarch64 HAL 147/147, x86_64 HAL 150/150, and VMM 334/334.
+- `make lint-ratchet`: PASS at the 1,731-finding baseline.
+- `git diff --check`: PASS.
+
+## Post-own-stack acceptance
+
+The final stack gate exposed one interaction introduced by the bottom-half-safe
+locks: process-context `spin_unlock_bh()` drained pending softirqs on the task
+stack, while Linux x86_64 and arm64 use `do_softirq_own_stack()` on the per-CPU
+IRQ stack. Commit `fe49e882f` adds that architecture stack switch without
+skipping or deferring the drain. The production frame/stack gates then passed:
+x86_64 syscall entry measured 11,928 B and aarch64 measured 12,992 B against the
+13,000 B task-stack ceiling, with no new allowlist entry.
+
+Fresh paired smoke on this exact build passed first attempt: x86_64 reached a
+responsive userspace and serial RX in 74 s; aarch64 did so in 121 s.
+
+Post-switch Firefox run `1435376` passed the complete graphical harness. GNOME
+settled at load `1.71 0.49 0.17`; one.one.one.one was visually ready in 6.105 s
+and the invalid DNS page in 2.679 s. Its syscall controls were:
+
+| Run | Real | User | Kernel | Kernel cost per syscall |
+|---|---:|---:|---:|---:|
+| 1 | 0.095 s | 0.022 s | 0.062 s | 0.155 us |
+| 2 | 0.084 s | 0.022 s | 0.061 s | 0.153 us |
+| 3 | 0.083 s | 0.022 s | 0.061 s | 0.153 us |
+
+The HTTPS control completed DNS + TCP + TLS + HTTP in 34.154 ms (204 bytes,
+HTTP 200), or 63 ms including process startup. Both OCR assertions and all
+resolver/control checks passed. UART/QMP log:
+`/tmp/oxide-firefox-uart-1435376.log`.

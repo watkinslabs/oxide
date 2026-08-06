@@ -1,8 +1,7 @@
 use alloc::sync::Arc;
 
-use sync::{Spinlock, TaskList as DriverLockClass};
-
 use super::super::DeviceKey;
+use super::super::DriverBhLock;
 
 #[derive(Clone)]
 pub(super) struct RxRuntime {
@@ -14,8 +13,8 @@ pub(super) struct RxRuntime {
     pub(super) ip: [u8; 4],
 }
 
-static RX_RUNTIMES: Spinlock<alloc::vec::Vec<RxRuntime>, DriverLockClass> =
-    Spinlock::new(alloc::vec::Vec::new());
+static RX_RUNTIMES: DriverBhLock<alloc::vec::Vec<RxRuntime>> =
+    DriverBhLock::new(alloc::vec::Vec::new());
 
 /// Stash one device's RX identity and network runtime. # C: O(1)
 pub(crate) fn set_softirq_iface(device_key: DeviceKey, iface: net::NetIfaceId,

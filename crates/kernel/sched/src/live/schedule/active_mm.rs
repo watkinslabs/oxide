@@ -2,6 +2,7 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
 use vmm::AddressSpace;
+use crate::live::runqueue::Runqueue;
 
 /// This CPU's logical index (clamped to `MAX_CPUS`), matching the TLB
 /// shootdown sender's `this_cpu()` so the `mm_cpumask` bit set/cleared in
@@ -66,32 +67,47 @@ fn log_transition(_event: &'static [u8], _cpu: usize, _mm: &AddressSpace, _prior
 /// task. Stores one extra `Arc` strong ref; any previously-held grab (which
 /// should be null when entering lazy from a user task) is reclaimed + dropped
 /// defensively so the slot never leaks. # C: O(1)
-pub(super) fn active_mm_grab(cpu: usize, mm: &Arc<AddressSpace>) {
+pub(super) fn active_mm_grab(cpu: usize, mm: &Arc<AddressSpace>, rq: &Runqueue) {
     if cpu >= cpu::MAX_CPUS { return; }
     let raw = Arc::into_raw(Arc::clone(mm)) as *mut AddressSpace;
     let prev = ACTIVE_MM[cpu].swap(raw, Ordering::AcqRel);
     if !prev.is_null() {
-        // SAFETY: `prev` was installed by a prior active_mm_grab via Arc::into_raw on a live Arc<AddressSpace>; reclaiming it drops the stale grab's strong ref.
-        let previous = unsafe { Arc::from_raw(prev) };
-        log_transition(b"active-mm-grab", cpu, mm, Some(&previous));
+        // An unexpected stale grab still cannot be destroyed under rq.inner:
+        // transfer it to the same post-switch slot used by the normal drop.
+        // SAFETY: `prev` is a live raw Arc held by ACTIVE_MM until this swap;
+        // borrowing it for diagnostics does not consume that reference.
+        let previous = unsafe { &*prev };
+        log_transition(b"active-mm-grab", cpu, mm, Some(previous));
         previous.debug_lifetime_event(b"active-mm-replace");
-        drop(previous);
+        let old = rq.prev_mm.swap(prev, Ordering::AcqRel);
+        hal::kassert!(old.is_null(), "active_mm overwrote pending rq prev_mm");
     }
 }
 
-/// Linux `mmdrop` (lazy-TLB): release this CPU's `active_mm` grab, if any.
-/// Called when the CPU activates a real, task-owned user root (it is no longer
-/// lazily resident, and the incoming task's own `mm` Arc now pins the root).
-/// Does NOT touch `mm_cpumask`: the released mm may be the SAME mm we are
-/// switching INTO (kthread-lazy-on-R -> owner-of-R resumes), whose bit the
-/// switch path just (re)set - clearing it here would under-mark and reintroduce
-/// the corruption. A stale bit on a different, surviving mm is harmless
-/// over-inclusion (one spurious shootdown IPI). # C: O(1)
-pub(super) fn active_mm_drop(cpu: usize) {
+/// Transfer this CPU's lazy-TLB grab to `rq->prev_mm` for release by the
+/// incoming task after it unlocks the runqueue. Address-space destruction can
+/// drop file-backed VMAs, perform synchronous writeback and sleep; doing that
+/// from the pre-switch rq critical section self-deadlocks on the next
+/// `schedule()`. Does not touch `mm_cpumask`: the released mm can be the same
+/// mm being switched into, whose bit was just restored. # C: O(1)
+pub(super) fn active_mm_defer_drop(cpu: usize, rq: &Runqueue) {
     if cpu >= cpu::MAX_CPUS { return; }
     let prev = ACTIVE_MM[cpu].swap(core::ptr::null_mut(), Ordering::AcqRel);
     if !prev.is_null() {
-        // SAFETY: `prev` was installed by active_mm_grab via Arc::into_raw on a live Arc<AddressSpace>; reclaiming it drops exactly the one strong ref the grab added (the mmdrop).
+        let old = rq.prev_mm.swap(prev, Ordering::AcqRel);
+        hal::kassert!(old.is_null(), "active_mm overwrote pending rq prev_mm");
+    }
+}
+
+/// Release the lazy-TLB reference deferred by `active_mm_defer_drop`.
+/// Called only after the incoming task has released the rq lock, so the final
+/// address-space destructor may block without recursively taking that lock.
+/// # C: O(1) excluding address-space destruction
+pub(super) fn active_mm_finish_drop(rq: &Runqueue) {
+    let prev = rq.prev_mm.swap(core::ptr::null_mut(), Ordering::AcqRel);
+    if !prev.is_null() {
+        // SAFETY: `prev` was transferred from ACTIVE_MM by
+        // active_mm_defer_drop and this swap consumes its one raw Arc exactly.
         let previous = unsafe { Arc::from_raw(prev) };
         drop(previous);
     }
@@ -126,5 +142,33 @@ pub fn park_active_mm(mm: Arc<AddressSpace>) {
         drop(previous);
     } else {
         log_transition(b"park-active-mm", me, &held, None);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{SchedClass, Task};
+
+    #[test]
+    fn lazy_mm_release_is_deferred_past_the_runqueue_lock() {
+        let mm = AddressSpace::new(0).expect("hosted address space");
+        let idle = Arc::new(Task::new(9900, "idle", SchedClass::Idle));
+        let rq = Runqueue::new(0, idle);
+        let raw = Arc::into_raw(Arc::clone(&mm)) as *mut AddressSpace;
+        assert!(ACTIVE_MM[0].swap(raw, Ordering::AcqRel).is_null());
+
+        let guard = rq.inner.lock();
+        active_mm_defer_drop(0, &rq);
+        assert!(ACTIVE_MM[0].load(Ordering::Acquire).is_null());
+        assert_eq!(rq.prev_mm.load(Ordering::Acquire), raw);
+        assert_eq!(Arc::strong_count(&mm), 2,
+            "deferred mm was destroyed inside the rq critical section");
+
+        drop(guard);
+        active_mm_finish_drop(&rq);
+        assert!(rq.prev_mm.load(Ordering::Acquire).is_null());
+        assert_eq!(Arc::strong_count(&mm), 1,
+            "post-unlock finish did not consume the deferred mm reference");
     }
 }

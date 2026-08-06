@@ -39,3 +39,36 @@ fn syscost_profiler_does_not_enable_serial_workload_traces() {
     assert!(poll.contains("#[cfg(feature = \"debug-syscost-trace\")]"));
     assert!(!poll.contains("#[cfg(feature = \"debug-syscost\")]"));
 }
+
+#[test]
+fn syscall_process_irqs_close_before_return_work() {
+    let dispatch = include_str!("dispatch/core.rs");
+    let enable = dispatch.find("ProcessIrqs::enable()").expect("process IRQ guard");
+    let route = dispatch.find("dispatch_route_a(nr, &args)").expect("syscall routes");
+    let close = dispatch.rfind("drop(process_irqs);").expect("IRQ guard close");
+    let exit = dispatch.find("exit_to_user_mode_loop(regs, Some(rv))").expect("return work");
+    assert!(enable < route, "IRQs enabled before ordinary syscall work");
+    assert!(route < close, "IRQs stay enabled through syscall work");
+    assert!(close < exit, "IRQs masked before return-work flag checks");
+    assert!(dispatch.contains("drop(process_irqs);\n        sched::cpustat::user_enter();\n        return rv;"),
+        "early user-dispatch return closes the IRQ guard");
+}
+
+#[test]
+fn process_fault_stubs_inherit_saved_irq_state() {
+    let x86 = include_str!("../../../arch/hal-x86_64/src/fault/stubs.rs");
+    let vector = x86.find("cmp  qword ptr [rsp + 0x78], 14").expect("#PF classifier");
+    let saved_if = x86.find("test qword ptr [rsp + 0x98], 0x200").expect("saved IF test");
+    let enable = x86[saved_if..].find("\"    sti\"").expect("process IRQ enable") + saved_if;
+    let call = x86.find("call oxide_fault_print_rust").expect("fault dispatch");
+    let mask = x86[call..].find("\"    cli\"").expect("exit IRQ mask") + call;
+    assert!(vector < saved_if && saved_if < enable && enable < call && call < mask);
+
+    let arm = include_str!("../../../arch/hal-aarch64/src/vbar/asm.rs");
+    let classify = arm.find("cmp  x9, #0x20").expect("abort classifier");
+    let saved_i = arm.find("tbnz x9, #7, 9f").expect("saved DAIF.I test");
+    let enable = arm[saved_i..].find("msr  daifclr, #2").expect("process IRQ enable") + saved_i;
+    let call = arm.find("bl   oxide_fault_print_rust").expect("fault dispatch");
+    let mask = arm[call..].find("msr  daifset, #2").expect("exit IRQ mask") + call;
+    assert!(classify < saved_i && saved_i < enable && enable < call && call < mask);
+}

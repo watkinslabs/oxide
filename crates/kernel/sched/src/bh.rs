@@ -15,6 +15,28 @@ use crate::preempt::{
 
 struct SchedHandlerAccounting;
 
+unsafe extern "C" fn run_pending_on_irq_stack() {
+    // SAFETY: the caller holds SOFTIRQ_OFFSET across this callback, so handler
+    // accounting and the restart gate have the same contract as the former
+    // inline task-stack call.
+    unsafe { softirq::run_pending_accounted::<SchedHandlerAccounting>(); }
+}
+
+unsafe fn do_softirq_own_stack() {
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: SOFTIRQ_OFFSET prevents scheduling and re-entry for the whole
+    // callback, satisfying the architecture trampoline's non-sleep contract.
+    unsafe {
+        hal_aarch64::call_on_irq_stack(run_pending_on_irq_stack);
+    }
+    #[cfg(target_arch = "x86_64")]
+    // SAFETY: SOFTIRQ_OFFSET prevents scheduling and re-entry for the whole
+    // callback, satisfying the architecture trampoline's non-sleep contract.
+    unsafe {
+        hal_x86_64::call_on_irq_stack(run_pending_on_irq_stack);
+    }
+}
+
 impl softirq::HandlerAccounting for SchedHandlerAccounting {
     type Snapshot = u32;
 
@@ -65,8 +87,10 @@ pub unsafe fn local_bh_enable() {
         // true, preempt still off, while we drain (Linux keeps preempt off
         // across the do_softirq call in __local_bh_enable_ip).
         preempt::preempt_count_sub(SOFTIRQ_DISABLE_OFFSET - SOFTIRQ_OFFSET);
-        // SAFETY: bh-accounted; drains this CPU's mask with the restart gate.
-        unsafe { softirq::run_pending_accounted::<SchedHandlerAccounting>(); }
+        // Linux `do_softirq_own_stack`: the complete softirq tree belongs to
+        // the per-CPU IRQ stack, not to an arbitrary syscall's task stack.
+        // SAFETY: bh-accounted; the callback cannot sleep.
+        unsafe { do_softirq_own_stack(); }
         preempt::preempt_count_sub(SOFTIRQ_OFFSET);
     } else {
         preempt::preempt_count_sub(SOFTIRQ_DISABLE_OFFSET);

@@ -163,7 +163,7 @@ static CUR_FAULT_FRAME: core::sync::atomic::AtomicPtr<PtRegs>
 /// FaultHandler invocation). Used by the kernel SIGSEGV path to
 /// rewrite the iretq frame for catchable signal delivery, and by the
 /// diagnostics that name the bad register on a user-mode #GP / #UD.
-/// # SAFETY: caller is in fault dispatch context with IRQs masked.
+/// # SAFETY: caller is in synchronous fault dispatch on the faulting task.
 /// # C: O(1)
 pub fn current_fault_frame() -> *mut PtRegs {
     CUR_FAULT_FRAME.load(core::sync::atomic::Ordering::Acquire)
@@ -203,7 +203,7 @@ fn nmi_backtrace(f: &PtRegs) {
 /// # SAFETY: caller (asm stub) passes a valid pointer to a
 /// `PtRegs` on the kernel stack.
 /// # C: O(constant)
-/// # Ctx: exception context, IRQs off
+/// # Ctx: synchronous exception; process page faults inherit IRQs enabled
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 #[no_mangle]
 unsafe extern "C" fn oxide_fault_print_rust(regs: *mut PtRegs) -> bool {

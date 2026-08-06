@@ -220,6 +220,76 @@ extern "C" {
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 const PERCPU_HARDIRQ_STACK_OFF: usize = 24;
 
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+core::arch::global_asm!(
+    ".section .text.oxide_x86_call_on_irq_stack,\"ax\"",
+    ".global oxide_x86_call_on_irq_stack",
+    ".type oxide_x86_call_on_irq_stack, @function",
+    "oxide_x86_call_on_irq_stack:",
+    "    push rbp",
+    "    mov  rbp, rsp",
+    "    push r12",
+    "    push r13",
+    "    push r14",
+    "    push r15",
+    "    mov  r12, rdi",
+    "    pushfq",
+    "    pop  r13",
+    // Keep hardware IRQs masked while the callback owns the shared IRQ stack;
+    // restore the exact entry RFLAGS only after returning to the task stack.
+    "    cli",
+    "    mov  rax, gs:[24]",
+    "    test rax, rax",
+    "    jz   2f",
+    "    mov  rdx, rax",
+    "    sub  rdx, rsp",
+    "    cmp  rdx, {stack_bytes}",
+    "    jbe  2f",
+    "    mov  r14, rsp",
+    "    mov  rsp, rax",
+    "    call r12",
+    "    mov  rsp, r14",
+    "    jmp  3f",
+    "2:",
+    "    call r12",
+    "3:",
+    "    push r13",
+    "    popfq",
+    "    pop  r15",
+    "    pop  r14",
+    "    pop  r13",
+    "    pop  r12",
+    "    pop  rbp",
+    "    ret",
+    ".size oxide_x86_call_on_irq_stack, . - oxide_x86_call_on_irq_stack",
+    stack_bytes = const hal::KERNEL_STACK_BYTES,
+);
+
+/// Run one non-sleeping callback on this CPU's per-CPU hard-IRQ stack.
+///
+/// Linux x86_64 uses its IRQ stack for process-context softirq drains. If
+/// early boot has not armed the stack, or the caller is already on it, the
+/// callback runs in place.
+/// # SAFETY: `callback` must not sleep and must preserve its C ABI contract.
+/// # C: O(callback)
+pub unsafe fn call_on_irq_stack(callback: unsafe extern "C" fn()) {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    // SAFETY: the caller guarantees a non-sleeping C callback; the trampoline
+    // preserves callee-saved state, restores RSP, and restores saved RFLAGS.
+    unsafe {
+        unsafe extern "C" {
+            fn oxide_x86_call_on_irq_stack(callback: unsafe extern "C" fn());
+        }
+        oxide_x86_call_on_irq_stack(callback);
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
+    // SAFETY: hosted builds have no IRQ stack, so forwarding preserves the
+    // caller's callback contract without changing architectural state.
+    unsafe {
+        callback();
+    }
+}
+
 /// Is the caller executing on this CPU's per-CPU hardirq stack?
 ///
 /// The IRQ entry asm (`oxide_irq_common`) switches RSP to that shared stack

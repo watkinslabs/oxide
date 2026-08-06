@@ -3,6 +3,14 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 static CARRIER_NEWLINKS: AtomicUsize = AtomicUsize::new(0);
 
+#[test]
+fn iface_registry_lock_excludes_network_bottom_halves() {
+    let source = include_str!("../netdev.rs");
+    assert!(source.contains("pub(crate) inner: IfaceRegistryLock"));
+    assert!(source.contains("self.0.lock_bh::<sched::bh::SchedBh>()"),
+        "the RX-softirq-shared interface registry must use spin_lock_bh");
+}
+
 fn record_carrier_newlink(event: &crate::control_event::ControlEvent) {
     if matches!(event, crate::control_event::ControlEvent::Link(link)
         if link.kind == crate::control_event::EventKind::New && link.name == "carrier0") {

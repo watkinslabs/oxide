@@ -217,7 +217,21 @@ pub struct IfaceEntry {
 /// Process-global iface table. `register_netdev` pushes; `iface`
 /// looks up by id. `up_ifaces` snapshots for boot-trace dumps.
 pub struct IfaceRegistry {
-    pub(crate) inner: Spinlock<RegistryInner, SocketLockClass>,
+    pub(crate) inner: IfaceRegistryLock,
+}
+
+/// The interface table is read from NET_RX softirq and mutated from process
+/// control paths. Linux protects this class with BH-safe networking locks; a
+/// plain spinlock lets the softirq interrupt its own lock holder and deadlock.
+pub(crate) struct IfaceRegistryLock(Spinlock<RegistryInner, SocketLockClass>);
+
+impl IfaceRegistryLock {
+    const fn new(value: RegistryInner) -> Self { Self(Spinlock::new(value)) }
+
+    #[inline]
+    fn lock(&self) -> sync::LockBhGuard<'_, RegistryInner, SocketLockClass, sched::bh::SchedBh> {
+        self.0.lock_bh::<sched::bh::SchedBh>()
+    }
 }
 
 pub(crate) struct RegistryInner {
@@ -265,7 +279,7 @@ impl RegistryInner {
 impl IfaceRegistry {
     /// # C: O(1)
     pub const fn new() -> Self {
-        Self { inner: Spinlock::new(RegistryInner { next: 0, entries: Vec::new() }) }
+        Self { inner: IfaceRegistryLock::new(RegistryInner { next: 0, entries: Vec::new() }) }
     }
 
     /// Hosted cleanup for a registry not owned by a `NetStack`.

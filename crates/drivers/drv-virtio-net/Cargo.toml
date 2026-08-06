@@ -16,6 +16,7 @@ hal      = { path = "../../arch/hal" }
 klog     = { path = "../../shared/klog" }
 net      = { path = "../../kernel/net" }
 pmm      = { path = "../../kernel/mm-pmm" }
+sched    = { path = "../../kernel/sched" }
 sync     = { path = "../../shared/sync" }
 virtio   = { path = "../virtio" }
 drv      = { path = "../drv" }
@@ -25,6 +26,9 @@ hal-x86_64 = { path = "../../arch/hal-x86_64" }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 hal-aarch64 = { path = "../../arch/hal-aarch64" }
+
+[dev-dependencies]
+sched = { path = "../../kernel/sched", features = ["hosted"] }
 
 [features]
 default = []

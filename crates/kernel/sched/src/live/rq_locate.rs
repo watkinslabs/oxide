@@ -26,7 +26,7 @@
 use alloc::sync::Arc;
 
 use crate::Task;
-use super::runqueue::Runqueue;
+use super::runqueue::{RqIrq, Runqueue};
 
 /// Dequeue `tid` from whichever runqueue currently holds it, under that
 /// runqueue's own lock. Returns the task and the CPU it was dequeued from, or
@@ -41,7 +41,7 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
     for cpu in 0..cpu::MAX_CPUS as u32 {
         let rq = match get_rq(cpu) { Some(r) => r, None => continue };
         let removed = {
-            let mut inner = rq.inner.lock();
+            let mut inner = rq.inner.lock_irqsave::<RqIrq>();
             let r = inner.remove(tid);
             if r.is_some() { rq.publish_nr_running(inner.nr_running()); }
             r
@@ -67,7 +67,7 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
     if matches!(task.sched_class(), crate::SchedClass::Idle) { return true; }
     match get_rq(cpu) {
         Some(rq) => {
-            let mut inner = rq.inner.lock();
+            let mut inner = rq.inner.lock_irqsave::<RqIrq>();
             inner.enqueue(task);
             rq.publish_nr_running(inner.nr_running());
             true

@@ -10,9 +10,12 @@ extern crate alloc;
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+use core::ops::Deref;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use sync::{Socket as MibLockClass, Spinlock};
+
+const INITIAL_NET_NS: u64 = 0;
 
 /// One counted event. Named for the `/proc/net/snmp` column it feeds, so a
 /// call site says which line of the file it moves.
@@ -88,7 +91,7 @@ struct Counters {
 }
 
 impl Counters {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             snmp: [const { AtomicU64::new(0) }; COUNTERS],
             tcp_ext: [const { AtomicU64::new(0) }; TCP_EXT_COUNTERS],
@@ -96,12 +99,43 @@ impl Counters {
     }
 }
 
-static NAMESPACES: Spinlock<BTreeMap<u64, alloc::sync::Arc<Counters>>, MibLockClass> =
-    Spinlock::new(BTreeMap::new());
+/// Dynamic namespace state is read from NET_RX and changed by namespace
+/// teardown. Keep Linux `spin_lock_bh` semantics in the type so no caller can
+/// take the table lock while allowing the receive bottom half to interrupt it.
+struct MibNamespaceLock(Spinlock<BTreeMap<u64, alloc::sync::Arc<Counters>>, MibLockClass>);
 
-fn counters(net_ns: u64) -> alloc::sync::Arc<Counters> {
-    NAMESPACES.lock().entry(net_ns)
-        .or_insert_with(|| alloc::sync::Arc::new(Counters::new())).clone()
+impl MibNamespaceLock {
+    const fn new() -> Self { Self(Spinlock::new(BTreeMap::new())) }
+
+    fn lock(&self) -> sync::LockBhGuard<'_, BTreeMap<u64, alloc::sync::Arc<Counters>>,
+        MibLockClass, sched::bh::SchedBh>
+    {
+        self.0.lock_bh::<sched::bh::SchedBh>()
+    }
+}
+
+static INITIAL_COUNTERS: Counters = Counters::new();
+static NAMESPACES: MibNamespaceLock = MibNamespaceLock::new();
+
+enum CounterRef {
+    Initial(&'static Counters),
+    Dynamic(alloc::sync::Arc<Counters>),
+}
+
+impl Deref for CounterRef {
+    type Target = Counters;
+    fn deref(&self) -> &Counters {
+        match self { Self::Initial(c) => c, Self::Dynamic(c) => c }
+    }
+}
+
+fn counters(net_ns: u64) -> CounterRef {
+    // The initial namespace is immortal and owns virtually all production
+    // traffic. Linux reaches its per-net MIB storage through a direct pointer;
+    // do the same here instead of taking a global BTreeMap lock per packet.
+    if net_ns == INITIAL_NET_NS { return CounterRef::Initial(&INITIAL_COUNTERS); }
+    CounterRef::Dynamic(NAMESPACES.lock().entry(net_ns)
+        .or_insert_with(|| alloc::sync::Arc::new(Counters::new())).clone())
 }
 
 /// Count one event in `net_ns`. # C: O(log N namespaces)
@@ -136,7 +170,9 @@ pub fn get_tcp_ext(net_ns: u64, which: TcpExt) -> u64 {
 }
 
 /// Drop a namespace's counters when it goes away. # C: O(log N)
-pub fn forget(net_ns: u64) { NAMESPACES.lock().remove(&net_ns); }
+pub fn forget(net_ns: u64) {
+    if net_ns != INITIAL_NET_NS { NAMESPACES.lock().remove(&net_ns); }
+}
 
 #[cfg(test)]
 mod tests {
@@ -166,6 +202,13 @@ mod tests {
             assert!(!seen[m.index()], "{m:?} shares a slot");
             seen[m.index()] = true;
         }
+    }
+
+    #[test]
+    fn initial_namespace_updates_bypass_the_dynamic_table() {
+        assert!(!NAMESPACES.lock().contains_key(&INITIAL_NET_NS));
+        bump(INITIAL_NET_NS, Mib::IpInReceives);
+        assert!(!NAMESPACES.lock().contains_key(&INITIAL_NET_NS));
     }
 
     #[test]

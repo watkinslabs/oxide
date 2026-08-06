@@ -12,7 +12,7 @@ use crate::execve_common::{
 use super::fd_table::unshare_fd_table_and_close_on_exec;
 
 /// aarch64 sys_execve — mirror of the x86 path.
-/// # SAFETY: dispatch ctx, IRQs masked.
+/// # SAFETY: syscall process context, IRQs enabled.
 /// # C: O(phdrs) + O(N_vmas) + O(1)
 pub fn sys_execve(args: &SyscallArgs) -> i64 {
     let path_owned = match read_user_exec_path(args.a0) {

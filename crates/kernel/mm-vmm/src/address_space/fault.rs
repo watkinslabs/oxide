@@ -34,11 +34,10 @@ impl AddressSpace {
     ///
     /// # SAFETY: `M` is the live per-arch MmuOps with PMM + HHDM
     /// state initialised; `alloc_frame` returns physically-valid
-    /// page-aligned PFNs from PMM. Caller's fault context already
-    /// disabled IRQs; AS read-lock acquisition here is safe (no
-    /// recursion).
+    /// page-aligned PFNs from PMM. Caller is synchronous fault context;
+    /// AS read-lock acquisition here is safe (no recursion).
     /// # C: O(log N) VMA lookup + O(1) frame zero + O(walk depth) map
-    /// # Ctx: fault, IRQ-off
+    /// # Ctx: synchronous fault; process faults run IRQ-on
     /// Back-compat wrapper: handle_page_fault without per-page
     /// refcount awareness. Always copies on Protection-write
     /// (correct for refcount==1 owner-only writes; suboptimal for

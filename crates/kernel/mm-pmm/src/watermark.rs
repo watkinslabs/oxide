@@ -76,30 +76,21 @@ pub(crate) fn before_allocation(free_pages: u64, requested_pages: u64) {
             #[cfg(target_os = "oxide-kernel")]
             {
                 crate::kswapd::wake_kswapd();
-                // NOTE: Linux clears `__GFP_DIRECT_RECLAIM` for atomic
-                // allocations, and gating this on `sched::preempt::in_atomic()`
-                // is the right shape — `direct_reclaim_once` descends
-                // pageout -> swap -> zram and can park, which must never happen
-                // from a softirq. It is NOT applied yet because our softirq
-                // handlers allocate (`drv-virtio-blk` collects completions into
-                // a `Vec`) and do not cope with `Enomem`: gating it regressed
-                // x86 to a lost-wakeup hang at `execve`, both CPUs idle with
-                // nothing runnable, i.e. dropped block completions.
-                //
-                // Apply it together with making those handlers allocation-free.
-                // The park itself is already refused by `schedule()`'s
-                // `in_atomic` check, so the corruption route is closed either way.
-                //
-                // Linux `PF_MEMALLOC_NOIO` (`prctl(PR_SET_IO_FLUSHER)`) DOES
-                // apply here: direct reclaim descends pageout -> swap -> the
-                // block layer, and a userspace block server that re-enters its
-                // own device from an allocation deadlocks. Such a task gets the
-                // background wakeup above and nothing else, exactly as Linux
-                // strips `__GFP_IO` for it.
-                if !current_is_io_flusher() { crate::kswapd::direct_reclaim_once(); }
+                // Direct reclaim descends pageout -> swap -> zram and may park.
+                // Atomic callers get only the background wakeup above; sleeping
+                // reclaim is legal only for a blockable allocation context.
+                // PF_MEMALLOC_NOIO similarly excludes the swap/block descent.
+                if direct_reclaim_allowed(sched::preempt::in_atomic(), current_is_io_flusher()) {
+                    crate::kswapd::direct_reclaim_once();
+                }
             }
         }
     }
+}
+
+/// Whether allocation context permits a sleeping direct-reclaim transaction. # C: O(1)
+pub const fn direct_reclaim_allowed(in_atomic: bool, io_flusher: bool) -> bool {
+    !in_atomic && !io_flusher
 }
 
 /// Wake background reclaim if a successful allocation left the zone below its

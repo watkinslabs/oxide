@@ -27,7 +27,7 @@ use hal::{Context, MmuOps};
 use crate::{RunqueueInner, SchedClass, Task, TaskState};
 use crate::live::runqueue::{global, Runqueue};
 
-use super::active_mm::{active_mm_drop, active_mm_grab, sched_current_cpu};
+use super::active_mm::{active_mm_defer_drop, active_mm_finish_drop, active_mm_grab, sched_current_cpu};
 use super::hooks::{fire_sched_switch, sched_switch_hook_installed};
 use super::lifecycle::VOLUNTARY;
 use super::ownership::report_ownership_conflict;
@@ -58,51 +58,6 @@ fn now_ns() -> u64 {
     { use hal::TimerOps; hal_aarch64::ArmTimerOps::monotonic_ns().0 }
     #[cfg(not(target_os = "oxide-kernel"))]
     { 0 }
-}
-
-/// Save this CPU's current IRQ-enable state, then mask IRQs for the pick +
-/// context switch. Returns an opaque token restored by `irq_restore` when
-/// THIS task resumes. Unlike Linux (whose `__schedule` always returns
-/// IRQs-enabled because its process-context locks shared with IRQs use
-/// `spin_lock_irqsave`), our kernel runs syscalls with IF=0 (SFMASK) and
-/// takes process-context locks (ZOMBIES, registry, wait lists) that the
-/// timer ISR also takes WITHOUT irqsave - so a switch MUST preserve each
-/// task's own IRQ state, or a syscall that blocked with IF=0 would resume
-/// with IF=1 and a timer firing while it holds such a lock would deadlock
-/// the ISR spinning on it. Host builds no-op (token 0). # C: O(1)
-#[inline]
-unsafe fn irq_save_disable() -> u64 {
-    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-    {
-        let f: u64;
-        // SAFETY: pushfq/pop reads RFLAGS (IF in bit 9); cli clears IF at CPL=0. Paired with irq_restore on this task's resume.
-        unsafe { core::arch::asm!("pushfq", "pop {f}", "cli", f = out(reg) f, options(nomem, preserves_flags)); }
-        f
-    }
-    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
-    {
-        let f: u64;
-        // SAFETY: mrs DAIF snapshots the mask bits; daifset #2 masks IRQ at EL1. Paired with irq_restore (msr daif) on this task's resume.
-        unsafe { core::arch::asm!("mrs {f}, daif", "msr daifset, #2", f = out(reg) f, options(nomem, nostack, preserves_flags)); }
-        f
-    }
-    #[cfg(not(target_os = "oxide-kernel"))]
-    { 0 }
-}
-
-/// Restore the IRQ-enable state captured by `irq_save_disable`. Run when
-/// THIS task resumes from its own switch (so a blocked syscall keeps IF=0,
-/// a voluntarily-yielding idle/kthread keeps IF=1). Host no-op. # C: O(1)
-#[inline]
-unsafe fn irq_restore(flags: u64) {
-    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-    // SAFETY: push/popfq restores RFLAGS (incl. IF) from the token saved by this task's own irq_save_disable; legal at CPL=0.
-    unsafe { core::arch::asm!("push {f}", "popfq", f = in(reg) flags, options(nomem)); }
-    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
-    // SAFETY: msr DAIF restores the mask bits saved by this task's own irq_save_disable; EL1-legal.
-    unsafe { core::arch::asm!("msr daif, {f}", f = in(reg) flags, options(nomem, nostack, preserves_flags)); }
-    #[cfg(not(target_os = "oxide-kernel"))]
-    { let _ = flags; }
 }
 
 /// `update_curr(prev)` per `13§3`/`13§8`: charge the CPU time the prev
@@ -159,14 +114,54 @@ unsafe fn finish_switched_from(rq: &Runqueue) {
     }
 }
 
+/// Complete the lock/ownership half of a switch handoff exactly once.
+///
+/// Normally the incoming task reaches this through its first-run trampoline
+/// or immediately after `Context::switch` returns.  A task can, however,
+/// reach another blocking `schedule()` before that tail hook (the live ext4
+/// fault reproduction does exactly this).  `switched_from` is the pending
+/// token: clearing only `on_cpu` while leaving the forgotten rq guard locked
+/// makes that next schedule spin forever on its own CPU.
+///
+/// # SAFETY: caller runs on `rq`'s CPU; a non-null handoff token denotes the
+/// one forgotten `rq.inner` guard installed by the preceding switch.
+/// # C: O(1)
+unsafe fn finish_lock_switch_pending(rq: &Runqueue) -> bool {
+    if rq.switched_from.load(Ordering::Acquire).is_null() { return false; }
+    // SAFETY: the non-null token proves a preceding switch still owns both
+    // the outgoing-task handoff and its forgotten rq guard.
+    unsafe { finish_switched_from(rq); }
+    // SAFETY: paired 1:1 with that switch's lock()+mem::forget guard.
+    unsafe { rq.inner.raw_unlock(); }
+    true
+}
+
 /// Linux `finish_task_switch` / `schedule_tail`: the INCOMING task runs this
 /// after the switch. It (1) releases the rq-lock the switcher held across the
-/// switch, (2) drains the deferred-reap slot, and (3) drops the `preempt_count`
-/// the switcher bumped. # C: O(1)
+/// switch, (2) drops the `preempt_count` the switcher bumped before any
+/// deferred destructor can sleep, and (3) drains deferred mm/reap work.
+/// # C: O(1) excluding deferred destruction
 #[no_mangle]
 pub unsafe extern "C" fn oxide_finish_task_switch() {
     sync::note_qs();
-    if let Some(rq) = global() {
+    let Some(rq) = global() else { return };
+    // A duplicate/delayed tail has no handoff debt. In particular, if
+    // schedule() repaired the pending switch before blocking again, a later
+    // stale tail must not unlock a new owner's rq guard or decrement its
+    // preempt count a second time.
+    // SAFETY: finish_task_switch runs on this runqueue's incoming task.
+    if !unsafe { finish_lock_switch_pending(rq) } { return; }
+    // rq.inner is no longer held, so consume the scheduler's preempt debt
+    // before any deferred destructor can block. This kernel's lazy-mm release
+    // can synchronously write back file-backed VMAs; leaving the debt live
+    // made its valid block look atomic and corrupted the nested switch count.
+    crate::preempt::preempt_enable_no_check();
+    // The deferred mm can run file-backed VMA destruction and synchronous
+    // writeback. The helper above has released rq.inner, matching the required
+    // finish-switch ordering before a potentially sleeping final mmdrop, and
+    // the preempt debt above is also settled before it can call schedule.
+    active_mm_finish_drop(rq);
+    {
         // Linux `finish_task_switch()` order: `finish_task(prev)` — the
         // `smp_store_release(&prev->on_cpu, 0)` — runs BEFORE
         // `finish_lock_switch(rq)` releases the rq lock. `kernel/sched/core.c`
@@ -191,12 +186,6 @@ pub unsafe extern "C" fn oxide_finish_task_switch() {
         // dcache Weak, VMA, etc. — the ~55s live-gnome heap-corruption
         // blocker). reap_pending still holds the Arc here, so the task is
         // guaranteed live.
-        // SAFETY: schedule_tail is the normal handoff completion point for
-        // this CPU's previous switch; the outgoing task is kept alive by
-        // reap_pending (drained below) or its runqueue/registry membership.
-        unsafe { finish_switched_from(rq); }
-        // SAFETY: the switcher acquired rq.inner via lock() and mem::forget'd the guard; this is the matching 1:1 release on the incoming stack.
-        unsafe { rq.inner.raw_unlock(); }
         // Place any task the switch we just completed evicted for affinity.
         // Here — not in `schedule()` — because here the outgoing task's
         // `on_cpu` is clear (so no other CPU can pick a task this one is still
@@ -220,7 +209,6 @@ pub unsafe extern "C" fn oxide_finish_task_switch() {
             }
         }
     }
-    crate::preempt::preempt_enable_no_check();
     // Linux `schedule_tail`'s trailing `put_user(task_pid_vnr(current),
     // current->set_child_tid)`: the ONE point at which a freshly forked child
     // is running on its OWN page tables and can service the copy-on-write fault
@@ -249,6 +237,15 @@ fn publish_forked_child_tid() {
 /// # Ctx: process|kthread|irq-exit-to-user; enters preempt-off
 #[track_caller]
 pub unsafe fn schedule() {
+    // Linux requires finish_task_switch(prev) to complete before the incoming
+    // task can block again. Recover that invariant before adding this call's
+    // own preempt-disable debt: otherwise the rq lock forgotten by the prior
+    // switch is still held and the acquisition below self-spins forever.
+    if global().is_some_and(|rq| !rq.switched_from.load(Ordering::Acquire).is_null()) {
+        // SAFETY: a non-null per-CPU handoff token is the preceding switch's
+        // exact finish_task_switch debt; the helper consumes it once.
+        unsafe { oxide_finish_task_switch(); }
+    }
     crate::preempt::preempt_disable();
     if !super::atomic::recover() {
         crate::preempt::preempt_enable_no_check();
@@ -259,11 +256,8 @@ pub unsafe fn schedule() {
         Some(r) => r,
         None => { crate::preempt::preempt_enable_no_check(); return }
     };
-    // SAFETY: complete any pending outgoing-task handoff before draining
-    // deferred wakeups, so ttwu does not re-defer a task on stale `on_cpu`.
-    unsafe { finish_switched_from(rq); }
     // SAFETY: single-CPU here; restored by irq_restore on this task's resume.
-    let flags = unsafe { irq_save_disable() };
+    let flags = unsafe { super::irq::save_disable() };
     let now = now_ns();
 
     let me_cpu = sched_current_cpu() as u32;
@@ -334,7 +328,7 @@ pub unsafe fn schedule() {
         drop(inner);
         crate::preempt::preempt_enable_no_check();
         // SAFETY: restores the IRQ state this fn saved at entry; no switch.
-        unsafe { irq_restore(flags); }
+        unsafe { super::irq::restore(flags); }
         return;
     }
 
@@ -385,10 +379,10 @@ pub unsafe fn schedule() {
                 if let Some(pm) = unsafe { prev_ref.mm_ref() } { pm.clear_cpu(me); }
             }
         }
-        active_mm_drop(me);
+        active_mm_defer_drop(me, rq);
     } else if prev_root != 0 {
         // SAFETY: prev_ref aliases the outgoing user Task; its mm Arc is live here (prev is still `current`); preempt-off + single-mutator per `13§5`.
-        if let Some(pm) = unsafe { prev_ref.mm_ref() } { active_mm_grab(me, pm); }
+        if let Some(pm) = unsafe { prev_ref.mm_ref() } { active_mm_grab(me, pm, rq); }
     }
 
     // SAFETY: prev_ref aliases the prev Task's arch_ctx buffer storage; per-active-CPU single-mutator invariant from `13§5` keeps this sound.
@@ -459,10 +453,11 @@ pub unsafe fn schedule() {
         unsafe { rq.current_ref() }.nr_migrations.fetch_add(1, Ordering::Relaxed);
         crate::perf_sw::charge(crate::perf_sw::CpuSw::Migration, me, 1);
     }
-    // SAFETY: before overwriting the single handoff slot, complete any
-    // previous switch whose incoming task reached schedule() before its tail
-    // hook cleared the old outgoing task.
-    unsafe { finish_switched_from(rq); }
+    // The entry recovery above must have consumed the previous handoff before
+    // this schedule acquired the same rq lock. Publishing over a live token
+    // would lose both its outgoing-task ownership clear and its lock release.
+    hal::kassert!(rq.switched_from.load(Ordering::Acquire).is_null(),
+        "schedule overwrote pending finish_task_switch handoff");
     rq.switched_from.store(prev_raw, Ordering::Release);
     let mut prev_arc_opt = Some(prev_arc);
     prev_arc_opt.as_ref().expect("just set").debug_check_canary("schedule_prev_arc");
@@ -609,7 +604,7 @@ pub unsafe fn schedule() {
     unsafe { oxide_finish_task_switch(); }
     drop(prev_arc_opt);
     // SAFETY: restores the IRQ state saved by THIS task's irq_save_disable.
-    unsafe { irq_restore(flags); }
+    unsafe { super::irq::restore(flags); }
 }
 
 /// Cooperative voluntary yield. Calls `schedule()` then parks the
@@ -617,7 +612,7 @@ pub unsafe fn schedule() {
 ///
 /// The trailing halt opens the IRQ window that a BUSY-yield caller (one
 /// that stays Runnable — recvmsg/accept/sendto spin-waiting for device
-/// data while the syscall runs IF=0) depends on to receive that data, so
+/// data) depends on to receive that data, so
 /// this form is for those callers. A caller that has already PARKED
 /// (marked itself Sleeping via a wait list) must instead use
 /// [`park_yield`], which does NOT halt: a parked task must not idle the
@@ -630,21 +625,8 @@ pub unsafe fn schedule() {
 pub unsafe fn tick_yield() {
     // SAFETY: caller satisfies `schedule()`'s contract (process / kthread context, preempt-off, single-CPU); delegated wholesale.
     unsafe { schedule(); }
-    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-    // SAFETY: privileged sti+hlt+cli at CPL=0. The sti window is exactly one instruction (the hlt) per Intel SDM Vol. 2A: STI delays IF=1 until after the NEXT instruction, so any IRQ edge raised between sti and hlt is serviced at hlt-resume, not in arbitrary kernel code. cli after returns to the syscall-tail IF=0 invariant.
-    unsafe {
-        core::arch::asm!("sti; hlt; cli", options(nomem, nostack, preserves_flags));
-    }
-    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
-    // SAFETY: msr daifclr/wfi/daifset are privileged at EL1; the daifclr-wfi-daifset triplet is the canonical arm idle pattern (Linux arm64 default_idle). Any IRQ pending before WFI causes WFI to fall through; daifset restores the syscall-tail DAIF.I=1 invariant.
-    unsafe {
-        core::arch::asm!(
-            "msr daifclr, #2",
-            "wfi",
-            "msr daifset, #2",
-            options(nomem, nostack, preserves_flags),
-        );
-    }
+    // SAFETY: cooperative yield owns a lock-free process-context idle window.
+    unsafe { super::irq::halt_enabled(); }
 }
 
 /// Linux `sched_yield(2)`: class-specific yield then schedule. # C: O(log N)
@@ -678,8 +660,8 @@ pub unsafe fn sched_yield() {
 ///     wake mechanism). Not halting here drains the roused set at full
 ///     context-switch speed.
 ///   * NOTHING else runnable (`nr_running == 0`): halt with IRQs enabled
-///     (idle semantics). This is REQUIRED: syscalls run IF=0, so if this
-///     task is the only runnable entity and `schedule()` re-selected it
+///     (idle semantics). This is REQUIRED even though ordinary process context
+///     is IRQ-on: an explicitly IRQ-off caller can be re-selected after a
 ///     (a raced wake / drained self-wake left it Runnable, or the CPU is
 ///     otherwise empty), the caller would re-park→`schedule()`→re-pick in
 ///     a tight loop with IRQs masked and the wake interrupt would never
@@ -711,19 +693,39 @@ pub unsafe fn park_yield() {
     if others != 0 { return; }
     // Nothing else to run: halt with IRQs on so the wake/data/timer IRQ can
     // land (idle semantics) — never spin the re-park loop with IRQs masked.
-    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-    // SAFETY: privileged sti+hlt+cli at CPL=0. STI delays IF=1 until after the next instruction (the hlt) per Intel SDM Vol. 2A, so any IRQ edge raised before the hlt is serviced at hlt-resume, not in arbitrary kernel code; cli restores the syscall-tail IF=0 invariant.
-    unsafe {
-        core::arch::asm!("sti; hlt; cli", options(nomem, nostack, preserves_flags));
-    }
-    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
-    // SAFETY: msr daifclr/wfi/daifset are privileged at EL1; the daifclr-wfi-daifset triplet is the canonical arm idle pattern (Linux arm64 default_idle). Any IRQ pending before WFI makes WFI fall through; daifset restores the syscall-tail DAIF.I=1 invariant.
-    unsafe {
-        core::arch::asm!(
-            "msr daifclr, #2",
-            "wfi",
-            "msr daifset, #2",
-            options(nomem, nostack, preserves_flags),
-        );
+    // SAFETY: parked caller owns a lock-free process-context idle window.
+    unsafe { super::irq::halt_enabled(); }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pending_switch_handoff_releases_forgotten_rq_guard_once() {
+        let idle = Arc::new(Task::new(9000, "idle", SchedClass::Idle));
+        let rq = Runqueue::new(0, idle);
+        let outgoing = Arc::new(Task::new(
+            9001,
+            "outgoing",
+            SchedClass::Normal { weight: 1024 },
+        ));
+        outgoing.on_cpu.store(true, Ordering::Release);
+        rq.switched_from.store(Arc::as_ptr(&outgoing) as *mut Task, Ordering::Release);
+
+        let guard = rq.inner.lock();
+        core::mem::forget(guard);
+        assert!(rq.inner.try_lock().is_none(), "test did not retain the rq guard");
+
+        // SAFETY: the test installed the exact non-null handoff token and
+        // matching forgotten guard required by the helper.
+        assert!(unsafe { finish_lock_switch_pending(&rq) });
+        assert!(!outgoing.on_cpu.load(Ordering::Acquire));
+        assert!(rq.switched_from.load(Ordering::Acquire).is_null());
+        assert!(rq.inner.try_lock().is_some(), "pending handoff left rq locked");
+
+        // SAFETY: no pending token remains; this must be a no-op.
+        assert!(!unsafe { finish_lock_switch_pending(&rq) },
+            "handoff was consumable more than once");
     }
 }
