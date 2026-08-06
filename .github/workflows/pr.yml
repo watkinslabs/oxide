@@ -1,5 +1,6 @@
 name: pr
 
+# On-demand diagnostics only. Local gates own merge verification per docs/40.
 on:
   workflow_dispatch:
 
