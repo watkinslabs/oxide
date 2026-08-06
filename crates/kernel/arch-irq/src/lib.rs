@@ -2,7 +2,8 @@
 // drivers. Device drivers own allocation at probe and release at
 // remove, matching the rest of the driver-core lifecycle.
 // `gic_trigger` owns host-testable GIC ICFGR field encoding, `gic_group` the
-// GICD_IGROUPR interrupt-group encoding.
+// GICD_IGROUPR interrupt-group encoding, and `spurious` the generic unhandled-
+// delivery detector.
 
 #![no_std]
 
@@ -22,9 +23,11 @@ mod gic_group;
 mod gic_trigger;
 mod line;
 mod msi;
+mod spurious;
 
-pub use line::LineHandler;
+pub use line::{irq_line_disabled, LineHandler};
 pub use msi::{alloc_pci_msi, free_pci_msi, register_pci_msi_handler, MsiMessage};
+pub use spurious::{IrqReport, IrqRet};
 #[cfg(target_arch = "x86_64")]
 pub use line::{free_irq_line_handler, invoke_x86_line_handler, register_irq_line_handler};
 #[cfg(target_arch = "aarch64")]
@@ -124,6 +127,7 @@ pub fn free_x86_vector(vector: u8) -> Result<(), ()> {
     let idx = (vector - hal_x86_64::VEC_MSI_POOL_FIRST) as usize;
     MSI_HANDLERS[idx].store(core::ptr::null_mut(), Ordering::Release);
     let _ = line::free_irq_line_handler(vector as u32);
+    hal_x86_64::ioapic::unroute_vector(vector);
     MSI_VEC_USED[idx].store(false, Ordering::Release);
     Ok(())
 }

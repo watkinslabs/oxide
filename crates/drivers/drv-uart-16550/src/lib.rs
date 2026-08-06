@@ -106,6 +106,7 @@ mod imp {
     // 8250 register offsets from the port base.
     const RBR: u16 = 0; // THR on write
     const IER: u16 = 1;
+    const IIR: u16 = 2; // FCR on write
     const FCR: u16 = 2;
     const LCR: u16 = 3; // line control; bit7 = DLAB (selects DLL/DLM at base+0/+1)
     const LSR: u16 = 5; // bit0 = RX data ready, bit5 = THR empty
@@ -114,6 +115,7 @@ mod imp {
     const FCR_CLEAR_RX: u8 = 0x02;
     const FCR_CLEAR_TX: u8 = 0x04;
     const FCR_RX_TRIGGER_8: u8 = 0x80;
+    const IIR_NO_INTERRUPT: u8 = 1 << 0;
     const LSR_DATA_READY: u8 = 1 << 0;
     const LSR_THR_EMPTY: u8 = 1 << 5;
 
@@ -202,7 +204,13 @@ mod imp {
     /// path only after dropping the aliased-register lock (delivery may log).
     /// # C: O(RX bytes + one 16-byte TX FIFO load)
     pub fn rx_isr(dlv: fn(u8)) {
-        let b = base(); if b == 0 { return; }
+        let _ = rx_isr_claimed(dlv);
+    }
+
+    fn rx_isr_claimed(dlv: fn(u8)) -> bool {
+        let b = base(); if b == 0 { return false; }
+        // SAFETY: IIR read at the detected COM base; bit 0 means this shared ISA line is not ours.
+        if unsafe { inb(b + IIR) } & IIR_NO_INTERRUPT != 0 { return false; }
         let mut received = [0u8; 64];
         let mut rx_count = 0usize;
         {
@@ -234,13 +242,19 @@ mod imp {
         for &byte in &received[..rx_count] {
             dlv(byte);
         }
+        true
     }
 
-    /// Bare-`fn()` MSI handler trampoline: the I/O APIC vector handler
-    /// signature has no args, so it pulls `deliver` from the stored
-    /// static and drains the FIFO into it.
+    /// I/O APIC line-handler adapter: reports whether IIR identifies this UART
+    /// as the source and pulls `deliver` from the stored static.
     /// # C: O(bytes pending)
-    fn uart_isr_msi() { rx_isr(super::deliver); }
+    fn uart_isr_line(_irq: u32) -> arch_irq::IrqReport {
+        arch_irq::IrqReport::hard(if rx_isr_claimed(super::deliver) {
+            arch_irq::IrqRet::Handled
+        } else {
+            arch_irq::IrqRet::NotMine
+        })
+    }
 
     /// Detect + register the serial console (TX sink + RX IRQ4). No-op
     /// when no UART responds. `dev_window_base` is the kernel device-MMIO
@@ -279,7 +293,7 @@ mod imp {
             unsafe { <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::map(Va(va), Pa(ioapic_pa), pf, PageSize::P4K); }
             hal_x86_64::ioapic::set_base_va(va);
             if let Some(vec) = arch_irq::alloc_x86_vector() {
-                if arch_irq::register_msi_handler(vec, uart_isr_msi).is_err() {
+                if arch_irq::register_irq_line_handler(vec as u32, uart_isr_line).is_err() {
                     let _ = arch_irq::free_x86_vector(vec);
                     BASE.store(0, Ordering::Release);
                     PRESENT.store(false, Ordering::Release);
