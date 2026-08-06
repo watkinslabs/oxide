@@ -36,11 +36,11 @@ reclassified.
 
 | Class \ Sev | blocker | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|
-| `DEFECT` | 0 | 1 | 11 | 24 | 36 |
+| `DEFECT` | 0 | 0 | 11 | 24 | 35 |
 | `MISSING` | 0 | 0 | 10 | 11 | 21 |
 | `COVERAGE` | 0 | 0 | 7 | 13 | 20 |
 | `INFRA` | 0 | 1 | 12 | 11 | 24 |
-| **Total** | **0** | **2** | **40** | **59** | **101** |
+| **Total** | **0** | **1** | **40** | **59** | **100** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -122,7 +122,6 @@ row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| OPEN | DEFECT | high | **Clean-release userspace still pays about 1.85 µs of on-CPU kernel time per syscall in the byte-copy probe, roughly 9× the Linux reference.** B1868 separated the earlier wall/CPU mismatch: the whole off-CPU half was an unrelated ALSA control busy loop and is archived as fixed, while the same 400k-syscall probe now takes 0.75–0.78 s wall and 0.73–0.75 s system on both settled SMP=1 and SMP=2. Queue next: attribute this remaining on-CPU cost with a measurement that can distinguish syscall entry/exit, VFS read/write, uaccess, and accounting; fix the canonical owner rather than adding permanent diagnostic work to the syscall tail. | B1868 clean-release KVM A/B, x86_64: SMP=1 0.76/0.76/0.75 s (`user=0.02`, `sys=0.73`) with `alsactl` sleeping and 259 context switches across all three runs; SMP=2 0.78/0.76/0.77 s (`user=0.02`, `sys=0.74–0.75`) with one runnable task before the probe. Killing only the previously spinning daemon changed B1867's 1.53–1.65 s wall result to 0.74–0.75 s without changing its ~0.74 s CPU time. | NEXT |
 | OPEN | DEFECT | med | Data segments still carry timestamps keyed on `ts_enabled` alone (`build_segment_at`), which is correct, but the SACK-block writer in `sack.rs` and the timestamp writer in `segment.rs` each assemble their own option area by hand rather than through `syn_opts`. Two more hand-rolled option writers remain; a non-SYN option assembler should absorb them. | Not a live defect — both currently emit correct bytes. Flagged so the next lane in this area does not add a fourth. | — |
 | OPEN | DEFECT | low | A mapping whose contents cannot be read is written as zeroes rather than reported. A reader returning 0 for a resident page is indistinguishable in the image from a genuinely zero page. Linux behaves the same way (a skipped range becomes a file hole), so this is faithful, but it means a dump cannot tell an operator that memory was lost. | `push_segment_data` in `crates/kernel/fs/src/coredump/elf/build.rs`; `tests/segments.rs::a_hole_is_zero_filled_rather_than_shortening_the_segment`. | — |
 | OPEN | DEFECT | low | `dma_mask_bits`/`consistent_dma_mask_bits` report the PCI default 32 for every function because no per-device DMA mask is tracked anywhere in the tree. A driver that would set a 64-bit mask is not represented. | `bus/pci_attrs/show.rs` `DEFAULT_DMA_MASK_BITS` | unowned |
