@@ -8,7 +8,8 @@ use vfs::{FileType, InodeRef};
 use crate::inotify::layout::encode_name;
 use crate::inotify::mask::{mask_applicable, IterType};
 use crate::inotify::types::{
-    inode_key, Event, InotifyData, MarkScope, FAN_ATTRIB, FAN_DELETE_SELF, FAN_EVENT_ON_CHILD,
+    child_mark_may_match, fs_scope_may_match, inode_key, Event, InotifyData, MarkScope,
+    FAN_ATTRIB, FAN_DELETE_SELF, FAN_EVENT_ON_CHILD,
     FAN_MOVED_FROM, FAN_MOVED_TO, FAN_MOVE_SELF,
     FAN_ONDIR, FAN_OPEN_EXEC, IN_ACCESS, IN_CLOSE_NOWRITE, IN_CLOSE_WRITE, IN_CREATE, IN_DELETE, IN_IGNORED,
     IN_EXCL_UNLINK, IN_ISDIR, IN_MODIFY, IN_ONESHOT, IN_OPEN, IN_SELF_NO_ISDIR, MARK_COUNT, MOVE_COOKIE,
@@ -269,12 +270,23 @@ fn fire_with_parent(inode: &InodeRef, mask_bit: u32, dentry: &Arc<vfs::Dentry>) 
     // marks pays neither the parent walk nor its dentry-inode lock on every
     // read/write/open/close.
     if MARK_COUNT.load(Ordering::Acquire) == 0 { return; }
+    let self_match = inode.fsnotify_has_mask(mask_bit) || fs_scope_may_match(mask_bit);
+    let child_match = child_mark_may_match(mask_bit);
+    if !self_match && !child_match { return; }
     let unlinked = d_unlinked(dentry);
-    fire_self_path(inode, mask_bit, unlinked);
+    if self_match { fire_self_path(inode, mask_bit, unlinked); }
+    if !child_match { return; }
     let Some(parent) = dentry.parent() else { return };
     let Some(pino) = parent.inode() else { return };
+    if !pino.fsnotify_has_mask(mask_bit | FAN_EVENT_ON_CHILD) { return; }
     let child_dir = inode.file_type() == FileType::Directory;
     fire_child_path(&pino, mask_bit, dentry.name(), child_dir, unlinked);
+}
+
+#[cfg(test)]
+pub(crate) fn fire_with_parent_for_test(inode: &InodeRef, mask_bit: u32,
+                                        dentry: &Arc<vfs::Dentry>) {
+    fire_with_parent(inode, mask_bit, dentry);
 }
 
 /// `d_unlinked(dentry)` — `d_unhashed(dentry) && !IS_ROOT(dentry)`. A name that

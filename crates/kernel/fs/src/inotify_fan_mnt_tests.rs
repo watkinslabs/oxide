@@ -87,7 +87,7 @@ fn graft(d: &Arc<Dentry>, root_ino: u64) -> u64 {
 fn mnt_group(ns: u64, mask: u32) -> Arc<InotifyData> {
     install_mnt_hook();
     let g = InotifyData::new_fanotify(FAN_REPORT_MNT);
-    assert_eq!(apply_mark_ns(&g, MarkScope::MountNamespace, 0, 0, ns, mask, true, false, 0, None), 0);
+    assert_eq!(apply_mark_ns(&g, MarkScope::MountNamespace, 0, 0, ns, mask, true, false, 0, None, None), 0);
     g
 }
 
@@ -95,7 +95,7 @@ fn mnt_group(ns: u64, mask: u32) -> Arc<InotifyData> {
 /// mark), so the process-wide mount-mark count returns to where it started.
 /// # C: O(N_watches)
 fn drop_mark(g: &Arc<InotifyData>, ns: u64, mask: u32) {
-    apply_mark_ns(g, MarkScope::MountNamespace, 0, 0, ns, mask, false, false, 0, None);
+    apply_mark_ns(g, MarkScope::MountNamespace, 0, 0, ns, mask, false, false, 0, None, None);
 }
 
 /// Drain the group and decode each record as `(mask, fd, mnt_id)`. Every record

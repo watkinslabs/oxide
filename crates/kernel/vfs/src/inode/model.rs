@@ -116,6 +116,11 @@ pub struct Inode {
     /// lifetime state, so separately opened file descriptors and forked VMAs
     /// cannot invent competing file-rmap objects for the same shared pages.
     pub(super) i_file_rmap:    Arc<vmm::FileRmap>,
+    /// Linux `inode->i_fsnotify_marks` fast-path summary. One counter per
+    /// event bit lets the notification owner answer "can this inode match?"
+    /// without scanning every inotify/fanotify group in the system. Counts,
+    /// rather than a lossy OR mask, make removal and mask replacement exact.
+    pub(super) i_fsnotify_mask_counts: [AtomicU32; 32],
     pub(super) i_op:           Arc<dyn InodeOps>,
     pub(super) i_fop:          Arc<dyn FileOps>,
     pub(super) i_private:      Arc<dyn Any + Send + Sync>,
