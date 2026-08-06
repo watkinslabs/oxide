@@ -14,7 +14,13 @@ static CURRENT: std::sync::Mutex<Option<NetworkNamespaceRef>> = std::sync::Mutex
 static CURRENT_CLAIM: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn claim_current() -> std::sync::MutexGuard<'static, ()> {
-    CURRENT_CLAIM.lock().unwrap_or_else(|e| e.into_inner())
+    let claim = CURRENT_CLAIM.lock().unwrap_or_else(|e| e.into_inner());
+    // Namespace allocation requires the production final-drop publication
+    // hook. Installing it is part of this fixture's ownership contract, not a
+    // side effect one test may accidentally provide for its siblings.
+    net::net_ns::install_final_drop_pending_notifier()
+        .expect("install final-drop pending notifier");
+    claim
 }
 
 fn current() -> NetworkNamespaceRef {
@@ -34,7 +40,6 @@ fn set(namespace: &NetworkNamespaceRef, key: usize, value: i64) -> Result<(), ()
 #[test]
 fn opened_net_sysctls_retain_owner_after_task_namespace_switch() {
     let _current = claim_current();
-    let _ = net::net_ns::install_final_drop_pending_notifier();
     let initial_user = namespace_identity::initial(namespace_identity::NamespaceKind::User);
     let opened_in = network_namespace::allocate(initial_user.clone()).unwrap();
     let switched_to = network_namespace::allocate(initial_user).unwrap();
