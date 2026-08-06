@@ -28,6 +28,7 @@ pub(crate) fn errno_from_vfs(error: vfs::VfsError) -> i64 {
         vfs::VfsError::Econnaborted => Errno::Econnaborted, vfs::VfsError::Econnreset => Errno::Econnreset, vfs::VfsError::Etimedout => Errno::Etimedout, vfs::VfsError::Econnrefused => Errno::Econnrefused,
         vfs::VfsError::Euclean => Errno::Euclean, vfs::VfsError::Edquot => Errno::Edquot, vfs::VfsError::Ecanceled => Errno::Ecanceled,
         vfs::VfsError::Enonet => Errno::Enonet, vfs::VfsError::Enoprotoopt => Errno::Enoprotoopt, vfs::VfsError::Eproto => Errno::Eproto,
+        vfs::VfsError::Ebadfd => Errno::Ebadfd,
         vfs::VfsError::Ehostdown => Errno::Ehostdown, vfs::VfsError::Eoverflow => Errno::Eoverflow,
     }.as_i32() as i64)
 }
