@@ -116,10 +116,11 @@ impl Ipv4Hdr {
     pub fn ihl_bytes(&self) -> usize { ((self.version_ihl & 0x0F) as usize) * 4 }
 }
 
-/// 1's-complement Internet checksum per RFC 1071. Returns 0 when
-/// the buffer (with checksum field already populated) is valid.
-/// # C: O(N)
-pub fn ip_checksum(buf: &[u8]) -> u16 {
+/// Unfolded 1's-complement sum per RFC 1071: big-endian 16-bit words, a final
+/// odd byte taken as the high half. Partial sums over disjoint even-aligned
+/// regions add before folding, which is what lets a pseudo-header and a message
+/// body each be summed in one pass and combined. # C: O(N)
+pub fn ones_sum(buf: &[u8]) -> u32 {
     let mut sum: u32 = 0;
     let mut i = 0;
     while i + 1 < buf.len() {
@@ -129,9 +130,23 @@ pub fn ip_checksum(buf: &[u8]) -> u16 {
     if i < buf.len() {
         sum += (buf[i] as u32) << 8;
     }
-    while (sum >> 16) != 0 { sum = (sum & 0xFFFF) + (sum >> 16); }
-    !(sum as u16)
+    sum
 }
+
+/// Carry an unfolded sum down into sixteen bits. # C: O(1)
+pub fn fold_ones(mut sum: u32) -> u16 {
+    while (sum >> 16) != 0 { sum = (sum & 0xFFFF) + (sum >> 16); }
+    sum as u16
+}
+
+/// Remove one 16-bit word's contribution from an unfolded sum: subtraction in
+/// this arithmetic is addition of the word's complement. # C: O(1)
+pub fn ones_sub(sum: u32, word: u16) -> u32 { sum + (!word as u32) }
+
+/// 1's-complement Internet checksum per RFC 1071. Returns 0 when
+/// the buffer (with checksum field already populated) is valid.
+/// # C: O(N)
+pub fn ip_checksum(buf: &[u8]) -> u16 { !fold_ones(ones_sum(buf)) }
 
 /// Push a 20-byte IPv4 header in front of the current packet
 /// payload. Caller has already populated `pkt` with the L4 payload

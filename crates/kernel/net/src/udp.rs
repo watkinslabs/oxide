@@ -4,7 +4,7 @@
 // + payload. v1 honors checksum (sender computes; receiver
 // validates).
 
-use crate::addr::Ipv4Addr;
+use crate::addr::{IpProto, Ipv4Addr};
 use crate::ipv4::ip_checksum;
 
 pub const UDP_HDR_LEN: usize = 8;
@@ -28,28 +28,55 @@ pub struct UdpHdr {
     pub checksum: u16,
 }
 
+/// One validated UDP/IPv4 receive: the wire header, plus the whole-datagram
+/// checksum the validating pass retained.
+///
+/// `complete` is the unfolded 1's-complement sum over the UDP message exactly
+/// as it arrived — header, checksum field and payload, no pseudo-header. It is
+/// `Some` only for a datagram that carried a checksum; a sender that suppressed
+/// the checksum leaves nothing to retain, and nothing is published. Retaining
+/// it here rather than recomputing later is what keeps one datagram's checksum
+/// arithmetic to a single pass.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct UdpReceive { pub hdr: UdpHdr, pub complete: Option<u32> }
+
+/// Parse and validate one UDP/IPv4 message, keeping the whole-datagram
+/// checksum. # C: O(N)
+pub fn parse_rx(buf: &[u8], src_ip: Ipv4Addr, dst_ip: Ipv4Addr)
+    -> Result<UdpReceive, UdpError>
+{
+    if buf.len() < UDP_HDR_LEN { return Err(UdpError::Short); }
+    let length = u16::from_be_bytes([buf[4], buf[5]]);
+    if (length as usize) != buf.len() { return Err(UdpError::BadLen); }
+    let checksum = u16::from_be_bytes([buf[6], buf[7]]);
+    // Per RFC 768, checksum=0 means "skipped". Otherwise verify: the message
+    // sum and the pseudo-header sum together fold to all-ones.
+    let mut complete = None;
+    if checksum != 0 {
+        let message = crate::ipv4::ones_sum(buf);
+        if crate::ipv4::fold_ones(message + pseudo_sum_v4(buf.len(), src_ip, dst_ip)) != 0xFFFF {
+            return Err(UdpError::BadChecksum);
+        }
+        complete = Some(message);
+    }
+    Ok(UdpReceive {
+        hdr: UdpHdr {
+            src_port: u16::from_be_bytes([buf[0], buf[1]]),
+            dst_port: u16::from_be_bytes([buf[2], buf[3]]),
+            length,
+            checksum,
+        },
+        complete,
+    })
+}
+
 impl UdpHdr {
     /// Parse a UDP header out of `buf` (the L4 payload of an
     /// IPv4 packet). Validates checksum against the IPv4 pseudo-
     /// header. `buf.len()` must equal `length`.
     /// # C: O(N)
     pub fn parse(buf: &[u8], src_ip: Ipv4Addr, dst_ip: Ipv4Addr) -> Result<Self, UdpError> {
-        if buf.len() < UDP_HDR_LEN { return Err(UdpError::Short); }
-        let length = u16::from_be_bytes([buf[4], buf[5]]);
-        if (length as usize) != buf.len() { return Err(UdpError::BadLen); }
-        let checksum = u16::from_be_bytes([buf[6], buf[7]]);
-        // Per RFC 768, checksum=0 means "skipped". Otherwise verify.
-        if checksum != 0 {
-            if !udp_checksum_ok(buf, src_ip, dst_ip) {
-                return Err(UdpError::BadChecksum);
-            }
-        }
-        Ok(Self {
-            src_port: u16::from_be_bytes([buf[0], buf[1]]),
-            dst_port: u16::from_be_bytes([buf[2], buf[3]]),
-            length,
-            checksum,
-        })
+        parse_rx(buf, src_ip, dst_ip).map(|rx| rx.hdr)
     }
 
     /// Build a UDP datagram (header + payload) into `out`.
@@ -102,24 +129,26 @@ pub fn compute_udp_checksum(buf: &[u8], src_ip: Ipv4Addr, dst_ip: Ipv4Addr) -> u
     compute_udp_checksum_with_field(buf, src_ip, dst_ip, false)
 }
 
-fn compute_udp_checksum_with_field(
-    buf: &[u8], src_ip: Ipv4Addr, dst_ip: Ipv4Addr, include_field: bool,
-) -> u16 {
-    // Pseudo-header: src(4) + dst(4) + zero(1) + proto(1) + udp_len(2)
+/// Unfolded sum over the UDP/IPv4 pseudo-header: src(4) + dst(4) + zero(1) +
+/// proto(1) + udp_len(2). # C: O(1)
+fn pseudo_sum_v4(len: usize, src_ip: Ipv4Addr, dst_ip: Ipv4Addr) -> u32 {
     let mut pseudo = [0u8; 12];
     pseudo[0..4].copy_from_slice(&src_ip.octets());
     pseudo[4..8].copy_from_slice(&dst_ip.octets());
     pseudo[8] = 0;
-    pseudo[9] = 17;  // IpProto::Udp
-    pseudo[10..12].copy_from_slice(&(buf.len() as u16).to_be_bytes());
-    let mut all = alloc::vec::Vec::with_capacity(12 + buf.len());
-    all.extend_from_slice(&pseudo);
-    all.extend_from_slice(buf);
-    if !include_field && all.len() >= 12 + 8 {
-        all[12 + 6] = 0;
-        all[12 + 7] = 0;
+    pseudo[9] = IpProto::Udp as u8;
+    pseudo[10..12].copy_from_slice(&(len as u16).to_be_bytes());
+    crate::ipv4::ones_sum(&pseudo)
+}
+
+fn compute_udp_checksum_with_field(
+    buf: &[u8], src_ip: Ipv4Addr, dst_ip: Ipv4Addr, include_field: bool,
+) -> u16 {
+    let mut sum = pseudo_sum_v4(buf.len(), src_ip, dst_ip) + crate::ipv4::ones_sum(buf);
+    if !include_field && buf.len() >= UDP_HDR_LEN {
+        sum = crate::ipv4::ones_sub(sum, u16::from_be_bytes([buf[6], buf[7]]));
     }
-    ip_checksum(&all)
+    !crate::ipv4::fold_ones(sum)
 }
 
 /// F180a: build a UDP header for the IPv6 pseudo-header per RFC 8200

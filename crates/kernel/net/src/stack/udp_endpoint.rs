@@ -117,6 +117,10 @@ impl UdpRxQueue {
             GroAdmit::Merge => {
                 let tail = state.datagrams.back_mut().expect("a merge names a tail");
                 tail.datagram.payload.extend_from_slice(&datagram.payload);
+                // The retained sum covered the head datagram alone; a coalesced
+                // receive hands the reader more bytes than it describes, so
+                // there is no whole-datagram checksum left to publish.
+                tail.datagram.checksum = None;
                 tail.gro.extend(len);
             }
             GroAdmit::Separate { open } => {
