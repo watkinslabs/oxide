@@ -21,6 +21,8 @@ pub struct PciIdent {
     pub subsystem_device: u16,
     /// Legacy INTx line, 0 when the function reports no INTx pin.
     pub interrupt_line: u32,
+    /// Device Serial Number from the PCIe extended-capability chain.
+    pub serial_number: Option<u64>,
 }
 
 /// Read `buf.len()` config-space bytes of the function at `addr` starting at

@@ -69,6 +69,7 @@ pub(crate) fn pci_ident(d: &pci::PciDevice) -> drv::PciIdent {
         ident.subsystem_vendor = svid;
         ident.subsystem_device = sdid;
         ident.interrupt_line = pci::interrupt_line(&r, d.bdf);
+        ident.serial_number = pci::device_serial_number(&r, d.bdf);
     }
     ident
 }
