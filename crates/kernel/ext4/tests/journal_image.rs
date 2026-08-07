@@ -128,6 +128,30 @@ fn commit_metadata_routes_through_journal() {
 }
 
 #[test]
+fn full_batch_commits_across_multiple_descriptors() {
+    let disk = build_disk();
+    let m = ext4::Mount::open(disk.clone()).unwrap();
+    let bs = m.sb.block_size as usize;
+    let first = 1200u64;
+    let staged: std::vec::Vec<_> = (0..512u64)
+        .map(|i| ext4::StagedBlock {
+            target_lba: first + i,
+            data: std::vec![(i % 251) as u8; bs],
+        })
+        .collect();
+    m.commit_metadata(staged).unwrap();
+    for i in [0u64, 123, 124, 511] {
+        let mut req = BlockRequest::new_read(
+            (first + i) * bs as u64 / SECTOR as u64,
+            (bs / SECTOR as usize) as u32,
+            SECTOR,
+        );
+        disk.submit_sync(&mut req).unwrap();
+        assert_eq!(req.buffer[0], (i % 251) as u8, "target index {i}");
+    }
+}
+
+#[test]
 fn journaled_image_supports_writes() {
     // Even with a journal present + recover support running, the
     // ext4 RW path (alloc_block + create_file + …) must continue

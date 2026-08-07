@@ -1,10 +1,11 @@
 // Descriptor block: lists the target fs blocks for the data
 // blocks immediately following in the journal. Each entry
-// (`journal_block_tag_s` in fs/jbd2) is 8 (legacy 32-bit) or
-// 16 (64BIT feature) bytes:
+// is 8 (legacy 32-bit) or 12 (64BIT feature) bytes for the
+// unchecksummed format:
 //
 //   u32 t_blocknr_lo
-//   u32 t_flags
+//   u16 t_checksum
+//   u16 t_flags
 //   [u32 t_blocknr_hi  if 64BIT]
 //   [u8 t_uuid[16]     if !SAME_UUID]
 //
@@ -61,7 +62,7 @@ impl<'a> Iterator for DescriptorIter<'a> {
     fn next(&mut self) -> Option<DescriptorEntry> {
         if self.done { return None; }
         let off = self.off;
-        let min = if self.bit64 { 16 } else { 8 };
+        let min = if self.bit64 { 12 } else { 8 };
         if off + min > self.buf.len() { self.done = true; return None; }
         let blocknr_lo = u32::from_be_bytes([self.buf[off], self.buf[off+1], self.buf[off+2], self.buf[off+3]]) as u64;
         let flags      = u32::from_be_bytes([self.buf[off+4], self.buf[off+5], self.buf[off+6], self.buf[off+7]]);
@@ -117,12 +118,11 @@ mod tests {
 
     #[test]
     fn walk_64bit_tag() {
-        // 64bit: 16 bytes per tag (no UUID with SAME_UUID|LAST).
+        // Unchecksummed 64bit: 12 bytes per tag (no UUID with SAME_UUID|LAST).
         let mut b = std::vec::Vec::new();
         put32(&mut b, 0x0000_0064);  // blocknr_lo
         put32(&mut b, TAG_FLAG_SAME_UUID | TAG_FLAG_LAST);
         put32(&mut b, 1);            // blocknr_hi
-        put32(&mut b, 0);            // unused
         let v: std::vec::Vec<_> = DescriptorIter::new(&b, true).collect();
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].tag.blocknr, 0x0000_0001_0000_0064);

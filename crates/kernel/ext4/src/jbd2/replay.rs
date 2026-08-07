@@ -11,7 +11,7 @@
 // PASS_REPLAY).
 
 extern crate alloc;
-use alloc::collections::BTreeSet;
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 use block::{BlockDevice, BlockRequest, types::BlockError};
@@ -59,7 +59,7 @@ pub fn replay<J: JournalLogReader>(
     if !sb.needs_recovery() { return Ok(stats); }
 
     // Pass 1: scan revokes; track (blocknr, sequence-of-revoke).
-    let mut revoke_set: BTreeSet<u64> = BTreeSet::new();
+    let mut revoke_set: BTreeMap<u64, u32> = BTreeMap::new();
     let mut cur = sb.start;
     let mut seq = sb.sequence;
     loop {
@@ -78,11 +78,11 @@ pub fn replay<J: JournalLogReader>(
                 // Skip past descriptor's data blocks for revoke pass.
                 let tags: Vec<_> = DescriptorIter::new(&blk[12..], bit64).collect();
                 let n_data = tags.len() as u32;
-                cur = wrap_advance(cur, 1 + n_data, sb.maxlen);
+                cur = wrap_advance(cur, 1 + n_data, sb.first, sb.maxlen);
             }
             BlockType::Commit => {
                 seq = seq.wrapping_add(1);
-                cur = wrap_advance(cur, 1, sb.maxlen);
+                cur = wrap_advance(cur, 1, sb.first, sb.maxlen);
             }
             BlockType::Revoke => {
                 let count_bytes = u32::from_be_bytes([blk[12], blk[13], blk[14], blk[15]]) as usize;
@@ -98,14 +98,18 @@ pub fn replay<J: JournalLogReader>(
                     } else {
                         u32::from_be_bytes([payload[o], payload[o+1], payload[o+2], payload[o+3]]) as u64
                     };
-                    revoke_set.insert(bn);
+                    match revoke_set.get_mut(&bn) {
+                        Some(old) if tid_gt(seq, *old) => { *old = seq; }
+                        None => { revoke_set.insert(bn, seq); }
+                        _ => {}
+                    }
                     stats.revokes += 1;
                     o += stride;
                 }
-                cur = wrap_advance(cur, 1, sb.maxlen);
+                cur = wrap_advance(cur, 1, sb.first, sb.maxlen);
             }
             BlockType::SuperblockV1 | BlockType::SuperblockV2 => {
-                cur = wrap_advance(cur, 1, sb.maxlen);
+                cur = wrap_advance(cur, 1, sb.first, sb.maxlen);
             }
         }
         if cur == sb.start { break; }
@@ -127,13 +131,12 @@ pub fn replay<J: JournalLogReader>(
             BlockType::Descriptor => {
                 let tags: Vec<_> = DescriptorIter::new(&blk[12..], bit64)
                     .map(|e| e.tag).collect();
-                cur = wrap_advance(cur, 1, sb.maxlen);
-                pending.clear();
+                cur = wrap_advance(cur, 1, sb.first, sb.maxlen);
                 for tag in &tags {
                     let data = match journal.read_journal_block(cur) {
                         Ok(b) => b, Err(_) => return Err(ReplayError::Corrupt),
                     };
-                    cur = wrap_advance(cur, 1, sb.maxlen);
+                    cur = wrap_advance(cur, 1, sb.first, sb.maxlen);
                     let mut payload = data;
                     // ESCAPE: first 4 bytes of the data block were
                     // overwritten to 0 because they would otherwise
@@ -151,19 +154,21 @@ pub fn replay<J: JournalLogReader>(
                 // Apply all pending blocks (filtered by revoke set).
                 let bs = sb.block_size as u64;
                 for (bn, data) in pending.drain(..) {
-                    if revoke_set.contains(&bn) { continue; }
+                    if revoke_set.get(&bn).map_or(false, |&revoke_seq| !tid_gt(seq, revoke_seq)) {
+                        continue;
+                    }
                     write_target(target, bn * bs, &data)?;
                     stats.blocks_applied += 1;
                 }
                 stats.txns_replayed += 1;
                 seq = seq.wrapping_add(1);
-                cur = wrap_advance(cur, 1, sb.maxlen);
+                cur = wrap_advance(cur, 1, sb.first, sb.maxlen);
             }
             BlockType::Revoke => {
-                cur = wrap_advance(cur, 1, sb.maxlen);
+                cur = wrap_advance(cur, 1, sb.first, sb.maxlen);
             }
             BlockType::SuperblockV1 | BlockType::SuperblockV2 => {
-                cur = wrap_advance(cur, 1, sb.maxlen);
+                cur = wrap_advance(cur, 1, sb.first, sb.maxlen);
             }
         }
         if cur == sb.start { break; }
@@ -171,13 +176,15 @@ pub fn replay<J: JournalLogReader>(
     Ok(stats)
 }
 
-fn wrap_advance(cur: u32, delta: u32, maxlen: u32) -> u32 {
-    if maxlen == 0 { return cur; }
-    let mut c = cur as u64 + delta as u64;
-    let m = maxlen as u64;
-    while c >= m { c -= m - 1; if c == 0 { c = 1; } } // never wrap to 0 (sb)
-    c as u32
+fn wrap_advance(cur: u32, delta: u32, first: u32, maxlen: u32) -> u32 {
+    let first = core::cmp::max(first, 1);
+    let range = maxlen.saturating_sub(first) as u64;
+    if range == 0 { return cur; }
+    let off = cur.saturating_sub(first) as u64;
+    first + ((off + delta as u64) % range) as u32
 }
+
+fn tid_gt(x: u32, y: u32) -> bool { (x.wrapping_sub(y) as i32) > 0 }
 
 fn write_target(target: &dyn BlockDevice, byte_off: u64, data: &[u8]) -> Result<(), ReplayError> {
     let bs = target.block_size() as u64;
@@ -231,12 +238,20 @@ mod tests {
         b
     }
 
+    fn make_revoke(seq: u32, target_blk: u32, bs: usize) -> std::vec::Vec<u8> {
+        let mut b = std::vec![0u8; bs];
+        BlockHeader { block_type: BlockType::Revoke, sequence: seq }.write_to(&mut b);
+        b[12..16].copy_from_slice(&20u32.to_be_bytes());
+        b[16..20].copy_from_slice(&target_blk.to_be_bytes());
+        b
+    }
+
     fn make_data(byte: u8, bs: usize) -> std::vec::Vec<u8> { std::vec![byte; bs] }
 
     fn make_journal_sb(start: u32, sequence: u32, bs: u32, maxlen: u32) -> JournalSuperblock {
         JournalSuperblock {
             block_size: bs, maxlen, first: 1, sequence, start,
-            feature_compat: 0, feature_incompat: 0, feature_ro: 0,
+            feature_compat: 0, feature_incompat: 0, feature_ro: 0, uuid: [0u8; 16],
         }
     }
 
@@ -270,5 +285,31 @@ mod tests {
         let mut req = BlockRequest::new_read(7, 1, bs as u32);
         disk.submit_sync(&mut req).unwrap();
         assert_eq!(req.buffer[0], 0xAB);
+    }
+
+    #[test]
+    fn later_transaction_survives_earlier_revoke_across_tid_wrap() {
+        let bs = 1024usize;
+        let old = u32::MAX;
+        let new = 0;
+        let blocks = std::vec![
+            make_data(0, bs),
+            make_descriptor(old, 7, bs),
+            make_data(0xAA, bs),
+            make_revoke(old, 7, bs),
+            make_commit(old, bs),
+            make_descriptor(new, 7, bs),
+            make_data(0xBB, bs),
+            make_commit(new, bs),
+        ];
+        let j = MemJournal { blocks };
+        let disk: Arc<MemDisk<TaskList>> = MemDisk::new(bs as u32, 16);
+        let sb = make_journal_sb(1, old, bs as u32, 16);
+        let stats = replay(&j, &*disk, &sb).unwrap();
+        assert_eq!(stats.txns_replayed, 2);
+        assert_eq!(stats.blocks_applied, 1, "revoke covers its txn, not a later one");
+        let mut req = BlockRequest::new_read(7, 1, bs as u32);
+        disk.submit_sync(&mut req).unwrap();
+        assert_eq!(req.buffer[0], 0xBB);
     }
 }

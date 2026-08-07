@@ -14,8 +14,8 @@ use crate::jbd2::{
     JournalSuperblock,
     JournalLogReader, ReplayError, ReplayStats,
     replay,
-    StagedBlock, LogCursor, build_descriptor_block, build_commit_block,
-    escape_journal_payload,
+    StagedBlock, LogCursor, TransactionError,
+    transaction_block_count, emit_transaction,
 };
 
 use crate::inode::{self, Inode};
@@ -70,7 +70,7 @@ impl Mount {
     /// - `NoSpace` if the staged set exceeds journal capacity
     /// - `BlockIo` propagated from device errors
     /// # C: O(N staged) journal I/O + N target I/O
-    pub fn commit_metadata(&self, mut staged: Vec<StagedBlock>) -> Result<u32, MountError> {
+    pub fn commit_metadata(&self, staged: Vec<StagedBlock>) -> Result<u32, MountError> {
         if staged.is_empty() { return Ok(0); }
         #[cfg(feature = "debug-fsync-latency")]
         let staged_blocks = staged.len() as u64;
@@ -107,29 +107,23 @@ impl Mount {
             return self.apply_staged_to_target(&staged).map(|_| 0);
         }
         let bs = jsb.block_size as usize;
-        let n = staged.len() as u32;
-        if n + 2 >= jsb.maxlen { return Err(MountError::NoSpace); }
-        let mut cursor = LogCursor::new(jsb.start, jsb.maxlen, jsb.sequence);
-        // Reserve descriptor + N data + commit.
-        let desc_at = cursor.reserve(1);
-        let data_at_first = cursor.reserve(n);
-        let commit_at = cursor.reserve(1);
+        let bit64 = jsb.feature_incompat & crate::jbd2::superblock::JBD2_INCOMPAT_64BIT != 0;
+        let transaction_blocks = transaction_block_count(staged.len(), bs, bit64)
+            .map_err(|_| MountError::NoSpace)?;
+        let mut cursor = LogCursor::new(jsb.start, jsb.first, jsb.maxlen, jsb.sequence);
+        if transaction_blocks as u32 > cursor.usable() { return Err(MountError::NoSpace); }
+        let desc_at = cursor.head;
         let seq = cursor.seq;
-        // Write descriptor.
-        let dbuf = build_descriptor_block(seq, &staged, bs);
         #[cfg(feature = "debug-fsync-latency")]
         let journal_started_ns = crate::fsync_latency::now_ns();
-        log.write_journal_block(desc_at, &dbuf)?;
-        // Write each data block (escape if first 4 bytes are JBD2_MAGIC).
-        for (i, s) in staged.iter_mut().enumerate() {
-            let mut b = s.data.clone();
-            if b.len() != bs { b.resize(bs, 0); }
-            escape_journal_payload(&mut b);
-            log.write_journal_block(data_at_first + i as u32, &b)?;
-        }
-        // Write commit.
-        let cbuf = build_commit_block(seq, bs);
-        log.write_journal_block(commit_at, &cbuf)?;
+        emit_transaction(seq, &staged, bs, bit64, &jsb.uuid, |block| {
+            let at = cursor.reserve(1);
+            log.write_journal_block(at, block)
+        }).map_err(|e| match e {
+            TransactionError::Emit(crate::jbd2::EmitError::BlockNumber) => MountError::BadBlock,
+            TransactionError::Emit(_) => MountError::NoSpace,
+            TransactionError::Write(e) => e,
+        })?;
         #[cfg(feature = "debug-fsync-latency")]
         crate::fsync_latency::report(b"journal-body", journal_started_ns, staged_blocks);
         // WAL barrier (jbd2 write-ahead, ext4fix §6.1): make the journal body
