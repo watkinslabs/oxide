@@ -63,12 +63,6 @@ pub mod x86_64 {
 
         /// Quadwords in the struct.
         pub const N: usize = 27;
-
-        /// `orig_rax` on a frame that did NOT come from a `syscall`
-        /// instruction: there is no syscall number to report, and a debugger
-        /// reading a plausible number there would show the stop as an
-        /// interrupted call.
-        pub const NO_SYSCALL: u64 = u64::MAX;
     }
 
     pub const X86_EFLAGS_CF:   u64 = 1 << 0;

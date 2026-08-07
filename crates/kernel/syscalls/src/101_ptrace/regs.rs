@@ -31,7 +31,7 @@ pub mod x86 {
     /// `hal::uregs` because the core-dump register block indexes the same way.
     pub use hal::uregs::x86_64::user_regs::{
         CS as U_CS, DS as U_DS, EFLAGS as U_EFLAGS, ES as U_ES, FS as U_FS,
-        FS_BASE as U_FS_BASE, GS as U_GS, GS_BASE as U_GS_BASE, N, NO_SYSCALL,
+        FS_BASE as U_FS_BASE, GS as U_GS, GS_BASE as U_GS_BASE, N,
         ORIG_RAX as U_ORIG_RAX, R10 as U_R10, R11 as U_R11, R12 as U_R12,
         R13 as U_R13, R14 as U_R14, R15 as U_R15, R8 as U_R8, R9 as U_R9,
         RAX as U_RAX, RBP as U_RBP, RBX as U_RBX, RCX as U_RCX, RDI as U_RDI,
@@ -61,9 +61,8 @@ pub mod x86 {
     /// entry — it keeps the syscall number for the whole dispatch — so the
     /// ABI return register comes from `stop_rax`, the value recorded at the
     /// stop (Linux reports `-ENOSYS` at a syscall-entry stop and the result at
-    /// a syscall-exit stop). On a trap frame there is no syscall: `rax` is the
-    /// user's own register and `orig_rax` reads back as [`NO_SYSCALL`], which
-    /// is what the core-dump block reports for the same frame.
+    /// a syscall-exit stop). On a trap frame, `rax` is the user's own register
+    /// and the independently saved entry word is `orig_rax`.
     /// # C: O(1)
     pub fn to_user_regs(f: &Frame, stop_rax: u64, seg: &SegState) -> [u64; N] {
         let from_syscall = f.from_syscall();
@@ -83,7 +82,7 @@ pub mod x86 {
         u[U_RDX] = f.rdx;
         u[U_RSI] = f.rsi;
         u[U_RDI] = f.rdi;
-        u[U_ORIG_RAX] = if from_syscall { f.rax } else { NO_SYSCALL };
+        u[U_ORIG_RAX] = if from_syscall { f.rax } else { f.error };
         u[U_RIP]    = f.rip;
         u[U_CS]     = f.cs;
         u[U_EFLAGS] = f.rflags;
@@ -111,9 +110,8 @@ pub mod x86 {
     /// selector, or a non-canonical FS/GS base) with EIO, leaving the frame
     /// untouched.
     ///
-    /// Which supplied word lands in the frame's single `rax` slot follows the
-    /// entry tag, mirroring [`to_user_regs`]: the syscall number on a
-    /// `syscall` frame, the architectural `rax` on a trap frame.
+    /// A syscall frame stores its original number in `rax`; a trap frame keeps
+    /// its architectural `rax` and independent entry word in `error`.
     /// # C: O(1)
     pub fn from_user_regs(u: &[u64; N], f: &mut Frame, seg: &mut SegState,
                           user_va_end: u64) -> Result<u64, Errno> {
@@ -137,7 +135,12 @@ pub mod x86 {
         f.rdx = u[U_RDX];
         f.rsi = u[U_RSI];
         f.rdi = u[U_RDI];
-        f.rax = if f.from_syscall() { u[U_ORIG_RAX] } else { u[U_RAX] };
+        if f.from_syscall() {
+            f.rax = u[U_ORIG_RAX];
+        } else {
+            f.rax = u[U_RAX];
+            f.error = u[U_ORIG_RAX];
+        }
         f.rip = u[U_RIP];
         f.rsp = u[U_RSP];
         f.rflags = hal::uregs::x86_64::ptrace_eflags(f.rflags, u[U_EFLAGS]);

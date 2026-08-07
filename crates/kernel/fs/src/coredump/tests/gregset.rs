@@ -66,27 +66,29 @@ fn the_x86_return_register_and_the_syscall_number_are_separate_slots() {
     assert_eq!(word(&b, X86_U_ORIG_RAX), 0x3b);
 }
 
-/// A trap frame has no syscall to report.
+/// A trap frame keeps the entry word independently from its architectural RAX.
 #[test]
-fn a_frame_that_did_not_come_from_a_syscall_reports_no_syscall_number() {
-    let f = X86Frame { orig_rax: NO_SYSCALL, ..x86_marked() };
+fn a_trap_frame_reports_its_independent_entry_word() {
+    let f = X86Frame { orig_rax: 0xdecafbad, ..x86_marked() };
     let b = x86_64_block(&f, &X86SegBases::default());
-    assert_eq!(word(&b, X86_U_ORIG_RAX), u64::MAX);
+    assert_eq!(word(&b, X86_U_ORIG_RAX), 0xdecafbad);
     assert_eq!(word(&b, X86_U_RAX), 0xaa);
 }
 
 /// The live-frame reader picks that rule from the entry tag rather than from
-/// a guess about the register's value.
+/// a guess about the register's value, preserving the trap's entry word.
 #[cfg(target_arch = "x86_64")]
 #[test]
 fn the_live_frame_reader_takes_the_syscall_number_only_from_a_syscall_entry() {
     /// A page-fault vector: any entry tag that is not the syscall sentinel.
     const VECTOR_PAGE_FAULT: u64 = 14;
-    let mut r = hal_x86_64::PtRegs { rax: 0x27, rip: 0x401000, ..Default::default() };
+    let mut r = hal_x86_64::PtRegs {
+        rax: 0x27, error: 0x7172, rip: 0x401000, ..Default::default()
+    };
     r.vector = VECTOR_PAGE_FAULT;
     // SAFETY: `r` is a local frame value owned by this test for the call's duration.
     let trap = unsafe { current_block(&r as *const _, &X86SegBases::default()) };
-    assert_eq!(word(&trap, X86_U_ORIG_RAX), NO_SYSCALL);
+    assert_eq!(word(&trap, X86_U_ORIG_RAX), 0x7172);
     assert_eq!(word(&trap, X86_U_RAX), 0x27);
 
     r.vector = hal_x86_64::PT_REGS_VECTOR_SYSCALL;
