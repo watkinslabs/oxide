@@ -241,7 +241,7 @@ here now.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| OPEN | MISSING | low | `/proc/interrupts` lists no virtio lines, so per-device interrupt progress cannot be observed from the guest. | probe on `c177484f8` | — |
+| OPEN | MISSING | low | `/proc/interrupts` lists no virtio lines, so per-device interrupt progress cannot be observed from the guest. | probe on `c177484f8` | CLAIMED F839 |
 
 ### C275-cmdline-extra
 
