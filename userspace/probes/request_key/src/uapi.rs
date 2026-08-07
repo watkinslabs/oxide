@@ -19,6 +19,12 @@ pub const SYS_KEYCTL: libc::c_long = 219;
 /// `KEYCTL_READ` — read a key's payload back.
 pub const KEYCTL_READ: libc::c_long = 11;
 
+/// `KEYCTL_INSTANTIATE_IOV` — instantiate a key from a scatter-gather vector.
+/// The probe uses it for its user-memory contract, not to instantiate
+/// anything: the payload is gathered BEFORE the authorisation token is
+/// consulted, so an unprivileged caller can observe the copy's errno.
+pub const KEYCTL_INSTANTIATE_IOV: libc::c_long = 20;
+
 // CONST, not `#[test]`: the whole point of this module is that the slots differ
 // between x86_64 and aarch64, and a host-only test proves nothing about the
 // cross-built binary. Verified against `arch/x86/entry/syscalls/syscall_64.tbl`

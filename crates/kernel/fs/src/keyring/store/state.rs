@@ -13,8 +13,12 @@ pub struct Store {
     pub session:  BTreeMap<u32, i32>, // tid  -> session keyring serial
     pub thread:   BTreeMap<u32, i32>, // tid  -> thread keyring
     pub process:  BTreeMap<u32, i32>, // tgid -> process keyring
-    pub user:     BTreeMap<u32, i32>, // uid  -> user keyring
-    pub usersess: BTreeMap<u32, i32>, // uid  -> user-session keyring
+    /// `_uid.<uid>` inside the user namespace's `.user_reg` register: the
+    /// register is per user namespace, so the pair — not the uid alone — is
+    /// what names a user keyring.
+    pub user:     BTreeMap<(u64, u32), i32>, // (user_ns, uid) -> user keyring
+    /// `_uid_ses.<uid>` in the same per-namespace register.
+    pub usersess: BTreeMap<(u64, u32), i32>, // (user_ns, uid) -> user-session keyring
     /// `cred->jit_keyring` (`KEYCTL_SET_REQKEY_KEYRING`), per tid. Absent
     /// means `KEY_REQKEY_DEFL_THREAD_KEYRING`, Linux's boot default.
     pub jit:      BTreeMap<u32, i32>,
@@ -26,9 +30,10 @@ pub struct Store {
     /// an ordinary caller.
     pub authkey:  BTreeMap<u32, i32>,
     /// `ns->persistent_keyring_register` — the `.persistent_register` keyring
-    /// holding every `_persistent.<uid>`. Absent until the first
+    /// holding every `_persistent.<uid>`, ONE PER USER NAMESPACE as the field
+    /// name says. Absent for a namespace until its first
     /// `KEYCTL_GET_PERSISTENT` creates it.
-    pub persistent_register: Option<i32>,
+    pub persistent_register: BTreeMap<u64, i32>,
 }
 
 pub static STORE: Spinlock<Store, TaskListClass> = Spinlock::new(Store {
@@ -42,5 +47,5 @@ pub static STORE: Spinlock<Store, TaskListClass> = Spinlock::new(Store {
     jit:      BTreeMap::new(),
     quota:    BTreeMap::new(),
     authkey:  BTreeMap::new(),
-    persistent_register: None,
+    persistent_register: BTreeMap::new(),
 });

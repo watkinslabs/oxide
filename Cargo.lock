@@ -666,6 +666,7 @@ dependencies = [
  "timekeeper",
  "uaccess",
  "umh",
+ "user-namespace",
  "vfs",
  "vmm",
 ]
