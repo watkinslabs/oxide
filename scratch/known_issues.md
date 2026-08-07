@@ -38,9 +38,9 @@ reclassified.
 |---|---:|---:|---:|---:|---:|
 | `DEFECT` | 0 | 0 | 13 | 23 | 36 |
 | `MISSING` | 2 | 0 | 17 | 17 | 36 |
-| `COVERAGE` | 0 | 0 | 9 | 15 | 24 |
+| `COVERAGE` | 0 | 0 | 9 | 14 | 23 |
 | `INFRA` | 0 | 0 | 14 | 11 | 25 |
-| **Total** | **2** | **0** | **53** | **66** | **121** |
+| **Total** | **2** | **0** | **53** | **65** | **120** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -250,7 +250,6 @@ here now.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| OPEN | COVERAGE | low | `getlink_one` and the dump builders return bare errno literals (`-22`, `-19`) rather than `Errno::Einval`/`Errno::Enodev`. New code in this lane uses the typed constants; the pre-existing sites were left alone to keep the diff to one change. | `crates/kernel/netlink/src/rtnetlink/dumps.rs` `getlink_one` | — |
 | OPEN | MISSING | low | Strict validation does not yet reject unknown attributes in a dump request (`nlmsg_parse_deprecated_strict` against `ifa_ipv4_policy`/`ifla_policy`), nor honour `IFA_TARGET_NETNSID`/`IFLA_TARGET_NETNSID`. | `crates/kernel/netlink/src/rtnetlink/dump_req.rs` validates the family header only | — |
 
 ### B1748-ipv4-addr-record-fields
