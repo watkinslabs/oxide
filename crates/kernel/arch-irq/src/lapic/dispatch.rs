@@ -197,7 +197,7 @@ unsafe extern "C" fn oxide_irq_dispatch(regs: *mut hal_x86_64::PtRegs) {
             // per-vector handler if installed.
             crate::MSI_FIRES.fetch_add(1, Ordering::Relaxed);
             let idx = (v - hal_x86_64::VEC_MSI_POOL_FIRST) as usize;
-            crate::irqstat::hit_line(idx);
+            crate::irqstat::hit_msi(v as u32);
             let raw = crate::MSI_HANDLERS[idx].load(Ordering::Acquire);
             if !raw.is_null() {
                 // SAFETY: raw was installed via `register_msi_handler` with the documented `fn()` signature; reverse cast restores the ABI-compatible fn pointer.
