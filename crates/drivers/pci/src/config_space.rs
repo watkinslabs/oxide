@@ -1,9 +1,5 @@
-// Byte-granular config-space access behind a dword accessor, plus the
-// window rules userspace sees through the `config` sysfs blob.
-//
-// Sub-dword writes are read-modify-write on the containing dword: the
-// accessor contract is dword-only, so a byte store re-emits its three
-// neighbours unchanged.
+// Byte-granular PCI configuration-space access and the window rules userspace
+// sees through the `config` sysfs blob.
 
 use crate::types::{Bdf, ConfigSpaceReader};
 use crate::uapi::{
@@ -35,7 +31,7 @@ pub fn span(size: usize, off: u64, count: usize) -> usize {
 }
 
 /// Dword offset containing byte `off`. # C: O(1)
-fn dword_base(off: usize) -> u8 { (off & !0b11) as u8 }
+fn dword_base(off: usize) -> u16 { (off & !0b11) as u16 }
 
 /// Read `buf.len()` bytes of config space starting at `off`, assembling from
 /// dword reads. Callers clamp `off`/len with [`span`] first. # C: O(n)
@@ -44,7 +40,7 @@ pub fn read_bytes<R: ConfigSpaceReader>(r: &R, bdf: Bdf, off: usize, buf: &mut [
     let end = off + buf.len();
     while pos < end {
         let base = dword_base(pos) as usize;
-        let word = r.read32(bdf, dword_base(pos)).to_le_bytes();
+        let word = r.read32_ext(bdf, dword_base(pos)).to_le_bytes();
         let stop = core::cmp::min(base + word.len(), end);
         for byte in pos..stop {
             buf[byte - off] = word[byte - base];
@@ -53,33 +49,34 @@ pub fn read_bytes<R: ConfigSpaceReader>(r: &R, bdf: Bdf, off: usize, buf: &mut [
     }
 }
 
-/// Write `buf` into config space at `off`, read-modify-writing every partially
-/// covered dword. Callers clamp `off`/len with [`span`] first. # C: O(n)
+/// Write `buf` into config space at `off` with the narrowest native PCI
+/// transaction for each aligned extent. Callers clamp it with [`span`]. # C: O(n)
 pub fn write_bytes<R: ConfigSpaceReader>(r: &R, bdf: Bdf, off: usize, buf: &[u8]) {
     let mut pos = off;
     let end = off + buf.len();
     while pos < end {
-        let base = dword_base(pos) as usize;
-        let mut word = r.read32(bdf, dword_base(pos)).to_le_bytes();
-        let stop = core::cmp::min(base + word.len(), end);
-        for byte in pos..stop {
-            word[byte - base] = buf[byte - off];
+        let left = end - pos;
+        if pos & 3 == 0 && left >= 4 {
+            r.write32_ext(bdf, pos as u16, u32::from_le_bytes(buf[pos - off..pos - off + 4].try_into().unwrap()));
+            pos += 4;
+        } else if pos & 1 == 0 && left >= 2 {
+            r.write16_ext(bdf, pos as u16, u16::from_le_bytes(buf[pos - off..pos - off + 2].try_into().unwrap()));
+            pos += 2;
+        } else {
+            r.write8_ext(bdf, pos as u16, buf[pos - off]);
+            pos += 1;
         }
-        r.write32(bdf, dword_base(pos), u32::from_le_bytes(word));
-        pos = stop;
     }
 }
 
 /// Read one 16-bit config register. # C: O(1)
 pub fn read16<R: ConfigSpaceReader>(r: &R, bdf: Bdf, off: u8) -> u16 {
-    let word = r.read32(bdf, dword_base(off as usize));
-    ((word >> ((off as u32 & 0b11) * 8)) & 0xFFFF) as u16
+    r.read16_ext(bdf, off as u16)
 }
 
 /// Read one 8-bit config register. # C: O(1)
 pub fn read8<R: ConfigSpaceReader>(r: &R, bdf: Bdf, off: u8) -> u8 {
-    let word = r.read32(bdf, dword_base(off as usize));
-    ((word >> ((off as u32 & 0b11) * 8)) & 0xFF) as u8
+    r.read8_ext(bdf, off as u16)
 }
 
 /// `(subsystem_vendor, subsystem_device)` for a function. Only endpoints and
@@ -113,21 +110,24 @@ mod tests {
     use std::collections::HashMap;
     use std::vec;
 
-    struct Fake { m: HashMap<u8, u32> }
+    struct Fake { m: HashMap<u16, u32> }
     impl ConfigSpaceReader for Fake {
         fn read32(&self, _bdf: Bdf, offset: u8) -> u32 {
-            self.m.get(&offset).copied().unwrap_or(0)
+            self.m.get(&u16::from(offset)).copied().unwrap_or(0)
         }
         fn write32(&self, _bdf: Bdf, _offset: u8, _val: u32) { unreachable!("read-only fake") }
+        fn read32_ext(&self, _bdf: Bdf, offset: u16) -> u32 {
+            self.m.get(&offset).copied().unwrap_or(0)
+        }
     }
 
-    struct Recorder { m: std::sync::Mutex<HashMap<u8, u32>> }
+    struct Recorder { m: std::sync::Mutex<HashMap<u16, u32>> }
     impl ConfigSpaceReader for Recorder {
         fn read32(&self, _bdf: Bdf, offset: u8) -> u32 {
-            self.m.lock().unwrap().get(&offset).copied().unwrap_or(0)
+            self.m.lock().unwrap().get(&u16::from(offset)).copied().unwrap_or(0)
         }
         fn write32(&self, _bdf: Bdf, offset: u8, val: u32) {
-            self.m.lock().unwrap().insert(offset, val);
+            self.m.lock().unwrap().insert(u16::from(offset), val);
         }
     }
 
@@ -141,6 +141,7 @@ mod tests {
         m.insert(0x0c, 0x0000_0000);
         m.insert(0x2c, 0x1100_1AF4);
         m.insert(0x3c, 0x0000_010B);
+        m.insert(0x100, 0xAABB_CCDD);
         Fake { m }
     }
 
@@ -151,8 +152,8 @@ mod tests {
         assert_eq!(visible_size(false, HEADER_TYPE_CARDBUS), 128);
         // The multifunction bit never widens or narrows the window.
         assert_eq!(visible_size(false, HEADER_TYPE_CARDBUS | 0x80), 128);
-        assert_eq!(visible_size(true, HEADER_TYPE_NORMAL), 256);
-        assert_eq!(visible_size(true, HEADER_TYPE_CARDBUS), 256);
+        assert_eq!(visible_size(true, HEADER_TYPE_NORMAL), CFG_SPACE_SIZE);
+        assert_eq!(visible_size(true, HEADER_TYPE_CARDBUS), CFG_SPACE_SIZE);
     }
 
     #[test]
@@ -179,6 +180,14 @@ mod tests {
         read_bytes(&r, BDF, 0x2b, &mut buf);
         // 0x2b is an unset dword's top byte, then the subsystem vendor id.
         assert_eq!(buf, [0x00, 0xF4, 0x1A]);
+    }
+
+    #[test]
+    fn privileged_reads_reach_extended_config_space() {
+        let r = fake();
+        let mut buf = [0u8; 4];
+        read_bytes(&r, BDF, 0x100, &mut buf);
+        assert_eq!(buf, [0xDD, 0xCC, 0xBB, 0xAA]);
     }
 
     #[test]

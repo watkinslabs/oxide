@@ -39,12 +39,12 @@ impl EcamPci {
     }
 
     #[inline]
-    fn ecam_addr(&self, bus: u8, dev: u8, func: u8, reg: u8) -> u64 {
+    fn ecam_addr(&self, bus: u8, dev: u8, func: u8, reg: u16) -> u64 {
         self.base_va
             + ((bus  as u64) << 20)
             + ((dev  as u64) << 15)
             + ((func as u64) << 12)
-            + ((reg  as u64) & 0xFC)
+            + ((reg  as u64) & 0xFFC)
     }
 
     /// Read a 4-byte aligned dword from PCI config space.
@@ -52,7 +52,7 @@ impl EcamPci {
     /// device-mapped (Device-nGnRnE) into `base_va`'s region; reads
     /// from non-existent BDFs return all-1s by hardware convention.
     /// # C: O(1)
-    pub fn read32(&self, bus: u8, dev: u8, func: u8, reg: u8) -> u32 {
+    pub fn read32(&self, bus: u8, dev: u8, func: u8, reg: u16) -> u32 {
         let p = self.ecam_addr(bus, dev, func, reg) as *const u32;
         // SAFETY: per fn contract — Device-nGnRnE mapping lets the
         // load complete with the BDF-decoded read.
@@ -63,7 +63,7 @@ impl EcamPci {
     /// # SAFETY: same contract as read32; writes affect device
     /// state per BAR/cmd-reg semantics.
     /// # C: O(1)
-    pub fn write32(&self, bus: u8, dev: u8, func: u8, reg: u8, val: u32) {
+    pub fn write32(&self, bus: u8, dev: u8, func: u8, reg: u16, val: u32) {
         let p = self.ecam_addr(bus, dev, func, reg) as *mut u32;
         // SAFETY: caller asserts the matching ECAM page is Device-nGnRnE-mapped at base_va; PCI config writes have hardware-defined effects per BAR / cmd-reg semantics; aligned u32 access.
         unsafe { core::ptr::write_volatile(p, val); }
@@ -73,9 +73,35 @@ impl EcamPci {
 #[cfg(target_arch = "aarch64")]
 impl pci::ConfigSpaceReader for EcamPci {
     fn read32(&self, bdf: pci::Bdf, offset: u8) -> u32 {
-        Self::read32(self, bdf.bus, bdf.device, bdf.function, offset)
+        Self::read32(self, bdf.bus, bdf.device, bdf.function, u16::from(offset))
     }
     fn write32(&self, bdf: pci::Bdf, offset: u8, val: u32) {
+        Self::write32(self, bdf.bus, bdf.device, bdf.function, u16::from(offset), val);
+    }
+    fn read32_ext(&self, bdf: pci::Bdf, offset: u16) -> u32 {
+        Self::read32(self, bdf.bus, bdf.device, bdf.function, offset)
+    }
+    fn write32_ext(&self, bdf: pci::Bdf, offset: u16, val: u32) {
         Self::write32(self, bdf.bus, bdf.device, bdf.function, offset, val);
+    }
+    fn read8_ext(&self, bdf: pci::Bdf, offset: u16) -> u8 {
+        let p = (self.ecam_addr(bdf.bus, bdf.device, bdf.function, offset) + u64::from(offset & 3)) as *const u8;
+        // SAFETY: ECAM maps this byte as Device-nGnRnE inside the selected function page.
+        unsafe { core::ptr::read_volatile(p) }
+    }
+    fn read16_ext(&self, bdf: pci::Bdf, offset: u16) -> u16 {
+        let p = (self.ecam_addr(bdf.bus, bdf.device, bdf.function, offset) + u64::from(offset & 3)) as *const u16;
+        // SAFETY: ECAM maps this aligned word as Device-nGnRnE inside the selected function page.
+        unsafe { core::ptr::read_volatile(p) }
+    }
+    fn write8_ext(&self, bdf: pci::Bdf, offset: u16, val: u8) {
+        let p = (self.ecam_addr(bdf.bus, bdf.device, bdf.function, offset) + u64::from(offset & 3)) as *mut u8;
+        // SAFETY: ECAM maps this byte as Device-nGnRnE inside the selected function page.
+        unsafe { core::ptr::write_volatile(p, val) }
+    }
+    fn write16_ext(&self, bdf: pci::Bdf, offset: u16, val: u16) {
+        let p = (self.ecam_addr(bdf.bus, bdf.device, bdf.function, offset) + u64::from(offset & 3)) as *mut u16;
+        // SAFETY: ECAM maps this aligned word as Device-nGnRnE inside the selected function page.
+        unsafe { core::ptr::write_volatile(p, val) }
     }
 }

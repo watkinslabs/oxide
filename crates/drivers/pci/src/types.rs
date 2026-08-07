@@ -59,6 +59,32 @@ pub trait ConfigSpaceReader: Send + Sync {
     fn read32(&self, bdf: Bdf, offset: u8) -> u32;
     /// Optional write (for BAR programming, MSI setup, etc.).
     fn write32(&self, bdf: Bdf, offset: u8, val: u32);
+    /// Read a dword from the complete PCIe configuration window.
+    fn read32_ext(&self, bdf: Bdf, offset: u16) -> u32 { self.read32(bdf, offset as u8) }
+    /// Write a dword in the complete PCIe configuration window.
+    fn write32_ext(&self, bdf: Bdf, offset: u16, val: u32) { self.write32(bdf, offset as u8, val); }
+    /// Native byte transaction; never synthesize it by rewriting a dword.
+    fn read8_ext(&self, bdf: Bdf, offset: u16) -> u8 {
+        (self.read32_ext(bdf, offset & !3) >> ((offset & 3) * 8)) as u8
+    }
+    /// Native word transaction; never synthesize it by rewriting a dword.
+    fn read16_ext(&self, bdf: Bdf, offset: u16) -> u16 {
+        (self.read32_ext(bdf, offset & !3) >> ((offset & 3) * 8)) as u16
+    }
+    /// Native byte transaction; never synthesize it by rewriting a dword.
+    fn write8_ext(&self, bdf: Bdf, offset: u16, val: u8) {
+        let base = offset & !3;
+        let shift = (offset & 3) * 8;
+        let old = self.read32_ext(bdf, base);
+        self.write32_ext(bdf, base, (old & !(0xFF << shift)) | (u32::from(val) << shift));
+    }
+    /// Native word transaction; never synthesize it by rewriting a dword.
+    fn write16_ext(&self, bdf: Bdf, offset: u16, val: u16) {
+        let base = offset & !3;
+        let shift = (offset & 3) * 8;
+        let old = self.read32_ext(bdf, base);
+        self.write32_ext(bdf, base, (old & !(0xFFFF << shift)) | (u32::from(val) << shift));
+    }
 }
 
 /// PCI command register bit: I/O Space Enable.

@@ -89,7 +89,8 @@ mod tests {
         assert_eq!(&buf[..4], &[60, 61, 62, 63]);
         assert_eq!(read(&d, false, 64, &mut buf), Ok(0));
         assert_eq!(read(&d, false, 4096, &mut buf), Ok(0));
-        assert_eq!(read(&d, true, 254, &mut buf), Ok(2));
+        assert_eq!(read(&d, true, 4092, &mut buf), Ok(4));
+        assert_eq!(read(&d, true, 4096, &mut buf), Ok(0));
     }
 
     #[test]
@@ -107,8 +108,8 @@ mod tests {
         let mut buf = [0u8; 2];
         assert_eq!(read(&d, true, 0x80, &mut buf), Ok(2));
         assert_eq!(buf, [0xAA, 0xBB]);
-        assert_eq!(write(&d, 255, &[1, 2, 3, 4]), Ok(1));
-        assert_eq!(write(&d, 256, &[1]), Ok(0));
+        assert_eq!(write(&d, 4095, &[1, 2, 3, 4]), Ok(1));
+        assert_eq!(write(&d, 4096, &[1]), Ok(0));
     }
 
     #[test]
