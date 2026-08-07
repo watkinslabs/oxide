@@ -91,16 +91,14 @@ fn pci_device_exposes_indexed_bar_resource_attrs() {
     assert_eq!(core::str::from_utf8(&buf[..n]).expect("utf8"), expected);
 
     let res2 = dir.lookup("resource2").expect("resource2 attr");
-    let n = res2.read(0, &mut buf).expect("read resource2");
-    assert_eq!(
-        &buf[..n],
-        b"0x0000000000001000 0x0000000000001fff 0x0000000000000200\n");
+    assert_eq!(res2.i_mode() & 0o777, 0o600);
+    assert_eq!(res2.size(), 0x1000);
+    assert_eq!(crate::pci_resource_mmap_backing(&res2), Some(Ok((0x1000, 0x1000))));
+    assert_eq!(res2.read(0, &mut buf), Err(VfsError::Eio));
 
     let res5 = dir.lookup("resource5").expect("resource5 attr");
-    let n = res5.read(0, &mut buf).expect("read resource5");
-    assert_eq!(
-        &buf[..n],
-        b"0x00000000febc0000 0x00000000febc0fff 0x0000000000002200\n");
+    assert_eq!(crate::pci_resource_mmap_backing(&res5), Some(Ok((0xfebc_0000, 0x1000))));
+    assert_eq!(res5.read(0, &mut buf), Err(VfsError::Eio));
 
     let modalias = dir.lookup("modalias").expect("modalias still works");
     let n = modalias.read(0, &mut buf).expect("read modalias");
