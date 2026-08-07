@@ -14,8 +14,21 @@ use crate::pkt::Pkt;
 pub const NFPROTO_IPV4: u8 = 2;
 pub const NFPROTO_IPV6: u8 = 10;
 
-/// Netfilter verdict callback. Verdict u32: NF_DROP=0, NF_ACCEPT=1.
-pub type NfHookFn = fn(namespace: u64, hook_id: u32, pkt: &[u8], family: u8) -> u32;
+/// Netfilter result carried across an ingress hook.  Packet marks are routing
+/// metadata: nft may update them at PRE_ROUTING, and policy routing consumes
+/// the resulting value before deciding local input versus forwarding.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct NfHookResult {
+    pub verdict: u32,
+    pub mark: u32,
+}
+
+impl NfHookResult {
+    pub const ACCEPT: Self = Self { verdict: 1, mark: 0 };
+}
+
+/// Netfilter callback. Verdict u32: NF_DROP=0, NF_ACCEPT=1.
+pub type NfHookFn = fn(namespace: u64, hook_id: u32, pkt: &[u8], family: u8) -> NfHookResult;
 
 static NF_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 #[cfg(any(test, feature = "hosted"))]
@@ -69,18 +82,18 @@ pub(crate) fn swap_nf_hook(hook: Option<NfHookFn>) -> Option<NfHookFn> {
 /// # C: O(1) when no hook; otherwise O(eval)
 #[cfg(any(test, feature = "hosted"))]
 pub(crate) fn nf_hook_eval(hook_id: u32, pkt: &[u8], family: u8) -> u32 {
-    nf_hook_eval_in(0, hook_id, pkt, family)
+    nf_hook_eval_in(0, hook_id, pkt, family).verdict
 }
 
 /// Evaluate namespace-owned security policy before the legacy netfilter
 /// callback. The ingress lease supplies the concrete namespace key.
-pub(crate) fn nf_hook_eval_in(namespace: u64, hook_id: u32, pkt: &[u8], family: u8) -> u32 {
+pub(crate) fn nf_hook_eval_in(namespace: u64, hook_id: u32, pkt: &[u8], family: u8) -> NfHookResult {
     let context = security::network::Context {
         namespace, family: family as u16, socket_type: 0, protocol: 0,
         operation: security::network::Operation::Packet,
     };
     if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
-        return 0;
+        return NfHookResult { verdict: 0, mark: 0 };
     }
     #[cfg(any(test, feature = "hosted"))]
     let _lease = loop {
@@ -90,7 +103,7 @@ pub(crate) fn nf_hook_eval_in(namespace: u64, hook_id: u32, pkt: &[u8], family: 
         NF_ACTIVE.fetch_sub(1, Ordering::AcqRel);
     };
     let raw = NF_HOOK.load(Ordering::Acquire);
-    if raw.is_null() { return 1; /* NF_ACCEPT */ }
+    if raw.is_null() { return NfHookResult::ACCEPT; }
     // SAFETY: raw was installed via `install_nf_hook` with the documented
     // namespace-qualified `NfHookFn` signature.
     let f: NfHookFn = unsafe { core::mem::transmute(raw) };
@@ -127,6 +140,6 @@ pub(crate) fn nf_output_in(namespace: u64, p: &Pkt, family: u8) -> bool {
     if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
         return false;
     }
-    nf_hook_eval_in(namespace, NF_INET_LOCAL_OUT, p.data(), family) != 0
-        && nf_hook_eval_in(namespace, NF_INET_POST_ROUTING, p.data(), family) != 0
+    nf_hook_eval_in(namespace, NF_INET_LOCAL_OUT, p.data(), family).verdict != 0
+        && nf_hook_eval_in(namespace, NF_INET_POST_ROUTING, p.data(), family).verdict != 0
 }

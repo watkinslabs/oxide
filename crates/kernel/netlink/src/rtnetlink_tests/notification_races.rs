@@ -269,7 +269,7 @@ fn link_route_rule_notifications_share_one_rtnl_order() {
         row: net::policy_rule::PolicyRule {
             ns, family: net::policy_rule::AF_INET, dst_len: 0, src_len: 0, tos: 0,
             table: RT_TABLE_MAIN as u32, action: net::policy_rule::FR_ACT_TO_TBL,
-            flags: 0, priority: 844,
+            flags: 0, fwmark: 0, fwmask: 0, priority: 844,
         },
     }));
     drop(rtnl);

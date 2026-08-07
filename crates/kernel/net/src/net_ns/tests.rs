@@ -247,7 +247,7 @@ fn namespace_teardown_removes_owned_state_only() {
         stack.policy_rules().insert_rtnl(&rtnl, crate::policy_rule::PolicyRule {
             ns: a, family: crate::policy_rule::AF_INET6, dst_len: 0, src_len: 0,
             tos: 0, table: crate::policy_rule::RT_TABLE_MAIN,
-            action: crate::policy_rule::FR_ACT_TO_TBL, flags: 0, priority: 100,
+            action: crate::policy_rule::FR_ACT_TO_TBL, flags: 0, fwmark: 0, fwmask: 0, priority: 100,
         });
     }
     let frag4_a = crate::ipv4_reasm::ReasmKey {

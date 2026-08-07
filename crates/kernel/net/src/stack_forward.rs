@@ -55,11 +55,22 @@ impl NetStack {
         egress.xmit_raw(&frame)
     }
 
-    /// True when `dst` belongs to one network namespace. # C: O(N addrs)
-    pub(crate) fn ipv4_dst_is_local_in(&self, net_ns: u64, dst: Ipv4Addr) -> bool {
+    /// Mark-aware IPv4 local-input decision.  PRE_ROUTING may select a local
+    /// route via an nft packet mark and an `ip rule fwmark` policy rule.
+    /// # C: O(N rules * N routes + N addrs)
+    pub(crate) fn ipv4_dst_is_local_mark_in(&self, net_ns: u64, dst: Ipv4Addr, mark: u32) -> bool {
         if dst.is_loopback() || dst.is_broadcast() || dst.is_multicast() {
             return true;
         }
+        // The FIB's local route type is the routing decision that turns a
+        // received destination into local input.  Interface-address lookup is
+        // still needed for addresses that have not yet had their automatic
+        // local-table record materialised, but it must not be the only owner:
+        // policy routing can deliberately select an `RTN_LOCAL` route for a
+        // nonlocal address (the transparent-proxy delivery shape).
+        if self.routes.lookup_record_mark_in(net_ns, dst, mark).is_some_and(|record|
+            record.kind == crate::route::RTN_LOCAL)
+        { return true; }
         crate::iface_addr::snapshot_ns(net_ns)
             .iter()
             .any(|row| row.addr == dst)
@@ -110,8 +121,11 @@ impl NetStack {
         Ok(())
     }
 
-    /// Forward one IPv4 packet within the ingress namespace. # C: O(N routes + len)
-    pub(crate) fn forward_ipv4_in(&self, net_ns: u64, ingress: NetIfaceId, l3: &[u8]) -> NetResult<()> {
+    /// Forward one packet using the PRE_ROUTING packet mark for policy route
+    /// selection. # C: O(N rules * N routes + len)
+    pub(crate) fn forward_ipv4_mark_in(&self, net_ns: u64, ingress: NetIfaceId, l3: &[u8], mark: u32)
+        -> NetResult<()>
+    {
         if crate::forwarding::ipv4_enabled_in(net_ns) != Some(true) {
             crate::mib::bump(net_ns, crate::mib::Mib::IpInAddrErrors);
             return Ok(());
@@ -131,7 +145,7 @@ impl NetStack {
                 ingress, error_src, src, icmp::ICMP_TYPE_TIME_EXC, time_exceeded_code::TTL, l3,
             );
         }
-        let route = match self.routes.lookup_result_in(net_ns, dst) {
+        let route = match self.routes.lookup_result_mark_in(net_ns, dst, mark) {
             Ok(route) => route,
             Err(NetError::Einval) => return Ok(()),
             Err(NetError::Ehostunreach) => {
@@ -169,8 +183,8 @@ impl NetStack {
         p.proto = crate::addr::eth_p::IPV4;
         p.iface = Some(route.iface);
         p.next_hop = Some(crate::pkt::TxNextHop::V4(crate::route::RouteRecord::next_hop_for(route.gateway, dst)));
-        if nf_hook_eval_in(net_ns, NF_INET_FORWARD, p.data(), NFPROTO_IPV4) == 0 { return Ok(()); }
-        if nf_hook_eval_in(net_ns, NF_INET_POST_ROUTING, p.data(), NFPROTO_IPV4) == 0 { return Ok(()); }
+        if nf_hook_eval_in(net_ns, NF_INET_FORWARD, p.data(), NFPROTO_IPV4).verdict == 0 { return Ok(()); }
+        if nf_hook_eval_in(net_ns, NF_INET_POST_ROUTING, p.data(), NFPROTO_IPV4).verdict == 0 { return Ok(()); }
         dev.xmit(p)
     }
 }
@@ -196,8 +210,8 @@ impl NetStack {
         p.next_hop = Some(crate::pkt::TxNextHop::V6 {
             addr: crate::route6::next_hop6_for(route.gateway, header.dst), src: Ipv6Addr::ANY,
         });
-        if nf_hook_eval_in(net_ns, NF_INET_FORWARD, p.data(), NFPROTO_IPV6) == 0 { return Ok(()); }
-        if nf_hook_eval_in(net_ns, NF_INET_POST_ROUTING, p.data(), NFPROTO_IPV6) == 0 { return Ok(()); }
+        if nf_hook_eval_in(net_ns, NF_INET_FORWARD, p.data(), NFPROTO_IPV6).verdict == 0 { return Ok(()); }
+        if nf_hook_eval_in(net_ns, NF_INET_POST_ROUTING, p.data(), NFPROTO_IPV6).verdict == 0 { return Ok(()); }
         let _ = ingress;
         dev.xmit(p)
     }

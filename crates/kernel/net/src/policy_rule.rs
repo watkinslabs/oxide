@@ -26,6 +26,10 @@ pub struct PolicyRule {
     pub table:    u32,
     pub action:   u8,
     pub flags:    u32,
+    /// `FRA_FWMARK` and `FRA_FWMASK`: a zero mask means this rule does not
+    /// constrain the packet mark; otherwise `(mark & mask) == value`.
+    pub fwmark:   u32,
+    pub fwmask:   u32,
     pub priority: u32,
 }
 
@@ -154,11 +158,11 @@ impl Default for PolicyRuleTable { fn default() -> Self { Self::new() } }
 pub fn builtin_rules(ns: u64, family: u8) -> [PolicyRule; 3] {
     [
         PolicyRule { ns, family, priority: 0, table: RT_TABLE_LOCAL,
-            action: FR_ACT_TO_TBL, dst_len: 0, src_len: 0, tos: 0, flags: 0 },
+            action: FR_ACT_TO_TBL, dst_len: 0, src_len: 0, tos: 0, flags: 0, fwmark: 0, fwmask: 0 },
         PolicyRule { ns, family, priority: 32766, table: RT_TABLE_MAIN,
-            action: FR_ACT_TO_TBL, dst_len: 0, src_len: 0, tos: 0, flags: 0 },
+            action: FR_ACT_TO_TBL, dst_len: 0, src_len: 0, tos: 0, flags: 0, fwmark: 0, fwmask: 0 },
         PolicyRule { ns, family, priority: 32767, table: RT_TABLE_DEFAULT,
-            action: FR_ACT_TO_TBL, dst_len: 0, src_len: 0, tos: 0, flags: 0 },
+            action: FR_ACT_TO_TBL, dst_len: 0, src_len: 0, tos: 0, flags: 0, fwmark: 0, fwmask: 0 },
     ]
 }
 
@@ -198,7 +202,7 @@ mod tests {
 
     fn row(table: u32) -> PolicyRule {
         PolicyRule { ns: 7, family: AF_INET, dst_len: 0, src_len: 0, tos: 0,
-            table, action: FR_ACT_TO_TBL, flags: 0, priority: 100 }
+            table, action: FR_ACT_TO_TBL, flags: 0, fwmark: 0, fwmask: 0, priority: 100 }
     }
 
     #[test]

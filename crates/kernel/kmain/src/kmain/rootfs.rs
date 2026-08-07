@@ -161,7 +161,10 @@ fn install_network_hooks() {
     netlink::install_netfilter_handler(netfilter::handle);
     // NB: control-event notifier is installed earlier, in `runtime::init` before
     // netdev registration, so eth0's boot RTM_NEWLINK is not dropped.
-    net::stack::install_nf_hook(|ns, h, p, fam| netfilter::eval_in(ns, h, p, fam).as_u32());
+    net::stack::install_nf_hook(|ns, h, p, fam| {
+        let result = netfilter::eval_in_with_mark(ns, h, p, fam, 0);
+        net::stack::NfHookResult { verdict: result.verdict.as_u32(), mark: result.mark }
+    });
     net::stack::install_bpf_filter_runner(|kind, insns, packet| match kind {
         net::bpf_filter::FilterKind::Ebpf =>
             security::bpf_interp::run(insns, packet).map_or(0, |r| r as u32),

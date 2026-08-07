@@ -343,7 +343,7 @@
         route_insert(row(1002, 4404));
         net::policy_rule::insert(net::policy_rule::PolicyRule {
             ns: NS, family: net::policy_rule::AF_INET, priority: 1000, table: 1002,
-            action: net::policy_rule::FR_ACT_TO_TBL, dst_len: 0, src_len: 0, tos: 0, flags: 0,
+            action: net::policy_rule::FR_ACT_TO_TBL, dst_len: 0, src_len: 0, tos: 0, flags: 0, fwmark: 0, fwmask: 0,
         });
         assert_eq!(route_lookup_ns(NS, [8, 8, 8, 8]).unwrap().oif_ifindex, 4404);
         assert_eq!(net::policy_rule::remove(NS, net::policy_rule::AF_INET, Some(1000), Some(1002)), 1);

@@ -70,6 +70,7 @@ pub const NFTA_META_SREG: u16 = 3;
 
 // nft_meta_keys (Linux nf_tables.h)
 pub const NFT_META_LEN:     u32 = 0;
+pub const NFT_META_MARK:    u32 = 3;
 pub const NFT_META_NFPROTO: u32 = 15;
 pub const NFT_META_L4PROTO: u32 = 16;
 
@@ -115,7 +116,7 @@ pub enum Expr {
     Payload   { dreg: u32, base: u32, offset: u32, len: u32 },
     Cmp       { sreg: u32, op: u32, data: Vec<u8> },
     Immediate { dreg: u32, verdict: Option<i32>, value: Vec<u8> },
-    Meta      { dreg: u32, key: u32 },
+    Meta      { dreg: Option<u32>, sreg: Option<u32>, key: u32 },
     Lookup    { sreg: u32, set: String, set_id: Option<usize>, invert: bool },
     Counter,
     Bitwise   { sreg: u32, dreg: u32, mask: Vec<u8>, xor: Vec<u8> },
@@ -231,9 +232,11 @@ fn parse_lookup(d: &[u8]) -> Option<Expr> {
 }
 
 fn parse_meta(d: &[u8]) -> Option<Expr> {
-    let dreg = find_u32_be(d, NFTA_META_DREG)?;
     let key  = find_u32_be(d, NFTA_META_KEY)?;
-    Some(Expr::Meta { dreg, key })
+    let dreg = find_u32_be(d, NFTA_META_DREG);
+    let sreg = find_u32_be(d, NFTA_META_SREG);
+    if dreg.is_some() == sreg.is_some() { return None; }
+    Some(Expr::Meta { dreg, sreg, key })
 }
 
 fn parse_immediate(d: &[u8]) -> Option<Expr> {
@@ -315,6 +318,17 @@ pub fn run_rule_with_lookup(exprs: &[Expr], pkt: &[u8], lookup: Option<SetLookup
 pub fn run_rule_full(exprs: &[Expr], pkt: &[u8],
                      lookup: Option<SetLookupFn>, family: u8,
                      packets: &mut u64, bytes: &mut u64) -> Option<i32> {
+    let mut mark = 0;
+    run_rule_full_with_mark(exprs, pkt, lookup, family, &mut mark, packets, bytes)
+}
+
+/// Run one rule while preserving the packet mark across expressions and
+/// rules.  `meta mark set` writes a source register into `mark`; `meta mark`
+/// loads its network-endian representation for comparisons and bitwise work.
+/// # C: O(N_exprs · max_len)
+pub fn run_rule_full_with_mark(exprs: &[Expr], pkt: &[u8],
+                     lookup: Option<SetLookupFn>, family: u8, mark: &mut u32,
+                     packets: &mut u64, bytes: &mut u64) -> Option<i32> {
     let mut regs = [0u8; REG_BYTES];
     let mut scratch = [0u8; REG_BYTES];
     for e in exprs {
@@ -355,8 +369,15 @@ pub fn run_rule_full(exprs: &[Expr], pkt: &[u8],
                 };
                 if !matched { return None; }
             }
-            Expr::Meta { dreg, key } => {
-                let dst = reg_off(*dreg)?;
+            Expr::Meta { dreg, sreg, key } => {
+                if let Some(sreg) = sreg {
+                    if *key != NFT_META_MARK { return None; }
+                    let src = reg_off(*sreg)?;
+                    if src + 4 > regs.len() { return None; }
+                    *mark = u32::from_be_bytes(regs[src .. src + 4].try_into().ok()?);
+                    continue;
+                }
+                let dst = reg_off((*dreg)?)?;
                 match *key {
                     NFT_META_LEN => {
                         if dst + 4 > regs.len() { return None; }
@@ -374,6 +395,10 @@ pub fn run_rule_full(exprs: &[Expr], pkt: &[u8],
                             _            => { if pkt.len() < 10 { return None; } pkt[9] }
                         };
                         regs[dst] = proto;
+                    }
+                    NFT_META_MARK => {
+                        if dst + 4 > regs.len() { return None; }
+                        regs[dst .. dst + 4].copy_from_slice(&mark.to_be_bytes());
                     }
                     _ => return None,
                 }

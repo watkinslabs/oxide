@@ -2,7 +2,7 @@ use super::*;
 
 fn rule(ns: u64, table: u32) -> policy_rule::PolicyRule {
     policy_rule::PolicyRule { ns, family: policy_rule::AF_INET, priority: 100, table,
-        action: policy_rule::FR_ACT_TO_TBL, dst_len: 0, src_len: 0, tos: 0, flags: 0 }
+        action: policy_rule::FR_ACT_TO_TBL, dst_len: 0, src_len: 0, tos: 0, flags: 0, fwmark: 0, fwmask: 0 }
 }
 
 #[test]
@@ -14,6 +14,25 @@ fn custom_policy_rule_selects_custom_table() {
     { let rtnl = stack.rtnl_lock(); stack.policy_rules().insert_rtnl(&rtnl, rule(0, 100)); }
     let r = stack.routes.lookup_in(0, Ipv4Addr::new(8, 8, 8, 8)).unwrap();
     assert_eq!(r.iface, NetIfaceId::from_raw(2));
+}
+
+#[test]
+fn fwmark_rule_selects_its_table_only_for_matching_packet_mark() {
+    const NS: u64 = 0x8250_1001;
+    let stack = crate::NetStack::new();
+    let dst = Ipv4Addr::new(198, 51, 100, 8);
+    stack.routes.add_in(NS, RouteEntry::main(
+        Ipv4Addr::ANY, 0, NetIfaceId::from_raw(1), None, None));
+    stack.routes.add_in(NS, RouteEntry { table: 101, dst: Ipv4Addr::ANY, prefix_len: 0,
+        iface: NetIfaceId::from_raw(101), gateway: None, src_hint: None });
+    let marked = policy_rule::PolicyRule { fwmark: 0x20, fwmask: 0xf0,
+        ..rule(NS, 101) };
+    { let rtnl = stack.rtnl_lock(); stack.policy_rules().insert_rtnl(&rtnl, marked); }
+
+    assert_eq!(stack.routes.lookup_record_mark_in(NS, dst, 0x21)
+        .map(|record| record.route.iface), Some(NetIfaceId::from_raw(101)));
+    assert_eq!(stack.routes.lookup_record_mark_in(NS, dst, 0x11)
+        .map(|record| record.route.iface), Some(NetIfaceId::from_raw(1)));
 }
 
 #[test]
@@ -98,7 +117,7 @@ fn ipv6_policy_rule_selects_custom_table() {
     });
     let row = policy_rule::PolicyRule {
         ns: NS, family: policy_rule::AF_INET6, priority: 100, table: 600,
-        action: policy_rule::FR_ACT_TO_TBL, dst_len: 0, src_len: 0, tos: 0, flags: 0,
+        action: policy_rule::FR_ACT_TO_TBL, dst_len: 0, src_len: 0, tos: 0, flags: 0, fwmark: 0, fwmask: 0,
     };
     { let rtnl = stack.rtnl_lock(); stack.policy_rules().insert_rtnl(&rtnl, row); }
 

@@ -15,8 +15,10 @@ use net::policy_rule::{PolicyRule as RuleRow, FR_ACT_TO_TBL};
 use net::policy_rule;
 
 pub mod fra {
+    pub const FRA_FWMARK:   u16 = 10;
     pub const FRA_PRIORITY: u16 = 6;
     pub const FRA_TABLE:    u16 = 15;
+    pub const FRA_FWMASK:   u16 = 16;
 }
 
 #[repr(C)]
@@ -69,6 +71,10 @@ pub(crate) fn build_newrule_reply(seq: u32, pid: u32, row: RuleRow, multi: bool)
     body.extend_from_slice(&frh_buf);
     put_nlattr_u32(&mut body, fra::FRA_PRIORITY, row.priority);
     put_nlattr_u32(&mut body, fra::FRA_TABLE, row.table);
+    if row.fwmask != 0 {
+        put_nlattr_u32(&mut body, fra::FRA_FWMARK, row.fwmark);
+        put_nlattr_u32(&mut body, fra::FRA_FWMASK, row.fwmask);
+    }
 
     let total = Nlmsghdr::SIZE + body.len();
     let hdr = Nlmsghdr {
@@ -90,9 +96,11 @@ pub(crate) fn build_newrule_reply(seq: u32, pid: u32, row: RuleRow, multi: bool)
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum ParseRuleError { Malformed, UnsupportedFamily }
 
-fn parse_rule_attrs(attrs: &[u8]) -> Result<(Option<u32>, Option<u32>), ParseRuleError> {
+fn parse_rule_attrs(attrs: &[u8]) -> Result<(Option<u32>, Option<u32>, Option<u32>, Option<u32>), ParseRuleError> {
     let mut priority = None;
     let mut table = None;
+    let mut fwmark = None;
+    let mut fwmask = None;
     let mut off = 0;
     while off + 4 <= attrs.len() {
         let nla_len = u16::from_ne_bytes([attrs[off], attrs[off + 1]]) as usize;
@@ -101,19 +109,21 @@ fn parse_rule_attrs(attrs: &[u8]) -> Result<(Option<u32>, Option<u32>), ParseRul
         let next = off.checked_add(nlmsg_align(nla_len)).ok_or(ParseRuleError::Malformed)?;
         if next > attrs.len() { return Err(ParseRuleError::Malformed); }
         let payload = &attrs[off + 4..off + nla_len];
-        if matches!(nla_type, fra::FRA_PRIORITY | fra::FRA_TABLE) {
+        if matches!(nla_type, fra::FRA_PRIORITY | fra::FRA_TABLE | fra::FRA_FWMARK | fra::FRA_FWMASK) {
             if payload.len() != 4 { return Err(ParseRuleError::Malformed); }
             let value = u32::from_ne_bytes(payload[0..4].try_into().unwrap());
             match nla_type {
                 fra::FRA_PRIORITY => priority = Some(value),
                 fra::FRA_TABLE => table = Some(value),
+                fra::FRA_FWMARK => fwmark = Some(value),
+                fra::FRA_FWMASK => fwmask = Some(value),
                 _ => {}
             }
         }
         off = next;
     }
     if off != attrs.len() { return Err(ParseRuleError::Malformed); }
-    Ok((priority, table))
+    Ok((priority, table, fwmark, fwmask))
 }
 
 fn parse_rule(net_ns: u64, full_msg: &[u8])
@@ -126,7 +136,7 @@ fn parse_rule(net_ns: u64, full_msg: &[u8])
         _ => return Err(ParseRuleError::UnsupportedFamily),
     };
     let attrs = &full_msg[off + FibRuleHdr::SIZE..];
-    let (priority, attr_table) = parse_rule_attrs(attrs)?;
+    let (priority, attr_table, fwmark, fwmask) = parse_rule_attrs(attrs)?;
     let table = attr_table.unwrap_or(full_msg[off + 4] as u32);
     Ok((RuleRow {
         ns: net_ns,
@@ -137,6 +147,8 @@ fn parse_rule(net_ns: u64, full_msg: &[u8])
         table,
         action: full_msg[off + 7],
         flags: u32::from_ne_bytes(full_msg[off + 8..off + 12].try_into().unwrap()),
+        fwmark: fwmark.unwrap_or(0),
+        fwmask: fwmask.unwrap_or_else(|| if fwmark.is_some() { u32::MAX } else { 0 }),
         priority: priority.unwrap_or(0),
     }, priority))
 }
@@ -167,6 +179,20 @@ pub fn handle_newrule(req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     handle_newrule_in(net::netdev::current_net_ns(), req, full_msg)
 }
 
+/// Retain the namespace owner until a staged rule notification is published.
+/// Hosted tests exercise namespace-zero policy state before the kernel's
+/// immortal namespace registry is brought up, so retain that synthetic owner
+/// there; a real kernel must have a live owner.
+fn rule_namespace_owner(net_ns: u64) -> Option<net::control_event::NamespaceOwner> {
+    if let Some(namespace) = network_namespace::lookup_u64(net_ns) {
+        return Some(net::control_event::NamespaceOwner::Live(namespace));
+    }
+    #[cfg(test)]
+    return Some(net::control_event::NamespaceOwner::Hosted(net_ns));
+    #[cfg(not(test))]
+    None
+}
+
 /// Create a rule in the namespace captured by the netlink socket. # C: O(N)
 pub fn handle_newrule_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     let (mut row, explicit_priority) = match parse_rule(net_ns, full_msg) {
@@ -182,7 +208,7 @@ pub fn handle_newrule_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8
     }
     let ticket = {
         let stack = net::global_stack();
-        let Some(namespace) = network_namespace::lookup_u64(net_ns) else {
+        let Some(namespace) = rule_namespace_owner(net_ns) else {
             return crate::rtnetlink::nlmsg_ack_pub(req, -19);
         };
         let rtnl = stack.rtnl_lock();
@@ -197,7 +223,7 @@ pub fn handle_newrule_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8
         net::control_event::stage(&rtnl,
             net::control_event::ControlEvent::Rule(net::control_event::RuleEvent {
                 kind: net::control_event::EventKind::New,
-                namespace: net::control_event::NamespaceOwner::Live(namespace), row: inserted,
+                namespace, row: inserted,
             }))
     };
     net::control_event::publish(ticket);
@@ -220,12 +246,14 @@ pub fn handle_delrule_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8
     if explicit_priority.is_none() && table.is_none() { return crate::rtnetlink::nlmsg_ack_pub(req, -22); }
     let ticket = {
         let stack = net::global_stack();
-        let Some(namespace) = network_namespace::lookup_u64(net_ns)
-            else { return crate::rtnetlink::nlmsg_ack_pub(req, -19) };
+        let Some(namespace) = rule_namespace_owner(net_ns) else {
+            return crate::rtnetlink::nlmsg_ack_pub(req, -19);
+        };
         let rtnl = stack.rtnl_lock();
         let selected = stack.policy_rules().snapshot_effective(row.ns, row.family).into_iter()
             .find(|candidate| candidate.dst_len == row.dst_len && candidate.src_len == row.src_len
                 && candidate.tos == row.tos && candidate.flags == row.flags && candidate.action == row.action
+                && candidate.fwmark == row.fwmark && candidate.fwmask == row.fwmask
                 && explicit_priority.is_none_or(|priority| candidate.priority == priority)
                 && table.is_none_or(|table| candidate.table == table));
         let Some(selected) = selected else { return crate::rtnetlink::nlmsg_ack_pub(req, -2); };
@@ -234,8 +262,7 @@ pub fn handle_delrule_in(net_ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8
             else { return crate::rtnetlink::nlmsg_ack_pub(req, -2) };
         net::control_event::stage(&rtnl,
             net::control_event::ControlEvent::Rule(net::control_event::RuleEvent {
-                kind: net::control_event::EventKind::Delete,
-                namespace: net::control_event::NamespaceOwner::Live(namespace), row: removed,
+                kind: net::control_event::EventKind::Delete, namespace, row: removed,
             }))
     };
     net::control_event::publish(ticket);
@@ -338,6 +365,11 @@ mod tests {
         (req, msg)
     }
 
+    fn finish_req_len(req: &mut Nlmsghdr, msg: &mut [u8]) {
+        req.nlmsg_len = msg.len() as u32;
+        req.write_to(&mut msg[..Nlmsghdr::SIZE]);
+    }
+
     #[test]
     fn newrule_dump_and_delrule_mutate_custom_rules() {
         let (new_hdr, new_msg) = rule_req(crate::rtnetlink::RTM_NEWRULE, AF_INET, 12345, 100);
@@ -369,6 +401,26 @@ mod tests {
         hdr.nlmsg_flags |= flags::NLM_F_EXCL;
         assert_eq!(ack_errno(&handle_newrule(&hdr, &msg)), -17);
         assert_eq!(policy_rule::remove(0, AF_INET6, Some(22345), Some(200)), 1);
+    }
+
+    #[test]
+    fn fwmark_and_fwmask_round_trip_through_rule_netlink() {
+        let domain = net::hosted_fixture::init_net_domain();
+        domain.set_notifier(crate::mcast::notify_control_event);
+        let owner = crate::netlink_tests::test_namespace();
+        let ns = owner.id().as_u64();
+        let (mut hdr, mut msg) = rule_req(crate::rtnetlink::RTM_NEWRULE, AF_INET, 28310, 831);
+        put_nlattr_u32(&mut msg, fra::FRA_FWMARK, 0x20);
+        put_nlattr_u32(&mut msg, fra::FRA_FWMASK, 0xf0);
+        finish_req_len(&mut hdr, &mut msg);
+        assert_eq!(ack_errno(&handle_newrule_in(ns, &hdr, &msg)), 0);
+        let row = policy_rule::snapshot_custom_ns(ns).into_iter()
+            .find(|row| row.priority == 28310).unwrap();
+        assert_eq!((row.fwmark, row.fwmask), (0x20, 0xf0));
+        let reply = build_newrule_reply(1, 2, row, false);
+        assert!(reply.windows(4).any(|window| window == 0x20u32.to_ne_bytes()));
+        assert!(reply.windows(4).any(|window| window == 0xf0u32.to_ne_bytes()));
+        assert_eq!(policy_rule::remove(ns, AF_INET, Some(28310), Some(831)), 1);
     }
 
     #[test]
