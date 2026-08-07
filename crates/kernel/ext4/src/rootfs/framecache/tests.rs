@@ -1,5 +1,9 @@
 // Pure index/range arithmetic for invalidate_range/writeback_range. Frame data
 // paths are covered by the hosted ext4-image fixture test `frame_coherency_image`.
+use alloc::collections::BTreeMap;
+
+use super::{shadow_budget, trim_shadows, SHADOW_FLOOR};
+
 const PG: u64 = 4096;
 
 fn inv_bounds(start: u64, end: u64) -> (u64, u64) {
@@ -36,7 +40,12 @@ fn writeback_range_covers_intersecting_pages() {
 
 #[test]
 fn eviction_shadow_history_is_bounded_when_resident_cache_is_empty() {
-    const SHADOW_FLOOR: usize = 64;
-    let budget = 0usize.saturating_mul(2).saturating_add(SHADOW_FLOOR);
-    assert_eq!(budget, SHADOW_FLOOR);
+    let mut shadows = (0..SHADOW_FLOOR as u64 + 5).map(|idx| (idx, idx)).collect::<BTreeMap<_, _>>();
+
+    trim_shadows(&mut shadows, 0);
+
+    assert_eq!(shadows.len(), SHADOW_FLOOR);
+    assert!(!shadows.contains_key(&0));
+    assert!(shadows.contains_key(&(SHADOW_FLOOR as u64 + 4)));
+    assert_eq!(shadow_budget(3), SHADOW_FLOOR + 6);
 }
