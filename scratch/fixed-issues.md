@@ -849,6 +849,12 @@ evidence has one canonical home.
 | FIXED 2d2807f94 | INFRA | med | The Firefox harness named its QEMU build/stdout file `oxide-firefox-uart-*.log` but never saved bytes read from the UART socket, discarding the only evidence from intermittent guest failures. | UART and QEMU output now have separate files; live run `2755218` retained 30,637 serial bytes and 3,266 QEMU-output bytes, and later runs retain searchable error-free UART records. | B1878-ext4-journal-create-eio |
 | FIXED 3ad95d4d9 | COVERAGE | med | ext4 mkdir/create/tmpfile collapsed backend failures to a VFS errno without entering the filesystem-error reporting owner, so watchers could not identify a journal-create `EIO` and diagnostic boots could not retain its source. | Creation errors now invoke the canonical reporter; `debug-boot` emits a stable allocation-free error kind only for structural/device failures. The injected create BlockIo regression reports once; bypassing the reporter fails with zero reports. | B1878-ext4-journal-create-eio |
 
+### B1883-pseudo-fs-superblock-ownership
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 8d8be76e8 | DEFECT | med | Every pseudo-filesystem built inodes without an owning superblock, so metadata readers fell back to synthetic defaults. | VFS now binds a synthesized inode when it is instantiated as a root or lookup result, and creates a separate inode view when one pseudo-tree template is reached through another superblock. Global sysfs and cgroup trees reuse their owning superblock. The regression proves distinct root and child views retain their own owners; focused VFS/kernfs/sysfs/cgroup suites and paired x86_64/aarch64 smoke passed. | B1883-pseudo-fs-superblock-ownership |
+
 ### B1879-jbd2-multidescriptor-replay
 
 | Status | Class | Sev | Issue | Evidence | Owner |

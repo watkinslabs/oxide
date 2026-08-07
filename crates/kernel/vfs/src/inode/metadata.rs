@@ -122,7 +122,17 @@ impl Inode {
     /// `i_generation`. # C: O(1)
     pub fn i_generation(&self) -> u32 { self.i_generation }
     /// `i_sb` — owning superblock (if still live). # C: O(1)
-    pub fn i_sb(&self) -> Option<Arc<SuperBlock>> { self.i_sb.upgrade() }
+    pub fn i_sb(&self) -> Option<Arc<SuperBlock>> { self.i_sb.read().upgrade() }
+    /// Bind a synthesized inode to the superblock that instantiated it. An
+    /// inode may be attached repeatedly through aliases of ONE instance, but
+    /// must never migrate between live superblocks. # C: O(1)
+    pub(crate) fn bind_superblock(&self, sb: &Arc<SuperBlock>) -> bool {
+        let mut owner = self.i_sb.write();
+        match owner.upgrade() {
+            Some(old) if !Arc::ptr_eq(&old, sb) => false,
+            _ => { *owner = Arc::downgrade(sb); true }
+        }
+    }
     /// Superblock/mount identity (`st_dev`). # C: O(1)
     pub fn fsid(&self) -> u64 {
         let f = self.i_fsid.load(Ordering::Relaxed);

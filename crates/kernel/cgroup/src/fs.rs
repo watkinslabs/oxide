@@ -40,6 +40,9 @@ impl FileSystem for CgroupFs {
     /// detects the unified hierarchy by this `statfs` f_type.
     /// # C: O(1)
     fn magic(&self) -> u64 { CGROUP2_SUPER_MAGIC }
+    /// The unified hierarchy is one kernfs tree, so mounts reuse its owning
+    /// superblock instead of attaching one inode tree to competing owners. # C: O(1)
+    fn dev_id(&self) -> Option<u64> { Some(CGROUP2_SUPER_MAGIC) }
     /// Resolve a `/sys/fs/cgroup/...` path by synthesizing from the
     /// hierarchy.
     /// # C: O(components · log n)

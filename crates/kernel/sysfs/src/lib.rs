@@ -234,6 +234,9 @@ impl vfs::fs::FileSystem for SysfsFs {
     /// Sysfs filesystem magic.
     /// # C: O(1)
     fn magic(&self) -> u64 { SYSFS_MAGIC }
+    /// All mounts of the one global kernfs tree share its one superblock;
+    /// namespace-specific mount state lives above the superblock. # C: O(1)
+    fn dev_id(&self) -> Option<u64> { Some(SYSFS_FSID) }
     /// Sysfs superblocks carry `SB_I_NOEXEC | SB_I_NODEV`. Also the `required_iflags`
     /// `mount_too_revealing` demands of every `FS_USERNS_MOUNT_RESTRICTED`
     /// filesystem, which sysfs is. # C: O(1)

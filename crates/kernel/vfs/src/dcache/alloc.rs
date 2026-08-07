@@ -25,6 +25,10 @@ pub static ANON_INODE_OPS: crate::dentry::DentryOps = crate::dentry::DentryOps {
 /// Allocate the root dentry for `sb`, install it as `s_root`, and record the
 /// inode alias. # C: O(1)
 pub fn d_make_root(inode: InodeRef, sb: &Arc<SuperBlock>) -> Arc<Dentry> {
+    // `new_inode(sb)` owns this association in Linux. Pseudo filesystems build
+    // their root before `fill_super` has an SB, so the one VFS root-instantiation
+    // boundary supplies the same ownership instead of every backend guessing it.
+    let inode = if inode.bind_superblock(sb) { inode } else { inode.clone_for_superblock(sb) };
     let root = Dentry::new_root_in_sb(inode.clone(), sb);
     // Pin the root's `d_count` for the mount's lifetime (Linux `__d_alloc` seeds
     // `d_lockref.count = 1`; the mount owns that ref via `sb->s_root`). Without
@@ -145,6 +149,10 @@ pub fn d_weak_revalidate(d: &Arc<Dentry>, reval: bool) -> bool {
 /// in the owning SB's icache (Linux `d_instantiate` → `inode->i_dentry`).
 /// # C: O(1)
 pub fn d_instantiate(dentry: &Arc<Dentry>, inode: InodeRef) {
+    let inode = match dentry.d_sb() {
+        Some(sb) if !inode.bind_superblock(&sb) => inode.clone_for_superblock(&sb),
+        _ => inode,
+    };
     if let Some(sb) = inode.i_sb() { sb.i_add_alias(&inode, dentry); }
     dentry.set_inode(Some(inode));
     dentry.grab_inode_hold(); // D3/D37: positive dentry counts its inode hold

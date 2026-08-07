@@ -3,7 +3,8 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::sync::{Arc, Weak};
 use core::any::Any;
-use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, AtomicU64};
+use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, AtomicU64, Ordering};
+use sync::{Inode as InodeClass, RwLock};
 
 use crate::file_ops::FileOps;
 use crate::inode_ops::InodeOps;
@@ -104,7 +105,10 @@ pub struct Inode {
     pub(super) i_count:        AtomicU32,
     pub(super) i_version:      AtomicU64,
     pub(super) i_fsid:         AtomicU64,
-    pub(super) i_sb:           Weak<SuperBlock>,
+    /// Set when VFS instantiates this inode into an owning superblock.  Pseudo
+    /// filesystems synthesize an inode before `fill_super` has allocated that
+    /// instance, so construction alone cannot establish this association.
+    pub(super) i_sb:           RwLock<Weak<SuperBlock>, InodeClass>,
     pub(super) i_mapping:      Option<Arc<dyn AddressSpaceOps>>,
     /// `mapping->wb_err` (Linux `struct address_space`): this inode's
     /// writeback-error latch, reported once per open description by
@@ -133,6 +137,62 @@ pub struct Inode {
     pub(super) i_rwsem:        super::rwsem::InodeRwsem,
     /// `inode->i_flctx`: single owner for BSD flock and POSIX/OFD records.
     pub(super) i_flctx:        FileLockContext,
+}
+
+impl Inode {
+    /// Create this namespace object's distinct inode view for `sb`. Shared
+    /// pseudo trees retain immutable operation/private state, while every
+    /// superblock receives its own VFS metadata, locks, wait queues, and
+    /// writeback state. # C: O(xattrs)
+    pub(crate) fn clone_for_superblock(&self, sb: &Arc<SuperBlock>) -> InodeRef {
+        let xattrs = self.i_xattrs.as_ref().map(|old| {
+            let copy = crate::xattr::SimpleXattrs::new();
+            copy.replace_all(&old.entries());
+            copy
+        });
+        Arc::new(Inode {
+            i_ino: self.i_ino,
+            i_mode: AtomicU32::new(self.i_mode.load(Ordering::Relaxed)),
+            i_size: AtomicU64::new(self.i_size.load(Ordering::Relaxed)),
+            i_blocks: AtomicU64::new(self.i_blocks.load(Ordering::Relaxed)),
+            i_nlink: AtomicU32::new(self.i_nlink.load(Ordering::Relaxed)),
+            i_uid: AtomicU32::new(self.i_uid.load(Ordering::Relaxed)),
+            i_gid: AtomicU32::new(self.i_gid.load(Ordering::Relaxed)),
+            i_projid: AtomicU32::new(self.i_projid.load(Ordering::Relaxed)),
+            i_flags: AtomicU32::new(self.i_flags.load(Ordering::Relaxed)),
+            i_rdev: self.i_rdev,
+            i_generation: sb.next_inode_generation(),
+            i_atime_sec: AtomicI64::new(self.i_atime_sec.load(Ordering::Relaxed)),
+            i_atime_nsec: AtomicU32::new(self.i_atime_nsec.load(Ordering::Relaxed)),
+            i_mtime_sec: AtomicI64::new(self.i_mtime_sec.load(Ordering::Relaxed)),
+            i_mtime_nsec: AtomicU32::new(self.i_mtime_nsec.load(Ordering::Relaxed)),
+            i_ctime_sec: AtomicI64::new(self.i_ctime_sec.load(Ordering::Relaxed)),
+            i_ctime_nsec: AtomicU32::new(self.i_ctime_nsec.load(Ordering::Relaxed)),
+            i_btime: self.i_btime,
+            i_writecount: AtomicI32::new(0),
+            i_state: AtomicU32::new(0),
+            dirtied_time_when: AtomicU64::new(0),
+            i_count: AtomicU32::new(1),
+            i_version: AtomicU64::new(self.i_version.load(Ordering::Relaxed)),
+            i_fsid: AtomicU64::new(self.i_fsid.load(Ordering::Relaxed)),
+            i_sb: RwLock::new(Arc::downgrade(sb)),
+            i_mapping: self.i_mapping.clone(),
+            i_wb_err: crate::errseq::Errseq::new(),
+            i_file_rmap: vmm::FileRmap::new(),
+            i_fsnotify_mask_counts: [const { AtomicU32::new(0) }; 32],
+            i_op: Arc::clone(&self.i_op),
+            i_fop: Arc::clone(&self.i_fop),
+            i_private: Arc::clone(&self.i_private),
+            poll_subs: self.poll_subs.as_ref().map(|_| Arc::new(PollSubscribers::new())),
+            seal_carrier: self.seal_carrier.clone(),
+            owner_persist: self.owner_persist.clone(),
+            i_link: self.i_link.clone(),
+            i_xattrs: xattrs,
+            i_dquot: InodeDquots::new(),
+            i_rwsem: super::rwsem::InodeRwsem::new(),
+            i_flctx: FileLockContext::new(),
+        })
+    }
 }
 
 /// One physical extent reported by `Inode::fiemap` (Linux `struct

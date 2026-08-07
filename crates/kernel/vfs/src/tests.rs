@@ -18,6 +18,7 @@ use sync::{RwLock, Inode as InodeClass};
 
 mod dentry_paths;
 mod file_fd;
+mod superblock_ownership;
 
 // ---------------------------------------------------------------------------
 // In-memory test inode — minimal Regular + Directory inodes for the FS surface

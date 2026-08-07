@@ -36,11 +36,11 @@ reclassified.
 
 | Class \ Sev | blocker | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|
-| `DEFECT` | 0 | 0 | 14 | 24 | 38 |
+| `DEFECT` | 0 | 0 | 13 | 24 | 37 |
 | `MISSING` | 2 | 0 | 17 | 19 | 38 |
 | `COVERAGE` | 0 | 0 | 10 | 15 | 25 |
 | `INFRA` | 0 | 0 | 15 | 11 | 26 |
-| **Total** | **2** | **0** | **56** | **69** | **127** |
+| **Total** | **2** | **0** | **55** | **69** | **126** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -209,7 +209,6 @@ here now.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | OPEN | COVERAGE | med | **The cgroupfs `open_by_handle_at` repair has no syscall-boundary regression.** The decoder used to read `anchor.inode.i_sb()` and return `ESTALE` for every handle cgroupfs had just minted. Both sites now take the mount's superblock, and cgroup's encode/decode unit tests cover that lower layer, but no test opens a real cgroup by handle through the syscall. | `304_open_by_handle_at.rs` takes the mount superblock at both former inode-back-pointer sites; only cgroup's direct encode/decode tests cover the round trip. | unowned |
-| OPEN | DEFECT | med | **Every pseudo-filesystem builds inodes with no superblock back-pointer.** `.sb(...)` on the inode builder is called by ext4 and devnode only; cgroupfs, procfs and sysfs never call it, so `i_sb()` is `None` for every inode they synthesize. This lane routes the two export paths around it, but `i_sb()` has other readers — `dev_t` reporting, `statfs_magic`, `blksize`, and the writeback-error latch all fall back to a default when it is empty. Each is a silent wrong answer of the same shape as this one. Either the builder should require a superblock, or those readers need the same path-first treatment. | `grep -rn "\.sb("` across `crates/kernel` returns ext4 and devnode only; `i_sb()` readers are in `vfs/src/inode/metadata.rs`. | unowned |
 
 ### B1730-irq-nesting-unbounded
 
