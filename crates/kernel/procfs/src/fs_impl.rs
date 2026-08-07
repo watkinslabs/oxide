@@ -26,9 +26,9 @@ pub struct ProcfsFs {
 
 impl ProcfsFs {
     /// Build a procfs instance for one mount. # C: O(N static files)
-    pub fn new(info: crate::fs_info::ProcFsInfo) -> Self {
+    pub fn new(info: crate::fs_info::ProcFsInfo, user_ns: namespace_identity::NamespaceRef) -> Self {
         let info = Arc::new(info);
-        ProcfsFs { root: crate::static_files::build_root(Arc::clone(&info)), info }
+        ProcfsFs { root: crate::static_files::build_root(Arc::clone(&info), user_ns), info }
     }
 
     /// # C: O(1)
@@ -38,7 +38,10 @@ impl ProcfsFs {
 impl Default for ProcfsFs {
     /// An option-less `mount -t proc`, which is every mount the kernel itself
     /// performs. # C: O(N static files)
-    fn default() -> Self { ProcfsFs::new(crate::fs_info::ProcFsInfo::default()) }
+    fn default() -> Self {
+        ProcfsFs::new(crate::fs_info::ProcFsInfo::default(),
+            namespace_identity::initial(namespace_identity::NamespaceKind::User))
+    }
 }
 
 /// `super_operations` for procfs. procfs is a zero-sized pseudo filesystem:

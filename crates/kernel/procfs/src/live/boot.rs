@@ -26,7 +26,8 @@ pub fn smoke_test() {
             // smoke runs before any procfs mount exists, so it checks that the
             // static tree BUILDS and resolves, not what a mount would answer.
             let root = crate::static_files::build_root(
-                alloc::sync::Arc::new(crate::fs_info::ProcFsInfo::default()));
+                alloc::sync::Arc::new(crate::fs_info::ProcFsInfo::default()),
+                namespace_identity::initial(namespace_identity::NamespaceKind::User));
             return lookup_child_path(root as InodeRef, rest);
         }
         if let Some(rest) = path.strip_prefix("/sys/") {

@@ -170,7 +170,10 @@ fn register_filesystems() {
         // this slice holds only pinned open files. Reading the slice here made
         // every option silently do nothing.
         let info = procfs::fs_info::info_for_mount(d, p)?;
-        mounted(ty, Arc::new(procfs::fs_impl::ProcfsFs::new(info)), None, "proc", sb_flags)
+        let user_ns = sched::live::current()
+            .and_then(|task| task.namespace_owner(namespace_identity::NamespaceKind::User))
+            .unwrap_or_else(|| namespace_identity::initial(namespace_identity::NamespaceKind::User));
+        mounted(ty, Arc::new(procfs::fs_impl::ProcfsFs::new(info, user_ns)), None, "proc", sb_flags)
     }), Some(procfs::fs_info::PROC_PARAMS)));
     let _ = register_fs(FsType::new("sysfs", SYSFS_MAGIC, FsFlags::FS_USERNS_MOUNT | FsFlags::FS_USERNS_MOUNT_RESTRICTED, Box::new(|ty, _, _, _, sb_flags, _p: &[vfs::fs::FsParameter]| -> R {
         mounted(ty, Arc::new(sysfs::SysfsFs), None, "sysfs", sb_flags)

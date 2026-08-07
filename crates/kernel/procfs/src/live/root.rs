@@ -15,6 +15,8 @@ pub struct ProcRootInode {
     /// root, so `hidepid=`/`subset=` are answers this mount owns rather than
     /// properties of the process asking.
     info: Arc<crate::fs_info::ProcFsInfo>,
+    /// The user namespace the mount fixed for credential copy-out.
+    user_ns: namespace_identity::NamespaceRef,
 }
 
 fn proc_root_lookup(d: &ProcRootInode, name: &str) -> KResult<InodeRef> {
@@ -50,7 +52,7 @@ fn proc_root_lookup(d: &ProcRootInode, name: &str) -> KResult<InodeRef> {
     if !super::pid_access::pid_visible(&d.info, tid, crate::fs_info::HidePid::NoAccess) {
         return Err(VfsError::Enoent);
     }
-    Ok(make_proc_pid_dir(tid, false, true))
+    Ok(make_proc_pid_dir(tid, false, true, d.user_ns.clone()))
 }
 
 struct ProcRootOps;
@@ -110,13 +112,14 @@ impl FileOps for ProcRootOps {
 /// fresh root inode in `proc_fill_super` for every superblock and shares only
 /// the static `proc_dir_entry` skeleton between them. # C: O(N static files)
 pub fn make_proc_root(children: BTreeMap<String, InodeRef>,
-                      info: Arc<crate::fs_info::ProcFsInfo>) -> InodeRef {
+                      info: Arc<crate::fs_info::ProcFsInfo>,
+                      user_ns: namespace_identity::NamespaceRef) -> InodeRef {
     InodeBuilder::new(
         crate::ids::PROC_ROOT,
         mk_mode(FileType::Directory, PROC_ROOT_DIR_MODE),
         Arc::new(ProcRootOps),
         Arc::new(ProcRootOps),
     )
-    .private(Arc::new(ProcRootInode { children, info }))
+    .private(Arc::new(ProcRootInode { children, info, user_ns }))
     .build()
 }

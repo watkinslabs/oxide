@@ -5,8 +5,8 @@ use super::pid_ino;
 use super::self_files::{push, push_hex};
 use vfs::InodeRef;
 
-fn pid_status_body(tid: u32) -> Vec<u8> {
-    crate::pid_status::body(tid)
+fn pid_status_body(tid: u32, owner: &namespace_identity::NamespaceRef) -> Vec<u8> {
+    crate::pid_status::body(tid, owner)
 }
 
 fn pid_cmdline_body(tid: u32) -> Vec<u8> {
@@ -130,7 +130,10 @@ macro_rules! pid_gated_ctor {
     };
 }
 
-pid_inode_ctor!(make_pid_status, pid_status_body, 0x20);
+/// `/proc/<pid>/status`, rendered in this proc mount's user namespace. # C: O(1)
+pub fn make_pid_status(tid: u32, owner: namespace_identity::NamespaceRef) -> InodeRef {
+    crate::dyn_file::make_pid_ns_gen_file(pid_ino(0x20, tid), tid, owner, pid_status_body)
+}
 pid_inode_ctor!(make_pid_cmdline, pid_cmdline_body, 0x21);
 pid_inode_ctor!(make_pid_stat, pid_stat_body, 0x22);
 pid_gated_ctor!(make_pid_maps, pid_maps_body, 0x23, "maps");
