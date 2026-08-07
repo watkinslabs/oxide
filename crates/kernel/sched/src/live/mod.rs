@@ -88,7 +88,7 @@ pub use delayed_work::queue_delayed_work_on;
 pub use tasklet::TaskletFn;
 pub use timer_list::TimerFn;
 pub use threaded_irq::{request as request_threaded_irq, free as free_threaded_irq};
-pub use send::{force_fatal_sig, force_sig_fault, force_sig_info_to_task, send_sig_priv_group,
+pub use send::{force_fatal_sig, force_sig_fault, force_sig_pkey_fault, force_sig_info_to_task, send_sig_priv_group,
                send_sig_priv_self, send_sig_self_info, send_signal, SendErr};
 pub use sigpend::{
     deliverable_signals, deliverable_signals_self, fatal_kill_pending, fatal_kill_pending_self, frozen_self,

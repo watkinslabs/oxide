@@ -16,12 +16,10 @@
 
 use sync::{AddressSpace as AddressSpaceClass, Spinlock};
 
-/// Per-arch facts about protection keys **on a CPU without the hardware
-/// feature** (x86 `X86_FEATURE_OSPKE`, arm64 `system_supports_poe()`), which
-/// is what we are on both arches: no CR4.PKE / PKRU, no POR_EL0, no per-PTE
-/// key bits. Both arches compile the syscalls in unconditionally
-/// (`X86_INTEL_MEMORY_PROTECTION_KEYS` and `ARM64_POE` are both `def_bool y`
-/// and both `select ARCH_HAS_PKEYS`), so neither ENOSYSes.
+/// Per-arch facts protection-key helpers need for one particular boot-time
+/// hardware decision. The architecture enables the register before any user
+/// mm exists, so a newly-created mm captures one immutable descriptor and
+/// neither its allocation map nor its fork child can disagree with it.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct PkeyArch {
     /// `arch_max_pkey()`. x86: `OSPKE ? 16 : 1`, so 1 for us. arm64: 8,
@@ -62,6 +60,29 @@ pub const AARCH64: PkeyArch = PkeyArch {
     alloc_checks_hw: true,
     execute_only_pkey: None,
 };
+
+/// The descriptor the running kernel's architecture enabled on this boot.
+/// # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub fn runtime_arch() -> PkeyArch {
+    if hal_x86_64::ospke_enabled() {
+        PkeyArch { max_pkey: hal_x86_64::pkru::MAX_PKEY_OSPKE as i32, init_map: 1,
+            alloc_checks_hw: false, execute_only_pkey: Some(-1) }
+    } else { X86_64 }
+}
+
+/// The descriptor the running kernel's architecture enabled on this boot.
+/// # C: O(1)
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+pub fn runtime_arch() -> PkeyArch {
+    PkeyArch { max_pkey: if hal_aarch64::poe_enabled() { hal_aarch64::por::MAX_PKEY as i32 } else { 1 }, init_map: 1,
+        alloc_checks_hw: !hal_aarch64::poe_enabled(), execute_only_pkey: None }
+}
+
+/// Hosted builds model the x86 hardware-absent descriptor.
+/// # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+pub fn runtime_arch() -> PkeyArch { ARCH }
 
 /// The descriptor for the arch this kernel is built for.
 #[cfg(target_arch = "aarch64")]
@@ -118,16 +139,23 @@ pub fn mm_pkey_free(a: &PkeyArch, map: &mut u16, pkey: i32) -> bool {
 /// the same sequence under `mmap_write_lock`.
 pub struct PkeyContext {
     map: Spinlock<u16, AddressSpaceClass>,
+    arch: PkeyArch,
 }
 
 impl PkeyContext {
     /// `init_new_context`'s pkey initialisation for a brand-new mm.
     /// # C: O(1)
-    pub(super) fn new() -> Self { Self { map: Spinlock::new(ARCH.init_map) } }
+    pub(super) fn new() -> Self {
+        let arch = runtime_arch();
+        Self { map: Spinlock::new(arch.init_map), arch }
+    }
 
     /// `arch_dup_pkeys` — the child mm inherits the parent's map verbatim.
     /// # C: O(1)
-    pub(super) fn forked(src: &Self) -> Self { Self { map: Spinlock::new(*src.map.lock()) } }
+    pub(super) fn forked(src: &Self) -> Self { Self { map: Spinlock::new(*src.map.lock()), arch: src.arch } }
+
+    /// The hardware shape captured when this mm was created. # C: O(1)
+    pub fn arch(&self) -> PkeyArch { self.arch }
 
     /// Run one `mm_pkey_*` sequence with the map locked, the way Linux runs
     /// them under `mmap_write_lock`.

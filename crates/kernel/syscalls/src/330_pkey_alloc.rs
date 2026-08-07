@@ -4,6 +4,7 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
+use core::sync::atomic::Ordering;
 use crate::misc::misc_common::errno;
 use crate::pkey;
 
@@ -25,6 +26,28 @@ pub fn sys_pkey_alloc(args: &SyscallArgs) -> i64 {
     let cur = match sched::live::current() { Some(c) => c, None => return errno(Errno::Einval) };
     // SAFETY: mm slot single-mutator per `13§5`; the Arc clone keeps this mm alive across the pkey-map update below.
     let mm = match unsafe { cur.mm_ref() } { Some(m) => m.clone(), None => return errno(Errno::Einval) };
-    let r = mm.pkeys().with_map(|map| pkey::pkey_alloc(&pkey::ARCH, map, args.a0, args.a1));
-    match r { Ok(key) => key as i64, Err(e) => errno(e) }
+    let abi = pkey::with_mm(pkey::ARCH, mm.pkeys().arch());
+    let r = mm.pkeys().with_map(|map| pkey::pkey_alloc(&abi, map, args.a0, args.a1));
+    let key = match r { Ok(key) => key, Err(e) => return errno(e) };
+    let rights = pkey_access_rights(key as u16, args.a1);
+    cur.pkey_rights.store(rights, Ordering::Relaxed);
+    sched::pkey_rights::write_live(rights);
+    key as i64
+}
+
+/// Apply `pkey_alloc`'s requested initial rights to the current task's live
+/// user-writable register. # C: O(1)
+#[cfg(target_arch = "x86_64")]
+fn pkey_access_rights(pkey: u16, init: u64) -> u64 {
+    hal_x86_64::pkru::pkru_set_pkey_access(sched::pkey_rights::read_live() as u32, pkey,
+        init & pkey::PKEY_DISABLE_ACCESS != 0, init & pkey::PKEY_DISABLE_WRITE != 0) as u64
+}
+
+/// Apply `pkey_alloc`'s requested initial rights to the current task's live
+/// user-writable register. # C: O(1)
+#[cfg(target_arch = "aarch64")]
+fn pkey_access_rights(pkey: u16, init: u64) -> u64 {
+    hal_aarch64::por::por_set_pkey_access(sched::pkey_rights::read_live(), pkey,
+        init & pkey::PKEY_DISABLE_ACCESS != 0, init & pkey::PKEY_DISABLE_WRITE != 0,
+        init & pkey::PKEY_DISABLE_READ != 0, init & pkey::PKEY_DISABLE_EXECUTE != 0)
 }

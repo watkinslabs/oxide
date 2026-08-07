@@ -84,6 +84,12 @@ pub const ARCH: PkeyAbi = AARCH64;
 #[cfg(not(target_arch = "aarch64"))]
 pub const ARCH: PkeyAbi = X86_64;
 
+/// Pair this syscall ABI's masks with the immutable descriptor of the mm it
+/// operates on. The access masks are an ABI property; the key count and map
+/// shape are the boot-time hardware decision owned by that mm.
+/// # C: O(1)
+pub const fn with_mm(a: PkeyAbi, mm: PkeyArch) -> PkeyAbi { PkeyAbi { mm, ..a } }
+
 /// `SYSCALL_DEFINE2(pkey_alloc)` against this mm's allocation `map`.
 /// Validation order is Linux's: flags, then `init_val`, then the allocation
 /// attempt, then the arch install.
@@ -93,9 +99,12 @@ pub fn pkey_alloc(a: &PkeyAbi, map: &mut u16, flags: u64, init_val: u64) -> Resu
     if init_val & !a.access_mask != 0 { return Err(Errno::Einval); }
     let pkey = pkeys::mm_pkey_alloc(&a.mm, map);
     if pkey == pkeys::PKEY_ALLOC_FAILED { return Err(Errno::Enospc); }
-    // We have no PKU/PKRU and no POE, so `arch_set_user_pkey_access` always
-    // takes its feature-absent early return. Linux discards the rollback's own
-    // result and reports the install error.
+    // A usable rights register makes the allocation visible. The syscall shim
+    // installs `init_val` into the current task immediately after this map
+    // update, while it still owns this mm's pkey operation.
+    if a.mm.max_pkey > 1 { return Ok(pkey); }
+    // Without hardware, `arch_set_user_pkey_access` takes its feature-absent
+    // return. Linux discards the rollback's own result and reports that error.
     let _ = pkeys::mm_pkey_free(&a.mm, map, pkey);
     Err(a.set_access_err)
 }

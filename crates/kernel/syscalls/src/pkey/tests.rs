@@ -120,3 +120,20 @@ fn x86_map_after_the_failed_alloc_still_refuses_key_zero_for_mprotect() {
     assert!(!pkey_mprotect_allows(&X86_64, m, 0));
     assert_eq!(pkey_free(&X86_64, &mut m, 0), Err(Errno::Einval));
 }
+
+#[test]
+fn enabled_hardware_allocates_a_real_key_without_rollback() {
+    let x86 = with_mm(X86_64, pkeys::PkeyArch {
+        max_pkey: 16, init_map: 1, alloc_checks_hw: false, execute_only_pkey: Some(-1),
+    });
+    let mut map = x86.mm.init_map;
+    assert_eq!(pkey_alloc(&x86, &mut map, 0, PKEY_DISABLE_WRITE), Ok(1));
+    assert!(pkey_mprotect_allows(&x86, map, 1));
+
+    let arm = with_mm(AARCH64, pkeys::PkeyArch {
+        max_pkey: 8, init_map: 1, alloc_checks_hw: false, execute_only_pkey: None,
+    });
+    let mut map = arm.mm.init_map;
+    assert_eq!(pkey_alloc(&arm, &mut map, 0, PKEY_DISABLE_READ), Ok(1));
+    assert!(pkey_mprotect_allows(&arm, map, 1));
+}

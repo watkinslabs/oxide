@@ -218,7 +218,16 @@ pub fn overflow_is_eagain(sig: u32, src: &SigSource) -> bool {
 pub fn fault_info(sig: u32, code: i32, addr: u64, addr_lsb: i16) -> SigInfo {
     SigInfo {
         signo: sig, code, pid: 0, uid: 0, value: 0, sys: None,
-        fault: Some(hal::SigFault { addr, addr_lsb }), poll: None,
+        fault: Some(hal::SigFault { addr, addr_lsb, pkey: 0 }), poll: None,
+    }
+}
+
+/// Build the `_sigfault._addr_pkey` record for a protection-key denial.
+/// # C: O(1)
+pub fn pkey_fault_info(sig: u32, addr: u64, pkey: i32) -> SigInfo {
+    SigInfo {
+        signo: sig, code: hal::siginfo::code::SEGV_PKUERR, pid: 0, uid: 0, value: 0, sys: None,
+        fault: Some(hal::SigFault { addr, addr_lsb: 0, pkey }), poll: None,
     }
 }
 

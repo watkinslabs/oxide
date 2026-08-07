@@ -76,10 +76,9 @@ pub struct SigPoll {
 /// `siginfo_t::_sifields._sigfault` — the arm SIGSEGV, SIGBUS, SIGILL, SIGFPE
 /// and SIGTRAP select (`include/uapi/asm-generic/siginfo.h`).
 ///
-/// `addr` is the faulting instruction / memory reference. `addr_lsb` is the
-/// `short` that follows it, meaningful for the SIGBUS machine-check codes; the
-/// remaining inner-union members (`_addr_bnd`, `_addr_pkey`, `_perf`) start
-/// past it and are written by their own producers.
+/// `addr` is the faulting instruction / memory reference. `addr_lsb` is
+/// meaningful for SIGBUS machine-checks; `pkey` occupies the same inner-union
+/// slot for `SEGV_PKUERR`.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct SigFault {
@@ -88,6 +87,8 @@ pub struct SigFault {
     /// `si_addr_lsb` — log2 of the reported page size for the SIGBUS
     /// machine-check codes; 0 everywhere else.
     pub addr_lsb: i16,
+    /// `si_pkey` for `SEGV_PKUERR`; zero for every other fault class.
+    pub pkey: i32,
 }
 
 /// `siginfo_t::_sifields._sigsys` (`include/uapi/asm-generic/siginfo.h`),
@@ -365,7 +366,11 @@ pub fn write_siginfo(info: &mut [u8; 128], sig: u32, payload: Option<SigPayload>
     }
     if let Some(f) = p.fault {
         info[SI_ADDR..SI_ADDR + 8].copy_from_slice(&f.addr.to_ne_bytes());
-        info[SI_ADDR_LSB..SI_ADDR_LSB + 2].copy_from_slice(&f.addr_lsb.to_ne_bytes());
+        if p.code == code::SEGV_PKUERR {
+            info[SI_ADDR_LSB..SI_ADDR_LSB + 4].copy_from_slice(&f.pkey.to_ne_bytes());
+        } else {
+            info[SI_ADDR_LSB..SI_ADDR_LSB + 2].copy_from_slice(&f.addr_lsb.to_ne_bytes());
+        }
         return;
     }
     if let Some(q) = p.poll {
@@ -420,6 +425,7 @@ pub fn read_siginfo(info: &[u8; 128], sig: u32) -> SigPayload {
         p.fault = Some(SigFault {
             addr:     u64_at(info, SI_ADDR),
             addr_lsb: i16::from_ne_bytes([info[SI_ADDR_LSB], info[SI_ADDR_LSB + 1]]),
+            pkey: if code == code::SEGV_PKUERR { i32_at(info, SI_ADDR_LSB) } else { 0 },
         });
         return p;
     }

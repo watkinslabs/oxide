@@ -166,6 +166,13 @@ pub fn force_sig_fault(sig: Signum, code: i32, addr: u64, addr_lsb: i16) {
     force_sig_info_to_task(&cur, info, ForceMode::Current);
 }
 
+/// Queue `SEGV_PKUERR` with the VMA key the hardware rejected. # C: O(1)
+pub fn force_sig_pkey_fault(sig: Signum, addr: u64, pkey: i32) {
+    let Some(cur) = current_arc() else { return };
+    let info = sigsend::pkey_fault_info(sig.as_u8() as u32, addr, pkey);
+    force_sig_info_to_task(&cur, info, ForceMode::Current);
+}
+
 /// Linux `force_fatal_sig(sig)` — `HANDLER_EXIT`: the default action runs even
 /// if a handler is installed, and the action is marked `SA_IMMUTABLE` so it
 /// cannot be turned back into a survivable one. `HANDLER_SIG_DFL` (which is

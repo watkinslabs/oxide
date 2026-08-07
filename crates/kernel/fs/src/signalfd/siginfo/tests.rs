@@ -192,7 +192,7 @@ fn the_fault_arm_renders_an_address_and_no_sender() {
 fn a_forced_fault_record_reports_its_own_si_addr_not_the_overlaid_words() {
     let mut r = rec(SIGSEGV, 2);
     r.pid = 0xdead_beef; r.uid = 0x0000_7fff;
-    r.fault = Some(hal::SigFault { addr: 0x7fff_1234_5000, addr_lsb: 0 });
+    r.fault = Some(hal::SigFault { addr: 0x7fff_1234_5000, addr_lsb: 0, pkey: 0 });
     let out = enc(SIGSEGV, &r);
     assert_eq!(u64_at(&out, SSI_ADDR), 0x7fff_1234_5000);
     assert_eq!(i32_at(&out, SSI_CODE), 2, "SEGV_ACCERR survives the round trip");
@@ -203,7 +203,7 @@ fn a_forced_fault_record_reports_its_own_si_addr_not_the_overlaid_words() {
 fn a_forced_mceerr_record_reports_its_own_addr_lsb() {
     let mut r = rec(SIGBUS, BUS_MCEERR_AR);
     r.value = 0;
-    r.fault = Some(hal::SigFault { addr: 0x4000, addr_lsb: 21 });
+    r.fault = Some(hal::SigFault { addr: 0x4000, addr_lsb: 21, pkey: 0 });
     let out = enc(SIGBUS, &r);
     assert_eq!(u64_at(&out, SSI_ADDR), 0x4000);
     assert_eq!(u16_at(&out, SSI_ADDR_LSB), 21);

@@ -85,7 +85,24 @@ fn vma_at(ip: u64) -> Option<sched::signal_report::VmaAddr> {
 /// # C: O(1)
 fn raise(cls: hal::fault_class::FaultSignal, addr: u64) {
     let sig = signum_from(cls.signo);
-    sched::live::force_sig_fault(sig, cls.code, addr, 0);
+    if cls.code == hal::siginfo::code::SEGV_PKUERR {
+        sched::live::force_sig_pkey_fault(sig, addr, fault_pkey(addr) as i32);
+    } else {
+        sched::live::force_sig_fault(sig, cls.code, addr, 0);
+    }
+}
+
+/// `siginfo.si_pkey` is meaningful only for an access rejected by the
+/// protection-key mechanism. The VMA is the sole mapping-level key owner,
+/// including a key changed by `pkey_mprotect`; ordinary faults retain zero.
+/// # C: O(log N_vmas)
+fn fault_pkey(addr: u64) -> u32 {
+    let Some(cur) = sched::live::current() else { return 0; };
+    // SAFETY: synchronous fault dispatch runs on the faulting task; the VMA
+    // lookup is read-only and the task's mm remains live for this handler.
+    let Some(mm) = (unsafe { cur.mm_ref() }) else { return 0; };
+    hal::UserVirtAddr::new(addr).and_then(|uva| mm.find_vma(uva))
+        .map_or(0, |vma| vma.pkey as u32)
 }
 
 /// Map a classifier signo onto the typed `Signum`. The classifier only ever
