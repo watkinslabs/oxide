@@ -176,16 +176,23 @@ pub fn vet_payload(t: &KeyType, len: u64, have_ptr: bool) -> Result<(), Errno> {
 pub struct PreparsedPayload {
     pub description: Option<String>,
     pub asymmetric_ids: Vec<Vec<u8>>,
+    pub asymmetric_name_id: Option<Vec<u8>>,
 }
 
+/// Decode the type-owned metadata that instantiation keeps with the payload.
+/// # C: O(len)
 pub fn preparse_blob(t: &KeyType, payload: &[u8]) -> Result<PreparsedPayload, Errno> {
     match t.payload_rule {
         PayloadRule::Asymmetric => {
             let key = pkey::AsymmetricKey::parse(payload)
                 .map_err(super::ops::pkey::errno_for)?;
-            Ok(PreparsedPayload { description: key.description, asymmetric_ids: key.ids })
+            Ok(PreparsedPayload {
+                description: key.description, asymmetric_ids: key.ids, asymmetric_name_id: key.name_id,
+            })
         }
-        _ => Ok(PreparsedPayload { description: None, asymmetric_ids: Vec::new() }),
+        _ => Ok(PreparsedPayload {
+            description: None, asymmetric_ids: Vec::new(), asymmetric_name_id: None,
+        }),
     }
 }
 

@@ -23,8 +23,12 @@ const NAME_PREFIX_MATCH: usize = 7;
 pub struct Certificate {
     /// The rendered subject name, as the key description carries it.
     pub subject: String,
+    /// Raw subject-name content octets used as the third key identifier.
+    pub subject_id: Vec<u8>,
     /// Raw `serialNumber` content octets.
     pub serial: Vec<u8>,
+    /// Raw issuer-name content octets paired with the serial-number ID.
+    pub issuer: Vec<u8>,
     /// Raw subject key identifier, when the certificate carries one.
     pub skid: Option<Vec<u8>>,
     /// Public-key algorithm name.
@@ -48,7 +52,7 @@ pub fn parse(blob: &[u8]) -> Result<Certificate, PkeyError> {
     r.take_if(TAG_VERSION)?;
     let serial = der::positive_integer(r.expect(der::TAG_INTEGER)?)?.to_vec();
     r.expect(der::TAG_SEQUENCE)?;          // inner signature algorithm
-    r.expect(der::TAG_SEQUENCE)?;          // issuer
+    let issuer = r.expect(der::TAG_SEQUENCE)?.to_vec();
     r.expect(der::TAG_SEQUENCE)?;          // validity
     let subject_raw = r.expect(der::TAG_SEQUENCE)?;
     let spki = r.expect(der::TAG_SEQUENCE)?;
@@ -56,7 +60,7 @@ pub fn parse(blob: &[u8]) -> Result<Certificate, PkeyError> {
     let (algo, key) = parse_spki(spki)?;
     let subject = render_name(subject_raw)?;
     let skid = find_skid(&mut r)?;
-    Ok(Certificate { subject, serial, skid, algo, key })
+    Ok(Certificate { subject, subject_id: subject_raw.to_vec(), serial, issuer, skid, algo, key })
 }
 
 /// `SubjectPublicKeyInfo ::= SEQUENCE { algorithm AlgorithmIdentifier,

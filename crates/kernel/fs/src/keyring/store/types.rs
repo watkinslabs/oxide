@@ -64,6 +64,8 @@ pub struct Key {
     /// Asymmetric certificate identifiers, parsed once at instantiation and
     /// owned by the key with its payload.
     pub asymmetric_ids: Vec<Vec<u8>>,
+    /// Third asymmetric certificate identifier, reserved for exact `dn:` lookup.
+    pub asymmetric_name_id: Option<Vec<u8>>,
     pub perm: u32,
     pub uid: u32,
     pub gid: u32,

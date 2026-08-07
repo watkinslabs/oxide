@@ -28,19 +28,19 @@ fn decode_hex(id: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-fn asymmetric_match(ids: &[Vec<u8>], description: &str) -> bool {
+fn asymmetric_match(ids: &[Vec<u8>], name_id: Option<&[u8]>, description: &str) -> bool {
     let Some((kind, text)) = description.split_once(':') else { return false; };
     let Some(want) = decode_hex(text) else { return false; };
     match kind {
         "id" => ids.iter().any(|id| id.ends_with(&want)),
         "ex" => ids.iter().any(|id| id == &want),
-        "s" => ids.get(1).is_some_and(|id| id == &want),
+        "dn" => name_id.is_some_and(|id| id == want),
         _ => false,
     }
 }
 
 fn asymmetric_selector(description: &str) -> bool {
-    description.starts_with("id:") || description.starts_with("ex:") || description.starts_with("s:")
+    description.starts_with("id:") || description.starts_with("ex:") || description.starts_with("dn:")
 }
 
 /// Whether an expired match is skipped silently or reported.
@@ -100,7 +100,9 @@ fn search_one(g: &Store, root: i32, t: &TaskIds, key_type: &str, description: &s
                 continue;
             }
             if k.key_type.name == ASYMMETRIC_KEY_TYPE {
-                if asymmetric_selector(description) && !asymmetric_match(&k.asymmetric_ids, description) { continue; }
+                if asymmetric_selector(description)
+                    && !asymmetric_match(&k.asymmetric_ids, k.asymmetric_name_id.as_deref(), description)
+                { continue; }
                 if !asymmetric_selector(description) && k.description != description { continue; }
             } else if k.description != description { continue; }
             if key_task_permission(g, k, t, KEY_NEED_SEARCH, now_ns).is_err() { result = Errno::Eacces.as_i32(); continue; }

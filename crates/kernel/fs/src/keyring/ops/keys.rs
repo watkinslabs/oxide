@@ -74,7 +74,9 @@ pub fn add_key_core(c: &Ctx, key_type: &str, desc: &str, payload: Vec<u8>, have_
     let serial = match g.mint(ty, desc, payload, c.t.fsuid, c.t.fsgid, quota) {
         Ok(s) => s, Err(err) => return e(err),
     };
-    g.keys.get_mut(&serial).expect("just minted under the held store lock").asymmetric_ids = parsed.asymmetric_ids;
+    let key = g.keys.get_mut(&serial).expect("just minted under the held store lock");
+    key.asymmetric_ids = parsed.asymmetric_ids;
+    key.asymmetric_name_id = parsed.asymmetric_name_id;
     match g.link(ring, serial) {
         Ok(()) => serial as i64,
         Err(err) => { g.destroy(serial); e(err) }
