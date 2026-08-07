@@ -37,10 +37,10 @@ reclassified.
 | Class \ Sev | blocker | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|
 | `DEFECT` | 0 | 0 | 13 | 19 | 32 |
-| `MISSING` | 2 | 0 | 14 | 14 | 30 |
+| `MISSING` | 2 | 0 | 14 | 13 | 29 |
 | `COVERAGE` | 0 | 0 | 9 | 14 | 23 |
 | `INFRA` | 0 | 0 | 14 | 11 | 25 |
-| **Total** | **2** | **0** | **50** | **58** | **110** |
+| **Total** | **2** | **0** | **50** | **57** | **109** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -236,7 +236,6 @@ here now.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| IN-PROGRESS F837-ipv4-indiscards-accounting | MISSING | low | `IpInDiscards` still reads zero because no packet-buffer drop owner has been implemented. It needs its event named at the point it occurs. | `crates/kernel/net/src/mib.rs` | [CLAIMED F837-ipv4-indiscards-accounting 2026-08-07] |
 | OPEN | MISSING | low | `/proc/net/snmp6` and `/proc/net/packet` remain empty/header-only stubs. `/proc/net/netstat` is live and projects the canonical TCP extended MIB counters. | `crates/kernel/procfs/src/static_files.rs`; `crates/kernel/net/src/mib.rs::render_proc_netstat` | — |
 
 ### C274-qemu-pcap-capture
