@@ -210,6 +210,7 @@ shape they were retired in; post-D473 imports retain the `Class` column.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
+| FIXED B1912-ledger | MISSING | med | `KEYCTL_DH_COMPUTE`, `KEYCTL_PKEY_*`, and `KEYCTL_WATCH_KEY` were still recorded as unsupported. | `ops::{dh,pkey,watch}::SUPPORTED` are all true; `keyrings_capabilities` derives the public-key, Diffie-Hellman, and notification bits from those owners; focused keyring tests assert the bits. The stale aggregate row is removed from the live ledger. | B1912-keyring-restrictions |
 | FIXED 39262278d | DEFECT | low | Asymmetric-key search accepted only an exact description, not certificate ID selectors. | Each asymmetric key owns its issuer+serial, SKID, and subject identifiers alongside its payload. `KEYCTL_SEARCH` accepts partial `id:`, exact `ex:`, and exact subject `dn:` selectors without a second key index; the held-ID test covers all forms. Removing exact matching makes it fail with `ENOKEY`; 12 keyring-pkey tests pass. | B1911-asymmetric-key-id-search |
 
 | Status | Class | Sev | Issue | Evidence | Owner |
