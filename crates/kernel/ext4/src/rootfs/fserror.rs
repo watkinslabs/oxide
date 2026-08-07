@@ -46,9 +46,46 @@ pub(crate) fn is_inconsistency(e: &MountError) -> bool {
 /// # C: O(1) + subscribers
 pub(crate) fn report(st: &RootfsState, e: MountError) -> vfs::VfsError {
     let bad = is_inconsistency(&e);
+    #[cfg(feature = "debug-boot")]
+    if bad { log_error(&e); }
     let mapped = super::inode::regular::vfs_error_from_mount(e);
     if bad { vfs::fire_fs_error(watcher_fsid(st), None, mapped as i32); }
     mapped
+}
+
+/// Stable error-only diagnostic kind; no pathname or transient allocation.
+/// # C: O(1)
+#[cfg(any(feature = "debug-boot", test))]
+fn error_kind(e: &MountError) -> &'static [u8] {
+    match e {
+        MountError::BlockIo => b"block-io",
+        MountError::Superblock(_) => b"superblock",
+        MountError::Gdt(_) => b"gdt",
+        MountError::Inode(_) => b"inode",
+        MountError::Dir(_) => b"directory",
+        MountError::NotFound => b"not-found",
+        MountError::NotDir => b"not-directory",
+        MountError::NotExtents => b"not-extents",
+        MountError::DepthUnsupported => b"extent-depth",
+        MountError::NoSpace => b"no-space",
+        MountError::BadBlock => b"bad-block",
+        MountError::DoubleFree => b"double-free",
+        MountError::ExtentTreeFull => b"extent-tree-full",
+        MountError::DirFull => b"directory-full",
+        MountError::CorruptExtentTree => b"corrupt-extent-tree",
+        MountError::BadChecksum => b"bad-checksum",
+        MountError::UnsupportedFeature => b"unsupported-feature",
+        MountError::Quota(_) => b"quota",
+    }
+}
+
+/// Emit the diagnostic-build record without changing error delivery.
+/// # C: O(1)
+#[cfg(feature = "debug-boot")]
+fn log_error(e: &MountError) {
+    klog::write_raw(b"[EXT4-ERROR] kind=");
+    klog::write_raw(error_kind(e));
+    klog::write_raw(b"\n");
 }
 
 /// The filesystem identity a report carries: the `st_dev` every inode on this
@@ -76,6 +113,8 @@ mod tests {
         assert!(is_inconsistency(&MountError::DoubleFree));
         assert!(is_inconsistency(&MountError::BadBlock));
         assert!(is_inconsistency(&MountError::BlockIo));
+        assert_eq!(error_kind(&MountError::BlockIo), b"block-io");
+        assert_eq!(error_kind(&MountError::BadChecksum), b"bad-checksum");
     }
 
     /// Ordinary answers about a HEALTHY filesystem are not errors about the

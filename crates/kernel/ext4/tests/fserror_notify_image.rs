@@ -107,6 +107,24 @@ fn a_corrupt_extent_header_is_reported_to_the_filesystem_watcher() {
                "the reported number is the errno the caller was refused with, POSITIVE");
 }
 
+/// Namespace mutation errors use the same filesystem-error owner as data and
+/// extent operations. A failed create must not collapse to `EIO` before the
+/// watcher and stable error-only diagnostic have seen the backend failure.
+#[test]
+fn a_create_block_io_error_is_reported_to_the_filesystem_watcher() {
+    let dev = 0x00FE_0004;
+    let (m, _sb) = mount(dev);
+    let root = m.root().expect("root inode");
+    m.state().mount.fail_next_metadata_write_for_tests();
+
+    let before = reports_for(dev).len();
+    let rc = root.create_child("must-fail", 0o600, &vfs::CreateCtx::root());
+    assert!(matches!(rc, Err(vfs::VfsError::Eio)));
+    let reports = reports_for(dev);
+    assert_eq!(reports.len(), before + 1, "create reports its backend failure once");
+    assert_eq!(reports[before], vfs::VfsError::Eio as i32);
+}
+
 /// A HEALTHY filesystem stays silent. An ordinary answer — a name that is not
 /// there, a block that is not mapped — is not an error about the filesystem.
 #[test]

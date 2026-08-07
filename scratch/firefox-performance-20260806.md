@@ -775,3 +775,51 @@ ingress ownership. GNOME settled at load `0.55 0.15 0.05` on one vCPU:
 Saved output: `/tmp/b1873-firefox-exact-final.log` and UART
 `/tmp/oxide-firefox-uart-1909894.log`. Both final runs completed without a
 watchdog, fault, resolver/control loss, or stalled invalid-host request.
+
+## B1878 post-merge intermittent journal EIO
+
+All runs used merge `5d637d985`, a clean release x86_64 build, KVM, and one
+vCPU. Kernel cost divides reported system time by 400,000 read/write syscalls.
+
+| Run | Result | Kernel us/call | HTTPS | Valid page | Invalid DNS |
+|---|---|---:|---:|---:|---:|
+| `2746116` | FAIL: blank Firefox window; repeated journal-create `EIO` | 0.158--0.173 | 58.593 ms | >20 s | unreadable |
+| `2750629` | PASS | 0.155 | 37.201 ms | 4.936 s | 2.681 s |
+| `2752392` | PASS | 0.153--0.170 | 43.971 ms | 4.954 s | 2.665 s |
+| `2752865` | PASS; curl transport timeout | 0.153--0.155 | >30 s | 4.950 s | 4.038 s |
+| `2753976` | PASS; QMP RIP profile | 0.155--0.158 | 34.042 ms | complete in 20 s sample | complete in 15 s sample |
+| `2755218` | PASS; first real UART capture | 0.153--0.158 | 111.842 ms | 4.974 s | 1.472 s |
+| `2768474` | PASS; deferred-I/O fix | 0.155--0.158 | 32.622 ms | 4.950 s | 1.465 s |
+| `2769008` | PASS; deferred-I/O fix repeat | 0.155 | 48.959 ms | 6.130 s | 1.469 s |
+| `2771882` | PASS; reporter build | 0.153--0.155 | 32.923 ms | 4.935 s | 2.643 s |
+
+Profile `2753976` retained 350 non-stopping samples. The valid window had no
+dominant active kernel symbol: IRQ-state restore was 10.50%, boot idle anchor
+3.00%, user mode 12.00%, and every other kernel symbol at or below 2.00%.
+The invalid-DNS window was 38.67% in the `sti; hlt` boot idle anchor, 15.33%
+across IRQ-state restore instances, 10.67% user mode, and every other symbol
+at or below 2.00%. No earlier PMM scan, allocator region scan, block polling,
+namespace lookup, or network lock spin reappeared.
+
+The original 2.06 us/call uniform syscall tax remains eliminated: every
+current run measured 0.153--0.173 us/call. One journal-create EIO/blank launch
+and one independent curl timeout show remaining
+intermittent filesystem or transport correctness, not a uniform CPU hotspot.
+The EIO remains open until reproduced with its exact ext4 error source and
+fixed; passing repeats do not retire it.
+
+Commit `71736c892` closes one independent storage stall found in this pass.
+An async request queued while a synchronous virtio-blk owner held the queue
+had no completion that could restart deferred dispatch; releasing the owner
+only woke another owner, which could not acquire while `deferred` remained
+nonempty. Release now reruns queued dispatch before waking the next owner.
+The exact regression fails when that call is removed and passes when restored;
+the driver suite passes 31/31 and the three post-fix browser boots above pass.
+
+Commit `2d2807f94` makes the harness's UART artifact truthful: bytes consumed
+from the serial socket go to `oxide-firefox-uart-<run>.log`, while build/QEMU
+stdout has a separate `oxide-firefox-qemu-<run>.log`. Commit `3ad95d4d9` routes
+mkdir/create/tmpfile backend failures through ext4's canonical filesystem-error
+owner; `debug-boot` emits an allocation-free stable error kind for
+structural/device failures. Its injected create-I/O positive control reports exactly once;
+bypassing the owner makes the test fail with zero reports.

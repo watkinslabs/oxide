@@ -472,7 +472,7 @@ impl BlkState {
     /// I/O-priority dispatch order, not arrival order: this is the one point
     /// where the queue is congested and a priority can therefore matter. With
     /// a single class waiting the order it produces IS arrival order.
-    fn start_deferred_requests(&self) {
+    pub(super) fn start_deferred_requests(&self) {
         loop {
             let deferred = {
                 let mut ring = self.inflight.lock_bh::<sched::bh::SchedBh>();
