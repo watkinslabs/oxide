@@ -77,6 +77,16 @@ fn active_open_uses_learned_pmtu_unless_mode_uses_interface() {
 }
 
 #[test]
+fn active_open_mib_moves_only_after_the_syn_transmits() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let stack = NetStack::new();
+    let (_iface, _) = stack.register_loopback();
+    let before = crate::mib::get(0, crate::mib::Mib::TcpActiveOpens);
+    let _entry = connect_with_mode(&stack, CLIENT_PORT + 100, crate::uapi::IP_PMTUDISC_WANT);
+    assert_eq!(crate::mib::get(0, crate::mib::Mib::TcpActiveOpens), before + 1);
+}
+
+#[test]
 fn passive_child_uses_learned_pmtu_unless_listener_uses_interface() {
     let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
