@@ -21,6 +21,12 @@ shape they were retired in; post-D473 imports retain the `Class` column.
 |---|---|---|---|---|---|
 | FIXED a005e6b5a | DEFECT | low | x86 trap-frame ptrace could not preserve independent `rax` and `orig_rax` values. | The saved trap entry word now owns `orig_rax`, while architectural `rax` remains independent on both `PTRACE_GETREGS` and `PTRACE_SETREGS`; core-note register encoding uses the same mapping. Focused red/green controls, 1,236 syscall tests, 964 filesystem tests, paired smoke, and the full pre-push gate passed. | B1937-x86-ptrace-orig-rax |
 
+## Restartable sequences
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 8a364ee0a | MISSING | med | rseq time-slice extension granted no execution time: slot 471 only read-and-cleared a never-set yielded latch, while `PR_RSEQ_SLICE_EXTENSION` could not negotiate a v2 grant. | V2 registration now advertises the extension, `prctl` validates and changes its state, and eligible return-to-user reschedules grant the requested bounded extension. Syscall entry and expiry revoke it, and the per-CPU one-shot timer carries the microsecond deadline on both architectures. Focused ABI/`prctl` tests, both target checks, paired smoke, and the full pre-push gate passed. | F830-rseq-slice-extension |
+
 ## Tooling / gates
 
 | Status | Sev | Issue | Evidence | Owner |

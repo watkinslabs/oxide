@@ -37,10 +37,10 @@ reclassified.
 | Class \ Sev | blocker | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|
 | `DEFECT` | 0 | 0 | 13 | 19 | 32 |
-| `MISSING` | 2 | 0 | 15 | 17 | 34 |
+| `MISSING` | 2 | 0 | 14 | 17 | 33 |
 | `COVERAGE` | 0 | 0 | 9 | 14 | 23 |
 | `INFRA` | 0 | 0 | 14 | 11 | 25 |
-| **Total** | **2** | **0** | **51** | **61** | **114** |
+| **Total** | **2** | **0** | **50** | **61** | **113** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -102,7 +102,6 @@ row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 |---|---|---|---|---|---|
 | OPEN | DEFECT | med | Data segments still carry timestamps keyed on `ts_enabled` alone (`build_segment_at`), which is correct, but the SACK-block writer in `sack.rs` and the timestamp writer in `segment.rs` each assemble their own option area by hand rather than through `syn_opts`. Two more hand-rolled option writers remain; a non-SYN option assembler should absorb them. | Not a live defect — both currently emit correct bytes. Flagged so the next lane in this area does not add a fourth. | — |
 | OPEN | DEFECT | low | A mapping whose contents cannot be read is written as zeroes rather than reported. A reader returning 0 for a resident page is indistinguishable in the image from a genuinely zero page. Linux behaves the same way (a skipped range becomes a file hole), so this is faithful, but it means a dump cannot tell an operator that memory was lost. | `push_segment_data` in `crates/kernel/fs/src/coredump/elf/build.rs`; `tests/segments.rs::a_hole_is_zero_filled_rather_than_shortening_the_segment`. | — |
-| OPEN | MISSING | med | rseq time-slice extension: slot 471 read-and-clears the yielded flag correctly, but the GRANT side (`PR_RSEQ_SLICE_*`) is not implemented. This is what pins the release below 7.0. | matrix row 471 `PARTIAL` (F762) | — |
 | OPEN | COVERAGE | med | **No ARM boot has been run for the three ported probes.** They build, cross-link and inject on aarch64 (verified), but have not been watched executing there. The x86 DRM smoke is the only in-guest evidence in this PR. | PR #4410 verification table | unowned |
 | OPEN | COVERAGE | low | "Each control slot resolves its fd exactly once" is no longer asserted by anything. It used to be a source grep (`source.matches("fd_file(fd)").count() == 1`) — an assertion that could not fail on a behaviour change but did name a real property: a second lookup can land on a different open file description after a concurrent close/reopen recycles the slot. It is now structural (`net_common::classify` is the only caller of `fd_file` on these paths and returns the pinned file), and not reachable hosted: the fd table lookup is `sched::live::current`-gated. What would settle it is a guest probe that closes and reopens an fd from a second thread across a `getpeername`, or an fd-table fault-injection seam. | `net_common::classify` is `#[cfg(target_os = "oxide-kernel")]` because `fd_file` is. | unclaimed |
 | OPEN | COVERAGE | low | The "a synthesised event record names the TRACEE" rule is pinned hosted (`a_synthesised_event_record_names_the_tracee_not_the_tracer`), but the CALL SITES that supply the vpid live in `target_os = "oxide-kernel"`-gated files (`stop.rs`, `sig.rs::interrupt`), so a hosted test cannot catch a caller that passes the wrong task. The in-guest probe is the only check on the wiring itself. | `101_ptrace/stop.rs::self_vpid`; `t_ptrace_siginfo` `addr_is_not_a_pid`. | — |
