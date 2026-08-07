@@ -30,12 +30,17 @@ pub const XSAVE_MAX_BYTES: usize = 4096;
 
 /// XCR0 components the kernel context-switches, intersected with CPU-
 /// supported (CPUID.0Dh:EAX): x87(0)|SSE(1)|AVX(2)|opmask(5)|ZMM_Hi256(6)|
-/// Hi16_ZMM(7). We save the FULL state the CPU offers so glibc's AVX/AVX512
+/// Hi16_ZMM(7)|PKRU(9). We save the FULL user state the CPU offers so glibc's AVX/AVX512
 /// IFUNC paths — which it selects via `xgetbv(XCR0)` — are all correct
 /// across a mid-SIMD-loop preemption (the Linux way).
 // Masked against CPUID.0Dh:EAX inside `xstate_init`, which is kernel-target-only.
-#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-const XCR0_WANT: u64 = 0b1110_0111;
+#[cfg(any(all(target_arch = "x86_64", target_os = "oxide-kernel"), test))]
+const XCR0_WANT: u64 = 0b10_1110_0111;
+
+/// PKRU state layout. Its feature bit and standard-format ABI live in the
+/// xstate signal module; CPUID supplies the component's offset.
+use crate::signal::xstate::XFEATURE_PKRU;
+const PKRU_STATE_BYTES: usize = core::mem::size_of::<u32>();
 
 /// True once `xstate_init` enabled XSAVE on the boot CPU (CR4.OSXSAVE +
 /// XCR0). Read by `fpu_save`/`fpu_restore` to pick XSAVE vs the FXSAVE
@@ -47,6 +52,10 @@ static XSAVE_ENABLED: AtomicBool = AtomicBool::new(false);
 static XSAVE_XCR0: AtomicU64 = AtomicU64::new(0);
 /// XSAVE area size (bytes) for the enabled XCR0 (CPUID.0Dh:EBX); 0 pre-init.
 static XSAVE_AREA_BYTES: AtomicUsize = AtomicUsize::new(0);
+/// CPUID.0Dh:9 EBX, or zero when PKRU is not in the active XSAVE image.
+/// Extended-state components begin after the 576-byte legacy/header region,
+/// so zero is not a valid PKRU offset.
+static PKRU_XSAVE_OFF: AtomicUsize = AtomicUsize::new(0);
 /// Linux `mxcsr_feature_mask` (`arch/x86/kernel/fpu/init.c`): the MXCSR bits
 /// this CPU implements, taken from an FXSAVE image's `mxcsr_mask` word.
 /// `rt_sigreturn` rejects a user MXCSR with any bit outside it, because
@@ -94,6 +103,33 @@ pub fn xsave_active() -> bool { XSAVE_ENABLED.load(Ordering::Acquire) }
 /// Active XSAVE area size (0 when on the FXSAVE fallback). # C: O(1)
 pub fn xsave_area_bytes() -> usize { XSAVE_AREA_BYTES.load(Ordering::Acquire) }
 
+/// Put the restrictive initial PKRU value in an otherwise fresh standard
+/// XSAVE image. `XRSTOR` treats a clear PKRU XSTATE_BV bit as architectural
+/// zero, which would make every future key accessible, so PKRU must be an
+/// explicit component of a fresh task's image.
+/// # C: O(1)
+pub fn seed_initial_pkru(img: &mut [u8]) {
+    if !xsave_active() { return; }
+    let off = PKRU_XSAVE_OFF.load(Ordering::Acquire);
+    if off == 0 { return; }
+    let _ = seed_pkru_component(img, off, crate::pkru_init_value());
+}
+
+/// Write a PKRU component into a standard-format XSAVE image. Kept pure so
+/// the bounds and XSTATE_BV contract are host-tested without privileged CPU
+/// setup. # C: O(1)
+fn seed_pkru_component(img: &mut [u8], off: usize, pkru: u32) -> bool {
+    use crate::signal::xstate::{MIN_XSTATE_SIZE, XFEATURES_OFF};
+    let Some(end) = off.checked_add(PKRU_STATE_BYTES) else { return false };
+    if off < MIN_XSTATE_SIZE || end > img.len() || img.len() < MIN_XSTATE_SIZE { return false; }
+    img[off..end].copy_from_slice(&pkru.to_le_bytes());
+    let mut bv = [0u8; 8];
+    bv.copy_from_slice(&img[XFEATURES_OFF..XFEATURES_OFF + 8]);
+    let bv = u64::from_le_bytes(bv) | XFEATURE_PKRU;
+    img[XFEATURES_OFF..XFEATURES_OFF + 8].copy_from_slice(&bv.to_le_bytes());
+    true
+}
+
 /// Enable full extended-state (AVX/AVX512) context-switching on THIS CPU.
 /// Called once per CPU at boot from `enable_sse` (BSP + each AP), AFTER
 /// CR4.OSFXSR. Sets CR4.OSXSAVE then `xsetbv` XCR0 to the CPU-supported
@@ -128,7 +164,20 @@ pub unsafe fn xstate_init() {
         // components we save; x87|SSE are mandatory (XSETBV #GPs without them).
         // SAFETY: cpuid unprivileged, no memory effects.
         let (eax0d, _, _, _) = unsafe { cpuid_count(0x0d, 0) };
-        let xcr0: u64 = ((eax0d as u64) & XCR0_WANT) | 0b11;
+        let mut xcr0: u64 = ((eax0d as u64) & XCR0_WANT) | 0b11;
+        let mut pkru_off = 0usize;
+        if xcr0 & XFEATURE_PKRU != 0 {
+            // CPUID.0Dh:9 describes the standard-format PKRU component.
+            // Do not advertise it in XCR0 unless the image can carry it.
+            // SAFETY: cpuid is unprivileged, no memory effects.
+            let (size, off, _, _) = unsafe { cpuid_count(0x0d, 9) };
+            let end = (off as usize).checked_add(size as usize);
+            if size < PKRU_STATE_BYTES as u32 || end.is_none_or(|v| v > XSAVE_MAX_BYTES) {
+                xcr0 &= !XFEATURE_PKRU;
+            } else {
+                pkru_off = off as usize;
+            }
+        }
         // SAFETY: XSETBV(ECX=0) loads XCR0 from EDX:EAX; xcr0 includes x87|SSE
         // and only CPU-supported bits, so no #GP; OSXSAVE set just above.
         unsafe {
@@ -148,6 +197,7 @@ pub unsafe fn xstate_init() {
         if area == 0 || area > XSAVE_MAX_BYTES { return; }
         XSAVE_AREA_BYTES.store(area, Ordering::Release);
         XSAVE_XCR0.store(xcr0, Ordering::Release);
+        PKRU_XSAVE_OFF.store(pkru_off, Ordering::Release);
         XSAVE_ENABLED.store(true, Ordering::Release);
         // One-time boot confirmation (BSP fires first). Names the pre-existing
         // OSXSAVE (what the bootloader left → whether glibc was already using AVX),
@@ -327,6 +377,30 @@ mod tests {
     fn fpu_state_size_matches_fxsave_area() {
         assert_eq!(core::mem::size_of::<FpuStateX86_64>(), FPU_STATE_BYTES);
         assert_eq!(FPU_STATE_BYTES, 512);
+    }
+
+    #[test]
+    fn requested_xcr0_includes_the_pkru_component() {
+        assert_ne!(XCR0_WANT & (1 << 9), 0);
+    }
+
+    #[test]
+    fn initial_pkru_is_an_explicit_xsave_component() {
+        use crate::signal::xstate::{MIN_XSTATE_SIZE, XFEATURES_OFF};
+        const TEST_PKRU_OFF: usize = MIN_XSTATE_SIZE;
+        const TEST_PKRU: u32 = 0xa5a5_5a5a;
+        let mut img = [0u8; TEST_PKRU_OFF + PKRU_STATE_BYTES];
+        assert!(seed_pkru_component(&mut img, TEST_PKRU_OFF, TEST_PKRU));
+        let mut bv = [0u8; 8];
+        bv.copy_from_slice(&img[XFEATURES_OFF..XFEATURES_OFF + 8]);
+        assert_ne!(u64::from_le_bytes(bv) & XFEATURE_PKRU, 0);
+        assert_eq!(&img[TEST_PKRU_OFF..], &TEST_PKRU.to_le_bytes());
+    }
+
+    #[test]
+    fn initial_pkru_rejects_an_image_without_header_space() {
+        let mut img = [0u8; 8];
+        assert!(!seed_pkru_component(&mut img, 0, 0));
     }
 
     #[test]

@@ -67,6 +67,9 @@ pub const XFEATURE_MASK_FPSSE: u64 = 0b11;
 /// Linux `XFEATURE_MASK_YMM`, joined with FP|SSE to decide when MXCSR is
 /// live and must be range-checked (`copy_uabi_to_xstate`).
 pub const XFEATURE_MASK_YMM: u64 = 1 << 2;
+/// `XFEATURE_PKRU` — the four-byte PKRU component whose standard-format
+/// offset is supplied by CPUID.0Dh:9.
+pub const XFEATURE_PKRU: u64 = 1 << 9;
 /// Fallback `mxcsr_feature_mask` when the CPU reports `mxcsr_mask == 0`
 /// (`arch/x86/kernel/fpu/init.c` `fpu__init_system_mxcsr`).
 // Consumed by `fpu::mxcsr_mask_init`, which is kernel-target-only.

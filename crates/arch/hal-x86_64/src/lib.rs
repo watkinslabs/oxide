@@ -54,7 +54,7 @@ pub use fault::{
 };
 pub use fpu::{
     fpu_disable, fpu_enable, fpu_restore, fpu_save, mxcsr_feature_mask, mxcsr_mask_init,
-    xsave_active, xsave_area_bytes, xsave_xcr0, xstate_init,
+    seed_initial_pkru, xsave_active, xsave_area_bytes, xsave_xcr0, xstate_init,
     FpuStateX86_64, FPU_OWNER, FPU_STATE_BYTES,
 };
 pub use gdt::{install_kernel_gdt, load_kernel_gdt_for_ap, GdtPointer, GDT_LEN, KERNEL_DS,

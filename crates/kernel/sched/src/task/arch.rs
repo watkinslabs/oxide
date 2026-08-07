@@ -36,16 +36,25 @@ impl ArchFpuBuf {
     /// # C: O(1)
     pub fn arch_default() -> Self {
         #[cfg(target_arch = "x86_64")]
-        let mut b = [0u8; ARCH_FPU_SIZE];
+        let b = [0u8; ARCH_FPU_SIZE];
         #[cfg(not(target_arch = "x86_64"))]
         let b = [0u8; ARCH_FPU_SIZE];
+        let mut out = ArchFpuBuf(alloc::boxed::Box::new(FpuArea(b)));
+        out.reset_initial();
+        out
+    }
+
+    /// Restore this allocation to the architectural initial image without
+    /// moving its boxed, 64-byte-aligned backing. # C: O(n) in save-area size
+    pub fn reset_initial(&mut self) {
+        for b in self.0.0.iter_mut() { *b = 0; }
         #[cfg(target_arch = "x86_64")]
         {
             // FXSAVE layout: FCW @0 (0x037f), MXCSR @24 (0x1f80).
-            b[0] = 0x7f; b[1] = 0x03;
-            b[24] = 0x80; b[25] = 0x1f;
+            self.0.0[0] = 0x7f; self.0.0[1] = 0x03;
+            self.0.0[24] = 0x80; self.0.0[25] = 0x1f;
+            hal_x86_64::seed_initial_pkru(&mut self.0.0);
         }
-        ArchFpuBuf(alloc::boxed::Box::new(FpuArea(b)))
     }
 
     /// Raw pointer to the 64-aligned save area for `fxsave`/`xsave` (write)

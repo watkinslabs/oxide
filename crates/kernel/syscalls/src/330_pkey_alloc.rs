@@ -4,7 +4,6 @@
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use core::sync::atomic::Ordering;
 use crate::misc::misc_common::errno;
 use crate::pkey;
 
@@ -30,7 +29,6 @@ pub fn sys_pkey_alloc(args: &SyscallArgs) -> i64 {
     let r = mm.pkeys().with_map(|map| pkey::pkey_alloc(&abi, map, args.a0, args.a1));
     let key = match r { Ok(key) => key, Err(e) => return errno(e) };
     let rights = pkey_access_rights(key as u16, args.a1);
-    cur.pkey_rights.store(rights, Ordering::Relaxed);
     sched::pkey_rights::write_live(rights);
     key as i64
 }

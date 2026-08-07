@@ -419,8 +419,8 @@ impl Task {
             ptrace_fpu_dirty: AtomicBool::new(false),
             singlestep:    AtomicU32::new(0),
             nocpuid:       AtomicBool::new(false),
-            // Born with the restrictive default: a thread must open a key
-            // deliberately, never by inheriting an accident of creation order.
+            // POR_EL0 begins restrictive; a thread opens keys deliberately.
+            #[cfg(target_arch = "aarch64")]
             pkey_rights:   AtomicU64::new(crate::pkey_rights::init_value()),
             shstk_features: AtomicU64::new(0),
             shstk_locked:   AtomicU64::new(0),
