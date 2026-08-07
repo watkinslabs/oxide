@@ -37,10 +37,10 @@ reclassified.
 | Class \ Sev | blocker | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|
 | `DEFECT` | 0 | 0 | 13 | 24 | 37 |
-| `MISSING` | 2 | 0 | 17 | 19 | 38 |
+| `MISSING` | 2 | 0 | 17 | 18 | 37 |
 | `COVERAGE` | 0 | 0 | 9 | 15 | 24 |
 | `INFRA` | 0 | 0 | 15 | 11 | 26 |
-| **Total** | **2** | **0** | **54** | **69** | **125** |
+| **Total** | **2** | **0** | **54** | **68** | **124** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -197,12 +197,6 @@ here now.
 |---|---|---|---|---|---|
 | OPEN | MISSING | med | **Four cgroup2 flags are accepted and stored but cannot yet be acted on, because the mechanism they gate does not exist here.** They are declared because omitting a name fails a mount the reference accepts — a container runtime passing `memory_recursiveprot` would not mount at all — but no code reads them yet: (1) `memory_recursiveprot`: `memory.min`/`memory.low` are stored on the node and read by NOTHING; there is no effective-protection computation of any kind, recursive or not, so there is no behaviour to switch. (2) `pids_localevents`: `pids.events` is the hardcoded literal `"max 0\n"` — no pids-max-breach counter exists to be local or hierarchical. (3) `memory_hugetlb_accounting`: no hugetlb exists in this kernel at all. (4) `favordynmods`: a locking-strategy choice with no user-visible semantics and no dynamic-modification cost model here. Each becomes enforceable when its controller does; `RootFlag`'s own doc comments say which are enforced today. | `crates/kernel/cgroup/src/root_flags.rs` `RootFlag`; `tree/files.rs:44` (`"pids.events" => "max 0\n"`); `mem_low`/`mem_min` have no reader outside their own read/write handlers. | unowned |
 | OPEN | COVERAGE | med | **The cgroup2 flag path has no in-guest proof.** The boot mounts `/sys/fs/cgroup` from the kernel with no options and this image's systemd passes none, so a normal boot exercises only the default. A probe that mounts with `-o nsdelegate` and reads `/proc/mounts` was attempted twice: once it hit the `#DF` above, once it passed spuriously because the marker `^[0-9]` matched a kernel timestamp line rather than the command's output — a probe-design error, recorded because the same loose-marker mistake would pass any future probe. Parse, merge, render and both enforcement paths are hosted-tested; what is unproven is only that the registry constructor receives the blob, which is the same wiring the procfs lane proved in-guest for an identically-shaped constructor. | This lane. Correct probe: a marker that cannot appear in kernel output, e.g. the quote-split nonce the harness itself uses. | unowned |
-
-### B1727-nsnet-inline-fastopen-cache
-
-| Status | Class | Sev | Issue | Evidence | Owner |
-|---|---|---|---|---|---|
-| OPEN | MISSING | low | **`current_unix_registry`, `unix_registry_for_addr` and `unix_registry_for_path` have no callers anywhere in the tree.** Defined in `net/src/net_ns/state.rs` and referenced by nothing — the machinery-without-callers class. Either the AF_UNIX registry selection they encode belongs on a path that is currently doing it another way, in which case that is a split source of truth to unify, or they are dead and go. | Whole-tree grep for each name returns only the definitions. | unowned |
 
 ### B1729-cgroup-inode-superblock
 

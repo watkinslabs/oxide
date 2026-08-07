@@ -321,39 +321,7 @@ pub fn unix_registry_for_addr_in(namespace: &NetworkNamespaceRef,
     }
 }
 
-/// AF_UNIX registry for the calling task's net_ns. # C: O(log N)
-#[cfg(target_os = "oxide-kernel")]
-pub fn current_unix_registry() -> UnixRegRef {
-    ns_unix_registry(crate::netdev::current_net_ns())
-}
-
-#[cfg(target_os = "oxide-kernel")]
-pub fn unix_ns_for_addr(addr: &crate::UnixAddr) -> u64 {
-    unix_ns_for_addr_in(crate::netdev::current_net_ns(), addr)
-}
-
-/// Resolve an AF_UNIX registry key from a retained socket owner. # C: O(1)
-#[cfg(target_os = "oxide-kernel")]
-pub fn unix_ns_for_addr_in(net_ns: u64, addr: &crate::UnixAddr) -> u64 {
-    if addr.is_pathname() { 0 } else { net_ns }
-}
-
-#[cfg(target_os = "oxide-kernel")]
-pub fn unix_ns_for_path(path: &str) -> u64 {
-    if unix_path_is_global(path) { 0 } else { crate::netdev::current_net_ns() }
-}
-
 /// True for filesystem-global AF_UNIX pathname addresses. # C: O(1)
 pub fn unix_path_is_global(path: &str) -> bool {
     !crate::unix_sock::unix_path_is_abstract(path)
-}
-
-#[cfg(target_os = "oxide-kernel")]
-pub fn unix_registry_for_addr(addr: &crate::UnixAddr) -> UnixRegRef {
-    ns_unix_registry(unix_ns_for_addr(addr))
-}
-
-#[cfg(target_os = "oxide-kernel")]
-pub fn unix_registry_for_path(path: &str) -> UnixRegRef {
-    ns_unix_registry(unix_ns_for_path(path))
 }
