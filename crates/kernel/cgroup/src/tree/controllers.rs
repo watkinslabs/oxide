@@ -70,35 +70,6 @@ pub const CORE_FILES: &[&str] = &[
 /// Extra core files present only in non-root cgroups.
 pub const NONROOT_FILES: &[&str] = &["cgroup.kill", "cgroup.freeze"];
 
-/// Reserved slot for a name outside the tables below. Never handed out by
-/// [`file_slot`], so it cannot alias a real control file.
-pub const FILE_SLOT_UNKNOWN: u8 = u8::MAX;
-
-/// A control file's FIXED slot inside its cgroup's inode-number space.
-///
-/// Order: `CORE_FILES`, `NONROOT_FILES`, then `controller_files(ALL)` — the
-/// full set, not the subset a given cgroup has enabled, so a name's slot never
-/// moves when a controller is switched on. The inode number is
-/// `(cgid << 8) | slot`, so the slot must be unique per name; it replaced an
-/// 8-bit multiply-31 hash of the name, under which `pids.events` and
-/// `cpuset.cpus` collided and shared one `st_ino`. Linux kernfs gives every
-/// node its own ino from an idr (`fs/kernfs/dir.c` `kernfs_new_node`), and
-/// anything keyed by inode identity — `stat`, hardlink detection, and inotify's
-/// per-inode marks — needs that to hold.
-/// # C: O(N_names)
-pub fn file_slot(name: &str) -> u8 {
-    let mut i: u16 = 0;
-    for n in CORE_FILES.iter().chain(NONROOT_FILES.iter()) {
-        if *n == name { return i as u8; }
-        i += 1;
-    }
-    for n in controller_files(ALL) {
-        if n == name { return i as u8; }
-        i += 1;
-    }
-    FILE_SLOT_UNKNOWN
-}
-
 /// Per-controller interface files, gated on the controller being
 /// available (enabled in the parent's subtree_control).
 /// # C: O(controllers)

@@ -13,6 +13,7 @@ use vfs::export::kernfs_fid::{HANDLE_TYPE_KERNFS, KERNFS_FID_LEN};
 use vfs::SuperOps;
 
 use super::*;
+use crate::tree;
 
 /// The unified hierarchy is a process-wide singleton; realize it once so the
 /// root cgroup exists and ids resolve.
@@ -79,38 +80,23 @@ fn a_control_file_handle_round_trips_to_the_same_file() {
     assert_eq!(back.ino(), f.ino());
 }
 
-/// An inode number outside cgroupfs's regions is not cgroupfs's to resolve, and
-/// a cgroup id with no live node is stale rather than a synthesized inode for a
-/// cgroup that was removed.
+/// An inode number without a live cgroupfs node is stale rather than a
+/// synthesized inode for a cgroup that was removed.
 #[test]
 fn a_foreign_or_dead_number_does_not_resolve() {
     hierarchy();
-    assert!(resolve_ino(1).is_none(), "not in a cgroup region");
-    let dead = ids::dir_ino(0x00ff_fffe);
-    assert!(!crate::node_exists(0x00ff_fffe), "id is not in the hierarchy");
-    assert!(resolve_ino(dead).is_none(), "a dead cgroup id is stale");
+    assert!(resolve_ino(u64::MAX).is_none(), "no live cgroup node owns this number");
 }
 
-/// The inode-number derivations invert exactly, which is what makes the
-/// 8-byte handle a complete identity — up to each region's width, past which
-/// the fold wraps ids onto lower ones (a directory id past `CGROUP_DIR`'s
-/// 2^24, a control file past `CGROUP_FILE`'s 2^19 cgroups).
+/// A handle identifies the hierarchy node that minted it, rather than an
+/// arithmetic projection of its cgroup id and file-table slot.
 #[test]
-fn the_inode_number_derivations_invert() {
-    for cgid in [0u64, 1, 2, 4095, 0x0007_ffff] {
-        assert_eq!(ids::cgid_of_dir_ino(ids::dir_ino(cgid)), Some(cgid), "dir {cgid}");
-        for slot in [0u8, 1, 7, 255] {
-            assert_eq!(ids::cgid_slot_of_file_ino(ids::file_ino(cgid, slot)),
-                       Some((cgid, slot)), "file {cgid}/{slot}");
-        }
-    }
-    // A directory id inverts across the whole directory region.
-    assert_eq!(ids::cgid_of_dir_ino(ids::dir_ino(0x00ff_ffff)), Some(0x00ff_ffff));
-    // Past the control-file region's cgroup width the packed number wraps, so
-    // the inverse names a different cgroup. Stated here so a later widening of
-    // the region has a test that says what it fixes.
-    assert_ne!(ids::cgid_slot_of_file_ino(ids::file_ino(0x0008_0000, 3)),
-               Some((0x0008_0000, 3)));
+fn a_file_handle_resolves_only_its_minted_control_file_node() {
+    let root = hierarchy();
+    let a = inode::make_cg_file(root, "cgroup.procs");
+    let b = inode::make_cg_file(root, "cgroup.threads");
+    assert_ne!(a.ino(), b.ino());
+    assert_eq!(resolve_ino(a.ino()).expect("live file").ino(), a.ino());
 }
 
 /// A connectable handle to a control file is the one shape the kernfs payload

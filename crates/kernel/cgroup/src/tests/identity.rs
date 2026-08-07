@@ -1,11 +1,10 @@
 // Identity of a cgroup2 inode comes from the backend state cgroupfs installs
 // (`CgDirData` in `i_private`), never from arithmetic on `st_ino`. These pin
 // that a foreign inode carrying the SAME number and the SAME cgroup2 fsid is
-// rejected, and that every number cgroupfs mints stays inside its declared
-// pseudo-inode region.
+// rejected, and that directory and control-file identities are separately
+// owned by the live hierarchy nodes.
 
 
-use vfs::pseudo_ino::{CGROUP_DIR, CGROUP_FILE};
 use vfs::{default_inode_ops, mk_mode, FileType, InodeBuilder};
 
 /// Build an inode that copies a cgroup directory's NUMBER and fsid but carries
@@ -43,23 +42,9 @@ fn cgroup_file_inode_is_not_a_cgroup_dir() {
 }
 
 #[test]
-fn minted_numbers_stay_inside_the_declared_regions() {
-    for cgid in [crate::tree::ROOT, 1, 2, 0xFF, 0x1_0000, u64::MAX] {
-        let ino = crate::ids::dir_ino(cgid);
-        assert!(CGROUP_DIR.contains(ino), "dir ino {ino:#x} inside CGROUP_DIR");
-    }
-    // The `(cgid << 8) | slot` encoding used to be added to a bare base, so a
-    // large cgroup id minted straight past the region's end.
-    for cgid in [0u64, 1, 0xFFFF, 0x00FF_FFFF, u64::MAX] {
-        for slot in [0u8, 1, 0x7F, u8::MAX] {
-            let ino = crate::ids::file_ino(cgid, slot);
-            assert!(CGROUP_FILE.contains(ino), "file ino {ino:#x} inside CGROUP_FILE");
-        }
-    }
-}
-
-#[test]
-fn dir_and_file_regions_do_not_overlap_devpts() {
-    assert!(!vfs::pseudo_ino::overlaps(&CGROUP_DIR, &vfs::pseudo_ino::DEVPTS),
-        "cgroup dirs and devpts pty endpoints no longer share a base");
+fn hierarchy_node_numbers_do_not_depend_on_cgroup_id() {
+    let _ = crate::realize_tree();
+    let root = crate::inode::make_cg_dir(crate::tree::ROOT);
+    let file = crate::inode::make_cg_file(crate::tree::ROOT, "cgroup.procs");
+    assert_ne!(root.ino(), file.ino(), "directory and control file have separate nodes");
 }

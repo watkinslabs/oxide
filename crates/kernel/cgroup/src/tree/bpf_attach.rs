@@ -309,8 +309,9 @@ impl Tree {
 
     fn ensure_bpf_root(&mut self) {
         self.nodes.entry(ROOT)
-            .or_insert_with(|| Node::new(ROOT, String::new(), None, ALL));
+            .or_insert_with(|| Node::new(ROOT, ROOT, String::new(), None, ALL));
         if self.next_id <= ROOT { self.next_id = ROOT + 1; }
+        if self.next_ino <= ROOT { self.next_ino = ROOT + 1; }
     }
 
     fn bpf_hierarchy_allows_attach(
