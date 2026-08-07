@@ -65,7 +65,7 @@ impl NetStack {
         if state.hdrincl {
             if control.options.is_some() { return Err(NetError::Einval); }
             return self.send_raw4_hdrincl(endpoint, iface_id, iface, next_hop,
-                source, payload, mtu);
+                source, payload, mtu, options.nodefrag);
         }
         let id = self.next_raw4_id();
         let ttl = control.ttl.unwrap_or(options.ttl);
@@ -81,7 +81,7 @@ impl NetStack {
     fn send_raw4_hdrincl(&self, endpoint: &Raw4Endpoint, iface_id: NetIfaceId,
                          iface: crate::EgressLease,
                          next_hop: Ipv4Addr, source: Ipv4Addr,
-                         packet: &[u8], mtu: usize) -> NetResult<()> {
+                         packet: &[u8], mtu: usize, nodefrag: bool) -> NetResult<()> {
         if packet.len() < IPV4_HDR_LEN || packet.len() > IPV4_MAX_PACKET {
             return Err(NetError::Einval);
         }
@@ -99,6 +99,8 @@ impl NetStack {
         bytes[10..12].copy_from_slice(&0u16.to_be_bytes());
         let checksum = ip_checksum(&bytes[..ihl]);
         bytes[10..12].copy_from_slice(&checksum.to_be_bytes());
+        let Some(bytes) = self.ipv4_nf_defrag_local_out(endpoint.net_ns(), &bytes, nodefrag)?
+            else { return Ok(()); };
         if !self.admit_raw4(endpoint, iface_id, next_hop, &bytes)? { return Ok(()); }
         if bytes.len() > mtu { return Err(NetError::Emsgsize); }
         self.emit_raw4_fragment(iface_id, iface, next_hop, &bytes)

@@ -58,6 +58,7 @@ pub struct Raw4TxOptions {
     pub ttl: u8,
     pub pmtudisc: i32,
     pub broadcast: bool,
+    pub nodefrag: bool,
 }
 
 impl Default for Raw4TxOptions {
@@ -69,6 +70,7 @@ impl Default for Raw4TxOptions {
             ttl: crate::ipv4::IPV4_DEFAULT_TTL,
             pmtudisc: crate::uapi::IP_PMTUDISC_WANT,
             broadcast: false,
+            nodefrag: false,
         }
     }
 }

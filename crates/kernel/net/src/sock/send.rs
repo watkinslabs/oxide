@@ -60,6 +60,7 @@ pub fn sendto(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, creds
                 sock.opts.ip_ttl.load(core::sync::atomic::Ordering::Acquire), multicast)),
             pmtudisc: sock.opts.ip_mtu_discover.load(core::sync::atomic::Ordering::Acquire),
             broadcast: sock.opts.broadcast.load(core::sync::atomic::Ordering::Acquire) != 0,
+            nodefrag: sock.opts.ip.flag(crate::sock_opts::sol_ip::state::flag::NODEFRAG),
         };
         let mut raw_control = control.raw4.clone();
         // A control message replaces the socket's own option area outright;

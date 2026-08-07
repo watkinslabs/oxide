@@ -10,6 +10,8 @@ pub const IPV4_DEFAULT_TTL: u8 = 64;
 pub const IPV4_FLAG_DONT_FRAGMENT: u16 = 0x4000;
 /// The more-fragments bit of the flags-and-offset field.
 pub const IPV4_FLAG_MORE_FRAGMENTS: u16 = 0x2000;
+/// The fragment-offset portion of the flags-and-offset field.
+pub const IPV4_FRAGMENT_OFFSET_MASK: u16 = 0x1fff;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Ipv4Error {

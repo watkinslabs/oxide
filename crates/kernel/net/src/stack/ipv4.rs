@@ -178,6 +178,9 @@ impl NetStack {
     pub fn deliver_rx_in(&self, lease: &crate::IngressLease, l3: &[u8]) -> NetResult<()> {
         let net_ns = lease.net_ns();
         let iface = lease.iface();
+        let Some((reassembled, frag_max)) = self.ipv4_nf_defrag_ingress(net_ns, iface, l3)?
+            else { return Ok(()); };
+        let l3 = &reassembled[..];
         // PRE_ROUTING fires on every received packet before the routing
         // decision. Non-local destinations are forwarded only when
         // `net.ipv4.ip_forward` enables router mode.
@@ -213,38 +216,9 @@ impl NetStack {
             filled = v;
             &filled[..]
         } else { l3 };
-        let frag_payload = &l3[hdr.ihl_bytes() .. total];
-        let assembled;
-        let reassembled_packet;
-        let raw_delivered;
-        let mut frag_max = 0u32;
-        let mf = (hdr.flags_frag & 0x2000) != 0;
-        let off8 = (hdr.flags_frag & 0x1FFF) as usize;
-        let (payload, full_packet): (&[u8], &[u8]) = if mf || off8 != 0 {
-            raw_delivered = self.deliver_raw4(net_ns, iface, &l3[..total], hdr, net_now_ns(), &rx_options);
-            let k = crate::ipv4_reasm::ReasmKey {
-                net_ns, domain: 0, iface: Some(iface), src: hdr.src, dst: hdr.dst,
-                proto: hdr.proto, id: hdr.id,
-            };
-            let prefix = (off8 == 0).then_some(&l3[..hdr.ihl_bytes()]);
-            let fragsize = (hdr.ihl_bytes() + frag_payload.len()) as u32;
-            match self.ipv4_reasm.push_with_prefix(
-                k, net_now_ns(), off8 * 8, prefix, frag_payload, mf, fragsize,
-            ) {
-                Some((header, b, largest)) => {
-                    assembled = b;
-                    frag_max = largest;
-                    let Some(packet) = crate::cgroup_bpf::reassembled_ipv4(&header, &assembled)
-                        else { return Err(NetError::Einval); };
-                    reassembled_packet = packet;
-                    (&assembled[..], &reassembled_packet[..])
-                }
-                None    => return Ok(()),
-            }
-        } else {
-            raw_delivered = self.deliver_raw4(net_ns, iface, &l3[..total], hdr, net_now_ns(), &rx_options);
-            (frag_payload, &l3[..total])
-        };
+        let raw_delivered = self.deliver_raw4(net_ns, iface, &l3[..total], hdr, net_now_ns(), &rx_options);
+        let payload = &l3[hdr.ihl_bytes() .. total];
+        let full_packet = &l3[..total];
         match hdr.proto {
             p if p == IpProto::Icmp as u8 => {
                 crate::mib::bump(net_ns, crate::mib::Mib::IpInDelivers);
