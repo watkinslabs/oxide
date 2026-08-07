@@ -209,3 +209,21 @@ fn softirq_shared_queue_state_is_bottom_half_safe() {
     assert!(joined.contains("inflight.lock_bh::<sched::bh::SchedBh>()"));
     assert!(joined.contains("DEVICES.lock_bh::<sched::bh::SchedBh>()"));
 }
+
+/// A request queued while the synchronous owner is active has no hardware
+/// completion that could kick dispatch. Releasing that owner is therefore the
+/// event that must start the deferred request; merely waking another owner
+/// leaves `deferred` nonempty forever and makes every later sync owner re-park.
+#[test]
+fn synchronous_turn_release_dispatches_deferred_before_waking_next_owner() {
+    let source = include_str!("../modern/wait.rs");
+    let release = source.split("pub(super) fn release_turn").nth(1)
+        .expect("release_turn implementation");
+    let free = release.find("busy = false").expect("turn release");
+    let dispatch = release.find("self.start_deferred_requests()")
+        .expect("release must kick queued async I/O");
+    let wake = release.find("BLK_TURN.wake_one()")
+        .expect("release must wake a synchronous waiter");
+    assert!(free < dispatch && dispatch < wake,
+        "free turn, dispatch already-queued I/O, then wake the next owner");
+}

@@ -73,9 +73,14 @@ impl BlkState {
 
     pub(super) fn release_turn(&self) {
         self.inflight.lock_bh::<sched::bh::SchedBh>().busy = false;
-        // Hand the freed turn to exactly ONE FIFO waiter (no herd). The woken
-        // task re-checks `acquire_turn`'s condition and re-parks if a concurrent
-        // async request took the turn first.
+        // A synchronous owner can have accumulated async requests behind it.
+        // Re-run dispatch before waking a synchronous turn waiter: queue
+        // release is the completion event those requests were waiting for,
+        // and no device completion exists to dispatch them later.
+        self.start_deferred_requests();
+        // Hand a still-free turn to exactly ONE FIFO waiter (no herd). The
+        // woken task re-checks the condition and re-parks if dispatch above
+        // consumed the turn or populated the async pending queue.
         #[cfg(target_os = "oxide-kernel")]
         BLK_TURN.wake_one();
     }
