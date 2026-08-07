@@ -46,6 +46,7 @@ pub mod zram;
 mod net_tests;
 
 pub use root::{drop_cached, register, register_dir, sys_root, SYSFS_FSID};
+/// PCI resource-file mapping backing, when `inode` is a BAR resource. # C: O(1)
 pub fn pci_resource_mmap_backing(inode: &InodeRef) -> Option<Result<(u64, u64), VfsError>> {
     bus::resource_mmap_backing(inode)
 }
