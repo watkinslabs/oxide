@@ -62,7 +62,6 @@ pub unsafe fn init(info: &BootInfo) {
                 boot_register("ext4", "/home", home_fs);
             }
         }
-        debug_cgroup! { cgroup::selftest::run(); }
     }
 
     log_dev_null_owner();
