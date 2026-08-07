@@ -208,6 +208,10 @@ shape they were retired in; post-D473 imports retain the `Class` column.
 
 ## Process
 
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 505477325 | DEFECT | low | `shmctl(IPC_SET)`, `SHM_LOCK`/`SHM_UNLOCK`, and the live-segment `IPC_RMID` path returned `EAGAIN` when another segment reference existed. | Segment key, uid, gid, and mode are now canonical atomics; a held-reference regression covers all three controls. The old exclusive-reference guard makes that test fail with `-EAGAIN`; 39 SysV-shm tests and both target checks pass. | B1909-shmctl-metadata-owner |
+
 Retired to CLAUDE.md as standing hard rules (`Conflict resolution is where
 coverage dies`, `Verification must be able to fail`) — a lesson that lives only
 in a ledger row is one nobody reads before the next merge.
