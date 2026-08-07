@@ -11,10 +11,17 @@ fn key_from_scanout_driver(driver_key: drm::node::ScanoutDriverKey) -> virtio::V
 
 pub fn boot_scanout_res_id_for_key(_driver_key: drm::node::ScanoutDriverKey) -> u32 { BOOT_SCANOUT_RES_ID }
 
+/// Keep a persistent command frame out of service when its descriptor did not
+/// retire: the device can still write the prior request's reply into it.
+pub(super) fn retain_ctx_after_submit(ctx: &mut ScanoutCtx, retired: bool) -> bool {
+    if !retired { ctx.quiesced = true; }
+    retired
+}
+
 fn submit_ctrl_for_key<F: Fn(&mut [u8]) -> usize>(driver_key: drm::node::ScanoutDriverKey, encode: F) -> bool {
     let owner = key_from_scanout_driver(driver_key);
-    let g = CTX.lock();
-    let ctx = match g.iter().find(|ctx| ctx.device_key == owner) { Some(c) => c, None => return false };
+    let mut g = CTX.lock();
+    let ctx = match g.iter_mut().find(|ctx| ctx.device_key == owner) { Some(c) => c, None => return false };
     if ctx.quiesced {
         return false;
     }
@@ -25,7 +32,7 @@ fn submit_ctrl_for_key<F: Fn(&mut [u8]) -> usize>(driver_key: drm::node::Scanout
     let ok = unsafe {
         submit_one(cmd_buf_va_p, ctx.cmd_buf_pa, |b| encode(b), ctx.ctrlq, ctx.hhdm)
     };
-    if !ok { return false; }
+    if !retain_ctx_after_submit(ctx, ok) { return false; }
     // SAFETY: RESP_OFF (0x200) is a 4-byte-aligned offset with 0xE00 bytes left
     // in the ctx's command frame, so this reads the reply header's `type` word
     // in bounds; `ok` means the device retired the descriptor, so it is done
@@ -135,7 +142,7 @@ pub fn present_rect_for_key(driver_key: drm::node::ScanoutDriverKey, res_id: u32
                     |b| crate::encode_resource_flush(b, res_id, r.x, r.y, r.w, r.h), ctrlq, hhdm)
             },
         };
-        if !ok { return false; }
+        if !retain_ctx_after_submit(ctx, ok) { return false; }
         if matches!(step, present::Step::SetScanout) { ctx.bound = Some(next); }
     }
     true
@@ -149,24 +156,25 @@ pub fn set_cursor_for_key(driver_key: drm::node::ScanoutDriverKey, res_id: u32,
     w: u32, h: u32, x: i32, y: i32, hot_x: i32, hot_y: i32) -> bool {
     if res_id == 0 {
         let owner = key_from_scanout_driver(driver_key);
-        let g = CTX.lock();
-        let ctx = match g.iter().find(|ctx| ctx.device_key == owner) { Some(c) => c, None => return false };
+        let mut g = CTX.lock();
+        let ctx = match g.iter_mut().find(|ctx| ctx.device_key == owner) { Some(c) => c, None => return false };
         if ctx.quiesced { return false; }
         // SAFETY: `submit_cursor_one`'s contract — `CTX` is held, so the ctx's
         // 4 KiB command frame and CURSORQ are live and single-producer; the
         // cursor area 0x100..0x200 is disjoint from the CTRLQ areas.
-        return unsafe {
+        let ok = unsafe {
             submit_cursor_one(ctx.cmd_buf_va as *mut u8, ctx.cmd_buf_pa,
                 |b| crate::encode_update_cursor(b, 0, 0, 0, 0, 0, 0, 0), ctx.cursorq, ctx.hhdm)
         };
+        return retain_ctx_after_submit(ctx, ok);
     }
     if w == 0 || h == 0 || w > 64 || h > 64 || hot_x < 0 || hot_y < 0
         || hot_x as u32 >= w || hot_y as u32 >= h {
         return false;
     }
     let owner = key_from_scanout_driver(driver_key);
-    let g = CTX.lock();
-    let ctx = match g.iter().find(|ctx| ctx.device_key == owner) { Some(c) => c, None => return false };
+    let mut g = CTX.lock();
+    let ctx = match g.iter_mut().find(|ctx| ctx.device_key == owner) { Some(c) => c, None => return false };
     if ctx.quiesced { return false; }
     let cmd_buf_va = ctx.cmd_buf_va as *mut u8;
     // SAFETY: `submit_one` / `submit_cursor_one` contract — `CTX` is held for
@@ -174,32 +182,34 @@ pub fn set_cursor_for_key(driver_key: drm::node::ScanoutDriverKey, res_id: u32,
     // live and single-producer, and each command waits for the previous
     // descriptor to retire before the frame is reused.
     unsafe {
-        if !submit_one(cmd_buf_va, ctx.cmd_buf_pa,
-            |b| crate::encode_transfer_to_host_2d(b, res_id, 0, 0, w, h, 0), ctx.ctrlq, ctx.hhdm) {
+        if !retain_ctx_after_submit(ctx, submit_one(cmd_buf_va, ctx.cmd_buf_pa,
+            |b| crate::encode_transfer_to_host_2d(b, res_id, 0, 0, w, h, 0), ctx.ctrlq, ctx.hhdm)) {
             return false;
         }
-        if !submit_one(cmd_buf_va, ctx.cmd_buf_pa,
-            |b| crate::encode_resource_flush(b, res_id, 0, 0, w, h), ctx.ctrlq, ctx.hhdm) {
+        if !retain_ctx_after_submit(ctx, submit_one(cmd_buf_va, ctx.cmd_buf_pa,
+            |b| crate::encode_resource_flush(b, res_id, 0, 0, w, h), ctx.ctrlq, ctx.hhdm)) {
             return false;
         }
-        submit_cursor_one(cmd_buf_va, ctx.cmd_buf_pa,
+        retain_ctx_after_submit(ctx, submit_cursor_one(cmd_buf_va, ctx.cmd_buf_pa,
             |b| crate::encode_update_cursor(b, res_id, w, h, x, y, hot_x, hot_y), ctx.cursorq, ctx.hhdm)
+        )
     }
 }
 
 /// Reposition the current cursor without re-uploading its resource.
 pub fn move_cursor_for_key(driver_key: drm::node::ScanoutDriverKey, x: i32, y: i32) -> bool {
     let owner = key_from_scanout_driver(driver_key);
-    let g = CTX.lock();
-    let ctx = match g.iter().find(|ctx| ctx.device_key == owner) { Some(c) => c, None => return false };
+    let mut g = CTX.lock();
+    let ctx = match g.iter_mut().find(|ctx| ctx.device_key == owner) { Some(c) => c, None => return false };
     if ctx.quiesced { return false; }
     // SAFETY: `submit_cursor_one`'s contract — `CTX` is held, so the ctx's 4 KiB
     // command frame and CURSORQ are live and single-producer, and the cursor
     // area 0x100..0x200 is disjoint from the CTRLQ request and reply areas.
-    unsafe {
+    let ok = unsafe {
         submit_cursor_one(ctx.cmd_buf_va as *mut u8, ctx.cmd_buf_pa,
             |b| crate::encode_move_cursor(b, x, y), ctx.cursorq, ctx.hhdm)
-    }
+    };
+    retain_ctx_after_submit(ctx, ok)
 }
 
 pub fn restore_console_scanout_for_key(driver_key: drm::node::ScanoutDriverKey) -> bool {
@@ -230,8 +240,8 @@ pub fn unregister_drm_hooks(card_id: u32) {
 
 pub fn flush_scanout_for_key(driver_key: fbdev::FbDriverKey) {
     let owner = key_from_raw(driver_key.raw());
-    let g = CTX.lock();
-    let ctx = match g.iter().find(|ctx| ctx.device_key == owner) { Some(c) => c, None => return };
+    let mut g = CTX.lock();
+    let ctx = match g.iter_mut().find(|ctx| ctx.device_key == owner) { Some(c) => c, None => return };
     if ctx.quiesced {
         return;
     }
@@ -241,11 +251,13 @@ pub fn flush_scanout_for_key(driver_key: fbdev::FbDriverKey) {
     // this ctx's 4 KiB command frame and its CTRLQ stay live and single-producer
     // and the previous submission on the queue was already retired.
     unsafe {
-        let _ = submit_one(cmd_buf_va_p, ctx.cmd_buf_pa,
+        if !retain_ctx_after_submit(ctx, submit_one(cmd_buf_va_p, ctx.cmd_buf_pa,
             |buf| crate::encode_transfer_to_host_2d(buf, res_id, 0, 0, w, h, 0),
-            ctx.ctrlq, ctx.hhdm);
-        let _ = submit_one(cmd_buf_va_p, ctx.cmd_buf_pa,
+            ctx.ctrlq, ctx.hhdm)) {
+            return;
+        }
+        let _ = retain_ctx_after_submit(ctx, submit_one(cmd_buf_va_p, ctx.cmd_buf_pa,
             |buf| crate::encode_resource_flush(buf, res_id, 0, 0, w, h),
-            ctx.ctrlq, ctx.hhdm);
+            ctx.ctrlq, ctx.hhdm));
     }
 }

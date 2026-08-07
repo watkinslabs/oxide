@@ -28,9 +28,9 @@ pub(super) fn console_owner_key() -> Option<virtio::VirtioChildDeviceKey> {
 /// `write_volatile` loop whose IRQ-masked window stalled the timer tick for
 /// seconds — but left it whole-frame; this cuts the extent.
 pub fn fbcon_flush_pixels(pixels: &[u8], rect: fbcon::kernel::FlushRect) {
-    let g = CTX.lock();
+    let mut g = CTX.lock();
     let owner = match console_owner_key() { Some(key) => key, None => return };
-    let ctx = match g.iter().find(|ctx| ctx.device_key == owner) { Some(c) => c, None => return };
+    let ctx = match g.iter_mut().find(|ctx| ctx.device_key == owner) { Some(c) => c, None => return };
     if ctx.quiesced {
         return;
     }
@@ -52,12 +52,14 @@ pub fn fbcon_flush_pixels(pixels: &[u8], rect: fbcon::kernel::FlushRect) {
     // frame and CTRLQ are live and single-producer for the whole call, and the
     // frame was allocated 4 KiB by the probe that installed the ctx.
     unsafe {
-        let _ = submit_one(cmd_buf_va_p, ctx.cmd_buf_pa,
+        if !super::runtime::retain_ctx_after_submit(ctx, submit_one(cmd_buf_va_p, ctx.cmd_buf_pa,
             |buf| crate::encode_transfer_to_host_2d(buf, res_id, x, y, w, h, off),
-            ctx.ctrlq, ctx.hhdm);
-        let _ = submit_one(cmd_buf_va_p, ctx.cmd_buf_pa,
+            ctx.ctrlq, ctx.hhdm)) {
+            return;
+        }
+        let _ = super::runtime::retain_ctx_after_submit(ctx, submit_one(cmd_buf_va_p, ctx.cmd_buf_pa,
             |buf| crate::encode_resource_flush(buf, res_id, x, y, w, h),
-            ctx.ctrlq, ctx.hhdm);
+            ctx.ctrlq, ctx.hhdm));
     }
 }
 
@@ -98,8 +100,8 @@ unsafe fn copy_damage(src: &[u8], dst: *mut u8, plan: &damage::CopyPlan) {
 
 pub fn blank_scanout_for_key(driver_key: fbdev::FbDriverKey) {
     let owner = key_from_fb_driver(driver_key);
-    let g = CTX.lock();
-    let ctx = match g.iter().find(|ctx| ctx.device_key == owner) { Some(c) => c, None => return };
+    let mut g = CTX.lock();
+    let ctx = match g.iter_mut().find(|ctx| ctx.device_key == owner) { Some(c) => c, None => return };
     if ctx.quiesced {
         return;
     }
@@ -115,12 +117,14 @@ pub fn blank_scanout_for_key(driver_key: fbdev::FbDriverKey) {
     // frame and CTRLQ are live and single-producer for the whole call, and the
     // frame was allocated 4 KiB by the probe that installed the ctx.
     unsafe {
-        let _ = submit_one(cmd_buf_va_p, ctx.cmd_buf_pa,
+        if !super::runtime::retain_ctx_after_submit(ctx, submit_one(cmd_buf_va_p, ctx.cmd_buf_pa,
             |buf| crate::encode_transfer_to_host_2d(buf, res_id, 0, 0, w, h, 0),
-            ctx.ctrlq, ctx.hhdm);
-        let _ = submit_one(cmd_buf_va_p, ctx.cmd_buf_pa,
+            ctx.ctrlq, ctx.hhdm)) {
+            return;
+        }
+        let _ = super::runtime::retain_ctx_after_submit(ctx, submit_one(cmd_buf_va_p, ctx.cmd_buf_pa,
             |buf| crate::encode_resource_flush(buf, res_id, 0, 0, w, h),
-            ctx.ctrlq, ctx.hhdm);
+            ctx.ctrlq, ctx.hhdm));
     }
 }
 
