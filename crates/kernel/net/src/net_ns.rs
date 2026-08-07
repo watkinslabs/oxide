@@ -28,9 +28,7 @@ pub use state::{
 };
 #[cfg(target_os = "oxide-kernel")]
 pub use state::{
-    UnixRegRef, current_unix_registry, ns_unix_registry, unix_ns_for_addr,
-    unix_ns_for_addr_in, unix_ns_for_path, unix_registry_for_addr,
-    unix_registry_for_addr_in, unix_registry_for_path,
+    UnixRegRef, ns_unix_registry, unix_registry_for_addr_in,
 };
 #[cfg(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted")))]
 pub use state::unix_registry_for_addr_in;
