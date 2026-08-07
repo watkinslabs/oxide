@@ -125,7 +125,7 @@ impl NetStack {
         dst_ip: Ipv4Addr, dst_port: u16, payload: &[u8], bound: Option<NetIfaceId>,
         tos: u8, ttl: u8) -> NetResult<()>
     {
-        let (route, iface, next_hop) = self.route_v4_iface_in(net_ns, dst_ip, bound)?;
+        let (route, iface, next_hop) = self.route_v4_xmit_in(net_ns, dst_ip, bound)?;
         let total = crate::udp::UDP_HDR_LEN + payload.len();
         let mut p = Pkt::with_capacity(IPV4_HDR_LEN, total + IPV4_HDR_LEN);
         let udp_total = crate::udp::UDP_HDR_LEN + payload.len();
@@ -225,7 +225,7 @@ impl NetStack {
     fn send_l4_over_ipv4_bound(&self, net_ns: u64, src: Ipv4Addr, dst: Ipv4Addr,
         proto: IpProto, l4: &[u8], tos: u8, bound: Option<NetIfaceId>) -> NetResult<()>
     {
-        let (route, iface, next_hop) = self.route_v4_iface_in(net_ns, dst, bound)?;
+        let (route, iface, next_hop) = self.route_v4_xmit_in(net_ns, dst, bound)?;
         self.xmit_ipv4_l4_on_iface(
             route, iface, next_hop, src, dst, proto, l4, tos, self.next_ipv4_id(),
         )

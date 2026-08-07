@@ -806,6 +806,7 @@ evidence has one canonical home.
 | FIXED B1756 | COVERAGE | med | The rendering first lived in `procfs::net`, which is `#[cfg(target_os = "oxide-kernel")]`: the tests written beside it compiled out entirely and reported `0 passed; 162 filtered out`. Moved into the ungated `net::mib`, where they run; procfs keeps a shim. | `cargo test -p procfs snmp_tests` → 0 passed, before the move | — |
 
 | FIXED B1894 | MISSING | low | IPv4 `FragCreates`, `FragOKs`, and `FragFails` were rendered from the per-namespace MIB but the transmit owner never moved them. The oversized-datagram refusal, each successfully emitted fragment, whole successful datagram, allocation failure, and device-output failure now update the canonical MIB at the fragmentation decision. | `ipv4_fragment_counters_follow_output_outcomes` uses a private network namespace: 100 bytes at MTU 68 emits three fragments and one successful datagram; an injected output error adds exactly one failure without a false create/ok. | B1894-ipv4-mib-outcomes |
+| FIXED B1895 | MISSING | low | IPv4 `OutNoRoutes` was rendered from the per-namespace MIB but no actual send moved it. A transmit-only route wrapper now owns that result; route inspection used by raw connect and Fast Open policy remains observational and cannot change the count. | `only_a_transmit_route_failure_moves_out_no_routes` proves a diagnostic lookup leaves the counter at zero and a send route failure moves it once. | B1895-ipv4-out-no-routes |
 
 ### C269-stack-gates-in-routine-path
 

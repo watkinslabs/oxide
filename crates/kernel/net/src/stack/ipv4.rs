@@ -94,7 +94,7 @@ impl NetStack {
         -> NetResult<crate::cgroup_bpf::EgressVerdict>
     {
         let wire_dst = crate::ipv4_options::wire_dst(opts, dst);
-        let (route, iface, next_hop) = self.route_v4_iface_in(net_ns, wire_dst, bound)?;
+        let (route, iface, next_hop) = self.route_v4_xmit_in(net_ns, wire_dst, bound)?;
         if crate::ipv4_options::is_strict_route(opts) && next_hop != wire_dst {
             return Err(NetError::Enetunreach);
         }
@@ -148,7 +148,7 @@ impl NetStack {
         opts: Option<&crate::ipv4_options::Compiled>, no_check: bool)
         -> NetResult<()> {
         let wire_dst = crate::ipv4_options::wire_dst(opts, dst);
-        let (route, iface, next_hop) = self.route_v4_iface_in(net_ns, wire_dst, bound)?;
+        let (route, iface, next_hop) = self.route_v4_xmit_in(net_ns, wire_dst, bound)?;
         let (mtu, df, may_fragment) = self.ipv4_route_pmtu_policy(
             net_ns, route, wire_dst, iface.mtu(), mode,
         );

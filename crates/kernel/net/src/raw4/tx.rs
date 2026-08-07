@@ -40,7 +40,7 @@ impl NetStack {
                 priority: 0,
                 metrics: crate::RouteMetrics::NONE,
             }, iface, route_dst)
-        } else { self.route_v4_iface_in(endpoint.net_ns(), route_dst, bound)? };
+        } else { self.route_v4_xmit_in(endpoint.net_ns(), route_dst, bound)? };
         let iface_id = route.iface;
         if (control.dont_route && bound.is_none()
             || crate::ipv4_options::is_strict_route(control.options.as_ref()))
