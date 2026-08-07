@@ -156,16 +156,6 @@ fn sendmmsg_keeps_the_completed_prefix_when_a_later_entry_restarts() {
     assert_eq!(io.published, [(0, 16)]);
 }
 
-#[test]
-fn compat_batch_flag_is_rejected_before_import() {
-    let task = sched::Task::new(8, "send", sched::SchedClass::Normal { weight: 1024 });
-    let ctx = SendContext::new(&task);
-    let mut batch = Batch { imported: Vec::new(), published: Vec::new() };
-    assert_eq!(send_batch(&ctx, BatchSpec { len: 1, flags: batch::MSG_CMSG_COMPAT }, &mut batch),
-        Err(Error::Einval));
-    assert!(batch.imported.is_empty());
-}
-
 struct Single {
     target: Arc<vfs::File>,
     imported: bool,

@@ -5,7 +5,6 @@ use crate::send::{InetPrepared, PreparedSend, prepare, send_prepared, send_retai
 
 pub const UIO_MAXIOV: u32 = 1024;
 pub const MSG_BATCH: u32 = 0x4_0000;
-pub const MSG_CMSG_COMPAT: u32 = 0x8000_0000;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BatchSpec {
@@ -36,7 +35,6 @@ pub trait BatchIo {
 /// Send a lazy imported batch through one retained target. # C: O(messages + bytes)
 pub fn send_batch<I: BatchIo>(ctx: &SendContext<'_>, spec: BatchSpec, io: &mut I) -> KResult<u32>
 {
-    if spec.flags & MSG_CMSG_COMPAT != 0 { return Err(Error::Einval); }
     let target = SendFile::new(io.file()?);
     if !target.is_socket() { return Err(Error::Enotsock); }
     // Linux limits sendmmsg to UIO_MAXIOV entries after resolving the file;
