@@ -143,7 +143,7 @@ fn work_flags() -> u32 {
 /// # C: O(1) per pass; passes bounded by `sched::exit_to_user::MAX_PASSES`
 /// # Ctx: return-to-user
 /// # Sleeps: yes — `schedule()` and a faulting frame write both can
-pub unsafe fn exit_to_user_mode_loop(regs: *mut UserRegs, syscall_rv: Option<i64>) -> u64 {
+pub unsafe fn exit_to_user_mode_loop(regs: *mut UserRegs, syscall_rv: Option<i64>, from_irq: bool) -> u64 {
     let from_syscall = syscall_rv.is_some();
     // No interrupted syscall ⇒ the return-value register is ordinary user
     // state, and a signal frame built here must record what is actually in it.
@@ -186,10 +186,15 @@ pub unsafe fn exit_to_user_mode_loop(regs: *mut UserRegs, syscall_rv: Option<i64
         let flags = unsafe { ArchIrqGate::save_enable() };
         if (w & work::NEED_RESCHED) != 0
             && sched::preempt::preempt_count() == 0 && sched::preempt::take_need_resched() {
+            if sched::rseq::try_grant_slice(from_irq, want_signal) {
+                // An enabled user request consumed this reschedule.  The
+                // extension expiry will request the next scheduling pass.
+            } else {
             // SAFETY: return-to-user safe point — preempt_count is zero, we
             // are on the task's own kernel stack, and no hardirq field is
             // raised, so this is Linux's `schedule()` from the work loop.
             unsafe { sched::live::schedule(); }
+            }
         }
         // Linux `get_signal()` clears TIF_NOTIFY_SIGNAL and runs task_work
         // before it dequeues an ordinary signal.
@@ -239,7 +244,7 @@ pub unsafe extern "C" fn irqentry_exit(regs: *mut u8) {
     if sched::live::current().is_none() { return; }
     // SAFETY: this fn's own contract is forwarded unchanged — `regs` is a live
     // entry frame, checked non-null and user-mode above, with a current task.
-    let _ = unsafe { exit_to_user_mode_loop(regs, None) };
+    let _ = unsafe { exit_to_user_mode_loop(regs, None, true) };
     sched::cpustat::user_enter();
 }
 

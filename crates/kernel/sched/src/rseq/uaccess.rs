@@ -58,18 +58,23 @@ pub fn put_ids(ptr: u64, cpu_id: u32, node_id: u32, mm_cid: u32) -> Result<(), E
 
 /// Linux `rseq_register`'s user-side initialisation: drop any stale
 /// `rseq_cs` (older libcs recycle the area for new threads without clearing
-/// it, and a stale descriptor would fault the first abort), publish the
-/// feature-flag word, and park the ids at the "uninitialised" sentinel until
+/// it, and a stale descriptor would fault the first abort), publish the v2
+/// slice-extension flags, and park the ids at the "uninitialised" sentinel until
 /// `super::exit::rseq_writeback` fills them in.
 ///
 /// Returns false when the area is not writable — the caller reports EFAULT.
 /// # C: O(1)
-pub fn init_area(ptr: u64) -> bool {
+pub fn init_area(ptr: u64, len: u32, reg_flags: u32) -> bool {
+    let v2 = abi::is_v2(len);
+    let enabled = v2 && reg_flags & abi::RSEQ_FLAG_SLICE_EXT_DEFAULT_ON != 0;
+    let flags = if v2 {
+        abi::RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE
+            | if enabled { abi::RSEQ_CS_FLAG_SLICE_EXT_ENABLED } else { 0 }
+    } else { 0 };
     let done = put_u64(ptr + abi::RSEQ_OFF_RSEQ_CS, 0)
-        // No slice-extension feature bits: oxide never advertises
-        // RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE, so the word stays clear.
-        .and_then(|()| put_u32(ptr + abi::RSEQ_OFF_FLAGS, 0))
-        .and_then(|()| put_ids(ptr, abi::RSEQ_CPU_ID_UNINITIALIZED, 0, 0));
+        .and_then(|()| put_u32(ptr + abi::RSEQ_OFF_FLAGS, flags))
+        .and_then(|()| put_ids(ptr, abi::RSEQ_CPU_ID_UNINITIALIZED, 0, 0))
+        .and_then(|()| if v2 { put_u32(ptr + abi::RSEQ_OFF_SLICE_CTRL, 0) } else { Ok(()) });
     done.is_ok()
 }
 

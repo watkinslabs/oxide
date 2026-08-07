@@ -445,6 +445,9 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     // here and which nothing else writes until the next entry.
     let a5 = unsafe { crate::syscall_a5::read() };
     let args = SyscallArgs { a0, a1, a2, a3, a4, a5 };
+    // Linux rseq syscall-entry work revokes a current slice grant before any
+    // tracer, filter, or syscall body can observe this kernel entry.
+    sched::rseq::slice_syscall_enter(nr);
     if let Some(c) = sched::current() {
         c.note_syscall(nr as u32);
         // Per-syscall checkpoint (state.md: stack-guard-wipe hunt) — `current_ref`
@@ -592,7 +595,7 @@ pub unsafe extern "C" fn oxide_syscall_dispatch(nr: u64, a0: u64, a1: u64, a2: u
     let regs = crate::arch_frame::current_user_regs();
     // SAFETY: syscall-return tail on the running task's own kernel stack; the
     // entry frame is live and exclusively owned until the epilogue consumes it.
-    let rv_out = unsafe { crate::exit_to_user::exit_to_user_mode_loop(regs, Some(rv)) };
+    let rv_out = unsafe { crate::exit_to_user::exit_to_user_mode_loop(regs, Some(rv), false) };
     #[cfg(feature = "debug-syscall-return")]
     if let Some(task) = return_task { sched::diag::syscall_return_clear(task); }
     // Diagnostic only: the ARM wait4(ECHILD) investigation needs to know

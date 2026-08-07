@@ -378,7 +378,14 @@ pub fn next_interrupt_deadline() -> u64 {
     // like any other: without it here the throttle would end at the next
     // accounting tick instead of at the start of the entity's next period,
     // which turns a sub-tick reservation into a tick-granularity one.
-    crate::hrtimeout::fold_wait_expiry(now, with_waits, crate::deadline::replenish::earliest_ns())
+    let with_deadline = crate::hrtimeout::fold_wait_expiry(
+        now, with_waits, crate::deadline::replenish::earliest_ns());
+    // The rseq extension is a per-running-task hrtimer.  It participates in
+    // the same one-shot decision rather than waiting for the accounting tick.
+    #[cfg(target_os = "oxide-kernel")]
+    { crate::hrtimeout::fold_wait_expiry(now, with_deadline, crate::rseq::slice_deadline()) }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { with_deadline }
 }
 
 /// Re-arm this CPU's one-shot after a wait expiry was armed or cancelled in

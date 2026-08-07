@@ -121,7 +121,7 @@ pub fn rseq_preempt_return(ip: &mut u64) {
 /// with SIGSEGV (`force_sigsegv` → `SIG_DFL` → group-fatal). Reached only
 /// when user space handed the kernel an unusable area or descriptor.
 /// # C: task-exit teardown
-fn registration_died(cur: &crate::Task) -> ! {
+pub(crate) fn registration_died(cur: &crate::Task) -> ! {
     ua::mark_registration_failed(cur);
     cur.rseq_ptr.store(0, Ordering::Release);
     cur.rseq_len.store(0, Ordering::Release);

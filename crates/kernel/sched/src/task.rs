@@ -876,13 +876,17 @@ pub struct Task {
     /// so an exit to user that did not change CPU costs no user writes.
     /// `crate::rseq::exit::IDS_UNSET` = nothing published yet.
     pub rseq_ids: AtomicU64,
+    /// Slice-extension opt-in for a v2 rseq registration. The kernel owns the
+    /// matching user `flags` bit and clears this state on registration teardown.
+    pub rseq_slice_enabled: AtomicBool,
+    /// An outstanding bounded slice grant. The return-to-user path clears the
+    /// matching user control word before a regular reschedule can proceed.
+    pub rseq_slice_granted: AtomicBool,
+    /// Absolute monotonic expiry for the outstanding slice grant, or zero.
+    pub rseq_slice_expires_ns: AtomicU64,
     /// Linux `task_struct::rseq.slice.yielded` — read-and-cleared by
     /// `rseq_slice_yield(2)` (slot 471). Set by `rseq_syscall_enter_work` when
     /// a GRANTED time-slice extension is relinquished through that syscall.
-    /// The grant machinery itself (`PR_RSEQ_SLICE_EXTENSION`, the rseq-ABI
-    /// `slice_ctrl` word, the preempt-time grant and its revoke timer) is not
-    /// implemented, so nothing sets this yet and 471 answers 0 — the same
-    /// answer Linux gives any thread that never opted in via prctl.
     pub rseq_slice_yielded: AtomicBool,
 
     /// POSIX credentials per `13§5` / docs/14 cred-ABI block.

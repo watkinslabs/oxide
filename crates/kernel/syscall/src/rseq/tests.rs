@@ -153,7 +153,25 @@ fn struct_offsets_match_the_uapi_layout() {
     assert_eq!(RSEQ_OFF_FLAGS, 16);
     assert_eq!(RSEQ_OFF_NODE_ID, 20);
     assert_eq!(RSEQ_OFF_MM_CID, 24);
+    assert_eq!(RSEQ_OFF_SLICE_CTRL, 28);
     assert_eq!(RSEQ_CS_SIZE, 32);
     assert_eq!(RSEQ_CPU_ID_UNINITIALIZED, u32::MAX);
     assert_eq!(RSEQ_CPU_ID_REGISTRATION_FAILED, u32::MAX - 1);
+}
+
+#[test]
+fn slice_extension_requires_the_extensible_registration_shape() {
+    assert!(!is_v2(ORIG_RSEQ_SIZE));
+    assert!(is_v2(RSEQ_END_OFFSET));
+    assert_eq!(RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE, 1 << 4);
+    assert_eq!(RSEQ_CS_FLAG_SLICE_EXT_ENABLED, 1 << 5);
+    assert_eq!(RSEQ_SLICE_REQUEST, 1);
+    assert_eq!(RSEQ_SLICE_GRANTED, 1 << 8);
+}
+
+#[test]
+fn slice_grant_consumes_only_the_request_byte() {
+    assert_eq!(take_slice_request(0), None);
+    assert_eq!(take_slice_request(RSEQ_SLICE_REQUEST), Some(RSEQ_SLICE_GRANTED));
+    assert_eq!(take_slice_request(0xfeed_0001), Some(0xfeed_0100));
 }

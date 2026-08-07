@@ -60,7 +60,7 @@ pub mod io_flusher;
 pub mod auxv;
 pub mod timer_ids;
 mod futex_hash;
-mod rseq_slice;
+pub(crate) mod rseq_slice;
 // The fan-out and its live-task glue need `crate::live`, which is itself
 // build-gated; every DECISION module above stays ungated so `cargo test`
 // reaches it, and so `Task` can name the two live state types on any target.

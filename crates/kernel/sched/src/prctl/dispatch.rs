@@ -156,6 +156,15 @@ pub fn sys_prctl(args: &SyscallArgs) -> i64 {
                 Err(e) => -(e.as_i32() as i64),
             },
         Op::FutexHash { cmd, slots, a4 } => futex_hash::decide(cmd, slots, a4),
-        Op::RseqSliceExtension { cmd, ctrl, a4, a5 } => rseq_slice::decide(cmd, ctrl, a4, a5),
+        Op::RseqSliceExtension { cmd, ctrl, a4, a5 } => {
+            let request = match rseq_slice::decide(cmd, ctrl, a4, a5) {
+                Ok(request) => request,
+                Err(e) => return -(e.as_i32() as i64),
+            };
+            #[cfg(target_os = "oxide-kernel")]
+            { crate::rseq::slice_extension_prctl(&cur, request) }
+            #[cfg(not(target_os = "oxide-kernel"))]
+            { let _ = (cur, request); 0 }
+        }
     }
 }

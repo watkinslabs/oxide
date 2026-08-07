@@ -468,6 +468,9 @@ impl Task {
             rseq_len:       AtomicU32::new(0),
             rseq_sig:       AtomicU32::new(0),
             rseq_ids:       AtomicU64::new(u64::MAX),
+            rseq_slice_enabled: AtomicBool::new(false),
+            rseq_slice_granted: AtomicBool::new(false),
+            rseq_slice_expires_ns: AtomicU64::new(0),
             rseq_slice_yielded: AtomicBool::new(false),
             creds: Creds::root(),
             #[cfg(feature = "debug-smp")]

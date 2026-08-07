@@ -89,6 +89,10 @@ pub(crate) fn reset_per_execve_state(cur: &sched::Task) {
     cur.rseq_ptr.store(0, Ordering::Release);
     cur.rseq_len.store(0, Ordering::Release);
     cur.rseq_sig.store(0, Ordering::Release);
+    cur.rseq_slice_enabled.store(false, Ordering::Release);
+    cur.rseq_slice_granted.store(false, Ordering::Release);
+    cur.rseq_slice_expires_ns.store(0, Ordering::Release);
+    cur.rseq_slice_yielded.store(false, Ordering::Release);
     // parent-death signal cleared — handler would be in the old text.
     cur.pdeathsig.store(0, Ordering::Release);
     // Linux `begin_new_exec`: `clear_syscall_work_syscall_user_dispatch(me)`.
