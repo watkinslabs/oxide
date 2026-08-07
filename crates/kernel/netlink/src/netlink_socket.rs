@@ -193,6 +193,7 @@ impl NetlinkSocket {
         } else { match (self.protocol, hdr.nlmsg_type) {
             (proto::NETLINK_ROUTE, rtnetlink::RTM_GETLINK) => rtnetlink::handle_getlink_in(net_ns, hdr, msg, strict),
             (proto::NETLINK_ROUTE, rtnetlink::RTM_GETADDR) if rtnetlink::is_dump(hdr) => rtnetlink::handle_getaddr_in(net_ns, hdr, msg, strict),
+            (proto::NETLINK_ROUTE, rtnetlink::RTM_GETADDR) => rtnetlink::handle_getaddr6_one_in(net_ns, hdr, msg),
             (proto::NETLINK_ROUTE, rtnetlink::RTM_NEWADDR) => rtnetlink::handle_newaddr_in(net_ns, hdr, msg),
             (proto::NETLINK_ROUTE, rtnetlink::RTM_DELADDR) => rtnetlink::handle_deladdr_in(net_ns, hdr, msg),
             (proto::NETLINK_ROUTE, rtnetlink::RTM_GETROUTE) => rtnetlink::handle_getroute_in(net_ns, hdr, msg),
@@ -736,6 +737,28 @@ mod tests {
         sock.write(&msg).unwrap();
         let (reply, _) = sock.dequeue().unwrap();
         assert_eq!(ack_errno(&reply), -(vfs::VfsError::Enoent as i32));
+        let _ = net::global_stack().ifaces.unregister(iface);
+    }
+
+    #[test]
+    fn getaddr6_one_reads_one_canonical_address_without_done() {
+        let (namespace, _ns, iface, ifindex) = seed_neigh_iface();
+        let addr = net::Ipv6Addr([0x20, 1, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9]);
+        net::global_stack().add_v6_addr(iface, addr);
+        let mut body = alloc::vec![0u8; rtnetlink::Ifaddrmsg::SIZE];
+        body[0] = rtnetlink::AF_INET6;
+        body[4..8].copy_from_slice(&ifindex.to_ne_bytes());
+        rtnetlink::put_nlattr(&mut body, rtnetlink::ifa::IFA_ADDRESS, &addr.0);
+        let sock = NetlinkSocket::new(proto::NETLINK_ROUTE, &namespace);
+        let mut msg = request(rtnetlink::RTM_GETADDR, &body);
+        msg[6..8].copy_from_slice(&flags::NLM_F_REQUEST.to_ne_bytes());
+        sock.write(&msg).unwrap();
+        let (reply, _) = sock.dequeue().unwrap();
+        assert!(!reply_ends_with_done(&reply));
+        let hdr = Nlmsghdr::parse(&reply).unwrap();
+        assert_eq!(hdr.nlmsg_type, rtnetlink::RTM_NEWADDR);
+        assert_eq!(reply[Nlmsghdr::SIZE], rtnetlink::AF_INET6);
+        assert_eq!(u32::from_ne_bytes(reply[Nlmsghdr::SIZE + 4..Nlmsghdr::SIZE + 8].try_into().unwrap()), ifindex);
         let _ = net::global_stack().ifaces.unregister(iface);
     }
 

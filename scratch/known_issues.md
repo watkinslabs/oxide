@@ -37,10 +37,10 @@ reclassified.
 | Class \ Sev | blocker | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|
 | `DEFECT` | 0 | 0 | 13 | 23 | 36 |
-| `MISSING` | 2 | 0 | 17 | 18 | 37 |
+| `MISSING` | 2 | 0 | 17 | 17 | 36 |
 | `COVERAGE` | 0 | 0 | 9 | 15 | 24 |
 | `INFRA` | 0 | 0 | 14 | 11 | 25 |
-| **Total** | **2** | **0** | **53** | **67** | **122** |
+| **Total** | **2** | **0** | **53** | **66** | **121** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -245,7 +245,6 @@ here now.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | OPEN | MISSING | med | `NETLINK_F_CAP_ACK`, `NETLINK_F_EXT_ACK`, `NETLINK_F_RECV_PKTINFO`, `NETLINK_F_BROADCAST_SEND_ERROR`, `NETLINK_F_LISTEN_ALL_NSID` are stored and readable but not consumed. Each needs its Linux mechanism: truncate the `NLMSG_ERROR` payload to the request header; append extended-ack attributes; attach `struct nl_pktinfo` as a control message; report broadcast delivery failure to the sender; deliver multicast from every network namespace. | `sockflags.rs` defines the bits; no reader outside `getsockopt` and `receive.rs` (`F_RECV_NO_ENOBUFS`) | — |
-| OPEN | MISSING | low | Non-dump `RTM_GETADDR` for `AF_INET6` has no `inet6_rtm_getaddr` equivalent. Linux registers a `doit`; `PF_INET` `RTM_GETADDR` correctly has none (`EOPNOTSUPP`). | `crates/kernel/netlink/src/rtnetlink/dumps.rs` | — |
 
 ### B1745-netlink-strict-dump-check
 

@@ -12,10 +12,8 @@ use super::rtnetlink_addr::IfaCacheInfo;
 use super::rtnetlink_link::{put_link_stats64, LinkStats64};
 use super::uapi::{
     ifa, if_oper, ifla, iff, AF_INET, AF_INET6, Ifaddrmsg, Ifinfomsg,
-    RTM_NEWADDR, RTM_NEWLINK,
+    RTM_NEWADDR, RTM_NEWLINK, RT_SCOPE_HOST, RT_SCOPE_LINK, RT_SCOPE_UNIVERSE,
 };
-#[cfg(target_os = "oxide-kernel")]
-use super::uapi::{RT_SCOPE_HOST, RT_SCOPE_LINK, RT_SCOPE_UNIVERSE};
 
 /// Build a single RTM_NEWLINK reply for one iface.
 /// # C: O(N attrs)
@@ -331,7 +329,6 @@ pub fn handle_getaddr_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8], strict: bool)
         );
         reply.extend_from_slice(&one);
     }
-    #[cfg(target_os = "oxide-kernel")]
     for (iface, row) in net::sock::stack().v6_addr_snapshot_in(ns) {
         let Some(ifindex) = net::global_stack().ifaces.ifindex_in_ns(iface, ns) else { continue; };
         if want.is_some_and(|w| w != ifindex) { continue; }
@@ -351,6 +348,39 @@ pub fn handle_getaddr_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8], strict: bool)
     }
     reply.extend_from_slice(&done_multi(req.nlmsg_seq, req.nlmsg_pid));
     reply
+}
+
+/// Handle the IPv6 non-dump RTM_GETADDR form from the canonical address rows. # C: O(N addresses)
+pub fn handle_getaddr6_one_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
+    let off = Nlmsghdr::SIZE;
+    if full_msg.len() < off + Ifaddrmsg::SIZE || full_msg[off] != AF_INET6 {
+        return super::ack::build_ack(req, -(Errno::Einval.as_i32()));
+    }
+    let ifindex = u32::from_ne_bytes(full_msg[off + 4..off + 8].try_into().unwrap());
+    let mut attr = &full_msg[off + Ifaddrmsg::SIZE..];
+    let mut wanted = None;
+    while attr.len() >= 4 {
+        let len = u16::from_ne_bytes([attr[0], attr[1]]) as usize;
+        let ty = u16::from_ne_bytes([attr[2], attr[3]]) & 0x3fff;
+        if len < 4 || len > attr.len() { return super::ack::build_ack(req, -(Errno::Einval.as_i32())); }
+        if matches!(ty, ifa::IFA_ADDRESS | ifa::IFA_LOCAL) && len == 20 {
+            let mut raw = [0u8; 16]; raw.copy_from_slice(&attr[4..20]); wanted = Some(raw);
+        }
+        let next = (len + 3) & !3;
+        if next > attr.len() { return super::ack::build_ack(req, -(Errno::Einval.as_i32())); }
+        attr = &attr[next..];
+    }
+    let Some(wanted) = wanted else { return super::ack::build_ack(req, -(Errno::Einval.as_i32())); };
+    let ifaces = ifaces_snapshot_in(ns);
+    let found = net::sock::stack().v6_addr_snapshot_in(ns).into_iter().find(|(iface, row)|
+        net::global_stack().ifaces.ifindex_in_ns(*iface, ns) == Some(ifindex) && row.addr.0 == wanted);
+    let Some((_, row)) = found else { return super::ack::build_ack(req, -(Errno::Enoent.as_i32())); };
+    let Some((_, name, _, _, _, _, _, _)) = ifaces.iter().find(|(id, ..)| *id == ifindex) else {
+        return super::ack::build_ack(req, -(Errno::Enodev.as_i32()));
+    };
+    let scope = if row.addr.is_loopback() { RT_SCOPE_HOST } else if row.addr.is_link_local() { RT_SCOPE_LINK } else { RT_SCOPE_UNIVERSE };
+    build_newaddr6_reply(req.nlmsg_seq, req.nlmsg_pid, ifindex as i32, name, row.addr.0, row.prefixlen,
+        scope, row.flags(), IfaCacheInfo { preferred: row.preferred, valid: row.valid, cstamp: 0, tstamp: 0 }, 0)
 }
 
 #[cfg(test)]
