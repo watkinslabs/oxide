@@ -33,4 +33,8 @@ pub mod replay;
 pub use replay::{replay, JournalLogReader, ReplayError, ReplayStats};
 
 pub mod emit;
-pub use emit::{StagedBlock, LogCursor, build_descriptor_block, build_commit_block, escape_journal_payload};
+pub use emit::{
+    StagedBlock, LogCursor, EmitError, TransactionError,
+    descriptor_capacity, transaction_block_count, build_descriptor_block, emit_transaction,
+    build_commit_block, escape_journal_payload,
+};

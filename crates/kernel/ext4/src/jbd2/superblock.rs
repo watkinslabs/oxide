@@ -20,6 +20,8 @@ pub struct JournalSuperblock {
     pub feature_compat:   u32,
     pub feature_incompat: u32,
     pub feature_ro:    u32,
+    /// Journal UUID carried by the first tag of every descriptor block.
+    pub uuid:          [u8; 16],
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -40,6 +42,8 @@ impl JournalSuperblock {
         let bt = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]);
         if bt != 3 && bt != 4 { return Err(JournalSuperblockError::BadType); }
         // Body at offset 12 onward.
+        let mut uuid = [0u8; 16];
+        if bt == 4 { uuid.copy_from_slice(&buf[0x30..0x40]); }
         Ok(JournalSuperblock {
             block_size:       u32::from_be_bytes([buf[0x0C], buf[0x0D], buf[0x0E], buf[0x0F]]),
             maxlen:           u32::from_be_bytes([buf[0x10], buf[0x11], buf[0x12], buf[0x13]]),
@@ -49,6 +53,7 @@ impl JournalSuperblock {
             feature_compat:   if bt == 4 { u32::from_be_bytes([buf[0x24], buf[0x25], buf[0x26], buf[0x27]]) } else { 0 },
             feature_incompat: if bt == 4 { u32::from_be_bytes([buf[0x28], buf[0x29], buf[0x2A], buf[0x2B]]) } else { 0 },
             feature_ro:       if bt == 4 { u32::from_be_bytes([buf[0x2C], buf[0x2D], buf[0x2E], buf[0x2F]]) } else { 0 },
+            uuid,
         })
     }
 
@@ -97,6 +102,16 @@ mod tests {
         let sb = JournalSuperblock::parse(&b).unwrap();
         assert!(sb.needs_recovery());
         assert_eq!(sb.start, 100);
+    }
+
+    #[test]
+    fn parse_v2_retains_descriptor_uuid() {
+        let uuid = [0x5Au8; 16];
+        let mut b = build_sb(4096, 8192, 1, 5, 100);
+        b[4..8].copy_from_slice(&4u32.to_be_bytes());
+        b[0x30..0x40].copy_from_slice(&uuid);
+        let sb = JournalSuperblock::parse(&b).unwrap();
+        assert_eq!(sb.uuid, uuid);
     }
 
     #[test]
