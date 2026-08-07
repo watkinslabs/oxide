@@ -27,6 +27,12 @@ shape they were retired in; post-D473 imports retain the `Class` column.
 |---|---|---|---|---|---|
 | FIXED 8a364ee0a | MISSING | med | rseq time-slice extension granted no execution time: slot 471 only read-and-cleared a never-set yielded latch, while `PR_RSEQ_SLICE_EXTENSION` could not negotiate a v2 grant. | V2 registration now advertises the extension, `prctl` validates and changes its state, and eligible return-to-user reschedules grant the requested bounded extension. Syscall entry and expiry revoke it, and the per-CPU one-shot timer carries the microsecond deadline on both architectures. Focused ABI/`prctl` tests, both target checks, paired smoke, and the full pre-push gate passed. | F830-rseq-slice-extension |
 
+## Net / socket
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 18369fea2 | MISSING | med | `IP_TRANSPARENT` supplied nonlocal-bind permission only; transparent-proxy local delivery and reply-source behaviour were absent. | PRE_ROUTING nft packet marks now flow into fwmark policy rules; an `RTN_LOCAL` result takes IPv4 local input, while marked unicast routing governs forwarding. Rtnetlink persists `FRA_FWMARK`/`FRA_FWMASK`; bound foreign sources remain the outbound source. Net, netfilter, netlink, both target checks, paired smoke, and pre-push passed. | F831-ip-transparent-local-delivery |
+
 ## Tooling / gates
 
 | Status | Sev | Issue | Evidence | Owner |
