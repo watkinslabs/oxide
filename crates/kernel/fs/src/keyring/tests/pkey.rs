@@ -72,7 +72,7 @@ fn add_private(t: &Ctx, desc: &str) -> i64 {
 // the only registered type that may.
 #[test]
 fn a_certificate_supplies_its_own_description() {
-    let t = ctx(1720, 7720);
+    let t = ctx(1729, 7729);
     join_session(&t, None);
     let k = add_cert(&t, "") as i32;
     assert!(k >= FIRST_SERIAL, "added: {k}");
@@ -81,6 +81,20 @@ fn a_certificate_supplies_its_own_description() {
     // A description the caller DOES supply wins over the proposal.
     let named = add_cert(&t, "my-cert") as i32;
     assert_eq!(STORE.lock().keys.get(&named).expect("added key").description, "my-cert");
+}
+
+#[test]
+fn asymmetric_search_accepts_partial_and_exact_certificate_ids() {
+    let t = ctx(1739, 7739);
+    join_session(&t, None);
+    let key = add_cert(&t, "id-search") as i32;
+    let ring = get_keyring_id(&t, KEY_SPEC_SESSION_KEYRING, true) as i32;
+    const SKID: &str = "ex:fb55bbd159ecd01255e7d576480dcb840ddd8ce7";
+    const SERIAL: &str = "s:280d0bb06dc810c24687dae3d19387bd2fdea38f";
+    assert_eq!(search_core(&t, ring, "asymmetric", SKID, 0), key as i64);
+    assert_eq!(search_core(&t, ring, "asymmetric", "id:0dcb840ddd8ce7", 0), key as i64);
+    assert_eq!(search_core(&t, ring, "asymmetric", SERIAL, 0), key as i64);
+    assert_eq!(search_core(&t, ring, "asymmetric", "ex:0dcb840ddd8ce7", 0), enokey());
 }
 
 // A private-key blob proposes no name, so adding one unnamed is EINVAL rather

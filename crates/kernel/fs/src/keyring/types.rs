@@ -12,6 +12,7 @@
 // an X.509 certificate or a PKCS#8 private key, parsed by `pkey`.
 
 use alloc::string::String;
+use alloc::vec::Vec;
 use syscall::errno::Errno;
 use super::uapi::*;
 
@@ -172,14 +173,19 @@ pub fn vet_payload(t: &KeyType, len: u64, have_ptr: bool) -> Result<(), Errno> {
 /// the blob decode, and what description does it propose for itself? A type
 /// with no parser accepts any payload its length rule allowed and proposes
 /// nothing. # C: O(len)
-pub fn preparse_blob(t: &KeyType, payload: &[u8]) -> Result<Option<String>, Errno> {
+pub struct PreparsedPayload {
+    pub description: Option<String>,
+    pub asymmetric_ids: Vec<Vec<u8>>,
+}
+
+pub fn preparse_blob(t: &KeyType, payload: &[u8]) -> Result<PreparsedPayload, Errno> {
     match t.payload_rule {
         PayloadRule::Asymmetric => {
             let key = pkey::AsymmetricKey::parse(payload)
                 .map_err(super::ops::pkey::errno_for)?;
-            Ok(key.description)
+            Ok(PreparsedPayload { description: key.description, asymmetric_ids: key.ids })
         }
-        _ => Ok(None),
+        _ => Ok(PreparsedPayload { description: None, asymmetric_ids: Vec::new() }),
     }
 }
 

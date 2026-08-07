@@ -17,6 +17,32 @@ use super::super::perm::{key_task_permission, key_validate};
 use super::super::store::{Store, TaskIds};
 use super::super::uapi::*;
 
+fn decode_hex(id: &str) -> Option<Vec<u8>> {
+    if id.is_empty() || id.len() % 2 != 0 { return None; }
+    let mut out = Vec::with_capacity(id.len() / 2);
+    for pair in id.as_bytes().chunks_exact(2) {
+        let hi = (pair[0] as char).to_digit(16)?;
+        let lo = (pair[1] as char).to_digit(16)?;
+        out.push(((hi << 4) | lo) as u8);
+    }
+    Some(out)
+}
+
+fn asymmetric_match(ids: &[Vec<u8>], description: &str) -> bool {
+    let Some((kind, text)) = description.split_once(':') else { return false; };
+    let Some(want) = decode_hex(text) else { return false; };
+    match kind {
+        "id" => ids.iter().any(|id| id.ends_with(&want)),
+        "ex" => ids.iter().any(|id| id == &want),
+        "s" => ids.get(1).is_some_and(|id| id == &want),
+        _ => false,
+    }
+}
+
+fn asymmetric_selector(description: &str) -> bool {
+    description.starts_with("id:") || description.starts_with("ex:") || description.starts_with("s:")
+}
+
 /// Whether an expired match is skipped silently or reported.
 /// `request_key` sets `KEYRING_SEARCH_SKIP_EXPIRED` — an expired key must not
 /// stop it from building a fresh one — while `KEYCTL_SEARCH` does not, so a
@@ -73,7 +99,10 @@ fn search_one(g: &Store, root: i32, t: &TaskIds, key_type: &str, description: &s
                 if expired == Expired::Report { result = Errno::Ekeyexpired.as_i32(); }
                 continue;
             }
-            if k.description != description { continue; }
+            if k.key_type.name == ASYMMETRIC_KEY_TYPE {
+                if asymmetric_selector(description) && !asymmetric_match(&k.asymmetric_ids, description) { continue; }
+                if !asymmetric_selector(description) && k.description != description { continue; }
+            } else if k.description != description { continue; }
             if key_task_permission(g, k, t, KEY_NEED_SEARCH, now_ns).is_err() { result = Errno::Eacces.as_i32(); continue; }
             // A negative key MATCHES but does not satisfy the search: its
             // stored errno becomes the search's answer, which is what stops

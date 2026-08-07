@@ -50,9 +50,9 @@ pub fn add_key_core(c: &Ctx, key_type: &str, desc: &str, payload: Vec<u8>, have_
     // The type's parser runs BEFORE the destination keyring is checked for
     // write access, so a malformed payload is reported as malformed rather
     // than as a permission problem on a keyring the caller never got to use.
-    let proposed = match types::preparse_blob(ty, &payload) { Ok(d) => d, Err(err) => return e(err) };
+    let parsed = match types::preparse_blob(ty, &payload) { Ok(d) => d, Err(err) => return e(err) };
     let named: String = if !desc.is_empty() { String::from(desc) } else {
-        match proposed { Some(d) => d, None => return e(Errno::Einval) }
+        match parsed.description.as_ref() { Some(d) => d.clone(), None => return e(Errno::Einval) }
     };
     let desc: &str = &named;
     if let Err(rv) = check_perm(&g, ring, &c.t, KEY_NEED_WRITE, Lookup::Full, c.now_ns) { return rv; }
@@ -74,6 +74,7 @@ pub fn add_key_core(c: &Ctx, key_type: &str, desc: &str, payload: Vec<u8>, have_
     let serial = match g.mint(ty, desc, payload, c.t.fsuid, c.t.fsgid, quota) {
         Ok(s) => s, Err(err) => return e(err),
     };
+    g.keys.get_mut(&serial).expect("just minted under the held store lock").asymmetric_ids = parsed.asymmetric_ids;
     match g.link(ring, serial) {
         Ok(()) => serial as i64,
         Err(err) => { g.destroy(serial); e(err) }

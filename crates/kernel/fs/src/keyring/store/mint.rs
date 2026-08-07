@@ -61,7 +61,7 @@ impl Store {
         // negative values are the special-keyring namespace.
         self.next_serial = match self.next_serial.checked_add(1) { Some(n) => n, None => FIRST_SERIAL };
         self.keys.insert(serial, Key {
-            serial, key_type: ty, description: String::from(desc), payload, perm, uid, gid,
+            serial, key_type: ty, description: String::from(desc), payload, asymmetric_ids: Vec::new(), perm, uid, gid,
             quotalen, in_quota: true,
             expiry_ns: 0, revoked: false, invalidated: false,
             members: Vec::new(), restrict_reject: false,

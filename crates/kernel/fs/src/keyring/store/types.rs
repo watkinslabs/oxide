@@ -61,6 +61,9 @@ pub struct Key {
     pub key_type: &'static KeyType,
     pub description: String,
     pub payload: Vec<u8>,
+    /// Asymmetric certificate identifiers, parsed once at instantiation and
+    /// owned by the key with its payload.
+    pub asymmetric_ids: Vec<Vec<u8>>,
     pub perm: u32,
     pub uid: u32,
     pub gid: u32,
