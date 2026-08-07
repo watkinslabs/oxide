@@ -210,6 +210,10 @@ shape they were retired in; post-D473 imports retain the `Class` column.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
+| FIXED 2222cd9d1 | DEFECT | low | RSA private operations discarded the PKCS#8 CRT fields and performed a full-width private-exponent calculation. | Parsed keys now retain one canonical validated CRT representation (`p`, `q`, CRT exponents, coefficient); private operation recombines the two modular powers. The raw private-operation round trip turns red when the CRT modulus is corrupted; the restored `pkey` suite passes 21 tests. | B1910-asymmetric-key-ids-crt |
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
 | FIXED 505477325 | DEFECT | low | `shmctl(IPC_SET)`, `SHM_LOCK`/`SHM_UNLOCK`, and the live-segment `IPC_RMID` path returned `EAGAIN` when another segment reference existed. | Segment key, uid, gid, and mode are now canonical atomics; a held-reference regression covers all three controls. The old exclusive-reference guard makes that test fail with `-EAGAIN`; 39 SysV-shm tests and both target checks pass. | B1909-shmctl-metadata-owner |
 
 Retired to CLAUDE.md as standing hard rules (`Conflict resolution is where
