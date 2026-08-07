@@ -62,7 +62,7 @@ impl ReasmTable {
         offset_bytes: usize, payload: &[u8], mf: bool,
     ) -> Option<Vec<u8>> {
         self.push_inner(key, now_ns, offset_bytes, None, payload, mf, 0)
-            .map(|(_, payload, _)| payload)
+            .ok().flatten().map(|(_, payload, _)| payload)
     }
 
     /// Reassemble payload while retaining the offset-zero packet prefix, and
@@ -73,14 +73,29 @@ impl ReasmTable {
         prefix: Option<&[u8]>, payload: &[u8], mf: bool, fragsize: u32)
         -> Option<(Vec<u8>, Vec<u8>, u32)>
     {
+        self.try_push_with_prefix(key, now_ns, offset_bytes, prefix, payload, mf, fragsize)
+            .ok().flatten()
+    }
+
+    /// Offer one fragment while preserving a buffer-allocation failure for the
+    /// IPv4 receive owner to account and dispose. # C: O(N frags)
+    pub fn try_push_with_prefix(&self, key: ReasmKey, now_ns: u64, offset_bytes: usize,
+        prefix: Option<&[u8]>, payload: &[u8], mf: bool, fragsize: u32)
+        -> crate::NetResult<Option<(Vec<u8>, Vec<u8>, u32)>>
+    {
         self.push_inner(key, now_ns, offset_bytes, prefix, payload, mf, fragsize)
     }
 
     fn push_inner(&self, key: ReasmKey, now_ns: u64, offset_bytes: usize,
         prefix: Option<&[u8]>, payload: &[u8], mf: bool, fragsize: u32)
-        -> Option<(Vec<u8>, Vec<u8>, u32)>
+        -> crate::NetResult<Option<(Vec<u8>, Vec<u8>, u32)>>
     {
-        if offset_bytes + payload.len() > REASM_MAX_BYTES { return None; }
+        if offset_bytes + payload.len() > REASM_MAX_BYTES { return Ok(None); }
+        // Allocate every packet-owned byte before touching canonical reassembly
+        // state. A failed allocation drops this input fragment, never leaves a
+        // half-updated flow behind it.
+        let prefix = if offset_bytes == 0 { prefix.map(copy_bytes).transpose()? } else { None };
+        let frag = Frag { offset: offset_bytes, bytes: copy_bytes(payload)? };
         let mut g = self.flows.lock();
         // Evict stale flows opportunistically.
         g.retain(|_, f| now_ns.saturating_sub(f.last_ns) < REASM_TIMEOUT_NS);
@@ -89,37 +104,40 @@ impl ReasmTable {
         });
         flow.last_ns = now_ns;
         if fragsize > flow.max_frag { flow.max_frag = fragsize; }
-        if offset_bytes == 0 {
-            if let Some(prefix) = prefix { flow.prefix = Some(prefix.to_vec()); }
-        }
+        if let Some(prefix) = prefix { flow.prefix = Some(prefix); }
         // Queue ordered by offset the way Linux orders its fragment queue at insert
         // time, instead of re-sorting on every arrival. Equal offsets keep arrival
         // order: a peer may send two fragments at the same offset, and which one the
         // reassembled datagram keeps is decided by arrival order.
-        crate::ordered::insert_stable_by_key(&mut flow.frags,
-            Frag { offset: offset_bytes, bytes: payload.to_vec() }, |f| f.offset);
+        flow.frags.try_reserve(1).map_err(|_| crate::NetError::Enobufs)?;
+        crate::ordered::insert_stable_by_key(&mut flow.frags, frag, |f| f.offset);
         if !mf {
             flow.total = Some(offset_bytes + payload.len());
         }
         // Try to finalize.
-        let total = flow.total?;
+        let Some(total) = flow.total else { return Ok(None); };
         // Verify contiguous coverage [0, total); the queue is already offset-ordered.
         let mut cur = 0usize;
         for f in &flow.frags {
-            if f.offset > cur { return None; }    // hole
+            if f.offset > cur { return Ok(None); }    // hole
             cur = core::cmp::max(cur, f.offset + f.bytes.len());
         }
-        if cur < total { return None; }
+        if cur < total { return Ok(None); }
         // Assemble.
-        let mut out = alloc::vec![0u8; total];
+        let mut out = Vec::new();
+        out.try_reserve_exact(total).map_err(|_| crate::NetError::Enobufs)?;
+        out.resize(total, 0);
         for f in &flow.frags {
             let end = core::cmp::min(f.offset + f.bytes.len(), total);
             out[f.offset..end].copy_from_slice(&f.bytes[..end - f.offset]);
         }
-        let prefix = flow.prefix.clone().unwrap_or_default();
+        let prefix = match flow.prefix.as_deref() {
+            Some(prefix) => copy_bytes(prefix)?,
+            None => Vec::new(),
+        };
         let max_frag = flow.max_frag;
         g.remove(&key);
-        Some((prefix, out, max_frag))
+        Ok(Some((prefix, out, max_frag)))
     }
 
     /// Time-based GC. Caller invokes from the periodic tick.
@@ -144,6 +162,15 @@ impl ReasmTable {
         g.retain(|key, _| !(key.net_ns == net_ns && key.iface == Some(iface)));
         before - g.len()
     }
+}
+
+/// Copy fragment storage without converting allocation pressure into abort.
+/// # C: O(bytes)
+fn copy_bytes(bytes: &[u8]) -> crate::NetResult<Vec<u8>> {
+    let mut copied = Vec::new();
+    copied.try_reserve_exact(bytes.len()).map_err(|_| crate::NetError::Enobufs)?;
+    copied.extend_from_slice(bytes);
+    Ok(copied)
 }
 
 impl Default for ReasmTable { fn default() -> Self { Self::new() } }

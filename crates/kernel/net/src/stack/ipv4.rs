@@ -178,7 +178,8 @@ impl NetStack {
     pub fn deliver_rx_in(&self, lease: &crate::IngressLease, l3: &[u8]) -> NetResult<()> {
         let net_ns = lease.net_ns();
         let iface = lease.iface();
-        let Some((reassembled, frag_max)) = self.ipv4_nf_defrag_ingress(net_ns, iface, l3)?
+        let Some((reassembled, frag_max)) = account_ingress_copy(net_ns,
+            self.ipv4_nf_defrag_ingress(net_ns, iface, l3))?
             else { return Ok(()); };
         let l3 = &reassembled[..];
         // PRE_ROUTING fires on every received packet before the routing
@@ -425,6 +426,27 @@ impl NetStack {
     #[cfg(any(test, feature = "hosted"))]
     pub(crate) fn drain_loopback_in(&self, lease: &crate::IngressLease, lo: &LoopbackDev) {
         while let Some(p) = lo.rx_pop() { self.deliver_loopback_pkt_in(lease, p); }
+    }
+}
+
+fn account_ingress_copy<T>(net_ns: u64, result: NetResult<T>) -> NetResult<T> {
+    if matches!(result, Err(NetError::Enobufs)) {
+        crate::mib::bump(net_ns, crate::mib::Mib::IpInDiscards);
+    }
+    result
+}
+
+#[cfg(test)]
+mod discard_tests {
+    use super::*;
+
+    #[test]
+    fn exhausted_ipv4_copy_is_counted_as_an_input_discard() {
+        const NS: u64 = 0x837;
+        crate::mib::forget(NS);
+        assert_eq!(account_ingress_copy(NS, Err::<(), _>(NetError::Enobufs)), Err(NetError::Enobufs));
+        assert_eq!(crate::mib::get(NS, crate::mib::Mib::IpInDiscards), 1);
+        crate::mib::forget(NS);
     }
 }
 
