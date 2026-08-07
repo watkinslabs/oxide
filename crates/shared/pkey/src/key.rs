@@ -7,6 +7,7 @@ use alloc::vec::Vec;
 use crate::pkcs1::{self, HashPrefix};
 use crate::rsa::{self, RsaKey};
 use crate::{pkcs8, x509, PkeyError};
+use crypt::Digest;
 
 /// Encoding names. `raw` means the caller supplies and receives unpadded
 /// values; `pkcs1` selects the v1.5 encodings.
@@ -148,6 +149,14 @@ impl AsymmetricKey {
             // value, so there is nothing to verify with.
             Scheme::Raw => Err(PkeyError::NoAlgorithm),
         }
+    }
+
+    /// Verify an X.509 certificate's signed body with this public key.
+    /// # C: O(certificate + rsa)
+    pub fn verify_certificate(&self, cert: &x509::Certificate) -> Result<(), PkeyError> {
+        let hash = cert.signature_hash.ok_or(PkeyError::NoPackage)?;
+        let digest = Digest::by_name(hash).ok_or(PkeyError::NoPackage)?.digest(&[&cert.tbs]);
+        self.verify(ENCODING_PKCS1, Some(hash), &digest, &cert.signature)
     }
 
     /// Which calculation an encoding and operation select.

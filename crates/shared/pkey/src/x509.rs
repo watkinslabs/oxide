@@ -35,17 +35,28 @@ pub struct Certificate {
     pub algo: &'static str,
     /// The `subjectPublicKey` contents — for RSA, an `RSAPublicKey`.
     pub key: Vec<u8>,
+    /// Full DER encoding of the signed `TBSCertificate`.
+    pub tbs: Vec<u8>,
+    /// Digest name declared by the certificate signature algorithm.
+    pub signature_hash: Option<&'static str>,
+    /// Signature octets after the BIT STRING's unused-bit count.
+    pub signature: Vec<u8>,
 }
 
 /// Parse a DER certificate. # C: O(len)
 pub fn parse(blob: &[u8]) -> Result<Certificate, PkeyError> {
     let cert = der::parse_exact(blob, der::TAG_SEQUENCE)?;
     let mut top = Reader::new(cert);
-    let tbs = top.expect(der::TAG_SEQUENCE)?;
-    // The signature algorithm and value follow; they are read only to prove
-    // the certificate is structurally whole.
-    top.expect(der::TAG_SEQUENCE)?;
-    der::bit_string_bytes(top.expect(der::TAG_BIT_STRING)?)?;
+    let (tbs_tlv, tbs_raw) = top.next_raw()?;
+    if tbs_tlv.tag != der::TAG_SEQUENCE { return Err(PkeyError::BadMessage); }
+    let tbs = tbs_tlv.value;
+    let sig_alg = top.expect(der::TAG_SEQUENCE)?;
+    let mut sig_alg = Reader::new(sig_alg);
+    let sig_oid = sig_alg.expect(der::TAG_OID)?;
+    sig_alg.take_if(der::TAG_NULL)?;
+    sig_alg.end()?;
+    let signature_hash = if sig_oid == oid::SHA256_WITH_RSA { Some("sha256") } else { None };
+    let signature = der::bit_string_bytes(top.expect(der::TAG_BIT_STRING)?)?.to_vec();
     top.end()?;
 
     let mut r = Reader::new(tbs);
@@ -60,7 +71,10 @@ pub fn parse(blob: &[u8]) -> Result<Certificate, PkeyError> {
     let (algo, key) = parse_spki(spki)?;
     let subject = render_name(subject_raw)?;
     let skid = find_skid(&mut r)?;
-    Ok(Certificate { subject, subject_id: subject_raw.to_vec(), serial, issuer, skid, algo, key })
+    Ok(Certificate {
+        subject, subject_id: subject_raw.to_vec(), serial, issuer, skid, algo, key,
+        tbs: tbs_raw.to_vec(), signature_hash, signature,
+    })
 }
 
 /// `SubjectPublicKeyInfo ::= SEQUENCE { algorithm AlgorithmIdentifier,
