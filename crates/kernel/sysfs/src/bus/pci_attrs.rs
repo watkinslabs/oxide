@@ -55,6 +55,8 @@ pub(super) const PCI_DEV_ATTRS: &[Attribute] = &[
 
 /// Attribute published only by a VGA-class function. # C: n/a
 const BOOT_VGA_ATTR: Attribute = Attribute { name: "boot_vga", mode: RO_PERM };
+/// DSN exists only when the function's PCIe extended-capability chain carries it.
+const SERIAL_NUMBER_ATTR: Attribute = Attribute { name: "serial_number", mode: RO_PERM };
 
 /// Attributes published only by a PCI-to-PCI bridge. # C: n/a
 const BRIDGE_ATTRS: &[Attribute] = &[
@@ -80,6 +82,9 @@ pub(super) fn is_bridge(dev: &drv::Device) -> bool {
 pub(super) fn visible_attrs(dev: &drv::Device) -> alloc::vec::Vec<&'static Attribute> {
     let mut attrs: alloc::vec::Vec<&'static Attribute> = PCI_DEV_ATTRS.iter().collect();
     if is_vga(dev.class) { attrs.push(&BOOT_VGA_ATTR); }
+    if dev.pci.is_some_and(|p| p.serial_number.is_some_and(|n| n != 0)) {
+        attrs.push(&SERIAL_NUMBER_ATTR);
+    }
     if is_bridge(dev) { attrs.extend(BRIDGE_ATTRS.iter()); }
     attrs
 }

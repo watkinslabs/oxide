@@ -5,6 +5,11 @@ pub const CAP_ID_MSI: u8 = 0x05;
 pub const CAP_ID_VENDOR: u8 = 0x09;
 pub const CAP_ID_PCIE: u8 = 0x10;
 pub const CAP_ID_MSIX: u8 = 0x11;
+/// PCIe extended capability ID for a Device Serial Number.
+pub const EXT_CAP_ID_DSN: u16 = 0x0003;
+const EXT_CAP_FIRST: u16 = 0x100;
+const EXT_CAP_NEXT_MASK: u32 = 0xFFF << 20;
+const EXT_CAP_MAX_STEPS: usize = 960;
 pub const MSI_ENABLE: u32 = 1u32 << 16;
 pub const MSIX_ENABLE: u32 = 1u32 << 31;
 pub const MSIX_FUNCTION_MASK: u32 = 1u32 << 30;
@@ -37,6 +42,26 @@ pub struct PciCap {
     pub id: u8,
     /// Byte offset within the device's 256-byte config space.
     pub cfg_off: u8,
+}
+
+/// Return the Device Serial Number from the bounded extended-capability chain.
+/// A malformed loop, all-zero header, or absent DSN has no serial number.
+/// # C: O(extended capabilities)
+pub fn device_serial_number<R: ConfigSpaceReader>(r: &R, bdf: Bdf) -> Option<u64> {
+    let mut off = EXT_CAP_FIRST;
+    for _ in 0..EXT_CAP_MAX_STEPS {
+        let hdr = r.read32_ext(bdf, off);
+        if hdr == 0 || hdr == u32::MAX { return None; }
+        if (hdr & 0xFFFF) as u16 == EXT_CAP_ID_DSN {
+            let lo = r.read32_ext(bdf, off + 4);
+            let hi = r.read32_ext(bdf, off + 8);
+            return Some((u64::from(hi) << 32) | u64::from(lo));
+        }
+        let next = ((hdr & EXT_CAP_NEXT_MASK) >> 20) as u16;
+        if next < EXT_CAP_FIRST || next <= off { return None; }
+        off = next;
+    }
+    None
 }
 
 /// MSI capability shape (PCI Local Bus 3.0 §6.8.1).
@@ -349,11 +374,11 @@ mod msi_tests {
     use std::sync::Mutex;
 
     struct Config {
-        words: Mutex<[u32; 64]>,
+        words: Mutex<[u32; 1024]>,
     }
 
     impl Config {
-        fn new() -> Self { Self { words: Mutex::new([0; 64]) } }
+        fn new() -> Self { Self { words: Mutex::new([0; 1024]) } }
     }
 
     impl ConfigSpaceReader for Config {
@@ -363,10 +388,26 @@ mod msi_tests {
         fn write32(&self, _bdf: Bdf, offset: u8, val: u32) {
             self.words.lock().unwrap()[offset as usize / 4] = val;
         }
+        fn read32_ext(&self, _bdf: Bdf, offset: u16) -> u32 {
+            self.words.lock().unwrap()[offset as usize / 4]
+        }
+        fn write32_ext(&self, _bdf: Bdf, offset: u16, val: u32) {
+            self.words.lock().unwrap()[offset as usize / 4] = val;
+        }
     }
 
     const BDF: Bdf = Bdf { bus: 0, device: 1, function: 0 };
     const CAP: u8 = 0x80;
+
+    #[test]
+    fn dsn_is_read_from_the_extended_capability_chain() {
+        let cfg = Config::new();
+        cfg.write32_ext(BDF, 0x100, 0x120 << 20 | 1);
+        cfg.write32_ext(BDF, 0x120, EXT_CAP_ID_DSN as u32);
+        cfg.write32_ext(BDF, 0x124, 0x5566_7788);
+        cfg.write32_ext(BDF, 0x128, 0x1122_3344);
+        assert_eq!(device_serial_number(&cfg, BDF), Some(0x1122_3344_5566_7788));
+    }
 
     #[test]
     fn program_single_64_bit_msi_preserves_reserved_data_half() {

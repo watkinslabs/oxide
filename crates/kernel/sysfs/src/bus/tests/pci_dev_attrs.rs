@@ -34,6 +34,7 @@ fn registered(addr: &str) -> Arc<drv::Device> {
                 subsystem_vendor: TEST_SUBSYSTEM_VENDOR,
                 subsystem_device: TEST_SUBSYSTEM_DEVICE,
                 interrupt_line: TEST_IRQ,
+                serial_number: None,
             }));
     drv::try_device_add(Arc::clone(&dev)).expect("test pci registration");
     dev

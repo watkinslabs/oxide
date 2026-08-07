@@ -23,7 +23,7 @@ pub use bars::{
     IORESOURCE_PREFETCH,
 };
 pub use caps::{
-    capabilities, decode_msi_cap, decode_msix_cap, disable_msi, emit_msix_teardown_steps,
+    capabilities, decode_msi_cap, decode_msix_cap, device_serial_number, disable_msi, emit_msix_teardown_steps,
     heapless_caps, msi_single_control_value, msix_control_enable_masked, msix_control_value,
     msix_table_entry_offset, program_msi_single, MsiCap, MsixCap, MsixTeardownStep, PciCap,
     CAP_ID_MSI, CAP_ID_MSIX, CAP_ID_PCIE, CAP_ID_VENDOR, MSI_ENABLE, MSIX_ENABLE,

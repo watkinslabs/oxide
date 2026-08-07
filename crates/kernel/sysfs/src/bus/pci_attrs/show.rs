@@ -108,6 +108,9 @@ pub(crate) fn body(dev: &drv::Device, leaf: &str) -> Option<Vec<u8>> {
         "revision" => { let _ = write!(s, "0x{:02x}", ident.revision); }
         "class" => { let _ = write!(s, "0x{:06x}", dev.class); }
         "irq" => { let _ = write!(s, "{}", ident.interrupt_line); }
+        "serial_number" if ident.serial_number.is_some_and(|n| n != 0) => {
+            let _ = write!(s, "{:016x}", ident.serial_number.unwrap());
+        }
         "power_state" => { s.push_str(POWER_STATE_D0); }
         "resource" => { return Some(resource_table(&dev.resources, is_bridge(dev)).into_bytes()); }
         "local_cpus" => { s.push_str(&cpumask_hex(ncpu())); }
@@ -148,6 +151,7 @@ mod tests {
                 subsystem_vendor: 0x1AF4,
                 subsystem_device: 0x1100,
                 interrupt_line: 11,
+                serial_number: None,
             })
     }
 
@@ -165,6 +169,13 @@ mod tests {
         assert_eq!(read(&dev, "revision"), "0x01\n");
         assert_eq!(read(&dev, "class"), "0x030000\n");
         assert_eq!(read(&dev, "irq"), "11\n");
+    }
+
+    #[test]
+    fn device_serial_number_is_rendered_as_sixteen_hex_digits() {
+        let mut dev = pci_dev();
+        dev.pci.as_mut().unwrap().serial_number = Some(0x1122_3344_5566_7788);
+        assert_eq!(read(&dev, "serial_number"), "1122334455667788\n");
     }
 
     #[test]
