@@ -37,10 +37,10 @@ reclassified.
 | Class \ Sev | blocker | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|
 | `DEFECT` | 0 | 0 | 13 | 19 | 32 |
-| `MISSING` | 2 | 0 | 14 | 12 | 28 |
+| `MISSING` | 2 | 0 | 14 | 11 | 27 |
 | `COVERAGE` | 0 | 0 | 9 | 14 | 23 |
 | `INFRA` | 0 | 0 | 14 | 11 | 25 |
-| **Total** | **2** | **0** | **50** | **56** | **108** |
+| **Total** | **2** | **0** | **50** | **55** | **107** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -236,12 +236,6 @@ here now.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-
-### C274-qemu-pcap-capture
-
-| Status | Class | Sev | Issue | Evidence | Owner |
-|---|---|---|---|---|---|
-| OPEN | MISSING | low | `/proc/interrupts` lists no virtio lines, so per-device interrupt progress cannot be observed from the guest. | probe on `c177484f8` | CLAIMED F839 |
 
 ### C275-cmdline-extra
 
