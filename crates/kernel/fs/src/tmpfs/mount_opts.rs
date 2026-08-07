@@ -23,9 +23,8 @@ pub(super) struct TmpfsOpts {
     /// `gid=` — root-inode owner gid.
     pub gid: Option<u32>,
     /// `size=` — max bytes for data pages (accepts k/m/g/K/M/G suffix, or a
-    /// trailing `%` meaning percent of RAM). Mutually informative with
-    /// `nr_blocks`; `size` wins if both appear (last-writer in Linux, but we
-    /// keep the byte form here and let the accountant convert to pages).
+    /// trailing `%` meaning percent of RAM). Mutually exclusive with
+    /// `nr_blocks`: parsing keeps only the last supplied block limit.
     pub size_bytes: Option<u64>,
     /// `nr_blocks=` — max data pages, directly (no byte→page conversion).
     pub nr_blocks: Option<u64>,
@@ -94,16 +93,25 @@ impl TmpfsOpts {
                 "uid" => o.uid = parse_u64(val).map(|v| v as u32).or(o.uid),
                 "gid" => o.gid = parse_u64(val).map(|v| v as u32).or(o.gid),
                 "nr_inodes" => o.nr_inodes = parse_u64(val).or(o.nr_inodes),
-                "nr_blocks" => o.nr_blocks = parse_u64(val).or(o.nr_blocks),
+                "nr_blocks" => {
+                    if let Some(blocks) = parse_u64(val) {
+                        o.nr_blocks = Some(blocks);
+                        o.size_bytes = None;
+                    }
+                }
                 "size" => {
                     match parse_size(val) {
-                        Some(SizeVal::Bytes(b)) => o.size_bytes = Some(b),
+                        Some(SizeVal::Bytes(b)) => {
+                            o.size_bytes = Some(b);
+                            o.nr_blocks = None;
+                        }
                         // Percent → bytes via total RAM (page-granular is fine;
                         // convert pages back to bytes so `resolve_blocks` shares
                         // one byte→page round-up path).
                         Some(SizeVal::Percent(p)) => {
                             let pages = total_ram_pages.saturating_mul(p) / 100;
                             o.size_bytes = Some(pages.saturating_mul(super::limits::PG as u64));
+                            o.nr_blocks = None;
                         }
                         None => {}
                     }
