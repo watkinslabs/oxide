@@ -147,6 +147,11 @@ decl_lock_class! {
     // acquisition) may take TaskList while publishing the per-task work bit.
     Tracepoint   = 99,
     TaskList     = 100,
+    // Scheduler's secondary task indices (`by_mm` / `by_tgid`). A task mm
+    // replacement holds its TaskList pin while publishing membership, so this
+    // sits immediately above TaskList; readers release it before pinning a
+    // candidate task's mm.
+    MmTaskIndex  = 101,
     Runqueue     = 110,
     // Throttled `SCHED_DEADLINE` entities awaiting replenishment
     // (`sched::deadline::replenish`). Taken irqsave: the hard timer IRQ sweeps

@@ -30,12 +30,12 @@ fn exit_state(t: &Task) -> ExitState {
 /// `find_lock_task_mm` — during a group exit the thread the pidfd names may
 /// already have dropped its mm while a sibling still holds it, so the reap
 /// target is the first thread of the group that still has one.
-fn find_task_mm(target: &Arc<Task>, tasks: &[Arc<Task>]) -> Option<(Arc<Task>, Arc<vmm::AddressSpace>)> {
+fn find_task_mm(target: &Arc<Task>) -> Option<(Arc<Task>, Arc<vmm::AddressSpace>)> {
     if let Some(mm) = target.clone_mm() { return Some((Arc::clone(target), mm)); }
     let tgid = target.tgid.load(core::sync::atomic::Ordering::Acquire);
-    tasks.iter()
-        .filter(|t| t.tgid.load(core::sync::atomic::Ordering::Acquire) == tgid)
-        .find_map(|t| t.clone_mm().map(|mm| (Arc::clone(t), mm)))
+    sched::registry::thread_group_members(tgid)
+        .into_iter()
+        .find_map(|task| task.clone_mm().map(|mm| (task, mm)))
 }
 
 /// `process_mrelease(pidfd, flags)` — slot 448.
@@ -53,7 +53,7 @@ fn find_task_mm(target: &Arc<Task>, tasks: &[Arc<Task>]) -> Option<(Arc<Task>, A
 /// against another process's address space. Reaping in place avoids that
 /// entirely, and file-backed pages are left alone because they are
 /// reclaimable from their backing store.
-/// # C: O(N_tasks + target_mm anon pages)
+/// # C: O(N_threads_in_group + N_mm_sharers + target_mm anon pages)
 pub fn sys_process_mrelease(args: &SyscallArgs) -> i64 {
     let pidfd = args.a0 as i32;
     let flags = args.a1;
@@ -73,19 +73,17 @@ pub fn sys_process_mrelease(args: &SyscallArgs) -> i64 {
         None => return errno(Errno::Esrch),
     };
 
-    let tasks = sched::registry::try_snapshot().unwrap_or_default();
     // `find_lock_task_mm` returning NULL is ESRCH: the whole group is already
     // past its mm teardown, so there is nothing left to release.
-    let Some((holder, mm)) = find_task_mm(&target, &tasks) else { return errno(Errno::Esrch) };
+    let Some((holder, mm)) = find_task_mm(&target) else { return errno(Errno::Esrch) };
 
     // Tasks sharing this mm from OUTSIDE the holder's thread group (CLONE_VM
     // without CLONE_THREAD). Same-group threads are already accounted for by
     // the holder's own group-exit state.
     let tgid = holder.tgid.load(core::sync::atomic::Ordering::Acquire);
-    let sharers: Vec<ExitState> = tasks.iter()
-        .filter(|t| t.tgid.load(core::sync::atomic::Ordering::Acquire) != tgid)
-        .filter(|t| t.clone_mm().is_some_and(|other| Arc::ptr_eq(&other, &mm)))
-        .map(|t| exit_state(t))
+    let sharers: Vec<ExitState> = sched::registry::mm_sharers(&mm).into_iter()
+        .filter(|task| task.tgid.load(core::sync::atomic::Ordering::Acquire) != tgid)
+        .map(|task| exit_state(&task))
         .collect();
     // `mm_users`: this mm's holder plus every outside sharer.
     let mm_users = 1 + sharers.len() as u64;

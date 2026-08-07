@@ -94,4 +94,5 @@ pub(super) fn prune_dead_locked(g: &mut Registry) {
 pub(super) fn clear_locked(g: &mut Registry) {
     g.by_tid.clear();
     g.vpid_hint.clear();
+    super::mm::clear_for_tests();
 }
