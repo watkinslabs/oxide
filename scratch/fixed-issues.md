@@ -1,5 +1,11 @@
 # Fixed issues
 
+### F837-ipv4-indiscards-accounting
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 0e55ecce1 | MISSING | low | `IpInDiscards` still reads zero because no packet-buffer drop owner has been implemented. It needs its event named at the point it occurs. | IPv4 ingress and fragment reassembly retain allocation exhaustion as `ENOBUFS`; the ingress owner counts that disposal in `IpInDiscards`. Focused allocation/accounting regressions, 2,079 net tests, `cargo check -p kmain`, and the full pre-push gate passed. | [CLAIMED F837-ipv4-indiscards-accounting 2026-08-07] |
+
 ### F836-netlink-dump-continuation
 
 | Status | Class | Sev | Issue | Evidence | Owner |
