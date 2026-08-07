@@ -332,6 +332,7 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
         child.rseq_ptr.store(cur.rseq_ptr.load(Ordering::Acquire), Ordering::Release);
         child.rseq_len.store(cur.rseq_len.load(Ordering::Acquire), Ordering::Release);
         child.rseq_sig.store(cur.rseq_sig.load(Ordering::Acquire), Ordering::Release);
+        child.rseq_slice_enabled.store(cur.rseq_slice_enabled.load(Ordering::Acquire), Ordering::Release);
     }
     // The number to return to the parent: the child's pid AS THE CALLER'S pid
     // namespace numbers it, which is not the child's own number whenever this

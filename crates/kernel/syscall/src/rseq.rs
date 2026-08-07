@@ -43,6 +43,34 @@ pub const RSEQ_OFF_RSEQ_CS:      u64 = 8;
 pub const RSEQ_OFF_FLAGS:        u64 = 16;
 pub const RSEQ_OFF_NODE_ID:      u64 = 20;
 pub const RSEQ_OFF_MM_CID:       u64 = 24;
+/// `struct rseq::slice_ctrl`, valid only for a v2 registration.
+pub const RSEQ_OFF_SLICE_CTRL:   u64 = 28;
+
+/// `RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE`: the kernel supports the v2
+/// time-slice extension and owns this read-only advertisement bit.
+pub const RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE: u32 = 1 << 4;
+/// `RSEQ_CS_FLAG_SLICE_EXT_ENABLED`: the task has enabled the extension
+/// through `PR_RSEQ_SLICE_EXTENSION`.
+pub const RSEQ_CS_FLAG_SLICE_EXT_ENABLED: u32 = 1 << 5;
+
+/// `rseq_slice_ctrl` request byte. The kernel clears it when it grants or
+/// rejects a request; userspace may clear it before that point.
+pub const RSEQ_SLICE_REQUEST: u32 = 1 << 0;
+/// `rseq_slice_ctrl` grant byte. Only the kernel writes this bit.
+pub const RSEQ_SLICE_GRANTED: u32 = 1 << 8;
+
+/// Linux `rseq_slice_ext_get_next`: consume a userspace extension request and
+/// publish the kernel grant while preserving future-compatible control bits.
+/// `None` means userspace did not request an extension. # C: O(1)
+pub const fn take_slice_request(ctrl: u32) -> Option<u32> {
+    if ctrl & RSEQ_SLICE_REQUEST == 0 { return None; }
+    Some((ctrl & !RSEQ_SLICE_REQUEST) | RSEQ_SLICE_GRANTED)
+}
+
+/// A registration longer than the original 32-byte ABI is the extensible v2
+/// form. It is the only form whose tail contains `slice_ctrl`.
+/// # C: O(1)
+pub const fn is_v2(len: u32) -> bool { len > ORIG_RSEQ_SIZE }
 
 /// `struct rseq_cs` field offsets + size (`include/uapi/linux/rseq.h`).
 pub const RSEQ_CS_OFF_VERSION:            u64 = 0;

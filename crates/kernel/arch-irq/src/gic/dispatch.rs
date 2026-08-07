@@ -291,7 +291,11 @@ unsafe extern "C" fn oxide_irq_exit_to_user(regs: *mut hal_aarch64::SvcFrame) {
     // SAFETY: forwarded contract — `regs` is the live entry frame and the
     // registered loop is the one installed at boot.
     unsafe { sched::exit_to_user::hook::run(regs as *mut u8); }
-    if preempted {
+    // A slice-extension grant consumed this preemption without switching the
+    // task, so its rseq critical section remains valid.
+    let slice_granted = sched::live::current().is_some_and(|t|
+        t.rseq_slice_granted.load(Ordering::Acquire));
+    if preempted && !slice_granted {
         // The thread just lost the CPU inside EL0 code. If it was inside a
         // declared rseq critical section, invalidate it and restart at
         // `abort_ip` BEFORE the eret resumes, so the commit never runs against

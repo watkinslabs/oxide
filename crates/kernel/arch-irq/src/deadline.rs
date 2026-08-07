@@ -73,4 +73,8 @@ pub fn service_wait_deadlines() {
     // its budget resumes at the instant the period begins.
     #[cfg(target_os = "oxide-kernel")]
     sched::deadline::live::expire_throttled_now();
+    // rseq grants have a microsecond expiry, so they share the one-shot timer
+    // instead of inheriting the coarse scheduler tick.
+    #[cfg(target_os = "oxide-kernel")]
+    sched::rseq::slice_timer_expired();
 }
