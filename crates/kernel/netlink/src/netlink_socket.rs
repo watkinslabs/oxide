@@ -590,7 +590,8 @@ mod tests {
         received_fd.write(&request(rtnetlink::RTM_NEWADDR, &body)).unwrap();
         let (reply, _) = received_fd.dequeue().unwrap();
         assert_eq!(ack_errno(&reply), 0);
-        assert!(rtnetlink::addr_snapshot_ns(owner_ns).iter().any(|row| row.ifindex == iface.raw() && row.addr == addr));
+        assert!(rtnetlink::addr_snapshot_ns(owner_ns).iter().any(|row|
+            row.iface == iface && row.addr == net::Ipv4Addr::from_u32(u32::from_be_bytes(addr))));
         assert!(rtnetlink::addr_snapshot_ns(receiver_ns).is_empty());
 
         received_fd.write(&request(rtnetlink::RTM_GETADDR, &[])).unwrap();

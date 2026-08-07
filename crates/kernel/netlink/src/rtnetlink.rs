@@ -52,7 +52,7 @@ pub use route_state::{
 };
 pub use rtnetlink_addr::{
     addr_insert, addr_remove, addr_snapshot, addr_snapshot_ns, cache_to_net, seed_defaults,
-    IfaCacheInfo, IfaceAddr,
+    IfaCacheInfo,
 };
 pub use uapi::*;
 

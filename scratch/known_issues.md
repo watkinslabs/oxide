@@ -36,11 +36,11 @@ reclassified.
 
 | Class \ Sev | blocker | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|
-| `DEFECT` | 0 | 0 | 13 | 24 | 37 |
+| `DEFECT` | 0 | 0 | 13 | 23 | 36 |
 | `MISSING` | 2 | 0 | 17 | 18 | 37 |
 | `COVERAGE` | 0 | 0 | 9 | 15 | 24 |
 | `INFRA` | 0 | 0 | 15 | 11 | 26 |
-| **Total** | **2** | **0** | **54** | **68** | **124** |
+| **Total** | **2** | **0** | **54** | **67** | **123** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -264,7 +264,6 @@ here now.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| OPEN | DEFECT | low | The two row types are still a split source of truth: one carries typed `Ipv4Addr`/`NetIfaceId`, the other `[u8; 4]`/`u32`, and every field added to one must be added to the other or it is silently dropped — which is exactly how `broadcast` was lost. Eleven non-test references; the netlink-side type should be deleted and the `net` one used throughout. | `crates/kernel/netlink/src/rtnetlink_addr.rs` `IfaceAddr` | — |
 | OPEN | MISSING | low | `IFA_ANYCAST`, `IFA_MULTICAST` and `IFA_TARGET_NETNSID` are still neither parsed nor reported. The reference carries all three. | `parse_newaddr_attrs` rejects unknown-but-known types only for the ones it names | — |
 
 ### B1749-resolved-boot-scope
