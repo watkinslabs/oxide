@@ -17,13 +17,15 @@ use alloc::vec::Vec;
 use block::{BlockDevice, BlockRequest, types::BlockError};
 
 use super::block_header::{BlockHeader, BlockType, JBD2_MAGIC};
-use super::descriptor::{DescriptorIter, TAG_FLAG_ESCAPE, TAG_FLAG_LAST};
+use super::checksum::{self, ChecksumMode};
+use super::descriptor::{DescriptorIter, DescriptorTag, TAG_FLAG_ESCAPE, TAG_FLAG_LAST};
 use super::superblock::{JournalSuperblock, JBD2_INCOMPAT_64BIT, JBD2_INCOMPAT_REVOKE};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum ReplayError {
     BlockIo,
     Corrupt,
+    BadChecksum,
 }
 
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
@@ -55,6 +57,8 @@ pub fn replay<J: JournalLogReader>(
 ) -> Result<ReplayStats, ReplayError> {
     let bit64    = (sb.feature_incompat & JBD2_INCOMPAT_64BIT)     != 0;
     let _revoke_on = (sb.feature_incompat & JBD2_INCOMPAT_REVOKE) != 0;
+    let checksum_mode = sb.checksum_mode();
+    let checksum_seed = checksum::checksum_seed(&sb.uuid);
     let mut stats = ReplayStats::default();
     if !sb.needs_recovery() { return Ok(stats); }
 
@@ -62,6 +66,7 @@ pub fn replay<J: JournalLogReader>(
     let mut revoke_set: BTreeMap<u64, u32> = BTreeMap::new();
     let mut cur = sb.start;
     let mut seq = sb.sequence;
+    let mut transaction_csum = 0xFFFF_FFFF;
     loop {
         let blk = match journal.read_journal_block(cur) {
             Ok(b) => b, Err(_) => break,
@@ -75,18 +80,44 @@ pub fn replay<J: JournalLogReader>(
         }
         match header.block_type {
             BlockType::Descriptor => {
+                let tags = descriptor_tags(&blk, bit64, checksum_mode, checksum_seed)?;
+                if checksum_mode == ChecksumMode::V1 {
+                    transaction_csum = checksum::transaction_checksum_update(transaction_csum, &blk);
+                    let mut data_cur = wrap_advance(cur, 1, sb.first, sb.maxlen);
+                    for _ in &tags {
+                        let data = journal.read_journal_block(data_cur)
+                            .map_err(|_| ReplayError::BlockIo)?;
+                        transaction_csum = checksum::transaction_checksum_update(transaction_csum, &data);
+                        data_cur = wrap_advance(data_cur, 1, sb.first, sb.maxlen);
+                    }
+                }
                 // Skip past descriptor's data blocks for revoke pass.
-                let tags: Vec<_> = DescriptorIter::new(&blk[12..], bit64).collect();
                 let n_data = tags.len() as u32;
                 cur = wrap_advance(cur, 1 + n_data, sb.first, sb.maxlen);
             }
             BlockType::Commit => {
+                if !verify_commit(&blk, checksum_mode, checksum_seed, transaction_csum) {
+                    return Err(ReplayError::BadChecksum);
+                }
+                transaction_csum = 0xFFFF_FFFF;
                 seq = seq.wrapping_add(1);
                 cur = wrap_advance(cur, 1, sb.first, sb.maxlen);
             }
             BlockType::Revoke => {
+                if checksum_mode.has_block_checksums()
+                    && !verify_block_tail(&blk, checksum_seed)
+                {
+                    return Err(ReplayError::BadChecksum);
+                }
+                if blk.len() < 16 { return Err(ReplayError::Corrupt); }
                 let count_bytes = u32::from_be_bytes([blk[12], blk[13], blk[14], blk[15]]) as usize;
-                let payload = &blk[16 .. core::cmp::min(blk.len(), 16 + count_bytes.saturating_sub(16))];
+                let block_end = blk.len().saturating_sub(
+                    if checksum_mode.has_block_checksums() { checksum::BLOCK_TAIL_BYTES } else { 0 },
+                );
+                if count_bytes < 16 || count_bytes > block_end {
+                    return Err(ReplayError::Corrupt);
+                }
+                let payload = &blk[16..count_bytes];
                 let stride = if bit64 { 8 } else { 4 };
                 let mut o = 0usize;
                 while o + stride <= payload.len() {
@@ -129,14 +160,22 @@ pub fn replay<J: JournalLogReader>(
         if header.sequence != seq { break; }
         match header.block_type {
             BlockType::Descriptor => {
-                let tags: Vec<_> = DescriptorIter::new(&blk[12..], bit64)
-                    .map(|e| e.tag).collect();
+                let tags = descriptor_tags(&blk, bit64, checksum_mode, checksum_seed)?;
                 cur = wrap_advance(cur, 1, sb.first, sb.maxlen);
                 for tag in &tags {
                     let data = match journal.read_journal_block(cur) {
                         Ok(b) => b, Err(_) => return Err(ReplayError::Corrupt),
                     };
                     cur = wrap_advance(cur, 1, sb.first, sb.maxlen);
+                    if checksum_mode.has_block_checksums() {
+                        let actual = checksum::data_checksum(checksum_seed, seq, &data);
+                        let matches = if checksum_mode == ChecksumMode::V2 {
+                            tag.checksum == (actual as u16) as u32
+                        } else {
+                            tag.checksum == actual
+                        };
+                        if !matches { return Err(ReplayError::BadChecksum); }
+                    }
                     let mut payload = data;
                     // ESCAPE: first 4 bytes of the data block were
                     // overwritten to 0 because they would otherwise
@@ -151,6 +190,11 @@ pub fn replay<J: JournalLogReader>(
                 }
             }
             BlockType::Commit => {
+                if checksum_mode != ChecksumMode::V1
+                    && !verify_commit(&blk, checksum_mode, checksum_seed, 0)
+                {
+                    return Err(ReplayError::BadChecksum);
+                }
                 // Apply all pending blocks (filtered by revoke set).
                 let bs = sb.block_size as u64;
                 for (bn, data) in pending.drain(..) {
@@ -165,6 +209,11 @@ pub fn replay<J: JournalLogReader>(
                 cur = wrap_advance(cur, 1, sb.first, sb.maxlen);
             }
             BlockType::Revoke => {
+                if checksum_mode.has_block_checksums()
+                    && !verify_block_tail(&blk, checksum_seed)
+                {
+                    return Err(ReplayError::BadChecksum);
+                }
                 cur = wrap_advance(cur, 1, sb.first, sb.maxlen);
             }
             BlockType::SuperblockV1 | BlockType::SuperblockV2 => {
@@ -174,6 +223,60 @@ pub fn replay<J: JournalLogReader>(
         if cur == sb.start { break; }
     }
     Ok(stats)
+}
+
+fn descriptor_tags(
+    block: &[u8],
+    bit64: bool,
+    checksum_mode: ChecksumMode,
+    checksum_seed: u32,
+) -> Result<Vec<DescriptorTag>, ReplayError> {
+    let tail = if checksum_mode.has_block_checksums() {
+        if !verify_block_tail(block, checksum_seed) { return Err(ReplayError::BadChecksum); }
+        checksum::BLOCK_TAIL_BYTES
+    } else { 0 };
+    if block.len() < 12 + tail { return Err(ReplayError::Corrupt); }
+    let tags: Vec<_> = DescriptorIter::with_checksum(
+        &block[12..block.len() - tail], bit64, checksum_mode,
+    ).map(|entry| entry.tag).collect();
+    if tags.is_empty() || tags.last().map_or(true, |tag| tag.flags & TAG_FLAG_LAST == 0) {
+        return Err(ReplayError::Corrupt);
+    }
+    Ok(tags)
+}
+
+fn verify_block_tail(block: &[u8], checksum_seed: u32) -> bool {
+    block.len() >= checksum::BLOCK_TAIL_BYTES
+        && checksum::verify_zeroed_word(
+            checksum_seed, block, block.len() - checksum::BLOCK_TAIL_BYTES,
+        )
+}
+
+fn verify_commit(
+    block: &[u8],
+    checksum_mode: ChecksumMode,
+    checksum_seed: u32,
+    transaction_checksum: u32,
+) -> bool {
+    if block.len() < checksum::COMMIT_CHECKSUM_OFFSET + 4 { return false; }
+    let provided = u32::from_be_bytes([
+        block[checksum::COMMIT_CHECKSUM_OFFSET],
+        block[checksum::COMMIT_CHECKSUM_OFFSET + 1],
+        block[checksum::COMMIT_CHECKSUM_OFFSET + 2],
+        block[checksum::COMMIT_CHECKSUM_OFFSET + 3],
+    ]);
+    match checksum_mode {
+        ChecksumMode::None => true,
+        ChecksumMode::V1 => {
+            (block[12] == checksum::JBD2_CRC32_CHKSUM
+                && block[13] == checksum::JBD2_CRC32_CHKSUM_SIZE
+                && provided == transaction_checksum)
+                || (block[12] == 0 && block[13] == 0 && provided == 0)
+        }
+        ChecksumMode::V2 | ChecksumMode::V3 => checksum::verify_zeroed_word(
+            checksum_seed, block, checksum::COMMIT_CHECKSUM_OFFSET,
+        ),
+    }
 }
 
 fn wrap_advance(cur: u32, delta: u32, first: u32, maxlen: u32) -> u32 {
@@ -252,6 +355,7 @@ mod tests {
         JournalSuperblock {
             block_size: bs, maxlen, first: 1, sequence, start,
             feature_compat: 0, feature_incompat: 0, feature_ro: 0, uuid: [0u8; 16],
+            checksum_type: 0,
         }
     }
 
