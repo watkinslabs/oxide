@@ -68,6 +68,7 @@ pub mod flags {
     pub const NLM_F_ACK:       u16 = 0x0004;
     pub const NLM_F_ECHO:      u16 = 0x0008;
     pub const NLM_F_DUMP_INTR: u16 = 0x0010;
+    pub const NLM_F_CAPPED:    u16 = 0x0100;
     pub const NLM_F_ROOT:      u16 = 0x0100;
     pub const NLM_F_MATCH:     u16 = 0x0200;
     pub const NLM_F_ATOMIC:    u16 = 0x0400;

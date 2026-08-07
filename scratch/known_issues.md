@@ -231,7 +231,7 @@ here now.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| OPEN | MISSING | med | `NETLINK_F_CAP_ACK`, `NETLINK_F_EXT_ACK`, `NETLINK_F_RECV_PKTINFO`, `NETLINK_F_BROADCAST_SEND_ERROR`, `NETLINK_F_LISTEN_ALL_NSID` are stored and readable but not consumed. Each needs its Linux mechanism: truncate the `NLMSG_ERROR` payload to the request header; append extended-ack attributes; attach `struct nl_pktinfo` as a control message; report broadcast delivery failure to the sender; deliver multicast from every network namespace. | `sockflags.rs` defines the bits; no reader outside `getsockopt` and `receive.rs` (`F_RECV_NO_ENOBUFS`) | — |
+| OPEN | MISSING | med | `NETLINK_F_EXT_ACK`, `NETLINK_F_BROADCAST_SEND_ERROR`, and `NETLINK_F_LISTEN_ALL_NSID` are stored and readable but do not reach their Linux mechanisms. Extended ACK attributes need request-error context; multicast delivery does not retain its sender/failure result for the receiver-selected broadcast-error policy; and delivery remains namespace-local with no peer-namespace ID carried to a listening socket. | `F_CAP_ACK` now shapes canonical error replies; the receive syscall already emits `NETLINK_PKTINFO`. `listeners::{rtnl_multicast_in,rebroadcast_cooked_uevent}` return only a delivery count and filter strictly on one namespace. | — |
 
 ### B1745-netlink-strict-dump-check
 
