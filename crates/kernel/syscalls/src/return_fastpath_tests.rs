@@ -46,7 +46,11 @@ fn syscall_process_irqs_close_before_return_work() {
     let enable = dispatch.find("ProcessIrqs::enable()").expect("process IRQ guard");
     let route = dispatch.find("dispatch_route_a(nr, &args)").expect("syscall routes");
     let close = dispatch.rfind("drop(process_irqs);").expect("IRQ guard close");
-    let exit = dispatch.find("exit_to_user_mode_loop(regs, Some(rv))").expect("return work");
+    // Match the call by receiver and leading arguments, not its whole signature:
+    // a parameter added to the tail must not read as a missing call site. The
+    // prefix still excludes the prose above the call, which names the function
+    // without opening an argument list.
+    let exit = dispatch.find("exit_to_user_mode_loop(regs, Some(rv)").expect("return work");
     assert!(enable < route, "IRQs enabled before ordinary syscall work");
     assert!(route < close, "IRQs stay enabled through syscall work");
     assert!(close < exit, "IRQs masked before return-work flag checks");
