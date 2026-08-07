@@ -37,7 +37,7 @@ pub use attrs::{put_nlattr, put_nlattr_str, put_nlattr_u32, put_nlattr_u8};
 pub(crate) use dumps::{build_newaddr6_reply, build_newaddr_reply, build_newlink_reply};
 pub use dump_req::{is_dump, validate_addr_dump, validate_link_dump, AddrDump, LinkDump, NLM_F_DUMP_FILTERED};
 pub use dumps::{done_multi, handle_getaddr, handle_getaddr_in, handle_getlink, handle_getlink_in};
-pub use neigh::{handle_delneigh_in, handle_getneigh_in, handle_newneigh_in};
+pub use neigh::{handle_delneigh_in, handle_getneigh_in, handle_getneigh_one_in, handle_newneigh_in};
 pub(crate) use rtnetlink_link::LinkStats64;
 pub use iface::{handle_setlink, handle_setlink_in};
 pub(crate) use route_ops::{build_newroute6_reply, build_newroute_group_reply,

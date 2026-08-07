@@ -94,6 +94,37 @@ pub fn handle_getneigh_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     reply
 }
 
+/// Handle a non-dump RTM_GETNEIGH from the canonical neighbour caches. # C: O(N neighbours)
+pub fn handle_getneigh_one_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
+    let off = Nlmsghdr::SIZE;
+    let Some(ndm) = Ndmsg::parse(&full_msg[off.min(full_msg.len())..]) else {
+        return build_ack(req, EINVAL);
+    };
+    let Some(attrs) = parse_neigh_attrs(&full_msg[off + Ndmsg::SIZE..]) else {
+        return build_ack(req, EINVAL);
+    };
+    let stack = net::global_stack();
+    let one = match ndm.ndm_family {
+        AF_INET if attrs.dst.len() == IPV4_ADDR_LEN => {
+            let ip = net::Ipv4Addr::from_u32(u32::from_be_bytes(attrs.dst.try_into().unwrap()));
+            stack.neigh_snapshot_v4_ns(ns).into_iter().find(|row|
+                (ndm.ndm_ifindex == 0 || row.ifindex == ndm.ndm_ifindex as u32) && row.ip == ip)
+                .map(|row| build_newneigh_reply(req.nlmsg_seq, req.nlmsg_pid, AF_INET,
+                    row.ifindex as i32, nud_state(row.state), &row.ip.octets(), row.mac.map(|m| m.0), false))
+        }
+        AF_INET6 if attrs.dst.len() == IPV6_ADDR_LEN => {
+            let mut raw = [0u8; IPV6_ADDR_LEN]; raw.copy_from_slice(&attrs.dst);
+            stack.neigh_snapshot_v6_ns(ns).into_iter().find(|(ifindex, ip, _)|
+                (ndm.ndm_ifindex == 0 || *ifindex == ndm.ndm_ifindex as u32) && ip.0 == raw)
+                .map(|(ifindex, ip, mac)| build_newneigh_reply(req.nlmsg_seq, req.nlmsg_pid, AF_INET6,
+                    ifindex as i32, nud::NUD_REACHABLE, &ip.0, Some(mac.0), false))
+        }
+        AF_INET | AF_INET6 => return build_ack(req, EINVAL),
+        _ => return build_ack(req, EAFNOSUPPORT),
+    };
+    one.unwrap_or_else(|| build_ack(req, ENOENT))
+}
+
 struct NeighAttrs {
     dst: Vec<u8>,
     lladdr: Option<[u8; LLADDR_LEN]>,
