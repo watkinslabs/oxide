@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 
 use crate::tcp_conn::TcpConn;
-use crate::tcp_hdr::{opt, SackBlock, TCP_HDR_MIN_LEN};
+use crate::tcp_hdr::{SackBlock, TCP_HDR_MIN_LEN};
 use crate::tcp_hdr::flags;
 
 impl TcpConn {
@@ -38,31 +38,20 @@ impl TcpConn {
         if blocks.is_empty() {
             return self.build_segment(flags::ACK, &[]);
         }
-        let body = 8 * blocks.len();
-        let opt_len = 2 + body;
-        let padded = (2 + opt_len + 3) & !3;
-        let total = TCP_HDR_MIN_LEN + padded;
-        let mut buf = alloc::vec![0u8; total];
-        let mut i = TCP_HDR_MIN_LEN;
-        buf[i] = opt::NOP;
-        i += 1;
-        buf[i] = opt::NOP;
-        i += 1;
-        buf[i] = opt::SACK;
-        buf[i + 1] = opt_len as u8;
-        i += 2;
-        for b in &blocks {
-            buf[i..i + 4].copy_from_slice(&b.left.to_be_bytes());
-            buf[i + 4..i + 8].copy_from_slice(&b.right.to_be_bytes());
-            i += 8;
-        }
-        let data_offset = (TCP_HDR_MIN_LEN + padded) / 4;
+        let timestamp = self.ts_enabled.then(|| (
+            crate::tcp_conn::tcp_now_ms().wrapping_add(self.ts_off), self.ts_recent));
+        let option_len = crate::tcp_conn::segment_opts::SegmentOptions {
+            timestamp, sacks: &blocks,
+        }.encoded_len();
+        let options = crate::tcp_conn::segment_opts::append(timestamp, &blocks, &[]);
+        let mut buf = alloc::vec![0u8; TCP_HDR_MIN_LEN + options.len()];
+        buf[TCP_HDR_MIN_LEN..].copy_from_slice(&options);
         let mut h = crate::tcp_hdr::TcpHdr {
             src_port: self.local.port,
             dst_port: self.remote.port,
             seq: self.snd_nxt,
             ack: self.rcv_nxt,
-            data_offset: data_offset as u8,
+            data_offset: (TCP_HDR_MIN_LEN + option_len) as u8 / 4,
             flags: flags::ACK,
             window: self.current_rcv_window(),
             checksum: 0,

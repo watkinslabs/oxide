@@ -6,8 +6,9 @@
 //                   congestion-window helpers, rcv-window autotune).
 // - timers.rs     : RTO/RTT timer math and scheduling.
 // - io.rs         : send/recv, segment input/output, state transitions.
-// - sack.rs       : SACK block helpers and ACK-with-SACK encoding.
+// - sack.rs       : SACK block helpers and ACK-with-SACK selection.
 // - segment.rs    : wire-segment builders (ACK/data/SYN variants).
+// - segment_opts.rs: established-segment timestamp and SACK option encoding.
 // - timing.rs     : monotonic clocks used by TS/keepalive.
 // - delivery.rs   : transmit snapshots and ACK-derived delivery-rate samples.
 // - chrono.rs     : send-state duration accounting for TCP_INFO.
@@ -26,6 +27,7 @@ pub mod timers;
 pub mod io;
 pub mod sack;
 pub mod segment;
+pub mod segment_opts;
 pub mod syn_opts;
 pub mod fastopen;
 pub mod active_fastopen;
