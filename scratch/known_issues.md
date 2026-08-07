@@ -38,9 +38,9 @@ reclassified.
 |---|---:|---:|---:|---:|---:|
 | `DEFECT` | 0 | 0 | 13 | 24 | 37 |
 | `MISSING` | 2 | 0 | 17 | 19 | 38 |
-| `COVERAGE` | 0 | 0 | 10 | 15 | 25 |
+| `COVERAGE` | 0 | 0 | 9 | 15 | 24 |
 | `INFRA` | 0 | 0 | 15 | 11 | 26 |
-| **Total** | **2** | **0** | **55** | **69** | **126** |
+| **Total** | **2** | **0** | **54** | **69** | **125** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -208,7 +208,6 @@ here now.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| OPEN | COVERAGE | med | **The cgroupfs `open_by_handle_at` repair has no syscall-boundary regression.** The decoder used to read `anchor.inode.i_sb()` and return `ESTALE` for every handle cgroupfs had just minted. Both sites now take the mount's superblock, and cgroup's encode/decode unit tests cover that lower layer, but no test opens a real cgroup by handle through the syscall. | `304_open_by_handle_at.rs` takes the mount superblock at both former inode-back-pointer sites; only cgroup's direct encode/decode tests cover the round trip. | unowned |
 
 ### B1730-irq-nesting-unbounded
 
