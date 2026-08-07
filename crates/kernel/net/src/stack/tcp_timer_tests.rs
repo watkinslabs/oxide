@@ -1,5 +1,16 @@
 use super::*;
 
+const RETRANS_NS: u64 = 0x5443_505f_5254_58;
+
+#[test]
+fn retransmit_mib_counts_only_successful_output() {
+    crate::mib::forget(RETRANS_NS);
+    super::tcp_timer::account_retransmit(RETRANS_NS, Ok(()));
+    super::tcp_timer::account_retransmit(RETRANS_NS, Err(NetError::Enetunreach));
+    assert_eq!(crate::mib::get(RETRANS_NS, crate::mib::Mib::TcpRetransSegs), 1);
+    crate::mib::forget(RETRANS_NS);
+}
+
 fn time_wait_entry(net_ns: u64, port: u16) -> (TcpKey, Arc<TcpEntry>) {
     let local = Endpoint { ip: IpAddr::V4(Ipv4Addr::LOOPBACK), port };
     let remote = Endpoint { ip: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)), port: 80 };
