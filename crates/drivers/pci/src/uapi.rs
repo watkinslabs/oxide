@@ -79,10 +79,8 @@ pub const CLASS_DISPLAY_VGA: u32 = 0x0300;
 /// Class-code value (`class >> 8`) of a non-VGA display controller.
 pub const CLASS_DISPLAY_OTHER: u32 = 0x0380;
 
-/// Conventional config-space size — every byte a `ConfigSpaceReader`
-/// addresses. The extended 4 KiB PCIe window is not addressable through the
-/// 8-bit register offset the accessor takes.
-pub const CFG_SPACE_SIZE: usize = 256;
+/// Complete PCIe configuration-space window exposed by ECAM.
+pub const CFG_SPACE_SIZE: usize = 4096;
 /// Config-space window an unprivileged reader observes. Reads past it return
 /// short, so a device that locks up on undefined-register reads is only ever
 /// poked by a privileged caller.
