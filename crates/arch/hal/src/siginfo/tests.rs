@@ -184,6 +184,16 @@ fn the_non_fault_signals_with_their_own_codes_select_their_own_arms() {
     assert_eq!(layout(SIGUSR1, NSIGPOLL + 1), Layout::Kill);
 }
 
+#[test]
+fn known_layout_marks_only_prefix_complete_siginfo_records() {
+    assert!(known_layout(SIGSEGV, code::SEGV_MAPERR));
+    assert!(known_layout(SIGUSR1, limit::NSIGPOLL));
+    assert!(known_layout(SIGUSR1, source::SI_DETHREAD));
+    assert!(known_layout(SIGUSR1, source::SI_ASYNCNL));
+    assert!(!known_layout(SIGSEGV, limit::NSIGSEGV + 1));
+    assert!(!known_layout(SIGUSR1, source::SI_ASYNCNL + 1));
+}
+
 // ---- flat decode -------------------------------------------------------
 
 /// Render a payload and decode it back, which is exactly the round trip a

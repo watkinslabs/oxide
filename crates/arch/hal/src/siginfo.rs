@@ -205,6 +205,10 @@ pub mod source {
     pub const SI_TIMER:  i32 = -2;
     /// A queued `SIGIO` — selects `_sigpoll` even though the code is negative.
     pub const SI_SIGIO:  i32 = -5;
+    /// `execve` killing a sibling thread.
+    pub const SI_DETHREAD: i32 = -7;
+    /// Asynchronous name-lookup completion.
+    pub const SI_ASYNCNL: i32 = -60;
 }
 
 /// Per-signal `si_code` upper bound (Linux `sig_sicodes[].limit`). A code above
@@ -269,6 +273,21 @@ fn sig_sicode(sig: u32) -> Option<(i32, Layout)> {
         signo::SIGSYS  => Some((limit::NSIGSYS,  Layout::Sys)),
         _ => None,
     }
+}
+
+/// Whether a user-supplied `(signal, si_code)` has a layout whose 48-byte
+/// kernel prefix contains every meaningful field. Unknown layouts may carry
+/// future data in siginfo_t's expansion and must preserve it or reject it.
+/// # C: O(1)
+pub fn known_layout(sig: u32, si_code: i32) -> bool {
+    if si_code == source::SI_KERNEL { return true; }
+    if si_code > source::SI_USER {
+        return match sig_sicode(sig) {
+            Some((bound, _)) => si_code <= bound,
+            None => si_code <= limit::NSIGPOLL,
+        };
+    }
+    si_code >= source::SI_DETHREAD || si_code == source::SI_ASYNCNL
 }
 
 /// `si_code` values that override their signal's default fault arm.

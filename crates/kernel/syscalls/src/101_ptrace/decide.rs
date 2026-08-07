@@ -177,6 +177,16 @@ pub fn peeksiginfo_args(off: u64, flags: u32, nr: i32) -> Result<PeekSigInfo, Er
     Ok(PeekSigInfo { off, shared: flags & uapi::PEEKSIGINFO_SHARED != 0, nr: nr as u32 })
 }
 
+/// The expansion bytes a siginfo copy-in may discard are legal only when the
+/// `(signo, si_code)` layout is already known, or when all of them are zero.
+/// # C: O(n)
+pub fn siginfo_expansion_check(signo: u32, code: i32, expansion: &[u8]) -> Result<(), Errno> {
+    if !hal::siginfo::known_layout(signo, code) && expansion.iter().any(|byte| *byte != 0) {
+        return Err(Errno::E2big);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,6 +198,13 @@ mod tests {
         assert!(valid_signal(64));
         assert!(!valid_signal(65));
         assert!(!valid_signal(u64::MAX));
+    }
+
+    #[test]
+    fn unknown_siginfo_layout_requires_a_zero_expansion() {
+        assert_eq!(siginfo_expansion_check(11, 11, &[0; 80]), Ok(()));
+        assert_eq!(siginfo_expansion_check(11, 11, &[0, 0, 1]), Err(Errno::E2big));
+        assert_eq!(siginfo_expansion_check(11, 1, &[1]), Ok(()));
     }
 
     #[test]
