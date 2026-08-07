@@ -274,8 +274,8 @@ here now.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| OPEN | MISSING | low | Counters with no call site yet read zero honestly but are not yet counted: `IpInAddrErrors`, `IpInUnknownProtos`, `IpInDiscards`, `IpOutNoRoutes`, the fragment counters, `UdpNoPorts`, the TCP open/reset/retransmit counters, and the ICMP output counters. Each needs its event named at the point it occurs. | `crates/kernel/net/src/mib.rs` — `Mib` lists them; `grep -c 'mib::bump'` names the wired ones | — |
-| OPEN | MISSING | low | `/proc/net/netstat`, `/proc/net/snmp6` and `/proc/net/packet` remain header-only or empty stubs of the same shape. | `crates/kernel/procfs/src/static_files.rs` | — |
+| OPEN | MISSING | low | Counters with no call site yet read zero honestly but are not yet counted: `IpInAddrErrors`, `IpInUnknownProtos`, `IpInDiscards`, `IpOutNoRoutes`, and the TCP open/reset/retransmit counters. Each needs its event named at the point it occurs. | `crates/kernel/net/src/mib.rs` — `Mib` lists them; `grep -c 'mib::bump'` names the wired ones | — |
+| OPEN | MISSING | low | `/proc/net/snmp6` and `/proc/net/packet` remain empty/header-only stubs. `/proc/net/netstat` is live and projects the canonical TCP extended MIB counters. | `crates/kernel/procfs/src/static_files.rs`; `crates/kernel/net/src/mib.rs::render_proc_netstat` | — |
 
 ### C274-qemu-pcap-capture
 
