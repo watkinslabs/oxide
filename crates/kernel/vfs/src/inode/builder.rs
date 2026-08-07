@@ -4,6 +4,7 @@ use alloc::boxed::Box;
 use alloc::sync::{Arc, Weak};
 use core::any::Any;
 use core::sync::atomic::{AtomicI64, AtomicU32, AtomicU64};
+use sync::{Inode as InodeClass, RwLock};
 
 use crate::file_ops::FileOps;
 use crate::inode_ops::InodeOps;
@@ -124,7 +125,7 @@ impl InodeBuilder {
             i_count: AtomicU32::new(1),
             i_version: AtomicU64::new(self.version),
             i_fsid: AtomicU64::new(self.fsid),
-            i_sb: self.sb,
+            i_sb: RwLock::<Weak<SuperBlock>, InodeClass>::new(self.sb),
             i_mapping: self.mapping,
             i_wb_err: crate::errseq::Errseq::new(),
             i_file_rmap: vmm::FileRmap::new(),

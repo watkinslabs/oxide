@@ -46,12 +46,9 @@ pub fn register_dir(full_path: &str) {
     sys_root().ensure_dir_path(rel(full_path));
 }
 
-/// Every live sysfs superblock. `/sys` is mounted more than once — each mount
-/// realizes a fresh superblock over the same kernfs tree and owns its own
-/// dentry cache — and the kernfs root retains only the most recent one for
-/// inode construction. Invalidation that consults that single slot walks a
-/// dentry tree nobody is using and silently drops nothing, so the set is
-/// tracked here and every live mount is invalidated.
+/// Every live sysfs superblock. Mounts of one kernfs tree reuse one owning
+/// superblock; this stays a set because the global tree can outlive an
+/// unmount/remount cycle and because stale weak entries are harmless.
 static SYS_SUPERS: Spinlock<Vec<Weak<SuperBlock>>, LockClass> = Spinlock::new(Vec::new());
 
 /// Record one realized sysfs superblock. Called from `SysfsFs::set_sb`.
@@ -128,18 +125,22 @@ mod tests {
 
     fn cache_leaf(sb: &Arc<vfs::SuperBlock>, parent_path: &str, path: &str) -> Arc<vfs::Dentry> {
         let root = sb.s_root().expect("sysfs root dentry");
+        let root_inode = root.inode().expect("sysfs root inode");
+        assert!(root_inode.i_sb().is_some_and(|owner| Arc::ptr_eq(&owner, sb)),
+            "root inode belongs to its superblock");
         let (_, parent) = vfs::path_lookup(
             root.clone(), root.clone(), parent_path, LookupFlags::default(),
         ).expect("parent cached");
-        vfs::path_lookup(root.clone(), root, path, LookupFlags::default())
+        let (leaf_inode, _) = vfs::path_lookup(root.clone(), root, path, LookupFlags::default())
             .expect("leaf cached");
+        assert!(leaf_inode.i_sb().is_some_and(|owner| Arc::ptr_eq(&owner, sb)),
+            "lookup inode belongs to its superblock");
         assert!(vfs::d_lookup(&parent, "leaf").is_some(), "leaf cached before invalidation");
         parent
     }
 
-    // A later `/sys` mount replaces the kernfs root's superblock slot, so an
-    // invalidation that consulted only that slot dropped nothing from the
-    // dentry cache the earlier mount is still serving.
+    // Two mounts of the global tree share its superblock and therefore its
+    // canonical inode cache; invalidation must still reach that one root.
     #[test]
     fn drop_cached_invalidates_every_live_sysfs_mount() {
         let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
@@ -147,6 +148,7 @@ mod tests {
         crate::register(path, crate::make_body_inode(b"stale\n".to_vec(), crate::ids::STALE_UEVENT));
         let first = realize("sysfs-multi-first");
         let second = realize("sysfs-multi-second");
+        assert!(Arc::ptr_eq(&first, &second), "one kernfs tree owns one superblock");
         let first_parent = cache_leaf(&first, "/drop-cache-multi", "/drop-cache-multi/leaf");
         let second_parent = cache_leaf(&second, "/drop-cache-multi", "/drop-cache-multi/leaf");
 
