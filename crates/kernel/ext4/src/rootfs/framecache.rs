@@ -43,6 +43,26 @@ mod tests;
 /// `PG / block_size` consecutive file blocks.
 const PG: usize = hal::PAGE_SIZE_BYTES as usize;
 
+/// Small nonresident history retained even when a mapping has no resident
+/// file frames. Additional shadows scale with cache state, so a sparse
+/// eviction/truncate workload cannot turn eviction metadata into an unbounded
+/// second page cache.
+const SHADOW_FLOOR: usize = 64;
+
+fn shadow_budget(resident_pages: usize) -> usize {
+    resident_pages.saturating_mul(2).saturating_add(SHADOW_FLOOR)
+}
+
+/// Discard the least-recently evicted shadows that exceed `resident_pages`'
+/// history budget. # C: O(shadows²) worst case
+fn trim_shadows(shadows: &mut BTreeMap<u64, u64>, resident_pages: usize) {
+    let budget = shadow_budget(resident_pages);
+    while shadows.len() > budget {
+        let Some(oldest) = shadows.iter().min_by_key(|(_, stamp)| *stamp).map(|(&idx, _)| idx) else { break };
+        shadows.remove(&oldest);
+    }
+}
+
 /// Resolve the current allocator's memcg at the page-cache allocation point.
 /// A pre-scheduler kernel context belongs to root; a published page never
 /// follows a later task migration. # C: O(log n)
@@ -307,7 +327,10 @@ impl Ext4FrameStore {
         drop(pages);
         // Reclaim leaves a shadow, stamped with the nonresident age, so a later
         // `cachestat` can tell "evicted" from "never cached".
-        self.shadows.lock().insert(idx, pmm::reclaim::workingset_eviction());
+        let resident_pages = self.pages.lock().len();
+        let mut shadows = self.shadows.lock();
+        shadows.insert(idx, pmm::reclaim::workingset_eviction());
+        trim_shadows(&mut shadows, resident_pages);
         #[cfg(feature = "debug-fillverify")]
         self.sums.lock().remove(&idx);
         vfs::memory_accounting::account_file_cache_remove(1);
