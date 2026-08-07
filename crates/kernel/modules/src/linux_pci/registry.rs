@@ -94,6 +94,7 @@ fn bind_model_device(slot: usize, model: &Arc<Device>) -> drv::KResult<()> {
     let id = match_id(driver, model).ok_or(drv::Error::NoMatch)?;
     let mut dev = Box::new(make_pci_dev(driver, model));
     let dev_ptr = dev.as_mut() as *mut LinuxPciDev;
+    dev.dev.dma_mask = &mut dev.dma_mask;
     if insert_binding(driver as usize, model, dev_ptr as usize, id as usize).is_err() {
         return Err(drv::Error::Busy);
     }
@@ -140,7 +141,7 @@ fn make_pci_dev(driver: *mut LinuxPciDriver, model: &Device) -> LinuxPciDev {
     };
     dev.dev = LinuxDevice {
         dma_mask: null_mut(),
-        coherent_dma_mask: u64::MAX,
+        coherent_dma_mask: model.coherent_dma_mask(),
         driver_data: null_mut(),
         parent: null_mut(),
         bus: null_mut(),
@@ -160,6 +161,7 @@ fn make_pci_dev(driver: *mut LinuxPciDriver, model: &Device) -> LinuxPciDev {
         acpi_node: null_mut(),
         power: crate::linux_pm::types::LinuxDevPmInfo::new(),
     };
+    dev.dma_mask = model.dma_mask();
     dev.vendor = model.vendor_id;
     dev.device = model.device_id;
     dev.subsystem_vendor = 0;
@@ -246,6 +248,17 @@ fn remove_binding_by_model(model: &Device, driver: usize) -> Option<BindingRecor
     let mut g = BINDINGS.lock();
     let pos = g.iter().position(|r| r.driver == driver && core::ptr::eq(&*r.model, model))?;
     Some(g.swap_remove(pos))
+}
+
+/// Reflect a successful module DMA-mask update into the canonical model.
+/// # C: O(N_bindings)
+pub(crate) fn sync_dma_masks(dev: *mut crate::linux_dma::LinuxDevice, streaming: Option<u64>, coherent: Option<u64>) {
+    let model = BINDINGS.lock().iter()
+        .find(|rec| rec.dev == dev as usize)
+        .map(|rec| Arc::clone(&rec.model));
+    let Some(model) = model else { return; };
+    if let Some(mask) = streaming { model.set_dma_mask(mask); }
+    if let Some(mask) = coherent { model.set_coherent_dma_mask(mask); }
 }
 
 fn driver_ptr(slot: usize) -> Option<usize> {

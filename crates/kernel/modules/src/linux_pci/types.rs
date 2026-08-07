@@ -45,6 +45,7 @@ pub(super) struct LinuxPciDeviceId {
 #[repr(C)]
 pub(super) struct LinuxPciDev {
     pub(super) dev: LinuxDevice,
+    pub(super) dma_mask: u64,
     pub(super) vendor: u16,
     pub(super) device: u16,
     pub(super) subsystem_vendor: u16,
