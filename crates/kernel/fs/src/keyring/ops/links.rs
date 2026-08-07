@@ -9,7 +9,7 @@ use super::{e, Ctx};
 use super::super::construct;
 use super::super::notify;
 use super::super::perm::{check_perm, Lookup};
-use super::super::store::{Store, STORE};
+use super::super::store::{LinkRestriction, Store, STORE};
 use super::super::types;
 use super::super::uapi::*;
 
@@ -109,24 +109,42 @@ pub fn clear_core(c: &Ctx, ring_id: i32) -> i64 {
 /// `KEYCTL_RESTRICT_KEYRING` core — Linux `keyctl_restrict_keyring` +
 /// `keyring_restrict`: `KEY_NEED_SETATTR` on the ring; ENOTDIR if it is not a
 /// keyring; EEXIST if a restriction is already installed. A NULL type installs
-/// `restrict_link_reject`, refusing every further link with EPERM. A named
-/// type is looked up (ENOKEY if unregistered) and then rejected with ENOENT
-/// unless it provides a `lookup_restriction` method — no registered type here
-/// does, matching a Linux built without `CONFIG_ASYMMETRIC_KEY_TYPE`.
+/// the reject rule. The asymmetric type parses its restriction string once and
+/// leaves link-time signature verification with the keyring that owns links.
 /// # C: O(log N)
-pub fn restrict_core(c: &Ctx, ring_id: i32, key_type: Option<&str>) -> i64 {
+pub fn restrict_core(c: &Ctx, ring_id: i32, key_type: Option<&str>, restriction: Option<&str>) -> i64 {
     let mut g = STORE.lock();
     let r = match g.resolve(ring_id, &c.t) { Ok(r) => r, Err(err) => return e(err) };
     if let Err(rv) = check_perm(&g, r, &c.t, KEY_NEED_SETATTR, Lookup::Full, c.now_ns) { return rv; }
     if g.keys.get(&r).map(|k| !k.is_keyring()).unwrap_or(true) { return e(Errno::Enotdir); }
-    if let Some(name) = key_type {
+    let rule = if let Some(name) = key_type {
+        let restriction = match restriction { Some(r) => r, None => return e(Errno::Einval) };
         let ty = match types::lookup(name) { Some(t) => t, None => return e(Errno::Enokey) };
         if !ty.restrictable { return e(Errno::Enoent); }
-    }
+        match asymmetric_restriction(&mut g, c, restriction) { Ok(r) => r, Err(err) => return e(err) }
+    } else {
+        if restriction.is_some() { return e(Errno::Einval); }
+        LinkRestriction::Reject
+    };
     let k = g.keys.get_mut(&r).expect("keyring presence proved under the same held lock");
-    if k.restrict_reject { return e(Errno::Eexist); }
-    k.restrict_reject = true;
+    if k.restriction.is_some() { return e(Errno::Eexist); }
+    k.restriction = Some(rule);
     0
+}
+
+fn asymmetric_restriction(g: &mut Store, c: &Ctx, text: &str) -> Result<LinkRestriction, Errno> {
+    if matches!(text, "builtin_trusted" | "builtin_and_secondary_trusted") {
+        return Ok(LinkRestriction::Asymmetric { trusted: None, chain: false });
+    }
+    let Some(rest) = text.strip_prefix("key_or_keyring:") else { return Err(Errno::Einval); };
+    let (serial, suffix) = match rest.split_once(':') { Some(x) => x, None => (rest, "") };
+    let chain = match suffix { "" => false, "chain" => true, _ => return Err(Errno::Einval) };
+    let serial = serial.parse::<i32>().map_err(|_| Errno::Einval)?;
+    if serial == 0 && chain { return Ok(LinkRestriction::Asymmetric { trusted: None, chain: true }); }
+    let trusted = g.resolve(serial, &c.t)?;
+    let key = g.keys.get(&trusted).ok_or(Errno::Enokey)?;
+    if key.key_type.name != ASYMMETRIC_KEY_TYPE && !key.is_keyring() { return Err(Errno::Eopnotsupp); }
+    Ok(LinkRestriction::Asymmetric { trusted: Some(trusted), chain })
 }
 
 /// `KEYCTL_SEARCH` core — Linux `keyctl_keyring_search`: the search starts at

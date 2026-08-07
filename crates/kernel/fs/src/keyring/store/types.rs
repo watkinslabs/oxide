@@ -54,6 +54,15 @@ pub struct KeyUser {
     pub nbytes: u64,
 }
 
+/// Link admission rule installed on a keyring. The trust target is a key or
+/// keyring serial in the same authoritative key store; no parallel index owns
+/// certificate trust state.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum LinkRestriction {
+    Reject,
+    Asymmetric { trusted: Option<i32>, chain: bool },
+}
+
 /// One `struct key`. A keyring is a key of type `keyring` whose `members`
 /// holds the linked child serials.
 pub struct Key {
@@ -85,10 +94,8 @@ pub struct Key {
     pub invalidated: bool,
     /// Keyring only: linked member serials.
     pub members: Vec<i32>,
-    /// Keyring only: `key->restrict_link == restrict_link_reject`, installed
-    /// by `KEYCTL_RESTRICT_KEYRING` with a NULL type. Every subsequent link
-    /// into this ring is EPERM.
-    pub restrict_reject: bool,
+    /// Keyring only: installed link restriction.
+    pub restriction: Option<LinkRestriction>,
     /// `key->state`: [`KEY_IS_UNINSTANTIATED`], [`KEY_IS_POSITIVE`], or a
     /// negative `-errno` for a key that was negated or rejected. Every full
     /// lookup reads this BEFORE `key_validate`, so a negative key hands its

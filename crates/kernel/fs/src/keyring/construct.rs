@@ -216,7 +216,7 @@ pub fn reject(g: &mut Store, key: i32, timeout: u64, error: i32, keyring: Option
 {
     let e = |x: Errno| -(x.as_i32() as i64);
     if let Some(r) = keyring {
-        if g.keys.get(&r).map(|k| k.restrict_reject).unwrap_or(false) { return Err(e(Errno::Eperm)); }
+        if g.keys.get(&r).and_then(|k| k.restriction).is_some() { return Err(e(Errno::Eperm)); }
     }
     let k = g.keys.get(&key).ok_or(e(Errno::Enokey))?;
     if k.read_state() != KEY_IS_UNINSTANTIATED { return Err(e(Errno::Ebusy)); }
