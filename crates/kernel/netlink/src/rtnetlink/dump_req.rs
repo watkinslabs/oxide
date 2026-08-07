@@ -37,6 +37,8 @@ pub enum AddrDump {
     All,
     /// Report only the named device's addresses, and mark the answer filtered.
     OneDevice(u32),
+    /// Report a caller-mapped peer namespace, optionally narrowed to one device.
+    Target { nsid: i32, ifindex: Option<u32> },
     /// Refuse the request.
     Err(Errno),
 }
@@ -49,11 +51,11 @@ fn payload(full_msg: &[u8], want: usize) -> Option<&[u8]> {
     Some(&full_msg[off..])
 }
 
-/// Strict address-dump attributes have one defined key. The target namespace
-/// lookup belongs to the socket namespace owner; until that owner exists,
-/// even the known key must be refused rather than silently discarded. # C: O(N attrs)
-fn validate_addr_dump_attrs(attrs: &[u8]) -> Result<(), Errno> {
-    let off = 0;
+/// Strict address-dump attributes have one defined key. Its caller-local ID is
+/// resolved by the socket namespace owner after this grammar check. # C: O(N attrs)
+fn validate_addr_dump_attrs(attrs: &[u8]) -> Result<Option<i32>, Errno> {
+    let mut off = 0;
+    let mut target = None;
     while off < attrs.len() {
         if attrs.len() - off < 4 { return Err(Errno::Einval); }
         let len = u16::from_ne_bytes([attrs[off], attrs[off + 1]]) as usize;
@@ -61,13 +63,13 @@ fn validate_addr_dump_attrs(attrs: &[u8]) -> Result<(), Errno> {
         if len < 4 || len > attrs.len() - off { return Err(Errno::Einval); }
         let next = (len + 3) & !3;
         if next > attrs.len() - off { return Err(Errno::Einval); }
-        if ty != ifa::IFA_TARGET_NETNSID || len != 8 { return Err(Errno::Einval); }
-        // A netnsid is not a global namespace number: it is a caller-scoped
-        // peer mapping. There is no mapping owner yet, so accepting it would
-        // falsely claim the requested dump had been redirected.
-        return Err(Errno::Einval);
+        if ty != ifa::IFA_TARGET_NETNSID || len != 8 || target.is_some() {
+            return Err(Errno::Einval);
+        }
+        target = Some(i32::from_ne_bytes(attrs[off + 4..off + 8].try_into().unwrap()));
+        off = next;
     }
-    Ok(())
+    Ok(target)
 }
 
 /// Validate a `RTM_GETLINK` dump request.
@@ -102,8 +104,12 @@ pub fn validate_addr_dump(strict: bool, full_msg: &[u8]) -> AddrDump {
     let scope = body[3];
     let index = u32::from_ne_bytes([body[4], body[5], body[6], body[7]]);
     if prefixlen != 0 || flags != 0 || scope != 0 { return AddrDump::Err(Errno::Einval); }
-    if let Err(e) = validate_addr_dump_attrs(&body[Ifaddrmsg::SIZE..]) { return AddrDump::Err(e); }
-    if index != 0 { return AddrDump::OneDevice(index) } else { AddrDump::All }
+    let target = match validate_addr_dump_attrs(&body[Ifaddrmsg::SIZE..]) {
+        Ok(target) => target, Err(e) => return AddrDump::Err(e),
+    };
+    if let Some(nsid) = target {
+        AddrDump::Target { nsid, ifindex: (index != 0).then_some(index) }
+    } else if index != 0 { AddrDump::OneDevice(index) } else { AddrDump::All }
 }
 
 #[cfg(test)]
@@ -200,13 +206,13 @@ mod tests {
     }
 
     #[test]
-    fn a_strict_address_dump_refuses_unknown_or_unowned_attributes() {
+    fn a_strict_address_dump_refuses_unknown_or_malformed_attributes() {
         let mut body = ifaddr(0, 0, 0, 0);
         body.extend_from_slice(&attr(0x7fff, &[1]));
         assert_eq!(validate_addr_dump(true, &msg(&body)), AddrDump::Err(Errno::Einval));
         let mut target = ifaddr(0, 0, 0, 0);
         target.extend_from_slice(&attr(ifa::IFA_TARGET_NETNSID, &7i32.to_ne_bytes()));
-        assert_eq!(validate_addr_dump(true, &msg(&target)), AddrDump::Err(Errno::Einval));
+        assert_eq!(validate_addr_dump(true, &msg(&target)), AddrDump::Target { nsid: 7, ifindex: None });
         let mut truncated = ifaddr(0, 0, 0, 0);
         truncated.extend_from_slice(&[8, 0, 1, 0, 1]);
         assert_eq!(validate_addr_dump(true, &msg(&truncated)), AddrDump::Err(Errno::Einval));

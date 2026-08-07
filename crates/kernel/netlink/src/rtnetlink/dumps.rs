@@ -6,7 +6,7 @@ use syscall::errno::Errno;
 
 use crate::{flags, Nlmsghdr};
 
-use super::attrs::{put_nlattr, put_nlattr_str, put_nlattr_u32, put_nlattr_u8};
+use super::attrs::{put_nlattr, put_nlattr_i32, put_nlattr_str, put_nlattr_u32, put_nlattr_u8};
 use super::iface::ifaces_snapshot_in;
 use super::rtnetlink_addr::IfaCacheInfo;
 use super::rtnetlink_link::{put_link_stats64, LinkStats64};
@@ -199,7 +199,7 @@ fn age_cacheinfo(ci: IfaCacheInfo, flags: u32) -> IfaCacheInfo {
 pub(crate) fn build_newaddr_reply(
     seq: u32, pid: u32, ifindex: i32, label: &str, addr: [u8; 4], peer: Option<[u8; 4]>,
     broadcast: Option<[u8; 4]>, prefixlen: u8, scope: u8, flags: u32, proto: u8,
-    rt_priority: u32, cacheinfo: IfaCacheInfo, msg_flags: u16,
+    rt_priority: u32, cacheinfo: IfaCacheInfo, msg_flags: u16, target_nsid: Option<i32>,
 ) -> Vec<u8> {
     let mut body: Vec<u8> = Vec::with_capacity(96);
     let ifa = Ifaddrmsg {
@@ -214,6 +214,8 @@ pub(crate) fn build_newaddr_reply(
     let mut ifa_buf = [0u8; Ifaddrmsg::SIZE];
     ifa.write_to(&mut ifa_buf);
     body.extend_from_slice(&ifa_buf);
+
+    if let Some(nsid) = target_nsid { put_nlattr_i32(&mut body, ifa::IFA_TARGET_NETNSID, nsid); }
 
     // Every attribute is reported only when it was actually set, in the order
     // the reference emits them. A synthesized value reads back as one the
@@ -251,7 +253,7 @@ pub(crate) fn build_newaddr_reply(
 /// # C: O(N attrs)
 pub(crate) fn build_newaddr6_reply(
     seq: u32, pid: u32, ifindex: i32, label: &str, addr: [u8; 16], prefixlen: u8, scope: u8,
-    flags: u32, cacheinfo: IfaCacheInfo, msg_flags: u16,
+    flags: u32, cacheinfo: IfaCacheInfo, msg_flags: u16, target_nsid: Option<i32>,
 ) -> Vec<u8> {
     let mut body: Vec<u8> = Vec::with_capacity(96);
     let ifa = Ifaddrmsg {
@@ -264,6 +266,7 @@ pub(crate) fn build_newaddr6_reply(
     let mut ifa_buf = [0u8; Ifaddrmsg::SIZE];
     ifa.write_to(&mut ifa_buf);
     body.extend_from_slice(&ifa_buf);
+    if let Some(nsid) = target_nsid { put_nlattr_i32(&mut body, ifa::IFA_TARGET_NETNSID, nsid); }
     put_nlattr(&mut body, ifa::IFA_LOCAL, &addr);
     put_nlattr(&mut body, ifa::IFA_ADDRESS, &addr);
     put_nlattr_str(&mut body, ifa::IFA_LABEL, label);
@@ -295,6 +298,15 @@ pub fn handle_getaddr(req: &Nlmsghdr) -> Vec<u8> {
     handle_getaddr_in(net::netdev::current_net_ns(), req, &[], false)
 }
 
+/// Handle RTM_GETADDR with the caller's target-namespace capability decision.
+/// # C: O(N addresses)
+pub(crate) fn handle_getaddr_with_access<F>(ns: u64, req: &Nlmsghdr, full_msg: &[u8], strict: bool,
+                                            target_access: F) -> Vec<u8>
+where F: Fn(&network_namespace::NetworkNamespaceRef) -> bool
+{
+    handle_getaddr_impl(ns, req, full_msg, strict, target_access)
+}
+
 /// Handle RTM_GETADDR in the socket's captured network namespace.
 ///
 /// Under `NETLINK_GET_STRICT_CHK` the request header is validated and its
@@ -302,10 +314,29 @@ pub fn handle_getaddr(req: &Nlmsghdr) -> Vec<u8> {
 /// is reported, which is what a client asking for one device used to receive.
 /// # C: O(N_ifaces)
 pub fn handle_getaddr_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8], strict: bool) -> Vec<u8> {
-    let want = match super::dump_req::validate_addr_dump(strict, full_msg) {
+    handle_getaddr_impl(ns, req, full_msg, strict, |_| true)
+}
+
+fn handle_getaddr_impl<F>(ns: u64, req: &Nlmsghdr, full_msg: &[u8], strict: bool,
+                          target_access: F) -> Vec<u8>
+where F: Fn(&network_namespace::NetworkNamespaceRef) -> bool
+{
+    let (ns, want, target_nsid) = match super::dump_req::validate_addr_dump(strict, full_msg) {
         super::dump_req::AddrDump::Err(e) => return super::ack::build_ack(req, -(e.as_i32())),
-        super::dump_req::AddrDump::All => None,
-        super::dump_req::AddrDump::OneDevice(index) => Some(index),
+        super::dump_req::AddrDump::All => (ns, None, None),
+        super::dump_req::AddrDump::OneDevice(index) => (ns, Some(index), None),
+        super::dump_req::AddrDump::Target { nsid, ifindex } => {
+            let Some(caller) = network_namespace::lookup_u64(ns) else {
+                return super::ack::build_ack(req, -(Errno::Einval.as_i32()));
+            };
+            let Some(target) = caller.peer_by_id(nsid) else {
+                return super::ack::build_ack(req, -(Errno::Einval.as_i32()));
+            };
+            if !target_access(&target) {
+                return super::ack::build_ack(req, -(Errno::Eacces.as_i32()));
+            }
+            (target.id().as_u64(), ifindex, Some(nsid))
+        }
     };
     let msg_flags = flags::NLM_F_MULTI
         | if want.is_some() { super::dump_req::NLM_F_DUMP_FILTERED } else { 0 };
@@ -325,7 +356,7 @@ pub fn handle_getaddr_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8], strict: bool)
             req.nlmsg_seq, req.nlmsg_pid, ifindex as i32, name, row.addr.octets(),
             row.peer.map(net::Ipv4Addr::octets), row.broadcast.map(net::Ipv4Addr::octets),
             row.prefixlen, row.scope, row.flags, row.proto, row.rt_priority,
-            super::rtnetlink_addr::cache_from_net(row.cacheinfo), msg_flags,
+            super::rtnetlink_addr::cache_from_net(row.cacheinfo), msg_flags, target_nsid,
         );
         reply.extend_from_slice(&one);
     }
@@ -343,44 +374,11 @@ pub fn handle_getaddr_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8], strict: bool)
         let cacheinfo = IfaCacheInfo { preferred: row.preferred, valid: row.valid, cstamp: 0, tstamp: 0 };
         reply.extend_from_slice(&build_newaddr6_reply(
             req.nlmsg_seq, req.nlmsg_pid, ifindex as i32, name, addr.0, row.prefixlen, scope,
-            row.flags(), cacheinfo, msg_flags,
+            row.flags(), cacheinfo, msg_flags, target_nsid,
         ));
     }
     reply.extend_from_slice(&done_multi(req.nlmsg_seq, req.nlmsg_pid));
     reply
-}
-
-/// Handle the IPv6 non-dump RTM_GETADDR form from the canonical address rows. # C: O(N addresses)
-pub fn handle_getaddr6_one_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
-    let off = Nlmsghdr::SIZE;
-    if full_msg.len() < off + Ifaddrmsg::SIZE || full_msg[off] != AF_INET6 {
-        return super::ack::build_ack(req, -(Errno::Einval.as_i32()));
-    }
-    let ifindex = u32::from_ne_bytes(full_msg[off + 4..off + 8].try_into().unwrap());
-    let mut attr = &full_msg[off + Ifaddrmsg::SIZE..];
-    let mut wanted = None;
-    while attr.len() >= 4 {
-        let len = u16::from_ne_bytes([attr[0], attr[1]]) as usize;
-        let ty = u16::from_ne_bytes([attr[2], attr[3]]) & 0x3fff;
-        if len < 4 || len > attr.len() { return super::ack::build_ack(req, -(Errno::Einval.as_i32())); }
-        if matches!(ty, ifa::IFA_ADDRESS | ifa::IFA_LOCAL) && len == 20 {
-            let mut raw = [0u8; 16]; raw.copy_from_slice(&attr[4..20]); wanted = Some(raw);
-        }
-        let next = (len + 3) & !3;
-        if next > attr.len() { return super::ack::build_ack(req, -(Errno::Einval.as_i32())); }
-        attr = &attr[next..];
-    }
-    let Some(wanted) = wanted else { return super::ack::build_ack(req, -(Errno::Einval.as_i32())); };
-    let ifaces = ifaces_snapshot_in(ns);
-    let found = net::sock::stack().v6_addr_snapshot_in(ns).into_iter().find(|(iface, row)|
-        net::global_stack().ifaces.ifindex_in_ns(*iface, ns) == Some(ifindex) && row.addr.0 == wanted);
-    let Some((_, row)) = found else { return super::ack::build_ack(req, -(Errno::Enoent.as_i32())); };
-    let Some((_, name, _, _, _, _, _, _)) = ifaces.iter().find(|(id, ..)| *id == ifindex) else {
-        return super::ack::build_ack(req, -(Errno::Enodev.as_i32()));
-    };
-    let scope = if row.addr.is_loopback() { RT_SCOPE_HOST } else if row.addr.is_link_local() { RT_SCOPE_LINK } else { RT_SCOPE_UNIVERSE };
-    build_newaddr6_reply(req.nlmsg_seq, req.nlmsg_pid, ifindex as i32, name, row.addr.0, row.prefixlen,
-        scope, row.flags(), IfaCacheInfo { preferred: row.preferred, valid: row.valid, cstamp: 0, tstamp: 0 }, 0)
 }
 
 #[cfg(test)]

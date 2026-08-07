@@ -6,6 +6,7 @@
 use crate::addr::{Ipv6Addr, NetIfaceId};
 use crate::netdev::{NetError, NetResult};
 use crate::stack::NetStack;
+use alloc::vec::Vec;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) struct AnycastAddr {
@@ -67,6 +68,19 @@ impl NetStack {
     pub(crate) fn v6_anycast_owned_by(&self, iface: NetIfaceId, addr: Ipv6Addr) -> bool {
         self.v6_anycast.lock().get(&iface).is_some_and(|rows| rows.iter()
             .any(|row| row.addr == addr && row.refs != 0))
+    }
+
+    /// Snapshot live IPv6 anycast addresses in one network namespace. # C: O(N addresses)
+    pub fn v6_anycast_snapshot_in(&self, net_ns: u64) -> Vec<(NetIfaceId, Ipv6Addr)> {
+        let all = self.v6_anycast.lock();
+        let mut rows = Vec::new();
+        for (iface, addrs) in all.iter() {
+            if self.ifaces.ifindex_in_ns(*iface, net_ns).is_none() { continue; }
+            for row in addrs {
+                if row.refs != 0 { rows.push((*iface, row.addr)); }
+            }
+        }
+        rows
     }
 }
 

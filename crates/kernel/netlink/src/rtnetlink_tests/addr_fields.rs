@@ -38,7 +38,7 @@ fn reply_for(row: net::iface_addr::Ipv4IfaceAddr) -> alloc::vec::Vec<u8> {
     build_newaddr_reply(1, 2, 3, "eth0", row.addr.octets(), row.peer.map(net::Ipv4Addr::octets),
         row.broadcast.map(net::Ipv4Addr::octets), row.prefixlen, row.scope, row.flags, row.proto, row.rt_priority,
         super::rtnetlink_addr::cache_from_net(row.cacheinfo),
-        crate::flags::NLM_F_MULTI)
+        crate::flags::NLM_F_MULTI, None)
 }
 
 fn dhcp_row() -> net::iface_addr::Ipv4IfaceAddr {
