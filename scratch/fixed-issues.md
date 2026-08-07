@@ -32,6 +32,7 @@ shape they were retired in; post-D473 imports retain the `Class` column.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 18369fea2 | MISSING | med | `IP_TRANSPARENT` supplied nonlocal-bind permission only; transparent-proxy local delivery and reply-source behaviour were absent. | PRE_ROUTING nft packet marks now flow into fwmark policy rules; an `RTN_LOCAL` result takes IPv4 local input, while marked unicast routing governs forwarding. Rtnetlink persists `FRA_FWMARK`/`FRA_FWMASK`; bound foreign sources remain the outbound source. Net, netfilter, netlink, both target checks, paired smoke, and pre-push passed. | F831-ip-transparent-local-delivery |
+| FIXED 791f6ec16 | MISSING | med | `IP_NODEFRAG` was stored on raw sockets but no IPv4 netfilter defragmentation stage consumed it. | IPv4 fragments now gather in the canonical reassembly table before PRE_ROUTING; raw IP_HDRINCL output gathers before LOCAL_OUT unless the socket's `IP_NODEFRAG` bit preserves supplied fragments. Exact hook-boundary regressions, net/netfilter/netlink tests, both target checks, paired smoke, and pre-push passed. | F832-ip-nodefrag-netfilter-defrag |
 
 ## Tooling / gates
 
