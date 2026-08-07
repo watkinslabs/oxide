@@ -329,6 +329,10 @@ fn read_at(body: &[u8], off: u64, buf: &mut [u8]) -> usize {
 
 fn alloc_ino() -> Ino { NEXT_INO.alloc() }
 
+/// Allocate a tracefs-owned dynamic control inode number. # C: O(1)
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn alloc_control_ino() -> Ino { alloc_ino() }
+
 /// Linux tracefs regular files use `tracefs_file_inode_operations` whose
 /// `setattr` delegates to `simple_setattr`. In particular, the `O_TRUNC` in
 /// ordinary `echo 1 > .../enable` opens is admitted before the control-file
