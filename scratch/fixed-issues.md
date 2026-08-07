@@ -15,6 +15,12 @@ shape they were retired in; post-D473 imports retain the `Class` column.
 |---|---|---|---|---|---|
 | FIXED cb759577e | DEFECT | med | `/proc/<pid>/status` exposed internal UID/GID credentials unchanged when the proc mount belonged to a different user namespace. | Each procfs instance captures the mounting user namespace; its pid status renderer translates all four UID and GID slots plus supplementary groups through the canonical user-namespace engine, munging unmapped IDs to overflow. The hosted mapped/unmapped regression, full 165-test procfs suite, both target checks, and paired smoke passed; changing a mapped expected UID makes the regression fail. | B1936-procfs-userns-ids |
 
+## Debugging / ptrace
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED a005e6b5a | DEFECT | low | x86 trap-frame ptrace could not preserve independent `rax` and `orig_rax` values. | The saved trap entry word now owns `orig_rax`, while architectural `rax` remains independent on both `PTRACE_GETREGS` and `PTRACE_SETREGS`; core-note register encoding uses the same mapping. Focused red/green controls, 1,236 syscall tests, 964 filesystem tests, paired smoke, and the full pre-push gate passed. | B1937-x86-ptrace-orig-rax |
+
 ## Tooling / gates
 
 | Status | Sev | Issue | Evidence | Owner |
