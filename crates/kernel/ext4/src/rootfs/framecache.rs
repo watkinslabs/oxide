@@ -19,7 +19,7 @@
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::{KResult, VfsError};
@@ -83,6 +83,14 @@ pub(crate) struct Ext4FrameStore {
     me: Spinlock<Weak<Ext4FrameStore>, TaskListClass>,
     /// One-shot: registered in the global dirty list (on first dirty).
     registered: AtomicBool,
+    /// Final inode eviction has started.  Linux sets AS_EXITING and waits for
+    /// inode writeback before `truncate_inode_pages_final`; once published,
+    /// no new writeback may reach this inode's blocks.
+    evicting: AtomicBool,
+    /// Writebacks admitted before `evicting` was published.  Final eviction
+    /// waits for this count to drain before discarding pages and freeing the
+    /// orphan's blocks, mirroring `inode_wait_for_writeback`.
+    active_writebacks: AtomicU32,
     /// Eviction shadows (Linux workingset shadow entries in the mapping
     /// xarray): `page_idx -> nonresident-age stamp` for a page reclaim dropped.
     /// The index stays *present* in the cache's index space with no frame, so
@@ -109,6 +117,8 @@ impl Ext4FrameStore {
             dirty: Spinlock::new(BTreeSet::new()),
             me: Spinlock::new(Weak::new()),
             registered: AtomicBool::new(false),
+            evicting: AtomicBool::new(false),
+            active_writebacks: AtomicU32::new(0),
             shadows: Spinlock::new(BTreeMap::new()),
             #[cfg(feature = "debug-fillverify")]
             sums: Spinlock::new(BTreeMap::new()),
