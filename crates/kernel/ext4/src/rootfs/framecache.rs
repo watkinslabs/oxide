@@ -98,6 +98,10 @@ pub(crate) struct Ext4FrameStore {
     /// handed out via `shared_frame` is tagged dirty; `writeback` flushes +
     /// clears.
     dirty: Spinlock<BTreeSet<u64>, TaskListClass>,
+    /// Per-index writeback references. A page can be dirtied and queued again
+    /// while an earlier flush is still copying it, so this is a count rather
+    /// than a boolean. It is the authoritative `cachestat` writeback state.
+    writeback: Spinlock<BTreeMap<u64, u32>, TaskListClass>,
     /// Self-`Weak` so `mark_dirty` can register this store in the global
     /// dirty list (for `msync`, which has no fd). Set once in `new`.
     me: Spinlock<Weak<Ext4FrameStore>, TaskListClass>,
@@ -135,6 +139,7 @@ impl Ext4FrameStore {
             size: AtomicU64::new(size),
             pages: Spinlock::new(BTreeMap::new()),
             dirty: Spinlock::new(BTreeSet::new()),
+            writeback: Spinlock::new(BTreeMap::new()),
             me: Spinlock::new(Weak::new()),
             registered: AtomicBool::new(false),
             evicting: AtomicBool::new(false),
@@ -322,7 +327,7 @@ impl Ext4FrameStore {
         if pmm::setup::frame_mapcount(pa) != 0 { return None; }
         let mut pages = self.pages.lock();
         let idx = pages.iter().find_map(|(&idx, page)| (page.pa == pa).then_some(idx))?;
-        if self.dirty.lock().contains(&idx) { return None; }
+        if self.dirty.lock().contains(&idx) || self.writeback.lock().contains_key(&idx) { return None; }
         let page = pages.remove(&idx)?;
         drop(pages);
         // Reclaim leaves a shadow, stamped with the nonresident age, so a later

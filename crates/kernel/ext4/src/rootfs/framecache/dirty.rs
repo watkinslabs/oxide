@@ -28,7 +28,8 @@ fn count_clean_pages() -> usize {
     let count = stores.iter().filter_map(Weak::upgrade).map(|store| {
         let pages = store.pages.lock();
         let dirty = store.dirty.lock();
-        pages.iter().filter(|(idx, page)| !dirty.contains(idx) && pmm::setup::frame_mapcount(page.pa) == 0).count()
+        let writeback = store.writeback.lock();
+        pages.iter().filter(|(idx, page)| !dirty.contains(idx) && !writeback.contains_key(idx) && pmm::setup::frame_mapcount(page.pa) == 0).count()
     }).sum();
     ALL_STORES.lock().retain(|store| store.strong_count() > 0);
     count
