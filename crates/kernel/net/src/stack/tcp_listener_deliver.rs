@@ -81,6 +81,7 @@ impl NetStack {
                 return Err(error);
             }
             super::stamp_last_sent(&new_entry, 1);
+            crate::mib::bump(net_ns, crate::mib::Mib::TcpPassiveOpens);
         }
         self.activate_tcp_timers(&new_entry);
         Ok(())
