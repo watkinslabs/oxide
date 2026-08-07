@@ -12,6 +12,7 @@ use crate::receive::ReceiveQueue;
 use crate::wire::alloc_port_id;
 
 mod netfilter;
+mod ack_response;
 
 pub const NETLINK_SNDBUF_DEFAULT: usize = 212_992;
 /// Linux default NETLINK receive budget; one owner keeps loss, `sk_err`, and poll coherent.
@@ -183,7 +184,9 @@ impl NetlinkSocket {
             // Netlink core acknowledges a control message or a non-request only
             // when the sender asked for one, and never runs a handler for it.
             if (hdr.nlmsg_flags & flags::NLM_F_ACK) != 0 {
-                self.enqueue(rtnetlink::nlmsg_ack_pub(hdr, 0));
+                let mut reply = rtnetlink::nlmsg_ack_pub(hdr, 0);
+                ack_response::shape(&mut reply, msg, self.flags.get(crate::sockflags::F_CAP_ACK));
+                self.enqueue(reply);
             }
             return;
         }
@@ -229,6 +232,7 @@ impl NetlinkSocket {
             }
         }};
         let mut reply = reply;
+        ack_response::shape(&mut reply, msg, self.flags.get(crate::sockflags::F_CAP_ACK));
         let port = self.port_id.load(Ordering::Acquire);
         let mut off = 0usize;
         while off + Nlmsghdr::SIZE <= reply.len() {
