@@ -36,6 +36,15 @@ fn test_scanout_ctx(device_key: virtio::VirtioChildDeviceKey) -> ScanoutCtx {
     }
 }
 
+#[test]
+fn unretired_runtime_submission_quiesces_its_context() {
+    let mut ctx = test_scanout_ctx(key(0x0010_0000));
+    assert!(runtime::retain_ctx_after_submit(&mut ctx, true));
+    assert!(!ctx.quiesced);
+    assert!(!runtime::retain_ctx_after_submit(&mut ctx, false));
+    assert!(ctx.quiesced);
+}
+
 fn test_gpu_dev(device_key: virtio::VirtioChildDeviceKey, bdf: u32) -> crate::VirtioGpuDev {
     crate::VirtioGpuDev {
         device_key,
