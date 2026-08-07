@@ -92,9 +92,10 @@ pub(super) fn inherit_from_parent(task: &mut Task) {
     // feature/lock pair: a child of a shadow-stack thread must not be able to
     // re-open a facility its parent locked.
     task.nocpuid.store(parent.nocpuid.load(Ordering::Acquire), Ordering::Release);
-    // Protection-key rights: a thread that opened a key keeps it across fork,
-    // and a CLONE_VM thread must start where its creator stood or it would
-    // fault on the very memory it was spawned to work on.
+    inherit_fpu_state(task, parent);
+    // POR_EL0 is separate from the aarch64 FPSIMD image, so it is inherited
+    // explicitly. x86 PKRU rides in the xstate copy above.
+    #[cfg(target_arch = "aarch64")]
     task.pkey_rights.store(parent.pkey_rights.load(Ordering::Acquire), Ordering::Release);
     task.shstk_features.store(parent.shstk_features.load(Ordering::Acquire), Ordering::Release);
     task.shstk_locked.store(parent.shstk_locked.load(Ordering::Acquire), Ordering::Release);
@@ -120,4 +121,21 @@ pub(super) fn inherit_from_parent(task: &mut Task) {
     // across execve — a Landlock-confined process's children stay confined.
     let parent_domain = parent.landlock_domain.lock().clone();
     *task.landlock_domain.lock() = parent_domain;
+}
+
+/// Snapshot the running parent's architectural state, then give the child an
+/// exact private copy. Fork runs preempt-off, so neither buffer can change
+/// between the snapshot and copy. # C: O(ARCH_FPU_SIZE)
+fn inherit_fpu_state(task: &Task, parent: &Task) {
+    // SAFETY: parent is current and fork's caller holds preemption off; task
+    // is unpublished. Both buffers are distinct `ARCH_FPU_SIZE` allocations.
+    unsafe {
+        let src = (*parent.fpu_state.get()).as_mut_ptr();
+        let dst = (*task.fpu_state.get()).as_mut_ptr();
+        #[cfg(target_arch = "x86_64")]
+        hal_x86_64::fpu_save(src as *mut hal_x86_64::FpuStateX86_64);
+        #[cfg(target_arch = "aarch64")]
+        hal_aarch64::fpu_save(src as *mut hal_aarch64::FpuStateAArch64);
+        core::ptr::copy_nonoverlapping(src, dst, crate::ARCH_FPU_SIZE);
+    }
 }

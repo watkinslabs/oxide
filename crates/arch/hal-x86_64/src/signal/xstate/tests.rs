@@ -6,8 +6,10 @@ use super::*;
 
 /// A plausible XSAVE area for x87+SSE+AVX+AVX512 on a modern CPU.
 const AREA: usize = 2696;
-/// XCR0 the kernel programs for that area (x87|SSE|AVX|opmask|Hi256|Hi16).
-const XCR0: u64 = 0b1110_0111;
+/// XCR0 the kernel programs for that area (x87|SSE|AVX|opmask|Hi256|Hi16|PKRU).
+const XCR0: u64 = 0b10_1110_0111;
+/// A plausible CPUID.0Dh:9 standard-format PKRU offset for this area.
+const PKRU_OFF: usize = 2688;
 const MXCSR_MASK: u32 = 0xffff;
 
 fn wr32(b: &mut [u8], off: usize, v: u32) { b[off..off + 4].copy_from_slice(&v.to_le_bytes()); }
@@ -180,6 +182,23 @@ fn a_kernel_written_image_round_trips_through_restore_unchanged() {
     assert_eq!(&out[576..832], &img[576..832], "YMM state lost across sigreturn");
     assert_eq!(rd64(&out, XFEATURES_OFF), 0b111 | XFEATURE_MASK_FPSSE);
     assert_eq!(read_u32(&out, MXCSR_OFF), 0x1f80);
+}
+
+/// PKRU is an xstate component, not a parallel task snapshot: a handler's
+/// change must be discarded when sigreturn reloads the interrupted image.
+#[test]
+fn pkru_component_round_trips_through_sigreturn() {
+    const INTERRUPTED_PKRU: u32 = 0x5555_5554;
+    let mut img = good_image();
+    wr32(&mut img, PKRU_OFF, INTERRUPTED_PKRU);
+    let bv = rd64(&img, XFEATURES_OFF) | XFEATURE_PKRU;
+    wr64(&mut img, XFEATURES_OFF, bv);
+    let sw = read_sw_bytes(&img).unwrap();
+    let check = check_xstate_in_sigframe(&sw, read_trailer(&img, sw.xstate_size as usize), AREA);
+    let mut out = [0u8; N];
+    assert!(build_restore_image(&img, &mut out, check, XCR0, MXCSR_MASK, true));
+    assert_eq!(read_u32(&out, PKRU_OFF), INTERRUPTED_PKRU);
+    assert_ne!(rd64(&out, XFEATURES_OFF) & XFEATURE_PKRU, 0);
 }
 
 /// The degraded arm: only the legacy 512 bytes survive, every extended

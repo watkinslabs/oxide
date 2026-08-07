@@ -1,19 +1,10 @@
-// Per-task protection-key rights register (Linux `thread.pkru`,
-// `x86_pkru_load`/`x86_pkru_save` around `__switch_to`).
-//
-// Arch-neutral face of the register x86 calls PKRU. The aarch64 equivalent
-// (`POR_EL0`) joins this module when its enablement lands; every caller —
-// task creation, fork, exec, context switch — talks to these four functions so
-// neither arch grows its own copy of the policy.
-//
-// The rights register is USER-writable (`WRPKRU` is unprivileged), so the
-// per-task field is a snapshot, not the truth: [`switch_to`] refreshes the
-// outgoing task's copy by reading the live register before loading the
-// incoming one's. A switch path that only wrote would silently discard every
-// change userspace made since the task was scheduled in.
+// Protection-key rights register plumbing. x86 PKRU is an XSAVE component,
+// so its architectural image owns context switch, fork, signal return, and
+// exec. Aarch64 POR_EL0 is outside its FPSIMD image, so this module owns that
+// target's per-task snapshot and register handoff.
 
+#[cfg(target_arch = "aarch64")]
 use core::sync::atomic::Ordering;
-
 use crate::Task;
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
@@ -70,27 +61,43 @@ mod fake {
     pub(super) fn set(v: u64) { let _ = v; }
 }
 
-/// `__switch_to`'s rights-register handoff: capture what `prev` ended up with
-/// — including any unprivileged user write the kernel never saw — then install
-/// `next`'s.
-///
-/// Ordering matters: reading before writing is what makes a task that opened a
-/// key still hold it when it is scheduled again.
+/// Aarch64 `__switch_to` rights-register handoff. x86 returns without a
+/// second handoff because `fpu_save`/`fpu_restore` own PKRU there.
 /// # C: O(1)
 pub fn switch_to(prev: &Task, next: &Task) {
+    #[cfg(target_arch = "aarch64")]
+    {
     if !supported() && !fake::active() { return; }
     prev.pkey_rights.store(read_live(), Ordering::Relaxed);
     write_live(next.pkey_rights.load(Ordering::Relaxed));
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    { let _ = (prev, next); }
 }
 
 /// `execve` reset (Linux `fpu_flush_thread` → `pkru_write_default`): a fresh
 /// program must not inherit rights the old one opened, because its keys mean
 /// something else entirely. # C: O(1)
 pub fn reset_on_exec(task: &Task) {
+    #[cfg(target_arch = "aarch64")]
+    {
     let init = init_value();
     task.pkey_rights.store(init, Ordering::Relaxed);
     write_live(init);
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        // SAFETY: exec resets its running task before user return; no other
+        // CPU may access this task's single-mutator xstate buffer.
+        unsafe {
+            let fpu = &mut *task.fpu_state.get();
+            fpu.reset_initial();
+            hal_x86_64::fpu_restore(fpu.as_ptr() as *const hal_x86_64::FpuStateX86_64);
+        }
+    }
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+    { let _ = task; }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_arch = "aarch64"))]
 mod tests;
