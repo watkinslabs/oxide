@@ -32,6 +32,7 @@ kernfs = { path = "../kernfs" }
 nscg  = { path = "../nscg" }
 network-namespace = { path = "../network-namespace" }
 namespace-identity = { path = "../namespace-identity" }
+user-namespace = { path = "../user-namespace" }
 sysfs = { path = "../sysfs" }
 cgroup = { path = "../cgroup" }
 # /proc/sys/fs/mqueue/* binds to the per-IPC-namespace values mq_open reads.

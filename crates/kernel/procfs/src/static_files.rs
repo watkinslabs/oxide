@@ -71,8 +71,8 @@ pub fn build_proc_root() -> alloc::collections::BTreeMap<alloc::string::String, 
 /// a fresh root inode per superblock in `proc_fill_super` and shares only the
 /// static `proc_dir_entry` skeleton, which `crate::reg` already is.
 /// # C: O(N static files)
-pub fn build_root(info: Arc<crate::fs_info::ProcFsInfo>) -> InodeRef {
-    make_proc_root(build_proc_root(), info)
+pub fn build_root(info: Arc<crate::fs_info::ProcFsInfo>, user_ns: namespace_identity::NamespaceRef) -> InodeRef {
+    make_proc_root(build_proc_root(), info, user_ns)
 }
 
 /// # SAFETY: caller is the boot path; single-CPU pre-init.

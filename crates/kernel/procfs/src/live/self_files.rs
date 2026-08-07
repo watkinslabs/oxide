@@ -153,7 +153,8 @@ pub fn make_proc_self_stat() -> InodeRef { crate::dyn_file::make_gen_file(crate:
 /// disagree. # C: as `pid_status::body`
 fn self_status_body() -> Vec<u8> {
     match sched::live::current() {
-        Some(c) => crate::pid_status::body(c.tid),
+        Some(c) => crate::pid_status::body(c.tid, &c.namespace_owner(namespace_identity::NamespaceKind::User)
+            .unwrap_or_else(|| namespace_identity::initial(namespace_identity::NamespaceKind::User))),
         None    => Vec::new(),
     }
 }

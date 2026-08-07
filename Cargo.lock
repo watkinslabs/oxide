@@ -1335,6 +1335,7 @@ dependencies = [
  "sync",
  "syscall",
  "sysfs",
+ "user-namespace",
  "vfs",
  "vmm",
 ]

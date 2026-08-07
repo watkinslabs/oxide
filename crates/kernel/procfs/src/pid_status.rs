@@ -39,7 +39,7 @@ fn fd_size(task: &sched::Task) -> u64 {
 fn widen(numbers: Vec<u32>) -> Vec<u64> { numbers.into_iter().map(u64::from).collect() }
 
 /// # C: O(ngroups + 64 signal slots)
-pub fn body(tid: u32) -> Vec<u8> {
+pub fn body(tid: u32, owner: &namespace_identity::NamespaceRef) -> Vec<u8> {
     let Some(task) = sched::live::registry::lookup(tid) else { return Vec::new() };
     // Display the namespace PID (Linux "PID" == our vtgid), not the internal
     // kernel tid. PID1 (systemd/init) is stamped vtgid=1 but keeps an opaque
@@ -70,6 +70,11 @@ pub fn body(tid: u32) -> Vec<u8> {
     };
     let ns_pgid = widen(sched::live::registry::group_chain(&own, task.pgid(), &reader));
     let ns_sid = widen(sched::live::registry::group_chain(&own, task.sid(), &reader));
+    let (uid, gid, groups) = crate::status_ids::translate(owner,
+        [c.ruid.load(Ordering::Acquire), c.euid.load(Ordering::Acquire),
+         c.suid.load(Ordering::Acquire), c.fsuid.load(Ordering::Acquire)],
+        [c.rgid.load(Ordering::Acquire), c.egid.load(Ordering::Acquire),
+         c.sgid.load(Ordering::Acquire), c.fsgid.load(Ordering::Acquire)], groups);
     let s = Status {
         name:   &name,
         umask:  task.umask(),
@@ -82,12 +87,10 @@ pub fn body(tid: u32) -> Vec<u8> {
         pid:    sched::live::registry::display_vtid(tid),
         ppid,
         tracer_pid: if tracer == 0 { 0 } else { sched::live::registry::display_vpid(tracer) },
-        uid: [c.ruid.load(Ordering::Acquire), c.euid.load(Ordering::Acquire),
-              c.suid.load(Ordering::Acquire), c.fsuid.load(Ordering::Acquire)],
-        gid: [c.rgid.load(Ordering::Acquire), c.egid.load(Ordering::Acquire),
-              c.sgid.load(Ordering::Acquire), c.fsgid.load(Ordering::Acquire)],
+        uid,
+        gid,
         fd_size: fd_size(&task),
-        groups,
+        groups: &groups,
         ns_tgid: &ns_tgid,
         ns_pid:  &ns_pid,
         ns_pgid: &ns_pgid,

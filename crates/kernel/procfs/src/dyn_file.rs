@@ -124,6 +124,31 @@ pub fn make_pid_gen_file(ino: Ino, tid: u32, gen: fn(u32) -> Vec<u8>) -> InodeRe
         .build()
 }
 
+/// `i_private` for a pid generator whose ABI view is fixed by the proc mount.
+pub struct PidNsGenData {
+    pub tid: u32,
+    pub owner: namespace_identity::NamespaceRef,
+    pub gen: fn(u32, &namespace_identity::NamespaceRef) -> Vec<u8>,
+}
+
+struct PidNsGenFileOps;
+impl FileOps for PidNsGenFileOps {
+    fn can_poll(&self, _file: &vfs::File) -> bool { true }
+    fn read(&self, inode: &Inode, off: u64, buf: &mut [u8]) -> KResult<usize> {
+        let d = inode.private::<PidNsGenData>().ok_or(VfsError::Einval)?;
+        Ok(read_at(&(d.gen)(d.tid, &d.owner), off, buf))
+    }
+    fn write(&self, _inode: &Inode, _off: u64, _buf: &[u8]) -> KResult<usize> { Err(VfsError::Erofs) }
+}
+
+/// Read-only `/proc/<pid>/<file>` bound to the mounting user namespace. # C: O(1)
+pub fn make_pid_ns_gen_file(ino: Ino, tid: u32, owner: namespace_identity::NamespaceRef,
+                            gen: fn(u32, &namespace_identity::NamespaceRef) -> Vec<u8>) -> InodeRef {
+    InodeBuilder::new(ino, mk_mode(FileType::Regular, PROC_RO_FILE_MODE), default_inode_ops(), Arc::new(PidNsGenFileOps))
+        .private(Arc::new(PidNsGenData { tid, owner, gen }))
+        .build()
+}
+
 /// `i_private` holding a once-computed owned body (e.g. a `/sys` attribute
 /// snapshotted at lookup). # C: O(1)
 pub struct OwnedData { pub body: Vec<u8> }

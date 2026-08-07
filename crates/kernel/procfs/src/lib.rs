@@ -19,6 +19,7 @@ extern crate alloc;
 #[cfg(target_os = "oxide-kernel")]
 #[macro_use] extern crate kmacros;
 mod ids;
+mod status_ids;
 pub mod ino;
 // Cookie-ordered readdir for this crate's synthesized directories. Ungated so
 // the entry-set / d_type / vanished-entry decisions are hosted-testable.

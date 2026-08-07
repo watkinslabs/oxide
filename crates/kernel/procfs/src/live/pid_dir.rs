@@ -21,6 +21,8 @@ pub struct ProcPidDirInode {
     pub tid: u32,
     pub is_self: bool,
     pub allow_task_dir: bool,
+    /// The user namespace fixed when this proc superblock was mounted.
+    pub user_ns: namespace_identity::NamespaceRef,
     /// The task this directory WAS built for (Linux: the inode's `struct pid`).
     /// Identity, not a lookup key: `d_revalidate`/`d_delete` upgrade it to ask
     /// "is my task still alive" without the registry lock and without trusting a
@@ -28,9 +30,12 @@ pub struct ProcPidDirInode {
     pub task: Weak<sched::Task>,
 }
 
-type PidCtor = fn(u32, bool) -> InodeRef;
+#[derive(Clone, Copy)]
+enum PidCtor {
+    Fixed(fn(u32, bool) -> InodeRef),
+    Status,
+}
 
-fn pc_status(t: u32, _s: bool) -> InodeRef { make_pid_status(t) }
 fn pc_cmdline(t: u32, _s: bool) -> InodeRef { make_pid_cmdline(t) }
 fn pc_stat(t: u32, _s: bool) -> InodeRef { make_pid_stat(t) }
 fn pc_maps(t: u32, _s: bool) -> InodeRef { make_pid_maps(t) }
@@ -78,47 +83,47 @@ fn pc_attr(t: u32, _s: bool) -> InodeRef { make_proc_pid_attr_dir(t) }
 const TASK_DIR: &str = "task";
 
 const PID_ENTRIES: &[(&str, FileType, PidCtor)] = &[
-    ("status", FileType::Regular, pc_status),
-    ("cmdline", FileType::Regular, pc_cmdline),
-    ("stat", FileType::Regular, pc_stat),
-    ("maps", FileType::Regular, pc_maps),
-    ("smaps", FileType::Regular, pc_smaps),
-    ("smaps_rollup", FileType::Regular, pc_smaps),
-    ("numa_maps", FileType::Regular, pc_maps),
-    ("comm", FileType::Regular, pc_comm),
-    ("environ", FileType::Regular, pc_environ),
-    ("statm", FileType::Regular, pc_statm),
-    ("wchan", FileType::Regular, pc_wchan),
-    ("oom_score", FileType::Regular, pc_oom_score),
-    ("oom_score_adj", FileType::Regular, pc_oom_score_adj),
-    ("loginuid", FileType::Regular, pc_loginuid),
-    ("sessionid", FileType::Regular, pc_sessionid),
-    ("io", FileType::Regular, pc_io),
-    ("limits", FileType::Regular, pc_limits),
-    ("personality", FileType::Regular, pc_personality),
-    ("sched", FileType::Regular, pc_sched),
-    ("schedstat", FileType::Regular, pc_schedstat),
-    ("autogroup", FileType::Regular, pc_autogroup),
-    ("uid_map", FileType::Regular, pc_uid_map),
-    ("gid_map", FileType::Regular, pc_gid_map),
-    ("projid_map", FileType::Regular, pc_projid_map),
-    ("setgroups", FileType::Regular, pc_setgroups),
-    ("syscall", FileType::Regular, pc_syscall),
-    ("stack", FileType::Regular, pc_empty),
-    ("mounts", FileType::Regular, pc_mounts),
-    ("mountinfo", FileType::Regular, pc_mountinfo),
-    ("mountstats", FileType::Regular, pc_empty),
-    ("cgroup", FileType::Regular, pc_cgroup),
-    ("auxv", FileType::Regular, pc_auxv),
-    ("timerslack_ns", FileType::Regular, pc_timerslack),
-    ("coredump_filter", FileType::Regular, pc_coredump_filter),
-    ("timens_offsets", FileType::Regular, pc_timens_offsets),
-    ("exe", FileType::Symlink, pc_exe),
-    ("cwd", FileType::Symlink, pc_cwd),
-    ("root", FileType::Symlink, pc_root),
-    ("fd", FileType::Directory, pc_fd),
-    ("fdinfo", FileType::Directory, pc_fdinfo),
-    ("attr", FileType::Directory, pc_attr),
+    ("status", FileType::Regular, PidCtor::Status),
+    ("cmdline", FileType::Regular, PidCtor::Fixed(pc_cmdline)),
+    ("stat", FileType::Regular, PidCtor::Fixed(pc_stat)),
+    ("maps", FileType::Regular, PidCtor::Fixed(pc_maps)),
+    ("smaps", FileType::Regular, PidCtor::Fixed(pc_smaps)),
+    ("smaps_rollup", FileType::Regular, PidCtor::Fixed(pc_smaps)),
+    ("numa_maps", FileType::Regular, PidCtor::Fixed(pc_maps)),
+    ("comm", FileType::Regular, PidCtor::Fixed(pc_comm)),
+    ("environ", FileType::Regular, PidCtor::Fixed(pc_environ)),
+    ("statm", FileType::Regular, PidCtor::Fixed(pc_statm)),
+    ("wchan", FileType::Regular, PidCtor::Fixed(pc_wchan)),
+    ("oom_score", FileType::Regular, PidCtor::Fixed(pc_oom_score)),
+    ("oom_score_adj", FileType::Regular, PidCtor::Fixed(pc_oom_score_adj)),
+    ("loginuid", FileType::Regular, PidCtor::Fixed(pc_loginuid)),
+    ("sessionid", FileType::Regular, PidCtor::Fixed(pc_sessionid)),
+    ("io", FileType::Regular, PidCtor::Fixed(pc_io)),
+    ("limits", FileType::Regular, PidCtor::Fixed(pc_limits)),
+    ("personality", FileType::Regular, PidCtor::Fixed(pc_personality)),
+    ("sched", FileType::Regular, PidCtor::Fixed(pc_sched)),
+    ("schedstat", FileType::Regular, PidCtor::Fixed(pc_schedstat)),
+    ("autogroup", FileType::Regular, PidCtor::Fixed(pc_autogroup)),
+    ("uid_map", FileType::Regular, PidCtor::Fixed(pc_uid_map)),
+    ("gid_map", FileType::Regular, PidCtor::Fixed(pc_gid_map)),
+    ("projid_map", FileType::Regular, PidCtor::Fixed(pc_projid_map)),
+    ("setgroups", FileType::Regular, PidCtor::Fixed(pc_setgroups)),
+    ("syscall", FileType::Regular, PidCtor::Fixed(pc_syscall)),
+    ("stack", FileType::Regular, PidCtor::Fixed(pc_empty)),
+    ("mounts", FileType::Regular, PidCtor::Fixed(pc_mounts)),
+    ("mountinfo", FileType::Regular, PidCtor::Fixed(pc_mountinfo)),
+    ("mountstats", FileType::Regular, PidCtor::Fixed(pc_empty)),
+    ("cgroup", FileType::Regular, PidCtor::Fixed(pc_cgroup)),
+    ("auxv", FileType::Regular, PidCtor::Fixed(pc_auxv)),
+    ("timerslack_ns", FileType::Regular, PidCtor::Fixed(pc_timerslack)),
+    ("coredump_filter", FileType::Regular, PidCtor::Fixed(pc_coredump_filter)),
+    ("timens_offsets", FileType::Regular, PidCtor::Fixed(pc_timens_offsets)),
+    ("exe", FileType::Symlink, PidCtor::Fixed(pc_exe)),
+    ("cwd", FileType::Symlink, PidCtor::Fixed(pc_cwd)),
+    ("root", FileType::Symlink, PidCtor::Fixed(pc_root)),
+    ("fd", FileType::Directory, PidCtor::Fixed(pc_fd)),
+    ("fdinfo", FileType::Directory, PidCtor::Fixed(pc_fdinfo)),
+    ("attr", FileType::Directory, PidCtor::Fixed(pc_attr)),
 ];
 
 fn proc_pid_dir_lookup(d: &ProcPidDirInode, name: &str) -> KResult<InodeRef> {
@@ -140,13 +145,16 @@ fn proc_pid_dir_lookup(d: &ProcPidDirInode, name: &str) -> KResult<InodeRef> {
 
 fn pid_entry_inode(d: &ProcPidDirInode, tid: u32, name: &str) -> KResult<InodeRef> {
     if let Some((_, _, ctor)) = PID_ENTRIES.iter().find(|(n, _, _)| *n == name) {
-        return Ok(ctor(tid, d.is_self));
+        return Ok(match ctor {
+            PidCtor::Fixed(ctor) => ctor(tid, d.is_self),
+            PidCtor::Status => make_pid_status(tid, d.user_ns.clone()),
+        });
     }
     match name {
         TASK_DIR if d.allow_task_dir => {
             let task = sched::live::registry::lookup(tid).ok_or(VfsError::Enoent)?;
             let tgid = task.tgid.load(Ordering::Acquire);
-            Ok(make_proc_pid_task_dir(tgid))
+            Ok(make_proc_pid_task_dir(tgid, d.user_ns.clone()))
         }
         "ns" => Ok(make_proc_pid_ns_dir(tid)),
         "make-it-fail" | "fail-nth" | "pagemap" | "kpagecount" | "kpageflags" => {
@@ -179,7 +187,8 @@ impl FileOps for ProcPidDirOps {
     }
 }
 
-pub fn make_proc_pid_dir(tid: u32, is_self: bool, allow_task_dir: bool) -> InodeRef {
+pub fn make_proc_pid_dir(tid: u32, is_self: bool, allow_task_dir: bool,
+                         user_ns: namespace_identity::NamespaceRef) -> InodeRef {
     let inode = InodeBuilder::new(
         pid_ino(0x01, tid),
         mk_mode(FileType::Directory, crate::pid_file_policy::MODE_DIR_RUGO),
@@ -187,7 +196,7 @@ pub fn make_proc_pid_dir(tid: u32, is_self: bool, allow_task_dir: bool) -> Inode
         Arc::new(ProcPidDirOps),
     )
     .private(Arc::new(ProcPidDirInode {
-        tid, is_self, allow_task_dir,
+        tid, is_self, allow_task_dir, user_ns,
         task: sched::live::registry::lookup(tid).map(|t| Arc::downgrade(&t)).unwrap_or_default(),
     }))
     .build();
@@ -200,6 +209,7 @@ pub fn make_proc_pid_dir(tid: u32, is_self: bool, allow_task_dir: bool) -> Inode
 
 pub struct ProcPidTaskDirInode {
     pub tgid: u32,
+    pub user_ns: namespace_identity::NamespaceRef,
     /// The thread-group leader this `task/` directory belongs to; see
     /// [`ProcPidDirInode::task`].
     pub task: Weak<sched::Task>,
@@ -211,7 +221,7 @@ fn proc_pid_task_dir_lookup(d: &ProcPidTaskDirInode, name: &str) -> KResult<Inod
         .into_iter()
         .find_map(|(vtid, tid)| if vtid == want { Some(tid) } else { None })
         .ok_or(VfsError::Enoent)?;
-    Ok(make_proc_pid_dir(tid, false, false))
+    Ok(make_proc_pid_dir(tid, false, false, d.user_ns.clone()))
 }
 
 struct ProcPidTaskDirOps;
@@ -234,7 +244,7 @@ impl FileOps for ProcPidTaskDirOps {
     }
 }
 
-pub fn make_proc_pid_task_dir(tgid: u32) -> InodeRef {
+pub fn make_proc_pid_task_dir(tgid: u32, user_ns: namespace_identity::NamespaceRef) -> InodeRef {
     InodeBuilder::new(
         pid_ino(0x07, tgid),
         mk_mode(FileType::Directory, crate::pid_file_policy::MODE_DIR_RUGO),
@@ -242,7 +252,7 @@ pub fn make_proc_pid_task_dir(tgid: u32) -> InodeRef {
         Arc::new(ProcPidTaskDirOps),
     )
     .private(Arc::new(ProcPidTaskDirInode {
-        tgid,
+        tgid, user_ns,
         task: sched::live::registry::lookup(tgid).map(|t| Arc::downgrade(&t)).unwrap_or_default(),
     }))
     .build()
