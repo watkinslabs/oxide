@@ -41,6 +41,7 @@ pub fn cache_to_net(row: IfaCacheInfo) -> net::iface_addr::Ipv4AddrCacheInfo {
     }
 }
 
+/// # C: O(1)
 pub(crate) fn cache_from_net(row: net::iface_addr::Ipv4AddrCacheInfo) -> IfaCacheInfo {
     IfaCacheInfo {
         preferred: row.preferred,
