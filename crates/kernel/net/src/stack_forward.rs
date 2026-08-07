@@ -112,7 +112,10 @@ impl NetStack {
 
     /// Forward one IPv4 packet within the ingress namespace. # C: O(N routes + len)
     pub(crate) fn forward_ipv4_in(&self, net_ns: u64, ingress: NetIfaceId, l3: &[u8]) -> NetResult<()> {
-        if crate::forwarding::ipv4_enabled_in(net_ns) != Some(true) { return Ok(()); }
+        if crate::forwarding::ipv4_enabled_in(net_ns) != Some(true) {
+            crate::mib::bump(net_ns, crate::mib::Mib::IpInAddrErrors);
+            return Ok(());
+        }
         if l3.len() < IPV4_HDR_LEN { return Ok(()); }
         // A transit packet asking routers to examine it goes to the sockets
         // that joined the router-alert chain, ahead of the hop-limit check;
@@ -132,6 +135,7 @@ impl NetStack {
             Ok(route) => route,
             Err(NetError::Einval) => return Ok(()),
             Err(NetError::Ehostunreach) => {
+                crate::mib::bump(net_ns, crate::mib::Mib::IpInAddrErrors);
                 return self.send_ipv4_error(
                     ingress, error_src, src, icmp::ICMP_TYPE_DEST_UNREACH, unreach_code::HOST, l3,
                 );

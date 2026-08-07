@@ -194,7 +194,6 @@ impl NetStack {
             crate::mib::bump(net_ns, crate::mib::Mib::IpForwDatagrams);
             return self.forward_ipv4_in(net_ns, iface, l3);
         }
-        crate::mib::bump(net_ns, crate::mib::Mib::IpInDelivers);
         if crate::netfilter_hook::nf_hook_eval_in(net_ns, NF_INET_LOCAL_IN, l3, NFPROTO_IPV4) == 0 { return Ok(()); }
         let total = hdr.total_len as usize;
         if total > l3.len() { return Err(NetError::Einval); }
@@ -215,11 +214,12 @@ impl NetStack {
         let frag_payload = &l3[hdr.ihl_bytes() .. total];
         let assembled;
         let reassembled_packet;
+        let raw_delivered;
         let mut frag_max = 0u32;
         let mf = (hdr.flags_frag & 0x2000) != 0;
         let off8 = (hdr.flags_frag & 0x1FFF) as usize;
         let (payload, full_packet): (&[u8], &[u8]) = if mf || off8 != 0 {
-            self.deliver_raw4(net_ns, iface, &l3[..total], hdr, net_now_ns(), &rx_options);
+            raw_delivered = self.deliver_raw4(net_ns, iface, &l3[..total], hdr, net_now_ns(), &rx_options);
             let k = crate::ipv4_reasm::ReasmKey {
                 net_ns, domain: 0, iface: Some(iface), src: hdr.src, dst: hdr.dst,
                 proto: hdr.proto, id: hdr.id,
@@ -240,11 +240,12 @@ impl NetStack {
                 None    => return Ok(()),
             }
         } else {
-            self.deliver_raw4(net_ns, iface, &l3[..total], hdr, net_now_ns(), &rx_options);
+            raw_delivered = self.deliver_raw4(net_ns, iface, &l3[..total], hdr, net_now_ns(), &rx_options);
             (frag_payload, &l3[..total])
         };
         match hdr.proto {
             p if p == IpProto::Icmp as u8 => {
+                crate::mib::bump(net_ns, crate::mib::Mib::IpInDelivers);
                 crate::mib::bump(net_ns, crate::mib::Mib::IcmpInMsgs);
                 let echo = match icmp::IcmpEcho::parse(payload) {
                     Ok(h) => h,
@@ -294,6 +295,7 @@ impl NetStack {
                 }
             }
             p if p == IpProto::Udp as u8 => {
+                crate::mib::bump(net_ns, crate::mib::Mib::IpInDelivers);
                 crate::mib::bump(net_ns, crate::mib::Mib::UdpInDatagrams);
                 let udp = UdpHdr::parse(payload, hdr.src, hdr.dst)
                     .map_err(|_| {
@@ -381,16 +383,23 @@ impl NetStack {
                 }
             }
             p if p == IpProto::Tcp as u8 => {
+                crate::mib::bump(net_ns, crate::mib::Mib::IpInDelivers);
                 crate::mib::bump(net_ns, crate::mib::Mib::TcpInSegs);
                 self.deliver_tcp_packet_hop(net_ns, iface, IpAddr::V4(hdr.src), IpAddr::V4(hdr.dst),
                     payload, full_packet, hdr.ttl)?
             }
             p if p == IpProto::Igmp as u8 => {
+                crate::mib::bump(net_ns, crate::mib::Mib::IpInDelivers);
                 if hdr.ttl == 1 && ipv4_has_router_alert(&l3[IPV4_HDR_LEN..hdr.ihl_bytes()]) {
                     self.handle_igmp(lease, hdr.src, hdr.dst, payload)?;
                 }
             }
-            _ => {}
+            _ if raw_delivered => crate::mib::bump(net_ns, crate::mib::Mib::IpInDelivers),
+            _ => {
+                crate::mib::bump(net_ns, crate::mib::Mib::IpInUnknownProtos);
+                self.send_ipv4_error(iface, hdr.dst, hdr.src, icmp::ICMP_TYPE_DEST_UNREACH,
+                    icmp::unreach_code::PROTOCOL, full_packet)?;
+            }
         }
         Ok(())
     }
