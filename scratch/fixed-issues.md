@@ -609,6 +609,8 @@ open issue. Live rows that still need the work carry it in their own row.
 
 ### Memory / page cache
 
+| FIXED f8c9cb756 | low | `cachestat` eviction shadows could grow without bound for a live ext4 inode under repeated page reclamation. | The ext4 frame store now retains a small floor plus a resident-cache-scaled history budget and discards oldest surplus shadows; the regression proves pruning preserves the newest history. | B1921-cachestat-shadow-reclaim |
+
 | FIXED 6b29690ac | blocker | File-backed demand faults installed exactly one 4 KiB page, with no Linux `do_fault_around` equivalent to map adjacent page-cache residents. | Read and execute faults now inspect a naturally aligned 64 KiB window, clamped to the VMA, EOF, and page-table leaf, and install only already-resident cache frames without allocation or I/O. Speculative PTEs remain read-only so private COW and shared dirty-fault semantics stay on the demand path. A positive control that disabled neighbor installation turned the focused regression red; the restored implementation passed `vmm` (330) and `fs` (958) tests, full CI, and paired first-attempt smoke on x86_64 (54 s) and aarch64 (100 s), both with serial RX. | B1862-file-fault-around |
 
 
