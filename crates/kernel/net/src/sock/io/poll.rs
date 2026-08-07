@@ -130,15 +130,20 @@ impl InetSocket {
             vfs::IoctlIntCmd::Fionread => Ok(self.inq_len() as u32),
             vfs::IoctlIntCmd::Siocoutq => Ok(self.outq_len() as u32),
             vfs::IoctlIntCmd::Siocoutqnsd => self.outq_nsd_len(),
-            vfs::IoctlIntCmd::Siocatmark => match &*self.kind.lock() {
-                SockKind::TcpConn(entry) => Ok(entry.conn.lock().at_urgent_mark() as u32),
-                SockKind::Unix(pair, end) => Ok(pair.at_oob_mark(*end) as u32),
-                // AF_UNIX has an out-of-band channel only on `SOCK_STREAM`, so
-                // the mark is not a question the other flavours can answer.
-                SockKind::UnixDgram(_) | SockKind::UnixMsgPair(_, _) | SockKind::UnixListener(_)
-                | SockKind::UnixUnbound(_, _) => Err(vfs::VfsError::Eopnotsupp),
-                _ => Err(vfs::VfsError::Enotty),
-            },
+            vfs::IoctlIntCmd::Siocatmark => {
+                use crate::sock::oob_class::{at_mark, oob_shape, AtMark};
+                let kind = self.kind.lock();
+                match at_mark(oob_shape(&kind)) {
+                    AtMark::Eopnotsupp => Err(vfs::VfsError::Eopnotsupp),
+                    AtMark::Enotty => Err(vfs::VfsError::Enotty),
+                    AtMark::Report => match &*kind {
+                        SockKind::TcpConn(entry) => Ok(entry.conn.lock().at_urgent_mark() as u32),
+                        SockKind::Unix(pair, end) => Ok(pair.at_oob_mark(*end) as u32),
+                        // `at_mark` reports the mark for exactly these two.
+                        _ => Err(vfs::VfsError::Enotty),
+                    },
+                }
+            }
         }
     }
 

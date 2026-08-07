@@ -237,10 +237,11 @@ impl NetStack {
                 }
             }
             // F158: wake on either recv_buf growth or terminal state
-            let (_pre_len, pre_state, input, _post_len, post_state, fastopen_child) = {
+            let (_pre_len, pre_state, input, _post_len, post_state, fastopen_child, urgent) = {
                 let mut c = entry.conn.lock();
                 let pre_len = c.recv_buf.len;
                 let pre_state = c.state;
+                let pre_urg = c.peek_urgent();
                 let fastopen_child = c.fastopen_child;
                 if pre_state == crate::tcp_state::TcpState::SynRecv {
                     if let Some(listener) = passive_listener.as_ref() {
@@ -248,8 +249,15 @@ impl NetStack {
                     }
                 }
                 let input = c.input_prevalidated(src_ip, dst_ip, seg);
-                (pre_len, pre_state, input, c.recv_buf.len, c.state, fastopen_child)
+                let urgent = crate::sock::oob_notify::urgent_arrived(pre_urg, c.peek_urgent());
+                (pre_len, pre_state, input, c.recv_buf.len, c.state, fastopen_child, urgent)
             };
+            // Tell the world about a new urgent pointer (Linux
+            // `sk_send_sigurg` from the urgent-pointer check): an
+            // unconditional `SIGURG` to the receiving description's `f_owner`.
+            // The `F_SETSIG` half rides the readiness wake below, whose mask
+            // now carries `POLL_PRI`, and is not raised here.
+            if urgent { crate::sock::oob_notify::sk_send_sigurg(entry.owner_file()); }
             super::tcp_fastopen::drain_client(self, &entry, crate::tcp_conn::ka_now_ns());
             let pre_syn = pre_state == crate::tcp_state::TcpState::SynSent;
             let resp = match input {
@@ -364,3 +372,6 @@ impl NetStack {
 #[cfg(test)]
 #[path = "tcp_timer_tests.rs"]
 mod timer_tests;
+#[cfg(test)]
+#[path = "tcp_urgent_tests.rs"]
+mod urgent_tests;

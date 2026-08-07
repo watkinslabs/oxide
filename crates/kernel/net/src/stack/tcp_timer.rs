@@ -40,12 +40,28 @@ pub(crate) struct TcpTimers {
 pub(crate) struct TcpAsyncState {
     timers: TcpTimers,
     subscribers: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,
+    /// The owning open file description (Linux `sk->sk_socket->file`), which
+    /// urgent arrival signals through its `f_owner`. Weak, and published by
+    /// the same bind that publishes `subscribers`, so the two notification
+    /// targets of one socket cannot name different descriptions.
+    owner_file: Spinlock<alloc::sync::Weak<vfs::File>, StackLockClass>,
 }
 
 impl TcpAsyncState {
     /// # C: O(1)
     pub(crate) const fn new() -> Self {
-        Self { timers: TcpTimers::new(), subscribers: Spinlock::new(None) }
+        Self { timers: TcpTimers::new(), subscribers: Spinlock::new(None),
+               owner_file: Spinlock::new(alloc::sync::Weak::new()) }
+    }
+
+    /// The owning description, while a descriptor is bound. # C: O(1)
+    pub(crate) fn owner_file(&self) -> Option<alloc::sync::Arc<vfs::File>> {
+        self.owner_file.lock().upgrade()
+    }
+
+    /// Publish the owning description. # C: O(1)
+    pub(crate) fn set_owner_file(&self, file: &alloc::sync::Arc<vfs::File>) {
+        *self.owner_file.lock() = alloc::sync::Arc::downgrade(file);
     }
 }
 

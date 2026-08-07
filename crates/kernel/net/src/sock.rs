@@ -16,6 +16,8 @@
 // - packet_tx: canonical AF_PACKET link-layer transmit work.
 // - packet_ring_tx: TPACKET V1/V2/V3 transmit consumption and ownership.
 // - construct: family constructors and namespace-owner snapshots.
+// - oob_notify: shared urgent-arrival owner notification (AF_UNIX and TCP).
+// - oob_class: per-kind `recv(MSG_OOB)` and `SIOCATMARK` answers.
 // - inode: VFS inode wrapper and file operations bridge.
 // - io: socket read/write/poll methods.
 // - udp: datagram receive/send helpers and iface source hook.
@@ -64,6 +66,8 @@ mod packet_ring_v3;
 mod packet_tx;
 mod packet_ring_tx;
 mod construct;
+pub mod oob_notify;
+pub mod oob_class;
 pub mod iface;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 mod inode;
