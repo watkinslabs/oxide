@@ -5,7 +5,7 @@ use super::*;
 fn operstate(flags: u32) -> u8 {
     let msg = build_newlink_reply(
         1, 2, 3, "eth0", [2, 0, 0, 0, 0, 1], &[u8::MAX; 6], 1500,
-        false, flags, LinkStats64::default(), false,
+        false, flags, LinkStats64::default(), false, None,
     );
     let attrs = &msg[Nlmsghdr::SIZE + Ifinfomsg::SIZE..];
     find_attr(attrs, ifla::IFLA_OPERSTATE).expect("IFLA_OPERSTATE")[0]

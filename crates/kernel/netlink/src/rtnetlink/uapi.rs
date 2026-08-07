@@ -72,6 +72,8 @@ pub mod ifla {
     pub const IFLA_STATS64:   u16 = 23;
     pub const IFLA_GROUP:     u16 = 27;
     pub const IFLA_CARRIER:   u16 = 33;
+    /// Caller-local peer-network-namespace ID for `RTM_GETLINK`.
+    pub const IFLA_TARGET_NETNSID: u16 = 46;
 }
 
 /// Linux interface operational states carried by `IFLA_OPERSTATE`.

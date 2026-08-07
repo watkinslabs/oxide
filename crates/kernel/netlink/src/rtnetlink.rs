@@ -20,6 +20,7 @@ mod attrs;
 mod dump_req;
 mod dumps;
 mod addr_one;
+mod link_get;
 mod mcast_dumps;
 mod iface;
 mod neigh;
@@ -41,10 +42,12 @@ pub use addr_ops::{handle_deladdr, handle_deladdr_in, handle_newaddr, handle_new
 pub use attrs::{put_nlattr, put_nlattr_i32, put_nlattr_str, put_nlattr_u32, put_nlattr_u8};
 pub(crate) use dumps::{build_newaddr6_reply, build_newaddr_reply, build_newlink_reply};
 pub use dump_req::{is_dump, validate_addr_dump, validate_link_dump, AddrDump, LinkDump, NLM_F_DUMP_FILTERED};
-pub use dumps::{done_multi, handle_getaddr, handle_getaddr_in, handle_getlink, handle_getlink_in};
+pub use dumps::{done_multi, handle_getaddr, handle_getaddr_in};
 pub use addr_one::handle_getaddr6_one_in;
 pub(crate) use dumps::handle_getaddr_with_access;
 pub(crate) use addr_one::handle_getaddr6_one_with_access;
+pub use link_get::{handle_getlink, handle_getlink_in};
+pub(crate) use link_get::handle_getlink_with_access;
 pub use mcast_dumps::{handle_getanycast_in, handle_getmulticast_in};
 pub use neigh::{handle_delneigh_in, handle_getneigh_in, handle_getneigh_one_in, handle_newneigh_in};
 pub use nsid_req::{dump as parse_dumpnsid, get as parse_getnsid, new as parse_newnsid,

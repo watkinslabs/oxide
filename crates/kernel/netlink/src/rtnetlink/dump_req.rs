@@ -26,6 +26,8 @@ pub const NLM_F_DUMP_FILTERED: u16 = 0x20;
 pub enum LinkDump {
     /// Walk every device.
     All,
+    /// Walk a caller-mapped peer namespace.
+    Target(i32),
     /// Refuse the request.
     Err(Errno),
 }
@@ -79,7 +81,7 @@ fn validate_addr_dump_attrs(attrs: &[u8]) -> Result<Option<i32>, Errno> {
 /// filters the wrong way learns it instead of receiving every device.
 /// # C: O(1)
 pub fn validate_link_dump(strict: bool, full_msg: &[u8]) -> LinkDump {
-    if !strict { return LinkDump::All; }
+    if !strict { return link_target_nsid(full_msg).map_or(LinkDump::All, LinkDump::Target); }
     let Some(body) = payload(full_msg, Ifinfomsg::SIZE) else { return LinkDump::Err(Errno::Einval) };
     let pad = body[1];
     let ifi_type = u16::from_ne_bytes([body[2], body[3]]);
@@ -88,7 +90,53 @@ pub fn validate_link_dump(strict: bool, full_msg: &[u8]) -> LinkDump {
     let ifi_change = u32::from_ne_bytes([body[12], body[13], body[14], body[15]]);
     if pad != 0 || ifi_type != 0 || ifi_flags != 0 || ifi_change != 0 { return LinkDump::Err(Errno::Einval); }
     if ifi_index != 0 { return LinkDump::Err(Errno::Einval); }
-    LinkDump::All
+    match link_target_strict(&body[Ifinfomsg::SIZE..]) {
+        Ok(Some(nsid)) => LinkDump::Target(nsid),
+        Ok(None) => LinkDump::All,
+        Err(e) => LinkDump::Err(e),
+    }
+}
+
+/// Caller-local target namespace from a complete link request. # C: O(N attrs)
+pub(crate) fn link_target_nsid(full_msg: &[u8]) -> Option<i32> {
+    payload(full_msg, Ifinfomsg::SIZE).and_then(|body| link_target(&body[Ifinfomsg::SIZE..]))
+}
+
+fn link_target(attrs: &[u8]) -> Option<i32> {
+    let mut off = 0;
+    let mut target = None;
+    while off < attrs.len() {
+        if attrs.len() - off < 4 { return None; }
+        let len = u16::from_ne_bytes([attrs[off], attrs[off + 1]]) as usize;
+        let ty = u16::from_ne_bytes([attrs[off + 2], attrs[off + 3]]) & 0x3fff;
+        if len < 4 || len > attrs.len() - off { return None; }
+        let next = (len + 3) & !3;
+        if next > attrs.len() - off { return None; }
+        if ty == super::uapi::ifla::IFLA_TARGET_NETNSID && len == 8 {
+            target = Some(i32::from_ne_bytes(attrs[off + 4..off + 8].try_into().unwrap()));
+        }
+        off = next;
+    }
+    target
+}
+
+fn link_target_strict(attrs: &[u8]) -> Result<Option<i32>, Errno> {
+    let mut off = 0;
+    let mut target = None;
+    while off < attrs.len() {
+        if attrs.len() - off < 4 { return Err(Errno::Einval); }
+        let len = u16::from_ne_bytes([attrs[off], attrs[off + 1]]) as usize;
+        let ty = u16::from_ne_bytes([attrs[off + 2], attrs[off + 3]]) & 0x3fff;
+        if len < 4 || len > attrs.len() - off { return Err(Errno::Einval); }
+        let next = (len + 3) & !3;
+        if next > attrs.len() - off { return Err(Errno::Einval); }
+        if ty != super::uapi::ifla::IFLA_TARGET_NETNSID || len != 8 || target.is_some() {
+            return Err(Errno::Einval);
+        }
+        target = Some(i32::from_ne_bytes(attrs[off + 4..off + 8].try_into().unwrap()));
+        off = next;
+    }
+    Ok(target)
 }
 
 /// Validate a `RTM_GETADDR` dump request and extract its device filter.

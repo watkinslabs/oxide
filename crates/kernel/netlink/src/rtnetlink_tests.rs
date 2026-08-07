@@ -589,7 +589,7 @@
             false,
             iff::IFF_UP | iff::IFF_RUNNING,
             stats,
-            true,
+            true, None,
         );
         let attrs = &msg[Nlmsghdr::SIZE + Ifinfomsg::SIZE..];
         let raw = find_attr(attrs, ifla::IFLA_STATS64).expect("IFLA_STATS64");
