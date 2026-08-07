@@ -910,6 +910,12 @@ evidence has one canonical home.
 | FIXED 15f244783 | DEFECT | med | Hardware-enabled x86 and arm64 pkey allocation previously remained feature-absent despite VMA/PTE key support. | Each mm captures its enabled arch key-space descriptor; allocation updates the calling task's live PKRU/POR rights. Focused HAL/VMM/syscall/scheduler suites, both target builds, paired smoke, and pre-push passed. | B1932-pkey-runtime-allocation |
 | FIXED 15f244783 | DEFECT | med | `SEGV_PKUERR` exposed a fabricated zero `si_pkey`. | The fault signal now reads the VMA's sole key owner and serializes it in the PKU siginfo union arm; HAL and scheduler regression tests pin the record. | B1932-pkey-runtime-allocation |
 
+### B1934-pkru-signal-xstate
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 51a7032e3 | DEFECT | med | x86 PKRU was outside XCR0 and retained a second task-level snapshot, so XSAVE signal frames could not restore the interrupted PKRU after a handler changed it. | PKRU is now an explicit xstate component: fresh xstate images seed the restrictive default, context switch/fork/exec/signal return use that sole image, and a hosted sigreturn round-trip plus the glibc pkey signal probe pin the result. Both target builds, paired smoke, and pre-push gates passed. | B1934-pkru-signal-xstate |
+
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 8d8be76e8 | DEFECT | med | Every pseudo-filesystem built inodes without an owning superblock, so metadata readers fell back to synthetic defaults. | VFS now binds a synthesized inode when it is instantiated as a root or lookup result, and creates a separate inode view when one pseudo-tree template is reached through another superblock. Global sysfs and cgroup trees reuse their owning superblock. The regression proves distinct root and child views retain their own owners; focused VFS/kernfs/sysfs/cgroup suites and paired x86_64/aarch64 smoke passed. | B1883-pseudo-fs-superblock-ownership |
