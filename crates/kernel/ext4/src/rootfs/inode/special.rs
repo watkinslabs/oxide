@@ -99,7 +99,7 @@ impl InodeOps for Ext4StatInodeOps {
             Ok(v) => v,
             Err(e) => {
                 let _ = super::super::quota::rollback_new_inode_charge(&d.st, d.ino, m, uid, gid);
-                return Err(super::regular::vfs_error_from_mount(e));
+                return Err(super::regular::fs_err(&d.st, e));
             }
         };
         d.st.forget_created_ino(ino);
@@ -142,7 +142,7 @@ impl InodeOps for Ext4StatInodeOps {
             Ok(v) => v,
             Err(e) => {
                 let _ = super::super::quota::rollback_new_inode_charge(&d.st, d.ino, m, uid, gid);
-                return Err(super::regular::vfs_error_from_mount(e));
+                return Err(super::regular::fs_err(&d.st, e));
             }
         };
         d.st.forget_created_ino(ino);
@@ -159,7 +159,7 @@ impl InodeOps for Ext4StatInodeOps {
             Ok(v) => v,
             Err(e) => {
                 let _ = super::super::quota::rollback_new_inode_charge(&d.st, d.ino, m, uid, gid);
-                return Err(super::regular::vfs_error_from_mount(e));
+                return Err(super::regular::fs_err(&d.st, e));
             }
         };
         d.st.orphan_insert(ino);
