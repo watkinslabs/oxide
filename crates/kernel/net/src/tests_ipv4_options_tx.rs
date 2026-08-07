@@ -4,6 +4,7 @@
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use sync::{Socket as LockClass, Spinlock};
 
@@ -43,6 +44,53 @@ fn device(stack: &NetStack, mtu: u32, addr: Ipv4Addr) -> (Arc<Capture>, NetIface
         mask: 0xffff_ff00, broadcast: None, scope: 0, flags: 0, proto: 0, rt_priority: 0,
         cacheinfo: Ipv4AddrCacheInfo::PERMANENT });
     (dev, iface)
+}
+
+struct OutcomeCapture { fail: AtomicBool }
+impl NetDev for OutcomeCapture {
+    fn name(&self) -> &str { "mib0" }
+    fn mac(&self) -> MacAddr { MacAddr::ZERO }
+    fn mtu(&self) -> u32 { 68 }
+    fn retire_namespace(&self) {}
+    fn namespace_drop_action(&self) -> crate::NamespaceDropAction {
+        crate::NamespaceDropAction::Destroy
+    }
+    fn xmit(&self, _packet: Pkt) -> NetResult<()> {
+        if self.fail.load(Ordering::Acquire) { Err(crate::NetError::Eio) } else { Ok(()) }
+    }
+}
+
+#[test]
+fn ipv4_fragment_counters_follow_output_outcomes() {
+    let ns_owner = crate::net_ns::test_support::allocate_namespace();
+    let net_ns = ns_owner.id().as_u64();
+    let stack = NetStack::new();
+    let dev = Arc::new(OutcomeCapture { fail: AtomicBool::new(false) });
+    let iface = stack.ifaces.register_in_ns(dev.clone() as Arc<dyn NetDev>, net_ns);
+    stack.ifaces.arp_cache_in_ns(iface, net_ns).unwrap().insert(
+        DST, MacAddr([2, 0, 0, 0, 0, 2]),
+    );
+    let lease = stack.ifaces.acquire_egress_in_ns(iface, net_ns).unwrap();
+    let owner = crate::SocketOwner::root(ns_owner, 0);
+    let before_created = crate::mib::get(net_ns, crate::mib::Mib::IpFragCreates);
+    let before_oks = crate::mib::get(net_ns, crate::mib::Mib::IpFragOks);
+    let before_fails = crate::mib::get(net_ns, crate::mib::Mib::IpFragFails);
+
+    stack.xmit_ipv4_l4_with_policy(iface, lease.clone(), DST, SRC, DST, crate::IpProto::Udp,
+        &[0u8; 100], 0, crate::ipv4::IPV4_DEFAULT_TTL, 1, 68, false, true,
+        Some(&owner), None).unwrap();
+    assert_eq!(crate::mib::get(net_ns, crate::mib::Mib::IpFragCreates), before_created + 3);
+    assert_eq!(crate::mib::get(net_ns, crate::mib::Mib::IpFragOks), before_oks + 1);
+    assert_eq!(crate::mib::get(net_ns, crate::mib::Mib::IpFragFails), before_fails);
+
+    dev.fail.store(true, Ordering::Release);
+    assert_eq!(stack.xmit_ipv4_l4_with_policy(iface, lease, DST, SRC, DST, crate::IpProto::Udp,
+        &[0u8; 100], 0, crate::ipv4::IPV4_DEFAULT_TTL, 2, 68, false, true,
+        Some(&owner), None), Err(crate::NetError::Eio));
+    assert_eq!(crate::mib::get(net_ns, crate::mib::Mib::IpFragCreates), before_created + 3);
+    assert_eq!(crate::mib::get(net_ns, crate::mib::Mib::IpFragOks), before_oks + 1);
+    assert_eq!(crate::mib::get(net_ns, crate::mib::Mib::IpFragFails), before_fails + 1);
+    crate::mib::forget(net_ns);
 }
 
 fn resolve(stack: &NetStack, iface: NetIfaceId, hop: Ipv4Addr) {

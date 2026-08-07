@@ -805,6 +805,8 @@ evidence has one canonical home.
 | FIXED B1756 | MISSING | med | `/proc/net/snmp` was a hardcoded table of zeroes. That is worse than an absent file: a reader cannot tell a counter that has not moved from one nothing keeps, and `Ip: InReceives 0 OutRequests 0` on a guest that had moved packets read as a dead stack during a live investigation and produced a wrong conclusion. Now a per-namespace MIB counted where each event happens, so a zero means the event has not occurred. | `crates/kernel/net/src/mib.rs` (9 hosted tests); `the_receive_path_counts_what_it_delivers` drives a real datagram through `deliver_rx_in` — positive control: removing the `IpInReceives` bump fails it | — |
 | FIXED B1756 | COVERAGE | med | The rendering first lived in `procfs::net`, which is `#[cfg(target_os = "oxide-kernel")]`: the tests written beside it compiled out entirely and reported `0 passed; 162 filtered out`. Moved into the ungated `net::mib`, where they run; procfs keeps a shim. | `cargo test -p procfs snmp_tests` → 0 passed, before the move | — |
 
+| FIXED B1894 | MISSING | low | IPv4 `FragCreates`, `FragOKs`, and `FragFails` were rendered from the per-namespace MIB but the transmit owner never moved them. The oversized-datagram refusal, each successfully emitted fragment, whole successful datagram, allocation failure, and device-output failure now update the canonical MIB at the fragmentation decision. | `ipv4_fragment_counters_follow_output_outcomes` uses a private network namespace: 100 bytes at MTU 68 emits three fragments and one successful datagram; an injected output error adds exactly one failure without a false create/ok. | B1894-ipv4-mib-outcomes |
+
 ### C269-stack-gates-in-routine-path
 
 | Status | Class | Sev | Issue | Evidence | Owner |
