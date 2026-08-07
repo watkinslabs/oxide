@@ -12,14 +12,7 @@ use super::ids::{INO_ATTR, INO_DEVICE_DIR, INO_SYMLINK};
 use super::index::dev_devpath;
 
 const DEV_ATTR: Attribute = Attribute { name: "dev", mode: RO_PERM };
-const PCI_RESOURCE_ATTRS: [Attribute; 6] = [
-    Attribute { name: "resource0", mode: RO_PERM },
-    Attribute { name: "resource1", mode: RO_PERM },
-    Attribute { name: "resource2", mode: RO_PERM },
-    Attribute { name: "resource3", mode: RO_PERM },
-    Attribute { name: "resource4", mode: RO_PERM },
-    Attribute { name: "resource5", mode: RO_PERM },
-];
+const PCI_RESOURCE_NAMES: [&str; 6] = ["resource0", "resource1", "resource2", "resource3", "resource4", "resource5"];
 
 pub(super) fn modalias(dev: &drv::Device) -> String {
     if dev.bus == "pci" {
@@ -81,25 +74,11 @@ fn pci_resource_index(leaf: &str) -> Option<u8> {
     Some(b - b'0')
 }
 
-fn resource_body(r: &drv::Resource) -> Vec<u8> {
-    alloc::format!(
-        "0x{:016x} 0x{:016x} 0x{:016x}\n",
-        r.start, r.end, r.flags,
-    ).into_bytes()
-}
-
 pub(super) fn dev_attr(dev: &drv::Device, leaf: &str) -> Option<Vec<u8>> {
     match leaf {
         "vendor" => Some(alloc::format!("0x{:04x}\n", dev.vendor_id).into_bytes()),
         "device" => Some(alloc::format!("0x{:04x}\n", dev.device_id).into_bytes()),
         "class"  => Some(alloc::format!("0x{:06x}\n", dev.class).into_bytes()),
-        leaf if dev.bus == "pci" && pci_resource_index(leaf).is_some() => {
-            let bar = pci_resource_index(leaf).expect("resource index checked");
-            dev.resources
-                .iter()
-                .find(|r| r.bar == bar)
-                .map(resource_body)
-        }
         "modalias" => Some(alloc::format!("{}\n", modalias(dev)).into_bytes()),
         "driver_override" => {
             Some(match dev.driver_override() {
@@ -272,8 +251,7 @@ impl InodeOps for DeviceDirOps {
                 if !dev.resources.iter().any(|r| r.bar == bar) {
                     return Err(VfsError::Enoent);
                 }
-                let ops: Arc<dyn SysfsOps> = Arc::new(DeviceKobj { device: Arc::clone(dev) });
-                return Ok(make_attr_inode(&PCI_RESOURCE_ATTRS[bar as usize], ops, INO_ATTR));
+                return Ok(super::pci_file::make_resource_inode(Arc::clone(dev), bar));
             }
             return super::pci_file::lookup(dev, name).ok_or(VfsError::Enoent);
         }
@@ -303,12 +281,11 @@ impl FileOps for DeviceDirOps {
             entries.push(("dev", FileType::Regular));
         }
         if dev.bus == "pci" {
-            for attr in PCI_RESOURCE_ATTRS.iter() {
-                if let Some(bar) = pci_resource_index(attr.name) {
+            for (bar, name) in PCI_RESOURCE_NAMES.iter().enumerate() {
+                let bar = bar as u8;
                     if dev.resources.iter().any(|r| r.bar == bar) {
-                        entries.push((attr.name, FileType::Regular));
+                        entries.push((name, FileType::Regular));
                     }
-                }
             }
         }
         entries.push(("subsystem", FileType::Symlink));

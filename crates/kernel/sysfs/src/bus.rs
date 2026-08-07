@@ -23,6 +23,7 @@ mod pci_file;
 mod test_harness;
 
 pub(crate) use device::{make_device_link_inode, ups_prefix};
+pub(crate) use pci_file::resource_mmap_backing;
 pub use hooks::{bind_device_cb, init, publish_device_cb, publish_driver_cb, remove_device_cb};
 #[cfg(test)]
 pub(crate) use test_harness::device_hook_serial;

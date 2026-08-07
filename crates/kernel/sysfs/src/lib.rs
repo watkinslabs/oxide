@@ -46,6 +46,9 @@ pub mod zram;
 mod net_tests;
 
 pub use root::{drop_cached, register, register_dir, sys_root, SYSFS_FSID};
+pub fn pci_resource_mmap_backing(inode: &InodeRef) -> Option<Result<(u64, u64), VfsError>> {
+    bus::resource_mmap_backing(inode)
+}
 #[cfg(test)]
 pub(crate) use net_class::make_net_iface_inode;
 

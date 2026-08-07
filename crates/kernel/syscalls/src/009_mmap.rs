@@ -181,7 +181,13 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
                 Err(error) => error,
             };
         }
-        match fbdev::devfs::mmap_backing(inode) {
+        match sysfs::pci_resource_mmap_backing(inode) {
+            Some(Ok((pa, len))) => {
+                if offset.saturating_add(args.a1) > len { return -(Errno::Einval.as_i32() as i64); }
+                phys_range = Some((pa, vmm::PhysCacheMode::Device));
+            }
+            Some(Err(error)) => return crate::namei_common::errno_from_vfs(error),
+            None => match fbdev::devfs::mmap_backing(inode) {
             Some((pa, len, cache)) => {
                 // The mapped window must fit within the device's backing.
                 if offset.saturating_add(args.a1) > len {
@@ -223,6 +229,7 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
                 backing = Some(crate::mmap_file::InodeFileBacking::new_named(
                     inode.clone(), map_path.into_bytes()));
             },
+        },
         }
     }
     let result = pmm::user_as::glue_mmap(
