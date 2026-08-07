@@ -40,7 +40,8 @@ pub fn do_mprotect_pkey(args: &SyscallArgs, pkey: i32) -> i64 {
     // Linux takes `mmap_write_lock` and then refuses a key userspace never
     // allocated, before any VMA is touched so a bad key cannot partially apply.
     let pkey_map = mm.pkeys().with_map(|m| *m);
-    if !crate::pkey::pkey_mprotect_allows(&crate::pkey::ARCH, pkey_map, pkey) {
+    let pkey_abi = crate::pkey::with_mm(crate::pkey::ARCH, mm.pkeys().arch());
+    if !crate::pkey::pkey_mprotect_allows(&pkey_abi, pkey_map, pkey) {
         return -(Errno::Einval.as_i32() as i64);
     }
     let ua = match UserVirtAddr::new(addr) {

@@ -167,6 +167,14 @@ fn a_fault_record_carries_the_faulting_address_not_a_sender_identity() {
 }
 
 #[test]
+fn a_pku_fault_record_carries_the_rejected_key() {
+    let i = pkey_fault_info(SIGSEGV, 0x7fff_0000_1000, 6);
+    assert_eq!(i.code, hal::siginfo::code::SEGV_PKUERR);
+    let f = i.fault.expect("a pkey fault must select the _sigfault arm");
+    assert_eq!((f.addr, f.pkey), (0x7fff_0000_1000, 6));
+}
+
+#[test]
 fn only_handler_exit_marks_the_action_immutable() {
     // `SA_IMMUTABLE` is what makes a forced-fatal signal final: the process
     // cannot re-install a handler for it, and its tracer cannot intercept it.

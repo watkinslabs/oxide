@@ -60,7 +60,7 @@ fn write_siginfo_sigsys_arm_writes_call_addr_syscall_arch_and_errno() {
 #[test]
 fn write_siginfo_sigfault_arm_writes_si_addr_and_si_addr_lsb() {
     let mut info = [0u8; 128];
-    let f = SigFault { addr: 0x7fff_dead_b000, addr_lsb: 12 };
+    let f = SigFault { addr: 0x7fff_dead_b000, addr_lsb: 12, pkey: 0 };
     let p = SigPayload { code: code::SEGV_MAPERR, pid: 0, uid: 0, status: 0, value: 0,
                          chld_arm: false, sigsys: None, fault: Some(f), poll: None };
     write_siginfo(&mut info, 11, Some(p));
@@ -75,7 +75,7 @@ fn write_siginfo_sigfault_arm_writes_si_addr_and_si_addr_lsb() {
 #[test]
 fn the_sigfault_arm_excludes_the_pid_uid_and_value_fields() {
     let mut info = [0u8; 128];
-    let f = SigFault { addr: u64::MAX, addr_lsb: 0 };
+    let f = SigFault { addr: u64::MAX, addr_lsb: 0, pkey: 0 };
     let p = SigPayload { code: code::SEGV_ACCERR, pid: 0x4242, uid: 0x77, status: -9,
                          value: u64::MAX, chld_arm: false, sigsys: None, fault: Some(f), poll: None };
     write_siginfo(&mut info, 11, Some(p));
@@ -209,11 +209,11 @@ fn round_trip(sig: u32, p: SigPayload) -> SigPayload {
 #[test]
 fn a_segv_record_decodes_to_a_fault_address_and_names_no_sender() {
     let addr = 0x7fff_dead_b00fu64;
-    let p = SigPayload { code: code::SEGV_MAPERR, fault: Some(SigFault { addr, addr_lsb: 0 }),
+    let p = SigPayload { code: code::SEGV_MAPERR, fault: Some(SigFault { addr, addr_lsb: 0, pkey: 0 }),
                          ..Default::default() };
     let back = round_trip(SIGSEGV, p);
     assert_eq!(back.code, code::SEGV_MAPERR);
-    assert_eq!(back.fault, Some(SigFault { addr, addr_lsb: 0 }));
+    assert_eq!(back.fault, Some(SigFault { addr, addr_lsb: 0, pkey: 0 }));
     assert_eq!(back.pid, 0, "a fault has no sender; those bytes are si_addr");
     assert_eq!(back.uid, 0);
 }
@@ -224,7 +224,7 @@ fn a_segv_record_decodes_to_a_fault_address_and_names_no_sender() {
 #[test]
 fn a_fault_record_never_carries_a_pid_into_si_addr() {
     let p = SigPayload { code: code::SEGV_ACCERR, pid: 0x1234, uid: 0x99,
-                         fault: Some(SigFault { addr: 0x4000, addr_lsb: 0 }), ..Default::default() };
+                         fault: Some(SigFault { addr: 0x4000, addr_lsb: 0, pkey: 0 }), ..Default::default() };
     let mut buf = [0u8; 128];
     write_siginfo(&mut buf, SIGSEGV, Some(p));
     assert_eq!(u64::from_ne_bytes(buf[16..24].try_into().unwrap()), 0x4000,
@@ -235,7 +235,7 @@ fn a_fault_record_never_carries_a_pid_into_si_addr() {
 #[test]
 fn every_arm_survives_a_flat_round_trip() {
     let f = SigPayload { code: code::BUS_ADRALN,
-                         fault: Some(SigFault { addr: 0x2000, addr_lsb: 12 }), ..Default::default() };
+                         fault: Some(SigFault { addr: 0x2000, addr_lsb: 12, pkey: 0 }), ..Default::default() };
     assert_eq!(round_trip(SIGBUS, f).fault, f.fault);
 
     let s = SigPayload { code: 1, sigsys: Some(Sigsys { call_addr: 0x7fff_0000_1000,
@@ -254,6 +254,16 @@ fn every_arm_survives_a_flat_round_trip() {
     let back = round_trip(SIGUSR1, k);
     assert_eq!((back.pid, back.uid), (99, 1000));
     assert!(back.fault.is_none() && back.poll.is_none() && back.sigsys.is_none());
+}
+
+#[test]
+fn pku_fault_writes_the_key_in_the_overlapping_sigfault_union_slot() {
+    let p = SigPayload { code: code::SEGV_PKUERR,
+        fault: Some(SigFault { addr: 0x7fff_dead_b000, addr_lsb: 0, pkey: 7 }), ..Default::default() };
+    let mut buf = [0u8; 128];
+    write_siginfo(&mut buf, SIGSEGV, Some(p));
+    assert_eq!(i32::from_ne_bytes(buf[24..28].try_into().unwrap()), 7);
+    assert_eq!(read_siginfo(&buf, SIGSEGV).fault.unwrap().pkey, 7);
 }
 
 // `_sigchld.si_status` is an `int`. Decoding 8 bytes there folds `si_utime`'s
@@ -276,7 +286,7 @@ fn a_sigchld_record_decodes_a_four_byte_status() {
 fn the_caller_supplied_signal_selects_the_arm_not_the_buffers_si_signo() {
     let mut buf = [0u8; 128];
     write_siginfo(&mut buf, SIGSEGV, Some(SigPayload {
-        code: code::SEGV_MAPERR, fault: Some(SigFault { addr: 0x9000, addr_lsb: 0 }),
+        code: code::SEGV_MAPERR, fault: Some(SigFault { addr: 0x9000, addr_lsb: 0, pkey: 0 }),
         ..Default::default() }));
     // Read as SIGCHLD: si_code 1 is CLD_EXITED there, so the same bytes are a
     // sender and a status — the arm follows the signal argument.
