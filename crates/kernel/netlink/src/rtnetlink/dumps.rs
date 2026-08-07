@@ -317,17 +317,17 @@ pub fn handle_getaddr_in(ns: u64, req: &Nlmsghdr, full_msg: &[u8], strict: bool)
         return super::ack::build_ack(req, -(Errno::Enodev.as_i32()));
     }
     for row in super::rtnetlink_addr::addr_snapshot_ns(ns).iter() {
-        let Some(ifindex) = net::global_stack().ifaces.ifindex_in_ns(
-            net::NetIfaceId::from_raw(row.ifindex), ns) else { continue; };
+        let Some(ifindex) = net::global_stack().ifaces.ifindex_in_ns(row.iface, ns) else { continue; };
         if want.is_some_and(|w| w != ifindex) { continue; }
         let name = match ifaces.iter().find(|(id, _, _, _, _, _, _, _)| *id == ifindex) {
             Some((_, n, _, _, _, _, _, _)) => n.as_str(),
             None => continue,
         };
         let one = build_newaddr_reply(
-            req.nlmsg_seq, req.nlmsg_pid, ifindex as i32, name, row.addr, row.peer,
-            row.broadcast, row.prefixlen, row.scope, row.flags, row.proto, row.rt_priority,
-            row.cacheinfo, msg_flags,
+            req.nlmsg_seq, req.nlmsg_pid, ifindex as i32, name, row.addr.octets(),
+            row.peer.map(net::Ipv4Addr::octets), row.broadcast.map(net::Ipv4Addr::octets),
+            row.prefixlen, row.scope, row.flags, row.proto, row.rt_priority,
+            super::rtnetlink_addr::cache_from_net(row.cacheinfo), msg_flags,
         );
         reply.extend_from_slice(&one);
     }

@@ -53,11 +53,12 @@ fn a_strict_address_dump_answers_only_the_device_the_caller_named() {
     // The address table is keyed by the internal device id; the dump maps it
     // to the namespace ifindex the reply carries.
     for (idx, addr, plen) in [(lo.raw(), [127, 0, 0, 1], 8u8), (eth.raw(), [10, 0, 2, 15], 24)] {
-        super::rtnetlink_addr::addr_insert(super::rtnetlink_addr::IfaceAddr {
-            ns: 0, ifindex: idx, family: super::uapi::AF_INET, addr, peer: None, broadcast: None,
+        super::rtnetlink_addr::addr_insert(net::iface_addr::Ipv4IfaceAddr {
+            ns: 0, iface: net::NetIfaceId::from_raw(idx), addr: net::Ipv4Addr::from_u32(u32::from_be_bytes(addr)), peer: None, mask: 0,
+            broadcast: None,
             prefixlen: plen, scope: super::uapi::RT_SCOPE_UNIVERSE,
             flags: net::iface_addr::IFA_F_PERMANENT, proto: 0, rt_priority: 0,
-            cacheinfo: super::rtnetlink_addr::IfaCacheInfo::PERMANENT,
+            cacheinfo: net::iface_addr::Ipv4AddrCacheInfo::PERMANENT,
         });
     }
 

@@ -34,18 +34,19 @@ const BCAST: [u8; 4] = [10, 0, 2, 255];
 const DHCP_PROTO: u8 = 16;
 const METRIC: u32 = 425;
 
-fn reply_for(row: super::rtnetlink_addr::IfaceAddr) -> alloc::vec::Vec<u8> {
-    build_newaddr_reply(1, 2, 3, "eth0", row.addr, row.peer, row.broadcast, row.prefixlen,
-        row.scope, row.flags, row.proto, row.rt_priority, row.cacheinfo,
+fn reply_for(row: net::iface_addr::Ipv4IfaceAddr) -> alloc::vec::Vec<u8> {
+    build_newaddr_reply(1, 2, 3, "eth0", row.addr.octets(), row.peer.map(net::Ipv4Addr::octets),
+        row.broadcast.map(net::Ipv4Addr::octets), row.prefixlen, row.scope, row.flags, row.proto, row.rt_priority,
+        super::rtnetlink_addr::cache_from_net(row.cacheinfo),
         crate::flags::NLM_F_MULTI)
 }
 
-fn dhcp_row() -> super::rtnetlink_addr::IfaceAddr {
-    super::rtnetlink_addr::IfaceAddr {
-        ns: 0, ifindex: 3, family: super::uapi::AF_INET, addr: LOCAL, peer: None,
-        broadcast: Some(BCAST), prefixlen: 24, scope: super::uapi::RT_SCOPE_UNIVERSE,
+fn dhcp_row() -> net::iface_addr::Ipv4IfaceAddr {
+    net::iface_addr::Ipv4IfaceAddr {
+        ns: 0, iface: net::NetIfaceId::from_raw(3), addr: net::Ipv4Addr::from_u32(u32::from_be_bytes(LOCAL)), peer: None, mask: 0xffffff00,
+        broadcast: Some(net::Ipv4Addr::from_u32(u32::from_be_bytes(BCAST))), prefixlen: 24, scope: super::uapi::RT_SCOPE_UNIVERSE,
         flags: 0, proto: DHCP_PROTO, rt_priority: METRIC,
-        cacheinfo: super::rtnetlink_addr::IfaCacheInfo {
+        cacheinfo: net::iface_addr::Ipv4AddrCacheInfo {
             preferred: 3600, valid: 7200, cstamp: 0, tstamp: 0 },
     }
 }
@@ -84,7 +85,7 @@ fn a_field_the_setter_left_unset_is_not_invented() {
 fn a_point_to_point_address_reports_the_peer_as_the_prefix_address() {
     let mut row = dhcp_row();
     let peer = [192, 0, 2, 1];
-    row.peer = Some(peer);
+    row.peer = Some(net::Ipv4Addr::from_u32(u32::from_be_bytes(peer)));
     let a = attrs(&reply_for(row));
     assert_eq!(find(&a, ifa::IFA_LOCAL).map(|v| v.as_slice()), Some(&LOCAL[..]));
     assert_eq!(find(&a, ifa::IFA_ADDRESS).map(|v| v.as_slice()), Some(&peer[..]));

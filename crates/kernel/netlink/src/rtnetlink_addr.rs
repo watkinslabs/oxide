@@ -2,7 +2,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use super::{AF_INET, RT_SCOPE_HOST};
+use super::RT_SCOPE_HOST;
 
 /// Linux `struct ifa_cacheinfo`: preferred/valid lifetimes and timestamps.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -31,23 +31,6 @@ impl IfaCacheInfo {
     }
 }
 
-/// One entry in the kernel's iface->address table.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct IfaceAddr {
-    pub ns:        u64,
-    pub ifindex:   u32,
-    pub family:    u8,
-    pub addr:      [u8; 4],
-    pub peer:      Option<[u8; 4]>,
-    pub broadcast: Option<[u8; 4]>,
-    pub prefixlen: u8,
-    pub scope:     u8,
-    pub flags:     u32,
-    pub proto:     u8,
-    pub rt_priority: u32,
-    pub cacheinfo: IfaCacheInfo,
-}
-
 /// # C: O(1)
 pub fn cache_to_net(row: IfaCacheInfo) -> net::iface_addr::Ipv4AddrCacheInfo {
     net::iface_addr::Ipv4AddrCacheInfo {
@@ -58,7 +41,7 @@ pub fn cache_to_net(row: IfaCacheInfo) -> net::iface_addr::Ipv4AddrCacheInfo {
     }
 }
 
-fn cache_from_net(row: net::iface_addr::Ipv4AddrCacheInfo) -> IfaCacheInfo {
+pub(crate) fn cache_from_net(row: net::iface_addr::Ipv4AddrCacheInfo) -> IfaCacheInfo {
     IfaCacheInfo {
         preferred: row.preferred,
         valid: row.valid,
@@ -67,43 +50,9 @@ fn cache_from_net(row: net::iface_addr::Ipv4AddrCacheInfo) -> IfaCacheInfo {
     }
 }
 
-fn addr_to_net(row: IfaceAddr) -> net::iface_addr::Ipv4IfaceAddr {
-    net::iface_addr::Ipv4IfaceAddr {
-        ns: row.ns,
-        iface: net::NetIfaceId::from_raw(row.ifindex),
-        addr: net::Ipv4Addr::from_u32(u32::from_be_bytes(row.addr)),
-        peer: row.peer.map(|peer| net::Ipv4Addr::from_u32(u32::from_be_bytes(peer))),
-        prefixlen: row.prefixlen,
-        mask: if row.prefixlen == 0 { 0 } else { !0u32 << (32 - row.prefixlen.min(32)) },
-        broadcast: row.broadcast.map(|b| net::Ipv4Addr::from_u32(u32::from_be_bytes(b))),
-        scope: row.scope,
-        flags: row.flags,
-        proto: row.proto,
-        rt_priority: row.rt_priority,
-        cacheinfo: cache_to_net(row.cacheinfo),
-    }
-}
-
-fn addr_from_net(row: net::iface_addr::Ipv4IfaceAddr) -> IfaceAddr {
-    IfaceAddr {
-        ns: row.ns,
-        ifindex: row.iface.raw(),
-        family: AF_INET,
-        addr: row.addr.octets(),
-        peer: row.peer.map(net::Ipv4Addr::octets),
-        broadcast: row.broadcast.map(net::Ipv4Addr::octets),
-        prefixlen: row.prefixlen,
-        scope: row.scope,
-        flags: row.flags,
-        proto: row.proto,
-        rt_priority: row.rt_priority,
-        cacheinfo: cache_from_net(row.cacheinfo),
-    }
-}
-
 /// Insert or replace by ns+ifindex+addr+prefixlen. # C: O(N)
-pub fn addr_insert(row: IfaceAddr) {
-    net::iface_addr::insert(addr_to_net(row));
+pub fn addr_insert(row: net::iface_addr::Ipv4IfaceAddr) {
+    net::iface_addr::insert(row);
 }
 
 /// Remove rows matching ns+ifindex+addr+prefixlen. # C: O(N)
@@ -117,31 +66,31 @@ pub fn addr_remove(ns: u64, ifindex: u32, addr: [u8; 4], prefixlen: u8) -> usize
 }
 
 /// Snapshot address rows in network namespace `ns`. # C: O(N)
-pub fn addr_snapshot_ns(ns: u64) -> Vec<IfaceAddr> {
-    net::iface_addr::snapshot_ns(ns).into_iter().map(addr_from_net).collect()
+pub fn addr_snapshot_ns(ns: u64) -> Vec<net::iface_addr::Ipv4IfaceAddr> {
+    net::iface_addr::snapshot_ns(ns)
 }
 
 /// Full snapshot of all address rows. # C: O(N)
-pub fn addr_snapshot() -> Vec<IfaceAddr> {
-    net::iface_addr::snapshot().into_iter().map(addr_from_net).collect()
+pub fn addr_snapshot() -> Vec<net::iface_addr::Ipv4IfaceAddr> {
+    net::iface_addr::snapshot()
 }
 
 /// Boot-time seed of the default v1 addresses. # C: O(1)
 pub fn seed_defaults(eth0_ifindex: Option<u32>, lo_ifindex: Option<u32>) {
     if let Some(idx) = lo_ifindex {
-        addr_insert(IfaceAddr {
+        addr_insert(net::iface_addr::Ipv4IfaceAddr {
             ns: 0,
-            ifindex: idx,
-            family: AF_INET,
-            addr: [127, 0, 0, 1],
+            iface: net::NetIfaceId::from_raw(idx),
+            addr: net::Ipv4Addr::new(127, 0, 0, 1),
             peer: None,
+            mask: 0xff00_0000,
             broadcast: None,
             prefixlen: 8,
             scope: RT_SCOPE_HOST,
             flags: net::iface_addr::IFA_F_PERMANENT,
             proto: net::iface_addr::IFAPROT_KERNEL_LO,
             rt_priority: 0,
-            cacheinfo: IfaCacheInfo::PERMANENT,
+            cacheinfo: net::iface_addr::Ipv4AddrCacheInfo::PERMANENT,
         });
     }
     let _ = eth0_ifindex;

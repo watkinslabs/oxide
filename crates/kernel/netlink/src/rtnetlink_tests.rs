@@ -356,11 +356,12 @@
         let domain = net::hosted_fixture::init_net_domain();
         domain.set_notifier(crate::mcast::notify_control_event);
         let before = addr_snapshot_ns(0).len();
-        addr_insert(IfaceAddr {
-            ns: 0, ifindex: 9999, family: AF_INET,
-            addr: [10, 9, 9, 9], peer: None, broadcast: None, prefixlen: 32, scope: RT_SCOPE_UNIVERSE,
+        addr_insert(net::iface_addr::Ipv4IfaceAddr {
+            ns: 0, iface: net::NetIfaceId::from_raw(9999),
+            addr: net::Ipv4Addr::from_u32(u32::from_be_bytes([10, 9, 9, 9])), peer: None,
+            mask: u32::MAX, broadcast: None, prefixlen: 32, scope: RT_SCOPE_UNIVERSE,
             flags: net::iface_addr::IFA_F_PERMANENT, proto: 0, rt_priority: 0,
-            cacheinfo: IfaCacheInfo::PERMANENT,
+            cacheinfo: net::iface_addr::Ipv4AddrCacheInfo::PERMANENT,
         });
         let after_insert = addr_snapshot_ns(0).len();
         assert_eq!(after_insert, before + 1);
@@ -373,11 +374,12 @@
     fn addr_insert_dedupes_same_key() {
         let domain = net::hosted_fixture::init_net_domain();
         domain.set_notifier(crate::mcast::notify_control_event);
-        let row = IfaceAddr {
-            ns: 0, ifindex: 9998, family: AF_INET,
-            addr: [10, 9, 9, 8], peer: None, broadcast: None, prefixlen: 32, scope: RT_SCOPE_UNIVERSE,
+        let row = net::iface_addr::Ipv4IfaceAddr {
+            ns: 0, iface: net::NetIfaceId::from_raw(9998),
+            addr: net::Ipv4Addr::from_u32(u32::from_be_bytes([10, 9, 9, 8])), peer: None,
+            mask: u32::MAX, broadcast: None, prefixlen: 32, scope: RT_SCOPE_UNIVERSE,
             flags: net::iface_addr::IFA_F_PERMANENT, proto: 0, rt_priority: 0,
-            cacheinfo: IfaCacheInfo::PERMANENT,
+            cacheinfo: net::iface_addr::Ipv4AddrCacheInfo::PERMANENT,
         };
         let before = addr_snapshot_ns(0).len();
         addr_insert(row);
@@ -389,11 +391,12 @@
 
     #[test]
     fn addrs_are_isolated_per_net_ns() {
-        let row = |ns| IfaceAddr {
-            ns, ifindex: 9997, family: AF_INET,
-            addr: [10, 9, 9, 7], peer: None, broadcast: None, prefixlen: 32, scope: RT_SCOPE_UNIVERSE,
+        let row = |ns| net::iface_addr::Ipv4IfaceAddr {
+            ns, iface: net::NetIfaceId::from_raw(9997),
+            addr: net::Ipv4Addr::from_u32(u32::from_be_bytes([10, 9, 9, 7])), peer: None,
+            mask: u32::MAX, broadcast: None, prefixlen: 32, scope: RT_SCOPE_UNIVERSE,
             flags: net::iface_addr::IFA_F_PERMANENT, proto: 0, rt_priority: 0,
-            cacheinfo: IfaCacheInfo::PERMANENT,
+            cacheinfo: net::iface_addr::Ipv4AddrCacheInfo::PERMANENT,
         };
         let n0 = addr_snapshot_ns(880).len();
         let n1 = addr_snapshot_ns(881).len();
@@ -447,12 +450,12 @@
         let (new_hdr, new_msg) = addr_req(RTM_NEWADDR, ifindex, 32, addr);
         assert_eq!(ack_errno(&handle_newaddr(&new_hdr, &new_msg)), 0);
         assert!(addr_snapshot_ns(0).iter().any(|r|
-            r.ifindex == iface.raw() && r.addr == addr && r.prefixlen == 32));
+            r.iface == iface && r.addr == net::Ipv4Addr::from_u32(u32::from_be_bytes(addr)) && r.prefixlen == 32));
 
         let (del_hdr, del_msg) = addr_req(RTM_DELADDR, ifindex, 32, addr);
         assert_eq!(ack_errno(&handle_deladdr(&del_hdr, &del_msg)), 0);
         assert!(!addr_snapshot_ns(0).iter().any(|r|
-            r.ifindex == iface.raw() && r.addr == addr && r.prefixlen == 32));
+            r.iface == iface && r.addr == net::Ipv4Addr::from_u32(u32::from_be_bytes(addr)) && r.prefixlen == 32));
         let _ = net::global_stack().ifaces.unregister(iface);
     }
 
