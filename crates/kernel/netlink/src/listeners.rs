@@ -191,7 +191,8 @@ pub fn rtnl_multicast_result_in(net_ns: u64, group: u32, msg: &[u8]) -> RtnlBroa
             if s.net_ns.id().as_u64() == net_ns { return Some((s, None)); }
             if !s.flags.get(crate::sockflags::F_LISTEN_ALL_NSID) { return None; }
             let nsid = source.as_deref().and_then(|source| s.net_ns.peer_id(source));
-            nsid.map(|nsid| (s, Some(nsid)))
+            nsid.filter(|_| source.as_ref().is_some_and(|source| s.may_receive_cross_ns(source)))
+                .map(|nsid| (s, Some(nsid)))
         }).collect()
     };
     #[cfg(feature = "debug-netlink")]

@@ -11,64 +11,100 @@ pub const NETNSA_FD: u16 = 3;
 pub const NETNSA_TARGET_NSID: u16 = 4;
 pub const NETNSA_CURRENT_NSID: u16 = 5;
 
-/// Decoded `RTM_NEWNSID`: an explicit caller-local ID and a peer nsfs fd.
+/// Peer namespace reference accepted by `RTM_NEWNSID` and `RTM_GETNSID`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct New { pub nsid: i32, pub fd: i32 }
-/// Decoded `RTM_GETNSID`: a peer nsfs fd.
+pub enum PeerRef { Fd(i32), Pid(u32), Nsid(i32) }
+/// Decoded `RTM_NEWNSID`: explicit caller-local ID plus its peer reference.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct Get { pub fd: i32 }
+pub struct New { pub nsid: i32, pub peer: PeerRef }
+/// Decoded `RTM_GETNSID`, including its optional caller-local target namespace.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct Get { pub peer: PeerRef, pub target_nsid: Option<i32> }
+/// Decoded `RTM_GETNSID` dump selector.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct Dump { pub target_nsid: Option<i32> }
 
-fn attrs(body: &[u8]) -> Result<alloc::vec::Vec<(u16, &[u8])>, Errno> {
-    if body.len() < RTGENMSG_LEN || body[0] != 0 { return Err(Errno::Einval); }
+/// Request-parser failure, retaining the offending attribute's wire position
+/// for the `NLMSGERR_ATTR_OFFS` extended-ack contract.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct ParseError { pub errno: Errno, pub offset: Option<u32> }
+
+impl ParseError {
+    const fn plain(errno: Errno) -> Self { Self { errno, offset: None } }
+    const fn attr(errno: Errno, offset: usize) -> Self {
+        Self { errno, offset: Some((crate::Nlmsghdr::SIZE + offset) as u32) }
+    }
+}
+
+fn attrs(body: &[u8]) -> Result<alloc::vec::Vec<(u16, &[u8], usize)>, ParseError> {
+    if body.len() < RTGENMSG_LEN || body[0] != 0 { return Err(ParseError::plain(Errno::Einval)); }
     let mut off = RTGENMSG_LEN;
     let mut out = alloc::vec::Vec::new();
     while off < body.len() {
-        if body.len() - off < 4 { return Err(Errno::Einval); }
+        if body.len() - off < 4 { return Err(ParseError::attr(Errno::Einval, off)); }
         let len = u16::from_ne_bytes([body[off], body[off + 1]]) as usize;
         let ty = u16::from_ne_bytes([body[off + 2], body[off + 3]]) & 0x3fff;
-        if len < 4 || len > body.len() - off { return Err(Errno::Einval); }
+        if len < 4 || len > body.len() - off { return Err(ParseError::attr(Errno::Einval, off)); }
         let next = (len + 3) & !3;
-        if next > body.len() - off { return Err(Errno::Einval); }
-        out.push((ty, &body[off + 4..off + len]));
+        if next > body.len() - off { return Err(ParseError::attr(Errno::Einval, off)); }
+        out.push((ty, &body[off + 4..off + len], off));
         off += next;
     }
     Ok(out)
 }
 
-fn i32_attr(value: &[u8]) -> Result<i32, Errno> {
-    value.try_into().map(i32::from_ne_bytes).map_err(|_| Errno::Einval)
+fn i32_attr(value: &[u8], offset: usize) -> Result<i32, ParseError> {
+    value.try_into().map(i32::from_ne_bytes).map_err(|_| ParseError::attr(Errno::Einval, offset))
 }
 
 /// Parse `RTM_NEWNSID`; PID references remain unsupported until a task-pid
 /// namespace resolver exists, so they are refused rather than misresolved.
 /// # C: O(N attrs)
-pub fn new(body: &[u8]) -> Result<New, Errno> {
+pub fn new(body: &[u8]) -> Result<New, ParseError> {
     let mut nsid = None;
-    let mut fd = None;
-    for (ty, value) in attrs(body)? {
+    let mut peer = None;
+    for (ty, value, offset) in attrs(body)? {
         match ty {
-            NETNSA_NSID if nsid.is_none() => nsid = Some(i32_attr(value)?),
-            NETNSA_FD if fd.is_none() => fd = Some(i32_attr(value)?),
+            NETNSA_NSID if nsid.is_none() => nsid = Some(i32_attr(value, offset)?),
+            NETNSA_FD if peer.is_none() => peer = Some(PeerRef::Fd(i32_attr(value, offset)?)),
+            NETNSA_PID if peer.is_none() => peer = Some(PeerRef::Pid(i32_attr(value, offset)? as u32)),
             NETNSA_NSID | NETNSA_FD | NETNSA_PID | NETNSA_TARGET_NSID | NETNSA_CURRENT_NSID =>
-                return Err(Errno::Einval),
-            _ => return Err(Errno::Einval),
+                return Err(ParseError::attr(Errno::Einval, offset)),
+            _ => return Err(ParseError::attr(Errno::Einval, offset)),
         }
     }
-    Ok(New { nsid: nsid.ok_or(Errno::Einval)?, fd: fd.ok_or(Errno::Einval)? })
+    Ok(New { nsid: nsid.ok_or(ParseError::plain(Errno::Einval))?, peer: peer.ok_or(ParseError::plain(Errno::Einval))? })
 }
 
 /// Parse `RTM_GETNSID`'s peer nsfs-fd form. # C: O(N attrs)
-pub fn get(body: &[u8]) -> Result<Get, Errno> {
-    let mut fd = None;
-    for (ty, value) in attrs(body)? {
+pub fn get(body: &[u8]) -> Result<Get, ParseError> {
+    let mut peer = None;
+    let mut target_nsid = None;
+    for (ty, value, offset) in attrs(body)? {
         match ty {
-            NETNSA_FD if fd.is_none() => fd = Some(i32_attr(value)?),
+            NETNSA_FD if peer.is_none() => peer = Some(PeerRef::Fd(i32_attr(value, offset)?)),
+            NETNSA_PID if peer.is_none() => peer = Some(PeerRef::Pid(i32_attr(value, offset)? as u32)),
+            NETNSA_NSID if peer.is_none() => peer = Some(PeerRef::Nsid(i32_attr(value, offset)?)),
+            NETNSA_TARGET_NSID if target_nsid.is_none() => target_nsid = Some(i32_attr(value, offset)?),
             NETNSA_FD | NETNSA_PID | NETNSA_NSID | NETNSA_TARGET_NSID | NETNSA_CURRENT_NSID =>
-                return Err(Errno::Einval),
-            _ => return Err(Errno::Einval),
+                return Err(ParseError::attr(Errno::Einval, offset)),
+            _ => return Err(ParseError::attr(Errno::Einval, offset)),
         }
     }
-    Ok(Get { fd: fd.ok_or(Errno::Einval)? })
+    Ok(Get { peer: peer.ok_or(ParseError::plain(Errno::Einval))?, target_nsid })
+}
+
+/// Parse `RTM_GETNSID|NLM_F_DUMP`; only a target namespace is meaningful.
+/// # C: O(N attrs)
+pub fn dump(body: &[u8]) -> Result<Dump, ParseError> {
+    let mut target_nsid = None;
+    for (ty, value, offset) in attrs(body)? {
+        match ty {
+            NETNSA_TARGET_NSID if target_nsid.is_none() => target_nsid = Some(i32_attr(value, offset)?),
+            _ => return Err(ParseError::attr(Errno::Einval, offset)),
+        }
+    }
+    Ok(Dump { target_nsid })
 }
 
 #[cfg(test)]
@@ -86,15 +122,25 @@ mod tests {
 
     #[test]
     fn new_requires_one_nsid_and_one_fd() {
-        assert_eq!(new(&request(&[(NETNSA_NSID, 7), (NETNSA_FD, 3)])), Ok(New { nsid: 7, fd: 3 }));
-        assert_eq!(new(&request(&[(NETNSA_FD, 3)])), Err(Errno::Einval));
-        assert_eq!(new(&request(&[(NETNSA_NSID, 7)])), Err(Errno::Einval));
+        assert_eq!(new(&request(&[(NETNSA_NSID, 7), (NETNSA_FD, 3)])), Ok(New { nsid: 7, peer: PeerRef::Fd(3) }));
+        assert_eq!(new(&request(&[(NETNSA_NSID, 7), (NETNSA_PID, 3)])), Ok(New { nsid: 7, peer: PeerRef::Pid(3) }));
+        assert_eq!(new(&request(&[(NETNSA_FD, 3)])).unwrap_err().errno, Errno::Einval);
+        assert_eq!(new(&request(&[(NETNSA_NSID, 7)])).unwrap_err().errno, Errno::Einval);
     }
 
     #[test]
     fn get_refuses_duplicates_and_non_fd_peer_references() {
-        assert_eq!(get(&request(&[(NETNSA_FD, 3)])), Ok(Get { fd: 3 }));
-        assert_eq!(get(&request(&[(NETNSA_FD, 3), (NETNSA_FD, 4)])), Err(Errno::Einval));
-        assert_eq!(get(&request(&[(NETNSA_PID, 44)])), Err(Errno::Einval));
+        assert_eq!(get(&request(&[(NETNSA_FD, 3)])), Ok(Get { peer: PeerRef::Fd(3), target_nsid: None }));
+        assert_eq!(get(&request(&[(NETNSA_NSID, 6), (NETNSA_TARGET_NSID, 9)])),
+            Ok(Get { peer: PeerRef::Nsid(6), target_nsid: Some(9) }));
+        assert_eq!(get(&request(&[(NETNSA_FD, 3), (NETNSA_FD, 4)])).unwrap_err().offset, Some(25));
+        assert_eq!(get(&request(&[(NETNSA_FD, 3), (NETNSA_PID, 44)])).unwrap_err().offset, Some(25));
+    }
+
+    #[test]
+    fn dump_accepts_only_one_target_namespace() {
+        assert_eq!(dump(&request(&[])), Ok(Dump { target_nsid: None }));
+        assert_eq!(dump(&request(&[(NETNSA_TARGET_NSID, 9)])), Ok(Dump { target_nsid: Some(9) }));
+        assert_eq!(dump(&request(&[(NETNSA_NSID, 9)])).unwrap_err().offset, Some(17));
     }
 }

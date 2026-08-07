@@ -115,4 +115,20 @@ mod tests {
         assert_eq!(reply.len(), Nlmsghdr::SIZE + NLMSGERR_HEAD_LEN);
         assert_ne!(Nlmsghdr::parse(&reply).unwrap().nlmsg_flags & flags::NLM_F_CAPPED, 0);
     }
+
+    #[test]
+    fn extended_ack_keeps_bad_attribute_offset_only_when_enabled() {
+        let request = request(&[0, 8, 0, 3, 0, 4, 0, 0, 0]);
+        let hdr = Nlmsghdr::parse(&request).unwrap();
+        let mut plain = crate::rtnetlink::nlmsg_ack_bad_attr(&hdr, -22, 17);
+        shape(&mut plain, &request, false, false);
+        assert_eq!(plain.len(), Nlmsghdr::SIZE + NLMSGERR_HEAD_LEN + 9);
+        assert_eq!(Nlmsghdr::parse(&plain).unwrap().nlmsg_flags & flags::NLM_F_ACK_TLVS, 0);
+
+        let mut extended = crate::rtnetlink::nlmsg_ack_bad_attr(&hdr, -22, 17);
+        shape(&mut extended, &request, false, true);
+        assert_ne!(Nlmsghdr::parse(&extended).unwrap().nlmsg_flags & flags::NLM_F_ACK_TLVS, 0);
+        let tlv = Nlmsghdr::SIZE + NLMSGERR_HEAD_LEN + 9;
+        assert_eq!(&extended[tlv..tlv + 8], &[8, 0, 2, 0, 17, 0, 0, 0]);
+    }
 }

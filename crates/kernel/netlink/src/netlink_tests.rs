@@ -528,6 +528,22 @@ fn rtnl_listen_all_nsid_receives_foreign_namespace_with_local_id() {
 }
 
 #[test]
+fn rtnl_listen_all_nsid_requires_the_socket_opener_capability_for_source() {
+    use alloc::sync::Arc;
+    let source = test_namespace();
+    let receiver_ns = test_namespace();
+    receiver_ns.assign_peer_id(&source, 30).unwrap();
+    let opener = namespace_identity::initial(namespace_identity::NamespaceKind::User).pin();
+    let sock = Arc::new(NetlinkSocket::new_with_cred(proto::NETLINK_ROUTE, &receiver_ns, opener, 0));
+    sock.flags.assign(sockflags::F_LISTEN_ALL_NSID, true);
+    let _ = sock.add_membership(mcast::grp::RTNLGRP_LINK);
+    register_rtnl_listener(&sock);
+
+    assert_eq!(rtnl_multicast_in(source.id().as_u64(), mcast::grp::RTNLGRP_LINK, &[7]), 0);
+    assert!(sock.dequeue().is_none());
+}
+
+#[test]
 fn rtnl_broadcast_error_reports_only_an_opted_in_receiver_overrun() {
     use alloc::sync::Arc;
     let namespace = network_namespace::initial();

@@ -22,6 +22,11 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
         Some(namespace) => namespace,
         None => return -(Errno::Esrch.as_i32() as i64),
     };
+    let opener_user_ns = match cur.namespace_owner(namespace_identity::NamespaceKind::User) {
+        Some(namespace) => namespace,
+        None => return -(Errno::Esrch.as_i32() as i64),
+    };
+    let opener_caps = cur.creds.cap_effective.load(core::sync::atomic::Ordering::Acquire);
     let env = net::socket_create::CreateEnv {
         namespace: net_namespace.id().as_u64(),
         has_net_raw: nscg::has_net_raw_for(cur, &net_namespace),
@@ -46,7 +51,8 @@ pub fn sys_socket(args: &SyscallArgs) -> i64 {
             return -(Errno::Eprotonosupport.as_i32() as i64);
         }
         let nl_proto = spec.protocol as u16;
-        let sock = Arc::new(::netlink::NetlinkSocket::new(nl_proto, &net_namespace));
+        let sock = Arc::new(::netlink::NetlinkSocket::new_with_cred(nl_proto, &net_namespace,
+            opener_user_ns.pin(), opener_caps));
         // udev/systemd-udevd: a NETLINK_KOBJECT_UEVENT socket subscribes
         // to broadcast device uevents.
         if nl_proto == ::netlink::proto::NETLINK_KOBJECT_UEVENT {

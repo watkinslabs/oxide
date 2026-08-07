@@ -108,6 +108,22 @@ impl NetworkNamespace {
             .and_then(|candidate| core::ptr::eq(&*candidate, peer).then_some(*id)))
     }
 
+    /// Resolve one caller-local namespace ID to its live peer owner.
+    /// # C: O(1)
+    pub fn peer_by_id(&self, id: i32) -> Option<Arc<NetworkNamespace>> {
+        let mut ids = self.peer_ids.lock();
+        ids.retain(|_, owner| owner.strong_count() != 0);
+        ids.get(&id).and_then(alloc::sync::Weak::upgrade)
+    }
+
+    /// Snapshot caller-local peer IDs in deterministic numeric order.
+    /// # C: O(N peers)
+    pub fn peer_snapshot(&self) -> alloc::vec::Vec<(i32, Arc<NetworkNamespace>)> {
+        let mut ids = self.peer_ids.lock();
+        ids.retain(|_, owner| owner.strong_count() != 0);
+        ids.iter().filter_map(|(id, owner)| owner.upgrade().map(|peer| (*id, peer))).collect()
+    }
+
     /// Install one explicit peer-ID mapping. `RTM_NEWNSID` owns the request
     /// parser; this owner enforces the one-to-one namespace relation.
     /// # C: O(N peers)
