@@ -99,7 +99,7 @@ pub fn handle_getlink(req: &Nlmsghdr) -> Vec<u8> {
 /// # C: O(N_ifaces)
 fn getlink_one(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
     let off = Nlmsghdr::SIZE;
-    if full_msg.len() < off + Ifinfomsg::SIZE { return super::ack::build_ack(req, -22); }
+    if full_msg.len() < off + Ifinfomsg::SIZE { return super::ack::build_ack(req, -(Errno::Einval.as_i32())); }
     let want_index = i32::from_ne_bytes([
         full_msg[off + 4], full_msg[off + 5], full_msg[off + 6], full_msg[off + 7],
     ]);
@@ -110,7 +110,7 @@ fn getlink_one(ns: u64, req: &Nlmsghdr, full_msg: &[u8]) -> Vec<u8> {
             || want_name.as_deref().is_some_and(|w| w == name.as_str())
     });
     let Some((id, name, mac, broadcast, mtu, is_lo, flags, stats)) = found
-        else { return super::ack::build_ack(req, -19) };
+        else { return super::ack::build_ack(req, -(Errno::Enodev.as_i32())) };
     build_newlink_reply(req.nlmsg_seq, req.nlmsg_pid, *id as i32, name, *mac,
         &broadcast.bytes[..broadcast.len as usize], *mtu, *is_lo, *flags, *stats, false)
 }
