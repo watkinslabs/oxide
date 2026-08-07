@@ -36,11 +36,11 @@ reclassified.
 
 | Class \ Sev | blocker | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|
-| `DEFECT` | 0 | 2 | 14 | 24 | 40 |
+| `DEFECT` | 0 | 0 | 14 | 24 | 38 |
 | `MISSING` | 2 | 0 | 17 | 19 | 38 |
 | `COVERAGE` | 0 | 0 | 10 | 15 | 25 |
 | `INFRA` | 0 | 0 | 15 | 11 | 26 |
-| **Total** | **2** | **2** | **56** | **69** | **129** |
+| **Total** | **2** | **0** | **56** | **69** | **127** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
