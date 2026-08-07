@@ -757,6 +757,7 @@ evidence has one canonical home.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
+| FIXED B1893 | COVERAGE | low | `getlink_one` used bare `-22`/`-19` replies despite the rtnetlink module already owning typed errno values. Its malformed-request and absent-device replies now derive from `Errno::Einval` and `Errno::Enodev`, preventing an ABI-number literal from drifting. | `cargo test -p netlink --lib --no-fail-fast` (265 passed). | B1893-rtnetlink-typed-errno |
 | FIXED B1745 | DEFECT | med | `handle_getaddr_in` took no message body, so a `RTM_GETADDR` dump carrying an `ifa_index` filter was answered with every address in the namespace. `ip addr show dev eth0` received loopback's addresses alongside eth0's. | `crates/kernel/netlink/src/rtnetlink_tests/strict_dumps.rs` `a_strict_address_dump_answers_only_the_device_the_caller_named`; positive control: deleting the filter line turns it RED | — |
 | FIXED B1745 | DEFECT | low | A `RTM_GETLINK` dump carrying a non-zero `ifi_index` was answered with every device. Link dumps define no device filter, so the reference refuses the request rather than silently ignoring the field. | `a_strict_link_dump_refuses_a_device_filter_it_cannot_honour` | — |
 | FIXED B1745 | MISSING | low | Dump replies never carried `NLM_F_DUMP_FILTERED`, so a client could not tell a filtered answer from a full one. | the filtered-flag assertions in `strict_dumps.rs` | — |
