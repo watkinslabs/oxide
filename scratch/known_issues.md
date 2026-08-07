@@ -236,7 +236,7 @@ here now.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| OPEN | MISSING | low | `/proc/net/snmp6` and `/proc/net/packet` remain empty/header-only stubs. `/proc/net/netstat` is live and projects the canonical TCP extended MIB counters. | `crates/kernel/procfs/src/static_files.rs`; `crates/kernel/net/src/mib.rs::render_proc_netstat` | — |
+| OPEN | MISSING | low | `/proc/net/snmp6` and `/proc/net/packet` remain empty/header-only stubs. `/proc/net/netstat` is live and projects the canonical TCP extended MIB counters. | `crates/kernel/procfs/src/static_files.rs`; `crates/kernel/net/src/mib.rs::render_proc_netstat` | CLAIMED F838 |
 
 ### C274-qemu-pcap-capture
 

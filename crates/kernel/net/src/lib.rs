@@ -63,6 +63,7 @@ pub mod icmp;
 pub mod igmp;
 pub mod icmpv6;
 pub mod mib;
+pub mod mib6;
 pub mod neigh;
 pub mod arp;
 pub mod ethernet;

@@ -56,8 +56,12 @@ impl NetStack {
         let dev = self.ifaces.acquire_egress_in_ns(iface, lease.net_ns())
             .filter(|dev| dev.generation() == lease.generation())
             .ok_or(NetError::Enetunreach)?;
+        crate::mib6::bump_ip(lease.net_ns(), crate::mib6::Ip6Mib::OutRequests);
         if !nf_output(&packet, NFPROTO_IPV6) { return Ok(false); }
         dev.xmit(packet)?;
+        crate::mib6::account_output(lease.net_ns(), dst, total);
+        crate::mib6::bump_icmp(lease.net_ns(), crate::mib6::Icmp6Mib::OutMsgs);
+        if let Some(typ) = body.first() { crate::mib6::bump_icmp_type(lease.net_ns(), true, *typ); }
         Ok(true)
     }
 
@@ -262,12 +266,23 @@ impl NetStack {
         let mut packet = crate::pkt::Pkt::with_capacity(0, l4_len);
         let body = packet.put(l4_len).map_err(|_| NetError::Enobufs)?;
         crate::udp::build_into_v6_opts(src_port, dst_port, src, dst, payload, body, no_check);
-        self.xmit_ipv6_l4_with_policy(
+        match self.xmit_ipv6_l4_with_policy(
             iface_id, iface, next_hop, src, dst, IpProto::Udp, packet.data(), hop_limit,
             traffic_class, flow_label, automatic_flow_label, source_prefs, mtu,
             crate::uapi::ipv6_pmtudisc_allows_fragmentation(mode),
             owner, control,
-        ).map(|_| ())
+        ) {
+            Ok(_) => {
+                crate::mib6::bump_udp(net_ns, crate::mib6::Udp6Mib::OutDatagrams);
+                Ok(())
+            }
+            Err(error) => {
+                if error == NetError::Enobufs {
+                    crate::mib6::bump_udp(net_ns, crate::mib6::Udp6Mib::SndbufErrors);
+                }
+                Err(error)
+            }
+        }
     }
 
     pub(crate) fn handle_v6_packet_too_big(&self, net_ns: u64, mtu: u32, invoking: &[u8]) {
@@ -328,10 +343,17 @@ impl NetStack {
         p.next_hop = Some(crate::pkt::TxNextHop::V6 { addr: dst, src });
         let net_ns = self.ifaces.namespace(iface).ok_or(NetError::Enetunreach)?;
         let dev = self.ifaces.acquire_egress_in_ns(iface, net_ns).ok_or(NetError::Enetunreach)?;
+        crate::mib6::bump_ip(net_ns, crate::mib6::Ip6Mib::OutRequests);
         if !nf_output(&p, NFPROTO_IPV6) {
             return Ok(());
         }
-        dev.xmit(p)
+        dev.xmit(p)?;
+        crate::mib6::account_output(net_ns, dst, total);
+        if proto == IpProto::Icmpv6 {
+            crate::mib6::bump_icmp(net_ns, crate::mib6::Icmp6Mib::OutMsgs);
+            if let Some(typ) = body.first() { crate::mib6::bump_icmp_type(net_ns, true, *typ); }
+        }
+        Ok(())
     }
 
 }
@@ -358,10 +380,24 @@ pub(super) fn admit_ipv6_owned(owner: &crate::SocketOwner, iface_id: NetIfaceId,
     Ok(true)
 }
 
-pub(super) fn emit_ipv6_fragment(iface_id: NetIfaceId, iface: crate::EgressLease, next_hop: Ipv6Addr,
+pub(super) fn emit_ipv6_fragment(owner: Option<&crate::SocketOwner>, iface_id: NetIfaceId, iface: crate::EgressLease, next_hop: Ipv6Addr,
              src: Ipv6Addr, mut p: crate::pkt::Pkt) -> NetResult<()> {
     prepare_ipv6(iface_id, next_hop, src, &mut p);
-    iface.xmit(p)
+    let bytes = p.len();
+    // Header-included raw sockets may intentionally hand us bytes whose IPv6
+    // header is not parseable here; their transmit contract is opaque bytes,
+    // not a second validation pass.  Count only packets whose final header
+    // supplies the destination needed by the IPv6 MIB projection.
+    let dst = p.data().get(24..40).and_then(|bytes| {
+        if p.data().first()? >> 4 == 6 { Some(Ipv6Addr(bytes.try_into().ok()?)) } else { None }
+    });
+    iface.xmit(p)?;
+    if let Some(dst) = dst {
+        crate::mib6::account_output(
+            owner.map_or_else(crate::netdev::current_net_ns, crate::SocketOwner::net_ns), dst, bytes,
+        );
+    }
+    Ok(())
 }
 
 pub(super) fn prepare_ipv6(iface_id: NetIfaceId, next_hop: Ipv6Addr, src: Ipv6Addr,

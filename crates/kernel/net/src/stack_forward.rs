@@ -213,6 +213,9 @@ impl NetStack {
         if nf_hook_eval_in(net_ns, NF_INET_FORWARD, p.data(), NFPROTO_IPV6).verdict == 0 { return Ok(()); }
         if nf_hook_eval_in(net_ns, NF_INET_POST_ROUTING, p.data(), NFPROTO_IPV6).verdict == 0 { return Ok(()); }
         let _ = ingress;
-        dev.xmit(p)
+        dev.xmit(p)?;
+        crate::mib6::bump_ip(net_ns, crate::mib6::Ip6Mib::OutForwDatagrams);
+        crate::mib6::account_output(net_ns, header.dst, total);
+        Ok(())
     }
 }

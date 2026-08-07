@@ -20,7 +20,10 @@ impl NetStack {
     {
         let udp = match crate::udp::parse_v6(payload, src, dst) {
             Ok(h) => h,
-            Err(_) => return,
+            Err(_) => {
+                crate::mib6::bump_udp(net_ns, crate::mib6::Udp6Mib::InErrors);
+                return;
+            }
         };
         // Reuseport selection classifies the datagram body, so resolve it
         // before the demux rather than per selected endpoint.
@@ -28,6 +31,9 @@ impl NetStack {
             .get(crate::udp::UDP_HDR_LEN..udp.length as usize).unwrap_or(&[]);
         let endpoints = self.udp6_demux_in(net_ns, src, udp.src_port, dst, udp.dst_port, iface,
             datagram_body);
+        if endpoints.is_empty() && !dst.is_multicast() {
+            crate::mib6::bump_udp(net_ns, crate::mib6::Udp6Mib::NoPorts);
+        }
         let gro_offered = crate::udp_gro::device_offers_gro(
             self.ifaces.lookup_in_ns(iface, net_ns).map_or(0, |dev| dev.hardware_type()));
         for q in endpoints {
@@ -51,14 +57,19 @@ impl NetStack {
                         .map_or(0, |dev| dev.hardware_type()),
                 }), body.len(),
             ) else { continue; };
-            let _ = q.enqueue_gro(crate::stack_ipv6::Udp6Datagram {
+            if q.enqueue_gro(crate::stack_ipv6::Udp6Datagram {
                 src, sport: udp.src_port, dst, dport: udp.dst_port, iface, hop_limit,
                 traffic_class,
                 flowinfo: crate::cmsg::flowinfo(traffic_class, ancillary.flow_label),
                 ext_headers: ancillary.ext_headers.clone(),
                 frag_max: ancillary.frag_max,
                 payload: body[..keep].to_vec(),
-            }, udp.checksum == 0, gro_offered);
+            }, udp.checksum == 0, gro_offered) {
+                crate::mib6::bump_udp(net_ns, crate::mib6::Udp6Mib::InDatagrams);
+            } else {
+                crate::mib6::bump_udp(net_ns, crate::mib6::Udp6Mib::RcvbufErrors);
+                crate::mib6::bump_udp(net_ns, crate::mib6::Udp6Mib::InErrors);
+            }
         }
     }
 }

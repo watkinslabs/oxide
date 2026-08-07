@@ -89,16 +89,32 @@ impl ReasmTable {
         more_fragments: bool,
         fragsize: u32,
     ) -> Option<(Vec<u8>, Vec<u8>, u32)> {
-        let end = offset_bytes.checked_add(payload.len())?;
-        if end > REASM_MAX_BYTES { return None; }
-        if more_fragments && (payload.len() & 7) != 0 { return None; }
+        crate::mib6::bump_ip(key.net_ns, crate::mib6::Ip6Mib::ReasmReqds);
+        let Some(end) = offset_bytes.checked_add(payload.len()) else {
+            crate::mib6::bump_ip(key.net_ns, crate::mib6::Ip6Mib::ReasmFails);
+            return None;
+        };
+        if end > REASM_MAX_BYTES || more_fragments && (payload.len() & 7) != 0 {
+            crate::mib6::bump_ip(key.net_ns, crate::mib6::Ip6Mib::ReasmFails);
+            return None;
+        }
 
         let mut g = self.flows.lock();
-        g.retain(|_, f| now_ns.saturating_sub(f.last_ns) < REASM_TIMEOUT_NS);
+        let mut expired = Vec::new();
+        g.retain(|key, f| {
+            let live = now_ns.saturating_sub(f.last_ns) < REASM_TIMEOUT_NS;
+            if !live { expired.push(key.net_ns); }
+            live
+        });
+        for net_ns in expired {
+            crate::mib6::bump_ip(net_ns, crate::mib6::Ip6Mib::ReasmTimeout);
+            crate::mib6::bump_ip(net_ns, crate::mib6::Ip6Mib::ReasmFails);
+        }
         if g.get(&key).map(|flow| conflicts(flow, offset_bytes, end, !more_fragments))
             .unwrap_or(false)
         {
             g.remove(&key);
+            crate::mib6::bump_ip(key.net_ns, crate::mib6::Ip6Mib::ReasmFails);
             return None;
         }
         let flow = g.entry(key).or_insert(Flow {
@@ -139,12 +155,22 @@ impl ReasmTable {
         let prefix = flow.prefix.clone().unwrap_or_default();
         let max_frag = flow.max_frag;
         g.remove(&key);
+        crate::mib6::bump_ip(key.net_ns, crate::mib6::Ip6Mib::ReasmOks);
         Some((prefix, out, max_frag))
     }
 
     /// # C: O(N flows)
     pub fn gc(&self, now_ns: u64) {
-        self.flows.lock().retain(|_, f| now_ns.saturating_sub(f.last_ns) < REASM_TIMEOUT_NS);
+        let mut expired = Vec::new();
+        self.flows.lock().retain(|key, f| {
+            let live = now_ns.saturating_sub(f.last_ns) < REASM_TIMEOUT_NS;
+            if !live { expired.push(key.net_ns); }
+            live
+        });
+        for net_ns in expired {
+            crate::mib6::bump_ip(net_ns, crate::mib6::Ip6Mib::ReasmTimeout);
+            crate::mib6::bump_ip(net_ns, crate::mib6::Ip6Mib::ReasmFails);
+        }
     }
 
     /// Remove every incomplete flow owned by one network namespace. # C: O(N flows)
