@@ -99,7 +99,8 @@ pub fn initial() -> NetworkNamespaceRef {
     let final_drop = Arc::new(FinalDropPublication::new());
     let final_drop_publisher = FinalDropPublisher::new(INIT_ID, Arc::clone(&final_drop));
     let namespace = Arc::new(NetworkNamespace {
-        canonical, active: Spinlock::new(None), _final_drop: final_drop_publisher,
+        canonical, active: Spinlock::new(None), peer_ids: Spinlock::new(BTreeMap::new()),
+        _final_drop: final_drop_publisher,
     });
     let mut initial_map = BTreeMap::new();
     initial_map.insert(INIT_ID, RegistryEntry::Live {
@@ -135,7 +136,8 @@ pub fn allocate<H: namespace_identity::NamespaceHandle>(owner_user_namespace: H)
     let id = NetworkNamespaceId(canonical.id().as_u64());
     let final_drop_publisher = FinalDropPublisher::new(id, Arc::clone(&final_drop));
     let namespace = Arc::new(NetworkNamespace {
-        canonical, active: Spinlock::new(None), _final_drop: final_drop_publisher,
+        canonical, active: Spinlock::new(None), peer_ids: Spinlock::new(BTreeMap::new()),
+        _final_drop: final_drop_publisher,
     });
     REGISTRY.lock().by_id.insert(namespace.id(),
         RegistryEntry::Live { owner: Arc::downgrade(&namespace), final_drop });

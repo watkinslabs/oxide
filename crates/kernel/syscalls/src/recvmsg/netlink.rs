@@ -9,6 +9,7 @@ use crate::recv_user::RecvUser;
 const NETLINK_KOBJECT_UEVENT: u16 = 15;
 const SOL_NETLINK: i32 = 270;
 const NETLINK_PKTINFO: i32 = 3;
+const NETLINK_LISTEN_ALL_NSID: i32 = 8;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
@@ -33,7 +34,7 @@ pub(crate) fn recv_pinned(file: &alloc::sync::Arc<vfs::File>, file_nonblock: boo
     if flags & MSG_OOB != 0 { return err(Errno::Eopnotsupp); }
     let peek = flags & MSG_PEEK != 0;
     let nonblock = flags & MSG_DONTWAIT != 0 || file_nonblock;
-    let (dgram, copied, src_pid, multicast_group, carried, security) = loop {
+    let (dgram, copied, src_pid, multicast_group, nsid, carried, security) = loop {
         match sock.receive(peek) {
             ::netlink::ReceiveState::Empty => {
                 if nonblock { return err(Errno::Eagain); }
@@ -55,7 +56,7 @@ pub(crate) fn recv_pinned(file: &alloc::sync::Arc<vfs::File>, file_nonblock: boo
                     &received.bytes[..core::cmp::min(user.capacity, received.bytes.len())]);
                 match copied {
                     Ok(copied) => break (received.bytes, copied, received.src_port,
-                        received.multicast_group, received.creds, received.security),
+                        received.multicast_group, received.nsid, received.creds, received.security),
                     Err(e) => return e,
                 }
             }
@@ -67,15 +68,21 @@ pub(crate) fn recv_pinned(file: &alloc::sync::Arc<vfs::File>, file_nonblock: boo
     // that did not ask is never handed a control message, and a reader that
     // did is answered whether it is watching uevents or the link table.
     let pktinfo = multicast_group.to_ne_bytes();
-    let protocol = sock.flags.get(::netlink::F_RECV_PKTINFO)
-        .then_some((SOL_NETLINK, NETLINK_PKTINFO, pktinfo.as_slice()));
+    let nsid_wire = nsid.unwrap_or_default().to_ne_bytes();
+    let mut protocol = Vec::new();
+    if sock.flags.get(::netlink::F_RECV_PKTINFO) {
+        protocol.push((SOL_NETLINK, NETLINK_PKTINFO, pktinfo.as_slice()));
+    }
+    if sock.flags.get(::netlink::F_LISTEN_ALL_NSID) && nsid.is_some() {
+        protocol.push((SOL_NETLINK, NETLINK_LISTEN_ALL_NSID, nsid_wire.as_slice()));
+    }
     let scm = crate::recv_control::ScmReceive {
         credentials: net::scm::recv(sock.scm.on(), carried),
         security: if sock.scm_security.on() { security } else { None },
         pid: None,
         want_pidfd: false,
     };
-    let delivered = match crate::recv_control::deliver(user, Vec::new(), scm, None, protocol, flags)
+    let delivered = match crate::recv_control::deliver(user, Vec::new(), scm, None, &protocol, flags)
     {
         Ok(delivered) => delivered,
         Err(error) => return error,

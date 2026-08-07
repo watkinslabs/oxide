@@ -17,14 +17,14 @@ pub(super) fn dispatch(
         if let Some(header) = Nlmsghdr::parse(datagram) {
             let mut reply = rtnetlink::nlmsg_ack_pub(&header, -(vfs::VfsError::Eperm as i32));
             super::ack_response::shape(&mut reply, datagram,
-                sock.flags.get(crate::sockflags::F_CAP_ACK));
+                sock.flags.get(crate::sockflags::F_CAP_ACK), sock.flags.get(crate::sockflags::F_EXT_ACK));
             sock.enqueue(reply);
         }
         return Ok(consumed);
     }
 
     let mut reply = invoke_netfilter(datagram, sock.net_ns.id().as_u64());
-    super::ack_response::shape(&mut reply, datagram, sock.flags.get(crate::sockflags::F_CAP_ACK));
+    super::ack_response::shape(&mut reply, datagram, sock.flags.get(crate::sockflags::F_CAP_ACK), sock.flags.get(crate::sockflags::F_EXT_ACK));
     let port = sock.port_id.load(Ordering::Acquire);
     let mut off = 0usize;
     while off + Nlmsghdr::SIZE <= reply.len() {

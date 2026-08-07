@@ -80,7 +80,7 @@ fn finish_inq(sock: &Arc<InetSocket>, user: &RecvUser, files: alloc::vec::Vec<Ar
         pid: if passpidfd { carried.as_ref().and_then(|cred| cred.identity.clone()) } else { None },
         want_pidfd: passpidfd,
     };
-    let delivered = recv_control::deliver(user, files, scm, inq, None, flags)?;
+    let delivered = recv_control::deliver(user, files, scm, inq, &[], flags)?;
     user.copy_name(name)?;
     user.finish(delivered.len, out_flags | delivered.flags)
 }

@@ -27,9 +27,15 @@ fn set_reply_header(reply: &mut [u8], mut hdr: Nlmsghdr) {
 /// canonical `NLMSG_ERROR`. Error ACKs copy the request payload unless the
 /// sender asked for `NETLINK_CAP_ACK`; successful ACKs are always capped.
 /// # C: O(reply + request)
-pub(super) fn shape(reply: &mut Vec<u8>, request: &[u8], cap_ack: bool) {
+pub(super) fn shape(reply: &mut Vec<u8>, request: &[u8], cap_ack: bool, ext_ack: bool) {
     let Some(mut hdr) = reply_header(reply) else { return; };
     let error = reply_error(reply);
+    let base = Nlmsghdr::SIZE + NLMSGERR_HEAD_LEN;
+    let has_tlvs = hdr.nlmsg_flags & flags::NLM_F_ACK_TLVS != 0;
+    if has_tlvs && !ext_ack {
+        reply.truncate(base);
+        hdr.nlmsg_flags &= !flags::NLM_F_ACK_TLVS;
+    }
     if error == 0 || cap_ack {
         hdr.nlmsg_flags |= flags::NLM_F_CAPPED;
         set_reply_header(reply, hdr);
@@ -38,7 +44,9 @@ pub(super) fn shape(reply: &mut Vec<u8>, request: &[u8], cap_ack: bool) {
     let Some(req) = Nlmsghdr::parse(request) else { return; };
     let req_len = req.nlmsg_len as usize;
     if req_len < Nlmsghdr::SIZE || req_len > request.len() { return; }
-    reply.extend_from_slice(&request[Nlmsghdr::SIZE..req_len]);
+    if has_tlvs && ext_ack {
+        reply.splice(base..base, request[Nlmsghdr::SIZE..req_len].iter().copied());
+    } else { reply.extend_from_slice(&request[Nlmsghdr::SIZE..req_len]); }
     set_reply_header(reply, hdr);
 }
 
@@ -72,12 +80,12 @@ mod tests {
         let request = request(b"full original request");
         let hdr = Nlmsghdr::parse(&request).unwrap();
         let mut uncapped = ack(&hdr, -22);
-        shape(&mut uncapped, &request, false);
+        shape(&mut uncapped, &request, false, false);
         assert_eq!(&uncapped[Nlmsghdr::SIZE + NLMSGERR_HEAD_LEN..], b"full original request");
         assert_eq!(Nlmsghdr::parse(&uncapped).unwrap().nlmsg_flags & flags::NLM_F_CAPPED, 0);
 
         let mut capped = ack(&hdr, -22);
-        shape(&mut capped, &request, true);
+        shape(&mut capped, &request, true, false);
         assert_eq!(capped.len(), Nlmsghdr::SIZE + NLMSGERR_HEAD_LEN);
         assert_ne!(Nlmsghdr::parse(&capped).unwrap().nlmsg_flags & flags::NLM_F_CAPPED, 0);
     }
@@ -86,7 +94,7 @@ mod tests {
     fn successful_ack_is_capped_even_without_the_option() {
         let request = request(b"ignored on success");
         let mut reply = ack(&Nlmsghdr::parse(&request).unwrap(), 0);
-        shape(&mut reply, &request, false);
+        shape(&mut reply, &request, false, false);
         assert_eq!(reply.len(), Nlmsghdr::SIZE + NLMSGERR_HEAD_LEN);
         assert_ne!(Nlmsghdr::parse(&reply).unwrap().nlmsg_flags & flags::NLM_F_CAPPED, 0);
     }

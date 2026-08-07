@@ -23,6 +23,11 @@ pub fn put_nlattr_u32(out: &mut Vec<u8>, ty: u16, v: u32) {
 }
 
 /// # C: O(1)
+pub fn put_nlattr_i32(out: &mut Vec<u8>, ty: u16, v: i32) {
+    put_nlattr(out, ty, &v.to_ne_bytes());
+}
+
+/// # C: O(1)
 pub fn put_nlattr_u8(out: &mut Vec<u8>, ty: u16, v: u8) {
     put_nlattr(out, ty, &[v]);
 }
