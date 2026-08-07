@@ -70,6 +70,8 @@ pub(crate) use pmtu_cache::IPV4_MIN_PMTU;
 mod core;
 #[path = "stack_anycast.rs"]
 pub(crate) mod anycast;
+#[path = "stack_mcast_rtnl.rs"]
+pub(crate) mod mcast_rtnl;
 mod lifecycle;
 mod udp_endpoint;
 mod udp_bind;

@@ -62,6 +62,10 @@
         assert_eq!(RTM_GETROUTE, 26);
         assert_eq!(RTM_NEWRULE,  32);
         assert_eq!(RTM_GETRULE,  34);
+        assert_eq!(RTM_NEWMULTICAST, 56);
+        assert_eq!(RTM_GETMULTICAST, 58);
+        assert_eq!(RTM_NEWANYCAST, 60);
+        assert_eq!(RTM_GETANYCAST, 62);
     }
 
     // K4: an RTM_GETLINK dump must end with a well-formed NLMSG_DONE.
@@ -496,7 +500,7 @@
         let bytes = build_newaddr_reply(
             1, 42, 2, "eth0", [10, 0, 2, 15], None, Some([10, 0, 2, 255]), 24,
             RT_SCOPE_UNIVERSE, net::iface_addr::IFA_F_PERMANENT, 0, 0,
-            IfaCacheInfo::PERMANENT, crate::flags::NLM_F_MULTI,
+            IfaCacheInfo::PERMANENT, crate::flags::NLM_F_MULTI, None,
         );
         // Header nlmsg_type == RTM_NEWADDR
         let ty = u16::from_ne_bytes([bytes[4], bytes[5]]);
@@ -526,7 +530,7 @@
         let bytes = build_newaddr_reply(
             1, 42, 2, "ppp0", local, Some(peer), None, 32, RT_SCOPE_UNIVERSE,
             net::iface_addr::IFA_F_PERMANENT, 0, 0, IfaCacheInfo::PERMANENT,
-            crate::flags::NLM_F_MULTI,
+            crate::flags::NLM_F_MULTI, None,
         );
         let attrs = &bytes[Nlmsghdr::SIZE + Ifaddrmsg::SIZE..];
         assert_eq!(find_attr(attrs, ifa::IFA_LOCAL).unwrap(), &local);
@@ -539,7 +543,7 @@
         let addr = [0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
         let ci = IfaCacheInfo { preferred: 1800, valid: 3600, cstamp: 0, tstamp: 0 };
         let bytes = build_newaddr6_reply(1, 42, 2, "eth0", addr, 64, RT_SCOPE_UNIVERSE,
-            net::iface_addr::IFA_F_PERMANENT, ci, crate::flags::NLM_F_MULTI);
+            net::iface_addr::IFA_F_PERMANENT, ci, crate::flags::NLM_F_MULTI, None);
         assert_eq!(u16::from_ne_bytes([bytes[4], bytes[5]]), RTM_NEWADDR);
         assert_eq!(bytes[Nlmsghdr::SIZE], AF_INET6);
         assert_eq!(bytes[Nlmsghdr::SIZE + 1], 64);

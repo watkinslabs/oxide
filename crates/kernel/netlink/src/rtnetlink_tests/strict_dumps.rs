@@ -41,6 +41,31 @@ fn ack_errno(reply: &[u8]) -> i32 {
     i32::from_ne_bytes([reply[16], reply[17], reply[18], reply[19]])
 }
 
+fn target_attr(msg: &mut alloc::vec::Vec<u8>, nsid: i32) {
+    msg.extend_from_slice(&8u16.to_ne_bytes());
+    msg.extend_from_slice(&ifa::IFA_TARGET_NETNSID.to_ne_bytes());
+    msg.extend_from_slice(&nsid.to_ne_bytes());
+    let mut hdr = Nlmsghdr::parse(msg).unwrap();
+    hdr.nlmsg_len = msg.len() as u32;
+    hdr.write_to(&mut msg[..Nlmsghdr::SIZE]);
+}
+
+fn getaddr6_one_request(ifindex: u32, addr: [u8; 16]) -> (Nlmsghdr, alloc::vec::Vec<u8>) {
+    let mut body = alloc::vec![0u8; super::uapi::Ifaddrmsg::SIZE];
+    body[0] = super::uapi::AF_INET6;
+    body[4..8].copy_from_slice(&ifindex.to_ne_bytes());
+    super::put_nlattr(&mut body, ifa::IFA_ADDRESS, &addr);
+    let hdr = Nlmsghdr {
+        nlmsg_len: (Nlmsghdr::SIZE + body.len()) as u32,
+        nlmsg_type: RTM_GETADDR, nlmsg_flags: crate::flags::NLM_F_REQUEST,
+        nlmsg_seq: 5, nlmsg_pid: 7,
+    };
+    let mut msg = alloc::vec![0u8; Nlmsghdr::SIZE];
+    hdr.write_to(&mut msg[..]);
+    msg.extend_from_slice(&body);
+    (hdr, msg)
+}
+
 #[test]
 fn a_strict_address_dump_answers_only_the_device_the_caller_named() {
     let domain = net::hosted_fixture::init_net_domain();
@@ -84,6 +109,56 @@ fn a_strict_address_dump_answers_only_the_device_the_caller_named() {
     let all = addr_rows(&handle_getaddr_in(0, &all_req, &all_msg, true));
     assert!(all.len() >= 2);
     assert!(all.iter().all(|(_, f)| f & crate::rtnetlink::NLM_F_DUMP_FILTERED == 0));
+}
+
+#[test]
+fn a_strict_address_dump_resolves_a_caller_local_target_namespace() {
+    let domain = net::hosted_fixture::init_net_domain();
+    domain.set_notifier(crate::mcast::notify_control_event);
+    let caller = network_namespace::initial();
+    let target = crate::netlink_tests::test_namespace();
+    let target_id = target.id().as_u64();
+    caller.assign_peer_id(&target, 47).unwrap();
+    let stack = net::global_stack();
+    let iface = stack.ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), target_id);
+    let addr = net::Ipv4Addr::new(198, 51, 100, 7);
+    assert!(stack.set_ipv4_prefix_meta_in(target_id, iface, addr, None, 24,
+        net::iface_addr::Ipv4AddrMeta::permanent(super::uapi::RT_SCOPE_UNIVERSE)));
+    let (req, mut msg) = getaddr_request(0, 0);
+    target_attr(&mut msg, 47);
+
+    let reply = handle_getaddr_with_access(0, &req, &msg, true,
+        |owner| owner.id().as_u64() == target_id);
+    assert_eq!(addr_rows(&reply).len(), 1);
+    assert_eq!(addr_rows(&reply)[0].0, visible_ifindex(iface, target_id));
+    let attrs = &reply[Nlmsghdr::SIZE + Ifaddrmsg::SIZE..];
+    assert_eq!(super::find_attr(attrs, ifa::IFA_TARGET_NETNSID).unwrap(), &47i32.to_ne_bytes());
+    let denied = handle_getaddr_with_access(0, &req, &msg, true, |_| false);
+    assert_eq!(ack_errno(&denied), -(syscall::errno::Errno::Eacces.as_i32()));
+}
+
+#[test]
+fn an_ipv6_address_lookup_resolves_a_caller_local_target_namespace() {
+    let domain = net::hosted_fixture::init_net_domain();
+    domain.set_notifier(crate::mcast::notify_control_event);
+    let caller = network_namespace::initial();
+    let target = crate::netlink_tests::test_namespace();
+    let target_id = target.id().as_u64();
+    caller.assign_peer_id(&target, 48).unwrap();
+    let iface = net::global_stack().ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), target_id);
+    let addr = net::Ipv6Addr([0x20, 1, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 48]);
+    net::global_stack().add_v6_addr(iface, addr);
+    let (req, mut msg) = getaddr6_one_request(visible_ifindex(iface, target_id), addr.0);
+    target_attr(&mut msg, 48);
+
+    let reply = crate::rtnetlink::handle_getaddr6_one_with_access(0, &req, &msg,
+        |owner| owner.id().as_u64() == target_id);
+    assert_eq!(Nlmsghdr::parse(&reply).unwrap().nlmsg_type, RTM_NEWADDR);
+    let attrs = &reply[Nlmsghdr::SIZE + Ifaddrmsg::SIZE..];
+    assert_eq!(super::find_attr(attrs, ifa::IFA_TARGET_NETNSID).unwrap(), &48i32.to_ne_bytes());
+    let denied = crate::rtnetlink::handle_getaddr6_one_with_access(0, &req, &msg, |_| false);
+    assert_eq!(ack_errno(&denied), -(syscall::errno::Errno::Eacces.as_i32()));
+    let _ = net::global_stack().ifaces.unregister(iface);
 }
 
 #[test]

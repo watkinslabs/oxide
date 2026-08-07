@@ -117,8 +117,12 @@ impl NetlinkSocket {
     }
 
     fn may_admin_net(&self) -> bool {
+        self.may_admin_net_for(&self.net_ns)
+    }
+
+    fn may_admin_net_for(&self, _target: &NetworkNamespaceRef) -> bool {
         #[cfg(target_os = "oxide-kernel")]
-        { sched::current().is_some_and(|cur| nscg::has_net_admin_for(cur, &self.net_ns)) }
+        { sched::current().is_some_and(|cur| nscg::has_net_admin_for(cur, _target)) }
         #[cfg(not(target_os = "oxide-kernel"))]
         { true }
     }
@@ -244,8 +248,10 @@ impl NetlinkSocket {
             (proto::NETLINK_ROUTE, rtnetlink::RTM_NEWNSID)
             | (proto::NETLINK_ROUTE, rtnetlink::RTM_GETNSID) => self.handle_nsid(hdr, msg),
             (proto::NETLINK_ROUTE, rtnetlink::RTM_GETLINK) => rtnetlink::handle_getlink_in(net_ns, hdr, msg, strict),
-            (proto::NETLINK_ROUTE, rtnetlink::RTM_GETADDR) if rtnetlink::is_dump(hdr) => rtnetlink::handle_getaddr_in(net_ns, hdr, msg, strict),
-            (proto::NETLINK_ROUTE, rtnetlink::RTM_GETADDR) => rtnetlink::handle_getaddr6_one_in(net_ns, hdr, msg),
+            (proto::NETLINK_ROUTE, rtnetlink::RTM_GETADDR) if rtnetlink::is_dump(hdr) => rtnetlink::handle_getaddr_with_access(net_ns, hdr, msg, strict, |target| self.may_admin_net_for(target)),
+            (proto::NETLINK_ROUTE, rtnetlink::RTM_GETADDR) => rtnetlink::handle_getaddr6_one_with_access(net_ns, hdr, msg, |target| self.may_admin_net_for(target)),
+            (proto::NETLINK_ROUTE, rtnetlink::RTM_GETMULTICAST) if rtnetlink::is_dump(hdr) => rtnetlink::handle_getmulticast_in(net_ns, hdr, msg, strict),
+            (proto::NETLINK_ROUTE, rtnetlink::RTM_GETANYCAST) if rtnetlink::is_dump(hdr) => rtnetlink::handle_getanycast_in(net_ns, hdr, msg, strict),
             (proto::NETLINK_ROUTE, rtnetlink::RTM_NEWADDR) => rtnetlink::handle_newaddr_in(net_ns, hdr, msg),
             (proto::NETLINK_ROUTE, rtnetlink::RTM_DELADDR) => rtnetlink::handle_deladdr_in(net_ns, hdr, msg),
             (proto::NETLINK_ROUTE, rtnetlink::RTM_GETROUTE) => rtnetlink::handle_getroute_in(net_ns, hdr, msg),
