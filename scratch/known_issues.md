@@ -37,10 +37,10 @@ reclassified.
 | Class \ Sev | blocker | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|
 | `DEFECT` | 0 | 0 | 13 | 19 | 32 |
-| `MISSING` | 2 | 0 | 14 | 16 | 32 |
+| `MISSING` | 2 | 0 | 14 | 15 | 31 |
 | `COVERAGE` | 0 | 0 | 9 | 14 | 23 |
 | `INFRA` | 0 | 0 | 14 | 11 | 25 |
-| **Total** | **2** | **0** | **50** | **60** | **112** |
+| **Total** | **2** | **0** | **50** | **59** | **111** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -220,7 +220,6 @@ here now.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| IN-PROGRESS F835-rtnetlink-link-target-netns | MISSING | low | Strict dump validation now rejects malformed and unknown IPv4 address attributes. `IFA_TARGET_NETNSID` still needs the caller-scoped peer-network-namespace-ID map and capability check that resolve a target namespace; `IFLA_TARGET_NETNSID` needs the equivalent link-dump owner. | `B1903` `a_strict_address_dump_refuses_unknown_or_unowned_attributes`; `dump_req.rs` refuses the known-but-unowned address key rather than silently dropping it. | [CLAIMED F835-rtnetlink-link-target-netns 2026-08-07] |
 
 ### B1748-ipv4-addr-record-fields
 
