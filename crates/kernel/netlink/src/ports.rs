@@ -27,6 +27,11 @@ fn retain_live(owners: &mut Vec<PortOwner>) {
     owners.retain(|owner| owner.socket.strong_count() != 0);
 }
 
+/// NETLINK request handling has no asynchronously queued transmit allocation:
+/// it completes synchronously and dump output is charged to RX when produced.
+/// # C: O(1)
+fn queued_write_bytes(_socket: &NetlinkSocket) -> usize { 0 }
+
 /// Publish a newly reachable Netlink socket's already-allocated port ID.
 /// # C: O(N live Netlink ports)
 pub(crate) fn register_port_id(socket: &Arc<NetlinkSocket>) {
@@ -132,8 +137,8 @@ pub fn proc_rows(net_ns: u64) -> Vec<crate::ProcRow> {
             port_id: sock.port_id.load(Ordering::Acquire),
             groups: sock.groups.low_mask(),
             rmem: sock.queued_bytes(),
-            wmem: 0,
-            dump: 0,
+            wmem: queued_write_bytes(&sock),
+            dump: u32::from(sock.dump.lock().active()),
             locks: Arc::strong_count(&sock) as u32,
             drops: sock.rx_drops.load(Ordering::Relaxed),
             ino: sock.ino.load(Ordering::Acquire),

@@ -230,7 +230,7 @@ here now.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| OPEN | MISSING | low | `Wmem` and `Dump` are reported as zero. The reference reports `sk_wmem_alloc` and `cb_running`; neither has a source here yet — netlink sends are synchronous, and dumps are built and enqueued in one call rather than continued across reads. | `proc_rows` | — |
+| IN-PROGRESS F836-netlink-dump-continuation | MISSING | low | `Wmem` and `Dump` are reported as zero. The reference reports `sk_wmem_alloc` and `cb_running`; neither has a source here yet — netlink sends are synchronous, and dumps are built and enqueued in one call rather than continued across reads. | `proc_rows` | [CLAIMED F836-netlink-dump-continuation 2026-08-07] |
 
 ### B1752-arp-first-packet-drop
 
