@@ -130,6 +130,11 @@ pub(crate) fn vfs_error(errno: i32) -> vfs::VfsError {
 }
 
 impl NetlinkSocket {
+    fn advance_dump(&self) {
+        let next = self.dump.lock().next_chunk();
+        if let Some(reply) = next { self.enqueue(reply); }
+    }
+
     /// Drop a fully-formatted reply buffer onto the RX queue. # C: O(1)
     pub fn enqueue(&self, msg: Vec<u8>) { self.enqueue_from(msg, 0); }
 
@@ -214,6 +219,8 @@ impl NetlinkSocket {
         let mut queue = self.rx_queue.lock();
         let dgram = queue.pop();
         if queue.is_empty() { self.rx_congested.store(false, Ordering::Release); }
+        drop(queue);
+        if dgram.is_some() { self.advance_dump(); }
         dgram.map(|(bytes, src_port, _, _, _, _)| (bytes, src_port))
     }
 
@@ -234,14 +241,18 @@ impl NetlinkSocket {
         // `sk_receive_queue`; keep both observations under the publication lock.
         let error = self.error.take();
         if error != 0 { return ReceiveState::Error(error); }
-        if let Some((bytes, src_port, multicast_group, nsid, creds, security)) = queue.datagrams.front().cloned() {
+        let state = if let Some((bytes, src_port, multicast_group, nsid, creds, security)) = queue.datagrams.front().cloned() {
             if !peek {
                 queue.pop();
                 if queue.is_empty() { self.rx_congested.store(false, Ordering::Release); }
             }
-            return ReceiveState::Datagram(ReceivedDatagram { bytes, src_port, multicast_group, nsid, creds, security });
-        }
-        ReceiveState::Empty
+            ReceiveState::Datagram(ReceivedDatagram { bytes, src_port, multicast_group, nsid, creds, security })
+        } else {
+            ReceiveState::Empty
+        };
+        drop(queue);
+        if !peek && matches!(state, ReceiveState::Datagram(_)) { self.advance_dump(); }
+        state
     }
 
     /// SO_RCVTIMEO as the absolute monotonic deadline used for interrupted

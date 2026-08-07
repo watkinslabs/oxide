@@ -13,6 +13,9 @@ use crate::wire::alloc_port_id;
 
 mod netfilter;
 mod ack_response;
+mod dump;
+
+use dump::DumpState;
 
 pub const NETLINK_SNDBUF_DEFAULT: usize = 212_992;
 /// Linux default NETLINK receive budget; one owner keeps loss, `sk_err`, and poll coherent.
@@ -75,6 +78,8 @@ pub struct NetlinkSocket {
     pub error: net::SocketError,
     pub bpf_filter: Arc<net::bpf_filter::SocketFilter>,
     pub(crate) rx_queue: Spinlock<ReceiveQueue, SockLockClass>,
+    /// The one socket-owned multipart dump continuation, if any.
+    pub(crate) dump: Spinlock<DumpState, SockLockClass>,
     pub poll_subs: Arc<vfs::PollSubscribers>,
     #[cfg(target_os = "oxide-kernel")]
     pub waiters: sched::live::WaitList,
@@ -159,10 +164,19 @@ impl NetlinkSocket {
             error: net::SocketError::new(),
             bpf_filter: Arc::new(net::bpf_filter::SocketFilter::new()),
             rx_queue: Spinlock::new(ReceiveQueue::new()),
+            dump: Spinlock::new(DumpState::new()),
             poll_subs: Arc::new(vfs::PollSubscribers::new()),
             #[cfg(target_os = "oxide-kernel")]
             waiters: sched::live::WaitList::new(),
         }
+    }
+
+    /// Whether one multipart dump is still generating replies for this socket.
+    /// # C: O(1)
+    fn dump_active(&self) -> bool { self.dump.lock().active() }
+
+    fn start_dump(&self, reply: Vec<u8>) -> Result<Vec<u8>, ()> {
+        self.dump.lock().start(reply)
     }
 
     /// Linux `file_ns_capable(socket_file, source_user_ns, CAP_NET_BROADCAST)`
@@ -231,6 +245,10 @@ impl NetlinkSocket {
         // `NETLINK_GET_STRICT_CHK`: the client asked for its dump requests to be
         // validated and their header filters honoured.
         let strict = self.flags.get(crate::sockflags::F_STRICT_CHK);
+        if rtnetlink::is_dump(hdr) && self.dump_active() {
+            self.enqueue(rtnetlink::nlmsg_ack_pub(hdr, -(vfs::VfsError::Ebusy as i32)));
+            return;
+        }
         if !crate::rcv_skb::reaches_handler(self.protocol, hdr) {
             // Netlink core acknowledges a control message or a non-request only
             // when the sender asked for one, and never runs a handler for it.
@@ -315,7 +333,15 @@ impl NetlinkSocket {
             }
             klog::write_raw(b"]\n");
         }
-        self.enqueue(reply);
+        if rtnetlink::is_dump(hdr)
+            && Nlmsghdr::parse(&reply).is_some_and(|first| first.nlmsg_flags & flags::NLM_F_MULTI != 0) {
+            match self.start_dump(reply) {
+                Ok(first) => self.enqueue(first),
+                Err(()) => self.enqueue(rtnetlink::nlmsg_ack_pub(hdr, -(vfs::VfsError::Ebusy as i32))),
+            }
+        } else {
+            self.enqueue(reply);
+        }
     }
 
     /// Parse + dispatch every nlmsghdr in `buf`; returns the bytes consumed.
@@ -450,6 +476,26 @@ mod tests {
         let limit = super::NETLINK_SNDBUF_DEFAULT - super::NETLINK_SEND_OVERHEAD;
         assert_eq!(sock.preflight_send(limit), Ok(()));
         assert_eq!(sock.preflight_send(limit + 1), Err(super::SendError::Emsgsize));
+    }
+
+    #[test]
+    fn consumed_dump_chunk_schedules_the_socket_owned_continuation() {
+        let sock = NetlinkSocket::new(proto::NETLINK_ROUTE, &network_namespace::initial());
+        let mut reply = alloc::vec![0; super::dump::DUMP_CHUNK_BYTES];
+        Nlmsghdr { nlmsg_len: super::dump::DUMP_CHUNK_BYTES as u32, nlmsg_type: rtnetlink::RTM_NEWLINK,
+            nlmsg_flags: flags::NLM_F_MULTI, nlmsg_seq: 1, nlmsg_pid: 2 }.write_to(&mut reply);
+        let done_at = reply.len();
+        reply.resize(done_at + Nlmsghdr::SIZE, 0);
+        Nlmsghdr { nlmsg_len: Nlmsghdr::SIZE as u32, nlmsg_type: crate::msg::NLMSG_DONE,
+            nlmsg_flags: flags::NLM_F_MULTI, nlmsg_seq: 1, nlmsg_pid: 2 }.write_to(&mut reply[done_at..]);
+
+        let first = sock.start_dump(reply).unwrap();
+        assert!(sock.dump_active());
+        sock.enqueue(first);
+        assert!(sock.dequeue().is_some());
+        assert!(!sock.dump_active(), "final continuation is generated after the first read");
+        let (last, _) = sock.dequeue().expect("next chunk is queued after the read");
+        assert_eq!(Nlmsghdr::parse(&last).unwrap().nlmsg_type, crate::msg::NLMSG_DONE);
     }
 
     #[test]
