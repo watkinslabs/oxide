@@ -250,13 +250,13 @@ here now.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| OPEN | MISSING | low | Strict validation does not yet reject unknown attributes in a dump request (`nlmsg_parse_deprecated_strict` against `ifa_ipv4_policy`/`ifla_policy`), nor honour `IFA_TARGET_NETNSID`/`IFLA_TARGET_NETNSID`. | `crates/kernel/netlink/src/rtnetlink/dump_req.rs` validates the family header only | — |
+| OPEN | MISSING | low | Strict dump validation now rejects malformed and unknown IPv4 address attributes. `IFA_TARGET_NETNSID` still needs the caller-scoped peer-network-namespace-ID map and capability check that resolve a target namespace; `IFLA_TARGET_NETNSID` needs the equivalent link-dump owner. | `B1903` `a_strict_address_dump_refuses_unknown_or_unowned_attributes`; `dump_req.rs` refuses the known-but-unowned address key rather than silently dropping it. | — |
 
 ### B1748-ipv4-addr-record-fields
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| OPEN | MISSING | low | `IFA_ANYCAST`, `IFA_MULTICAST` and `IFA_TARGET_NETNSID` are still neither parsed nor reported. The reference carries all three. | `parse_newaddr_attrs` rejects unknown-but-known types only for the ones it names | — |
+| OPEN | MISSING | low | `IFA_ANYCAST`, `IFA_MULTICAST` and `IFA_TARGET_NETNSID` are still neither parsed nor reported. The reference carries all three. | `parse_newaddr_attrs` rejects unknown-but-known types only for the ones it names | [CLAIMED B1903-rtnetlink-address-dump-attrs 2026-08-07] |
 
 ### B1749-resolved-boot-scope
 
