@@ -107,6 +107,11 @@ pub(crate) struct Ext4FrameStore {
 
 
 impl Ext4FrameStore {
+    /// Small nonresident history retained even when this mapping has no
+    /// resident file frames.  Additional shadows scale with cache state, so a
+    /// sparse eviction/truncate workload cannot turn eviction metadata into an
+    /// unbounded second page cache.
+    const SHADOW_FLOOR: usize = 64;
     /// Build a frame store for `ino` on mount `st`, seeded with the inode's
     /// current on-disk `size`. # C: O(1)
     pub(crate) fn new(st: Arc<RootfsState>, ino: u32, size: u64) -> Arc<Ext4FrameStore> {
@@ -308,10 +313,23 @@ impl Ext4FrameStore {
         // Reclaim leaves a shadow, stamped with the nonresident age, so a later
         // `cachestat` can tell "evicted" from "never cached".
         self.shadows.lock().insert(idx, pmm::reclaim::workingset_eviction());
+        self.trim_shadows();
         #[cfg(feature = "debug-fillverify")]
         self.sums.lock().remove(&idx);
         vfs::memory_accounting::account_file_cache_remove(1);
         Some(page)
+    }
+
+    /// Reclaim oldest eviction shadows beyond this mapping's bounded history.
+    /// The frame-store owns both the resident map and its shadow entries, so
+    /// this is the one place their relative budget can be kept exact. # C: O(shadows²) worst case
+    fn trim_shadows(&self) {
+        let budget = self.pages.lock().len().saturating_mul(2).saturating_add(Self::SHADOW_FLOOR);
+        let mut shadows = self.shadows.lock();
+        while shadows.len() > budget {
+            let Some(oldest) = shadows.iter().min_by_key(|(_, stamp)| *stamp).map(|(&idx, _)| idx) else { break };
+            shadows.remove(&oldest);
+        }
     }
 
     /// Read-side fill (read(2) / mmap read-fault): copy bytes from the frame

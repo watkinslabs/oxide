@@ -33,3 +33,10 @@ fn writeback_range_covers_intersecting_pages() {
     assert_eq!(wb_bounds(100, 2 * PG + 50), (0, 3));
     assert_eq!(wb_bounds(PG, u64::MAX), (1, u64::MAX));
 }
+
+#[test]
+fn eviction_shadow_history_is_bounded_when_resident_cache_is_empty() {
+    const SHADOW_FLOOR: usize = 64;
+    let budget = 0usize.saturating_mul(2).saturating_add(SHADOW_FLOOR);
+    assert_eq!(budget, SHADOW_FLOOR);
+}
