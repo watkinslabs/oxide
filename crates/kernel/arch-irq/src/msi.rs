@@ -46,20 +46,24 @@ pub fn alloc_pci_msi(requester_id: u32, event_id: u32) -> Option<MsiMessage> {
 
 /// Install the hard handler for one allocated PCI message.
 /// # C: O(N_irq_slots)
-pub fn register_pci_msi_handler(irq: u32, handler: fn()) -> bool {
+pub fn register_pci_msi_handler(irq: u32, action: crate::irqstat::DeviceAction, handler: fn()) -> bool {
     #[cfg(target_arch = "x86_64")]
     {
-        return u8::try_from(irq)
+        let installed = u8::try_from(irq)
             .ok()
             .is_some_and(|vector| super::register_msi_handler(vector, handler).is_ok());
+        if installed { let _ = crate::irqstat::register_msi(irq, action); }
+        return installed;
     }
     #[cfg(target_arch = "aarch64")]
     {
-        return super::register_msi_handler(irq, handler).is_ok();
+        let installed = super::register_msi_handler(irq, handler).is_ok();
+        if installed { let _ = crate::irqstat::register_msi(irq, action); }
+        return installed;
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     {
-        let _ = (irq, handler);
+        let _ = (irq, action, handler);
         false
     }
 }
@@ -67,6 +71,7 @@ pub fn register_pci_msi_handler(irq: u32, handler: fn()) -> bool {
 /// Remove the handler and release one PCI message ID.
 /// # C: O(N_irq_slots)
 pub fn free_pci_msi(irq: u32) {
+    crate::irqstat::unregister_msi(irq);
     #[cfg(target_arch = "x86_64")]
     if let Ok(vector) = u8::try_from(irq) {
         let _ = super::free_x86_vector(vector);
