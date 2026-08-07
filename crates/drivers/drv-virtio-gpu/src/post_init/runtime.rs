@@ -13,8 +13,8 @@ pub fn boot_scanout_res_id_for_key(_driver_key: drm::node::ScanoutDriverKey) -> 
 
 fn submit_ctrl_for_key<F: Fn(&mut [u8]) -> usize>(driver_key: drm::node::ScanoutDriverKey, encode: F) -> bool {
     let owner = key_from_scanout_driver(driver_key);
-    let g = CTX.lock();
-    let ctx = match g.iter().find(|ctx| ctx.device_key == owner) { Some(c) => c, None => return false };
+    let mut g = CTX.lock();
+    let ctx = match g.iter_mut().find(|ctx| ctx.device_key == owner) { Some(c) => c, None => return false };
     if ctx.quiesced {
         return false;
     }
@@ -25,7 +25,13 @@ fn submit_ctrl_for_key<F: Fn(&mut [u8]) -> usize>(driver_key: drm::node::Scanout
     let ok = unsafe {
         submit_one(cmd_buf_va_p, ctx.cmd_buf_pa, |b| encode(b), ctx.ctrlq, ctx.hhdm)
     };
-    if !ok { return false; }
+    if !ok {
+        // The descriptor did not retire, so the device may still own both the
+        // request and reply regions in this persistent frame. It must never be
+        // submitted again until teardown has reset the device.
+        ctx.quiesced = true;
+        return false;
+    }
     // SAFETY: RESP_OFF (0x200) is a 4-byte-aligned offset with 0xE00 bytes left
     // in the ctx's command frame, so this reads the reply header's `type` word
     // in bounds; `ok` means the device retired the descriptor, so it is done
@@ -135,7 +141,13 @@ pub fn present_rect_for_key(driver_key: drm::node::ScanoutDriverKey, res_id: u32
                     |b| crate::encode_resource_flush(b, res_id, r.x, r.y, r.w, r.h), ctrlq, hhdm)
             },
         };
-        if !ok { return false; }
+        if !ok {
+            // A timed-out descriptor can still complete into this same frame;
+            // poison the context before releasing the lock so no later caller
+            // can encode over the in-flight request or misread its reply.
+            ctx.quiesced = true;
+            return false;
+        }
         if matches!(step, present::Step::SetScanout) { ctx.bound = Some(next); }
     }
     true
