@@ -25,6 +25,7 @@ RUN_ID = f"{os.getpid()}"
 UART_SOCK = f"/tmp/oxide-firefox-uart-{RUN_ID}.sock"
 QMP_SOCK = f"/tmp/oxide-firefox-qmp-{RUN_ID}.sock"
 UART_LOG = f"/tmp/oxide-firefox-uart-{RUN_ID}.log"
+QEMU_LOG = f"/tmp/oxide-firefox-qemu-{RUN_ID}.log"
 SCREEN_PREFIX = f"/tmp/oxide-firefox-{RUN_ID}"
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 KERNEL_FAULT = re.compile(
@@ -46,13 +47,15 @@ env = dict(
     OXIDE_QEMU_QMP_SOCK=QMP_SOCK,
     OXIDE_QEMU_HEADLESS="1",
 )
-log = open(UART_LOG, "wb")
+uart_log = open(UART_LOG, "wb", buffering=0)
+qemu_log = open(QEMU_LOG, "wb")
 print(
-    f"guest-firefox-check: uart={UART_SOCK} qmp={QMP_SOCK} log={UART_LOG}",
+    f"guest-firefox-check: uart={UART_SOCK} qmp={QMP_SOCK} "
+    f"uart_log={UART_LOG} qemu_log={QEMU_LOG}",
     flush=True,
 )
 qemu = subprocess.Popen(
-    ["make", "qemu-x86"], env=env, stdout=log, stderr=subprocess.STDOUT,
+    ["make", "qemu-x86"], env=env, stdout=qemu_log, stderr=subprocess.STDOUT,
     stdin=subprocess.DEVNULL, start_new_session=True,
 )
 
@@ -67,6 +70,7 @@ def pump(conn, buf, seconds):
         if not chunk:
             return False
         buf.extend(chunk)
+        uart_log.write(chunk)
     return True
 
 
@@ -527,7 +531,8 @@ finally:
             os.killpg(os.getpgid(qemu.pid), signal.SIGKILL)
         except OSError:
             pass
-    log.close()
+    uart_log.close()
+    qemu_log.close()
 
 if not ok:
     print("--- UART tail for failed Firefox probe ---", flush=True)
