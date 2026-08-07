@@ -17,7 +17,7 @@ pub mod nft_expr;
 mod protocol;
 mod state;
 
-pub use eval::{Verdict, eval, eval_in};
+pub use eval::{EvalResult, Verdict, eval, eval_in, eval_in_with_mark};
 pub use nl::handle;
 pub use protocol::{
     Nfgenmsg, NFT_CHAIN_POLICY_ACCEPT, NFT_CHAIN_POLICY_DROP, hook, nft_msg, nfta_chain,

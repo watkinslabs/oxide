@@ -250,16 +250,32 @@ impl RouteTable {
 
     /// Policy lookup with Linux terminal route-type errors. # C: O(N rules * N routes)
     pub fn lookup_result_in(&self, net_ns: u64, addr: Ipv4Addr) -> NetResult<ResolvedRoute> {
-        let record = self.lookup_record_in(net_ns, addr).ok_or(NetError::Enetunreach)?;
+        self.lookup_result_mark_in(net_ns, addr, 0)
+    }
+
+    /// Mark-aware policy lookup with Linux terminal route-type errors.
+    /// # C: O(N rules * N routes)
+    pub fn lookup_result_mark_in(&self, net_ns: u64, addr: Ipv4Addr, mark: u32)
+        -> NetResult<ResolvedRoute>
+    {
+        let record = self.lookup_record_mark_in(net_ns, addr, mark).ok_or(NetError::Enetunreach)?;
         usable_record(record)
     }
 
     /// Policy-rule lookup retaining metadata from this table's canonical rules. # C: O(N rules * N routes)
     pub fn lookup_record_in(&self, net_ns: u64, addr: Ipv4Addr) -> Option<RouteRecord> {
+        self.lookup_record_mark_in(net_ns, addr, 0)
+    }
+
+    /// Policy lookup for a packet carrying `mark`. # C: O(N rules * N routes)
+    pub fn lookup_record_mark_in(&self, net_ns: u64, addr: Ipv4Addr, mark: u32)
+        -> Option<RouteRecord>
+    {
         let rules = self.rules.snapshot_effective(net_ns, policy_rule::AF_INET);
         let all = self.inner.lock();
         let routes = all.get(&net_ns).map(Vec::as_slice).unwrap_or(&[]);
         for rule in rules {
+            if rule.fwmask != 0 && mark & rule.fwmask != rule.fwmark { continue; }
             if let Some(r) = Self::lookup_record_in_table_locked(routes, rule.table, addr) {
                 if r.kind == RTN_THROW { continue; }
                 return Some(r);

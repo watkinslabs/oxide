@@ -50,7 +50,7 @@ use crate::tcp_conn::{TcpConn, Endpoint};
 // Netfilter hook bridge lives in `netfilter_hook` (08§7 split). Re-export
 // the public API so `net::stack::install_nf_hook` / `NF_INET_*` paths stay
 // stable; pull the crate-internal helpers into scope for the packet path.
-pub use crate::netfilter_hook::{NfHookFn, install_nf_hook, NFPROTO_IPV4,
+pub use crate::netfilter_hook::{NfHookFn, NfHookResult, install_nf_hook, NFPROTO_IPV4,
     NF_INET_PRE_ROUTING, NF_INET_LOCAL_IN, NF_INET_LOCAL_OUT, NF_INET_POST_ROUTING};
 use crate::netfilter_hook::nf_output;
 

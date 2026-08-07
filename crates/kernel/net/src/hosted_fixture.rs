@@ -125,9 +125,10 @@ mod tests {
 
     static HOOK_CALLS: AtomicUsize = AtomicUsize::new(0);
 
-    fn record_accept(_namespace: u64, _hook: u32, _packet: &[u8], _family: u8) -> u32 {
+    fn record_accept(_namespace: u64, _hook: u32, _packet: &[u8], _family: u8)
+        -> crate::netfilter_hook::NfHookResult {
         HOOK_CALLS.fetch_add(1, Ordering::AcqRel);
-        1
+        crate::netfilter_hook::NfHookResult::ACCEPT
     }
     fn ignore_event(_event: &crate::control_event::ControlEvent) {}
 

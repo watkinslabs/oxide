@@ -69,6 +69,50 @@ use super::*;
         assert_eq!(run_rule(&exprs, &[]), Some(NF_DROP));
     }
 
+    #[test]
+    fn meta_mark_set_persists_for_policy_routing() {
+        let exprs = vec![
+            Expr::Immediate { dreg: 1, verdict: None, value: 0x20u32.to_be_bytes().to_vec() },
+            Expr::Meta { dreg: None, sreg: Some(1), key: NFT_META_MARK },
+            Expr::Meta { dreg: Some(2), sreg: None, key: NFT_META_MARK },
+            Expr::Cmp { sreg: 2, op: NFT_CMP_EQ, data: 0x20u32.to_be_bytes().to_vec() },
+        ];
+        let mut mark = 0;
+        let mut packets = 0;
+        let mut bytes = 0;
+        assert_eq!(run_rule_full_with_mark(&exprs, &[], None, NFPROTO_IPV4,
+            &mut mark, &mut packets, &mut bytes), None);
+        assert_eq!(mark, 0x20);
+    }
+
+    #[test]
+    fn parses_nft_meta_mark_set_expression() {
+        let mut value = Vec::new();
+        nla(&mut value, NFTA_DATA_VALUE, &0x20u32.to_be_bytes());
+        let mut immediate_data = Vec::new();
+        nla_u32_be(&mut immediate_data, NFTA_IMMEDIATE_DREG, 1);
+        nla_nested(&mut immediate_data, NFTA_IMMEDIATE_DATA, &value);
+        let mut immediate = Vec::new();
+        nla_str(&mut immediate, NFTA_EXPR_NAME, "immediate");
+        nla_nested(&mut immediate, NFTA_EXPR_DATA, &immediate_data);
+        let mut meta_data = Vec::new();
+        nla_u32_be(&mut meta_data, NFTA_META_SREG, 1);
+        nla_u32_be(&mut meta_data, NFTA_META_KEY, NFT_META_MARK);
+        let mut meta = Vec::new();
+        nla_str(&mut meta, NFTA_EXPR_NAME, "meta");
+        nla_nested(&mut meta, NFTA_EXPR_DATA, &meta_data);
+        let mut raw = Vec::new();
+        nla_nested(&mut raw, NFTA_LIST_ELEM, &immediate);
+        nla_nested(&mut raw, NFTA_LIST_ELEM, &meta);
+        let exprs = parse_exprs_checked(&raw).unwrap();
+        let mut mark = 0;
+        let mut packets = 0;
+        let mut bytes = 0;
+        run_rule_full_with_mark(&exprs, &[], None, NFPROTO_IPV4,
+            &mut mark, &mut packets, &mut bytes);
+        assert_eq!(mark, 0x20);
+    }
+
     fn build_payload_cmp_drop_for_src_ipv4(src: [u8; 4]) -> Vec<u8> {
         // payload (NETWORK, offset 12, len 4) -> reg 1
         let mut pdata = Vec::new();

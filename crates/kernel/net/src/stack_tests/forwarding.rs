@@ -61,6 +61,12 @@ fn transit_ipv6(src: Ipv6Addr, dst: Ipv6Addr, hop_limit: u8) -> alloc::vec::Vec<
     frame
 }
 
+fn mark_transparent_packet(_namespace: u64, _hook: u32, _packet: &[u8], _family: u8)
+    -> crate::netfilter_hook::NfHookResult
+{
+    crate::netfilter_hook::NfHookResult { verdict: 1, mark: 0x20 }
+}
+
 #[test]
 fn ipv4_forwarding_sysctl_gates_transit_packets() {
     let fixture = ForwardingFixture::new();
@@ -102,7 +108,7 @@ fn ipv4_ingress_mib_names_unforwardable_and_unknown_packets() {
 
     let transit = transit_ipv4(Ipv4Addr::new(192, 0, 2, 10), Ipv4Addr::new(198, 51, 100, 20), 9);
     let addr_before = crate::mib::get(0, crate::mib::Mib::IpInAddrErrors);
-    stack.forward_ipv4_in(0, in_id, &transit).unwrap();
+    stack.forward_ipv4_mark_in(0, in_id, &transit, 0).unwrap();
     assert_eq!(crate::mib::get(0, crate::mib::Mib::IpInAddrErrors), addr_before + 1);
 
     let mut unknown = transit_ipv4(Ipv4Addr::new(192, 0, 2, 10), Ipv4Addr::LOOPBACK, 9);
@@ -115,6 +121,60 @@ fn ipv4_ingress_mib_names_unforwardable_and_unknown_packets() {
     stack.deliver_rx(in_id, &unknown).unwrap();
     assert_eq!(crate::mib::get(0, crate::mib::Mib::IpInUnknownProtos), unknown_before + 1);
     assert_eq!(crate::mib::get(0, crate::mib::Mib::IpInDelivers), delivered_before);
+}
+
+#[test]
+fn a_policy_selected_local_route_delivers_nonlocal_ipv4_instead_of_forwarding_it() {
+    let fixture = ForwardingFixture::new();
+    let net_ns = fixture.net_ns();
+    let in_id = fixture.stack.ifaces.register_in_ns(Arc::new(CountDev::new()), net_ns);
+    let dst = Ipv4Addr::new(198, 51, 100, 20);
+    // This is the route half of transparent proxying: ordinary address
+    // ownership does not include `dst`, but policy selected an RTN_LOCAL
+    // record for it, so ingress must take LOCAL_IN rather than FORWARD.
+    fixture.stack.routes.add_record_in(net_ns, crate::RouteRecord {
+        route: RouteEntry { table: 100, dst: Ipv4Addr::ANY, prefix_len: 0,
+            iface: in_id, gateway: None, src_hint: None },
+        kind: crate::route::RTN_LOCAL,
+        ..crate::RouteRecord::kernel(RouteEntry::main(
+            Ipv4Addr::ANY, 0, in_id, None, None))
+    });
+    let rule = crate::policy_rule::PolicyRule { ns: net_ns, family: crate::policy_rule::AF_INET,
+        priority: 100, table: 100, action: crate::policy_rule::FR_ACT_TO_TBL,
+        dst_len: 0, src_len: 0, tos: 0, flags: 0, fwmark: 0, fwmask: 0 };
+    { let rtnl = fixture.stack.rtnl_lock(); fixture.stack.policy_rules().insert_rtnl(&rtnl, rule); }
+    let before = crate::mib::get(net_ns, crate::mib::Mib::IpForwDatagrams);
+    // The intentionally header-only UDP packet fails L4 validation after the
+    // route decision.  That makes the test prove classification without
+    // needing an unrelated bound UDP socket.
+    assert_eq!(fixture.stack.deliver_rx(in_id,
+        &transit_ipv4(Ipv4Addr::new(192, 0, 2, 10), dst, 9)), Err(NetError::Einval));
+    assert_eq!(crate::mib::get(net_ns, crate::mib::Mib::IpForwDatagrams), before);
+    fixture.finish();
+}
+
+#[test]
+fn prerouting_packet_mark_selects_transparent_local_delivery() {
+    let domain = crate::hosted_fixture::init_net_domain();
+    domain.set_nf_hook(mark_transparent_packet);
+    let stack = NetStack::new();
+    let (in_id, _) = stack.register_loopback();
+    let dst = Ipv4Addr::new(198, 51, 100, 21);
+    stack.routes.add_record_in(0, crate::RouteRecord {
+        route: RouteEntry { table: 101, dst: Ipv4Addr::ANY, prefix_len: 0,
+            iface: in_id, gateway: None, src_hint: None },
+        kind: crate::route::RTN_LOCAL,
+        ..crate::RouteRecord::kernel(RouteEntry::main(
+            Ipv4Addr::ANY, 0, in_id, None, None))
+    });
+    let rule = crate::policy_rule::PolicyRule { ns: 0, family: crate::policy_rule::AF_INET,
+        priority: 101, table: 101, action: crate::policy_rule::FR_ACT_TO_TBL,
+        dst_len: 0, src_len: 0, tos: 0, flags: 0, fwmark: 0x20, fwmask: u32::MAX };
+    { let rtnl = stack.rtnl_lock(); stack.policy_rules().insert_rtnl(&rtnl, rule); }
+    let before = crate::mib::get(0, crate::mib::Mib::IpForwDatagrams);
+    assert_eq!(stack.deliver_rx(in_id,
+        &transit_ipv4(Ipv4Addr::new(192, 0, 2, 10), dst, 9)), Err(NetError::Einval));
+    assert_eq!(crate::mib::get(0, crate::mib::Mib::IpForwDatagrams), before);
 }
 
 #[test]
