@@ -37,10 +37,10 @@ reclassified.
 | Class \ Sev | blocker | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|
 | `DEFECT` | 0 | 0 | 13 | 19 | 32 |
-| `MISSING` | 2 | 0 | 14 | 13 | 29 |
+| `MISSING` | 2 | 0 | 14 | 12 | 28 |
 | `COVERAGE` | 0 | 0 | 9 | 14 | 23 |
 | `INFRA` | 0 | 0 | 14 | 11 | 25 |
-| **Total** | **2** | **0** | **50** | **57** | **109** |
+| **Total** | **2** | **0** | **50** | **56** | **108** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -236,7 +236,6 @@ here now.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| OPEN | MISSING | low | `/proc/net/snmp6` and `/proc/net/packet` remain empty/header-only stubs. `/proc/net/netstat` is live and projects the canonical TCP extended MIB counters. | `crates/kernel/procfs/src/static_files.rs`; `crates/kernel/net/src/mib.rs::render_proc_netstat` | CLAIMED F838 |
 
 ### C274-qemu-pcap-capture
 
