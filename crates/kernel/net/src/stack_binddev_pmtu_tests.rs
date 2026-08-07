@@ -92,6 +92,7 @@ fn passive_child_uses_learned_pmtu_unless_listener_uses_interface() {
     let stack = NetStack::new();
     let (iface, _) = stack.register_loopback();
     learn_tcp_pmtu(&stack, iface);
+    let before = crate::mib::get(0, crate::mib::Mib::TcpPassiveOpens);
 
     for (offset, mode, expected) in [
         (0, crate::uapi::IP_PMTUDISC_WANT, LEARNED_MSS),
@@ -124,6 +125,7 @@ fn passive_child_uses_learned_pmtu_unless_listener_uses_interface() {
         } else { u32::from(LEARNED_PMTU) };
         assert_eq!(child.conn.lock().path_mtu, expected_pmtu, "mode={mode}");
     }
+    assert_eq!(crate::mib::get(0, crate::mib::Mib::TcpPassiveOpens), before + 2);
 }
 
 #[test]
