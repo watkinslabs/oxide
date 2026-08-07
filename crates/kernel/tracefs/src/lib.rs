@@ -7,6 +7,8 @@ pub mod percpu_ring;
 pub mod predicate;
 pub mod ring;
 pub mod root;
+#[cfg(target_arch = "x86_64")]
+mod pkru;
 #[cfg(feature = "zram-memory-tracking")]
 pub mod zram;
 
@@ -45,6 +47,8 @@ pub fn init() {
     // live inodes (record + render + drain + gate); the rest stay nop-tracer
     // static defaults.
     ring::register();
+    #[cfg(target_arch = "x86_64")]
+    pkru::register();
     #[cfg(feature = "zram-memory-tracking")]
     zram::register();
     register("/sys/kernel/tracing/current_tracer",
