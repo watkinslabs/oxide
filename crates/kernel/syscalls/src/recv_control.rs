@@ -7,10 +7,9 @@ use alloc::sync::Arc;
 #[cfg(target_os = "oxide-kernel")]
 use vfs::File;
 
+use crate::msg_layout::{MsgLayout, cmsg};
 use crate::recv_user::RecvUser;
 
-const CMSG_HDR: usize = 16;
-const CMSG_ALIGN: usize = 8;
 const SOL_SOCKET: i32 = 1;
 const SCM_RIGHTS: i32 = 1;
 const SCM_CREDENTIALS: i32 = 2;
@@ -41,7 +40,6 @@ pub(crate) struct Control {
     entries: Vec<(i32, i32, Vec<u8>)>,
 }
 
-fn aligned(n: usize) -> usize { (n + CMSG_ALIGN - 1) & !(CMSG_ALIGN - 1) }
 
 /// Linux receive paths generally ignore `put_cmsg`'s EFAULT after payload
 /// delivery; the failed entry advances no control cursor. # C: O(1)
@@ -77,14 +75,14 @@ impl Control {
     /// Emit the control stream at the option ABI's raw user pointer. # C: O(entries + data + faults)
     pub fn copy_to_raw(&mut self, control: u64) -> Result<usize, i64> {
         self.copy_to(&RecvUser { msgp: 0, name: 0, namelen: 0, name_len_ptr: 0,
-            control, controllen: self.cap, iov: Vec::new(), capacity: 0 })
+            control, controllen: self.cap, iov: Vec::new(), capacity: 0, layout: MsgLayout::Native })
     }
 
     fn copy_to_at(&mut self, user: &RecvUser, at: usize) -> Result<usize, i64> {
         let mut copied = 0usize;
         for (level, ty, data) in &self.entries {
             let Some((entry, advance, truncated)) =
-                encode_entry(*level, *ty, data, self.cap.saturating_sub(copied))
+                encode_entry(user.layout, *level, *ty, data, self.cap.saturating_sub(copied))
             else { self.flags |= MSG_CTRUNC as u32; continue; };
             if truncated { self.flags |= MSG_CTRUNC as u32; }
             let Some(dst) = user.control.checked_add(at.saturating_add(copied) as u64) else { continue; };
@@ -100,7 +98,8 @@ impl Control {
         let mut out = Vec::new();
         for (level, ty, data) in &self.entries {
             let Some((entry, advance, truncated)) =
-                encode_entry(*level, *ty, data, self.cap.saturating_sub(out.len()))
+                encode_entry(MsgLayout::Native, *level, *ty, data,
+                    self.cap.saturating_sub(out.len()))
             else { self.flags |= MSG_CTRUNC as u32; continue; };
             if truncated { self.flags |= MSG_CTRUNC as u32; }
             let at = out.len();
@@ -113,20 +112,19 @@ impl Control {
 
 /// One control message's bytes, how far the cursor advances past it, and
 /// whether the payload was cut short. `None` when not even the header fits.
-/// # C: O(data)
-fn encode_entry(level: i32, ty: i32, data: &[u8], remaining: usize)
+/// A 32-bit receiver is handed a 12-byte header on a 4-byte grid; the
+/// truncation arithmetic is otherwise identical. # C: O(data)
+fn encode_entry(layout: MsgLayout, level: i32, ty: i32, data: &[u8], remaining: usize)
     -> Option<(Vec<u8>, usize, bool)>
 {
-    if remaining < CMSG_HDR { return None; }
-    let full_len = CMSG_HDR + data.len();
-    let advance = core::cmp::min(aligned(full_len), remaining);
-    let data_len = core::cmp::min(data.len(), remaining - CMSG_HDR);
-    let cmsg_len = CMSG_HDR + data_len;
-    let mut entry = alloc::vec![0u8; cmsg_len];
-    entry[..8].copy_from_slice(&(cmsg_len as u64).to_ne_bytes());
-    entry[8..12].copy_from_slice(&level.to_ne_bytes());
-    entry[12..16].copy_from_slice(&ty.to_ne_bytes());
-    entry[CMSG_HDR..CMSG_HDR + data_len].copy_from_slice(&data[..data_len]);
+    let hdr = layout.cmsghdr_size();
+    if remaining < hdr { return None; }
+    let full_len = hdr + data.len();
+    let advance = core::cmp::min(layout.cmsg_aligned(full_len), remaining);
+    let data_len = core::cmp::min(data.len(), remaining - hdr);
+    let cmsg_len = hdr + data_len;
+    let mut entry = cmsg::header_bytes(layout, cmsg_len, level, ty);
+    entry.extend_from_slice(&data[..data_len]);
     Some((entry, advance, remaining < full_len))
 }
 
@@ -158,8 +156,9 @@ pub(crate) fn deliver(user: &RecvUser, files: Vec<Arc<File>>, scm: ScmReceive,
     control.push_inq(inq);
     let mut off = control.copy_to_recv(user);
     flags |= control.flags;
+    let hdr = user.layout.cmsghdr_size();
     let remaining = cap.saturating_sub(off);
-    let rights_cap = remaining.saturating_sub(CMSG_HDR) / 4;
+    let rights_cap = remaining.saturating_sub(hdr) / 4;
     if rights_cap < files.len() { flags |= MSG_CTRUNC as u32; }
     let cur = sched::live::current();
     // SAFETY: current task owns its fd-table reference throughout this syscall.
@@ -171,7 +170,7 @@ pub(crate) fn deliver(user: &RecvUser, files: Vec<Arc<File>>, scm: ScmReceive,
         return Ok(DeliveredControl { len: off, flags });
     };
     let result = socket::install_received_fds(&fdt, nofile, cloexec, files, rights_cap, |index, fd| {
-            let dst = user.control.checked_add((off + CMSG_HDR + index * 4) as u64);
+            let dst = user.control.checked_add((off + hdr + index * 4) as u64);
             let dst = dst.ok_or(vfs::VfsError::Efault)?;
             // SAFETY: fd bytes are kernel-owned; raw usercopy reports a fault without losing prefix state.
             let left = unsafe { uaccess::raw_copy_to_user(dst, fd.to_ne_bytes().as_ptr(), 4) };
@@ -180,16 +179,15 @@ pub(crate) fn deliver(user: &RecvUser, files: Vec<Arc<File>>, scm: ScmReceive,
     if result.truncated { flags |= MSG_CTRUNC as u32; }
     let installed = result.installed;
     if installed != 0 {
-        let rights_len = CMSG_HDR + installed * 4;
-        let rights_space = core::cmp::min(aligned(rights_len), cap - off);
-        let base = user.control.checked_add(off as u64);
-        let header_ok = base.is_some_and(|base| base.checked_add(8).is_some_and(|p| uaccess::copy_to_user(p, &SOL_SOCKET.to_ne_bytes()).is_ok())
-            && base.checked_add(12).is_some_and(|p| uaccess::copy_to_user(p, &SCM_RIGHTS.to_ne_bytes()).is_ok())
-            && uaccess::copy_to_user(base, &(rights_len as u64).to_ne_bytes()).is_ok());
+        let rights_len = hdr + installed * 4;
+        let rights_space = core::cmp::min(user.layout.cmsg_aligned(rights_len), cap - off);
+        let header = cmsg::header_bytes(user.layout, rights_len, SOL_SOCKET, SCM_RIGHTS);
+        let header_ok = user.control.checked_add(off as u64)
+            .is_some_and(|base| uaccess::copy_to_user(base, &header).is_ok());
         if header_ok { off += rights_space; }
     }
     if scm.want_pidfd {
-        if cap.saturating_sub(off) < CMSG_HDR + core::mem::size_of::<i32>() {
+        if cap.saturating_sub(off) < hdr + core::mem::size_of::<i32>() {
             flags |= MSG_CTRUNC as u32;
         } else if let Some(identity) = scm.pid {
             let current = sched::live::current();
@@ -212,13 +210,18 @@ pub(crate) fn deliver(user: &RecvUser, files: Vec<Arc<File>>, scm: ScmReceive,
 mod tests {
     use super::*;
 
+    /// The native `sizeof(struct cmsghdr)`, which these tests assert against.
+    const CMSG_HDR: usize = 16;
+
+    fn aligned(n: usize) -> usize { MsgLayout::Native.cmsg_aligned(n) }
+
     #[test]
     fn truncated_cmsg_len_describes_only_emitted_data() {
         let data = [0x5au8; 12];
         for cap in 0..=32 {
             let mut bytes = [0u8; 32];
             let user = RecvUser { msgp: 0, name: 0, namelen: 0, name_len_ptr: 0, control: bytes.as_mut_ptr() as u64,
-                controllen: cap, iov: Vec::new(), capacity: 0 };
+                controllen: cap, iov: Vec::new(), capacity: 0, layout: MsgLayout::Native };
             let mut control = Control::new(cap);
             control.push(SOL_SOCKET, SCM_CREDENTIALS, &data);
             let copied = control.copy_to(&user).unwrap();
@@ -238,7 +241,7 @@ mod tests {
     fn complete_cmsg_does_not_write_alignment_padding() {
         let mut bytes = [0xa5u8; 32];
         let user = RecvUser { msgp: 0, name: 0, namelen: 0, name_len_ptr: 0, control: bytes.as_mut_ptr() as u64,
-            controllen: bytes.len(), iov: Vec::new(), capacity: 0 };
+            controllen: bytes.len(), iov: Vec::new(), capacity: 0, layout: MsgLayout::Native };
         let mut control = Control::new(bytes.len());
         control.push(SOL_SOCKET, SCM_CREDENTIALS, &[0x5a; 12]);
 
@@ -250,7 +253,7 @@ mod tests {
     fn socket_security_follows_credentials_in_the_one_control_cursor() {
         let mut bytes = [0u8; 64];
         let user = RecvUser { msgp: 0, name: 0, namelen: 0, name_len_ptr: 0,
-            control: bytes.as_mut_ptr() as u64, controllen: bytes.len(), iov: Vec::new(), capacity: 0 };
+            control: bytes.as_mut_ptr() as u64, controllen: bytes.len(), iov: Vec::new(), capacity: 0, layout: MsgLayout::Native };
         let mut control = Control::new(bytes.len());
         control.push(SOL_SOCKET, SCM_CREDENTIALS, &[0; 12]);
         control.push(SOL_SOCKET, SCM_SECURITY, b"sender_t");
@@ -273,7 +276,7 @@ mod tests {
             let mut bytes = [0u8; 32];
             let user = RecvUser { msgp: 0, name: 0, namelen: 0, name_len_ptr: 0,
                 control: bytes.as_mut_ptr() as u64, controllen: bytes.len(),
-                iov: Vec::new(), capacity: 0 };
+                iov: Vec::new(), capacity: 0, layout: MsgLayout::Native };
             let mut control = Control::new(bytes.len());
             control.push_inq(Some(inq));
             let copied = control.copy_to(&user).unwrap();
@@ -290,7 +293,7 @@ mod tests {
         let mut bytes = [0u8; 32];
         let user = RecvUser { msgp: 0, name: 0, namelen: 0, name_len_ptr: 0,
             control: bytes.as_mut_ptr() as u64, controllen: bytes.len(),
-            iov: Vec::new(), capacity: 0 };
+            iov: Vec::new(), capacity: 0, layout: MsgLayout::Native };
         let mut control = Control::new(bytes.len());
         control.push_inq(None);
         assert_eq!(control.copy_to(&user).unwrap(), 0);
@@ -300,6 +303,50 @@ mod tests {
     fn recv_output_preserves_cmsg_cloexec_only() {
         assert_eq!(output_flags(MSG_CMSG_CLOEXEC | net::uapi::MSG_PEEK), MSG_CMSG_CLOEXEC as u32);
         assert_eq!(output_flags(net::uapi::MSG_PEEK), 0);
+    }
+
+    // A 32-bit receiver is handed 12-byte headers on a 4-byte grid. Emitting
+    // the native shape into its buffer would put the level and type where its
+    // `CMSG_DATA` starts, and advance the cursor past entries it never sees.
+    #[test]
+    fn a_compat_receiver_gets_twelve_byte_headers_on_the_four_byte_grid() {
+        let mut bytes = [0xa5u8; 64];
+        let user = RecvUser { msgp: 0, name: 0, namelen: 0, name_len_ptr: 0,
+            control: bytes.as_mut_ptr() as u64, controllen: bytes.len(), iov: Vec::new(),
+            capacity: 0, layout: MsgLayout::Compat };
+        let mut control = Control::new(bytes.len());
+        control.push(SOL_SOCKET, SCM_CREDENTIALS, &[1u8; 12]);
+        control.push(SOL_SOCKET, SCM_SECURITY, b"t");
+        // CMSG_SPACE(12) = 24 and CMSG_SPACE(1) = 16 in the 32-bit ABI;
+        // natively the same two entries would take 32 and 24.
+        assert_eq!(control.copy_to(&user).unwrap(), 40);
+        assert_eq!(u32::from_ne_bytes(bytes[..4].try_into().unwrap()), 24);
+        assert_eq!(i32::from_ne_bytes(bytes[4..8].try_into().unwrap()), SOL_SOCKET);
+        assert_eq!(i32::from_ne_bytes(bytes[8..12].try_into().unwrap()), SCM_CREDENTIALS);
+        assert_eq!(&bytes[12..24], &[1u8; 12]);
+        assert_eq!(u32::from_ne_bytes(bytes[24..28].try_into().unwrap()), 13);
+        assert_eq!(i32::from_ne_bytes(bytes[28..32].try_into().unwrap()), SOL_SOCKET);
+        assert_eq!(i32::from_ne_bytes(bytes[32..36].try_into().unwrap()), SCM_SECURITY);
+        assert_eq!(&bytes[36..37], b"t");
+        assert_eq!(control.flags & MSG_CTRUNC as u32, 0);
+    }
+
+    // The truncation arithmetic follows the receiver's own header size: a
+    // buffer that holds a native header but not a native entry still holds a
+    // complete compat one.
+    #[test]
+    fn compat_truncation_is_measured_against_the_compat_header() {
+        let mut bytes = [0u8; 32];
+        for cap in 0..=16usize {
+            let user = RecvUser { msgp: 0, name: 0, namelen: 0, name_len_ptr: 0,
+                control: bytes.as_mut_ptr() as u64, controllen: cap, iov: Vec::new(),
+                capacity: 0, layout: MsgLayout::Compat };
+            let mut control = Control::new(cap);
+            control.push(SOL_SOCKET, SCM_CREDENTIALS, &[0u8; 4]);
+            let copied = control.copy_to(&user).unwrap();
+            assert_eq!(copied, if cap < 12 { 0 } else { core::cmp::min(16, cap) }, "cap={cap}");
+            assert_eq!(control.flags & MSG_CTRUNC as u32 != 0, cap < 16, "cap={cap}");
+        }
     }
 
     #[test]

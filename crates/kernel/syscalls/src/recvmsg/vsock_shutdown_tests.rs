@@ -36,6 +36,7 @@ fn connected_recvmsg_clears_source_length_without_synthesizing_a_peer_address() 
             len: payload.len(),
         }],
         capacity: payload.len(),
+        layout: crate::msg_layout::MsgLayout::Native,
     };
 
     assert_eq!(recv_pinned(&sock, false, &user, net::uapi::MSG_DONTWAIT), 1);
@@ -62,6 +63,7 @@ fn zerocopy_completion_uses_the_vsock_error_queue_abi() {
         controllen: control.len(),
         iov: alloc::vec![],
         capacity: 0,
+        layout: crate::msg_layout::MsgLayout::Native,
     };
 
     assert_eq!(recv_pinned(&sock, false, &user, net::uapi::MSG_ERRQUEUE), 0);

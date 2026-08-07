@@ -15,13 +15,19 @@
 
 use syscall::errno::Errno;
 
-use super::{AfterDelivery, OnFailure, admit_flags, after_delivery, batch_len,
+use crate::msg_layout::{EntryAbi, MsgLayout, entry_layout};
+
+use super::{AfterDelivery, OnFailure, after_delivery, batch_len,
     copies_timeout_back, entry_flags, on_failure, reports_pending_error};
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
 /// ABI steps one batch needs from its caller.
 pub trait BatchOps {
+    /// Adopt the message layout the entry settled on. Every offset, stride and
+    /// width this batch reads or writes follows from it; nothing below re-reads
+    /// a flag to pick a shape. # C: O(1)
+    fn use_layout(&mut self, layout: MsgLayout);
     /// Read and validate the caller's supplied timeout, if any. # C: O(1)
     fn import_timeout(&mut self) -> Result<(), i64>;
     /// Resolve and pin the one socket the whole batch receives from. # C: O(1)
@@ -57,9 +63,14 @@ fn failed<O: BatchOps>(ops: &mut O, delivered: i64, failure: i64) -> i64 {
 }
 
 /// One `recvmmsg` batch: the delivered count, or a negative errno when
-/// nothing was delivered. # C: O(vlen)
-pub fn run<O: BatchOps>(ops: &mut O, flags: u64, vlen: u64) -> i64 {
-    if let Err(e) = admit_flags(flags) { return err(e); }
+/// nothing was delivered. `abi` is which entry point the call arrived through,
+/// which with `flags` settles the layout — the first question asked, ahead of
+/// the timeout, the descriptor and every entry. # C: O(vlen)
+pub fn run<O: BatchOps>(ops: &mut O, flags: u64, vlen: u64, abi: EntryAbi) -> i64 {
+    match entry_layout(flags, abi) {
+        Ok(layout) => ops.use_layout(layout),
+        Err(e) => return err(e),
+    }
     if let Err(e) = ops.import_timeout() { return e; }
     if let Err(e) = ops.resolve() { return e; }
     if reports_pending_error(flags) {

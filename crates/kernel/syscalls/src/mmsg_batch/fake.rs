@@ -15,6 +15,8 @@ use syscall::errno::Errno;
 
 use net::uapi::MSG_DONTWAIT;
 
+use crate::msg_layout::{EntryAbi, MsgLayout};
+
 use super::{BatchOps, timeout_total_ns};
 
 /// A receive a real socket would have BLOCKED on. The fake cannot block, so it
@@ -62,6 +64,8 @@ pub struct Fake {
     pub unreached: usize,
     /// Whether the descriptor was resolved.
     pub resolved: bool,
+    /// The layout the batch adopted before doing anything else.
+    pub layout: Option<MsgLayout>,
 }
 
 impl Fake {
@@ -70,7 +74,7 @@ impl Fake {
         let unreached = entries.len();
         Fake { timeout: None, timeout_fault: false, resolve: Ok(()), pending: 0, entries,
             remaining: Vec::new(), publish_fault: None, seen_flags: Vec::new(), latched: None,
-            copied_timeout: false, unreached, resolved: false }
+            copied_timeout: false, unreached, resolved: false, layout: None }
     }
 
     /// `count` queued messages and nothing more, the shape a nonblocking
@@ -83,6 +87,8 @@ impl Fake {
 }
 
 impl BatchOps for Fake {
+    fn use_layout(&mut self, layout: MsgLayout) { self.layout = Some(layout); }
+
     fn import_timeout(&mut self) -> Result<(), i64> {
         if self.timeout_fault { return Err(err(Errno::Efault)); }
         let Some((sec, nsec)) = self.timeout else { return Ok(()) };
@@ -128,9 +134,14 @@ impl BatchOps for Fake {
     fn copy_timeout_back(&mut self) -> Result<(), i64> { self.copied_timeout = true; Ok(()) }
 }
 
-/// Run one scripted batch, returning its result and the fake it drove.
-/// # C: O(entries)
-pub fn drive(flags: u64, vlen: u64, mut fake: Fake) -> (i64, Fake) {
-    let result = super::run_batch(&mut fake, flags, vlen);
+/// Run one scripted batch through the native entry, returning its result and
+/// the fake it drove. # C: O(entries)
+pub fn drive(flags: u64, vlen: u64, fake: Fake) -> (i64, Fake) {
+    drive_abi(flags, vlen, fake, EntryAbi::Native)
+}
+
+/// The same, through a chosen entry point. # C: O(entries)
+pub fn drive_abi(flags: u64, vlen: u64, mut fake: Fake, abi: EntryAbi) -> (i64, Fake) {
+    let result = super::run_batch(&mut fake, flags, vlen, abi);
     (result, fake)
 }
