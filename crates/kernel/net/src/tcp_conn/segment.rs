@@ -3,8 +3,8 @@
 use alloc::vec::Vec;
 
 use crate::tcp_conn::{TcpConn, UnackedSegment};
-use crate::tcp_conn::syn_opts::SynOptions;
-use crate::tcp_hdr::{TcpHdr, TCP_HDR_MIN_LEN, flags, opt};
+use crate::tcp_conn::{segment_opts, syn_opts::SynOptions};
+use crate::tcp_hdr::{TcpHdr, TCP_HDR_MIN_LEN, flags};
 
 impl TcpConn {
     pub(crate) fn build_retx(&self, s: &UnackedSegment) -> alloc::vec::Vec<u8> {
@@ -33,31 +33,18 @@ impl TcpConn {
     }
 
     fn build_segment_at(&self, seq: u32, flag_bits: u8, payload: &[u8], urg_ptr: u16) -> Vec<u8> {
-        let ts_opt_len = if self.ts_enabled { 12 } else { 0 };
-        let data_offset = (5 + ts_opt_len / 4) as u8;
-        let total = TCP_HDR_MIN_LEN + ts_opt_len + payload.len();
-        let mut buf = alloc::vec![0u8; total];
-        if self.ts_enabled {
-            let mut i = TCP_HDR_MIN_LEN;
-            buf[i] = opt::NOP;
-            i += 1;
-            buf[i] = opt::NOP;
-            i += 1;
-            buf[i] = opt::TIMESTAMP;
-            buf[i + 1] = 10;
-            buf[i + 2..i + 6].copy_from_slice(
-            &crate::tcp_conn::tcp_now_ms().wrapping_add(self.ts_off).to_be_bytes());
-            buf[i + 6..i + 10].copy_from_slice(&self.ts_recent.to_be_bytes());
-        }
-        if !payload.is_empty() {
-            buf[TCP_HDR_MIN_LEN + ts_opt_len..].copy_from_slice(payload);
-        }
+        let timestamp = self.ts_enabled.then(|| (
+            crate::tcp_conn::tcp_now_ms().wrapping_add(self.ts_off), self.ts_recent));
+        let option_len = segment_opts::SegmentOptions { timestamp, sacks: &[] }.encoded_len();
+        let options = segment_opts::append(timestamp, &[], payload);
+        let mut buf = alloc::vec![0u8; TCP_HDR_MIN_LEN + options.len()];
+        buf[TCP_HDR_MIN_LEN..].copy_from_slice(&options);
         let mut h = TcpHdr {
             src_port: self.local.port,
             dst_port: self.remote.port,
             seq,
             ack: self.rcv_nxt,
-            data_offset,
+            data_offset: (TCP_HDR_MIN_LEN + option_len) as u8 / 4,
             flags: flag_bits,
             window: self.current_rcv_window(),
             checksum: 0,
