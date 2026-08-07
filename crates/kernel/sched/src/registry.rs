@@ -25,6 +25,7 @@
 // - pidfd: exact pidfd identity acquisition + `release_task`-equivalent reap.
 
 mod core;
+mod mm;
 mod pidfd;
 mod snapshot;
 mod tid;
@@ -39,6 +40,8 @@ pub use snapshot::{
     kernel_stack_bytes_snapshot, live_counts, live_tids, next_live_tid_after, tasks_traced_by,
     thread_entries, thread_group, try_snapshot,
 };
+pub use mm::{mm_sharers, thread_group_members};
+pub(crate) use mm::{track_mm_before_replace, track_task_before_publish, untrack_mm_after_replace};
 pub(crate) use snapshot::set_syscall_tracepoint_work_all;
 #[cfg(any(test, feature = "hosted"))]
 pub use tid::clear_for_tests;

@@ -469,8 +469,23 @@ impl Task {
     unsafe fn replace_mm_inner(&self, new: Option<Arc<AddressSpace>>, latch_rss: bool) {
         self.debug_check_canary("replace_mm");
         let _pin = self.mm_pin_lock.lock();
+        // Publish before changing the slot. A concurrent reader sees this
+        // candidate either before it shares `new` (and filters it out during
+        // revalidation) or after the swap; it cannot miss an existing sharer.
+        if let Some(mm) = new.as_ref() { crate::registry::track_mm_before_replace(self, mm); }
+        // SAFETY: `mm_pin_lock` held above serializes this read with every
+        // replacement, so it is a stable comparison with the incoming Arc.
+        let keeps_old_membership = unsafe {
+            (&*self.mm.get()).as_ref().is_some_and(|old| new.as_ref().is_some_and(|next| Arc::ptr_eq(old, next)))
+        };
         // SAFETY: see fn-level contract; single-mutator on this CPU.
         let old = unsafe { core::mem::replace(&mut *self.mm.get(), new) };
+        // Now the authoritative slot no longer names `old`, so dropping that
+        // bucket membership cannot hide a current sharer. Keeping this inside
+        // the same pin closes the interval in the other direction too.
+        if !keeps_old_membership {
+            if let Some(mm) = old.as_ref() { crate::registry::untrack_mm_after_replace(self, mm); }
+        }
         // Linux latches `signal_struct::maxrss` from the departing mm, so an
         // `execve(2)` does not reset the process's `ru_maxrss` to the new
         // image's residency.

@@ -30,6 +30,35 @@ fn member(tid: u32, leader_tid: u32, vpid: u32, vtid: u32) -> Arc<Task> {
 }
 
 #[test]
+fn mm_index_tracks_shared_mm_and_exec_replacement() {
+    let _g = registry_test_lock();
+    crate::registry::clear_for_tests();
+    let old = vmm::AddressSpace::new(0).expect("old address space");
+    let new = vmm::AddressSpace::new(0).expect("new address space");
+    let first = Arc::new(Task::new_user(0x1918, "mm-first",
+        SchedClass::Normal { weight: 1024 }, Arc::clone(&old)));
+    let second = Arc::new(Task::new_user(0x1919, "mm-second",
+        SchedClass::Normal { weight: 1024 }, Arc::clone(&old)));
+    crate::registry::insert(&first);
+    crate::registry::insert(&second);
+
+    let before = crate::registry::mm_sharers(&old);
+    assert_eq!(before.len(), 2, "CLONE_VM peers share one bounded mm bucket");
+    assert!(before.iter().any(|task| Arc::ptr_eq(task, &first)));
+    assert!(before.iter().any(|task| Arc::ptr_eq(task, &second)));
+
+    // SAFETY: hosted test is this task's sole scheduler mutator.
+    unsafe { second.replace_mm(Some(Arc::clone(&new))); }
+    let old_after = crate::registry::mm_sharers(&old);
+    assert_eq!(old_after.len(), 1, "stale old-mm bucket entries are revalidated");
+    assert!(Arc::ptr_eq(&old_after[0], &first));
+    let new_after = crate::registry::mm_sharers(&new);
+    assert_eq!(new_after.len(), 1, "replacement publishes the new bucket before swapping");
+    assert!(Arc::ptr_eq(&new_after[0], &second));
+    crate::registry::clear_for_tests();
+}
+
+#[test]
 fn syscall_tracepoint_registration_stamps_live_and_new_tasks() {
     let _g = registry_test_lock();
     crate::registry::clear_for_tests();

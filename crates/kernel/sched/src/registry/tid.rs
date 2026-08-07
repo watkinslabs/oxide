@@ -21,6 +21,9 @@ pub fn insert(task: &Arc<Task>) {
     task.pid.attach(task);
     let tid = task.tid;
     let weak = Arc::downgrade(task);
+    // The secondary buckets are ready before the authoritative tid entry is
+    // visible, so a published task cannot be omitted from an mm-sharer walk.
+    super::track_task_before_publish(task);
     let mut g = REG.lock_irqsave::<RegIrq>();
     crate::syscall_work::reconcile_new_task(task);
     g.by_tid.insert(tid, weak.clone());
