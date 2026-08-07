@@ -66,10 +66,14 @@ pub fn setsiginfo(target: &Task, data: u64) -> Result<(), Errno> {
     // A future/unknown layout can use bytes past the 48-byte kernel prefix.
     // This kernel cannot retain that expansion, so reject nonzero bytes rather
     // than silently truncating the tracer's record.
+    // SAFETY: setsiginfo validated this full 128-byte user record readable, so
+    // the aligned-independent read at the ABI code offset is in that range.
     let code = unsafe { core::ptr::read_unaligned((data + 8) as *const i32) };
     // SAFETY: the full 128-byte record was validated above; bytes 48..128
     // are within that proven readable range and are copied before testing.
     let mut expansion = [0u8; 80];
+    // SAFETY: setsiginfo validated data through byte 128; this copies only its
+    // trailing 80 bytes into the equally sized local expansion buffer.
     unsafe { core::ptr::copy_nonoverlapping((data + 48) as *const u8,
                                              expansion.as_mut_ptr(), expansion.len()); }
     crate::s101_ptrace_decide::siginfo_expansion_check(signo, code, &expansion)?;
