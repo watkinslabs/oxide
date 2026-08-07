@@ -46,6 +46,11 @@ pub struct AsymmetricKey {
     /// A name the blob proposes for itself, used when the caller supplies
     /// none. A private-key blob carries no name, so it has none to propose.
     pub description: Option<String>,
+    /// Certificate identifiers retained by the keyring for `id:` / `ex:`
+    /// search. Private-key blobs have none.
+    pub ids: Vec<Vec<u8>>,
+    /// Certificate subject identifier retained for exact `dn:` search.
+    pub name_id: Option<Vec<u8>>,
     key: RsaKey,
 }
 
@@ -65,16 +70,23 @@ impl AsymmetricKey {
             let key = rsa::parse_public(&cert.key)?;
             // The name a certificate proposes is its subject followed by the
             // subject key identifier, or the serial number when it has none.
+            let mut issuer_serial = cert.serial.clone();
+            issuer_serial.extend_from_slice(&cert.issuer);
+            let mut ids = alloc::vec![issuer_serial];
+            if let Some(skid) = cert.skid.as_ref() { ids.push(skid.clone()); }
             let mut desc = cert.subject;
             desc.push_str(": ");
             let id = cert.skid.unwrap_or(cert.serial);
             for b in &id { push_hex(&mut desc, *b); }
-            return Ok(Self { algo: cert.algo, id_type: ID_TYPE_X509, description: Some(desc), key });
+            return Ok(Self {
+                algo: cert.algo, id_type: ID_TYPE_X509, description: Some(desc), ids,
+                name_id: Some(cert.subject_id), key,
+            });
         }
         let (algo, private) = pkcs8::parse(blob)?;
         if algo != "rsa" { return Err(PkeyError::NoPackage); }
         let key = rsa::parse_private(&private)?;
-        Ok(Self { algo, id_type: ID_TYPE_PKCS8, description: None, key })
+        Ok(Self { algo, id_type: ID_TYPE_PKCS8, description: None, ids: Vec::new(), name_id: None, key })
     }
 
     /// Whether this key can perform private operations. # C: O(1)

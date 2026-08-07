@@ -83,6 +83,20 @@ fn a_certificate_supplies_its_own_description() {
     assert_eq!(STORE.lock().keys.get(&named).expect("added key").description, "my-cert");
 }
 
+#[test]
+fn asymmetric_search_accepts_partial_and_exact_certificate_ids() {
+    let t = ctx(1739, 7739);
+    join_session(&t, None);
+    let key = add_cert(&t, "id-search") as i32;
+    let ring = get_keyring_id(&t, KEY_SPEC_SESSION_KEYRING, true) as i32;
+    const SKID: &str = "ex:fb55bbd159ecd01255e7d576480dcb840ddd8ce7";
+    const DN: &str = "dn:31133011060355040a0c0a4f7869646520546573743114301206035504030c0b706b657920766563746f72";
+    assert_eq!(search_core(&t, ring, "asymmetric", SKID, 0), key as i64);
+    assert_eq!(search_core(&t, ring, "asymmetric", "id:0dcb840ddd8ce7", 0), key as i64);
+    assert_eq!(search_core(&t, ring, "asymmetric", DN, 0), key as i64);
+    assert_eq!(search_core(&t, ring, "asymmetric", "ex:0dcb840ddd8ce7", 0), enokey());
+}
+
 // A private-key blob proposes no name, so adding one unnamed is EINVAL rather
 // than a key nothing can find.
 #[test]
