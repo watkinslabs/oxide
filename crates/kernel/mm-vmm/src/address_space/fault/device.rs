@@ -29,7 +29,7 @@ impl AddressSpace {
         // offset would alias every page of a multi-page ring onto its header.
         let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
         let pa = pa + (va_page - vma.start.as_u64());
-        let pte_flags = vma.prot.to_page_flags();
+        let pte_flags = vma.page_flags();
         // SAFETY: pa is a kernel-owned frame whose lifetime exceeds every user mapping; va_page is page-aligned per find_containing; flags carry USER per `11§5`.
         // F157-A1: dec_ref any frame displaced by a stale present leaf
         // (separate from the KernelFrame's own `inc_ref(pa)` below).
@@ -64,7 +64,7 @@ impl AddressSpace {
         // offset O straight to base_pa + O. No PMM frame, no copy, no refcount.
         let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
         let off = va_page - vma.start.as_u64();
-        let mut pte_flags = vma.prot.to_page_flags();
+        let mut pte_flags = vma.page_flags();
         match cache {
             PhysCacheMode::WriteBack => {}
             PhysCacheMode::WriteCombine => pte_flags |= hal::PageFlags::WRITE_COMBINE,

@@ -227,6 +227,21 @@ fn mprotect_splits_at_boundaries() {
 }
 
 #[test]
+fn pkey_mprotect_splits_and_preserves_neighbor_keys() {
+    let mut t = VmaTree::new();
+    t.insert(anon(0x1000, 0x5000, VmaProt::READ)).unwrap();
+    t.mprotect_range_with_pkey(uva(0x2000), uva(0x4000), VmaProt::READ, Some(3)).unwrap();
+    let mut it = t.iter();
+    assert_eq!(it.next().unwrap().pkey, 0);
+    assert_eq!(it.next().unwrap().pkey, 3);
+    assert_eq!(it.next().unwrap().pkey, 0);
+    drop(it);
+    t.mprotect_range_with_pkey(uva(0x1000), uva(0x5000), VmaProt::READ, Some(3)).unwrap();
+    assert_eq!(t.len(), 1, "same protection and key re-merge");
+    assert_eq!(t.iter().next().unwrap().pkey, 3);
+}
+
+#[test]
 fn mprotect_rejects_hole() {
     let mut t = VmaTree::new();
     t.insert(anon(0x1000, 0x2000, VmaProt::READ)).unwrap();

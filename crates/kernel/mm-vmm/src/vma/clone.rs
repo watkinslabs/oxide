@@ -6,7 +6,7 @@ use alloc::sync::Arc;
 impl Clone for Vma {
     fn clone(&self) -> Self {
         Vma {
-            start: self.start, end: self.end, prot: self.prot, may_prot: self.may_prot,
+            start: self.start, end: self.end, prot: self.prot, may_prot: self.may_prot, pkey: self.pkey,
             // The child does NOT inherit the uffd registration: we advertise
             // no UFFD_FEATURE_EVENT_FORK, so Linux `dup_userfaultfd` clears
             // `vm_userfaultfd_ctx` + the `__VM_UFFD_FLAGS` on the child (the
@@ -63,6 +63,7 @@ impl Vma {
             end:   new_end,
             prot:  self.prot,
             may_prot: self.may_prot,
+            pkey: self.pkey,
             flags: self.flags,
             backing,
             rss: AtomicU64::new(0),

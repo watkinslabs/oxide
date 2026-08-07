@@ -42,7 +42,7 @@ pub(super) fn restore_swap_entry(
         cgroup::uncharge_memcg(memcg, PAGE_BYTES);
         return Err(vmm::Error::Io);
     }
-    let flags = vma.prot.to_page_flags();
+    let flags = vma.page_flags();
     let index = ((va_page - vma.start.as_u64()) / PAGE_BYTES) as u32;
     // SAFETY: fresh `pa` is not PTE-visible until the checked commit below.
     unsafe { crate::setup::set_anon_rmap_for_pa(pa, anon_vma, index); }

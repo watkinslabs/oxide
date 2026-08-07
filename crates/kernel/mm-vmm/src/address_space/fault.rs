@@ -221,7 +221,7 @@ impl AddressSpace {
                 let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
                 // Privileged PT read of the running task's active root.
                 if let Some((pa, old_fl)) = M::translate(Va(va_page)) {
-                    let mut f = vma.prot.to_page_flags();
+                    let mut f = vma.page_flags();
                     if f.contains(hal::PageFlags::WRITE) && !old_fl.contains(hal::PageFlags::WRITE) {
                         f.remove(hal::PageFlags::WRITE); // keep COW W-strip
                     }

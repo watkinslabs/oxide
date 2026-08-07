@@ -281,9 +281,9 @@ fn leaf_writable(leaf: u64) -> bool {
 /// preempt-off), (b) `va`/`len` are page-aligned and inside the
 /// user range. HHDM-mapped table memory is read/written.
 /// # C: O(len/page * walk_depth) + per-page TLB flush
-pub unsafe fn mprotect_pages(root_pa: u64, va: u64, len: usize, prot: VmaProt) {
+pub unsafe fn mprotect_pages(root_pa: u64, va: u64, len: usize, prot: VmaProt, pkey: u8) {
     use hal::MmuOps;
-    let new_flags = prot.to_page_flags();
+    let new_flags = prot.to_page_flags().with_pkey(pkey);
     let va_start = va & !0xFFF;
     let va_end = va.checked_add(len as u64).map_or(va_start, |e| (e + 0xFFF) & !0xFFF);
     if va_end <= va_start { return; }

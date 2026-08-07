@@ -122,7 +122,31 @@ bitflags::bitflags! {
         /// the Linux PAT WC entry; on arm64 it selects MAIR Normal-NC, which
         /// is the architecture's `pgprot_writecombine` mapping.
         const WRITE_COMBINE = 1 << 7;
+        /// Protection-key value bits. They travel with a user leaf's normal
+        /// permissions so fault, fork, and mprotect rewrites cannot lose the
+        /// key while preserving R/W/X.
+        const PKEY_BIT0 = 1 << 8;
+        const PKEY_BIT1 = 1 << 9;
+        const PKEY_BIT2 = 1 << 10;
+        const PKEY_BIT3 = 1 << 11;
     }
+}
+
+impl PageFlags {
+    /// All architecture-neutral protection-key value bits. # C: O(1)
+    pub const PKEY_MASK: PageFlags = PageFlags::PKEY_BIT0.union(PageFlags::PKEY_BIT1)
+        .union(PageFlags::PKEY_BIT2).union(PageFlags::PKEY_BIT3);
+
+    /// Replace this leaf's protection key without changing any other mapping
+    /// permission. # C: O(1)
+    pub const fn with_pkey(self, pkey: u8) -> Self {
+        let bits = (self.bits() & !Self::PKEY_MASK.bits())
+            | (((pkey as u64) << 8) & Self::PKEY_MASK.bits());
+        Self::from_bits_retain(bits)
+    }
+
+    /// This leaf's protection key. # C: O(1)
+    pub const fn pkey(self) -> u8 { ((self.bits() & Self::PKEY_MASK.bits()) >> 8) as u8 }
 }
 
 // ---------------------------------------------------------------------------

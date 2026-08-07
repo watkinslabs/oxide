@@ -17,6 +17,7 @@ pub struct MprotectStep {
     pub start: UserVirtAddr,
     pub len: usize,
     pub prot: VmaProt,
+    pub pkey: u8,
 }
 
 /// Linux mprotect may change an earlier VMA before a later VMA fails.
@@ -266,7 +267,7 @@ impl AddressSpace {
         len: usize,
         prot: VmaProt,
     ) -> KResult<()> {
-        let outcome = self.mprotect_user(addr, len, prot, false)?;
+        let outcome = self.mprotect_user(addr, len, prot, false, None)?;
         match outcome.error {
             Some(error) => Err(error),
             None => Ok(()),
@@ -283,6 +284,7 @@ impl AddressSpace {
         len: usize,
         requested: VmaProt,
         read_implies_exec: bool,
+        pkey: Option<u8>,
     ) -> KResult<MprotectOutcome> {
         validate_len(len)?;
         validate_aligned(addr)?;
@@ -326,6 +328,7 @@ impl AddressSpace {
                 start: UserVirtAddr::new(cursor).expect("validated user range"),
                 len: (step_end - cursor) as usize,
                 prot,
+                pkey: pkey.unwrap_or(vma.pkey),
             });
             cursor = step_end;
         }
@@ -336,10 +339,11 @@ impl AddressSpace {
             let step_end = step.start.as_u64() + step.len as u64;
             let result = self.rmap_resplit(
                 &mut tree, step.start.as_u64(), step_end,
-                |t, s, e| t.mprotect_range(
+                |t, s, e| t.mprotect_range_with_pkey(
                     UserVirtAddr::new(s).expect("validated user range"),
                     UserVirtAddr::new(e).expect("validated user range"),
                     step.prot,
+                    Some(step.pkey),
                 ),
             );
             if let Err(unexpected) = result {

@@ -22,6 +22,7 @@ const SH1:      u64 = 1 << 9;       // SH = 0b11 = Inner Shareable
 const AF:       u64 = 1 << 10;
 const PXN:      u64 = 1 << 53;
 const UXN:      u64 = 1 << 54;
+const PO_INDEX_SHIFT: u8 = 60;
 const PHYS_MASK_ARM: u64 = 0x0000_ffff_ffff_f000;
 const SWAP_MARKER: u64 = 1 << 1;
 const SWAP_TYPE_SHIFT: u8 = 2;
@@ -189,6 +190,7 @@ impl PtWalker for PtWalkerArm {
         };
         if pxn { e |= PXN; }
         if uxn { e |= UXN; }
+        e |= ((flags.pkey() as u64) & 0x7) << PO_INDEX_SHIFT;
         e
     }
 
