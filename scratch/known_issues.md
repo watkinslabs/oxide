@@ -231,7 +231,6 @@ here now.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| IN-PROGRESS B1916-netlink-remaining-socket-flags | MISSING | med | `NETLINK_EXT_ACK` remains stored/readable only: error handlers do not carry request-field context to `NLMSG_ERROR` TLVs. `NETLINK_LISTEN_ALL_NSID` now requires a caller-local peer-ID mapping, delivers foreign route multicast, and emits its ancillary namespace ID; `NETLINK_BROADCAST_SEND_ERROR` now records an opted-in receiver's queue failure in the multicast result. | Hosted tests cover peer-ID assignment, foreign multicast metadata, and opted-in delivery failure. Remaining work: typed extended-ACK context from parsers/handlers through error serialization. | B1916-netlink-remaining-socket-flags |
 
 ### B1745-netlink-strict-dump-check
 
