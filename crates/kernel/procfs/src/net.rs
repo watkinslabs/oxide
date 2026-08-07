@@ -245,10 +245,20 @@ fn net_snmp_body(net_ns: u64) -> alloc::vec::Vec<u8> {
 /// `/proc/net/snmp` inode. # C: O(1)
 pub fn make_proc_net_snmp() -> InodeRef { make_net_file(ids::NET_SNMP as Ino, net_snmp_body) }
 
+/// `/proc/net/snmp6` — IPv6 protocol counters. # C: O(IPv6 counters)
+fn net_snmp6_body(net_ns: u64) -> alloc::vec::Vec<u8> { net::mib6::render_proc_snmp6(net_ns) }
+/// `/proc/net/snmp6` inode. # C: O(1)
+pub fn make_proc_net_snmp6() -> InodeRef { make_net_file(ids::NET_SNMP6 as Ino, net_snmp6_body) }
+
 /// `/proc/net/netstat` — extended TCP counters. # C: O(1)
 fn net_netstat_body(net_ns: u64) -> alloc::vec::Vec<u8> { net::mib::render_proc_netstat(net_ns) }
 /// `/proc/net/netstat` inode. # C: O(1)
 pub fn make_proc_net_netstat() -> InodeRef { make_net_file(ids::NET_NETSTAT as Ino, net_netstat_body) }
+
+/// `/proc/net/packet` — namespace-local AF_PACKET socket table. # C: O(N sockets)
+fn net_packet_body(net_ns: u64) -> alloc::vec::Vec<u8> { net::sock::render_proc_packet(net_ns) }
+/// `/proc/net/packet` inode. # C: O(1)
+pub fn make_proc_net_packet() -> InodeRef { make_net_file(ids::NET_PACKET as Ino, net_packet_body) }
 
 /// `/proc/net/softnet_stat` — one row per CPU of receive bottom-half counters.
 /// Not namespace-scoped: the backlog is per-CPU, not per network namespace.

@@ -224,16 +224,9 @@ pub fn register_static_files() {
     crate::reg::register("/proc/net/icmp", crate::net_icmp::make_proc_net_icmp());
     crate::reg::register("/proc/net/icmp6", crate::net_icmp::make_proc_net_icmp6());
     crate::reg::register("/proc/net/netlink", crate::net::make_proc_net_netlink());
-    crate::reg::register(
-        "/proc/net/packet",
-        StaticFileInode::new(
-            b"\
-sk       RefCnt Type Proto  Iface R Rmem   User   Inode\n\
-",
-        ) as InodeRef,
-    );
+    crate::reg::register("/proc/net/packet", crate::net::make_proc_net_packet());
     crate::reg::register("/proc/net/snmp", crate::net::make_proc_net_snmp());
-    crate::reg::register("/proc/net/snmp6", StaticFileInode::new(b"") as InodeRef);
+    crate::reg::register("/proc/net/snmp6", crate::net::make_proc_net_snmp6());
     crate::reg::register("/proc/net/netstat", crate::net::make_proc_net_netstat());
     crate::reg::register("/proc/net/protocols", StaticFileInode::new(b"\
 protocol  size sockets  memory press maxhdr  slab module     cl co di ac io in de sh ss gs se re sp bi br ha uh gp em\n\

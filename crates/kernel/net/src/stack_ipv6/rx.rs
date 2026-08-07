@@ -29,16 +29,35 @@ impl NetStack {
     pub fn deliver_rx_ipv6_in(&self, lease: &crate::IngressLease, l3: &[u8]) -> NetResult<()> {
         let net_ns = lease.net_ns();
         let iface = lease.iface();
+        crate::mib6::bump_ip(net_ns, crate::mib6::Ip6Mib::InReceives);
+        crate::mib6::add_ip(net_ns, crate::mib6::Ip6Mib::InOctets, l3.len() as u64);
         if crate::netfilter_hook::nf_hook_eval_in(net_ns, NF_INET_PRE_ROUTING, l3, NFPROTO_IPV6).verdict == 0 {
             return Ok(());
         }
-        let hdr = Ipv6Hdr::parse(l3).map_err(|_| crate::netdev::NetError::Einval)?;
+        let hdr = match Ipv6Hdr::parse(l3) {
+            Ok(hdr) => hdr,
+            Err(_) => {
+                crate::mib6::bump_ip(net_ns, crate::mib6::Ip6Mib::InHdrErrors);
+                return Err(crate::netdev::NetError::Einval);
+            }
+        };
+        match hdr.traffic_class & 3 {
+            0 => crate::mib6::bump_ip(net_ns, crate::mib6::Ip6Mib::InNoEctPkts),
+            1 => crate::mib6::bump_ip(net_ns, crate::mib6::Ip6Mib::InEct1Pkts),
+            2 => crate::mib6::bump_ip(net_ns, crate::mib6::Ip6Mib::InEct0Pkts),
+            _ => crate::mib6::bump_ip(net_ns, crate::mib6::Ip6Mib::InCePkts),
+        }
+        if hdr.dst.is_multicast() {
+            crate::mib6::bump_ip(net_ns, crate::mib6::Ip6Mib::InMcastPkts);
+            crate::mib6::add_ip(net_ns, crate::mib6::Ip6Mib::InMcastOctets, l3.len() as u64);
+        }
         if !self.v6_dst_is_local_in(net_ns, iface, hdr.dst) {
             return self.forward_ipv6_in(net_ns, iface, l3);
         }
         if crate::netfilter_hook::nf_hook_eval_in(net_ns, NF_INET_LOCAL_IN, l3, NFPROTO_IPV6).verdict == 0 { return Ok(()); }
         let payload_end = crate::ipv6::IPV6_HDR_LEN + hdr.payload_length as usize;
         if payload_end > l3.len() {
+            crate::mib6::bump_ip(net_ns, crate::mib6::Ip6Mib::InTruncatedPkts);
             return Err(crate::netdev::NetError::Einval);
         }
         let payload = &l3[crate::ipv6::IPV6_HDR_LEN..payload_end];
@@ -146,6 +165,7 @@ impl NetStack {
         }
         match next_header {
             n if n == IpProto::Icmpv6 as u8 => {
+                crate::mib6::bump_ip(net_ns, crate::mib6::Ip6Mib::InDelivers);
                 if !payload.is_empty()
                     && crate::ping::is_reply(crate::ping::PingFamily::V6, payload[0])
                 {
@@ -156,15 +176,18 @@ impl NetStack {
                 }
                 self.deliver_rx_icmpv6(lease, src, dst, hop_limit, mld_router_alert, payload)?;
             }
-            n if n == IpProto::Udp as u8 => self.deliver_rx_udp6(
-                net_ns, iface, src, dst, hop_limit, traffic_class, ancillary, payload, packet),
+            n if n == IpProto::Udp as u8 => {
+                crate::mib6::bump_ip(net_ns, crate::mib6::Ip6Mib::InDelivers);
+                self.deliver_rx_udp6(net_ns, iface, src, dst, hop_limit, traffic_class, ancillary, payload, packet)
+            }
             n if n == IpProto::Tcp as u8 => {
+                crate::mib6::bump_ip(net_ns, crate::mib6::Ip6Mib::InDelivers);
                 let src = IpAddr::V6(src);
                 let dst = IpAddr::V6(dst);
                 let _ = self.deliver_tcp_packet_hop(net_ns, iface, src, dst, payload, packet,
                     hop_limit);
             }
-            _ => {}
+            _ => crate::mib6::bump_ip(net_ns, crate::mib6::Ip6Mib::InUnknownProtos),
         }
         Ok(())
     }
@@ -179,12 +202,18 @@ impl NetStack {
         payload: &[u8],
     ) -> NetResult<()> {
         let (net_ns, iface) = (lease.net_ns(), lease.iface());
-        if payload.len() < crate::icmpv6::ICMPV6_HDR_LEN
-            || !icmpv6_checksum_valid(payload, src, dst)
-        {
+        if payload.len() < crate::icmpv6::ICMPV6_HDR_LEN {
+            crate::mib6::bump_icmp(net_ns, crate::mib6::Icmp6Mib::InErrors);
+            return Ok(());
+        }
+        crate::mib6::bump_icmp(net_ns, crate::mib6::Icmp6Mib::InMsgs);
+        if !icmpv6_checksum_valid(payload, src, dst) {
+            crate::mib6::bump_icmp(net_ns, crate::mib6::Icmp6Mib::InCsumErrors);
+            crate::mib6::bump_icmp(net_ns, crate::mib6::Icmp6Mib::InErrors);
             return Ok(());
         }
         let typ = payload[0];
+        crate::mib6::bump_icmp_type(net_ns, false, typ);
         if matches!(typ, ICMPV6_TYPE_DEST_UNREACHABLE | ICMPV6_TYPE_TIME_EXCEEDED
             | ICMPV6_TYPE_PARAMETER_PROBLEM | crate::icmpv6::ICMPV6_TYPE_PACKET_TOO_BIG)
         {
