@@ -14,7 +14,7 @@
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use sync::{Spinlock, TaskList as DriverListClass};
 
 use crate::KResult;
@@ -52,6 +52,8 @@ pub const IORESOURCE_IO: u64 = 0x0000_0100;
 pub const IORESOURCE_MEM: u64 = 0x0000_0200;
 /// Linux `IORESOURCE_PREFETCH` flag for [`Resource::flags`]. # C: O(1)
 pub const IORESOURCE_PREFETCH: u64 = 0x0000_2000;
+/// PCI functions begin with the platform's 32-bit DMA addressing default.
+pub const PCI_DEFAULT_DMA_MASK: u64 = u32::MAX as u64;
 
 /// One enumerated device on a bus. `driver` names the bound driver
 /// (None = unbound). Held as `Arc<Device>` so the registry, the bound
@@ -88,6 +90,8 @@ pub struct Device {
     /// NUMA node this device is attached to (Linux `dev->numa_node`);
     /// [`NUMA_NODE_NONE`] when unattached.
     pub numa_node: core::sync::atomic::AtomicI32,
+    pub(crate) dma_mask: AtomicU64,
+    pub(crate) coherent_dma_mask: AtomicU64,
     /// Bound driver name, None when unbound.
     pub driver:    Spinlock<Option<&'static str>, DriverListClass>,
     /// Optional Linux `driver_override`: when set, only this driver name may
@@ -124,6 +128,7 @@ impl Device {
             msi_allowed: core::sync::atomic::AtomicBool::new(true),
             broken_parity_status: core::sync::atomic::AtomicBool::new(false),
             numa_node: core::sync::atomic::AtomicI32::new(NUMA_NODE_NONE),
+            dma_mask: AtomicU64::new(if bus == "pci" { PCI_DEFAULT_DMA_MASK } else { 0 }), coherent_dma_mask: AtomicU64::new(if bus == "pci" { PCI_DEFAULT_DMA_MASK } else { 0 }),
             driver: Spinlock::new(None), driver_override: Spinlock::new(None),
             dev_class: "", devname: None, dev_t: None, node_factory: None,
             uevent_env: Vec::new(), resources: Vec::new(),
@@ -183,34 +188,27 @@ impl Device {
     /// Builder: attach class/device-specific uevent environment. # C: O(n)
     pub fn with_uevent_env(mut self, env: Vec<String>) -> Self { self.uevent_env = env; self }
     /// Builder: attach PCI-function identity read from config space. # C: O(1)
-    pub fn with_pci_ident(mut self, ident: crate::pci_dev::PciIdent) -> Self {
-        self.pci = Some(ident);
-        self
-    }
+    pub fn with_pci_ident(mut self, ident: crate::pci_dev::PciIdent) -> Self { self.pci = Some(ident); self }
     /// Whether a not-yet-bound driver may request MSI/MSI-X. # C: O(1)
-    pub fn msi_allowed(&self) -> bool {
-        self.msi_allowed.load(core::sync::atomic::Ordering::Acquire)
-    }
+    pub fn msi_allowed(&self) -> bool { self.msi_allowed.load(core::sync::atomic::Ordering::Acquire) }
     /// Set the MSI/MSI-X admission policy for future drivers. # C: O(1)
-    pub fn set_msi_allowed(&self, allowed: bool) {
-        self.msi_allowed.store(allowed, core::sync::atomic::Ordering::Release);
-    }
+    pub fn set_msi_allowed(&self, allowed: bool) { self.msi_allowed.store(allowed, core::sync::atomic::Ordering::Release); }
     /// NUMA node this device is attached to. # C: O(1)
-    pub fn numa_node(&self) -> i32 {
-        self.numa_node.load(core::sync::atomic::Ordering::Acquire)
-    }
+    pub fn numa_node(&self) -> i32 { self.numa_node.load(core::sync::atomic::Ordering::Acquire) }
     /// Override the device's NUMA node. # C: O(1)
-    pub fn set_numa_node(&self, node: i32) {
-        self.numa_node.store(node, core::sync::atomic::Ordering::Release);
-    }
+    pub fn set_numa_node(&self, node: i32) { self.numa_node.store(node, core::sync::atomic::Ordering::Release); }
+    /// Streaming DMA mask presently selected for this device. # C: O(1)
+    pub fn dma_mask(&self) -> u64 { self.dma_mask.load(core::sync::atomic::Ordering::Acquire) }
+    /// Coherent DMA mask presently selected for this device. # C: O(1)
+    pub fn coherent_dma_mask(&self) -> u64 { self.coherent_dma_mask.load(core::sync::atomic::Ordering::Acquire) }
+    /// Update the streaming DMA mask after the bus has admitted it. # C: O(1)
+    pub fn set_dma_mask(&self, mask: u64) { self.dma_mask.store(mask, core::sync::atomic::Ordering::Release); }
+    /// Update the coherent DMA mask after the bus has admitted it. # C: O(1)
+    pub fn set_coherent_dma_mask(&self, mask: u64) { self.coherent_dma_mask.store(mask, core::sync::atomic::Ordering::Release); }
     /// Current broken-parity-status flag. # C: O(1)
-    pub fn broken_parity_status(&self) -> bool {
-        self.broken_parity_status.load(core::sync::atomic::Ordering::Acquire)
-    }
+    pub fn broken_parity_status(&self) -> bool { self.broken_parity_status.load(core::sync::atomic::Ordering::Acquire) }
     /// Set the broken-parity-status flag. # C: O(1)
-    pub fn set_broken_parity_status(&self, broken: bool) {
-        self.broken_parity_status.store(broken, core::sync::atomic::Ordering::Release);
-    }
+    pub fn set_broken_parity_status(&self, broken: bool) { self.broken_parity_status.store(broken, core::sync::atomic::Ordering::Release); }
     /// Builder: attach bus resources to the device. # C: O(n)
     pub fn with_resources(mut self, resources: Vec<Resource>) -> Self {
         self.resources = resources;

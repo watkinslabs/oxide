@@ -32,6 +32,8 @@ const TEST_CFG_PATCHED_DWORD: u32 = 0x1234_ab78;
 const TEST_DEVFN: u8 = (TEST_SLOT << PCI_DEVFN_DEV_SHIFT) | TEST_FUNC;
 const TEST_MODEL_CLASS: u32 = 0x010802;
 const TEST_MODEL_DRIVER_DATA: usize = 0xfeed_beef;
+const TEST_STREAMING_DMA_MASK: u64 = (1u64 << 48) - 1;
+const TEST_COHERENT_DMA_MASK: u64 = (1u64 << 40) - 1;
 
 static MODEL_PROBES: AtomicUsize = AtomicUsize::new(0);
 static MODEL_REMOVES: AtomicUsize = AtomicUsize::new(0);
@@ -97,6 +99,8 @@ unsafe extern "C" fn model_probe(dev: *mut LinuxPciDev, id: *const LinuxPciDevic
         assert!(cstr_eq((*dev).dev.name.as_ptr(), b"0000:02:03.1"));
         assert!((*dev).dev.init_name.is_null());
         assert_eq!((*id).driver_data, TEST_MODEL_DRIVER_DATA);
+        assert_eq!(crate::linux_dma::dma_set_mask(dev.cast(), TEST_STREAMING_DMA_MASK), LINUX_OK);
+        assert_eq!(crate::linux_dma::dma_set_coherent_mask(dev.cast(), TEST_COHERENT_DMA_MASK), LINUX_OK);
     }
     MODEL_PROBES.fetch_add(1, Ordering::SeqCst);
     pci_set_drvdata(dev, TEST_MODEL_DRIVER_DATA as *mut c_void);
@@ -204,6 +208,8 @@ fn pci_driver_registration_binds_existing_model_device() {
     assert_eq!(pci_register_driver(&mut driver), LINUX_OK);
     assert_eq!(model.bound(), Some("linux-pci-model-test"));
     assert_eq!(MODEL_PROBES.load(Ordering::SeqCst), 1);
+    assert_eq!(model.dma_mask(), TEST_STREAMING_DMA_MASK);
+    assert_eq!(model.coherent_dma_mask(), TEST_COHERENT_DMA_MASK);
     assert_eq!(super::super::registry::binding_count(), 1);
     assert_eq!(super::super::registry::bound_id_driver_data(&model), Some(TEST_MODEL_DRIVER_DATA));
     pci_unregister_driver(&mut driver);

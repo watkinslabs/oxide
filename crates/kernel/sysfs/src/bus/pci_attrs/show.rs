@@ -12,8 +12,6 @@ use super::{is_bridge, is_vga};
 pub(crate) const NUMA_NODE_NONE: i32 = drv::NUMA_NODE_NONE;
 /// Highest node id + 1 on a single-node system.
 pub(crate) const MAX_NUMNODES: i32 = 1;
-/// Addressing width of the DMA mask a PCI function is set up with.
-const DEFAULT_DMA_MASK_BITS: u32 = 32;
 /// Power state of a function with no runtime-PM transitions.
 const POWER_STATE_D0: &str = "D0";
 /// Hex digits per cpumask group in the `%*pb` cpumask format.
@@ -89,6 +87,9 @@ fn config_byte(dev: &drv::Device, off: u8) -> u8 {
     byte[0]
 }
 
+/// Highest set DMA-mask bit, with zero represented as zero bits. # C: O(1)
+fn dma_mask_bits(mask: u64) -> u32 { u64::BITS - mask.leading_zeros() }
+
 /// Whether the function currently decodes its I/O or memory windows —
 /// the enable count userspace observes. # C: O(1)
 pub(crate) fn enable_count(dev: &drv::Device) -> u32 {
@@ -116,9 +117,8 @@ pub(crate) fn body(dev: &drv::Device, leaf: &str) -> Option<Vec<u8>> {
         "local_cpus" => { s.push_str(&cpumask_hex(ncpu())); }
         "local_cpulist" => { s.push_str(&cpumask_list(ncpu())); }
         "numa_node" => { let _ = write!(s, "{}", dev.numa_node()); }
-        "dma_mask_bits" | "consistent_dma_mask_bits" => {
-            let _ = write!(s, "{DEFAULT_DMA_MASK_BITS}");
-        }
+        "dma_mask_bits" => { let _ = write!(s, "{}", dma_mask_bits(dev.dma_mask())); }
+        "consistent_dma_mask_bits" => { let _ = write!(s, "{}", dma_mask_bits(dev.coherent_dma_mask())); }
         "enable" => { let _ = write!(s, "{}", enable_count(dev)); }
         "broken_parity_status" => { let _ = write!(s, "{}", u32::from(dev.broken_parity_status())); }
         "msi_bus" => { let _ = write!(s, "{}", u32::from(dev.msi_allowed())); }
@@ -176,6 +176,15 @@ mod tests {
         let mut dev = pci_dev();
         dev.pci.as_mut().unwrap().serial_number = Some(0x1122_3344_5566_7788);
         assert_eq!(read(&dev, "serial_number"), "1122334455667788\n");
+    }
+
+    #[test]
+    fn dma_mask_attributes_report_each_live_mask_width() {
+        let dev = pci_dev();
+        dev.set_dma_mask((1u64 << 48) - 1);
+        dev.set_coherent_dma_mask((1u64 << 40) - 1);
+        assert_eq!(read(&dev, "dma_mask_bits"), "48\n");
+        assert_eq!(read(&dev, "consistent_dma_mask_bits"), "40\n");
     }
 
     #[test]

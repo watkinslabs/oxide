@@ -22,7 +22,7 @@ pub use path::{
 };
 pub use model::{
     bind, BindEvent, Device, Driver, NodeFactory, Resource, IORESOURCE_IO, IORESOURCE_MEM,
-    NUMA_NODE_NONE,
+    NUMA_NODE_NONE, PCI_DEFAULT_DMA_MASK,
     IORESOURCE_PREFETCH,
     register_driver, unregister_driver, devices, device_count, find_matching_device_identity,
     try_device_add, try_device_add_with_parent, device_del, rollback_devices, driver_names,

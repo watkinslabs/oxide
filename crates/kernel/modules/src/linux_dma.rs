@@ -202,7 +202,7 @@ extern "C" fn dma_sync_sg_for_device(_dev: *mut LinuxDevice, _sg: *mut ScatterLi
     if nents > 0 && valid_dir(dir) { sync_for_device(dir); }
 }
 
-extern "C" fn dma_set_mask(dev: *mut LinuxDevice, mask: u64) -> i32 {
+pub(crate) extern "C" fn dma_set_mask(dev: *mut LinuxDevice, mask: u64) -> i32 {
     if dev.is_null() || mask == 0 { return -LINUX_EINVAL; }
     if dma_supported(dev, mask) == 0 { return -LINUX_EIO; }
     // SAFETY: dev follows the KPI struct device prefix from linux/device.h.
@@ -210,14 +210,16 @@ extern "C" fn dma_set_mask(dev: *mut LinuxDevice, mask: u64) -> i32 {
         if (*dev).dma_mask.is_null() { return -LINUX_EIO; }
         *(*dev).dma_mask = mask;
     }
+    crate::linux_pci::sync_dma_masks(dev, Some(mask), None);
     LINUX_OK
 }
 
-extern "C" fn dma_set_coherent_mask(dev: *mut LinuxDevice, mask: u64) -> i32 {
+pub(crate) extern "C" fn dma_set_coherent_mask(dev: *mut LinuxDevice, mask: u64) -> i32 {
     if dev.is_null() || mask == 0 { return -LINUX_EINVAL; }
     if dma_supported(dev, mask) == 0 { return -LINUX_EIO; }
     // SAFETY: dev follows the KPI struct device prefix from linux/device.h.
     unsafe { (*dev).coherent_dma_mask = mask; }
+    crate::linux_pci::sync_dma_masks(dev, None, Some(mask));
     LINUX_OK
 }
 
