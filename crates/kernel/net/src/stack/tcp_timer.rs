@@ -175,6 +175,10 @@ fn min_deadline(current: Option<u64>, candidate: u64) -> Option<u64> {
     Some(current.map_or(candidate, |deadline| deadline.min(candidate)))
 }
 
+pub(super) fn account_retransmit(net_ns: u64, result: NetResult<()>) {
+    if result.is_ok() { crate::mib::bump(net_ns, crate::mib::Mib::TcpRetransSegs); }
+}
+
 fn deadlines(entry: &TcpEntry, now_ns: u64)
     -> (Option<u64>, Option<u64>, Option<u64>, Option<u64>)
 {
@@ -288,8 +292,8 @@ impl NetStack {
         };
         super::tcp_fastopen::drain_client(self, entry, now_ns);
         for segment in &segments {
-            let _ = self.send_tcp_segment_in(entry.net_ns(), src, dst, segment, 0,
-                entry.bound_iface(), TcpTxPolicy::Entry(entry));
+            account_retransmit(entry.net_ns(), self.send_tcp_segment_in(entry.net_ns(), src,
+                dst, segment, 0, entry.bound_iface(), TcpTxPolicy::Entry(entry)));
         }
         if abort {
             entry.set_error(syscall::errno::Errno::Etimedout as i32);
