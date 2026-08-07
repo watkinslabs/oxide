@@ -5,6 +5,7 @@
 // cap) — this module owns the plan/flush machinery; the parent owns state
 // and the read/write hot paths.
 
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
@@ -18,6 +19,22 @@ struct WritebackGuard<'a> { store: &'a Ext4FrameStore }
 
 impl Drop for WritebackGuard<'_> {
     fn drop(&mut self) { self.store.active_writebacks.fetch_sub(1, Ordering::Release); }
+}
+
+fn start_writeback(dirty: &mut BTreeSet<u64>, writeback: &mut BTreeMap<u64, u32>, idxs: Vec<u64>) -> Vec<u64> {
+    for idx in &idxs {
+        dirty.remove(idx);
+        *writeback.entry(*idx).or_insert(0) += 1;
+    }
+    idxs
+}
+
+fn finish_writeback(writeback: &mut BTreeMap<u64, u32>, idxs: &[u64]) {
+    for idx in idxs {
+        let Some(count) = writeback.get_mut(idx) else { continue };
+        *count -= 1;
+        if *count == 0 { writeback.remove(idx); }
+    }
 }
 
 impl Ext4FrameStore {
@@ -55,7 +72,9 @@ impl Ext4FrameStore {
 
     fn take_dirty_all(&self) -> Vec<u64> {
         let mut d = self.dirty.lock();
-        let pages: Vec<u64> = core::mem::take(&mut *d).into_iter().collect();
+        let mut writeback = self.writeback.lock();
+        let pages = d.iter().copied().collect();
+        let pages = start_writeback(&mut d, &mut writeback, pages);
         if !pages.is_empty() { vfs::memory_accounting::account_file_cache_writeback_begin(pages.len() as u64); }
         pages
     }
@@ -63,7 +82,8 @@ impl Ext4FrameStore {
     fn take_dirty_range(&self, lo: u64, hi: u64) -> Vec<u64> {
         let mut d = self.dirty.lock();
         let hit: Vec<u64> = d.range(lo..hi).copied().collect();
-        for i in &hit { d.remove(i); }
+        let mut writeback = self.writeback.lock();
+        let hit = start_writeback(&mut d, &mut writeback, hit);
         if !hit.is_empty() { vfs::memory_accounting::account_file_cache_writeback_begin(hit.len() as u64); }
         hit
     }
@@ -170,11 +190,34 @@ impl Ext4FrameStore {
                 if d.insert(*idx) { redirtied += 1; }
             }
         }
+        finish_writeback(&mut self.writeback.lock(), &idxs);
         vfs::memory_accounting::account_file_cache_writeback_complete(idxs.len() as u64, redirtied);
         // Drop the legacy Vec page-cache view so the metadata path re-reads.
         self.st.page_cache.invalidate(InodeId(self.ino as u64));
         #[cfg(feature = "debug-fsync-latency")]
         crate::fsync_latency::report(b"writeback", writeback_started_ns, idxs.len() as u64);
         if failed || rv.is_err() { Err(()) } else { Ok(()) }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::collections::{BTreeMap, BTreeSet};
+    use alloc::vec;
+
+    use super::{finish_writeback, start_writeback};
+
+    #[test]
+    fn overlapping_writebacks_hold_state_until_the_last_completion() {
+        let mut dirty = BTreeSet::from([7]);
+        let mut writeback = BTreeMap::new();
+        let first = start_writeback(&mut dirty, &mut writeback, vec![7]);
+        dirty.insert(7);
+        let second = start_writeback(&mut dirty, &mut writeback, vec![7]);
+
+        finish_writeback(&mut writeback, &first);
+        assert_eq!(writeback.get(&7), Some(&1));
+        finish_writeback(&mut writeback, &second);
+        assert!(!writeback.contains_key(&7));
     }
 }

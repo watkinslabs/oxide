@@ -10,12 +10,6 @@ impl Ext4FrameStore {
     /// are cache pages carrying this store's dirty tag; shadow entries are
     /// evictions, judged recent by the nonresident-age refault distance.
     ///
-    /// `nr_writeback` stays zero, and that is the true count rather than a
-    /// missing one: this store has no in-flight writeback state to observe —
-    /// a flush copies the frame to the device synchronously inside the
-    /// requesting call, so no index is ever left tagged "writeback pending"
-    /// for another task's syscall to see.
-    ///
     /// Every page here is a single frame, so an entry never straddles a range
     /// boundary; the walk still clips through the range so the accounting is
     /// the same shape a multi-page entry would need.
@@ -26,13 +20,16 @@ impl Ext4FrameStore {
         // Snapshot the resident indices and their dirty tags under the two
         // store locks, then release both: the recency test reads the reclaim
         // LRU under its own lock, which must not nest inside these.
-        let resident: alloc::vec::Vec<(u64, bool)> = {
+        let resident: alloc::vec::Vec<(u64, bool, bool)> = {
             let pages = self.pages.lock();
             let dirty = self.dirty.lock();
-            pages.range(range.first..=range.last).map(|(&idx, _)| (idx, dirty.contains(&idx))).collect()
+            let writeback = self.writeback.lock();
+            pages.range(range.first..=range.last)
+                .map(|(&idx, _)| (idx, dirty.contains(&idx), writeback.contains_key(&idx)))
+                .collect()
         };
-        for (idx, dirty) in resident {
-            cs.account(PageState::Cache { dirty, writeback: false }, range.covered(idx, 1));
+        for (idx, dirty, writeback) in resident {
+            cs.account(PageState::Cache { dirty, writeback }, range.covered(idx, 1));
         }
         let shadows: alloc::vec::Vec<(u64, u64)> = {
             let g = self.shadows.lock();
