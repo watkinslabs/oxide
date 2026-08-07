@@ -413,6 +413,7 @@ impl NetStack {
             super::tcp_listener::remove_tcp_entry_exact(&tables, &key, &entry);
             return Err(error);
         }
+        crate::mib::bump(bind.net_ns(), crate::mib::Mib::TcpActiveOpens);
         bind.role.store(TCP_BIND_CONNECT, Ordering::Release);
         crate::stack::stamp_last_sent_public(&entry, 1);
         self.activate_tcp_timers(&entry);
