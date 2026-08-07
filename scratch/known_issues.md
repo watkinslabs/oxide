@@ -37,10 +37,10 @@ reclassified.
 | Class \ Sev | blocker | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|
 | `DEFECT` | 0 | 0 | 13 | 19 | 32 |
-| `MISSING` | 2 | 0 | 14 | 15 | 31 |
+| `MISSING` | 2 | 0 | 14 | 14 | 30 |
 | `COVERAGE` | 0 | 0 | 9 | 14 | 23 |
 | `INFRA` | 0 | 0 | 14 | 11 | 25 |
-| **Total** | **2** | **0** | **50** | **59** | **111** |
+| **Total** | **2** | **0** | **50** | **58** | **110** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -225,12 +225,6 @@ here now.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-
-### B1749-resolved-boot-scope
-
-| Status | Class | Sev | Issue | Evidence | Owner |
-|---|---|---|---|---|---|
-| IN-PROGRESS F836-netlink-dump-continuation | MISSING | low | `Wmem` and `Dump` are reported as zero. The reference reports `sk_wmem_alloc` and `cb_running`; neither has a source here yet — netlink sends are synchronous, and dumps are built and enqueued in one call rather than continued across reads. | `proc_rows` | [CLAIMED F836-netlink-dump-continuation 2026-08-07] |
 
 ### B1752-arp-first-packet-drop
 
