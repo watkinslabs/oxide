@@ -11,8 +11,8 @@
 // - Commit block terminates one transaction; everything between
 //   the previous descriptor and this commit is durable.
 //
-// v1 scope: parse + replay. Transaction emit (write side) lives
-// alongside this crate's `Transaction` type for callers (Mount).
+// Parse, replay, and transaction emission share the same feature-selected tag
+// and checksum formats so the recovery and steady-state paths cannot drift.
 
 
 #[cfg(any(test, feature = "hosted"))]
@@ -25,6 +25,9 @@ pub use block_header::{BlockHeader, BlockType, JBD2_MAGIC};
 pub mod superblock;
 pub use superblock::{JournalSuperblock, JournalSuperblockError};
 
+pub mod checksum;
+pub use checksum::ChecksumMode;
+
 pub mod descriptor;
 pub use descriptor::{DescriptorEntry, DescriptorTag, DescriptorIter,
                      TAG_FLAG_ESCAPE, TAG_FLAG_SAME_UUID, TAG_FLAG_DELETED, TAG_FLAG_LAST};
@@ -35,6 +38,9 @@ pub use replay::{replay, JournalLogReader, ReplayError, ReplayStats};
 pub mod emit;
 pub use emit::{
     StagedBlock, LogCursor, EmitError, TransactionError,
-    descriptor_capacity, transaction_block_count, build_descriptor_block, emit_transaction,
-    build_commit_block, escape_journal_payload,
+    descriptor_capacity, descriptor_capacity_for,
+    transaction_block_count, transaction_block_count_for,
+    build_descriptor_block, build_descriptor_block_for,
+    emit_transaction, emit_transaction_for,
+    build_commit_block, build_commit_block_for, escape_journal_payload,
 };

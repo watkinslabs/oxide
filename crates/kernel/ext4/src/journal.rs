@@ -12,10 +12,11 @@ use alloc::vec::Vec;
 
 use crate::jbd2::{
     JournalSuperblock,
+    JournalSuperblockError,
     JournalLogReader, ReplayError, ReplayStats,
     replay,
     StagedBlock, LogCursor, TransactionError,
-    transaction_block_count, emit_transaction,
+    transaction_block_count_for, emit_transaction_for,
 };
 
 use crate::inode::{self, Inode};
@@ -37,10 +38,12 @@ impl Mount {
         let sb_bytes = log.read_journal_block(0).map_err(|_| MountError::BlockIo)?;
         let jsb = match JournalSuperblock::parse(&sb_bytes) {
             Ok(s) => s,
-            Err(_) => return Ok(None),  // not a journal SB → skip
+            Err(e) => return Err(map_journal_superblock_error(e)),
         };
-        let stats = replay(&log, &*self.dev, &jsb)
-            .map_err(|_| MountError::BlockIo)?;
+        let stats = replay(&log, &*self.dev, &jsb).map_err(|error| match error {
+            ReplayError::BadChecksum => MountError::BadChecksum,
+            ReplayError::BlockIo | ReplayError::Corrupt => MountError::BlockIo,
+        })?;
         if stats.txns_replayed > 0 {
             self.mark_journal_clean(&log, &jsb)?;
         }
@@ -56,6 +59,7 @@ impl Mount {
         if sb_bytes.len() < 0x20 { return Ok(()); }
         sb_bytes[0x18..0x1C].copy_from_slice(&jsb.sequence.wrapping_add(1).to_be_bytes());
         sb_bytes[0x1C..0x20].copy_from_slice(&0u32.to_be_bytes());
+        if !jsb.stamp_checksum(&mut sb_bytes) { return Err(MountError::BadChecksum); }
         log.write_journal_block(0, &sb_bytes)
     }
 
@@ -88,27 +92,12 @@ impl Mount {
         let sb_bytes = log.read_journal_block(0).map_err(|_| MountError::BlockIo)?;
         let jsb = match JournalSuperblock::parse(&sb_bytes) {
             Ok(s) => s,
-            Err(_) => return self.apply_staged_to_target(&staged).map(|_| 0),
+            Err(e) => return Err(map_journal_superblock_error(e)),
         };
-        // jbd2 checksum gate: we emit v1 (uncsummed) descriptor/commit blocks.
-        // A journal advertising CSUM_V2/V3 requires per-commit + per-tag crc32c;
-        // writing v1 blocks to it would fail replay verification (silent
-        // crash-recovery corruption). No ext4 filesystem we target uses it —
-        // e2fsprogs 1.47 does not enable jbd2 checksums even with metadata_csum,
-        // and every real image (rootfs + fixtures) reports "Journal features:
-        // (none)". Defensively fall back to DIRECT target writes (no journaling,
-        // no corruption) if we ever meet a csummed journal, rather than write
-        // blocks Linux would reject. REVOKE is likewise N/A: we checkpoint
-        // (s_start=0) after every commit, so only one transaction is ever
-        // in-flight and no older txn can resurrect a reused block on replay.
-        const JBD2_CSUM_ANY: u32 =
-            crate::jbd2::superblock::JBD2_INCOMPAT_CSUM_V2 | crate::jbd2::superblock::JBD2_INCOMPAT_CSUM_V3;
-        if jsb.feature_incompat & JBD2_CSUM_ANY != 0 {
-            return self.apply_staged_to_target(&staged).map(|_| 0);
-        }
         let bs = jsb.block_size as usize;
         let bit64 = jsb.feature_incompat & crate::jbd2::superblock::JBD2_INCOMPAT_64BIT != 0;
-        let transaction_blocks = transaction_block_count(staged.len(), bs, bit64)
+        let checksum_mode = jsb.checksum_mode();
+        let transaction_blocks = transaction_block_count_for(staged.len(), bs, bit64, checksum_mode)
             .map_err(|_| MountError::NoSpace)?;
         let mut cursor = LogCursor::new(jsb.start, jsb.first, jsb.maxlen, jsb.sequence);
         if transaction_blocks as u32 > cursor.usable() { return Err(MountError::NoSpace); }
@@ -116,7 +105,7 @@ impl Mount {
         let seq = cursor.seq;
         #[cfg(feature = "debug-fsync-latency")]
         let journal_started_ns = crate::fsync_latency::now_ns();
-        emit_transaction(seq, &staged, bs, bit64, &jsb.uuid, |block| {
+        emit_transaction_for(seq, &staged, bs, bit64, &jsb.uuid, checksum_mode, |block| {
             let at = cursor.reserve(1);
             log.write_journal_block(at, block)
         }).map_err(|e| match e {
@@ -146,6 +135,7 @@ impl Mount {
         crate::fsync_latency::report(b"journal-flush", flush_started_ns, staged_blocks);
         sb_bytes[0x18..0x1C].copy_from_slice(&seq.to_be_bytes());      // s_sequence = seq
         sb_bytes[0x1C..0x20].copy_from_slice(&desc_at.to_be_bytes());  // s_start = desc_at
+        if !jsb.stamp_checksum(&mut sb_bytes) { return Err(MountError::BadChecksum); }
         log.write_journal_block(0, &sb_bytes)?;
         #[cfg(feature = "debug-fsync-latency")]
         let publish_started_ns = crate::fsync_latency::now_ns();
@@ -172,6 +162,7 @@ impl Mount {
         // Checkpoint complete: mark the journal clean (s_start = 0, bump sequence).
         sb_bytes[0x18..0x1C].copy_from_slice(&seq.wrapping_add(1).to_be_bytes());
         sb_bytes[0x1C..0x20].copy_from_slice(&0u32.to_be_bytes());
+        if !jsb.stamp_checksum(&mut sb_bytes) { return Err(MountError::BadChecksum); }
         log.write_journal_block(0, &sb_bytes)?;
         Ok(seq)
     }
@@ -183,6 +174,18 @@ impl Mount {
             write_byte_range(&*self.dev, s.target_lba * bs, &s.data)?;
         }
         Ok(())
+    }
+}
+
+fn map_journal_superblock_error(error: JournalSuperblockError) -> MountError {
+    match error {
+        JournalSuperblockError::BadChecksum => MountError::BadChecksum,
+        JournalSuperblockError::BadFeatures | JournalSuperblockError::BadChecksumType => {
+            MountError::UnsupportedFeature
+        }
+        JournalSuperblockError::Short
+        | JournalSuperblockError::BadMagic
+        | JournalSuperblockError::BadType => MountError::BlockIo,
     }
 }
 

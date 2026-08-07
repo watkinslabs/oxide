@@ -23,6 +23,25 @@ fn build_disk() -> Arc<dyn BlockDevice> {
     disk
 }
 
+fn read_fs_block(disk: &Arc<dyn BlockDevice>, lba: u64, block_size: usize) -> std::vec::Vec<u8> {
+    let mut req = BlockRequest::new_read(
+        lba * block_size as u64 / SECTOR as u64,
+        (block_size / SECTOR as usize) as u32,
+        SECTOR,
+    );
+    disk.submit_sync(&mut req).unwrap();
+    req.buffer
+}
+
+fn write_fs_block(disk: &Arc<dyn BlockDevice>, lba: u64, data: &[u8]) {
+    let mut req = BlockRequest::new_write(
+        lba * data.len() as u64 / SECTOR as u64,
+        (data.len() / SECTOR as usize) as u32,
+        data.to_vec(),
+    );
+    disk.submit_sync(&mut req).unwrap();
+}
+
 #[test]
 fn journaled_image_mounts_clean() {
     let disk = build_disk();
@@ -125,6 +144,57 @@ fn commit_metadata_routes_through_journal() {
     let mut out = std::vec::Vec::new();
     out.extend_from_slice(&req.buffer[..bs]);
     assert_eq!(out, payload, "committed block landed at target LBA");
+}
+
+#[test]
+fn checksum_v2_v3_journals_do_not_bypass_the_log() {
+    use ext4::jbd2::checksum::{self, ChecksumMode};
+    use ext4::jbd2::descriptor::DescriptorIter;
+    use ext4::jbd2::superblock::{JournalSuperblock, JBD2_INCOMPAT_CSUM_V2,
+                                JBD2_INCOMPAT_CSUM_V3};
+
+    // mini-j.img's journal inode maps logical blocks 0/1 to fs blocks 32/33
+    // and logical blocks 2..16 to fs blocks 35..49.
+    for (mode, feature) in [
+        (ChecksumMode::V2, JBD2_INCOMPAT_CSUM_V2),
+        (ChecksumMode::V3, JBD2_INCOMPAT_CSUM_V3),
+    ] {
+        let disk = build_disk();
+        let mut jsb_block = read_fs_block(&disk, 32, 1024);
+        jsb_block[0x28..0x2C].copy_from_slice(&feature.to_be_bytes());
+        jsb_block[0x50] = checksum::JBD2_CRC32C_CHKSUM;
+        assert!(checksum::stamp_zeroed_word(
+            0xFFFF_FFFF, &mut jsb_block, checksum::SUPERBLOCK_CHECKSUM_OFFSET));
+        write_fs_block(&disk, 32, &jsb_block);
+
+        let jsb = JournalSuperblock::parse(&jsb_block).unwrap();
+        assert_eq!(jsb.checksum_mode(), mode);
+        let m = ext4::Mount::open(disk.clone()).unwrap();
+        let payload = std::vec![0xD3; 1024];
+        let seq = m.commit_metadata(std::vec![ext4::StagedBlock {
+            target_lba: 120,
+            data: payload,
+        }]).unwrap();
+
+        let descriptor = read_fs_block(&disk, 33, 1024); // journal logical 1
+        let data = read_fs_block(&disk, 35, 1024);       // journal logical 2
+        let commit = read_fs_block(&disk, 36, 1024);     // journal logical 3
+        let seed = checksum::checksum_seed(&jsb.uuid);
+        assert!(checksum::verify_zeroed_word(seed, &descriptor, 1020),
+                "{mode:?} descriptor tail");
+        let tag = DescriptorIter::with_checksum(&descriptor[12..1020], false, mode)
+            .next().unwrap().tag;
+        let actual = checksum::data_checksum(seed, seq, &data);
+        let expected = if mode == ChecksumMode::V2 { (actual as u16) as u32 } else { actual };
+        assert_eq!(tag.checksum, expected, "{mode:?} data tag");
+        assert!(checksum::verify_zeroed_word(
+            seed, &commit, checksum::COMMIT_CHECKSUM_OFFSET,
+        ), "{mode:?} commit checksum");
+
+        let clean_jsb = read_fs_block(&disk, 32, 1024);
+        let parsed = JournalSuperblock::parse(&clean_jsb).unwrap();
+        assert_eq!(parsed.start, 0, "{mode:?} checkpoint marks journal clean");
+    }
 }
 
 #[test]

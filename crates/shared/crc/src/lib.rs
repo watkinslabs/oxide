@@ -16,6 +16,10 @@ pub const CRC32C_POLY: u32 = 0x82F63B78;
 /// CRC32 (Ethernet/zlib) reflected polynomial: 0xEDB88320.
 pub const CRC32_POLY: u32 = 0xEDB88320;
 
+/// CRC32 (Ethernet) polynomial in the non-reflected representation used by
+/// Linux's `crc32_be()` and the original JBD2 transaction checksum format.
+pub const CRC32_BE_POLY: u32 = 0x04C11DB7;
+
 const fn build_table(poly: u32) -> [u32; 256] {
     let mut t = [0u32; 256];
     let mut i: u32 = 0;
@@ -34,6 +38,24 @@ const fn build_table(poly: u32) -> [u32; 256] {
 
 static CRC32C_TBL: [u32; 256] = build_table(CRC32C_POLY);
 static CRC32_TBL:  [u32; 256] = build_table(CRC32_POLY);
+
+const fn build_be_table(poly: u32) -> [u32; 256] {
+    let mut t = [0u32; 256];
+    let mut i: u32 = 0;
+    while i < 256 {
+        let mut c = i << 24;
+        let mut j = 0;
+        while j < 8 {
+            c = if (c & 0x8000_0000) != 0 { (c << 1) ^ poly } else { c << 1 };
+            j += 1;
+        }
+        t[i as usize] = c;
+        i += 1;
+    }
+    t
+}
+
+static CRC32_BE_TBL: [u32; 256] = build_be_table(CRC32_BE_POLY);
 
 /// CRC32C of `bytes` continuing from `seed`. Pass `0xFFFF_FFFF`
 /// as seed for a fresh CRC; XOR the final result with `0xFFFF_FFFF`
@@ -63,6 +85,18 @@ pub fn crc32_update(seed: u32, bytes: &[u8]) -> u32 {
     c
 }
 
+/// Non-reflected CRC32 continuing from `seed`, matching Linux `crc32_be()`.
+/// JBD2 checksum-v1 starts this at `0xFFFF_FFFF` and stores the raw result
+/// without a final XOR.
+/// # C: O(N)
+pub fn crc32_be_update(seed: u32, bytes: &[u8]) -> u32 {
+    let mut c = seed;
+    for &b in bytes {
+        c = CRC32_BE_TBL[((c >> 24) as u8 ^ b) as usize] ^ (c << 8);
+    }
+    c
+}
+
 /// # C: O(1)
 pub fn crc32(bytes: &[u8]) -> u32 {
     crc32_update(0xFFFF_FFFF, bytes) ^ 0xFFFF_FFFF
@@ -84,6 +118,11 @@ mod tests {
     fn crc32_known_vector() {
         // "123456789" ASCII → 0xCBF43926 (zlib/Ethernet).
         assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
+    }
+
+    #[test]
+    fn crc32_be_linux_raw_vector() {
+        assert_eq!(crc32_be_update(0xFFFF_FFFF, b"123456789"), 0x0376_E6E7);
     }
 
     #[test]

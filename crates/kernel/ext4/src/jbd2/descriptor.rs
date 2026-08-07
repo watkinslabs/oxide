@@ -13,6 +13,7 @@
 
 extern crate alloc;
 use alloc::vec::Vec;
+use super::checksum::ChecksumMode;
 
 pub const TAG_FLAG_ESCAPE:    u32 = 0x01;
 pub const TAG_FLAG_SAME_UUID: u32 = 0x02;
@@ -26,6 +27,8 @@ pub struct DescriptorTag {
     /// block is to be applied during replay.
     pub blocknr:  u64,
     pub flags:    u32,
+    /// Stored per-data-block crc32c (low 16 bits for v2, full 32 bits for v3).
+    pub checksum: u32,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -44,6 +47,7 @@ pub struct DescriptorIter<'a> {
     pub buf:    &'a [u8],
     pub off:    usize,
     pub bit64:  bool,
+    pub checksum: ChecksumMode,
     pub done:   bool,
     /// First UUID seen — subsequent SAME_UUID-tagged entries
     /// inherit it. JBD2 always emits a UUID on the first tag.
@@ -53,7 +57,13 @@ pub struct DescriptorIter<'a> {
 impl<'a> DescriptorIter<'a> {
     /// # C: O(1)
     pub fn new(buf: &'a [u8], bit64: bool) -> Self {
-        Self { buf, off: 0, bit64, done: false, _first_uuid: [0u8; 16] }
+        Self::with_checksum(buf, bit64, ChecksumMode::None)
+    }
+
+    /// Parse tags using the layout selected by the journal feature words.
+    /// # C: O(1)
+    pub fn with_checksum(buf: &'a [u8], bit64: bool, checksum: ChecksumMode) -> Self {
+        Self { buf, off: 0, bit64, checksum, done: false, _first_uuid: [0u8; 16] }
     }
 }
 
@@ -62,10 +72,26 @@ impl<'a> Iterator for DescriptorIter<'a> {
     fn next(&mut self) -> Option<DescriptorEntry> {
         if self.done { return None; }
         let off = self.off;
-        let min = if self.bit64 { 12 } else { 8 };
+        let min = match self.checksum {
+            ChecksumMode::V3 => 16,
+            ChecksumMode::V2 => if self.bit64 { 14 } else { 10 },
+            ChecksumMode::None | ChecksumMode::V1 => if self.bit64 { 12 } else { 8 },
+        };
         if off + min > self.buf.len() { self.done = true; return None; }
         let blocknr_lo = u32::from_be_bytes([self.buf[off], self.buf[off+1], self.buf[off+2], self.buf[off+3]]) as u64;
-        let flags      = u32::from_be_bytes([self.buf[off+4], self.buf[off+5], self.buf[off+6], self.buf[off+7]]);
+        let (flags, checksum) = if self.checksum == ChecksumMode::V3 {
+            (
+                u32::from_be_bytes([self.buf[off+4], self.buf[off+5], self.buf[off+6], self.buf[off+7]]),
+                u32::from_be_bytes([self.buf[off+12], self.buf[off+13], self.buf[off+14], self.buf[off+15]]),
+            )
+        } else {
+            (
+                u16::from_be_bytes([self.buf[off+6], self.buf[off+7]]) as u32,
+                if self.checksum == ChecksumMode::V2 {
+                    u16::from_be_bytes([self.buf[off+4], self.buf[off+5]]) as u32
+                } else { 0 },
+            )
+        };
         let mut consume = min;
         let mut blocknr = blocknr_lo;
         if self.bit64 {
@@ -79,7 +105,7 @@ impl<'a> Iterator for DescriptorIter<'a> {
             consume += 16;
         }
         let entry = DescriptorEntry {
-            tag: DescriptorTag { blocknr, flags },
+            tag: DescriptorTag { blocknr, flags, checksum },
             on_disk: consume,
         };
         if (flags & TAG_FLAG_LAST) != 0 { self.done = true; }
@@ -133,5 +159,25 @@ mod tests {
         let b = std::vec![0u8; 4];  // < 8 bytes minimum
         let v: std::vec::Vec<_> = DescriptorIter::new(&b, false).collect();
         assert!(v.is_empty());
+    }
+
+    #[test]
+    fn walks_v2_and_v3_checksum_layouts() {
+        let mut v2 = std::vec![0u8; 14];
+        v2[0..4].copy_from_slice(&7u32.to_be_bytes());
+        v2[4..6].copy_from_slice(&0xA1B2u16.to_be_bytes());
+        v2[6..8].copy_from_slice(&(TAG_FLAG_SAME_UUID | TAG_FLAG_LAST).to_be_bytes()[2..]);
+        v2[8..12].copy_from_slice(&1u32.to_be_bytes());
+        let tag = DescriptorIter::with_checksum(&v2, true, ChecksumMode::V2).next().unwrap().tag;
+        assert_eq!(tag.blocknr, 0x1_0000_0007);
+        assert_eq!(tag.checksum, 0xA1B2);
+
+        let mut v3 = std::vec![0u8; 16];
+        v3[0..4].copy_from_slice(&9u32.to_be_bytes());
+        v3[4..8].copy_from_slice(&(TAG_FLAG_SAME_UUID | TAG_FLAG_LAST).to_be_bytes());
+        v3[12..16].copy_from_slice(&0xA1B2_C3D4u32.to_be_bytes());
+        let tag = DescriptorIter::with_checksum(&v3, false, ChecksumMode::V3).next().unwrap().tag;
+        assert_eq!(tag.blocknr, 9);
+        assert_eq!(tag.checksum, 0xA1B2_C3D4);
     }
 }

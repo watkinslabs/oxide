@@ -17,11 +17,15 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use super::block_header::{BlockHeader, BlockType, JBD2_MAGIC};
+use super::checksum::{self, ChecksumMode};
 use super::descriptor::{TAG_FLAG_ESCAPE, TAG_FLAG_LAST, TAG_FLAG_SAME_UUID};
 
 const HEADER_BYTES: usize = 12;
 const TAG32_BYTES: usize = 8;
 const TAG64_BYTES: usize = 12;
+const TAG_V2_32_BYTES: usize = 10;
+const TAG_V2_64_BYTES: usize = 14;
+const TAG_V3_BYTES: usize = 16;
 const UUID_BYTES: usize = 16;
 
 /// One staged metadata write awaiting commit.
@@ -50,8 +54,24 @@ pub enum TransactionError<E> {
 /// first tag carries the journal UUID; later tags set `SAME_UUID`.
 /// # C: O(1)
 pub fn descriptor_capacity(block_size: usize, bit64: bool) -> usize {
-    let tag = if bit64 { TAG64_BYTES } else { TAG32_BYTES };
-    block_size.saturating_sub(HEADER_BYTES + UUID_BYTES) / tag
+    descriptor_capacity_for(block_size, bit64, ChecksumMode::None)
+}
+
+/// Maximum tags for the exact feature-selected on-disk layout.
+/// # C: O(1)
+pub fn descriptor_capacity_for(block_size: usize, bit64: bool, checksum_mode: ChecksumMode) -> usize {
+    let tag = descriptor_tag_bytes(bit64, checksum_mode);
+    let tail = if checksum_mode.has_block_checksums() { checksum::BLOCK_TAIL_BYTES } else { 0 };
+    block_size.saturating_sub(HEADER_BYTES + UUID_BYTES + tail) / tag
+}
+
+/// # C: O(1)
+fn descriptor_tag_bytes(bit64: bool, checksum_mode: ChecksumMode) -> usize {
+    match checksum_mode {
+        ChecksumMode::V3 => TAG_V3_BYTES,
+        ChecksumMode::V2 => if bit64 { TAG_V2_64_BYTES } else { TAG_V2_32_BYTES },
+        ChecksumMode::None | ChecksumMode::V1 => if bit64 { TAG64_BYTES } else { TAG32_BYTES },
+    }
 }
 
 /// Build the on-disk descriptor block for one transaction.
@@ -69,12 +89,29 @@ pub fn build_descriptor_block(
     bit64: bool,
     uuid: &[u8; UUID_BYTES],
 ) -> Result<Vec<u8>, EmitError> {
-    let cap = descriptor_capacity(block_size, bit64);
+    build_descriptor_block_for(
+        seq, staged, block_size, bit64, uuid, ChecksumMode::None, 0,
+    )
+}
+
+/// Build a descriptor using Linux's unchecksummed, checksum-v1, v2, or v3 tag
+/// layout. `checksum_seed` is `crc32c(~0, journal_uuid)` for v2/v3.
+/// # C: O(N tags * block_size) for v2/v3 data checksums
+pub fn build_descriptor_block_for(
+    seq: u32,
+    staged: &[StagedBlock],
+    block_size: usize,
+    bit64: bool,
+    uuid: &[u8; UUID_BYTES],
+    checksum_mode: ChecksumMode,
+    checksum_seed: u32,
+) -> Result<Vec<u8>, EmitError> {
+    let cap = descriptor_capacity_for(block_size, bit64, checksum_mode);
     if staged.is_empty() { return Err(EmitError::Empty); }
     if cap == 0 || staged.len() > cap { return Err(EmitError::BlockSize); }
     let mut buf = alloc::vec![0u8; block_size];
     BlockHeader { block_type: BlockType::Descriptor, sequence: seq }.write_to(&mut buf);
-    let tag_bytes = if bit64 { TAG64_BYTES } else { TAG32_BYTES };
+    let tag_bytes = descriptor_tag_bytes(bit64, checksum_mode);
     let mut off = HEADER_BYTES;
     for (i, s) in staged.iter().enumerate() {
         if !bit64 && s.target_lba > u32::MAX as u64 { return Err(EmitError::BlockNumber); }
@@ -86,15 +123,32 @@ pub fn build_descriptor_block(
             u32::from_be_bytes([s.data[0], s.data[1], s.data[2], s.data[3]]) == JBD2_MAGIC
         } else { false };
         if escape { flags |= TAG_FLAG_ESCAPE; }
-        buf[off    ..off+ 4].copy_from_slice(&(s.target_lba as u32).to_be_bytes());
-        buf[off+ 6..off+ 8].copy_from_slice(&(flags as u16).to_be_bytes());
-        if bit64 {
-            buf[off+ 8..off+12].copy_from_slice(&((s.target_lba >> 32) as u32).to_be_bytes());
+        buf[off..off + 4].copy_from_slice(&(s.target_lba as u32).to_be_bytes());
+        if checksum_mode == ChecksumMode::V3 {
+            buf[off + 4..off + 8].copy_from_slice(&flags.to_be_bytes());
+            buf[off + 8..off + 12].copy_from_slice(&((s.target_lba >> 32) as u32).to_be_bytes());
+            let csum = staged_data_checksum(checksum_seed, seq, s, block_size);
+            buf[off + 12..off + 16].copy_from_slice(&csum.to_be_bytes());
+        } else {
+            if checksum_mode == ChecksumMode::V2 {
+                let csum = staged_data_checksum(checksum_seed, seq, s, block_size);
+                buf[off + 4..off + 6].copy_from_slice(&(csum as u16).to_be_bytes());
+            }
+            buf[off + 6..off + 8].copy_from_slice(&(flags as u16).to_be_bytes());
+            if bit64 {
+                buf[off + 8..off + 12].copy_from_slice(&((s.target_lba >> 32) as u32).to_be_bytes());
+            }
         }
         off += tag_bytes;
         if i == 0 {
             buf[off..off + UUID_BYTES].copy_from_slice(uuid);
             off += UUID_BYTES;
+        }
+    }
+    if checksum_mode.has_block_checksums() {
+        let tail = block_size - checksum::BLOCK_TAIL_BYTES;
+        if !checksum::stamp_zeroed_word(checksum_seed, &mut buf, tail) {
+            return Err(EmitError::BlockSize);
         }
     }
     Ok(buf)
@@ -108,8 +162,19 @@ pub fn transaction_block_count(
     block_size: usize,
     bit64: bool,
 ) -> Result<usize, EmitError> {
+    transaction_block_count_for(staged_len, block_size, bit64, ChecksumMode::None)
+}
+
+/// Journal slots occupied by one transaction for the selected checksum layout.
+/// # C: O(1)
+pub fn transaction_block_count_for(
+    staged_len: usize,
+    block_size: usize,
+    bit64: bool,
+    checksum_mode: ChecksumMode,
+) -> Result<usize, EmitError> {
     if staged_len == 0 { return Err(EmitError::Empty); }
-    let cap = descriptor_capacity(block_size, bit64);
+    let cap = descriptor_capacity_for(block_size, bit64, checksum_mode);
     if cap == 0 { return Err(EmitError::BlockSize); }
     Ok(staged_len + staged_len.div_ceil(cap) + 1)
 }
@@ -124,37 +189,113 @@ pub fn emit_transaction<E, F>(
     block_size: usize,
     bit64: bool,
     uuid: &[u8; UUID_BYTES],
+    write: F,
+) -> Result<(), TransactionError<E>>
+where
+    F: FnMut(&[u8]) -> Result<(), E>,
+{
+    emit_transaction_for(
+        seq, staged, block_size, bit64, uuid, ChecksumMode::None, write,
+    )
+}
+
+/// Stream a complete transaction in the checksum format selected by the
+/// journal feature words.
+/// # C: O(N staged blocks)
+pub fn emit_transaction_for<E, F>(
+    seq: u32,
+    staged: &[StagedBlock],
+    block_size: usize,
+    bit64: bool,
+    uuid: &[u8; UUID_BYTES],
+    checksum_mode: ChecksumMode,
     mut write: F,
 ) -> Result<(), TransactionError<E>>
 where
     F: FnMut(&[u8]) -> Result<(), E>,
 {
-    transaction_block_count(staged.len(), block_size, bit64)
+    transaction_block_count_for(staged.len(), block_size, bit64, checksum_mode)
         .map_err(TransactionError::Emit)?;
-    let cap = descriptor_capacity(block_size, bit64);
+    let cap = descriptor_capacity_for(block_size, bit64, checksum_mode);
+    let checksum_seed = checksum::checksum_seed(uuid);
+    let mut transaction_csum = 0xFFFF_FFFF;
     for group in staged.chunks(cap) {
-        let descriptor = build_descriptor_block(seq, group, block_size, bit64, uuid)
+        let descriptor = build_descriptor_block_for(
+            seq, group, block_size, bit64, uuid, checksum_mode, checksum_seed,
+        )
             .map_err(TransactionError::Emit)?;
+        if checksum_mode == ChecksumMode::V1 {
+            transaction_csum = checksum::transaction_checksum_update(transaction_csum, &descriptor);
+        }
         write(&descriptor).map_err(TransactionError::Write)?;
         for s in group {
             let mut data = s.data.clone();
             if data.len() != block_size { data.resize(block_size, 0); }
             escape_journal_payload(&mut data);
+            if checksum_mode == ChecksumMode::V1 {
+                transaction_csum = checksum::transaction_checksum_update(transaction_csum, &data);
+            }
             write(&data).map_err(TransactionError::Write)?;
         }
     }
-    let commit = build_commit_block(seq, block_size);
+    let commit = build_commit_block_for(
+        seq, block_size, checksum_mode, checksum_seed, transaction_csum,
+    );
     write(&commit).map_err(TransactionError::Write)
 }
 
-/// Build a commit block for transaction `seq`. v1 emits the
-/// minimum: header + zero body. Real JBD2 commits include a
-/// timestamp + checksum; v2-of-v1 will add those.
+/// Build an unchecksummed commit block for transaction `seq`.
 /// # C: O(1)
 pub fn build_commit_block(seq: u32, block_size: usize) -> Vec<u8> {
+    build_commit_block_for(seq, block_size, ChecksumMode::None, 0, 0)
+}
+
+/// Build and checksum a commit block in the journal's selected format.
+/// # C: O(block_size) for v2/v3
+pub fn build_commit_block_for(
+    seq: u32,
+    block_size: usize,
+    checksum_mode: ChecksumMode,
+    checksum_seed: u32,
+    transaction_checksum: u32,
+) -> Vec<u8> {
     let mut buf = alloc::vec![0u8; block_size];
     BlockHeader { block_type: BlockType::Commit, sequence: seq }.write_to(&mut buf);
+    if checksum_mode == ChecksumMode::V1 && block_size >= checksum::COMMIT_CHECKSUM_OFFSET + 4 {
+        buf[12] = checksum::JBD2_CRC32_CHKSUM;
+        buf[13] = checksum::JBD2_CRC32_CHKSUM_SIZE;
+        buf[checksum::COMMIT_CHECKSUM_OFFSET..checksum::COMMIT_CHECKSUM_OFFSET + 4]
+            .copy_from_slice(&transaction_checksum.to_be_bytes());
+    } else if checksum_mode.has_block_checksums() {
+        let _ = checksum::stamp_zeroed_word(
+            checksum_seed, &mut buf, checksum::COMMIT_CHECKSUM_OFFSET,
+        );
+    }
     buf
+}
+
+/// Compute a v2/v3 tag checksum over the exact bytes that emission writes,
+/// without allocating a second normalized payload.
+/// # C: O(block_size)
+fn staged_data_checksum(seed: u32, seq: u32, staged: &StagedBlock, block_size: usize) -> u32 {
+    let mut csum = crc::crc32c_update(seed, &seq.to_be_bytes());
+    let used = core::cmp::min(staged.data.len(), block_size);
+    let escaped = used >= 4
+        && u32::from_be_bytes([staged.data[0], staged.data[1], staged.data[2], staged.data[3]]) == JBD2_MAGIC;
+    let mut off = 0usize;
+    if escaped {
+        csum = crc::crc32c_update(csum, &[0u8; 4]);
+        off = 4;
+    }
+    csum = crc::crc32c_update(csum, &staged.data[off..used]);
+    const ZEROES: [u8; 64] = [0; 64];
+    let mut remaining = block_size - used;
+    while remaining != 0 {
+        let n = core::cmp::min(remaining, ZEROES.len());
+        csum = crc::crc32c_update(csum, &ZEROES[..n]);
+        remaining -= n;
+    }
+    csum
 }
 
 /// If a staged block's first 4 bytes match JBD2_MAGIC, replace
@@ -228,6 +369,20 @@ mod tests {
         out
     }
 
+    fn transaction_with_checksum(
+        seq: u32,
+        staged: &[StagedBlock],
+        bs: usize,
+        checksum_mode: ChecksumMode,
+    ) -> std::vec::Vec<std::vec::Vec<u8>> {
+        let mut out = std::vec::Vec::new();
+        emit_transaction_for(seq, staged, bs, false, &UUID, checksum_mode, |block| {
+            out.push(block.to_vec());
+            Ok::<(), ()>(())
+        }).unwrap();
+        out
+    }
+
     #[test]
     fn descriptor_round_trips_through_iter() {
         let bs = 1024;
@@ -277,6 +432,62 @@ mod tests {
     }
 
     #[test]
+    fn checksum_v1_v2_v3_transactions_replay_and_reject_corruption() {
+        use super::super::replay::{replay, JournalLogReader, ReplayError};
+        use super::super::superblock::{JBD2_COMPAT_CHECKSUM, JBD2_INCOMPAT_CSUM_V2,
+                                      JBD2_INCOMPAT_CSUM_V3};
+        use sync::TaskList;
+        use block::MemDisk;
+        use alloc::sync::Arc;
+
+        struct VecJournal(std::vec::Vec<std::vec::Vec<u8>>);
+        impl JournalLogReader for VecJournal {
+            fn read_journal_block(&self, jblk: u32) -> Result<std::vec::Vec<u8>, ReplayError> {
+                self.0.get(jblk as usize).cloned().ok_or(ReplayError::BlockIo)
+            }
+        }
+
+        let bs = 1024usize;
+        let seq = 23;
+        let staged = [s(7, 0xBC, bs), s(8, 0xCD, bs)];
+        for mode in [ChecksumMode::V1, ChecksumMode::V2, ChecksumMode::V3] {
+            let tx = transaction_with_checksum(seq, &staged, bs, mode);
+            let (feature_compat, feature_incompat, checksum_type) = match mode {
+                ChecksumMode::V1 => (JBD2_COMPAT_CHECKSUM, 0, 0),
+                ChecksumMode::V2 => (0, JBD2_INCOMPAT_CSUM_V2,
+                                     checksum::JBD2_CRC32C_CHKSUM),
+                ChecksumMode::V3 => (0, JBD2_INCOMPAT_CSUM_V3,
+                                     checksum::JBD2_CRC32C_CHKSUM),
+                ChecksumMode::None => unreachable!(),
+            };
+            let sb = super::super::JournalSuperblock {
+                block_size: bs as u32, maxlen: 16, first: 1, sequence: seq, start: 1,
+                feature_compat, feature_incompat, feature_ro: 0, uuid: UUID,
+                checksum_type,
+            };
+
+            let mut blocks = std::vec![alloc::vec![0u8; bs]];
+            blocks.extend(tx.clone());
+            let disk: Arc<MemDisk<TaskList>> = MemDisk::new(bs as u32, 16);
+            let stats = replay(&VecJournal(blocks), &*disk, &sb).unwrap();
+            assert_eq!(stats.blocks_applied, 2, "{mode:?} clean transaction");
+
+            for corrupt_index in [0usize, 1, tx.len() - 1] {
+                let mut corrupt = tx.clone();
+                let corrupt_byte = if mode == ChecksumMode::V1 && corrupt_index == tx.len() - 1 {
+                    checksum::COMMIT_CHECKSUM_OFFSET
+                } else { 64 };
+                corrupt[corrupt_index][corrupt_byte] ^= 1;
+                let mut blocks = std::vec![alloc::vec![0u8; bs]];
+                blocks.extend(corrupt);
+                let disk: Arc<MemDisk<TaskList>> = MemDisk::new(bs as u32, 16);
+                assert_eq!(replay(&VecJournal(blocks), &*disk, &sb), Err(ReplayError::BadChecksum),
+                           "{mode:?} rejects corruption in transaction block {corrupt_index}");
+            }
+        }
+    }
+
+    #[test]
     fn log_cursor_reserves_and_wraps() {
         let mut c = LogCursor::new(1, 1, 8, 1);
         assert_eq!(c.reserve(3), 1); assert_eq!(c.head, 4);
@@ -323,6 +534,7 @@ mod tests {
         let sb = super::super::JournalSuperblock {
             block_size: bs as u32, maxlen: 32, first: 1, sequence: 7, start: 1,
             feature_compat: 0, feature_incompat: 0, feature_ro: 0, uuid: UUID,
+            checksum_type: 0,
         };
         let stats = replay(&j, &*disk, &sb).unwrap();
         assert_eq!(stats.txns_replayed, 1);
@@ -366,6 +578,7 @@ mod tests {
         let sb = super::super::JournalSuperblock {
             block_size: bs as u32, maxlen, first: 1, sequence: 9, start: 1,
             feature_compat: 0, feature_incompat: 0, feature_ro: 0, uuid: UUID,
+            checksum_type: 0,
         };
         let stats = replay(&journal, &*disk, &sb).unwrap();
         assert_eq!(stats.txns_replayed, 1);
@@ -407,6 +620,7 @@ mod tests {
         let sb = super::super::JournalSuperblock {
             block_size: bs as u32, maxlen: 20, first: 4, sequence: 11, start: 18,
             feature_compat: 0, feature_incompat: 0, feature_ro: 0, uuid: UUID,
+            checksum_type: 0,
         };
         let stats = replay(&journal, &*disk, &sb).unwrap();
         assert_eq!(stats.txns_replayed, 1);
