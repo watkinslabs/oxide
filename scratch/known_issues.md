@@ -220,7 +220,7 @@ here now.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| OPEN | MISSING | low | Strict dump validation now rejects malformed and unknown IPv4 address attributes. `IFA_TARGET_NETNSID` still needs the caller-scoped peer-network-namespace-ID map and capability check that resolve a target namespace; `IFLA_TARGET_NETNSID` needs the equivalent link-dump owner. | `B1903` `a_strict_address_dump_refuses_unknown_or_unowned_attributes`; `dump_req.rs` refuses the known-but-unowned address key rather than silently dropping it. | — |
+| IN-PROGRESS F835-rtnetlink-link-target-netns | MISSING | low | Strict dump validation now rejects malformed and unknown IPv4 address attributes. `IFA_TARGET_NETNSID` still needs the caller-scoped peer-network-namespace-ID map and capability check that resolve a target namespace; `IFLA_TARGET_NETNSID` needs the equivalent link-dump owner. | `B1903` `a_strict_address_dump_refuses_unknown_or_unowned_attributes`; `dump_req.rs` refuses the known-but-unowned address key rather than silently dropping it. | [CLAIMED F835-rtnetlink-link-target-netns 2026-08-07] |
 
 ### B1748-ipv4-addr-record-fields
 
