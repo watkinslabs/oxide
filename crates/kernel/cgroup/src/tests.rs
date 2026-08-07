@@ -25,11 +25,11 @@ fn realize_tree_builds_target_independent_cgroup2_sb() {
     use vfs::{SimpleSuperOps, SuperBlock, SuperOps};
     use vfs::superblock::next_anon_dev;
     const CGROUP2_MAGIC: u64 = 0x6367_7270;
-    let root_cgdir_ino = vfs::pseudo_ino::CGROUP_DIR.at(crate::tree::ROOT);
 
     let (fs, root) = crate::realize_tree();
+    let root_cgdir_ino = root.ino();
     assert_eq!(fs.magic(), CGROUP2_MAGIC, "CgroupFs.magic == CGROUP2_SUPER_MAGIC");
-    assert_eq!(root.ino(), root_cgdir_ino, "root CgDir ino = CGROUP_DIR.at(ROOT)");
+    assert_eq!(root.ino(), crate::tree::ROOT, "root CgDir owns inode one");
     assert_eq!(root.fsid(), CGROUP2_MAGIC, "root CgDir fsid == CGROUP2_FSID");
     assert!(crate::is_mounted(), "realize_tree marks the singleton hierarchy mounted");
 
@@ -473,25 +473,15 @@ fn cgroup_control_file_truncate_zero_is_noop() {
     assert_eq!(crate::write_file(ROOT, "cgroup.subtree_control", "+pids"), Ok(()));
 }
 
-/// Every control-file name must own a DISTINCT slot in its cgroup's
-/// inode-number space: the low 8 bits of a control file's ino are its slot, so
-/// a duplicate makes two files share one `st_ino` inside one cgroup. The
-/// multiply-31 name hash this replaced did exactly that for `pids.events` and
-/// `cpuset.cpus`. Also pins that the table stays inside the 8-bit field with
-/// `FILE_SLOT_UNKNOWN` reserved.
+/// Every control file owns an inode from the hierarchy's node sequence.  Its
+/// number must stay stable across synthesized VFS inodes and distinct from
+/// every other live cgroup node.
 #[test]
-fn every_control_file_name_owns_a_distinct_inode_slot() {
-    let mut names: alloc::vec::Vec<&str> = alloc::vec::Vec::new();
-    names.extend(CORE_FILES.iter().copied());
-    names.extend(NONROOT_FILES.iter().copied());
-    names.extend(controller_files(ALL));
-
-    let mut slots: alloc::vec::Vec<u8> = names.iter().map(|n| file_slot(n)).collect();
-    let total = slots.len();
-    slots.sort_unstable();
-    slots.dedup();
-    assert_eq!(slots.len(), total, "two control files share an inode slot");
-    assert!(total < FILE_SLOT_UNKNOWN as usize, "slot table outgrew the 8-bit ino field");
-    assert!(!slots.contains(&FILE_SLOT_UNKNOWN), "the unknown-name slot is reserved");
-    assert_eq!(file_slot("not.a.control.file"), FILE_SLOT_UNKNOWN);
+fn control_files_own_distinct_hierarchy_inodes() {
+    let _ = crate::realize_tree();
+    let a = crate::inode::make_cg_file(ROOT, "cgroup.procs");
+    let b = crate::inode::make_cg_file(ROOT, "cgroup.threads");
+    assert_ne!(a.ino(), b.ino(), "distinct control-file nodes share no inode");
+    assert_eq!(a.ino(), crate::inode::make_cg_file(ROOT, "cgroup.procs").ino(),
+        "a synthesized inode keeps its control-file node identity");
 }

@@ -20,7 +20,6 @@ pub mod policy;
 pub mod root_flags;
 pub mod state;
 pub mod tree;
-mod ids;
 mod membership;
 pub use fs::CGROUP2_SUPER_MAGIC;
 pub use membership::{
@@ -104,6 +103,15 @@ pub fn chown_file(cgid: u64, file: &str, uid: u32, gid: u32) -> KResult<()> {
 /// Ordered control-file names of cgroup `cgid` (for readdir).
 /// # C: O(controllers)
 pub fn node_file_names(cgid: u64) -> Vec<&'static str> { TREE.lock().node_files(cgid) }
+
+/// Hierarchy-owned inode number of cgroup `cgid`'s directory. # C: O(log n)
+pub fn node_dir_ino(cgid: u64) -> Option<vfs::Ino> { TREE.lock().dir_ino(cgid) }
+
+/// Hierarchy-owned inode number of a live cgroup control file. # C: O(log n)
+pub fn node_file_ino(cgid: u64, file: &str) -> KResult<vfs::Ino> { TREE.lock().file_ino(cgid, file) }
+
+/// Live cgroup node addressed by an exported inode number. # C: O(nodes · files)
+pub fn node_ino_target(ino: vfs::Ino) -> Option<(u64, Option<String>)> { TREE.lock().ino_target(ino) }
 
 /// Ordered child-cgroup names of `cgid` (for readdir).
 /// # C: O(children)

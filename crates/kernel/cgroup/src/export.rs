@@ -30,7 +30,7 @@ use vfs::export::kernfs_fid::{HANDLE_TYPE_KERNFS, KERNFS_FID_LEN, decode_kernfs_
 use vfs::{Ino, InodeRef, KResult, SbStatFs, SuperBlock};
 
 use crate::fs::CGROUP2_SUPER_MAGIC;
-use crate::{ids, inode, tree};
+use crate::inode;
 
 /// `s_op` for the unified cgroup2 hierarchy: `simple_statfs` plus the kernfs
 /// handle export.
@@ -83,10 +83,9 @@ impl vfs::SuperOps for CgroupSuperOps {
     ///
     /// cgroupfs synthesizes its inodes on lookup and never keeps them in the
     /// inode cache, so the generic cache-only decode would report ESTALE for
-    /// every handle. The number itself is the identity: it folds the cgroup id
-    /// (and, for a control file, the file slot) into cgroupfs's own regions,
-    /// and the hierarchy says whether that id is still live.
-    /// # C: O(log n) + O(controllers) for a control file
+    /// every handle. The hierarchy owns each live node's number and resolves
+    /// the handle directly to that node.
+    /// # C: O(nodes · files)
     fn fh_to_dentry(&self, _sb: &SuperBlock, ino: Ino, _generation: u32) -> Option<InodeRef> {
         resolve_ino(ino)
     }
@@ -111,19 +110,13 @@ impl vfs::SuperOps for CgroupSuperOps {
 
 /// Inode number → the cgroup inode it names, or `None` when the number is not
 /// cgroupfs's or names a cgroup that is gone.
-/// # C: O(log n) + O(controllers) for a control file
+/// # C: O(nodes · files)
 fn resolve_ino(ino: Ino) -> Option<InodeRef> {
-    if let Some(cgid) = ids::cgid_of_dir_ino(ino) {
-        if !crate::node_exists(cgid) { return None; }
-        return Some(inode::make_cg_dir(cgid));
+    let (cgid, file) = crate::node_ino_target(ino)?;
+    match file {
+        Some(name) => Some(inode::make_cg_file(cgid, &name)),
+        None => Some(inode::make_cg_dir(cgid)),
     }
-    let (cgid, slot) = ids::cgid_slot_of_file_ino(ino)?;
-    if !crate::node_exists(cgid) { return None; }
-    // The slot is the file's fixed table index, so the name is the one control
-    // file of this cgroup whose slot matches. A cgroup that lost the controller
-    // owning that file since the handle was minted has no such name — stale.
-    let name = crate::node_file_names(cgid).into_iter().find(|f| tree::file_slot(f) == slot)?;
-    Some(inode::make_cg_file(cgid, name))
 }
 
 #[cfg(test)]

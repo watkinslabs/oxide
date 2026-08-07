@@ -3,6 +3,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use vfs::VfsError;
+use vfs::Ino;
 
 use super::bpf_types::CgroupBpfState;
 use super::controllers::ALL;
@@ -164,6 +165,12 @@ impl MemoryEvents {
 
 /// One cgroup directory.
 pub struct Node {
+    /// Inode number owned by this directory node.  It is assigned when the
+    /// hierarchy creates the node, independent of the cgroup id.
+    pub dir_ino: Ino,
+    /// Inode numbers owned by the control-file nodes already exposed through
+    /// this directory.  Names remain the canonical control-file identity.
+    pub file_inos: BTreeMap<String, Ino>,
     pub name: String,
     pub parent: Option<u64>,
     pub children: BTreeMap<String, u64>,
@@ -241,9 +248,9 @@ pub struct Node {
 }
 
 impl Node {
-    pub(super) fn new(cgid: u64, name: String, parent: Option<u64>, avail: u8) -> Self {
+    pub(super) fn new(cgid: u64, ino: Ino, name: String, parent: Option<u64>, avail: u8) -> Self {
         Self {
-            name, parent, children: BTreeMap::new(), procs: BTreeSet::new(),
+            dir_ino: ino, file_inos: BTreeMap::new(), name, parent, children: BTreeMap::new(), procs: BTreeSet::new(),
             uid: 0, gid: 0, file_uid: 0, file_gid: 0, file_owner: BTreeMap::new(),
             threads: 0,
             subtree_control: 0, avail, frozen: false,
@@ -265,6 +272,9 @@ impl Node {
 pub struct Tree {
     pub(super) nodes: BTreeMap<u64, Node>,
     pub(super) next_id: u64,
+    /// Next cgroupfs node inode.  Directory and control-file nodes share this
+    /// one hierarchy-owned sequence, so a file handle names exactly one node.
+    pub(super) next_ino: Ino,
     /// pid → cgid membership index (for fork inheritance + /proc).
     pub(super) proc_cg: BTreeMap<u64, u64>,
     /// thread tid → (thread-group leader, owning cgroup).
@@ -280,7 +290,7 @@ impl Tree {
     /// Empty (unmounted) tree.
     /// # C: O(1)
     pub const fn new() -> Self {
-        Self { nodes: BTreeMap::new(), next_id: ROOT, proc_cg: BTreeMap::new(),
+        Self { nodes: BTreeMap::new(), next_id: ROOT, next_ino: ROOT, proc_cg: BTreeMap::new(),
                thread_cg: BTreeMap::new(), exited_procs: BTreeSet::new(), mounted: false }
     }
 
@@ -292,8 +302,9 @@ impl Tree {
     /// # C: O(1)
     pub fn mount_root(&mut self) -> bool {
         if self.mounted { return false; }
-        self.nodes.entry(ROOT).or_insert_with(|| Node::new(ROOT, String::new(), None, ALL));
+        self.nodes.entry(ROOT).or_insert_with(|| Node::new(ROOT, ROOT, String::new(), None, ALL));
         self.next_id = ROOT + 1;
+        self.next_ino = ROOT + 1;
         self.mounted = true;
         true
     }
@@ -301,4 +312,24 @@ impl Tree {
     /// Borrow a node by id.
     /// # C: O(log n)
     pub fn node(&self, id: u64) -> Option<&Node> { self.nodes.get(&id) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inode_sequence_does_not_fold_at_the_control_file_packing_boundary() {
+        const FIRST_WRAPPED_CGID: u64 = 1 << 19;
+        let mut tree = Tree::new();
+        assert!(tree.mount_root());
+        tree.next_id = FIRST_WRAPPED_CGID;
+        let (id, _) = tree.create(ROOT, "high-id").expect("create high cgroup id");
+        assert_eq!(id, FIRST_WRAPPED_CGID);
+        let dir = tree.dir_ino(id).expect("high cgroup directory inode");
+        let file = tree.file_ino(id, "cgroup.procs").expect("high cgroup file inode");
+        assert_ne!(dir, file, "directory and control file retain separate nodes");
+        assert_ne!(file, tree.file_ino(ROOT, "cgroup.procs").unwrap(),
+            "a high cgroup id cannot reuse the root control-file inode");
+    }
 }

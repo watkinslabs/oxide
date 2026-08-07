@@ -6,6 +6,7 @@ use vfs::VfsError;
 use super::bpf_types::CgroupBpfAttachType;
 use super::controllers::{CORE_FILES, NONROOT_FILES, controller_files, ctrl_bit};
 use super::types::{KResult, Node, ROOT, Tree};
+use vfs::Ino;
 
 impl Tree {
     /// Resolve a relative cgroup path ("" or "a/b/c") to a node id.
@@ -61,8 +62,9 @@ impl Tree {
             p.subtree_control
         };
         let id = self.next_id;
+        let ino = self.alloc_ino()?;
         self.next_id += 1;
-        self.nodes.insert(id, Node::new(id, name.to_string(), Some(parent), avail));
+        self.nodes.insert(id, Node::new(id, ino, name.to_string(), Some(parent), avail));
         self.nodes.get_mut(&parent).unwrap().children.insert(name.to_string(), id);
         for attach_type in CgroupBpfAttachType::ALL {
             self.rebuild_bpf_attach(id, attach_type);
@@ -149,6 +151,39 @@ impl Tree {
     /// handle needs: an id no longer in the hierarchy is `ESTALE`, not an
     /// inode synthesized for a cgroup that was removed. # C: O(log n)
     pub fn contains(&self, id: u64) -> bool { self.nodes.contains_key(&id) }
+
+    /// Directory inode owned by cgroup `id`. # C: O(log n)
+    pub fn dir_ino(&self, id: u64) -> Option<Ino> { self.nodes.get(&id).map(|n| n.dir_ino) }
+
+    /// Control-file inode owned by `(id, name)`.  The hierarchy assigns an
+    /// identity only to a live file node, retaining it across synthesized VFS
+    /// inodes. # C: O(log n)
+    pub fn file_ino(&mut self, id: u64, name: &str) -> KResult<Ino> {
+        if !self.has_file(id, name) { return Err(VfsError::Enoent); }
+        if let Some(ino) = self.nodes.get(&id).and_then(|n| n.file_inos.get(name)).copied() {
+            return Ok(ino);
+        }
+        let ino = self.alloc_ino()?;
+        self.nodes.get_mut(&id).ok_or(VfsError::Enoent)?.file_inos.insert(name.to_string(), ino);
+        Ok(ino)
+    }
+
+    /// Live cgroup node addressed by `ino`, if any. # C: O(nodes · files)
+    pub fn ino_target(&self, ino: Ino) -> Option<(u64, Option<String>)> {
+        for (id, n) in &self.nodes {
+            if n.dir_ino == ino { return Some((*id, None)); }
+            if let Some((name, _)) = n.file_inos.iter().find(|(_, nino)| **nino == ino) {
+                if self.has_file(*id, name) { return Some((*id, Some(name.clone()))); }
+            }
+        }
+        None
+    }
+
+    fn alloc_ino(&mut self) -> KResult<Ino> {
+        let ino = self.next_ino;
+        self.next_ino = self.next_ino.checked_add(1).ok_or(VfsError::Enospc)?;
+        Ok(ino)
+    }
 
     /// Parent node id of `id`, or `None` for the root (and for an id that is
     /// gone). # C: O(log n)
