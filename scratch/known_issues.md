@@ -39,8 +39,8 @@ reclassified.
 | `DEFECT` | 0 | 0 | 13 | 23 | 36 |
 | `MISSING` | 2 | 0 | 17 | 18 | 37 |
 | `COVERAGE` | 0 | 0 | 9 | 15 | 24 |
-| `INFRA` | 0 | 0 | 15 | 11 | 26 |
-| **Total** | **2** | **0** | **54** | **67** | **123** |
+| `INFRA` | 0 | 0 | 14 | 11 | 25 |
+| **Total** | **2** | **0** | **53** | **67** | **122** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -233,12 +233,6 @@ here now.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | OPEN | DEFECT | med | **The network manager still reports `eth0` as "connected (externally)" even though it now has a lease.** The address, routes and reachability are all correct, so this no longer blocks networking, but the manager's device state is still not derived from the link the way it should be — a device it calls externally-connected is one it will not fully own, which will matter for anything that asks it to reconfigure the link. Worth re-checking now that the single-device query returns real data: the earlier verdict was formed while every by-index query returned loopback, so it may simply be a stale assessment that a fresh probe would clear. | `nmcli -t -f DEVICE,STATE d` → `eth0:connected (externally)` in the same boot that shows the working lease above. | unowned |
-
-### B1737-carrier-model
-
-| Status | Class | Sev | Issue | Evidence | Owner |
-|---|---|---|---|---|---|
-| OPEN | INFRA | low | **`cgroup::selftest::run()` is invoked twice, and the first call cannot succeed.** `kmain/rootfs.rs:65` runs it before `sched::cgroup::install()` has wired the pid-resolve and migrate hooks, so it reports `mkdir='fail'`/`rmdir='fail'` every time; the real run is the post-install one at `kmain/runtime.rs:223`. A self-test that always fails in one of its two call sites teaches nothing and looks like a real failure in the log. | Boot log under `debug-cgroup`: failing self-test at t≈14.16 s, succeeding one at t≈15.9 s. | unowned |
 
 ### B1739-cgroup-exit-side-table
 
