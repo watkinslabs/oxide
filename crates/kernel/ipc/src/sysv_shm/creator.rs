@@ -67,7 +67,7 @@ pub fn exit_shm(task: &Task) {
             let seg = &g[i];
             let forced = rmid_forced::is_forced(seg.ns);
             let nattch = seg.nattch.load(Ordering::Acquire);
-            if exit_shm_destroys(nattch, forced, seg.mode) { out.push(g.remove(i)); } else { i += 1; }
+            if exit_shm_destroys(nattch, forced, seg.mode.load(Ordering::Acquire)) { out.push(g.remove(i)); } else { i += 1; }
         }
         out
     };

@@ -6,7 +6,7 @@
 
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicI32, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 use namespace_identity::NamespaceId;
 
 use sync::{Spinlock, TaskList as ShmLockClass};
@@ -54,13 +54,17 @@ pub(super) const SHM_MAX_SIZE: usize = usize::MAX - (1 << 24);
 /// writes (real Linux SysV shm), instead of each getting a private copy.
 pub struct ShmSegment {
     pub id:    i32,
-    pub key:   i32,
+    /// Key becomes private when `IPC_RMID` marks a live segment.
+    pub key:   AtomicI32,
     /// Internal table key derived from the canonical IPC namespace owner.
     pub ns:    NamespaceId,
     pub size:  usize,
-    pub mode:  u32,
-    pub uid:   u32,
-    pub gid:   u32,
+    /// Mutable IPC permission state. These remain writable while attachers
+    /// retain `Arc`s to this segment; control operations must not depend on
+    /// exclusive `Arc` ownership.
+    pub mode:  AtomicU32,
+    pub uid:   AtomicU32,
+    pub gid:   AtomicU32,
     pub cuid:  u32,
     pub cgid:  u32,
     /// Creator PID (shm_cpid) for IPC_STAT.
@@ -85,7 +89,8 @@ pub(super) use crate::sysv::perm::{current_ipc_cred, IpcCred};
 /// # C: O(log n)
 pub(super) fn ipc_permitted(seg: &ShmSegment, cred: &IpcCred, flg: u64) -> bool {
     crate::sysv::perm::ipc_permitted_fields(
-        seg.mode, seg.uid, seg.gid, seg.cuid, seg.cgid, cred, flg as i32)
+        seg.mode.load(Ordering::Acquire), seg.uid.load(Ordering::Acquire),
+        seg.gid.load(Ordering::Acquire), seg.cuid, seg.cgid, cred, flg as i32)
 }
 
 fn valid_new_size(size: usize) -> bool {
@@ -128,7 +133,7 @@ where F: FnOnce() -> Arc<dyn vmm::FileBacking> {
     if key != IPC_PRIVATE {
         let g = REG.segs.lock();
         for s in g.iter() {
-            if s.key == key && s.ns == ns {
+            if s.key.load(Ordering::Acquire) == key && s.ns == ns {
                 if flg & IPC_CREAT != 0 && flg & IPC_EXCL != 0 {
                     return -(Errno::Eexist.as_i32() as i64);
                 }
@@ -157,10 +162,10 @@ where F: FnOnce() -> Arc<dyn vmm::FileBacking> {
     }
     let id = REG.next_id.fetch_add(1, Ordering::AcqRel);
     let seg = Arc::new(ShmSegment {
-        id, key, ns, size,
-        mode: (flg & IPC_MODE_MASK) as u32,
-        uid: cred.euid,
-        gid: cred.egid,
+        id, key: AtomicI32::new(key), ns, size,
+        mode: AtomicU32::new((flg & IPC_MODE_MASK) as u32),
+        uid: AtomicU32::new(cred.euid),
+        gid: AtomicU32::new(cred.egid),
         cuid: cred.euid,
         cgid: cred.egid,
         cpid,
@@ -242,7 +247,7 @@ pub(super) fn release_detached(seg: &Arc<ShmSegment>) {
         let mut g = REG.segs.lock();
         match g.iter().position(|s| Arc::ptr_eq(s, seg)) {
             Some(pos) if self::rules::shm_may_destroy(
-                g[pos].nattch.load(Ordering::Acquire), forced, g[pos].mode) => Some(g.remove(pos)),
+                g[pos].nattch.load(Ordering::Acquire), forced, g[pos].mode.load(Ordering::Acquire)) => Some(g.remove(pos)),
             _ => None,
         }
     };
