@@ -820,6 +820,6 @@ Commit `2d2807f94` makes the harness's UART artifact truthful: bytes consumed
 from the serial socket go to `oxide-firefox-uart-<run>.log`, while build/QEMU
 stdout has a separate `oxide-firefox-qemu-<run>.log`. Commit `3ad95d4d9` routes
 mkdir/create/tmpfile backend failures through ext4's canonical filesystem-error
-owner and emits an allocation-free stable error kind for structural/device
-failures. Its injected create-I/O positive control reports exactly once;
+owner; `debug-boot` emits an allocation-free stable error kind for
+structural/device failures. Its injected create-I/O positive control reports exactly once;
 bypassing the owner makes the test fail with zero reports.

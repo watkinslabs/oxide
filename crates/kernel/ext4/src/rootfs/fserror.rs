@@ -46,11 +46,8 @@ pub(crate) fn is_inconsistency(e: &MountError) -> bool {
 /// # C: O(1) + subscribers
 pub(crate) fn report(st: &RootfsState, e: MountError) -> vfs::VfsError {
     let bad = is_inconsistency(&e);
-    if bad {
-        klog::write_raw(b"[EXT4-ERROR] kind=");
-        klog::write_raw(error_kind(&e));
-        klog::write_raw(b"\n");
-    }
+    #[cfg(feature = "debug-boot")]
+    if bad { log_error(&e); }
     let mapped = super::inode::regular::vfs_error_from_mount(e);
     if bad { vfs::fire_fs_error(watcher_fsid(st), None, mapped as i32); }
     mapped
@@ -58,6 +55,7 @@ pub(crate) fn report(st: &RootfsState, e: MountError) -> vfs::VfsError {
 
 /// Stable error-only diagnostic kind; no pathname or transient allocation.
 /// # C: O(1)
+#[cfg(any(feature = "debug-boot", test))]
 fn error_kind(e: &MountError) -> &'static [u8] {
     match e {
         MountError::BlockIo => b"block-io",
@@ -79,6 +77,15 @@ fn error_kind(e: &MountError) -> &'static [u8] {
         MountError::UnsupportedFeature => b"unsupported-feature",
         MountError::Quota(_) => b"quota",
     }
+}
+
+/// Emit the diagnostic-build record without changing error delivery.
+/// # C: O(1)
+#[cfg(feature = "debug-boot")]
+fn log_error(e: &MountError) {
+    klog::write_raw(b"[EXT4-ERROR] kind=");
+    klog::write_raw(error_kind(e));
+    klog::write_raw(b"\n");
 }
 
 /// The filesystem identity a report carries: the `st_dev` every inode on this
