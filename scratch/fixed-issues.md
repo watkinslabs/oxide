@@ -1,5 +1,11 @@
 # Fixed issues
 
+### F838-live-ipv6-packet-proc
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED f8439206e | MISSING | low | `/proc/net/snmp6` and `/proc/net/packet` remained empty/header-only stubs. `/proc/net/netstat` already projected the canonical TCP extended MIB counters. | Namespace-owned IPv6 MIB state now records receive, transmit, reassembly, forwarding, ICMPv6, and UDPv6 events for `/proc/net/snmp6`; `/proc/net/packet` projects the canonical packet socket registry. Focused IPv6/packet tests, 165 procfs tests, and the required hosted gates passed. | [CLAIMED F838 2026-08-07] |
+
 ### F837-ipv4-indiscards-accounting
 
 | Status | Class | Sev | Issue | Evidence | Owner |
