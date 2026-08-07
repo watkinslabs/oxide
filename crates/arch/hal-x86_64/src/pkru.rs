@@ -128,6 +128,9 @@ pub const fn cpuid_has_ospke(ecx: u32) -> bool { ecx & CPUID7_ECX_OSPKE != 0 }
 /// CR4 with PKE set. # C: O(1)
 pub const fn cr4_with_pke(cr4: u64) -> u64 { cr4 | CR4_PKE }
 
+/// CR4 with PKE cleared. # C: O(1)
+pub const fn cr4_without_pke(cr4: u64) -> u64 { cr4 & !CR4_PKE }
+
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 mod hw {
     use core::arch::asm;
@@ -224,7 +227,11 @@ pub unsafe fn setup_pku(is_bsp: bool) {
         if is_bsp {
             // Confirm the hardware accepted it rather than trusting the write.
             let (_, _, ecx7, _) = crate::cpuid::cpuid_count(7, 0);
-            if !cpuid_has_ospke(ecx7) { return; }
+            if !cpuid_has_ospke(ecx7) {
+                cr4 = cr4_without_pke(cr4);
+                core::arch::asm!("mov cr4, {}", in(reg) cr4, options(nomem, nostack, preserves_flags));
+                return;
+            }
             OSPKE.store(true, Ordering::Relaxed);
             // One line per detected CPU feature, as the kernel reports every
             // other optional facility it turns on. Absence prints nothing, so

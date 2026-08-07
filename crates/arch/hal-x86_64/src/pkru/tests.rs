@@ -114,6 +114,14 @@ fn cr4_pke_is_bit_22_and_preserves_other_bits() {
     assert_eq!(cr4_with_pke(after), after, "setting an already-set bit is idempotent");
 }
 
+#[test]
+fn clearing_pke_preserves_other_cr4_bits() {
+    let before = (1u64 << 9) | (1 << 10) | CR4_PKE | (1 << 18);
+    let after = cr4_without_pke(before);
+    assert_eq!(after, before & !CR4_PKE);
+    assert_eq!(cr4_without_pke(after), after, "clearing an already-clear bit is idempotent");
+}
+
 // Without OSPKE the key space is key 0 alone — the implicit key every PTE
 // carries — so `pkey_alloc` has nothing to hand out.
 #[test]
