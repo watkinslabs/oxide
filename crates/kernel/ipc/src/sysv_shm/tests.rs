@@ -1,5 +1,5 @@
 use super::*;
-use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use core::sync::atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering as AtomicOrdering};
 
 struct FakeBacking;
 
@@ -41,8 +41,8 @@ fn shmget(key: i32, size: usize, flg: u64, cred: IpcCred) -> i64 {
 fn segment(mode: u32, size: usize) -> Arc<ShmSegment> {
     let owner = crate::ipc_namespace::current().unwrap();
     Arc::new(ShmSegment {
-        id: 1, key: 1, ns: owner.key(), size, mode,
-        uid: 10, gid: 20, cuid: 10, cgid: 20, cpid: 77,
+        id: 1, key: AtomicI32::new(1), ns: owner.key(), size, mode: AtomicU32::new(mode),
+        uid: AtomicU32::new(10), gid: AtomicU32::new(20), cuid: 10, cgid: 20, cpid: 77,
         nattch: core::sync::atomic::AtomicI64::new(0),
         creator: Spinlock::new(None),
         backing: backing(),
@@ -84,11 +84,11 @@ fn create_public_key_records_owner_mode_and_lazy_allocates() {
     assert!(id > 0);
     assert_eq!(calls.load(AtomicOrdering::Acquire), 1);
     let seg = lookup_by_id(id as i32).unwrap();
-    assert_eq!(seg.key, 44);
+    assert_eq!(seg.key.load(AtomicOrdering::Acquire), 44);
     assert_eq!(seg.size, 4096);
-    assert_eq!(seg.mode, 0o640);
-    assert_eq!(seg.uid, 42);
-    assert_eq!(seg.gid, 7);
+    assert_eq!(seg.mode.load(AtomicOrdering::Acquire), 0o640);
+    assert_eq!(seg.uid.load(AtomicOrdering::Acquire), 42);
+    assert_eq!(seg.gid.load(AtomicOrdering::Acquire), 7);
     assert_eq!(seg.cuid, 42);
     assert_eq!(seg.cgid, 7);
 }

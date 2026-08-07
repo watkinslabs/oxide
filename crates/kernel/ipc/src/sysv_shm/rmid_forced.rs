@@ -66,7 +66,7 @@ pub(super) fn destroy_orphaned(ns: NamespaceId) {
             let s = &g[i];
             let orphan = s.ns == ns && s.creator.lock().is_none();
             let nattch = s.nattch.load(core::sync::atomic::Ordering::Acquire);
-            if orphan && shm_may_destroy(nattch, forced, s.mode) { out.push(g.remove(i)); } else { i += 1; }
+            if orphan && shm_may_destroy(nattch, forced, s.mode.load(core::sync::atomic::Ordering::Acquire)) { out.push(g.remove(i)); } else { i += 1; }
         }
         out
     };

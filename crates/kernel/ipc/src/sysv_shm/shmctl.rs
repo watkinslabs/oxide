@@ -51,11 +51,11 @@ struct ShmctlSet {
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
 fn can_admin(seg: &ShmSegment, cred: &IpcCred) -> bool {
-    cred.euid == seg.cuid || cred.euid == seg.uid || cred.cap_sys_admin
+    cred.euid == seg.cuid || cred.euid == seg.uid.load(Ordering::Acquire) || cred.cap_sys_admin
 }
 
 fn can_lock(seg: &ShmSegment, cred: &IpcCred) -> bool {
-    cred.cap_ipc_lock || cred.euid == seg.cuid || cred.euid == seg.uid
+    cred.cap_ipc_lock || cred.euid == seg.cuid || cred.euid == seg.uid.load(Ordering::Acquire)
 }
 
 fn validate_user_buf(ptr: u64, len: usize, write: bool) -> Result<(), i64> {
@@ -111,12 +111,12 @@ fn put_u64(out: &mut [u8], off: usize, v: u64) { out[off..off + 8].copy_from_sli
 
 fn encode_shmid64(seg: &ShmSegment) -> [u8; SHMID64_DS_BYTES] {
     let mut ds = [0u8; SHMID64_DS_BYTES];
-    put_u32(&mut ds, IPC64_PERM_KEY_OFF, seg.key as u32);
-    put_u32(&mut ds, IPC64_PERM_UID_OFF, seg.uid);
-    put_u32(&mut ds, IPC64_PERM_GID_OFF, seg.gid);
+    put_u32(&mut ds, IPC64_PERM_KEY_OFF, seg.key.load(Ordering::Acquire) as u32);
+    put_u32(&mut ds, IPC64_PERM_UID_OFF, seg.uid.load(Ordering::Acquire));
+    put_u32(&mut ds, IPC64_PERM_GID_OFF, seg.gid.load(Ordering::Acquire));
     put_u32(&mut ds, IPC64_PERM_CUID_OFF, seg.cuid);
     put_u32(&mut ds, IPC64_PERM_CGID_OFF, seg.cgid);
-    put_u32(&mut ds, IPC64_PERM_MODE_OFF, seg.mode);
+    put_u32(&mut ds, IPC64_PERM_MODE_OFF, seg.mode.load(Ordering::Acquire));
     put_u64(&mut ds, SHMID64_SEGSZ_OFF, seg.size as u64);
     put_i32(&mut ds, SHMID64_CPID_OFF, seg.cpid as i32);
     put_u64(&mut ds, SHMID64_NATTCH_OFF, seg.nattch.load(Ordering::Acquire).max(0) as u64);
@@ -135,9 +135,9 @@ fn encode_shminfo64() -> [u8; SHMINFO64_BYTES] {
 
 fn encode_shm_info(segs: &[alloc::sync::Arc<ShmSegment>], ns: namespace_identity::NamespaceId) -> [u8; SHM_INFO_BYTES] {
     let mut b = [0u8; SHM_INFO_BYTES];
-    let used = segs.iter().filter(|s| s.ns == ns && (s.mode & SHM_DEST) == 0).count() as i32;
+    let used = segs.iter().filter(|s| s.ns == ns && (s.mode.load(Ordering::Acquire) & SHM_DEST) == 0).count() as i32;
     let pages = segs.iter()
-        .filter(|s| s.ns == ns && (s.mode & SHM_DEST) == 0)
+        .filter(|s| s.ns == ns && (s.mode.load(Ordering::Acquire) & SHM_DEST) == 0)
         .map(|s| ((s.size as u64) + PAGE_SIZE - 1) / PAGE_SIZE)
         .sum::<u64>();
     put_i32(&mut b, SHM_INFO_USED_IDS_OFF, used);
@@ -164,7 +164,7 @@ fn stat_segment(shmid: i32, cmd: u64, cred: &IpcCred) -> Result<(alloc::sync::Ar
         if shmid < 0 { return Err(err(Errno::Einval)); }
         ns_segments(ns).get(shmid as usize).cloned().ok_or(err(Errno::Einval))?
     };
-    if (seg.mode & SHM_DEST) != 0 { return Err(err(Errno::Eidrm)); }
+    if (seg.mode.load(Ordering::Acquire) & SHM_DEST) != 0 { return Err(err(Errno::Eidrm)); }
     if cmd != SHM_STAT_ANY && !ipc_permitted(&seg, cred, S_IRUGO) { return Err(err(Errno::Eacces)); }
     let ret = if cmd == IPC_STAT { 0 } else { seg.id as i64 };
     Ok((seg, ret))
@@ -175,18 +175,14 @@ fn set_segment(shmid: i32, cred: &IpcCred, set: ShmctlSet) -> i64 {
         Ok(owner) => owner, Err(_) => return err(Errno::Einval),
     };
     let ns = owner.key();
-    let mut g = REG.segs.lock();
-    let Some(s) = g.iter_mut().find(|s| s.id == shmid && s.ns == ns) else { return err(Errno::Einval); };
-    if (s.mode & SHM_DEST) != 0 { return err(Errno::Eidrm); }
+    let g = REG.segs.lock();
+    let Some(s) = g.iter().find(|s| s.id == shmid && s.ns == ns) else { return err(Errno::Einval); };
+    if (s.mode.load(Ordering::Acquire) & SHM_DEST) != 0 { return err(Errno::Eidrm); }
     if !can_admin(s, cred) { return err(Errno::Eperm); }
-    if let Some(m) = alloc::sync::Arc::get_mut(s) {
-        m.uid = set.uid;
-        m.gid = set.gid;
-        m.mode = (m.mode & !S_IRWXUGO) | (set.mode & S_IRWXUGO);
-        0
-    } else {
-        err(Errno::Eagain)
-    }
+    s.uid.store(set.uid, Ordering::Release);
+    s.gid.store(set.gid, Ordering::Release);
+    s.mode.fetch_update(Ordering::AcqRel, Ordering::Acquire, |mode| Some((mode & !S_IRWXUGO) | (set.mode & S_IRWXUGO))).ok();
+    0
 }
 
 fn rmid_segment(shmid: i32, cred: &IpcCred) -> i64 {
@@ -196,19 +192,18 @@ fn rmid_segment(shmid: i32, cred: &IpcCred) -> i64 {
     let ns = owner.key();
     let mut g = REG.segs.lock();
     let Some(pos) = g.iter().position(|s| s.id == shmid && s.ns == ns) else { return err(Errno::Einval); };
-    if (g[pos].mode & SHM_DEST) != 0 { return err(Errno::Eidrm); }
+    if (g[pos].mode.load(Ordering::Acquire) & SHM_DEST) != 0 { return err(Errno::Eidrm); }
     if !can_admin(&g[pos], cred) { return err(Errno::Eperm); }
     if g[pos].nattch.load(Ordering::Acquire) > 0 {
-        if let Some(m) = alloc::sync::Arc::get_mut(&mut g[pos]) {
-            m.mode |= SHM_DEST;
+        {
+            let m = &g[pos];
+            m.mode.fetch_or(SHM_DEST, Ordering::AcqRel);
             // Linux `do_shm_rmid` -> `ipc_set_key_private`: a doomed segment
             // leaves the key hash, so `shmget(key, ...)` can neither find it
             // nor be handed an id that is already being torn down. Without
             // this the marked segment stays reachable by key for as long as
             // an attacher survives.
-            m.key = super::IPC_PRIVATE;
-        } else {
-            return err(Errno::Eagain);
+            m.key.store(super::IPC_PRIVATE, Ordering::Release);
         }
     } else {
         g.remove(pos);
@@ -221,15 +216,12 @@ fn lock_segment(shmid: i32, cmd: u64, cred: &IpcCred) -> i64 {
         Ok(owner) => owner, Err(_) => return err(Errno::Einval),
     };
     let ns = owner.key();
-    let mut g = REG.segs.lock();
-    let Some(s) = g.iter_mut().find(|s| s.id == shmid && s.ns == ns) else { return err(Errno::Einval); };
-    if (s.mode & SHM_DEST) != 0 { return err(Errno::Eidrm); }
+    let g = REG.segs.lock();
+    let Some(s) = g.iter().find(|s| s.id == shmid && s.ns == ns) else { return err(Errno::Einval); };
+    if (s.mode.load(Ordering::Acquire) & SHM_DEST) != 0 { return err(Errno::Eidrm); }
     if !can_lock(s, cred) { return err(Errno::Eperm); }
-    if let Some(m) = alloc::sync::Arc::get_mut(s) {
-        if cmd == SHM_LOCK { m.mode |= SHM_LOCKED; } else { m.mode &= !SHM_LOCKED; }
-    } else {
-        return err(Errno::Eagain);
-    }
+    if cmd == SHM_LOCK { s.mode.fetch_or(SHM_LOCKED, Ordering::AcqRel); }
+    else { s.mode.fetch_and(!SHM_LOCKED, Ordering::AcqRel); }
     0
 }
 
@@ -349,8 +341,8 @@ mod tests {
         let _shm = crate::sysv_shm::test_claim::claim_shm();
         let owner = crate::ipc_namespace::current().unwrap();
         let seg = alloc::sync::Arc::new(ShmSegment {
-            id: 7, key: 9, ns: owner.key(), size: 4096, mode: 0o600,
-            uid: 10, gid: 20, cuid: 10, cgid: 20, cpid: 77,
+            id: 7, key: core::sync::atomic::AtomicI32::new(9), ns: owner.key(), size: 4096, mode: core::sync::atomic::AtomicU32::new(0o600),
+            uid: core::sync::atomic::AtomicU32::new(10), gid: core::sync::atomic::AtomicU32::new(20), cuid: 10, cgid: 20, cpid: 77,
             nattch: core::sync::atomic::AtomicI64::new(2),
             creator: Spinlock::new(None),
             backing: backing(),
@@ -376,7 +368,7 @@ mod tests {
         assert_eq!(set_segment(id, &cred(99, 99, &[], false), ShmctlSet { uid: 1, gid: 2, mode: 0o644 }), err(Errno::Eperm));
         assert_eq!(set_segment(id, &owner, ShmctlSet { uid: 1, gid: 2, mode: 0o644 }), 0);
         let s = lookup_by_id(id).unwrap();
-        assert_eq!((s.uid, s.gid, s.mode & S_IRWXUGO), (1, 2, 0o644));
+        assert_eq!((s.uid.load(Ordering::Acquire), s.gid.load(Ordering::Acquire), s.mode.load(Ordering::Acquire) & S_IRWXUGO), (1, 2, 0o644));
         drop(s);
         assert_eq!(rmid_segment(id, &cred_caps(99, 99, &[], false, false, true)), 0);
         assert!(lookup_by_id(id).is_none());
@@ -391,8 +383,8 @@ mod tests {
         lookup_by_id(id).unwrap().nattch.store(1, Ordering::Release);
         assert_eq!(rmid_segment(id, &owner), 0);
         let seg = lookup_by_id(id).expect("an attached segment is marked, not removed");
-        assert_ne!(seg.mode & SHM_DEST, 0);
-        assert_eq!(seg.key, super::super::IPC_PRIVATE, "a doomed segment leaves the key hash");
+        assert_ne!(seg.mode.load(Ordering::Acquire) & SHM_DEST, 0);
+        assert_eq!(seg.key.load(Ordering::Acquire), super::super::IPC_PRIVATE, "a doomed segment leaves the key hash");
         drop(seg);
         // Linux: the key is free again, so this creates a NEW segment rather
         // than handing back the id being torn down.
@@ -410,11 +402,33 @@ mod tests {
         assert_eq!(lock_segment(id, SHM_LOCK, &cred(99, 99, &[], false)), err(Errno::Eperm));
         assert_eq!(lock_segment(id, SHM_LOCK, &owner), 0);
         let s = lookup_by_id(id).unwrap();
-        assert_ne!(s.mode & SHM_LOCKED, 0);
+        assert_ne!(s.mode.load(Ordering::Acquire) & SHM_LOCKED, 0);
         drop(s);
         assert_eq!(lock_segment(id, SHM_UNLOCK, &cred(99, 99, &[], false)), err(Errno::Eperm));
         assert_eq!(lock_segment(id, SHM_UNLOCK, &cred_caps(99, 99, &[], false, true, false)), 0);
-        assert_eq!(lookup_by_id(id).unwrap().mode & SHM_LOCKED, 0);
+        assert_eq!(lookup_by_id(id).unwrap().mode.load(Ordering::Acquire) & SHM_LOCKED, 0);
+    }
+
+    #[test]
+    fn control_operations_succeed_while_an_attacher_holds_a_segment_reference() {
+        let _shm = crate::sysv_shm::test_claim::claim_shm();
+        let owner = cred(10, 20, &[], false);
+        let set_id = shmget(101, 4096, super::super::IPC_CREAT | 0o600, owner.clone()) as i32;
+        let set_hold = lookup_by_id(set_id).unwrap();
+        assert_eq!(set_segment(set_id, &owner, ShmctlSet { uid: 11, gid: 21, mode: 0o640 }), 0);
+        assert_eq!(set_hold.uid.load(Ordering::Acquire), 11);
+
+        let lock_id = shmget(102, 4096, super::super::IPC_CREAT | 0o600, owner.clone()) as i32;
+        let lock_hold = lookup_by_id(lock_id).unwrap();
+        assert_eq!(lock_segment(lock_id, SHM_LOCK, &owner), 0);
+        assert_ne!(lock_hold.mode.load(Ordering::Acquire) & SHM_LOCKED, 0);
+
+        let rmid_id = shmget(103, 4096, super::super::IPC_CREAT | 0o600, owner.clone()) as i32;
+        let rmid_hold = lookup_by_id(rmid_id).unwrap();
+        rmid_hold.nattch.store(1, Ordering::Release);
+        assert_eq!(rmid_segment(rmid_id, &owner), 0);
+        assert_ne!(rmid_hold.mode.load(Ordering::Acquire) & SHM_DEST, 0);
+        assert_eq!(rmid_hold.key.load(Ordering::Acquire), super::super::IPC_PRIVATE);
     }
 
     #[test]
@@ -436,7 +450,7 @@ mod tests {
         let set_args = syscall::SyscallArgs { a0: id as u64, a1: IPC_SET, a2: set.as_ptr() as u64, ..Default::default() };
         assert_eq!(sys_shmctl(&set_args), 0);
         let seg = lookup_by_id(id).unwrap();
-        assert_eq!((seg.uid, seg.gid, seg.mode & S_IRWXUGO), (42, 43, 0o640));
+        assert_eq!((seg.uid.load(Ordering::Acquire), seg.gid.load(Ordering::Acquire), seg.mode.load(Ordering::Acquire) & S_IRWXUGO), (42, 43, 0o640));
         drop(seg);
 
         let mut info = [0u8; SHMINFO64_BYTES];

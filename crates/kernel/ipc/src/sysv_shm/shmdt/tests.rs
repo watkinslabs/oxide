@@ -3,7 +3,7 @@
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicI64, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicI64, AtomicU32, Ordering};
 
 use super::*;
 use crate::sysv_shm::{lookup_by_id, shm_vma_close, ShmSegment, PAGE_SIZE, REG, SHM_DEST};
@@ -95,8 +95,8 @@ fn a_relocated_fragment_no_longer_satisfies_the_placement_rule() {
 fn seg_with(id: i32, nattch: i64, mode: u32) -> Arc<ShmSegment> {
     let owner = crate::ipc_namespace::current().unwrap();
     Arc::new(ShmSegment {
-        id, key: 4242, ns: owner.key(), size: SPAN as usize, mode,
-        uid: 0, gid: 0, cuid: 0, cgid: 0, cpid: 1,
+        id, key: AtomicI32::new(4242), ns: owner.key(), size: SPAN as usize, mode: AtomicU32::new(mode),
+        uid: AtomicU32::new(0), gid: AtomicU32::new(0), cuid: 0, cgid: 0, cpid: 1,
         nattch: AtomicI64::new(nattch),
         creator: sync::Spinlock::new(None),
         backing: Arc::new(FakeBacking),

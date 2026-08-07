@@ -199,9 +199,9 @@ fn forced_rmid_reclaims_a_never_rmided_segment_at_its_last_detach() {
     // takes it, without any IPC_RMID ever being issued.
     let _shm = crate::sysv_shm::test_claim::claim_shm();
     let seg = Arc::new(ShmSegment {
-        id: 60_100, key: 0x5800, ns: crate::ipc_namespace::current().unwrap().key(),
-        size: SEG_SIZE, mode: SEG_MODE as u32,
-        uid: 0, gid: 0, cuid: 0, cgid: 0, cpid: 1,
+        id: 60_100, key: core::sync::atomic::AtomicI32::new(0x5800), ns: crate::ipc_namespace::current().unwrap().key(),
+        size: SEG_SIZE, mode: core::sync::atomic::AtomicU32::new(SEG_MODE as u32),
+        uid: core::sync::atomic::AtomicU32::new(0), gid: core::sync::atomic::AtomicU32::new(0), cuid: 0, cgid: 0, cpid: 1,
         nattch: core::sync::atomic::AtomicI64::new(2),
         creator: sync::Spinlock::new(None),
         backing: backing(),
@@ -210,7 +210,7 @@ fn forced_rmid_reclaims_a_never_rmided_segment_at_its_last_detach() {
     crate::sysv_shm::shm_vma_close(&seg.backing);
     crate::sysv_shm::shm_vma_close(&seg.backing);
     assert!(lookup_by_id(60_100).is_some(), "unforced: an idle segment survives");
-    assert_eq!(seg.mode & SHM_DEST, 0, "and it was never marked for destruction");
+    assert_eq!(seg.mode.load(Ordering::Acquire) & SHM_DEST, 0, "and it was never marked for destruction");
     // Re-attach BEFORE arming the sysctl, so the orphan sweep it runs cannot
     // take the segment and the reclaim under test is the DETACH path.
     seg.nattch.store(1, Ordering::Release);
