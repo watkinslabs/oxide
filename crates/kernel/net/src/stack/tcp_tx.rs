@@ -70,6 +70,9 @@ impl TcpTxPolicy<'_> {
         let payload_len = segment.len().saturating_sub(header.payload_offset());
         match self {
             Self::Entry(entry) => {
+                if header.flags & crate::tcp_hdr::flags::RST != 0 {
+                    crate::mib::bump(entry.net_ns(), crate::mib::Mib::TcpOutRsts);
+                }
                 let mut conn = entry.conn.lock();
                 conn.segs_out = conn.segs_out.saturating_add(1);
                 if payload_len != 0 {
@@ -162,6 +165,17 @@ mod tests {
         assert_eq!(conn.segs_out, 2);
         assert_eq!(conn.data_segs_out, 1);
         assert_eq!(conn.bytes_sent, 4);
+    }
+
+    #[test]
+    fn rst_transmit_moves_only_the_rst_mib_counter() {
+        let entry = TcpEntry::new(TcpConn::new_client(
+            Endpoint { ip: IpAddr::V4(Ipv4Addr::LOOPBACK), port: 40_006 },
+            Endpoint { ip: IpAddr::V4(Ipv4Addr::LOOPBACK), port: 40_007 }, 1));
+        let rst = entry.conn.lock().build_segment(crate::tcp_hdr::flags::RST, &[]);
+        let before = crate::mib::get(0, crate::mib::Mib::TcpOutRsts);
+        TcpTxPolicy::Entry(&entry).note_transmit(&rst);
+        assert_eq!(crate::mib::get(0, crate::mib::Mib::TcpOutRsts), before + 1);
     }
 
     #[test]

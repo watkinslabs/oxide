@@ -44,6 +44,8 @@ impl InetSocket {
             let linger_s  = self.opts.generic.scalar(Scalar::LingerSeconds);
             let (seg, src, dst, tos) = {
                 let mut c = entry.conn.lock();
+                let attempt = matches!(c.state, crate::tcp_state::TcpState::SynSent
+                    | crate::tcp_state::TcpState::SynRecv);
                 // F194: SO_LINGER on + timeout=0 = abortive close (RST)
                 // regardless of conn state. Otherwise the usual FIN/RST
                 // pick from drop_close.
@@ -56,6 +58,9 @@ impl InetSocket {
                 } else {
                     c.drop_close()
                 };
+                if attempt && s.is_some() {
+                    crate::mib::bump(entry.net_ns(), crate::mib::Mib::TcpAttemptFails);
+                }
                 (s, c.local.ip, c.remote.ip, crate::stack::ecn_tos(&c))
             };
             stk.drain_tcp_fastopen_client(entry);
