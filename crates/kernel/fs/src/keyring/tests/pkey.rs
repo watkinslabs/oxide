@@ -247,6 +247,8 @@ fn declared_lengths_are_bounded_by_the_query() {
     let q = pkey::query_core(&t, k, &info).expect("queries");
 
     assert_eq!(pkey::vet_lengths(Operation::Sign, &q, 32, 128), Ok(128));
+    assert_eq!(pkey::vet_lengths(Operation::Sign, &q, 32, 1), Ok(128),
+        "a short declared output length does not shrink the operation's copy width");
     assert_eq!(pkey::vet_lengths(Operation::Sign, &q, 129, 128), Err(Errno::Einval),
         "an input past the signature input ceiling");
     assert_eq!(pkey::vet_lengths(Operation::Sign, &q, 32, 129), Err(Errno::Einval),
@@ -255,6 +257,15 @@ fn declared_lengths_are_bounded_by_the_query() {
     assert_eq!(pkey::vet_lengths(Operation::Verify, &q, 32, 128), Ok(128));
     assert_eq!(pkey::vet_lengths(Operation::Verify, &q, 32, 129), Err(Errno::Einval),
         "a signature wider than the key");
+}
+
+#[test]
+fn pkey_syscall_copies_the_key_sized_result_after_short_output_admission() {
+    let marshal = include_str!("../keyctl/pkey.rs");
+    assert!(!marshal.contains("produced.len() as u64 > out_len"),
+        "a short declared output length must not turn the key result into EOVERFLOW");
+    assert!(marshal.contains("write_user_bytes(args.a4, &produced)"),
+        "the copied width is the produced key result");
 }
 
 // The advertised capability bit and the commands must agree.

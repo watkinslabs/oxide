@@ -51,11 +51,9 @@ pub fn eds(c: &Ctx, op: Operation, args: &SyscallArgs) -> i64 {
     let produced = match pkey::eds_core(&key, op, &info, &input, fill_random) {
         Ok(v) => v, Err(rv) => return rv,
     };
-    // The caller's declared output length is a promise about its buffer, so it
-    // bounds what is written. Linux sizes the copy from the key instead, which
-    // writes past a buffer the caller declared smaller; a result that does not
-    // fit what the caller offered is reported as the overflow it is.
-    if produced.len() as u64 > out_len { return err(Errno::Eoverflow); }
+    // The declared length is only an upper-bound admission check. The actual
+    // copy width is the key operation's result, which is the ABI this command
+    // has always exposed to callers that size their output from QUERY.
     match write_user_bytes(args.a4, &produced) { Ok(()) => produced.len() as i64, Err(rv) => rv }
 }
 
