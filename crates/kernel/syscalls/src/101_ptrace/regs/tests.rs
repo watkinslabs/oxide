@@ -70,14 +70,13 @@ mod x86_tests {
         assert_ne!(u[x86::U_EFLAGS], u[x86::U_R11]);
     }
 
-    /// A trap frame has no syscall: `orig_rax` reads back as the no-syscall
-    /// marker and `rax` is the thread's own register, matching the register
-    /// block a core dump writes for the same frame.
+    /// A trap frame preserves its independently saved entry word in
+    /// `orig_rax`, while `rax` remains the thread's own register.
     #[test]
-    fn x86_trap_frame_reports_no_syscall_and_the_architectural_rax() {
-        let f = trap_frame();
+    fn x86_trap_frame_reports_its_entry_word_and_the_architectural_rax() {
+        let f = PtRegs { error: 0xdecafbad, ..trap_frame() };
         let u = x86::to_user_regs(&f, 0xDEAD, &seg());
-        assert_eq!(u[x86::U_ORIG_RAX], x86::NO_SYSCALL);
+        assert_eq!(u[x86::U_ORIG_RAX], f.error);
         assert_eq!(u[x86::U_RAX], f.rax);
     }
 
@@ -109,15 +108,16 @@ mod x86_tests {
     }
 
     #[test]
-    fn x86_setregs_on_a_trap_frame_installs_the_architectural_rax() {
+    fn x86_setregs_on_a_trap_frame_keeps_rax_and_orig_rax_independent() {
         let mut f = trap_frame();
         let mut s = seg();
         let mut u = [0u64; x86::N];
         u[x86::U_CS] = 0x4b; u[x86::U_SS] = 0x43;
         u[x86::U_RAX] = 0x5150;
-        u[x86::U_ORIG_RAX] = x86::NO_SYSCALL;
+        u[x86::U_ORIG_RAX] = 0x7172;
         x86::from_user_regs(&u, &mut f, &mut s, 0x0000_8000_0000_0000).unwrap();
         assert_eq!(f.rax, 0x5150, "a trap frame's rax must not become -1");
+        assert_eq!(f.error, 0x7172, "orig_rax must not overwrite trap rax");
     }
 
     #[test]

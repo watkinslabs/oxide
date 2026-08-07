@@ -21,7 +21,7 @@ const GREG_BYTES: usize = 8;
 pub use hal::uregs::x86_64::user_regs::{
     CS as X86_U_CS, DS as X86_U_DS, EFLAGS as X86_U_EFLAGS, ES as X86_U_ES,
     FS as X86_U_FS, FS_BASE as X86_U_FS_BASE, GS as X86_U_GS,
-    GS_BASE as X86_U_GS_BASE, N as X86_NGREG, NO_SYSCALL,
+    GS_BASE as X86_U_GS_BASE, N as X86_NGREG,
     ORIG_RAX as X86_U_ORIG_RAX, R10 as X86_U_R10, R11 as X86_U_R11,
     R12 as X86_U_R12, R13 as X86_U_R13, R14 as X86_U_R14, R15 as X86_U_R15,
     R8 as X86_U_R8, R9 as X86_U_R9, RAX as X86_U_RAX, RBP as X86_U_RBP,
@@ -42,8 +42,9 @@ pub struct X86SegBases { pub fs_base: u64, pub gs_base: u64 }
 
 /// x86-64 general registers as a saved frame holds them, in frame terms.
 ///
-/// `rax` is the ABI return-value register; `orig_rax` is the syscall number a
-/// `syscall` entry parked there, or [`NO_SYSCALL`] on a trap.
+/// `rax` is the ABI return-value register. `orig_rax` is the syscall number a
+/// `syscall` entry parked there, or the independently saved entry word on a
+/// trap.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct X86Frame {
     pub r15: u64, pub r14: u64, pub r13: u64, pub r12: u64,
@@ -106,7 +107,8 @@ pub fn aarch64_block(gpr: &[u64; ARM_NGPR], sp: u64, pc: u64, pstate: u64) -> Ve
 /// The crashing thread's block, read out of its live entry frame.
 ///
 /// `from_syscall` is the entry tag: a frame a `syscall` instruction built
-/// reports its syscall number as `orig_ax`, a trap frame reports [`NO_SYSCALL`].
+/// reports its syscall number as `orig_ax`; a trap frame reports its saved
+/// entry word.
 /// # SAFETY: `regs` is the live entry frame of the calling thread.
 /// # C: O(1)
 #[cfg(target_arch = "x86_64")]
@@ -119,7 +121,7 @@ pub unsafe fn current_block(regs: *const hal_x86_64::PtRegs, seg: &X86SegBases) 
         r15: r.r15, r14: r.r14, r13: r.r13, r12: r.r12, rbp: r.rbp, rbx: r.rbx,
         r11: r.r11, r10: r.r10, r9: r.r9, r8: r.r8,
         rdi: r.rdi, rsi: r.rsi, rdx: r.rdx, rcx: r.rcx,
-        rax: r.rax, orig_rax: if from_syscall { r.rax } else { NO_SYSCALL },
+        rax: r.rax, orig_rax: if from_syscall { r.rax } else { r.error },
         rip: r.rip, cs: r.cs, rflags: r.rflags, rsp: r.rsp, ss: r.ss,
     }, seg)
 }
