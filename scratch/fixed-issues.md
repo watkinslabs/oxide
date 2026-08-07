@@ -903,6 +903,13 @@ evidence has one canonical home.
 
 ### B1883-pseudo-fs-superblock-ownership
 
+### B1932-pkey-runtime-allocation
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 15f244783 | DEFECT | med | Hardware-enabled x86 and arm64 pkey allocation previously remained feature-absent despite VMA/PTE key support. | Each mm captures its enabled arch key-space descriptor; allocation updates the calling task's live PKRU/POR rights. Focused HAL/VMM/syscall/scheduler suites, both target builds, paired smoke, and pre-push passed. | B1932-pkey-runtime-allocation |
+| FIXED 15f244783 | DEFECT | med | `SEGV_PKUERR` exposed a fabricated zero `si_pkey`. | The fault signal now reads the VMA's sole key owner and serializes it in the PKU siginfo union arm; HAL and scheduler regression tests pin the record. | B1932-pkey-runtime-allocation |
+
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED 8d8be76e8 | DEFECT | med | Every pseudo-filesystem built inodes without an owning superblock, so metadata readers fell back to synthetic defaults. | VFS now binds a synthesized inode when it is instantiated as a root or lookup result, and creates a separate inode view when one pseudo-tree template is reached through another superblock. Global sysfs and cgroup trees reuse their owning superblock. The regression proves distinct root and child views retain their own owners; focused VFS/kernfs/sysfs/cgroup suites and paired x86_64/aarch64 smoke passed. | B1883-pseudo-fs-superblock-ownership |
