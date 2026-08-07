@@ -36,11 +36,11 @@ reclassified.
 
 | Class \ Sev | blocker | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|
-| `DEFECT` | 0 | 0 | 13 | 22 | 35 |
+| `DEFECT` | 0 | 0 | 13 | 21 | 34 |
 | `MISSING` | 2 | 0 | 17 | 17 | 36 |
 | `COVERAGE` | 0 | 0 | 9 | 14 | 23 |
 | `INFRA` | 0 | 0 | 14 | 11 | 25 |
-| **Total** | **2** | **0** | **53** | **64** | **119** |
+| **Total** | **2** | **0** | **53** | **63** | **118** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -67,7 +67,6 @@ row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | OPEN | DEFECT | med | Not yet attributed: the combined x86 boot exercising `swapfile_probe` + `request_key_probe` hit `[CPU-STALL] cpu=0 no heartbeat for 10s (seen by cpu=1) last: tid=4181 syscall=fsync ... now: tid=4181 syscall=madvise` on attempt 1. That is the swapfile probe's `MADV_PAGEOUT` ladder. The C probe issued the same `MADV_PAGEOUT`, so it is most likely pre-existing rather than caused by the port — but the A/B that would prove it has NOT been run, and this row must not be read as either a new regression or a cleared one. | `target/smoke-x86.out`, boot attempt 1; `[NMI-BT] rip=ffffffff8043d104` | unowned |
-| OPEN | DEFECT | low | The asymmetric key type carries no key-ID list, so `KEYCTL_SEARCH` cannot find a certificate by `id:<hex>` / `ex:<hex>` / `s:<hex>` the way Linux's `asymmetric_key_match_preparse` does — only by the exact description. The subject key identifier IS parsed (it is what the proposed description ends with), so the data is present; what is missing is the match-preparse hook and a place on the key to keep the three ids. | B1658. `pkey::x509::Certificate::skid` is parsed and used for the description only. | — |
 | OPEN | DEFECT | low | **Deliberate deviation, safety:** `KEYCTL_PKEY_{ENCRYPT,DECRYPT,SIGN}` returns EOVERFLOW when the produced output is longer than the `out_len` the caller declared in `struct keyctl_pkey_params`. Linux instead re-sizes the copy from the KEY (`params.out_len = info.max_*_size`) and then `copy_to_user`s the produced length, so a caller that declares a short `out_len` — which passes the `out_len > max` check — has bytes written past its buffer. Reproducing that would be writing a user-memory overflow on purpose. Callers that size their buffer from `KEYCTL_PKEY_QUERY`, which is the documented flow, see no difference. | B1658, `keyctl/pkey.rs::eds`; the check is `produced.len() > out_len`. | — |
 | OPEN | DEFECT | low | `NT_FILE` carries no device or inode number — the format has room only for start, end and page offset per mapping, then the path. A debugger matching a dumped library to an on-disk build therefore relies on the path alone; a file replaced between the crash and the analysis is indistinguishable. This matches the reference format and is not a defect in the builder, recorded so a later lane does not "fix" it by inventing fields. | `files()` in `crates/kernel/fs/src/coredump/elf/notes.rs`; layout asserted in `tests/files.rs`. | — |
 | OPEN | DEFECT | low | `cachestat`'s `nr_writeback` is structurally 0 on both page-cache backends. Not a missing counter: a flush copies frames to the device synchronously inside the requesting call, so no index is ever left tagged writeback-pending for another task to observe. It becomes a real gap only if writeback is ever made asynchronous — at which point the tag has to be added to the ext4 frame store and reported here. | F778; `crates/kernel/ext4/src/rootfs/framecache/cachestat.rs`. | — |

@@ -210,6 +210,10 @@ shape they were retired in; post-D473 imports retain the `Class` column.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
+| FIXED 39262278d | DEFECT | low | Asymmetric-key search accepted only an exact description, not certificate ID selectors. | Each asymmetric key owns parsed SKID and serial IDs alongside its payload. `KEYCTL_SEARCH` accepts partial `id:`, exact `ex:`, and serial `s:` selectors without a second key index; the held-ID test covers all forms. Removing exact matching makes it fail with `ENOKEY`; 12 keyring-pkey tests pass. | B1911-asymmetric-key-id-search |
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
 | FIXED 2222cd9d1 | DEFECT | low | RSA private operations discarded the PKCS#8 CRT fields and performed a full-width private-exponent calculation. | Parsed keys now retain one canonical validated CRT representation (`p`, `q`, CRT exponents, coefficient); private operation recombines the two modular powers. The raw private-operation round trip turns red when the CRT modulus is corrupted; the restored `pkey` suite passes 21 tests. | B1910-asymmetric-key-ids-crt |
 
 | Status | Class | Sev | Issue | Evidence | Owner |
