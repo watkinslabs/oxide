@@ -66,6 +66,8 @@ pub mod flags {
     pub const NLM_F_REQUEST:   u16 = 0x0001;
     pub const NLM_F_MULTI:     u16 = 0x0002;
     pub const NLM_F_ACK:       u16 = 0x0004;
+    /// Error reply carries `NLMSGERR_ATTR_*` extended-ack attributes.
+    pub const NLM_F_ACK_TLVS:  u16 = 0x0200;
     pub const NLM_F_ECHO:      u16 = 0x0008;
     pub const NLM_F_DUMP_INTR: u16 = 0x0010;
     pub const NLM_F_CAPPED:    u16 = 0x0100;

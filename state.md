@@ -1,54 +1,29 @@
-# state.md — session hand-off
+# state.md — B1916 handoff
 
-Current integration: `B1877-serial-rx-lock-ownership`, PR #4739. Code head
-`a1e2a08d7`; rewritten base `be5808ec8`. The exact source passed the full
-workspace test run, local pre-push gates, and first-attempt x86_64/aarch64
-smoke including serial RX.
+Branch: `B1916-netlink-remaining-socket-flags`.
+Committed checkpoint: `f43bb83df netlink: wire namespace multicast flags`.
+No B1916 PR, push, or merge exists.
 
-## What just landed
+## Feature state
 
-- B1872 / PR #4734: synchronous virtio-blk waits park directly on completion;
-  process-context networking uses bottom-half exclusion. Three Firefox runs
-  passed valid and invalid-DNS pages without the former freeze.
-- B1873: packet paths retain their concrete network-namespace owner and nftables
-  publishes one compiled immutable generation. The exact Firefox run rendered
-  valid/invalid pages in 4.960/2.700 s at 0.150 us kernel time per syscall.
-- B1874 / PR #4736: x86 PAT WC, arm64 Normal-NC, and driver-owned raw-PFN cache
-  policy. Virtio framebuffer RAM remains WB.
-- B1875 / PR #4737: Multiboot2 type-5 request and type-8 RGB handoff,
-  `drv-simplefb`, post-PCI fallback binding, exact firmware pixel formats, and
-  page-offset-aware WC mapping. QEMU std-VGA with virtio-gpu omitted reached
-  userspace. A 125 MiB full-frame write took 0.27 s WC versus 3.10 s with the
-  temporary UC control. Measurements: `scratch/simplefb-performance-20260806.md`.
-- The stale real-hardware AP-bringup claim was retired: x86 INIT/SIPI and arm64
-  PSCI were already live. The enlarged boot handoff now lives in static
-  architecture-owned storage; x86 boot stack depth improved from its 20,000-byte
-  baseline to 19,904, and arm remains at 12,129.
-- B1876 / PR #4738: the 16550 line handler drains the legacy edge-triggered IRQ
-  source to deassertion with a bounded 512-pass limit, and initialization raises
-  the UART's `OUT2` interrupt gate. The hosted positive control fails with the
-  former single-service path; five exact forced-path boots passed with serial RX.
-- B1877 / PR #4739: serial RX echo now leaves the IRQ-save port owner before one
-  ordered device submission; the dead duplicate RX registration path is gone,
-  and fbcon tests use one global-state domain. The hosted positive control fails
-  with three inline writes; the fixed path submits one batch at IRQ depth zero.
+- `RTM_NEWNSID` now accepts FD or PID peer references; `RTM_GETNSID` accepts
+  FD, PID, caller-local NSID, and target-NSID forms. Target lookup enforces
+  `CAP_NET_ADMIN` in the target namespace owner.
+- Namespace-ID parser errors retain rejected attribute offsets. The live
+  handler emits `NLMSGERR_ATTR_OFFS`; ACK shaping retains that TLV only with
+  `NETLINK_EXT_ACK` enabled.
+- `NetworkNamespace::peer_by_id` is the canonical reverse lookup.
 
-## Live known-work summary
+`RTM_GETNSID` emits multipart dumps from the canonical peer-ID map. Linux has
+no `RTM_DELNSID` handler, so none was added. LISTEN_ALL_NSID checks the socket
+opener's retained `CAP_NET_BROADCAST` snapshot against the source namespace.
 
-The canonical type/severity table is in `scratch/known_issues.md`: 127 live
-rows = 2 blockers, 0 high, 56 medium, 69 low. The two blockers are x86 UEFI
-boot and xHCI/USB input. Retired rows and their failure/pass evidence remain in
-`scratch/fixed-issues.md`.
+## Verification
 
-## First task next session
+- `cargo test -q -p network-namespace -- --nocapture` — 4 passed.
+- `cargo test -q -p netlink -- --nocapture` — 275 passed.
+- `cargo run -q -p xtask -- kernel --arch x86_64 --check` — passed.
+- `cargo run -q -p xtask -- kernel --arch aarch64 --check` — passed.
+- `make smoke` — x86 passed in 52 s; arm passed in 108 s.
 
-```sh
-git pull
-tools/issues.sh --count
-```
-
-Re-run the release Firefox workload against
-`scratch/firefox-performance-20260806.md` and
-`scratch/write-combining-performance-20260806.md`, save the new comparison,
-then claim and fix the largest measured remaining cost. Firefox/performance
-remains the top user-facing priority; do not alter GitHub CI or merge policy.
+First command: `git status --short --branch`

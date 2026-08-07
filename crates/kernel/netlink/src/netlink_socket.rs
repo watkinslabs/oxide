@@ -45,6 +45,10 @@ pub struct NetlinkSocket {
     pub rcvtimeo_ns: core::sync::atomic::AtomicU64,
     pub protocol: u16,
     pub net_ns: NetworkNamespaceRef,
+    /// Socket-file opener credentials retained by the socket owner. Cross-netns
+    /// multicast checks this immutable snapshot, never the broadcaster task.
+    opener_user_ns: namespace_identity::NamespacePin,
+    opener_caps: u64,
     pub port_id: AtomicU32,
     pub groups: crate::groups::GroupBitmap,
     pub dst_port_id: AtomicU32,
@@ -83,7 +87,33 @@ impl NetlinkSocket {
             | rtnetlink::RTM_NEWROUTE | rtnetlink::RTM_DELROUTE
             | rtnetlink::RTM_NEWRULE | rtnetlink::RTM_DELRULE
             | rtnetlink::RTM_NEWNEIGH | rtnetlink::RTM_DELNEIGH
-            | rtnetlink::RTM_NEWLINK | rtnetlink::RTM_SETLINK)
+            | rtnetlink::RTM_NEWLINK | rtnetlink::RTM_SETLINK
+            | rtnetlink::RTM_NEWNSID)
+    }
+
+    /// Route an nsfs-backed namespace-ID request through the calling task's
+    /// pinned descriptor table. # C: O(N peers)
+    #[cfg(target_os = "oxide-kernel")]
+    fn handle_nsid(&self, hdr: &Nlmsghdr, msg: &[u8]) -> Vec<u8> {
+        let Some(cur) = sched::live::current() else {
+            return rtnetlink::nlmsg_ack_pub(hdr, -(syscall::errno::Errno::Ebadf.as_i32()));
+        };
+        let Some(fdt) = cur.clone_fd_table() else {
+            return rtnetlink::nlmsg_ack_pub(hdr, -(syscall::errno::Errno::Ebadf.as_i32()));
+        };
+        let body = &msg[Nlmsghdr::SIZE..];
+        match hdr.nlmsg_type {
+            rtnetlink::RTM_NEWNSID => rtnetlink::handle_newnsid(hdr, body, &self.net_ns, &fdt, &cur),
+            rtnetlink::RTM_GETNSID if rtnetlink::is_dump(hdr) =>
+                rtnetlink::handle_dumpnsid(hdr, body, &self.net_ns, &cur),
+            rtnetlink::RTM_GETNSID => rtnetlink::handle_getnsid(hdr, body, &self.net_ns, &fdt, &cur),
+            _ => rtnetlink::nlmsg_ack_pub(hdr, -(vfs::VfsError::Eopnotsupp as i32)),
+        }
+    }
+
+    #[cfg(not(target_os = "oxide-kernel"))]
+    fn handle_nsid(&self, hdr: &Nlmsghdr, _msg: &[u8]) -> Vec<u8> {
+        rtnetlink::nlmsg_ack_pub(hdr, -(syscall::errno::Errno::Ebadf.as_i32()))
     }
 
     fn may_admin_net(&self) -> bool {
@@ -95,10 +125,20 @@ impl NetlinkSocket {
 
     /// Create a socket retaining its concrete network namespace owner. # C: O(1)
     pub fn new(protocol: u16, net_ns: &NetworkNamespaceRef) -> Self {
+        Self::new_with_cred(protocol, net_ns,
+            namespace_identity::initial(namespace_identity::NamespaceKind::User).pin(), u64::MAX)
+    }
+
+    /// Create a socket retaining the opener's effective capability snapshot.
+    /// # C: O(1)
+    pub fn new_with_cred(protocol: u16, net_ns: &NetworkNamespaceRef,
+        opener_user_ns: namespace_identity::NamespacePin, opener_caps: u64) -> Self {
         Self {
             rcvtimeo_ns: core::sync::atomic::AtomicU64::new(0),
             protocol,
             net_ns: Arc::clone(net_ns),
+            opener_user_ns,
+            opener_caps,
             port_id: AtomicU32::new(alloc_port_id()),
             groups: crate::groups::GroupBitmap::new(),
             dst_port_id: AtomicU32::new(crate::NETLINK_UNCONNECTED_PORT_ID),
@@ -119,6 +159,13 @@ impl NetlinkSocket {
             #[cfg(target_os = "oxide-kernel")]
             waiters: sched::live::WaitList::new(),
         }
+    }
+
+    /// Linux `file_ns_capable(socket_file, source_user_ns, CAP_NET_BROADCAST)`
+    /// for cross-network-namespace multicast delivery. # C: O(ns depth)
+    pub(crate) fn may_receive_cross_ns(&self, source: &NetworkNamespaceRef) -> bool {
+        self.opener_caps & (1u64 << sched::cap::NET_BROADCAST) != 0
+            && nscg::proc_ns::user_ns_is_ancestor(&self.opener_user_ns, &source.owner_user_namespace())
     }
 
     /// Linux `sock_no_shutdown` for AF_NETLINK after namespace security admission.
@@ -185,7 +232,7 @@ impl NetlinkSocket {
             // when the sender asked for one, and never runs a handler for it.
             if (hdr.nlmsg_flags & flags::NLM_F_ACK) != 0 {
                 let mut reply = rtnetlink::nlmsg_ack_pub(hdr, 0);
-                ack_response::shape(&mut reply, msg, self.flags.get(crate::sockflags::F_CAP_ACK));
+                ack_response::shape(&mut reply, msg, self.flags.get(crate::sockflags::F_CAP_ACK), self.flags.get(crate::sockflags::F_EXT_ACK));
                 self.enqueue(reply);
             }
             return;
@@ -194,6 +241,8 @@ impl NetlinkSocket {
             && !self.may_admin_net() {
             rtnetlink::nlmsg_ack_pub(hdr, -1)
         } else { match (self.protocol, hdr.nlmsg_type) {
+            (proto::NETLINK_ROUTE, rtnetlink::RTM_NEWNSID)
+            | (proto::NETLINK_ROUTE, rtnetlink::RTM_GETNSID) => self.handle_nsid(hdr, msg),
             (proto::NETLINK_ROUTE, rtnetlink::RTM_GETLINK) => rtnetlink::handle_getlink_in(net_ns, hdr, msg, strict),
             (proto::NETLINK_ROUTE, rtnetlink::RTM_GETADDR) if rtnetlink::is_dump(hdr) => rtnetlink::handle_getaddr_in(net_ns, hdr, msg, strict),
             (proto::NETLINK_ROUTE, rtnetlink::RTM_GETADDR) => rtnetlink::handle_getaddr6_one_in(net_ns, hdr, msg),
@@ -232,7 +281,7 @@ impl NetlinkSocket {
             }
         }};
         let mut reply = reply;
-        ack_response::shape(&mut reply, msg, self.flags.get(crate::sockflags::F_CAP_ACK));
+        ack_response::shape(&mut reply, msg, self.flags.get(crate::sockflags::F_CAP_ACK), self.flags.get(crate::sockflags::F_EXT_ACK));
         let port = self.port_id.load(Ordering::Acquire);
         let mut off = 0usize;
         while off + Nlmsghdr::SIZE <= reply.len() {

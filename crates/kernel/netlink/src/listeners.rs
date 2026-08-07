@@ -161,11 +161,24 @@ pub fn rtnl_multicast(group: u32, msg: &[u8]) -> usize {
     rtnl_multicast_in(net::netdev::current_net_ns(), group, msg)
 }
 
+/// Result of one route multicast traversal. A receiver that opted into
+/// `NETLINK_BROADCAST_ERROR` turns its queue-overrun into `delivery_error`,
+/// matching the kernel broadcaster's return contract. # C: O(1)
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct RtnlBroadcast { pub delivered: usize, pub delivery_error: bool }
+
 /// Broadcast `msg` (kernel-originated nlmsg(s): seq 0, pid 0) to every
 /// `NETLINK_ROUTE` socket in `net_ns` subscribed to `group`.
 /// Returns the number of sockets reached. # C: O(N_listeners)
 pub fn rtnl_multicast_in(net_ns: u64, group: u32, msg: &[u8]) -> usize {
-    if group == 0 || group > crate::groups::RTNLGRP_MAX { return 0; }
+    rtnl_multicast_result_in(net_ns, group, msg).delivered
+}
+
+/// Broadcast route notification and retain the receiver-selected delivery
+/// failure result for a kernel caller that needs to observe it. # C: O(N_listeners)
+pub fn rtnl_multicast_result_in(net_ns: u64, group: u32, msg: &[u8]) -> RtnlBroadcast {
+    if group == 0 || group > crate::groups::RTNLGRP_MAX { return RtnlBroadcast::default(); }
+    let source = network_namespace::lookup_u64(net_ns);
     #[cfg(feature = "debug-netlink")]
     let live;
     let targets: Vec<_> = {
@@ -173,22 +186,30 @@ pub fn rtnl_multicast_in(net_ns: u64, group: u32, msg: &[u8]) -> usize {
         g.retain(|w| w.strong_count() > 0);
         #[cfg(feature = "debug-netlink")]
         { live = g.len(); }
-        g.iter().filter_map(Weak::upgrade).filter(|s| {
-            s.net_ns.id().as_u64() == net_ns && s.groups.test(group)
+        g.iter().filter_map(Weak::upgrade).filter_map(|s| {
+            if !s.groups.test(group) { return None; }
+            if s.net_ns.id().as_u64() == net_ns { return Some((s, None)); }
+            if !s.flags.get(crate::sockflags::F_LISTEN_ALL_NSID) { return None; }
+            let nsid = source.as_deref().and_then(|source| s.net_ns.peer_id(source));
+            nsid.filter(|_| source.as_ref().is_some_and(|source| s.may_receive_cross_ns(source)))
+                .map(|nsid| (s, Some(nsid)))
         }).collect()
     };
     #[cfg(feature = "debug-netlink")]
     let subscribed = targets.len();
-    let mut n = 0;
-    for s in targets {
-        if s.enqueue_multicast(msg.to_vec(), group) { n += 1; }
+    let mut result = RtnlBroadcast::default();
+    for (s, nsid) in targets {
+        if s.enqueue_multicast(msg.to_vec(), group, nsid) { result.delivered += 1; }
+        else if s.flags.get(crate::sockflags::F_BROADCAST_SEND_ERROR) {
+            result.delivery_error = true;
+        }
     }
     // A notification nobody receives is indistinguishable from one never sent:
     // the three counts separate "no rtnetlink socket exists" from "none
     // subscribed to this group" from "subscribed but the queue refused it".
     #[cfg(feature = "debug-netlink")]
-    trace_mcast(net_ns, group, live, subscribed, n, msg);
-    n
+    trace_mcast(net_ns, group, live, subscribed, result.delivered, msg);
+    result
 }
 
 #[cfg(feature = "debug-netlink")]

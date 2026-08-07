@@ -1,5 +1,6 @@
 use crate::callback;
 use alloc::sync::Arc;
+use alloc::collections::BTreeMap;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 pub(crate) struct FinalDropPublication { completed: AtomicBool }
@@ -58,9 +59,16 @@ pub struct NamespaceIdentity {
     pub nsfs_ino: u64,
 }
 
+/// Result of assigning a caller-scoped peer namespace ID.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum PeerIdError { Invalid, Exists }
+
 pub struct NetworkNamespace {
     pub(crate) canonical: namespace_identity::NamespacePin,
     pub(crate) active: sync::Spinlock<Option<namespace_identity::NamespaceRef>, sync::Namespace>,
+    /// Caller-scoped peer network-namespace IDs. The weak peer keeps this
+    /// namespace from extending another namespace's lifetime.
+    pub(crate) peer_ids: sync::Spinlock<BTreeMap<i32, alloc::sync::Weak<NetworkNamespace>>, sync::Namespace>,
     // Must remain last: its Drop publishes after all namespace-owned fields drop.
     pub(crate) _final_drop: FinalDropPublisher,
 }
@@ -89,6 +97,50 @@ impl NetworkNamespace {
 
     /// True for the immortal initial network namespace. # C: O(1)
     pub fn is_initial(&self) -> bool { self.canonical.is_initial() }
+
+    /// Resolve `peer` as this namespace names it. Namespace IDs are local to
+    /// the caller; a global namespace number is never an ABI substitute.
+    /// # C: O(N peers)
+    pub fn peer_id(&self, peer: &NetworkNamespace) -> Option<i32> {
+        let mut ids = self.peer_ids.lock();
+        ids.retain(|_, owner| owner.strong_count() != 0);
+        ids.iter().find_map(|(id, owner)| owner.upgrade()
+            .and_then(|candidate| core::ptr::eq(&*candidate, peer).then_some(*id)))
+    }
+
+    /// Resolve one caller-local namespace ID to its live peer owner.
+    /// # C: O(1)
+    pub fn peer_by_id(&self, id: i32) -> Option<Arc<NetworkNamespace>> {
+        let mut ids = self.peer_ids.lock();
+        ids.retain(|_, owner| owner.strong_count() != 0);
+        ids.get(&id).and_then(alloc::sync::Weak::upgrade)
+    }
+
+    /// Snapshot caller-local peer IDs in deterministic numeric order.
+    /// # C: O(N peers)
+    pub fn peer_snapshot(&self) -> alloc::vec::Vec<(i32, Arc<NetworkNamespace>)> {
+        let mut ids = self.peer_ids.lock();
+        ids.retain(|_, owner| owner.strong_count() != 0);
+        ids.iter().filter_map(|(id, owner)| owner.upgrade().map(|peer| (*id, peer))).collect()
+    }
+
+    /// Install one explicit peer-ID mapping. `RTM_NEWNSID` owns the request
+    /// parser; this owner enforces the one-to-one namespace relation.
+    /// # C: O(N peers)
+    pub fn assign_peer_id(&self, peer: &Arc<NetworkNamespace>, id: i32)
+        -> Result<(), PeerIdError>
+    {
+        if id < 0 { return Err(PeerIdError::Invalid); }
+        let mut ids = self.peer_ids.lock();
+        ids.retain(|_, owner| owner.strong_count() != 0);
+        if ids.values().any(|owner| owner.upgrade()
+            .is_some_and(|candidate| core::ptr::eq(&*candidate, &**peer))) {
+            return Err(PeerIdError::Exists);
+        }
+        if ids.contains_key(&id) { return Err(PeerIdError::Exists); }
+        ids.insert(id, Arc::downgrade(peer));
+        Ok(())
+    }
 }
 
 impl Drop for FinalDropPublisher {

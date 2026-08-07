@@ -231,7 +231,7 @@ here now.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| OPEN | MISSING | med | `NETLINK_F_EXT_ACK`, `NETLINK_F_BROADCAST_SEND_ERROR`, and `NETLINK_F_LISTEN_ALL_NSID` are stored and readable but do not reach their Linux mechanisms. Extended ACK attributes need request-error context; multicast delivery does not retain its sender/failure result for the receiver-selected broadcast-error policy; and delivery remains namespace-local with no peer-namespace ID carried to a listening socket. | `F_CAP_ACK` now shapes canonical error replies; the receive syscall already emits `NETLINK_PKTINFO`. `listeners::{rtnl_multicast_in,rebroadcast_cooked_uevent}` return only a delivery count and filter strictly on one namespace. | — |
+| IN-PROGRESS B1916-netlink-remaining-socket-flags | MISSING | med | `NETLINK_EXT_ACK` remains stored/readable only: error handlers do not carry request-field context to `NLMSG_ERROR` TLVs. `NETLINK_LISTEN_ALL_NSID` now requires a caller-local peer-ID mapping, delivers foreign route multicast, and emits its ancillary namespace ID; `NETLINK_BROADCAST_SEND_ERROR` now records an opted-in receiver's queue failure in the multicast result. | Hosted tests cover peer-ID assignment, foreign multicast metadata, and opted-in delivery failure. Remaining work: typed extended-ACK context from parsers/handlers through error serialization. | B1916-netlink-remaining-socket-flags |
 
 ### B1745-netlink-strict-dump-check
 

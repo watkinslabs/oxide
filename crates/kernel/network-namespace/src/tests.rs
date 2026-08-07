@@ -64,6 +64,12 @@ fn owner_registry_lifecycle_contract() {
     drop(uts);
     assert_eq!(Arc::strong_count(&first), 1, "registry must retain only Weak");
     assert!(first.id() < second.id());
+    assert_eq!(first.peer_id(&second), None);
+    assert_eq!(first.assign_peer_id(&second, 7), Ok(()));
+    assert_eq!(first.peer_id(&second), Some(7));
+    assert_eq!(first.assign_peer_id(&second, 8), Err(PeerIdError::Exists));
+    assert_eq!(first.assign_peer_id(&initial(), 7), Err(PeerIdError::Exists));
+    assert_eq!(first.assign_peer_id(&initial(), -1), Err(PeerIdError::Invalid));
     assert!(first.ns_id() > user_ns_id, "network IDs share the global allocator");
     assert!(second.ns_id() > first.ns_id(), "global namespace IDs are monotonic");
     assert_ne!(first.ns_id(), first.id().as_u64(),

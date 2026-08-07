@@ -507,5 +507,64 @@ fn rtnl_multicast_isolates_link_addr_and_route_by_socket_namespace() {
     let _ = net::global_stack().ifaces.unregister(iface);
 }
 
+#[test]
+fn rtnl_listen_all_nsid_receives_foreign_namespace_with_local_id() {
+    use alloc::sync::Arc;
+    let source = test_namespace();
+    let receiver_ns = test_namespace();
+    receiver_ns.assign_peer_id(&source, 29).unwrap();
+    let sock = Arc::new(NetlinkSocket::new(proto::NETLINK_ROUTE, &receiver_ns));
+    sock.flags.assign(sockflags::F_LISTEN_ALL_NSID, true);
+    let _ = sock.add_membership(mcast::grp::RTNLGRP_LINK);
+    register_rtnl_listener(&sock);
+
+    assert_eq!(rtnl_multicast_in(source.id().as_u64(), mcast::grp::RTNLGRP_LINK, &[7]), 1);
+    let received = match sock.receive(false) {
+        ReceiveState::Datagram(received) => received,
+        _ => panic!("foreign namespace multicast was not queued"),
+    };
+    assert_eq!(received.multicast_group, mcast::grp::RTNLGRP_LINK);
+    assert_eq!(received.nsid, Some(29));
+}
+
+#[test]
+fn rtnl_listen_all_nsid_requires_the_socket_opener_capability_for_source() {
+    use alloc::sync::Arc;
+    let source = test_namespace();
+    let receiver_ns = test_namespace();
+    receiver_ns.assign_peer_id(&source, 30).unwrap();
+    let opener = namespace_identity::initial(namespace_identity::NamespaceKind::User).pin();
+    let sock = Arc::new(NetlinkSocket::new_with_cred(proto::NETLINK_ROUTE, &receiver_ns, opener, 0));
+    sock.flags.assign(sockflags::F_LISTEN_ALL_NSID, true);
+    let _ = sock.add_membership(mcast::grp::RTNLGRP_LINK);
+    register_rtnl_listener(&sock);
+
+    assert_eq!(rtnl_multicast_in(source.id().as_u64(), mcast::grp::RTNLGRP_LINK, &[7]), 0);
+    assert!(sock.dequeue().is_none());
+}
+
+#[test]
+fn rtnl_broadcast_error_reports_only_an_opted_in_receiver_overrun() {
+    use alloc::sync::Arc;
+    let namespace = network_namespace::initial();
+    let plain = Arc::new(NetlinkSocket::new(proto::NETLINK_ROUTE, &namespace));
+    let opted_in = Arc::new(NetlinkSocket::new(proto::NETLINK_ROUTE, &namespace));
+    for socket in [&plain, &opted_in] {
+        socket.set_receive_buffer(0);
+        let _ = socket.add_membership(mcast::grp::RTNLGRP_LINK);
+        register_rtnl_listener(socket);
+    }
+    let first = listeners::rtnl_multicast_result_in(namespace.id().as_u64(),
+        mcast::grp::RTNLGRP_LINK, &[9]);
+    assert_eq!(first.delivered, 0);
+    assert!(!first.delivery_error);
+
+    opted_in.flags.assign(sockflags::F_BROADCAST_SEND_ERROR, true);
+    let second = listeners::rtnl_multicast_result_in(namespace.id().as_u64(),
+        mcast::grp::RTNLGRP_LINK, &[9]);
+    assert_eq!(second.delivered, 0);
+    assert!(second.delivery_error);
+}
+
 #[path = "netlink_tests/ino.rs"]
 mod ino;

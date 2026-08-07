@@ -15,6 +15,9 @@ pub const RTM_GETNEIGH: u16 = 30;
 pub const RTM_NEWRULE:  u16 = 32;
 pub const RTM_DELRULE:  u16 = 33;
 pub const RTM_GETRULE:  u16 = 34;
+pub const RTM_NEWNSID:  u16 = 88;
+pub const RTM_DELNSID:  u16 = 89;
+pub const RTM_GETNSID:  u16 = 90;
 /// Tunnel notification family retained so `RTM_MAX` matches Linux UAPI even
 /// while tunnel operations themselves remain unimplemented in this owner.
 pub const RTM_NEWTUNNEL: u16 = 120;

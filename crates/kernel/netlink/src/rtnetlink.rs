@@ -20,6 +20,8 @@ mod dump_req;
 mod dumps;
 mod iface;
 mod neigh;
+mod nsid_req;
+mod nsid;
 mod route_ops;
 pub(crate) mod route_state;
 mod uapi;
@@ -31,13 +33,17 @@ mod rtnetlink_link;
 #[path = "rtnetlink_route.rs"]
 pub(crate) mod rtnetlink_route;
 
-pub use ack::nlmsg_ack_pub;
+pub use ack::{nlmsg_ack_bad_attr, nlmsg_ack_pub};
 pub use addr_ops::{handle_deladdr, handle_deladdr_in, handle_newaddr, handle_newaddr_in};
-pub use attrs::{put_nlattr, put_nlattr_str, put_nlattr_u32, put_nlattr_u8};
+pub use attrs::{put_nlattr, put_nlattr_i32, put_nlattr_str, put_nlattr_u32, put_nlattr_u8};
 pub(crate) use dumps::{build_newaddr6_reply, build_newaddr_reply, build_newlink_reply};
 pub use dump_req::{is_dump, validate_addr_dump, validate_link_dump, AddrDump, LinkDump, NLM_F_DUMP_FILTERED};
 pub use dumps::{done_multi, handle_getaddr, handle_getaddr6_one_in, handle_getaddr_in, handle_getlink, handle_getlink_in};
 pub use neigh::{handle_delneigh_in, handle_getneigh_in, handle_getneigh_one_in, handle_newneigh_in};
+pub use nsid_req::{dump as parse_dumpnsid, get as parse_getnsid, new as parse_newnsid,
+    Dump as DumpNsid, Get as GetNsid, New as NewNsid, PeerRef,
+    ParseError as ParseNsidError};
+pub use nsid::{dump as handle_dumpnsid, get as handle_getnsid, new as handle_newnsid};
 pub(crate) use rtnetlink_link::LinkStats64;
 pub use iface::{handle_setlink, handle_setlink_in};
 pub(crate) use route_ops::{build_newroute6_reply, build_newroute_group_reply,

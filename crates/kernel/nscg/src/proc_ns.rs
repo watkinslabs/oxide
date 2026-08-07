@@ -156,6 +156,18 @@ pub fn net_ns_inode(namespace: NetworkNamespaceRef) -> InodeRef {
     ns_node(&ns)
 }
 
+/// Resolve an nsfs file descriptor to its retained network namespace. The
+/// descriptor's open-file reference pins the owner through this operation.
+/// # C: O(1)
+pub fn net_ns_from_fd(fdt: &vfs::FdTable, fd: i32) -> KResult<NetworkNamespaceRef> {
+    let file = fdt.get(fd)?;
+    let ns = file.inode().private::<NsInode>().ok_or(VfsError::Einval)?;
+    match ns.owner() {
+        NsOwner::Net(namespace) => Ok(Arc::clone(namespace)),
+        _ => Err(VfsError::Einval),
+    }
+}
+
 /// Build an nsfs node retaining a concrete MOUNT namespace owner — the node a
 /// walk through `/proc/<pid>/ns/mnt` lands on, and the object a mark or a
 /// `setns` names when it says "that mount namespace". # C: O(1)
