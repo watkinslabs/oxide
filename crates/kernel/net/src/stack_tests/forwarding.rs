@@ -96,6 +96,28 @@ fn ipv4_forwarding_sysctl_gates_transit_packets() {
 }
 
 #[test]
+fn ipv4_ingress_mib_names_unforwardable_and_unknown_packets() {
+    let stack = NetStack::new();
+    let (in_id, _) = stack.register_loopback();
+
+    let transit = transit_ipv4(Ipv4Addr::new(192, 0, 2, 10), Ipv4Addr::new(198, 51, 100, 20), 9);
+    let addr_before = crate::mib::get(0, crate::mib::Mib::IpInAddrErrors);
+    stack.forward_ipv4_in(0, in_id, &transit).unwrap();
+    assert_eq!(crate::mib::get(0, crate::mib::Mib::IpInAddrErrors), addr_before + 1);
+
+    let mut unknown = transit_ipv4(Ipv4Addr::new(192, 0, 2, 10), Ipv4Addr::LOOPBACK, 9);
+    unknown[9] = 253;
+    unknown[10..12].fill(0);
+    let checksum = crate::ipv4::ip_checksum(&unknown).to_be_bytes();
+    unknown[10..12].copy_from_slice(&checksum);
+    let unknown_before = crate::mib::get(0, crate::mib::Mib::IpInUnknownProtos);
+    let delivered_before = crate::mib::get(0, crate::mib::Mib::IpInDelivers);
+    stack.deliver_rx(in_id, &unknown).unwrap();
+    assert_eq!(crate::mib::get(0, crate::mib::Mib::IpInUnknownProtos), unknown_before + 1);
+    assert_eq!(crate::mib::get(0, crate::mib::Mib::IpInDelivers), delivered_before);
+}
+
+#[test]
 fn ipv4_forwarding_ttl_expired_emits_time_exceeded() {
     let fixture = ForwardingFixture::new();
     crate::forwarding::set_ipv4_enabled_for(fixture.namespace(), true).unwrap();

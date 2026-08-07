@@ -8,25 +8,26 @@ impl NetStack {
     /// Reassemble when required and clone one full IPv4 packet to every match. # C: O(S * packet)
     pub(crate) fn deliver_raw4(&self, net_ns: u64, iface: NetIfaceId,
                                packet: &[u8], hdr: Ipv4Hdr, now_ns: u64,
-                               opts: &crate::ipv4_options::Compiled) {
+                               opts: &crate::ipv4_options::Compiled) -> bool {
         let fragmented = hdr.flags_frag & 0x3fff != 0;
         let assembled;
         let full = if fragmented {
             let Some(value) = self.inet_tables(net_ns).raw4.reassembly.push(now_ns, packet, hdr)
-                else { return };
+                else { return false };
             assembled = value;
             &assembled[..]
         } else {
             let total = hdr.total_len as usize;
-            if packet.len() < total { return; }
+            if packet.len() < total { return false; }
             &packet[..total]
         };
-        let Ok(normalized) = Ipv4Hdr::parse(full) else { return };
-        let table = self.inet_tables(net_ns);
+        let Ok(normalized) = Ipv4Hdr::parse(full) else { return false; };
+        let Some(table) = self.try_inet_tables(net_ns) else { return false; };
         let endpoints = table.raw4.endpoints(normalized.proto);
-        if endpoints.is_empty() { return; }
+        if endpoints.is_empty() { return false; }
         let hatype = self.ifaces.lookup_in_ns(iface, net_ns)
             .map_or(0, |dev| dev.hardware_type());
+        let mut delivered = false;
         for endpoint in endpoints {
             if !raw4_matches(&endpoint, iface, normalized.src, normalized.dst) { continue; }
             if normalized.proto == crate::addr::IpProto::Icmp as u8 {
@@ -45,7 +46,7 @@ impl NetStack {
             });
             if verdict == 0 { continue; }
             let keep = (verdict as usize).min(full.len());
-            let _ = endpoint.enqueue(Raw4Datagram {
+            delivered |= endpoint.enqueue(Raw4Datagram {
                 packet: full[..keep].to_vec(),
                 source: normalized.src,
                 destination: normalized.dst,
@@ -54,6 +55,7 @@ impl NetStack {
                 options: opts.clone(),
             });
         }
+        delivered
     }
 }
 
