@@ -20,7 +20,7 @@ fn dump_only_get_requests_are_rejected_before_the_dump_builder() {
     domain.set_notifier(crate::mcast::notify_control_event);
     let socket = crate::netlink_socket::NetlinkSocket::new(
         crate::proto::NETLINK_ROUTE, &network_namespace::initial());
-    for ty in [RTM_GETADDR, RTM_GETNEIGH, RTM_GETRULE] {
+    for ty in [RTM_GETADDR, RTM_GETRULE] {
         socket.write(&request(ty)).unwrap();
         let (reply, _) = socket.dequeue().expect("dump-only request has an error reply");
         assert_eq!(ack_errno(&reply),

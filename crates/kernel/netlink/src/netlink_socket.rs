@@ -197,6 +197,7 @@ impl NetlinkSocket {
             (proto::NETLINK_ROUTE, rtnetlink::RTM_DELADDR) => rtnetlink::handle_deladdr_in(net_ns, hdr, msg),
             (proto::NETLINK_ROUTE, rtnetlink::RTM_GETROUTE) => rtnetlink::handle_getroute_in(net_ns, hdr, msg),
             (proto::NETLINK_ROUTE, rtnetlink::RTM_GETNEIGH) if rtnetlink::is_dump(hdr) => rtnetlink::handle_getneigh_in(net_ns, hdr, msg),
+            (proto::NETLINK_ROUTE, rtnetlink::RTM_GETNEIGH) => rtnetlink::handle_getneigh_one_in(net_ns, hdr, msg),
             (proto::NETLINK_ROUTE, rtnetlink::RTM_NEWNEIGH) => rtnetlink::handle_newneigh_in(net_ns, hdr, msg),
             (proto::NETLINK_ROUTE, rtnetlink::RTM_DELNEIGH) => rtnetlink::handle_delneigh_in(net_ns, hdr, msg),
             (proto::NETLINK_ROUTE, rtnetlink::RTM_GETRULE) if rtnetlink::is_dump(hdr) => rtnetlink_rule::handle_getrule_in(net_ns, hdr, msg),
@@ -703,6 +704,39 @@ mod tests {
         assert_eq!(row.2, Some(NEIGH_MAC), "NDA_LLADDR matches");
         assert!(row.0 & rtnetlink::nud::NUD_PERMANENT != 0, "permanent NUD state");
         let _ = stack.ifaces.unregister(iface);
+    }
+
+    #[test]
+    fn getneigh_one_reads_one_canonical_arp_entry_without_done() {
+        let (namespace, ns, iface, ifindex) = seed_neigh_iface();
+        let stack = net::global_stack();
+        let ip = net::Ipv4Addr::new(NEIGH_IP[0], NEIGH_IP[1], NEIGH_IP[2], NEIGH_IP[3]);
+        stack.neigh_add_v4(ns, ifindex, ip, net::MacAddr(NEIGH_MAC), true).unwrap();
+        let sock = NetlinkSocket::new(proto::NETLINK_ROUTE, &namespace);
+        let body = neigh_body(rtnetlink::AF_INET, ifindex, &NEIGH_IP, None, 0);
+        let mut msg = request(rtnetlink::RTM_GETNEIGH, &body);
+        msg[6..8].copy_from_slice(&flags::NLM_F_REQUEST.to_ne_bytes());
+        sock.write(&msg).unwrap();
+        let (reply, _) = sock.dequeue().unwrap();
+        assert!(!reply_ends_with_done(&reply));
+        let rows = parse_neigh_replies(&reply);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].1, NEIGH_IP);
+        assert_eq!(rows[0].2, Some(NEIGH_MAC));
+        let _ = stack.ifaces.unregister(iface);
+    }
+
+    #[test]
+    fn getneigh_one_reports_enoent_for_an_absent_canonical_entry() {
+        let (namespace, _ns, iface, ifindex) = seed_neigh_iface();
+        let sock = NetlinkSocket::new(proto::NETLINK_ROUTE, &namespace);
+        let body = neigh_body(rtnetlink::AF_INET, ifindex, &NEIGH_IP, None, 0);
+        let mut msg = request(rtnetlink::RTM_GETNEIGH, &body);
+        msg[6..8].copy_from_slice(&flags::NLM_F_REQUEST.to_ne_bytes());
+        sock.write(&msg).unwrap();
+        let (reply, _) = sock.dequeue().unwrap();
+        assert_eq!(ack_errno(&reply), -(vfs::VfsError::Enoent as i32));
+        let _ = net::global_stack().ifaces.unregister(iface);
     }
 
     #[test]
