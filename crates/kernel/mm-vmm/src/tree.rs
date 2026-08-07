@@ -302,6 +302,18 @@ impl VmaTree {
         end:   UserVirtAddr,
         new_prot: crate::vma::VmaProt,
     ) -> Result<(), Error> {
+        self.mprotect_range_with_pkey(start, end, new_prot, None)
+    }
+
+    /// `mprotect_range` with an optional replacement VMA protection key.
+    /// `None` is legacy mprotect's preserve-key rule. # C: O(K log N)
+    pub fn mprotect_range_with_pkey(
+        &mut self,
+        start: UserVirtAddr,
+        end: UserVirtAddr,
+        new_prot: crate::vma::VmaProt,
+        pkey: Option<u8>,
+    ) -> Result<(), Error> {
         if start.as_u64() >= end.as_u64() { return Err(Error::Inval); }
 
         // First pass: validate full coverage. Walk in-tree from `start`
@@ -326,7 +338,10 @@ impl VmaTree {
             }
         }
         for k in keys {
-            let v = self.map_take(&k).expect("collected key");
+            // A prior fragment can re-merge with this one after both acquire
+            // the same protection key. Its old map key was collected before
+            // the merge, but the surviving VMA is already complete.
+            let Some(v) = self.map_take(&k) else { continue };
             let v_start = v.start.as_u64();
             let v_end   = v.end.as_u64();
             let s = start.as_u64().max(v_start);
@@ -341,6 +356,7 @@ impl VmaTree {
             let me = UserVirtAddr::new(e).expect("UVA in range");
             let mut mid = v.clone_subrange(ms, me);
             mid.prot = new_prot;
+            if let Some(pkey) = pkey { mid.pkey = pkey; }
             let mid_key = mid.start;
             self.map_put(mid_key, mid);
             if e < v_end {

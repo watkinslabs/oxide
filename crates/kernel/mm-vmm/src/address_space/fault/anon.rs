@@ -43,7 +43,7 @@ impl AddressSpace {
             core::ptr::write_bytes(dst, 0, PAGE_SIZE_BYTES as usize);
         }
         let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
-        let pte_flags = vma.prot.to_page_flags();
+        let pte_flags = vma.page_flags();
         #[cfg(feature = "debug-atexit")]
         if (0x7ffff6000000..0x7ffff8000000).contains(&va_page) {
             crate::tailwatch::log_install(b"anon", 0, 0, va_page, pa, self.root_pa);

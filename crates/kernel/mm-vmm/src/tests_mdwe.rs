@@ -110,7 +110,7 @@ fn mprotect_commits_linux_prefix_and_applies_read_implies_exec_per_vma() {
                      private(), VmaBacking::Anonymous, true).unwrap();
     mm.mdwe_set(MdweRequest::RefuseExecGain).unwrap();
 
-    let partial = mm.mprotect_user(first, 2 * PAGE, VmaProt::READ, true).unwrap();
+    let partial = mm.mprotect_user(first, 2 * PAGE, VmaProt::READ, true, None).unwrap();
     assert_eq!(partial.error, Some(Error::Access));
     assert_eq!(partial.steps.len(), 1);
     assert_eq!(partial.steps[0].prot, VmaProt::READ | VmaProt::EXEC);
@@ -122,7 +122,7 @@ fn mprotect_commits_linux_prefix_and_applies_read_implies_exec_per_vma() {
                         private(), VmaBacking::Anonymous, true).unwrap();
     mixed.mmap_with_may(Some(second), PAGE, VmaProt::READ, VmaProt::READ,
                         private(), VmaBacking::Anonymous, true).unwrap();
-    let outcome = mixed.mprotect_user(first, 2 * PAGE, VmaProt::READ, true).unwrap();
+    let outcome = mixed.mprotect_user(first, 2 * PAGE, VmaProt::READ, true, None).unwrap();
     assert_eq!(outcome.error, None);
     assert_eq!(outcome.steps[0].prot, VmaProt::READ | VmaProt::EXEC);
     assert_eq!(outcome.steps[1].prot, VmaProt::READ);

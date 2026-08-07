@@ -65,6 +65,7 @@ bitflags::bitflags! {
         const NG     = 1 << 11; // Not Global (per-ASID)
         const PXN    = 1 << 53; // Privileged eXecute Never
         const UXN    = 1 << 54; // Unprivileged eXecute Never
+        const PKEY_MASK = 0x7 << 60; // Permission Overlay index
     }
 }
 
@@ -119,6 +120,7 @@ impl PteArm64 {
         if !n.contains(PageFlags::GLOBAL) && !n.contains(PageFlags::USER) {
             // Default kernel: clear NG (already cleared above).
         }
+        f |= PteFlags::from_bits_retain(((n.pkey() as u64) & 0x7) << 60);
         f
     }
 
@@ -137,6 +139,7 @@ impl PteArm64 {
             2 => n |= PageFlags::WRITE_COMBINE,
             _ => {}
         }
+        n = n.with_pkey(((f.bits() & PteFlags::PKEY_MASK.bits()) >> 60) as u8);
         n
     }
 
@@ -256,6 +259,14 @@ mod tests {
         assert!(back.contains(PageFlags::WRITE));
         assert!(back.contains(PageFlags::USER));
         assert!(back.contains(PageFlags::EXEC));
+    }
+
+    #[test]
+    fn pte_native_round_trip_preserves_permission_overlay_index() {
+        let n = (PageFlags::READ | PageFlags::USER).with_pkey(7);
+        let f = PteArm64::flags_from_native(n);
+        assert_eq!((f.bits() >> 60) & 0x7, 7);
+        assert_eq!(PteArm64::flags_to_native(f).pkey(), 7);
     }
 
     #[test]

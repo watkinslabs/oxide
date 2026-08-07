@@ -317,7 +317,7 @@ impl AddressSpace {
                     } else {
                         vma.prot
                     };
-                    let child_flags = child_prot.to_page_flags();
+                    let child_flags = child_prot.to_page_flags().with_pkey(vma.pkey);
                     // DIAG (debug-atexit): fork map_at into the child root at a
                     // lib-arena VA. ino=2 marks fork origin; root=child root.
                     #[cfg(feature = "debug-atexit")]
@@ -458,7 +458,7 @@ impl AddressSpace {
                         let d = (hhdm_offset + dst_pa) as *mut u8;
                         core::ptr::copy_nonoverlapping(s, d, PAGE_SIZE_BYTES as usize);
                     }
-                    let pte_flags = vma.prot.to_page_flags();
+                    let pte_flags = vma.page_flags();
                     // SAFETY: new_root_pa carries kernel-half clone of master per P2-19; va page-aligned in user range; dst_pa fresh; flags carry USER per `11§5`.
                     unsafe {
                         M::map_at(new_root_pa, Va(va), Pa(dst_pa), pte_flags, PageSize::P4K);

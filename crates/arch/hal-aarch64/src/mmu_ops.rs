@@ -359,6 +359,7 @@ fn unpack_flags(leaf: u64) -> PageFlags {
     // Round-trip through `pack_4k_leaf` preserves the right bit.
     let exec = if user { !uxn } else { !pxn };
     if exec { n |= PageFlags::EXEC; }
+    n = n.with_pkey(((leaf >> 60) & 0x7) as u8);
     n
 }
 
@@ -384,6 +385,13 @@ mod tests {
         let leaf = PtWalkerArm::pack_4k_leaf(pa, want);
         let got = unpack_flags(leaf);
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn unpack_flags_roundtrip_permission_overlay_index() {
+        use hal::pt_walker::PtWalker;
+        let want = (PageFlags::READ | PageFlags::USER).with_pkey(6);
+        assert_eq!(unpack_flags(PtWalkerArm::pack_4k_leaf(0xcafe_b000, want)), want);
     }
 
     #[test]

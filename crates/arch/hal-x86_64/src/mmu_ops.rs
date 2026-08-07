@@ -404,6 +404,7 @@ fn unpack_flags(leaf: u64, large: bool) -> PageFlags {
     if (leaf & (1 << 2)) != 0 { n |= PageFlags::USER; }
     n |= crate::pat::cache_flags(leaf, large);
     if (leaf & (1 << 8)) != 0 { n |= PageFlags::GLOBAL; }
+    n = n.with_pkey(((leaf >> 59) & 0xF) as u8);
     if (leaf & (1u64 << 63)) == 0 { n |= PageFlags::EXEC; }
     n
 }
@@ -433,5 +434,12 @@ mod tests {
         let leaf = PtWalkerX86::pack_4k_leaf(pa, want);
         let got = unpack_flags(leaf, false);
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn unpack_flags_roundtrip_pkey() {
+        use hal::pt_walker::PtWalker;
+        let want = (PageFlags::READ | PageFlags::USER).with_pkey(13);
+        assert_eq!(unpack_flags(PtWalkerX86::pack_4k_leaf(0xcafe_b000, want), false), want);
     }
 }

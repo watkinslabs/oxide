@@ -51,8 +51,10 @@ pub fn do_mprotect_pkey(args: &SyscallArgs, pkey: i32) -> i64 {
         Err(e) => return -(e.as_i32() as i64),
     };
     let requested = pmm::user_as::prot_from_linux(prot);
+    let key = (pkey != crate::pkey::PKEY_KEEP).then_some(pkey as u8);
     let outcome = match mm.mprotect_user(
         ua, len, requested, sched::personality::read_implies_exec(cur),
+        key,
     ) {
         Ok(outcome) => outcome,
         Err(_) => return -(Errno::Enomem.as_i32() as i64),
@@ -63,7 +65,7 @@ pub fn do_mprotect_pkey(args: &SyscallArgs, pkey: i32) -> i64 {
         // flushes every stale permission before returning.
         unsafe {
             pmm::user_as::mprotect_pages(
-                mm.root_pa(), step.start.as_u64(), step.len, step.prot,
+                mm.root_pa(), step.start.as_u64(), step.len, step.prot, step.pkey,
             );
         }
     }

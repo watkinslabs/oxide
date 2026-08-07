@@ -400,6 +400,9 @@ pub struct Vma {
     pub end:   UserVirtAddr,
     pub prot:  VmaProt,
     pub may_prot: VmaProt,
+    /// Linux `vma_pkey(vma)`: the sole protection-key owner for every leaf
+    /// installed from this mapping. Key zero is the initial/default key.
+    pub pkey: u8,
     pub flags: VmaFlags,
     pub backing: VmaBacking,
     pub rss: AtomicU64,
@@ -431,6 +434,7 @@ impl core::fmt::Debug for Vma {
             .field("end", &self.end)
             .field("prot", &self.prot)
             .field("may_prot", &self.may_prot)
+            .field("pkey", &self.pkey)
             .field("flags", &self.flags)
             .field("backing", &self.backing)
             .field("rss", &self.rss.load(Ordering::Relaxed))
@@ -479,7 +483,7 @@ impl Vma {
             _ => None,
         };
         Self {
-            start, end, prot, may_prot, flags, backing,
+            start, end, prot, may_prot, pkey: 0, flags, backing,
             rss: AtomicU64::new(0),
             anon_vma,
             anon_pages: AtomicBool::new(false),
@@ -503,6 +507,9 @@ impl Vma {
         self.prot.permits(access)
     }
 
+    /// PTE permissions for this VMA, including its canonical key. # C: O(1)
+    pub fn page_flags(&self) -> hal::PageFlags { self.prot.to_page_flags().with_pkey(self.pkey) }
+
     /// Byte length of the VMA range.
     /// # C: O(1)
     pub fn len_bytes(&self) -> u64 {
@@ -518,6 +525,7 @@ impl Vma {
         if self.end != next.start { return false; }
         if self.prot != next.prot { return false; }
         if self.may_prot != next.may_prot { return false; }
+        if self.pkey != next.pkey { return false; }
         if self.flags != next.flags { return false; }
         if self.anon_name != next.anon_name { return false; }
         // Different userfaultfd registrations never coalesce (Linux

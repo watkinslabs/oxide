@@ -107,7 +107,7 @@ pub fn user_fault_handler(vec: u64, err: u64, _rip: u64, cr2: u64) -> bool {
                                 // root, mutated here on the CPU that took the
                                 // fault for exactly one page inside the VMA `v`
                                 // that was just looked up in that same mm.
-                                unsafe { mprotect_pages(root, cr2 & !PAGE_MASK, PAGE_BYTES as usize, VmaProt::READ | VmaProt::WRITE); }
+                                unsafe { mprotect_pages(root, cr2 & !PAGE_MASK, PAGE_BYTES as usize, VmaProt::READ | VmaProt::WRITE, v.pkey); }
                                 let f = hal_x86_64::current_fault_frame();
                                 if !f.is_null() {
                                     // SAFETY: live PtRegs on the kernel stack; set TF (bit 8).

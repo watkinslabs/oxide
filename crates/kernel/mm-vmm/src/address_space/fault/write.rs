@@ -96,7 +96,7 @@ impl AddressSpace {
                 if let Some((src_pa, _)) = cur {
                     let cur_pa = src_pa.0 & !(PAGE_SIZE_BYTES - 1);
                     if reuse_ok(cur_pa) {
-                        let pte_flags = vma.prot.to_page_flags();
+                        let pte_flags = vma.page_flags();
                         // SAFETY: va_page page-aligned per find_containing; cur_pa is the
                         // sole-owned anon frame already mapped here (mapcount==1, exclusive);
                         // flags carry USER+WRITE since vma.prot.WRITE checked above. No
@@ -137,7 +137,7 @@ impl AddressSpace {
                         dec_ref(frame.pa);
                     }
                     if matches_current {
-                        let pte_flags = vma.prot.to_page_flags();
+                        let pte_flags = vma.page_flags();
                         // SAFETY: va_page page-aligned per find_containing; cur_pa is the
                         // inode-owned shared frame already mapped here (refcount held);
                         // flags carry USER+WRITE since vma.prot.WRITE checked above.
@@ -207,7 +207,7 @@ impl AddressSpace {
                 let src = (hhdm_offset + (src_pa.0 & !(PAGE_SIZE_BYTES - 1))) as *const u8;
                 core::ptr::copy_nonoverlapping(src, dst, PAGE_SIZE_BYTES as usize);
             }
-            let pte_flags = vma.prot.to_page_flags();
+            let pte_flags = vma.page_flags();
             #[cfg(feature = "debug-atexit")]
             if let VmaBacking::File { backing, off } = &vma.backing {
                 let foff = off.wrapping_add(va_page - vma.start.as_u64());

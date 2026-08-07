@@ -119,6 +119,7 @@ impl PtWalker for PtWalkerX86 {
         if flags.contains(hal::PageFlags::USER)          { e |= 1 << 2; }   // U/S
         e |= crate::pat::cache_bits(flags, false);
         if flags.contains(hal::PageFlags::GLOBAL)        { e |= 1 << 8; }   // G
+        e |= (flags.pkey() as u64) << 59;
         if !flags.contains(hal::PageFlags::EXEC)         { e |= NX_BIT; }
         e
     }
@@ -132,6 +133,7 @@ impl PtWalker for PtWalkerX86 {
         if flags.contains(hal::PageFlags::USER)          { e |= 1 << 2; }
         e |= crate::pat::cache_bits(flags, true);
         if flags.contains(hal::PageFlags::GLOBAL)        { e |= 1 << 8; }
+        e |= (flags.pkey() as u64) << 59;
         if !flags.contains(hal::PageFlags::EXEC)         { e |= NX_BIT; }
         e
     }

@@ -113,7 +113,7 @@ fn reclaim_locked_anon_page(pa: u64) -> usize {
         let Some(vma) = mm.find_vma(uva) else { return; };
         if !matches!(vma.backing, VmaBacking::Anonymous) { return; }
         ptes.push(ReclaimPte {
-            mm: Arc::clone(mm), va, original_flags: vma.prot.to_page_flags(),
+            mm: Arc::clone(mm), va, original_flags: vma.page_flags(),
             protected: false, replaced: false,
         });
     });

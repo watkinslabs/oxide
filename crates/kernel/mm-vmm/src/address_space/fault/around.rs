@@ -62,7 +62,7 @@ impl AddressSpace {
         );
         if window_start >= window_end { return; }
 
-        let mut flags = vma.prot.to_page_flags();
+        let mut flags = vma.page_flags();
         flags.remove(hal::PageFlags::WRITE);
         let mut va = window_start;
         while va < window_end {

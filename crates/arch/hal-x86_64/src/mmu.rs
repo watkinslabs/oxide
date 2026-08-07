@@ -65,6 +65,7 @@ bitflags::bitflags! {
         const DIRTY       = 1 << 6;
         const HUGE        = 1 << 7;   // PD/PDPT level: 2 MiB / 1 GiB leaf
         const GLOBAL      = 1 << 8;
+        const PKEY_MASK   = 0xF << 59;
         const NX          = 1 << 63;
     }
 }
@@ -112,6 +113,7 @@ impl PteX86_64 {
         if n.contains(PageFlags::WRITE)   { f |= PteFlags::WRITABLE;  }
         if n.contains(PageFlags::USER)    { f |= PteFlags::USER;      }
         if n.contains(PageFlags::GLOBAL)  { f |= PteFlags::GLOBAL;    }
+        f |= PteFlags::from_bits_retain((n.pkey() as u64) << 59);
         f |= PteFlags::from_bits_retain(crate::pat::cache_bits(n, false));
         // EXEC bit is the *inverse* of NX in x86 — clear NX iff EXEC is set.
         if !n.contains(PageFlags::EXEC)   { f |= PteFlags::NX;        }
@@ -127,6 +129,7 @@ impl PteX86_64 {
         if f.contains(PteFlags::WRITABLE)  { n |= PageFlags::WRITE;  }
         if f.contains(PteFlags::USER)      { n |= PageFlags::USER;   }
         if f.contains(PteFlags::GLOBAL)    { n |= PageFlags::GLOBAL; }
+        n = n.with_pkey(((f.bits() & PteFlags::PKEY_MASK.bits()) >> 59) as u8);
         n |= crate::pat::cache_flags(f.bits(), false);
         if !f.contains(PteFlags::NX)       { n |= PageFlags::EXEC;   }
         n
@@ -247,6 +250,14 @@ mod tests {
         assert!(back.contains(PageFlags::WRITE));
         assert!(back.contains(PageFlags::USER));
         assert!(back.contains(PageFlags::EXEC));
+    }
+
+    #[test]
+    fn pte_native_round_trip_preserves_all_four_pkey_bits() {
+        let n = (PageFlags::READ | PageFlags::USER).with_pkey(15);
+        let f = PteX86_64::flags_from_native(n);
+        assert_eq!((f.bits() >> 59) & 0xF, 15);
+        assert_eq!(PteX86_64::flags_to_native(f).pkey(), 15);
     }
 
     #[test]

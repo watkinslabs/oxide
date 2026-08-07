@@ -90,7 +90,7 @@ impl AddressSpace {
                         }
                     }
                 }
-                let pte_flags = vma.prot.to_page_flags();
+                let pte_flags = vma.page_flags();
                 // DIAG (debug-atexit): KernelBytes-arm install in the lib arena
                 // — this arm zeros BSS tail bytes and NEVER logged before; if it
                 // fires at a library VA the VMA consulted was a KernelBytes VMA
@@ -168,7 +168,7 @@ impl AddressSpace {
                         klog::write_raw(b"\n");
                     }
                     if !map_ref_held { inc_ref(spa); }
-                    let pte_flags = vma.prot.to_page_flags();
+                    let pte_flags = vma.page_flags();
                     // SAFETY: va_page is page aligned; spa is the owner-backed
                     // frame whose refcount was bumped; flags carry USER.
                     let replaced = unsafe { M::map(Va(va_page), Pa(spa), pte_flags, PageSize::P4K) };
@@ -402,7 +402,7 @@ impl AddressSpace {
                     klog::write_raw(b" pa=");  klog::write_hex_u64(pa);
                     klog::write_raw(b"\n");
                 }
-                let pte_flags = vma.prot.to_page_flags();
+                let pte_flags = vma.page_flags();
                 // Linux `finish_fault` pte_same/!pte_none re-check (mm/memory.c):
                 // `backing.read_at` above SLEEPS on the block device (ext4 ->
                 // virtio-blk park_blk -> schedule()), so a PEER THREAD of this
