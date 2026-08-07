@@ -1,5 +1,6 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use sync::{Spinlock, Socket as LockClass};
 
@@ -15,6 +16,36 @@ use super::{Raw4Endpoint, Raw4TxOptions};
 
 const SRC: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 44);
 const DST: Ipv4Addr = Ipv4Addr::new(198, 51, 100, 8);
+const FINAL_FRAGMENT_OFFSET: u16 = 1;
+
+static LOCAL_OUT_CALLS: AtomicUsize = AtomicUsize::new(0);
+static LOCAL_OUT_LEN: AtomicUsize = AtomicUsize::new(0);
+static LOCAL_OUT_FLAGS: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+fn observe_local_out(_namespace: u64, hook: u32, packet: &[u8], _family: u8)
+    -> crate::netfilter_hook::NfHookResult
+{
+    if hook == crate::netfilter_hook::NF_INET_LOCAL_OUT {
+        LOCAL_OUT_CALLS.fetch_add(1, Ordering::AcqRel);
+        LOCAL_OUT_LEN.store(packet.len(), Ordering::Release);
+        LOCAL_OUT_FLAGS.store(u16::from_be_bytes([packet[6], packet[7]]) as usize,
+            Ordering::Release);
+    }
+    crate::netfilter_hook::NfHookResult::ACCEPT
+}
+
+fn fragment(id: u16, flags: u16, payload: &[u8]) -> Vec<u8> {
+    let mut packet = alloc::vec![0u8; crate::IPV4_HDR_LEN + payload.len()];
+    let mut hdr = crate::Ipv4Hdr::build(SRC, DST, crate::IpProto::Udp, payload.len() as u16, id);
+    hdr.flags_frag = flags;
+    hdr.checksum = 0;
+    let mut header = [0u8; crate::IPV4_HDR_LEN];
+    hdr.write_to(&mut header);
+    hdr.checksum = crate::ipv4::ip_checksum(&header);
+    hdr.write_to(&mut packet[..crate::IPV4_HDR_LEN]);
+    packet[crate::IPV4_HDR_LEN..].copy_from_slice(payload);
+    packet
+}
 
 fn endpoint(protocol: u8) -> Arc<Raw4Endpoint> {
     Raw4Endpoint::new(protocol, network_namespace::initial(), Arc::new(SocketFilter::new()),
@@ -184,4 +215,39 @@ fn dont_route_with_explicit_iface_sends_on_link_without_route() {
     stack.send_raw4(&endpoint(17), DST, b"x", Raw4TxOptions::default(), &control).unwrap();
 
     assert_eq!(dev.packets.lock().len(), 1);
+}
+
+#[test]
+fn ip_nodefrag_keeps_raw_hdrincl_fragments_out_of_local_out_defrag() {
+    let domain = crate::hosted_fixture::init_net_domain();
+    domain.set_nf_hook(observe_local_out);
+    LOCAL_OUT_CALLS.store(0, Ordering::Release);
+    let (stack, dev, _) = setup(253, None);
+    let raw = endpoint(253);
+    raw.set_hdrincl(true);
+    let first = fragment(92, crate::ipv4::IPV4_FLAG_MORE_FRAGMENTS, b"abcdefgh");
+    let last = fragment(92, FINAL_FRAGMENT_OFFSET, b"ijklmnop");
+
+    stack.send_raw4(&raw, DST, &first, Raw4TxOptions::default(),
+        &Raw4Control::default()).unwrap();
+    assert_eq!(LOCAL_OUT_CALLS.load(Ordering::Acquire), 0);
+    stack.send_raw4(&raw, DST, &last, Raw4TxOptions::default(),
+        &Raw4Control::default()).unwrap();
+    assert_eq!(LOCAL_OUT_CALLS.load(Ordering::Acquire), 1);
+    assert_eq!(LOCAL_OUT_LEN.load(Ordering::Acquire), crate::IPV4_HDR_LEN + 16);
+    assert_eq!(LOCAL_OUT_FLAGS.load(Ordering::Acquire), 0);
+    assert_eq!(dev.packets.lock().len(), 1);
+
+    LOCAL_OUT_CALLS.store(0, Ordering::Release);
+    let first = fragment(93, crate::ipv4::IPV4_FLAG_MORE_FRAGMENTS, b"abcdefgh");
+    let last = fragment(93, FINAL_FRAGMENT_OFFSET, b"ijklmnop");
+    let options = Raw4TxOptions { nodefrag: true, ..Raw4TxOptions::default() };
+    stack.send_raw4(&raw, DST, &first, options,
+        &Raw4Control::default()).unwrap();
+    stack.send_raw4(&raw, DST, &last, options,
+        &Raw4Control::default()).unwrap();
+    assert_eq!(LOCAL_OUT_CALLS.load(Ordering::Acquire), 2);
+    assert_eq!(LOCAL_OUT_LEN.load(Ordering::Acquire), crate::IPV4_HDR_LEN + 8);
+    assert_eq!(LOCAL_OUT_FLAGS.load(Ordering::Acquire), FINAL_FRAGMENT_OFFSET as usize);
+    assert_eq!(dev.packets.lock().len(), 3);
 }

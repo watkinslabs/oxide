@@ -18,6 +18,7 @@
 // - tcp_tx: socket-owned TCP PMTU policy and family transmit dispatch.
 // - tcp_pmtu: validated TCP path-MTU reduction and immediate retransmit.
 // - ipv4: IPv4 receive demux, loopback drain.
+// - ipv4_nf_defrag: IPv4 fragment gathering before netfilter hook traversal.
 // - ipv4_tx: IPv4 transmit and fragment accounting.
 // - ipv4_route_tx: transmit-only IPv4 route outcome accounting.
 // - rx_backlog: per-CPU receive backlog, poll list, and the NET_RX drain pass.
@@ -87,6 +88,9 @@ pub(crate) mod tcp_rx_trace;
 mod tcp_tx;
 mod tcp_pmtu;
 mod ipv4;
+mod ipv4_nf_defrag;
+#[cfg(test)]
+mod ipv4_nf_defrag_tests;
 mod ipv4_tx;
 mod ipv4_route_tx;
 mod rx_backlog;
