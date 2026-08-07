@@ -84,7 +84,7 @@ fn emit_link(event: &net::control_event::LinkEvent) {
     let mut msg = rt::build_newlink_reply(
         0, 0, event.ifindex as i32, &event.name, event.mac.0,
         &event.broadcast.bytes[..event.broadcast.len as usize], event.mtu,
-        event.is_loopback, event.flags, stats, false);
+        event.is_loopback, event.flags, stats, false, None);
     if event.kind == net::control_event::EventKind::Delete {
         patch_type(&mut msg, rt::RTM_DELLINK);
     }

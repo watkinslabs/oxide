@@ -247,7 +247,7 @@ impl NetlinkSocket {
         } else { match (self.protocol, hdr.nlmsg_type) {
             (proto::NETLINK_ROUTE, rtnetlink::RTM_NEWNSID)
             | (proto::NETLINK_ROUTE, rtnetlink::RTM_GETNSID) => self.handle_nsid(hdr, msg),
-            (proto::NETLINK_ROUTE, rtnetlink::RTM_GETLINK) => rtnetlink::handle_getlink_in(net_ns, hdr, msg, strict),
+            (proto::NETLINK_ROUTE, rtnetlink::RTM_GETLINK) => rtnetlink::handle_getlink_with_access(net_ns, hdr, msg, strict, |target| self.may_admin_net_for(target)),
             (proto::NETLINK_ROUTE, rtnetlink::RTM_GETADDR) if rtnetlink::is_dump(hdr) => rtnetlink::handle_getaddr_with_access(net_ns, hdr, msg, strict, |target| self.may_admin_net_for(target)),
             (proto::NETLINK_ROUTE, rtnetlink::RTM_GETADDR) => rtnetlink::handle_getaddr6_one_with_access(net_ns, hdr, msg, |target| self.may_admin_net_for(target)),
             (proto::NETLINK_ROUTE, rtnetlink::RTM_GETMULTICAST) if rtnetlink::is_dump(hdr) => rtnetlink::handle_getmulticast_in(net_ns, hdr, msg, strict),

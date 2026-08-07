@@ -50,6 +50,28 @@ fn target_attr(msg: &mut alloc::vec::Vec<u8>, nsid: i32) {
     hdr.write_to(&mut msg[..Nlmsghdr::SIZE]);
 }
 
+fn link_target_attr(msg: &mut alloc::vec::Vec<u8>, nsid: i32) {
+    msg.extend_from_slice(&8u16.to_ne_bytes());
+    msg.extend_from_slice(&ifla::IFLA_TARGET_NETNSID.to_ne_bytes());
+    msg.extend_from_slice(&nsid.to_ne_bytes());
+    let mut hdr = Nlmsghdr::parse(msg).unwrap();
+    hdr.nlmsg_len = msg.len() as u32;
+    hdr.write_to(&mut msg[..Nlmsghdr::SIZE]);
+}
+
+fn getlink_dump_request() -> (Nlmsghdr, alloc::vec::Vec<u8>) {
+    let body = alloc::vec![0u8; Ifinfomsg::SIZE];
+    let hdr = Nlmsghdr {
+        nlmsg_len: (Nlmsghdr::SIZE + body.len()) as u32,
+        nlmsg_type: RTM_GETLINK, nlmsg_flags: crate::flags::NLM_F_DUMP,
+        nlmsg_seq: 5, nlmsg_pid: 7,
+    };
+    let mut msg = alloc::vec![0u8; Nlmsghdr::SIZE];
+    hdr.write_to(&mut msg[..]);
+    msg.extend_from_slice(&body);
+    (hdr, msg)
+}
+
 fn getaddr6_one_request(ifindex: u32, addr: [u8; 16]) -> (Nlmsghdr, alloc::vec::Vec<u8>) {
     let mut body = alloc::vec![0u8; super::uapi::Ifaddrmsg::SIZE];
     body[0] = super::uapi::AF_INET6;
@@ -135,6 +157,41 @@ fn a_strict_address_dump_resolves_a_caller_local_target_namespace() {
     assert_eq!(super::find_attr(attrs, ifa::IFA_TARGET_NETNSID).unwrap(), &47i32.to_ne_bytes());
     let denied = handle_getaddr_with_access(0, &req, &msg, true, |_| false);
     assert_eq!(ack_errno(&denied), -(syscall::errno::Errno::Eacces.as_i32()));
+}
+
+#[test]
+fn a_link_dump_resolves_a_caller_local_target_namespace() {
+    let domain = net::hosted_fixture::init_net_domain();
+    domain.set_notifier(crate::mcast::notify_control_event);
+    let caller = network_namespace::initial();
+    let target = crate::netlink_tests::test_namespace();
+    let target_id = target.id().as_u64();
+    caller.assign_peer_id(&target, 49).unwrap();
+    let iface = net::global_stack().ifaces.register_in_ns(Arc::new(net::LoopbackDev::new()), target_id);
+    let (req, mut msg) = getlink_dump_request();
+    link_target_attr(&mut msg, 49);
+
+    let reply = crate::rtnetlink::handle_getlink_with_access(0, &req, &msg, true,
+        |owner| owner.id().as_u64() == target_id);
+    let hdr = Nlmsghdr::parse(&reply).unwrap();
+    assert_eq!(hdr.nlmsg_type, RTM_NEWLINK);
+    assert_eq!(u32::from_ne_bytes(reply[Nlmsghdr::SIZE + 4..Nlmsghdr::SIZE + 8].try_into().unwrap()),
+        visible_ifindex(iface, target_id));
+    let attrs = &reply[Nlmsghdr::SIZE + Ifinfomsg::SIZE..];
+    assert_eq!(super::find_attr(attrs, ifla::IFLA_TARGET_NETNSID).unwrap(), &49i32.to_ne_bytes());
+    let mut one_req = req;
+    one_req.nlmsg_flags = crate::flags::NLM_F_REQUEST;
+    let mut one_msg = msg.clone();
+    one_msg[Nlmsghdr::SIZE + 4..Nlmsghdr::SIZE + 8].copy_from_slice(&visible_ifindex(iface, target_id).to_ne_bytes());
+    one_req.write_to(&mut one_msg[..Nlmsghdr::SIZE]);
+    let one = crate::rtnetlink::handle_getlink_with_access(0, &one_req, &one_msg, true,
+        |owner| owner.id().as_u64() == target_id);
+    assert_eq!(Nlmsghdr::parse(&one).unwrap().nlmsg_flags & crate::flags::NLM_F_MULTI, 0);
+    assert_eq!(super::find_attr(&one[Nlmsghdr::SIZE + Ifinfomsg::SIZE..], ifla::IFLA_TARGET_NETNSID).unwrap(),
+        &49i32.to_ne_bytes());
+    let denied = crate::rtnetlink::handle_getlink_with_access(0, &req, &msg, true, |_| false);
+    assert_eq!(ack_errno(&denied), -(syscall::errno::Errno::Eacces.as_i32()));
+    let _ = net::global_stack().ifaces.unregister(iface);
 }
 
 #[test]
