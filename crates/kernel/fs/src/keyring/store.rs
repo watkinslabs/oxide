@@ -22,4 +22,4 @@ pub use tunables::{max_bytes, max_keys, persistent_expiry, quota_limit, set_pers
     set_quota_limit, QuotaKnob};
 #[cfg(test)] pub use quota::over_quota;
 pub use state::{Store, STORE};
-pub use types::{AuthData, Key, KeyUser, Quota, TaskIds};
+pub use types::{AuthData, Key, KeyUser, LinkRestriction, Quota, TaskIds};

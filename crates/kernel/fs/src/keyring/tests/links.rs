@@ -89,22 +89,49 @@ fn restrict_reject_blocks_further_links() {
     let t = ctx(1044, 6304);
     let ring = add_key_core(&t, "keyring", "restricted", alloc::vec![], false, KEY_SPEC_SESSION_KEYRING) as i32;
     let k = add_key_core(&t, "user", "restrict-child", alloc::vec![7u8], true, KEY_SPEC_SESSION_KEYRING) as i32;
-    assert_eq!(restrict_core(&t, ring, None), 0);
+    assert_eq!(restrict_core(&t, ring, None, None), 0);
     assert_eq!(link_core(&t, k, ring), eperm(), "restrict_link_reject refuses every link");
-    assert_eq!(restrict_core(&t, ring, None), err(Errno::Eexist));
+    assert_eq!(restrict_core(&t, ring, None, None), err(Errno::Eexist));
 }
 
-// A named restriction type is only accepted when the type provides a
-// `lookup_restriction` method; none of the registered types does (that is the
-// asymmetric-key feature), so it is ENOENT, and an unregistered name is ENOKEY.
+// A named restriction type needs its type-specific parser. `asymmetric` owns
+// one; another registered type remains ENOENT and an unknown name is ENOKEY.
 #[test]
 fn restrict_named_type_is_enoent_and_unknown_is_enokey() {
     let t = ctx(1045, 6305);
     let ring = add_key_core(&t, "keyring", "restrict-named", alloc::vec![], false, KEY_SPEC_SESSION_KEYRING) as i32;
-    assert_eq!(restrict_core(&t, ring, Some("keyring")), err(Errno::Enoent));
-    assert_eq!(restrict_core(&t, ring, Some("no-such-type")), enokey());
+    assert_eq!(restrict_core(&t, ring, Some("keyring"), Some("builtin_trusted")), err(Errno::Enoent));
+    assert_eq!(restrict_core(&t, ring, Some("no-such-type"), Some("builtin_trusted")), enokey());
     let k = add_key_core(&t, "user", "restrict-nonring", alloc::vec![7u8], true, KEY_SPEC_SESSION_KEYRING) as i32;
-    assert_eq!(restrict_core(&t, k, None), err(Errno::Enotdir));
+    assert_eq!(restrict_core(&t, k, None, None), err(Errno::Enotdir));
+}
+
+#[test]
+fn asymmetric_key_or_keyring_restriction_verifies_the_issuer_signature() {
+    let t = ctx(1048, 6308);
+    let trust = add_key_core(&t, "asymmetric", "trust", super::pkey::certificate_payload(), true,
+        KEY_SPEC_SESSION_KEYRING) as i32;
+    let ring = add_key_core(&t, "keyring", "signature-restricted", alloc::vec![], false,
+        KEY_SPEC_SESSION_KEYRING) as i32;
+    let spec = alloc::format!("key_or_keyring:{trust}");
+    assert_eq!(restrict_core(&t, ring, Some("asymmetric"), Some(&spec)), 0);
+    assert!(add_key_core(&t, "asymmetric", "verified", super::pkey::certificate_payload(), true, ring) > 0);
+    let mut altered = super::pkey::certificate_payload();
+    let at = altered.windows(b"pkey vector".len()).rposition(|w| w == b"pkey vector")
+        .expect("subject appears after issuer in the certificate");
+    altered[at] ^= 1;
+    assert_eq!(add_key_core(&t, "asymmetric", "bad-signature", altered, true, ring),
+        err(Errno::Ekeyrejected));
+}
+
+#[test]
+fn asymmetric_chain_restriction_uses_existing_destination_certificates() {
+    let t = ctx(1049, 6309);
+    let ring = add_key_core(&t, "keyring", "chain-restricted", alloc::vec![], false,
+        KEY_SPEC_SESSION_KEYRING) as i32;
+    assert!(add_key_core(&t, "asymmetric", "chain-anchor", super::pkey::certificate_payload(), true, ring) > 0);
+    assert_eq!(restrict_core(&t, ring, Some("asymmetric"), Some("key_or_keyring:0:chain")), 0);
+    assert!(add_key_core(&t, "asymmetric", "chain-child", super::pkey::certificate_payload(), true, ring) > 0);
 }
 
 // KEYCTL_SEARCH searches the NAMED keyring's tree, not the global key store:

@@ -3,6 +3,8 @@
 
 /// `rsaEncryption` (1.2.840.113549.1.1.1).
 pub const RSA_ENCRYPTION: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01];
+/// `sha256WithRSAEncryption` (1.2.840.113549.1.1.11).
+pub const SHA256_WITH_RSA: &[u8] = &[0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b];
 /// `id-at-commonName` (2.5.4.3).
 pub const COMMON_NAME: &[u8] = &[0x55, 0x04, 0x03];
 /// `id-at-organizationName` (2.5.4.10).

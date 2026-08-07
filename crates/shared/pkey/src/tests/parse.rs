@@ -11,7 +11,7 @@ fn certificate_yields_a_public_key_and_its_name() {
     assert_eq!(cert.algo, "rsa");
     assert_eq!(cert.subject, "Oxide Test: pkey vector",
         "an organization the common name does not already carry is joined to it");
-    assert_eq!(hexed(&cert.skid.expect("the certificate carries one")), SKID_HEX);
+    assert_eq!(hexed(cert.skid.as_ref().expect("the certificate carries one")), SKID_HEX);
     assert_eq!(hexed(&cert.serial), "280d0bb06dc810c24687dae3d19387bd2fdea38f");
 
     let key = AsymmetricKey::parse(&unhex(CERT_DER)).expect("parses");
@@ -20,6 +20,10 @@ fn certificate_yields_a_public_key_and_its_name() {
     // The proposed description is the subject followed by the key identifier,
     // which is what names the key when the caller supplies no description.
     assert_eq!(key.description.as_deref(), Some(&*alloc::format!("Oxide Test: pkey vector: {SKID_HEX}")));
+    key.verify_certificate(&cert).expect("self-signed fixture verifies with its public key");
+    let mut altered = cert;
+    altered.signature[0] ^= 1;
+    assert_eq!(key.verify_certificate(&altered), Err(PkeyError::BadMessage));
 }
 
 #[test]

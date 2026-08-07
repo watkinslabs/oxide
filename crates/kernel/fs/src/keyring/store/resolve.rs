@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 use syscall::errno::Errno;
 
 use super::super::uapi::*;
-use super::{Quota, Store, TaskIds};
+use super::{LinkRestriction, Quota, Store, TaskIds};
 
 impl Store {
     /// Resolve a keyring id to a real serial, lazily creating the caller's
@@ -81,18 +81,55 @@ impl Store {
     }
 
     /// Link `child` into `ring`, idempotently. Enforces the ring's
-    /// `restrict_link` (Linux `restrict_link_reject` → EPERM) and rejects a
-    /// self-link or a cycle (`keyring_detect_cycle` → EDEADLK). # C: O(members)
+    /// link restriction and rejects a self-link or a cycle
+    /// (`keyring_detect_cycle` → EDEADLK). # C: O(members)
     pub fn link(&mut self, ring: i32, child: i32) -> Result<(), Errno> {
         if !self.keys.contains_key(&child) { return Err(Errno::Enokey); }
         if self.keys.get(&ring).map(|k| !k.is_keyring()).unwrap_or(true) {
             return if self.keys.contains_key(&ring) { Err(Errno::Enotdir) } else { Err(Errno::Enokey) };
         }
-        if self.keys[&ring].restrict_reject { return Err(Errno::Eperm); }
+        if let Some(restriction) = self.keys[&ring].restriction {
+            self.check_restriction(ring, child, restriction)?;
+        }
         if ring == child || self.reaches(child, ring) { return Err(Errno::Edeadlk); }
         let k = self.keys.get_mut(&ring).expect("ring presence checked above");
         if !k.members.contains(&child) { k.members.push(child); }
         Ok(())
+    }
+
+    fn check_restriction(&self, ring: i32, child: i32, restriction: LinkRestriction) -> Result<(), Errno> {
+        match restriction {
+            LinkRestriction::Reject => Err(Errno::Eperm),
+            LinkRestriction::Asymmetric { trusted, chain } => {
+                let candidate = self.keys.get(&child).ok_or(Errno::Enokey)?;
+                if candidate.key_type.name != ASYMMETRIC_KEY_TYPE { return Err(Errno::Eopnotsupp); }
+                let cert = ::pkey::x509::parse(&candidate.payload).map_err(crate::keyring::ops::pkey::errno_for)?;
+                let mut roots = alloc::vec::Vec::new();
+                if let Some(trusted) = trusted { roots.push(trusted); }
+                if chain { roots.push(ring); }
+                let mut visited = alloc::vec::Vec::new();
+                let mut parents = alloc::vec::Vec::new();
+                while let Some(id) = roots.pop() {
+                    if visited.contains(&id) { continue; }
+                    visited.push(id);
+                    let Some(key) = self.keys.get(&id) else { continue; };
+                    if key.is_keyring() { roots.extend(key.members.iter().copied()); continue; }
+                    if key.key_type.name != ASYMMETRIC_KEY_TYPE || key.asymmetric_name_id.as_deref() != Some(&cert.issuer) { continue; }
+                    parents.push(id);
+                }
+                if parents.is_empty() { return Err(Errno::Enokey); }
+                let mut first = Errno::Ekeyrejected;
+                for parent in parents {
+                    let key = ::pkey::AsymmetricKey::parse(&self.keys[&parent].payload)
+                        .map_err(crate::keyring::ops::pkey::errno_for)?;
+                    match key.verify_certificate(&cert) {
+                        Ok(()) => return Ok(()),
+                        Err(error) => first = crate::keyring::ops::pkey::errno_for(error),
+                    }
+                }
+                Err(first)
+            }
+        }
     }
 
     /// Is `to` reachable from keyring `from` through nested keyrings? Linux

@@ -64,6 +64,7 @@ fn fixed_rand(buf: &mut [u8]) { for (i, b) in buf.iter_mut().enumerate() { *b = 
 fn add_cert(t: &Ctx, desc: &str) -> i64 {
     add_key_core(t, "asymmetric", desc, unhex(CERT_DER), true, KEY_SPEC_SESSION_KEYRING)
 }
+pub(super) fn certificate_payload() -> Vec<u8> { unhex(CERT_DER) }
 fn add_private(t: &Ctx, desc: &str) -> i64 {
     add_key_core(t, "asymmetric", desc, unhex(KEY_PKCS8), true, KEY_SPEC_SESSION_KEYRING)
 }

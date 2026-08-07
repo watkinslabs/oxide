@@ -110,7 +110,7 @@ static TYPES: &[KeyType] = &[
     // queried it would let a signature be verified against a different key
     // than the one that was checked.
     KeyType { name: ASYMMETRIC_KEY_TYPE, readable: false, updatable: false, is_keyring: false,
-              vet_colon: false, restrictable: false, payload_rule: PayloadRule::Asymmetric,
+              vet_colon: false, restrictable: true, payload_rule: PayloadRule::Asymmetric,
               describes_itself: true },
 ];
 

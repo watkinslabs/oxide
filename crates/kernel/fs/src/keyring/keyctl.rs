@@ -8,7 +8,7 @@ use syscall::errno::Errno;
 use super::ops;
 use super::uapi::*;
 
-use super::{cur_ctx, err, read_user_bytes, read_user_key_desc, read_user_key_type,
+use super::{cur_ctx, err, read_user_bytes, read_user_key_cstr, read_user_key_desc, read_user_key_type,
     write_user_capped, write_user_exact};
 
 mod dh;
@@ -97,7 +97,11 @@ pub fn sys_keyctl(args: &SyscallArgs) -> i64 {
             if args.a3 != 0 && args.a2 == 0 { return err(Errno::Einval); }
             let ty = if args.a2 == 0 { None }
                      else { match read_user_key_type(args.a2) { Ok(s) => Some(s), Err(rv) => return rv } };
-            ops::restrict_core(&c, args.a1 as i32, ty.as_deref())
+            let restriction = if args.a3 == 0 { None }
+                              else { match read_user_key_cstr(args.a3, PKEY_INFO_MAX) {
+                                  Ok(s) => Some(super::key_string_from_bytes(&s)), Err(rv) => return rv,
+                              } };
+            ops::restrict_core(&c, args.a1 as i32, ty.as_deref(), restriction.as_deref())
         }
         KEYCTL_MOVE => ops::move_core(&c, args.a1 as i32, args.a2 as i32, args.a3 as i32, args.a4 as u32),
         KEYCTL_CAPABILITIES => capabilities(args.a1, args.a2),
