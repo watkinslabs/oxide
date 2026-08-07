@@ -37,10 +37,10 @@ reclassified.
 | Class \ Sev | blocker | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|
 | `DEFECT` | 0 | 0 | 13 | 19 | 32 |
-| `MISSING` | 2 | 0 | 14 | 17 | 33 |
+| `MISSING` | 2 | 0 | 14 | 16 | 32 |
 | `COVERAGE` | 0 | 0 | 9 | 14 | 23 |
 | `INFRA` | 0 | 0 | 14 | 11 | 25 |
-| **Total** | **2** | **0** | **50** | **61** | **113** |
+| **Total** | **2** | **0** | **50** | **60** | **112** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -226,7 +226,6 @@ here now.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| OPEN | MISSING | low | `IFA_ANYCAST`, `IFA_MULTICAST` and `IFA_TARGET_NETNSID` are still neither parsed nor reported. The reference carries all three. | `parse_newaddr_attrs` rejects unknown-but-known types only for the ones it names | [CLAIMED B1903-rtnetlink-address-dump-attrs 2026-08-07] |
 
 ### B1749-resolved-boot-scope
 

@@ -1,5 +1,11 @@
 # Fixed issues
 
+### F834-rtnetlink-address-anycast-multicast
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 7ead67698 | MISSING | low | `IFA_ANYCAST`, `IFA_MULTICAST` and `IFA_TARGET_NETNSID` are still neither parsed nor reported. The reference carries all three. | `parse_newaddr_attrs` rejects unknown-but-known types only for the ones it names | [CLAIMED B1903-rtnetlink-address-dump-attrs 2026-08-07] |
+
 Archive of rows retired from `scratch/known_issues.md`. A row moves here only
 when the fix is merged; the SHA stays with it. Kept so a later lane can see what
 shape these defects took — several were subsystems that compiled, tested and
