@@ -281,6 +281,9 @@ impl NetStack {
                 let abort = retries >= ceiling || c.user_timeout_expired(now_ns);
                 if c.fastopen_blackholed(abort) { c.fastopen_blackhole_seen = true; }
                 if abort {
+                    if front_is_syn {
+                        crate::mib::bump(entry.net_ns(), crate::mib::Mib::TcpAttemptFails);
+                    }
                     c.state = crate::tcp_state::TcpState::Closed;
                     c.retx_q.clear();
                     (Vec::new(), true, c.local.ip, c.remote.ip)

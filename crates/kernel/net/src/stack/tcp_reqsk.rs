@@ -94,6 +94,7 @@ impl NetStack {
                 c.retx_q.front().map(|segment| c.build_retx(segment))
             } else { None };
             if !reqsk::reschedules(recalc, synack.is_some(), c.rsk.acked) {
+                crate::mib::bump(entry.net_ns(), crate::mib::Mib::TcpAttemptFails);
                 c.state = crate::tcp_state::TcpState::Closed;
                 None
             } else {

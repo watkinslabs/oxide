@@ -257,6 +257,15 @@ impl NetStack {
                 Err(crate::tcp_conn::TcpConnError::Reset) => {
                     let eno = if pre_syn { syscall::errno::Errno::Econnrefused }
                         else { syscall::errno::Errno::Econnreset };
+                    if matches!(pre_state, crate::tcp_state::TcpState::SynSent
+                        | crate::tcp_state::TcpState::SynRecv)
+                    {
+                        crate::mib::bump(net_ns, crate::mib::Mib::TcpAttemptFails);
+                    } else if matches!(pre_state, crate::tcp_state::TcpState::Established
+                        | crate::tcp_state::TcpState::CloseWait)
+                    {
+                        crate::mib::bump(net_ns, crate::mib::Mib::TcpEstabResets);
+                    }
                     entry.set_error(eno as i32);
                     // A fast-open connection the peer reset is what a forged
                     // source address produces, so its charge against the
