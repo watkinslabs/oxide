@@ -43,7 +43,7 @@ path = "../cpu"
 # reporter so acquisitions are attributed to hardirq/softirq/process.
 debug-lockdep = ["sync/debug-lockdep"]
 default = []
-hosted  = []
+hosted  = ["sync/hosted"]
 # Per `04§3` R06 — gates the kthread coroutine boot smoke. Kernel
 # forwards via `--features debug-sched`.
 debug-sched = []
