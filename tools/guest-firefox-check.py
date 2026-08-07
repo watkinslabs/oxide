@@ -32,6 +32,9 @@ KERNEL_FAULT = re.compile(
     r"\[BUG\] scheduling while atomic|IRQ stack guard page|\[BADSTACK\]|#DF|Kernel panic"
 )
 KERNEL_STALL = re.compile(r"\[WATCHDOG\] (?:soft lockup|no-progress)|\[CPU-STALL\]")
+STORAGE_ERROR = re.compile(
+    r"\[EXT4-ERROR\]|\[NAMEI\] (?:openat-create|mkdir(?:at)?) .*err=5"
+)
 FIREFOX_ENV = (
     "HOME=/home/oxide XDG_RUNTIME_DIR=/run/user/1000 "
     "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus "
@@ -336,6 +339,23 @@ try:
         raise RuntimeError("UART control channel stopped during GNOME settle")
     print("guest-firefox-check: settled runtime snapshot:\n" + runtime[-8000:], flush=True)
 
+    journal = run(
+        uart,
+        buf,
+        "d=/var/log/journal/$(cat /etc/machine-id); "
+        "test -d \"$d\" && "
+        "find \"$d\" -maxdepth 1 -type f -name 'system*.journal' -size +0c -print -quit | grep -q . && "
+        "find \"$d\" -maxdepth 1 -type f -name 'user-1000*.journal' -size +0c -print -quit | grep -q . && "
+        "timeout 20s journalctl --verify --quiet",
+        settle=30,
+    )
+    if not rc(journal):
+        ok = False
+        print("guest-firefox-check: FAIL — persistent journals missing or invalid", flush=True)
+        print(journal[-4000:], flush=True)
+    else:
+        print("guest-firefox-check: persistent system/user journals verified", flush=True)
+
     if PROFILE:
         print("guest-firefox-check: production QMP RIP sampling active", flush=True)
 
@@ -486,6 +506,10 @@ try:
     if fault:
         ok = False
         print(f"guest-firefox-check: FAIL — kernel fault: {fault.group(0)}", flush=True)
+    storage_error = STORAGE_ERROR.search(buf.decode("utf-8", "replace"))
+    if storage_error:
+        ok = False
+        print(f"guest-firefox-check: FAIL — storage error: {storage_error.group(0)}", flush=True)
 except (OSError, RuntimeError, socket.timeout, json.JSONDecodeError) as exc:
     ok = False
     print(f"guest-firefox-check: FAIL — {exc}", flush=True)

@@ -28,6 +28,7 @@ use vfs::{CreateCtx, Dentry, File, InodeRef, OpenFlags, SuperBlock};
 
 const IMAGE: &[u8] = include_bytes!("mini-j.img");
 const SECTOR: u32 = 512;
+const PAGE_SIZE: usize = 4096;
 
 fn build_disk() -> (Arc<dyn BlockDevice>, u64) {
     let cap = (IMAGE.len() as u64) / (SECTOR as u64);
@@ -213,6 +214,70 @@ fn last_close_frees_the_inode_and_leaves_the_image_fsck_clean() {
     }
     // Mount dropped -> `put_super` reaps any residue and marks the fs clean.
     assert_fsck_clean(&disk, cap, "after unlink-while-open + last close");
+}
+
+#[test]
+fn final_eviction_discards_dirty_mmap_pages_before_reusing_storage() {
+    // Linux's ext4_evict_inode waits for writeback and then calls
+    // truncate_inode_pages_final() BEFORE it truncates/frees the orphan.  The
+    // reverse order lets a dirty MAP_SHARED page outlive the inode slot: its
+    // frame-store Drop writes through the now-freed inode after the allocator
+    // has made that storage available to a new directory.  The live failure
+    // put a dconf `GVariant` page over Flatpak's directory block.
+    let (disk, cap) = build_disk();
+    {
+        let (m, sb) = mount(disk.clone());
+        let root = sb.s_root_inode().expect("root inode");
+        let pre_blocks = m.state().mount.state_free_blocks();
+        let pre_inodes = m.state().mount.state_free_inodes();
+
+        let inode = root.create_child("dconf.tmp", 0o644, &CreateCtx::root()).expect("create victim");
+        let raw_ino = m.state().mount.lookup_path(b"/dconf.tmp").expect("lookup victim");
+        let (file, dentry) = open_file(&inode);
+        // A concurrent writeback snapshot may retain the backend page-cache
+        // owner without retaining `struct inode`.  Model that independent
+        // owner so iput can run final eviction while the frame store remains
+        // alive long enough for another inode/block allocation.
+        let stale_mapping_owner = Arc::clone(inode.i_private());
+        assert_eq!(file.pwrite(&alloc::vec![0u8; PAGE_SIZE], 0).expect("allocate victim"), PAGE_SIZE);
+        sync(&sb);
+        let victim_blocks = phys_blocks(&m, raw_ino);
+        assert!(!victim_blocks.is_empty(), "victim owns a data block");
+
+        // Model the last writable MAP_SHARED store: shared_frame marks the
+        // page dirty, then userspace changes it with no write(2)/fsync.
+        let frame = inode.i_mapping().expect("mapping").shared_frame(0)
+            .expect("shared frame lookup").expect("resident shared frame");
+        let poison = b"GVariant stale mapped page";
+        let base = pmm::setup::frame_ptr(frame.pa).expect("frame_ptr");
+        // SAFETY: frame is the victim's page-0 mapping; poison fits in one page.
+        unsafe { core::ptr::copy_nonoverlapping(poison.as_ptr(), base, poison.len()); }
+
+        root.unlink_child("dconf.tmp").expect("unlink victim");
+        drop(file);
+        drop(dentry);
+        vfs::file::iput(inode);
+
+        // Final eviction must return every inode/block charge.  A late dirty
+        // write through the freed inode consumes a block again and fails this
+        // assertion before any reuse can hide the accounting error.
+        assert_eq!(m.state().mount.state_free_blocks(), pre_blocks,
+            "dirty mapped page wrote back after its orphan blocks were freed");
+        assert_eq!(m.state().mount.state_free_inodes(), pre_inodes,
+            "victim inode slot was not returned at final eviction");
+
+        let reused = root.mkdir("flatpak", 0o755, &CreateCtx::root()).expect("mkdir after eviction");
+        assert_eq!(m.state().mount.lookup_path(b"/flatpak").expect("lookup reused directory"), raw_ino,
+            "fixture must reuse the victim inode slot");
+        // Pre-fix this final mapping drop writes `poison` through `raw_ino`,
+        // which now names the directory and owns its block.
+        drop(stale_mapping_owner);
+        reused.create_child("repo", 0o644, &CreateCtx::root()).expect("create inside reused directory");
+        assert!(reused.lookup("repo").is_ok(), "reused directory remains structurally readable");
+        let _ = frame;
+        sync(&sb);
+    }
+    assert_fsck_clean(&disk, cap, "after dirty mmap orphan eviction + directory reuse");
 }
 
 #[test]

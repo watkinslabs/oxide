@@ -823,3 +823,42 @@ mkdir/create/tmpfile backend failures through ext4's canonical filesystem-error
 owner; `debug-boot` emits an allocation-free stable error kind for
 structural/device failures. Its injected create-I/O positive control reports exactly once;
 bypassing the owner makes the test fail with zero reports.
+
+## B1880 final-eviction corruption fix
+
+The stronger production error reporter reproduced the storage class outside
+journald: clean run `2938048` repeatedly returned `EIO` from mkdir of
+`/home/oxide/.local/share/flatpak/repo`. Read-only inspection of that run's home
+image found Flatpak directory inode 187 mapped to physical block 1531, but the
+block began with `GVariant` and contained GNOME settings data instead of ext4
+directory entries; `debugfs` reported a directory-block checksum mismatch.
+
+The page-cache and inode lifetimes were reversed. Final eviction freed an
+unlinked inode's blocks and slot before dropping its `Ext4FrameStore`. A dirty
+mapped dconf page retained independently could then drop after the inode number
+and block had been reused, and its destructor wrote stale bytes through that
+new owner. The corrected sequence rejects later writeback, waits for admitted
+writeback, discards every dirty/resident page, and only then truncates and frees
+the orphan.
+
+The deterministic integration regression holds a dirty `GVariant` mapping
+owner across final `iput`, reuses the victim inode as a directory, drops the
+stale owner, and creates a child. Before the fix the child create returns `EIO`;
+after the fix it passes and the resulting image is e2fsck-clean. The complete
+ext4 suite passes, including the existing linked-inode cache-drop persistence
+tests. Production x86_64 and aarch64 builds pass.
+
+Two independent clean release Firefox cold boots passed with persistent system
+and user journals present and `journalctl --verify --quiet` clean. Neither UART
+contains the earlier user-journal create `EIO`, the Flatpak mkdir `EIO`, or any
+other namespace-mutation `EIO` marker.
+
+| Run | Kernel us/call | HTTPS | Valid page | Invalid DNS | Result |
+|---|---:|---:|---:|---:|---|
+| `2949128` | 0.168--0.173 | 53.288 ms | 6.211 s | 2.664 s | PASS |
+| `2949897` | 0.155--0.160 | 39.423 ms | 4.923 s | 2.689 s | PASS |
+
+Saved harness output: `/tmp/b1880-firefox-final-1.log` and
+`/tmp/b1880-firefox-final-2.log`; UART:
+`/tmp/oxide-firefox-uart-2949128.log` and
+`/tmp/oxide-firefox-uart-2949897.log`.

@@ -99,6 +99,14 @@ impl vfs::SuperOps for Ext4SuperOps {
     /// # C: O(N_extents) when it frees, else O(1)
     fn evict_inode(&self, inode: &vfs::Inode) {
         if inode.nlink() == 0 {
+            // Linux waits for inode writeback and removes every page-cache
+            // page before ext4 truncates/frees the orphan.  Reversing these
+            // operations lets a mapping that outlives `struct inode` write
+            // stale bytes through a reused inode/block (observed as dconf's
+            // `GVariant` payload replacing a Flatpak directory block).
+            if let Some(data) = inode.private::<crate::rootfs::inode::Ext4FileData>() {
+                data.frames.discard_for_eviction();
+            }
             if let Some((st, ino)) = crate::rootfs::ext4_state_of(inode) { let _ = st.evict_orphan(ino); }
         }
         inode.set_state(vfs::inode::I_FREEING | vfs::inode::I_CLEAR, vfs::inode::I_DIRTY);

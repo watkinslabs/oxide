@@ -12,11 +12,34 @@ use block::types::InodeId;
 
 use super::{Ext4FrameStore, PG};
 
+/// One writeback admitted before final inode eviction.  The counter spans the
+/// complete dirty-tag removal, page copy and journal I/O sequence.
+struct WritebackGuard<'a> { store: &'a Ext4FrameStore }
+
+impl Drop for WritebackGuard<'_> {
+    fn drop(&mut self) { self.store.active_writebacks.fetch_sub(1, Ordering::Release); }
+}
+
 impl Ext4FrameStore {
+    /// Enter writeback unless final eviction has started.  The second flag
+    /// test closes `false read -> eviction publishes -> counter increment`:
+    /// eviction may observe zero in that window, but this entrant then sees
+    /// `evicting` and retires without touching storage. # C: O(1)
+    fn begin_writeback(&self) -> Option<WritebackGuard<'_>> {
+        if self.evicting.load(Ordering::Acquire) { return None; }
+        self.active_writebacks.fetch_add(1, Ordering::AcqRel);
+        if self.evicting.load(Ordering::Acquire) {
+            self.active_writebacks.fetch_sub(1, Ordering::Release);
+            return None;
+        }
+        Some(WritebackGuard { store: self })
+    }
+
     /// Flush dirty frames (whole file) to disk via `Mount::write_at`
     /// (journaled), clamped to i_size. `fsync`/`msync`/inode-drop driver.
     /// # C: O(N_dirty)
     pub(crate) fn writeback(&self) -> Result<(), ()> {
+        let Some(_active) = self.begin_writeback() else { return Ok(()); };
         self.writeback_idxs(self.take_dirty_all())
     }
 
@@ -24,6 +47,7 @@ impl Ext4FrameStore {
     /// dirty pages intersecting `[start, end)` (`end == u64::MAX` = to EOF).
     /// Pages outside the window stay dirty. # C: O(N_dirty in range)
     pub(crate) fn writeback_range(&self, start: u64, end: u64) -> Result<(), ()> {
+        let Some(_active) = self.begin_writeback() else { return Ok(()); };
         let lo = start / PG as u64;
         let hi = if end == u64::MAX { u64::MAX } else { (end + PG as u64 - 1) / PG as u64 };
         self.writeback_idxs(self.take_dirty_range(lo, hi))

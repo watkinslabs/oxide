@@ -13,6 +13,7 @@
 //
 // Deliberately free of any target gate so the classification is hosted-testable.
 
+use crate::dir::DirError;
 use crate::{InodeError, MountError};
 
 use super::state::RootfsState;
@@ -25,7 +26,11 @@ pub(crate) fn is_inconsistency(e: &MountError) -> bool {
         MountError::CorruptExtentTree | MountError::BadChecksum => true,
         MountError::Inode(InodeError::BadExtentMagic)
         | MountError::Inode(InodeError::TooManyExtents) => true,
-        MountError::Superblock(_) | MountError::Gdt(_) | MountError::Dir(_) => true,
+        MountError::Superblock(_) | MountError::Gdt(_) => true,
+        MountError::Dir(DirError::Short)
+        | MountError::Dir(DirError::BadRecLen)
+        | MountError::Dir(DirError::Overrun)
+        | MountError::Dir(DirError::BadNameLen) => true,
         // Freeing a block whose bit was already clear, or naming one outside
         // every group, means the allocator's on-disk view disagrees with
         // itself.
@@ -62,7 +67,12 @@ fn error_kind(e: &MountError) -> &'static [u8] {
         MountError::Superblock(_) => b"superblock",
         MountError::Gdt(_) => b"gdt",
         MountError::Inode(_) => b"inode",
-        MountError::Dir(_) => b"directory",
+        MountError::Dir(DirError::Short) => b"directory-short",
+        MountError::Dir(DirError::BadRecLen) => b"directory-bad-rec-len",
+        MountError::Dir(DirError::Overrun) => b"directory-overrun",
+        MountError::Dir(DirError::BadNameLen) => b"directory-bad-name-len",
+        MountError::Dir(DirError::Full) => b"directory-full",
+        MountError::Dir(DirError::NotFound) => b"directory-not-found",
         MountError::NotFound => b"not-found",
         MountError::NotDir => b"not-directory",
         MountError::NotExtents => b"not-extents",
@@ -113,8 +123,10 @@ mod tests {
         assert!(is_inconsistency(&MountError::DoubleFree));
         assert!(is_inconsistency(&MountError::BadBlock));
         assert!(is_inconsistency(&MountError::BlockIo));
+        assert!(is_inconsistency(&MountError::Dir(DirError::BadRecLen)));
         assert_eq!(error_kind(&MountError::BlockIo), b"block-io");
         assert_eq!(error_kind(&MountError::BadChecksum), b"bad-checksum");
+        assert_eq!(error_kind(&MountError::Dir(DirError::BadRecLen)), b"directory-bad-rec-len");
     }
 
     /// Ordinary answers about a HEALTHY filesystem are not errors about the
@@ -131,6 +143,8 @@ mod tests {
         assert!(!is_inconsistency(&MountError::ExtentTreeFull));
         assert!(!is_inconsistency(&MountError::NotExtents));
         assert!(!is_inconsistency(&MountError::Inode(InodeError::BadLen)));
+        assert!(!is_inconsistency(&MountError::Dir(DirError::Full)));
+        assert!(!is_inconsistency(&MountError::Dir(DirError::NotFound)));
     }
 
     /// A corrupt extent tree surfaces as an I/O error, which is the number the
