@@ -9,6 +9,12 @@ Older tables use the pre-D473 5-column shape: `Status | Sev | Issue | Evidence |
 Owner`. The live ledger gained a `Class` column in D473; archived rows keep the
 shape they were retired in; post-D473 imports retain the `Class` column.
 
+## Namespaces / procfs
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED cb759577e | DEFECT | med | `/proc/<pid>/status` exposed internal UID/GID credentials unchanged when the proc mount belonged to a different user namespace. | Each procfs instance captures the mounting user namespace; its pid status renderer translates all four UID and GID slots plus supplementary groups through the canonical user-namespace engine, munging unmapped IDs to overflow. The hosted mapped/unmapped regression, full 165-test procfs suite, both target checks, and paired smoke passed; changing a mapped expected UID makes the regression fail. | B1936-procfs-userns-ids |
+
 ## Tooling / gates
 
 | Status | Sev | Issue | Evidence | Owner |
