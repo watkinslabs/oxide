@@ -609,6 +609,8 @@ open issue. Live rows that still need the work carry it in their own row.
 
 ### Memory / page cache
 
+| FIXED fdc8eb35a | low | The x86 PKRU default had no debugfs control despite owning an atomic kernel-wide default. | `/sys/kernel/debug/x86/init_pkru` now appears only when OSPKE is enabled, uses owner read/write permissions, accepts base-0 integer input, and delegates to the sole PKRU default setter. | B1925-pkru-debugfs-control |
+
 | FIXED 3f47f7d92 | low | `cachestat` could not report ext4 pages in writeback because the frame store carried no per-index in-flight state. | The frame store now owns counted per-index writeback state, so concurrent cache-stat walks report it and reclaim excludes the page until the final overlapping flush completes. | B1923-cachestat-writeback-state |
 
 | FIXED f8c9cb756 | low | `cachestat` eviction shadows could grow without bound for a live ext4 inode under repeated page reclamation. | The ext4 frame store now retains a small floor plus a resident-cache-scaled history budget and discards oldest surplus shadows; the regression proves pruning preserves the newest history. | B1921-cachestat-shadow-reclaim |
