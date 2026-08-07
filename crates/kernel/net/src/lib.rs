@@ -204,6 +204,7 @@ mod tests_ipv4_udp_errors;
 mod tests_arp_next_hop;
 #[cfg(test)]
 mod tests_ipv4_options_tx;
+#[cfg(test)]
 mod tests_ipv4_route_mib;
 #[cfg(test)]
 mod tests_ipv4_options_rx;
