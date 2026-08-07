@@ -1,5 +1,11 @@
 # Fixed issues
 
+### F836-netlink-dump-continuation
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 1e0af1e09 | MISSING | low | `Wmem` and `Dump` are reported as zero. The reference reports `sk_wmem_alloc` and `cb_running`; neither has a source here yet — netlink sends are synchronous, and dumps are built and enqueued in one call rather than continued across reads. | One multipart dump continuation is socket-owned, emits bounded frames after prior reads, and drives the proc `Dump` field; synchronous request handling has no queued write allocation. `cargo test -p netlink --lib` (286), `cargo check -p kmain`, `make smoke`, and the pre-push gate passed. | [CLAIMED F836-netlink-dump-continuation 2026-08-07] |
+
 ### F835-rtnetlink-link-target-netns
 
 | Status | Class | Sev | Issue | Evidence | Owner |
