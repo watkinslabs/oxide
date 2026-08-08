@@ -15,7 +15,9 @@ pub struct WaitList;
 
 #[cfg(not(target_os = "oxide-kernel"))]
 impl WaitList {
+    /// # C: O(1)
     pub const fn new() -> Self { Self }
+    /// # C: O(1)
     pub fn wake_all(&self) {}
 }
 
@@ -54,6 +56,7 @@ pub unsafe fn wait_until(wq: &WaitList, killable: bool, cond: impl FnMut() -> bo
 /// Hosted stand-in: nothing sleeps, so an unmet condition is reported as an
 /// interruption rather than looping forever.
 /// # SAFETY: never parks; see the live variant for the real contract.
+/// # C: O(1)
 #[cfg(not(target_os = "oxide-kernel"))]
 pub unsafe fn wait_until(_wq: &WaitList, _killable: bool, mut cond: impl FnMut() -> bool) -> Woke {
     if cond() { Woke::Ready } else { Woke::Interrupted }
