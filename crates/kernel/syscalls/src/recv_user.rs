@@ -116,6 +116,26 @@ impl RecvUser {
 
     /// Scatter payload after `offset` bytes already copied by this receive. # C: O(iov + bytes)
     pub fn copy_payload_at(&self, offset: usize, payload: &[u8]) -> Result<usize, i64> {
+        let (copied, faulted) = self.scatter(offset, payload);
+        if faulted && copied == 0 { return Err(errno(Errno::Efault)); }
+        Ok(copied)
+    }
+
+    /// Copy one queued fragment the way a stream transport consumes it: all of
+    /// it, or none of it. A destination fault reports EFAULT however much of
+    /// the fragment reached user memory, so the transport retires nothing and
+    /// the receive answers with whatever earlier fragments delivered. A copy
+    /// cut short because the caller's buffer ran out is not a fault and
+    /// reports what fit. # C: O(iov + bytes)
+    pub fn copy_payload_fragment(&self, offset: usize, payload: &[u8]) -> Result<usize, i64> {
+        let (copied, faulted) = self.scatter(offset, payload);
+        if faulted { return Err(errno(Errno::Efault)); }
+        Ok(copied)
+    }
+
+    /// Bytes placed, and whether the destination faulted. A short copy with no
+    /// fault means the caller's buffer ran out. # C: O(iov + bytes)
+    fn scatter(&self, offset: usize, payload: &[u8]) -> (usize, bool) {
         let mut copied = 0usize;
         let mut skip = offset;
         for iov in &self.iov {
@@ -128,9 +148,9 @@ impl RecvUser {
             // SAFETY: payload suffix is readable; raw usercopy recovers destination faults.
             let left = unsafe { uaccess::raw_copy_to_user(iov.base + at as u64, payload[copied..].as_ptr(), take) };
             copied += take - left;
-            if left != 0 { return if copied != 0 { Ok(copied) } else { Err(errno(Errno::Efault)) }; }
+            if left != 0 { return (copied, true); }
         }
-        Ok(copied)
+        (copied, false)
     }
 
     /// Scatter one record atomically from the receiver's point of view.
@@ -138,8 +158,9 @@ impl RecvUser {
     /// record transports must retire that record rather than re-expose it.
     /// # C: O(iov + bytes)
     pub fn copy_payload_record(&self, payload: &[u8]) -> Result<usize, i64> {
-        let copied = self.copy_payload(payload)?;
-        if copied == payload.len() { Ok(copied) } else { Err(errno(Errno::Efault)) }
+        let (copied, _) = self.scatter(0, payload);
+        if copied == payload.len() { return Ok(copied); }
+        crate::recv_txn::record_result(copied, errno(Errno::Efault))
     }
 
     /// Copy a source sockaddr using imported msg_namelen and publish its true length. # C: O(bytes + faults)

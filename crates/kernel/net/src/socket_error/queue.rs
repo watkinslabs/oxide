@@ -17,6 +17,9 @@ use crate::addr::IpAddr;
 /// transport owner.
 pub struct SocketError {
     state: Spinlock<SocketErrorState, SocketLockClass>,
+    /// `IPV6_RECVPATHMTU`'s one-slot report. Not part of the queue and not
+    /// governed by its budget or its pending errno — see `super::pathmtu`.
+    pub pathmtu: super::pathmtu::PathMtuSlot,
 }
 
 struct SocketErrorState {
@@ -65,6 +68,7 @@ impl SocketError {
                 rmem_limit: SOCK_ERRQUEUE_RMEM_DEFAULT, rmem_used: 0, zerocopy_next_id: 0,
                 queue: VecDeque::new(),
             }),
+            pathmtu: super::pathmtu::PathMtuSlot::new(),
         }
     }
 

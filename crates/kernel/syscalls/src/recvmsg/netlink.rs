@@ -84,12 +84,13 @@ pub(crate) fn recv_pinned(file: &alloc::sync::Arc<vfs::File>, file_nonblock: boo
         Ok(delivered) => delivered,
         Err(error) => return error,
     };
-    if let Err(e) = user.copy_name(encoded_sockaddr_nl(src_pid,
-        source_groups(sock.protocol, &dgram, multicast_group)).as_bytes()) { return e; }
     let mut out_flags = delivered.flags;
     if copied < dgram.len() { out_flags |= MSG_TRUNC as u32; }
-    if let Err(e) = user.finish(delivered.len, out_flags) { return e; }
-    if flags & MSG_TRUNC != 0 { dgram.len() as i64 } else { copied as i64 }
+    let success = if flags & MSG_TRUNC != 0 { dgram.len() as i64 } else { copied as i64 };
+    crate::recv_txn::publish_settled(user, delivered.len,
+        encoded_sockaddr_nl(src_pid,
+            source_groups(sock.protocol, &dgram, multicast_group)).as_bytes(),
+        out_flags, success)
 }
 
 #[cfg(test)]
