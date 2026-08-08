@@ -15,11 +15,14 @@
 //     Userspace mmap's a file, touches it, and the read fails: the mapping is
 //     valid, the memory behind it is not. Reporting SIGSEGV here tells a crash
 //     reporter the program dereferenced garbage, which is a lie.
-//   * out of memory -> no signal at all. Userspace resumes and re-takes the
-//     fault; whatever the memory-pressure path decided (a fatal signal on the
-//     chosen victim) is what ends the process, and if pressure was relieved the
-//     retry succeeds.
-//   * an explicit retry request -> no signal, re-take the fault.
+//   * out of memory -> no signal at all, and NOT to the faulting task. The
+//     out-of-memory selector chooses a victim and kills it; the faulting
+//     instruction is then re-taken and uses the memory that victim releases.
+//     Signalling the task that happened to fault would kill whichever process
+//     touched a page first rather than the one consuming the machine.
+//     `invokes_out_of_memory` below is what carries "run the selector" to the
+//     fault entry, and what makes the retry terminate.
+//   * an explicit retry request -> no signal, re-take the fault, no selector.
 //
 // Ungated on purpose: this is the decision, and it is `cargo test -p vmm`
 // provable. The fault entry in `mm-pmm` is target-gated, so a decision written
@@ -78,6 +81,23 @@ pub fn signal_for(failure: FaultFailure, arch: FaultSignal) -> Option<FaultSigna
         FaultFailure::BadArea  => Some(arch),
         FaultFailure::BusError => Some(FaultSignal { signo: SIGBUS, code: code::BUS_ADRERR }),
         FaultFailure::Oom | FaultFailure::Retake => None,
+    }
+}
+
+/// Whether this failure must invoke the out-of-memory selector before the
+/// faulting instruction is re-taken.
+///
+/// The two no-signal failures are NOT the same answer and must not collapse.
+/// A retry request means the resolver already did what was needed and the
+/// instruction re-runs into a state that has changed. Out of memory means
+/// nothing changed and nothing will: with no victim chosen and killed, the
+/// same instruction re-faults against the same exhausted supply forever. The
+/// selector is what makes that retry terminate.
+/// # C: O(1)
+pub fn invokes_out_of_memory(failure: FaultFailure) -> bool {
+    match failure {
+        FaultFailure::Oom => true,
+        FaultFailure::BadArea | FaultFailure::BusError | FaultFailure::Retake => false,
     }
 }
 
@@ -145,13 +165,34 @@ mod tests {
     #[test]
     fn out_of_memory_raises_no_signal_and_re_takes_the_fault() {
         assert_eq!(failure_of(Error::NoMem), FaultFailure::Oom);
-        assert_eq!(signal_of(Error::NoMem, maperr()), None);
+        // The faulting task is not the one that pays: no signal reaches it,
+        // whatever the hardware said about the access.
+        for arch in [maperr(), accerr(), pkuerr()] { assert_eq!(signal_of(Error::NoMem, arch), None); }
+    }
+
+    #[test]
+    fn out_of_memory_is_the_only_failure_that_runs_the_selector() {
+        assert!(invokes_out_of_memory(FaultFailure::Oom));
+        for f in [FaultFailure::BadArea, FaultFailure::BusError, FaultFailure::Retake] {
+            assert!(!invokes_out_of_memory(f));
+        }
     }
 
     #[test]
     fn explicit_retry_raises_no_signal() {
         assert_eq!(failure_of(Error::Again), FaultFailure::Retake);
         assert_eq!(signal_of(Error::Again, maperr()), None);
+    }
+
+    #[test]
+    fn the_two_no_signal_failures_do_not_collapse_together() {
+        // Both answer `None` to the signal question and they are still not the
+        // same failure: one re-takes the instruction, the other must first
+        // make memory exist. Collapsing them is the livelock.
+        assert_eq!(signal_of(Error::NoMem, maperr()), signal_of(Error::Again, maperr()));
+        assert_ne!(failure_of(Error::NoMem), failure_of(Error::Again));
+        assert_ne!(invokes_out_of_memory(FaultFailure::Oom),
+                   invokes_out_of_memory(FaultFailure::Retake));
     }
 
     #[test]
