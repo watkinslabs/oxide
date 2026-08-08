@@ -68,30 +68,38 @@ impl FileOps for PidfdFileOps {
         let Some(target) = inode.private::<PidfdInode>().map(|state| &state.target) else {
             return;
         };
-        let Some(task) = target.task() else {
-            let _ = write!(FdinfoFmt(out), "Pid:\t-1\n");
-            return;
-        };
         // Both rows are expressed in the READER's pid namespace: `Pid:` is the
         // number that namespace gives the target, and `NSpid:` continues with
         // one number per deeper level, so a reader that cannot name the target
         // is told so rather than handed the target's own private number.
-        let reader = sched::registry::reader_pid_ns();
-        let chain = target.nr_chain_from(&reader);
-        let chain = if chain.is_empty() {
-            match sched::registry::vnr_in(&task, &reader) {
-                Some(nr) => alloc::vec![nr],
-                None => alloc::vec::Vec::new(),
+        //
+        // Three distinct answers, and userspace separates them: the target is
+        // already reaped (`-1`); it is alive but the reader's namespace is not
+        // an ancestor, so no number there names it (`0` — a pid-number lookup
+        // that missed, not an absent task); or it is visible (its number, then
+        // one per deeper level). Folding the middle case onto `-1` told a
+        // sibling-namespace reader the process was gone while it was running.
+        let chain = match target.task() {
+            None => alloc::vec::Vec::new(),
+            Some(task) => {
+                let reader = sched::registry::reader_pid_ns();
+                let chain = target.nr_chain_from(&reader);
+                if chain.is_empty() {
+                    match sched::registry::vnr_in(&task, &reader) {
+                        Some(nr) => alloc::vec![nr],
+                        None     => alloc::vec![0],
+                    }
+                } else { chain }
             }
-        } else { chain };
-        match chain.first() {
-            None => { let _ = write!(FdinfoFmt(out), "Pid:\t-1\n"); }
-            Some(nr) => {
-                let _ = write!(FdinfoFmt(out), "Pid:\t{nr}\nNSpid:");
-                for nr in chain.iter() { let _ = write!(FdinfoFmt(out), "\t{nr}"); }
-                let _ = write!(FdinfoFmt(out), "\n");
-            }
+        };
+        let nr: i64 = match chain.first() { Some(nr) => *nr as i64, None => -1 };
+        // `NSpid:` always carries the same leading number, even when it is
+        // `-1`/`0`; only its deeper levels are conditional.
+        let _ = write!(FdinfoFmt(out), "Pid:\t{nr}\nNSpid:\t{nr}");
+        if nr > 0 {
+            for nr in chain.iter().skip(1) { let _ = write!(FdinfoFmt(out), "\t{nr}"); }
         }
+        let _ = write!(FdinfoFmt(out), "\n");
     }
 }
 

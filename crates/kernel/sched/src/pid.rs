@@ -11,5 +11,5 @@ mod numbers;
 #[cfg(test)]
 mod tests;
 
-pub use identity::{PidIdentity, PidInfo};
+pub use identity::{CoredumpRecord, PidIdentity, PidInfo};
 pub use numbers::{PidMapping, PidMappingError};

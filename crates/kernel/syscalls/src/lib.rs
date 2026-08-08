@@ -178,6 +178,10 @@ pub mod io_uring_identity;
 // record carries. Ungated so the mapping is testable — `acct_exit.rs` is
 // kernel-only.
 pub mod acct_ns;
+// pidfd ioctl (016 on a pidfd): the pidfs command vocabulary, the fixed vs
+// extensible match rules and the struct-length gate on the result mask.
+// Ungated so the ABI is unit-tested — `pidfd.rs` is kernel-only.
+pub mod pidfs_ioctl;
 mod fcntl_dup;
 mod exec_time;
 mod pidfd_signal_policy;

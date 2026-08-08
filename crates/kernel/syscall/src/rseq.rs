@@ -15,8 +15,9 @@ use crate::errno::Errno;
 pub const RSEQ_FLAG_UNREGISTER: u32 = 1 << 0;
 /// `RSEQ_FLAG_SLICE_EXT_DEFAULT_ON` — request slice extension on by default.
 /// Accepted at registration (Linux `RSEQ_FLAGS_SUPPORTED` names it
-/// unconditionally); the kernel only turns the feature on when it advertises
-/// `RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE`, which oxide does not.
+/// unconditionally); the feature only turns on for a v2-sized registration,
+/// the only form carrying `slice_ctrl` and the only one the kernel
+/// advertises `RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE` on.
 pub const RSEQ_FLAG_SLICE_EXT_DEFAULT_ON: u32 = 1 << 1;
 /// Linux `RSEQ_FLAGS_SUPPORTED` — flag bits legal on a REGISTER call.
 pub const RSEQ_FLAGS_SUPPORTED: u32 = RSEQ_FLAG_SLICE_EXT_DEFAULT_ON;

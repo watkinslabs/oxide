@@ -42,6 +42,16 @@ pub unsafe fn write_for_current(signo: i32, regs: *const crate::sig_dispatch::Us
     // first SIGSEGV, and a setuid binary's dump was readable to whoever owned
     // the pattern's directory.
     trace(b"entry", cx.signo as u64, cx.dumpable as u64);
+    // Linux `pidfs_coredump`: latch the verdict on the PID identity BEFORE any
+    // refusal arm, so a pidfd holder asking `PIDFD_GET_INFO` can tell a process
+    // that crashed and had its dump skipped from one that never crashed. The
+    // identity outlives the task, which is the only reason the answer survives
+    // to be read.
+    cur.pid.record_coredump(sched::pid::CoredumpRecord {
+        mask:   super::dumpable::coredump_verdict_mask(cx.dumpable),
+        signal: cx.signo as u32,
+        code:   sched::exit::status::wait_status(cur.exit_status.load(Ordering::Acquire)) as u32,
+    });
     if !dump_allowed(cx.dumpable) { trace(b"refused-dumpable", cx.dumpable as u64, 0); return; }
     let raw = pattern::core_pattern();
     let kind = pattern::kind_of(trim(&raw));
