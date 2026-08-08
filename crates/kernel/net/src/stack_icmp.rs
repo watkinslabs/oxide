@@ -45,12 +45,15 @@ fn update_pmtu_on_iface(stack: &NetStack, net_ns: u64, iface: NetIfaceId,
     Some(stack.inet_tables(net_ns).pmtu.update(iface, dst, mtu, link_mtu, floor))
 }
 
+/// `mark` is the mark of the socket the quoted packet was matched to, so the
+/// learned MTU lands on the route that socket transmits over. A quote matched
+/// to no socket carries the mark of the packet that provoked it, which for a
+/// locally originated one is that same socket's.
 fn update_pmtu_v4(stack: &NetStack, net_ns: u64, dst: crate::Ipv4Addr,
-                  bound: Option<NetIfaceId>, mtu: u32) -> Option<u32> {
+                  bound: Option<NetIfaceId>, mtu: u32, mark: u32) -> Option<u32> {
     let route = match bound {
-        Some(iface) => stack.route_v4_on_iface_in(net_ns, dst, iface,
-            crate::stack_binddev::UNMARKED).ok().flatten()?,
-        None => stack.routes.lookup_result_in(net_ns, dst).ok()?,
+        Some(iface) => stack.route_v4_on_iface_in(net_ns, dst, iface, mark).ok().flatten()?,
+        None => stack.routes.lookup_result_mark_in(net_ns, dst, mark).ok()?,
     };
     let link_mtu = stack.ifaces.lookup_in_ns(route.iface, net_ns)?.mtu();
     if route.metrics.locked(crate::route_metrics::RTAX_MTU) {
@@ -68,10 +71,17 @@ impl NetStack {
 
     /// Effective path MTU in one network namespace. # C: O(N)
     pub fn path_mtu_in(&self, net_ns: u64, dst: IpAddr, bound: Option<NetIfaceId>, probe: bool) -> NetResult<u32> {
+        self.path_mtu_mark_in(net_ns, dst, bound, probe, crate::stack_binddev::UNMARKED)
+    }
+
+    /// Effective path MTU over the route a socket's `SO_MARK` selects. The
+    /// learned PMTU is per interface, so a mark that changes the egress
+    /// interface changes the answer. # C: O(N)
+    pub fn path_mtu_mark_in(&self, net_ns: u64, dst: IpAddr, bound: Option<NetIfaceId>,
+        probe: bool, mark: u32) -> NetResult<u32> {
         if let IpAddr::V4(dst) = dst {
             let route = match bound {
-                Some(iface) => self.route_v4_on_iface_in(net_ns, dst, iface,
-                    crate::stack_binddev::UNMARKED)?
+                Some(iface) => self.route_v4_on_iface_in(net_ns, dst, iface, mark)?
                     .unwrap_or(crate::ResolvedRoute {
                         iface,
                         gateway: None,
@@ -80,7 +90,7 @@ impl NetStack {
                         priority: 0,
                         metrics: crate::RouteMetrics::NONE,
                     }),
-                None => self.routes.lookup_result_in(net_ns, dst)?,
+                None => self.routes.lookup_result_mark_in(net_ns, dst, mark)?,
             };
             let link_mtu = self.ifaces.lookup_in_ns(route.iface, net_ns)
                 .ok_or(NetError::Enetunreach)?.mtu();
@@ -276,7 +286,8 @@ pub fn handle_error_in(stack: &NetStack, net_ns: u64, iface: crate::NetIfaceId, 
             if let Some(mtu) = frag_mtu {
                 if crate::uapi::ip_pmtudisc_accepts_pmtu(endpoint.pmtudisc()) {
                     update_pmtu_v4(stack, net_ns, orig_hdr.dst,
-                        endpoint.snapshot().bound_iface, mtu);
+                        endpoint.snapshot().bound_iface, mtu,
+                        crate::stack_binddev::UNMARKED);
                 }
             }
             endpoint.publish_quoted_error(raw_entry.clone(), hard, orig_ip);
@@ -303,7 +314,7 @@ pub fn handle_error_in(stack: &NetStack, net_ns: u64, iface: crate::NetIfaceId, 
             if !entry.accepts_pmtu_update() { return; }
             let mtu = frag_mtu.expect("frag-needed MTU is present");
             if let Some(effective) = update_pmtu_v4(
-                stack, net_ns, orig_hdr.dst, entry.bound_iface(), mtu,
+                stack, net_ns, orig_hdr.dst, entry.bound_iface(), mtu, entry.mark(),
             ) {
                 stack.tcp_mtu_reduced(&entry, effective);
             }
@@ -331,7 +342,8 @@ pub fn handle_error_in(stack: &NetStack, net_ns: u64, iface: crate::NetIfaceId, 
                 if let Some(mtu) = frag_mtu {
                     let mode = target.pmtudisc();
                     if crate::uapi::ip_pmtudisc_accepts_pmtu(mode) {
-                        update_pmtu_v4(stack, net_ns, orig_hdr.dst, target.bound_iface(), mtu);
+                        update_pmtu_v4(stack, net_ns, orig_hdr.dst, target.bound_iface(), mtu,
+                            crate::stack_binddev::UNMARKED);
                     }
                     if mode == crate::uapi::IP_PMTUDISC_DONT { return; }
                     target.publish(entry, true);

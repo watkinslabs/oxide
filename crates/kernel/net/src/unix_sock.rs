@@ -40,9 +40,9 @@ pub use stream::{stream_recv_continues, UnixPair, UnixRing, UnixStreamError, Uni
 pub use stream::{at_mark as oob_at_mark, OobStep};
 pub use msg_cred::MsgCred;
 pub use msg_pair::{UnixMsg, UnixMsgError, UnixMsgKind, UnixMsgPair, UnixMsgRing, UnixMsgSendError};
-pub use dgram::{UnixDgram, UnixDgramQueue};
+pub use dgram::{DgramPeer, UnixDgram, UnixDgramQueue};
 pub use listener::{UnixAddr, UnixAddrKey, UnixConnectError, UnixListener};
-pub use writable::{dgram_peer_writable, dgram_symmetric_pair, unix_writable};
+pub use writable::{dgram_may_send, dgram_peer_writable, dgram_symmetric_pair, unix_writable};
 pub use registry::{unix_path_display, unix_path_is_abstract, UnixRegistry};
 pub use gc::{classify_files, collect as collect_scm_rights, inflight_rights, register_file, transfer_guard, GcLink, GcNode, GcPin, GcRights, GcTransferGuard};
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]

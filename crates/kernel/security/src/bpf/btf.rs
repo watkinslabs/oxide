@@ -19,7 +19,7 @@ mod validate;
 
 pub(super) use command::{get_fd_by_id, get_next_id, load};
 pub(super) use info::get_info_by_fd;
-pub(crate) use kernel::lsm_hook_by_btf_id;
+pub(crate) use kernel::{iter_target_by_btf_id, lsm_hook_by_btf_id, published_len, published_read};
 
 /// Highest type id any object may declare. An attach target above it names
 /// no type in any object and is refused before any object is consulted.

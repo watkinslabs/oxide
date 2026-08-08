@@ -13,11 +13,16 @@ pub(super) fn connect(sock: &Arc<InetSocket>, addr: crate::UnixAddr, nonblock: b
     {
         let kind = sock.kind.lock();
         if let SockKind::UnixDgram(q) = &*kind {
-            if crate::net_ns::unix_registry_for_addr_in(&sock.net_namespace, &addr)
-                .dgram_lookup_addr(&addr).is_none() {
-                return Err(NetError::Econnrefused);
+            let Some(other) = crate::net_ns::unix_registry_for_addr_in(&sock.net_namespace, &addr)
+                .dgram_lookup_addr(&addr) else { return Err(NetError::Econnrefused) };
+            // The destination is already connected to a third party, so it
+            // takes traffic from that party alone. Tested once the target is
+            // resolved and before this socket records it, so a refused connect
+            // leaves any previous association untouched.
+            if !crate::unix_sock::dgram_may_send(other.peer_id(), Some(q.id())) {
+                return Err(NetError::Eperm);
             }
-            q.set_peer(addr);
+            q.set_peer(addr, other.id());
             return Ok(());
         }
         match &*kind {

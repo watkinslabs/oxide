@@ -135,21 +135,21 @@ fn the_path_mtu_announcement_is_stashed_only_when_the_socket_asked_for_it() {
     let v4 = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 9));
 
     let error = SocketError::new();
-    assert_eq!(report(&error, 0, v6, 53, None, NetError::Emsgsize, false), NetError::Emsgsize);
+    assert_eq!(report(&error, 0, v6, 53, None, NetError::Emsgsize, false, 0), NetError::Emsgsize);
     assert!(!error.pathmtu.pending(), "a socket that did not ask is charged nothing");
 
     let error = SocketError::new();
-    assert_eq!(report(&error, 0, v4, 53, None, NetError::Emsgsize, true), NetError::Emsgsize);
+    assert_eq!(report(&error, 0, v4, 53, None, NetError::Emsgsize, true, 0), NetError::Emsgsize);
     assert!(!error.pathmtu.pending(), "the announcement is an IPv6 mechanism");
 
     let error = SocketError::new();
-    assert_eq!(report(&error, 0, v6, 53, None, NetError::Enetunreach, true),
+    assert_eq!(report(&error, 0, v6, 53, None, NetError::Enetunreach, true, 0),
         NetError::Enetunreach);
     assert!(!error.pathmtu.pending(), "only a size failure names an MTU");
 
     let error = SocketError::new();
     error.set_recverr6(true);
-    assert_eq!(report(&error, 0, v6, 53, None, NetError::Emsgsize, true), NetError::Emsgsize);
+    assert_eq!(report(&error, 0, v6, 53, None, NetError::Emsgsize, true, 0), NetError::Emsgsize);
     assert!(error.pathmtu.pending());
     assert_eq!(error.pathmtu.take().map(|r| r.dst), Some(Ipv6Addr::LOOPBACK));
     assert_eq!(error.take_extended().map(|entry| entry.origin), Some(SO_EE_ORIGIN_LOCAL),

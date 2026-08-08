@@ -192,3 +192,35 @@ fn take_wait4_waiters_is_a_no_op_for_an_unregistered_parent() {
     assert!(take_wait4_waiters(&mut waiters, 9999).is_empty());
     assert_eq!(waiters.len(), 1);
 }
+
+// --- kernel-thread exit disposition ------------------------------------------
+//
+// The wiring, not just the rule: `exit_notify_decision` must reach for the
+// kernel-thread parent's disposition for a parentless kernel thread, and must
+// NOT reach for it for any other parentless task. Without the first half a
+// kernel thread that exits parks a zombie no task can wait for; without the
+// second half an orphan would be released before `reap_orphans` can re-home it.
+
+#[test]
+fn a_parentless_kernel_thread_is_released_at_exit() {
+    let t = Arc::new(Task::new(9301, "kth", SchedClass::Normal { weight: 1024 }));
+    assert!(t.kernel_thread.load(Ordering::Acquire));
+    assert_eq!(t.parent_tid.load(Ordering::Acquire), 0);
+    // Real order: `finish_exit` retires the task and empties its group before
+    // the notification decision is taken.
+    let _ = Arc::clone(&t.thread_group).finish_exit(Arc::clone(&t));
+    let d = notify::exit_notify_decision(&t, None);
+    assert!(d.autoreap, "a kernel thread must leave no zombie behind");
+    assert_eq!(d.signal, None);
+}
+
+#[test]
+fn a_parentless_user_task_is_not_released_at_exit() {
+    let t = Arc::new(Task::new(9302, "usr", SchedClass::Normal { weight: 1024 }));
+    t.kernel_thread.store(false, Ordering::Release);
+    // Real order: `finish_exit` retires the task and empties its group before
+    // the notification decision is taken.
+    let _ = Arc::clone(&t.thread_group).finish_exit(Arc::clone(&t));
+    let d = notify::exit_notify_decision(&t, None);
+    assert!(!d.autoreap, "an orphan must stay reapable until it is re-homed");
+}

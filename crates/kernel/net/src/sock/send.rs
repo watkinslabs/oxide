@@ -1,4 +1,5 @@
 use super::*;
+use crate::sock_v6::RAW_NO_PORT;
 
 /// Arm, recheck, and park one blocking TCP sender on canonical ACK readiness. # C: O(retx) + park
 #[cfg(target_os = "oxide-kernel")]
@@ -63,7 +64,15 @@ fn sendto_raw4(sock: &InetSocket, endpoint: &alloc::sync::Arc<crate::raw4::Raw4E
         raw_control.multicast_loop = Some(
             sock.opts.ip_mcast_loop.load(core::sync::atomic::Ordering::Acquire) != 0);
     }
-    stack().send_raw4(endpoint, dst, payload, options, &raw_control, tx)?;
+    // The option area a non-header-included datagram carries stands between the
+    // fixed header and the payload, so a size refusal announces the room left
+    // for the payload rather than the raw path MTU.
+    let option_bytes = if endpoint.hdrincl() { 0 } else {
+        raw_control.options.as_ref().map_or(0, crate::ipv4_options::Compiled::len)
+    };
+    stack().send_raw4(endpoint, dst, payload, options, &raw_control, tx)
+        .map_err(|error| crate::socket_error::report_send_failure_pmtu(&sock.error, sock.net_ns(),
+            crate::addr::IpAddr::V4(dst), RAW_NO_PORT, iface, error, false, option_bytes as u32))?;
     if crate::send_control::should_drain_loopback(multicast, raw_control.multicast_loop,
         sock.opts.ip_mcast_loop.load(core::sync::atomic::Ordering::Acquire) != 0)
     { drain_loopback(); }

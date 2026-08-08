@@ -116,6 +116,37 @@ fn receive_memory_budget_bounds_the_queue() {
         "dequeue returns the budget");
 }
 
+// The error queue is charged against the socket's own receive budget, so a
+// socket that names a receive size names it for both queues. A socket that
+// never names one keeps the default, and a budget too small for one record
+// admits nothing at all.
+#[test]
+fn the_error_queue_budget_follows_the_socket_receive_budget() {
+    let dst = crate::addr::IpAddr::V4(crate::Ipv4Addr::LOOPBACK);
+    let publish = |error: &SocketError, port| error.publish_local(Errno::Emsgsize as i32,
+        dst, port, 1200);
+
+    let untouched = SocketError::new();
+    untouched.set_recverr4(true);
+    assert!(publish(&untouched, 1), "an unwritten budget is the default, not zero");
+
+    let widened = SocketError::new();
+    widened.set_recverr4(true);
+    widened.adopt_rcvbuf((SOCK_ERRQUEUE_RECORD_OVERHEAD * 2) as i32);
+    assert!(publish(&widened, 1));
+    assert!(!publish(&widened, 2), "the named size bounds the queue");
+
+    let narrowed = SocketError::new();
+    narrowed.set_recverr4(true);
+    narrowed.adopt_rcvbuf(SOCK_ERRQUEUE_RECORD_OVERHEAD as i32);
+    assert!(!publish(&narrowed, 1), "a budget one record wide holds none");
+
+    let negative = SocketError::new();
+    negative.set_recverr4(true);
+    negative.adopt_rcvbuf(-1);
+    assert!(!publish(&negative, 1), "a negative budget admits nothing");
+}
+
 #[test]
 fn zerocopy_completions_coalesce_only_when_identifiers_are_contiguous() {
     let error = SocketError::new();

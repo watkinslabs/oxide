@@ -40,11 +40,11 @@ pub fn is_perfmon_prog_type(t: u32) -> bool {
 /// build-time-selected subset; a type with no entry is `-EINVAL`.
 ///
 /// The built-in set here is exactly the set that can be *executed*:
-/// socket filters, the cgroup device and network hooks, and the LSM hooks
-/// this kernel publishes as attach targets.
+/// socket filters, the cgroup device and network hooks, the LSM hooks this
+/// kernel publishes as attach targets, and the iterator targets it can walk.
 /// # C: O(1)
 pub fn prog_type_supported(t: u32) -> bool {
     matches!(t, uapi::prog_type::SOCKET_FILTER | uapi::prog_type::CGROUP_DEVICE
         | uapi::prog_type::CGROUP_SKB | uapi::prog_type::CGROUP_SOCK_ADDR
-        | uapi::prog_type::LSM)
+        | uapi::prog_type::LSM | uapi::prog_type::TRACING)
 }

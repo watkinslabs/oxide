@@ -86,10 +86,17 @@ pub(super) fn accrue_child_rusage(reaper: &Task, r: syscall::rusage::Rusage) {
 /// # C: O(1)
 pub(super) fn exit_notify_decision(task: &Task, parent: Option<&Task>) -> crate::exit::notify::ExitNotify {
     use crate::exit::notify::{exit_notify, ParentSigchld};
-    let disposition = parent.map_or(ParentSigchld::default_action(), |p| {
-        let act = p.sigactions_ref().get(crate::live::sigpend::Signum::Sigchld.as_u8() as u32);
-        ParentSigchld { handler: act.handler, flags: act.flags }
-    });
+    let disposition = match parent {
+        Some(p) => {
+            let act = p.sigactions_ref().get(crate::live::sigpend::Signum::Sigchld.as_u8() as u32);
+            ParentSigchld { handler: act.handler, flags: act.flags }
+        }
+        // A kernel thread's parent is the kernel's thread spawner, which
+        // ignores every signal — so the exit auto-reaps instead of parking a
+        // zombie nothing can wait for.
+        None if task.kernel_thread.load(Ordering::Acquire) => ParentSigchld::kernel_thread_parent(),
+        None => ParentSigchld::default_action(),
+    };
     // `finish_exit` has already retired this task, so `live_count() == 0` is
     // Linux's `thread_group_empty(tsk)` at `exit_notify` time.
     exit_notify(

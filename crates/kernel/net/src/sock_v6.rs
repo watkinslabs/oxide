@@ -9,6 +9,7 @@ use crate::sock::{
     InetSocket,
     alloc_ephemeral_udp6_owned, drain_loopback, stack,
 };
+use crate::sock_opts::sol_ipv6::pathmtu::extension_bytes;
 
 /// v6 connect dispatch. # C: O(1) UDP, O(RTT) TCP.
 pub(crate) fn connect_udp6_locked(sock: &InetSocket, local_port: &mut Option<u16>,
@@ -171,10 +172,21 @@ fn xmit_raw6_with_sticky(sock: &InetSocket, endpoint: &crate::raw6::Raw6Endpoint
     } else { scoped_iface(sock, dst_ip, scope_id)? };
     let (_, scoped) = sticky_pktinfo_choice(crate::Ipv6Addr::ANY,
         sock.opts.ipv6.sticky_pktinfo(), scoped);
+    // A header-included send carries the caller's own header chain, so no
+    // extension-header area of ours stands between the fixed header and the
+    // payload and none comes off the announced MTU.
+    let header_bytes = if endpoint.header_included() { 0 } else { extension_bytes(&effective) };
     stack().send_raw6_with_frag_size(endpoint, dst_ip, scoped,
         protocol_override, payload, hop, pmtudisc, sock.opts.ipv6.frag_size(), &effective,
         sock.opts.ipv6.srcprefs(), tx)
+        .map_err(|error| crate::socket_error::report_send_failure_pmtu(&sock.error, sock.net_ns(),
+            crate::addr::IpAddr::V6(dst_ip), RAW_NO_PORT, scoped, error, recvpathmtu(sock),
+            header_bytes))
 }
+
+/// A raw socket names no transport port, so the destination a local error
+/// records carries none.
+pub(crate) const RAW_NO_PORT: u16 = 0;
 
 fn ensure_udp6_bound(sock: &InetSocket, dst_ip: crate::Ipv6Addr, scope_id: u32)
     -> Result<u16, NetError>
@@ -244,8 +256,9 @@ fn sendto_v4_mapped(sock: &InetSocket, dst_ip: crate::Ipv4Addr, dst_port: u16,
         sock.opts.ip_mtu_discover.load(core::sync::atomic::Ordering::Acquire),
         sock.opts.ip.options().as_ref(),
         sock.opts.base.generic.flag(crate::sock_opts::sol_socket::flag::NO_CHECK_TX), tx,
-    ).map_err(|error| crate::socket_error::report_send_failure(&sock.error, sock.net_ns(),
-        crate::addr::IpAddr::V4(dst_ip), dst_port, bound, error))?;
+    ).map_err(|error| crate::socket_error::report_send_failure_pmtu(&sock.error, sock.net_ns(),
+        crate::addr::IpAddr::V4(dst_ip), dst_port, bound, error, false,
+        sock.opts.ip.options_len() as u32))?;
     if !dst_ip.is_multicast() || multicast_loop { drain_loopback(); }
     Ok(payload.len())
 }
@@ -341,7 +354,7 @@ pub fn sendto_v6_ctl(sock: &InetSocket,
                     sock.opts.ipv6.srcprefs(), &control, tx,
                 ).map_err(|error| crate::socket_error::report_send_failure_pmtu(&sock.error,
                     sock.net_ns(), crate::addr::IpAddr::V6(dst_ip), dst_port, iface, error,
-                    recvpathmtu(sock)))?;
+                    recvpathmtu(sock), extension_bytes(&control)))?;
             }
             drain_loopback();
             return Ok(payload.len());
@@ -355,7 +368,8 @@ pub fn sendto_v6_ctl(sock: &InetSocket,
                         crate::sysctl::ipv6_auto_flowlabels_in(sock.net_ns()))),
         sock.opts.ipv6.srcprefs(), &control, tx,
     ).map_err(|error| crate::socket_error::report_send_failure_pmtu(&sock.error, sock.net_ns(),
-        crate::addr::IpAddr::V6(dst_ip), dst_port, iface, error, recvpathmtu(sock)))?;
+        crate::addr::IpAddr::V6(dst_ip), dst_port, iface, error, recvpathmtu(sock),
+        extension_bytes(&control)))?;
     drain_loopback();
     Ok(payload.len())
 }
@@ -381,6 +395,97 @@ mod tests {
             Some(crate::NetIfaceId::from_raw(3)));
         assert_eq!(source, sticky);
         assert_eq!(iface, Some(crate::NetIfaceId::from_raw(3)));
+    }
+
+    const RAW_MTU: u32 = 1280;
+    const RAW_LOCAL: crate::Ipv6Addr =
+        crate::Ipv6Addr([0x20, 1, 0xd, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    const RAW_DST: crate::Ipv6Addr =
+        crate::Ipv6Addr([0x20, 1, 0xd, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9]);
+
+    struct RawSinkDev;
+
+    impl crate::netdev::NetDev for RawSinkDev {
+        fn name(&self) -> &str { "raw6err0" }
+        fn mac(&self) -> crate::addr::MacAddr { crate::addr::MacAddr::ZERO }
+        fn mtu(&self) -> u32 { RAW_MTU }
+        fn retire_namespace(&self) {}
+        fn namespace_drop_action(&self) -> crate::NamespaceDropAction {
+            crate::NamespaceDropAction::Destroy
+        }
+        fn xmit(&self, _packet: crate::pkt::Pkt) -> crate::netdev::NetResult<()> { Ok(()) }
+    }
+
+    /// A raw IPv6 socket in its own namespace, routed over one `RAW_MTU` link,
+    /// forbidden to fragment and collecting both error reports. # C: O(1)
+    fn raw6_socket(protocol: u8) -> InetSocket {
+        let owner = crate::net_ns::test_support::allocate_namespace();
+        let ns = owner.id().as_u64();
+        let iface = stack().ifaces.register_in_ns(
+            alloc::sync::Arc::new(RawSinkDev) as alloc::sync::Arc<dyn crate::netdev::NetDev>, ns);
+        stack().add_v6_addr(iface, RAW_LOCAL);
+        stack().routes6.add_in(ns, crate::route6::Route6Entry {
+            table: crate::policy_rule::RT_TABLE_MAIN, dst: RAW_DST, prefix_len: 128,
+            iface, gateway: None, src_hint: Some(RAW_LOCAL),
+            origin: crate::route6::Route6Origin::Static,
+        });
+        let sock = InetSocket::new_raw6_in(protocol, owner);
+        sock.error.set_recverr6(true);
+        sock.opts.ipv6.set_flag(crate::sock_opts::sol_ipv6::flag::RXPATHMTU, true);
+        sock.opts.ipv6_mtu_discover.store(crate::uapi::IPV6_PMTUDISC_DO as i32,
+            core::sync::atomic::Ordering::Release);
+        sock
+    }
+
+    /// The raw send under test, with one message's control block. # C: O(payload)
+    fn raw6_send(sock: &InetSocket, bytes: usize,
+        control: &crate::send_control::Raw6Control) -> Result<usize, NetError>
+    {
+        let endpoint = match &*sock.kind.lock() {
+            crate::sock::SockKind::Raw6(endpoint) => endpoint.clone(),
+            _ => unreachable!("the fixture builds a raw IPv6 socket"),
+        };
+        sendto_raw6(sock, &endpoint, RAW_DST, None, 0, &alloc::vec![0u8; bytes],
+            control, crate::TxMeta::NONE)
+    }
+
+    // A raw send the path refuses on size is reported the same way an ordinary
+    // datagram send is: a local-origin record naming the destination and the
+    // MTU, plus the announcement a socket that asked for it collects.
+    #[test]
+    fn a_raw_ipv6_size_refusal_reports_the_local_error_and_the_announcement() {
+        let _domain = crate::hosted_fixture::init_net_domain();
+        let sock = raw6_socket(crate::addr::IpProto::Udp as u8);
+
+        assert_eq!(raw6_send(&sock, RAW_MTU as usize * 2,
+            &crate::send_control::Raw6Control::default()), Err(NetError::Emsgsize));
+
+        let entry = sock.error.take_extended().expect("the refusal queues a local record");
+        assert_eq!(entry.origin, crate::socket_error::SO_EE_ORIGIN_LOCAL);
+        assert_eq!(entry.errno, syscall::errno::Errno::Emsgsize as i32);
+        assert_eq!(entry.destination, crate::addr::IpAddr::V6(RAW_DST));
+        assert_eq!(entry.info, RAW_MTU);
+        assert_eq!(sock.error.pathmtu.take().map(|note| note.mtu), Some(RAW_MTU));
+    }
+
+    // The extension headers the send would have carried come off the number
+    // both reports name, because what is announced is the room left for the
+    // payload rather than the raw link MTU.
+    #[test]
+    fn a_raw_ipv6_refusal_takes_the_extension_headers_off_the_reported_mtu() {
+        let _domain = crate::hosted_fixture::init_net_domain();
+        let sock = raw6_socket(crate::addr::IpProto::Udp as u8);
+        let control = crate::send_control::Raw6Control {
+            hop_options: Some(alloc::vec![0u8; 8]),
+            dst_after_routing: Some(alloc::vec![0u8; 16]),
+            ..Default::default()
+        };
+
+        assert_eq!(raw6_send(&sock, RAW_MTU as usize * 2, &control), Err(NetError::Emsgsize));
+
+        let entry = sock.error.take_extended().expect("the refusal queues a local record");
+        assert_eq!(entry.info, RAW_MTU - 24);
+        assert_eq!(sock.error.pathmtu.take().map(|note| note.mtu), Some(RAW_MTU - 24));
     }
 
     #[test]

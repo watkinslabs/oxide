@@ -100,11 +100,14 @@ fn confirmed_on_loopback(stack: &NetStack, entry: &TcpEntry) -> bool {
     let net_ns = entry.net_ns();
     let bound = entry.bound_iface();
     let dst = entry.conn.lock().remote.ip;
+    // The device asked about is the one this connection egresses on, so the
+    // lookup runs under the connection's own mark.
+    let mark = entry.mark();
     match dst {
-        IpAddr::V4(dst) => stack.route_v4_iface_in(net_ns, dst, bound, crate::stack_binddev::UNMARKED)
+        IpAddr::V4(dst) => stack.route_v4_iface_in(net_ns, dst, bound, mark)
             .map(|(_, iface, _)| iface.flags() & iff::IFF_LOOPBACK != 0)
             .unwrap_or(false),
-        IpAddr::V6(dst) => stack.route_v6_iface_in(net_ns, dst, bound, crate::stack_binddev::UNMARKED)
+        IpAddr::V6(dst) => stack.route_v6_iface_in(net_ns, dst, bound, mark)
             .map(|(_, iface, _)| iface.flags() & iff::IFF_LOOPBACK != 0)
             .unwrap_or(false),
     }

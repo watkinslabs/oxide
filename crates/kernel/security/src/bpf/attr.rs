@@ -42,7 +42,8 @@ pub use map_elem::{
     Access, check_op_flags, check_update_flags, map_access_ok, update_presence_verdict,
 };
 pub use prog_cmd::{
-    LinkCreate, ProgBindMap, ProgLoad, ProgQuery, attach_type_to_prog_type,
+    AttachTarget, LinkCreate, ProgBindMap, ProgLoad, ProgQuery, TargetFd,
+    attach_target_object, attach_type_to_prog_type, iter_info_check,
     cgroup_link_flags_check, expected_attach_type_check, link_create_check,
     prog_attach_check, prog_attach_verdict, prog_bind_map_check, prog_get_fd_by_id_check,
     prog_load_check, prog_load_check_attach, prog_query_check,

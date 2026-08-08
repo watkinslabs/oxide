@@ -1,9 +1,13 @@
 use super::*;
 
 mod tcp_entry_wait;
+// The listening-socket record, split out at the per-file size cutoff.
+#[path = "types/listen.rs"]
+mod listen;
+pub use listen::TcpListenEntry;
 mod pacing;
-// The UDP receive types, split out at the per-file size cutoff. The TCP bind,
-// connection and listener types stay here.
+// The UDP receive types, split out at the per-file size cutoff. The TCP bind
+// and connection types stay here.
 #[path = "types/udp.rs"]
 mod udp;
 pub use udp::{UdpDatagram, UdpRxQueue};
@@ -30,6 +34,10 @@ pub struct TcpKey {
 /// table covers v4 + v6 listeners; UNSPECIFIED matches both families.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct TcpListenKey { pub local_ip: IpAddr, pub local_port: u16 }
+
+/// `SO_MARK` as an unwritten option word holds it — the same "no mark" a
+/// route lookup means by `stack_binddev::UNMARKED`, in the option's own type.
+pub(crate) const UNMARKED_OPTION: i32 = crate::stack_binddev::UNMARKED as i32;
 
 pub const TCP_BIND_BOUND: u8 = 0;
 pub const TCP_BIND_LISTEN: u8 = 1;
@@ -164,6 +172,13 @@ pub struct TcpEntry {
     /// passive child snapshots its listener's, the way every other inherited
     /// option does.
     pub min_hop: Arc<crate::min_hop::MinHop>,
+    /// `SO_MARK`, shared with the owning socket: every route this connection
+    /// resolves — transmit, path MTU, route metrics — is selected under it, so
+    /// a write to the option reaches the output path with nothing to restate.
+    /// A passive child owns its own cell, seeded from the listener's at the
+    /// handshake, because an accepted connection's mark is its own from then
+    /// on.
+    pub mark: Arc<::core::sync::atomic::AtomicI32>,
     /// Shared local bind owner. Passive children share their listener's bind.
     pub bind: Option<Arc<TcpBindReservation>>,
     /// Filter snapshot/shared socket owner used before TCP state processing.
@@ -364,6 +379,12 @@ impl TcpEntry {
         self.bind.as_ref().and_then(|bind| bind.bound_iface())
     }
 
+    /// The `SO_MARK` every route lookup this connection makes is selected
+    /// under. # C: O(1)
+    pub fn mark(&self) -> u32 {
+        self.mark.load(::core::sync::atomic::Ordering::Acquire) as u32
+    }
+
     /// Network namespace captured by the owning TCP bind. # C: O(1)
     pub fn net_ns(&self) -> u64 { self.bind.as_ref().map(|bind| bind.net_ns()).unwrap_or(0) }
 }
@@ -435,63 +456,6 @@ pub(crate) fn stamp_last_sent_public(entry: &TcpEntry, n: usize) {
     stamp_last_sent(entry, n);
 }
 
-pub struct TcpListenEntry {
-    /// Listening socket identity inherited by passive children.
-    pub owner: Arc<crate::SocketOwner>,
-    pub accept_q: Spinlock<VecDeque<Arc<TcpEntry>>, StackLockClass>,
-    pub bind: Arc<TcpBindReservation>,
-    /// Live listening-socket filter; passive children snapshot this state.
-    pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
-    /// Live listening-socket IPv4 PMTU mode; each passive child snapshots it.
-    pub ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
-    /// Live listening-socket IPv6 PMTU mode; each passive child snapshots it.
-    pub ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
-    /// Live listening-socket `IPV6_MTU`; passive children snapshot this cell.
-    pub ipv6_frag_size: Arc<::core::sync::atomic::AtomicI32>,
-    /// Canonical `IPPROTO_IPV6` state inherited by passive TCP children.
-    pub ipv6_opts: Arc<crate::sock_opts::sol_ipv6::Ipv6Opts>,
-    /// Live listening-socket `SO_MAX_PACING_RATE`; passive children inherit it.
-    pub max_pacing_rate: Arc<::core::sync::atomic::AtomicU64>,
-    /// Live listening-socket hop-limit minimums; each passive child shares them.
-    pub min_hop: Arc<crate::min_hop::MinHop>,
-    /// F192: backlog cap (listen(2), clamped by live `somaxconn`).
-    pub backlog: ::core::sync::atomic::AtomicUsize,
-    /// Half-open plus completed children not yet removed by accept.
-    pub syn_backlog_used: ::core::sync::atomic::AtomicUsize,
-    /// Requests that have not yet experienced their first timeout.
-    pub syn_backlog_young: ::core::sync::atomic::AtomicUsize,
-    pub accept_backlog_used: ::core::sync::atomic::AtomicUsize,
-    /// `TCP_DEFER_ACCEPT` as the retransmit count the option stores — the
-    /// number of request-timer firings a completed handshake is held at the
-    /// request stage for. The option block is the source of truth; this is the
-    /// applied copy the delivery path reads, in the same unit, so what
-    /// `getsockopt` reports and what the deferral waits cannot disagree.
-    pub defer_accept: ::core::sync::atomic::AtomicU8,
-    /// `TCP_SYNCNT` as the SYN-ACK retransmit ceiling this listener's requests
-    /// run under. `0` = the stack's own.
-    pub synack_retries: ::core::sync::atomic::AtomicU8,
-    /// The listening socket's own fast-open accept-queue state — the bound,
-    /// this listener's keys, and the live occupancy the bound governs. Shared
-    /// with the socket rather than copied: `TCP_FASTOPEN` may be written while
-    /// the socket listens, and the occupancy the delivery path charges must be
-    /// the same object `listen` sized.
-    pub fastopen: Arc<crate::tcp_fastopen::FastOpenQueue>,
-    /// `TCP_FASTOPEN_NO_COOKIE` as the delivery path reads it. The option
-    /// block is the source of truth; this is the applied copy, in the same
-    /// unit, reloaded whenever the option is written.
-    pub fastopen_no_cookie: ::core::sync::atomic::AtomicBool,
-    /// Listener close linearizes child admission and accept publication here.
-    pub closed: ::core::sync::atomic::AtomicBool,
-    pub local: Endpoint,
-    /// F160: blocking-accept waiters.
-    #[cfg(target_os = "oxide-kernel")]
-    pub accept_waiters: sched::live::WaitList,
-    /// F181a: per-fd epoll subscribers (POLL_IN on accept_q growth).
-    pub poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,
-    /// SO_REUSEPORT group reached from the listen table on the delivery path.
-    /// Published by listen-time join; the owning socket's cell holds membership.
-    pub reuseport_group: crate::reuseport::ReuseportSlot,
-}
 
 pub struct NetStack {
     pub(crate) rtnl: crate::rtnl::Rtnl,

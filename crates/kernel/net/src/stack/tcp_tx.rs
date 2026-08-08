@@ -12,6 +12,11 @@ impl TcpTxPolicy<'_> {
         }
     }
 
+    /// The `SO_MARK` this socket's segments are routed under.
+    fn mark(&self) -> u32 {
+        match self { Self::Entry(entry) => entry.mark() }
+    }
+
     fn ipv4_mode(&self) -> i32 {
         use ::core::sync::atomic::Ordering;
         match self {
@@ -99,17 +104,18 @@ impl NetStack {
         segment: &[u8], tos: u8, bound: Option<NetIfaceId>, policy: TcpTxPolicy<'_>)
         -> NetResult<()>
     {
+        let mark = policy.mark();
         let verdict = match (src, dst) {
             (IpAddr::V4(src), IpAddr::V4(dst)) => self.send_tcp_ipv4_segment_in(
                 net_ns, src, dst, segment, tos, bound, policy.ipv4_mode(), Some(policy.owner()),
-                policy.ipv4_options().as_ref(),
+                policy.ipv4_options().as_ref(), mark,
             ),
             (IpAddr::V6(src), IpAddr::V6(dst)) => {
-                let (iface_id, iface, next_hop) = self.route_v6_iface_in(net_ns, dst, bound, crate::stack_binddev::UNMARKED)?;
+                let (iface_id, iface, next_hop) = self.route_v6_iface_in(net_ns, dst, bound, mark)?;
                 let mode = policy.ipv6_mode();
                 let mtu = crate::stack_ipv6::ipv6_output_mtu(
-                    self.path_mtu_in(net_ns, IpAddr::V6(dst), Some(iface_id),
-                        crate::uapi::ipv6_pmtudisc_uses_interface(mode))? as usize,
+                    self.path_mtu_mark_in(net_ns, IpAddr::V6(dst), Some(iface_id),
+                        crate::uapi::ipv6_pmtudisc_uses_interface(mode), mark)? as usize,
                     policy.ipv6_frag_size());
                 let headers = policy.ipv6_headers();
                 self.xmit_ipv6_l4_with_policy(

@@ -186,10 +186,29 @@ impl TcpListenEntry {
                            min_hop: Arc<crate::min_hop::MinHop>,
                            fastopen: Arc<crate::tcp_fastopen::FastOpenQueue>,
                            max_pacing_rate: Arc<::core::sync::atomic::AtomicU64>) -> Self {
+        Self::new_with_fastopen_frag_pacing_ipv6_mark(bind, bpf_filter, ip_mtu_discover,
+            ipv6_mtu_discover, ipv6_frag_size, ipv6_opts, min_hop, fastopen, max_pacing_rate,
+            Arc::new(::core::sync::atomic::AtomicI32::new(super::types::UNMARKED_OPTION)))
+    }
+
+    /// Build a listener whose requests resolve their routes under the
+    /// listening socket's `SO_MARK`. # C: O(1)
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_fastopen_frag_pacing_ipv6_mark(bind: Arc<TcpBindReservation>,
+                           bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+                           ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+                           ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+                           ipv6_frag_size: Arc<::core::sync::atomic::AtomicI32>,
+                           ipv6_opts: Arc<crate::sock_opts::sol_ipv6::Ipv6Opts>,
+                           min_hop: Arc<crate::min_hop::MinHop>,
+                           fastopen: Arc<crate::tcp_fastopen::FastOpenQueue>,
+                           max_pacing_rate: Arc<::core::sync::atomic::AtomicU64>,
+                           mark: Arc<::core::sync::atomic::AtomicI32>) -> Self {
         let owner = bind.owner.clone();
         Self {
             owner, accept_q: Spinlock::new(VecDeque::new()), local: bind.local, bind, bpf_filter,
             ip_mtu_discover, ipv6_mtu_discover, ipv6_frag_size, ipv6_opts, max_pacing_rate, min_hop,
+            mark,
             backlog: ::core::sync::atomic::AtomicUsize::new(128),
             syn_backlog_used: ::core::sync::atomic::AtomicUsize::new(0),
             syn_backlog_young: ::core::sync::atomic::AtomicUsize::new(0),
