@@ -64,15 +64,27 @@ fn install(t: &sched::Task, snap: &CredSnapshot) {
 /// Credentials installed for the life of one operation. Dropping it puts the
 /// submitter's own credentials back, so no early return can leak a
 /// personality into the rest of the syscall.
+///
+/// The saved credentials live BEHIND a pointer rather than in this guard: the
+/// guard sits in the frame every operation runs beneath, and the deepest
+/// operations run close to the kernel stack budget, so a whole credential set
+/// stored inline here would be charged to all of them. Only an entry that
+/// actually names a personality pays for the allocation.
 pub struct CredsOverride {
-    saved: Option<CredSnapshot>,
+    saved: Option<alloc::boxed::Box<CredSnapshot>>,
 }
 
 impl CredsOverride {
-    /// Install `snap`, remembering what to restore. # C: O(1)
+    /// Install `snap`, remembering what to restore.
+    ///
+    /// Never inlined: the snapshot it takes is built here and moved to the
+    /// heap, and this frame is gone before the operation itself runs, so the
+    /// copy is not charged to the operation's stack depth.
+    /// # C: O(1)
+    #[inline(never)]
     pub fn install(snap: &CredSnapshot) -> Self {
         let Some(cur) = sched::live::current() else { return Self { saved: None } };
-        let saved = snapshot_of(cur);
+        let saved = alloc::boxed::Box::new(snapshot_of(cur));
         install(cur, snap);
         Self { saved: Some(saved) }
     }

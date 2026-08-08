@@ -27,6 +27,7 @@ fn file_of(fd: i32) -> Result<Arc<File>, i64> {
 }
 
 /// # C: O(len)
+#[inline(always)]
 pub fn read(op: &Op) -> i64 {
     if op.sqe.off == CUR_POS {
         call(crate::s000_read::sys_read, [op.fd as u64, op.addr, op.len as u64, 0, 0, 0])
@@ -36,6 +37,7 @@ pub fn read(op: &Op) -> i64 {
 }
 
 /// # C: O(len)
+#[inline(always)]
 pub fn write(op: &Op) -> i64 {
     if op.sqe.off == CUR_POS {
         call(crate::s001_write::sys_write, [op.fd as u64, op.addr, op.len as u64, 0, 0, 0])
@@ -46,12 +48,14 @@ pub fn write(op: &Op) -> i64 {
 
 /// The vectored forms carry their offset the same way, and the positional
 /// vectored syscall already treats `-1` as "current position". # C: O(len)
+#[inline(always)]
 pub fn readv(op: &Op) -> i64 {
     call(crate::s295_preadv::sys_preadv2,
          [op.fd as u64, op.addr, op.len as u64, op.sqe.off, 0, op.sqe.op_flags as u64])
 }
 
 /// # C: O(len)
+#[inline(always)]
 pub fn writev(op: &Op) -> i64 {
     call(crate::s296_pwritev::sys_pwritev2,
          [op.fd as u64, op.addr, op.len as u64, op.sqe.off, 0, op.sqe.op_flags as u64])
@@ -99,6 +103,7 @@ pub fn read_fixed(op: &Op) -> i64 { fixed(op, false) }
 pub fn write_fixed(op: &Op) -> i64 { fixed(op, true) }
 
 /// # C: O(dirty pages)
+#[inline(always)]
 pub fn fsync(op: &Op) -> i64 {
     let f = if op.sqe.op_flags & IORING_FSYNC_DATASYNC != 0 {
         crate::misc::sys_fdatasync
@@ -109,6 +114,7 @@ pub fn fsync(op: &Op) -> i64 {
 }
 
 /// # C: O(range)
+#[inline(always)]
 pub fn sync_file_range(op: &Op) -> i64 {
     call(crate::misc::sys_sync_file_range,
          [op.fd as u64, op.sqe.off, op.sqe.len as u64, op.sqe.op_flags as u64, 0, 0])
@@ -116,17 +122,20 @@ pub fn sync_file_range(op: &Op) -> i64 {
 
 /// `fallocate` takes its mode from `len` and its length from `addr`.
 /// # C: O(range)
+#[inline(always)]
 pub fn fallocate(op: &Op) -> i64 {
     call(crate::s285_fallocate::sys_fallocate,
          [op.fd as u64, op.sqe.len as u64, op.sqe.off, op.sqe.addr, 0, 0])
 }
 
 /// # C: O(1)
+#[inline(always)]
 pub fn ftruncate(op: &Op) -> i64 {
     call(crate::s077_ftruncate::sys_ftruncate, [op.fd as u64, op.sqe.off, 0, 0, 0, 0])
 }
 
 /// # C: O(range)
+#[inline(always)]
 pub fn fadvise(op: &Op) -> i64 {
     let len = if op.sqe.addr != 0 { op.sqe.addr } else { op.sqe.len as u64 };
     call(crate::s221_fadvise64::sys_fadvise64,
@@ -134,6 +143,7 @@ pub fn fadvise(op: &Op) -> i64 {
 }
 
 /// # C: O(range)
+#[inline(always)]
 pub fn madvise(op: &Op) -> i64 {
     let len = if op.sqe.off != 0 { op.sqe.off } else { op.sqe.len as u64 };
     call(crate::s028_madvise::sys_madvise, [op.sqe.addr, len, op.sqe.op_flags as u64, 0, 0, 0])
