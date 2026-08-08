@@ -25,6 +25,15 @@ pub enum VsockSocketType {
 }
 
 impl VsockSocketType {
+    /// The `SOCK_*` value this type was created from. # C: O(1)
+    const fn to_uapi(self) -> u32 {
+        match self {
+            Self::Datagram => crate::socket_args::SOCK_DGRAM,
+            Self::Stream => crate::socket_args::SOCK_STREAM,
+            Self::Seqpacket => crate::socket_args::SOCK_SEQPACKET,
+        }
+    }
+
     /// Decode one already UAPI-validated `SOCK_*` value. # C: O(1)
     fn from_uapi(typ: u32) -> Self {
         match typ {
@@ -245,12 +254,22 @@ impl VsockSocket {
         )
     }
 
-    /// Check the retained namespace before inspecting or mutating VSOCK options. # C: O(1)
-    pub fn check_option(&self) -> Result<(), crate::NetError> {
-        crate::security_admission::check(
-            self.net_ns(), crate::socket_args::AF_VSOCK as u16,
-            security::network::Operation::Option,
-        )
+    /// Check the retained namespace before inspecting or mutating one VSOCK
+    /// option, naming the option the decision is about. # C: O(1)
+    pub fn check_option(&self, access: crate::socket_security::option::Access,
+                        level: i32, optname: i32) -> Result<(), crate::NetError>
+    {
+        crate::socket_security::option::check(self.opt_sock(), access, level, optname)
+    }
+
+    /// This socket's identity as the option hooks see it. # C: O(1)
+    pub fn opt_sock(&self) -> crate::socket_security::option::OptSock {
+        crate::socket_security::option::OptSock {
+            namespace: self.net_ns(),
+            family: crate::socket_args::AF_VSOCK as u16,
+            socket_type: self.socket_type.to_uapi(),
+            protocol: 0,
+        }
     }
 
     /// Snapshot the live connection Arc if this socket is connected.

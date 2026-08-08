@@ -152,8 +152,10 @@ pub fn setsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64
     use ::netlink::{sockopt, SetAction};
     const NETLINK_OPTION_BYTES: u64 = core::mem::size_of::<u32>() as u64;
     let socket = target.socket();
-    if let Err(error) = net::security_admission::check(net::net_ns::namespace_id(&socket.net_ns),
-        net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Option)
+    if let Err(error) = net::socket_security::option::setsockopt(
+        net::socket_security::option::OptSock::plain(
+            net::net_ns::namespace_id(&socket.net_ns), net::socket_args::AF_NETLINK_WIRE),
+        level as i32, optname as i32)
     { return crate::net_errno::errno_from_neterr(error); }
     // The family table owns its own level and nothing else: SOL_SOCKET was
     // already answered generically before dispatch, and every other level is
@@ -222,8 +224,10 @@ fn has_net_admin(socket: &::netlink::NetlinkSocket) -> bool {
 pub fn getsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64, optlen_p: u64) -> i64 {
     const NETLINK_SCALAR_BYTES: usize = core::mem::size_of::<u32>();
     let socket = target.socket();
-    if let Err(error) = net::security_admission::check(net::net_ns::namespace_id(&socket.net_ns),
-        net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Option)
+    if let Err(error) = net::socket_security::option::getsockopt(
+        net::socket_security::option::OptSock::plain(
+            net::net_ns::namespace_id(&socket.net_ns), net::socket_args::AF_NETLINK_WIRE),
+        level as i32, optname as i32)
     { return crate::net_errno::errno_from_neterr(error); }
     let mut raw_len = [0u8; core::mem::size_of::<i32>()];
     if uaccess::copy_from_user(&mut raw_len, optlen_p).is_err() {

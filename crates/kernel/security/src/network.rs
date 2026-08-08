@@ -7,16 +7,47 @@ use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use sync::{Namespace, Spinlock};
 
+/// Reading a socket option and writing one are two distinct decisions: a module
+/// may publish state it will not let a caller change, so `SetOption` and
+/// `GetOption` are separate registrations rather than one "option access".
 #[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Operation { Create, Bind, Connect, Listen, Accept, Send, Receive, Shutdown,
-    NameQuery, SocketPair, Option, Ioctl, Packet }
+    NameQuery, SocketPair, SetOption, GetOption, Ioctl, Packet }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Verdict { Allow, Deny }
 
+/// The option a `SetOption`/`GetOption` decision is about. Every other
+/// operation names no option and carries `NONE`, so a module that keys on the
+/// pair cannot mistake one operation's zero for level 0 option 0.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct OptionId { pub level: i32, pub optname: i32 }
+
+impl OptionId {
+    pub const NONE: Self = Self { level: -1, optname: -1 };
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Context { pub namespace: u64, pub family: u16, pub socket_type: u32,
-    pub protocol: u32, pub operation: Operation }
+    pub protocol: u32, pub operation: Operation, pub option: OptionId }
+
+impl Context {
+    /// One operation on a socket that names no option. # C: O(1)
+    pub const fn op(namespace: u64, family: u16, socket_type: u32, protocol: u32,
+                    operation: Operation) -> Self
+    {
+        Self { namespace, family, socket_type, protocol, operation, option: OptionId::NONE }
+    }
+
+    /// One option access, carrying the level and option number the decision is
+    /// about. # C: O(1)
+    pub const fn option(namespace: u64, family: u16, socket_type: u32, protocol: u32,
+                        operation: Operation, level: i32, optname: i32) -> Self
+    {
+        Self { namespace, family, socket_type, protocol, operation,
+               option: OptionId { level, optname } }
+    }
+}
 
 pub type Hook = fn(Context) -> Verdict;
 
@@ -206,8 +237,7 @@ mod tests {
     fn policies_are_namespace_and_operation_scoped() {
         let _ = remove(7, Operation::Packet);
         assert_eq!(install(7, Operation::Packet, deny), None);
-        let context = Context { namespace: 7, family: 2, socket_type: 2,
-            protocol: 17, operation: Operation::Packet };
+        let context = Context::op(7, 2, 2, 17, Operation::Packet);
         assert_eq!(evaluate(context), Verdict::Deny);
         assert_eq!(evaluate(Context { namespace: 8, ..context }), Verdict::Allow);
         assert_eq!(remove(7, Operation::Packet), Some(deny as Hook));
@@ -221,8 +251,7 @@ mod tests {
         assert_eq!(install(11, Operation::Create, deny_any), None);
         assert_eq!(install(11, Operation::Bind, allow), None);
         assert_eq!(install(12, Operation::Create, allow), None);
-        let base = Context { namespace: 11, family: 2, socket_type: 1,
-            protocol: 6, operation: Operation::Create };
+        let base = Context::op(11, 2, 1, 6, Operation::Create);
         assert_eq!(evaluate(base), Verdict::Deny);
         assert_eq!(evaluate(base), Verdict::Deny);
         assert_eq!(evaluate(Context { operation: Operation::Bind, ..base }), Verdict::Allow);
@@ -246,15 +275,12 @@ mod tests {
         let _ = remove_namespace(13);
         assert_eq!(install(13, Operation::Create, allow), None);
         assert_eq!(install(13, Operation::Receive, deny_any), None);
-        assert_eq!(evaluate(Context { namespace: 13, family: 2, socket_type: 1,
-            protocol: 6, operation: Operation::Create }), Verdict::Allow);
-        assert_eq!(evaluate(Context { namespace: 13, family: 2, socket_type: 1,
-            protocol: 6, operation: Operation::Receive }), Verdict::Deny);
+        assert_eq!(evaluate(Context::op(13, 2, 1, 6, Operation::Create)), Verdict::Allow);
+        assert_eq!(evaluate(Context::op(13, 2, 1, 6, Operation::Receive)), Verdict::Deny);
         assert_eq!(remove_namespace(13), 2);
         assert_eq!(counters(13, Operation::Create), None);
         assert_eq!(counters(13, Operation::Receive), None);
-        assert_eq!(evaluate(Context { namespace: 13, family: 2, socket_type: 1,
-            protocol: 6, operation: Operation::Create }), Verdict::Allow);
+        assert_eq!(evaluate(Context::op(13, 2, 1, 6, Operation::Create)), Verdict::Allow);
     }
 
     #[test]
@@ -262,7 +288,8 @@ mod tests {
         let operations = [Operation::Create, Operation::Bind, Operation::Connect,
             Operation::Listen, Operation::Accept, Operation::Send, Operation::Receive,
             Operation::Shutdown, Operation::NameQuery, Operation::SocketPair,
-            Operation::Option, Operation::Ioctl, Operation::Packet];
+            Operation::SetOption, Operation::GetOption, Operation::Ioctl,
+            Operation::Packet];
         let _ = remove_namespace(21);
         let _ = remove_namespace(22);
         for operation in operations {
@@ -270,16 +297,14 @@ mod tests {
             assert_eq!(install(22, operation, allow), None);
         }
         for operation in operations {
-            let denied = Context { namespace: 21, family: 2, socket_type: 1,
-                protocol: 6, operation };
+            let denied = Context::op(21, 2, 1, 6, operation);
             let allowed = Context { namespace: 22, ..denied };
             assert_eq!(evaluate(denied), Verdict::Deny);
             assert_eq!(evaluate(allowed), Verdict::Allow);
             assert_eq!(counters(21, operation), Some((0, 1)));
             assert_eq!(counters(22, operation), Some((1, 0)));
         }
-        assert_eq!(evaluate(Context { namespace: 23, operation: Operation::Create,
-            family: 2, socket_type: 1, protocol: 6 }), Verdict::Allow);
+        assert_eq!(evaluate(Context::op(23, 2, 1, 6, Operation::Create)), Verdict::Allow);
         assert_eq!(remove_namespace(21), operations.len());
         assert_eq!(remove_namespace(22), operations.len());
     }
