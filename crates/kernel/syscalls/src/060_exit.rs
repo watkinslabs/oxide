@@ -230,6 +230,10 @@ pub fn do_exit(status: i32) -> i64 {
             // process keyring on the last thread. Runs before `mark_done` so
             // the hook's own group-dead test still counts this thread live.
             sched::live::run_keyring_exit(task);
+            // Registered io_uring rings hold file references of their own, so
+            // they are released alongside the fd table — a ring must not
+            // outlive the task that registered it by index.
+            task.io_uring_rings_drain();
             // B13/B14: drop fd_table+mm at exit + reparent children to init.
             // SAFETY: exiting task on this CPU; sole writer per single-mutator.
             unsafe { task.replace_fd_table(None); task.replace_mm(None); }

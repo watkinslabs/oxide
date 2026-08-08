@@ -33,13 +33,15 @@ pub fn flush_thread_flags(cur: &Task) {
     // so inheriting the old program's open keys would hand it access it never
     // asked for. Inert where the register does not exist.
     crate::pkey_rights::reset_on_exec(cur);
+    // A ring registered by index belongs to the image that registered it: the
+    // reference drops every registered ring at exec, so a new program starts
+    // with an empty array rather than inheriting indexes it never asked for.
+    cur.io_uring_rings_drain();
     #[cfg(target_arch = "aarch64")]
     {
         crate::prctl::tsc::apply(cur, false);
         cur.tagged_addr.store(false, core::sync::atomic::Ordering::Release);
     }
-    #[cfg(not(target_arch = "aarch64"))]
-    { let _ = cur; }
 }
 
 /// Whether `prctl(PR_SET_TSC, PR_TSC_SIGSEGV)` survives `execve` on this

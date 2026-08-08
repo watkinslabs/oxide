@@ -82,7 +82,8 @@ pub use wait_list::WaitList;
 pub use wait_event::{wait_event, wait_event_interruptible, wait_event_interruptible_until,
                      wait_event_killable};
 pub use mutex::{Mutex, MutexGuard};
-pub use kthread::{kthread_unuse_mm, kthread_use_mm, should_stop as kthread_should_stop, stop as kthread_stop};
+pub use kthread::{kthread_unuse_mm, kthread_use_mm, should_stop as kthread_should_stop,
+    stop as kthread_stop_request, stop_and_join as kthread_stop, exit as kthread_exit};
 pub use workqueue::{queue_work, queue_work_on, WorkFn};
 pub use delayed_work::queue_delayed_work_on;
 pub use tasklet::TaskletFn;

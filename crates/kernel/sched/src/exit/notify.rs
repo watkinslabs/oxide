@@ -39,6 +39,13 @@ impl ParentSigchld {
     /// Untouched disposition — a plain `SIG_DFL` with no flags. # C: O(1)
     pub const fn default_action() -> Self { Self { handler: SIG_DFL, flags: 0 } }
 
+    /// The disposition every kernel thread's parent has. A kernel thread is a
+    /// child of the kernel's own thread spawner, which ignores every signal, so
+    /// its `SIGCHLD` is discarded and it leaves no `wait4`-reapable zombie.
+    /// Without this a kernel thread that returns from its loop parks a zombie
+    /// no task can ever collect. # C: O(1)
+    pub const fn kernel_thread_parent() -> Self { Self { handler: SIG_IGN, flags: 0 } }
+
     /// POSIX auto-reap request: `SIG_IGN` or `SA_NOCLDWAIT`. # C: O(1)
     pub const fn discards_children(&self) -> bool {
         self.handler == SIG_IGN || self.flags & SA_NOCLDWAIT != 0

@@ -1,5 +1,19 @@
 # Fixed issues
 
+### B1982-missing-sched-proc-surface
+
+Six rows re-verified against the code and the reference before any work started;
+all six were already closed by earlier lanes and had never been flipped.
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED f489ea13f | MISSING | MED | Claim: "`clone(CLONE_SYSVSEM)` WITHOUT `CLONE_THREAD` gets its own empty semaphore undo list; oxide keys the list on the thread-group id." STATED BACKWARDS — the list is keyed on a per-TASK slot and shared by the FLAG, exactly as the reference does. | `Task::sysvsem_undo` (a per-task slot, not a tgid key); `ipc::sysv::sem::undo::copy_semundo(sysvsem, parent, child)` takes the flag and is called from `056_clone.rs` with `(flags & CLONE_SYSVSEM) != 0`; `ipc::sysv::sem::tests::undo` pins "no CLONE_SYSVSEM means a list of its own". | B1982 |
+| FIXED f04ebd124 | MISSING | med | Claim: group-stop / continued notification reaches one parent only. Already closed — both notifications are issued, under the reference's exact conditions. | `sched::jobctl::{stop_audience, continued_audience}` are pure `const fn` in an ungated module (`real_parent: gstop_done && (!traced \|\| reparented)`), driven by `live/stop.rs::{notify_stop,notify_continued}` which issue one call per true flag; full truth table in `sched::jobctl::tests`. | B1982 |
+| FIXED 6cadc0852 | MISSING | med | Claim: `clock_nanosleep` cannot tell the STATIC per-thread CPU clock from a dynamic per-thread encoding naming pid 0. Already closed — `ClockSpec::CpuEncoded` carries a `dynamic` bit precisely for this split. | `sched::timers::clockid::nsleep_supported` answers `dynamic \|\| !per_thread`, so the static thread clock reports EOPNOTSUPP and the dynamic self-naming encoding reaches the callback and then reports EINVAL; pinned by `static_and_dynamic_cpu_clocks_are_distinguishable_and_answer_differently`. | B1982 |
+| FIXED 6cadc0852 | DEFECT | low | Claim: "`CpuMeasure::Sched` samples `utime+stime`... no scheduler-runtime accumulator exists to read." STATED BACKWARDS — the accumulator exists, is charged on every schedule-out, and is what the scheduler clock reads. | `Task::sum_exec_runtime_ns`, charged by `cputime::charge_exec_runtime` from `live/schedule/switch.rs::update_curr`; read directly by `timers::clock::task_cpu_sample` for `CpuMeasure::Sched`, distinct from `Prof` (`utime+stime`) and `Virt` (`utime`). | B1982 |
+| FIXED 9c4788dc7 | MISSING | med | Claim: rseq time-slice extension is absent — "no prctl, no `slice_ctrl` word, no flag bits at registration, no preempt-time grant, no revoke timer, no syscall-entry revoke work". Every one of those six exists. | `sched::prctl::rseq_slice` (the prctl), `syscall::rseq` (the ABI word and the REQUEST/GRANTED bits), `sched::rseq::{try_grant_slice, slice_timer_expired, slice_syscall_enter}`, and `471_rseq_slice_yield` reading the state they write. A narrower residual gap is refiled below. | B1982 |
+| FIXED (folded duplicate) | MISSING | med | Duplicate of the io_uring registered-ring row already carried in the io_uring section; the two were folded from different lane drop files. | Survivor row restated in `known_issues.md` with the `sched` half closed. | B1982 |
+
 ### F839-live-proc-interrupts-device-counters
 
 | Status | Class | Sev | Issue | Evidence | Owner |
