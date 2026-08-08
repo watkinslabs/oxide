@@ -71,3 +71,16 @@ use sync::{Buddy, IrqGate, Spinlock};
         // Reset for sibling tests.
         set_tsc_khz(0);
     }
+
+/// The runaway guard keys a #PF on the address it faulted at and every other
+/// vector on the instruction that raised it: two #GPs from one `wrmsr` are the
+/// same fault, and CR2 is not even defined for them.
+#[test]
+fn fault_key_is_cr2_for_page_faults_and_rip_otherwise() {
+    assert_eq!(crate::fault::fault_key(crate::VEC_PF, 0xffff_ffff_8100_0000, 0x7ffe_dead_0000),
+               0x7ffe_dead_0000);
+    assert_eq!(crate::fault::fault_key(crate::VEC_GP, 0xffff_ffff_8100_0000, 0),
+               0xffff_ffff_8100_0000);
+    assert_eq!(crate::fault::fault_key(6, 0xffff_ffff_8100_0000, 0x1234),
+               0xffff_ffff_8100_0000);
+}

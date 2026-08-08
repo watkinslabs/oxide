@@ -28,10 +28,9 @@ fn read_watch_path(path_p: u64) -> Result<String, i64> {
     if path_p == 0 || path_p >= hal::USER_VA_END {
         return Err(-(Errno::Efault.as_i32() as i64));
     }
-    // SAFETY: path_p in user range; bounded read through the current address space.
-    let bytes = unsafe { devfs::read_user_cstr(path_p, vfs::path::PATH_MAX) }
+    let bytes = devfs::read_user_cstr(path_p, vfs::path::PATH_MAX)
         .ok_or(-(Errno::Efault.as_i32() as i64))?;
-    decode_watch_path_bytes(bytes)
+    decode_watch_path_bytes(&bytes)
 }
 
 fn fd_to_inotify(fd: i32) -> Result<Arc<InotifyData>, Errno> {

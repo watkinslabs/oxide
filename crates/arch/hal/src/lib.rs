@@ -7,6 +7,7 @@
 
 #![no_std]
 
+pub mod fault_reentry;
 pub mod fault_class;
 pub mod siginfo;
 pub use siginfo::{read_siginfo, write_siginfo, SigFault, SigPayload, SigPoll, Sigsys};

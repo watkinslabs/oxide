@@ -115,7 +115,7 @@ pub fn setup(eff: u32) -> MemfdSetup {
 /// `alloc_name`'s length verdict: `strncpy_from_user(dst, uname,
 /// MFD_NAME_MAX_LEN + 1)` returns the copied length, and `len >
 /// MFD_NAME_MAX_LEN` is `EINVAL` — so a name of exactly `MFD_NAME_MAX_LEN`
-/// bytes is accepted and one byte more is rejected. `scan_user_cstr` reports
+/// bytes is accepted and one byte more is rejected. `strncpy_from_user` reports
 /// the same window as `Enametoolong`, which this maps.
 /// # C: O(1)
 pub fn name_scan_err(e: Errno) -> Errno {

@@ -283,6 +283,38 @@ unsafe extern "C" fn oxide_fault_print_rust(regs: *mut PtRegs) -> bool {
         unsafe { read_cr2() }
     } else { 0 };
 
+    // Runaway guard, BEFORE the resolver is consulted. A fault already in
+    // flight at this address on this kernel stack cannot be resolved by running
+    // the same resolver again; doing so is what walked the stack down into its
+    // guard page. Report and halt instead, with nothing but raw register values
+    // — the resolver, the stack-name hook and the diagnostic dumps below all
+    // touch memory, and the state that produced a runaway is the last state to
+    // trust with that.
+    // KERNEL-mode only. A user-mode fault carries the USER stack pointer, which
+    // says nothing about kernel nesting, and cannot run away this way: it is
+    // either resolved or turned into a signal, and either answer returns to
+    // userspace rather than re-entering the dispatcher one frame deeper.
+    if (f.cs & 3) == 0
+        && hal::fault_reentry::enter(fault_cpu(), fault_key(f.vector, f.rip, cr2), f.rsp,
+                                     hal::KERNEL_STACK_BYTES as u64) == hal::fault_reentry::Verdict::Runaway {
+        // Same emit gate as the oops printer below: `debug-watchdog` is
+        // default-on via the boot crates, so every shipped build carries this
+        // line and a healthy boot emits none of it.
+        #[cfg(any(feature = "debug-irq", feature = "debug-watchdog"))]
+        {
+            klog::write_raw(b"[FAULT] BUG: runaway fault, same address re-entered on this stack - halting. vec=");
+            klog::write_hex_u64(f.vector);
+            klog::write_raw(b" rip=");
+            klog::write_hex_u64(f.rip);
+            klog::write_raw(b" cr2=");
+            klog::write_hex_u64(cr2);
+            klog::write_raw(b" rsp=");
+            klog::write_hex_u64(f.rsp);
+            klog::write_raw(b"\n");
+        }
+        return false;
+    }
+
     // Consult the registered handler first. A resolved fault (e.g.
     // demand-page) is normal kernel operation per `11§5` — silent in
     // production, no log line. Only log loudly when we're about to
@@ -412,7 +444,25 @@ unsafe extern "C" fn oxide_fault_print_rust(regs: *mut PtRegs) -> bool {
         #[cfg(not(any(feature = "debug-irq", feature = "debug-watchdog")))]
         { let _ = f; }
     }
+    // Retire this frame's runaway record. The fault is settled — resolved,
+    // fixed up, or about to halt — so it is no longer in flight and must not
+    // make the next fault at the same address look like a recursion.
+    if (f.cs & 3) == 0 { hal::fault_reentry::leave(fault_cpu(), f.rsp); }
     handled
+}
+
+/// Which CPU's runaway records this fault belongs to. The initial APIC id is
+/// read straight from the CPU, so the guard works before any per-CPU kernel
+/// structure is up — a fault during early boot is exactly when it must.
+/// # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+fn fault_cpu() -> usize { hal::fault_reentry::slot(crate::cpuid::initial_apic_id() as u64) }
+
+/// What makes two faults "the same" for the runaway guard: a #PF repeats on its
+/// faulting ADDRESS, everything else on the instruction that raised it.
+/// # C: O(1)
+pub fn fault_key(vector: u64, rip: u64, cr2: u64) -> u64 {
+    if vector == VEC_PF { cr2 } else { rip }
 }
 
 /// Intel-SDM vector numbers the exception-table fixup path names.
