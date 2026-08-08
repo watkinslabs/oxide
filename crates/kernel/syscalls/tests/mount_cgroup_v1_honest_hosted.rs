@@ -1,7 +1,7 @@
 // B1413: `mount(2)` with `fstype="cgroup"` (legacy v1) used to hit
 // `"devpts" | "cgroup" => 0` in `fsmount_common/mount_ops.rs` — success with
 // NOTHING mounted. Drives the extracted `mount_dispatch::dispatch_mount`
-// (ungated pure fn, `src/fsmount_common/mount_dispatch.rs`) directly against
+// (ungated pure fn, `src/mount_dispatch.rs`) directly against
 // the real `vfs` mount engine, hosted — no boot required.
 //
 // Proves:
@@ -14,10 +14,9 @@
 //    used to shadow as dead code) still succeeds AND grafts real, reachable
 //    content — the mountpoint is provably non-empty afterward, not just
 //    "attached to nothing."
-// This integration test compiles production modules directly via `#[path]` to
-// assert their ABI shape, and exercises only the part of each module the shape
-// under test needs. dead_code here measures the test's reach, not the kernel's
-// -- the real signal lives in `xtask kernel`, which is dead_code-clean.
+// Calls the LINKED `syscalls::mount_dispatch` — the same compilation the kernel
+// gets — not a `#[path]` copy of the source compiled into this binary. dead_code
+// below measures this test's own fixture reach, not the kernel's.
 #![allow(dead_code)]
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -25,27 +24,14 @@ extern crate alloc;
 
 use syscall::errno::Errno;
 use vfs::fs::{FileSystem, FsFlags, FsType};
-use mount_dispatch::MountCaps;
+use syscalls::mount_dispatch::{dispatch_mount, mount_capable, MountCaps};
 use vfs::inode::Inode;
 use vfs::{Dentry, FileType, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
 #[path = "../../vfs/tests/common/mod.rs"]
 mod common;
 
-// `mount_dispatch.rs` calls `crate::namei_common::errno_from_vfs` — reuse the
-// SAME canonical VfsError->errno table (`src/namei_common/errno.rs`) via
-// `#[path]`, not a reimplementation, so the honest-errno path is proven
-// against the real mapping.
-#[path = "../src/namei_common/errno.rs"]
-mod namei_common;
 
-// `mount_capable` is its own ungated module so the user-namespace rung is
-// testable on its own; `mount_dispatch` names it through the crate root, which
-// here is this test binary.
-#[path = "../src/mount_capable.rs"]
-mod mount_capable;
-#[path = "../src/fsmount_common/mount_dispatch.rs"]
-mod mount_dispatch;
 
 static SERIAL: Mutex<()> = Mutex::new(());
 static CUR_NS: Mutex<Option<vfs::mntns::MntNamespaceRef>> = Mutex::new(None);
@@ -132,7 +118,7 @@ fn cgroup_v1_mount_is_honest_enodev_not_a_silent_success() {
     let target_d = mount_tree("cgv1-a");
 
     // First "hierarchy": cpu+cpuset controllers.
-    let rv1 = mount_dispatch::dispatch_mount(None, "cgroup", "/mnt/point", &target_d, None, "cpu,cpuset", 0, ROOT_CAPS);
+    let rv1 = dispatch_mount(None, "cgroup", "/mnt/point", &target_d, None, "cpu,cpuset", 0, ROOT_CAPS);
     assert_eq!(rv1, eno(Errno::Enodev), "cgroup v1 mount must fail honestly, never silently succeed");
     assert!(vfs::mount::mount_at_path_exact(&target_d).is_none(), "nothing may be grafted on honest failure");
 
@@ -141,7 +127,7 @@ fn cgroup_v1_mount_is_honest_enodev_not_a_silent_success() {
     // succeeded; since no v1 hierarchy is ever attachable in this kernel, the
     // honest behaviour is BOTH attempts failing identically — never a
     // silent flip to success on retry, never partial/inconsistent state.
-    let rv2 = mount_dispatch::dispatch_mount(None, "cgroup", "/mnt/point", &target_d, None, "memory,pids", 0, ROOT_CAPS);
+    let rv2 = dispatch_mount(None, "cgroup", "/mnt/point", &target_d, None, "memory,pids", 0, ROOT_CAPS);
     assert_eq!(rv2, eno(Errno::Enodev), "a second cgroup v1 attempt must fail the same honest way");
     assert!(vfs::mount::mount_at_path_exact(&target_d).is_none(), "still nothing grafted after the second attempt");
 }
@@ -153,7 +139,7 @@ fn cgroup_v1_named_hierarchy_option_also_fails_honestly() {
 
     // `-o none,name=systemd` (systemd's hybrid-mode process-tracking
     // hierarchy) — still unimplemented, still honest ENODEV, not `0`.
-    let rv = mount_dispatch::dispatch_mount(None, "cgroup", "/mnt/point", &target_d, None, "none,name=systemd", 0, ROOT_CAPS);
+    let rv = dispatch_mount(None, "cgroup", "/mnt/point", &target_d, None, "none,name=systemd", 0, ROOT_CAPS);
     assert_eq!(rv, eno(Errno::Enodev));
     assert!(vfs::mount::mount_at_path_exact(&target_d).is_none());
 }
@@ -164,7 +150,7 @@ fn devpts_style_fstype_still_mounts_and_target_becomes_non_empty() {
     register_fake_devpts();
     let target_d = mount_tree("devpts-a");
 
-    let rv = mount_dispatch::dispatch_mount(None, "devpts", "/mnt/point", &target_d, None, "", 0, ROOT_CAPS);
+    let rv = dispatch_mount(None, "devpts", "/mnt/point", &target_d, None, "", 0, ROOT_CAPS);
     assert_eq!(rv, 0, "a genuinely registered fstype must still mount successfully");
 
     let m = vfs::mount::mount_at_path_exact(&target_d).expect("devpts-style mount grafted");
@@ -191,7 +177,7 @@ fn mount_options_reach_the_grafted_mount() {
 
     let ms = vfs::mount::MS_RDONLY | vfs::mount::MS_NOSUID | vfs::mount::MS_NODEV
         | vfs::mount::MS_NOEXEC | vfs::mount::MS_NOATIME;
-    let rv = mount_dispatch::dispatch_mount(None, "devpts", "/mnt/point", &target_d, None, "", ms, ROOT_CAPS);
+    let rv = dispatch_mount(None, "devpts", "/mnt/point", &target_d, None, "", ms, ROOT_CAPS);
     assert_eq!(rv, 0, "the mount itself still succeeds");
 
     let m = vfs::mount::mount_at_path_exact(&target_d).expect("grafted");
@@ -215,7 +201,7 @@ fn a_flagless_mount_still_gets_the_relatime_default() {
     let _g = guard();
     register_fake_devpts();
     let target_d = mount_tree("devpts-default");
-    assert_eq!(mount_dispatch::dispatch_mount(None, "devpts", "/mnt/point", &target_d, None, "", 0, ROOT_CAPS), 0);
+    assert_eq!(dispatch_mount(None, "devpts", "/mnt/point", &target_d, None, "", 0, ROOT_CAPS), 0);
     let m = vfs::mount::mount_at_path_exact(&target_d).expect("grafted");
     assert!(m.is_relatime(), "MNT_RELATIME is stamped by default");
     assert!(!m.is_readonly() && !m.is_nosuid() && !m.is_nodev() && !m.is_noexec());
@@ -232,7 +218,7 @@ fn a_userns_caller_cannot_mount_a_non_userns_filesystem() {
     register_fake_devpts();          // registered WITHOUT FS_USERNS_MOUNT
     let target_d = mount_tree("devpts-userns");
 
-    let rv = mount_dispatch::dispatch_mount(None, "devpts", "/mnt/point", &target_d, None, "", 0,
+    let rv = dispatch_mount(None, "devpts", "/mnt/point", &target_d, None, "", 0,
         USERNS_CAPS);
     assert_eq!(rv, eno(Errno::Eperm),
         "a filesystem without FS_USERNS_MOUNT needs privilege in the INITIAL user ns");
@@ -241,7 +227,7 @@ fn a_userns_caller_cannot_mount_a_non_userns_filesystem() {
 
     // The same caller, same target, same filesystem — but privileged in the
     // initial user namespace: allowed.
-    assert_eq!(mount_dispatch::dispatch_mount(None, "devpts", "/mnt/point", &target_d, None, "", 0,
+    assert_eq!(dispatch_mount(None, "devpts", "/mnt/point", &target_d, None, "", 0,
         ROOT_CAPS), 0);
     assert!(vfs::mount::mount_at_path_exact(&target_d).is_some());
 }
@@ -257,7 +243,7 @@ fn a_userns_caller_may_mount_a_userns_filesystem() {
             vfs::fs::superblock_from_filesystem(ty, fs, None, "usernsfs".into(), 0)
         })));
     let target_d = mount_tree("usernsfs-a");
-    assert_eq!(mount_dispatch::dispatch_mount(None, "usernsfs", "/mnt/point", &target_d, None, "", 0,
+    assert_eq!(dispatch_mount(None, "usernsfs", "/mnt/point", &target_d, None, "", 0,
         USERNS_CAPS), 0, "FS_USERNS_MOUNT settles for privilege in the mount ns owner");
     assert!(vfs::mount::mount_at_path_exact(&target_d).is_some());
 }
@@ -275,6 +261,6 @@ fn mount_capable_table() {
     ];
     for (fl, init, mntns, want) in cases {
         let caps = MountCaps { init_user_ns: init, mnt_user_ns: mntns };
-        assert_eq!(mount_dispatch::mount_capable(fl, caps), want, "{fl:?} init={init} mntns={mntns}");
+        assert_eq!(mount_capable(fl, caps), want, "{fl:?} init={init} mntns={mntns}");
     }
 }

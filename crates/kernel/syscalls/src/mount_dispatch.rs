@@ -1,16 +1,24 @@
 // Pure `mount(2)`-by-fstype dispatch (docs/53 hollow-shell shim pattern):
 // given the CALLER-resolved `vfs::fs::get_fs(fstype)` outcome, either
-// construct+graft the superblock or return the honest Linux errno. Deliberately
-// UNGATED (no `target_os` cfg) — its only deps (`vfs`, `syscall::errno`) are
-// hosted-compilable, so `cargo test` can drive this exact decision path
-// without booting (docs/CLAUDE "verify left" rule). `mount_ops.rs` (the real
-// kernel-only glue, `ensure_filesystems_registered()` + user-string reads)
-// stays `target_os`-gated and delegates here.
+// construct+graft the superblock or return the honest Linux errno. `mount_ops.rs`
+// (the real kernel-only glue, `ensure_filesystems_registered()` + user-string
+// reads) stays `target_os`-gated and delegates here.
+//
+// Lives at the CRATE ROOT, not under `fsmount_common`, and that position is the
+// point. `fsmount_common/mod.rs` carries a module-level
+// `#![cfg(target_os = "oxide-kernel")]`, which every file beneath it inherits —
+// so while this file sat there, `cargo test` compiled NONE of it, and the three
+// hosted tests that exercise it reached it by `#[path]`-including the source
+// into their own binaries. That is a second compilation of shipped logic in a
+// different crate context: it resolves `crate::...` against the TEST binary, so
+// a break in the module the kernel actually links leaves every one of them
+// green. Here the tests call the same `syscalls::mount_dispatch` the kernel
+// does, and `cargo test` type-checks it.
 use alloc::sync::Arc;
 use syscall::errno::Errno;
 use vfs::Dentry;
 
-pub(crate) use crate::mount_capable::{mount_capable, MountCaps};
+pub use crate::mount_capable::{mount_capable, MountCaps};
 
 fn graft_mount(sb: Arc<vfs::SuperBlock>, target_d: &Arc<Dentry>, parent_hint: Option<u64>,
     mnt_flags: u64, lock_flags: u32) -> i64 {
@@ -18,7 +26,7 @@ fn graft_mount(sb: Arc<vfs::SuperBlock>, target_d: &Arc<Dentry>, parent_hint: Op
         parent_hint) {
         Ok(()) => { let _ = vfs::mount::propagate_mount(target_d); 0 }
         Err(vfs::VfsError::Eexist) => -(Errno::Ebusy.as_i32() as i64),
-        Err(e) => crate::namei_common::errno_from_vfs(e),
+        Err(e) => crate::vfs_errno::errno_from_vfs(e),
     }
 }
 
@@ -51,7 +59,7 @@ fn graft_mount(sb: Arc<vfs::SuperBlock>, target_d: &Arc<Dentry>, parent_hint: Op
 /// gate) then read "unrestricted" and the options were advertised by
 /// `/proc/mounts` while enforcing nothing.
 /// # C: O(1) dispatch + O(construct) on hit
-pub(crate) fn dispatch_mount(source: Option<&str>, fstype: &str, target: &str, target_d: &Arc<Dentry>,
+pub fn dispatch_mount(source: Option<&str>, fstype: &str, target: &str, target_d: &Arc<Dentry>,
     parent_hint: Option<u64>, data: &str, ms_flags: u64, caps: MountCaps) -> i64 {
     if let Some(ty) = vfs::fs::get_fs(fstype) {
         // Linux `do_new_mount` order, exactly: build the context, parse
@@ -73,16 +81,16 @@ pub(crate) fn dispatch_mount(source: Option<&str>, fstype: &str, target: &str, t
         fc.set_mount_target(target);
         if let Some(name) = source {
             if let Err(e) = vfs::fs::vfs_parse_fs_string(&mut fc, "source", name) {
-                return crate::namei_common::errno_from_vfs(e);
+                return crate::vfs_errno::errno_from_vfs(e);
             }
         }
         if let Err(e) = vfs::fs::parse_monolithic_mount_data(&mut fc, data) {
-            return crate::namei_common::errno_from_vfs(e);
+            return crate::vfs_errno::errno_from_vfs(e);
         }
         // The superblock does not exist yet, so a refusal here leaks nothing.
         if !mount_capable(ty.fs_flags(), caps) { return -(Errno::Eperm.as_i32() as i64); }
         if let Err(e) = vfs::fs::vfs_get_tree(&mut fc) {
-            return crate::namei_common::errno_from_vfs(e);
+            return crate::vfs_errno::errno_from_vfs(e);
         }
         let sb = match fc.sb() {
             Some(s) => s.clone(),

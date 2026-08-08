@@ -109,7 +109,7 @@ pub(super) fn clone_mnt(src: &Arc<Mount>, ty: CloneType, pg: u64, master: &Arc<M
 /// master's slave list and drop its `SuperBlock` active ref ([`build_sb`]
 /// seeded one), so a skipped/failed clone leaves the SB active count and slave
 /// links balanced. # C: O(master slaves)
-fn release_clone(m: &Arc<Mount>) {
+pub(super) fn release_clone(m: &Arc<Mount>) {
     if let Some(master) = m.mnt_master.lock().upgrade() {
         master.mnt_slave_list.lock()
             .retain(|w| w.upgrade().map(|x| x.mnt_id != m.mnt_id).unwrap_or(false));

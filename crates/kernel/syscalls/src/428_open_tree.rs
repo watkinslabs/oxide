@@ -8,9 +8,10 @@ use crate::fsmount_common::*;
 
 /// `sys_open_tree(dirfd, path, flags)` — slot 428. `OPEN_TREE_CLONE`
 /// detaches a CLONE of the mount at `path` into an fd (the source for a
-/// later `move_mount`); without it, returns an O_PATH-like fd referring to
-/// the path. `OPEN_TREE_CLOEXEC = O_CLOEXEC`. systemd uses the clone form
-/// for `RootDirectory=`/sandbox setup.
+/// later `move_mount`); `OPEN_TREE_NAMESPACE` puts that copy in a new mount
+/// namespace and hands back the NAMESPACE fd instead; without either, returns
+/// an O_PATH-like fd referring to the path. `OPEN_TREE_CLOEXEC = O_CLOEXEC`.
+/// systemd uses the clone form for `RootDirectory=`/sandbox setup.
 /// # C: O(N_mounts)
 pub fn sys_open_tree(args: &SyscallArgs) -> i64 {
     match crate::open_tree_policy::parse(args.a2) {
@@ -24,10 +25,12 @@ pub fn sys_open_tree(args: &SyscallArgs) -> i64 {
 /// reuses the identical decision without re-parsing.
 /// # C: O(N_mounts)
 pub fn open_tree_decided(args: &SyscallArgs, f: crate::open_tree_policy::OpenTree) -> i64 {
-    // `OPEN_TREE_CLONE` demands `may_mount()` BEFORE the walk (Linux
-    // `vfs_open_tree`), so an unprivileged caller naming a nonexistent path is
-    // told EPERM, not ENOENT. The plain O_PATH-like form stays unprivileged.
-    if f.clone_tree { if let Some(rv) = may_mount_or_eperm() { return rv; } }
+    // The privilege rung runs BEFORE the walk, so an unprivileged caller naming
+    // a nonexistent path is told EPERM, not ENOENT. WHICH privilege depends on
+    // the form — the namespace form asks only about the caller's own user
+    // namespace — and that selection lives in the ungated policy module with
+    // `fsmount(2)`'s, because it is the same pair of rungs.
+    if let Err(rv) = crate::open_tree_policy::admit_privilege(f, sample_caps()) { return rv; }
     let vp = match crate::pathresolve::resolve_at_lookup(args.a0 as i32, args.a1, vfs::LookupFlags {
         empty: f.empty,
         follow: f.follow,
@@ -50,6 +53,27 @@ pub fn open_tree_decided(args: &SyscallArgs, f: crate::open_tree_policy::OpenTre
         klog::write_raw(b" target=<none>\n");
     }
     let cloexec = f.cloexec;
+    if f.namespace {
+        // The sibling of `fsmount(FSMOUNT_NAMESPACE)`, and it goes through the
+        // SAME constructor: the namespace both syscalls hand back has one shape
+        // — a copy of the caller's namespace root with the requested tree
+        // mounted on top of it — and writing that twice is writing two shapes.
+        let mnt = match vfs::mount::mount_by_id(vp.mnt_id) {
+            Some(m) => m,
+            None => return -(Errno::Enoent.as_i32() as i64),
+        };
+        let created = vfs::mount::create_new_namespace(vfs::mount::NsMountSource::Tree {
+            src: mnt, base: vp.dentry.clone(), recursive: f.recursive,
+        });
+        let (_top, ns) = match created {
+            Ok(pair) => pair,
+            Err(e) => return crate::namei_common::errno_from_vfs(e),
+        };
+        // The descriptor IS the namespace: it is what `setns(2)` takes, and
+        // holding it is what keeps the namespace — and the mounts inside it —
+        // alive, since nothing else refers to a freshly named one.
+        return install_fd(nscg::proc_ns::mnt_ns_inode(ns), "[mntns]", cloexec);
+    }
     if f.clone_tree {
         // D24 Stage 1a: RECURSIVELY clone the mount SUBTREE rooted at `abs`
         // (AT_RECURSIVE ⇒ whole bindable subtree; else root-only) into a
