@@ -445,6 +445,13 @@ impl Task {
     /// to call on an actively-scheduled task from another CPU.
     /// # C: O(1)
     pub unsafe fn replace_mm(&self, new: Option<Arc<AddressSpace>>) {
+        // Owning a user address space is what makes a task a user-mode thread:
+        // a helper started from the kernel that reaches `execve` stops being a
+        // kernel thread at exactly this point, and from here on its exit
+        // notifies a real parent instead of auto-reaping. The borrowed-mm
+        // sibling below deliberately does NOT clear the bit — a kernel thread
+        // that borrows someone else's mm is still a kernel thread.
+        if new.is_some() { self.kernel_thread.store(false, core::sync::atomic::Ordering::Release); }
         // SAFETY: this fn is itself `unsafe` and forwards its contract
         // unchanged — caller is the running task on its own CPU (or holds the
         // runqueue invariant for it) with preempt off, so the mm slot has a
