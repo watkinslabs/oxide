@@ -31,6 +31,14 @@ const SWAP_OFFSET_SHIFT: u8 = 12;
 // translation under the configured 4 KiB granule/address-size. Bit 11 is
 // therefore kernel software state and remains outside the payload.
 const MIGRATION_MARKER: u64 = 1 << 11;
+// AP[2] — clear = writable, set = read-only, at both exception levels.
+const AP2_RDONLY: u64 = 1 << 7;
+// Descriptor bit 58 is software-reserved on this architecture, so a valid leaf
+// can carry the userfaultfd write-protect marker without changing translation.
+const UFFD_WP_BIT: u64 = 1 << 58;
+// With VALID=0, bit 10 is ignored by translation and is disjoint from the swap
+// (bit 1) and migration (bit 11) markers.
+const POISON_MARKER: u64 = 1 << 10;
 
 /// Errors `map_device_4k` can return. Mirrors `WalkErr` 1:1.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -219,6 +227,13 @@ impl PtWalker for PtWalkerArm {
         if (raw & VALID) != 0 || (raw & MIGRATION_MARKER) == 0 { return None; }
         hal::pt_walker::MigrationEntry::new((raw >> SWAP_OFFSET_SHIFT) & hal::pt_walker::MigrationEntry::MAX_TOKEN)
     }
+
+    fn leaf_wrprotect(raw: u64) -> u64 { raw | AP2_RDONLY }
+    fn leaf_set_uffd_wp(raw: u64) -> u64 { raw | UFFD_WP_BIT }
+    fn leaf_clear_uffd_wp(raw: u64) -> u64 { raw & !UFFD_WP_BIT }
+    fn leaf_is_uffd_wp(raw: u64) -> bool { (raw & VALID) != 0 && (raw & UFFD_WP_BIT) != 0 }
+    fn pack_poison_marker() -> u64 { POISON_MARKER }
+    fn is_poison_marker(raw: u64) -> bool { (raw & VALID) == 0 && (raw & POISON_MARKER) != 0 }
 }
 
 /// Install a 4 KiB Device-nGnRnE mapping `va → pa` into TTBR1_EL1.

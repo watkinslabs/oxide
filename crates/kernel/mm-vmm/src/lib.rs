@@ -57,7 +57,7 @@ pub use file_rmap::{FileRmap, WritableMapReservation, WriteSealError};
 pub use migration::{migration_attach_marker, migration_begin, migration_drop_marker_mapping, migration_finish, migration_pending_then, migration_restore_marker_mapping};
 pub use vma::{EXEC_STACK_VMA_FLAGS, FaultAccess, FaultKind, FileBacking, FileBackingError, SharedFrame, Vma, VmaBacking, VmaFlags, VmaProt};
 pub use tree::{HomeNodeErr, VmaTree};
-pub use uffd::UffdContext;
+pub use uffd::{UffdContext, UffdFaultKind};
 pub use vm_ops::{set_shm_vm_ops, VmaOpsFn};
 
 /// DIAG (debug-atexit): fn-ptr the arch layer installs to arm a DR0 hardware

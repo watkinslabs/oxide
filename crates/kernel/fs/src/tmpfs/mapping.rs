@@ -87,6 +87,9 @@ impl AddressSpaceOps for TmpfsFileData {
         cs
     }
 
+    /// These frames are the file. # C: O(1)
+    fn is_shmem(&self) -> bool { true }
+
     /// # C: O(1)
     fn size(&self) -> u64 { self.len.load(Ordering::Acquire) }
 }

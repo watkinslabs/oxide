@@ -101,6 +101,40 @@ fn clear_current_migration_entry(va: u64) -> Option<hal::pt_walker::MigrationEnt
     with(|as_| clear_migration_entry(as_, va)).flatten()
 }
 
+/// Remove a userfaultfd poison marker. Zapping a range removes the memory the
+/// marker described, so leaving it behind would make the NEXT mapping of that
+/// address raise a memory error for contents that no longer exist — a
+/// `MADV_DONTNEED`ed range must refault as fresh zeroes, not as an error.
+/// Nothing is freed: a marker names no frame and no swap slot.
+/// # C: O(walk depth)
+fn clear_poison_marker(as_: &AddressSpace, va: u64) -> bool {
+    let _pt = as_.lock_page_table();
+    // SAFETY: the address-space PTE lock is held and HHDM covers this live root; the exchange writes the leaf only when it still holds exactly the marker.
+    unsafe {
+        #[cfg(target_arch = "x86_64")]
+        {
+            let marker = <hal_x86_64::vmm::PtWalkerX86 as hal::pt_walker::PtWalker>::pack_poison_marker();
+            hal::pt_walker::swap_leaf_if_4k_at_root::<hal_x86_64::vmm::PtWalkerX86>(as_.root_pa(), va, marker, 0, hhdm_offset())
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            let marker = <hal_aarch64::vmm::PtWalkerArm as hal::pt_walker::PtWalker>::pack_poison_marker();
+            hal::pt_walker::swap_leaf_if_4k_at_root::<hal_aarch64::vmm::PtWalkerArm>(as_.root_pa(), va, marker, 0, hhdm_offset())
+        }
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        { let _ = (as_, va); false }
+    }
+}
+
+/// # C: O(walk depth)
+fn clear_current_poison_marker(va: u64) -> bool {
+    if let Some(cur) = sched::live::current() {
+        // SAFETY: syscall context owns this task's AS mutation.
+        if let Some(mm) = unsafe { cur.mm_ref() } { return clear_poison_marker(mm, va); }
+    }
+    with(|as_| clear_poison_marker(as_, va)).unwrap_or(false)
+}
+
 pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
     // DIAG (debug-syscall): a MADV_DONTNEED/FREE zap of a lib-arena page while a
     // thread holds a lock there (finding #4) loses the in-flight lock/unlock
@@ -201,6 +235,10 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
             // cannot resurrect a page whose VMA has been zapped.
             hal::tlb::shootdown_others_va(va, mask);
             let _ = crate::swap::free_page(entry);
+        } else if clear_current_poison_marker(va) {
+            // The marker described contents this zap is discarding; it names
+            // no frame and no swap slot, so nothing is released with it.
+            hal::tlb::shootdown_others_va(va, mask);
         } else if let Some(marker) = clear_current_migration_entry(va) {
             hal::tlb::shootdown_others_va(va, mask);
             account_present_removed(va);
@@ -331,6 +369,10 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
             // remains charged after the mapping is gone.
             hal::tlb::shootdown_others_va(va, mask);
             let _ = crate::swap::free_page(entry);
+        } else if clear_current_poison_marker(va) {
+            // The marker described contents this zap is discarding; it names
+            // no frame and no swap slot, so nothing is released with it.
+            hal::tlb::shootdown_others_va(va, mask);
         } else if let Some(marker) = clear_current_migration_entry(va) {
             hal::tlb::shootdown_others_va(va, mask);
             account_present_removed(va);

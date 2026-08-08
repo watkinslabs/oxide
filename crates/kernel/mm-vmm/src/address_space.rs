@@ -111,7 +111,7 @@ mod mmfields;
 mod saved_auxv;
 mod ops;
 mod rwsem;
-mod uffd;
+pub mod uffd;
 pub mod pkeys;
 
 pub use limits::{MIN_USER_VA, MMAP_TOP};

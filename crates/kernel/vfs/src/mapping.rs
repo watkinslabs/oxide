@@ -265,6 +265,13 @@ pub trait AddressSpaceOps: Send + Sync {
     /// failure and must not be swallowed. # C: O(journal tx) + one barrier
     fn sync_backing(&self) -> Result<(), ()> { Ok(()) }
 
+    /// Whether these pages ARE the object's storage rather than a cache of
+    /// something durable behind it. A userfaultfd minor-fault registration is
+    /// only meaningful over such an address space, where "already resident in
+    /// the backing but absent from the page table" is a real state.
+    /// # C: O(1)
+    fn is_shmem(&self) -> bool { false }
+
     /// Logical size (Linux `i_size`) the cache reflects. # C: O(1)
     fn size(&self) -> u64;
 }
