@@ -138,6 +138,23 @@ impl FileBacking for ShrinkUnderFault {
     fn ino(&self) -> u64 { 0x5353 }
 }
 
+/// A backing that makes NO progress on its first read and then supplies the
+/// whole extent — a page-cache build race or an extent boundary that the next
+/// read satisfies, with the file size never moving. The reference re-reads a
+/// not-uptodate page once, synchronously, before it will call a fault fatal;
+/// giving up on the first no-progress return kills a process for a condition
+/// that had already cleared.
+struct StallThenFull { calls: AtomicUsize, size: u64 }
+impl FileBacking for StallThenFull {
+    fn read_at(&self, _off: u64, dst: &mut [u8]) -> Result<usize, FileBackingError> {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 { return Ok(0); }
+        for b in &mut *dst { *b = 0xAB; }
+        Ok(dst.len())
+    }
+    fn size_hint(&self) -> u64 { self.size }
+    fn ino(&self) -> u64 { 0x5454 }
+}
+
 fn mmap_file(root: u64, va: u64, backing: Arc<dyn FileBacking>) -> Arc<AddressSpace> {
     let as_ = AddressSpace::new(root).expect("AS::new");
     let s = hal::UserVirtAddr::new(va).expect("va");
@@ -285,4 +302,24 @@ fn absent_mapping_still_classifies_as_a_segmentation_fault() {
     assert_eq!(failure_of(err), FaultFailure::BadArea);
     let arch = hal::fault_class::FaultSignal { signo: 11, code: hal::siginfo::code::SEGV_MAPERR };
     assert_eq!(signal_of(err, arch), Some(arch), "no mapping keeps SIGSEGV/SEGV_MAPERR");
+}
+
+/// A no-progress read that the very next read satisfies must be RE-READ, not
+/// turned into a fatal fault. The size never changes here, so nothing about
+/// truncation can rescue it — only the reference's single synchronous re-read.
+/// Positive control: set `FILL_ATTEMPTS` to 1 in `fill.rs` and this goes red
+/// with `Io`, which is the signal a mapped-file reader dies with.
+#[test]
+fn a_read_that_stalls_once_is_re_read_not_made_fatal() {
+    reset();
+    let r = 0x1000;
+    let va = 0x50_0000u64;
+    let backing: Arc<dyn FileBacking> =
+        Arc::new(StallThenFull { calls: AtomicUsize::new(0), size: 2 * PG });
+    let as_ = mmap_file(r, va, backing);
+
+    fault(&as_, r, va).expect("a stalled read must be re-read, not made fatal");
+
+    let pa = cur_pa(r, va);
+    for i in 0..PG as usize { assert_eq!(read_byte(pa, i), 0xAB, "byte {i} not filled after re-read"); }
 }
