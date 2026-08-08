@@ -94,6 +94,14 @@ must use grouped paths from day one.
    immutable cgroup-owned effective snapshot; it cannot keep a second
    attachment registry. VFS and mknod paths are enforcement adapters, never
    policy owners.
+9a. Audit record production, the backlog and lost-record accounting, the
+   emission rate limit, and the NETLINK_AUDIT control surface live in
+   `crates/kernel/audit`. Producers (fanotify permission verdicts, Landlock
+   denials, syscall-filter decisions) supply facts and never keep a second
+   queue; `netlink` is the transport and owns framing and delivery only.
+   Landlock's own reporting configuration — the per-layer quiet masks and
+   logging flags — lives in `crates/kernel/landlock`, which decides WHAT to
+   report; `audit` decides whether it is emitted.
 10. `crates/drivers/drv-simplefb` owns firmware-framebuffer validation after
     handoff, WC mapping, format conversion, and fbdev/fbcon lifetime. Boot
     parsers only populate `BootInfo.framebuffer`; `kmain` only sequences the
@@ -139,6 +147,11 @@ Constraints:
 9. `crates/kernel/ipc` may depend on `netlink` for `mq_notify(SIGEV_THREAD)`
    cookie delivery, mirroring Linux mqueue's `netlink_getsockbyfd` /
    `netlink_sendskb`; `netlink` never depends on `ipc`.
+9a. `crates/kernel/audit` is a leaf over shared synchronization and the errno
+   type: it reads no task, no socket, and no filesystem, so its whole decision
+   surface runs hosted. `netlink`, `landlock`, `fs` and the syscall shims
+   depend on it, never vice versa; the caller's namespaces, capabilities and
+   process id are gathered by the transport and passed in.
 10. `crates/kernel/security` may depend on `cgroup` to attach, query, and
     acquire effective cgroup BPF programs. `cgroup` stays independent of
     security policy and retains opaque VFS program objects.

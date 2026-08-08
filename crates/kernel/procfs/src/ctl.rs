@@ -198,7 +198,14 @@ const SYSCTL_TREE: &[Node] = &[
         File("max_map_count",           Int(65530, Some((0, INT_MAX)))),
         File("min_free_kbytes",         Int(4096, Some((0, INT_MAX)))),
         File("page-cluster",            Int(3, Some((0, INT_MAX)))),
-        File("nr_hugepages",            Int(0, Some((0, INT_MAX)))),
+        // The pool is real memory, so this leaf is bound to it: a write sizes
+        // the pool and a read reports the size it reached, which need not be
+        // the size that was asked for.
+        File("nr_hugepages",            IntHook(get_nr_hugepages, set_nr_hugepages,
+                                                Some((0, INT_MAX)))),
+        File("nr_overcommit_hugepages", IntHook(get_nr_overcommit_hugepages,
+                                                set_nr_overcommit_hugepages,
+                                                Some((0, INT_MAX)))),
         File("mmap_min_addr",           Int(65536, Some((0, INT_MAX)))),
         // `vm.memfd_noexec` belongs to the active PID namespace. A child
         // copies its parent's effective scope and cannot write below the

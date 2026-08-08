@@ -85,10 +85,8 @@ pub const MASK_ADD_RULE: u32 = ADD_RULE_QUIET;
 
 // `landlock_restrict_self` flags.
 //
-// The three logging flags select which denials reach the audit log. This
-// kernel has no audit subsystem, so they are validated, carried, and record
-// nothing — the same shape a kernel built without audit support has, and they
-// never change an access decision.
+// The three logging flags select which denials reach the audit log; see
+// `logging`. None of them ever changes an access decision.
 pub const RESTRICT_SELF_LOG_SAME_EXEC_OFF:  u32 = 1 << 0;
 pub const RESTRICT_SELF_LOG_NEW_EXEC_ON:    u32 = 1 << 1;
 pub const RESTRICT_SELF_LOG_SUBDOMAINS_OFF: u32 = 1 << 2;

@@ -79,6 +79,10 @@ pub struct TmpfsFs {
     /// keys on `f_type` must be able to tell them apart.
     fsname:     &'static str,
     magic:      u64,
+    /// `casefold=` / `strict_encoding`: the name encoding this instance
+    /// declares, applied to the superblock at fill-super. A directory folds
+    /// case only once it also carries the casefold attribute.
+    encoding:   Option<(String, bool)>,
 }
 
 impl TmpfsFs {
@@ -101,9 +105,15 @@ impl TmpfsFs {
     /// # C: O(1)
     fn with_root(perm: u16, uid: u32, gid: u32, acct: Arc<TmpfsSb>,
                  fsname: &'static str, magic: u64) -> Arc<Self> {
+        Self::with_root_encoding(perm, uid, gid, acct, fsname, magic, None)
+    }
+    /// As [`TmpfsFs::with_root`], also declaring a name encoding. # C: O(1)
+    fn with_root_encoding(perm: u16, uid: u32, gid: u32, acct: Arc<TmpfsSb>,
+                          fsname: &'static str, magic: u64,
+                          encoding: Option<(String, bool)>) -> Arc<Self> {
         acct.charge_inode(); // the root inode itself counts (Linux shmem)
         let root = make_tmpfs_dir_inode(ROOT_INO, perm, uid, gid, Weak::new(), acct.clone());
-        Arc::new(Self { root, sb: Spinlock::new(Weak::new()), acct, fsname, magic })
+        Arc::new(Self { root, sb: Spinlock::new(Weak::new()), acct, fsname, magic, encoding })
     }
     /// Build a tmpfs instance honouring a `mount(2)` `-o` option string
     /// (`data`) — `mode=`/`uid=`/`gid=` set the ROOT inode's permission bits
@@ -139,11 +149,12 @@ impl TmpfsFs {
     fn typed_from_mount_data(data: &str, fsname: &'static str, magic: u64) -> KResult<Arc<Self>> {
         let opts = Self::parse_data(data)?;
         let acct = TmpfsSb::from_opts(&opts);
-        Ok(Self::with_root(
+        let encoding = opts.casefold.clone().map(|c| (c, opts.strict_encoding));
+        Ok(Self::with_root_encoding(
             opts.mode.unwrap_or(DEFAULT_ROOT_MODE),
             opts.uid.unwrap_or(DEFAULT_ROOT_UID),
             opts.gid.unwrap_or(DEFAULT_ROOT_GID),
-            acct, fsname, magic,
+            acct, fsname, magic, encoding,
         ))
     }
     /// Parse an option string against the CALLER's privilege. # C: O(len(data))
@@ -153,6 +164,10 @@ impl TmpfsFs {
     /// This instance's root inode (`sb->s_root->d_inode`), handed to
     /// `register_bind` so the path walk crosses into the tree. # C: O(1)
     pub fn root_inode(&self) -> InodeRef { self.root.clone() }
+    /// This instance's space accounting, the object every charge point takes.
+    /// # C: O(1)
+    #[cfg(test)]
+    pub(super) fn accounting(&self) -> Arc<TmpfsSb> { self.acct.clone() }
 }
 
 impl vfs::fs::FileSystem for TmpfsFs {
@@ -183,7 +198,20 @@ impl vfs::fs::FileSystem for TmpfsFs {
     /// derives `fsid` from `s_dev` (per-instance, not a constant). # C: O(1)
     fn set_sb(&self, sb: Weak<SuperBlock>) -> vfs::KResult<()> {
         *self.sb.lock() = sb.clone();
-        if let Some(d) = as_dir(&self.root) { d.set_sb(sb); }
+        self.acct.bind_sb(&sb);
+        if let Some(d) = as_dir(&self.root) { d.set_sb(sb.clone()); }
+        // The quota classes come up before the root inode is charged, so the
+        // root counts against its owner exactly as every later inode does.
+        if let Some(s) = sb.upgrade() {
+            // The encoding is declared before anything can be looked up in the
+            // instance, so no dentry is ever hashed by a rule the instance
+            // later changes.
+            if let Some((charset, strict)) = self.encoding.as_ref() {
+                vfs::dentry::casefold::sb_enable_casefold(&s, charset, *strict)?;
+            }
+            super::quota::enable(&s, &self.acct.quota())?;
+            super::quota::charge_existing_inode(&self.acct, &self.root);
+        }
         Ok(())
     }
 
@@ -197,4 +225,10 @@ pub struct TmpfsSuperOps { acct: Arc<TmpfsSb>, magic: u64 }
 impl vfs::SuperOps for TmpfsSuperOps {
     /// # C: O(1)
     fn statfs(&self) -> KResult<vfs::SbStatFs> { Ok(self.acct.statfs(self.magic)) }
+    /// Last-umount teardown drops this instance's quota classes: the records
+    /// are the live dquots, so the mount going away is the records going away.
+    /// # C: O(N_dq)
+    fn put_super(&self) {
+        if let Some(sb) = self.acct.quota_sb() { super::quota::disable(&sb); }
+    }
 }

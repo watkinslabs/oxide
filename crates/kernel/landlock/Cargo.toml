@@ -9,6 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 sync    = { path = "../../shared/sync" }
+audit   = { path = "../audit" }
 syscall = { path = "../syscall" }
 vfs     = { path = "../../kernel/vfs" }
 

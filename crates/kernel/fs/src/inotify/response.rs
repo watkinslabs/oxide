@@ -88,6 +88,20 @@ pub(crate) fn parse_response_info(info: &[u8]) -> Result<AuditRule, Errno> {
     })
 }
 
+/// The response word an audit record carries, or `None` when the verdict did
+/// not ask to be audited.
+///
+/// The recorded word keeps the verdict AND the modifier flags but drops the
+/// audit request itself: that flag says how the decision is to be handled, not
+/// what was decided, and a reader comparing records would otherwise see it on
+/// every one. The packed errno is dropped too — it is the accessor's answer,
+/// not the daemon's decision.
+/// # C: O(1)
+pub(crate) fn audited_response(raw: u32) -> Option<u32> {
+    if raw & FAN_AUDIT == 0 { return None; }
+    Some(raw & (RESPONSE_ACCESS | RESPONSE_FLAGS) & !FAN_AUDIT)
+}
+
 /// The errno packed into the high byte of a response word (`FAN_DENY_ERRNO`).
 /// # C: O(1)
 pub(crate) fn response_errno(response: u32) -> u32 { (response >> ERRNO_SHIFT) & ERRNO_MASK }
@@ -335,5 +349,32 @@ mod tests {
         assert_eq!(response_errno(FAN_DENY | (5 << 24)), 5);
         assert_eq!(response_errno(0xff00_0000), 0xff);
         assert_eq!(response_errno(0x00ff_ffff), 0, "no low bit leaks into the errno");
+    }
+
+    /// A verdict that did not ask to be audited produces no record at all.
+    #[test]
+    fn a_verdict_without_the_audit_flag_records_nothing() {
+        assert_eq!(audited_response(FAN_ALLOW), None);
+        assert_eq!(audited_response(FAN_DENY), None);
+        assert_eq!(audited_response(FAN_DENY | FAN_INFO), None);
+        assert_eq!(audited_response(0), None);
+    }
+
+    /// The audit request itself is dropped from the recorded word: it says how
+    /// the decision is to be handled, not what was decided.
+    #[test]
+    fn the_recorded_word_keeps_the_verdict_and_drops_the_audit_request() {
+        assert_eq!(audited_response(FAN_ALLOW | FAN_AUDIT), Some(FAN_ALLOW));
+        assert_eq!(audited_response(FAN_DENY | FAN_AUDIT), Some(FAN_DENY));
+        assert_eq!(audited_response(FAN_DENY | FAN_AUDIT | FAN_INFO),
+            Some(FAN_DENY | FAN_INFO));
+    }
+
+    /// The packed errno is the accessor's answer, not the daemon's decision,
+    /// so it does not reach the record.
+    #[test]
+    fn the_recorded_word_drops_the_packed_errno() {
+        let denial = FAN_DENY | FAN_AUDIT | (Errno::Enospc as u32) << ERRNO_SHIFT;
+        assert_eq!(audited_response(denial), Some(FAN_DENY));
     }
 }

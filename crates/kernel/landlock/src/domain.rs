@@ -17,7 +17,9 @@ use syscall::errno::Errno;
 use vfs::VfsPath;
 
 use crate::abi;
-use crate::eval::LayerMasks;
+use crate::audit::RequestType;
+use crate::eval::{Grant, LayerMasks};
+use crate::logging::{DomainDetails, LayerLog, LogConfig, LogStatus};
 use crate::ruleset::{FsRule, NetRule, Ruleset};
 use crate::uapi::*;
 use crate::walk::{self, Node};
@@ -27,29 +29,69 @@ pub struct Layer {
     pub handled_fs:  AccessMask,
     pub handled_net: AccessMask,
     pub scoped:      AccessMask,
+    /// Rights whose denial this layer asked not to have reported, for objects
+    /// one of its rules marked quiet. Never affects an access decision.
+    pub quiet_fs:     AccessMask,
+    pub quiet_net:    AccessMask,
+    /// Scopes whose denial is never reported; needs no object marking.
+    pub quiet_scoped: AccessMask,
     pub fs:  Vec<FsRule>,
     pub net: Vec<NetRule>,
+    /// Reporting state, SHARED with every domain that inherited this layer.
+    pub log: Arc<LayerLog>,
 }
 
 impl Layer {
     /// # C: O(1)
     pub fn fs_mask(&self) -> AccessMask { abi::fs_layer_mask(self.handled_fs) }
 
-    /// Rights this layer grants at one hierarchy node.
+    /// What this layer grants at one hierarchy node, and whether any rule it
+    /// matched there marked the object quiet. A rule that grants nothing still
+    /// contributes its quiet marking — carrying that marking is the only
+    /// reason such a rule can be added at all.
     /// # C: O(N_rules)
-    fn granted_at(&self, node: &Node) -> AccessMask {
+    fn granted_at(&self, node: &Node) -> Grant {
         let key = Arc::as_ptr(&node.inode);
-        let mut g = 0;
-        for r in self.fs.iter() { if Arc::as_ptr(&r.inode) == key { g |= r.allowed; } }
+        let mut g = Grant::default();
+        for r in self.fs.iter() {
+            if Arc::as_ptr(&r.inode) != key { continue; }
+            g.access |= r.allowed;
+            g.quiet |= r.quiet;
+        }
         g
     }
 
-    /// Rights this layer grants on one port.
+    /// What this layer grants on one port.
     /// # C: O(N_rules)
-    fn granted_port(&self, port: u16) -> AccessMask {
-        let mut g = 0;
-        for r in self.net.iter() { if r.port == port { g |= r.allowed; } }
+    fn granted_port(&self, port: u16) -> Grant {
+        let mut g = Grant::default();
+        for r in self.net.iter() {
+            if r.port != port { continue; }
+            g.access |= r.allowed;
+            g.quiet |= r.quiet;
+        }
         g
+    }
+
+    /// # C: O(1)
+    pub fn count_denial(&self) { self.log.count_denial(); }
+    /// # C: O(1)
+    pub fn denials(&self) -> u64 { self.log.denials() }
+    /// # C: O(1)
+    pub fn log_status(&self) -> LogStatus { self.log.status() }
+    /// # C: O(1)
+    pub fn claim_description(&self) -> LogStatus { self.log.claim_description() }
+
+    /// Clone for a stacked domain: the rules are copied, the reporting state
+    /// is SHARED — it describes one layer, however many domains hold it.
+    /// # C: O(N_rules)
+    fn inherit(&self) -> Self {
+        Self {
+            handled_fs: self.handled_fs, handled_net: self.handled_net, scoped: self.scoped,
+            quiet_fs: self.quiet_fs, quiet_net: self.quiet_net,
+            quiet_scoped: self.quiet_scoped,
+            fs: self.fs.clone(), net: self.net.clone(), log: Arc::clone(&self.log),
+        }
     }
 }
 
@@ -70,21 +112,29 @@ impl Domain {
     /// so a thread cannot escape a policy by enforcing another one.
     /// # C: O(N_rules)
     pub fn merge(parent: Option<&Arc<Domain>>, rs: &Ruleset) -> Result<Arc<Domain>, Errno> {
+        Self::merge_logged(parent, rs, LogConfig::default(), DomainDetails::default())
+    }
+
+    /// `merge`, with the reporting configuration the enforcement asked for and
+    /// the identity of whoever asked. The two are fixed at enforcement time
+    /// because the layer is immutable thereafter — including its logging,
+    /// which a sandboxed thread must not be able to turn back on.
+    /// # C: O(N_rules)
+    pub fn merge_logged(parent: Option<&Arc<Domain>>, rs: &Ruleset, log: LogConfig,
+                        details: DomainDetails) -> Result<Arc<Domain>, Errno>
+    {
         let mut layers = Vec::new();
         let mut ancestry = Vec::new();
         if let Some(p) = parent {
             abi::may_stack_layer(p.layers.len())?;
-            for l in p.layers.iter() {
-                layers.push(Layer {
-                    handled_fs: l.handled_fs, handled_net: l.handled_net, scoped: l.scoped,
-                    fs: l.fs.clone(), net: l.net.clone(),
-                });
-            }
+            for l in p.layers.iter() { layers.push(l.inherit()); }
             ancestry.extend_from_slice(&p.ancestry);
         }
         let (fs, net) = rs.snapshot();
         layers.push(Layer {
-            handled_fs: rs.handled_fs, handled_net: rs.handled_net, scoped: rs.scoped, fs, net,
+            handled_fs: rs.handled_fs, handled_net: rs.handled_net, scoped: rs.scoped,
+            quiet_fs: rs.quiet_fs, quiet_net: rs.quiet_net, quiet_scoped: rs.quiet_scoped,
+            fs, net, log: Arc::new(LayerLog::new(log, details)),
         });
         ancestry.push(NEXT_DOMAIN_ID.fetch_add(1, Ordering::AcqRel));
         Ok(Arc::new(Domain { layers, ancestry }))
@@ -127,8 +177,20 @@ impl Domain {
 
     /// Per-layer grants at one node.
     /// # C: O(N_layers × N_rules)
-    pub(crate) fn granted_at(&self, node: &Node) -> Vec<AccessMask> {
+    pub(crate) fn granted_at(&self, node: &Node) -> Vec<Grant> {
         self.layers.iter().map(|l| l.granted_at(node)).collect()
+    }
+
+    /// Report the denial `m` describes, if the layer that produced it reports.
+    ///
+    /// Called on every refusal path so a sandboxed program's failure is
+    /// explainable: the record names the layer, the domain, and exactly which
+    /// rights were still missing when the walk ran out.
+    /// # C: O(N_layers)
+    pub(crate) fn report_denial_masks(&self, m: &LayerMasks, ty: RequestType, request: AccessMask) {
+        let Some((layer, missing, object_quiet)) = m.denied_layer(request) else { return };
+        crate::audit::log_denial(self, ty, layer, missing, object_quiet,
+                                 crate::audit::same_execution(layer));
     }
 
     /// Whether `access` is allowed on `path`.
@@ -150,6 +212,7 @@ impl Domain {
         for n in chain.iter() {
             if m.unmask(&self.granted_at(n)) { return Ok(()); }
         }
+        self.report_denial_masks(&m, RequestType::FsAccess, req);
         Err(Errno::Eacces)
     }
 
@@ -169,13 +232,14 @@ impl Domain {
         let masks = self.fs_masks();
         let (mut m, union) = LayerMasks::init(&masks, req);
         if union == 0 { return Ok(()); }
-        let inside: Vec<AccessMask> = (0..self.layers.len())
-            .map(|i| if self.peer_inside_at(peer, i) { req } else { 0 })
+        let inside: Vec<Grant> = (0..self.layers.len())
+            .map(|i| Grant::plain(if self.peer_inside_at(peer, i) { req } else { 0 }))
             .collect();
         if m.unmask(&inside) { return Ok(()); }
         for n in walk::ancestors(path).iter() {
             if m.unmask(&self.granted_at(n)) { return Ok(()); }
         }
+        self.report_denial_masks(&m, RequestType::FsAccess, req);
         Err(Errno::Eacces)
     }
 
@@ -195,9 +259,10 @@ impl Domain {
         let masks = self.net_masks();
         let (mut m, req) = LayerMasks::init(&masks, access);
         if req == 0 { return Ok(()); }
-        let granted: Vec<AccessMask> =
+        let granted: Vec<Grant> =
             self.layers.iter().map(|l| l.granted_port(port)).collect();
         if m.unmask(&granted) { return Ok(()); }
+        self.report_denial_masks(&m, RequestType::NetAccess, req);
         Err(Errno::Eacces)
     }
 
@@ -211,7 +276,14 @@ impl Domain {
     pub fn scope_denies(&self, scope: AccessMask, peer: Option<&Arc<Domain>>) -> bool {
         for (level, l) in self.layers.iter().enumerate() {
             if (l.scoped & scope) == 0 { continue; }
-            if !self.peer_inside_at(peer, level) { return true; }
+            if self.peer_inside_at(peer, level) { continue; }
+            // A scope names no object, so there is no walk to run out of: the
+            // layer that scopes it IS the layer that denied it.
+            let ty = if scope == SCOPE_SIGNAL { RequestType::ScopeSignal }
+                     else { RequestType::ScopeAbstractUnixSocket };
+            crate::audit::log_denial(self, ty, level, 0, false,
+                                     crate::audit::same_execution(level));
+            return true;
         }
         false
     }
@@ -238,3 +310,18 @@ pub fn scope_denied(subject: Option<&Arc<Domain>>, peer: Option<&Arc<Domain>>,
 #[cfg(test)]
 #[path = "tests/domain.rs"]
 mod tests;
+
+impl Drop for Domain {
+    /// Report every layer that dies with this domain.
+    ///
+    /// Only the LAST holder reports: a layer inherited by a stacked domain is
+    /// still enforced somewhere, and announcing its id as gone would tell a
+    /// reader it could stop resolving records that are still being produced.
+    /// # C: O(N_layers)
+    fn drop(&mut self) {
+        for (i, l) in self.layers.iter().enumerate() {
+            if Arc::strong_count(&l.log) != 1 { continue; }
+            crate::audit::log_drop_layer(self.ancestry.get(i).copied().unwrap_or(0), l);
+        }
+    }
+}

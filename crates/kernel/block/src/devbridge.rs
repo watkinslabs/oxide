@@ -12,7 +12,10 @@
 //!
 //! The registry (`register_with_serial`/`unregister`) calls [`publish`] /
 //! [`unpublish`] here; [`DiskBlkOps`] forwards byte-granular read/write to the
-//! `Disk`'s stats-wrapped `BlockDevice` via whole-sector RMW.
+//! disk's page cache (`crate::bdev`), which owns the translation to whole
+//! device blocks. There is deliberately no second, uncached byte path beside
+//! it: a raw open that bypassed the cache would disagree with one that used
+//! it, and with the filesystem mounted on the same disk.
 
 use alloc::sync::Arc;
 use alloc::vec;
@@ -25,51 +28,20 @@ use crate::blockdev::{BlockDevice, BlockRequest};
 use crate::types::{BlockError, KResult as BlockResult, BlockOp};
 use crate::registry::{by_dev, close_by_dev, open_by_dev, DevNum, Disk};
 
-/// Read `buf.len()` bytes from `dev` at byte offset `off`, translating to
-/// whole-sector reads (Linux block layer slices to `block_size` below the fops).
-/// Reads past the device capacity return a short/zero count (EOF), never an
-/// error — matching a read on a block device positioned at/after its end.
-/// # C: O(buf.len() / block_size)
-pub fn read_at(dev: &dyn BlockDevice, off: u64, buf: &mut [u8]) -> KResult<usize> {
-    if buf.is_empty() { return Ok(0); }
-    let bs = dev.block_size() as u64;
-    let cap = dev.capacity_blocks().saturating_mul(bs);
-    if off >= cap { return Ok(0); }
-    let len = core::cmp::min(buf.len() as u64, cap - off) as usize;
-    let first = off / bs;
-    let last_excl = (off + len as u64 + bs - 1) / bs;
-    let n = (last_excl - first) as u32;
-    let mut req = BlockRequest::new_read(first, n, dev.block_size());
-    dev.submit_sync(&mut req).map_err(|_| VfsError::Eio)?;
-    let inner = (off - first * bs) as usize;
-    buf[..len].copy_from_slice(&req.buffer[inner .. inner + len]);
-    Ok(len)
-}
-
-/// Write `data` to `dev` at byte offset `off` via read-modify-write for any
-/// partial leading/trailing sector. Writes past capacity are clamped; a write
-/// starting at/after the end returns `0` (Linux short-writes a block device at
-/// its end). # C: O(data.len() / block_size + 2 RMW sectors)
-pub fn write_at(dev: &dyn BlockDevice, off: u64, data: &[u8]) -> KResult<usize> {
-    if data.is_empty() { return Ok(0); }
-    let bs = dev.block_size() as u64;
-    let cap = dev.capacity_blocks().saturating_mul(bs);
-    if off >= cap { return Ok(0); }
-    let len = core::cmp::min(data.len() as u64, cap - off) as usize;
-    let first = off / bs;
-    let last_excl = (off + len as u64 + bs - 1) / bs;
-    let n = (last_excl - first) as u32;
-    let mut rmw = BlockRequest::new_read(first, n, dev.block_size());
-    dev.submit_sync(&mut rmw).map_err(|_| VfsError::Eio)?;
-    let inner = (off - first * bs) as usize;
-    rmw.buffer[inner .. inner + len].copy_from_slice(&data[..len]);
-    let mut wreq = BlockRequest::new_write(first, n, rmw.buffer);
-    dev.submit_sync(&mut wreq).map_err(|_| VfsError::Eio)?;
-    // A write(2) straight at a block device is the caller's own output, so it
-    // is billed to the caller — unlike a buffered filesystem write, whose
-    // pages a kernel writeback thread submits later.
-    crate::task_io::account_write(len as u64);
-    Ok(len)
+/// Block-layer error as the errno a file operation returns. Both enums carry
+/// the Linux numeric value, so this is a name-to-name mapping of one code.
+/// # C: O(1)
+fn block_err(e: BlockError) -> VfsError {
+    match e {
+        BlockError::Enxio      => VfsError::Enxio,
+        BlockError::Eagain     => VfsError::Eagain,
+        BlockError::Enomem     => VfsError::Enomem,
+        BlockError::Ebusy      => VfsError::Ebusy,
+        BlockError::Einval     => VfsError::Einval,
+        BlockError::Enospc     => VfsError::Enospc,
+        BlockError::Eopnotsupp => VfsError::Eopnotsupp,
+        BlockError::Eio        => VfsError::Eio,
+    }
 }
 
 /// Issue a block discard over an already-validated byte range. # C: O(blocks)
@@ -168,16 +140,30 @@ impl BlockDevOps for DiskBlkOps {
     fn open_file(&self, devt: Devt, _file: &vfs::File) -> KResult<()> {
         if open_by_dev(devt.raw()) { Ok(()) } else { Err(VfsError::Enxio) }
     }
+    /// Final release of one description. When it is the LAST opener, the
+    /// device's dirty pages are written back here (Linux `bdev_release` syncs
+    /// when it looks like the last opener is leaving): the device pass of
+    /// `sync(2)` skips a disk nobody has open, so without this a raw write
+    /// followed by a close would leave dirty pages nothing would ever flush.
     fn release_file(&self, devt: Devt, _file: &vfs::File) {
+        if self.disk.opener_count() == 1 { let _ = self.disk.mapping.write_and_wait(); }
         let _ = close_by_dev(devt.raw());
     }
+    /// Linux `blkdev_read_iter` — through the device's page cache, not
+    /// straight at the driver.
     fn read(&self, _devt: Devt, off: u64, buf: &mut [u8]) -> KResult<usize> {
-        read_at(self.disk.dev.as_ref(), off, buf)
+        self.disk.mapping.read_at(off, buf).map_err(block_err)
     }
+    /// Linux `blkdev_write_iter` — buffered: the bytes land in the device's
+    /// page cache and writeback puts them on the medium.
     fn write(&self, _devt: Devt, off: u64, buf: &[u8]) -> KResult<usize> {
-        write_at(self.disk.dev.as_ref(), off, buf)
+        self.disk.mapping.write_at(off, buf).map_err(block_err)
     }
+    /// Linux `blkdev_fsync`: write back the device's page cache and wait for
+    /// it, THEN `blkdev_issue_flush`. The barrier alone would report a
+    /// durability the cached bytes never reached.
     fn flush_cache(&self, _devt: Devt) -> KResult<()> {
+        self.disk.mapping.write_and_wait().map_err(block_err)?;
         self.disk.dev.flush().map_err(|_| VfsError::Eio)
     }
 }
@@ -273,11 +259,50 @@ mod tests {
     // Reads at/after end-of-device are short/EOF, never an error (Linux).
     #[test]
     fn read_past_end_is_eof_not_error() {
-        let d = disk(2); // 1024 B
+        let idx = registry::register("vdu", disk(2)); // 1024 B
+        let devt = vfs::Devt(dev_t_of("vdu", idx).unwrap());
+        let ops = vfs::lookup_blkdev(devt).unwrap();
         let mut buf = [0u8; 512];
-        assert_eq!(super::read_at(d.as_ref(), 1024, &mut buf).unwrap(), 0);
+        assert_eq!(ops.read(devt, 1024, &mut buf).unwrap(), 0);
         // A read straddling the end returns only the in-bounds tail.
-        assert_eq!(super::read_at(d.as_ref(), 1000, &mut buf).unwrap(), 24);
+        assert_eq!(ops.read(devt, 1000, &mut buf).unwrap(), 24);
+        registry::unregister("vdu");
+    }
+
+    // `fsync` on a block-device fd is writeback THEN barrier: the bytes a
+    // buffered write left in the device's page cache must be on the medium
+    // when it returns, not merely ordered behind a flush of nothing.
+    #[test]
+    fn blockdev_fsync_writes_back_the_cache_then_flushes() {
+        let idx = registry::register("vdv", disk(8));
+        let devt = vfs::Devt(dev_t_of("vdv", idx).unwrap());
+        let ops = vfs::lookup_blkdev(devt).unwrap();
+        let d = registry::by_dev(devt.raw()).unwrap();
+        assert_eq!(ops.write(devt, 0, &[0xC3; 64]).unwrap(), 64);
+        assert_eq!(d.mapping.dirty_pages(), 1, "buffered, not written through");
+        ops.flush_cache(devt).unwrap();
+        assert_eq!(d.mapping.dirty_pages(), 0, "fsync wrote it back");
+        registry::unregister("vdv");
+    }
+
+    // Closing the LAST description writes the device's dirty pages back
+    // (Linux `bdev_release`) — the device pass of `sync(2)` skips a disk with
+    // no opener, so nothing else would.
+    #[test]
+    fn final_close_writes_back_the_device_cache() {
+        let idx = registry::register("vdw", disk(8));
+        let devt = vfs::Devt(dev_t_of("vdw", idx).unwrap());
+        let ops = vfs::lookup_blkdev(devt).unwrap();
+        let sb = test_sb();
+        let node = make_device_node_inode(1, FileType::BlockDev, devt, 0o660, Arc::downgrade(&sb));
+        let file = File::new(node.clone(), vfs::dcache::d_obtain_alias(node), OpenFlags::empty());
+        ops.open_file(devt, &file).unwrap();
+        let d = registry::by_dev(devt.raw()).unwrap();
+        ops.write(devt, 0, &[0xD4; 32]).unwrap();
+        assert_eq!(d.mapping.dirty_pages(), 1);
+        ops.release_file(devt, &file);
+        assert_eq!(d.mapping.dirty_pages(), 0, "final close flushed the cache");
+        registry::unregister("vdw");
     }
 
     // Size ioctl helpers report capacity in bytes + the logical sector size.

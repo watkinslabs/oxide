@@ -11,7 +11,7 @@ use vfs::InodeRef;
 
 use crate::inotify::fan_range;
 use crate::inotify::mask::mask_applicable;
-use crate::inotify::response::{validate_response, Verdict, FAN_ALLOW};
+use crate::inotify::response::{audited_response, validate_response, Verdict, FAN_ALLOW};
 use crate::inotify::types::{inode_key, Event, InotifyData, PermState, FAN_ACCESS_PERM,
     FAN_OPEN_EXEC_PERM, FAN_OPEN_PERM, FAN_PRE_ACCESS, PERM_MARK_COUNT};
 
@@ -160,7 +160,10 @@ pub(crate) fn reporting_pid(_group: &InotifyData) -> u32 { 0 }
 #[cfg(target_os = "oxide-kernel")]
 fn wait_for_verdict(group: &Arc<InotifyData>, st: &Arc<PermState>) -> Result<(), Errno> {
     loop {
-        if let Some(v) = verdict_of(group, st) { return v.as_result(); }
+        if let Some((raw, v)) = answered_verdict(group, st) {
+            audit_verdict(raw, st);
+            return v.as_result();
+        }
         if fatal_signal_pending() { st.cancel(); return Err(Errno::Eintr); }
         // SAFETY: syscall context on the accessing task, no VFS locks held; the
         // re-check below cancels the park if the verdict landed while
@@ -180,15 +183,37 @@ fn wait_for_verdict(group: &Arc<InotifyData>, st: &Arc<PermState>) -> Result<(),
 /// waited on allows the access rather than spinning. # C: O(1)
 #[cfg(not(target_os = "oxide-kernel"))]
 fn wait_for_verdict(group: &Arc<InotifyData>, st: &Arc<PermState>) -> Result<(), Errno> {
-    match verdict_of(group, st) { Some(v) => v.as_result(), None => Ok(()) }
+    match answered_verdict(group, st) {
+        Some((raw, v)) => { audit_verdict(raw, st); v.as_result() }
+        None => Ok(()),
+    }
 }
 
-/// The published verdict, re-validated against the group that published it.
+/// The published verdict, re-validated against the group that published it,
+/// alongside the raw response word the daemon wrote. The raw word is what
+/// carries the daemon's request to have the decision audited, so it has to
+/// survive validation rather than being folded into the verdict.
 /// # C: O(1)
-fn verdict_of(group: &InotifyData, st: &PermState) -> Option<Verdict> {
+fn answered_verdict(group: &InotifyData, st: &PermState) -> Option<(u32, Verdict)> {
     let r = st.answered()?;
-    Some(validate_response(r, group.is_pre_content(), group.audit_enabled())
-        .unwrap_or(Verdict { access: FAN_ALLOW, errno: 0 }))
+    let v = validate_response(r, group.is_pre_content(), group.audit_enabled())
+        .unwrap_or(Verdict { access: FAN_ALLOW, errno: 0 });
+    Some((r, v))
+}
+
+/// Record a verdict the daemon asked to have audited.
+///
+/// The record carries the verdict and its modifier flags but NOT the audit
+/// request itself — that flag says how the decision is to be handled, not what
+/// was decided. A verdict that named no rule is still recorded: "a daemon
+/// decided this and would not say why" is what an auditor needs to see.
+/// # C: O(1)
+fn audit_verdict(raw: u32, st: &PermState) {
+    let Some(resp) = audited_response(raw) else { return };
+    let info = st.audit_rule().map(|r| audit::FanotifyInfo {
+        rule_number: r.rule_number, subj_trust: r.subj_trust, obj_trust: r.obj_trust,
+    });
+    let _ = audit::log_fanotify(resp, info);
 }
 
 /// `fatal_signal_pending(current)` — only an unblockable kill breaks the wait.

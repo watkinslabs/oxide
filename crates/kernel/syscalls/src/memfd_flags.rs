@@ -54,6 +54,10 @@ pub struct MemfdSetup {
     pub cloexec: bool,
     /// Backing store must be hugetlbfs.
     pub hugetlb: bool,
+    /// log2 of the huge-page size the flag word named, 0 for the default
+    /// granule. Only meaningful with `hugetlb`; the flag validator admits the
+    /// field only alongside `MFD_HUGETLB`.
+    pub huge_shift: u32,
 }
 
 /// `sanitize_flags` + `check_sysctl_memfd_noexec`: reject undefined bits and
@@ -107,6 +111,7 @@ pub fn setup(eff: u32) -> MemfdSetup {
         perm,
         cloexec: eff & MFD_CLOEXEC != 0,
         hugetlb: eff & MFD_HUGETLB != 0,
+        huge_shift: (eff >> MFD_HUGE_SHIFT) & MFD_HUGE_MASK,
     }
 }
 

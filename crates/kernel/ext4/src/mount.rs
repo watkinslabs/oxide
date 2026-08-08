@@ -37,7 +37,7 @@ mod io;
 mod lifecycle;
 mod quota;
 
-pub(crate) use io::{read_byte_range_pub, write_byte_range};
+pub(crate) use io::read_byte_range_pub;
 
 /// Errors at the Mount layer.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -157,4 +157,27 @@ pub struct Mount {
     /// creator releases `op_lock`; it still drains the shadow atomically under
     /// `state.lock`, so it stays serialized. # Lk: none (atomic).
     pub(crate) creating: ::core::sync::atomic::AtomicBool,
+    /// The mount options in force. SOLE owner of this mount's option truth:
+    /// Linux keeps them in the per-superblock info every ext4 function reaches
+    /// through its inode's superblock, which is why every layer can read them.
+    /// They live HERE and not one layer up because the consumers are here — the
+    /// directory-growth ceiling, the discard on block free, the journal's I/O
+    /// priority and its data-ordering mode are all decided below the VFS-facing
+    /// state object, which could not see an option it owned itself.
+    /// # Lk: leaf — takes nothing, and never taken while `state` is held.
+    pub(crate) opts: Spinlock<crate::mount_opts::Ext4SbOpts, SuperblockLockClass>,
+}
+
+impl Mount {
+    /// Snapshot of the options in force on this mount. # C: O(MAXQUOTAS)
+    pub fn opts(&self) -> crate::mount_opts::Ext4SbOpts { self.opts.lock().clone() }
+
+    /// The behavioural half of those options. Copy-out, so a consumer holds no
+    /// lock while acting on the answer. # C: O(1)
+    pub fn behaviour(&self) -> crate::mount_opts::Ext4Behaviour { self.opts.lock().behaviour }
+
+    /// Replace the option state wholesale. Only the option path calls this,
+    /// and only with a context that has already been accepted in full.
+    /// # C: O(MAXQUOTAS)
+    pub(crate) fn set_opts(&self, next: crate::mount_opts::Ext4SbOpts) { *self.opts.lock() = next; }
 }

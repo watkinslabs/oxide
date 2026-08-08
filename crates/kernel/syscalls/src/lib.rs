@@ -245,6 +245,10 @@ mod s028_madvise;
 // file-type verdict. Both outside their kernel-only slot files so the rules
 // that decide a rejected call are unit-tested hosted.
 pub mod memfd_flags;
+// `mmap(2)`'s huge-page decisions (granule selection, length rounding, the
+// `MAP_HUGETLB`-on-an-ordinary-file contradiction), outside the kernel-only
+// slot file so every one of them is unit-tested hosted.
+pub mod mmap_huge;
 pub mod fcntl_seal;
 // fcntl F_GETDELEG/F_SETDELEG (1039/1040): the `struct delegation` wire form
 // and its reserved-field validation, outside the kernel-only slot file.

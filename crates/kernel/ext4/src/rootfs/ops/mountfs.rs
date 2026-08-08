@@ -241,32 +241,51 @@ impl Ext4Mount {
         dev: Arc<dyn block::BlockDevice>,
         dev_t: Option<u64>,
     ) -> block::types::KResult<Arc<Self>> {
-        let st = RootfsState::open(dev)?;
+        Self::open_with_behaviour(dev, dev_t, Default::default())
+    }
+
+    /// Open with the behavioural options already decided. # C: O(N_groups)
+    fn open_with_behaviour(
+        dev: Arc<dyn block::BlockDevice>,
+        dev_t: Option<u64>,
+        behaviour: crate::mount_opts::Ext4Behaviour,
+    ) -> block::types::KResult<Arc<Self>> {
+        let st = RootfsState::open_with_behaviour(dev, behaviour)?;
         // ext4_setup_super: a rw mount marks the fs not-cleanly-unmounted +
         // bumps the mount count, so a crash before Drop is fsck-visible.
         // Best-effort — a marginal SB write must not fail an otherwise-good
         // mount (Linux logs and continues).
         let _ = st.mount.mark_state_dirty();
-        Ok(Arc::new(Self { st, dev_t }))
+        let fs = Arc::new(Self { st, dev_t });
+        // `commit=` is a promise about a filesystem nobody is syncing, so the
+        // timer that keeps it is armed by the first mount rather than by boot.
+        crate::commit_timer::arm();
+        crate::commit_timer::register(&fs.st.mount);
+        Ok(fs)
     }
 
     /// Open `dev` and apply the mount-data option string to it.
     ///
-    /// Options are parsed and consistency-checked BEFORE the superblock is
-    /// published, so a rejected combination (`usrjquota=` without `jqfmt=`,
-    /// `prjquota` on a filesystem without the project feature, …) fails the
-    /// mount with the option error rather than half-mounting. An unknown
-    /// non-quota option never fails the mount.
+    /// The string is parsed BEFORE the filesystem is opened and
+    /// consistency-checked before the superblock is published, so a rejected
+    /// combination (`usrjquota=` without `jqfmt=`, `prjquota` on a filesystem
+    /// without the project feature, …) fails the mount with the option error
+    /// rather than half-mounting. An unknown non-quota option never fails the
+    /// mount.
+    ///
+    /// Parsing first is not tidiness: the open replays the journal, and
+    /// `noload`/`norecovery` is the option that says not to. It is parsed
+    /// ONCE — the same context the open consumed is the one applied afterwards.
     /// # C: O(N_groups + len(data))
     pub fn open_with_data(
         dev: Arc<dyn block::BlockDevice>,
         dev_t: Option<u64>,
         data: &str,
     ) -> vfs::KResult<Arc<Self>> {
-        let fs = Self::open_with_dev(dev, dev_t).map_err(|_| vfs::VfsError::Einval)?;
-        // Nothing has loaded quota yet on a fresh open, so this is the
-        // first-mount half of the option contract, not the remount half.
-        fs.st.configure_mount_opts(data, false)?;
+        let mut ctx = crate::mount_opts::parse_data(data, Default::default())?;
+        let fs = Self::open_with_behaviour(dev, dev_t, ctx.behaviour)
+            .map_err(|_| vfs::VfsError::Einval)?;
+        fs.st.apply_parsed_mount_opts(&mut ctx)?;
         Ok(fs)
     }
 

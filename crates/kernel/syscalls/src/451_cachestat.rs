@@ -21,11 +21,7 @@ fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
 /// `sys_cachestat(fd, range, cstat, flags)` — slot 451.
 ///
 /// Admission order is Linux's: fd, the range copy-in, the hugetlbfs refusal,
-/// the write-authority ladder, `flags`, then the walk and the copy-out. The
-/// hugetlbfs leg is unreachable here for the same reason it is unreachable
-/// with hugepage support unconfigured — nothing in this kernel produces a
-/// hugepage file description (`memfd_create(MFD_HUGETLB)` and
-/// `mmap(MAP_HUGETLB)` are both refused), so no fd can carry that backing.
+/// the write-authority ladder, `flags`, then the walk and the copy-out.
 /// # C: O(entries in range)
 pub fn sys_cachestat(args: &SyscallArgs) -> i64 {
     let fd = args.a0 as i32;
@@ -48,6 +44,10 @@ pub fn sys_cachestat(args: &SyscallArgs) -> i64 {
     };
 
     let inode = file.inode();
+    // A hugepage file's cache is not counted in base pages, and every counter
+    // this call reports is a base-page count — so the reference refuses rather
+    // than answering in a unit the caller cannot interpret.
+    if inode.huge_page_size() != 0 { return errno(Errno::Eopnotsupp); }
     let cred = crate::pathresolve::current_cred();
     let admitted = can_do_cachestat(
         file.f_mode().contains(Fmode::WRITE),

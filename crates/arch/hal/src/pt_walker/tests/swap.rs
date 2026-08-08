@@ -223,7 +223,7 @@ use super::harness::*;
         });
         let mut released = alloc::vec::Vec::new();
         let mut migrations = alloc::vec::Vec::new();
-        let mut free_leaf = |_va: u64, _pa: u64| panic!("swap leaf must not reach resident callback");
+        let mut free_leaf = |_va: u64, _pa: u64, _size: crate::PageSize| panic!("swap leaf must not reach resident callback");
         let mut free_swap = |va, found| released.push((va, found));
         let mut free_migration = |va, found| migrations.push((va, found));
         let mut free_table = |_pa: u64| {};

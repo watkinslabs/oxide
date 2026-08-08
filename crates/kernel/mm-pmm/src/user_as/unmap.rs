@@ -5,6 +5,73 @@ const PAGE_MASK: u64 = hal::PAGE_SIZE_BYTES - 1;
 const PAGE_ALIGN_MASK: u64 = !PAGE_MASK;
 const PAGE_BYTES: u64 = hal::PAGE_SIZE_BYTES;
 
+/// Read the present leaf at `va` together with the GRANULE that resolved it.
+///
+/// A zap loop must never assume the base granule: a hugetlbfs mapping installs
+/// one block leaf per huge page, and clearing it with the 4 KiB granule tears
+/// down the whole huge page while accounting a single base page — and then
+/// steps 4 KiB into the middle of a leaf that is already gone.
+/// # C: O(walk depth)
+fn translate_leaf(va: u64) -> Option<(u64, hal::PageSize)> {
+    use hal::{MmuOps, Va};
+    #[cfg(target_arch = "x86_64")]
+    let t = <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::translate_sized(Va(va));
+    #[cfg(target_arch = "aarch64")]
+    let t = <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::translate_sized(Va(va));
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    let t: Option<(hal::Pa, hal::PageFlags, hal::PageSize)> = { let _ = va; None };
+    t.map(|(pa, _flags, size)| (pa.0, size))
+}
+
+/// Clear the leaf of `size` at `va` from the active tables.
+/// # SAFETY: `va` is aligned to `size`, the leaf is present, and the caller
+/// owns the address space's teardown.
+/// # C: O(walk depth)
+unsafe fn clear_leaf(va: u64, size: hal::PageSize) {
+    use hal::{MmuOps, Va};
+    // SAFETY: per this function's contract — the granule comes from the very
+    // walk that found the leaf, so it matches what is installed.
+    unsafe {
+        #[cfg(target_arch = "x86_64")]
+        <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::unmap(Va(va), size);
+        #[cfg(target_arch = "aarch64")]
+        <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::unmap(Va(va), size);
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        { let _ = (va, size); }
+    }
+}
+
+/// Release one mapping's reference to the frame a just-cleared leaf named.
+///
+/// A block leaf names a hugetlb page, whose home is the huge-page pool and not
+/// the buddy allocator: dropping it through the ordinary free-on-zero path
+/// would return pool memory to the buddy and silently shrink the pool an
+/// operator sized. Base leaves keep the ordinary rmap-aware path.
+/// # SAFETY: the leaf was cleared and invalidated on every CPU before this
+/// call, so no translation can still reach the frame.
+/// # C: O(1) amortised for a base page; O(nr_hugepages) for a huge page.
+unsafe fn release_leaf_frame(pa: u64, size: hal::PageSize) {
+    if size == hal::PageSize::P4K {
+        // SAFETY: per this function's contract; the ordinary path releases to
+        // the buddy only when no address space maps the frame any more.
+        unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa & PAGE_ALIGN_MASK); }
+        return;
+    }
+    crate::hugetlb::huge_frame_unmap_ref(pa & !(size.bytes() - 1));
+}
+
+/// Whether this range would cut a huge mapping off a huge-page boundary.
+/// # C: O(N_vmas in range)
+fn huge_split_refused(range: MunmapRange) -> bool {
+    if let Some(cur) = sched::live::current() {
+        // SAFETY: running task on this CPU; read-only mm slot query.
+        if let Some(mm) = unsafe { cur.mm_ref() } {
+            return mm.huge_split_refused(range.start, range.end);
+        }
+    }
+    with(|as_| as_.huge_split_refused(range.start, range.end)).unwrap_or(false)
+}
+
 /// # C: O(log N_vmas)
 fn range_sealed(range: MunmapRange) -> bool {
     if let Some(cur) = sched::live::current() {
@@ -175,7 +242,6 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
         klog::write_raw(b"\n");
     }
     use syscall::errno::Errno;
-    use hal::{MmuOps, PageSize, Va};
     if addr == 0 || len == 0 || (addr & PAGE_MASK) != 0 {
         return -(Errno::Einval.as_i32() as i64);
     }
@@ -203,19 +269,15 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
     let mut va = addr;
     let end = addr + len_aligned;
     while va < end {
-        // SAFETY: privileged read of live page tables; va validated user-half above.
-        #[cfg(target_arch = "x86_64")]
-        let translated = <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::translate(Va(va));
-        #[cfg(target_arch = "aarch64")]
-        let translated = <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::translate(Va(va));
-        if let Some((pa, _flags)) = translated {
+        let mut step = PAGE_BYTES;
+        // Granule read from the tables, never assumed: a hugetlbfs mapping
+        // resolves through one block leaf per huge page.
+        let translated = translate_leaf(va);
+        if let Some((pa_raw, leaf)) = translated {
+            step = leaf.bytes();
+            let pa = hal::Pa(pa_raw);
             // SAFETY: page is currently mapped; unmap is the inverse of demand-page install. The dec_ref-and-maybe-free that follows handles the COW-shared case correctly (Linux: MADV_DONTNEED on a shared page just unmaps the caller's PTE, never frees the underlying frame).
-            unsafe {
-                #[cfg(target_arch = "x86_64")]
-                <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::unmap(Va(va), PageSize::P4K);
-                #[cfg(target_arch = "aarch64")]
-                <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::unmap(Va(va), PageSize::P4K);
-            }
+            unsafe { clear_leaf(va & !(step - 1), leaf); }
             // `MmuOps::unmap` does NOT invalidate on either arch (both walkers
             // just clear the leaf), so the invalidate has to happen here,
             // BEFORE the frame is released below (Linux's invariant order:
@@ -259,8 +321,8 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
                     }
                 }
             }
-            // SAFETY: pa was reachable via the live PT entry just unmapped; rmap_aware_dec_and_maybe_free checks struct-page refcount and only releases when the last mapping drops.
-            unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa.0 & PAGE_ALIGN_MASK); }
+            // SAFETY: the leaf was cleared and invalidated everywhere above, so no translation can still reach the frame; a base page goes back through the rmap-aware path and a huge page back to the pool that owns it.
+            unsafe { release_leaf_frame(pa.0, leaf); }
             account_present_removed(va);
         } else if let Some(entry) = clear_current_swap_entry(va) {
             // Swap PTEs are non-present and therefore invisible to `translate`.
@@ -281,7 +343,7 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
                 unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa); }
             }
         }
-        va += PAGE_BYTES;
+        va += step;
     }
     // Blocks the zapping thread on each monitor until it has read the message,
     // then releases the charge — so the range is already empty when the monitor
@@ -305,7 +367,6 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
         klog::write_raw(b" tid="); klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));
         klog::write_raw(b"\n");
     }
-    use hal::{MmuOps, PageSize, Va};
     use syscall::errno::Errno;
     let range = match validate_munmap_range(addr, len) {
         Ok(r)  => r,
@@ -315,6 +376,14 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
     // this glue, so reject sealed ranges before any PTE teardown.
     if range_sealed(range) {
         return -(Errno::Eperm.as_i32() as i64);
+    }
+    // A huge mapping is made of whole huge pages, each covered by one leaf.
+    // A request to unmap part of one has no answer — tearing the leaf down
+    // removes memory the caller did not name, leaving it removes nothing while
+    // the VMA disappears — so the split is refused, exactly as it is in the
+    // reference.
+    if huge_split_refused(range) {
+        return -(Errno::Einval.as_i32() as i64);
     }
     // DIAG (debug-mount): trace munmap range (the other PTE-zapping path).
     #[cfg(feature = "debug-mount")]
@@ -335,19 +404,15 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
     let mut va = addr;
     let end = range.end;
     while va < end {
-        // SAFETY: privileged read of live page tables; va is in user-half range validated above.
-        #[cfg(target_arch = "x86_64")]
-        let translated = <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::translate(Va(va));
-        #[cfg(target_arch = "aarch64")]
-        let translated = <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::translate(Va(va));
-        if let Some((pa, _flags)) = translated {
+        let mut step = PAGE_BYTES;
+        // Granule read from the tables, never assumed: a hugetlbfs mapping
+        // resolves through one block leaf per huge page.
+        let translated = translate_leaf(va);
+        if let Some((pa_raw, leaf)) = translated {
+            step = leaf.bytes();
+            let pa = hal::Pa(pa_raw);
             // SAFETY: page is mapped; unmap + frame free are the inverse of demand-page install.
-            unsafe {
-                #[cfg(target_arch = "x86_64")]
-                <hal_x86_64::mmu_ops::X86Mmu as MmuOps>::unmap(Va(va), PageSize::P4K);
-                #[cfg(target_arch = "aarch64")]
-                <hal_aarch64::mmu_ops::ArmMmu as MmuOps>::unmap(Va(va), PageSize::P4K);
-            }
+            unsafe { clear_leaf(va & !(step - 1), leaf); }
             // B47: dec_ref + maybe free. Refcount-aware: a frame
             // shared with a forked peer AS (still mapped there via
             // COW) stays alive; only the unconditional free_one_frame
@@ -403,8 +468,8 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
                     }
                 }
             }
-            // SAFETY: pa was reachable via the live PT entry just unmapped; rmap_aware_dec_and_maybe_free only releases to PMM when struct-page refcount drops to zero (no other AS maps this frame).
-            unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa.0 & PAGE_ALIGN_MASK); }
+            // SAFETY: the leaf was cleared and invalidated everywhere above, so no translation can still reach the frame; a base page goes back through the rmap-aware path and a huge page back to the pool that owns it.
+            unsafe { release_leaf_frame(pa.0, leaf); }
             account_present_removed(va);
         } else if let Some(entry) = clear_current_swap_entry(va) {
             // `munmap` must release a non-present swap leaf exactly as it
@@ -424,7 +489,7 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
                 unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa); }
             }
         }
-        va += PAGE_BYTES;
+        va += step;
     }
 
     // VMA bookkeeping side. Post-execve the running CR3 targets

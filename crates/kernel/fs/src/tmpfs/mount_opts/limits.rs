@@ -38,6 +38,9 @@ pub(crate) const PERCENT_SUFFIX: char = '%';
 /// The prefix a `casefold=<version>` value must carry.
 pub(crate) const CASEFOLD_UTF8_PREFIX: &str = "utf8-";
 
+/// What a bare `casefold` flag selects: the kernel table's own version.
+pub(crate) const CASEFOLD_LATEST: &str = "utf8";
+
 /// Inode number no object may be given: `0` is the "no inode" sentinel every
 /// caller of `stat(2)` reads as absent.
 pub(crate) const ZERO_INO: u64 = 0;

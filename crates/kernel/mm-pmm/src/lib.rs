@@ -39,6 +39,7 @@ mod buddy;
 #[cfg(any(test, all(target_os = "oxide-kernel", target_arch = "aarch64", feature = "debug-arm-mprotect")))]
 mod arm_mprotect_trace;
 mod page_meta;
+pub mod hugetlb;
 pub mod reclaim;
 pub mod shrinker;
 pub mod movable;

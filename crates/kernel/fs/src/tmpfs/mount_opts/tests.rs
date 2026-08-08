@@ -189,15 +189,22 @@ fn only_the_large_folio_policy_that_can_be_honoured_is_accepted() {
 
 // ---- case folding -----------------------------------------------------------
 
-/// Case-insensitive lookup needs a Unicode case-folding table to compare names
-/// with, and there is none. Accepting the option would produce a mount that
-/// compares names case-SENSITIVELY while claiming otherwise.
+/// The instance's name encoding: both spellings of the option are accepted and
+/// recorded, only a UTF-8 charset this kernel has a table for is a charset, and
+/// strictness without an encoding describes nothing.
 #[test]
-fn casefolding_is_refused_rather_than_claimed() {
-    assert!(refused("casefold"));
-    assert!(refused("casefold=utf8-12.1.0"));
-    assert!(refused("casefold=latin1"));
-    assert!(refused("strict_encoding"));
+fn the_encoding_option_records_what_it_accepts_and_refuses_the_rest() {
+    let latest = parse_opts("casefold", 0, MountCred::KERNEL).expect("the bare flag");
+    assert!(latest.casefold.is_some(), "the bare flag names the table's own version");
+    assert!(!latest.strict_encoding);
+    let named = parse_opts("casefold=utf8-12.1.0", 0, MountCred::KERNEL).expect("a named version");
+    assert_eq!(named.casefold.as_deref(), Some("utf8-12.1.0"));
+    let strict = parse_opts("casefold,strict_encoding", 0, MountCred::KERNEL).expect("strict");
+    assert!(strict.strict_encoding);
+
+    assert!(refused("casefold=latin1"), "only a UTF-8 charset has a table here");
+    assert!(refused("casefold=utf8-99.0.0"), "a version newer than the table");
+    assert!(refused("strict_encoding"), "strictness without an encoding is strict about nothing");
 }
 
 // ---- numa policy ------------------------------------------------------------

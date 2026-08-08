@@ -70,6 +70,11 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
         klog::write_primary_raw(b"\n[PANIC] halted\n");
     }
     #[cfg(not(feature = "debug-panic"))] { let _ = info; }
+    // Snapshot the log for whatever is registered to keep it across the
+    // reboot. Last, so the panic text above is inside the snapshot; and
+    // unconditional, because a build without the printer is exactly the one
+    // where a persisted record is the only evidence there will be.
+    klog::kmsg_dump(klog::kmsg_dump::REASON_PANIC);
     loop { core::hint::spin_loop(); }
 }
 

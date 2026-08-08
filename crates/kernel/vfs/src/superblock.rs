@@ -10,6 +10,7 @@
 // - `attrs`: flags, active refs, write limits, UUID, and timestamp attributes.
 // - `lifecycle`: sync, freeze/thaw, shutdown, and `put_super`.
 // - `userns`: `s_user_ns` stamping and the mounting-namespace probe.
+// - `encoding`: `s_encoding`/`s_encoding_flags` -- the instance's name encoding.
 
 extern crate alloc;
 use alloc::collections::BTreeMap;
@@ -26,6 +27,7 @@ use crate::quota::QuotaInfo;
 use crate::types::Ino;
 
 mod attrs;
+mod encoding;
 mod flags;
 mod icache;
 mod lifecycle;
@@ -36,6 +38,7 @@ mod stat;
 mod userns;
 
 pub use flags::{MAX_LFS_FILESIZE, NSEC_PER_SEC, SB_ACTIVE, SB_BORN, SB_DIRSYNC, SB_FREEZE_COMPLETE, SB_FREEZE_FS, SB_FREEZE_PAGEFAULT, SB_FREEZE_WRITE, SB_I_NODEV, SB_I_NOEXEC, SB_I_NOIDMAP, SB_I_RESTRICTED_VARIANT, SB_I_USERNS_REQUIRED, SB_I_VERSION, SB_KERNMOUNT, SB_LAZYTIME, SB_MANDLOCK, SB_NOATIME, SB_NODEV, SB_NODIRATIME, SB_NOEXEC, SB_NOSUID, SB_NOUSER, SB_POSIXACL, SB_RDONLY, SB_SILENT, SB_SYNCHRONOUS, SB_UNFROZEN, TIME64_MAX, TIME64_MIN};
+pub use encoding::{encoding_errno, SB_ENC_STRICT_MODE};
 pub use ops::{FileSystemType, SbStatFs, SimpleSuperOps, SuperOps};
 pub use registry::{fs_supers, iterate_supers, next_anon_dev, register_super, sb_by_dev, sb_iterable, sget, sget_result, sget_reused};
 pub use userns::{clear_current_user_ns_hook, set_current_user_ns_hook};
@@ -202,6 +205,18 @@ pub struct SuperBlock {
     pub(crate) s_wb: Spinlock<BTreeMap<Ino, InodeRef>, SbClass>,
     /// `s_dquot` — superblock quota state and dquot cache.
     pub s_dquot: QuotaInfo,
+    /// `s_encoding` — the Unicode version this instance normalizes and folds
+    /// names under, packed as `maj<<16 | min<<8 | rev`; 0 = none, so names are
+    /// opaque bytes and lookups are byte-exact. Set once at `fill_super` from
+    /// the `casefold` mount option or the on-disk field, and read on every
+    /// lookup in a casefolded directory. Stored as the version rather than as a
+    /// loaded table so there is ONE record of what the instance declared.
+    /// # consumers: generic_ci_d_hash, generic_ci_d_compare, strict name checks.
+    s_encoding: AtomicU32,
+    /// `s_encoding_flags` — `SB_ENC_STRICT_MODE` and nothing else so far: names
+    /// that are not well formed for `s_encoding` are refused instead of being
+    /// kept as opaque bytes.
+    s_encoding_flags: AtomicU32,
     /// `s_wb_err` (Linux `struct super_block`): filesystem-wide writeback
     /// error latch. Every `mapping_set_error` on any inode of this mount also
     /// records here, so `syncfs(2)` can

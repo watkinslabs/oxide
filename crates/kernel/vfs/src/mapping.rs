@@ -123,6 +123,18 @@ impl DirtyPages {
         if self.err & AS_EIO != 0 { self.err &= !AS_EIO; ret = EIO; }
         ret
     }
+
+    /// `filemap_check_and_keep_errors`: report the accumulated writeback error
+    /// WITHOUT consuming it. This is the whole-system `sync` variant — it must
+    /// notice a failed writeback, but it is not the reporter of record, so
+    /// clearing the flag here would leave the next `fsync` on the affected
+    /// object blind to its own failure. Same precedence as
+    /// [`Self::check_errors`]: `EIO` when both bits are set. # C: O(1)
+    pub fn check_and_keep_errors(&self) -> i32 {
+        if self.err & AS_EIO != 0 { return EIO; }
+        if self.err & AS_ENOSPC != 0 { return ENOSPC; }
+        0
+    }
 }
 
 /// POSIX `ENOSPC` / `EIO` positive codes (Linux uapi) — the writeback-error
@@ -365,6 +377,23 @@ mod tests {
         assert_eq!(i.mmap_shared_frame(PG).map(|f| f.map(|f| f.pa)), Ok(Some(0x10_0000 + PG)));
         // Repeated calls are stable (shared, not per-call).
         assert_eq!(i.mmap_shared_frame(0), i.mmap_shared_frame(0));
+    }
+
+    // A whole-system `sync` must NOTICE a writeback failure without becoming
+    // the reporter of it: the flag survives so the next `fsync` still reports
+    // the error exactly once.
+    #[test]
+    fn check_and_keep_errors_reports_without_consuming() {
+        use crate::mapping::DirtyPages;
+        let mut d = DirtyPages::new();
+        assert_eq!(d.check_and_keep_errors(), 0);
+        d.set_error(28); // ENOSPC
+        assert_eq!(d.check_and_keep_errors(), 28);
+        assert_eq!(d.check_and_keep_errors(), 28, "not consumed");
+        d.set_error(5);  // EIO also set → EIO wins, same as the consuming form
+        assert_eq!(d.check_and_keep_errors(), 5);
+        assert_eq!(d.check_errors(), 5, "fsync still sees it");
+        assert_eq!(d.check_and_keep_errors(), 0, "and it was consumed exactly once");
     }
 
     // No i_mapping → no shareable frame (MAP_PRIVATE copy path upstream).

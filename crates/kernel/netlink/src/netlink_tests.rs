@@ -16,6 +16,10 @@ fn deny_shutdown(_context: security::network::Context) -> security::network::Ver
 
 /// Allocate one isolated hosted namespace fixture. # C: O(1)
 pub(crate) fn test_namespace() -> network_namespace::NetworkNamespaceRef {
+    // The registry refuses to publish a child before the initial namespace
+    // exists, and a hosted test binary has no boot to create it. Whichever
+    // test runs first would otherwise decide whether the suite passes.
+    let _init = network_namespace::initial();
     network_namespace::install_final_drop_callback(namespace_dropped).unwrap();
     network_namespace::allocate(namespace_identity::initial(
         namespace_identity::NamespaceKind::User)).unwrap()

@@ -5,8 +5,11 @@ use crate::inode::InodeRef;
 
 use super::Dentry;
 
-/// `d_hash`: hash the name portion (parent salt is folded in by the VFS).
-pub type DHashFn = fn(name: &str) -> u32;
+/// `d_hash`: hash the name portion under the parent DIRECTORY dentry (parent
+/// salt is folded in by the VFS). The directory is passed because the answer
+/// depends on it: a casefolded directory hashes the folded name, and the
+/// encoding to fold under lives on its superblock.
+pub type DHashFn = fn(dir: &Dentry, name: &str) -> u32;
 /// `d_compare`: true iff `name` matches the cached dentry `cand`.
 pub type DCompareFn = fn(name: &str, cand: &Dentry) -> bool;
 /// `d_revalidate`: false means the cached dentry is stale.

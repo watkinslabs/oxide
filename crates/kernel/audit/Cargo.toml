@@ -1,0 +1,24 @@
+[package]
+name = "audit"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Kernel audit subsystem: record queue, backlog/lost accounting, rate limiting, and the NETLINK_AUDIT control surface auditd binds to."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+sync    = { path = "../../shared/sync" }
+syscall = { path = "../syscall" }
+hal     = { path = "../../arch/hal" }
+klog    = { path = "../../shared/klog", optional = true }
+
+[features]
+debug-audit = ["dep:klog"]  # [AUDIT] lost-record warning on the console
+
+[target.'cfg(target_os = "oxide-kernel")'.dependencies]
+timekeeper = { path = "../timekeeper" }
+
+[lints]
+workspace = true

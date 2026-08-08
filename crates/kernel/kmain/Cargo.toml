@@ -9,6 +9,7 @@ name = "kmain"
 path = "src/kmain.rs"
 
 [dependencies]
+audit   = { path = "../audit" }
 block   = { path = "../block" }
 boot-info = { path = "../../shared/boot-info" }
 cpu       = { path = "../cpu" }
@@ -37,6 +38,7 @@ tracefs   = { path = "../tracefs" }
 kmacros   = { path = "../../shared/kmacros" }
 kalloc  = { path = "../../shared/kalloc" }
 pmm     = { path = "../mm-pmm" }
+pstore  = { path = "../pstore" }
 efence  = { path = "../efence" }
 procfs  = { path = "../procfs" }
 sched   = { path = "../sched" }
@@ -85,6 +87,7 @@ default = []
 # sites absent from the binary; the hot path emits zero bytes. Names
 # match the spec's bucket list 1:1 — independence guarantee in §3.
 debug-pmm  = ["kmacros/debug-pmm", "smoke/debug-pmm", "pmm/debug-pmm"]  # PMM smoke + stress + memmap dump
+debug-pstore = ["pstore/debug-pstore"]  # persistent-store region geometry + survivor count at attach
 debug-memtest = ["smoke/debug-memtest"]  # in-guest full-RAM memtest pass (opt-in; slow under TCG)
 debug-vmm  = ["pmm/debug-vmm", "kmacros/debug-vmm", "smoke/debug-vmm"]  # device-map MMIO sanity reads (HPET cap, GICD typer)
 debug-irq  = ["pmm/debug-irq", "kmacros/debug-irq", "smoke/debug-irq", "syscalls/debug-irq"]  # LAPIC/GIC enable diag + timer-IRQ soak + tick logs
@@ -184,6 +187,7 @@ debug-no-shmem = ["vmm/debug-no-shmem"]  # TEST
 debug-shortfill = ["vmm/debug-shortfill"]  # [SHORT-FILE-FAULT] B240: log File demand-fault short read_at on a non-EOF page (partial fill = ld.so exit 127)
 debug-eager-fork = ["syscalls/debug-eager-fork"]  # TEST
 debug-atexit = ["syscalls/debug-atexit", "vmm/debug-atexit", "pmm/debug-atexit", "hal/debug-zerotrap"]  # targeted dynamic-loader stderr / atexit probes
+debug-audit = ["audit/debug-audit"]  # [AUDIT] lost-record warning
 debug-trace = ["kmacros/debug-trace", "console/debug-trace", "smoke/debug-trace", "syscalls/debug-trace", "pci-boot/debug-trace"]  # structured dtrace! probes — direct UART emit bypassing klog/lock (CAT-wedge-class debugging)
 debug-all  = ["debug-pmm","debug-vmm","debug-irq","debug-acpi","debug-sched","debug-boot","debug-cgroup","debug-modules","debug-syscall","debug-watchdog-detail","sched/debug-syscall"]
 

@@ -10,6 +10,8 @@
 //   dirtytime.rs — the periodic sweep that bounds a `lazytime` mount's deferral.
 //   order.rs   — the whole-system `sync(2)` phase order (`SyncPhase`), executed
 //                by the slot-162 shim.
+//   bdev.rs    — which devices that shim's device pass still owes a barrier,
+//                given what the filesystem passes already flushed.
 
 mod fsync;
 mod order;

@@ -20,10 +20,33 @@ impl Mount {
     /// mutators from the shadow-drain through the final target-device write.
     /// # C: O(N shadow blocks) + one journal commit
     pub fn commit_batch(&self) -> Result<(), MountError> {
+        self.order_data_before_commit();
         self.txn_acquire();
         let result = self.commit_batch_inner();
         self.txn_release();
         result
+    }
+
+    /// `data=ordered`: put this mount's dirty file data on the device BEFORE
+    /// the metadata that references it commits.
+    ///
+    /// That ordering is the entire difference between `ordered` and
+    /// `writeback`. Without it a crash between the metadata commit and the data
+    /// writeback leaves a committed extent pointing at a block still holding
+    /// whatever was there before — someone else's deleted file, readable by
+    /// whoever now owns the extent. `writeback` accepts exactly that in
+    /// exchange for not waiting here; `journal` needs nothing here because its
+    /// data already went through the journal with the metadata.
+    ///
+    /// Runs BEFORE the transaction gate is taken: the writeback stages through
+    /// that same gate, and the commit it precedes must see what it produced.
+    /// # C: O(N_dirty) when ordered, O(1) otherwise
+    fn order_data_before_commit(&self) {
+        if !self.behaviour().data.orders_data() { return; }
+        #[cfg(feature = "ext4-frame-cache")]
+        // A failed data write is not lost here: the page stays dirty and the
+        // store latches the error, so the next durability point reports it.
+        let _ = crate::rootfs::framecache::writeback_dirty(Some(self));
     }
 
     fn commit_batch_inner(&self) -> Result<(), MountError> {

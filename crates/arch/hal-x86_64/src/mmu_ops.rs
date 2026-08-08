@@ -299,7 +299,17 @@ impl MmuOps for X86Mmu {
         if hhdm == 0 { return None; }
         // SAFETY: HHDM covers page-table memory; reads only.
         let (pa, leaf, level) = unsafe { pt_walker::translate_at_va::<PtWalkerX86>(va.0, hhdm)? };
-        Some((Pa(pa), unpack_flags(leaf, level != 3)))
+        Some((Pa(pa), unpack_flags(leaf, level != MARKER_LEAF_LEVEL)))
+    }
+
+    /// Translate and report the installed granule (L3 page, L2 / L1 block).
+    /// # C: O(walk depth) = O(4)
+    fn translate_sized(va: Va) -> Option<(Pa, PageFlags, PageSize)> {
+        let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
+        if hhdm == 0 { return None; }
+        // SAFETY: HHDM covers page-table memory; reads only.
+        let (pa, leaf, level) = unsafe { pt_walker::translate_at_va::<PtWalkerX86>(va.0, hhdm)? };
+        Some((Pa(pa), unpack_flags(leaf, level != MARKER_LEAF_LEVEL), PageSize::from_walk_level(level)?))
     }
 
     /// Local-CPU TLB invalidate of a single 4 KiB page.

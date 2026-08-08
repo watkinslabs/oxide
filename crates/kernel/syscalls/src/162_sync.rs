@@ -35,42 +35,18 @@ pub fn sys_sync(_args: &SyscallArgs) -> i64 {
         fs::sync::SyncPhase::FsWait => vfs::superblock::iterate_supers(|sb| {
             if !sb.sb_rdonly() { let _ = sb.sync_fs(true); }
         }),
-        fs::sync::SyncPhase::BdevNoWait => sync_bdevs(false),
-        fs::sync::SyncPhase::BdevWait   => sync_bdevs(true),
+        // The device passes are page-cache writeback of the block devices
+        // themselves: submit everywhere, then wait everywhere. They take no
+        // durability barrier — a device barrier belongs to the filesystem's own
+        // waiting pass above, and to `fsync` on a raw device.
+        fs::sync::SyncPhase::BdevNoWait => block::sync_bdevs(false),
+        fs::sync::SyncPhase::BdevWait   => block::sync_bdevs(true),
     });
     // Commit the ext4 root running journal transaction (cross-op batching): the
     // per-sb sync flushed dirty pages into the running txn; sync(2) must make it
     // durable. No-op when batching is off / empty / non-ext4 root.
     let _ = ext4::commit_rootfs_journal();
     0
-}
-
-/// `sync_bdevs`: the device-level half of `sync(2)`, run after every filesystem
-/// above the devices has committed.
-///
-/// The pass is split into submit and wait because a block device normally holds
-/// its own cache of dirty buffers written back asynchronously: submit starts
-/// that writeback everywhere, wait collects it. Here a write to a raw block
-/// device goes straight to the driver, so there is no deferred device-level
-/// cache to submit and the submit half has nothing to start.
-///
-/// DELIBERATE DEVIATION, stated because it costs something: the wait half takes
-/// a durability BARRIER per device rather than waiting on device writeback,
-/// since a barrier is the only device-level durability action available with no
-/// such writeback to wait for. That is what makes `sync(2)` durable for a device
-/// written raw, with no filesystem above it to flush on its behalf — but it also
-/// means a device that a filesystem already barriered in the `sync_fs(wait=1)`
-/// phase is barriered a second time. Removing the second one requires the
-/// device-level writeback this layer does not yet have; until then `sync(2)`
-/// pays it, while `syncfs(2)`, freeze and unmount — which do not run this pass —
-/// take one barrier per filesystem instead of two.
-///
-/// Errors are dropped deliberately: `sync(2)` reports 0 regardless, and a device
-/// with no filesystem above it has no per-inode latch to record into.
-/// # C: O(N_disks)
-fn sync_bdevs(wait: bool) {
-    if !wait { return; }
-    for disk in block::registry::snapshot() { let _ = disk.dev.flush(); }
 }
 
 /// `syncfs(fd)` — flush the filesystem CONTAINING `fd` (Linux `sys_syncfs`:

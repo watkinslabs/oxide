@@ -260,6 +260,22 @@ pub trait FileBacking: Send + Sync {
     /// # C: O(log N_pages)
     fn shared_frame(&self, _off: u64) -> Result<Option<SharedFrame>, FileBackingError> { Ok(None) }
 
+    /// Byte size of the huge page this backing is built on, or 0 when it maps
+    /// ordinary base pages.
+    ///
+    /// A hugetlbfs file's pages ARE huge pages: a mapping of one resolves
+    /// through a single page-table leaf covering the whole page, not through
+    /// the base-page leaves the rest of this trait deals in. Reporting the size
+    /// here is what sends the fault handler down that path, and it is the only
+    /// place the fact is recorded — the VMA carries no second copy that could
+    /// disagree with the file it maps.
+    ///
+    /// A non-zero value must be a granule the page tables express as one leaf,
+    /// and `shared_frame` must then accept offsets aligned to it and return a
+    /// physical base aligned to it.
+    /// # C: O(1)
+    fn huge_page_size(&self) -> u64 { 0 }
+
     /// Retained cache frame for Linux-style `map_pages` fault-around. This
     /// MUST be a non-faulting lookup: no allocation, swap-in, or backing I/O.
     /// `None` means the page is not currently eligible. # C: O(log N_pages)

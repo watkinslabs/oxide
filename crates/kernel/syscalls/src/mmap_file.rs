@@ -42,6 +42,13 @@ impl InodeFileBacking {
 const PAGE: usize = 4096;
 
 impl FileBacking for InodeFileBacking {
+    /// `hstate_file` — the huge-page granule this file's pages ARE, or 0 for a
+    /// file of ordinary base pages. Read from the inode's own filesystem, so a
+    /// mapping cannot disagree with the file it maps about how big its pages
+    /// are.
+    /// # C: O(1)
+    fn huge_page_size(&self) -> u64 { self.inode.huge_page_size() }
+
     /// Fill `dst` with bytes starting at file offset `off`. Aligns
     /// the request to PAGE_BYTES and consults the per-backing
     /// `PageCache`; on miss, fetches via `Inode::read`. Returns the

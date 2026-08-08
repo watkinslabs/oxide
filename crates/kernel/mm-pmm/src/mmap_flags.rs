@@ -105,10 +105,31 @@ pub fn map_type(flags: u64) -> Result<MapType, i64> {
     }
 }
 
+/// Bit position and width of the huge-page size-log field `MAP_HUGETLB` reads,
+/// shared with `memfd_create` and `shmget` (`pmm::hugetlb`).
+pub const MAP_HUGE_SHIFT: u32 = crate::hugetlb::HUGE_FLAG_ENCODE_SHIFT;
+pub const MAP_HUGE_MASK:  u32 = crate::hugetlb::HUGE_FLAG_ENCODE_MASK;
+/// Size-log encodings for the two granules this kernel serves.
+pub const MAP_HUGE_2MB: u64 = 21u64 << MAP_HUGE_SHIFT;
+pub const MAP_HUGE_1GB: u64 = 30u64 << MAP_HUGE_SHIFT;
+/// The whole size-log field, admitted only alongside `MAP_HUGETLB`.
+const MAP_HUGE_FIELD: u64 = (MAP_HUGE_MASK as u64) << MAP_HUGE_SHIFT;
+
+/// Huge-page granule an anonymous `MAP_HUGETLB` request names, or `Err(EINVAL)`
+/// when the size-log field names a size this kernel has no pool for. A zero
+/// field selects the default granule.
+/// # C: O(1)
+pub fn huge_size(flags: u64) -> Result<crate::hugetlb::HugePageSize, i64> {
+    crate::hugetlb::size_from_flags(flags).ok_or(-(Errno::Einval.as_i32() as i64))
+}
+
 /// # C: O(1)
 pub fn validate(flags: u64) -> Result<(), i64> {
-    if (flags & !MAP_KNOWN) != 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
-    if (flags & MAP_HUGETLB) != 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
+    // The size-log field overlaps flag bits that mean something else without
+    // `MAP_HUGETLB`, so it is admitted only when `MAP_HUGETLB` asks for it.
+    let known = if (flags & MAP_HUGETLB) != 0 { MAP_KNOWN | MAP_HUGE_FIELD } else { MAP_KNOWN };
+    if (flags & !known) != 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
+    if (flags & MAP_HUGETLB) != 0 { huge_size(flags)?; }
     map_type(flags)?;
     Ok(())
 }
@@ -221,15 +242,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hugetlb_uses_linux_einval_not_enosys() {
-        let r = validate(MAP_PRIVATE | MAP_ANON | MAP_HUGETLB);
-        assert_eq!(r, Err(-(Errno::Einval.as_i32() as i64)));
+    fn hugetlb_with_no_size_selector_is_admitted_at_the_default_granule() {
+        assert_eq!(validate(MAP_PRIVATE | MAP_ANON | MAP_HUGETLB), Ok(()));
+        assert_eq!(huge_size(MAP_PRIVATE | MAP_ANON | MAP_HUGETLB),
+                   Ok(crate::hugetlb::HugePageSize::Huge2M));
+    }
+
+    #[test]
+    fn each_supported_huge_size_selector_resolves_to_its_granule() {
+        assert_eq!(huge_size(MAP_HUGETLB | MAP_HUGE_2MB), Ok(crate::hugetlb::HugePageSize::Huge2M));
+        assert_eq!(huge_size(MAP_HUGETLB | MAP_HUGE_1GB), Ok(crate::hugetlb::HugePageSize::Huge1G));
+        assert_eq!(validate(MAP_PRIVATE | MAP_ANON | MAP_HUGETLB | MAP_HUGE_1GB), Ok(()));
+    }
+
+    #[test]
+    fn an_unserved_huge_size_selector_is_einval_not_a_silent_downgrade() {
+        let flags = MAP_PRIVATE | MAP_ANON | MAP_HUGETLB | (16u64 << MAP_HUGE_SHIFT);
+        assert_eq!(validate(flags), Err(-(Errno::Einval.as_i32() as i64)));
+        assert_eq!(huge_size(flags), Err(-(Errno::Einval.as_i32() as i64)));
+    }
+
+    #[test]
+    fn the_huge_size_field_is_admitted_only_alongside_hugetlb() {
+        // Without MAP_HUGETLB those bits mean nothing and must stay refused.
+        assert_eq!(validate(MAP_PRIVATE | MAP_ANON | MAP_HUGE_2MB),
+                   Err(-(Errno::Einval.as_i32() as i64)));
     }
 
     #[test]
     fn unknown_future_bits_are_einval() {
         let r = validate(MAP_PRIVATE | MAP_ANON | 0x8000_0000);
         assert_eq!(r, Err(-(Errno::Einval.as_i32() as i64)));
+        // Still refused when MAP_HUGETLB widens the admitted set: only the
+        // size-log field opens up, not every high bit.
+        assert_eq!(validate(MAP_PRIVATE | MAP_ANON | MAP_HUGETLB | (1u64 << 40)),
+                   Err(-(Errno::Einval.as_i32() as i64)));
     }
 
     #[test]

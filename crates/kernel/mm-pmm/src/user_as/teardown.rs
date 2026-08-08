@@ -44,7 +44,11 @@ pub unsafe extern "C" fn as_teardown(root_pa: u64) {
     // F157: leaves go through dec_and_maybe_free so COW-shared frames
     // (multiple AS map them) only release once the last AS drops.
     // Tables (intermediate PT levels) are always per-AS — direct free.
-    let mut free_leaf = |_va: u64, pa: u64| {
+    let mut free_leaf = |_va: u64, pa: u64, size: hal::PageSize| {
+        // A block leaf names a huge page, whose home is the hugetlb pool: the
+        // ordinary release would hand pool memory to the buddy allocator and
+        // silently shrink the pool an operator sized.
+        if size != hal::PageSize::P4K { crate::hugetlb::huge_frame_unmap_ref(pa); return; }
         // Opt-in free-while-mapped backstop (debug-fwm); the always-on invariant
         // is the cheap own-mapcount check in release_frame_on_zero.
         #[cfg(feature = "debug-fwm")]
@@ -97,7 +101,9 @@ pub unsafe extern "C" fn as_teardown(root_pa: u64) {
     #[cfg(feature = "debug-atexit")]
     crate::setup::set_dec_ctx(root_pa);
     // SAFETY: per fn contract; HHDM covers PT memory; root quiesced.
-    let mut free_leaf = |_va: u64, pa: u64| {
+    let mut free_leaf = |_va: u64, pa: u64, size: hal::PageSize| {
+        // Block leaves go back to the hugetlb pool; mirror of x86_64 above.
+        if size != hal::PageSize::P4K { crate::hugetlb::huge_frame_unmap_ref(pa); return; }
         // Opt-in free-while-mapped backstop (debug-fwm); mirror of x86_64 above.
         #[cfg(feature = "debug-fwm")]
         fwm_teardown_backstop(_va, pa, root_pa, hhdm);

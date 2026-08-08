@@ -20,6 +20,10 @@ extern crate boot_aarch64 as _boot;
 #[cfg(target_os = "oxide-kernel")]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
+    // Snapshot the log for whatever is registered to keep it across the
+    // reboot — the same call the other architecture's handler makes, so
+    // whether a crash leaves a record does not depend on the machine.
+    klog::kmsg_dump(klog::kmsg_dump::REASON_PANIC);
     loop { core::hint::spin_loop(); }
 }
 

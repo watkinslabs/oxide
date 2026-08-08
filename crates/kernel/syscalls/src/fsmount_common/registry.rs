@@ -41,7 +41,6 @@ const BPF_FS_MAGIC: u64 = 0xcafe_4a11;
 const FUSE_CTL_MAGIC: u64 = 0x6573_5543;
 const FUSE_SUPER_MAGIC: u64 = fs::fuse::FUSE_SUPER_MAGIC;
 const MQUEUE_MAGIC: u64 = 0x1980_0202;
-const HUGETLBFS_MAGIC: u64 = 0x9584_58f6;
 const EXT4_MAGIC: u64 = 0xef53;
 const CGROUP2_MAGIC: u64 = cgroup::CGROUP2_SUPER_MAGIC;
 const DEVTMPFS_MAGIC: u64 = vfs::uapi::TMPFS_SUPER_MAGIC;
@@ -83,9 +82,14 @@ pub fn ensure_filesystems_registered() {
 /// `parse_param` at all. `proc`, `sysfs`, `configfs`, `securityfs`, `fusectl`,
 /// `mqueue` and `binfmt_misc` are those types.
 ///
-/// Two types still take `None`, and each says why at its own registration:
-/// `pstore` and `hugetlbfs`. `None` means the blob travels whole and nothing in
-/// it is refused.
+/// Every registered type now publishes a table, so an option no filesystem here
+/// implements fails the mount instead of being accepted and dropped.
+///
+/// `pstore` publishes a table and is still the most permissive type here,
+/// because its reference parse SWALLOWS every negative answer — an unknown
+/// key, a value that is not a number, a bare word where a number belongs. The
+/// table is what makes a valid `kmsg_bytes=` reach the capture; the leniency
+/// is enforced by pstore's own admission, not by omitting the table.
 /// The calling task's cgroup-namespace root path, for `nsdelegate`.
 ///
 /// The cgroup crate is a leaf with no `sched`/`nscg` dependency (the same
@@ -218,22 +222,24 @@ fn register_filesystems() {
             mounted(ty, fs, None, $name, sb_flags)
         }), Some($params)));
     }; }
-    // The type still taking `None`: `pstore`'s one parameter (`kmsg_bytes`)
-    // bounds how much of the kernel log a pstore BACKEND records, and no pstore
-    // backend exists here — the mount is a bare tree. Its reference parse also
-    // swallows an unknown key, so `None` (refuse nothing) is what it does
-    // today; a table would need a consumer to be worth more than a promise.
-    macro_rules! pseudo { ($name:literal, $magic:expr) => {
-        let _ = register_fs(FsType::new($name, $magic, FsFlags::empty(), Box::new(|ty, _, _, _, sb_flags, _p: &[vfs::fs::FsParameter]| -> R {
-            let fs: Arc<dyn vfs::fs::FileSystem> = kernfs::PseudoFs::new($name, $magic);
-            mounted(ty, fs, None, $name, sb_flags)
-        })));
-    }; }
     pseudo_no_params!("securityfs", SECURITYFS_MAGIC);
     // efivarfs takes `uid=`/`gid=` and NO `mode=`; the two-name table is why
     // `mount -t efivarfs -o mode=700` fails and the same line on tracefs does not.
     pseudo_root_attr!("efivarfs", EFIVARFS_MAGIC, crate::fsmount_pseudo_params::EFIVARFS_PARAMS);
-    pseudo!("pstore", PSTOREFS_MAGIC);
+    // pstore declares its one byte-count option and CONSUMES it: the value
+    // bounds how much of the kernel log the next captured record carries, so
+    // a mount naming it changes what a crash report contains. The mount also
+    // publishes whatever records the persistent-RAM backend recovered from the
+    // previous boot — a file per record, unlinking one erases it.
+    //
+    // The table does not make the mount strict: pstore's admission swallows
+    // every negative answer, so `-o kmsg_bytes=rubbish` and `-o nosuchopt`
+    // both mount and simply change nothing, which is what the reference does
+    // and what no other type registered here does.
+    let _ = register_fs(FsType::with_parameters("pstore", PSTOREFS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, d: &str, sb_flags, p: &[vfs::fs::FsParameter]| -> R {
+        let fs: Arc<dyn vfs::fs::FileSystem> = pstore::mount(d, p)?;
+        mounted(ty, fs, None, "pstore", sb_flags)
+    }), Some(pstore::PSTORE_PARAMS)));
     // bpffs declares the reference's seven. `uid`/`gid`/`mode` land on the
     // instance root here; the four `delegate_*` values name what a bpf TOKEN
     // created from this mount may do, which the token subsystem answers, not
@@ -245,11 +251,10 @@ fn register_filesystems() {
     }), Some(tracefs::mount_opts::CONFIGFS_PARAMS)));
     pseudo_no_params!("fusectl", FUSE_CTL_MAGIC);
     pseudo_no_params!("mqueue", MQUEUE_MAGIC);
-    // hugetlbfs is the one type here with no backend at all: the reference
-    // takes seven options that size a huge-page pool and pick a page size, and
-    // this mount is a bare generic tree with no huge-page allocator behind it.
-    // A table would declare seven names nothing could consume.
-    pseudo!("hugetlbfs", HUGETLBFS_MAGIC);
+    // hugetlbfs registers itself: its constructor, its seven-name table and
+    // the pool behind them all live in the filesystem, so the type's whole
+    // option surface is described where it is enforced.
+    let _ = ::fs::hugetlbfs::register();
     let _ = register_fs(FsType::with_context_parameters(
         "autofs", AUTOFS_SUPER_MAGIC, FsFlags::empty(),
         Arc::new(::fs::autofs::AutofsContextOps), ::fs::autofs::AUTOFS_PARAMS,

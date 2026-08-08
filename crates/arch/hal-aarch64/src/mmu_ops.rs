@@ -224,6 +224,17 @@ impl MmuOps for ArmMmu {
         Some((Pa(pa), unpack_flags(leaf)))
     }
 
+    /// Translate and report the installed granule (L3 page, L2 / L1 block).
+    /// # C: O(walk depth) = O(4)
+    fn translate_sized(va: Va) -> Option<(Pa, PageFlags, PageSize)> {
+        let _pt = KERNEL_PT_WRITE.lock_irqsave::<crate::ArmIrqGate>();
+        let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
+        if hhdm == 0 { return None; }
+        // SAFETY: HHDM covers page-table memory; the walk reads only, under the same writer lock `map`/`unmap` take.
+        let (pa, leaf, level) = unsafe { pt_walker::translate_at_va::<PtWalkerArm>(va.0, hhdm)? };
+        Some((Pa(pa), unpack_flags(leaf), PageSize::from_walk_level(level)?))
+    }
+
     /// Local-CPU TLB invalidate of a single 4 KiB page.
     /// # SAFETY: privileged TLBI; legal at EL1.
     /// # C: O(1)

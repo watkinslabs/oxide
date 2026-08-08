@@ -24,6 +24,7 @@ fn migrating_fixture(pa: u64, cgid: u64) -> (TmpfsFileData, hal::pt_walker::Migr
         self_ref: Spinlock::new(Weak::new()),
         pages: Spinlock::<BTreeMap<u64, ShmemPage>, TaskList>::new(pages),
         len: AtomicU64::new(0), acct: super::super::accounting::TmpfsSb::unlimited(),
+        owner: sync::Spinlock::new(Default::default()), inode: sync::Spinlock::new(alloc::sync::Weak::new()),
         seals: AtomicU32::new(0),
     }, token)
 }

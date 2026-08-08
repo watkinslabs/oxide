@@ -22,6 +22,7 @@ Authoritative list of every `debug-*` Cargo feature in the workspace. Each one's
 | `debug-slab-audit` | `slab` | walk every cache after every op | 50× | only for chasing slab corruption |
 | `debug-vmm` | `vmm` | VMA tree audit each op; PT walker invariants | 5× | `11§3` checks |
 | `debug-lockdep` | `sync` | lock-class graph; cycle detector | 10% | `06§3.6` |
+| `debug-audit` | `audit` | console warning when a record is dropped, naming the lost count and both limits | none unless records drop | the lost counter itself is ABI and always kept |
 | `debug-preempt` | `sched` | assert preempt_count valid at every kernel entry/exit | 5% | catches paired-disable bugs |
 | `debug-sched` | `sched` | per-switch trace ring; runqueue audit; current-pointer canary | 30% | `13§17` |
 | `debug-sched-canary` | `sched` | per-task canary `[u64;16]` checked every yield | 2× | the `14§8` test mode |

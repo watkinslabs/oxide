@@ -70,6 +70,13 @@ macro_rules! decl_lock_class {
 
 decl_lock_class! {
     Buddy        =  0,
+    // Huge-page pool counters and free list (`pmm::hugetlb`). Directly above
+    // `Buddy` because a pool grow/shrink calls the buddy allocator, and below
+    // everything else because a hugetlbfs inode holds its own lock while
+    // charging the pool — the same nesting tmpfs already has over `Buddy`.
+    // Never held ACROSS a buddy allocation: a resize computes its plan under
+    // the lock, releases it, allocates, then re-takes it to commit.
+    HugetlbPool  =  1,
     Timer        =  5,
     Slab         = 10,
     Reclaim      = 15,

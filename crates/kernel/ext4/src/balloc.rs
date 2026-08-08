@@ -11,6 +11,8 @@
 // disk RMW and counter updates.
 
 use crate::gdt;
+
+pub mod scan;
 use crate::mount::{Mount, MountError};
 use crate::superblock::{Superblock, SB_OFF_FREE_BLOCKS_LO, SB_OFF_FREE_BLOCKS_HI};
 #[cfg(not(target_os = "oxide-kernel"))]
@@ -34,11 +36,17 @@ impl Mount {
                 return Err(MountError::BlockIo);
             }
         }
+        let optimize = self.optimize_scan();
         self.run_journaled(|m| {
             let groups = m.sb.group_count();
             if groups == 0 { return Err(MountError::NoSpace); }
+            // `mb_optimize_scan=`: where the walk STARTS. It still visits every
+            // group, so the answer never changes — only how many full groups
+            // are read before it is reached.
+            let freest = if optimize { m.freest_group(groups) } else { None };
+            let start = scan::scan_start(hint, groups, optimize, freest);
             for off in 0..groups {
-                let g = (hint + off) % groups;
+                let g = (start + off) % groups;
                 if let Some(blk) = m.try_alloc_in_group(g)? {
                     return Ok(blk);
                 }
@@ -61,6 +69,38 @@ impl Mount {
                 return Err(MountError::BlockIo);
             }
         }
+        let r = self.free_block_inner(phys_blk);
+        // The block is now free as far as the filesystem is concerned, so tell
+        // the device it no longer has to preserve those contents. Issued AFTER
+        // the bitmap transaction, never before: a discard that landed first and
+        // then lost its transaction would have destroyed live data.
+        if r.is_ok() && self.behaviour().discard { self.issue_discard(phys_blk); }
+        r
+    }
+
+    /// Hand one freed filesystem block back to the device (`-o discard`).
+    ///
+    /// A device advertising no discard limit is not asked — an unsupported
+    /// operation is not a capability probe. Failure is dropped on purpose: the
+    /// block IS free, the trim is an optimisation, and turning a device's
+    /// refusal into a failed `unlink` would be the worse answer. That is also
+    /// what the reference does with the one error it expects here.
+    /// # C: O(1) submission
+    fn issue_discard(&self, phys_blk: u64) {
+        if !self.dev.supports_discard() { return; }
+        let dev_bs = self.dev.block_size() as u64;
+        if dev_bs == 0 { return; }
+        let fs_bs = self.sb.block_size as u64;
+        // The filesystem block is addressed in device sectors. One smaller than
+        // a sector covers no whole sector of its own, so trimming it would
+        // reach a neighbouring block's live data.
+        if fs_bs < dev_bs { return; }
+        let per_fs_block = fs_bs / dev_bs;
+        let mut req = block::BlockRequest::new_discard(phys_blk * per_fs_block, per_fs_block as u32);
+        let _ = self.dev.submit_sync(&mut req);
+    }
+
+    fn free_block_inner(&self, phys_blk: u64) -> Result<(), MountError> {
         self.run_journaled(|m| {
             let (group, bit) = m.locate_block(phys_blk)?;
             let gd_orig = {
@@ -94,6 +134,31 @@ impl Mount {
             m.flush_pending_tx()?;
             Ok(())
         })
+    }
+
+    /// Whether this mount scans block groups in free-space order. The mount
+    /// option decides it; a mount that named none gets the answer its own size
+    /// implies. # C: O(1)
+    fn optimize_scan(&self) -> bool {
+        self.behaviour().mb_optimize_scan
+            .unwrap_or_else(|| scan::optimize_scan_default(self.sb.group_count()))
+    }
+
+    /// The group with the most free blocks, from the cached group descriptors.
+    ///
+    /// Read straight off the counters the allocator already maintains rather
+    /// than from a second index of its own: an index would be a parallel copy
+    /// of this same truth, free to disagree with it after any allocation.
+    /// # C: O(N_groups)
+    fn freest_group(&self, groups: u32) -> Option<(u32, u64)> {
+        let s = self.state.lock();
+        let mut best: Option<(u32, u64)> = None;
+        for g in 0..groups {
+            let Ok(d) = gdt::parse_descriptor(&s.gdt_buf, g, &self.sb) else { continue };
+            let free = d.free_blocks_count as u64;
+            if best.is_none_or(|(_, b)| free > b) { best = Some((g, free)); }
+        }
+        best
     }
 
     /// Try to find a free bit in `group`. Returns Ok(Some(phys))

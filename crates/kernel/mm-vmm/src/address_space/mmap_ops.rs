@@ -2,7 +2,7 @@
 
 use hal::UserVirtAddr;
 
-use crate::hole::{find_hole, find_hole_bottom_up, hole_clear};
+use crate::hole::hole_clear;
 use crate::vma::{Vma, VmaBacking, VmaFlags, VmaProt};
 use crate::{Error, KResult, MdweAdmission, MmapError, MmapPlacement};
 
@@ -66,11 +66,19 @@ impl AddressSpace {
     /// this mm is using.
     /// # C: O(N) over VMAs
     fn unmapped_area(&self, tree: &crate::tree::VmaTree, len: u64) -> Option<UserVirtAddr> {
+        self.unmapped_area_aligned(tree, len, 1)
+    }
+
+    /// As [`AddressSpace::unmapped_area`], but the result must start on
+    /// `align` — the granule a huge-page mapping's leaves demand.
+    /// # C: O(N) over VMAs
+    fn unmapped_area_aligned(&self, tree: &crate::tree::VmaTree, len: u64, align: u64)
+        -> Option<UserVirtAddr> {
         let anchor = self.mmap_base.load(core::sync::atomic::Ordering::Acquire);
         if self.mmap_topdown() {
-            find_hole(tree, len, if anchor == 0 { MMAP_TOP } else { anchor })
+            crate::hole::find_hole_aligned(tree, len, if anchor == 0 { MMAP_TOP } else { anchor }, align)
         } else {
-            find_hole_bottom_up(tree, len, anchor)
+            crate::hole::find_hole_bottom_up_aligned(tree, len, anchor, align)
         }
     }
 
@@ -181,23 +189,36 @@ impl AddressSpace {
             (true, true)  => flags | VmaFlags::LOCKED_MASK,
         };
         let len_u64 = len as u64;
+        // The granule this mapping must START on. A mapping whose backing is
+        // made of huge pages resolves through one block leaf per page, and a
+        // leaf can only be installed on its own boundary — so an address off
+        // that boundary is not a worse placement, it is an unusable one
+        // (`hugetlb_get_unmapped_area`). Read from the backing, which is the
+        // only thing that knows.
+        let align = match &backing {
+            VmaBacking::File { backing, .. } => backing.huge_page_size().max(1),
+            _ => 1,
+        };
+        let aligned_for_backing = |h: UserVirtAddr| h.as_u64() & (align - 1) == 0;
 
         let mut tree = self.vmas.write();
         let (start_va, replace_end) = match placement {
             MmapPlacement::Fixed(h) => {
                 validate_aligned(h)?;
+                if !aligned_for_backing(h) { return Err(Error::Inval.into()); }
                 let end = end_of(h, len_u64)?;
                 (h, Some(end))
             }
             MmapPlacement::FixedNoReplace(h) => {
                 validate_aligned(h)?;
+                if !aligned_for_backing(h) { return Err(Error::Inval.into()); }
                 let end = end_of(h, len_u64)?;
                 if !hole_clear(&tree, h, end) { return Err(MmapError::Exists); }
                 (h, None)
             }
             MmapPlacement::Advisory(hint) => {
                 let from_hint = match hint {
-                    Some(h) if is_aligned(h) => {
+                    Some(h) if is_aligned(h) && aligned_for_backing(h) => {
                         end_of(h, len_u64).ok().and_then(|end| {
                             if hole_clear(&tree, h, end) { Some(h) } else { None }
                         })
@@ -206,7 +227,7 @@ impl AddressSpace {
                 };
                 let start = match from_hint {
                     Some(h) => h,
-                    None => self.unmapped_area(&tree, len_u64).ok_or(Error::NoMem)?,
+                    None => self.unmapped_area_aligned(&tree, len_u64, align).ok_or(Error::NoMem)?,
                 };
                 (start, None)
             }

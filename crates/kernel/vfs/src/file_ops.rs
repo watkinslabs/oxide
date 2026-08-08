@@ -228,6 +228,18 @@ pub trait FileOps: Send + Sync {
         inode.i_mapping().map_or(Ok(None), |m| m.shared_frame(off))
     }
 
+    /// Byte size of the huge page this file's pages ARE, or 0 for a file made
+    /// of ordinary base pages.
+    ///
+    /// This is the "is this a hugepage file" question every caller that must
+    /// treat one differently asks — a mapping that installs one page-table
+    /// leaf per huge page, an `mmap` length that rounds to the huge size, a
+    /// `cachestat` that refuses. The answer comes from the inode's own
+    /// filesystem, so no second registry of which files are huge can disagree
+    /// with it.
+    /// # C: O(1)
+    fn huge_page_size(&self, _inode: &Inode) -> u64 { 0 }
+
     /// Whether this file vtable implements Linux `f_op->remap_file_range`.
     /// Default false so VFS admission reports the Linux no-op errno before
     /// calling into a backend. # C: O(1)

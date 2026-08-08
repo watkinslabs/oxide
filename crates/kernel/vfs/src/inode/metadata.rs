@@ -168,8 +168,17 @@ impl Inode {
     pub fn set_fsid(&self, f: u64) { self.i_fsid.store(f, Ordering::Release); }
     /// Filesystem magic for `fstatfs`. # C: O(1)
     pub fn statfs_magic(&self) -> u64 { self.i_sb().map(|s| s.s_magic).unwrap_or(0) }
-    /// Preferred I/O block size. # C: O(1)
-    pub fn blksize(&self) -> u32 { self.i_sb().map(|s| s.s_blocksize).unwrap_or(4096) }
+    /// Preferred I/O block size.
+    ///
+    /// A file whose pages ARE huge pages reports the huge size even with no
+    /// superblock behind it (an anonymous `memfd_create(MFD_HUGETLB)` file):
+    /// the value tells a program the unit it must align to, and answering the
+    /// base page size for such a file tells it the wrong one.
+    /// # C: O(1)
+    pub fn blksize(&self) -> u32 {
+        if let Some(s) = self.i_sb() { return s.s_blocksize; }
+        match self.huge_page_size() { 0 => 4096, huge => huge as u32 }
+    }
     /// `i_mapping` — the per-inode page cache. # C: O(1)
     pub fn i_mapping(&self) -> Option<&dyn AddressSpaceOps> { self.i_mapping.as_deref() }
     /// Canonical file reverse-map owner (`address_space->i_mmap`). # C: O(1)

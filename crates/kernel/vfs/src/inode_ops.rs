@@ -83,6 +83,13 @@ pub trait InodeOps: Send + Sync {
     /// forever. # C: O(1)
     fn child_d_op(&self, _inode: &Inode, _name: &str) -> Option<&'static DentryOps> { None }
 
+    /// Has this directory no children (`simple_empty`)? The casefold attribute
+    /// may only be turned on or off while it is empty, because every name
+    /// already inside was hashed by the rule that is changing. A backend that
+    /// cannot answer reports empty, which is what a non-directory is.
+    /// # C: backend-dependent
+    fn dir_is_empty(&self, _inode: &Inode) -> bool { true }
+
     /// Whether this inode can trigger `automount`. # C: O(1)
     fn is_automount(&self, _inode: &Inode) -> bool { false }
 

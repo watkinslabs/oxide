@@ -30,7 +30,10 @@ pub(super) fn seccomp_gate(nr: u64, args: &[u64; 6]) -> Option<u64> {
     let ip = crate::arch_frame::current_user_pc();
     match security::seccomp::check(nr, args, ip) {
         Verdict::Allow => None,
-        Verdict::Log { syscall } => { log_action(syscall, b"log"); None }
+        Verdict::Log { syscall } => {
+            audit_action(syscall, security::seccomp::SECCOMP_RET_LOG, 0);
+            log_action(syscall, b"log"); None
+        }
         Verdict::Skip { ret } => Some(ret as u64),
         // The supervisor is waited for inside `check`, which hands back the
         // outcome as an ordinary verdict, so this arm never arrives. Denying
@@ -50,10 +53,17 @@ pub(super) fn seccomp_gate(nr: u64, args: &[u64; 6]) -> Option<u64> {
         // with a core dump for the whole group; else `do_exit(SIGSYS)` for
         // this thread alone.
         Verdict::KillThread(s) => {
+            audit_action(s.syscall, security::seccomp::SECCOMP_RET_KILL_THREAD,
+                Signum::Sigsys as u32);
             log_action(s.syscall, b"kill_thread");
             if last_live_thread() { kill_group_sigsys(&s) } else { exit_thread(Signum::Sigsys) }
         }
-        Verdict::KillProcess(s) => { log_action(s.syscall, b"kill_process"); kill_group_sigsys(&s) }
+        Verdict::KillProcess(s) => {
+            audit_action(s.syscall, security::seccomp::SECCOMP_RET_KILL_PROCESS,
+                Signum::Sigsys as u32);
+            log_action(s.syscall, b"kill_process");
+            kill_group_sigsys(&s)
+        }
         Verdict::TraceStop { data } => trace_stop(nr, data),
         // `__secure_computing_strict`'s violation path and the MODE_DEAD arm.
         Verdict::DieSigkill => exit_thread(Signum::Sigkill),
@@ -165,8 +175,22 @@ fn tracer_rewrote_nr_negative(orig: u64) -> bool {
 fn enosys() -> u64 { (-(syscall::errno::Errno::Enosys.as_i32() as i64)) as u64 }
 
 /// `seccomp_log(this_syscall, signr, action, requested)` -> `audit_seccomp`.
-/// No audit subsystem yet, so the record goes to klog; `SECCOMP_RET_ALLOW` is
-/// never logged, matching `seccomp_log`'s first case.
+///
+/// The record is the durable account a security policy reads; the klog lines
+/// below it are the post-mortem a developer reads when no audit consumer is
+/// running. `SECCOMP_RET_ALLOW` reaches neither.
+fn audit_seccomp(s: &Sigsys, signal: u32, action: u32) {
+    let _ = audit::log_seccomp(audit::SeccompEvent {
+        tid: sched::live::current().map(|c| c.tid).unwrap_or(0),
+        signal,
+        action,
+        syscall: s.syscall,
+        arch: s.arch,
+        ip: s.call_addr,
+        errno: s.errno as u32,
+    });
+}
+
 fn log_sigsys(s: &Sigsys) {
     klog::write_raw(b"[SECCOMP] sigsys syscall=");
     klog::write_dec_u64(s.syscall as i64 as u64);
@@ -174,6 +198,18 @@ fn log_sigsys(s: &Sigsys) {
     klog::write_raw(b" ip=");    klog::write_hex_u64(s.call_addr);
     klog::write_raw(b" errno="); klog::write_dec_u64(s.errno as i64 as u64);
     klog::write_raw(b"\n");
+}
+
+/// A verdict that names only the syscall it refused: the record still needs
+/// the calling ABI and the instruction, which are read from the live frame.
+/// # C: O(1)
+fn audit_action(syscall: i32, action: u32, signal: u32) {
+    audit_seccomp(&Sigsys {
+        call_addr: crate::arch_frame::current_user_pc(),
+        syscall,
+        arch: security::seccomp::native_audit_arch(),
+        errno: 0,
+    }, signal, action);
 }
 
 fn log_action(syscall: i32, action: &'static [u8]) {

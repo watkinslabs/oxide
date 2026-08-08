@@ -36,7 +36,7 @@ fn from_mount_data_default_is_root_owned_0755() {
 fn an_option_that_cannot_be_honoured_fails_the_mount() {
     assert!(TmpfsFs::from_mount_data(String::from("/tmp"), "size=64mb").is_err());
     assert!(TmpfsFs::from_mount_data(String::from("/tmp"), "huge=always").is_err());
-    assert!(TmpfsFs::from_mount_data(String::from("/tmp"), "casefold").is_err());
+    assert!(TmpfsFs::from_mount_data(String::from("/tmp"), "casefold=latin1").is_err());
     // ramfs takes `mode=` and nothing else, but a key it shares must still work.
     assert!(TmpfsFs::ramfs_from_mount_data("mode=0755").is_ok());
     assert!(TmpfsFs::ramfs_from_mount_data("strict_encoding").is_err());

@@ -224,3 +224,33 @@ pub(super) fn set_tcp_fastopen_key(ns: &network_namespace::NetworkNamespaceRef,
     net::tcp_fastopen::set_ns_keys(ns, ctx);
     Ok(())
 }
+
+/// `vm.nr_hugepages` — the operator's target size for the default-granule
+/// huge-page pool, and the size it actually reached.
+///
+/// A write is a request, not a command: growing is bounded by what the buddy
+/// allocator can supply and shrinking by the reservations already made, so the
+/// value read back after a write is the pool's real size (Linux
+/// `set_max_huge_pages` returns the count it achieved).
+/// # C: O(1)
+pub(super) fn get_nr_hugepages() -> i64 {
+    let size = pmm::hugetlb::HugePageSize::default_size();
+    pmm::hugetlb::nr_hugepages(size) as i64
+}
+/// # C: O(|delta| * pages)
+pub(super) fn set_nr_hugepages(value: i64) {
+    let size = pmm::hugetlb::HugePageSize::default_size();
+    pmm::hugetlb::set_nr_hugepages(size, value.max(0) as u64);
+}
+
+/// `vm.nr_overcommit_hugepages` — how many huge pages the pool may take beyond
+/// its target to satisfy a reservation, and give back afterwards.
+/// # C: O(1)
+pub(super) fn get_nr_overcommit_hugepages() -> i64 {
+    pmm::hugetlb::nr_overcommit_hugepages(pmm::hugetlb::HugePageSize::default_size()) as i64
+}
+/// # C: O(1)
+pub(super) fn set_nr_overcommit_hugepages(value: i64) {
+    pmm::hugetlb::set_nr_overcommit_hugepages(
+        pmm::hugetlb::HugePageSize::default_size(), value.max(0) as u64);
+}

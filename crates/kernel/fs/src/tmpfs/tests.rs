@@ -24,8 +24,8 @@ mod statfs_tests {
         assert_eq!((s0.f_type, s0.f_bsize as usize), (TMPFS_MAGIC, PG));
         assert_eq!((s0.f_blocks, s0.f_bfree, s0.f_files, s0.f_ffree), (4, 4, 4, 4));
         // Charge 4 blocks → 5th is refused (ENOSPC).
-        for _ in 0..4 { assert!(sb.charge_block()); }
-        assert!(!sb.charge_block());
+        for _ in 0..4 { assert!(sb.charge_blocks(1)); }
+        assert!(!sb.charge_blocks(1));
         assert_eq!(sb.statfs(TMPFS_MAGIC).f_bfree, 0);
         sb.free_blocks(2);
         assert_eq!(sb.statfs(TMPFS_MAGIC).f_bfree, 2);
@@ -99,7 +99,7 @@ mod statfs_tests {
     #[test]
     fn a_bounded_instance_reports_its_real_limits() {
         let sb = TmpfsSb::new(100, 10);
-        assert!(sb.charge_block());
+        assert!(sb.charge_blocks(1));
         assert!(sb.charge_inode());
         let st = sb.statfs(TMPFS_MAGIC);
         assert_eq!((st.f_blocks, st.f_bfree, st.f_bavail), (100, 99, 99));
@@ -466,3 +466,4 @@ mod xattr_tests {
 // UID:UID; before the parser the option string was dropped, mounting root:root
 // 0755 which pam_systemd / `systemd --user` reject.
 mod mount_opts;
+mod quota;

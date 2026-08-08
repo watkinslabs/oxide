@@ -66,6 +66,7 @@ pub trait SuperOps: Send + Sync {
     fn statfs(&self) -> KResult<SbStatFs>;
     /// `sync_fs` — flush dirty state. Default no-op (pseudo-fs). # C: FS-dependent
     fn sync_fs(&self, _wait: bool) -> KResult<()> { Ok(()) }
+
     /// `s_export_op->encode_fh` — payload bytes a handle for this object costs
     /// on THIS filesystem, so `name_to_handle_at(2)` can run its capacity check
     /// before encoding anything.

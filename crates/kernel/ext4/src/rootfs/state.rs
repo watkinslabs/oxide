@@ -38,12 +38,6 @@ pub struct RootfsState {
     /// FIFREEZE state (Linux `sb->s_writers.frozen`). Set by
     /// `Ext4SuperOps::freeze_fs`, cleared by `thaw_fs`. PER MOUNT.
     pub frozen: core::sync::atomic::AtomicBool,
-    /// The mount options this mount was given. Sole owner of the mount's
-    /// option truth — the quota family (`usrquota`, `usrjquota=`, `jqfmt=`, …)
-    /// that `enable_mount_quotas` reads to decide which classes load, and the
-    /// behavioural options (`errors=`, `barrier`, `commit=`, …) every consumer
-    /// reads from here rather than keeping a copy of. PER MOUNT.
-    pub opts: sync::Spinlock<crate::mount_opts::Ext4SbOpts, sync::Inode>,
 }
 
 impl RootfsState {
@@ -58,7 +52,6 @@ impl RootfsState {
             cache_hits:   core::sync::atomic::AtomicU64::new(0),
             cache_misses: core::sync::atomic::AtomicU64::new(0),
             frozen:       core::sync::atomic::AtomicBool::new(false),
-            opts:         sync::Spinlock::new(crate::mount_opts::Ext4SbOpts::default()),
         })
     }
 
@@ -70,8 +63,13 @@ impl RootfsState {
         }
     }
 
-    /// Snapshot of the options in force on this mount. # C: O(MAXQUOTAS)
-    pub fn opts(&self) -> crate::mount_opts::Ext4SbOpts { self.opts.lock().clone() }
+    /// Snapshot of the options in force on this mount.
+    ///
+    /// Reads through to the `Mount`, which OWNS them: the consumers that act on
+    /// the behavioural half (directory ceiling, discard on free, journal I/O
+    /// priority, data ordering) all live below this object and could not see an
+    /// option stored above them. # C: O(MAXQUOTAS)
+    pub fn opts(&self) -> crate::mount_opts::Ext4SbOpts { self.mount.opts() }
 
     /// Parse `data` and fold its options into this mount's option state.
     /// `quota_loaded` selects remount semantics. Nothing is applied unless the
@@ -84,7 +82,23 @@ impl RootfsState {
         let feat = self.quota_features();
         let mut next = alloc::boxed::Box::new(self.opts());
         crate::mount_opts::configure(data, &feat, &mut next, quota_loaded)?;
-        *self.opts.lock() = *next;
+        self.mount.set_opts(*next);
+        Ok(())
+    }
+
+    /// Finish an ALREADY-PARSED first-mount option context against this
+    /// filesystem's features. The parse ran before the open so `noload` could
+    /// be honoured; this is the half that needed the open to have happened.
+    /// # C: O(MAXQUOTAS)
+    pub fn apply_parsed_mount_opts(&self, ctx: &mut crate::mount_opts::Ext4MountOpts)
+        -> vfs::KResult<()>
+    {
+        let feat = self.quota_features();
+        let mut next = alloc::boxed::Box::new(self.opts());
+        // Nothing has loaded quota yet on a fresh open, so this is the
+        // first-mount half of the option contract, not the remount half.
+        crate::mount_opts::configure_parsed(ctx, &feat, &mut next, false)?;
+        self.mount.set_opts(*next);
         Ok(())
     }
 
@@ -124,7 +138,16 @@ impl RootfsState {
     /// Open `dev` as a fresh ext4 mount + state.
     /// # C: O(N_groups + 1024)
     pub fn open(dev: Arc<dyn BlockDevice>) -> KResult<Arc<Self>> {
-        let mount = Mount::open_with_orphan_cleanup(dev, false).map_err(|_| BlockError::Eio)?;
+        Self::open_with_behaviour(dev, Default::default())
+    }
+
+    /// Open `dev` with the behavioural options already decided, so the open
+    /// itself can honour the ones that change what it does — `noload` being
+    /// the whole reason the parse runs first. # C: O(N_groups + 1024)
+    pub fn open_with_behaviour(dev: Arc<dyn BlockDevice>, behaviour: crate::mount_opts::Ext4Behaviour)
+        -> KResult<Arc<Self>>
+    {
+        let mount = Mount::open_with_behaviour(dev, false, behaviour).map_err(|_| BlockError::Eio)?;
         Ok(Self::new(Arc::new(mount)))
     }
 

@@ -6,8 +6,18 @@
 // reads would be the same defect this module exists to remove: `-o
 // errors=remount-ro` that does not remount read-only is worse than a mount
 // that refuses the option, because the administrator believes it took.
+//
+// Module manifest:
+// - parse: option token names + the table that turns one token into a change.
 
-use vfs::{KResult, VfsError};
+mod parse;
+
+pub use parse::{OPT_BARRIER, OPT_BLOCK_VALIDITY, OPT_COMMIT, OPT_DATA, OPT_DAX, OPT_DELALLOC,
+                OPT_DISCARD, OPT_ERRORS, OPT_INIT_ITABLE, OPT_JOURNAL_IOPRIO,
+                OPT_MAX_DIR_SIZE_KB, OPT_MB_OPTIMIZE_SCAN, OPT_NOBARRIER,
+                OPT_NOBLOCK_VALIDITY, OPT_NODELALLOC, OPT_NODISCARD, OPT_NOINIT_ITABLE,
+                OPT_NOLOAD, OPT_NORECOVERY, OPT_NOWARN_ON_ERROR, OPT_RESGID, OPT_RESUID,
+                OPT_STRIPE, OPT_WARN_ON_ERROR};
 
 /// What the filesystem does when it finds its own on-disk state wrong.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -30,24 +40,6 @@ pub enum DataMode {
     /// Data is not ordered against metadata at all.
     Writeback,
 }
-
-pub const OPT_ERRORS: &str = "errors";
-pub const OPT_DATA: &str = "data";
-pub const OPT_COMMIT: &str = "commit";
-pub const OPT_JOURNAL_IOPRIO: &str = "journal_ioprio";
-pub const OPT_MAX_DIR_SIZE_KB: &str = "max_dir_size_kb";
-pub const OPT_BARRIER: &str = "barrier";
-pub const OPT_NOBARRIER: &str = "nobarrier";
-pub const OPT_DISCARD: &str = "discard";
-pub const OPT_NODISCARD: &str = "nodiscard";
-pub const OPT_DELALLOC: &str = "delalloc";
-pub const OPT_NODELALLOC: &str = "nodelalloc";
-pub const OPT_BLOCK_VALIDITY: &str = "block_validity";
-pub const OPT_NOBLOCK_VALIDITY: &str = "noblock_validity";
-pub const OPT_NOLOAD: &str = "noload";
-pub const OPT_NORECOVERY: &str = "norecovery";
-pub const OPT_WARN_ON_ERROR: &str = "warn_on_error";
-pub const OPT_NOWARN_ON_ERROR: &str = "nowarn_on_error";
 
 const ERRORS_CONTINUE: &str = "continue";
 const ERRORS_PANIC: &str = "panic";
@@ -78,6 +70,20 @@ pub const MAX_JOURNAL_IOPRIO: u32 = 7;
 pub const NO_DIR_SIZE_LIMIT: u32 = 0;
 /// Bytes per kilobyte, for turning the directory ceiling into a size.
 pub const BYTES_PER_KB: u64 = 1024;
+/// Shift from bytes to kilobytes, which is how the directory ceiling is
+/// compared: the ceiling is written in kB and the size held in bytes.
+pub const KB_SHIFT: u32 = 10;
+
+/// Wait multiplier a bare `init_itable` selects.
+pub const DEFAULT_LI_WAIT_MULT: u32 = 10;
+
+/// `resuid=`/`resgid=` of a mount that names neither: the reserved blocks
+/// belong to root.
+pub const DEFAULT_RESUID: u32 = 0;
+pub const DEFAULT_RESGID: u32 = 0;
+
+/// `stripe=0` means the allocator aligns to nothing.
+pub const NO_STRIPE: u32 = 0;
 
 impl ErrorsPolicy {
     /// Written `errors=` value → policy. # C: O(1)
@@ -127,6 +133,14 @@ impl DataMode {
             Self::Writeback => DATA_WRITEBACK,
         }
     }
+    /// True when a file data block must go through the journal with the
+    /// metadata that references it. # C: O(1)
+    pub fn journals_data(self) -> bool { matches!(self, Self::Journal) }
+    /// True when file data must be on the device BEFORE the metadata that
+    /// references it commits — the guarantee that stops a crash exposing a
+    /// freshly-allocated block's previous contents through a committed extent.
+    /// # C: O(1)
+    pub fn orders_data(self) -> bool { matches!(self, Self::Ordered) }
 }
 
 /// The behavioural options in force on one mounted filesystem.
@@ -142,6 +156,20 @@ pub struct Ext4Behaviour {
     pub journal_ioprio: u32,
     /// `max_dir_size_kb=` — ceiling on a directory's size; 0 is no ceiling.
     pub max_dir_size_kb: u32,
+    /// `stripe=` — RAID stripe width, in filesystem blocks, the allocator
+    /// aligns a full-stripe allocation to; 0 is no alignment.
+    pub stripe: u32,
+    /// `resuid=` — the user who may consume the superblock's reserved blocks.
+    pub resuid: u32,
+    /// `resgid=` — the group whose members may consume them.
+    pub resgid: u32,
+    /// `init_itable=`/`noinit_itable` — lazy inode-table initialisation, and
+    /// the wait multiplier it paces itself by; `None` = turned off.
+    pub li_wait_mult: Option<u32>,
+    /// `mb_optimize_scan=` — whether the block allocator scans groups in
+    /// free-space order rather than in group order. `None` = the mount named
+    /// no preference, so the filesystem's own size decides.
+    pub mb_optimize_scan: Option<bool>,
     /// `barrier`/`nobarrier` — whether durability points take a device flush.
     pub barrier: bool,
     /// `discard`/`nodiscard` — whether freed blocks are handed back to the
@@ -167,6 +195,11 @@ impl Default for Ext4Behaviour {
             commit_secs: DEFAULT_COMMIT_SECS,
             journal_ioprio: DEFAULT_JOURNAL_IOPRIO,
             max_dir_size_kb: NO_DIR_SIZE_LIMIT,
+            stripe: NO_STRIPE,
+            resuid: DEFAULT_RESUID,
+            resgid: DEFAULT_RESGID,
+            li_wait_mult: Some(DEFAULT_LI_WAIT_MULT),
+            mb_optimize_scan: None,
             barrier: true,
             discard: false,
             delalloc: true,
@@ -191,63 +224,24 @@ impl Ext4Behaviour {
         Some(self.max_dir_size_kb as u64 * BYTES_PER_KB)
     }
 
-    /// Consume one behavioural option. `Ok(false)` = not one of these keys.
-    ///
-    /// A value that is not one of the values the option takes is refused. It
-    /// used to be swallowed, which made `-o errors=remount-rw` — a typo with
-    /// no such value — mount silently with the default policy.
-    /// # C: O(len(val))
-    pub fn parse_one(&mut self, key: &str, val: Option<&str>) -> KResult<bool> {
-        match key {
-            OPT_ERRORS => self.errors = ErrorsPolicy::from_name(value(val)?).ok_or(VfsError::Einval)?,
-            OPT_DATA => self.data = DataMode::from_name(value(val)?).ok_or(VfsError::Einval)?,
-            OPT_COMMIT => {
-                let n = number(value(val)?)?;
-                // Zero does not mean "never commit"; it means "the default".
-                if n == 0 { self.commit_secs = DEFAULT_COMMIT_SECS; }
-                else if n > MAX_COMMIT_SECS { return Err(VfsError::Einval); }
-                else { self.commit_secs = n; }
-            }
-            OPT_JOURNAL_IOPRIO => {
-                let n = number(value(val)?)?;
-                if n > MAX_JOURNAL_IOPRIO { return Err(VfsError::Einval); }
-                self.journal_ioprio = n;
-            }
-            OPT_MAX_DIR_SIZE_KB => self.max_dir_size_kb = number(value(val)?)?,
-            // `barrier` carries a value in its other spelling, where a zero
-            // turns it OFF — the same answer `nobarrier` gives.
-            OPT_BARRIER => self.barrier = match val {
-                None => true,
-                Some(v) => number(v)? != 0,
-            },
-            OPT_NOBARRIER => { flag(val)?; self.barrier = false; }
-            OPT_DISCARD => { flag(val)?; self.discard = true; }
-            OPT_NODISCARD => { flag(val)?; self.discard = false; }
-            OPT_DELALLOC => { flag(val)?; self.delalloc = true; }
-            OPT_NODELALLOC => { flag(val)?; self.delalloc = false; }
-            OPT_BLOCK_VALIDITY => { flag(val)?; self.block_validity = true; }
-            OPT_NOBLOCK_VALIDITY => { flag(val)?; self.block_validity = false; }
-            // Two spellings of one answer: do not replay the journal.
-            OPT_NOLOAD | OPT_NORECOVERY => { flag(val)?; self.noload = true; }
-            OPT_WARN_ON_ERROR => { flag(val)?; self.warn_on_error = true; }
-            OPT_NOWARN_ON_ERROR => { flag(val)?; self.warn_on_error = false; }
-            _ => return Ok(false),
-        }
-        Ok(true)
+    /// Whether a directory currently `size` bytes long may be GROWN by another
+    /// block. The comparison is the ceiling's own unit — the directory's size
+    /// in whole kilobytes against the written kB ceiling — and it is `>=`, so a
+    /// directory that has exactly reached the ceiling may not grow again.
+    /// # C: O(1)
+    pub fn dir_may_grow(&self, size: u64) -> bool {
+        if self.max_dir_size_kb == NO_DIR_SIZE_LIMIT { return true; }
+        (size >> KB_SHIFT) < self.max_dir_size_kb as u64
     }
-}
 
-/// The value of a key that requires one. # C: O(1)
-fn value(val: Option<&str>) -> KResult<&str> { val.ok_or(VfsError::Einval) }
-
-/// Refuse a value on a key that takes none. # C: O(1)
-fn flag(val: Option<&str>) -> KResult<()> {
-    if val.is_some() { return Err(VfsError::Einval); }
-    Ok(())
-}
-
-/// A plain unsigned decimal value, with nothing else in it. # C: O(len)
-fn number(val: &str) -> KResult<u32> {
-    if val.is_empty() { return Err(VfsError::Einval); }
-    val.parse::<u32>().map_err(|_| VfsError::Einval)
+    /// Whether `uid`/`gids` may consume the superblock's reserved blocks.
+    /// The group half is only consulted for a NON-root `resgid=`: a mount that
+    /// left it at the default reserves for root alone, and treating that
+    /// default as "every member of group 0" would hand the reserve to a whole
+    /// class of processes the option never named.
+    /// # C: O(len(gids))
+    pub fn may_use_reserved(&self, uid: u32, gids: &[u32]) -> bool {
+        if uid == self.resuid { return true; }
+        self.resgid != DEFAULT_RESGID && gids.contains(&self.resgid)
+    }
 }

@@ -1,0 +1,39 @@
+[package]
+name = "pstore"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MPL-2.0"
+
+# Persistent store (Linux `fs/pstore`): the persistent-RAM backend, the
+# record core that captures a kernel-log snapshot on the crash paths, and
+# the filesystem that publishes each surviving record as a file.
+#
+# Everything except `boot` is UNGATED so the zone geometry, header
+# validation, record enumeration and the `kmsg_bytes` bound are driven by
+# hosted `cargo test`.
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+crc     = { path = "../../shared/crc" }
+klog    = { path = "../../shared/klog" }
+sync    = { path = "../../shared/sync" }
+vfs     = { path = "../vfs" }
+
+[target.'cfg(target_os = "oxide-kernel")'.dependencies]
+boot-info = { path = "../../shared/boot-info" }
+cmdline   = { path = "../cmdline" }
+hal       = { path = "../../arch/hal" }
+pmm       = { path = "../mm-pmm" }
+timekeeper = { path = "../timekeeper" }
+
+[features]
+default = []
+hosted  = ["klog/hosted", "vfs/hosted"]
+# Boot-time report of the region geometry and how many records came back.
+debug-pstore = []
+
+[lints]
+workspace = true

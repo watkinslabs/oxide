@@ -246,12 +246,24 @@ impl AddressSpace {
             let keeps_wp = crate::uffd::child_keeps_wp(
                 vma.flags & VmaFlags::UFFD_MASK,
                 vma.uffd.as_ref().is_some_and(|c| c.wants_event(crate::uffd::UffdEventKind::Fork)));
+            // Granule this VMA's leaves use, read from the backing rather than
+            // assumed: a hugetlbfs mapping has one block leaf per huge page,
+            // and copying it as base pages would install 4 KiB leaves in the
+            // child over memory the parent maps as one huge page.
+            let huge_bytes = match &vma.backing {
+                VmaBacking::File { backing, .. } => backing.huge_page_size(),
+                _ => 0,
+            };
+            let (step, granule) = match hal::PageSize::from_bytes(huge_bytes) {
+                Some(g) if huge_bytes != 0 => (huge_bytes, g),
+                _                          => (PAGE_SIZE_BYTES, PageSize::P4K),
+            };
             let mut va = vma.start.as_u64();
             let end = vma.end.as_u64();
             while va < end {
                 // M::translate reads the active PT for the parent.
                 if let Some((src_pa, src_flags)) = Some(M::translate(Va(va))).flatten() {
-                    let pa = src_pa.0 & !(PAGE_SIZE_BYTES - 1);
+                    let pa = src_pa.0 & !(step - 1);
                     // Bump per-page refcount: child + parent both ref it.
                     inc_ref(pa);
                     // Compute child PTE flags. If the VMA is writable,
@@ -281,7 +293,7 @@ impl AddressSpace {
                     }
                     // SAFETY: new_root_pa carries kernel-half clone; va aligned in user range; flags carry USER per `11§5`; pa is the parent's mapped frame whose refcount we just bumped.
                     unsafe {
-                        M::map_at(new_root_pa, Va(va), Pa(pa), child_flags, PageSize::P4K);
+                        M::map_at(new_root_pa, Va(va), Pa(pa), child_flags, granule);
                     }
                     tally.add(class_of(&vma.backing));
                     // If parent's PTE was writable, remap RO so the
@@ -294,7 +306,7 @@ impl AddressSpace {
                         // SAFETY: parent's CR3 is active; same-PA remap
                         // with W bit cleared; pa is current mapping per
                         // translate above.
-                        unsafe { M::map(Va(va), Pa(pa), child_flags, PageSize::P4K); }
+                        unsafe { M::map(Va(va), Pa(pa), child_flags, granule); }
                         // SAFETY: privileged TLB invalidation is legal at CPL=0/EL1.
                         unsafe { M::flush_va(Va(va)); }
                         // debug-cow: this frame is now RO-shared between
@@ -310,7 +322,7 @@ impl AddressSpace {
                         }
                     }
                 }
-                va += PAGE_SIZE_BYTES;
+                va += step;
             }
         }
         // SMP TLB coherence (`20§5`): we just write-protected the parent's

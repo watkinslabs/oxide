@@ -49,6 +49,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "audit"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "klog",
+ "sync",
+ "syscall",
+ "timekeeper",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -573,6 +584,7 @@ dependencies = [
  "pmm",
  "sched",
  "sync",
+ "timer",
  "vfs",
 ]
 
@@ -642,6 +654,7 @@ checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
 name = "fs"
 version = "0.1.0"
 dependencies = [
+ "audit",
  "block",
  "boot-info",
  "cgroup",
@@ -834,6 +847,7 @@ name = "kernel-bin-aarch64"
 version = "0.1.0"
 dependencies = [
  "boot-aarch64",
+ "klog",
 ]
 
 [[package]]
@@ -867,6 +881,7 @@ name = "kmain"
 version = "0.1.0"
 dependencies = [
  "arch-irq",
+ "audit",
  "block",
  "boot-info",
  "cgroup",
@@ -913,6 +928,7 @@ dependencies = [
  "pmm",
  "power",
  "procfs",
+ "pstore",
  "sched",
  "security",
  "smoke",
@@ -937,6 +953,7 @@ dependencies = [
 name = "landlock"
 version = "0.1.0"
 dependencies = [
+ "audit",
  "sync",
  "syscall",
  "vfs",
@@ -1121,6 +1138,7 @@ dependencies = [
 name = "netlink"
 version = "0.1.0"
 dependencies = [
+ "audit",
  "klog",
  "namespace-identity",
  "net",
@@ -1363,6 +1381,21 @@ dependencies = [
  "rusty-fork",
  "tempfile",
  "unarray",
+]
+
+[[package]]
+name = "pstore"
+version = "0.1.0"
+dependencies = [
+ "boot-info",
+ "cmdline",
+ "crc",
+ "hal",
+ "klog",
+ "pmm",
+ "sync",
+ "timekeeper",
+ "vfs",
 ]
 
 [[package]]
@@ -1728,6 +1761,7 @@ version = "0.1.0"
 dependencies = [
  "arch-irq",
  "aslr",
+ "audit",
  "block",
  "boot-info",
  "cgroup",
@@ -1772,6 +1806,7 @@ dependencies = [
  "pmm",
  "power",
  "procfs",
+ "pstore",
  "sched",
  "security",
  "smoke",
@@ -2020,6 +2055,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "utf8"
+version = "0.1.0"
+
+[[package]]
 name = "valuable"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2043,6 +2082,7 @@ dependencies = [
  "syscall",
  "timekeeper",
  "user-namespace",
+ "utf8",
  "vmm",
 ]
 

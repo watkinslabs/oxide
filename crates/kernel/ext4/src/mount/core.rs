@@ -88,6 +88,22 @@ impl Mount {
     /// Open the filesystem, optionally deferring orphan cleanup to the caller.
     /// # C: O(N_groups * desc_size + 1024)
     pub(crate) fn open_with_orphan_cleanup(dev: alloc::sync::Arc<dyn block::BlockDevice>, cleanup_orphans: bool) -> Result<Self, MountError> {
+        Self::open_with_behaviour(dev, cleanup_orphans, Default::default())
+    }
+
+    /// Open the filesystem with its behavioural options ALREADY decided.
+    ///
+    /// The options have to arrive before the open rather than after it: journal
+    /// replay happens in here, and `noload`/`norecovery` is the option that
+    /// says not to do it. An open that parsed its options afterwards had
+    /// already replayed the log by the time it read the option asking it not
+    /// to, which is why the option is passed in rather than looked up.
+    /// # C: O(N_groups * desc_size + 1024)
+    pub(crate) fn open_with_behaviour(
+        dev: alloc::sync::Arc<dyn block::BlockDevice>,
+        cleanup_orphans: bool,
+        behaviour: crate::mount_opts::Ext4Behaviour,
+    ) -> Result<Self, MountError> {
         let sb_bytes = read_byte_range(&*dev, SUPERBLOCK_OFFSET, SUPERBLOCK_LEN)?;
         let sb = Superblock::parse(&sb_bytes)?;
         // Feature gating (Linux EXT4_FEATURE_{INCOMPAT,RO_COMPAT}_SUPP): refuse a
@@ -136,8 +152,21 @@ impl Mount {
                        faults: super::faults::HostedFaults::new(),
                        txn_owner: ::core::sync::atomic::AtomicU64::new(0),
                        txn_depth: ::core::sync::atomic::AtomicU32::new(0),
-                       creating: ::core::sync::atomic::AtomicBool::new(false) };
-        let _ = m.recover_journal();
+                       creating: ::core::sync::atomic::AtomicBool::new(false),
+                       opts: sync::Spinlock::new(crate::mount_opts::Ext4SbOpts {
+                           behaviour, ..Default::default() }) };
+        // `noload`/`norecovery` decides this, and it decides it BEFORE the
+        // replay rather than after. Every mount this code opens is writable, so
+        // a dirty log plus the option is the combination that has no correct
+        // answer and is refused here (Linux `ext4_fill_super`).
+        let needs_recovery = (m.sb.feature_incompat & crate::superblock::INCOMPAT_RECOVER) != 0
+            && m.sb.journal_inum != 0;
+        const MOUNTED_READ_ONLY: bool = false;
+        match crate::mount_opts::recovery_action(behaviour.noload, MOUNTED_READ_ONLY, needs_recovery) {
+            Err(_) => return Err(MountError::UnsupportedFeature),
+            Ok(crate::mount_opts::JournalRecovery::Replay) => { let _ = m.recover_journal(); }
+            Ok(crate::mount_opts::JournalRecovery::Skip) => {}
+        }
         if cleanup_orphans { let _ = m.orphan_cleanup(); }
         Ok(m)
     }

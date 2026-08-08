@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 boot-aarch64 = { path = "../../arch/boot-aarch64" }
+klog         = { path = "../../shared/klog" }
 
 [features]
 debug-getdents = ["boot-aarch64/debug-getdents"]

@@ -8,6 +8,7 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
+audit = { path = "../audit" }
 landlock = { path = "../landlock" }
 crng = { path = "../crng" }
 aslr = { path = "../aslr" }
@@ -31,6 +32,7 @@ smoke     = { path = "../smoke" }
 devpts    = { path = "../devpts" }
 tracefs   = { path = "../tracefs" }
 kernfs    = { path = "../kernfs" }
+pstore    = { path = "../pstore" }
 kmacros   = { path = "../../shared/kmacros" }
 kalloc  = { path = "../../shared/kalloc" }
 pmm     = { path = "../mm-pmm" }

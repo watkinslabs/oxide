@@ -5,14 +5,37 @@
 
 use crate::uapi::*;
 
+/// What one layer grants at one hierarchy node, and whether the rule that
+/// granted it asked for denials naming that object to stay unreported.
+///
+/// The two travel together because they are read from the same rule: a rule
+/// marked quiet still grants what it grants, and a rule that grants nothing
+/// can still mark an object quiet — which is the only reason to add it.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct Grant {
+    pub access: AccessMask,
+    pub quiet: bool,
+}
+
+impl Grant {
+    /// A grant from a source that carries no quiet marking: a scope, a port
+    /// with no rule, an in-domain peer.
+    /// # C: O(1)
+    pub fn plain(access: AccessMask) -> Self { Self { access, quiet: false } }
+}
+
 /// Per-layer unfulfilled-rights matrix. Index = layer level, outermost first.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct LayerMasks {
     pub layers: [AccessMask; MAX_NUM_LAYERS],
+    /// Whether a rule marked quiet was met at this layer during the walk.
+    /// Accumulated, never cleared: an object is quiet at a layer if ANY rule
+    /// of that layer said so.
+    pub quiet: [bool; MAX_NUM_LAYERS],
 }
 
 impl Default for LayerMasks {
-    fn default() -> Self { Self { layers: [0; MAX_NUM_LAYERS] } }
+    fn default() -> Self { Self { layers: [0; MAX_NUM_LAYERS], quiet: [false; MAX_NUM_LAYERS] } }
 }
 
 impl LayerMasks {
@@ -40,11 +63,27 @@ impl LayerMasks {
     /// request, so a right granted high in the hierarchy still covers an object
     /// deep inside it.
     /// # C: O(N_layers)
-    pub fn unmask(&mut self, granted: &[AccessMask]) -> bool {
+    pub fn unmask(&mut self, granted: &[Grant]) -> bool {
         for (i, g) in granted.iter().enumerate().take(MAX_NUM_LAYERS) {
-            self.layers[i] &= !*g;
+            self.layers[i] &= !g.access;
+            if g.quiet { self.quiet[i] = true; }
         }
         self.all_clear()
+    }
+
+    /// The YOUNGEST layer still refusing part of `request`: its level, the
+    /// rights it refuses, and whether it marked the object quiet.
+    ///
+    /// Youngest rather than outermost because that is the layer whose author
+    /// most recently chose to refuse this, and therefore the one whose logging
+    /// configuration decides whether the denial is reported at all.
+    /// # C: O(N_layers)
+    pub fn denied_layer(&self, request: AccessMask) -> Option<(usize, AccessMask, bool)> {
+        for i in (0..MAX_NUM_LAYERS).rev() {
+            let missing = self.layers[i] & request;
+            if missing != 0 { return Some((i, missing, self.quiet[i])); }
+        }
+        None
     }
 
     /// # C: O(N_layers)

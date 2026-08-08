@@ -22,11 +22,14 @@
 // - `symlink`: symlink body and inode builder.
 // - `special`: socket/FIFO/device special inode builders.
 // - `dir`: directory tree state and namespace inode ops.
+// - `page`: shmem page-index frame allocation, refault, and block charging.
+// - `quota`: the mount's quota classes, per-owner ceilings, and charge points.
 // - `fs`: mounted tmpfs filesystem and superblock ops.
 // - `params`: the tmpfs/ramfs mount-parameter tables mount options are admitted against.
 // - `fileattr`: `chattr` flag word (`i_op->fileattr_{get,set}`, Linux shmem).
 
 mod accounting;
+mod casefold;
 mod dir;
 mod falloc;
 mod file;
@@ -39,7 +42,9 @@ mod limits;
 mod mount_opts;
 mod migration;
 mod mapping;
+mod page;
 mod params;
+mod quota;
 mod reclaim;
 mod special;
 mod symlink;

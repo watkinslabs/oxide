@@ -130,6 +130,10 @@ pub(crate) fn parse_opts(data: &str, total_ram_pages: u64, cred: MountCred) -> K
         };
         parse_one(&mut o, key, val, total_ram_pages, cred)?;
     }
+    // Strictness is a property OF an encoding: asking for it without naming
+    // one describes nothing, and the reference fails the mount rather than
+    // mounting an instance that is strict about nothing.
+    if o.strict_encoding && o.casefold.is_none() { return Err(VfsError::Einval); }
     Ok(o)
 }
 
@@ -185,17 +189,24 @@ fn parse_one(o: &mut TmpfsOpts, key: &str, val: Option<&str>, total_ram_pages: u
             o.qlimits.grp_block = quota_limit(need_value(val)?, QUOTA_MAX_SPC_LIMIT)?,
         KEY_GRPQUOTA_INODE =>
             o.qlimits.grp_inode = quota_limit(need_value(val)?, QUOTA_MAX_INO_LIMIT)?,
-        // Case-insensitive lookup needs a Unicode case-folding table to
-        // compare names with, and there is none here. A kernel built without
-        // one refuses both spellings rather than mounting a filesystem whose
-        // names would compare case-SENSITIVELY under a `casefold` mount.
+        // `casefold` alone takes the kernel table's own Unicode version;
+        // `casefold=utf8-<version>` names one, and only that spelling — any
+        // other charset is a name this kernel has no table for. The version
+        // itself is checked when the instance declares the encoding, so a
+        // version newer than the table fails the mount rather than mounting
+        // an instance folding by a different table than it advertises.
         KEY_CASEFOLD => {
-            if let Some(v) = val {
-                if !v.starts_with(CASEFOLD_UTF8_PREFIX) { return Err(VfsError::Einval); }
-            }
-            return Err(VfsError::Einval);
+            let charset = match val {
+                None => alloc::string::String::from(CASEFOLD_LATEST),
+                Some(v) => {
+                    if !v.starts_with(CASEFOLD_UTF8_PREFIX) { return Err(VfsError::Einval); }
+                    alloc::string::String::from(v)
+                }
+            };
+            vfs::dentry::casefold::charset_ok(&charset)?;
+            o.casefold = Some(charset);
         }
-        KEY_STRICT_ENCODING => { need_flag(val)?; return Err(VfsError::Einval); }
+        KEY_STRICT_ENCODING => { need_flag(val)?; o.strict_encoding = true; }
         _ => {}
     }
     Ok(())

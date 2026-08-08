@@ -24,6 +24,7 @@ use crate::inode::InodeRef;
 use crate::superblock::SuperBlock;
 use crate::types::FileType;
 
+pub mod casefold;
 pub mod flags;
 mod constructors;
 mod lifecycle;
@@ -36,6 +37,7 @@ pub use lockref::{Lockref, LOCKREF_DEAD};
 pub use ops::*;
 pub use qstr::{QStr, DNAME_INLINE_LEN};
 
+use constructors::default_name_hash;
 use lifecycle::dentry_iput;
 
 /// Presence-bit set for `d_op` (Linux `d_set_d_op`): a `D_OP_*` bit per

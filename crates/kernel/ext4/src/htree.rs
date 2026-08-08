@@ -274,7 +274,7 @@ impl Mount {
         let new_buf = self.build_leaf_block(bs, usable, &ents[split..], dir_ino, gen)?;
 
         self.run_journaled(|m| {
-            let new_lblk = m.append_block(dir_ino, &new_buf)?;
+            let new_lblk = m.append_dir_block(dir_ino, &new_buf)?;
             m.write_file_block_meta(dir_node, leaf_lblk, &old_buf)?;
             let mut dx = m.read_file_block_meta(dir_node, dx_lblk)?;
             let count = u16::from_le_bytes([dx[count_off + 2], dx[count_off + 3]]) as usize;
@@ -367,7 +367,7 @@ impl Mount {
 
             self.run_journaled(|m| {
                 crate::csum::stamp_dx_tail(&self.sb, dir_ino, gen, &mut newnode, count_off);
-                let new_node_lblk = m.append_block(dir_ino, &newnode)?;
+                let new_node_lblk = m.append_dir_block(dir_ino, &newnode)?;
                 crate::csum::stamp_dx_tail(&self.sb, dir_ino, gen, &mut oldnode, count_off);
                 m.write_file_block_meta(dir_node, dx_lblk, &oldnode)?;
                 // Insert {boundary_hash, new_node_lblk} into the root, sorted.
@@ -417,7 +417,7 @@ impl Mount {
         node[node_count_off + 2..node_count_off + 4].copy_from_slice(&(root_count as u16).to_le_bytes());
 
         let node_lblk = self.run_journaled(|m| {
-            let node_lblk = m.append_block(dir_ino, &{
+            let node_lblk = m.append_dir_block(dir_ino, &{
                 let mut n = node.clone();
                 crate::csum::stamp_dx_tail(&self.sb, dir_ino, gen, &mut n, node_count_off);
                 n
@@ -487,7 +487,7 @@ impl Mount {
         root[0x22..0x24].copy_from_slice(&1u16.to_le_bytes());       // entry0.count
 
         self.run_journaled(|m| {
-            let leaf_lblk = m.append_block(dir_ino, &leaf)?;
+            let leaf_lblk = m.append_dir_block(dir_ino, &leaf)?;
             let mut r = root.clone();
             r[0x24..0x28].copy_from_slice(&leaf_lblk.to_le_bytes()); // entry0.block → leaf
             crate::csum::stamp_dx_tail(&self.sb, dir_ino, gen, &mut r, 0x20);

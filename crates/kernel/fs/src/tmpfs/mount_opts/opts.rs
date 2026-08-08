@@ -6,9 +6,9 @@
 // second way — the only value each can be given that this filesystem could act
 // on is the one that asks for nothing — so their resolved values are recorded
 // here for the option string they came from, not consulted at run time. The
-// quota classes and hard limits are validated to the same standard and carried
-// the same way; enforcing them needs per-owner accounting the block and inode
-// charge points do not yet carry.
+// quota classes and hard limits are honoured the FIRST way: `tmpfs::quota`
+// brings the named classes up on the mount's superblock and every block and
+// inode charge point consults the owner's ceilings.
 
 use vmm::mempolicy::MemPolicy;
 
@@ -109,6 +109,13 @@ pub(crate) struct TmpfsOpts {
     pub quota_types: u32,
     /// The four `*_hardlimit=` ceilings.
     pub qlimits: QuotaLimits,
+    /// `casefold` / `casefold=utf8-<version>`: the name encoding this instance
+    /// declares. `None` is a byte-exact instance.
+    pub casefold: Option<alloc::string::String>,
+    /// `strict_encoding`: a name the encoding cannot represent is refused
+    /// rather than stored as opaque bytes. Meaningless without an encoding,
+    /// and the mount says so.
+    pub strict_encoding: bool,
 }
 
 impl TmpfsOpts {

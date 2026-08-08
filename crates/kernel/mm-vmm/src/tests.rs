@@ -6,6 +6,7 @@
 mod address_space;
 mod legacy_layout;
 mod accounting;
+mod hugetlb_placement;
 mod vma_tree;
 
 use super::*;

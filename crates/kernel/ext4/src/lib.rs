@@ -61,6 +61,8 @@ pub mod xattr;
 
 pub mod journal;
 
+pub mod commit_timer;
+
 #[cfg(feature = "debug-fsync-latency")]
 mod fsync_latency;
 

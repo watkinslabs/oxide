@@ -20,7 +20,7 @@ use crate::jbd2::{
 };
 
 use crate::inode::{self, Inode};
-use crate::mount::{Mount, MountError, write_byte_range, read_byte_range_pub};
+use crate::mount::{Mount, MountError, read_byte_range_pub};
 use crate::superblock::INCOMPAT_RECOVER;
 
 impl Mount {
@@ -171,7 +171,9 @@ impl Mount {
     fn apply_staged_to_target(&self, staged: &[StagedBlock]) -> Result<(), MountError> {
         let bs = self.sb.block_size as u64;
         for s in staged {
-            write_byte_range(&*self.dev, s.target_lba * bs, &s.data)?;
+            // Checkpoint writes belong to the journal, not to whoever happened
+            // to dirty the block, so they carry the journal's priority too.
+            self.write_journal_byte_range(s.target_lba * bs, &s.data)?;
         }
         Ok(())
     }
@@ -225,7 +227,10 @@ impl<'m> ExtentLogReader<'m> {
     fn write_journal_block(&self, jblk: u32, data: &[u8]) -> Result<(), MountError> {
         let lba = self.map(jblk).ok_or(MountError::NotFound)?;
         let bs = self.mount.sb.block_size as u64;
-        write_byte_range(&*self.mount.dev, lba * bs, data)
+        // Journal traffic carries the mount's `journal_ioprio=`: it is the only
+        // way the option reaches the queue that orders these writes against
+        // everything else the device has in flight.
+        self.mount.write_journal_byte_range(lba * bs, data)
     }
 }
 

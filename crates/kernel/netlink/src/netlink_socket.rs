@@ -302,7 +302,7 @@ impl NetlinkSocket {
             (proto::NETLINK_ROUTE, rtnetlink::RTM_NEWLINK)
             | (proto::NETLINK_ROUTE, rtnetlink::RTM_SETLINK) => rtnetlink::handle_setlink_in(net_ns, hdr, msg),
             (proto::NETLINK_GENERIC, _) => genetlink::handle(msg, net_ns, self.genl_cred()),
-            (proto::NETLINK_AUDIT, _) => crate::audit::handle(hdr, msg),
+            (proto::NETLINK_AUDIT, _) => crate::audit::handle(self, hdr, msg),
             (proto::NETLINK_SOCK_DIAG, sock_diag::SOCK_DIAG_BY_FAMILY)
             | (proto::NETLINK_SOCK_DIAG, sock_diag::TCPDIAG_GETSOCK) =>
                 sock_diag::handle_in(net_ns, hdr, msg),
