@@ -3,10 +3,8 @@
 use alloc::sync::Arc;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, Ordering};
-
 use block::{BlockCompletion, BlockDevice, BlockError, BlockOp, BlockRequest, KResult};
-use vfs::{Inode, VfsError};
+use vfs::{Inode, InodeRef, VfsError};
 
 use super::inode::Ext4FileData;
 
@@ -14,13 +12,15 @@ struct Extent { logical: u64, physical: u64, blocks: u64 }
 const SWAP_PAGE_BYTES: u64 = hal::PAGE_SIZE_BYTES;
 const ZERO_BLOCKS: u32 = 0;
 
-/// Direct block-device view of an active ext4 swapfile. The final drop clears
-/// the file mutation pin after the PMM has removed the swap area.
+/// Direct block-device view of an active ext4 swapfile. Holding the inode is
+/// what keeps the swapfile claim alive: the final drop happens after the PMM
+/// has removed the swap area, and releases the claim then, so the file becomes
+/// truncatable and re-allocatable at exactly the moment nothing swaps to it.
 pub struct SwapFileDevice {
     device: Arc<dyn BlockDevice>,
     extents: Vec<Extent>,
     capacity: u64,
-    pin: Arc<AtomicBool>,
+    inode: InodeRef,
 }
 
 /// Stable identity plus the direct block-device view owned by one active
@@ -40,33 +40,37 @@ pub fn swapfile_name(inode: &Inode) -> Option<String> {
 }
 
 impl Drop for SwapFileDevice {
-    fn drop(&mut self) { self.pin.store(false, Ordering::Release); }
+    fn drop(&mut self) { self.inode.release_swapfile(); }
 }
 
 /// Build a direct-I/O backing only for a page-aligned regular file whose real
 /// ext4 extents cover every byte and contain no unwritten range. # C: O(extents)
-pub fn swapfile_backing(inode: &Inode) -> Result<SwapFileBacking, VfsError> {
+pub fn swapfile_backing(inode: &InodeRef) -> Result<SwapFileBacking, VfsError> {
     let file = inode.private::<Ext4FileData>().ok_or(VfsError::Einval)?;
     let size = inode.size();
     if size == 0 || size % SWAP_PAGE_BYTES != 0 { return Err(VfsError::Einval); }
-    file.begin_swap_activation()?;
+    // Claiming the inode is what makes every block-moving operation answer
+    // ETXTBSY from here on; a second activation of the same file loses it.
+    file.begin_swap_activation(inode)?;
     // mkswap normally used buffered write(2). Drain its data and journaled
     // metadata before reading the swap header through the raw device view;
     // after activation the direct backing, not the ext4 page cache, owns I/O.
     if file.frames.writeback().is_err() || file.st.mount.commit_batch().is_err() {
-        file.swap_active.store(false, Ordering::Release);
+        inode.release_swapfile();
         return Err(VfsError::Eio);
     }
-    match SwapFileDevice::new(file, size) {
-        Ok(device) => Ok(SwapFileBacking {
-            name: swapfile_name(inode).ok_or(VfsError::Einval)?, device: Arc::new(device),
-        }),
-        Err(error) => { file.swap_active.store(false, Ordering::Release); Err(error) }
+    let name = match swapfile_name(inode) {
+        Some(name) => name,
+        None => { inode.release_swapfile(); return Err(VfsError::Einval); }
+    };
+    match SwapFileDevice::new(inode.clone(), file, size) {
+        Ok(device) => Ok(SwapFileBacking { name, device: Arc::new(device) }),
+        Err(error) => { inode.release_swapfile(); Err(error) }
     }
 }
 
 impl SwapFileDevice {
-    fn new(file: &Ext4FileData, size: u64) -> Result<Self, VfsError> {
+    fn new(inode: InodeRef, file: &Ext4FileData, size: u64) -> Result<Self, VfsError> {
         let device = file.st.mount.dev.clone();
         let device_block = device.block_size() as u64;
         let fs_block = file.st.mount.sb.block_size.max(1) as u64;
@@ -90,7 +94,7 @@ impl SwapFileDevice {
             if expected >= file_blocks { break; }
         }
         if expected != file_blocks { return Err(VfsError::Einval); }
-        Ok(Self { device, extents, capacity: size / device_block, pin: file.swap_active.clone() })
+        Ok(Self { device, extents, capacity: size / device_block, inode })
     }
 
     fn extent_at(&self, block: u64) -> Option<&Extent> {
@@ -166,11 +170,14 @@ mod tests {
     const FIRST_WRITE_BLOCK: u64 = 1;
     const WRITE_BLOCK_COUNT: u32 = 3;
     const WRITE_BYTE: u8 = 0x5a;
-    const INITIAL_PIN: bool = true;
+    const SWAP_INO: u64 = 4242;
+    const SWAP_MODE: u16 = 0o600;
 
-    fn fixture() -> (Arc<MemDisk<TaskList>>, SwapFileDevice, Arc<AtomicBool>) {
+    fn fixture() -> (Arc<MemDisk<TaskList>>, SwapFileDevice, InodeRef) {
         let backing = MemDisk::<TaskList>::new(DEVICE_BLOCK_BYTES, DEVICE_BLOCK_COUNT);
-        let pin = Arc::new(AtomicBool::new(INITIAL_PIN));
+        let inode = vfs::InodeBuilder::new(SWAP_INO, vfs::mk_mode(vfs::FileType::Regular, SWAP_MODE),
+            vfs::default_inode_ops(), vfs::default_file_ops()).build();
+        inode.claim_swapfile().expect("a fresh inode is claimable");
         let device = SwapFileDevice {
             device: backing.clone(),
             extents: alloc::vec![
@@ -178,14 +185,14 @@ mod tests {
                 Extent { logical: FIRST_RUN_BLOCKS, physical: SECOND_PHYSICAL_RUN, blocks: SECOND_RUN_BLOCKS },
             ],
             capacity: FILE_BLOCK_COUNT,
-            pin: pin.clone(),
+            inode: inode.clone(),
         };
-        (backing, device, pin)
+        (backing, device, inode)
     }
 
     #[test]
     fn transfer_crosses_real_extent_boundary() {
-        let (backing, device, _pin) = fixture();
+        let (backing, device, _inode) = fixture();
         let bytes = WRITE_BLOCK_COUNT as usize * DEVICE_BLOCK_BYTES as usize;
         let mut request = BlockRequest::new_write(FIRST_WRITE_BLOCK, WRITE_BLOCK_COUNT, alloc::vec![WRITE_BYTE; bytes]);
         device.submit_sync(&mut request).unwrap();
@@ -202,7 +209,7 @@ mod tests {
 
     #[test]
     fn discard_crosses_real_extent_boundary() {
-        let (backing, device, _pin) = fixture();
+        let (backing, device, _inode) = fixture();
         let bytes = WRITE_BLOCK_COUNT as usize * DEVICE_BLOCK_BYTES as usize;
         let mut write = BlockRequest::new_write(FIRST_WRITE_BLOCK, WRITE_BLOCK_COUNT,
             alloc::vec![WRITE_BYTE; bytes]);
@@ -218,10 +225,12 @@ mod tests {
     }
 
     #[test]
-    fn final_device_drop_releases_mutation_pin() {
-        let (_backing, device, pin) = fixture();
-        assert!(pin.load(Ordering::Acquire));
+    fn final_device_drop_releases_the_inode_swapfile_claim() {
+        let (_backing, device, inode) = fixture();
+        assert!(inode.is_swapfile(), "an active area holds the claim");
+        assert!(inode.claim_swapfile().is_err(), "a second activation is refused while it stands");
         drop(device);
-        assert!(!pin.load(Ordering::Acquire));
+        assert!(!inode.is_swapfile(), "swapoff makes the file mutable again");
+        inode.claim_swapfile().expect("the file can be re-activated after swapoff");
     }
 }

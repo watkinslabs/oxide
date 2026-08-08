@@ -73,6 +73,14 @@ pub(crate) fn unlink_at(dirfd: i32, raw: &str) -> i64 {
             }
         }
     }
+    // Recall the delegations this removal invalidates, in the order the objects
+    // are affected: the parent directory loses a name, then the victim itself
+    // loses a link. After every permission gate above, before the backend drops
+    // the name.
+    if let Some(rv) = crate::deleg_break::break_deleg_for_mutation(&parent.inode) { return rv; }
+    if let Some(i) = victim.as_ref().and_then(|d| d.inode()) {
+        if let Some(rv) = crate::deleg_break::break_deleg_for_mutation(&i) { return rv; }
+    }
     let unix_addr = victim.as_ref()
         .and_then(|d| d.inode())
         .and_then(|i| if i.file_type() == vfs::FileType::Socket {

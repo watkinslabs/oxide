@@ -79,6 +79,12 @@ pub(crate) fn mknod_impl(dirfd: i32, raw: String, mode: u16, dev: u32) -> i64 {
             return -(e.as_i32() as i64);
         }
     }
+    // A new name changes the directory, so a directory delegation on the parent
+    // is recalled before the node appears. Placed after every permission gate
+    // above: a caller who may not create here must not be able to recall
+    // someone else's delegation, and before the backend call, because the
+    // holder's cached listing must be invalidated before it goes stale.
+    if let Some(rv) = crate::deleg_break::break_deleg_for_mutation(&parent.inode) { return rv; }
     let umask = sched::live::current()
         .map(|c| c.umask()).unwrap_or(0) as u16;
     // Thread the mount idmap + caller cred + umask so the new node gets the

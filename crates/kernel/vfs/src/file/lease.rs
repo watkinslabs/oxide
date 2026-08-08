@@ -14,10 +14,8 @@ use super::{File, SIGIO_HOOK};
 /// lease break or dnotify event delivers when the holder set no `F_SETSIG`.
 pub(crate) const SIGIO_DFL: i32 = 29;
 
-/// Lease type values (== record-lock `l_type`): read / write / unlock.
-const F_RDLCK: i32 = 0;
-const F_WRLCK: i32 = 1;
-pub(crate) const F_UNLCK: i32 = 2;
+pub(crate) use super::lease_policy::F_UNLCK;
+use super::lease_policy as policy;
 
 /// dnotify `DN_*` event bits (Linux fcntl UAPI) + the `DN_MULTISHOT` one-shot
 /// toggle. Re-exported for the dir-mutation emit call sites.
@@ -87,55 +85,71 @@ pub fn lease_registered() -> usize {
     l.len()
 }
 
-/// Does a holder's lease `ty` conflict with a new open? A read lease (`F_RDLCK`)
-/// is broken only by a write/truncate open; a write lease (`F_WRLCK`) is broken
-/// by ANY open (Linux `__break_lease`: `want_write ? FL_UNLOCK_REQUIRED :
-/// FL_DOWNGRADE_REQUIRED`). # C: O(1)
-fn lease_conflicts(ty: i32, breaker_writes: bool) -> bool {
-    match ty { F_WRLCK => true, F_RDLCK => breaker_writes, _ => false }
-}
-
-/// True iff some OTHER description holds a lease on `inode` that conflicts with
-/// the pending open (`breaker_writes` = the opener wants write/O_TRUNC). Reads
-/// the fast-path counter first — zero leases anywhere ⇒ instant `false`, the
-/// boot/no-lease open cost. # C: O(1) common, O(N) when a lease exists
-pub fn lease_conflict(inode: &InodeRef, breaker_writes: bool) -> bool {
+/// True iff some description holds a lease on `inode` that a breaker of
+/// `breaker_flavour` (a lease break from a conflicting open, or a delegation
+/// break from a mutation) must clear. `breaker_writes` says the breaker wants
+/// the file gone from the holder entirely rather than downgraded.
+///
+/// Reads the fast-path counter first — zero leases anywhere ⇒ instant `false`,
+/// the boot/no-lease cost. # C: O(1) common, O(N) when a lease exists
+pub fn lease_conflict(inode: &InodeRef, breaker_flavour: i32, breaker_writes: bool) -> bool {
     if LEASE_COUNT.load(Ordering::Acquire) == 0 { return false; }
     let l = LEASE_HOLDERS.lock();
     l.iter().filter_map(|w| w.upgrade())
-        .any(|f| Arc::ptr_eq(&f.inode, inode) && lease_conflicts(f.lease(), breaker_writes))
+        .any(|f| Arc::ptr_eq(&f.inode, inode)
+                 && policy::conflicts(f.lease_word(), breaker_flavour, breaker_writes))
 }
 
-/// Signal every conflicting lease holder on `inode` (Linux `__break_lease` →
-/// `lease->fl_lmops->lm_break` → `kill_fasync`/`send_sigio`). The holder gets
-/// its `F_SETSIG` signal or the default `SIGIO`, routed to its `f_owner` via the
-/// installed SIGIO hook. Snapshots under the lock, delivers with it dropped.
-/// Caller invokes once when a conflict is first detected. # C: O(N) leased fds
-pub fn lease_break_signal(inode: &InodeRef, breaker_writes: bool) {
+/// Would adding a lease of `ty` on `file` collide with another description's
+/// lease on the same file? An exclusive lease demands sole tenancy, and no
+/// lease may be added while a break is outstanding. # C: O(N) leased fds
+pub fn add_lease_conflict(file: &Arc<File>, ty: i32) -> bool {
+    if LEASE_COUNT.load(Ordering::Acquire) == 0 { return false; }
+    let p = Arc::as_ptr(file);
+    let l = LEASE_HOLDERS.lock();
+    l.iter().filter_map(|w| w.upgrade())
+        .filter(|f| Arc::as_ptr(f) != p && Arc::ptr_eq(&f.inode, &file.inode))
+        .any(|f| policy::add_lease_conflicts_with_holder(ty, f.lease_word()))
+}
+
+/// Signal every conflicting lease holder on `inode`: the holder gets its
+/// `F_SETSIG` signal or the default `SIGIO`, routed to its `f_owner` via the
+/// installed SIGIO hook. Marks each holder's lease as breaking FIRST, so a
+/// holder is told once per break rather than once per conflicting event — a
+/// stream of mutations against one delegation delivers one signal, not one per
+/// mutation. Snapshots under the lock, delivers with it dropped.
+/// # C: O(N) leased fds
+pub fn lease_break_signal(inode: &InodeRef, breaker_flavour: i32, breaker_writes: bool) {
     if LEASE_COUNT.load(Ordering::Acquire) == 0 { return; }
     let snapshot: Vec<Arc<File>> = {
         let l = LEASE_HOLDERS.lock();
         l.iter().filter_map(|w| w.upgrade())
-            .filter(|f| Arc::ptr_eq(&f.inode, inode) && lease_conflicts(f.lease(), breaker_writes))
+            .filter(|f| Arc::ptr_eq(&f.inode, inode)
+                        && policy::conflicts(f.lease_word(), breaker_flavour, breaker_writes))
+            .filter(|f| match policy::mark_breaking(f.lease_word(), breaker_writes) {
+                Some(w) => { f.set_lease_word(w); true }
+                None    => false,
+            })
             .collect()
     };
     for f in snapshot { f.notify_lease_break(); }
 }
 
-/// Force-break (Linux `lease_break_time` elapsed → `lease_modify(F_UNLCK)`):
-/// drop every conflicting lease on `inode` and unregister it, so a holder that
-/// never voluntarily released no longer blocks the opener. # C: O(N) leased fds
-pub fn lease_force_break(inode: &InodeRef, breaker_writes: bool) {
+/// Force-break once the break time has elapsed: drop every conflicting lease on
+/// `inode` and unregister it, so a holder that never voluntarily released no
+/// longer blocks the breaker. # C: O(N) leased fds
+pub fn lease_force_break(inode: &InodeRef, breaker_flavour: i32, breaker_writes: bool) {
     if LEASE_COUNT.load(Ordering::Acquire) == 0 { return; }
     let mut l = LEASE_HOLDERS.lock();
     for w in l.iter() {
         if let Some(f) = w.upgrade() {
-            if Arc::ptr_eq(&f.inode, inode) && lease_conflicts(f.lease(), breaker_writes) {
-                f.set_lease(F_UNLCK);
+            if Arc::ptr_eq(&f.inode, inode)
+                && policy::conflicts(f.lease_word(), breaker_flavour, breaker_writes) {
+                f.set_lease_word(policy::unleased());
             }
         }
     }
-    l.retain(|w| w.upgrade().is_some_and(|f| f.lease() != F_UNLCK));
+    l.retain(|w| w.upgrade().is_some_and(|f| policy::held(f.lease_word())));
     LEASE_COUNT.store(l.len(), Ordering::Release);
 }
 
@@ -195,15 +209,32 @@ pub fn dnotify_emit(dir_inode: &InodeRef, events: u32) {
 }
 
 impl File {
-    /// `F_SETLEASE` (Linux `do_fcntl_add_lease`): record the lease type held on
-    /// this description — `F_RDLCK`(0) / `F_WRLCK`(1) read/write lease, or
-    /// `F_UNLCK`(2) to drop it. Storage only; the conflicting-open break path is
-    /// the lease-manager follow-up. # C: O(1)
-    pub fn set_lease(&self, ty: i32) { self.lease.store(ty, Ordering::Release); }
+    /// Record a lease of `flavour` and type `ty` on this description —
+    /// `F_RDLCK`(0) / `F_WRLCK`(1), or `F_UNLCK`(2) to drop it. Clears any
+    /// pending break state, because a holder that answers the break is no
+    /// longer being broken. # C: O(1)
+    pub fn set_lease_of(&self, flavour: i32, ty: i32) {
+        self.set_lease_word(policy::pack(flavour, ty));
+    }
 
-    /// `F_GETLEASE` (Linux `fcntl_getlease`): the lease type held — `F_RDLCK`/
-    /// `F_WRLCK`, or `F_UNLCK` when none. # C: O(1)
-    pub fn lease(&self) -> i32 { self.lease.load(Ordering::Acquire) }
+    /// The whole packed lease word: flavour, type and pending-break state.
+    /// # C: O(1)
+    pub fn lease_word(&self) -> i32 { self.lease.load(Ordering::Acquire) }
+
+    /// Install a whole packed lease word. # C: O(1)
+    pub fn set_lease_word(&self, word: i32) { self.lease.store(word, Ordering::Release); }
+
+    /// The lease type a get-lease query of `query_flavour` reports: `F_RDLCK` /
+    /// `F_WRLCK` for a matching held lease (or what an outstanding break is
+    /// turning it into), `F_UNLCK` when this description holds no lease of that
+    /// flavour. A delegation is invisible to a plain-lease query and vice
+    /// versa. # C: O(1)
+    pub fn lease_of(&self, query_flavour: i32) -> i32 {
+        policy::getlease_report(self.lease_word(), query_flavour)
+    }
+
+    /// True while this description holds a lease of any flavour. # C: O(1)
+    pub fn lease_held(&self) -> bool { policy::held(self.lease_word()) }
 
     /// `F_NOTIFY` (Linux `fcntl_dirnotify`): set the dnotify `DN_*` watch mask
     /// on this directory fd (`0` clears). Storage only; the dir-mutation event

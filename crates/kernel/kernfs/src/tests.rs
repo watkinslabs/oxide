@@ -1,3 +1,7 @@
+// Child module manifest: `fileattr` owns the per-filesystem
+// `i_op->fileattr_{get,set}` default (pseudo tree vs shmem-backed tree).
+mod fileattr;
+
 use alloc::string::String;
 use alloc::sync::Arc;
 

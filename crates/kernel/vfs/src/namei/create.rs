@@ -30,6 +30,11 @@ pub fn vfs_create_at(dir: &VfsPath, name: &str, mode: u32, ctx: &CreateCtx<'_>)
     -> KResult<(InodeRef, Arc<Dentry>)>
 {
     may_create(&dir.inode, ctx.cred)?;
+    // A new name changes the directory, so a delegation holder's cached listing
+    // must be recalled before the object appears. After the permission gate: a
+    // caller who may not create here must not be able to recall someone else's
+    // delegation. One place, so every in-kernel creator does it.
+    crate::file::break_deleg(&dir.inode)?;
     // The parent's `i_rwsem` is held EXCLUSIVE across the backend create, so a
     // second creator of the same name sees the first one's entry.
     let inode = { let _g = dir.inode.inode_lock(); dir.inode.create_child(name, mode, ctx)? };

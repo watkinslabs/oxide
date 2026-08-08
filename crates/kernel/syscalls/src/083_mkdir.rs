@@ -81,6 +81,9 @@ pub fn sys_mkdir(args: &SyscallArgs) -> i64 {
     }
     // Thread the mount idmap + caller cred + umask so the new dir gets the right
     // owner (Linux `->mkdir(struct mnt_idmap *, ...)`).
+    // A new name changes the parent directory: recall any delegation on it
+    // before the subdirectory appears, after every permission gate above.
+    if let Some(rv) = crate::deleg_break::break_deleg_for_mutation(&parent.inode) { return rv; }
     let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: umask as u16 };
     // D29: hold the parent dir's `i_rwsem` EXCLUSIVE across the backend mkdir
     // (Linux `filename_create` → `->mkdir`). Scope is just the op; the rank-40

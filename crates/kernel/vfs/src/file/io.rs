@@ -148,70 +148,15 @@ impl File {
     /// `write(2)` — advances the cursor by the byte count returned by
     /// the inode's `write`. Rejects read-only opens with `Ebadf`.
     /// `O_APPEND` snaps the offset to the current size before writing.
-    /// # C: depends on inode impl
+    ///
+    /// One ladder, in `write_iocb`: this is the same call with the
+    /// description's own `O_APPEND` and no per-operation modifiers. Inlined for
+    /// the same reason `pwrite` is — a real frame on every write costs stack on
+    /// the deepest aarch64 syscall chain. # C: depends on inode impl
+    #[inline]
     pub fn write(&self, buf: &[u8]) -> KResult<usize> {
-        #[cfg(feature = "debug-zram-lifecycle")]
-        klog::write_raw(b"[ZRAM-TEST] vfs-write-enter\n");
-        let f = self.flags();
-        // Gate on the canonical `f_mode` capability (Linux `FMODE_WRITE`):
-        // O_RDONLY and O_PATH both lack FMODE_WRITE → EBADF.
-        if !self.f_mode.contains(Fmode::WRITE) {
-            return Err(VfsError::Ebadf);
-        }
-        if self.mnt_readonly() {
-            #[cfg(feature = "debug-mnt")]
-            self.trace_write_erofs(b"write");
-            return Err(VfsError::Erofs);
-        }
-        // D27: admit as a sb-freeze in-flight writer (Linux `file_start_write`).
-        // Frozen sb sleeps until thaw; guard's Drop runs `sb_end_write` on every
-        // return/error path below.
-        let _sbw = self.file_start_write()?;
-        #[cfg(feature = "debug-zram-lifecycle")]
-        klog::write_raw(b"[ZRAM-TEST] vfs-write-sb\n");
-        // FMODE_ATOMIC_POS: hold `f_pos_lock` across the offset pick (incl.
-        // the O_APPEND size read) -> I/O -> pos-update so a shared fd can't
-        // interleave the cursor (Linux `__fdget_pos`). `None` for
-        // non-seekable files. This serializes only THIS description's `pos`.
-        let pos_guard = if self.atomic_pos() { Some(self.f_pos_lock.lock()) } else { None };
-        #[cfg(feature = "debug-zram-lifecycle")]
-        klog::write_raw(b"[ZRAM-TEST] vfs-write-pos\n");
-        // D37: O_APPEND cross-writer atomicity — hold the inode's `i_rwsem`
-        // EXCLUSIVE across size-read -> write -> pos so two DIFFERENT open file
-        // descriptions appending to the SAME inode are mutually atomic (Linux
-        // `file_start_write` + the i_size append path's inode lock), not merely
-        // per-description-serialized by `f_pos_lock`. Acquired AFTER `f_pos_lock`
-        // (rank 35) — `i_rwsem` is rank 40, so the order is ascending. Gated on
-        // `atomic_pos` (regular/dir) so the spin-rwsem is never held across a
-        // parking pipe/socket write.
-        let is_append = f.contains(OpenFlags::O_APPEND);
-        let append_guard = if is_append && self.atomic_pos() { Some(self.inode.inode_lock()) } else { None };
-        #[cfg(feature = "debug-zram-lifecycle")]
-        klog::write_raw(b"[ZRAM-TEST] vfs-write-append\n");
-        let off = if is_append {
-            self.inode.size()
-        } else {
-            self.pos.load(Ordering::Acquire)
-        };
-        let buf = &buf[..self.write_limit(off, buf.len())?];
-        // D2: dispatch through the cached `file->f_op` (snapshotted at open).
-        let n = if f.contains(OpenFlags::O_NONBLOCK) {
-            self.f_op.write_nonblock_file(self, off, buf)?
-        } else {
-            self.f_op.write_file(self, off, buf)?
-        };
-        #[cfg(feature = "debug-zram-lifecycle")]
-        klog::write_raw(b"[ZRAM-TEST] vfs-write-fop\n");
-        self.pos.store(off + n as u64, Ordering::Release);
-        drop(append_guard); // release i_rwsem (rank 40) before f_pos_lock (rank 35)
-        drop(pos_guard); // release before the (possibly lock-taking) inotify hook
-        // inotify IN_MODIFY hook (no-op when nothing installed).
-        if n > 0 {
-            self.file_update_time();
-            fire_write_hook(&self.inode, &self.dentry);
-            self.generic_write_sync(off + n as u64, n, crate::file::SyncMode::default())?; // `generic_write_sync`
-        }
-        Ok(n)
+        let append = self.flags().contains(OpenFlags::O_APPEND);
+        self.write_iocb(buf, super::iocb::WriteIocb { append, nowait: false, more: false })
     }
 
     /// `file_update_time` — after a modifying write, stamp
@@ -364,7 +309,7 @@ impl File {
         // description's own `O_APPEND` and no per-operation modifiers. A second
         // copy of the gate order here is exactly how the two drifted apart.
         let append = self.flags().contains(OpenFlags::O_APPEND);
-        self.pwrite_iocb(buf, off, super::iocb::WriteIocb { append, nowait: false })
+        self.pwrite_iocb(buf, off, super::iocb::WriteIocb { append, nowait: false, more: false })
     }
 
     /// `readv(2)` core (Linux `vfs_readv` -> `do_iter_read`): aggregate the

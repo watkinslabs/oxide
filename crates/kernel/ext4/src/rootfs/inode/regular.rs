@@ -90,7 +90,7 @@ impl InodeOps for Ext4RegInodeOps {
 
     fn truncate(&self, inode: &Inode, len: u64) -> KResult<()> {
         let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
-        let _mutation = d.begin_swap_mutation()?;
+        let _mutation = d.begin_swap_mutation(inode)?;
         d.st.mount.truncate_inode(d.ino, len).map_err(|e| fs_err(&d.st, e))?;
         d.st.page_cache.invalidate(InodeId(d.ino as u64));
         d.frames.invalidate_range(len & !(4095u64), u64::MAX);
@@ -291,7 +291,7 @@ impl FileOps for Ext4RegFileOps {
 
     fn write(&self, inode: &Inode, off: u64, buf: &[u8]) -> KResult<usize> {
         let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
-        let _mutation = d.begin_swap_mutation()?;
+        let _mutation = d.begin_swap_mutation(inode)?;
         // Linux buffered write: land the bytes in the page cache (dirty) and
         // return; disk I/O is deferred to writeback (fsync/msync/sync/drop).
         // Without the frame cache there is nowhere to buffer, so fall back to
@@ -439,7 +439,6 @@ pub(crate) fn build_file_inode(st: Arc<RootfsState>, ino: u32, mode: u16, size: 
 {
     let frames = super::super::framecache::Ext4FrameStore::new(st.clone(), ino, size);
     let data = Arc::new(Ext4FileData { st, ino, size_hint: AtomicU64::new(size), frames,
-        swap_active: Arc::new(core::sync::atomic::AtomicBool::new(false)),
         swap_mutations: Arc::new(AtomicU64::new(0)) });
     let mapping: Arc<dyn AddressSpaceOps> = Arc::new(Ext4FileMapping { data: data.clone() });
     let weak_sb = data.st.sb.lock().clone();

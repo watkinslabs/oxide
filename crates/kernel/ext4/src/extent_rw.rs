@@ -14,6 +14,8 @@
 // - limits: bounded writeback-cluster sizing shared with the frame cache.
 // - truncate: extent-tree truncation, subtree freeing, and i_blocks accounting.
 // - nlink: link-count mutation helper.
+// - punch: fallocate PUNCH_HOLE block removal and extent-tree rebuild.
+// - shift: fallocate COLLAPSE_RANGE / INSERT_RANGE logical-block re-indexing.
 
 mod append;
 mod collect;
@@ -23,6 +25,7 @@ mod insert;
 mod nlink;
 mod punch;
 mod records;
+mod shift;
 mod truncate;
 mod write;
 mod limits;

@@ -7,8 +7,9 @@
 
 use alloc::vec;
 
-use vfs::{File, KResult, VfsError};
+use vfs::{File, KResult, VfsError, WriteIocb};
 
+use super::flags::more_hint;
 use crate::pipe::{self, PipeData};
 
 /// Staging window for one batch. Deliberately heap, not stack: a page-sized
@@ -56,19 +57,32 @@ pub fn file_to_pipe(in_file: &File, pos: &mut u64, use_pos: bool,
 /// The pipe bytes are PEEKED and only consumed by the count the file write
 /// accepted, mirroring Linux's release-the-buffer-after-the-write ordering: a
 /// short or failing write must not swallow queued data. `Ok(0)` means the input
-/// pipe reached EOF (all writers closed). # C: O(bytes)
+/// pipe reached EOF (all writers closed).
+///
+/// `user_more` is the caller's `SPLICE_F_MORE`; the hint actually handed to the
+/// output is [`more_hint`]'s, which also covers the batch that is followed by
+/// another batch of this same call. A segment-forming output coalesces on it;
+/// every other output ignores it. # C: O(bytes)
 pub fn pipe_to_file(inp: &PipeData, in_file: &File, out_file: &File,
-                    pos: &mut u64, use_pos: bool, len: usize, nonblock: bool)
+                    pos: &mut u64, use_pos: bool, len: usize, nonblock: bool,
+                    user_more: bool)
     -> KResult<usize>
 {
     if len == 0 { return Ok(0); }
     if !pipe::ipipe_prep(inp, nonblock)? { return Ok(0); } // EOF
-    let want = len.min(pipe::queued(inp)).min(STAGE);
+    let queued = pipe::queued(inp);
+    let want = len.min(queued).min(STAGE);
     if want == 0 { return Ok(0); }
     let mut buf = vec![0u8; want];
     let n = pipe::peek(inp, &mut buf);
     if n == 0 { return Ok(0); }
-    let w = match if use_pos { out_file.pwrite(&buf[..n], *pos as i64) } else { out_file.write(&buf[..n]) } {
+    // `append` is false unconditionally: an `O_APPEND` splice output is
+    // rejected by the admission ladder before any batch runs, so there is no
+    // description here whose own flag could apply.
+    let iocb = WriteIocb { append: false, nowait: false,
+                           more: more_hint(user_more, len, n, queued) };
+    let w = match if use_pos { out_file.pwrite_iocb(&buf[..n], *pos as i64, iocb) }
+                  else { out_file.write_iocb(&buf[..n], iocb) } {
         Ok(w)  => w,
         Err(e) => return Err(e),
     };
@@ -96,6 +110,10 @@ pub fn pipe_to_pipe(inp: &PipeData, in_file: &File, out: &PipeData, out_file: &F
     }
     Ok(n)
 }
+
+#[cfg(test)]
+#[path = "pipe_xfer_tests.rs"]
+mod tests;
 
 /// Map a `VfsError` to the negative errno the syscall returns, collapsing
 /// `ERESTARTSYS` the way the signal-restart layer expects. # C: O(1)

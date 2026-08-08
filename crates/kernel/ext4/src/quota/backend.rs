@@ -1,12 +1,15 @@
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use sync::Spinlock;
 
 use crate::inode::Inode;
 use crate::mount::{Mount, MountError};
 use crate::rootfs::RootfsState;
 
+use super::blocks::journaled;
+// Quota-file byte I/O lives in `blocks`; re-exported so the qtree modules keep
+// one import surface for the quota-file primitives.
+pub(super) use super::blocks::{read_file_bytes, read_qblk, write_file_bytes, write_qblk, write_qinfo};
 use super::cleanup::clear_visible_quota_file;
 use super::delete::delete_dquot;
 use super::format::entry_size;
@@ -109,7 +112,7 @@ impl Ext4QuotaOps {
     fn rollback_released_dquot(&self, ino: u32, mut qi: Qinfo, info: vfs::MemDqinfo, dq: &vfs::Dquot) -> vfs::KResult<u64> {
         let rb_inode = read_quota_inode(&self.st.mount, ino)?;
         let off = insert_dquot(&self.st.mount, ino, &rb_inode, &mut qi, dq.id())?;
-        write_existing_dquot(&self.st.mount, &rb_inode, off, dq.id().id, dq.dqblk(), self.file_fmt(dq.id().kind)?)?;
+        write_existing_dquot(&self.st.mount, ino, &rb_inode, off, dq.id().id, dq.dqblk(), self.file_fmt(dq.id().kind)?)?;
         write_qinfo(&self.st.mount, ino, &rb_inode, &qi, info)?;
         Ok(off)
     }
@@ -156,6 +159,7 @@ impl vfs::DquotOperations for Ext4QuotaOps {
     }
 
     fn write_dquot(&self, dq: &vfs::Dquot) -> vfs::KResult<()> {
+        journaled(&self.st.mount, || {
         let ino = self.file_ino(dq.id().kind)?;
         let fmt = self.file_fmt(dq.id().kind)?;
         let inode = read_quota_inode(&self.st.mount, ino)?;
@@ -176,7 +180,7 @@ impl vfs::DquotOperations for Ext4QuotaOps {
             }
         };
         let inode = read_quota_inode(&self.st.mount, ino)?;
-        if let Err(e) = write_existing_dquot(&self.st.mount, &inode, off, dq.id().id, dq.dqblk(), fmt) {
+        if let Err(e) = write_existing_dquot(&self.st.mount, ino, &inode, off, dq.id().id, dq.dqblk(), fmt) {
             if let Some((qi, info)) = inserted {
                 self.offsets.lock().remove(&dq.id());
                 if let Err(rb) = self.rollback_inserted_dquot(ino, qi, info, dq.id(), off) { return Err(rb); }
@@ -185,14 +189,17 @@ impl vfs::DquotOperations for Ext4QuotaOps {
         }
         if inserted.is_some() { self.offsets.lock().insert(dq.id(), off); }
         Ok(())
+        })
     }
 
     fn write_info(&self, kind: vfs::QuotaType, info: vfs::MemDqinfo) -> vfs::KResult<()> {
+        journaled(&self.st.mount, || {
         let ino = self.file_ino(kind)?;
         let fmt = self.file_fmt(kind)?;
         let inode = read_quota_inode(&self.st.mount, ino)?;
         let qi = read_info(&self.st.mount, &inode, kind, fmt)?;
         write_qinfo(&self.st.mount, ino, &inode, &qi, info)
+        })
     }
 
     fn file_stat(&self, kind: vfs::QuotaType) -> vfs::KResult<vfs::QuotaFileStat> {
@@ -208,6 +215,7 @@ impl vfs::DquotOperations for Ext4QuotaOps {
 
     fn release_dquot(&self, dq: &vfs::Dquot) -> vfs::KResult<()> {
         if !releasable_fake(dq) { return Ok(()); }
+        journaled(&self.st.mount, || {
         let off = match self.offsets.lock().get(&dq.id()).copied() {
             Some(o) => o,
             None => return Ok(()),
@@ -232,6 +240,7 @@ impl vfs::DquotOperations for Ext4QuotaOps {
         }
         self.offsets.lock().remove(&dq.id());
         Ok(())
+        })
     }
 
     fn get_next_id(&self, qid: vfs::Kqid) -> vfs::KResult<Option<vfs::Kqid>> {
@@ -280,22 +289,6 @@ pub(super) fn map_mount(e: MountError) -> vfs::VfsError {
     }
 }
 
-pub(super) fn read_file_bytes(m: &Mount, inode: &Inode, off: u64, len: usize) -> vfs::KResult<Vec<u8>> {
-    if off >= inode.size { return Ok(alloc::vec![0u8; len]); }
-    let mut out = Vec::with_capacity(len);
-    let bs = m.sb.block_size as u64;
-    let mut pos = off;
-    while out.len() < len {
-        let file_blk = (pos / bs) as u32;
-        let blk = m.read_file_block(inode, file_blk).map_err(map_mount)?;
-        let in_blk = (pos % bs) as usize;
-        let take = core::cmp::min(len - out.len(), blk.len() - in_blk);
-        out.extend_from_slice(&blk[in_blk..in_blk + take]);
-        pos += take as u64;
-    }
-    Ok(out)
-}
-
 pub(super) fn read_info(m: &Mount, inode: &Inode, kind: vfs::QuotaType, fmt: u32) -> vfs::KResult<Qinfo> {
     let hdr = read_file_bytes(m, inode, 0, 8)?;
     if le32(&hdr, 0) != magic(kind) { return Err(vfs::VfsError::Einval); }
@@ -337,81 +330,6 @@ pub(super) fn read_file_info(m: &Mount, inode: &Inode) -> vfs::KResult<vfs::MemD
         dqi_flags: 0,
         dqi_valid: vfs::IIF_BGRACE | vfs::IIF_IGRACE | vfs::IIF_FLAGS,
     })
-}
-
-pub(super) fn read_qblk(m: &Mount, inode: &Inode, blk: u32) -> vfs::KResult<Vec<u8>> {
-    read_file_bytes(m, inode, (blk as u64) << QBLK_BITS, QBLK_SIZE)
-}
-
-pub(super) fn write_qblk(m: &Mount, ino: u32, inode: &Inode, blk: u32, buf: &[u8]) -> vfs::KResult<()> {
-    if buf.len() != QBLK_SIZE { return Err(vfs::VfsError::Einval); }
-    #[cfg(not(target_os = "oxide-kernel"))]
-    if m.faults.next_quota_qblk_write.swap(false, core::sync::atomic::Ordering::AcqRel) { return Err(vfs::VfsError::Eio); }
-    #[cfg(not(target_os = "oxide-kernel"))]
-    {
-        let n = m.faults.quota_qblk_write_after.load(core::sync::atomic::Ordering::Acquire);
-        if n != 0 {
-            if n == 1 {
-                m.faults.quota_qblk_write_after.store(0, core::sync::atomic::Ordering::Release);
-                return Err(vfs::VfsError::Eio);
-            }
-            let _ = m.faults.quota_qblk_write_after.compare_exchange(
-                n, n - 1,
-                core::sync::atomic::Ordering::AcqRel,
-                core::sync::atomic::Ordering::Acquire,
-            );
-        }
-    }
-    write_file_bytes(m, ino, inode, (blk as u64) << QBLK_BITS, buf)
-}
-
-pub(super) fn write_file_bytes(m: &Mount, ino: u32, inode: &Inode, off: u64, data: &[u8]) -> vfs::KResult<()> {
-    let end = off.checked_add(data.len() as u64).ok_or(vfs::VfsError::Efbig)?;
-    if end > inode.size {
-        return m.write_at(ino, off, data).map_err(map_mount);
-    }
-    let bs = m.sb.block_size as u64;
-    let mut pos = off;
-    let mut done = 0usize;
-    while done < data.len() {
-        let file_blk = (pos / bs) as u32;
-        let mut blk = m.read_file_block(inode, file_blk).map_err(map_mount)?;
-        let in_blk = (pos % bs) as usize;
-        let take = core::cmp::min(data.len() - done, blk.len() - in_blk);
-        blk[in_blk..in_blk + take].copy_from_slice(&data[done..done + take]);
-        m.write_file_block(inode, file_blk, &blk).map_err(map_mount)?;
-        pos += take as u64;
-        done += take;
-    }
-    Ok(())
-}
-
-pub(super) fn write_qinfo(m: &Mount, ino: u32, inode: &Inode, qi: &Qinfo, info: vfs::MemDqinfo) -> vfs::KResult<()> {
-    #[cfg(not(target_os = "oxide-kernel"))]
-    if m.faults.next_quota_info_write.swap(false, core::sync::atomic::Ordering::AcqRel) { return Err(vfs::VfsError::Eio); }
-    #[cfg(not(target_os = "oxide-kernel"))]
-    {
-        let n = m.faults.quota_info_write_after.load(core::sync::atomic::Ordering::Acquire);
-        if n != 0 {
-            if n == 1 {
-                m.faults.quota_info_write_after.store(0, core::sync::atomic::Ordering::Release);
-                return Err(vfs::VfsError::Eio);
-            }
-            let _ = m.faults.quota_info_write_after.compare_exchange(
-                n, n - 1,
-                core::sync::atomic::Ordering::AcqRel,
-                core::sync::atomic::Ordering::Acquire,
-            );
-        }
-    }
-    let mut buf = [0u8; 24];
-    buf[0..4].copy_from_slice(&(info.dqi_bgrace as u32).to_le_bytes());
-    buf[4..8].copy_from_slice(&(info.dqi_igrace as u32).to_le_bytes());
-    buf[8..12].copy_from_slice(&0u32.to_le_bytes());
-    buf[12..16].copy_from_slice(&qi.blocks.to_le_bytes());
-    buf[16..20].copy_from_slice(&qi.free_blk.to_le_bytes());
-    buf[20..24].copy_from_slice(&qi.free_entry.to_le_bytes());
-    write_file_bytes(m, ino, inode, V2_DQINFOOFF, &buf)
 }
 
 fn releasable_fake(dq: &vfs::Dquot) -> bool {

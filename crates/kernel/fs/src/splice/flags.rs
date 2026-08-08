@@ -80,6 +80,23 @@ pub fn splice_case(i: &SpliceIn) -> Result<SpliceCase, Errno> {
     Err(Errno::Einval)
 }
 
+/// The MORE-DATA hint one pipe→output batch carries.
+///
+/// Two independent reasons, ORed, and BOTH are part of the contract:
+/// 1. the caller set `SPLICE_F_MORE`, which holds for every batch of the call;
+/// 2. this batch did not exhaust the request (`seg < req`) AND the pipe still
+///    holds bytes past the batch (`queued > seg`) — so another batch is going
+///    out of this same call and the segment about to be written is not the last
+///    one. Deriving (2) is what stops a multi-batch splice from emitting one
+///    short segment per batch even when the caller passed no flag at all.
+///
+/// `seg` is the byte count this batch will hand the output, `req` the bytes
+/// still wanted by the call, `queued` the bytes currently in the input pipe.
+/// # C: O(1)
+pub fn more_hint(user_more: bool, req: usize, seg: usize, queued: usize) -> bool {
+    user_more || (seg < req && queued > seg)
+}
+
 /// `tee(2)` admission. The FMODE pair is checked
 /// BEFORE the pipe test, and "not a pipe" / "same pipe" share one EINVAL. # C: O(1)
 pub fn tee_admit(in_is_pipe: bool, out_is_pipe: bool, same_pipe: bool,
@@ -205,6 +222,60 @@ mod tests {
         assert_eq!(tee_admit(false, false, false, false, true), Err(Errno::Ebadf),
             "EBADF precedes the pipe test");
         assert_eq!(tee_admit(true, true, false, true, false), Err(Errno::Ebadf));
+    }
+
+    /// `SPLICE_F_MORE` from the caller marks EVERY batch, whatever the batch
+    /// and pipe sizes say — the caller is promising data beyond this whole
+    /// call, which no amount of local emptiness can contradict. # C: O(1)
+    #[test]
+    fn user_more_marks_every_batch() {
+        // Last batch: exhausts the request and drains the pipe.
+        assert!(more_hint(true, 100, 100, 100));
+        // Not even a full batch's worth left.
+        assert!(more_hint(true, 4096, 10, 10));
+        assert!(more_hint(true, 0, 0, 0));
+    }
+
+    /// Without the caller's flag the hint is DERIVED, and needs both halves:
+    /// the batch left request bytes unfilled AND the pipe still holds bytes
+    /// past this batch. Either half alone means this segment is the last one
+    /// this call will produce, so it must go out unhinted or the output sits
+    /// on it. # C: O(1)
+    #[test]
+    fn derived_more_needs_request_and_pipe_remainder() {
+        // Both halves: 4096-byte batch out of a 8192 request, 8192 queued.
+        assert!(more_hint(false, 8192, 4096, 8192));
+        // Request satisfied by this batch — nothing more is coming from here,
+        // even though the pipe holds more than the batch.
+        assert!(!more_hint(false, 4096, 4096, 8192));
+        // Request unfinished but the pipe is drained by this batch: the next
+        // round has nothing to send until a writer refills, so this segment is
+        // final as far as this call knows.
+        assert!(!more_hint(false, 8192, 4096, 4096));
+        // Neither half.
+        assert!(!more_hint(false, 100, 100, 100));
+        // A zero-length batch cannot claim more data is queued past it.
+        assert!(!more_hint(false, 8192, 0, 0));
+    }
+
+    /// The derived half is what a multi-batch splice with NO flags relies on:
+    /// every batch but the last is hinted, the last is not. Walking a whole
+    /// 3-batch transfer pins the boundary that a per-batch write would
+    /// otherwise turn into three separate segments. # C: O(1)
+    #[test]
+    fn multi_batch_hints_all_but_the_last() {
+        const BATCH: usize = 4096;
+        let queued = 3 * BATCH;      // whole transfer sitting in the pipe
+        let mut req = 3 * BATCH;
+        let mut left = queued;
+        let mut hints = [false; 3];
+        for h in hints.iter_mut() {
+            let seg = BATCH.min(left).min(req);
+            *h = more_hint(false, req, seg, left);
+            req -= seg;
+            left -= seg;
+        }
+        assert_eq!(hints, [true, true, false]);
     }
 
     /// vmsplice direction is decided by `f_mode` alone, and an `O_PATH` fd

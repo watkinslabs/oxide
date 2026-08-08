@@ -117,6 +117,32 @@ impl Inode {
     pub fn is_anon_file(&self) -> bool {
         self.i_flags.load(Ordering::Relaxed) & super::flags::S_ANON_INODE != 0
     }
+    /// Take swap ownership of this inode's block map (`S_SWAPFILE`). Exactly one
+    /// activation may hold it: a second `swapon` of the same file loses the
+    /// exchange and is told `EBUSY`, and every operation that would move the
+    /// file's blocks is refused with `ETXTBSY` while the flag stands. Setting it
+    /// is the ONLY thing that makes an inode a live swapfile — no filesystem
+    /// keeps a private copy of that fact. # C: O(1)
+    pub fn claim_swapfile(&self) -> Result<(), crate::VfsError> {
+        let mut cur = self.i_flags.load(Ordering::Acquire);
+        loop {
+            if cur & super::flags::S_SWAPFILE != 0 { return Err(crate::VfsError::Ebusy); }
+            match self.i_flags.compare_exchange_weak(
+                cur, cur | super::flags::S_SWAPFILE, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_)  => return Ok(()),
+                Err(seen) => cur = seen,
+            }
+        }
+    }
+    /// Release swap ownership taken by [`Inode::claim_swapfile`]. # C: O(1)
+    pub fn release_swapfile(&self) {
+        self.i_flags.fetch_and(!super::flags::S_SWAPFILE, Ordering::AcqRel);
+    }
+    /// `IS_SWAPFILE(inode)`. # C: O(1)
+    pub fn is_swapfile(&self) -> bool {
+        self.i_flags.load(Ordering::Acquire) & super::flags::S_SWAPFILE != 0
+    }
     /// `i_rdev` packed `dev_t`. # C: O(1)
     pub fn rdev(&self) -> u32 { self.i_rdev }
     /// `i_generation`. # C: O(1)

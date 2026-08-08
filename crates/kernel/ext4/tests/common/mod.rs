@@ -8,6 +8,8 @@
 
 extern crate alloc;
 
+pub mod crash;
+
 use alloc::string::String;
 use alloc::sync::Arc;
 use std::sync::Once;
