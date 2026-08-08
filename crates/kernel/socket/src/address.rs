@@ -45,8 +45,17 @@ fn resolve_unix(ctx: &SendContext<'_>, path: Vec<u8>) -> KResult<net::UnixAddr> 
     // Resolving a pathname socket published outside this sandbox is a
     // filesystem right, checked once the object is known to be a socket so a
     // name that is not one keeps its own error.
-    net::landlock_addr::check_unix_resolve(&found, &addr).map_err(Error::from)?;
+    check_resolved_unix(ctx, &found, &addr)?;
     Ok(addr)
+}
+
+/// Apply this send's retained sandbox policy to one resolved pathname socket.
+/// The snapshot the send started under is used, not a fresh read, so one
+/// message cannot be judged against two policies. # C: O(depth × N_layers × N_rules)
+pub(crate) fn check_resolved_unix(ctx: &SendContext<'_>, found: &vfs::VfsPath,
+    addr: &net::UnixAddr) -> KResult<()>
+{
+    net::landlock_addr::unix_resolve_verdict(ctx.sandbox(), found, addr).map_err(Error::from)
 }
 
 /// Decode one kernel-owned INET sockaddr without protocol side effects. # C: O(1)

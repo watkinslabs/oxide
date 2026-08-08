@@ -119,10 +119,27 @@ bitflags::bitflags! {
         /// they fault in rather than being prefaulted. Only ever set
         /// alongside `LOCKED`; the pair is [`VmaFlags::LOCKED_MASK`].
         const LOCKONFAULT = 1 << 16;
+        /// userfaultfd(2) `UFFDIO_REGISTER` MODE_WP: a write to a page in this
+        /// VMA carrying the per-page write-protect marker is routed to the
+        /// registered `uffd` context instead of resolving as a normal write
+        /// fault. The per-PAGE half of that state lives in the page-table leaf;
+        /// this flag is only the per-VMA registration.
+        const UFFD_WP = 1 << 17;
+        /// userfaultfd(2) `UFFDIO_REGISTER` MODE_MINOR: a not-present fault on
+        /// a page the VMA's backing already holds resident is routed to the
+        /// registered `uffd` context instead of being mapped straight in.
+        const UFFD_MINOR = 1 << 18;
     }
 }
 
 impl VmaFlags {
+    /// Every userfaultfd registration-mode flag. A VMA carries flags from this
+    /// set together with a context, or carries neither; fork drops the whole
+    /// mask with the context so no child is left holding a mode flag whose
+    /// context it does not have.
+    pub const UFFD_MASK: VmaFlags = VmaFlags::UFFD_MISSING
+        .union(VmaFlags::UFFD_WP).union(VmaFlags::UFFD_MINOR);
+
     /// Linux `VM_LOCKED_MASK` — the mlock-family flag pair. Every mlock
     /// transition clears the whole mask before adding the new state, and
     /// fork/mremap drop the mask outright, so a stale `LOCKONFAULT` can never
@@ -240,6 +257,17 @@ pub trait FileBacking: Send + Sync {
     /// MUST be a non-faulting lookup: no allocation, swap-in, or backing I/O.
     /// `None` means the page is not currently eligible. # C: O(log N_pages)
     fn fault_around_frame(&self, _off: u64) -> Result<Option<SharedFrame>, FileBackingError> { Ok(None) }
+
+    /// Whether the mapped pages ARE the object's storage (memory-backed shared
+    /// memory) rather than a cache of something durable behind it.
+    ///
+    /// This is the fact a userfaultfd minor-fault registration turns on: a
+    /// minor fault means "the backing already holds this page, only the page
+    /// table is missing it", which is only a meaningful distinction where the
+    /// backing owns real frames. A backing that merely copies bytes on demand
+    /// can never report a page as already resident.
+    /// # C: O(1)
+    fn is_shmem(&self) -> bool { false }
 
     /// Device-owned frame installed directly for either mapping type. # C: O(1)
     fn direct_frame(&self, _off: u64) -> Option<u64> { None }

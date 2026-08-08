@@ -1,12 +1,15 @@
 // Address-driven Landlock checks the socket layer performs.
 //
 // `landlock_glue` owns the running task's domain and the abstract-namespace
-// scope. This file owns the two checks that need an address in hand: the port
-// right a datagram send to an explicit recipient asks for, and the resolve
-// right a pathname AF_UNIX address asks for. Every verdict is one call into the
-// `landlock` crate; what lives here is only the socket-layer knowledge that
-// call needs — which transport a socket carries, and which domain published the
-// address being resolved.
+// scope. This file owns the verdicts that need an address in hand: the port
+// right an address names, and the resolve right a pathname AF_UNIX address
+// asks for. Every verdict is one call into the `landlock` crate; what lives
+// here is only the socket-layer knowledge that call needs — which transport a
+// socket carries, and which domain published the address being resolved.
+//
+// Which of these a send asks for is not decided here: `socket_security` owns
+// the send hook and composes them, so there is one place that says what a send
+// checks.
 
 extern crate alloc;
 
@@ -63,23 +66,6 @@ pub fn addr_verdict(client: Option<&Arc<Domain>>, proto: Proto, op: Op, bytes: &
         Verdict::Fail(e) => Err(net_error(e)),
         Verdict::CheckPort(p) => d.check_net(p, req).map_err(net_error),
     }
-}
-
-/// Gate a datagram send that names an explicit recipient: settling a remote
-/// port through `sendto`/`sendmsg` reaches the same endpoint a connect would,
-/// so it asks for the same right. A send that names no address settles no port
-/// and has nothing to check.
-/// # C: O(N_layers × N_rules)
-pub fn check_send_addr(sock: &crate::sock::InetSocket, name: &[u8]) -> Result<(), NetError> {
-    addr_verdict(current_domain().as_ref(), sock_proto(sock), Op::Send, name,
-                 sock.family.load(core::sync::atomic::Ordering::Acquire))
-}
-
-/// Gate a Fast Open send that names its connection peer. The payload travels
-/// through sendmsg, but the named address creates a TCP connection. # C: O(N_layers × N_rules)
-pub fn check_fastopen_addr(sock: &crate::sock::InetSocket, name: &[u8]) -> Result<(), NetError> {
-    addr_verdict(current_domain().as_ref(), Proto::Tcp, Op::Connect, name,
-                 sock.family.load(core::sync::atomic::Ordering::Acquire))
 }
 
 /// Gate UDP's implicit local-port allocation as though the caller had bound

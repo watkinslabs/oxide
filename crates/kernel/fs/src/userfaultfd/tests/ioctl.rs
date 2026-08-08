@@ -10,10 +10,11 @@ use alloc::sync::{Arc, Weak};
 use hal::UserVirtAddr;
 use syscall::errno::Errno;
 use vfs::{FileOps, InodeRef};
-use vmm::{AddressSpace, UffdContext, VmaBacking, VmaFlags, VmaProt};
+use vmm::{AddressSpace, UffdContext, UffdFaultKind, VmaBacking, VmaFlags, VmaProt};
 
 use crate::userfaultfd::uapi::*;
-use crate::userfaultfd::{handle_uffd_ioctl, make_userfaultfd_inode, UfData, UffdFileOps};
+use crate::userfaultfd::msg::UffdFileOps;
+use crate::userfaultfd::{handle_uffd_ioctl, make_userfaultfd_inode, UfData};
 
 const PAGE: u64 = hal::PAGE_SIZE_BYTES;
 /// Base of the anonymous region every test registers.
@@ -94,7 +95,8 @@ fn a_failed_api_zeroes_the_reply_object() {
 fn an_unknown_command_is_einval_not_enotty() {
     let mm = mk_mm();
     let inode = mk_registered(&mm);
-    assert_eq!(handle_uffd_ioctl(&inode, 0xc020_aa07 /* UFFDIO_CONTINUE */, 0), e(Errno::Einval));
+    // A command in the userfaultfd space that names no slot at all.
+    assert_eq!(handle_uffd_ioctl(&inode, 0xc020_aa2a, 0), e(Errno::Einval));
 }
 
 // ---- REGISTER -------------------------------------------------------------
@@ -106,7 +108,12 @@ fn register_records_the_range_and_reports_the_linux_ioctl_bitmap() {
     handshake(&inode);
     let reg = [REGION, REGION_LEN, UFFDIO_REGISTER_MODE_MISSING, 0u64];
     assert_eq!(handle_uffd_ioctl(&inode, UFFDIO_REGISTER, reg.as_ptr() as u64), 0);
-    assert_eq!(word(&reg, 3), (1 << slot::WAKE) | (1 << slot::COPY) | (1 << slot::ZEROPAGE));
+    let promised = word(&reg, 3);
+    assert_ne!(promised & (1 << slot::WAKE), 0);
+    assert_ne!(promised & (1 << slot::COPY), 0);
+    assert_ne!(promised & (1 << slot::ZEROPAGE), 0);
+    assert_eq!(promised & (1 << slot::WRITEPROTECT), 0, "WP promised without MODE_WP");
+    assert_eq!(promised & (1 << slot::CONTINUE), 0, "CONTINUE promised without MODE_MINOR");
     let d = ufd_of(&inode);
     let g = d.state.lock();
     assert_eq!(g.ranges.len(), 1);
@@ -128,16 +135,45 @@ fn register_binds_the_context_to_the_ctx_mm_vmas() {
     assert!(mm.find_vma(UserVirtAddr::new(REGION).expect("va")).expect("vma").uffd.is_none());
 }
 
+/// A write-protect registration arms the mode on the VMA, and a minor
+/// registration on anonymous memory — where a minor fault cannot happen — is
+/// refused rather than recorded as a range that never delivers.
 #[test]
-fn register_refuses_wp_mode_instead_of_recording_a_dead_range() {
+fn register_arms_write_protect_and_refuses_minor_on_anonymous_memory() {
     let mm = mk_mm();
     let inode = make_userfaultfd_inode(0, Arc::downgrade(&mm));
     handshake(&inode);
-    let reg = [REGION, REGION_LEN, UFFDIO_REGISTER_MODE_WP, 0u64];
-    assert_eq!(handle_uffd_ioctl(&inode, UFFDIO_REGISTER, reg.as_ptr() as u64), e(Errno::Einval));
-    assert_eq!(ufd_of(&inode).state.lock().ranges.len(), 0);
+    let reg = [REGION, REGION_LEN, UFFDIO_REGISTER_MODE_MISSING | UFFDIO_REGISTER_MODE_WP, 0u64];
+    assert_eq!(handle_uffd_ioctl(&inode, UFFDIO_REGISTER, reg.as_ptr() as u64), 0);
+    assert_ne!(word(&reg, 3) & (1 << slot::WRITEPROTECT), 0);
     let v = mm.uffd_vma_at(UserVirtAddr::new(REGION).expect("va")).expect("vma");
-    assert!(v.ctx.is_none());
+    assert!(v.modes.contains(VmaFlags::UFFD_WP));
+    assert!(v.modes.contains(VmaFlags::UFFD_MISSING));
+    assert!(!v.modes.contains(VmaFlags::UFFD_MINOR));
+
+    let mm2 = mk_mm();
+    let inode2 = make_userfaultfd_inode(0, Arc::downgrade(&mm2));
+    handshake(&inode2);
+    let minor = [REGION, REGION_LEN, UFFDIO_REGISTER_MODE_MINOR, 0u64];
+    assert_eq!(handle_uffd_ioctl(&inode2, UFFDIO_REGISTER, minor.as_ptr() as u64), e(Errno::Einval));
+    assert_eq!(ufd_of(&inode2).state.lock().ranges.len(), 0);
+    assert!(mm2.uffd_vma_at(UserVirtAddr::new(REGION).expect("va")).expect("vma").ctx.is_none());
+}
+
+/// Re-registering a range REPLACES its mode set. A leftover mode would keep
+/// intercepting faults the monitor no longer asked for.
+#[test]
+fn re_registering_replaces_the_mode_set() {
+    let mm = mk_mm();
+    let inode = make_userfaultfd_inode(0, Arc::downgrade(&mm));
+    handshake(&inode);
+    let both = [REGION, REGION_LEN, UFFDIO_REGISTER_MODE_MISSING | UFFDIO_REGISTER_MODE_WP, 0u64];
+    assert_eq!(handle_uffd_ioctl(&inode, UFFDIO_REGISTER, both.as_ptr() as u64), 0);
+    let only_missing = [REGION, REGION_LEN, UFFDIO_REGISTER_MODE_MISSING, 0u64];
+    assert_eq!(handle_uffd_ioctl(&inode, UFFDIO_REGISTER, only_missing.as_ptr() as u64), 0);
+    let v = mm.uffd_vma_at(UserVirtAddr::new(REGION).expect("va")).expect("vma");
+    assert!(v.modes.contains(VmaFlags::UFFD_MISSING));
+    assert!(!v.modes.contains(VmaFlags::UFFD_WP), "a dropped mode must stop being armed");
 }
 
 #[test]
@@ -172,6 +208,7 @@ fn unregister_removes_the_range_and_the_vma_binding() {
     assert_eq!(ufd_of(&inode).state.lock().ranges.len(), 0);
     let v = mm.uffd_vma_at(UserVirtAddr::new(REGION).expect("va")).expect("vma");
     assert!(v.ctx.is_none());
+    assert!(v.modes.is_empty(), "unregister must drop the mode flags with the context");
 }
 
 // ---- COPY / ZEROPAGE destination enforcement ------------------------------
@@ -292,7 +329,7 @@ fn enqueued_pagefault_msg_drains_through_read() {
     let d = ufd_of(&inode);
     let addr = REGION + PAGE;
     // missing_fault under hosted enqueues + returns (no park).
-    assert!(d.missing_fault(addr, true, true));
+    assert!(d.fault(addr, UffdFaultKind::Missing, true, true));
     assert_eq!(d.state.lock().events.len(), 1);
     let mut buf = [0u8; 32];
     let n = UffdFileOps.read(&inode, 0, &mut buf).expect("read event");
@@ -320,9 +357,9 @@ fn a_user_mode_only_context_refuses_a_kernel_mode_fault() {
     let inode = make_userfaultfd_inode(UFFD_USER_MODE_ONLY, Arc::downgrade(&mm));
     handshake(&inode);
     let d = ufd_of(&inode);
-    assert!(!d.missing_fault(REGION, true, false), "kernel-mode fault must be refused");
+    assert!(!d.fault(REGION, UffdFaultKind::Missing, true, false), "kernel-mode fault must be refused");
     assert_eq!(d.state.lock().events.len(), 0, "a refused fault must not enqueue");
-    assert!(d.missing_fault(REGION, true, true));
+    assert!(d.fault(REGION, UffdFaultKind::Missing, true, true));
     assert_eq!(d.state.lock().events.len(), 1);
 }
 

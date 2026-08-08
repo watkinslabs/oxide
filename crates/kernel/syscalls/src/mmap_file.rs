@@ -162,6 +162,12 @@ impl FileBacking for InodeFileBacking {
             .map_err(vfs_error)
     }
 
+    /// Memory-backed shared storage is a property of the inode's address
+    /// space, not of this handle to it. # C: O(1)
+    fn is_shmem(&self) -> bool {
+        self.inode.i_mapping().is_some_and(|m| m.is_shmem())
+    }
+
     /// Cached-only fault-around lookup. Inodes without a frame-backed
     /// address_space keep using the one-page copy fault path: their generic
     /// byte-vector cache cannot safely be installed as a PMM PTE.
