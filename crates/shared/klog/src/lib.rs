@@ -35,6 +35,9 @@ pub use bootcon::{
     set_keep_bootcon, set_printk_time, DEVKMSG_OFF, DEVKMSG_ON, DEVKMSG_RATELIMIT,
 };
 
+pub mod replay;
+pub use replay::{init_console_cursor, replay_into};
+
 pub mod ratelimit;
 
 pub mod initcall;
@@ -87,20 +90,32 @@ pub struct InternedFormat {
 /// `fn(&[u8])` without a `dyn` trait object (`07§5` bans `dyn HAL`).
 pub type LogSink = fn(&[u8]);
 
-/// Install the primary byte sink (the serial console). Thin shim over the
-/// `console` registry's reserved `SLOT_BYTE` so historical callers + the
-/// ring→serial→fbcon ordering are preserved (Linux: a UART registering its
-/// `struct console`). `f` is called with prefix + message + `\n` for every
-/// klog event whose level isn't suppressed.
-/// # C: O(1)
+/// Install the primary byte sink (the serial console) in the `console`
+/// registry's reserved `SLOT_BYTE`, taking the wire over from the boot console
+/// if one is live (Linux: a UART registering its `struct console` over a
+/// bootconsole on the same port). Everything the ring still holds that no
+/// console has shown yet is replayed into `f`, so a console that registers at
+/// device-init time shows the whole boot rather than only what follows it.
+/// `f` is called with prefix + message + `\n` for every klog event whose level
+/// isn't suppressed.
+/// # C: O(bytes replayed)
 pub fn set_byte_sink(f: LogSink) {
+    bootcon::handover_to_primary(f);
+}
+
+/// Install `f` as the primary byte sink WITHOUT replaying the backlog into it
+/// — for a test that captures its own output and would otherwise be handed the
+/// preceding test's records. Marking and installing happen in one critical
+/// section: doing it in two lets an unserialised emitter land between them, and
+/// its half-line then arrives spliced onto the first captured line.
+/// # C: O(1)
+#[cfg(test)]
+pub(crate) fn set_byte_sink_no_replay(f: LogSink) {
+    let h = lock::acquire();
+    bootcon::mark_shown_through_now();
     console::install_slot(console::SLOT_BYTE, f);
-    // A real console has taken over the wire. The boot console wrote to the
-    // same UART with none of the driver's locking, so leaving both live
-    // double-prints every line; the handover drops it — unless the boot line
-    // asked to keep it, which is the only way to see the handover window
-    // itself when the real console's own bring-up is what hangs.
     bootcon::drop_boot_console();
+    lock::release(h);
 }
 
 /// Install the secondary sink (the fbcon VT console). Thin shim over the
@@ -119,9 +134,12 @@ pub fn clear_aux_sink() {
 }
 
 /// Detach the primary byte sink (clears reserved `SLOT_BYTE`). Subsequent
-/// `__klog_emit` calls skip it until `set_byte_sink` is called again.
+/// `__klog_emit` calls skip it until `set_byte_sink` is called again. The
+/// displayed-through position freezes here, so the next console to take the
+/// wire replays only what went unseen while it had no console.
 /// # C: O(1)
 pub fn clear_byte_sink() {
+    bootcon::mark_shown_through_now();
     console::clear_slot(console::SLOT_BYTE);
 }
 
@@ -301,6 +319,12 @@ pub fn ring_total() -> usize {
     use core::sync::atomic::Ordering;
     RING.total.load(Ordering::Acquire)
 }
+
+/// Position of the oldest byte the ring still holds, in the same total-stream
+/// terms as `ring_total`. Anything before it has been overwritten and cannot
+/// be replayed to a console registering now.
+/// # C: O(1)
+pub fn ring_oldest() -> usize { ring_total().saturating_sub(RING_BYTES) }
 
 struct DmesgRing {
     buf:  core::cell::UnsafeCell<[u8; RING_BYTES]>,

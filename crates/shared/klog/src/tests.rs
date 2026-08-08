@@ -61,7 +61,7 @@
     fn kinfo_with_sink_writes_prefix_message_newline() {
         let _g = lock_sink();
         let _ = drain_sink();
-        set_byte_sink(test_sink);
+        crate::set_byte_sink_no_replay(test_sink);
         kinfo!("init started");
         let out = drain_sink();
         clear_byte_sink();
@@ -72,7 +72,7 @@
     fn each_level_uses_its_own_prefix() {
         let _g = lock_sink();
         let _ = drain_sink();
-        set_byte_sink(test_sink);
+        crate::set_byte_sink_no_replay(test_sink);
         kerror!("e");
         kwarn!("w");
         kinfo!("i");
@@ -88,7 +88,7 @@
     fn clear_byte_sink_stops_emit() {
         let _g = lock_sink();
         let _ = drain_sink();
-        set_byte_sink(test_sink);
+        crate::set_byte_sink_no_replay(test_sink);
         kinfo!("a");
         clear_byte_sink();
         kinfo!("b");
@@ -106,7 +106,7 @@
         fn counting(_b: &[u8]) { N.fetch_add(1, Ordering::Relaxed); }
         N.store(0, Ordering::Relaxed);
         set_cpu_fn(|| 0);
-        set_byte_sink(counting);
+        crate::set_byte_sink_no_replay(counting);
         kinfo!("hi");
         clear_byte_sink();
         clear_cpu_fn();
@@ -127,7 +127,7 @@
     fn multi_call_lines_do_not_splice() {
         let _g = lock_sink();
         let _ = drain_sink();
-        set_byte_sink(test_sink);
+        crate::set_byte_sink_no_replay(test_sink);
         set_clock_fn(|| 0);
         // Per-CPU line buffers are keyed by the cpu thunk, and fragments only
         // join a pending line when the caller identity matches. Hosted threads
@@ -191,7 +191,7 @@
     fn concurrent_emitters_do_not_splice_lines() {
         let _g = lock_sink();
         let _ = drain_sink();
-        set_byte_sink(test_sink);
+        crate::set_byte_sink_no_replay(test_sink);
         // A clock thunk is required: without it `emit_bytes` takes the
         // single-call early-return path, where the sink write is already
         // indivisible and no splicing is possible. The defect lives in the
@@ -258,7 +258,7 @@
         }
         DEPTH.store(0, Ordering::Relaxed);
         set_cpu_fn(|| 0);
-        set_byte_sink(reentrant);
+        crate::set_byte_sink_no_replay(reentrant);
         write_raw(b"outer\n");
         clear_byte_sink();
         clear_cpu_fn();
@@ -273,7 +273,7 @@
 fn interrupted_line_is_terminated_not_concatenated() {
     let _g = lock_sink();
     let _ = drain_sink();
-    set_byte_sink(test_sink);
+    crate::set_byte_sink_no_replay(test_sink);
     set_clock_fn(|| 0);
     set_cpu_fn(|| 0);
     // Two callers on ONE cpu — a hard IRQ logging while task context is

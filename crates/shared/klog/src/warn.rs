@@ -103,7 +103,7 @@ mod tests {
     fn start() -> std::sync::MutexGuard<'static, ()> {
         let g = crate::console::test_lock();
         SEEN.lock().unwrap_or_else(|e| e.into_inner()).clear();
-        crate::set_byte_sink(capture);
+        crate::set_byte_sink_no_replay(capture);
         g
     }
     fn seen() -> String { SEEN.lock().unwrap_or_else(|e| e.into_inner()).clone() }
