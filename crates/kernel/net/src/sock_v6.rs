@@ -263,39 +263,6 @@ fn mapped_v4_source(sock: &InetSocket, dst_ip: crate::Ipv4Addr,
         .unwrap_or(crate::Ipv4Addr::LOOPBACK))
 }
 
-/// Emit one segmentation-offload plan, if this send has one. The plan, its
-/// path MTU and its chunk loop are this branch's alone.
-///
-/// `#[inline(never)]`: the ordinary single-datagram send below sits under the
-/// deepest send path in the tree, and this branch's working set must not ride
-/// in its frame (Linux `noinline_for_stack`).
-/// # C: O(payload)
-#[allow(clippy::too_many_arguments)]
-#[inline(never)]
-fn segmented_v6(sock: &InetSocket, dst_ip: crate::Ipv6Addr, dst_port: u16,
-    src_ip: crate::Ipv6Addr, src_port: u16, _scope_id: u32, payload: &[u8],
-    iface: Option<crate::NetIfaceId>, hop: u8, tclass: u8, pmtudisc: i32, frag_size: i32,
-    no_check: bool, msg: &crate::send_control::Raw6Control,
-    control: &crate::send_control::Raw6Control) -> Result<bool, NetError>
-{
-    let mtu = stack().path_mtu_in(
-        sock.net_ns(), crate::addr::IpAddr::V6(dst_ip), iface, false)? as usize;
-    let Some(plan) = crate::sock_opts::sol_udp::segment::plan_v6(
-        payload.len(), sock.opts.udp.gso_size(), mtu, no_check)? else { return Ok(false) };
-    for segment in payload.chunks(plan.seg_size) {
-        stack().send_udp6_pmtu_to_bound_opts_owned(
-            &sock.owner, src_ip, src_port, dst_ip, dst_port, segment, iface, hop, tclass,
-            pmtudisc, frag_size, no_check, msg.v6_flow_label(sock.opts.ipv6.flow_label()),
-            msg.v6_autoflowlabel(
-                sock.opts.ipv6.flag(crate::sock_opts::sol_ipv6::flag::AUTOFLOWLABEL)),
-            sock.opts.ipv6.srcprefs(), control,
-        ).map_err(|error| crate::socket_error::report_send_failure(&sock.error,
-            sock.net_ns(), crate::addr::IpAddr::V6(dst_ip), dst_port, iface, error))?;
-    }
-    drain_loopback();
-    Ok(true)
-}
-
 /// F180b: AF_INET6 datagram sendto. Allocates an ephemeral src port
 /// on demand; routes via the selected IP family. # C: O(payload)
 #[inline(always)]
@@ -352,10 +319,27 @@ pub fn sendto_v6_ctl(sock: &InetSocket,
     control.merge_sticky_headers(&sock.opts.ipv6);
     // UDP_SEGMENT: one write becomes N wire datagrams of the segmentation
     // size, the last carrying the remainder.
-    if sock.opts.udp.gso_size() != 0
-        && segmented_v6(sock, dst_ip, dst_port, src_ip, src_port, scope_id, payload, iface, hop,
-            tclass, pmtudisc, frag_size, no_check, msg, &control)?
-    { return Ok(payload.len()); }
+    let gso = sock.opts.udp.gso_size();
+    if gso != 0 {
+        let mtu = stack().path_mtu_in(
+            sock.net_ns(), crate::addr::IpAddr::V6(dst_ip), iface, false)? as usize;
+        if let Some(plan) = crate::sock_opts::sol_udp::segment::plan_v6(
+            payload.len(), gso, mtu, no_check)?
+        {
+            for segment in payload.chunks(plan.seg_size) {
+                stack().send_udp6_pmtu_to_bound_opts_owned(
+                    &sock.owner, src_ip, src_port, dst_ip, dst_port, segment, iface, hop, tclass,
+                    pmtudisc, frag_size, no_check, msg.v6_flow_label(sock.opts.ipv6.flow_label()),
+                    msg.v6_autoflowlabel(
+                        sock.opts.ipv6.flag(crate::sock_opts::sol_ipv6::flag::AUTOFLOWLABEL)),
+                    sock.opts.ipv6.srcprefs(), &control,
+                ).map_err(|error| crate::socket_error::report_send_failure(&sock.error,
+                    sock.net_ns(), crate::addr::IpAddr::V6(dst_ip), dst_port, iface, error))?;
+            }
+            drain_loopback();
+            return Ok(payload.len());
+        }
+    }
     stack().send_udp6_pmtu_to_bound_opts_owned(
         &sock.owner, src_ip, src_port, dst_ip, dst_port, payload,
         iface, hop, tclass, pmtudisc, frag_size, no_check, msg.v6_flow_label(sock.opts.ipv6.flow_label()),

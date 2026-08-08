@@ -133,7 +133,10 @@ fn send_netlink(socket: &netlink::NetlinkSocket, message: &Message, dest: netlin
 pub(crate) enum InetPrepared {
     Packet,
     Unix(crate::control::UnixScm),
-    Transport(crate::address::InetAddress, net::send_control::SendControl),
+    /// The settled transmit overrides live on the heap, not in this enum: the
+    /// value would otherwise be copied into three stack frames that all sit
+    /// under the deepest send path in the tree, once each.
+    Transport(crate::address::InetAddress, alloc::boxed::Box<net::send_control::SendControl>),
 }
 
 pub(crate) enum PreparedSend {
@@ -197,7 +200,8 @@ pub(crate) fn prepare(ctx: &SendContext<'_>, target: &SendFile, message: &Messag
             let mut control = crate::control_family::admit(ctx, socket, &message.control,
                 Some(&address))?;
             control.apply_flags(flags as u64);
-            Ok(PreparedSend::Inet(InetPrepared::Transport(address, control)))
+            Ok(PreparedSend::Inet(InetPrepared::Transport(address,
+                alloc::boxed::Box::new(control))))
         }
     }
 }
