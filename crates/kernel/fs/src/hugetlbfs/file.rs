@@ -94,6 +94,41 @@ impl HugetlbfsFileData {
         Ok(done)
     }
 
+    /// A private copy of the huge page at `idx`, for a `MAP_PRIVATE` mapping.
+    ///
+    /// The source page is materialised first — a private mapping still reads
+    /// the file's contents, and a copy of a page that does not exist yet is a
+    /// page of zeroes, which is exactly what a hole reads as. The copy is
+    /// charged to the mount like any other page it hands out, and carries
+    /// exactly ONE reference, the caller's, so the mapping owns it outright and
+    /// releasing it returns it to the pool.
+    /// # C: O(huge page)
+    pub(super) fn cow_page(&self, idx: u64) -> KResult<vfs::SharedFrame> {
+        let size = self.sb.huge_size();
+        let src = self.ensure_page(idx)?;
+        self.sb.charge_unreserved_page()?;
+        let Some(dst) = hugetlb::alloc_huge_frame(size, false) else {
+            self.sb.uncharge_page();
+            return Err(VfsError::Enomem);
+        };
+        if let (Some(sp), Some(dp)) = (pmm::setup::frame_ptr(src), pmm::setup::frame_ptr(dst)) {
+            // SAFETY: `sp` and `dp` head two DISTINCT huge pages of `size` —
+            // the destination is off the pool free list, so nothing else can
+            // reach it — and the HHDM mirror covers both runs in full.
+            unsafe { core::ptr::copy_nonoverlapping(sp, dp, size.bytes() as usize); }
+        }
+        Ok(vfs::SharedFrame { pa: dst, map_ref_held: true })
+    }
+
+    /// Release one reference to a huge page this file handed out, returning it
+    /// to the pool when the last one goes.
+    /// # C: O(log nr)
+    pub(super) fn put_page(&self, pa: u64) {
+        if hugetlb::huge_frame_dec_and_maybe_release(self.sb.huge_size(), pa) {
+            self.sb.uncharge_page();
+        }
+    }
+
     /// Drop every page and every unconsumed reservation the file holds,
     /// returning the pages to the pool that owns them.
     /// # C: O(N_pages)
@@ -252,6 +287,19 @@ impl FileOps for HugetlbfsFileOps {
     /// `hstate_inode` — the granule this file's pages are. # C: O(1)
     fn huge_page_size(&self, inode: &Inode) -> u64 {
         inode.private::<HugetlbfsFileData>().map_or(0, |d| d.huge_bytes())
+    }
+
+    /// A private copy of the huge page at `off`, for a `MAP_PRIVATE` mapping
+    /// whose writes must not reach the file.
+    /// # C: O(huge page)
+    fn huge_cow_frame(&self, inode: &Inode, off: u64) -> KResult<Option<vfs::SharedFrame>> {
+        let d = inode.private::<HugetlbfsFileData>().ok_or(VfsError::Einval)?;
+        d.cow_page(off / d.huge_bytes()).map(Some)
+    }
+
+    /// # C: O(log nr)
+    fn huge_put_frame(&self, inode: &Inode, pa: u64) {
+        if let Some(d) = inode.private::<HugetlbfsFileData>() { d.put_page(pa); }
     }
 
     /// These pages are never written back to anything (`noop_fsync`).

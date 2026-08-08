@@ -289,7 +289,11 @@ fn register_filesystems() {
     // tmpfs mount admits — a key outside it fails, as it does in the reference
     // — while a size or an owner cannot re-shape a tree that already exists and
     // is shared, and the reference does not let it either.
-    let _ = register_fs(FsType::with_parameters("devtmpfs", DEVTMPFS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, _, sb_flags, _p: &[vfs::fs::FsParameter]| -> R {
+    let _ = register_fs(FsType::with_parameters("devtmpfs", DEVTMPFS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, d: &str, sb_flags, _p: &[vfs::fs::FsParameter]| -> R {
+        // Borrowing the table means borrowing its VALUE grammar too: without
+        // this, `-o size=64mb` — which a real tmpfs mount refuses — was
+        // admitted here on the key alone.
+        ::fs::tmpfs::validate_opts(d)?;
         let fs: Arc<dyn vfs::fs::FileSystem> = Arc::new(devfs::DevfsFs);
         mounted(ty, fs, None, "devtmpfs", sb_flags)
     }), Some(::fs::tmpfs::TMPFS_PARAMS)));

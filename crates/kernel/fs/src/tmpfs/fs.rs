@@ -34,6 +34,16 @@ fn current_mount_cred() -> super::mount_opts::MountCred {
     }
 }
 
+/// Check an option string against the tmpfs grammar without building anything.
+///
+/// For a filesystem that BORROWS this table — devtmpfs hands back the ONE
+/// shared device tree, so no mount of it can re-shape anything — admitting the
+/// key set without checking the VALUES would accept `size=64mb` and every other
+/// malformed value the real parser refuses. # C: O(len(data))
+pub fn validate_opts(data: &str) -> KResult<()> {
+    super::mount_opts::parse_opts(data, TmpfsSb::total_ram_pages(), current_mount_cred()).map(|_| ())
+}
+
 /// # C: O(1)
 pub fn init() {}
 

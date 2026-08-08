@@ -83,3 +83,17 @@ fn the_size_and_inode_ceilings_land_on_the_superblock() {
     let st = sb.statfs(super::super::uapi::TMPFS_MAGIC);
     assert_eq!((st.f_blocks, st.f_files), (64, 8));
 }
+
+/// A filesystem that BORROWS this table gets the value grammar with it. Before
+/// this, devtmpfs admitted any value under a known key — `size=64mb`, which a
+/// real tmpfs mount refuses, mounted.
+#[test]
+fn the_validate_only_entry_point_answers_exactly_what_a_mount_would() {
+    use super::super::validate_opts;
+    assert!(validate_opts("mode=0755").is_ok());
+    assert!(validate_opts("size=64m").is_ok());
+    assert!(validate_opts("size=64mb").is_err(), "a trailing unit is not a size");
+    assert!(validate_opts("mode=799").is_err(), "a mode is octal");
+    assert!(validate_opts("nr_blocks=7x").is_err());
+    assert!(validate_opts("strict_encoding").is_err(), "strict about no encoding");
+}
