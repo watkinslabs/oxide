@@ -3,11 +3,9 @@
 //!
 //! The load-bearing properties are the ones B1452 found missing: a record lock
 //! is RELEASED when its holder's descriptor closes or its descriptor table is
-//! torn down (Linux `filp_flush` → `locks_remove_posix`, `fs/open.c:1475`),
-//! that release WAKES every task parked in `F_SETLKW` (Linux
-//! `locks_delete_lock_ctx` → `locks_wake_up_blocks`, `fs/locks.c:925`), and
-//! the park is INTERRUPTIBLE (Linux `do_lock_file_wait`, `fs/locks.c:2523`, a
-//! bare `wait_event_interruptible`) so a fatal signal ends it.
+//! torn down, that release WAKES every task parked in `F_SETLKW`, and the park
+//! is INTERRUPTIBLE (a plain interruptible sleep, not restartable across a
+//! non-fatal signal) so a fatal signal ends it.
 
 extern crate alloc;
 
@@ -136,8 +134,8 @@ fn closing_the_holders_descriptor_releases_its_records_and_wakes_waiters() {
     assert_eq!(holder_t.close(hfd), Ok(()));
     vfs::clear_file_lock_wait_hooks();
 
-    // Linux `filp_flush` → `locks_remove_posix` (`fs/open.c:1475`), then
-    // `locks_delete_lock_ctx` → `locks_wake_up_blocks` (`fs/locks.c:925`).
+    // Closing the descriptor drops every record it owned on the inode, and
+    // that release wakes the inode's file-lock wait key.
     assert_eq!(ino.file_lock_context().record_lock_count(), 0,
         "close(2) must drop every record the descriptor table owned on this inode");
     assert_eq!(WOKEN_KEY.load(Ordering::Acquire), expected,
@@ -212,11 +210,10 @@ fn a_parked_setlkw_is_interruptible() {
     let held = resolve(&req(F_WRLCK, RANGE_START, TO_EOF), files_owner(&holder_t), HOLDER_PID).unwrap();
     assert_eq!(setlk(&holder_f, &held), 0);
 
-    // `fs/locks.c` contains no -EINTR and no -ERESTARTSYS: `do_lock_file_wait`
-    // is a bare `wait_event_interruptible`, so the interrupted value is
-    // `prepare_to_wait_event`'s -ERESTARTSYS (`kernel/sched/wait.c:309`)
-    // propagated unchanged. A signal that is never delivered — a SIGKILL — must
-    // therefore end the park rather than leave an unkillable task.
+    // The lock wait is a plain interruptible sleep with no -EINTR path: an
+    // interrupted wait returns -ERESTARTSYS unchanged. A signal that is never
+    // delivered — a SIGKILL — must therefore end the park rather than leave
+    // an unkillable task.
     vfs::set_file_lock_wait_hooks(noop_park, noop_schedule, record_wake, always_interrupted);
     let want = resolve(&req(F_WRLCK, RANGE_START, RANGE_LEN), files_owner(&waiter_t), WAITER_PID).unwrap();
     let rv = setlkw(&waiter_f, &want);
@@ -255,7 +252,7 @@ fn a_wait_cycle_is_edeadlk_rather_than_a_hang() {
     vfs::clear_file_lock_wait_hooks();
     vfs::record_lock_unblock(files_owner(&a_t));
 
-    // Linux `posix_locks_deadlock` (`fs/locks.c:1101`).
+    // A wait cycle is detected and reported as EDEADLK rather than hanging.
     assert_eq!(rv, edeadlk(), "B waiting on A while A waits on B is EDEADLK");
 }
 

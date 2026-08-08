@@ -1,4 +1,4 @@
-// Anon-VMA reverse mapping per Linux `mm/rmap.c` semantics.
+// Anon-VMA reverse mapping, matching Linux's anonymous-page rmap semantics.
 //
 // One `AnonVma` per anonymous-VMA family. Every VMA in that family
 // (the original + every fork descendant + every COW-split VMA) holds
@@ -40,7 +40,7 @@ pub struct RmapTarget {
     pub end:   u64,
 }
 
-/// Anon-VMA per `mm/rmap.c`. Tracks every VMA that references the
+/// Anon-VMA. Tracks every VMA that references the
 /// anonymous family; stored on each VMA via `Vma::anon_vma`.
 pub struct AnonVma {
     chain: Spinlock<Vec<RmapTarget>, AnonVmaClass>,

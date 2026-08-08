@@ -76,7 +76,7 @@ impl DirDebugBackend {
     }
 }
 
-/// `struct dir_context` (Linux `include/linux/fs.h`): the readdir cursor +
+/// `struct dir_context`: the readdir cursor +
 /// actor threaded through [`FileOps::iterate`]. `pos` is the resume cookie the
 /// backend reads to know where to start and that [`Self::emit`] advances as
 /// each entry is accepted; `actor` is the buffer-packing sink. # C: O(1)
@@ -414,8 +414,7 @@ pub trait FileOps: Send + Sync {
     }
 
     /// Does an `fsync` on this description have page-cache data to write back
-    /// BEFORE the backend commits (Linux `ext4_sync_file`'s
-    /// `file_write_and_wait_range` step, `fs/ext4/fsync.c:189`)?
+    /// BEFORE the backend commits its own durable state?
     ///
     /// Deliberately NOT "is `fsync` legal here" — that answer belongs to
     /// [`Self::fsync`] alone, so a backend that installs a real `fsync` slot on
@@ -431,14 +430,13 @@ pub trait FileOps: Send + Sync {
     /// `FMODE_CAN_ODIRECT` — does this backend have a real `a_ops->direct_IO`,
     /// i.e. an I/O path that genuinely bypasses the page cache?
     ///
-    /// Linux sets the bit from `f_mapping->a_ops->direct_IO` (`fs/open.c:960`),
-    /// and `open(2)` returns `EINVAL` for `O_DIRECT` without it (`:968`).
-    /// Default `false` — a backend must claim direct I/O, never inherit the
-    /// claim, because the failure mode of being wrong is that a caller relying
-    /// on cache bypass for correctness gets silently buffered I/O and no
-    /// indication. Backends whose pages ARE the store (tmpfs/shmem,
-    /// `mm/shmem.c:2910`) answer `true` because bypassing the cache is vacuous
-    /// there. # C: O(1)
+    /// The bit is set from whether the backend's address-space ops install a
+    /// `direct_IO` callback, and `open(2)` returns `EINVAL` for `O_DIRECT`
+    /// without it. Default `false` — a backend must claim direct I/O, never
+    /// inherit the claim, because the failure mode of being wrong is that a
+    /// caller relying on cache bypass for correctness gets silently buffered
+    /// I/O and no indication. Backends whose pages ARE the store (tmpfs/shmem)
+    /// answer `true` because bypassing the cache is vacuous there. # C: O(1)
     fn can_odirect(&self, _inode: &Inode) -> bool { false }
 
     /// `f_op->llseek` SEEK_HOLE/SEEK_DATA core (Linux `generic_file_llseek` →

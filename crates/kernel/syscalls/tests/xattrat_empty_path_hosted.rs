@@ -6,11 +6,11 @@
 //! because they routed every `*xattrat` call through `resolve_at_lookup`:
 //!
 //!   1. `AT_EMPTY_PATH` + a **NULL** pathname is legal and means "operate on
-//!      `dfd`" (`fs/xattr.c:726`, `include/linux/fs.h:2541`). The old code sent
+//! `dfd`" (Linux's `getname_maybe_null` empty-path handling). The old code sent
 //!      a NULL pointer straight to `at_path_empty`, which is unconditionally
 //!      `EFAULT` — so `fsetxattr`-shaped calls could never work.
 //!   2. `list`/`removexattrat` omit the `dfd >= 0` guard that `set`/`getxattrat`
-//!      carry (`fs/xattr.c:992`, `:1089` vs `:726`, `:866`), so a NULL filename
+//! carry, so a NULL filename
 //!      with `AT_FDCWD` is `EBADF` for those two and the **cwd** for the others.
 //!
 //! Stubs mirror `openat_absolute_dirfd_hosted.rs`: `at.rs` reaches
@@ -127,7 +127,7 @@ fn null_path_with_at_empty_path_targets_the_open_fd() {
 fn null_path_with_at_fdcwd_falls_through_to_filename_lookup_on_the_cwd() {
     // `if (!filename && dfd >= 0)` is FALSE for AT_FDCWD (-100), so Linux calls
     // `filename_lookup(AT_FDCWD, NULL, …)`, which `__set_nameidata` turns into
-    // an empty pathname relative to the cwd (`fs/namei.c`).
+    // an empty pathname relative to the cwd.
     let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     setup();

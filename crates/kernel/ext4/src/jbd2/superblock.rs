@@ -120,10 +120,10 @@ impl JournalSuperblock {
     }
 }
 
-/// JBD2 COMPAT feature bits per `linux/jbd2.h`.
+/// JBD2 COMPAT feature bits per the on-disk journal superblock format.
 pub const JBD2_COMPAT_CHECKSUM: u32 = 0x0001;
 
-/// JBD2 INCOMPAT feature bits per `linux/jbd2.h`.
+/// JBD2 INCOMPAT feature bits per the on-disk journal superblock format.
 pub const JBD2_INCOMPAT_REVOKE:    u32 = 0x0001;
 pub const JBD2_INCOMPAT_64BIT:     u32 = 0x0002;
 pub const JBD2_INCOMPAT_ASYNC_COMMIT: u32 = 0x0004;

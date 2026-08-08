@@ -1,4 +1,4 @@
-//! dot-entry synthesis (`16§`/Linux `dir_emit_dots`, `fs/libfs.c`): every
+//! dot-entry synthesis (`16§`, `dir_emit_dots` shape): every
 //! directory's `readdir` stream must lead with "." (self ino, `DT_DIR`) then
 //! ".." (parent ino, `DT_DIR`) before any real child, at fixed readdir cursors
 //! `0` and `1`. The filesystem ROOT's ".." points back at the root itself

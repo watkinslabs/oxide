@@ -1,7 +1,6 @@
 //! B1482: `i_blocks` counts blocks ACTUALLY allocated to the inode, never a
-//! prediction. Linux charges at allocation time — `ext4_mb_new_blocks`
-//! (fs/ext4/mballoc.c) calls `dquot_alloc_block` before handing out the block,
-//! and `__dquot_alloc_space` (fs/quota/dquot.c) is what runs `inode_add_bytes`
+//! prediction. Linux charges at allocation time: quota is charged before
+//! handing out the block, and that same charge is what updates `i_blocks`
 //! — so the data block and each extent-tree metadata block are charged once
 //! each, when they are really taken.
 //!

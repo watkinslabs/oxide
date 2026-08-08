@@ -1,4 +1,4 @@
-//! Slot 271 `ppoll` against Linux `fs/select.c::SYSCALL_DEFINE5(ppoll)`:
+//! Slot 271 `ppoll` against Linux's `SYSCALL_DEFINE5(ppoll)`:
 //! the `set_user_sigmask`/`TIF_RESTORE_SIGMASK` handshake, the timespec
 //! argument rules, the remaining-time writeback, and register-then-recheck.
 
@@ -176,7 +176,7 @@ fn args(pfd: &mut [u8; 8], nfds: u64, tsp: u64, ss: u64, sslen: u64) -> SyscallA
 
 // Linux `do_poll`/`core_sys_select` end an interrupted wait with
 // `-ERESTARTNOHAND`, and `poll_select_finish` folds it to `-EINTR` only when
-// the residual timeout could not be written back (`fs/select.c:361-363`).
+// the residual timeout could not be written back.
 // Every case below either has no timeout buffer or a zero timeout, so the
 // restart code survives to the syscall tail — which restarts the call when no
 // handler frame was built.
@@ -351,7 +351,7 @@ fn an_interrupted_sticky_timeouts_wait_reports_eintr_because_it_cannot_restart()
     poll::poll_common::SIGNAL_ON_PARK.store(SIGUSR1_BIT, Ordering::SeqCst);
     let mut t = ts(5, 0);
 
-    // Linux `fs/select.c:353-363`: with the residual timeout left unwritten,
+    // Linux's `poll_select_finish` sticky tail: with the residual timeout left unwritten,
     // "we can't restart the system call", so `sticky:` turns
     // `-ERESTARTNOHAND` into `-EINTR`. Restarting here would silently extend
     // the caller's wait by the full original timeout.

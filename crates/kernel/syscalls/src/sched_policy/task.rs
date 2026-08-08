@@ -1,7 +1,7 @@
 // Live `Task` accessors and the `sched_setattr`/`sched_setscheduler`
-// permission ladder. Linux `kernel/sched/syscalls.c`
-// (`user_check_sched_setscheduler`, `check_same_owner`, `is_nice_reduction`,
-// `get_params`) and `kernel/sched/sched.h`.
+// permission ladder. Linux's
+// `user_check_sched_setscheduler`, `check_same_owner`, `is_nice_reduction`,
+// and `get_params`.
 
 use core::sync::atomic::Ordering;
 use syscall::errno::Errno;

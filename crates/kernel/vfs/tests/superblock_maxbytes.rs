@@ -1,7 +1,7 @@
 //! superblock-D (`s_maxbytes` consumer): the SB stores the largest file size a
 //! backend can represent (`s_maxbytes`, default `MAX_LFS_FILESIZE`). Before this
 //! the field existed but had NO consumer — a write past the cap was never
-//! clamped or rejected. `generic_write_check_limits` (Linux fs/read_write.c)
+//! clamped or rejected. `generic_write_check_limits`
 //! clamps a write to the cap and reports the `EFBIG` case so the write(2) path
 //! can shorten or fail a write that would exceed the fs's representable size.
 

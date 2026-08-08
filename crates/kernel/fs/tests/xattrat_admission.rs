@@ -1,10 +1,11 @@
-//! `*xattrat` (463-466) argument-admission ORDER, pinned against Linux
-//! `fs/xattr.c`. Ordering is observable whenever two arguments are both bad:
-//! whichever check Linux runs first names the errno userspace sees.
+//! `*xattrat` (463-466) argument-admission ORDER. Ordering is observable
+//! whenever two arguments are both bad: whichever check runs first names the
+//! errno userspace sees.
 //!
 //! Before F761 the four shims imported the name/value BEFORE validating
 //! `at_flags`, so `setxattrat(dfd, path, /*bogus*/ 0x2, NULL_name, args, 16)`
-//! answered `EFAULT` (from the name import) where Linux answers `EINVAL`.
+//! answered `EFAULT` (from the name import) where the correct order answers
+//! `EINVAL`.
 
 use fs::xattr::{admit_getxattrat, admit_listxattrat, admit_removexattrat, admit_setxattrat,
                 check_at_flags, XATTR_CREATE, XATTR_REPLACE};
@@ -44,7 +45,7 @@ fn only_nofollow_and_empty_path_are_accepted() {
     assert_eq!(check_at_flags(0xffff_ffff), Err(e(Errno::Einval)));
 }
 
-// --- 463 setxattrat (`fs/xattr.c:701` + `:740`) ---------------------------
+// --- 463 setxattrat ---------------------------------------------------------
 
 #[test]
 fn setxattrat_runs_the_xattr_args_handshake_before_at_flags() {
@@ -89,7 +90,7 @@ fn setxattrat_rejects_a_non_zero_unknown_tail() {
     assert_eq!(set_err(admit_setxattrat(0, 0, a.as_ptr() as u64, 20)), e(Errno::E2big));
 }
 
-// --- 464 getxattrat (`fs/xattr.c:846` + `:880`) ---------------------------
+// --- 464 getxattrat ---------------------------------------------------------
 
 #[test]
 fn getxattrat_rejects_a_non_zero_args_flags_before_at_flags_and_name() {
@@ -114,7 +115,7 @@ fn getxattrat_carries_the_value_pointer_and_size_out_of_xattr_args() {
     assert_eq!(size, 4096);
 }
 
-// --- 466 removexattrat (`fs/xattr.c:1075`) --------------------------------
+// --- 466 removexattrat -------------------------------------------------------
 
 #[test]
 fn removexattrat_checks_at_flags_before_importing_the_name() {
@@ -124,7 +125,7 @@ fn removexattrat_checks_at_flags_before_importing_the_name() {
     assert_eq!(admit_removexattrat(AT_SYMLINK_NOFOLLOW, name.as_ptr() as u64).unwrap(), "trusted.x");
 }
 
-// --- 465 listxattrat (`fs/xattr.c:983`) -----------------------------------
+// --- 465 listxattrat ----------------------------------------------------------
 
 #[test]
 fn listxattrat_only_validates_at_flags() {

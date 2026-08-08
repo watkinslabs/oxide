@@ -164,7 +164,7 @@ pub unsafe extern "C" fn oxide_finish_task_switch() {
     {
         // Linux `finish_task_switch()` order: `finish_task(prev)` — the
         // `smp_store_release(&prev->on_cpu, 0)` — runs BEFORE
-        // `finish_lock_switch(rq)` releases the rq lock. `kernel/sched/core.c`
+        // `finish_lock_switch(rq)` releases the rq lock. Linux
         // states the rule outright: "p->on_cpu ... is set by prepare_task() and
         // cleared by finish_task() such that it will be set before p is
         // scheduled-in and cleared after p is scheduled-out, BOTH UNDER
@@ -441,7 +441,7 @@ pub unsafe fn schedule() {
     // SAFETY: rq.current was just set to next and this scheduler context owns
     // the incoming task's CPU ownership transition.
     // Linux `set_task_cpu()` bumps `se.nr_migrations` when a task lands on a
-    // different CPU than it last ran on (`kernel/sched/core.c`); that counter
+    // different CPU than it last ran on; that counter
     // is what `PERF_COUNT_SW_CPU_MIGRATIONS` reports. `u16::MAX` is the
     // never-scheduled sentinel and is not a migration.
     // SAFETY: `rq.current` is the incoming task just published by

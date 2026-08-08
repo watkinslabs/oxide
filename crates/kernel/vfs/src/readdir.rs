@@ -1,6 +1,6 @@
 // readdir driver: `.`/`..` synthesis + child-cursor offsetting.
 //
-// Linux has every filesystem call `dir_emit_dots` (`include/linux/fs.h`) at the
+// The reference kernel has every filesystem call `dir_emit_dots` at the
 // head of its own `iterate_shared`, and reserves readdir cursors 0 and 1 for the
 // two dots. Backends whose entries physically carry the dots (ext4, and FUSE
 // where the daemon supplies them) opt out via

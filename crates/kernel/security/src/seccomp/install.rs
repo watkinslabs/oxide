@@ -1,6 +1,6 @@
-// Install-time gate for `seccomp(2)` / `prctl(PR_SET_SECCOMP)`, in Linux's
-// exact check order (`seccomp_set_mode_filter` -> `seccomp_prepare_user_filter`
-// -> `seccomp_prepare_filter`, `kernel/seccomp.c`).
+// Install-time gate for `seccomp(2)` / `prctl(PR_SET_SECCOMP)`, in exact
+// check order: flag validation, then user-filter preparation, then filter
+// preparation/attach.
 //
 // UNGATED (`CLAUDE.md` phantom-test rule): this is the permission ladder, so
 // it must be reachable from `cargo test`.
@@ -45,7 +45,7 @@ pub fn pre_verify_gate(c: &InstallCtx) -> Result<(), Errno> {
     Ok(())
 }
 
-/// `MAX_INSNS_PER_PATH` (`kernel/seccomp.c`) — `(1 << 18) / sizeof(struct
+/// `MAX_INSNS_PER_PATH` — `(1 << 18) / sizeof(struct
 /// sock_filter)`, the cap on the TOTAL instruction count of a task's whole
 /// filter chain. Without it a task installs 4096-instruction filters until
 /// every syscall walks megabytes of cBPF.

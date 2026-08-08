@@ -1,4 +1,4 @@
-//! `vfs_getattr` / `generic_fillattr` (Linux `fs/stat.c`).
+//! `vfs_getattr` / `generic_fillattr`: the stat-family attribute assembly path.
 //!
 //! A single `Inode::getattr` inode-op (default `generic_fillattr`) assembles
 //! the `Kstat` every stat-family syscall encodes, replacing the field-by-field
@@ -25,7 +25,7 @@ pub const S_IFDIR:  u32 = crate::types::S_IFDIR  as u32;
 pub const S_IFCHR:  u32 = crate::types::S_IFCHR  as u32;
 pub const S_IFIFO:  u32 = crate::types::S_IFIFO  as u32;
 
-/// `STATX_*` result-mask bits (Linux `include/uapi/linux/stat.h`) — set in
+/// `STATX_*` result-mask bits (statx(2) ABI) — set in
 /// `Kstat::result_mask` for each field the backend actually filled, so the
 /// `statx(2)` ABI can report `stx_mask` exactly. `generic_fillattr` always
 /// populates the `STATX_BASIC_STATS` set; `STATX_BTIME` is added only when the
@@ -45,7 +45,7 @@ pub const STATX_BLOCKS:      u32 = 0x0000_0400;
 pub const STATX_BASIC_STATS: u32 = STATX_TYPE | STATX_MODE | STATX_NLINK | STATX_UID
     | STATX_GID | STATX_ATIME | STATX_MTIME | STATX_CTIME | STATX_INO | STATX_SIZE | STATX_BLOCKS;
 pub const STATX_BTIME:       u32 = 0x0000_0800;
-/// `STATX_CHANGE_COOKIE` (Linux `include/uapi/linux/stat.h`, bit 30) — the
+/// `STATX_CHANGE_COOKIE` (statx(2) ABI, bit 30) — the
 /// caller wants / the kernel filled `stx_change_attr`, the opaque monotonic
 /// change cookie an NFS-style client compares to detect a modification without
 /// re-reading content. Only [`vfs_getattr_mask`] sets it (gated on the request
@@ -53,23 +53,23 @@ pub const STATX_BTIME:       u32 = 0x0000_0800;
 /// QUERIED flag — a plain stat must not pay that side effect.
 pub const STATX_CHANGE_COOKIE: u32 = 0x4000_0000;
 
-/// `STATX_ATTR_*` bits (Linux `include/uapi/linux/stat.h`) — reported in
+/// `STATX_ATTR_*` bits (statx(2) ABI) — reported in
 /// `Kstat::attributes`, masked by `Kstat::attributes_mask` (the set of
 /// attributes the backend understands). `generic_fillattr` translates the VFS
 /// `i_flags` `S_IMMUTABLE`/`S_APPEND` bits into the matching attr bits.
 pub const STATX_ATTR_IMMUTABLE: u64 = 0x0000_0010;
 pub const STATX_ATTR_APPEND:    u64 = 0x0000_0020;
 /// `STATX_ATTR_AUTOMOUNT` — the resolved inode is a mount trigger
-/// (Linux `vfs_getattr_nosec` `fs/stat.c:200-207`, `IS_AUTOMOUNT`).
+/// (an automount point, `IS_AUTOMOUNT`).
 pub const STATX_ATTR_AUTOMOUNT: u64 = 0x0000_1000;
 /// `STATX_ATTR_DAX` — the inode is served directly from persistent memory.
 pub const STATX_ATTR_DAX:       u64 = 0x0020_0000;
-/// The pair `vfs_getattr_nosec` advertises as authoritative on EVERY inode,
-/// independent of the backend (`fs/stat.c:207`). A backend's own
+/// The pair the VFS advertises as authoritative on EVERY inode,
+/// independent of the backend. A backend's own
 /// `attributes_mask` is OR'd on top.
 pub const KSTAT_ATTR_VFS_LEVEL: u64 = STATX_ATTR_AUTOMOUNT | STATX_ATTR_DAX;
 
-/// Resolved inode attributes (Linux `struct kstat`). `mode` carries the
+/// Resolved inode attributes (the `stat`/`statx` result struct). `mode` carries the
 /// `S_IF*` type bits OR'd with the permission bits. `fsid` is the raw
 /// filesystem identity (`Inode::fsid`); the syscall layer encodes it into the
 /// ABI `dev_t`. `result_mask` reports exactly which fields are valid (statx
@@ -103,7 +103,7 @@ pub struct Kstat {
     pub attributes_mask: u64,
 }
 
-/// `new_encode_dev` (Linux `include/linux/kdev_t.h`): pack a `(major, minor)`
+/// `new_encode_dev`: pack a `(major, minor)`
 /// pair into the 32-bit `st_rdev` ABI surface with the huge-dev split — minor's
 /// low 8 bits in `[0..8)`, the 12-bit major in `[8..20)`, and minor's HIGH bits
 /// in `[20..32)`. The high-minor split is what lets a minor exceed 255 (e.g.
@@ -354,17 +354,17 @@ pub fn blocks_for(size: u64, bsize: u32) -> u64 {
     units * (unit / 512)                          // → 512-byte sectors
 }
 
-/// VFS-level post-processing every `vfs_getattr_nosec` applies AROUND the
-/// backend's `i_op->getattr` (Linux `fs/stat.c:193-207`), so it holds for
+/// VFS-level post-processing applied AROUND the
+/// backend's `i_op->getattr`, so it holds for
 /// pseudo-fs and ext4 alike:
 ///
-/// - `SB_NOATIME` CLEARS `STATX_ATIME` from `result_mask` (`fs/stat.c:193-194`).
+/// - `SB_NOATIME` CLEARS `STATX_ATIME` from `result_mask`.
 ///   The field is still copied; the mask says it is meaningless, and a caller
 ///   that trusts an unmasked `stx_atime` on a `noatime` mount reads a stale
 ///   value. This is the one place `stx_mask` is narrower than the base set.
 /// - `IS_AUTOMOUNT` sets `STATX_ATTR_AUTOMOUNT`, `S_DAX` sets `STATX_ATTR_DAX`,
 ///   and BOTH are advertised in `attributes_mask` unconditionally
-///   (`fs/stat.c:200-207`) — a clear bit then means "not an automount", not
+///   — a clear bit then means "not an automount", not
 ///   "unknown". # C: O(1)
 fn vfs_getattr_post(inode: &crate::inode::InodeRef, st: &mut Kstat) {
     if inode.i_sb().map(|s| s.s_flags() & crate::superblock::SB_NOATIME != 0).unwrap_or(false) {
@@ -375,7 +375,7 @@ fn vfs_getattr_post(inode: &crate::inode::InodeRef, st: &mut Kstat) {
     st.attributes_mask |= KSTAT_ATTR_VFS_LEVEL;
 }
 
-/// `vfs_getattr` (Linux `fs/stat.c`): the stat-family entry that dispatches to
+/// `vfs_getattr`: the stat-family entry that dispatches to
 /// `i_op->getattr` (override) or `generic_fillattr` (default), then applies the
 /// VFS-level mask/attribute rules in [`vfs_getattr_post`]. # C: O(1)
 pub fn vfs_getattr(inode: &crate::inode::InodeRef, idmap: &Idmap) -> Kstat {

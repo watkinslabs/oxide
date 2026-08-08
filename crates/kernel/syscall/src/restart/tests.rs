@@ -1,7 +1,7 @@
 // Hosted tests for the ERESTART* encodings and Linux's signal-delivery-time
-// restart decision. Table values checked against linux-master
-// `include/linux/errno.h`, `arch/x86/kernel/signal.c` `handle_signal` /
-// `arch_do_signal_or_restart`, and `arch/arm64/kernel/signal.c` `do_signal`.
+// restart decision. Table values checked against Linux's internal errno
+// space and the `handle_signal` / `arch_do_signal_or_restart` (x86_64) and
+// `do_signal` (aarch64) restart-action tables.
 
 use super::*;
 

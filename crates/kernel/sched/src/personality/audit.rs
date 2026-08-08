@@ -19,8 +19,8 @@
 // and read by nothing, because Linux itself reads them nowhere reachable here:
 //   FDPIC_FUNCPTRS   arm32 / sh / xtensa signal frames only; neither of this
 //                    kernel's arches has an FDPIC ABI or a consumer.
-//   SHORT_INODE      no consumer anywhere in the Linux tree.
-//   WHOLE_SECONDS    no consumer anywhere in the Linux tree.
+//   SHORT_INODE      no consumer in upstream Linux, on any arch.
+//   WHOLE_SECONDS    no consumer in upstream Linux, on any arch.
 //   ADDR_LIMIT_3GB   moves the ia32 page offset, read only under a 32-bit
 //                    compat task; unreachable on a 64-bit-only kernel.
 //   ADDR_LIMIT_32BIT arm32 `STACK_TOP` only; no 64-bit consumer.

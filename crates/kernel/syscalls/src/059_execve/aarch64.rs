@@ -189,7 +189,7 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
     unsafe {
         core::arch::asm!("msr tpidr_el0, xzr", options(nomem, nostack, preserves_flags));
     }
-    // Linux `fs/binfmt_elf.c:226` `create_elf_tables()`: AT_RANDOM is 16
+    // Linux's `create_elf_tables()`: AT_RANDOM is 16
     // `get_random_bytes()` bytes drawn per exec.
     let random16 = crate::auxrandom::at_random_bytes();
     let argv_slices: alloc::vec::Vec<&[u8]> = argv_vec.iter().map(|v| v.as_slice()).collect();
@@ -208,7 +208,7 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
             cur.set_exe_path(Some(path_str.clone()));
             if let Some(mm) = cur.mm_ref() { mm.set_exe_path(path_str.clone()); }
             // Linux `exe_file_deny_write_access` on the new image, released on
-            // the old one (`kernel/fork.c` `replace_mm_exe_file`). Modern Linux
+            // the old one (`replace_mm_exe_file`). Modern Linux
             // dropped `VM_DENYWRITE` and hangs `ETXTBSY` off the exe_file, so
             // this retention is what stops a running binary's text being
             // rewritten under it. The image was already opened for exec above,

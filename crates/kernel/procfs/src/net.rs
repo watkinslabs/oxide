@@ -76,7 +76,7 @@ fn net_tcp6_body(net_ns: u64) -> alloc::vec::Vec<u8> {
 pub fn make_proc_net_tcp6() -> InodeRef { make_net_file(ids::NET_TCP6 as Ino, net_tcp6_body) }
 
 /// Translate our internal TcpState to Linux's /proc/net/tcp values
-/// (uapi/linux/tcp.h `enum tcp_state`). `ss`/`netstat` decode this.
+/// (`enum tcp_state`). `ss`/`netstat` decode this.
 fn proc_ipv6_hex(ip: net::addr::Ipv6Addr) -> alloc::string::String {
     use alloc::format;
     let o = ip.0;

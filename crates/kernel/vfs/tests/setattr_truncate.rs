@@ -1,5 +1,5 @@
-//! ATTR_SIZE truncate apply path (Linux `fs/attr.c` notify_change +
-//! `fs/open.c` vfs_truncate / do_truncate): a size change requires MAY_WRITE,
+//! ATTR_SIZE truncate apply path (`notify_change` composed with the
+//! `vfs_truncate`/`do_truncate` gates): a size change requires MAY_WRITE,
 //! is rejected on an immutable (EPERM, via `inode_permission`) or append-only
 //! (EPERM, via the `vfs_truncate` IS_APPEND gate) inode, and otherwise drives
 //! `i_op->truncate` so the backend updates `i_size` and drops backing storage

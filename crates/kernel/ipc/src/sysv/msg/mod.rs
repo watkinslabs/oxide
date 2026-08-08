@@ -1,5 +1,4 @@
-//! System V message queues (`ipc/msg.c`): `msgget` / `msgsnd` / `msgrcv` /
-//! `msgctl`.
+//! System V message queues: `msgget` / `msgsnd` / `msgrcv` / `msgctl`.
 //!
 //! Module manifest:
 //!   `model`  — `struct msg_queue`, the per-namespace registry, `freeque`,

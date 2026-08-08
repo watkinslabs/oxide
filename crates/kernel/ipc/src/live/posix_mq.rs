@@ -1,6 +1,6 @@
 // POSIX message queues (`24`) — slots 240..=245.
 //
-// Linux shape (`ipc/mqueue.c`): each IPC namespace owns a private mqueuefs
+// Each IPC namespace owns a private mqueuefs
 // whose sticky 01777 root holds one `S_IFREG` inode per queue; the inode's
 // private state IS the queue, its mode/uid/gid are what `mq_open` and
 // `mq_unlink` run DAC against, and the descriptor's own flags carry the access

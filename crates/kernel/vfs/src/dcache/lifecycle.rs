@@ -39,19 +39,19 @@ pub fn dput(d: Arc<Dentry>) {
     drop(d);
 }
 
-/// Final kill of an UNUSED dentry (Linux `__dentry_kill`, `fs/dcache.c`): stamp
+/// Final kill of an UNUSED dentry: stamp
 /// the lockref `LOCKREF_DEAD` sentinel BEFORE unhashing, so a concurrent
 /// `d_lookup` whose `inc_count_not_dead` races the kill fails the not-dead gate
-/// (Linux marks dead under `d_lock` at the top of `__dentry_kill`, ahead of
-/// `__d_drop`) and re-walks the slow path instead of resurrecting a dying
+/// (dead is marked under the dentry lock ahead of the unhash) and re-walks the
+/// slow path instead of resurrecting a dying
 /// dentry. Routed to by every genuine eviction site — final `dput`, the LRU /
 /// per-sb / subtree shrinkers, and `d_prune_aliases`. The non-kill unhash paths
 /// keep the bare `d_drop`: `d_move` rehomes a live dentry, `d_invalidate`
 /// disconnects a subtree whose nodes may still be in use, and a stale
 /// `d_revalidate` miss re-walks without a refcount kill. # C: O(d_drop)
 pub(super) fn dentry_kill(d: &Arc<Dentry>) {
-    // Linux `__dentry_kill`: fire `d_op->d_prune` (gated by the `DCACHE_OP_PRUNE`
-    // presence bit) BEFORE unhashing, so the fs can drop cache bookkeeping while
+    // Fire the pruning hook (gated by the presence bit) BEFORE unhashing, so
+    // the fs can drop cache bookkeeping while
     // the dentry's name/parent binding is still intact.
     if d.d_has_op_prune() {
         if let Some(f) = d.d_op().and_then(|o| o.d_prune) { f(d); }
@@ -60,21 +60,21 @@ pub(super) fn dentry_kill(d: &Arc<Dentry>) {
     d_drop(d);
 }
 
-/// Unhash `d` from the global table and its parent's `d_subdirs` (Linux
-/// `d_drop`): a stale positive dentry isn't reused after unlink/rmdir/rename.
-/// Also drops `d` from its inode's alias list (`inode->i_dentry`).
+/// Unhash `d` from the global table and its parent's child list: a stale
+/// positive dentry isn't reused after unlink/rmdir/rename.
+/// Also drops `d` from its inode's alias list.
 /// # C: O(bucket_len + log N_children)
 pub fn d_drop(d: &Arc<Dentry>) {
-    // Linux invariant: a dentry with a filesystem mounted on it stays hashed
-    // and canonical — `__d_drop` never unhashes a live mountpoint. Unhashing it
+    // Invariant: a dentry with a filesystem mounted on it stays hashed
+    // and canonical — the unhash never touches a live mountpoint. Unhashing it
     // orphans the mount: a later lookup of the same (parent,name) mints a FRESH
-    // dentry the mount is not keyed on (`__lookup_mnt` keys on dentry pointer),
-    // so the mount is skipped and resolution falls through to the underlay. This
-    // is the live-gnome greeter blocker: systemd's sandbox setup d_drop'd the
-    // ext4 `/sys` dentry that sysfs was mounted on, so logind's re-lookup of
-    // `/sys` produced an unmounted dentry → `/sys` = empty ext4 dir →
+    // dentry the mount is not keyed on (mount lookup keys on the dentry
+    // pointer), so the mount is skipped and resolution falls through to the
+    // underlay. This was the live-gnome greeter blocker: a sandbox setup
+    // dropped the ext4 `/sys` dentry that sysfs was mounted on, so a re-lookup
+    // of `/sys` produced an unmounted dentry → `/sys` = empty ext4 dir →
     // `/sys/dev/char/226:0` ENOENT → card0 never attached → no seat0 → no
-    // greeter. Unmount clears `D_MOUNTED` (`put_mountpoint`) BEFORE any drop, so
+    // greeter. Unmount clears the mounted flag BEFORE any drop, so
     // this guard never blocks a real teardown. # C: O(1)
     if d.is_mounted() { return; }
     DENTRY_HASHTABLE.remove(d);
@@ -84,16 +84,16 @@ pub fn d_drop(d: &Arc<Dentry>) {
     if let Some(p) = d.parent() { p.forget_child(d.name()); }
 }
 
-/// Tell the dcache an inode behind `d` was unlinked (Linux `d_delete`,
-/// `fs/dcache.c`): the FS calls this after a successful `unlink`/`rmdir` so the
-/// stale positive dentry isn't reused. Two Linux-faithful outcomes:
-///   * SOLE-USER, FS caches negatives — turn `d` NEGATIVE but keep it HASHED
-///     (Linux `dentry_unlink_inode`): drop its inode alias and clear the inode,
+/// Tell the dcache an inode behind `d` was unlinked: the FS calls this after
+/// a successful `unlink`/`rmdir` so the
+/// stale positive dentry isn't reused. Two outcomes:
+///   * SOLE-USER, FS caches negatives — turn `d` NEGATIVE but keep it HASHED:
+///     drop its inode alias and clear the inode,
 ///     leaving a cached miss so a later `d_lookup` of the now-absent name hits
-///     the negative WITHOUT re-running `i_op->lookup`.
+///     the negative WITHOUT re-running the lookup op.
 ///   * SHARED (`d_count > 1`, another walker holds the positive view) OR the FS
-///     opts out of caching negatives via `d_op->d_delete` returning true (Linux
-///     `DCACHE_OP_DELETE`, e.g. a pseudo-fs that never wants stale names) —
+///     opts out of caching negatives via its delete hook returning true
+///     (e.g. a pseudo-fs that never wants stale names) —
 ///     UNHASH it (`d_drop`) so new lookups re-walk and the node is freed at the
 ///     last `dput`. A shared dentry can't be turned negative underneath its
 ///     other users, so it is dropped, not made negative. # C: O(d_drop)
@@ -109,12 +109,11 @@ pub fn d_delete(d: &Arc<Dentry>) {
     }
 }
 
-/// Unlink the name at `d` (Linux `vfs_unlink` tail, dentry side) — the D30
-/// coupling between `Inode::i_nlink` and the per-inode `i_dentry` alias list.
+/// Unlink the name at `d` (dentry side of `unlink`/`rmdir`) — the D30
+/// coupling between `Inode::i_nlink` and the per-inode dentry alias list.
 ///
-/// AUTHORITY: the FILESYSTEM's `i_op->unlink`/`rmdir` owns the in-memory
-/// `drop_nlink` on the victim inode (Linux: `ext4_unlink`→`ext4_dec_count`,
-/// `shmem`/`simple_unlink`→`drop_nlink`), and it runs BEFORE this — the unlink/
+/// AUTHORITY: the FILESYSTEM's unlink/rmdir op owns the in-memory
+/// nlink decrement on the victim inode, and it runs BEFORE this — the unlink/
 /// rmdir syscall handlers call the backend op first, then this. So by the time
 /// `d_unlink` runs, `inode.i_nlink` ALREADY reflects the drop; this function
 /// does NOT touch nlink (no double-decrement). It only tears down the dcache
@@ -125,7 +124,7 @@ pub fn d_delete(d: &Arc<Dentry>) {
 ///      one is unhashed.
 ///   3. If that was the last name, [`d_prune_aliases`] drops every remaining
 ///      UNUSED sibling alias so no stale cached name resolves to the now-dead
-///      inode (Linux `d_prune_aliases` on the final unlink), and the last
+///      inode, and the last
 ///      held reference's `iput` retires the inode through the EXISTING
 ///      `drop_inode`/`evict_inode` window. Eviction is driven solely by `iput`
 ///      (whose `drop_inode` default is `nlink == 0 && i_count == 0`) — this
@@ -138,8 +137,8 @@ pub fn d_unlink(d: &Arc<Dentry>) -> bool {
     // Backend `i_op->unlink`/`rmdir` already dropped the in-memory link.
     let last = inode.nlink() == 0;
     d_delete(d);
-    // Linux `dentry_unlink_inode`: `if (!inode->i_nlink) fsnotify_inoderemove()`
-    // (`fs/dcache.c`). Firing here rather than from `unlink(2)` is what makes
+    // The delete-self notification fires once `i_nlink` reaches zero.
+    // Firing here rather than from `unlink(2)` is what makes
     // `rmdir` report it at all, and what stops a file with remaining hardlinks
     // reporting it on the first name removed.
     if last {

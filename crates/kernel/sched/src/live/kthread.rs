@@ -1,4 +1,4 @@
-// kthread lifecycle — Linux `kernel/kthread.c` (`skizm.md` §2, Step 8).
+// kthread lifecycle — Linux model (`skizm.md` §2, Step 8).
 //
 // `spawn_kernel_thread` could only ever CREATE a kthread. There was no way to
 // ask one to stop and no way to stand one down temporarily, so every kthread in

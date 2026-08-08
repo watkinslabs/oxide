@@ -80,7 +80,7 @@ pub use pivot_check::{pivot_check, PivotFacts};
 pub(crate) use detach::detach_mounts_on;
 
 // mnt_flags model: the kernel-internal `mnt_flags` bit set (MNT_LOCKED /
-// MNT_INTERNAL / MNT_DOOMED / …, Linux `include/linux/mount.h`) distinct from
+// MNT_INTERNAL / MNT_DOOMED / …) distinct from
 // the MS_*-valued option mask, plus typed option-mask + atime-policy readback.
 mod mnt_flags;
 pub use mnt_flags::{

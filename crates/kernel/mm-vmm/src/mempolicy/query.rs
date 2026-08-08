@@ -1,6 +1,6 @@
-// `do_get_mempolicy` (`mm/mempolicy.c:1147`) split into the part that only
-// needs the flags (validation, which decides WHICH lookup the slot must do)
-// and the part that turns a resolved policy into the two output values.
+// get_mempolicy(2) split into the part that only needs the flags
+// (validation, which decides WHICH lookup the slot must do) and the part
+// that turns a resolved policy into the two output values.
 //
 // Four distinct behaviours, all reachable from libnuma:
 //   MPOL_F_MEMS_ALLOWED              → mode 0, nodemask = cpuset mems_allowed
@@ -13,7 +13,7 @@ use super::policy::MemPolicy;
 use super::uapi::*;
 use crate::Error;
 
-/// Which lookup `do_get_mempolicy` needs after flag validation.
+/// Which lookup get_mempolicy(2) needs after flag validation.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum GetPolicyKind {
     /// `MPOL_F_MEMS_ALLOWED`: no policy lookup at all.
@@ -25,7 +25,7 @@ pub enum GetPolicyKind {
     TaskPolicy { node: bool },
 }
 
-/// `do_get_mempolicy`'s flag ladder (`mm/mempolicy.c:1152..1174`).
+/// get_mempolicy(2)'s flag ladder.
 /// `addr` matters: without `MPOL_F_ADDR` a non-zero `addr` is `EINVAL`.
 /// # C: O(1)
 pub fn get_mempolicy_kind(flags: u64, addr: u64) -> Result<GetPolicyKind, Error> {
@@ -40,10 +40,10 @@ pub fn get_mempolicy_kind(flags: u64, addr: u64) -> Result<GetPolicyKind, Error>
     Ok(GetPolicyKind::TaskPolicy { node })
 }
 
-/// `current->il_prev` right after `do_set_mempolicy` installs an interleave
-/// policy (`mm/mempolicy.c:1095`). oxide's allocator is single-node, so the
-/// interleave cursor is never advanced past its seed — `next_node_in` from
-/// here is the only value `get_mempolicy(MPOL_F_NODE)` can observe.
+/// Interleave cursor seed right after set_mempolicy(2) installs an interleave
+/// policy. oxide's allocator is single-node, so the interleave cursor is
+/// never advanced past its seed — `next_node_in` from here is the only value
+/// `get_mempolicy(MPOL_F_NODE)` can observe.
 pub const IL_PREV_INIT: u16 = (MAX_NUMNODES - 1) as u16;
 
 /// `next_node_in(n, mask)`: first node after `n` in `mask`, wrapping.

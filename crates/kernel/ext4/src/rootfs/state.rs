@@ -91,8 +91,8 @@ impl RootfsState {
     pub fn set_sb(self: &Arc<Self>, sb: Weak<vfs::SuperBlock>) -> vfs::KResult<()> {
         self.mount.set_vfs_superblock(sb.clone());
         let live = sb.upgrade().ok_or(vfs::VfsError::Enodev)?;
-        // `__ext4_fill_super` (Linux fs/ext4/super.c) publishes the on-disk
-        // timestamp window BEFORE the fs is usable, so `timestamp_truncate`
+        // Linux publishes the on-disk timestamp window at mount time,
+        // BEFORE the fs is usable, so `timestamp_truncate`
         // clamps utimes/current_time to what ext4 can actually store: whole
         // seconds capped at 2038 without `i_atime_extra`, else nanoseconds out
         // to year 2446. `s_time_min` is `S32_MIN` either way — 1901-12-13, so

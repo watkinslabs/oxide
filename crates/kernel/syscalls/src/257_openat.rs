@@ -357,7 +357,7 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
         // S_IALLUGO (0o7777): pass requested suid/sgid/sticky to VFS prepare.
         let final_mode = mode & 0o7777;
         // The openat2 RESOLVE_* scope MUST survive into the create path. Linux
-        // hands one `op->lookup_flags` (`fs/open.c` build_open_flags) to
+        // hands one `op->lookup_flags` (from `build_open_flags`) to
         // `path_openat`, which runs the LOOKUP_PARENT walk with the same
         // `nd->flags` — no create-path exception exists. Resolving the parent
         // unscoped here let `openat2(dirfd, "/etc/x", O_CREAT, {RESOLVE_IN_ROOT})`
@@ -506,7 +506,7 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
     // session leader opening a console/serial/VT tty WITHOUT O_NOCTTY, when
     // the tty is unclaimed, makes it the session's controlling terminal.
     console::acquire_ctty_on_open(&inode, flags);
-    // Same rule for the pty slave half (`drivers/tty/tty_io.c:2163-2169` folds
+    // Same rule for the pty slave half (Linux's `tty_open` folds
     // only the MASTER into `noctty`). devpts owns those inodes, so it makes the
     // call; without it no pty is ever a controlling terminal and job control on
     // `/dev/pts/<n>` is inert.

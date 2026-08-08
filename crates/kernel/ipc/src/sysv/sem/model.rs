@@ -1,5 +1,4 @@
-//! `struct sem` / `struct sem_array` and the per-namespace registry
-//! (`ipc/sem.c`).
+//! `struct sem` / `struct sem_array` and the per-namespace registry.
 //!
 //! One `Spinlock` per set stands in for Linux's `sem_perm.lock` +
 //! per-semaphore `sem->lock` pair. Linux splits them purely for SMP scaling

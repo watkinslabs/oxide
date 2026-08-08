@@ -1,5 +1,5 @@
 // 238 set_mempolicy — `SYSCALL_DEFINE3(set_mempolicy)` / `kernel_set_mempolicy`
-// (`mm/mempolicy.c:1835`). ABI shim (docs/53): the ladder is
+//. ABI shim (docs/53): the ladder is
 // `vmm::mempolicy::{sanitize_mpol_flags, mpol_new}`, the storage is
 // `Task::set_mempolicy`.
 

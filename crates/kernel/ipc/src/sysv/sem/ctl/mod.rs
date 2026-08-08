@@ -1,5 +1,4 @@
-//! `semctl(2)` — Linux `ksys_semctl` and the four bodies it fans out to
-//! (`ipc/sem.c`).
+//! `semctl(2)` — Linux `ksys_semctl` and the four bodies it fans out to.
 //!
 //! Module manifest:
 //!   `dispatch` — `ksys_semctl` command fan-out and the `NR_SEMCTL` shim.

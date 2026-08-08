@@ -1,6 +1,5 @@
 // Permission + validity chokepoint for `add_key`/`request_key`/`keyctl`.
-// Mirrors Linux `key_task_permission` and `key_validate`
-// (`security/keys/permission.c`): a key's `perm: u32` packs four 6-bit
+// A key's `perm: u32` packs four 6-bit
 // need-masks — possessor(31:24) / user(23:16) / group(15:8) / other(7:0) —
 // each tested against the `KEY_NEED_*` bit the op requires. `check_perm` is
 // the ONE call every op site makes before touching a key; no op reads `perm`
@@ -85,7 +84,7 @@ fn reachable(g: &Store, roots: alloc::vec::Vec<i32>, target: i32) -> bool {
     false
 }
 
-/// Linux `key_validate` (`security/keys/permission.c`), verbatim:
+/// Key validity check, in this exact order:
 /// invalidated → ENOKEY, revoked or dead → EKEYREVOKED, past its expiry →
 /// EKEYEXPIRED. Every non-`KEY_LOOKUP_PARTIAL` lookup runs this, which is what
 /// makes `KEYCTL_SET_TIMEOUT` and `KEYCTL_REVOKE` actually take effect rather

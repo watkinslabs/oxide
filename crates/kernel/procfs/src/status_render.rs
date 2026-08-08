@@ -1,5 +1,5 @@
-// `/proc/<pid>/status` field rendering — Linux `fs/proc/array.c`
-// (`proc_pid_status` -> `task_state` / `task_sig` / `task_cap` /
+// `/proc/<pid>/status` field rendering — matching Linux's `proc_pid_status`
+// composition (`task_state` / `task_sig` / `task_cap` /
 // `task_seccomp` / `task_cpus_allowed` / `cpuset_task_status_allowed` /
 // `task_context_switch_counts`).
 //

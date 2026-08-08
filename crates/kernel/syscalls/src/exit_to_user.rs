@@ -1,6 +1,6 @@
 // Return-to-user-mode work loop — the EXECUTOR half.
 //
-// Linux `kernel/entry/common.c` `__exit_to_user_mode_loop`. One body, reached
+// Linux's `__exit_to_user_mode_loop`. One body, reached
 // from EVERY return to user mode:
 //
 //   * syscall return  — `dispatch/core.rs` tail (Linux
@@ -36,9 +36,9 @@ type ArchIrqGate = hal_x86_64::X86IrqGate;
 #[cfg(target_arch = "aarch64")]
 type ArchIrqGate = hal_aarch64::ArmIrqGate;
 
-/// Linux `user_mode(regs)`: `!!(regs->cs & 3)` on x86_64
-/// (`arch/x86/include/asm/ptrace.h`), `(regs->pstate & PSR_MODE_MASK) ==
-/// PSR_MODE_EL0t` on arm64 (`arch/arm64/include/asm/ptrace.h`). The ONE place
+/// Linux `user_mode(regs)`: `!!(regs->cs & 3)` on x86_64,
+/// `(regs->pstate & PSR_MODE_MASK) ==
+/// PSR_MODE_EL0t` on arm64. The ONE place
 /// either test is written — every return path asks this rather than
 /// re-deriving `& 3` / `& 0xf` at the call site.
 /// # SAFETY: `regs` is a live entry frame.

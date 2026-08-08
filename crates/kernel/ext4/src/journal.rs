@@ -128,8 +128,8 @@ impl Mount {
         // stable media, so publishing `s_start` next would point recovery at a
         // transaction that might not exist. Discarding this error (the old
         // `let _ =`) made the write-ahead guarantee unverifiable even in
-        // principle. Linux checks `blkdev_issue_flush` and propagates it
-        // (`fs/ext4/fsync.c:186-189`, `jbd2_journal_commit_transaction`).
+        // principle. Linux checks the flush's return value and propagates
+        // any error from the journal commit path.
         self.dev.flush().map_err(|_| MountError::BlockIo)?;
         #[cfg(feature = "debug-fsync-latency")]
         crate::fsync_latency::report(b"journal-flush", flush_started_ns, staged_blocks);

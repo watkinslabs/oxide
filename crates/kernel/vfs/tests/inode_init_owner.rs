@@ -1,4 +1,4 @@
-//! `inode_init_owner` (Linux `fs/inode.c`) — owner-id + mode assignment for a
+//! `inode_init_owner` — owner-id + mode assignment for a
 //! NEWLY created inode. Pins the four behaviors the create path depends on:
 //! (1) `i_uid` is always the creator's fsuid; (2) the SGID-directory group
 //! inheritance rule (`dir & S_ISGID` → inherit dir gid, else fsgid); (3) a new

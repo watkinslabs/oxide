@@ -1,5 +1,5 @@
 // B1454: passive open's third ACK. Linux `tcp_rcv_state_process`
-// (`net/ipv4/tcp_input.c:7200-7253`) runs `tcp_ack` — hence
+// runs `tcp_ack` — hence
 // `tcp_clean_rtx_queue` — BEFORE the `case TCP_SYN_RECV:` arm, and that arm
 // then installs `tp->snd_una` AND
 // `tp->snd_wnd = ntohs(th->window) << tp->rx_opt.snd_wscale`.

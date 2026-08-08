@@ -1,4 +1,4 @@
-// Where the heap starts. Linux `load_elf_binary` (`fs/binfmt_elf.c:1310-1342`).
+// Where the heap starts, mirroring Linux's `load_elf_binary` brk placement.
 
 use aslr::ExecRnd;
 use elf::ElfType;
@@ -18,9 +18,9 @@ const HEAP_RESERVE: u64 = 64 * 1024 * 1024;
 /// Two Linux behaviours ride here. A PIE with no interpreter has its image
 /// placed by the arena search, so leaving the heap directly above it would put
 /// the heap inside the mmap arena; Linux moves it to `ELF_ET_DYN_BASE` instead
-/// (`:1310-1315`, the `brk_moved` flag). Then, when the heap randomises, an
+/// (Linux's `brk_moved` flag). Then, when the heap randomises, an
 /// image whose heap was NOT moved first steps one page clear of the image end
-/// (`:1334-1335`) so `start_brk` can never alias the last data page.
+/// so `start_brk` can never alias the last data page.
 /// # C: O(N) VMA insert
 pub(crate) fn install(
     as_: &AddressSpace,

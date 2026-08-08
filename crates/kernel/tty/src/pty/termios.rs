@@ -65,7 +65,7 @@ pub const TERMIOS_OFF_OSPEED: usize = 40;
 /// Number of c_cc control characters in Linux termios.
 pub const NCCS: usize = 19;
 
-/// c_cc indices per Linux termios.h. v1 honours VINTR + VEOF +
+/// c_cc indices per the Linux termios UAPI. v1 honours VINTR + VEOF +
 /// VERASE + VKILL via ldisc dispatch; the rest are stored in the
 /// termios image but ignored.
 pub mod cc {

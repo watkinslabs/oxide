@@ -1,7 +1,7 @@
 // 235 utimes — one syscall, one file (docs/53 §0).
 //
-// Linux implements this as `do_futimesat(AT_FDCWD, filename, utimes)`
-// (`fs/utimes.c:203-207`), so it is slot 261 with the dirfd pinned. The decode
+// Linux implements this as `do_futimesat(AT_FDCWD, filename, utimes)`,
+// so it is slot 261 with the dirfd pinned. The decode
 // is shared, not copied, and the microsecond validation therefore precedes the
 // path lookup here too.
 

@@ -6,8 +6,8 @@
 //   - QEMU smoke shutdown (kmain end-of-boot)
 //
 // Module manifest:
-// - `uapi`:    `include/uapi/linux/reboot.h` magic + command constants.
-// - `decide`:  pure `SYSCALL_DEFINE4(reboot)` / `reboot_pid_ns` decisions
+// - `uapi`:    reboot(2) magic + command constants.
+// - `decide`:  pure reboot(2) / reboot_pid_ns decisions
 //              (magic pair, command classification, pid-namespace mapping,
 //              RESTART2 string truncation) — host-tested.
 // - `cad`:     the `C_A_D` global and `ctrl_alt_del()`'s rule.

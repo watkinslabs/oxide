@@ -1,5 +1,5 @@
 //! `renameat2` flag validation (`rename_flags_check`) + the `vfs_rename`
-//! dual-parent permission gate (`may_rename`) per Linux `fs/namei.c`. Synthetic
+//! dual-parent permission gate (`may_rename`). Synthetic
 //! `Inode` impls carry explicit mode/uid/`i_flags`; both helpers are reached via
 //! their fully-qualified `vfs::namei` paths (crate-root re-exports reported, not
 //! edited).

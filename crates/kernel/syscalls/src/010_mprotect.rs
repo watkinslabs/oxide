@@ -11,7 +11,7 @@ use syscall::errno::Errno;
 /// # C: O(len / PAGE_SIZE)
 pub fn sys_mprotect(args: &SyscallArgs) -> i64 { do_mprotect_pkey(args, crate::pkey::PKEY_KEEP) }
 
-/// `do_mprotect_pkey` (`mm/mprotect.c`). Updates the VMA's `prot` field and
+/// `do_mprotect_pkey`. Updates the VMA's `prot` field and
 /// walks the live page tables to flip W/X bits + flush the TLB per `11§6` via
 /// `pmm::user_as::mprotect_pages`.
 ///

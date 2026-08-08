@@ -34,7 +34,7 @@ const SECURITYFS_MAGIC: u64 = 0x7363_6673;
 const EFIVARFS_MAGIC: u64 = 0xde5e_81e4;
 const PSTOREFS_MAGIC: u64 = 0x6165_676C;
 const BPF_FS_MAGIC: u64 = 0xcafe_4a11;
-/// `FUSE_CTL_SUPER_MAGIC` (Linux fs/fuse/control.c) — the fuse CONTROL
+/// `FUSE_CTL_SUPER_MAGIC` — the fuse CONTROL
 /// filesystem mounted at `/sys/fs/fuse/connections`. Distinct from
 /// `FUSE_SUPER_MAGIC` (0x65735546) by one nibble; reporting the latter makes
 /// every `statfs`-based fuse probe misidentify the control mount.

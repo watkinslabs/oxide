@@ -1,5 +1,5 @@
 // --- [D10] Per-mount mnt_flags OPTION bits — the REAL Linux kernel-internal
-// `mnt->mnt_flags` values (`include/linux/mount.h`), a DISJOINT space from the
+// `mnt->mnt_flags` values, a DISJOINT space from the
 // MS_* mount(2) request flags below. `ms_to_mnt` maps a request mask into this
 // space at mount/remount time. `/proc/mounts` + statvfs `ST_*` read these by
 // NAME, so the value change is transparent to those renderers. ---
@@ -22,7 +22,7 @@ pub const MNT_STRICTATIME: u64 = 1 << 33;
 pub const MNT_OPTION_MASK: u64 = MNT_RDONLY | MNT_NOSUID | MNT_NODEV | MNT_NOEXEC
     | MNT_NOATIME | MNT_NODIRATIME | MNT_RELATIME | MNT_NOSYMFOLLOW | MNT_STRICTATIME;
 
-/// Linux `MNT_ATIME_MASK` (`include/linux/mount.h`): the whole atime policy
+/// Linux `MNT_ATIME_MASK`: the whole atime policy
 /// field, NODIRATIME included. The unit `do_remount`/`can_change_locked_flags`/
 /// `mount_too_revealing` compare and preserve. Carries our synthetic
 /// `MNT_STRICTATIME` because Linux spells strictatime as the ABSENCE of
@@ -35,7 +35,7 @@ pub const MNT_ATIME_MASK: u64 = MNT_NOATIME | MNT_NODIRATIME | MNT_RELATIME | MN
 /// sweep it. # C: const
 pub const MNT_ATIME_MODE_MASK: u64 = MNT_NOATIME | MNT_RELATIME | MNT_STRICTATIME;
 
-// --- [D10] mount(2) MS_* OPTION request flags (`linux/mount.h`) — the
+// --- [D10] mount(2) MS_* OPTION request flags — the
 // USER-FACING request space the syscall passes in, mapped to MNT_* by
 // `ms_to_mnt`. SYNCHRONOUS/MANDLOCK/DIRSYNC/LAZYTIME are SUPERBLOCK (`SB_*`)
 // flags, not per-mount, and are NOT represented in the mnt_flags space. ---
@@ -46,7 +46,7 @@ pub const MS_NOEXEC: u64 = 0x8;
 pub const MS_SYNCHRONOUS: u64 = 0x10;
 pub const MS_MANDLOCK: u64 = 0x40;
 pub const MS_DIRSYNC: u64 = 0x80;
-/// `MS_NOSYMFOLLOW` (`uapi/linux/mount.h` line 21) — the request counterpart of
+/// `MS_NOSYMFOLLOW` — the request counterpart of
 /// `MNT_NOSYMFOLLOW`. `path_mount` maps it; without the constant the request bit
 /// was silently dropped and the mount followed symlinks it was told not to.
 pub const MS_NOSYMFOLLOW: u64 = 256;
@@ -55,13 +55,13 @@ pub const MS_NODIRATIME: u64 = 0x800;
 pub const MS_RELATIME: u64 = 1 << 21;
 pub const MS_STRICTATIME: u64 = 1 << 24;
 pub const MS_LAZYTIME: u64 = 1 << 25;
-/// `MS_SILENT` (`uapi/linux/mount.h`) — suppress the backend's fill-super
+/// `MS_SILENT` — suppress the backend's fill-super
 /// console chatter. Not an option bit anything enforces here, but
 /// `flags_to_propagation_type` STRIPS it alongside `MS_REC`, so a
 /// `mount(NULL, t, NULL, MS_SHARED|MS_SILENT)` must not be read as malformed.
 pub const MS_SILENT: u64 = 1 << 15;
 
-// --- mount(2) OPERATION selectors (`uapi/linux/mount.h`). Not option bits:
+// --- mount(2) OPERATION selectors. Not option bits:
 // `path_mount` dispatches on these to do_reconfigure_mnt / do_remount /
 // do_loopback / do_change_type / do_move_mount_old / do_new_mount. Owned here
 // with the option bits so the mount(2) request contract has ONE definition. ---
@@ -88,8 +88,8 @@ pub const MS_REMOUNTABLE: u64 = MS_RDONLY | MS_NOSUID | MS_NODEV | MS_NOEXEC | M
 pub const MS_ATIME_REQUEST: u64 = MS_NOATIME | MS_NODIRATIME | MS_RELATIME | MS_STRICTATIME;
 
 /// Map a mount(2) MS_* OPTION request mask to the per-mount MNT_* flag space.
-/// Mirrors Linux `fs/namespace.c` `path_mount` ("Separate the per-mountpoint
-/// flags") STATEMENT FOR STATEMENT, because the atime rules are order-sensitive:
+/// Mirrors Linux `path_mount`'s per-mountpoint flag derivation exactly,
+/// because the atime rules are order-sensitive:
 /// relatime is stamped unless MS_NOATIME is present, and MS_STRICTATIME then
 /// CLEARS both RELATIME and NOATIME — so `MS_NOATIME|MS_STRICTATIME` resolves to
 /// strictatime, not noatime. (Linux encodes strictatime as the ABSENCE of both;

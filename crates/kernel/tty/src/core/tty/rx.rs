@@ -35,7 +35,7 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
     /// the next keystroke. # C: O(1)
     pub fn flip_pending(&self) -> usize { self.flip.lock_irqsave::<W::Irq>().pending() }
 
-    /// Linux `flush_to_ldisc` (`drivers/tty/tty_buffer.c`, the `buf->work`
+    /// Linux `flush_to_ldisc` (the tty_buffer `buf->work`
     /// callback): drain everything `insert_flip` staged into the line
     /// discipline, in PROCESS context. Loops until the ring is empty so a byte
     /// inserted mid-drain is not stranded waiting for the next keystroke.

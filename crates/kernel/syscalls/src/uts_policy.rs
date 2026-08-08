@@ -1,4 +1,5 @@
-// sethostname(2) / setdomainname(2) prologue — Linux `kernel/sys.c`.
+// sethostname(2) / setdomainname(2) prologue — Linux's `sys_sethostname` /
+// `sys_setdomainname`.
 //
 // Kept OUTSIDE the `target_os = "oxide-kernel"` gate so `cargo test -p
 // syscalls` exercises the ORDER, which is the only observable part of a
@@ -6,7 +7,7 @@
 
 use syscall::errno::Errno;
 
-/// Linux `__NEW_UTS_LEN` (`include/uapi/linux/utsname.h`): 64 bytes, NOT
+/// Linux `__NEW_UTS_LEN`: 64 bytes, NOT
 /// counting the terminating NUL that `new_utsname.nodename[65]` holds.
 pub const NEW_UTS_LEN: usize = 64;
 

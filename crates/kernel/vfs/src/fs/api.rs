@@ -21,9 +21,9 @@ pub trait FileSystem: Send + Sync {
     fn magic(&self) -> u64 { 0 }
     fn fs_flags(&self) -> FsFlags { FsFlags::empty() }
     /// `sb->s_iflags` this backend stamps at fill-super (Linux does it inline in
-    /// each `fill_super`: `fs/proc/root.c` and `fs/kernfs/mount.c` both set
-    /// `SB_I_NOEXEC | SB_I_NODEV`, `fs/libfs.c` `init_pseudo` sets the same pair
-    /// for every pseudo filesystem). A backend marked
+    /// each `fill_super`: procfs and kernfs/sysfs both set
+    /// `SB_I_NOEXEC | SB_I_NODEV`, and the generic pseudo-filesystem init path
+    /// sets the same pair for every pseudo filesystem). A backend marked
     /// `FS_USERNS_MOUNT_RESTRICTED` MUST return at least
     /// [`crate::superblock::SB_I_USERNS_REQUIRED`] or `mount_too_revealing`
     /// refuses every user-namespace mount of it. # C: O(1)

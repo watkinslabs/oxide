@@ -124,7 +124,7 @@ pub unsafe fn write_foreign_user(root_pa: u64, va: u64, src: &[u8]) -> usize {
 /// freed early.
 ///
 /// TLB coherence (`20§5`) runs through [`crate::tlb_gather::TlbGather`],
-/// which enforces Linux's `mm/mmu_gather.c` rule that the invalidate
+/// which enforces the invariant that the invalidate
 /// completes BEFORE the frame is released. This is NOT optional on a
 /// foreign root: the target is a live process whose threads may be
 /// executing on other CPUs (`process_madvise`), and even

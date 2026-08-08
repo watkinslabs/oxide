@@ -1,6 +1,6 @@
 #![cfg(target_os = "oxide-kernel")]
 
-// FS_IOC_FIEMAP (Linux `fs/ioctl.c::ioctl_fiemap`): map a file's physical
+// FS_IOC_FIEMAP (Linux `ioctl_fiemap`'s shape): map a file's physical
 // extents into the caller's `struct fiemap`. filefrag(8), backup/dedup tools,
 // and `xfs_io fiemap` use it. The per-fs geometry comes from
 // `InodeOps::fiemap`; this shim marshals the uapi struct in/out only.
@@ -14,7 +14,7 @@ use crate::userbuf::{validate_user_buf_readable, validate_user_buf_writable};
 const FS_IOC_FIEMAP: u64 = 0xC020_660B;
 const FIEMAP_MAX_EXTENTS: u32 = u32::MAX / FIEMAP_EXTENT_SZ as u32;
 
-// `struct fiemap` field offsets (include/uapi/linux/fiemap.h).
+// `struct fiemap` field offsets.
 const FM_START:        u64 = 0;   // __u64 fm_start
 const FM_LENGTH:       u64 = 8;   // __u64 fm_length
 const FM_FLAGS:        u64 = 16;  // __u32 fm_flags

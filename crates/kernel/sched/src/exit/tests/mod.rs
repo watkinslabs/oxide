@@ -1,4 +1,4 @@
-// Hosted proof of the `kernel/exit.c` decision logic.
+// Hosted proof of the process-exit decision logic.
 //
 // Module manifest:
 //   status  — exit-code truncation, WIFEXITED/WIFSIGNALED/WCOREDUMP encoding

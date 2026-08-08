@@ -2,7 +2,7 @@
 // glue uses `crate::syscall_nrs::NR_*`. Numbers don't change, so
 // we add them all up-front rather than piecemeal per syscall.
 //
-// Source: arch/x86/entry/syscalls/syscall_64.tbl (Linux mainline).
+// These are the x86_64 Linux syscall numbers.
 // aarch64 numbers differ; the glue treats these as the dispatch
 // keys (the asm stub remaps arch-native numbers to this set).
 
@@ -364,8 +364,8 @@ pub const NR_CACHESTAT:           u64 = 451;
 // set deliberately returns ENOSYS to match modern Linux). Out of numeric order
 // here only because they were back-filled; the value is what's authoritative.
 // OBSOLETE (Linux itself ENOSYS — see docs/15 legend). The set is exactly the
-// rows of `arch/x86/entry/syscalls/syscall_64.tbl` with no entry point or with
-// `sys_ni_syscall`; `misc::is_obsolete` must list every one of them, which
+// x86_64 syscall numbers that are allocated but wired to no entry point;
+// `misc::is_obsolete` must list every one of them, which
 // `obsolete_set_matches_linux` asserts.
 pub const NR_CREATE_MODULE:       u64 = 174;
 pub const NR_GET_KERNEL_SYMS:     u64 = 177;
@@ -405,7 +405,7 @@ pub const NR_FILE_SETATTR:        u64 = 469;
 pub const NR_LISTNS:              u64 = 470;
 pub const NR_RSEQ_SLICE_YIELD:    u64 = 471;
 
-// `arch_prctl(2)` sub-codes — `arch/x86/include/uapi/asm/prctl.h`.
+// `arch_prctl(2)` sub-codes — x86 arch-prctl UAPI code space.
 pub const ARCH_SET_GS: u64 = 0x1001;
 pub const ARCH_SET_FS: u64 = 0x1002;
 pub const ARCH_GET_FS: u64 = 0x1003;

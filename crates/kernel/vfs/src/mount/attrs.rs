@@ -112,7 +112,7 @@ pub fn mnt_setattr_tree_by_id(top_id: u64, set: u64, clr: u64) -> KResult<()> {
     mnt_setattr_attached(top_id, set, clr, None, true)
 }
 
-/// Linux `__mnt_is_readonly` (`fs/namespace.c`): `(mnt_flags & MNT_READONLY) ||
+/// Linux `__mnt_is_readonly`: `(mnt_flags & MNT_READONLY) ||
 /// sb_rdonly(mnt_sb)`. BOTH halves matter — `mount -o ro` on a fresh mount sets
 /// the per-mount bit, while a read-only superblock (a RO-mounted backing device,
 /// a failed-journal ext4) makes every mount over it read-only regardless.
@@ -132,7 +132,7 @@ pub fn mnt_want_write(m: &Mount) -> KResult<()> {
 /// `mnt_drop_write` (Linux): end a write begun by `mnt_want_write`. # C: O(1)
 pub fn mnt_drop_write(m: &Mount) { m.mnt_writers.fetch_sub(1, Ordering::AcqRel); }
 
-/// `check_mnt` (Linux `fs/namespace.c`): true iff mount `m` belongs to the
+/// `check_mnt`: true iff mount `m` belongs to the
 /// CALLER's mount namespace. The uniform guard that keeps a by-id / by-fd /
 /// resolved mount handle from operating across a namespace boundary — every
 /// mount-tree op handed a mount the caller did not freshly resolve in its own

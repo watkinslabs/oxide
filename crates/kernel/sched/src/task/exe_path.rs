@@ -57,7 +57,7 @@ impl Task {
 }
 
 impl Task {
-    /// Linux `replace_mm_exe_file` (`kernel/fork.c`): install `inode` as the
+    /// Linux `replace_mm_exe_file`: install `inode` as the
     /// running image, taking a `deny_write_access` on it and releasing the one
     /// held on the previous image. That deny is what makes `ETXTBSY` real —
     /// `open(O_WRONLY)` and `truncate` of a live binary must fail while it runs.

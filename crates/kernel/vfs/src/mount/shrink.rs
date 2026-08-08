@@ -1,4 +1,4 @@
-//! `shrink_submounts` (Linux `fs/namespace.c`) — the pass `umount(2)` owes an
+//! `shrink_submounts` — the pass `umount(2)` owes an
 //! automounted tree before it declares the target busy.
 //!
 //! An automounter (autofs, NFS crossmnt) parks its short-lived submounts on an

@@ -21,7 +21,7 @@ pub use crate::signum::Signum;
 /// # C: O(1)
 pub fn send_signal_self(sig: Signum) { super::send::send_sig_priv_self(sig); }
 
-/// Linux `zap_other_threads` (kernel/signal.c): on `exit_group(2)` or a
+/// Linux `zap_other_threads`: on `exit_group(2)` or a
 /// fatal signal, EVERY thread in the caller's thread-group dies — the whole
 /// process terminates, not just the calling thread. We post an unblockable
 /// SIGKILL to each sibling (same `tgid`, excluding self) and wake it, so the
@@ -75,7 +75,7 @@ pub fn post_group_signal(target: &alloc::sync::Arc<crate::Task>, sig: u32,
     super::send::send_signal(target, sig, src, crate::sigsend::SigTarget::Process)
 }
 
-/// Linux `complete_signal` (`kernel/signal.c`): once a process-directed signal
+/// Linux `complete_signal`: once a process-directed signal
 /// is queued, find a thread that `wants_signal()` — one that does not have it
 /// blocked — and wake THAT thread so it reaches a delivery point.
 ///

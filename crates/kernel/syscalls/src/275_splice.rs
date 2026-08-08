@@ -1,6 +1,6 @@
 // 275 splice / 276 tee / 278 vmsplice — one file (docs/53 §0). ABI shim only:
 // fd resolution, the `loff_t __user *` copy-in/copy-out, and the iovec import.
-// Every transfer rule is `fs::splice` (Linux `fs/splice.c`).
+// Every transfer rule is `fs::splice`.
 
 #![cfg(target_os = "oxide-kernel")]
 
@@ -42,7 +42,7 @@ fn put_loff(ptr: u64, v: u64) -> Result<(), i64> {
 
 /// `sys_splice(fd_in, off_in, fd_out, off_out, len, flags)` — slot 275.
 ///
-/// Order is Linux's (`fs/splice.c:1616-1636`): `len == 0` returns 0 BEFORE any
+/// Order is Linux's: `len == 0` returns 0 BEFORE any
 /// fd or flag validation, then the flag word, then the two fd lookups.
 /// # C: O(len)
 pub fn sys_splice(args: &SyscallArgs) -> i64 {
@@ -60,15 +60,15 @@ pub fn sys_splice(args: &SyscallArgs) -> i64 {
     let ret = ::fs::splice::do_splice(&in_file, in_off.as_mut(),
                                       &out_file, out_off.as_mut(), len, args.a5);
     if ret < 0 { return ret; }
-    // Copy-out only on success (`fs/splice.c:1434-1438`).
+    // Copy-out only on success.
     if let Some(v) = in_off { if let Err(e) = put_loff(in_off_ptr, v) { return e; } }
     if let Some(v) = out_off { if let Err(e) = put_loff(out_off_ptr, v) { return e; } }
     ret
 }
 
 /// `sys_tee(fd_in, fd_out, len, flags)` — slot 276. Flags are validated BEFORE
-/// the `len == 0` short-circuit here, the reverse of `splice`
-/// (`fs/splice.c:1977-1994`). # C: O(len)
+/// the `len == 0` short-circuit here, the reverse of `splice`.
+/// # C: O(len)
 pub fn sys_tee(args: &SyscallArgs) -> i64 {
     if args.a3 & !::fs::splice::SPLICE_F_ALL != 0 { return errno(Errno::Einval); }
     let len = args.a2 as usize;
@@ -79,7 +79,7 @@ pub fn sys_tee(args: &SyscallArgs) -> i64 {
 }
 
 /// `sys_vmsplice(fd, iov, nr_segs, flags)` — slot 278. The direction comes from
-/// `f_mode` (`fs/splice.c:1593-1598`), so the iovec is imported as a SOURCE or
+/// `f_mode`, so the iovec is imported as a SOURCE or
 /// a DESTINATION accordingly — reading the caller's pages for `ToPipe`,
 /// writing them for `ToUser`. # C: O(sum of iov lens)
 pub fn sys_vmsplice(args: &SyscallArgs) -> i64 {

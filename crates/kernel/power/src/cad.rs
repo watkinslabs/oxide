@@ -1,6 +1,5 @@
-// Linux's `C_A_D` global (`kernel/reboot.c:41`) and `ctrl_alt_del()`
-// (`kernel/reboot.c:828-836`), the only consumer of `LINUX_REBOOT_CMD_CAD_ON`
-// / `CAD_OFF`.
+// Linux's `C_A_D` global and its Ctrl-Alt-Del handler, the only consumer of
+// `LINUX_REBOOT_CMD_CAD_ON` / `CAD_OFF`.
 //
 // `C_A_D` starts at 1 (`int C_A_D = 1;`): out of the box Ctrl-Alt-Del reboots
 // the machine. `reboot(..., CAD_OFF, ...)` — which is what systemd issues at
@@ -29,7 +28,7 @@ pub enum CadAction {
     SignalInit,
 }
 
-/// `ctrl_alt_del()`'s decision (`kernel/reboot.c:828-836`). Pure so the rule is
+/// `ctrl_alt_del()`'s decision. Pure so the rule is
 /// testable; the keyboard driver performs the outcome.
 /// # C: O(1)
 pub const fn cad_action(enabled: bool) -> CadAction {

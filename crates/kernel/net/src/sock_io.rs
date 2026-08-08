@@ -74,7 +74,7 @@ pub(crate) fn write_tcp_blocking(
                 // F168: signal-interruptible — return short success
                 // if we already accepted some bytes, else EINTR.
                 #[cfg(target_os = "oxide-kernel")]
-                // Linux `sk_stream_wait_memory` (`net/core/stream.c:184`)
+                // Linux `sk_stream_wait_memory`
                 // returns `sock_intr_errno(*timeo)`, and `tcp_sendmsg_locked`'s
                 // `do_error:` returns the PARTIAL count when anything was
                 // copied — the short-success arm below is that rule.
@@ -291,8 +291,7 @@ pub fn recvfrom_opts(
         let Some(msg) = msg else {
             // Linux `__skb_wait_for_more_packets`: `if (sk->sk_shutdown &
             // RCV_SHUTDOWN) goto out_noerr;`, which sets `*err = 0` — a receive
-            // on a shut-down socket reports EOF, never EAGAIN
-            // (`net/core/datagram.c`).
+            // on a shut-down socket reports EOF, never EAGAIN.
             //
             // `unix_dgram_poll` reports POLLIN UNCONDITIONALLY once the read
             // side is shut (it is EOF, and EOF is readable), so returning

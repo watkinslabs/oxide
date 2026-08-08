@@ -1,5 +1,5 @@
 // `setns(2)` pidfd flag vocabulary — Linux `check_setns_flags`
-// (`kernel/nsproxy.c`) and `CLONE_NS_ALL` (`include/uapi/linux/sched.h`).
+// and `CLONE_NS_ALL`.
 //
 // Non-gated so a hosted `cargo test` runs these: `308_setns.rs` is behind
 // `kernel_body.rs`'s `#[cfg(target_os = "oxide-kernel")]`, where a

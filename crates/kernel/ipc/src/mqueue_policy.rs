@@ -5,12 +5,12 @@
 // out silently and never runs.
 //
 // Module manifest:
-// - `limits`: Linux mqueue sysctl defaults + hard caps (`include/linux/ipc_namespace.h:118-126`).
-// - `name`:   the queue-name ladder (`fs/namei.c` `lookup_noperm_common`, `fs/libfs.c` `simple_lookup`).
-// - `open`:   `prepare_open` + `OPEN_FMODE` (`ipc/mqueue.c:861-886`).
-// - `attr`:   `mqueue_get_inode` / `mqueue_create_attr` validation + the
-//             RLIMIT_MSGQUEUE arithmetic (`ipc/mqueue.c:289-401`, `:566-608`).
-// - `notify`: `do_mq_notify`'s sigevent gate (`ipc/mqueue.c:1278-1290`).
+// - `limits`: mqueue sysctl defaults + hard caps.
+// - `name`:   the queue-name lookup ladder (component/length/empty-string rules).
+// - `open`:   existence/access-mode resolution (`prepare_open` + `OPEN_FMODE` shape).
+// - `attr`:   inode/attr validation + the
+//             RLIMIT_MSGQUEUE arithmetic.
+// - `notify`: the sigevent validation gate for registration.
 
 pub mod attr;
 pub mod limits;

@@ -185,10 +185,9 @@ fn restart_block_normalizes_to_user_visible_eintr() {
 // The engine `clock_nanosleep(2)` (slot 230) shares with `nanosleep(2)`.
 // Slot 230 is `#![cfg(target_os = "oxide-kernel")]`, so its ABI decisions live
 // here in `sleep_until_deadline`/`interrupt_result` where they are reachable
-// hosted. Linux: `kernel/time/posix-timers.c:1400-1401` (TIMER_ABSTIME forces
-// `rmtp = NULL`) and `kernel/time/hrtimer.c:2446-2458` (the ABS arm returns
-// -ERESTARTNOHAND and arms NO restart block; the REL arm saves the absolute
-// expiry and returns -ERESTART_RESTARTBLOCK).
+// hosted. TIMER_ABSTIME forces `rmtp = NULL` at syscall entry; the ABS arm
+// returns -ERESTARTNOHAND and arms NO restart block, while the REL arm saves
+// the absolute expiry and returns -ERESTART_RESTARTBLOCK.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -264,17 +263,17 @@ fn the_relative_form_writes_remaining_time_and_arms_the_absolute_expiry() {
 
 #[test]
 fn a_job_control_stop_writes_the_remainder_and_arms_the_restart_block() {
-    // B1456. Linux `do_nanosleep`'s loop condition is `t->task &&
-    // !signal_pending(current)` (`kernel/time/hrtimer.c:2404`), and
-    // `signal_wake_up_state` (`kernel/signal.c:721-736`) sets TIF_SIGPENDING for
+    // B1456. The sleep-wait loop condition is "still waiting AND no signal
+    // pending", and a stop signal sets TIF_SIGPENDING for
     // SIGSTOP/SIGTSTP/SIGTTIN/SIGTTOU exactly like a caught signal. So a stop
-    // takes the SAME interrupted tail as any other signal: `nanosleep_copyout`
-    // to `rmtp`, `set_restart_fn(hrtimer_nanosleep_restart)` with the ABSOLUTE
-    // expiry, -ERESTART_RESTARTBLOCK. The stop itself is taken afterwards, in
-    // `get_signal` -> `do_signal_stop`, and SIGCONT resumes through
-    // `restart_syscall(2)`. Stopping inside the park loop and resuming in place
-    // reached neither the copy-out nor the restart block, so `rmtp` stayed
-    // untouched — the one record the guest differential still diverged on.
+    // takes the SAME interrupted tail as any other signal: copy-out to
+    // `rmtp`, arm the restart function with the ABSOLUTE expiry, return
+    // -ERESTART_RESTARTBLOCK. The stop itself is taken afterwards, on the
+    // generic signal-dispatch path, and SIGCONT resumes through
+    // `restart_syscall(2)`. Stopping inside the park loop and resuming in
+    // place reached neither the copy-out nor the restart block, so `rmtp`
+    // stayed untouched — the one record the guest differential still
+    // diverged on.
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     for sig in [Signum::Sigstop, Signum::Sigtstp, Signum::Sigttin, Signum::Sigttou] {
@@ -297,9 +296,8 @@ fn a_job_control_stop_writes_the_remainder_and_arms_the_restart_block() {
 
 #[test]
 fn timer_abstime_under_a_job_control_stop_still_writes_nothing() {
-    // `TIMER_ABSTIME` forces `rmtp = NULL` at the syscall entry
-    // (`kernel/time/posix-timers.c:1400-1401`) and `hrtimer_nanosleep` skips
-    // `set_restart_fn` for HRTIMER_MODE_ABS — a stop changes neither.
+    // `TIMER_ABSTIME` forces `rmtp = NULL` at the syscall entry and the
+    // absolute-mode sleep arms no restart function — a stop changes neither.
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let task = install_current();

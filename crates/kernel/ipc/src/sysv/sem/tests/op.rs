@@ -183,9 +183,8 @@ fn deadline_conversion_rejects_invalid_timespecs() {
 
 #[test]
 fn an_already_expired_semtimedop_timeout_is_eagain_without_parking() {
-    // Linux `__do_semtimedop`: `schedule_hrtimeout_range` on a deadline in the
-    // past returns immediately with `timed_out`, and the loop tail turns that
-    // into `-EAGAIN` (`ipc/sem.c:2209-2210`). A `{0,0}` timeout is therefore
+    // A deadline already in the past is detected on the first poll and turns
+    // into `-EAGAIN`, without ever parking. A `{0,0}` timeout is therefore
     // "poll once, then EAGAIN" — never an indefinite park, and never EINVAL.
     let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
@@ -199,8 +198,8 @@ fn an_already_expired_semtimedop_timeout_is_eagain_without_parking() {
 
 #[test]
 fn a_timeout_is_rejected_before_the_id_is_resolved() {
-    // `__do_semtimedop` validates the timespec at `ipc/sem.c:2003-2009`, before
-    // `sem_obtain_object_check`, so a malformed timeout beats EINVAL-for-bad-id.
+    // The timespec is validated before the set id is resolved, so a
+    // malformed timeout beats EINVAL-for-bad-id.
     let _g = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let (ns, c) = (ns(), root());
@@ -209,7 +208,8 @@ fn a_timeout_is_rejected_before_the_id_is_resolved() {
     // timespec on the same id still reports EINVAL for the id alone.
     assert_eq!(semop_in(ns, &c, 4096, &[sop(0, 1, 0)], Some((0, -1))), Err(Errno::Einval));
     assert_eq!(semop_in(ns, &c, 4096, &[sop(0, 1, 0)], Some((0, 0))), Err(Errno::Einval));
-    // E2BIG outranks the timeout check (`ipc/sem.c:2000-2001` precedes `:2003`).
+    // The nsops-count bound (E2BIG) is checked before the timespec, so it
+    // outranks the timeout-validation EINVAL above.
     let big: Vec<Sembuf> = (0..SEMOPM + 1).map(|_| sop(0, 1, 0)).collect();
     assert_eq!(semop_in(ns, &c, 4096, &big, Some((0, -1))), Err(Errno::E2big));
 }

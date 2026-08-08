@@ -2,7 +2,7 @@
 
 pub const JBD2_MAGIC: u32 = 0xC03B_3998;
 
-/// Block-type discriminant per `linux/jbd2.h`.
+/// Block-type discriminant per the JBD2 on-disk journal format.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum BlockType {
     Descriptor   = 1,

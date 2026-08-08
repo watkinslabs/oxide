@@ -1,5 +1,5 @@
-// ext4 inode + extent-header parser per Linux fs/ext4/ext4.h
-// `ext4_inode` + `ext4_extent_header`. Pure decoder — caller
+// ext4 inode + extent-header parser (on-disk `ext4_inode` +
+// `ext4_extent_header` layout). Pure decoder — caller
 // hands a slice big enough for an inode (sb.inode_size bytes).
 //
 // We only decode the read-path fields:
@@ -171,8 +171,8 @@ impl Inode {
                 | ((u16::from_le_bytes([buf[0x78], buf[0x79]]) as u32) << 16);
         let gid = u16::from_le_bytes([buf[0x18], buf[0x19]]) as u32
                 | ((u16::from_le_bytes([buf[0x7A], buf[0x7B]]) as u32) << 16);
-        // `EXT4_INODE_GET_{A,C,M}TIME` + `EXT4_EINODE_GET_XTIME(i_crtime)`
-        // (Linux fs/ext4/ext4.h). Signed seconds: a pre-1970 base word
+        // `EXT4_INODE_GET_{A,C,M}TIME` + `EXT4_EINODE_GET_XTIME(i_crtime)`.
+        // Signed seconds: a pre-1970 base word
         // sign-extends rather than reading back as year 2106.
         let atime = ts::get_xtime(buf, isize, ts::I_ATIME, ts::I_ATIME_EXTRA);
         let ctime = ts::get_xtime(buf, isize, ts::I_CTIME, ts::I_CTIME_EXTRA);

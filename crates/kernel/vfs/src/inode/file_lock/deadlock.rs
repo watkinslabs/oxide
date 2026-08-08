@@ -1,4 +1,4 @@
-// Linux `posix_locks_deadlock` (`fs/locks.c:1101`): before a POSIX record
+// Linux `posix_locks_deadlock`: before a POSIX record
 // lock sleeps, walk the "owner X is blocked on owner Y" chain starting at the
 // prospective blocker. Reaching the caller's own owner is a cycle, and the
 // request is EDEADLK instead of an unbounded sleep.
@@ -16,7 +16,7 @@ use sync::{FileLockBlocked as BlockedClass, Spinlock};
 
 use super::records::RecordOwner;
 
-/// Linux `MAX_DEADLK_ITERATIONS` (`fs/locks.c:1083`): a broken owner graph —
+/// Linux `MAX_DEADLK_ITERATIONS`: a broken owner graph —
 /// Linux names threads sharing one descriptor table — can otherwise walk
 /// forever, so the search gives up rather than hangs.
 const MAX_DEADLK_ITERATIONS: usize = 10;
@@ -40,7 +40,7 @@ fn waiting_for(edges: &[Edge], owner: RecordOwner) -> Option<RecordOwner> {
 /// because Linux holds `blocked_lock_lock` across both.
 ///
 /// OFD callers never reach here: Linux skips detection for `FL_OFDLCK`
-/// (`fs/locks.c:1114`) since the owner is a file, not a thread of execution.
+/// since the owner is a file, not a thread of execution.
 /// # C: O(N_edges * MAX_DEADLK_ITERATIONS)
 pub fn block_on(waiter: RecordOwner, blocker: RecordOwner) -> bool {
     let mut edges = BLOCKED.lock();

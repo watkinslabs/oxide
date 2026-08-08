@@ -8,7 +8,7 @@
 // re-exports `Signum`, so every `sched::live::sigpend::Signum` call site
 // keeps resolving unchanged.
 //
-// Numeric values match the Linux uapi `<asm-generic/signal.h>`. This is the
+// Numeric values match the Linux uapi signal numbering. This is the
 // typed alternative to raw signo literals (CLAUDE.md `07§5`): NEVER open-code
 // a bare signal number — route through `Signum` / the helpers here.
 
@@ -65,7 +65,7 @@ pub const RT_SIGNAL_MIN: u32 = 33;
 pub const RT_SIGNAL_MAX: u32 = 64;
 
 /// `si_code` values relevant to `rt_sigqueueinfo(2)`/`rt_tgsigqueueinfo(2)`
-/// forgery checks (Linux `<asm-generic/siginfo.h>`). Codes `>= SI_USER`
+/// forgery checks. Codes `>= SI_USER`
 /// (i.e. `SI_USER`=0 .. `SI_KERNEL`=0x80) are kernel/user-dispatch reserved;
 /// `SI_TKILL` is stamped by `tgkill`/`tkill` themselves. Only negative
 /// app-supplied codes below this (`SI_QUEUE` and friends) may be forged by
@@ -74,7 +74,7 @@ pub const SI_USER: i32 = 0;
 pub const SI_KERNEL: i32 = 0x80;
 pub const SI_QUEUE: i32 = -1;
 /// `SI_MESGQ` — "sent by real time mesq state change", the code
-/// `mq_notify(SIGEV_SIGNAL)` delivery stamps (`ipc/mqueue.c:800`).
+/// `mq_notify(SIGEV_SIGNAL)` delivery stamps.
 pub const SI_MESGQ: i32 = -3;
 pub const SI_TKILL: i32 = -6;
 

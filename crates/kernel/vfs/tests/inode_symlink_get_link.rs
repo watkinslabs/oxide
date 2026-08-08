@@ -1,6 +1,6 @@
 //! inode-16§2 symlink content path: `readlink` (raw storage primitive,
 //! `EINVAL` on a non-symlink) vs `get_link` (the VFS resolution entry the path
-//! walker + `readlink(2)` call). Mirrors Linux `fs/namei.c` `get_link()`: the
+//! walker + `readlink(2)` call). Mirrors Linux `get_link()`: the
 //! inline `i_link` fast path is consulted BEFORE the per-inode `readlink` op.
 //! Driven over `InodeBuilder` fixtures, no QEMU.
 

@@ -120,7 +120,7 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
             return rv;
         }
     }
-    // SIOCGSKNS (linux/sockios.h): "get the network namespace fd of this
+    // SIOCGSKNS: "get the network namespace fd of this
     // socket". systemd's sd-device-monitor probes its NETLINK_KOBJECT_UEVENT
     // socket with it (device-monitor.c, under DEBUG_LOGGING) then fstat-compares
     // the result with /proc/1/ns/net; a blanket ENOTTY produced the per-worker
@@ -192,7 +192,7 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
         return crate::siocgif::handle_sioc_in(net_namespace.id().as_u64(), req, arg)
             .unwrap_or(-(Errno::Enotty.as_i32() as i64));
     }
-    // FIFREEZE / FITHAW (Linux `ioctl_fsfreeze`/`ioctl_fsthaw`, fs/ioctl.c).
+    // FIFREEZE / FITHAW (Linux `ioctl_fsfreeze`/`ioctl_fsthaw`).
     // Issued on a regular file / directory / block-device fd; route BEFORE the
     // CharDev gate. CAP_SYS_ADMIN-gated. `arg` is ignored (Linux ignores it).
     // FIFREEZE → `freeze_super` (EBUSY if already frozen); FITHAW →

@@ -1,7 +1,6 @@
 // `prctl(2)` option classification + per-option argument rules — Linux
-// `kernel/sys.c` `SYSCALL_DEFINE5(prctl)` and the helpers it dispatches to
-// (`prctl_set_thp_disable`, `prctl_set_mm`, `security/commoncap.c`
-// `cap_task_prctl`).
+// `SYSCALL_DEFINE5(prctl)` and the helpers it dispatches to
+// (`prctl_set_thp_disable`, `prctl_set_mm`, `cap_task_prctl`).
 //
 // Pure decision logic, no `Task` and no user memory, so every argument rule
 // is reachable from `cargo test`. Linux rejects non-zero arg3/arg4/arg5 for
@@ -107,7 +106,7 @@ fn cap_valid(cap: u64) -> bool { cap <= CAP_LAST_CAP }
 /// Resolve one `prctl(option, arg2, arg3, arg4, arg5)` call to the operation
 /// it names, or to the errno Linux answers before touching any state.
 ///
-/// Unknown options are EINVAL (`kernel/sys.c` default arm). Options this port
+/// Unknown options are EINVAL (Linux's default-arm behaviour). Options this port
 /// does not implement are NOT listed here, so they take the same EINVAL path —
 /// see the per-option notes in `prctl.rs` for which of those are Linux gaps.
 /// # C: O(1)

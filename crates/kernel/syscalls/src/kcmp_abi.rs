@@ -1,5 +1,5 @@
-// kcmp(2) type vocabulary + result encoding, per Linux `kernel/kcmp.c` and
-// `include/uapi/linux/kcmp.h`.
+// kcmp(2) type vocabulary + result encoding, per Linux's `sys_kcmp` and the
+// kcmp UAPI type space.
 //
 // Non-gated so a hosted `cargo test` actually runs these: every numbered slot
 // file (`312_kcmp.rs` included) is behind `kernel_body.rs`'s
@@ -59,7 +59,7 @@ mod tests {
 
     #[test]
     fn type_numbering_matches_uapi_order() {
-        // include/uapi/linux/kcmp.h — KCMP_VM precedes KCMP_FILES.
+        // kcmp UAPI enum order — KCMP_VM precedes KCMP_FILES.
         assert_eq!(KCMP_FILE, 0);
         assert_eq!(KCMP_VM, 1);
         assert_eq!(KCMP_FILES, 2);

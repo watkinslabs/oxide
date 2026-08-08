@@ -1,4 +1,4 @@
-// Linux `fs/splice.c` + the `copy_file_range` half of `fs/read_write.c`.
+// splice/tee/vmsplice + `copy_file_range` work-fns.
 // Module manifest. Work fns only — the `SyscallArgs` shims live in
 // `syscalls/{275_splice,326_copy_file_range}.rs` per `docs/53`.
 //

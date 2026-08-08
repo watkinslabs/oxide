@@ -1,5 +1,5 @@
-// ext4 directory entry parser per Linux fs/ext4/ext4.h
-// `ext4_dir_entry_2`. Entries are variable-length; each
+// ext4 directory entry parser (on-disk `ext4_dir_entry_2` layout).
+// Entries are variable-length; each
 // header is 8 bytes followed by the name (no terminator),
 // padded to a 4-byte boundary. The entire entry MUST fit
 // inside one filesystem block — rec_len bridges to the next

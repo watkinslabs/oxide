@@ -10,11 +10,14 @@
 //! mount was covering. That makes user namespaces a privilege-escalation surface
 //! rather than a sandbox.
 //!
-//! Linux source mirrored: `fs/namespace.c` `lock_mnt_tree` (called from
-//! `copy_mnt_ns` under `if (user_ns != ns->user_ns)`), `can_change_locked_flags`
-//! (`do_remount` / `do_reconfigure_mnt` / `mount_setattr`, all EPERM),
-//! `__has_locked_children` (`__do_loopback` EINVAL), `clone_mnt`'s
-//! `& ~MNT_INTERNAL_FLAGS`, and `do_umount`'s `MNT_LOCKED` EINVAL.
+//! Mechanism mirrored: a mount-namespace copy into a differing user namespace
+//! locks the tree (`lock_mnt_tree`), converting each currently-enforced
+//! MNT_* bit into a corresponding `MNT_LOCK_*` bit; a remount/reconfigure
+//! (`can_change_locked_flags`) or loopback bind onto a subtree with locked
+//! children (`__has_locked_children`) is then EPERM/EINVAL if it would
+//! relax a locked protection; `clone_mnt` strips the internal-only flag
+//! bits on copy; and `do_umount` refuses to unmount a `MNT_LOCKED` mount
+//! with EINVAL.
 //!
 //! Own test binary → own copy of the vfs statics; `SERIAL`-guarded.
 

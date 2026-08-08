@@ -16,7 +16,7 @@ fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
 /// `sys_preadv2(fd, iov, iovcnt, pos_l, pos_h, flags)` — slot 327.
 /// `pos == -1` is the documented escape to current-offset (`readv`) semantics
-/// (`fs/read_write.c:1189`); every other negative offset is `EINVAL`.
+/// ; every other negative offset is `EINVAL`.
 /// # C: O(iovcnt + sum(iov[i].len))
 pub fn sys_preadv2(args: &SyscallArgs) -> i64 { do_preadv(args, true) }
 
@@ -25,7 +25,7 @@ pub fn sys_preadv2(args: &SyscallArgs) -> i64 { do_preadv(args, true) }
 /// # C: O(iovcnt + sum(iov[i].len))
 pub fn sys_preadv(args: &SyscallArgs) -> i64 { do_preadv(args, false) }
 
-/// Shared body of `do_preadv` (`fs/read_write.c:1121-1140`) plus the
+/// Shared body of `do_preadv` plus the
 /// `preadv2` `pos == -1` escape. Ladder order is Linux's:
 /// `pos` sign check BEFORE the fd lookup, then `EBADF`, then `ESPIPE` for a
 /// description without `FMODE_PREAD`, then `vfs_readv`'s `FMODE_READ` gate and
@@ -62,12 +62,12 @@ fn do_preadv(args: &SyscallArgs, v2: bool) -> i64 {
     if !file.f_mode().contains(vfs::Fmode::PREAD) {
         let r = errno(Errno::Espipe); cur.account_read_result(r); return r;
     }
-    // `vfs_readv`: FMODE_READ → EBADF (`fs/read_write.c:1000-1001`).
+    // `vfs_readv`: FMODE_READ → EBADF.
     if !file.f_mode().contains(vfs::Fmode::READ) {
         let r = errno(Errno::Ebadf); cur.account_read_result(r); return r;
     }
     // `import_iovec`: `nr_segs > UIO_MAXIOV` → EINVAL; `nr_segs == 0` is a
-    // legal zero-length op returning 0 (`lib/iov_iter.c:1316-1319`).
+    // legal zero-length op returning 0.
     if iovcnt > UIO_MAXIOV { let r = errno(Errno::Einval); cur.account_read_result(r); return r; }
     let ranges = match import_iov_writable(iov, iovcnt) {
         Ok(r)  => r,
@@ -117,7 +117,7 @@ fn do_preadv(args: &SyscallArgs, v2: bool) -> i64 {
 fn errno_vfs(e: vfs::VfsError) -> i64 { -(e as i64) }
 
 /// `preadv2(..., pos == -1, flags)` → `do_readv(fd, vec, vlen, flags)`
-/// (`fs/read_write.c:1190`): the cursor-advancing vectored read, which slot 19
+///: the cursor-advancing vectored read, which slot 19
 /// already implements atomically over `f_pos`. The RWF word is still validated
 /// against the description before handing off. # C: O(iovcnt + bytes)
 fn current_offset_readv(args: &SyscallArgs, flags: u64) -> i64 {
@@ -141,8 +141,8 @@ fn current_offset_readv(args: &SyscallArgs, flags: u64) -> i64 {
 /// `import_iovec(ITER_DEST, ...)` for a writable destination vector: validates
 /// the array itself, then each segment, applying the two Linux rules that the
 /// pre-fix slot skipped — a segment whose length is negative as `ssize_t` is
-/// `EINVAL` (`lib/iov_iter.c:1288-1290`), and the running total is TRUNCATED at
-/// `MAX_RW_COUNT` rather than rejected (`lib/iov_iter.c:1389-1404`).
+/// `EINVAL`, and the running total is TRUNCATED at
+/// `MAX_RW_COUNT` rather than rejected.
 /// Zero-length segments are dropped. # C: O(iovcnt)
 fn import_iov_writable(iov: u64, iovcnt: u64) -> Result<Vec<(u64, usize)>, i64> {
     let mut out: Vec<(u64, usize)> = Vec::new();

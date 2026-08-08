@@ -26,7 +26,7 @@
 //   `x86_64`  — EFLAGS bit names, `FIX_EFLAGS`, ptrace `FLAG_MASK`, merges.
 //   `aarch64` — SPSR_EL1 bit names, RES0 mask, `valid_native_regs` port.
 
-/// x86_64 EFLAGS. Bit names from `arch/x86/include/uapi/asm/processor-flags.h`.
+/// x86_64 EFLAGS register bit layout — architectural bit names, Linux ABI-compatible.
 pub mod x86_64 {
     /// `struct user_regs_struct` (x86_64) — quadword index of each field, in
     /// the order a debugger decodes `PTRACE_GETREGS` / `NT_PRSTATUS`. This is
@@ -87,11 +87,10 @@ pub mod x86_64 {
     pub const X86_EFLAGS_VIP:  u64 = 1 << 20;
     pub const X86_EFLAGS_ID:   u64 = 1 << 21;
 
-    /// Segment-selector RPL field (`SEGMENT_RPL_MASK`,
-    /// `arch/x86/include/asm/segment.h`).
+    /// Segment-selector RPL field (`SEGMENT_RPL_MASK`).
     pub const X86_CS_RPL_MASK: u64 = 3;
     /// `USER_RPL` — the RPL a CPL3 selector carries. Linux `user_mode(regs)` is
-    /// `!!(regs->cs & 3)` on x86_64 (`arch/x86/include/asm/ptrace.h`), so the
+    /// `!!(regs->cs & 3)` on x86_64, so the
     /// saved CS's RPL is the whole test for "this entry came from user mode" —
     /// the gate on whether a return runs `exit_to_user_mode_loop`.
     pub const X86_CS_RPL_USER: u64 = 3;
@@ -101,7 +100,7 @@ pub mod x86_64 {
 
     /// The saved register state a syscall return needs before `SYSRETQ` may be
     /// used instead of `IRETQ` — a direct port of the tail of
-    /// `do_syscall_64()` (`arch/x86/entry/syscall_64.c`), which returns this
+    /// `do_syscall_64()`, which returns this
     /// same bool for its asm caller to branch on.
     ///
     /// `SYSRETQ` FORCES `RIP := RCX` and `RFLAGS := R11`; it cannot restore an
@@ -141,7 +140,7 @@ pub mod x86_64 {
         true
     }
 
-    /// Linux `FIX_EFLAGS` (`arch/x86/include/asm/sighandling.h`) — the ONLY
+    /// Linux `FIX_EFLAGS` — the ONLY
     /// EFLAGS bits `rt_sigreturn` takes from the user's `sigcontext.flags`.
     /// Everything outside it keeps the kernel's saved value, so IF, IOPL, NT,
     /// VM, VIF, VIP and ID cannot be forged through a signal frame.
@@ -150,9 +149,8 @@ pub mod x86_64 {
         X86_EFLAGS_SF | X86_EFLAGS_ZF | X86_EFLAGS_AF | X86_EFLAGS_PF |
         X86_EFLAGS_CF | X86_EFLAGS_RF;
 
-    /// Linux x86_64 ptrace `FLAG_MASK` = `FLAG_MASK_32 | X86_EFLAGS_NT`
-    /// (`arch/x86/kernel/ptrace.c`, `#else /* CONFIG_X86_64 */` arm). Same set
-    /// as `FIX_EFLAGS` plus NT — a tracer may set NT, a signal frame may not.
+    /// Linux x86_64 ptrace `FLAG_MASK` = `FLAG_MASK_32 | X86_EFLAGS_NT`.
+    /// Same set as `FIX_EFLAGS` plus NT — a tracer may set NT, a signal frame may not.
     pub const PTRACE_FLAG_MASK: u64 = FIX_EFLAGS | X86_EFLAGS_NT;
 
     /// Linux's `regs->flags = (regs->flags & ~MASK) | (user & MASK)` splice.
@@ -161,7 +159,7 @@ pub mod x86_64 {
         (cur & !mask) | (user & mask)
     }
 
-    /// `restore_sigcontext` (`arch/x86/kernel/signal_64.c`):
+    /// `restore_sigcontext`:
     /// `regs->flags = (regs->flags & ~FIX_EFLAGS) | (sc.flags & FIX_EFLAGS)`.
     /// `cur` is the interrupted task's saved RFLAGS (the r11 slot the SYSCALL
     /// instruction filled), `user` the word read out of the user sigcontext.
@@ -170,13 +168,13 @@ pub mod x86_64 {
         merge_eflags(cur, user, FIX_EFLAGS)
     }
 
-    /// `putreg`/`genregs_set` (`arch/x86/kernel/ptrace.c`) EFLAGS arm.
+    /// `putreg`/`genregs_set` EFLAGS arm.
     /// # C: O(1)
     pub const fn ptrace_eflags(cur: u64, user: u64) -> u64 {
         merge_eflags(cur, user, PTRACE_FLAG_MASK)
     }
 
-    /// `handle_signal` (`arch/x86/kernel/signal.c`), post-`setup_rt_frame`:
+    /// `handle_signal`, post-`setup_rt_frame`:
     /// `regs->flags &= ~(X86_EFLAGS_DF | X86_EFLAGS_RF | X86_EFLAGS_TF)`.
     /// DF because the SysV ABI requires it clear at function entry — a handler
     /// entered with DF set runs every `rep movs` backwards. TF so a SIGTRAP
@@ -190,9 +188,9 @@ pub mod x86_64 {
     pub const fn handler_entry_eflags(cur: u64) -> u64 { cur & !SIGNAL_ENTRY_CLEAR }
 }
 
-/// aarch64 SPSR_EL1. Bit names from `arch/arm64/include/uapi/asm/ptrace.h`
-/// (plus IL from `arch/arm64/include/asm/ptrace.h` and SS = `DBG_SPSR_SS`
-/// from `arch/arm64/include/asm/debug-monitors.h`).
+/// aarch64 SPSR_EL1. Bit names per the ARMv8-A PSTATE/SPSR_EL1 architectural
+/// layout used by Linux's ptrace ABI (plus IL and SS = `DBG_SPSR_SS`, the
+/// software-step status bit).
 pub mod aarch64 {
     /// `struct user_pt_regs` (arm64) — `regs[31]`, then the three named
     /// words. Same ownership rule as the x86_64 sibling.
@@ -238,7 +236,7 @@ pub mod aarch64 {
     /// Condition flags — all that survives a rejected PSTATE.
     pub const PSR_NZCV: u64 = PSR_N_BIT | PSR_Z_BIT | PSR_C_BIT | PSR_V_BIT;
 
-    /// Linux `SPSR_EL1_AARCH64_RES0_BITS` (`arch/arm64/kernel/ptrace.c`):
+    /// Linux `SPSR_EL1_AARCH64_RES0_BITS`:
     /// `GENMASK_ULL(63,32) | GENMASK_ULL(27,26) | GENMASK_ULL(23,22) |
     ///  GENMASK_ULL(20,13) | GENMASK_ULL(5,5)`. Architecturally RES0, plus
     /// PAN/UAO (meaningless at EL0) and IL (kernel-reserved). SSBS (bit 12),
@@ -255,7 +253,7 @@ pub mod aarch64 {
     }
 
     /// Port of `valid_user_regs` → `user_regs_reset_single_step` +
-    /// `valid_native_regs` (`arch/arm64/kernel/ptrace.c`), whose comment names
+    /// `valid_native_regs`, whose Linux implementation cites
     /// signal-handler security as the reason it exists.
     ///
     /// Returns `(pstate, accepted)`. `accepted == false` means the caller must
@@ -285,14 +283,14 @@ pub mod aarch64 {
     }
 
     /// Linux `user_mode(regs)`, arm64 arm: `(regs->pstate & PSR_MODE_MASK) ==
-    /// PSR_MODE_EL0t` (`arch/arm64/include/asm/ptrace.h`). The gate on whether
+    /// PSR_MODE_EL0t`. The gate on whether
     /// a return runs `exit_to_user_mode_loop`.
     /// # C: O(1)
     pub const fn user_mode(pstate: u64) -> bool {
         (pstate & PSR_MODE_MASK) == PSR_MODE_EL0T
     }
 
-    /// `setup_return` (`arch/arm64/kernel/signal.c`): the PSTATE a handler is
+    /// `setup_return`: the PSTATE a handler is
     /// ENTERED with. TCO is always cleared for a signal handler; BTYPE is set
     /// to `PSR_BTYPE_C` only where FEAT_BTI is implemented, since PSTATE.BTYPE
     /// is RES0 without it.

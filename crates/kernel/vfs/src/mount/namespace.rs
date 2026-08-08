@@ -122,10 +122,10 @@ pub fn bind_submounts_rec_at(src_mnt_hint: Option<u64>, src: &Arc<Dentry>, tgt: 
     }
     // Clone the source's submount SUBTREE (root EXCLUDED — already bound) as
     // private binds. If `src` is the mountpoint the caller walked BEFORE
-    // crossing into `src_m`, subtree discovery starts at `src_m.mnt_root`
-    // (Linux source path after `follow_mount`), not at the covered parent-fs
-    // dentry. A caller that already supplied a crossed `struct path` dentry uses
-    // that dentry as-is.
+    // crossing into `src_m`, subtree discovery starts at `src_m.mnt_root` —
+    // the dentry reached AFTER crossing the mount — not at the covered
+    // parent-fs dentry. A caller that already supplied a crossed `struct path`
+    // dentry uses that dentry as-is.
     let src_base = match src_m.mountpoint() {
         Some(mp) if Arc::ptr_eq(&mp, src) => src_m.mnt_root().unwrap_or_else(|| src.clone()),
         _ => src.clone(),

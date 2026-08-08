@@ -1,6 +1,5 @@
 //! Mount namespaces, the `struct mountpoint` registry, the mount-generation
-//! notify counter, and the `pivot_root` chroot-refs hook (`docs/16§6`,
-//! structured like Linux `fs/mount.h` + `fs/namespace.c`).
+//! notify counter, and the `pivot_root` chroot-refs hook (`docs/16§6`).
 //!
 //! Split out of `mount.rs` (file-length cap, `08§7`). `mount.rs` owns the
 //! `struct mount` tree (parent/child links, the `(ns,parent,dptr)` hash, the
@@ -296,17 +295,16 @@ pub fn ns_seq(ns: u64) -> u64 {
 }
 
 // ---------------------------------------------------------------------------
-// Per-ns mount cap (Linux `sysctl_mount_max` + `mnt_ns->nr_mounts`). Without
+// Per-ns mount cap. Without
 // it, MS_SHARED propagation across a deep peer group, or a malicious
 // rbind/move loop, can fan a single `mount(2)` into an unbounded number of
-// `struct mount`s — Linux added `count_mounts` (commit d29216842a85) precisely
-// to bound this. Mirrors `fs/namespace.c::count_mounts`: admit `num` mounts
+// mount instances — a per-namespace mount-count reserve with a fixed ceiling
+// bounds this: admit `num` mounts
 // into `ns` iff `nr_mounts + pending_mounts + num <= sysctl_mount_max`,
 // reserving in `pending_mounts`; commit rolls the reservation into `nr_mounts`.
 // ---------------------------------------------------------------------------
 
-/// Default per-namespace mount ceiling (Linux `sysctl_mount_max`, kernel
-/// `fs/namespace.c` `#define DEFAULT_MOUNT_MAX 100000`).
+/// Default per-namespace mount ceiling (`/proc/sys/fs/mount-max` default).
 pub const DEFAULT_MOUNT_MAX: u64 = 100_000;
 
 static SYSCTL_MOUNT_MAX: AtomicU64 = AtomicU64::new(DEFAULT_MOUNT_MAX);

@@ -21,8 +21,8 @@ use crate::types::KResult;
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct SharedFrame { pub pa: u64, pub map_ref_held: bool }
 
-/// `address_space->flags` writeback-error bits (Linux `enum mapping_flags`,
-/// `include/linux/pagemap.h`) — recorded by `mapping_set_error` and harvested by
+/// `address_space->flags` writeback-error bits (Linux `enum mapping_flags`)
+/// — recorded by `mapping_set_error` and harvested by
 /// `filemap_check_errors` so a deferred writeback failure surfaces at the next
 /// `fsync`/`close`. Exposed as OR-able masks (the kernel keeps them as bit
 /// numbers tested via `test_bit`; the mask form is the idiomatic Rust shape).
@@ -102,7 +102,7 @@ impl DirtyPages {
         hit
     }
 
-    /// `mapping_set_error` (Linux `include/linux/pagemap.h`): record a deferred
+    /// `mapping_set_error`: record a deferred
     /// writeback error. `ENOSPC` sets `AS_ENOSPC`, any other nonzero errno sets
     /// the generic `AS_EIO`; `0`/success is a no-op. The flag is sticky until
     /// [`Self::check_errors`] harvests it. `errno` is the POSIX positive code
@@ -112,7 +112,7 @@ impl DirtyPages {
         if errno == ENOSPC { self.err |= AS_ENOSPC; } else { self.err |= AS_EIO; }
     }
 
-    /// `filemap_check_errors` (Linux `mm/filemap.c`): test-and-clear BOTH
+    /// `filemap_check_errors`: test-and-clear BOTH
     /// accumulated writeback errors in one pass, returning the errno `fsync`/
     /// `close` reports. Matching Linux, the `AS_EIO` assignment runs last, so
     /// `EIO` is the return value when both flags are set, `ENOSPC` when only it

@@ -1,8 +1,6 @@
-// `queue_pages_range` / `queue_pages_test_walk` / `queue_folios_pte_range`
-// (`mm/mempolicy.c:910..1002`) — the range scan `mbind` runs before it
-// rewrites VMA policies. Two observable outputs: a hole in the range is
-// `EFAULT`, and misplaced pages under `MPOL_MF_STRICT` (without a MOVE bit)
-// are `EIO`.
+// The range scan `mbind(2)` runs before it rewrites VMA policies. Two
+// observable outputs: a hole in the range is `EFAULT`, and misplaced pages
+// under `MPOL_MF_STRICT` (without a MOVE bit) are `EIO`.
 //
 // On a single-node PMM every resident page is on `NODE_ID_LOCAL`, so
 // "misplaced" reduces to "the caller's raw nodemask does not contain node 0"
@@ -15,38 +13,37 @@ use super::uapi::*;
 use crate::vma::{Vma, VmaBacking};
 use crate::Error;
 
-/// `MPOL_MF_INTERNAL << 0` (`mm/mempolicy.c:124`) — set by `do_mbind` when the
-/// new policy is NULL (MPOL_DEFAULT), which makes holes in the range legal.
+/// Internal-only scan flag — set when the new policy is NULL (MPOL_DEFAULT),
+/// which makes holes in the range legal.
 pub const MPOL_MF_DISCONTIG_OK: u64 = 1 << 5;
-/// `MPOL_MF_INTERNAL << 1` (`:125`) — `do_mbind` always sets it, so
+/// Internal-only scan flag — always set by mbind's scan, so
 /// "required" means "NOT in the caller's nodemask".
 pub const MPOL_MF_INVERT: u64 = 1 << 6;
 
-/// `strictly_unmovable` (`mm/mempolicy.c:611`): STRICT with neither MOVE bit
-/// makes the first misplaced page fatal.
+/// STRICT with neither MOVE bit makes the first misplaced page fatal.
 /// # C: O(1)
 pub fn strictly_unmovable(flags: u64) -> bool {
     flags & (MPOL_MF_STRICT | MPOL_MF_MOVE | MPOL_MF_MOVE_ALL) == MPOL_MF_STRICT
 }
 
-/// `vma_migratable` (`mm/mempolicy.c:1998`): `VM_IO | VM_PFNMAP` mappings are
-/// never migration candidates. oxide's `PhysRange` is `remap_pfn_range`
-/// (device scanout), `KernelFrame` is the vvar-style shared kernel page and
-/// `Special` is vDSO/vvar — all three are Linux `VM_PFNMAP`/`VM_IO`.
+/// Device/IO-backed mappings are never migration candidates. oxide's
+/// `PhysRange` is unrefcounted device scanout memory, `KernelFrame` is the
+/// vvar-style shared kernel page and `Special` is vDSO/vvar — all three are
+/// non-migratable, matching Linux's `VM_PFNMAP`/`VM_IO` exclusion.
 /// # C: O(1)
 pub fn vma_migratable(vma: &Vma) -> bool {
     matches!(vma.backing,
         VmaBacking::Anonymous | VmaBacking::File { .. } | VmaBacking::KernelBytes { .. })
 }
 
-/// `queue_folio_required` (`mm/mempolicy.c:643`) with `MPOL_MF_INVERT` set:
-/// a page is "required" (i.e. misplaced) when its node is NOT in `nmask`.
+/// With `MPOL_MF_INVERT` set (always, for a caller-facing scan): a page is
+/// "required" (i.e. misplaced) when its node is NOT in `nmask`.
 /// # C: O(1)
 fn folio_required(node: u16, nmask: NodeMask, flags: u64) -> bool {
     nmask.is_set(node) == (flags & MPOL_MF_INVERT == 0)
 }
 
-/// `queue_pages_range` (`mm/mempolicy.c:979`). `vmas` is an ordered,
+/// The mbind(2)/move_pages(2) range scan. `vmas` is an ordered,
 /// non-overlapping snapshot; `present(va)` is the PTE-present query.
 ///
 /// `Err(Error::Fault)` = a hole at the head, middle or tail of the range

@@ -1,8 +1,8 @@
-/// Linux TMPFS_MAGIC shared by tmpfs and devtmpfs (`linux/magic.h`).
+/// Linux TMPFS_MAGIC shared by tmpfs and devtmpfs.
 pub const TMPFS_SUPER_MAGIC: u64 = 0x0102_1994;
 
-// `FALLOC_FL_*` (Linux `include/uapi/linux/falloc.h`) plus the
-// `FALLOC_FL_MODE_MASK` composite (`include/linux/falloc.h`). Shared UAPI: the
+// `FALLOC_FL_*` UAPI bits plus the
+// `FALLOC_FL_MODE_MASK` composite. Shared UAPI: the
 // `vfs_fallocate` ladder and EVERY filesystem backend decode the same `mode`
 // word, exactly as both sides of Linux include the same header.
 

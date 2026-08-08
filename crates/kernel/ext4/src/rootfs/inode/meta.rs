@@ -29,10 +29,9 @@ pub(crate) fn ext4_fileattr_get(inode: &Inode) -> KResult<FileAttr> {
     if inode.file_type() == vfs::FileType::Regular {
         flags &= !FS_PROJINHERIT_FL;
     }
-    // Linux `ext4_fileattr_get` publishes the translated `fsx_xflags` view via
-    // `fileattr_fill_flags` (fs/ext4/ioctl.c) — `file_getattr(2)` reads
-    // `fa_xflags` straight out of it, so the backend, not the consumer, owns
-    // the translation.
+    // Linux `ext4_fileattr_get` publishes the translated `fsx_xflags` view;
+    // `file_getattr(2)` reads `fa_xflags` straight out of it, so the
+    // backend, not the consumer, owns the translation.
     let mut fa = vfs::fileattr_fill_flags(flags);
     fa.fsx_projid = if st.mount.sb.has_project() { raw.i_projid } else { 0 };
     Ok(fa)
@@ -193,7 +192,7 @@ fn ext4_fileattr_setproject(
     inode.set_times(None, None, ctime)
 }
 
-/// `ext4_setattr` (Linux `fs/ext4/inode.c`): the `i_op->setattr` for every
+/// `ext4_setattr`: the `i_op->setattr` for every
 /// ext4 inode. Apply the prepared `ia` to the in-core inode via the generic
 /// `simple_setattr` (mode / owner / times / truncate + suid-kill fold), then
 /// write the mutated metadata THROUGH to the on-disk inode (journaled), so

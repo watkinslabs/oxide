@@ -1,4 +1,4 @@
-// `SeqLock<T, C>` — Linux `seqlock_t` (`include/linux/seqlock.h`): a sequence
+// `SeqLock<T, C>` — Linux `seqlock_t`: a sequence
 // counter plus a writer spinlock, giving readers a lock-free, never-blocking
 // snapshot of small `Copy` state that is read constantly and written rarely.
 //

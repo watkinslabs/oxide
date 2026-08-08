@@ -32,17 +32,17 @@ pub struct ExecRnd {
     pub randomize: bool,
     /// Linux `PF_RANDOMIZE && randomize_va_space > 1`.
     pub randomize_brk: bool,
-    /// `arch_mmap_rnd()` for `arch_pick_mmap_layout` (`mm/util.c:469`).
+    /// `arch_mmap_rnd()` draw for the mmap arena anchor (`arch_pick_mmap_layout`).
     pub mmap_rnd: u64,
-    /// The SECOND, independent `arch_mmap_rnd()` draw — the PIE load bias
-    /// (`fs/binfmt_elf.c:1142`). Sharing one draw between the arena and the
+    /// The SECOND, independent `arch_mmap_rnd()` draw — the PIE load bias.
+    /// Sharing one draw between the arena and the
     /// executable would tie the two together and halve the effective entropy.
     pub load_bias_rnd: u64,
-    /// Raw word for `randomize_stack_top` (`mm/util.c:346`).
+    /// Raw word for `randomize_stack_top`.
     pub stack_raw: u64,
-    /// Raw word for `arch_randomize_brk` (`mm/util.c:386`).
+    /// Raw word for `arch_randomize_brk`.
     pub brk_raw: u64,
-    /// Raw word for `arch_align_stack` (`arch/x86/kernel/process.c:1023`).
+    /// Raw word for `arch_align_stack`.
     pub align_raw: u64,
     /// Entropy budget in force — the build arch's, except in tests.
     pub budget: Budget,
@@ -65,10 +65,9 @@ impl ExecRnd {
     /// Draw one exec's worth of randomness from the kernel CSPRNG.
     /// `no_randomize` is the caller's `personality & ADDR_NO_RANDOMIZE` test.
     ///
-    /// Linux reads `randomize_va_space` ONCE per exec into
-    /// `snapshot_randomize_va_space` (`fs/binfmt_elf.c:1020`) so a concurrent
-    /// sysctl write cannot randomise the stack but not the heap; the single
-    /// `mode()` read here is that snapshot.
+    /// Linux reads `randomize_va_space` ONCE per exec into a snapshot so a
+    /// concurrent sysctl write cannot randomise the stack but not the heap;
+    /// the single `mode()` read here is that snapshot.
     /// # C: O(1) — five CRNG words
     pub fn draw(no_randomize: bool) -> Self {
         let m = mode::mode();
@@ -128,19 +127,19 @@ impl ExecRnd {
         }
     }
 
-    /// Linux `randomize_stack_top(STACK_TOP)` (`fs/binfmt_elf.c:1028`).
+    /// Linux `randomize_stack_top(STACK_TOP)`.
     /// # C: O(1)
     pub fn stack_top(&self) -> u64 {
         layout::randomize_stack_top(STACK_TOP, self.stack_raw, self.randomize, &self.budget)
     }
 
-    /// Linux ET_DYN + PT_INTERP load bias (`fs/binfmt_elf.c:1140-1145`).
+    /// Linux ET_DYN + PT_INTERP load bias.
     /// # C: O(1)
     pub fn elf_dyn_load_bias(&self, max_align: u64) -> u64 {
         layout::elf_dyn_load_bias(self.load_bias_rnd, max_align)
     }
 
-    /// Linux's `brk` placement (`fs/binfmt_elf.c:1330-1338`). `moved` is
+    /// Linux's `brk` placement. `moved` is
     /// Linux's `brk_moved`: true when the heap was already relocated to
     /// `ELF_ET_DYN_BASE` because the image itself went into the mmap arena.
     /// When it was NOT moved, Linux steps one page clear of the image end
@@ -154,8 +153,7 @@ impl ExecRnd {
         layout::arch_randomize_brk(base, self.brk_raw)
     }
 
-    /// Linux `arch_align_stack(p)` at the head of `create_elf_tables`
-    /// (`fs/binfmt_elf.c:193`).
+    /// Linux `arch_align_stack(p)` at the head of `create_elf_tables`.
     /// # C: O(1)
     pub fn align_stack(&self, sp: u64) -> u64 {
         layout::arch_align_stack(sp, self.align_raw, self.randomize, &self.budget)

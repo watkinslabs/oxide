@@ -1,5 +1,5 @@
 // 074 fsync / 075 fdatasync — one file (docs/53 §0). ABI shim only: the flush
-// itself is `fs::sync::vfs_fsync` (Linux `fs/sync.c` `do_fsync`).
+// itself is `fs::sync::vfs_fsync` (`do_fsync`).
 
 #![cfg(target_os = "oxide-kernel")]
 
@@ -7,7 +7,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::misc::misc_common::errno;
 
-/// `do_fsync(fd, datasync)` (Linux `fs/sync.c`) — the body both slots share.
+/// `do_fsync(fd, datasync)` — the body both slots share.
 /// # C: O(N_dirty)
 fn do_fsync(args: &SyscallArgs, datasync: bool) -> i64 {
     let fd = args.a0 as i32;

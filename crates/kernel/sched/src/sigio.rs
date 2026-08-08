@@ -1,5 +1,5 @@
 // `sigio_perm` — whether an `O_ASYNC` / `F_SETOWN` owner may signal the task
-// it named (Linux `fs/fcntl.c`).
+// it named (Linux `fcntl` async-I/O ownership check).
 //
 // Ungated (CLAUDE.md "Phantom tests"): this is a pure credential ladder, so it
 // is provable by `cargo test -p sched`. `live::sigpend::send_sigio` is the

@@ -21,7 +21,7 @@ outstanding surface. Only class A is enumerated here.
 | Item | Gap | Owner subsystem | Row |
 |---|---|---|---|
 | RT scheduling | `SCHED_RR` stored and picked as RT but has NO round-robin quantum — no tick requeue exists in `crates/kernel/sched`, so RR runs identically to FIFO. `SCHED_DEADLINE` has no class at all and is refused. | sched | `sched_setscheduler`, `sched_rr_get_interval` |
-| Controlling-tty teardown | `disassociate_ctty(1)` not implemented — a session leader's final exit neither vhangs up its session nor `SIGHUP`s the tty foreground pgrp (`drivers/tty/tty_jobctrl.c`). | tty + sched | `exit` |
+| Controlling-tty teardown | `disassociate_ctty(1)` not implemented — a session leader's final exit neither vhangs up its session nor `SIGHUP`s the tty foreground pgrp. | tty + sched | `exit` |
 | `ctty` ownership | `ctty` lives on the task, not the `ThreadGroup`; moving it touches console routing, `tty_ioctl`, `openat /dev/tty`, clone. | tty | `setsid` |
 | rseq critical sections | `sched::rseq` has no `rseq_cs` / IP-fixup, so no critical section can be restarted; `MEMBARRIER_CMD_PRIVATE_EXPEDITED_RSEQ` is consequently refused. | sched | `membarrier` |
 

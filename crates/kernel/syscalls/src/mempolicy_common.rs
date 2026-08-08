@@ -108,7 +108,7 @@ pub(crate) fn page_present_in(mm: &AddressSpace, va: u64) -> bool {
     }
 }
 
-/// `find_mm_struct` (`mm/migrate.c:2540`): pid 0 is the caller, otherwise the
+/// `find_mm_struct`: pid 0 is the caller, otherwise the
 /// target must exist (ESRCH) and pass `ptrace_may_access` (EPERM).
 /// # C: O(N_tasks)
 pub(crate) fn find_mm_struct(pid: u32) -> Result<Arc<AddressSpace>, i64> {

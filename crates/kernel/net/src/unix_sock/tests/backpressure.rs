@@ -214,7 +214,7 @@ fn wmem_bounds_a_sender_whose_destination_is_unbounded() {
 
 // --- EOF vs EAGAIN on a shut-down receive ------------------------------------
 // Linux `__skb_wait_for_more_packets`: `if (sk->sk_shutdown & RCV_SHUTDOWN)
-// goto out_noerr` sets `*err = 0` (net/core/datagram.c). `unix_dgram_poll`
+// goto out_noerr` sets `*err = 0`. `unix_dgram_poll`
 // reports POLLIN unconditionally once the read side is shut, so a recv that
 // answers EAGAIN there spins the reader forever — which is what systemd-journald
 // was doing: 10.9M syscalls, 208s CPU, state R, epoll_wait<->recvmsg.

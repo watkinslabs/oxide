@@ -1,4 +1,4 @@
-//! `STATX_CHANGE_COOKIE` wiring (Linux `fs/stat.c` `vfs_getattr_nosec` +
+//! `STATX_CHANGE_COOKIE` wiring (Linux `vfs_getattr_nosec` +
 //! `generic_fillattr`). The i_version change counter (B210) existed but no
 //! stat path surfaced it: `generic_fillattr` never set `stx_change_attr`, so
 //! statx callers could not read the cookie an NFS/IMA change-detector compares.

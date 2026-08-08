@@ -1,4 +1,4 @@
-// `do_group_exit` (Linux `kernel/exit.c`): the exit code every thread of the
+// `do_group_exit` (Linux's exit path): the exit code every thread of the
 // group reports, no matter which thread asked for the group death and no
 // matter which signal actually killed the others.
 //

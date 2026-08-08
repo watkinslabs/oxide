@@ -1,6 +1,5 @@
 // Live-kernel glue: fetch the user `perf_event_attr`, gather the credentials
 // the pure ladders need, install the fd, and route ioctls.
-// Linux `kernel/events/core.c` `SYSCALL_DEFINE5(perf_event_open)` + `perf_ioctl`.
 
 use alloc::sync::Arc;
 use alloc::vec;
@@ -139,11 +138,10 @@ pub fn handle_perf_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> i64 {
             0
         }
         PerfIoctl::SetOutput => {
-            // `perf_event_set_output(event, output_event)`. Redirecting samples
-            // needs the ring buffer that oxide's software PMUs never allocate,
-            // so the only reachable arm is Linux's `-EINVAL` for an event with
-            // no `rb` (`kernel/events/core.c` `perf_event_set_output`), plus
-            // its `-EBADF` for a non-perf fd.
+            // Redirecting samples to another event's ring buffer. That buffer
+            // is something oxide's software PMUs never allocate, so the only
+            // reachable arm is `-EINVAL` for an event with no ring buffer,
+            // plus `-EBADF` for a non-perf fd.
             if arg as i32 != -1 {
                 let cur = match sched::current() { Some(c) => c, None => return err(Errno::Ebadf) };
                 // SAFETY: running task on this CPU; preempt-off; sole reader of the fd_table slot.

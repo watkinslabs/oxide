@@ -1,5 +1,5 @@
 // ChaCha20 block function (RFC 8439 §2.3), the permutation Linux's
-// `drivers/char/random.c` builds its CRNG on.
+// CRNG driver builds on.
 //
 // Block only — no AEAD, no Poly1305. Two consumers: the fast-key-erasure
 // output path and the entropy-absorb rekey, both in `pool.rs`.

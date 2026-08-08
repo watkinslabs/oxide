@@ -15,7 +15,7 @@ use vfs::dirent::{
 };
 use vfs::{dirent64_pack, dirent64_reclen, dirent_pack, dirent_reclen, FileType};
 
-/// Linux `include/linux/fs_types.h` numeric `DT_*` values — frozen by the ABI.
+/// Linux numeric `DT_*` uapi values — frozen by the ABI.
 #[test]
 fn dt_constants_match_linux_uapi() {
     assert_eq!(DT_UNKNOWN, 0);

@@ -1,5 +1,5 @@
-//! inode-D28 (setattr half): `setattr_prepare`/`simple_setattr` (Linux
-//! `fs/attr.c`) decide ownership against the inode's *vfs* owner — the fs
+//! inode-D28 (setattr half): `setattr_prepare`/`simple_setattr`
+//! decide ownership against the inode's *vfs* owner — the fs
 //! `i_uid`/`i_gid` mapped OUT through the mount idmap — and store a chown's
 //! target id mapped back IN to the fs view. On an idmapped mount the fs owner
 //! (e.g. 1000) is NOT the caller's view (e.g. vfs 101000); the DAC owner test

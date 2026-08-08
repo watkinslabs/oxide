@@ -6,8 +6,8 @@
 // read from and the target `prctl(PR_SET_MM, opt, addr)` rewrites:
 // systemd relabels its own argv block then calls PR_SET_MM_ARG_START/
 // ARG_END so `/proc/self/cmdline` reflects the new title. The pointer
-// setters and PR_SET_MM_MAP path validate exactly like Linux
-// `kernel/sys.c` `prctl_set_mm` / `validate_prctl_map_addr`.
+// setters and PR_SET_MM_MAP path validate exactly like Linux's
+// prctl(PR_SET_MM) implementation.
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
@@ -18,7 +18,7 @@ use sync::{AddressSpace as AddressSpaceClass, Spinlock};
 use super::AddressSpace;
 use crate::coredump_filter::CoredumpFilter;
 
-// PR_SET_MM subcommand numbers (`uapi/linux/prctl.h`), passed as
+// PR_SET_MM subcommand numbers (prctl UAPI), passed as
 // prctl arg2. 1..=11 are the single-field pointer setters; 12..=15
 // are auxv / exe-file / whole-map / map-size.
 pub const PR_SET_MM_START_CODE:  u64 = 1;
@@ -37,7 +37,7 @@ pub const PR_SET_MM_EXE_FILE:    u64 = 13;
 pub const PR_SET_MM_MAP:         u64 = 14;
 pub const PR_SET_MM_MAP_SIZE:    u64 = 15;
 
-/// Linux `struct prctl_mm_map` (`uapi/linux/prctl.h`). Passed by
+/// Linux `struct prctl_mm_map` (prctl UAPI). Passed by
 /// PR_SET_MM_MAP as a user pointer of size `PR_SET_MM_MAP_SIZE`
 /// (== `size_of::<PrctlMmMap>()` == 104). `#[repr(C)]` so the field
 /// layout matches the userspace struct byte-for-byte.

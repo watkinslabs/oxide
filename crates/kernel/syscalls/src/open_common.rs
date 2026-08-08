@@ -12,14 +12,14 @@ pub(crate) const O_EXCL:      u32 = 0o200;
 pub(crate) const O_TRUNC:     u32 = 0o1000;
 pub(crate) const O_APPEND:    u32 = 0o2000;
 pub(crate) const O_DIRECTORY: u32 = 0o200000;
-// O_* flag VALUES are arch-specific (Linux fcntl.h per-arch overrides):
+// O_* flag VALUES are arch-specific (Linux fcntl UAPI per-arch overrides):
 // x86_64 = asm-generic (O_NOFOLLOW=0o400000); aarch64 uses the arm override
 // (O_NOFOLLOW=0o100000, while 0x20000 is O_LARGEFILE which musl-aarch64 sets).
 #[cfg(target_arch = "x86_64")]
 pub(crate) const O_NOFOLLOW:  u32 = 0o400000;
 #[cfg(target_arch = "aarch64")]
 pub(crate) const O_NOFOLLOW:  u32 = 0o100000;
-/// `__O_TMPFILE` per Linux fcntl.h (full O_TMPFILE = this | O_DIRECTORY).
+/// `__O_TMPFILE` per the Linux fcntl UAPI (full O_TMPFILE = this | O_DIRECTORY).
 pub(crate) const O_TMPFILE:   u32 = 0o20000000;
 /// `O_PATH` (asm-generic, both arches): an fd-reference open with no read/write
 /// access — bypasses `may_open`'s access-mode permission check.

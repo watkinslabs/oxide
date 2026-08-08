@@ -1,4 +1,4 @@
-// Linux internal syscall-restart return codes (`include/linux/errno.h`) plus
+// Linux internal syscall-restart return codes plus
 // the signal-delivery-time restart decision Linux's `arch_do_signal_or_restart`
 // / `handle_signal` make from them. These codes are not errno values and must
 // never escape to userspace.
@@ -48,7 +48,7 @@ pub const fn is_restart_code(rv: i64) -> bool {
 }
 
 /// What the syscall-return tail must do with an ERESTART* sentinel, per
-/// Linux `arch/x86/kernel/signal.c` `handle_signal` (a handler was set up) and
+/// Linux's `handle_signal` (a handler was set up) and
 /// `arch_do_signal_or_restart` (no handler ran).
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum RestartAction {
@@ -92,10 +92,10 @@ pub const fn signal_restart_action(rv: i64, handler_ran: bool, sa_restart: bool)
 /// The value Linux's `handle_signal` leaves in the syscall-return register of
 /// the frame `rt_sigreturn` restores. When the call is being restarted the
 /// register carries the syscall number (`regs->ax = regs->orig_ax`), so the
-/// raw `rv` is right; otherwise Linux writes `regs->ax = -EINTR` EXPLICITLY
-/// (`arch/x86/kernel/signal.c` `handle_signal`, `arch/arm64/kernel/signal.c`
-/// `handle_signal`) — the internal ERESTART* sentinel must never reach the
-/// frame, because `rt_sigreturn` puts it straight into userspace.
+/// raw `rv` is right; otherwise Linux's `handle_signal` (both x86_64 and
+/// aarch64) writes `regs->ax = -EINTR` EXPLICITLY — the internal ERESTART*
+/// sentinel must never reach the frame, because `rt_sigreturn` puts it
+/// straight into userspace.
 ///
 /// B1448: both HALs stored the raw `saved_ret` here, so an interrupted
 /// syscall whose handler did not opt into `SA_RESTART` returned the

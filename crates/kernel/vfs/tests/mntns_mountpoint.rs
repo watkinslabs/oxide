@@ -1,5 +1,5 @@
 //! Mountpoint registry (Linux `struct mountpoint` + `get_mountpoint` /
-//! `put_mountpoint`, fs/namespace.c): a dentry with >=1 mount attached carries
+//! `put_mountpoint`): a dentry with >=1 mount attached carries
 //! a refcounted `Mountpoint` in the global `mountpoint_hashtable`, keyed by
 //! dentry IDENTITY. `m_count` is the number of mounts using the dentry as their
 //! mountpoint (across namespaces); the object — and the "is this dentry a

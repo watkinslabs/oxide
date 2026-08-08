@@ -1,6 +1,6 @@
-// NTP / `adjtimex(2)` UAPI numbers and discipline-loop scaling constants.
-// Transcribed from `include/uapi/linux/timex.h` and `include/linux/timex.h`
-// (Linux v7.2.0-rc4). Numbers only — no policy (`docs/52`).
+// NTP / `adjtimex(2)` UAPI numbers and discipline-loop scaling constants,
+// verbatim from Linux's uapi/kernel-internal timex headers. Numbers only —
+// no policy (`docs/52`).
 
 /// `timex.modes` selectors.
 pub const ADJ_OFFSET:     u32 = 0x0001;
@@ -15,7 +15,7 @@ pub const ADJ_MICRO:      u32 = 0x1000;
 pub const ADJ_NANO:       u32 = 0x2000;
 pub const ADJ_TICK:       u32 = 0x4000;
 
-/// Kernel-internal `modes` bits (`include/linux/timex.h`): the legacy
+/// Kernel-internal `modes` bits: the legacy
 /// `adjtime(3)` single-shot channel, which userspace spells
 /// `ADJ_OFFSET_SINGLESHOT == 0x8001` and `ADJ_OFFSET_SS_READ == 0xa001`.
 pub const ADJ_ADJTIME:          u32 = 0x8000;

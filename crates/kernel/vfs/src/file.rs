@@ -111,12 +111,12 @@ pub struct File {
     f_ra: Spinlock<FileRaState, FileRa>,
     flags:  AtomicU32,
     /// `f_wb_err` — snapshot of the inode address_space's `wb_err` taken at
-    /// open (`fs/open.c:895`), advanced by `file_check_and_advance_wb_err`.
+    /// open, advanced by `file_check_and_advance_wb_err`.
     /// This is what makes `fsync` report a writeback error EXACTLY ONCE per
     /// open file description.
     f_wb_err: AtomicU32,
     /// `f_sb_err` — the same, against the superblock's `s_wb_err`, read by
-    /// `syncfs(2)` (`fs/open.c:896`, `fs/sync.c:162`). Kept separate from
+    /// `syncfs(2)`. Kept separate from
     /// `f_wb_err` because the two are advanced by different syscalls.
     f_sb_err: AtomicU32,
     /// Currently-held flock kind: 0=none, 1=LOCK_SH, 2=LOCK_EX. Used

@@ -1,5 +1,5 @@
-//! EPOLLEXCLUSIVE wake-one semantics (Linux fs/eventpoll.c
-//! `add_wait_queue_exclusive` + `__wake_up_common` nr_exclusive==1).
+//! EPOLLEXCLUSIVE wake-one semantics (exclusive wait-queue add, wake stops
+//! after the first exclusive waiter).
 //!
 //! When N epoll instances each add the SAME listening socket with
 //! `EPOLLEXCLUSIVE`, a single incoming-connection readiness event must wake

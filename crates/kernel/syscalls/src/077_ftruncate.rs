@@ -1,5 +1,5 @@
 // 077 ftruncate — one syscall, one file (docs/53 §0). ABI shim only: the size
-// change itself is `fs::truncate::do_ftruncate` (Linux `fs/open.c`).
+// change itself is `fs::truncate::do_ftruncate`.
 
 #![cfg(target_os = "oxide-kernel")]
 

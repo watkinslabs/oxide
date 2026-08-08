@@ -5,7 +5,7 @@
 // `signal_struct::shared_pending` (process wide, fed by `kill(2)`,
 // `sigqueue(3)`, `kill_pgrp`, a POSIX timer with `PIDTYPE_TGID`, …).
 // `__send_signal_locked` chooses between them off the `enum pid_type` the
-// sender passed (`kernel/signal.c`), and `dequeue_signal` drains the private
+// sender passed, and `dequeue_signal` drains the private
 // queue first, then the shared one — so ANY thread reaching a delivery point
 // with the signal unblocked can consume a process-directed signal.
 //

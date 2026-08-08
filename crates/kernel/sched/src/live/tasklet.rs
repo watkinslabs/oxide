@@ -1,4 +1,4 @@
-// `tasklet` — Linux `include/linux/interrupt.h` (`skizm.md` §2, Step 8).
+// `tasklet` — Linux model (`skizm.md` §2, Step 8).
 //
 // A one-shot callback that runs in SOFTIRQ context. The middle rung between the
 // two things this kernel already had:

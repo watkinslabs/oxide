@@ -1,4 +1,4 @@
-// Ordering contract for the page-teardown gather (Linux `mm/mmu_gather.c`).
+// Ordering contract for the page-teardown gather.
 //
 // These run hosted: `tlb_gather` deliberately sits at the crate root, NOT
 // under `user_as` (which is `#[cfg(target_os = "oxide-kernel")]` and would

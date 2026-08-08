@@ -1,9 +1,9 @@
-// `struct file_attr` ABI edge of `file_getattr(2)` / `file_setattr(2)`
-// (Linux `fs/file_attr.c`). The inode work is `vfs::fileattr_{get,set}`; this
+// `struct file_attr` ABI edge of `file_getattr(2)` / `file_setattr(2)`.
+// The inode work is `vfs::fileattr_{get,set}`; this
 // module owns only the extensible-struct handshake and the `fsxattr` field
 // translation, so every rule below is hosted-testable (`tests/fileattr_abi.rs`).
 //
-//   struct file_attr {          // uapi/linux/fs.h, FILE_ATTR_SIZE_VER0 = 24
+//   struct file_attr {          // FILE_ATTR_SIZE_VER0 = 24
 //       __u64 fa_xflags;        // @0
 //       __u32 fa_extsize;       // @8
 //       __u32 fa_nextents;      // @12  (get-only)
@@ -20,7 +20,7 @@ use vfs::inode::{FS_XFLAG_RDONLY_MASK, FS_XFLAGS_MASK};
 
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 
-/// `FILE_ATTR_SIZE_VER0` / `FILE_ATTR_SIZE_LATEST` (`uapi/linux/fs.h`).
+/// `FILE_ATTR_SIZE_VER0` / `FILE_ATTR_SIZE_LATEST`.
 pub const FILE_ATTR_SIZE_VER0: usize = 24;
 
 /// Field offsets inside `struct file_attr`.
@@ -32,9 +32,9 @@ const OFF_COWEXTSIZE: usize = 20;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
-/// The `usize` handshake both syscalls run before touching the pointer: Linux
-/// rejects an over-page struct with `E2BIG` and a pre-VER0 one with `EINVAL`
-/// (`fs/file_attr.c` `SYSCALL_DEFINE5(file_getattr)`). # C: O(1)
+/// The `usize` handshake both syscalls run before touching the pointer:
+/// rejects an over-page struct with `E2BIG` and a pre-VER0 one with `EINVAL`.
+/// # C: O(1)
 pub fn check_struct_size(usize_bytes: usize) -> Result<(), i64> {
     if usize_bytes as u64 > hal::PAGE_SIZE_BYTES { return Err(err(Errno::E2big)); }
     if usize_bytes < FILE_ATTR_SIZE_VER0 { return Err(err(Errno::Einval)); }
@@ -49,7 +49,7 @@ fn le64(b: &[u8], off: usize) -> u64 {
     u64::from_le_bytes(v)
 }
 
-/// `copy_struct_from_user` + `file_attr_to_fileattr` (`fs/file_attr.c`): any
+/// Extensible-struct decode + field translation: any
 /// non-zero byte past the known fields is an unknown extension (`E2BIG`), an
 /// xflag outside `FS_XFLAGS_MASK` is `EINVAL`, and the read-only xflags are
 /// dropped before the request reaches the filesystem. `fa_nextents` is
@@ -66,7 +66,7 @@ pub fn decode(bytes: &[u8]) -> Result<FileAttr, i64> {
     Ok(fa)
 }
 
-/// `fileattr_to_file_attr` (`fs/file_attr.c`): the reported xflags are masked to
+/// Field translation for the `file_getattr(2)` reply: the reported xflags are masked to
 /// `FS_XFLAGS_MASK`, everything else copies straight across. # C: O(1)
 pub fn encode(fa: &FileAttr) -> [u8; FILE_ATTR_SIZE_VER0] {
     let mut out = [0u8; FILE_ATTR_SIZE_VER0];

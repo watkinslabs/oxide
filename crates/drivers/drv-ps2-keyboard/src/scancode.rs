@@ -35,7 +35,7 @@ const E0_KEYCODE: [u16; 0x80] = build_e0_table();
 
 const fn build_e0_table() -> [u16; 0x80] {
     let mut t = [0u16; 0x80];
-    // Linux KEY_* values (include/uapi/linux/input-event-codes.h).
+    // Linux KEY_* input-event-code values.
     t[0x1C] = 96; // KP_ENTER
     t[0x1D] = 97; // RIGHTCTRL
     t[0x35] = 98; // KPSLASH

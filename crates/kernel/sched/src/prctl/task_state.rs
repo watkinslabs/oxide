@@ -1,4 +1,4 @@
-// Per-task `prctl(2)` state options — Linux `kernel/sys.c`.
+// Per-task `prctl(2)` state options.
 //
 // Every `PR_GET_*` that reports through a user pointer here uses
 // `uaccess::copy_to_user`, so a bad pointer is EFAULT exactly as Linux's

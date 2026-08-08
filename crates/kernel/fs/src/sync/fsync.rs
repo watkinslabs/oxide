@@ -1,5 +1,5 @@
-// `fsync(2)` / `fdatasync(2)` work-fns — Linux `fs/sync.c` (`do_fsync` →
-// `vfs_fsync` → `vfs_fsync_range`). The syscall shim owns only fd resolution.
+// `fsync(2)` / `fdatasync(2)` work-fns: whole-file and byte-range durability.
+// The syscall shim owns only fd resolution.
 //
 // The mechanism lives on `vfs::File` ([`vfs::File::vfs_fsync_range`]) because
 // `generic_write_sync` — the `O_SYNC`/`O_DSYNC` write tail — has to call the
@@ -9,7 +9,7 @@
 
 use vfs::File;
 
-/// `vfs_fsync(file, datasync)` (`fs/sync.c:189-192`) — flush the whole file.
+/// Flush the whole file's data (and metadata unless `datasync`).
 ///
 /// Ordering, which is the entire point, is documented on
 /// [`vfs::File::vfs_fsync_range`]: page-cache writeback FIRST, then the
@@ -30,9 +30,8 @@ pub fn vfs_fsync(file: &File, datasync: bool) -> i64 {
     }
 }
 
-/// `vfs_fsync_range(file, start, end_incl, datasync)` (`fs/sync.c:176-187`) —
-/// the byte-range form behind `generic_write_sync` and `msync(MS_SYNC)`.
-/// `end_incl` is INCLUSIVE, matching Linux's `endbyte`. Returns 0 or `-errno`.
+/// Byte-range durability form behind the `O_SYNC`/`O_DSYNC` write tail and
+/// `msync(MS_SYNC)`. `end_incl` is INCLUSIVE. Returns 0 or `-errno`.
 /// # C: O(N_dirty in range)
 pub fn vfs_fsync_range(file: &File, start: u64, end_incl: u64, datasync: bool) -> i64 {
     match file.vfs_fsync_range(start, end_incl, datasync) {

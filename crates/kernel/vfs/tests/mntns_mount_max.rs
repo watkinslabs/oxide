@@ -1,10 +1,9 @@
-//! Per-namespace mount cap (Linux `sysctl_mount_max` + `count_mounts`): a
+//! Per-namespace mount cap (`sysctl_mount_max` + a mount-count reserve): a
 //! single `mount(2)` whose MS_SHARED propagation / rbind fan-out would push a
 //! namespace past `sysctl_mount_max` must fail with ENOSPC and leave NO partial
-//! reservation behind — unbounded fan-out is the DoS Linux closed with
-//! `count_mounts` (commit d29216842a85). The accounting is a reserve
-//! (`count_mounts`) → commit (`commit_mounts`) / abort (`abort_mounts`) /
-//! detach (`dec_mounts`) cycle on `mnt_ns->{nr_mounts,pending_mounts}`.
+//! reservation behind — unbounded fan-out via propagation/rbind is a DoS this
+//! cap closes. The accounting is a reserve → commit / abort / detach cycle on
+//! `mnt_ns->{nr_mounts,pending_mounts}`.
 //!
 //! Own test binary → own copy of the vfs statics; single-threaded so the shared
 //! `SYSCTL_MOUNT_MAX` / per-ns counters are mutated deterministically.

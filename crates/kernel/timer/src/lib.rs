@@ -1,6 +1,6 @@
 #![no_std]
-//! Software periodic-timer registry — the timer-wheel analog (Linux
-//! kernel/time/timer.c). Subsystems register their OWN periodic work
+//! Software periodic-timer registry — the timer-wheel analog to Linux's
+//! timer subsystem. Subsystems register their OWN periodic work
 //! (net tcp-retransmit, sched cfs-bandwidth/load-balance, neighbor GC,
 //! …) via `register_periodic`; a single generic driver (a process-context
 //! kthread, spawned by the kernel) calls `run_due` and fires the elapsed

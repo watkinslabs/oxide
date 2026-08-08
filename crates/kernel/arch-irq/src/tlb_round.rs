@@ -4,11 +4,11 @@
 // the crate manifest, so a test module living there would be compiled out
 // silently while `cargo test` still printed "ok".
 //
-// Linux serialises a cross-CPU call per TARGET with the per-CPU `csd` lock
-// (`kernel/smp.c` `csd_lock`/`csd_unlock`): a second call to the same CPU
-// cannot start until the first completes, so an ACK can never be credited to
-// the wrong request. This port has ONE global in-flight slot instead, so the
-// same guarantee has to be carried explicitly by a round id.
+// Linux serialises a cross-CPU call per TARGET with a per-CPU call-descriptor
+// lock: a second call to the same CPU cannot start until the first
+// completes, so an ACK can never be credited to the wrong request. This
+// port has ONE global in-flight slot instead, so the same guarantee has to
+// be carried explicitly by a round id.
 
 /// Advance to the next round id. Wrapping is deliberate and harmless: the test
 /// is equality against the id a target read moments earlier, not ordering.
@@ -45,8 +45,8 @@ pub fn escalation_due(now_ns: u64, next_warn_ns: u64, spins: u64, next_warn_spin
 }
 
 /// Gap before the NEXT escalation, given how many have already fired. Linux
-/// backs the check off as `csd_lock_timeout_ns * (nmessages + 1) * …`
-/// (`kernel/smp.c` `csd_lock_wait_toolong`) so a genuinely wedged peer keeps
+/// backs the check off similarly (proportional to the escalation count) so
+/// a genuinely wedged peer keeps
 /// naming itself without turning the console into the reason it is wedged —
 /// the failure mode `B1474` measured, where the instrument cost more than what
 /// it measured. Saturating, so a very long wait cannot wrap the deadline

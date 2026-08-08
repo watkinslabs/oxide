@@ -6,15 +6,14 @@ sites of a primitive this kernel never built.
 
 ## 1 Root cause
 
-Linux funnels every interruptible sleep through `___wait_event`
-(`include/linux/wait.h:302-327`) → `prepare_to_wait_event`
-(`kernel/sched/wait.c:289-320`), which returns **`-ERESTARTSYS`** at
-`wait.c:309` when `signal_pending_state()` holds. `-ERESTARTSYS` is therefore
+Linux funnels every interruptible sleep through `___wait_event` →
+`prepare_to_wait_event`, which returns **`-ERESTARTSYS`**
+when `signal_pending_state()` holds. `-ERESTARTSYS` is therefore
 Linux's DEFAULT for an interrupted wait; a real `-EINTR` is the deliberate
 exception a syscall opts into.
 
 Sockets have a second shared rule on top: `sock_intr_errno`
-(`include/net/sock.h:2755-2761`) returns `-ERESTARTSYS` when no
+returns `-ERESTARTSYS` when no
 SO_{RCV,SND}TIMEO is set and `-EINTR` when one is — *"Alas, with timeout socket
 operations are not restartable."*
 
@@ -33,35 +32,35 @@ correct answer.
 
 ## 2 Per-syscall ground truth
 
-Audited against Linux source. **Already correct in oxide — do not touch:**
-`epoll_wait` (`fs/eventpoll.c:2287`, genuine `-EINTR`, corroborated by
-`restore_saved_sigmask_unless(error == -EINTR)` at `:2843`), `semop`
-(`ipc/sem.c:2158`, genuine `-EINTR`, no ERESTART anywhere in `ipc/sem.c`),
-`rt_sigtimedwait` (`kernel/signal.c:3803`), autofs (`fs/autofs/waitq.c:400`),
-`VT_WAITACTIVE` (`drivers/tty/vt/vt_ioctl.c:230`), `getdents`
-(`fs/readdir.c:282`, partial count, no errno), `wait4`/`waitid`, plus the five
-F743 fixed. `mutex_lock_interruptible` (`kernel/locking/mutex.c:713`) and
-`down_interruptible` (`kernel/locking/semaphore.c:307`) are genuinely `-EINTR`.
+Audited against the reference implementation. **Already correct in oxide — do not touch:**
+`epoll_wait` (genuine `-EINTR`, corroborated by
+`restore_saved_sigmask_unless(error == -EINTR)`), `semop`
+(genuine `-EINTR`, no ERESTART anywhere in the sysv sem code),
+`rt_sigtimedwait`, autofs,
+`VT_WAITACTIVE`, `getdents`
+(partial count, no errno), `wait4`/`waitid`, plus the five
+F743 fixed. `mutex_lock_interruptible` and
+`down_interruptible` are genuinely `-EINTR`.
 
 **Wrong today:**
 
-| Group | Sites | Correct code | Linux |
+| Group | Sites | Correct code | Status |
 |---|---|---|---|
-| Sockets — INET/TCP/UDP/UNIX/VSOCK/netlink | 15 | `sock_intr_errno(timeo)` | `include/net/sock.h:2759` — DONE (F748) |
-| pipe/FIFO read, write, open-partner | 4 | `-ERESTARTSYS` | `fs/pipe.c:481, 652, 1208` |
-| tty read/write + job-control SIGTTIN/SIGTTOU | 5 | `-ERESTARTSYS` | `drivers/tty/n_tty.c:2155, 2356`; `tty_jobctrl.c:58` |
-| eventfd, signalfd, timerfd, userfaultfd | 4 | `-ERESTARTSYS` | `fs/eventfd.c:232`, `fs/signalfd.c:181`, `fs/timerfd.c:314`, `mm/userfaultfd.c:3402` |
-| FUSE request + `/dev/fuse` read | 2 | `-ERESTARTSYS` | `fs/fuse/dev.c:705, 1554` |
-| `flock`, `F_SETLKW`, lease break | 3 | `-ERESTARTSYS` | `fs/locks.c:2233, 2537` |
-| `syslog(2)` read | 1 | `-ERESTARTSYS` | `kernel/printk/printk.c:1611` |
-| `mq_timedsend` / `mq_timedreceive` | 2 | `-ERESTARTSYS` | `ipc/mqueue.c:739` — DONE (F745) |
-| module shim `completion_wait` | 1 | `-ERESTARTSYS` | `kernel/sched/completion.c:93` |
+| Sockets — INET/TCP/UDP/UNIX/VSOCK/netlink | 15 | `sock_intr_errno(timeo)` | DONE (F748) |
+| pipe/FIFO read, write, open-partner | 4 | `-ERESTARTSYS` | |
+| tty read/write + job-control SIGTTIN/SIGTTOU | 5 | `-ERESTARTSYS` | |
+| eventfd, signalfd, timerfd, userfaultfd | 4 | `-ERESTARTSYS` | |
+| FUSE request + `/dev/fuse` read | 2 | `-ERESTARTSYS` | |
+| `flock`, `F_SETLKW`, lease break | 3 | `-ERESTARTSYS` | |
+| `syslog(2)` read | 1 | `-ERESTARTSYS` | |
+| `mq_timedsend` / `mq_timedreceive` | 2 | `-ERESTARTSYS` | DONE (F745) |
+| module shim `completion_wait` | 1 | `-ERESTARTSYS` | |
 
 **`mq_timedsend`/`mq_timedreceive` (`ipc/src/live/posix_mq.rs:319,357`) have no
 signal check at all** — an unkillable park. Worse than the rest of the class.
 
 `recvmmsg`/`sendmmsg` are special: a partial batch returns the count and stashes
-the error in `sk_err` (`net/socket.c:3079-3097`, `:2844-2848`).
+the error in `sk_err`.
 
 oxide has **no io_uring blocking wait at all** (`426_io_uring_enter.rs` has no
 `min_complete` path) — a missing feature, not a wrong code.
@@ -87,8 +86,7 @@ oxide has **no io_uring blocking wait at all** (`426_io_uring_enter.rs` has no
 1. `sched::live::wait_event` — Linux `___wait_event`'s loop; `WaitState` /
    `WaitOutcome` / `signal_pending_state` live in the NON-gated
    `sched::task::sigwake` so the decision is hosted-tested.
-   `__fatal_signal_pending` is SIGKILL only (`sched/signal.h:399-402`), not
-   SIGSTOP.
+   `__fatal_signal_pending` is SIGKILL only, not SIGSTOP.
 2. `net::sock_intr` — `sock_intr_errno`, non-gated, with `NetError`/`VfsError`
    flavours for the two ways a socket wait exits.
 3. `Erestartsys = 512` on `VfsError`, `NetError`, `socket::Error` + `From` arms.
@@ -104,15 +102,15 @@ survivors.
 
 ## 5 Phase 2 — the two missing restart_block clients
 
-Linux has exactly five continuations (`include/linux/restart_block.h:26-55`
-has three union members; an exhaustive `->fn =` grep yields five fns):
+Linux has exactly five continuations (the restart_block union has three
+members; an exhaustive `->fn =` grep yields five fns):
 `do_restart_poll`, `futex_wait_restart`, `hrtimer_nanosleep_restart` (all
 present), plus:
 
-| Missing | Linux | Arming syscall |
-|---|---|---|
-| `alarm_timer_nsleep_restart` | `kernel/time/alarmtimer.c:805` | `clock_nanosleep(CLOCK_{REALTIME,BOOTTIME}_ALARM)`, relative only |
-| `posix_cpu_nsleep_restart` | `kernel/time/posix-cpu-timers.c:1657` | `clock_nanosleep` on a CPU clock, relative only |
+| Missing | Arming syscall |
+|---|---|
+| `alarm_timer_nsleep_restart` | `clock_nanosleep(CLOCK_{REALTIME,BOOTTIME}_ALARM)`, relative only |
+| `posix_cpu_nsleep_restart` | `clock_nanosleep` on a CPU clock, relative only |
 
 Both use the `nanosleep` union; both return `-ERESTARTNOHAND` for ABSTIME.
 
@@ -293,15 +291,15 @@ Trust the classification over the plan estimate — same as 1a (15 vs ~30).
 
 | Site | Linux | Verdict |
 |---|---|---|
-| `fs/pipe.rs` FIFO open x2 | `wait_for_partner`, `fs/pipe.c:1211` | ERESTARTSYS |
-| `fs/pipe/ring.rs` read | `pipe_read`, `fs/pipe.c:476-481` | ERESTARTSYS |
-| `fs/pipe/ring.rs` write | `pipe_write`, `fs/pipe.c:654` | ERESTARTSYS |
-| `fs/pipe/eventfd.rs` read | `eventfd_read`, `fs/eventfd.c:232` | ERESTARTSYS |
-| `fs/fuse/dev.rs` daemon read | `fuse_dev_do_read`, `fs/fuse/dev.c:1555` | ERESTARTSYS |
-| `fs/fuse/conn.rs` request wait | `request_wait_answer`, `fs/fuse/dev.c:705` | ERESTARTSYS |
-| `fs/userfaultfd/mod.rs` read | `userfaultfd_ctx_read`, `mm/userfaultfd.c:3401` | ERESTARTSYS |
+| `fs/pipe.rs` FIFO open x2 | `wait_for_partner` | ERESTARTSYS |
+| `fs/pipe/ring.rs` read | `pipe_read` | ERESTARTSYS |
+| `fs/pipe/ring.rs` write | `pipe_write` | ERESTARTSYS |
+| `fs/pipe/eventfd.rs` read | `eventfd_read` | ERESTARTSYS |
+| `fs/fuse/dev.rs` daemon read | `fuse_dev_do_read` | ERESTARTSYS |
+| `fs/fuse/conn.rs` request wait | `request_wait_answer` | ERESTARTSYS |
+| `fs/userfaultfd/mod.rs` read | `userfaultfd_ctx_read` | ERESTARTSYS |
 | `console/jobctl.rs` background access | `__tty_check_change`, `tty_jobctrl.c:55-59` | ERESTARTSYS |
-| `fs/autofs.rs` | `autofs/waitq.c:400` `wq->status = -EINTR` | **NOT moved** |
+| `fs/autofs.rs` | autofs wait queue reports `-EINTR` in `wq->status` | **NOT moved** |
 | `fs/userfaultfd/mod.rs` fault path | returns no errno — `break`s so the fault retries | **NOT moved** |
 
 **tty job control is a second, different rule inside the same driver.** Linux
@@ -318,46 +316,45 @@ unreachable on `/dev/pts/<n>` — the ttys every job-control shell actually uses
 The `wait_diff` `jobctl` probe timed out on BOTH arches. Two missing links, both
 closed in B1451: `console::acquire_ctty_on_open` short-circuits outside the
 console char-device band, so a pty slave open never acquired a ctty
-(`drivers/tty/tty_io.c:2163-2169` folds only the MASTER half into `noctty`), and
-`PtySlaveFileOps::{read,read_nonblock,write}` never called the gate at all
-(`drivers/tty/n_tty.c:2200`). The live gate moved `console::jobctl` →
+(Linux's tty-open path folds only the MASTER half into `noctty`), and
+`PtySlaveFileOps::{read,read_nonblock,write}` never called the gate at all.
+The live gate moved `console::jobctl` →
 `tty::jobctl::live` so both drivers share one; `console` is a
 `target_os = "oxide-kernel"` crate devpts cannot depend on, which is how the
 split survived review.
 
 ### New gap found (NOT closed here)
 
-`fuse/conn.rs` aborts a request on the FIRST interruptible wait. Linux
-`request_wait_answer` then runs a SECOND, **killable** phase (`fs/fuse/dev.c:721`)
+`fuse/conn.rs` aborts a request on the FIRST interruptible wait. Linux's
+`request_wait_answer` then runs a SECOND, **killable** phase
 after setting `FR_INTERRUPTED` and queueing a FUSE INTERRUPT request, so a
 non-fatal signal does not abandon the request outright. The return code is
 correct either way; the missing second phase is its own lane.
 
 ## 12 1c outcome — and a rule that must NOT be generalised
 
-Three sites, all ERESTARTSYS: `flock(2)` (`fs/locks.c:2232`), `F_SETLKW` /
-`F_OFD_SETLKW` (`:1480`, `:2536`), `syslog(2)` READ
-(`kernel/printk/printk.c:1611`). The last two carried doc comments already
+Three sites, all ERESTARTSYS: `flock(2)`, `F_SETLKW` /
+`F_OFD_SETLKW`, `syslog(2)` READ. The last two carried doc comments already
 citing `wait_event_interruptible` while returning EINTR — documented deferrals,
 now closed.
 
-**`fs/locks.c` contains no `-EINTR` and no `-ERESTARTSYS` at all.** Every lock
+**The file-locking code contains no `-EINTR` and no `-ERESTARTSYS` at all.** Every lock
 wait is a bare `wait_event_interruptible` whose value propagates unchanged, so
-the answer comes from `prepare_to_wait_event` (`kernel/sched/wait.c:309`). That
+the answer comes from `prepare_to_wait_event`. That
 is the L1 primitive doing its job.
 
 ### The finding: `sock_intr_errno` is socket-specific, not a general rule
 
-The lease break (`__break_lease`, `fs/locks.c:1764`) HAS a timeout
-(`break_time`) and HAS an `-EWOULDBLOCK` path (`:1743`, `LEASE_BREAK_NONBLOCK`)
+The lease break (`__break_lease`) HAS a timeout
+(`break_time`) and HAS an `-EWOULDBLOCK` path (`LEASE_BREAK_NONBLOCK`)
 — and NEITHER changes the signal answer. `wait_event_interruptible_timeout`
 returns `-ERESTARTSYS` on a signal whether or not a timeout was armed; the
-timeout expiring returns 0, which `__break_lease` turns into success/retry
-(`:1772-1781`), never EINTR.
+timeout expiring returns 0, which `__break_lease` turns into success/retry,
+never EINTR.
 
 So "a timed wait reports EINTR" is TRUE ONLY FOR SOCKETS, where
 `sock_intr_errno` makes it so explicitly *because* the residual timeout cannot
-cross a restart (`include/net/sock.h:2755-2757`). Do not carry that reasoning
+cross a restart. Do not carry that reasoning
 into non-socket timed waits — several remain in phases 2/3a.
 
 ### Missing feature, not a wrong errno
@@ -406,14 +403,11 @@ Linux before writing, per the vsock lesson. Both halves dissolve.
 
 ### `alarm_timer_nsleep_restart` — already satisfied
 
-`alarm_timer_nsleep` (`kernel/time/alarmtimer.c:766-805`) ends with EXACTLY the
-split `hrtimer_nanosleep` uses:
-
-    if (ret != -ERESTART_RESTARTBLOCK) return ret;
-    if (flags == TIMER_ABSTIME) return -ERESTARTNOHAND;   /* :798-800 */
-    restart->nanosleep.clockid = type;
-    restart->nanosleep.expires = exp;
-    set_restart_fn(restart, alarm_timer_nsleep_restart);
+`alarm_timer_nsleep` ends with EXACTLY the
+split `hrtimer_nanosleep` uses: on `-ERESTART_RESTARTBLOCK`, an absolute-time
+sleep converts to `-ERESTARTNOHAND`, otherwise the restart block is armed with
+the clock id and expiry and `alarm_timer_nsleep_restart` is set as its
+continuation.
 
 F743 put that split in the shared engine, and `230_clock_nanosleep` routes the
 alarm clocks through it unconditionally — `sleep_until_deadline(cur, deadline,
@@ -424,11 +418,11 @@ A separate `RESTART_ALARM_NANOSLEEP` kind would be pure ceremony: same payload
 (absolute expiry + rmtp), same resume, no observable difference. Linux needs a
 distinct continuation only because it resumes against `alarm_bases[type]` with
 RTC wake-from-suspend; note it even REUSES `nanosleep.clockid` to store an
-`alarmtimer_type`, not a clockid (`alarmtimer.c:748`) — a sibling in shape only.
+`alarmtimer_type`, not a clockid — a sibling in shape only.
 
 **The real alarm gap is not the restart block.** This kernel has no alarm timer
 base and no RTC-backed wake-from-suspend, and returns no `-EOPNOTSUPP` for a
-missing rtcdev (`alarmtimer.c:775-776`). CAP_WAKE_ALARM is checked correctly.
+missing rtcdev. CAP_WAKE_ALARM is checked correctly.
 Because no system-suspend path exists here at all, an alarm sleep is
 behaviourally identical to Linux's on a machine that never suspends — the
 distinguishing semantics are unobservable. Own lane, gated on suspend support.
@@ -567,8 +561,8 @@ with the struct markers.
 
 Linux never had a family-specific setsockopt for these: they are SOL_SOCKET
 options handled by the generic `sock_setsockopt`, which is why
-`vsock_connectible_recvmsg` (`af_vsock.c:2384`) / `_sendmsg` (`:2267`) and
-`__skb_wait_for_more_packets` (`net/core/datagram.c:128`) can just read
+`vsock_connectible_recvmsg` / `_sendmsg` and
+`__skb_wait_for_more_packets` can just read
 `sock_rcvtimeo`/`sock_sndtimeo` back. Both handlers here REJECTED SOL_SOCKET
 outright with ENOPROTOOPT, so `setsockopt(SO_RCVTIMEO)` on a vsock or netlink
 socket failed — a plain conformance bug independent of the restart work.
@@ -936,7 +930,7 @@ treating either arch's value as stable.
 
 ### Found while reading, NOT closed here
 
-- `tcp_recv_urg` (`net/ipv4/tcp.c:1513-1519`) NEVER blocks — "this call should
+- `tcp_recv_urg` NEVER blocks — "this call should
   never block, independent of the blocking state of the socket" — and returns
   `-EAGAIN` when no urgent byte is ready. `recvmsg/inet.rs` `tcp_oob_with_copy`
   parks instead. Own lane: it is a blocking-policy defect, and changing it moves

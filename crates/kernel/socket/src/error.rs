@@ -1,8 +1,8 @@
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(i32)]
 pub enum Error {
-    /// Linux `ERESTARTSYS` (`include/linux/errno.h:12`) — not an errno and
-    /// never seen by userspace. `sock_intr_errno` (`include/net/sock.h:2759`)
+    /// Linux `ERESTARTSYS` — not an errno and
+    /// never seen by userspace. `sock_intr_errno`
     /// picks it for every interrupted socket wait that has NO SO_RCVTIMEO /
     /// SO_SNDTIMEO set; the syscall-return tail then restarts the call unless
     /// a handler frame was built. Must not be collapsed to `Eintr` here.

@@ -1,5 +1,5 @@
-//! superblock: `s_time_min`/`s_time_max` epoch-window clamp (Linux
-//! `timestamp_truncate`, fs/inode.c). A backend whose on-disk timestamp field
+//! superblock: `s_time_min`/`s_time_max` epoch-window clamp (the
+//! `timestamp_truncate` contract). A backend whose on-disk timestamp field
 //! is narrower than `time64_t` (ext4 32-bit = 1901..2446) publishes its window
 //! via `set_time_range`; `timestamp_truncate` then pins an out-of-window setattr
 //! time to the nearest boundary second (sub-second field zeroed), so an
@@ -9,7 +9,7 @@
 //!
 //! The range rule is a CLAMP, never an error: Linux caps at the filesystem
 //! boundary and lets the syscall succeed, which is why `utimensat` carries no
-//! seconds-range check at all (`fs/utimes.c` validates `tv_nsec` only).
+//! seconds-range check at all (only `tv_nsec` is validated).
 
 use std::sync::Arc;
 
@@ -83,7 +83,7 @@ fn in_window_time_is_untouched() {
 #[test]
 fn pre_epoch_time_is_in_range_for_an_ext4_shaped_window() {
     let sb = sb();
-    let smin: i64 = i32::MIN as i64; // EXT4_TIMESTAMP_MIN, fs/ext4/ext4.h:2150
+    let smin: i64 = i32::MIN as i64; // EXT4_TIMESTAMP_MIN (ext4's 32-bit signed timestamp floor)
     sb.set_time_range(smin, 0x37fff_ffff);
     // 1906-08-16 — the shape `tar`/`rsync`/`cp -p` restore from old archives.
     let t = Timespec64::new(-2_000_000_000, 123_456_789);

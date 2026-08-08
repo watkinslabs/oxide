@@ -102,7 +102,7 @@ pub fn resolve_at_path_cred(dirfd: i32, raw: &str, mut flags: vfs::LookupFlags, 
 /// [`resolve_at_path`] would re-base an absolute pathname on the process root
 /// and resolve the parent OUTSIDE the scope (Linux `path_init`'s
 /// `LOOKUP_IS_SCOPED` branch runs for the `LOOKUP_PARENT` walk too; there is no
-/// create-path exception in `fs/namei.c` `path_openat`).
+/// create-path exception in Linux's `path_openat`).
 /// # C: O(components × dir-lookup) + O(symlinks)
 pub fn resolve_parent_at_flags(dirfd: i32, raw: &str, flags: vfs::LookupFlags) -> Result<vfs::VfsPath, i64> {
     // LOOKUP_FOLLOW on a parent walk means exactly what it means in the
@@ -191,7 +191,7 @@ pub fn resolve_at_lookup_maybe_null(dirfd: i32, path_ptr: u64, flags: vfs::Looku
     resolve_at_lookup(dirfd, path_ptr, flags)
 }
 
-/// Linux `getname_maybe_null` (`include/linux/fs.h`) reduced to its decision:
+/// Linux `getname_maybe_null` reduced to its decision:
 /// with `AT_EMPTY_PATH`, a NULL pointer OR an empty string yields a NULL
 /// `struct filename`, which is how the `*at` syscall is told to operate on
 /// `dfd` itself. Without the flag neither shortcut applies — the ordinary walk
@@ -224,8 +224,8 @@ pub fn resolve_at_or_dirfd(dirfd: i32, path_ptr: u64, at_flags: u32) -> Result<v
 }
 
 /// Linux `path_listxattrat` / `path_removexattrat` target resolution. These two
-/// omit the `dfd >= 0` guard their `set`/`get` siblings carry (`fs/xattr.c:992`,
-/// `:1089` vs `:726`, `:866`), so a NULL `struct filename` ALWAYS goes to the
+/// omit the `dfd >= 0` guard their `set`/`get` siblings carry, so a NULL
+/// `struct filename` ALWAYS goes to the
 /// descriptor table — `AT_FDCWD` included, which `fd_empty` rejects with
 /// `EBADF` rather than resolving to the cwd. # C: O(components × dir-lookup)
 pub fn resolve_at_or_fd(dirfd: i32, path_ptr: u64, at_flags: u32) -> Result<vfs::VfsPath, i64> {

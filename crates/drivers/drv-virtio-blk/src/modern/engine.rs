@@ -223,9 +223,9 @@ impl BlkState {
     /// write-through.
     ///
     /// Linux's equivalent is structural rather than a branch: without
-    /// `F_FLUSH` it calls `blk_queue_write_cache(q, false, false)`
-    /// (`virtio_blk.c:1084` → `virtblk_probe`), after which `blk_insert_flush`
-    /// (`block/blk-flush.c`) retires a flush-only request immediately and
+    /// `F_FLUSH` `virtblk_probe` calls `blk_queue_write_cache(q, false, false)`,
+    /// after which `blk_insert_flush`
+    /// retires a flush-only request immediately and
     /// `virtblk_setup_cmd` is never reached with `REQ_OP_FLUSH`. Same outcome,
     /// and it is the CORRECT outcome: a device with no volatile write cache has
     /// nothing to fence, so `Ok(())` here is a truthful durability answer, not

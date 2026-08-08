@@ -1,5 +1,5 @@
 // printk console-loglevel + `syslog(2)` cursor state. Linux keeps all of
-// this in `kernel/printk/printk.c` next to the record ring (`console_loglevel`,
+// this next to the record ring (`console_loglevel`,
 // `saved_console_loglevel`, `minimum_console_loglevel`, `syslog_seq`,
 // `clear_seq`, `dmesg_restrict`). Same owner here: the ring lives in
 // `klog`, so its read cursor, clear point and console gate live with it —

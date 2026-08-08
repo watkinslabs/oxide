@@ -1,4 +1,4 @@
-// `prctl(PR_SET_MM, opt, addr, arg4, 0)` — Linux `kernel/sys.c`
+// `prctl(PR_SET_MM, opt, addr, arg4, 0)` — Linux
 // `prctl_set_mm`. Split out of `prctl.rs` so the pointer-setter /
 // AUXV / EXE_FILE / whole-MAP dispatch stays under the file cap.
 //

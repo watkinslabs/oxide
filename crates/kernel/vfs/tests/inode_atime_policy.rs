@@ -1,4 +1,4 @@
-//! atime-update policy (Linux fs/inode.c `atime_needs_update` /
+//! atime-update policy (mirrors `atime_needs_update` /
 //! `relatime_need_update`). Validates the three mount modes — relatime (update
 //! only if atime<=ctime/mtime or >24h stale), noatime (never), strictatime
 //! (always, subject to the noatime gates + equality) — plus the per-inode

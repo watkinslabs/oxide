@@ -16,10 +16,9 @@ impl UcountKey {
     /// Key for a namespace named by its canonical identity. # C: O(1)
     pub fn in_namespace(ns: NamespaceId, uid: u32) -> Self { Self { ns: ns.as_u64(), uid } }
 
-    /// Linux `INIT_USER` — uid 0 of the initial user namespace. `RLIMIT_NPROC`
-    /// is never enforced against it (`kernel/fork.c` exempts it explicitly),
-    /// which is what keeps a root fork bomb from locking root out of the
-    /// machine entirely. # C: O(1)
+    /// uid 0 of the initial user namespace. `RLIMIT_NPROC` is never enforced
+    /// against it — an explicit exemption — which is what keeps a root fork
+    /// bomb from locking root out of the machine entirely. # C: O(1)
     pub const INIT_USER: Self = Self { ns: 0, uid: 0 };
 
     /// Whether this key is [`Self::INIT_USER`]. # C: O(1)

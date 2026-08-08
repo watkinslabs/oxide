@@ -1,7 +1,7 @@
-//! inode-D28 (getattr half): `generic_fillattr` (Linux `fs/stat.c`) maps the
+//! inode-D28 (getattr half): `generic_fillattr` maps the
 //! inode's stored *filesystem* uid/gid (`i_uid`/`i_gid`) THROUGH the mount
-//! idmap to the *vfs* ids the caller sees, exactly the `vfs_getattr` →
-//! `from_kuid`/`make_vfsuid` step. An identity (non-idmapped) mount returns the
+//! idmap to the *vfs* ids the caller sees, via the vfsuid mapping step of
+//! generic getattr. An identity (non-idmapped) mount returns the
 //! raw fs ids unchanged; a real idmapped mount translates them, and an fs id
 //! outside every extent surfaces as the INVALID sentinel (`(uid_t)-1`).
 //!

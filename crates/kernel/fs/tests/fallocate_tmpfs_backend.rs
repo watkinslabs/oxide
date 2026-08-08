@@ -1,4 +1,4 @@
-//! `shmem_fallocate` (Linux `mm/shmem.c`) reached through the real
+//! tmpfs's `fallocate` backend, reached through the real
 //! `vfs_fallocate` ladder over real tmpfs inodes. Pins the two things only the
 //! backend can decide: which modes it serves, and that it checks
 //! `RLIMIT_FSIZE` even under `FALLOC_FL_KEEP_SIZE` — the deliberate split from

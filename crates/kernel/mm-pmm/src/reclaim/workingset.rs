@@ -1,4 +1,4 @@
-// Workingset shadow-entry recency (Linux `mm/workingset.c`).
+// Workingset shadow-entry recency.
 //
 // Reclaim dropping a clean page cache page leaves a *shadow* entry at that
 // index instead of nothing. The shadow records the value of the global

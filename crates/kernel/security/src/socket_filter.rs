@@ -1,4 +1,4 @@
-//! Classic socket-filter verifier and interpreter (`linux/filter.h`).
+//! Classic socket-filter verifier and interpreter (socket-filter UAPI).
 
 extern crate alloc;
 

@@ -1,4 +1,4 @@
-// perf_event_open(2) — Linux `kernel/events/core.c`.
+// perf_event_open(2).
 //
 // `kernel.perf_event_paranoid` / `perf_event_max_sample_rate` live in
 // `sched::perf_sw` — `procfs` binds `/proc/sys/kernel` to them and cannot

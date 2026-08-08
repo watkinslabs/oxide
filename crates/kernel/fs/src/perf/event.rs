@@ -1,6 +1,5 @@
-// Live `struct perf_event` state and its counter sources.
-// Linux `kernel/events/core.c` (`perf_event_alloc`, `cpu_clock_event_update`,
-// `task_clock_event_update`) + `kernel/events/core.c` software counters.
+// Live `struct perf_event` state and its counter sources: allocation,
+// CPU-clock and task-clock update, and the software-counter set.
 
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;

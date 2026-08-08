@@ -214,7 +214,7 @@ fn efault() -> i64 { -(Errno::Efault.as_i32() as i64) }
 use crate::atomic::IN_FORMATS_BLOB_ID;
 
 /// Build the plane `IN_FORMATS` blob (`struct drm_format_modifier_blob`,
-/// drm_mode.h): header(24) + formats[2](8) + modifiers[1](24) = 56 bytes.
+/// DRM/KMS modesetting UAPI): header(24) + formats[2](8) + modifiers[1](24) = 56 bytes.
 /// Advertises XRGB8888/ARGB8888 with the LINEAR modifier — the only layout our
 /// PMM-contiguous dumb buffers use. This is the exact structure mutter's native
 /// KMS backend parses to learn a plane's supported formats. # C: O(1)

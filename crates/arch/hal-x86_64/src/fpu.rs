@@ -56,7 +56,7 @@ static XSAVE_AREA_BYTES: AtomicUsize = AtomicUsize::new(0);
 /// Extended-state components begin after the 576-byte legacy/header region,
 /// so zero is not a valid PKRU offset.
 static PKRU_XSAVE_OFF: AtomicUsize = AtomicUsize::new(0);
-/// Linux `mxcsr_feature_mask` (`arch/x86/kernel/fpu/init.c`): the MXCSR bits
+/// Linux `mxcsr_feature_mask`: the MXCSR bits
 /// this CPU implements, taken from an FXSAVE image's `mxcsr_mask` word.
 /// `rt_sigreturn` rejects a user MXCSR with any bit outside it, because
 /// `fxrstor`/`xrstor64` #GP on a reserved MXCSR bit and that #GP would land

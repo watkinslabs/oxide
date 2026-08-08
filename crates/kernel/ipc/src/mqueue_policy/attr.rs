@@ -1,6 +1,5 @@
 //! `struct mq_attr` validation, the per-namespace queue admission gate, and
-//! the RLIMIT_MSGQUEUE charge — Linux `mqueue_create_attr`
-//! (`ipc/mqueue.c:566-608`) and `mqueue_get_inode` (`:289-401`).
+//! the RLIMIT_MSGQUEUE charge.
 
 use syscall::errno::Errno;
 
@@ -21,7 +20,7 @@ pub struct MqSysctls {
 }
 
 impl MqSysctls {
-    /// `ipc/namespace.c` `create_ipc_ns` initial values. # C: O(1)
+    /// The IPC namespace's initial mqueue sysctl values. # C: O(1)
     pub const fn linux_defaults() -> Self {
         Self {
             queues_max: DFLT_QUEUESMAX,
@@ -42,12 +41,12 @@ impl Default for MqSysctls {
 pub struct MqCreate {
     pub maxmsg: i64,
     pub msgsize: i64,
-    /// Linux `mq_bytes` (`ipc/mqueue.c:364-370`) — what the queue costs the
+    /// What the queue costs the
     /// creating user's `RLIMIT_MSGQUEUE` budget for as long as it exists.
     pub mq_bytes: u64,
 }
 
-/// Linux `mqueue_create_attr` (`ipc/mqueue.c:581-585`): a namespace already at
+/// A namespace already at
 /// `queues_max` refuses a new queue with `ENOSPC`, and `CAP_SYS_RESOURCE`
 /// bypasses it. Runs BEFORE any attr validation, so a bad `mq_attr` on a full
 /// namespace still reports `ENOSPC`.
@@ -57,10 +56,10 @@ pub fn admit_new_queue(count: u32, queues_max: u32, cap_sys_resource: bool) -> R
     Ok(())
 }
 
-/// Linux `mqueue_get_inode` (`ipc/mqueue.c:326-370`). `attr` is the caller's
+/// `attr` is the caller's
 /// `(mq_maxmsg, mq_msgsize)` when `mq_open` was handed a non-NULL `u_attr`;
-/// `None` takes the namespace defaults. Linux does NOT clamp an out-of-range
-/// request — it rejects it:
+/// `None` takes the namespace defaults. An out-of-range
+/// request is NOT clamped — it is rejected:
 ///
 /// * `mq_maxmsg <= 0` or `mq_msgsize <= 0` → `EINVAL`
 /// * over `HARD_MSGMAX` / `HARD_MSGSIZEMAX` with `CAP_SYS_RESOURCE` → `EINVAL`
@@ -97,9 +96,9 @@ pub fn validate_attr(attr: Option<(i64, i64)>, ns: &MqSysctls, cap_sys_resource:
     Ok(MqCreate { maxmsg, msgsize, mq_bytes })
 }
 
-/// Linux `inc_rlimit_ucounts` gate (`ipc/mqueue.c:371-387`): the new queue's
+/// The new queue's
 /// charge must keep the creating user's accumulated mqueue bytes within
-/// `RLIMIT_MSGQUEUE`. Over it is `EMFILE` (`mqueue.c:383`) — not `EAGAIN`, and
+/// `RLIMIT_MSGQUEUE`. Over it is `EMFILE` — not `EAGAIN`, and
 /// not `ENOMEM`. Returns the new accumulated total on success.
 /// # C: O(1)
 pub fn charge_msgqueue(current_bytes: u64, add: u64, rlimit_cur: u64) -> Result<u64, Errno> {
@@ -108,7 +107,7 @@ pub fn charge_msgqueue(current_bytes: u64, add: u64, rlimit_cur: u64) -> Result<
     Ok(total)
 }
 
-/// Linux `do_mq_getsetattr` (`ipc/mqueue.c:1392-1393`): the ONLY bit a caller
+/// The ONLY bit a caller
 /// may set in `mq_attr.mq_flags` is `O_NONBLOCK`; anything else is `EINVAL`.
 /// The test runs before the descriptor lookup, so it beats `EBADF`.
 /// Returns the requested `O_NONBLOCK` state.

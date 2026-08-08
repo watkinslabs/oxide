@@ -1,4 +1,4 @@
-// `membarrier(2)` work fns — Linux `kernel/sched/membarrier.c`.
+// `membarrier(2)` work fns.
 //
 // WHAT THE EXPEDITED COMMANDS ACTUALLY NEED. Linux's `ipi_mb()` is nothing
 // but `smp_mb()`: the ordering comes from the TARGET entering the kernel and

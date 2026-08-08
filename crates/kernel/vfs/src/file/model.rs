@@ -342,7 +342,7 @@ impl File {
     pub fn set_ra_pages(&self, pages: u32) { self.f_ra.lock().ra_pages = pages; }
 
     /// `POSIX_FADV_NORMAL` — restore the backing device's default readahead
-    /// window (Linux `mm/fadvise.c`: `file->f_ra.ra_pages = bdi->ra_pages`).
+    /// window (`file->f_ra.ra_pages = bdi->ra_pages`).
     /// The ceiling itself is `f_ra`'s to own, so fadvise names the intent and
     /// does not carry the number. # C: O(1)
     pub fn ra_set_normal(&self) { self.set_ra_pages(DEFAULT_RA_PAGES); }

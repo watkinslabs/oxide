@@ -1,5 +1,5 @@
-// Per-MOUNT procfs identity and the decisions it drives — Linux `struct
-// proc_fs_info` (`include/linux/proc_fs.h`), which lives in `sb->s_fs_info` and
+// Per-MOUNT procfs identity and the decisions it drives — matching Linux's
+// `struct proc_fs_info`, which lives in `sb->s_fs_info` and
 // is built fresh by `proc_fill_super` for every superblock.
 //
 // The point of the struct is that these answers belong to the MOUNT, not to the
@@ -79,7 +79,7 @@ pub fn parse_subset(value: &str) -> Result<PidOnly, ()> {
     }
 }
 
-/// `proc_fs_parameters` (Linux `fs/proc/root.c`). `pidns=` is deliberately
+/// Matches Linux's `proc_fs_parameters` table. `pidns=` is deliberately
 /// absent: it names a pid-namespace file to mount against, and this kernel
 /// derives a mount's namespace from the mounting task rather than from a file,
 /// so declaring it would claim a selector nothing reads. Every name listed here

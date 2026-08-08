@@ -14,14 +14,14 @@ use alloc::vec::Vec;
 
 /// Linux `(uid_t)-1` / `(gid_t)-1`: the INVALID owner sentinel a real (non-nop)
 /// idmap yields for any id outside every extent. `make_vfsuid`/`from_vfsuid`
-/// (`fs/mnt_idmapping.c`) propagate `map_id_down`/`map_id_up`'s `(u32)-1` miss
+/// propagate `map_id_down`/`map_id_up`'s `(u32)-1` miss
 /// result as `INVALID_VFSUID`/`INVALID_UID`; the userspace copy-out boundary
 /// later munges it to overflowuid (65534).
 pub const INVALID_ID: u32 = u32::MAX;
 
-/// Linux global `overflowuid` (`kernel/sys.c`, `/proc/sys/kernel/overflowuid`,
+/// Linux global `overflowuid` (`/proc/sys/kernel/overflowuid`,
 /// default `65534`): the placeholder id `from_kuid_munged`/`from_kgid_munged`
-/// (`kernel/user_namespace.c`) substitute when a kernel id has NO mapping in the
+/// substitute when a kernel id has NO mapping in the
 /// target user namespace — the stat copy-out boundary turns the INVALID
 /// sentinel into this "nobody" id so an unmapped owner surfaces as `65534`
 /// rather than leaking `(uid_t)-1`. Distinct from [`INVALID_ID`]: INVALID is the
@@ -97,7 +97,7 @@ impl Idmap {
     /// vfsgid (chown/create arg) → fs `i_gid` stored. # C: O(extents)
     pub fn map_in_gid(&self, vfs: u32) -> u32 { self.inn(&self.gid_ext, vfs) }
 
-    /// `from_kuid_munged` (Linux `kernel/user_namespace.c`): fs `i_uid` → the
+    /// `from_kuid_munged`: fs `i_uid` → the
     /// uid userspace observes through `stat(2)`'s `st_uid` copy-out, mapping the
     /// INVALID miss result to [`OVERFLOW_UID`] (65534) instead of leaking
     /// `(uid_t)-1`. The plain [`map_out_uid`](Self::map_out_uid) keeps INVALID so

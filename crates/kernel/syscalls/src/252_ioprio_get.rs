@@ -1,5 +1,5 @@
 // 252 ioprio_get — one syscall, one file (docs/53 §0).
-// `ioprio_get(which, who)`: Linux `block/ioprio.c:180`. Thin shim over
+// `ioprio_get(which, who)`: Linux's `sys_ioprio_get`. Thin shim over
 // `crate::ioprio`.
 //
 // The two arms differ on purpose in Linux and here: IOPRIO_WHO_PROCESS reports

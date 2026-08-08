@@ -1,6 +1,6 @@
 // `sys_chroot(path)` — slot 161. ABI shim only: path fetch + resolution; the
 // directory/permission/capability ladder and the `fs_struct` root install are
-// `fs::cwd::set_fs_root` (Linux `fs/open.c SYSCALL_DEFINE1(chroot)`).
+// `fs::cwd::set_fs_root` (Linux's `SYSCALL_DEFINE1(chroot)`).
 
 #![cfg(target_os = "oxide-kernel")]
 

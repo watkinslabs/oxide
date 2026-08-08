@@ -1,7 +1,7 @@
 //! idmap-D4b (out-of-range part): an idmapped mount with a real (non-nop) idmap
 //! maps any filesystem id NOT covered by an extent to the INVALID sentinel
-//! (`(uid_t)-1` == `u32::MAX`), matching Linux `make_vfsuid`/`from_vfsuid`
-//! (`fs/mnt_idmapping.c`): `map_id_down`/`map_id_up` return `(u32)-1` on an
+//! (`(uid_t)-1` == `u32::MAX`), matching Linux `make_vfsuid`/`from_vfsuid`:
+//! `map_id_down`/`map_id_up` return `(u32)-1` on an
 //! extent miss, so the kernel surfaces the unmapped owner as INVALID_VFSUID /
 //! INVALID_UID (later munged to overflowuid at the userspace copy-out boundary).
 //!

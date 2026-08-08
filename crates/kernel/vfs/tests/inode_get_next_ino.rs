@@ -1,4 +1,4 @@
-//! `get_next_ino` (Linux `fs/inode.c`) — the anon-inode number allocator for
+//! `get_next_ino` — the anon-inode number allocator for
 //! the pseudo families with no range of their own (pidfd, POSIX message
 //! queues, the io_uring low half). Before it existed there was no central
 //! allocator at all, so pseudo inodes could collide on `(s_dev, i_ino)` or hand

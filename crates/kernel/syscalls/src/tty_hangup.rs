@@ -74,7 +74,7 @@ pub(crate) fn hangup(target: &CttyTarget, kind: HangupKind) {
         CttyTarget::Vt(vt) => console::vt_tty::hangup(*vt, kind),
         CttyTarget::Pts(pair) => pair.with_pair(|p| {
             // `pty_close` hangs the slave up through the same `tty_vhangup`
-            // path (`drivers/tty/pty.c:77`); `master_hangup` is that state
+            // path ; `master_hangup` is that state
             // change — EOF on slave read, EIO on slave write.
             p.master_hangup();
             p.session_pid = 0;

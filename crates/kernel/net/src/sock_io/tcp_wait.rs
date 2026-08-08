@@ -11,7 +11,7 @@ pub(crate) fn connect_wait_established(
     loop {
         drain_loopback();
         #[cfg(target_os = "oxide-kernel")]
-        // Linux `__inet_stream_connect` (`net/ipv4/af_inet.c`):
+        // Linux `__inet_stream_connect`:
         // `err = sock_intr_errno(timeo);` where `timeo = sock_sndtimeo(...)`.
         if sched::live::deliverable_signals_self() != 0 {
             return Err(crate::sock_intr::sock_intr_net(deadline_ns));

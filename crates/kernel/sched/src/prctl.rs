@@ -1,9 +1,9 @@
 // `sys_prctl` (slot 157) — module manifest.
 //
-// Linux `kernel/sys.c` `SYSCALL_DEFINE5(prctl)` plus the helpers it fans out
+// Linux `SYSCALL_DEFINE5(prctl)` plus the helpers it fans out
 // to. Split per `08§7` / crate-shape rules:
 //
-//   uapi        — `PR_*` option numbers and sub-values (`include/uapi/linux/prctl.h`)
+//   uapi        — `PR_*` option numbers and sub-values
 //   arm64       — the arm64-only options (tagged-address ABI, SVE/SME vector
 //                 length, pointer auth), each gated on a real ID-register read
 //   tsc         — PR_{SET,GET}_TSC: the per-task counter-read trap and the
@@ -14,7 +14,7 @@
 //   name        — PR_SET_NAME / PR_GET_NAME / PR_SET_DUMPABLE
 //   task_state  — per-task state options (pdeathsig, subreaper, no-new-privs,
 //                 timerslack, THP, MCE, tid-address)
-//   caps        — capability-set options (`security/commoncap.c` `cap_task_prctl`)
+//   caps        — capability-set options (Linux `cap_task_prctl`)
 //   sud         — PR_SET_SYSCALL_USER_DISPATCH: registration + the per-syscall
 //                 predicate the dispatch head consumes
 //   io_flusher  — PR_{SET,GET}_IO_FLUSHER, incl. the live no-IO-reclaim flag

@@ -1,10 +1,10 @@
-// The hierarchical charge walks: Linux `inc_rlimit_ucounts`,
-// `dec_rlimit_ucounts` and `is_rlimit_overlimit` (`kernel/ucount.c`).
+// The hierarchical charge walks for incrementing, decrementing and testing
+// an rlimit-backed ucount.
 //
 // Every walk starts at the task's own account and follows each namespace's
-// creator link upward. `inc`/`dec` are UNCONDITIONAL — Linux charges first
-// and asks afterwards, because `fork` wants the count to include the task it
-// is deciding about, and `commit_creds` must not be able to fail. The
+// creator link upward. `inc`/`dec` are UNCONDITIONAL — charge first and ask
+// afterwards, because `fork` wants the count to include the task it is
+// deciding about, and credential-commit must not be able to fail. The
 // admission decision is [`is_overlimit`], run separately by the caller.
 
 use crate::chain::{ceiling_of, creator_of, RLIM_INFINITY};

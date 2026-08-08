@@ -1,5 +1,5 @@
-// `/proc/pressure/{cpu,memory,io}` — Linux PSI files (`kernel/sched/psi.c`
-// `psi_*_proc_ops`). Each is O_RDWR: `read` renders the two-line snapshot from
+// `/proc/pressure/{cpu,memory,io}` — Linux PSI files.
+// Each is O_RDWR: `read` renders the two-line snapshot from
 // the `sched::psi` accounting core, `write` registers a poll trigger
 // (`<some|full> <threshold_us> <window_us>`), and `poll` reports `POLL_PRI`
 // once that resource's trigger crosses. Systemd's memory-pressure watch opens

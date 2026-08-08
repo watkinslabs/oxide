@@ -1,8 +1,7 @@
 // POSIX session / process-group work fns (`docs/53§3`): the real bodies behind
 // slots 109 setpgid, 110 getppid, 111 getpgrp, 112 setsid, 121 getpgid,
-// 124 getsid. Modelled line-for-line on Linux `kernel/sys.c`
-// (`SYSCALL_DEFINE2(setpgid)`, `do_getpgid`, `SYSCALL_DEFINE1(getsid)`,
-// `ksys_setsid`, `SYSCALL_DEFINE0(getppid)`), including the exact order errors
+// 124 getsid. Modelled line-for-line on Linux `setpgid`, `do_getpgid`,
+// `getsid`, `ksys_setsid`, `getppid`, including the exact order errors
 // are returned in — job-control code depends on distinguishing EPERM from
 // EACCES from ESRCH on the same call.
 //

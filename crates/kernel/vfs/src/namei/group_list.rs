@@ -1,4 +1,4 @@
-// Linux `struct group_info` (`include/linux/cred.h`, `kernel/groups.c`): the
+// Linux `struct group_info`: the
 // caller's supplementary gid set, carried by every credential snapshot.
 //
 // Refcounted and ASCENDING-SORTED, exactly like the kernel's: cloning a

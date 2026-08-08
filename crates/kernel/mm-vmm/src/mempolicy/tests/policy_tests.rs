@@ -1,5 +1,4 @@
-// `sanitize_mpol_flags` (`mm/mempolicy.c:1721`) + `mpol_new`/`mpol_set_nodemask`
-// (`:441`, `:404`).
+// Mode-flag sanitization + policy construction from a nodemask.
 //
 // The pre-F763 shims tested `mode > MPOL_LOCAL` and stored nothing, so they
 // rejected MPOL_PREFERRED_MANY and MPOL_WEIGHTED_INTERLEAVE (both legal) and

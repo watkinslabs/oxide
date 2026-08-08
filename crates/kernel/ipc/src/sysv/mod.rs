@@ -1,6 +1,6 @@
-//! System V IPC shared substrate per `24` — the pieces Linux keeps in
-//! `ipc/util.c` and the `<asm/*buf.h>` UAPI, owned once so `sem`, `msg` and
-//! `shm` cannot drift apart.
+//! System V IPC shared substrate per `24` — the id-space, permission and
+//! UAPI-layout machinery Linux keeps common across object classes, owned
+//! once here so `sem`, `msg` and `shm` cannot drift apart.
 //!
 //! Module manifest:
 //!   `limits` — `SEMMSL`/`SEMOPM`/`SEMVMX`/`MSGMAX`/`MSGMNB`/… tunables and

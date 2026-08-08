@@ -1,5 +1,4 @@
-// `perf_event_open(2)` — Linux `kernel/events/core.c`
-// `SYSCALL_DEFINE5(perf_event_open, ...)`.
+// `perf_event_open(2)` admission ladder.
 //
 // The decision ladder is a pure function (`admit`) so its errno ORDER is
 // hosted-testable; only fd allocation and the target-task lookup touch live
@@ -141,7 +140,7 @@ pub fn admit(attr: &PerfAttr, pid: i32, cpu: i32, group_fd: i32, flags: u64, ctx
     Ok(Admitted { source, cloexec, join_group })
 }
 
-/// `perf_check_permission()` (`kernel/events/core.c`). # C: O(1)
+/// perf-event open permission check. # C: O(1)
 fn perf_check_permission(attr: &PerfAttr, ctx: &OpenCtx) -> bool {
     let mut is_capable = ctx.perfmon;
     if attr.bit(attr_bit::SIGTRAP) { is_capable &= ctx.cap_kill; }

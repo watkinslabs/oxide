@@ -1,5 +1,4 @@
-//! `semget(2)` — Linux `ksys_semget` → `ipcget` → `newary` / `sem_more_checks`
-//! (`ipc/sem.c`, `ipc/util.c`).
+//! `semget(2)` — Linux `ksys_semget` → `ipcget` → `newary` / `sem_more_checks`.
 
 use namespace_identity::NamespaceId;
 use syscall::errno::Errno;

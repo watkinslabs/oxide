@@ -59,7 +59,7 @@ pub fn ilookup(&self, ino: Ino) -> Option<InodeRef> {
         inode
     }
 
-    /// `iput` (Linux `fs/inode.c`) — drop one `i_count` reference. On the LAST
+    /// `iput` — drop one `i_count` reference. On the LAST
     /// drop (1 → 0, `iput_final`) the `s_op->drop_inode` decision runs: when it
     /// says evict (default: `i_nlink == 0`), the inode goes through the pre-evict
     /// window — `I_WILL_FREE`, `s_op->write_inode` (flush dirty metadata),
@@ -70,9 +70,8 @@ pub fn ilookup(&self, ino: Ino) -> Option<InodeRef> {
     /// kernel's keep-vs-evict split. # C: O(log N_ino)
     pub fn iput(&self, inode: InodeRef) {
         if inode.i_count_dec() != 1 { return; } // not the last reference
-        // `iput`'s lazytime forcing point (Linux fs/inode.c: `if (inode->i_nlink
-        // && sync_lazytime(inode))` runs before the count reaches zero). An
-        // inode that still has a NAME must not carry a deferred timestamp into
+        // `iput`'s lazytime forcing point runs before the count reaches zero.
+        // An inode that still has a NAME must not carry a deferred timestamp into
         // eviction, where the state — and with it the stamp — is simply
         // dropped. A link-less inode is exempt: it is about to cease existing,
         // so no I/O is spent persisting the times of a deleted file.
@@ -169,7 +168,7 @@ pub fn ilookup(&self, ino: Ino) -> Option<InodeRef> {
         self.i_nlink(ino) == Some(0)
     }
 
-    /// `set_nlink` (Linux fs/inode.c): set `ino`'s stored link count to `nlink`.
+    /// `set_nlink`: set `ino`'s stored link count to `nlink`.
     /// `0` clears it to the dead state (Linux `clear_nlink`); a nonzero value
     /// directly installs the count, including the legitimate `0 → 1` revival some
     /// filesystems perform. No-op if uncached. # C: O(log N_ino)
@@ -177,14 +176,14 @@ pub fn ilookup(&self, ino: Ino) -> Option<InodeRef> {
         if let Some(i) = self.icache_upgrade(ino) { i.set_nlink(nlink); }
     }
 
-    /// `inc_nlink` (Linux fs/inode.c): add one hard link to `ino`'s stored count,
+    /// `inc_nlink`: add one hard link to `ino`'s stored count,
     /// reviving a `0`-count inode (the O_TMPFILE `linkat` `I_LINKABLE` case). The
     /// count saturates rather than wrapping. No-op if uncached. # C: O(log N_ino)
     pub fn inc_nlink(&self, ino: Ino) {
         if let Some(i) = self.icache_upgrade(ino) { i.inc_nlink(); }
     }
 
-    /// `drop_nlink` (Linux fs/inode.c): remove one hard link from `ino`'s stored
+    /// `drop_nlink`: remove one hard link from `ino`'s stored
     /// count. Reaching `0` makes the inode an eviction candidate (observable via
     /// [`Self::i_nlink_zero`] / [`Self::i_nlink`]). Saturates at `0` rather than
     /// underflowing (Linux WARNs on a drop below zero; the count never wraps).
@@ -205,7 +204,7 @@ pub fn ilookup(&self, ino: Ino) -> Option<InodeRef> {
         }
     }
 
-    /// `clear_inode` (Linux fs/inode.c): the terminal eviction state. Sets
+    /// `clear_inode`: the terminal eviction state. Sets
     /// `I_FREEING | I_CLEAR` and drops every dirty bit — the inode's metadata is
     /// gone and no writeback will follow. # C: O(log N_ino)
     pub fn clear_inode(&self, ino: Ino) {
@@ -248,7 +247,7 @@ pub fn ilookup(&self, ino: Ino) -> Option<InodeRef> {
             .unwrap_or_default()
     }
 
-    /// `evict_inodes` (Linux fs/inode.c, run from `generic_shutdown_super`):
+    /// `evict_inodes` (run from `generic_shutdown_super`):
     /// sweep the per-SB inode cache evicting every inode with no remaining
     /// reference. In this `Weak`-keyed icache a referenceless inode is one whose
     /// `Weak::upgrade` already fails (Linux `i_count == 0`); its slot — and any

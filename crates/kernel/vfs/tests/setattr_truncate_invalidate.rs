@@ -1,5 +1,5 @@
 //! ATTR_SIZE truncate must invalidate the inode page cache (Linux
-//! `truncate_setsize` → `truncate_pagecache`, mm/truncate.c). `simple_setattr`,
+//! `truncate_setsize` → `truncate_pagecache`). `simple_setattr`,
 //! after driving `i_op->truncate`, evicts resident `i_mapping` pages lying
 //! wholly beyond the new `i_size`, so a later refault re-reads zeros/backing
 //! rather than stale post-EOF bytes. The eviction is a no-op on grow (nothing

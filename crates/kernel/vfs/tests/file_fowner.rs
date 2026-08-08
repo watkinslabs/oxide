@@ -293,7 +293,7 @@ fn sicode_is_si_sigio_for_signals_with_their_own_si_codes() {
     assert_eq!(vfs::file::sicode_for(SIGSEGV, POLL_HUP), SI_SIGIO);
 }
 
-// `band_table` (fs/fcntl.c). An out-of-range reason reports `~0`.
+// `band_table` reason-to-POLL-mask map. An out-of-range reason reports `~0`.
 #[test]
 fn band_table_matches_the_linux_reason_to_mask_map() {
     use vfs::file::band_for;

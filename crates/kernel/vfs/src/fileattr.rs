@@ -55,7 +55,7 @@ pub fn fileattr_get(inode: &InodeRef) -> KResult<FileAttr> {
     inode.fileattr_get()
 }
 
-/// Linux `fileattr_fill_flags` (fs/file_attr.c): a backend reporting the legacy
+/// Linux `fileattr_fill_flags`: a backend reporting the legacy
 /// `FS_*_FL` word publishes the translated `fsx_xflags` view in the same call,
 /// so no consumer has to re-derive it. # C: O(1)
 pub fn fileattr_fill_flags(flags: u32) -> FileAttr {
@@ -72,7 +72,7 @@ pub fn fileattr_fill_flags(flags: u32) -> FileAttr {
     fa
 }
 
-/// Linux `fileattr_fill_xflags` (fs/file_attr.c): the `fsxattr`-side inverse of
+/// Linux `fileattr_fill_xflags`: the `fsxattr`-side inverse of
 /// [`fileattr_fill_flags`]. # C: O(1)
 pub fn fileattr_fill_xflags(xflags: u32) -> FileAttr {
     let mut fa = FileAttr { fsx_xflags: xflags, ..Default::default() };

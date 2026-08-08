@@ -1,6 +1,6 @@
 // Controlling-terminal acquisition decision — the pure core of Linux
 // `tty_open` → `tty_open_proc_set_tty` / `__proc_set_tty`
-// (`drivers/tty/tty_io.c`, `28§4`). Kept in the tty crate (host-testable)
+// (`28§4`). Kept in the tty crate (host-testable)
 // so the rule is verified by oracle tests; the kernel open path supplies
 // the live context (is-the-inode-a-tty, O_NOCTTY, session-leader, current
 // ctty, tty's owning session) and acts on the outcome by wiring
@@ -15,8 +15,8 @@
 // when the tty already belongs to a session, the open does NOT acquire.
 
 /// Which tty an open resolved to. Linux computes its `noctty` term in
-/// `tty_open` from the device number plus the driver type/subtype
-/// (`drivers/tty/tty_io.c:2163-2167`); this is that classification reduced to
+/// `tty_open` from the device number plus the driver type/subtype;
+/// this is that classification reduced to
 /// the distinctions oxide's device numbering can make.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum TtyKind {
@@ -24,7 +24,7 @@ pub enum TtyKind {
     /// tty (`/dev/ttyS0`).
     Terminal,
     /// pty master half (`/dev/ptmx`) — Linux `TTY_DRIVER_TYPE_PTY` +
-    /// `PTY_TYPE_MASTER`, folded into `noctty` at `tty_io.c:2166-2167`, so it
+    /// `PTY_TYPE_MASTER`, folded into `noctty` in Linux's `tty_open`, so it
     /// can NEVER become a controlling terminal.
     PtyMaster,
     /// pty slave half (`/dev/pts/<n>`) — absent from Linux's `noctty` term, so
@@ -38,7 +38,7 @@ pub enum TtyKind {
 /// Whether a tty of this kind can become a controlling terminal on open at
 /// all, before the O_NOCTTY / session-leader / ownership conditions in
 /// [`should_acquire_ctty`] are applied (Linux `tty_open`'s `noctty` term minus
-/// its O_NOCTTY and device-alias clauses, `drivers/tty/tty_io.c:2163-2167`).
+/// its O_NOCTTY and device-alias clauses).
 /// # C: O(1)
 pub const fn kind_can_be_ctty(kind: TtyKind) -> bool {
     match kind {

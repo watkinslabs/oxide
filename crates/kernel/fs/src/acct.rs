@@ -1,4 +1,4 @@
-// BSD process accounting (Linux `kernel/acct.c`, `CONFIG_BSD_PROCESS_ACCT`).
+// BSD process accounting (`acct(2)`, the CONFIG_BSD_PROCESS_ACCT facility).
 //
 // `acct(2)` names a file; from then on the kernel appends one 64-byte
 // `struct acct_v3` record per exiting process, and `sa`/`lastcomm` read it

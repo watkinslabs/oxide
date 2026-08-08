@@ -75,7 +75,7 @@ fn queues_max_is_enospc_and_cap_sys_resource_bypasses_it() {
 
 #[test]
 fn the_msgqueue_rlimit_is_emfile_when_exceeded() {
-    // `ipc/mqueue.c:383` — EMFILE, not EAGAIN and not ENOMEM.
+    // A namespace already at its RLIMIT_MSGQUEUE cap returns EMFILE, not EAGAIN and not ENOMEM.
     assert_eq!(charge_msgqueue(0, 100, 100), Ok(100));
     assert_eq!(charge_msgqueue(0, 101, 100), Err(Errno::Emfile));
     assert_eq!(charge_msgqueue(60, 41, 100), Err(Errno::Emfile));

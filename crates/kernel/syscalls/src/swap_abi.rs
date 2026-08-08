@@ -1,6 +1,5 @@
-// `swapon(2)` / `swapoff(2)` ABI decode — Linux `mm/swapfile.c`
-// `SYSCALL_DEFINE2(swapon)` (3594-3614, 3763-3765) and `include/linux/swap.h`
-// (23-31).
+// `swapon(2)` / `swapoff(2)` ABI decode — Linux's `SYSCALL_DEFINE2(swapon)` /
+// `SYSCALL_DEFINE1(swapoff)` and the `SWAP_FLAG_*` UAPI constants.
 //
 // Ungated so the flag rule and its errno ORDER are reachable from the hosted
 // suite; the slot files are `#![cfg(target_os = "oxide-kernel")]` and would
@@ -108,10 +107,10 @@ mod tests {
 
     #[test]
     fn the_flag_mask_precedes_the_capability_check() {
-        // Both wrong -> EINVAL: `swap_flags & ~SWAP_FLAGS_VALID` is tested at
-        // `swapfile.c:3610`, ahead of `capable(CAP_SYS_ADMIN)` at `:3613`.
-        // This is the OPPOSITE order from reboot(2), which checks the
-        // capability first — neither is a house style, both come from source.
+        // Both wrong -> EINVAL: `swap_flags & ~SWAP_FLAGS_VALID` is tested
+        // ahead of `capable(CAP_SYS_ADMIN)`. This is the OPPOSITE order from
+        // reboot(2), which checks the capability first — neither is a house
+        // style, both mirror Linux's per-syscall order.
         assert_eq!(swapon_precheck(0x8_0000, false), Err(Errno::Einval));
         assert_eq!(swapon_precheck(0, false), Err(Errno::Eperm));
         assert!(swapon_precheck(0, true).is_ok());

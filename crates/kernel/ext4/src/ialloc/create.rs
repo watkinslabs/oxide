@@ -31,8 +31,8 @@ impl Mount {
     /// `create_file` returning the freshly written in-memory `Inode` alongside
     /// its number, so the VFS layer instantiates from it instead of reading the
     /// slot back off disk. Linux `ext4_create` does exactly this: the
-    /// `struct inode` from `ext4_new_inode` goes straight to
-    /// `d_instantiate_new` (`fs/ext4/namei.c` `ext4_add_nondir`).
+    /// live `struct inode` from allocation goes straight to dentry
+    /// instantiation without a re-read.
     /// # C: same as `create_file`, minus one inode-table read
     pub fn create_file_inode(
         &self,

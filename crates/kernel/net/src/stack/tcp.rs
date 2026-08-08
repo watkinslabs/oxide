@@ -46,7 +46,7 @@ impl NetStack {
         offset: usize, inline: bool, copy: impl FnOnce(&[u8]) -> Result<(R, usize), E>)
         -> Result<Option<R>, E>
     {
-        // Linux `tcp_cleanup_rbuf` (`net/ipv4/tcp.c:1575-1600`): "We send an
+        // Linux `tcp_cleanup_rbuf`: "We send an
         // ACK if we can now advertise a non-zero window which has been raised
         // significantly ... `new_window >= 2 * rcv_window_now`". Without this
         // window-update ACK a receiver that drained a CLOSED window never tells

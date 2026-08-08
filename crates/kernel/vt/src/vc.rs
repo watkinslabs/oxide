@@ -200,8 +200,8 @@ pub struct Vc {
     /// Alternate screen buffer (`CSI ?47/?1047/?1049h`). `Some` while on the
     /// alt screen, holding the saved MAIN-screen cells + cursor/attr to
     /// restore on `…l`. Full-screen apps (htop/top/vim/less) draw their UI on
-    /// the alt screen, then restore the shell on exit. Linux
-    /// `drivers/tty/vt/vt.c` `set_mode`/`save_screen`.
+    /// the alt screen, then restore the shell on exit. Mirrors Linux VT's
+    /// `set_mode`/`save_screen`.
     alt_screen: Option<AltScreen>,
     /// Active 256-color palette (index → 0x00RRGGBB). SGR index colors and
     /// `38;5`/`48;5` resolve through THIS table at apply time, so `OSC 4`

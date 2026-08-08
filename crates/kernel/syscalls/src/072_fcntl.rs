@@ -31,12 +31,12 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
     const F_GETLK: u64 = 5; const F_SETLK: u64 = 6; const F_SETLKW: u64 = 7;
     const F_OFD_GETLK: u64 = 36; const F_OFD_SETLK: u64 = 37; const F_OFD_SETLKW: u64 = 38;
     const F_DUPFD_CLOEXEC: u64 = 1030;
-    /// Linux 6.10 `F_DUPFD_QUERY` (`fs/fcntl.c` `f_dupfd_query`): "do these two
+    /// Linux 6.10 `F_DUPFD_QUERY` (`f_dupfd_query`): "do these two
     /// descriptors refer to the same open file description?". systemd asks this
     /// on every fd it might already hold — 182 times in one boot here — and got
     /// EINVAL, because the command simply did not exist.
     const F_DUPFD_QUERY: u64 = 1027;
-    /// Linux 6.12 `F_CREATED_QUERY` (`fs/fcntl.c` `f_created_query`): "did the
+    /// Linux 6.12 `F_CREATED_QUERY` (`f_created_query`): "did the
     /// open that produced this fd CREATE the file?". Reads `FMODE_CREATED`,
     /// which this kernel defined and tested but never set nor read.
     const F_CREATED_QUERY: u64 = 1028;
@@ -50,9 +50,9 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
     const F_SETSIG: u64 = 10; const F_GETSIG: u64 = 11;
     const F_SETOWN_EX: u64 = 15; const F_GETOWN_EX: u64 = 16;
     use vfs::file::owner_type::{F_OWNER_PGRP, F_OWNER_PID, F_OWNER_TID};
-    // F_*LEASE / F_NOTIFY (Linux fcntl.h, asm-generic).
+    // F_*LEASE / F_NOTIFY (Linux fcntl UAPI, asm-generic).
     const F_SETLEASE: u64 = 1024; const F_GETLEASE: u64 = 1025; const F_NOTIFY: u64 = 1026;
-    // F_{GET,SET}_RW_HINT + the per-file variants (Linux fcntl.h). arg is a
+    // F_{GET,SET}_RW_HINT + the per-file variants (Linux fcntl UAPI). arg is a
     // pointer to a u64 RWH_WRITE_LIFE_* value (NOT_SET=0 … EXTREME=5).
     // F_{GET,SET}_RW_HINT. The per-file variants (1037/1038) were removed from
     // Linux's `do_fcntl` and now fall to its `default:` EINVAL, so they are not
@@ -62,7 +62,7 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
     const O_ASYNC: u64 = 0o20000;
     // Lease types (== the l_type record-lock values): read / write / unlock.
     const F_RDLCK: i32 = 0; const F_WRLCK: i32 = 1; const F_UNLCK: i32 = 2;
-    // dnotify F_NOTIFY DN_* event bits + DN_MULTISHOT (Linux fcntl.h).
+    // dnotify F_NOTIFY DN_* event bits + DN_MULTISHOT (Linux fcntl UAPI).
     const DN_VALID: u32 = 0x0000_003f; // ACCESS|MODIFY|CREATE|DELETE|RENAME|ATTRIB
     const DN_MULTISHOT: u32 = 0x8000_0000;
     const NSIG: u64 = 64;
@@ -104,7 +104,7 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
             Err(e) => -(e as i64),
         },
         // F_GETFL: on 64-bit Linux every open implicitly carries O_LARGEFILE
-        // (`include/linux/fcntl.h` force_o_largefile; the open path ORs it into
+        // (`force_o_largefile`; the open path ORs it into
         // `f_flags`), so F_GETFL always reports it. OR it in here — O_LARGEFILE
         // is NOT in `SETFL_MASK`, so F_SETFL cannot clear it (Linux parity).
         F_GETFL => (file.flags() | vfs::OpenFlags::O_LARGEFILE).bits() as i64,
@@ -138,7 +138,7 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
             Ok(size) => size as i64,
             Err(e) => -(e as i64),
         },
-        // memfd seals (`fcntl.h`, docs/19). Only a sealable memfd exposes
+        // memfd seals (fcntl UAPI, docs/19). Only a sealable memfd exposes
         // seals; everything else → EINVAL.
         F_GET_SEALS => match file.inode().fcntl_seals() {
             Some(s) => s.load(core::sync::atomic::Ordering::Acquire) as i64,

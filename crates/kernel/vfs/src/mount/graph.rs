@@ -228,7 +228,7 @@ pub fn namespace_root_path(ns: u64, d: &Arc<Dentry>) -> Option<(u64, Arc<Dentry>
 // `hash_top`/`hash_drop_ids`) moved to `model.rs` (file-length cap, `08§7`) —
 // see there for the lock-ordering doc and the `HASH_KEY_OF` reverse index.
 
-/// `__lookup_mnt` (Linux `fs/namespace.c`): the (top) mount attached on
+/// `__lookup_mnt`: the (top) mount attached on
 /// mountpoint dentry `d` whose PARENT mount is `parent_mnt_id`, by the
 /// `(parent, dentry)` hash. [D24] THE crossing primitive the path walk
 /// (`follow_mount_down`) and the engine-internal `descend` now read — the legacy

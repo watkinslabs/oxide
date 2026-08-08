@@ -53,8 +53,8 @@ pub fn d_alloc(parent: &Arc<Dentry>, name: &str) -> Arc<Dentry> {
     Dentry::new_child(parent, name, None)
 }
 
-/// Allocate a PSEUDO dentry for an anonymous/internal inode (Linux
-/// `d_alloc_pseudo`, `fs/dcache.c`) — the constructor pipefs/sockfs/anon-inodefs
+/// Allocate a PSEUDO dentry for an anonymous/internal inode (`d_alloc_pseudo`
+/// shape) — the constructor pipefs/sockfs/anon-inodefs
 /// and every `anon_inode_getfd` consumer (pipe, eventfd, signalfd, timerfd,
 /// memfd, epoll, bpf, io_uring) use for an fd with no path. The dentry is
 /// parentless, positive, UNHASHED (no (parent,name) key — it never enters the

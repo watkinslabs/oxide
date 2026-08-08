@@ -1,5 +1,6 @@
-// `mq_notify(2)` (slot `NR_MQ_NOTIFY`) — Linux `do_mq_notify`
-// (`ipc/mqueue.c:1266-1385`) and the delivery half `__do_notify` (`:777-836`).
+// `mq_notify(2)` (slot `NR_MQ_NOTIFY`): registers or deregisters a one-shot
+// notification, delivered when a send makes the queue newly non-empty with
+// no receiver already blocked.
 
 use alloc::vec::Vec;
 
@@ -16,8 +17,8 @@ use super::user::{
     current_tgid, errno, read_user_bytes, read_user_i32, read_user_i64,
 };
 
-/// Detach a registration under the queue lock. The SIGEV_THREAD side effect
-/// Linux's `remove_notification` (`ipc/mqueue.c:848-859`) runs — the cookie
+/// Detach a registration under the queue lock. The SIGEV_THREAD side effect —
+/// the cookie
 /// goes back on the notification socket stamped `NOTIFY_REMOVED`, so a helper
 /// thread learns the registration died rather than waiting forever — is
 /// [`finish_removal`]'s job, run AFTER the lock is dropped: it enqueues on a
@@ -44,7 +45,7 @@ fn send_cookie(reg: &MqNotifyReg, code: u8) {
     super::thread_notify::sendskb(sock, &cookie);
 }
 
-/// Linux `__do_notify` (`ipc/mqueue.c:777-836`): fires when a send takes the
+/// Fires when a send takes the
 /// queue from empty to one message AND no receiver was waiting synchronously,
 /// then UNREGISTERS — a notification is one-shot.
 /// # C: O(1)
@@ -57,8 +58,8 @@ pub(super) fn do_notify(q: &MqQueue, sender_vpid: u32, sender_uid: u32) {
     match reg.kind {
         NotifyKind::None => {}
         NotifyKind::Signal(signo) => {
-            // `do_mq_notify` accepts `sigev_signo == 0`; `__do_notify` then
-            // sends nothing (`mqueue.c:793-795`).
+            // A SIGEV_SIGNAL registration accepts `sigev_signo == 0`; delivery then
+            // sends nothing.
             if signo != 0 { queue_mesgq_signal(&reg, signo, sender_vpid, sender_uid); }
         }
         NotifyKind::Thread => send_cookie(&reg, NOTIFY_WOKENUP),
@@ -67,9 +68,8 @@ pub(super) fn do_notify(q: &MqQueue, sender_vpid: u32, sender_uid: u32) {
 
 /// Post `signo` at the registered thread group with `si_code == SI_MESGQ`,
 /// `si_pid` = the sending process and `si_value` = the registered
-/// `sigev_value` (`ipc/mqueue.c:797-820`). Linux bypasses
-/// `check_kill_permission` here — the signal is from the kernel. `si_pid` is
-/// `task_tgid_nr_ns(current, ns_of_pid(info->notify_owner))`, i.e. the sender's
+/// `sigev_value`. Permission checks are bypassed here since the signal
+/// originates from the kernel, not from the sender. `si_pid` is the sender's
 /// NAMESPACE pid, never the opaque internal tgid.
 /// # C: O(1)
 fn queue_mesgq_signal(reg: &MqNotifyReg, signo: u32, sender_vpid: u32, sender_uid: u32) {
@@ -93,8 +93,8 @@ fn queue_mesgq_signal(reg: &MqNotifyReg, signo: u32, sender_vpid: u32, sender_ui
 }
 
 /// Read the `struct sigevent` prefix `mq_notify` consumes.
-/// `SYSCALL_DEFINE2(mq_notify)` copies it before `do_mq_notify` runs
-/// (`ipc/mqueue.c:1379-1383`), so a bad pointer is `EFAULT` ahead of `EBADF`.
+/// The sigevent is copied and validated before the descriptor is
+/// looked up, so a bad pointer is `EFAULT` ahead of `EBADF`.
 /// # C: O(1)
 fn read_sigevent(uptr: u64) -> Result<(u64, i32, i32), Errno> {
     if uptr == 0 || uptr >= hal::USER_VA_END
@@ -125,7 +125,7 @@ pub fn sys_mq_notify(args: &syscall::SyscallArgs) -> i64 {
         let mut sock = None;
         if matches!(kind, NotifyKind::Thread) {
             // `sigev_value.sival_ptr` addresses a NOTIFY_COOKIE_LEN cookie and
-            // `sigev_signo` is the netlink socket fd (`mqueue.c:1287-1318`).
+            // `sigev_signo` is the netlink socket fd.
             // Both are consumed BEFORE `mqdes` is fetched, so their errors
             // outrank EBADF on the queue descriptor.
             if cookie.try_reserve_exact(NOTIFY_COOKIE_LEN).is_err() { return errno(Errno::Enomem); }

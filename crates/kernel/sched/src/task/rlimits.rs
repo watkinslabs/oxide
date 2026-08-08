@@ -7,7 +7,7 @@ use super::Task;
 use crate::rlimit::{PrlimitError, check_new_rlimit, rlim};
 
 impl Task {
-    /// Linux `kernel/sys.c do_prlimit(tsk, resource, new_rlim, old_rlim)` — the
+    /// Linux `do_prlimit(tsk, resource, new_rlim, old_rlim)` — the
     /// single work-fn behind BOTH `getrlimit(2)`/`setrlimit(2)` (slots 97/160)
     /// and `prlimit64(2)` (slot 302). Returns the PREVIOUS `(cur, max)`, which
     /// Linux copies out only when the whole ladder passed:

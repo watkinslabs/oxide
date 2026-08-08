@@ -1,6 +1,6 @@
 // pkey syscall errno conformance, both arch descriptors, hosted.
 //
-// Every expectation is traced from Linux source. `pkey_alloc(2)` documents
+// Every expectation is verified against Linux's actual behaviour. `pkey_alloc(2)` documents
 // only ENOSPC and is silent about x86's first-call EINVAL; B1434 believed the
 // man page's shape and shipped ENOSPC on both arches.
 

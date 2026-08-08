@@ -210,16 +210,16 @@ pub fn fire_attrib(inode: &InodeRef) {
     vfs::file::dnotify_emit(inode, vfs::file::DN_ATTRIB);
 }
 
-/// Linux `fsnotify_link_count` — the inode's link count changed, reported as
-/// FS_ATTRIB on the inode itself (`include/linux/fsnotify.h`). Fired by
+/// The inode's link count changed, reported as
+/// FS_ATTRIB on the inode itself. Fired by
 /// `fsnotify_link` on every new hardlink and by `fsnotify_move` on a rename
 /// that overwrote an existing target. Distinct from the dirent CREATE/DELETE
 /// on the parent: a watch on the FILE learns its link count moved.
 /// # C: O(N_groups * N_watches)
 pub fn fire_link_count(inode: &InodeRef) { fire_self(inode, FAN_ATTRIB); }
 
-/// FAN_OPEN_EXEC — a file opened for program execution (Linux
-/// `fsnotify_open` with `FMODE_EXEC`). Wired from the execve path.
+/// FAN_OPEN_EXEC — a file opened for program execution (the fd carries
+/// `FMODE_EXEC`). Wired from the execve path.
 /// # C: O(N_groups * N_watches)
 pub fn fire_open_exec(inode: &InodeRef) { fire_self(inode, FAN_OPEN_EXEC); }
 
@@ -229,9 +229,9 @@ pub fn fire_open_exec(inode: &InodeRef) { fire_self(inode, FAN_OPEN_EXEC); }
 /// superblock is detached. # C: O(N_groups * N_watches)
 pub fn fire_unmount(fsid: u64) { crate::inotify::marks::unmount_fs_marks(fsid); }
 
-/// Linux `fsnotify_inoderemove` (`include/linux/fsnotify.h`) in full: report
-/// FS_DELETE_SELF on the dying inode, THEN retire every mark attached to it
-/// (`__fsnotify_inode_delete`), which queues each freed wd's `IN_IGNORED`.
+/// Full inode-removal notification: report
+/// FS_DELETE_SELF on the dying inode, THEN retire every mark attached to it,
+/// which queues each freed wd's `IN_IGNORED`.
 /// The order matters — a reader must see DELETE_SELF before IGNORED.
 /// # C: O(N_groups * N_watches)
 pub fn fire_delete_self(inode: &InodeRef) {
@@ -239,7 +239,7 @@ pub fn fire_delete_self(inode: &InodeRef) {
     crate::inotify::marks::destroy_inode_marks(inode);
 }
 
-/// Rename notification triple (Linux `fsnotify_move`): FAN_MOVED_FROM on the
+/// Rename notification triple: FAN_MOVED_FROM on the
 /// source directory (naming the OLD entry) + FAN_MOVED_TO on the destination
 /// directory (naming the NEW entry) share one cookie, and FAN_MOVE_SELF fires
 /// on the moved object. The two names are what lets a watcher pair the halves
@@ -260,7 +260,7 @@ pub fn fire_move(old_parent: &InodeRef, new_parent: &InodeRef, moved: Option<&In
     vfs::file::dnotify_emit(new_parent, vfs::file::DN_RENAME);
 }
 
-/// Linux `fsnotify_parent`: an event on a file is reported on the file's OWN
+/// An event on a file is reported on the file's OWN
 /// marks and, named, on its PARENT directory's marks. Watching a directory is
 /// the normal way inotify is used (`GFileMonitor`, systemd `.path` units), and
 /// without the parent leg such a watch never learns that a file inside it was
@@ -302,7 +302,7 @@ fn vfs_close_notify(inode: &InodeRef, was_writable: bool, d: &Arc<vfs::Dentry>) 
     fire_with_parent(inode, if was_writable { IN_CLOSE_WRITE } else { IN_CLOSE_NOWRITE }, d);
 }
 
-/// Linux `fsnotify_change` (`include/linux/fsnotify.h`): map the applied
+/// Map the applied
 /// `ATTR_*` set onto event bits. Not every attribute change is `FS_ATTRIB` — a
 /// size change is a MODIFY, and a lone atime/mtime update is ACCESS/MODIFY
 /// respectively, while BOTH together mean a `utimes()` call and are ATTRIB.

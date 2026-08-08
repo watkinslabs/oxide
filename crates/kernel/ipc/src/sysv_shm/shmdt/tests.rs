@@ -1,4 +1,4 @@
-//! `shmdt` placement rule + detach accounting, per `ipc/shm.c` `ksys_shmdt`
+//! `shmdt` placement rule + detach accounting, per Linux `ksys_shmdt`
 //! and `shm_close`.
 
 use alloc::sync::Arc;

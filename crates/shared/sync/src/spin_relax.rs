@@ -3,7 +3,7 @@
 // `pause` alone is enough on Linux, because Linux guarantees no kernel path
 // spins unboundedly with interrupts masked: `smp_call_function_many_cond`
 // asserts `lockdep_assert_irqs_enabled()` ("Can deadlock when called with
-// interrupts disabled", `kernel/smp.c`), and `mmap_lock` is a sleeping lock, so
+// interrupts disabled"), and `mmap_lock` is a sleeping lock, so
 // a CPU waiting for an address-space lock is descheduled and keeps taking IPIs.
 //
 // This port still has explicit IRQ-off kernel sections and uses a spinning

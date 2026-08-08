@@ -1,5 +1,5 @@
-//! Linux `vm_operations_struct.open` / `.close` for the one user that needs
-//! them: SysV shared memory (`ipc/shm.c` `shm_vm_ops`).
+//! VMA open/close lifecycle hooks for the one user that needs
+//! them: SysV shared memory attach/detach refcounting.
 //!
 //! `shm_nattch` counts VMAs, not processes — `shm_open` runs on every VMA
 //! that comes into existence referencing the segment (`shmat`'s own mmap,

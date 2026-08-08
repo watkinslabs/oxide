@@ -220,7 +220,7 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
                 // Linux `generic_file_mmap`/`generic_file_readonly_mmap` run
                 // `file_accessed(file)` when the mapping is established, NOT on
                 // each fault — this is also the only atime a mapped `execve`
-                // image ever gets (fs/exec.c never touches atime itself).
+                // image ever gets (the exec path never touches atime itself).
                 vfs::file_accessed(&file);
                 // The mapping remembers the name it was established under, so
                 // a core dump can tell a debugger which object to reopen for

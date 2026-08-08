@@ -1,4 +1,4 @@
-// `do_notify_parent` (Linux `kernel/signal.c`): the child-exit `siginfo` the
+// `do_notify_parent` (Linux): the child-exit `siginfo` the
 // real parent reads, and the `exit_notify` decision resolved against that
 // parent's live SIGCHLD disposition. Split out of `zombies.rs` to keep the
 // registry file inside the `08§7` cutoff.
@@ -19,7 +19,7 @@ use crate::Task;
 pub(super) fn child_exit_info(child: &Task, signo: u32, receiver: &Task)
     -> crate::task::SigInfo
 {
-    // CLD_* si_code values (siginfo(7) / asm-generic/siginfo.h).
+    // CLD_* si_code values (siginfo(7)).
     const CLD_EXITED: i32 = 1;
     const CLD_KILLED: i32 = 2;
     const CLD_DUMPED: i32 = 3;

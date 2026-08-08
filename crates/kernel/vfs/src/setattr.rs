@@ -1,4 +1,4 @@
-//! `setattr_prepare` / `notify_change` (Linux `fs/attr.c`) — the single
+//! `setattr_prepare` / `notify_change` — the single
 //! convergence point for chmod / chown / truncate / utimes.
 //!
 //! `setattr_prepare` runs the DAC + idmap decision (owner/CAP_FOWNER for
@@ -29,7 +29,7 @@ use crate::namei::{Cred, inode_permission, MAY_WRITE, S_ISGID, S_ISUID, S_IXGRP}
 use crate::timespec::Timespec64;
 use crate::types::{FileType, KResult, VfsError};
 
-/// `ATTR_*` valid-mask bits (Linux `include/linux/fs.h`, subset). `*_SET`
+/// `ATTR_*` valid-mask bits (subset). `*_SET`
 /// distinguish a *specific* time from "set to now" (UTIME_NOW / NULL), which
 /// the permission rule treats differently.
 pub const ATTR_MODE:      u32 = 1 << 0;
@@ -43,19 +43,19 @@ pub const ATTR_ATIME_SET: u32 = 1 << 7;
 pub const ATTR_MTIME_SET: u32 = 1 << 8;
 pub const ATTR_KILL_SUID: u32 = 1 << 9;
 pub const ATTR_KILL_SGID: u32 = 1 << 10;
-/// Linux `ATTR_FORCE` — "the caller already established write authority, run
-/// the change anyway" (`may_setattr`: `if (ia_valid & ATTR_FORCE) return 0;`).
-/// Linux checks `inode_permission(MAY_WRITE)` for an `ATTR_SIZE` change in
-/// `vfs_truncate` (the path form) and NOT at all in `do_ftruncate` (an
-/// `FMODE_WRITE` descriptor IS the authority); this bit lets those two callers
-/// carry that decision instead of having it re-run — and wrongly re-fail — here.
+/// `ATTR_FORCE` — the caller already established write authority, so the
+/// change runs unconditionally in `may_setattr`. An `ATTR_SIZE` change checks
+/// `MAY_WRITE` on the path form of truncate and NOT at all on the descriptor
+/// form (an `FMODE_WRITE` descriptor IS the authority); this bit lets those
+/// two callers carry that decision instead of having it re-run — and wrongly
+/// re-fail — here.
 pub const ATTR_FORCE:     u32 = 1 << 11;
 
-/// Requested attribute change (Linux `struct iattr`). `valid` selects which
+/// Requested attribute change (`struct iattr` shape). `valid` selects which
 /// fields apply; uid/gid are vfs ids (the caller's view) until `map_in_*` at
 /// apply. Times are absolute [`Timespec64`] wall-clock instants — SIGNED
 /// seconds, so a pre-1970 `utimensat` is an ordinary request, not an error
-/// (Linux `fs/utimes.c` validates `tv_nsec` only). `ctime` is stamped on every
+/// (only `tv_nsec` is range-validated). `ctime` is stamped on every
 /// change.
 #[derive(Clone, Copy, Default)]
 pub struct Iattr {
@@ -87,7 +87,7 @@ pub fn set_rlimit_fsize_hook(f: RlimitFsizeHook) {
 /// Drop the installed `RLIMIT_FSIZE` decision (hosted tests). # C: O(1)
 pub fn clear_rlimit_fsize_hook() { RLIMIT_FSIZE_HOOK.store(0, Ordering::Release); }
 
-/// `inode_newsize_ok` (Linux `fs/attr.c`) — the size constraints, which
+/// `inode_newsize_ok` — the size constraints, which
 /// `setattr_prepare` applies BEFORE `ATTR_FORCE` because they "can't be
 /// overridden using ATTR_FORCE". Both caps bite only when the file GROWS:
 /// shrinking is never limited by `RLIMIT_FSIZE`, and a size already on disk is
@@ -108,7 +108,7 @@ pub fn inode_newsize_ok(inode: &Inode, offset: u64) -> KResult<()> {
     Ok(())
 }
 
-/// `setattr_prepare` (Linux `fs/attr.c`): permission + idmap gate, run before
+/// `setattr_prepare`: permission + idmap gate, run before
 /// any mutation. Mutates `ia` to strip a disallowed S_ISGID (chmod) and to set
 /// the S_ISUID/S_ISGID kill flags (chown of a non-directory). # C: O(ngroups)
 pub fn setattr_prepare(idmap: &Idmap, inode: &InodeRef, ia: &mut Iattr, cred: &Cred) -> KResult<()> {
@@ -120,22 +120,21 @@ pub fn setattr_prepare(idmap: &Idmap, inode: &InodeRef, ia: &mut Iattr, cred: &C
     // means a direct `setattr_prepare` caller (`file_setattr`, a backend
     // `->setattr`) cannot skip the flag gate.
     may_setattr(idmap, inode, ia.valid, cred)?;
-    // Linux: the size constraints "can't be overridden using ATTR_FORCE", so
-    // they run ahead of it. The append-only reject on a size change lives in
-    // the truncate callers (`vfs_truncate`: `error = -EPERM; if
-    // (IS_APPEND(inode))`, `do_ftruncate`: `if (IS_APPEND(file_inode(file)))
-    // return -EPERM;`) and is repeated here so an `O_TRUNC` open or a
+    // The size constraints can't be overridden using ATTR_FORCE, so they run
+    // ahead of it. The append-only reject on a size change is also enforced by
+    // the truncate callers directly (an `S_APPEND` inode refuses any size
+    // change with EPERM) and is repeated here so an `O_TRUNC` open or a
     // `file_setattr` size change cannot reach a backend behind `ATTR_FORCE`.
     if ia.valid & ATTR_SIZE != 0 {
         inode_newsize_ok(inode, ia.size)?;
         if inode.i_flags() & S_APPEND != 0 { return Err(VfsError::Eperm); }
     }
-    // `if (ia_valid & ATTR_FORCE) goto kill_priv;`: the caller has already
-    // established authority for this change and the DAC gate below must not
-    // re-derive — and wrongly re-fail — it. `truncate(2)` reaches here having
-    // run `inode_permission(MAY_WRITE)`, `ftruncate(2)` having required
-    // `FMODE_WRITE`, and both then carry `ATTR_MTIME | ATTR_CTIME` meaning
-    // "now", which is NOT the owner-gated specific-time form.
+    // `ATTR_FORCE` set: the caller has already established authority for this
+    // change and the DAC gate below must not re-derive — and wrongly re-fail —
+    // it. `truncate(2)` reaches here having run `MAY_WRITE`, `ftruncate(2)`
+    // having required `FMODE_WRITE`, and both then carry `ATTR_MTIME |
+    // ATTR_CTIME` meaning "now", which is NOT the owner-gated specific-time
+    // form.
     if ia.valid & ATTR_FORCE != 0 { return Ok(()); }
 
     // Linux order: chown, then chgrp, then chmod, then the timestamp gate.
@@ -197,13 +196,13 @@ pub fn apply_kill_priv(valid: u32, mut mode: u16) -> u16 {
     mode
 }
 
-/// `simple_setattr` (Linux `fs/libfs.c`) — the default `i_op->setattr`: apply
+/// `simple_setattr` — the default `i_op->setattr`: apply
 /// the prepared `ia` to the inode's native metadata, mapping owner ids back to
 /// fs ids (`map_in_*`). Returns `Erofs` for inodes without native storage
 /// (the kernel `notify_change` then falls back to its metadata overlay).
 /// # C: O(1)
 pub fn simple_setattr(inode: &Inode, idmap: &Idmap, ia: &Iattr) -> KResult<()> {
-    // Linux `shmem_setattr` (`mm/shmem.c`): an exec-sealed memfd may change
+    // An exec-sealed memfd may change
     // other permission bits, but no chmod path may add or remove an execute
     // bit. Only shmem-style inodes expose a seal carrier, so keeping the gate
     // at this common metadata-apply boundary covers every chmod/ACL caller
@@ -218,7 +217,7 @@ pub fn simple_setattr(inode: &Inode, idmap: &Idmap, ia: &Iattr) -> KResult<()> {
     }
     if ia.valid & ATTR_SIZE != 0 {
         inode.truncate(ia.size)?;
-        // `truncate_pagecache` (Linux `mm/truncate.c`, via `truncate_setsize`):
+        // `truncate_pagecache` (via `truncate_setsize`):
         // after the backend updates `i_size`, evict resident cache pages lying
         // WHOLLY beyond the new size so a later refault re-reads zeros/backing,
         // never stale post-EOF bytes. `invalidate_range` retains the page that
@@ -249,7 +248,7 @@ pub fn simple_setattr(inode: &Inode, idmap: &Idmap, ia: &Iattr) -> KResult<()> {
     Ok(())
 }
 
-/// `setattr_should_drop_suidgid` (Linux `fs/attr.c`): the write-path companion
+/// `setattr_should_drop_suidgid`: the write-path companion
 /// to [`apply_kill_priv`]. Returns the `ATTR_KILL_SUID`/`ATTR_KILL_SGID` mask a
 /// modifying write (or content/size change) must fold into the inode mode:
 /// S_ISUID is always killed; S_ISGID only when group-executable (a bare S_ISGID
@@ -264,7 +263,7 @@ pub fn setattr_should_drop_suidgid(inode: &Inode, cred: &Cred) -> u32 {
     if kill != 0 && !cred.cap_fsetid && matches!(inode.file_type(), FileType::Regular) { kill } else { 0 }
 }
 
-/// `setattr_should_drop_sgid` (Linux `fs/attr.c`) — the idmap-aware S_ISGID
+/// `setattr_should_drop_sgid` — the idmap-aware S_ISGID
 /// strip used by the chown / `setattr_copy` path (distinct from the write-path
 /// [`setattr_should_drop_suidgid`], which preserves a bare mandatory-lock
 /// S_ISGID). Returns `ATTR_KILL_SGID` when the inode is set-group-id AND either
@@ -283,7 +282,7 @@ pub fn setattr_should_drop_sgid(idmap: &Idmap, inode: &Inode, cred: &Cred) -> u3
     if cred.in_group(vfsgid) || cred.cap_fsetid { 0 } else { ATTR_KILL_SGID }
 }
 
-/// `notify_change` (Linux `fs/attr.c`): `setattr_prepare` then `i_op->setattr`.
+/// `notify_change`: `setattr_prepare` then `i_op->setattr`.
 /// The kernel syscall layer adds an `Erofs`→metadata-overlay fallback for
 /// pseudo-fs; this native form serves backends with real storage and the
 /// hosted tests. # C: O(ngroups)
@@ -299,7 +298,7 @@ pub fn notify_change(idmap: &Idmap, inode: &InodeRef, ia: &mut Iattr, cred: &Cre
     notify_change_applied(idmap, inode, ia)
 }
 
-/// Linux `notify_change`: "Don't allow changing the mode of symlinks". The VFS
+/// `notify_change` disallows changing the mode of symlinks. The VFS
 /// ignores a symlink's mode during permission checking and no filesystem
 /// implements the change, so it is `EOPNOTSUPP` for every caller — reachable
 /// only through `fchmodat2(AT_SYMLINK_NOFOLLOW)` and `file_setattr` on an
@@ -368,10 +367,10 @@ fn notify_change_applied(idmap: &Idmap, inode: &InodeRef, ia: &mut Iattr) -> KRe
         crate::writeback::mark_inode_dirty(
             inode, crate::inode::I_DIRTY_SYNC, crate::inode_times::realtime_now_ns());
     }
-    // Linux fires notification from HERE and nowhere else: `notify_change`
-    // calls `fsnotify_change(dentry, ia_valid)` once `i_op->setattr` returns 0
-    // (`fs/attr.c`). Firing per-syscall instead silently skips every path that
-    // does not go through that one syscall.
+    // Notification fires from HERE and nowhere else: once `i_op->setattr`
+    // returns success, `notify_change` fires the change notification itself.
+    // Firing per-syscall instead silently skips every path that does not go
+    // through that one syscall.
     if r.is_ok() { crate::file::fire_setattr_hook(inode, ia.valid); }
     r
 }

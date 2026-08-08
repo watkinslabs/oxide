@@ -1,5 +1,5 @@
-// `SYSCALL_DEFINE6(splice)` (Linux `fs/splice.c:1616-1636`) → `__do_splice`
-// (`:1397-1441`) → `do_splice` (`:1300-1395`).
+// `splice(2)` work-fn: case selection, nonblock derivation, and the
+// transfer loop over the resolved descriptions.
 
 use syscall::errno::Errno;
 use vfs::{File, OpenFlags};
@@ -13,12 +13,11 @@ fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
 /// One `splice(2)` call over already-resolved descriptions.
 ///
 /// `off_in`/`off_out` are `Option<&mut u64>`: `Some` mirrors a non-NULL user
-/// pointer whose value the shim copied in and will copy back on success
-/// (`fs/splice.c:1420-1437` — copy-out happens only for `ret >= 0`).
+/// pointer whose value the shim copied in and will copy back on success —
+/// copy-out happens only for `ret >= 0`.
 ///
 /// The transfer loop runs until `len` is satisfied, the input hits EOF, or a
-/// stall. Linux's rule that already-moved bytes beat a pending errno
-/// (`__splice_from_pipe`, `fs/splice.c:610`) is reproduced: EAGAIN/ERESTARTSYS/
+/// stall. Already-moved bytes beat a pending errno: EAGAIN/ERESTARTSYS/
 /// EPIPE surface only when nothing has moved yet. # C: O(len)
 pub fn do_splice(in_file: &File, off_in: Option<&mut u64>,
                  out_file: &File, off_out: Option<&mut u64>,
@@ -42,15 +41,14 @@ pub fn do_splice(in_file: &File, off_in: Option<&mut u64>,
         out_append: out_file.flags().contains(OpenFlags::O_APPEND),
     };
     let case = match splice_case(&sin) { Ok(c) => c, Err(e) => return errno(e) };
-    // `O_NONBLOCK` on EITHER description adds SPLICE_F_NONBLOCK
-    // (`fs/splice.c:1323`, `:1345`, `:1371`).
+    // `O_NONBLOCK` on EITHER description adds SPLICE_F_NONBLOCK.
     let nonblock = flags & SPLICE_F_NONBLOCK != 0
         || in_file.flags().contains(OpenFlags::O_NONBLOCK)
         || out_file.flags().contains(OpenFlags::O_NONBLOCK);
 
     let mut total: usize = 0;
     // Explicit-offset ends work on a local cursor that the caller writes back;
-    // otherwise the description's own `f_pos` moves (`fs/splice.c:1352-1355`).
+    // otherwise the description's own `f_pos` moves.
     let mut in_pos = off_in.as_ref().map(|p| **p).unwrap_or(0);
     let mut out_pos = off_out.as_ref().map(|p| **p).unwrap_or(0);
     let use_in_pos = off_in.is_some();

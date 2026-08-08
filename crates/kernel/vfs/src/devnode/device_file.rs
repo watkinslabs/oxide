@@ -30,7 +30,7 @@ impl FileOps for DeviceFileOps {
             _ => Err(VfsError::Eio) }
     }
 
-    /// Linux `blkdev_fsync` (`block/fops.c`): write back the block device's
+    /// Linux `blkdev_fsync`: write back the block device's
     /// page cache, then `blkdev_issue_flush`. `datasync` is not consulted —
     /// a raw block device has no metadata to elide, which is why Linux gives
     /// `fsync` and `fdatasync` the same slot here. A character device keeps

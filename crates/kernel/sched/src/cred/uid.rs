@@ -1,4 +1,4 @@
-// Linux `kernel/sys.c` uid-family work fns: `__sys_setuid`, `__sys_setreuid`,
+// Linux's uid-family work fns: `__sys_setuid`, `__sys_setreuid`,
 // `__sys_setresuid`, plus the trivial getters.
 //
 // Every work fn takes `&Task` so the full transition (including the error
@@ -82,7 +82,7 @@ pub fn sys_geteuid(_args: &SyscallArgs) -> i64 {
     }
 }
 
-/// Linux `__sys_setuid` (`kernel/sys.c`). An id the caller's user namespace
+/// Linux `__sys_setuid`. An id the caller's user namespace
 /// does not map is `EINVAL` before any privilege is considered. With
 /// `CAP_SETUID` the real AND saved uid follow; without it the target must
 /// already be the real or the SAVED uid — Linux does NOT accept the current
@@ -108,7 +108,7 @@ pub fn sys_setuid(args: &SyscallArgs) -> i64 {
     match crate::live::current() { Some(c) => setuid_on(&c, args.a0 as u32), None => 0 }
 }
 
-/// Linux `__sys_setreuid` (`kernel/sys.c`, BSD semantics). BOTH arguments
+/// Linux `__sys_setreuid` (BSD semantics). BOTH arguments
 /// are mapped and validated before either is permission-checked, so an
 /// unmapped effective uid is `EINVAL` even when the real uid alone would
 /// have been `EPERM`. The real-uid target is confined to `{ruid, euid}` (NOT
@@ -143,7 +143,7 @@ pub fn sys_setreuid(args: &SyscallArgs) -> i64 {
     }
 }
 
-/// Linux `__sys_setresuid` (`kernel/sys.c`). All three arguments are mapped
+/// Linux `__sys_setresuid`. All three arguments are mapped
 /// and `EINVAL`-checked first. Each non-`-1` argument that is not already one
 /// of `{ruid, euid, suid}` requires `CAP_SETUID`; the check covers ALL THREE
 /// before any is applied, so a partially permitted call changes nothing.

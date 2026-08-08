@@ -14,7 +14,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 // ============================================================
-// TIOCLINUX subfunction selectors (linux/include/uapi/linux/tiocl.h)
+// TIOCLINUX subfunction selectors, per the Linux tiocl UAPI.
 // ============================================================
 pub const TIOCL_SETSEL:         u8 = 2;
 pub const TIOCL_PASTESEL:       u8 = 3;

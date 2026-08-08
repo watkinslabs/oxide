@@ -14,7 +14,7 @@ use vfs::{FileType, InodeRef};
 
 use super::policy::{err, may_write_xattr, XattrCred, NAME_ACL_ACCESS, NAME_ACL_DEFAULT};
 
-/// POSIX ACL entry tags (`uapi/linux/posix_acl.h`).
+/// POSIX ACL entry tags.
 const ACL_USER_OBJ:  u16 = 0x01;
 const ACL_USER:      u16 = 0x02;
 const ACL_GROUP_OBJ: u16 = 0x04;

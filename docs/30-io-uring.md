@@ -23,7 +23,7 @@ sys_io_uring_enter(fd:RawFd, to_submit:u32, min_complete:u32, flags:u32, sig:UVA
 sys_io_uring_register(fd:RawFd, opcode:u32, arg:UVA<&u8>, nr_args:u32) -> KR<u32>;
 ```
 
-`IoUringParams`,`io_uring_sqe`,`io_uring_cqe`: layout per Linux `include/uapi/linux/io_uring.h`.
+`IoUringParams`,`io_uring_sqe`,`io_uring_cqe`: layout matches the Linux io_uring UAPI byte-for-byte.
 
 ## 4 Opcodes (full phase 22 target)
 

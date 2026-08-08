@@ -124,8 +124,8 @@ impl AddressSpace {
     /// preempt-off; caller is the `sys_fork` handler.
     /// # C: O(N_vmas + P_anon_pages)
     /// F157: COW fork (Linux equivalent). Replaces the eager-copy
-    /// `fork_copy_pages` with refcount-based page sharing per
-    /// `mm/memory.c` `copy_present_pte`:
+    /// `fork_copy_pages` with refcount-based page sharing, matching
+    /// Linux's fork-time present-PTE copy:
     /// 1. Clone the VMA tree.
     /// 2. Walk parent's mapped pages: for each present leaf,
     ///    - bump struct-page refcount via `inc_ref`,
@@ -277,7 +277,8 @@ impl AddressSpace {
             // write; genuine MAP_SHARED needs a real shared backing object (the
             // tmpfs/memfd path, fix #7), NOT in-place writable COW frames.
             //
-            // CORRECTED (refcount-safe, Linux mm/memory.c): the blanket
+            // CORRECTED (refcount-safe, matching Linux's fork-time page
+            // sharing): the blanket
             // `shared=false` ALSO caught genuine inode-backed MAP_SHARED
             // (memfd/tmpfs File VMAs whose pages ARE the inode's shared
             // frames). Forcing those through COW W-stripped the shared frame
@@ -297,7 +298,7 @@ impl AddressSpace {
             // B18 fix: COW-share Anonymous + KernelBytes + File-backed
             // frames. File backings are required so child processes
             // inherit their parent's mmap'd shared-library mappings
-            // (libpam.so, libc.so, …) — Linux mm/memory.c semantic.
+            // (libpam.so, libc.so, …) — matching Linux's fork page-sharing.
             // Skipping File backings caused pam_unix's helper-fork
             // child to SIGSEGV the moment it called any libpam.so
             // function: child's PT had no entries for the libpam.so

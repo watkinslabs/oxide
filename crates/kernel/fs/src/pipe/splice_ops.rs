@@ -1,8 +1,7 @@
 // Pipe-side primitives `splice(2)`/`tee(2)`/`vmsplice(2)` need and that a
 // plain read/write cannot express: a NON-consuming ring-to-ring duplication
-// (Linux `link_pipe`, `fs/splice.c:1850-1930`) and the three wait states
-// (`ipipe_prep` `:1642-1672`, `opipe_prep` `:1678-1711`, `wait_for_space`
-// `:1259-1274`), whose errno ORDER differs between them.
+// and the three wait states (input-pipe prep, output-pipe prep, wait-for-space),
+// whose errno ORDER differs between them.
 
 use core::sync::atomic::Ordering;
 
@@ -27,7 +26,7 @@ impl core::ops::Deref for PipeRef<'_> {
     }
 }
 
-/// `get_pipe_info(file, for_splice)` (Linux `fs/pipe.c:1512-1523`): the ring
+/// The ring
 /// behind a description IFF it really is a pipe end. Covers both an anonymous
 /// pipe (ring in `i_private`) and an opened named FIFO (ring in the per-inode
 /// side table). Anything else — a regular file, a socket, an eventfd, a FIFO
@@ -52,14 +51,14 @@ pub fn space(p: &PipeData) -> usize {
 
 /// Move or duplicate up to `len` bytes from `src` into `dst`.
 ///
-/// `consume == false` is Linux `link_pipe()` (the `tee(2)` engine): the bytes
-/// stay queued in `src`. Linux achieves that by taking a REFERENCE on the pipe
-/// buffer pages; oxide's ring is a byte array, so the duplication is a copy —
-/// observably identical, since `link_pipe` also strips `PIPE_BUF_FLAG_GIFT` and
-/// `PIPE_BUF_FLAG_CAN_MERGE` from the duplicate so the page can never be stolen
-/// twice (`fs/splice.c:1907-1908`).
+/// `consume == false` is the `tee(2)` engine: the bytes
+/// stay queued in `src`. A reference-counted pipe-buffer implementation
+/// achieves that by taking a REFERENCE on the pipe
+/// buffer pages, stripping the GIFT and CAN-MERGE flags from the duplicate so
+/// the page can never be stolen twice; oxide's ring is a byte array, so the
+/// duplication is a copy — observably identical.
 ///
-/// `consume == true` is the `splice_pipe_to_pipe()` move.
+/// `consume == true` is the pipe-to-pipe splice move.
 ///
 /// BOTH rings are locked for the whole transfer, so a concurrent reader cannot
 /// drain `src` mid-copy and leave `dst` holding bytes that were also delivered
@@ -134,7 +133,7 @@ pub fn fill(p: &PipeData, src: &[u8]) -> usize {
     n
 }
 
-/// `ipipe_prep()` (Linux `fs/splice.c:1642-1672`) — make the INPUT pipe ready.
+/// `ipipe_prep()` — make the INPUT pipe ready.
 ///
 /// Order matters and differs from the output side: a pending signal is checked
 /// FIRST (`-ERESTARTSYS`), then "all writers gone" is EOF (`Ok(false)`, which
@@ -164,8 +163,7 @@ pub fn ipipe_prep(p: &PipeData, nonblock: bool) -> KResult<bool> {
     }
 }
 
-/// `opipe_prep()` / `wait_for_space()` (Linux `fs/splice.c:1678-1711`,
-/// `:1259-1274`) — make the OUTPUT pipe ready.
+/// `opipe_prep()` / `wait_for_space()` — make the OUTPUT pipe ready.
 ///
 /// Order is the MIRROR of the input side: "no readers" is `-EPIPE` (plus a
 /// SIGPIPE to the caller) BEFORE the non-blocking test, and `SPLICE_F_NONBLOCK`

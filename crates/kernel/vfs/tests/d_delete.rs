@@ -1,4 +1,4 @@
-//! dcache: `d_delete` (Linux fs/dcache.c). After a successful unlink/rmdir the
+//! dcache: `d_delete`. After a successful unlink/rmdir the
 //! FS calls `d_delete` on the victim dentry. Linux turns a SOLE-USER dentry
 //! NEGATIVE while keeping it HASHED (a cached miss, `dentry_unlink_inode`), and
 //! UNHASHES (`d_drop`) a dentry that is SHARED (`d_count > 1`) or whose

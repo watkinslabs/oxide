@@ -65,7 +65,7 @@ pub fn sys_syncfs(args: &SyscallArgs) -> i64 {
     // caller never named. Linux syncs the one filesystem containing the fd.
     //
     // `ret2 = errseq_check_and_advance(&sb->s_wb_err, &file->f_sb_err);
-    //  return ret ? ret : ret2;` (`fs/sync.c:162-164`) — a writeback error that
+    // return ret ? ret: ret2;` — a writeback error that
     // happened at ANY point since this fd was opened is reported here exactly
     // once, even though the pass just now succeeded and even if the inode that
     // failed has since been evicted (which is why `mapping_set_error` records

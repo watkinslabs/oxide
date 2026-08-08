@@ -183,7 +183,7 @@ impl TcpConn {
                 // Linux `tcp_v4_init_seq_and_ts_off` keys the passive ISN on the
                 // packet's own (daddr, saddr, dest, source) — the wildcard
                 // listener's `self.local.ip` may be ANY, so use the delivered
-                // destination (`net/ipv4/tcp_ipv4.c`). This opened at 0 before:
+                // destination. This opened at 0 before:
                 // every inbound connection to any listening service started at
                 // sequence 0, so blind injection needed no guess at all.
                 let isn = crate::secure_seq::secure_tcp_seq(
@@ -294,7 +294,7 @@ impl TcpConn {
                 Ok(Some(synack))
             }
             TcpState::SynRecv if (hdr.flags & flags::ACK) != 0 => {
-                // Linux `tcp_rcv_state_process` (`net/ipv4/tcp_input.c:7200-7253`)
+                // Linux `tcp_rcv_state_process`
                 // runs `tcp_ack` — and therefore `tcp_clean_rtx_queue` — BEFORE
                 // the `case TCP_SYN_RECV:` arm, then that arm installs
                 // `tp->snd_una` and

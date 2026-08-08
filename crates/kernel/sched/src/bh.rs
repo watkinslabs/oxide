@@ -1,4 +1,4 @@
-//! Bottom-half (softirq) control, per Linux `kernel/softirq.c`. Built on the
+//! Bottom-half (softirq) control, per Linux's softirq subsystem. Built on the
 //! per-CPU `preempt_count` softirq field (`crate::preempt`): `local_bh_disable`
 //! raises it so process context can exclude softirqs (the basis of
 //! `spin_lock_bh`); the softirq drain marks `in_serving_softirq` across the

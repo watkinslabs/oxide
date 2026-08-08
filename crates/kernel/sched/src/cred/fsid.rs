@@ -1,4 +1,4 @@
-// Linux `__sys_setfsuid` / `__sys_setfsgid` (`kernel/sys.c`).
+// Linux `__sys_setfsuid` / `__sys_setfsgid`.
 //
 // Neither can fail: EVERY path returns the PREVIOUS fsuid/fsgid, whether the
 // change was applied, rejected for lack of privilege, or skipped because the

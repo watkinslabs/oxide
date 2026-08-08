@@ -1,5 +1,5 @@
 // mount_perm — the ONE `may_mount()` gate for the whole mount(2) family
-// (docs/53 §0). Linux `fs/namespace.c`:
+// (docs/53 §0). Linux's `may_mount`:
 //
 //     bool may_mount(void)
 //     {

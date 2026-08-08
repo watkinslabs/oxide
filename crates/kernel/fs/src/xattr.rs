@@ -1,5 +1,5 @@
 // Extended-attribute syscall family (188-199 + the 463-466 `*xattrat` slots),
-// the VFS-policy half of Linux `fs/xattr.c`. Module manifest:
+// the VFS-policy half of extended-attribute handling. Module manifest:
 //
 //   policy — namespace resolution, `xattr_permission`, the commoncap gate,
 //            and every ABI limit (`XATTR_{NAME,SIZE,LIST}_MAX`, flags).

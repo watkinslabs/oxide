@@ -403,7 +403,7 @@ impl AddressSpace {
                     klog::write_raw(b"\n");
                 }
                 let pte_flags = vma.page_flags();
-                // Linux `finish_fault` pte_same/!pte_none re-check (mm/memory.c):
+                // Linux's post-fault pte_same/!pte_none re-check:
                 // `backing.read_at` above SLEEPS on the block device (ext4 ->
                 // virtio-blk park_blk -> schedule()), so a PEER THREAD of this
                 // same mm (CLONE_VM) can fault the SAME va while we sleep,

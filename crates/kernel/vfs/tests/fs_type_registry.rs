@@ -1,6 +1,6 @@
 //! D40 (vfs-model/no-d_automount-no-fs-mount-callback) — the missing
-//! piece was a name-keyed `register_filesystem`/`get_fs_type` registry
-//! (Linux `fs/filesystems.c`). These prove `mount(2)`'s "resolve `-t
+//! piece was a name-keyed `register_filesystem`/`get_fs_type` registry.
+//! These prove `mount(2)`'s "resolve `-t
 //! <type>` to a FileSystemType" can now be a registry lookup, not a
 //! hard-coded `match fstype { … }`.
 //!

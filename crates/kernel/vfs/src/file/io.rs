@@ -80,10 +80,10 @@ impl File {
         };
         self.pos.store(pos + n as u64, Ordering::Release);
         drop(pos_guard); // release before the (possibly lock-taking) inotify hook
-        // `file_accessed` (Linux include/linux/fs.h) — the atime bump the
-        // per-backend read helpers (`filemap_read`, `shmem_file_read_iter`,
-        // `pipe_read`) each run at the end of a read. Unconditional on the byte
-        // count: Linux stamps even a 0-byte read at EOF.
+        // `file_accessed` — the atime bump the
+        // per-backend read helpers (regular-file readback, tmpfs-style reads,
+        // pipe reads) each run at the end of a read. Unconditional on the byte
+        // count: a 0-byte read at EOF still stamps atime.
         crate::atime::file_accessed(self);
         if n > 0 {
             fire_read_hook(&self.inode, &self.dentry);
@@ -100,7 +100,7 @@ impl File {
         self.f_op.iterate_file(self, ctx)
     }
 
-    /// `file_start_write` (Linux `fs/super.c` `sb_start_write` via the
+    /// `file_start_write` (`sb_start_write` via the
     /// `vfs_write`/`write_iter` path): admit THIS description as an in-flight
     /// writer against its inode's superblock freeze gate before any data write,
     /// sleeping while the sb is frozen and returning an RAII [`SbWriteGuard`]
@@ -207,7 +207,7 @@ impl File {
         Ok(n)
     }
 
-    /// `file_update_time` (Linux fs/inode.c) — after a modifying write, stamp
+    /// `file_update_time` — after a modifying write, stamp
     /// the inode's mtime + ctime to the current wall clock via its
     /// `i_op->update_time` (ext4 & co. persist through to the backend; the
     /// generic default updates the in-core fields), or — on a `lazytime` mount —
@@ -308,10 +308,10 @@ impl File {
     }
 
     /// `pread` with `IOCB_NOWAIT` semantics (`RWF_NOWAIT`): return `EAGAIN`
-    /// rather than sleep for backing-store I/O. Linux enforces this inside
+    /// rather than sleep for backing-store I/O. Enforced inside
     /// `filemap_read` — every point that would have to wait for a folio
-    /// (`mm/filemap.c:2559`, `:2566`, `:2592`, `:2617`) short-circuits to
-    /// `-EAGAIN` — while readahead is still permitted (`mm/filemap.c:2951-2953`).
+    /// short-circuits to
+    /// `-EAGAIN` — while readahead is still permitted.
     ///
     /// Oxide's page cache answers the same question with `mincore_page`: if the
     /// FIRST page of the request is already resident the read completes from

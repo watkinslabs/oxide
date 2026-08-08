@@ -1,4 +1,4 @@
-// Module manifest for Linux `inode->i_flctx` (`fs/locks.c`): `context` owns
+// Module manifest for Linux `inode->i_flctx`: `context` owns
 // the per-inode BSD-flock + byte-range-record state and its wait key,
 // `records` owns the byte-range algebra (conflict rule, split/merge),
 // `deadlock` owns the global blocked-owner graph `posix_locks_deadlock` walks.

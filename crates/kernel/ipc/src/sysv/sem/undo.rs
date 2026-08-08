@@ -1,5 +1,5 @@
 //! `SEM_UNDO` bookkeeping — Linux `struct sem_undo` / `struct sem_undo_list`
-//! and `exit_sem` (`ipc/sem.c`).
+//! and `exit_sem`.
 //!
 //! Keying: Linux keys the undo list on `task->sysvsem.undo_list`, shared by
 //! `CLONE_SYSVSEM` and refcounted, so all threads of one process share it and a

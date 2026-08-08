@@ -1,5 +1,5 @@
-// Per-syscall argument ladders (`mm/mempolicy.c` do_mbind /
-// set_mempolicy_home_node, `mm/migrate.c` kernel_move_pages).
+// Per-syscall argument ladders: mbind(2), set_mempolicy_home_node(2),
+// move_pages(2).
 
 use crate::mempolicy::args::*;
 use crate::mempolicy::uapi::*;
@@ -14,7 +14,7 @@ fn mbind_rejects_undefined_flags_before_checking_the_capability() {
     assert_eq!(mbind_flags(MPOL_MF_LAZY, true), Err(Error::Inval));
     assert_eq!(mbind_flags(1 << 20, true), Err(Error::Inval));
     // An undefined bit alongside MOVE_ALL is EINVAL, not EPERM — the flag
-    // mask test comes first (`mm/mempolicy.c:1495`).
+    // mask test comes first.
     assert_eq!(mbind_flags(MPOL_MF_LAZY | MPOL_MF_MOVE_ALL, false), Err(Error::Inval));
 }
 
@@ -51,8 +51,8 @@ fn len_is_rounded_up_and_zero_length_is_a_successful_no_op() {
 
 #[test]
 fn a_length_that_rounds_up_to_zero_is_a_no_op_here_unlike_mseal() {
-    // do_mbind has no `len_in && !len` guard, so PAGE_ALIGN's wrap lands on
-    // `end == start` and returns 0 (`mm/mempolicy.c:1509`).
+    // mbind has no separate "len rounds to zero but was nonzero" guard, so
+    // the page-align wrap lands on `end == start` and returns 0.
     assert_eq!(align_range(BASE, u64::MAX), Ok(None));
 }
 

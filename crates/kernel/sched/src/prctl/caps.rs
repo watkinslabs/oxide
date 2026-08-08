@@ -1,12 +1,12 @@
-// Capability-set `prctl(2)` options — Linux `security/commoncap.c`
-// `cap_task_prctl`, which runs from `security_task_prctl` BEFORE the
-// `kernel/sys.c` switch and owns PR_CAPBSET_*, PR_{GET,SET}_SECUREBITS,
-// PR_{GET,SET}_KEEPCAPS and PR_CAP_AMBIENT.
+// Capability-set `prctl(2)` options — Linux `cap_task_prctl`, which runs
+// from `security_task_prctl` before the generic prctl switch and owns
+// PR_CAPBSET_*, PR_{GET,SET}_SECUREBITS, PR_{GET,SET}_KEEPCAPS and
+// PR_CAP_AMBIENT.
 //
 // PR_CAPBSET_READ capability-number validation is in `decide`.
 // PR_CAPBSET_DROP retains the raw number here because Linux
-// `security/commoncap.c::cap_prctl_drop` checks CAP_SETPCAP first, then
-// `cap_valid`, then commits the credential change.
+// `cap_prctl_drop` checks CAP_SETPCAP first, then capability-number
+// validity, then commits the credential change.
 
 use core::sync::atomic::Ordering;
 use syscall::errno::Errno;
@@ -30,8 +30,8 @@ fn capbset_drop_check(has_setpcap: bool, cap: u64) -> Result<u32, Errno> {
     Ok(cap as u32)
 }
 
-/// `PR_CAPBSET_DROP` — Linux `security/commoncap.c::cap_prctl_drop` checks
-/// CAP_SETPCAP before validating the raw capability number. # C: O(1)
+/// `PR_CAPBSET_DROP` — Linux `cap_prctl_drop` checks CAP_SETPCAP before
+/// validating the raw capability number. # C: O(1)
 pub fn capbset_drop(cur: &Task, cap: u64) -> i64 {
     let cap = match capbset_drop_check(cur.has_cap(crate::cap::SETPCAP), cap) {
         Ok(cap) => cap,

@@ -23,7 +23,7 @@
 //
 // All user copies bounds-check (< hal::USER_VA_END) and use volatile
 // reads/writes through the caller's AS at CPL=0. UAPI struct layouts
-// copied from linux/include/uapi/drm/drm_mode.h EXACTLY.
+// match the Linux DRM/KMS ABI byte-for-byte (`47`).
 
 extern crate alloc;
 
@@ -34,7 +34,7 @@ use syscall::errno::Errno;
 use crate::node::scanout_ops;
 
 // ============================================================
-// UAPI wire structs (drm_mode.h)
+// UAPI wire structs (DRM/KMS modesetting UAPI)
 // ============================================================
 
 /// `struct drm_mode_crtc_page_flip` — 0xc01864b0, 24 bytes. # C: ABI
@@ -237,7 +237,7 @@ fn event_waiters(card_id: u32) -> alloc::sync::Arc<sched::live::wait_list::WaitL
     w
 }
 
-/// Blocking drain — Linux `drm_read` (`drivers/gpu/drm/drm_file.c`).
+/// Blocking drain — Linux `drm_read`.
 ///
 /// Empty queue: `EAGAIN` for `O_NONBLOCK`, otherwise sleep on the card's
 /// wait list until an event arrives or a signal is deliverable

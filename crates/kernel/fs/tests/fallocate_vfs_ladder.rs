@@ -1,4 +1,4 @@
-//! `vfs_fallocate` (Linux `fs/open.c:250-352`) driven over REAL tmpfs inodes
+//! `vfs_fallocate` driven over REAL tmpfs inodes
 //! and real descriptions — no mocks. Pins the error ladder, whose order is not
 //! the order the arguments suggest: one `EINVAL` for the range and nothing
 //! else, `EOPNOTSUPP` for every unsupported mode, inode-flag rejections ahead

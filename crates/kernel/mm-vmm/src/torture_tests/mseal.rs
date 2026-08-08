@@ -36,9 +36,8 @@ fn mseal_hole_rejected() {
 }
 
 /// mseal(2) is a security primitive, so the operations it must BLOCK are the
-/// contract. Linux blocks munmap (`mm/vma.c:1422`), mmap(MAP_FIXED) over the
-/// range (same gather path), mprotect (`mm/mprotect.c:737`) and mremap
-/// (`mm/mremap.c:1736`) — all with EPERM.
+/// contract. Linux blocks munmap, mmap(MAP_FIXED) over the
+/// range (same gather path), mprotect and mremap — all with EPERM.
 ///
 /// Pre-F763 the MAP_FIXED leg was OPEN: `glue_mmap` discarded `glue_munmap`'s
 /// EPERM and `mmap_with_may(fixed)` called `remove_range` unconditionally, so
@@ -76,8 +75,7 @@ fn map_fixed_next_to_a_sealed_range_still_works() {
     a.audit().unwrap();
 }
 
-/// Sealing twice is a no-op success, and there is no unseal
-/// (`mm/mseal.c:138`).
+/// Sealing twice is a no-op success, and there is no unseal.
 #[test]
 fn sealing_an_already_sealed_range_succeeds() {
     let a = AddressSpace::new(0).unwrap();

@@ -227,11 +227,10 @@ fn wait_loop(uaddr: u64, op_full: u32, val: u32, bitset: u32, private: bool, dea
             cur.futex_uaddr.store(uaddr, core::sync::atomic::Ordering::Relaxed);
             w.push(Waiter { key, task: arc, bitset });
         }
-        // Linux `futex_wait` arms its `hrtimer_sleeper` with
-        // `current->timer_slack_ns` (`kernel/futex/waitwake.c:747-748`), and
-        // `futex_do_wait` starts it AFTER `futex_queue` published the waiter.
-        // Arming before the task is Sleeping would let the expiry be consumed
-        // by a `claim_wake` that cannot win, losing the timeout outright.
+        // The timeout is armed with the current task's timer slack, and only
+        // AFTER the waiter is queued and marked Sleeping. Arming before the
+        // task is Sleeping would let the expiry be consumed by a wake that
+        // cannot win, losing the timeout outright.
         if deadline_ns != 0 {
             sched::hrtimeout::arm_current(deadline_ns, sched::hrtimeout::task_slack_ns(cur));
         }

@@ -85,9 +85,8 @@ impl WaitList {
     /// (== plain `park`).
     ///
     /// Grants the task's own `timer_slack_ns` — Linux's default for a generic
-    /// timed wait (`hrtimer_nanosleep` at `kernel/time/hrtimer.c:2444`,
-    /// `futex_wait` at `kernel/futex/waitwake.c:748`,
-    /// `wait_event_hrtimeout` at `include/linux/wait.h:554` all pass exactly
+    /// timed wait (`hrtimer_nanosleep`, `futex_wait`, and
+    /// `wait_event_hrtimeout` all pass exactly
     /// this). Callers that coalesce harder — poll/select/epoll, which spend
     /// 0.1% of the remaining timeout — use `park_with_deadline_range` with
     /// `hrtimeout::select_estimate_accuracy`.

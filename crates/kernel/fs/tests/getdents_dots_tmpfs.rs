@@ -1,8 +1,8 @@
 //! `getdents(2)`/`getdents64(2)` over a REAL tmpfs directory, through the same
 //! `vfs::readdir_dots` driver the syscall shim uses.
 //!
-//! Linux reserves readdir cursors 0 and 1 for `.` and `..` (`dir_emit_dots`,
-//! `include/linux/fs.h`) and every filesystem emits them. tmpfs (and every other
+//! Readdir cursors 0 and 1 are reserved for `.` and `..`, and every
+//! filesystem emits them. tmpfs (and every other
 //! synthetic backend here) stores only real children, so the VFS synthesises the
 //! dots and shifts the backend's cookie space past them. Without that, `ls -a`
 //! on /run, /tmp, /dev, /proc and /sys shows no `.`/`..`, `find` cannot walk

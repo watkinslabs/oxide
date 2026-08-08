@@ -1,7 +1,5 @@
-// Controlling-terminal hangup — Linux `__tty_hangup`
-// (`drivers/tty/tty_io.c:568-656`), `tty_signal_session_leader`
-// (`drivers/tty/tty_jobctrl.c:196-238`) and `SYSCALL_DEFINE0(vhangup)`
-// (`fs/open.c:1530-1537`).
+// Controlling-terminal hangup — Linux `__tty_hangup`,
+// `tty_signal_session_leader`, and the `vhangup(2)` syscall.
 //
 // `vhangup(2)` is a security boundary, not a convenience: `login`/`agetty`
 // call it between sessions so nothing the PREVIOUS session left behind can

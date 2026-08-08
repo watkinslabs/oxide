@@ -1,5 +1,5 @@
-//! `ipc_ids` identifier-space behaviour, per `ipc/util.c` `ipc_idr_alloc` /
-//! `ipc_obtain_object_check` / `ipc_rmid`.
+//! `ipc_ids` identifier-space behaviour: cyclic slot allocation, sequence-number
+//! advance on wrap, and stale-id rejection once a slot is recycled and removed.
 
 use super::*;
 use namespace_identity::{allocate, NamespaceKind};

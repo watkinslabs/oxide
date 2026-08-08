@@ -1,9 +1,9 @@
-// NTP discipline state and the `adjtimex(2)` transaction, transcribed from
-// `kernel/time/ntp.c` (`struct ntp_data`, `ntp_adjtimex`, `second_overflow`,
+// NTP discipline state and the `adjtimex(2)` transaction, matching Linux's
+// NTP discipline core (`struct ntp_data`, `ntp_adjtimex`, `second_overflow`,
 // `ntp_update_offset`, `ntp_update_frequency`) and the validation half of
-// `kernel/time/timekeeping.c` `timekeeping_validate_timex`, Linux v7.2.0-rc4.
+// its `timekeeping_validate_timex`.
 //
-// CONFIG_NTP_PPS is off, matching the `#else` arms in ntp.c: `ntp_offset_chunk`
+// CONFIG_NTP_PPS is off, matching Linux's non-PPS build: `ntp_offset_chunk`
 // is the plain `shift_right(offset, SHIFT_PLL + time_constant)`, the PPS status
 // bits are never raised, and `pps_fill_timex` reports zeros.
 

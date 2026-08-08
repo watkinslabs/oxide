@@ -1,5 +1,5 @@
 //! `semop(2)` / `semtimedop(2)` — Linux `do_semtimedop`, `__do_semtimedop` and
-//! `perform_atomic_semop[_slow]` (`ipc/sem.c`).
+//! `perform_atomic_semop[_slow]`.
 
 use alloc::vec::Vec;
 use namespace_identity::NamespaceId;

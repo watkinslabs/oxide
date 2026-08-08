@@ -83,7 +83,7 @@ pub struct SuperBlock {
     pub s_op: Arc<dyn SuperOps>,
     /// `s_type` — file_system_type backref.
     pub s_type: Arc<dyn FileSystemType>,
-    /// `s_magic` (linux/magic.h) reported by statfs `f_type`.
+    /// `s_magic` reported by statfs `f_type`.
     pub s_magic: u64,
     /// `s_dev` — the `st_dev` every inode on this SB reports.
     pub s_dev: u64,
@@ -204,9 +204,9 @@ pub struct SuperBlock {
     pub s_dquot: QuotaInfo,
     /// `s_wb_err` (Linux `struct super_block`): filesystem-wide writeback
     /// error latch. Every `mapping_set_error` on any inode of this mount also
-    /// records here (`include/linux/pagemap.h:246-248`), so `syncfs(2)` can
+    /// records here, so `syncfs(2)` can
     /// report a failure whose inode has since been evicted. Read against the
-    /// per-description `f_sb_err` snapshot (`fs/sync.c:162`).
+    /// per-description `f_sb_err` snapshot.
     pub s_wb_err: crate::errseq::Errseq,
 }
 

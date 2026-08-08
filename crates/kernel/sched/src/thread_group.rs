@@ -397,7 +397,7 @@ impl ThreadGroup {
     }
 
     /// `zap_pid_ns_processes`' closing `current->signal->group_exit_code =
-    /// pid_ns->reboot` (`kernel/pid_namespace.c:278-279`) — a PLAIN store, not
+    /// pid_ns->reboot` — a PLAIN store, not
     /// a latch: it deliberately overwrites the SIGKILL status the namespace
     /// teardown already published, so the supervisor outside sees the reboot
     /// request instead of the kill that carried it out.

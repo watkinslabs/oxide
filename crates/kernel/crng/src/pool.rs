@@ -1,5 +1,5 @@
-// The kernel CSPRNG: ChaCha20 with fast key erasure, the construction Linux
-// `drivers/char/random.c` uses (`crng_fast_key_erasure`).
+// The kernel CSPRNG: ChaCha20 with fast key erasure, the construction Linux's
+// CRNG driver uses.
 //
 // Every output call derives a one-shot key from the master key, immediately
 // replaces the master key with fresh keystream, and streams the caller's bytes
@@ -22,8 +22,8 @@ use crate::hw;
 static BULK_SOURCE: AtomicU64 = AtomicU64::new(0);
 type BulkFn = fn(&mut [u8]) -> usize;
 
-/// Set once a source that actually carries entropy has contributed — Linux
-/// `crng_init == CRNG_READY` (`drivers/char/random.c`). Read without the lock
+/// Set once a source that actually carries entropy has contributed — matches
+/// Linux's CRNG-ready state transition. Read without the lock
 /// so `is_initialized` costs nothing.
 ///
 /// Deliberately NOT set by a bare `reseed()` that found no source. It used to

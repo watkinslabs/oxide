@@ -1,6 +1,6 @@
 // 468 file_getattr — one syscall, one file (docs/53 §0).
 // file_getattr(dfd, filename, struct file_attr*, usize, at_flags): the
-// path-based `FS_IOC_FSGETXATTR` (Linux `fs/file_attr.c:374`). Admission,
+// path-based `FS_IOC_FSGETXATTR`. Admission,
 // resolution and the extensible-struct copy-out live in `fileattr_common`.
 use syscall::SyscallArgs;
 /// `sys_file_getattr(dfd, filename, ufattr, usize, at_flags)` — slot 468.

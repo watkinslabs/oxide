@@ -1,4 +1,4 @@
-//! Write-path privilege drop (`setattr_should_drop_suidgid`, Linux `fs/attr.c`):
+//! Write-path privilege drop (`setattr_should_drop_suidgid`):
 //! a modifying write strips S_ISUID always and S_ISGID when group-executable,
 //! unless the writer holds CAP_FSETID; non-regular inodes are never touched.
 //! Synthetic `Inode`s carrying explicit POSIX mode — no real filesystem.

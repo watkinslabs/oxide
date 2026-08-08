@@ -95,7 +95,7 @@ pub fn open_tree_decided(args: &SyscallArgs, f: crate::open_tree_policy::OpenTre
         }
         let tree = vfs::mount::clone_mount_tree(&mnt, recursive);
         if tree.is_empty() { return -(Errno::Einval.as_i32() as i64); }
-        // Linux `fs/namespace.c` `create_new_namespace` (reached from
+        // Linux's `create_new_namespace` (reached from
         // `open_tree(OPEN_TREE_CLONE)` via `open_new_namespace`): `if (user_ns !=
         // ns->user_ns) lock_mnt_tree(new_ns_root);`. A caller whose CURRENT user
         // namespace is not the one owning its mount namespace is unprivileged

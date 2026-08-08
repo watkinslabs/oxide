@@ -3,7 +3,7 @@ use crate::types::{FileType, KResult, VfsError};
 
 use super::{Cred, MAY_EXEC, MAY_READ, MAY_WRITE};
 
-/// `generic_permission` (Linux `fs/namei.c`) for the access `mask`.
+/// `generic_permission` for the access `mask`.
 /// Owner/group/other class selection uses the caller credential snapshot.
 /// # C: O(ngroups)
 pub fn generic_permission(inode: &crate::inode::Inode, mask: u32, cred: &Cred) -> KResult<()> {
@@ -63,7 +63,7 @@ pub fn generic_permission(inode: &crate::inode::Inode, mask: u32, cred: &Cred) -
     Err(VfsError::Eacces)
 }
 
-// POSIX ACL entry tags (`linux/posix_acl.h`).
+// POSIX ACL entry tags.
 const ACL_USER_OBJ:  u16 = 0x01;
 const ACL_USER:      u16 = 0x02;
 const ACL_GROUP_OBJ: u16 = 0x04;
@@ -143,7 +143,7 @@ fn posix_acl_permission(buf: &[u8], cred: &Cred, i_uid: u32, i_gid: u32, want: u
     None
 }
 
-/// `inode_permission` (Linux `fs/namei.c`) — the VFS entry every permission
+/// `inode_permission` — the VFS entry every permission
 /// check routes through. Dispatches to the inode's `i_op->permission` override
 /// (`Inode::permission`, default `generic_permission`), so a filesystem with
 /// ACLs / custom DAC can intercept WITHOUT every call-site changing.
@@ -169,7 +169,7 @@ pub(crate) fn may_lookup(inode: &InodeRef, cred: &Cred) -> KResult<()> {
     inode_permission(inode, MAY_EXEC, cred)
 }
 
-/// `may_open` (Linux `fs/namei.c`): DAC check for opening `inode` with the
+/// `may_open`: DAC check for opening `inode` with the
 /// requested read/write access. A SYMLINK final inode is `ELOOP` — it only
 /// reaches `may_open` when `open(O_NOFOLLOW)` (without `O_PATH`) left the
 /// trailing symlink unfollowed (Linux `may_open` `case S_IFLNK: return -ELOOP`).

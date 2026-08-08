@@ -2,8 +2,8 @@
 
 use super::lookup::resolve_path_raw;
 
-/// Linux `fs/exec.c` `do_open_execat` — resolve the pathname, apply the
-/// `may_open(..., MAY_EXEC, 0)` gate (`fs/namei.c:4236`), then read the image.
+/// Linux's `do_open_execat` — resolve the pathname, apply the
+/// `may_open(..., MAY_EXEC, 0)` gate, then read the image.
 ///
 /// The resolved [`vfs::VfsPath`] comes back with the blob because the exec
 /// credential transition must be computed from the SAME inode and mount this
@@ -35,7 +35,7 @@ pub fn exec_permission(vp: &vfs::VfsPath) -> Result<(), i64> {
     use syscall::errno::Errno;
     crate::execveat_at::may_exec_file_type(vp.inode.file_type())
         .map_err(|e| -(e.as_i32() as i64))?;
-    // `path_noexec(path)` (`fs/exec.c`): `(mnt->mnt_flags & MNT_NOEXEC) ||
+    // `path_noexec(path)`: `(mnt->mnt_flags & MNT_NOEXEC) ||
     // (mnt->mnt_sb->s_iflags & SB_I_NOEXEC)`. `s_iflags` is the KERNEL-INTERNAL
     // word procfs/sysfs/pseudo-fs stamp at fill-super — a different field from
     // the user-visible `s_flags` `SB_NOEXEC`, and the only one those backends

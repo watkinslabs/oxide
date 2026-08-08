@@ -96,7 +96,7 @@ pub struct Task {
     /// cleared in finish_task_switch after register save; remote ttwu spins on it.
     pub on_cpu:   AtomicBool,
     /// Linux `TIF_NEED_RESCHED` (`thread_info::flags`), per-TASK — never
-    /// per-CPU. `__resched_curr` (`kernel/sched/core.c`) stamps the flag on
+    /// per-CPU. `__resched_curr` stamps the flag on
     /// `rq->curr`'s thread_info, and `__schedule` clears it on `prev`
     /// (`clear_tsk_need_resched(prev)`), so a tick that lands while THIS task
     /// is descheduled is charged to whoever was actually running. A per-CPU
@@ -252,7 +252,7 @@ pub struct Task {
     /// `set_mempolicy(2)` installed, packed by `MemPolicy::to_words`. Word 0
     /// is zero when no policy is installed, which is Linux's NULL
     /// `->mempolicy` (i.e. MPOL_DEFAULT). Inherited by fork/clone
-    /// (`kernel/fork.c:2225` `mpol_dup`) and NOT reset by execve.
+    /// (Linux `mpol_dup`) and NOT reset by execve.
     /// Read/written through `mempolicy()` / `set_mempolicy()`.
     pub mempolicy: [AtomicU64; 3],
     /// Linux `task_struct::sched_reset_on_fork`. Set by the
@@ -476,8 +476,8 @@ pub struct Task {
     /// Linux `mm_struct::exe_file`. Retained so the running image holds a
     /// `deny_write_access` on its inode for as long as it is executing —
     /// modern Linux dropped `VM_DENYWRITE` and hangs `ETXTBSY` off the
-    /// exe_file instead (`fs/exec.c` `exe_file_deny_write_access`,
-    /// `kernel/fork.c` `replace_mm_exe_file`). Without it, a running binary's
+    /// exe_file instead (`exe_file_deny_write_access`,
+    /// `replace_mm_exe_file`). Without it, a running binary's
     /// text can be rewritten under it.
     pub exe_inode: Spinlock<Option<vfs::InodeRef>, TaskListClass>,
 

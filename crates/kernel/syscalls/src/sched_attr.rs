@@ -1,13 +1,13 @@
 // `struct sched_attr` extensible-struct ABI for slots 314/315.
 //
-// Linux refs (v7.2.0-rc4):
-//   include/uapi/linux/sched/types.h  — struct sched_attr, SCHED_ATTR_SIZE_VER{0,1}
-//   include/uapi/linux/sched.h:139    — SCHED_FLAG_*
-//   kernel/sched/sched.h:285          — SCHED_FLAG_SUGOV (kernel-internal)
-//   kernel/sched/syscalls.c:872       — sched_copy_attr()
-//   kernel/sched/syscalls.c:1060      — sys_sched_getattr()
-//   include/linux/uaccess.h:393/490   — copy_struct_from_user/copy_struct_to_user
-//   kernel/sched/syscalls.c:300-420   — uclamp_reset/__setscheduler_uclamp/uclamp_validate
+// Linux surface mirrored here:
+// `struct sched_attr`, SCHED_ATTR_SIZE_VER{0,1} — the sched_attr UAPI struct
+// SCHED_FLAG_* — the sched_attr flag bits
+// SCHED_FLAG_SUGOV — kernel-internal, never accepted from userspace
+// sched_copy_attr() — the size-versioned copy-in ladder
+// sys_sched_getattr() — the size-versioned copy-out ladder
+// copy_struct_from_user/copy_struct_to_user — the extensible-struct protocol
+// uclamp_reset/__setscheduler_uclamp/uclamp_validate — the uclamp range rules
 //
 // Deliberately NOT `#![cfg(target_os = "oxide-kernel")]`: the 314/315 slot files
 // are kernel-gated, so any rule expressed inside them is invisible to
@@ -25,7 +25,7 @@ pub const KSIZE: u32 = SIZE_VER1;
 /// `sched_copy_attr` rejects any `attr->size` above `PAGE_SIZE`.
 pub const MAX_SIZE: u32 = 4096;
 
-// struct sched_attr field offsets (include/uapi/linux/sched/types.h).
+// struct sched_attr field offsets.
 const OFF_SIZE: usize = 0;
 const OFF_POLICY: usize = 4;
 const OFF_FLAGS: usize = 8;
@@ -58,18 +58,18 @@ pub const FLAG_UTIL_CLAMP: u64 = FLAG_UTIL_CLAMP_MIN | FLAG_UTIL_CLAMP_MAX;
 /// `SCHED_FLAG_ALL` — the whole user-settable set.
 pub const FLAG_ALL: u64 =
     FLAG_RESET_ON_FORK | FLAG_RECLAIM | FLAG_DL_OVERRUN | FLAG_KEEP_ALL | FLAG_UTIL_CLAMP;
-/// `SCHED_FLAG_SUGOV` (`kernel/sched/sched.h`): kernel-internal. It passes the
+/// `SCHED_FLAG_SUGOV`: kernel-internal. It passes the
 /// `~(SCHED_FLAG_ALL | SCHED_FLAG_SUGOV)` mask and is then rejected for any
 /// `user` caller, so it is `EINVAL` from a syscall but not an unknown flag.
 pub const FLAG_SUGOV: u64 = 0x1000_0000;
 
-/// `SCHED_GETATTR_FLAG_DL_DYNAMIC` (include/uapi/linux/sched.h:160) — the only
+/// `SCHED_GETATTR_FLAG_DL_DYNAMIC` — the only
 /// `sched_getattr` flag, and only on a `SCHED_DEADLINE` task.
 pub const GETATTR_FLAG_DL_DYNAMIC: u64 = 0x01;
 
 /// Linux `SCHED_CAPACITY_SCALE` — the uclamp upper bound.
 pub const CAPACITY_SCALE: u32 = 1024;
-/// `sysctl_sched_uclamp_util_min_rt_default` (`kernel/sched/core.c:1581`).
+/// `sysctl_sched_uclamp_util_min_rt_default`.
 pub const UCLAMP_MIN_RT_DEFAULT: u32 = CAPACITY_SCALE;
 /// Linux `MIN_NICE`.
 pub const MIN_NICE: i32 = -20;

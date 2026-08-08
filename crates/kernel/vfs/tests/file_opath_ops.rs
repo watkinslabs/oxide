@@ -16,7 +16,7 @@ use vfs::inode::Inode;
 use vfs::{Dentry, File, FileOps, FileType, InodeBuilder, InodeRef, KResult, OpenFlags, VfsError,
           default_inode_ops, mk_mode};
 
-/// `O_PATH` (asm-generic, both arches — Linux `fcntl.h` `010000000`). Now a
+/// `O_PATH` (asm-generic, both arches — Linux fcntl UAPI value `010000000`). Now a
 /// DECLARED `OpenFlags` bit (single source of truth, vfs `types.rs`), so the
 /// open path's `from_bits_truncate(flags)` preserves it instead of stripping
 /// it (pinned by `opath_bit_not_truncated`).

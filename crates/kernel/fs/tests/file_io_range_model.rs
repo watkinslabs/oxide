@@ -2,9 +2,9 @@
 // REAL tmpfs filesystem (`fs::tmpfs::TmpfsFs`) through the real work-fns — the
 // same inodes, address spaces and `File` gates the syscalls use in the kernel.
 //
-// Linux references: `fs/read_write.c` `vfs_copy_file_range` (:1553-1646),
-// `fs/sync.c` `sync_file_range` (:223-292), `mm/readahead.c` `ksys_readahead`
-// (:724-759).
+// Pins the argument ladders (flag validation, offset/overlap checks,
+// FMODE gates, RLIMIT_FSIZE clamping) and error orderings for
+// `copy_file_range`, `sync_file_range`, and `readahead`.
 
 extern crate alloc;
 
@@ -101,7 +101,7 @@ fn copy_file_range_is_short_at_eof() {
     assert_eq!((pi, po), (4, 4), "nothing copied, nothing advanced");
 }
 
-/// A non-zero `flags` word is EINVAL (`fs/read_write.c:1679`).
+/// A non-zero `flags` word is EINVAL.
 #[test]
 fn copy_file_range_rejects_nonzero_flags() {
     let (_fs, src, dst, _si, _di) = fixture(b"abcd");
@@ -112,7 +112,7 @@ fn copy_file_range_rejects_nonzero_flags() {
 
 /// Overlapping ranges of the SAME file are EINVAL, and nothing is written —
 /// the check that stops `copy_file_range` from being used as a self-shifting
-/// memmove with undefined results (`fs/read_write.c:1539-1542`).
+/// memmove with undefined results.
 #[test]
 fn copy_file_range_same_file_overlap_is_einval_and_writes_nothing() {
     let fs = TmpfsFs::new(String::from("overlap"));
@@ -133,7 +133,7 @@ fn copy_file_range_same_file_overlap_is_einval_and_writes_nothing() {
 }
 
 /// `RLIMIT_FSIZE` clamps the copy and raises EFBIG once the output offset is
-/// already at the limit (`fs/read_write.c:1710-1733`).
+/// already at the limit.
 #[test]
 fn copy_file_range_honours_rlimit_fsize() {
     let (_fs, src, dst, _si, di) = fixture(b"abcdefghij");
@@ -214,8 +214,7 @@ fn sync_file_range_argument_ladder() {
     assert_eq!(sync_file_range(&ro, 0, 8, SYNC_FILE_RANGE_WRITE), 0);
 }
 
-/// A pipe (or any non REG/BLK/DIR inode) is ESPIPE, not EINVAL
-/// (`fs/sync.c:265-268`).
+/// A pipe (or any non REG/BLK/DIR inode) is ESPIPE, not EINVAL.
 #[test]
 fn sync_file_range_on_a_pipe_is_espipe() {
     let inode = fs::pipe::make_pipe_inode();

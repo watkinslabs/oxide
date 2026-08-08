@@ -138,8 +138,8 @@ impl AddressSpace {
         self.accounting.replace_locked_range(old_locked, new_locked);
     }
 
-    /// Linux `count_mm_mlocked_page_nr` (`mm/mlock.c`), in BYTES: how much of
-    /// `[start, start+len)` is ALREADY `VM_LOCKED`. `do_mlock`'s RLIMIT_MEMLOCK
+    /// How much of `[start, start+len)` is ALREADY `VM_LOCKED`, in BYTES.
+    /// mlock's RLIMIT_MEMLOCK
     /// ladder subtracts this before rejecting, so re-locking a range that is
     /// already locked is not charged against the limit a second time — without
     /// it, an idempotent `mlock()` of the same buffer eventually fails.
@@ -182,8 +182,8 @@ impl AddressSpace {
         validate_aligned(addr)?;
         let end = end_of_raw(addr, len as u64)?;
         let mut tree = self.vmas.write();
-        // mseal(2) `vms_gather_munmap_vmas` (`mm/vma.c:1422`): a sealed VMA
-        // anywhere in the range refuses the whole unmap, before any split.
+        // mseal(2): a sealed VMA anywhere in the range refuses the whole
+        // unmap, before any split.
         if tree.any_sealed_raw_end(addr, end) { return Err(Error::Perm); }
         // A4-rmap (GAP A4-2): detach the anon_vma chain edges of every
         // VMA the unmap touches (their pre-split ranges), then re-attach

@@ -1,5 +1,5 @@
-//! Pure writeback/lazytime decision ladder (Linux fs/fs-writeback.c
-//! `__mark_inode_dirty` state machine, fs/inode.c `inode_time_dirty_flag`,
+//! Pure writeback/lazytime decision ladder (the
+//! `__mark_inode_dirty` state machine, `inode_time_dirty_flag`,
 //! `dirtytime_expire_interval`). No inode, no superblock — the arithmetic only.
 //!
 //! The `lazytime_writeback.rs` sibling proves the ladder is WIRED and that a

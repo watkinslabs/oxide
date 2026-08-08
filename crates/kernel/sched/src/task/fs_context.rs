@@ -12,8 +12,8 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::{Dentry, VfsPath};
 
-/// `S_IRWXUGO` — the only bits `umask(2)` retains (Linux `kernel/sys.c`:
-/// `mask & S_IRWXUGO`). # C: O(1)
+/// `S_IRWXUGO` — the only bits `umask(2)` retains (Linux: `mask & S_IRWXUGO`).
+/// # C: O(1)
 pub const UMASK_MASK: u32 = 0o777;
 
 /// Boot/init `fs_struct.umask` before any `umask(2)` call.
@@ -80,10 +80,10 @@ pub struct FsContext {
 
 impl FsContext {
     /// Construct the initial `/` filesystem context — Linux `init_fs` after
-    /// `fs/namespace.c init_mount_tree()` ran `set_fs_pwd`/`set_fs_root` on it:
+    /// `init_mount_tree()` ran `set_fs_pwd`/`set_fs_root` on it:
     /// root AND pwd are the mount-namespace root `struct path`, not "unset".
     /// A live task's `fs->root` is what `/proc/<pid>/root` resolves to
-    /// (`fs/proc/base.c proc_root_link` → `get_task_root`), so leaving it unset
+    /// (`proc_root_link` → `get_task_root`), so leaving it unset
     /// makes that magic link ENOENT — which systemd reads as "I am in a
     /// chroot" and then skips `udevadm trigger`, leaving the udev database
     /// empty for the whole boot. `None` only before the root filesystem is
@@ -110,7 +110,7 @@ impl FsContext {
         self.state.lock().snapshot(umask)
     }
 
-    /// `umask(2)` (Linux `kernel/sys.c`): install `mask & S_IRWXUGO` and return
+    /// `umask(2)`: install `mask & S_IRWXUGO` and return
     /// the PREVIOUS mask. # C: O(1)
     pub fn swap_umask(&self, mask: u32) -> u32 {
         self.umask.swap(mask & UMASK_MASK, Ordering::AcqRel)
@@ -187,7 +187,7 @@ impl super::Task {
         Arc::ptr_eq(&self.fs_context(), &other.fs_context())
     }
 
-    /// Linux `fs/exec.c` `check_unsafe_exec`'s `LSM_UNSAFE_SHARE`:
+    /// Linux `check_unsafe_exec`'s `LSM_UNSAFE_SHARE`:
     /// `p->fs->users > n_fs`, where `n_fs` counts this task plus the threads of
     /// its own group that share the owner. A task OUTSIDE the thread group
     /// holding the same `fs_struct` can rewrite cwd/root while the exec is in

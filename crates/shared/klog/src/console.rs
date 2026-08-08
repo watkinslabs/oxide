@@ -1,5 +1,5 @@
-// printk `struct console` registry (Linux `kernel/printk/printk.c`
-// `register_console` / `console_unlock` fan-out). A small fixed array of
+// printk `struct console` registry (Linux `register_console` /
+// `console_unlock` fan-out). A small fixed array of
 // registered console sinks; printk fans every byte-run to the dmesg ring
 // then to each registered console. NO `dyn`, NO alloc — klog is
 // `#![no_std]` and runs pre-alloc / in early boot, so the registry is a

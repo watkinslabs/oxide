@@ -22,7 +22,7 @@ pub fn sys_finit_module(args: &SyscallArgs) -> i64 {
     }
     // MODULE_INIT_COMPRESSED_FILE asks the kernel to decompress the image
     // before parsing it. Linux answers EOPNOTSUPP without a decompressor built
-    // (`module_decompress()` stub in `kernel/module/internal.h`) — never a
+    // (its `module_decompress()` stub) — never a
     // silent attempt to parse compressed bytes as ELF, which would surface as
     // a misleading EINVAL "bad module".
     if args.a2 & modules::admission::MODULE_INIT_COMPRESSED_FILE != 0 {

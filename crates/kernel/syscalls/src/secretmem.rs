@@ -1,20 +1,18 @@
-// memfd_secret(2) admission — `SYSCALL_DEFINE1(memfd_secret)`
-// (`mm/secretmem.c:224`).
+// memfd_secret(2) admission — `SYSCALL_DEFINE1(memfd_secret)`.
 //
 // NOT target-gated so the hosted suite reaches the ladder; `447_memfd_secret.rs`
 // is the shim.
 //
 // The syscall's entire contract is that its pages are removed from the
-// kernel's linear map (`set_direct_map_invalid_noflush`, `mm/secretmem.c:75`)
-// and restored on free (`:154`). Linux refuses to pretend otherwise: when the
-// architecture cannot unmap single pages from the linear map it answers
-// -ENOSYS rather than hand back ordinary RAM under a "secret" name
-// (`mm/secretmem.c:229`).
+// kernel's linear map (`set_direct_map_invalid_noflush`) and restored on
+// free. Linux refuses to pretend otherwise: when the architecture cannot
+// unmap single pages from the linear map it answers -ENOSYS rather than
+// hand back ordinary RAM under a "secret" name.
 
 use syscall::errno::Errno;
 use vfs::OpenFlags;
 
-/// `SECRETMEM_MODE_MASK` / `SECRETMEM_FLAGS_MASK` (`mm/secretmem.c:35`) — no
+/// `SECRETMEM_MODE_MASK` / `SECRETMEM_FLAGS_MASK` — no
 /// mode bits are defined, so `O_CLOEXEC` is the only accepted flag.
 pub const SECRETMEM_FLAGS_MASK: u32 = 0;
 
@@ -23,7 +21,7 @@ pub const SECRETMEM_FLAGS_MASK: u32 = 0;
 /// level-1 blocks (`crates/arch/boot-aarch64/src/selfboot.rs:15`, aarch64).
 pub const HHDM_LEAF_BYTES: u64 = 1 << 30;
 
-/// Linux `can_set_direct_map()` (`arch/arm64/mm/pageattr.c:90`): true only
+/// Linux `can_set_direct_map()`: true only
 /// when the linear map is at page granularity, "so that it is possible to
 /// protect/unprotect single pages".
 ///
@@ -70,8 +68,8 @@ mod tests {
         // linear map page-granular this assertion is the thing that flips.
         assert!(!can_set_direct_map());
         assert_eq!(HHDM_LEAF_BYTES, 1 << 30);
-        // ENOSYS outranks a bad flag, exactly as `mm/secretmem.c:229` runs
-        // before `:232`.
+        // ENOSYS outranks a bad flag: the direct-map capability check runs
+        // before the flag-mask check.
         assert_eq!(memfd_secret_check(0), Err(Errno::Enosys));
         assert_eq!(memfd_secret_check(0xdead_beef), Err(Errno::Enosys));
     }

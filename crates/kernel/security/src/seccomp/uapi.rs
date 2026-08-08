@@ -1,14 +1,14 @@
-// seccomp ABI numbers — `include/uapi/linux/seccomp.h`, plus the two
-// kernel-internal values `kernel/seccomp.c` defines on top of it.
+// seccomp ABI numbers, plus the two kernel-internal values this kernel also
+// needs on top of the UAPI set.
 // Numbers only; no policy (`52` UAPI-is-not-policy).
 
 /// `seccomp.mode` / `prctl(PR_SET_SECCOMP, <mode>)` values.
 pub const SECCOMP_MODE_DISABLED: u32 = 0;
 pub const SECCOMP_MODE_STRICT:   u32 = 1;
 pub const SECCOMP_MODE_FILTER:   u32 = 2;
-/// `kernel/seccomp.c:35` `#define SECCOMP_MODE_DEAD (SECCOMP_MODE_FILTER + 1)`.
-/// `__seccomp_filter` latches it on a `RET_KILL_*` so a task that somehow
-/// survives the kill is caught by `__secure_computing`'s `MODE_DEAD` arm.
+/// Internal-only mode, one past the highest UAPI mode value. Latched on a
+/// `RET_KILL_*` so a task that somehow survives the kill is caught by the
+/// dead-mode arm of the syscall-entry check.
 pub const SECCOMP_MODE_DEAD:     u32 = SECCOMP_MODE_FILTER + 1;
 
 /// `seccomp(2)` operations.
@@ -40,13 +40,13 @@ pub const SECCOMP_RET_ACTION_FULL: u32 = 0xffff_0000;
 pub const SECCOMP_RET_ACTION:      u32 = 0x7fff_0000;
 pub const SECCOMP_RET_DATA:        u32 = 0x0000_ffff;
 
-/// `MAX_ERRNO` (`include/linux/err.h`) — `SECCOMP_RET_ERRNO` caps its 16-bit
-/// data at this before negating it into the return register.
+/// `MAX_ERRNO` — `SECCOMP_RET_ERRNO` caps its 16-bit data at this before
+/// negating it into the return register.
 pub const MAX_ERRNO: u32 = 4095;
 
-/// `BPF_MAXINSNS` (`include/uapi/linux/bpf_common.h`).
+/// Max cBPF program length in instructions.
 pub const BPF_MAXINSNS: usize = 4096;
-/// `BPF_MEMWORDS` (`include/uapi/linux/filter.h`) — cBPF scratch cells.
+/// cBPF scratch memory cell count.
 pub const BPF_MEMWORDS: usize = 16;
 
 /// `sizeof(struct sock_filter)`.
@@ -60,8 +60,7 @@ pub const SOCK_FPROG_FILTER_OFF: u64 = 8;
 /// on every `BPF_LD|BPF_W|BPF_ABS` offset.
 pub const SECCOMP_DATA_BYTES: u32 = 64;
 
-/// `AUDIT_ARCH_*` tokens reported in `seccomp_data.arch`
-/// (`include/uapi/linux/audit.h`).
+/// `AUDIT_ARCH_*` tokens reported in `seccomp_data.arch`.
 pub const AUDIT_ARCH_X86_64:  u32 = 0xc000_003e;
 pub const AUDIT_ARCH_AARCH64: u32 = 0xc000_00b7;
 
@@ -72,24 +71,22 @@ pub const fn native_audit_arch() -> u32 {
     #[cfg(not(target_arch = "x86_64"))] { AUDIT_ARCH_AARCH64 }
 }
 
-/// Linux `mode1_syscalls` (`kernel/seccomp.c`) — `{__NR_seccomp_read,
-/// __NR_seccomp_write, __NR_seccomp_exit, __NR_seccomp_sigreturn}` in the
-/// CALLING ABI's numbering, which is what `seccomp_data.nr` reports.
-/// Hard-coding the x86_64 values would kill every syscall an aarch64 task
-/// makes.
+/// SECCOMP_MODE_STRICT's fixed allowed syscall set — `{read, write, exit,
+/// sigreturn}` — in the CALLING ABI's numbering, which is what
+/// `seccomp_data.nr` reports. Hard-coding the x86_64 values would kill every
+/// syscall an aarch64 task makes.
 #[cfg(target_arch = "x86_64")]
 pub const MODE1_SYSCALLS: [u32; 4] = [0, 1, 60, 15];
-/// aarch64 generic ABI (`include/uapi/asm-generic/unistd.h`).
+/// aarch64 generic syscall ABI numbering for the same set.
 #[cfg(not(target_arch = "x86_64"))]
 pub const MODE1_SYSCALLS: [u32; 4] = [63, 64, 93, 139];
 
-/// `si_code` for a seccomp-raised `SIGSYS` (`SYS_SECCOMP`,
-/// `include/uapi/asm-generic/siginfo.h`).
+/// `si_code` for a seccomp-raised `SIGSYS` (`SYS_SECCOMP`).
 pub const SYS_SECCOMP: i32 = 1;
 
-/// `PTRACE_EVENT_SECCOMP` (`include/uapi/linux/ptrace.h`) and the
-/// `PTRACE_O_TRACESECCOMP` option bit that arms it. `__seccomp_filter`'s
-/// `ptrace_event_enabled(current, PTRACE_EVENT_SECCOMP)` tests exactly this.
+/// `PTRACE_EVENT_SECCOMP` and the `PTRACE_O_TRACESECCOMP` option bit that
+/// arms it. Tested against the tracer's enabled ptrace-event options on
+/// every filter run when a tracer is attached.
 pub const PTRACE_EVENT_SECCOMP: u32 = 7;
 pub const PTRACE_O_TRACESECCOMP: u32 = 1 << PTRACE_EVENT_SECCOMP;
 /// `PTRACE_O_SUSPEND_SECCOMP` — `__secure_computing` returns 0 (no filtering

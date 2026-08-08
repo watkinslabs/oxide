@@ -1,6 +1,6 @@
-// Pinned against Linux `lib/tests/siphash_kunit.c` — the same key, the same
-// 64 vectors, the same `in[i] = i` / `siphash(in, i)` loop. These vectors are
-// the reference implementation's (https://github.com/veorq/SipHash), so a pass
+// Pinned against Linux's kernel siphash self-test vectors — the same key, the
+// same 64 vectors, the same `in[i] = i` / `siphash(in, i)` loop. These vectors
+// are the SipHash reference implementation's, so a pass
 // proves interoperability with Linux and with SipHash itself, not merely
 // self-consistency.
 

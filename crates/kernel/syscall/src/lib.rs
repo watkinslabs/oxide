@@ -9,7 +9,7 @@
 // `errno.rs` — Linux-numbered `Errno` enum used as the universal
 // `KResult<T>` error type at the syscall boundary.
 // `nrs.rs` — Linux syscall numbers. `tracepoint.rs` — sys_enter/exit hooks.
-// `at.rs` — `AT_*` dirfd/`*at` flag numbers (`uapi/linux/fcntl.h`).
+// `at.rs` — `AT_*` dirfd/`*at` flag numbers (fcntl UAPI).
 // `getrandom.rs` — `GRND_*` flags + flag-validation for `sys_getrandom`.
 // `io_uring_ctl.rs` — the live `io_uring_disabled`/`io_uring_group` cells
 // shared by the ring-creation admission check and `/proc/sys/kernel`.

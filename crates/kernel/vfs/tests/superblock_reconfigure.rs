@@ -1,5 +1,5 @@
 //! superblock: classic `super_operations.remount_fs` hook + sb-level
-//! `reconfigure_super` (Linux fs/super.c). A flag-delta remount applied to a
+//! `reconfigure_super`. A flag-delta remount applied to a
 //! LIVE superblock: on RW→RO the dirty state is synced FIRST, the backend
 //! `remount_fs(proposed_flags)` hook runs, and `s_flags` are rewritten ONLY on
 //! its success. A hook error aborts with the old flags intact. None of this

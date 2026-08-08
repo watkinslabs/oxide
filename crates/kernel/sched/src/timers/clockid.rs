@@ -1,11 +1,10 @@
 // Canonical Linux POSIX clock-id decode + per-clock capability table.
 // Single owner for every clock_gettime / clock_getres / clock_settime /
 // clock_nanosleep / timer_create caller, mirroring
-// `kernel/time/posix-timers.c` `clockid_to_kclock()` and the `posix_clocks[]`
+// `clockid_to_kclock()` and the `posix_clocks[]`
 // `k_clock` table (which callback a clock does or does not provide IS the
 // errno contract).
 
-/// `include/uapi/linux/time.h`
 pub const CLOCK_REALTIME:           i32 = 0;
 pub const CLOCK_MONOTONIC:          i32 = 1;
 pub const CLOCK_PROCESS_CPUTIME_ID: i32 = 2;
@@ -19,7 +18,7 @@ pub const CLOCK_BOOTTIME_ALARM:     i32 = 9;
 /// 10 is `CLOCK_SGI_CYCLE`, removed from `posix_clocks[]` — Linux EINVALs it.
 pub const CLOCK_TAI:                i32 = 11;
 
-/// `include/linux/posix-timers.h` CPU-clock encoding of negative clock ids.
+/// Linux CPU-clock encoding of negative clock ids.
 const CPUCLOCK_PERTHREAD_MASK: i32 = 4;
 const CPUCLOCK_CLOCK_MASK:     i32 = 3;
 const CPUCLOCK_PROF:           i32 = 0;
@@ -208,17 +207,17 @@ pub fn nsleep_supported(clock: ClockSpec) -> bool {
         ClockSpec::MonotonicRaw | ClockSpec::RealtimeCoarse
         | ClockSpec::MonotonicCoarse | ClockSpec::Dynamic => false,
         // The STATIC ids map to `clock_process` (has `.nsleep`) and
-        // `clock_thread` (has none -> EOPNOTSUPP), `posix-cpu-timers.c:1718-1731`.
+        // `clock_thread` (has none -> EOPNOTSUPP).
         ClockSpec::Cpu(cpu) => !cpu.per_thread,
         // Encoded CPU clocks cover TWO Linux cases that this representation
         // cannot tell apart, because `classify_clock` maps the static
         // CLOCK_THREAD_CPUTIME_ID to `CpuEncoded { pid: 0, per_thread: true }`
         // — the same value a DYNAMIC per-thread clock naming pid 0 produces.
         // Linux separates them by k_clock table: the static id reaches
-        // `clock_thread`, which has no `.nsleep` -> EOPNOTSUPP
-        // (`posix-cpu-timers.c:1727-1731`), while a dynamic id reaches
-        // `clock_posix_cpu`, which does have one (`:1711`) and then rejects a
-        // self-naming clock with EINVAL (`:1639-1642`).
+        // `clock_thread`, which has no `.nsleep` -> EOPNOTSUPP,
+        // while a dynamic id reaches
+        // `clock_posix_cpu`, which does have one and then rejects a
+        // self-naming clock with EINVAL.
         //
         // pid 0 is resolved in favour of the STATIC reading, since
         // CLOCK_THREAD_CPUTIME_ID is the reachable case and EOPNOTSUPP is its

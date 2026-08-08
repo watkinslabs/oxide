@@ -1,4 +1,4 @@
-// Linux `__sys_setresuid` / `__sys_setresgid` (`kernel/sys.c`).
+// Linux's `__sys_setresuid` / `__sys_setresgid`.
 
 use core::sync::atomic::Ordering;
 

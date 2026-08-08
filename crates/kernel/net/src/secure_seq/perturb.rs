@@ -1,4 +1,4 @@
-// Linux `table_perturb` (`net/ipv4/inet_hashtables.c`).
+// Linux `table_perturb`.
 //
 // The connect-time port offset is a pure function of the 4-tuple, so two
 // sockets connecting to the SAME destination would start their scans on the

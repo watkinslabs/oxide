@@ -2,7 +2,7 @@ use syscall::errno::Errno;
 
 use crate::net_errno::errno_from_neterr;
 
-/// `SO_RCVTIMEO_OLD` / `SO_SNDTIMEO_OLD` (`asm-generic/socket.h`).
+/// `SO_RCVTIMEO_OLD` / `SO_SNDTIMEO_OLD` (asm-generic socket UAPI).
 const SO_RCVTIMEO_VSOCK: u64 = 20;
 const SO_SNDTIMEO_VSOCK: u64 = 21;
 

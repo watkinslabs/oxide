@@ -1,7 +1,6 @@
-// F740: `shmem_rename2`'s contract — the flag set tmpfs actually implements,
-// the `!simple_empty(new_dentry)` ENOTEMPTY gate, and the `..` link
-// accounting a directory move moves between the two parents
-// (`simple_rename` / `simple_rename_exchange` in `fs/libfs.c`).
+// F740: tmpfs `rename2`'s contract — the flag set tmpfs actually implements,
+// the "destination directory not empty" ENOTEMPTY gate, and the `..` link
+// accounting a directory move moves between the two parents.
 
 use alloc::string::String;
 use alloc::sync::Arc;

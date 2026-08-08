@@ -1,6 +1,6 @@
 // 469 file_setattr — one syscall, one file (docs/53 §0).
 // file_setattr(dfd, filename, struct file_attr*, usize, at_flags): the
-// path-based `FS_IOC_FSSETXATTR` (Linux `fs/file_attr.c:427`). Admission,
+// path-based `FS_IOC_FSSETXATTR`. Admission,
 // resolution, `mnt_want_write` and `vfs_fileattr_set` live in `fileattr_common`.
 use syscall::SyscallArgs;
 /// `sys_file_setattr(dfd, filename, ufattr, usize, at_flags)` — slot 469.

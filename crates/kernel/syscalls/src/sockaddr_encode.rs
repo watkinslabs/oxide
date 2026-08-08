@@ -19,7 +19,7 @@ pub(crate) const SOCKADDR_IN_LEN:    usize = 16;
 pub(crate) const SOCKADDR_IN6_LEN:   usize = 28;
 pub(crate) const SOCKADDR_NL_LEN:    usize = 12;
 pub(crate) const SOCKADDR_LL_BASE_LEN: usize = 12;
-/// `sockaddr_ll.sll_addr[8]` (`include/uapi/linux/if_packet.h`).
+/// `sockaddr_ll.sll_addr[8]`.
 pub(crate) const SOCKADDR_LL_ADDR_LEN: usize = 8;
 pub(crate) const SOCKADDR_VM_LEN:    usize = 16;
 pub(crate) const SOCKADDR_STORAGE:   usize = SOCKADDR_UN_LEN;

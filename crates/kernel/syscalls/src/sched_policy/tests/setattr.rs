@@ -1,8 +1,7 @@
 // End-to-end `sched_setattr(2)` rules that only the `sched_attr`-shaped entry
 // can express: the flag mask, SCHED_FLAG_KEEP_{POLICY,PARAMS}, the util-clamp
 // request, the custom CFS slice, and Linux's no-change fast path.
-// Reference: Linux v7.2.0-rc4 `kernel/sched/syscalls.c` `__sched_setscheduler`,
-// `kernel/sched/fair.c` `__setparam_fair`.
+// Reference: Linux's `__sched_setscheduler` and `__setparam_fair`.
 
 use super::*;
 use crate::sched_attr as sa;

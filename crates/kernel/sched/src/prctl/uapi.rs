@@ -1,4 +1,4 @@
-// `prctl(2)` option numbers and sub-values — `include/uapi/linux/prctl.h`.
+// `prctl(2)` option numbers and sub-values.
 // UAPI only: no dispatch, no policy, no state (`docs/07§5`).
 
 pub const PR_SET_PDEATHSIG:       u64 = 1;
@@ -171,16 +171,16 @@ pub const PR_SPEC_DISABLE_NOEXEC: i64 = 1 << 4;
 pub const PR_MDWE_REFUSE_EXEC_GAIN: u64 = 1 << 0;
 pub const PR_MDWE_NO_INHERIT:       u64 = 1 << 1;
 
-/// `_NSIG` (`include/uapi/asm-generic/signal.h`) — the ceiling
-/// `valid_signal()` compares against for `PR_SET_PDEATHSIG`.
+/// `_NSIG` — the ceiling `valid_signal()` compares against for
+/// `PR_SET_PDEATHSIG`.
 pub const NSIG: u64 = 64;
 
-/// `CAP_LAST_CAP` == `CAP_CHECKPOINT_RESTORE` (`include/uapi/linux/capability.h`).
-/// `cap_valid(x)` is `x <= CAP_LAST_CAP`, NOT `x < 64`: capability numbers
-/// 41..63 are unassigned and Linux answers EINVAL for them.
+/// `CAP_LAST_CAP` == `CAP_CHECKPOINT_RESTORE`. `cap_valid(x)` is
+/// `x <= CAP_LAST_CAP`, NOT `x < 64`: capability numbers 41..63 are
+/// unassigned and Linux answers EINVAL for them.
 pub const CAP_LAST_CAP: u64 = crate::cap::CHECKPOINT_RESTORE as u64;
 
-/// `SECCOMP_MODE_*` (`include/uapi/linux/seccomp.h`) — `PR_GET_SECCOMP`
+/// `SECCOMP_MODE_*` — `PR_GET_SECCOMP`
 /// returns `current->seccomp.mode` verbatim.
 pub const SECCOMP_MODE_DISABLED: i64 = 0;
 pub const SECCOMP_MODE_STRICT:   i64 = 1;

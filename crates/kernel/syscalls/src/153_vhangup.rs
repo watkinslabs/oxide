@@ -22,7 +22,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
 /// `sys_vhangup()` — slot 153. `capable(CAP_SYS_TTY_CONFIG)` then
-/// `tty_vhangup_self()` (`fs/open.c:1530-1537`).
+/// `tty_vhangup_self()`.
 /// # C: O(N_tasks)
 pub fn sys_vhangup(_args: &SyscallArgs) -> i64 {
     let cur = match sched::live::current() { Some(c) => c, None => return 0 };

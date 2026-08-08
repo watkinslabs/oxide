@@ -1,4 +1,4 @@
-//! Mount expiry list (`docs/16§6`, Linux `fs/namespace.c::mark_mounts_for_expiry`).
+//! Mount expiry list (`docs/16§6`, Linux `mark_mounts_for_expiry`).
 //!
 //! autofs / NFS register short-lived submounts on a per-fs expire list and call
 //! a periodic sweep that auto-umounts the ones that have gone idle. The sweep is

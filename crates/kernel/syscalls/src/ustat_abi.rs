@@ -3,7 +3,7 @@
 // `f_tfree` truncation are the whole observable contract and a boot cannot
 // unit-test them (`08§7`, CLAUDE.md phantom-test rule).
 //
-// Linux `include/linux/types.h`:
+// Linux's `struct ustat`:
 //   struct ustat {
 //       __kernel_daddr_t f_tfree;      /* `int` per asm-generic posix_types.h */
 //       unsigned long    f_tinode;     /* `unsigned int` only when
@@ -26,7 +26,7 @@ pub const FPACK_LEN:  usize = 6;
 /// alignment `unsigned long f_tinode` imposes.
 pub const USTAT_BYTES: usize = 32;
 
-/// Encode `struct ustat` exactly as `fs/statfs.c` `SYSCALL_DEFINE2(ustat)`
+/// Encode `struct ustat` exactly as Linux's `SYSCALL_DEFINE2(ustat)`
 /// builds it: zero the whole struct, then `f_tfree = sbuf.f_bfree` (a 64-bit
 /// count assigned to a 32-bit `int`, so it TRUNCATES — reproduced with a
 /// wrapping cast rather than a saturate, which would report a different number

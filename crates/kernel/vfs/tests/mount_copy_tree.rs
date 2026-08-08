@@ -1,5 +1,4 @@
-//! copy_tree / clone_mnt / commit_tree (BIG REWRITE #3, Linux `fs/namespace.c`
-//! `copy_tree`/`clone_mnt`/`commit_tree`). Exercises the real global mount
+//! copy_tree / clone_mnt / commit_tree (BIG REWRITE #3). Exercises the real global mount
 //! engine through its two public entry points — `bind_submounts_rec` (MS_REC)
 //! and `propagate_mount` (peer/slave fan-out) — over the hosted dentry-identity
 //! fixture (`common`), no QEMU. Pins: recursive subtree clone, shared-peer group

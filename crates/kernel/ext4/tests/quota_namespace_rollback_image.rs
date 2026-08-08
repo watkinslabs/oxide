@@ -165,11 +165,10 @@ fn final_unlink_inode_write_failure_preserves_namespace_and_project_quota() {
 
 /// A failed quota release CANNOT roll an unlink back, and this test used to
 /// assert that it did (EIO returned, dirent preserved). That expectation was
-/// never Linux: `__ext4_unlink` (`fs/ext4/namei.c`) calls no dquot function at
-/// all — it deletes the entry, `drop_nlink`s and `ext4_orphan_add`s. The
-/// release is `dquot_free_inode` inside `ext4_free_inode`
-/// (`fs/ext4/ialloc.c:275`), reached from `ext4_evict_inode`
-/// (`fs/ext4/inode.c:319`), and `ext4_free_inode` returns `void` — by then the
+/// never Linux: unlink calls no quota-release function at
+/// all — it deletes the entry, drops the link count and orphans the inode. The
+/// release happens only at inode-free time, reached from eviction on the
+/// last reference, and that free path returns `void` — by then the
 /// name is long gone and there is nothing to undo.
 ///
 /// The real contract: the unlink succeeds, and because nothing holds this
@@ -247,11 +246,11 @@ fn vfs_final_unlink_inode_write_failure_preserves_namespace_and_project_quota() 
 
 /// Same correction as [`final_unlink_quota_release_failure_is_retried_at_eviction`]
 /// through `i_op->unlink`, and one step further: the test holds `file`, so the
-/// eviction is DEFERRED. `__ext4_unlink` (`fs/ext4/namei.c`) removes the name
+/// eviction is DEFERRED. Unlink removes the name
 /// and orphans the inode without touching quota; the armed `mark_dirty`
 /// failure therefore cannot reach the unlink at all, and only fires later,
-/// inside `ext4_evict_inode` → `ext4_free_inode` → `dquot_free_inode`
-/// (`fs/ext4/ialloc.c:275`), where `release_existing_inode_retry` absorbs it.
+/// during eviction's inode-free/quota-release step, where
+/// `release_existing_inode_retry` absorbs it.
 #[test]
 fn vfs_final_unlink_quota_release_failure_is_retried_at_eviction() {
     common::boot_hosted_pmm();
@@ -397,10 +396,9 @@ fn vfs_final_rmdir_quota_release_failure_preserves_namespace_and_project_quota()
 
 /// A REGULAR-file rename victim now follows the unlink contract, so this test's
 /// old expectation (EIO, both names preserved) was wrong for the same reason:
-/// `ext4_rename` (`fs/ext4/namei.c`) only `ext4_dec_count(new.inode)` and
-/// `ext4_orphan_add(handle, new.inode)`s the victim — no dquot call — leaving
-/// `dquot_free_inode` in `ext4_free_inode` (`fs/ext4/ialloc.c:275`) to release
-/// it at eviction, where nothing can un-rename anything.
+/// rename-overwrite only decrements the victim's link count and orphans it
+/// — no quota release — leaving inode-free at eviction to release
+/// it, where nothing can un-rename anything.
 ///
 /// Here neither side is held, so the victim's eviction runs inline inside the
 /// rename and `release_existing_inode_retry` absorbs the injected failure.
@@ -481,11 +479,11 @@ fn rename_overwrite_directory_victim_quota_release_failure_rolls_back() {
 }
 
 /// `i_op->rename` over a REGULAR-file victim that the test still HOLDS. Same
-/// correction as the path-based case — `ext4_rename` (`fs/ext4/namei.c`) only
-/// `ext4_dec_count`s + `ext4_orphan_add`s the victim, calling no dquot function
+/// correction as the path-based case — rename-overwrite only decrements the
+/// link count and orphans the victim, releasing no quota
 /// — plus the deferral: with `dst` alive the victim's blocks and charge outlive
 /// the rename, and the armed `mark_dirty` failure only reaches
-/// `dquot_free_inode` (`fs/ext4/ialloc.c:275`) at the eviction `iput` triggers,
+/// inode-free at the eviction the last `iput` triggers,
 /// where `release_existing_inode_retry` absorbs it.
 #[test]
 fn vfs_rename_overwrite_quota_release_failure_is_retried_at_victim_eviction() {

@@ -1,4 +1,4 @@
-//! dcache-D: `d_prune_aliases` (Linux fs/dcache.c). Drop the UNUSED dentry
+//! dcache-D: `d_prune_aliases`. Drop the UNUSED dentry
 //! aliases of an inode an FS is forcing out of cache, leaving in-use (open /
 //! CWD-held) aliases pinned. Driven against a real ramfs SuperBlock so
 //! `i_sb()` resolves and the `i_dentry` alias list (hard-link aliases) works.

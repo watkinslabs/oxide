@@ -3,7 +3,7 @@
 //! `O_NOCTTY`/`O_LARGEFILE`/`O_PATH`/`O_TMPFILE`). Pre-fix they lived only as
 //! ad-hoc syscall-layer consts and `from_bits_truncate` SILENTLY STRIPPED them
 //! off the open word. These tests pin the numeric values to the x86_64 /
-//! asm-generic uapi (`include/uapi/asm-generic/fcntl.h`) — the single source of
+//! asm-generic UAPI values — the single source of
 //! truth the whole vfs crate now shares — and assert the bits survive a
 //! `from_bits_truncate` round-trip.
 

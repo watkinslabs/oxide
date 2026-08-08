@@ -13,7 +13,7 @@ mod x86 {
 
     #[test]
     fn fix_eflags_is_linux_0x50dd5() {
-        // arch/x86/include/asm/sighandling.h: AC|OF|DF|TF|SF|ZF|AF|PF|CF|RF.
+        // Linux FIX_EFLAGS bit set: AC|OF|DF|TF|SF|ZF|AF|PF|CF|RF.
         assert_eq!(FIX_EFLAGS, 0x0005_0DD5);
         assert_eq!(PTRACE_FLAG_MASK, 0x0005_4DD5);
     }

@@ -1,5 +1,5 @@
 // Core TTY ioctls — the device-class-agnostic TIOC* / TCGETS surface
-// (`drivers/tty/tty_io.c:tty_ioctl`). The syscall layer (T8) hands the
+// (Linux `tty_ioctl`). The syscall layer (T8) hands the
 // request number + a pointer-as-u64 and is responsible for user-buffer
 // copy in/out; this module operates on the `TtyStruct` state and the
 // already-fetched / to-be-stored bytes via the `IoctlArg` accessor so it
@@ -12,7 +12,7 @@ use crate::core::{TtyDriver, TtyStruct};
 use crate::pty::{Winsize, TERMIOS_BYTES};
 use crate::wait::TtyWait;
 
-/// Linux tty ioctl request numbers (`include/uapi/asm-generic/ioctls.h`).
+/// Linux tty ioctl request numbers, per the generic ioctls UAPI.
 pub mod req {
     /// Get termios (`struct termios`).
     pub const TCGETS: u32 = 0x5401;

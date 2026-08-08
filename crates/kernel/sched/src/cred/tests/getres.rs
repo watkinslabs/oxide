@@ -1,4 +1,4 @@
-// Linux `SYSCALL_DEFINE3(getresuid)` / `getresgid` (`kernel/sys.c`).
+// Linux's `getresuid`/`getresgid` syscalls.
 
 use super::fixtures::{err, privileged, set_gids, set_uids, KERNEL_PTR};
 use crate::cred::resid::{getresgid_on, getresuid_on};

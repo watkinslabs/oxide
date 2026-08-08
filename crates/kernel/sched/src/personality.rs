@@ -1,6 +1,5 @@
 // `personality(2)` (slot 135) execution domain — UAPI bits plus the work fns
-// its consumers call. Linux `include/uapi/linux/personality.h` +
-// `kernel/exec_domain.c`.
+// its consumers call.
 //
 // The persona is per-task, inherited by `fork`/`clone` (Linux
 // `dup_task_struct` copies `task_struct::personality`) and preserved across
@@ -144,7 +143,7 @@ pub const fn sticky_timeouts(persona: u32) -> bool { persona & STICKY_TIMEOUTS !
 /// # C: O(1)
 pub fn uname26(cur: &Task) -> bool { get(cur) & UNAME26 != 0 }
 
-/// Linux `override_release` (`kernel/sys.c`): rewrite `X.Y.Z<rest>` as
+/// Linux `override_release`: rewrite `X.Y.Z<rest>` as
 /// `2.6.<Y+60><rest>` for `UNAME26` processes, so programs that reject a
 /// "Linux 3.0"-or-newer release string keep working.
 ///

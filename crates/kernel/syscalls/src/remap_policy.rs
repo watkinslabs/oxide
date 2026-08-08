@@ -1,5 +1,5 @@
 // remap_file_pages(2) slot 216 — argument admission for Linux's DEPRECATED
-// emulation (`mm/mmap.c` SYSCALL_DEFINE5(remap_file_pages)).
+// emulation (`SYSCALL_DEFINE5(remap_file_pages)`).
 //
 // The nonlinear-VMA implementation this call once had is gone from Linux: the
 // syscall now re-`do_mmap`s the same file over the same address with

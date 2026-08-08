@@ -251,7 +251,7 @@ impl NTty {
     }
 
     /// Linux `clear_bit(TTY_HUPPED, &tty->flags)` at the tail of a successful
-    /// `tty_open` (`drivers/tty/tty_io.c:2161`). A hangup is a property of the
+    /// `tty_open`. A hangup is a property of the
     /// OPEN, not of the device: Linux revokes the old file descriptors by
     /// swapping their `f_op` to `hung_up_tty_fops` and hands a fresh
     /// (re-initialised) ldisc to the next opener. oxide's ttys are long-lived

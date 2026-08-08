@@ -121,7 +121,7 @@ pub fn wake_list_drain(cpu: u32) -> Vec<Arc<Task>> {
 /// after the pre-pick drain but before the outgoing task clears `on_cpu`.
 ///
 /// The per-task decision is made INSIDE the rq lock, immediately before the
-/// enqueue it authorises — Linux's structure exactly (`kernel/sched/core.c`):
+/// enqueue it authorises — Linux's structure exactly:
 ///
 /// ```c
 /// rq_lock_irqsave(rq, &rf);
@@ -416,7 +416,7 @@ pub(crate) unsafe fn place_runnable(task: Arc<Task>, force_defer: bool) {
 pub(crate) fn place_runnable_with<'a, F>(get_rq: &F, me: u32, task: Arc<Task>, force_defer: bool)
 where F: Fn(u32) -> Option<&'a Runqueue> {
     let owner = task.cpu.load(Ordering::Acquire) as u32;
-    // Linux ttwu's `smp_load_acquire(&p->on_cpu)` (`kernel/sched/core.c`
+    // Linux ttwu's `smp_load_acquire(&p->on_cpu)` (in
     // `try_to_wake_up`), pairing with `finish_task`'s
     // `smp_store_release(&prev->on_cpu, 0)`.
     let on_cpu = task.on_cpu.load(Ordering::Acquire);

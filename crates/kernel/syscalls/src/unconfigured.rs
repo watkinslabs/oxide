@@ -15,16 +15,16 @@
 use syscall::nrs::*;
 
 /// Slots refused with ENOSYS because the feature is not built, each paired
-/// with the Linux config that turns it off and the source line proving the
+/// with the Linux config that turns it off and the mechanism that proves the
 /// errno:
 ///
-/// | Slot | Linux config | Linux source |
+/// | Slot | Linux config | Mechanism |
 /// |---|---|---|
-/// | `modify_ldt` | `CONFIG_MODIFY_LDT_SYSCALL` | `kernel/sys_ni.c COND_SYSCALL(modify_ldt)`; `arch/x86/kernel/Makefile` builds `ldt.o` only when set |
-/// | `iopl` | `CONFIG_X86_IOPL_IOPERM` | `arch/x86/kernel/ioport.c` `#else` branch: `SYSCALL_DEFINE1(iopl) { return -ENOSYS; }` |
+/// | `modify_ldt` | `CONFIG_MODIFY_LDT_SYSCALL` | `COND_SYSCALL(modify_ldt)`; the x86 build only compiles the LDT object when set |
+/// | `iopl` | `CONFIG_X86_IOPL_IOPERM` | the `#else` branch: `SYSCALL_DEFINE1(iopl) { return -ENOSYS; }` |
 /// | `ioperm` | `CONFIG_X86_IOPL_IOPERM` | same `#else` branch: `SYSCALL_DEFINE3(ioperm) { return -ENOSYS; }` |
-/// | `kexec_load` | `CONFIG_KEXEC` | `kernel/sys_ni.c COND_SYSCALL(kexec_load)` |
-/// | `kexec_file_load` | `CONFIG_KEXEC_FILE` | `kernel/sys_ni.c COND_SYSCALL(kexec_file_load)` |
+/// | `kexec_load` | `CONFIG_KEXEC` | `COND_SYSCALL(kexec_load)` |
+/// | `kexec_file_load` | `CONFIG_KEXEC_FILE` | `COND_SYSCALL(kexec_file_load)` |
 ///
 /// Why each is refused rather than implemented:
 ///

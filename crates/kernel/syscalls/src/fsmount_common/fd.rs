@@ -85,10 +85,10 @@ pub(crate) fn fd_inode(fd: i32) -> Option<InodeRef> {
     fd_file(fd).map(|f| f.inode().clone())
 }
 
-/// `fget_raw(fd)` (`fs/file.c`) — the open file description behind `fd` with a
+/// `fget_raw(fd)` — the open file description behind `fd` with a
 /// reference held for the caller, O_PATH descriptions included. `fsconfig`'s
 /// `FSCONFIG_SET_FD` pins the file this way so the parameter survives the
-/// caller closing the fd mid-parse (`fs/fsopen.c`). # C: O(1)
+/// caller closing the fd mid-parse. # C: O(1)
 pub(crate) fn fd_file(fd: i32) -> Option<Arc<File>> {
     let cur = sched::live::current()?;
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.

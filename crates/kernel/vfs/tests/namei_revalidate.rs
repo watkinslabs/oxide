@@ -1,4 +1,4 @@
-//! `d_revalidate` in the path walk (Linux `fs/namei.c` `lookup_fast` →
+//! `d_revalidate` in the path walk (`lookup_fast` →
 //! `d_revalidate`). Two contracts:
 //!   1. a cached dentry whose `d_op->d_revalidate` returns false is dropped and
 //!      re-resolved via the slow `i_op->lookup` (cache MISS), never reused.

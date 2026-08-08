@@ -1,11 +1,11 @@
 //! D35: `Fmode` carries the previously-missing `file->f_mode` state bits
 //! `FMODE_OPENED` / `FMODE_CREATED` / `FMODE_NONOTIFY`. Pin their numeric
-//! values to Linux `include/linux/fs.h` and confirm they are independent of
+//! values to the reference ABI and confirm they are independent of
 //! the access-capability bits already present (READ/WRITE/PATH).
 
 use vfs::Fmode;
 
-/// Values match Linux `fs.h` exactly (`1 << 19/20/26`).
+/// Values match the reference ABI exactly (`1 << 19/20/26`).
 #[test]
 fn values_match_linux() {
     assert_eq!(Fmode::OPENED.bits(),   0x0008_0000, "FMODE_OPENED  = 1<<19");

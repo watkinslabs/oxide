@@ -1,18 +1,14 @@
 // One rule every
-// interrupted socket wait uses:
+// interrupted socket wait uses: `sock_intr_errno(timeo)` reports
+// `-ERESTARTSYS` when the wait had no timeout (fully restartable) and
+// `-EINTR` when a finite timeout was in effect — a timed wait cannot be
+// restarted because the remaining time budget cannot be carried across the
+// restart, so with-timeout waits are not restartable. Alas, with timeout,
+// socket operations are not restartable — compare this to poll().
 //
-//     /* Alas, with timeout socket operations are not restartable.
-//      * Compare this to poll().
-//      */
-//     static inline int sock_intr_errno(long timeo)
-//     {
-//         return timeo == MAX_SCHEDULE_TIMEOUT ? -ERESTARTSYS : -EINTR;
-//     }
-//
-// Every blocking socket path routes its interrupted exit through it:
-// `__skb_wait_for_more_packets` (`net/core/datagram.c:128`), `tcp_recvmsg_locked`
-// (`net/ipv4/tcp.c:2784`), `sk_stream_wait_memory` (`net/core/stream.c:184`),
-// `sock_alloc_send_pskb` (`net/core/sock.c:3010`), `inet_wait_for_connect`
+// Every blocking socket path routes its interrupted exit through this rule:
+// `__skb_wait_for_more_packets`, `tcp_recvmsg_locked`,
+// `sk_stream_wait_memory`, `sock_alloc_send_pskb`, `inet_wait_for_connect` —
 // applies to every blocking INET, AF_UNIX, VSOCK, and netlink socket path.
 //
 // ~30 oxide sites each hard-coded `Eintr`, which is right ONLY for the

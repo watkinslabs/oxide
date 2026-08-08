@@ -1,7 +1,6 @@
-// `getcwd(2)` / `chdir(2)` / `fchdir(2)` / `chroot(2)` work-fns — Linux
-// `fs/d_path.c` (`SYSCALL_DEFINE2(getcwd)` → `prepend_path`) and `fs/open.c`
-// (`chdir`, `fchdir`, `chroot` → `path_permission(MAY_EXEC | MAY_CHDIR)` →
-// `set_fs_pwd` / `set_fs_root`).
+// `getcwd(2)` / `chdir(2)` / `fchdir(2)` / `chroot(2)` work-fns. `chdir`,
+// `fchdir`, and `chroot` all require `MAY_EXEC | MAY_CHDIR` search permission
+// on the target directory before installing it as the new pwd/root.
 // The syscall shims own only argument fetch, path/fd resolution, and the
 // user-buffer copy-out.
 
@@ -12,8 +11,8 @@ use alloc::string::String;
 use syscall::errno::Errno;
 use vfs::{FileType, VfsPath};
 
-/// Prefix Linux `getcwd(2)` prepends when `prepend_path` could not reach the
-/// caller's root — the pwd escaped the chroot (Linux `fs/d_path.c`).
+/// Prefix `getcwd(2)` prepends when path rendering could not reach the
+/// caller's root — the pwd escaped the chroot.
 const UNREACHABLE_PREFIX: &str = "(unreachable)";
 
 /// Render the caller's current working directory the way Linux does: from the
@@ -58,11 +57,11 @@ pub fn getcwd_path() -> Result<String, i64> {
     Ok(rendered)
 }
 
-/// `set_fs_pwd` half of `chdir(2)` / `fchdir(2)` (Linux `fs/open.c`): require a
+/// `set_fs_pwd` half of `chdir(2)` / `fchdir(2)`: require a
 /// directory, then `MAY_EXEC` search permission on it (`EACCES`), then install
 /// it as the shared filesystem owner's pwd. Both syscalls converge here, which
-/// is why `fchdir` is permission-checked at all — Linux runs the same
-/// `MAY_EXEC | MAY_CHDIR` test through `file_permission`. # C: O(depth)
+/// is why `fchdir` is permission-checked at all — both run the same
+/// `MAY_EXEC | MAY_CHDIR` test. # C: O(depth)
 pub fn set_fs_pwd(path: VfsPath, cred: &vfs::Cred) -> i64 {
     if !matches!(path.inode.file_type(), FileType::Directory) {
         return -(Errno::Enotdir.as_i32() as i64);
@@ -78,8 +77,7 @@ pub fn set_fs_pwd(path: VfsPath, cred: &vfs::Cred) -> i64 {
     0
 }
 
-/// `set_fs_root` half of `chroot(2)` (Linux `fs/open.c`
-/// `SYSCALL_DEFINE1(chroot)`), in Linux's exact order:
+/// `set_fs_root` half of `chroot(2)`, in Linux's exact order:
 ///
 /// ```text
 /// error = filename_lookup(AT_FDCWD, name, LOOKUP_FOLLOW|LOOKUP_DIRECTORY, &path, NULL);

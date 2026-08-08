@@ -28,7 +28,7 @@ pub trait SealCarrier: Send + Sync {
     fn seal_word(&self) -> &AtomicU32;
 }
 
-/// Linux `F_SEAL_*` values (`include/uapi/linux/fcntl.h`).
+/// `F_SEAL_*` seal bits.
 pub const F_SEAL_SEAL: u32 = 0x0001;
 pub const F_SEAL_SHRINK: u32 = 0x0002;
 pub const F_SEAL_GROW: u32 = 0x0004;
@@ -71,12 +71,12 @@ pub struct Inode {
     pub(super) i_flags:        AtomicU32,
     pub(super) i_rdev:         u32,
     pub(super) i_generation:   u32,
-    // Linux `struct inode` splits each file time into a SIGNED `time64_t
-    // i_atime_sec` plus an unsigned `u32 i_atime_nsec` (include/linux/fs.h) —
+    // Each file time is split into a SIGNED `time64_t
+    // i_atime_sec` plus an unsigned `u32 i_atime_nsec` —
     // pre-1970 stamps are ordinary, and the pair spans the full `time64_t`
-    // window a single ns scalar cannot. Linux's fields are plain (unlocked
-    // readers may observe a half-updated pair); the Relaxed atomics here give
-    // exactly that, no more.
+    // window a single ns scalar cannot. The reference fields are plain
+    // (unlocked readers may observe a half-updated pair); the Relaxed atomics
+    // here give exactly that, no more.
     pub(super) i_atime_sec:    AtomicI64,
     pub(super) i_atime_nsec:   AtomicU32,
     pub(super) i_mtime_sec:    AtomicI64,
@@ -87,7 +87,7 @@ pub struct Inode {
     /// stores none — NOT a zero sentinel, since the epoch second is itself a
     /// legal birth time.
     pub(super) i_btime:        Option<Timespec64>,
-    /// Linux `i_writecount` (`include/linux/fs.h`): 0 idle, >0 = that many
+    /// `i_writecount`: 0 idle, >0 = that many
     /// writers hold the file open, <0 = that many execs are running it.
     /// `get_write_access` is `atomic_inc_unless_negative`, `deny_write_access`
     /// is `atomic_dec_unless_positive` — the two directions are what make

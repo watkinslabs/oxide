@@ -1,6 +1,5 @@
 // Classic-BPF instruction encoding + the `seccomp_data` the filter reads.
-// Opcode numbers from `include/uapi/linux/bpf_common.h` and
-// `include/uapi/linux/filter.h`; no policy here.
+// Opcode numbers are the fixed cBPF ABI; no policy here.
 
 use super::uapi::SECCOMP_DATA_BYTES;
 
@@ -90,7 +89,7 @@ impl SockFilter {
     }
 }
 
-/// `struct seccomp_data` (`include/uapi/linux/seccomp.h`) — 64 bytes, read by
+/// `struct seccomp_data` — 64 bytes, read by
 /// `BPF_LD|BPF_W|BPF_ABS` at 4-byte-aligned offsets:
 ///   0  nr (i32) | 4 arch (u32) | 8 instruction_pointer (u64) | 16 args[6]
 #[repr(C)]

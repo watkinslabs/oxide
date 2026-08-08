@@ -1,6 +1,6 @@
 // uname(2) `utsname` field values + the two `personality(2)`-driven overrides
-// Linux applies after copying the namespace's `new_utsname` (kernel/sys.c
-// `override_release` / `override_architecture`).
+// Linux applies after copying the namespace's `new_utsname`
+// (`override_release` / `override_architecture`).
 //
 // Pure logic, no user-memory access: the syscall shim (`063_uname.rs`) copies
 // what these produce, and the rules are unit-testable without a boot.
@@ -9,7 +9,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 /// `__NEW_UTS_LEN + 1` — each `struct new_utsname` field is 65 bytes,
-/// NUL-terminated (Linux `include/uapi/linux/utsname.h`).
+/// NUL-terminated.
 pub const UTSNAME_FIELD_LEN: usize = 65;
 /// `sizeof(struct new_utsname)` — six 65-byte fields, no padding.
 pub const UTSNAME_TOTAL_LEN: usize = UTSNAME_FIELD_LEN * 6;
@@ -35,8 +35,8 @@ pub const UTS_MACHINE: &str = "aarch64";
 pub const UTS_MACHINE: &str = "unknown";
 
 /// `COMPAT_UTS_MACHINE` — the machine name a `PER_LINUX32` task is told it runs
-/// on (`arch/x86/include/asm/compat.h`, `arch/arm64/include/asm/compat.h`;
-/// arm64 little-endian takes `armv8l`).
+/// on, per each arch's compat-mode UAPI table; arm64 little-endian takes
+/// `armv8l`.
 #[cfg(target_arch = "x86_64")]
 pub const COMPAT_UTS_MACHINE: &str = "i686";
 #[cfg(target_arch = "aarch64")]

@@ -60,7 +60,7 @@ fn an_unreadable_buffer_is_efault_before_anything_runs() {
 
 #[test]
 fn adjtimex_writes_back_even_when_the_adjustment_was_rejected() {
-    // kernel/time/time.c: `return copy_to_user(...) ? -EFAULT : ret;` — the
+    // Linux's `sys_adjtimex` tail: `return copy_to_user(...) ? -EFAULT: ret;` — the
     // copy is unconditional, so a rejected call still refreshes the buffer.
     let mut o = Ops::default();
     o.adj_err = Some(Errno::Eperm);

@@ -32,7 +32,7 @@ impl Drop for File {
         if (self.flags.load(Ordering::Acquire) & O_ASYNC) != 0 {
             fasync_unregister(self);
         }
-        // Linux `__fput` → `locks_remove_file` (`fs/locks.c:2849`): the last
+        // Linux `__fput` → `locks_remove_file`: the last
         // reference to an open file description releases BOTH its BSD flock
         // and its OFD byte-range records (`locks_remove_posix(filp, filp)`).
         // Linux `locks_delete_lock_ctx` → `locks_wake_up_blocks`: every task

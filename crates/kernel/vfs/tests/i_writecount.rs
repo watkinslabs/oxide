@@ -1,4 +1,4 @@
-//! Linux `i_writecount` (`include/linux/fs.h:2798-2830`): one signed counter,
+//! Linux `i_writecount`: one signed counter,
 //! `>0` writers and `<0` execs, each refusing the other. That mutual exclusion
 //! is what `ETXTBSY` is — a running binary cannot be opened for write, and a
 //! file open for write cannot be executed.

@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 
 use super::{get_u16, get_u32, get_u64, put_pad, put_u16, put_u32, put_u64};
 
-/// `struct fuse_in_header` (`uapi/linux/fuse.h`): `len,opcode,unique,nodeid,
+/// `struct fuse_in_header` (FUSE UAPI): `len,opcode,unique,nodeid,
 /// uid,gid,pid,padding`. `len` is the TOTAL request length including this
 /// header. # C: O(1)
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]

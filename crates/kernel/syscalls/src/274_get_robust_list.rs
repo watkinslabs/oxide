@@ -1,6 +1,6 @@
 // 274 get_robust_list — one syscall, one file (docs/53 §0).
-// `get_robust_list(pid, head_ptr, len_ptr)`: Linux `kernel/futex/syscalls.c:94`
-// + `futex_get_robust_list_common` (`:47`).
+// `get_robust_list(pid, head_ptr, len_ptr)`: Linux's `sys_get_robust_list`
+// + `futex_get_robust_list_common`.
 #![cfg(target_os = "oxide-kernel")]
 
 use core::sync::atomic::Ordering;

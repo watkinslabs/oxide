@@ -1,4 +1,4 @@
-// `kernfs_dentry_operations` (Linux `fs/kernfs/dir.c`): the `d_revalidate` hook
+// The pseudo-filesystem's dentry-operations table: the `d_revalidate` hook
 // every dentry cached under a `PseudoDir` carries.
 //
 // A pseudo-fs entry is owned by the tree, not by the dcache. Hot-unplug removes

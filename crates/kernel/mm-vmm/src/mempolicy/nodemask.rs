@@ -1,8 +1,7 @@
-// Nodemask <-> userspace bitmap conventions: `get_bitmap` / `get_nodes` /
-// `copy_nodes_to_user` (`mm/mempolicy.c:1634..1716`).
+// Nodemask <-> userspace bitmap conventions for the mempolicy syscall ABI.
 //
-// The `maxnode` argument is NOT a bit count: `get_nodes` decrements it first,
-// so `maxnode` is "highest node id the caller cares about, plus one". Every
+// The `maxnode` argument is NOT a bit count: it is decremented first, so
+// `maxnode` is "highest node id the caller cares about, plus one". Every
 // off-by-one below is that `--maxnode`.
 //
 // Expressed as pure functions over a word-reader / a copy plan so the hosted
@@ -47,7 +46,7 @@ impl NodeMask {
 /// # C: O(1)
 pub fn nodes_with_memory() -> NodeMask { NodeMask::single(super::uapi::NODE_ID_LOCAL) }
 
-/// `mpol_relative_nodemask` (`mm/mempolicy.c:370`): fold `orig` to the weight
+/// MPOL_F_RELATIVE_NODES remap: fold `orig` to the weight
 /// of `rel`, then map it onto `rel`'s set bits. With a single allowed node
 /// this collapses to "node 0 iff orig is non-empty", but the fold is written
 /// out so the shape survives a multi-node PMM.
@@ -73,21 +72,20 @@ pub fn relative_nodemask(orig: NodeMask, rel: NodeMask) -> NodeMask {
     NodeMask(out)
 }
 
-/// `get_bitmap` (`mm/mempolicy.c:1634`) for a single word: read one
-/// `unsigned long` and clear the bits above `bits`. `bits` must be `<= 64`;
-/// `bits % 64 == 0` leaves the word untouched, exactly as Linux's
-/// `if (maxnode % BITS_PER_LONG)` guard does.
+/// Read one `unsigned long` word from a user nodemask and clear the bits
+/// above `bits`. `bits` must be `<= 64`; `bits % 64 == 0` leaves the word
+/// untouched (a "clear nothing" no-op guard for the exact-multiple case).
 /// # C: O(1)
 fn mask_to_bits(word: u64, bits: u64) -> u64 {
     let rem = bits % BITS_PER_LONG;
     if rem == 0 { word } else { word & ((1u64 << rem) - 1) }
 }
 
-/// `get_nodes` (`mm/mempolicy.c:1658`). `nmask_present` is "the user pointer
-/// was non-NULL"; `read_word(i)` fetches `nmask[i]` (8 bytes) and reports
-/// `Error::Fault` for an unreadable word.
+/// Validate and read a user-supplied nodemask. `nmask_present` is "the user
+/// pointer was non-NULL"; `read_word(i)` fetches `nmask[i]` (8 bytes) and
+/// reports `Error::Fault` for an unreadable word.
 ///
-/// Ordering, verbatim from Linux and load-bearing:
+/// Ordering, load-bearing:
 /// 1. `--maxnode` FIRST. `maxnode == 0` therefore underflows to `ULONG_MAX`,
 ///    which trips the `MAX_NODEMASK_BITS` ceiling → `EINVAL` (only a NULL
 ///    `nmask` escapes with an empty mask).
@@ -118,7 +116,7 @@ where F: FnMut(u64) -> Result<u64, Error>
     Ok(NodeMask(mask_to_bits(read_word(0)?, maxnode)))
 }
 
-/// The three-part write `copy_nodes_to_user` performs (`mm/mempolicy.c:1694`).
+/// The three-part write a nodemask-to-user copy performs.
 /// `clear_bytes == 0` means no zero-fill tail.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct NodemaskOut {
@@ -130,7 +128,7 @@ pub struct NodemaskOut {
     pub clear_bytes: u64,
 }
 
-/// `copy_nodes_to_user` (`mm/mempolicy.c:1694`): the caller's `maxnode - 1`
+/// `get_mempolicy(2)`'s nodemask-out plan: the caller's `maxnode - 1`
 /// bits are rounded up to a 64-bit boundary to get the byte count it expects.
 /// A request wider than `nr_node_ids` is satisfied by copying the real mask
 /// and zero-filling the rest — libnuma always asks for far more than exists.

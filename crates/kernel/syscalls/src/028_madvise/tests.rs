@@ -113,7 +113,7 @@ fn pageout_private_file_falls_back_without_calling_shared_backing() {
 }
 
 // ── process_madvise: remote admission + the vector loop ──────────────────
-// `mm/madvise.c` owns both, so they are pinned here beside `madvise_vmas`.
+// Linux's madvise core owns both, so they are pinned here beside `madvise_vmas`.
 
 const EINVAL: i64 = -(Errno::Einval.as_i32() as i64);
 

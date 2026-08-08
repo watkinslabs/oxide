@@ -70,8 +70,8 @@ fn cap_load_target(pid: i32) -> Result<(u64, u64, u64), i64> {
 /// `cap_policy::capget_early` for Linux's exact ladder. Note capset has NO
 /// such case: `cap_validate_magic` failing there is EINVAL unconditionally.
 /// A v1 request silently drops the upper 32 bits, matching Linux's
-/// documented fail-safe (`kernel/capability.c`: "we silently drop the upper
-/// capabilities here" rather than -ERANGE).
+/// documented fail-safe ("we silently drop the upper capabilities here"
+/// rather than -ERANGE).
 /// # C: O(1)
 pub(super) fn sys_capget(args: &SyscallArgs) -> i64 {
     let hp = args.a0;

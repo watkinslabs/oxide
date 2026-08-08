@@ -1,5 +1,5 @@
 // /proc/<pid>/fdinfo/<n> — per-fd open file description metadata.
-// Linux Documentation/filesystems/proc.rst format:
+// Standard field format:
 //   pos:    <bytes>
 //   flags:  <octal>
 //   mnt_id: <mount id>

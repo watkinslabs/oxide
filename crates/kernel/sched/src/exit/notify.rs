@@ -1,4 +1,4 @@
-// `exit_notify` + `do_notify_parent` (Linux `kernel/exit.c`, `kernel/signal.c`):
+// `exit_notify` + `do_notify_parent` (Linux's exit and signal paths):
 // which signal the real parent gets, and whether a zombie is left behind at all.
 //
 // POSIX.1 gives `SIGCHLD` set to `SIG_IGN`, and `SA_NOCLDWAIT`, special
@@ -14,16 +14,16 @@ use crate::signum::Signum;
 pub const SIG_DFL: u64 = 0;
 /// `sa_handler == SIG_IGN`.
 pub const SIG_IGN: u64 = 1;
-/// `SA_NOCLDWAIT` (`<asm-generic/signal.h>`): never leave a zombie.
+/// `SA_NOCLDWAIT` (asm-generic signal UAPI): never leave a zombie.
 pub const SA_NOCLDWAIT: u64 = 0x0000_0002;
-/// `SA_NOCLDSTOP` (`<asm-generic/signal.h>`): don't notify me when my children
+/// `SA_NOCLDSTOP` (asm-generic signal UAPI): don't notify me when my children
 /// stop or continue.
 pub const SA_NOCLDSTOP: u64 = 0x0000_0001;
-/// `CLD_STOPPED` si_code (`<asm-generic/siginfo.h>`).
+/// `CLD_STOPPED` si_code (`siginfo(7)`).
 pub const CLD_STOPPED: i32 = 5;
-/// `CLD_CONTINUED` si_code (`<asm-generic/siginfo.h>`).
+/// `CLD_CONTINUED` si_code (`siginfo(7)`).
 pub const CLD_CONTINUED: i32 = 6;
-/// `CLD_TRAPPED` si_code (`<asm-generic/siginfo.h>`): a TRACEE stopped, which
+/// `CLD_TRAPPED` si_code (`siginfo(7)`): a TRACEE stopped, which
 /// is reported to its TRACER — never to its real parent as `CLD_STOPPED`.
 pub const CLD_TRAPPED: i32 = 4;
 
@@ -117,10 +117,10 @@ pub struct CldstopNotify {
     pub si_code: i32,
 }
 
-/// Linux `do_notify_parent_cldstop` (`kernel/signal.c:2290-2346`).
+/// Linux `do_notify_parent_cldstop`.
 ///
 /// SIGCHLD is suppressed when the parent set it to `SIG_IGN` or asked for
-/// `SA_NOCLDSTOP` (`:2338-2340`), but the `wait4` wake happens EITHER WAY:
+/// `SA_NOCLDSTOP`, but the `wait4` wake happens EITHER WAY:
 /// "Even if SIGCHLD is not generated, we must wake up wait4 calls"
 /// (`:2342-2344`). Gating the wake on the signal would leave a
 /// `waitpid(WUNTRACED)` asleep through the very stop it is waiting for —

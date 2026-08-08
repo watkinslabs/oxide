@@ -68,7 +68,7 @@ impl PollWaiter {
     pub(crate) unsafe fn park_until(&self, observed: u64, deadline_ns: u64) {
         // `select_estimate_accuracy`, not the flat task slack: Linux hands
         // poll(2)/select(2) 0.1% of the remaining timeout as coalescing range
-        // (`fs/select.c:509`, `:900`, `:965` → `poll_schedule_timeout` →
+        // (from `poll_schedule_timeout` →
         // `schedule_hrtimeout_range(expires, slack, HRTIMER_MODE_ABS)`), which
         // is what keeps a machine full of long pollers off the interrupt path.
         let slack_ns = sched::hrtimeout::select_estimate_accuracy(deadline_ns);

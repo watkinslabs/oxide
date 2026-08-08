@@ -1,6 +1,6 @@
 // Memory protection keys on aarch64 — FEAT_S1POE, the Stage-1 Permission
-// Overlay Extension. Linux `arch/arm64/include/asm/por.h`,
-// `arch/arm64/include/asm/pkeys.h`, `cpu_enable_poe()`.
+// Overlay Extension. Enabled the same way Linux's `cpu_enable_poe()` does:
+// per-CPU `POR_EL0` setup gated on `CPACR_EL1.E0POE`.
 //
 // The overlay is the same idea as x86's PKRU with a different shape: a page's
 // descriptor carries a 3-bit Permission Overlay index, and `POR_EL0` holds a

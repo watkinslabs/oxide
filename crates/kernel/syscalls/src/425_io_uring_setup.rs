@@ -4,8 +4,7 @@
 // the entries ladder, the region geometry, the reported feature bits — lives
 // in `crate::io_uring_abi`, which the hosted suite compiles and tests.
 //
-// Linux: `io_uring/io_uring.c` `SYSCALL_DEFINE2(io_uring_setup)` →
-// `io_uring_setup()` → `io_uring_create()`.
+// Linux shape: the syscall entry validates params, then creates the ring.
 
 #![cfg(target_os = "oxide-kernel")]
 

@@ -1,5 +1,5 @@
-// `pid_dentry_operations` (Linux `fs/proc/base.c`): the `d_revalidate` /
-// `d_delete` pair every `/proc/<pid>/**` dentry carries.
+// `pid_dentry_operations`, matching Linux's proc pid dentry ops: the
+// `d_revalidate` / `d_delete` pair every `/proc/<pid>/**` dentry carries.
 //
 // A per-pid node's owner is a snapshot of credentials that move under the
 // dcache — the task may `setuid()` after the entry was cached, or exit and have

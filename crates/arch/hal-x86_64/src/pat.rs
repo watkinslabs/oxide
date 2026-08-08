@@ -30,7 +30,7 @@ const fn pat_value(entries: [u64; 8]) -> u64 {
         | (entries[7] << 56)
 }
 
-/// Linux's full-PAT layout from `arch/x86/mm/pat/memtype.c`.
+/// Linux's full-PAT (8-entry PAT MSR) memory-type layout.
 pub const LINUX_PAT: u64 = pat_value([
     MEMTYPE_WB,
     MEMTYPE_WC,

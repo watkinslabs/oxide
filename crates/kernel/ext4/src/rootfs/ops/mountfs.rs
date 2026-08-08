@@ -19,7 +19,7 @@ impl Ext4SuperOps {
 }
 
 impl vfs::SuperOps for Ext4SuperOps {
-    /// Linux `ext4_statfs` (fs/ext4/super.c). `f_blocks` merges
+    /// Linux `ext4_statfs`. `f_blocks` merges
     /// `s_blocks_count_hi` so a >16 TiB filesystem is not truncated to its low
     /// 32 bits; `f_bavail` subtracts `s_r_blocks_count` (the super-user reserve)
     /// from `f_bfree` and clamps at zero, so an unprivileged writer is told the

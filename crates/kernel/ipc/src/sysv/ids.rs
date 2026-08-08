@@ -1,5 +1,5 @@
 //! Linux `struct ipc_ids` — the per-namespace identifier space shared by every
-//! SysV object class (`ipc/util.c`).
+//! SysV object class.
 //!
 //! Reproduces the real encoding rather than a monotonic counter: slots are
 //! allocated cyclically, `seq` advances whenever allocation wraps back to a

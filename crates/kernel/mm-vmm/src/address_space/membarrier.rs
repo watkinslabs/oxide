@@ -1,11 +1,9 @@
-// Per-mm `membarrier(2)` registration state — Linux
-// `mm_struct::membarrier_state` (`include/linux/sched/mm.h`) driven by
-// `kernel/sched/membarrier.c`.
+// Per-mm `membarrier(2)` registration state.
 //
 // The state belongs to the ADDRESS SPACE, not the task or the thread group:
 // Linux's contract is that `CLONE_VM`-without-`CLONE_THREAD` siblings share
-// one registration ("We need to consider threads belonging to different
-// thread groups, which use the same mm"). Keeping it here is the only place
+// one registration, since threads belonging to different thread groups can
+// share the same mm. Keeping it here is the only place
 // that fact is representable without a shadow registry.
 //
 // `execve` builds a FRESH `AddressSpace` over a fresh page-table root

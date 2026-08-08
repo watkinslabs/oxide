@@ -10,7 +10,7 @@ use syscall::errno::Errno;
 use crate::rwf::{kiocb_set_rw_flags, pos_from_hilo, preadv_pos, PreadvPos, RwCaps, RwDir};
 use crate::userbuf::validate_user_buf;
 
-/// `pos_from_hilo` (`fs/read_write.c:1115-1119`) — on a 64-bit kernel the
+/// `pos_from_hilo` — on a 64-bit kernel the
 /// offset is `pos_l` alone and `pos_h` is shifted out. The previous x86_64
 /// branch applied the 32-bit COMPAT split, truncating any offset above 4 GiB
 /// and OR-ing in whatever the caller left in the unset `pos_h` register — on
@@ -19,7 +19,7 @@ fn offset_from_args(args: &SyscallArgs) -> i64 { pos_from_hilo(args.a3, args.a4)
 
 /// `sys_pwritev2(fd, iov, iovcnt, pos_l, pos_h, flags)` — slot 328.
 /// `pos == -1` means current-offset (`writev`) semantics
-/// (`fs/read_write.c:1209`); the `RWF_*` word goes through the same
+/// ; the `RWF_*` word goes through the same
 /// `kiocb_set_rw_flags` ladder as the read side.
 /// # C: O(iovcnt x iov[i].len)
 pub fn sys_pwritev2(args: &SyscallArgs) -> i64 {
@@ -31,7 +31,7 @@ pub fn sys_pwritev2(args: &SyscallArgs) -> i64 {
     };
     // `kiocb_set_rw_flags` folded `RWF_SYNC`/`RWF_DSYNC` into `IOCB_SYNC`/
     // `IOCB_DSYNC`; Linux then acts on them in `generic_write_sync` at the tail
-    // of the write (`include/linux/fs.h:2665-2670`). Previously the effect was
+    // of the write. Previously the effect was
     // computed and dropped on the floor, so `pwritev2(..., RWF_SYNC)` behaved
     // exactly like `pwritev`.
     let extra = vfs::SyncMode { dsync: eff.dsync, sync: eff.sync };

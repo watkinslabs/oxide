@@ -1,5 +1,5 @@
-// `fs.nr_open` — Linux `fs/file.c`'s `sysctl_nr_open` plus the min/max window
-// `kernel/sysctl.c` clamps writes to. The fd-table is this value's Linux-shaped
+// `fs.nr_open` — the `sysctl_nr_open` sysctl cell plus the min/max window
+// writes are clamped to. The fd-table is this value's Linux-shaped
 // owner, so `setrlimit(RLIMIT_NOFILE)` (`do_prlimit`) and the
 // `/proc/sys/fs/nr_open` proc_handler read ONE live cell instead of each
 // carrying a private copy that can disagree.

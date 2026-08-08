@@ -1,5 +1,5 @@
 // The keyed constructions themselves, as pure functions of (key, 4-tuple,
-// clock). Port of Linux `net/core/secure_seq.c`. No globals, no clock reads,
+// clock). Port of Linux's `secure_seq` keyed hash. No globals, no clock reads,
 // no target gate — every security property below is asserted in
 // `secure_seq/tests.rs` against these entry points.
 //

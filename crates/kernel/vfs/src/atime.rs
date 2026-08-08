@@ -1,4 +1,4 @@
-// `touch_atime` / `file_accessed` (Linux fs/inode.c, include/linux/fs.h) — the
+// `touch_atime` / `file_accessed` — the
 // PLUMBING half of the access-time contract. The DECISION half lives in
 // [`crate::inode_times`] (`atime_needs_update` / `relatime_need_update`); this
 // module snapshots a live inode + mount into an `AtimeCtx`, applies the
@@ -51,7 +51,7 @@ pub fn touch_atime_needed(c: &AtimeCtx, now: Timespec64) -> bool {
     c.mnt_flags & MNT_RDONLY == 0
 }
 
-/// `touch_atime(&path)` (Linux fs/inode.c) — advance `i_atime` to the current
+/// `touch_atime(&path)` — advance `i_atime` to the current
 /// wall clock when the mount/superblock/inode policy allows it, then persist
 /// through `i_op->update_time(S_ATIME)` so a backend that owns on-disk inodes
 /// (ext4) writes it out. A no-op before the wall clock is installed (early
@@ -81,7 +81,7 @@ pub fn file_type_tracks_atime(ft: FileType) -> bool {
     matches!(ft, FileType::Regular | FileType::BlockDev | FileType::Fifo | FileType::Directory)
 }
 
-/// `file_accessed(file)` (Linux include/linux/fs.h) — `touch_atime` on the
+/// `file_accessed(file)` — `touch_atime` on the
 /// description's `f_path`, skipped for an `O_NOATIME` open. # C: O(1) + backend
 pub fn file_accessed(file: &crate::File) {
     if file.flags().contains(OpenFlags::O_NOATIME) { return; }

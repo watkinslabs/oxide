@@ -1,5 +1,4 @@
-// Hosted unit tests for the named-FIFO (S_IFIFO) open path — Linux
-// `fs/pipe.c` `fifo_open` + `pipefifo_fops`. These drive the REAL fifo code
+// Hosted unit tests for the named-FIFO (S_IFIFO) open path. These drive the REAL fifo code
 // (`fifo_open` → shared ring → `FifoFileOps`) on a genuine `vfs::make_fifo_inode`
 // inode, so they reproduce the systemd-initctl EIO symptom and prove the fix and
 // the reader/writer/O_NONBLOCK/EOF behaviour matrix. The blocking rendezvous is

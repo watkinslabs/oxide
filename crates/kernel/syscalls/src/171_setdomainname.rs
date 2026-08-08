@@ -178,7 +178,7 @@ pub fn domain_set_current(b: &[u8]) {
 pub enum UtsField { Nodename, Domainname }
 
 /// Shared body of `SYSCALL_DEFINE2(sethostname)` / `SYSCALL_DEFINE2(
-/// setdomainname)` (Linux `kernel/sys.c`). The decision order lives in
+/// setdomainname)`. The decision order lives in
 /// [`crate::uts_policy::check_uts_set`]; this owns the copy-in and the store.
 /// # C: O(N)
 pub fn write_uts_name(args: &syscall::SyscallArgs, field: UtsField) -> i64 {

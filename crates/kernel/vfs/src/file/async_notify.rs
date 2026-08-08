@@ -1,5 +1,5 @@
-// fasync / `O_ASYNC` SIGIO delivery (Linux `fs/fcntl.c` `kill_fasync` ->
-// `send_sigio` -> `send_sigio_to_task`).
+// fasync / `O_ASYNC` SIGIO delivery: readiness fans out through
+// `kill_fasync` -> `send_sigio` -> `send_sigio_to_task`.
 //
 // The registration list is owned by the SOURCE's poll queue
 // (`Inode::poll_subscribers`), exactly as Linux hangs `pipe->fasync_readers`
@@ -23,16 +23,16 @@ use super::File;
 /// tests, early boot). # C: O(1)
 pub(crate) static SIGIO_HOOK: AtomicU64 = AtomicU64::new(0);
 
-/// Default async-I/O signal for ordinary readiness (`SIGIO` == `SIGPOLL`,
-/// `asm-generic/signal.h`). The ONE owner of this number.
+/// Default async-I/O signal for ordinary readiness (`SIGIO` == `SIGPOLL`).
+/// The ONE owner of this number.
 pub const SIGIO: i32 = 29;
 
-/// Default async-I/O signal for out-of-band readiness (`SIGURG`,
-/// `asm-generic/signal.h`). The ONE owner of this number.
+/// Default async-I/O signal for out-of-band readiness (`SIGURG`).
+/// The ONE owner of this number.
 pub const SIGURG: i32 = 23;
 
-/// `f_owner_ex.type` / Linux `enum pid_type` as `F_SETOWN_EX` names it
-/// (`include/uapi/asm-generic/fcntl.h`). The ONE owner of these values.
+/// `f_owner_ex.type` — the `pid_type` values `F_SETOWN_EX` names.
+/// The ONE owner of these values.
 pub mod owner_type {
     /// `F_OWNER_TID` — Linux `PIDTYPE_PID`: one thread.
     pub const F_OWNER_TID:  i32 = 0;
@@ -77,7 +77,7 @@ pub fn set_sigio_hook(f: fn(AsyncSignal)) {
     SIGIO_HOOK.store(f as u64, Ordering::Release);
 }
 
-/// `POLL_*` si_codes an async-I/O signal carries (`asm-generic/siginfo.h`).
+/// `POLL_*` si_codes an async-I/O signal carries.
 /// Also the index base into [`band_for`]'s table.
 pub mod reason {
     /// Data input available.
@@ -96,12 +96,11 @@ pub mod reason {
     pub const NSIGPOLL: i32 = 6;
 }
 
-/// Linux `band_table[NSIGPOLL]` (`fs/fcntl.c`): the poll mask reported as
-/// `si_band` for each `POLL_*` reason. Out-of-range reasons report `~0`, which
-/// is what Linux's `reason - POLL_IN >= NSIGPOLL` arm does.
+/// The poll-mask-to-reason table: the poll mask reported as
+/// `si_band` for each `POLL_*` reason. Out-of-range reasons report `~0`.
 ///
-/// `mangle_poll` is the identity on x86_64 and aarch64 (neither overrides the
-/// asm-generic `POLL*` values), so the `EPOLL*` bits pass through unchanged.
+/// `mangle_poll` is the identity on x86_64 and aarch64 (neither arch overrides
+/// the generic `POLL*` values), so the `EPOLL*` bits pass through unchanged.
 /// # C: O(1)
 pub fn band_for(reason: i32) -> i64 {
     use crate::inode::{POLL_ERR, POLL_HUP, POLL_IN, POLL_MSG, POLL_OUT, POLL_PRI,
@@ -137,13 +136,13 @@ pub fn reason_for_mask(mask: u32) -> Option<i32> {
     None
 }
 
-/// Linux `SIG_SPECIFIC_SICODES_MASK` (`include/linux/signal.h`): signals that
+/// The signal-specific-sicodes mask: signals that
 /// already define their own si_codes, so a `POLL_*` code would be ambiguous.
 /// `send_sigio_to_task` substitutes `SI_SIGIO` for those — except `SIGPOLL`
 /// itself (== `SIGIO`), whose si_codes ARE the `POLL_*` set.
 /// # C: O(1)
 pub fn sicode_for(sig: i32, reason: i32) -> i32 {
-    /// `SI_SIGIO` (`asm-generic/siginfo.h`) — sent by queued SIGIO.
+    /// `SI_SIGIO` — sent by queued SIGIO.
     const SI_SIGIO: i32 = -5;
     const SIGILL: i32 = 4;  const SIGTRAP: i32 = 5;  const SIGFPE: i32 = 8;
     const SIGBUS: i32 = 7;  const SIGSEGV: i32 = 11; const SIGCHLD: i32 = 17;
@@ -155,10 +154,10 @@ pub fn sicode_for(sig: i32, reason: i32) -> i32 {
     }
 }
 
-/// Register an open file description for fasync SIGIO delivery (Linux
-/// `fasync_helper(.., on=1)` linking a `fasync_struct` onto the source's list).
+/// Register an open file description for fasync SIGIO delivery — links a
+/// `fasync_struct` onto the source's list.
 /// Idempotent. `false` when the inode has no poll source — such a backend can
-/// never signal readiness, which is why Linux gives it no `f_op->fasync`
+/// never signal readiness, which is why it has no fasync callback
 /// either. # C: O(N) registered fds
 pub fn fasync_register(file: &Arc<File>) -> bool {
     match file.inode().poll_subscribers() {
@@ -167,8 +166,8 @@ pub fn fasync_register(file: &Arc<File>) -> bool {
     }
 }
 
-/// Unregister an open file description from fasync delivery (Linux
-/// `fasync_helper(.., on=0)`). Called when `O_ASYNC` is turned off via
+/// Unregister an open file description from fasync delivery. Called when
+/// `O_ASYNC` is turned off via
 /// `F_SETFL` and from `File::drop`. # C: O(N) registered fds
 pub fn fasync_unregister(file: &File) {
     if let Some(s) = file.inode().poll_subscribers() { s.fasync_del(file); }
@@ -180,7 +179,7 @@ pub fn fasync_registered(inode: &InodeRef) -> usize {
     inode.poll_subscribers().map(|s| s.fasync_len()).unwrap_or(0)
 }
 
-/// `kill_fasync(&inode->i_fasync, sig, band)` (Linux `fs/fcntl.c`): deliver the
+/// `kill_fasync(&inode->i_fasync, sig, band)`: deliver the
 /// async-ready signal to every `O_ASYNC` fd open on `inode`. `reason` is the
 /// `POLL_*` code naming what became ready; `sig` is `SIGIO` for ordinary
 /// readiness and `SIGURG` for out-of-band data.
@@ -291,7 +290,7 @@ impl File {
         });
     }
 
-    /// `send_sigurg(file)` (Linux `fs/fcntl.c`, reached from `sk_send_sigurg`):
+    /// `send_sigurg(file)`, reached from the socket urgent-data path:
     /// post `SIGURG` to THIS description's `f_owner` because out-of-band data
     /// arrived. Independent of both `O_ASYNC` and `F_SETSIG` — urgent arrival
     /// signals the recorded owner whether or not signal-driven I/O was ever

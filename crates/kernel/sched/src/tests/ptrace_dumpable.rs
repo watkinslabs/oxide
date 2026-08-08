@@ -1,4 +1,4 @@
-//! `__ptrace_may_access`'s dumpability gate (`kernel/ptrace.c`): a target that
+//! `__ptrace_may_access`'s dumpability gate: a target that
 //! dropped privileges is non-dumpable, and only `CAP_SYS_PTRACE` may still
 //! reach it — even when the credential comparison passes.
 //!

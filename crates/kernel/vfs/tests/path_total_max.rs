@@ -1,5 +1,5 @@
 //! path-PATH_MAX: Linux `getname` enforces a TOTAL pathname length limit
-//! (`PATH_MAX`, `linux/limits.h`) at the syscall boundary, distinct from the
+//! (`PATH_MAX`) at the syscall boundary, distinct from the
 //! per-component `NAME_MAX` gate (`path_name_max.rs`). The kernel pathname
 //! buffer is 4096 bytes INCLUDING the terminating NUL, so the longest pathname
 //! accepted is `PATH_MAX - 1` = 4095 on-disk bytes; a 4096-byte (or longer)

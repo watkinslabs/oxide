@@ -1,7 +1,7 @@
 use core::sync::atomic::{AtomicI64, Ordering};
 
 /// Sentinel `d_count` for a dentry whose kill is in progress (Linux
-/// `LOCKREF_DEAD`, `lib/lockref.c`). A dead lockref is `< 0`, so every
+/// `LOCKREF_DEAD`). A dead lockref is `< 0`, so every
 /// resurrection attempt fails and `__d_lookup_rcu` skips a dentry mid-kill.
 pub const LOCKREF_DEAD: i64 = -128;
 

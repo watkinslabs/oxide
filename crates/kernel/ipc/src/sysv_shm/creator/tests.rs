@@ -1,6 +1,5 @@
 //! `exit_shm` + `kernel.shm_rmid_forced`, driven against the real registry
-//! with real `Task`s so the creator back-reference is exercised end to end
-//! (`ipc/shm.c` `exit_shm` / `shm_destroy_orphaned`, `ipc/ipc_sysctl.c`).
+//! with real `Task`s so the creator back-reference is exercised end to end.
 
 use alloc::sync::Arc;
 use core::ptr;

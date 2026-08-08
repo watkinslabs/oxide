@@ -1,5 +1,4 @@
-// getrandom(2) flag vocabulary per docs/15, Linux
-// `include/uapi/linux/random.h` + `drivers/char/random.c`
+// getrandom(2) flag vocabulary per docs/15, matching Linux's
 // `SYSCALL_DEFINE3(getrandom, ...)`. Pure ABI validation, no kernel
 // state, so it lives in the ABI boundary crate (docs/53) and stays
 // hosted-testable even though the syscall shim
@@ -21,8 +20,8 @@ pub const GRND_RANDOM: u32 = 0x0002;
 pub const GRND_INSECURE: u32 = 0x0004;
 const GRND_KNOWN: u32 = GRND_NONBLOCK | GRND_RANDOM | GRND_INSECURE;
 
-/// Linux `INT_MAX` — `getrandom(2)` silently clamps `count` to this
-/// (`drivers/char/random.c`), since the return value is a signed `ssize_t`.
+/// Linux `INT_MAX` — `getrandom(2)` silently clamps `count` to this,
+/// since the return value is a signed `ssize_t`.
 pub const GETRANDOM_COUNT_MAX: u64 = i32::MAX as u64;
 
 /// Validate `getrandom(2)`'s `flags` argument. Unknown bits are `EINVAL`;
@@ -45,7 +44,7 @@ pub enum ColdPool {
     Wait,
 }
 
-/// Linux `drivers/char/random.c` `SYSCALL_DEFINE3(getrandom)`:
+/// Linux `SYSCALL_DEFINE3(getrandom)`:
 ///
 /// ```text
 /// if (!crng_ready() && !(flags & GRND_INSECURE)) {

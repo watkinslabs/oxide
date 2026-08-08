@@ -1,4 +1,4 @@
-// SIOCGSKNS — "get the network namespace of this socket" (linux/sockios.h).
+// SIOCGSKNS — "get the network namespace of this socket".
 // Split out of the ioctl dispatcher (docs/53 §0): the socket-netns fd install
 // is its own concern, not a tty/block/evdev ioctl.
 #![cfg(target_os = "oxide-kernel")]
@@ -6,7 +6,7 @@
 use syscall::errno::Errno;
 use alloc::string::String;
 
-/// `SIOCGSKNS` (linux/sockios.h). Issued on ANY socket fd; Linux `sock_ioctl`
+/// `SIOCGSKNS`. Issued on ANY socket fd; Linux `sock_ioctl`
 /// routes it to `open_related_ns(sock_net(sk), get_net_ns)`, returning an nsfs
 /// fd (`O_RDONLY|O_CLOEXEC`) referring to the socket's network namespace.
 pub const SIOCGSKNS: u64 = 0x894C;

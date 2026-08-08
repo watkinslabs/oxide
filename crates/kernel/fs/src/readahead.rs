@@ -1,6 +1,5 @@
-// `readahead(2)` work-fn — Linux `mm/readahead.c` `ksys_readahead()`
-// (`mm/readahead.c:724-759`) → `vfs_fadvise(POSIX_FADV_WILLNEED)` →
-// `generic_fadvise()` (`mm/fadvise.c:96-107`) → `force_page_cache_readahead()`.
+// `readahead(2)` work-fn: admission ladder + `POSIX_FADV_WILLNEED`-style
+// range resolution, then a page-cache fill over the resolved window.
 //
 // Slot 187 used to land in the compat table's `sys_fadvise_validate`, which
 // checked only "is `fd` open" and returned 0. That answered the wrong
@@ -11,40 +10,40 @@
 use syscall::errno::Errno;
 use vfs::{File, FileType, Fmode};
 
-/// Page granularity Linux readahead works in (`PAGE_SHIFT`); 4 KiB on both
+/// Page granularity readahead works in (`PAGE_SHIFT`); 4 KiB on both
 /// arches' base page, matching `vfs::file::readahead::PAGE_SIZE`.
 const PAGE_SIZE: u64 = 4096;
 
-/// Admission ladder of `ksys_readahead()` (`mm/readahead.c:730-751`) expressed
+/// Admission ladder for `readahead(2)`, expressed
 /// over the facts the caller has already resolved, so the ORDER — which is the
 /// only observable part of a rejected call — is unit tested without a live fd.
 ///
-/// `has_mapping` is Linux's `file->f_mapping && file->f_mapping->a_ops`; an
-/// oxide anon-inode description reports `None` from `Inode::i_mapping`, which
-/// is the same "cannot execute readahead" condition `IS_ANON_FILE` covers.
+/// `has_mapping` is "the description has a page-cache address space with
+/// operations attached"; an oxide anon-inode description reports `None` from
+/// `Inode::i_mapping`, which is the same "cannot execute readahead" condition.
 /// # C: O(1)
 pub fn readahead_admit(readable: bool, has_mapping: bool, ft: FileType) -> Result<(), Errno> {
-    // `!(file->f_mode & FMODE_READ)` → EBADF (`mm/readahead.c:734-735`).
+    // An unreadable description (no FMODE_READ) → EBADF, checked first.
     if !readable { return Err(Errno::Ebadf); }
-    // `!f_mapping` / `!f_mapping->a_ops` → EINVAL (`mm/readahead.c:742-745`).
+    // No address space / no address-space ops → EINVAL, checked next.
     if !has_mapping { return Err(Errno::Einval); }
-    // `!S_ISREG && !S_ISBLK` → EINVAL (`mm/readahead.c:748-749`). A FIFO lands
-    // here and is EINVAL, NOT ESPIPE: `generic_fadvise`'s ESPIPE arm
-    // (`mm/fadvise.c:42-43`) is unreachable from this syscall.
+    // Neither a regular file nor a block device → EINVAL. A FIFO lands
+    // here and is EINVAL, NOT ESPIPE: the ESPIPE arm of the general fadvise
+    // path is unreachable from this syscall.
     if !matches!(ft, FileType::Regular | FileType::BlockDev) { return Err(Errno::Einval); }
     Ok(())
 }
 
-/// `generic_fadvise` argument check (`mm/fadvise.c:46-47`): `readahead(2)`
-/// widens `count` from `size_t` to `loff_t`, so a `count` above `LLONG_MAX`
-/// arrives negative and is `EINVAL` — as is a negative `offset`.
+/// `readahead(2)` range argument check: `count` widens from `size_t` to a
+/// signed 64-bit byte count, so a `count` above `i64::MAX` arrives negative
+/// and is `EINVAL` — as is a negative `offset`.
 /// # C: O(1)
 pub fn fadvise_range_ok(offset: i64, len: i64) -> bool { offset >= 0 && len >= 0 }
 
-/// `readahead(file, offset, count)` — Linux `ksys_readahead`.
+/// `readahead(file, offset, count)` work-fn.
 ///
-/// On success returns 0 unconditionally (`generic_fadvise` `mm/fadvise.c:174`);
-/// `force_page_cache_readahead` returns `void`, so a readahead I/O failure is
+/// On success returns 0 unconditionally; the underlying cache-fill primitive
+/// returns nothing, so a readahead I/O failure is
 /// never reported. The cache fill itself is real: every not-yet-resident page
 /// of the requested window that lies below EOF is pulled through the inode's
 /// address space, which is what makes a later `read`/fault hit the cache.
@@ -59,23 +58,22 @@ pub fn readahead(file: &File, offset: i64, count: u64) -> i64 {
     let len = count as i64;
     if !fadvise_range_ok(offset, len) { return -(Errno::Einval.as_i32() as i64); }
     let Some(mapping) = file.inode().i_mapping() else { return 0 };
-    // Linux converts [offset, offset+count) to a page window; `count == 0`
-    // means "to EOF" (`mm/fadvise.c:80-84` `endbyte = LLONG_MAX`).
+    // Convert [offset, offset+count) to a page window; `count == 0`
+    // means "to EOF" (an unbounded end clamped to the file's current size).
     let size = file.inode().size();
     let start = offset as u64;
     let end = if len == 0 { size } else { (start.saturating_add(len as u64)).min(size) };
     if start >= end { return 0; }
     let first = start / PAGE_SIZE;
     let last = (end - 1) / PAGE_SIZE;
-    // `force_page_cache_readahead(mapping, file, first, nr)`: ONE submit for the
-    // whole window. Already-resident pages cost nothing (Linux skips them in
-    // `page_cache_ra_unbounded` via the xarray probe) and a backend that can
-    // fetch a run in a single device operation does so here. The page-at-a-time
-    // `read_at` loop this replaces also copied every page into a scratch buffer
-    // it immediately discarded.
+    // ONE submit for the whole window. Already-resident pages cost nothing
+    // (skipped via a cache probe before any I/O is issued) and a backend that
+    // can fetch a run in a single device operation does so here. The
+    // page-at-a-time `read_at` loop this replaces also copied every page into
+    // a scratch buffer it immediately discarded.
     mapping.readahead(first, last - first + 1);
     // Advance the per-open readahead window so a following sequential read
-    // starts from the grown state (Linux updates `file->f_ra`).
+    // starts from the grown state.
     let req = ((end - start + PAGE_SIZE - 1) / PAGE_SIZE).max(1) as u32;
     let _ = file.ra_ondemand(first, req, false);
     0
@@ -85,9 +83,8 @@ pub fn readahead(file: &File, offset: i64, count: u64) -> i64 {
 mod tests {
     use super::*;
 
-    /// EBADF for an unreadable description beats every other rejection
-    /// (`mm/readahead.c:734`), and the mapping test beats the file-type test
-    /// (`:742` before `:748`). # C: O(1)
+    /// EBADF for an unreadable description beats every other rejection,
+    /// and the mapping test beats the file-type test. # C: O(1)
     #[test]
     fn admission_order_is_ebadf_then_einval() {
         // Unreadable wins even though the type is also wrong.
@@ -99,9 +96,9 @@ mod tests {
         assert_eq!(readahead_admit(true, true, FileType::BlockDev), Ok(()));
     }
 
-    /// A FIFO is EINVAL, not ESPIPE — `generic_fadvise`'s ESPIPE arm cannot be
-    /// reached through `readahead(2)` because the `S_ISREG || S_ISBLK` filter
-    /// runs first (`mm/readahead.c:748`). `fadvise64(2)` has no such filter and
+    /// A FIFO is EINVAL, not ESPIPE — the general fadvise path's ESPIPE arm
+    /// cannot be reached through `readahead(2)` because the `S_ISREG ||
+    /// S_ISBLK` filter runs first. `fadvise64(2)` has no such filter and
     /// therefore CAN return ESPIPE; the two syscalls differ here. # C: O(1)
     #[test]
     fn fifo_is_einval_not_espipe() {
@@ -112,8 +109,8 @@ mod tests {
     }
 
     /// EPERM is never a `readahead(2)` answer: the ladder has no capability or
-    /// LSM hook at all (`mm/readahead.c:724-754` — no `capable()`, no
-    /// `security_*`, and no `rw_verify_area`). This pins the regression the
+    /// LSM hook at all — no privilege check, no security-module hook, and no
+    /// area-verification step. This pins the regression the
     /// compat-table routing used to risk. # C: O(1)
     #[test]
     fn eperm_is_never_a_readahead_answer() {
@@ -128,8 +125,8 @@ mod tests {
         }
     }
 
-    /// A `count` above `LLONG_MAX` becomes a negative `loff_t` and is EINVAL,
-    /// as is a negative offset (`mm/fadvise.c:46-47`). # C: O(1)
+    /// A `count` above `i64::MAX` becomes a negative signed byte count and is
+    /// EINVAL, as is a negative offset. # C: O(1)
     #[test]
     fn negative_offset_or_huge_count_is_einval() {
         assert!(fadvise_range_ok(0, 0));

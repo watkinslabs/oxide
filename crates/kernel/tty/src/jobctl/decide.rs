@@ -1,4 +1,4 @@
-// Pure core of Linux `__tty_check_change` (`drivers/tty/tty_jobctrl.c:33-66`).
+// Pure core of Linux `__tty_check_change`.
 // Kept out of any driver so the rule is verified by oracle tests and cannot
 // drift between the console/serial VTs and the devpts pty slaves; each driver
 // supplies the live context and acts on the outcome.
@@ -19,7 +19,7 @@ pub enum Decision {
     /// signal ignored/blocked).
     Eio,
     /// Stop the caller's process group (send SIGTTIN/SIGTTOU) and fail the
-    /// syscall with `-ERESTARTSYS` (`drivers/tty/tty_jobctrl.c:55-59`).
+    /// syscall with `-ERESTARTSYS`.
     Stop,
 }
 

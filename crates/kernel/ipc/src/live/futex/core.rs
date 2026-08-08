@@ -20,11 +20,11 @@ pub(super) const FUTEX_WAKE_BITSET: u32 = 10;
 pub(super) const FUTEX_WAIT_REQUEUE_PI: u32 = 11;
 pub(super) const FUTEX_CMP_REQUEUE_PI: u32 = 12;
 pub(super) const FUTEX_LOCK_PI2: u32 = 13;
-/// `FUTEX_PRIVATE_FLAG` (linux/futex.h): the futex is process-private, so it is
+/// `FUTEX_PRIVATE_FLAG` (futex UAPI): the futex is process-private, so it is
 /// keyed on `(mm, va)` rather than physical page. Same numeric value as
 /// FUTEX2_PRIVATE used by the futex2 (`futex_wait`/`futex_wake`) syscalls.
 pub const FUTEX_PRIVATE_FLAG: u32 = 0x80;
-/// `FUTEX_CLOCK_REALTIME` (linux/futex.h): pair the wait's absolute deadline
+/// `FUTEX_CLOCK_REALTIME` (futex UAPI): pair the wait's absolute deadline
 /// with `CLOCK_REALTIME` instead of `CLOCK_MONOTONIC`. Linux `do_futex`
 /// restricts this modifier to `FUTEX_WAIT_BITSET`/`FUTEX_WAIT_REQUEUE_PI`/
 /// `FUTEX_LOCK_PI2` and returns `-ENOSYS` for any other cmd (`kernel/futex/
@@ -211,11 +211,10 @@ pub(super) unsafe fn store_user_u32(uaddr: u64, val: u32) {
     unsafe { core::ptr::write_volatile(uaddr as *mut u32, val); }
 }
 
-/// Linux `futex_cmpxchg_value_locked` (`kernel/futex/futex.h`): atomically
-/// swap `new` into the user word if it still holds `old`, returning the value
-/// actually seen. `handle_futex_death` needs this — a plain load-then-store
-/// silently drops a concurrent userspace unlock, which is why Linux loops on
-/// `if (nval != uval) goto retry`.
+/// Atomically swap `new` into the user word if it still holds `old`,
+/// returning the value actually seen. Robust-list death cleanup needs this —
+/// a plain load-then-store silently drops a concurrent userspace unlock, so
+/// the caller must retry when the returned value differs from `old`.
 /// # SAFETY: caller validated `uaddr` is a 4-aligned, present, writable user
 /// word and that current's mm is the active CR3/TTBR0.
 /// # C: O(1)

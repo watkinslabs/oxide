@@ -1,5 +1,4 @@
-// cgroup2 mount options — Linux `cgroup2_fs_parameters` and the `CGRP_ROOT_*`
-// bits they set on the hierarchy root (`include/linux/cgroup-defs.h`).
+// cgroup2 mount options and the hierarchy-root flag bits they set.
 //
 // Unlike devpts or procfs, these are NOT per-mount: cgroup v2 has one default
 // root, every mount of it shows the same flags, and a mount (or remount) that

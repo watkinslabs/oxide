@@ -7,12 +7,12 @@ use alloc::vec::Vec;
 
 use crate::types::FileType;
 
-/// `DT_*` directory-entry type tags (Linux `include/uapi/linux/fcntl.h` via
-/// `include/linux/fs_types.h`). These land in `linux_dirent64.d_type` (offset
-/// 18) / `linux_dirent`'s trailing byte and tell `ls`/`readdir(3)` the child's
-/// type without a per-entry `stat`. Numerically `DT_x == (S_IFx >> 12)` — the
-/// Linux `IFTODT` shift — so the type byte is derivable straight from the
-/// inode's `S_IFMT` bits (`dtype_from_file_type`).
+/// `DT_*` directory-entry type tags — the uapi values. These land in
+/// `linux_dirent64.d_type` (offset 18) / `linux_dirent`'s trailing byte and
+/// tell `ls`/`readdir(3)` the child's type without a per-entry `stat`.
+/// Numerically `DT_x == (S_IFx >> 12)` — the `IFTODT` shift — so the type
+/// byte is derivable straight from the inode's `S_IFMT` bits
+/// (`dtype_from_file_type`).
 pub const DT_UNKNOWN: u8 = 0;
 pub const DT_FIFO:    u8 = 1;
 pub const DT_CHR:     u8 = 2;
@@ -64,15 +64,15 @@ impl DType {
     pub fn to_file_type_lossy(self) -> FileType { FileType::from_ifmt((self.0 as u16) << 12) }
 }
 
-/// Count of synthetic directory entries (".", "..") Linux's `dir_emit_dots`
-/// (`fs/libfs.c`) prepends to EVERY directory's `readdir` stream before any
+/// Count of synthetic directory entries (".", "..") `dir_emit_dots`
+/// prepends to EVERY directory's `readdir` stream before any
 /// real child. The dots occupy readdir cursors `0` (".") and `1` (".."), so a
 /// dots-aware filesystem's real-child cookies begin at this value: child `i`
 /// (0-based) lands at cursor `DOTS_RESERVED + i`.
 pub const DOTS_RESERVED: u64 = 2;
 
-/// Emit the synthetic "." and ".." entries Linux's `dir_emit_dots`
-/// (`fs/libfs.c`) prepends to every directory's `readdir` stream, before the
+/// Emit the synthetic "." and ".." entries `dir_emit_dots`
+/// prepends to every directory's `readdir` stream, before the
 /// caller iterates real children. Linux guarantees these two records lead the
 /// listing of every directory with the correct inode numbers, so `getcwd(3)`
 /// (which `..`-walks comparing inos), `find`, and `ls -ai` work.

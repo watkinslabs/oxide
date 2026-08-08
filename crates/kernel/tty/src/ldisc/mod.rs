@@ -1,4 +1,4 @@
-// Line discipline layer — Linux `drivers/tty/n_tty.c` + the
+// Line discipline layer — Linux's N_TTY line discipline + the
 // `tty_ldisc_ops` interface, as host-testable pure logic.
 //
 // Position in the Linux stack (tty-rebuild-plan §0):

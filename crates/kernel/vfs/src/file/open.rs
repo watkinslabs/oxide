@@ -78,12 +78,11 @@ pub fn open_file_at(
             None      => File::new_at(inode, dentry, file_flags, mnt_id, cred),
         };
         if !file_flags.contains(OpenFlags::O_PATH) { file.open_hook()?; }
-        // `if ((f->f_flags & O_DIRECT) && !(f->f_mode & FMODE_CAN_ODIRECT))
-        //      return -EINVAL;` (`fs/open.c:968-969`).
+        // `O_DIRECT` set without `FMODE_CAN_ODIRECT` is `EINVAL` at open time.
         //
         // `FMODE_CAN_ODIRECT` is set only by backends that install an
-        // `a_ops->direct_IO` (`fs/open.c:960-961`), plus block devices
-        // (`block/bdev.c:987`) and shmem (`mm/shmem.c:2910`). We have no
+        // `a_ops->direct_IO`, plus block devices
+        // and shmem. We have no
         // direct-I/O path for ext4 regular files — no cache bypass, no
         // alignment gate, no `invalidate_inode_pages2_range` for coherency —
         // so the honest answer is Linux's own answer for a filesystem without

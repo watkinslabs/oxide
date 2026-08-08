@@ -1,6 +1,5 @@
 // POSIX job-control access to a controlling tty — Linux `__tty_check_change`
-// (`drivers/tty/tty_jobctrl.c:33-66`) reached from n_tty's `job_control`
-// (`drivers/tty/n_tty.c:2090-2101`) on read and `tty_check_change` on write
+// reached from n_tty's `job_control` on read and `tty_check_change` on write
 // (`28§6`).
 //
 // Module manifest:

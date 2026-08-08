@@ -1,4 +1,4 @@
-//! Linux `task_tick_rt` (`kernel/sched/rt.c`): the periodic tick must not
+//! Linux `task_tick_rt`: the periodic tick must not
 //! preempt a `SCHED_FIFO` task at all, and must preempt a `SCHED_RR` one only
 //! when its quantum is exhausted AND a peer can take the CPU.
 //!

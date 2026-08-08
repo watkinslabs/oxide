@@ -1,7 +1,7 @@
 use crate::exit::status::*;
 use crate::signum::{killed_status, Signum, WSTATUS_CORE, WSTATUS_SIGNALED};
 
-// Userspace `<bits/waitstatus.h>` decoders, spelled out so the assertions read
+// Userspace `wait(2)` status-macro decoders, spelled out so the assertions read
 // the way a C program observes the status word.
 const fn wifexited(s: i32) -> bool { s & 0x7f == 0 }
 const fn wexitstatus(s: i32) -> i32 { (s >> 8) & 0xff }

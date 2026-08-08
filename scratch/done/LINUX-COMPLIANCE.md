@@ -119,9 +119,8 @@ IS shadow-coherent (`read_inode` → `read_meta_byte_range` →
 — it assumed the read sees the write.
 
 The real defect was structural, not a race. **Linux never re-reads what it just
-allocated:** `ext4_create` hands the live `struct inode` from `ext4_new_inode`
-straight to `d_instantiate_new` (`fs/ext4/namei.c` `ext4_add_nondir`), and
-orphans rather than leaks on failure. `forget_created_ino` — dropping the cache
+allocated:** creating a file hands the live in-memory inode straight to
+dentry instantiation, and orphans rather than leaks on failure. `forget_created_ino` — dropping the cache
 immediately before the read — existed only to service a round trip Linux does
 not make. `init_inode` now returns the parsed `Inode` it wrote, and
 `wrap_created_file`/`wrap_created_any` build from it with no I/O and no failure

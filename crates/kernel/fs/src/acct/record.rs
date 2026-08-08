@@ -1,6 +1,5 @@
-// The `acct_v3` on-disk record and its two numeric encodings, exactly as
-// Linux `kernel/acct.c` writes them (`include/uapi/linux/acct.h struct
-// acct_v3`, `ACCT_VERSION 3`).
+// The `acct_v3` on-disk record and its two numeric encodings, matching the
+// standard `struct acct_v3` wire layout (`ACCT_VERSION 3`) byte for byte.
 //
 // Pure: no clock, no task, no file. Everything the record needs arrives as a
 // value, so `cargo test -p fs` proves the bit layout and the two float-ish
@@ -35,7 +34,7 @@ pub const ACCT_COMM: usize = 16;
 /// appended back-to-back, so the reader indexes by multiplication.
 pub const ACCT_V3_LEN: usize = 64;
 
-/// `AHZ` (`include/linux/acct.h`): the fixed 100 Hz tick the accounting file
+/// `AHZ`: the fixed 100 Hz tick the accounting file
 /// is denominated in, independent of the kernel's own `HZ`.
 pub const AHZ: u64 = 100;
 

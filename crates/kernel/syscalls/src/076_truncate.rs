@@ -1,5 +1,5 @@
 // 076 truncate — one syscall, one file (docs/53 §0). ABI shim only: the size
-// change itself is `fs::truncate::vfs_truncate` (Linux `fs/open.c`).
+// change itself is `fs::truncate::vfs_truncate`.
 
 #![cfg(target_os = "oxide-kernel")]
 

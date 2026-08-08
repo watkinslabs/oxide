@@ -27,7 +27,7 @@ pub enum FileType {
 /// `Inode::i_mode()` (inode.rs) reassembles the umode_t view.
 pub type Umode = u16;
 
-/// `S_IF*` file-type bits (Linux `include/uapi/linux/stat.h`), canonical typed
+/// `S_IF*` file-type bits (`stat(2)` mode bits), canonical typed
 /// `Umode` defs for the whole vfs crate. The `u32` `Kstat`/ABI surface in
 /// `getattr` re-derives from these (single source of truth, no magic literals).
 pub const S_IFMT:   Umode = 0o170000;
@@ -97,8 +97,8 @@ bitflags::bitflags! {
         // D22: status / open-time bits with no VFS data-path consumer YET, but
         // declared so the typed set is the single source of truth and
         // `from_bits_truncate` no longer SILENTLY STRIPS them off the open word
-        // (Linux keeps them in `f_flags`). Values = x86_64 / asm-generic uapi
-        // (`include/uapi/asm-generic/fcntl.h`); aarch64 shares them.
+        // (Linux keeps them in `f_flags`). Values match the generic open-flag
+        // uapi encoding; aarch64 shares them.
         /// `O_NOCTTY` — don't make this terminal the process's controlling tty.
         const O_NOCTTY    = 0o400;
         /// `O_DSYNC` — synchronised I/O data integrity (data + size metadata).
@@ -226,9 +226,9 @@ pub enum VfsError {
     /// the filesystem's namespace, or any change to an inode whose existing
     /// owner has no mapping in the caller's view (Linux `notify_change`).
     Eoverflow = 75,
-    /// Linux `ERESTARTSYS` (`include/linux/errno.h:12`) — NOT an errno, and it
-    /// never reaches userspace. `prepare_to_wait_event` returns it for every
-    /// interrupted interruptible sleep (`kernel/sched/wait.c:309`), so it is
+    /// `ERESTARTSYS` — NOT an errno, and it
+    /// never reaches userspace. The interruptible-sleep wait primitive returns
+    /// it for every interrupted wait, so it is
     /// the DEFAULT outcome of a signal landing on a blocked VFS wait; a real
     /// `Eintr` is the exception a syscall opts into. Carried through the VFS
     /// result type because the syscall-return tail — not the wait — decides

@@ -1,9 +1,9 @@
-// seccomp per `27` — Linux `kernel/seccomp.c` in Rust.
+// seccomp per `27`.
 //
 // Module manifest (`08§7`):
-//   uapi     — `include/uapi/linux/seccomp.h` numbers + the two internal
-//              values `kernel/seccomp.c` adds (`SECCOMP_MODE_DEAD`, the
-//              `MAX_ERRNO` cap); AUDIT_ARCH tokens; mode-1 syscall table.
+//   uapi     — seccomp ABI numbers + the two internal values this kernel
+//              also needs (`SECCOMP_MODE_DEAD`, the `MAX_ERRNO` cap);
+//              AUDIT_ARCH tokens; mode-1 syscall table.
 //   flags    — `SECCOMP_FILTER_FLAG_*` + `seccomp_set_mode_filter`'s and
 //              `do_seccomp`'s flag ladders.
 //   insn     — cBPF opcode numbers, `sock_filter` packing, `seccomp_data`.

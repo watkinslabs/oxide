@@ -65,8 +65,8 @@ pub fn shrink_dcache(target: usize) -> usize {
     freed
 }
 
-/// Evict EVERY unused dentry belonging to `sb` from the LRU (Linux
-/// `shrink_dcache_sb`, `fs/dcache.c`) — the per-superblock aggressive prune
+/// Evict EVERY unused dentry belonging to `sb` from the LRU
+/// (`shrink_dcache_sb`) — the per-superblock aggressive prune
 /// driven by remount (`reconfigure_super`) and per-sb `drop_caches`. Unlike the
 /// periodic [`shrink_dcache`] two-hand clock, this IGNORES the `D_REFERENCED`
 /// bit: a matching UNUSED (`d_count == 0`) dentry is `d_drop`-ed in one pass
@@ -93,8 +93,8 @@ pub fn shrink_dcache_sb(sb: &Arc<SuperBlock>) -> usize {
     freed
 }
 
-/// Prune the UNUSED dentries in the subtree under `parent` (Linux
-/// `shrink_dcache_parent`, `fs/dcache.c`) — the per-subtree counterpart of the
+/// Prune the UNUSED dentries in the subtree under `parent`
+/// (`shrink_dcache_parent`) — the per-subtree counterpart of the
 /// global `shrink_dcache`, used on remount / umount of a subtree / before a
 /// populated-dir rmdir to reclaim its cached children. `parent` itself is never
 /// pruned. A descendant is prunable only when it is UNUSED (`d_count == 0`) AND
@@ -126,8 +126,8 @@ pub fn shrink_dcache_parent(parent: &Arc<Dentry>) -> usize {
     freed
 }
 
-/// FORCE-detach the ENTIRE dentry tree of `sb` on unmount (Linux
-/// `shrink_dcache_for_umount` → `do_one_tree`, `fs/dcache.c`), run from
+/// FORCE-detach the ENTIRE dentry tree of `sb` on unmount
+/// (`shrink_dcache_for_umount` → `do_one_tree`), run from
 /// `generic_shutdown_super` once the mount is going away. Unlike the gentle
 /// [`shrink_dcache_sb`] (which evicts only UNUSED `d_count == 0` dentries and
 /// leaves in-use ones on the LRU), this tears down EVERY dentry rooted at
@@ -162,8 +162,8 @@ pub fn shrink_dcache_for_umount(sb: &Arc<SuperBlock>) -> usize {
     order.len()
 }
 
-/// Prune every UNUSED dentry alias of `inode` (Linux `d_prune_aliases`,
-/// `fs/dcache.c`) — drop the cached dentries naming an inode that an FS is
+/// Prune every UNUSED dentry alias of `inode` (`d_prune_aliases`)
+/// — drop the cached dentries naming an inode that an FS is
 /// forcing out of cache (NFS post-`silly-rename` / `nfs_zap_caches`, FUSE
 /// `fuse_reverse_inval_entry`, generic invalidation) WITHOUT requiring the
 /// inode itself to be freed. An alias is prunable only when UNUSED

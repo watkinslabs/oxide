@@ -10,7 +10,7 @@
 
 use syscall::errno::Errno;
 
-/// `FSMOUNT_*` (`include/uapi/linux/mount.h`).
+/// `FSMOUNT_*`.
 pub const FSMOUNT_CLOEXEC:   u64 = 0x0000_0001;
 /// Create the mount inside a NEW mount namespace and return a namespace fd for
 /// it, instead of an `O_PATH` fd over a mount in an anonymous namespace.

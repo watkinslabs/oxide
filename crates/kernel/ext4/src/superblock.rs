@@ -1,4 +1,4 @@
-// ext4 superblock per Linux fs/ext4/ext4.h `ext4_super_block`.
+// ext4 superblock (on-disk `ext4_super_block` layout).
 // Located at byte offset 1024 from start of the partition; 1024
 // bytes total. Pure parser — caller hands a 1024-byte slice.
 
@@ -160,7 +160,7 @@ pub const SB_OFF_FREE_BLOCKS_HI: usize = 0x158;
 /// `EXT4_NAME_LEN` — longest directory-entry name, reported as statfs `f_namelen`.
 pub const EXT4_NAME_LEN: u64 = 255;
 
-/// Linux `uuid_to_fsid` (include/linux/statfs.h): fold the 16-byte on-disk
+/// Linux `uuid_to_fsid`: fold the 16-byte on-disk
 /// `s_uuid` to the 64-bit `statfs` `f_fsid` by XOR-ing its two little-endian
 /// halves. The result is stable across mounts, unlike `s_dev`. # C: O(1)
 pub fn uuid_to_fsid(uuid: &[u8; 16]) -> u64 {

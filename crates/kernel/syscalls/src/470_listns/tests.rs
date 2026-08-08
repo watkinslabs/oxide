@@ -114,7 +114,7 @@ fn unknown_type_precedes_owner_lookup_and_zero_capacity_still_checks_cursor() {
 
     io.put_u32(REQ_OFF_NS_TYPE, UTS_NS);
     io.put_u64(REQ_OFF_USER_NS_ID, 0);
-    // Linux kernel/nstree.c do_listns() looks up last_ns_id + 1 before
+    // Linux's `do_listns()` looks up last_ns_id + 1 before
     // considering output capacity. This cursor has no possible successor and
     // avoids racing the process-global namespace registry.
     io.put_u64(REQ_OFF_NS_ID, LAST_NONWRAPPING_NS_ID);

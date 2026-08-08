@@ -4,8 +4,8 @@ use vfs::{
     F_SEAL_SHRINK, F_SEAL_WRITE,
 };
 
-/// Linux `memfd_add_seals` admission and implied-seal decision
-/// (`mm/memfd.c`). The caller atomically publishes the returned bits.
+/// Linux `memfd_add_seals` admission and implied-seal decision.
+/// The caller atomically publishes the returned bits.
 /// # C: O(1)
 pub fn plan_add_seals(
     writable: bool,

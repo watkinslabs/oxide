@@ -2,7 +2,7 @@ use hal::{PAGE_SIZE_BYTES, USER_VA_END};
 
 use crate::limits::*;
 
-/// `arch/x86/Kconfig:358-364` and `arch/arm64/Kconfig:296-313`. The arm64 max
+/// Per-arch Kconfig `ARCH_MMAP_RND_BITS_{MIN,MAX}` bounds. The arm64 max
 /// is the `ARM64_VA_BITS=47` row, because `hal::USER_VA_END` makes 47 the user
 /// VA width on both arches here — picking the 48-bit row's 33 would let
 /// `vm.mmap_rnd_bits` be raised past what the address space can absorb.
@@ -16,8 +16,8 @@ fn budgets_match_linux_kconfig() {
     assert_eq!(AARCH64.mmap_rnd_bits, AARCH64.mmap_rnd_bits_min);
 }
 
-/// `arch/x86/include/asm/elf.h:326` (`0x3fffff`, 22 bits) vs
-/// `arch/arm64/include/asm/elf.h:194` (`0x3ffff`, 18 bits). These genuinely
+/// x86_64 `STACK_RND_MASK` is `0x3fffff` (22 bits) vs
+/// arm64's `0x3ffff` (18 bits). These genuinely
 /// differ and a shared constant would silently give arm64 x86's budget.
 #[test]
 fn stack_rnd_masks_differ_per_arch() {
@@ -29,8 +29,8 @@ fn stack_rnd_masks_differ_per_arch() {
     assert_eq!((AARCH64.stack_rnd_mask + 1) << PAGE_SHIFT, 1024 * 1024 * 1024);
 }
 
-/// `arch/x86/kernel/process.c:1023` subtracts up to 8191; arm64's
-/// `arch/arm64/kernel/process.c:816` subtracts up to `PAGE_SIZE - 1`.
+/// x86_64's `arch_align_stack` subtracts up to 8191; arm64's
+/// subtracts up to `PAGE_SIZE - 1`.
 #[test]
 fn align_stack_jitter_differs_per_arch() {
     assert_eq!(X86_64.align_stack_max, 8192);
@@ -38,7 +38,7 @@ fn align_stack_jitter_differs_per_arch() {
 }
 
 /// `DEFAULT_MAP_WINDOW / 3 * 2`, page-aligned — the well-known `0x555555554000`
-/// PIE base that `arch/x86/include/asm/elf.h:234` produces on a 47-bit window.
+/// PIE base Linux `ELF_ET_DYN_BASE` produces on a 47-bit window.
 #[test]
 fn elf_et_dyn_base_is_two_thirds_of_the_window() {
     assert_eq!(ELF_ET_DYN_BASE, 0x5555_5555_4000);
@@ -67,7 +67,7 @@ fn max_pie_bias_stays_below_min_mmap_base() {
     }
 }
 
-/// `mm/util.c:428-429`.
+/// Linux's `MIN_GAP`/`MAX_GAP` mmap-arena bounds.
 #[test]
 fn gap_bounds_match_linux() {
     assert_eq!(MIN_GAP, 128 * 1024 * 1024);

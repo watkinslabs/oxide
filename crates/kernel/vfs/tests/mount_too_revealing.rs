@@ -2,21 +2,19 @@
 //! user-namespace holder from mounting a PRISTINE `proc`/`sysfs` instance next
 //! to the masked one it was given.
 //!
-//! Before this fix the function did not exist. `mount_capable`
-//! (`fs/super.c`, wired in the first half of this lane) correctly lets a
+//! Before this fix the function did not exist. `mount_capable` correctly lets a
 //! user-namespace holder mount `FS_USERNS_MOUNT` filesystems — procfs and sysfs
 //! are exactly those two — with NO visibility constraint at all. So a container
 //! whose `/proc/kcore`, `/proc/sys`, `/proc/sysrq-trigger` were covered by
 //! locked mounts simply did `mount -t proc proc /mnt` and read the originals out
 //! of the fresh instance. That is a straight information-disclosure escape, and
-//! it is the whole reason Linux carries this check.
+//! it is the whole reason this check exists.
 //!
-//! Linux source mirrored: `fs/namespace.c` `mount_too_revealing` /
-//! `mnt_already_visible` and their two callers `do_new_mount_fc` and
-//! `do_fsmount`; `mnt_add_to_ns` for the `ns->mnt_visible_mounts` membership
-//! rule; `include/linux/fs/super_types.h` for `SB_I_NOEXEC` / `SB_I_NODEV` /
-//! `SB_I_RESTRICTED_VARIANT`; `fs/proc/root.c` `proc_fill_super` and
-//! `fs/kernfs/mount.c` `kernfs_fill_super` for who stamps them.
+//! Contract mirrored: `mount_too_revealing`/`mnt_already_visible` gate new
+//! mounts of `FS_USERNS_MOUNT` filesystems (procfs, sysfs) when the caller's
+//! namespace already has a masked/locked instance visible; a superblock is
+//! "restricted" via `SB_I_NOEXEC`/`SB_I_NODEV`/`SB_I_RESTRICTED_VARIANT`,
+//! stamped by the procfs and kernfs/sysfs superblock fill paths.
 //!
 //! Own test binary → own copy of the vfs statics; `SERIAL`-guarded.
 
@@ -71,8 +69,9 @@ fn make_tdir(ino: u64) -> InodeRef {
     InodeBuilder::new(ino, mk_mode(FileType::Directory, 0o755), Arc::new(TDirOps), default_file_ops()).build()
 }
 
-/// The procfs stand-in: `FS_USERNS_MOUNT | FS_USERNS_MOUNT_RESTRICTED`, exactly
-/// `fs/proc/root.c`'s `.fs_flags`. ONE `Arc` for the whole binary.
+/// The procfs stand-in: `FS_USERNS_MOUNT | FS_USERNS_MOUNT_RESTRICTED`, the
+/// same `.fs_flags` a userns-mountable procfs registers. ONE `Arc` for the
+/// whole binary.
 fn restricted_ty() -> Arc<dyn FileSystemType> {
     static TY: OnceLock<Arc<vfs::fs::FsType>> = OnceLock::new();
     TY.get_or_init(|| vfs::fs::FsType::new("revealfs", 0x9fa0,

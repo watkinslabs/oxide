@@ -19,7 +19,7 @@ const F_RDLCK: i32 = 0;
 const F_WRLCK: i32 = 1;
 pub(crate) const F_UNLCK: i32 = 2;
 
-/// dnotify `DN_*` event bits (Linux `fcntl.h`) + the `DN_MULTISHOT` one-shot
+/// dnotify `DN_*` event bits (Linux fcntl UAPI) + the `DN_MULTISHOT` one-shot
 /// toggle. Re-exported for the dir-mutation emit call sites.
 pub const DN_ACCESS: u32 = 0x0000_0001;
 pub const DN_MODIFY: u32 = 0x0000_0002;

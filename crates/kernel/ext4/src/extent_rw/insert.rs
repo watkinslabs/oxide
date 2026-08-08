@@ -371,9 +371,9 @@ impl Mount {
         }
         let hint_group = Self::extent_hint_group(self, &extents, logical);
         let prev_i_blocks = u32::from_le_bytes([ino_bytes[0x1C], ino_bytes[0x1D], ino_bytes[0x1E], ino_bytes[0x1F]]);
-        // Charge the DATA block before allocating it, exactly as
-        // `ext4_mb_new_blocks` (fs/ext4/mballoc.c) calls `dquot_alloc_block`
-        // ahead of the allocation. Whether the inline root ALSO needs an
+        // Charge the DATA block before allocating it, exactly as Linux
+        // block allocation charges quota ahead of handing out the block.
+        // Whether the inline root ALSO needs an
         // external leaf block is not knowable yet: an appended block that is
         // physically contiguous with an existing extent merges into it and
         // leaves the entry count unchanged, so the promotion is decided below

@@ -1,4 +1,4 @@
-// perf_event ABI numbers — Linux `include/uapi/linux/perf_event.h`.
+// perf_event ABI numbers.
 // Numbers only; every policy decision lives in `attr.rs`/`perm.rs`/`open.rs`.
 
 #![allow(dead_code)]
@@ -63,7 +63,7 @@ pub mod branch {
     pub const HV:       u64 = 1 << 2;
     /// `PERF_SAMPLE_BRANCH_PLM_ALL`.
     pub const PLM_ALL:  u64 = USER | KERNEL | HV;
-    /// `PERF_SAMPLE_BRANCH_PERM_PLM` (`kernel/events/core.c`).
+    /// `PERF_SAMPLE_BRANCH_PERM_PLM`.
     pub const PERM_PLM: u64 = KERNEL | HV;
     /// `1U << PERF_SAMPLE_BRANCH_MAX_SHIFT` (shift 20).
     pub const MAX:      u64 = 1 << 20;
@@ -75,7 +75,7 @@ pub mod open_flags {
     pub const FD_OUTPUT:   u64 = 1 << 1;
     pub const PID_CGROUP:  u64 = 1 << 2;
     pub const FD_CLOEXEC:  u64 = 1 << 3;
-    /// `PERF_FLAG_ALL` (`kernel/events/core.c`).
+    /// `PERF_FLAG_ALL`.
     pub const ALL: u64 = FD_NO_GROUP | FD_OUTPUT | PID_CGROUP | FD_CLOEXEC;
 }
 
@@ -223,11 +223,11 @@ pub mod mmap_page {
 /// `perf_reg_validate` rejection mask — a nonzero `sample_regs_*` that
 /// intersects `REJECT` is `-EINVAL`; a zero mask is `-EINVAL` too.
 ///
-/// x86_64 (`arch/x86/kernel/perf_regs.c`): `REG_NOSUPPORT` = DS/ES/FS/GS
+/// x86_64: `REG_NOSUPPORT` = DS/ES/FS/GS
 /// (bits 12..15); `PERF_REG_X86_RESERVED` folds to 0 there because
 /// `PERF_REG_X86_MAX` is 64 — the XMM bits 32..63 are therefore *accepted*.
 ///
-/// aarch64 (`arch/arm64/kernel/perf_regs.c`): `REG_RESERVED` =
+/// aarch64: `REG_RESERVED` =
 /// `~((1 << PERF_REG_ARM64_MAX) - 1)` with `PERF_REG_ARM64_MAX` = 33
 /// (x0..x29, LR, SP, PC). The SVE `PERF_REG_ARM64_VG` bit (46) is only
 /// unreserved when `system_supports_sve()`, which oxide does not claim.

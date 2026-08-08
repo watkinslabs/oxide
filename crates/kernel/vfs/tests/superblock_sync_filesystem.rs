@@ -1,6 +1,5 @@
-//! superblock `sync_filesystem` two-phase flush + per-sb `drop_caches`
-//! (Linux fs/sync.c `sync_filesystem`, fs/inode.c `invalidate_inodes`,
-//! fs/drop_caches.c). `sync_filesystem` must issue `sync_fs` in the canonical
+//! superblock `sync_filesystem` two-phase flush + per-sb `drop_caches`.
+//! `sync_filesystem` must issue `sync_fs` in the canonical
 //! async-then-wait order (`wait=0` then `wait=1`), short-circuit on a read-only
 //! SB, and abort before the wait pass if the async pass errors. `drop_caches`
 //! must reclaim only CLEAN, UNREFERENCED icache slots — busy (still-referenced)

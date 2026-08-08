@@ -1,4 +1,4 @@
-// `perf_ioctl` — Linux `kernel/events/core.c` `_perf_ioctl()`.
+// `perf_ioctl` command classification + dispatch.
 //
 // The command classification is a pure function so the `-ENOTTY` / `-EINVAL` /
 // `-EBADF` split is hosted-testable; the arms that touch user memory or the fd

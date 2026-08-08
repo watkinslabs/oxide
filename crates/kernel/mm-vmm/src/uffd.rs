@@ -103,9 +103,8 @@ pub fn uffd_ptr_eq(a: &Option<Arc<dyn UffdContext>>, b: &Option<Arc<dyn UffdCont
     }
 }
 
-/// Linux `static int sysctl_unprivileged_userfaultfd __read_mostly;`
-/// (`mm/userfaultfd.c`) — a zero-initialised `int`, i.e. DENY by default, with
-/// a `proc_dointvec_minmax` window of `[SYSCTL_ZERO, SYSCTL_ONE]`.
+/// `vm.unprivileged_userfaultfd` sysctl default: DENY (0), toggle range
+/// `[0, 1]` enforced by its ctl_table bounds.
 const UNPRIVILEGED_USERFAULTFD_DEFAULT: i64 = 0;
 /// `.extra1`/`.extra2` of the `vm.unprivileged_userfaultfd` ctl_table entry.
 pub const UNPRIVILEGED_USERFAULTFD_BOUNDS: (i64, i64) = (0, 1);

@@ -1,5 +1,5 @@
-//! fsconfig param-type model (Linux `enum fs_value_type`, `fs/fsopen.c`
-//! `SYSCALL_DEFINE5(fsconfig)`). The new mount API delivers ONE structured
+//! fsconfig param-type model (Linux `enum fs_value_type`, the
+//! `fsconfig(2)` syscall). The new mount API delivers ONE structured
 //! parameter at a time, and the command byte (`FSCONFIG_SET_FLAG`/`_STRING`/
 //! `_FD`/`_PATH`/`_PATH_EMPTY`/`_BINARY`) picks the typed value. Fails-before:
 //! `FsValue` carried only `Flag`/`String`, so a `SET_FD`/`SET_PATH`/`SET_BINARY`
@@ -59,8 +59,8 @@ fn typed_accessors_round_trip_and_reject_wrong_type() {
     assert_eq!(f.as_fd(), Some(11));
     assert_eq!(f.as_str(), None);
     // `param->file` travels with `param->dirfd`: the fd-typed parameter carries
-    // the PINNED description, so a filesystem that wants the file (Linux
-    // `fs/fuse/inode.c`, `fs/autofs/inode.c`) never re-looks-up the fd.
+    // the PINNED description, so a filesystem that wants the file (e.g. a
+    // FUSE or autofs-style backend) never re-looks-up the fd.
     assert!(Arc::ptr_eq(f.as_file().expect("fd param carries its file"), &file));
     assert!(s.as_file().is_none());
 

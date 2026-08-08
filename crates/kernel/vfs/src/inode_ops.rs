@@ -165,7 +165,7 @@ pub trait InodeOps: Send + Sync {
     /// consulted by [`Inode::get_link`] BEFORE this. # C: O(target_len)
     fn readlink(&self, _inode: &Inode) -> KResult<Vec<u8>> { Err(VfsError::Einval) }
 
-    /// `i_op->get_link` (Linux `fs/namei.c get_link`) — the link-FOLLOW entry
+    /// `i_op->get_link` — the link-FOLLOW entry
     /// the path walk uses. Returns either the symlink BODY to splice as a path
     /// (`LinkTarget::Path`), or a MAGIC-link JUMP target the walk resets its
     /// current `(mnt,dentry,inode)` to (`LinkTarget::Jump`, Linux

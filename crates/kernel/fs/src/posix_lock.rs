@@ -25,7 +25,7 @@ pub use vfs::inode::{F_RDLCK, F_UNLCK, F_WRLCK};
 /// `struct flock` byte size on Linux x86_64 (aarch64 matches).
 pub const FLOCK_BYTES: usize = 32;
 
-/// `l_whence` values (Linux `include/uapi/linux/fs.h` SEEK_*).
+/// `l_whence` values (the standard `SEEK_*` constants).
 const SEEK_SET: i16 = 0;
 const SEEK_CUR: i16 = 1;
 const SEEK_END: i16 = 2;
@@ -88,8 +88,8 @@ pub fn owner_for(is_ofd: bool, file: &Arc<vfs::File>, files_id: usize) -> Record
     else { RecordOwner::Files(files_id) }
 }
 
-/// Linux `check_fmode_for_setlk` (`fs/locks.c:2547`): a read lock needs
-/// `FMODE_READ` and a write lock needs `FMODE_WRITE`, else `EBADF`. Applies to
+/// A read lock needs the fd open `FMODE_READ` and a write lock needs
+/// `FMODE_WRITE`, else `EBADF`. Applies to
 /// the `F_SETLK*` commands only — `F_GETLK` is exempt. # C: O(1)
 pub fn fmode_ok_for_setlk(file: &Arc<vfs::File>, l_type: i16) -> bool {
     match l_type {
@@ -99,7 +99,7 @@ pub fn fmode_ok_for_setlk(file: &Arc<vfs::File>, l_type: i16) -> bool {
     }
 }
 
-/// `F_GETLK` / `F_OFD_GETLK` (Linux `fcntl_getlk` → `posix_test_lock`).
+/// `F_GETLK` / `F_OFD_GETLK`: probe for a conflicting record lock.
 /// Returns the blocking lock, or `None` when the request would succeed — the
 /// caller then reports `l_type = F_UNLCK`. # C: O(N_records)
 pub fn getlk(file: &Arc<vfs::File>, req: &RecordLock) -> Option<LockReq> {
@@ -108,8 +108,8 @@ pub fn getlk(file: &Arc<vfs::File>, req: &RecordLock) -> Option<LockReq> {
     Some(LockReq { l_type: blocker.l_type, start: blocker.start as i64, len, pid: blocker.pid })
 }
 
-/// `F_SETLK` / `F_OFD_SETLK` (Linux `fcntl_setlk` with a non-blocking
-/// `vfs_lock_file`): apply or report `EAGAIN`. Never sleeps.
+/// `F_SETLK` / `F_OFD_SETLK`: apply the record lock non-blocking, or report
+/// `EAGAIN` on conflict. Never sleeps.
 /// # C: O(N_records^2)
 pub fn setlk(file: &Arc<vfs::File>, req: &RecordLock) -> i64 {
     let ctx = file.inode().file_lock_context();
@@ -123,23 +123,20 @@ pub fn setlk(file: &Arc<vfs::File>, req: &RecordLock) -> i64 {
     }
 }
 
-/// `F_SETLKW` / `F_OFD_SETLKW` (Linux `fcntl_setlk` → `do_lock_file_wait`,
-/// `fs/locks.c:2523`): retry until the conflicting holder releases, sleeping
-/// on the inode's file-lock wait queue in between.
+/// `F_SETLKW` / `F_OFD_SETLKW`: retry until the conflicting holder releases,
+/// sleeping on the inode's file-lock wait queue in between.
 ///
 /// Three properties are load-bearing and each was a real defect:
-///  - the wait SLEEPS on the inode wait key, and the release paths
-///    (`filp_close`, `__fput`, `F_UNLCK`) wake it — Linux
-///    `locks_delete_lock_ctx` → `locks_wake_up_blocks` (`fs/locks.c:925`).
-///  - the wait is INTERRUPTIBLE. `fs/locks.c` contains no `-EINTR` and no
-///    `-ERESTARTSYS`: `do_lock_file_wait` is a bare `wait_event_interruptible`
-///    whose value propagates unchanged from `prepare_to_wait_event`
-///    (`kernel/sched/wait.c:309`), i.e. `-ERESTARTSYS`. So `SA_RESTART` makes
-///    the acquire resume and eventually succeed, its absence surfaces `EINTR`,
-///    and a fatal signal always ends the sleep.
-///  - a wait cycle is `EDEADLK`, not a hang (Linux `posix_locks_deadlock`,
-///    `fs/locks.c:1101`), and OFD callers are exempt from that check
-///    (`fs/locks.c:1114`).
+///  - the wait SLEEPS on the inode wait key, and every release path
+///    (`close`, final `fput`, an explicit `F_UNLCK`) wakes it.
+///  - the wait is INTERRUPTIBLE and carries no bespoke EINTR handling: an
+///    interrupted wait surfaces as `-ERESTARTSYS` from the generic sleep
+///    primitive. So `SA_RESTART` makes the acquire resume and eventually
+///    succeed, its absence surfaces `EINTR`, and a fatal signal always ends
+///    the sleep.
+///  - a wait cycle is `EDEADLK`, not a hang; OFD-owned locks are exempt from
+///    that deadlock check since OFD ownership can't form the classic
+///    process-cycle deadlock.
 /// # C: sleeps; O(N_records^2) per attempt
 pub fn setlkw(file: &Arc<vfs::File>, req: &RecordLock) -> i64 {
     let ctx = file.inode().file_lock_context();

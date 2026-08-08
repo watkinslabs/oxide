@@ -25,7 +25,7 @@ pub fn clear_need_resched() -> bool { crate::preempt::take_need_resched() }
 pub fn need_resched() -> bool { crate::preempt::take_need_resched() }
 
 /// Linux `scheduler_tick` → `curr->sched_class->task_tick`. The periodic tick
-/// must NOT preempt unconditionally: `task_tick_rt` (`kernel/sched/rt.c`)
+/// must NOT preempt unconditionally: `task_tick_rt`
 /// returns immediately for `SCHED_FIFO`, because a FIFO task runs until it
 /// blocks or yields — that is its defining guarantee, and preempting it every
 /// tick makes FIFO behave exactly like RR.

@@ -1,14 +1,7 @@
-// Mark LIFETIME against the object a mark is attached to — Linux
-// `__fsnotify_inode_delete` (`fs/notify/fsnotify.c`), reached from
-// `fsnotify_inoderemove` in `include/linux/fsnotify.h`:
-//
-//     static inline void fsnotify_inoderemove(struct inode *inode)
-//     {
-//             fsnotify_inode(inode, FS_DELETE_SELF);
-//             __fsnotify_inode_delete(inode);
-//     }
-//
-// which `fs/dcache.c` `dentry_unlink_inode` runs under `if (!inode->i_nlink)`.
+// Mark LIFETIME against the object a mark is attached to. Inode removal
+// notification is two steps run together whenever a dentry unlink drops the
+// inode's link count to zero: fire FS_DELETE_SELF on the dying inode, THEN
+// tear down every mark still attached to it.
 //
 // A mark on Linux hangs off the inode, so the inode dying takes the mark with
 // it: `fsnotify_clear_marks_by_inode` destroys every mark, inotify's

@@ -1,5 +1,5 @@
-// Canonical NTP state plus the `do_adjtimex()` transaction (Linux
-// `kernel/time/timekeeping.c` `__do_adjtimex` / `do_adjtimex`).
+// Canonical NTP state plus the `do_adjtimex()` transaction, matching Linux's
+// `__do_adjtimex` / `do_adjtimex`.
 //
 // Its own seqlock rather than a widening of `ClockState`: the clock state is
 // copied by every `clock_gettime`, and NTP state is touched only by an NTP

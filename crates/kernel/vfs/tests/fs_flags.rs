@@ -1,7 +1,7 @@
 //! fs-flags: `FileSystem::fs_flags()` is the type-level `file_system_type::
-//! fs_flags` (Linux `include/linux/fs.h`). The `/proc/filesystems` `nodev`
-//! column is DERIVED from `FS_REQUIRES_DEV` (`filesystems_proc_show`,
-//! `fs/filesystems.c`) — not a hardcoded string. A block-backed fs emits
+//! fs_flags`. The `/proc/filesystems` `nodev`
+//! column is DERIVED from `FS_REQUIRES_DEV` (`filesystems_proc_show`'s
+//! per-entry format) — not a hardcoded string. A block-backed fs emits
 //! `"\t<name>\n"`; a pseudo / in-memory fs emits `"nodev\t<name>\n"`. The
 //! rename-d_move predicate keys the VFS rename path off `FS_RENAME_DOES_D_MOVE`.
 

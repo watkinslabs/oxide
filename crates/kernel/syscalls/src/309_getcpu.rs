@@ -18,7 +18,7 @@ fn current_cpu_id() -> u32 {
 
 /// `sys_getcpu(cpu, node, tcache)` — slot 309.
 ///
-/// Linux `kernel/sys.c`: `err |= put_user(...)` for BOTH pointers, then one
+/// Linux's `sys_getcpu`: `err |= put_user(...)` for BOTH pointers, then one
 /// `-EFAULT` if either failed. A bad `cpup` therefore does NOT stop the
 /// `nodep` store — returning early skips a write user space observed on Linux.
 /// The third argument (`tcache`) has been ignored since 2.6.24; it is not

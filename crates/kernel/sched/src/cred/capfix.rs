@@ -1,5 +1,5 @@
 // Linux `security_task_fix_setuid`/`security_task_fix_setgid` as implemented
-// by commoncap (`security/commoncap.c` `cap_task_fix_setuid`).
+// by commoncap's `cap_task_fix_setuid`.
 //
 // Two DISJOINT juggles, selected by the LSM_SETID_* flag the caller passes:
 //   * `LSM_SETID_RE` / `LSM_SETID_ID` / `LSM_SETID_RES` (the whole set*uid
@@ -15,7 +15,7 @@ use crate::Task;
 use crate::task::creds::securebits::SECBIT_NO_SETUID_FIXUP;
 use crate::task::creds::securebits::SECBIT_KEEP_CAPS;
 
-/// Linux `CAP_FS_MASK` (`include/linux/capability.h`): the capabilities that
+/// Linux `CAP_FS_MASK`: the capabilities that
 /// follow the FILESYSTEM uid rather than the effective uid.
 const FS_CAP_MASK: u64 = (1u64 << crate::cap::CHOWN)
     | (1u64 << crate::cap::DAC_OVERRIDE)

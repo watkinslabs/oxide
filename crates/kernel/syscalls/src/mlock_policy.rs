@@ -1,4 +1,4 @@
-// mlock/mlock2/mlockall RLIMIT_MEMLOCK admission (Linux `mm/mlock.c`
+// mlock/mlock2/mlockall RLIMIT_MEMLOCK admission (Linux's
 // `can_do_mlock` + `do_mlock`) and the mlock2(2) flag set.
 //
 // Every observable rejection of an mlock family call is decided here, so the
@@ -13,7 +13,7 @@
 
 use syscall::errno::Errno;
 
-/// `MLOCK_ONFAULT` (`include/uapi/asm-generic/mman-common.h`) — lock pages as
+/// `MLOCK_ONFAULT` — lock pages as
 /// they fault in rather than prefaulting the whole range.
 pub const MLOCK_ONFAULT: u64 = 0x01;
 
@@ -72,7 +72,7 @@ pub fn posix_error_return(e: Errno) -> Errno {
     }
 }
 
-/// mlockall(2) flags (`include/uapi/asm-generic/mman.h`). Identical on x86_64
+/// mlockall(2) flags. Identical on x86_64
 /// and aarch64.
 pub const MCL_CURRENT: u64 = 1;
 pub const MCL_FUTURE:  u64 = 2;

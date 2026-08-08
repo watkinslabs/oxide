@@ -87,7 +87,7 @@ pub const DEFAULT_NPROC: u64 = THREADS_MAX / 2;
 /// the ceiling the POSIX message-queue admission gate charges against.
 pub const MQ_BYTES_MAX: u64 = 819_200;
 
-/// Linux `MLOCK_LIMIT` (`include/uapi/linux/resource.h`), the RLIMIT_MEMLOCK
+/// Linux `MLOCK_LIMIT`, the RLIMIT_MEMLOCK
 /// default for both the soft and hard limit. Leaving MEMLOCK unlimited would
 /// make the whole mlock(2)/mlock2(2)/mlockall(2) admission ladder unreachable —
 /// EPERM and ENOMEM would never fire — and would let any unprivileged process
@@ -106,7 +106,7 @@ pub enum PrlimitError {
 }
 
 /// The half of Linux `do_prlimit` that inspects only the INCOMING pair, run
-/// before the rlimit table is even read (`kernel/sys.c`):
+/// before the rlimit table is even read:
 ///
 /// ```text
 /// if (new_rlim->rlim_cur > new_rlim->rlim_max)          return -EINVAL;
@@ -125,7 +125,7 @@ pub fn check_new_rlimit(resource: usize, new: (u64, u64), nr_open: u64)
     Ok(())
 }
 
-/// `MIN_NICE` / `MAX_NICE` (Linux `include/linux/sched/prio.h`).
+/// `MIN_NICE` / `MAX_NICE`.
 pub const MIN_NICE: i32 = -20;
 pub const MAX_NICE: i32 = 19;
 
@@ -147,7 +147,7 @@ pub fn clamp_nice(nice: i32) -> i8 {
     else { nice as i8 }
 }
 
-/// Linux `nice_to_rlimit` (`include/linux/sched/prio.h`): convert a nice value
+/// Linux `nice_to_rlimit`: convert a nice value
 /// in `[19, -20]` to the rlimit-style value in `[1, 40]`, `MAX_NICE - nice + 1`.
 ///
 /// This is BOTH the `getpriority(2)` return bias and the units `RLIMIT_NICE`

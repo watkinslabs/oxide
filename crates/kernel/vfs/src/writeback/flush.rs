@@ -15,8 +15,7 @@ use super::dirty::sync_lazytime_on;
 use super::policy::{forces_lazytime, harvest_dirty, needs_write_inode, DIRTYTIME_EXPIRE_SECS};
 
 impl SuperBlock {
-    /// `__writeback_single_inode` (Linux fs/fs-writeback.c) — resolve one
-    /// inode's metadata debt.
+    /// Resolve one inode's metadata debt.
     ///
     /// Order is the contract, not a preference:
     /// 1. Convert a pending lazy timestamp FIRST, because that conversion is
@@ -69,7 +68,7 @@ impl SuperBlock {
     }
 }
 
-/// `wakeup_dirtytime_writeback` (Linux fs/fs-writeback.c), the periodic work
+/// The periodic work
 /// that keeps a lazily-deferred timestamp from living in memory forever: sweep
 /// every mounted filesystem forcing out the deferrals older than
 /// [`DIRTYTIME_EXPIRE_SECS`]. Bind mounts share a superblock, so the sweep

@@ -8,7 +8,7 @@
 // its `wake_all` — from there puts the whole VT pipeline on the same 16 KiB
 // stack whose measured peak is already 14.5 KiB. Linux instead has the VT
 // keyboard driver call `tty_insert_flip_char` + `tty_flip_buffer_push`
-// (`drivers/tty/vt/keyboard.c` `put_queue`), and `flush_to_ldisc` cooks it from
+// (`put_queue`), and `flush_to_ldisc` cooks it from
 // a workqueue.
 //
 // Ordering: `TIOCLINUX` paste (`input_push_byte` from a syscall) and DSR

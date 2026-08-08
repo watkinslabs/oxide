@@ -2,7 +2,7 @@
 
 use syscall::errno::Errno;
 
-/// Match Linux `move_addr_to_user`: publish full length before address copy. # Lk: net/socket.c:move_addr_to_user # C: O(1)
+/// Match Linux `move_addr_to_user`: publish full length before address copy. # C: O(1)
 pub(crate) fn copy_sockaddr_value_result(read_len: impl FnOnce() -> Result<i32, Errno>,
     full_len: u32, write_len: impl FnOnce(u32) -> Result<(), Errno>,
     copy_addr: impl FnOnce(usize) -> Result<(), Errno>) -> Result<(), Errno>

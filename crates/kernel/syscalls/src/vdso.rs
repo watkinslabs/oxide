@@ -1,4 +1,4 @@
-// vDSO bring-up per `15` + Linux Documentation/abi/vdso.rst.
+// vDSO bring-up per `15` + Linux's vDSO ABI contract.
 // The vDSO is a tiny ELF mapped into every user AS at execve.
 // glibc / musl / Go runtimes probe AT_SYSINFO_EHDR to find it and
 // call the exported `__vdso_*` symbols. Namespace-relative clocks use
@@ -45,7 +45,7 @@ const SHT_STRTAB: u32 = 3;
 #[cfg(target_arch = "aarch64")]
 const ELF64_SYM_SIZE: usize = 24;
 /// The arm64 kernel-owned signal-return trampoline arm64 glibc leaves
-/// `sa_restorer` zero for (`arch/arm64/kernel/vdso/sigreturn.S`).
+/// `sa_restorer` zero for.
 #[cfg(target_arch = "aarch64")]
 const VDSO_SIGRETURN_SYMBOL: &[u8] = b"__kernel_rt_sigreturn";
 
@@ -165,8 +165,8 @@ pub fn map_into_current() -> Option<u64> {
     // Reserve vvar + total bytes: vvar = 1 page right before vDSO base.
     //
     // Linux picks the vDSO address with `get_unmapped_area(NULL, 0, ...)` and
-    // `_install_special_mapping` (`arch/x86/entry/vdso/vma.c:174`,
-    // `arch/arm64/kernel/vdso.c:114`) — there is no dedicated vDSO random draw
+    // `_install_special_mapping` (both x86_64 and aarch64) — there is no
+    // dedicated vDSO random draw
     // on either arch in modern kernels. Its randomisation is `mmap_base`'s,
     // inherited through this search. Asking for the address without mapping
     // (rather than mapping a placeholder and unmapping it) keeps the hole from

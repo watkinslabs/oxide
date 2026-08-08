@@ -1,6 +1,5 @@
-// Per-user resource accounting keyed by `(user namespace, uid)` — Linux
-// `struct ucounts` (`kernel/ucount.c`). The counter that makes this load
-// bearing is `RLIMIT_NPROC`: without it a uid can fork without bound, and
+// Per-user resource accounting keyed by `(user namespace, uid)`. The counter
+// that makes this load bearing is `RLIMIT_NPROC`: without it a uid can fork without bound, and
 // `setuid(2)`/`execve(2)` lose the deferred-EAGAIN contract that stops a
 // privileged daemon from dropping into an over-quota account.
 //

@@ -1,5 +1,5 @@
-// `shmem_fallocate` (Linux `mm/shmem.c`) — the tmpfs `f_op->fallocate` body,
-// split out of `file.rs` to keep that file's inode/file-ops manifest bounded.
+// tmpfs `f_op->fallocate` body, split out of `file.rs` to keep that file's
+// inode/file-ops manifest bounded.
 
 use core::sync::atomic::Ordering;
 

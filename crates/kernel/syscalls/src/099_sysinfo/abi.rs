@@ -2,7 +2,7 @@
 // `do_sysinfo` performs. Pure logic, no user-memory access and no target gate,
 // so the layout and the scaling rule are hosted-testable.
 
-/// `sizeof(struct sysinfo)` on LP64 (include/uapi/linux/sysinfo.h).
+/// `sizeof(struct sysinfo)` on LP64.
 pub const SYSINFO_BYTES: usize = 112;
 
 /// Field byte offsets in `struct sysinfo` (LP64).
@@ -22,7 +22,7 @@ pub const OFF_MEM_UNIT:  usize = 104;
 /// `char _f[]` — the libc5 padding tail Linux leaves zeroed.
 pub const OFF_F:         usize = 108;
 
-/// `SI_LOAD_SHIFT` (include/uapi/linux/sysinfo.h) — the fixed-point shift the
+/// `SI_LOAD_SHIFT` — the fixed-point shift the
 /// `loads[]` array uses. NOT the scheduler's `FSHIFT`: `do_sysinfo` calls
 /// `get_avenrun(info->loads, 0, SI_LOAD_SHIFT - FSHIFT)`, which shifts the
 /// scheduler's FSHIFT-scaled averages LEFT by 5.

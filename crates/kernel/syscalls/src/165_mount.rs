@@ -1,7 +1,7 @@
 // 165 mount — one syscall, one file (docs/53 §0).
 //
-// `sys_mount(source, target, fstype, flags, data)`, shaped as Linux
-// `fs/namespace.c` `do_mount` → `path_mount`: resolve `target`, gate on
+// `sys_mount(source, target, fstype, flags, data)`, shaped as Linux's
+// `do_mount` → `path_mount`: resolve `target`, gate on
 // `may_mount()`, derive the per-mount MNT_* option mask from `flags`, then
 // dispatch on the operation selector — MS_REMOUNT / MS_BIND / MS_{SHARED,
 // PRIVATE,SLAVE,UNBINDABLE} / MS_MOVE / else a new mount by fstype. Mounts are

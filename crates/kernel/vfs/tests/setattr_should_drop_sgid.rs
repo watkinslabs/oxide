@@ -1,5 +1,5 @@
-//! Chown/`setattr_copy`-path S_ISGID strip (`setattr_should_drop_sgid`, Linux
-//! `fs/attr.c`): a setgid file drops S_ISGID when it is group-executable, OR
+//! Chown/`setattr_copy`-path S_ISGID strip (`setattr_should_drop_sgid`):
+//! a setgid file drops S_ISGID when it is group-executable, OR
 //! when the caller is neither in the inode's *vfsgid* group nor CAP_FSETID —
 //! the `in_group_or_capable` edge that prevents a setgid bit leaking to a
 //! process outside the file's group. The inode gid is mapped through the mount

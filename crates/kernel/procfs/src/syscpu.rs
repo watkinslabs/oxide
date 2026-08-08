@@ -1,5 +1,5 @@
-// /sys/devices/system/cpu — the CPU device subsystem (Linux
-// `drivers/base/cpu.c` + `arch_topology`). A dynamic kobject directory:
+// /sys/devices/system/cpu — the CPU device subsystem, matching Linux's
+// arch_topology sysfs layout. A dynamic kobject directory:
 // `cpuN` device dirs are enumerated per CPU at readdir time, so the set
 // always reflects the live `online_count()` — NOT a snapshot taken at
 // boot before the APs are up. Each `cpuN` is a real device dir with an

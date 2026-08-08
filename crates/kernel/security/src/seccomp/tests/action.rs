@@ -27,8 +27,8 @@ fn ret_trace_without_a_tracer_denies_the_syscall() {
 }
 
 // Not a kill: the relayed audit claimed RET_TRACE degrades to
-// KILL_THREAD without a tracer. `kernel/seccomp.c` sets -ENOSYS and
-// `goto skip`; the task lives.
+// KILL_THREAD without a tracer. Correct behavior is to skip the syscall
+// with -ENOSYS and let the task live.
 #[test]
 fn ret_trace_without_a_tracer_does_not_kill() {
     match decide(SECCOMP_RET_TRACE, &data(), false) {

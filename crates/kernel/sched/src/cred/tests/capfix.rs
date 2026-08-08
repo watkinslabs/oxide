@@ -1,5 +1,5 @@
-// Linux `cap_emulate_setxuid` (`security/commoncap.c`) and the `commit_creds`
-// (`kernel/cred.c`) dumpability block, driven through the real syscalls.
+// Linux `cap_emulate_setxuid` and the `commit_creds` dumpability block,
+// driven through the real syscalls.
 
 use core::sync::atomic::Ordering;
 

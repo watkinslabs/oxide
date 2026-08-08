@@ -1,6 +1,6 @@
-//! `IS_IMMUTABLE`/`IS_APPEND`/`IS_NOATIME`/`IS_SYNC` predicates (Linux
-//! `include/linux/fs.h` `IS_*` macros) over `Inode::i_flags`, plus the
-//! Linux-exact numeric reps of the added `S_*` flag bits (`S_DAX`/`S_ENCRYPTED`/
+//! `IS_IMMUTABLE`/`IS_APPEND`/`IS_NOATIME`/`IS_SYNC` predicates
+//! (the `IS_*` macro family) over `Inode::i_flags`, plus the
+//! ABI-exact numeric reps of the added `S_*` flag bits (`S_DAX`/`S_ENCRYPTED`/
 //! `S_CASEFOLD`/`S_VERITY`). The predicates are the reusable VFS primitives the
 //! write/open/atime paths call instead of open-coding `i_flags() & S_FOO`.
 
@@ -15,7 +15,7 @@ fn flag_file(flags: u32) -> InodeRef {
         .i_flags(flags).build()
 }
 
-/// The added `S_*` bits match Linux `include/linux/fs.h` numeric reps exactly.
+/// The added `S_*` bits match the ABI numeric reps exactly.
 #[test]
 fn s_flag_bits_match_linux() {
     assert_eq!(S_SYNC, 1 << 0);

@@ -10,7 +10,7 @@ use super::{Cred, MAY_EXEC, MAY_WRITE};
 use super::may_create::id_representable;
 use super::permission::inode_permission;
 
-/// `check_sticky` (Linux `fs/namei.c`) — restricted-deletion test for a child
+/// `check_sticky` — restricted-deletion test for a child
 /// in a sticky (`S_ISVTX`) directory. Returns `true` when the deletion is
 /// FORBIDDEN: the parent `dir` carries the sticky bit AND the caller neither
 /// owns the victim (`fsuid == victim.uid`) nor owns the directory
@@ -26,7 +26,7 @@ fn check_sticky(dir: &InodeRef, victim: &InodeRef, cred: &Cred) -> bool {
     !cred.cap_fowner
 }
 
-/// `may_delete` (Linux `fs/namei.c` `may_delete_dentry`) — DAC + restriction
+/// `may_delete` (`may_delete_dentry`) — DAC + restriction
 /// gate for removing the child `victim` (an existing entry) from directory
 /// `dir` via unlink/rmdir/rename-overwrite. Ordering mirrors Linux exactly,
 /// because several of these are reachable at once and only the FIRST is

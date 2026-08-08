@@ -1,4 +1,4 @@
-// Linux `__sched_setscheduler()` (`kernel/sched/syscalls.c:490`) and
+// Linux `__sched_setscheduler()` and
 // `_sched_setscheduler()` (`:721`): validation order, the no-change fast path,
 // the util-clamp update, and the commit onto the runqueue.
 
@@ -179,7 +179,7 @@ fn apply(t: &Arc<sched::Task>, attr: &SchedAttr, policy: u32) {
         t.rt_timeout_ns.store(0, Ordering::Release);
     }
     t.policy.store(policy, Ordering::Release);
-    // `__setscheduler_params` (`kernel/sched/syscalls.c:257-262`): an RT or
+    // `__setscheduler_params`: an RT or
     // deadline task's timer slack is ZERO for as long as it holds that policy,
     // and returning to a fair policy restores its inherited default. Every
     // timed wait reads the field directly, so this write is what makes an RT
@@ -192,7 +192,7 @@ fn apply(t: &Arc<sched::Task>, attr: &SchedAttr, policy: u32) {
     crate::sched_policy::commit::set_class(t, new_class);
 }
 
-/// Linux `__setparam_fair()` (`kernel/sched/fair.c:5951`): a non-zero
+/// Linux `__setparam_fair()`: a non-zero
 /// `sched_runtime` becomes a custom CFS slice clamped to `[100us, 100ms]`;
 /// zero clears the custom slice back to `sysctl_sched_base_slice`.
 /// # C: O(1)

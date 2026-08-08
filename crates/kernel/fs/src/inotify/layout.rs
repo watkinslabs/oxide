@@ -1,5 +1,5 @@
-// `struct inotify_event` wire layout — Linux `fs/notify/inotify/inotify_user.c`
-// (`round_event_name_len`, `copy_event_to_user`).
+// `struct inotify_event` wire layout: name-length rounding + the
+// per-event copy-to-user encoding.
 //
 // Deliberately free of any target gate so the padding/short-buffer rules are
 // hosted-testable: the read path in `group.rs` only sequences these helpers.

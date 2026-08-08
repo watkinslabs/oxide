@@ -1,4 +1,4 @@
-// Entry collection for sysfs's synthetic directories (Linux fs/kernfs/dir.c).
+// Entry collection for sysfs's synthetic directories.
 //
 // Every sysfs directory is synthesised from a LIVE registry snapshot, so its
 // cursor must be a per-entry NAME cookie (`vfs::readdir_cookie`), never an

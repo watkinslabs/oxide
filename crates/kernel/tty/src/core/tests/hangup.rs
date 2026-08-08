@@ -1,5 +1,5 @@
-// `__tty_hangup` state transitions on the tty core (Linux
-// `drivers/tty/tty_io.c:568-656`). The SESSION-scoped half of a hangup — who
+// `__tty_hangup` state transitions on the tty core (Linux's tty_io
+// hangup path). The SESSION-scoped half of a hangup — who
 // loses the controlling terminal, who is signalled — lives in
 // `crate::hangup` and is tested there.
 
@@ -42,8 +42,8 @@ fn hangup_makes_writes_drop() {
 #[test]
 fn a_vhangup_does_not_signal_the_foreground_process_group() {
     // `__tty_hangup(tty, exit_session = 0)`: `tty_signal_session_leader` only
-    // runs `kill_pgrp(tty_pgrp, SIGHUP)` when `exit_session` is set
-    // (`drivers/tty/tty_jobctrl.c:232-236`). vhangup(2) passes 0, so the
+    // runs `kill_pgrp(tty_pgrp, SIGHUP)` when `exit_session` is set.
+    // vhangup(2) passes 0, so the
     // foreground job is NOT killed by the hangup itself — only the session
     // leader is signalled, and that walk lives in `tty::hangup`.
     let tty = cooked_tty();
@@ -62,7 +62,7 @@ fn a_vhangup_does_not_signal_the_foreground_process_group() {
 #[test]
 fn reopening_a_hung_up_tty_clears_the_hangup() {
     // Linux `tty_open` ends with `clear_bit(TTY_HUPPED, &tty->flags)`
-    // (`drivers/tty/tty_io.c:2161`). agetty runs TIOCNOTTY -> close every fd
+    // on every successful open. agetty runs TIOCNOTTY -> close every fd
     // -> vhangup(2) -> REOPEN the same line; without this clear, oxide's
     // long-lived console tty would stay at permanent EOF and no later login
     // could ever read a keystroke.

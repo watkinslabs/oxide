@@ -133,7 +133,7 @@ static HANDLERS: [AtomicPtr<()>; N_SLOTS] = [
 // no separate flag. `run_pending` below is the pure `__do_softirq` core; it
 // runs only inside that bh-accounted bracket.
 
-/// Linux `MAX_SOFTIRQ_RESTART` (`kernel/softirq.c`): restart-pass cap before
+/// Linux `MAX_SOFTIRQ_RESTART`: restart-pass cap before
 /// the drain defers, so a self-re-raising slot (virtio-net `NetRx` re-armed
 /// by every RX MSI under a packet flood) can't monopolize the CPU and starve
 /// the percpu heartbeat.

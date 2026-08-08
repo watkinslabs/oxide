@@ -1,7 +1,7 @@
 // Return-to-user-mode work loop — the decision half.
 //
 // Linux runs the SAME loop before EVERY return to user mode, not just after a
-// syscall: `kernel/entry/common.c` `__exit_to_user_mode_loop`, reached from
+// syscall: `__exit_to_user_mode_loop`, reached from
 // `syscall_exit_to_user_mode_prepare` (syscall) and
 // `irqentry_exit_to_user_mode_prepare` (interrupt + exception), the latter via
 // `irqentry_exit`'s `if (user_mode(regs))` arm. Without it a task that never
@@ -22,9 +22,8 @@
 
 pub mod hook;
 
-/// Linux `_TIF_*` work bits, in `EXIT_TO_USER_MODE_WORK` order
-/// (`include/linux/irq-entry-common.h`). One bit per work item the loop can
-/// service; the numeric values are private to this kernel — nothing crosses
+/// Linux `_TIF_*` work bits, in `EXIT_TO_USER_MODE_WORK` order. One bit per
+/// work item the loop can service; the numeric values are private to this kernel — nothing crosses
 /// the ABI — but the NAMES track Linux's so the mapping stays checkable.
 pub mod work {
     /// Linux `_TIF_NEED_RESCHED` — a reschedule was requested (tick, wakeup,
@@ -54,7 +53,7 @@ pub mod work {
     pub const MASK: u32 = NEED_RESCHED | SIGPENDING | NOTIFY_SIGNAL | NOTIFY_RESUME | RSEQ;
 
     /// Linux `EXIT_TO_USER_MODE_WORK_LOOP` = `EXIT_TO_USER_MODE_WORK &
-    /// ~_TIF_RSEQ` (`kernel/entry/common.c`, `CONFIG_HAVE_GENERIC_TIF_BITS`).
+    /// ~_TIF_RSEQ`.
     /// `RSEQ` describes a STANDING condition — the thread registered an rseq
     /// area — not an event a pass consumes, so leaving it in the `while`
     /// condition makes every return spin to the pass bound. Linux carves it

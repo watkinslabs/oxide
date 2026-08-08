@@ -1,5 +1,4 @@
-// `chmod(2)` / `chown(2)` family work-fns — Linux `fs/open.c` `chmod_common`
-// and `chown_common`. The syscall shims own only argument fetch, `AT_*` flag
+// `chmod(2)` / `chown(2)` family work-fns. The syscall shims own only argument fetch, `AT_*` flag
 // validation, path/fd resolution, and the user-namespace id translation of the
 // uid/gid ARGUMENTS; every attribute decision converges here and then in
 // `vfs::notify_change_mnt`.
@@ -7,12 +6,12 @@
 use vfs::{Cred, FileType, Iattr, InodeRef, KResult};
 use vfs::{ATTR_CTIME, ATTR_GID, ATTR_KILL_SUID, ATTR_MODE, ATTR_UID};
 
-/// Wall-clock stamp for the `ctime` an attribute change records (Linux
-/// `current_time(inode)` reads CLOCK_REALTIME, not the monotonic counter).
+/// Wall-clock stamp for the `ctime` an attribute change records — an
+/// inode's `current_time` reads CLOCK_REALTIME, not the monotonic counter.
 /// # C: O(1)
 fn wall_now_ns() -> u64 { vfs::inode_times::realtime_now_ns() }
 
-/// `chmod_common` (Linux `fs/open.c`): `ATTR_MODE | ATTR_CTIME` through
+/// Builds an iattr with `ATTR_MODE | ATTR_CTIME` through
 /// `notify_change`. Only the permission bits are caller-supplied — the file
 /// type half of `i_mode` is preserved (`(mode & S_IALLUGO) | (i_mode &
 /// ~S_IALLUGO)`), so no chmod can retype an inode. The `ctime` bit is what
@@ -30,7 +29,7 @@ pub fn chmod_common(inode: &InodeRef, mnt_id: u64, mode: u16, cred: &Cred) -> KR
     vfs::notify_change_mnt(inode, mnt_id, &mut ia, cred, now)
 }
 
-/// Build the `iattr` a `chown_common` issues (Linux `fs/open.c`). Split out of
+/// Build the `iattr` the chown work-fn issues. Split out of
 /// [`chown_common`] because it is the whole decision and needs no mount:
 ///
 /// * `None` = the `(uid_t)-1` / `(gid_t)-1` "leave alone" sentinel, which
@@ -60,11 +59,10 @@ pub fn chown_iattr(idmap: &vfs::Idmap, inode: &InodeRef, uid: Option<u32>, gid: 
     }
 }
 
-/// `chown_common` (Linux `fs/open.c`) shared by chown/lchown/fchown/fchownat.
+/// Attribute work-fn shared by chown/lchown/fchown/fchownat.
 /// `uid`/`gid` are already-translated internal ids; `None` is the `-1`
 /// leave-alone sentinel. The shim reports `EINVAL` for an id the caller's user
-/// namespace does not map, exactly as `make_kuid` + `setattr_vfsuid` do, so a
-/// `Some` here is always representable. # C: O(ngroups)
+/// namespace does not map, so a `Some` here is always representable. # C: O(ngroups)
 pub fn chown_common(inode: &InodeRef, mnt_id: u64, uid: Option<u32>, gid: Option<u32>, cred: &Cred)
     -> KResult<()>
 {

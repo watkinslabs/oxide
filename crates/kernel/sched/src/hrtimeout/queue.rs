@@ -57,8 +57,8 @@ fn now_ns() -> u64 { use hal::TimerOps; hal_aarch64::ArmTimerOps::monotonic_ns()
 fn now_ns() -> u64 { 0 }
 
 /// Linux keeps `timer_slack_ns` at 0 for the whole time a task is
-/// SCHED_FIFO/RR/DEADLINE (`kernel/sched/syscalls.c:257-262`), so every slack
-/// consumer reads 0 for a real-time task without testing the policy itself.
+/// SCHED_FIFO/RR/DEADLINE, so every slack consumer reads 0 for a real-time
+/// task without testing the policy itself.
 /// The write sites hold that invariant here too; this reader states the
 /// invariant it depends on rather than re-deriving it.
 /// # C: O(1)

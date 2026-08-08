@@ -6,7 +6,7 @@
 // `power::machine`.
 //
 // The check ORDER is the part that is easy to get wrong and is load-bearing:
-// `SYSCALL_DEFINE4(reboot)` (`kernel/reboot.c:735-745`) tests CAP_SYS_BOOT
+// `SYSCALL_DEFINE4(reboot)` tests CAP_SYS_BOOT
 // FIRST and the magic pair SECOND. An unprivileged caller passing garbage
 // magic must see EPERM — reversing the two leaks "these magic numbers were
 // wrong" to a process that was never allowed to reboot anything, and makes
@@ -58,7 +58,7 @@ pub fn sys_reboot(args: &SyscallArgs) -> i64 {
 }
 
 /// `LINUX_REBOOT_CMD_RESTART2`: `strncpy_from_user(&buffer[0], arg, 255)` with
-/// `-EFAULT` on a bad pointer (`kernel/reboot.c:787-796`). The copy happens
+/// `-EFAULT` on a bad pointer. The copy happens
 /// BEFORE `kernel_restart`, so a caller that passes a garbage pointer gets
 /// EFAULT and the machine keeps running — ignoring `arg` and rebooting anyway
 /// destroys the caller's chance to learn it made a mistake.
@@ -80,7 +80,7 @@ fn restart2(arg: u64) -> i64 {
     unsafe { power::restart_with_command(&raw[..len]) }
 }
 
-/// `reboot_pid_ns` (`kernel/pid_namespace.c:319-346`): record the reboot
+/// `reboot_pid_ns`: record the reboot
 /// signal on the namespace, SIGKILL its `child_reaper`, and `do_exit(0)`.
 /// The caller does not return; the namespace's init reports the recorded
 /// signal to whoever is watching from outside.

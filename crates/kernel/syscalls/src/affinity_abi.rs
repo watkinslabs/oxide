@@ -1,8 +1,7 @@
 // `sched_setaffinity(2)`/`sched_getaffinity(2)` cpumask ABI + decision core —
-// Linux `kernel/sched/syscalls.c` (`sys_sched_setaffinity`, `get_user_cpu_mask`,
+// Linux's `sys_sched_setaffinity`, `get_user_cpu_mask`,
 // `sched_setaffinity`, `__sched_setaffinity`, `sys_sched_getaffinity`,
-// `sched_getaffinity`, `check_same_owner`) and `include/linux/cpumask.h`
-// (`cpumask_size`) at v7.2.0-rc4.
+// `sched_getaffinity`, `check_same_owner`, and `cpumask_size`.
 //
 // Deliberately NOT `#![cfg(target_os = "oxide-kernel")]`: slots 203/204 are
 // kernel-only, so the `len`-in-BYTES rules, the return-value contract glibc's

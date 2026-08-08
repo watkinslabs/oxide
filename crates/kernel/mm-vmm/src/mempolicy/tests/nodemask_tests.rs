@@ -1,4 +1,4 @@
-// `get_nodes` / `copy_nodes_to_user` (`mm/mempolicy.c:1634..1716`).
+// User-nodemask read + nodemask-to-user copy planning.
 //
 // The pre-F763 slots never read or wrote a nodemask at all, so every
 // assertion here fails against the old shims by construction: they returned 0
@@ -100,7 +100,7 @@ fn an_oversized_request_is_zero_filled_past_nr_node_ids() {
 
 #[test]
 fn a_request_wider_than_a_page_is_einval() {
-    // ALIGN(maxnode-1,64)/8 > PAGE_SIZE ⇒ EINVAL (`mm/mempolicy.c:1705`).
+    // ALIGN(maxnode-1,64)/8 > PAGE_SIZE ⇒ EINVAL.
     assert_eq!(copy_nodes_to_user_plan(NODEMASK_COPY_MAX_BYTES * 8 + 1),
                Ok(NodemaskOut { copy_bytes: 8, clear_off: 8,
                                 clear_bytes: NODEMASK_COPY_MAX_BYTES - 8 }));

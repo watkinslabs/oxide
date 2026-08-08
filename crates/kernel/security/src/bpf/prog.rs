@@ -1,7 +1,6 @@
 // `BPF_PROG_LOAD`, `BPF_PROG_ATTACH`/`BPF_PROG_DETACH`, `BPF_LINK_CREATE`.
-// Ordering mirrors kernel/bpf/syscall.c `bpf_prog_load()`,
-// `bpf_prog_attach()` and `link_create()`; every errno decision itself
-// lives in `attr.rs` so it is hosted-testable.
+// Validation ordering matches the load/attach/link-create command handlers;
+// every errno decision itself lives in `attr.rs` so it is hosted-testable.
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -124,12 +123,13 @@ fn read_license(ptr: u64) -> Result<Vec<u8>, Errno> {
     Ok(out)
 }
 
-/// `bpf_check()`.  Each advertised type has a matching runner and verifier.
+/// Structural bytecode verification. Each advertised type has a matching
+/// runner and verifier.
 ///
-/// The structural rejects all map onto Linux verifier paths returning
-/// `-EINVAL`: `"jump out of range"`, `"last insn is not an exit or
-/// jmp"`, `"R%d is invalid"`, `"unknown opcode %02x"`
-/// (kernel/bpf/verifier.c). # C: O(insn_cnt)
+/// The structural rejects all map onto verifier failures returning
+/// `-EINVAL`: an out-of-range jump target, a final instruction that is
+/// neither an exit nor a jump, an invalid register number, or an unknown
+/// opcode. # C: O(insn_cnt)
 fn verify(
     prog_type: u32,
     expected_attach_type: u32,

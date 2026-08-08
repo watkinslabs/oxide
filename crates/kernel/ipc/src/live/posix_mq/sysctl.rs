@@ -1,4 +1,4 @@
-// `/proc/sys/fs/mqueue/*` — Linux `ipc/mq_sysctl.c`.
+// `/proc/sys/fs/mqueue/*`.
 //
 // Every leaf is per-IPC-namespace: `set_lookup` resolves
 // `current->nsproxy->ipc_ns->mq_set`, so a namespace that raised its

@@ -1,5 +1,5 @@
-// `KCMP_EPOLL_TFD` — Linux `kcmp_epoll_target` (`kernel/kcmp.c:98`) plus
-// `get_epoll_tfile_raw_ptr` / `ep_find_tfd` (`fs/eventpoll.c`).
+// `KCMP_EPOLL_TFD` — Linux `kcmp_epoll_target` plus
+// `get_epoll_tfile_raw_ptr` / `ep_find_tfd`.
 //
 // Compares the open file description behind `task1`'s fd `idx1` against the
 // file an epoll instance owned by `task2` watches. `idx2` points at a user
@@ -11,7 +11,7 @@ use syscall::errno::Errno;
 use crate::kcmp_abi::ptr_cmp;
 use crate::misc::misc_common::errno;
 
-/// `struct kcmp_epoll_slot` (`include/uapi/linux/kcmp.h`): three `__u32`.
+/// `struct kcmp_epoll_slot`: three `__u32`.
 const KCMP_EPOLL_SLOT_BYTES: u64 = 12;
 const SLOT_OFF_EFD:  usize = 0;
 const SLOT_OFF_TFD:  usize = 4;

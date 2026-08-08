@@ -122,14 +122,14 @@ impl FileLockContext {
         RecordTry::Acquired { released: records::apply(&mut st.posix, req) }
     }
 
-    /// Linux `F_GETLK` (`fs/locks.c` `posix_test_lock`): describe the lock
+    /// `F_GETLK` support: describe the lock
     /// that would block `req`, or `None` when `req` would succeed.
     /// # C: O(N_records)
     pub fn probe_record_lock(&self, req: &RecordLock) -> Option<RecordLock> {
         records::find_conflict(&self.state.lock().posix, req)
     }
 
-    /// Linux `locks_remove_posix` (`fs/locks.c:2768`): drop every byte-range
+    /// Drop every byte-range
     /// record `owner` holds on this inode. `true` means waiters must be woken
     /// once the state lock is dropped. # C: O(N_records)
     pub fn remove_records_for(&self, owner: RecordOwner) -> bool {
@@ -148,7 +148,7 @@ impl FileLockContext {
     /// pass does not leak entries. # C: O(1)
     pub fn record_lock_count(&self) -> usize { self.state.lock().posix.len() }
 
-    /// Linux `locks_remove_file` (`fs/locks.c:2849`) for a final `fput`:
+    /// For a final `fput`:
     /// releases the description's BSD flock AND its OFD byte-range records.
     /// `true` means waiters must be woken. # C: O(N_holders + N_records)
     pub fn release_file(&self, file_id: usize) -> bool {

@@ -1,7 +1,6 @@
 // 326 copy_file_range — one syscall, one file (docs/53 §0). ABI shim only:
 // fd resolution, the `loff_t __user *` copy-in/copy-out, and the RLIMIT_FSIZE
-// lookup. The check ladder and the copy are `fs::splice::copy_file_range`
-// (Linux `fs/read_write.c`).
+// lookup. The check ladder and the copy are `fs::splice::copy_file_range`.
 
 #![cfg(target_os = "oxide-kernel")]
 
@@ -14,7 +13,7 @@ fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
 /// `sys_copy_file_range(fd_in, off_in, fd_out, off_out, len, flags)` — slot 326.
 ///
-/// Order is Linux's (`fs/read_write.c:1649-1703`): both fd lookups (EBADF),
+/// Order is Linux's: both fd lookups (EBADF),
 /// then the offset copy-in (EFAULT), then `flags != 0` (EINVAL) — so a bad
 /// offset pointer AND a bad flag word reports EFAULT. Offsets are written back
 /// only when bytes were actually copied, and a NULL pointer means the
@@ -42,7 +41,7 @@ pub fn sys_copy_file_range(args: &SyscallArgs) -> i64 {
     let ret = ::fs::splice::copy_file_range(&in_file, &mut pos_in, &out_file, &mut pos_out,
                                             args.a4, args.a5, limit);
     if ret <= 0 { return ret; }
-    // `fs/read_write.c:1684-1701`: advance and store, user pointer or f_pos.
+    // Linux's `ksys_copy_file_range` tail: advance and store, user pointer or f_pos.
     if in_ptr != 0 {
         if let Err(e) = store_pos(in_ptr, pos_in) { return e; }
     } else { in_file.set_pos(pos_in); }
@@ -52,8 +51,8 @@ pub fn sys_copy_file_range(args: &SyscallArgs) -> i64 {
     ret
 }
 
-/// A NULL `loff_t __user *` means "use the description's cursor"
-/// (`fs/read_write.c:1665-1677`). # C: O(1)
+/// A NULL `loff_t __user *` means "use the description's cursor".
+/// # C: O(1)
 fn load_pos(ptr: u64, file: &vfs::File) -> Result<u64, i64> {
     if ptr == 0 { return Ok(file.pos()); }
     validate_user_buf(ptr, 8, 8)?;

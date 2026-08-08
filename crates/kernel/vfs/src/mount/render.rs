@@ -16,9 +16,8 @@ pub fn mountinfo_root_field(m: &Arc<super::Mount>) -> String {
 /// Render mountinfo field 4 from explicit root dentries. The result is `/` for
 /// a whole-filesystem mount and a slash-prefixed subpath for bind roots.
 ///
-/// Linux `show_path()` (`fs/namespace.c`) → `seq_dentry()` → `dentry_path()` →
-/// `__dentry_path()` (`fs/d_path.c`): a plain `d_parent` walk terminating at
-/// `IS_ROOT`, with `//deleted` appended for an unlinked root. It never consults
+/// A plain parent-chain walk terminating at the root dentry, with `//deleted`
+/// appended for an unlinked root. It never consults
 /// the mount table.
 ///
 /// This previously built two GLOBAL `absolute_path()`s and subtracted them as

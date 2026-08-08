@@ -1,4 +1,4 @@
-// `kill_orphaned_pgrp` (Linux `kernel/exit.c`, POSIX 3.2.2.2): when this exit
+// `kill_orphaned_pgrp` (Linux, POSIX 3.2.2.2): when this exit
 // orphans a process group that still holds stopped jobs, the group gets SIGHUP
 // then SIGCONT — otherwise those jobs stay frozen with nothing left able to
 // resume them (a `^Z`ed job under a shell whose session leader dies).

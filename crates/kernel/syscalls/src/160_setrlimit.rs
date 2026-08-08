@@ -1,6 +1,6 @@
 // 160 setrlimit — one syscall, one file (docs/53 §0). ABI shim only: the whole
-// decision ladder is `sched::Task::do_prlimit` (Linux `kernel/sys.c
-// do_prlimit`), shared with 097 getrlimit and 302 prlimit64.
+// decision ladder is `sched::Task::do_prlimit` (Linux's
+// `do_prlimit`), shared with 097 getrlimit and 302 prlimit64.
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;

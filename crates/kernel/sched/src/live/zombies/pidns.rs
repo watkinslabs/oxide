@@ -79,8 +79,8 @@ pub fn namespace_child_reaper(task: &Task) -> Option<Arc<Task>> {
     fallback
 }
 
-/// Linux `cad_pid`'s default target — `cad_pid = task_pid(&init_task)`
-/// (`kernel/reboot.c`), i.e. the init of the INITIAL pid namespace. Used by
+/// Linux `cad_pid`'s default target — `cad_pid = task_pid(&init_task)`,
+/// i.e. the init of the INITIAL pid namespace. Used by
 /// `ctrl_alt_del()` to deliver SIGINT when `C_A_D` is clear.
 ///
 /// The visible pid is `vtgid` when set and the real `tgid` otherwise — an

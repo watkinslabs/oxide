@@ -1,4 +1,4 @@
-// `cachestat(2)` admission policy (Linux `mm/filemap.c` `can_do_cachestat`).
+// `cachestat(2)` admission policy (`can_do_cachestat`).
 //
 // Ungated: the slot file is `#![cfg(target_os = "oxide-kernel")]`, so the
 // permission ladder would otherwise never be exercised by a hosted test.

@@ -1,4 +1,4 @@
-// 237 mbind — `SYSCALL_DEFINE6(mbind)` / `kernel_mbind` (`mm/mempolicy.c:1827`)
+// 237 mbind — `SYSCALL_DEFINE6(mbind)` / `kernel_mbind` 
 // + `do_mbind` (`:1486`). ABI shim (docs/53): validation lives in
 // `vmm::mempolicy::{sanitize_mpol_flags, mpol_new, args, scan}`, the VMA
 // rewrite in `AddressSpace::set_policy_range`.
@@ -34,7 +34,7 @@ pub fn sys_mbind(args: &SyscallArgs) -> i64 {
     if mode == MPOL_DEFAULT { flags &= !MPOL_MF_STRICT; }
     let range = match align_range(start, len) { Ok(r) => r, Err(e) => return errno_of(e) };
     // `mpol_new` runs even for a zero-length range in Linux? No: the
-    // `end == start` return is BEFORE mpol_new (`mm/mempolicy.c:1510`), so an
+    // `end == start` return is BEFORE mpol_new, so an
     // illegal mode+nodemask pairing over a zero-length range still returns 0.
     let Some((start, end)) = range else { return 0 };
     let pol = match mpol_new(mode, mode_flags, nodes) { Ok(p) => p, Err(e) => return errno_of(e) };

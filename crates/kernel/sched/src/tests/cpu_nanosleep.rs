@@ -6,9 +6,8 @@
 // static id, and `timers::clock::now_ns` has no arm for the encoded form — it
 // samples only the resolved `ClockSpec::Cpu`. So the arm read `None` and
 // reported "already expired". Linux resolves once in `posix_cpu_timer_create`
-// (`kernel/time/posix-cpu-timers.c:386-411`) via `pid_for_clock()` and stores
-// the resulting `struct pid` on the timer, which `do_cpu_nanosleep` (`:1552`)
-// runs for its stack timer too.
+// via `pid_for_clock()` and stores the resulting `struct pid` on the timer,
+// which `do_cpu_nanosleep` runs for its stack timer too.
 //
 // These drive `arm` / `account_cpu_tick` directly: the park loop needs a
 // runqueue, the decision does not.

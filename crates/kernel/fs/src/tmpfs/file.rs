@@ -452,9 +452,8 @@ impl FileOps for TmpfsFileOps {
         Ok(n)
     }
 
-    /// `file->f_mode |= FMODE_CAN_ODIRECT` (`mm/shmem.c:2910`): shmem accepts
-    /// `O_DIRECT` because its pages ARE the store — there is no cache behind
-    /// which data could be buffered, so "bypass the page cache" is already
-    /// true. # C: O(1)
+    /// tmpfs accepts `O_DIRECT` (sets `FMODE_CAN_ODIRECT`) because its pages
+    /// ARE the store — there is no cache behind which data could be
+    /// buffered, so "bypass the page cache" is already true. # C: O(1)
     fn can_odirect(&self, _inode: &Inode) -> bool { true }
 }

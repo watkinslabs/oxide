@@ -1,5 +1,5 @@
 //! RESOLVE_NO_SYMLINKS vs O_NOFOLLOW ordering on the FINAL component
-//! (Linux `fs/namei.c`: `pick_link`'s `LOOKUP_NO_SYMLINKS` ELOOP gate fires only
+//! (`pick_link`'s `LOOKUP_NO_SYMLINKS` ELOOP gate fires only
 //! when a link is actually FOLLOWED). A trailing symlink left unfollowed by
 //! O_NOFOLLOW (`no_follow_final`) is NOT resolved, so RESOLVE_NO_SYMLINKS does
 //! not turn it into ELOOP — the walk returns the symlink itself (the shape

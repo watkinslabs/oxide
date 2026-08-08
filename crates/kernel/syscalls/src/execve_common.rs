@@ -190,7 +190,7 @@ pub(crate) fn open_exec_image(path: &[u8])
     }
 }
 
-/// Resolve a `#!`-script chain per Linux `fs/binfmt_script.c`.
+/// Resolve a `#!`-script chain per Linux's binfmt_script loader.
 ///
 /// On entry:
 ///   * `blob_owned` holds the file content the user asked execve to load

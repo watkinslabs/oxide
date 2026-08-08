@@ -126,8 +126,8 @@ impl StatSink for SliceSink<'_> {
 }
 
 /// One `struct stat` timestamp pair: `__kernel_long_t st_*time` (SIGNED) then
-/// `__kernel_ulong_t st_*time_nsec` (`include/uapi/asm-generic/stat.h`, and the
-/// x86_64 `arch/x86/include/uapi/asm/stat.h` variant). Written straight from
+/// `__kernel_ulong_t st_*time_nsec` (the generic `struct stat` UAPI layout, and
+/// x86_64's variant). Written straight from
 /// the `timespec64` fields — the pre-fix `(ns / 1e9, ns % 1e9)` division
 /// emitted a NEGATIVE `st_*time_nsec` for any pre-1970 stamp, which POSIX
 /// forbids. # C: O(1)

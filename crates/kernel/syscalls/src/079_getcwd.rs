@@ -1,5 +1,5 @@
 // 079 getcwd — one syscall, one file (docs/53 §0). ABI shim only: the pwd is
-// rendered by `fs::cwd::getcwd_path` (Linux `fs/d_path.c`).
+// rendered by `fs::cwd::getcwd_path`.
 
 #![cfg(target_os = "oxide-kernel")]
 

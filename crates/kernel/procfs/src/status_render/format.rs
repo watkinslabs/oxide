@@ -1,6 +1,6 @@
 // Primitive field formatters shared by `status_render`. Numeric shapes come
 // from Linux's `seq_put_decimal_ull`, `seq_put_hex_ll(.., 16)` (`render_cap_t`
-// / `render_sigset_t`) and `lib/vsprintf.c`'s `%*pb` / `%*pbl` bitmap forms.
+// / `render_sigset_t`) and its `%*pb` / `%*pbl` bitmap forms.
 
 use alloc::vec::Vec;
 

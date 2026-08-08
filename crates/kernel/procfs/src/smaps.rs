@@ -100,7 +100,7 @@ fn build_from_mm(mm: &vmm::AddressSpace) -> Vec<u8> {
         kv_kb(&mut out, b"Locked:         ", if vma.flags.contains(vmm::VmaFlags::LOCKED) { rss_kb } else { 0 });
         push(&mut out, b"THPeligible:    0\n");
         push(&mut out, b"ProtectionKey:  0\n");
-        // VmFlags short-tag list per Linux Documentation/filesystems/proc.rst.
+        // VmFlags short-tag list, matching Linux's standard smaps format.
         push(&mut out, b"VmFlags:");
         if vma.prot.contains(vmm::VmaProt::READ)        { push(&mut out, b" rd"); }
         if vma.prot.contains(vmm::VmaProt::WRITE)       { push(&mut out, b" wr"); }

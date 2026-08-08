@@ -1,5 +1,5 @@
-// Linux `SYSCALL_DEFINE2(getgroups)` / `SYSCALL_DEFINE2(setgroups)`
-// (`kernel/groups.c`) — counts, sizes, sorting, and the error ORDER.
+// Linux's `SYSCALL_DEFINE2(getgroups)` / `SYSCALL_DEFINE2(setgroups)`
+// — counts, sizes, sorting, and the error ORDER.
 
 use alloc::vec::Vec;
 

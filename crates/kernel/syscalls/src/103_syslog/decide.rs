@@ -1,6 +1,6 @@
-// `syslog(2)` / `klogctl(3)` decision logic — Linux `kernel/printk/printk.c`
-// (`syslog_action_restricted`, `check_syslog_permissions`, the argument
-// validation at the head of each `do_syslog` case).
+// `syslog(2)` / `klogctl(3)` decision logic — Linux's
+// `syslog_action_restricted`, `check_syslog_permissions`, the argument
+// validation at the head of each `do_syslog` case.
 //
 // Hosted-testable: pure functions over scalars, no `sched`/`hal`/user memory.
 // The kernel-side shim (`103_syslog.rs`) supplies the capability bit and the
@@ -8,7 +8,7 @@
 
 use syscall::errno::Errno;
 
-/// `SYSLOG_ACTION_*` (`include/uapi/linux/kernel.h` via `linux/syslog.h`).
+/// `SYSLOG_ACTION_*` (syslog UAPI action codes).
 pub const ACTION_CLOSE:         u32 = 0;
 pub const ACTION_OPEN:          u32 = 1;
 pub const ACTION_READ:          u32 = 2;

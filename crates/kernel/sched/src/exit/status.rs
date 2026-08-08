@@ -5,8 +5,8 @@
 //     core-dump flag. A normal exit stores the raw 8-bit exit code with bit 8
 //     clear. `crate::signum::killed_status` is the signal-death producer.
 //
-//   LINUX WSTATUS — what `wait4(2)` writes to userspace and the `W*` macros in
-//     `<bits/waitstatus.h>` decode: `(code & 0xff) << 8` for a normal exit,
+//   LINUX WSTATUS — what `wait4(2)` writes to userspace and the `W*` macros
+//     decode: `(code & 0xff) << 8` for a normal exit,
 //     `signo | 0x80?` for a signal death, `(sig << 8) | 0x7f` for a job-control
 //     stop, `0xffff` for continued.
 //
@@ -14,8 +14,8 @@
 // it — `061_wait4` and `247_waitid` previously open-coded
 // `if code & 0x100 != 0 { code & 0x7f } else { (code & 0xff) << 8 }`, which
 // masked the core-dump bit off (`0x7f`, not `0xff`) and so made `WCOREDUMP`
-// always false for a SIGSEGV/SIGABRT death (Linux `kernel/exit.c`
-// `wait_task_zombie`: `wo->wo_stat = status` verbatim, core bit included).
+// always false for a SIGSEGV/SIGABRT death (Linux's `wait_task_zombie`:
+// `wo->wo_stat = status` verbatim, core bit included).
 
 use crate::signum::{WSTATUS_CORE, WSTATUS_SIGNALED};
 

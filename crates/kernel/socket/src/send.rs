@@ -317,8 +317,8 @@ fn send_unix_blocking(ctx: &SendContext<'_>, target: &SendFile,
             Ok(n) => return Ok(total.saturating_add(n)),
             Err(Error::Eagain) if nonblock => return if total == 0 { Err(Error::Eagain) } else { Ok(total) },
             Err(Error::Eagain) => {
-                // Linux `unix_dgram_sendmsg`/`unix_stream_sendmsg`
-                // (`net/unix/af_unix.c:2258`): `sock_intr_errno(timeo)`.
+                // Linux `unix_dgram_sendmsg`/`unix_stream_sendmsg`:
+                // `sock_intr_errno(timeo)`.
                 if sched::live::deliverable_signals_self() != 0 {
                     return if total == 0 {
                         Err(Error::from(net::sock_intr::sock_intr_net(deadline)))

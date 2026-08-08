@@ -12,7 +12,7 @@ use crate::{inode, is_mounted, state::TREE, tree};
 /// a `CgDir`/`CgFile` inode — no registry, ZERO devfs dependency.
 pub struct CgroupFs;
 
-/// Linux CGROUP2_SUPER_MAGIC (`linux/magic.h`).
+/// Linux `CGROUP2_SUPER_MAGIC` — the cgroup2 statfs `f_type`.
 pub const CGROUP2_SUPER_MAGIC: u64 = 0x6367_7270;
 
 impl CgroupFs {
@@ -36,7 +36,7 @@ impl FileSystem for CgroupFs {
     /// own — the generic fallback would mint a 12-byte handle the cgroup-id
     /// readers in userspace cannot receive. # C: O(1)
     fn super_ops(&self) -> Option<Arc<dyn vfs::SuperOps>> { Some(crate::export::super_ops()) }
-    /// CGROUP2_SUPER_MAGIC (linux/magic.h) — systemd's `cg_all_unified()`
+    /// CGROUP2_SUPER_MAGIC (the statfs f_type value) — systemd's `cg_all_unified()`
     /// detects the unified hierarchy by this `statfs` f_type.
     /// # C: O(1)
     fn magic(&self) -> u64 { CGROUP2_SUPER_MAGIC }

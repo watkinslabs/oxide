@@ -3,7 +3,7 @@
 // (`userbuf.rs` is `#![cfg(target_os = "oxide-kernel")]`).
 //
 // Linux's `access_ok` is O(1) — a bound check against `TASK_SIZE_MAX`
-// (`arch/x86/include/asm/uaccess.h`) — because per-page validity is resolved by
+// — because per-page validity is resolved by
 // the fault handler through the exception table during the copy itself. This
 // port has no kernel extable, so `userbuf` pre-validates that the range is
 // covered by VMAs with the right protection. That is a legitimate substitute,

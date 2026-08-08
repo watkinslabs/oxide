@@ -1,7 +1,7 @@
 // Hosted unit tests for the scheduler-policy decision core. These are the
 // rules that only ever regressed silently, because the syscall slot files are
 // `#![cfg(target_os = "oxide-kernel")]` and unreachable from `cargo test`.
-// Reference: Linux `kernel/sched/syscalls.c` (v7.2.0-rc4).
+// Reference: Linux's scheduler-policy syscall bodies.
 
 // Module manifest:
 //   this file  — predicates, parameter validation, permission ladder, the

@@ -6,7 +6,7 @@
 // IST (SMP hardening): `setup_ist_stacks(cpu)` allocates per-CPU
 // exception stacks for the fatal / nesting-prone vectors and publishes
 // their tops into CPU `cpu`'s TSS IST slots. Linux-faithful assignment
-// (arch/x86/include/asm/cpu_entry_area.h `IST_INDEX_*` + 1 → gate field):
+// (`IST_INDEX_*` + 1 → gate field):
 //   IST1 = #DF (double fault)   IST2 = NMI
 //   IST3 = #DB (debug)          IST4 = #MC (machine check)
 // #PF is DELIBERATELY left on RSP0 (Linux does the same): page faults

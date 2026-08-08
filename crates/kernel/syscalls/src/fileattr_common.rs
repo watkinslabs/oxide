@@ -1,5 +1,5 @@
 // Shared shim glue for `file_getattr(2)` / `file_setattr(2)` (slots 468/469,
-// Linux `fs/file_attr.c`). The `struct file_attr` ABI lives in
+// matching Linux's file_attr syscalls). The `struct file_attr` ABI lives in
 // `fs::fileattr`; the inode work is `vfs::fileattr_{get,set}`. Everything here
 // is resolve + credential/mount plumbing.
 
@@ -9,7 +9,7 @@ use syscall::errno::Errno;
 use syscall::at::AT_NOFOLLOW_EMPTY;
 
 /// Both syscalls reject unknown `at_flags` before they look at `usize`
-/// (`fs/file_attr.c:387,440`). # C: O(1)
+/// (both syscalls, same order). # C: O(1)
 fn check_at_flags(at_flags: u32) -> Result<(), i64> {
     if at_flags & !AT_NOFOLLOW_EMPTY != 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
     Ok(())
@@ -33,7 +33,7 @@ pub fn sys_file_getattr(dfd: i32, path_ptr: u64, ubuf: u64, usize_bytes: usize, 
 
 /// `file_setattr(dfd, filename, ufattr, usize, at_flags)`: at_flags, size
 /// handshake, `copy_struct_from_user` + `file_attr_to_fileattr` (both BEFORE
-/// the path walk, `fs/file_attr.c:452`), resolve, `mnt_want_write`, then
+/// the path walk), resolve, `mnt_want_write`, then
 /// `vfs_fileattr_set`. # C: O(N_path)
 pub fn sys_file_setattr(dfd: i32, path_ptr: u64, ubuf: u64, usize_bytes: usize, at_flags: u32) -> i64 {
     if let Err(rv) = check_at_flags(at_flags) { return rv; }

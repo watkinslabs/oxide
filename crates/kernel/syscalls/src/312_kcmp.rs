@@ -19,7 +19,7 @@ mod epoll_tfd;
 
 /// kcmp(2): compare two tasks' resources by pointer identity.
 ///
-/// Ladder order is Linux `kernel/kcmp.c:135` and observable: task lookup
+/// Ladder order is Linux's `sys_kcmp` and observable: task lookup
 /// (ESRCH) → `ptrace_may_access(PTRACE_MODE_READ_REALCREDS)` on BOTH tasks
 /// (EPERM) → the type switch (EINVAL). Validating `type` first, as this shim
 /// used to, reports EINVAL where Linux reports ESRCH for a dead pid.
@@ -64,7 +64,7 @@ pub fn sys_kcmp(args: &SyscallArgs) -> i64 {
                 _ => errno(Errno::Ebadf),
             }
         }
-        // KCMP_VM is 1 and KCMP_FILES is 2 (`include/uapi/linux/kcmp.h`).
+        // KCMP_VM is 1 and KCMP_FILES is 2.
         // This shim had them swapped, so every caller asking "same address
         // space?" was answered about descriptor tables, and vice versa.
         abi::KCMP_VM => {

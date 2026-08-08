@@ -296,7 +296,7 @@ fn ioctl_fibmap(cur: &sched::Task, file: &vfs::File, arg: u64) -> i64 {
     rv
 }
 
-/// `ioctl_preallocate` (Linux `fs/ioctl.c`) — the legacy XFS space-reservation
+/// `ioctl_preallocate` — the legacy XFS space-reservation
 /// ioctls. Only the `l_whence` fixup belongs here; the range, mode, writability
 /// and inode-flag ladder is `vfs_fallocate`'s, and duplicating it produced the
 /// wrong errno (`EINVAL` where Linux reports `EFBIG` on wraparound).

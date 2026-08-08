@@ -1,11 +1,11 @@
-// Quota types (linux/quota.h).
+// Quota types (quotactl UAPI).
 pub const USRQUOTA: u64 = 0;
 pub const GRPQUOTA: u64 = 1;
 pub const PRJQUOTA: u64 = 2;
 pub const MAXQUOTAS: u64 = 3;
 
 // Q_* subcommands — values AFTER the `>> 8` decode; carry the 0x800000 prefix
-// that Linux's QCMD macro OR-folds into the packed cmd (linux/quota.h).
+// that Linux's QCMD macro OR-folds into the packed cmd (quotactl UAPI).
 pub const Q_SYNC: u64 = 0x800001;
 pub const Q_QUOTAON: u64 = 0x800002;
 pub const Q_QUOTAOFF: u64 = 0x800003;

@@ -1,7 +1,7 @@
 // ptrace(2) argument validation — the scalar checks Linux performs in
-// `kernel/ptrace.c` (`check_ptrace_options`, `valid_signal`, the SEIZE arm of
-// `ptrace_attach`, `ptrace_regset`) and `arch/x86/kernel/ptrace.c`
-// (`arch_ptrace` PEEKUSR/POKEUSR bounds).
+// `check_ptrace_options`, `valid_signal`, the SEIZE arm of
+// `ptrace_attach`, `ptrace_regset`, and x86's
+// `arch_ptrace` PEEKUSR/POKEUSR bounds.
 //
 // Hosted-testable: scalars in, `Errno` out. The shim never open-codes any of
 // these, so an errno divergence is a unit-test failure rather than a boot

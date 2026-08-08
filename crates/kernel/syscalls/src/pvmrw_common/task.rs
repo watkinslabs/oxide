@@ -8,7 +8,7 @@ use vmm::AddressSpace;
 /// Resolve the target's `AddressSpace` and return the owning `Arc`, having
 /// first applied Linux's access gate.
 ///
-/// `mm_access` order (`kernel/fork.c`), which is what a caller observes:
+/// `mm_access` order, which is what a caller observes:
 ///   1. `find_get_task_by_vpid(pid)` — ESRCH. `pid <= 0` never names a task
 ///      (`find_vpid` starts its idr at 1), so it is ESRCH too.
 ///   2. `get_task_mm(task)` — a task with no mm (kernel thread, exited) is

@@ -13,7 +13,7 @@ fn klog_cpu_id() -> u32 {
     #[cfg(target_arch = "aarch64")] { hal_aarch64::ArmCpuOps::current_cpu() }
 }
 
-/// Linux `printk_caller_id()` (`kernel/printk/printk.c`): the task pid in task
+/// Linux `printk_caller_id()`: the task pid in task
 /// context, `CALLER_ID_MASK + cpu` in interrupt context. klog's line assembly
 /// only joins a fragment to a pending line when this matches, so a hard IRQ
 /// that logs while task context is mid-line starts its own line instead of

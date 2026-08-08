@@ -1,19 +1,20 @@
-// Memory-protection-key syscall bodies — `mm/mprotect.c`
+// Memory-protection-key syscall bodies — Linux's
 // `SYSCALL_DEFINE2(pkey_alloc)`, `SYSCALL_DEFINE1(pkey_free)`, and the pkey
 // admission clause of `do_mprotect_pkey`. Shared by slots 329/330/331.
 //
 // The per-mm allocation map and the `mm_pkey_*` helpers live with the mm
-// (`vmm::pkeys`, mirroring `asm/pkeys.h`); this module owns only what
-// `mm/mprotect.c` owns — the UAPI masks and the validation ORDER.
+// (`vmm::pkeys`, mirroring Linux's per-arch pkeys header); this module owns
+// only what Linux's pkey syscall bodies own — the UAPI masks and the
+// validation ORDER.
 //
 // **B1479 corrects B1434.** B1434 replaced an ENOSYS strawman with a flat
 // ENOSPC on both arches, reasoning that "pkey 0 is allocated implicitly when
 // the mm is created, so the allocation map is already full". True on arm64,
-// false on x86_64: `arch/x86/include/asm/mmu_context.h` `init_new_context`
+// false on x86_64: Linux's `init_new_context`
 // sets `pkey_allocation_map = 0x1` *inside*
 // `if (cpu_feature_enabled(X86_FEATURE_OSPKE))`, so on a CPU without OSPKE the
 // map starts empty, `mm_pkey_alloc` hands out key 0, and the syscall fails one
-// step later in `arch_set_user_pkey_access` (`arch/x86/kernel/fpu/xstate.c`,
+// step later in `arch_set_user_pkey_access` (
 // `if (!cpu_feature_enabled(X86_FEATURE_OSPKE)) return -EINVAL`). The rollback
 // `mm_pkey_free` then fails too — key 0 equals the uninitialised
 // `execute_only_pkey`, so `mm_pkey_is_allocated` refuses it — leaving the bit
@@ -30,16 +31,16 @@
 // explicitly (`ARCH` selects only one, so the other half — and the two
 // aarch64-exclusive mask bits it is built from — is unreferenced by the kernel
 // build by design, on whichever arch is being compiled).
-#![allow(dead_code, reason = "per-arch pkey UAPI table (mm/mprotect.c): the non-native arch's descriptor + masks are kept for the hosted differential tests")]
+#![allow(dead_code, reason = "per-arch pkey UAPI table: the non-native arch's descriptor + masks are kept for the hosted differential tests")]
 
 use syscall::errno::Errno;
 use vmm::pkeys::{self, PkeyArch};
 
-/// `PKEY_DISABLE_ACCESS` (`uapi/asm-generic/mman-common.h`), both arches.
+/// `PKEY_DISABLE_ACCESS`, both arches.
 pub const PKEY_DISABLE_ACCESS: u64 = 0x1;
 /// `PKEY_DISABLE_WRITE`, both arches.
 pub const PKEY_DISABLE_WRITE: u64 = 0x2;
-/// `PKEY_DISABLE_EXECUTE` — aarch64 only (`arch/arm64/include/uapi/asm/mman.h`).
+/// `PKEY_DISABLE_EXECUTE` — aarch64 only.
 pub const PKEY_DISABLE_EXECUTE: u64 = 0x4;
 /// `PKEY_DISABLE_READ` — aarch64 only. POE can revoke read; PKRU cannot
 /// express read-without-access, so x86 defines no such bit and rejects it.
@@ -48,7 +49,7 @@ pub const PKEY_DISABLE_READ: u64 = 0x8;
 /// "Keep the current key" sentinel accepted by `pkey_mprotect`.
 pub const PKEY_KEEP: i32 = -1;
 
-/// The `mm/mprotect.c`-side per-arch facts: the `PKEY_ACCESS_MASK` `init_val`
+/// The pkey-syscall-side per-arch facts: the `PKEY_ACCESS_MASK` `init_val`
 /// is validated against, and the errno `arch_set_user_pkey_access` returns
 /// when the hardware feature is absent.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -56,7 +57,7 @@ pub struct PkeyAbi {
     /// `PKEY_ACCESS_MASK` — the only bits `init_val` may carry.
     pub access_mask: u64,
     /// `arch_set_user_pkey_access` with the hardware feature off: x86 returns
-    /// `-EINVAL`, arm64 (`arch/arm64/mm/mmu.c`) returns `-ENOSPC`.
+    /// `-EINVAL`, arm64 returns `-ENOSPC`.
     pub set_access_err: Errno,
     /// The mm-side descriptor for the same arch.
     pub mm: PkeyArch,

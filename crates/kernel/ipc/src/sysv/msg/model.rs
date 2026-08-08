@@ -1,4 +1,4 @@
-//! Linux `struct msg_queue` (`ipc/msg.c`) and its per-namespace registry.
+//! Linux `struct msg_queue` and its per-namespace registry.
 //!
 //! The mutable half sits behind the queue's own lock so `msgsnd` / `msgrcv`
 //! evaluate the queue-full / message-match condition AND register on a wait

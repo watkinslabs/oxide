@@ -1,8 +1,8 @@
 // Random-UUID bodies for `/proc/sys/kernel/random/{uuid,boot_id}` and
 // `/sys/kernel/random/{uuid,boot_id}`.
 //
-// Linux `drivers/char/random.c` `proc_do_uuid` (the `random_table` handler for
-// BOTH leaves) distinguishes them by `.data`:
+// Linux's `proc_do_uuid` handler for
+// BOTH leaves distinguishes them by `.data`:
 //   * `uuid`    — registered with NO `.data`, so every read takes the
 //     `if (!uuid) { uuid = tmp_uuid; generate_random_uuid(uuid); }` branch:
 //     a FRESH v4 UUID per read, from a stack buffer.
@@ -12,9 +12,9 @@
 // Both are mode 0444 and both render through `proc_dostring`, which appends the
 // trailing newline — 36 UUID chars + '\n'.
 //
-// Bit-setting is Linux `lib/uuid.c` `generate_random_uuid`: 16 random bytes,
+// Bit-setting matches Linux's `generate_random_uuid`: 16 random bytes,
 // version 4 in the high nibble of byte 6, DCE variant in the top two bits of
-// byte 8. Rendering is `%pU` (`lib/vsprintf.c` `uuid_string`, default
+// byte 8. Rendering matches `%pU` (default
 // big-endian/lowercase): the 16 bytes in index order, lowercase hex, hyphens
 // after bytes 4, 6, 8 and 10.
 //
@@ -24,20 +24,20 @@
 
 use alloc::vec::Vec;
 
-/// `UUID_SIZE` (`include/linux/uuid.h`).
+/// `UUID_SIZE`.
 pub const UUID_BYTES: usize = 16;
-/// `UUID_STRING_LEN` (`include/linux/uuid.h`) — 36 chars, no NUL, no newline.
+/// `UUID_STRING_LEN` — 36 chars, no NUL, no newline.
 pub const UUID_STRING_LEN: usize = 36;
 /// `proc_dostring` read shape: the string plus its terminating newline.
 pub const UUID_LINE_LEN: usize = UUID_STRING_LEN + 1;
 
-/// Byte carrying the UUID version nibble (`lib/uuid.c`: `uuid[6]`).
+/// Byte carrying the UUID version nibble (`uuid[6]`).
 const VERSION_BYTE: usize = 6;
 /// Mask retaining the random low nibble of `VERSION_BYTE`.
 const VERSION_KEEP_MASK: u8 = 0x0f;
 /// Version 4 ("truly random generation") in the high nibble.
 const VERSION_4: u8 = 0x40;
-/// Byte carrying the UUID variant bits (`lib/uuid.c`: `uuid[8]`).
+/// Byte carrying the UUID variant bits (`uuid[8]`).
 const VARIANT_BYTE: usize = 8;
 /// Mask retaining the random low six bits of `VARIANT_BYTE`.
 const VARIANT_KEEP_MASK: u8 = 0x3f;
@@ -47,8 +47,8 @@ const VARIANT_DCE: u8 = 0x80;
 /// Byte index of each hyphen group boundary in `%pU` output.
 const GROUP_ENDS: [usize; 4] = [4, 6, 8, 10];
 
-/// Stamp version 4 + DCE variant over otherwise-random bytes — `lib/uuid.c`
-/// `generate_random_uuid`. # C: O(1)
+/// Stamp version 4 + DCE variant over otherwise-random bytes, matching
+/// Linux's `generate_random_uuid`. # C: O(1)
 pub fn set_uuid_v4_bits(uuid: &mut [u8; UUID_BYTES]) {
     uuid[VERSION_BYTE] = (uuid[VERSION_BYTE] & VERSION_KEEP_MASK) | VERSION_4;
     uuid[VARIANT_BYTE] = (uuid[VARIANT_BYTE] & VARIANT_KEEP_MASK) | VARIANT_DCE;

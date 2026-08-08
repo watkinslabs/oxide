@@ -1,5 +1,5 @@
 //! System V semaphores per `24` — `semget`/`semop`/`semtimedop`/`semctl` and
-//! `SEM_UNDO`, tracking Linux `ipc/sem.c`.
+//! `SEM_UNDO`, tracking Linux semantics.
 //!
 //! Module manifest:
 //!   `model` — `struct sem` / `struct sem_array`, the per-namespace registry,

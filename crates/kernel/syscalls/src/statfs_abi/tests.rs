@@ -29,7 +29,7 @@ fn sample() -> SbStatFs {
 
 #[test]
 fn struct_statfs_is_120_bytes_on_both_lp64_arches() {
-    // asm-generic/statfs.h: 7 __statfs_word + __kernel_fsid_t (2×int) +
+    // struct statfs: 7 __statfs_word + __kernel_fsid_t (2×int) +
     // 3 __statfs_word + f_spare[4] = (7+1+3+4)*8 = 120 on LP64. x86_64 and
     // aarch64 both take the generic 64-bit definition, so ONE encoder serves
     // both — this constant is the lockstep contract.

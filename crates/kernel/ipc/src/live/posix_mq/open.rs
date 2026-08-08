@@ -1,6 +1,4 @@
-// `mq_open(2)` (slot `NR_MQ_OPEN`) and `mq_unlink(2)` (slot `NR_MQ_UNLINK`) —
-// Linux `do_mq_open` (`ipc/mqueue.c:911-938`) and `SYSCALL_DEFINE1(mq_unlink)`
-// (`:940-972`).
+// `mq_open(2)` (slot `NR_MQ_OPEN`) and `mq_unlink(2)` (slot `NR_MQ_UNLINK`).
 
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -31,8 +29,8 @@ fn read_name(uptr: u64) -> Result<String, Errno> {
     Ok(String::from(s))
 }
 
-/// `SYSCALL_DEFINE4(mq_open)` copies the WHOLE `struct mq_attr` before
-/// `do_mq_open` runs (`ipc/mqueue.c:930-938`), so a bad `u_attr` is `EFAULT`
+/// The syscall entry copies the WHOLE `struct mq_attr` before
+/// the open logic runs, so a bad `u_attr` is `EFAULT`
 /// ahead of every name and existence error. Only `mq_maxmsg`/`mq_msgsize` are
 /// consumed; the rest of the struct is read (for the fault) and discarded.
 /// # C: O(1)
@@ -45,8 +43,7 @@ fn read_attr(uptr: u64) -> Result<(i64, i64), Errno> {
     Ok((read_user_i64(uptr + MQ_ATTR_MAXMSG_OFF)?, read_user_i64(uptr + MQ_ATTR_MSGSIZE_OFF)?))
 }
 
-/// Publish `inode` as a descriptor. Linux `do_mq_open` installs it with
-/// `FD_ADD(O_CLOEXEC, ...)` (`ipc/mqueue.c:924`): an mq descriptor is
+/// Publish `inode` as a descriptor. An mq descriptor is
 /// UNCONDITIONALLY close-on-exec, whatever `oflag` asked for. That is also
 /// what keeps a notification registration from surviving an `exec` into an
 /// unrelated program.
@@ -95,9 +92,9 @@ pub fn sys_mq_open(args: &syscall::SyscallArgs) -> i64 {
             let mut mask = 0u32;
             if may_read { mask |= vfs::namei::MAY_READ; }
             if may_write { mask |= vfs::namei::MAY_WRITE; }
-            // Linux `inode_permission(&nop_mnt_idmap, d_inode(dentry), acc)`
-            // (`mqueue.c:885`). A zero mask (`O_ACCMODE == 3` reached through a
-            // create) grants trivially, exactly as `inode_permission` does.
+            // A zero mask (`O_ACCMODE == 3` reached through a
+            // create) grants trivially, exactly as the standard inode
+            // permission check does.
             if mask != 0 {
                 if let Err(e) = vfs::namei::inode_permission(&inode, mask, &cred) {
                     return -(e as i64);
@@ -112,7 +109,7 @@ pub fn sys_mq_open(args: &syscall::SyscallArgs) -> i64 {
             let created = match validate_attr(attr, &sysctls, cap_res) {
                 Ok(c) => c, Err(e) => return errno(e),
             };
-            // `vfs_mkobj(dentry, mode & ~current_umask(), ...)` (`mqueue.c:875`).
+            // The new inode's mode is the caller's requested mode masked by umask.
             let perm = (mode & 0o7777) & !(cur.umask() as u16);
             let rlimit_cur = cur.rlimit(sched::rlimit::rlim::MSGQUEUE).0;
             let inode = match model::create_linked(
@@ -137,7 +134,7 @@ pub fn sys_mq_unlink(args: &syscall::SyscallArgs) -> i64 {
     let ns = match ipc_ns() { Ok(n) => n, Err(e) => return errno(e) };
     let Some(inode) = model::lookup(ns, &name) else { return errno(Errno::Enoent) };
     let root = model::root_inode(ns);
-    // Linux `vfs_unlink` → `may_delete` on the mqueue root: write+search on a
+    // Unlink permission on the mqueue root: write+search on a
     // 01777 directory (so anyone may try) and then the STICKY owner test, which
     // is what makes a non-owner's `mq_unlink` EPERM rather than a silent
     // deletion of somebody else's queue.

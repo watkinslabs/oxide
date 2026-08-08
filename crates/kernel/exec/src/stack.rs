@@ -13,7 +13,7 @@
 
 use crate::{uapi::*, LoadedImage};
 
-/// SysV auxv keys (subset). Full set in `linux/auxvec.h`.
+/// SysV auxv keys (subset). Full set in the SysV auxiliary-vector UAPI.
 
 #[cfg(target_arch = "x86_64")]
 const PLATFORM: &[u8] = b"x86_64\0";
@@ -25,7 +25,7 @@ const PLATFORM: &[u8] = b"aarch64\0";
 /// (Linux `mm->arg_start`..`env_end` + `start_stack`), the source for
 /// `/proc/<pid>/{cmdline,environ,stat}`. `arg_*`/`env_*` are `0` when the
 /// corresponding vector is empty.
-/// The credential half of the auxiliary vector (`fs/binfmt_elf.c:261-265`
+/// The credential half of the auxiliary vector (Linux's
 /// `create_elf_tables`): `AT_UID`/`AT_EUID`/`AT_GID`/`AT_EGID` are the NEW
 /// credentials `from_kuid_munged` through the task's user namespace, and
 /// `AT_SECURE` is `bprm->secureexec`.
@@ -52,7 +52,7 @@ pub struct StackLayout {
     pub env_start: u64,
     pub env_end:   u64,
     /// The auxiliary vector written onto the stack, for the mm's
-    /// `saved_auxv` copy (Linux `fs/binfmt_elf.c` fills `mm->saved_auxv`
+    /// `saved_auxv` copy (Linux fills `mm->saved_auxv`
     /// FIRST and copies it to the stack from there). `prctl(PR_GET_AUXV)`
     /// and `/proc/<pid>/auxv` serve that copy, so it has to survive here.
     pub auxv:      [(u64, u64); AUXV_SLOTS],
@@ -105,7 +105,7 @@ pub unsafe fn build_user_stack(
     rnd: &aslr::ExecRnd,
 ) -> Option<StackLayout> {
     // Linux `create_elf_tables` opens with `p = arch_align_stack(p)`
-    // (`fs/binfmt_elf.c:193`) — a sub-page shuffle of the string area so
+    // — a sub-page shuffle of the string area so
     // sibling processes on an SMT pair do not share L1 cache sets, then a hard
     // 16-byte align for the SysV ABI. Applied to the cursor before the first
     // push, which is exactly where Linux applies it.
@@ -129,7 +129,7 @@ pub unsafe fn build_user_stack(
     // Push envp then argv, each from the LAST element to the FIRST. The
     // cursor moves top-down, so pushing last→first makes the WITHIN-block
     // memory order FORWARD — argv[0] at the LOWEST address, argv[last] just
-    // below envp[0] — byte-for-byte matching Linux `fs/exec.c copy_strings`
+    // below envp[0] — byte-for-byte matching Linux's `copy_strings`
     // (so `/proc/<pid>/cmdline` reads argv[0]\0argv[1]\0… in order). envp is
     // pushed first so the env block sits ABOVE the argv block: util-linux
     // login's process_title_init needs env strings above argv[0], else its

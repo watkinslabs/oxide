@@ -1,5 +1,5 @@
 //! `mount(MS_SHARED|MS_PRIVATE|MS_SLAVE|MS_UNBINDABLE)`'s admission ladder
-//! (Linux `fs/namespace.c::do_change_type`), as a PURE decision over facts the
+//! (`do_change_type`), as a PURE decision over facts the
 //! syscall shim samples.
 //!
 //! The shim used to accept-and-noop whenever the target was not a mount root,

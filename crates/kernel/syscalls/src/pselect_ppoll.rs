@@ -1,7 +1,7 @@
-// Shared pselect6/ppoll (slots 270/271) decision rules — Linux `fs/select.c`
-// (`SYSCALL_DEFINE6(pselect6)`, `do_pselect`, `SYSCALL_DEFINE5(ppoll)`,
-// `poll_select_finish`, `do_poll`, `do_select`, `core_sys_select`) and
-// `kernel/signal.c` (`set_user_sigmask`).
+// Shared pselect6/ppoll (slots 270/271) decision rules — Linux's
+// `SYSCALL_DEFINE6(pselect6)`, `do_pselect`, `SYSCALL_DEFINE5(ppoll)`,
+// `poll_select_finish`, `do_poll`, `do_select`, `core_sys_select`, and
+// `set_user_sigmask`.
 //
 // NOT `#[cfg(target_os = "oxide-kernel")]`: these two slots are the event-loop
 // core (glibc implements `poll(2)` on `ppoll` and `select(2)` on `pselect6`),
@@ -36,7 +36,7 @@ pub fn user_sigmask_wanted(ss_ptr: u64, ss_len: u64) -> Result<bool, Errno> {
 }
 
 /// Linux `poll_select_finish`'s `restore_saved_sigmask_unless(ret ==
-/// -ERESTARTNOHAND)` (`fs/select.c:301`). `-ERESTARTNOHAND` is the one return
+/// -ERESTARTNOHAND)`. `-ERESTARTNOHAND` is the one return
 /// value that must LEAVE the temporary mask installed: the syscall-return tail
 /// then either builds a handler frame under it (`Task::sigmask_to_save` folds
 /// the saved mask into what `rt_sigreturn` restores) or restores it itself. A
@@ -49,8 +49,8 @@ pub fn restores_saved_sigmask(rv: i64) -> bool {
 
 /// Linux `do_poll` / `do_select` break order for one readiness scan:
 /// `if (!count) { if (signal_pending(current)) count = -ERESTARTNOHAND; }`
-/// (`fs/select.c:936-940`) / `core_sys_select`'s `ret = -ERESTARTNOHAND; if
-/// (signal_pending(current)) goto out;` (`fs/select.c:681-686`), then `if
+/// / `core_sys_select`'s `ret = -ERESTARTNOHAND; if
+/// (signal_pending(current)) goto out;`, then `if
 /// (count || timed_out) break;`. Readiness outranks a pending signal, and a
 /// pending signal outranks an expired timeout.
 ///
@@ -74,19 +74,19 @@ pub fn wait_verdict(ready: i64, timed_out: bool, signal_pending: bool) -> Option
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum TimeoutWriteback {
     /// Linux's `if (!p) return ret;` / "No update for zero timeout" early
-    /// returns (`fs/select.c:303-311`) — nothing to write, `ret` untouched.
+    /// returns — nothing to write, `ret` untouched.
     Skipped,
-    /// `STICKY_TIMEOUTS` persona: `goto sticky` (`fs/select.c:306-307`).
+    /// `STICKY_TIMEOUTS` persona: `goto sticky`.
     Sticky,
-    /// The residual timeout reached userspace (`fs/select.c:329/339/344/348`).
+    /// The residual timeout reached userspace.
     Wrote,
     /// `copy_to_user`/`put_timespec64` failed and control fell into `sticky:`.
     Faulted,
 }
 
 /// Linux `poll_select_finish`'s `sticky:` tail — `if (ret == -ERESTARTNOHAND)
-/// ret = -EINTR;` (`fs/select.c:361-363`). Reached ONLY when the residual
-/// timeout could not be written back, because the comment at `fs/select.c:353`
+/// ret = -EINTR;`. Reached ONLY when the residual
+/// timeout could not be written back, because Linux's own comment there
 /// spells out why: "because we're not updating the timeval, we can't restart
 /// the system call". A successful writeback — and the `!p` / zero-timeout
 /// early returns, which have nothing to update — keep `-ERESTARTNOHAND` so the

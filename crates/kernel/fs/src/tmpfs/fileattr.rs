@@ -1,26 +1,24 @@
-// `i_op->fileattr_{get,set}` for tmpfs — Linux `mm/shmem.c`
-// `shmem_fileattr_get` / `shmem_fileattr_set` / `shmem_set_inode_flags`.
+// `i_op->fileattr_{get,set}` for tmpfs: get/set the chattr-style flag word
+// and derive/apply it against the inode's own state.
 // Reached by `FS_IOC_{GET,SET}FLAGS`, `FS_IOC_FS{GET,SET}XATTR` (slot 16) and
 // by `file_getattr(2)` / `file_setattr(2)` (slots 468/469). Without it every
-// tmpfs mount — `/tmp`, `/run`, `/dev/shm` — answered `EOPNOTSUPP` where Linux
-// answers `0`, and `chattr +i` on a tmpfs file was impossible.
+// tmpfs mount — `/tmp`, `/run`, `/dev/shm` — answered `EOPNOTSUPP` where the
+// real ABI answers `0`, and `chattr +i` on a tmpfs file was impossible.
 //
 // STORAGE: the inode's own `i_flags` word (`vfs::FileAttr::from_i_flags` is the
-// reverse map). Linux parks the chattr word in `shmem_inode_info.fsflags`
-// because its `inode->i_flags` has no `NODUMP` bit; the oxide inode carries
-// `S_NODUMP` itself, so there is no second copy to drift.
+// reverse map) — a single copy, so there is nothing to drift.
 
 use vfs::inode::{FS_APPEND_FL, FS_CASEFOLD_FL, FS_IMMUTABLE_FL, FS_NOATIME_FL, FS_NODUMP_FL,
                  FS_XFLAG_COMMON, S_APPEND, S_CASEFOLD, S_IMMUTABLE, S_NOATIME, S_NODUMP};
 use vfs::{FileAttr, FileType, Inode, KResult, VfsError};
 
-/// `SHMEM_FL_USER_MODIFIABLE` (`include/linux/shmem_fs.h`) — everything
-/// `shmem_fileattr_set` will accept; any other bit is `EOPNOTSUPP`.
+/// Every chattr-style bit tmpfs's `fileattr_set` will accept; any other bit
+/// is `EOPNOTSUPP`.
 const SHMEM_FL_USER_MODIFIABLE: u32 =
     FS_IMMUTABLE_FL | FS_APPEND_FL | FS_NODUMP_FL | FS_NOATIME_FL | FS_CASEFOLD_FL;
 
-/// `fileattr_has_fsx` (`include/linux/fileattr.h`): the request carries
-/// `fsxattr`-only state tmpfs cannot store. `fsx_valid` is not part of the
+/// Whether the request carries `fsxattr`-only state tmpfs cannot store.
+/// `fsx_valid` is not part of the
 /// `i_op` signature here; it is implied, because `vfs::fileattr_set` fills the
 /// `fsx_*` fields from the CURRENT attrs on the `FS_IOC_SETFLAGS` path, and
 /// tmpfs's current attrs never carry any. # C: O(1)

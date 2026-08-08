@@ -1,4 +1,4 @@
-//! dcache primitives per Linux `fs/dcache.c`.
+//! dcache primitives.
 //!
 //! Module manifest:
 //! - `hash`: global `(parent,name)` dentry hash table and seqcount probes.

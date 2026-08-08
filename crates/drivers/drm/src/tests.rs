@@ -284,7 +284,7 @@ const IOC_RW: u64 = 3;
 /// `_IOC(dir, 'd', nr, size)` — DRM's ioctl type byte is 'd' (0x64).
 const fn ioc(dir: u64, nr: u64, size: u64) -> u64 { (dir << 30) | (size << 16) | (0x64 << 8) | nr }
 
-/// Sizes taken from `include/uapi/drm/{drm.h,drm_mode.h}` in linux-master.
+/// Sizes match the Linux DRM/KMS UAPI's core and modesetting struct layouts.
 #[test]
 fn ioctl_numbers_encode_their_linux_struct_size() {
     assert_eq!(DRM_IOCTL_MODE_ATOMIC,            ioc(IOC_RW, 0xBC, 56), "drm_mode_atomic");
@@ -334,7 +334,7 @@ fn wire_structs_are_the_size_their_ioctl_number_claims() {
 /// `drm_mode_create_blob` shipped as (length, blob_id, data) instead of
 /// (data, length, blob_id), which made `length` the low half of the caller's
 /// data pointer and failed every CREATEPROPBLOB with EINVAL.
-/// Offsets are from `include/uapi/drm/drm_mode.h`.
+/// Offsets match the Linux DRM/KMS UAPI's modesetting struct layout.
 #[test]
 fn wire_struct_field_offsets_match_linux() {
     use core::mem::offset_of;

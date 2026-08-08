@@ -27,7 +27,7 @@ const CG_DIR_MODE: u16 = 0o755;
 const CG_FILE_MODE_READ_ONLY: u16 = 0o444;
 const CG_FILE_MODE_WRITABLE: u16 = 0o644;
 
-/// cgroup2 superblock magic (`linux/magic.h` CGROUP2_SUPER_MAGIC) — the
+/// cgroup2 superblock magic (`CGROUP2_SUPER_MAGIC`) — the
 /// distinct `fsid` for the unified hierarchy so mount-point detection sees
 /// the `/sys/fs/cgroup` boundary.
 /// Backend-private state (`i_private`) for a cgroup directory: the node id

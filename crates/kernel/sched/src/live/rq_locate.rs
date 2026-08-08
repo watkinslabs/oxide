@@ -4,8 +4,8 @@
 // (`RunqueueInner::enqueue`'s `on_rq` guard). Any operation that has to
 // re-place a queued task must therefore dequeue it from ITS rq — the one
 // named by `task_rq(p)` — not from the rq of whatever CPU happens to be
-// running the syscall. Linux states this directly in `kernel/sched/core.c`:
-// `__sched_setscheduler` opens with `rq = task_rq_lock(p, &rf)`, and both
+// running the syscall. Linux `__sched_setscheduler` opens with
+// `rq = task_rq_lock(p, &rf)`, and both
 // `sched_change_begin()` and `sched_change_end()` independently recompute
 // `rq = task_rq(p)` and `lockdep_assert_rq_held(rq)`, so the dequeue and the
 // matching enqueue provably target the same, task-owned runqueue.

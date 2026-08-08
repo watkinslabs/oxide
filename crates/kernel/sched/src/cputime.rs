@@ -8,7 +8,7 @@
 /// nice-0 task accrues vruntime at exactly wall-clock rate.
 pub const NICE_0_WEIGHT: u32 = 1024;
 
-/// Linux `sched_prio_to_weight[]` (kernel/sched/core.c): nice -20..19 →
+/// Linux `sched_prio_to_weight[]`: nice -20..19 →
 /// load weight. Each nice step is ~1.25× CPU share. Index = nice + 20.
 pub const SCHED_PRIO_TO_WEIGHT: [u32; 40] = [
     /* -20 */ 88761, 71755, 56483, 46273, 36291,

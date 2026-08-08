@@ -11,13 +11,13 @@ use crate::utimes_abi::iattr_touch;
 /// `sys_utimensat(dirfd, path, times[2], flags)` — slot 280.
 /// `times == NULL` ⇒ both atime and mtime = now. Each slot may be UTIME_NOW,
 /// UTIME_OMIT, or a real timespec — including a PRE-1970 one, which Linux
-/// accepts because `nsec_valid` (`fs/utimes.c:13-19`) checks `tv_nsec` alone
+/// accepts because `nsec_valid` checks `tv_nsec` alone
 /// and never bounds `tv_sec`. Routes through `notify_change`: setting a
 /// specific time needs owner/CAP_FOWNER (EPERM), setting "now"/NULL needs
 /// MAY_WRITE (EACCES); EROFS on a read-only mount. `AT_SYMLINK_NOFOLLOW`
 /// operates on the symlink itself (U2); `AT_EMPTY_PATH` stamps the dirfd.
 ///
-/// Ladder order is `SYSCALL_DEFINE4(utimensat)`'s (`fs/utimes.c:141-160`):
+/// Ladder order is `SYSCALL_DEFINE4(utimensat)`'s:
 /// copy in (EFAULT) → both-UTIME_OMIT no-op → flag check → lookup →
 /// `nsec_valid`. The both-OMIT case therefore succeeds without the path being
 /// touched at all ("Nothing to do, we must not even check the path").
@@ -35,7 +35,7 @@ pub fn sys_utimensat(args: &SyscallArgs) -> i64 {
             Err(rv) => return rv,
         }
     };
-    // `do_utimes_fd` takes no flags at all (`fs/utimes.c:110-111`): the fd form
+    // `do_utimes_fd` takes no flags at all: the fd form
     // rejects even AT_SYMLINK_NOFOLLOW, which is legal on the path form.
     let fd_form = crate::utimes_abi::utimes_target(dirfd, path_ptr == 0)
         != crate::utimes_abi::UtimesTarget::Path;

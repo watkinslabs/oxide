@@ -8,7 +8,7 @@ use crate::registry;
 #[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum NamespaceKind { Cgroup, Ipc, Mnt, Net, Pid, Time, User, Uts }
 
-/// Linux `pidns_memfd_noexec_scope` values (`include/linux/pid_namespace.h`).
+/// Per-pid-namespace `memfd` noexec-seal enforcement scope values.
 pub const PID_MEMFD_NOEXEC_SCOPE_EXEC: u8 = 0;
 pub const PID_MEMFD_NOEXEC_SCOPE_NOEXEC_SEAL: u8 = 1;
 pub const PID_MEMFD_NOEXEC_SCOPE_NOEXEC_ENFORCED: u8 = 2;

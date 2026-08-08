@@ -1,4 +1,4 @@
-//! `inode_owner_or_capable` (Linux `fs/inode.c`) — the canonical
+//! `inode_owner_or_capable` — the canonical
 //! owner-or-`CAP_FOWNER` predicate chmod / specific-time-utimes / chattr /
 //! `setattr_prepare` reduce to. Before this helper the test lived only inline as
 //! `cred.uid == vfsuid || cred.cap_fowner` (setattr_prepare / may_chmod), which

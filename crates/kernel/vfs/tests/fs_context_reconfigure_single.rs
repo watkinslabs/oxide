@@ -1,4 +1,4 @@
-//! `reconfigure_single` (Linux `fs/super.c`) — the monolithic-data remount
+//! `reconfigure_single` — the monolithic-data remount
 //! wrapper a single-instance pseudo-fs uses: build a FOR_RECONFIGURE context
 //! over the live sb's root, replay parsed params, run `reconfigure_super`, tear
 //! the context down (`put_fs_context`). Fails-before: only the lower

@@ -1,5 +1,4 @@
-//! `touch_atime` / `file_accessed` PLUMBING (Linux fs/inode.c `touch_atime`,
-//! include/linux/fs.h `file_accessed`). The pure decision ladder is covered by
+//! `touch_atime` / `file_accessed` PLUMBING. The pure decision ladder is covered by
 //! `inode_atime_policy.rs`; this file proves the ladder is actually WIRED — a
 //! live inode + a live mount, and the timestamp really moves (or really does
 //! not) through `i_op->update_time(S_ATIME)`.

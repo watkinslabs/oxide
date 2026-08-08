@@ -420,7 +420,7 @@ pub fn device_inode_ioctl(inode: &Inode, cmd: u32, arg: usize) -> KResult<usize>
     }
 }
 
-/// `init_special_inode` (Linux `fs/inode.c`) — build the right special inode for
+/// `init_special_inode` — build the right special inode for
 /// a `mknod(2)` type, binding the op set by `S_IFMT`. `rdev` is consumed only
 /// for the two device types. A non-special `FileType` is a bogus `i_mode` and
 /// returns `Einval`. # C: O(1)

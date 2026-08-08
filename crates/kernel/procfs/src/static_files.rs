@@ -114,8 +114,8 @@ pub fn register_static_files() {
         "/sys/kernel/random/entropy_avail",
         StaticFileInode::new(b"4096\n") as InodeRef,
     );
-    // /sys/devices/system/cpu — the CPU device subsystem (Linux
-    // drivers/base/cpu.c). ONE dynamic kobject directory owns the whole
+    // /sys/devices/system/cpu — the CPU device subsystem. ONE dynamic
+    // kobject directory owns the whole
     // subtree: control files + a `cpuN` device dir per CPU, enumerated at
     // readdir time so the set tracks the live online_count() rather than a
     // boot-time snapshot taken before the APs are up. nproc / htop /

@@ -1,5 +1,5 @@
-// Blocking edge of `mq_timedsend(2)`/`mq_timedreceive(2)` — Linux
-// `ipc/mqueue.c` `prepare_timeout` (`:838-846`) and `wq_sleep` (`:708-752`).
+// Blocking edge of `mq_timedsend(2)`/`mq_timedreceive(2)`: timeout parsing
+// and the parked-wait terminal check.
 //
 // Split out of `posix_mq.rs` at the 500-line cap (`docs/08§7`). The pure
 // decision rules live in the non-gated `crate::mqueue_wait`; this file owns
@@ -10,14 +10,13 @@ use crate::mqueue_wait;
 /// `struct timespec` — two 64-bit words on both LP64 arches.
 const TIMESPEC_BYTES: u64 = 16;
 
-/// Linux `prepare_timeout` (`ipc/mqueue.c:838-846`) applied to the raw user
-/// pointer, plus the absolute-deadline conversion `wq_sleep` waits on
-/// (`mqueue.c:722-723`: `HRTIMER_MODE_ABS, CLOCK_REALTIME`).
+/// Timeout validation applied to the raw user
+/// pointer, plus the absolute-deadline conversion the wait loop waits on
+/// (`CLOCK_REALTIME`, absolute mode).
 ///
 /// Runs in the SYSCALL WRAPPER position — before the `mqdes` lookup — because
-/// `SYSCALL_DEFINE5(mq_timedsend)` (`mqueue.c:1236-1244`) validates the
-/// timespec before `do_mq_timedsend` reaches `fdget`, so a malformed timespec
-/// beats EBADF. `Ok(None)` = NULL pointer = wait forever.
+/// the timespec is validated before the descriptor is fetched, so a
+/// malformed timespec beats EBADF. `Ok(None)` = NULL pointer = wait forever.
 /// # C: O(1)
 pub(super) fn mq_abs_deadline(abstime: u64) -> Result<Option<u64>, i64> {
     use syscall::errno::Errno;
@@ -55,7 +54,7 @@ pub(super) fn mq_clock_monotonic_ns() -> u64 {
 /// # C: O(1)
 pub(super) fn mq_clock_realtime_ns() -> u64 { timekeeper::realtime_ns() }
 
-/// One `wq_sleep` iteration's terminal check (`ipc/mqueue.c:734-744`), shared
+/// One parked-wait iteration's terminal check, shared
 /// by send and receive so the signal-before-timeout order cannot drift.
 /// `None` = park again.
 /// # C: O(N_sig)

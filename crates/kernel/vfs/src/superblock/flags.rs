@@ -22,7 +22,7 @@ pub const SB_ACTIVE: u64 = 1 << 30;
 /// instance exists — which is where both `mount(2)` and `fsmount(2)` test it.
 pub const SB_NOUSER: u64 = 1 << 31;
 
-// `s_writers.frozen` freeze levels (Linux include/linux/fs.h). `freeze_super`
+// `s_writers.frozen` freeze levels. `freeze_super`
 // ratchets UNFROZEN → WRITE (block new write(2)) → PAGEFAULT (block mmap
 // faults) → FS (on-disk `freeze_fs`) → COMPLETE; `thaw_super` resets to
 // UNFROZEN. `sb_start_write` admits a writer only at UNFROZEN. Drives FIFREEZE
@@ -33,12 +33,12 @@ pub const SB_FREEZE_PAGEFAULT: u32 = 2;
 pub const SB_FREEZE_FS:        u32 = 3;
 pub const SB_FREEZE_COMPLETE:  u32 = 4;
 
-// --- `sb->s_iflags` (Linux `include/linux/fs/super_types.h`) — the
+// --- `sb->s_iflags` — the
 // KERNEL-INTERNAL superblock flag word, a space DISJOINT from the user-visible
-// `SB_*` bits in `s_flags` above. Set by `fill_super` (`fs/proc/root.c`
-// `proc_fill_super`, `fs/kernfs/mount.c` `kernfs_fill_super`, `fs/libfs.c`
-// `init_pseudo`); read by `path_noexec`, `may_open_dev` and — the reason this
-// word exists here — `fs/namespace.c` `mount_too_revealing`. ---
+// `SB_*` bits in `s_flags` above. Set by each filesystem's `fill_super` (procfs,
+// kernfs, and generic pseudo-fs instances all set it); read by the noexec and
+// device-open checks and — the reason this word exists here — the
+// already-visible-instance revealing check on new mounts. ---
 /// `SB_I_NOEXEC` — nothing on this filesystem is ever executable, whatever the
 /// per-mount `MNT_NOEXEC` says (Linux `path_noexec`).
 pub const SB_I_NOEXEC: u64 = 0x0000_0002;
@@ -57,16 +57,16 @@ pub const SB_I_NOIDMAP: u64 = 0x0000_2000;
 /// `FS_USERNS_MOUNT_RESTRICTED` (Linux `required_iflags`). # C: const
 pub const SB_I_USERNS_REQUIRED: u64 = SB_I_NOEXEC | SB_I_NODEV;
 
-/// `MAX_LFS_FILESIZE` on a 64-bit kernel (Linux include/linux/fs.h) — the
+/// `MAX_LFS_FILESIZE` on a 64-bit kernel — the
 /// default `s_maxbytes` a large-file backend reports. # C: O(1)
 pub const MAX_LFS_FILESIZE: u64 = i64::MAX as u64;
 
-/// `NSEC_PER_SEC` (Linux include/vdso/time64.h) — nanoseconds in one second,
+/// `NSEC_PER_SEC` — nanoseconds in one second,
 /// the per-second denominator [`SuperBlock::timestamp_truncate`] floors the
 /// sub-second field against. # C: O(1)
 pub const NSEC_PER_SEC: u64 = 1_000_000_000;
 
-/// `TIME64_MIN`/`TIME64_MAX` (Linux include/linux/time64.h) — the widest
+/// `TIME64_MIN`/`TIME64_MAX` — the widest
 /// representable `time64_t` seconds-since-epoch range, the default
 /// `s_time_min`/`s_time_max` `alloc_super` installs before a backend narrows it
 /// to its on-disk timestamp field width (ext4 32-bit: 1901..2446). With these

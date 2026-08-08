@@ -1,7 +1,8 @@
-// `mm_pkey_*` conformance, both arch descriptors, on whichever host runs the
-// hosted suite. Every expectation below is traced from Linux source, not from
-// the man page: `pkey_alloc(2)` documents only ENOSPC and is silent about the
-// x86 first-call EINVAL that falls out of `arch_set_user_pkey_access`.
+// Protection-key allocation conformance, both arch descriptors, on whichever
+// host runs the hosted suite. Every expectation below is traced from the
+// verified kernel behaviour, not from the man page: `pkey_alloc(2)` documents
+// only ENOSPC and is silent about the x86 first-call EINVAL that falls out
+// of the per-arch user-pkey-access setup.
 
 use super::*;
 

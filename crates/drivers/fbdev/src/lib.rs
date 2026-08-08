@@ -1,6 +1,6 @@
 // Linux fbdev compat shim per docs/48. /dev/fb0..fbN over a DRM
-// dumb-buffer + scanout. Full FBIO* ioctl surface per
-// linux/include/uapi/linux/fb.h. No DRM modeset privileges
+// dumb-buffer + scanout. Full FBIO* ioctl surface per the Linux
+// fbdev UAPI. No DRM modeset privileges
 // needed; this crate is a thin presenter on top of `47`.
 
 #![no_std]

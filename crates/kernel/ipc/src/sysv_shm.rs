@@ -212,7 +212,7 @@ pub(super) fn lookup_segment_by_backing(backing: &Arc<dyn vmm::FileBacking>) -> 
     g.iter().find(|s| self::shmdt::backing_addr(&s.backing) == want).cloned()
 }
 
-/// Linux `shm_open` (`ipc/shm.c` `shm_vm_ops.open`): a new VMA references this
+/// Linux `shm_vm_ops.open`: a new VMA references this
 /// segment — `shmat`'s own mmap, a fork copy, or a fragment of a split.
 /// # C: O(N_segments)
 pub fn shm_vma_open(backing: &Arc<dyn vmm::FileBacking>) {
@@ -221,7 +221,7 @@ pub fn shm_vma_open(backing: &Arc<dyn vmm::FileBacking>) {
     }
 }
 
-/// Linux `shm_close` (`ipc/shm.c` `shm_vm_ops.close`): one VMA referencing
+/// Linux `shm_vm_ops.close`: one VMA referencing
 /// this segment is gone. The last one destroys a segment already marked
 /// `SHM_DEST`.
 /// # C: O(N_segments)

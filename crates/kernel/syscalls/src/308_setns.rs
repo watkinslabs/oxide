@@ -10,7 +10,7 @@ use syscall::SyscallArgs;
 #[path = "308_setns/from_pidfd.rs"]
 mod from_pidfd;
 
-/// `sys_setns(fd, nstype)` — `SYSCALL_DEFINE2(setns)` (`kernel/nsproxy.c:569`).
+/// `sys_setns(fd, nstype)` — `SYSCALL_DEFINE2(setns)`.
 ///
 /// Two fd shapes, as Linux: an `/proc/<pid>/ns/*` (nsfs) fd installs exactly
 /// that one namespace, and `nstype` — when non-zero — must name its type; a

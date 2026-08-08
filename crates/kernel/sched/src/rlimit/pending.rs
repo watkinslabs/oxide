@@ -1,5 +1,5 @@
 // `RLIMIT_SIGPENDING`: how many signal records one USER may hold queued
-// across every task it owns (Linux `sig_get_ucounts`, `kernel/signal.c`).
+// across every task it owns (Linux `sig_get_ucounts`).
 //
 // The counted resource is per-user, not per-task and not per-signal: the
 // account is charged when a record is queued and released when it is

@@ -6,7 +6,7 @@
 // The vfs-side decision is proven in `vfs/tests/mount_too_revealing.rs`; this
 // file proves the WIRING: that `mount(2)` actually consults it, refuses with
 // EPERM, grafts nothing on refusal, and installs the inherited MNT_LOCK_* bits
-// on the mount it does graft. Linux `fs/namespace.c` `do_new_mount_fc`:
+// on the mount it does graft. Linux's `do_new_mount_fc`:
 //
 //     if (unlikely(mount_too_revealing(sb, &mnt_flags))) {
 //             errorfcp(fc, "VFS", "Mount too revealing");

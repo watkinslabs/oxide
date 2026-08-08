@@ -1,5 +1,4 @@
-// Inode eviction — the `iput_final` → `ext4_evict_inode` half of the unlink
-// contract (`fs/ext4/inode.c` `ext4_evict_inode`, `fs/inode.c` `iput`).
+// Inode eviction — the last-reference-drop half of the unlink contract.
 //
 // `Mount::unlink` removes the NAME and, on the last link, records the inode on
 // the on-disk orphan list. Nothing is freed there. This module owns the other

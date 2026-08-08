@@ -1,6 +1,6 @@
-// `RWF_*` per-I/O flags (`include/uapi/linux/fs.h:424-457`), the
-// `kiocb_set_rw_flags()` admission ladder (`include/linux/fs.h:3427-3472`),
-// and the `pos_from_hilo` offset rule (`fs/read_write.c:1115-1119`) shared by
+// `RWF_*` per-I/O flags, the
+// `kiocb_set_rw_flags()` admission ladder,
+// and the `pos_from_hilo` offset rule shared by
 // preadv/preadv2/pwritev/pwritev2.
 //
 // No target gate: the offset rule is arch-conditional, and the pre-fix x86_64
@@ -18,10 +18,10 @@ pub const RWF_DSYNC:     u64 = 0x0000_0002;
 /// `RWF_SYNC` — per-write `O_SYNC` (implies DSYNC).
 pub const RWF_SYNC:      u64 = 0x0000_0004;
 /// `RWF_NOWAIT` — never block; requires `FMODE_NOWAIT` on the description or
-/// the call is `EOPNOTSUPP` (`include/linux/fs.h:3442-3445`).
+/// the call is `EOPNOTSUPP`.
 pub const RWF_NOWAIT:    u64 = 0x0000_0008;
 /// `RWF_APPEND` — force `IOCB_APPEND` for this operation; the supplied offset
-/// is then IGNORED (`fs/read_write.c:1748-1749`).
+/// is then IGNORED.
 pub const RWF_APPEND:    u64 = 0x0000_0010;
 /// `RWF_NOAPPEND` — clear `IOCB_APPEND` inherited from `O_APPEND` so the
 /// supplied offset is honoured; `EPERM` if the INODE is append-only.
@@ -33,7 +33,7 @@ pub const RWF_ATOMIC:    u64 = 0x0000_0040;
 pub const RWF_DONTCACHE: u64 = 0x0000_0080;
 /// `RWF_NOSIGNAL` — suppress SIGPIPE on a broken pipe write.
 pub const RWF_NOSIGNAL:  u64 = 0x0000_0100;
-/// `RWF_SUPPORTED` (`include/uapi/linux/fs.h:455-457`) — every other bit is
+/// `RWF_SUPPORTED` — every other bit is
 /// `EOPNOTSUPP`. The pre-fix constant was `0x1f`, which rejected the four flags
 /// Linux has added since (NOAPPEND / ATOMIC / DONTCACHE / NOSIGNAL) with the
 /// right errno by accident but for the wrong reason, and made NOAPPEND
@@ -42,7 +42,7 @@ pub const RWF_SUPPORTED: u64 = RWF_HIPRI | RWF_DSYNC | RWF_SYNC | RWF_NOWAIT
     | RWF_APPEND | RWF_NOAPPEND | RWF_ATOMIC | RWF_DONTCACHE | RWF_NOSIGNAL;
 
 /// Direction of the operation the flags are being validated for — `RWF_ATOMIC`
-/// is write-only (`include/linux/fs.h:3446-3448`).
+/// is write-only.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum RwDir { Read, Write }
 
@@ -74,7 +74,7 @@ pub struct RwEffect {
     pub sync: bool,
 }
 
-/// `kiocb_set_rw_flags()` (`include/linux/fs.h:3427-3472`) in Linux's exact
+/// `kiocb_set_rw_flags()` in Linux's exact
 /// order. Every rejection is `EOPNOTSUPP` except the APPEND/NOAPPEND conflict
 /// (`EINVAL`) and the append-only-inode override (`EPERM`).
 ///
@@ -101,21 +101,21 @@ pub fn kiocb_set_rw_flags(flags: u64, dir: RwDir, caps: &RwCaps) -> Result<RwEff
     };
     if flags & RWF_NOAPPEND != 0 && eff.append {
         // Clearing IOCB_APPEND on an append-only INODE is EPERM, not a silent
-        // downgrade (`include/linux/fs.h:3464-3468`).
+        // downgrade.
         if caps.inode_append_only { return Err(Errno::Eperm); }
         eff.append = false;
     }
     Ok(eff)
 }
 
-/// `pos_from_hilo(pos_h, pos_l)` (`fs/read_write.c:1115-1119`):
+/// `pos_from_hilo(pos_h, pos_l)`:
 /// `(((loff_t)high << 32) << 32) | low`. On a 64-bit kernel the double shift
 /// discards `high` entirely, so the NATIVE syscall takes the full offset in
 /// `pos_l` alone and `pos_h` is dead — glibc's `LO_HI_LONG` passes one argument
 /// on a 64-bit target and leaves the `pos_h` register uninitialised.
 ///
-/// Only the 32-bit COMPAT entries (`COMPAT_SYSCALL_DEFINE5(preadv)`,
-/// `fs/read_write.c:1230-1237`) use `((loff_t)pos_high << 32) | pos_low`.
+/// Only the 32-bit COMPAT entries (`COMPAT_SYSCALL_DEFINE5(preadv)`
+/// and friends) use `((loff_t)pos_high << 32) | pos_low`.
 /// Applying the compat formula on x86_64 — which is what the pre-fix slot did —
 /// truncates the offset to 32 bits AND ORs in whatever junk the caller happened
 /// to leave in `r8`. Both arches are native 64-bit here, so there is one rule.
@@ -125,10 +125,10 @@ pub fn pos_from_hilo(pos_l: u64, pos_h: u64) -> i64 {
     pos_l as i64
 }
 
-/// `preadv2`/`pwritev2` current-offset escape (`fs/read_write.c:1189`,
-/// `:1209`): `pos == -1` EXACTLY means "use and advance `f_pos`", i.e. behave
-/// as `readv`/`writev`. Any other negative `pos` is `EINVAL` from `do_preadv`
-/// (`:1126-1127`), checked BEFORE the fd lookup — so a bad fd with a bad offset
+/// `preadv2`/`pwritev2` current-offset escape: `pos == -1` EXACTLY means "use
+/// and advance `f_pos`", i.e. behave
+/// as `readv`/`writev`. Any other negative `pos` is `EINVAL` from `do_preadv`,
+/// checked BEFORE the fd lookup — so a bad fd with a bad offset
 /// reports EINVAL, not EBADF. The non-`2` `preadv`/`pwritev` have no such
 /// escape: `-1` there is just a negative offset. # C: O(1)
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -142,12 +142,12 @@ pub fn preadv_pos(pos: i64, v2: bool) -> PreadvPos {
     PreadvPos::At(pos as u64)
 }
 
-/// `MAX_RW_COUNT` (`include/linux/fs.h:2424`) — `INT_MAX & PAGE_MASK`. The
+/// `MAX_RW_COUNT` — `INT_MAX & PAGE_MASK`. The
 /// iovec importer silently TRUNCATES the tail of a vector whose running total
-/// crosses it rather than erroring (`lib/iov_iter.c:1389-1404`).
+/// crosses it rather than erroring.
 pub const MAX_RW_COUNT: u64 = (i32::MAX as u64) & !0xfff;
-/// `UIO_MAXIOV` (`include/uapi/linux/uio.h:46`) — `iovcnt` above this is
-/// `EINVAL` (`lib/iov_iter.c:1318-1319`); `iovcnt == 0` is a valid zero-length
+/// `UIO_MAXIOV` — `iovcnt` above this is
+/// `EINVAL` ; `iovcnt == 0` is a valid zero-length
 /// operation returning 0, NOT an error.
 pub const UIO_MAXIOV: u64 = 1024;
 
@@ -247,7 +247,7 @@ mod tests {
         assert_eq!(kiocb_set_rw_flags(RWF_NOAPPEND, RwDir::Write, &ao), Err(Errno::Eperm));
         // NOAPPEND on a non-append description is a no-op, not an error.
         assert!(!kiocb_set_rw_flags(RWF_NOAPPEND, RwDir::Write, &plain).unwrap().append);
-        // RWF_SYNC implies DSYNC (`include/linux/fs.h:3461`).
+        // RWF_SYNC implies DSYNC.
         let eff = kiocb_set_rw_flags(RWF_SYNC, RwDir::Write, &plain).unwrap();
         assert!(eff.sync && eff.dsync);
         let eff = kiocb_set_rw_flags(RWF_DSYNC, RwDir::Write, &plain).unwrap();

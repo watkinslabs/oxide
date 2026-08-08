@@ -8,7 +8,7 @@
 //     v1 compares Task fields directly when both pids exist; ESRCH
 //     otherwise; EBADF for a KCMP_FILE fd that is not allocated.
 //   - set_mempolicy / get_mempolicy / mbind / migrate_pages /
-//     move_pages / set_mempolicy_home_node: full `mm/mempolicy.c`
+// move_pages / set_mempolicy_home_node: full Linux mempolicy
 //     semantics. Policy is stored (per-thread and per-VMA),
 //     inherited by fork, and reported back verbatim; the argument
 //     ladders and nodemask conventions live in `vmm::mempolicy`.
@@ -79,6 +79,6 @@ pub fn dispatch(nr: u64, args: &SyscallArgs) -> i64 {
 }
 
 /// docs/15 §2 OBSOLETE numbers — see `crate::obsolete` for the set and the
-/// test that pins it to Linux `syscall_64.tbl`. Re-exported here because the
+/// test that pins it to the Linux x86_64 syscall numbering. Re-exported here because the
 /// dispatch match calls `misc::is_obsolete`.
 pub use crate::obsolete::is_obsolete;

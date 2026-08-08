@@ -1,4 +1,4 @@
-//! dcache-D24: `shrink_dcache_parent` (Linux fs/dcache.c). Prune the UNUSED
+//! dcache-D24: `shrink_dcache_parent`. Prune the UNUSED
 //! dentries in the subtree under a given parent — the per-subtree counterpart
 //! of the global `shrink_dcache` (remount / umount of a subtree / pre-rmdir
 //! prune). An in-use descendant pins the path to it: its unused ancestors are

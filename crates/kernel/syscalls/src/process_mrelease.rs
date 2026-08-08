@@ -1,4 +1,4 @@
-// `process_mrelease(2)` admission (Linux `mm/oom_kill.c`
+// `process_mrelease(2)` admission (Linux's
 // `SYSCALL_DEFINE2(process_mrelease)` and `task_will_free_mem`).
 //
 // Ungated: the slot file is `#![cfg(target_os = "oxide-kernel")]`, so the

@@ -1,10 +1,9 @@
-// The two file<->pipe transfer legs of `splice(2)`: `splice_file_to_pipe`
-// (`fs/splice.c:1280-1295`) and `do_splice_from` / `__splice_from_pipe`
-// (`fs/splice.c:568-612`).
+// The two file<->pipe transfer legs of `splice(2)`: file-to-pipe and
+// pipe-to-file.
 //
 // Both move ONE batch per call and report the byte count; the syscall wrapper
-// owns the "keep going until `len` or a stall" loop, exactly as Linux splits
-// `splice_direct_to_actor` from the per-batch actor.
+// owns the "keep going until `len` or a stall" loop, separating the
+// batch-transfer actor from the driving loop.
 
 use alloc::vec;
 
@@ -18,13 +17,14 @@ use crate::pipe::{self, PipeData};
 /// single pipe can ever accept.
 const STAGE: usize = 4096;
 
-/// File → pipe (`splice_file_to_pipe`). `pos` is the read offset when
+/// File → pipe. `pos` is the read offset when
 /// `use_pos`, otherwise the description's own cursor is used and advanced.
 ///
 /// Returns the bytes moved; `Ok(0)` is EOF on the input file, which the caller
 /// turns into a 0 return. The output pipe is made ready first
-/// (`wait_for_space`), so `EPIPE` (no readers, plus SIGPIPE), `EAGAIN`
-/// (non-blocking, full) and `ERESTARTSYS` all originate there in Linux's order.
+/// (space is awaited), so `EPIPE` (no readers, plus SIGPIPE), `EAGAIN`
+/// (non-blocking, full) and `ERESTARTSYS` all originate there, before the
+/// read from the input file happens.
 /// # C: O(bytes)
 pub fn file_to_pipe(in_file: &File, pos: &mut u64, use_pos: bool,
                     out: &PipeData, out_file: &File, len: usize, nonblock: bool)
@@ -80,7 +80,7 @@ pub fn pipe_to_file(inp: &PipeData, in_file: &File, out_file: &File,
     Ok(w)
 }
 
-/// Pipe → pipe (`splice_pipe_to_pipe`, `fs/splice.c:1716-1845`): a MOVE, so the
+/// Pipe → pipe: a MOVE, so the
 /// source is consumed. Both rings are made ready first — the input for data
 /// (EOF ⇒ `Ok(0)`), the output for space. # C: O(bytes)
 pub fn pipe_to_pipe(inp: &PipeData, in_file: &File, out: &PipeData, out_file: &File,

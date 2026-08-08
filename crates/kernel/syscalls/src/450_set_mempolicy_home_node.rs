@@ -1,5 +1,5 @@
 // 450 set_mempolicy_home_node — `SYSCALL_DEFINE4(set_mempolicy_home_node)`
-// (`mm/mempolicy.c:1760`). ABI shim (docs/53).
+//. ABI shim (docs/53).
 
 #![cfg(target_os = "oxide-kernel")]
 

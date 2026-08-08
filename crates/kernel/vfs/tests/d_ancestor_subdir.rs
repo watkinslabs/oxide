@@ -1,5 +1,5 @@
-//! dentry-D28: `d_ancestor`/`is_subdir_of` parent-chain ancestry (Linux
-//! `fs/dcache.c`). The rename keystone loop check (`do_rename` returns
+//! dentry-D28: `d_ancestor`/`is_subdir_of` parent-chain ancestry.
+//! The rename keystone loop check (`do_rename` returns
 //! `-EINVAL` when a directory would move into its own descendant) and
 //! `is_path_reachable` both ask "does A lie inside B's subtree?". Pre-change
 //! neither primitive existed (compile failure); this proves the semantics.

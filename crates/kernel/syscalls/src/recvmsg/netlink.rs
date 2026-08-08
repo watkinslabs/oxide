@@ -36,7 +36,7 @@ pub(crate) fn recv_pinned(file: &alloc::sync::Arc<vfs::File>, file_nonblock: boo
             ::netlink::ReceiveState::Empty => {
                 if nonblock { return err(Errno::Eagain); }
                 // Linux `netlink_recvmsg` -> `skb_recv_datagram` ->
-                // `__skb_wait_for_more_packets` (`net/core/datagram.c:122-128`):
+                // `__skb_wait_for_more_packets`:
                 // `error = sock_intr_errno(*timeo_p)` off `sock_rcvtimeo`.
                 if sched::live::deliverable_signals_self() != 0 {
                     return crate::net_errno::sock_intr_errno(sock.recv_deadline_ns());

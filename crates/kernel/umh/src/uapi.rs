@@ -1,4 +1,4 @@
-// UAPI-shaped constants for the usermode helper (`<linux/umh.h>`).
+// UAPI-shaped constants for the usermode helper.
 
 /// Queue the helper and return immediately. The caller gets no useful error if
 /// the program could not be exec'd; the request is safe to make from a context

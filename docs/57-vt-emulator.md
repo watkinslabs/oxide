@@ -11,7 +11,7 @@ Implementation: `crates/kernel/vt/{emulator.rs,vc.rs,palette.rs}`.
 1. **Byte-at-a-time state machine. No regex, no line buffering, no `alloc` on the feed path.** `#![no_std]`; the interpreter consumes one `u8` and mutates `Vc` in place. A regex/line-split tokenizer (as in host emulators that target std) is forbidden — it cannot run in-kernel and mis-handles sequences split across read() boundaries.
 2. Partial sequences survive chunk boundaries by living in the state machine, not a re-fed string buffer. `feed_bytes` is resumable: feed `\x1b[`, then `31m` in a later call → same effect as one call.
 3. Unknown finals/params are tolerated (consumed, no effect) — never panic, never desync. A malformed sequence resets to `Ground` at the first byte that cannot extend it.
-4. Reference for *coverage* (which sequences exist): ECMA-48, `xterm` ctlseqs, Linux `drivers/tty/vt/vt.c`. Host emulators may be read for the command list, but their architecture (regex, GC'd strings) and their bugs (e.g. CNL implemented as cursor-up) are explicitly NOT replicated.
+4. Reference for *coverage* (which sequences exist): ECMA-48, `xterm` ctlseqs, Linux's VT subsystem. Host emulators may be read for the command list, but their architecture (regex, GC'd strings) and their bugs (e.g. CNL implemented as cursor-up) are explicitly NOT replicated.
 
 ## 2 Parser states
 

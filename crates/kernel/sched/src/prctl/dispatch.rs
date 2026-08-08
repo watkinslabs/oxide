@@ -1,4 +1,4 @@
-// `sys_prctl` fan-out — Linux `kernel/sys.c` `SYSCALL_DEFINE5(prctl)`'s
+// `sys_prctl` fan-out — Linux `SYSCALL_DEFINE5(prctl)`'s
 // switch. Argument validation already happened in `decide::classify`, so
 // every arm here is a call into the owner of that piece of task state.
 

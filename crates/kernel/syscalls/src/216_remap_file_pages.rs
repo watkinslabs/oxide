@@ -1,7 +1,7 @@
 // 216 remap_file_pages — deprecated nonlinear-mapping call, kept alive by
 // Linux as an EMULATION over mmap (docs/53 §0).
 //
-// `mm/mmap.c` SYSCALL_DEFINE5(remap_file_pages) no longer builds a nonlinear
+// Linux's `SYSCALL_DEFINE5(remap_file_pages)` no longer builds a nonlinear
 // VMA: after validating the arguments it re-maps the SAME file over the SAME
 // address with `MAP_SHARED | MAP_FIXED | MAP_POPULATE` (plus MAP_LOCKED when
 // the VMA was VM_LOCKED, and the caller's MAP_NONBLOCK), taking the protection

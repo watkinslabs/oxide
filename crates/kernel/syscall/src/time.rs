@@ -1,4 +1,4 @@
-// Shared timespec→ns ABI conversion per docs/15, Linux `include/linux/ktime.h`
+// Shared timespec→ns ABI conversion per docs/15, matching Linux's
 // `ktime_set`. Every syscall that decodes a user `{ tv_sec, tv_nsec }` pair
 // into a nanosecond count (relative duration OR absolute deadline — futex
 // WAIT/WAIT_BITSET/waitv, timerfd_settime, clock_nanosleep, nanosleep, ppoll,

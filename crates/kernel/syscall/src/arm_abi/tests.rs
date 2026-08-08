@@ -264,8 +264,8 @@ fn thread_primitive_numbers_map_to_their_own_slots() {
     assert_ne!(aarch64_nr_to_x86(130), NR_KILL);
 }
 
-/// aarch64 has no `uretprobe`/`uprobe` syscall: 335/336 exist only in
-/// `arch/x86/entry/syscalls/syscall_64.tbl`, and the asm-generic table marks
+/// aarch64 has no `uretprobe`/`uprobe` syscall: 335/336 are allocated in the
+/// x86_64 numbering only, and the asm-generic table marks
 /// 295..402 "unassigned … don't use". Passing them through unchanged made an
 /// aarch64 `syscall(335)` execute x86's `sys_uretprobe` and take a SIGILL.
 #[test]
@@ -287,7 +287,7 @@ fn syscall_nr_kexec_file_load() -> u64 { crate::nrs::NR_KEXEC_FILE_LOAD }
 
 /// arm64 has no `arch_prctl(2)` at all: the sub-code space describes FS/GS
 /// segment bases, CPUID faulting, XSAVE permission and CET, none of which
-/// exist on aarch64, and `asm-generic/unistd.h` assigns it no number. Slot
+/// exist on aarch64, and the asm-generic syscall numbering assigns it no number. Slot
 /// 158's x86 handler writes the FS-base MSR, so a fall-through would run a
 /// segment-base write for an arm caller that asked for something else — and
 /// the integer 158 IS assigned on arm64, to `getgroups`.

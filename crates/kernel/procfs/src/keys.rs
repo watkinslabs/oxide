@@ -1,4 +1,4 @@
-// `/proc/keys` + `/proc/key-users` (Linux `security/keys/proc.c`).
+// `/proc/keys` + `/proc/key-users`.
 //
 // Both are generator files, not snapshots. `/proc/keys` is rendered per read
 // in the READING task's context because `proc_keys_show` omits every key that
@@ -80,7 +80,7 @@ mod tests {
         leaf.store(b"777\n").expect("an in-range ceiling is accepted");
         assert_eq!(FAKE_MAXKEYS.load(Ordering::SeqCst), 777);
         assert_eq!(leaf.format(), b"777\n".to_vec(), "the read reflects the live ceiling");
-        // `security/keys/sysctl.c` registers extra1 = 1: a zero ceiling is out
+        // Linux's keys sysctl registers extra1 = 1: a zero ceiling is out
         // of range and must not reach the store.
         assert!(leaf.store(b"0\n").is_err());
         assert_eq!(FAKE_MAXKEYS.load(Ordering::SeqCst), 777);

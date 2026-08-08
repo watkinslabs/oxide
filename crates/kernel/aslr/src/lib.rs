@@ -6,8 +6,8 @@
 //              the address anchors (`ELF_ET_DYN_BASE`, `STACK_TOP`, gaps).
 //   `mode`   — the live `kernel.randomize_va_space` cell and the per-exec
 //              `PF_RANDOMIZE` decision.
-//   `layout` — pure address math mirroring `mm/util.c` + `fs/binfmt_elf.c`.
-//              Every function takes its random word as an argument, so the
+//   `layout` — pure address math mirroring Linux's mmap-layout and ELF-load
+//              placement rules. Every function takes its random word as an argument, so the
 //              placement rules are testable without an RNG.
 //   `exec`   — `ExecRnd`: the per-exec draw. One CRNG read per randomised
 //              quantity, taken once at execve and threaded through the loader.

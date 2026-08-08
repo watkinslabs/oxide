@@ -1,7 +1,7 @@
 // io_uring ABI + ring-geometry decisions shared by slots 425/426/427.
 //
 // Module manifest:
-//   uapi        — Linux `include/uapi/linux/io_uring.h` numbers + the
+// uapi — the io_uring UAPI numbers + the
 //                 `struct io_uring_params` wire form (encode/decode).
 //   layout      — oxide's SQ/CQ/SQE region geometry + the `io_uring_setup`
 //                 admission ladder (`io_uring_sanitise_params`,
@@ -14,7 +14,7 @@
 //   link        — link chains, drain barriers and silent success.
 //   restriction — the per-ring register/SQE allow-lists.
 //   register_op — the `io_uring_register(2)` opcode + argument ladder
-//                 (Linux `io_uring/register.c` `__io_uring_register`).
+//                 (the Linux `__io_uring_register` admission ladder).
 //
 // Deliberately NOT kernel-gated: the three slot files are
 // `#![cfg(target_os = "oxide-kernel")]`, so any decision left in them is

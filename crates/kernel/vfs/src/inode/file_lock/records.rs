@@ -1,6 +1,6 @@
-// Byte-range record-lock algebra (Linux `fs/locks.c` `posix_lock_inode`):
-// owner identity, the conflict rule, and the split/merge an F_SETLK or
-// F_UNLCK performs on an inode's `flc_posix` list. Pure data — the state that
+// Byte-range record-lock algebra: owner identity, the conflict rule, and the
+// split/merge an F_SETLK or F_UNLCK performs on an inode's lock list. Pure
+// data — the state that
 // holds these entries lives in `context.rs`, the wait policy in
 // `fs::posix_lock`.
 
@@ -8,7 +8,7 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-/// `l_type` values (Linux `include/uapi/asm-generic/fcntl.h`).
+/// `l_type` values (`fcntl(2)` `struct flock`).
 pub const F_RDLCK: i16 = 0;
 /// See [`F_RDLCK`].
 pub const F_WRLCK: i16 = 1;
@@ -23,23 +23,21 @@ pub const RECORD_END_MAX: u64 = u64::MAX;
 /// Record-lock owner identity (Linux `file_lock_core::flc_owner`).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum RecordOwner {
-    /// POSIX `fcntl(F_SETLK)` locks. Linux `fcntl_setlk` sets
-    /// `flc_owner = current->files` (`fs/locks.c:2600` area), so every thread
-    /// sharing one descriptor table is ONE owner, and `close(2)` of ANY
-    /// descriptor for the file drops that owner's locks on the inode
-    /// (`fs/open.c:1475` `filp_flush` → `locks_remove_posix`).
+    /// POSIX `fcntl(F_SETLK)` locks. The owner identity is the descriptor
+    /// table, so every thread sharing one descriptor table is ONE owner, and
+    /// `close(2)` of ANY descriptor for the file drops that owner's locks on
+    /// the inode.
     Files(usize),
-    /// Open-file-description `fcntl(F_OFD_SETLK)` locks. Linux
-    /// `fcntl_setlk` sets `flc_owner = filp` for `FL_OFDLCK`, so the lock dies
-    /// with the description's last reference (`fs/locks.c:2858`
-    /// `locks_remove_file` → `locks_remove_posix(filp, filp)`).
+    /// Open-file-description `fcntl(F_OFD_SETLK)` locks. The owner identity
+    /// is the open file description itself, so the lock dies with the
+    /// description's last reference.
     Ofd(usize),
 }
 
 impl RecordOwner {
-    /// Linux `posix_locks_deadlock` (`fs/locks.c:1114`) returns false for any
-    /// `FL_OFDLCK` caller: an OFD lock is not tied to a thread of execution,
-    /// so the blocked-owner graph cannot describe it. # C: O(1)
+    /// An OFD lock is never a party to deadlock detection: it is not tied to
+    /// a thread of execution, so the blocked-owner graph cannot describe it.
+    /// # C: O(1)
     pub fn is_ofd(&self) -> bool { matches!(self, RecordOwner::Ofd(_)) }
 }
 
@@ -51,8 +49,8 @@ pub struct RecordLock {
     pub start:  u64,
     pub end:    u64,
     pub owner:  RecordOwner,
-    /// Linux `flc_pid` (`current->tgid`): reported by `F_GETLK`, never part of
-    /// conflict detection — that is `flc_owner`'s job.
+    /// The locking process's tgid: reported by `F_GETLK`, never part of
+    /// conflict detection — that is the owner identity's job.
     pub pid:    u32,
 }
 
@@ -60,11 +58,10 @@ pub struct RecordLock {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum RecordTry {
     /// `released` means an existing entry was removed or shrunk, so tasks
-    /// parked on this inode must be woken — Linux `locks_unlink_lock_ctx`
-    /// (`fs/locks.c:925`) → `locks_wake_up_blocks`.
+    /// parked on this inode must be woken.
     Acquired { released: bool },
-    /// A foreign lock overlaps. `blocker` is its owner, Linux `flc_blocker`,
-    /// the edge the deadlock walk follows.
+    /// A foreign lock overlaps. `blocker` is its owner — the edge the
+    /// deadlock walk follows.
     Blocked { blocker: RecordOwner },
 }
 

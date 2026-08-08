@@ -267,7 +267,7 @@ pub fn make_random_inode() -> InodeRef { public_char_inode(crate::uapi::INO_RAND
 /// `/dev/urandom` inode (1:9 mem/urandom, `0o666`). # C: O(1)
 pub fn make_urandom_inode() -> InodeRef { public_char_inode(crate::uapi::INO_URANDOM, crate::uapi::DEV_MEM_URANDOM, Arc::new(RandomFileOps)) }
 
-/// The `mem` char driver (Linux `drivers/char/mem.c`, major 1) — ONE
+/// The `mem` char driver (Linux major 1) — ONE
 /// `CharDevOps` backing every mem minor, dispatching by minor to the SAME
 /// behaviour the devfs built-in inodes expose. Registered at boot via
 /// `register_chrdev(1, …)`.

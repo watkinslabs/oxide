@@ -1,6 +1,6 @@
-//! Linux `convert_mode` / `testmsg` / `find_msg` (`ipc/msg.c`) — the `msgtyp`
-//! selection rules, kept pure so the hosted tests drive them directly instead
-//! of through a park that a `cargo test` build has no scheduler for.
+//! `msgtyp` selection rules (mode-conversion + queue search), kept pure so
+//! the hosted tests drive them directly instead of through a park that a
+//! `cargo test` build has no scheduler for.
 
 use alloc::collections::VecDeque;
 

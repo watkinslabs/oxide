@@ -45,7 +45,7 @@ impl TcpEntry {
     }
 
     /// Transport readiness before socket-level shutdown overlays. `POLL_OUT`
-    /// follows Linux `tcp_poll` (`net/ipv4/tcp.c:600-616`): withheld while
+    /// follows Linux `tcp_poll`: withheld while
     /// `__sk_stream_is_writeable(sk, 1)` is false, which is what makes a
     /// non-blocking writer park on a full send buffer instead of spinning
     /// `EPOLLOUT` → `send` → `EAGAIN`. `sndbuf_cap` is the same `SO_SNDBUF`

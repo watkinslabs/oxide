@@ -1,6 +1,6 @@
 // 139 sysfs — the SysV filesystem-type query (docs/53 §0). NOT sysfs the
-// filesystem: this is `fs/filesystems.c`'s three-option lookup over the
-// registered `file_systems` list.
+// filesystem: this is a three-option lookup over the
+// registered filesystem-type list.
 //
 //   sysfs(1, const char *name)          -> index of that type, EINVAL if absent
 //   sysfs(2, unsigned index, char *buf) -> writes name + NUL, EINVAL past end

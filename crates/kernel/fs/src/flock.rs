@@ -42,18 +42,17 @@ pub fn flock(file: &alloc::sync::Arc<vfs::File>, op_in: u32) -> i64 {
                 if released { vfs::file_lock_wake(wait_key); }
                 if nb { return -(Errno::Eagain.as_i32() as i64); }
                 vfs::file_lock_schedule();
-                // Linux `flock_lock_inode_wait` (`fs/locks.c:2232`) is a bare
-                // `wait_event_interruptible`, so the interrupted return is
-                // `prepare_to_wait_event`'s -ERESTARTSYS (`kernel/sched/wait.c:309`)
-                // propagated unchanged — `fs/locks.c` contains no EINTR at all.
+                // The flock wait is a bare interruptible sleep with no signal
+                // handling of its own, so an interrupted wait returns
+                // -ERESTARTSYS (subject to SA_RESTART), never -EINTR.
                 if vfs::file_lock_interrupted() { return syscall::restart::restart_sys(); }
             }
         }
     }
 }
 
-/// Linux `flock_translate_cmd(cmd & ~LOCK_NB)` — the operation is one of
-/// `LOCK_SH`/`LOCK_EX`/`LOCK_UN` exactly, so `LOCK_SH|LOCK_EX` and any stray
+/// The operation (`cmd & ~LOCK_NB`) must be exactly one of
+/// `LOCK_SH`/`LOCK_EX`/`LOCK_UN`, so `LOCK_SH|LOCK_EX` and any stray
 /// bit (`LOCK_READ`, `LOCK_WRITE` without `LOCK_MAND`) is rejected. # C: O(1)
 fn flock_cmd_valid(bare: u32) -> bool { bare == LOCK_SH || bare == LOCK_EX || bare == LOCK_UN }
 

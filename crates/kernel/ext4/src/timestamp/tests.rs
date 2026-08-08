@@ -30,7 +30,7 @@ fn pre_1970_round_trips_and_stays_negative() {
 
 #[test]
 fn epoch_bit_bands_from_the_ext4_h_table_round_trip() {
-    // fs/ext4/ext4.h "extra epoch bits" table: one probe per band, at both
+    // ext4 on-disk "extra epoch bits" table: one probe per band, at both
     // ends where the band is a boundary.
     let bands: [(i64, u32); 10] = [
         (-0x8000_0000,      0), // 1901-12-13, epoch 0,0 msb 1

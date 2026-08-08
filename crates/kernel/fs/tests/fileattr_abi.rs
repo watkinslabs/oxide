@@ -1,6 +1,6 @@
 //! `struct file_attr` ABI conformance for `file_getattr(2)`/`file_setattr(2)`
-//! (slots 468/469). Every case cites the Linux `fs/file_attr.c` /
-//! `include/linux/fileattr.h` / `uapi/linux/fs.h` rule it pins.
+//! (slots 468/469). Every case pins one rule of the struct-size handshake,
+//! the trailing-byte zero-fill contract, or the xflags/fsflags mapping.
 //!
 //! Before F761 both slots were stubs: they resolved the path, then wrote 24
 //! zero bytes (getattr) or rejected any non-zero field with `EOPNOTSUPP`
@@ -30,11 +30,11 @@ fn img(xflags: u64, extsize: u32, nextents: u32, projid: u32, cowextsize: u32, p
     v
 }
 
-// --- the `usize` handshake (`fs/file_attr.c:393`, `:449`) ------------------
+// --- the `usize` handshake -------------------------------------------------
 
 #[test]
 fn struct_size_below_ver0_is_einval_and_over_a_page_is_e2big() {
-    assert_eq!(FILE_ATTR_SIZE_VER0, 24, "uapi/linux/fs.h FILE_ATTR_SIZE_VER0");
+    assert_eq!(FILE_ATTR_SIZE_VER0, 24, "FILE_ATTR_SIZE_VER0 ABI constant");
     assert_eq!(check_struct_size(0), Err(e(Errno::Einval)));
     assert_eq!(check_struct_size(23), Err(e(Errno::Einval)));
     assert_eq!(check_struct_size(24), Ok(()));
@@ -44,7 +44,7 @@ fn struct_size_below_ver0_is_einval_and_over_a_page_is_e2big() {
     assert_eq!(check_struct_size(1 << 20), Err(e(Errno::E2big)));
 }
 
-// --- `copy_struct_from_user` + `file_attr_to_fileattr` (`:141`) ------------
+// --- `copy_struct_from_user` + `file_attr_to_fileattr` ---------------------
 
 #[test]
 fn unknown_trailing_bytes_must_be_zero() {

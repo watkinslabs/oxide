@@ -1,6 +1,5 @@
 // ============================================================
-// Wire constants per linux/include/uapi/linux/virtio_gpu.h
-// + virtio 1.2 §5.7
+// Wire constants per the Linux virtio_gpu UAPI + virtio 1.2 §5.7
 // ============================================================
 
 pub const VIRTIO_ID_GPU: u16 = 16;
@@ -13,7 +12,7 @@ pub const DRIVER_ID: virtio::VirtioChildDriverId =
 pub const VIRTIO_GPU_PCI_DEVICE_ID: u16 = 0x1050;
 pub use virtio::resources::VIRTIO_VENDOR_ID as VIRTIO_PCI_VENDOR_RH;
 
-// Feature bits (per virtio_gpu.h)
+// Feature bits (per the virtio-gpu UAPI)
 pub const VIRTIO_GPU_F_VIRGL:               u32 = 0;
 pub const VIRTIO_GPU_F_EDID:                u32 = 1;
 pub const VIRTIO_GPU_F_RESOURCE_UUID:       u32 = 2;
@@ -229,7 +228,7 @@ pub struct DisplayInfo {
 /// little-endian fourcc byte order == BGRA in memory). `None` for an
 /// unsupported fourcc. Pure → hosted-testable. # C: O(1)
 pub fn drm_fourcc_to_virtio(fourcc: u32) -> Option<u32> {
-    // drm_fourcc.h: XR24 = 0x34325258, AR24 = 0x34325241.
+    // DRM fourcc UAPI: XR24 = 0x34325258, AR24 = 0x34325241.
     match fourcc {
         0x3432_5258 => Some(VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM),
         0x3432_5241 => Some(VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM),

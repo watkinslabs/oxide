@@ -137,7 +137,7 @@ Constraints:
    procfs, and future credential-translation consumers depend on it, never
    vice versa.
 9. `crates/kernel/ipc` may depend on `netlink` for `mq_notify(SIGEV_THREAD)`
-   cookie delivery, mirroring `ipc/mqueue.c`'s `netlink_getsockbyfd` /
+   cookie delivery, mirroring Linux mqueue's `netlink_getsockbyfd` /
    `netlink_sendskb`; `netlink` never depends on `ipc`.
 10. `crates/kernel/security` may depend on `cgroup` to attach, query, and
     acquire effective cgroup BPF programs. `cgroup` stays independent of

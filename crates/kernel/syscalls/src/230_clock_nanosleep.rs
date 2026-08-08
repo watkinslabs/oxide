@@ -13,7 +13,7 @@ const TIMER_ABSTIME: u64 = 0x1;
 
 /// `sys_clock_nanosleep(clk_id, flags, req, rem)` — slot 230.
 ///
-/// Linux `SYSCALL_DEFINE4(clock_nanosleep)` (`kernel/time/posix-timers.c:1383`)
+/// Linux `SYSCALL_DEFINE4(clock_nanosleep)` 
 /// → `common_nsleep`/`common_nsleep_timens` → `hrtimer_nanosleep`, in this
 /// order: clock admission (EINVAL / EOPNOTSUPP), `get_timespec64` (EFAULT),
 /// `timespec64_valid` (EINVAL), then
@@ -72,8 +72,8 @@ pub fn sys_clock_nanosleep(args: &SyscallArgs) -> i64 {
     let Some(cur) = sched::live::current() else { return 0; };
     // CPU clocks do NOT sleep on wall time, and never touch the wall/time-
     // namespace conversion below. Linux dispatches them through
-    // `k_clock::nsleep` to `posix_cpu_nsleep` -> `do_cpu_nanosleep`
-    // (`kernel/time/posix-cpu-timers.c:1537-1655`), which arms a timer on the
+    // `k_clock::nsleep` to `posix_cpu_nsleep` -> `do_cpu_nanosleep`,
+    // which arms a timer on the
     // CPU clock itself and blocks until a RUNNING sibling advances it past the
     // expiry. Converting to an elapsed-time deadline (what this slot used to
     // do for every clock) makes a process-CPU sleep expire on wall time.
@@ -108,7 +108,7 @@ fn monotonic() -> u64 {
     { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
 }
 
-/// Linux `posix_cpu_nsleep` (`kernel/time/posix-cpu-timers.c:1630-1655`).
+/// Linux `posix_cpu_nsleep`.
 /// # C: O(schedules until the CPU expiry or a signal)
 fn cpu_clock_nanosleep(cur: &sched::Task, spec: sched::posix_clock::ClockSpec,
                        is_abs: bool, target_ns: u64, rem: u64) -> i64 {
@@ -177,7 +177,7 @@ fn write_cpu_remaining(rem: u64, left: u64) -> i64 {
     0
 }
 
-/// Linux `posix_cpu_nsleep_restart` (`posix-cpu-timers.c:1657-1665`):
+/// Linux `posix_cpu_nsleep_restart`:
 ///
 /// ```c
 /// clockid_t which_clock = restart_block->nanosleep.clockid;

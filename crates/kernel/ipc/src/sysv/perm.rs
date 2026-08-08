@@ -1,5 +1,5 @@
-//! Linux `struct kern_ipc_perm` + `ipcperms()` / `ipc_update_perm()`
-//! (`ipc/util.c`). ONE implementation for sem, msg and shm — the permission
+//! Linux `struct kern_ipc_perm` + `ipcperms()` / `ipc_update_perm()`.
+//! ONE implementation for sem, msg and shm — the permission
 //! algebra is a single function in Linux and forking it per object class is
 //! how the three surfaces silently diverge.
 

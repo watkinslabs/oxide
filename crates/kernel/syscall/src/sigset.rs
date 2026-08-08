@@ -2,7 +2,7 @@
 // syscall shares. Owned here, in the ABI crate, so slots 13/14/127/128/130 and
 // `ppoll`/`pselect6`/`epoll_pwait` cannot drift apart on it — the check is the
 // only thing standing between a mismatched libc's sigset and an out-of-bounds
-// user access. Linux: `kernel/signal.c`.
+// user access.
 
 use crate::errno::Errno;
 

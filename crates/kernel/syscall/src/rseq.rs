@@ -1,7 +1,7 @@
-// rseq(2) ABI vocabulary + pure decision ladders per Linux `kernel/rseq.c`
-// (`sys_rseq`, `rseq_register`, `rseq_unregister`, `rseq_reregister`,
-// `rseq_length_valid`) and `include/linux/rseq_entry.h`
-// (`rseq_update_user_cs` — the critical-section abort/fixup).
+// rseq(2) ABI vocabulary + pure decision ladders matching Linux's
+// `sys_rseq`, `rseq_register`, `rseq_unregister`, `rseq_reregister`,
+// `rseq_length_valid`, and `rseq_update_user_cs` (the critical-section
+// abort/fixup).
 //
 // Pure ABI + arithmetic, no kernel state, so it lives in the boundary crate
 // (docs/53) and stays hosted-testable: the kernel side
@@ -21,7 +21,7 @@ pub const RSEQ_FLAG_SLICE_EXT_DEFAULT_ON: u32 = 1 << 1;
 /// Linux `RSEQ_FLAGS_SUPPORTED` — flag bits legal on a REGISTER call.
 pub const RSEQ_FLAGS_SUPPORTED: u32 = RSEQ_FLAG_SLICE_EXT_DEFAULT_ON;
 
-/// Linux `ORIG_RSEQ_SIZE` (`kernel/rseq.c:413`): the pre-extensible
+/// Linux `ORIG_RSEQ_SIZE`: the pre-extensible
 /// `struct rseq` size, and the required alignment for a legacy registration.
 pub const ORIG_RSEQ_SIZE: u32 = 32;
 /// `offsetof(struct rseq, end)` for the current UAPI layout: `__reserved`
@@ -36,7 +36,7 @@ pub const RSEQ_CPU_ID_UNINITIALIZED: u32 = u32::MAX;
 /// `enum rseq_cpu_id_state::RSEQ_CPU_ID_REGISTRATION_FAILED` ((__u32)-2).
 pub const RSEQ_CPU_ID_REGISTRATION_FAILED: u32 = u32::MAX - 1;
 
-/// `struct rseq` field offsets (`include/uapi/linux/rseq.h`).
+/// `struct rseq` field offsets.
 pub const RSEQ_OFF_CPU_ID_START: u64 = 0;
 pub const RSEQ_OFF_CPU_ID:       u64 = 4;
 pub const RSEQ_OFF_RSEQ_CS:      u64 = 8;
@@ -72,7 +72,7 @@ pub const fn take_slice_request(ctrl: u32) -> Option<u32> {
 /// # C: O(1)
 pub const fn is_v2(len: u32) -> bool { len > ORIG_RSEQ_SIZE }
 
-/// `struct rseq_cs` field offsets + size (`include/uapi/linux/rseq.h`).
+/// `struct rseq_cs` field offsets + size.
 pub const RSEQ_CS_OFF_VERSION:            u64 = 0;
 pub const RSEQ_CS_OFF_FLAGS:              u64 = 4;
 pub const RSEQ_CS_OFF_START_IP:           u64 = 8;
@@ -112,7 +112,7 @@ pub fn length_valid(ptr: u64, len: u32) -> bool {
 /// (`access_ok` → `EFAULT`, and the unregister id-reset → `EFAULT`) which
 /// the kernel side owns because they touch user memory.
 ///
-/// Order is load-bearing and matches `kernel/rseq.c:547`:
+/// Order is load-bearing and matches Linux's `sys_rseq`:
 /// UNREGISTER first (its own flag mask, then ptr/len match `EINVAL`, then sig
 /// mismatch `EPERM`); otherwise unknown flags `EINVAL`; then an already-live
 /// registration re-registers (`EINVAL` on ptr/len mismatch, `EPERM` on sig
@@ -155,7 +155,7 @@ pub enum CsOutcome {
     Fatal,
 }
 
-/// Linux `rseq_update_user_cs` (`include/linux/rseq_entry.h:380`), split from
+/// Linux `rseq_update_user_cs`, split from
 /// its uaccess so the arithmetic is testable.
 ///
 /// `ip` is the interrupted user PC, `sig` the registered signature and `usig`
