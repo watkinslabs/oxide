@@ -202,6 +202,7 @@ fn registering_a_poll_claims_the_net_rx_slot() {
 
 #[test]
 fn a_pass_moves_frames_from_the_poll_list_through_delivery() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = crate::NetStack::new();
     let lo = Arc::new(LoopbackDev::new());
     let iface = stack.ifaces.register(lo.clone());
@@ -216,6 +217,7 @@ fn a_pass_moves_frames_from_the_poll_list_through_delivery() {
 
 #[test]
 fn a_pass_stops_at_its_budget_and_reports_work_remaining() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = crate::NetStack::new();
     let lo = Arc::new(LoopbackDev::new());
     let iface = stack.ifaces.register(lo.clone());

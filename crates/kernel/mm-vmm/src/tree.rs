@@ -443,13 +443,16 @@ impl VmaTree {
     /// registration covers exactly the requested range (Linux
     /// `userfaultfd_register` → `vma_modify` split). Holes are skipped
     /// (Linux requires the range be mapped; the syscall layer validates
-    /// coverage separately). `Some` sets `UFFD_MISSING`; `None` clears it.
+    /// coverage separately). `Some` installs the context and REPLACES the
+    /// mode-flag set with `modes`; `None` drops the context and every mode
+    /// flag, so a registration and its modes can never disagree.
     /// # C: O(K log N)
     pub fn set_uffd_range(
         &mut self,
         start: UserVirtAddr,
         end:   UserVirtAddr,
         ctx:   Option<alloc::sync::Arc<dyn crate::uffd::UffdContext>>,
+        modes: crate::vma::VmaFlags,
     ) {
         if start.as_u64() >= end.as_u64() { return; }
         let mut keys: Vec<UserVirtAddr> = Vec::new();
@@ -471,8 +474,15 @@ impl VmaTree {
             let me = UserVirtAddr::new(e).expect("UVA in range");
             let mut mid = v.clone_subrange(ms, me);
             match &ctx {
-                Some(c) => { mid.uffd = Some(c.clone()); mid.flags.insert(crate::vma::VmaFlags::UFFD_MISSING); }
-                None    => { mid.uffd = None;            mid.flags.remove(crate::vma::VmaFlags::UFFD_MISSING); }
+                Some(c) => {
+                    mid.uffd = Some(c.clone());
+                    mid.flags.remove(crate::vma::VmaFlags::UFFD_MASK);
+                    mid.flags.insert(modes & crate::vma::VmaFlags::UFFD_MASK);
+                }
+                None => {
+                    mid.uffd = None;
+                    mid.flags.remove(crate::vma::VmaFlags::UFFD_MASK);
+                }
             }
             let mid_key = mid.start;
             self.map_put(mid_key, mid);

@@ -132,6 +132,10 @@ pub mod code {
     pub const BUS_ADRERR: i32 = 2;
     /// SIGBUS — object-specific hardware error (SIGBUS past EOF on a file map).
     pub const BUS_OBJERR: i32 = 3;
+    /// SIGBUS — hardware memory error consumed by this access (action required).
+    pub const BUS_MCEERR_AR: i32 = 4;
+    /// SIGBUS — hardware memory error detected, not consumed (action optional).
+    pub const BUS_MCEERR_AO: i32 = 5;
     /// SIGILL — illegal opcode.
     pub const ILL_ILLOPC: i32 = 1;
     /// SIGILL — illegal operand.
@@ -292,8 +296,8 @@ pub fn known_layout(sig: u32, si_code: i32) -> bool {
 }
 
 /// `si_code` values that override their signal's default fault arm.
-const BUS_MCEERR_AR: i32 = 4;
-const BUS_MCEERR_AO: i32 = 5;
+const BUS_MCEERR_AR: i32 = code::BUS_MCEERR_AR;
+const BUS_MCEERR_AO: i32 = code::BUS_MCEERR_AO;
 
 /// Linux `siginfo_layout(sig, si_code)` — the ONE owner of "which union arm
 /// does this record use". A record whose arm is decided anywhere else can

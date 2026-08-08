@@ -25,10 +25,9 @@ use super::user::{current_cred, errno, ipc_ns, read_user_i64};
 /// # C: O(PATH_MAX)
 fn read_name(uptr: u64) -> Result<String, Errno> {
     if uptr == 0 || uptr >= hal::USER_VA_END { return Err(Errno::Efault); }
-    // SAFETY: pointer bounded below USER_VA_END; read_user_cstr probes one byte at a time within [uptr, uptr+PATH_MAX) through the caller's address space at CPL=0.
-    let bytes = unsafe { devfs::read_user_cstr(uptr, PATH_MAX) }.ok_or(Errno::Efault)?;
+    let bytes = devfs::read_user_cstr(uptr, PATH_MAX).ok_or(Errno::Efault)?;
     if bytes.len() >= PATH_MAX { return Err(Errno::Enametoolong); }
-    let s = core::str::from_utf8(bytes).map_err(|_| Errno::Einval)?;
+    let s = core::str::from_utf8(&bytes).map_err(|_| Errno::Einval)?;
     Ok(String::from(s))
 }
 

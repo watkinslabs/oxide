@@ -251,6 +251,7 @@ fn icmpv6_hardness_controls_connected_error_without_recverr() {
 
 #[test]
 fn packet_too_big_respects_all_linux_pmtudisc_modes() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     use syscall::errno::Errno;
     const PATH_MTU: u32 = 1_280;
     for (mode, accepted, hard) in [
@@ -344,6 +345,7 @@ fn packet_too_big_publishes_emsgsize_to_exact_udp6_endpoint() {
 
 #[test]
 fn udp6_pmtudisc_modes_select_cache_interface_and_fragmentation() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let remote = Ipv6Addr::from_segments([0x2001, 0xdb8, 5, 0, 0, 0, 0, 1]);
     let dev = Arc::new(Pmtu6Dev {
@@ -373,6 +375,7 @@ fn udp6_pmtudisc_modes_select_cache_interface_and_fragmentation() {
 
 #[test]
 fn socket_fragment_size_caps_udp6_after_route_selection() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let dev = Arc::new(Pmtu6Dev { tx: AtomicUsize::new(0), fragments: AtomicUsize::new(0) });
     let iface = stack.ifaces.register(dev.clone());

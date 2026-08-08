@@ -101,6 +101,7 @@ fn queued_tx_is_peer_visible_once_and_direct_tx_is_hidden() {
 
 #[test]
 fn mixed_queued_and_direct_tx_has_one_hardware_owner_and_fifo_queue() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = Arc::new(crate::NetStack::new());
     let dev = Arc::new(DispatchDev::new(true));
     let iface = stack.ifaces.register(dev.clone());
@@ -138,6 +139,7 @@ fn mixed_queued_and_direct_tx_has_one_hardware_owner_and_fifo_queue() {
 
 #[test]
 fn full_dispatch_fifo_returns_enobufs() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = Arc::new(crate::NetStack::new());
     let dev = Arc::new(DispatchDev::new(true));
     let iface = stack.ifaces.register(dev.clone());
@@ -165,6 +167,7 @@ fn full_dispatch_fifo_returns_enobufs() {
 
 #[test]
 fn unresolved_arp_queues_packet_then_retries_and_drops_on_failure() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     // Linux `neigh_resolve_output` reports success to the sender as soon as the
     // packet is queued on the incomplete neighbour; the transmit does not block
     // on resolution. The queued packet is retried by the ARP timer and dropped
@@ -189,6 +192,7 @@ fn unresolved_arp_queues_packet_then_retries_and_drops_on_failure() {
 
 #[test]
 fn stale_arp_sends_data_then_unicast_probes_after_delay() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = Arc::new(crate::NetStack::new());
     let dev = Arc::new(DispatchDev::new(false));
     let iface = stack.ifaces.register(dev.clone());

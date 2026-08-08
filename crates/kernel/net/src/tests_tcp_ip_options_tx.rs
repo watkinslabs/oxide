@@ -77,6 +77,7 @@ fn entry(area: Option<&[u8]>) -> TcpEntry {
 /// widened header in the next test is the option area's doing.
 #[test]
 fn a_connection_without_sticky_options_emits_the_minimum_header() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (dev, iface) = device(&stack, SRC);
     stack.routes.add(RouteEntry::main(DST, 32, iface, None, Some(SRC)));
@@ -96,6 +97,7 @@ fn a_connection_without_sticky_options_emits_the_minimum_header() {
 /// stamps the outgoing address into the record-route slot.
 #[test]
 fn a_tcp_segment_carries_the_sockets_sticky_option_area() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (dev, iface) = device(&stack, SRC);
     stack.routes.add(RouteEntry::main(DST, 32, iface, None, Some(SRC)));
@@ -123,6 +125,7 @@ fn a_tcp_segment_carries_the_sockets_sticky_option_area() {
 /// was known, so the source route must not disturb the segment bytes.
 #[test]
 fn a_tcp_source_route_retargets_the_wire_destination_only() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (direct, direct_iface) = device(&stack, SRC);
     let (hop_dev, hop_iface) = device(&stack, Ipv4Addr::new(192, 0, 2, 45));
@@ -150,6 +153,7 @@ fn a_tcp_source_route_retargets_the_wire_destination_only() {
 /// segments the connection emits still fit once the wider header is prepended.
 #[test]
 fn the_sticky_option_area_is_charged_against_the_connections_mss() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (_dev, iface) = device(&stack, SRC);
     stack.routes.add(RouteEntry::main(DST, 32, iface, None, Some(SRC)));

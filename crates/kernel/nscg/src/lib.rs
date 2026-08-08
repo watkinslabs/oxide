@@ -22,6 +22,9 @@ pub mod user_ns;
 pub mod uts_ns;
 mod listns;
 mod owner;
+/// Hosted-test ownership of the crate's process-global namespace state.
+#[cfg(test)]
+mod test_support;
 
 pub use proc_ns::{
     CLONE_NEWCGROUP, CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWNS, CLONE_NEWTIME,

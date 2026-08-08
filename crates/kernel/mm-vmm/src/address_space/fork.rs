@@ -10,6 +10,19 @@ use crate::{Error, KResult};
 use super::AddressSpace;
 use super::rss::{class_of, RssTally};
 
+/// Whether fork must rewrite the PARENT's leaf read-only so its next write
+/// takes a copy-on-write split.
+///
+/// A leaf that is ALREADY read-only needs no strip — and rewriting it from the
+/// VMA protection would destroy per-page state the leaf carries and the VMA
+/// does not: a userfaultfd write-protect marker armed on that page. Fork would
+/// then silently disarm the monitor's barrier, and the next write would take
+/// the copy-on-write path instead of being reported.
+/// # C: O(1)
+fn needs_cow_wrprotect(vma_writable: bool, shared: bool, leaf_writable: bool) -> bool {
+    vma_writable && !shared && leaf_writable
+}
+
 /// Undo every swap leaf installed in an unpublished child root and return its
 /// matching PMM slot reference.  The PTE is cleared before release so no page
 /// table can reach a slot after its last reference disappears.
@@ -302,7 +315,7 @@ impl AddressSpace {
             let end = vma.end.as_u64();
             while va < end {
                 // M::translate reads the active PT for the parent.
-                if let Some((src_pa, _)) = Some(M::translate(Va(va))).flatten() {
+                if let Some((src_pa, src_flags)) = Some(M::translate(Va(va))).flatten() {
                     let pa = src_pa.0 & !(PAGE_SIZE_BYTES - 1);
                     // Bump per-page refcount: child + parent both ref it.
                     inc_ref(pa);
@@ -334,7 +347,8 @@ impl AddressSpace {
                     // M::map writes through the active CR3 (parent's
                     // root). M::map's own implementation flushes the
                     // VA on x86; aarch64 may need an explicit flush.
-                    if writable && !shared {
+                    if needs_cow_wrprotect(writable, shared,
+                                           src_flags.contains(hal::PageFlags::WRITE)) {
                         // SAFETY: parent's CR3 is active; same-PA remap
                         // with W bit cleared; pa is current mapping per
                         // translate above.
@@ -501,4 +515,22 @@ impl AddressSpace {
         Ok(child)
     }
 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::needs_cow_wrprotect;
+
+    /// The parent's copy-on-write strip must skip a leaf that is already
+    /// read-only. Rewriting one from the VMA protection destroys the per-page
+    /// userfaultfd write-protect marker, which is the whole barrier: the next
+    /// write would copy the page instead of being reported to the monitor.
+    #[test]
+    fn fork_does_not_rewrite_an_already_read_only_parent_leaf() {
+        assert!(needs_cow_wrprotect(true, false, true));
+        assert!(!needs_cow_wrprotect(true, false, false),
+                "an already read-only leaf must be left exactly as it is");
+        assert!(!needs_cow_wrprotect(false, false, true));
+        assert!(!needs_cow_wrprotect(true, true, true), "shared pages are not split");
+    }
 }

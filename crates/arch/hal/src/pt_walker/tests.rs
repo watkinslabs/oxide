@@ -15,6 +15,12 @@ use super::*;
     const TEST_SWAP_OFFSET_SHIFT: u8 = 12;
     /// A software-only non-present bit distinct from the hosted swap shape.
     const TEST_MIGRATION_MARKER: u64 = 1 << 11;
+    /// Write permission in the hosted test PTE encoding.
+    const TEST_WRITE: u64 = 1 << 8;
+    /// Hosted stand-in for the software userfaultfd write-protect marker.
+    const TEST_UFFD_WP: u64 = 1 << 10;
+    /// Hosted stand-in for the non-present poison marker.
+    const TEST_POISON_MARKER: u64 = 1 << 9;
     /// HHDM offset in a hosted synthetic page-table tree.
     const TEST_HHDM_OFFSET: u64 = 0;
     /// Empty scalar stored in zero-initialized test page tables.
@@ -77,6 +83,16 @@ use super::*;
                 return None;
             }
             MigrationEntry::new(raw >> TEST_SWAP_OFFSET_SHIFT)
+        }
+        fn leaf_wrprotect(raw: u64) -> u64 { raw & !TEST_WRITE }
+        fn leaf_set_uffd_wp(raw: u64) -> u64 { raw | TEST_UFFD_WP }
+        fn leaf_clear_uffd_wp(raw: u64) -> u64 { raw & !TEST_UFFD_WP }
+        fn leaf_is_uffd_wp(raw: u64) -> bool {
+            raw & TEST_PTE_VALID != TEST_EMPTY_PTE && raw & TEST_UFFD_WP != TEST_EMPTY_PTE
+        }
+        fn pack_poison_marker() -> u64 { TEST_POISON_MARKER }
+        fn is_poison_marker(raw: u64) -> bool {
+            raw & TEST_PTE_VALID == TEST_EMPTY_PTE && raw & TEST_POISON_MARKER != TEST_EMPTY_PTE
         }
     }
 

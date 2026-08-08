@@ -19,10 +19,7 @@ use modules::admission::{DELETE_MODULE_FORCE, MODULE_NAME_LEN};
 pub fn sys_delete_module(args: &SyscallArgs) -> i64 {
     if let Err(rv) = crate::module_admit::may_init_module() { return rv; }
     if args.a0 == 0 { return errno(Errno::Efault); }
-    let name_bytes = match syscall::scan_user_cstr(args.a0, MODULE_NAME_LEN as u64, |va|
-        // SAFETY: scan_user_cstr validates va < USER_VA_END before every read.
-        unsafe { core::ptr::read_volatile(va as *const u8) }
-    ) {
+    let name_bytes = match uaccess::strncpy_from_user(args.a0, MODULE_NAME_LEN as u64) {
         Ok(v) => v,
         Err(e) => return errno(e),
     };

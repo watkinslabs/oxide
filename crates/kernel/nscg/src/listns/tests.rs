@@ -1,13 +1,11 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Mutex;
 
 use namespace_identity::{NamespaceKind, NamespaceRef};
 
 use super::*;
 
 static NEXT_TID: AtomicU32 = AtomicU32::new(0x7100_0000);
-static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn task(name: &'static str) -> Arc<sched::Task> {
     Arc::new(sched::Task::new(NEXT_TID.fetch_add(1, Ordering::Relaxed), name,
@@ -24,7 +22,7 @@ fn ids(page: &ListNsPage) -> Vec<u64> {
 
 #[test]
 fn nsfd_only_dynamic_uts_is_listed_and_retained() {
-    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _scan = crate::test_support::registry_scan();
     let caller = task("listns-nsfd");
     let owner = allocate(NamespaceKind::Uts,
         &namespace_identity::initial(NamespaceKind::User));
@@ -44,7 +42,7 @@ fn nsfd_only_dynamic_uts_is_listed_and_retained() {
 
 #[test]
 fn visibility_is_exact_current_or_init_privileged() {
-    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _scan = crate::test_support::registry_scan();
     let caller = task("listns-visible");
     let init_user = namespace_identity::initial(NamespaceKind::User);
     let current = allocate(NamespaceKind::Uts, &init_user);
@@ -62,7 +60,7 @@ fn visibility_is_exact_current_or_init_privileged() {
 
 #[test]
 fn owner_filter_uses_direct_children_and_excludes_initial_user_self() {
-    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _scan = crate::test_support::registry_scan();
     let caller = task("listns-owner");
     let init_user = namespace_identity::initial(NamespaceKind::User);
     let child_user = namespace_identity::allocate(NamespaceKind::User,
@@ -81,7 +79,7 @@ fn owner_filter_uses_direct_children_and_excludes_initial_user_self() {
 
 #[test]
 fn invalid_explicit_owner_is_typed() {
-    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _scan = crate::test_support::registry_scan();
     let caller = task("listns-invalid-owner");
     let uts = allocate(NamespaceKind::Uts,
         &namespace_identity::initial(NamespaceKind::User));
@@ -92,7 +90,7 @@ fn invalid_explicit_owner_is_typed() {
 
 #[test]
 fn inactive_user_retained_only_by_child_cannot_be_listed_or_owner_filtered() {
-    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _scan = crate::test_support::registry_scan();
     let caller = task("listns-passive-owner");
     let init_user = namespace_identity::initial(NamespaceKind::User);
     let user = namespace_identity::allocate(NamespaceKind::User,
@@ -112,7 +110,7 @@ fn inactive_user_retained_only_by_child_cannot_be_listed_or_owner_filtered() {
 
 #[test]
 fn zero_cursor_empty_owner_tree_returns_empty_page() {
-    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _scan = crate::test_support::registry_scan();
     let caller = task("listns-empty-owner");
     let init_user = namespace_identity::initial(NamespaceKind::User);
     let child_user = namespace_identity::allocate(NamespaceKind::User,
@@ -125,28 +123,27 @@ fn zero_cursor_empty_owner_tree_returns_empty_page() {
 
 #[test]
 fn structural_no_successor_differs_from_filtered_empty_page() {
-    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _scan = crate::test_support::registry_scan();
     let caller = task("listns-successor");
     caller.creds.cap_effective.store(0, Ordering::Release);
-    let foreign = allocate(NamespaceKind::Uts,
+    let _foreign = allocate(NamespaceKind::Uts,
         &namespace_identity::initial(NamespaceKind::User));
-    let foreign_id = foreign.ns_id().as_u64();
 
     let empty = listns_page(&caller, NamespaceKind::Uts.initial_ns_id().as_u64(),
         CLONE_NEWUTS as u32, ListNsOwnerFilter::All, 8).unwrap();
     assert!(empty.is_empty(), "invisible structural successors are skipped without error");
 
-    let last = namespace_identity::live_snapshot().into_iter()
-        .filter(|owner| owner.kind() == NamespaceKind::Uts)
-        .map(|owner| owner.ns_id().as_u64()).max().unwrap();
-    assert!(last >= foreign_id);
-    assert_eq!(listns_page(&caller, last, CLONE_NEWUTS as u32,
+    // A cursor above every allocatable global id, not the largest id observed a
+    // moment ago: the observed maximum goes stale the instant any concurrent
+    // allocation publishes a higher one, which turns this structural
+    // no-successor into a page. `u64::MAX` itself means "restart at zero".
+    assert_eq!(listns_page(&caller, u64::MAX - 1, CLONE_NEWUTS as u32,
         ListNsOwnerFilter::All, 8).err(), Some(ListNsError::NoSuccessor));
 }
 
 #[test]
 fn global_page_is_sorted_by_global_namespace_id() {
-    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _scan = crate::test_support::registry_scan();
     let caller = task("listns-sorted");
     let init_user = namespace_identity::initial(NamespaceKind::User);
     let _uts = allocate(NamespaceKind::Uts, &init_user);
@@ -160,7 +157,7 @@ fn global_page_is_sorted_by_global_namespace_id() {
 
 #[test]
 fn maximum_cursor_wraps_to_first_structural_entry() {
-    let _serial = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _scan = crate::test_support::registry_scan();
     let caller = task("listns-cursor-wrap");
     let page = listns_page(&caller, u64::MAX, CLONE_NEWUTS as u32,
         ListNsOwnerFilter::All, 1).unwrap();

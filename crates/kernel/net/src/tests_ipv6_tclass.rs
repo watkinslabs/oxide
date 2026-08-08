@@ -41,6 +41,7 @@ fn emitted_tclass(dev: &CaptureDev) -> u8 {
 // lands in the on-wire header's traffic-class field (bits 4..12 of word 0).
 #[test]
 fn sticky_tclass_reaches_ipv6_udp_wire() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let remote = Ipv6Addr::from_segments([0x2001, 0xdb8, 0x76, 0, 0, 0, 0, 1]);
     let dev = Arc::new(CaptureDev { frames: Mutex::new(Vec::new()) });

@@ -79,6 +79,7 @@ fn caller_packet(len: usize) -> Vec<u8> {
 
 #[test]
 fn hdrincl_transmits_caller_bytes_without_header_validation_or_rewriting() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let (stack, dev) = routed_capture(96);
     let endpoint = Raw6Endpoint::standalone(network_namespace::initial(), IpProto::Raw as u8);
     let bytes = caller_packet(64);
@@ -91,6 +92,7 @@ fn hdrincl_transmits_caller_bytes_without_header_validation_or_rewriting() {
 
 #[test]
 fn socket_fragment_size_caps_raw6_after_route_selection() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let (stack, dev) = routed_capture(1500);
     let endpoint = Raw6Endpoint::standalone(network_namespace::initial(), 253);
 
@@ -105,6 +107,7 @@ fn socket_fragment_size_caps_raw6_after_route_selection() {
 
 #[test]
 fn hdrincl_enforces_only_base_header_minimum_and_route_mtu() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let (stack, dev) = routed_capture(64);
     let endpoint = Raw6Endpoint::standalone(network_namespace::initial(), IpProto::Raw as u8);
 
@@ -119,6 +122,7 @@ fn hdrincl_enforces_only_base_header_minimum_and_route_mtu() {
 
 #[test]
 fn missing_source_rejects_kernel_header_but_not_caller_header() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let (stack, dev) = routed_capture_without_source(96);
     let kernel = Raw6Endpoint::standalone(network_namespace::initial(), IpProto::Udp as u8);
     assert_eq!(stack.send_raw6(&kernel, ROUTE_DST, None, None, b"payload", 64,
@@ -146,6 +150,7 @@ fn enabled_udp_checksum_zero_is_transmitted_as_ffff() {
 
 #[test]
 fn one_message_controls_drive_route_and_extension_header_construction() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let (stack, dev) = routed_capture(256);
     let endpoint = Raw6Endpoint::standalone(network_namespace::initial(), IpProto::Udp as u8);
     let hop = vec![0, 0, 1, 0, 0, 0, 0, 0];
@@ -178,6 +183,7 @@ fn one_message_controls_drive_route_and_extension_header_construction() {
 
 #[test]
 fn per_message_dontfrag_rejects_packet_over_route_mtu() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let (stack, dev) = routed_capture(64);
     let endpoint = Raw6Endpoint::standalone(network_namespace::initial(), IpProto::Udp as u8);
     let control = crate::send_control::Raw6Control {
@@ -190,6 +196,7 @@ fn per_message_dontfrag_rejects_packet_over_route_mtu() {
 
 #[test]
 fn pktinfo_iface_without_matching_route_returns_unreachable() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let (stack, dev) = routed_capture(256);
     let other = stack.ifaces.register(Arc::new(CaptureDev {
         mtu: 256, packets: Spinlock::new(Vec::new()),
@@ -206,6 +213,7 @@ fn pktinfo_iface_without_matching_route_returns_unreachable() {
 
 #[test]
 fn fragmented_chain_keeps_headers_and_udp_header_in_fragment_zero() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let (stack, dev) = routed_capture(104);
     let endpoint = Raw6Endpoint::standalone(network_namespace::initial(), IpProto::Udp as u8);
     let mut route = vec![0, 2, 2, 1, 0, 0, 0, 0];
@@ -239,6 +247,7 @@ fn fragmented_chain_keeps_headers_and_udp_header_in_fragment_zero() {
 
 #[test]
 fn oversized_post_fragment_header_chain_returns_emsgsize() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let (stack, dev) = routed_capture(96);
     let endpoint = Raw6Endpoint::standalone(network_namespace::initial(), IpProto::Udp as u8);
     let mut destination_options = vec![0; 48];
@@ -255,6 +264,7 @@ fn oversized_post_fragment_header_chain_returns_emsgsize() {
 
 #[test]
 fn arbitrary_protocol_payload_can_fragment() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let (stack, dev) = routed_capture(96);
     let endpoint = Raw6Endpoint::standalone(network_namespace::initial(), 253);
 
@@ -266,6 +276,7 @@ fn arbitrary_protocol_payload_can_fragment() {
 
 #[test]
 fn oversized_reassembled_payload_returns_emsgsize() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let (stack, dev) = routed_capture(1500);
     let endpoint = Raw6Endpoint::standalone(network_namespace::initial(), 253);
 

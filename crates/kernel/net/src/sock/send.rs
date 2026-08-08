@@ -15,66 +15,75 @@ pub fn wait_transmit(sock: &InetSocket, deadline_ns: u64) -> bool {
     true
 }
 
+/// Transmit one raw IPv4 datagram.
+///
+/// `#[inline(never)]`: the option area, the control clone and the ping probe
+/// are this branch's alone, and `sendto` sits under the deepest send path in
+/// the tree — its frame must not carry one protocol's working set into every
+/// other protocol's call (Linux `noinline_for_stack`).
+/// # C: O(payload bytes)
+#[inline(never)]
+fn sendto_raw4(sock: &InetSocket, endpoint: &alloc::sync::Arc<crate::raw4::Raw4Endpoint>,
+    payload: &[u8], dest: Option<RemoteAddr>, control: &crate::send_control::SendControl)
+    -> Result<usize, NetError>
+{
+    if sock.write_shut.load(core::sync::atomic::Ordering::Acquire) { return Err(NetError::Epipe); }
+    let probe;
+    let payload = if endpoint.is_ping() {
+        probe = crate::ping::prepare_v4(endpoint, payload, control.oob)?;
+        &probe[..]
+    } else { payload };
+    let dst = match dest {
+        Some(RemoteAddr::Inet { ip, .. }) => ip,
+        None => endpoint.snapshot().remote.ok_or(NetError::Edestaddrreq)?,
+        _ => return Err(NetError::Eafnosupport),
+    };
+    let multicast = dst.is_multicast();
+    let iface = if control.raw4.iface.is_some() { control.raw4.iface } else if multicast {
+        crate::sock_mcast::bound_iface(sock, dst)?
+    } else { super::iface::v4_egress_iface(sock)? };
+    let socket_source = if multicast { crate::sock_mcast::src_ip(sock, dst, iface) }
+        else { crate::Ipv4Addr::ANY };
+    let options = crate::raw4::Raw4TxOptions {
+        source: control.raw4.source.or((!socket_source.is_unspecified()).then_some(socket_source)),
+        iface,
+        tos: control.raw4.tos.unwrap_or(sock.opts.ip_tos.load(core::sync::atomic::Ordering::Acquire) as u8),
+        ttl: control.raw4.ttl.unwrap_or(crate::inet_tx::ipv4_ttl(
+            sock.opts.ip_mcast_ttl.load(core::sync::atomic::Ordering::Acquire),
+            sock.opts.ip_ttl.load(core::sync::atomic::Ordering::Acquire), multicast)),
+        pmtudisc: sock.opts.ip_mtu_discover.load(core::sync::atomic::Ordering::Acquire),
+        broadcast: sock.opts.broadcast.load(core::sync::atomic::Ordering::Acquire) != 0,
+        nodefrag: sock.opts.ip.flag(crate::sock_opts::sol_ip::state::flag::NODEFRAG),
+    };
+    let mut raw_control = control.raw4.clone();
+    // A control message replaces the socket's own option area outright;
+    // without one the sticky `IP_OPTIONS` area rides the datagram.
+    if raw_control.options.is_none() { raw_control.options = sock.opts.ip.options(); }
+    if raw_control.multicast_loop.is_none() {
+        raw_control.multicast_loop = Some(
+            sock.opts.ip_mcast_loop.load(core::sync::atomic::Ordering::Acquire) != 0);
+    }
+    stack().send_raw4(endpoint, dst, payload, options, &raw_control)?;
+    if crate::send_control::should_drain_loopback(multicast, raw_control.multicast_loop,
+        sock.opts.ip_mcast_loop.load(core::sync::atomic::Ordering::Acquire) != 0)
+    { drain_loopback(); }
+    return Ok(payload.len());
+}
+
 /// `sendto`/`send` typed work function for supported socket families. # C: O(payload bytes)
 pub fn sendto(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, creds: SenderCreds,
     control: &crate::send_control::SendControl)
     -> Result<usize, NetError>
 {
-    let context = security::network::Context {
-        namespace: sock.net_ns(),
-        family: sock.family.load(core::sync::atomic::Ordering::Acquire),
-        socket_type: 0, protocol: 0,
-        operation: security::network::Operation::Send,
-    };
-    if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
-        return Err(NetError::Eacces);
-    }
+    // No security decision here. The transport is entered only after the one
+    // message hook has admitted this send, and a second evaluation would both
+    // double-count the transaction and let a policy change land mid-message.
     if matches!(*sock.kind.lock(), SockKind::Packet { .. }) {
         return if sock.has_packet_tx_ring() { sock.kick_packet_tx_ring(None) }
             else { send_packet(sock, payload, None) };
     }
     if let SockKind::Raw4(endpoint) = &*sock.kind.lock() {
-        if sock.write_shut.load(core::sync::atomic::Ordering::Acquire) { return Err(NetError::Epipe); }
-        let probe;
-        let payload = if endpoint.is_ping() {
-            probe = crate::ping::prepare_v4(endpoint, payload, control.oob)?;
-            &probe[..]
-        } else { payload };
-        let dst = match dest {
-            Some(RemoteAddr::Inet { ip, .. }) => ip,
-            None => endpoint.snapshot().remote.ok_or(NetError::Edestaddrreq)?,
-            _ => return Err(NetError::Eafnosupport),
-        };
-        let multicast = dst.is_multicast();
-        let iface = if control.raw4.iface.is_some() { control.raw4.iface } else if multicast {
-            crate::sock_mcast::bound_iface(sock, dst)?
-        } else { super::iface::v4_egress_iface(sock)? };
-        let socket_source = if multicast { crate::sock_mcast::src_ip(sock, dst, iface) }
-            else { crate::Ipv4Addr::ANY };
-        let options = crate::raw4::Raw4TxOptions {
-            source: control.raw4.source.or((!socket_source.is_unspecified()).then_some(socket_source)),
-            iface,
-            tos: control.raw4.tos.unwrap_or(sock.opts.ip_tos.load(core::sync::atomic::Ordering::Acquire) as u8),
-            ttl: control.raw4.ttl.unwrap_or(crate::inet_tx::ipv4_ttl(
-                sock.opts.ip_mcast_ttl.load(core::sync::atomic::Ordering::Acquire),
-                sock.opts.ip_ttl.load(core::sync::atomic::Ordering::Acquire), multicast)),
-            pmtudisc: sock.opts.ip_mtu_discover.load(core::sync::atomic::Ordering::Acquire),
-            broadcast: sock.opts.broadcast.load(core::sync::atomic::Ordering::Acquire) != 0,
-            nodefrag: sock.opts.ip.flag(crate::sock_opts::sol_ip::state::flag::NODEFRAG),
-        };
-        let mut raw_control = control.raw4.clone();
-        // A control message replaces the socket's own option area outright;
-        // without one the sticky `IP_OPTIONS` area rides the datagram.
-        if raw_control.options.is_none() { raw_control.options = sock.opts.ip.options(); }
-        if raw_control.multicast_loop.is_none() {
-            raw_control.multicast_loop = Some(
-                sock.opts.ip_mcast_loop.load(core::sync::atomic::Ordering::Acquire) != 0);
-        }
-        stack().send_raw4(endpoint, dst, payload, options, &raw_control)?;
-        if crate::send_control::should_drain_loopback(multicast, raw_control.multicast_loop,
-            sock.opts.ip_mcast_loop.load(core::sync::atomic::Ordering::Acquire) != 0)
-        { drain_loopback(); }
-        return Ok(payload.len());
+        return sendto_raw4(sock, endpoint, payload, dest, control);
     }
     if let SockKind::Raw6(endpoint) = &*sock.kind.lock() {
         if sock.write_shut.load(core::sync::atomic::Ordering::Acquire) { return Err(NetError::Epipe); }
