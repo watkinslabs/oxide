@@ -78,6 +78,35 @@ pub fn route(op: ControlOp, endpoint: Option<Endpoint>, arg_error: Option<Errno>
     }
 }
 
+/// Where `accept(2)` / `accept4(2)` allocate the descriptor the accepted
+/// socket will occupy.
+///
+/// The position is the contract, not an implementation detail: the descriptor
+/// is reserved AFTER the fd lookup and the call's own flag screen, and BEFORE
+/// the file's protocol is consulted or a single connection leaves the
+/// listener's queue. A caller whose descriptor table is full therefore gets
+/// EMFILE with the accept queue untouched — the pending peer keeps its
+/// connection and is retried, instead of having it dequeued and destroyed to
+/// report an error that was decidable before any connection moved.
+///
+/// `reserve` produces the descriptor slot; `release` returns it when a later
+/// rung refuses. Both are supplied by the caller, so the whole decision stays
+/// a pure function of its inputs.
+/// # C: O(1) + reserve
+pub fn accept_route<R>(endpoint: Option<Endpoint>, arg_error: Option<Errno>,
+                       reserve: impl FnOnce() -> Result<R, Errno>,
+                       release: impl FnOnce(R))
+    -> Result<(Endpoint, R), Errno>
+{
+    let endpoint = match endpoint { Some(e) => e, None => return Err(Errno::Ebadf) };
+    if let Some(error) = arg_error { return Err(error); }
+    let slot = reserve()?;
+    match route(ControlOp::Accept, Some(endpoint), None) {
+        Ok(endpoint) => Ok((endpoint, slot)),
+        Err(error) => { release(slot); Err(error) }
+    }
+}
+
 /// Classify an already-pinned open file. Ungated so the classification a
 /// control syscall acts on is provable against real socket inodes.
 /// # C: O(1)
@@ -182,6 +211,73 @@ mod tests {
         let file = file_for(inode);
         assert_eq!(endpoint_of(&file), Endpoint::NotSocket);
         assert_eq!(route_op(ControlOp::Shutdown, Some(endpoint_of(&file))), Err(Errno::Enotsock));
+    }
+
+    /// Record whether the descriptor reservation ran, and what became of it.
+    #[derive(Default)]
+    struct Slots { reserved: core::cell::Cell<u32>, released: core::cell::Cell<u32> }
+
+    fn accept_with(slots: &Slots, endpoint: Option<Endpoint>, arg_error: Option<Errno>,
+                   available: bool) -> Result<(Endpoint, i32), Errno>
+    {
+        accept_route(endpoint, arg_error,
+            || {
+                slots.reserved.set(slots.reserved.get() + 1);
+                if available { Ok(7) } else { Err(Errno::Emfile) }
+            },
+            |slot| { assert_eq!(slot, 7); slots.released.set(slots.released.get() + 1); })
+    }
+
+    #[test]
+    fn a_bad_descriptor_or_a_bad_flag_word_reserves_nothing() {
+        // Neither refusal needs a descriptor, and reserving one would let a
+        // full table turn either into EMFILE.
+        let slots = Slots::default();
+        assert_eq!(accept_with(&slots, None, None, true), Err(Errno::Ebadf));
+        assert_eq!(accept_with(&slots, None, Some(Errno::Einval), true), Err(Errno::Ebadf));
+        assert_eq!(accept_with(&slots, Some(Endpoint::Inet), Some(Errno::Einval), true),
+            Err(Errno::Einval));
+        assert_eq!(slots.reserved.get(), 0);
+        assert_eq!(slots.released.get(), 0);
+    }
+
+    #[test]
+    fn an_exhausted_descriptor_table_refuses_before_the_protocol_is_consulted() {
+        // EMFILE outranks both ENOTSOCK and EOPNOTSUPP: the descriptor is the
+        // first resource the call needs and the last one it can do without.
+        for endpoint in [Endpoint::Inet, Endpoint::Vsock, Endpoint::Netlink,
+                         Endpoint::NotSocket] {
+            let slots = Slots::default();
+            assert_eq!(accept_with(&slots, Some(endpoint), None, false),
+                Err(Errno::Emfile), "{endpoint:?}");
+            assert_eq!(slots.reserved.get(), 1, "{endpoint:?}");
+            assert_eq!(slots.released.get(), 0, "{endpoint:?}");
+        }
+    }
+
+    #[test]
+    fn a_protocol_refusal_returns_the_descriptor_it_reserved() {
+        for (endpoint, expected) in [(Endpoint::NotSocket, Errno::Enotsock),
+                                     (Endpoint::Netlink, Errno::Eopnotsupp)] {
+            let slots = Slots::default();
+            assert_eq!(accept_with(&slots, Some(endpoint), None, true), Err(expected),
+                "{endpoint:?}");
+            assert_eq!(slots.reserved.get(), 1, "{endpoint:?}");
+            // Leaking it would cost the caller one descriptor per refused
+            // accept — an fd-table leak no error return reports.
+            assert_eq!(slots.released.get(), 1, "{endpoint:?}");
+        }
+    }
+
+    #[test]
+    fn a_socket_that_accepts_keeps_the_descriptor_reserved_for_its_child() {
+        for endpoint in [Endpoint::Inet, Endpoint::Vsock] {
+            let slots = Slots::default();
+            assert_eq!(accept_with(&slots, Some(endpoint), None, true), Ok((endpoint, 7)),
+                "{endpoint:?}");
+            assert_eq!(slots.reserved.get(), 1, "{endpoint:?}");
+            assert_eq!(slots.released.get(), 0, "{endpoint:?}");
+        }
     }
 
     #[test]

@@ -114,7 +114,7 @@ pub(crate) fn classify(fd: u64, op: crate::sock_route::ControlOp,
                        arg_error: Option<syscall::errno::Errno>)
     -> Result<Routed, syscall::errno::Errno>
 {
-    use crate::sock_route::{Endpoint, endpoint_of, route};
+    use crate::sock_route::{endpoint_of, route};
     let file = fd_file(fd);
     let endpoint = match route(op, file.as_ref().map(endpoint_of), arg_error) {
         Ok(endpoint) => endpoint,
@@ -128,6 +128,18 @@ pub(crate) fn classify(fd: u64, op: crate::sock_route::ControlOp,
     // `route` returns the endpoint only for a file it classified, so this fd
     // named an open file description.
     let file = match file { Some(file) => file, None => return Err(syscall::errno::Errno::Ebadf) };
+    routed_from(endpoint, file)
+}
+
+/// Build the owning target for an already-classified open file. Split out of
+/// `classify` for the calls whose refusal ladder puts a step of their own
+/// between the classification and the dispatch — `accept(2)` reserves its
+/// descriptor there. # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) fn routed_from(endpoint: crate::sock_route::Endpoint, file: Arc<vfs::File>)
+    -> Result<Routed, syscall::errno::Errno>
+{
+    use crate::sock_route::Endpoint;
     Ok(match endpoint {
         Endpoint::Netlink => match crate::netlink_fd::from_file(file) {
             Some(target) => Routed::Netlink(target),

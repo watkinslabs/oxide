@@ -42,6 +42,11 @@ mod pkey;
 // per-PAGE loop with a per-VMA one is exactly the kind of bound that has to be
 // tested, having wedged a CPU for 300+ s with interrupts masked (B1476).
 pub mod uaccess_range;
+// uretprobe(2) 335 / uprobe(2) 336: what each kernel-injected slot owes a
+// caller that did not arrive through a uprobe trampoline. Ungated because both
+// slot files are kernel-only, and the two answers differ in a way a userspace
+// feature probe reads directly.
+pub mod uprobe_abi;
 pub mod secretmem;
 // execve(2) 59: the AT_RANDOM auxv block. Kernel-gated slot files can't be
 // tested, and this is what glibc's stack canary + pointer guard come from.
