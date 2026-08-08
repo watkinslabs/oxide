@@ -123,6 +123,9 @@ fn exercise_identity_close_reuse(kind: NsKind, identity_kind: NamespaceKind, tid
 }
 
 fn exercise_mount_close_reuse(tid: u32) {
+    // `live()` pins every namespace in the process, so this body may not run
+    // beside a test that observes its own final drop.
+    let scan = crate::test_support::registry_scan();
     let fdt = vfs::FdTable::new();
     let user = namespace_identity::initial(NamespaceKind::User);
     let original = vfs::mntns::allocate(user.clone()).unwrap();
@@ -177,7 +180,7 @@ fn exercise_mount_close_reuse(tid: u32) {
     assert!(original_weak.upgrade().is_none(), "destination exit drops final mount owner");
     assert!(vfs::mntns::ns_by_id(original_id).is_none(),
         "stale mount id cannot numerically reconstruct an owner");
-    assert!(!namespace_identity::live_snapshot().iter().any(|owner|
+    assert!(!scan.live().iter().any(|owner|
         owner.kind() == NamespaceKind::Mnt && owner.id().as_u64() == original_id),
         "weak mount live index disappears only after final owner drop");
     fdt.close(fd).unwrap();
@@ -185,6 +188,9 @@ fn exercise_mount_close_reuse(tid: u32) {
 
 #[test]
 fn nsfd_only_owner_retains_uts_state_until_close() {
+    // The close must be the final drop: a concurrent registry scan would pin
+    // this owner and defer the finalizer that erases its UTS state.
+    let isolation = crate::test_support::drop_isolation();
     let fdt = vfs::FdTable::new();
     let owner = uts_owner();
     let id = owner.id();
@@ -195,20 +201,19 @@ fn nsfd_only_owner_retains_uts_state_until_close() {
     let retained = weak.upgrade().expect("nsfd retains exact UTS owner");
     assert_eq!(crate::uts_ns::snapshot(&retained).unwrap().hostname, b"nsfd-host".to_vec());
     drop(retained);
-    assert!(crate::uts_ns::contains(id));
+    assert!(isolation.uts_state(id));
 
     fdt.close(fd).unwrap();
     assert!(weak.upgrade().is_none());
-    assert!(!crate::uts_ns::contains(id));
+    assert!(!isolation.uts_state(id));
 }
 
 #[test]
 fn network_setns_pin_survives_close_and_exact_fd_reuse() {
-    install_test_final_drop_callback();
     let fdt = vfs::FdTable::new();
     let user = namespace_identity::initial(NamespaceKind::User);
-    let original_namespace = network_namespace::allocate(user.clone()).unwrap();
-    let replacement_namespace = network_namespace::allocate(user).unwrap();
+    let original_namespace = crate::test_support::net_ns(user.clone());
+    let replacement_namespace = crate::test_support::net_ns(user);
     let original_id = original_namespace.id();
     let replacement_id = replacement_namespace.id();
     let original_owner_weak = Arc::downgrade(&original_namespace);

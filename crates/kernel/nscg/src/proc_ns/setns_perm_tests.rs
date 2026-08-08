@@ -45,7 +45,7 @@ fn uts_setns_requires_sys_admin() {
 fn ipc_net_cgroup_setns_all_require_sys_admin() {
     let ipc = alloc_under(NamespaceKind::Ipc, initial_user());
     let cgroup = alloc_under(NamespaceKind::Cgroup, initial_user());
-    let net = network_namespace::allocate(initial_user()).unwrap();
+    let net = crate::test_support::net_ns(initial_user());
     let t = task(602, "multi-nocap");
     drop_all_caps(&t);
     assert_eq!(setns_apply(&NsInode::new(NsKind::Ipc, NsOwner::Ipc(ipc)),

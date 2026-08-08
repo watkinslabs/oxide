@@ -98,6 +98,8 @@ fn may_see_all(caller: &sched::Task) -> bool {
 }
 
 fn candidates(cursor: NsId, mask: u32, owner: Option<&NamespacePin>) -> Vec<NamespacePin> {
+    #[cfg(test)]
+    crate::test_support::assert_registry_scan_held();
     if let Some(owner) = owner {
         return namespace_identity::active_owner_page(owner, cursor, usize::MAX);
     }
