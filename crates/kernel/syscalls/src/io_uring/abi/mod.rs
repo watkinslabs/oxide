@@ -6,8 +6,13 @@
 //   layout      — oxide's SQ/CQ/SQE region geometry + the `io_uring_setup`
 //                 admission ladder (`io_uring_sanitise_params`,
 //                 `io_uring_fill_params`, `rings_size`).
-//   enter       — `io_uring_enter` CQ-occupancy / SQ-index decisions.
+//   allowed     — who may create a ring at all (`kernel.io_uring_disabled`,
+//                 `kernel.io_uring_group`, CAP_SYS_ADMIN) → EPERM.
+//   enter       — `io_uring_enter` flag/argument decode, CQ-occupancy and
+//                 SQ-index decisions, and the wait ladder.
 //   ops         — `IORING_OP_*` / `IOSQE_*` and which opcodes dispatch runs.
+//   link        — link chains, drain barriers and silent success.
+//   restriction — the per-ring register/SQE allow-lists.
 //   register_op — the `io_uring_register(2)` opcode + argument ladder
 //                 (Linux `io_uring/register.c` `__io_uring_register`).
 //
@@ -17,7 +22,10 @@
 // call one of these, and encode (docs/53).
 
 pub mod uapi;
+pub mod allowed;
 pub mod layout;
 pub mod enter;
 pub mod ops;
+pub mod link;
 pub mod register_op;
+pub mod restriction;

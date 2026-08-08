@@ -53,15 +53,22 @@ pub const RING_CQES:            u32 = 0x40;
 /// `IORING_SETUP_NO_SQARRAY` (SQ head/tail index the SQE array directly).
 pub const NO_SQ_ARRAY: u32 = u32::MAX;
 
-/// Setup flags oxide implements. Every other bit in `IORING_SETUP_FLAGS` is
-/// refused with `EINVAL` — the same answer a Linux kernel that predates the
-/// flag gives, because the bit is simply absent from its `IORING_SETUP_FLAGS`
-/// mask (`io_uring_sanitise_params`). Refusing is mandatory: accepting e.g.
-/// `IORING_SETUP_SQPOLL` without a poll thread would leave the caller
-/// spinning on an SQ ring nobody drains.
+/// Setup flags this kernel implements. Every other bit is refused with
+/// `EINVAL` — the same answer a kernel that predates the flag gives, because
+/// the bit is simply absent from its own mask. Refusing is mandatory:
+/// accepting `IORING_SETUP_SQPOLL` without a poll thread would leave the
+/// caller spinning on an SQ ring nobody drains.
+///
+/// The task-work flags are honoured rather than ignored: every entry runs to
+/// completion inside the submission that issued it, so there is never deferred
+/// work to signal, notify or defer, and the `IORING_SQ_TASKRUN` bit a
+/// `TASKRUN_FLAG` ring watches is correctly never raised. `SINGLE_ISSUER` is
+/// enforced — a second task submitting to such a ring is refused.
 pub const SUPPORTED_SETUP_FLAGS: u32 =
     IORING_SETUP_CQSIZE | IORING_SETUP_CLAMP | IORING_SETUP_NO_SQARRAY
-    | IORING_SETUP_SUBMIT_ALL;
+    | IORING_SETUP_SUBMIT_ALL | IORING_SETUP_R_DISABLED
+    | IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_COOP_TASKRUN
+    | IORING_SETUP_TASKRUN_FLAG | IORING_SETUP_DEFER_TASKRUN;
 
 /// `p->features` oxide reports. Claiming a bit we do not implement is a lie
 /// liburing acts on, so the set is deliberately small:
@@ -70,12 +77,22 @@ pub const SUPPORTED_SETUP_FLAGS: u32 =
 ///                    `IORING_OFF_CQ_RING` separately.
 ///   SUBMIT_STABLE  — every op runs inline in `io_uring_enter`, so the SQE is
 ///                    fully consumed before submit returns.
-/// NOT claimed, and why: NODROP (no CQ overflow list — a full CQ stops
-/// submission), RW_CUR_POS (`off == -1` is not translated to the file
-/// position), CUR_PERSONALITY / FAST_POLL / POLL_32BITS / SQPOLL_NONFIXED /
-/// EXT_ARG / NATIVE_WORKERS / RSRC_TAGS / CQE_SKIP / LINKED_FILE /
-/// REG_REG_RING (unimplemented).
-pub const REPORTED_FEATURES: u32 = IORING_FEAT_SINGLE_MMAP | IORING_FEAT_SUBMIT_STABLE;
+///   NODROP         — a completion is never dropped for want of ring space;
+///                    the overflow backlog holds it until the caller reaps.
+///   RW_CUR_POS     — `off == -1` means "use the description's position".
+///   CUR_PERSONALITY— an entry runs under the submitter's credentials unless
+///                    it names a registered personality.
+///   EXT_ARG        — `io_uring_enter` accepts the extended wait argument.
+///   RSRC_TAGS      — a released tagged resource posts its tag.
+///   CQE_SKIP       — a successful entry can ask for no completion.
+///   LINKED_FILE    — a linked entry resolves its file in submission order.
+/// NOT claimed, and why: FAST_POLL and NATIVE_WORKERS (no worker pool to
+/// retry from), POLL_32BITS (no poll entry), SQPOLL_NONFIXED (no poll
+/// thread), REG_REG_RING (no registered-ring array).
+pub const REPORTED_FEATURES: u32 =
+    IORING_FEAT_SINGLE_MMAP | IORING_FEAT_NODROP | IORING_FEAT_SUBMIT_STABLE
+    | IORING_FEAT_RW_CUR_POS | IORING_FEAT_CUR_PERSONALITY | IORING_FEAT_EXT_ARG
+    | IORING_FEAT_RSRC_TAGS | IORING_FEAT_CQE_SKIP | IORING_FEAT_LINKED_FILE;
 
 /// Region geometry derived from an admitted `struct io_uring_params`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

@@ -44,7 +44,13 @@ pub const KERNEL_SYSCTLS: &[Node] = &[
         File("dmesg_restrict",        IntHook(get_dmesg_restrict, set_dmesg_restrict, Some((0, 1)))),
         File("kptr_restrict",         Int(0, Some((0, 2)))),
         File("modules_disabled",      IntHook(get_modules_disabled, set_modules_disabled, Some((1, 1)))),
-        File("io_uring_disabled",     Int(0, Some((0, 2)))),
+        // Bound to the live cells ring creation consults, not a procfs-local
+        // cell: a dead cell here would report io_uring as disabled while rings
+        // kept being handed out. `io_uring_group` carries no bounds — a
+        // negative gid is the legal "no group" value.
+        File("io_uring_disabled",     IntHook(get_io_uring_disabled, set_io_uring_disabled,
+                                              Some(syscall::io_uring_ctl::DISABLED_BOUNDS))),
+        File("io_uring_group",        IntHook(get_io_uring_group, set_io_uring_group, None)),
         File("shm_rmid_forced",       IntHook(get_shm_rmid_forced, set_shm_rmid_forced,
                                               Some(ipc::sysv_shm::RMID_FORCED_BOUNDS))),
         File("hostname",              StrHook(crate::hooks::hostname, crate::hooks::set_hostname)),

@@ -1,103 +1,121 @@
-// sys_io_uring_enter (NR_IO_URING_ENTER=426) per docs/53§0 — per-syscall file.
-// Ring geometry and `IORING_OP_*` dispatch live in the io_uring module; this
-// file drains SQ head→tail and posts CQEs.
+// sys_io_uring_enter (NR_IO_URING_ENTER=426) per docs/53§0 — ABI shim only:
+// validate the flags, resolve the ring, decode the extended argument, submit,
+// wait, fold the two halves into one return value. The submission engine, the
+// wait and every decision live below (`io_uring::submit`, `io_uring::wait`,
+// `io_uring_abi::enter`), which the hosted suite compiles and tests.
 
 #![cfg(target_os = "oxide-kernel")]
 
-use crate::io_uring::{dispatch_op, ring_of, IoUringInode};
-use crate::io_uring_abi::enter::{cq_has_room, sq_index_valid};
-use crate::io_uring_abi::layout::{
-    RING_CQ_HEAD, RING_CQ_OVERFLOW, RING_CQ_TAIL, RING_SQ_DROPPED, RING_SQ_HEAD, RING_SQ_TAIL,
-};
-use crate::io_uring_sqe::OpArgs;
+use alloc::sync::Arc;
 
-/// `sys_io_uring_enter(fd, to_submit, min_complete, flags, sig, sigsz)`
-/// — slot 426.
-/// # C: O(to_submit)
+use syscall::errno::Errno;
+
+use crate::io_uring::ctx::{state, IoUringInode};
+use crate::io_uring::{ring_ctx, ring_of};
+use crate::io_uring_abi::enter::*;
+
+fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
+
+/// Resolve the ring behind the first argument. # C: O(1)
+fn ring_for(fd: i32, registered: bool) -> Result<Arc<IoUringInode>, i64> {
+    use crate::io_uring_abi::register_op::registered_ring_error;
+    // No registered-ring array is populated, so this form can only report the
+    // errno an empty array gives.
+    if registered { return Err(err(registered_ring_error(fd))); }
+    let Some(cur) = sched::live::current() else { return Err(err(Errno::Ebadf)) };
+    // SAFETY: running task on this CPU; preempt-off; sole reader of the fd_table slot.
+    let Some(fdt) = (unsafe { cur.fd_table_ref() }) else { return Err(err(Errno::Ebadf)) };
+    let file = match fdt.clone().get(fd) { Ok(f) => f, Err(_) => return Err(err(Errno::Ebadf)) };
+    let inode = ring_of(&file).map_err(err)?;
+    ring_ctx(&inode).ok_or(err(Errno::Eopnotsupp))
+}
+
+/// Read the caller's wait parameters, whichever argument shape it used.
+/// # C: O(1)
+fn ext_arg_of(flags: u32, argp: u64, argsz: u64) -> Result<ExtArg, i64> {
+    match arg_kind(flags, argsz).map_err(err)? {
+        ArgKind::BareSigmask => Ok(bare_sigmask_arg(argp, argsz, flags)),
+        ArgKind::Getevents => {
+            let mut b = [0u8; GETEVENTS_ARG_BYTES as usize];
+            if uaccess::copy_from_user(&mut b, argp).is_err() { return Err(err(Errno::Efault)); }
+            let (sig, sigsz, min_wait_usec, ts_p) = decode_getevents(&b);
+            let ts = if ts_p == 0 { None } else { Some(read_timespec(ts_p)?) };
+            Ok(ExtArg {
+                sig, sigsz,
+                min_wait_ns: min_wait_usec.saturating_mul(NSEC_PER_USEC),
+                ts,
+                abs: flags & IORING_ENTER_ABS_TIMER != 0,
+                iowait: flags & IORING_ENTER_NO_IOWAIT == 0,
+            })
+        }
+        // The registered form reads its wait record out of a wait region the
+        // ring registered. No region can be registered, so the offset the
+        // caller passed can only be outside it.
+        ArgKind::RegisteredWait => Err(err(Errno::Efault)),
+    }
+}
+
+/// # C: O(1)
+fn read_timespec(p: u64) -> Result<(i64, i64), i64> {
+    let mut b = [0u8; 16];
+    if uaccess::copy_from_user(&mut b, p).is_err() { return Err(err(Errno::Efault)); }
+    let sec = i64::from_ne_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]);
+    let nsec = i64::from_ne_bytes([b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]]);
+    Ok((sec, nsec))
+}
+
+/// Install the caller's temporary signal mask for the wait. Armed rather than
+/// swapped, so a signal that arrives during the wait runs its handler under
+/// the temporary mask and the caller's own mask comes back with the return.
+/// # C: O(1)
+fn arm_sigmask(ext: &ExtArg) -> Result<bool, i64> {
+    if ext.sig == 0 { return Ok(false); }
+    if syscall::sigset::check_exact(ext.sigsz).is_err() { return Err(err(Errno::Einval)); }
+    let mut b = [0u8; 8];
+    if uaccess::copy_from_user(&mut b, ext.sig).is_err() { return Err(err(Errno::Efault)); }
+    if let Some(cur) = sched::live::current() { cur.arm_saved_sigmask(u64::from_ne_bytes(b)); }
+    Ok(true)
+}
+
+/// `sys_io_uring_enter(fd, to_submit, min_complete, flags, argp, argsz)`
+/// — slot 426. # C: O(to_submit) + wait
 pub fn sys_io_uring_enter(args: &syscall::SyscallArgs) -> i64 {
-    use syscall::errno::Errno;
     let fd        = args.a0 as i32;
     let to_submit = args.a1 as u32;
-    let _min_cmpl = args.a2;
-    let _flags    = args.a3;
-    let cur = match sched::live::current() {
-        Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
-    let fdt = match unsafe { cur.fd_table_ref() } {
-        Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    let file = match fdt.get(fd) {
-        Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
-    };
-    // Linux io_uring_ctx_get_file(): EOPNOTSUPP for a non-io_uring fd.
-    let inode_ref = match ring_of(&file) { Ok(i) => i, Err(e) => return -(e.as_i32() as i64) };
-    let ring_inode: &IoUringInode = match inode_ref.private::<IoUringInode>() {
-        Some(d) => d, None => return -(Errno::Eopnotsupp.as_i32() as i64),
-    };
-    let g = ring_inode.ring.lock();
+    let min_cmpl  = args.a2 as u32;
+    let flags     = args.a3 as u32;
+    let argp      = args.a4;
+    let argsz     = args.a5;
 
-    let mut submitted: u32 = 0;
-    let mut sq_h = g.hdr_load(RING_SQ_HEAD);
-    let sq_t     = g.hdr_load(RING_SQ_TAIL);
-    let mut cq_t = g.hdr_load(RING_CQ_TAIL);
-    while submitted < to_submit && sq_h != sq_t {
-        // The CQ ring has no overflow list, so a full CQ stops submission
-        // instead of overwriting completions the caller has not reaped.
-        // `IORING_FEAT_NODROP` is deliberately NOT reported (abi::layout).
-        let cq_h = g.hdr_load(RING_CQ_HEAD);
-        if !cq_has_room(cq_t, cq_h, g.cq_entries) {
-            g.hdr_store(RING_CQ_OVERFLOW, g.hdr_load(RING_CQ_OVERFLOW).wrapping_add(1));
-            break;
-        }
-        let idx = g.sq_index(sq_h);
-        if !sq_index_valid(idx, g.sq_entries) {
-            // Linux io_get_sqe(): an out-of-range SQ index is counted in
-            // sq_dropped and the entry is skipped, not executed.
-            g.hdr_store(RING_SQ_DROPPED, g.hdr_load(RING_SQ_DROPPED).wrapping_add(1));
-            sq_h = sq_h.wrapping_add(1);
-            continue;
-        }
-        let sqe = g.sqe_at(idx);
-        // SQE layout (Linux struct io_uring_sqe): opcode@0, flags@1, ioprio@2,
-        // fd@4, off@8, addr@16, len@24, op_flags@28, user_data@32,
-        // buf_index@40 (union).
-        // SAFETY: sqe is inside the SQEs frame (sqe_at masks the index into range); the frame is HHDM-mapped for the ring's lifetime; the ring spinlock serialises kernel readers.
-        let op = unsafe {
-            OpArgs {
-                opcode:    core::ptr::read_volatile((sqe +  0) as *const u8),
-                flags:     core::ptr::read_volatile((sqe +  1) as *const u8),
-                fd:        core::ptr::read_volatile((sqe +  4) as *const i32),
-                off:       core::ptr::read_volatile((sqe +  8) as *const u64),
-                addr:      core::ptr::read_volatile((sqe + 16) as *const u64),
-                len:       core::ptr::read_volatile((sqe + 24) as *const u32),
-                op_flags:  core::ptr::read_volatile((sqe + 28) as *const u32),
-                buf_index: core::ptr::read_volatile((sqe + 40) as *const u16),
-            }
-        };
-        // SAFETY: same frame and lock as the SQE read above; user_data is the opaque cookie echoed into the CQE.
-        let user_data = unsafe { core::ptr::read_volatile((sqe + 32) as *const u64) };
-        let res: i64 = dispatch_op(ring_inode, &op);
+    if let Err(e) = validate_flags(flags) { return err(e); }
+    let inode = match ring_for(fd, flags & IORING_ENTER_REGISTERED_RING != 0) {
+        Ok(i) => i, Err(e) => return e,
+    };
+    // A ring created disabled submits nothing until it is enabled.
+    if inode.test_state(state::DISABLED) { return err(Errno::Ebadfd); }
+    if let Err(e) = inode.claim_issuer() { return err(e); }
 
-        let cqe = g.cqe_at(cq_t);
-        // SAFETY: cqe_at masks the index into the CQE array, which rings_size bounded inside the rings frame; the ring spinlock serialises kernel writers.
-        unsafe {
-            core::ptr::write_volatile((cqe +  0) as *mut u64, user_data);
-            core::ptr::write_volatile((cqe +  8) as *mut i32, res as i32);
-            core::ptr::write_volatile((cqe + 12) as *mut u32, 0);
-        }
-        cq_t = cq_t.wrapping_add(1);
-        // Publish each completion before advancing the SQ head so a reaper
-        // never sees a consumed SQE with no CQE behind it.
-        g.hdr_store(RING_CQ_TAIL, cq_t);
-        sq_h = sq_h.wrapping_add(1);
-        g.hdr_store(RING_SQ_HEAD, sq_h);
-        submitted += 1;
+    let submitted = if to_submit > 0 {
+        crate::io_uring::submit::submit_sqes(&inode, to_submit)
+    } else {
+        0
+    };
+    if !runs_getevents(submitted, to_submit, flags) { return submitted; }
+    enter_result(submitted, wait_half(&inode, min_cmpl, flags, argp, argsz))
+}
+
+/// The wait half, kept out of the submission frame: the deepest operations run
+/// close to the kernel stack budget, so the wait's own bookkeeping must not be
+/// charged to their depth. # C: wait
+#[inline(never)]
+fn wait_half(inode: &Arc<IoUringInode>, min_cmpl: u32, flags: u32, argp: u64, argsz: u64) -> i64 {
+    let ext = match ext_arg_of(flags, argp, argsz) { Ok(e) => e, Err(e) => return e };
+    let armed = match arm_sigmask(&ext) { Ok(a) => a, Err(e) => return e };
+    let wait_rv = crate::io_uring::wait::cq_wait(inode, min_cmpl, &ext);
+    // An interrupted wait KEEPS the temporary mask so the handler runs under
+    // it; anything else restores the caller's own mask now.
+    if armed && wait_rv != err(Errno::Eintr) {
+        if let Some(cur) = sched::live::current() { cur.restore_saved_sigmask(); }
     }
-    drop(g);
-    // Signal the registered completion eventfd once per enter if any CQEs were
-    // posted (Linux signals per-CQE; once is sufficient for the level-triggered
-    // eventfd counter to wake an epoll/read waiter).
-    if submitted > 0 { ring_inode.signal_eventfd(); }
-    submitted as i64
+    wait_rv
 }

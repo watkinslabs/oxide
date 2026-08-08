@@ -59,6 +59,13 @@ pub enum Errno {
     /// removing a watchpoint that was never added reports.
     Ebadslt = 57,
     Enodata = 61,
+    /// `ETIME` — a wait bounded by a caller-supplied timeout expired before
+    /// the condition became true. Distinct from `ETIMEDOUT`, which reports a
+    /// peer or transport that stopped answering.
+    Etime   = 62,
+    /// `EBADR` — a completion the kernel produced could not be delivered and
+    /// was dropped; the caller is told once, then the condition is cleared.
+    Ebadr   = 53,
     Enopkg  = 65,
     Enonet  = 64,
     Eproto  = 71,

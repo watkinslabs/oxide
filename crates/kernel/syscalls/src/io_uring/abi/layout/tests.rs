@@ -79,11 +79,9 @@ fn unimplemented_setup_bits_are_refused_not_ignored() {
     // Accepting these silently is the bug this file exists to prevent: a ring
     // asked for SQPOLL and handed a ring with no poll thread spins forever.
     for f in [IORING_SETUP_IOPOLL, IORING_SETUP_SQPOLL, IORING_SETUP_SQ_AFF,
-              IORING_SETUP_ATTACH_WQ, IORING_SETUP_R_DISABLED,
-              IORING_SETUP_COOP_TASKRUN, IORING_SETUP_SQE128, IORING_SETUP_CQE32,
-              IORING_SETUP_SINGLE_ISSUER, IORING_SETUP_NO_MMAP,
-              IORING_SETUP_HYBRID_IOPOLL, IORING_SETUP_CQE_MIXED,
-              IORING_SETUP_SQE_MIXED] {
+              IORING_SETUP_ATTACH_WQ, IORING_SETUP_SQE128, IORING_SETUP_CQE32,
+              IORING_SETUP_NO_MMAP, IORING_SETUP_HYBRID_IOPOLL,
+              IORING_SETUP_CQE_MIXED, IORING_SETUP_SQE_MIXED] {
         assert_eq!(prepare(&mut req(f), 4), Err(Errno::Einval), "flag {f:#x}");
     }
 }
@@ -93,8 +91,13 @@ fn linux_flag_combination_rules_hold() {
     // Each of these is EINVAL in io_uring_sanitise_params() for a reason that
     // has nothing to do with what oxide implements.
     assert_eq!(prepare(&mut req(IORING_SETUP_REGISTERED_FD_ONLY), 4), Err(Errno::Einval));
+    // TASKRUN_FLAG needs one of the two task-run modes alongside it, and
+    // DEFER_TASKRUN needs SINGLE_ISSUER — neither is refused for being
+    // unimplemented, so the pairing rules are what these check.
     assert_eq!(prepare(&mut req(IORING_SETUP_TASKRUN_FLAG), 4), Err(Errno::Einval));
+    assert!(prepare(&mut req(IORING_SETUP_TASKRUN_FLAG | IORING_SETUP_COOP_TASKRUN), 4).is_ok());
     assert_eq!(prepare(&mut req(IORING_SETUP_DEFER_TASKRUN), 4), Err(Errno::Einval));
+    assert!(prepare(&mut req(IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_SINGLE_ISSUER), 4).is_ok());
     assert_eq!(prepare(&mut req(IORING_SETUP_HYBRID_IOPOLL), 4), Err(Errno::Einval));
     assert_eq!(prepare(&mut req(IORING_SETUP_SQ_REWIND), 4), Err(Errno::Einval));
 }
@@ -187,13 +190,22 @@ fn mmap_offsets_select_the_right_region() {
 
 #[test]
 fn features_claim_only_what_the_ring_actually_does() {
-    assert_eq!(REPORTED_FEATURES, IORING_FEAT_SINGLE_MMAP | IORING_FEAT_SUBMIT_STABLE);
-    // Reporting 0 (the old behaviour) makes liburing mmap IORING_OFF_CQ_RING
+    // Reporting 0 (the old behaviour) makes a caller mmap IORING_OFF_CQ_RING
     // separately and treat the returned CQ offsets as relative to THAT
     // mapping — they are relative to the rings mapping.
     assert_ne!(REPORTED_FEATURES & IORING_FEAT_SINGLE_MMAP, 0);
-    // A full CQ stops submission instead of queueing an overflow list.
-    assert_eq!(REPORTED_FEATURES & IORING_FEAT_NODROP, 0);
-    assert_eq!(REPORTED_FEATURES & IORING_FEAT_RW_CUR_POS, 0);
-    assert_eq!(REPORTED_FEATURES & IORING_FEAT_EXT_ARG, 0);
+    // Each of these names behaviour the ring really has: an overflow backlog,
+    // the current-position offset escape, the extended wait argument, tagged
+    // resources, silent success, and link-order file resolution.
+    for f in [IORING_FEAT_NODROP, IORING_FEAT_SUBMIT_STABLE, IORING_FEAT_RW_CUR_POS,
+              IORING_FEAT_CUR_PERSONALITY, IORING_FEAT_EXT_ARG, IORING_FEAT_RSRC_TAGS,
+              IORING_FEAT_CQE_SKIP, IORING_FEAT_LINKED_FILE] {
+        assert_ne!(REPORTED_FEATURES & f, 0, "feature {f:#x}");
+    }
+    // Claiming these would promise a worker pool, a poll entry, a poll thread
+    // or a registered-ring array that does not exist.
+    for f in [IORING_FEAT_FAST_POLL, IORING_FEAT_NATIVE_WORKERS, IORING_FEAT_POLL_32BITS,
+              IORING_FEAT_SQPOLL_NONFIXED, IORING_FEAT_REG_REG_RING] {
+        assert_eq!(REPORTED_FEATURES & f, 0, "feature {f:#x}");
+    }
 }

@@ -1,18 +1,14 @@
 // `io_uring_register(2)` opcode + argument ladder.
 //
-// Linux reference, read for every rule below:
-//   io_uring/register.c  SYSCALL_DEFINE4(io_uring_register) — USE_REGISTERED_RING
-//                        masking, the `>= IORING_REGISTER_LAST` bound, `fd == -1`
-//   io_uring/register.c  __io_uring_register()  — the per-opcode arg/nr_args ladder
-//   io_uring/register.c  io_uring_register_blind()
-//   io_uring/register.c  io_probe()
-//   io_uring/io_uring.c  io_uring_ctx_get_file() — EBADF / EOPNOTSUPP
-//   io_uring/rsrc.c      io_sqe_buffers_register(), io_sqe_files_register(),
-//                        io_register_files_update(), __io_sqe_files_update()
+// The ladder is three stages, in this order: strip the
+// `USE_REGISTERED_RING` selector bit, bound the opcode, then split the
+// "blind" (`fd == -1`) forms from the ring forms. Only then are the
+// per-opcode argument rules applied. Getting that order wrong is what made
+// every valid opcode carrying the selector bit look like an unknown opcode.
 
 use syscall::errno::Errno;
 
-/// `enum io_uring_register_op` (Linux `include/uapi/linux/io_uring.h`).
+/// `enum io_uring_register_op`.
 pub const IORING_REGISTER_BUFFERS:           u32 = 0;
 pub const IORING_UNREGISTER_BUFFERS:         u32 = 1;
 pub const IORING_REGISTER_FILES:             u32 = 2;
@@ -58,16 +54,21 @@ pub const IORING_REGISTER_USE_REGISTERED_RING: u32 = 1 << 31;
 
 /// `IORING_REGISTER_FILES_SKIP` — leave this update slot untouched.
 pub const IORING_REGISTER_FILES_SKIP: i32 = -2;
-/// `IO_RINGFD_REG_MAX` (Linux `include/linux/io_uring_types.h`).
+/// Largest registered-ring array.
 pub const IO_RINGFD_REG_MAX: u32 = 16;
-/// `IORING_MAX_REG_BUFFERS` (Linux `io_uring/rsrc.c`).
+/// Largest registered-buffer table.
 pub const IORING_MAX_REG_BUFFERS: u32 = 1 << 14;
-/// `IORING_MAX_FIXED_FILES` (Linux `io_uring/rsrc.c`).
+/// Largest registered-file table.
 pub const IORING_MAX_FIXED_FILES: u32 = 1 << 20;
-/// `io_uring_register(2)` caps `IORING_REGISTER_PROBE` at 256 ops.
+/// `IORING_REGISTER_PROBE` caps its op count at 256.
 pub const PROBE_MAX_OPS: u32 = 256;
 /// `sizeof(struct io_uring_rsrc_update)` — {offset:u32, resv:u32, data:u64}.
 pub const RSRC_UPDATE_BYTES: u64 = 16;
+/// `sizeof(struct io_uring_rsrc_update2)` — adds {tags:u64, nr:u32, resv2:u32}.
+pub const RSRC_UPDATE2_BYTES: u64 = 32;
+/// `sizeof(struct io_uring_rsrc_register)` — {nr:u32, flags:u32, resv2:u64,
+/// data:u64, tags:u64}.
+pub const RSRC_REGISTER_BYTES: u64 = 32;
 /// `sizeof(struct iovec)` on a 64-bit ABI.
 pub const IOVEC_BYTES: u64 = 16;
 /// `io_uring_probe` header bytes; `ops[]` follows.
@@ -76,8 +77,20 @@ pub const PROBE_HDR_BYTES: u64 = 16;
 pub const PROBE_OP_BYTES: u64 = 8;
 /// `io_uring_probe_op.flags` bit `IO_URING_OP_SUPPORTED`.
 pub const IO_URING_OP_SUPPORTED: u16 = 1 << 0;
+/// `sizeof(struct io_uring_file_index_range)`.
+pub const FILE_INDEX_RANGE_BYTES: u64 = 16;
+/// `sizeof(struct io_uring_clock_register)`.
+pub const CLOCK_REGISTER_BYTES: u64 = 16;
+/// `sizeof(struct io_uring_clone_buffers)`.
+pub const CLONE_BUFFERS_BYTES: u64 = 32;
+/// `sizeof(struct io_uring_buf_status)`.
+pub const BUF_STATUS_BYTES: u64 = 40;
+/// `sizeof(struct io_uring_sync_cancel_reg)`.
+pub const SYNC_CANCEL_BYTES: u64 = 64;
+/// `sizeof(struct io_uring_buf_reg)`.
+pub const BUF_REG_BYTES: u64 = 40;
 
-/// A register request oxide executes.
+/// A register request that will be executed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RegisterOp {
     Buffers { arg: u64, nr: u32 },
@@ -85,47 +98,65 @@ pub enum RegisterOp {
     Files { arg: u64, nr: u32 },
     UnregisterFiles,
     FilesUpdate { arg: u64, nr: u32 },
-    /// `async_only` distinguishes `IORING_REGISTER_EVENTFD_ASYNC`, which
-    /// signals only for completions posted from async context.
+    /// `async_only` distinguishes `IORING_REGISTER_EVENTFD_ASYNC`.
     Eventfd { arg: u64, async_only: bool },
     UnregisterEventfd,
     Probe { arg: u64, nr: u32 },
+    Personality,
+    UnregisterPersonality { id: u32 },
+    Restrictions { arg: u64, nr: u32 },
+    EnableRings,
+    /// Tagged registration; `buffers` picks the resource kind.
+    Rsrc { arg: u64, nr: u32, buffers: bool },
+    /// Tagged update; `buffers` picks the resource kind.
+    RsrcUpdate { arg: u64, nr: u32, buffers: bool },
+    FileAllocRange { arg: u64 },
+    Clock { arg: u64 },
+    CloneBuffers { arg: u64 },
+    PbufRing { arg: u64 },
+    UnregisterPbufRing { arg: u64 },
+    PbufStatus { arg: u64 },
+    SyncCancel { arg: u64 },
+    Query { arg: u64, nr: u32 },
+    SendMsgRing { arg: u64 },
 }
 
 /// A decoded `io_uring_register(2)` call.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Request { pub registered_ring: bool, pub op: RegisterOp }
-
-/// Opcodes Linux defines that oxide does not execute. `EOPNOTSUPP` says
-/// "recognised, not supported" — the answer Linux itself uses when an
-/// io_uring path is reached with the wrong kind of object. Returning 0 here
-/// would be worse than any error: the caller would believe its buffers /
-/// personalities / restrictions took effect. # C: O(1)
-fn unimplemented(opcode: u32) -> Errno {
-    let _ = opcode;
-    Errno::Eopnotsupp
+pub struct Request {
+    pub registered_ring: bool,
+    /// The opcode with the selector bit stripped — the register-restriction
+    /// allow-list is keyed on this.
+    pub opcode: u32,
+    pub op: RegisterOp,
 }
 
-/// Per-opcode argument ladder, in Linux `__io_uring_register` order.
-/// # C: O(1)
+/// Opcodes this kernel recognises but cannot execute, each because a whole
+/// mechanism it needs is absent — a worker pool, a per-task registered-ring
+/// array, multi-frame ring regions, a zero-copy receive queue, busy-poll, or
+/// a BPF program loader. `EOPNOTSUPP` says "recognised, not supported"; a
+/// zero would tell the caller its registration took effect. # C: O(1)
+fn unsupported(_opcode: u32) -> Errno { Errno::Eopnotsupp }
+
+/// Per-opcode argument ladder. # C: O(1)
 fn ring_op(opcode: u32, arg: u64, nr_args: u32) -> Result<RegisterOp, Errno> {
+    let no_args = |op: RegisterOp| -> Result<RegisterOp, Errno> {
+        if arg != 0 || nr_args != 0 { Err(Errno::Einval) } else { Ok(op) }
+    };
+    let one = |op: RegisterOp| -> Result<RegisterOp, Errno> {
+        if arg == 0 || nr_args != 1 { Err(Errno::Einval) } else { Ok(op) }
+    };
     match opcode {
         IORING_REGISTER_BUFFERS => {
             if arg == 0 { return Err(Errno::Efault); }
             Ok(RegisterOp::Buffers { arg, nr: nr_args })
         }
-        IORING_UNREGISTER_BUFFERS => {
-            if arg != 0 || nr_args != 0 { return Err(Errno::Einval); }
-            Ok(RegisterOp::UnregisterBuffers)
-        }
+        IORING_UNREGISTER_BUFFERS => no_args(RegisterOp::UnregisterBuffers),
         IORING_REGISTER_FILES => {
             if arg == 0 { return Err(Errno::Efault); }
             Ok(RegisterOp::Files { arg, nr: nr_args })
         }
-        IORING_UNREGISTER_FILES => {
-            if arg != 0 || nr_args != 0 { return Err(Errno::Einval); }
-            Ok(RegisterOp::UnregisterFiles)
-        }
+        IORING_UNREGISTER_FILES => no_args(RegisterOp::UnregisterFiles),
         IORING_REGISTER_FILES_UPDATE => Ok(RegisterOp::FilesUpdate { arg, nr: nr_args }),
         IORING_REGISTER_EVENTFD => {
             if nr_args != 1 { return Err(Errno::Einval); }
@@ -135,60 +166,84 @@ fn ring_op(opcode: u32, arg: u64, nr_args: u32) -> Result<RegisterOp, Errno> {
             if nr_args != 1 { return Err(Errno::Einval); }
             Ok(RegisterOp::Eventfd { arg, async_only: true })
         }
-        IORING_UNREGISTER_EVENTFD => {
-            if arg != 0 || nr_args != 0 { return Err(Errno::Einval); }
-            Ok(RegisterOp::UnregisterEventfd)
-        }
+        IORING_UNREGISTER_EVENTFD => no_args(RegisterOp::UnregisterEventfd),
         IORING_REGISTER_PROBE => {
             if arg == 0 || nr_args > PROBE_MAX_OPS { return Err(Errno::Einval); }
             Ok(RegisterOp::Probe { arg, nr: nr_args })
         }
-        _ => Err(unimplemented(opcode)),
+        IORING_REGISTER_PERSONALITY => no_args(RegisterOp::Personality),
+        IORING_UNREGISTER_PERSONALITY => {
+            // The id travels in `nr_args`, so only `arg` must be empty.
+            if arg != 0 { return Err(Errno::Einval); }
+            Ok(RegisterOp::UnregisterPersonality { id: nr_args })
+        }
+        IORING_REGISTER_ENABLE_RINGS => no_args(RegisterOp::EnableRings),
+        IORING_REGISTER_RESTRICTIONS => Ok(RegisterOp::Restrictions { arg, nr: nr_args }),
+        IORING_REGISTER_FILES2 => Ok(RegisterOp::Rsrc { arg, nr: nr_args, buffers: false }),
+        IORING_REGISTER_BUFFERS2 => Ok(RegisterOp::Rsrc { arg, nr: nr_args, buffers: true }),
+        IORING_REGISTER_FILES_UPDATE2 => Ok(RegisterOp::RsrcUpdate { arg, nr: nr_args, buffers: false }),
+        IORING_REGISTER_BUFFERS_UPDATE => Ok(RegisterOp::RsrcUpdate { arg, nr: nr_args, buffers: true }),
+        IORING_REGISTER_FILE_ALLOC_RANGE => {
+            if arg == 0 || nr_args != 0 { return Err(Errno::Einval); }
+            Ok(RegisterOp::FileAllocRange { arg })
+        }
+        IORING_REGISTER_CLOCK => {
+            if arg == 0 || nr_args != 0 { return Err(Errno::Einval); }
+            Ok(RegisterOp::Clock { arg })
+        }
+        IORING_REGISTER_CLONE_BUFFERS => one(RegisterOp::CloneBuffers { arg }),
+        IORING_REGISTER_PBUF_RING => one(RegisterOp::PbufRing { arg }),
+        IORING_UNREGISTER_PBUF_RING => one(RegisterOp::UnregisterPbufRing { arg }),
+        IORING_REGISTER_PBUF_STATUS => one(RegisterOp::PbufStatus { arg }),
+        IORING_REGISTER_SYNC_CANCEL => one(RegisterOp::SyncCancel { arg }),
+        IORING_REGISTER_QUERY => Ok(RegisterOp::Query { arg, nr: nr_args }),
+        IORING_REGISTER_SEND_MSG_RING => one(RegisterOp::SendMsgRing { arg }),
+        _ => Err(unsupported(opcode)),
     }
 }
 
-/// `fd == -1` ("blind") registration: Linux routes four opcodes that need no
-/// ring, and rejects every other opcode with `EINVAL`
-/// (`io_uring_register_blind`). oxide implements none of the four.
-/// # C: O(1)
-fn blind(opcode: u32) -> Errno {
+/// `fd == -1` ("blind") registration: the forms that need no ring. Every
+/// other opcode is `EINVAL` there, because the missing ring is an argument
+/// error rather than a missing feature. # C: O(1)
+fn blind(opcode: u32, arg: u64, nr_args: u32) -> Result<RegisterOp, Errno> {
     match opcode {
-        IORING_REGISTER_SEND_MSG_RING | IORING_REGISTER_QUERY
-        | IORING_REGISTER_RESTRICTIONS | IORING_REGISTER_BPF_FILTER => unimplemented(opcode),
-        _ => Errno::Einval,
+        IORING_REGISTER_SEND_MSG_RING => {
+            if arg == 0 || nr_args != 1 { return Err(Errno::Einval); }
+            Ok(RegisterOp::SendMsgRing { arg })
+        }
+        IORING_REGISTER_QUERY => Ok(RegisterOp::Query { arg, nr: nr_args }),
+        IORING_REGISTER_RESTRICTIONS | IORING_REGISTER_BPF_FILTER => Err(unsupported(opcode)),
+        _ => Err(Errno::Einval),
     }
 }
 
-/// Syscall-level decode: strip `IORING_REGISTER_USE_REGISTERED_RING`, bound
-/// the opcode, split the blind path, then validate the arguments.
-/// # C: O(1)
+/// Syscall-level decode. # C: O(1)
 pub fn decode(raw_opcode: u32, fd: i32, arg: u64, nr_args: u32) -> Result<Request, Errno> {
     let registered_ring = raw_opcode & IORING_REGISTER_USE_REGISTERED_RING != 0;
     let opcode = raw_opcode & !IORING_REGISTER_USE_REGISTERED_RING;
     if opcode >= IORING_REGISTER_LAST { return Err(Errno::Einval); }
-    if fd == -1 { return Err(blind(opcode)); }
-    Ok(Request { registered_ring, op: ring_op(opcode, arg, nr_args)? })
+    if fd == -1 {
+        return Ok(Request { registered_ring, opcode, op: blind(opcode, arg, nr_args)? });
+    }
+    Ok(Request { registered_ring, opcode, op: ring_op(opcode, arg, nr_args)? })
 }
 
-/// Resolving `fd` through the task's registered-ring array. oxide implements
-/// no `IORING_REGISTER_RING_FDS`, so every slot is empty: Linux
-/// `io_uring_ctx_get_file(registered = true)` gives `EINVAL` past the array
-/// and `EBADF` for an empty slot. # C: O(1)
+/// Resolving `fd` through the task's registered-ring array. No
+/// `IORING_REGISTER_RING_FDS` is executed, so every slot is empty: past the
+/// array is `EINVAL`, an empty slot inside it is `EBADF`. # C: O(1)
 pub fn registered_ring_error(fd: i32) -> Errno {
     if fd < 0 || fd as u32 >= IO_RINGFD_REG_MAX { Errno::Einval } else { Errno::Ebadf }
 }
 
-/// `io_sqe_buffers_register` admission: EBUSY before the count check.
-/// # C: O(1)
+/// Buffer-registration admission: EBUSY before the count check. # C: O(1)
 pub fn buffers_admission(already_registered: bool, nr: u32) -> Result<(), Errno> {
     if already_registered { return Err(Errno::Ebusy); }
     if nr == 0 || nr > IORING_MAX_REG_BUFFERS { return Err(Errno::Einval); }
     Ok(())
 }
 
-/// `io_sqe_files_register` admission: EBUSY, then the zero check, then the
-/// two EMFILE bounds (`IORING_MAX_FIXED_FILES`, then `RLIMIT_NOFILE`).
-/// # C: O(1)
+/// File-registration admission: EBUSY, then the zero check, then the two
+/// EMFILE bounds (the fixed-file ceiling, then `RLIMIT_NOFILE`). # C: O(1)
 pub fn files_admission(already_registered: bool, nr: u32, nofile_soft: u32) -> Result<(), Errno> {
     if already_registered { return Err(Errno::Ebusy); }
     if nr == 0 { return Err(Errno::Einval); }
@@ -196,8 +251,7 @@ pub fn files_admission(already_registered: bool, nr: u32, nofile_soft: u32) -> R
     Ok(())
 }
 
-/// `io_register_files_update` + `__io_sqe_files_update` admission.
-/// `registered` is `None` when no `IORING_REGISTER_FILES` has been done.
+/// Update admission. `registered` is `None` when nothing is registered.
 /// # C: O(1)
 pub fn files_update_admission(registered: Option<u32>, offset: u32, nr: u32) -> Result<(), Errno> {
     if nr == 0 { return Err(Errno::Einval); }
@@ -207,8 +261,7 @@ pub fn files_update_admission(registered: Option<u32>, offset: u32, nr: u32) -> 
     Ok(())
 }
 
-/// `io_probe`: Linux CLAMPS `nr_args` to the opcode count instead of failing.
-/// # C: O(1)
+/// `io_probe` CLAMPS its op count instead of failing. # C: O(1)
 pub fn probe_ops(nr: u32, op_count: u32) -> u32 { if nr > op_count { op_count } else { nr } }
 
 #[cfg(test)]

@@ -12,10 +12,29 @@
 use syscall::errno::Errno;
 
 use crate::io_uring::{make_io_uring_inode, IoUringInode};
+use crate::io_uring_abi::allowed::allowed;
 use crate::io_uring_abi::layout::{prepare, REPORTED_FEATURES};
 use crate::io_uring_abi::uapi::{Params, PARAMS_SIZE};
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
+
+/// Read the caller's credential state and put it through the ring-creation
+/// admission ladder (`io_uring_abi::allowed`). Runs BEFORE the params copy, so
+/// an administratively closed kernel answers EPERM rather than EFAULT.
+/// # C: O(N_groups)
+fn creation_allowed() -> Result<(), Errno> {
+    use core::sync::atomic::Ordering;
+    let disabled = syscall::io_uring_ctl::disabled();
+    let group    = syscall::io_uring_ctl::group();
+    let Some(cur) = sched::live::current() else { return Ok(()) };
+    let egid = cur.creds.egid.load(Ordering::Acquire);
+    let cap  = cur.has_cap(sched::cap::SYS_ADMIN);
+    let groups = cur.creds.groups.lock().clone();
+    match groups {
+        Some(g) => allowed(disabled, group, cap, egid, &g),
+        None    => allowed(disabled, group, cap, egid, &[]),
+    }
+}
 
 /// `sys_io_uring_setup(entries, *params)` — slot 425.
 /// # C: O(1)
@@ -23,6 +42,9 @@ pub fn sys_io_uring_setup(args: &syscall::SyscallArgs) -> i64 {
     use vfs::{File, OpenFlags};
     let entries  = args.a0 as u32;
     let params_p = args.a1;
+
+    // Administrative admission outranks argument validation.
+    if let Err(e) = creation_allowed() { return err(e); }
 
     // Linux io_uring_setup(): the WHOLE struct is copied in first, so a bad
     // pointer — including NULL — is EFAULT before anything is validated or

@@ -1,22 +1,15 @@
-// One io_uring instance: the two shared regions and the registration state.
+// The two shared regions of one ring, and the inode that carries them.
 //
-// Linux `io_uring/io_uring.c io_allocate_scq_urings()` builds TWO regions and
-// hands each out under its own `IORING_OFF_*` mmap offset:
-//   rings region — SQ/CQ headers, the CQE array, the SQ index array
-//                  (`IORING_OFF_SQ_RING`, and `IORING_OFF_CQ_RING` because
-//                  oxide reports `IORING_FEAT_SINGLE_MMAP`)
-//   SQEs region  — the SQE array (`IORING_OFF_SQES`)
-// They cannot share a page: userspace mmaps `IORING_OFF_SQES` as its own
-// mapping starting at the SQE array's first byte, so an SQE array parked at a
-// non-zero offset inside the rings page would be read by the kernel and
+// A rings region (SQ/CQ headers, the CQE array, the SQ index array) and a
+// separate SQEs region. They cannot share a page: userspace maps the SQE array
+// as its own mapping starting at the array's first byte, so an array parked at
+// a non-zero offset inside the rings page would be read by the kernel and
 // written by userspace at different addresses.
 
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 
-use sync::{Spinlock, TaskList as RingLockClass};
-use vfs::File;
 use vfs::{Inode, InodeBuilder, InodeRef, FileOps, FileType, default_inode_ops, mk_mode, get_next_ino};
+use vfs::File;
 
 use crate::io_uring_abi::layout::{
     Geometry, MmapRegion, mmap_region, NO_SQ_ARRAY, REGION_BYTES,
@@ -25,12 +18,14 @@ use crate::io_uring_abi::layout::{
 };
 use crate::io_uring_abi::uapi::{CQE_SIZE, SQE_SIZE};
 
+use super::ctx::IoUringInode;
+
 /// io_uring's reserved inode-number range, owned by `vfs::pseudo_ino`. A ring's
 /// number comes out of here; what makes a file a ring is the `IoUringInode` it
 /// owns, not the number.
 use vfs::pseudo_ino::IO_URING as INO_REGION;
 
-/// One io_uring instance — owns the rings frame and the SQEs frame.
+/// One io_uring instance's memory — owns the rings frame and the SQEs frame.
 pub struct IoUring {
     pub rings_pa: u64,
     pub rings_va: u64,
@@ -45,8 +40,7 @@ pub struct IoUring {
 }
 
 impl IoUring {
-    /// Allocate and seed both regions for an admitted geometry.
-    /// # C: O(1)
+    /// Allocate and seed both regions for an admitted geometry. # C: O(1)
     pub fn new(g: &Geometry) -> Option<Self> {
         // The geometry is admitted against REGION_BYTES; one frame per region.
         if g.rings_bytes > REGION_BYTES || g.sqes_bytes > REGION_BYTES { return None; }
@@ -72,8 +66,8 @@ impl IoUring {
             sq_entries: g.sq_entries, cq_entries: g.cq_entries,
             sq_array_off: g.sq_array_off, flags: g.flags,
         };
-        // Linux io_allocate_scq_urings(): seed the constant ring_mask /
-        // ring_entries words before the ring becomes visible to userspace.
+        // Seed the constant ring_mask / ring_entries words before the ring
+        // becomes visible to userspace.
         r.hdr_store(RING_SQ_RING_MASK, g.sq_entries - 1);
         r.hdr_store(RING_CQ_RING_MASK, g.cq_entries - 1);
         r.hdr_store(RING_SQ_RING_ENTRIES, g.sq_entries);
@@ -112,7 +106,7 @@ impl IoUring {
         let slot = head & (self.sq_entries - 1);
         if self.sq_array_off == NO_SQ_ARRAY { return slot; }
         let p = (self.rings_va + self.sq_array_off as u64 + slot as u64 * 4) as *const u32;
-        // SAFETY: sq_array_off + sq_entries*4 was bounded by `rings_size` to the rings frame; slot is masked into range.
+        // SAFETY: sq_array_off + sq_entries*4 was bounded by the geometry to the rings frame; slot is masked into range.
         unsafe { core::ptr::read_volatile(p) }
     }
 
@@ -141,96 +135,14 @@ impl Drop for IoUring {
     }
 }
 
-/// Resources registered against a ring via `io_uring_register(2)`. Linux keeps
-/// these on `struct io_ring_ctx`; oxide mirrors that here under its own lock so
-/// registration never contends the SQ/CQ ring lock.
-#[derive(Default)]
-pub struct IoUringReg {
-    /// Fixed buffers: (user_base, len). Indexed by SQE `buf_index`. `None` =
-    /// no `REGISTER_BUFFERS` done, which is what makes `UNREGISTER_BUFFERS`
-    /// able to return `ENXIO`.
-    pub buffers: Option<Vec<(u64, u64)>>,
-    /// Fixed files: a `None` slot is the `-1` empty slot Linux allows. The
-    /// outer `Option` = no `REGISTER_FILES` done.
-    pub files: Option<Vec<Option<Arc<File>>>>,
-    /// Completion eventfd — signalled (+1) on every CQE post.
-    pub eventfd: Option<Arc<File>>,
-    /// Registered via `IORING_REGISTER_EVENTFD_ASYNC`: Linux signals such an
-    /// eventfd only for completions posted from async context. Every oxide
-    /// completion is posted inline from the submitting task, so an async-only
-    /// eventfd is correctly never signalled.
-    pub eventfd_async: bool,
-}
-
-pub struct IoUringInode {
-    pub ring: Spinlock<IoUring, RingLockClass>,
-    pub reg:  Spinlock<IoUringReg, RingLockClass>,
-}
-
-impl IoUringInode {
-    /// Build a ring from an admitted geometry. # C: O(1)
-    pub fn new(g: &Geometry) -> Option<Arc<Self>> {
-        let ring = IoUring::new(g)?;
-        Some(Arc::new(Self {
-            ring: Spinlock::new(ring),
-            reg:  Spinlock::new(IoUringReg::default()),
-        }))
-    }
-
-    /// Resolve SQE `buf_index` to the registered buffer's user range, then
-    /// clamp the requested `[off, off+len)` window inside it. Linux: `EFAULT`
-    /// if no such buffer index, or on an out-of-range window. # C: O(1)
-    pub fn fixed_buf_window(&self, buf_index: u16, off: u64, len: u32) -> Result<(u64, u64), i64> {
-        use syscall::errno::Errno;
-        let g = self.reg.lock();
-        let bufs = match g.buffers.as_ref() {
-            Some(b) => b, None => return Err(-(Errno::Efault.as_i32() as i64)),
-        };
-        let (base, blen) = match bufs.get(buf_index as usize) {
-            Some(&bl) => bl, None => return Err(-(Errno::Efault.as_i32() as i64)),
-        };
-        let want = len as u64;
-        let end = match off.checked_add(want) { Some(e) => e, None => return Err(-(Errno::Efault.as_i32() as i64)) };
-        if end > blen { return Err(-(Errno::Efault.as_i32() as i64)); }
-        let addr = match base.checked_add(off) { Some(a) => a, None => return Err(-(Errno::Efault.as_i32() as i64)) };
-        if !uaccess::access_ok(addr, want as usize) { return Err(-(Errno::Efault.as_i32() as i64)); }
-        Ok((addr, want))
-    }
-
-    /// Resolve a fixed-file index (`IOSQE_FIXED_FILE`). Linux: `EBADF` if no
-    /// files are registered, the index is out of range, or the slot is empty.
-    /// # C: O(1)
-    pub fn fixed_file(&self, idx: u32) -> Result<Arc<File>, i64> {
-        use syscall::errno::Errno;
-        let g = self.reg.lock();
-        match g.files.as_ref().and_then(|f| f.get(idx as usize)).and_then(|s| s.clone()) {
-            Some(f) => Ok(f),
-            None    => Err(-(Errno::Ebadf.as_i32() as i64)),
-        }
-    }
-
-    /// Signal the registered completion eventfd (+1), if one is registered and
-    /// it is not the async-only variant. # C: O(1)
-    pub fn signal_eventfd(&self) {
-        let efd = { let g = self.reg.lock(); if g.eventfd_async { None } else { g.eventfd.clone() } };
-        if let Some(f) = efd {
-            let one = 1u64.to_ne_bytes();
-            let _ = f.inode().write(0, &one);
-        }
-    }
-}
-
 /// Physical backing for `mmap(io_uring_fd)`. The caller (`009_mmap`) maps this
 /// as a `kframe` (`VmaBacking::KernelFrame`), NOT a `PhysRange`: the regions
-/// are refcounted RAM frames (`alloc_object_frame`), so the mapping inc_ref's
-/// them and holds them alive for the mapping's whole lifetime. A frame is
-/// freed only once BOTH the fd is closed (`IoUring::Drop`) AND every user
-/// mapping is gone — Linux `vm_file`-reference semantics. Mapping it as a
-/// PhysRange instead was a free-while-mapped UAF (state.md).
+/// are refcounted RAM frames, so the mapping inc_ref's them and holds them
+/// alive for the mapping's whole lifetime. A frame is freed only once BOTH the
+/// fd is closed AND every user mapping is gone.
 ///
 /// An offset that selects no region reports a zero-length region, so
-/// `009_mmap`'s `len > region` test turns it into `EINVAL` — Linux
-/// `io_uring_mmap` rejects an unknown offset the same way. # C: O(1)
+/// `009_mmap`'s `len > region` test turns it into `EINVAL`. # C: O(1)
 pub fn mmap_backing(inode: &vfs::InodeRef, offset: u64) -> Option<(u64, u64)> {
     let iu = inode.private::<IoUringInode>()?;
     let g = iu.ring.lock();
@@ -238,22 +150,21 @@ pub fn mmap_backing(inode: &vfs::InodeRef, offset: u64) -> Option<(u64, u64)> {
 }
 
 /// `file_operations` for an io_uring fd: the ring is consumed via
-/// `io_uring_enter`/`mmap`, not `read`/`write`, so both are `Einval` (Linux).
+/// `io_uring_enter`/`mmap`, not `read`/`write`, so both are `Einval`.
 /// # C: O(1)
 struct IoUringFileOps;
 impl FileOps for IoUringFileOps {
-    /// The one vtable io_uring installs — Linux `io_is_uring_fops` compares
-    /// `f_op` against exactly this. # C: O(1)
+    /// The one vtable io_uring installs — ring identity compares against
+    /// exactly this. # C: O(1)
     fn is_io_uring(&self) -> bool { true }
-    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    /// This description has a readiness hook. # C: O(1)
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn read(&self, _inode: &Inode, _o: u64, _b: &mut [u8]) -> vfs::KResult<usize> { Err(vfs::VfsError::Einval) }
     fn write(&self, _inode: &Inode, _o: u64, _b: &[u8]) -> vfs::KResult<usize> { Err(vfs::VfsError::Einval) }
 }
 
 /// Wrap ring state into a concrete `vfs::Inode`: `i_private` carries the
-/// `IoUringInode`, the ino is tagged `"IOUR"` | a process-wide anon ino.
-/// # C: O(1)
+/// `IoUringInode`, the number comes from io_uring's reserved range. # C: O(1)
 pub fn make_io_uring_inode(data: Arc<IoUringInode>) -> InodeRef {
     let ino = INO_REGION.at(get_next_ino() as u64);
     InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o600), default_inode_ops(), Arc::new(IoUringFileOps))
@@ -268,4 +179,9 @@ pub fn make_io_uring_inode(data: Arc<IoUringInode>) -> InodeRef {
 pub fn ring_of(file: &Arc<File>) -> Result<InodeRef, syscall::errno::Errno> {
     crate::io_uring_identity::admit_ring_fd(file)?;
     Ok(file.inode().clone())
+}
+
+/// The ring context behind an inode, as an owning handle. # C: O(1)
+pub fn ring_ctx(inode: &InodeRef) -> Option<Arc<IoUringInode>> {
+    Arc::clone(inode.i_private()).downcast::<IoUringInode>().ok()
 }
