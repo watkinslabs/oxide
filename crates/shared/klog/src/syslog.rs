@@ -78,10 +78,12 @@ pub fn console_on() {
     }
 }
 
-/// Linux `suppress_message_printing`: true when a record at `lvl` must not
-/// reach the consoles. The dmesg ring always keeps it regardless.
+/// True when a record at `lvl` must not reach the consoles. The dmesg ring
+/// always keeps it regardless. `ignore_loglevel` defeats the gate entirely,
+/// which is the point of the parameter: a boot that dies before userspace can
+/// lower the threshold still has to say what it was doing.
 /// # C: O(1)
-pub fn suppress_console(lvl: u32) -> bool { lvl >= console_level() }
+pub fn suppress_console(lvl: u32) -> bool { lvl >= console_level() && !crate::bootcon::ignore_loglevel() }
 
 /// `kernel.dmesg_restrict` sysctl. When set, every syslog action needs
 /// CAP_SYSLOG; when clear, READ_ALL and SIZE_BUFFER are unrestricted.

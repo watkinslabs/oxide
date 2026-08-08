@@ -12,20 +12,34 @@ use crate::{boot_debug, boot_info_build};
 #[cfg(target_os = "oxide-kernel")]
 #[no_mangle]
 unsafe extern "C" fn _start_rust() -> ! {
-    // UART init + klog sink registration gated behind `debug-boot`
-    // per `04§4.0` (R06): default builds emit zero klog bytes, so
-    // the sink is never installed.
-    debug_boot! {
-        // SAFETY: COM1 owned by us pre-init; no other CPU alive yet; `init` programs the UART for 115200-8N1 + FIFO. After this call any klog emit will land on the serial port.
-        unsafe { boot_debug::init_boot_uart(); }
-        klog::set_byte_sink(boot_debug::boot_emit);
-    }
     // SAFETY: single-CPU boot, IRQs masked; install_kernel_gdt populates a kernel-owned GDT (KERNEL_CS=0x28 / KERNEL_DS=0x30) and reloads CS via far return + DS/ES/SS/FS/GS via mov. Replaces the bootloader's GDT before any IDT entry could fire.
     unsafe { hal_x86_64::install_kernel_gdt(); }
     // SAFETY: single-CPU boot, IRQs masked; GDT just installed with TSS descriptor populated at TSS_SEL=0x48 (avail 64-bit TSS, type=9). install_tss issues `ltr 0x48` which marks the descriptor busy and binds CR0.TR to the kernel-wide TSS. RSP0 stays zero until first userspace task; pre-userspace IRQs (Phase 1 path) ignore RSP0 since they take from CPL=0.
     unsafe { hal_x86_64::install_tss(); }
     // SAFETY: single-CPU boot, IRQs masked; install_default populates a kernel-owned IDT and `lidt`s it. Subsequent exceptions vector to oxide_idt_default_handler which halts.
     unsafe { hal_x86_64::install_default_idt(); }
+    // Boot console, as early as an exception can be caught. Everything above
+    // this point is unavoidably silent; everything below it reaches the wire
+    // the moment the boot line asks for one, with no driver model, no device
+    // probe and no allocator in the way. Without it the first output of any
+    // build that is not `debug-boot` comes from the serial console driver,
+    // which registers after the whole of memory, scheduler and device init —
+    // so a hang anywhere before that produced no output at all.
+    // SAFETY: boot path, single CPU, IRQs masked; the multiboot2 command line
+    // is read from the loader-owned region the trampoline stashed and copied
+    // into kernel-owned storage before any reader exists.
+    unsafe { early_console(); }
+    // `debug-boot`'s own COM1 sink is the fallback for a build that wants
+    // boot output without asking for it on the command line. It drives the
+    // same port, so it installs only when the command line did not already
+    // bring a boot console up — two sinks on one UART double every line.
+    debug_boot! {
+        if !klog::boot_console_registered() {
+            // SAFETY: COM1 owned by us pre-init; no other CPU alive yet; `init` programs the UART for 115200-8N1 + FIFO. After this call any klog emit lands on the serial port.
+            unsafe { boot_debug::init_boot_uart(); }
+            klog::set_byte_sink(boot_debug::boot_emit);
+        }
+    }
     // Remap+mask the legacy 8259 PIC away from the exception vectors.
     // The multiboot2 handoff leaves the PIC as firmware left it, with
     // IRQ0 (PIT) at vector 0x08 (the #DF slot), so the first STI vectors
@@ -64,8 +78,6 @@ unsafe extern "C" fn _start_rust() -> ! {
     hal_x86_64::set_tsc_khz(tsc_khz);
     klog::set_clock_fn(boot_debug::now_ns_x86);
     debug_boot! { boot_debug::log_cpu_info(); }
-    // SAFETY: capture_cmdline is boot-only, single-CPU, runs before any reader of cmdline can race; reads the loader-owned multiboot2 cmdline tag then publishes the captured bytes through the boot-owned slot.
-    unsafe { boot_info_build::capture_cmdline(); }
     // SAFETY: boot path per fn contract; build_boot_info reads
     // bootloader-owned state and returns the boot-owned static BootInfo.
     let info = unsafe { boot_info_build::build_boot_info() };
@@ -73,6 +85,37 @@ unsafe extern "C" fn _start_rust() -> ! {
     // boot environment we just established (kernel stack installed,
     // IRQs masked, single CPU, `info` valid).
     unsafe { kmain::kernel_main(info) }
+}
+
+/// This platform's boot UART: an 8250 behind port I/O at COM1. What a bare
+/// `earlycon` resolves to, and the fallback for a request that names the
+/// driver but no address.
+#[cfg(target_os = "oxide-kernel")]
+const BOOT_UART: cmdline::ArchDefaults = cmdline::ArchDefaults {
+    driver: cmdline::Driver::Uart8250,
+    iotype: cmdline::IoType::Port,
+    addr: crate::uart::COM1 as u64,
+};
+
+/// Capture the bootloader's command line and bring up the console it asks
+/// for. Port I/O needs no mapping, so the boot console is reachable here with
+/// nothing else initialised.
+///
+/// # SAFETY: boot path, single CPU, IRQs masked, before any reader of the
+/// command-line slot exists.
+/// # C: O(cmdline length)
+/// # Ctx: pre-init, IRQ-off, single-CPU
+#[cfg(target_os = "oxide-kernel")]
+unsafe fn early_console() {
+    // SAFETY: capture_cmdline is boot-only, single-CPU, and runs before any reader of the slot can race; it reads the loader-owned multiboot2 cmdline tag and publishes the captured bytes through the boot-owned slot.
+    unsafe { boot_info_build::capture_cmdline(); }
+    // No loader line (a non-multiboot2 entry) still gets the arch default, so
+    // a `console=` consumer and the boot console read the same string. The
+    // call is idempotent; kmain's later one becomes a no-op.
+    // SAFETY: boot-only single-writer, and a no-op once the slot is filled.
+    unsafe { cmdline::install_arch_default(); }
+    // SAFETY: same boot-path, single-CPU window; BOOT_UART names this platform's real 16550 at COM1, which nothing else drives before device init, and port I/O needs no direct-map translation.
+    unsafe { bootparam::init(cmdline::get(), BOOT_UART, 0); }
 }
 
 /// Entry point the multiboot2 trampoline tail-calls once long mode is

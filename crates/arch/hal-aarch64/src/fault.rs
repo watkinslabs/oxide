@@ -265,6 +265,10 @@ pub unsafe extern "C" fn oxide_fault_print_rust(esr: u64, far: u64, elr: u64,
         // ring). No-op unless a producer was installed; only ever runs on an
         // unrecoverable abort, so a healthy boot emits nothing.
         ctx_dump(frame);
+        // `oops=panic`: escalate an unrecoverable abort to a full panic, so
+        // the panic path's reporting and the `panic=` restart apply. Without
+        // it this CPU simply halts, which is indistinguishable from a wedge.
+        if klog::oops::panic_on_oops() { klog::oops::escalate_oops(); }
     }
     // Retire this frame's runaway record. The abort is settled — resolved,
     // fixed up, or about to halt — so it is no longer in flight and must not

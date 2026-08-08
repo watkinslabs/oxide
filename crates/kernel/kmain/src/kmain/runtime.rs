@@ -1,4 +1,5 @@
 use crate::{BootInfo, tick_poll_combined};
+use super::entry::step;
 
 /// Runtime hook, console, device, and SMP bring-up.
 /// # SAFETY: caller must satisfy `kernel_main` boot-entry contract.
@@ -6,34 +7,34 @@ use crate::{BootInfo, tick_poll_combined};
 #[cfg(target_os = "oxide-kernel")]
 pub unsafe fn init(info: &BootInfo) {
     arch_irq::set_tick_poll_hook(tick_poll_combined);
-    arch_irq::install_timer_deadline_hook();
-    arch_irq::install_diag_nmi_hook();
-    arch_irq::install_softirq_hooks();
+    step("arch_irq::install_timer_deadline_hook", || arch_irq::install_timer_deadline_hook());
+    step("arch_irq::install_diag_nmi_hook", || arch_irq::install_diag_nmi_hook());
+    step("arch_irq::install_softirq_hooks", || arch_irq::install_softirq_hooks());
 
-    console::static_console::install();
+    step("console::static_console::install", console::static_console::install);
     tty::live::set_kbd_sink(console::kbd_input);
     // VT owns the canonical foreground console; sysfs only exposes it.
     sysfs::tty::set_active_vt_hook(vt::active);
     drv_serial::set_rx_prefilter(sched::diag::sysrq_rx);
     drv_serial::configure_probe(info.bsp_lapic_id as u8, smoke::device_map::KERNEL_DEVICE_BASE);
-    install_drv_sysfs_hooks();
-    init_serial_console();
-    init_ps2_keyboard(info);
-    init_smp(info);
-    init_runtime_subsystems();
-    init_vt_and_drv_hooks();
+    step("install_drv_sysfs_hooks", install_drv_sysfs_hooks);
+    step("init_serial_console", init_serial_console);
+    step("init_ps2_keyboard", || init_ps2_keyboard(info));
+    step("init_smp", || init_smp(info));
+    step("init_runtime_subsystems", init_runtime_subsystems);
+    step("init_vt_and_drv_hooks", init_vt_and_drv_hooks);
     // Wire the control-event notifier BEFORE any netdev registers. Linux
     // installs the rtnetlink notifier chain before device registration; here
     // `init_network_and_pci` probes virtio-net and emits eth0's boot-time
     // RTM_NEWLINK. Installing the notifier afterward (the old rootfs-phase
     // install) dropped that event on the floor (control_event.rs notifier=None).
     net::control_event::set_notifier(netlink::mcast::notify_control_event);
-    init_network_and_pci();
+    step("init_network_and_pci", init_network_and_pci);
     // Generic firmware framebuffer is a fallback, not a competitor to a
     // native scanout. PCI probing runs first so virtio-gpu remains fb0 in the
     // desktop VM; physical machines without a supported display driver bind
     // the bootloader surface here.
-    init_simple_framebuffer(info);
+    step("init_simple_framebuffer", || init_simple_framebuffer(info));
     // NB: the AP master page-table gets each device's MMIO mapping propagated
     // eagerly inside `mmio_map::map_pages` (resync per splice), so APs can't #PF
     // on a virtio notify/config VA mid-enumeration — no post-enum resync needed.
@@ -158,9 +159,19 @@ fn init_runtime_subsystems() {
     // SAFETY: both are boot-path-only one-shot inits (pre-init, IRQ-off,
     // single-CPU per their contracts) and this fn runs exactly once from
     // `runtime::init` on the boot CPU.
-    let _ = unsafe { power::init() };
+    let _ = step("power::init", || unsafe { power::init() });
+    // `panic=<n>` cannot restart the machine without a way to restart it, and
+    // the panic handler is a dependency-thin shim that cannot reach the power
+    // subsystem directly. Installing the callback here is what turns the
+    // parameter from a printed intention into an actual reboot.
+    klog::oops::set_restart_hook(|| {
+        // SAFETY: the panic path is the sole caller and it never returns; by
+        // construction it runs with the machine already unusable, which is
+        // `restart`'s "no concurrent user of the reset path" precondition.
+        unsafe { power::machine::restart() }
+    });
     // SAFETY: same boot-path, single-CPU, called-once window as `power::init`.
-    let _ = unsafe { firmware::init() };
+    let _ = step("firmware::init", || unsafe { firmware::init() });
     ::sched::set_current_hook(|| sched::live::current());
     vmm::set_mmap_rwsem_wait_hooks(
         sched::live::inode_wait::park,
@@ -227,16 +238,16 @@ fn init_runtime_subsystems() {
     vmm::set_shm_vm_ops(ipc::sysv_shm::shm_vma_open, ipc::sysv_shm::shm_vma_close);
     // SAFETY: boot-path-only one-shot init (pre-init, single-CPU per its
     // contract), reached once from `runtime::init` on the boot CPU.
-    let _ = unsafe { nscg::init() };
+    let _ = step("nscg::init", || unsafe { nscg::init() });
     sched::cgroup::install();
     cgroup::set_notify_hook(fs::inotify::fire_modify);
     debug_cgroup! { cgroup::selftest::run(); }
     // SAFETY: boot-path-only one-shot init (pre-init, single-CPU per its
     // contract), reached once from `runtime::init` on the boot CPU.
-    let _ = unsafe { security::init() };
+    let _ = step("security::init", || unsafe { security::init() });
     // SAFETY: same boot-path, single-CPU, called-once window; the sysfs and
     // bind hooks the driver model publishes into are installed before it.
-    let _ = unsafe { drv::init() };
+    let _ = step("drv::init", || unsafe { drv::init() });
     power::set_driver_shutdown_hook(drv::shutdown_all);
 }
 
@@ -244,7 +255,7 @@ fn init_runtime_subsystems() {
 fn init_vt_and_drv_hooks() {
     // SAFETY: boot-path-only one-shot init on the boot CPU, before any user
     // task can open a console, so no concurrent VT user exists.
-    let _ = unsafe { vt::init() };
+    let _ = step("vt::init", || unsafe { vt::init() });
     vt::set_signal_hook(|pid, signo| {
         // VT_SETMODE's acquire/release signals are kernel-generated and
         // PROCESS-directed (Linux `vt_ioctl` -> `kill_pid(..., priv = 1)`), and
@@ -277,8 +288,8 @@ fn install_drv_sysfs_hooks() {
 fn init_network_and_pci() {
     // SAFETY: boot-path-only one-shot init on the boot CPU, before any task can
     // create a socket, so the protocol tables have no concurrent reader.
-    unsafe { net::sock::init(); }
-    crate::pci_boot::enumerate_and_log();
+    step("net::sock::init", || unsafe { net::sock::init() });
+    step("pci_boot::enumerate_and_log", crate::pci_boot::enumerate_and_log);
 }
 
 #[cfg(target_os = "oxide-kernel")]
@@ -308,9 +319,11 @@ fn init_simple_framebuffer(info: &BootInfo) {
     };
     let simplefb = drv_simplefb::driver();
     drv::register_driver(simplefb);
-    if dev.bound() != Some(drv::Driver::name(simplefb)) {
-        debug_boot! { klog::write_raw(b"[WARN]  simplefb: platform probe failed\n"); }
-    }
+    // A boot framebuffer that was published by the handoff and then failed to
+    // bind is a broken expectation, not a normal outcome: the display stays
+    // dark and nothing else reports why.
+    klog::warn::warn_on(dev.bound() != Some(drv::Driver::name(simplefb)),
+                        "simplefb: boot framebuffer published but platform probe failed");
 }
 
 /// Publish a boot-discovered platform device through the driver model.

@@ -34,8 +34,6 @@
     use core::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
-    static SINK_SERIAL: Mutex<()> = Mutex::new(());
-
     static SINK_BYTES: Mutex<alloc::vec::Vec<u8>> = Mutex::new(alloc::vec::Vec::new());
     fn test_sink(bytes: &[u8]) {
         SINK_BYTES.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(bytes);
@@ -48,9 +46,7 @@
         out
     }
 
-    fn lock_sink() -> std::sync::MutexGuard<'static, ()> {
-        SINK_SERIAL.lock().unwrap_or_else(|e| e.into_inner())
-    }
+    fn lock_sink() -> std::sync::MutexGuard<'static, ()> { crate::console::test_lock() }
 
     #[test]
     fn no_sink_emit_is_noop() {

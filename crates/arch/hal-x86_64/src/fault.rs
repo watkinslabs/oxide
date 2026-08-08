@@ -443,6 +443,11 @@ unsafe extern "C" fn oxide_fault_print_rust(regs: *mut PtRegs) -> bool {
         }
         #[cfg(not(any(feature = "debug-irq", feature = "debug-watchdog")))]
         { let _ = f; }
+        // `oops=panic`: escalate an unrecoverable fault to a full panic, so
+        // the panic path's reporting and the `panic=` restart apply. Without
+        // it this CPU simply halts, which on a machine that then sits there
+        // is indistinguishable from a wedge.
+        if klog::oops::panic_on_oops() { klog::oops::escalate_oops(); }
     }
     // Retire this frame's runaway record. The fault is settled — resolved,
     // fixed up, or about to halt — so it is no longer in flight and must not

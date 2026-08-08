@@ -38,6 +38,42 @@ fn bootloader_supplies_boot_image(arch: &str) -> bool { arch == "aarch64" }
 /// not extra parameters were supplied. # C: O(len)
 fn alloc_extra(value: &str) -> String { format!("{value} ") }
 
+/// Kernel parameters that make a boot say what it is doing, for the case the
+/// whole set exists to serve: a boot that never completes and produces nothing
+/// to diagnose with.
+///
+/// `earlycon` brings a console up before device init, so the pre-console
+/// window stops being invisible; `keep_bootcon` stops it being handed over and
+/// dropped when the real console registers; `initcall_debug` makes each init
+/// step name itself before it runs, so a step that hangs is named;
+/// `ignore_loglevel` and `printk.time` make everything print, with times, so a
+/// slow step is distinguishable from a stuck one.
+pub(super) const KERNEL_DEBUG_PARAMS: &str =
+    "earlycon keep_bootcon initcall_debug ignore_loglevel printk.time=1";
+
+/// Userspace parameters for the same case: a service that fails during boot
+/// cannot be restarted to observe it, because restarting is the one thing that
+/// changes the state under investigation.
+pub(super) const USERSPACE_DEBUG_PARAMS: &str =
+    "systemd.log_level=debug systemd.log_target=console systemd.journald.forward_to_console=1";
+
+/// Extra parameters this run asks for. `OXIDE_CMDLINE_DEBUG=1` prepends the
+/// debug preset; `OXIDE_CMDLINE_EXTRA` appends anything else, so a caller adds
+/// a parameter without editing a script and without losing the preset.
+fn extra_params() -> String {
+    let mut out = String::new();
+    if std::env::var("OXIDE_CMDLINE_DEBUG").is_ok_and(|v| !v.is_empty() && v != "0") {
+        out.push_str(KERNEL_DEBUG_PARAMS);
+        out.push(' ');
+        out.push_str(USERSPACE_DEBUG_PARAMS);
+        out.push(' ');
+    }
+    if let Ok(v) = std::env::var("OXIDE_CMDLINE_EXTRA") {
+        if !v.is_empty() { out.push_str(&alloc_extra(&v)); }
+    }
+    out
+}
+
 pub(super) fn kernel_cmdline(arch: &str, image_path: &str) -> String {
     let ser = serial_console(arch);
     let dev = serial_devnode(arch);
@@ -46,16 +82,12 @@ pub(super) fn kernel_cmdline(arch: &str, image_path: &str) -> String {
     } else {
         format!("BOOT_IMAGE={image_path} ")
     };
-    // Extra parameters for one run, e.g. raising a service's log level from
-    // boot (`systemd.setenv=SYSTEMD_LOG_LEVEL=debug`). A service that misbehaves
-    // only during boot cannot be restarted to observe it: restarting is the one
-    // thing that changes the state under investigation.
-    let extra = match std::env::var("OXIDE_CMDLINE_EXTRA") {
-        Ok(v) if !v.is_empty() => alloc_extra(&v),
-        _ => String::new(),
-    };
+    let extra = extra_params();
+    // No `quiet`: the parameter is honoured now, and a line that asks for
+    // silence while every consumer expects a talkative boot is a line that
+    // lies. A boot that wants it can pass it through OXIDE_CMDLINE_EXTRA.
     format!(
-        "{boot_image}root=/dev/oxide0 rw quiet {extra}\
+        "{boot_image}root=/dev/oxide0 rw {extra}\
          console={ser},115200 console=tty0 \
          systemd.mask=firewalld.service systemd.mask=chronyd.service \
          systemd.mask=ModemManager.service systemd.mask=plymouth-start.service \
@@ -66,7 +98,20 @@ pub(super) fn kernel_cmdline(arch: &str, image_path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{kernel_cmdline, serial_console};
+    use super::{kernel_cmdline, serial_console, KERNEL_DEBUG_PARAMS, USERSPACE_DEBUG_PARAMS};
+    use std::sync::Mutex;
+
+    // The composer reads process environment; these tests mutate it.
+    static ENV: Mutex<()> = Mutex::new(());
+
+    fn with_env(vars: &[(&str, Option<&str>)], f: impl FnOnce()) {
+        let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        for (k, v) in vars {
+            match v { Some(v) => std::env::set_var(k, v), None => std::env::remove_var(k) }
+        }
+        f();
+        for (k, _) in vars { std::env::remove_var(k); }
+    }
 
     /// Both arches carry the identical parameter set; only the console device
     /// name and who supplies `BOOT_IMAGE=` differ. Guards the drift this
@@ -125,5 +170,72 @@ mod tests {
         for arch in ["x86_64", "aarch64"] {
             assert!(kernel_cmdline(arch, "/img").contains("oxide.bootargs=grub"));
         }
+    }
+
+    /// The debug preset is what a caller passes to see a hang, so each
+    /// parameter is named HERE rather than read back out of the constant
+    /// under test: a check derived from its own subject cannot notice the
+    /// subject losing a member. Dropping `earlycon` from the preset left this
+    /// green until the list was spelled out.
+    #[test]
+    fn the_debug_preset_reaches_the_line() {
+        const REQUIRED: [&str; 8] = [
+            "earlycon", "keep_bootcon", "initcall_debug", "ignore_loglevel", "printk.time=1",
+            "systemd.log_level=debug", "systemd.log_target=console",
+            "systemd.journald.forward_to_console=1",
+        ];
+        with_env(&[("OXIDE_CMDLINE_DEBUG", Some("1")), ("OXIDE_CMDLINE_EXTRA", None)], || {
+            let line = kernel_cmdline("x86_64", "/img");
+            for p in REQUIRED { assert!(line.split(' ').any(|t| t == p), "preset lost {p}: {line}"); }
+        });
+        // ...and the constants themselves carry exactly those, so a parameter
+        // added to one without the other is a mismatch rather than a silent
+        // widening of what a debug boot means.
+        let declared: usize = KERNEL_DEBUG_PARAMS.split(' ').count() + USERSPACE_DEBUG_PARAMS.split(' ').count();
+        assert_eq!(declared, REQUIRED.len(), "preset changed without updating what a debug boot must carry");
+    }
+
+    /// Off by default: a boot that did not ask for the preset must not get it,
+    /// or the smoke gate measures a different kernel than the one it names.
+    #[test]
+    fn the_preset_is_absent_unless_asked_for() {
+        with_env(&[("OXIDE_CMDLINE_DEBUG", None), ("OXIDE_CMDLINE_EXTRA", None)], || {
+            let line = kernel_cmdline("x86_64", "/img");
+            assert!(!line.contains("earlycon"), "{line}");
+            assert!(!line.contains("initcall_debug"), "{line}");
+        });
+    }
+
+    /// A caller adding one parameter must not have to choose between it and
+    /// the preset — that choice is what makes people edit scripts.
+    #[test]
+    fn extra_parameters_compose_with_the_preset() {
+        with_env(&[("OXIDE_CMDLINE_DEBUG", Some("1")), ("OXIDE_CMDLINE_EXTRA", Some("loglevel=8 panic=30"))], || {
+            let line = kernel_cmdline("aarch64", "/img");
+            assert!(line.split(' ').any(|t| t == "earlycon"), "{line}");
+            assert!(line.split(' ').any(|t| t == "loglevel=8"), "{line}");
+            assert!(line.split(' ').any(|t| t == "panic=30"), "{line}");
+        });
+    }
+
+    /// `OXIDE_CMDLINE_DEBUG=0` is a request for the plain line, not a truthy
+    /// string that happens to be set.
+    #[test]
+    fn an_explicit_zero_disables_the_preset() {
+        with_env(&[("OXIDE_CMDLINE_DEBUG", Some("0")), ("OXIDE_CMDLINE_EXTRA", None)], || {
+            assert!(!kernel_cmdline("x86_64", "/img").contains("earlycon"));
+        });
+    }
+
+    /// `quiet` is honoured now, so the default line must not assert it while
+    /// every consumer of that line expects a talkative boot.
+    #[test]
+    fn the_default_line_does_not_ask_for_silence() {
+        with_env(&[("OXIDE_CMDLINE_DEBUG", None), ("OXIDE_CMDLINE_EXTRA", None)], || {
+            for arch in ["x86_64", "aarch64"] {
+                let line = kernel_cmdline(arch, "/img");
+                assert!(!line.split(' ').any(|t| t == "quiet"), "{arch}: {line}");
+            }
+        });
     }
 }

@@ -78,7 +78,7 @@ Userspace fault not from `copy_*_user`:
 
 ## 10 Debug
 
-`debug-panic`: full register dump including caller-saved (snapshot before disabling interrupts). Larger panic dump.
+Panic reporting is unconditional on both arches (`klog::oops`): location, message, then the action `panic=` asked for. A panic that prints nothing is indistinguishable from a hang, so it is not behind a build feature.
 
 ## 11 Cross-spec
 

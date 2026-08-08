@@ -180,6 +180,15 @@ Per-target levels: cmdline `oxide.log=info,sched=debug,vmm=trace,net::tcp=warn`.
 
 Hot-path: never above `trace`; `trace` feature-gated; off = `.klog_strings` entry not even emitted.
 
+### 4.6 Boot-line printk control
+
+Runtime, per boot, via the parameters in `36§5.2`: `loglevel=N`, `quiet`,
+`debug`, `ignore_loglevel`, `printk.time`, `printk.devkmsg`. `36§5.1` covers
+the boot console (`earlycon`, `keep_bootcon`) — the sink that exists before
+device init, without which a boot that hangs early emits nothing at all.
+`36§5.3` covers `initcall_debug`, which names each boot init step before it
+runs. Operational guide: `scratch/boot-debugging.md`.
+
 ## 5 Bench / regression
 
 `crates/bench/` + `tools/perfrunner/`. Two modes:
