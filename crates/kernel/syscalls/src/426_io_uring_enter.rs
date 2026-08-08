@@ -101,16 +101,21 @@ pub fn sys_io_uring_enter(args: &syscall::SyscallArgs) -> i64 {
         0
     };
     if !runs_getevents(submitted, to_submit, flags) { return submitted; }
+    enter_result(submitted, wait_half(&inode, min_cmpl, flags, argp, argsz))
+}
 
-    let ext = match ext_arg_of(flags, argp, argsz) { Ok(e) => e, Err(e) => return enter_result(submitted, e) };
-    let armed = match arm_sigmask(&ext) { Ok(a) => a, Err(e) => return enter_result(submitted, e) };
-    let wait_rv = crate::io_uring::wait::cq_wait(&inode, min_cmpl, &ext);
-    if armed {
-        // An interrupted wait KEEPS the temporary mask so the handler runs
-        // under it; anything else restores the caller's own mask now.
-        if wait_rv != err(Errno::Eintr) {
-            if let Some(cur) = sched::live::current() { cur.restore_saved_sigmask(); }
-        }
+/// The wait half, kept out of the submission frame: the deepest operations run
+/// close to the kernel stack budget, so the wait's own bookkeeping must not be
+/// charged to their depth. # C: wait
+#[inline(never)]
+fn wait_half(inode: &Arc<IoUringInode>, min_cmpl: u32, flags: u32, argp: u64, argsz: u64) -> i64 {
+    let ext = match ext_arg_of(flags, argp, argsz) { Ok(e) => e, Err(e) => return e };
+    let armed = match arm_sigmask(&ext) { Ok(a) => a, Err(e) => return e };
+    let wait_rv = crate::io_uring::wait::cq_wait(inode, min_cmpl, &ext);
+    // An interrupted wait KEEPS the temporary mask so the handler runs under
+    // it; anything else restores the caller's own mask now.
+    if armed && wait_rv != err(Errno::Eintr) {
+        if let Some(cur) = sched::live::current() { cur.restore_saved_sigmask(); }
     }
-    enter_result(submitted, wait_rv)
+    wait_rv
 }

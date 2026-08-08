@@ -25,12 +25,19 @@ pub struct Op<'a> {
     pub len: u32,
 }
 
-/// Invoke a syscall handler with an explicit register block. # C: one call
+/// Invoke a syscall handler with an explicit register block. Folded into the
+/// caller so the register block does not cost a frame of its own.
+/// # C: one call
+#[inline(always)]
 pub fn call(f: fn(&syscall::SyscallArgs) -> i64, a: [u64; 6]) -> i64 {
     f(&syscall::SyscallArgs { a0: a[0], a1: a[1], a2: a[2], a3: a[3], a4: a[4], a5: a[5] })
 }
 
-/// Run one admitted SQE. # C: one operation
+/// Run one admitted SQE. Folded into the submission engine: a frame of its
+/// own would be charged to the stack depth of every operation, and the
+/// deepest operations already run close to the kernel stack budget.
+/// # C: one operation
+#[inline(always)]
 pub fn dispatch_op(inode: &Arc<IoUringInode>, sqe: &Sqe) -> OpOutcome {
     let (fd, _scratch) = match effective_fd(inode, sqe) {
         Ok(v) => v,
@@ -52,7 +59,11 @@ pub fn dispatch_op(inode: &Arc<IoUringInode>, sqe: &Sqe) -> OpOutcome {
     OpOutcome::res(run(&op))
 }
 
+/// Folded into its two callers on purpose: a separate frame here would be
+/// charged to every operation's stack depth, and the arms are mutually
+/// exclusive so their locals overlap instead of summing.
 /// # C: one operation
+#[inline(always)]
 fn run(op: &Op) -> i64 {
     match op.sqe.opcode {
         IORING_OP_NOP             => 0,

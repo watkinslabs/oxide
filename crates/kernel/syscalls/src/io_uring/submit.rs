@@ -37,7 +37,7 @@ fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 /// Consume one SQ slot. Returns the entry's wire image, or `None` when the
 /// ring is empty. An SQ index array entry naming no real SQE is counted in
 /// `sq_dropped` and skipped, never executed. # C: O(1) per skipped index
-fn next_sqe(inode: &IoUringInode) -> Option<[u8; SQE_BYTES]> {
+fn next_sqe(inode: &IoUringInode) -> Option<Sqe> {
     loop {
         let r = inode.ring.lock();
         let head = r.hdr_load(RING_SQ_HEAD);
@@ -52,7 +52,9 @@ fn next_sqe(inode: &IoUringInode) -> Option<[u8; SQE_BYTES]> {
         let mut b = [0u8; SQE_BYTES];
         // SAFETY: sqe_at masks the index into the SQE region, which is HHDM-mapped for the ring's lifetime; the ring lock serialises kernel readers.
         unsafe { core::ptr::copy_nonoverlapping(at as *const u8, b.as_mut_ptr(), SQE_BYTES); }
-        return Some(b);
+        // Decoded here rather than in the caller so the 64-byte wire image
+        // does not sit in the frame that every operation runs beneath.
+        return Some(Sqe::from_bytes(&b));
     }
 }
 
@@ -81,6 +83,7 @@ fn admit(inode: &IoUringInode, sqe: &Sqe) -> Result<(), Errno> {
 
 /// Run one admitted entry, under the personality it names.
 /// # C: one operation
+#[inline(always)]
 fn issue(inode: &Arc<IoUringInode>, sqe: &Sqe) -> OpOutcome {
     if sqe.personality == 0 { return dispatch_op(inode, sqe); }
     let creds = inode.reg.lock().personality(sqe.personality as u32);
@@ -101,9 +104,8 @@ pub fn submit_sqes(inode: &Arc<IoUringInode>, to_submit: u32) -> i64 {
     let mut chain = Chain::default();
 
     while consumed < to_submit {
-        let Some(bytes) = next_sqe(inode) else { break };
+        let Some(sqe) = next_sqe(inode) else { break };
         consumed += 1;
-        let sqe = Sqe::from_bytes(&bytes);
 
         let (out, init_failed) = match chain.action(sqe.flags) {
             // Everything behind a broken link is cancelled, not executed.
