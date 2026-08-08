@@ -23,6 +23,7 @@ use syscall::errno::Errno;
 
 use crate::io_uring_abi::layout::{RING_SQ_DROPPED, RING_SQ_HEAD, RING_SQ_TAIL};
 use crate::io_uring_abi::enter::sq_index_valid;
+use crate::io_uring_abi::link::{disables_drain, posts_cqe, wants_drain, Action, Chain};
 use crate::io_uring_abi::ops::*;
 use crate::io_uring_abi::uapi::IORING_SETUP_SUBMIT_ALL;
 use crate::io_uring_sqe::{Sqe, SQE_BYTES};
@@ -65,10 +66,10 @@ fn admit(inode: &IoUringInode, sqe: &Sqe) -> Result<(), Errno> {
     if sqe.flags & IOSQE_BUFFER_SELECT != 0 && !op_buffer_select(sqe.opcode) {
         return Err(Errno::Eopnotsupp);
     }
-    // A ring that has seen `IOSQE_CQE_SKIP_SUCCESS` can no longer order by
+    // A ring that has seen a silent-success entry can no longer order by
     // drain: the barrier counts completions, and skipped ones never arrive.
-    if sqe.flags & IOSQE_CQE_SKIP_SUCCESS != 0 { inode.set_state(state::DRAIN_DISABLED); }
-    if sqe.flags & IOSQE_IO_DRAIN != 0 && inode.test_state(state::DRAIN_DISABLED) {
+    if disables_drain(sqe.flags) { inode.set_state(state::DRAIN_DISABLED); }
+    if wants_drain(sqe.flags) && inode.test_state(state::DRAIN_DISABLED) {
         return Err(Errno::Eopnotsupp);
     }
     if !inode.reg.lock().restrictions.allows_sqe(sqe.opcode, sqe.flags) {
@@ -97,36 +98,27 @@ pub fn submit_sqes(inode: &Arc<IoUringInode>, to_submit: u32) -> i64 {
     let _batch = unsafe { inode.submit.lock() };
     let submit_all = inode.flags & IORING_SETUP_SUBMIT_ALL != 0;
     let mut consumed: u32 = 0;
-    // A link chain is being assembled, and whether it has already failed.
-    let mut in_chain = false;
-    let mut chain_broken = false;
+    let mut chain = Chain::default();
 
     while consumed < to_submit {
         let Some(bytes) = next_sqe(inode) else { break };
         consumed += 1;
         let sqe = Sqe::from_bytes(&bytes);
-        let links_on = sqe.flags & SQE_LINK_FLAGS != 0;
-        let hard = sqe.flags & IOSQE_IO_HARDLINK != 0;
 
-        let (out, init_failed) = if in_chain && chain_broken {
+        let (out, init_failed) = match chain.action(sqe.flags) {
             // Everything behind a broken link is cancelled, not executed.
-            (OpOutcome::res(err(Errno::Ecanceled)), false)
-        } else {
-            match admit(inode, &sqe) {
+            Action::Cancel => (OpOutcome::res(err(Errno::Ecanceled)), false),
+            Action::Run => match admit(inode, &sqe) {
                 Err(e) => (OpOutcome::res(err(e)), true),
                 Ok(()) => (issue(inode, &sqe), false),
-            }
+            },
         };
 
-        if out.res >= 0 && sqe.flags & IOSQE_CQE_SKIP_SUCCESS != 0 {
-            // Silent success still counts as submitted.
-        } else {
+        if posts_cqe(sqe.flags, out.res) {
             let res32 = if out.res > i32::MAX as i64 { i32::MAX } else { out.res as i32 };
             inode.post_cqe(Cqe { user_data: sqe.user_data, res: res32, flags: out.cqe_flags });
         }
-
-        if (in_chain || links_on) && out.res < 0 && !hard { chain_broken = true; }
-        if !links_on { in_chain = false; chain_broken = false; } else { in_chain = true; }
+        chain.advance(sqe.flags, out.res);
 
         if init_failed && !submit_all { break; }
     }
