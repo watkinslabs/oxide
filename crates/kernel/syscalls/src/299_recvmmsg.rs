@@ -12,8 +12,8 @@ use syscall::errno::Errno;
 use net::uapi::MSG_OOB;
 
 use crate::mmsg_batch::{self, BatchOps};
+use crate::msg_layout::{EntryAbi, MsgLayout, TIMESPEC_SIZE};
 use crate::recvmsg::dispatch::RecvTarget;
-use crate::recvmsg::layout::{MMSGHDR_FLAGS_OFFSET, MMSGHDR_LEN_OFFSET, MMSGHDR_SIZE, TIMESPEC_SIZE};
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
@@ -31,13 +31,16 @@ struct Batch {
     timeout_user: u64,
     timeout: Option<BatchTimeout>,
     target: Option<RecvTarget>,
+    /// Settled by the batch runner before any entry is touched; every stride
+    /// and offset below comes from it.
+    layout: MsgLayout,
 }
 
 impl Batch {
     /// Address of entry `index`, or `EFAULT` when the array would wrap.
     /// # C: O(1)
     fn entry(&self, index: u64) -> Result<u64, i64> {
-        index.checked_mul(MMSGHDR_SIZE).and_then(|off| self.mmsg.checked_add(off))
+        index.checked_mul(self.layout.mmsghdr_size()).and_then(|off| self.mmsg.checked_add(off))
             .ok_or(err(Errno::Efault))
     }
 
@@ -48,6 +51,8 @@ impl Batch {
 }
 
 impl BatchOps for Batch {
+    fn use_layout(&mut self, layout: MsgLayout) { self.layout = layout; }
+
     fn import_timeout(&mut self) -> Result<(), i64> {
         if self.timeout_user == 0 { return Ok(()); }
         let mut raw = [0u8; TIMESPEC_SIZE];
@@ -70,18 +75,21 @@ impl BatchOps for Batch {
 
     fn receive(&mut self, index: u64, flags: u64) -> i64 {
         let entry = match self.entry(index) { Ok(entry) => entry, Err(e) => return e };
-        let user = match crate::recv_user::import(entry) { Ok(user) => user, Err(e) => return e };
+        let user = match crate::recv_user::import(entry, self.layout) {
+            Ok(user) => user, Err(e) => return e };
         crate::recvmsg::recv(self.target(), &user, flags)
     }
 
     fn publish(&mut self, index: u64, len: i64) -> Result<(), i64> {
-        let len_ptr = self.entry(index)?.checked_add(MMSGHDR_LEN_OFFSET).ok_or(err(Errno::Efault))?;
+        let len_ptr = self.entry(index)?.checked_add(self.layout.mmsghdr_len_offset())
+            .ok_or(err(Errno::Efault))?;
         uaccess::copy_to_user(len_ptr, &(len as u32).to_ne_bytes()).map_err(|_| err(Errno::Efault))
     }
 
     fn received_oob(&mut self, index: u64) -> bool {
         let Ok(entry) = self.entry(index) else { return false };
-        let Some(flags_ptr) = entry.checked_add(MMSGHDR_FLAGS_OFFSET) else { return false };
+        let Some(flags_ptr) = entry.checked_add(self.layout.mmsghdr_flags_offset())
+            else { return false };
         let mut raw = [0u8; 4];
         if uaccess::copy_from_user(&mut raw, flags_ptr).is_err() { return false; }
         u32::from_ne_bytes(raw) as u64 & MSG_OOB != 0
@@ -110,6 +118,6 @@ impl BatchOps for Batch {
 /// # C: O(vlen)
 pub fn sys_recvmmsg(args: &SyscallArgs) -> i64 {
     let mut batch = Batch { fd: args.a0, mmsg: args.a1, timeout_user: args.a4,
-        timeout: None, target: None };
-    mmsg_batch::run_batch(&mut batch, args.a3, args.a2)
+        timeout: None, target: None, layout: MsgLayout::Native };
+    mmsg_batch::run_batch(&mut batch, args.a3, args.a2, EntryAbi::Native)
 }

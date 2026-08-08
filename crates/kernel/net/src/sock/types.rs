@@ -143,6 +143,12 @@ impl InetSocket {
     /// Associate the socket with its owning open file description. # C: O(1)
     pub fn set_file(&self, file: &Arc<vfs::File>) {
         *self.file.lock() = Arc::downgrade(file);
+        // A TCP connection is notified of urgent arrival from the receive
+        // path, which never holds the socket, so the transport entry carries
+        // the same description (Linux reaches it as `sk->sk_socket->file`).
+        // Published here, by the one bind that owns the association, so the
+        // socket and its transport cannot name different descriptions.
+        if let SockKind::TcpConn(entry) = &*self.kind.lock() { entry.register_file(file); }
     }
 
     /// Landlock domain in this socket's retained file credentials. # C: O(1)

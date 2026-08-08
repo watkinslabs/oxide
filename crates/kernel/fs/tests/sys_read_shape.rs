@@ -23,6 +23,13 @@ mod netlink_fd {
 
 pub fn access_ok(ptr: u64, len: usize) -> bool { len == 0 || ptr != 0 }
 
+// The message-ABI layout the slot passes through; the read path is always
+// native, so the stub carries just enough of the shape to compile.
+mod msg_layout {
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub enum MsgLayout { Native }
+}
+
 mod recv_user {
     pub struct IoVec {
         pub base: u64,
@@ -38,6 +45,7 @@ mod recv_user {
         pub controllen: usize,
         pub iov: alloc::vec::Vec<IoVec>,
         pub capacity: usize,
+        pub layout: crate::msg_layout::MsgLayout,
     }
 }
 
@@ -55,7 +63,8 @@ mod recvmsg {
         let user = _user;
         let abi = user.msgp == 0 && user.name == 0 && user.namelen == 0 && user.name_len_ptr == 0
             && user.control == 0 && user.controllen == 0 && user.iov.len() == 1
-            && user.capacity == user.iov[0].len;
+            && user.capacity == user.iov[0].len
+            && user.layout == crate::msg_layout::MsgLayout::Native;
         crate::RECV_USER_ABI_VALID.store(abi, Ordering::SeqCst);
         crate::RECV_CALLS.fetch_add(1, Ordering::SeqCst);
         0

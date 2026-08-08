@@ -5,12 +5,12 @@ use syscall::errno::Errno;
 
 use uaccess::MAX_RW_COUNT;
 
-const MSGHDR_LEN: usize = 56;
-const COMPAT_MSGHDR_LEN: usize = 28;
-const IOVEC_LEN: usize = 16;
-const COMPAT_IOVEC_LEN: usize = 8;
+use crate::msg_layout::{MsgLayout, cmsg};
+
 const UIO_MAXIOV: usize = 1024;
 const SOCKADDR_STORAGE_LEN: usize = 128;
+/// Largest `msghdr` either ABI presents, so one stack buffer serves both.
+const MSGHDR_MAX: usize = 56;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct IoVec {
@@ -34,14 +34,6 @@ fn work_error(error: i64) -> socket::Error {
     else if error == errno(Errno::Enobufs) { socket::Error::Enobufs }
     else if error == errno(Errno::Einval) { socket::Error::Einval }
     else { socket::Error::Eio }
-}
-
-fn u32_at(bytes: &[u8], at: usize) -> u32 {
-    u32::from_ne_bytes(bytes[at..at + 4].try_into().unwrap())
-}
-
-fn u64_at(bytes: &[u8], at: usize) -> u64 {
-    u64::from_ne_bytes(bytes[at..at + 8].try_into().unwrap())
 }
 
 fn copy_vec(src: u64, len: usize) -> Result<Vec<u8>, i64> {
@@ -119,23 +111,31 @@ fn capped_total(iov: &[IoVec]) -> usize {
     total
 }
 
-fn import_meta(msgp: u64) -> Result<SendMeta, i64> {
-    let mut hdr = [0u8; MSGHDR_LEN];
-    uaccess::copy_from_user(&mut hdr, msgp).map_err(errno)?;
-    let name = u64_at(&hdr, 0);
-    let namelen = u32_at(&hdr, 8);
-    let iovp = u64_at(&hdr, 16);
-    let raw_iovlen = u64_at(&hdr, 24);
-    let control = u64_at(&hdr, 32);
-    let raw_controllen = u64_at(&hdr, 40);
+/// Import one `msghdr` and its iovec array in `layout`'s shape. Pointer and
+/// size widths, the header size, and the iovec stride are the only things the
+/// two ABIs differ in here; every bound below is shared.
+/// # C: O(iovlen + faults)
+fn import_meta(msgp: u64, layout: MsgLayout) -> Result<SendMeta, i64> {
+    let mut raw_hdr = [0u8; MSGHDR_MAX];
+    let hdr = &mut raw_hdr[..layout.msghdr_size()];
+    uaccess::copy_from_user(hdr, msgp).map_err(errno)?;
+    let at = layout.msghdr();
+    let name = layout.word_at(hdr, at.name);
+    let namelen = layout.u32_at(hdr, at.namelen);
+    let iovp = layout.word_at(hdr, at.iov);
+    let raw_iovlen = layout.word_at(hdr, at.iovlen);
+    let control = layout.word_at(hdr, at.control);
+    let raw_controllen = layout.word_at(hdr, at.controllen);
 
     let (name, iovlen) = import_name_and_iovlen_with(name, namelen, raw_iovlen, copy_vec)?;
-    let bytes_len = iovlen.checked_mul(IOVEC_LEN).ok_or_else(|| errno(Errno::Emsgsize))?;
+    let stride = layout.iovec_size();
+    let bytes_len = iovlen.checked_mul(stride).ok_or_else(|| errno(Errno::Emsgsize))?;
     let raw = copy_vec(iovp, bytes_len)?;
     let mut iov = Vec::with_capacity(iovlen);
-    for entry in raw.chunks_exact(IOVEC_LEN) {
-        let base = u64_at(entry, 0);
-        let len = usize::try_from(u64_at(entry, 8)).map_err(|_| errno(Errno::Einval))?;
+    for entry in raw.chunks_exact(stride) {
+        let base = layout.word_at(entry, 0);
+        let len = usize::try_from(layout.word_at(entry, layout.word()))
+            .map_err(|_| errno(Errno::Einval))?;
         if len != 0 && !uaccess::access_ok(base, len) { return Err(errno(Errno::Efault)); }
         iov.push(IoVec { base, len });
     }
@@ -145,73 +145,41 @@ fn import_meta(msgp: u64) -> Result<SendMeta, i64> {
     Ok(SendMeta { iov, control, controllen, name })
 }
 
-fn import_meta_compat(msgp: u64) -> Result<SendMeta, i64> {
-    let mut hdr = [0u8; COMPAT_MSGHDR_LEN];
-    uaccess::copy_from_user(&mut hdr, msgp).map_err(errno)?;
-    let name = u32_at(&hdr, 0) as u64;
-    let namelen = u32_at(&hdr, 4);
-    let iovp = u32_at(&hdr, 8) as u64;
-    let raw_iovlen = u32_at(&hdr, 12) as u64;
-    let control = u32_at(&hdr, 16) as u64;
-    let controllen = u32_at(&hdr, 20) as usize;
-    let (name, iovlen) = import_name_and_iovlen_with(name, namelen, raw_iovlen, copy_vec)?;
-    let bytes_len = iovlen.checked_mul(COMPAT_IOVEC_LEN).ok_or_else(|| errno(Errno::Emsgsize))?;
-    let raw = copy_vec(iovp, bytes_len)?;
-    let mut iov = Vec::with_capacity(iovlen);
-    for entry in raw.chunks_exact(COMPAT_IOVEC_LEN) {
-        let base = u32_at(entry, 0) as u64;
-        let len = u32_at(entry, 4) as usize;
-        if len != 0 && !uaccess::access_ok(base, len) { return Err(errno(Errno::Efault)); }
-        iov.push(IoVec { base, len });
-    }
-    if controllen > net::sysctl::optmem_max() { return Err(errno(Errno::Enobufs)); }
-    Ok(SendMeta { iov, control, controllen, name })
+/// Copy the caller's ancillary bytes and hand back a NATIVE control stream.
+/// A 32-bit sender's stream is rebuilt here, once, so no protocol below ever
+/// sees two ancillary shapes. # C: O(control bytes)
+pub(crate) fn copy_control(layout: MsgLayout, src: u64, len: usize) -> Result<Vec<u8>, i64> {
+    let raw = copy_vec(src, len)?;
+    if !layout.is_compat() || len == 0 { return Ok(raw); }
+    cmsg::compat_to_native(&raw).map_err(errno)
 }
 
 /// Validate the send envelope and ancillary bytes without touching payload pages. # C: O(iovlen + name + control)
-pub(crate) fn import_raw_oob(msgp: u64) -> Result<socket::Message, i64> {
-    let meta = import_meta(msgp)?;
+pub(crate) fn import_raw_oob(msgp: u64, layout: MsgLayout) -> Result<socket::Message, i64> {
+    let meta = import_meta(msgp, layout)?;
     let requested_len = capped_total(&meta.iov);
-    let control = copy_vec(meta.control, meta.controllen)?;
+    let control = copy_control(layout, meta.control, meta.controllen)?;
     Ok(socket::Message { requested_len, control, name: meta.name, ..socket::Message::default() })
 }
 
-fn import_raw_oob_compat(msgp: u64) -> Result<socket::Message, i64> {
-    let meta = import_meta_compat(msgp)?;
-    let requested_len = capped_total(&meta.iov);
-    let control = copy_vec(meta.control, meta.controllen)?;
-    Ok(socket::Message { requested_len, control, name: meta.name, ..socket::Message::default() })
-}
-
-/// Import a native LP64 Linux msghdr, iovecs, and send-side byte buffers. # C: O(iovlen + bytes + faults)
-pub(crate) fn import(msgp: u64) -> Result<socket::Message, i64> {
-    let meta = import_meta(msgp)?;
+/// Import one Linux msghdr, its iovecs, and the send-side byte buffers.
+/// # C: O(iovlen + bytes + faults)
+pub(crate) fn import(msgp: u64, layout: MsgLayout) -> Result<socket::Message, i64> {
+    let meta = import_meta(msgp, layout)?;
     let requested_len = capped_total(&meta.iov);
     let (payload, payload_faulted) = match gather(&meta.iov, requested_len) {
         Ok(result) => result,
         Err(error) if error == errno(Errno::Efault) => (Vec::new(), true),
         Err(error) => return Err(error),
     };
-    let control = copy_vec(meta.control, meta.controllen)?;
+    let control = copy_control(layout, meta.control, meta.controllen)?;
     Ok(socket::Message { payload, payload_faulted, requested_len, control, name: meta.name })
 }
 
-fn import_compat(msgp: u64) -> Result<socket::Message, i64> {
-    let meta = import_meta_compat(msgp)?;
+fn import_envelope_at(msgp: u64, layout: MsgLayout) -> Result<(socket::Message, SendMeta), i64> {
+    let mut meta = import_meta(msgp, layout)?;
     let requested_len = capped_total(&meta.iov);
-    let (payload, payload_faulted) = match gather(&meta.iov, requested_len) {
-        Ok(result) => result,
-        Err(error) if error == errno(Errno::Efault) => (Vec::new(), true),
-        Err(error) => return Err(error),
-    };
-    let control = copy_vec(meta.control, meta.controllen)?;
-    Ok(socket::Message { payload, payload_faulted, requested_len, control, name: meta.name })
-}
-
-fn import_envelope_at(msgp: u64) -> Result<(socket::Message, SendMeta), i64> {
-    let mut meta = import_meta(msgp)?;
-    let requested_len = capped_total(&meta.iov);
-    let control = copy_vec(meta.control, meta.controllen)?;
+    let control = copy_control(layout, meta.control, meta.controllen)?;
     let name = meta.name.take();
     Ok((socket::Message { requested_len, control, name, ..socket::Message::default() }, meta))
 }
@@ -236,12 +204,14 @@ pub(crate) struct SendMsgIo<'a> {
     fd: i32,
     source: u64,
     meta: Option<SendMeta>,
+    layout: MsgLayout,
 }
 
 impl<'a> SendMsgIo<'a> {
-    /// Build one native sendmsg importer over the retained task context. # C: O(1)
-    pub(crate) fn new(task: &'a sched::Task, fd: i32, source: u64) -> Self {
-        Self { task, fd, source, meta: None }
+    /// Build one sendmsg importer over the retained task context, in the
+    /// layout the entry already decided. # C: O(1)
+    pub(crate) fn new(task: &'a sched::Task, fd: i32, source: u64, layout: MsgLayout) -> Self {
+        Self { task, fd, source, meta: None, layout }
     }
 }
 
@@ -254,13 +224,13 @@ impl socket::MessageIo for SendMsgIo<'_> {
 
     fn import(&mut self, mode: socket::ImportMode) -> socket::KResult<socket::Message> {
         match mode {
-            socket::ImportMode::Full => import(self.source),
-            socket::ImportMode::RawOobEnvelope => import_raw_oob(self.source),
+            socket::ImportMode::Full => import(self.source, self.layout),
+            socket::ImportMode::RawOobEnvelope => import_raw_oob(self.source, self.layout),
         }.map_err(work_error)
     }
 
     fn import_envelope(&mut self) -> socket::KResult<Option<socket::Message>> {
-        let (message, meta) = import_envelope_at(self.source).map_err(work_error)?;
+        let (message, meta) = import_envelope_at(self.source, self.layout).map_err(work_error)?;
         self.meta = Some(meta);
         Ok(Some(message))
     }
@@ -321,28 +291,26 @@ impl socket::MessageIo for SendtoIo<'_> {
     }
 }
 
-const MMSGHDR_LEN: u64 = 64;
-const MSG_LEN_OFFSET: u64 = 56;
-const COMPAT_MMSGHDR_LEN: u64 = 32;
-const COMPAT_MMSG_LEN_OFFSET: u64 = 28;
-
 pub(crate) struct SendBatchIo<'a> {
     task: &'a sched::Task,
     fd: i32,
     base: u64,
     meta: Option<(u32, SendMeta)>,
-    compat: bool,
+    layout: MsgLayout,
 }
 
 impl<'a> SendBatchIo<'a> {
-    /// Build one lazy sendmmsg importer over the retained task context. # C: O(1)
-    pub(crate) fn new(task: &'a sched::Task, fd: i32, base: u64) -> Self {
-        Self { task, fd, base, meta: None, compat: false }
+    /// Build one lazy sendmmsg importer over the retained task context, in the
+    /// layout the entry already decided. The stride between entries and the
+    /// offset `msg_len` is published at both follow from it — a batch cannot
+    /// re-decide the shape part-way through. # C: O(1)
+    pub(crate) fn new(task: &'a sched::Task, fd: i32, base: u64, layout: MsgLayout) -> Self {
+        Self { task, fd, base, meta: None, layout }
     }
 
     fn entry(&self, index: u32) -> socket::KResult<u64> {
-        let stride = if self.compat { COMPAT_MMSGHDR_LEN } else { MMSGHDR_LEN };
-        let offset = (index as u64).checked_mul(stride).ok_or(socket::Error::Efault)?;
+        let offset = (index as u64).checked_mul(self.layout.mmsghdr_size())
+            .ok_or(socket::Error::Efault)?;
         self.base.checked_add(offset).ok_or(socket::Error::Efault)
     }
 }
@@ -357,22 +325,14 @@ impl socket::BatchIo for SendBatchIo<'_> {
     fn import(&mut self, index: u32, mode: socket::ImportMode) -> socket::KResult<socket::Message> {
         let entry = self.entry(index)?;
         match mode {
-            socket::ImportMode::Full => if self.compat { import_compat(entry) } else { import(entry) },
-            socket::ImportMode::RawOobEnvelope => if self.compat {
-                import_raw_oob_compat(entry)
-            } else { import_raw_oob(entry) },
+            socket::ImportMode::Full => import(entry, self.layout),
+            socket::ImportMode::RawOobEnvelope => import_raw_oob(entry, self.layout),
         }.map_err(work_error)
     }
 
     fn import_envelope(&mut self, index: u32) -> socket::KResult<Option<socket::Message>> {
         let entry = self.entry(index)?;
-        let (message, meta) = if self.compat {
-            let mut meta = import_meta_compat(entry).map_err(work_error)?;
-            let requested_len = capped_total(&meta.iov);
-            let control = copy_vec(meta.control, meta.controllen).map_err(work_error)?;
-            let name = meta.name.take();
-            (socket::Message { requested_len, control, name, ..socket::Message::default() }, meta)
-        } else { import_envelope_at(entry).map_err(work_error)? };
+        let (message, meta) = import_envelope_at(entry, self.layout).map_err(work_error)?;
         self.meta = Some((index, meta));
         Ok(Some(message))
     }
@@ -386,7 +346,7 @@ impl socket::BatchIo for SendBatchIo<'_> {
     }
 
     fn publish(&mut self, index: u32, len: u32) -> socket::KResult<()> {
-        let offset = if self.compat { COMPAT_MMSG_LEN_OFFSET } else { MSG_LEN_OFFSET };
+        let offset = self.layout.mmsghdr_len_offset();
         let destination = self.entry(index)?.checked_add(offset).ok_or(socket::Error::Efault)?;
         uaccess::copy_to_user(destination, &len.to_ne_bytes()).map_err(|error| {
             work_error(errno(error))

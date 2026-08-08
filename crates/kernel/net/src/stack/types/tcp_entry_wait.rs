@@ -64,6 +64,10 @@ impl TcpEntry {
         } else if writeable { vfs::POLL_OUT | vfs::POLL_WRNORM } else { 0 };
         if self.error.has() { mask |= vfs::POLL_ERR; }
         if !c.recv_buf.is_empty() || c.has_urgent() { mask |= vfs::POLL_IN; }
+        // `tcp_poll`: a valid urgent pointer is priority readiness, which is
+        // what `select`'s exception set and `EPOLLPRI` report, and what the
+        // fasync half classifies as `SIGURG` rather than `SIGIO`.
+        if c.has_urgent() { mask |= vfs::POLL_PRI; }
         if c.state == crate::tcp_state::TcpState::Closed {
             mask |= vfs::POLL_IN | vfs::POLL_HUP;
         } else if c.state == crate::tcp_state::TcpState::CloseWait {
@@ -83,6 +87,18 @@ impl TcpEntry {
     /// F181a: register owning InetSocket's epoll subscribers. # C: O(1)
     pub fn register_poll_subs(&self, subs: &alloc::sync::Arc<vfs::PollSubscribers>) {
         *self.poll_subs.lock() = Some(alloc::sync::Arc::downgrade(subs));
+    }
+
+    /// Register the owning open file description (Linux `sk->sk_socket->file`),
+    /// so urgent arrival on the receive path can signal its `f_owner`.
+    /// # C: O(1)
+    pub fn register_file(&self, file: &alloc::sync::Arc<vfs::File>) {
+        self.poll_subs.set_owner_file(file);
+    }
+
+    /// The owning open file description, while a descriptor is bound. # C: O(1)
+    pub fn owner_file(&self) -> Option<alloc::sync::Arc<vfs::File>> {
+        self.poll_subs.owner_file()
     }
 
     /// Atomically classify or arm a blocking active-open wait. # C: O(1)

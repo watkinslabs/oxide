@@ -15,7 +15,10 @@ fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 /// out-of-band delivery, reported with `MSG_OOB` set in the returned flags.
 /// Never blocks — nothing pending, or `SO_OOBINLINE` having put the byte in the
 /// in-band stream instead, is the same EINVAL. `MSG_PEEK` leaves the byte where
-/// it is. # C: O(1)
+/// it is.
+///
+/// Reports the channel's fixed one byte, not what the copy took: a destination
+/// with no room still consumes the byte and still reports one. # C: O(1)
 fn recv_urgent(pair: &Arc<net::UnixPair>, end: net::UnixEnd, sock: &Arc<InetSocket>,
     user: &RecvUser, flags: u64, inline: bool) -> i64
 {
@@ -29,7 +32,7 @@ fn recv_urgent(pair: &Arc<net::UnixPair>, end: net::UnixEnd, sock: &Arc<InetSock
         return e;
     }
     sock.note_receive_now();
-    copied as i64
+    net::sock::oob_class::urgent_recv_len(copied)
 }
 
 enum WaitOutcome { Retry, DatagramShutdown }
@@ -114,10 +117,14 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
     // a receive path. In particular, `recv_urgent` obtains the peer path and
     // therefore needs to inspect `sock.kind` itself.
     let target = match &*sock.kind.lock() {
-        SockKind::Unix(pair, end) if flags & MSG_OOB != 0 =>
-            Selection::Urgent(pair.clone(), *end),
-        SockKind::UnixMsgPair(_, _) | SockKind::UnixDgram(_) if flags & MSG_OOB != 0 => {
-            return err(Errno::Eopnotsupp);
+        kind if flags & MSG_OOB != 0 => {
+            use net::sock::oob_class::{oob_shape, recv_oob, RecvOob};
+            match (recv_oob(oob_shape(kind)), kind) {
+                (RecvOob::Urgent, SockKind::Unix(pair, end)) =>
+                    Selection::Urgent(pair.clone(), *end),
+                (RecvOob::Eopnotsupp, _) => return err(Errno::Eopnotsupp),
+                _ => return err(Errno::Einval),
+            }
         }
         SockKind::Unix(pair, end) => Selection::Normal(Target::Stream(pair.clone(), *end)),
         SockKind::UnixMsgPair(pair, end) => Selection::Normal(Target::Msg(pair.clone(), *end)),
