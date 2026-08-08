@@ -340,10 +340,10 @@ impl InetSocket {
         let Some(address) = local.peer() else { return true };
         let Some(peer) = crate::net_ns::unix_registry_for_addr_in(&self.net_namespace, &address)
             .dgram_lookup_addr(&address) else { return true };
-        // `unix_peer(other) != sk` — a symmetrically connected pair is
-        // flow-controlled by wmem alone, so its backlog is not consulted.
-        let symmetric = crate::unix_sock::dgram_symmetric_pair(
-            peer.peer().as_ref(), local.bound().as_ref());
+        // A symmetrically connected pair is flow-controlled by write memory
+        // alone, so its backlog is not consulted. Poll and the send path read
+        // the ONE relation, from the same identities.
+        let symmetric = crate::unix_sock::dgram_symmetric_pair(peer.peer_id(), Some(local.id()));
         if symmetric { return true; }
         if crate::unix_sock::dgram_peer_writable(peer.queued_bytes(), sndbuf_cap) { return true; }
         // `unix_dgram_peer_wake_me`: register on the peer's wake list at the

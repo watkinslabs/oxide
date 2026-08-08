@@ -41,11 +41,15 @@ impl NetStack {
             ::core::sync::atomic::Ordering::Acquire);
         let ipv6_mode = listener.ipv6_mtu_discover.load(
             ::core::sync::atomic::Ordering::Acquire);
+        // The request is admitted under the listening socket's mark, and every
+        // route question it asks — MSS, path MTU, metrics — is answered by the
+        // route that mark selects, the same one the child will transmit over.
+        let mark = listener.mark.load(::core::sync::atomic::Ordering::Acquire) as u32;
         let own_mss = self.mss_for_dst_on_iface_pmtu_modes_in(
-            net_ns, src_ip, bound, ip_mode, ipv6_mode);
-        let path_mtu = self.tcp_path_mtu_in(net_ns, src_ip, bound, ip_mode, ipv6_mode)
+            net_ns, src_ip, bound, ip_mode, ipv6_mode, mark);
+        let path_mtu = self.tcp_path_mtu_in(net_ns, src_ip, bound, ip_mode, ipv6_mode, mark)
             .unwrap_or(0);
-        let metrics = self.route_metrics_for_dst_in(net_ns, src_ip, bound);
+        let metrics = self.route_metrics_for_dst_mark_in(net_ns, src_ip, bound, mark);
         // Handshake input runs against the heap-resident child, so the
         // connection state never occupies a frame on the delivery path.
         // Decided before the SYN is processed: the handshake builds its
@@ -178,7 +182,7 @@ fn build_passive_child(local_ep: Endpoint, own_mss: u16, path_mtu: u32,
     // own lock, so the child is built first and its fields written through that
     // lock — the same order the reference uses, where the child socket is
     // allocated and then initialised rather than assembled on the stack.
-    let child = Arc::new(TcpEntry::new_bound_ip_opts_pacing_ipv6(
+    let child = Arc::new(TcpEntry::new_bound_ip_opts_pacing_ipv6_mark(
         TcpConn::new_listener(local_ep), Arc::new(crate::SocketError::new()), Some(listener.bind.clone()),
         Arc::new(crate::bpf_filter::SocketFilter::inherited(&listener.bpf_filter)),
         Arc::new(::core::sync::atomic::AtomicI32::new(
@@ -193,6 +197,11 @@ fn build_passive_child(local_ep: Endpoint, own_mss: u16, path_mtu: u32,
         // socket option inherited from a listening socket does.
         listener.min_hop.clone(), Arc::new(crate::sock_opts::sol_ip::IpOpts::default()),
         listener.ipv6_opts.clone(), listener.max_pacing_rate.clone(),
+        // The mark, unlike the hop-limit minimums, is SNAPSHOTTED: the request
+        // takes the listening socket's mark, and the connection it becomes
+        // owns that value from then on rather than tracking the listener.
+        Arc::new(::core::sync::atomic::AtomicI32::new(
+            listener.mark.load(::core::sync::atomic::Ordering::Acquire))),
     ));
     {
         let mut conn = child.conn.lock();

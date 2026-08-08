@@ -44,6 +44,7 @@ mod rlimits;
 mod fd_table;
 mod fs_context;
 mod io_context;
+pub mod io_uring;
 mod lifetime;
 mod mempolicy;
 mod methods;
@@ -120,6 +121,17 @@ pub struct Task {
     /// Set by the thread once it has observed a park request and parked, so
     /// `kthread_park()` can wait for it to actually be off the CPU.
     pub kthread_parked: AtomicBool,
+    /// Linux `PF_KTHREAD`: created as a kernel thread and has never run user
+    /// code. Set by the kernel-thread spawn path, cleared the moment `execve`
+    /// installs a user address space — the same split the reference draws
+    /// between a kernel thread and a user-mode thread started from the kernel.
+    pub kernel_thread: AtomicBool,
+    /// Linux `kthread->result`: the value the thread handed to `kthread_exit`,
+    /// which is what `kthread_stop` returns to the joiner.
+    pub kthread_result: AtomicI32,
+    /// Linux `kthread->exited` completion: published once the thread is off its
+    /// own stack for good, so a joiner may drop the last reference safely.
+    pub kthread_exited: AtomicBool,
     /// True once `wait4`/`waitid` has collected this task's exit status (Linux
     /// `release_task`). The Task may still be pinned alive by an open pidfd, but
     /// a reaped process MUST vanish from `/proc`: procfs enumeration
@@ -377,6 +389,14 @@ pub struct Task {
     /// otherwise a concurrent exit on another CPU can drop the last
     /// `Arc<FdTable>` strong ref mid-read (UAF).
     pub fd_table_pin_lock: Spinlock<(), TaskListClass>,
+    /// Linux `task_struct::io_uring`: the per-task io_uring context, holding
+    /// the ring descriptors this task registered by INDEX rather than by fd so
+    /// a submission can name one without an fd-table lookup. A pointer, not an
+    /// inline array, and allocated on first registration exactly as the
+    /// reference allocates its context on first use — most tasks never open a
+    /// ring and must not pay for the slots. Dropped at exit and at `execve`.
+    pub registered_rings: Spinlock<Option<alloc::boxed::Box<io_uring::RegisteredRings>>,
+        TaskListClass>,
 
     /// Pending signal bitmap per `27§3` (Linux kernel_sigset_t = 64
     /// bits). Bit i set ⇔ signal i+1 pending. Updated atomically by

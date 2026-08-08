@@ -11,7 +11,7 @@ use super::super::uapi;
 fn request(prog_type: u32, expected_attach_type: u32, attach_btf_id: u32) -> ProgLoad {
     ProgLoad {
         prog_type, expected_attach_type, attach_btf_id,
-        insn_cnt: 1, insns: 0, license: 0,
+        insn_cnt: 1, insns: 0, license: 0, attach_btf_obj_fd: 0,
     }
 }
 
@@ -151,4 +151,44 @@ fn an_access_the_context_does_not_admit_is_a_refusal_not_a_malformed_program() {
     let mut bad = alloc::vec![0x20, 0, 0, 0, 0, 0, 0, 0];
     bad.extend_from_slice(&returns(0));
     assert_eq!(verify(&p, GPL, &bad, &[]), Err(Errno::Einval));
+}
+
+/// Type id of `bpf_iter_bpf_prog` in the published object: the hook stubs
+/// come first, then one forward declaration, one pointer, the prototype and
+/// the stub per iterator argument.
+const ITER_BPF_PROG_BTF_ID: u32 = 11;
+
+#[test]
+fn an_iterator_program_loads_against_a_published_target() {
+    let p = request(
+        uapi::prog_type::TRACING, uapi::attach_type::TRACE_ITER, ITER_BPF_PROG_BTF_ID,
+    );
+    assert_eq!(
+        super::super::btf::iter_target_by_btf_id(ITER_BPF_PROG_BTF_ID),
+        Some(super::super::IterTarget::BpfProg),
+    );
+    assert_eq!(verify(&p, GPL, &returns(0), &[]), Ok(false));
+    // A step's other answer is equally admitted.
+    assert_eq!(verify(&p, GPL, &returns(1), &[]), Ok(false));
+}
+
+#[test]
+fn an_iterator_program_naming_no_published_target_is_refused() {
+    // Reject control for the load above: the same program body, refused
+    // because its attach target names nothing this kernel can walk.
+    for attach_btf_id in [0, FILE_OPEN_BTF_ID, u32::MAX] {
+        let p = request(uapi::prog_type::TRACING, uapi::attach_type::TRACE_ITER, attach_btf_id);
+        assert_eq!(verify(&p, GPL, &returns(0), &[]), Err(Errno::Einval),
+            "target {attach_btf_id} was admitted");
+    }
+}
+
+#[test]
+fn a_tracing_program_that_is_not_an_iterator_is_refused() {
+    // The only tracing attachment this kernel serves is the iterator one.
+    for attach_type in [0, uapi::attach_type::LSM_MAC, uapi::attach_type::CGROUP_DEVICE] {
+        let p = request(uapi::prog_type::TRACING, attach_type, ITER_BPF_PROG_BTF_ID);
+        assert_eq!(verify(&p, GPL, &returns(0), &[]), Err(Errno::Einval),
+            "attach type {attach_type} was admitted");
+    }
 }

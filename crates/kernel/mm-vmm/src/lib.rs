@@ -15,6 +15,7 @@ extern crate std;
 pub mod address_space;
 pub mod coredump_filter;
 pub mod debug_cow;
+pub mod fault_signal;
 #[cfg(feature = "debug-atexit")]
 pub mod tailwatch;
 mod mremap;

@@ -3,13 +3,16 @@
 
 use super::*;
 
-fn attr_with(pairs: &[(usize, u32)]) -> Attr {
+#[path = "tests/map.rs"]
+mod map;
+
+pub(crate) fn attr_with(pairs: &[(usize, u32)]) -> Attr {
     let mut a = Attr::zeroed();
     for (off, v) in pairs { a.bytes[*off..*off + 4].copy_from_slice(&v.to_ne_bytes()); }
     a
 }
 
-fn attr_u64(a: &mut Attr, off: usize, v: u64) { a.bytes[off..off + 8].copy_from_slice(&v.to_ne_bytes()); }
+pub(crate) fn attr_u64(a: &mut Attr, off: usize, v: u64) { a.bytes[off..off + 8].copy_from_slice(&v.to_ne_bytes()); }
 
 fn caps_none() -> Caps { Caps::default() }
 fn caps_bpf() -> Caps { Caps { bpf: true, ..Caps::default() } }
@@ -71,165 +74,6 @@ fn prog_load_last_field_ends_the_union_so_check_attr_always_passes() {
     let mut a = Attr::zeroed();
     a.bytes[uapi::ATTR_SIZE - 1] = 0xff;
     assert_eq!(check_attr(&a, uapi::off::prog_load::LAST_END), Ok(()));
-}
-
-// ------------------------------------------------------------ MAP_CREATE
-
-fn good_map_create() -> Attr {
-    use uapi::off::map_create as o;
-    attr_with(&[(o::MAP_TYPE, uapi::map_type::HASH), (o::KEY_SIZE, 4),
-                (o::VALUE_SIZE, 8), (o::MAX_ENTRIES, 16)])
-}
-
-#[test]
-fn map_create_bad_map_type_is_einval_even_without_cap_bpf() {
-    // map_create_alloc(): the map-type lookup returns -EINVAL long
-    // before the `sysctl_unprivileged_bpf_disabled` EPERM gate.
-    let mut a = good_map_create();
-    a.bytes[uapi::off::map_create::MAP_TYPE..uapi::off::map_create::MAP_TYPE + 4]
-        .copy_from_slice(&999u32.to_ne_bytes());
-    assert_eq!(map_create_check(&a, caps_none(), true), Err(Errno::Einval));
-}
-
-#[test]
-fn map_create_without_cap_bpf_is_eperm_when_unpriv_is_disabled() {
-    assert_eq!(map_create_check(&good_map_create(), caps_none(), true), Err(Errno::Eperm));
-    assert!(map_create_check(&good_map_create(), caps_bpf(), true).is_ok());
-}
-
-#[test]
-fn map_create_is_allowed_unprivileged_when_the_sysctl_is_off() {
-    // "Intent here is for unprivileged_bpf_disabled to block BPF map
-    // creation for unprivileged users" — map_create_alloc().
-    assert!(map_create_check(&good_map_create(), caps_none(), false).is_ok());
-}
-
-#[test]
-fn map_create_cap_sys_admin_alone_satisfies_bpf_capable() {
-    let caps = Caps { sys_admin: true, ..Caps::default() };
-    assert!(map_create_check(&good_map_create(), caps, true).is_ok());
-}
-
-#[test]
-fn map_create_zero_sizes_are_einval() {
-    use uapi::off::map_create as o;
-    for off in [o::KEY_SIZE, o::VALUE_SIZE, o::MAX_ENTRIES] {
-        let mut a = good_map_create();
-        a.bytes[off..off + 4].copy_from_slice(&0u32.to_ne_bytes());
-        assert_eq!(map_create_check(&a, caps_bpf(), true), Err(Errno::Einval));
-    }
-}
-
-#[test]
-fn map_create_rdonly_and_wronly_together_is_einval() {
-    // bpf_get_file_flag().
-    use uapi::map_flags as f;
-    let mut a = good_map_create();
-    let off = uapi::off::map_create::MAP_FLAGS;
-    a.bytes[off..off + 4].copy_from_slice(&(f::RDONLY | f::WRONLY).to_ne_bytes());
-    assert_eq!(map_create_check(&a, caps_bpf(), true), Err(Errno::Einval));
-}
-
-#[test]
-fn map_create_unknown_flag_bit_is_einval() {
-    // htab_map_alloc_check(): attr->map_flags & ~HTAB_CREATE_FLAG_MASK.
-    let mut a = good_map_create();
-    let off = uapi::off::map_create::MAP_FLAGS;
-    a.bytes[off..off + 4].copy_from_slice(&(1u32 << 20).to_ne_bytes());
-    assert_eq!(map_create_check(&a, caps_bpf(), true), Err(Errno::Einval));
-}
-
-#[test]
-fn map_create_zero_seed_needs_cap_sys_admin() {
-    // htab_map_alloc_check(): zero_seed && !capable(CAP_SYS_ADMIN) -> -EPERM.
-    let mut a = good_map_create();
-    let off = uapi::off::map_create::MAP_FLAGS;
-    a.bytes[off..off + 4].copy_from_slice(&uapi::map_flags::ZERO_SEED.to_ne_bytes());
-    assert_eq!(map_create_check(&a, caps_bpf(), true), Err(Errno::Eperm));
-    let admin = Caps { sys_admin: true, ..Caps::default() };
-    assert!(map_create_check(&a, admin, true).is_ok());
-}
-
-#[test]
-fn map_create_nonzero_map_extra_is_einval_for_hash() {
-    let mut a = good_map_create();
-    attr_u64(&mut a, uapi::off::map_create::MAP_EXTRA, 1);
-    assert_eq!(map_create_check(&a, caps_bpf(), true), Err(Errno::Einval));
-}
-
-#[test]
-fn map_create_short_attr_reads_as_zeros_and_fails_validation_not_the_size_check() {
-    // A 4-byte attr leaves key_size/value_size/max_entries zero-filled;
-    // Linux reaches htab_map_alloc_check() and returns -EINVAL, never
-    // "attr too short".
-    let (copy, tail) = size_protocol(4).unwrap();
-    assert_eq!((copy, tail), (4, 0));
-    let a = attr_with(&[(uapi::off::map_create::MAP_TYPE, uapi::map_type::HASH)]);
-    assert_eq!(map_create_check(&a, caps_bpf(), true), Err(Errno::Einval));
-}
-
-// ------------------------------------------------------- map element ops
-
-#[test]
-fn element_ops_need_no_capability_at_all() {
-    // map_lookup_elem()/map_update_elem() gate on the fd's FMODE only.
-    assert_eq!(map_access_ok(0, false, Access::Read), Ok(()));
-    assert_eq!(map_access_ok(0, false, Access::Write), Ok(()));
-}
-
-#[test]
-fn frozen_map_loses_write_but_keeps_read() {
-    // map_get_sys_perms(): frozen clears FMODE_CAN_WRITE.
-    assert_eq!(map_access_ok(0, true, Access::Write), Err(Errno::Eperm));
-    assert_eq!(map_access_ok(0, true, Access::Read), Ok(()));
-}
-
-#[test]
-fn rdonly_and_wronly_map_flags_gate_the_matching_direction() {
-    use uapi::map_flags as f;
-    assert_eq!(map_access_ok(f::RDONLY, false, Access::Write), Err(Errno::Eperm));
-    assert_eq!(map_access_ok(f::RDONLY, false, Access::Read), Ok(()));
-    assert_eq!(map_access_ok(f::WRONLY, false, Access::Read), Err(Errno::Eperm));
-    assert_eq!(map_access_ok(f::WRONLY, false, Access::Write), Ok(()));
-}
-
-#[test]
-fn hash_map_rejects_lock_cpu_and_high_half_flags() {
-    use uapi::elem_flags as e;
-    let all = !0u64;
-    assert_eq!(check_op_flags(e::F_LOCK, e::F_LOCK | e::F_CPU), Err(Errno::Einval));
-    assert_eq!(check_op_flags(e::F_CPU, e::F_LOCK | e::F_CPU), Err(Errno::Einval));
-    assert_eq!(check_op_flags(1u64 << 32, all), Err(Errno::Einval));
-    assert_eq!(check_op_flags(e::ANY, all), Ok(()));
-}
-
-#[test]
-fn lookup_rejects_any_update_flag_because_its_allowed_mask_is_narrow() {
-    use uapi::elem_flags as e;
-    let lookup_mask = e::F_LOCK | e::F_CPU;
-    assert_eq!(check_op_flags(e::NOEXIST, lookup_mask), Err(Errno::Einval));
-    assert_eq!(check_op_flags(e::EXIST, lookup_mask), Err(Errno::Einval));
-}
-
-#[test]
-fn update_flags_above_bpf_exist_are_einval() {
-    // htab_map_update_elem(): (map_flags & ~BPF_F_LOCK) > BPF_EXIST.
-    use uapi::elem_flags as e;
-    assert_eq!(check_update_flags(e::ANY), Ok(()));
-    assert_eq!(check_update_flags(e::NOEXIST), Ok(()));
-    assert_eq!(check_update_flags(e::EXIST), Ok(()));
-    assert_eq!(check_update_flags(3), Err(Errno::Einval));
-}
-
-#[test]
-fn noexist_on_a_present_key_is_eexist_and_exist_on_absent_is_enoent() {
-    use uapi::elem_flags as e;
-    assert_eq!(update_presence_verdict(e::NOEXIST, true), Err(Errno::Eexist));
-    assert_eq!(update_presence_verdict(e::NOEXIST, false), Ok(()));
-    assert_eq!(update_presence_verdict(e::EXIST, false), Err(Errno::Enoent));
-    assert_eq!(update_presence_verdict(e::EXIST, true), Ok(()));
-    assert_eq!(update_presence_verdict(e::ANY, true), Ok(()));
-    assert_eq!(update_presence_verdict(e::ANY, false), Ok(()));
 }
 
 // -------------------------------------------------------------- PROG_LOAD
@@ -307,8 +151,10 @@ fn prog_types_without_a_runner_are_not_loadable() {
     assert!(prog_type_supported(uapi::prog_type::CGROUP_DEVICE));
     assert!(prog_type_supported(uapi::prog_type::CGROUP_SKB));
     assert!(prog_type_supported(uapi::prog_type::CGROUP_SOCK_ADDR));
+    assert!(prog_type_supported(uapi::prog_type::LSM));
+    assert!(prog_type_supported(uapi::prog_type::TRACING));
     for t in [uapi::prog_type::UNSPEC, uapi::prog_type::XDP, uapi::prog_type::KPROBE,
-              uapi::prog_type::SCHED_CLS, uapi::prog_type::TRACING,
+              uapi::prog_type::SCHED_CLS, uapi::prog_type::STRUCT_OPS,
               uapi::prog_type::SYSCALL] {
         assert!(!prog_type_supported(t), "type {t} must not be loadable");
     }
@@ -349,12 +195,12 @@ fn lsm_programs_are_loadable_and_need_both_bpf_and_perfmon() {
 fn only_a_program_type_that_attaches_to_a_target_may_name_one() {
     use uapi::prog_type as p;
     for prog_type in [p::TRACING, p::LSM, p::STRUCT_OPS, p::EXT] {
-        assert_eq!(prog_load_check_attach(prog_type, uapi::attach_type::LSM_MAC, 1), Ok(()));
+        assert_eq!(prog_load_check_attach(prog_type, uapi::attach_type::LSM_MAC, 1, AttachTarget::None), Ok(()));
     }
     for prog_type in [p::SOCKET_FILTER, p::CGROUP_DEVICE, p::KPROBE] {
-        assert_eq!(prog_load_check_attach(prog_type, 0, 1), Err(Errno::Einval));
+        assert_eq!(prog_load_check_attach(prog_type, 0, 1, AttachTarget::None), Err(Errno::Einval));
         // Naming no target at all leaves those types unaffected.
-        assert_eq!(prog_load_check_attach(prog_type, 0, 0), Ok(()));
+        assert_eq!(prog_load_check_attach(prog_type, 0, 0, AttachTarget::None), Ok(()));
     }
 }
 
@@ -362,13 +208,15 @@ fn only_a_program_type_that_attaches_to_a_target_may_name_one() {
 fn an_attach_target_above_the_type_id_ceiling_is_refused() {
     const MAX_TYPE_ID: u32 = 0x000f_ffff;
     assert_eq!(
-        prog_load_check_attach(uapi::prog_type::LSM, uapi::attach_type::LSM_MAC, MAX_TYPE_ID),
+        prog_load_check_attach(uapi::prog_type::LSM, uapi::attach_type::LSM_MAC, MAX_TYPE_ID,
+            AttachTarget::None),
         Ok(()),
     );
     for attach_btf_id in [MAX_TYPE_ID + 1, u32::MAX] {
         assert_eq!(
             prog_load_check_attach(
                 uapi::prog_type::LSM, uapi::attach_type::LSM_MAC, attach_btf_id,
+                AttachTarget::None,
             ),
             Err(Errno::Einval),
         );
@@ -480,6 +328,9 @@ fn link_create_decodes_cgroup_ordering_and_revision_union() {
     assert_eq!(link_create_check(&a), Ok(LinkCreate {
         prog_fd: 3, target_fd: 4, attach_type: uapi::attach_type::CGROUP_DEVICE,
         flags, target_btf_id: 9, relative_fd: 9, expected_revision: 27,
+        // Same two slots, read as the iterator link's pair: the decode is
+        // a union view, so every member of one offset reports together.
+        iter_info: 9, iter_info_len: 27,
     }));
     assert_eq!(cgroup_link_flags_check(flags), Ok(()));
 
@@ -522,4 +373,59 @@ fn unprivileged_bpf_may_be_switched_off_for_good_but_only_by_an_administrator() 
     assert_eq!(unpriv_write_verdict(0, 3, true), Err(Errno::Einval));
     assert_eq!(unpriv_write_verdict(0, -1, true), Err(Errno::Einval));
     assert_eq!(unpriv_write_verdict(0, 3, false), Err(Errno::Eperm));
+}
+
+/// A descriptor in the attach-target slot is judged by what it holds. The
+/// three answers are distinct: a program is a target, type information a
+/// loader supplied is refused as unsupported, and anything else is a
+/// malformed request.
+#[test]
+fn the_attach_target_descriptor_is_judged_by_what_it_holds() {
+    assert_eq!(attach_target_object(TargetFd::Prog), Ok(AttachTarget::DstProg));
+    assert_eq!(attach_target_object(TargetFd::KernelBtfObject), Ok(AttachTarget::KernelBtf));
+    assert_eq!(attach_target_object(TargetFd::UserBtfObject), Err(Errno::Enotsupp));
+    assert_eq!(attach_target_object(TargetFd::Other), Err(Errno::Einval));
+    assert_ne!(Errno::Enotsupp.as_i32(), Errno::Einval.as_i32());
+}
+
+/// Only the two program types that run in another program's place may name
+/// a target program; every other type naming one is a caller error.
+#[test]
+fn a_target_program_is_only_a_target_for_the_types_that_replace_one() {
+    use uapi::prog_type as p;
+    for prog_type in [p::TRACING, p::EXT] {
+        assert_eq!(prog_load_check_attach(prog_type, 0, 0, AttachTarget::DstProg), Ok(()));
+        assert_eq!(prog_load_check_attach(prog_type, 0, 1, AttachTarget::DstProg), Ok(()));
+    }
+    for prog_type in [p::LSM, p::STRUCT_OPS, p::SOCKET_FILTER, p::CGROUP_DEVICE] {
+        assert_eq!(
+            prog_load_check_attach(prog_type, 0, 0, AttachTarget::DstProg),
+            Err(Errno::Einval),
+        );
+    }
+}
+
+/// Positive control for the rule above: with the target descriptor absent
+/// the same requests are admitted, so the refusal is the descriptor's doing
+/// and not the program type's.
+#[test]
+fn the_same_types_load_when_they_name_no_target_program() {
+    use uapi::prog_type as p;
+    for prog_type in [p::LSM, p::STRUCT_OPS, p::SOCKET_FILTER, p::CGROUP_DEVICE] {
+        assert_eq!(prog_load_check_attach(prog_type, 0, 0, AttachTarget::None), Ok(()));
+    }
+}
+
+/// Type information with no type id to read from it names nothing.
+#[test]
+fn resolved_type_information_without_a_type_id_is_refused() {
+    use uapi::prog_type as p;
+    assert_eq!(
+        prog_load_check_attach(p::LSM, uapi::attach_type::LSM_MAC, 0, AttachTarget::KernelBtf),
+        Err(Errno::Einval),
+    );
+    assert_eq!(
+        prog_load_check_attach(p::LSM, uapi::attach_type::LSM_MAC, 1, AttachTarget::KernelBtf),
+        Ok(()),
+    );
 }

@@ -130,6 +130,9 @@ fn multicast_preflight(level: u64, optname: u64) -> Option<net::sock_mcast::Mcas
 pub(super) fn sync_rcvbuf(sock: &net::sock::InetSocket, value: i32) {
     sync_raw_rcvbuf(sock, value);
     sync_tcp_rcvbuf(sock, value);
+    // The error queue is admitted against the same receive budget the ordinary
+    // receive queue uses, so a socket that names one names it for both.
+    sock.error.adopt_rcvbuf(value);
 }
 
 fn sync_raw_rcvbuf(sock: &net::sock::InetSocket, value: i32) {

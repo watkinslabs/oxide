@@ -1,10 +1,12 @@
 //! Module manifest: `queue` covers publication/dequeue/pending-errno parity,
 //! `origins` covers the per-origin record shapes, `abi` covers the wire
-//! encoding and the two support ladders.
+//! encoding and the two support ladders, `send_failure` covers the
+//! local-origin report a refused transmit produces.
 
 mod abi;
 mod origins;
 mod queue;
+mod send_failure;
 
 use crate::addr::{IpAddr, Ipv4Addr, Ipv6Addr};
 use crate::socket_error::SocketErrorEntry;

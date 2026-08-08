@@ -61,6 +61,27 @@ impl NetStack {
         fastopen: Arc<crate::tcp_fastopen::FastOpenQueue>,
         max_pacing_rate: Arc<::core::sync::atomic::AtomicU64>) -> NetResult<Arc<TcpListenEntry>>
     {
+        self.tcp_listen_reserved_fastopen_frag_pacing_ipv6_mark(bind, bpf_filter, ip_mtu_discover,
+            ipv6_mtu_discover, ipv6_frag_size, ipv6_opts, min_hop, fastopen, max_pacing_rate,
+            Arc::new(::core::sync::atomic::AtomicI32::new(
+                crate::stack::types::UNMARKED_OPTION)))
+    }
+
+    /// Publish a listener whose requests carry the listening socket's
+    /// `SO_MARK` into every route lookup they make. # C: O(N)
+    #[allow(clippy::too_many_arguments)]
+    pub fn tcp_listen_reserved_fastopen_frag_pacing_ipv6_mark(&self,
+        bind: &Arc<TcpBindReservation>,
+        bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
+        ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+        ipv6_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
+        ipv6_frag_size: Arc<::core::sync::atomic::AtomicI32>,
+        ipv6_opts: Arc<crate::sock_opts::sol_ipv6::Ipv6Opts>,
+        min_hop: Arc<crate::min_hop::MinHop>,
+        fastopen: Arc<crate::tcp_fastopen::FastOpenQueue>,
+        max_pacing_rate: Arc<::core::sync::atomic::AtomicU64>,
+        mark: Arc<::core::sync::atomic::AtomicI32>) -> NetResult<Arc<TcpListenEntry>>
+    {
         let tables = self.inet_tables(bind.net_ns());
         let mut binds = tables.tcp_binds.lock();
         if !self.tcp_bind_registered_locked(&mut binds, bind) { return Err(NetError::Einval); }
@@ -83,8 +104,9 @@ impl NetStack {
                         && iface_overlap(old.bound_iface(), bind.bound_iface())));
             if conflict { return Err(NetError::Eaddrinuse); }
         }
-        let entry = Arc::new(TcpListenEntry::new_with_fastopen_frag_pacing_ipv6(bind.clone(), bpf_filter,
-            ip_mtu_discover, ipv6_mtu_discover, ipv6_frag_size, ipv6_opts, min_hop, fastopen, max_pacing_rate));
+        let entry = Arc::new(TcpListenEntry::new_with_fastopen_frag_pacing_ipv6_mark(bind.clone(),
+            bpf_filter, ip_mtu_discover, ipv6_mtu_discover, ipv6_frag_size, ipv6_opts, min_hop,
+            fastopen, max_pacing_rate, mark));
         let key = TcpListenKey { local_ip: bind.local.ip, local_port: bind.local.port };
         listeners.entry(key).or_default().push(entry.clone());
         bind.role.store(TCP_BIND_LISTEN, Ordering::Release);

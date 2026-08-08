@@ -215,6 +215,13 @@ pub(crate) fn prepare_unix(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSo
                 let address = crate::address::unix(ctx, name)?;
                 let queue = net::net_ns::unix_registry_for_addr_in(&socket.net_namespace, &address)
                     .dgram_lookup_addr(&address).ok_or(Error::Econnrefused)?;
+                // A socketpair end publishes no receive queue, so nothing can
+                // ever be connected to it: it may address a destination only
+                // while that destination has no connected peer, and it is
+                // never the symmetric case. One relation, sender identity absent.
+                if !net::unix_sock::dgram_may_send(queue.peer_id(), None) {
+                    return Err(Error::Eperm);
+                }
                 Ok(UnixScm::Datagram { scm, queue, sender: None, address,
                     symmetric: false, local: None })
             }
@@ -232,8 +239,14 @@ pub(crate) fn prepare_unix(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSo
                 };
                 let queue = net::net_ns::unix_registry_for_addr_in(&socket.net_namespace, &address)
                     .dgram_lookup_addr(&address).ok_or(Error::Econnrefused)?;
-                let symmetric = net::unix_sock::dgram_symmetric_pair(
-                    queue.peer().as_ref(), local.bound().as_ref());
+                // Refused once the destination is resolved and before any of
+                // the destination's own state is consulted: this outranks its
+                // receive shutdown, its descriptor-passing refusal and its
+                // receive-queue bound, all of which the enqueue applies later.
+                if !net::unix_sock::dgram_may_send(queue.peer_id(), Some(local.id())) {
+                    return Err(Error::Eperm);
+                }
+                let symmetric = net::unix_sock::dgram_symmetric_pair(queue.peer_id(), Some(local.id()));
                 Ok(UnixScm::Datagram { scm, queue, sender, address, symmetric,
                     local: Some(local) })
             }
