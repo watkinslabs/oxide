@@ -18,7 +18,7 @@ use syscall::errno::Errno;
 
 use super::ops::search::{self, Expired};
 use super::perm::key_validate;
-use super::store::{AuthData, Store, TaskIds};
+use super::store::{AuthData, KeyNs, Store, TaskIds};
 use super::types;
 use super::uapi::*;
 
@@ -50,8 +50,9 @@ pub fn request_key_auth_new(g: &mut Store, target: i32, op: &str, callout: &[u8]
         None => (caller.clone(), caller.tgid),
     };
     let desc = alloc::format!("{target:x}");
-    let serial = g.mint_not_in_quota(types::auth_type(), &desc, caller.fsuid, caller.fsgid,
-        REQKEY_AUTH_PERM)?;
+    let ty = types::auth_type();
+    let serial = g.mint_not_in_quota(ty, &desc, caller.fsuid, caller.fsgid,
+        REQKEY_AUTH_PERM, KeyNs::of(caller, ty))?;
     let k = g.keys.get_mut(&serial).expect("just minted under the held lock");
     // The callout info IS the token's readable payload — the helper reads it
     // back with `KEYCTL_READ` to learn what it was asked for. One copy, in the

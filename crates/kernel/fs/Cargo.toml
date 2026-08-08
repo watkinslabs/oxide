@@ -29,6 +29,10 @@ timekeeper = { path = "../timekeeper" }
 # `capable(CAP_SYS_PTRACE)` for userfaultfd(2) is `ns_capable(&init_user_ns, …)`,
 # so the gate needs the initial-user-namespace test, not just the effective set.
 namespace-identity = { path = "../namespace-identity" }
+# Keyring names, the per-uid keyrings and the persistent register are all per
+# USER namespace, and `find_keyring_by_name` skips a candidate whose owner uid
+# the caller's namespace cannot name — which is this crate's uid map.
+user-namespace = { path = "../user-namespace" }
 uaccess  = { path = "../uaccess" }
 cpu      = { path = "../cpu" }
 # Diffie-Hellman modular exponentiation and the digest table the keyring's

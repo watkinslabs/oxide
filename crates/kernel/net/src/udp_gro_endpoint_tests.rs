@@ -110,7 +110,7 @@ fn plain4(fill: u8) -> UdpDatagram {
     UdpDatagram {
         src: SRC, sport: SPORT, dst: DST, dport: DPORT, iface: iface(1), ttl: TTL,
         tos: 0, options: Default::default(), frag_max: 0, dont_fragment: false,
-        payload: alloc::vec![fill; 100],
+        checksum: Some(0x1234), payload: alloc::vec![fill; 100],
     }
 }
 
@@ -275,7 +275,7 @@ fn the_ipv6_run_never_spans_two_compared_header_values() {
     let base = |fill: u8| Udp6Datagram {
         src: Ipv6Addr::LOOPBACK, sport: SPORT, dst: Ipv6Addr::LOOPBACK, dport: DPORT,
         iface: iface(1), hop_limit: 64, traffic_class: 0, flowinfo: 0,
-        ext_headers: alloc::vec::Vec::new(), frag_max: 0,
+        ext_headers: alloc::vec::Vec::new(), frag_max: 0, checksum: None,
         payload: alloc::vec![fill; 100],
     };
     let variants: [(&str, fn(Udp6Datagram) -> Udp6Datagram); 5] = [

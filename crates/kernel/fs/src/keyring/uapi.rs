@@ -129,6 +129,10 @@ pub const KEYCTL_CAPS_BYTES: usize = 2;
 /// supply a number: any other type is EOPNOTSUPP.
 pub const USER_KEY_TYPE: &str = "user";
 
+/// The kernel's DNS answer cache — the registered type whose keys carry a
+/// network-namespace domain tag rather than the default one.
+pub const DNS_RESOLVER_KEY_TYPE: &str = "dns_resolver";
+
 /// The key type the `KEYCTL_PKEY_*` family operates on. Any other type is
 /// EOPNOTSUPP: it exists and may be readable, it simply has no asymmetric
 /// operations.
@@ -205,6 +209,23 @@ pub const KEYCTL_UPDATE_MAX_PAYLOAD: u64 = 4096;
 /// `KEYCTL_READ` on a keyring hands back an array of 4-byte serials, so a
 /// buffer length that is not a multiple of that is EINVAL.
 pub const KEY_SERIAL_SIZE: u64 = 4;
+
+/// `look_up_user_keyrings`: the per-uid keyrings are named after the uid
+/// inside the namespace's register, so two user namespaces holding the same
+/// uid hold two distinctly-named keyrings.
+pub const USER_KEYRING_PREFIX: &str = "_uid.";
+pub const USER_SESSION_KEYRING_PREFIX: &str = "_uid_ses.";
+/// `get_user_register`: the per-user-namespace keyring the two above live in.
+/// Dot-prefixed, so no `KEYCTL_JOIN_SESSION_KEYRING` can name it.
+pub const USER_REGISTER_NAME: &str = ".user_reg";
+
+/// The index-key domain tag shared by every key type that is NOT network
+/// -namespace scoped — the single static default domain, so those keys are one
+/// name space kernel-wide.
+pub const DEFAULT_KEY_DOMAIN: u64 = 0;
+/// The boot user namespace. Its uid map is the full identity range, so
+/// `kuid_has_mapping` there is unconditionally true and never reads extents.
+pub const INITIAL_USER_NS: u64 = 0;
 
 /// Per-uid key quota defaults, settable through `/proc/sys/kernel/keys/`:
 /// `key_quota_maxkeys` / `key_quota_maxbytes` for an ordinary uid and

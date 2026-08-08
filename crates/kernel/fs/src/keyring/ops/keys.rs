@@ -9,7 +9,7 @@ use syscall::errno::Errno;
 use super::{e, Ctx};
 use super::super::notify;
 use super::super::perm::{check_perm, Lookup};
-use super::super::store::{Store, STORE};
+use super::super::store::{KeyNs, Store, STORE};
 use super::super::types;
 use super::super::uapi::*;
 
@@ -58,9 +58,13 @@ pub fn add_key_core(c: &Ctx, key_type: &str, desc: &str, payload: Vec<u8>, have_
     if let Err(rv) = check_perm(&g, ring, &c.t, KEY_NEED_WRITE, Lookup::Full, c.now_ns) { return rv; }
     let quota = types::payload_quota(ty, payload.len() as u64);
     if ty.updatable {
+        // The whole INDEX KEY has to match, domain tag included — an answer
+        // cached for one network namespace is not the key a task in another
+        // asked to update.
+        let domain = c.t.domain_for(ty);
         let existing = g.keys[&ring].members.iter().copied().find(|s| {
             g.keys.get(s).map(|k| core::ptr::eq(k.key_type, ty) && k.description == desc
-                && !k.revoked && !k.invalidated).unwrap_or(false)
+                && k.domain == domain && !k.revoked && !k.invalidated).unwrap_or(false)
         });
         if let Some(s) = existing {
             if let Err(rv) = check_perm(&g, s, &c.t, KEY_NEED_WRITE, Lookup::Full, c.now_ns) { return rv; }
@@ -71,7 +75,7 @@ pub fn add_key_core(c: &Ctx, key_type: &str, desc: &str, payload: Vec<u8>, have_
         }
     }
     if let Err(err) = types::vet_description(ty, desc) { return e(err); }
-    let serial = match g.mint(ty, desc, payload, c.t.fsuid, c.t.fsgid, quota) {
+    let serial = match g.mint(ty, desc, payload, c.t.fsuid, c.t.fsgid, quota, KeyNs::of(&c.t, ty)) {
         Ok(s) => s, Err(err) => return e(err),
     };
     let key = g.keys.get_mut(&serial).expect("just minted under the held store lock");

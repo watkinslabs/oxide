@@ -194,6 +194,33 @@ impl FsContext {
         Ok(Some(self.log.remove(0)))
     }
 
+    /// `read(2)` on the descriptor `fsopen(2)`/`fspick(2)` returned, whole.
+    ///
+    /// One message per call, oldest first, and the three outcomes are the
+    /// point:
+    /// - an empty ring is `ENODATA`, NOT a short read — end-of-file would tell
+    ///   a caller the context is finished when it is merely quiet;
+    /// - a message longer than the buffer is `EMSGSIZE` and STAYS QUEUED, so
+    ///   the caller can retry larger; a truncating read would destroy the one
+    ///   copy of the diagnostic;
+    /// - otherwise the byte count, terminating newline included and no NUL.
+    ///
+    /// The file offset is ignored: the log is a queue, not a byte stream, and a
+    /// seek cannot address a message already consumed. This lives here rather
+    /// than in the descriptor's operations table because that table is
+    /// `#![cfg(target_os = "oxide-kernel")]` — a decision written there cannot
+    /// be tested. # C: O(N_log + len msg)
+    pub fn read_message(&mut self, buf: &mut [u8]) -> KResult<usize> {
+        match self.fetch_message(buf.len())? {
+            None => Err(crate::types::VfsError::Enodata),
+            Some(msg) => {
+                let n = msg.len();
+                buf[..n].copy_from_slice(msg.as_bytes());
+                Ok(n)
+            }
+        }
+    }
+
     pub fn errorf(&mut self, msg: &str) { self.logfc('e', msg); }
     pub fn warnf(&mut self, msg: &str) { self.logfc('w', msg); }
     pub fn infof(&mut self, msg: &str) { self.logfc('i', msg); }

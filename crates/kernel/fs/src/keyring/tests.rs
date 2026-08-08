@@ -23,6 +23,7 @@ use super::store::{TaskIds, STORE};
 
 mod dh;
 mod keys;
+mod namespace;
 mod links;
 mod payload;
 mod perm;
@@ -33,7 +34,31 @@ mod watch;
 
 /// A caller with fsuid == fsgid == `uid` and no supplementary groups.
 fn ctx(tid: u32, uid: u32) -> Ctx {
-    Ctx::with_caps(TaskIds { tid, tgid: tid, fsuid: uid, fsgid: uid, groups: Vec::new() }, 0, false, false)
+    Ctx::with_caps(TaskIds { tid, tgid: tid, fsuid: uid, fsgid: uid, groups: Vec::new(), ..TaskIds::default() }, 0, false, false)
+}
+
+/// The same caller in a non-initial user namespace whose uid map is `map`.
+/// A namespace with an EMPTY map can name no uid at all, which is the state a
+/// freshly created one is in until `uid_map` is written.
+fn ns_ctx(tid: u32, uid: u32, user_ns: u64, map: &[::user_namespace::IdMapExtent]) -> Ctx {
+    let mut c = ctx(tid, uid);
+    c.t.user_ns = user_ns;
+    c.t.uid_map = map.to_vec();
+    c
+}
+
+/// The same caller in network namespace `net_ns`, which only a network-scoped
+/// key type reads.
+fn net_ctx(tid: u32, uid: u32, net_ns: u64) -> Ctx {
+    let mut c = ctx(tid, uid);
+    c.t.net_ns = net_ns;
+    c
+}
+
+/// An identity map covering `count` uids from zero — what a user namespace that
+/// has written a full-range `uid_map` looks like.
+fn identity_map(count: u32) -> [::user_namespace::IdMapExtent; 1] {
+    [::user_namespace::IdMapExtent { ns_id: 0, host_id: 0, count }]
 }
 
 /// The same caller holding `CAP_SYS_ADMIN`.

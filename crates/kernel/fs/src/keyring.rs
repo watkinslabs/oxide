@@ -42,10 +42,11 @@ use alloc::vec::Vec;
 
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
-use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
+use crate::userbuf::{validate_user_buf_readable, validate_user_buf_writable};
 
 mod auth;
 mod construct;
+mod iov;
 mod keyctl;
 mod lifecycle;
 mod notify;
@@ -88,12 +89,28 @@ fn key_string_from_bytes(bytes: &[u8]) -> String {
     vfs::path_from_bytes(bytes)
 }
 
+/// `strndup_user`. The scan range-checks each address; the MAPPING check is
+/// added here, once per page crossed, because the byte read below has no
+/// exception-table fixup — an address in the user half that nothing maps would
+/// fault the kernel instead of answering EFAULT. An unmapped page ends the scan
+/// (a reader that cannot read sees no more string) and the result is EFAULT.
+/// # C: O(len + pages)
 fn read_user_key_cstr(p: u64, max: usize) -> Result<Vec<u8>, i64> {
     if p == 0 { return Err(err(Errno::Efault)); }
-    match syscall::scan_user_cstr(p, max as u64, |va| {
-        // SAFETY: scan_user_cstr validates each user VA before this byte read.
+    let page_mask = !(hal::PAGE_SIZE_BYTES - 1);
+    let mut checked: u64 = u64::MAX;
+    let mut unmapped = false;
+    let scanned = syscall::scan_user_cstr(p, max as u64, |va| {
+        let page = va & page_mask;
+        if page != checked {
+            if validate_user_buf_readable(va, 1, 1).is_err() { unmapped = true; return 0; }
+            checked = page;
+        }
+        // SAFETY: this byte's page was proved mapped and readable in the caller's address space immediately above, and scan_user_cstr range-checked the address.
         unsafe { core::ptr::read_unaligned(va as *const u8) }
-    }) {
+    });
+    if unmapped { return Err(err(Errno::Efault)); }
+    match scanned {
         Ok(b) => Ok(b),
         Err(Errno::Enametoolong) => Err(err(Errno::Einval)),
         Err(e) => Err(err(e)),
@@ -125,10 +142,19 @@ fn read_user_key_desc_optional(p: u64) -> Result<String, i64> {
     read_user_key_desc(p)
 }
 
+/// A bounded copy of an exact user byte range.
+///
+/// The validation walks the caller's VMAs rather than only range-checking the
+/// address. A range check alone is `access_ok`, which in Linux is safe only
+/// because the copy itself is fixed up by the exception table and returns
+/// EFAULT from a fault; a raw read here has no fixup, so an address that is
+/// merely IN the user half but mapped by nothing faults the KERNEL instead of
+/// answering the caller EFAULT. Found by a probe passing an unmapped user
+/// pointer: the kernel took a #PF on it and died. # C: O(pages + len)
 fn read_user_bytes(p: u64, len: u64) -> Result<Vec<u8>, i64> {
     if len == 0 { return Ok(Vec::new()); }
     if len > KEY_MAX_PAYLOAD { return Err(err(Errno::Einval)); }
-    validate_user_buf(p, len, 1)?;
+    validate_user_buf_readable(p, len, 1)?;
     let len = len as usize;
     let mut out = alloc::vec![0u8; len];
     // SAFETY: exact user byte range validated; destination is a kernel-owned Vec.
@@ -136,41 +162,31 @@ fn read_user_bytes(p: u64, len: u64) -> Result<Vec<u8>, i64> {
     Ok(out)
 }
 
-/// `import_iovec` for `KEYCTL_INSTANTIATE_IOV`: gather `n` Linux `struct
-/// iovec` segments into one payload. The segments are validated as a whole
-/// BEFORE any is copied, so a bad pointer in the last one does not leave a
-/// half-gathered payload to be instantiated. The combined length is bounded by
-/// the same 1 MiB ceiling `KEYCTL_INSTANTIATE` applies — a vectored call must
-/// not be a way around it. # C: O(n + total)
+/// `import_iovec` + the copy for `KEYCTL_INSTANTIATE_IOV`. The ordering rule —
+/// every segment validated before any is copied — lives in [`iov::gather`],
+/// which is where it can be tested; this supplies the user-memory primitives it
+/// drives. # C: O(n + total)
 fn read_user_iov(p: u64, n: u64) -> Result<Vec<u8>, i64> {
-    /// `sizeof(struct iovec)` — `void *iov_base; size_t iov_len;`.
-    const IOVEC_SIZE: u64 = 16;
-    const IOVEC_LEN_OFFSET: u64 = 8;
-    if n == 0 { return Ok(Vec::new()); }
-    let array_bytes = n.checked_mul(IOVEC_SIZE).ok_or(err(Errno::Efault))?;
-    validate_user_buf(p, array_bytes, 8)?;
-    let mut segs: Vec<(u64, u64)> = Vec::new();
-    let mut total: u64 = 0;
-    for i in 0..n {
-        let e = p + i * IOVEC_SIZE;
-        // SAFETY: the whole iovec array was validated above; e and e+8 lie inside it and the Linux ABI aligns both to 8.
-        let base = unsafe { core::ptr::read_volatile(e as *const u64) };
-        // SAFETY: same validated array range; iov_len sits at offset +8, 8-byte aligned.
-        let len = unsafe { core::ptr::read_volatile((e + IOVEC_LEN_OFFSET) as *const u64) };
-        if len == 0 { continue; }
-        total = total.checked_add(len).ok_or(err(Errno::Einval))?;
-        if total > KEY_MAX_PAYLOAD { return Err(err(Errno::Einval)); }
-        validate_user_buf(base, len, 1)?;
-        segs.push((base, len));
-    }
-    let mut out = Vec::with_capacity(total as usize);
-    for (base, len) in segs {
-        for i in 0..len {
-            // SAFETY: every segment was validated readable above and none has been unmapped since — the caller holds no lock that would let it.
-            out.push(unsafe { core::ptr::read_unaligned((base + i) as *const u8) });
+    struct Live;
+    impl iov::UserMem for Live {
+        fn validate(&mut self, base: u64, len: u64, align: u64) -> Result<(), i64> {
+            // Mapping-checked, not merely range-checked: the copy below has no
+            // exception-table fixup, so an unmapped user address has to be
+            // refused HERE or it faults the kernel. See `read_user_bytes`.
+            validate_user_buf_readable(base, len, align)
+        }
+        fn read_word(&mut self, at: u64) -> u64 {
+            // SAFETY: the whole iovec array was validated readable and 8-byte aligned before any word of it is read, and `at` lies inside it.
+            unsafe { core::ptr::read_volatile(at as *const u64) }
+        }
+        fn copy_in(&mut self, base: u64, len: u64, out: &mut Vec<u8>) {
+            for i in 0..len {
+                // SAFETY: every segment was validated readable before this copy began and the caller holds no lock that could have let it be unmapped since.
+                out.push(unsafe { core::ptr::read_unaligned((base + i) as *const u8) });
+            }
         }
     }
-    Ok(out)
+    iov::gather(&mut Live, p, n)
 }
 
 /// Raw copy-out of an exact byte range. # C: O(n)
@@ -213,16 +229,37 @@ fn cur_ctx() -> Ctx {
     let now_ns = monotonic_now_ns();
     match sched::current() {
         Some(c) => {
+            let user_ns = c.namespace_id(namespace_identity::NamespaceKind::User)
+                .unwrap_or(INITIAL_USER_NS);
             let t = TaskIds {
                 tid: c.tid,
                 tgid: c.vtgid.load(Acquire),
                 fsuid: c.creds.fsuid.load(Acquire),
                 fsgid: c.creds.fsgid.load(Acquire),
                 groups: c.creds.group_list().map(|g| g.to_vec()).unwrap_or_default(),
+                user_ns,
+                // Read for the domain tag, which only a network-scoped key
+                // type has; every other type indexes under the default domain
+                // and never looks.
+                net_ns: c.namespace_id(namespace_identity::NamespaceKind::Net)
+                    .unwrap_or(DEFAULT_KEY_DOMAIN),
+                uid_map: uid_map_of(&c, user_ns),
             };
             Ctx::with_caps(t, now_ns, c.has_cap(sched::cap::SYS_ADMIN), c.has_cap(sched::cap::SETUID))
         }
         None => Ctx::with_caps(TaskIds::default(), now_ns, true, true),
+    }
+}
+
+/// `cred->user_ns`'s uid map, for the `kuid_has_mapping` test a named-keyring
+/// lookup makes. The initial namespace maps the whole range and is never
+/// consulted, so it is not snapshotted. # C: O(extents)
+fn uid_map_of(task: &sched::Task, user_ns: u64) -> Vec<user_namespace::IdMapExtent> {
+    if user_ns == INITIAL_USER_NS { return Vec::new(); }
+    match task.namespace_owner(namespace_identity::NamespaceKind::User) {
+        Some(owner) => user_namespace::snapshot_map(&owner, user_namespace::IdMapKind::Uid)
+            .unwrap_or_default(),
+        None => Vec::new(),
     }
 }
 

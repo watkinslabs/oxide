@@ -8,8 +8,7 @@ use crate::stack::TcpEntry;
 mod tcp_wait;
 mod tcp_read;
 mod packet;
-mod types;
-pub use types::{recv_empty, recv_empty_with, Received, RecvOptions};
+pub use crate::recv_result::{recv_empty, recv_empty_with, Received, RecvOptions};
 pub(crate) use crate::sock_error::pending_net_error;
 pub use tcp_read::tcp_recv_eof;
 pub(crate) use tcp_read::{arm_tcp_read_after_mode, read_tcp_blocking, tcp_vfs_error};
@@ -450,7 +449,7 @@ pub fn recvfrom_opts(
             pktinfo6: Some((d.dst, d.iface)),
             hoplimit: Some(d.hop_limit), tclass: Some(d.traffic_class),
             dport: d.dport, flowinfo: d.flowinfo, ext_headers: d.ext_headers,
-            frag_max: d.frag_max, gro: gro.map(|seg| seg as i32),
+            frag_max: d.frag_max, checksum: d.checksum, gro: gro.map(|seg| seg as i32),
             ..Default::default()
         });
     }
@@ -479,6 +478,7 @@ pub fn recvfrom_opts(
         payload: out, full_len, peer: Some((d.src, d.sport)),
         pktinfo: Some((d.dst, d.iface)), ttl: Some(d.ttl), tos: Some(d.tos),
         options: d.options, dport: d.dport, frag_max: d.frag_max,
+        checksum: d.checksum,
         gro: gro.map(|seg| seg as i32), ..Default::default()
     })
 }

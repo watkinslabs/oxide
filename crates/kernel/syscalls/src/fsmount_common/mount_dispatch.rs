@@ -9,29 +9,8 @@
 use alloc::sync::Arc;
 use syscall::errno::Errno;
 use vfs::Dentry;
-use vfs::fs::FsFlags;
 
-/// The capability facts `mount_capable` chooses between, sampled by the caller
-/// (`mount_perm::sample_mount_caps`) so this module stays free of `sched`.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct MountCaps {
-    /// `capable(CAP_SYS_ADMIN)` — held in the INITIAL user namespace.
-    pub init_user_ns: bool,
-    /// `may_mount()` — `ns_capable(mnt_ns->user_ns, CAP_SYS_ADMIN)`.
-    pub mnt_user_ns: bool,
-}
-
-/// Linux `fs/super.c` `mount_capable`: a filesystem WITHOUT `FS_USERNS_MOUNT`
-/// may only be mounted by a caller privileged in the INITIAL user namespace;
-/// one with the flag settles for privilege in the mount namespace's owning user
-/// namespace. `FS_USERNS_MOUNT` was defined in `vfs::fs::FsFlags` and set on
-/// procfs/sysfs, but NOTHING read it — so an unprivileged user-namespace holder
-/// (who by construction has CAP_SYS_ADMIN inside its own userns, and so passes
-/// `may_mount`) could mount ext4, tmpfs, devtmpfs, devpts, fuse … every type
-/// Linux reserves for the initial user namespace. # C: O(1)
-pub(crate) fn mount_capable(fs_flags: FsFlags, caps: MountCaps) -> bool {
-    if !fs_flags.contains(FsFlags::FS_USERNS_MOUNT) { caps.init_user_ns } else { caps.mnt_user_ns }
-}
+pub(crate) use crate::mount_capable::{mount_capable, MountCaps};
 
 fn graft_mount(sb: Arc<vfs::SuperBlock>, target_d: &Arc<Dentry>, parent_hint: Option<u64>,
     mnt_flags: u64, lock_flags: u32) -> i64 {

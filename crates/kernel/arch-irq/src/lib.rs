@@ -26,6 +26,7 @@ mod msi;
 mod spurious;
 
 pub use line::{irq_line_disabled, LineHandler};
+pub use irqstat::DeviceAction;
 pub use msi::{alloc_pci_msi, free_pci_msi, register_pci_msi_handler, MsiMessage};
 pub use spurious::{IrqReport, IrqRet};
 #[cfg(target_arch = "x86_64")]

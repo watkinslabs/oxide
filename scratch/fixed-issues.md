@@ -1,5 +1,11 @@
 # Fixed issues
 
+### F839-live-proc-interrupts-device-counters
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 22542186e | MISSING | low | `/proc/interrupts` listed no virtio lines, so per-device interrupt progress could not be observed from the guest. | The IRQ owner publishes active PCI MSI descriptors with per-CPU counters and action names; `/proc/interrupts` renders virtio PCI and AHCI rows before their first delivery. ITS LPI and GICv2m SPI registrations both retain device interrupts, and paired smoke reached live userspace on x86_64 and aarch64. | [CLAIMED F839 2026-08-07] |
+
 ### F838-live-ipv6-packet-proc
 
 | Status | Class | Sev | Issue | Evidence | Owner |

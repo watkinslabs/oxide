@@ -146,30 +146,11 @@ fn wanted(sock: &InetSocket) -> net::cmsg::Want {
     }
 }
 
-/// The received datagram's header state, as the receive path captured it.
-/// # C: O(headers)
+/// The received datagram's header state, as the receive path captured it. The
+/// projection itself is owned by `net`, so it is checkable without a kernel;
+/// only the peer label needs syscall context. # C: O(headers)
 fn meta(sock: &InetSocket, rcv: &Received) -> net::cmsg::RxMeta {
-    net::cmsg::RxMeta {
-        dst: rcv.pktinfo.map(|(dst, iface)| (dst.octets(), iface.raw())),
-        ttl: rcv.ttl,
-        tos: rcv.tos,
-        options: rcv.options.clone(),
-        src: rcv.peer.map_or([0u8; 4], |(addr, _)| addr.octets()),
-        dport: rcv.dport,
-        frag_max: rcv.frag_max,
-        // No receive path in this stack retains a whole-datagram checksum, so
-        // the checksum message is never produced — the same answer a Linux
-        // receive gives when the device did not hand one up.
-        checksum: None,
-        security: peer_label(sock),
-        gro: rcv.gro,
-        dst6: rcv.pktinfo6.map(|(dst, iface)| (dst.0, iface.raw())),
-        hoplimit: rcv.hoplimit,
-        tclass: rcv.tclass,
-        flowinfo: rcv.flowinfo,
-        ext_headers: rcv.ext_headers.clone(),
-        scope_id: rcv.peer6.map_or(0, |(_, _, scope)| scope),
-    }
+    rcv.rx_meta(peer_label(sock))
 }
 
 /// The peer's security label, published only by a module that labels sockets.

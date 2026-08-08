@@ -9,7 +9,7 @@ use super::super::ops::{add_key_core, join_session, revoke_core, set_timeout_cor
 use super::super::store::{over_quota, quota_limit, set_quota_limit, KeyUser, QuotaKnob, STORE};
 
 fn ctx(tid: u32, uid: u32) -> Ctx {
-    Ctx::with_caps(TaskIds { tid, tgid: tid, fsuid: uid, fsgid: uid, groups: Vec::new() }, 0, false, false)
+    Ctx::with_caps(TaskIds { tid, tgid: tid, fsuid: uid, fsgid: uid, groups: Vec::new(), ..TaskIds::default() }, 0, false, false)
 }
 
 /// The `/proc/keys` line for `serial` as `t` sees it, if any.
