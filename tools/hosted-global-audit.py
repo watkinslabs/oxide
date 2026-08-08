@@ -76,6 +76,25 @@ def is_testy_path(rel):
     return stem in TESTY_STEMS or stem.endswith("_tests") or stem.startswith("test_")
 
 
+_STRIP_CACHE = {}
+
+
+def code_only(text):
+    """Body text with comments removed, for claim matching.
+
+    A claim is a CALL, so it must be read out of code. Matching raw text also
+    counts a name appearing in a comment, which made the ledger move whenever
+    prose changed: a sweep that removed an unrelated path from one comment
+    dropped a candidate below its exposure and raised two others above it,
+    with no code touched and no change in whether anything was guarded.
+    """
+    hit = _STRIP_CACHE.get(text)
+    if hit is None:
+        hit = re.sub(r"/\*.*?\*/", " ", re.sub(r"//[^\n]*", " ", text), flags=re.S)
+        _STRIP_CACHE[text] = hit
+    return hit
+
+
 def brace_region(text, open_at):
     """Return the index just past the block whose `{` is at or after open_at."""
     i = text.find("{", open_at)
@@ -295,7 +314,7 @@ def find_singletons(srcs, guarded_files):
             qualified = re.compile(r"\b(?:" + re.escape(crate.replace("-", "_")) +
                                    r"|crate|self|super)\s*::(?:\s*[a-z_][a-z_0-9]*\s*::)*\s*"
                                    + fn + r"\s*\(\s*\)")
-            n = sum(1 for _, body in callers if qualified.search(body))
+            n = sum(1 for _, body in callers if qualified.search(code_only(body)))
             if not n:
                 continue
             k = (s.crate, s.binary, crate, fn)
@@ -350,7 +369,7 @@ def accessors_of(src, name):
     out = set()
     for m in FN_DECL.finditer(src.text):
         body = src.text[m.end():brace_region(src.text, m.end()) + 1]
-        if re.search(r"\b" + re.escape(name) + r"\b", body):
+        if re.search(r"\b" + re.escape(name) + r"\b", code_only(body)):
             out.add(m.group(1))
     return out
 
@@ -369,7 +388,8 @@ def measure_exposure(cands, srcs):
         for f in files:
             for _, body in f.test_fns():
                 total += 1
-                if any(re.search(r"\b" + re.escape(n) + r"\b", body) for n in owner):
+                if any(re.search(r"\b" + re.escape(n) + r"\b", code_only(body))
+                       for n in owner):
                     claim += 1
         c.exposure, c.claimants = total, claim
 
