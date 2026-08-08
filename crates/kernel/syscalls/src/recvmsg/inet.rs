@@ -11,13 +11,6 @@ use crate::net_sockaddr::{encoded_sockaddr_for_socket, encoded_sockaddr_in6};
 use crate::recv_user::RecvUser;
 use crate::recv_control::Control;
 
-// The receive ancillary message numbers live in `net::cmsg`; only the
-// error-queue pair is answered here.
-const IPPROTO_IP: i32 = 0;
-const IPPROTO_IPV6: i32 = 41;
-const IP_RECVERR: i32 = 11;
-const IPV6_RECVERR: i32 = 25;
-
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
 fn oob_error(sock: &InetSocket, flags: u64) -> Option<Errno> {
@@ -29,66 +22,27 @@ fn oob_error(sock: &InetSocket, flags: u64) -> Option<Errno> {
     }
 }
 
-fn sockaddr(addr: net::IpAddr, port: u16, family: u16, ifindex: u32) -> Vec<u8> {
-    if family == net::sock::AF_INET6 {
-        let ip = match addr {
-            net::IpAddr::V4(ip) => net::Ipv6Addr::from_v4_mapped(ip),
-            net::IpAddr::V6(ip) => ip,
-        };
-        let mut out = alloc::vec![0u8; 28];
-        out[0..2].copy_from_slice(&net::sock::AF_INET6.to_ne_bytes());
-        out[2..4].copy_from_slice(&port.to_be_bytes());
-        out[8..24].copy_from_slice(&ip.0);
-        if ip.is_link_local() { out[24..28].copy_from_slice(&ifindex.to_ne_bytes()); }
-        return out;
-    }
-    match addr {
-        net::IpAddr::V4(ip) => {
-            let mut out = alloc::vec![0u8; 16];
-            out[0..2].copy_from_slice(&net::sock::AF_INET.to_ne_bytes());
-            out[2..4].copy_from_slice(&port.to_be_bytes());
-            out[4..8].copy_from_slice(&ip.octets());
-            out
-        }
-        net::IpAddr::V6(ip) => {
-            let mut out = alloc::vec![0u8; 28];
-            out[0..2].copy_from_slice(&net::sock::AF_INET6.to_ne_bytes());
-            out[2..4].copy_from_slice(&port.to_be_bytes());
-            out[8..24].copy_from_slice(&ip.0);
-            out
-        }
-    }
-}
-
-fn extended_error_data(entry: &net::SocketErrorEntry, family: u16) -> Vec<u8> {
-    let offender = sockaddr(entry.offender, 0, family, entry.ifindex);
-    let mut out = alloc::vec![0u8; 16 + offender.len()];
-    out[0..4].copy_from_slice(&(entry.errno as u32).to_ne_bytes());
-    out[4] = entry.origin;
-    out[5] = entry.kind;
-    out[6] = entry.code;
-    out[8..12].copy_from_slice(&entry.info.to_ne_bytes());
-    out[12..16].copy_from_slice(&entry.data.to_ne_bytes());
-    out[16..].copy_from_slice(&offender);
-    out
-}
-
-/// Consume one Linux extended socket error and encode its payload/name/cmsg. # C: O(payload)
+/// Consume one extended socket error and encode its payload/name/cmsg.
+///
+/// The record never blocks and never waits: an empty queue is `EAGAIN`
+/// regardless of `MSG_DONTWAIT` or the receive timeout. Layout, the offender
+/// address and whether `msg_name` is filled are decided by
+/// `net::socket_error::abi`. # C: O(payload)
 pub(crate) fn recv_error(sock: &Arc<InetSocket>, user: &RecvUser, flags: u64) -> i64 {
+    use net::socket_error::abi;
     if let Some(e) = oob_error(sock, flags) { return err(e); }
     let Some(entry) = sock.take_extended_error() else { return err(Errno::Eagain); };
-    let family = sock.family.load(Ordering::Acquire);
+    let v6 = sock.family.load(Ordering::Acquire) == net::sock::AF_INET6;
     let copied = match user.copy_payload_record(
         &entry.payload[..core::cmp::min(user.capacity, entry.payload.len())])
     { Ok(n) => n, Err(e) => return e };
-    if let Err(e) = user.copy_name(&sockaddr(
-        entry.destination, entry.destination_port, family, entry.ifindex,
-    )) { return e; }
+    let name = abi::name_bytes(&entry, v6).unwrap_or_default();
+    if let Err(e) = user.copy_name(&name) { return e; }
+    let opt_cmsg = sock.opts.timestamping.load(Ordering::Acquire)
+        & net::uapi::SOF_TIMESTAMPING_OPT_CMSG != 0;
     let mut ctrl = Control::new(if user.control == 0 { 0 } else { user.controllen });
-    let (level, kind) = if family == net::sock::AF_INET6 {
-        (IPPROTO_IPV6, IPV6_RECVERR)
-    } else { (IPPROTO_IP, IP_RECVERR) };
-    ctrl.push(level, kind, &extended_error_data(&entry, family));
+    let (level, kind) = abi::cmsg_slot(v6);
+    ctrl.push(level, kind, &abi::errhdr_bytes(&entry, v6, opt_cmsg));
     let ctrl_len = ctrl.copy_to_recv(user);
     let mut out_flags = ctrl.flags | MSG_ERRQUEUE as u32 | crate::recv_control::output_flags(flags);
     if entry.payload.len() > copied { out_flags |= MSG_TRUNC as u32; }

@@ -240,7 +240,8 @@ fn sendto_v4_mapped(sock: &InetSocket, dst_ip: crate::Ipv4Addr, dst_port: u16,
         sock.opts.ip_mtu_discover.load(core::sync::atomic::Ordering::Acquire),
         sock.opts.ip.options().as_ref(),
         sock.opts.generic.flag(crate::sock_opts::sol_socket::flag::NO_CHECK_TX),
-    )?;
+    ).map_err(|error| crate::socket_error::report_send_failure(&sock.error, sock.net_ns(),
+        crate::addr::IpAddr::V4(dst_ip), dst_port, bound, error))?;
     if !dst_ip.is_multicast() || multicast_loop { drain_loopback(); }
     Ok(payload.len())
 }
@@ -288,7 +289,8 @@ fn segmented_v6(sock: &InetSocket, dst_ip: crate::Ipv6Addr, dst_port: u16,
             msg.v6_autoflowlabel(
                 sock.opts.ipv6.flag(crate::sock_opts::sol_ipv6::flag::AUTOFLOWLABEL)),
             sock.opts.ipv6.srcprefs(), control,
-        )?;
+        ).map_err(|error| crate::socket_error::report_send_failure(&sock.error,
+            sock.net_ns(), crate::addr::IpAddr::V6(dst_ip), dst_port, iface, error))?;
     }
     drain_loopback();
     Ok(true)
@@ -360,7 +362,8 @@ pub fn sendto_v6_ctl(sock: &InetSocket,
         msg.v6_autoflowlabel(
             sock.opts.ipv6.flag(crate::sock_opts::sol_ipv6::flag::AUTOFLOWLABEL)),
         sock.opts.ipv6.srcprefs(), &control,
-    )?;
+    ).map_err(|error| crate::socket_error::report_send_failure(&sock.error, sock.net_ns(),
+        crate::addr::IpAddr::V6(dst_ip), dst_port, iface, error))?;
     drain_loopback();
     Ok(payload.len())
 }

@@ -498,5 +498,10 @@ pub(crate) fn send_prepared(ctx: &SendContext<'_>, target: &SendFile, message: M
         }
         _ => return Err(Error::Enotsock),
     }?;
+    // The completion a `MSG_ZEROCOPY` send owes the error queue is published
+    // once, here, for every family that offers the option.
+    if let SendKind::Inet(socket) = target.kind() {
+        socket.complete_zerocopy_send(flags as u64 & net::uapi::MSG_ZEROCOPY != 0, bytes);
+    }
     Ok(SendOutcome { bytes, complete: bytes >= requested })
 }
