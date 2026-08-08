@@ -37,6 +37,18 @@ pub(super) fn set_perf_paranoid(v: i64) { sched::perf_sw::set_paranoid(v as i32)
 pub(super) fn get_perf_sample_rate() -> i64 { sched::perf_sw::sample_rate() as i64 }
 pub(super) fn set_perf_sample_rate(v: i64) { sched::perf_sw::set_sample_rate(v as i32); }
 pub(super) fn get_dmesg_restrict() -> i64 { klog::syslog::dmesg_restrict() as i64 }
+
+/// `kernel.unprivileged_bpf_disabled`, bound to the cell `bpf(2)` reads.
+/// # C: O(1)
+pub(super) fn get_unpriv_bpf_disabled() -> i64 {
+    security::bpf::attr::unpriv_bpf_disabled_value() as i64
+}
+/// # C: O(1)
+pub(super) fn set_unpriv_bpf_disabled(value: i64) -> vfs::KResult<()> {
+    security::bpf::attr::write_unpriv_bpf_disabled(value)
+        .map_err(|e| if e == syscall::errno::Errno::Eperm { vfs::VfsError::Eperm }
+                     else { vfs::VfsError::Einval })
+}
 /// `kernel.io_uring_disabled` / `kernel.io_uring_group` bind to the live cells
 /// the ring-creation admission check reads. A procfs-local copy would let an
 /// administrator disable io_uring here while ring creation kept succeeding.

@@ -344,6 +344,25 @@ impl ProcHandler for CheckedIntHook {
     }
 }
 
+/// `proc_dointvec_minmax` whose setter distinguishes a REFUSED write from a
+/// malformed one — a knob whose policy answer is EPERM, not EINVAL.
+pub struct PermIntHook {
+    pub get: fn() -> i64,
+    pub set: fn(i64) -> KResult<()>,
+    pub bounds: Option<(i64, i64)>,
+}
+impl ProcHandler for PermIntHook {
+    fn format(&self) -> Vec<u8> { fmt_i64((self.get)()) }
+    fn store(&self, src: &[u8]) -> Result<(), ()> { self.store_vfs(src).map_err(|_| ()) }
+    fn store_vfs(&self, src: &[u8]) -> KResult<()> {
+        let value = parse_single_i64(src).map_err(|_| VfsError::Einval)?;
+        if let Some((min, max)) = self.bounds {
+            if value < min || value > max { return Err(VfsError::Einval); }
+        }
+        (self.set)(value)
+    }
+}
+
 /// Two-u16 `proc_dointvec` binding used by `ip_local_port_range`.
 pub struct U16PairHook {
     pub get: fn() -> (u16, u16),

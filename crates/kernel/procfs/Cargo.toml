@@ -29,6 +29,8 @@ devfs = { path = "../devfs" }
 # CSPRNG (`27`); procfs never carries a second generator.
 crng  = { path = "../crng" }
 kernfs = { path = "../kernfs" }
+# `kernel.unprivileged_bpf_disabled` binds to the cell `bpf(2)` itself reads.
+security = { path = "../security" }
 nscg  = { path = "../nscg" }
 network-namespace = { path = "../network-namespace" }
 namespace-identity = { path = "../namespace-identity" }
