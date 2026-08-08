@@ -277,7 +277,7 @@ mod tests {
         // timeout before descriptor, pending error before the batch — through
         // the same code the kernel runs.
         let recvmmsg = include_str!("299_recvmmsg.rs");
-        assert!(recvmmsg.contains("mmsg_batch::run_batch(&mut batch, args.a3, args.a2)"),
+        assert!(recvmmsg.contains("mmsg_batch::run_batch(&mut batch, args.a3, args.a2, EntryAbi::Native)"),
             "recvmmsg composes its batch through the one ungated runner");
         assert!(!recvmmsg.contains("for index in 0.."),
             "the slot file keeps no batch loop of its own");

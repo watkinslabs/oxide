@@ -107,6 +107,7 @@ pub mod iface_addr;
 // decision behind a build flag.
 pub mod router_alert;
 pub mod bind_screen;
+pub mod transparent;
 pub mod local_port;
 pub mod netfilter_hook;
 pub mod bpf_filter;

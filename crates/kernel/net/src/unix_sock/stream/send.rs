@@ -114,6 +114,13 @@ impl UnixPair {
         g.produced += n as u64;
         drop(g);
         drop(transition);
+        // Urgent arrival signals the RECEIVER's owner (Linux `sk_send_sigurg`
+        // on the peer socket), unconditionally: neither `O_ASYNC` nor a
+        // fasync registration is required, which is what makes a plain
+        // `fcntl(F_SETOWN)` receiver see the signal at all. The `F_SETSIG`
+        // half rides the `POLL_PRI` readiness wake below — its one owner —
+        // and is not raised here.
+        if oob { crate::sock::oob_notify::sk_send_sigurg(self.gc_node(end.other()).owner_file()); }
         #[cfg(target_os = "oxide-kernel")]
         {
             // debug-syscost DIAG: log dbus-broker's / polkit's connected-socket

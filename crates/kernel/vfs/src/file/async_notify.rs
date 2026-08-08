@@ -23,6 +23,14 @@ use super::File;
 /// tests, early boot). # C: O(1)
 pub(crate) static SIGIO_HOOK: AtomicU64 = AtomicU64::new(0);
 
+/// Default async-I/O signal for ordinary readiness (`SIGIO` == `SIGPOLL`,
+/// `asm-generic/signal.h`). The ONE owner of this number.
+pub const SIGIO: i32 = 29;
+
+/// Default async-I/O signal for out-of-band readiness (`SIGURG`,
+/// `asm-generic/signal.h`). The ONE owner of this number.
+pub const SIGURG: i32 = 23;
+
 /// `f_owner_ex.type` / Linux `enum pid_type` as `F_SETOWN_EX` names it
 /// (`include/uapi/asm-generic/fcntl.h`). The ONE owner of these values.
 pub mod owner_type {
@@ -261,8 +269,6 @@ impl File {
     /// default signalling and must not fire plain SIGURG at the owner).
     /// # C: O(1)
     pub fn kill_fasync(&self, dfl: i32, reason: i32) {
-        /// `SIGURG` (`asm-generic/signal.h`).
-        const SIGURG: i32 = 23;
         if !self.is_async() { return; }
         let chosen = self.f_sig.load(Ordering::Acquire);
         if dfl == SIGURG && chosen == 0 { return; }
@@ -283,6 +289,38 @@ impl File {
             fd:   self.fa_fd.load(Ordering::Acquire),
             queued: chosen != 0,
         });
+    }
+
+    /// `send_sigurg(file)` (Linux `fs/fcntl.c`, reached from `sk_send_sigurg`):
+    /// post `SIGURG` to THIS description's `f_owner` because out-of-band data
+    /// arrived. Independent of both `O_ASYNC` and `F_SETSIG` — urgent arrival
+    /// signals the recorded owner whether or not signal-driven I/O was ever
+    /// enabled, which is what makes a bare `fcntl(F_SETOWN)` receiver see a
+    /// signal at all. Always the plain signal with no `_sigpoll` record
+    /// (`SEND_SIG_PRIV`), so `F_SETSIG` does NOT redirect it: the queued
+    /// `F_SETSIG` notification is the separate fasync half, driven by the
+    /// readiness wake that carries `POLL_PRI`.
+    ///
+    /// Reports whether an owner was recorded, which is what gates that fasync
+    /// half at the socket layer. Reported from the owner alone, before any
+    /// permission check, so a signal the owner may not receive still counts.
+    /// # C: O(1)
+    pub fn send_sigurg(&self) -> bool {
+        let owner = self.owner.load(Ordering::Acquire);
+        if owner == 0 { return false; }
+        let h = SIGIO_HOOK.load(Ordering::Acquire);
+        if h == 0 { return true; }
+        let (uid, euid) = self.f_owner_creds();
+        // SAFETY: h installed by `set_sigio_hook` with the documented
+        // fn(AsyncSignal) signature; the cast round-trips that exact type.
+        let f: fn(AsyncSignal) = unsafe { core::mem::transmute(h) };
+        f(AsyncSignal {
+            owner, uid, euid,
+            sig:  SIGURG,
+            ty:   self.owner_type.load(Ordering::Acquire),
+            code: 0, band: 0, fd: -1, queued: false,
+        });
+        true
     }
 }
 
