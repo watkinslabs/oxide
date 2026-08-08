@@ -12,6 +12,7 @@
 //   rings    — personalities, restrictions, ring enabling, clock, cancel,
 //              buffer-group status, cross-ring messages
 //   pbuf     — provided-buffer rings
+//   iowq     — worker limits and worker processor affinity
 
 #[path = "register/tags.rs"]    pub mod tags;
 #[path = "register/buffers.rs"] pub mod buffers;
@@ -20,3 +21,4 @@
 #[path = "register/probe.rs"]   pub mod probe;
 #[path = "register/rings.rs"]   pub mod rings;
 #[path = "register/pbuf.rs"]    pub mod pbuf;
+#[path = "register/iowq.rs"]    pub mod iowq;

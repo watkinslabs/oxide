@@ -68,6 +68,7 @@ pub fn sys_io_uring_setup(args: &syscall::SyscallArgs) -> i64 {
     let cur = match sched::live::current() { Some(c) => c, None => return err(Errno::Ebadf) };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return err(Errno::Ebadf) };
+    crate::io_uring::ring::install_release_hook();
     let inode_ref: vfs::InodeRef = make_io_uring_inode(inode);
     let dentry = vfs::dcache::d_alloc_pseudo("[io_uring]", inode_ref.clone(), &crate::anon_dname::ANON_INODE_OPS);
     let file = File::new(inode_ref, dentry, OpenFlags::O_RDWR);

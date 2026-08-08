@@ -42,6 +42,23 @@ pub struct IoUringInode {
     /// submit to it and to register against it, claimed by whoever gets there
     /// first. `0` = unclaimed.
     pub submitter: core::sync::atomic::AtomicU32,
+    /// Requests this ring still owes a completion for.
+    pub inflight: Spinlock<super::req::InFlight, RingLockClass>,
+    /// Completions this ring has posted, ever. A completion-count timeout is
+    /// stated against this, not against the CQ tail, which userspace's reaping
+    /// moves on its own.
+    pub posted: core::sync::atomic::AtomicU64,
+    /// The address space, descriptor table and credentials a worker borrows to
+    /// run this ring's deferred work, captured at the first deferral.
+    pub owner: Spinlock<Option<Arc<super::iowq::Owner>>, RingLockClass>,
+    /// `IORING_REGISTER_IOWQ_MAX_WORKERS`: how many of this ring's requests may
+    /// run at once, per work class.
+    pub iowq_max: [core::sync::atomic::AtomicU32; super::iowq::acct::NR],
+    /// How many are running right now.
+    pub iowq_running: [core::sync::atomic::AtomicU32; super::iowq::acct::NR],
+    /// Armed timeouts gated on this ring's completion count. Non-zero means a
+    /// completion can make one due, so posting one must rouse the pool.
+    pub count_timers: core::sync::atomic::AtomicU32,
 }
 
 /// `state` bits.
@@ -73,6 +90,18 @@ impl IoUringInode {
             flags: g.flags,
             state: core::sync::atomic::AtomicU32::new(init),
             submitter: core::sync::atomic::AtomicU32::new(0),
+            inflight: Spinlock::new(super::req::InFlight::default()),
+            posted: core::sync::atomic::AtomicU64::new(0),
+            owner: Spinlock::new(None),
+            iowq_max: [
+                core::sync::atomic::AtomicU32::new(super::iowq::pool::DEFAULT_MAX[0]),
+                core::sync::atomic::AtomicU32::new(super::iowq::pool::DEFAULT_MAX[1]),
+            ],
+            iowq_running: [
+                core::sync::atomic::AtomicU32::new(0),
+                core::sync::atomic::AtomicU32::new(0),
+            ],
+            count_timers: core::sync::atomic::AtomicU32::new(0),
         }))
     }
 
@@ -132,3 +161,5 @@ impl IoUringInode {
         }
     }
 }
+
+#[path = "ctx/async_state.rs"] mod async_state;

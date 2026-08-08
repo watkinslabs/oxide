@@ -11,7 +11,7 @@ use crate::io_uring_sqe::Sqe;
 
 use super::fdres::{effective_fd, select_buf};
 use super::outcome::OpOutcome;
-use super::{fs_ops, net_ops, ring_ops, rw};
+use super::{async_ops, fs_ops, net_ops, ring_ops, rw};
 
 /// One operation's resolved operands.
 pub struct Op<'a> {
@@ -113,6 +113,14 @@ fn run(op: &Op) -> i64 {
         IORING_OP_PROVIDE_BUFFERS   => ring_ops::provide_buffers(op),
         IORING_OP_REMOVE_BUFFERS    => ring_ops::remove_buffers(op),
         IORING_OP_FIXED_FD_INSTALL  => ring_ops::fixed_fd_install(op),
+
+        IORING_OP_ASYNC_CANCEL      => async_ops::async_cancel(op),
+        IORING_OP_TIMEOUT_REMOVE    => async_ops::timeout_remove(op),
+        IORING_OP_POLL_REMOVE       => async_ops::poll_remove(op),
+
+        // Armed rather than run: they are placed on a clock or on a
+        // description by the submission engine and never reach a handler.
+        IORING_OP_TIMEOUT | IORING_OP_LINK_TIMEOUT | IORING_OP_POLL_ADD => 0,
 
         // Admission already refused every opcode with no handler, so reaching
         // here would mean the two tables disagreed.
