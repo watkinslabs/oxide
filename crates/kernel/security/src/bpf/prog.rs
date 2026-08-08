@@ -56,8 +56,33 @@ fn load_check_attach_then<T>(
     p: &attr::ProgLoad,
     next: impl FnOnce() -> Result<T, Errno>,
 ) -> Result<T, Errno> {
-    attr::prog_load_check_attach(p.prog_type, p.expected_attach_type, p.attach_btf_id)?;
+    let target = attach_target(p)?;
+    attr::prog_load_check_attach(
+        p.prog_type, p.expected_attach_type, p.attach_btf_id, target,
+    )?;
     next()
+}
+
+/// Resolve the one descriptor slot naming either a target program or the
+/// type-information object holding the attach type id. A zero slot names
+/// neither, and a type id on its own is read from the kernel's own type
+/// information. # C: O(1)
+fn attach_target(p: &attr::ProgLoad) -> Result<attr::AttachTarget, Errno> {
+    if p.attach_btf_obj_fd == 0 { return Ok(attr::AttachTarget::None); }
+    attr::attach_target_object(target_fd_holds(p.attach_btf_obj_fd))
+}
+
+/// What one descriptor holds. This kernel publishes its own type
+/// information without minting a descriptor for it, so every type
+/// information object reachable by fd is one a loader supplied.
+/// # C: O(1)
+fn target_fd_holds(fd: u32) -> attr::TargetFd {
+    let Ok(inode) = super::command::objfd::inode_from_fd(fd as i32) else {
+        return attr::TargetFd::Other;
+    };
+    if inode.private::<super::BpfProgInode>().is_some() { return attr::TargetFd::Prog; }
+    if super::btf::is_object_inode(&inode) { return attr::TargetFd::UserBtfObject; }
+    attr::TargetFd::Other
 }
 
 /// Licenses that place a program under the kernel's own terms, which is
@@ -162,6 +187,12 @@ fn verify(
         uapi::prog_type::LSM =>
             crate::bpf_verify::verify_lsm_program(lsm_hook(p, gpl)?, insns, maps)
                 .map(|()| false),
+        uapi::prog_type::TRACING => {
+            iter_target(p)?;
+            crate::bpf_verify::verify_program(
+                p.prog_type, p.expected_attach_type, insns, maps,
+            )
+        }
         _ => return Err(Errno::Einval),
     };
     verdict.map_err(|error| match error {
@@ -184,6 +215,17 @@ fn lsm_hook(p: &attr::ProgLoad, gpl: bool) -> Result<crate::bpf_lsm::Hook, Errno
         return Err(Errno::Einval);
     }
     super::btf::lsm_hook_by_btf_id(p.attach_btf_id).ok_or(Errno::Einval)
+}
+
+/// Iterator target a TRACING program attaches to, resolved against the
+/// kernel's own type information. Only `BPF_TRACE_ITER` is an iterator
+/// attachment, and a target that names no published iterator stub has
+/// nothing to walk: both are `-EINVAL`, matching the reference's single
+/// answer for a tracing program whose attach target does not resolve.
+/// # C: O(target count)
+fn iter_target(p: &attr::ProgLoad) -> Result<super::iter::IterTarget, Errno> {
+    if p.expected_attach_type != uapi::attach_type::TRACE_ITER { return Err(Errno::Einval); }
+    super::btf::iter_target_by_btf_id(p.attach_btf_id).ok_or(Errno::Einval)
 }
 
 /// `bpf_prog_attach()` / `bpf_prog_detach()`. # C: O(descendants * programs)

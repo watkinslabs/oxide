@@ -70,12 +70,18 @@ pub const SK_FILTER_CONTEXT_BYTES: usize = sk_buff::SIZE;
 /// Context window a cgroup program's pointer arithmetic may address.
 const CGROUP_CONTEXT_BYTES: usize = 64;
 
+/// Bytes of context an iterator program addresses: the iteration meta
+/// record and the object of the current step. Every published target
+/// declares the same two, so the shape belongs to the program type.
+use crate::bpf::iter_context_bytes;
+
 /// Upper bound on context-relative addressing for one program.
 /// # C: O(1)
 pub(super) fn context_size(profile: &Profile) -> usize {
     match (profile.prog_type, profile.hook) {
         (uapi::prog_type::SOCKET_FILTER, _) => SK_FILTER_CONTEXT_BYTES,
         (uapi::prog_type::LSM, Some(hook)) => bpf_lsm::context_bytes(hook),
+        (uapi::prog_type::TRACING, _) => iter_context_bytes(),
         _ => CGROUP_CONTEXT_BYTES,
     }
 }
@@ -97,6 +103,7 @@ pub(super) fn valid_context(
             sock_addr_access(profile.expected_attach_type, offset, size, write),
         uapi::prog_type::LSM =>
             profile.hook.is_some_and(|hook| lsm_access(hook, offset, size, write)),
+        uapi::prog_type::TRACING => iter_access(offset, size, write),
         _ => false,
     }
 }
@@ -114,6 +121,16 @@ pub(super) fn valid_context(
 fn lsm_access(hook: Hook, offset: usize, size: usize, write: bool) -> bool {
     !write && size == bpf_lsm::SLOT_BYTES && offset % bpf_lsm::SLOT_BYTES == 0
         && offset < bpf_lsm::context_bytes(hook)
+}
+
+/// Iterator context: the meta slot and the object slot, each read whole or
+/// not at all, neither writable, nothing past them addressable. Both hold
+/// typed kernel pointers this verifier proves no field access through, so a
+/// program may observe a slot and may never follow it.
+/// # C: O(1)
+fn iter_access(offset: usize, size: usize, write: bool) -> bool {
+    let slot = crate::bpf::ITER_SLOT_BYTES;
+    !write && size == slot && offset % slot == 0 && offset < iter_context_bytes()
 }
 
 /// Covers `[start, start + size)` entirely within `[from, to)`. # C: O(1)

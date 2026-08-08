@@ -14,6 +14,23 @@ pub struct ProgLoad {
     pub license: u64,
     pub expected_attach_type: u32,
     pub attach_btf_id: u32,
+    /// The one slot naming either a target program or the type-information
+    /// object holding `attach_btf_id`. Which of the two it is depends on
+    /// what the descriptor turns out to hold, so the raw value is carried
+    /// and judged by [`attach_target_object`].
+    pub attach_btf_obj_fd: u32,
+}
+
+/// What a nonzero attach-target descriptor turned out to hold.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum AttachTarget {
+    /// The request named no target descriptor. A nonzero `attach_btf_id`
+    /// is then resolved against the kernel's own type information.
+    None,
+    /// The descriptor holds a loaded program to attach to.
+    DstProg,
+    /// The descriptor holds the kernel's own type information.
+    KernelBtf,
 }
 
 /// `bpf_prog_load()`'s pre-copy ladder, in Linux's order:
@@ -38,6 +55,7 @@ pub fn prog_load_check(a: &Attr, caps: Caps, unpriv_disabled: bool) -> Result<Pr
         insns: a.u64_at(o::INSNS), license: a.u64_at(o::LICENSE),
         expected_attach_type: a.u32_at(o::EXPECTED_ATTACH_TYPE),
         attach_btf_id: a.u32_at(o::ATTACH_BTF_ID),
+        attach_btf_obj_fd: a.u32_at(o::ATTACH_BTF_OBJ_FD),
     };
     let ceiling = if bpf_cap { uapi::COMPLEXITY_LIMIT_INSNS } else { uapi::MAXINSNS };
     if p.insn_cnt == 0 || p.insn_cnt > ceiling { return Err(Errno::E2big); }
@@ -53,22 +71,60 @@ pub fn prog_load_check(a: &Attr, caps: Caps, unpriv_disabled: bool) -> Result<Pr
 ///
 /// A nonzero attach target must name a type some object could declare, and
 /// only the program types whose contract is fixed by an attach target may
-/// name one at all. This kernel's own type information is always available,
-/// so the reference's "no BTF to resolve against" EINVAL cannot fire here.
+/// name one at all. A resolved type-information object is meaningless
+/// without a type id to read from it and cannot be combined with a target
+/// program; a target program is only a target for the two program types
+/// that run in another program's place.
 /// # C: O(1)
 pub fn prog_load_check_attach(
     prog_type: u32,
     attach_type: u32,
     attach_btf_id: u32,
+    target: AttachTarget,
 ) -> Result<(), Errno> {
     use uapi::prog_type as p;
+    let dst_prog = target == AttachTarget::DstProg;
+    // A type id resolved against the kernel's own type information is the
+    // no-descriptor case: the object is always available here.
+    let attach_btf = target == AttachTarget::KernelBtf
+        || target == AttachTarget::None && attach_btf_id != 0;
     if attach_btf_id != 0 {
         if attach_btf_id > super::super::btf::MAX_TYPE_ID { return Err(Errno::Einval); }
+        if !attach_btf && !dst_prog { return Err(Errno::Einval); }
         if !matches!(prog_type, p::TRACING | p::LSM | p::STRUCT_OPS | p::EXT) {
             return Err(Errno::Einval);
         }
     }
+    if attach_btf && (attach_btf_id == 0 || dst_prog) { return Err(Errno::Einval); }
+    if dst_prog && !matches!(prog_type, p::TRACING | p::EXT) { return Err(Errno::Einval); }
     expected_attach_type_check(prog_type, attach_type)
+}
+
+/// What the attach-target descriptor was found to hold.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum TargetFd {
+    /// A loaded program.
+    Prog,
+    /// Type information the kernel published about itself.
+    KernelBtfObject,
+    /// Type information a loader supplied.
+    UserBtfObject,
+    /// Anything else, including a descriptor that is not open.
+    Other,
+}
+
+/// Judge one nonzero attach-target descriptor. A loaded program is a target
+/// program. Type information is a target only when it is the kernel's own:
+/// attaching through a loader-supplied object is refused as unsupported
+/// (`ENOTSUPP`), which is a different answer from the `EINVAL` a descriptor
+/// holding neither gets. # C: O(1)
+pub fn attach_target_object(found: TargetFd) -> Result<AttachTarget, Errno> {
+    match found {
+        TargetFd::Prog => Ok(AttachTarget::DstProg),
+        TargetFd::KernelBtfObject => Ok(AttachTarget::KernelBtf),
+        TargetFd::UserBtfObject => Err(Errno::Enotsupp),
+        TargetFd::Other => Err(Errno::Einval),
+    }
 }
 
 /// The expected-attach-type switch of `bpf_prog_load_check_attach()`.
@@ -100,6 +156,7 @@ pub fn attach_type_to_prog_type(attach_type: u32) -> u32 {
             | at::CGROUP_INET4_CONNECT | at::CGROUP_INET6_CONNECT => p::CGROUP_SOCK_ADDR,
         at::CGROUP_DEVICE => p::CGROUP_DEVICE,
         at::LSM_MAC => p::LSM,
+        at::TRACE_ITER => p::TRACING,
         _ => p::UNSPEC,
     }
 }
@@ -204,6 +261,14 @@ pub fn prog_bind_map_check(a: &Attr) -> Result<ProgBindMap, Errno> {
 pub struct LinkCreate {
     pub prog_fd: u32, pub target_fd: u32, pub attach_type: u32, pub flags: u32,
     pub target_btf_id: u32, pub relative_fd: u32, pub expected_revision: u64,
+    pub iter_info: u64, pub iter_info_len: u32,
+}
+
+/// `bpf_iter_link_attach()`'s first gate: the per-link information pointer
+/// and its length are supplied together or not at all. # C: O(1)
+pub fn iter_info_check(iter_info: u64, iter_info_len: u32) -> Result<(), Errno> {
+    if (iter_info == 0) != (iter_info_len == 0) { return Err(Errno::Einval); }
+    Ok(())
 }
 
 /// `link_create()` first-stage `CHECK_ATTR` and union decode. Program lookup
@@ -217,6 +282,7 @@ pub fn link_create_check(a: &Attr) -> Result<LinkCreate, Errno> {
         target_btf_id: a.u32_at(o::TARGET_BTF_ID),
         relative_fd: a.u32_at(o::CGROUP_RELATIVE_FD),
         expected_revision: a.u64_at(o::CGROUP_EXPECTED_REVISION),
+        iter_info: a.u64_at(o::ITER_INFO), iter_info_len: a.u32_at(o::ITER_INFO_LEN),
     })
 }
 

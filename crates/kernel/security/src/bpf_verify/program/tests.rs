@@ -4,6 +4,7 @@
 //!   cgroup.rs         cgroup skb and sockaddr contracts
 //!   socket_filter.rs  socket-filter context, helper and exit contracts
 //!   lsm.rs            LSM hook context and return contracts
+//!   iter.rs           iterator context and step-answer contracts
 
 #[path = "tests/support.rs"]
 mod support;
@@ -17,3 +18,5 @@ mod cgroup;
 mod socket_filter;
 #[path = "tests/lsm.rs"]
 mod lsm;
+#[path = "tests/iter.rs"]
+mod iter;

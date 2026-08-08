@@ -15,7 +15,8 @@ use super::{BPF_FD_MODE, ids};
 #[path = "link/registry.rs"]
 mod registry;
 pub(crate) use registry::{
-    cancel_link_id, link_by_id, next_live_link_id, reserve_link_id, settle_link_id,
+    cancel_link_id, forget_link_id, link_by_id, next_live_link_id, reserve_link_id,
+    settle_link_id,
 };
 
 /// fd-backed BPF LSM link. Dropping the last fd reference removes the
