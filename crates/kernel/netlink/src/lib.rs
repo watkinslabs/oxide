@@ -10,6 +10,8 @@
 // - `rcv_skb`: netlink-core datagram framing walk and handler-admission rules.
 // - `sockaddr`: the one `sockaddr_nl` destination decoder every send path uses.
 // - `shutdown`: AF_NETLINK's Linux `sock_no_shutdown` contract.
+// - `sol_socket`: where an admitted generic socket-option write lands, and the
+//   read view assembled from it.
 // - `receive`: canonical dequeue, pending-error ordering, and wait arming.
 // - `inode`: VFS inode glue for netlink socket file descriptors.
 // - `rtnetlink*` / `genetlink` / `sock_diag` / `mcast`: protocol-specific code.
@@ -48,6 +50,7 @@ mod receive;
 mod sockaddr;
 mod shutdown;
 mod sockflags;
+pub mod sol_socket;
 #[cfg(test)]
 mod netlink_tests;
 mod wire;
