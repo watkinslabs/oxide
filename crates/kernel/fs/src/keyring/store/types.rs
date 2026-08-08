@@ -22,6 +22,19 @@ pub struct TaskIds {
     /// `cred->group_info`, walked by `groups_search` when the key's gid is
     /// not the caller's fsgid.
     pub groups: Vec<u32>,
+    /// `cred->user_ns`. Keyring NAMES, the per-uid user and user-session
+    /// keyrings, and the persistent-keyring register are all per user
+    /// namespace, so this is part of the identity every one of those lookups
+    /// keys on. [`INITIAL_USER_NS`] is the boot namespace.
+    pub user_ns: u64,
+    /// `current->nsproxy->net_ns`, the source of the index-key domain tag for
+    /// a key type whose keys are network-namespace scoped. Ignored for every
+    /// other type, which all share [`DEFAULT_KEY_DOMAIN`].
+    pub net_ns: u64,
+    /// `cred->user_ns`'s uid map, for `kuid_has_mapping`. Empty in the
+    /// initial namespace, whose map is the full identity range and is never
+    /// consulted.
+    pub uid_map: Vec<::user_namespace::IdMapExtent>,
 }
 
 impl TaskIds {
@@ -29,6 +42,23 @@ impl TaskIds {
     /// groups_search(cred->group_info, gid)` (Linux `in_group_p`). # C: O(groups)
     pub fn in_group(&self, gid: u32) -> bool {
         gid != GID_INVALID && (gid == self.fsgid || self.groups.contains(&gid))
+    }
+
+    /// `kuid_has_mapping(cred->user_ns, uid)`: can the caller's user namespace
+    /// name `uid` at all? `find_keyring_by_name` skips a candidate it cannot,
+    /// so a keyring owned by a uid outside the namespace's map is invisible to
+    /// it even though both live in the same namespace. The initial namespace
+    /// maps the whole range, so it never reaches the extents.
+    /// # C: O(extents)
+    pub fn uid_visible(&self, uid: u32) -> bool {
+        if self.user_ns == INITIAL_USER_NS { return true; }
+        ::user_namespace::has_mapping(&self.uid_map, uid)
+    }
+
+    /// The index-key domain tag a key of `ty` is created and searched under.
+    /// # C: O(1)
+    pub fn domain_for(&self, ty: &KeyType) -> u64 {
+        if ty.net_domain { self.net_ns } else { DEFAULT_KEY_DOMAIN }
     }
 }
 
@@ -69,6 +99,16 @@ pub struct Key {
     pub serial: i32,
     pub key_type: &'static KeyType,
     pub description: String,
+    /// `key->index_key.domain_tag`. A key is found only by a search whose
+    /// domain matches, so two keys of the same net-scoped type and
+    /// description in different network namespaces are different keys.
+    /// [`DEFAULT_KEY_DOMAIN`] for every type that is not network-scoped.
+    pub domain: u64,
+    /// The user namespace the key was created in. Only a NAMED keyring is
+    /// looked up by name, and only inside the namespace it was published in —
+    /// this is what `ns->keyring_name_list` expresses by holding one list per
+    /// namespace, without a second registry beside the key store.
+    pub user_ns: u64,
     pub payload: Vec<u8>,
     /// Asymmetric certificate identifiers, parsed once at instantiation and
     /// owned by the key with its payload.

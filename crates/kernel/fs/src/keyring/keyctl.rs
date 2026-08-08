@@ -94,7 +94,7 @@ pub fn sys_keyctl(args: &SyscallArgs) -> i64 {
         KEYCTL_INVALIDATE => ops::invalidate_core(&c, args.a1 as i32),
         KEYCTL_GET_PERSISTENT => ops::get_persistent(&c, args.a1 as i32, args.a2 as i32),
         KEYCTL_RESTRICT_KEYRING => {
-            if args.a3 != 0 && args.a2 == 0 { return err(Errno::Einval); }
+            if let Err(rv) = ops::vet_restrict_args(args.a2 != 0, args.a3 != 0) { return rv; }
             let ty = if args.a2 == 0 { None }
                      else { match read_user_key_type(args.a2) { Ok(s) => Some(s), Err(rv) => return rv } };
             let restriction = if args.a3 == 0 { None }

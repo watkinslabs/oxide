@@ -21,5 +21,6 @@ mod types;
 pub use tunables::{max_bytes, max_keys, persistent_expiry, quota_limit, set_persistent_expiry,
     set_quota_limit, QuotaKnob};
 #[cfg(test)] pub use quota::over_quota;
+pub use mint::KeyNs;
 pub use state::{Store, STORE};
 pub use types::{AuthData, Key, KeyUser, LinkRestriction, Quota, TaskIds};

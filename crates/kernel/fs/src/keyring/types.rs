@@ -70,6 +70,12 @@ pub struct KeyType {
     /// lets a caller add a key without naming it. Every other type leaves an
     /// absent description as EINVAL.
     pub describes_itself: bool,
+    /// `KEY_TYPE_NET_DOMAIN`: this type's keys are indexed under the creating
+    /// task's NETWORK namespace instead of the single default domain. Two keys
+    /// of the same type and description in different network namespaces are
+    /// then different keys and neither search finds the other's — which is the
+    /// point for a type caching an answer that is only true on one network.
+    pub net_domain: bool,
 }
 
 /// `key_types_list` in registration order.
@@ -79,12 +85,12 @@ static TYPES: &[KeyType] = &[
     // EOPNOTSUPP. It still gets `KEY_POS_WRITE` by default because
     // `default_perm` names the keyring type explicitly.
     KeyType { name: "keyring", readable: true,  updatable: false, is_keyring: true,
-              vet_colon: false, restrictable: false, payload_rule: PayloadRule::Empty, describes_itself: false },
+              vet_colon: false, restrictable: false, payload_rule: PayloadRule::Empty, describes_itself: false, net_domain: false },
     KeyType { name: "user",    readable: true,  updatable: true,  is_keyring: false,
-              vet_colon: false, restrictable: false, payload_rule: PayloadRule::UserDefined, describes_itself: false },
+              vet_colon: false, restrictable: false, payload_rule: PayloadRule::UserDefined, describes_itself: false, net_domain: false },
     // `logon` deliberately omits `.read`: the payload is write-only.
     KeyType { name: "logon",   readable: false, updatable: true,  is_keyring: false,
-              vet_colon: true,  restrictable: false, payload_rule: PayloadRule::UserDefined, describes_itself: false },
+              vet_colon: true,  restrictable: false, payload_rule: PayloadRule::UserDefined, describes_itself: false, net_domain: false },
     // `big_key` takes a payload up to 1 MiB. Linux offloads anything past a
     // small threshold into an encrypted shmem file so it can be swapped; that
     // is a storage decision with no syscall-visible effect — the same bytes
@@ -93,7 +99,7 @@ static TYPES: &[KeyType] = &[
     // which is why a big_key does not consume the owner's byte quota in
     // proportion to its size.
     KeyType { name: "big_key", readable: true,  updatable: true,  is_keyring: false,
-              vet_colon: false, restrictable: false, payload_rule: PayloadRule::Big, describes_itself: false },
+              vet_colon: false, restrictable: false, payload_rule: PayloadRule::Big, describes_itself: false, net_domain: false },
     // The instantiation authorisation token. Registered like any other type,
     // and unreachable from userspace by name for the same reason Linux's is:
     // `key_get_type_from_user` rejects a `.`-prefixed name with EPERM, so no
@@ -102,7 +108,7 @@ static TYPES: &[KeyType] = &[
     // holding the token — that is how `/sbin/request-key` learns what it was
     // asked to build.
     KeyType { name: REQKEY_AUTH_TYPE, readable: true, updatable: false, is_keyring: false,
-              vet_colon: false, restrictable: false, payload_rule: PayloadRule::Empty, describes_itself: false },
+              vet_colon: false, restrictable: false, payload_rule: PayloadRule::Empty, describes_itself: false, net_domain: false },
     // An asymmetric key holds parsed public-key material. It has no `read`
     // method — the point of the type is that operations happen inside the
     // kernel and the key material never comes back out — and no `update`: a
@@ -111,7 +117,15 @@ static TYPES: &[KeyType] = &[
     // than the one that was checked.
     KeyType { name: ASYMMETRIC_KEY_TYPE, readable: false, updatable: false, is_keyring: false,
               vet_colon: false, restrictable: true, payload_rule: PayloadRule::Asymmetric,
-              describes_itself: true },
+              describes_itself: true, net_domain: false },
+    // The kernel's DNS answer cache. Its keys are NETWORK-NAMESPACE scoped:
+    // the same name resolves to different addresses on different networks, so
+    // an answer cached by a task in one network namespace must never be found
+    // by a task in another. That scoping is the domain tag, and this is the
+    // type that consumes it.
+    KeyType { name: DNS_RESOLVER_KEY_TYPE, readable: true, updatable: false, is_keyring: false,
+              vet_colon: false, restrictable: false, payload_rule: PayloadRule::UserDefined,
+              describes_itself: false, net_domain: true },
 ];
 
 /// The authorisation-token type, for the paths that mint one directly.

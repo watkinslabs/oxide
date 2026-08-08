@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 use syscall::errno::Errno;
 
 use super::super::uapi::*;
-use super::{LinkRestriction, Quota, Store, TaskIds};
+use super::{KeyNs, LinkRestriction, Quota, Store, TaskIds};
 
 impl Store {
     /// Resolve a keyring id to a real serial, lazily creating the caller's
@@ -27,6 +27,10 @@ impl Store {
     /// # C: O(log N)
     pub fn resolve(&mut self, id: i32, t: &TaskIds) -> Result<i32, Errno> {
         if id >= 1 { return Ok(id); }
+        // Every keyring this can create is of the keyring type, which is not
+        // network-scoped, so the stamp is the caller's user namespace with the
+        // default domain.
+        let ns = KeyNs::of(t, super::super::types::keyring_type());
         // The implicit thread / process / anonymous-session keyrings are
         // allocated with the quota OVERRUN flag: they are charged but never
         // refused, because a task that has hit its quota must still be able to
@@ -34,28 +38,33 @@ impl Store {
         let s = match id {
             KEY_SPEC_THREAD_KEYRING => {
                 if let Some(&v) = self.thread.get(&t.tid) { v }
-                else { let v = self.new_keyring("_tid", t.fsuid, t.fsgid, THREAD_KEYRING_PERM, Quota::Overrun)?;
+                else { let v = self.new_keyring("_tid", t.fsuid, t.fsgid, THREAD_KEYRING_PERM, Quota::Overrun, ns)?;
                        self.thread.insert(t.tid, v); v }
             }
             KEY_SPEC_PROCESS_KEYRING => {
                 if let Some(&v) = self.process.get(&t.tgid) { v }
-                else { let v = self.new_keyring("_pid", t.fsuid, t.fsgid, THREAD_KEYRING_PERM, Quota::Overrun)?;
+                else { let v = self.new_keyring("_pid", t.fsuid, t.fsgid, THREAD_KEYRING_PERM, Quota::Overrun, ns)?;
                        self.process.insert(t.tgid, v); v }
             }
             KEY_SPEC_SESSION_KEYRING => {
                 if let Some(&v) = self.session.get(&t.tid) { v }
-                else { let v = self.new_keyring("_ses", t.fsuid, t.fsgid, SESSION_KEYRING_PERM, Quota::Overrun)?;
+                else { let v = self.new_keyring("_ses", t.fsuid, t.fsgid, SESSION_KEYRING_PERM, Quota::Overrun, ns)?;
                        self.session.insert(t.tid, v); v }
             }
+            // `look_up_user_keyrings` names these `_uid.<uid>` / `_uid_ses.<uid>`
+            // inside the CALLER'S user namespace's `.user_reg` register, so two
+            // namespaces holding the same uid hold two different keyrings.
             KEY_SPEC_USER_KEYRING => {
-                if let Some(&v) = self.user.get(&t.fsuid) { v }
-                else { let v = self.new_keyring("_uid", t.fsuid, GID_INVALID, USER_KEYRING_PERM, Quota::InQuota)?;
-                       self.user.insert(t.fsuid, v); v }
+                if let Some(&v) = self.user.get(&(t.user_ns, t.fsuid)) { v }
+                else { let name = alloc::format!("{USER_KEYRING_PREFIX}{}", t.fsuid);
+                       let v = self.new_keyring(&name, t.fsuid, GID_INVALID, USER_KEYRING_PERM, Quota::InQuota, ns)?;
+                       self.user.insert((t.user_ns, t.fsuid), v); v }
             }
             KEY_SPEC_USER_SESSION_KEYRING => {
-                if let Some(&v) = self.usersess.get(&t.fsuid) { v }
-                else { let v = self.new_keyring("_uid_ses", t.fsuid, GID_INVALID, USER_KEYRING_PERM, Quota::InQuota)?;
-                       self.usersess.insert(t.fsuid, v); v }
+                if let Some(&v) = self.usersess.get(&(t.user_ns, t.fsuid)) { v }
+                else { let name = alloc::format!("{USER_SESSION_KEYRING_PREFIX}{}", t.fsuid);
+                       let v = self.new_keyring(&name, t.fsuid, GID_INVALID, USER_KEYRING_PERM, Quota::InQuota, ns)?;
+                       self.usersess.insert((t.user_ns, t.fsuid), v); v }
             }
             // `@a` is the authorisation token the caller has assumed; `@` is
             // the destination keyring recorded IN that token, so a helper
@@ -159,7 +168,7 @@ impl Store {
         if let Some(&v) = self.process.get(&t.tgid) { roots.push(v); }
         match self.session.get(&t.tid) {
             Some(&v) => roots.push(v),
-            None => if let Some(&v) = self.usersess.get(&t.fsuid) { roots.push(v); },
+            None => if let Some(&v) = self.usersess.get(&(t.user_ns, t.fsuid)) { roots.push(v); },
         }
         roots
     }
@@ -169,8 +178,8 @@ impl Store {
     /// plus the user keyring reached by linkage. # C: O(log N)
     pub fn possession_roots(&self, t: &TaskIds) -> Vec<i32> {
         let mut roots = self.cred_roots(t);
-        if let Some(&v) = self.user.get(&t.fsuid) { if !roots.contains(&v) { roots.push(v); } }
-        if let Some(&v) = self.usersess.get(&t.fsuid) { if !roots.contains(&v) { roots.push(v); } }
+        if let Some(&v) = self.user.get(&(t.user_ns, t.fsuid)) { if !roots.contains(&v) { roots.push(v); } }
+        if let Some(&v) = self.usersess.get(&(t.user_ns, t.fsuid)) { if !roots.contains(&v) { roots.push(v); } }
         roots
     }
 }

@@ -16,6 +16,8 @@
 use super::*;
 use super::super::super::auth;
 use super::super::super::ops::search::{search_process, Expired};
+use super::super::super::lifecycle;
+use super::super::super::store::KeyNs;
 use super::super::super::types;
 
 /// The answer both behaviours instantiate with, so a requester reading it back
@@ -36,6 +38,41 @@ pub(super) fn answer_after_exec_and_fork(a: &HelperArgs, helper_tid: u32) -> i64
     let child = ctx(child_tid, 0);
     let rc = instantiate_core(&child, a.key, ANSWER.to_vec(), 0);
     STORE.lock().session.remove(&child_tid);
+    rc
+}
+
+/// The actor body for `deep`: the whole shape a real system has, every
+/// transition through the production hook that implements it.
+///
+///   `/sbin/request-key` execs (already done) and assumes authority
+///     -> execs the configured handler                 `lifecycle::exec`
+///     -> the handler is a shell, which FORKS          `lifecycle::fork`
+///        -> the child EXECS `keyctl`                  `lifecycle::exec`
+///           -> which re-assumes authority BY SEARCH and answers the key.
+///
+/// The re-assumption is the part no other case covers: the program that finally
+/// answers finds the token by SEARCHING its own keyrings, so the helper's
+/// session keyring — and the token in it — has to have survived a fork and two
+/// execs to still be there. Every earlier hosted case answered from a task that
+/// had inherited the assumed-authority slot directly, which cannot observe a
+/// token that became unreachable.
+/// # C: O(N)
+pub(super) fn answer_from_a_grandchild_that_execs(a: &HelperArgs, helper_tid: u32) -> i64 {
+    lifecycle::exec(helper_tid, helper_tid);
+    let sh_tid = HELPER_TID.fetch_add(1, Ordering::Relaxed);
+    lifecycle::fork(helper_tid, sh_tid);
+    let keyctl_tid = HELPER_TID.fetch_add(1, Ordering::Relaxed);
+    lifecycle::fork(sh_tid, keyctl_tid);
+    lifecycle::exec(keyctl_tid, keyctl_tid);
+    let grandchild = ctx(keyctl_tid, 0);
+    // Divest first, so what follows can only succeed by FINDING the token —
+    // an inherited slot would make the search unnecessary and the case vacuous.
+    assume_authority_core(&grandchild, 0);
+    let found = assume_authority_core(&grandchild, a.key);
+    assert_eq!(found, a.authkey as i64,
+        "the grandchild finds the token by searching the keyrings it inherited: {found}");
+    let rc = instantiate_core(&grandchild, a.key, ANSWER.to_vec(), 0);
+    for tid in [sh_tid, keyctl_tid] { lifecycle::exit(tid, tid, true); }
     rc
 }
 
@@ -65,6 +102,19 @@ pub(super) fn answer_after_borrowing_a_requester_key(a: &HelperArgs, h: &Ctx) ->
     let found = request_key_core(h, "user", REQUESTER_ONLY, None, 0);
     assert!(found > 0, "the helper reaches the requester's key through its token: {found}");
     instantiate_core(h, a.key, ANSWER.to_vec(), 0)
+}
+
+// The case a booted system actually runs: the token is found BY SEARCH from a
+// grandchild that has been through a fork and two execs. Proven end to end on
+// both architectures by the boot probe; this is the check that can fail in
+// milliseconds when a lifecycle hook stops carrying it.
+#[test]
+fn a_grandchild_that_execs_finds_the_token_and_answers() {
+    with_helper();
+    let t = ctx(910_115, 910_115);
+    let key = request_key_core(&t, "user", "deep-exec-fork-exec", Some(b"callout"), 0);
+    assert!(key > 0, "the construction completed across fork+exec+exec: {key}");
+    assert_eq!(read_core(&t, key as i32, 64).expect("read"), ANSWER);
 }
 
 // The headline case. A helper that execs its handler and forks the program that
@@ -148,7 +198,7 @@ fn the_requester_reach_is_token_scoped_and_never_yields_a_token() {
     let (target, token) = {
         let mut g = STORE.lock();
         let target = g.mint_uninstantiated(ty, "scoped-target", req.t.fsuid, req.t.fsgid,
-            types::default_perm(ty), types::payload_quota(ty, 0)).expect("mint");
+            types::default_perm(ty), types::payload_quota(ty, 0), KeyNs::initial()).expect("mint");
         let token = auth::request_key_auth_new(&mut g, target, REQKEY_OP_CREATE, b"c", session,
             &req.t).expect("token");
         // The token is reachable from the REQUESTER's own keyrings here, which
