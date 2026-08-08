@@ -274,11 +274,12 @@ impl NetStack {
             p if p == IpProto::Udp as u8 => {
                 crate::mib::bump(net_ns, crate::mib::Mib::IpInDelivers);
                 crate::mib::bump(net_ns, crate::mib::Mib::UdpInDatagrams);
-                let udp = UdpHdr::parse(payload, hdr.src, hdr.dst)
+                let rx = crate::udp::parse_rx(payload, hdr.src, hdr.dst)
                     .map_err(|_| {
                         crate::mib::bump(net_ns, crate::mib::Mib::UdpInErrors);
                         NetError::Einval
                     })?;
+                let udp = rx.hdr;
                 // Clone the queue Arc out of the map then drop the
                 // map lock before touching the queue itself. wake_all
                 // takes the waitlist lock + runqueue inner; we must
@@ -316,6 +317,7 @@ impl NetStack {
                         dport: udp.dst_port, iface, ttl: hdr.ttl, tos: hdr.tos,
                         options: rx_options.clone(), frag_max,
                         dont_fragment: hdr.flags_frag & crate::ipv4::IPV4_FLAG_DONT_FRAGMENT != 0,
+                        checksum: rx.complete,
                         payload: body[..keep].to_vec(),
                     }, udp.checksum == 0, gro_offered);
                 }
@@ -344,6 +346,7 @@ impl NetStack {
                         dst: Ipv6Addr::from_v4_mapped(hdr.dst), dport: udp.dst_port,
                         iface, hop_limit: hdr.ttl, traffic_class: hdr.tos,
                         flowinfo: 0, ext_headers: alloc::vec::Vec::new(), frag_max,
+                        checksum: rx.complete,
                         payload: body[..keep].to_vec(),
                     }, udp.checksum == 0, gro_offered);
                 }
