@@ -75,3 +75,67 @@ mod tests {
         assert_eq!((SUID_DUMP_DISABLE, SUID_DUMP_USER, SUID_DUMP_ROOT), (0, 1, 2));
     }
 }
+
+/// `PIDFD_COREDUMP*` reported through `PIDFD_GET_INFO`.
+pub const PIDFD_COREDUMPED:    u32 = 1 << 0;
+pub const PIDFD_COREDUMP_SKIP: u32 = 1 << 1;
+pub const PIDFD_COREDUMP_USER: u32 = 1 << 2;
+pub const PIDFD_COREDUMP_ROOT: u32 = 1 << 3;
+
+/// Linux `pidfs_coredump_mask`: which rights a dump for this dumpability would
+/// be taken under, or that it would be skipped entirely. Carries no
+/// `PIDFD_COREDUMPED` — that bit means a dump was actually reached, which only
+/// the dump path itself can say.
+/// # C: O(1)
+pub fn coredump_rights_mask(dumpable: i32) -> u32 {
+    match dumpable {
+        SUID_DUMP_USER    => PIDFD_COREDUMP_USER,
+        SUID_DUMP_ROOT    => PIDFD_COREDUMP_ROOT,
+        SUID_DUMP_DISABLE => PIDFD_COREDUMP_SKIP,
+        // Unreachable without a bug; report "skipped" rather than implying a
+        // dump was taken under rights nobody can name.
+        _                 => PIDFD_COREDUMP_SKIP,
+    }
+}
+
+/// The mask latched when a process actually faced the dump decision:
+/// the rights arm, plus `PIDFD_COREDUMPED` when a dump was reached.
+/// # C: O(1)
+pub fn coredump_verdict_mask(dumpable: i32) -> u32 {
+    let rights = coredump_rights_mask(dumpable);
+    if dump_allowed(dumpable) { rights | PIDFD_COREDUMPED } else { rights }
+}
+
+#[cfg(test)]
+mod coredump_mask_tests {
+    use super::*;
+
+    #[test]
+    fn the_rights_arm_never_claims_a_dump_was_taken() {
+        for d in [SUID_DUMP_DISABLE, SUID_DUMP_USER, SUID_DUMP_ROOT, 7] {
+            assert_eq!(coredump_rights_mask(d) & PIDFD_COREDUMPED, 0);
+        }
+        assert_eq!(coredump_rights_mask(SUID_DUMP_USER), PIDFD_COREDUMP_USER);
+        assert_eq!(coredump_rights_mask(SUID_DUMP_ROOT), PIDFD_COREDUMP_ROOT);
+        assert_eq!(coredump_rights_mask(SUID_DUMP_DISABLE), PIDFD_COREDUMP_SKIP);
+        assert_eq!(coredump_rights_mask(7), PIDFD_COREDUMP_SKIP, "an unknown state must not imply a dump");
+    }
+
+    #[test]
+    fn a_verdict_claims_a_dump_exactly_when_one_was_permitted() {
+        assert_eq!(coredump_verdict_mask(SUID_DUMP_USER),
+                   PIDFD_COREDUMP_USER | PIDFD_COREDUMPED);
+        assert_eq!(coredump_verdict_mask(SUID_DUMP_ROOT),
+                   PIDFD_COREDUMP_ROOT | PIDFD_COREDUMPED);
+        assert_eq!(coredump_verdict_mask(SUID_DUMP_DISABLE), PIDFD_COREDUMP_SKIP,
+                   "a refused dump reports SKIP and never COREDUMPED");
+        assert!(coredump_verdict_mask(SUID_DUMP_DISABLE) & PIDFD_COREDUMPED == 0);
+    }
+
+    #[test]
+    fn the_verdict_and_the_dump_decision_cannot_disagree() {
+        for d in [SUID_DUMP_DISABLE, SUID_DUMP_USER, SUID_DUMP_ROOT, -1, 9] {
+            assert_eq!(coredump_verdict_mask(d) & PIDFD_COREDUMPED != 0, dump_allowed(d));
+        }
+    }
+}
