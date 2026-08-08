@@ -41,7 +41,15 @@ pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &
     // replies from a remote peer (slirp's DNS at 10.0.2.3, …) can
     // never make it back since they target loopback not eth0.
     let src_ip = match crate::inet_tx::source_choice(src_ip, dst) {
-        crate::inet_tx::SourceChoice::Bound(ip) => ip,
+        // A source the socket chose is screened for locality before it reaches
+        // the wire: only the transparent permission lets a datagram carry an
+        // address this host does not own. Everything below picks an owned
+        // address by construction and needs no screen.
+        crate::inet_tx::SourceChoice::Bound(ip) => {
+            crate::transparent::screen_v4_socket_source(net_ns, ip, dst,
+                bound_iface.is_some(), super::nonlocal::permission(sock), false)?;
+            ip
+        }
         crate::inet_tx::SourceChoice::Multicast => crate::sock_mcast::src_ip(sock, dst, bound_iface),
         crate::inet_tx::SourceChoice::Loopback => Ipv4Addr::LOOPBACK,
         // The outbound interface's primary IPv4, via the route table.
