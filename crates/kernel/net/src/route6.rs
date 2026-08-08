@@ -127,7 +127,16 @@ impl Route6Table {
     /// Policy-rule lookup in one network namespace. # C: O(N rules * N routes)
     pub fn lookup_policy_in(&self, net_ns: u64, addr: Ipv6Addr,
                             rules: &PolicyRuleTable) -> Option<Route6Entry> {
+        self.lookup_policy_mark_in(net_ns, addr, rules, 0)
+    }
+
+    /// Policy-rule lookup for a packet carrying `mark`. A rule that selects on
+    /// the mark is skipped by a packet whose mark it does not match, exactly as
+    /// on the IPv4 side — the rule table is shared. # C: O(N rules * N routes)
+    pub fn lookup_policy_mark_in(&self, net_ns: u64, addr: Ipv6Addr,
+                                 rules: &PolicyRuleTable, mark: u32) -> Option<Route6Entry> {
         for rule in rules.snapshot_effective(net_ns, AF_INET6) {
+            if rule.fwmask != 0 && mark & rule.fwmask != rule.fwmark { continue; }
             if let Some(route) = self.lookup_in_table_in(net_ns, rule.table, addr) {
                 return Some(route);
             }
@@ -140,11 +149,20 @@ impl Route6Table {
                                   iface: NetIfaceId, rules: &PolicyRuleTable)
         -> Option<Route6Entry>
     {
+        self.lookup_policy_iface_mark_in(net_ns, addr, iface, rules, 0)
+    }
+
+    /// [`lookup_policy_iface_in`] for a packet carrying `mark`. # C: O(N rules * N routes)
+    pub fn lookup_policy_iface_mark_in(&self, net_ns: u64, addr: Ipv6Addr,
+                                  iface: NetIfaceId, rules: &PolicyRuleTable, mark: u32)
+        -> Option<Route6Entry>
+    {
         let rules = rules.snapshot_effective(net_ns, AF_INET6);
         let now_ns = self.now_ns();
         let all = self.inner.lock();
         let routes = all.get(&net_ns).map(Vec::as_slice).unwrap_or(&[]);
         for rule in rules {
+            if rule.fwmask != 0 && mark & rule.fwmask != rule.fwmark { continue; }
             let mut best = None;
             for route in routes {
                 if route.table != rule.table || route.iface != iface

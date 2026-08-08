@@ -14,6 +14,8 @@ use crate::addr::NetIfaceId;
 
 #[path = "netdev/ingress.rs"]
 mod ingress;
+#[path = "netdev/tx_band.rs"]
+pub mod tx_band;
 #[path = "netdev/tx_dispatch.rs"]
 pub(crate) mod tx_dispatch;
 #[path = "netdev/registration.rs"]

@@ -6,6 +6,11 @@ use crate::sockaddr::{first_group, NlDest};
 use crate::NetlinkSocket;
 
 impl NetlinkSocket {
+    /// `ns_capable(sock_net(sk)->user_ns, CAP_NET_ADMIN)` for this socket —
+    /// the half of the supplied-destination gate that is not the protocol's
+    /// own declaration. # C: O(1)
+    pub fn net_admin(&self) -> bool { self.may_admin_net() }
+
     /// Store one Linux AF_NETLINK connected destination. A connected Netlink
     /// socket accepts the first requested multicast group only. # C: O(1)
     pub fn connect_destination(&self, port_id: u32, groups: u32) -> Result<(), net::NetError> {

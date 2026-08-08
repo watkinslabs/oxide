@@ -72,7 +72,7 @@ fn arp_target(dev: &Wire) -> Option<Ipv4Addr> {
 fn an_on_link_destination_is_solicited_by_its_own_address() {
     let _initial_net = crate::hosted_fixture::init_net_domain();
     let (stack, dev, iface) = guest_like();
-    let (route, _lease, next_hop) = stack.route_v4_iface_in(0, GATEWAY, None).expect("a route");
+    let (route, _lease, next_hop) = stack.route_v4_iface_in(0, GATEWAY, None, 0).expect("a route");
     assert_eq!(route.iface, iface);
     assert_eq!(next_hop, GATEWAY,
         "an on-link destination is its own next hop; a zero here is solicited as 0.0.0.0");
@@ -83,7 +83,7 @@ fn an_on_link_destination_is_solicited_by_its_own_address() {
 fn an_off_link_destination_is_solicited_by_the_gateway() {
     let _initial_net = crate::hosted_fixture::init_net_domain();
     let (stack, _dev, _iface) = guest_like();
-    let (_route, _lease, next_hop) = stack.route_v4_iface_in(0, OFFLINK, None).expect("a route");
+    let (_route, _lease, next_hop) = stack.route_v4_iface_in(0, OFFLINK, None, 0).expect("a route");
     assert_eq!(next_hop, GATEWAY, "the default route's gateway carries the frame");
 }
 
@@ -93,7 +93,7 @@ fn the_solicited_target_is_never_the_unspecified_address() {
     // Whatever the route table says, a request for 0.0.0.0 cannot be answered.
     let (stack, _dev, _iface) = guest_like();
     for dst in [GATEWAY, OFFLINK, Ipv4Addr::new(10, 0, 2, 99)] {
-        let (_r, _l, next_hop) = stack.route_v4_iface_in(0, dst, None).expect("a route");
+        let (_r, _l, next_hop) = stack.route_v4_iface_in(0, dst, None, 0).expect("a route");
         assert!(!next_hop.is_unspecified(), "dst {dst:?} resolved to an unspecified next hop");
     }
 }
@@ -117,7 +117,7 @@ fn a_zero_gateway_route_still_solicits_the_destination() {
     // Exactly what the guest's table held.
     stack.routes.add_record_in(0, crate::route::RouteRecord::kernel(
         RouteEntry::main(SUBNET, 24, iface, Some(Ipv4Addr::ANY), Some(LOCAL))));
-    let (_r, _l, next_hop) = stack.route_v4_iface_in(0, GATEWAY, None).expect("a route");
+    let (_r, _l, next_hop) = stack.route_v4_iface_in(0, GATEWAY, None, 0).expect("a route");
     assert_eq!(next_hop, GATEWAY, "a zero gateway means on-link, not a gateway of 0.0.0.0");
 }
 

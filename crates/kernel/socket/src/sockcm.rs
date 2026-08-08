@@ -27,11 +27,8 @@ const SCM_DEVMEM_DMABUF: i32 = 79;
 const SCM_RIGHTS: i32 = 1;
 const SCM_CREDENTIALS: i32 = 2;
 
-/// `SOF_TIMESTAMPING_TX_RECORD_MASK` — the transmit-record bits a message may
-/// change for its own duration.
-const TX_RECORD_MASK: u32 = 0x0000_0303;
-/// `SOF_TIMESTAMPING_OPT_ID`.
-pub(crate) const SOF_TIMESTAMPING_OPT_ID: i32 = 1 << 7;
+use net::send_control::SockCm;
+use net::uapi::{SOF_TIMESTAMPING_OPT_ID, SOF_TIMESTAMPING_TX_RECORD_MASK};
 
 /// The socket state the generic rule branches on, snapshotted once per message.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -60,23 +57,30 @@ fn u32_exact(data: &[u8]) -> KResult<u32> {
     Ok(u32::from_ne_bytes(data[..4].try_into().unwrap()))
 }
 
-/// Admit one SOL_SOCKET control message on a send. An unrecognised type is
-/// EINVAL; a recognised one is screened for its exact length and, where Linux
-/// gates it, for the caller's capability. # C: O(1)
-pub(crate) fn admit(env: &SockCmEnv, cmsg: &Cmsg<'_>) -> KResult<()> {
+/// Admit one SOL_SOCKET control message on a send and RECORD what it settles.
+///
+/// An unrecognised type is EINVAL; a recognised one is screened for its exact
+/// length and, where Linux gates it, for the caller's capability. An admitted
+/// value is written into `out`, which is the message's one copy of it — the
+/// transmit path resolves it against the socket's own choice rather than
+/// finding it mirrored anywhere. # C: O(1)
+pub(crate) fn admit(env: &SockCmEnv, cmsg: &Cmsg<'_>, out: &mut SockCm) -> KResult<()> {
     match cmsg.kind {
         kind if kind == SO_MARK as i32 => {
             if !env.net_raw && !env.net_admin { return Err(Error::Eperm); }
-            u32_exact(cmsg.data).map(|_| ())
+            out.mark = Some(u32_exact(cmsg.data)?);
+            Ok(())
         }
         kind if kind == SO_TIMESTAMPING_OLD as i32 || kind == SO_TIMESTAMPING_NEW as i32 => {
             let flags = u32_exact(cmsg.data)?;
-            if flags & !TX_RECORD_MASK != 0 { return Err(Error::Einval); }
+            if flags & !SOF_TIMESTAMPING_TX_RECORD_MASK != 0 { return Err(Error::Einval); }
+            out.tsflags = Some(flags);
             Ok(())
         }
         SCM_TXTIME => {
             if !env.txtime { return Err(Error::Einval); }
             if cmsg.data.len() != 8 { return Err(Error::Einval); }
+            out.transmit_time = Some(u64::from_ne_bytes(cmsg.data[..8].try_into().unwrap()));
             Ok(())
         }
         SCM_TS_OPT_ID => {
@@ -84,12 +88,14 @@ pub(crate) fn admit(env: &SockCmEnv, cmsg: &Cmsg<'_>) -> KResult<()> {
             // sender is refused before its socket's own flags are consulted.
             if env.tcp { return Err(Error::Einval); }
             if !env.tstamp_opt_id { return Err(Error::Einval); }
-            u32_exact(cmsg.data).map(|_| ())
+            out.ts_opt_id = Some(u32_exact(cmsg.data)?);
+            Ok(())
         }
         SCM_RIGHTS | SCM_CREDENTIALS => Ok(()),
         kind if kind == SO_PRIORITY as i32 => {
-            let value = u32_exact(cmsg.data)? as i32;
-            if !env.prio_allowed(value) { return Err(Error::Eperm); }
+            let value = u32_exact(cmsg.data)?;
+            if !env.prio_allowed(value as i32) { return Err(Error::Eperm); }
+            out.priority = Some(value);
             Ok(())
         }
         SCM_DEVMEM_DMABUF => u32_exact(cmsg.data).map(|_| ()),
@@ -112,7 +118,7 @@ pub(crate) fn env_for(ctx: &crate::SendContext<'_>, socket: &alloc::sync::Arc<ne
         txtime: socket.opts.generic.flag(net::sock_opts::sol_socket::flag::TXTIME),
         tcp: matches!(*socket.kind.lock(), net::sock::SockKind::TcpConn(_)
             | net::sock::SockKind::TcpInit | net::sock::SockKind::TcpListener(_)),
-        tstamp_opt_id: socket.opts.timestamping.load(Ordering::Acquire)
+        tstamp_opt_id: socket.opts.timestamping.load(Ordering::Acquire) as u32
             & SOF_TIMESTAMPING_OPT_ID != 0,
     }
 }
@@ -121,13 +127,14 @@ pub(crate) fn env_for(ctx: &crate::SendContext<'_>, socket: &alloc::sync::Arc<ne
 /// control messages of its own — a stream, or AF_PACKET. Levels other than
 /// SOL_SOCKET are stepped over exactly as the transports that DO own a level
 /// step over the levels they do not. # C: O(control)
-pub(crate) fn admit_socket_level_only(control: &[u8], env: &SockCmEnv) -> KResult<()> {
+pub(crate) fn admit_socket_level_only(control: &[u8], env: &SockCmEnv) -> KResult<SockCm> {
+    let mut out = SockCm::default();
     for item in crate::cmsg_walk::CmsgWalk::new(control) {
         let item = item?;
         if item.level != crate::cmsg_walk::SOL_SOCKET { continue; }
-        admit(env, &item)?;
+        admit(env, &item, &mut out)?;
     }
-    Ok(())
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -138,8 +145,14 @@ mod tests {
     fn msg(kind: i32, data: &[u8]) -> (Vec<u8>, i32) { (data.to_vec(), kind) }
 
     fn admit_bytes(env: &SockCmEnv, kind: i32, data: &[u8]) -> KResult<()> {
+        settle(env, kind, data).map(|_| ())
+    }
+
+    fn settle(env: &SockCmEnv, kind: i32, data: &[u8]) -> KResult<SockCm> {
         let (data, kind) = msg(kind, data);
-        admit(env, &Cmsg { level: crate::cmsg_walk::SOL_SOCKET, kind, data: &data })
+        let mut out = SockCm::default();
+        admit(env, &Cmsg { level: crate::cmsg_walk::SOL_SOCKET, kind, data: &data }, &mut out)?;
+        Ok(out)
     }
 
     fn caps() -> SockCmEnv { SockCmEnv { net_raw: true, ..SockCmEnv::default() } }

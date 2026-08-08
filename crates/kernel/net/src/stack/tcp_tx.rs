@@ -105,7 +105,7 @@ impl NetStack {
                 policy.ipv4_options().as_ref(),
             ),
             (IpAddr::V6(src), IpAddr::V6(dst)) => {
-                let (iface_id, iface, next_hop) = self.route_v6_iface_in(net_ns, dst, bound)?;
+                let (iface_id, iface, next_hop) = self.route_v6_iface_in(net_ns, dst, bound, crate::stack_binddev::UNMARKED)?;
                 let mode = policy.ipv6_mode();
                 let mtu = crate::stack_ipv6::ipv6_output_mtu(
                     self.path_mtu_in(net_ns, IpAddr::V6(dst), Some(iface_id),
@@ -118,7 +118,7 @@ impl NetStack {
                     policy.ipv6_flow_label(net_ns).0, policy.ipv6_flow_label(net_ns).1,
                     policy.ipv6_source_prefs(), mtu,
                     crate::uapi::ipv6_pmtudisc_allows_fragmentation(mode),
-                    Some(policy.owner()), &headers,
+                    Some(policy.owner()), &headers, crate::TxMeta::NONE,
                 )
             }
             _ => Err(NetError::Einval),

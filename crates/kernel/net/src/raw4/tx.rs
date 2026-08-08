@@ -18,7 +18,7 @@ impl NetStack {
     /// Send one raw IPv4 message using endpoint-owned protocol and scope. # C: O(packet + route)
     pub fn send_raw4(&self, endpoint: &Raw4Endpoint, dst: Ipv4Addr,
                      payload: &[u8], options: Raw4TxOptions,
-                     control: &crate::send_control::Raw4Control) -> NetResult<()> {
+                     control: &crate::send_control::Raw4Control, tx: crate::TxMeta) -> NetResult<()> {
         let state = endpoint.snapshot();
         if !state.accepting { return Err(NetError::Enoent); }
         if dst.is_unspecified() { return Err(NetError::Edestaddrreq); }
@@ -40,13 +40,14 @@ impl NetStack {
                 priority: 0,
                 metrics: crate::RouteMetrics::NONE,
             }, iface, route_dst)
-        } else { self.route_v4_xmit_in(endpoint.net_ns(), route_dst, bound)? };
+        } else { self.route_v4_xmit_in(endpoint.net_ns(), route_dst, bound, tx.mark)? };
         let iface_id = route.iface;
         if (control.dont_route && bound.is_none()
             || crate::ipv4_options::is_strict_route(control.options.as_ref()))
             && (next_hop != route_dst || !self.raw4_link_route(endpoint.net_ns(), route_dst, iface_id))
         { return Err(NetError::Enetunreach); }
-        let route_source = self.routes.lookup_in(endpoint.net_ns(), route_dst).and_then(|r| r.src_hint)
+        let route_source = self.routes.lookup_record_mark_in(endpoint.net_ns(), route_dst, tx.mark)
+            .map(|record| record.route).and_then(|r| r.src_hint)
             .or_else(|| crate::iface_addr::primary(endpoint.net_ns(), iface_id).map(|v| v.0));
         let source = control.source.or(options.source).filter(|src| !src.is_unspecified())
             .or_else(|| (!state.local.is_unspecified()).then_some(state.local))
@@ -65,7 +66,7 @@ impl NetStack {
         if state.hdrincl {
             if control.options.is_some() { return Err(NetError::Einval); }
             return self.send_raw4_hdrincl(endpoint, iface_id, iface, next_hop,
-                source, payload, mtu, options.nodefrag);
+                source, payload, mtu, options.nodefrag, tx);
         }
         let id = self.next_raw4_id();
         let ttl = control.ttl.unwrap_or(options.ttl);
@@ -75,13 +76,14 @@ impl NetStack {
             endpoint.protocol(),
             payload, control.tos.unwrap_or(options.tos), ttl,
             id, mtu, df, may_fragment,
-            control.options.as_ref())
+            control.options.as_ref(), tx)
     }
 
     fn send_raw4_hdrincl(&self, endpoint: &Raw4Endpoint, iface_id: NetIfaceId,
                          iface: crate::EgressLease,
                          next_hop: Ipv4Addr, source: Ipv4Addr,
-                         packet: &[u8], mtu: usize, nodefrag: bool) -> NetResult<()> {
+                         packet: &[u8], mtu: usize, nodefrag: bool, tx: crate::TxMeta)
+                         -> NetResult<()> {
         if packet.len() < IPV4_HDR_LEN || packet.len() > IPV4_MAX_PACKET {
             return Err(NetError::Einval);
         }
@@ -103,7 +105,7 @@ impl NetStack {
             else { return Ok(()); };
         if !self.admit_raw4(endpoint, iface_id, next_hop, &bytes)? { return Ok(()); }
         if bytes.len() > mtu { return Err(NetError::Emsgsize); }
-        self.emit_raw4_fragment(iface_id, iface, next_hop, &bytes)
+        self.emit_raw4_fragment(iface_id, iface, next_hop, &bytes, tx)
     }
 
     fn send_raw4_payload(&self, endpoint: &Raw4Endpoint, iface_id: NetIfaceId,
@@ -111,7 +113,7 @@ impl NetStack {
                          next_hop: Ipv4Addr, src: Ipv4Addr, final_dst: Ipv4Addr, protocol: u8,
                          payload: &[u8], tos: u8, ttl: u8, id: u16, mtu: usize,
                          df: bool, may_fragment: bool,
-        options: Option<&Compiled>) -> NetResult<()> {
+        options: Option<&Compiled>, tx: crate::TxMeta) -> NetResult<()> {
         let header_len = crate::ipv4_options::header_len(options);
         if payload.len() + header_len > IPV4_MAX_PACKET { return Err(NetError::Emsgsize); }
         let full_flags = if df { IPV4_DF } else { 0 };
@@ -119,7 +121,7 @@ impl NetStack {
             tos, ttl, id, full_flags, options)?;
         if !self.admit_raw4(endpoint, iface_id, next_hop, &full)? { return Ok(()); }
         if payload.len() + header_len <= mtu {
-            return self.emit_raw4_fragment(iface_id, iface, next_hop, &full);
+            return self.emit_raw4_fragment(iface_id, iface, next_hop, &full, tx);
         }
         if !may_fragment { return Err(NetError::Emsgsize); }
         let max_payload = mtu.saturating_sub(header_len) & !7usize;
@@ -134,7 +136,7 @@ impl NetStack {
             let options = if offset == 0 { options } else { later.as_ref() };
             let bytes = raw4_packet(src, final_dst, protocol,
                 &payload[offset..offset + take], tos, ttl, id, flags, options)?;
-            self.emit_raw4_fragment(iface_id, iface.clone(), next_hop, &bytes)?;
+            self.emit_raw4_fragment(iface_id, iface.clone(), next_hop, &bytes, tx)?;
             offset += take;
         }
         Ok(())
@@ -155,8 +157,9 @@ impl NetStack {
     }
 
     fn emit_raw4_fragment(&self, iface_id: NetIfaceId, iface: crate::EgressLease,
-                          next_hop: Ipv4Addr, bytes: &[u8]) -> NetResult<()> {
+                          next_hop: Ipv4Addr, bytes: &[u8], tx: crate::TxMeta) -> NetResult<()> {
         let mut packet = Pkt::with_capacity(0, bytes.len());
+        packet.tx = tx;
         packet.put(bytes.len()).map_err(|_| NetError::Enobufs)?.copy_from_slice(bytes);
         packet.proto = eth_p::IPV4;
         packet.iface = Some(iface_id);

@@ -6,6 +6,7 @@
 // - `unix_scm`: AF_UNIX SCM_RIGHTS pinning across payload failure and fd reuse.
 // - `family_ancillary`: WHICH ancillary rule each family runs, and its
 //   destination and out-of-band answers.
+// - `unix_dgram_pair`: a datagram socketpair end and a supplied destination.
 
 mod common;
 mod batch;
@@ -13,3 +14,4 @@ mod phases;
 mod vsock;
 mod unix_scm;
 mod family_ancillary;
+mod unix_dgram_pair;

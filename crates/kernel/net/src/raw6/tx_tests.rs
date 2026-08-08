@@ -85,7 +85,7 @@ fn hdrincl_transmits_caller_bytes_without_header_validation_or_rewriting() {
     let bytes = caller_packet(64);
 
     stack.send_raw6(&endpoint, ROUTE_DST, None, None, &bytes, 64,
-        crate::uapi::IPV6_PMTUDISC_WANT, &crate::send_control::Raw6Control::default()).unwrap();
+        crate::uapi::IPV6_PMTUDISC_WANT, &crate::send_control::Raw6Control::default(), crate::TxMeta::NONE).unwrap();
 
     assert_eq!(&*dev.packets.lock(), &[bytes]);
 }
@@ -98,7 +98,7 @@ fn socket_fragment_size_caps_raw6_after_route_selection() {
 
     stack.send_raw6_with_frag_size(&endpoint, ROUTE_DST, None, None, &[0x5a; 2_000], 64,
         crate::uapi::IPV6_PMTUDISC_WANT, 1280,
-        &crate::send_control::Raw6Control::default(), 0).unwrap();
+        &crate::send_control::Raw6Control::default(), 0, crate::TxMeta::NONE).unwrap();
 
     let packets = dev.packets.lock();
     assert_eq!(packets.len(), 2);
@@ -113,10 +113,10 @@ fn hdrincl_enforces_only_base_header_minimum_and_route_mtu() {
 
     assert_eq!(stack.send_raw6(&endpoint, ROUTE_DST, None, None,
         &caller_packet(crate::ipv6::IPV6_HDR_LEN - 1), 64,
-        crate::uapi::IPV6_PMTUDISC_WANT, &crate::send_control::Raw6Control::default()), Err(NetError::Einval));
+        crate::uapi::IPV6_PMTUDISC_WANT, &crate::send_control::Raw6Control::default(), crate::TxMeta::NONE), Err(NetError::Einval));
     assert_eq!(stack.send_raw6(&endpoint, ROUTE_DST, None, None,
         &caller_packet(65), 64, crate::uapi::IPV6_PMTUDISC_WANT,
-        &crate::send_control::Raw6Control::default()), Err(NetError::Emsgsize));
+        &crate::send_control::Raw6Control::default(), crate::TxMeta::NONE), Err(NetError::Emsgsize));
     assert!(dev.packets.lock().is_empty());
 }
 
@@ -126,13 +126,13 @@ fn missing_source_rejects_kernel_header_but_not_caller_header() {
     let (stack, dev) = routed_capture_without_source(96);
     let kernel = Raw6Endpoint::standalone(network_namespace::initial(), IpProto::Udp as u8);
     assert_eq!(stack.send_raw6(&kernel, ROUTE_DST, None, None, b"payload", 64,
-        crate::uapi::IPV6_PMTUDISC_WANT, &crate::send_control::Raw6Control::default()),
+        crate::uapi::IPV6_PMTUDISC_WANT, &crate::send_control::Raw6Control::default(), crate::TxMeta::NONE),
         Err(NetError::Eaddrnotavail));
 
     let caller = Raw6Endpoint::standalone(network_namespace::initial(), IpProto::Raw as u8);
     let bytes = caller_packet(64);
     stack.send_raw6(&caller, ROUTE_DST, None, None, &bytes, 64,
-        crate::uapi::IPV6_PMTUDISC_WANT, &crate::send_control::Raw6Control::default()).unwrap();
+        crate::uapi::IPV6_PMTUDISC_WANT, &crate::send_control::Raw6Control::default(), crate::TxMeta::NONE).unwrap();
     assert_eq!(&*dev.packets.lock(), &[bytes]);
 }
 
@@ -164,7 +164,7 @@ fn one_message_controls_drive_route_and_extension_header_construction() {
         ..crate::send_control::Raw6Control::default() };
 
     stack.send_raw6(&endpoint, ROUTE_DST, None, None, b"data", 64,
-        crate::uapi::IPV6_PMTUDISC_WANT, &control).unwrap();
+        crate::uapi::IPV6_PMTUDISC_WANT, &control, crate::TxMeta::NONE).unwrap();
 
     let packet = &dev.packets.lock()[0];
     let header = crate::ipv6::Ipv6Hdr::parse(packet).unwrap();
@@ -190,7 +190,7 @@ fn per_message_dontfrag_rejects_packet_over_route_mtu() {
         dontfrag: Some(true), ..crate::send_control::Raw6Control::default()
     };
     assert_eq!(stack.send_raw6(&endpoint, ROUTE_DST, None, None, &[0; 40], 64,
-        crate::uapi::IPV6_PMTUDISC_DONT, &control), Err(NetError::Emsgsize));
+        crate::uapi::IPV6_PMTUDISC_DONT, &control, crate::TxMeta::NONE), Err(NetError::Emsgsize));
     assert!(dev.packets.lock().is_empty());
 }
 
@@ -207,7 +207,7 @@ fn pktinfo_iface_without_matching_route_returns_unreachable() {
     };
 
     assert_eq!(stack.send_raw6(&endpoint, ROUTE_DST, None, None, &[0; 8], 64,
-        crate::uapi::IPV6_PMTUDISC_WANT, &control), Err(NetError::Enetunreach));
+        crate::uapi::IPV6_PMTUDISC_WANT, &control, crate::TxMeta::NONE), Err(NetError::Enetunreach));
     assert!(dev.packets.lock().is_empty());
 }
 
@@ -228,7 +228,7 @@ fn fragmented_chain_keeps_headers_and_udp_header_in_fragment_zero() {
     udp[4..6].copy_from_slice(&udp_len.to_be_bytes());
 
     stack.send_raw6(&endpoint, ROUTE_DST, None, None, &udp, 64,
-        crate::uapi::IPV6_PMTUDISC_WANT, &control).unwrap();
+        crate::uapi::IPV6_PMTUDISC_WANT, &control, crate::TxMeta::NONE).unwrap();
 
     let packets = dev.packets.lock();
     assert!(packets.len() > 1);
@@ -258,7 +258,7 @@ fn oversized_post_fragment_header_chain_returns_emsgsize() {
     };
 
     assert_eq!(stack.send_raw6(&endpoint, ROUTE_DST, None, None, &[0; 24], 64,
-        crate::uapi::IPV6_PMTUDISC_WANT, &control), Err(NetError::Emsgsize));
+        crate::uapi::IPV6_PMTUDISC_WANT, &control, crate::TxMeta::NONE), Err(NetError::Emsgsize));
     assert!(dev.packets.lock().is_empty());
 }
 
@@ -269,7 +269,7 @@ fn arbitrary_protocol_payload_can_fragment() {
     let endpoint = Raw6Endpoint::standalone(network_namespace::initial(), 253);
 
     stack.send_raw6(&endpoint, ROUTE_DST, None, None, &[0x5a; 96], 64,
-        crate::uapi::IPV6_PMTUDISC_WANT, &crate::send_control::Raw6Control::default()).unwrap();
+        crate::uapi::IPV6_PMTUDISC_WANT, &crate::send_control::Raw6Control::default(), crate::TxMeta::NONE).unwrap();
 
     assert!(dev.packets.lock().len() > 1);
 }
@@ -281,7 +281,7 @@ fn oversized_reassembled_payload_returns_emsgsize() {
     let endpoint = Raw6Endpoint::standalone(network_namespace::initial(), 253);
 
     assert_eq!(stack.send_raw6(&endpoint, ROUTE_DST, None, None, &[0; 65_536], 64,
-        crate::uapi::IPV6_PMTUDISC_WANT, &crate::send_control::Raw6Control::default()),
+        crate::uapi::IPV6_PMTUDISC_WANT, &crate::send_control::Raw6Control::default(), crate::TxMeta::NONE),
         Err(NetError::Emsgsize));
     assert!(dev.packets.lock().is_empty());
 }
@@ -303,6 +303,6 @@ fn multicast_loop_disabled_never_enqueues_on_loopback() {
     };
 
     stack.send_raw6(&endpoint, GROUP, None, None, &[0; 8], 1,
-        crate::uapi::IPV6_PMTUDISC_WANT, &control).unwrap();
+        crate::uapi::IPV6_PMTUDISC_WANT, &control, crate::TxMeta::NONE).unwrap();
     assert_eq!(lo.rx_len(), 0);
 }

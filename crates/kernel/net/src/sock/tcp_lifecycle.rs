@@ -197,7 +197,8 @@ pub(crate) fn connect_tcp4_locked(sock: &InetSocket, local_port: &mut Option<u16
         Ipv4Addr::LOOPBACK
     } else {
         let iface = super::iface::v4_egress_iface(sock)?;
-        iface.and_then(|id| stack().route_v4_on_iface_in(net_ns, dst_ip, id).ok().flatten()
+        iface.and_then(|id| stack().route_v4_on_iface_in(net_ns, dst_ip, id,
+            super::sock_mark(sock)).ok().flatten()
             .and_then(|route| route.src_hint))
             .or_else(|| stack().routes.lookup_in(net_ns, dst_ip).and_then(|route| route.src_hint))
             .or_else(|| iface_primary_ip(iface.or_else(|| stack().routes.lookup_in(net_ns, dst_ip).map(|r| r.iface))))
@@ -227,7 +228,8 @@ pub(crate) fn connect_tcp4_mapped_locked(sock: &InetSocket, local_port: &mut Opt
         Ipv4Addr::LOOPBACK
     } else {
         let iface = super::iface::v4_egress_iface(sock)?;
-        iface.and_then(|id| stack().route_v4_on_iface_in(net_ns, dst_ip, id).ok().flatten()
+        iface.and_then(|id| stack().route_v4_on_iface_in(net_ns, dst_ip, id,
+            super::sock_mark(sock)).ok().flatten()
             .and_then(|route| route.src_hint))
             .or_else(|| stack().routes.lookup_in(net_ns, dst_ip).and_then(|route| route.src_hint))
             .or_else(|| iface_primary_ip(iface.or_else(|| {

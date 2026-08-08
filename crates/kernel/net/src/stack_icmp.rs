@@ -48,7 +48,8 @@ fn update_pmtu_on_iface(stack: &NetStack, net_ns: u64, iface: NetIfaceId,
 fn update_pmtu_v4(stack: &NetStack, net_ns: u64, dst: crate::Ipv4Addr,
                   bound: Option<NetIfaceId>, mtu: u32) -> Option<u32> {
     let route = match bound {
-        Some(iface) => stack.route_v4_on_iface_in(net_ns, dst, iface).ok().flatten()?,
+        Some(iface) => stack.route_v4_on_iface_in(net_ns, dst, iface,
+            crate::stack_binddev::UNMARKED).ok().flatten()?,
         None => stack.routes.lookup_result_in(net_ns, dst).ok()?,
     };
     let link_mtu = stack.ifaces.lookup_in_ns(route.iface, net_ns)?.mtu();
@@ -69,7 +70,8 @@ impl NetStack {
     pub fn path_mtu_in(&self, net_ns: u64, dst: IpAddr, bound: Option<NetIfaceId>, probe: bool) -> NetResult<u32> {
         if let IpAddr::V4(dst) = dst {
             let route = match bound {
-                Some(iface) => self.route_v4_on_iface_in(net_ns, dst, iface)?
+                Some(iface) => self.route_v4_on_iface_in(net_ns, dst, iface,
+                    crate::stack_binddev::UNMARKED)?
                     .unwrap_or(crate::ResolvedRoute {
                         iface,
                         gateway: None,

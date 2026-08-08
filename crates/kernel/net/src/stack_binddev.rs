@@ -10,6 +10,10 @@ use crate::route::{ResolvedRoute, RouteRecord, RTN_BLACKHOLE, RTN_LOCAL,
 use crate::route::RouteEntry;
 use crate::stack::{NetStack, TcpEntry};
 
+/// The mark a lookup that is not a transmit carries: a metrics or path-MTU
+/// query answers about the route itself, not about one packet.
+pub(crate) const UNMARKED: u32 = 0;
+
 const IPV4_TCP_OVERHEAD: u32 = 40;
 const IPV6_TCP_OVERHEAD: u32 = 60;
 
@@ -30,7 +34,7 @@ impl NetStack {
         bound: Option<NetIfaceId>) -> crate::RouteMetrics {
         let IpAddr::V4(dst) = dst else { return crate::RouteMetrics::NONE; };
         match bound {
-            Some(iface) => self.route_v4_on_iface_in(net_ns, dst, iface)
+            Some(iface) => self.route_v4_on_iface_in(net_ns, dst, iface, UNMARKED)
                 .ok().flatten().map(|route| route.metrics),
             None => self.routes.lookup_result_in(net_ns, dst).ok().map(|route| route.metrics),
         }.unwrap_or(crate::RouteMetrics::NONE)
@@ -75,7 +79,7 @@ impl NetStack {
         } else { IPV4_TCP_OVERHEAD };
         let route_advmss = match dst {
             IpAddr::V4(dst) => match bound {
-                Some(iface) => self.route_v4_on_iface_in(net_ns, dst, iface)
+                Some(iface) => self.route_v4_on_iface_in(net_ns, dst, iface, UNMARKED)
                     .ok().flatten().map(|route| route.metrics.advmss),
                 None => self.routes.lookup_result_in(net_ns, dst)
                     .ok().map(|route| route.metrics.advmss),
@@ -125,7 +129,7 @@ impl NetStack {
         dst_ip: Ipv4Addr, dst_port: u16, payload: &[u8], bound: Option<NetIfaceId>,
         tos: u8, ttl: u8) -> NetResult<()>
     {
-        let (route, iface, next_hop) = self.route_v4_xmit_in(net_ns, dst_ip, bound)?;
+        let (route, iface, next_hop) = self.route_v4_xmit_in(net_ns, dst_ip, bound, UNMARKED)?;
         let total = crate::udp::UDP_HDR_LEN + payload.len();
         let mut p = Pkt::with_capacity(IPV4_HDR_LEN, total + IPV4_HDR_LEN);
         let udp_total = crate::udp::UDP_HDR_LEN + payload.len();
@@ -166,7 +170,7 @@ impl NetStack {
         } else {
             src_ip
         };
-        let (iface_id, iface, next_hop) = self.route_v6_iface_in(net_ns, dst_ip, bound)?;
+        let (iface_id, iface, next_hop) = self.route_v6_iface_in(net_ns, dst_ip, bound, UNMARKED)?;
         let src_hint = self.routes6.lookup_policy_iface_in(
             net_ns, dst_ip, iface_id, self.policy_rules()).and_then(|route| route.src_hint);
         let src_ip = if src_ip.is_unspecified() {
@@ -225,7 +229,7 @@ impl NetStack {
     fn send_l4_over_ipv4_bound(&self, net_ns: u64, src: Ipv4Addr, dst: Ipv4Addr,
         proto: IpProto, l4: &[u8], tos: u8, bound: Option<NetIfaceId>) -> NetResult<()>
     {
-        let (route, iface, next_hop) = self.route_v4_xmit_in(net_ns, dst, bound)?;
+        let (route, iface, next_hop) = self.route_v4_xmit_in(net_ns, dst, bound, UNMARKED)?;
         self.xmit_ipv4_l4_on_iface(
             route, iface, next_hop, src, dst, proto, l4, tos, self.next_ipv4_id(),
         )
@@ -234,17 +238,17 @@ impl NetStack {
     fn send_l4_over_ipv6_bound(&self, net_ns: u64, src: Ipv6Addr, dst: Ipv6Addr,
         proto: IpProto, l4: &[u8], bound: Option<NetIfaceId>) -> NetResult<()>
     {
-        let (iface_id, iface, next_hop) = self.route_v6_iface_in(net_ns, dst, bound)?;
+        let (iface_id, iface, next_hop) = self.route_v6_iface_in(net_ns, dst, bound, UNMARKED)?;
         self.xmit_ipv6_l4_on_iface(iface_id, iface, next_hop, src, dst, proto, l4)
     }
 
     /// Resolve IPv4 egress and capture its route-selected next hop. # C: O(N)
-    pub(crate) fn route_v4_iface_in(&self, net_ns: u64, dst: Ipv4Addr, bound: Option<NetIfaceId>)
-        -> NetResult<(ResolvedRoute, crate::EgressLease, Ipv4Addr)>
+    pub(crate) fn route_v4_iface_in(&self, net_ns: u64, dst: Ipv4Addr, bound: Option<NetIfaceId>,
+        mark: u32) -> NetResult<(ResolvedRoute, crate::EgressLease, Ipv4Addr)>
     {
         if let Some(id) = bound {
             let iface = self.ifaces.acquire_egress_in_ns(id, net_ns).ok_or(NetError::Enetunreach)?;
-            let route = match self.route_v4_on_iface_in(net_ns, dst, id)? {
+            let route = match self.route_v4_on_iface_in(net_ns, dst, id, mark)? {
                 Some(route) => route,
                 None if dst.is_broadcast() => ResolvedRoute {
                     iface: id,
@@ -258,12 +262,12 @@ impl NetStack {
             };
             return Ok((route, iface, crate::route::RouteRecord::next_hop_for(route.gateway, dst)));
         }
-        match self.routes.lookup_result_in(net_ns, dst) {
+        match self.routes.lookup_result_mark_in(net_ns, dst, mark) {
             Ok(route) => Ok((route, self.ifaces.acquire_egress_in_ns(route.iface, net_ns)
                 .ok_or(NetError::Enetunreach)?,
                 crate::route::RouteRecord::next_hop_for(route.gateway, dst))),
             Err(NetError::Enetunreach) if dst.is_broadcast()
-                && self.routes.lookup_record_in(net_ns, dst).is_none() => {
+                && self.routes.lookup_record_mark_in(net_ns, dst, mark).is_none() => {
                 let devs = self.ifaces.snapshot_devs_in_ns(net_ns);
                 let pick = devs.iter().find(|(_, d)| {
                     d.hardware_type() != crate::uapi::ARPHRD_LOOPBACK
@@ -283,17 +287,19 @@ impl NetStack {
         }
     }
 
-    pub(crate) fn route_v4_on_iface_in(&self, net_ns: u64, dst: Ipv4Addr, iface: NetIfaceId)
-        -> NetResult<Option<ResolvedRoute>>
+    pub(crate) fn route_v4_on_iface_in(&self, net_ns: u64, dst: Ipv4Addr, iface: NetIfaceId,
+        mark: u32) -> NetResult<Option<ResolvedRoute>>
     {
-        match self.routes.lookup_result_in(net_ns, dst) {
+        match self.routes.lookup_result_mark_in(net_ns, dst, mark) {
             Ok(route) if route.iface == iface => return Ok(Some(route)),
-            Err(NetError::Enetunreach) if self.routes.lookup_record_in(net_ns, dst).is_none() => {}
+            Err(NetError::Enetunreach)
+                if self.routes.lookup_record_mark_in(net_ns, dst, mark).is_none() => {}
             Err(error) => return Err(error),
             _ => {}
         }
         let records = self.routes.snapshot_records_in(net_ns);
         for rule in self.routes.policy_rules().snapshot_effective(net_ns, crate::policy_rule::AF_INET) {
+            if rule.fwmask != 0 && mark & rule.fwmask != rule.fwmark { continue; }
             let best = records.iter().filter(|record| {
                 let route = record.route;
                 route.table == rule.table && route.iface == iface && route.matches(dst)
@@ -307,18 +313,18 @@ impl NetStack {
     }
 
     /// Resolve IPv6 egress and capture its route-selected next hop. # C: O(N)
-    pub(crate) fn route_v6_iface_in(&self, net_ns: u64, dst: Ipv6Addr, bound: Option<NetIfaceId>)
-        -> NetResult<(NetIfaceId, crate::EgressLease, Ipv6Addr)>
+    pub(crate) fn route_v6_iface_in(&self, net_ns: u64, dst: Ipv6Addr, bound: Option<NetIfaceId>,
+        mark: u32) -> NetResult<(NetIfaceId, crate::EgressLease, Ipv6Addr)>
     {
         if let Some(id) = bound {
             let iface = self.ifaces.acquire_egress_in_ns(id, net_ns).ok_or(NetError::Enetunreach)?;
-            let next_hop = self.routes6.lookup_policy_iface_in(
-                net_ns, dst, id, self.policy_rules())
+            let next_hop = self.routes6.lookup_policy_iface_mark_in(
+                net_ns, dst, id, self.policy_rules(), mark)
                 .and_then(|route| route.gateway).unwrap_or(dst);
             return Ok((id, iface, next_hop));
         }
-        let route = self.routes6.lookup_policy_in(
-            net_ns, dst, self.policy_rules()).ok_or(NetError::Enetunreach)?;
+        let route = self.routes6.lookup_policy_mark_in(
+            net_ns, dst, self.policy_rules(), mark).ok_or(NetError::Enetunreach)?;
         let iface = self.ifaces.acquire_egress_in_ns(route.iface, net_ns).ok_or(NetError::Enetunreach)?;
         Ok((route.iface, iface, crate::route6::next_hop6_for(route.gateway, dst)))
     }

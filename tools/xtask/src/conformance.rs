@@ -59,10 +59,11 @@ pub(crate) fn cmd_conformance(rest: &[String]) -> Result<(), u8> {
 
     let mut pass = 0usize;
     let mut fail = 0usize;
-    let _ = std::fs::create_dir_all("target/glibc-conf");
+    let out = out_dir(build_id.as_deref());
+    let _ = std::fs::create_dir_all(&out);
     for prog in &progs {
         let name = prog.file_stem().unwrap().to_string_lossy().into_owned();
-        match run_one(prog, &name, triple) {
+        match run_one(prog, &name, triple, &out) {
             Ok(true) => { eprintln!("xtask conformance: PASS {name}"); pass += 1; }
             Ok(false) => { fail += 1; }
             Err(_) => { eprintln!("xtask conformance: ERROR {name} (build/run failed)"); fail += 1; }
@@ -74,6 +75,15 @@ pub(crate) fn cmd_conformance(rest: &[String]) -> Result<(), u8> {
     eprintln!("xtask conformance: {pass}/{} oracles recorded and {arch} guest binaries linked",
         pass + fail);
     if fail == 0 { Ok(()) } else { Err(1) }
+}
+
+/// Two arch lanes run concurrently against one checkout and compile the SAME
+/// host oracle path. Sharing it makes one lane's linker truncate the binary the
+/// other lane is executing (ETXTBSY -> "host oracle did not execute"), so a
+/// build id gives each lane its own artifact directory.
+fn out_dir(id: Option<&str>) -> PathBuf {
+    let base = PathBuf::from("target/glibc-conf");
+    match id { Some(id) => base.join(id), None => base }
 }
 
 fn inject_guest(names: &str, arch: &str, triple: &str, id: Option<&str>) -> Result<(), u8> {
@@ -92,7 +102,7 @@ fn inject_guest(names: &str, arch: &str, triple: &str, id: Option<&str>) -> Resu
         if !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
             eprintln!("xtask conformance: unsafe test name `{name}`"); return Err(2);
         }
-        let host = PathBuf::from(format!("target/glibc-conf/{name}.{triple}.guest"));
+        let host = out_dir(id).join(format!("{name}.{triple}.guest"));
         let guest = format!("/usr/local/bin/oxide-conformance-{name}");
         inject_file(&image, &host, &guest, "0100755")?;
     }
@@ -116,10 +126,11 @@ fn debugfs(image: &Path, request: &str) -> Result<(), u8> {
 
 // Records the host oracle frame and produces the guest binary. Guest execution
 // and the host-vs-guest diff belong to `tools/oxide-conformance-ssh.sh`.
-fn run_one(src: &Path, name: &str, triple: &str) -> Result<bool, u8> {
-    let host_obj = format!("target/glibc-conf/{name}.host.o");
-    let target_obj = format!("target/glibc-conf/{name}.{triple}.o");
-    let hbin = format!("target/glibc-conf/{name}.host");
+fn run_one(src: &Path, name: &str, triple: &str, out: &Path) -> Result<bool, u8> {
+    let out = out.to_str().unwrap();
+    let host_obj = format!("{out}/{name}.host.o");
+    let target_obj = format!("{out}/{name}.{triple}.o");
+    let hbin = format!("{out}/{name}.host");
     let copy_reloc = name == "t_copyreloc_globals";
 
     // 1. compile once (host headers; glibc-ABI-compatible).
@@ -149,7 +160,7 @@ fn run_one(src: &Path, name: &str, triple: &str) -> Result<bool, u8> {
     // `--dynamic-linker` override and no `-nostdlib` — it is a normal
     // dynamically-linked program, so the guest resolves it through the image's
     // own Fedora `ld-linux` and `libc.so.6`.
-    let guest_bin = format!("target/glibc-conf/{name}.{triple}.guest");
+    let guest_bin = format!("{out}/{name}.{triple}.guest");
     let mut guest_link = target_compiler(triple);
     if copy_reloc { guest_link.arg("-no-pie"); } else { guest_link.args(["-fPIE", "-pie"]); }
     guest_link.args([&target_obj, "-lm", "-lresolv", "-o", &guest_bin]);
@@ -157,7 +168,7 @@ fn run_one(src: &Path, name: &str, triple: &str) -> Result<bool, u8> {
 
     // 4. persist the oracle frame next to the guest binary so a guest result can
     // be diffed against exactly the frame this run recorded.
-    write_frame(name, &host_result)?;
+    write_frame(out, name, &host_result)?;
     if host_result.status == RUN_FAILED {
         eprintln!("xtask conformance: FAIL {name} — host oracle did not execute");
         eprintln!("  host stderr={:?}", String::from_utf8_lossy(&host_result.stderr));
@@ -170,13 +181,13 @@ fn run_one(src: &Path, name: &str, triple: &str) -> Result<bool, u8> {
 
 /// `<name>.oracle` = exit status then stdout then stderr, each length-prefixed
 /// so an empty stream and a missing stream stay distinguishable.
-fn write_frame(name: &str, frame: &ResultFrame) -> Result<(), u8> {
-    let mut out = std::format!("exit {}\n", frame.status).into_bytes();
-    out.extend_from_slice(std::format!("stdout {}\n", frame.stdout.len()).as_bytes());
-    out.extend_from_slice(&frame.stdout);
-    out.extend_from_slice(std::format!("\nstderr {}\n", frame.stderr.len()).as_bytes());
-    out.extend_from_slice(&frame.stderr);
-    std::fs::write(std::format!("target/glibc-conf/{name}.oracle"), out).map_err(|_| 1u8)
+fn write_frame(out: &str, name: &str, frame: &ResultFrame) -> Result<(), u8> {
+    let mut frame_bytes = std::format!("exit {}\n", frame.status).into_bytes();
+    frame_bytes.extend_from_slice(std::format!("stdout {}\n", frame.stdout.len()).as_bytes());
+    frame_bytes.extend_from_slice(&frame.stdout);
+    frame_bytes.extend_from_slice(std::format!("\nstderr {}\n", frame.stderr.len()).as_bytes());
+    frame_bytes.extend_from_slice(&frame.stderr);
+    std::fs::write(std::format!("{out}/{name}.oracle"), frame_bytes).map_err(|_| 1u8)
 }
 
 fn target_compiler(triple: &str) -> Command {

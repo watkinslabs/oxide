@@ -101,10 +101,10 @@ fn confirmed_on_loopback(stack: &NetStack, entry: &TcpEntry) -> bool {
     let bound = entry.bound_iface();
     let dst = entry.conn.lock().remote.ip;
     match dst {
-        IpAddr::V4(dst) => stack.route_v4_iface_in(net_ns, dst, bound)
+        IpAddr::V4(dst) => stack.route_v4_iface_in(net_ns, dst, bound, crate::stack_binddev::UNMARKED)
             .map(|(_, iface, _)| iface.flags() & iff::IFF_LOOPBACK != 0)
             .unwrap_or(false),
-        IpAddr::V6(dst) => stack.route_v6_iface_in(net_ns, dst, bound)
+        IpAddr::V6(dst) => stack.route_v6_iface_in(net_ns, dst, bound, crate::stack_binddev::UNMARKED)
             .map(|(_, iface, _)| iface.flags() & iff::IFF_LOOPBACK != 0)
             .unwrap_or(false),
     }

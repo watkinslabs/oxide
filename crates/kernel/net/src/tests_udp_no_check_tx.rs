@@ -47,7 +47,7 @@ fn emit(no_check: bool) -> Vec<u8> {
     }
     let owner = crate::SocketOwner::root(network_namespace::initial(), 0);
     stack.send_udp_pmtu_to_bound_opts_owned(&owner, SRC, SPORT, DST, DPORT, BODY,
-        Some(iface), 0, 0, crate::uapi::IP_PMTUDISC_DONT, None, no_check).unwrap();
+        Some(iface), 0, 0, crate::uapi::IP_PMTUDISC_DONT, None, no_check, crate::TxMeta::NONE).unwrap();
     let packets = dev.packets.lock();
     assert_eq!(packets.len(), 1);
     packets[0].clone()

@@ -534,27 +534,27 @@ smoke-kbd-login: smoke-kbd-login-x86 smoke-kbd-login-arm
 # success marker must include PASS; a prefix marker accepts either verdict.
 REQUEST_KEY_SMOKE_TIMEOUT ?= 600
 smoke-request-key-x86: x86
-	OXIDE_REQUEST_KEY_SMOKE=1 SMOKE_MARKER='REQUEST-KEY-PROBE: PASS' ./tools/boot-smoke.sh x86 $(REQUEST_KEY_SMOKE_TIMEOUT)
+	OXIDE_REQUEST_KEY_SMOKE=1 SMOKE_ALIVE_PROBE= SMOKE_MARKER='REQUEST-KEY-PROBE: PASS' ./tools/boot-smoke.sh x86 $(REQUEST_KEY_SMOKE_TIMEOUT)
 smoke-request-key-arm: arm
-	OXIDE_REQUEST_KEY_SMOKE=1 SMOKE_MARKER='REQUEST-KEY-PROBE: PASS' ./tools/boot-smoke.sh arm $(REQUEST_KEY_SMOKE_TIMEOUT)
+	OXIDE_REQUEST_KEY_SMOKE=1 SMOKE_ALIVE_PROBE= SMOKE_MARKER='REQUEST-KEY-PROBE: PASS' ./tools/boot-smoke.sh arm $(REQUEST_KEY_SMOKE_TIMEOUT)
 smoke-request-key: smoke-request-key-x86 smoke-request-key-arm
 
 # Ext4 swapfile + memcg pageout smoke. The shared probe helper emits the
 # lowercase probe name, so keep the marker exact rather than accepting a prefix.
 SWAPFILE_SMOKE_TIMEOUT ?= 600
 smoke-swapfile-x86: x86
-	OXIDE_SWAPFILE_SMOKE=1 SMOKE_MARKER='swapfile_probe: PASS' ./tools/boot-smoke.sh x86 $(SWAPFILE_SMOKE_TIMEOUT)
+	OXIDE_SWAPFILE_SMOKE=1 SMOKE_ALIVE_PROBE= SMOKE_MARKER='swapfile_probe: PASS' ./tools/boot-smoke.sh x86 $(SWAPFILE_SMOKE_TIMEOUT)
 smoke-swapfile-arm: arm
-	OXIDE_SWAPFILE_SMOKE=1 SMOKE_MARKER='swapfile_probe: PASS' ./tools/boot-smoke.sh arm $(SWAPFILE_SMOKE_TIMEOUT)
+	OXIDE_SWAPFILE_SMOKE=1 SMOKE_ALIVE_PROBE= SMOKE_MARKER='swapfile_probe: PASS' ./tools/boot-smoke.sh arm $(SWAPFILE_SMOKE_TIMEOUT)
 smoke-swapfile: smoke-swapfile-x86 smoke-swapfile-arm
 
 # GNOME input classification smoke. Its injected script reports a single
 # tagged PASS/FAIL line; require the passing verdict from the boot log.
 GNOME_INPUT_CLASSIFY_SMOKE_TIMEOUT ?= 600
 smoke-gnome-input-classify-x86: x86
-	OXIDE_GNOME_INPUT_CLASSIFY_SMOKE=1 SMOKE_MARKER='gnome_input_classify: PASS' ./tools/boot-smoke.sh x86 $(GNOME_INPUT_CLASSIFY_SMOKE_TIMEOUT)
+	OXIDE_GNOME_INPUT_CLASSIFY_SMOKE=1 SMOKE_ALIVE_PROBE= SMOKE_MARKER='gnome_input_classify: PASS' ./tools/boot-smoke.sh x86 $(GNOME_INPUT_CLASSIFY_SMOKE_TIMEOUT)
 smoke-gnome-input-classify-arm: arm
-	OXIDE_GNOME_INPUT_CLASSIFY_SMOKE=1 SMOKE_MARKER='gnome_input_classify: PASS' ./tools/boot-smoke.sh arm $(GNOME_INPUT_CLASSIFY_SMOKE_TIMEOUT)
+	OXIDE_GNOME_INPUT_CLASSIFY_SMOKE=1 SMOKE_ALIVE_PROBE= SMOKE_MARKER='gnome_input_classify: PASS' ./tools/boot-smoke.sh arm $(GNOME_INPUT_CLASSIFY_SMOKE_TIMEOUT)
 smoke-gnome-input-classify: smoke-gnome-input-classify-x86 smoke-gnome-input-classify-arm
 
 LOGIN_SMOKE_TIMEOUT ?= 600

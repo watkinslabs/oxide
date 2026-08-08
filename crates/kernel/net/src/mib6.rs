@@ -250,7 +250,8 @@ mod tests {
         stack.xmit_ipv6_l4_with_policy(iface, lease, crate::Ipv6Addr::LOOPBACK,
             crate::Ipv6Addr::LOOPBACK, crate::Ipv6Addr::LOOPBACK, crate::IpProto::Udp, bytes,
             crate::ipv6::IPV6_DEFAULT_HOP_LIMIT, 0, 0, false, 0, usize::MAX, true,
-            Some(&owner), &crate::send_control::Raw6Control::default()).unwrap();
+            Some(&owner), &crate::send_control::Raw6Control::default(),
+            crate::TxMeta::NONE).unwrap();
         assert_eq!(get_ip(net_ns, Ip6Mib::OutRequests), 1);
         assert_eq!(get_ip(net_ns, Ip6Mib::OutTransmits), 1);
         assert_eq!(get_ip(net_ns, Ip6Mib::OutOctets),

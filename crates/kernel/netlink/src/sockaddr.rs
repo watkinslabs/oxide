@@ -47,6 +47,37 @@ pub fn parse_dest(name: &[u8]) -> Result<NlDest, vfs::VfsError> {
     })
 }
 
+/// Whether this protocol declares its sends unprivileged. Exactly one does;
+/// for every other one a caller-supplied destination is capability-gated.
+/// # C: O(1)
+pub fn nonroot_send(protocol: u16) -> bool { protocol == crate::wire::proto::NETLINK_USERSOCK }
+
+/// Admit one CALLER-SUPPLIED destination.
+///
+/// Naming a port or a multicast group is privileged: without the
+/// network-administration capability in the socket's own namespace it is EPERM,
+/// unless the protocol declares its sends unprivileged. A destination that
+/// names neither is not gated, and neither is the destination-less send — that
+/// pair was admitted when the socket connected.
+/// # C: O(1)
+pub fn admit_dest(dest: NlDest, protocol: u16, net_admin: bool)
+    -> Result<NlDest, vfs::VfsError>
+{
+    if (dest.port_id != 0 || dest.group != 0) && !nonroot_send(protocol) && !net_admin {
+        return Err(vfs::VfsError::Eperm);
+    }
+    Ok(dest)
+}
+
+/// Decode and admit one caller-supplied `msg_name`. The malformed-address
+/// answer outranks the permission one, which is the order the reference asks
+/// them in. # C: O(1)
+pub fn parse_supplied_dest(name: &[u8], protocol: u16, net_admin: bool)
+    -> Result<NlDest, vfs::VfsError>
+{
+    admit_dest(parse_dest(name)?, protocol, net_admin)
+}
+
 /// Encode a destination back into `sockaddr_nl` wire bytes. # C: O(1)
 pub fn encode_dest(dest: NlDest) -> [u8; SOCKADDR_NL_SIZE] {
     let mut out = [0u8; SOCKADDR_NL_SIZE];
@@ -60,7 +91,9 @@ pub fn encode_dest(dest: NlDest) -> [u8; SOCKADDR_NL_SIZE] {
 
 #[cfg(test)]
 mod tests {
-    use super::{encode_dest, first_group, parse_dest, NlDest};
+    use super::{admit_dest, encode_dest, first_group, nonroot_send, parse_dest,
+        parse_supplied_dest, NlDest};
+    use crate::wire::proto::{NETLINK_AUDIT, NETLINK_ROUTE, NETLINK_USERSOCK};
     use crate::wire::{AF_NETLINK, SOCKADDR_NL_SIZE};
 
     fn name(family: u16, port_id: u32, groups: u32) -> [u8; SOCKADDR_NL_SIZE] {
@@ -112,6 +145,55 @@ mod tests {
     fn port_and_group_are_read_from_their_own_offsets() {
         assert_eq!(parse_dest(&name(AF_NETLINK, 0xdead_beef, 1 << 4)),
             Ok(NlDest { port_id: 0xdead_beef, group: 1 << 4 }));
+    }
+
+    /// Naming a port or a group is privileged on every protocol but the one
+    /// that declares its sends unprivileged.
+    #[test]
+    fn a_named_destination_needs_the_network_capability() {
+        let port = NlDest { port_id: 42, group: 0 };
+        let group = NlDest { port_id: 0, group: 1 << 3 };
+        for dest in [port, group, NlDest { port_id: 42, group: 1 }] {
+            for protocol in [NETLINK_ROUTE, NETLINK_AUDIT] {
+                assert_eq!(admit_dest(dest, protocol, false), Err(vfs::VfsError::Eperm));
+                assert_eq!(admit_dest(dest, protocol, true), Ok(dest));
+            }
+            assert_eq!(admit_dest(dest, NETLINK_USERSOCK, false), Ok(dest));
+        }
+    }
+
+    /// The kernel itself is port 0 with no group: an unprivileged sender may
+    /// always name it, which is the destination every request uses.
+    #[test]
+    fn the_unnamed_destination_is_not_gated_on_any_protocol() {
+        let kernel = NlDest { port_id: 0, group: 0 };
+        for protocol in [NETLINK_ROUTE, NETLINK_AUDIT, NETLINK_USERSOCK] {
+            assert_eq!(admit_dest(kernel, protocol, false), Ok(kernel));
+        }
+    }
+
+    #[test]
+    fn exactly_one_protocol_declares_its_sends_unprivileged() {
+        assert!(nonroot_send(NETLINK_USERSOCK));
+        for protocol in 0..32u16 {
+            assert_eq!(nonroot_send(protocol), protocol == NETLINK_USERSOCK);
+        }
+    }
+
+    /// A malformed address is answered before the permission question: the
+    /// caller learns its address is wrong whether or not it is privileged.
+    #[test]
+    fn a_malformed_name_outranks_the_permission_answer() {
+        const AF_INET: u16 = 2;
+        let foreign = name(AF_INET, 42, 1);
+        assert_eq!(parse_supplied_dest(&foreign, NETLINK_ROUTE, false),
+            Err(vfs::VfsError::Einval));
+        let short = name(AF_NETLINK, 42, 1);
+        assert_eq!(parse_supplied_dest(&short[..4], NETLINK_ROUTE, false),
+            Err(vfs::VfsError::Einval));
+        assert_eq!(parse_supplied_dest(&short, NETLINK_ROUTE, false), Err(vfs::VfsError::Eperm));
+        assert_eq!(parse_supplied_dest(&short, NETLINK_ROUTE, true),
+            Ok(NlDest { port_id: 42, group: 1 }));
     }
 
     #[test]

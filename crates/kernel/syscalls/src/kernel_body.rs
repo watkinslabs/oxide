@@ -130,6 +130,7 @@ mod userbuf;
 mod recv_user;
 mod send_user;
 mod recv_control;
+mod recv_txn;
 mod unix_recv;
 mod recvmsg;
 pub mod dispatch;

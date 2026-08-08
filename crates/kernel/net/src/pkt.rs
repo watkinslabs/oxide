@@ -50,6 +50,28 @@ pub struct Pkt {
     pub next_hop: Option<TxNextHop>,
     pub proto:    u16,
     pub timestamp_ns: u64,
+    /// Transmit metadata the SENDER settled: the packet mark, the transmit
+    /// band, and the departure time. Absent on a received packet.
+    pub tx: TxMeta,
+}
+
+/// The per-transmission metadata a socket settles from its own options and the
+/// message's SOL_SOCKET ancillary overrides, carried on the packet the way the
+/// mark, priority and departure time travel on a socket buffer.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct TxMeta {
+    /// `skb->mark`: the value policy routing and the packet filter match on.
+    pub mark: u32,
+    /// `skb->priority`: selects the transmit band.
+    pub priority: u32,
+    /// `skb->tstamp` set from a departure-time request. Zero means "as soon as
+    /// the queue reaches it".
+    pub transmit_time: u64,
+}
+
+impl TxMeta {
+    /// The metadata of a packet no socket settled anything for. # C: O(1)
+    pub const NONE: Self = Self { mark: 0, priority: 0, transmit_time: 0 };
 }
 
 impl Pkt {
@@ -70,6 +92,7 @@ impl Pkt {
             data: headroom as u32,
             tail: (headroom + payload_len) as u32,
             mac_header: None, iface: None, next_hop: None, proto: 0, timestamp_ns: 0,
+            tx: TxMeta::NONE,
         }
     }
 
@@ -87,6 +110,7 @@ impl Pkt {
             data: headroom as u32,
             tail: headroom as u32,
             mac_header: None, iface: None, next_hop: None, proto: 0, timestamp_ns: 0,
+            tx: TxMeta::NONE,
         }
     }
 
@@ -97,7 +121,7 @@ impl Pkt {
     pub fn from_owned(buf: Vec<u8>) -> Self {
         let len = buf.len() as u32;
         Self { buf, data: 0, tail: len, mac_header: None,
-            iface: None, next_hop: None, proto: 0, timestamp_ns: 0 }
+            iface: None, next_hop: None, proto: 0, timestamp_ns: 0, tx: TxMeta::NONE }
     }
 
     /// # C: O(1)

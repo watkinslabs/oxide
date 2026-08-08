@@ -114,8 +114,16 @@ pub const TP_STATUS_COPY: u32 = 1 << 1;
 pub const TP_STATUS_TS_SOFTWARE: u32 = 1 << 29;
 pub const TP_STATUS_TS_RAW_HARDWARE: u32 = 1 << 31;
 
+pub const SOF_TIMESTAMPING_TX_HARDWARE: u32 = 1;
+pub const SOF_TIMESTAMPING_TX_SOFTWARE: u32 = 1 << 1;
 pub const SOF_TIMESTAMPING_SOFTWARE: i32 = 1 << 4;
 pub const SOF_TIMESTAMPING_RAW_HARDWARE: i32 = 1 << 6;
+pub const SOF_TIMESTAMPING_OPT_ID: u32 = 1 << 7;
+pub const SOF_TIMESTAMPING_TX_SCHED: u32 = 1 << 8;
+pub const SOF_TIMESTAMPING_TX_ACK: u32 = 1 << 9;
+/// The transmit-record bits a single message may change for its own duration.
+pub const SOF_TIMESTAMPING_TX_RECORD_MASK: u32 = SOF_TIMESTAMPING_TX_HARDWARE
+    | SOF_TIMESTAMPING_TX_SOFTWARE | SOF_TIMESTAMPING_TX_SCHED | SOF_TIMESTAMPING_TX_ACK;
 /// Ask for ancillary data beside a transmit timestamp on the error queue.
 pub const SOF_TIMESTAMPING_OPT_CMSG: i32 = 1 << 10;
 

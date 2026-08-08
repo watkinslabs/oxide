@@ -298,10 +298,14 @@ fn multicast_membership_filters_each_raw_endpoint() {
 struct CaptureDev {
     mtu: u32,
     packets: Spinlock<Vec<Vec<u8>>, LockClass>,
+    /// The transmit metadata each captured packet arrived with.
+    metas: Spinlock<Vec<crate::TxMeta>, LockClass>,
 }
 
 impl CaptureDev {
-    fn new(mtu: u32) -> Self { Self { mtu, packets: Spinlock::new(Vec::new()) } }
+    fn new(mtu: u32) -> Self {
+        Self { mtu, packets: Spinlock::new(Vec::new()), metas: Spinlock::new(Vec::new()) }
+    }
 }
 
 impl NetDev for CaptureDev {
@@ -313,6 +317,7 @@ impl NetDev for CaptureDev {
         crate::NamespaceDropAction::Destroy
     }
     fn xmit(&self, packet: Pkt) -> NetResult<()> {
+        self.metas.lock().push(packet.tx);
         self.packets.lock().push(packet.data().to_vec());
         Ok(())
     }

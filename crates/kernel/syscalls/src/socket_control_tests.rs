@@ -158,7 +158,7 @@ fn netlink_connect_runs_one_admission_before_destination_state() {
         .split("/// `setsockopt").next().unwrap();
     let admission = connect.find("security::network::Operation::Connect").unwrap();
     let disconnect = connect.find("socket.disconnect_destination()").unwrap();
-    let destination = connect.find("socket.connect_destination(port_id, groups)").unwrap();
+    let destination = connect.find("socket.connect_destination(dest.port_id, dest.group)").unwrap();
     assert_eq!(connect.matches("security::network::Operation::Connect").count(), 1);
     assert!(admission < disconnect && admission < destination);
     assert!(!owner.contains("security::network::Operation::Connect"));
