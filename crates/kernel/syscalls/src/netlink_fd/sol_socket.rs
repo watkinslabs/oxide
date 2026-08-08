@@ -2,88 +2,110 @@
 //
 // SOL_SOCKET never reaches a family's own option table: it is answered once,
 // generically, before family dispatch, and the family op sees only its own
-// level. This module is that generic step for netlink until every family
-// shares one socket base — it owns no decision of its own, deferring the
-// credential gate, the flag and its value to `net::scm`, and the receive
-// timeout to the socket's canonical field.
+// level. This module is that generic step for netlink, and it owns no decision
+// of its own — the argument import, the admission ladder, the capability gates
+// and every value transform are the SAME ones the internet families use, so a
+// write judged here cannot be judged differently there. It applies the results
+// this socket has a home for; the rest is state a netlink socket does not yet
+// carry.
 
 use syscall::errno::Errno;
 
-use super::NetlinkFileRef;
+use net::sock_opts::sol_socket::{self as sol, flag};
+use net::sock_opts::sol_socket::set::Action;
 
-const SO_RCVTIMEO_OLD: u64 = 20;
-const TIMEVAL_BYTES: u64 = 16;
-const INT_BYTES: u64 = core::mem::size_of::<i32>() as u64;
-const NSEC_PER_SEC: i128 = 1_000_000_000;
-const NSEC_PER_USEC: i128 = 1_000;
+use super::NetlinkFileRef;
 
 fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
-fn read_int(optval: u64) -> Result<i32, i64> {
-    let mut raw = [0u8; core::mem::size_of::<i32>()];
-    uaccess::copy_from_user(&mut raw, optval).map_err(|_| errno(Errno::Efault))?;
-    Ok(i32::from_ne_bytes(raw))
+/// The socket personality the generic table branches on. A netlink socket is
+/// a datagram socket of no internet transport, so every family-gated option
+/// takes the family's own answer. # C: O(1)
+fn personality() -> sol::OptSock {
+    sol::OptSock { family: net::socket_args::AF_NETLINK_WIRE, stream: false, tcp: false,
+                   udp: false, peek_off_capable: false }
+}
+
+/// Caller's network capabilities in the socket's owning namespace. # C: O(1)
+fn caps_for(target: &NetlinkFileRef) -> sol::OptCaps {
+    let Some(cur) = sched::live::current() else { return sol::OptCaps::default(); };
+    let namespace = &target.socket().net_ns;
+    sol::OptCaps {
+        net_admin: nscg::has_net_admin_for(cur, namespace),
+        net_raw: nscg::has_net_raw_for(cur, namespace),
+    }
 }
 
 /// `sock_setsockopt` for a netlink socket. # C: O(1)
 pub fn set(target: &NetlinkFileRef, optname: u64, optval: u64, optlen: u64) -> i64 {
     let socket = target.socket();
-    match optname {
-        net::sock_opts::sol_socket::SO_PASSCRED => {
-            if !net::scm::may_scm_recv(net::socket_args::AF_NETLINK as u16) {
-                return errno(Errno::Eopnotsupp);
-            }
-            if optlen < INT_BYTES { return errno(Errno::Einval); }
-            match read_int(optval) {
-                Ok(v) => { socket.scm.set(v != 0); 0 }
-                Err(e) => e,
-            }
-        }
-        net::sock_opts::sol_socket::SO_PASSSEC => {
-            if !net::scm::may_scm_recv(net::socket_args::AF_NETLINK as u16) {
-                return errno(Errno::Eopnotsupp);
-            }
-            if optlen < INT_BYTES { return errno(Errno::Einval); }
-            match read_int(optval) {
-                Ok(v) => { socket.scm_security.set(v != 0); 0 }
-                Err(e) => e,
-            }
-        }
+    let optlen = optlen.min(u32::MAX as u64) as u32;
+    let arg = match crate::s054_setsockopt::sol_socket::import(optname, optval, optlen) {
+        Ok(arg) => arg,
+        Err(e) => return errno(e),
+    };
+    let env = sol::set::SetEnv {
+        caps: caps_for(target),
+        bound_device: false,
+        ceilings: net::sysctl::buf_ceilings(),
+        busy_poll_budget: socket.generic.scalar(sol::Scalar::BusyPollBudget),
+    };
+    let action = match sol::set::admit(optname, arg, personality(), env) {
+        Ok(action) => action,
+        Err(e) => return errno(e),
+    };
+    apply(target, action);
+    0
+}
+
+/// Store one admitted write. # C: O(1)
+fn apply(target: &NetlinkFileRef, action: Action) {
+    use core::sync::atomic::Ordering;
+    let socket = target.socket();
+    match action {
+        Action::SndBuf(v) => socket.sndbuf.store(v.max(0) as usize, Ordering::Release),
+        Action::RcvBuf(v) => socket.rcvbuf.store(v.max(0) as usize, Ordering::Release),
+        Action::Passcred(v) => socket.scm.set(v != 0),
+        Action::Flag { bit: flag::SCM_SECURITY, on } => socket.scm_security.set(on),
+        Action::Flag { bit, on } => socket.generic.set_flag(bit, on),
+        Action::Scalar { slot, value } => socket.generic.set_scalar(slot, value),
+        Action::PacingRate(rate) => socket.generic.set_max_pacing_rate(rate),
         // `sk_rcvtimeo`, read back by the receive wait for `sock_intr_errno`:
         // without it a timed netlink receive is impossible and every
-        // interrupted one must report ERESTARTSYS.
-        SO_RCVTIMEO_OLD => {
-            if optlen < TIMEVAL_BYTES { return errno(Errno::Einval); }
-            let mut raw = [0u8; TIMEVAL_BYTES as usize];
-            if uaccess::copy_from_user(&mut raw, optval).is_err() { return errno(Errno::Efault); }
-            let sec = i64::from_ne_bytes(raw[..8].try_into().unwrap());
-            let usec = i64::from_ne_bytes(raw[8..].try_into().unwrap());
-            let ns = (sec.max(0) as i128 * NSEC_PER_SEC + usec.max(0) as i128 * NSEC_PER_USEC)
-                .min(u64::MAX as i128) as u64;
-            socket.rcvtimeo_ns.store(ns, core::sync::atomic::Ordering::Release);
-            0
-        }
-        _ => 0,
+        // interrupted one must report ERESTARTSYS. The send half has no
+        // blocking wait on this family to bound.
+        Action::Timeout { send: false, ns } =>
+            socket.rcvtimeo_ns.store(ns.max(0) as u64, Ordering::Release),
+        _ => {}
     }
 }
 
-/// `sock_getsockopt` for a netlink socket. `None` when the option is not one
-/// this level answers, so the caller falls through to its own table. # C: O(1)
-pub fn get(target: &NetlinkFileRef, optname: u64) -> Option<Result<alloc::vec::Vec<u8>, i64>> {
+/// `sock_getsockopt` for a netlink socket, through the same value table every
+/// other family reads. `None` when the option is not one this level answers.
+/// # C: O(1)
+pub fn get(target: &NetlinkFileRef, optname: u64, requested: usize)
+    -> Option<Result<alloc::vec::Vec<u8>, i64>>
+{
+    use core::sync::atomic::Ordering;
     let socket = target.socket();
-    match optname {
-        net::sock_opts::sol_socket::SO_PASSCRED => {
-            if !net::scm::may_scm_recv(net::socket_args::AF_NETLINK as u16) {
-                return Some(Err(errno(Errno::Eopnotsupp)));
-            }
-            Some(Ok(socket.scm.value().to_ne_bytes().to_vec()))
-        }
-        net::sock_opts::sol_socket::SO_PASSSEC => {
-            if !net::scm::may_scm_recv(net::socket_args::AF_NETLINK as u16) {
-                return Some(Err(errno(Errno::Eopnotsupp)));
-            }
-            Some(Ok(socket.scm_security.value().to_ne_bytes().to_vec()))
-        }
-        _ => None,
-    }
+    let requested = i32::try_from(requested).unwrap_or(i32::MAX);
+    let view = sol::get::SockView {
+        sock: personality(),
+        sndbuf: socket.sndbuf.load(Ordering::Acquire).min(i32::MAX as usize) as i32,
+        rcvbuf: socket.rcvbuf.load(Ordering::Acquire).min(i32::MAX as usize) as i32,
+        passcred: socket.scm.value(),
+        rcvtimeo_ns: socket.rcvtimeo_ns.load(Ordering::Acquire).min(i64::MAX as u64) as i64,
+        socket_type: net::socket_args::SOCK_RAW as i32,
+        protocol: socket.protocol as i32,
+        netns_cookie: net::net_ns::namespace_id(&socket.net_ns),
+        socket_cookie: socket.generic.cookie(sol::next_cookie) as u64,
+        ..Default::default()
+    };
+    let value = match sol::get::value(optname, requested, &socket.generic, &view) {
+        Ok(value) => value,
+        Err(e) => return Some(Err(errno(e))),
+    };
+    let mut bytes = [0u8; 16];
+    let natural = sol::get::encode(&value, &mut bytes);
+    Some(Ok(bytes[..natural].to_vec()))
 }

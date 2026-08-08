@@ -239,32 +239,24 @@ pub fn getsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64
     };
     let mut bytes: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
     if level == net::uapi::SOL_SOCKET {
-        if let Some(answer) = sol_socket::get(target, optname) {
-            match answer {
-                Ok(value) => {
-                    if requested < value.len() { return -(Errno::Einval.as_i32() as i64); }
-                    return netlink_getsockopt_copyout(optval, optlen_p, requested, &value);
-                }
-                Err(e) => return e,
+        // The generic table truncates the answer to what the caller asked for
+        // and publishes the truncated length, exactly as it does for every
+        // other family — a short buffer is not an error here.
+        return match sol_socket::get(target, optname, requested) {
+            Some(Ok(value)) => {
+                let take = core::cmp::min(requested, value.len());
+                netlink_getsockopt_copyout(optval, optlen_p, &value[..take], take)
             }
-        }
+            Some(Err(e)) => e,
+            None => -(Errno::Enoprotoopt.as_i32() as i64),
+        };
     }
-    let required = match (level, optname) {
-        (net::uapi::SOL_SOCKET, net::uapi::SO_PROTOCOL) => {
-            if requested < NETLINK_SCALAR_BYTES { return -(Errno::Einval.as_i32() as i64); }
-            bytes.extend_from_slice(&(socket.protocol as u32).to_ne_bytes());
-            NETLINK_SCALAR_BYTES
-        }
-        (net::uapi::SOL_SOCKET, net::uapi::SO_TYPE) => {
-            if requested < NETLINK_SCALAR_BYTES { return -(Errno::Einval.as_i32() as i64); }
-            bytes.extend_from_slice(&net::socket_args::SOCK_RAW.to_ne_bytes());
-            NETLINK_SCALAR_BYTES
-        }
+    let copied = match (level, optname) {
         (::netlink::sockopt::SOL_NETLINK, name) => match ::netlink::get_answer(name) {
             ::netlink::GetAnswer::Unknown => return -(Errno::Enoprotoopt.as_i32() as i64),
             ::netlink::GetAnswer::Memberships => {
                 bytes = netlink_membership_words(socket.membership_words());
-                bytes.len()
+                crate::netlink_getsockopt_policy::whole_words(requested, bytes.len())
             }
             ::netlink::GetAnswer::Flag(bit) => {
                 if requested < NETLINK_SCALAR_BYTES { return -(Errno::Einval.as_i32() as i64); }
@@ -274,7 +266,9 @@ pub fn getsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64
         },
         _ => return -(Errno::Enoprotoopt.as_i32() as i64),
     };
-    netlink_getsockopt_copyout(optval, optlen_p, requested, &bytes[..required])
+    // The published length is the option's own full length, which is how a
+    // caller discovers the buffer a truncated membership list needs.
+    netlink_getsockopt_copyout(optval, optlen_p, &bytes[..copied], bytes.len())
 }
 
 /// Encode NETLINK's canonical membership bitmap as its Linux ABI words: one
@@ -286,13 +280,13 @@ fn netlink_membership_words(words: alloc::vec::Vec<u32>) -> alloc::vec::Vec<u8> 
     out
 }
 
-/// Copy a NETLINK getsockopt result then report its full Linux result length. # C: O(len)
-fn netlink_getsockopt_copyout(optval: u64, optlen_p: u64, requested: usize, value: &[u8]) -> i64 {
-    let copied = core::cmp::min(requested, value.len());
-    if copied != 0 && uaccess::copy_to_user(optval, &value[..copied]).is_err() {
+/// Copy one NETLINK getsockopt result, then report the length the option
+/// publishes — which is not always the number of bytes copied. # C: O(len)
+fn netlink_getsockopt_copyout(optval: u64, optlen_p: u64, value: &[u8], publish: usize) -> i64 {
+    if !value.is_empty() && uaccess::copy_to_user(optval, value).is_err() {
         return -(Errno::Efault.as_i32() as i64);
     }
-    let Ok(required) = i32::try_from(value.len()) else { return -(Errno::Einval.as_i32() as i64); };
+    let Ok(required) = i32::try_from(publish) else { return -(Errno::Einval.as_i32() as i64); };
     if uaccess::copy_to_user(optlen_p, &required.to_ne_bytes()).is_err() {
         return -(Errno::Efault.as_i32() as i64);
     }

@@ -7,7 +7,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
 mod main;
-mod sol_socket;
+pub(crate) mod sol_socket;
 mod ip;
 mod ipv6;
 mod tcp;
