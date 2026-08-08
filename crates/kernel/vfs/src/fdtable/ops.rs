@@ -226,6 +226,38 @@ impl FdTable {
         super::debug::record_object(self, super::debug::OP_DUP3, old_fd, new_fd, Arc::as_ptr(&f) as u64);
         Ok(new_fd)
     }
+    /// Linux `replace_fd`: publish `file` AT `new_fd`, closing whatever
+    /// occupied it. Unlike [`FdTable::dup3_limit`] the source is an open file
+    /// description rather than another descriptor, which is what a descriptor
+    /// handed over from outside this table needs. # C: O(1)
+    pub fn replace_fd(&self, new_fd: i32, file: Arc<File>, flags: OpenFlags, limit: usize)
+        -> KResult<i32>
+    {
+        if flags.bits() & !OpenFlags::O_CLOEXEC.bits() != 0 { return Err(VfsError::Einval); }
+        if new_fd < 0 || (new_fd as usize) >= FD_TABLE_MAX { return Err(VfsError::Ebadf); }
+        let max = if limit < FD_TABLE_MAX { limit } else { FD_TABLE_MAX };
+        if (new_fd as usize) >= max { return Err(VfsError::Ebadf); }
+        let cloexec = flags.contains(OpenFlags::O_CLOEXEC);
+        let nf = new_fd as usize;
+        let replaced = {
+            let mut g = self.inner.lock();
+            g.ensure_capacity(nf);
+            if g.is_reserved(nf) { return Err(VfsError::Ebusy); }
+            let old = g.files[nf].take();
+            g.files[nf] = Some(Arc::clone(&file));
+            g.set_open(nf, true);
+            g.set_cloexec_bit(nf, cloexec);
+            g.set_reserved(nf, false);
+            old
+        };
+        crate::file::fire_clone_hook(&file);
+        // A replaced occupant leaves the descriptor table, so it takes the
+        // full close path — record-lock release included — not a bare put.
+        if let Some(old) = replaced {
+            let _ = super::close::filp_close(super::close::files_owner(self), old);
+        }
+        Ok(new_fd)
+    }
     pub fn set_cloexec(&self, fd: i32, on: bool) -> KResult<()> {
         if fd < 0 { return Err(VfsError::Ebadf); }
         let mut g = self.inner.lock();

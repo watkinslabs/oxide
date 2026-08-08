@@ -10,17 +10,18 @@ use syscall::errno::Errno;
 
 use super::action::{self, Verdict};
 use super::insn::SeccompData;
+use super::flags::{SECCOMP_FILTER_FLAG_NEW_LISTENER, SECCOMP_FILTER_FLAG_WAIT_KILLABLE_RECV};
 use super::install::{self, InstallCtx};
 use super::interp;
 use super::uapi::*;
 use super::user;
 use super::verifier;
 
-/// `sizeof(struct seccomp_notif)` = u64 id + u32 pid + u32 flags +
-/// `struct seccomp_data`.
-const SECCOMP_NOTIF_BYTES: u16 = 8 + 4 + 4 + SECCOMP_DATA_BYTES as u16;
-/// `sizeof(struct seccomp_notif_resp)` = u64 id + s64 val + s32 error + u32 flags.
-const SECCOMP_NOTIF_RESP_BYTES: u16 = 8 + 8 + 4 + 4;
+/// The two structure sizes `SECCOMP_GET_NOTIF_SIZES` reports come from the
+/// notification module that defines the wire format, never from a second copy
+/// of the arithmetic here.
+use super::notif::uapi::{NOTIF_BYTES as SECCOMP_NOTIF_BYTES,
+                         NOTIF_RESP_BYTES as SECCOMP_NOTIF_RESP_BYTES};
 
 /// Linux `seccomp_mode(&current->seccomp)`. The canonical cell, never
 /// re-derived from chain emptiness: STRICT installs no filter at all, so an
@@ -57,16 +58,26 @@ pub fn check(nr: u64, args: &[u64; 6], ip: u64) -> Verdict {
         }
         SECCOMP_MODE_FILTER => {
             let d = SeccompData { nr: nr as i32, arch: native_audit_arch(), ip, args: *args };
-            let ret = {
+            let (ret, listener) = {
                 let chain = cur.seccomp_filters.lock();
                 // `WARN_ON(f == NULL) return SECCOMP_RET_KILL_PROCESS` —
                 // "Ensure unexpected behavior doesn't result in failing open".
                 if chain.is_empty() { drop(chain); return kill_process(&cur, nr, ip); }
-                interp::run_chain(&chain, &d)
+                interp::run_chain_match(&chain, &d)
             };
             let tracer_armed = cur.traced_by.load(Ordering::Acquire) != 0
                 && opts & PTRACE_O_TRACESECCOMP != 0;
-            let v = action::decide(ret, &d, tracer_armed);
+            let v = action::decide_with_listener(ret, &d, tracer_armed, listener);
+            // The supervisor is waited for HERE — no lock held, before any
+            // verdict reaches the shim. What comes back is either "run the
+            // syscall after all" or "skip it with this value", both of which
+            // are ordinary verdicts the shim already knows.
+            if let Verdict::UserNotif { listener } = v {
+                return match super::notif::do_user_notification(listener, &d) {
+                    super::notif::Outcome::Continue => Verdict::Allow,
+                    super::notif::Outcome::Skip(ret) => Verdict::Skip { ret },
+                };
+            }
             // `current->seccomp.mode = SECCOMP_MODE_DEAD` runs BEFORE the
             // kill, so a task that somehow survives is caught by the
             // MODE_DEAD arm on its next syscall instead of being filtered
@@ -124,7 +135,8 @@ fn do_seccomp_inner(op: u64, flags: u64, uargs: u64) -> Result<i64, Errno> {
         SECCOMP_GET_ACTION_AVAIL => install::action_avail(user::read_u32(uargs)?).map(|_| 0),
         SECCOMP_GET_NOTIF_SIZES => {
             user::write_notif_sizes(uargs,
-                [SECCOMP_NOTIF_BYTES, SECCOMP_NOTIF_RESP_BYTES, SECCOMP_DATA_BYTES as u16])?;
+                [SECCOMP_NOTIF_BYTES as u16, SECCOMP_NOTIF_RESP_BYTES as u16,
+                 SECCOMP_DATA_BYTES as u16])?;
             Ok(0)
         }
         _ => Err(Errno::Einval),
@@ -148,11 +160,46 @@ fn set_mode_filter(cur: &sched::Task, flags: u64, uargs: u64) -> Result<i64, Err
         cur_mode: cur.seccomp_mode.load(Ordering::Acquire) as u32,
     };
     install::pre_verify_gate(&ctx)?;
-    if let Some(e) = install::listener_unsupported(flags) { return Err(e); }
     let prog = user::read_prog(filter_p, ctx.len)?;
     verifier::check_seccomp_filter(&prog)?;
-    install::post_verify_gate(&ctx)?;
-    attach(cur, prog, flags)
+
+    // The listener descriptor is published BEFORE the mode is assigned, so a
+    // descriptor-table failure is reported instead of leaving the caller
+    // filtered by a supervised filter whose supervisor it cannot reach. Every
+    // later failure closes it again, and closing it is what detaches the
+    // listener — one owner for "this listener is gone".
+    let want_listener = flags & SECCOMP_FILTER_FLAG_NEW_LISTENER != 0;
+    let listener = if want_listener {
+        Some(super::notif::install(flags & SECCOMP_FILTER_FLAG_WAIT_KILLABLE_RECV != 0)?)
+    } else { None };
+
+    let r = finish_install(cur, &ctx, prog, flags, listener.map(|(_, id)| id));
+    match (r, listener) {
+        (Err(e), Some((fd, _))) => { super::notif::uninstall(fd); Err(e) }
+        (Err(e), None) => Err(e),
+        // On success the listener descriptor IS the return value; there is no
+        // other outcome it could be confused with, because combining it with
+        // the thread-sync flag is refused unless that flag reports failures as
+        // a plain error.
+        (Ok(_), Some((fd, _))) => Ok(fd as i64),
+        (Ok(v), None) => Ok(v),
+    }
+}
+
+/// The half of the install that must not run before a published listener can
+/// be taken back: mode assignment, the one-listener-per-chain rule, and the
+/// attach itself.
+fn finish_install(cur: &sched::Task, ctx: &InstallCtx, prog: Vec<u64>, flags: u64,
+                  listener: Option<u64>) -> Result<i64, Errno> {
+    install::post_verify_gate(ctx)?;
+    // A chain may own at most one listener: with two, a syscall both filters
+    // notify on would have to reach two supervisors, and only one of them can
+    // decide the call.
+    if listener.is_some()
+        && cur.seccomp_filters.lock().iter().any(|f| f.listener.is_some()) {
+        return Err(Errno::Ebusy);
+    }
+    attach(cur, prog, flags, listener)
 }
 
 /// `seccomp_attach_filter` + `seccomp_assign_mode`.
@@ -165,7 +212,9 @@ fn set_mode_filter(cur: &sched::Task, flags: u64, uargs: u64) -> Result<i64, Err
 /// A refused TSYNC returns the offending thread's POSITIVE vpid, not an
 /// errno — the caller cannot otherwise tell which thread blocked it — unless
 /// `SECCOMP_FILTER_FLAG_TSYNC_ESRCH` asked for a plain `-ESRCH`.
-fn attach(cur: &sched::Task, prog: Vec<u64>, flags: u64) -> Result<i64, Errno> {
+fn attach(cur: &sched::Task, prog: Vec<u64>, flags: u64, listener: Option<u64>)
+    -> Result<i64, Errno>
+{
     use super::flags::{SECCOMP_FILTER_FLAG_TSYNC, SECCOMP_FILTER_FLAG_TSYNC_ESRCH};
     if install::total_insns_exceeded(chain_insns(cur), prog.len()) { return Err(Errno::Enomem); }
     if flags & SECCOMP_FILTER_FLAG_TSYNC != 0 {
@@ -174,7 +223,11 @@ fn attach(cur: &sched::Task, prog: Vec<u64>, flags: u64) -> Result<i64, Errno> {
             return Ok(vpid as i64);
         }
     }
-    cur.seccomp_filters.lock().push(sched::seccomp_filter::SeccompFilter::new(prog, flags));
+    let f = match listener {
+        Some(id) => sched::seccomp_filter::SeccompFilter::with_listener(prog, flags, id),
+        None => sched::seccomp_filter::SeccompFilter::new(prog, flags),
+    };
+    cur.seccomp_filters.lock().push(f);
     cur.seccomp_mode.store(SECCOMP_MODE_FILTER as u8, Ordering::Release);
     if flags & SECCOMP_FILTER_FLAG_TSYNC != 0 { sync_threads(cur); }
     Ok(0)

@@ -469,3 +469,27 @@ fn link_create_check_attr_region_starts_at_sixty_four() {
     a.bytes[o::LAST_END] = 1;
     assert_eq!(link_create_check(&a), Err(Errno::Einval));
 }
+
+// `kernel.unprivileged_bpf_disabled`. The latch is the whole point of the
+// knob: an attacker who reaches code that can write it must not be able to
+// re-open the interface it closed.
+#[test]
+fn unprivileged_bpf_may_be_switched_off_for_good_but_only_by_an_administrator() {
+    // Only the administrative capability writes it at all, and the refusal is
+    // EPERM rather than a value complaint.
+    assert_eq!(unpriv_write_verdict(0, 1, false), Err(Errno::Eperm));
+    assert_eq!(unpriv_write_verdict(0, 1, true), Ok(1));
+    // 1 is a one-way latch: nothing re-opens it, not even the same value's
+    // weaker neighbour.
+    assert_eq!(unpriv_write_verdict(1, 0, true), Err(Errno::Eperm));
+    assert_eq!(unpriv_write_verdict(1, 2, true), Err(Errno::Eperm));
+    assert_eq!(unpriv_write_verdict(1, 1, true), Ok(1));
+    // The build-time default carries no latch, so an administrator can still
+    // choose the weaker setting on a kernel that shipped with the stronger.
+    assert_eq!(unpriv_write_verdict(2, 0, true), Ok(0));
+    assert_eq!(unpriv_write_verdict(2, 1, true), Ok(1));
+    // Out-of-window values are a value complaint, checked after the capability.
+    assert_eq!(unpriv_write_verdict(0, 3, true), Err(Errno::Einval));
+    assert_eq!(unpriv_write_verdict(0, -1, true), Err(Errno::Einval));
+    assert_eq!(unpriv_write_verdict(0, 3, false), Err(Errno::Eperm));
+}
