@@ -63,3 +63,31 @@ fn a_filter_installed_with_a_listener_carries_its_id_through_every_copy() {
     assert_eq!(sched::seccomp_filter::SeccompFilter::new(alloc::vec![1], 0).listener, None);
     detach(&l);
 }
+
+// The ioctl router recognises a listener by the state its inode owns, never
+// by the command number: a foreign descriptor whose ioctl happens to use
+// these numbers must fall through untouched, and a listener must answer even
+// a command it does not know rather than letting it reach another handler.
+#[test]
+fn only_a_listener_descriptor_reaches_the_listener_ioctls() {
+    let l = create(false);
+    let inode = super::super::fd::make_listener_inode(l.clone());
+    assert!(super::super::fd::is_listener_inode(&inode));
+    let dentry = vfs::Dentry::new(None, alloc::string::String::from("[seccomp notify]"),
+                                  inode.clone());
+    let file = vfs::File::new(inode, dentry, vfs::OpenFlags::O_RDWR);
+    // An unknown command on a listener is answered here, not passed on.
+    assert_eq!(super::super::handle_ioctl(&file, 0xdead_beef, 0),
+               Some(-(syscall::errno::Errno::Einval.as_i32() as i64)));
+
+    let plain_inode = vfs::InodeBuilder::new(2, vfs::mk_mode(vfs::FileType::Regular, 0o600),
+        vfs::default_inode_ops(), vfs::default_file_ops()).build();
+    assert!(!super::super::fd::is_listener_inode(&plain_inode));
+    let plain_dentry = vfs::Dentry::new(None, alloc::string::String::from("f"),
+                                        plain_inode.clone());
+    let plain = vfs::File::new(plain_inode, plain_dentry, vfs::OpenFlags::empty());
+    assert_eq!(super::super::handle_ioctl(&plain,
+                   super::super::uapi::IOCTL_NOTIF_RECV as u64, 0), None,
+               "a foreign descriptor is not routed into the listener handler");
+    detach(&l);
+}
