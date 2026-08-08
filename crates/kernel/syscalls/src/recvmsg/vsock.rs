@@ -21,7 +21,6 @@ fn zerocopy_error_data((first, last, copied): (u32, u32, bool)) -> [u8; 16] {
 pub(crate) fn recv_error(sock: &Arc<net::vsock_socket::VsockSocket>, user: &RecvUser,
     flags: u64) -> i64
 {
-    if let Err(error) = sock.check_receive() { return crate::net_errno::errno_from_neterr(error); }
     let Some(completion) = sock.take_zerocopy_completion() else { return err(Errno::Eagain); };
     if let Err(error) = user.copy_name(&[]) { return error; }
     let mut control = crate::recv_control::Control::new(
@@ -49,7 +48,6 @@ enum RecvmsgState {
 fn recvmsg_preflight(sock: &Arc<net::vsock_socket::VsockSocket>, capacity: usize,
     flags: u64) -> Result<RecvmsgState, i64>
 {
-    sock.check_receive().map_err(|_| err(Errno::Eacces))?;
     if sock.is_datagram() { return Err(err(Errno::Eopnotsupp)); }
     let conn = sock.conn().ok_or_else(|| err(Errno::Enotconn))?;
     match *conn.st.lock() {
@@ -78,7 +76,6 @@ fn recv_with_copy_inner<F, R>(sock: &Arc<net::vsock_socket::VsockSocket>, capaci
     flags: u64, file_nonblock: bool, copy: F, retry: R) -> Result<usize, i64>
 where F: FnMut(usize, &[u8]) -> Result<usize, i64>, R: FnMut(&Arc<net::vsock_socket::VsockSocket>)
 {
-    sock.check_receive().map_err(|_| err(Errno::Eacces))?;
     // Current virtio-vsock exposes the DGRAM socket but its transport
     // `dgram_dequeue` operation is explicitly unsupported.
     if sock.is_datagram() { return Err(err(Errno::Eopnotsupp)); }

@@ -32,11 +32,21 @@ pub trait MessageIo {
 
 pub struct SendContext<'a> {
     task: &'a sched::Task,
+    sandbox: Option<Arc<landlock::Domain>>,
 }
 
 impl<'a> SendContext<'a> {
-    /// Capture explicit task state needed by socket send policy. # C: O(1)
-    pub fn new(task: &'a sched::Task) -> Self { Self { task } }
+    /// Capture explicit task state needed by socket send policy. The sandbox
+    /// domain is snapshotted once so every message of a batch is judged against
+    /// the policy the call started under. # C: O(1)
+    pub fn new(task: &'a sched::Task) -> Self {
+        Self { task, sandbox: task.landlock_domain.lock().clone() }
+    }
+
+    /// Build a sender context with an explicit sandbox snapshot. # C: O(1)
+    pub fn with_sandbox(task: &'a sched::Task, sandbox: Option<Arc<landlock::Domain>>) -> Self {
+        Self { task, sandbox }
+    }
 
     /// Snapshot sender credentials from the retained task context. An
     /// unsolicited AF_UNIX credential reports the sender's REAL uid/gid — the
@@ -52,6 +62,9 @@ impl<'a> SendContext<'a> {
 
     /// Borrow the retained sender task context. # C: O(1)
     pub(crate) fn task(&self) -> &sched::Task { self.task }
+
+    /// Sandbox policy retained for this send. # C: O(1)
+    pub(crate) fn sandbox(&self) -> Option<&Arc<landlock::Domain>> { self.sandbox.as_ref() }
 }
 
 /// Apply shared stream SIGPIPE completion semantics. # C: O(1)
@@ -133,12 +146,10 @@ pub(crate) enum PreparedSend {
 pub(crate) fn prepare(ctx: &SendContext<'_>, target: &SendFile, message: &Message, flags: u32)
     -> KResult<PreparedSend>
 {
+    crate::security::admit(ctx, target, message, flags)?;
     match target.kind() {
         SendKind::File => Err(Error::Enotsock),
         SendKind::Netlink(socket) => {
-            net::security_admission::check(net::net_ns::namespace_id(&socket.net_ns),
-                net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Send)
-                .map_err(Error::from)?;
             if flags as u64 & net::uapi::MSG_OOB != 0 { return Err(Error::Eopnotsupp); }
             if message.requested_len == 0 { return Err(Error::Enodata); }
             crate::control::validate_non_unix(ctx, &message.control)?;
@@ -168,16 +179,6 @@ pub(crate) fn prepare(ctx: &SendContext<'_>, target: &SendFile, message: &Messag
                 return Ok(PreparedSend::Inet(InetPrepared::Packet));
             }
             let address = crate::address::inet(message.name.as_deref())?;
-            // A send that names an explicit recipient settles the same remote
-            // port a connect would, so it asks for the same port rights. A send
-            // with no address settles nothing and is not checked. Placed after
-            // the family and length parse so a malformed address reports its
-            // own error rather than a permission one.
-            if let Some(name) = message.name.as_deref() {
-                if flags as u64 & net::uapi::MSG_FASTOPEN != 0 {
-                    net::landlock_addr::check_fastopen_addr(socket, name).map_err(Error::from)?;
-                } else { net::landlock_addr::check_send_addr(socket, name).map_err(Error::from)?; }
-            }
             let raw_family = match &*socket.kind.lock() {
                 net::sock::SockKind::Raw4(_) => Some(false),
                 net::sock::SockKind::Raw6(_) => Some(true),
@@ -203,21 +204,14 @@ fn monotonic_ns() -> u64 {
     { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
 }
 
+/// `#[inline(never)]`: this is one protocol family's send working set, and
+/// `send_prepared` dispatches every family through the same frame (Linux
+/// `noinline_for_stack`).
 #[cfg(target_os = "oxide-kernel")]
+#[inline(never)]
 fn send_inet(ctx: &SendContext<'_>, target: &SendFile, socket: &Arc<net::sock::InetSocket>,
     message: &Message, flags: u32, prepared: InetPrepared) -> KResult<usize>
 {
-    let direct = matches!(&prepared, InetPrepared::Packet | InetPrepared::Unix(_))
-        || (flags as u64 & net::uapi::MSG_OOB != 0
-            && matches!(*socket.kind.lock(), net::sock::SockKind::TcpConn(_)));
-    // Packet-ring, AF_UNIX SCM, and TCP urgent sends bypass sendto(), whose
-    // transport path otherwise owns Send admission. Admit those direct owners
-    // before they inspect or mutate their protocol state.
-    if direct {
-        net::security_admission::check(socket.net_ns(),
-            socket.family.load(Ordering::Acquire), security::network::Operation::Send)
-            .map_err(Error::from)?;
-    }
     let (dest, control) = match prepared {
         InetPrepared::Packet =>
             return crate::packet::send(socket, &message.payload, message.name.as_deref()),
@@ -376,14 +370,12 @@ pub fn send_io<I: MessageIo>(ctx: &SendContext<'_>, flags: u32, io: &mut I)
         _ => ImportMode::Full,
     };
     if mode == ImportMode::RawOobEnvelope {
-        match target.kind() {
-            SendKind::Inet(socket) => net::security_admission::check(socket.net_ns(),
-                socket.family.load(Ordering::Acquire), security::network::Operation::Send)
-                .map_err(Error::from)?,
-            SendKind::Vsock(socket) => socket.check_send().map_err(Error::from)?,
-            _ => return Err(Error::Enotsock),
-        }
-        io.import(mode)?;
+        // The envelope is imported before the hook, exactly as an ordinary
+        // send imports its header first: a caller whose address or ancillary
+        // memory is unreadable owes EFAULT, not a permission answer. The
+        // absent out-of-band channel is the protocol's answer and comes last.
+        let message = io.import(mode)?;
+        crate::security::admit(ctx, &target, &message, flags)?;
         return Err(Error::Eopnotsupp);
     }
     if let Some(mut message) = io.import_envelope()? {
@@ -420,13 +412,7 @@ pub(crate) fn send_retained(ctx: &SendContext<'_>, target: &SendFile, message: M
         _ => false,
     };
     if flags as u64 & net::uapi::MSG_OOB != 0 && envelope_only_oob {
-        match target.kind() {
-            SendKind::Inet(socket) => net::security_admission::check(socket.net_ns(),
-                socket.family.load(Ordering::Acquire), security::network::Operation::Send)
-                .map_err(Error::from)?,
-            SendKind::Vsock(socket) => socket.check_send().map_err(Error::from)?,
-            _ => return Err(Error::Enotsock),
-        }
+        crate::security::admit(ctx, target, &message, flags)?;
         return Err(Error::Eopnotsupp);
     }
     let prepared = prepare(ctx, target, &message, flags)?;
