@@ -71,7 +71,7 @@ add the serial verdict harness.
 ## 5 Image format
 
 `xtask image` produces a GRUB rescue ISO plus a separate root disk — no ESP, no GPT boot image, no initramfs:
-1. `oxide-<arch>-grub.iso` (`grub2-mkrescue`): `boot/grub/grub.cfg` + the kernel payload. x86_64 loads `boot/oxide-x86_64` (ELF) with `multiboot2`; aarch64 loads `boot/oxide-aarch64.Image` (EFI-stub arm64 Image) with `linux`. Firmware is SeaBIOS El Torito on x86_64, OVMF on aarch64.
+1. `oxide-<arch>-grub.iso` (`grub2-mkrescue`): `boot/grub/grub.cfg` + the kernel payload. x86_64 loads `boot/oxide-x86_64` (ELF) with `multiboot2` from either SeaBIOS El Torito or x86_64 OVMF; aarch64 loads `boot/oxide-aarch64.Image` (EFI-stub arm64 Image) with `linux` under OVMF.
 2. `root-<arch>.img`: ext4 root, attached as virtio-blk and named by the kernel cmdline.
 
 Root filesystem content is Fedora's, composed by `../images` (`29a§2`): `/sbin/init`→systemd, `/lib64/ld-linux-*`, `/lib64/libc.so.6`, `/bin/{bash,…}`, `/etc/*`, empty `/proc`,`/sys`,`/dev`,`/tmp` mount points. This repo adds nothing to it but the conformance probes (`29a§5`).
@@ -91,7 +91,8 @@ Built by `xtask`:
 ## 7 QEMU invocation
 
 `make qemu-x86` builds and boots the x86_64 GRUB rescue ISO through the
-multiboot2 path. `make qemu-arm` builds and boots the aarch64 GRUB rescue ISO
+multiboot2 path under SeaBIOS; `OXIDE_QEMU_UEFI=1 make qemu-x86` selects OVMF
+and the same GRUB handoff. `make qemu-arm` builds and boots the aarch64 GRUB rescue ISO
 through the EFI-stub `linux` path. The runner attaches the ext4 root disk and
 passes the architecture's QEMU options; `SMP=<n>` and `FEATURES=<csv>` select
 the exposed Makefile controls.
@@ -105,7 +106,7 @@ the exposed Makefile controls.
 - `xtask kernel --arch x86_64` and `--arch aarch64` succeed clean checkout.
 - `xtask rootfs` fails with a clear message when `../images/output/<profile>-<arch>-root.img` is absent.
 - `xtask image` produces an `oxide-<arch>-grub.iso` whose hash matches across machines (with same toolchain + same rootfs image).
-- `make smoke-x86` / `make smoke-arm` boot to `oxide login:`.
+- `make smoke-x86` / `make smoke-arm` boot to `oxide login:`; `OXIDE_QEMU_UEFI=1 make qemu-x86` reaches the x86_64 boot marker through OVMF.
 - CI runs `xtask spec-lint` and `xtask doc-check`; both pass.
 
 ## 10 Failure modes
