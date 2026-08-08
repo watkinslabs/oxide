@@ -30,6 +30,7 @@ fn kstat() -> Kstat {
         btime: None,
         fsid: 0,
         change_cookie: 0,
+        dio_mem_align: 0, dio_offset_align: 0,
         result_mask: 0,
         attributes: 0,
         attributes_mask: 0,

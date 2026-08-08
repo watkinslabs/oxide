@@ -80,8 +80,16 @@ impl Inode {
     pub fn fileattr_set(&self, fa: &FileAttr) -> KResult<()> { self.i_op.fileattr_set(self, fa) }
     /// `i_op->permission`. # C: O(ngroups)
     pub fn permission(&self, mask: u32, cred: &namei::Cred) -> KResult<()> { self.i_op.permission(self, mask, cred) }
-    /// `i_op->getattr`. # C: O(1)
-    pub fn getattr(&self, idmap: &Idmap) -> Kstat { self.i_op.getattr(self, idmap) }
+    /// `i_op->getattr` with the statx request mask and query flags. # C: O(1)
+    pub fn getattr_mask(&self, idmap: &Idmap, request_mask: u32, query_flags: u32) -> Kstat {
+        self.i_op.getattr(self, idmap, request_mask, query_flags)
+    }
+    /// `i_op->getattr` for the `stat`-family callers, which have no statx mask:
+    /// they ask for the basic set and accept whatever sync the backend prefers.
+    /// # C: O(1)
+    pub fn getattr(&self, idmap: &Idmap) -> Kstat {
+        self.getattr_mask(idmap, crate::getattr::STATX_BASIC_STATS, 0)
+    }
     /// `i_op->setattr`. # C: O(1)
     pub fn setattr(&self, idmap: &Idmap, ia: &Iattr) -> KResult<()> { self.i_op.setattr(self, idmap, ia) }
 

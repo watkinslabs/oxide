@@ -7,10 +7,7 @@ use crate::extent_rw::meta::InodeMetaUpdate;
 use crate::superblock::{EXT4_LABEL_MAX, SB_OFF_VOLUME_NAME, SUPERBLOCK_OFFSET};
 
 // ext4 on-disk `i_flags` (@0x20) bits — IDENTICAL to the `FS_*_FL` chattr view.
-const EXT4_SYNC_FL:      u32 = 0x0000_0008;
-const EXT4_IMMUTABLE_FL: u32 = 0x0000_0010;
-const EXT4_APPEND_FL:    u32 = 0x0000_0020;
-const EXT4_NOATIME_FL:   u32 = 0x0000_0080;
+use crate::inode::flags::{EXT4_APPEND_FL, EXT4_IMMUTABLE_FL, EXT4_NOATIME_FL, EXT4_SYNC_FL};
 const EXT4_JOURNAL_DATA_FL: u32 = 0x0000_4000;
 const EXT4_EXTENTS_FL:   u32 = 0x0008_0000;
 const EXT4_PROJINHERIT_FL: u32 = FS_PROJINHERIT_FL;

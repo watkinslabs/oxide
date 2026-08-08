@@ -9,10 +9,30 @@ use alloc::vec::Vec;
 
 use crate::inode::InodeRef;
 use crate::superblock::SuperBlock;
+use crate::types::VfsError;
 use crate::KResult;
 
 use super::dirty::sync_lazytime_on;
 use super::policy::{forces_lazytime, harvest_dirty, needs_write_inode, DIRTYTIME_EXPIRE_SECS};
+
+/// The ONE place a writeback failure with nobody to return it to is recorded.
+///
+/// A background pass, an eviction and a whole-system `sync` all discover errors
+/// that no caller is waiting on. `mapping_set_error` is the latch that makes
+/// them reportable later: it records into the inode's own `wb_err` — so a
+/// subsequent `fsync` on that file reports it exactly once — AND into the
+/// filesystem-wide latch, so `syncfs` still reports it after the inode itself
+/// has been evicted. Writing only the filesystem-wide half leaves the per-inode
+/// `fsync` blind, which is the asymmetry this exists to prevent.
+///
+/// An inode not yet bound to its instance cannot reach the filesystem-wide latch
+/// on its own, so the superblock the pass is running over records it directly;
+/// otherwise a failure on such an inode would be reportable only for as long as
+/// the inode survived. # C: O(1)
+pub(crate) fn wb_set_error(sb: &SuperBlock, inode: &InodeRef, e: VfsError) {
+    inode.mapping_set_error(e as i32);
+    if inode.i_sb().is_none() { sb.s_wb_err.set(e as u32); }
+}
 
 impl SuperBlock {
     /// Resolve one inode's metadata debt.
@@ -49,11 +69,18 @@ impl SuperBlock {
     /// the FIRST backend error, having still attempted every other inode — a
     /// single unwritable inode must not strand the rest of the filesystem.
     /// Snapshots the pinned set first so a per-inode unpin cannot mutate the map
-    /// under its own iterator. # C: O(N_wb)
+    /// under its own iterator.
+    ///
+    /// EVERY per-inode failure — not only the one returned — is latched through
+    /// [`wb_set_error`]. The returned error reaches at most the caller that
+    /// happens to be waiting; the latch is what makes a failure on the second or
+    /// tenth inode visible to a later `fsync` on THAT file and to a later
+    /// `syncfs` on this filesystem. # C: O(N_wb)
     pub fn wb_writeback_pass(&self, sync_all: bool, now_ns: u64) -> KResult<()> {
         let mut first_err = Ok(());
         for inode in self.wb_dirty_inodes() {
             let r = self.writeback_single_inode(&inode, sync_all, now_ns);
+            if let Err(e) = r { wb_set_error(self, &inode, e); }
             if first_err.is_ok() { first_err = r; }
         }
         first_err
@@ -74,9 +101,13 @@ impl SuperBlock {
 /// [`DIRTYTIME_EXPIRE_SECS`]. Bind mounts share a superblock, so the sweep
 /// dedups by `Arc` identity. Returns the number of superblocks visited.
 ///
-/// A per-superblock failure is recorded in that filesystem's `s_wb_err` latch so
-/// the next `syncfs`/`fsync` on it reports the error exactly once, rather than
-/// vanishing into a background pass nobody is waiting on. # C: O(N_sb x N_wb)
+/// Every failure the sweep discovers is latched by the pass itself
+/// ([`wb_set_error`]), against BOTH the inode that failed and its filesystem, so
+/// the next `fsync` on that file and the next `syncfs` on that filesystem each
+/// report it exactly once instead of it vanishing into a background pass nobody
+/// is waiting on. Recording only the filesystem-wide half here — which is what
+/// this did — left the per-inode `fsync` blind to its own failure.
+/// # C: O(N_sb x N_wb)
 pub fn dirtytime_expire_pass(now_ns: u64) -> usize {
     let mut seen: Vec<*const ()> = Vec::new();
     for m in crate::mount::all_mounts().iter() {
@@ -84,7 +115,7 @@ pub fn dirtytime_expire_pass(now_ns: u64) -> usize {
         let key = alloc::sync::Arc::as_ptr(sb) as *const ();
         if seen.contains(&key) { continue; }
         seen.push(key);
-        if let Err(e) = sb.wb_flush_expired_dirtytime(now_ns) { sb.s_wb_err.set(e as u32); }
+        let _ = sb.wb_flush_expired_dirtytime(now_ns);
     }
     seen.len()
 }

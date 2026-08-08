@@ -16,6 +16,11 @@ use vfs::Timespec64;
 use crate::superblock::Superblock;
 use crate::timestamp as ts;
 
+/// On-disk `i_flags` bit definitions and their statx attribute translation.
+pub mod flags;
+/// Direct-I/O alignment reporting for `STATX_DIOALIGN`.
+pub mod dio;
+
 #[cfg(test)]
 mod tests;
 

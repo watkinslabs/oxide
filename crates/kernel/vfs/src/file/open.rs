@@ -63,16 +63,29 @@ pub fn open_file_at(
         // mounted read-only.
         let needs_trunc = flags.contains(OpenFlags::O_TRUNC);
         let truncate = needs_trunc && matches!(inode.file_type(), crate::types::FileType::Regular);
-        if truncate {
-            if mnt_id != 0 {
-                if let Some(m) = crate::mount::mount_by_id(mnt_id) {
-                    if (m.flags() & crate::mount::MNT_RDONLY) != 0 || m.sb().is_readonly() {
-                        return Err(VfsError::Erofs);
-                    }
-                }
+        if truncate && mnt_write_readonly(mnt_id) { return Err(VfsError::Erofs); }
+        let file_flags = flags - OpenFlags::O_CLOEXEC;
+        // Write admission for the DESCRIPTION, in the fixed order: the inode
+        // writer counter first (`ETXTBSY` against a running executable), then
+        // the mount/superblock read-only test (`EROFS`). Both stand AFTER the
+        // permission ladder the caller already ran, which is why a caller who
+        // lacks permission on a file that also sits on a read-only mount is
+        // told `EACCES` and not `EROFS`.
+        //
+        // The write reference is held for the LIFE of the description and
+        // released by `File::drop`, not by this call frame: it is what makes a
+        // write-open of a running binary fail, and a running binary is one that
+        // some OTHER description still holds. Acquired BEFORE the description
+        // exists so that every failure below simply drops the `File` and lets
+        // `Drop` do the single matching release.
+        let write_ref = wants_write_ref(file_flags, mnt_id, inode.file_type());
+        if write_ref {
+            inode.get_write_access()?;
+            if mnt_write_readonly(mnt_id) {
+                inode.put_write_access();
+                return Err(VfsError::Erofs);
             }
         }
-        let file_flags = flags - OpenFlags::O_CLOEXEC;
         let file = match fop_override {
             Some(fop) => File::new_at_fop(inode, dentry, file_flags, mnt_id, cred, fop),
             None      => File::new_at(inode, dentry, file_flags, mnt_id, cred),
@@ -103,6 +116,63 @@ pub fn open_file_at(
         }
         if truncate { file.inode().truncate(0)?; }
         Ok(file)
+    }
+}
+
+/// A device / FIFO / socket open addresses a driver, not filesystem data.
+/// Write admission for those file types is the driver's business, so they are
+/// exempt from the mount write admission and from the inode writer counter.
+/// # C: O(1)
+fn special_file(ftype: crate::types::FileType) -> bool {
+    use crate::types::FileType;
+    matches!(ftype, FileType::CharDev | FileType::BlockDev | FileType::Fifo | FileType::Socket)
+}
+
+/// The single rule deciding whether an open file description carries an inode
+/// write reference: a write-capable access mode, on a real mount, on a
+/// non-special file type. Both the acquire (open) and the release (final
+/// close) read THIS function, so they cannot drift apart.
+///
+/// The mount test is what separates a real open from an anonymous/pseudo file
+/// (pipe, socket, memfd, eventfd, …). Those are constructed directly rather
+/// than through this path, take no write reference, and must not release one at
+/// close — doing so would drive the counter negative and make an unrelated file
+/// look like a running executable. `O_PATH` is excluded for free: it yields an
+/// `f_mode` with neither read nor write. # C: O(1)
+fn write_ref_for(f_mode: super::Fmode, mnt_id: u64, ftype: crate::types::FileType) -> bool {
+    mnt_id != 0 && f_mode.contains(super::Fmode::WRITE) && !special_file(ftype)
+}
+
+/// [`write_ref_for`] evaluated from the flags an open is about to use, before
+/// the description exists — the acquire side of the pair. # C: O(1)
+fn wants_write_ref(flags: OpenFlags, mnt_id: u64, ftype: crate::types::FileType) -> bool {
+    write_ref_for(super::fmode_from_flags(flags), mnt_id, ftype)
+}
+
+impl File {
+    /// True iff THIS open file description holds one write reference on its
+    /// inode's writer/exec counter for its whole lifetime — the state that makes
+    /// a write-open of a running executable `ETXTBSY`, and an execute of a
+    /// currently write-open file `ETXTBSY` in the other direction.
+    ///
+    /// Recomputed rather than stored: every input is immutable for the life of
+    /// the description (the `f_mode` access bits are fixed at open and `F_SETFL`
+    /// cannot change them, the mount identity is captured at open, an inode
+    /// never changes file type), so the acquire site and the release site cannot
+    /// disagree and no extra field is needed to keep them in step. # C: O(1)
+    pub fn holds_write_ref(&self) -> bool {
+        write_ref_for(self.f_mode(), self.mnt_id(), self.inode().file_type())
+    }
+}
+
+/// True when a write through `mnt_id` must be refused `EROFS` because the mount
+/// or its backing superblock is read-only. An anonymous file (`mnt_id == 0`) has
+/// no mount to admit against and is never blocked here. # C: O(log N_mounts)
+fn mnt_write_readonly(mnt_id: u64) -> bool {
+    if mnt_id == 0 { return false; }
+    match crate::mount::mount_by_id(mnt_id) {
+        Some(m) => (m.flags() & crate::mount::MNT_RDONLY) != 0 || m.sb().is_readonly(),
+        None    => false,
     }
 }
 

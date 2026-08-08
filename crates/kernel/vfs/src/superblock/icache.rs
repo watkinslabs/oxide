@@ -88,7 +88,18 @@ pub fn ilookup(&self, ino: Ino) -> Option<InodeRef> {
         // A link-less inode is being DELETED — writing its metadata out costs
         // I/O to record state that is about to be freed, and under `lazytime`
         // would defeat the option's main saving on a create/read/unlink churn.
-        if inode.nlink() != 0 { let _ = self.s_op.write_inode(&inode, true); }
+        // The failure has nowhere to be returned to — `iput` has no caller
+        // waiting on durability — so it is LATCHED rather than dropped. This is
+        // the eviction case the error latch exists for: the inode is about to
+        // leave the cache, and without the record a later `syncfs` on this
+        // filesystem would report success for metadata that never reached the
+        // backend. Dropping it, which is what this did, made a metadata
+        // writeback failure at eviction invisible to every later call.
+        if inode.nlink() != 0 {
+            if let Err(e) = self.s_op.write_inode(&inode, true) {
+                crate::writeback::flush::wb_set_error(self, &inode, e);
+            }
+        }
         inode.set_state(I_FREEING, I_WILL_FREE);
         self.s_op.evict_inode(&inode); // default: clear_inode (I_FREEING|I_CLEAR)
         // The inode is leaving the cache. A mark that asked not to pin its

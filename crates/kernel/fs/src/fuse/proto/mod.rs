@@ -17,7 +17,7 @@ mod message;
 mod attr;
 
 pub use message::{InHeader, OutHeader, InitIn, InitOut};
-pub use attr::{Attr, EntryOut, AttrOut, OpenOut, OpenIn, GetattrIn, ReadIn, Dirent, decode_dirent_stream};
+pub use attr::{Attr, EntryOut, AttrOut, OpenOut, OpenIn, GetattrIn, ReadIn, FsyncIn, Dirent, decode_dirent_stream};
 
 // ---------------------------------------------------------------------------
 // Protocol version — Linux `FUSE_KERNEL_VERSION` / `FUSE_KERNEL_MINOR_VERSION`.
@@ -51,7 +51,9 @@ pub const FUSE_FLUSH: u32 = 25;
 pub const FUSE_INIT: u32 = 26;
 pub const FUSE_OPENDIR: u32 = 27;
 pub const FUSE_READDIR: u32 = 28;
+pub const FUSE_FSYNC: u32 = 20;
 pub const FUSE_RELEASEDIR: u32 = 29;
+pub const FUSE_FSYNCDIR: u32 = 30;
 pub const FUSE_DESTROY: u32 = 38;
 
 // ---------------------------------------------------------------------------
@@ -101,6 +103,12 @@ pub const FUSE_READ_IN_SIZE: usize = 40;
 pub const FUSE_RELEASE_IN_SIZE: usize = 24;
 /// `sizeof(struct fuse_flush_in)`. # C: O(1)
 pub const FUSE_FLUSH_IN_SIZE: usize = 24;
+/// `sizeof(struct fuse_fsync_in)` (`fh,fsync_flags,padding`). # C: O(1)
+pub const FUSE_FSYNC_IN_SIZE: usize = 16;
+/// `FUSE_FSYNC_FDATASYNC` — sync data only, not metadata: the wire form of the
+/// `datasync` argument. Without it the daemon cannot tell `fsync` from
+/// `fdatasync` and must over-sync every call. # C: O(1)
+pub const FUSE_FSYNC_FDATASYNC: u32 = 1 << 0;
 /// `sizeof(struct fuse_forget_in)`. # C: O(1)
 pub const FUSE_FORGET_IN_SIZE: usize = 8;
 /// `struct fuse_dirent` header size (`ino,off,namelen,type`), name follows.

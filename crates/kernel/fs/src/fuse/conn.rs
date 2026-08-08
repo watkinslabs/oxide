@@ -149,6 +149,14 @@ pub struct FuseConn {
     node_inodes: Spinlock<BTreeMap<u64, Weak<Inode>>, FuseClass>,
     /// `fc->max_read` from the typed mount context; bounds every FUSE_READ.
     max_read: AtomicU32,
+    /// `fc->no_fsync` — the daemon answered `ENOSYS` to FSYNC once, so it has
+    /// no fsync handler at all. Every later fsync succeeds without a round
+    /// trip. Latched per connection, never cleared: a daemon does not grow a
+    /// handler mid-session.
+    no_fsync: AtomicBool,
+    /// `fc->no_fsyncdir` — the same latch for FSYNCDIR, which daemons omit far
+    /// more often than FSYNC.
+    no_fsyncdir: AtomicBool,
 }
 
 impl FuseConn {
@@ -165,6 +173,8 @@ impl FuseConn {
             poll_subs,
             node_inodes: Spinlock::new(BTreeMap::new()),
             max_read: AtomicU32::new(u32::MAX),
+            no_fsync: AtomicBool::new(false),
+            no_fsyncdir: AtomicBool::new(false),
         })
     }
 
@@ -195,6 +205,21 @@ impl FuseConn {
     pub fn set_max_read(&self, max_read: u32) { self.max_read.store(max_read, Ordering::Release); }
     /// Maximum payload requested by one `FUSE_READ`. # C: O(1)
     pub fn max_read(&self) -> u32 { self.max_read.load(Ordering::Acquire) }
+
+    /// True when this daemon has already answered `ENOSYS` to the given fsync
+    /// opcode, so the request must be skipped and the sync reported as done.
+    /// # C: O(1)
+    pub fn fsync_unsupported(&self, is_dir: bool) -> bool {
+        let f = if is_dir { &self.no_fsyncdir } else { &self.no_fsync };
+        f.load(Ordering::Acquire)
+    }
+
+    /// Latch the `ENOSYS` answer so no later fsync pays the round trip.
+    /// # C: O(1)
+    pub fn set_fsync_unsupported(&self, is_dir: bool) {
+        let f = if is_dir { &self.no_fsyncdir } else { &self.no_fsync };
+        f.store(true, Ordering::Release);
+    }
 
     /// Encode a request (`fuse_in_header` + `body`) for `opcode` on `nodeid`,
     /// file it in `slots`, push it to the daemon's `pending` queue, and wake a
@@ -417,6 +442,35 @@ fn wire_err_to_vfs(neg: i32) -> vfs::VfsError {
     match -neg {
         1 => Eperm, 2 => Enoent, 5 => Eio, 9 => Ebadf, 13 => Eacces, 17 => Eexist,
         20 => Enotdir, 21 => Eisdir, 22 => Einval, 38 => Enosys, 95 => Eopnotsupp,
-        107 => Enotconn, _ => Eio,
+        107 => Enotconn, 116 => Estale, _ => Eio,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wire_err_to_vfs;
+    use vfs::VfsError;
+
+    /// A daemon errno reaches the caller as ITSELF, not as a generic I/O error.
+    /// `ESTALE` in particular: it was folded into `EIO`, which both hid a real
+    /// server answer and made the one errno the path-resolution retry exists to
+    /// act on unreachable — the retry could never fire because nothing in the
+    /// tree could produce the error that triggers it. # C: O(1)
+    #[test]
+    fn daemon_errnos_survive_translation() {
+        let cases = [
+            (-1, VfsError::Eperm), (-2, VfsError::Enoent), (-5, VfsError::Eio),
+            (-9, VfsError::Ebadf), (-13, VfsError::Eacces), (-17, VfsError::Eexist),
+            (-20, VfsError::Enotdir), (-21, VfsError::Eisdir), (-22, VfsError::Einval),
+            (-38, VfsError::Enosys), (-95, VfsError::Eopnotsupp),
+            (-107, VfsError::Enotconn), (-116, VfsError::Estale),
+        ];
+        for (wire, want) in cases {
+            assert_eq!(wire_err_to_vfs(wire), want, "wire {wire}");
+        }
+        // A stale handle must be distinguishable from a generic failure.
+        assert_ne!(wire_err_to_vfs(-116), wire_err_to_vfs(-5));
+        // An errno with no mapping is still an error, never a success.
+        assert_eq!(wire_err_to_vfs(-4095), VfsError::Eio);
     }
 }
