@@ -62,18 +62,26 @@ pub fn vnr_in(t: &Task, ns: &NamespaceRef) -> Option<u32> {
 /// hosted fixtures with no installed task), which callers treat as the initial
 /// namespace.
 ///
-/// UNGATED deliberately. This was kernel-only, and [`reader_pid_ns`] answered
-/// "the initial namespace" unconditionally in every other build — so every
-/// hosted test of a wait, signal or reap path saw one namespace no matter what
-/// it set up, and no test could distinguish a reader-namespace answer from an
-/// internal one. The namespace-relative half of those paths was therefore
-/// structurally unverifiable, which is why the wait rows carried a
-/// nested-namespace coverage gap rather than a defect. `current()` already
-/// returns `None` when no task is installed, which is the same fallback the
-/// gate hard-coded.
+/// Gated on the SCHEDULER's presence, not on the kernel target. This was
+/// kernel-only, and [`reader_pid_ns`] answered "the initial namespace"
+/// unconditionally in every other build — so every hosted test of a wait,
+/// signal or reap path saw one namespace no matter what it set up, and no test
+/// could distinguish a reader-namespace answer from an internal one. The
+/// namespace-relative half of those paths was structurally unverifiable, which
+/// is why the wait rows carried a nested-namespace coverage gap with no defect
+/// ever named under it.
+///
+/// The condition is now exactly `live`'s own: a build WITH a runqueue answers
+/// from the running task, whether that build is the kernel or a hosted test. A
+/// build without one has no current task to ask, so `None` is the only honest
+/// answer and callers read it as the initial namespace, which is what the old
+/// gate hard-coded for every non-kernel build.
 /// # C: O(1)
 pub fn caller_pid_ns() -> Option<NamespaceRef> {
-    crate::live::current()?.namespace_owner(NamespaceKind::Pid)
+    #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+    { crate::live::current()?.namespace_owner(NamespaceKind::Pid) }
+    #[cfg(not(any(target_os = "oxide-kernel", test, feature = "hosted")))]
+    { None }
 }
 
 /// The pid namespace every number rendered on this call must be expressed in:
