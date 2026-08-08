@@ -11,6 +11,8 @@
 // `nrs.rs` — Linux syscall numbers. `tracepoint.rs` — sys_enter/exit hooks.
 // `at.rs` — `AT_*` dirfd/`*at` flag numbers (`uapi/linux/fcntl.h`).
 // `getrandom.rs` — `GRND_*` flags + flag-validation for `sys_getrandom`.
+// `io_uring_ctl.rs` — the live `io_uring_disabled`/`io_uring_group` cells
+// shared by the ring-creation admission check and `/proc/sys/kernel`.
 // `time.rs` — shared timespec→ns decode + `ktime_set`-style clamp.
 // `ptrace.rs` — PTRACE_EVENT_* codes + stop-code composition, shared with
 // the wait status encoder.
@@ -31,6 +33,7 @@ pub mod args;
 pub mod at;
 pub mod errno;
 pub mod getrandom;
+pub mod io_uring_ctl;
 pub mod nrs;
 pub mod ptrace;
 pub mod restart;

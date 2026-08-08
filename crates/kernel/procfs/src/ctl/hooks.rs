@@ -37,6 +37,13 @@ pub(super) fn set_perf_paranoid(v: i64) { sched::perf_sw::set_paranoid(v as i32)
 pub(super) fn get_perf_sample_rate() -> i64 { sched::perf_sw::sample_rate() as i64 }
 pub(super) fn set_perf_sample_rate(v: i64) { sched::perf_sw::set_sample_rate(v as i32); }
 pub(super) fn get_dmesg_restrict() -> i64 { klog::syslog::dmesg_restrict() as i64 }
+/// `kernel.io_uring_disabled` / `kernel.io_uring_group` bind to the live cells
+/// the ring-creation admission check reads. A procfs-local copy would let an
+/// administrator disable io_uring here while ring creation kept succeeding.
+pub(super) fn get_io_uring_disabled() -> i64 { syscall::io_uring_ctl::disabled() as i64 }
+pub(super) fn set_io_uring_disabled(v: i64) { syscall::io_uring_ctl::set_disabled(v as i32); }
+pub(super) fn get_io_uring_group() -> i64 { syscall::io_uring_ctl::group() as i64 }
+pub(super) fn set_io_uring_group(v: i64) { syscall::io_uring_ctl::set_group(v as i32); }
 /// `debug.exception-trace` binds to the live `show_unhandled_signals` cell the
 /// fault path reads, so silencing the report here really does silence it.
 pub(super) fn get_exception_trace() -> i64 { sched::signal_report::show_unhandled_signals() as i64 }
