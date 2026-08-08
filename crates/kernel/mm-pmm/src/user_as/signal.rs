@@ -93,15 +93,18 @@ fn resolver_signal(failure: Option<vmm::fault_signal::FaultFailure>,
     // the contract that the memory-pressure path has already posted a fatal
     // signal on its chosen victim. If it did not, the instruction re-faults
     // forever — so say so once, or a hang looks like a wedge with no cause.
+    // Latched: the retry re-enters this path on every re-fault, and an
+    // unbounded log would bury the console.
+    #[cfg(feature = "debug-faultdiag")]
     if matches!(failure, Some(vmm::fault_signal::FaultFailure::Oom))
         && !OOM_FAULT_REPORTED.swap(true, core::sync::atomic::Ordering::Relaxed) {
-        klog::write_raw(b"[FAULT] out of memory resolving a user fault; re-taking\n");
+        klog::write_raw(b"[FAULT-RESOLVE] out of memory; no signal, re-taking\n");
     }
     sig
 }
 
-/// One-shot latch for the out-of-memory fault report above: the retry re-enters
-/// this path on every re-fault, and an unbounded log would bury the console.
+/// One-shot latch for the out-of-memory fault report above.
+#[cfg(feature = "debug-faultdiag")]
 static OOM_FAULT_REPORTED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
