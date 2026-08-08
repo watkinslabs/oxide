@@ -24,6 +24,13 @@ const SWAP_OFFSET_SHIFT: u8 = 12;
 // 4.8); hardware ignores it when P=0.  Keeping it outside the 40-bit
 // payload makes a migration marker distinguishable from every swap type.
 const MIGRATION_MARKER: u64 = 1 << 11;
+// Present-leaf bit 57 is software-available on this architecture (ignored by
+// the translation hardware), which is what lets a leaf carry the userfaultfd
+// write-protect marker without changing how the CPU walks it.
+const UFFD_WP_BIT: u64 = 1 << 57;
+// Non-present bit 10, disjoint from the swap (bit 1) and migration (bit 11)
+// markers, so a poisoned leaf decodes as neither.
+const POISON_MARKER: u64 = 1 << 10;
 
 /// Errors `map_device_4k` can return. Mirrors `WalkErr` 1:1; kept
 /// as a separate type so callers don't depend on the hal-internal
@@ -155,6 +162,13 @@ impl PtWalker for PtWalkerX86 {
         if (raw & P_BIT) != 0 || (raw & MIGRATION_MARKER) == 0 { return None; }
         hal::pt_walker::MigrationEntry::new((raw >> SWAP_OFFSET_SHIFT) & hal::pt_walker::MigrationEntry::MAX_TOKEN)
     }
+
+    fn leaf_wrprotect(raw: u64) -> u64 { raw & !RW_BIT }
+    fn leaf_set_uffd_wp(raw: u64) -> u64 { raw | UFFD_WP_BIT }
+    fn leaf_clear_uffd_wp(raw: u64) -> u64 { raw & !UFFD_WP_BIT }
+    fn leaf_is_uffd_wp(raw: u64) -> bool { (raw & P_BIT) != 0 && (raw & UFFD_WP_BIT) != 0 }
+    fn pack_poison_marker() -> u64 { POISON_MARKER }
+    fn is_poison_marker(raw: u64) -> bool { (raw & P_BIT) == 0 && (raw & POISON_MARKER) != 0 }
 }
 
 /// Install a 4 KiB Device-attr (PCD|PWT, NX) mapping `va → pa` in

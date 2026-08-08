@@ -5,6 +5,7 @@
 // `teardown` owns AS page-table teardown and fault classification helpers.
 // `debug` owns cfg-gated fault diagnostics and debug watch hooks.
 // `fault` owns arch fault dispatch and demand-page resolution.
+// `uffd` owns userfaultfd fault interception and poisoned-page reporting.
 // `mmap` owns mmap syscall glue.
 // `unmap` owns madvise/munmap page eviction glue.
 // `diag` owns file-page diagnostics; `prefault` owns eager range population.
@@ -31,6 +32,7 @@ mod teardown;
 #[cfg(any(feature = "debug-cow", feature = "debug-displaystack", all(feature = "debug-mount", target_arch = "x86_64")))]
 mod debug;
 mod fault;
+pub(crate) mod uffd;
 mod mmap;
 mod unmap;
 mod diag;

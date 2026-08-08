@@ -11,10 +11,10 @@ impl Clone for Vma {
             // no UFFD_FEATURE_EVENT_FORK, so Linux `dup_userfaultfd` clears
             // `vm_userfaultfd_ctx` + the `__VM_UFFD_FLAGS` on the child (the
             // parent's monitor owns the fd and would `UFFDIO_COPY` into the
-            // WRONG mm). Strip the MISSING flag here; `uffd` is dropped below.
+            // WRONG mm). Strip EVERY mode flag here; `uffd` is dropped below.
             // (`Vma::clone` is the fork-dup path exclusively; splits use
             // `clone_subrange`.)
-            flags: self.flags.difference(VmaFlags::UFFD_MISSING),
+            flags: self.flags.difference(VmaFlags::UFFD_MASK),
             backing: self.backing.clone(),
             rss: AtomicU64::new(self.rss.load(Ordering::Relaxed)),
             anon_pages: AtomicBool::new(self.anon_pages.load(Ordering::Relaxed)),

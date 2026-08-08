@@ -155,4 +155,39 @@ pub trait PtWalker {
     fn unpack_swap_entry(raw: u64) -> Option<SwapEntry>;
     fn pack_migration_entry(entry: MigrationEntry) -> u64 { let _ = entry; 0 }
     fn unpack_migration_entry(raw: u64) -> Option<MigrationEntry> { let _ = raw; None }
+
+    /// Make a present leaf reject writes while keeping it readable and
+    /// resident. There is deliberately no inverse: a leaf regains write
+    /// permission only by being re-packed from its VMA protection, so no
+    /// caller can invent write access out of a raw entry.
+    /// # C: O(1)
+    fn leaf_wrprotect(raw: u64) -> u64;
+
+    /// Set the software "write-protected on behalf of a userfaultfd" marker on
+    /// a present leaf. The marker is per-PAGE state living in the leaf itself,
+    /// which is what makes the page table the single owner of "this page is
+    /// uffd write-protected" — no side table can disagree with what the CPU
+    /// walks.
+    /// # C: O(1)
+    fn leaf_set_uffd_wp(raw: u64) -> u64;
+
+    /// Clear the software userfaultfd write-protect marker. Write permission
+    /// is deliberately NOT restored here: the next write takes an ordinary
+    /// protection fault, which is where write access is decided.
+    /// # C: O(1)
+    fn leaf_clear_uffd_wp(raw: u64) -> u64;
+
+    /// Whether a present leaf carries the userfaultfd write-protect marker.
+    /// # C: O(1)
+    fn leaf_is_uffd_wp(raw: u64) -> bool;
+
+    /// A non-present leaf marking the page as poisoned: an access to it raises
+    /// a memory-error fault instead of allocating a page. Distinct from the
+    /// swap and migration encodings and from the all-zero absent leaf.
+    /// # C: O(1)
+    fn pack_poison_marker() -> u64;
+
+    /// Whether `raw` is the marker written by [`Self::pack_poison_marker`].
+    /// # C: O(1)
+    fn is_poison_marker(raw: u64) -> bool;
 }
