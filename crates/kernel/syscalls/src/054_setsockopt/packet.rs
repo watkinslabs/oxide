@@ -170,8 +170,9 @@ fn packet_fanout(sock: &Arc<net::sock::InetSocket>, optval: u64, optlen: u32) ->
 }
 
 fn packet_fanout_data(sock: &Arc<net::sock::InetSocket>, optval: u64, optlen: u32) -> i64 {
-    if sock.bpf_filter.is_locked() { return -(Errno::Eperm.as_i32() as i64); }
-    let program = match sock.packet_fanout_mode() {
+    let mode = crate::packet_optshape::fanout_data_mode(sock.packet_fanout_mode().ok(),
+        sock.bpf_filter.is_locked());
+    let program = match mode {
         Ok(net::uapi::PACKET_FANOUT_CBPF) => {
             let header = match super::main::classic_filter_header(optval, optlen) {
                 Ok(header) => header, Err(error) => return -(error.as_i32() as i64),
@@ -192,7 +193,8 @@ fn packet_fanout_data(sock: &Arc<net::sock::InetSocket>, optval: u64, optlen: u3
                 Ok(program) => program, Err(error) => return -(error.as_i32() as i64),
             }
         }
-        Ok(_) | Err(_) => return -(Errno::Einval.as_i32() as i64),
+        Ok(_) => return -(Errno::Einval.as_i32() as i64),
+        Err(error) => return -(error.as_i32() as i64),
     };
     match sock.set_packet_fanout_data(program) {
         Ok(()) => 0,

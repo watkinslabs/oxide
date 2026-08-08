@@ -77,5 +77,21 @@ pub(crate) fn vnet_hdr_get(size: u32, explicit_size: bool) -> i32 {
     if explicit_size { size as i32 } else { i32::from(size != 0) }
 }
 
+/// Which import a `PACKET_FANOUT_DATA` write performs, or the error it takes.
+///
+/// The group answers first: a socket that joined no fanout group, or joined one
+/// whose selector is neither classic nor extended, is refused for that reason
+/// alone — a locked filter does not turn that refusal into a permission error.
+/// The lock is the accepting modes' own refusal, and it precedes the import, so
+/// a locked socket never reads the caller's program. # C: O(1)
+pub(crate) fn fanout_data_mode(mode: Option<u8>, filter_locked: bool) -> Result<u8, Errno> {
+    let mode = mode.ok_or(Errno::Einval)?;
+    if mode != net::uapi::PACKET_FANOUT_CBPF && mode != net::uapi::PACKET_FANOUT_EBPF {
+        return Err(Errno::Einval);
+    }
+    if filter_locked { return Err(Errno::Eperm); }
+    Ok(mode)
+}
+
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 mod tests;

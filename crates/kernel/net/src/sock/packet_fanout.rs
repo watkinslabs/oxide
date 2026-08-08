@@ -208,10 +208,12 @@ impl InetSocket {
 
     /// Replace the shared CBPF/EBPF fanout selector. # C: O(program bytes)
     pub fn set_packet_fanout_data(&self, program: FilterProgram) -> crate::NetResult<()> {
-        if self.bpf_filter.is_locked() { return Err(crate::NetError::Eperm); }
+        // Group membership answers before the filter lock: a socket in no
+        // group is refused for that reason whether or not its filter is locked.
         let Some(member) = self.packet_fanout.lock().clone() else {
             return Err(crate::NetError::Einval);
         };
+        if self.bpf_filter.is_locked() { return Err(crate::NetError::Eperm); }
         let expected = if member.group.mode == crate::uapi::PACKET_FANOUT_CBPF {
             crate::bpf_filter::FilterKind::Classic
         } else if member.group.mode == crate::uapi::PACKET_FANOUT_EBPF {
