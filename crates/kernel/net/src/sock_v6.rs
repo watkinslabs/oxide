@@ -334,8 +334,9 @@ pub fn sendto_v6_ctl(sock: &InetSocket,
                         sock.opts.ipv6.generates_flow_label(
                         crate::sysctl::ipv6_auto_flowlabels_in(sock.net_ns()))),
                     sock.opts.ipv6.srcprefs(), &control,
-                ).map_err(|error| crate::socket_error::report_send_failure(&sock.error,
-                    sock.net_ns(), crate::addr::IpAddr::V6(dst_ip), dst_port, iface, error))?;
+                ).map_err(|error| crate::socket_error::report_send_failure_pmtu(&sock.error,
+                    sock.net_ns(), crate::addr::IpAddr::V6(dst_ip), dst_port, iface, error,
+                    recvpathmtu(sock)))?;
             }
             drain_loopback();
             return Ok(payload.len());
@@ -348,10 +349,16 @@ pub fn sendto_v6_ctl(sock: &InetSocket,
             sock.opts.ipv6.generates_flow_label(
                         crate::sysctl::ipv6_auto_flowlabels_in(sock.net_ns()))),
         sock.opts.ipv6.srcprefs(), &control,
-    ).map_err(|error| crate::socket_error::report_send_failure(&sock.error, sock.net_ns(),
-        crate::addr::IpAddr::V6(dst_ip), dst_port, iface, error))?;
+    ).map_err(|error| crate::socket_error::report_send_failure_pmtu(&sock.error, sock.net_ns(),
+        crate::addr::IpAddr::V6(dst_ip), dst_port, iface, error, recvpathmtu(sock)))?;
     drain_loopback();
     Ok(payload.len())
+}
+
+/// Whether this socket collects the path-MTU announcement from its ordinary
+/// receive. # C: O(1)
+fn recvpathmtu(sock: &InetSocket) -> bool {
+    sock.opts.ipv6.flag(crate::sock_opts::sol_ipv6::flag::RXPATHMTU)
 }
 
 #[cfg(test)]
