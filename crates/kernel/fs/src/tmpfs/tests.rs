@@ -67,8 +67,8 @@ mod statfs_tests {
     #[test]
     fn ramfs_and_tmpfs_report_their_own_magic_and_name() {
         use super::super::uapi::RAMFS_MAGIC;
-        let t = TmpfsFs::from_mount_data(String::from("/run"), "");
-        let r = TmpfsFs::ramfs_from_mount_data("");
+        let t = TmpfsFs::from_mount_data(String::from("/run"), "").unwrap();
+        let r = TmpfsFs::ramfs_from_mount_data("").unwrap();
         assert_eq!(t.magic(), TMPFS_MAGIC);
         assert_eq!(r.magic(), RAMFS_MAGIC);
         assert_ne!(TMPFS_MAGIC, RAMFS_MAGIC);
@@ -262,7 +262,7 @@ mod symlink_tests {
     // tmpfs symlink inode round-trips its target (the systemd /run case).
     #[test]
     fn symlink_inode_readlink_roundtrips() {
-        let s = make_tmpfs_symlink_inode(b"/usr/share/zoneinfo/UTC", 0, 0, Weak::new());
+        let s = make_tmpfs_symlink_inode(b"/usr/share/zoneinfo/UTC", 0, 0, Weak::new(), &TmpfsSb::unlimited());
         assert_eq!(s.file_type(), FileType::Symlink);
         assert_eq!(s.size(), 23);
         assert_eq!(s.readlink().unwrap(), b"/usr/share/zoneinfo/UTC".to_vec());

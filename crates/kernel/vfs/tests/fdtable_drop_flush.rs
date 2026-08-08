@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 struct FlushOps(Arc<AtomicUsize>);
 
 impl vfs::FileOps for FlushOps {
-    fn on_flush_file(&self, _file: &vfs::File) -> vfs::KResult<()> {
+    fn on_flush_file(&self, _file: &vfs::File, _owner: vfs::RecordOwner) -> vfs::KResult<()> {
         self.0.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }

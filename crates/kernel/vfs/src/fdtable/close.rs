@@ -29,7 +29,7 @@ pub fn files_owner(table: *const super::FdTable) -> RecordOwner {
 /// records and BSD flocks are the last-reference case instead and ride
 /// `File::drop` (`locks_remove_file`). # C: O(N_records)
 pub fn filp_close(owner: RecordOwner, file: Arc<File>) -> KResult<()> {
-    let result = file.flush();
+    let result = file.flush(owner);
     {
         let flctx = file.inode().file_lock_context();
         if flctx.remove_records_for(owner) { crate::file_lock_wake(flctx.wait_key()); }

@@ -16,6 +16,8 @@
 //! - `dir_ops`: the `i_op`/`f_op` vectors that adapt the tree to the VFS.
 //! - `reval`: `d_revalidate` + removal-time cache invalidation (`kernfs_dops`).
 //! - `fs`: the standalone `PseudoFs` `FileSystem` wrapper.
+//! - `mount_opts`: the root-owner/mode mount options the pseudo-filesystems
+//!   built on this tree accept, and the stamp that enforces them.
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
@@ -26,6 +28,7 @@ extern crate std;
 
 mod dir_ops;
 mod fs;
+pub mod mount_opts;
 mod reval;
 mod tree;
 

@@ -3,7 +3,7 @@
 
 use vfs::MAXQUOTAS;
 
-use super::ctx::{Ext4MountOpts, FsQuotaFeatures, SbQuotaOpts};
+use super::ctx::{Ext4MountOpts, FsQuotaFeatures, Ext4SbOpts};
 use super::flags::EXT4_MOUNT_QUOTA;
 
 /// Apply `ctx` to `sb`.
@@ -13,8 +13,11 @@ use super::flags::EXT4_MOUNT_QUOTA;
 /// quota inodes are then the only quota files, and a named one would be a
 /// second, disagreeing source of quota state.
 /// # C: O(MAXQUOTAS)
-pub fn apply_quota_options(ctx: &mut Ext4MountOpts, feat: &FsQuotaFeatures, sb: &mut SbQuotaOpts) {
+pub fn apply_quota_options(ctx: &mut Ext4MountOpts, feat: &FsQuotaFeatures, sb: &mut Ext4SbOpts) {
     sb.mount_opt = (sb.mount_opt & !ctx.mask) | (ctx.vals & ctx.mask);
+    // The context was seeded from `sb.behaviour`, so this carries forward every
+    // option this data string did not name.
+    sb.behaviour = ctx.behaviour;
     if feat.quota { return; }
     if ctx.spec_jquota {
         for slot in 0..MAXQUOTAS {

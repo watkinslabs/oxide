@@ -153,6 +153,13 @@ pub mod vfs_errno;
 // it by `#[path]`-including the file, so a break in the module the kernel
 // actually links could not turn any of them red).
 pub mod mount_dispatch;
+// The parameter tables of the pseudo-filesystems `fsmount_common::registry`
+// builds from the generic tree, and the stamp that puts a mount's `uid=`/`gid=`
+// /`mode=` on the root it created. Ungated and LINKED for the same reason as
+// `mount_dispatch`: `registry.rs` is `target_os`-gated, so a table declared
+// there is compiled out of `cargo test` and no test could turn red on it.
+#[path = "fsmount_common/pseudo_params.rs"]
+pub mod fsmount_pseudo_params;
 // mount(2)'s flag-word preamble: the MS_MGC_VAL magic strip and the MS_NOUSER
 // reject, whose ORDER is load-bearing (the magic value CONTAINS MS_NOUSER).
 pub mod mount_flags_policy;

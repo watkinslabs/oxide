@@ -149,7 +149,31 @@ fn wants_write_ref(flags: OpenFlags, mnt_id: u64, ftype: crate::types::FileType)
     write_ref_for(super::fmode_from_flags(flags), mnt_id, ftype)
 }
 
+/// The single rule deciding whether an open file description counts as a
+/// READER of its inode: read access without write access. A read-write open is
+/// a writer and is counted by `i_writecount` instead, so no description is ever
+/// counted twice; an `O_PATH` fd has neither bit and is neither.
+///
+/// Unlike the write reference this asks nothing about the mount or the file
+/// type: the reader count exists to answer "does anyone else have this open",
+/// which is as true of a pipe read end or an anonymous inode as of a file on
+/// disk. Every description takes it at construction, so acquire and release
+/// balance for anonymous files too. # C: O(1)
+pub fn read_ref_for(f_mode: super::Fmode) -> bool {
+    f_mode.contains(super::Fmode::READ) && !f_mode.contains(super::Fmode::WRITE)
+}
+
 impl File {
+    /// True iff THIS open file description holds one reference on its inode's
+    /// reader count — the state that makes an exclusive lease `EAGAIN` while
+    /// somebody ELSE still has the file open for reading.
+    ///
+    /// Recomputed rather than stored, for the reason [`Self::holds_write_ref`]
+    /// gives: the `f_mode` access bits are fixed at open and `F_SETFL` cannot
+    /// change them, so the acquire site and the release site read one function
+    /// and cannot drift apart. # C: O(1)
+    pub fn holds_read_ref(&self) -> bool { read_ref_for(self.f_mode()) }
+
     /// True iff THIS open file description holds one write reference on its
     /// inode's writer/exec counter for its whole lifetime — the state that makes
     /// a write-open of a running executable `ETXTBSY`, and an execute of a

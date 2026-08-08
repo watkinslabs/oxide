@@ -99,8 +99,10 @@ pub(crate) fn set_lease(
     if vfs::file::add_lease_conflict(file, ty) {
         return -(Errno::Eagain.as_i32() as i64);
     }
-    if vfs::file::open_conflicts(ty, inode.writecount(),
-                                 file.f_mode().contains(vfs::Fmode::WRITE)) {
+    // The open-count admission reads BOTH live counters and this description's
+    // own contribution to each; asking the file keeps the two apart from any
+    // second opinion the shim could form about its own open mode.
+    if file.lease_open_conflict(ty) {
         return -(Errno::Eagain.as_i32() as i64);
     }
     if file.owner.load(Ordering::Acquire) == 0 {

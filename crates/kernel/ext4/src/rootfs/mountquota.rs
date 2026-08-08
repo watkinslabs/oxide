@@ -15,7 +15,7 @@
 
 use alloc::sync::Arc;
 
-use crate::mount_opts::SbQuotaOpts;
+use crate::mount_opts::Ext4SbOpts;
 use crate::superblock::EXT4_ROOT_INO;
 use super::RootfsState;
 
@@ -32,7 +32,7 @@ pub(super) fn enable_mount_quotas(
     allow_readonly: bool,
 ) -> vfs::KResult<()> {
     if sb.sb_rdonly() && !allow_readonly { return Ok(()); }
-    let opts = st.quota_opts();
+    let opts = st.opts();
     if st.mount.sb.has_quota() { enable_hidden_quotas(st, sb, &opts, allow_readonly)?; }
     enable_journalled_quotas(st, sb, &opts, allow_readonly);
     Ok(())
@@ -42,7 +42,7 @@ pub(super) fn enable_mount_quotas(
 fn enable_hidden_quotas(
     st: &Arc<RootfsState>,
     sb: &Arc<vfs::SuperBlock>,
-    opts: &SbQuotaOpts,
+    opts: &Ext4SbOpts,
     allow_readonly: bool,
 ) -> vfs::KResult<()> {
     let mut done = [false; vfs::MAXQUOTAS];
@@ -82,7 +82,7 @@ fn enable_hidden_quotas(
 fn enable_journalled_quotas(
     st: &Arc<RootfsState>,
     sb: &Arc<vfs::SuperBlock>,
-    opts: &SbQuotaOpts,
+    opts: &Ext4SbOpts,
     allow_readonly: bool,
 ) {
     if !opts.has_journalled_files() { return; }

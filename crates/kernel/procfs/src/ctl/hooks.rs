@@ -84,6 +84,15 @@ pub(super) fn set_dmesg_restrict(value: i64) { klog::syslog::set_dmesg_restrict(
 /// `struct mq_attr` against, so raising a ceiling here and
 /// the EINVAL the syscall reports can never disagree. Every leaf is
 /// namespace-scoped: Linux's `set_lookup` resolves `current`'s `ipc_ns`.
+/// `fs.pipe-max-size` and the two per-user pipe page limits, bound to the live
+/// variables the pipe admission ladders read. Was a procfs-owned cell that
+/// nothing consulted, so lowering the ceiling changed no pipe.
+pub(super) fn get_pipe_max_size() -> i64 { vfs::pipe_limits::max_size() }
+pub(super) fn set_pipe_max_size(v: i64) { vfs::pipe_limits::set_max_size(v) }
+pub(super) fn get_pipe_user_pages_soft() -> i64 { vfs::pipe_limits::user_pages_soft() }
+pub(super) fn set_pipe_user_pages_soft(v: i64) { vfs::pipe_limits::set_user_pages_soft(v) }
+pub(super) fn get_pipe_user_pages_hard() -> i64 { vfs::pipe_limits::user_pages_hard() }
+pub(super) fn set_pipe_user_pages_hard(v: i64) { vfs::pipe_limits::set_user_pages_hard(v) }
 pub(super) fn get_ep_max_watches() -> i64 { vfs::epoll_limits::max_user_watches() }
 pub(super) fn set_ep_max_watches(v: i64) { vfs::epoll_limits::set_max_user_watches(v) }
 pub(super) fn get_in_max_watches() -> i64 { vfs::fsnotify::max_user_watches() }

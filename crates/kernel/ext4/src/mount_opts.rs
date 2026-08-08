@@ -1,6 +1,7 @@
 // ext4 mount-option parsing and the quota-family option contract.
 //
 // Module manifest:
+// - behaviour: the non-quota options and what each one changes.
 // - flags: option token names, quota mount-opt bits, `jqfmt=` enum.
 // - ctx: parse context, live per-superblock quota option state, feature bits.
 // - parse: mount-data tokeniser, option table, quota-file name rules.
@@ -10,6 +11,7 @@
 // UNGATED on purpose: the whole decision surface must be reachable by
 // `cargo test` on the host.
 
+pub mod behaviour;
 mod flags;
 mod ctx;
 mod parse;
@@ -22,7 +24,8 @@ mod tests;
 pub use flags::{EXT4_MOUNT_GRPQUOTA, EXT4_MOUNT_PRJQUOTA, EXT4_MOUNT_QUOTA,
                 EXT4_MOUNT_QUOTA_MASK, EXT4_MOUNT_USRQUOTA, jqfmt_from_name, jqfmt_name,
                 limit_bit};
-pub use ctx::{Ext4MountOpts, FsQuotaFeatures, SbQuotaOpts};
+pub use behaviour::{DataMode, ErrorsPolicy, Ext4Behaviour};
+pub use ctx::{Ext4MountOpts, FsQuotaFeatures, Ext4SbOpts};
 pub use consistency::check_quota_consistency;
 pub use apply::apply_quota_options;
 
@@ -39,10 +42,10 @@ pub use apply::apply_quota_options;
 pub fn configure(
     data: &str,
     feat: &FsQuotaFeatures,
-    sb: &mut SbQuotaOpts,
+    sb: &mut Ext4SbOpts,
     quota_loaded: bool,
 ) -> vfs::KResult<()> {
-    let mut ctx = alloc::boxed::Box::new(Ext4MountOpts::parse(data)?);
+    let mut ctx = alloc::boxed::Box::new(Ext4MountOpts::parse_from(data, sb.behaviour)?);
     ctx.validate()?;
     check_quota_consistency(&mut ctx, feat, sb, quota_loaded)?;
     apply_quota_options(&mut ctx, feat, sb);

@@ -362,3 +362,29 @@ impl super::Inode {
         self.i_writecount.load(core::sync::atomic::Ordering::Acquire)
     }
 }
+
+/// `i_readcount` accessors: how many open file descriptions hold this inode
+/// open for reading ONLY. The reference is taken for the whole life of such a
+/// description and released by `File::drop`, exactly like the writer reference,
+/// so the count answers "who has it open right now", never "who read it".
+impl super::Inode {
+    /// One more read-only open of this inode (Linux `i_readcount_inc`).
+    /// # C: O(1)
+    pub fn i_readcount_inc(&self) {
+        self.i_readcount.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// One fewer read-only open (Linux `i_readcount_dec`). The count may never
+    /// go negative: a release with no matching acquire would let an exclusive
+    /// lease be granted over a reader that still has the file open. # C: O(1)
+    pub fn i_readcount_dec(&self) {
+        let prev = self.i_readcount.fetch_sub(1, Ordering::AcqRel);
+        hal::kassert!(prev > 0, "i_readcount released more times than acquired");
+    }
+
+    /// Live count of read-only opens, for the lease admission test and for
+    /// `/proc`-style reporting. # C: O(1)
+    pub fn readcount(&self) -> i32 {
+        self.i_readcount.load(Ordering::Acquire)
+    }
+}

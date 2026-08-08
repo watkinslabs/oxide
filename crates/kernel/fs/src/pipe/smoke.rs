@@ -3,7 +3,7 @@ use super::*;
 pub fn smoke_test() {
     use hal::kassert;
 
-    let pipe = make_pipe_inode();
+    let pipe = make_pipe_inode().expect("pipe inode");
     let pd = pipe_data(&pipe).expect("pipe data");
     pd.writers.store(1, core::sync::atomic::Ordering::Release);
     pd.readers.store(1, core::sync::atomic::Ordering::Release);

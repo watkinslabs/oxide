@@ -79,7 +79,7 @@ pub fn dump_to_program(pattern: &[u8], cx: &CoreContext, body: &[u8]) -> bool {
 }
 
 fn make_pipe() -> Option<(Arc<File>, Arc<File>)> {
-    let inode = crate::pipe::make_pipe_inode();
+    let inode = crate::pipe::make_pipe_inode().ok()?;
     let pd = crate::pipe::pipe_data(&inode)?;
     pd.readers.store(1, core::sync::atomic::Ordering::Release);
     pd.writers.store(1, core::sync::atomic::Ordering::Release);

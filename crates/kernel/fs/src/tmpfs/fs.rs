@@ -10,6 +10,30 @@ use super::dir::{as_dir, make_tmpfs_dir_inode};
 use super::limits::{PG, ROOT_INO};
 use super::uapi::TMPFS_MAGIC;
 
+/// Root-inode defaults of a mount that names no `mode=`/`uid=`/`gid=`
+/// (`shmem_fill_super`).
+const DEFAULT_ROOT_MODE: u16 = 0o755;
+const DEFAULT_ROOT_UID: u32 = 0;
+const DEFAULT_ROOT_GID: u32 = 0;
+
+/// The privilege facts the option parser judges `noswap` and the quota family
+/// against, sampled once per mount so the parse itself stays a pure function.
+///
+/// A mount with no calling task is the boot path building an in-kernel
+/// instance: it has no user namespace to be outside of and no capability set
+/// to lack, and it is the most privileged context there is.
+/// # C: O(userns depth)
+fn current_mount_cred() -> super::mount_opts::MountCred {
+    let Some(cur) = sched::current() else { return super::mount_opts::MountCred::KERNEL; };
+    let init = namespace_identity::initial(namespace_identity::NamespaceKind::User).pin();
+    let in_init_userns = cur.namespace_owner(namespace_identity::NamespaceKind::User)
+        .is_some_and(|ns| namespace_identity::NamespacePin::ptr_eq(&ns.pin(), &init));
+    super::mount_opts::MountCred {
+        in_init_userns,
+        sys_admin: nscg::proc_ns::has_cap_for(&cur, &init, sched::cap::SYS_ADMIN),
+    }
+}
+
 /// # C: O(1)
 pub fn init() {}
 
@@ -88,34 +112,43 @@ impl TmpfsFs {
     /// `/run/user/979` mounts mode 0700 owned by 979:979 as pam_systemd and
     /// `systemd --user` require (Linux `shmem_fill_super`). Unspecified options
     /// take the Linux defaults (0755, 0:0, half-RAM). `_name` is informational.
+    /// An option this mount cannot be given fails the mount with the option's
+    /// own error, rather than mounting a filesystem that quietly ignores it.
     /// # C: O(len(data))
-    pub fn from_mount_data(_name: String, data: &str) -> Arc<Self> {
+    pub fn from_mount_data(_name: String, data: &str) -> KResult<Arc<Self>> {
         Self::typed_from_mount_data(data, "tmpfs", TMPFS_MAGIC)
     }
     /// `ramfs_fill_super`: the same in-memory tree, but reporting `ramfs` /
     /// `RAMFS_MAGIC` and — like Linux ramfs — no block or inode ceiling, so
     /// `statfs(2)` reports the zero accounting a limit-less fs has.
+    ///
+    /// ramfs takes `mode=` and nothing else (`ramfs_fs_parameters`), so any
+    /// other key here is a key the caller was told does not exist.
     /// # C: O(len(data))
-    pub fn ramfs_from_mount_data(data: &str) -> Arc<Self> {
-        let opts = super::mount_opts::TmpfsOpts::parse(data, TmpfsSb::total_ram_pages());
-        Self::with_root(
-            opts.mode.unwrap_or(0o755),
-            opts.uid.unwrap_or(0),
-            opts.gid.unwrap_or(0),
+    pub fn ramfs_from_mount_data(data: &str) -> KResult<Arc<Self>> {
+        let opts = Self::parse_data(data)?;
+        Ok(Self::with_root(
+            opts.mode.unwrap_or(DEFAULT_ROOT_MODE),
+            opts.uid.unwrap_or(DEFAULT_ROOT_UID),
+            opts.gid.unwrap_or(DEFAULT_ROOT_GID),
             TmpfsSb::unlimited(),
             "ramfs", super::uapi::RAMFS_MAGIC,
-        )
+        ))
     }
     /// # C: O(len(data))
-    fn typed_from_mount_data(data: &str, fsname: &'static str, magic: u64) -> Arc<Self> {
-        let opts = super::mount_opts::TmpfsOpts::parse(data, TmpfsSb::total_ram_pages());
+    fn typed_from_mount_data(data: &str, fsname: &'static str, magic: u64) -> KResult<Arc<Self>> {
+        let opts = Self::parse_data(data)?;
         let acct = TmpfsSb::from_opts(&opts);
-        Self::with_root(
-            opts.mode.unwrap_or(0o755),
-            opts.uid.unwrap_or(0),
-            opts.gid.unwrap_or(0),
+        Ok(Self::with_root(
+            opts.mode.unwrap_or(DEFAULT_ROOT_MODE),
+            opts.uid.unwrap_or(DEFAULT_ROOT_UID),
+            opts.gid.unwrap_or(DEFAULT_ROOT_GID),
             acct, fsname, magic,
-        )
+        ))
+    }
+    /// Parse an option string against the CALLER's privilege. # C: O(len(data))
+    fn parse_data(data: &str) -> KResult<super::mount_opts::TmpfsOpts> {
+        super::mount_opts::parse_opts(data, TmpfsSb::total_ram_pages(), current_mount_cred())
     }
     /// This instance's root inode (`sb->s_root->d_inode`), handed to
     /// `register_bind` so the path walk crosses into the tree. # C: O(1)

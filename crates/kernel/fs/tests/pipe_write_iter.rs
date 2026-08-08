@@ -13,7 +13,7 @@ const FIFO_INO: u64 = 0xf1f0_1000;
 /// unit, never the size of the ring, and a test that assumes the two are equal
 /// stops testing what its name says the moment the default size moves.
 fn pipe(flags: OpenFlags) -> (Arc<File>, Arc<File>, usize) {
-    let ino = fs::pipe::make_pipe_inode();
+    let ino = fs::pipe::make_pipe_inode().expect("pipe inode");
     let p = fs::pipe::pipe_data(&ino).expect("pipe data");
     p.readers.store(1, Ordering::Release);
     p.writers.store(1, Ordering::Release);

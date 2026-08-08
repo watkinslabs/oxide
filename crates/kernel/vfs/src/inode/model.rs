@@ -94,6 +94,13 @@ pub struct Inode {
     /// `ETXTBSY` mutual, so a running binary cannot be opened for write and a
     /// file open for write cannot be executed.
     pub(super) i_writecount:   AtomicI32,
+    /// `i_readcount`: how many open file descriptions hold this inode open for
+    /// READING ONLY. A description opened read-write counts as a writer, never
+    /// as a reader, so the two counters never describe the same open twice.
+    /// Separate from `i_writecount` because it is a plain count with no exec
+    /// direction: an exclusive lease requires its requester to be the sole
+    /// holder in BOTH counters, which the writer count alone cannot express.
+    pub(super) i_readcount:    AtomicI32,
     pub(super) i_state:        AtomicU32,
     /// Linux `inode->dirtied_time_when`: the wall-clock nanosecond at which
     /// `I_DIRTY_TIME` was first set on an otherwise-clean inode. The expiry
@@ -170,6 +177,7 @@ impl Inode {
             i_ctime_nsec: AtomicU32::new(self.i_ctime_nsec.load(Ordering::Relaxed)),
             i_btime: self.i_btime,
             i_writecount: AtomicI32::new(0),
+            i_readcount: AtomicI32::new(0),
             i_state: AtomicU32::new(0),
             dirtied_time_when: AtomicU64::new(0),
             i_count: AtomicU32::new(1),

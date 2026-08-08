@@ -15,21 +15,34 @@ use sync::{Spinlock, Tty as FuseClass};
 use vfs::{DirContext, File, FileOps, FileType, Idmap, Inode, InodeOps, InodeRef, KResult, VfsError};
 use vfs::{Kstat, generic_fillattr};
 
+use vfs::RecordOwner;
+
+use super::flush;
 use super::fs::{build_inode, fuse_data, name_body};
 use super::proto::{self, Attr};
+
+/// The numeric identity behind a lock owner — what the scramble ciphers. Both
+/// owner kinds are a kernel address, and the daemon must never see either.
+/// # C: O(1)
+fn owner_identity(owner: RecordOwner) -> u64 {
+    match owner { RecordOwner::Files(a) => a as u64, RecordOwner::Ofd(a) => a as u64 }
+}
 
 /// Per-open file handle state (Linux `struct fuse_file`). Keyed by the reader's
 /// open `File` identity so READ carries the `fh` the daemon returned from OPEN.
 /// # C: O(1)
 struct FuseFile {
-    /// `fuse_open_out.fh` the daemon assigned. # consumers: read/release.
+    /// `fuse_open_out.fh` the daemon assigned. # consumers: read/release/flush.
     fh: u64,
     /// The nodeid this handle was opened on. # consumers: release.
     nodeid: u64,
+    /// `fuse_open_out.open_flags` — the daemon's per-open answers (`FOPEN_*`).
+    /// # consumers: flush.
+    open_flags: u32,
 }
 
-/// `File` identity → its opened FUSE handle. An entry exists from the first
-/// read's lazy OPEN until `on_release_file`. # C: O(1)
+/// `File` identity → its opened FUSE handle. An entry exists from the OPEN the
+/// description's `->open` performed until `on_release_file`. # C: O(1)
 static FUSE_FILES: Spinlock<BTreeMap<usize, FuseFile>, FuseClass> = Spinlock::new(BTreeMap::new());
 
 /// `struct fuse_attr` → the volatile inode fields we cache locally, then defer
@@ -78,10 +91,15 @@ impl InodeOps for FuseInodeOps {
 /// Recover the per-open handle key for a fuse `File`. # C: O(1)
 fn file_key(file: &File) -> usize { file as *const File as usize }
 
-/// Ensure the reader's `File` has an OPEN handle, doing the lazy `FUSE_OPEN` on
-/// first read (Linux opens at `open(2)`; this VFS has no per-open op that can
-/// stash the `fh`, so the open is folded into first read). Returns the `fh`.
-/// # C: O(1) + rtt on first call
+/// Ensure this description has a daemon handle, performing `FUSE_OPEN` /
+/// `FUSE_OPENDIR` if `->open` has not already done so, and return the `fh`.
+///
+/// `open(2)` runs it through [`FuseFileOps::on_open_file`], which is where a
+/// handle normally comes from — Linux opens at `open(2)` and every later op
+/// names `ff->fh`. This stays the entry point for the data-path ops so a
+/// description built WITHOUT the open hook (a kernel-internal open, `O_PATH`
+/// promoted later) still reaches the daemon rather than reading through a
+/// handle the daemon never issued. # C: O(1), + rtt when no handle exists yet
 fn ensure_open(file: &File) -> KResult<u64> {
     let key = file_key(file);
     if let Some(f) = FUSE_FILES.lock().get(&key) { return Ok(f.fh); }
@@ -92,8 +110,15 @@ fn ensure_open(file: &File) -> KResult<u64> {
     proto::OpenIn { flags: file.flags().bits() & 0o3, open_flags: 0 }.encode(&mut body);
     let reply = d.conn.call(op, d.nodeid, &body)?;
     let oo = proto::OpenOut::decode(&reply).ok_or(VfsError::Eio)?;
-    FUSE_FILES.lock().insert(key, FuseFile { fh: oo.fh, nodeid: d.nodeid });
+    FUSE_FILES.lock().insert(key, FuseFile { fh: oo.fh, nodeid: d.nodeid, open_flags: oo.open_flags });
     Ok(oo.fh)
+}
+
+/// The daemon's per-open `FOPEN_*` answers for this description, if it holds a
+/// handle. `None` = no handle, so there is nothing this description opened.
+/// # C: O(1)
+fn open_flags_of(file: &File) -> Option<u32> {
+    FUSE_FILES.lock().get(&file_key(file)).map(|f| f.open_flags)
 }
 
 /// `i_fop` for a fuse inode — the data-path ops forwarded to the daemon.
@@ -140,14 +165,50 @@ impl FileOps for FuseFileOps {
     /// prepend synthetic dots or shift the cookie space. # C: O(1)
     fn iterate_emits_dots(&self) -> bool { true }
 
-    /// `FUSE_FLUSH` on `close(2)` (every fd close). Best-effort. # C: O(1) + rtt
-    fn on_flush(&self, inode: &Inode) -> KResult<()> {
-        if let Ok(d) = fuse_data(inode) {
-            let mut b = Vec::with_capacity(proto::FUSE_FLUSH_IN_SIZE);
-            encode_flush(&mut b, 0);
-            let _ = d.conn.call(proto::FUSE_FLUSH, d.nodeid, &b);
+    /// `f_op->open` — `FUSE_OPEN` / `FUSE_OPENDIR` for this description, at
+    /// `open(2)` where Linux does it, recording the `fh` and the daemon's
+    /// `FOPEN_*` answers against the description's identity.
+    ///
+    /// Opening here rather than at first read is what lets every later op NAME
+    /// the handle: a description that is opened and closed without ever being
+    /// read still has an `fh` for its FLUSH and RELEASE to carry, and a daemon
+    /// that refuses the open reports its errno from `open(2)` instead of from
+    /// whichever op happened to touch the file first. # C: O(1) + rtt
+    fn on_open_file(&self, file: &File) -> KResult<()> {
+        // A description on an inode that is not fuse-backed is not ours to
+        // open; the generic default answers for it.
+        if fuse_data(file.inode()).is_err() { return Ok(()); }
+        ensure_open(file).map(|_| ())
+    }
+
+    /// `FUSE_FLUSH` on `close(2)` — EVERY fd close, not only the last.
+    ///
+    /// The request names the handle being closed (`fh`) and the lock owner
+    /// whose POSIX records go with it, ciphered under the connection key so the
+    /// daemon never sees the kernel identity behind it. Without both the daemon
+    /// cannot tell which of several open handles is closing, nor which owner's
+    /// locks to release — which is what a `fh = 0`, `lock_owner = 0` body said.
+    ///
+    /// `ENOSYS` is not a failure: the daemon has no flush handler, so the close
+    /// succeeds and the answer latches for the connection. Every other errno IS
+    /// the errno `close(2)` returns. # C: O(1) + rtt
+    fn on_flush_file(&self, file: &File, owner: RecordOwner) -> KResult<()> {
+        let Ok(d) = fuse_data(file.inode()) else { return Ok(()) };
+        // No handle means this description never opened anything on the daemon,
+        // so there is nothing to flush — and a fabricated `fh` would name a
+        // handle the daemon never issued.
+        let Some(open_flags) = open_flags_of(file) else { return Ok(()) };
+        if flush::flush_is_skipped(open_flags, d.conn.writeback_cache()) { return Ok(()); }
+        if d.conn.flush_unsupported() { return Ok(()); }
+        let fh = ensure_open(file)?;
+        let mut b = Vec::with_capacity(proto::FUSE_FLUSH_IN_SIZE);
+        flush::encode_flush(&mut b, fh, d.conn.lock_owner_id(owner_identity(owner)));
+        let r = d.conn.call(proto::FUSE_FLUSH, d.nodeid, &b).map(|_| ());
+        match flush::classify_reply(r) {
+            flush::FlushOutcome::Done        => Ok(()),
+            flush::FlushOutcome::Unsupported => { d.conn.set_flush_unsupported(); Ok(()) }
+            flush::FlushOutcome::Failed(e)   => Err(e),
         }
-        Ok(())
     }
 
     /// `FUSE_FSYNC` / `FUSE_FSYNCDIR` — ask the daemon to make this file's (or
@@ -227,14 +288,6 @@ fn encode_release(out: &mut Vec<u8>, fh: u64, flags: u32) {
     proto::put_u64(out, fh);
     proto::put_u32(out, flags);
     proto::put_u32(out, 0); // release_flags
-    proto::put_u64(out, 0); // lock_owner
-}
-
-/// Encode a `struct fuse_flush_in` (`fh,unused,padding,lock_owner`). # C: O(1)
-fn encode_flush(out: &mut Vec<u8>, fh: u64) {
-    proto::put_u64(out, fh);
-    proto::put_u32(out, 0); // unused
-    proto::put_u32(out, 0); // padding
     proto::put_u64(out, 0); // lock_owner
 }
 

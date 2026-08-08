@@ -72,20 +72,20 @@ pub fn ensure_filesystems_registered() {
 /// comma-separated blob through the same verdict `fsconfig(2)` applies, so a
 /// key absent from the table fails the real mount, not merely the probe.
 ///
-/// So a table is published only where the option string is actually delivered
-/// to the backend — `tmpfs`, `ramfs`, `ext4`, `autofs`, `fuse` — and it lists
-/// what the reference accepts, in full, INCLUDING names not yet acted on.
-/// Listing a name we ignore is honest about the mount succeeding; omitting it
-/// would make a mount the reference accepts fail outright, which is worse.
+/// A table lists what the reference accepts, in full, INCLUDING a name that is
+/// answered somewhere other than the mount. Omitting a name would make a mount
+/// the reference accepts fail outright, which is worse than listing it; where a
+/// listed name is answered elsewhere, the registration below says where.
 ///
-/// Every other type here takes `None`: its constructor discards the data
-/// string entirely, so it has no option surface to describe. `None` keeps the
-/// pre-table behaviour exactly — the blob travels whole and nothing in it is
-/// refused. `devpts` and `cgroup2` are no longer in that set: each publishes
-/// and consumes its reference parameter table below.
+/// `Some(&[])` is a real declaration and not a default: the VFS admits every
+/// key against it, finds none, and reports the parameter unknown — exactly what
+/// the reference does for a type whose context operations carry no
+/// `parse_param` at all. `proc`, `sysfs`, `configfs`, `securityfs`, `fusectl`,
+/// `mqueue` and `binfmt_misc` are those types.
 ///
-/// `proc` is the exception, and `Some(&[])` is a real declaration rather than
-/// a default — see its registration below.
+/// Two types still take `None`, and each says why at its own registration:
+/// `pstore` and `hugetlbfs`. `None` means the blob travels whole and nothing in
+/// it is refused.
 /// The calling task's cgroup-namespace root path, for `nsdelegate`.
 ///
 /// The cgroup crate is a leaf with no `sched`/`nscg` dependency (the same
@@ -123,7 +123,9 @@ fn register_filesystems() {
         // mode 0700 owned by UID:UID, and pam_systemd/`systemd --user` reject a
         // root-owned 0755 runtime dir. Was: option string dropped → every
         // tmpfs mounted root:root 0755 half-RAM (real-Linux divergence).
-        let tfs = ::fs::tmpfs::TmpfsFs::from_mount_data(target.to_string(), d);
+        // An option string the filesystem cannot honour fails the mount with
+        // that option's error, rather than mounting something that ignores it.
+        let tfs = ::fs::tmpfs::TmpfsFs::from_mount_data(target.to_string(), d)?;
         let root = tfs.root_inode();
         let fs: Arc<dyn vfs::fs::FileSystem> = tfs;
         mounted(ty, fs, Some(root), target, sb_flags)
@@ -134,7 +136,7 @@ fn register_filesystems() {
     // and to /proc/mounts.
     fn ramfs_ctor(ty: Arc<dyn vfs::FileSystemType>, _s: Option<&str>, target: &str, d: &str, sb_flags: u64,
         _p: &[vfs::fs::FsParameter]) -> R {
-        let rfs = ::fs::tmpfs::TmpfsFs::ramfs_from_mount_data(d);
+        let rfs = ::fs::tmpfs::TmpfsFs::ramfs_from_mount_data(d)?;
         let root = rfs.root_inode();
         let fs: Arc<dyn vfs::fs::FileSystem> = rfs;
         mounted(ty, fs, Some(root), target, sb_flags)
@@ -175,39 +177,90 @@ fn register_filesystems() {
             .unwrap_or_else(|| namespace_identity::initial(namespace_identity::NamespaceKind::User));
         mounted(ty, Arc::new(procfs::fs_impl::ProcfsFs::new(info, user_ns)), None, "proc", sb_flags)
     }), Some(procfs::fs_info::PROC_PARAMS)));
-    let _ = register_fs(FsType::new("sysfs", SYSFS_MAGIC, FsFlags::FS_USERNS_MOUNT | FsFlags::FS_USERNS_MOUNT_RESTRICTED, Box::new(|ty, _, _, _, sb_flags, _p: &[vfs::fs::FsParameter]| -> R {
+    // sysfs's context operations carry no `parse_param`, so every key in a
+    // sysfs option string reaches the unknown-parameter report. `Some(&[])`
+    // says that in a form the admission path can check; the `ro`/`rw`/`sync`
+    // family never reaches it, being superblock flags the VFS claims first.
+    let _ = register_fs(FsType::with_parameters("sysfs", SYSFS_MAGIC, FsFlags::FS_USERNS_MOUNT | FsFlags::FS_USERNS_MOUNT_RESTRICTED, Box::new(|ty, _, _, d: &str, sb_flags, p: &[vfs::fs::FsParameter]| -> R {
+        crate::fsmount_pseudo_params::admit_no_params(d, p)?;
         mounted(ty, Arc::new(sysfs::SysfsFs), None, "sysfs", sb_flags)
-    })));
-    let _ = register_fs(FsType::new("debugfs", DEBUGFS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, _, sb_flags, _p: &[vfs::fs::FsParameter]| -> R {
-        mounted(ty, Arc::new(tracefs::fs_impl::DebugfsFs), None, "debugfs", sb_flags)
-    })));
-    let _ = register_fs(FsType::new("tracefs", TRACEFS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, _, sb_flags, _p: &[vfs::fs::FsParameter]| -> R {
+    }), Some(kernfs::mount_opts::NO_PARAMETERS)));
+    // debugfs owns its parse because it is the one type here that SWALLOWS a
+    // key it does not know: the reference turns the "no such parameter" answer
+    // into success, so a strict table would fail mounts it completes. Its
+    // `uid=`/`gid=`/`mode=` still land on the debugfs tree root, and a declared
+    // key with a bad value still fails — see `tracefs::context`.
+    let _ = register_fs(FsType::with_context_parameters(
+        "debugfs", DEBUGFS_MAGIC, FsFlags::empty(),
+        Arc::new(tracefs::context::DebugfsContextOps), tracefs::mount_opts::DEBUGFS_PARAMS,
+    ));
+    // tracefs declares and enforces the same three, and unlike debugfs it
+    // REFUSES a key it does not declare.
+    let _ = register_fs(FsType::with_parameters("tracefs", TRACEFS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, d: &str, sb_flags, p: &[vfs::fs::FsParameter]| -> R {
+        tracefs::mount_opts::mount_tracefs(d, p)?;
         mounted(ty, Arc::new(tracefs::fs_impl::TracefsFs), None, "tracefs", sb_flags)
-    })));
+    }), Some(tracefs::mount_opts::TRACEFS_PARAMS)));
+    // A generic-tree type whose reference declares NO parameter. The empty
+    // table is the declaration; the constructor refuses anything in the blob.
+    macro_rules! pseudo_no_params { ($name:literal, $magic:expr) => {
+        let _ = register_fs(FsType::with_parameters($name, $magic, FsFlags::empty(), Box::new(|ty, _, _, d: &str, sb_flags, p: &[vfs::fs::FsParameter]| -> R {
+            let fs: Arc<dyn vfs::fs::FileSystem> =
+                crate::fsmount_pseudo_params::pseudo_no_params($name, $magic, d, p)?;
+            mounted(ty, fs, None, $name, sb_flags)
+        }), Some(kernfs::mount_opts::NO_PARAMETERS)));
+    }; }
+    // A generic-tree type whose options name its root's owner and mode. Each
+    // mount builds its own tree, so the stamp is per instance.
+    macro_rules! pseudo_root_attr { ($name:literal, $magic:expr, $params:expr) => {
+        let _ = register_fs(FsType::with_parameters($name, $magic, FsFlags::empty(), Box::new(|ty, _, _, d: &str, sb_flags, p: &[vfs::fs::FsParameter]| -> R {
+            let fs: Arc<dyn vfs::fs::FileSystem> =
+                crate::fsmount_pseudo_params::pseudo_with_root_attr($name, $magic, $params, d, p)?;
+            mounted(ty, fs, None, $name, sb_flags)
+        }), Some($params)));
+    }; }
+    // The type still taking `None`: `pstore`'s one parameter (`kmsg_bytes`)
+    // bounds how much of the kernel log a pstore BACKEND records, and no pstore
+    // backend exists here — the mount is a bare tree. Its reference parse also
+    // swallows an unknown key, so `None` (refuse nothing) is what it does
+    // today; a table would need a consumer to be worth more than a promise.
     macro_rules! pseudo { ($name:literal, $magic:expr) => {
         let _ = register_fs(FsType::new($name, $magic, FsFlags::empty(), Box::new(|ty, _, _, _, sb_flags, _p: &[vfs::fs::FsParameter]| -> R {
             let fs: Arc<dyn vfs::fs::FileSystem> = kernfs::PseudoFs::new($name, $magic);
             mounted(ty, fs, None, $name, sb_flags)
         })));
     }; }
-    pseudo!("securityfs", SECURITYFS_MAGIC);
-    pseudo!("efivarfs", EFIVARFS_MAGIC);
+    pseudo_no_params!("securityfs", SECURITYFS_MAGIC);
+    // efivarfs takes `uid=`/`gid=` and NO `mode=`; the two-name table is why
+    // `mount -t efivarfs -o mode=700` fails and the same line on tracefs does not.
+    pseudo_root_attr!("efivarfs", EFIVARFS_MAGIC, crate::fsmount_pseudo_params::EFIVARFS_PARAMS);
     pseudo!("pstore", PSTOREFS_MAGIC);
-    pseudo!("bpf", BPF_FS_MAGIC);
-    let _ = register_fs(FsType::new("configfs", CONFIGFS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, _, sb_flags, _p: &[vfs::fs::FsParameter]| -> R {
+    // bpffs declares the reference's seven. `uid`/`gid`/`mode` land on the
+    // instance root here; the four `delegate_*` values name what a bpf TOKEN
+    // created from this mount may do, which the token subsystem answers, not
+    // the mount.
+    pseudo_root_attr!("bpf", BPF_FS_MAGIC, crate::fsmount_pseudo_params::BPF_PARAMS);
+    let _ = register_fs(FsType::with_parameters("configfs", CONFIGFS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, d: &str, sb_flags, p: &[vfs::fs::FsParameter]| -> R {
+        tracefs::mount_opts::mount_configfs(d, p)?;
         mounted(ty, Arc::new(tracefs::fs_impl::ConfigfsFs), None, "configfs", sb_flags)
-    })));
-    pseudo!("fusectl", FUSE_CTL_MAGIC);
-    pseudo!("mqueue", MQUEUE_MAGIC);
+    }), Some(tracefs::mount_opts::CONFIGFS_PARAMS)));
+    pseudo_no_params!("fusectl", FUSE_CTL_MAGIC);
+    pseudo_no_params!("mqueue", MQUEUE_MAGIC);
+    // hugetlbfs is the one type here with no backend at all: the reference
+    // takes seven options that size a huge-page pool and pick a page size, and
+    // this mount is a bare generic tree with no huge-page allocator behind it.
+    // A table would declare seven names nothing could consume.
     pseudo!("hugetlbfs", HUGETLBFS_MAGIC);
     let _ = register_fs(FsType::with_context_parameters(
         "autofs", AUTOFS_SUPER_MAGIC, FsFlags::empty(),
         Arc::new(::fs::autofs::AutofsContextOps), ::fs::autofs::AUTOFS_PARAMS,
     ));
-    let _ = register_fs(FsType::new("binfmt_misc", BINFMTFS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, _, sb_flags, _p: &[vfs::fs::FsParameter]| -> R {
+    // binfmt_misc's context operations carry no `parse_param` either: it keys
+    // its instance on the caller's user namespace, not on an option.
+    let _ = register_fs(FsType::with_parameters("binfmt_misc", BINFMTFS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, d: &str, sb_flags, p: &[vfs::fs::FsParameter]| -> R {
+        crate::fsmount_pseudo_params::admit_no_params(d, p)?;
         let fs: Arc<dyn vfs::fs::FileSystem> = ::fs::binfmt_misc::BinfmtMiscFs::new();
         mounted(ty, fs, None, "binfmt_misc", sb_flags)
-    })));
+    }), Some(kernfs::mount_opts::NO_PARAMETERS)));
     let _ = register_fs(FsType::with_context_parameters(
         "fuse", FUSE_SUPER_MAGIC, FsFlags::empty(),
         Arc::new(::fs::fuse::FuseContextOps), ::fs::fuse::FUSE_PARAMS,
@@ -225,10 +278,16 @@ fn register_filesystems() {
         let fs: Arc<dyn vfs::fs::FileSystem> = dfs;
         mounted(ty, fs, None, "devpts", sb_flags)
     }), Some(devpts::mount_opts::DEVPTS_PARAMS)));
-    let _ = register_fs(FsType::new("devtmpfs", DEVTMPFS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, _, sb_flags, _p: &[vfs::fs::FsParameter]| -> R {
+    // devtmpfs has no option table of its own: it borrows the parse of the
+    // filesystem it is built on (tmpfs) and then hands back the ONE device
+    // tree, which every mount of it shares. So the table admits exactly what a
+    // tmpfs mount admits — a key outside it fails, as it does in the reference
+    // — while a size or an owner cannot re-shape a tree that already exists and
+    // is shared, and the reference does not let it either.
+    let _ = register_fs(FsType::with_parameters("devtmpfs", DEVTMPFS_MAGIC, FsFlags::empty(), Box::new(|ty, _, _, _, sb_flags, _p: &[vfs::fs::FsParameter]| -> R {
         let fs: Arc<dyn vfs::fs::FileSystem> = Arc::new(devfs::DevfsFs);
         mounted(ty, fs, None, "devtmpfs", sb_flags)
-    })));
+    }), Some(::fs::tmpfs::TMPFS_PARAMS)));
     // cgroup2 declares the six flags the reference does. They are hierarchy-wide
     // (Linux keeps them in `cgrp_dfl_root.flags`, not per mount), so a mount
     // naming one turns it on for the whole default hierarchy — and a remount

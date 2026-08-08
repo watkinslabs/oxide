@@ -38,11 +38,12 @@ pub struct RootfsState {
     /// FIFREEZE state (Linux `sb->s_writers.frozen`). Set by
     /// `Ext4SuperOps::freeze_fs`, cleared by `thaw_fs`. PER MOUNT.
     pub frozen: core::sync::atomic::AtomicBool,
-    /// Quota options this mount was given (`usrquota`, `usrjquota=`, `jqfmt=`,
-    /// …). Sole owner of the mount's quota-option truth: `enable_mount_quotas`
-    /// reads it to decide which classes load, from which file, and whether
-    /// limits are enforced or only usage tracked. PER MOUNT.
-    pub quota_opts: sync::Spinlock<crate::mount_opts::SbQuotaOpts, sync::Inode>,
+    /// The mount options this mount was given. Sole owner of the mount's
+    /// option truth — the quota family (`usrquota`, `usrjquota=`, `jqfmt=`, …)
+    /// that `enable_mount_quotas` reads to decide which classes load, and the
+    /// behavioural options (`errors=`, `barrier`, `commit=`, …) every consumer
+    /// reads from here rather than keeping a copy of. PER MOUNT.
+    pub opts: sync::Spinlock<crate::mount_opts::Ext4SbOpts, sync::Inode>,
 }
 
 impl RootfsState {
@@ -57,7 +58,7 @@ impl RootfsState {
             cache_hits:   core::sync::atomic::AtomicU64::new(0),
             cache_misses: core::sync::atomic::AtomicU64::new(0),
             frozen:       core::sync::atomic::AtomicBool::new(false),
-            quota_opts:   sync::Spinlock::new(crate::mount_opts::SbQuotaOpts::default()),
+            opts:         sync::Spinlock::new(crate::mount_opts::Ext4SbOpts::default()),
         })
     }
 
@@ -69,10 +70,10 @@ impl RootfsState {
         }
     }
 
-    /// Snapshot of the quota options in force on this mount. # C: O(MAXQUOTAS)
-    pub fn quota_opts(&self) -> crate::mount_opts::SbQuotaOpts { self.quota_opts.lock().clone() }
+    /// Snapshot of the options in force on this mount. # C: O(MAXQUOTAS)
+    pub fn opts(&self) -> crate::mount_opts::Ext4SbOpts { self.opts.lock().clone() }
 
-    /// Parse `data` and fold its quota options into this mount's option state.
+    /// Parse `data` and fold its options into this mount's option state.
     /// `quota_loaded` selects remount semantics. Nothing is applied unless the
     /// whole data string is accepted. # C: O(len(data))
     /// `next` is boxed and this stays out of its caller's frame for the reason
@@ -81,9 +82,9 @@ impl RootfsState {
     #[inline(never)]
     pub fn configure_mount_opts(&self, data: &str, quota_loaded: bool) -> vfs::KResult<()> {
         let feat = self.quota_features();
-        let mut next = alloc::boxed::Box::new(self.quota_opts());
+        let mut next = alloc::boxed::Box::new(self.opts());
         crate::mount_opts::configure(data, &feat, &mut next, quota_loaded)?;
-        *self.quota_opts.lock() = *next;
+        *self.opts.lock() = *next;
         Ok(())
     }
 

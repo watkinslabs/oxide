@@ -197,15 +197,15 @@ fn a_remount_option_string_reaches_the_filesystem_and_is_validated() {
     // option string was threaded, every one of these was accepted and dropped.
     common::boot_hosted_pmm();
     let (m, sb) = mount(seeded_quota_disk());
-    let before = m.state().quota_opts();
+    let before = m.state().opts();
 
     // The quota FEATURE is on for this image, so a journalled quota file name
     // cannot be introduced by remount.
     assert_eq!(sb.reconfigure_super(0, 0, "usrjquota=aquota.user,jqfmt=vfsv1"),
         Err(vfs::VfsError::Einval));
-    assert_eq!(m.state().quota_opts().jquota_fmt, before.jquota_fmt,
+    assert_eq!(m.state().opts().jquota_fmt, before.jquota_fmt,
         "a refused remount commits none of its options");
-    assert!(m.state().quota_opts().qf_name(vfs::QuotaType::User.slot()).is_none());
+    assert!(m.state().opts().qf_name(vfs::QuotaType::User.slot()).is_none());
 
     // A malformed quota option is refused the same way.
     assert_eq!(sb.reconfigure_super(0, 0, "jqfmt=nonsuch"), Err(vfs::VfsError::Einval));
@@ -217,7 +217,7 @@ fn a_remount_option_string_reaches_the_filesystem_and_is_validated() {
     let kind = vfs::QuotaType::Project;
     assert!(!sb.s_dquot.is_enforced(kind));
     sb.reconfigure_super(0, 0, "prjquota").expect("remount requesting project limits");
-    assert!(m.state().quota_opts().limits_requested(kind),
+    assert!(m.state().opts().limits_requested(kind),
         "the accepted option reached the live mount's option state");
 
     sb.reconfigure_super(SB_RDONLY, 0, "").expect("RW→RO remount");

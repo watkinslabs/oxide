@@ -60,7 +60,7 @@ pub use lock_wait::{clear_file_lock_wait_hooks, file_lock_interrupted, file_lock
 pub use lifetime::{fput, get_file, iput};
 pub use mode::{Fmode, SeekFrom};
 pub use kernel_open::kernel_open_at_root;
-pub use open::{install_open_at, open_dentry_at, open_file_at};
+pub use open::{install_open_at, open_dentry_at, open_file_at, read_ref_for};
 pub use readahead::FileRaState;
 pub use iocb::WriteIocb;
 pub use fsync::{iocb_sync_mode, fsync_slot_present, SyncMode, SYNC_TO_EOF};

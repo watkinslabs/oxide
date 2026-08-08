@@ -106,7 +106,7 @@ impl FileOps for MqFileOps {
     /// are unconditionally `O_CLOEXEC`) never leaves a notification aimed at a
     /// tgid that may be recycled.
     /// # C: O(1)
-    fn on_flush_file(&self, file: &File) -> KResult<()> {
+    fn on_flush_file(&self, file: &File, _owner: vfs::RecordOwner) -> KResult<()> {
         let Some(q) = queue_of(&file.inode()) else { return Ok(()) };
         let Some(cur) = sched::live::current() else { return Ok(()) };
         let tgid = cur.tgid.load(Ordering::Acquire);

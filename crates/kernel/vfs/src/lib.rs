@@ -60,6 +60,7 @@ pub mod poll_subs;
 pub mod pseudo_ino;
 pub mod fsnotify;
 pub mod epoll_limits;
+pub mod pipe_limits;
 pub mod quota;
 pub mod xattr;
 

@@ -179,7 +179,7 @@ fn backend_count_precedes_bad_user_pointer_fault() {
 fn real_pipe_fionread_reports_queued_bytes() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     reset();
-    let ino = fs::pipe::make_pipe_inode();
+    let ino = fs::pipe::make_pipe_inode().expect("pipe inode");
     let p = fs::pipe::pipe_data(&ino).expect("pipe data");
     p.readers.store(1, Ordering::Release);
     p.writers.store(1, Ordering::Release);

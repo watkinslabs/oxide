@@ -273,10 +273,18 @@ pub trait FileOps: Send + Sync {
     /// already been removed. # C: O(1)
     fn on_flush(&self, _inode: &Inode) -> KResult<()> { Ok(()) }
 
-    /// `f_op->flush` with access to the open file description. Backends whose
-    /// flush target is per-open state override this; default preserves
-    /// inode-only drivers. # C: O(1)
-    fn on_flush_file(&self, file: &File) -> KResult<()> {
+    /// `f_op->flush(file, id)` — the full slot: the open file description being
+    /// closed AND the lock owner closing it (Linux's `fl_owner_t`, which
+    /// `filp_close` takes from the descriptor table).
+    ///
+    /// The owner is not decoration. A backend that keeps per-open state on a
+    /// remote peer has to tell that peer WHICH handle is going away and WHOSE
+    /// byte-range locks go with it; without the owner it can only guess, and
+    /// the guess releases somebody else's locks. Backends override this;
+    /// the default drops both arguments and preserves inode-only drivers.
+    /// # C: O(1)
+    fn on_flush_file(&self, file: &File, owner: crate::inode::RecordOwner) -> KResult<()> {
+        let _ = owner;
         self.on_flush(file.inode())
     }
 

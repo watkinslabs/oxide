@@ -23,6 +23,7 @@ use sync::Spinlock;
 use vfs::{File, FileType, Fmode, Inode, InodeRef, KResult, VfsError};
 use vfs::FileOps;
 pub mod eventfd;
+mod acct;
 pub mod limits;
 mod ring;
 mod smoke;
@@ -30,7 +31,7 @@ mod splice_ops;
 #[cfg(test)]
 mod fifo_tests;
 pub use eventfd::{EventfdData, is_eventfd, make_eventfd_inode};
-pub use ring::{make_pipe_inode, pipe_data, pipe_size, set_pipe_size, write_dump, PipeData};
+pub use ring::{charge_pipe_pages, make_pipe_inode, pipe_data, pipe_size, set_pipe_size, write_dump, PipeData};
 /// `splice`/`tee`/`vmsplice` pipe-side primitives.
 pub use splice_ops::{advance, fill, ipipe_prep, link_pipe, opipe_prep, peek, pipe_info,
     queued, space, wake_readers, wake_writers, PipeRef};
@@ -196,13 +197,13 @@ pub fn is_named_fifo(inode: &Inode) -> bool {
 }
 
 /// Get (or create on first open) the shared ring for a FIFO inode. # C: O(log N)
-fn fifo_pipe_get_or_create(inode: &Inode) -> Arc<PipeData> {
+fn fifo_pipe_get_or_create(inode: &Inode) -> KResult<Arc<PipeData>> {
     let key = fifo_key(inode);
     let mut g = FIFO_PIPES.lock();
-    if let Some(p) = g.get(&key) { return p.clone(); }
-    let p = Arc::new(PipeData::new(inode.ino()));
+    if let Some(p) = g.get(&key) { return Ok(p.clone()); }
+    let p = Arc::new(PipeData::try_new(inode.ino())?);
     g.insert(key, p.clone());
-    p
+    Ok(p)
 }
 
 /// Look up the shared ring for an already-open FIFO inode. # C: O(log N)
@@ -316,7 +317,7 @@ pub fn fifo_open(inode: &InodeRef, flags: u32) -> KResult<Arc<dyn FileOps>> {
     let accmode  = flags & O_ACCMODE;
     let nonblock = (flags & O_NONBLOCK) != 0;
     let subs = inode.poll_subscribers();
-    let p = fifo_pipe_get_or_create(inode);
+    let p = fifo_pipe_get_or_create(inode)?;
     match accmode {
         O_WRONLY => {
             // ENXIO BEFORE taking a writer count (Linux: `!pipe->readers` +

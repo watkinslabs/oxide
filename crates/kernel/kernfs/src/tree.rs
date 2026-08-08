@@ -8,6 +8,7 @@ use vfs::superblock::SuperBlock;
 use vfs::{CookieEntry, CreateCtx, DirContext, FileType, Ino, Inode, InodeBuilder, InodeRef, KResult, VfsError, default_file_ops, default_inode_ops, mk_mode};
 
 use crate::dir_ops::{DirFileattr, PseudoDirFileOps, PseudoDirOps};
+use crate::mount_opts::DirAttr;
 
 /// Deterministic inode number from a path (FNV-1a, tagged into the
 /// synthetic-dir range so it never collides with leaf inodes). # C: O(len)
@@ -84,6 +85,14 @@ pub struct PseudoDir {
     pub(crate) children: Spinlock<BTreeMap<String, PseudoEntry>, KernfsClass>,
     pub(crate) inode: Spinlock<Weak<Inode>, KernfsClass>,
     pub(crate) hooks: Spinlock<Option<Arc<dyn PseudoDirHooks>>, KernfsClass>,
+    /// Owner + permission bits this directory's inode is BORN with.
+    ///
+    /// The inode itself is a cache entry — `as_inode` rebuilds it whenever the
+    /// superblock's icache has dropped it — so a mount option that only wrote
+    /// `i_uid`/`i_mode` would be forgotten at the next lookup. The durable
+    /// answer lives here, on the tree node, and [`Self::set_attr`] writes both
+    /// halves so the live inode and every future rebuild agree.
+    pub(crate) attr: Spinlock<DirAttr, KernfsClass>,
     /// The `i_op` vector every directory inode in THIS tree is built with —
     /// the owning filesystem's inode-op default, fixed at root creation and
     /// inherited by every child dir. One choke point: `as_inode` is the only
@@ -121,6 +130,7 @@ impl PseudoDir {
             children: Spinlock::new(BTreeMap::new()),
             inode: Spinlock::new(Weak::new()),
             hooks: Spinlock::new(None),
+            attr: Spinlock::new(DirAttr::default()),
             dir_iops: Arc::new(PseudoDirOps::new(fileattr)),
         })
     }
@@ -135,8 +145,23 @@ impl PseudoDir {
             children: Spinlock::new(BTreeMap::new()),
             inode: Spinlock::new(Weak::new()),
             hooks: Spinlock::new(None),
+            attr: Spinlock::new(DirAttr::default()),
             dir_iops,
         })
+    }
+
+    /// This directory's birth owner and permission bits. # C: O(1)
+    pub fn attr(&self) -> DirAttr { *self.attr.lock() }
+
+    /// Stamp a new owner/permission on this directory: the durable record on
+    /// the node AND the inode that is live right now, so a mount option takes
+    /// effect immediately and survives the icache dropping the inode.
+    /// # C: O(1)
+    pub fn set_attr(self: &Arc<PseudoDir>, attr: DirAttr) {
+        *self.attr.lock() = attr;
+        let inode = self.as_inode();
+        let _ = inode.set_owner(attr.uid, attr.gid);
+        let _ = inode.set_perm(attr.perm);
     }
 
     pub fn set_sb(&self, sb: Weak<SuperBlock>) {
@@ -155,12 +180,14 @@ impl PseudoDir {
         let me = Arc::clone(self);
         let sbw2 = sbw.clone();
         let build = move || {
+            let a = *me.attr.lock();
             let mut b = InodeBuilder::new(
                 me.ino,
-                mk_mode(FileType::Directory, 0o755),
+                mk_mode(FileType::Directory, a.perm),
                 Arc::clone(&me.dir_iops),
                 Arc::new(PseudoDirFileOps),
             )
+            .owner(a.uid, a.gid)
             .private(Arc::clone(&me) as Arc<dyn core::any::Any + Send + Sync>)
             .sb(sbw2.clone());
             if sbw2.upgrade().is_none() {

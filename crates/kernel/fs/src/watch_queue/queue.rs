@@ -86,18 +86,24 @@ impl WatchQueue {
         core::mem::take(&mut *self.watched_keys.lock())
     }
 
-    /// `IOC_WATCH_QUEUE_SET_SIZE`. The depth is settable ONCE: a queue whose
-    /// notes are already allocated is EBUSY, because resizing it underneath a
-    /// reader would drop notifications it was never told it lost. The request
-    /// is rounded up to a whole page of notes, so the depth actually available
-    /// is never less than what the caller asked for. # C: O(1)
-    pub fn set_size(&self, nr_notes: usize) -> Result<usize, Errno> {
-        if nr_notes < 1 || nr_notes > WATCH_QUEUE_MAX_NOTES { return Err(Errno::Einval); }
+    /// Is a depth already set? The depth is settable ONCE: resizing a queue
+    /// underneath a reader would drop notifications it was never told it lost.
+    /// # C: O(1)
+    pub fn is_sized(&self) -> bool { self.state.lock().capacity != 0 }
+
+    /// Publish a depth of `pages` whole pages of notes. The caller has already
+    /// admitted the request and reserved the memory it charges. # C: O(1)
+    pub fn commit_size(&self, pages: usize) -> usize {
         let mut g = self.state.lock();
-        if g.capacity != 0 { return Err(Errno::Ebusy); }
-        let pages = nr_notes.div_ceil(WATCH_QUEUE_NOTES_PER_PAGE);
         g.capacity = pages * WATCH_QUEUE_NOTES_PER_PAGE;
-        Ok(g.capacity)
+        g.capacity
+    }
+
+    /// `IOC_WATCH_QUEUE_SET_SIZE` with no memory reservation behind it — the
+    /// depth-only form the hosted tests drive. # C: O(1)
+    pub fn set_size(&self, nr_notes: usize) -> Result<usize, Errno> {
+        let pages = admit_set_size(nr_notes, self.is_sized())?;
+        Ok(self.commit_size(pages))
     }
 
     /// The depth in notes; zero when it has never been set. # C: O(1)
@@ -261,4 +267,15 @@ pub fn removal_record(id: u64, info_id: u32) -> [u8; WATCH_REMOVAL_SIZE] {
         &header(WATCH_TYPE_META, WATCH_META_REMOVAL_NOTIFICATION, WATCH_REMOVAL_SIZE, info_id));
     out[8..].copy_from_slice(&id.to_ne_bytes());
     out
+}
+
+/// `IOC_WATCH_QUEUE_SET_SIZE` admission, in the reference's order: a queue that
+/// already has its notes is EBUSY whatever depth was asked for, and only then
+/// is the depth itself ranged. Answers the whole PAGES the depth rounds up to,
+/// which is both the depth actually published and the memory charged for it.
+/// # C: O(1)
+pub fn admit_set_size(nr_notes: usize, already_sized: bool) -> Result<usize, Errno> {
+    if already_sized { return Err(Errno::Ebusy); }
+    if nr_notes < 1 || nr_notes > WATCH_QUEUE_MAX_NOTES { return Err(Errno::Einval); }
+    Ok(nr_notes.div_ceil(WATCH_QUEUE_NOTES_PER_PAGE))
 }

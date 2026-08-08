@@ -142,7 +142,9 @@ const SYSCTL_TREE: &[Node] = &[
         File("file-nr",              Const(b"0\t0\t65536\n")),
         File("nr_open",               IntHook(get_nr_open, set_nr_open,
             Some((vfs::fdtable::NR_OPEN_MIN as i64, vfs::fdtable::NR_OPEN_MAX as i64)))),
-        File("pipe-max-size",         Int(4096, Some((0, INT_MAX)))),
+        File("pipe-max-size",         IntHook(get_pipe_max_size, set_pipe_max_size, Some((1, INT_MAX)))),
+        File("pipe-user-pages-hard",  IntHook(get_pipe_user_pages_hard, set_pipe_user_pages_hard, None)),
+        File("pipe-user-pages-soft",  IntHook(get_pipe_user_pages_soft, set_pipe_user_pages_soft, None)),
         File("protected_regular",     Int(2, Some((0, 2)))),
         File("protected_fifos",       Int(1, Some((0, 2)))),
         // Writable, like their `protected_regular`/`protected_fifos` siblings

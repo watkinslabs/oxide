@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 use vfs::{FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError, mk_mode};
 use vfs::superblock::SuperBlock;
 
-use super::inode::{fsid_of, iget_or_build, next_ino};
+use super::inode::{fsid_of, iget_or_build};
 
 pub struct TmpfsSymlinkData { target: Vec<u8> }
 
@@ -27,8 +27,8 @@ impl InodeOps for TmpfsSymlinkOps {
 }
 
 /// Build a tmpfs symlink inode pointing at `target`, owned by `sb`. # C: O(1)
-pub(super) fn make_tmpfs_symlink_inode(target: &[u8], uid: u32, gid: u32, sb: Weak<SuperBlock>) -> InodeRef {
-    let ino = next_ino();
+pub(super) fn make_tmpfs_symlink_inode(target: &[u8], uid: u32, gid: u32, sb: Weak<SuperBlock>, acct: &super::accounting::TmpfsSb) -> InodeRef {
+    let ino = acct.alloc_ino();
     let sb2 = sb.clone();
     let target = target.to_vec();
     iget_or_build(&sb, ino, move || {

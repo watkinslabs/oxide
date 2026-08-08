@@ -27,6 +27,11 @@ impl Drop for File {
         // the description, so a running executable stays `ETXTBSY`-protected
         // against write-opens until the last fd referring to it is closed.
         if self.holds_write_ref() { self.inode.put_write_access(); }
+        // …and the reader reference (Linux `put_file_access` →
+        // `i_readcount_dec`), taken by the same constructor that took the
+        // write one. A lease requester learns it is alone only once every
+        // other description that had the file open has been through here.
+        if self.holds_read_ref() { self.inode.i_readcount_dec(); }
         self.release_epoll_links();
         // Drop any lease / dnotify registration (Linux `__fput` → `locks_remove_file`
         // / `dnotify_flush`). Weaks self-expire, but prune eagerly + fix the counters.

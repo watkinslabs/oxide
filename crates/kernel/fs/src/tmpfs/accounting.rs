@@ -4,18 +4,47 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::limits::{FALLBACK_TOTAL_PAGES, PG};
 
+/// One mounted instance's superblock state: the ceilings it enforces, the
+/// usage it has against them, and the mount options that change how it
+/// behaves rather than how much it holds.
+///
+/// This is the ONLY place a mount's options live. Every consumer reads them
+/// from here — there is no second copy on the filesystem object, on the root
+/// inode, or in the parse context, so no two of them can disagree about
+/// whether this mount swaps.
 pub struct TmpfsSb {
     max_blocks:  u64,
     max_inodes:  u64,
     used_blocks: AtomicU64,
     used_inodes: AtomicU64,
+    /// `-o noswap`: this mount's pages are never written to swap.
+    noswap:      bool,
+    /// `-o inode64`: inode numbers may use the full 64-bit space.
+    full_inums:  bool,
 }
 
 impl TmpfsSb {
-    /// A bounded instance (`max_blocks` pages, `max_inodes` inodes). # C: O(1)
+    /// A bounded instance (`max_blocks` pages, `max_inodes` inodes) with
+    /// default mount options. # C: O(1)
     pub(super) fn new(max_blocks: u64, max_inodes: u64) -> Arc<Self> {
         Arc::new(Self { max_blocks, max_inodes,
-            used_blocks: AtomicU64::new(0), used_inodes: AtomicU64::new(0) })
+            used_blocks: AtomicU64::new(0), used_inodes: AtomicU64::new(0),
+            noswap: false, full_inums: false })
+    }
+
+    /// Whether this mount may write a page to swap (`shmem_writeout`'s
+    /// `sbinfo->noswap` test). The single point both the shrinker and an
+    /// explicit page-out consult. # C: O(1)
+    pub(super) fn may_swap_out(&self) -> bool { !self.noswap }
+
+    /// Whether this mount's inode numbers may use the full 64-bit space.
+    /// # C: O(1)
+    pub(super) fn full_inums(&self) -> bool { self.full_inums }
+
+    /// Allocate this mount's next inode number, applying its inode-number
+    /// width. # C: O(1)
+    pub(super) fn alloc_ino(&self) -> vfs::Ino {
+        super::inode::constrain_ino(super::inode::next_ino_raw(), self.full_inums())
     }
     /// Effectively-unbounded accounting (memfd/anon/coredump, hosted tests).
     /// # C: O(1)
@@ -35,12 +64,18 @@ impl TmpfsSb {
         let half = Self::total_ram_pages() / 2;
         Self::new(half, half)
     }
-    /// Build accounting from parsed `-o size=/nr_blocks=/nr_inodes=` options,
-    /// defaulting any unspecified cap to Linux's half-RAM. `size=` (bytes) is
-    /// rounded up to pages inside `resolve_blocks`. # C: O(1)
+    /// Build a mount's superblock state from its parsed options: the ceilings
+    /// (defaulting to half of RAM) and every behavioural option, in one object
+    /// so no consumer has to look anywhere else for them. # C: O(1)
     pub(super) fn from_opts(opts: &super::mount_opts::TmpfsOpts) -> Arc<Self> {
         let half = Self::total_ram_pages() / 2;
-        Self::new(opts.resolve_blocks(half), opts.resolve_inodes(half))
+        Arc::new(Self {
+            max_blocks: opts.resolve_blocks(half),
+            max_inodes: opts.resolve_inodes(half),
+            used_blocks: AtomicU64::new(0), used_inodes: AtomicU64::new(0),
+            noswap: opts.noswap,
+            full_inums: opts.full_inums(),
+        })
     }
     /// Reserve one block; `false` (caller → `ENOSPC`) at the limit. # C: O(1)
     pub(super) fn charge_block(&self) -> bool {

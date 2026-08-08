@@ -6,7 +6,8 @@ use sync::{Spinlock, Tty as TtyClass};
 use vfs::{FileType, Ino, Inode, InodeRef, KResult, VfsError};
 use vfs::{InodeBuilder, PollSubscribers, default_inode_ops, mk_mode};
 
-use super::limits::{round_pipe_size, PIPE_BUF, PIPE_DEF_SIZE, PIPE_GROW_STEP, PIPE_MAX_SIZE};
+use vfs::pipe_limits;
+use super::limits::{round_pipe_size, PIPE_BUF, PIPE_GROW_STEP};
 use super::{PipeFileOps, WaitList};
 
 #[cfg(test)]
@@ -42,9 +43,9 @@ pub(super) struct PipeBuf {
 }
 
 impl PipeBuf {
-    fn new() -> Self {
+    fn new(cap: usize) -> Self {
         Self { data: Vec::new(), packet: Vec::new(), packet_end: Vec::new(),
-            head: 0, tail: 0, len: 0, cap: PIPE_DEF_SIZE }
+            head: 0, tail: 0, len: 0, cap }
     }
 
     /// Next ring index after `i`. Wraps on the ALLOCATED length, not on the
@@ -128,18 +129,35 @@ pub struct PipeData {
     /// Tasks parked on a write that found the buffer full. Woken
     /// when a read drains bytes or when the last reader closes.
     pub(super) write_waiters: WaitList,
+    /// Account this ring's pages are charged to, and how many are charged.
+    /// Both halves live here so the release on teardown cannot be booked
+    /// against a different user than the charge was.
+    pub(super) owner_uid: u32,
+    pub(super) accounted: AtomicUsize,
 }
 
 impl PipeData {
-    pub(super) fn new(ino: Ino) -> Self {
-        Self {
-            buf: Spinlock::new(PipeBuf::new()),
+    /// Allocate a ring, charging its pages to the running task's account.
+    ///
+    /// The size is whatever the per-user ladder allows: the default, the
+    /// minimum once the owner is past the soft limit, and no pipe at all once
+    /// it is past the hard limit — which is `ENOMEM`, the same refusal the
+    /// reference's failed ring allocation produces. # C: O(N_users)
+    pub(super) fn try_new(ino: Ino) -> Result<Self, VfsError> {
+        let (uid, caps) = super::acct::current_account();
+        let pages = pipe_limits::alloc_pages(pipe_limits::charged(uid), caps)
+            .ok_or(VfsError::Enomem)?;
+        pipe_limits::account(uid, 0, pages);
+        Ok(Self {
+            buf: Spinlock::new(PipeBuf::new(pages as usize * pipe_limits::PIPE_PAGE_BYTES as usize)),
             ino,
             writers: AtomicUsize::new(0),
             readers: AtomicUsize::new(0),
             read_waiters:  WaitList::new(),
             write_waiters: WaitList::new(),
-        }
+            owner_uid: uid,
+            accounted: AtomicUsize::new(pages as usize),
+        })
     }
 
     /// Drain whatever bytes are available into `buf`, given the ring lock
@@ -389,13 +407,15 @@ fn write_wait_aborted(abort: WriteAbort, deliverable_signal: bool, fatal_kill: b
 static NEXT_PIPE_INO: vfs::pseudo_ino::RegionAllocator
     = vfs::pseudo_ino::RegionAllocator::new(&vfs::pseudo_ino::PIPE);
 
-/// `make_pipe_inode()` — a Fifo pseudo-inode backing both ends of an anonymous pipe. # C: O(1)
-pub fn make_pipe_inode() -> InodeRef {
+/// `make_pipe_inode()` — a Fifo pseudo-inode backing both ends of an anonymous
+/// pipe. `ENOMEM` once the owner's pipe pages are past the hard limit.
+/// # C: O(N_users)
+pub fn make_pipe_inode() -> KResult<InodeRef> {
     let ino = NEXT_PIPE_INO.alloc();
-    InodeBuilder::new(ino, mk_mode(FileType::Fifo, 0), default_inode_ops(), Arc::new(PipeFileOps))
+    Ok(InodeBuilder::new(ino, mk_mode(FileType::Fifo, 0), default_inode_ops(), Arc::new(PipeFileOps))
         .poll_subs(PollSubscribers::new())
-        .private(Arc::new(PipeData::new(ino)))
-        .build()
+        .private(Arc::new(PipeData::try_new(ino)?))
+        .build())
 }
 
 /// Recover the `PipeData` behind a pipe inode. # C: O(1)
@@ -412,13 +432,41 @@ pub fn pipe_size(inode: &Inode) -> Option<usize> { pipe_data(inode).map(|p| p.ca
 /// queued is `EBUSY` — shrinking a pipe may not discard bytes a reader has not
 /// collected. # C: O(1)
 pub fn set_pipe_size(inode: &Inode, requested: usize) -> Result<usize, VfsError> {
-    if requested > PIPE_MAX_SIZE { return Err(VfsError::Eperm); }
     let p = pipe_data(inode).ok_or(VfsError::Einval)?;
     let new_cap = round_pipe_size(requested);
+    let new_pages = (new_cap / pipe_limits::PIPE_PAGE_BYTES as usize) as i64;
+    let old_pages = p.accounted.load(Ordering::Acquire) as i64;
+    let (_, caps) = super::acct::current_account();
+    pipe_limits::resize_ok(old_pages, new_pages, pipe_limits::charged(p.owner_uid), caps)?;
     let mut g = p.buf.lock();
     if new_cap < g.len { return Err(VfsError::Ebusy); }
     g.cap = new_cap;
+    drop(g);
+    pipe_limits::account(p.owner_uid, old_pages, new_pages);
+    p.accounted.store(new_pages as usize, Ordering::Release);
     Ok(new_cap)
+}
+
+/// Move a pipe's page charge to `new_pages` on behalf of a subsystem that
+/// reserves memory against the pipe without changing the byte ring — the
+/// notification queue's depth. Refused with `EPERM` on the same rungs a
+/// `F_SETPIPE_SZ` growth is, and a refusal leaves the account untouched.
+/// # C: O(N_users)
+pub fn charge_pipe_pages(inode: &Inode, new_pages: i64) -> Result<(), VfsError> {
+    let p = pipe_data(inode).ok_or(VfsError::Einval)?;
+    let old_pages = p.accounted.load(Ordering::Acquire) as i64;
+    let (_, caps) = super::acct::current_account();
+    pipe_limits::resize_ok(old_pages, new_pages, pipe_limits::charged(p.owner_uid), caps)?;
+    pipe_limits::account(p.owner_uid, old_pages, new_pages);
+    p.accounted.store(new_pages as usize, Ordering::Release);
+    Ok(())
+}
+
+/// Release the ring's page charge with the ring itself (`free_pipe_info`).
+impl Drop for PipeData {
+    fn drop(&mut self) {
+        pipe_limits::account(self.owner_uid, self.accounted.load(Ordering::Acquire) as i64, 0);
+    }
 }
 
 /// Push `buf` into a pipe on behalf of the core dumper: the wait for room ends

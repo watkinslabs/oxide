@@ -10,7 +10,7 @@ use vfs::superblock::SuperBlock;
 use super::accounting::TmpfsSb;
 use super::file::make_tmpfs_file_inode;
 use super::flags::{S_IFBLK, S_IFCHR, S_IFIFO, S_IFMT, S_IFSOCK};
-use super::inode::{fsid_of, iget_or_build, next_ino};
+use super::inode::{fsid_of, iget_or_build};
 use super::special::{make_tmpfs_sock_inode, make_tmpfs_special_inode};
 use super::symlink::make_tmpfs_symlink_inode;
 
@@ -109,7 +109,7 @@ impl InodeOps for TmpfsDirOps {
         let mut g = dd.kids.lock();
         if g.contains_key(name) { return Err(VfsError::Eexist); }
         if !dd.acct.charge_inode() { return Err(VfsError::Enospc); }
-        let ino = next_ino();
+        let ino = dd.acct.alloc_ino();
         let (uid, gid, m) = vfs::prepare_create_owner_mode(ctx.idmap, inode, mode as u16,
             0o1777, vfs::types::S_IFDIR, ctx.cred, ctx.umask);
         let d = make_tmpfs_dir_inode(ino, m & 0o7777, uid, gid, dd.sb_weak(), dd.acct.clone());
@@ -199,7 +199,7 @@ impl InodeOps for TmpfsDirOps {
         if g.contains_key(name) { return Err(VfsError::Eexist); }
         if !dd.acct.charge_inode() { return Err(VfsError::Enospc); }
         let (uid, gid) = vfs::prepare_symlink_owner(ctx.idmap, inode, ctx.cred);
-        g.insert(name.into(), make_tmpfs_symlink_inode(target, uid, gid, dd.sb_weak()));
+        g.insert(name.into(), make_tmpfs_symlink_inode(target, uid, gid, dd.sb_weak(), &dd.acct));
         Ok(())
     }
 
@@ -217,13 +217,13 @@ impl InodeOps for TmpfsDirOps {
             mode, mode, ctx.cred, ctx.umask);
         let perm = m & 0o7777;
         let child: InodeRef = match mode & S_IFMT {
-            S_IFIFO  => make_tmpfs_special_inode(FileType::Fifo, perm, 0, uid, gid, sb),
-            S_IFSOCK => make_tmpfs_sock_inode(perm, uid, gid, sb),
+            S_IFIFO  => make_tmpfs_special_inode(FileType::Fifo, perm, 0, uid, gid, sb, &dd.acct),
+            S_IFSOCK => make_tmpfs_sock_inode(perm, uid, gid, sb, &dd.acct),
             S_IFCHR  => make_device_node_inode(
-                next_ino(), FileType::CharDev,
+                dd.acct.alloc_ino(), FileType::CharDev,
                 Devt::from_raw(rdev), perm, sb),
             S_IFBLK  => make_device_node_inode(
-                next_ino(), FileType::BlockDev,
+                dd.acct.alloc_ino(), FileType::BlockDev,
                 Devt::from_raw(rdev), perm, sb),
             _ => { dd.acct.free_inode(); return Err(VfsError::Einval); }
         };
@@ -292,7 +292,7 @@ impl InodeOps for TmpfsDirOps {
         }
         if flags & RENAME_WHITEOUT != 0 {
             let sb = sdir.sb_weak();
-            let wo = make_device_node_inode(next_ino(), FileType::CharDev, Devt::from_raw(0), 0, sb);
+            let wo = make_device_node_inode(sdir.acct.alloc_ino(), FileType::CharDev, Devt::from_raw(0), 0, sb);
             sdir.insert(old_name, wo);
         }
         ddir.insert(new_name, moved);

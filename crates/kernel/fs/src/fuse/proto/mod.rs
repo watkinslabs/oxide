@@ -67,10 +67,23 @@ pub const FUSE_ASYNC_READ: u32 = 1 << 0;
 pub const FUSE_BIG_WRITES: u32 = 1 << 5;
 /// `FUSE_DO_READDIRPLUS` — daemon may answer READDIRPLUS. # C: O(1)
 pub const FUSE_DO_READDIRPLUS: u32 = 1 << 13;
+/// `FUSE_WRITEBACK_CACHE` — the kernel, not the daemon, holds an open file's
+/// dirty page-cache data. Named because it is what overrides a daemon's
+/// `FOPEN_NOFLUSH` at close: with a writeback cache the flush pushes out data
+/// the daemon has never seen, so the daemon's preference cannot decide it.
+/// # C: O(1)
+pub const FUSE_WRITEBACK_CACHE: u32 = 1 << 16;
 /// `FUSE_INIT_EXT` (7.36+) — the INIT request carries `flags2` and the reserved
 /// extension area. Advertising 7.45 without this bit/body would lie about the
 /// negotiated wire layout. # C: O(1)
 pub const FUSE_INIT_EXT: u32 = 1 << 30;
+
+// ---------------------------------------------------------------------------
+// `FOPEN_*` — per-open flags a daemon returns in `fuse_open_out.open_flags`.
+// ---------------------------------------------------------------------------
+
+/// `FOPEN_NOFLUSH` (7.30+) — this open wants no FLUSH on close. # C: O(1)
+pub const FOPEN_NOFLUSH: u32 = 1 << 5;
 
 // ---------------------------------------------------------------------------
 // Fixed struct sizes (`sizeof` in libfuse) — the byte lengths the codec reads/

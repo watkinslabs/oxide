@@ -10,7 +10,7 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use super::accounting::TmpfsSb;
 use super::flags::{F_SEAL_FUTURE_WRITE, F_SEAL_GROW, F_SEAL_SHRINK, F_SEAL_WRITE};
-use super::inode::{fsid_of, iget_or_build, next_ino};
+use super::inode::{fsid_of, iget_or_build};
 use super::limits::PG;
 
 /// Resolve the allocating task's memcg once, at the shmem page-allocation
@@ -172,7 +172,7 @@ pub(super) fn ensure_page(g: &mut BTreeMap<u64, ShmemPage>, idx: u64, acct: &Tmp
 /// (Linux honours the `open`/`creat` mode, masked by umask at the syscall
 /// layer); `sb` owns the inode (`fsid` derives from `s_dev`). # C: O(1)
 pub(super) fn make_tmpfs_file_inode(sealable: bool, perm: u16, uid: u32, gid: u32, sb: Weak<SuperBlock>, acct: Arc<TmpfsSb>) -> InodeRef {
-    let ino = next_ino();
+    let ino = acct.alloc_ino();
     let sb2 = sb.clone();
     iget_or_build(&sb, ino, move || {
         let data = Arc::new(TmpfsFileData {

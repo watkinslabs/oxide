@@ -26,7 +26,10 @@ pub fn sys_pipe2(args: &SyscallArgs) -> i64 {
     let cur = match current_task() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
     // SAFETY: running task on this CPU; preempt-off.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
-    let inode = ::fs::pipe::make_pipe_inode();
+    let inode = match ::fs::pipe::make_pipe_inode() {
+        Ok(i) => i,
+        Err(e) => return -(e as i64),
+    };
     let pd = ::fs::pipe::pipe_data(&inode).expect("pipe inode has PipeData");
     pd.writers.store(1, core::sync::atomic::Ordering::Release);
     pd.readers.store(1, core::sync::atomic::Ordering::Release);

@@ -143,15 +143,17 @@ fn limit_bit_maps_each_quota_class() {
 }
 
 #[test]
-fn unknown_non_quota_tokens_are_carried_not_rejected() {
+fn a_token_no_consumer_owns_is_carried_not_rejected() {
     // ext4 is the root filesystem: an option this driver does not model must
-    // never turn into a failed mount.
+    // never turn into a failed mount. An option it DOES model is acted on and
+    // must not land here — a token in `other` is a token nothing reads.
     let data = "rw,relatime,errors=remount-ro,data=ordered,discard,usrquota";
-    let o = Ext4MountOpts::parse(data).expect("unknown options are tolerated");
+    let o = Ext4MountOpts::parse(data).expect("unmodelled options are tolerated");
     assert_eq!(o.vals, EXT4_MOUNT_QUOTA | EXT4_MOUNT_USRQUOTA);
-    assert_eq!(o.other.len(), 5);
-    assert!(o.other.iter().any(|t| t.as_str() == "errors=remount-ro"));
-    assert!(o.other.iter().any(|t| t.as_str() == "discard"));
+    assert_eq!(o.other, ["rw", "relatime"], "only the two nothing consumes");
+    assert_eq!(o.behaviour.errors, crate::mount_opts::ErrorsPolicy::RemountRo);
+    assert_eq!(o.behaviour.data, crate::mount_opts::DataMode::Ordered);
+    assert!(o.behaviour.discard);
 }
 
 #[test]

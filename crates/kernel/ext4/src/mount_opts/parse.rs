@@ -21,15 +21,27 @@ impl Ext4MountOpts {
     /// name outside the filesystem root are all `EINVAL`. Non-quota tokens
     /// are collected verbatim and never fail the mount.
     /// # C: O(len(data))
-    pub fn parse(data: &str) -> KResult<Self> {
+    pub fn parse(data: &str) -> KResult<Self> { Self::parse_from(data, Default::default()) }
+
+    /// Parse one data string on TOP of the behaviour already in force, which
+    /// is what a remount naming a single option must do — the options it does
+    /// not name keep their current answers rather than snapping back to the
+    /// mount-time defaults.
+    /// # C: O(len(data))
+    pub fn parse_from(data: &str, behaviour: super::behaviour::Ext4Behaviour) -> KResult<Self> {
         let mut o = Self::default();
+        o.behaviour = behaviour;
         for tok in data.split(OPT_SEP) {
             if tok.is_empty() { continue; }
             let (key, val) = match tok.find(OPT_ASSIGN) {
                 Some(i) => (&tok[..i], Some(&tok[i + OPT_ASSIGN.len_utf8()..])),
                 None => (tok, None),
             };
-            if !o.parse_one(key, val)? { o.other.push(tok.to_string()); }
+            if o.parse_one(key, val)? { continue; }
+            // A behavioural option is acted on, not collected: a key that
+            // reaches `other` is a key nothing in this filesystem reads.
+            if o.behaviour.parse_one(key, val)? { continue; }
+            o.other.push(tok.to_string());
         }
         Ok(o)
     }

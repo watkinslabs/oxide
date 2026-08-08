@@ -11,6 +11,7 @@
 //   * `dev`    — the `/dev/fuse` misc char device `file_operations`.
 //   * `fs`     — the mounted `fuse` filesystem + root inode + mount parsing.
 //   * `fops`   — the forwarding `i_op`/`i_fop` (LOOKUP/GETATTR/OPEN/READ/READDIR…).
+//   * `flush`  — FLUSH decisions: the lock-owner scramble, the skip rule, the body.
 //   * `params` — the mount-parameter table fuse options are admitted against.
 //
 // Scope: a REAL read-only browse+read filesystem (LOOKUP, GETATTR, OPEN/OPENDIR,
@@ -25,6 +26,7 @@ pub mod conn;
 pub mod dev;
 pub mod fs;
 pub mod fops;
+pub mod flush;
 pub mod fsync;
 mod params;
 mod context;

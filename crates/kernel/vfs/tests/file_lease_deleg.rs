@@ -288,21 +288,80 @@ fn add_lease_admission_against_other_holders() {
 // carry an exclusive lease.
 #[test]
 fn open_conflicts_rules() {
-    // Shared: any writer at all blocks it.
-    assert!(!vfs::file::open_conflicts(F_RDLCK, 0, false));
-    assert!(vfs::file::open_conflicts(F_RDLCK, 1, false));
-    assert!(!vfs::file::open_conflicts(F_RDLCK, -1, false), "an exec deny is not an open writer");
+    // Shared: any writer at all blocks it; other READERS are exactly who a
+    // shared lease coexists with.
+    assert!(!vfs::file::open_conflicts(F_RDLCK, 0, 0, false, false));
+    assert!(vfs::file::open_conflicts(F_RDLCK, 1, 0, false, false));
+    assert!(!vfs::file::open_conflicts(F_RDLCK, -1, 0, false, false), "an exec deny is not an open writer");
+    assert!(!vfs::file::open_conflicts(F_RDLCK, 0, 7, false, true), "readers never block a shared lease");
 
     // Exclusive: the requester must be the only writer, or there must be none
     // when the requester is not one.
-    assert!(!vfs::file::open_conflicts(F_WRLCK, 1, true), "the requester's own write open");
-    assert!(vfs::file::open_conflicts(F_WRLCK, 2, true), "somebody else has it open too");
-    assert!(!vfs::file::open_conflicts(F_WRLCK, 0, false));
-    assert!(vfs::file::open_conflicts(F_WRLCK, 1, false), "another writer");
-    assert!(vfs::file::open_conflicts(F_WRLCK, -1, false), "never on a running executable");
+    assert!(!vfs::file::open_conflicts(F_WRLCK, 1, 0, true, false), "the requester's own write open");
+    assert!(vfs::file::open_conflicts(F_WRLCK, 2, 0, true, false), "somebody else has it open too");
+    assert!(!vfs::file::open_conflicts(F_WRLCK, 0, 0, false, false));
+    assert!(vfs::file::open_conflicts(F_WRLCK, 1, 0, false, false), "another writer");
+    assert!(vfs::file::open_conflicts(F_WRLCK, -1, 0, false, false), "never on a running executable");
+
+    // Exclusive, the READER half: sole tenancy means no other reader either,
+    // and the requester's own read-only open is not somebody else.
+    assert!(vfs::file::open_conflicts(F_WRLCK, 0, 1, false, false), "another reader has it open");
+    assert!(!vfs::file::open_conflicts(F_WRLCK, 0, 1, false, true), "the requester's own read open");
+    assert!(vfs::file::open_conflicts(F_WRLCK, 0, 2, false, true), "a reader besides the requester");
+    assert!(vfs::file::open_conflicts(F_WRLCK, 1, 1, true, false),
+            "a write requester is not counted among the readers, so that reader is another");
 
     // The release form admits nothing and refuses nothing.
-    assert!(!vfs::file::open_conflicts(F_UNLCK, 5, false));
+    assert!(!vfs::file::open_conflicts(F_UNLCK, 5, 5, false, false));
+}
+
+// The reader reference itself: which open modes take one, and that it lives
+// exactly as long as the description.
+#[test]
+fn read_only_opens_are_counted_on_the_inode() {
+    use vfs::file::read_ref_for;
+    use vfs::Fmode;
+    assert!(read_ref_for(Fmode::READ));
+    assert!(!read_ref_for(Fmode::READ | Fmode::WRITE), "a read-write open is a writer, not a reader");
+    assert!(!read_ref_for(Fmode::WRITE));
+    assert!(!read_ref_for(Fmode::PATH), "an O_PATH fd holds the file open for neither");
+
+    let ino = reg_inode(120);
+    assert_eq!(ino.readcount(), 0);
+    let a = file_on(&ino);
+    assert_eq!(ino.readcount(), 1, "the read-only open is counted");
+    assert!(a.holds_read_ref());
+    let b = file_on(&ino);
+    assert_eq!(ino.readcount(), 2);
+    let w = {
+        let d = Dentry::new(None, "f".into(), Arc::clone(&ino));
+        File::new(Arc::clone(&ino), d, OpenFlags::O_RDWR)
+    };
+    assert!(!w.holds_read_ref());
+    assert_eq!(ino.readcount(), 2, "a read-write open is not a reader");
+    drop(b);
+    assert_eq!(ino.readcount(), 1, "the count follows the description, not the read");
+    drop(a);
+    drop(w);
+    assert_eq!(ino.readcount(), 0, "every reference released at close");
+}
+
+// The two halves together: an exclusive lease is refused while ANOTHER
+// description has the file open — even a read-only one, which the writer count
+// alone can never see.
+#[test]
+fn an_exclusive_lease_needs_sole_tenancy_including_readers() {
+    let ino = reg_inode(121);
+    let requester = file_on(&ino);
+    assert!(!requester.lease_open_conflict(F_WRLCK),
+            "the requester's own read-only open is not a conflict");
+    let other = file_on(&ino);
+    assert!(requester.lease_open_conflict(F_WRLCK),
+            "another reader has it open, so there is nothing to be exclusive over");
+    assert!(!requester.lease_open_conflict(F_RDLCK),
+            "a shared lease is still fine beside that reader");
+    drop(other);
+    assert!(!requester.lease_open_conflict(F_WRLCK), "sole tenancy restored at close");
 }
 
 // A directory delegation is recalled by a change to the directory — the case
