@@ -125,6 +125,8 @@ impl NetlinkSocket {
         rtnetlink::nlmsg_ack_pub(hdr, -(syscall::errno::Errno::Ebadf.as_i32()))
     }
 
+    /// Whether the caller may administer this socket's own network namespace.
+    /// # C: O(namespace depth)
     pub(crate) fn may_admin_net(&self) -> bool {
         self.may_admin_net_for(&self.net_ns)
     }

@@ -32,14 +32,14 @@ pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &
         crate::sock::tx_meta(sock, &crate::send_control::SockCm::default()))
 }
 
-/// The same send, carrying one message's IPv4 ancillary overrides. Each of
-/// them replaces exactly the socket-level choice its `setsockopt` counterpart
-/// makes, for this datagram only. # C: O(1)
 /// The route this send's mark selects. # C: O(N rules * N routes)
 fn marked_route(net_ns: u64, dst: Ipv4Addr, mark: u32) -> Option<crate::route::RouteEntry> {
     stack().routes.lookup_record_mark_in(net_ns, dst, mark).map(|record| record.route)
 }
 
+/// The same send, carrying one message's IPv4 ancillary overrides. Each of
+/// them replaces exactly the socket-level choice its `setsockopt` counterpart
+/// makes, for this datagram only. # C: O(1)
 pub fn socket_sendto_ctl(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &[u8],
     msg: &crate::send_control::Raw4Control, tx: crate::TxMeta)
     -> Result<usize, NetError>
