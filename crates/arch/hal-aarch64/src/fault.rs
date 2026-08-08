@@ -157,15 +157,21 @@ pub unsafe extern "C" fn oxide_fault_print_rust(esr: u64, far: u64, elr: u64,
     if from_kernel
         && hal::fault_reentry::enter(fault_cpu(), fault_key(esr, far, elr), frame,
                                      hal::KERNEL_STACK_BYTES as u64) == hal::fault_reentry::Verdict::Runaway {
-        klog::write_raw(b"[FAULT] BUG: runaway abort, same address re-entered on this stack - halting. esr=");
-        klog::write_hex_u64(esr);
-        klog::write_raw(b" far=");
-        klog::write_hex_u64(far);
-        klog::write_raw(b" elr=");
-        klog::write_hex_u64(elr);
-        klog::write_raw(b" frame=");
-        klog::write_hex_u64(frame);
-        klog::write_raw(b"\n");
+        // Same emit gate as the oops printer below: `debug-watchdog` is
+        // default-on via the boot crates, so every shipped build carries this
+        // line and a healthy boot emits none of it.
+        #[cfg(any(feature = "debug-irq", feature = "debug-watchdog"))]
+        {
+            klog::write_raw(b"[FAULT] BUG: runaway abort, same address re-entered on this stack - halting. esr=");
+            klog::write_hex_u64(esr);
+            klog::write_raw(b" far=");
+            klog::write_hex_u64(far);
+            klog::write_raw(b" elr=");
+            klog::write_hex_u64(elr);
+            klog::write_raw(b" frame=");
+            klog::write_hex_u64(frame);
+            klog::write_raw(b"\n");
+        }
         return false;
     }
 
