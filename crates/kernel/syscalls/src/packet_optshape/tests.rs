@@ -96,3 +96,22 @@ fn the_vnet_header_pair_round_trips_through_its_own_rule() {
     assert_eq!(vnet_hdr_get(standard, true), VIRTIO_NET_HDR_LEN as i32);
     assert_ne!(vnet_hdr_get(standard, false), vnet_hdr_get(standard, true));
 }
+
+#[test]
+fn a_fanout_data_write_is_judged_by_its_group_before_its_filter_lock() {
+    use net::uapi::{PACKET_FANOUT_CBPF, PACKET_FANOUT_EBPF, PACKET_FANOUT_HASH};
+    // A socket that joined no group is refused for that reason alone, even
+    // with a locked filter: the lock belongs to the two modes that import a
+    // program, not to the enquiry about membership.
+    assert_eq!(fanout_data_mode(None, false), Err(Errno::Einval));
+    assert_eq!(fanout_data_mode(None, true), Err(Errno::Einval));
+    // A group whose selector is not a program is the same refusal.
+    assert_eq!(fanout_data_mode(Some(PACKET_FANOUT_HASH), true), Err(Errno::Einval));
+    assert_eq!(fanout_data_mode(Some(PACKET_FANOUT_HASH), false), Err(Errno::Einval));
+    // Only inside an accepting mode does the lock have its say, and it has it
+    // before the caller's program is read.
+    assert_eq!(fanout_data_mode(Some(PACKET_FANOUT_CBPF), true), Err(Errno::Eperm));
+    assert_eq!(fanout_data_mode(Some(PACKET_FANOUT_EBPF), true), Err(Errno::Eperm));
+    assert_eq!(fanout_data_mode(Some(PACKET_FANOUT_CBPF), false), Ok(PACKET_FANOUT_CBPF));
+    assert_eq!(fanout_data_mode(Some(PACKET_FANOUT_EBPF), false), Ok(PACKET_FANOUT_EBPF));
+}

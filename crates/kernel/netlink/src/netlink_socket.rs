@@ -46,6 +46,10 @@ pub struct NetlinkSocket {
     /// Effective receive timeout shared by generic socket options and netlink
     /// wait interruption. `0` means no timeout.
     pub rcvtimeo_ns: core::sync::atomic::AtomicU64,
+    /// The generic `struct sock` option state every family carries, in the one
+    /// type that owns it, so a SOL_SOCKET write on a netlink fd is stored where
+    /// the SOL_SOCKET read looks for it.
+    pub generic: net::sock_opts::sol_socket::GenericSockOpts,
     pub protocol: u16,
     pub net_ns: NetworkNamespaceRef,
     /// Socket-file opener credentials retained by the socket owner. Cross-netns
@@ -144,6 +148,7 @@ impl NetlinkSocket {
         opener_user_ns: namespace_identity::NamespacePin, opener_caps: u64) -> Self {
         Self {
             rcvtimeo_ns: core::sync::atomic::AtomicU64::new(0),
+            generic: net::sock_opts::sol_socket::GenericSockOpts::default(),
             protocol,
             net_ns: Arc::clone(net_ns),
             opener_user_ns,

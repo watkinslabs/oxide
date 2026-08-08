@@ -88,10 +88,8 @@ pub(crate) fn nf_hook_eval(hook_id: u32, pkt: &[u8], family: u8) -> u32 {
 /// Evaluate namespace-owned security policy before the legacy netfilter
 /// callback. The ingress lease supplies the concrete namespace key.
 pub(crate) fn nf_hook_eval_in(namespace: u64, hook_id: u32, pkt: &[u8], family: u8) -> NfHookResult {
-    let context = security::network::Context {
-        namespace, family: family as u16, socket_type: 0, protocol: 0,
-        operation: security::network::Operation::Packet,
-    };
+    let context = security::network::Context::op(namespace, family as u16, 0, 0,
+        security::network::Operation::Packet);
     if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
         return NfHookResult { verdict: 0, mark: 0 };
     }
@@ -132,11 +130,8 @@ pub(crate) fn nf_output(p: &Pkt, family: u8) -> bool {
 
 /// Netfilter output under the retained socket namespace. # C: O(eval) ×2
 pub(crate) fn nf_output_in(namespace: u64, p: &Pkt, family: u8) -> bool {
-    let context = security::network::Context {
-        namespace,
-        family: family as u16, socket_type: 0, protocol: 0,
-        operation: security::network::Operation::Send,
-    };
+    let context = security::network::Context::op(namespace, family as u16, 0, 0,
+        security::network::Operation::Send);
     if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
         return false;
     }

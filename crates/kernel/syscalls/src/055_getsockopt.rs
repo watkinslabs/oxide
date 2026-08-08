@@ -97,8 +97,9 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             Err(e) => return e,
         };
         let (namespace, family) = target.option_context();
-        if let Err(error) = net::security_admission::check(namespace, family,
-            security::network::Operation::Option)
+        if let Err(error) = net::socket_security::option::getsockopt(
+            net::socket_security::option::OptSock::plain(namespace, family),
+            level as i32, optname as i32)
         { return errno_from_neterr(error); }
         let pending = target.take_error();
         return out.i32(pending);
@@ -109,8 +110,9 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             None => return -(Errno::Enotsock.as_i32() as i64),
         };
         let (namespace, family) = target.option_context();
-        if let Err(error) = net::security_admission::check(namespace, family,
-            security::network::Operation::Option)
+        if let Err(error) = net::socket_security::option::getsockopt(
+            net::socket_security::option::OptSock::plain(namespace, family),
+            level as i32, optname as i32)
         { return errno_from_neterr(error); }
         if optname == SO_GET_FILTER { return varlen::get_filter(&target, optval, optlen_p); }
         return out.i32(i32::from(target.is_locked()));
@@ -119,7 +121,9 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
         return crate::netlink_fd::getsockopt(&target, level, optname, optval, optlen_p);
     }
     if let Some(vsock) = vsock_from_file(file.clone()) {
-        if let Err(error) = vsock.check_option() { return errno_from_neterr(error); }
+        if let Err(error) = vsock.check_option(net::socket_security::option::Access::Get,
+            level as i32, optname as i32)
+        { return errno_from_neterr(error); }
         if level == net::uapi::SOL_VSOCK {
             if net::vsock_socket::VsockSocket::is_vsock_buffer_option(optname) {
                 return match vsock.get_vsock_buffer_option(optname) {
@@ -141,7 +145,9 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
         Some(sock) => sock,
         None => return -(Errno::Enotsock.as_i32() as i64),
     };
-    if let Err(error) = net::sock_opts::check_option(&sock) {
+    if let Err(error) = net::socket_security::option::getsockopt(
+        net::socket_security::option::inet(&sock), level as i32, optname as i32)
+    {
         return errno_from_neterr(error);
     }
     // An AF_UNIX socket carries no protocol-level option table at all: every
@@ -263,43 +269,4 @@ fn bind_to_device_name(s: &alloc::sync::Arc<net::sock::InetSocket>,
     0
 }
 
-pub(crate) fn socket_type(s: &alloc::sync::Arc<net::sock::InetSocket>) -> i32 {
-    use core::sync::atomic::Ordering;
-    // Explicit SO_TYPE override (AF_UNIX SOCK_SEQPACKET listener — see
-    // sys_socket): the byte-ring SockKind can't encode the SEQPACKET shape.
-    let ov = s.opts.so_type.load(Ordering::Acquire);
-    if ov != 0 { return ov as i32; }
-    match &*s.kind.lock() {
-        SockKind::Udp | SockKind::UnixDgram(_) => net::socket_args::SOCK_DGRAM as i32,
-        SockKind::Raw4(_) | SockKind::Raw6(_) => net::socket_args::SOCK_RAW as i32,
-        SockKind::Packet { sock_type, .. } => sock_type.load(Ordering::Acquire) as i32,
-        SockKind::UnixMsgPair(_, _) => net::socket_args::SOCK_SEQPACKET as i32,
-        SockKind::TcpInit | SockKind::UnixUnbound(_, _)
-        | SockKind::TcpListener(_)
-        | SockKind::TcpConn(_)
-        | SockKind::Unix(_, _)
-        | SockKind::UnixListener(_) => net::socket_args::SOCK_STREAM as i32,
-    }
-}
-
-pub(crate) fn socket_acceptconn(s: &alloc::sync::Arc<net::sock::InetSocket>) -> i32 {
-    match &*s.kind.lock() {
-        SockKind::TcpListener(_) | SockKind::UnixListener(_) => 1,
-        _ => 0,
-    }
-}
-
-pub(crate) fn socket_protocol(s: &alloc::sync::Arc<net::sock::InetSocket>) -> i32 {
-    use core::sync::atomic::Ordering;
-    if s.family.load(Ordering::Acquire) == net::sock::AF_UNIX {
-        return 0;
-    }
-    match &*s.kind.lock() {
-        SockKind::Packet { protocol, .. } => protocol.load(Ordering::Acquire) as i32,
-        SockKind::Raw4(endpoint) => endpoint.protocol() as i32,
-        SockKind::Raw6(endpoint) => endpoint.protocol() as i32,
-        SockKind::Udp => IPPROTO_UDP as i32,
-        SockKind::TcpInit | SockKind::TcpListener(_) | SockKind::TcpConn(_) => IPPROTO_TCP as i32,
-        _ => 0,
-    }
-}
+pub(crate) use net::sock_opts::identity::{socket_acceptconn, socket_protocol, socket_type};

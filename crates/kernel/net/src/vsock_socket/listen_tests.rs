@@ -136,8 +136,14 @@ fn lifecycle_operations_admit_before_vsock_state_transition() {
     let option_socket = VsockSocket::new_type_in(crate::socket_args::SOCK_STREAM,
         crate::net_ns::test_support::allocate_namespace());
     let option_namespace = option_socket.net_ns();
-    assert_eq!(security::network::install(option_namespace, security::network::Operation::Option,
+    assert_eq!(security::network::install(option_namespace, security::network::Operation::SetOption,
         deny_vsock_operation), None);
-    assert_eq!(option_socket.check_option(), Err(crate::NetError::Eacces));
-    assert!(security::network::remove(option_namespace, security::network::Operation::Option).is_some());
+    let (level, optname) = (crate::uapi::SOL_VSOCK as i32, 0);
+    assert_eq!(option_socket.check_option(crate::socket_security::option::Access::Set,
+        level, optname), Err(crate::NetError::Eacces));
+    // Writing an option and reading one are separate registrations: denying
+    // the write leaves the read allowed.
+    assert_eq!(option_socket.check_option(crate::socket_security::option::Access::Get,
+        level, optname), Ok(()));
+    assert!(security::network::remove(option_namespace, security::network::Operation::SetOption).is_some());
 }

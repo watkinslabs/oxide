@@ -31,9 +31,12 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
             Some(target) => target,
             None => return -(Errno::Enotsock.as_i32() as i64),
         };
-        let (namespace, family) = target.option_context();
-        if let Err(error) = net::security_admission::check(namespace, family, security::network::Operation::Option) { return errno_from_neterr(error); }
         if signed_optlen < 0 { return -(Errno::Einval.as_i32() as i64); }
+        let (namespace, family) = target.option_context();
+        if let Err(error) = net::socket_security::option::setsockopt(
+            net::socket_security::option::OptSock::plain(namespace, family),
+            level as i32, optname as i32)
+        { return errno_from_neterr(error); }
         return socket_filter_option(&target, optname, optval, signed_optlen as u32);
     }
     if let Some(target) = crate::netlink_fd::from_file(file.clone()) {
@@ -42,16 +45,21 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
         // SOL_SOCKET is answered generically for every family and never
         // reaches the family's own table.
         if level == SOL_SOCKET {
-            if let Err(error) = net::security_admission::check(
-                net::net_ns::namespace_id(&target.socket().net_ns),
-                net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Option)
+            if let Err(error) = net::socket_security::option::setsockopt(
+                net::socket_security::option::OptSock::plain(
+                    net::net_ns::namespace_id(&target.socket().net_ns),
+                    net::socket_args::AF_NETLINK_WIRE),
+                level as i32, optname as i32)
             { return errno_from_neterr(error); }
             return crate::netlink_fd::sol_socket::set(&target, optname, optval, optlen as u64);
         }
         return crate::netlink_fd::setsockopt(&target, level, optname, optval, optlen as u64);
     }
     if let Some(vsock) = vsock_from_file(file.clone()) {
-        if let Err(error) = vsock.check_option() { return errno_from_neterr(error); }
+        if signed_optlen < 0 { return -(Errno::Einval.as_i32() as i64); }
+        if let Err(error) = vsock.check_option(net::socket_security::option::Access::Set,
+            level as i32, optname as i32)
+        { return errno_from_neterr(error); }
         return vsock_setsockopt(&vsock, level, optname, optval, signed_optlen);
     }
     let sock = match socket_from_file(file) {
@@ -61,10 +69,12 @@ pub fn sys_setsockopt(args: &SyscallArgs) -> i64 {
             return -(Errno::Enotsock.as_i32() as i64);
         }
     };
-    if let Err(error) = net::sock_opts::check_option(&sock) {
+    if signed_optlen < 0 { return -(Errno::Einval.as_i32() as i64); }
+    if let Err(error) = net::socket_security::option::setsockopt(
+        net::socket_security::option::inet(&sock), level as i32, optname as i32)
+    {
         return errno_from_neterr(error);
     }
-    if signed_optlen < 0 { return -(Errno::Einval.as_i32() as i64); }
     let optlen = signed_optlen as u32;
     if level == SOL_SOCKET {
         if optname == SO_BINDTODEVICE { return bind_to_device(&sock, optval, optlen); }

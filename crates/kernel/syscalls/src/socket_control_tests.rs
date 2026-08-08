@@ -124,11 +124,12 @@ fn netlink_getsockopt_negative_optlen_is_rejected_by_the_live_policy_owner() {
 #[test]
 fn netlink_getsockopt_keeps_linux_owned_options_and_rejects_unknowns() {
     let source = include_str!("netlink_fd.rs");
-    let dispatch = source.split("let required = match (level, optname)").nth(1).unwrap();
-    assert!(dispatch.contains("(net::uapi::SOL_SOCKET, net::uapi::SO_PROTOCOL)"));
-    assert!(dispatch.contains("socket.protocol as u32"));
-    assert!(dispatch.contains("(net::uapi::SOL_SOCKET, net::uapi::SO_TYPE)"));
-    assert!(dispatch.contains("net::socket_args::SOCK_RAW"));
+    // SOL_SOCKET is answered by the ONE generic table every family reads, so
+    // this shim carries no identity arm of its own to disagree with it.
+    assert!(source.contains("sol_socket::get(target, optname, requested)"));
+    assert!(!source.contains("(net::uapi::SOL_SOCKET, net::uapi::SO_PROTOCOL)"));
+    assert!(!source.contains("(net::uapi::SOL_SOCKET, net::uapi::SO_TYPE)"));
+    let dispatch = source.split("let copied = match (level, optname)").nth(1).unwrap();
     // SOL_NETLINK answers are owned by the netlink crate's decision table, not
     // by a second switch in the shim.
     assert!(dispatch.contains("(::netlink::sockopt::SOL_NETLINK, name) => match ::netlink::get_answer(name)"));
@@ -145,7 +146,7 @@ fn netlink_getsockopt_keeps_linux_owned_options_and_rejects_unknowns() {
     assert!(unknown < copyout);
     assert!(!source.contains("write_volatile"));
     assert!(source.contains("out.extend_from_slice(&word.to_ne_bytes())"));
-    assert!(source.contains("if copied != 0 && uaccess::copy_to_user(optval"));
+    assert!(source.contains("if !value.is_empty() && uaccess::copy_to_user(optval"));
     assert!(source.contains("uaccess::copy_to_user(optlen_p, &required.to_ne_bytes())"));
 }
 
@@ -284,6 +285,33 @@ fn netlink_setsockopt_reports_enoprotoopt_for_an_option_it_does_not_implement() 
     // A short option is not an error in netlink: the value simply stays zero.
     assert!(body.contains("if optlen >= NETLINK_OPTION_BYTES"));
     assert!(body.contains("Errno::Efault"), "a bad pointer is EFAULT, not EINVAL");
+}
+
+// SOL_SOCKET on a netlink fd is the SAME generic decision every other family
+// makes. A second table here diverged in three ways at once: it validated only
+// three option numbers and silently reported success for the rest, it kept its
+// own timeval arithmetic with no EDOM screen and no negative-seconds rule, and
+// it answered the buffer sizes as unreadable while accepting writes to them.
+#[test]
+fn netlink_sol_socket_defers_to_the_one_generic_table() {
+    let source = include_str!("netlink_fd/sol_socket.rs");
+    assert!(source.contains("crate::s054_setsockopt::sol_socket::import(optname, optval, optlen)"),
+        "the argument import is the canonical one");
+    assert!(source.contains("sol::set::admit(optname, arg, personality(), env)"),
+        "the admission ladder is the canonical one");
+    assert!(source.contains("sol::get::value(optname, requested, &socket.generic, &view)"),
+        "the read table is the canonical one");
+    // No arithmetic, no length rule and no capability gate of its own.
+    for reimplementation in ["NSEC_PER_USEC", "TIMEVAL_BYTES", "may_scm_recv", "Errno::Edom"] {
+        assert!(!source.contains(reimplementation),
+            "{reimplementation} belongs to the generic table, not to this shim");
+    }
+    // The rules that shim now inherits, asserted on the owner itself.
+    use net::sock_opts::sol_socket::timeout_ns_from_timeval as timeout;
+    assert_eq!(timeout(1, 1_000_000), Err(syscall::errno::Errno::Edom));
+    assert_eq!(timeout(1, -1), Err(syscall::errno::Errno::Edom));
+    assert_eq!(timeout(-1, 500), Ok(net::sock_opts::sol_socket::IMMEDIATE_TIMEOUT_NS));
+    assert_eq!(timeout(0, 0), Ok(0));
 }
 
 #[test]

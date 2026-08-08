@@ -7,13 +7,9 @@ pub struct ConnectAdmission(());
 
 /// Apply generic connect security before protocol parsing or name lookup. # C: O(1)
 pub fn admit_connect(sock: &InetSocket) -> Result<ConnectAdmission, NetError> {
-    let context = security::network::Context {
-        namespace: sock.net_ns(),
-        family: sock.family.load(core::sync::atomic::Ordering::Acquire),
-        socket_type: 0,
-        protocol: 0,
-        operation: security::network::Operation::Connect,
-    };
+    let context = security::network::Context::op(sock.net_ns(),
+        sock.family.load(core::sync::atomic::Ordering::Acquire), 0, 0,
+        security::network::Operation::Connect);
     if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
         return Err(NetError::Eacces);
     }

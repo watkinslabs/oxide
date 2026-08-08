@@ -145,6 +145,8 @@ pub(super) fn set_tcp_rmem(ns: &network_namespace::NetworkNamespaceRef, w: [i64;
 }
 pub(super) fn get_rmem_max() -> i64 { net::sysctl::rmem_max() as i64 }
 pub(super) fn set_rmem_max(value: i64) { net::sysctl::set_rmem_max(value) }
+pub(super) fn get_mld_max_msf() -> i64 { net::sysctl::mld_max_msf() }
+pub(super) fn set_mld_max_msf(value: i64) { net::sysctl::set_mld_max_msf(value) }
 pub(super) fn get_wmem_max() -> i64 { net::sysctl::wmem_max() as i64 }
 pub(super) fn set_wmem_max(value: i64) { net::sysctl::set_wmem_max(value) }
 pub(super) fn net_int(namespace: &network_namespace::NetworkNamespaceRef, key: usize) -> Result<i64, ()> {

@@ -40,7 +40,7 @@ fn i64_at(bytes: &[u8], offset: usize) -> i64 {
 /// for every option except `SO_BINDTODEVICE`, so a short buffer is `EINVAL`
 /// and a bad pointer `EFAULT` before the option number is classified.
 /// # C: O(1)
-fn import(optname: u64, optval: u64, optlen: u32) -> Result<Arg, Errno> {
+pub(crate) fn import(optname: u64, optval: u64, optlen: u32) -> Result<Arg, Errno> {
     let width = core::mem::size_of::<i32>() as u32;
     let short = if net::sock_opts::sol_socket::exact_int_argument(optname) {
         optlen != width

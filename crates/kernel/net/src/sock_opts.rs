@@ -3,12 +3,16 @@
 //
 // Module manifest:
 // - this file: security admission plus the TCP keepalive option application.
+// - `identity`: the socket's own type/protocol/listening state.
+// - `msfilter`: the memory and source-count ceilings a filter write faces.
 // - `sol_socket`: the generic SOL_SOCKET option table (slots 54/55).
 // - `peercred`: the `SO_PEERCRED` value encoding, including the no-peer answer.
 // - `sol_ip` / `sol_ipv6` / `sol_tcp` / `sol_udp`: one option level each.
 // - `inq`: the unread-bytes control message `SO_INQ` and `TCP_INQ` share.
 
+pub mod identity;
 pub mod inq;
+pub mod msfilter;
 pub mod peercred;
 pub mod sol_ip;
 pub mod sol_ipv6;
@@ -24,27 +28,12 @@ pub const TCP_KEEPIDLE_DEFAULT_S: i32 = 7200;
 pub const TCP_KEEPINTVL_DEFAULT_S: i32 = 75;
 pub const TCP_KEEPCNT_DEFAULT: i32 = 9;
 
-/// Apply the canonical namespace security decision for socket option access.
-/// ABI code calls this boundary but does not implement policy itself. # C: O(1)
-pub fn check_option(sock: &InetSocket) -> Result<(), crate::NetError> {
-    let context = security::network::Context {
-        namespace: sock.net_ns(),
-        family: sock.family.load(core::sync::atomic::Ordering::Acquire),
-        socket_type: 0, protocol: 0,
-        operation: security::network::Operation::Option,
-    };
-    if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
-        return Err(crate::NetError::Eacces);
-    }
-    Ok(())
-}
-
 /// Canonical security admission for socketpair creation. # C: O(1)
 pub fn check_socketpair(namespace: u64, family: u16, socket_type: u32, protocol: u32)
     -> Result<(), crate::NetError>
 {
-    let context = security::network::Context { namespace, family, socket_type, protocol,
-        operation: security::network::Operation::SocketPair };
+    let context = security::network::Context::op(namespace, family, socket_type, protocol,
+        security::network::Operation::SocketPair);
     if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
         return Err(crate::NetError::Eacces);
     }

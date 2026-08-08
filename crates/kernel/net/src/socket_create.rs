@@ -45,13 +45,8 @@ pub fn plan<P: FnOnce() -> bool>(family: u32, raw_type: u32, protocol: u32,
     // create operation screens the protocol or the raw-socket capability — so
     // a denial is reported even for a request that would have failed those
     // screens anyway, and a registered hook observes every attempt.
-    let context = Context {
-        namespace: env.namespace,
-        family: identity.family as u16,
-        socket_type: identity.typ,
-        protocol,
-        operation: Operation::Create,
-    };
+    let context = Context::op(env.namespace, identity.family as u16, identity.typ,
+        protocol, Operation::Create);
     if matches!(security::network::evaluate(context), Verdict::Deny) { return Err(CREATE_DENIED); }
     let spec = resolve_socket_args(identity, protocol, env.has_net_raw)?;
     // Linux assigns the DGRAM transport during AF_VSOCK creation. The virtio
