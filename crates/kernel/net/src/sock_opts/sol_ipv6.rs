@@ -8,6 +8,10 @@
 // - `set`: Linux-ordered admission for every write.
 // - `get`: Linux value/length table for every read.
 // - `hdr`: sticky extension-header shape screen.
+// - `pktoptions`: `IPV6_2292PKTOPTIONS` — the written ancillary stream's
+//   admission, and the messages a read publishes back.
+// - `pathmtu`: `IPV6_RECVPATHMTU` — when the single-slot notification cell is
+//   filled, when an ordinary receive drains it, and its wire shape.
 // - `flowlabel`: the per-namespace flow-label table `IPV6_FLOWLABEL_MGR` leases from.
 // - `autolabel`: the one flow-label generation policy, read back by
 //   `IPV6_AUTOFLOWLABEL` and consulted by every transmit path.
@@ -20,6 +24,8 @@ pub mod state;
 pub mod set;
 pub mod get;
 pub mod hdr;
+pub mod pktoptions;
+pub mod pathmtu;
 pub mod autolabel;
 pub mod flowlabel;
 #[cfg(test)]

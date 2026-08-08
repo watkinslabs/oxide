@@ -55,6 +55,10 @@ pub enum Value {
     Bytes(Vec<u8>),
     /// `IPV6_PATHMTU`, refused outright when the caller's buffer is too small.
     Exact(Vec<u8>),
+    /// `IPV6_2292PKTOPTIONS`: an ancillary-message stream, not a value. The
+    /// caller's length is a budget the messages are packed into, and the
+    /// published length is how much of it was used.
+    ControlStream,
     /// Owned by the multicast or flow-label table.
     Delegated,
 }
@@ -122,10 +126,13 @@ pub fn read(optname: u64, sock: Ipv6Sock, s: &Ipv6GetState) -> Result<Value, Err
         IPV6_ROUTER_ALERT => bit(flag::RTALERT),
         IPV6_ROUTER_ALERT_ISOLATE => bit(flag::RTALERT_ISOLATE),
         IPV6_RECVERR_RFC4884 => bit(flag::RECVERR_RFC4884),
-        // The stream-socket ancillary snapshot has no datagram form.
+        // The stream-socket ancillary publication has no datagram form. The
+        // messages themselves are `pktoptions`' business, and the caller's
+        // buffer is a running budget rather than a length, so this read owns
+        // its own copyout.
         IPV6_2292PKTOPTIONS => {
             if !sock.stream { return Err(Errno::Enoprotoopt); }
-            Value::Bytes(Vec::new())
+            Value::ControlStream
         }
         MCAST_MSFILTER | IPV6_FLOWLABEL_MGR => Value::Delegated,
         _ => return Err(Errno::Enoprotoopt),

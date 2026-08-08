@@ -152,6 +152,31 @@ fn merge_sticky_raw6_control(sock: &InetSocket, control: &crate::send_control::R
     effective
 }
 
+/// Post the path-MTU notification a size refusal owes a socket that both asked
+/// for it and forbade fragmentation, and hand the failure back unchanged.
+///
+/// A SEPARATE channel from the extended-error queue: one replace-in-place cell
+/// the next ordinary receive drains, with no `MSG_ERRQUEUE` and no
+/// `IPV6_RECVERR` involved. Whether it fires at all, and what MTU it reports,
+/// are owned by `sol_ipv6::pathmtu`. # C: O(route lookup)
+fn note_path_mtu(sock: &InetSocket, dst: crate::Ipv6Addr, scope_id: u32,
+    iface: Option<crate::NetIfaceId>, control: &crate::send_control::Raw6Control,
+    failure: NetError) -> NetError
+{
+    use crate::sock_opts::sol_ipv6::{flag, pathmtu};
+    if !pathmtu::notifies(sock.opts.ipv6.flag(flag::RXPATHMTU),
+        control.dontfrag == Some(true), failure)
+    { return failure; }
+    let path = stack().path_mtu_in(sock.net_ns(), crate::addr::IpAddr::V6(dst), iface, false)
+        .unwrap_or(0);
+    sock.opts.ipv6.set_pathmtu(pathmtu::PathMtu {
+        mtu: pathmtu::reported_mtu(path, pathmtu::extension_bytes(control)),
+        dst: dst.0,
+        scope_id: iface.map_or(scope_id, |iface| iface.raw()),
+    });
+    failure
+}
+
 /// Merge sticky socket options into the per-message control block and transmit.
 /// Split out of `sendto_raw6` so the merged control never occupies the frame that
 /// continues into the loopback receive pass (Linux `noinline_for_stack`).
@@ -172,6 +197,7 @@ fn xmit_raw6_with_sticky(sock: &InetSocket, endpoint: &crate::raw6::Raw6Endpoint
     stack().send_raw6_with_frag_size(endpoint, dst_ip, scoped,
         protocol_override, payload, hop, pmtudisc, sock.opts.ipv6.frag_size(), &effective,
         sock.opts.ipv6.srcprefs())
+        .map_err(|error| note_path_mtu(sock, dst_ip, scope_id, scoped, &effective, error))
 }
 
 fn ensure_udp6_bound(sock: &InetSocket, dst_ip: crate::Ipv6Addr, scope_id: u32)
@@ -337,7 +363,8 @@ pub fn sendto_v6_ctl(sock: &InetSocket,
                         crate::sysctl::ipv6_auto_flowlabels_in(sock.net_ns()))),
                     sock.opts.ipv6.srcprefs(), &control,
                 ).map_err(|error| crate::socket_error::report_send_failure(&sock.error,
-                    sock.net_ns(), crate::addr::IpAddr::V6(dst_ip), dst_port, iface, error))?;
+                    sock.net_ns(), crate::addr::IpAddr::V6(dst_ip), dst_port, iface,
+                    note_path_mtu(sock, dst_ip, scope_id, iface, &control, error)))?;
             }
             drain_loopback();
             return Ok(payload.len());
@@ -351,7 +378,8 @@ pub fn sendto_v6_ctl(sock: &InetSocket,
                         crate::sysctl::ipv6_auto_flowlabels_in(sock.net_ns()))),
         sock.opts.ipv6.srcprefs(), &control,
     ).map_err(|error| crate::socket_error::report_send_failure(&sock.error, sock.net_ns(),
-        crate::addr::IpAddr::V6(dst_ip), dst_port, iface, error))?;
+        crate::addr::IpAddr::V6(dst_ip), dst_port, iface,
+        note_path_mtu(sock, dst_ip, scope_id, iface, &control, error)))?;
     drain_loopback();
     Ok(payload.len())
 }
