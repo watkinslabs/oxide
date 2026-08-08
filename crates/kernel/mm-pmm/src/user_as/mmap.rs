@@ -39,6 +39,11 @@ pub fn glue_mmap(
     // the root cause the corruption hunt traced, state.md).
     kframe: Option<u64>,
     may_prot: VmaProt,
+    // Flags the FILE being mapped imposes on the VMA, independent of the
+    // syscall's own flags — the mapping-time half of a file whose pages carry
+    // a property the caller cannot ask for or decline (secretmem's
+    // never-swapped, never-dumped pages).
+    file_vma_flags: VmaFlags,
 ) -> Result<u64, i64> {
     use syscall::errno::Errno;
     use crate::mmap_flags::{
@@ -104,6 +109,7 @@ pub fn glue_mmap(
     // and ld.so's main stack).
     if want_grows_down { vma_flags |= VmaFlags::GROWSDOWN; }
     if (flags & MAP_LOCKED) != 0 { vma_flags |= VmaFlags::LOCKED; }
+    vma_flags |= file_vma_flags;
     // Linux `do_mmap`: MAP_LOCKED needs `can_do_mlock()`, and any mapping that
     // ends up VM_LOCKED — including one that only inherits it from an
     // `mlockall(MCL_FUTURE)` `def_flags` policy — is charged against

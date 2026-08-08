@@ -41,9 +41,59 @@ pub enum UffdFaultKind {
     Minor,
 }
 
+/// An address-space change reported to a COOPERATIVE monitor — one tracking the
+/// mappings it manages, not only their contents.
+///
+/// Each is delivered with the changing thread BLOCKED until the monitor has
+/// read it. That block is the contract: without it a monitor acts on a mapping
+/// that has already moved or gone, and its next resolve installs pages in the
+/// wrong place.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum UffdEvent {
+    /// The address space was duplicated. The child carries its OWN context,
+    /// which the monitor receives as a new descriptor when it reads the event.
+    Fork,
+    /// `[from, from+len)` now lives at `to`.
+    Remap { from: u64, to: u64, len: u64 },
+    /// The contents of `[start, end)` were discarded; the mapping stays.
+    Remove { start: u64, end: u64 },
+    /// `[start, end)` was unmapped.
+    Unmap { start: u64, end: u64 },
+}
+
+/// The feature a monitor must have negotiated for an event to be reported.
+/// Separate from [`UffdEvent`] so "does this monitor want it" can be asked
+/// before the change's addresses exist.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum UffdEventKind { Fork, Remap, Remove, Unmap }
+
+impl UffdEvent {
+    /// # C: O(1)
+    pub fn kind(&self) -> UffdEventKind {
+        match self {
+            UffdEvent::Fork          => UffdEventKind::Fork,
+            UffdEvent::Remap  { .. } => UffdEventKind::Remap,
+            UffdEvent::Remove { .. } => UffdEventKind::Remove,
+            UffdEvent::Unmap  { .. } => UffdEventKind::Unmap,
+        }
+    }
+}
+
 /// Per-VMA userfaultfd hook (Linux `vm_userfaultfd_ctx.ctx`). Impl'd by
 /// the fs `userfaultfd` inode state; installed on VMAs via
 /// [`crate::AddressSpace::set_uffd`].
+///
+/// Beyond fault delivery the trait carries the COOPERATIVE half: a change to
+/// the address space is announced to the monitor, and every resolve issued
+/// while such a change is in flight is refused, so no monitor can resolve
+/// against a layout it has not been told about. The three-step shape — charge,
+/// then either publish or abandon — is what makes that refusal exact: the
+/// charge is taken before the change becomes visible and released only after
+/// the monitor has consumed the announcement.
+///
+/// Every cooperative method defaults to doing nothing, because a context that
+/// negotiated no event feature must behave exactly as it did before they
+/// existed.
 pub trait UffdContext: Send + Sync {
     /// Called on a fault at page-aligned `addr` inside a range registered for
     /// `kind`. Enqueues a PAGEFAULT message, wakes the fd's readers/pollers,
@@ -58,6 +108,43 @@ pub trait UffdContext: Send + Sync {
     /// means "handled, retry the instruction".
     /// # C: O(1) enqueue + block
     fn fault(&self, addr: u64, kind: UffdFaultKind, write: bool, user_mode: bool) -> bool;
+
+    /// Whether this monitor negotiated the feature that reports `kind`. A
+    /// context that did not is skipped entirely — no charge, no announcement,
+    /// and (for fork and remap) the registration is dropped rather than
+    /// silently following a mapping the monitor cannot see move.
+    /// # C: O(1)
+    fn wants_event(&self, _kind: UffdEventKind) -> bool { false }
+
+    /// Charge one in-flight address-space change against this context. Taken
+    /// BEFORE the change becomes visible; every resolve is refused while the
+    /// charge stands. Always paired with exactly one [`Self::change_complete`]
+    /// or [`Self::change_abort`].
+    /// # C: O(1)
+    fn change_begin(&self) {}
+
+    /// Publish `ev`, BLOCK until the monitor has read it, then release the
+    /// charge [`Self::change_begin`] took.
+    /// # C: O(1) enqueue + block
+    fn change_complete(&self, _ev: UffdEvent) {}
+
+    /// Release the charge without publishing anything — the change did not
+    /// happen. Without this arm a failed operation would leave the context
+    /// refusing every resolve forever.
+    /// # C: O(1)
+    fn change_abort(&self) {}
+
+    /// Derive the context the CHILD address space carries across a fork, and
+    /// charge the fork against this one. `None` = the monitor did not ask for
+    /// fork events, so the child inherits no registration at all.
+    ///
+    /// The child gets its own context rather than sharing this one: the two
+    /// address spaces resolve independently from that point, and a resolve
+    /// aimed at one must never land in the other. The monitor is handed a
+    /// descriptor for it when it reads the fork event.
+    /// # C: O(1)
+    fn fork_dup(&self, _child_mm: alloc::sync::Weak<crate::AddressSpace>)
+        -> Option<Arc<dyn UffdContext>> { None }
 }
 
 /// Which fault a NOT-PRESENT access inside a registered range is, given the
@@ -150,6 +237,53 @@ mod tests {
         // A write-protect registration says nothing about absent pages.
         assert_eq!(not_present_kind(WP, false), None);
         assert_eq!(not_present_kind(WP, true), None);
+    }
+
+    /// An object that has EVICTED a page still holds that page's contents, so
+    /// a fault on it is minor, not missing. The two residency queries differ
+    /// exactly here, and deciding the fault kind from the narrower one told a
+    /// monitor to supply contents the object already had — after which the
+    /// monitor's page replaced them.
+    #[test]
+    fn an_evicted_backing_page_is_still_a_page_the_object_holds() {
+        use crate::vma::{FileBacking, FileBackingError, SharedFrame};
+        // A backing whose only page has been evicted: nothing to install a PTE
+        // from right now, but the object still owns the contents.
+        struct Evicted;
+        impl FileBacking for Evicted {
+            fn read_at(&self, _off: u64, _dst: &mut [u8]) -> Result<usize, FileBackingError> { Ok(0) }
+            fn size_hint(&self) -> u64 { hal::PAGE_SIZE_BYTES }
+            fn is_shmem(&self) -> bool { true }
+            fn fault_around_frame(&self, _off: u64) -> Result<Option<SharedFrame>, FileBackingError> {
+                Ok(None)
+            }
+            fn backing_holds_page(&self, _off: u64) -> bool { true }
+        }
+        // The narrower query cannot answer it: there is no frame to map.
+        assert!(matches!(Evicted.fault_around_frame(0), Ok(None)));
+        // The ownership query can, and that is the one the fault kind uses.
+        assert!(Evicted.backing_holds_page(0));
+        assert_eq!(not_present_kind(MISSING | MINOR, Evicted.backing_holds_page(0)),
+                   Some(UffdFaultKind::Minor));
+        // Reading the kind off the narrower query is the defect: it reports the
+        // fault as MISSING and loses the page the object already holds.
+        let narrow = Evicted.fault_around_frame(0).is_ok_and(|f| f.is_some());
+        assert_eq!(not_present_kind(MISSING | MINOR, narrow), Some(UffdFaultKind::Missing));
+    }
+
+    /// A backing that owns no page at the offset reports nothing, so nothing
+    /// can manufacture a minor fault over a hole.
+    #[test]
+    fn a_backing_that_holds_nothing_reports_no_page() {
+        use crate::vma::{FileBacking, FileBackingError};
+        struct Hole;
+        impl FileBacking for Hole {
+            fn read_at(&self, _off: u64, _dst: &mut [u8]) -> Result<usize, FileBackingError> { Ok(0) }
+            fn size_hint(&self) -> u64 { 0 }
+        }
+        assert!(!Hole.backing_holds_page(0));
+        assert_eq!(not_present_kind(MISSING | MINOR, Hole.backing_holds_page(0)),
+                   Some(UffdFaultKind::Missing));
     }
 
     /// The marker and the registration must BOTH hold. A stale marker left by

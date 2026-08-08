@@ -26,6 +26,14 @@ impl PtWalker for RootWalker {
     fn pack_block_leaf(pa: u64, flags: crate::PageFlags) -> u64 { Self::pack_4k_leaf(pa, flags) }
     fn pack_swap_entry(_: SwapEntry) -> u64 { 0 }
     fn unpack_swap_entry(_: u64) -> Option<SwapEntry> { None }
+    fn can_split_kernel_leaf() -> bool { true }
+    fn split_child_leaf(block: u64, child_pa: u64, _child_level: u8) -> u64 {
+        (block & !Self::PHYS_MASK) | (child_pa & Self::PHYS_MASK)
+    }
+    fn publish_table_barrier() {}
+    fn leaf_set_present(raw: u64, present: bool) -> u64 {
+        if present { raw | TEST_VALID } else { raw & !TEST_VALID }
+    }
     fn leaf_wrprotect(raw: u64) -> u64 { raw & !TEST_WRITE }
     fn leaf_set_uffd_wp(raw: u64) -> u64 { raw | TEST_UFFD_WP }
     fn leaf_clear_uffd_wp(raw: u64) -> u64 { raw & !TEST_UFFD_WP }

@@ -21,7 +21,7 @@ pub fn poison_range(mm: &vmm::AddressSpace, start: u64, end: u64) -> Progress {
     while start + done < end {
         let va = start + done;
         let _pt = mm.lock_page_table();
-        if leaf(mm, va).is_some_and(|l| l != 0) { return (done, Some(Errno::Eexist)); }
+        if let Err(e) = super::leaf::dst_must_be_empty(leaf(mm, va)) { return (done, Some(e)); }
         let marker = <Walker as PtWalker>::pack_poison_marker();
         // SAFETY: the page-table lock is held; `va` lies in a VMA of this address space that the caller has already validated, and the marker is a non-present leaf, so no mapping reference is created or destroyed by installing it. Intermediate tables are allocated from the PMM.
         let placed = unsafe {

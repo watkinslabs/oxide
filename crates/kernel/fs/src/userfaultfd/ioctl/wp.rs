@@ -13,6 +13,11 @@ use super::structs::{err, read_req, UffdioWriteprotect};
 /// barrier a monitor could not reason about.
 /// # C: O(N_vmas) + O(len/PAGE)
 pub fn ioc_writeprotect(ufd: &UfData, arg: u64) -> i64 {
+    // Having no reply field puts the in-flight-change refusal FIRST, ahead of
+    // the request object itself: nothing has to be written back for it, so
+    // EAGAIN wins over the EFAULT an unreadable object would produce. Every
+    // other range op has to write its reply word, which puts EFAULT first.
+    if let Err(e) = policy::check_mmap_changing(ufd.changes_in_flight()) { return err(e); }
     if let Err(rv) = validate_user_buf_writable(arg, UFFDIO_WRITEPROTECT_SIZE, 1) { return rv; }
     // SAFETY: arg validated for the full uffdio_writeprotect object.
     let w: UffdioWriteprotect = unsafe { read_req(arg) };

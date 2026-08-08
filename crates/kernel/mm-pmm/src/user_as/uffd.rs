@@ -97,27 +97,22 @@ pub(super) fn write_protected(as_: &AddressSpace, uva: UserVirtAddr, user_mode: 
     Some(deliver(&*hit.ctx, va_page, kind, true, user_mode))
 }
 
-/// Whether the VMA's backing already holds the page for `uva` resident — the
-/// fact that makes a not-present fault a MINOR fault. The lookup must not
-/// allocate or read the backing store, or asking the question would answer it.
+/// Whether the VMA's backing already holds the page for `uva` — the fact that
+/// makes a not-present fault a MINOR fault. The lookup must not allocate or
+/// read the backing store, or asking the question would answer it.
+///
+/// "Holds" is OWNERSHIP of the page, not current residency: an evicted or
+/// in-migration page is still a page the object has contents for, so a fault on
+/// it is still minor. Deciding this from the narrower install-a-PTE-now lookup
+/// reported an evicted page as absent, which downgraded the fault to MISSING
+/// and asked the monitor to supply contents that already existed.
 /// # C: O(log N_pages)
 fn backing_resident(as_: &AddressSpace, uva: UserVirtAddr, va_page: u64) -> bool {
     let Some(v) = as_.uffd_vma_at(uva) else { return false };
     if !v.shmem { return false; }
     let Some(off) = v.file_off(va_page) else { return false };
     let Some((backing, _)) = v.file.as_ref() else { return false };
-    match backing.fault_around_frame(off) {
-        Ok(Some(frame)) => {
-            // The lookup took a prospective mapping reference for a PTE we are
-            // NOT installing; release it or the page is pinned forever.
-            if frame.map_ref_held {
-                // SAFETY: `frame.pa` carries exactly the one prospective mapping reference this lookup acquired, and no PTE was installed from it; rmap_aware_dec_and_maybe_free releases to the PMM only at refcount zero.
-                unsafe { crate::setup::rmap_aware_dec_and_maybe_free(frame.pa); }
-            }
-            true
-        }
-        _ => false,
-    }
+    backing.backing_holds_page(off)
 }
 
 /// The single delivery call every mode goes through.

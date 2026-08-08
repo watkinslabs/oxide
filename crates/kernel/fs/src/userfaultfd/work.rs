@@ -7,6 +7,8 @@
 // target gate costs no test coverage.
 //
 // Module manifest:
+//   - leaf: UNGATED — every judgement these paths make about a page-table
+//     leaf, generic over the walker, so the encodings can be exercised hosted.
 //   - install: the fill loop shared by COPY, ZEROPAGE and CONTINUE.
 //   - wp: the write-protect arm/disarm range walk.
 //   - poison: the poison-marker install.
@@ -32,6 +34,8 @@ pub struct FillReq {
 
 /// Bytes completed plus the first error, for every op that reports progress.
 pub type Progress = (u64, Option<Errno>);
+
+pub mod leaf;
 
 #[cfg(target_os = "oxide-kernel")]
 mod arch;

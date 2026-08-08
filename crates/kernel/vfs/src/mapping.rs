@@ -154,6 +154,17 @@ pub trait AddressSpaceOps: Send + Sync {
         Ok(None)
     }
 
+    /// Whether the object holds this page-aligned offset in ANY form —
+    /// resident, mid-migration, or evicted — as opposed to a hole it has never
+    /// held contents for. Non-faulting: no allocation, no swap-in, no I/O.
+    ///
+    /// Distinct from [`fault_around_frame`](Self::fault_around_frame), which
+    /// answers the narrower "can a PTE be installed right now": a page that
+    /// was evicted is one the object still holds, and reporting it as a hole
+    /// misclassifies a fault over it.
+    /// # C: O(log N_pages)
+    fn backing_holds_page(&self, _off: u64) -> bool { false }
+
     /// Copy bytes from the cache starting at file offset `off` into `dst`
     /// (the `MAP_PRIVATE` / read-fault fill, Linux `do_cow_fault`'s read
     /// of the cache page before the private COW copy). Short reads

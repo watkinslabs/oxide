@@ -15,6 +15,13 @@ use hal::pt_walker::{self, PtWalker, WalkErr};
 const P_BIT:  u64 = 1 << 0;
 const RW_BIT: u64 = 1 << 1;
 const PS_BIT: u64 = 1 << 7;
+const DIRTY_BIT: u64 = 1 << 6;
+/// High memory-type selector bit position in a block (non-bottom-level) leaf.
+const BLOCK_TYPE_HI_SHIFT: u32 = 12;
+/// Same selector's position in a bottom-level 4 KiB leaf.
+const LEAF_TYPE_HI_SHIFT: u32 = 7;
+/// Bottom (4 KiB) level index in the shared four-level walker.
+const LEAF_LEVEL_4K: u8 = 3;
 const NX_BIT: u64 = 1 << 63;
 const PHYS_MASK_X86: u64 = 0x000f_ffff_ffff_f000;
 const SWAP_MARKER: u64 = 1 << 1;
@@ -163,6 +170,37 @@ impl PtWalker for PtWalkerX86 {
         hal::pt_walker::MigrationEntry::new((raw >> SWAP_OFFSET_SHIFT) & hal::pt_walker::MigrationEntry::MAX_TOKEN)
     }
 
+    /// Unconditionally true: a live linear-map block leaf on this architecture
+    /// is replaced by a table of smaller leaves with the same output addresses
+    /// and attributes, and the hardware tolerates the transient window in which
+    /// a TLB may hold both granularities for the same address, provided the two
+    /// translations agree — which a same-attribute split guarantees.
+    fn can_split_kernel_leaf() -> bool { true }
+
+    fn split_child_leaf(block: u64, child_pa: u64, child_level: u8) -> u64 {
+        // The memory-type index's high selector bit lives at descriptor bit 12
+        // on a block leaf and at descriptor bit 7 on a bottom-level leaf,
+        // because bit 7 is the block-size selector above the bottom level. A
+        // split therefore has to MOVE that bit when it produces bottom-level
+        // children, or the child silently changes memory type.
+        let type_hi = (block >> BLOCK_TYPE_HI_SHIFT) & 1;
+        let attrs = block & !Self::PHYS_MASK;
+        if child_level == LEAF_LEVEL_4K {
+            (attrs & !PS_BIT) | (type_hi << LEAF_TYPE_HI_SHIFT) | (child_pa & Self::PHYS_MASK)
+        } else {
+            attrs | (type_hi << BLOCK_TYPE_HI_SHIFT) | (child_pa & Self::PHYS_MASK)
+        }
+    }
+
+    /// Stores on this architecture are already ordered against each other as
+    /// seen by any observer, including a table walker, so only the compiler
+    /// needs to be prevented from sinking the table fill past the publish.
+    fn publish_table_barrier() { core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::Release); }
+
+    fn leaf_set_present(raw: u64, present: bool) -> u64 {
+        if present { raw | P_BIT | RW_BIT } else { raw & !(P_BIT | RW_BIT | DIRTY_BIT) }
+    }
+
     fn leaf_wrprotect(raw: u64) -> u64 { raw & !RW_BIT }
     fn leaf_set_uffd_wp(raw: u64) -> u64 { raw | UFFD_WP_BIT }
     fn leaf_clear_uffd_wp(raw: u64) -> u64 { raw & !UFFD_WP_BIT }
@@ -238,6 +276,51 @@ mod tests {
         assert!(leaf & (1 << 2) != 0, "leaf U/S bit set");
         assert_eq!(leaf & NX_BIT, 0, "EXEC ⇒ NX clear");
         assert_eq!(leaf & PtWalkerX86::PHYS_MASK, pa);
+    }
+
+    /// The memory-type selector's high bit sits at a DIFFERENT descriptor
+    /// position in a bottom-level leaf than in a block leaf, because the block
+    /// leaf spends that position on the size selector. A split that copies the
+    /// descriptor verbatim therefore changes the child's memory type — silently
+    /// making a write-through page uncached, or worse.
+    #[test]
+    fn splitting_to_the_bottom_level_moves_the_memory_type_selector() {
+        let block = PtWalkerX86::pack_block_leaf(2 << 20, hal::PageFlags::READ | hal::PageFlags::WRITE)
+            | (1 << BLOCK_TYPE_HI_SHIFT);
+        let child = PtWalkerX86::split_child_leaf(block, 0x4000, LEAF_LEVEL_4K);
+        assert_eq!(child & PS_BIT, 1 << LEAF_TYPE_HI_SHIFT,
+                   "the selector must land on the bottom-level position, which is where the size selector was");
+        assert_eq!(child & PtWalkerX86::PHYS_MASK, 0x4000, "the child must translate its own address");
+        assert!(PtWalkerX86::is_valid(child));
+        // The size selector is only asked about above the bottom level, which
+        // is exactly why the position is free to carry the memory type there.
+        let plain = PtWalkerX86::split_child_leaf(
+            PtWalkerX86::pack_block_leaf(2 << 20, hal::PageFlags::READ | hal::PageFlags::WRITE),
+            0x4000, LEAF_LEVEL_4K);
+        assert_eq!(plain & PS_BIT, 0, "a split of a default-memory-type block leaves the position clear");
+    }
+
+    /// Splitting a block into smaller BLOCKS leaves the selector where it was.
+    #[test]
+    fn splitting_to_an_intermediate_block_keeps_the_selector_in_place() {
+        let block = PtWalkerX86::pack_block_leaf(1 << 30, hal::PageFlags::READ | hal::PageFlags::WRITE)
+            | (1 << BLOCK_TYPE_HI_SHIFT);
+        let child = PtWalkerX86::split_child_leaf(block, 1 << 21, 2);
+        assert_ne!(child & (1 << BLOCK_TYPE_HI_SHIFT), 0);
+        assert!(PtWalkerX86::is_huge_or_block(child), "an intermediate child is still a block");
+        assert_eq!(child & !PtWalkerX86::PHYS_MASK, block & !PtWalkerX86::PHYS_MASK,
+                   "every other attribute carries over unchanged");
+    }
+
+    /// Removing a page from the linear map and restoring it must be exactly
+    /// reversible, or the restored page differs from the one that was taken.
+    #[test]
+    fn clearing_and_restoring_a_leaf_round_trips() {
+        let leaf = PtWalkerX86::pack_4k_leaf(0x9000, hal::PageFlags::READ | hal::PageFlags::WRITE);
+        let gone = PtWalkerX86::leaf_set_present(leaf, false);
+        assert!(!PtWalkerX86::is_valid(gone), "the page must stop translating");
+        assert_eq!(gone & PtWalkerX86::PHYS_MASK, 0x9000, "the address must survive so it can be restored");
+        assert_eq!(PtWalkerX86::leaf_set_present(gone, true), leaf);
     }
 
     #[test]

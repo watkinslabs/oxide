@@ -85,6 +85,18 @@ use super::*;
             MigrationEntry::new(raw >> TEST_SWAP_OFFSET_SHIFT)
         }
         fn leaf_wrprotect(raw: u64) -> u64 { raw & !TEST_WRITE }
+        fn can_split_kernel_leaf() -> bool { true }
+        fn split_child_leaf(block: u64, child_pa: u64, child_level: u8) -> u64 {
+            // Mirrors the real impls' one structural obligation: a bottom-level
+            // child must not still claim to be a block.
+            let attrs = block & !Self::PHYS_MASK;
+            let attrs = if child_level == 3 { attrs & !TEST_PTE_BLOCK_OR_SWAP } else { attrs };
+            attrs | (child_pa & Self::PHYS_MASK)
+        }
+        fn publish_table_barrier() {}
+        fn leaf_set_present(raw: u64, present: bool) -> u64 {
+            if present { raw | TEST_PTE_VALID } else { raw & !TEST_PTE_VALID }
+        }
         fn leaf_set_uffd_wp(raw: u64) -> u64 { raw | TEST_UFFD_WP }
         fn leaf_clear_uffd_wp(raw: u64) -> u64 { raw & !TEST_UFFD_WP }
         fn leaf_is_uffd_wp(raw: u64) -> bool {

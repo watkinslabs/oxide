@@ -12,28 +12,36 @@
 
 use syscall::errno::Errno;
 use syscall::SyscallArgs;
+use vfs::{File, OpenFlags};
 
-use crate::secretmem::{can_set_direct_map, memfd_secret_check};
+use crate::secretmem::memfd_secret_check;
 
-// Compile-time barrier. This shim is only honest while single pages cannot be
-// removed from the linear map. The day `hal::pt_walker` grows a huge-leaf
-// split and the HHDM becomes page-granular, this breaks the BUILD instead of
-// silently shipping a memfd_secret whose pages are not secret — at which
-// point the work is: a `secretmem` pseudo-inode with `.release` +
-// `.mmap_prepare` and no read/write op (so read(2)/write(2) are EINVAL),
-// MAP_SHARED-only mmap setting VM_LOCKED|VM_DONTDUMP, a fault path that
-// zeroes a fresh frame and unmaps it from the HHDM, a free path that restores
-// the HHDM entry and re-zeroes, `.migrate_folio = -EBUSY`, refusal from
-// gup/mlock, and `setattr` accepting ATTR_SIZE only while i_size == 0.
-const _: () = assert!(!can_set_direct_map());
+#[inline]
+fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
-/// `memfd_secret(flags)` — slot 447.
-/// # C: O(1)
+/// `memfd_secret(flags)` — slot 447. The descriptor is read-write and large-file
+/// capable, and its name is its own: the file lives on its own pseudo
+/// filesystem rather than among the shared anonymous inodes.
+/// # C: O(N_fds) for the fd-table alloc
 pub fn sys_memfd_secret(args: &SyscallArgs) -> i64 {
     // Linux declares `unsigned int flags`.
-    match memfd_secret_check(args.a0 as u32) {
-        // Unreachable while the const assertion above holds.
-        Ok(_cloexec) => -(Errno::Enosys.as_i32() as i64),
-        Err(e) => -(e.as_i32() as i64),
-    }
+    let cloexec = match memfd_secret_check(args.a0 as u32) {
+        Ok(c) => c,
+        Err(e) => return err(e),
+    };
+    let cur = match sched::live::current() { Some(c) => c, None => return err(Errno::Ebadf) };
+    // SAFETY: running task on this CPU; preempt-off; sole reader of the slot.
+    let fdt = match unsafe { cur.fd_table_ref() } {
+        Some(t) => t.clone(), None => return err(Errno::Ebadf),
+    };
+    let cred = crate::pathresolve::current_cred();
+    let inode = ::fs::secretmem::secretmem_inode(cred.uid, cred.gid);
+    let dentry = vfs::dcache::d_alloc_pseudo(::fs::secretmem::SECRETMEM_NAME, inode.clone(),
+                                             &::fs::secretmem::SECRETMEM_OPS);
+    let file = File::new(inode, dentry, OpenFlags::O_RDWR | OpenFlags::O_LARGEFILE);
+    let fd = match fdt.alloc_limit(file, cur.nofile_soft()) {
+        Ok(fd) => fd, Err(e) => return -(e as i64),
+    };
+    if cloexec { let _ = fdt.set_cloexec(fd, true); }
+    fd as i64
 }

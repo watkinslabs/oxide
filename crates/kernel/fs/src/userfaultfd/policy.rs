@@ -14,6 +14,8 @@
 //     shared short-fill return protocol.
 //   - wp: the WRITEPROTECT mode word and per-VMA ladder.
 //   - movepg: the MOVE mode word and the two-VMA compatibility ladder.
+//   - events: the cooperative address-space events and the in-flight-change
+//     refusal every resolve runs first.
 
 pub mod range;
 pub mod create;
@@ -21,6 +23,7 @@ pub mod register;
 pub mod fill;
 pub mod wp;
 pub mod movepg;
+pub mod events;
 
 pub use range::{validate_range, validate_unaligned_range};
 pub use create::{api_negotiate, check_create, check_ioctl_ordering, is_initialized,
@@ -31,3 +34,5 @@ pub use fill::{check_copy_mode, check_continue_mode, check_dst_vma, check_poison
                check_zeropage_mode, fill_retval, should_wake, DstVma, FillKind};
 pub use wp::{check_wp_mode, check_wp_vma, WpMode, WpVma};
 pub use movepg::{check_move_areas, check_move_mode, check_move_ranges, MoveMode, MoveVma};
+pub use events::{check_mmap_changing, event_feature, event_msg, next_message, wants_event,
+                 NextMessage};

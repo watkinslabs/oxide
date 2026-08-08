@@ -12,33 +12,10 @@ use syscall::errno::Errno;
 use vmm::address_space::uffd::UffdVma;
 
 use super::arch::{flush, leaf, set_leaf, Walker};
+use super::leaf::{move_step, MoveStep};
 use super::Progress;
 
 const PAGE: u64 = hal::PAGE_SIZE_BYTES;
-
-/// What the source leaf holds, and therefore what moving it means.
-enum SrcLeaf {
-    /// Nothing: a hole.
-    Absent,
-    /// A resident page.
-    Present(u64),
-    /// A non-present entry that names a page elsewhere (swapped out).
-    Swapped(u64),
-    /// A page in transit; the move must be retried.
-    InFlight,
-    /// A marker whose contents cannot be moved anywhere.
-    Unmovable,
-}
-
-/// # C: O(1)
-fn classify(raw: Option<u64>) -> SrcLeaf {
-    let Some(raw) = raw else { return SrcLeaf::Absent };
-    if raw == 0 { return SrcLeaf::Absent; }
-    if <Walker as PtWalker>::is_valid(raw) { return SrcLeaf::Present(raw); }
-    if <Walker as PtWalker>::unpack_migration_entry(raw).is_some() { return SrcLeaf::InFlight; }
-    if <Walker as PtWalker>::unpack_swap_entry(raw).is_some() { return SrcLeaf::Swapped(raw); }
-    SrcLeaf::Unmovable
-}
 
 /// Move `[src, src+len)` to `[dst, dst+len)`, stopping at the first page that
 /// cannot move and reporting how far it got.
@@ -55,21 +32,17 @@ pub fn move_pages(mm: &vmm::AddressSpace, dst: u64, src: u64, len: u64, allow_ho
     while done < len {
         let (s, d) = (src + done, dst + done);
         let _pt = mm.lock_page_table();
-        if leaf(mm, d).is_some_and(|l| l != 0) { return (done, Some(Errno::Eexist)); }
-        match classify(leaf(mm, s)) {
-            SrcLeaf::Absent => {
-                if !allow_holes { return (done, Some(Errno::Enoent)); }
-                // A skipped hole is progress: the destination is as empty as
-                // the source was, which is what the move asked for.
-            }
-            SrcLeaf::InFlight  => return (done, Some(Errno::Eagain)),
-            SrcLeaf::Unmovable => return (done, Some(Errno::Efault)),
-            // A swapped page names its slot; moving the entry moves the one
+        match move_step::<Walker>(leaf(mm, d), leaf(mm, s), allow_holes) {
+            MoveStep::Fail(e) => return (done, Some(e)),
+            // A skipped hole is progress: the destination is as empty as the
+            // source was, which is what the move asked for.
+            MoveStep::Skip => {}
+            // A swapped entry names its slot; moving the entry moves the one
             // reference to that slot, and residency does not change.
-            SrcLeaf::Swapped(raw) => {
+            MoveStep::Relocate { raw, resident: false } => {
                 if let Err(e) = relocate(mm, s, d, raw) { return (done, Some(e)); }
             }
-            SrcLeaf::Present(raw) => {
+            MoveStep::Relocate { raw, resident: true } => {
                 let pa = raw & <Walker as PtWalker>::PHYS_MASK;
                 if !pmm::setup::can_reuse_anon_exclusive(pa) {
                     return (done, Some(Errno::Ebusy));

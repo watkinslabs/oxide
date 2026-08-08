@@ -97,7 +97,7 @@ impl AddressSpace {
             membarrier: super::membarrier::MembarrierState::forked_from(&self.membarrier),
             mdwe: super::mdwe::MdweState::inherited_from(&self.mdwe),
             self_weak: w.clone(),
-            has_uffd: core::sync::atomic::AtomicBool::new(false), // fork clears child uffd (no EVENT_FORK)
+            has_uffd: core::sync::atomic::AtomicBool::new(false), // set by dup_uffd_registrations for a fork-tracking monitor only
             mlock_future: core::sync::atomic::AtomicBool::new(false), // Linux does not inherit mlockall state across fork.
             mlock_onfault: core::sync::atomic::AtomicBool::new(false),
             // Fresh/forked AS: no CPU has loaded it yet (Linux clears
@@ -110,6 +110,12 @@ impl AddressSpace {
         super::accounting::register_page_table_owner(new_root_pa, &child.accounting);
         super::register_live_address_space(new_root_pa, Arc::downgrade(&child));
         attach_child_rmaps(&child);
+        // Linux `dup_userfaultfd` + `dup_userfaultfd_complete`: a monitor that
+        // tracks mappings gets a context for the child and is told about the
+        // fork; one that does not gets nothing in the child. Runs with no VMA
+        // lock held — the announcement blocks the forking thread.
+        drop(src);
+        super::uffd::dup_uffd_registrations(self, &child);
         Ok(child)
     }
 
@@ -400,7 +406,7 @@ impl AddressSpace {
             membarrier: super::membarrier::MembarrierState::forked_from(&self.membarrier),
             mdwe: super::mdwe::MdweState::inherited_from(&self.mdwe),
             self_weak: w.clone(),
-            has_uffd: core::sync::atomic::AtomicBool::new(false), // fork clears child uffd (no EVENT_FORK)
+            has_uffd: core::sync::atomic::AtomicBool::new(false), // set by dup_uffd_registrations for a fork-tracking monitor only
             mlock_future: core::sync::atomic::AtomicBool::new(false), // Linux does not inherit mlockall state across fork.
             mlock_onfault: core::sync::atomic::AtomicBool::new(false),
             // Fresh/forked AS: no CPU has loaded it yet (Linux clears
@@ -420,6 +426,12 @@ impl AddressSpace {
         super::register_live_address_space(new_root_pa, Arc::downgrade(&child));
         // Linux `anon_vma_fork` plus the file `i_mmap` counterpart.
         attach_child_rmaps(&child);
+        // Linux `dup_userfaultfd` + `dup_userfaultfd_complete`: a monitor that
+        // tracks mappings gets a context for the child and is told about the
+        // fork; one that does not gets nothing in the child. Runs with no VMA
+        // lock held — the announcement blocks the forking thread.
+        drop(src);
+        super::uffd::dup_uffd_registrations(self, &child);
         Ok(child)
     }
 
@@ -500,7 +512,7 @@ impl AddressSpace {
             membarrier: super::membarrier::MembarrierState::forked_from(&self.membarrier),
             mdwe: super::mdwe::MdweState::inherited_from(&self.mdwe),
             self_weak: w.clone(),
-            has_uffd: core::sync::atomic::AtomicBool::new(false), // fork clears child uffd (no EVENT_FORK)
+            has_uffd: core::sync::atomic::AtomicBool::new(false), // set by dup_uffd_registrations for a fork-tracking monitor only
             mlock_future: core::sync::atomic::AtomicBool::new(false), // Linux does not inherit mlockall state across fork.
             mlock_onfault: core::sync::atomic::AtomicBool::new(false),
             // Fresh/forked AS: no CPU has loaded it yet (Linux clears
@@ -513,6 +525,12 @@ impl AddressSpace {
         super::accounting::register_page_table_owner(new_root_pa, &child.accounting);
         super::register_live_address_space(new_root_pa, Arc::downgrade(&child));
         attach_child_rmaps(&child);
+        // Linux `dup_userfaultfd` + `dup_userfaultfd_complete`: a monitor that
+        // tracks mappings gets a context for the child and is told about the
+        // fork; one that does not gets nothing in the child. Runs with no VMA
+        // lock held — the announcement blocks the forking thread.
+        drop(src);
+        super::uffd::dup_uffd_registrations(self, &child);
         Ok(child)
     }
 

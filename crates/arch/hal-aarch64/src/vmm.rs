@@ -11,6 +11,8 @@
 
 use hal::pt_walker::{self, PtWalker, WalkErr};
 
+pub mod linear;
+
 const VALID:    u64 = 1 << 0;
 const TABLE:    u64 = 1 << 1;       // also "PAGE" at L3
 // AttrIndx is descriptor bits[4:2]. AttrIdx1 is bit 2 and AttrIdx2 is bit 3;
@@ -20,6 +22,10 @@ const ATTR_NORMAL_NC: u64 = 1 << 3; // AttrIdx 2
 const SH0:      u64 = 1 << 8;
 const SH1:      u64 = 1 << 9;       // SH = 0b11 = Inner Shareable
 const AF:       u64 = 1 << 10;
+/// Contiguous hint — a run of leaves the TLB may fold into one entry.
+const CONT:     u64 = 1 << 52;
+/// Bottom (4 KiB) level index in the shared four-level walker.
+const LEAF_LEVEL_4K: u8 = 3;
 const PXN:      u64 = 1 << 53;
 const UXN:      u64 = 1 << 54;
 const PO_INDEX_SHIFT: u8 = 60;
@@ -228,6 +234,40 @@ impl PtWalker for PtWalkerArm {
         hal::pt_walker::MigrationEntry::new((raw >> SWAP_OFFSET_SHIFT) & hal::pt_walker::MigrationEntry::MAX_TOKEN)
     }
 
+    /// Answered by `linear::page_removable_from_linear_map`: either the linear
+    /// map's RAM already has a bottom-level leaf for every page, in which case
+    /// no granularity changes at all, or the implementation advertises that a
+    /// live one is free of translation-conflict aborts. The boot policy
+    /// supplies the first, so the answer does not depend on the second.
+    fn can_split_kernel_leaf() -> bool {
+        linear::page_removable_from_linear_map(
+            linear::LINEAR_MAP_RAM_PAGE_GRANULAR, linear::read_id_aa64mmfr2())
+    }
+
+    fn split_child_leaf(block: u64, child_pa: u64, child_level: u8) -> u64 {
+        // Descriptor kind is the only field that differs between a block leaf
+        // and a bottom-level page leaf: the same bit reads as "block" when
+        // clear above the bottom level and must be SET on a bottom-level page.
+        // The contiguous hint is dropped because the split children no longer
+        // form the run the hint promised.
+        let e = (block & !Self::PHYS_MASK & !CONT) | (child_pa & Self::PHYS_MASK);
+        if child_level == LEAF_LEVEL_4K { e | TABLE } else { e & !TABLE }
+    }
+
+    /// A table walker on this architecture is not coherent with the store
+    /// buffer, so the table fill needs a store barrier — not merely release
+    /// ordering — before the entry that publishes it becomes visible.
+    fn publish_table_barrier() {
+        #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+        // SAFETY: `dsb ishst` is an unprivileged store barrier over the
+        // inner-shareable domain; it touches no memory and has no operands.
+        unsafe { core::arch::asm!("dsb ishst", options(nostack, preserves_flags)); }
+    }
+
+    fn leaf_set_present(raw: u64, present: bool) -> u64 {
+        if present { raw | VALID } else { raw & !VALID }
+    }
+
     fn leaf_wrprotect(raw: u64) -> u64 { raw | AP2_RDONLY }
     fn leaf_set_uffd_wp(raw: u64) -> u64 { raw | UFFD_WP_BIT }
     fn leaf_clear_uffd_wp(raw: u64) -> u64 { raw & !UFFD_WP_BIT }
@@ -264,6 +304,50 @@ mod tests {
     fn map_err_distinct() {
         assert_ne!(MapErr::AllocFailed, MapErr::HitBlockDescriptor);
         assert_ne!(MapErr::HitBlockDescriptor, MapErr::AlreadyMapped);
+    }
+
+    /// A bottom-level child must be spelled as a page, not as a block: the same
+    /// descriptor bit means "block" above the bottom level and "page" at it, so
+    /// a verbatim copy produces a descriptor the walker treats as invalid.
+    #[test]
+    fn splitting_to_the_bottom_level_respells_the_descriptor_as_a_page() {
+        let flags = hal::PageFlags::READ | hal::PageFlags::WRITE;
+        let block = PtWalkerArm::pack_block_leaf(2 << 20, flags);
+        assert!(PtWalkerArm::is_huge_or_block(block));
+        let child = PtWalkerArm::split_child_leaf(block, 0x4000, LEAF_LEVEL_4K);
+        assert_eq!(child, PtWalkerArm::pack_4k_leaf(0x4000, flags),
+                   "a bottom-level child must be identical to a directly packed page leaf");
+    }
+
+    /// An intermediate child stays a block and keeps every attribute.
+    #[test]
+    fn splitting_to_an_intermediate_block_keeps_the_block_spelling() {
+        let flags = hal::PageFlags::READ | hal::PageFlags::WRITE;
+        let block = PtWalkerArm::pack_block_leaf(1 << 30, flags);
+        let child = PtWalkerArm::split_child_leaf(block, 1 << 21, 2);
+        assert!(PtWalkerArm::is_huge_or_block(child));
+        assert_eq!(child, PtWalkerArm::pack_block_leaf(1 << 21, flags));
+    }
+
+    /// The contiguous hint promises a run of adjacent leaves; split children no
+    /// longer form that run, so carrying it down would let a TLB fold entries
+    /// that are about to stop agreeing.
+    #[test]
+    fn splitting_drops_the_contiguous_hint() {
+        let block = PtWalkerArm::pack_block_leaf(1 << 30, hal::PageFlags::READ) | CONT;
+        assert_eq!(PtWalkerArm::split_child_leaf(block, 1 << 21, 2) & CONT, 0);
+        assert_eq!(PtWalkerArm::split_child_leaf(block, 0x1000, LEAF_LEVEL_4K) & CONT, 0);
+    }
+
+    /// Removing a page from the linear map and restoring it must be exactly
+    /// reversible, or the restored page differs from the one that was taken.
+    #[test]
+    fn clearing_and_restoring_a_leaf_round_trips() {
+        let leaf = PtWalkerArm::pack_4k_leaf(0x9000, hal::PageFlags::READ | hal::PageFlags::WRITE);
+        let gone = PtWalkerArm::leaf_set_present(leaf, false);
+        assert!(!PtWalkerArm::is_valid(gone), "the page must stop translating");
+        assert_eq!(gone & PtWalkerArm::PHYS_MASK, 0x9000, "the address must survive so it can be restored");
+        assert_eq!(PtWalkerArm::leaf_set_present(gone, true), leaf);
     }
 
     #[test]

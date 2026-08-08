@@ -6,7 +6,7 @@
 
 use super::*;
 
-fn fresh(a: &PkeyAbi) -> u16 { a.mm.init_map }
+fn fresh(a: &PkeyAbi) -> PkeyState { PkeyState::new(&a.mm) }
 
 #[test]
 fn flags_are_rejected_before_init_val() {
@@ -16,7 +16,7 @@ fn flags_are_rejected_before_init_val() {
         // reaches the allocator, so the map is untouched.
         assert_eq!(pkey_alloc(a, &mut m, 1, !0), Err(Errno::Einval));
         assert_eq!(pkey_alloc(a, &mut m, 0x8000, 0), Err(Errno::Einval));
-        assert_eq!(m, fresh(a));
+        assert_eq!(m.map, fresh(a).map);
     }
 }
 
@@ -63,7 +63,7 @@ fn arm64_alloc_is_enospc_from_the_very_first_call() {
     for iv in [0, PKEY_DISABLE_ACCESS, PKEY_DISABLE_WRITE, PKEY_DISABLE_READ, AARCH64.access_mask] {
         let mut m = fresh(&AARCH64);
         for _ in 0..4 { assert_eq!(pkey_alloc(&AARCH64, &mut m, 0, iv), Err(Errno::Enospc)); }
-        assert_eq!(m, fresh(&AARCH64));
+        assert_eq!(m.map, fresh(&AARCH64).map);
     }
 }
 
@@ -91,12 +91,12 @@ fn pkey_free_rejects_out_of_range_keys_on_both_arches() {
 
 #[test]
 fn pkey_mprotect_keep_always_allowed_default_key_only_on_arm64() {
-    for a in [&X86_64, &AARCH64] { assert!(pkey_mprotect_allows(a, fresh(a), PKEY_KEEP)); }
-    assert!(pkey_mprotect_allows(&AARCH64, fresh(&AARCH64), 0));
-    assert!(!pkey_mprotect_allows(&X86_64, fresh(&X86_64), 0));
+    for a in [&X86_64, &AARCH64] { assert!(pkey_mprotect_allows(a, &fresh(a), PKEY_KEEP)); }
+    assert!(pkey_mprotect_allows(&AARCH64, &fresh(&AARCH64), 0));
+    assert!(!pkey_mprotect_allows(&X86_64, &fresh(&X86_64), 0));
     for a in [&X86_64, &AARCH64] {
         for k in [1, 2, 15, 16, i32::MAX, -2, i32::MIN] {
-            assert!(!pkey_mprotect_allows(a, fresh(a), k), "key {k} must be EINVAL");
+            assert!(!pkey_mprotect_allows(a, &fresh(a), k), "key {k} must be EINVAL");
         }
     }
 }
@@ -104,10 +104,10 @@ fn pkey_mprotect_keep_always_allowed_default_key_only_on_arm64() {
 #[test]
 fn arm64_mprotect_follows_the_map_after_a_free() {
     let mut m = fresh(&AARCH64);
-    assert!(pkey_mprotect_allows(&AARCH64, m, 0));
+    assert!(pkey_mprotect_allows(&AARCH64, &m, 0));
     assert_eq!(pkey_free(&AARCH64, &mut m, 0), Ok(()));
-    assert!(!pkey_mprotect_allows(&AARCH64, m, 0), "freed key is no longer usable");
-    assert!(pkey_mprotect_allows(&AARCH64, m, PKEY_KEEP));
+    assert!(!pkey_mprotect_allows(&AARCH64, &m, 0), "freed key is no longer usable");
+    assert!(pkey_mprotect_allows(&AARCH64, &m, PKEY_KEEP));
 }
 
 #[test]
@@ -116,24 +116,24 @@ fn x86_map_after_the_failed_alloc_still_refuses_key_zero_for_mprotect() {
     // still excludes key 0 (execute-only), so pkey_mprotect stays EINVAL.
     let mut m = fresh(&X86_64);
     assert_eq!(pkey_alloc(&X86_64, &mut m, 0, 0), Err(Errno::Einval));
-    assert_eq!(m, 0x1);
-    assert!(!pkey_mprotect_allows(&X86_64, m, 0));
+    assert_eq!(m.map, 0x1);
+    assert!(!pkey_mprotect_allows(&X86_64, &m, 0));
     assert_eq!(pkey_free(&X86_64, &mut m, 0), Err(Errno::Einval));
 }
 
 #[test]
 fn enabled_hardware_allocates_a_real_key_without_rollback() {
     let x86 = with_mm(X86_64, pkeys::PkeyArch {
-        max_pkey: 16, init_map: 1, alloc_checks_hw: false, execute_only_pkey: Some(-1),
+        max_pkey: 16, init_map: 1, alloc_checks_hw: false, execute_only_init: Some(-1), exec_ignores_keys: true,
     });
-    let mut map = x86.mm.init_map;
+    let mut map = PkeyState::new(&x86.mm);
     assert_eq!(pkey_alloc(&x86, &mut map, 0, PKEY_DISABLE_WRITE), Ok(1));
-    assert!(pkey_mprotect_allows(&x86, map, 1));
+    assert!(pkey_mprotect_allows(&x86, &map, 1));
 
     let arm = with_mm(AARCH64, pkeys::PkeyArch {
-        max_pkey: 8, init_map: 1, alloc_checks_hw: false, execute_only_pkey: None,
+        max_pkey: 8, init_map: 1, alloc_checks_hw: false, execute_only_init: None, exec_ignores_keys: false,
     });
-    let mut map = arm.mm.init_map;
+    let mut map = PkeyState::new(&arm.mm);
     assert_eq!(pkey_alloc(&arm, &mut map, 0, PKEY_DISABLE_READ), Ok(1));
-    assert!(pkey_mprotect_allows(&arm, map, 1));
+    assert!(pkey_mprotect_allows(&arm, &map, 1));
 }

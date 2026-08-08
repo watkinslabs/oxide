@@ -267,7 +267,7 @@ impl AddressSpace {
         len: usize,
         prot: VmaProt,
     ) -> KResult<()> {
-        let outcome = self.mprotect_user(addr, len, prot, false, None)?;
+        let outcome = self.mprotect_user(addr, len, prot, false, &mut |v: &Vma| v.pkey)?;
         match outcome.error {
             Some(error) => Err(error),
             None => Ok(()),
@@ -277,6 +277,10 @@ impl AddressSpace {
     /// Apply Linux `do_mprotect_pkey`'s per-VMA permission ladder while the
     /// VMA write lock stays held. Earlier steps remain committed if a later
     /// hole, VM_MAY, MDWE, or mseal check fails.
+    ///
+    /// `key_for` decides the protection key each VMA carries afterwards, and
+    /// runs per VMA because that decision reads the VMA it is running over —
+    /// its current key and whether it was execute-only.
     /// # C: O(K log N)
     pub fn mprotect_user(
         &self,
@@ -284,7 +288,7 @@ impl AddressSpace {
         len: usize,
         requested: VmaProt,
         read_implies_exec: bool,
-        pkey: Option<u8>,
+        key_for: &mut dyn FnMut(&Vma) -> u8,
     ) -> KResult<MprotectOutcome> {
         validate_len(len)?;
         validate_aligned(addr)?;
@@ -328,7 +332,7 @@ impl AddressSpace {
                 start: UserVirtAddr::new(cursor).expect("validated user range"),
                 len: (step_end - cursor) as usize,
                 prot,
-                pkey: pkey.unwrap_or(vma.pkey),
+                pkey: key_for(vma),
             });
             cursor = step_end;
         }

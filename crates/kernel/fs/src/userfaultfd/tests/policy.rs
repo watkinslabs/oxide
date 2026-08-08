@@ -72,18 +72,22 @@ fn api_rejects_a_foreign_api_number() {
 /// behaviour a monitor can observe, or refused — never accepted and ignored.
 #[test]
 fn api_offers_exactly_the_features_that_are_wired() {
-    // The fork-event capability check runs BEFORE the "do we implement it"
-    // rejection, so an unprivileged request for it reports EPERM.
+    // The fork-event capability check runs BEFORE anything else about the
+    // feature word, so an UNPRIVILEGED request for it is EPERM even though the
+    // feature exists — the ordering is observable and is the whole reason a
+    // monitor tracking forks needs the tracing capability.
     assert_eq!(api_negotiate(UFFD_API, feature::EVENT_FORK, false, 0).err(), Some(Errno::Eperm));
-    assert_eq!(api_negotiate(UFFD_API, feature::EVENT_FORK, true, 0).err(), Some(Errno::Einval));
-    for unwired in [feature::SIGBUS, feature::EVENT_REMAP, feature::EXACT_ADDRESS,
+    assert!(api_negotiate(UFFD_API, feature::EVENT_FORK, true, 0).is_ok());
+    for unwired in [feature::SIGBUS, feature::EXACT_ADDRESS,
                     feature::MISSING_HUGETLBFS, feature::MINOR_HUGETLBFS,
                     feature::WP_UNPOPULATED, feature::WP_ASYNC, feature::WP_HUGETLBFS_SHMEM] {
         assert_eq!(api_negotiate(UFFD_API, unwired, true, 0).err(), Some(Errno::Einval),
                    "unwired feature {unwired:#x} must be refused, not accepted and ignored");
     }
     for wired in [feature::THREAD_ID, feature::PAGEFAULT_FLAG_WP, feature::MISSING_SHMEM,
-                  feature::MINOR_SHMEM, feature::POISON, feature::MOVE] {
+                  feature::MINOR_SHMEM, feature::POISON, feature::MOVE,
+                  feature::EVENT_FORK, feature::EVENT_REMAP, feature::EVENT_REMOVE,
+                  feature::EVENT_UNMAP] {
         assert!(api_negotiate(UFFD_API, wired, true, 0).is_ok(),
                 "wired feature {wired:#x} must be offered");
     }

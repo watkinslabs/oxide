@@ -181,6 +181,38 @@ pub trait PtWalker {
     /// # C: O(1)
     fn leaf_is_uffd_wp(raw: u64) -> bool;
 
+    /// Whether this architecture may replace a live kernel-linear-map block
+    /// leaf with a table of smaller leaves while other CPUs run. One
+    /// architecture reaches the new granularity through an intermediate state
+    /// the hardware tolerates; the other only guarantees no translation-conflict
+    /// abort when the implementation advertises the relaxed break-before-make
+    /// behaviour, so it answers from the CPU's own feature identification.
+    /// # C: O(1)
+    fn can_split_kernel_leaf() -> bool;
+
+    /// Derive one child of a split block leaf. `child_level` is `2` for a
+    /// 2 MiB child and `3` for a 4 KiB child; `child_pa` is that child's output
+    /// address, aligned to the child's span. Every attribute of `block` carries
+    /// over unchanged — a split changes granularity, never permissions or
+    /// memory type — including any attribute field whose descriptor position
+    /// differs between a block leaf and a bottom-level page leaf.
+    /// # C: O(1)
+    fn split_child_leaf(block: u64, child_pa: u64, child_level: u8) -> u64;
+
+    /// Order the stores that filled a freshly built table ahead of the store
+    /// publishing the table entry that points at it, as observed by every CPU's
+    /// hardware table walker. Plain release ordering is not enough on an
+    /// architecture whose walkers are not coherent with the store buffer.
+    /// # SAFETY: none — barrier only.
+    /// # C: O(1)
+    fn publish_table_barrier();
+
+    /// Set or clear a leaf's translation-valid state, preserving its output
+    /// address and every attribute so the inverse call restores the original
+    /// translation exactly.
+    /// # C: O(1)
+    fn leaf_set_present(raw: u64, present: bool) -> u64;
+
     /// A non-present leaf marking the page as poisoned: an access to it raises
     /// a memory-error fault instead of allocating a page. Distinct from the
     /// swap and migration encodings and from the all-zero absent leaf.
