@@ -55,10 +55,13 @@ impl SendControl {
 }
 
 impl Raw6Control {
-    /// Fill absent extension-header controls from one socket's canonical sticky state.
-    /// # C: O(total header bytes)
+    /// Fill absent controls from one socket's canonical sticky state: the four
+    /// extension headers, and the fragmentation refusal, which is a sticky
+    /// socket flag as well as a per-message control and must reach the same
+    /// slot from either. # C: O(total header bytes)
     pub fn merge_sticky_headers(&mut self, opts: &crate::sock_opts::sol_ipv6::Ipv6Opts) {
-        use crate::sock_opts::sol_ipv6::Sticky;
+        use crate::sock_opts::sol_ipv6::{Sticky, flag};
+        if self.dontfrag.is_none() && opts.flag(flag::DONTFRAG) { self.dontfrag = Some(true); }
         if self.hop_options.is_none() { self.hop_options = opts.header(Sticky::HopOpts); }
         if self.dst_before_routing.is_none() {
             self.dst_before_routing = opts.header(Sticky::RthdrDstOpts);
@@ -93,6 +96,23 @@ mod tests {
         assert!(should_drain_loopback(true, None, true));
         assert!(!should_drain_loopback(true, Some(false), true));
         assert!(should_drain_loopback(true, Some(true), false));
+    }
+
+    #[test]
+    fn a_sticky_fragmentation_refusal_reaches_the_same_slot_as_a_per_message_one() {
+        use crate::sock_opts::sol_ipv6::{Ipv6Opts, flag};
+        let opts = Ipv6Opts::default();
+        let mut plain = Raw6Control::default();
+        plain.merge_sticky_headers(&opts);
+        assert_eq!(plain.dontfrag, None);
+        opts.set_flag(flag::DONTFRAG, true);
+        let mut sticky = Raw6Control::default();
+        sticky.merge_sticky_headers(&opts);
+        assert_eq!(sticky.dontfrag, Some(true), "the sticky option reaches the transmit slot");
+        // A message that named its own answer keeps it, in both directions.
+        let mut named_off = Raw6Control { dontfrag: Some(false), ..Default::default() };
+        named_off.merge_sticky_headers(&opts);
+        assert_eq!(named_off.dontfrag, Some(false));
     }
 
     #[test]
