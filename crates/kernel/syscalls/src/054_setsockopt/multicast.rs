@@ -130,16 +130,38 @@ pub(super) fn ipv4_mcast_source_req(sock: &Arc<net::sock::InetSocket>, optval: u
     encode(sock.source_v4_mcast_req(0, ifaddr, group, source, op))
 }
 
+/// The ceilings one source-filter write faces, refused before the source list
+/// is read. `net::sock_opts::msfilter` owns the ladder; this resolves the live
+/// limits it is judged against. # C: O(log N)
+fn filter_length(sock: &Arc<net::sock::InetSocket>, optlen: u32, optval: u64,
+                 shape: net::sock_opts::msfilter::Shape, v6: bool) -> Result<(), i64> {
+    let limits = net::sysctl::msfilter_limits(sock.net_ns(), v6, shape.entry != 4);
+    if let Err(error) = net::sock_opts::msfilter::admit_length(optlen, shape, limits) {
+        return Err(-(error.as_i32() as i64));
+    }
+    if optval.saturating_add(optlen as u64) > USER_VA_END {
+        return Err(-(Errno::Einval.as_i32() as i64));
+    }
+    Ok(())
+}
+
+/// The source count the caller named, against the same live limits. # C: O(log N)
+fn filter_sources(sock: &Arc<net::sock::InetSocket>, optlen: u32, numsrc: u32,
+                  shape: net::sock_opts::msfilter::Shape, v6: bool) -> Result<(), i64> {
+    let limits = net::sysctl::msfilter_limits(sock.net_ns(), v6, shape.entry != 4);
+    net::sock_opts::msfilter::admit_sources(optlen, numsrc, shape, limits)
+        .map_err(|error| -(error.as_i32() as i64))
+}
+
 pub(super) fn ipv4_msfilter(sock: &Arc<net::sock::InetSocket>, optval: u64, optlen: u32) -> i64 {
     if let Err(error) = preflight(sock, net::sock_mcast::McastSetOp::V4Other) { return error; }
-    if optlen < 16 || optval + optlen as u64 > USER_VA_END { return -(Errno::Einval.as_i32() as i64); }
+    const SHAPE: net::sock_opts::msfilter::Shape = net::sock_opts::msfilter::IP_MSFILTER;
+    if let Err(error) = filter_length(sock, optlen, optval, SHAPE, false) { return error; }
     let Some(group) = read_ipv4_at(optval) else { return -(Errno::Efault.as_i32() as i64); };
     let Some(ifaddr) = read_ipv4_at(optval + 4) else { return -(Errno::Efault.as_i32() as i64); };
     let Some(mode_raw) = read_u32_at(optval + 8) else { return -(Errno::Efault.as_i32() as i64); };
     let Some(numsrc) = read_u32_at(optval + 12) else { return -(Errno::Efault.as_i32() as i64); };
-    if 16u64.saturating_add(numsrc as u64 * 4) > optlen as u64 {
-        return -(Errno::Einval.as_i32() as i64);
-    }
+    if let Err(error) = filter_sources(sock, optlen, numsrc, SHAPE, false) { return error; }
     let mut sources = alloc::vec::Vec::new();
     for i in 0..numsrc as u64 {
         let Some(src) = read_ipv4_at(optval + 16 + i * 4) else { return -(Errno::Efault.as_i32() as i64); };
@@ -167,14 +189,13 @@ pub(super) fn ipv4_mcast_group_source_req(sock: &Arc<net::sock::InetSocket>, opt
 
 pub(super) fn ipv4_group_filter(sock: &Arc<net::sock::InetSocket>, optval: u64, optlen: u32) -> i64 {
     if let Err(error) = preflight(sock, net::sock_mcast::McastSetOp::V4Other) { return error; }
-    if optlen < 144 || optval + optlen as u64 > USER_VA_END { return -(Errno::Einval.as_i32() as i64); }
+    const SHAPE: net::sock_opts::msfilter::Shape = net::sock_opts::msfilter::GROUP_FILTER;
+    if let Err(error) = filter_length(sock, optlen, optval, SHAPE, false) { return error; }
     let Some(ifindex) = read_u32_at(optval) else { return -(Errno::Efault.as_i32() as i64); };
     let Some(group) = read_sockaddr_storage_v4(optval + 8) else { return -(Errno::Einval.as_i32() as i64); };
     let Some(mode_raw) = read_u32_at(optval + 136) else { return -(Errno::Efault.as_i32() as i64); };
     let Some(numsrc) = read_u32_at(optval + 140) else { return -(Errno::Efault.as_i32() as i64); };
-    if 144u64.saturating_add(numsrc as u64 * 128) > optlen as u64 {
-        return -(Errno::Einval.as_i32() as i64);
-    }
+    if let Err(error) = filter_sources(sock, optlen, numsrc, SHAPE, false) { return error; }
     let mut sources = alloc::vec::Vec::new();
     for i in 0..numsrc as u64 {
         let Some(src) = read_sockaddr_storage_v4(optval + 144 + i * 128) else { return -(Errno::Einval.as_i32() as i64); };
@@ -237,14 +258,13 @@ pub(super) fn ipv6_mcast_group_source_req(sock: &Arc<net::sock::InetSocket>, opt
 pub(super) fn ipv6_group_filter(sock: &Arc<net::sock::InetSocket>, optval: u64,
                                 optlen: u32) -> i64 {
     if let Err(error) = preflight(sock, net::sock_mcast::McastSetOp::V6Other) { return error; }
-    if optlen < 144 || optval + optlen as u64 > USER_VA_END { return -(Errno::Einval.as_i32() as i64); }
+    const SHAPE: net::sock_opts::msfilter::Shape = net::sock_opts::msfilter::GROUP_FILTER;
+    if let Err(error) = filter_length(sock, optlen, optval, SHAPE, true) { return error; }
     let Some(ifindex) = read_u32_at(optval) else { return -(Errno::Efault.as_i32() as i64); };
     let Some(group) = read_sockaddr_storage_v6(optval + 8) else { return -(Errno::Einval.as_i32() as i64); };
     let Some(mode_raw) = read_u32_at(optval + 136) else { return -(Errno::Efault.as_i32() as i64); };
     let Some(numsrc) = read_u32_at(optval + 140) else { return -(Errno::Efault.as_i32() as i64); };
-    if 144u64.saturating_add(numsrc as u64 * 128) > optlen as u64 {
-        return -(Errno::Einval.as_i32() as i64);
-    }
+    if let Err(error) = filter_sources(sock, optlen, numsrc, SHAPE, true) { return error; }
     let mut sources = alloc::vec::Vec::new();
     for index in 0..numsrc as u64 {
         let Some(source) = read_sockaddr_storage_v6(optval + 144 + index * 128) else {

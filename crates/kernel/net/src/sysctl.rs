@@ -212,6 +212,33 @@ pub fn set_optmem_max(value: usize) -> Result<(), ()> {
     Ok(())
 }
 
+/// `sysctl_mld_max_msf`: how many sources one IPv6 multicast source filter may
+/// name. Global rather than per-namespace, as the reference keeps it.
+static MLD_MAX_MSF: AtomicI64 =
+    AtomicI64::new(crate::sock_opts::msfilter::DEFAULT_MLD_MAX_MSF);
+
+pub const MLD_MAX_MSF_BOUNDS: (i64, i64) = (0, i32::MAX as i64);
+
+/// # C: O(1)
+pub fn mld_max_msf() -> i64 { MLD_MAX_MSF.load(Ordering::Acquire) }
+
+/// # C: O(1)
+pub fn set_mld_max_msf(value: i64) { MLD_MAX_MSF.store(value, Ordering::Release); }
+
+/// The ceilings one multicast source-filter write is judged against. The v4
+/// count ceiling is per-namespace and the v6 one is global, which is the split
+/// the reference keeps. # C: O(log N)
+pub fn msfilter_limits(ns: u64, v6: bool, wide: bool) -> crate::sock_opts::msfilter::Limits {
+    use crate::sock_opts::msfilter;
+    crate::sock_opts::msfilter::Limits {
+        optmem_max: optmem_max_in(ns).unwrap_or(DEFAULT_OPTMEM_MAX),
+        max_msf: if v6 { mld_max_msf() }
+            else { value_in(ns, NetSysctlKey::Ipv4IgmpMaxMsf)
+                .unwrap_or(msfilter::DEFAULT_IGMP_MAX_MSF) },
+        numsrc_overflow: if wide { msfilter::MAX_NUMSRC_WIDE } else { msfilter::MAX_NUMSRC_NARROW },
+    }
+}
+
 /// `net.ipv6.auto_flowlabels` in a live namespace: the flow-label policy a
 /// socket that named none of its own inherits, and the one that overrides
 /// every socket in both directions. # C: O(log N)

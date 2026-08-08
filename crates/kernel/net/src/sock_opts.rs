@@ -4,6 +4,7 @@
 // Module manifest:
 // - this file: security admission plus the TCP keepalive option application.
 // - `identity`: the socket's own type/protocol/listening state.
+// - `msfilter`: the memory and source-count ceilings a filter write faces.
 // - `sol_socket`: the generic SOL_SOCKET option table (slots 54/55).
 // - `peercred`: the `SO_PEERCRED` value encoding, including the no-peer answer.
 // - `sol_ip` / `sol_ipv6` / `sol_tcp` / `sol_udp`: one option level each.
@@ -11,6 +12,7 @@
 
 pub mod identity;
 pub mod inq;
+pub mod msfilter;
 pub mod peercred;
 pub mod sol_ip;
 pub mod sol_ipv6;
