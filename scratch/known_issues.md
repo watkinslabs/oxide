@@ -21,6 +21,23 @@ work and become `IN-PROGRESS <branch>` when the current integration finishes.
 | Class | Means |
 |---|---|
 
+`Sev`: `blocker` (merge gate) | `high` (wrong answer reaching userspace) |
+`med` (missing surface) | `low` (hygiene, tooling, cosmetics).
+
+## Open-work summary
+
+This is a derived view of the live `OPEN` and `IN-PROGRESS` rows below, not a
+second ledger. Update it in the same change whenever a row is added, moved, or
+reclassified.
+
+| Class \ Sev | blocker | high | med | low | Total |
+|---|---:|---:|---:|---:|---:|
+| `DEFECT` | 0 | 3 | 24 | 40 | 67 |
+| `MISSING` | 1 | 5 | 47 | 37 | 90 |
+| `COVERAGE` | 0 | 3 | 32 | 35 | 70 |
+| `INFRA` | 0 | 1 | 15 | 25 | 41 |
+| **Total** | **1** | **12** | **118** | **137** | **268** |
+
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 
@@ -415,7 +432,6 @@ here now.
 | OPEN | DEFECT | low | `BPF_BTF_GET_NEXT_ID` still carries its own copy of the `GET_NEXT_ID` ladder in `bpf/btf/attr.rs` + `bpf/btf/command.rs` rather than calling the shared one. The two agree today, which is precisely why the duplication is dangerous — the MAP copy had already drifted (row above). Needs `btf::get_next_id` to delegate to `cmd::next_id::get_next_id` with `object::next_id` as its walker. Those files were outside this lane's ownership. | Compare `bpf/btf/attr.rs::get_next_id` against `bpf/cmd/next_id.rs::admit`: same four decisions, written twice. | NEXT |
 | OPEN | INFRA | low | `bpf/link.rs` exports `cgroup_link_by_id`, which is now a one-line alias for the general `link_by_id` — the cgroup ordering anchors re-check the link kind themselves. The name says "cgroup" but the lookup is over the one link registry. Renaming it means touching `bpf/prog/attach.rs`, outside this lane's ownership. | `bpf/link.rs`: `pub(crate) fn cgroup_link_by_id(id: u32) -> Result<InodeRef, Errno> { link_by_id(id) }`. | NEXT |
 | OPEN | COVERAGE | med | The batch commands' loop bodies (`lookup_batch`, `update_batch`, `delete_batch` in `bpf/cmd/batch.rs`) have no hosted test that drives them against a real map: they need a live `BpfMapInode`, which needs `sched::current()` for the descriptor resolution the command starts from. Their admission ladder, access modes, flag masks, address arithmetic and count write-back are all covered; the per-element walk, the skip-on-racing-delete and the end-of-map `ENOENT` are not. Needs the map-object half of the hosted fixture the element tests use. | `bpf::command::batch::tests` covers 8 decisions; `grep -c 'fn lookup_batch'` shows the walk itself has none. | NEXT |
-| OPEN | DEFECT | High | The bpf verifier/command work pushes an aarch64 static call path to or past the 13000 B ceiling on a 16384 B kernel stack. The branch was pushed with `SKIP_STACK_GATE=1` on an explicit instruction to land the work; **the overrun ships with it.** A kernel stack overrun does not fault cleanly — it scribbles the adjacent allocation, and this tree has already lost multiple sessions to exactly that class (the ~90% boot corruption was a 16 KB stack overflowing into the heap, chased for weeks as a refcount UAF before guard pages proved it). | `make stack-gate` on `B1977-bpf-verifier-and-commands` reports `>= ceiling (13000B): 4`. Deepest chain at the time of the bypass: `_start` 19832 → `_start_rust` 19816 → `kernel_main` 19752 → `rootfs::init` 16552 → `smoke::elf::run_as_task` 12184 → `oxide_syscall_entry` 12064 → `oxide_syscall_dispatch` 11880. Three of the four over-ceiling paths are pre-existing allowlist entries; this lane's contribution is the fourth and is NOT allowlisted. | unowned |
 | OPEN | COVERAGE | high | 433 unguarded candidates, 59 of them bare serialisation locks — `B1957` predicted 25 from a narrower grep, and every one of those 25 is in this list. Each is a fixture lock whose protection is a convention any new test in the same binary can forget. | `tools/hosted-global-state-backlog.tsv`, one row per candidate, sortable by claim ratio. The worst by exposure: `net/src/net_ns/test_support.rs::LIFETIME_LOCK` (17 of 2186 tests in the binary claim it), `sched/src/tests/timing.rs::SERIAL` (1 of 1210), `fs/src/timerfd/tests.rs::TEST_LOCK` (10 of 1002), `syscalls/src/fcntl_dup_tests.rs::TEST_LOCK` (2 of 1329). | unassigned — one row per lane |
 | OPEN | COVERAGE | med | `crng/src/pool/tests.rs::SOURCE_LOCK` states the requirement in its own doc comment — "`BULK_SOURCE` and `SEEDED` are process-global, so every test that installs a source or inspects readiness must run alone" — and 12 of the crate's 17 tests call `fill()`, which reads both, without it. Exactly the `B1957` shape: the lock protects the fixture, not the state the fixture installs into. | Flagged `UNGUARDED fixture-lock crng/src/pool/tests.rs:22 SOURCE_LOCK [5/17 tests claim]`. Not observed to fail — structural, not measured. | unassigned |
 | OPEN | COVERAGE | med | `modules/src/test_serial.rs::MODULES` (217/231), `drv/src/model/test_claim.rs::MODEL` (38/40), `fbdev/src/test_claim.rs::FBDEV` (27/30), `input/src/tests.rs::TEST_MUTEX` (18/22), `ucounts/src/tests.rs::LOCK` (11/12): near-total conventions, which is the state `socket` was in before the 18 non-claiming tests were noticed. A convention at 94 % is one added test away from the flake. | Same file; claim ratios above. | unassigned |
