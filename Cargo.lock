@@ -1782,6 +1782,7 @@ dependencies = [
  "tracefs",
  "tty",
  "uaccess",
+ "user-namespace",
  "vfs",
  "virtio",
  "vmm",

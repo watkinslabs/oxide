@@ -34,7 +34,7 @@ pub fn update_curr_dl(t: &Task, now: u64) -> Charged {
     let p = t.dl.params();
     let mut s = t.dl.sched();
     let delta = t.dl.take_delta(now);
-    if delta != 0 { t.sum_exec_runtime_ns.fetch_add(delta, core::sync::atomic::Ordering::Relaxed); }
+    if delta != 0 { crate::cputime::charge_exec_runtime(t, delta); }
     let out = cbs::charge(&p, &mut s, delta);
     t.dl.store_sched(&s);
     out

@@ -21,7 +21,7 @@ mod io_context;
 pub(crate) use crate::clone_abi::{
     CloneCaller, CloneRequest, CLONE_CHILD_CLEARTID, CLONE_CHILD_SETTID,
     CLONE_CLEAR_SIGHAND, CLONE_FS, CLONE_PARENT, CLONE_PARENT_SETTID, CLONE_PIDFD,
-    CLONE_SETTLS, CLONE_SIGHAND, CLONE_THREAD, CLONE_VFORK, CLONE_VM,
+    CLONE_SETTLS, CLONE_SIGHAND, CLONE_SYSVSEM, CLONE_THREAD, CLONE_VFORK, CLONE_VM,
 };
 
 fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
@@ -303,6 +303,17 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
     child.set_sid(cur.sid());
     // Inherit Linux `fs_struct`: CLONE_FS shares one owner; fork snapshots it.
     child.inherit_fs_context_from(cur, (flags & CLONE_FS) != 0);
+    // Linux `copy_semundo`. CLONE_SYSVSEM shares the SysV `SEM_UNDO` adjustment
+    // list by reference, and it is a flag in its OWN right — not a consequence
+    // of CLONE_THREAD. A plain fork(2) child must start with no list, or it
+    // would hand back adjustments its parent still owes; a
+    // clone(CLONE_SYSVSEM) child WITHOUT CLONE_THREAD must share the parent's,
+    // or each would undo the other's operations at its own exit.
+    if let Err(e) = ipc::sysv::sem::undo::copy_semundo(
+        (flags & CLONE_SYSVSEM) != 0, &cur.sysvsem_undo, &child.sysvsem_undo)
+    {
+        return errno(e);
+    }
     // Inherit rlimits and ctty per POSIX fork(2). child is unpublished and
     // therefore the sole writer to child's own slots; cur's rlimits read
     // goes through the lock since cur is a real, possibly-foreign-observed

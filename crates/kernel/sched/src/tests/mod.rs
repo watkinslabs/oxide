@@ -3,6 +3,7 @@
 // - child_rusage: signal_struct c* counters — reap-time child accounting for
 //   getrusage(RUSAGE_CHILDREN) and times(2).
 // - common: shared hosted-test fixtures and serialisation helpers.
+// - cpu_clock_measure: VIRT/PROF/SCHED CPU-clock measures off the task + group totals.
 // - cpu_nanosleep: CPU-clock clock_nanosleep arm/resolve + accounting-tick service.
 // - exit_notify: exit_notify/forget_original_parent adoption order + autoreap.
 // - net_namespace: task-owned network namespace lifetime and exit ordering.
@@ -23,12 +24,14 @@
 // - ucounts: per-user RLIMIT_NPROC charge, fork EAGAIN gate, deferred execve.
 // - umask: fs_struct-owned umask(2) sharing across CLONE_FS / fork / unshare.
 // - wait_events: wait(2) child stop/continue selection + wait-rusage folding.
+// - wait_pidns: wait-family child selection and reported numbers across a pid-ns nest.
 // - wake_list: lock-free per-CPU wake list ownership + double-push coalescing.
 
 mod affinity;
 mod child_rusage;
 pub(crate) mod common;
 mod pi_boost;
+mod cpu_clock_measure;
 mod cpu_nanosleep;
 mod exit_notify;
 mod net_namespace;
@@ -53,4 +56,5 @@ mod timing;
 mod ucounts;
 mod umask;
 mod wait_events;
+mod wait_pidns;
 mod wake_list;

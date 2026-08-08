@@ -119,9 +119,60 @@ pub enum NotifyTarget {
     Tracer,
 }
 
-/// Who is told when a task parks in `kind`. # C: O(1)
-pub const fn notify_target(kind: StopKind) -> NotifyTarget {
-    match kind { StopKind::Ptrace => NotifyTarget::Tracer, StopKind::JobControl => NotifyTarget::RealParent }
+/// Which parents one stop/continue report reaches.
+///
+/// A traced task has TWO parents — the tracer, and the real parent of its group
+/// leader — and they are told about different things. The tracer wants every
+/// stop; the real parent only wants the completion of a group stop. Neither
+/// suppresses the other, so a report can go to both, to one, or to neither.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct StopAudience {
+    /// `do_notify_parent_cldstop(..., for_ptracer = true)`.
+    pub tracer: bool,
+    /// `do_notify_parent_cldstop(..., for_ptracer = false)`.
+    pub real_parent: bool,
+}
+
+impl StopAudience {
+    /// # C: O(1)
+    pub const fn none() -> Self { Self { tracer: false, real_parent: false } }
+    /// # C: O(1)
+    pub const fn any(&self) -> bool { self.tracer || self.real_parent }
+}
+
+/// Audience of a task parking in a stop.
+///
+/// `traced` is `current->ptrace`; `gstop_done` is whether THIS park completed a
+/// group stop; `reparented` is `ptrace_reparented(current)` — the tracer is not
+/// in the real parent's thread group, so the two are genuinely different
+/// recipients rather than the same process twice.
+///
+/// - The tracer is told about every stop of its tracee.
+/// - The real parent is told only when the group stop completed, and only when
+///   that report would not merely duplicate the tracer's — an untraced task has
+///   no tracer to duplicate, and a self-traced one would send the same process
+///   the same SIGCHLD twice.
+///
+/// The untraced case reduces to the plain group-stop rule, so this is one rule
+/// for both stop kinds rather than two that can drift.
+/// # C: O(1)
+pub const fn stop_audience(traced: bool, gstop_done: bool, reparented: bool) -> StopAudience {
+    StopAudience {
+        tracer: traced,
+        real_parent: gstop_done && (!traced || reparented),
+    }
+}
+
+/// Audience of a `CLD_CONTINUED` report.
+///
+/// Continuing is a per-PROCESS event, so the real parent is always told. A
+/// tracer has no business consuming it through `wait(2)` at all, but is told
+/// anyway for compatibility — and only when it is not the real parent already.
+/// The tracer that matters here is the GROUP LEADER's: the event describes the
+/// process, not the thread that happened to notice the SIGCONT.
+/// # C: O(1)
+pub const fn continued_audience(leader_reparented: bool) -> StopAudience {
+    StopAudience { tracer: leader_reparented, real_parent: true }
 }
 
 /// The `si_code` the stop notification carries. # C: O(1)

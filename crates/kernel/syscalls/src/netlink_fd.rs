@@ -93,7 +93,8 @@ fn trace_uev_bind(nl_groups: u32, via: &[u8]) {
 /// (`ip monitor`, systemd-networkd). `nl_pid` claims one canonical live port
 /// ID in the socket's namespace and protocol domain.
 /// # C: O(1)
-pub fn bind(target: &NetlinkFileRef, storage: &net::SockaddrStorage) -> i64 {
+pub fn bind(target: &NetlinkFileRef, storage: &net::SockaddrStorage,
+    _admission: net::sock_admit::AddrAdmission) -> i64 {
     const SOCKADDR_FAMILY_BYTES: usize = core::mem::size_of::<u16>();
     let address = storage.as_bytes();
     if address.len() < ::netlink::SOCKADDR_NL_SIZE {
@@ -106,9 +107,6 @@ pub fn bind(target: &NetlinkFileRef, storage: &net::SockaddrStorage) -> i64 {
     let nl_groups = u32::from_ne_bytes(address[::netlink::SOCKADDR_NL_GROUPS_OFFSET
         ..::netlink::SOCKADDR_NL_GROUPS_OFFSET + core::mem::size_of::<u32>()].try_into().unwrap());
     let s = target.socket();
-    if let Err(error) = net::security_admission::check(net::net_ns::namespace_id(&s.net_ns),
-        net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Bind)
-    { return crate::net_errno::errno_from_neterr(error); }
     if let Err(error) = ::netlink::bind_port_id(s, port_id) {
         return crate::net_errno::errno_from_neterr(error);
     }
@@ -121,15 +119,13 @@ pub fn bind(target: &NetlinkFileRef, storage: &net::SockaddrStorage) -> i64 {
 /// `connect(fd, sockaddr_nl, addrlen)` for Netlink. Linux persists the
 /// destination in the socket, selects only the first multicast group, and
 /// clears both fields for AF_UNSPEC. # C: O(1)
-pub fn connect(target: &NetlinkFileRef, storage: &net::SockaddrStorage) -> i64 {
+pub fn connect(target: &NetlinkFileRef, storage: &net::SockaddrStorage,
+    _admission: net::sock_admit::AddrAdmission) -> i64 {
     const SOCKADDR_FAMILY_BYTES: usize = core::mem::size_of::<u16>();
     let address = storage.as_bytes();
     if address.len() < SOCKADDR_FAMILY_BYTES { return -(Errno::Einval.as_i32() as i64); }
     let family = u16::from_ne_bytes(address[..SOCKADDR_FAMILY_BYTES].try_into().unwrap());
     let socket = target.socket();
-    if let Err(error) = net::security_admission::check(net::net_ns::namespace_id(&socket.net_ns),
-        net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Connect)
-    { return crate::net_errno::errno_from_neterr(error); }
     if family as u32 == net::socket_args::AF_UNSPEC {
         return socket.disconnect_destination().map_or_else(crate::net_errno::errno_from_neterr, |_| 0);
     }

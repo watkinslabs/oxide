@@ -158,6 +158,26 @@ pub fn current_tgid() -> u32 {
     }
 }
 
+/// The calling task's `SEM_UNDO` list handle slot — Linux
+/// `current->sysvsem.undo_list`. `None` only when there is no current task at
+/// all, which no `semop(2)` can reach.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+pub fn current_undo_slot() -> Option<&'static core::sync::atomic::AtomicU64> {
+    sched::current().map(|t| &t.sysvsem_undo)
+}
+
+/// Hosted builds have no task registry, so the whole test process stands in for
+/// one task holding one handle — the same role `current_tgid`'s zero plays.
+#[cfg(not(target_os = "oxide-kernel"))]
+static HOSTED_UNDO_SLOT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// The calling task's `SEM_UNDO` list handle slot. # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+pub fn current_undo_slot() -> Option<&'static core::sync::atomic::AtomicU64> {
+    Some(&HOSTED_UNDO_SLOT)
+}
+
 /// Wall-clock seconds for the `*_otime` / `*_ctime` stat fields
 /// (`ktime_get_real_seconds`). # C: O(1)
 pub fn real_seconds() -> i64 { (timekeeper::realtime_ns() / 1_000_000_000) as i64 }

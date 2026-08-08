@@ -49,12 +49,24 @@ impl NetStack {
         let route_source = self.routes.lookup_record_mark_in(endpoint.net_ns(), route_dst, tx.mark)
             .map(|record| record.route).and_then(|r| r.src_hint)
             .or_else(|| crate::iface_addr::primary(endpoint.net_ns(), iface_id).map(|v| v.0));
-        let source = control.source.or(options.source).filter(|src| !src.is_unspecified())
-            .or_else(|| (!state.local.is_unspecified()).then_some(state.local))
-            .or(route_source).unwrap_or(Ipv4Addr::ANY);
+        // The source the SEND chose, before route selection gets to fill one
+        // in. Only this one is screened: a source route output picked for
+        // itself is local by construction and never needs a permission.
+        let chosen = control.source.or(options.source).filter(|src| !src.is_unspecified())
+            .or_else(|| (!state.local.is_unspecified()).then_some(state.local));
+        let source = chosen.or(route_source).unwrap_or(Ipv4Addr::ANY);
         if control.source.is_some() && !crate::iface_addr::snapshot_ns(endpoint.net_ns()).iter()
             .any(|row| row.addr == source)
         { return Err(NetError::Eaddrnotavail); }
+        // Route output screens a chosen source for locality unless the socket
+        // carries the any-source permission — the transparent bit, or a
+        // header-including socket, which writes its own source word. The bit
+        // is read live off the option state this endpoint shares with its
+        // socket, so a `setsockopt` after publication reaches the screen.
+        if let Some(chosen) = chosen {
+            crate::transparent::screen_v4_socket_source(endpoint.net_ns(), chosen, dst,
+                bound.is_some(), endpoint.ip_opts.nonlocal(), state.hdrincl)?;
+        }
         let (mtu, df, may_fragment) = self.ipv4_route_pmtu_policy(
             endpoint.net_ns(), route, route_dst, iface.mtu(), options.pmtudisc,
         );

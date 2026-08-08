@@ -18,9 +18,12 @@ pub const CLOCK_BOOTTIME_ALARM:     i32 = 9;
 /// 10 is `CLOCK_SGI_CYCLE`, removed from `posix_clocks[]` — Linux EINVALs it.
 pub const CLOCK_TAI:                i32 = 11;
 
-/// Linux CPU-clock encoding of negative clock ids.
-const CPUCLOCK_PERTHREAD_MASK: i32 = 4;
+/// Linux CPU-clock encoding of negative clock ids. Bits `[2]` scope,
+/// `[1:0]` measure, `[31:3]` the one's-complement pid.
+pub const CPUCLOCK_PERTHREAD_MASK: i32 = 4;
 const CPUCLOCK_CLOCK_MASK:     i32 = 3;
+/// Bit position the encoded pid starts at (`clockid_to_fd` shifts by this).
+const CPUCLOCK_PID_SHIFT:      u32 = 3;
 const CPUCLOCK_PROF:           i32 = 0;
 const CPUCLOCK_VIRT:           i32 = 1;
 const CPUCLOCK_SCHED:          i32 = 2;
@@ -58,6 +61,9 @@ pub struct CpuClock {
     pub target: u32,
     pub per_thread: bool,
     pub measure: CpuMeasure,
+    /// [`ClockSpec::CpuEncoded::dynamic`], carried through resolution so the
+    /// callback-presence tables answer the same way before and after.
+    pub dynamic: bool,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -71,8 +77,19 @@ pub enum ClockSpec {
     RealtimeAlarm,
     BoottimeAlarm,
     Tai,
-    /// Negative CPU-clock encoding not yet resolved against the task registry.
-    CpuEncoded { pid: u32, per_thread: bool, measure: CpuMeasure },
+    /// CPU clock not yet resolved against the task registry.
+    ///
+    /// `dynamic` is the CLOCK-ID PROVENANCE, and it is a distinct capability
+    /// table, not a cosmetic tag. A CPU clock reaches this kernel two ways: as
+    /// one of the two STATIC ids (`CLOCK_PROCESS_CPUTIME_ID`,
+    /// `CLOCK_THREAD_CPUTIME_ID`), or as a NEGATIVE encoding minted by
+    /// `clock_getcpuclockid(2)`/`pthread_getcpuclockid(3)`. The static pair are
+    /// their own table entries with a NARROWER callback set than the encoded
+    /// form: neither can be set, and the static per-thread id cannot sleep.
+    /// Both static ids also name the caller (pid 0), so without this bit they
+    /// are indistinguishable from an encoding naming pid 0 — and the two must
+    /// answer differently. See [`settable`] and [`nsleep_supported`].
+    CpuEncoded { pid: u32, per_thread: bool, measure: CpuMeasure, dynamic: bool },
     Cpu(CpuClock),
     /// `CLOCKFD` dynamic POSIX clock (a `/dev/ptpN` character device fd).
     Dynamic,
@@ -90,6 +107,28 @@ fn cpu_measure(which: i32) -> CpuMeasure {
     }
 }
 
+/// `make_process_cpuclock` / `make_thread_cpuclock` — the inverse of
+/// [`classify_clock`]'s negative arm, and the single owner of the encoding so
+/// no caller has to open-code the shift and the scope bit. `Invalid` produces
+/// the reserved measure `clockid_to_kclock` rejects.
+/// # C: O(1)
+pub const fn encode_cpu_clock(pid: u32, per_thread: bool, measure: CpuMeasure) -> i32 {
+    let which = match measure {
+        CpuMeasure::Prof  => CPUCLOCK_PROF,
+        CpuMeasure::Virt  => CPUCLOCK_VIRT,
+        CpuMeasure::Sched => CPUCLOCK_SCHED,
+        CpuMeasure::Invalid => CPUCLOCK_CLOCK_MASK,
+    };
+    ((!pid as i32) << CPUCLOCK_PID_SHIFT)
+        | if per_thread { CPUCLOCK_PERTHREAD_MASK } else { 0 }
+        | which
+}
+
+/// `make_clockid(fd)` — the dynamic POSIX-clock encoding of a `/dev/ptpN`
+/// descriptor, inverse of [`classify_clock`]'s [`ClockSpec::Dynamic`] arm.
+/// # C: O(1)
+pub const fn encode_clockfd(fd: i32) -> i32 { ((!fd) << CPUCLOCK_PID_SHIFT) | CLOCKFD }
+
 /// Decode one raw `clockid_t`, `clockid_to_kclock()` semantics: a negative id
 /// is either a `CLOCKFD` dynamic clock or a CPU clock; a positive id outside
 /// `posix_clocks[]` (and the NULL slot 10) is EINVAL.
@@ -99,9 +138,9 @@ pub fn classify_clock(id: i32) -> Result<ClockSpec, ClockError> {
         CLOCK_REALTIME           => Ok(ClockSpec::Realtime),
         CLOCK_MONOTONIC          => Ok(ClockSpec::Monotonic),
         CLOCK_PROCESS_CPUTIME_ID => Ok(ClockSpec::CpuEncoded {
-            pid: 0, per_thread: false, measure: CpuMeasure::Sched }),
+            pid: 0, per_thread: false, measure: CpuMeasure::Sched, dynamic: false }),
         CLOCK_THREAD_CPUTIME_ID  => Ok(ClockSpec::CpuEncoded {
-            pid: 0, per_thread: true, measure: CpuMeasure::Sched }),
+            pid: 0, per_thread: true, measure: CpuMeasure::Sched, dynamic: false }),
         CLOCK_MONOTONIC_RAW      => Ok(ClockSpec::MonotonicRaw),
         CLOCK_REALTIME_COARSE    => Ok(ClockSpec::RealtimeCoarse),
         CLOCK_MONOTONIC_COARSE   => Ok(ClockSpec::MonotonicCoarse),
@@ -112,12 +151,13 @@ pub fn classify_clock(id: i32) -> Result<ClockSpec, ClockError> {
         _ if id < 0 => {
             if id & CLOCKFD_MASK == CLOCKFD { return Ok(ClockSpec::Dynamic); }
             let measure = cpu_measure(id & CPUCLOCK_CLOCK_MASK);
-            let pid = !(id >> 3);
+            let pid = !(id >> CPUCLOCK_PID_SHIFT);
             if pid < 0 { return Err(ClockError::Invalid); }
             Ok(ClockSpec::CpuEncoded {
                 pid: pid as u32,
                 per_thread: id & CPUCLOCK_PERTHREAD_MASK != 0,
                 measure,
+                dynamic: true,
             })
         }
         _ => Err(ClockError::Invalid),
@@ -157,12 +197,20 @@ pub fn getres_ns(clock: ClockSpec) -> Result<u64, ClockError> {
     })
 }
 
-/// Whether `clock_settime` has a `k_clock::clock_set` callback. Only
-/// CLOCK_REALTIME and the CPU clocks do; the CPU setter exists solely to
-/// return EPERM after validating the target.
+/// Whether `clock_settime` has a `k_clock::clock_set` callback. CLOCK_REALTIME
+/// has one; so does the DYNAMIC CPU-clock encoding, whose setter exists solely
+/// to return EPERM after validating the target. The two STATIC CPU ids have
+/// their own narrower table entries carrying no setter at all, so
+/// `clock_settime(CLOCK_PROCESS_CPUTIME_ID)` / `(CLOCK_THREAD_CPUTIME_ID)` is
+/// EINVAL — not the EPERM the encoded form gives.
 /// # C: O(1)
 pub fn settable(clock: ClockSpec) -> bool {
-    matches!(clock, ClockSpec::Realtime | ClockSpec::CpuEncoded { .. } | ClockSpec::Cpu(_))
+    match clock {
+        ClockSpec::Realtime => true,
+        ClockSpec::CpuEncoded { dynamic, .. } => dynamic,
+        ClockSpec::Cpu(cpu) => cpu.dynamic,
+        _ => false,
+    }
 }
 
 /// Whether `clock_adjtime` has a `k_clock::clock_adj` callback. Only
@@ -201,32 +249,21 @@ pub fn needs_wake_alarm(clock: ClockSpec) -> bool {
 }
 
 /// Whether `clock_nanosleep` has a `k_clock::nsleep` callback.
+///
+/// The STATIC per-thread id is the one CPU clock with NO sleep callback, so it
+/// is EOPNOTSUPP. Every other CPU clock — the static process id and both
+/// dynamic encodings — has one and sleeps; a dynamic PER-THREAD encoding that
+/// names the caller (pid 0, or the caller's own pid) is then rejected inside
+/// that callback with EINVAL, which is [`super::cpu_nanosleep::names_self`]'s
+/// job, not this table's. The two answers differ, which is why the spec must
+/// carry `dynamic`.
 /// # C: O(1)
 pub fn nsleep_supported(clock: ClockSpec) -> bool {
     match clock {
         ClockSpec::MonotonicRaw | ClockSpec::RealtimeCoarse
         | ClockSpec::MonotonicCoarse | ClockSpec::Dynamic => false,
-        // The STATIC ids map to `clock_process` (has `.nsleep`) and
-        // `clock_thread` (has none -> EOPNOTSUPP).
-        ClockSpec::Cpu(cpu) => !cpu.per_thread,
-        // Encoded CPU clocks cover TWO Linux cases that this representation
-        // cannot tell apart, because `classify_clock` maps the static
-        // CLOCK_THREAD_CPUTIME_ID to `CpuEncoded { pid: 0, per_thread: true }`
-        // — the same value a DYNAMIC per-thread clock naming pid 0 produces.
-        // Linux separates them by k_clock table: the static id reaches
-        // `clock_thread`, which has no `.nsleep` -> EOPNOTSUPP,
-        // while a dynamic id reaches
-        // `clock_posix_cpu`, which does have one and then rejects a
-        // self-naming clock with EINVAL.
-        //
-        // pid 0 is resolved in favour of the STATIC reading, since
-        // CLOCK_THREAD_CPUTIME_ID is the reachable case and EOPNOTSUPP is its
-        // correct answer; a dynamic per-thread clock naming ANOTHER thread is
-        // supported and sleeps for real. The residual divergence is a dynamic
-        // per-thread clock naming pid 0, which reports EOPNOTSUPP where Linux
-        // reports EINVAL — it needs the clock spec to carry static-vs-dynamic
-        // provenance to fix.
-        ClockSpec::CpuEncoded { pid, per_thread, .. } => !per_thread || pid != 0,
+        ClockSpec::Cpu(cpu) => cpu.dynamic || !cpu.per_thread,
+        ClockSpec::CpuEncoded { per_thread, dynamic, .. } => dynamic || !per_thread,
         _ => true,
     }
 }
@@ -235,8 +272,9 @@ pub fn nsleep_supported(clock: ClockSpec) -> bool {
 mod tests {
     use super::*;
 
-    fn encoded(pid: u32, per_thread: bool, measure: i32) -> i32 {
-        ((!pid as i32) << 3) | if per_thread { CPUCLOCK_PERTHREAD_MASK } else { 0 } | measure
+    use CpuMeasure::{Prof, Sched, Virt};
+    const fn encoded(pid: u32, per_thread: bool, measure: CpuMeasure) -> i32 {
+        encode_cpu_clock(pid, per_thread, measure)
     }
 
     #[test]
@@ -251,9 +289,9 @@ mod tests {
         assert_eq!(classify_clock(CLOCK_BOOTTIME_ALARM), Ok(ClockSpec::BoottimeAlarm));
         assert_eq!(classify_clock(CLOCK_TAI), Ok(ClockSpec::Tai));
         assert_eq!(classify_clock(CLOCK_PROCESS_CPUTIME_ID), Ok(ClockSpec::CpuEncoded {
-            pid: 0, per_thread: false, measure: CpuMeasure::Sched }));
+            pid: 0, per_thread: false, measure: CpuMeasure::Sched, dynamic: false }));
         assert_eq!(classify_clock(CLOCK_THREAD_CPUTIME_ID), Ok(ClockSpec::CpuEncoded {
-            pid: 0, per_thread: true, measure: CpuMeasure::Sched }));
+            pid: 0, per_thread: true, measure: CpuMeasure::Sched, dynamic: false }));
         assert_eq!(classify_clock(10), Err(ClockError::Invalid), "CLOCK_SGI_CYCLE slot is NULL");
         assert_eq!(classify_clock(12), Err(ClockError::Invalid));
         assert_eq!(classify_clock(i32::MAX), Err(ClockError::Invalid));
@@ -263,15 +301,58 @@ mod tests {
     fn negative_ids_split_between_clockfd_and_cpu_encodings() {
         // clockid_to_fd(id) == ~(id >> 3); CLOCKFD ids end in CLOCKFD_MASK == 3.
         assert_eq!(classify_clock((!3i32 << 3) | CLOCKFD), Ok(ClockSpec::Dynamic));
-        assert_eq!(classify_clock(encoded(42, true, CPUCLOCK_VIRT)), Ok(ClockSpec::CpuEncoded {
-            pid: 42, per_thread: true, measure: CpuMeasure::Virt }));
-        assert_eq!(classify_clock(encoded(7, false, CPUCLOCK_PROF)), Ok(ClockSpec::CpuEncoded {
-            pid: 7, per_thread: false, measure: CpuMeasure::Prof }));
-        assert_eq!(classify_clock(encoded(1, false, CPUCLOCK_SCHED)), Ok(ClockSpec::CpuEncoded {
-            pid: 1, per_thread: false, measure: CpuMeasure::Sched }));
+        assert_eq!(classify_clock(encoded(42, true, Virt)), Ok(ClockSpec::CpuEncoded {
+            pid: 42, per_thread: true, measure: CpuMeasure::Virt, dynamic: true }));
+        assert_eq!(classify_clock(encoded(7, false, Prof)), Ok(ClockSpec::CpuEncoded {
+            pid: 7, per_thread: false, measure: CpuMeasure::Prof, dynamic: true }));
+        assert_eq!(classify_clock(encoded(1, false, Sched)), Ok(ClockSpec::CpuEncoded {
+            pid: 1, per_thread: false, measure: CpuMeasure::Sched, dynamic: true }));
         assert_eq!(classify_clock(-1), Ok(ClockSpec::CpuEncoded {
-            pid: 0, per_thread: true, measure: CpuMeasure::Invalid }),
+            pid: 0, per_thread: true, measure: CpuMeasure::Invalid, dynamic: true }),
             "CPUCLOCK_WHICH >= CPUCLOCK_MAX is rejected by pid_for_clock, not the decode");
+    }
+
+    /// The static ids and an encoding naming pid 0 carry the SAME pid,
+    /// per-thread and measure — provenance is the only thing telling them
+    /// apart, and it changes two answers.
+    #[test]
+    fn static_and_dynamic_cpu_clocks_are_distinguishable_and_answer_differently() {
+        let static_thread = classify_clock(CLOCK_THREAD_CPUTIME_ID).unwrap();
+        let static_process = classify_clock(CLOCK_PROCESS_CPUTIME_ID).unwrap();
+        let dyn_thread_self = classify_clock(encoded(0, true, Sched)).unwrap();
+        let dyn_process_self = classify_clock(encoded(0, false, Sched)).unwrap();
+        assert_ne!(static_thread, dyn_thread_self,
+            "same pid/per_thread/measure — only provenance separates them");
+        assert_ne!(static_process, dyn_process_self);
+
+        // No setter on either static entry; the encoded form has one, which is
+        // what turns an EINVAL into the validate-then-EPERM path.
+        assert!(!settable(static_thread));
+        assert!(!settable(static_process));
+        assert!(settable(dyn_thread_self));
+        assert!(settable(dyn_process_self));
+        assert!(settable(classify_clock(encoded(9, false, Prof)).unwrap()));
+
+        // Only the static per-thread entry lacks a sleep callback. The dynamic
+        // per-thread clock naming the caller HAS one and is refused later with
+        // EINVAL instead.
+        assert!(!nsleep_supported(static_thread));
+        assert!(nsleep_supported(static_process));
+        assert!(nsleep_supported(dyn_thread_self));
+        assert!(nsleep_supported(dyn_process_self));
+        assert!(nsleep_supported(classify_clock(encoded(9, true, Sched)).unwrap()));
+    }
+
+    /// Provenance survives resolution, so a resolved spec answers as its
+    /// encoding did.
+    #[test]
+    fn resolution_carries_provenance() {
+        let cpu = |dynamic| ClockSpec::Cpu(CpuClock {
+            target: 7, per_thread: true, measure: CpuMeasure::Sched, dynamic });
+        assert!(!settable(cpu(false)));
+        assert!(settable(cpu(true)));
+        assert!(!nsleep_supported(cpu(false)));
+        assert!(nsleep_supported(cpu(true)));
     }
 
     #[test]
@@ -288,7 +369,7 @@ mod tests {
             assert_eq!(getres_ns(classify_clock(id).unwrap()), Ok(HRTIMER_RES_NS),
                 "PROCESS/THREAD_CPUTIME_ID are CPUCLOCK_SCHED -> 1ns");
         }
-        assert_eq!(getres_ns(classify_clock(encoded(9, false, CPUCLOCK_PROF)).unwrap()),
+        assert_eq!(getres_ns(classify_clock(encoded(9, false, Prof)).unwrap()),
             Ok(TICK_NSEC), "non-SCHED CPU clocks report (NSEC_PER_SEC + HZ - 1) / HZ");
         assert_eq!(getres_ns(ClockSpec::Dynamic), Err(ClockError::Invalid));
     }
@@ -302,7 +383,8 @@ mod tests {
         {
             assert!(!settable(clock), "only clock_realtime and the CPU clocks set");
         }
-        assert!(settable(classify_clock(CLOCK_PROCESS_CPUTIME_ID).unwrap()));
+        assert!(!settable(classify_clock(CLOCK_PROCESS_CPUTIME_ID).unwrap()),
+            "the static CPU ids have no setter — EINVAL, not EPERM");
         for clock in [ClockSpec::MonotonicRaw, ClockSpec::RealtimeCoarse,
             ClockSpec::MonotonicCoarse, ClockSpec::Dynamic]
         {

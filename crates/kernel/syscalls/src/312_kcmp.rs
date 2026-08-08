@@ -92,11 +92,13 @@ pub fn sys_kcmp(args: &SyscallArgs) -> i64 {
         // NULL — exactly what Linux reports for two tasks that never entered
         // an io-context-allocating scheduler.
         abi::KCMP_IO => opt_cmp(None, None),
-        // Linux `task->sysvsem.undo_list`. oxide keys the undo list on the
-        // thread-group id (`ipc::sysv::sem::undo`), so an identical tgid IS an
-        // identical undo list.
-        abi::KCMP_SYSVSEM => ptr_cmp(t1.tgid.load(Ordering::Acquire) as usize,
-                                     t2.tgid.load(Ordering::Acquire) as usize),
+        // Linux `task->sysvsem.undo_list` — the handle itself, which is what
+        // `CLONE_SYSVSEM` shares. Answering from the thread-group id instead
+        // reported two threads of one process as sharing a list even when
+        // neither had ever registered an adjustment, and reported a
+        // `clone(CLONE_SYSVSEM)` child that genuinely shares one as different.
+        abi::KCMP_SYSVSEM => ptr_cmp(t1.sysvsem_undo.load(Ordering::Acquire) as usize,
+                                     t2.sysvsem_undo.load(Ordering::Acquire) as usize),
         abi::KCMP_EPOLL_TFD => epoll_tfd::compare(&t1, &t2, idx1, idx2),
         _ => errno(Errno::Einval),
     }
