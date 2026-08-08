@@ -30,7 +30,7 @@ pub fn user_fault_handler(vec: u64, err: u64, _rip: u64, cr2: u64) -> bool {
                 // with its `_sigfault` record. Reporting every one as a
                 // terminating SIGSEGV made a handled SIGFPE unhandleable.
                 signal::trace_user_fault_x86(vec, err, _rip, cr2);
-                return force_user_fault_x86(vec, err, _rip, cr2);
+                return force_user_fault_x86(vec, err, _rip, cr2, None);
             }
         }
         return false;
@@ -87,21 +87,23 @@ pub fn user_fault_handler(vec: u64, err: u64, _rip: u64, cr2: u64) -> bool {
     // access that faulted was issued at CPL=3. Kernel-mode faults on a user VA
     // (uaccess, exec's direct stack pushes) clear it, and a
     // `UFFD_USER_MODE_ONLY` context refuses to intercept those.
-    if handle(cr2, kind, err & 0x4 != 0) {
-        return true;
-    }
+    let failure = match handle(cr2, kind, err & 0x4 != 0) {
+        Ok(())   => return true,
+        Err(f)   => f,
+    };
     // debug-cow probe 2: the fault is now fatal (the demand-page resolver
     // refused it). Dump the failing VA + VMA + PTE/frame before SIGSEGV.
     #[cfg(feature = "debug-cow")]
     segv_dump(_rip, cr2, err);
     // Unhandled fault from user mode. Linux `bad_area` -> `force_sig_fault`:
-    // queue the classified signal (SEGV_MAPERR for an absent mapping,
-    // SEGV_ACCERR for a protection violation) against this thread and return
-    // to the vector epilogue, whose return-to-user work loop delivers it
-    // through the ONE signal path.
+    // queue the signal the RESOLVER's reason earns — a hardware-classified
+    // SIGSEGV (SEGV_MAPERR / SEGV_ACCERR / SEGV_PKUERR) for an absent or
+    // forbidden mapping, SIGBUS/BUS_ADRERR for a mapping whose backing could
+    // not supply the page, and no signal at all for the out-of-memory and
+    // retry reasons, which resume userspace so the instruction re-faults.
     if err & 0x4 != 0 {
         signal::trace_user_fault_x86(vec, err, _rip, cr2);
-        return force_user_fault_x86(vec, err, _rip, cr2);
+        return force_user_fault_x86(vec, err, _rip, cr2, Some(failure));
     }
     false
 }
@@ -117,9 +119,10 @@ pub fn user_fault_handler(esr: u64, far: u64, _elr: u64) -> bool {
     // LOWER exception level (EL0 user); 0x21/0x25 are the same-EL (kernel
     // uaccess) forms, which clear the flag.
     let user_mode = matches!((esr >> 26) & 0x3F, 0x20 | 0x24);
-    if handle(far, kind, user_mode) {
-        return true;
-    }
+    let failure = match handle(far, kind, user_mode) {
+        Ok(())  => return true,
+        Err(f)  => f,
+    };
     #[cfg(feature = "debug-displaystack")]
     if let Some(cur) = sched::live::current() {
         // SAFETY: the synchronous EL0 fault runs against the current task;
@@ -183,7 +186,7 @@ pub fn user_fault_handler(esr: u64, far: u64, _elr: u64) -> bool {
     let ec = (esr >> 26) & 0x3F;
     if matches!(ec, 0x20 | 0x24) {
         signal::trace_user_fault_arm(esr, far, _elr);
-        return force_user_fault_arm(esr, far, _elr);
+        return force_user_fault_arm(esr, far, _elr, Some(failure));
     }
     false
 }
@@ -191,12 +194,20 @@ pub fn user_fault_handler(esr: u64, far: u64, _elr: u64) -> bool {
 /// Falls back to the global AS for boot-time faults that arrive
 /// before any task is current (e.g. the demand-page smoke). Allocates
 /// a PMM frame and installs the leaf via per-arch MmuOps; flushes
-/// the faulting VA's TLB. Returns true to retry, false to halt.
-fn handle(va_raw: u64, fault: FaultKind, user_mode: bool) -> bool {
+/// the faulting VA's TLB.
+///
+/// `Ok(())` = the leaf is installed, retry the instruction. `Err(f)` names WHY
+/// the fault could not be resolved, so the caller can report the signal that
+/// reason earns (`vmm::fault_signal`) instead of guessing from the hardware
+/// error code alone.
+/// # C: O(log N_vmas) + O(walk depth)
+fn handle(va_raw: u64, fault: FaultKind, user_mode: bool)
+    -> Result<(), vmm::fault_signal::FaultFailure>
+{
     let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
     let uva = match UserVirtAddr::new(va_raw) {
         Some(u) => u,
-        None    => return false,
+        None    => return Err(vmm::fault_signal::FaultFailure::BadArea),
     };
     // DIAG (debug-atexit): the File fill installs lib-arena writable pages
     // READ-ONLY, so the FIRST write to a correctly-filled library page arrives
@@ -354,8 +365,16 @@ fn handle(va_raw: u64, fault: FaultKind, user_mode: bool) -> bool {
             #[cfg(target_arch = "aarch64")]
             // SAFETY: tlbi vae1is invalidates the just-mapped VA so the faulting instruction's retry walks the new PTE; privileged but legal at EL1.
             unsafe { <hal_aarch64::mmu_ops::ArmMmu as hal::MmuOps>::flush_va(hal::Va(va_raw)); }
-            true
+            Ok(())
         }
-        _ => false,
+        // The resolver's reason survives to the caller. Collapsing it to a
+        // bare bool made a mapping whose backing could not be read
+        // indistinguishable from an address with no mapping at all, so the
+        // signal had to be guessed from the hardware error code — and a failed
+        // file fill was reported as a segmentation fault.
+        Some(Err(e)) => Err(vmm::fault_signal::failure_of(e)),
+        // No mm, or an address outside the user range: there is nothing this
+        // fault could have been resolved against.
+        None => Err(vmm::fault_signal::FaultFailure::BadArea),
     }
 }

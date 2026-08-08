@@ -27,12 +27,20 @@
 /// which is what lets the work loop run. The signal is already pending, so
 /// either a handler frame is built or the SIG_DFL fatal action ends the group;
 /// neither outcome comes back here.
+///
+/// `failure` is the demand-page resolver's reason, present for a `#PF` the
+/// resolver refused and absent for a trap that never reached it. The hardware
+/// status word cannot tell an absent mapping from a mapping whose backing
+/// could not supply the page, so the reason — not the error code — picks the
+/// signal (`vmm::fault_signal`).
 /// # C: O(1)
 #[cfg(target_arch = "x86_64")]
-pub fn force_user_fault_x86(vec: u64, err: u64, pc: u64, cr2: u64) -> bool {
+pub fn force_user_fault_x86(vec: u64, err: u64, pc: u64, cr2: u64,
+                            failure: Option<vmm::fault_signal::FaultFailure>) -> bool {
     use hal::fault_class::x86_64 as fc;
-    let (cls, addr) = if vec == fc::TRAP_PF { (fc::page_fault(err), cr2) }
-                      else { (fc::trap(vec), fc::trap_addr(vec, pc)) };
+    let (arch_cls, addr) = if vec == fc::TRAP_PF { (fc::page_fault(err), cr2) }
+                           else { (fc::trap(vec), fc::trap_addr(vec, pc)) };
+    let Some(cls) = resolver_signal(failure, arch_cls) else { return true; };
     let fp = hal_x86_64::current_fault_frame();
     // SAFETY: stub-built PtRegs on the kernel stack; read-only, and the stub does not pop it until the Rust dispatcher returns, so the slot is live here.
     let sp = if fp.is_null() { 0 } else { unsafe { (*fp).rsp } };
@@ -42,12 +50,15 @@ pub fn force_user_fault_x86(vec: u64, err: u64, pc: u64, cr2: u64) -> bool {
 }
 
 /// aarch64 form. `esr` is ESR_EL1, `far` FAR_EL1 (the faulting address for the
-/// abort classes) and `elr` the faulting PC.
+/// abort classes) and `elr` the faulting PC. `failure` carries the same
+/// resolver reason as the x86 form and is consulted through the same one
+/// mapping — the two architectures do not each own a copy of this decision.
 /// # C: O(1)
 #[cfg(target_arch = "aarch64")]
-pub fn force_user_fault_arm(esr: u64, far: u64, elr: u64) -> bool {
+pub fn force_user_fault_arm(esr: u64, far: u64, elr: u64,
+                            failure: Option<vmm::fault_signal::FaultFailure>) -> bool {
     use hal::fault_class::aarch64 as fc;
-    let cls = fc::sync(esr);
+    let Some(cls) = resolver_signal(failure, fc::sync(esr)) else { return true; };
     // The abort classes report FAR_EL1; every other synchronous EL0 exception
     // (BRK, illegal state, FP) names the instruction that raised it.
     let addr = if fc::from_el0(esr) || matches!(fc::ec(esr), fc::EC_PC_ALIGN | fc::EC_SP_ALIGN)
@@ -60,6 +71,39 @@ pub fn force_user_fault_arm(esr: u64, far: u64, elr: u64) -> bool {
     raise(cls, addr);
     true
 }
+
+/// Fold the resolver's failure reason into the hardware classification.
+///
+/// `None` in, `Some(arch)` out: a synchronous trap that never went through the
+/// demand-page resolver (`#UD`, `#DE`, a BRK) is classified by the
+/// architecture alone. `Some(reason)` in: the ONE mapping in
+/// `vmm::fault_signal` decides, and it may answer `None` — no signal, resume
+/// userspace, re-take the fault. Both architectures call this; neither owns a
+/// second copy of the mapping.
+/// # C: O(1)
+fn resolver_signal(failure: Option<vmm::fault_signal::FaultFailure>,
+                   arch: hal::fault_class::FaultSignal)
+    -> Option<hal::fault_class::FaultSignal>
+{
+    let sig = match failure {
+        None    => Some(arch),
+        Some(f) => vmm::fault_signal::signal_for(f, arch),
+    };
+    // An out-of-memory fault raises no signal and re-takes the instruction, on
+    // the contract that the memory-pressure path has already posted a fatal
+    // signal on its chosen victim. If it did not, the instruction re-faults
+    // forever — so say so once, or a hang looks like a wedge with no cause.
+    if matches!(failure, Some(vmm::fault_signal::FaultFailure::Oom))
+        && !OOM_FAULT_REPORTED.swap(true, core::sync::atomic::Ordering::Relaxed) {
+        klog::write_raw(b"[FAULT] out of memory resolving a user fault; re-taking\n");
+    }
+    sig
+}
+
+/// One-shot latch for the out-of-memory fault report above: the retry re-enters
+/// this path on every re-fault, and an unbounded log would bury the console.
+static OOM_FAULT_REPORTED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
 
 /// Resolve the mapping covering `ip` in the faulting task's own mm, for the
 /// unhandled-fault report's `print_vma_addr` tail. `None` when there is no
