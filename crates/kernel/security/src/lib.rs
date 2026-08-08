@@ -19,6 +19,10 @@
 // nothing is hidden: real dead code still surfaces on `xtask kernel`.
 #![cfg_attr(not(target_os = "oxide-kernel"), allow(dead_code))]
 extern crate alloc;
+// Hosted tests only: the bottom-half exclusion contract in `network` is pinned
+// against a second OS thread, which needs `std::thread`.
+#[cfg(test)]
+extern crate std;
 
 mod anon_dname;
 pub mod seccomp;
