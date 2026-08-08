@@ -178,7 +178,7 @@ pub(super) fn log_submit_failure(
 
 /// Feature bits we ask the device for. `VIRTIO_BLK_F_FLUSH` is what makes
 /// `VIRTIO_BLK_T_FLUSH` a legal request at all (Virtio 1.2 §5.2.6) and is in
-/// Linux's `features[]` for exactly that reason (`virtio_blk.c:1669-1676`).
+/// the reference's requested feature set for exactly that reason.
 /// Without it negotiated the device may answer every barrier `S_UNSUPP`, so a
 /// journal commit that believes it fenced its writes has not.
 const WANTED_FEATURES: u64 =

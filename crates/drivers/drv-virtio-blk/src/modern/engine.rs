@@ -588,7 +588,7 @@ impl BlockDevice for BlkState {
     }
 }
 
-/// `virtblk_result` (Linux `virtio_blk.c:107-118`): `S_UNSUPP` is
+/// The reference's status mapping: `S_UNSUPP` is
 /// `BLK_STS_NOTSUPP`, not an I/O error. Collapsing both into `Eio` is what made
 /// a flush issued against an un-negotiated `F_FLUSH` indistinguishable from a
 /// real media failure. # C: O(1)

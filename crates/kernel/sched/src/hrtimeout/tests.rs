@@ -51,7 +51,7 @@ fn pop_yields_expiries_in_soft_order_and_stops_at_the_first_not_due() {
     assert!(queue.is_empty());
 }
 
-/// Linux `hrtimer.c:2093`: the sweep fires everything already SOFT-due at the
+/// The reference's sweep fires everything already SOFT-due at the
 /// interrupt raised by the earliest HARD expiry. That is the coalescing — one
 /// interrupt, N wakeups.
 #[test]
@@ -131,8 +131,8 @@ fn a_realtime_task_gets_zero_slack_at_every_timeout_length() {
     assert_eq!(estimate_accuracy(1_000_000 * MS, 0, true), 0);
 }
 
-/// An expiry already in the past must not be programmed: Linux
-/// `tick-sched.c:833-838` — re-arming at minimal delta for an expired timer is
+/// An expiry already in the past must not be programmed: re-arming at the
+/// minimal delta for an already-expired timer is
 /// "Lather, rinse and repeat", i.e. an interrupt storm.
 #[test]
 fn an_already_due_expiry_does_not_reprogram_the_hardware() {

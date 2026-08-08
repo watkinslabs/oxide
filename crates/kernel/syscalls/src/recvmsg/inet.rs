@@ -218,7 +218,7 @@ where F: FnMut(usize, &[u8]) -> Result<usize, i64>
         if nonblock { return if total != 0 { Ok(total) } else { Err(err(Errno::Eagain)) }; }
         // Linux `tcp_recvmsg_locked`:
         // `copied = sock_intr_errno(timeo)` on the nothing-copied arm, while a
-        // partial transfer breaks out and returns the count (`tcp.c:2735-2742`).
+        // partial transfer breaks out and returns the count.
         if sched::live::deliverable_signals_self() != 0 {
             super::rx_trace::event(b"intr");
             return crate::net_errno::recv_interrupted(deadline, total);

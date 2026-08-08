@@ -61,7 +61,7 @@ pub(super) extern "C" fn prepare_to_wait_event(w: *mut LinuxWaitQueueHead, e: *m
     let cell = if w.is_null() { None } else { Some(wait_cell(w as usize, WAIT_QUEUE)) };
     let gate = cell.map(|c| c.gate.lock());
     // `signal_pending_state(state, current)`: bail BEFORE enqueueing, exactly
-    // as `wait.c:295-309` does, so a caller that never parks still sees the
+    // as the reference does, so a caller that never parks still sees the
     // restart.
     if let Some(wait_state) = wait_state_for(state) {
         if signal_pending_state_current(wait_state) {

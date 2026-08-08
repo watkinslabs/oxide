@@ -81,7 +81,7 @@ pub fn list_modules_precheck(flags: u32) -> Result<(), Errno> {
     Ok(())
 }
 
-/// `total_size = lsm_active_cnt * sizeof(*ids)` (`lsm_syscalls.c:108`) — the
+/// The active-module count times one id — the
 /// byte count written back through `size` on EVERY path, success or E2BIG.
 /// # C: O(1)
 pub const fn list_modules_total_size() -> u32 {

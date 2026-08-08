@@ -192,8 +192,8 @@ mod cache_mode_tests {
 
     /// `S_UNSUPP` and `S_IOERR` are DIFFERENT device answers and must stay
     /// distinguishable — collapsing them is what made the un-negotiated flush
-    /// undiagnosable from the guest (`virtio_blk.c:113` maps `S_UNSUPP` to
-    /// `BLK_STS_NOTSUPP`, `S_IOERR` to `BLK_STS_IOERR`). # C: O(1)
+    /// undiagnosable from the guest (the reference maps `S_UNSUPP` to a
+    /// not-supported status and `S_IOERR` to an I/O error status). # C: O(1)
     #[test]
     fn status_bytes_stay_distinct() {
         assert_eq!(decode_status(VIRTIO_BLK_S_OK), Ok(()));

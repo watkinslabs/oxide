@@ -93,7 +93,7 @@ fn service_wake(timer: &mut PosixTimer, timer_id: usize, current: &Task, wake: b
     // context, where `registry::lookup` is forbidden (`06§3.1`) and where a
     // failed lookup would silently skip the wake forever.
     let Some(now) = clock::now_ns_for(timer.domain, current) else { return };
-    // Linux `cpu_timer_fire` (`posix-cpu-timers.c:682-688`): a `clock_nanosleep`
+    // As the reference's CPU-timer fire path does: a `clock_nanosleep`
     // timer wakes its sleeper and disarms, rather than queueing a signal. This
     // runs from `account_cpu_tick` on the RUNNING task, which is the only thing
     // that can advance a CPU clock — a sleeping task accrues no CPU time, so a
