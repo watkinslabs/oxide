@@ -26,14 +26,18 @@ fn an_unset_hop_limit_resolves_through_the_route_then_the_default() {
     assert_eq!(get::read(IPV6_UNICAST_HOPS, dgram(), &named), Ok(Value::Int(5)));
 }
 
+// The sticky source this option writes has no read of its own: it is a write
+// and a per-message ancillary type, and the only interface that publishes it
+// back is the receive control message. Its real consumer is source selection
+// on transmit, so answering the read would be the second reader, not the
+// first.
 #[test]
-fn sticky_pktinfo_reads_back_as_an_in6_pktinfo() {
-    let mut pktinfo = [0u8; 20];
-    pktinfo[..16].copy_from_slice(&[0x20, 1, 0x0d, 0xb8, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 9]);
-    pktinfo[16..].copy_from_slice(&7u32.to_ne_bytes());
-    let s = Ipv6GetState { pktinfo, ..state() };
-    assert_eq!(get::read(IPV6_PKTINFO, dgram(), &s), Ok(Value::Bytes(pktinfo.to_vec())));
+fn the_sticky_source_option_has_no_readback() {
+    assert_eq!(get::read(IPV6_PKTINFO, dgram(), &state()), Err(Errno::Enoprotoopt));
+    assert_eq!(get::read(IPV6_PKTINFO, stream(), &state()), Err(Errno::Enoprotoopt));
+    // The ancillary form of the same number stays readable as the receive
+    // personality bit it is.
+    assert!(get::read(IPV6_2292PKTINFO, dgram(), &state()).is_ok());
 }
 
 #[test]
@@ -73,8 +77,14 @@ fn source_preferences_read_back_as_a_complete_set() {
 
 #[test]
 fn automatic_flow_labels_fall_back_to_the_namespace_policy() {
-    let s = Ipv6GetState { default_autoflowlabel: true, ..state() };
+    use super::super::autolabel;
+    // A socket that named no policy publishes the namespace's — and the
+    // compiled namespace policy opts sockets IN, so an untouched socket reads
+    // back 1, not 0.
+    let s = Ipv6GetState { auto_flowlabels: autolabel::DEFAULT_POLICY, ..state() };
     assert_eq!(get::read(IPV6_AUTOFLOWLABEL, dgram(), &s), Ok(Value::Int(1)));
+    let opt_in_ns = Ipv6GetState { auto_flowlabels: autolabel::OPTIN, ..state() };
+    assert_eq!(get::read(IPV6_AUTOFLOWLABEL, dgram(), &opt_in_ns), Ok(Value::Int(0)));
     let named_off = Ipv6GetState { flags: flag::AUTOFLOWLABEL_SET, ..s.clone() };
     assert_eq!(get::read(IPV6_AUTOFLOWLABEL, dgram(), &named_off), Ok(Value::Int(0)));
     let named_on = Ipv6GetState {

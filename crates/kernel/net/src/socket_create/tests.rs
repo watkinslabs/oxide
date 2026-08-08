@@ -138,10 +138,8 @@ fn the_hook_observes_the_renamed_family_the_masked_type_and_the_raw_protocol() {
     const NS: u64 = 792_040;
     let _guard = HookGuard::install(NS, record);
     assert!(plan(AF_INET6, SOCK_DGRAM | SOCK_CLOEXEC, IPPROTO_UDP, env(NS), admitted).is_ok());
-    assert_eq!(seen(), Context {
-        namespace: NS, family: AF_INET6 as u16, socket_type: SOCK_DGRAM,
-        protocol: IPPROTO_UDP, operation: Operation::Create,
-    });
+    assert_eq!(seen(), Context::op(NS, AF_INET6 as u16, SOCK_DGRAM, IPPROTO_UDP,
+        Operation::Create));
     assert!(plan(AF_INET, SOCK_PACKET, 0, privileged(NS), admitted).is_ok());
     assert_eq!(seen().family, AF_PACKET as u16);
     assert_eq!(seen().socket_type, SOCK_PACKET);

@@ -314,7 +314,28 @@ mod tests {
         assert!(accept.contains("vs.listener_for_accept()"));
 
         let setsockopt = include_str!("054_setsockopt/main.rs");
-        assert!(setsockopt.contains("vsock.check_option()"));
+        // A negative `optlen` is EINVAL before the option security decision
+        // runs, on EVERY route through the slot: a module never sees, and can
+        // never allow, a malformed write. Each route is checked in its own
+        // slice of the file, since one route's screen must not stand in for
+        // another's.
+        for (route, decision) in [
+            ("let target = match socket::FilterFile::from_file",
+             "socket_security::option::setsockopt("),
+            ("if let Some(target) = crate::netlink_fd::from_file",
+             "socket_security::option::setsockopt("),
+            ("if let Some(vsock) = vsock_from_file",
+             "vsock.check_option(net::socket_security::option::Access::Set,"),
+            ("let sock = match socket_from_file",
+             "socket_security::option::inet(&sock)"),
+        ] {
+            let tail = &setsockopt[setsockopt.find(route).unwrap()..];
+            let screen = tail.find("if signed_optlen < 0").unwrap();
+            let hook = tail.find(decision).unwrap();
+            assert!(screen < hook,
+                "the negative-length screen precedes the option security decision on {route}");
+        }
+        assert!(setsockopt.contains("vsock.check_option(net::socket_security::option::Access::Set,"));
         assert!(include_str!("054_setsockopt/optval.rs")
             .contains("fn read_i32_required"));
         // Every SOL_SOCKET write goes through the one canonical option table.
@@ -328,7 +349,7 @@ mod tests {
             "the leading int screen precedes option classification");
 
         let getsockopt = include_str!("055_getsockopt.rs");
-        assert!(getsockopt.contains("vsock.check_option()"));
+        assert!(getsockopt.contains("vsock.check_option(net::socket_security::option::Access::Get,"));
         assert!(getsockopt.contains("sol_socket::read(&sock, optname, optval, optlen_p)"));
         assert!(!getsockopt.contains("(SOL_SOCKET, "),
             "no SOL_SOCKET readback arm may live outside the canonical table");

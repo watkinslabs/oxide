@@ -34,15 +34,13 @@ pub struct Ipv6GetState {
     pub min_hopcount: i32,
     pub srcprefs: i32,
     pub frag_size: i32,
-    /// Namespace automatic-flow-label policy, published when the socket named
-    /// none of its own.
-    pub default_autoflowlabel: bool,
+    /// `net.ipv6.auto_flowlabels`, the namespace policy the read resolves
+    /// against when the socket named none of its own.
+    pub auto_flowlabels: i64,
     /// Path MTU of the socket's route, zero when it has none.
     pub mtu: u32,
     /// Sticky extension headers, in slot order.
     pub headers: [Option<Vec<u8>>; Sticky::COUNT],
-    /// `IPV6_PKTINFO`'s `in6_pktinfo` payload: source address then ifindex.
-    pub pktinfo: [u8; 20],
     /// `IPV6_ADDRFORM` reports the family the socket currently carries.
     pub family: i32,
 }
@@ -79,7 +77,6 @@ pub fn read(optname: u64, sock: Ipv6Sock, s: &Ipv6GetState) -> Result<Value, Err
         }
         IPV6_V6ONLY => Value::Int(i32::from(s.v6only)),
         IPV6_RECVPKTINFO => bit(RECVPKTINFO),
-        IPV6_PKTINFO => Value::Bytes(s.pktinfo.to_vec()),
         IPV6_2292PKTINFO => bit(flag::RXOINFO),
         IPV6_RECVHOPLIMIT => bit(RECVHOPLIMIT),
         IPV6_2292HOPLIMIT => bit(flag::RXOHLIM),
@@ -118,10 +115,9 @@ pub fn read(optname: u64, sock: Ipv6Sock, s: &Ipv6GetState) -> Result<Value, Err
         IPV6_ADDR_PREFERENCES => Value::Int(published_prefs(s.srcprefs)),
         IPV6_MINHOPCOUNT => Value::Int(s.min_hopcount),
         IPV6_DONTFRAG => bit(flag::DONTFRAG),
-        IPV6_AUTOFLOWLABEL => Value::Int(i32::from(
-            if s.flags & flag::AUTOFLOWLABEL_SET != 0 {
-                s.flags & flag::AUTOFLOWLABEL != 0
-            } else { s.default_autoflowlabel })),
+        IPV6_AUTOFLOWLABEL => Value::Int(i32::from(super::autolabel::socket_policy(
+            s.flags & flag::AUTOFLOWLABEL_SET != 0,
+            s.flags & flag::AUTOFLOWLABEL != 0, s.auto_flowlabels))),
         IPV6_RECVFRAGSIZE => bit(flag::RECVFRAGSIZE),
         IPV6_ROUTER_ALERT => bit(flag::RTALERT),
         IPV6_ROUTER_ALERT_ISOLATE => bit(flag::RTALERT_ISOLATE),

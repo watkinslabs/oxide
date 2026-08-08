@@ -37,6 +37,9 @@ pub const NET_SYSCTLS: &[Node] = &[
             File("ip_unprivileged_port_start", PerNetIntHook(unprivileged_port_start,
                 set_unprivileged_port_start, Some((0, 65_535)))),
             File("icmp_echo_ignore_all", NetInt(net::net_ns::NetSysctlKey::IcmpEchoIgnoreAll, Some((0, 1)))),
+            // How many sources one IPv4 multicast source filter may name.
+            File("igmp_max_msf",       NetInt(net::net_ns::NetSysctlKey::Ipv4IgmpMaxMsf,
+                Some((0, INT_MAX)))),
             // The group window that admits an ICMP datagram endpoint. The
             // compiled default `1 0` admits nobody; distributions open it at
             // boot so an echo-probe tool needs no capability.
@@ -58,6 +61,14 @@ pub const NET_SYSCTLS: &[Node] = &[
         ]),
         Dir("ipv6", &[
             File("ip_nonlocal_bind",   NetInt(net::net_ns::NetSysctlKey::Ipv6NonlocalBind, Some((0, 1)))),
+            // Whether packets carry a generated flow label: off, opt-out
+            // (the default — sockets are in unless they say otherwise),
+            // opt-in, or forced on every socket.
+            File("auto_flowlabels",    NetInt(net::net_ns::NetSysctlKey::Ipv6AutoFlowLabels,
+                Some((0, net::sock_opts::sol_ipv6::autolabel::MAX_POLICY)))),
+            // The IPv6 source-filter ceiling is global, not per-namespace.
+            File("mld_max_msf",        NetGlobalIntHook(get_mld_max_msf, set_mld_max_msf,
+                Some(net::sysctl::MLD_MAX_MSF_BOUNDS))),
             Dir("conf", &[
                 Dir("all",     &[ File("disable_ipv6", NetInt(net::net_ns::NetSysctlKey::Ipv6DisableAll, Some((0, 1)))) ]),
                 Dir("default", &[ File("disable_ipv6", NetInt(net::net_ns::NetSysctlKey::Ipv6DisableDefault, Some((0, 1)))) ]),

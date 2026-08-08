@@ -33,10 +33,11 @@ impl TcpTxPolicy<'_> {
         }
     }
 
-    fn ipv6_flow_label(&self) -> (u32, bool) {
+    fn ipv6_flow_label(&self, net_ns: u64) -> (u32, bool) {
         match self {
             Self::Entry(entry) => (entry.ipv6_opts.flow_label(),
-                entry.ipv6_opts.flag(crate::sock_opts::sol_ipv6::flag::AUTOFLOWLABEL)),
+                entry.ipv6_opts.generates_flow_label(
+                    crate::sysctl::ipv6_auto_flowlabels_in(net_ns))),
         }
     }
 
@@ -114,7 +115,7 @@ impl NetStack {
                 self.xmit_ipv6_l4_with_policy(
                     iface_id, iface, next_hop, src, dst, IpProto::Tcp, segment,
                     crate::ipv6::IPV6_DEFAULT_HOP_LIMIT, 0,
-                    policy.ipv6_flow_label().0, policy.ipv6_flow_label().1,
+                    policy.ipv6_flow_label(net_ns).0, policy.ipv6_flow_label(net_ns).1,
                     policy.ipv6_source_prefs(), mtu,
                     crate::uapi::ipv6_pmtudisc_allows_fragmentation(mode),
                     Some(policy.owner()), &headers,
@@ -195,7 +196,7 @@ mod tests {
             Endpoint { ip: IpAddr::V6(Ipv6Addr::LOOPBACK), port: 40_006 }, 1));
         entry.ipv6_opts.set_flow_label(0x34567);
         entry.ipv6_opts.set_flag(crate::sock_opts::sol_ipv6::flag::AUTOFLOWLABEL, true);
-        assert_eq!(TcpTxPolicy::Entry(&entry).ipv6_flow_label(), (0x34567, true));
+        assert_eq!(TcpTxPolicy::Entry(&entry).ipv6_flow_label(entry.net_ns()), (0x34567, true));
     }
 
     #[test]

@@ -145,6 +145,14 @@ impl Ipv6Opts {
     /// # C: O(1)
     pub fn flags(&self) -> u64 { self.flags.load(Ordering::Acquire) }
 
+    /// Whether packets from this socket carry a generated flow label under the
+    /// namespace policy — the one decision the transmit paths ask.
+    /// # C: O(1)
+    pub fn generates_flow_label(&self, policy: i64) -> bool {
+        super::autolabel::generates(self.flag(flag::AUTOFLOWLABEL_SET),
+            self.flag(flag::AUTOFLOWLABEL), policy)
+    }
+
     /// # C: O(1)
     pub fn set_flag(&self, bit: u64, on: bool) {
         if on { self.flags.fetch_or(bit, Ordering::AcqRel); }

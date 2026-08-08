@@ -93,6 +93,13 @@ pub enum NetSysctlKey {
     /// `net.ipv6.conf.all.forwarding` — IPv6 transit admission is independent
     /// from the IPv4 router-mode knob.
     Ipv6Forwarding,
+    /// `net.ipv6.auto_flowlabels` — the namespace policy a socket that never
+    /// named one of its own inherits, and the one that can force or forbid
+    /// generation outright (`crate::sock_opts::sol_ipv6::autolabel`).
+    Ipv6AutoFlowLabels,
+    /// `net.ipv4.igmp_max_msf` — how many sources one IPv4 multicast source
+    /// filter may name (`crate::sock_opts::msfilter`).
+    Ipv4IgmpMaxMsf,
 }
 
 /// One slot of a three-value socket-buffer window. # C: O(1)
@@ -114,7 +121,9 @@ impl NetSysctlKey {
     const RMEM_BASE: usize = Self::WMEM_BASE + BufWindow::COUNT;
     const BASE_COUNT: usize = Self::RMEM_BASE + BufWindow::COUNT;
     const IPV6_FORWARDING: usize = Self::BASE_COUNT + Ipv4ConfDev::COUNT * Ipv4ConfKey::COUNT;
-    const COUNT: usize = Self::IPV6_FORWARDING + 1;
+    const IPV6_AUTO_FLOWLABELS: usize = Self::IPV6_FORWARDING + 1;
+    const IPV4_IGMP_MAX_MSF: usize = Self::IPV6_AUTO_FLOWLABELS + 1;
+    const COUNT: usize = Self::IPV4_IGMP_MAX_MSF + 1;
 
     const fn index(self) -> usize {
         match self {
@@ -131,6 +140,8 @@ impl NetSysctlKey {
             Self::Ipv4Conf(dev, key) => Self::BASE_COUNT
                 + dev.index() * Ipv4ConfKey::COUNT + key.index(),
             Self::Ipv6Forwarding => Self::IPV6_FORWARDING,
+            Self::Ipv6AutoFlowLabels => Self::IPV6_AUTO_FLOWLABELS,
+            Self::Ipv4IgmpMaxMsf => Self::IPV4_IGMP_MAX_MSF,
         }
     }
 
@@ -153,6 +164,8 @@ impl NetSysctlKey {
                 Some(slot) => Self::TcpRmem(slot), None => return None,
             },
             Self::IPV6_FORWARDING => Self::Ipv6Forwarding,
+            Self::IPV6_AUTO_FLOWLABELS => Self::Ipv6AutoFlowLabels,
+            Self::IPV4_IGMP_MAX_MSF => Self::Ipv4IgmpMaxMsf,
             _ => {
                 let relative = index - Self::BASE_COUNT;
                 let dev = match Ipv4ConfDev::from_index(relative / Ipv4ConfKey::COUNT) {
@@ -176,6 +189,9 @@ impl NetSysctlKey {
             5 => 7_200,
             11 => crate::tcp_fastopen::TFO_DEFAULT as i64,
             12 => crate::tcp_fastopen::BLACKHOLE_TIMEOUT_DEFAULT,
+            Self::IPV6_AUTO_FLOWLABELS =>
+                crate::sock_opts::sol_ipv6::autolabel::DEFAULT_POLICY,
+            Self::IPV4_IGMP_MAX_MSF => crate::sock_opts::msfilter::DEFAULT_IGMP_MAX_MSF,
             _ if index >= Self::WMEM_BASE && index < Self::RMEM_BASE =>
                 crate::sysctl::DEFAULT_TCP_WMEM[index - Self::WMEM_BASE],
             _ if index >= Self::RMEM_BASE && index < Self::BASE_COUNT =>

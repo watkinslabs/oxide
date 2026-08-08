@@ -1,4 +1,8 @@
-// Canonical security boundary for one socket message transaction.
+// Canonical security boundary for one socket transaction.
+//
+// Module manifest:
+// - this file: the send and receive message decisions.
+// - `option`: the setsockopt/getsockopt decisions, one per direction.
 //
 // Every send and every receive asks exactly one question, in exactly one place:
 // this file. It composes the two modules that answer it — the sandbox, which
@@ -13,6 +17,8 @@
 // snapshot across a batch.
 
 extern crate alloc;
+
+pub mod option;
 
 use alloc::sync::Arc;
 
