@@ -8,7 +8,12 @@ impl InetSocket {
     /// # C: O(1)
     pub fn poll(&self) -> u32 {
         use vfs::{POLL_IN, POLL_OUT, POLL_HUP};
-        let pending = if self.has_pending_recv_error() || self.has_extended_error() { vfs::POLL_ERR } else { 0 };
+        let datagram = matches!(&*self.kind.lock(),
+            SockKind::Udp | SockKind::Raw4(_) | SockKind::Raw6(_) | SockKind::Packet { .. });
+        let pending = crate::socket_error::error_poll_mask(
+            self.has_pending_recv_error(), self.has_extended_error(),
+            self.opts.generic.flag(crate::sock_opts::sol_socket::flag::SELECT_ERR_QUEUE),
+            datagram);
         let packet_ring_ready = self.packet_ring_readable();
         let unix_listener = {
             let kind = self.kind.lock();

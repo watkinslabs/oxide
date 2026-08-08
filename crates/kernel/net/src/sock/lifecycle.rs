@@ -40,6 +40,16 @@ impl InetSocket {
     /// Observe queued Linux extended-error state. # C: O(1)
     pub fn has_extended_error(&self) -> bool { self.error.has_extended() }
 
+    /// Publish the zero-copy completion one send owes its error queue, and
+    /// wake the readers waiting on it. # C: O(1) amortized
+    pub fn complete_zerocopy_send(&self, requested: bool, bytes: usize) {
+        let enabled = self.opts.generic.flag(crate::sock_opts::sol_socket::flag::ZEROCOPY);
+        let v6 = self.family.load(core::sync::atomic::Ordering::Acquire) == crate::sock::AF_INET6;
+        if !crate::socket_error::complete_zerocopy_send(&self.error, enabled, requested, bytes, v6)
+        { return; }
+        self.poll_subs.notify_mask(vfs::POLL_ERR);
+    }
+
     /// Apply SO_BINDTODEVICE atomically with bind and close. # C: O(N_port)
     pub fn set_bound_iface(&self, iface: Option<NetIfaceId>) -> Result<(), NetError> {
         self.set_bound_iface_inner(iface, || {})
