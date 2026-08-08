@@ -326,6 +326,7 @@ impl ThreadGroup {
     /// an `execve` on the target owns the write side.
     /// # C: O(1) uncontended
     /// # Sleeps: yes, while the target is mid-execve
+    #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
     pub unsafe fn exec_update_read(&self) -> crate::rwsem::RwSemReadGuard<'_, ()> {
         // SAFETY: forwarded contract — the caller guarantees process context with no spinlock held.
         unsafe { self.exec_update.read() }
