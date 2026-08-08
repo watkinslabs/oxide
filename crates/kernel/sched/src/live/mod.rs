@@ -286,8 +286,14 @@ pub fn run_pi_exit(owner_tid: u32) {
 /// `ipc`, which already depends on `sched`. A process dying while holding a
 /// semaphore it acquired with `SEM_UNDO` must have that adjustment applied
 /// (Linux `do_exit -> exit_sem`), or every peer waiting on the semaphore blocks
-/// forever. Argument is the dying task's thread-group id.
-pub type SysvSemExitFn = fn(u32);
+/// forever.
+///
+/// Arguments are the dying task's own handle slot and its thread-group id. The
+/// slot rather than the tgid, because the list is shared by `CLONE_SYSVSEM`
+/// and refcounted: a thread exiting only drops ITS reference, and the
+/// adjustments are applied when the last holder goes. The tgid is still needed
+/// — it is what `sempid` is stamped with.
+pub type SysvSemExitFn = fn(&core::sync::atomic::AtomicU64, u32);
 static SYSVSEM_EXIT_HOOK: core::sync::atomic::AtomicPtr<()>
     = core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
 
@@ -300,12 +306,12 @@ pub fn set_sysvsem_exit_hook(f: SysvSemExitFn) {
 /// (early boot before kmain wires the hook). Touches no user memory, so it has
 /// no ordering requirement against the mm teardown.
 /// # C: O(N_undo × nsems) via the installed walk
-pub fn run_sysvsem_exit(tgid: u32) {
+pub fn run_sysvsem_exit(slot: &core::sync::atomic::AtomicU64, tgid: u32) {
     let p = SYSVSEM_EXIT_HOOK.load(core::sync::atomic::Ordering::Acquire);
     if p.is_null() { return; }
     // SAFETY: hook installed via set_sysvsem_exit_hook with the documented SysvSemExitFn signature; Acquire load pairs with the Release store in the setter; ptr is a valid 'static fn address.
     let f: SysvSemExitFn = unsafe { core::mem::transmute(p) };
-    f(tgid);
+    f(slot, tgid);
 }
 
 /// Controlling-terminal disassociation for the last thread of a dying process

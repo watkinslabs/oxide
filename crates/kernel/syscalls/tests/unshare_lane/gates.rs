@@ -82,28 +82,37 @@ fn sys_unshare_rejects_unknown_flag_bits() {
 /// from the new IPC namespace.
 #[test]
 fn sys_unshare_detaches_the_sysvsem_undo_list() {
-    use ipc::sysv::sem::undo::{find_alloc, has_entry};
+    use ipc::sysv::sem::undo::{find_alloc, get_undo_list, has_entry};
     const SEMID: i32 = 0x2720;
     const NSEMS: usize = 4;
     let _guard = guard();
     let current = install_current(920);
     current.tgid.store(920, Ordering::Release);
     let ns = owner(current, NamespaceKind::Ipc).id();
+    // The list is reached through the TASK's handle, so each re-registration
+    // below allocates a fresh one — which is itself the detach being asserted.
+    let register = || {
+        let id = get_undo_list(&current.sysvsem_undo).unwrap();
+        find_alloc(id, ns, SEMID, NSEMS).unwrap();
+        id
+    };
 
-    find_alloc(920, ns, SEMID, NSEMS).unwrap();
-    assert!(has_entry(920, ns, SEMID));
+    let id = register();
+    assert!(has_entry(id, ns, SEMID));
     assert_eq!(s272_unshare::sys_unshare(&args(unshare_policy::CLONE_SYSVSEM)), 0);
-    assert!(!has_entry(920, ns, SEMID), "CLONE_SYSVSEM is equivalent to sys_exit()");
+    assert!(!has_entry(id, ns, SEMID), "CLONE_SYSVSEM is equivalent to sys_exit()");
+    assert_eq!(current.sysvsem_undo.load(Ordering::Acquire), 0,
+        "the caller is left holding no list at all, not an emptied one");
 
     // A flag set that touches neither SYSVSEM nor NEWIPC leaves it alone.
-    find_alloc(920, ns, SEMID, NSEMS).unwrap();
+    let id = register();
     assert_eq!(s272_unshare::sys_unshare(&args(CLONE_NEWUTS)), 0);
-    assert!(has_entry(920, ns, SEMID));
+    assert!(has_entry(id, ns, SEMID));
 
     // CLONE_NEWIPC detaches too: the arrays the entries name are unreachable
     // from the new namespace.
     assert_eq!(s272_unshare::sys_unshare(&args(CLONE_NEWIPC)), 0);
-    assert!(!has_entry(920, ns, SEMID));
+    assert!(!has_entry(id, ns, SEMID));
 }
 
 /// Linux `copy_cgroup_ns` pins the creating task's `css_set`, so the cgroup it

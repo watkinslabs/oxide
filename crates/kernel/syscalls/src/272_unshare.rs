@@ -139,7 +139,8 @@ pub fn sys_unshare(args: &SyscallArgs) -> i64 {
     if sysvsem {
         let vtg = cur.vtgid.load(core::sync::atomic::Ordering::Acquire);
         let tg = cur.tgid.load(core::sync::atomic::Ordering::Acquire);
-        ipc::sysv::sem::exit_sem(if vtg != 0 { vtg } else { tg });
+        ipc::sysv::sem::undo::exit_sem(&cur.sysvsem_undo,
+            if vtg != 0 { vtg } else { tg });
     }
     if let Some(table) = new_fd_table {
         // SAFETY: current task is the sole writer of its fd-table owner slot.
