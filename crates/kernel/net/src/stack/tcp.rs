@@ -237,10 +237,11 @@ impl NetStack {
                 }
             }
             // F158: wake on either recv_buf growth or terminal state
-            let (_pre_len, pre_state, input, _post_len, post_state, fastopen_child, urgent) = {
+            let (_pre_len, pre_state, input, _post_len, post_state, fastopen_child, urgent, acked) = {
                 let mut c = entry.conn.lock();
                 let pre_len = c.recv_buf.len;
                 let pre_state = c.state;
+                let pre_una = c.snd_una;
                 let pre_urg = c.peek_urgent();
                 let fastopen_child = c.fastopen_child;
                 if pre_state == crate::tcp_state::TcpState::SynRecv {
@@ -250,8 +251,12 @@ impl NetStack {
                 }
                 let input = c.input_prevalidated(src_ip, dst_ip, seg);
                 let urgent = crate::sock::oob_notify::urgent_arrived(pre_urg, c.peek_urgent());
-                (pre_len, pre_state, input, c.recv_buf.len, c.state, fastopen_child, urgent)
+                let acked = c.snd_una != pre_una;
+                (pre_len, pre_state, input, c.recv_buf.len, c.state, fastopen_child, urgent, acked)
             };
+            // The peer acknowledged something, so whatever a passing ICMP
+            // report said about this path no longer describes it.
+            if acked { entry.clear_soft_error(); }
             // Tell the world about a new urgent pointer (Linux
             // `sk_send_sigurg` from the urgent-pointer check): an
             // unconditional `SIGURG` to the receiving description's `f_owner`.

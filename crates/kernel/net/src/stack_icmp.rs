@@ -344,12 +344,19 @@ pub fn handle_error_in(stack: &NetStack, net_ns: u64, iface: crate::NetIfaceId, 
                 remote_port: dst_port,
             };
             if let Some(entry) = stack.inet_tables(net_ns).tcp_conns.lock().get(&key).cloned() {
-                let mut c = entry.conn.lock();
-                c.state = crate::tcp_state::TcpState::Closed;
-                drop(c);
-                entry.set_error(eno);
-                #[cfg(target_os = "oxide-kernel")]
-                entry.rx_waiters.wake_all();
+                let state = entry.conn.lock().state;
+                match crate::socket_error::icmp_tcp_verdict(state,
+                    entry.wants_extended_errors(false))
+                {
+                    crate::socket_error::IcmpTcpVerdict::Fatal => {
+                        entry.conn.lock().state = crate::tcp_state::TcpState::Closed;
+                        entry.set_error(eno);
+                        #[cfg(target_os = "oxide-kernel")]
+                        entry.rx_waiters.wake_all();
+                    }
+                    crate::socket_error::IcmpTcpVerdict::Report => { entry.set_error(eno); }
+                    crate::socket_error::IcmpTcpVerdict::Soft => { entry.set_soft_error(eno); }
+                }
             }
         }
         _ => {}

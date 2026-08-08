@@ -11,6 +11,13 @@ const TIME_WAIT_NS: u64 = 60_000_000_000;
 #[derive(Copy, Clone)]
 enum TimerKind { Write, DelAck, KeepAlive, Cleanup }
 
+/// What a connection that ran out of retransmissions reports. A non-fatal
+/// error recorded earlier describes the failure better than the bare timeout
+/// the give-up itself produces, so it wins. # C: O(1)
+fn give_up_cause(soft: i32) -> i32 {
+    if soft != 0 { soft } else { syscall::errno::Errno::Etimedout as i32 }
+}
+
 struct TimerSlot {
     id: AtomicU64,
     generation: AtomicU64,
@@ -315,7 +322,7 @@ impl NetStack {
                 dst, segment, 0, entry.bound_iface(), TcpTxPolicy::Entry(entry)));
         }
         if abort {
-            entry.set_error(syscall::errno::Errno::Etimedout as i32);
+            entry.set_error(give_up_cause(entry.soft_error()));
             entry.release_backlog();
             super::tcp_listener::remove_tcp_entry_exact(&tables, &key, entry);
             #[cfg(target_os = "oxide-kernel")]
@@ -374,7 +381,7 @@ impl NetStack {
                 entry.bound_iface(), TcpTxPolicy::Entry(entry));
         }
         if exhausted {
-            entry.set_error(syscall::errno::Errno::Etimedout as i32);
+            entry.set_error(give_up_cause(entry.soft_error()));
             entry.release_backlog();
             super::tcp_listener::remove_tcp_entry_exact(&tables, &key, entry);
             #[cfg(target_os = "oxide-kernel")]
@@ -408,5 +415,19 @@ impl NetStack {
             return;
         }
         self.refresh_tcp_timers(entry);
+    }
+}
+
+#[cfg(test)]
+mod give_up_tests {
+    use super::give_up_cause;
+    use syscall::errno::Errno;
+
+    /// A connection that recorded a non-fatal report reports THAT when it runs
+    /// out of retransmissions; one that recorded nothing reports the timeout.
+    #[test]
+    fn the_give_up_cause_prefers_the_recorded_non_fatal_error() {
+        assert_eq!(give_up_cause(0), Errno::Etimedout as i32);
+        assert_eq!(give_up_cause(Errno::Ehostunreach as i32), Errno::Ehostunreach as i32);
     }
 }

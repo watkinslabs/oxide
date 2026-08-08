@@ -108,6 +108,17 @@ impl RecvTarget {
         }
     }
 
+    /// Consume the error the socket-option read reports. Unlike `take_error`,
+    /// which is the receive path's fatal-error check, this falls back to the
+    /// non-fatal error when no fatal one is pending. # C: O(1)
+    pub(crate) fn take_reported_error(&self) -> i32 {
+        match &self.kind {
+            RecvKind::Inet(sock) => sock.take_reported_error(),
+            RecvKind::Netlink(sock) => sock.take_reported_error(),
+            RecvKind::Vsock(sock) => sock.take_reported_error(),
+        }
+    }
+
     /// Publish the latest pending positive receive error. # C: O(1)
     pub(crate) fn set_pending_error(&self, errno: i32) {
         match &self.kind {

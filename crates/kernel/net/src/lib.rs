@@ -212,6 +212,8 @@ mod tests_ipv6_local;
 #[cfg(test)]
 mod tests_ipv4_udp_errors;
 #[cfg(test)]
+mod tests_icmp_tcp;
+#[cfg(test)]
 mod tests_arp_next_hop;
 #[cfg(test)]
 mod tests_ipv4_options_tx;

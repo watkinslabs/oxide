@@ -33,6 +33,9 @@ impl InetSocket {
 
     /// Observe whether a receive error is pending without consuming it. # C: O(1)
     pub fn has_pending_recv_error(&self) -> bool { self.error.has() }
+    /// Consume the error the socket-option read reports: the fatal one first,
+    /// and only when there is none the non-fatal one. # C: O(1)
+    pub fn take_reported_error(&self) -> i32 { self.error.take_reported() }
 
     /// Consume the oldest queued Linux extended error. # C: O(1)
     pub fn take_extended_error(&self) -> Option<crate::SocketErrorEntry> { self.error.take_extended() }

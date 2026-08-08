@@ -219,6 +219,9 @@ impl NetlinkSocket {
     pub fn take_pending_recv_error(&self) -> i32 {
         self.error.take()
     }
+    /// Consume the error the socket-option read reports: the fatal one first,
+    /// and only when there is none the non-fatal one. # C: O(1)
+    pub fn take_reported_error(&self) -> i32 { self.error.take_reported() }
 
     /// Observe whether a socket error is pending without consuming it. # C: O(1)
     pub fn has_pending_recv_error(&self) -> bool { self.error.has() }

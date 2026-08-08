@@ -137,3 +137,40 @@ fn empty_zerocopy_completion_queues_nothing() {
     assert!(!error.publish_zerocopy(0, 0, true, false));
     assert!(!error.has_extended());
 }
+
+/// The option read reports the fatal error first and the non-fatal one only
+/// when no fatal error is pending, each exactly once. The receive path's own
+/// check never sees the non-fatal one at all.
+#[test]
+fn the_option_read_falls_back_to_the_non_fatal_error_and_the_receive_path_does_not() {
+    let error = SocketError::new();
+    assert!(error.set_soft(Errno::Ehostunreach as i32));
+    // The receive path asks only about the fatal error, and there is none.
+    assert_eq!(error.take(), 0);
+    assert!(!error.has());
+    // The option read finds the non-fatal one, and reports it once.
+    assert_eq!(error.take_reported(), Errno::Ehostunreach as i32);
+    assert_eq!(error.take_reported(), 0);
+
+    assert!(error.set_soft(Errno::Enetunreach as i32));
+    assert!(error.set(Errno::Econnrefused as i32));
+    // A fatal error outranks it, and does not consume it.
+    assert_eq!(error.take_reported(), Errno::Econnrefused as i32);
+    assert_eq!(error.take_reported(), Errno::Enetunreach as i32);
+    assert_eq!(error.take_reported(), 0);
+}
+
+/// A later non-fatal error replaces the earlier one, and an acknowledgement
+/// discards it: the connection worked, so the report no longer describes it.
+#[test]
+fn the_non_fatal_error_is_replaced_by_a_later_one_and_dropped_by_progress() {
+    let error = SocketError::new();
+    assert!(error.set_soft(Errno::Ehostunreach as i32));
+    assert!(error.set_soft(Errno::Enetunreach as i32));
+    assert_eq!(error.soft(), Errno::Enetunreach as i32);
+    error.clear_soft();
+    assert_eq!(error.soft(), 0);
+    assert_eq!(error.take_reported(), 0);
+    assert!(!error.set_soft(0));
+    assert!(!error.set_soft(-1));
+}
