@@ -16,6 +16,9 @@ pub fn install_received_fds<F>(table: &FdTable, limit: usize, cloexec: bool,
     files: Vec<Arc<File>>, capacity: usize, mut copyout: F) -> ReceiveFdResult
 where F: FnMut(usize, i32) -> vfs::KResult<()>
 {
+    // The one point every socket-side rights transfer enters the global graph.
+    #[cfg(test)]
+    crate::test_support::assert_scm_owned();
     let _transfer = net::transfer_guard();
     let total = files.len();
     let flags = if cloexec { OpenFlags::O_CLOEXEC } else { OpenFlags::empty() };

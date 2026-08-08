@@ -38,6 +38,7 @@ impl MessageIo for BadPayload {
 
 #[test]
 fn netlink_emsgsize_precedes_payload_fault_or_allocation_failure() {
+    let _policy = crate::test_support::unpoliced();
     let task = sched::Task::new(21, "netlink-preflight",
         sched::SchedClass::Normal { weight: 1024 });
     for error in [Error::Efault, Error::Enomem] {
@@ -70,6 +71,7 @@ impl BatchIo for PreflightBatch {
 
 #[test]
 fn sendmmsg_keeps_completed_prefix_when_next_netlink_datagram_is_oversized() {
+    let _policy = crate::test_support::unpoliced();
     let task = sched::Task::new(22, "netlink-batch-preflight",
         sched::SchedClass::Normal { weight: 1024 });
     let mut io = PreflightBatch { target: netlink_file(), payload_calls: Vec::new(),

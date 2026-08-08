@@ -16,18 +16,15 @@ use security::network::{self, Context, Operation, Verdict};
 
 use crate::{Error, Message, SendContext, SendFile};
 
-/// These install policy on the one hosted network namespace, so they take
-/// turns rather than racing each other's registry state.
-static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// The namespace every hosted send target is built in, with its policy cleared.
+/// The namespace every hosted send target is built in, with its policy cleared
+/// and this thread holding the crate's one right to install policy there —
+/// which the send path's hook call site checks, so a sibling test that drives a
+/// send here without any claim fails rather than corrupting these counters.
 /// # C: O(1)
-fn fixture() -> (std::sync::MutexGuard<'static, ()>, network_namespace::NetworkNamespaceRef, u64) {
-    let guard = LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+fn fixture() -> (crate::test_support::PolicyControl, network_namespace::NetworkNamespaceRef, u64) {
+    let guard = crate::test_support::policy_control();
     let owner = network_namespace::initial();
-    let namespace = owner.id().as_u64();
-    let _ = network::remove_namespace(namespace);
-    (guard, owner, namespace)
+    (guard, owner, crate::test_support::initial_namespace())
 }
 
 fn deny(_context: Context) -> Verdict { Verdict::Deny }

@@ -34,6 +34,9 @@ pub(crate) fn admit(ctx: &SendContext<'_>, target: &SendFile, message: &Message,
     -> KResult<()>
 {
     let sock = security_sock(target)?;
+    // The one point every send reaches the namespace-keyed policy registry.
+    #[cfg(test)]
+    crate::test_support::assert_policy_owned(sock.namespace);
     net::socket_security::sendmsg(ctx.sandbox(), sock, message.name.as_deref(), flags as u64)
         .map_err(Error::from)
 }

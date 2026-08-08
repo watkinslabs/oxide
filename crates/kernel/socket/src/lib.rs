@@ -11,6 +11,8 @@
 // - `receive`: SCM_RIGHTS receive descriptor publication.
 // - `security`: the one send-side security hook call site.
 // - `filter`: common socket-filter target and mutation work.
+// - `test_support`: hosted-suite ownership of the process-global policy and
+//   AF_UNIX rights state, checked at the choke points that reach them.
 
 #![no_std]
 
@@ -49,6 +51,8 @@ pub use receive::{ReceiveFdResult, install_received_fds};
 pub use send::{ImportMode, MessageIo, SendContext, send, send_io, write, writev};
 pub use target::{SendFile, SendKind};
 
+#[cfg(test)]
+mod test_support;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
