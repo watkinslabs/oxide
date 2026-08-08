@@ -116,6 +116,7 @@ impl InetSocket {
             self.owner.clone(), bind_ip, self.error.clone(), iface,
             self.opts.reuseaddr.clone(), self.opts.reuseport.clone(),
             self.opts.ip_mtu_discover.clone(), self.opts.udp.gro.clone(),
+            self.opts.udp.encap_type.clone(),
             self.peer.clone(), self.bpf_filter.clone(), self.mcast.clone(),
             policy.range,
         ).map_err(|error| if error == NetError::Eaddrinuse { NetError::Eagain } else { error })?;

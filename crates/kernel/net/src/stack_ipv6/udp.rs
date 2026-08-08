@@ -189,6 +189,7 @@ impl NetStack {
         self.bind_udp6_socket_owned(crate::SocketOwner::root(namespace, owner_uid), bind_ip,
             port, iface, error, reuseaddr, reuseport, v6only, peer, ip_mtu_discover,
             ipv6_mtu_discover, Arc::new(core::sync::atomic::AtomicI32::new(0)),
+            Arc::new(core::sync::atomic::AtomicI32::new(0)),
             Arc::new(core::sync::atomic::AtomicI32::new(0)), bpf_filter, mcast)
     }
 
@@ -208,6 +209,7 @@ impl NetStack {
         ipv6_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
         no_check6_rx: Arc<core::sync::atomic::AtomicI32>,
         gro: Arc<core::sync::atomic::AtomicI32>,
+        encap_type: Arc<core::sync::atomic::AtomicI32>,
         bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
         mcast: Arc<crate::mcast_filter::SocketMcast>,
     ) -> NetResult<Arc<Udp6RxQueue>> {
@@ -256,7 +258,7 @@ impl NetStack {
             net_ns, bind_ip, port, error, reuseaddr,
             Arc::new(core::sync::atomic::AtomicI32::new(i32::from(reuseport_member))),
             owner, Arc::new(core::sync::atomic::AtomicI32::new(i32::from(v6only_at_bind))),
-            peer, ip_mtu_discover, ipv6_mtu_discover, no_check6_rx, gro, bpf_filter, mcast,
+            peer, ip_mtu_discover, ipv6_mtu_discover, no_check6_rx, gro, encap_type, bpf_filter, mcast,
         ));
         q.bound_ifindex
             .store(iface.map(|i| i.raw()).unwrap_or(0), core::sync::atomic::Ordering::Release);

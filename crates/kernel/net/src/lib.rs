@@ -194,6 +194,8 @@ pub use tcp_state::{transition, TcpEvent, TcpState};
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_udp_encap;
+#[cfg(test)]
 mod tests_correctness;
 #[cfg(test)]
 mod stack_tests;
