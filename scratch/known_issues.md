@@ -20,30 +20,27 @@ work and become `IN-PROGRESS <branch>` when the current integration finishes.
 
 | Class | Means |
 |---|---|
-| `DEFECT` | 0 | 4 | 20 | 30 | 54 |
-| `MISSING` | 2 | 6 | 48 | 28 | 84 |
-| `COVERAGE` | 0 | 3 | 27 | 34 | 64 |
-| `INFRA` | 0 | 1 | 15 | 24 | 40 |
-| **Total** | **2** | **14** | **110** | **116** | **242** |
-| `DEFECT` | 0 | 4 | 20 | 31 | 55 |
-| `MISSING` | 2 | 6 | 64 | 38 | 110 |
-| `INFRA` | 0 | 2 | 15 | 24 | 41 |
-| **Total** | **2** | **15** | **126** | **127** | **270** |
 | `DEFECT` | behaviour diverges from Linux — wrong answer, wrong order, wrong lifetime |
 | `MISSING` | Linux surface that is absent, or present-but-unconsumed (stored and never read) |
 | `COVERAGE` | the behaviour may be right, but no check here can fail if it stops being right |
 | `INFRA` | tooling, gates, docs, images, or the dev box itself |
+
 `Sev`: `blocker` (merge gate) | `high` (wrong answer reaching userspace) |
 `med` (missing surface) | `low` (hygiene, tooling, cosmetics).
+
 ## Open-work summary
+
 This is a derived view of the live `OPEN` and `IN-PROGRESS` rows below, not a
 second ledger. Update it in the same change whenever a row is added, moved, or
 reclassified.
+
 | Class \ Sev | blocker | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|
-| `MISSING` | 2 | 8 | 56 | 28 | 94 |
-| `INFRA` | 0 | 1 | 15 | 25 | 41 |
-| **Total** | **2** | **16** | **118** | **118** | **254** |
+| `DEFECT` | 0 | 4 | 20 | 30 | 54 |
+| `MISSING` | 1 | 6 | 48 | 28 | 83 |
+| `COVERAGE` | 0 | 3 | 27 | 34 | 64 |
+| `INFRA` | 0 | 1 | 15 | 24 | 40 |
+| **Total** | **1** | **14** | **110** | **116** | **241** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -256,10 +253,9 @@ here now.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
-| OPEN | MISSING | blocker | **x86 boots multiboot2 (BIOS/CSM) only.** No UEFI path. Modern TRX40/WRX80/WRX90 and Z790/X870 boards are UEFI and many ship without CSM, so the kernel cannot be loaded at all. aarch64 already boots EFI-stub. | `tools/xtask/src/image_qemu/x86_64.rs:23-24` | — |
-| OPEN | MISSING | blocker | **No USB host controller.** `modules/src/linux_usb/` is a module-registry shim (types/core/gadget, 945 lines) with no xHCI driver; grep for xHCI across `crates/` is empty. Only physical input driver is `drv-ps2-keyboard`, so a board without PS/2 has no keyboard. | `crates/kernel/modules/src/linux_usb/`, `crates/drivers/` listing | — |
-| OPEN | MISSING | med | **CPU count capped below Threadripper part counts, no x2APIC.** `MAX_CPUS = 64` with a `u64` online mask; MADT decode reads x2APIC entries but nothing enables x2APIC MSR mode, so APIC IDs above 255 are unaddressable. A 64C/128T part is at or over the mask width. | `crates/kernel/cpu/src/lib.rs:20`, `firmware/src/acpi/tables.rs:123-133` | — |
-| OPEN | MISSING | med | **No FADT parse — no ACPI poweroff or reset.** `crates/kernel/power/` carries the `reboot(2)` policy with no hardware path beneath it. Parsed tables are APIC/HPET/MCFG/SPCR only. | `crates/kernel/firmware/src/acpi/`, `crates/kernel/power/src/cad.rs` | — |
+| OPEN | MISSING | blocker | **No USB host controller.** `modules/src/linux_usb/` is a module-registry shim (types/core/gadget, 1268 lines) with no xHCI driver; grep for `xhci`/`ehci`/`usb_hcd` across `crates/` is empty. Only physical input driver is `drv-ps2-keyboard`, so a board without PS/2 has no keyboard. **Re-verified and decomposed by B1984** — this is not one item, it is four, and the fourth is a design decision that must be settled before the third: (1) an xHCI PCI driver (class `0x0c0330`, `drv::Driver` + MSI-X, structurally modelled on `drv-ahci`, which is the only in-tree PCI driver doing MSI + async completion); (2) a USB core — descriptor enumeration, address assignment, hub driver — which does not exist in any form; (3) HID and mass-storage class drivers on top; (4) **there is no bus-agnostic input core to publish HID events into.** `input::registry::install` keys strictly on `virtio::VirtioChildDeviceKey`, and `drv-ps2-keyboard` sidesteps evdev entirely by calling the virtio driver's key handler directly, so today there are two disjoint keyboard paths and neither is bus-neutral. `linux_usb::set_transport` is the intended host-controller seam and has zero callers. | `crates/kernel/modules/src/linux_usb/{core,gadget,types}.rs`; `crates/drivers/` listing; `input::registry::install` signature; `drv-ps2-keyboard/src/imp/irq.rs` calling `drv_virtio_input::drain::handle_key_event` | — |
+| OPEN | MISSING | med | **CPU count capped below Threadripper part counts, no x2APIC.** Re-verified by B1984 and the stated reason needs correcting in one direction and widening in another. MADT decode is NOT the break — `decode_madt` already reads type-9 Local x2APIC entries and passes the full 32-bit id to `cpu::add_cpu`, which stores it. The breaks are downstream: `lapic::ipi::write_icr` writes `target_apic_id << 24` into the xAPIC MMIO ICR, silently truncating any id ≥ 256 (this is the register AP bring-up sends INIT-SIPI-SIPI through); `lapic::regs::select_eoi_path` only FOLLOWS a firmware-set x2APIC mode for EOI and deliberately never enables it, because enabling x2APIC disables the MMIO window the rest of the driver drives; `local_apic_id()` reads the 8-bit MMIO id, never the 32-bit MSR one; and `cpuid.rs` reads only leaf 1's 8-bit initial id, never the extended-topology leaf that reports the 32-bit one. Separately, the affinity/online/shootdown/membarrier masks are scalar `u64`, so widening past 64 is a type change at ~12 sites, not a constant bump. | `arch-irq/src/lapic/ipi.rs write_icr`; `arch-irq/src/lapic/regs.rs select_eoi_path`, `local_apic_id`; `hal-x86_64/src/cpuid.rs initial_apic_id`; `cpu/src/smp.rs ONLINE_MASK: AtomicU64`; `sched/src/task.rs cpus_allowed: AtomicU64`; `syscalls/src/affinity_abi.rs NR_CPU_IDS` | — |
+| OPEN | MISSING | med | **No ACPI poweroff.** The reset half of this row is closed (see `fixed-issues.md`, B1984: the FADT is parsed and `reboot(2)` now walks a real reset ladder). Poweroff is NOT, and the reason is more specific than "no FADT parse": entering S5 requires the `SLP_TYP` value for the S5 sleep state, which lives in the `_S5` object in the DSDT and can only be obtained by evaluating AML. The FADT's PM1a/PM1b control blocks and the ACPI 5.0 sleep-control/sleep-status registers are decoded and available (`firmware::acpi::Fadt`), so the mechanism is one value short — and that value is gated on the AML row below, not on any further table work. Until then x86 poweroff remains the emulator debug-exit port write, which is a no-op on real hardware and falls through to halt. | `crates/kernel/power/src/machine.rs power_off`; `firmware::acpi::Fadt::{pm1a_control,pm1b_control,sleep_control,sleep_status}` parsed and pinned by `acpi::fadt::tests` | — |
 | OPEN | MISSING | med | **No AML interpreter, so no `_PRT`.** Legacy INTx routing cannot be resolved on physical hardware; every device must use MSI/MSI-X. Workable (MSI and MSI-X cap programming exist) but it is an unrecorded hard constraint on the driver model, not a preference. | `crates/drivers/pci/src/caps.rs`, absent DSDT/SSDT parse | — |
 | OPEN | MISSING | med | **No driver for any physical NIC.** Only `drv-virtio-net`. Target boards carry Intel I225/I226, Realtek RTL8125, Aquantia AQC113 or Intel X550. | `crates/drivers/` listing | — |
 | OPEN | INFRA | LOW | Matrix row 44 carried "GAP: AF_UNIX MSG_OOB not implemented", and rows 47/299 carried "true OOB delivery" in their Remaining lists, for a feature that IS implemented. The gap was recorded from a grep against `crates/kernel/net/src/unix/`, a path that does not exist — the subsystem is `crates/kernel/net/src/unix_sock/`. A nonexistent-path grep returns zero hits and reads exactly like a missing feature. Rows 44/46/47 corrected; row 299 still carries the stale phrase and is another lane's row. | `net::unix_sock::tests::oob` 18 tests green on the unmodified tree; `cargo test -p net --features hosted --lib` 2083 passed / 0 failed. `socket::oob::tests` 5 tests cover the send split. | B1938 (rows 44/46/47), unassigned (row 299) |

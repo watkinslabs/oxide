@@ -8,9 +8,14 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
-hal  = { path = "../../arch/hal" }
-klog = { path = "../../shared/klog" }
-sync = { path = "../../shared/sync" }
+hal      = { path = "../../arch/hal" }
+klog     = { path = "../../shared/klog" }
+sync     = { path = "../../shared/sync" }
+firmware = { path = "../firmware" }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+hal-x86_64 = { path = "../../arch/hal-x86_64" }
+mmio-map   = { path = "../mmio-map" }
 
 [lints]
 workspace = true

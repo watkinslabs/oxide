@@ -160,6 +160,55 @@ pub(crate) fn set_spcr(base: u64, addr_space: u8, gsi: u32) {
     SPCR_GSI.store(gsi, Ordering::Release);
 }
 
+// ---- FADT reset register ------------------------------------------------
+// Only the DERIVED action is latched, never the raw register block: a stored
+// descriptor nothing reads is indistinguishable from a bug. `power` is the
+// sole consumer, through `reset_action()`.
+
+static RESET_KIND: AtomicU32 = AtomicU32::new(RESET_KIND_NONE);
+static RESET_ADDR: AtomicU64 = AtomicU64::new(0);
+static RESET_VALUE: AtomicU32 = AtomicU32::new(0);
+
+const RESET_KIND_NONE: u32 = 0;
+const RESET_KIND_PORT: u32 = 1;
+const RESET_KIND_MMIO: u32 = 2;
+const RESET_KIND_PCI: u32 = 3;
+
+/// The reset the FADT authorised, or `None` when firmware published no
+/// usable reset register. Reads are safe at any time; the value is written
+/// once during the boot-time table walk.
+/// # C: O(1)
+pub fn reset_action() -> Option<acpi::ResetAction> {
+    let value = RESET_VALUE.load(Ordering::Acquire) as u8;
+    let addr = RESET_ADDR.load(Ordering::Acquire);
+    match RESET_KIND.load(Ordering::Acquire) {
+        RESET_KIND_PORT => Some(acpi::ResetAction::PortIo { port: addr as u16, value }),
+        RESET_KIND_MMIO => Some(acpi::ResetAction::Mmio { pa: addr, value }),
+        RESET_KIND_PCI => Some(acpi::ResetAction::PciConfig {
+            device: (addr >> 32) as u8,
+            function: (addr >> 40) as u8,
+            offset: addr as u16,
+            value,
+        }),
+        _ => None,
+    }
+}
+
+/// Latch the reset action the FADT decode derived (first wins).
+/// # C: O(1)
+pub(crate) fn set_reset_action(a: acpi::ResetAction) {
+    let (kind, addr, value) = match a {
+        acpi::ResetAction::PortIo { port, value } => (RESET_KIND_PORT, port as u64, value),
+        acpi::ResetAction::Mmio { pa, value } => (RESET_KIND_MMIO, pa, value),
+        acpi::ResetAction::PciConfig { device, function, offset, value } =>
+            (RESET_KIND_PCI, ((device as u64) << 32) | ((function as u64) << 40) | offset as u64, value),
+    };
+    if RESET_KIND.compare_exchange(RESET_KIND_NONE, kind, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+        RESET_ADDR.store(addr, Ordering::Release);
+        RESET_VALUE.store(value as u32, Ordering::Release);
+    }
+}
+
 /// Record the first I/O APIC from the MADT (first wins). # C: O(1)
 pub(crate) fn set_ioapic(pa: u32, gsi_base: u32) {
     if IOAPIC_PA.compare_exchange(0, pa as u64,

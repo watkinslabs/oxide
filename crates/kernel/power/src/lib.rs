@@ -12,6 +12,7 @@
 //              RESTART2 string truncation) — host-tested.
 // - `cad`:     the `C_A_D` global and `ctrl_alt_del()`'s rule.
 // - `machine`: driver shutdown + the per-arch irreversible transition.
+// - `reset`:   the x86 reset ladder's order and port encodings — host-tested.
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
@@ -20,6 +21,7 @@ pub mod uapi;
 pub mod decide;
 pub mod cad;
 pub mod machine;
+pub mod reset;
 
 pub use uapi::*;
 pub use decide::{check_magic, classify_cmd, pid_ns_reboot, reboot_precheck, restart2_cmd_len,
@@ -27,3 +29,4 @@ pub use decide::{check_magic, classify_cmd, pid_ns_reboot, reboot_precheck, rest
 pub use cad::{cad_action, cad_enabled, set_cad, CadAction};
 pub use machine::{halt, init, power_off, restart, restart_with_command,
     set_driver_shutdown_hook, terminal};
+pub use reset::{ladder, reset_control_writes, ResetRung};

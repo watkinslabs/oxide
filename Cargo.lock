@@ -1273,8 +1273,11 @@ dependencies = [
 name = "power"
 version = "0.1.0"
 dependencies = [
+ "firmware",
  "hal",
+ "hal-x86_64",
  "klog",
+ "mmio-map",
  "sync",
 ]
 

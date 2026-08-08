@@ -55,25 +55,17 @@ pub unsafe fn halt() -> ! {
 }
 
 /// Reset the machine. Returns only on host (test) builds.
-/// x86_64: triple fault via `lidt` of a zero IDTR + int3.
-/// aarch64: PSCI SYSTEM_RESET (`hvc #0` with x0=0x84000009).
+/// x86_64: the reset ladder in `crate::reset` — the FADT-described register,
+/// then the keyboard controller, then the chipset reset port, then a triple
+/// fault. aarch64: PSCI SYSTEM_RESET (`hvc #0` with x0=0x84000009), which is
+/// the platform's single authoritative mechanism and needs no ladder.
 /// # SAFETY: clobbers IDT (x86) / traps to EL2 (arm); irreversible.
 /// # C: O(1)
 pub unsafe fn restart() -> ! {
     #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
     {
-        // Zero IDTR + int3 → CPU triple-faults → reset.
-        // SAFETY: lidt with limit=0 makes any interrupt fault; the int3 then takes a #DB→#GP→#DF→reset chain. Irreversible on purpose.
-        unsafe {
-            core::arch::asm!(
-                "sub rsp, 16",
-                "mov word ptr [rsp], 0",
-                "mov qword ptr [rsp+2], 0",
-                "lidt [rsp]",
-                "int3",
-                options(noreturn, nostack)
-            );
-        }
+        // SAFETY: caller validated the reboot request and shut the drivers down; the ladder ends in a rung that never returns.
+        unsafe { crate::reset::x86::run_ladder() }
     }
     #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
     {

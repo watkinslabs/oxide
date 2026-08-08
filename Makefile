@@ -37,7 +37,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         build-debug x86-debug arm-debug \
         test lint lint-ratchet lint-ratchet-update audit-counts profile-policy warnings-control stats ci \
         qemu-x86 qemu-arm qemu-x86-debug qemu-arm-debug qemu-mcp \
-        qemu-x86-grub \
+        qemu-x86-grub qemu-x86-uefi smoke-uefi-x86 \
         smoke-cmdline-x86 smoke-cmdline-arm smoke-cmdline \
         smoke-devpts-x86 smoke-devpts-arm smoke-devpts \
         smoke-af-packet-diff-x86 smoke-af-packet-diff-arm smoke-af-packet-diff \
@@ -227,6 +227,14 @@ qemu-arm:
 # canonical recipe so `FEATURES=` has identical meaning on both spellings.
 qemu-x86-grub: qemu-x86
 
+# Same ISO, same GRUB handoff, UEFI firmware instead of the legacy BIOS.
+# grub2-mkrescue already writes BOTH an El Torito BIOS image and an EFI one,
+# so the firmware is the only variable this target changes — which is what
+# makes it a usable answer to "does this kernel boot a board without a CSM".
+qemu-x86-uefi:
+	$(TRIM_ROOTFS_CACHE)
+	OXIDE_QEMU_UEFI=1 $(XTASK) grub --arch x86_64 --smp $(SMP) $(if $(QEMU_FEATURES_X86),--features "$(QEMU_FEATURES_X86)",)
+
 # Same but with `--features debug-all` (every syscall trace + LAPIC
 # tick + boot-pulse log). Useful for kernel debugging; not what you
 # want when just trying to log in and use it.
@@ -248,6 +256,14 @@ smoke-x86: x86
 
 smoke-arm: arm
 	./tools/boot-smoke.sh arm $(SMOKE_TIMEOUT)
+
+# The UEFI half of the x86 boot contract. Identical kernel, identical ISO,
+# identical marker — only the firmware differs, so a failure here is a UEFI
+# handoff regression and nothing else. Kept separate from `smoke` because it
+# boots the same kernel a second time; run it when the boot path, the ISO
+# builder or the multiboot2 header changes.
+smoke-uefi-x86: x86
+	OXIDE_QEMU_UEFI=1 ./tools/boot-smoke.sh x86 $(SMOKE_TIMEOUT)
 
 # Both arches at once. The builds are prerequisites, so they finish first
 # (cargo serialises them through its own lock anyway); only the two BOOTS
