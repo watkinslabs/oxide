@@ -52,6 +52,11 @@ extern "C" fn ksoftirqd(arg: usize) -> ! {
         // elapsed. Process context, so callbacks that take sleeping-style
         // locks (iput → icache) are safe here.
         sync::rcu_process_callbacks();
+        // Final drop of tasks the context-switch tail handed over rather than
+        // tearing down under itself (`zombies::reclaim`). Same reasoning as the
+        // RCU drain above and the same context requirement: a task's teardown
+        // unmounts, writes back and closes files, all of which may block.
+        super::zombies::reclaim::drain_released();
         if softirq::pending() {
             // Linux run_ksoftirqd: drain in process context via the bh-accounted
             // entry (in_serving_softirq marked, in_interrupt re-entry guard).
