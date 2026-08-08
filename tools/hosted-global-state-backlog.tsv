@@ -435,3 +435,4 @@ vt/src/tests.rs	REC	fixture-state	unclaimed; 6/32 tests claimed it at the C294 b
 vt/src/tests.rs	STATE_SERIAL	fixture-state	unclaimed; 20/32 tests claimed it at the C294 baseline
 vt/src/tests.rs	SW_REC	fixture-state	unclaimed; 2/32 tests claimed it at the C294 baseline
 vt/src/tests.rs	tty::foreground	singleton-pin	unclaimed; 1/21 tests claimed it at the C294 baseline
+sched/src/tests/procfs.rs	ucounts::clear_for_tests	singleton-pin	unclaimed; 12/17 tests claimed it at the C294 baseline. Exposed by this sweep: claim detection is a name match over file text, so removing an external path from a comment dropped the claim count below exposure without any code changing.
