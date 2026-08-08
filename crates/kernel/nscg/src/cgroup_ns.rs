@@ -1,7 +1,7 @@
 // Cgroup-namespace state keyed by canonical namespace identity — Linux
 // `struct cgroup_namespace`'s `root_cset`, whose cgroup is the namespace's
-// root for every path this namespace renders (`kernel/cgroup/cgroup.c`
-// `copy_cgroup_ns` / `cgroup_path_ns_locked`).
+// root for every path this namespace renders (`copy_cgroup_ns` /
+// `cgroup_path_ns_locked`).
 //
 // Linux stores a css_set reference; the unified v2 hierarchy makes the
 // observable part exactly one thing — the absolute path of the cgroup the
@@ -89,6 +89,13 @@ pub fn relativize(root: &str, absolute: &str) -> String {
     out
 }
 
+/// Whether cgroup-root state for `id` is still published. # C: O(log N)
+#[cfg(test)]
+pub(crate) fn contains(id: NamespaceId) -> bool {
+    crate::test_support::assert_drop_isolation_held();
+    ROOTS.lock().contains_key(&id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,10 +130,11 @@ mod tests {
 
     #[test]
     fn final_owner_drop_removes_state() {
+        let isolation = crate::test_support::drop_isolation();
         let id = { let owner = owner();
             allocate(&owner, "/gone".to_string()).unwrap();
             owner.id() };
-        assert!(!ROOTS.lock().contains_key(&id));
+        assert!(!isolation.cgroup_state(id));
     }
 
     #[test]

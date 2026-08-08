@@ -65,7 +65,10 @@ pub fn set_domainname(owner: &NamespaceRef, domainname: Vec<u8>) -> Result<(), U
 }
 
 #[cfg(test)]
-pub(crate) fn contains(id: NamespaceId) -> bool { UTS.lock().contains_key(&id) }
+pub(crate) fn contains(id: NamespaceId) -> bool {
+    crate::test_support::assert_drop_isolation_held();
+    UTS.lock().contains_key(&id)
+}
 
 #[cfg(test)]
 mod tests {
@@ -107,6 +110,7 @@ mod tests {
 
     #[test]
     fn final_owner_drop_removes_state() {
+        let _isolation = crate::test_support::drop_isolation();
         let owner = owner();
         let id = owner.id();
         allocate(&owner, b"host".to_vec(), Vec::new()).unwrap();

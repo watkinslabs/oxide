@@ -132,8 +132,7 @@ fn capability_walk_uses_concrete_user_parent_owners() {
     assert!(has_cap_for(&current, &child.pin(), sched::cap::NET_ADMIN));
     assert!(!has_cap_for(&current, &sibling.pin(), sched::cap::NET_ADMIN));
 
-    install_test_final_drop_callback();
-    let network = network_namespace::allocate(child.clone()).unwrap();
+    let network = crate::test_support::net_ns(child.clone());
     assert!(has_net_admin_for(&current, &network));
     assert!(has_net_raw_for(&current, &network));
 }
@@ -154,7 +153,6 @@ fn setns_rejects_nonexact_mask_and_released_destination() {
 
 #[test]
 fn network_proc_link_retains_exact_owner_after_task_exit() {
-    install_test_final_drop_callback();
     let source = task(83, "source");
     let retained = source.network_namespace_snapshot().unwrap();
     let link = ns_inode_for(&source, NsKind::Net).unwrap();
