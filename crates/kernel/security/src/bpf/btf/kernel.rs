@@ -14,6 +14,8 @@ use alloc::vec::Vec;
 use sync::{Spinlock, TaskList as TaskListClass};
 
 use crate::bpf_lsm::{Hook, hook_by_stub_name, HOOKS};
+use super::super::iter::{IterTarget, target_by_stub_name};
+use super::super::iter::targets::TARGETS as ITER_TARGETS;
 use super::format::{FLAGS_NONE, HEADER_LEN, Kind, MAGIC, VERSION};
 use super::parse::{BtfIndex, parse};
 
@@ -65,18 +67,36 @@ impl Builder {
     }
 }
 
-/// Build the raw object. Declares one `int`, then per hook: an opaque
-/// forward declaration per argument type, a pointer to each, the hook's
+/// One stub function this kernel declares as an attachable target.
+struct Stub {
+    name: &'static str,
+    args: &'static [&'static str],
+}
+
+/// Every stub the object declares, hooks first and then iterator targets.
+/// Both attach-target families are named the same way, so they are
+/// published from one walk rather than from two objects that could
+/// disagree about a type id.
+/// # C: O(hooks + iterator targets)
+fn published_stubs() -> Vec<Stub> {
+    let mut stubs = Vec::new();
+    for (_, spec) in HOOKS { stubs.push(Stub { name: spec.stub, args: spec.args }); }
+    for (_, spec) in ITER_TARGETS { stubs.push(Stub { name: spec.stub, args: spec.args }); }
+    stubs
+}
+
+/// Build the raw object. Declares one `int`, then per stub: an opaque
+/// forward declaration per argument type, a pointer to each, the stub's
 /// prototype, and the stub function itself.
-/// # C: O(total hook argument count)
+/// # C: O(total stub argument count)
 fn build() -> Vec<u8> {
     let mut b = Builder::new();
     let int_name = b.name("int");
     let int_payload = INT_SIGNED << INT_ENCODING_SHIFT | INT_BITS;
     b.record(int_name, Kind::Int, 0, INT_BYTES, &[int_payload]);
-    for (_, spec) in HOOKS {
+    for stub in published_stubs() {
         let mut params = Vec::new();
-        for arg in spec.args {
+        for arg in stub.args {
             let arg_name = b.name(arg);
             let fwd = b.record(arg_name, Kind::Fwd, 0, 0, &[]);
             let ptr = b.record(0, Kind::Ptr, 0, fwd, &[]);
@@ -85,7 +105,7 @@ fn build() -> Vec<u8> {
         let mut payload = Vec::new();
         for (arg_name, ptr) in &params { payload.push(*arg_name); payload.push(*ptr); }
         let proto = b.record(0, Kind::FuncProto, params.len() as u32, INT_TYPE_ID, &payload);
-        let stub_name = b.name(spec.stub);
+        let stub_name = b.name(stub.name);
         b.record(stub_name, Kind::Func, FUNC_GLOBAL, proto, &[]);
     }
     let type_len = b.types.len() as u32;
@@ -128,14 +148,53 @@ pub(super) fn published() -> Option<Arc<KernelBtf>> {
     Some(btf)
 }
 
+impl KernelBtf {
+    /// Exact bytes this kernel publishes. One copy, shared by every reader:
+    /// the attach-target resolver below parses these same bytes, so a loader
+    /// that reads them can never be told a type id the load path would then
+    /// refuse to resolve. # C: O(1)
+    pub(crate) fn raw(&self) -> &[u8] { &self.raw }
+}
+
+/// Byte length of the published object; 0 when this kernel publishes none.
+/// # C: O(1) after first call
+pub(crate) fn published_len() -> u64 {
+    published().map(|btf| btf.raw().len() as u64).unwrap_or(0)
+}
+
+/// Windowed copy of the published object into `buf` starting at `off`,
+/// returning the byte count copied — 0 once `off` reaches the end. The read
+/// half of the binary attribute a loader opens to discover the type ids it
+/// names as attach targets. # C: O(n)
+pub(crate) fn published_read(off: u64, buf: &mut [u8]) -> usize {
+    let Some(btf) = published() else { return 0 };
+    let raw = btf.raw();
+    let Ok(off) = usize::try_from(off) else { return 0 };
+    if off >= raw.len() { return 0; }
+    let n = (raw.len() - off).min(buf.len());
+    buf[..n].copy_from_slice(&raw[off..off + n]);
+    n
+}
+
 /// Resolve one attach target id against the kernel's own type information.
 /// A target that is not a function, or is a function that is not one of the
 /// published LSM hook stubs, resolves to nothing.
 /// # C: O(hook count)
 pub(crate) fn lsm_hook_by_btf_id(btf_id: u32) -> Option<Hook> {
+    stub_name_by_btf_id(btf_id).and_then(|name| hook_by_stub_name(&name))
+}
+
+/// Resolve one attach target id to the iterator target its stub names.
+/// # C: O(target count)
+pub(crate) fn iter_target_by_btf_id(btf_id: u32) -> Option<IterTarget> {
+    stub_name_by_btf_id(btf_id).and_then(|name| target_by_stub_name(&name))
+}
+
+/// Name of the stub function one type id declares, when it declares one.
+/// # C: O(1)
+fn stub_name_by_btf_id(btf_id: u32) -> Option<Vec<u8>> {
     let btf = published()?;
-    let name = btf.index.func_name(&btf.raw, btf_id)?;
-    hook_by_stub_name(name)
+    btf.index.func_name(&btf.raw, btf_id).map(|name| name.to_vec())
 }
 
 #[cfg(test)]

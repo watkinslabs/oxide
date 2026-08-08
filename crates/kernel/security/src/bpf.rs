@@ -12,6 +12,7 @@
 //   prog.rs      PROG_LOAD, PROG_ATTACH/DETACH, LINK_CREATE, program object
 //   map.rs       MAP_CREATE, the element/freeze commands, map object
 //   link.rs      cgroup and LSM link objects and the link id registry
+//   iter.rs      iterator targets, the iterator link, and its walk descriptor
 //   fd.rs        descriptor publication for every fd-backed object
 //   sk_filter.rs socket-filter `__sk_buff` context build and run entry
 //   ids.rs       pseudo-inode numbers for fd-backed objects
@@ -32,6 +33,7 @@ mod dispatch;
 #[path = "bpf/cmd.rs"]
 mod command;
 mod prog;
+mod iter;
 mod cgroup_device;
 mod cgroup_network;
 mod btf;
@@ -57,6 +59,11 @@ pub use map::inode::{BpfMapInode, make_bpf_map_inode};
 pub use link::{
     BpfCgroupLinkInode, BpfLsmLinkInode, make_bpf_cgroup_link_inode, make_bpf_lsm_link_inode,
 };
+pub use iter::{BpfIterLinkInode, IterTarget, make_bpf_iter_link_inode};
+/// Width of one iterator context slot. # C: O(1)
+pub const ITER_SLOT_BYTES: usize = iter::targets::SLOT_BYTES;
+/// Bytes of context an iterator program addresses. # C: O(1)
+pub fn iter_context_bytes() -> usize { iter::targets::CONTEXT_BYTES }
 pub(crate) use link::prime_bpf_cgroup_link;
 pub(crate) use fd::{install_fd, install_fd_access};
 
@@ -76,6 +83,19 @@ pub use cgroup_network::{
     CgroupSockAddrContext, CgroupSockAddrError, CgroupSockAddrVerdict,
     run_cgroup_skb, run_cgroup_sock_addr,
 };
+
+/// Byte length of the type information this kernel publishes about itself;
+/// the size a binary attribute serving those bytes reports.
+/// # C: O(1) after first call
+pub fn kernel_btf_len() -> u64 { btf::published_len() }
+
+/// Windowed read of the type information this kernel publishes about
+/// itself: copy from `off` into `buf`, answering the byte count and 0 at
+/// end of object. A loader reads this to discover the type id naming the
+/// hook stub it means to attach to, and the ids it sees are the ids the
+/// load path resolves because both read one object.
+/// # C: O(n)
+pub fn kernel_btf_read(off: u64, buf: &mut [u8]) -> usize { btf::published_read(off, buf) }
 
 /// Delegation token derived from a bpffs superblock.
 pub struct BpfTokenInode {
