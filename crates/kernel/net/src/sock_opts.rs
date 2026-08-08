@@ -61,16 +61,16 @@ pub fn check_ioctl(namespace: u64, family: u16) -> Result<(), crate::NetError> {
     crate::security_admission::check(namespace, family, security::network::Operation::Ioctl)
 }
 
-/// Canonical security admission for a socket receive transaction. # C: O(1)
+/// The one receive security decision for a `read(2)`-shaped receive. # C: O(1)
 pub fn check_receive(sock: &InetSocket) -> Result<(), crate::NetError> {
-    crate::security_admission::check(sock.net_ns(),
-        sock.family.load(core::sync::atomic::Ordering::Acquire), security::network::Operation::Receive)
+    crate::socket_security::recvmsg(crate::socket_security::inet(sock), 0)
 }
 
-/// Canonical security admission for a socket send transaction. # C: O(1)
+/// The one send security decision for a `write(2)`-shaped send, which names no
+/// destination and carries no message flags. # C: O(N_layers × N_rules)
 pub fn check_send(sock: &InetSocket) -> Result<(), crate::NetError> {
-    crate::security_admission::check(sock.net_ns(),
-        sock.family.load(core::sync::atomic::Ordering::Acquire), security::network::Operation::Send)
+    crate::socket_security::sendmsg(crate::landlock_glue::current_domain().as_ref(),
+        crate::socket_security::inet(sock), None, 0)
 }
 
 /// Sender credentials for AF_UNIX SCM_CREDENTIALS. Caller fetches from

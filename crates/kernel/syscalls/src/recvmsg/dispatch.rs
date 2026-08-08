@@ -1,10 +1,10 @@
 use alloc::sync::Arc;
 
 use net::sock::SockKind;
-use net::uapi::MSG_ERRQUEUE;
 use syscall::errno::Errno;
 use vfs::OpenFlags;
 
+use crate::recv_admit::{RecvFamily, RecvRoute};
 use crate::recv_user::RecvUser;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
@@ -44,34 +44,52 @@ pub(crate) fn from_file(file: Arc<vfs::File>) -> Result<RecvTarget, i64> {
 
 /// Route one imported receive destination to its protocol owner. # C: O(1)
 pub(crate) fn recv(target: &RecvTarget, user: &RecvUser, flags: u64) -> i64 {
-    if flags & MSG_ERRQUEUE != 0 {
-        if let RecvKind::Inet(sock) = &target.kind {
-            if !matches!(*sock.kind.lock(), SockKind::Unix(_, _) | SockKind::UnixMsgPair(_, _)
-                | SockKind::UnixDgram(_))
-            {
-                if let Err(error) = net::security_admission::check(sock.net_ns(),
-                    sock.family.load(core::sync::atomic::Ordering::Acquire),
-                    security::network::Operation::Receive)
-                { return crate::net_errno::errno_from_neterr(error); }
-                return super::inet::recv_error(sock, user, flags);
-            }
-        }
-    }
+    // The one receive-side security decision, and the only source of a route:
+    // no protocol owner can be reached without it.
+    let route = match crate::recv_admit::admit_and_route(target.security_sock(),
+        target.family(), flags)
+    { Ok(route) => route, Err(error) => return error };
     let nonblock = target.file.flags().contains(OpenFlags::O_NONBLOCK);
-    match &target.kind {
-        RecvKind::Netlink(_) => super::netlink::recv_pinned(&target.file, nonblock, user, flags),
-        RecvKind::Vsock(sock) => super::vsock::recv_pinned(sock, nonblock, user, flags),
-        RecvKind::Inet(sock) => {
-            if matches!(*sock.kind.lock(), SockKind::Unix(_, _) | SockKind::UnixMsgPair(_, _) | SockKind::UnixDgram(_)) {
-                crate::unix_recv::recvmsg(sock, nonblock, user, flags)
-            } else {
-                super::inet::recv_pinned(sock, nonblock, user, flags)
-            }
-        }
+    match (route, &target.kind) {
+        (RecvRoute::Netlink, _) =>
+            super::netlink::recv_pinned(&target.file, nonblock, user, flags),
+        (RecvRoute::Vsock, RecvKind::Vsock(sock)) =>
+            super::vsock::recv_pinned(sock, nonblock, user, flags),
+        (RecvRoute::Unix, RecvKind::Inet(sock)) =>
+            crate::unix_recv::recvmsg(sock, nonblock, user, flags),
+        (RecvRoute::InetErrqueue, RecvKind::Inet(sock)) =>
+            super::inet::recv_error(sock, user, flags),
+        (RecvRoute::Inet, RecvKind::Inet(sock)) =>
+            super::inet::recv_pinned(sock, nonblock, user, flags),
+        _ => err(Errno::Enotsock),
     }
 }
 
 impl RecvTarget {
+    /// Describe the pinned receive target to the one message security
+    /// boundary. # C: O(1)
+    pub(crate) fn security_sock(&self) -> net::socket_security::MsgSock {
+        match &self.kind {
+            RecvKind::Inet(sock) => net::socket_security::inet(sock),
+            RecvKind::Netlink(sock) => net::socket_security::other(
+                net::net_ns::namespace_id(&sock.net_ns), net::socket_args::AF_NETLINK_WIRE),
+            RecvKind::Vsock(sock) => net::socket_security::other(
+                sock.net_ns(), net::socket_args::AF_VSOCK as u16),
+        }
+    }
+
+    /// Concrete family of the pinned target, for admission and routing. # C: O(1)
+    pub(crate) fn family(&self) -> RecvFamily {
+        match &self.kind {
+            RecvKind::Netlink(_) => RecvFamily::Netlink,
+            RecvKind::Vsock(_) => RecvFamily::Vsock,
+            RecvKind::Inet(sock) => RecvFamily::Inet {
+                unix: matches!(*sock.kind.lock(), SockKind::Unix(_, _)
+                    | SockKind::UnixMsgPair(_, _) | SockKind::UnixDgram(_)),
+            },
+        }
+    }
+
     /// Retained namespace/family owner for generic socket-option admission. # C: O(1)
     pub(crate) fn option_context(&self) -> (u64, u16) {
         match &self.kind {

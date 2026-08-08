@@ -61,9 +61,10 @@ impl InetSocket {
                 | SockKind::UnixDgram(_) | SockKind::Packet { .. } => K::Msg,
             _                            => K::NotConnected,
         };
-        if matches!(&k, K::Unix(_, _) | K::UnixMsgPair(_, _) | K::Tcp(_)) {
-            crate::sock_opts::check_receive(self).map_err(vfs_from_neterr)?;
-        }
+        // Every kind, not only the connected ones: the receive core below no
+        // longer carries a verdict of its own, so this is the one place a
+        // `read(2)`-shaped receive is admitted.
+        crate::sock_opts::check_receive(self).map_err(vfs_from_neterr)?;
         let timeo = self.opts.rcvtimeo_ns.load(core::sync::atomic::Ordering::Acquire);
         let deadline_ns = compute_deadline_ns(timeo);
         match k {
@@ -116,9 +117,10 @@ impl InetSocket {
                 | SockKind::UnixDgram(_) | SockKind::Packet { .. } => K::Msg,
             _                            => K::NotConnected,
         };
-        if matches!(&k, K::Unix(_, _) | K::UnixMsgPair(_, _) | K::Tcp(_)) {
-            crate::sock_opts::check_receive(self).map_err(vfs_from_neterr)?;
-        }
+        // Every kind, not only the connected ones: the receive core below no
+        // longer carries a verdict of its own, so this is the one place a
+        // `read(2)`-shaped receive is admitted.
+        crate::sock_opts::check_receive(self).map_err(vfs_from_neterr)?;
         match k {
             K::Tcp(entry) => {
                 drain_loopback();
@@ -212,9 +214,10 @@ impl InetSocket {
             SockKind::TcpConn(e)        => K::Tcp(e.clone()),
             _                            => K::Other,
         };
-        if matches!(&k, K::Unix(_, _) | K::UnixMsgPair(_, _) | K::Tcp(_)) {
-            crate::sock_opts::check_send(self).map_err(vfs_from_neterr)?;
-        }
+        // Every kind, not only the connected ones: the transport below no
+        // longer carries a verdict of its own, so this is the one place a
+        // `write(2)`-shaped send is admitted.
+        crate::sock_opts::check_send(self).map_err(vfs_from_neterr)?;
         match k {
             K::Unix(pair, end) => match pair.write(end, buf) {
                 Ok(n) => Ok(n),
