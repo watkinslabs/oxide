@@ -34,32 +34,40 @@ pub struct RegVma {
     pub anonymous: bool,
     /// Memory-backed shared storage whose pages ARE the object.
     pub shmem: bool,
+    /// A file object stands behind the mapping — as opposed to a device range
+    /// or a kernel-owned frame, whose leaves name memory this kernel does not
+    /// own the lifetime of.
+    pub file_backed: bool,
     /// The mapping may become writable.
     pub may_write: bool,
     /// The VMA already belongs to a DIFFERENT userfaultfd.
     pub owned_by_other_uffd: bool,
 }
 
-/// Which VMAs a given mode set may be armed on.
+/// Which VMAs a given mode set may be armed on. `wp_async` is the monitor's
+/// negotiated "resolve write faults instead of reporting them".
 ///
-/// - Everything requires a backing this kernel can intercept faults for:
-///   anonymous memory, or memory-backed shared storage. A device range, a
-///   kernel-owned frame or a file whose pages are a cache of something durable
-///   has no such interception point.
+/// - A mode that REPORTS a fault requires a backing this kernel can intercept
+///   for: anonymous memory, or memory-backed shared storage. A device range or
+///   a kernel-owned frame has no such interception point.
 /// - MINOR requires shared storage. A minor fault means "the backing already
 ///   holds this page, only the page table is missing it", which cannot arise
 ///   for anonymous memory: there is no backing to hold it.
-/// - WP requires anonymous memory. Write-protect state lives in a PRESENT
-///   page-table leaf, so a page that is absent from the page table cannot
-///   carry it; for shared storage that state would have to survive in the
-///   backing across eviction, which this kernel does not do. Accepting WP
-///   there would register a barrier that silently does not hold — the exact
-///   failure this ladder exists to prevent.
+/// - WP no longer requires anonymous memory: the protection now has a
+///   page-table entry of its own for an address with no resident page, so it no
+///   longer depends on the page being there to carry it.
+/// - WP ALONE, for a monitor that resolves its own write faults, needs no
+///   interception point at all — nothing is reported and nothing blocks — so it
+///   is admitted over anything backed by a page this kernel accounts, an
+///   ordinary file mapping included. A device range still is not: the write it
+///   would catch lands in memory whose lifetime this kernel does not own.
 /// # C: O(1)
-pub fn vma_can_userfault(v: &RegVma, modes: VmaFlags) -> bool {
+pub fn vma_can_userfault(v: &RegVma, modes: VmaFlags, wp_async: bool) -> bool {
+    if wp_async && modes == VmaFlags::UFFD_WP {
+        return v.anonymous || v.shmem || v.file_backed;
+    }
     if !(v.anonymous || v.shmem) { return false; }
     if modes.contains(VmaFlags::UFFD_MINOR) && !v.shmem { return false; }
-    if modes.contains(VmaFlags::UFFD_WP) && !v.anonymous { return false; }
     true
 }
 
@@ -77,8 +85,8 @@ pub fn vma_can_userfault(v: &RegVma, modes: VmaFlags) -> bool {
 /// makes "the VMA carries a uffd context" a usable authorisation fact for the
 /// fill ladder — two fds can never own one VMA.
 /// # C: O(1)
-pub fn check_register_vma(v: &RegVma, modes: VmaFlags) -> Result<(), Errno> {
-    if !vma_can_userfault(v, modes) { return Err(Errno::Einval); }
+pub fn check_register_vma(v: &RegVma, modes: VmaFlags, wp_async: bool) -> Result<(), Errno> {
+    if !vma_can_userfault(v, modes, wp_async) { return Err(Errno::Einval); }
     if !v.may_write { return Err(Errno::Eperm); }
     if v.owned_by_other_uffd { return Err(Errno::Ebusy); }
     Ok(())

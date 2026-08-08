@@ -190,7 +190,7 @@ fn fault(as_: &AddressSpace, root: u64, va: u64, fk: FaultKind) {
     // SAFETY: hosted; ACTIVE root set; mock frames are live host memory; hhdm=0 identity.
     unsafe {
         as_.handle_page_fault_cow_rmap::<MultiMmu, _, _, _, _, _, _, _, _>(
-            hal::UserVirtAddr::new(va).unwrap(), fk, 0,
+            hal::UserVirtAddr::new(va).unwrap(), fk, 0, false,
             fresh_pa_opt, rc_get_u32, rc_dec,
             |_p, _av, _i| {}, rc_inc, |_p| false,
             || Ok(()), || {},
@@ -340,7 +340,7 @@ fn shared_memcg_rejection_is_enomem_not_private_fallback() {
     // physical frame is allocated when the backing reports NoMem.
     let result = unsafe {
         as_.handle_page_fault_cow_rmap::<MultiMmu, _, _, _, _, _, _, _, _>(
-            hal::UserVirtAddr::new(va).unwrap(), RD, 0,
+            hal::UserVirtAddr::new(va).unwrap(), RD, 0, false,
             fresh_pa_opt, rc_get_u32, rc_dec,
             |_p, _av, _i| {}, rc_inc, |_p| false,
             || Ok(()), || {},

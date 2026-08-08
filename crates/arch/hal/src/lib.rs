@@ -108,47 +108,8 @@ pub const PAGE_SHIFT: u32 = 12;
 /// stack-window guards cannot drift from the scheduler's allocator.
 pub const KERNEL_STACK_BYTES: usize = 16 * 1024;
 
-bitflags::bitflags! {
-    /// PTE protection bits (per 20§5 / 21§5).
-    #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-    pub struct PageFlags: u64 {
-        const READ      = 1 << 0;
-        const WRITE     = 1 << 1;
-        const EXEC      = 1 << 2;
-        const USER      = 1 << 3;
-        const GLOBAL    = 1 << 4;
-        const NO_CACHE  = 1 << 5;
-        const WRITE_THROUGH = 1 << 6;
-        /// Normal memory with write-combining semantics. On x86 this selects
-        /// the Linux PAT WC entry; on arm64 it selects MAIR Normal-NC, which
-        /// is the architecture's `pgprot_writecombine` mapping.
-        const WRITE_COMBINE = 1 << 7;
-        /// Protection-key value bits. They travel with a user leaf's normal
-        /// permissions so fault, fork, and mprotect rewrites cannot lose the
-        /// key while preserving R/W/X.
-        const PKEY_BIT0 = 1 << 8;
-        const PKEY_BIT1 = 1 << 9;
-        const PKEY_BIT2 = 1 << 10;
-        const PKEY_BIT3 = 1 << 11;
-    }
-}
-
-impl PageFlags {
-    /// All architecture-neutral protection-key value bits. # C: O(1)
-    pub const PKEY_MASK: PageFlags = PageFlags::PKEY_BIT0.union(PageFlags::PKEY_BIT1)
-        .union(PageFlags::PKEY_BIT2).union(PageFlags::PKEY_BIT3);
-
-    /// Replace this leaf's protection key without changing any other mapping
-    /// permission. # C: O(1)
-    pub const fn with_pkey(self, pkey: u8) -> Self {
-        let bits = (self.bits() & !Self::PKEY_MASK.bits())
-            | (((pkey as u64) << 8) & Self::PKEY_MASK.bits());
-        Self::from_bits_retain(bits)
-    }
-
-    /// This leaf's protection key. # C: O(1)
-    pub const fn pkey(self) -> u8 { ((self.bits() & Self::PKEY_MASK.bits()) >> 8) as u8 }
-}
+mod flags;
+pub use flags::PageFlags;
 
 // ---------------------------------------------------------------------------
 // Context (14§4)
@@ -275,13 +236,40 @@ pub trait MmuOps {
     /// # C: O(walk depth)
     fn migration_entry_at(_root_pa: u64, _va: Va) -> Option<pt_walker::MigrationEntry> { None }
 
+    /// Read a non-present MARKER leaf from an explicit root — per-page facts
+    /// that name no page and no swap slot. Deliberately distinct from the two
+    /// above: a marker is inherited as-is, with no reference to retain and
+    /// nothing to wait for.
+    /// # C: O(walk depth)
+    fn pte_marker_at(_root_pa: u64, _va: Va) -> Option<pt_walker::PteMarker> { None }
+
+    /// Whether the NON-PRESENT leaf at `va` carries userfaultfd write-protect
+    /// state — the barrier riding on a reference to a page that is elsewhere.
+    /// Asked separately from the entry's identity because the two are separate
+    /// facts: the slot or token says WHERE the page is, this says whether a
+    /// monitor is still watching writes to it.
+    /// # C: O(walk depth)
+    fn nonpresent_uffd_wp_at(_root_pa: u64, _va: Va) -> bool { false }
+
+    /// Install a non-present marker leaf in a fresh child root, at an address
+    /// that holds nothing.
+    /// # SAFETY: caller owns `root_pa` and holds its page-table lock.
+    /// # C: O(walk depth)
+    unsafe fn map_marker_at(
+        _root_pa: u64, _va: Va, _m: pt_walker::PteMarker,
+    ) -> Result<(), pt_walker::WalkErr> { Err(pt_walker::WalkErr::AllocFailed) }
+
     /// Install a non-present swap leaf in a fresh child root.  The operation
     /// never overwrites a present or another non-present leaf, so the caller
     /// can roll back the slot reference on any error.
+    ///
+    /// `uffd_wp` arms the child's copy of the barrier. It is decided by the
+    /// caller rather than copied from the parent leaf because a child inherits
+    /// a monitor's protection only when it inherits the monitor.
     /// # SAFETY: caller owns `root_pa` and holds its page-table lock.
     /// # C: O(walk depth)
     unsafe fn map_swap_at(
-        _root_pa: u64, _va: Va, _entry: pt_walker::SwapEntry,
+        _root_pa: u64, _va: Va, _entry: pt_walker::SwapEntry, _uffd_wp: bool,
     ) -> Result<(), pt_walker::WalkErr> { Err(pt_walker::WalkErr::AllocFailed) }
 
     /// Remove this exact non-present swap leaf from an unpublished child root.

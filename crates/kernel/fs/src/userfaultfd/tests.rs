@@ -9,8 +9,12 @@
 //     unmapped destination is REFUSED before any page is installed.
 //   - ioctl_modes.rs: the four mode-specific commands end-to-end — which
 //     registration each demands, and what lands in its reply word.
+//   - events.rs: the cooperative half — what a fork, a move and a range change
+//     carry into the child / the destination / the monitor's queue, and the
+//     refusal every resolve meets while one is outstanding.
 
 mod policy;
 mod modes;
 mod ioctl;
 mod ioctl_modes;
+mod events;

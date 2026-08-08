@@ -16,6 +16,7 @@ impl AddressSpace {
         va: UserVirtAddr,
         vma: &Vma,
         hhdm_offset: u64,
+        uffd_wp: hal::PageFlags,
         alloc_frame: &mut A,
         dec_ref: &mut DR,
         set_rmap: &mut SR,
@@ -43,7 +44,7 @@ impl AddressSpace {
             core::ptr::write_bytes(dst, 0, PAGE_SIZE_BYTES as usize);
         }
         let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
-        let pte_flags = vma.page_flags();
+        let pte_flags = vma.page_flags() | uffd_wp;
         #[cfg(feature = "debug-atexit")]
         if (0x7ffff6000000..0x7ffff8000000).contains(&va_page) {
             crate::tailwatch::log_install(b"anon", 0, 0, va_page, pa, self.root_pa);

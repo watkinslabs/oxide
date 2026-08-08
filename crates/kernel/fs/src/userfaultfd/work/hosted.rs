@@ -17,7 +17,7 @@ pub fn fill_pages(_mm: &vmm::AddressSpace, req: &FillReq, _vma: &UffdVma) -> Pro
 }
 
 /// # C: O(1)
-pub fn wp_range(_mm: &vmm::AddressSpace, _start: u64, _end: u64, _protect: bool) {}
+pub fn wp_range(_mm: &vmm::AddressSpace, _start: u64, _end: u64, _protect: bool, _markers: bool) {}
 
 /// # C: O(1)
 pub fn poison_range(_mm: &vmm::AddressSpace, start: u64, end: u64) -> Progress {

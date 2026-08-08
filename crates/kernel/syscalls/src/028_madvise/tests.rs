@@ -215,3 +215,62 @@ fn vector_skips_zero_length_entries() {
 fn empty_vector_succeeds_with_zero_bytes() {
     assert_eq!(vector_madvise(&[], |_, _| EINVAL), 0);
 }
+
+// A sealed anonymous mapping and the protection key that decides whether the
+// caller "could write to it anyway".
+
+/// Ops whose rights register denies every key.
+struct KeyDeniedOps;
+impl MadviseOps for KeyDeniedOps {
+    fn key_permits_write(&self, _vma: &vmm::Vma) -> bool { false }
+}
+
+fn sealed_writable_anon() -> vmm::Vma {
+    let mut v = anonymous_vma();
+    v.flags |= vmm::VmaFlags::SEALED;
+    v
+}
+
+#[test]
+fn a_sealed_writable_anon_mapping_may_be_discarded_when_the_key_permits_it() {
+    let mut ops = RecordedOps { pageout: None, evicted: false };
+    let vma = sealed_writable_anon();
+    // Some of these fail for reasons of their own on a private anonymous
+    // mapping; what matters is that the seal is not what stops them.
+    for advice in [MADV_FREE, MADV_DONTNEED, MADV_DONTNEED_LOCKED, MADV_REMOVE,
+                   MADV_DONTFORK, MADV_WIPEONFORK] {
+        assert_ne!(apply_vma(&mut ops, advice, &vma, TEST_START, TEST_START + TEST_LEN),
+                   err(Errno::Eperm), "advice {advice} on a writable sealed mapping");
+    }
+}
+
+#[test]
+fn a_key_that_denies_writes_makes_a_sealed_discard_eperm() {
+    let mut ops = KeyDeniedOps;
+    let vma = sealed_writable_anon();
+    for advice in [MADV_FREE, MADV_DONTNEED, MADV_DONTNEED_LOCKED, MADV_REMOVE,
+                   MADV_DONTFORK, MADV_WIPEONFORK] {
+        assert_eq!(apply_vma(&mut ops, advice, &vma, TEST_START, TEST_START + TEST_LEN),
+                   err(Errno::Eperm), "advice {advice} must not bypass the key");
+    }
+}
+
+#[test]
+fn a_denying_key_does_not_block_a_non_discard_advice_or_an_unsealed_mapping() {
+    let mut ops = KeyDeniedOps;
+    // Not a discard.
+    let vma = sealed_writable_anon();
+    assert_eq!(apply_vma(&mut ops, MADV_NORMAL, &vma, TEST_START, TEST_START + TEST_LEN), 0);
+    // Not sealed.
+    let vma = anonymous_vma();
+    assert_eq!(apply_vma(&mut ops, MADV_DONTNEED, &vma, TEST_START, TEST_START + TEST_LEN), 0);
+}
+
+#[test]
+fn a_sealed_unwritable_mapping_is_eperm_whatever_the_key_says() {
+    let mut ops = RecordedOps { pageout: None, evicted: false };
+    let mut vma = sealed_writable_anon();
+    vma.prot = vmm::VmaProt::READ;
+    assert_eq!(apply_vma(&mut ops, MADV_DONTNEED, &vma, TEST_START, TEST_START + TEST_LEN),
+               err(Errno::Eperm));
+}

@@ -415,6 +415,13 @@ impl VmaTree {
             let ms = UserVirtAddr::new(s).expect("UVA in range");
             let me = UserVirtAddr::new(e).expect("UVA in range");
             let mut mid = v.clone_subrange(ms, me);
+            // A secret-memory mapping's lock state is not the caller's to
+            // change: its pages have no kernel-visible address, so they can
+            // never be reclaimed and the mapping can never be unlocked.
+            let (set, clear) = if mid.flags.contains(crate::vma::VmaFlags::SECRETMEM) {
+                (set.difference(crate::vma::VmaFlags::LOCKED_MASK),
+                 clear.difference(crate::vma::VmaFlags::LOCKED_MASK))
+            } else { (set, clear) };
             mid.flags.insert(set);
             mid.flags.remove(clear);
             let mid_key = mid.start;

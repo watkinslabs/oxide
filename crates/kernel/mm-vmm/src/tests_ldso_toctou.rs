@@ -103,7 +103,7 @@ fn drive(mm: &AddressSpace, va: u64, fault: FaultKind) {
     // accounting — the accounting invariant is covered by tests_cow_invariant).
     let _ = unsafe {
         mm.handle_page_fault_cow_rmap::<ToctouMmu, _, _, _, _, _, _, _, _>(
-            uva, fault, 0,
+            uva, fault, 0, false,
             alloc_frame,
             |_pa| 2,        // frame_refcount: pretend shared (>1) so CoW never reuses
             |_pa| {},       // dec_ref

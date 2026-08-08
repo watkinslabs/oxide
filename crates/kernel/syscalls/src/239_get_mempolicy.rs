@@ -34,7 +34,7 @@ pub fn sys_get_mempolicy(args: &SyscallArgs) -> i64 {
             // needs VM_READ and faults the page in; then `page_to_nid`.
             let n = if node {
                 // `check_vma_flags` refuses a range without VM_READ.
-                if !mm.range_readable_at(addr) { return err(Errno::Efault); }
+                if !mm.gup_read_permitted(addr, crate::pkey::rights_allow) { return err(Errno::Efault); }
                 let page = addr & !(hal::PAGE_SIZE_BYTES - 1);
                 if !page_present(page) {
                     // gup POPULATES the page; a range that cannot be

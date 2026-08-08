@@ -39,9 +39,9 @@ pub fn do_mprotect_pkey(args: &SyscallArgs, pkey: i32) -> i64 {
     let mm = match unsafe { cur.mm_ref() } { Some(m) => m.clone(), None => return 0 };
     // Linux takes `mmap_write_lock` and then refuses a key userspace never
     // allocated, before any VMA is touched so a bad key cannot partially apply.
-    let pkey_map = mm.pkeys().with_map(|m| *m);
-    let pkey_abi = crate::pkey::with_mm(crate::pkey::ARCH, mm.pkeys().arch());
-    if !crate::pkey::pkey_mprotect_allows(&pkey_abi, pkey_map, pkey) {
+    let pkey_arch = mm.pkeys().arch();
+    let pkey_abi = crate::pkey::with_mm(crate::pkey::ARCH, pkey_arch);
+    if !mm.pkeys().with_state(|st| crate::pkey::pkey_mprotect_allows(&pkey_abi, st, pkey)) {
         return -(Errno::Einval.as_i32() as i64);
     }
     let ua = match UserVirtAddr::new(addr) {
@@ -52,10 +52,22 @@ pub fn do_mprotect_pkey(args: &SyscallArgs, pkey: i32) -> i64 {
         Err(e) => return -(e.as_i32() as i64),
     };
     let requested = pmm::user_as::prot_from_linux(prot);
-    let key = (pkey != crate::pkey::PKEY_KEEP).then_some(pkey as u8);
+    // `arch_override_mprotect_pkey`: an explicit key from `pkey_mprotect` is
+    // never overridden, but a plain `mprotect` to execute-only takes this
+    // mm's execute-only key (allocating it on first use), and one leaving
+    // execute-only gives it back. The decision reads each VMA it runs over,
+    // so it runs inside the walk rather than once for the whole range.
+    let prot_exec_only = requested == vmm::VmaProt::EXEC;
+    let mut rights = crate::pkey::LiveRights;
+    let mut key_for = |v: &vmm::Vma| -> u8 {
+        mm.pkeys().with_state(|st| vmm::pkeys::arch_override_mprotect_pkey(
+            &pkey_arch, st, prot_exec_only,
+            vmm::pkeys::VmaKeyView { pkey: v.pkey, access_is_exec_only: v.prot == vmm::VmaProt::EXEC },
+            pkey, &mut rights)) as u8
+    };
     let outcome = match mm.mprotect_user(
         ua, len, requested, sched::personality::read_implies_exec(cur),
-        key,
+        &mut key_for,
     ) {
         Ok(outcome) => outcome,
         Err(_) => return -(Errno::Enomem.as_i32() as i64),

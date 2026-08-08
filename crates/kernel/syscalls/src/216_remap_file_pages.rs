@@ -101,7 +101,7 @@ pub fn sys_remap_file_pages(args: &SyscallArgs) -> i64 {
         final_prot |= vmm::VmaProt::EXEC;
     }
     match pmm::user_as::glue_mmap(range.start, range.size, prot_bits(final_prot), flags, -1,
-                                  file_off, Some(backing), None, None, vma.may_prot) {
+                                  file_off, Some(backing), None, None, vma.may_prot, vmm::VmaFlags::empty()) {
         // Linux discards the address `do_mmap` returns and reports 0.
         Ok(_)   => 0,
         Err(rv) => rv,

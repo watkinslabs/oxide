@@ -34,7 +34,7 @@
 #![allow(dead_code, reason = "per-arch pkey UAPI table: the non-native arch's descriptor + masks are kept for the hosted differential tests")]
 
 use syscall::errno::Errno;
-use vmm::pkeys::{self, PkeyArch};
+use vmm::pkeys::{self, PkeyArch, PkeyState};
 
 /// `PKEY_DISABLE_ACCESS`, both arches.
 pub const PKEY_DISABLE_ACCESS: u64 = 0x1;
@@ -46,8 +46,9 @@ pub const PKEY_DISABLE_EXECUTE: u64 = 0x4;
 /// express read-without-access, so x86 defines no such bit and rejects it.
 pub const PKEY_DISABLE_READ: u64 = 0x8;
 
-/// "Keep the current key" sentinel accepted by `pkey_mprotect`.
-pub const PKEY_KEEP: i32 = -1;
+/// "Keep the current key" sentinel accepted by `pkey_mprotect`. Owned by the
+/// mm, which is what actually decides whether a key is being kept.
+pub use pkeys::PKEY_KEEP;
 
 /// The pkey-syscall-side per-arch facts: the `PKEY_ACCESS_MASK` `init_val`
 /// is validated against, and the errno `arch_set_user_pkey_access` returns
@@ -95,34 +96,38 @@ pub const fn with_mm(a: PkeyAbi, mm: PkeyArch) -> PkeyAbi { PkeyAbi { mm, ..a } 
 /// Validation order is Linux's: flags, then `init_val`, then the allocation
 /// attempt, then the arch install.
 /// # C: O(1)
-pub fn pkey_alloc(a: &PkeyAbi, map: &mut u16, flags: u64, init_val: u64) -> Result<i32, Errno> {
+pub fn pkey_alloc(a: &PkeyAbi, st: &mut PkeyState, flags: u64, init_val: u64) -> Result<i32, Errno> {
     if flags != 0 { return Err(Errno::Einval); }
     if init_val & !a.access_mask != 0 { return Err(Errno::Einval); }
-    let pkey = pkeys::mm_pkey_alloc(&a.mm, map);
+    let pkey = pkeys::mm_pkey_alloc(&a.mm, st);
     if pkey == pkeys::PKEY_ALLOC_FAILED { return Err(Errno::Enospc); }
     // A usable rights register makes the allocation visible. The syscall shim
     // installs `init_val` into the current task immediately after this map
     // update, while it still owns this mm's pkey operation.
-    if a.mm.max_pkey > 1 { return Ok(pkey); }
+    if a.mm.pkeys_enabled() { return Ok(pkey); }
     // Without hardware, `arch_set_user_pkey_access` takes its feature-absent
     // return. Linux discards the rollback's own result and reports that error.
-    let _ = pkeys::mm_pkey_free(&a.mm, map, pkey);
+    let _ = pkeys::mm_pkey_free(&a.mm, st, pkey);
     Err(a.set_access_err)
 }
 
 /// `SYSCALL_DEFINE1(pkey_free)` — `mm_pkey_free` verbatim.
 /// # C: O(1)
-pub fn pkey_free(a: &PkeyAbi, map: &mut u16, pkey: i32) -> Result<(), Errno> {
-    if pkeys::mm_pkey_free(&a.mm, map, pkey) { Ok(()) } else { Err(Errno::Einval) }
+pub fn pkey_free(a: &PkeyAbi, st: &mut PkeyState, pkey: i32) -> Result<(), Errno> {
+    if pkeys::mm_pkey_free(&a.mm, st, pkey) { Ok(()) } else { Err(Errno::Einval) }
 }
 
 /// `do_mprotect_pkey`'s pkey clause: `pkey != -1 && !mm_pkey_is_allocated` is
 /// EINVAL, checked after the address/length/prot validation and before the VMA
 /// walk so a bad key never partially applies.
 /// # C: O(1)
-pub fn pkey_mprotect_allows(a: &PkeyAbi, map: u16, pkey: i32) -> bool {
-    pkey == PKEY_KEEP || pkeys::mm_pkey_is_allocated(&a.mm, map, pkey)
+pub fn pkey_mprotect_allows(a: &PkeyAbi, st: &PkeyState, pkey: i32) -> bool {
+    pkey == PKEY_KEEP || pkeys::mm_pkey_is_allocated(&a.mm, st, pkey)
 }
+
+mod rights;
+#[cfg(target_os = "oxide-kernel")]
+pub use rights::{LiveRights, rights_allow};
 
 #[cfg(test)]
 mod tests;

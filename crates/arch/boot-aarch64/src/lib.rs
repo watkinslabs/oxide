@@ -31,6 +31,7 @@ extern crate std;
 
 pub mod dtb;
 pub mod efi_cmdline;
+pub mod linear_map;
 pub mod pl011;
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
 pub mod selfboot;

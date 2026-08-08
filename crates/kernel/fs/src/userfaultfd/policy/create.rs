@@ -66,6 +66,13 @@ pub struct ApiReply {
 /// handshake with `features == 0` succeeds exactly once (the stored word then
 /// carries INITIALIZED and is no longer 0) — reproduce that, do not "improve"
 /// it: a monitor probing the API twice depends on it.
+///
+/// Asking for asynchronous write faults installs the unpopulated-address
+/// coverage with it, named or not: a monitor that never reads the fd has no
+/// other way to learn about a write to an address that had no page, so the two
+/// together are what "resolve every write silently" has to mean. The reply
+/// still advertises the whole offered set, so the monitor sees no difference
+/// between what it asked for and what it got.
 /// # C: O(1)
 pub fn api_negotiate(api: u64, req_features: u64, cap_sys_ptrace: bool, ctx_features: u64)
     -> Result<ApiReply, Errno> {
@@ -73,11 +80,24 @@ pub fn api_negotiate(api: u64, req_features: u64, cap_sys_ptrace: bool, ctx_feat
     if req_features & feature::EVENT_FORK != 0 && !cap_sys_ptrace { return Err(Errno::Eperm); }
     if req_features & !UFFD_API_FEATURES != 0 { return Err(Errno::Einval); }
     if ctx_features != 0 { return Err(Errno::Einval); }
+    let mut installed = req_features;
+    if installed & feature::WP_ASYNC != 0 { installed |= feature::WP_UNPOPULATED; }
     Ok(ApiReply {
         features: UFFD_API_FEATURES,
         ioctls: UFFD_API_IOCTLS,
-        ctx_features: req_features | feature::INITIALIZED,
+        ctx_features: installed | feature::INITIALIZED,
     })
+}
+
+/// Whether the monitor asked for write faults to be resolved silently rather
+/// than reported.
+/// # C: O(1)
+pub fn wp_async(ctx_features: u64) -> bool { ctx_features & feature::WP_ASYNC != 0 }
+
+/// Whether the monitor asked the barrier to cover addresses with no page.
+/// # C: O(1)
+pub fn wp_unpopulated(ctx_features: u64) -> bool {
+    ctx_features & feature::WP_UNPOPULATED != 0
 }
 
 /// Whether a fault may be handed to the monitor. Returns false for a

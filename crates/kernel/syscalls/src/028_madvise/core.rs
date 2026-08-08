@@ -107,6 +107,11 @@ pub(crate) trait MadviseOps {
     fn update_flags(&mut self, _start: u64, _len: u64,
                     _set: vmm::VmaFlags, _clear: vmm::VmaFlags) {}
     fn populate(&mut self, _start: u64, _len: u64, _write: bool) -> i64 { 0 }
+    /// `arch_vma_access_permitted(vma, write)` — would a write through this
+    /// mapping's protection key be permitted for the calling thread right
+    /// now? A boot with no rights register permits everything, which is why
+    /// this defaults to true.
+    fn key_permits_write(&self, _vma: &vmm::Vma) -> bool { true }
 }
 
 fn find_vma<'a>(vmas: &'a [vmm::Vma], pos: u64) -> Option<&'a vmm::Vma> {
@@ -124,17 +129,21 @@ fn file_err(e: vmm::FileBackingError) -> i64 {
     }
 }
 
-fn sealed_discard_rejected(vma: &vmm::Vma, advice: u64) -> bool {
+/// A sealed anonymous mapping may still be discarded if the caller could
+/// write through it anyway — which needs BOTH the mapping's write permission
+/// and the protection key's. A mapping the key currently denies is not one
+/// the caller can write, so the discard is refused.
+fn sealed_discard_rejected<O: MadviseOps>(ops: &O, vma: &vmm::Vma, advice: u64) -> bool {
     let discard = matches!(advice, MADV_FREE | MADV_DONTNEED | MADV_DONTNEED_LOCKED |
         MADV_REMOVE | MADV_DONTFORK | MADV_WIPEONFORK);
     discard
         && vma.flags.contains(vmm::VmaFlags::SEALED)
         && matches!(vma.backing, vmm::VmaBacking::Anonymous)
-        && !vma.prot.contains(vmm::VmaProt::WRITE)
+        && !(vma.prot.contains(vmm::VmaProt::WRITE) && ops.key_permits_write(vma))
 }
 
 fn apply_vma<O: MadviseOps>(ops: &mut O, advice: u64, vma: &vmm::Vma, start: u64, end: u64) -> i64 {
-    if sealed_discard_rejected(vma, advice) { return err(Errno::Eperm); }
+    if sealed_discard_rejected(ops, vma, advice) { return err(Errno::Eperm); }
     let len = end - start;
     match advice {
         MADV_NORMAL => {
@@ -319,6 +328,14 @@ pub(crate) struct LiveOps {
 
 #[cfg(target_os = "oxide-kernel")]
 impl MadviseOps for LiveOps {
+    /// `process_madvise` against another process is a foreign access, which
+    /// keys never govern — there is no thread whose rights register could be
+    /// meant. Only the caller's own mm is key-checked.
+    fn key_permits_write(&self, vma: &vmm::Vma) -> bool {
+        vmm::pkeys::vma_access_permitted(&self.mm.pkeys().arch(), vma.pkey, true, false,
+                                         !self.local, crate::pkey::rights_allow)
+    }
+
     fn evict_pages(&mut self, start: u64, len: u64) -> i64 {
         if self.local { pmm::user_as::evict_pages_in_range(start, len) }
         else { pmm::user_as::evict_foreign_pages_in_range(&self.mm, start, len) }

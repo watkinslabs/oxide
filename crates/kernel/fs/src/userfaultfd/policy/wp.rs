@@ -39,6 +39,28 @@ pub struct WpVma {
     pub end: u64,
     /// The VMA is registered for write-protect mode.
     pub uffd_wp: bool,
+    /// Private anonymous memory.
+    pub anonymous: bool,
+    /// The monitor asked the barrier to cover addresses with no page.
+    pub wp_unpopulated: bool,
+}
+
+/// Whether the barrier over this VMA is carried by an entry of its OWN at an
+/// address with no resident page, rather than only by the permissions of the
+/// pages that already exist.
+///
+/// Anything but private anonymous memory needs one unconditionally: the page a
+/// write would land on can be sitting in the backing while the page table has
+/// nothing, so "no entry" is not "no page", and leaving the address alone lets
+/// that write through unseen.
+///
+/// Private anonymous memory has nothing behind it — an address with no entry
+/// has no contents anywhere — so there the coverage is the monitor's to ask
+/// for, and it costs page tables for addresses that may never be touched.
+/// # C: O(1)
+pub fn wp_use_markers(v: &WpVma) -> bool {
+    if !v.uffd_wp { return false; }
+    !v.anonymous || v.wp_unpopulated
 }
 
 /// Every VMA overlapping the range must be WP-registered, and the range must
