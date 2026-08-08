@@ -179,8 +179,17 @@ pub trait InodeOps: Send + Sync {
 
     /// `i_op->getattr` — assemble the stat/statx `Kstat`. Default
     /// `generic_fillattr` over the concrete inode fields + mount idmap.
-    /// # C: O(1)
-    fn getattr(&self, inode: &Inode, idmap: &Idmap) -> Kstat {
+    ///
+    /// `request_mask` is the statx mask the caller asked for and `query_flags`
+    /// carries the sync-type selector. Both are part of the backend contract,
+    /// not decoration: the request-gated `STATX_*` fields cost real work (an
+    /// extra device query, a round trip) and must only be produced when asked
+    /// for, and the sync-type selector is the only way a network-backed
+    /// filesystem can be told to answer from cache. Omitting them from this
+    /// signature made every such field unimplementable and silently discarded
+    /// the sync-type selector after validating it. # C: O(1)
+    fn getattr(&self, inode: &Inode, idmap: &Idmap, request_mask: u32, query_flags: u32) -> Kstat {
+        let _ = (request_mask, query_flags);
         crate::getattr::generic_fillattr(inode, idmap)
     }
 

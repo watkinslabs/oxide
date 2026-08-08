@@ -46,7 +46,7 @@ fn plain_getattr_never_fills_change_cookie() {
 fn unrequested_mask_leaves_cookie_clear() {
     let inode: InodeRef = vfile(8);
     // Request only the basic stats, not the change cookie.
-    let st = vfs_getattr_mask(&inode, &IDENTITY, STATX_BASIC_STATS);
+    let st = vfs_getattr_mask(&inode, &IDENTITY, STATX_BASIC_STATS, 0);
     assert_eq!(st.result_mask & STATX_CHANGE_COOKIE, 0, "not requested ⇒ not filled");
     assert_eq!(st.change_cookie, 0);
 }
@@ -62,7 +62,7 @@ fn requested_fills_real_version_and_latches() {
     // Before any query, a lazy bump is a no-op (nobody queried since last bump).
     assert!(!inode_maybe_inc_iversion(&inode, false), "no query yet ⇒ lazy bump skipped");
 
-    let st = vfs_getattr_mask(&inode, &IDENTITY, STATX_CHANGE_COOKIE | STATX_BASIC_STATS);
+    let st = vfs_getattr_mask(&inode, &IDENTITY, STATX_CHANGE_COOKIE | STATX_BASIC_STATS, 0);
     assert_eq!(st.result_mask & STATX_CHANGE_COOKIE, STATX_CHANGE_COOKIE, "cookie bit set when requested");
     assert_eq!(st.change_cookie, 4, "real version is raw >> 1");
     // The base mask is untouched alongside the added bit.
@@ -78,7 +78,7 @@ fn requested_fills_real_version_and_latches() {
 #[test]
 fn requested_fills_cookie_for_concrete_inode() {
     let inode: InodeRef = vfile(6); // real version 6>>1 = 3
-    let st = vfs_getattr_mask(&inode, &IDENTITY, STATX_CHANGE_COOKIE | STATX_BASIC_STATS);
+    let st = vfs_getattr_mask(&inode, &IDENTITY, STATX_CHANGE_COOKIE | STATX_BASIC_STATS, 0);
     assert_eq!(st.result_mask & STATX_CHANGE_COOKIE, STATX_CHANGE_COOKIE,
                "concrete inode always carries i_version ⇒ cookie surfaced when requested");
     assert_eq!(st.change_cookie, 3, "real version is raw >> 1");

@@ -7,7 +7,7 @@
 use syscall::SyscallArgs;
 
 use crate::statx_abi::{cp_statx, statx_entry, statx_validate, StatxEntry, StatxPathInfo,
-    AT_EMPTY_PATH, AT_NO_AUTOMOUNT, AT_SYMLINK_NOFOLLOW, STATX_SIZE};
+    AT_EMPTY_PATH, AT_NO_AUTOMOUNT, AT_STATX_SYNC_TYPE, AT_SYMLINK_NOFOLLOW, STATX_SIZE};
 use crate::stat_common::{stat_gid, stat_uid};
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 
@@ -69,7 +69,10 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
     // request-gated change cookie. `result_mask` reports exactly the fields the
     // backend could fill — never the requested set.
     let idmap = vfs::mount::idmap_for(p.mnt_id);
-    let mut st = vfs::getattr::vfs_getattr_mask(&p.inode, &idmap, request_mask);
+    // `AT_STATX_SYNC_TYPE` reaches the backend: validating it and then dropping
+    // it cost a full attribute round trip on every `AT_STATX_DONT_SYNC` stat.
+    let mut st = vfs::getattr::vfs_getattr_mask(&p.inode, &idmap, request_mask,
+                                                flags & AT_STATX_SYNC_TYPE);
     st.uid = stat_uid(st.uid);
     st.gid = stat_gid(st.gid);
     let dev = crate::namei_common::fsid_to_dev(st.fsid);

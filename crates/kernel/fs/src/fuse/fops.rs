@@ -55,7 +55,15 @@ impl InodeOps for FuseInodeOps {
     /// `FUSE_GETATTR` — refresh + report this inode's attributes. On a daemon
     /// error, report the locally cached fields because this VFS signature cannot
     /// return an errno. # C: O(1) + rtt
-    fn getattr(&self, inode: &Inode, idmap: &Idmap) -> Kstat {
+    fn getattr(&self, inode: &Inode, idmap: &Idmap, request_mask: u32, query_flags: u32) -> Kstat {
+        let _ = request_mask;
+        // The sync selector is the whole reason a network-backed filesystem
+        // gets one: `DONT_SYNC` says a cached answer will do, so the round trip
+        // is skipped. It used to be validated at the shim and then dropped, so
+        // every such stat paid a full attribute round trip anyway.
+        if query_flags & vfs::getattr::AT_STATX_DONT_SYNC != 0 {
+            return generic_fillattr(inode, idmap);
+        }
         if let Ok(d) = fuse_data(inode) {
             let mut body = Vec::with_capacity(proto::FUSE_GETATTR_IN_SIZE);
             proto::GetattrIn { getattr_flags: 0, fh: 0 }.encode(&mut body);
@@ -140,6 +148,36 @@ impl FileOps for FuseFileOps {
             let _ = d.conn.call(proto::FUSE_FLUSH, d.nodeid, &b);
         }
         Ok(())
+    }
+
+    /// `FUSE_FSYNC` / `FUSE_FSYNCDIR` — ask the daemon to make this file's (or
+    /// directory's) contents durable. `datasync` travels as
+    /// `FUSE_FSYNC_FDATASYNC` so the daemon can skip the metadata write.
+    ///
+    /// Before this slot existed, fuse inherited the generic default's
+    /// `Ok(())`: `fsync(2)` on a fuse file returned success without the daemon
+    /// ever hearing about it. The one errno that is not a failure is `ENOSYS`
+    /// — the daemon declining to implement the op — which reports success and
+    /// latches on the connection so no later call pays the round trip.
+    /// # C: O(1) + rtt
+    fn fsync(&self, file: &File, datasync: bool) -> KResult<()> {
+        let d = fuse_data(file.inode())?;
+        let is_dir = file.inode().file_type() == FileType::Directory;
+        if d.conn.fsync_unsupported(is_dir) { return Ok(()); }
+        // The handle is this description's own; a fuse fsync names an open
+        // file, so an unopened description has nothing to sync.
+        let fh = ensure_open(file)?;
+        let mut body = Vec::with_capacity(proto::FUSE_FSYNC_IN_SIZE);
+        proto::FsyncIn { fh, fsync_flags: super::fsync::fsync_flags(datasync) }.encode(&mut body);
+        let r = d.conn.call(super::fsync::fsync_opcode(is_dir), d.nodeid, &body).map(|_| ());
+        match super::fsync::classify_reply(r) {
+            super::fsync::FsyncOutcome::Done        => Ok(()),
+            super::fsync::FsyncOutcome::Unsupported => {
+                d.conn.set_fsync_unsupported(is_dir);
+                Ok(())
+            }
+            super::fsync::FsyncOutcome::Failed(e)   => Err(e),
+        }
     }
 
     /// `FUSE_RELEASE`/`FUSE_RELEASEDIR` at last close — drop the daemon's `fh`

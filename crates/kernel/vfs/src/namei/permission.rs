@@ -169,6 +169,21 @@ pub(crate) fn may_lookup(inode: &InodeRef, cred: &Cred) -> KResult<()> {
     inode_permission(inode, MAY_EXEC, cred)
 }
 
+/// The open-flag rungs `may_open` applies AFTER the access-mode DAC check.
+/// Carried as decoded booleans so the arch-specific numeric `O_*` values stay
+/// at the syscall boundary and cannot be mismatched here.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct OpenIntent {
+    /// Access mode is not read-only (`O_WRONLY` or `O_RDWR`).
+    pub write_mode: bool,
+    /// `O_APPEND` requested.
+    pub append: bool,
+    /// `O_TRUNC` requested.
+    pub trunc: bool,
+    /// `O_NOATIME` requested.
+    pub noatime: bool,
+}
+
 /// `may_open`: DAC check for opening `inode` with the
 /// requested read/write access. A SYMLINK final inode is `ELOOP` — it only
 /// reaches `may_open` when `open(O_NOFOLLOW)` (without `O_PATH`) left the
@@ -176,19 +191,63 @@ pub(crate) fn may_lookup(inode: &InodeRef, cred: &Cred) -> KResult<()> {
 /// Writing to a directory is `EISDIR`; otherwise the requested access classes
 /// are checked via `inode_permission` (EACCES on deny). The EROFS-on-RO-mount
 /// and O_CREAT parent checks live at the syscall layer (they need the resolved
-/// mount + parent inode). A freshly O_CREAT'd file skips this entirely (Linux
-/// sets acc_mode=0), as does an O_PATH open. # C: O(ngroups)
+/// mount + parent inode). A freshly O_CREAT'd file skips the ACCESS-MODE part
+/// (Linux sets acc_mode=0), as does an O_PATH open.
+///
+/// Flag-less form: the caller has no open flags to declare (in-kernel openers,
+/// `MAY_EXEC` probes). [`may_open_at`] carries the full ladder. # C: O(ngroups)
 pub fn may_open(inode: &InodeRef, want_read: bool, want_write: bool, cred: &Cred) -> KResult<()> {
+    may_open_at(inode, want_read, want_write, OpenIntent::default(), cred)
+}
+
+/// `may_open` with the open's flag rungs, in the order the contract fixes them:
+/// the file-type verdict, then the access-mode DAC check, then the append-only
+/// inode rung, then the `O_NOATIME` owner rung. The flag rungs run even when the
+/// access-mode mask is empty (a just-created or `acc_mode == 0` open), because
+/// they are decided by the FLAGS, not by the requested access.
+/// # C: O(ngroups)
+pub fn may_open_at(
+    inode: &InodeRef,
+    want_read: bool,
+    want_write: bool,
+    intent: OpenIntent,
+    cred: &Cred,
+) -> KResult<()> {
+    let mut intent = intent;
     match inode.file_type() {
         FileType::Symlink => return Err(VfsError::Eloop),
         FileType::Directory if want_write => return Err(VfsError::Eisdir),
+        // A device / FIFO / socket open acts on the driver, not on filesystem
+        // data, so the truncate request is dropped before the append-only rung
+        // below ever sees it.
+        FileType::CharDev | FileType::BlockDev | FileType::Fifo | FileType::Socket => {
+            intent.trunc = false;
+        }
         _ => {}
     }
     let mut mask = 0u32;
     if want_read  { mask |= MAY_READ; }
     if want_write { mask |= MAY_WRITE; }
-    if mask == 0 { return Ok(()); }
-    inode_permission(inode, mask, cred)
+    if mask != 0 { inode_permission(inode, mask, cred)?; }
+    // An append-only inode accepts a write-mode open ONLY in append mode, and
+    // never a truncating one. The flag bounds what the description may ever do,
+    // so the refusal belongs at open — a description that could not legally
+    // write must not exist, rather than failing at every later write.
+    if inode.i_flags() & crate::inode::S_APPEND != 0 {
+        if intent.write_mode && !intent.append { return Err(VfsError::Eperm); }
+        if intent.trunc { return Err(VfsError::Eperm); }
+    }
+    // `O_NOATIME` suppresses the access-time update for every read through this
+    // description, so it is an owner-only privilege: without this rung any
+    // caller could silently freeze the atime of another user's file.
+    if intent.noatime && !owner_or_capable(inode, cred) { return Err(VfsError::Eperm); }
+    Ok(())
+}
+
+/// `inode_owner_or_capable`: the caller's filesystem uid owns `inode`, or the
+/// caller holds the file-owner capability. # C: O(1)
+fn owner_or_capable(inode: &InodeRef, cred: &Cred) -> bool {
+    cred.uid == inode.uid().unwrap_or(0) || cred.cap_fowner
 }
 
 #[cfg(test)]

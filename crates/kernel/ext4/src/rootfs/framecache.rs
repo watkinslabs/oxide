@@ -18,7 +18,6 @@
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::sync::{Arc, Weak};
-use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use sync::{Spinlock, TaskList as TaskListClass};
@@ -28,6 +27,7 @@ use super::state::RootfsState;
 
 mod cachestat;
 mod dirty;
+mod invalidate;
 #[cfg(feature = "debug-fillverify")]
 mod debug;
 #[cfg(feature = "debug-framecache-verify")]
@@ -454,45 +454,9 @@ impl Ext4FrameStore {
     /// change is on disk, keep the writeback clamp in step). # C: O(1)
     pub(crate) fn set_size(&self, size: u64) { self.size.store(size, Ordering::Release); }
 
-    /// Drop+`dec_ref` every resident frame whose whole page lies in
-    /// `[start, end)` (Linux `truncate_inode_pages_range`), clearing dirty
-    /// tags. A page is a victim iff `i·PG >= start && (i+1)·PG <= end`; pass a
-    /// page-floored `start` (e.g. truncate floors i_size) to also drop the
-    /// partial page so a refault re-reads zeros. Returns frames dropped.
-    /// # C: O(pages in range)
-    pub(crate) fn invalidate_range(&self, start: u64, end: u64) -> usize {
-        let lo = (start + PG as u64 - 1) / PG as u64;       // first FULLY-covered page
-        let hi = if end == u64::MAX { u64::MAX } else { end / PG as u64 }; // exclusive
-        if lo >= hi { return 0; }
-        // Pick and unpublish each victim under ONE pages lock. Apart from
-        // avoiding a double-free race with a second invalidate, this makes the
-        // resident-cache counter follow exactly the entries actually removed.
-        let victims: Vec<(u64, FileCachePage)> = {
-            let mut g = self.pages.lock();
-            let ids: Vec<u64> = g.range(lo..hi).map(|(&idx, _)| idx).collect();
-            ids.into_iter().filter_map(|idx| g.remove(&idx).map(|page| (idx, page))).collect()
-        };
-        let n = victims.len();
-        if n != 0 { vfs::memory_accounting::account_file_cache_remove(n as u64); }
-        for (_, page) in victims {
-            // SAFETY: frame removed from the store; release the inode's object
-            // reference (a still-mapped peer's inc_ref keeps it alive until
-            // that peer's AS teardown decs).
-            unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(page.pa); }
-            cgroup::uncharge_memory(page.cgid, cgroup::MemoryKind::File, PG as u64);
-        }
-        let mut d = self.dirty.lock();
-        let dirty_ids: Vec<u64> = d.range(lo..hi).copied().collect();
-        for idx in &dirty_ids { d.remove(idx); }
-        drop(d);
-        if !dirty_ids.is_empty() { vfs::memory_accounting::account_file_cache_discard_dirty(dirty_ids.len() as u64); }
-        // Truncation removes the index entirely, shadow included — a refault
-        // there is a new page, not a returning one.
-        self.shadows.lock().retain(|&i, _| i < lo || i >= hi);
-        #[cfg(feature = "debug-fillverify")]
-        self.sums.lock().retain(|&i, _| i < lo || i >= hi);
-        n
-    }
+    // Range eviction — truncate's unconditional drop (`invalidate_range`) and
+    // the DONTNEED hint's best-effort one (`try_invalidate_pages`) — lives in
+    // the `invalidate` child module.
 
     // ── internals ────────────────────────────────────────────────────────
 

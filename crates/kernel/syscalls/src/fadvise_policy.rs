@@ -65,6 +65,60 @@ pub fn fadvise_check(is_fifo: bool, has_mapping: bool, offset: i64, len: i64, ad
     Ok(())
 }
 
+/// Page granularity the DONTNEED whole-page rule works in (`PAGE_SHIFT`);
+/// 4 KiB base page on both arches, matching `vfs::file::readahead::PAGE_SIZE`
+/// and `fs::readahead`'s window granule.
+pub const FADV_PAGE_SIZE: u64 = 4096;
+
+/// `generic_fadvise`'s INCLUSIVE `endbyte`: `offset + len - 1`, with `len == 0`
+/// ("as much as possible") and an overflowing sum both collapsing to
+/// `LLONG_MAX`. The overflow test is SIGNED — `offset` and `len` are each at
+/// most `i64::MAX`, so their sum can reach `2·i64::MAX` and a `u64` comparison
+/// misses the wrap that a `loff_t` comparison catches (`offset == len ==
+/// i64::MAX` is the witness: signed says overflow, unsigned says `-3`).
+/// # C: O(1)
+pub fn fadvise_endbyte(offset: i64, len: i64) -> i64 {
+    let end = (offset as u64).wrapping_add(len as u64);
+    if len == 0 || (end as i64) < len { i64::MAX } else { end.wrapping_sub(1) as i64 }
+}
+
+/// `POSIX_FADV_DONTNEED`'s victim range as INCLUSIVE page indices, or `None`
+/// when the advice discards nothing. `i_size` is the inode's current length.
+///
+/// The rule is "first and last FULL page": `start_index` rounds UP and
+/// `end_index` rounds DOWN, and because the eviction primitive treats
+/// `end_index` inclusively, `end_index` is then DECREMENTED so a trailing
+/// partial page survives — preserving a page that is still needed beats
+/// discarding one that is not. Two exceptions keep that decrement from
+/// throwing away a page nothing else will ever reclaim:
+///
+/// - `endbyte` already sits on a page's LAST byte, so no page is partial; and
+/// - `endbyte` is exactly `i_size - 1`, i.e. the partial page is the file's
+///   EOF page, whose tail no future read can want.
+///
+/// A decrement that would underflow past index 0 discards nothing at all —
+/// wrapping an unsigned index would pass the `end >= start` test and evict the
+/// WHOLE file cache for a request that named a few bytes of the first page.
+/// # C: O(1)
+pub fn dontneed_page_range(offset: i64, len: i64, i_size: u64) -> Option<(u64, u64)> {
+    if offset < 0 || len < 0 { return None; }
+    let endbyte = fadvise_endbyte(offset, len);
+    if endbyte < 0 { return None; }
+    let eb = endbyte as u64;
+    let start_index = (offset as u64 + (FADV_PAGE_SIZE - 1)) / FADV_PAGE_SIZE;
+    let mut end_index = eb / FADV_PAGE_SIZE;
+    let ends_on_page_boundary = eb % FADV_PAGE_SIZE == FADV_PAGE_SIZE - 1;
+    // Written as `eb + 1 == i_size` rather than `eb == i_size - 1`: `eb` is at
+    // most `i64::MAX` so the add cannot overflow, while the subtraction
+    // underflows on an empty file.
+    let is_last_byte_of_file = eb + 1 == i_size;
+    if !ends_on_page_boundary && !is_last_byte_of_file {
+        if end_index == 0 { return None; }
+        end_index -= 1;
+    }
+    if end_index >= start_index { Some((start_index, end_index)) } else { None }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
