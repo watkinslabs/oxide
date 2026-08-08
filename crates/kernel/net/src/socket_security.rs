@@ -53,6 +53,7 @@ pub fn other(namespace: u64, family: u16) -> MsgSock {
 /// send settles no new port, and a family with no port rules is left alone. A
 /// send that names no address settles nothing and is not checked.
 /// # C: O(N_layers × N_rules)
+#[inline(never)]
 fn sandbox_send(domain: Option<&Arc<Domain>>, sock: MsgSock, name: Option<&[u8]>, flags: u64)
     -> Result<(), NetError>
 {
@@ -73,7 +74,11 @@ fn sandbox_send(domain: Option<&Arc<Domain>>, sock: MsgSock, name: Option<&[u8]>
 /// The one send-side security decision. `name` is the kernel-owned destination
 /// this message names, or `None` for a send that rides the socket's existing
 /// association.
+/// `#[inline(never)]`: the sandbox verdict and the registry lookup each
+/// materialise their own working set, and every send entry point calls this
+/// ahead of the family work whose frame it would otherwise sum with.
 /// # C: O(N_layers × N_rules)
+#[inline(never)]
 pub fn sendmsg(domain: Option<&Arc<Domain>>, sock: MsgSock, name: Option<&[u8]>, flags: u64)
     -> Result<(), NetError>
 {

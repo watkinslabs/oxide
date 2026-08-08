@@ -11,6 +11,7 @@ use crate::send::SendContext;
 
 /// Describe the retained send target to the one message security boundary.
 /// # C: O(1)
+#[inline(never)]
 pub(crate) fn security_sock(target: &SendFile) -> KResult<net::socket_security::MsgSock> {
     Ok(match target.kind() {
         SendKind::File => return Err(Error::Enotsock),
@@ -25,7 +26,10 @@ pub(crate) fn security_sock(target: &SendFile) -> KResult<net::socket_security::
 /// The one send-side security decision, asked once per message and before any
 /// family-specific validation, so a refusal is not preempted by an argument
 /// error the sandboxed caller was never allowed to reach.
+/// `#[inline(never)]`: this sits at the head of every send, ahead of the
+/// family work, so its frame must overlap that work rather than add to it.
 /// # C: O(N_layers × N_rules)
+#[inline(never)]
 pub(crate) fn admit(ctx: &SendContext<'_>, target: &SendFile, message: &Message, flags: u32)
     -> KResult<()>
 {

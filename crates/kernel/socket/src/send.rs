@@ -204,7 +204,11 @@ fn monotonic_ns() -> u64 {
     { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
 }
 
+/// `#[inline(never)]`: this is one protocol family's send working set, and
+/// `send_prepared` dispatches every family through the same frame (Linux
+/// `noinline_for_stack`).
 #[cfg(target_os = "oxide-kernel")]
+#[inline(never)]
 fn send_inet(ctx: &SendContext<'_>, target: &SendFile, socket: &Arc<net::sock::InetSocket>,
     message: &Message, flags: u32, prepared: InetPrepared) -> KResult<usize>
 {
