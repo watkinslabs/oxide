@@ -97,7 +97,7 @@ impl AddressSpace {
         // SAFETY: forwarded preconditions per `handle_page_fault_cow_rmap`.
         unsafe {
             self.handle_page_fault_cow_rmap::<M, _, _, _, _, _, _, _, _>(
-                va, fault, hhdm_offset,
+                va, fault, hhdm_offset, false,
                 alloc_frame, frame_refcount, dec_ref,
                 |_pa, _av, _idx| {},
                 |_pa| {},
@@ -115,11 +115,19 @@ impl AddressSpace {
     /// `page_add_anon_rmap`. Hosted tests pin no-op `set_rmap`.
     /// # SAFETY: per `handle_page_fault_cow`.
     /// # C: O(N_vmas) on lookup + O(walk) on install.
+    ///
+    /// `install_uffd_wp` publishes a not-present fill ALREADY carrying a
+    /// userfaultfd monitor's write-protect barrier. The address held the
+    /// barrier with no page to carry it; installing the page and re-protecting
+    /// it afterwards would leave it briefly writable, and a peer thread's write
+    /// in that window escapes the barrier once — so the fill builds the leaf
+    /// protected and publishes it in the one store that makes it visible.
     pub unsafe fn handle_page_fault_cow_rmap<M, A, RC, DR, SR, IR, XR, CA, UA>(
         &self,
         va: UserVirtAddr,
         fault: FaultKind,
         hhdm_offset: u64,
+        install_uffd_wp: bool,
         mut alloc_frame: A,
         mut frame_refcount: RC,
         mut dec_ref: DR,
@@ -245,7 +253,7 @@ impl AddressSpace {
         // SAFETY: dispatches the NotPresent backing fill under the same callback contracts.
         unsafe {
             self.handle_not_present::<M, _, _, _, _, _, _>(
-                va, access, hhdm_offset, &mut alloc_frame,
+                va, access, hhdm_offset, install_uffd_wp, &mut alloc_frame,
                 &mut dec_ref, &mut set_rmap, &mut inc_ref,
                 &mut charge_anon, &mut uncharge_anon,
             )

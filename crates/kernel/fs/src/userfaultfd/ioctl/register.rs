@@ -23,7 +23,8 @@ pub fn ioc_register(ufd: &Arc<UfData>, arg: u64) -> i64 {
     let start = reg.range.start;
     let end   = start + reg.range.len;
     let Some(mm) = ufd.mm() else { return err(Errno::Enomem) };
-    if let Err(e) = scan_registerable(&mm, start, end, ufd, modes) { return err(e); }
+    let wp_async = policy::wp_async(ufd.features.load(core::sync::atomic::Ordering::Acquire));
+    if let Err(e) = scan_registerable(&mm, start, end, ufd, modes, wp_async) { return err(e); }
     ufd.state.lock().ranges.push(RegisteredRange { start, end, mode: reg.mode });
     let ctx: Arc<dyn vmm::UffdContext> = ufd.clone();
     mm.set_uffd(start, end, ctx, modes);
@@ -38,16 +39,17 @@ pub fn ioc_register(ufd: &Arc<UfData>, arg: u64) -> i64 {
 /// range are not an error — the scan simply skips them.
 /// # C: O(N_vmas)
 fn scan_registerable(mm: &vmm::AddressSpace, start: u64, end: u64, ufd: &Arc<UfData>,
-                     modes: vmm::VmaFlags) -> Result<(), Errno> {
+                     modes: vmm::VmaFlags, wp_async: bool) -> Result<(), Errno> {
     let vmas = mm.uffd_vmas_in(start, end);
     if vmas.is_empty() { return Err(Errno::Einval); }
     for v in &vmas {
         policy::check_register_vma(&RegVma {
             anonymous: v.anonymous,
             shmem: v.shmem,
+            file_backed: v.file.is_some(),
             may_write: v.may_write,
             owned_by_other_uffd: v.ctx.as_ref().is_some_and(|c| !ctx_is(c, ufd)),
-        }, modes)?;
+        }, modes, wp_async)?;
     }
     Ok(())
 }

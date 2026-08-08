@@ -31,13 +31,28 @@ const SWAP_OFFSET_SHIFT: u8 = 12;
 // 4.8); hardware ignores it when P=0.  Keeping it outside the 40-bit
 // payload makes a migration marker distinguishable from every swap type.
 const MIGRATION_MARKER: u64 = 1 << 11;
-// Present-leaf bit 57 is software-available on this architecture (ignored by
-// the translation hardware), which is what lets a leaf carry the userfaultfd
-// write-protect marker without changing how the CPU walks it.
+// Bit 57 is software-available on this architecture (ignored by the translation
+// hardware whether or not the entry is present), which is what lets a leaf carry
+// the userfaultfd write-protect marker without changing how the CPU walks it.
+//
+// The SAME bit carries the state on a NON-PRESENT leaf, and it can do so
+// without ambiguity: it lies outside every field the three non-present
+// encodings are identified or decoded by. Swap entries are named by bit 1 and
+// decode bits 2..=6 and 12..=51; migration entries are named by bit 11 and
+// decode 12..=51; markers are named by bit 10 and decode 12..=13. Bit 57 is in
+// none of those, so setting it changes no identity and no payload, and the
+// "present or not" question — which the two predicates below split on — is
+// exactly what separates a page's own barrier from the barrier riding on a
+// reference to a page that is elsewhere.
 const UFFD_WP_BIT: u64 = 1 << 57;
 // Non-present bit 10, disjoint from the swap (bit 1) and migration (bit 11)
-// markers, so a poisoned leaf decodes as neither.
-const POISON_MARKER: u64 = 1 << 10;
+// markers, so a marker leaf decodes as neither and neither decodes as a marker.
+// The kinds ride in the same payload field the swap offset and the migration
+// token occupy: that field can never make a swap or migration entry out of a
+// marker, because those two are identified by bits 1 and 11 and a marker sets
+// neither.
+const PTE_MARKER: u64 = 1 << 10;
+const PTE_MARKER_KIND_SHIFT: u8 = 12;
 
 /// Errors `map_device_4k` can return. Mirrors `WalkErr` 1:1; kept
 /// as a separate type so callers don't depend on the hal-internal
@@ -129,7 +144,11 @@ impl PtWalker for PtWalkerX86 {
         // USER from USER. NX = clear iff EXEC. Cache bits come from the one
         // PAT translator shared with reverse translation. GLOBAL from GLOBAL.
         let mut e = (pa & Self::PHYS_MASK) | P_BIT;
-        if flags.contains(hal::PageFlags::WRITE)         { e |= RW_BIT; }
+        // A monitor's barrier and write permission are one fact: a leaf built
+        // protected is never briefly writable, so a peer thread cannot slip a
+        // write past the barrier between the install and a later re-protect.
+        if flags.contains(hal::PageFlags::UFFD_WP)       { e |= UFFD_WP_BIT; }
+        else if flags.contains(hal::PageFlags::WRITE)    { e |= RW_BIT; }
         if flags.contains(hal::PageFlags::USER)          { e |= 1 << 2; }   // U/S
         e |= crate::pat::cache_bits(flags, false);
         if flags.contains(hal::PageFlags::GLOBAL)        { e |= 1 << 8; }   // G
@@ -143,7 +162,8 @@ impl PtWalker for PtWalkerX86 {
         // is PS here). Build the non-cache controls directly so WT selects
         // Linux PAT slot 7 without corrupting the leaf kind.
         let mut e = (pa & Self::PHYS_MASK) | P_BIT | PS_BIT;
-        if flags.contains(hal::PageFlags::WRITE)         { e |= RW_BIT; }
+        if flags.contains(hal::PageFlags::UFFD_WP)       { e |= UFFD_WP_BIT; }
+        else if flags.contains(hal::PageFlags::WRITE)    { e |= RW_BIT; }
         if flags.contains(hal::PageFlags::USER)          { e |= 1 << 2; }
         e |= crate::pat::cache_bits(flags, true);
         if flags.contains(hal::PageFlags::GLOBAL)        { e |= 1 << 8; }
@@ -205,8 +225,17 @@ impl PtWalker for PtWalkerX86 {
     fn leaf_set_uffd_wp(raw: u64) -> u64 { raw | UFFD_WP_BIT }
     fn leaf_clear_uffd_wp(raw: u64) -> u64 { raw & !UFFD_WP_BIT }
     fn leaf_is_uffd_wp(raw: u64) -> bool { (raw & P_BIT) != 0 && (raw & UFFD_WP_BIT) != 0 }
-    fn pack_poison_marker() -> u64 { POISON_MARKER }
-    fn is_poison_marker(raw: u64) -> bool { (raw & P_BIT) == 0 && (raw & POISON_MARKER) != 0 }
+    fn nonpresent_set_uffd_wp(raw: u64) -> u64 { raw | UFFD_WP_BIT }
+    fn nonpresent_clear_uffd_wp(raw: u64) -> u64 { raw & !UFFD_WP_BIT }
+    fn nonpresent_is_uffd_wp(raw: u64) -> bool { (raw & P_BIT) == 0 && (raw & UFFD_WP_BIT) != 0 }
+    fn pack_pte_marker(m: hal::pt_walker::PteMarker) -> u64 {
+        PTE_MARKER | ((m.bits() as u64) << PTE_MARKER_KIND_SHIFT)
+    }
+    fn unpack_pte_marker(raw: u64) -> Option<hal::pt_walker::PteMarker> {
+        if (raw & P_BIT) != 0 || (raw & PTE_MARKER) == 0 { return None; }
+        hal::pt_walker::PteMarker::from_bits(
+            ((raw >> PTE_MARKER_KIND_SHIFT) as u32) & hal::pt_walker::PteMarker::MASK)
+    }
 }
 
 /// Install a 4 KiB Device-attr (PCD|PWT, NX) mapping `va → pa` in
@@ -237,98 +266,4 @@ pub unsafe fn map_device_4k<F: FnMut() -> Option<u64>>(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn map_err_distinct() {
-        assert_ne!(MapErr::AllocFailed, MapErr::HitHugePage);
-        assert_ne!(MapErr::HitHugePage, MapErr::AlreadyMapped);
-    }
-
-    #[test]
-    fn host_walker_pack_unpack_roundtrip() {
-        let pa = 0xdead_b000_u64;
-        let leaf = PtWalkerX86::pack_device_leaf(pa);
-        assert!(PtWalkerX86::is_valid(leaf));
-        assert!(!PtWalkerX86::is_huge_or_block(leaf));
-        assert_eq!(leaf & PtWalkerX86::PHYS_MASK, pa);
-        let table = PtWalkerX86::pack_table(pa);
-        assert!(PtWalkerX86::is_valid(table));
-        assert!(!PtWalkerX86::is_huge_or_block(table));
-        assert_eq!(table & PtWalkerX86::PHYS_MASK, pa);
-    }
-
-    #[test]
-    fn interior_table_entries_grant_user() {
-        // Intel SDM §4.6: every interior entry on a CPL=3 walk must
-        // have U/S=1 or the access faults. The leaf's U bit alone
-        // gates user access; interior U=1 is unconditional.
-        let table = PtWalkerX86::pack_table(0x10_0000);
-        assert!(table & (1 << 2) != 0, "U/S bit must be set on interior entries");
-        assert!(table & RW_BIT != 0, "RW bit must be set on interior entries");
-    }
-
-    #[test]
-    fn user_leaf_packs_user_bit_and_clears_nx() {
-        let pa = 0x4000_u64;
-        let leaf = PtWalkerX86::pack_4k_leaf(pa, hal::PageFlags::READ | hal::PageFlags::EXEC | hal::PageFlags::USER);
-        assert!(leaf & (1 << 2) != 0, "leaf U/S bit set");
-        assert_eq!(leaf & NX_BIT, 0, "EXEC ⇒ NX clear");
-        assert_eq!(leaf & PtWalkerX86::PHYS_MASK, pa);
-    }
-
-    /// The memory-type selector's high bit sits at a DIFFERENT descriptor
-    /// position in a bottom-level leaf than in a block leaf, because the block
-    /// leaf spends that position on the size selector. A split that copies the
-    /// descriptor verbatim therefore changes the child's memory type — silently
-    /// making a write-through page uncached, or worse.
-    #[test]
-    fn splitting_to_the_bottom_level_moves_the_memory_type_selector() {
-        let block = PtWalkerX86::pack_block_leaf(2 << 20, hal::PageFlags::READ | hal::PageFlags::WRITE)
-            | (1 << BLOCK_TYPE_HI_SHIFT);
-        let child = PtWalkerX86::split_child_leaf(block, 0x4000, LEAF_LEVEL_4K);
-        assert_eq!(child & PS_BIT, 1 << LEAF_TYPE_HI_SHIFT,
-                   "the selector must land on the bottom-level position, which is where the size selector was");
-        assert_eq!(child & PtWalkerX86::PHYS_MASK, 0x4000, "the child must translate its own address");
-        assert!(PtWalkerX86::is_valid(child));
-        // The size selector is only asked about above the bottom level, which
-        // is exactly why the position is free to carry the memory type there.
-        let plain = PtWalkerX86::split_child_leaf(
-            PtWalkerX86::pack_block_leaf(2 << 20, hal::PageFlags::READ | hal::PageFlags::WRITE),
-            0x4000, LEAF_LEVEL_4K);
-        assert_eq!(plain & PS_BIT, 0, "a split of a default-memory-type block leaves the position clear");
-    }
-
-    /// Splitting a block into smaller BLOCKS leaves the selector where it was.
-    #[test]
-    fn splitting_to_an_intermediate_block_keeps_the_selector_in_place() {
-        let block = PtWalkerX86::pack_block_leaf(1 << 30, hal::PageFlags::READ | hal::PageFlags::WRITE)
-            | (1 << BLOCK_TYPE_HI_SHIFT);
-        let child = PtWalkerX86::split_child_leaf(block, 1 << 21, 2);
-        assert_ne!(child & (1 << BLOCK_TYPE_HI_SHIFT), 0);
-        assert!(PtWalkerX86::is_huge_or_block(child), "an intermediate child is still a block");
-        assert_eq!(child & !PtWalkerX86::PHYS_MASK, block & !PtWalkerX86::PHYS_MASK,
-                   "every other attribute carries over unchanged");
-    }
-
-    /// Removing a page from the linear map and restoring it must be exactly
-    /// reversible, or the restored page differs from the one that was taken.
-    #[test]
-    fn clearing_and_restoring_a_leaf_round_trips() {
-        let leaf = PtWalkerX86::pack_4k_leaf(0x9000, hal::PageFlags::READ | hal::PageFlags::WRITE);
-        let gone = PtWalkerX86::leaf_set_present(leaf, false);
-        assert!(!PtWalkerX86::is_valid(gone), "the page must stop translating");
-        assert_eq!(gone & PtWalkerX86::PHYS_MASK, 0x9000, "the address must survive so it can be restored");
-        assert_eq!(PtWalkerX86::leaf_set_present(gone, true), leaf);
-    }
-
-    #[test]
-    fn kernel_only_leaf_clears_user_bit() {
-        let pa = 0x5000_u64;
-        let leaf = PtWalkerX86::pack_4k_leaf(pa, hal::PageFlags::READ | hal::PageFlags::WRITE);
-        assert_eq!(leaf & (1 << 2), 0, "kernel-only leaf must have U/S=0");
-        assert!(leaf & NX_BIT != 0, "no EXEC ⇒ NX set");
-    }
-
-}
+mod tests;

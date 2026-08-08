@@ -101,28 +101,36 @@ fn clear_current_migration_entry(va: u64) -> Option<hal::pt_walker::MigrationEnt
     with(|as_| clear_migration_entry(as_, va)).flatten()
 }
 
-/// Remove a userfaultfd poison marker. Zapping a range removes the memory the
-/// marker described, so leaving it behind would make the NEXT mapping of that
-/// address raise a memory error for contents that no longer exist — a
-/// `MADV_DONTNEED`ed range must refault as fresh zeroes, not as an error.
-/// Nothing is freed: a marker names no frame and no swap slot.
+/// Remove a userfaultfd marker of ANY kind. Zapping a range removes the memory
+/// the marker described, so leaving it behind would make the NEXT mapping of
+/// that address raise a memory error, or report a write-protect fault to a
+/// monitor, for a mapping that no longer exists — a `MADV_DONTNEED`ed range
+/// must refault as fresh zeroes. Nothing is freed: a marker names no frame and
+/// no swap slot.
 /// # C: O(walk depth)
-fn clear_poison_marker(as_: &AddressSpace, va: u64) -> bool {
+fn clear_pte_marker(as_: &AddressSpace, va: u64) -> bool {
     let _pt = as_.lock_page_table();
-    // SAFETY: the address-space PTE lock is held and HHDM covers this live root; the exchange writes the leaf only when it still holds exactly the marker.
+    // SAFETY: the address-space PTE lock is held and HHDM covers this live root; a marker leaf is non-present, so replacing it with an absent leaf unmaps nothing and drops no reference.
     unsafe {
         #[cfg(target_arch = "x86_64")]
-        {
-            let marker = <hal_x86_64::vmm::PtWalkerX86 as hal::pt_walker::PtWalker>::pack_poison_marker();
-            hal::pt_walker::swap_leaf_if_4k_at_root::<hal_x86_64::vmm::PtWalkerX86>(as_.root_pa(), va, marker, 0, hhdm_offset())
-        }
+        { clear_marker_at::<hal_x86_64::vmm::PtWalkerX86>(as_.root_pa(), va) }
         #[cfg(target_arch = "aarch64")]
-        {
-            let marker = <hal_aarch64::vmm::PtWalkerArm as hal::pt_walker::PtWalker>::pack_poison_marker();
-            hal::pt_walker::swap_leaf_if_4k_at_root::<hal_aarch64::vmm::PtWalkerArm>(as_.root_pa(), va, marker, 0, hhdm_offset())
-        }
+        { clear_marker_at::<hal_aarch64::vmm::PtWalkerArm>(as_.root_pa(), va) }
         #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
         { let _ = (as_, va); false }
+    }
+}
+
+/// # SAFETY: caller holds the address space's page-table lock and owns `root`.
+/// # C: O(walk depth)
+#[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+unsafe fn clear_marker_at<W: hal::pt_walker::PtWalker>(root: u64, va: u64) -> bool {
+    // SAFETY: per fn contract — the read and the exchange both run under the caller's page-table lock, and the exchange writes only when the leaf still holds exactly the marker it read.
+    unsafe {
+        let Some(raw) = hal::pt_walker::read_leaf_4k_at_root::<W>(root, va, hhdm_offset())
+            else { return false };
+        if W::unpack_pte_marker(raw).is_none() { return false; }
+        hal::pt_walker::swap_leaf_if_4k_at_root::<W>(root, va, raw, 0, hhdm_offset())
     }
 }
 
@@ -147,12 +155,12 @@ fn zap_watchers(start: u64, end: u64, kind: vmm::UffdEventKind)
 }
 
 /// # C: O(walk depth)
-fn clear_current_poison_marker(va: u64) -> bool {
+fn clear_current_pte_marker(va: u64) -> bool {
     if let Some(cur) = sched::live::current() {
         // SAFETY: syscall context owns this task's AS mutation.
-        if let Some(mm) = unsafe { cur.mm_ref() } { return clear_poison_marker(mm, va); }
+        if let Some(mm) = unsafe { cur.mm_ref() } { return clear_pte_marker(mm, va); }
     }
-    with(|as_| clear_poison_marker(as_, va)).unwrap_or(false)
+    with(|as_| clear_pte_marker(as_, va)).unwrap_or(false)
 }
 
 pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
@@ -260,7 +268,7 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
             // cannot resurrect a page whose VMA has been zapped.
             hal::tlb::shootdown_others_va(va, mask);
             let _ = crate::swap::free_page(entry);
-        } else if clear_current_poison_marker(va) {
+        } else if clear_current_pte_marker(va) {
             // The marker described contents this zap is discarding; it names
             // no frame and no swap slot, so nothing is released with it.
             hal::tlb::shootdown_others_va(va, mask);
@@ -404,7 +412,7 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
             // remains charged after the mapping is gone.
             hal::tlb::shootdown_others_va(va, mask);
             let _ = crate::swap::free_page(entry);
-        } else if clear_current_poison_marker(va) {
+        } else if clear_current_pte_marker(va) {
             // The marker described contents this zap is discarding; it names
             // no frame and no swap slot, so nothing is released with it.
             hal::tlb::shootdown_others_va(va, mask);

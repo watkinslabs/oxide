@@ -181,6 +181,28 @@ pub trait PtWalker {
     /// # C: O(1)
     fn leaf_is_uffd_wp(raw: u64) -> bool;
 
+    /// Set the userfaultfd write-protect state on a NON-PRESENT leaf that names
+    /// a page elsewhere — a swap slot or a page in transit.
+    ///
+    /// A page that leaves memory takes its barrier with it. Without a place for
+    /// the state in the entry, eviction disarms it: the page comes back through
+    /// an ordinary fill, the fill grants write permission, and the write the
+    /// barrier existed to catch happens unobserved. Callers apply this only to a
+    /// swap or migration leaf; on anything else it would produce a non-present
+    /// entry that names nothing.
+    /// # C: O(1)
+    fn nonpresent_set_uffd_wp(raw: u64) -> u64;
+
+    /// Clear that state, leaving the entry it rode on untouched.
+    /// # C: O(1)
+    fn nonpresent_clear_uffd_wp(raw: u64) -> u64;
+
+    /// Whether a non-present leaf carries userfaultfd write-protect state.
+    /// False for every present leaf: a resident page carries the state in its
+    /// own permissions, which [`Self::leaf_is_uffd_wp`] answers.
+    /// # C: O(1)
+    fn nonpresent_is_uffd_wp(raw: u64) -> bool;
+
     /// Whether this architecture may replace a live kernel-linear-map block
     /// leaf with a table of smaller leaves while other CPUs run. One
     /// architecture reaches the new granularity through an intermediate state
@@ -213,13 +235,37 @@ pub trait PtWalker {
     /// # C: O(1)
     fn leaf_set_present(raw: u64, present: bool) -> u64;
 
-    /// A non-present leaf marking the page as poisoned: an access to it raises
-    /// a memory-error fault instead of allocating a page. Distinct from the
-    /// swap and migration encodings and from the all-zero absent leaf.
+    /// A non-present leaf carrying `m`. Distinct from the swap and migration
+    /// encodings and from the all-zero absent leaf, so a marker can never be
+    /// decoded as a slot reference, as a page in transit, or as a hole.
     /// # C: O(1)
-    fn pack_poison_marker() -> u64;
+    fn pack_pte_marker(m: super::PteMarker) -> u64;
 
-    /// Whether `raw` is the marker written by [`Self::pack_poison_marker`].
+    /// The kinds `raw` carries, or `None` when it is not a marker leaf.
     /// # C: O(1)
-    fn is_poison_marker(raw: u64) -> bool;
+    fn unpack_pte_marker(raw: u64) -> Option<super::PteMarker>;
+
+    /// The marker for a page whose contents are unrecoverable.
+    /// # C: O(1)
+    fn pack_poison_marker() -> u64 { Self::pack_pte_marker(super::PteMarker::POISON) }
+
+    /// Whether `raw` declares the page's contents unrecoverable. A marker that
+    /// ALSO carries the write-protect kind still answers yes: contents that are
+    /// gone outrank a barrier over writes to them.
+    /// # C: O(1)
+    fn is_poison_marker(raw: u64) -> bool {
+        Self::unpack_pte_marker(raw).is_some_and(|m| m.contains(super::PteMarker::POISON))
+    }
+
+    /// The marker standing in for a write-protected page that is not there —
+    /// what carries userfaultfd write-protect state at an address with no
+    /// resident page, where there are no permissions to remove.
+    /// # C: O(1)
+    fn pack_uffd_wp_marker() -> u64 { Self::pack_pte_marker(super::PteMarker::UFFD_WP) }
+
+    /// Whether `raw` carries userfaultfd write-protect state as a marker.
+    /// # C: O(1)
+    fn is_uffd_wp_marker(raw: u64) -> bool {
+        Self::unpack_pte_marker(raw).is_some_and(|m| m.contains(super::PteMarker::UFFD_WP))
+    }
 }

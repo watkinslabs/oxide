@@ -66,6 +66,8 @@ fn the_non_present_encodings_do_not_collide() {
         for (j, b) in all.iter().enumerate() { if i != j { assert_ne!(a, b); } }
     }
     assert!(W::is_poison_marker(poisoned()));
+    assert!(!W::is_uffd_wp_marker(poisoned()));
+    assert!(W::is_uffd_wp_marker(W::pack_uffd_wp_marker()));
     assert!(!W::is_poison_marker(swapped()));
     assert!(!W::is_poison_marker(migrating()));
     assert!(W::unpack_swap_entry(poisoned()).is_none());
@@ -133,11 +135,14 @@ fn a_fill_takes_its_contents_from_the_object_whenever_there_is_one() {
 /// marker alone leaves the page writable, so the write the barrier exists to
 /// catch never faults; removing write permission alone makes the next write
 /// look like an ordinary protection fault, which resolves as a copy instead of
-/// being reported.
+/// being reported. And the leaf must arrive that way — a page published
+/// writable and re-protected afterwards lets a peer thread's write through
+/// exactly once, unreported.
 #[test]
 fn a_write_protecting_fill_installs_the_marker_and_removes_write_permission() {
-    let plain = present_rw();
-    let armed = wp_leaf::<W>(plain);
+    let prot = hal::PageFlags::READ | hal::PageFlags::WRITE | hal::PageFlags::USER;
+    let plain = W::pack_4k_leaf(PA, fill_page_flags(prot, false));
+    let armed = W::pack_4k_leaf(PA, fill_page_flags(prot, true));
     assert!(W::leaf_is_uffd_wp(armed), "the marker must be set");
     assert!(!W::leaf_is_uffd_wp(plain), "and must not have been there already");
     assert!(W::is_valid(armed), "the page stays resident and readable");
@@ -146,4 +151,25 @@ fn a_write_protecting_fill_installs_the_marker_and_removes_write_permission() {
     // the armed leaf, which it would not be if the leaf were still writable.
     assert_eq!(W::leaf_wrprotect(armed), armed);
     assert_ne!(W::leaf_wrprotect(plain), plain, "the plain leaf WAS writable");
+}
+
+// ---- the fill destination -------------------------------------------------
+
+/// A fill may land on a marker THIS monitor left there and replace it, and on
+/// nothing else. A range registered for both missing pages and write-protect,
+/// armed while empty, carries a marker at every untouched address: refusing the
+/// fill there would make the very fault the monitor was told about impossible
+/// to answer, and the faulting thread would never be released.
+#[test]
+fn a_fill_replaces_a_marker_and_still_refuses_everything_else() {
+    assert_eq!(fill_dst_ok::<W>(None), Ok(()));
+    assert_eq!(fill_dst_ok::<W>(Some(0)), Ok(()));
+    assert_eq!(fill_dst_ok::<W>(Some(W::pack_uffd_wp_marker())), Ok(()));
+    assert_eq!(fill_dst_ok::<W>(Some(poisoned())), Ok(()));
+    for raw in [present_rw(), swapped(), migrating()] {
+        assert_eq!(fill_dst_ok::<W>(Some(raw)), Err(Errno::Eexist), "{raw:#x}");
+    }
+    // Publishing a marker, and the receiving half of a move, stay strict: they
+    // would destroy state rather than answer a fault the monitor is waiting on.
+    assert_eq!(dst_must_be_empty(Some(W::pack_uffd_wp_marker())), Err(Errno::Eexist));
 }

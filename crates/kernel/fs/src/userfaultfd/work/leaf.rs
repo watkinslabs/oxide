@@ -13,18 +13,39 @@ use syscall::errno::Errno;
 
 use crate::userfaultfd::policy::FillKind;
 
-/// The destination of every op that PUBLISHES something at an address — a
-/// fill, a poison marker, the receiving half of a move — must be empty.
+/// The destination of a POISON marker and of the receiving half of a MOVE must
+/// be empty.
 ///
 /// EEXIST, not silent replacement, and it covers every kind of entry, not just
 /// a resident page: overwriting a swap entry would leak the slot, overwriting a
-/// migration entry would lose the page in transit, and overwriting a poison
-/// marker would turn contents the monitor declared unrecoverable back into
-/// ordinary memory. `None` (no table covers the address) is empty.
+/// migration entry would lose the page in transit, and overwriting a marker
+/// would destroy state the monitor itself put there. `None` (no table covers
+/// the address) is empty.
 /// # C: O(1)
 pub fn dst_must_be_empty(raw: Option<u64>) -> Result<(), Errno> {
     if raw.is_some_and(|l| l != 0) { return Err(Errno::Eexist); }
     Ok(())
+}
+
+/// A FILL may additionally land on a userfaultfd marker, which it replaces.
+///
+/// A marker is state THIS monitor put there and stands for a page that does not
+/// exist. A range registered for both MISSING and WP and write-protected while
+/// empty carries one at every untouched address; refusing the fill there would
+/// make the very fault the monitor was just told about impossible to answer.
+/// The same holds for an address whose contents were declared unrecoverable and
+/// which the monitor has now decided to supply.
+///
+/// Everything else still blocks the fill: a resident page belongs to the
+/// process, a swap entry names a slot, a migration entry names a page in
+/// transit.
+/// # C: O(1)
+pub fn fill_dst_ok<W: PtWalker>(raw: Option<u64>) -> Result<(), Errno> {
+    match raw {
+        None | Some(0) => Ok(()),
+        Some(l) if W::unpack_pte_marker(l).is_some() => Ok(()),
+        Some(_) => Err(Errno::Eexist),
+    }
 }
 
 /// What a source leaf holds, and therefore what moving it means.
@@ -123,16 +144,18 @@ pub fn fill_source(kind: FillKind, has_object: bool, object_holds_page: bool)
     }
 }
 
-/// The leaf a page installed under a write-protecting fill carries: write
-/// permission removed AND the marker set, in one value.
+/// The permissions a fill installs its page with, given the mapping's own
+/// protection and whether the monitor asked for the page to stay
+/// write-protected.
 ///
-/// Both halves, always. The marker alone leaves the page writable, so the write
-/// the barrier exists to catch never faults; removing write permission alone
-/// makes the next write look like an ordinary protection fault, which resolves
-/// as a copy instead of being reported.
+/// The barrier is folded in HERE, before anything is published, so the single
+/// store that makes the page visible makes it visible already protected.
+/// Installing it writable and re-protecting afterwards leaves a window a peer
+/// thread's write passes through unreported — the page-table lock does not
+/// close that window, because the writer is userspace and never takes it.
 /// # C: O(1)
-pub fn wp_leaf<W: PtWalker>(raw: u64) -> u64 {
-    W::leaf_set_uffd_wp(W::leaf_wrprotect(raw))
+pub fn fill_page_flags(prot: hal::PageFlags, wp: bool) -> hal::PageFlags {
+    if wp { prot | hal::PageFlags::UFFD_WP } else { prot }
 }
 
 #[cfg(test)]

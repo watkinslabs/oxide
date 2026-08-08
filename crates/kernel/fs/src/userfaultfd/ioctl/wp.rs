@@ -26,14 +26,24 @@ pub fn ioc_writeprotect(ufd: &UfData, arg: u64) -> i64 {
     let Some(mm) = ufd.mm() else { return err(Errno::Esrch) };
     let start = w.range.start;
     let end   = start + w.range.len;
+    let wp_unpopulated =
+        policy::wp_unpopulated(ufd.features.load(core::sync::atomic::Ordering::Acquire));
     let vmas: alloc::vec::Vec<WpVma> = mm.uffd_vmas_in(start, end).iter()
         .map(|v| WpVma {
             start: v.start, end: v.end,
             uffd_wp: v.ctx.is_some() && v.modes.contains(vmm::VmaFlags::UFFD_WP),
+            anonymous: v.anonymous,
+            wp_unpopulated,
         })
         .collect();
     if let Err(e) = policy::check_wp_vma(start, end, &vmas) { return err(e); }
-    work::wp_range(&mm, start, end, mode.protect);
+    // Walked per VMA, because whether an address with no page carries the
+    // barrier is a per-VMA answer: a range spanning anonymous memory and a file
+    // mapping gets markers over the second and not the first.
+    for v in &vmas {
+        let (s, e) = (v.start.max(start), v.end.min(end));
+        if s < e { work::wp_range(&mm, s, e, mode.protect, policy::wp_use_markers(v)); }
+    }
     // Resolving the barrier releases the threads it stopped; arming it has
     // nobody to release, and asking for both at once was already refused.
     if !mode.protect && !mode.dontwake { ufd.wake_faulters(); }

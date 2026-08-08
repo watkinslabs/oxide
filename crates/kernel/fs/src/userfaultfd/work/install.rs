@@ -11,8 +11,8 @@ use syscall::errno::Errno;
 
 use vmm::address_space::uffd::UffdVma;
 
-use super::arch::{flush, hhdm, leaf, set_leaf, Mmu, Walker};
-use super::leaf::{dst_must_be_empty, fill_source, wp_leaf, FillSource};
+use super::arch::{flush, hhdm, leaf, Mmu, Walker};
+use super::leaf::{fill_dst_ok, fill_page_flags, fill_source, FillSource};
 use super::{FillReq, Progress};
 
 /// 4 KiB granule of the fill loop.
@@ -105,15 +105,16 @@ fn anon_rmap(mm: &vmm::AddressSpace, vma: &UffdVma, va: u64, pa: u64) {
 /// count and the short-fill return.
 /// # C: O(len/PAGE) walks + frame work
 pub fn fill_pages(mm: &vmm::AddressSpace, req: &FillReq, vma: &UffdVma) -> Progress {
-    let flags = vma.prot.to_page_flags();
+    let flags = fill_page_flags(vma.prot.to_page_flags(), req.wp);
     let mut done = 0u64;
     while done < req.len {
         let va = req.dst + done;
         let _pt = mm.lock_page_table();
-        // The destination must be a hole: a monitor must never overwrite a
-        // page the process is already using, and must never bury a poison
-        // marker under a fresh page.
-        if let Err(e) = dst_must_be_empty(leaf(mm, va)) { return (done, Some(e)); }
+        // The destination must be a hole or a marker this monitor left there:
+        // a fill must never overwrite a page the process is already using, and
+        // a write-protected address with no page is exactly where the monitor
+        // is expected to supply one.
+        if let Err(e) = fill_dst_ok::<Walker>(leaf(mm, va)) { return (done, Some(e)); }
         let source = match source_for(req, vma, va, done) { Ok(s) => s, Err(e) => return (done, Some(e)) };
         let pa = source.pa();
         // SAFETY: `pa` carries this page's contents and one reference for the mapping about to be installed; `va` is page-aligned and inside `vma`, which belongs to the address space rooted at `mm.root_pa()`; map_at installs the leaf, allocating intermediate tables from the PMM.
@@ -124,9 +125,6 @@ pub fn fill_pages(mm: &vmm::AddressSpace, req: &FillReq, vma: &UffdVma) -> Progr
             // mapping reference, so drop it rather than leak.
             // SAFETY: `old` was reachable only through the leaf map_at just replaced, so its mapping reference is ours to drop.
             unsafe { pmm::setup::rmap_aware_dec_and_maybe_free(old.0); }
-        }
-        if req.wp {
-            if let Some(l) = leaf(mm, va) { set_leaf(mm, va, wp_leaf::<Walker>(l)); }
         }
         flush(mm, va);
         if matches!(source, Source::Fresh(_)) { anon_rmap(mm, vma, va, pa); }

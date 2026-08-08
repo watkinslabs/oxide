@@ -266,6 +266,14 @@ impl vmm::UffdContext for UfData {
     }
 
     /// # C: O(1)
+    fn wp_async(&self) -> bool { policy::wp_async(self.features.load(Ordering::Acquire)) }
+
+    /// # C: O(1)
+    fn wp_unpopulated(&self) -> bool {
+        policy::wp_unpopulated(self.features.load(Ordering::Acquire))
+    }
+
+    /// # C: O(1)
     fn wants_event(&self, kind: vmm::UffdEventKind) -> bool { self.wants(kind) }
 
     /// # C: O(1)
