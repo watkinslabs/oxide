@@ -77,17 +77,6 @@ pub fn post_verify_gate(c: &InstallCtx) -> Result<(), Errno> {
     Ok(())
 }
 
-/// `SECCOMP_FILTER_FLAG_NEW_LISTENER` asks the kernel to hand back a
-/// notification fd and makes every `SECCOMP_RET_USER_NOTIF` from the new
-/// filter block on a supervisor's reply. That transport is NOT built here
-/// (no `seccomp_notif` anon-fd, no notify waitqueue), so the install FAILS
-/// rather than returning a filter the caller believes is supervised while
-/// its `RET_USER_NOTIF` silently ENOSYS-es.
-/// # C: O(1)
-pub fn listener_unsupported(flags: u64) -> Option<Errno> {
-    if flags & SECCOMP_FILTER_FLAG_NEW_LISTENER != 0 { Some(Errno::Enosys) } else { None }
-}
-
 /// `SECCOMP_GET_ACTION_AVAIL` — the action word the caller passed is either
 /// one of the eight defined actions (0) or EOPNOTSUPP.
 /// # C: O(1)

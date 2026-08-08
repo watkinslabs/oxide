@@ -80,6 +80,12 @@ pub fn sys_ioctl(args: &SyscallArgs) -> i64 {
     if let Some(rv) = ::fs::epoll::handle_epoll_ioctl(&file, req, arg) {
         return rv;
     }
+    // seccomp user-notification ioctls. The handler recognises its own files
+    // by the listener their inode owns, so a foreign inode reusing these
+    // command numbers falls through untouched.
+    if let Some(rv) = security::seccomp::notif::handle_ioctl(&file, req, arg) {
+        return rv;
+    }
     // userfaultfd / perf ioctls: route through the dedicated handlers before
     // the CharDev gate (those inodes are tagged Regular). Each handler's file
     // is recognised by the backend state its inode owns, as Linux compares

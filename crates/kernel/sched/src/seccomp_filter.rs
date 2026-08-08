@@ -21,11 +21,22 @@ pub struct SeccompFilter {
     pub prog:  Vec<u64>,
     /// The `SECCOMP_FILTER_FLAG_*` word this filter was installed with.
     pub flags: u64,
+    /// Identity of the user-notification listener this filter was installed
+    /// with, if any. The ID rather than the object: a chain is copied by value
+    /// onto every thread `SECCOMP_FILTER_FLAG_TSYNC` reaches and every forked
+    /// child, and all of those copies must reach the SAME listener. `security`
+    /// owns the id -> listener mapping; this is the filter's half of it.
+    pub listener: Option<u64>,
 }
 
 impl SeccompFilter {
     /// # C: O(1)
-    pub fn new(prog: Vec<u64>, flags: u64) -> Self { Self { prog, flags } }
+    pub fn new(prog: Vec<u64>, flags: u64) -> Self { Self { prog, flags, listener: None } }
+    /// A filter whose `SECCOMP_RET_USER_NOTIF` returns reach `listener`.
+    /// # C: O(1)
+    pub fn with_listener(prog: Vec<u64>, flags: u64, listener: u64) -> Self {
+        Self { prog, flags, listener: Some(listener) }
+    }
     /// Instruction count — `filter->prog->len`. # C: O(1)
     pub fn len(&self) -> usize { self.prog.len() }
     /// # C: O(1)

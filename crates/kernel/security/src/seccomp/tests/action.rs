@@ -151,3 +151,20 @@ fn strict_mode_permits_exactly_the_four_mode1_syscalls() {
     // A negative / rewritten syscall number is not one of them either.
     assert!(!strict_allows(-1));
 }
+
+// `SECCOMP_RET_USER_NOTIF` is the one action whose verdict depends on the
+// filter that produced it: with a listener the syscall goes to that
+// supervisor, without one it is denied. Getting this wrong in the permissive
+// direction would let every notified syscall through unexamined.
+#[test]
+fn user_notif_reaches_its_listener_and_denies_without_one() {
+    assert_eq!(decide_with_listener(SECCOMP_RET_USER_NOTIF, &data(), false, Some(9)),
+               Verdict::UserNotif { listener: 9 });
+    assert_eq!(decide_with_listener(SECCOMP_RET_USER_NOTIF, &data(), false, None),
+               Verdict::Skip { ret: enosys() });
+    // A listener never changes any OTHER action's verdict.
+    assert_eq!(decide_with_listener(SECCOMP_RET_ALLOW, &data(), false, Some(9)),
+               Verdict::Allow);
+    assert_eq!(decide_with_listener(SECCOMP_RET_ERRNO | 1, &data(), false, Some(9)),
+               Verdict::Skip { ret: -1 });
+}
