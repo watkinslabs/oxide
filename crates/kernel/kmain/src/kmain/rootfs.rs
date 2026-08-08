@@ -1,6 +1,7 @@
 use alloc::sync::Arc;
 
 use crate::BootInfo;
+use super::entry::step;
 
 /// Rootfs, mount graph, keymap, and first-userspace handoff.
 /// # SAFETY: caller must satisfy `kernel_main` boot-entry contract.
@@ -29,7 +30,7 @@ pub unsafe fn init(info: &BootInfo) {
         let root_dev = block::registry::by_serial("oxide-root")
             .or_else(block::registry::first_device)
             .expect("root disk (virtio-blk serial=oxide-root) not found");
-        ext4::rootfs::init_from_dev(root_dev)
+        step("ext4::rootfs::init_from_dev", || ext4::rootfs::init_from_dev(root_dev))
             .expect("ext4 root mount (oxide-root) failed to open");
         net::sock::init();
         // Generic netlink: the nlctrl controller plus every in-kernel family
@@ -66,8 +67,8 @@ pub unsafe fn init(info: &BootInfo) {
 
     log_dev_null_owner();
     debug_boot_rootfs();
-    load_keymap();
-    handoff_to_userspace(info);
+    step("load_keymap", load_keymap);
+    step("handoff_to_userspace", || handoff_to_userspace(info));
 }
 
 #[cfg(target_os = "oxide-kernel")]

@@ -46,7 +46,6 @@ Authoritative list of every `debug-*` Cargo feature in the workspace. Each one's
 | `debug-arm-mprotect-detail` | `pmm` | full operation root/TTBR0 summaries and VA/PA/raw-PTE present-leaf records | extreme | targeted only; depends on `debug-arm-mprotect`, excluded from `debug-all` |
 | `debug-arm-mprotect-pages` | `pmm` | compatibility alias for `debug-arm-mprotect-detail` | extreme | retains the old diagnostic entry point without a second trace path |
 | `debug-random-seed` | `syscalls` | `[RSEED]` syscall result trace for `systemd-random-seed` only | boot-only | retains the ARM coldplug-latency diagnostic without global trace cost |
-| `debug-panic` | `panic` | full caller-saved reg dump on panic | panic-only | `38§10` |
 | `debug-obs` | `klog` | ring stats every 10s; tracepoint-enable history | <1% | `37§15` |
 | `debug-procfs` | `procfs` | log every open with path+caller | <1% | `19§11` |
 | `debug-hal-x86_64` | `hal-x86_64` | full GDT/IDT/TSS dump; per-CPU MSR snapshot | boot-only | `20§17` |
@@ -56,6 +55,11 @@ Authoritative list of every `debug-*` Cargo feature in the workspace. Each one's
 | `debug-boot` | `boot-*` | dump the parsed handoff (HHDM/RSDP/magic); full memmap | boot-only | `36§9` |
 | `debug-all` | meta | enables all `debug-*` except `debug-syscalls`, `debug-slab-audit`, `debug-net` (too expensive for general use) | varies | recommended for routine debug work |
 | `paranoid-ci` | meta | aggressive-audit PR-time build. Enables: `debug-pmm` + `debug-alloc` + `debug-lockdep` + `debug-preempt` + `debug-sched-canary` + `debug-vmm` + `debug-vfs`. Catches concurrency / memory / refcount bugs by per-op auditing in proptest harnesses, not by long workloads. | 5–10× | **MANDATORY in `pr.yml` test-hosted job per `40§2`** |
+
+Panic reporting is NOT a feature: `klog::oops::panic_and_stop` reports on every
+build and on both arches, because a panic that prints nothing is
+indistinguishable from a hang. The former `debug-panic` feature gated only that
+text and is gone.
 
 ## 4 Combinations
 

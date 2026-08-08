@@ -14,8 +14,6 @@ boot-x86_64 = { path = "../../arch/boot-x86_64" }
 klog        = { path = "../../shared/klog" }
 
 [features]
-default     = ["debug-panic"]
-debug-panic = []
 debug-getdents = ["boot-x86_64/debug-getdents"]
 debug-getdents-detail = ["boot-x86_64/debug-getdents-detail"]
 debug-syscall-return = ["boot-x86_64/debug-syscall-return"]

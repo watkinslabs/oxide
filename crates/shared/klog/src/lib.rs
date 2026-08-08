@@ -28,6 +28,20 @@ pub mod syslog;
 
 pub mod kmsg_dump;
 pub use kmsg_dump::{clear_kmsg_dump_hook, kmsg_dump, set_kmsg_dump_hook, DumpFn};
+pub mod bootcon;
+pub use bootcon::{
+    boot_console_registered, drop_boot_console, force_drop_boot_console, ignore_loglevel,
+    keep_bootcon, printk_time, set_boot_console, set_devkmsg_mode, set_ignore_loglevel,
+    set_keep_bootcon, set_printk_time, DEVKMSG_OFF, DEVKMSG_ON, DEVKMSG_RATELIMIT,
+};
+
+pub mod ratelimit;
+
+pub mod initcall;
+
+pub mod oops;
+
+pub mod warn;
 
 /// Maximum base-10 digits in a `u64` (`18446744073709551615`).
 const U64_DECIMAL_BYTES: usize = 20;
@@ -81,6 +95,12 @@ pub type LogSink = fn(&[u8]);
 /// # C: O(1)
 pub fn set_byte_sink(f: LogSink) {
     console::install_slot(console::SLOT_BYTE, f);
+    // A real console has taken over the wire. The boot console wrote to the
+    // same UART with none of the driver's locking, so leaving both live
+    // double-prints every line; the handover drops it — unless the boot line
+    // asked to keep it, which is the only way to see the handover window
+    // itself when the real console's own bring-up is what hangs.
+    bootcon::drop_boot_console();
 }
 
 /// Install the secondary sink (the fbcon VT console). Thin shim over the
@@ -138,6 +158,18 @@ fn now_ns() -> Option<u64> {
     // contract beyond returning a u64.
     let f: ClockFn = unsafe { core::mem::transmute::<*mut (), ClockFn>(raw) };
     Some(f())
+}
+
+/// Nanoseconds since boot, or `None` before a clock is installed.
+/// # C: O(1)
+pub fn monotonic_ns() -> Option<u64> { now_ns() }
+
+/// Emit `v` as a decimal natural-width integer tagged with loglevel `lvl`.
+/// # C: O(log10(v))
+pub fn write_dec_at(v: u64, lvl: u32) {
+    let mut buf = [0u8; U64_DECIMAL_BYTES];
+    let n = write_dec(&mut buf, v, false);
+    emit_bytes_at(&buf[..n], lvl);
 }
 
 /// Emit `v` as a decimal natural-width integer through the sink.
@@ -211,7 +243,7 @@ fn sink_route(bytes: &[u8], lvl: u32, route: u32) {
 pub(crate) fn flush_line(bytes: &[u8], lvl: u32, route: u32) {
     if bytes.is_empty() { return; }
     if LINE_START.swap(false, core::sync::atomic::Ordering::AcqRel) {
-        if let Some(ns) = now_ns() { emit_timestamp(ns, lvl, route); }
+        if bootcon::printk_time() { if let Some(ns) = now_ns() { emit_timestamp(ns, lvl, route); } }
     }
     sink_route(bytes, lvl, route);
     if bytes[bytes.len() - 1] == b'\n' {
@@ -404,6 +436,11 @@ pub fn write_primary_dec_u64(mut v: u64) {
 /// per-subsystem debug trace gated to zero bytes by default.
 /// # C: O(len(bytes))
 pub fn kmsg_write(bytes: &[u8]) {
+    match bootcon::devkmsg_mode() {
+        bootcon::DEVKMSG_OFF => return,
+        bootcon::DEVKMSG_RATELIMIT if !ratelimit::devkmsg_allow(now_ns()) => return,
+        _ => {}
+    }
     emit_bytes_at(bytes, kmsg_level(bytes));
 }
 

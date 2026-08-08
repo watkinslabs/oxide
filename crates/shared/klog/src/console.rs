@@ -16,21 +16,30 @@ use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 /// newline, raw bytes). Plain `fn` pointer — no `dyn` (`07§5`).
 pub type ConsoleSink = fn(&[u8]);
 
-/// Registry capacity. Two slots are reserved (`SLOT_BYTE`, `SLOT_AUX`) for
-/// the `set_byte_sink` / `set_aux_sink` shims; the rest are general
-/// `register_console` slots. Sized for the kernel's console count
-/// (serial + fbcon VT + headroom for netconsole / extra UARTs).
+/// Registry capacity. Three slots are reserved (`SLOT_BOOT`, `SLOT_BYTE`,
+/// `SLOT_AUX`) for the boot console and the `set_byte_sink` /
+/// `set_aux_sink` shims; the rest are general `register_console` slots.
+/// Sized for the kernel's console count (boot UART + serial + fbcon VT +
+/// headroom for netconsole / extra UARTs).
 pub const MAX_CONSOLES: usize = 8;
 
+/// Reserved slot index for the boot console — the command-line-requested
+/// early UART. Lowest index so it fires FIRST: it is the only sink that
+/// exists before device init, so anything emitted in that window reaches a
+/// wire through this slot or through nothing at all.
+pub const SLOT_BOOT: usize = 0;
 /// Reserved slot index for the primary byte sink (serial console).
-pub const SLOT_BYTE: usize = 0;
+pub const SLOT_BYTE: usize = 1;
 /// Reserved slot index for the aux sink (fbcon VT console).
-pub const SLOT_AUX: usize = 1;
+pub const SLOT_AUX: usize = 2;
 /// First general-purpose `register_console` slot.
-pub const SLOT_GENERAL: usize = 2;
+pub const SLOT_GENERAL: usize = 3;
 
 /// `CON_ENABLED`: slot holds a live sink and receives emits.
 pub const CON_ENABLED: u32 = 0x1;
+/// `CON_BOOT`: slot holds a boot console, which is dropped when a real
+/// console registers unless the boot line asked to keep it.
+pub const CON_BOOT: u32 = 0x2;
 
 struct ConsoleSlot {
     sink: AtomicPtr<()>,
@@ -73,12 +82,24 @@ static REGISTRY: Registry = Registry {
 /// for the `set_byte_sink` / `set_aux_sink` shims.
 /// # C: O(1)
 pub(crate) fn install_slot(idx: usize, f: ConsoleSink) {
+    install_slot_flags(idx, f, CON_ENABLED)
+}
+
+/// Install `f` in reserved slot `idx` with an explicit flag set.
+/// # C: O(1)
+pub(crate) fn install_slot_flags(idx: usize, f: ConsoleSink, flags: u32) {
     if idx >= MAX_CONSOLES {
         return;
     }
     let slot = &REGISTRY.slots[idx];
     slot.sink.store(f as *mut (), Ordering::Release);
-    slot.flags.store(CON_ENABLED, Ordering::Release);
+    slot.flags.store(flags | CON_ENABLED, Ordering::Release);
+}
+
+/// Is reserved slot `idx` live?
+/// # C: O(1)
+pub(crate) fn slot_live(idx: usize) -> bool {
+    idx < MAX_CONSOLES && REGISTRY.slots[idx].flags.load(Ordering::Acquire) & CON_ENABLED != 0
 }
 
 /// Detach the sink in reserved slot `idx` (subsequent emits skip it).
@@ -121,6 +142,10 @@ pub fn register_console(f: ConsoleSink) -> Option<usize> {
         }
         i += 1;
     }
+    // Every slot taken. The caller's output silently goes nowhere from here,
+    // which is the failure a boot investigation can least afford to have
+    // hidden from it.
+    crate::warn::warn("console registry full; console not registered");
     None
 }
 
@@ -167,24 +192,43 @@ pub(crate) fn fan_out(bytes: &[u8]) {
 /// allocator or other leaf lock is held.
 /// # C: O(bytes.len())
 pub(crate) fn primary_only(bytes: &[u8]) {
-    let slot = &REGISTRY.slots[SLOT_BYTE];
+    // The boot console is part of the emergency route: before device init it
+    // is the ONLY sink, so an emergency diagnostic that skipped it would be
+    // lost in exactly the window it exists to cover. It writes straight to
+    // the UART and allocates nothing, so it is safe from a leaf-lock holder.
+    emit_slot(SLOT_BOOT, bytes);
+    emit_slot(SLOT_BYTE, bytes);
+}
+
+/// Fire one reserved slot if it is live. # C: O(bytes.len())
+fn emit_slot(idx: usize, bytes: &[u8]) {
+    let slot = &REGISTRY.slots[idx];
     if slot.flags.load(Ordering::Acquire) & CON_ENABLED == 0 { return; }
     let raw = slot.sink.load(Ordering::Acquire);
     if raw.is_null() { return; }
-    // SAFETY: SLOT_BYTE is installed through set_byte_sink, which stores a
-    // valid ConsoleSink function pointer before setting CON_ENABLED.
+    // SAFETY: a reserved slot is populated only through install_slot_flags, which stores a valid ConsoleSink fn-pointer through `as *mut ()` before setting CON_ENABLED; the reverse cast restores the identical signature.
     let f: ConsoleSink = unsafe { core::mem::transmute::<*mut (), ConsoleSink>(raw) };
     f(bytes);
+}
+
+/// The console registry, the byte sinks and every printk policy knob are
+/// process-global. Every test in this crate that touches any of them takes
+/// THIS lock — a per-module lock does not serialise against another module's,
+/// and a capture sink that sees a different module's output fails for a reason
+/// that has nothing to do with what it asserts.
+/// # C: O(1) uncontended; blocks for the holder otherwise
+#[cfg(test)]
+pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use core::sync::atomic::AtomicUsize;
-    use std::sync::Mutex;
 
-    // Console registry is process-global; serialize the tests.
-    static SERIAL: Mutex<()> = Mutex::new(());
+    use super::test_lock as serial_lock;
 
     fn reset_all() {
         let mut i = 0usize;
@@ -203,7 +247,7 @@ mod tests {
 
     #[test]
     fn register_n_consoles_all_get_bytes() {
-        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = serial_lock();
         reset_all();
         C0.store(0, Ordering::Relaxed);
         C1.store(0, Ordering::Relaxed);
@@ -220,7 +264,7 @@ mod tests {
 
     #[test]
     fn unregister_stops_one() {
-        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = serial_lock();
         reset_all();
         C0.store(0, Ordering::Relaxed);
         C1.store(0, Ordering::Relaxed);
@@ -235,7 +279,7 @@ mod tests {
 
     #[test]
     fn pre_registration_emit_is_noop() {
-        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = serial_lock();
         reset_all();
         // No consoles registered: fan_out must not panic and must do nothing.
         fan_out(b"nothing here");
@@ -244,7 +288,7 @@ mod tests {
 
     #[test]
     fn register_is_idempotent() {
-        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = serial_lock();
         reset_all();
         let a = register_console(s0);
         let b = register_console(s0);
@@ -254,7 +298,7 @@ mod tests {
 
     #[test]
     fn reserved_slots_fire_in_order() {
-        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = serial_lock();
         reset_all();
         C0.store(0, Ordering::Relaxed);
         install_slot(SLOT_BYTE, s0);

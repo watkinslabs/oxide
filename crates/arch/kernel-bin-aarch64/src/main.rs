@@ -14,18 +14,13 @@
 #[cfg(target_os = "oxide-kernel")]
 extern crate boot_aarch64 as _boot;
 
-/// Panic = halt. v1 inline spin-loop; per-arch `wfi` lands when this
-/// shim grows a hal-aarch64 dep.
-/// # C: O(infinity)
+/// Panic. Same reporting and `panic=` handling as the other arch, through the
+/// one shared implementation: this handler used to print nothing at all, so an
+/// aarch64 panic was indistinguishable from a hang.
+/// # C: O(infinity) — by definition
 #[cfg(target_os = "oxide-kernel")]
 #[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    // Snapshot the log for whatever is registered to keep it across the
-    // reboot — the same call the other architecture's handler makes, so
-    // whether a crash leaves a record does not depend on the machine.
-    klog::kmsg_dump(klog::kmsg_dump::REASON_PANIC);
-    loop { core::hint::spin_loop(); }
-}
+fn panic(info: &core::panic::PanicInfo) -> ! { klog::oops::panic_and_stop(info) }
 
 /// Host-only stub `main` so `cargo test --workspace` can exercise the
 /// rest of the workspace without choking on the bin's no_main.

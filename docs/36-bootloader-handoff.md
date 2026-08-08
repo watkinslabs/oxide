@@ -57,15 +57,59 @@ AP startup is PSCI `CPU_ON` driven by the kernel off the DTB `/cpus` list or the
 
 ## 5 Cmdline
 
-Single string: `oxide.<key>=<value> ... <kernel-cmdline>`. Examples:
-- `oxide.log=info,sched=debug`
-- `oxide.smp=N` (cap CPUs at N)
-- `oxide.pti=on|off`
-- `oxide.kaslr=on|off` (v2)
-- `oxide.console=ttyS0,115200` or `=tty1`
-- `oxide.root=PARTUUID=...` or `=UUID=...`
+Single whitespace-separated string of `name` and `name=value` tokens, in the
+Linux spelling — not an `oxide.`-namespaced scheme. A prefix never matches; a
+value may contain `=`; a repeated scalar takes the last value. Stored verbatim
+and served by `/proc/cmdline`.
 
-Parsed at boot; stored in `/proc/cmdline`.
+Transport per arch: multiboot2 boot-command-line tag (x86_64); UEFI
+`LoadOptions` then DTB `/chosen/bootargs` (aarch64), in that order because the
+firmware behind GRUB publishes no device tree. An empty slot falls back to the
+arch default.
+
+### 5.1 Console and early output
+
+| Parameter | Contract |
+|---|---|
+| `earlycon` | Register a boot console on the platform UART before device init. |
+| `earlycon=<name>[,io\|mmio\|mmio16\|mmio32\|mmio32be\|mmio32native,<addr>][,<baud>]` | `<name>` ∈ `uart`, `uart8250`, `ns16550`, `ns16550a`, `8250`, `pl011`. An unknown name registers nothing. |
+| `earlycon=<name>,0x<addr>[,<baud>]` | Bare address is memory-mapped. |
+| `earlyprintk=serial[,ttyS<n>\|0x<port>][,<baud>][,keep]` | Also `ttyS<n>[,<baud>]` and `mmio32,0x<addr>[,<baud>]`. |
+| `console=<name>,...` | Same earlycon grammar when `<name>` is a UART driver, not a tty class. |
+| `keep_bootcon` | Boot console survives the real console's registration. Also the `keep` suffix on `earlyprintk=`. |
+| `console=<dev>[,<baud><parity><bits><flow>]` | One printk console per token; the LAST backs `/dev/console`. A class not named gets no printk, though its `/dev` tty still works. No token at all keeps both classes. |
+
+### 5.2 Verbosity
+
+`loglevel=N`, `quiet`, `debug` — later wins; a malformed value is ignored,
+not installed. `ignore_loglevel` — every record reaches the consoles
+regardless of level. `printk.time=<bool>` — timestamp prefix.
+`printk.devkmsg=on|off|ratelimit` — `/dev/kmsg` write policy; default here is
+`on`, not `ratelimit`, because the writer's credentials do not reach the record
+ring and a default limit would drop the log daemon's own records.
+
+### 5.3 Naming a hang or a fatal event
+
+`initcall_debug[=<bool>]` — each boot init step prints its name BEFORE it runs
+and its return value and elapsed microseconds after, so a step that never
+returns is named by the last line of the log. `panic=<n>` — seconds before
+restart; `0` waits forever (the default), negative restarts at once; requires
+the power subsystem, and halts instead of announcing a restart it cannot
+perform. `oops=panic` — an unhandled kernel fault becomes a panic instead of
+halting one CPU. `panic_on_warn` — the first broken invariant stops the machine.
+
+### 5.4 Userspace
+
+`init=<path>`, `rdinit=<path>`.
+
+### 5.5 Recognised, not yet honoured
+
+`softlockup_panic`, `nmi_watchdog=`, `hung_task_panic`,
+`hung_task_timeout_secs`, `log_buf_len=`, `no_console_suspend`, `slub_debug=`,
+`page_poison=`, `debug_pagealloc=`, `boot_delay=`. Each prints
+`Unhonoured kernel parameter: <name>: <what it needs>` at boot; none is
+silently accepted. Open rows in `scratch/known_issues.md` name the subsystem
+each one waits on.
 
 ## 6 Concurrency
 

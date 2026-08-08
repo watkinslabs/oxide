@@ -60,15 +60,30 @@ unsafe extern "C" fn _start_rust() -> ! {
     };
     pl011::set_hhdm_offset(hhdm);
 
-    // Sink registration is gated behind `debug-boot` per
-    // `04§4.0` (R06): default builds emit zero klog bytes. Self-boot
-    // routes klog through the real PL011 over HHDM; the fallback uses
-    // the paging-agnostic semihosting sink.
+    // Boot console, as early as the UART is reachable. Everything above this
+    // point is unavoidably silent; everything below it reaches the wire the
+    // moment the boot line asks for one, with no driver model, no device
+    // probe and no allocator in the way. Without it the first output of any
+    // build that is not `debug-boot` comes from the serial console driver,
+    // which registers after the whole of memory, scheduler and device init —
+    // so a hang anywhere before that produced no output at all.
+    // SAFETY: boot path, single CPU, IRQs masked; reads the bootloader-owned
+    // command line captured before ExitBootServices and publishes it through
+    // the boot-owned slot before any reader exists.
+    unsafe { early_console(hhdm); }
+    // `debug-boot`'s own sinks are the fallback for a build that wants boot
+    // output without asking for it on the command line. They drive the same
+    // PL011, so they install only when the command line did not already bring
+    // a boot console up — two sinks on one UART double every line. Self-boot
+    // routes klog through the real PL011 over HHDM; the fallback uses the
+    // paging-agnostic semihosting sink.
     debug_boot! {
-        if selfboot::is_selfboot() {
-            klog::set_byte_sink(boot_debug::boot_emit_pl011);
-        } else {
-            klog::set_byte_sink(boot_debug::boot_emit);
+        if !klog::boot_console_registered() {
+            if selfboot::is_selfboot() {
+                klog::set_byte_sink(boot_debug::boot_emit_pl011);
+            } else {
+                klog::set_byte_sink(boot_debug::boot_emit);
+            }
         }
     }
 
@@ -93,19 +108,6 @@ unsafe extern "C" fn _start_rust() -> ! {
         boot_debug::log_cpu_info();
     }
 
-    // Boot command line, in bootloader-transport priority order. The EFI
-    // path's load options come first because the firmware behind GRUB
-    // publishes no device tree, so `/chosen/bootargs` does not exist there
-    // and only the load options carry the line. Each is a no-op once the
-    // slot is filled, and an empty slot falls through to
-    // install_arch_default.
-    // SAFETY: boot-only single-writer; both read bootloader-owned state
-    // captured before ExitBootServices and publish via cmdline::set.
-    unsafe { boot_info_build::capture_cmdline_from_efi(); }
-    // SAFETY: boot-only single-writer; capture_cmdline_from_dtb reads
-    // the DTB /chosen/bootargs and publishes it via cmdline::set, or
-    // no-ops if the DTB lacks bootargs.
-    unsafe { boot_info_build::capture_cmdline_from_dtb(); }
     // SAFETY: boot path, pre-SMP; publishes the PSCI AP-startup params (page
     // table phys + DTB /cpus MPIDRs) for the kernel's bring_up_aps_psci.
     unsafe { boot_info_build::publish_psci_ap_params(); }
@@ -115,6 +117,41 @@ unsafe extern "C" fn _start_rust() -> ! {
     // SAFETY: kernel_main's contract is satisfied by the boot env
     // we just established (kernel stack installed, IRQs masked).
     unsafe { kmain::kernel_main(info) }
+}
+
+/// This platform's boot UART: a PL011 in MMIO at the virt machine's UART base.
+/// What a bare `earlycon` resolves to, and the fallback for a request that
+/// names the driver but no address.
+#[cfg(target_os = "oxide-kernel")]
+const BOOT_UART: cmdline::ArchDefaults = cmdline::ArchDefaults {
+    driver: cmdline::Driver::Pl011,
+    iotype: cmdline::IoType::Mem32,
+    addr: pl011::PL011_VIRT_BASE as u64,
+};
+
+/// Capture the bootloader's command line and bring up the console it asks
+/// for. `hhdm` is the direct-map offset the trampoline installed; the MMIO
+/// forms are reached through it.
+///
+/// Transport priority: the EFI load options come first because the firmware
+/// behind GRUB publishes no device tree, so `/chosen/bootargs` does not exist
+/// there and only the load options carry the line. Each is a no-op once the
+/// slot is filled, and an empty slot falls through to the arch default.
+///
+/// # SAFETY: boot path, single CPU, IRQs masked, before any reader of the
+/// command-line slot exists.
+/// # C: O(cmdline length)
+/// # Ctx: pre-init, IRQ-off, single-CPU
+#[cfg(target_os = "oxide-kernel")]
+unsafe fn early_console(hhdm: u64) {
+    // SAFETY: boot-only single-writer; reads bootloader-owned state captured before ExitBootServices and publishes it via the boot-owned slot.
+    unsafe { boot_info_build::capture_cmdline_from_efi(); }
+    // SAFETY: boot-only single-writer; reads the DTB /chosen/bootargs and publishes it via the boot-owned slot, or no-ops if the DTB lacks bootargs.
+    unsafe { boot_info_build::capture_cmdline_from_dtb(); }
+    // SAFETY: boot-only single-writer, and a no-op once the slot is filled.
+    unsafe { cmdline::install_arch_default(); }
+    // SAFETY: same boot-path, single-CPU window; BOOT_UART names this platform's real PL011, which nothing else drives before device init, and `hhdm` is the direct map the trampoline installed for it.
+    unsafe { bootparam::init(cmdline::get(), BOOT_UART, hhdm); }
 }
 
 /// Entry. The shared bootloader-agnostic entry the trampoline tail-calls

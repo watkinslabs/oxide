@@ -21,62 +21,17 @@
 #[cfg(target_os = "oxide-kernel")]
 extern crate boot_x86_64 as _boot;
 
-/// Panic = halt. Kernel panics terminate the CPU; the per-arch HAL
-/// halt insn is the right floor here, but we don't depend on hal in
-/// this thin shim, so an inline loop suffices for v1.
-///
-/// Uses `klog::write_primary_*` (non-allocating), never `write_raw` — a
-/// panicking allocator call (e.g. a `kalloc` assert firing while its own
-/// Spinlock is held somewhere on the call stack) must not have this
-/// handler recurse into the SAME allocator via `write_raw`'s
-/// framebuffer-scroll fanout, which can allocate. That recursion
-/// self-deadlocks on this CPU's own held lock: a silent hang with no
-/// panic text at all, observed live (B1320 fixed one such held-lock site;
-/// this handler is the other half of the same failure class).
+/// Panic. Reports through the emergency console route — non-allocating, never
+/// `write_raw` — then does what the boot line's `panic=` asked: stop with the
+/// text on screen, or restart the machine after a delay. A panicking allocator
+/// call must not have this handler recurse into the same allocator through a
+/// framebuffer-scroll fan-out that can itself allocate; that recursion
+/// self-deadlocks on this CPU's own held lock, producing a silent hang with no
+/// panic text at all.
 /// # C: O(infinity) — by definition
 #[cfg(target_os = "oxide-kernel")]
 #[panic_handler]
-fn panic(info: &core::panic::PanicInfo) -> ! {
-    #[cfg(feature = "debug-panic")] {
-        klog::write_primary_raw(b"\n[PANIC] ");
-        if let Some(loc) = info.location() {
-            klog::write_primary_raw(loc.file().as_bytes());
-            klog::write_primary_raw(b":");
-            klog::write_primary_dec_u64(loc.line() as u64);
-            klog::write_primary_raw(b": ");
-        }
-        if let Some(s) = info.message().as_str() {
-            klog::write_primary_raw(s.as_bytes());
-        } else {
-            // Format args carry interpolation (e.g. alloc OOM emits
-            // "memory allocation of {size} bytes failed"). Render
-            // into a stack buffer via core::fmt::Write so the actual
-            // size shows up at the UART.
-            use core::fmt::Write as _;
-            struct Sink { buf: [u8; 192], len: usize }
-            impl core::fmt::Write for Sink {
-                fn write_str(&mut self, s: &str) -> core::fmt::Result {
-                    let b = s.as_bytes();
-                    let n = b.len().min(self.buf.len() - self.len);
-                    self.buf[self.len .. self.len + n].copy_from_slice(&b[..n]);
-                    self.len += n;
-                    Ok(())
-                }
-            }
-            let mut sink = Sink { buf: [0; 192], len: 0 };
-            let _ = core::write!(&mut sink, "{}", info.message());
-            klog::write_primary_raw(&sink.buf[..sink.len]);
-        }
-        klog::write_primary_raw(b"\n[PANIC] halted\n");
-    }
-    #[cfg(not(feature = "debug-panic"))] { let _ = info; }
-    // Snapshot the log for whatever is registered to keep it across the
-    // reboot. Last, so the panic text above is inside the snapshot; and
-    // unconditional, because a build without the printer is exactly the one
-    // where a persisted record is the only evidence there will be.
-    klog::kmsg_dump(klog::kmsg_dump::REASON_PANIC);
-    loop { core::hint::spin_loop(); }
-}
+fn panic(info: &core::panic::PanicInfo) -> ! { klog::oops::panic_and_stop(info) }
 
 /// Host-only stub `main` so `cargo test --workspace` can exercise the
 /// rest of the workspace without choking on the bin's no_main.

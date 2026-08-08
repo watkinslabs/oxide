@@ -29,6 +29,11 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
 # `make ci`              — what PR gate runs: spec-lint, test, both arches default + debug-all.
 # `make qemu-x86 / qemu-arm` — boot under QEMU with NO debug features;
 #                          `qemu-*-debug` is the firehose.
+# `make boot-debug-x86 / boot-debug-arm` — boot with the kernel debug cmdline
+#                          (earlycon + initcall_debug + ignore_loglevel), for a
+#                          boot that hangs and otherwise prints nothing.
+# `make smoke-debug`     — same, headless, serial log KEPT under
+#                          $(BOOT_LOG_DIR) whether it passes or fails.
 # `make qemu-mcp`        — print the MCP tool list (interactive QEMU debug).
 # `make artifacts`       — export stable packaging artifacts to target/artifacts.
 # `make clean`           — `cargo clean`.
@@ -37,6 +42,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         build-debug x86-debug arm-debug \
         test lint lint-ratchet lint-ratchet-update audit-counts profile-policy warnings-control stats ci \
         qemu-x86 qemu-arm qemu-x86-debug qemu-arm-debug qemu-mcp \
+        boot-debug-x86 boot-debug-arm smoke-debug smoke-debug-x86 smoke-debug-arm \
         qemu-x86-grub qemu-x86-uefi smoke-uefi-x86 \
         smoke-cmdline-x86 smoke-cmdline-arm smoke-cmdline \
         smoke-devpts-x86 smoke-devpts-arm smoke-devpts \
@@ -245,6 +251,55 @@ qemu-x86-debug:
 qemu-arm-debug:
 	$(TRIM_ROOTFS_CACHE)
 	$(XTASK) grub --arch aarch64 --features debug-all
+
+# Boot debugging — the answer to "it hangs and prints nothing".
+#
+# `OXIDE_CMDLINE_DEBUG=1` makes the ONE cmdline composer
+# (tools/xtask/src/image_qemu/bootargs.rs) prepend the debug preset:
+# `earlycon keep_bootcon initcall_debug ignore_loglevel printk.time=1` plus the
+# systemd side. `earlycon` brings a console up before device init, so the
+# pre-console window stops being invisible; `initcall_debug` makes each init
+# step name itself BEFORE it runs, so a boot that hangs names the step it
+# stopped in. Add anything else with `OXIDE_CMDLINE_EXTRA='panic=30 oops=panic'`
+# — it composes with the preset rather than replacing it.
+#
+# `make boot-debug-x86` / `boot-debug-arm` — interactive, output on the terminal.
+boot-debug-x86:
+	$(TRIM_ROOTFS_CACHE)
+	OXIDE_CMDLINE_DEBUG=1 $(XTASK) grub --arch x86_64  --smp $(SMP) $(if $(QEMU_FEATURES_X86),--features "$(QEMU_FEATURES_X86)",)
+
+boot-debug-arm:
+	$(TRIM_ROOTFS_CACHE)
+	OXIDE_CMDLINE_DEBUG=1 $(XTASK) grub --arch aarch64 --smp $(SMP) $(if $(QEMU_FEATURES_ARM),--features "$(QEMU_FEATURES_ARM)",)
+
+# Captured variants: same boot, serial log kept at a stable path whether the
+# boot passes or fails. `boot-smoke.sh` deletes its temp log on exit, so a
+# passing boot's early output is otherwise unrecoverable — the case where the
+# question is "what did the slow one do differently", not "did it fail".
+BOOT_LOG_DIR ?= target/boot-logs
+
+smoke-debug-x86: x86
+	@mkdir -p $(BOOT_LOG_DIR)
+	OXIDE_CMDLINE_DEBUG=1 SMOKE_KEEP_LOG=$(BOOT_LOG_DIR)/x86.log \
+	    SMOKE_KEEP_LOG_DIR=$(BOOT_LOG_DIR) ./tools/boot-smoke.sh x86 $(SMOKE_TIMEOUT)
+	@echo "serial log kept: $(BOOT_LOG_DIR)/x86.log"
+
+smoke-debug-arm: arm
+	@mkdir -p $(BOOT_LOG_DIR)
+	OXIDE_CMDLINE_DEBUG=1 SMOKE_KEEP_LOG=$(BOOT_LOG_DIR)/arm.log \
+	    SMOKE_KEEP_LOG_DIR=$(BOOT_LOG_DIR) ./tools/boot-smoke.sh arm $(SMOKE_TIMEOUT)
+	@echo "serial log kept: $(BOOT_LOG_DIR)/arm.log"
+
+# Both arches concurrently, same rationale as `smoke`: they contend for
+# nothing, and running them back to back doubles the wall clock for no answer.
+smoke-debug: x86 arm
+	@mkdir -p $(BOOT_LOG_DIR); rc=0; \
+	OXIDE_CMDLINE_DEBUG=1 SMOKE_KEEP_LOG=$(BOOT_LOG_DIR)/x86.log SMOKE_KEEP_LOG_DIR=$(BOOT_LOG_DIR) ./tools/boot-smoke.sh x86 $(SMOKE_TIMEOUT) & p1=$$!; \
+	OXIDE_CMDLINE_DEBUG=1 SMOKE_KEEP_LOG=$(BOOT_LOG_DIR)/arm.log SMOKE_KEEP_LOG_DIR=$(BOOT_LOG_DIR) ./tools/boot-smoke.sh arm $(SMOKE_TIMEOUT) & p2=$$!; \
+	wait $$p1 || rc=1; \
+	wait $$p2 || rc=1; \
+	echo "serial logs kept under $(BOOT_LOG_DIR)/"; \
+	exit $$rc
 
 # Boot-smoke gates — run kernel under qemu headless and wait for
 # `oxide login:` on serial within SMOKE_TIMEOUT seconds (default
