@@ -125,7 +125,7 @@ impl NetlinkSocket {
         rtnetlink::nlmsg_ack_pub(hdr, -(syscall::errno::Errno::Ebadf.as_i32()))
     }
 
-    fn may_admin_net(&self) -> bool {
+    pub(crate) fn may_admin_net(&self) -> bool {
         self.may_admin_net_for(&self.net_ns)
     }
 
