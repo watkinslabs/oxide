@@ -68,7 +68,8 @@ mod tests {
             Arc::new(net::mcast_filter::SocketMcast::new()),
             Arc::new(net::SocketError::new()),
             Arc::new(core::sync::atomic::AtomicI32::new(0)),
-            Arc::new(core::sync::atomic::AtomicI32::new(net::uapi::IP_PMTUDISC_WANT)))
+            Arc::new(core::sync::atomic::AtomicI32::new(net::uapi::IP_PMTUDISC_WANT)),
+            Arc::new(net::sock_opts::sol_ip::IpOpts::default()))
     }
 
     // The identifier is the local port column, and a raw ICMP socket in the

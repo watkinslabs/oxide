@@ -13,6 +13,9 @@ use crate::RouteMetrics;
 
 pub const RTN_UNICAST:     u8 = 1;
 pub const RTN_LOCAL:       u8 = 2;
+pub const RTN_BROADCAST:   u8 = 3;
+pub const RTN_ANYCAST:     u8 = 4;
+pub const RTN_MULTICAST:   u8 = 5;
 pub const RTN_BLACKHOLE:   u8 = 6;
 pub const RTN_UNREACHABLE: u8 = 7;
 pub const RTN_PROHIBIT:    u8 = 8;
@@ -59,6 +62,15 @@ impl RouteRecord {
         Self { route, protocol: 2, scope: 0, kind: 1, metric: 0,
             metrics: RouteMetrics::NONE, flags: 0,
             weight: 1, nh_flags: 0 }
+    }
+
+    /// Construct a route of LOCAL type — one the local table carries because
+    /// the address it covers is delivered to this host rather than forwarded.
+    /// The type is what a bind and a local-input decision read; the table
+    /// alone does not say it, because the local table also carries broadcast
+    /// and anycast rows. # C: O(1)
+    pub const fn local(route: RouteEntry) -> Self {
+        Self { kind: RTN_LOCAL, ..Self::kernel(route) }
     }
 
     /// The address a transmit to `dst` solicits: the gateway when the route

@@ -85,6 +85,12 @@ pub struct Raw4Endpoint {
     pub bpf_filter: Arc<SocketFilter>,
     pub mcast: Arc<SocketMcast>,
     pub error: Arc<SocketError>,
+    /// The live `IPPROTO_IP` option state of the socket that owns this
+    /// endpoint, retained the way a TCP transport entry retains it. The
+    /// transmit path's source screen reads the nonlocal permission through it,
+    /// so a `setsockopt` after the endpoint was published reaches the screen
+    /// with no second socket lookup and no mirrored copy to fall out of date.
+    pub ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>,
     ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
     #[cfg(target_os = "oxide-kernel")]
     pub waiters: sched::live::WaitList,
@@ -104,30 +110,34 @@ impl Raw4Endpoint {
                bpf: Arc<SocketFilter>, mcast: Arc<SocketMcast>, error: Arc<SocketError>,
                ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>) -> Arc<Self> {
         Self::new_owned_with_pmtudisc(protocol, crate::SocketOwner::root(net_namespace, 0),
-            bpf, mcast, error, ip_mtu_discover)
+            bpf, mcast, error, ip_mtu_discover,
+            Arc::new(crate::sock_opts::sol_ip::IpOpts::default()))
     }
 
     /// Build one endpoint retaining the socket's canonical owner. # C: O(1)
     pub fn new_owned_with_pmtudisc(protocol: u8, owner: Arc<crate::SocketOwner>,
                bpf: Arc<SocketFilter>, mcast: Arc<SocketMcast>, error: Arc<SocketError>,
-               ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>) -> Arc<Self> {
-        Self::new_inner(protocol, owner, None, bpf, mcast, error, ip_mtu_discover)
+               ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
+               ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>) -> Arc<Self> {
+        Self::new_inner(protocol, owner, None, bpf, mcast, error, ip_mtu_discover, ip_opts)
     }
 
     /// Build one ICMP datagram endpoint whose identifier the kernel owns. # C: O(1)
     pub fn new_ping(owner: Arc<crate::SocketOwner>, bpf: Arc<SocketFilter>,
                mcast: Arc<SocketMcast>, error: Arc<SocketError>,
                reuse: Arc<core::sync::atomic::AtomicI32>,
-               ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>) -> Arc<Self> {
+               ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
+               ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>) -> Arc<Self> {
         let ident = crate::ping::new_ident(crate::ping::PingFamily::V4, reuse);
         Self::new_inner(crate::addr::IpProto::Icmp as u8, owner, Some(ident), bpf, mcast, error,
-            ip_mtu_discover)
+            ip_mtu_discover, ip_opts)
     }
 
     fn new_inner(protocol: u8, owner: Arc<crate::SocketOwner>,
                ping: Option<Arc<crate::ping::PingIdent>>, bpf: Arc<SocketFilter>,
                mcast: Arc<SocketMcast>, error: Arc<SocketError>,
-               ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>) -> Arc<Self> {
+               ip_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
+               ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>) -> Arc<Self> {
         Arc::new(Self {
             protocol,
             owner,
@@ -148,6 +158,7 @@ impl Raw4Endpoint {
             bpf_filter: bpf,
             mcast,
             error,
+            ip_opts,
             ip_mtu_discover,
             #[cfg(target_os = "oxide-kernel")]
             waiters: sched::live::WaitList::new(),
