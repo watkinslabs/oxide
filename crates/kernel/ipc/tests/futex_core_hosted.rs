@@ -569,7 +569,7 @@ fn untimed_wait_returns_erestartsys_on_signal_not_a_fake_success_or_timeout() {
     unsafe { live::try_to_wake_up(waiter_watch.clone()); }
 
     let rv = rx.recv_timeout(Duration::from_secs(5)).expect("must not hang");
-    // Linux `futex_wait()` `waitwake.c:753-754`: no timeout, so `-ERESTARTSYS`
+    // No timeout, so `-ERESTARTSYS`
     // reaches the syscall tail untouched and an SA_RESTART handler restarts
     // the wait. A bare EINTR here loses that restart.
     assert_eq!(rv, syscall::restart::restart_sys());
@@ -600,7 +600,7 @@ fn timed_wait_arms_futex_wait_restart_with_the_same_absolute_deadline() {
     unsafe { live::try_to_wake_up(waiter_watch.clone()); }
 
     let rv = rx.recv_timeout(Duration::from_secs(5)).expect("must not hang");
-    // Linux `waitwake.c:759-767`: any timeout arms `futex_wait_restart` and
+    // Any timeout arms the wait's own restart function and
     // `set_restart_fn` returns -ERESTART_RESTARTBLOCK.
     assert_eq!(rv, syscall::restart::restart_block());
     assert_eq!(waiter_watch.restart_block.kind(), task::restart::RESTART_FUTEX);

@@ -8,12 +8,17 @@ use sync::RwLock;
 use alloc::collections::BTreeMap;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64};
 
+/// Name hash for a dentry whose `d_hash` hook declines to fold (Linux
+/// `full_name_hash` with no case folding). The same function the no-hook path
+/// uses, narrowed to the width a hook returns. # C: O(name.len())
+pub(crate) fn default_name_hash(name: &str) -> u32 { Dentry::fnv1a(name.as_bytes()) as u32 }
+
 impl Dentry {
     /// `full_name_hash(parent, name)` (`16§96`). # C: O(name.len())
     pub fn compute_hash(parent: Option<&Arc<Dentry>>, name: &str) -> u32 {
         let salt = match parent { Some(p) => Arc::as_ptr(p) as usize as u64, None => 0 };
         let name_hash = match parent.and_then(|p| p.d_op).and_then(|o| o.d_hash) {
-            Some(f) => f(name) as u64,
+            Some(f) => f(parent.expect("d_op comes from the parent"), name) as u64,
             None    => Self::fnv1a(name.as_bytes()),
         };
         let mut h = salt.wrapping_mul(0x100000001B3) ^ name_hash;
@@ -22,7 +27,7 @@ impl Dentry {
     }
 
     /// FNV-1a 64 over `bytes`. # C: O(bytes.len())
-    fn fnv1a(bytes: &[u8]) -> u64 {
+    pub(super) fn fnv1a(bytes: &[u8]) -> u64 {
         let mut h: u64 = 0xcbf29ce484222325;
         for &b in bytes { h = (h ^ b as u64).wrapping_mul(0x100000001B3); }
         h
@@ -81,7 +86,17 @@ impl Dentry {
 
     /// Construct a superblock root dentry. # C: O(1)
     pub fn new_root_in_sb(inode: InodeRef, sb: &Arc<SuperBlock>) -> Arc<Self> {
-        Self::build(None, "", Some(inode), Arc::downgrade(sb), None, D_ROOT)
+        Self::new_root_in_sb_ops(inode, sb, None)
+    }
+
+    /// Construct a superblock root dentry carrying the instance-wide dentry
+    /// operations (Linux `sb->s_d_op`, propagated to every child at `d_alloc`).
+    /// A casefolded filesystem passes what
+    /// [`crate::dentry::casefold::sb_enable_casefold`] returned, so the whole
+    /// tree hashes and compares names through the instance's encoding.
+    /// # C: O(1)
+    pub fn new_root_in_sb_ops(inode: InodeRef, sb: &Arc<SuperBlock>, d_op: Option<&'static DentryOps>) -> Arc<Self> {
+        Self::build(None, "", Some(inode), Arc::downgrade(sb), d_op, D_ROOT)
     }
 
     /// Construct an anonymous disconnected dentry. # C: O(1)

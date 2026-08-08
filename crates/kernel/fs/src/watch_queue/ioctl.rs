@@ -31,7 +31,20 @@ fn set_size(file: &File, arg: u64) -> i64 {
     // an enormous allocation.
     let nr = arg as u32 as i32;
     if nr < 0 { return neg(Errno::Einval); }
-    match q.set_size(nr as usize) { Ok(_) => 0, Err(e) => neg(e) }
+    let pages = match super::queue::admit_set_size(nr as usize, q.is_sized()) {
+        Ok(p) => p,
+        Err(e) => return neg(e),
+    };
+    // The depth is memory, and it is the pipe's owner who pays for it: the
+    // reservation is charged against that account before the depth exists, so
+    // a user cannot hold more notification memory than pipe pages.
+    if let Err(e) = crate::pipe::charge_pipe_pages(file.inode(), pages as i64) {
+        // The charge refuses with EPERM (over a per-user limit) and nothing
+        // else on a pipe that reached this command at all.
+        return neg(match e { vfs::VfsError::Einval => Errno::Einval, _ => Errno::Eperm });
+    }
+    q.commit_size(pages);
+    0
 }
 
 fn set_filter(file: &File, arg: u64) -> i64 {

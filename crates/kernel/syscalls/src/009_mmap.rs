@@ -33,6 +33,16 @@ impl Drop for DrmDumbBacking {
     }
 }
 
+/// The errno a failed huge-page file build reports. `ENODEV` for a granule
+/// this kernel has no pool for, `ENOMEM` for a pool that cannot promise the
+/// pages, `ENOSPC` for an inode it could not build — the three the reference's
+/// `hugetlb_file_setup` distinguishes.
+/// # C: O(1)
+fn huge_setup_errno(e: ::fs::hugetlbfs::HugetlbSetupError) -> Errno {
+    use ::fs::hugetlbfs::HugetlbSetupError as E;
+    match e { E::NoSuchSize => Errno::Enodev, E::NoMemory => Errno::Enomem, E::NoSpace => Errno::Enospc }
+}
+
 /// # C: O(log N_vmas)
 pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
     let fd     = args.a4 as i32;
@@ -70,10 +80,42 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
     // corruption that COW-splitting MAP_SHARED|ANON caused. Offset is 0 (anon
     // inode starts empty, grows sparse + zero-filled on demand). MAP_PRIVATE|
     // MAP_ANON is unchanged: pure zero-fill COW (backing stays None).
+    // Length the mapping really covers. A huge mapping is served by whole
+    // leaves, so its length rounds up to whole huge pages before anything
+    // places it (`ksys_mmap_pgoff`).
+    let mut len = args.a1;
+    // Flags as the placement layer sees them. `MAP_HUGETLB|MAP_ANON` clears
+    // `MAP_ANON` below: the reference turns that request into a mapping of a
+    // real file on the kernel-private hugetlbfs mount, and a mapping with a
+    // backing file is a file mapping — calling it anonymous as well is the
+    // contradiction the admission check exists to catch.
+    let mut eff_flags = args.a3;
     if (flags & MAP_ANON) != 0 {
-        if (flags & MAP_TYPE) == MAP_SHARED {
-            backing = Some(crate::mmap_file::InodeFileBacking::new(::fs::tmpfs::tmpfs_anon_file()));
-            offset = 0;
+        // MAP_HUGETLB|MAP_ANON is not an anonymous mapping at all in the
+        // reference: it builds a file on the kernel-private hugetlbfs mount
+        // and maps that, so the pages come from the hugetlb pool and carry the
+        // same accounting every other hugetlbfs page does.
+        match crate::mmap_huge::anon_request(flags) {
+            Err(e) => return -(e.as_i32() as i64),
+            Ok(crate::mmap_huge::HugeRequest::Huge(size)) => {
+                len = match crate::mmap_huge::huge_len(len, size) {
+                    Ok(l) => l, Err(e) => return -(e.as_i32() as i64),
+                };
+                let log = size.shift();
+                let inode = match ::fs::hugetlbfs::hugetlb_file_setup(len, log, 0o777, 0, 0) {
+                    Ok(i)  => i,
+                    Err(e) => return -(huge_setup_errno(e).as_i32() as i64),
+                };
+                backing = Some(crate::mmap_file::InodeFileBacking::new(inode));
+                offset = 0;
+                eff_flags &= !MAP_ANON;
+            }
+            Ok(crate::mmap_huge::HugeRequest::None) => {
+                if (flags & MAP_TYPE) == MAP_SHARED {
+                    backing = Some(crate::mmap_file::InodeFileBacking::new(::fs::tmpfs::tmpfs_anon_file()));
+                    offset = 0;
+                }
+            }
         }
         if rier { prot |= PROT_EXEC; }
     } else {
@@ -236,6 +278,23 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
                 // each fault — this is also the only atime a mapped `execve`
                 // image ever gets (the exec path never touches atime itself).
                 vfs::file_accessed(&file);
+                // The FILE decides whether this mapping is made of huge pages:
+                // mapping a hugetlbfs file gives them whether or not the caller
+                // said MAP_HUGETLB, and asking for MAP_HUGETLB on a file that
+                // is not one is a contradiction.
+                let huge = match crate::mmap_huge::file_request(flags, inode.huge_page_size()) {
+                    Ok(h)  => h,
+                    Err(e) => return -(e.as_i32() as i64),
+                };
+                len = match huge.len(len) { Ok(l) => l, Err(e) => return -(e.as_i32() as i64) };
+                if huge.size().is_some() {
+                    // `hugetlbfs_file_mmap`: the pages are committed HERE, so a
+                    // mapping larger than the mount or the pool can hold fails
+                    // at the call rather than at a fault nothing can handle.
+                    if let Err(e) = ::fs::hugetlbfs::reserve_mapping(&inode, offset, len) {
+                        return crate::namei_common::errno_from_vfs(e);
+                    }
+                }
                 // The mapping remembers the name it was established under, so
                 // a core dump can tell a debugger which object to reopen for
                 // the pages it did not carry.
@@ -247,7 +306,7 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
         }
     }
     let result = pmm::user_as::glue_mmap(
-        args.a0, args.a1, prot, args.a3, fd as i64, offset, backing, phys_range,
+        args.a0, len, prot, eff_flags, fd as i64, offset, backing, phys_range,
         None, may_prot, file_vma_flags,
     );
     drop(seal_write_reservation);

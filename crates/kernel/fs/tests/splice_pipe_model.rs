@@ -22,7 +22,7 @@ fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
 /// A live anonymous pipe with both ends open: `readers`/`writers` primed the
 /// way `sys_pipe2` primes them, so the EOF / EPIPE decisions are real.
 fn pipe_pair() -> (InodeRef, Arc<File>, Arc<File>) {
-    let inode = make_pipe_inode();
+    let inode = make_pipe_inode().expect("pipe inode");
     let p = pipe_data(&inode).expect("anon pipe carries its ring");
     p.readers.store(1, Ordering::Release);
     p.writers.store(1, Ordering::Release);

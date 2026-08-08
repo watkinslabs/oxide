@@ -37,8 +37,8 @@ fn every_layer_must_be_satisfied_independently() {
     let (mut m, _) = LayerMasks::init(&[ACCESS_FS_READ_FILE, ACCESS_FS_READ_FILE],
                                       ACCESS_FS_READ_FILE);
     // Only the first layer grants it: the request is still outstanding.
-    assert!(!m.unmask(&[ACCESS_FS_READ_FILE, 0]));
-    assert!(m.unmask(&[0, ACCESS_FS_READ_FILE]));
+    assert!(!m.unmask(&[Grant::plain(ACCESS_FS_READ_FILE), Grant::plain(0)]));
+    assert!(m.unmask(&[Grant::plain(0), Grant::plain(ACCESS_FS_READ_FILE)]));
 }
 
 #[test]
@@ -47,8 +47,8 @@ fn rights_union_along_the_walk_within_a_layer() {
     // satisfy a request for both.
     let (mut m, _) = LayerMasks::init(&[ACCESS_FS_READ_FILE | ACCESS_FS_EXECUTE],
                                       ACCESS_FS_READ_FILE | ACCESS_FS_EXECUTE);
-    assert!(!m.unmask(&[ACCESS_FS_EXECUTE]));
-    assert!(m.unmask(&[ACCESS_FS_READ_FILE]));
+    assert!(!m.unmask(&[Grant::plain(ACCESS_FS_EXECUTE)]));
+    assert!(m.unmask(&[Grant::plain(ACCESS_FS_READ_FILE)]));
 }
 
 #[test]
@@ -129,4 +129,59 @@ fn an_exchange_is_checked_in_both_directions() {
     assert!(!no_more_access(&none, &none, true, &x0, Some(&x0), true));
     // Without a second child only one direction is examined.
     assert!(no_more_access(&none, &none, true, &x0, None, true));
+}
+
+/// A satisfied request names no denying layer: there is nothing to report.
+#[test]
+fn a_satisfied_request_has_no_denied_layer() {
+    let (m, _) = LayerMasks::init(&[ACCESS_FS_READ_FILE], ACCESS_FS_READ_FILE);
+    let mut m = m;
+    assert!(m.unmask(&[Grant::plain(ACCESS_FS_READ_FILE)]));
+    assert_eq!(m.denied_layer(ACCESS_FS_READ_FILE), None);
+}
+
+/// The YOUNGEST layer still refusing is the one reported: it is the layer whose
+/// author most recently chose to refuse this, so its configuration decides
+/// whether the denial is reported at all.
+#[test]
+fn the_youngest_refusing_layer_is_the_one_named() {
+    let handled = [ACCESS_FS_READ_FILE, ACCESS_FS_READ_FILE, ACCESS_FS_READ_FILE];
+    let (mut m, req) = LayerMasks::init(&handled, ACCESS_FS_READ_FILE);
+    assert_eq!(req, ACCESS_FS_READ_FILE);
+    // Only the middle layer grants it; the outermost and youngest still refuse.
+    assert!(!m.unmask(&[Grant::plain(0), Grant::plain(ACCESS_FS_READ_FILE), Grant::plain(0)]));
+    assert_eq!(m.denied_layer(req), Some((2, ACCESS_FS_READ_FILE, false)));
+}
+
+/// The reported rights are the ones THAT layer still refuses, not the whole
+/// request: a layer that granted half of it did not refuse that half.
+#[test]
+fn only_the_rights_the_named_layer_still_refuses_are_reported() {
+    let both = ACCESS_FS_READ_FILE | ACCESS_FS_WRITE_FILE;
+    let (mut m, req) = LayerMasks::init(&[both, both], both);
+    assert!(!m.unmask(&[Grant::plain(0), Grant::plain(ACCESS_FS_WRITE_FILE)]));
+    assert_eq!(m.denied_layer(req), Some((1, ACCESS_FS_READ_FILE, false)));
+}
+
+/// A quiet marking met anywhere on the walk sticks to its layer, and only to
+/// its layer.
+#[test]
+fn a_quiet_marking_accumulates_per_layer() {
+    let (mut m, req) = LayerMasks::init(&[ACCESS_FS_READ_FILE, ACCESS_FS_READ_FILE],
+        ACCESS_FS_READ_FILE);
+    // A rule of layer 1 marks the object quiet without granting anything.
+    assert!(!m.unmask(&[Grant::plain(0), Grant { access: 0, quiet: true }]));
+    assert!(!m.unmask(&[Grant::plain(0), Grant::plain(0)]), "a later node does not clear it");
+    assert_eq!(m.denied_layer(req), Some((1, ACCESS_FS_READ_FILE, true)));
+    assert!(!m.quiet[0]);
+}
+
+/// Rights outside the request are not reported even when a layer still tracks
+/// them: a denial must describe what was asked for.
+#[test]
+fn rights_outside_the_request_are_not_reported() {
+    let mut m = LayerMasks::default();
+    m.layers[0] = ACCESS_FS_READ_FILE | ACCESS_FS_EXECUTE;
+    assert_eq!(m.denied_layer(ACCESS_FS_EXECUTE), Some((0, ACCESS_FS_EXECUTE, false)));
+    assert_eq!(m.denied_layer(ACCESS_FS_TRUNCATE), None);
 }

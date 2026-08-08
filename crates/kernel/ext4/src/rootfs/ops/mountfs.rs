@@ -24,8 +24,13 @@ impl Ext4SuperOps {
 /// finish it: a barrier there orders writes nobody has waited for, while still
 /// costing a full device flush — and since the sync path issues BOTH passes,
 /// answering `true` for both doubles every whole-filesystem sync's device
-/// flushes. # C: O(1)
-fn sync_fs_needs_barrier(wait: bool) -> bool { wait }
+/// flushes.
+///
+/// `-o nobarrier` removes the flush entirely: the mount has told us its device
+/// either does not need one or is lying about it. That option had no effect at
+/// all before this, so a mount that asked to trade durability for speed paid
+/// for the durability anyway. # C: O(1)
+fn sync_fs_needs_barrier(wait: bool, barrier: bool) -> bool { wait && barrier }
 
 impl vfs::SuperOps for Ext4SuperOps {
     /// Linux `ext4_statfs`. `f_blocks` merges
@@ -151,7 +156,7 @@ impl vfs::SuperOps for Ext4SuperOps {
         // authoritative for EVERY ext4 mount (incl. non-root `/home`), not
         // just the root helper `commit_rootfs_journal`.
         self.st.mount.commit_batch().map_err(|_| vfs::VfsError::Eio)?;
-        if sync_fs_needs_barrier(wait) {
+        if sync_fs_needs_barrier(wait, self.st.opts().behaviour.barrier) {
             self.st.mount.dev.flush().map_err(|_| vfs::VfsError::Eio)?;
         }
         Ok(())
@@ -236,32 +241,51 @@ impl Ext4Mount {
         dev: Arc<dyn block::BlockDevice>,
         dev_t: Option<u64>,
     ) -> block::types::KResult<Arc<Self>> {
-        let st = RootfsState::open(dev)?;
+        Self::open_with_behaviour(dev, dev_t, Default::default())
+    }
+
+    /// Open with the behavioural options already decided. # C: O(N_groups)
+    fn open_with_behaviour(
+        dev: Arc<dyn block::BlockDevice>,
+        dev_t: Option<u64>,
+        behaviour: crate::mount_opts::Ext4Behaviour,
+    ) -> block::types::KResult<Arc<Self>> {
+        let st = RootfsState::open_with_behaviour(dev, behaviour)?;
         // ext4_setup_super: a rw mount marks the fs not-cleanly-unmounted +
         // bumps the mount count, so a crash before Drop is fsck-visible.
         // Best-effort — a marginal SB write must not fail an otherwise-good
         // mount (Linux logs and continues).
         let _ = st.mount.mark_state_dirty();
-        Ok(Arc::new(Self { st, dev_t }))
+        let fs = Arc::new(Self { st, dev_t });
+        // `commit=` is a promise about a filesystem nobody is syncing, so the
+        // timer that keeps it is armed by the first mount rather than by boot.
+        crate::commit_timer::arm();
+        crate::commit_timer::register(&fs.st.mount);
+        Ok(fs)
     }
 
     /// Open `dev` and apply the mount-data option string to it.
     ///
-    /// Options are parsed and consistency-checked BEFORE the superblock is
-    /// published, so a rejected combination (`usrjquota=` without `jqfmt=`,
-    /// `prjquota` on a filesystem without the project feature, …) fails the
-    /// mount with the option error rather than half-mounting. An unknown
-    /// non-quota option never fails the mount.
+    /// The string is parsed BEFORE the filesystem is opened and
+    /// consistency-checked before the superblock is published, so a rejected
+    /// combination (`usrjquota=` without `jqfmt=`, `prjquota` on a filesystem
+    /// without the project feature, …) fails the mount with the option error
+    /// rather than half-mounting. An unknown non-quota option never fails the
+    /// mount.
+    ///
+    /// Parsing first is not tidiness: the open replays the journal, and
+    /// `noload`/`norecovery` is the option that says not to. It is parsed
+    /// ONCE — the same context the open consumed is the one applied afterwards.
     /// # C: O(N_groups + len(data))
     pub fn open_with_data(
         dev: Arc<dyn block::BlockDevice>,
         dev_t: Option<u64>,
         data: &str,
     ) -> vfs::KResult<Arc<Self>> {
-        let fs = Self::open_with_dev(dev, dev_t).map_err(|_| vfs::VfsError::Einval)?;
-        // Nothing has loaded quota yet on a fresh open, so this is the
-        // first-mount half of the option contract, not the remount half.
-        fs.st.configure_mount_opts(data, false)?;
+        let mut ctx = crate::mount_opts::parse_data(data, Default::default())?;
+        let fs = Self::open_with_behaviour(dev, dev_t, ctx.behaviour)
+            .map_err(|_| vfs::VfsError::Einval)?;
+        fs.st.apply_parsed_mount_opts(&mut ctx)?;
         Ok(fs)
     }
 
@@ -395,10 +419,59 @@ mod tests {
             "one whole-filesystem sync, one device barrier");
     }
 
-    /// The barrier decision itself, stated once: the waiting pass and only it.
+    /// The barrier decision itself, stated once: the waiting pass and only it,
+    /// and only on a mount that did not ask for the flush to be dropped.
     #[test]
-    fn only_the_waiting_pass_owes_a_barrier() {
-        assert!(!sync_fs_needs_barrier(false));
-        assert!(sync_fs_needs_barrier(true));
+    fn only_the_waiting_pass_of_a_barrier_mount_owes_a_barrier() {
+        assert!(!sync_fs_needs_barrier(false, true));
+        assert!(sync_fs_needs_barrier(true, true));
+        assert!(!sync_fs_needs_barrier(false, false));
+        assert!(!sync_fs_needs_barrier(true, false), "-o nobarrier takes no device flush");
+    }
+
+    /// `-o nobarrier` reaches the device, not just the option state.
+    #[test]
+    fn nobarrier_removes_the_device_flush_a_full_sync_would_take() {
+        let dev = fresh_dev();
+        let m = Ext4Mount::open_with_data(dev.clone() as Arc<dyn BlockDevice>, None, "nobarrier")
+            .expect("nobarrier mounts");
+        let ops = m.super_ops().expect("ext4 super_ops");
+        dev.flushes.store(0, Ordering::SeqCst);
+        ops.sync_fs(false).expect("nowait pass");
+        ops.sync_fs(true).expect("waiting pass");
+        assert_eq!(dev.flushes.load(Ordering::SeqCst), 0,
+            "a nobarrier mount takes no device flush");
+    }
+
+    /// An option value the filesystem does not have fails the mount instead of
+    /// being swallowed. `errors=remount-rw` is not a value; it used to mount.
+    #[test]
+    fn an_unknown_option_value_fails_the_mount() {
+        let dev = fresh_dev() as Arc<dyn BlockDevice>;
+        assert!(Ext4Mount::open_with_data(dev.clone(), None, "errors=remount-rw").is_err());
+        assert!(Ext4Mount::open_with_data(dev.clone(), None, "data=sideways").is_err());
+        assert!(Ext4Mount::open_with_data(dev.clone(), None, "journal_ioprio=8").is_err());
+        assert!(Ext4Mount::open_with_data(dev.clone(), None, "commit=notanumber").is_err());
+        assert!(Ext4Mount::open_with_data(dev, None, "errors=panic").is_ok());
+    }
+
+    /// The options a root filesystem is actually mounted with reach the state
+    /// their consumers read, and the ones the string did not name keep their
+    /// defaults.
+    #[test]
+    fn the_behavioural_options_land_where_their_consumers_read_them() {
+        let dev = fresh_dev() as Arc<dyn BlockDevice>;
+        let m = Ext4Mount::open_with_data(dev, None,
+            "errors=continue,commit=30,max_dir_size_kb=64,nodelalloc,discard,noload")
+            .expect("mounts");
+        let b = m.state().opts().behaviour;
+        assert_eq!(b.errors, crate::mount_opts::ErrorsPolicy::Continue);
+        assert_eq!(b.commit_secs, 30);
+        assert_eq!(b.max_dir_size_bytes(), Some(64 * 1024));
+        assert!(!b.delalloc);
+        assert!(b.discard);
+        assert!(b.noload);
+        assert!(b.barrier, "an option the string did not name keeps its default");
+        assert_eq!(b.data, crate::mount_opts::DataMode::Ordered);
     }
 }

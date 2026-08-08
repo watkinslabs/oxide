@@ -6,14 +6,16 @@ pub const MEMORY: u8 = 1 << 1;
 pub const IO: u8 = 1 << 2;
 pub const PIDS: u8 = 1 << 3;
 pub const CPUSET: u8 = 1 << 4;
-pub const ALL: u8 = CPU | MEMORY | IO | PIDS | CPUSET;
+pub const HUGETLB: u8 = 1 << 5;
+pub const ALL: u8 = CPU | MEMORY | IO | PIDS | CPUSET | HUGETLB;
 
-/// Controller name ↔ bit. Linux ordering: cpu cpuset io memory pids.
+/// Controller name ↔ bit. Linux ordering: cpu cpuset io memory hugetlb pids.
 const CTRL_TABLE: &[(&str, u8)] = &[
     ("cpu", CPU),
     ("cpuset", CPUSET),
     ("io", IO),
     ("memory", MEMORY),
+    ("hugetlb", HUGETLB),
     ("pids", PIDS),
 ];
 
@@ -32,6 +34,7 @@ pub(super) fn file_controller(file: &str) -> Option<u8> {
         "cpu" => Some(CPU),
         "io" => Some(IO),
         "cpuset" => Some(CPUSET),
+        "hugetlb" => Some(HUGETLB),
         _ => None,
     }
 }

@@ -9,10 +9,6 @@ use vfs::{File, FileType, SuperBlock};
 
 use super::mode::{falloc_mode_ok, FALLOC_FL_KEEP_SIZE};
 
-/// `S_SWAPFILE` — swapon captured this inode's
-/// block map, so no operation may move its blocks.
-const S_SWAPFILE: u32 = 1 << 8;
-
 /// `-errno` in the syscall return convention. # C: O(1)
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
@@ -76,7 +72,7 @@ pub fn vfs_fallocate(_cur: &sched::Task, file: &File, mode: u32, offset: i64, le
     // 6. Immutable rejects even plain preallocation.
     if i_flags & vfs::S_IMMUTABLE != 0 { return err(Errno::Eperm); }
     // 7. An active swapfile's block map belongs to the swap subsystem.
-    if i_flags & S_SWAPFILE != 0 { return err(Errno::Etxtbsy); }
+    if i_flags & vfs::S_SWAPFILE != 0 { return err(Errno::Etxtbsy); }
     // 9-11. File-type ladder: three distinct errnos, none of them EINVAL.
     match inode.file_type() {
         FileType::Fifo      => return err(Errno::Espipe),

@@ -172,6 +172,13 @@ pub(crate) fn commit(cur: &sched::Task, t: &ExecTransition) {
     // ABI). Owned by sched so the two arches cannot drift apart here.
     sched::exec_flush::flush_thread_flags(cur);
     cur.dumpable.store(t.dumpable, Ordering::Release);
+    // Landlock's `bprm_creds_prepare`: the layer set this EXECUTION enforced
+    // is empty for a program that has just replaced the one that enforced it,
+    // so its denials fall under the new-execution reporting rule rather than
+    // the same-execution one. The subdomain switch survives — it was a
+    // decision about the layers, not about the program that made it.
+    let ll = cur.landlock_log_state.load(Ordering::Acquire);
+    cur.landlock_log_state.store(::landlock::logging::state_after_exec(ll), Ordering::Release);
     // Linux `prepare_exec_creds`: the new image gets no thread keyring and a
     // fresh (absent) process keyring; the session keyring and any assumed
     // instantiation authority are inherited. Dropping the first two is what

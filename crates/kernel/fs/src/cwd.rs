@@ -77,17 +77,11 @@ pub fn set_fs_pwd(path: VfsPath, cred: &vfs::Cred) -> i64 {
     0
 }
 
-/// `set_fs_root` half of `chroot(2)`, in Linux's exact order:
-///
-/// ```text
-/// error = filename_lookup(AT_FDCWD, name, LOOKUP_FOLLOW|LOOKUP_DIRECTORY, &path, NULL);
-/// if (error) return error;                       /* shim: resolution errno  */
-/// error = path_permission(&path, MAY_EXEC | MAY_CHDIR);
-/// if (error) goto dput_and_out;                  /* EACCES                  */
-/// error = -EPERM;
-/// if (!ns_capable(current_user_ns(), CAP_SYS_CHROOT)) goto dput_and_out;
-/// set_fs_root(current->fs, &path);
-/// ```
+/// The root-installing half of `chroot(2)`, in the reference's rung order:
+/// resolve the name (following symlinks, requiring a directory) and report the
+/// resolution errno; then the search permission on the resolved directory
+/// (EACCES); then `CAP_SYS_CHROOT` in the caller's user namespace (EPERM);
+/// then install the root.
 ///
 /// The order matters and is observable: a caller WITHOUT `CAP_SYS_CHROOT`
 /// naming an unsearchable directory gets EACCES, not EPERM. `permitted` is a

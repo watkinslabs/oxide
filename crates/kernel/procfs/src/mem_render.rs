@@ -35,6 +35,10 @@ pub struct MemStatus {
     pub swap_pages:      u64,
     /// Peak of `rss_pages()`, already folded with the live total.
     pub hiwater_rss_pages: u64,
+    /// Huge pages this mapping holds, in BASE pages. Reported on its own row
+    /// and deliberately outside every `Rss*` row, because the reference keeps
+    /// hugetlb out of the resident-set counters entirely.
+    pub hugetlb_pages: u64,
 }
 
 const BYTES_PER_KIB: u64 = 1024;
@@ -89,6 +93,7 @@ pub fn render_status_rows(m: &MemStatus) -> Vec<u8> {
     wide_row(&mut o, b"VmLib:\t", 0);
     wide_row(&mut o, b"VmPTE:\t", kib_of_bytes(m.pgtable_bytes));
     row(&mut o, b"VmSwap:\t", kib_of_pages(m.swap_pages));
+    row(&mut o, b"HugetlbPages:\t", kib_of_pages(m.hugetlb_pages));
     o
 }
 

@@ -429,7 +429,7 @@ fn fdtable_close_flushes_snapshotted_file_ops() {
     }
     struct FileOnlyOps;
     impl FileOps for FileOnlyOps {
-        fn on_flush_file(&self, _f: &File) -> KResult<()> { FILE_FLUSH.fetch_add(1, O::Relaxed); Ok(()) }
+        fn on_flush_file(&self, _f: &File, _o: crate::RecordOwner) -> KResult<()> { FILE_FLUSH.fetch_add(1, O::Relaxed); Ok(()) }
     }
     INODE_FLUSH.store(0, O::Relaxed);
     FILE_FLUSH.store(0, O::Relaxed);

@@ -236,6 +236,15 @@ impl File {
     /// True while this description holds a lease of any flavour. # C: O(1)
     pub fn lease_held(&self) -> bool { policy::held(self.lease_word()) }
 
+    /// Would the file's CURRENT opens refuse a lease of `ty` on this
+    /// description (Linux `lm_open_conflict`)? Reads both live open counters
+    /// and this description's own contribution to each, so no caller can pass a
+    /// second opinion about what it holds. # C: O(1)
+    pub fn lease_open_conflict(&self, ty: i32) -> bool {
+        policy::open_conflicts(ty, self.inode.writecount(), self.inode.readcount(),
+                               self.holds_write_ref(), self.holds_read_ref())
+    }
+
     /// `F_NOTIFY` (Linux `fcntl_dirnotify`): set the dnotify `DN_*` watch mask
     /// on this directory fd (`0` clears). Storage only; the dir-mutation event
     /// delivery is the dnotify follow-up. # C: O(1)

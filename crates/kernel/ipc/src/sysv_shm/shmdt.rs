@@ -17,7 +17,7 @@ use alloc::vec::Vec;
 use syscall::errno::Errno;
 use vmm::VmaBacking;
 
-use super::{lookup_segment_by_backing, page_align_len, ShmSegment, PAGE_SIZE};
+use super::{lookup_segment_by_backing, seg_span, ShmSegment, PAGE_SIZE};
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
@@ -113,7 +113,7 @@ pub fn sys_shmdt(args: &syscall::SyscallArgs) -> i64 {
         DetachVma { start: v.start.as_u64(), end: v.end.as_u64(), off, seg }
     }).collect();
 
-    let plan = match plan_detach(&desc, addr, |s| page_align_len(segs[s].size).map(|l| l as u64)) {
+    let plan = match plan_detach(&desc, addr, |s| seg_span(&segs[s]).map(|l| l as u64)) {
         Some(p) => p, None => return err(Errno::Einval),
     };
     // Each unmapped VMA runs `shm_vma_close` from the VMA tree, so the count

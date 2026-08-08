@@ -10,6 +10,40 @@ use super::dir::{as_dir, make_tmpfs_dir_inode};
 use super::limits::{PG, ROOT_INO};
 use super::uapi::TMPFS_MAGIC;
 
+/// Root-inode defaults of a mount that names no `mode=`/`uid=`/`gid=`
+/// (`shmem_fill_super`).
+const DEFAULT_ROOT_MODE: u16 = 0o755;
+const DEFAULT_ROOT_UID: u32 = 0;
+const DEFAULT_ROOT_GID: u32 = 0;
+
+/// The privilege facts the option parser judges `noswap` and the quota family
+/// against, sampled once per mount so the parse itself stays a pure function.
+///
+/// A mount with no calling task is the boot path building an in-kernel
+/// instance: it has no user namespace to be outside of and no capability set
+/// to lack, and it is the most privileged context there is.
+/// # C: O(userns depth)
+fn current_mount_cred() -> super::mount_opts::MountCred {
+    let Some(cur) = sched::current() else { return super::mount_opts::MountCred::KERNEL; };
+    let init = namespace_identity::initial(namespace_identity::NamespaceKind::User).pin();
+    let in_init_userns = cur.namespace_owner(namespace_identity::NamespaceKind::User)
+        .is_some_and(|ns| namespace_identity::NamespacePin::ptr_eq(&ns.pin(), &init));
+    super::mount_opts::MountCred {
+        in_init_userns,
+        sys_admin: nscg::proc_ns::has_cap_for(&cur, &init, sched::cap::SYS_ADMIN),
+    }
+}
+
+/// Check an option string against the tmpfs grammar without building anything.
+///
+/// For a filesystem that BORROWS this table — devtmpfs hands back the ONE
+/// shared device tree, so no mount of it can re-shape anything — admitting the
+/// key set without checking the VALUES would accept `size=64mb` and every other
+/// malformed value the real parser refuses. # C: O(len(data))
+pub fn validate_opts(data: &str) -> KResult<()> {
+    super::mount_opts::parse_opts(data, TmpfsSb::total_ram_pages(), current_mount_cred()).map(|_| ())
+}
+
 /// # C: O(1)
 pub fn init() {}
 
@@ -55,6 +89,10 @@ pub struct TmpfsFs {
     /// keys on `f_type` must be able to tell them apart.
     fsname:     &'static str,
     magic:      u64,
+    /// `casefold=` / `strict_encoding`: the name encoding this instance
+    /// declares, applied to the superblock at fill-super. A directory folds
+    /// case only once it also carries the casefold attribute.
+    encoding:   Option<(String, bool)>,
 }
 
 impl TmpfsFs {
@@ -77,9 +115,15 @@ impl TmpfsFs {
     /// # C: O(1)
     fn with_root(perm: u16, uid: u32, gid: u32, acct: Arc<TmpfsSb>,
                  fsname: &'static str, magic: u64) -> Arc<Self> {
+        Self::with_root_encoding(perm, uid, gid, acct, fsname, magic, None)
+    }
+    /// As [`TmpfsFs::with_root`], also declaring a name encoding. # C: O(1)
+    fn with_root_encoding(perm: u16, uid: u32, gid: u32, acct: Arc<TmpfsSb>,
+                          fsname: &'static str, magic: u64,
+                          encoding: Option<(String, bool)>) -> Arc<Self> {
         acct.charge_inode(); // the root inode itself counts (Linux shmem)
         let root = make_tmpfs_dir_inode(ROOT_INO, perm, uid, gid, Weak::new(), acct.clone());
-        Arc::new(Self { root, sb: Spinlock::new(Weak::new()), acct, fsname, magic })
+        Arc::new(Self { root, sb: Spinlock::new(Weak::new()), acct, fsname, magic, encoding })
     }
     /// Build a tmpfs instance honouring a `mount(2)` `-o` option string
     /// (`data`) — `mode=`/`uid=`/`gid=` set the ROOT inode's permission bits
@@ -88,38 +132,52 @@ impl TmpfsFs {
     /// `/run/user/979` mounts mode 0700 owned by 979:979 as pam_systemd and
     /// `systemd --user` require (Linux `shmem_fill_super`). Unspecified options
     /// take the Linux defaults (0755, 0:0, half-RAM). `_name` is informational.
+    /// An option this mount cannot be given fails the mount with the option's
+    /// own error, rather than mounting a filesystem that quietly ignores it.
     /// # C: O(len(data))
-    pub fn from_mount_data(_name: String, data: &str) -> Arc<Self> {
+    pub fn from_mount_data(_name: String, data: &str) -> KResult<Arc<Self>> {
         Self::typed_from_mount_data(data, "tmpfs", TMPFS_MAGIC)
     }
     /// `ramfs_fill_super`: the same in-memory tree, but reporting `ramfs` /
     /// `RAMFS_MAGIC` and — like Linux ramfs — no block or inode ceiling, so
     /// `statfs(2)` reports the zero accounting a limit-less fs has.
+    ///
+    /// ramfs takes `mode=` and nothing else (`ramfs_fs_parameters`), so any
+    /// other key here is a key the caller was told does not exist.
     /// # C: O(len(data))
-    pub fn ramfs_from_mount_data(data: &str) -> Arc<Self> {
-        let opts = super::mount_opts::TmpfsOpts::parse(data, TmpfsSb::total_ram_pages());
-        Self::with_root(
-            opts.mode.unwrap_or(0o755),
-            opts.uid.unwrap_or(0),
-            opts.gid.unwrap_or(0),
+    pub fn ramfs_from_mount_data(data: &str) -> KResult<Arc<Self>> {
+        let opts = Self::parse_data(data)?;
+        Ok(Self::with_root(
+            opts.mode.unwrap_or(DEFAULT_ROOT_MODE),
+            opts.uid.unwrap_or(DEFAULT_ROOT_UID),
+            opts.gid.unwrap_or(DEFAULT_ROOT_GID),
             TmpfsSb::unlimited(),
             "ramfs", super::uapi::RAMFS_MAGIC,
-        )
+        ))
     }
     /// # C: O(len(data))
-    fn typed_from_mount_data(data: &str, fsname: &'static str, magic: u64) -> Arc<Self> {
-        let opts = super::mount_opts::TmpfsOpts::parse(data, TmpfsSb::total_ram_pages());
+    fn typed_from_mount_data(data: &str, fsname: &'static str, magic: u64) -> KResult<Arc<Self>> {
+        let opts = Self::parse_data(data)?;
         let acct = TmpfsSb::from_opts(&opts);
-        Self::with_root(
-            opts.mode.unwrap_or(0o755),
-            opts.uid.unwrap_or(0),
-            opts.gid.unwrap_or(0),
-            acct, fsname, magic,
-        )
+        let encoding = opts.casefold.clone().map(|c| (c, opts.strict_encoding));
+        Ok(Self::with_root_encoding(
+            opts.mode.unwrap_or(DEFAULT_ROOT_MODE),
+            opts.uid.unwrap_or(DEFAULT_ROOT_UID),
+            opts.gid.unwrap_or(DEFAULT_ROOT_GID),
+            acct, fsname, magic, encoding,
+        ))
+    }
+    /// Parse an option string against the CALLER's privilege. # C: O(len(data))
+    fn parse_data(data: &str) -> KResult<super::mount_opts::TmpfsOpts> {
+        super::mount_opts::parse_opts(data, TmpfsSb::total_ram_pages(), current_mount_cred())
     }
     /// This instance's root inode (`sb->s_root->d_inode`), handed to
     /// `register_bind` so the path walk crosses into the tree. # C: O(1)
     pub fn root_inode(&self) -> InodeRef { self.root.clone() }
+    /// This instance's space accounting, the object every charge point takes.
+    /// # C: O(1)
+    #[cfg(test)]
+    pub(super) fn accounting(&self) -> Arc<TmpfsSb> { self.acct.clone() }
 }
 
 impl vfs::fs::FileSystem for TmpfsFs {
@@ -150,7 +208,20 @@ impl vfs::fs::FileSystem for TmpfsFs {
     /// derives `fsid` from `s_dev` (per-instance, not a constant). # C: O(1)
     fn set_sb(&self, sb: Weak<SuperBlock>) -> vfs::KResult<()> {
         *self.sb.lock() = sb.clone();
-        if let Some(d) = as_dir(&self.root) { d.set_sb(sb); }
+        self.acct.bind_sb(&sb);
+        if let Some(d) = as_dir(&self.root) { d.set_sb(sb.clone()); }
+        // The quota classes come up before the root inode is charged, so the
+        // root counts against its owner exactly as every later inode does.
+        if let Some(s) = sb.upgrade() {
+            // The encoding is declared before anything can be looked up in the
+            // instance, so no dentry is ever hashed by a rule the instance
+            // later changes.
+            if let Some((charset, strict)) = self.encoding.as_ref() {
+                vfs::dentry::casefold::sb_enable_casefold(&s, charset, *strict)?;
+            }
+            super::quota::enable(&s, &self.acct.quota())?;
+            super::quota::charge_existing_inode(&self.acct, &self.root);
+        }
         Ok(())
     }
 
@@ -164,4 +235,10 @@ pub struct TmpfsSuperOps { acct: Arc<TmpfsSb>, magic: u64 }
 impl vfs::SuperOps for TmpfsSuperOps {
     /// # C: O(1)
     fn statfs(&self) -> KResult<vfs::SbStatFs> { Ok(self.acct.statfs(self.magic)) }
+    /// Last-umount teardown drops this instance's quota classes: the records
+    /// are the live dquots, so the mount going away is the records going away.
+    /// # C: O(N_dq)
+    fn put_super(&self) {
+        if let Some(sb) = self.acct.quota_sb() { super::quota::disable(&sb); }
+    }
 }

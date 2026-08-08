@@ -44,8 +44,20 @@ pub struct Disk {
     pub number: DevNum,
     pub serial: Option<String>,
     pub dev: Arc<dyn BlockDevice>,
+    /// This disk's page cache (Linux `bdev->bd_mapping`) — what a raw
+    /// `/dev/<name>` open reads and writes through, and what the device pass
+    /// of `sync(2)` writes back. Every OTHER submitter reaches the device
+    /// through `dev`'s coherence decorator, which reconciles with this cache
+    /// first, so a mounted filesystem and a raw open cannot disagree.
+    pub mapping: Arc<crate::bdev::BdevMapping>,
     pub stats: Arc<crate::stats::DiskStats>,
     state: Arc<Spinlock<DiskState, DevicesClass>>,
+}
+
+impl Disk {
+    /// VFS open file descriptions currently holding this disk (Linux
+    /// `bd_openers`). # C: O(1)
+    pub fn opener_count(&self) -> u32 { self.state.lock().openers }
 }
 
 /// The generic block-device lifetime state. Holders are kernel consumers such
@@ -190,6 +202,11 @@ impl DiskQuiesce {
             true
         };
         if !removed { return false; }
+        // Linux `bdev_mark_dead`: the cache was written back when the
+        // admission gate closed (`try_quiesce`); drop what is left of it, so
+        // no page survives into a re-registration of the same device number
+        // to serve the OLD medium's bytes.
+        disk.mapping.invalidate_clean();
         crate::devbridge::unpublish(disk.number);
         release_number(disk.driver, disk.number);
         if let Some(dev) = drv::devices().into_iter().find(|d| d.bus == "block" && d.addr == name) { drv::device_del(&dev); }
@@ -237,10 +254,16 @@ pub fn register_with_driver(driver: BlockDriver, name: &str, serial: Option<&str
         let admitted: Arc<dyn BlockDevice> = Arc::new(AdmissionDev {
             inner: dev, state: Arc::clone(&state),
         });
-        let (dev, stats) = crate::stats::StatsDev::wrap(admitted);
+        let (accounted, stats) = crate::stats::StatsDev::wrap(admitted);
+        // The cache submits through the ACCOUNTED handle and every other
+        // submitter through the coherence decorator wrapped around it: cache
+        // writeback is counted like any other request, and cannot recursively
+        // invalidate the pages it is writing back.
+        let mapping = crate::bdev::BdevMapping::new(Arc::clone(&accounted));
+        let dev = crate::bdev::CoherentDev::wrap(accounted, Arc::downgrade(&mapping));
         let disk = Arc::new(Disk {
             name: name.to_string(), index, driver, number,
-            serial: serial.filter(|s| !s.is_empty()).map(ToString::to_string), dev, stats,
+            serial: serial.filter(|s| !s.is_empty()).map(ToString::to_string), dev, mapping, stats,
             state,
         });
         t.push(disk.clone());
@@ -355,6 +378,11 @@ pub fn close_by_dev(dev_t: u32) -> bool {
 /// same lock, including queued requests retained until completion.
 /// # C: O(N_disks)
 pub fn try_quiesce(name: &str) -> Option<DiskQuiesce> {
+    // Write the device's page cache back BEFORE the admission gate closes —
+    // Linux syncs a block device while it is still operable, because once the
+    // gate is shut every request is refused and the dirty pages would have
+    // nowhere to go. No registry lock is held across the I/O.
+    if let Some(disk) = by_name(name) { let _ = disk.mapping.write_and_wait(); }
     let table = TABLE.lock();
     let disk = table.iter().find(|disk| disk.name == name)?.clone();
     let mut state = disk.state.lock();

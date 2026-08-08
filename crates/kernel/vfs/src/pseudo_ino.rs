@@ -111,6 +111,11 @@ pub const EPOLL: Region = Region::new("epoll", 0x7400_0000, 0x74FF_FFFF);
 pub const BPF: Region = Region::new("bpf", 0x7500_0000, 0x7500_FFFF);
 /// `/dev/input/eventN`. Moved off `0x7400_0000`, which [`EPOLL`] also claimed.
 pub const EVDEV: Region = Region::new("evdev", 0x7600_0000, 0x7600_FFFF);
+/// hugetlbfs instances, including the kernel-private mounts
+/// `memfd_create(MFD_HUGETLB)` and `mmap(MAP_HUGETLB)` build their files on.
+/// A band of its own rather than a share of [`TMPFS`]: the two filesystems mint
+/// numbers from independent counters, so one shared range would collide.
+pub const HUGETLBFS: Region = Region::new("hugetlbfs", 0x7700_0000, 0x77FF_FFFF);
 /// zram's debugfs device directories and their block-state files.
 pub const ZRAM_DEBUGFS: Region = Region::new("zram-debugfs", 0x7A72_0000, 0x7A72_FFFF);
 /// `/dev/fbN`.
@@ -146,6 +151,8 @@ pub const PERF: Region = tag_region("perf", 0x5045_5246);
 pub const INET_SOCK: Region = tag_region("inet-sock", 0x534F_434B);
 /// `/dev/snd/*` and the OSS aliases.
 pub const SOUND: Region = tag_region("sound", 0x536E_6400);
+/// The pstore mount root and the record files under it.
+pub const PSTORE: Region = tag_region("pstore", 0x5053_5452);
 /// `userfaultfd(2)`.
 pub const USERFAULTFD: Region = tag_region("userfaultfd", 0x5546_4644);
 /// `AF_VSOCK` sockets.
@@ -162,7 +169,7 @@ pub const REGIONS: &[Region] = &[
     DEVPTS, CONFIGFS, DEBUGFS, DEBUGFS_AUTOMOUNT, INOTIFY, SIGNALFD, TIMERFD,
     EPOLL, BPF, EVDEV, ZRAM_DEBUGFS, FBDEV, PROCFS_NET,
     PROCFS_PID, DRM_CARD, DRM_RENDER, IO_URING, NETLINK, PERF, INET_SOCK, SOUND,
-    USERFAULTFD, VSOCK, EXT4,
+    PSTORE, USERFAULTFD, VSOCK, EXT4,
 ];
 
 /// Whether `a` and `b` reserve any number in common. # C: O(1)

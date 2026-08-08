@@ -12,6 +12,7 @@ use syscall::errno::Errno;
 use vfs::{FileType, VfsPath};
 
 use crate::domain::Domain;
+use crate::audit::RequestType;
 use crate::eval::LayerMasks;
 use crate::uapi::*;
 
@@ -69,7 +70,14 @@ pub fn open_decide(dom: &Domain, path: &VfsPath, open_req: AccessMask, is_device
         for l in m.layers.iter() { a &= !*l; }
         a
     };
-    if (open_req | allowed) != allowed { return Err(Errno::Eacces); }
+    if (open_req | allowed) != allowed {
+        // Only the rights the OPEN itself needed are reported: the optional
+        // ones were asked for speculatively and their absence is recorded on
+        // the description rather than refused, so naming them here would
+        // describe a denial that did not happen.
+        dom.report_denial_masks(&m, RequestType::FsAccess, open_req);
+        return Err(Errno::Eacces);
+    }
     Ok(allowed)
 }
 

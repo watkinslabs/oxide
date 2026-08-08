@@ -43,8 +43,8 @@ fn a_background_access_that_stops_the_pgrp_returns_erestartsys_not_eintr() {
 
 #[test]
 fn the_orphan_and_ignored_cases_stay_eio_and_proceed_stays_ok() {
-    // `tty_jobctrl.c:50-54`: is_ignored -> EIO for SIGTTIN,
-    // is_current_pgrp_orphaned -> EIO. Neither is a restart.
+    // An ignored or blocked SIGTTIN reports EIO, and so does an orphaned
+    // process group. Neither is a restart.
     assert_eq!(Decision::Eio.vfs_err(), Some(vfs::VfsError::Eio));
     assert_eq!(Decision::Proceed.vfs_err(), None);
 }
@@ -105,7 +105,7 @@ fn a_backgrounded_read_of_a_terminal_line_stops_the_job() {
 #[test]
 fn a_pty_master_read_is_never_job_controlled() {
     // The master half is the shell's/emulator's end: it is nobody's ctty
-    // (`tty_io.c:2166-2167`), so its reads always proceed.
+    // so its reads always proceed.
     assert_eq!(probe_background_read(TtyKind::PtyMaster, false), Decision::Proceed);
 }
 

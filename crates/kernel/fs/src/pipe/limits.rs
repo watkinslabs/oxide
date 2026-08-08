@@ -7,18 +7,23 @@
 //   * how large a write is still ATOMIC       — [`PIPE_BUF`]
 // Only the last is a POSIX guarantee; the first two are tunables.
 
-/// Bytes a pipe holds before a writer has to wait, for a pipe nobody resized.
-/// Sixteen pages, which is what `F_GETPIPE_SZ` reports on a fresh pipe and what
-/// a core dump written to a helper's standard input relies on: a 4 KiB ring
-/// turns a multi-megabyte dump into thousands of round trips through the
-/// scheduler, each of which is a chance for the dumping thread to be aborted.
-pub const PIPE_DEF_SIZE: usize = 16 * PAGE;
+/// Bytes a pipe holds before a writer has to wait, for a pipe nobody resized
+/// whose owner is under every per-user limit. Sixteen pages, which is what
+/// `F_GETPIPE_SZ` reports on such a pipe and what a core dump written to a
+/// helper's standard input relies on: a 4 KiB ring turns a multi-megabyte dump
+/// into thousands of round trips through the scheduler, each of which is a
+/// chance for the dumping thread to be aborted. The ladder that can hand out
+/// less than this owns the decision; this is only its starting point.
+/// # C: O(1)
+pub fn pipe_def_size() -> usize {
+    (vfs::pipe_limits::PIPE_DEF_BUFFERS * vfs::pipe_limits::PIPE_PAGE_BYTES) as usize
+}
 
-/// Ceiling `F_SETPIPE_SZ` may raise a pipe to without `CAP_SYS_RESOURCE`
-/// (`/proc/sys/fs/pipe-max-size`). A request above it is `EPERM`, not a clamp —
-/// silently handing back a smaller pipe than asked for would make a program
-/// that sized its pipe for a batch deadlock on the batch.
-pub const PIPE_MAX_SIZE: usize = 1024 * PAGE;
+/// Live `fs.pipe-max-size`: how far `F_SETPIPE_SZ` may raise a pipe without
+/// `CAP_SYS_RESOURCE`. A request above it is `EPERM`, not a clamp — silently
+/// handing back a smaller pipe than asked for would make a program that sized
+/// its pipe for a batch deadlock on the batch. # C: O(1)
+pub fn pipe_max_size() -> usize { vfs::pipe_limits::max_size() as usize }
 
 /// POSIX `PIPE_BUF`. A write of at most this many bytes is delivered whole or
 /// not at all, so two writers cannot interleave inside one message. Larger
@@ -49,14 +54,14 @@ mod tests {
 
     #[test]
     fn a_fresh_pipe_holds_sixteen_pages_and_stays_atomic_for_one() {
-        assert_eq!(PIPE_DEF_SIZE, 65536);
+        assert_eq!(pipe_def_size(), 65536);
         assert_eq!(PIPE_BUF, 4096);
         assert_eq!(PIPE_GROW_STEP, PIPE_BUF,
             "the minimum rounded capacity must hold one atomic write");
         assert!(round_pipe_size(0) >= PIPE_BUF,
             "a pipe capacity may never be smaller than an atomic write");
-        assert!(PIPE_DEF_SIZE > PIPE_BUF, "a pipe must hold more than one atomic write");
-        assert!(PIPE_MAX_SIZE > PIPE_DEF_SIZE);
+        assert!(pipe_def_size() > PIPE_BUF, "a pipe must hold more than one atomic write");
+        assert!(pipe_max_size() > pipe_def_size());
     }
 
     #[test]
@@ -65,7 +70,7 @@ mod tests {
         assert_eq!(round_pipe_size(1), PIPE_GROW_STEP);
         assert_eq!(round_pipe_size(PIPE_GROW_STEP), PIPE_GROW_STEP);
         assert_eq!(round_pipe_size(PIPE_GROW_STEP + 1), 2 * PIPE_GROW_STEP);
-        assert_eq!(round_pipe_size(PIPE_DEF_SIZE), PIPE_DEF_SIZE);
+        assert_eq!(round_pipe_size(pipe_def_size()), pipe_def_size());
     }
 
     #[test]

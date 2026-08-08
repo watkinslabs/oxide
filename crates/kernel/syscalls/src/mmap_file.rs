@@ -42,6 +42,25 @@ impl InodeFileBacking {
 const PAGE: usize = 4096;
 
 impl FileBacking for InodeFileBacking {
+    /// `hstate_file` — the huge-page granule this file's pages ARE, or 0 for a
+    /// file of ordinary base pages. Read from the inode's own filesystem, so a
+    /// mapping cannot disagree with the file it maps about how big its pages
+    /// are.
+    /// # C: O(1)
+    fn huge_page_size(&self) -> u64 { self.inode.huge_page_size() }
+
+    /// A private mapping's write gets a copy of the huge page that only that
+    /// mapping owns, so the write never reaches the file or any other mapper.
+    /// # C: O(huge page)
+    fn huge_cow_frame(&self, off: u64) -> Result<Option<SharedFrame>, FileBackingError> {
+        self.inode.huge_cow_frame(off)
+            .map(|frame| frame.map(|frame| SharedFrame { pa: frame.pa, map_ref_held: frame.map_ref_held }))
+            .map_err(vfs_error)
+    }
+
+    /// # C: O(log nr)
+    fn huge_put_frame(&self, pa: u64) { self.inode.huge_put_frame(pa) }
+
     /// Fill `dst` with bytes starting at file offset `off`. Aligns
     /// the request to PAGE_BYTES and consults the per-backing
     /// `PageCache`; on miss, fetches via `Inode::read`. Returns the

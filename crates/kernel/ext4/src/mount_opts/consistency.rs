@@ -4,7 +4,7 @@
 
 use vfs::{KResult, MAXQUOTAS, VfsError};
 
-use super::ctx::{Ext4MountOpts, FsQuotaFeatures, SbQuotaOpts};
+use super::ctx::{Ext4MountOpts, FsQuotaFeatures, Ext4SbOpts};
 use super::flags::{EXT4_MOUNT_GRPQUOTA, EXT4_MOUNT_PRJQUOTA, EXT4_MOUNT_QUOTA_MASK,
                    EXT4_MOUNT_USRQUOTA};
 
@@ -30,7 +30,7 @@ use super::flags::{EXT4_MOUNT_GRPQUOTA, EXT4_MOUNT_PRJQUOTA, EXT4_MOUNT_QUOTA_MA
 pub fn check_quota_consistency(
     ctx: &mut Ext4MountOpts,
     feat: &FsQuotaFeatures,
-    sb: &SbQuotaOpts,
+    sb: &Ext4SbOpts,
     quota_loaded: bool,
 ) -> KResult<()> {
     // Only project quota is feature-gated: legacy user/group quotas in quota

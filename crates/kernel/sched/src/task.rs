@@ -639,6 +639,14 @@ pub struct Task {
     /// stamped after the work starts so the initiator's repeated thread-group
     /// scans cannot enqueue the same task twice.
     pub landlock_tsync_id: AtomicU64,
+    /// Landlock denial-reporting state for this thread, packed into one word:
+    /// the low bits name the layer levels THIS execution enforced, and the top
+    /// bit records that some enforcement asked the layers beneath it to stay
+    /// silent. Both are per-thread, not per-domain — the first is cleared by
+    /// `execve` and the second survives an enforcement that installs no layer
+    /// at all — which is why they cannot live on the immutable domain.
+    /// Layout and reads live in `landlock::logging`.
+    pub landlock_log_state: AtomicU32,
     /// Linux `TIF_NOTIFY_SIGNAL`: not a real signal, but it breaks
     /// interruptible waits and forces the shared return-to-user work loop.
     pub notify_signal: AtomicBool,

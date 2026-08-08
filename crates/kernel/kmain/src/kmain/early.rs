@@ -78,6 +78,12 @@ pub unsafe fn init(info: &BootInfo) {
 
     // SAFETY: PMM up; HHDM offset known; single-CPU pre-init.
     unsafe { pmm::user_as::init(info.hhdm_offset); }
+    // Attach the persistent store to the region reserved above: enumerate
+    // whatever the previous boot left there, then start recording. After the
+    // direct map, because that is how the region is reached.
+    // SAFETY: after `pstore::boot::reserve` and after the direct-map offset is
+    // published; single-CPU boot path; runs once.
+    unsafe { pstore::boot::init(); }
     // SAFETY: PMM up; HHDM offset just published; one-shot.
     unsafe { syscalls::vvar::init(); }
     // The ONE return-to-user work loop (Linux `exit_to_user_mode_loop`). Must
@@ -218,6 +224,14 @@ fn init_pmm_and_arch(info: &BootInfo) {
     if pmm.is_err() { klog::write_raw(b"[KALLOC] pmm-unavailable\n"); }
     #[cfg(target_arch = "x86_64")]
     if pmm.is_ok() { arch_irq::smp_x86::reserve_trampoline_page(); }
+    // The persistent-store region, reserved HERE for the same reason as the
+    // trampoline page: `reserve_early` silently skips a page already handed
+    // out, so the reservation must precede the first allocation. It is
+    // EXCLUDED from the allocator rather than allocated from it — an
+    // allocation lands wherever allocator state puts it, which is not the same
+    // place after the reboot its contents have to survive.
+    // SAFETY: PMM just initialised, single-CPU, before any allocation from it.
+    if pmm.is_ok() { unsafe { pstore::boot::reserve(info); } }
     if pmm.is_ok() {
         // `init_from_boot_info` has already reserved and published the PMM's
         // canonical struct-page array directly from the boot map. Only now

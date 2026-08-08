@@ -73,7 +73,7 @@ mod tests {
 
     #[test]
     fn a_pty_slave_is_a_ctty_candidate_and_the_master_never_is() {
-        // `tty_io.c:2166-2167` folds ONLY the master half into `noctty`.
+        // The reference folds ONLY the master half into `noctty`.
         assert!(kind_can_be_ctty(TtyKind::PtySlave));
         assert!(kind_can_be_ctty(TtyKind::Terminal));
         assert!(!kind_can_be_ctty(TtyKind::PtyMaster));

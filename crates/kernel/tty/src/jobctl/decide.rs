@@ -29,7 +29,7 @@ impl Decision {
     /// `Stop` is `-ERESTARTSYS`, NOT `-EINTR`, and that is a different rule
     /// from the ordinary interruptible read-queue wait in the same driver.
     /// Linux pairs it with `set_thread_flag(TIF_SIGPENDING)`
-    /// (`tty_jobctrl.c:56-58`) precisely so the access RE-RUNS once SIGCONT
+    /// precisely so the access RE-RUNS once SIGCONT
     /// continues the stopped process group — with EINTR a backgrounded read
     /// fails permanently instead of resuming after `fg`.
     /// # C: O(1)

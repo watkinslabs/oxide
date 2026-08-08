@@ -103,6 +103,7 @@ mod layout_state;
 mod mdwe;
 mod mempolicy;
 mod mmap_ops;
+mod huge_split;
 mod layout;
 mod limits;
 mod membarrier;

@@ -9,8 +9,19 @@
 //
 // Caller acquires `Mount::state` lock; this module only performs
 // disk RMW and counter updates.
+//
+// Module manifest:
+// - scan: where a group walk starts, and whether it walks in free-space order.
+// - reserve: who may consume the superblock's reserved blocks (`resuid=`,
+//   `resgid=`, and the allocations that carry a claim of their own).
+// - free: releasing a block, and `-o discard` handing it back to the device.
 
 use crate::gdt;
+
+pub mod scan;
+pub mod reserve;
+mod free;
+use reserve::ReserveFlags;
 use crate::mount::{Mount, MountError};
 use crate::superblock::{Superblock, SB_OFF_FREE_BLOCKS_LO, SB_OFF_FREE_BLOCKS_HI};
 #[cfg(not(target_os = "oxide-kernel"))]
@@ -20,11 +31,36 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 impl Mount {
-    /// Allocate one previously-free filesystem block. Wraps in a
+    /// Allocate one previously-free filesystem block for file data. Wraps in a
     /// journal scope so bitmap + GDT + SB counter writes commit
     /// atomically.
     /// # C: O(N_groups * block_size) worst-case
     pub fn alloc_block(&self, hint: u32) -> Result<u64, MountError> {
+        self.alloc_block_flags(hint, ReserveFlags::DATA)
+    }
+
+    /// Allocate one block for metadata whose caller is already past the point
+    /// of no return. An extent tree part-way through a rewrite cannot answer
+    /// ENOSPC and leave a half-built tree behind, so its nodes come out of the
+    /// reserve when nothing else is left.
+    /// # C: same as [`Mount::alloc_block`]
+    pub fn alloc_block_nofail(&self, hint: u32) -> Result<u64, MountError> {
+        self.alloc_block_flags(hint, ReserveFlags::METADATA_NOFAIL)
+    }
+
+    /// The claim a data allocation for inode `ino` has on the reserve. A quota
+    /// file's own blocks come out of it: quota accounting is what records that
+    /// the disk filled up, so it cannot be the first thing a full filesystem
+    /// stops being able to write.
+    /// # C: O(1)
+    pub(crate) fn data_reserve_flags(&self, ino: u32) -> ReserveFlags {
+        if self.sb.is_quota_inode(ino) { ReserveFlags::QUOTA_FILE } else { ReserveFlags::DATA }
+    }
+
+    /// Allocate one previously-free filesystem block, stating what claim the
+    /// allocation has on the superblock's reserved blocks.
+    /// # C: O(N_groups * block_size) worst-case
+    pub fn alloc_block_flags(&self, hint: u32, flags: ReserveFlags) -> Result<u64, MountError> {
         #[cfg(not(target_os = "oxide-kernel"))]
         if self.faults.next_alloc_block.swap(false, Ordering::AcqRel) { return Err(MountError::BlockIo); }
         #[cfg(not(target_os = "oxide-kernel"))]
@@ -34,11 +70,29 @@ impl Mount {
                 return Err(MountError::BlockIo);
             }
         }
+        let optimize = self.optimize_scan();
+        // Who is asking, and what claim their allocation has on the reserve.
+        // Read before the journal scope: the credentials belong to the caller,
+        // not to whichever context happens to drain the transaction.
+        let may_dip = reserve::may_dip_into_reserve(&self.behaviour(), &self.alloc_cred(), flags);
         self.run_journaled(|m| {
             let groups = m.sb.group_count();
             if groups == 0 { return Err(MountError::NoSpace); }
+            // The reserve gate, before any group is scanned: a caller with no
+            // claim on the reserved blocks is out of space while they are all
+            // that is left, exactly as if the bitmaps were full.
+            let free = m.state.lock().sb_free_blocks;
+            const ONE_BLOCK: u64 = 1;
+            if !reserve::has_free_blocks(free, ONE_BLOCK, m.sb.r_blocks_count, may_dip) {
+                return Err(MountError::NoSpace);
+            }
+            // `mb_optimize_scan=`: where the walk STARTS. It still visits every
+            // group, so the answer never changes — only how many full groups
+            // are read before it is reached.
+            let freest = if optimize { m.freest_group(groups) } else { None };
+            let start = scan::scan_start(hint, groups, optimize, freest);
             for off in 0..groups {
-                let g = (hint + off) % groups;
+                let g = (start + off) % groups;
                 if let Some(blk) = m.try_alloc_in_group(g)? {
                     return Ok(blk);
                 }
@@ -47,53 +101,29 @@ impl Mount {
         })
     }
 
-    /// Free a block previously returned by `alloc_block`. Clears
-    /// the bitmap bit + bumps both counters. Wraps in a journal
-    /// scope. `DoubleFree` if the bit was already clear.
-    /// # C: O(block_size) within one group
-    pub fn free_block(&self, phys_blk: u64) -> Result<(), MountError> {
-        #[cfg(not(target_os = "oxide-kernel"))]
-        if self.faults.next_free_block.swap(false, Ordering::AcqRel) { return Err(MountError::BlockIo); }
-        #[cfg(not(target_os = "oxide-kernel"))]
-        {
-            let left = self.faults.free_block_after.load(Ordering::Acquire);
-            if left != 0 && self.faults.free_block_after.fetch_sub(1, Ordering::AcqRel) == 1 {
-                return Err(MountError::BlockIo);
-            }
+    /// Whether this mount scans block groups in free-space order. The mount
+    /// option decides it; a mount that named none gets the answer its own size
+    /// implies. # C: O(1)
+    fn optimize_scan(&self) -> bool {
+        self.behaviour().mb_optimize_scan
+            .unwrap_or_else(|| scan::optimize_scan_default(self.sb.group_count()))
+    }
+
+    /// The group with the most free blocks, from the cached group descriptors.
+    ///
+    /// Read straight off the counters the allocator already maintains rather
+    /// than from a second index of its own: an index would be a parallel copy
+    /// of this same truth, free to disagree with it after any allocation.
+    /// # C: O(N_groups)
+    fn freest_group(&self, groups: u32) -> Option<(u32, u64)> {
+        let s = self.state.lock();
+        let mut best: Option<(u32, u64)> = None;
+        for g in 0..groups {
+            let Ok(d) = gdt::parse_descriptor(&s.gdt_buf, g, &self.sb) else { continue };
+            let free = d.free_blocks_count as u64;
+            if best.is_none_or(|(_, b)| free > b) { best = Some((g, free)); }
         }
-        self.run_journaled(|m| {
-            let (group, bit) = m.locate_block(phys_blk)?;
-            let gd_orig = {
-                let s = m.state.lock();
-                gdt::parse_descriptor(&s.gdt_buf, group, &m.sb)?
-            };
-            let bbm_byte_off = gd_orig.block_bitmap * (m.sb.block_size as u64);
-            let mut bitmap = m.read_meta_byte_range(bbm_byte_off, m.sb.block_size as usize)?;
-            if !crate::csum::verify_block_bitmap_csum_at(&m.sb, &m.state.lock().gdt_buf, group, &bitmap) {
-                return Err(MountError::BadChecksum);
-            }
-            let bidx = bit as usize;
-            let mask = 1u8 << (bidx & 7);
-            if (bitmap[bidx >> 3] & mask) == 0 {
-                return Err(MountError::DoubleFree);
-            }
-            bitmap[bidx >> 3] &= !mask;
-            // Update cached state (gdt_buf + sb_free_blocks).
-            let mut gd = gd_orig;
-            gd.free_blocks_count = gd.free_blocks_count.saturating_add(1);
-            {
-                let mut s = m.state.lock();
-                gdt::write_descriptor_counters(&mut s.gdt_buf, group, &m.sb, &gd)?;
-                crate::csum::set_block_bitmap_csum(&m.sb, &mut s.gdt_buf, group, &bitmap);
-                crate::csum::stamp_group_desc_csum(&m.sb, &mut s.gdt_buf, group);
-                s.sb_free_blocks = s.sb_free_blocks.saturating_add(1);
-            }
-            m.metadata_write(bbm_byte_off, &bitmap)?;
-            m.persist_gdt_slot_meta(group)?;
-            m.persist_sb_free_blocks_meta()?;
-            m.flush_pending_tx()?;
-            Ok(())
-        })
+        best
     }
 
     /// Try to find a free bit in `group`. Returns Ok(Some(phys))

@@ -354,7 +354,7 @@ pub(super) fn check_rss(label: &str) {
                     RssClass::Anon      => walk.anon += 1,
                     RssClass::File      => walk.file += 1,
                     RssClass::Shmem     => walk.shmem += 1,
-                    RssClass::Device | RssClass::Untracked => {}
+                    RssClass::Device | RssClass::Hugetlb | RssClass::Untracked => {}
                 },
             }
         }

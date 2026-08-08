@@ -14,6 +14,10 @@ use super::ops::DquotOperations;
 pub const QFMT_VFS_OLD: u32 = 1;
 pub const QFMT_VFS_V1: u32 = 4;
 pub const QFMT_VFS_V0: u32 = 2;
+/// In-memory quota format: the live dquot IS the record. A filesystem with no
+/// persistent store carries its limits nowhere else, so a class using this
+/// format has nothing to reload a dropped dquot from.
+pub const QFMT_SHMEM: u32 = 5;
 
 /// Enable one quota class with filesystem dquot operations. # C: O(1)
 pub fn quota_on(sb: &SuperBlock, kind: QuotaType, fmt: u32, ops: Arc<dyn DquotOperations>) -> KResult<()> {

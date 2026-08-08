@@ -40,6 +40,19 @@ impl AddressSpace {
             if !vma.prot.contains(VmaProt::WRITE) {
                 return Err(Error::Inval);
             }
+            // A huge mapping's leaf covers a whole huge page, so every branch
+            // below — which re-installs at the base granule — would replace it
+            // with a 4 KiB leaf over memory the mapping owns as one page.
+            // Re-install the SAME huge page with the VMA's protection: these
+            // frames ARE the file, so a write must reach them in place and can
+            // never be resolved by copying.
+            if let VmaBacking::File { backing, off } = &vma.backing {
+                let huge_bytes = backing.huge_page_size();
+                if huge_bytes != 0 {
+                    // SAFETY: forwards the live MMU; no page-table lock is held here.
+                    return unsafe { self.rewrite_huge_leaf::<M>(va, &vma, backing, *off, huge_bytes) };
+                }
+            }
             let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
             // va_page is in user-half; M::translate reads the active PT for the running task's CR3 / TTBR0; vma is the live snapshot for `va`.
             let cur = M::translate(Va(va_page));

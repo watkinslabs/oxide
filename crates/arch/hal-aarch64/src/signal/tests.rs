@@ -181,7 +181,7 @@ fn rt_sigreturn_masks_res0_bits_end_to_end() {
 #[test]
 fn rt_sigreturn_rejects_a_frame_with_no_fpsimd_record() {
     let o = sigreturn_with(hal::uregs::aarch64::PSR_NZCV, false, 0);
-    assert!(o.ret.is_none(), "a frame with no FPSIMD record must be -EINVAL (signal.c:1044)");
+    assert!(o.ret.is_none(), "a frame with no FPSIMD record must be -EINVAL");
     assert_eq!(o.spsr, 0xbeef, "the SVC frame must be left untouched");
 }
 

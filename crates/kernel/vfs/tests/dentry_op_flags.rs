@@ -17,7 +17,7 @@ fn dir() -> InodeRef {
 }
 
 // Stand-in hook impls (only presence matters for the stamp).
-fn h(_n: &str) -> u32 { 0 }
+fn h(_dir: &Dentry, _n: &str) -> u32 { 0 }
 fn cmp(name: &str, cand: &Dentry) -> bool { cand.name() == name }
 fn cmp_ci(name: &str, cand: &Dentry) -> bool { cand.name().eq_ignore_ascii_case(name) }
 fn rev(_d: &Arc<Dentry>, _reval: bool) -> bool { true }

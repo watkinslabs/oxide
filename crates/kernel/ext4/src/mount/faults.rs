@@ -194,3 +194,13 @@ impl Mount {
         self.faults.quota_mark_dirty_after.store(ok_count + 1, Ordering::Release);
     }
 }
+
+impl Mount {
+    /// Hosted-test hook: charge every later allocation on this mount to the
+    /// named credentials instead of the kernel's own. # C: O(len(gids))
+    pub fn set_alloc_cred_for_tests(&self, uid: u32, gids: &[u32], cap_sys_resource: bool) {
+        *self.test_cred.lock() = Some(crate::balloc::reserve::AllocCred {
+            uid, gids: gids.to_vec(), cap_sys_resource,
+        });
+    }
+}

@@ -18,7 +18,7 @@ pub const SWAP_FLAG_DISCARD: u32 = 0x1_0000;
 pub const SWAP_FLAG_DISCARD_ONCE: u32 = 0x2_0000;
 /// `SWAP_FLAG_DISCARD_PAGES` — discard page clusters as they are freed.
 pub const SWAP_FLAG_DISCARD_PAGES: u32 = 0x4_0000;
-/// `SWAP_FLAGS_VALID` — every bit `swapon` accepts (`swap.h:29-31`).
+/// `SWAP_FLAGS_VALID` — every bit `swapon` accepts.
 pub const SWAP_FLAGS_VALID: u32 = SWAP_FLAG_PRIO_MASK
     | SWAP_FLAG_PREFER
     | SWAP_FLAG_DISCARD
@@ -45,7 +45,7 @@ pub struct SwaponFlags {
 /// top 32 bits of the second argument (glibc's wrapper does not clear it) gets
 /// the same answer Linux gives, not a spurious EINVAL.
 ///
-/// This runs BEFORE the `CAP_SYS_ADMIN` check (`swapfile.c:3610-3614`), so an
+/// This runs BEFORE the `CAP_SYS_ADMIN` check, so an
 /// unprivileged caller passing a bad flag sees EINVAL, not EPERM.
 /// # C: O(1)
 pub fn parse_swapon_flags(raw: u64) -> Result<SwaponFlags, Errno> {
@@ -60,7 +60,7 @@ pub fn parse_swapon_flags(raw: u64) -> Result<SwaponFlags, Errno> {
     })
 }
 
-/// `swapon(2)`'s admission ladder in Linux's order (`swapfile.c:3610-3614`):
+/// `swapon(2)`'s admission ladder in the reference's order:
 /// the flag mask FIRST, `CAP_SYS_ADMIN` SECOND.
 ///
 /// The order is the difference between "that flag does not exist" and "you may

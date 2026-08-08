@@ -78,7 +78,7 @@ pub const MXCSR_DEFAULT_FEATURE_MASK: u32 = 0x0000_ffbf;
 /// XSAVE demands a 64-byte-aligned area; `xsave64`/`xrstor64` #GP below it.
 pub const XSTATE_ALIGN: u64 = 64;
 
-/// Linux `struct _fpx_sw_bytes` (`sigcontext.h:40-70`) — the SW-reserved
+/// Linux `struct _fpx_sw_bytes` — the SW-reserved
 /// footer at offset 464 of the legacy area, describing what follows it.
 #[repr(C)]
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]

@@ -261,13 +261,13 @@ fn wait_loop(uaddr: u64, op_full: u32, val: u32, bitset: u32, private: bool, dea
         }
         if sched::live::deliverable_signals_self() != 0 {
             // Linux `__futex_wait` ends an interrupted wait with
-            // `-ERESTARTSYS` (`waitwake.c:738`); `futex_wait()` then either
+            // `-ERESTARTSYS`; the wait's caller then either
             // returns it as-is (no timeout) or arms `futex_wait_restart` with
             // the ABSOLUTE deadline and returns `-ERESTART_RESTARTBLOCK`
-            // (`waitwake.c:752-767`). The discriminator is the presence of a
+            // instead. The discriminator is the presence of a
             // timeout, NOT whether it was absolute or relative — a relative
             // FUTEX_WAIT timeout is already absolute by this point
-            // (`syscalls.c:184-185`). Returning a bare `-EINTR` here dropped
+            // by the time the wait is entered. Returning a bare `-EINTR` here dropped
             // both restarts: an SA_RESTART handler firing mid-wait surfaced a
             // spurious EINTR, and a resumed wait would have restarted the full
             // timeout instead of the remainder.

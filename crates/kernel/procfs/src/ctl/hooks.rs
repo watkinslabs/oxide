@@ -84,6 +84,15 @@ pub(super) fn set_dmesg_restrict(value: i64) { klog::syslog::set_dmesg_restrict(
 /// `struct mq_attr` against, so raising a ceiling here and
 /// the EINVAL the syscall reports can never disagree. Every leaf is
 /// namespace-scoped: Linux's `set_lookup` resolves `current`'s `ipc_ns`.
+/// `fs.pipe-max-size` and the two per-user pipe page limits, bound to the live
+/// variables the pipe admission ladders read. Was a procfs-owned cell that
+/// nothing consulted, so lowering the ceiling changed no pipe.
+pub(super) fn get_pipe_max_size() -> i64 { vfs::pipe_limits::max_size() }
+pub(super) fn set_pipe_max_size(v: i64) { vfs::pipe_limits::set_max_size(v) }
+pub(super) fn get_pipe_user_pages_soft() -> i64 { vfs::pipe_limits::user_pages_soft() }
+pub(super) fn set_pipe_user_pages_soft(v: i64) { vfs::pipe_limits::set_user_pages_soft(v) }
+pub(super) fn get_pipe_user_pages_hard() -> i64 { vfs::pipe_limits::user_pages_hard() }
+pub(super) fn set_pipe_user_pages_hard(v: i64) { vfs::pipe_limits::set_user_pages_hard(v) }
 pub(super) fn get_ep_max_watches() -> i64 { vfs::epoll_limits::max_user_watches() }
 pub(super) fn set_ep_max_watches(v: i64) { vfs::epoll_limits::set_max_user_watches(v) }
 pub(super) fn get_in_max_watches() -> i64 { vfs::fsnotify::max_user_watches() }
@@ -214,4 +223,40 @@ pub(super) fn set_tcp_fastopen_key(ns: &network_namespace::NetworkNamespaceRef,
     let ctx = net::tcp_fastopen::parse_hex(src).ok_or(())?;
     net::tcp_fastopen::set_ns_keys(ns, ctx);
     Ok(())
+}
+
+/// `vm.nr_hugepages` — the operator's target size for the default-granule
+/// huge-page pool, and the size it actually reached.
+///
+/// A write is a request, not a command: growing is bounded by what the buddy
+/// allocator can supply and shrinking by the reservations already made, so the
+/// value read back after a write is the pool's real size (Linux
+/// `set_max_huge_pages` returns the count it achieved).
+/// # C: O(1)
+/// `vm.hugetlb_shm_group`: the group whose members may create huge-page
+/// shared-memory segments without `CAP_IPC_LOCK`. Bound to the live variable
+/// the shm admission reads, so setting it here is what grants the right.
+pub(super) fn get_hugetlb_shm_group() -> i64 { ipc::sysv_shm::hugetlb_shm_group() }
+pub(super) fn set_hugetlb_shm_group(v: i64) { ipc::sysv_shm::set_hugetlb_shm_group(v) }
+
+pub(super) fn get_nr_hugepages() -> i64 {
+    let size = pmm::hugetlb::HugePageSize::default_size();
+    pmm::hugetlb::nr_hugepages(size) as i64
+}
+/// # C: O(|delta| * pages)
+pub(super) fn set_nr_hugepages(value: i64) {
+    let size = pmm::hugetlb::HugePageSize::default_size();
+    pmm::hugetlb::set_nr_hugepages(size, value.max(0) as u64);
+}
+
+/// `vm.nr_overcommit_hugepages` — how many huge pages the pool may take beyond
+/// its target to satisfy a reservation, and give back afterwards.
+/// # C: O(1)
+pub(super) fn get_nr_overcommit_hugepages() -> i64 {
+    pmm::hugetlb::nr_overcommit_hugepages(pmm::hugetlb::HugePageSize::default_size()) as i64
+}
+/// # C: O(1)
+pub(super) fn set_nr_overcommit_hugepages(value: i64) {
+    pmm::hugetlb::set_nr_overcommit_hugepages(
+        pmm::hugetlb::HugePageSize::default_size(), value.max(0) as u64);
 }

@@ -166,6 +166,25 @@ pub fn can_reuse_anon_exclusive(pa: u64) -> bool {
         && meta.refcount(pfn) == Some(1)
 }
 
+/// Drop one reference WITHOUT ever returning the frame to the buddy allocator,
+/// reporting the count that remains. Both `refcount` and `mapcount` fall, so it
+/// is the exact inverse of [`inc_ref`].
+///
+/// This exists for pages whose home is not the buddy allocator: a huge page
+/// belongs to the hugetlb pool, and letting the generic free-on-zero path
+/// reclaim it would silently shrink the pool an operator sized. The pool takes
+/// the page back itself once this reports zero.
+/// # SAFETY: caller owns one reference to `pa` taken by `inc_ref`, and owns the
+/// decision of where the frame goes when the returned count reaches 0.
+/// # C: O(1)
+pub unsafe fn dec_ref_no_free(pa: u64) -> u32 {
+    let pfn = hal::Pfn(pa / hal::PAGE_SIZE_BYTES);
+    match page_meta() {
+        Some(meta) => { let _ = meta.dec_map(pfn); meta.dec_ref(pfn).unwrap_or(0) }
+        None       => 0,
+    }
+}
+
 /// F157: refcount snapshot. Returns 0 if pre-init or out-of-range.
 /// # C: O(1)
 pub fn frame_refcount(pa: u64) -> u32 {

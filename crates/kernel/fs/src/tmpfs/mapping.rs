@@ -2,7 +2,8 @@ use core::sync::atomic::Ordering;
 
 use vfs::{AddressSpaceOps, KResult};
 
-use super::file::{ensure_page, ShmemPage, TmpfsFileData};
+use super::file::{ShmemPage, TmpfsFileData};
+use super::page::ensure_page;
 use super::limits::PG;
 
 /// The tmpfs inode's persistent, sparse shmem address_space. Every mapper of
@@ -17,7 +18,7 @@ impl AddressSpaceOps for TmpfsFileData {
                 match g.get(&idx).copied() {
                     Some(ShmemPage::Migrating { token, .. }) => Some(token),
                     _ => {
-                        let pa = ensure_page(&mut g, idx, &self.acct)?;
+                        let pa = ensure_page(&mut g, idx, self)?;
                         // SAFETY: index lock keeps this terminal resident
                         // state live until this map reference is recorded.
                         unsafe { pmm::setup::inc_ref(pa); }

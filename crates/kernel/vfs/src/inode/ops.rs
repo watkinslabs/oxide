@@ -111,6 +111,15 @@ impl Inode {
     pub fn poll_file(&self, pos: u64) -> u32 { self.i_fop.poll_file(self, pos) }
     /// `MAP_SHARED` cache frame. # C: O(log N_pages)
     pub fn mmap_shared_frame(&self, off: u64) -> KResult<Option<crate::SharedFrame>> { self.i_fop.mmap_shared_frame(self, off) }
+    /// Huge-page size this inode's pages ARE, or 0 for base pages
+    /// (`hstate_inode`). # C: O(1)
+    pub fn huge_page_size(&self) -> u64 { self.i_fop.huge_page_size(self) }
+    /// A private copy of the huge page at `off`. # C: O(huge page)
+    pub fn huge_cow_frame(&self, off: u64) -> KResult<Option<crate::SharedFrame>> {
+        self.i_fop.huge_cow_frame(self, off)
+    }
+    /// Release one reference to a huge page this inode handed out. # C: O(log nr)
+    pub fn huge_put_frame(&self, pa: u64) { self.i_fop.huge_put_frame(self, pa) }
     /// `f_op->open` hook. # C: O(1)
     pub fn on_open(&self) -> KResult<()> { self.i_fop.on_open(self) }
     /// `f_op->release` hook. # C: O(1)

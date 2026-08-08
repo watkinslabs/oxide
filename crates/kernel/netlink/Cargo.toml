@@ -17,6 +17,7 @@ namespace-identity = { path = "../namespace-identity" }
 syscall = { path = "../syscall" }
 security = { path = "../security" }
 nscg = { path = "../nscg" }
+audit = { path = "../audit" }
 klog = { path = "../../shared/klog", optional = true }
 
 [features]

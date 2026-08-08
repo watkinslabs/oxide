@@ -6,6 +6,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use vfs::MAXQUOTAS;
 
+use super::behaviour::Ext4Behaviour;
 use super::flags::{EXT4_MOUNT_QUOTA_MASK, limit_bit};
 
 /// On-disk quota-relevant feature bits of the filesystem being mounted.
@@ -39,6 +40,10 @@ pub struct Ext4MountOpts {
     /// Non-quota tokens carried through unrecognised. ext4 is the root
     /// filesystem: an unknown token here must not fail the mount.
     pub other: Vec<String>,
+    /// The behavioural options this data string leaves in force. Seeded from
+    /// what the filesystem already has, so a remount that names one option
+    /// does not reset the others.
+    pub behaviour: Ext4Behaviour,
 }
 
 impl Ext4MountOpts {
@@ -58,13 +63,17 @@ impl Ext4MountOpts {
 
 /// Live quota option state of a mounted ext4 superblock.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct SbQuotaOpts {
+pub struct Ext4SbOpts {
     pub mount_opt: u32,
     pub qf_names: [Option<String>; MAXQUOTAS],
     pub jquota_fmt: u32,
+    /// The behavioural options in force. This is their ONLY home: every
+    /// consumer reads them from the mounted filesystem's option state, so a
+    /// remount cannot leave two copies disagreeing.
+    pub behaviour: Ext4Behaviour,
 }
 
-impl SbQuotaOpts {
+impl Ext4SbOpts {
     /// True when every named bit is set on the superblock. # C: O(1)
     pub fn test_opt(&self, bits: u32) -> bool { self.mount_opt & bits != 0 }
     /// Journalled quota file name in force for `slot`. # C: O(1)

@@ -159,15 +159,31 @@ pub fn add_lease_conflicts_with_holder(ty: i32, other: i32) -> bool {
     other & FL_UNLOCK_PENDING != 0
 }
 
-/// Does an already-open descriptor forbid this lease? A shared lease requires
-/// that nobody has the file open for writing; an exclusive lease requires that
-/// the requester is the ONLY writer, which for a read-only requester means no
-/// writer at all. `writecount` is the file's live writer count and `self_write`
-/// says whether this description is one of them. # C: O(1)
-pub fn open_conflicts(ty: i32, writecount: i32, self_write: bool) -> bool {
+/// Does an already-open descriptor forbid this lease?
+///
+/// A shared lease asks only that nobody has the file open for WRITING — other
+/// readers are precisely who a read lease coexists with.
+///
+/// An exclusive lease asks that the requester is the file's ONLY holder, in
+/// both directions: no other writer AND no other reader. The requester itself
+/// is counted in exactly one of the two counters — a write-capable open is a
+/// writer, a read-only open is a reader — so the test is that each count equals
+/// the requester's own contribution to it and nothing more. That is why an
+/// exclusive lease is refused while some other process merely has the file open
+/// read-only: it would be told nothing when that reader read.
+///
+/// A negative `writecount` is a running executable, never a writer count of
+/// zero, so it fails the equality and no lease is granted over it.
+///
+/// `self_write` / `self_read` describe THIS description's own contribution and
+/// must come from `File::holds_write_ref`-shaped state, not from a second
+/// opinion about the open mode. # C: O(1)
+pub fn open_conflicts(ty: i32, writecount: i32, readcount: i32,
+                      self_write: bool, self_read: bool) -> bool {
     match ty {
         F_RDLCK => writecount > 0,
-        F_WRLCK => writecount != if self_write { 1 } else { 0 },
+        F_WRLCK => writecount != if self_write { 1 } else { 0 }
+                   || readcount != if self_read { 1 } else { 0 },
         _       => false,
     }
 }

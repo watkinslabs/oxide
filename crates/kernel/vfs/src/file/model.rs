@@ -96,6 +96,12 @@ impl File {
         // (Linux `struct file` pins the inode; iget/igrab supplies the ref). The
         // matching `iput`/dec is in `File::drop`.
         inode.igrab();
+        // The reader reference this description holds for its whole life
+        // (Linux `do_dentry_open` / `alloc_file` → `i_readcount_inc`),
+        // released by `File::drop`. Taken here, in the ONE constructor every
+        // open file description passes through, so an anonymous file balances
+        // it exactly as a file on disk does.
+        if super::open::read_ref_for(f_mode) { inode.i_readcount_inc(); }
         let inode_wb_err = inode.wb_err().sample();
         let sb_wb_err = inode.i_sb().map_or(0, |sb| sb.s_wb_err.sample());
         Arc::new(Self {
@@ -398,7 +404,7 @@ impl File {
     /// `filp_close` on every `close(2)`/`dup2`-replace/cloexec drop —
     /// NOT only the last). Dispatches through this open file description's
     /// snapshotted `f_op`, not the inode's current `i_fop`. # C: depends on f_op
-    pub fn flush(&self) -> crate::KResult<()> { self.f_op.on_flush_file(self) }
+    pub fn flush(&self, owner: crate::inode::RecordOwner) -> crate::KResult<()> { self.f_op.on_flush_file(self, owner) }
 
     /// FMODE_ATOMIC_POS predicate (Linux `do_dentry_open`: set only for
     /// `S_ISREG`/`S_ISDIR`). Seekable files carry a real cursor whose

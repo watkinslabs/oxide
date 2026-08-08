@@ -61,13 +61,17 @@ pub mod xattr;
 
 pub mod journal;
 
+pub mod commit_timer;
+
+pub mod itable_init;
+
 #[cfg(feature = "debug-fsync-latency")]
 mod fsync_latency;
 
 pub mod quota;
 
 pub mod mount_opts;
-pub use mount_opts::{Ext4MountOpts, FsQuotaFeatures, SbQuotaOpts};
+pub use mount_opts::{DataMode, ErrorsPolicy, Ext4Behaviour, Ext4MountOpts, FsQuotaFeatures, Ext4SbOpts};
 
 // Host-compilable so the verify-left resolution harness
 // (tests/walk_image.rs) can drive the real ext4 Inode impls via

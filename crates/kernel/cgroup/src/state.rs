@@ -220,3 +220,17 @@ pub(crate) fn weight_hook() -> Option<fn(u64, u32)> {
 pub(crate) fn cpuset_hook() -> Option<fn(u64, u64)> {
     *CPUSET_HOOK.lock()
 }
+
+/// Hugetlb charge-reparent hook: `fn(from_cgid, to_cgid)`. A cgroup being
+/// removed hands its outstanding huge-page charges to its parent, and the
+/// owner recorded against each charged page has to follow — otherwise the
+/// eventual release names a cgroup that is gone and the charge is stranded on
+/// the parent forever. The huge-page pool holds those owner records, so it
+/// installs the hook rather than this leaf crate reaching into it.
+static HUGETLB_REPARENT_HOOK: Spinlock<Option<fn(u64, u64)>, TaskListClass> = Spinlock::new(None);
+
+/// # C: O(1)
+pub fn set_hugetlb_reparent_hook(h: fn(u64, u64)) { *HUGETLB_REPARENT_HOOK.lock() = Some(h); }
+
+/// # C: O(1)
+pub(crate) fn hugetlb_reparent_hook() -> Option<fn(u64, u64)> { *HUGETLB_REPARENT_HOOK.lock() }

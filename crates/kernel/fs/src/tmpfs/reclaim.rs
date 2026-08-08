@@ -200,6 +200,11 @@ fn count_objects() -> usize {
 fn scan_objects(target: usize) -> usize {
     let mut released = 0usize;
     for data in live_objects() {
+        // A `-o noswap` mount has nowhere for its pages to go. Skipping it here
+        // is what makes the option mean anything: without this the shrinker
+        // paged such a mount out exactly as if the option had never been
+        // written.
+        if !data.acct.may_swap_out() { continue; }
         while released < target {
             if evict_one_unmapped(&data) || evict_one_mapped(&data) { released += 1; } else { break; }
         }
@@ -390,6 +395,10 @@ fn evict_mapped(data: &TmpfsFileData, idx: u64, pa: u64, cgid: u64) -> bool {
 /// selects a different inode page than the caller requested. # C: O(pages)
 pub(super) fn pageout_range(data: &TmpfsFileData, off: u64, len: u64) -> KResult<usize> {
     if len == 0 { return Ok(0); }
+    // An explicit page-out request is still a request to write to swap, and a
+    // `-o noswap` mount refuses it for the same reason the shrinker skips it.
+    // Reclaiming nothing is the honest answer: the pages stay resident.
+    if !data.acct.may_swap_out() { return Ok(0); }
     let indices = page_indices(off, len)?;
     let mut released = 0usize;
     for idx in indices {

@@ -47,6 +47,8 @@ impl SuperBlock {
             s_fs_info: Spinlock::new(s_fs_info),
             icache: Spinlock::new(BTreeMap::new()),
             s_wb: Spinlock::new(BTreeMap::new()),
+            s_encoding: AtomicU32::new(0),
+            s_encoding_flags: AtomicU32::new(0),
             s_dquot: QuotaInfo::new(),
             s_wb_err: crate::errseq::Errseq::new(),
         });

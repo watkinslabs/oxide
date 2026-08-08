@@ -28,7 +28,7 @@ pub use warn::{DquotWarn, DquotWarns, QuotaWarnType, QuotaWarning, clear_quota_w
 #[cfg(not(target_os = "oxide-kernel"))]
 pub use warn::take_logged_warnings;
 pub use auth::{INVALID_QUOTA_ID, QuotaCtlCmd, QuotaCtlCred, clear_quota_sys_resource_hook, quota_check_quotactl_permission, quota_has_sys_resource, quota_ignore_hardlimit, set_quota_sys_resource_hook};
-pub use control::{QFMT_VFS_OLD, QFMT_VFS_V0, QFMT_VFS_V1, quota_disable_limits, quota_enable_limits, quota_getfmt, quota_getinfo, quota_getnextquota, quota_getquota, quota_off, quota_on, quota_setinfo, quota_setquota, quota_setquota_masked, quota_shutdown, quota_suspend_sysfiles, quota_sync, quota_sync_all, quota_sysfile_active};
+pub use control::{QFMT_SHMEM, QFMT_VFS_OLD, QFMT_VFS_V0, QFMT_VFS_V1, quota_disable_limits, quota_enable_limits, quota_getfmt, quota_getinfo, quota_getnextquota, quota_getquota, quota_off, quota_on, quota_setinfo, quota_setquota, quota_setquota_masked, quota_shutdown, quota_suspend_sysfiles, quota_sync, quota_sync_all, quota_sysfile_active};
 pub use dquot::{ChargeResult, Dquot, DquotRef, DquotSet};
 pub use error::{QuotaError, QuotaResult};
 pub use ids::{Kqid, QuotaId, QuotaType, MAXQUOTAS};

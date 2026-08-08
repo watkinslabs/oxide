@@ -1,8 +1,10 @@
 #![no_std]
 extern crate alloc;
 
+pub mod context;
 pub mod eventfs;
 pub mod fs_impl;
+pub mod mount_opts;
 pub mod percpu_ring;
 pub mod predicate;
 pub mod ring;

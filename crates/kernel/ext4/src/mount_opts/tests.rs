@@ -6,10 +6,11 @@
 mod parse;
 mod consistency;
 mod apply;
+mod behaviour;
 
 use alloc::string::String;
 
-use super::{Ext4MountOpts, FsQuotaFeatures, SbQuotaOpts};
+use super::{Ext4MountOpts, FsQuotaFeatures, Ext4SbOpts};
 
 /// Filesystem with neither the QUOTA nor the PROJECT feature. # C: O(1)
 pub(super) fn plain() -> FsQuotaFeatures { FsQuotaFeatures { quota: false, project: false } }
@@ -26,10 +27,11 @@ pub(super) fn parsed(data: &str) -> vfs::KResult<Ext4MountOpts> {
 }
 
 /// Live superblock state carrying `names` and `fmt`. # C: O(1)
-pub(super) fn live(names: [Option<&str>; 3], fmt: u32, mount_opt: u32) -> SbQuotaOpts {
-    SbQuotaOpts {
+pub(super) fn live(names: [Option<&str>; 3], fmt: u32, mount_opt: u32) -> Ext4SbOpts {
+    Ext4SbOpts {
         mount_opt,
         qf_names: names.map(|n| n.map(String::from)),
         jquota_fmt: fmt,
+        behaviour: Default::default(),
     }
 }

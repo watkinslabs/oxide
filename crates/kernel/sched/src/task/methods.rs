@@ -416,6 +416,7 @@ impl Task {
             landlock_domain: Spinlock::new(None),
             landlock_tsync_work: Spinlock::new(None),
             landlock_tsync_id: AtomicU64::new(0),
+            landlock_log_state: AtomicU32::new(0),
             notify_signal: AtomicBool::new(false),
             fpu_state:       UnsafeCell::new(fpu_state),
             #[cfg(feature = "debug-task-fpu-provenance")]

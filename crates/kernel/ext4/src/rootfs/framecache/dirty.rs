@@ -94,13 +94,43 @@ pub fn flush_all_dirty() -> Result<(), ()> { flush_dirty(None) }
 /// its own `sync_fs` goes on to run.
 /// # C: O(N_stores · N_dirty)
 pub fn flush_dirty(only: Option<&alloc::sync::Arc<crate::Mount>>) -> Result<(), ()> {
+    let (mut failed, mounts) = writeback_dirty_inner(only.map(|m| &**m));
+    // Durability point (sync/syncfs/msync): drain the running batch of EVERY
+    // mount whose frames were just staged — one arbitrary mount is not enough
+    // when the walk covered several.
+    for m in &mounts { if m.commit_batch().is_err() { failed = true; } }
+    if failed { Err(()) } else { Ok(()) }
+}
+
+/// The data half of [`flush_dirty`] with no commit behind it: get every dirty
+/// page of these mounts onto the device and stop there.
+///
+/// This is what `data=ordered` needs, and it is why the two halves are
+/// separate: the ordering guarantee is "data BEFORE the metadata commit", so
+/// the caller is the commit, and a data flush that finished by committing would
+/// be calling the very thing it runs ahead of.
+/// # C: O(N_stores · N_dirty)
+pub fn writeback_dirty(only: Option<&crate::Mount>) -> Result<(), ()> {
+    let (failed, _) = writeback_dirty_inner(only);
+    if failed { Err(()) } else { Ok(()) }
+}
+
+/// Write back the selected stores; report failure and the mounts covered.
+/// # C: O(N_stores · N_dirty)
+fn writeback_dirty_inner(only: Option<&crate::Mount>)
+    -> (bool, Vec<alloc::sync::Arc<crate::Mount>>)
+{
     let snapshot: Vec<Weak<Ext4FrameStore>> = { DIRTY_STORES.lock().iter().cloned().collect() };
     let mut failed = false;
     let mut mounts: Vec<alloc::sync::Arc<crate::Mount>> = Vec::new();
     for w in &snapshot {
         let Some(s) = w.upgrade() else { continue };
         if let Some(m) = only {
-            if !alloc::sync::Arc::ptr_eq(&s.st.mount, m) { continue; }
+            // Identity by ADDRESS, not by owning `Arc`: the ordered-data caller
+            // is a `&Mount` inside a commit and holds no `Arc` of itself.
+            if !core::ptr::eq(alloc::sync::Arc::as_ptr(&s.st.mount), m as *const crate::Mount) {
+                continue;
+            }
         }
         if !mounts.iter().any(|m| alloc::sync::Arc::ptr_eq(m, &s.st.mount)) {
             mounts.push(s.st.mount.clone());
@@ -108,9 +138,5 @@ pub fn flush_dirty(only: Option<&alloc::sync::Arc<crate::Mount>>) -> Result<(), 
         if s.writeback().is_err() { failed = true; }
     }
     DIRTY_STORES.lock().retain(|w| w.strong_count() > 0);
-    // Durability point (sync/syncfs/msync): drain the running batch of EVERY
-    // mount whose frames were just staged — one arbitrary mount is not enough
-    // when the walk covered several.
-    for m in &mounts { if m.commit_batch().is_err() { failed = true; } }
-    if failed { Err(()) } else { Ok(()) }
+    (failed, mounts)
 }

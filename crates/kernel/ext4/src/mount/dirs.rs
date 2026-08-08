@@ -7,6 +7,28 @@ use crate::inode::Inode;
 use super::{Mount, MountError};
 
 impl Mount {
+    /// Grow directory `dir_ino` by one block, subject to the mount's
+    /// `max_dir_size_kb=` ceiling.
+    ///
+    /// EVERY directory-growth path goes through here: linear overflow, htree
+    /// conversion, and htree node and leaf splits. A ceiling only some of them
+    /// consulted would be one a growing directory walks straight past by taking
+    /// whichever path skipped it.
+    ///
+    /// `NoSpace` is the refusal, and it is the errno the reference returns from
+    /// the same check: to the caller there is no room for the entry, which is
+    /// exactly what the ceiling means.
+    /// # C: O(N_extents) + 1 block I/O
+    pub(crate) fn append_dir_block(&self, dir_ino: u32, data: &[u8]) -> Result<u32, MountError> {
+        let b = self.behaviour();
+        // Skip the inode read entirely on the mounts that set no ceiling, which
+        // is every mount that did not name the option.
+        if b.max_dir_size_kb != crate::mount_opts::behaviour::NO_DIR_SIZE_LIMIT {
+            if !b.dir_may_grow(self.read_inode(dir_ino)?.size) { return Err(MountError::NoSpace); }
+        }
+        self.append_block(dir_ino, data)
+    }
+
     /// Stamp the dir-block tail csum (no-op without metadata_csum)
     /// and write the block back through the journaled metadata path.
     /// # C: O(bs) csum + 1 block I/O
@@ -70,7 +92,7 @@ impl Mount {
         dir::insert(&mut newblk[..usable], child_ino, file_type, name)
             .map_err(MountError::Dir)?;
         crate::csum::stamp_dirent_tail(&self.sb, dir_ino, gen, &mut newblk);
-        self.append_block(dir_ino, &newblk)?;
+        self.append_dir_block(dir_ino, &newblk)?;
         Ok(())
     }
 

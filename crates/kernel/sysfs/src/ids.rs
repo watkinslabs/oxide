@@ -80,6 +80,10 @@ pub(crate) const MODULE_ATTR: u64 = 0x5100_7003;
 #[cfg(test)]
 pub(crate) const STALE_UEVENT: u64 = 0x51dc_a001;
 pub(crate) const UEVENT_SEQNUM: u64 = 0x5107_0001;
+/// `/sys/kernel/mm/hugepages/hugepages-*/` attributes. The granule occupies
+/// the middle byte and the attribute the low one, so the tree's ten leaves
+/// each claim a distinct number.
+pub(crate) const HUGEPAGES_ATTR: u64 = 0x5109_0000;
 pub(crate) const ZRAM_CONTROL_ROOT: u64 = 0x5108_0001;
 pub(crate) const ZRAM_CONTROL_HOT_ADD: u64 = 0x5108_2001;
 pub(crate) const ZRAM_CONTROL_HOT_REMOVE: u64 = 0x5108_2002;

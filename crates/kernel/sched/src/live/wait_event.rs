@@ -60,7 +60,7 @@ pub unsafe fn wait_event(wq: &WaitList, state: WaitState, deadline_ns: u64,
         unsafe { wq.park_interruptible_with_deadline(deadline_ns); }
         if cond() { break; }
         if signal_pending_state_current(state) {
-            // `wait.c:308-309`: dequeue, THEN report the restart, so an
+            // Dequeue, THEN report the restart, so an
             // exclusive waiter that bails cannot swallow another's wakeup.
             wq.cancel_current_park();
             return WaitOutcome::Interrupted;

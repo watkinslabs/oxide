@@ -13,6 +13,8 @@
 //   netcheck — socket-address admission for port rules
 //   access   — per-operation request masks and the open-time recorded mask
 //   walk     — object-to-root hierarchy walk across mount points
+//   logging  — per-layer denial-reporting configuration and live state
+//   audit    — denial records: what to report, what to suppress, what to say
 //
 // Nothing here reads task state; the caller supplies the domain. That keeps
 // this crate below `sched`, which stores the domain on the task.
@@ -23,6 +25,8 @@
 extern crate alloc;
 
 pub mod uapi;
+pub mod logging;
+pub mod audit;
 pub mod abi;
 pub mod eval;
 pub mod ruleset;
@@ -34,4 +38,5 @@ pub mod walk;
 
 pub use domain::Domain;
 pub use ruleset::{FsRule, NetRule, Ruleset};
+pub use logging::{DomainDetails, LogConfig, LogStatus};
 pub use uapi::AccessMask;

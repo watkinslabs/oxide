@@ -163,7 +163,7 @@ fn a_journalled_quota_file_option_loads_that_visible_file_at_mount() {
     assert!(sb.s_dquot.is_enforced(kind), "a journalled quota file brings limits with it");
     let raw = m.state().mount.read_inode(qino).expect("raw quota inode");
     assert_ne!(raw.i_flags & FS_IMMUTABLE_FL, 0, "the live quota file is protected immutable");
-    assert_eq!(m.state().quota_opts().journalled_file(kind), Some(USR_QUOTA_FILE));
+    assert_eq!(m.state().opts().journalled_file(kind), Some(USR_QUOTA_FILE));
 }
 
 #[test]
@@ -206,19 +206,27 @@ fn journalled_options_are_ignored_when_the_filesystem_owns_its_quota_inodes() {
     common::boot_hosted_pmm();
     let (m, sb) = mount_opts(hidden_quota_disk(), "rw,usrjquota=aquota.user,jqfmt=vfsv0,prjquota")
         .expect("journalled options are inert, not fatal, under the QUOTA feature");
-    assert_eq!(m.state().quota_opts().journalled_file(vfs::QuotaType::User), None);
-    assert_eq!(m.state().quota_opts().jquota_fmt, 0);
+    assert_eq!(m.state().opts().journalled_file(vfs::QuotaType::User), None);
+    assert_eq!(m.state().opts().jquota_fmt, 0);
     assert!(sb.s_dquot.is_enforced(vfs::QuotaType::Project), "the plain option still applies");
 }
 
 #[test]
-fn unknown_mount_options_never_fail_an_ext4_mount() {
+fn a_mount_option_no_consumer_owns_never_fails_an_ext4_mount() {
     common::boot_hosted_pmm();
     // ext4 is the root filesystem: an option this driver does not model must
     // not turn a bootable disk into an unmountable one.
     let data = "rw,relatime,errors=remount-ro,data=ordered,discard,nobarrier,stripe=32";
     let (m, _sb) = mount_opts(project_disk(), data).expect("mount");
-    assert_eq!(m.state().quota_opts(), ext4::SbQuotaOpts::default());
+    let opts = m.state().opts();
+    // The quota half is untouched by any of these...
+    assert_eq!(opts.mount_opt, 0);
+    assert_eq!(opts.jquota_fmt, 0);
+    // ...and the ones with a consumer reached it, rather than being dropped.
+    assert!(opts.behaviour.discard);
+    assert!(!opts.behaviour.barrier);
+    assert_eq!(opts.behaviour.errors, ext4::ErrorsPolicy::RemountRo);
+    assert_eq!(opts.behaviour.data, ext4::DataMode::Ordered);
 }
 
 #[test]

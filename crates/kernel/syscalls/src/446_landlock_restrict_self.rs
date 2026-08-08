@@ -9,7 +9,8 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
 use ::landlock::abi;
-use ::landlock::Domain;
+use ::landlock::logging::{self, LogConfig};
+use ::landlock::{Domain, DomainDetails};
 
 /// `sys_landlock_restrict_self(ruleset_fd, flags)` — slot 446.
 ///
@@ -30,11 +31,19 @@ pub fn sys_landlock_restrict_self(args: &SyscallArgs) -> i64 {
         return -(e.as_i32() as i64);
     }
     let plan = abi::restrict_plan(fd, flags, nnp);
+    // The denial-reporting reader has to be live before any domain can deny
+    // anything; installing it here rather than from a boot hook keeps the
+    // landlock crate free of a boot-order slot, and no domain can exist before
+    // the first call to this syscall.
+    ::landlock::audit::set_exec_layers_source(current_exec_layers);
+    let log_state = cur.landlock_log_state.load(Ordering::Acquire);
 
-    // A pure logging-configuration change installs no layer. With no audit
-    // subsystem there is nothing for it to configure, so it succeeds having
-    // changed nothing — which is what a caller quietening its own logs expects.
+    // A pure logging-configuration change installs no layer: it only asks that
+    // the layers stacked from here on stay silent, which is how a launcher
+    // quietens the sandbox it is about to hand to a child.
     if !plan.needs_ruleset {
+        cur.landlock_log_state.store(
+            logging::state_after_restrict(log_state, flags, None), Ordering::Release);
         if plan.propagate_no_new_privs {
             if let Err(sched::landlock_tsync::StartError::Restart) =
                 sched::landlock_tsync::restrict_siblings(cur, None, true)
@@ -49,9 +58,13 @@ pub fn sys_landlock_restrict_self(args: &SyscallArgs) -> i64 {
         Ok(r) => r, Err(e) => return -(e.as_i32() as i64),
     };
     let parent = crate::landlock::current_domain();
-    let dom = match Domain::merge(parent.as_ref(), &rs) {
+    let log = LogConfig::from_flags(flags, logging::state_allows_subdomains(log_state));
+    let dom = match Domain::merge_logged(parent.as_ref(), &rs, log, details(&cur)) {
         Ok(d) => d, Err(e) => return -(e.as_i32() as i64),
     };
+    cur.landlock_log_state.store(
+        logging::state_after_restrict(log_state, flags, Some(dom.num_layers() - 1)),
+        Ordering::Release);
     if plan.tsync {
         if let Err(sched::landlock_tsync::StartError::Restart) =
             sched::landlock_tsync::restrict_siblings(
@@ -75,5 +88,28 @@ fn cap_sys_admin_in_own_user_ns(cur: &sched::Task) -> bool {
     match cur.namespace_owner(namespace_identity::NamespaceKind::User) {
         Some(own) => nscg::proc_ns::has_cap_for(cur, &own.pin(), sched::cap::SYS_ADMIN),
         None => cur.has_cap(sched::cap::SYS_ADMIN),
+    }
+}
+
+/// Who is enforcing this layer, for the record that describes the domain once.
+/// Captured at enforcement because the layer is immutable afterwards and the
+/// thread that built it may be gone by the time a denial names it.
+/// # C: O(1)
+fn details(cur: &sched::Task) -> DomainDetails {
+    DomainDetails {
+        pid: cur.visible_pid(),
+        uid: cur.creds.euid.load(Ordering::Acquire),
+        exe: cur.exe_path().map(|p| p.into_bytes()).unwrap_or_default(),
+        comm: cur.comm().into_bytes(),
+    }
+}
+
+/// Layer levels the CURRENT execution enforced. Read by the denial path to
+/// decide which of the two per-execution logging flags applies.
+/// # C: O(1)
+fn current_exec_layers() -> u32 {
+    match sched::live::current() {
+        Some(c) => ::landlock::logging::exec_layers(c.landlock_log_state.load(Ordering::Acquire)),
+        None => 0,
     }
 }

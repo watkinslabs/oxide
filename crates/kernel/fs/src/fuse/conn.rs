@@ -28,6 +28,10 @@ use vfs::{Inode, InodeRef, PollSubscribers};
 use super::proto;
 use super::FUSE_WIRE_ENOTCONN;
 
+/// `negotiated` — what the channel has LEARNED about its peer: the `ENOSYS`
+/// per-opcode latches, the INIT feature answers, and the lock-owner key.
+mod negotiated;
+
 fn copy_iov(bufs: &[&[u8]], mut skip: usize, mut out: &mut [u8]) -> bool {
     for buf in bufs {
         if skip >= buf.len() {
@@ -157,6 +161,14 @@ pub struct FuseConn {
     /// `fc->no_fsyncdir` — the same latch for FSYNCDIR, which daemons omit far
     /// more often than FSYNC.
     no_fsyncdir: AtomicBool,
+    /// `fc->no_flush` — the daemon answered `ENOSYS` to FLUSH once, so it has
+    /// no flush handler. Every later `close(2)` succeeds without a round trip.
+    no_flush: AtomicBool,
+    /// `fc->scramble_key` — the per-connection key the lock-owner identity is
+    /// ciphered under before it reaches the daemon (see
+    /// [`super::flush::lock_owner_id`]). Random per connection so the mapping
+    /// is unguessable and uncorrelatable across mounts.
+    scramble_key: [u32; super::flush::SCRAMBLE_KEY_WORDS],
 }
 
 impl FuseConn {
@@ -175,6 +187,8 @@ impl FuseConn {
             max_read: AtomicU32::new(u32::MAX),
             no_fsync: AtomicBool::new(false),
             no_fsyncdir: AtomicBool::new(false),
+            no_flush: AtomicBool::new(false),
+            scramble_key: negotiated::random_scramble_key(),
         })
     }
 
@@ -205,21 +219,6 @@ impl FuseConn {
     pub fn set_max_read(&self, max_read: u32) { self.max_read.store(max_read, Ordering::Release); }
     /// Maximum payload requested by one `FUSE_READ`. # C: O(1)
     pub fn max_read(&self) -> u32 { self.max_read.load(Ordering::Acquire) }
-
-    /// True when this daemon has already answered `ENOSYS` to the given fsync
-    /// opcode, so the request must be skipped and the sync reported as done.
-    /// # C: O(1)
-    pub fn fsync_unsupported(&self, is_dir: bool) -> bool {
-        let f = if is_dir { &self.no_fsyncdir } else { &self.no_fsync };
-        f.load(Ordering::Acquire)
-    }
-
-    /// Latch the `ENOSYS` answer so no later fsync pays the round trip.
-    /// # C: O(1)
-    pub fn set_fsync_unsupported(&self, is_dir: bool) {
-        let f = if is_dir { &self.no_fsyncdir } else { &self.no_fsync };
-        f.store(true, Ordering::Release);
-    }
 
     /// Encode a request (`fuse_in_header` + `body`) for `opcode` on `nodeid`,
     /// file it in `slots`, push it to the daemon's `pending` queue, and wake a

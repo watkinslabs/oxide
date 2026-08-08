@@ -54,6 +54,7 @@ pub mod pseudo_ino_identity;
 /// Secret memory: pages removed from the kernel's linear map while owned.
 pub mod secretmem;
 pub mod tmpfs;
+pub mod hugetlbfs;
 pub mod fuse;
 pub mod autofs;
 pub mod binfmt_misc;

@@ -31,6 +31,30 @@ fn depth_rules() {
     assert_eq!(q2.set_size(WATCH_QUEUE_MAX_NOTES), Err(Errno::Ebusy));
 }
 
+// A queue that already has its notes is EBUSY whatever depth the second call
+// names — the already-sized rung is ahead of the range rung, so an out-of-range
+// second call does not report the depth as the reason it failed.
+#[test]
+fn a_second_size_is_ebusy_before_the_depth_is_ranged() {
+    use crate::watch_queue::queue::admit_set_size;
+    assert_eq!(admit_set_size(0, true), Err(Errno::Ebusy));
+    assert_eq!(admit_set_size(WATCH_QUEUE_MAX_NOTES + 1, true), Err(Errno::Ebusy));
+    assert_eq!(admit_set_size(0, false), Err(Errno::Einval));
+    assert_eq!(admit_set_size(WATCH_QUEUE_MAX_NOTES + 1, false), Err(Errno::Einval));
+}
+
+// The admitted answer is the PAGES the depth costs, which is what the memory
+// reservation is charged in — one page for anything up to a page of notes.
+#[test]
+fn the_admitted_depth_is_counted_in_whole_pages() {
+    use crate::watch_queue::queue::admit_set_size;
+    assert_eq!(admit_set_size(1, false), Ok(1));
+    assert_eq!(admit_set_size(WATCH_QUEUE_NOTES_PER_PAGE, false), Ok(1));
+    assert_eq!(admit_set_size(WATCH_QUEUE_NOTES_PER_PAGE + 1, false), Ok(2));
+    assert_eq!(admit_set_size(WATCH_QUEUE_MAX_NOTES, false),
+        Ok(WATCH_QUEUE_MAX_NOTES.div_ceil(WATCH_QUEUE_NOTES_PER_PAGE)));
+}
+
 // A queue with no depth accepts nothing, and the reader is told so — a
 // notification is never dropped silently.
 #[test]

@@ -50,6 +50,30 @@ pub(crate) fn register_port_id(socket: &Arc<NetlinkSocket>) {
     owners.push(PortOwner { namespace: wanted.0, protocol: wanted.1, port_id, socket: Arc::downgrade(socket) });
 }
 
+/// Deliver a KERNEL-generated message to a bound port. `false` when no live
+/// socket owns that port in `namespace`, or its receive budget refused it.
+///
+/// Unlike a unicast from a socket this never blocks and never retries: the
+/// producer is an arbitrary kernel path with no send timeout to bound a wait
+/// and no business parking on a userspace consumer's buffer. A refusal is the
+/// caller's to account for.
+/// # C: O(N live Netlink ports)
+pub(crate) fn deliver_from_kernel(namespace: u64, protocol: u16, port_id: u32, bytes: &[u8])
+    -> bool
+{
+    let wanted = (namespace, protocol, port_id);
+    let target = {
+        let mut owners = PORT_OWNERS.lock();
+        retain_live(&mut owners);
+        owners.iter().find(|owner| (owner.namespace, owner.protocol, owner.port_id) == wanted)
+            .and_then(|owner| owner.socket.upgrade())
+    };
+    let Some(target) = target else { return false; };
+    // A kernel-generated message carries the kernel's port and no credentials.
+    target.try_enqueue_from_creds(bytes.to_vec(), 0, net::sock_opts::SenderCreds::default())
+        == Unicast::Queued
+}
+
 /// Atomically claim an explicit `sockaddr_nl.nl_pid`, or retain the current
 /// autobound ID when the request is zero. # C: O(N live Netlink ports)
 pub fn bind_port_id(socket: &Arc<NetlinkSocket>, requested: u32) -> Result<(), net::NetError> {

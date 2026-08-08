@@ -77,7 +77,7 @@ pub unsafe fn free_user_tree_leafmap<W, FL, FS, FM, FT>(
 )
 where
     W: PtWalker,
-    FL: FnMut(u64, u64),
+    FL: FnMut(u64, u64, crate::PageSize),
     FS: FnMut(u64, SwapEntry),
     FM: FnMut(u64, MigrationEntry),
     FT: FnMut(u64),
@@ -95,12 +95,29 @@ where
             let l1 = (hhdm_offset.wrapping_add(l1_pa)) as *const u64;
             for i_l1 in 0..ENTRIES_PER_TABLE {
                 let e1 = ptr::read_volatile(l1.add(i_l1));
-                if !W::is_valid(e1) || W::is_huge_or_block(e1) { continue; }
+                if !W::is_valid(e1) { continue; }
+                if W::is_huge_or_block(e1) {
+                    // A 1 GiB block leaf. Skipping it would leak the mapping
+                    // reference it holds on the huge page behind it, so that
+                    // page would never return to the pool that owns it.
+                    let va = ((i_l0 as u64) << L0_SHIFT) | ((i_l1 as u64) << L1_SHIFT);
+                    free_leaf(va, e1 & W::PHYS_MASK, crate::PageSize::P1G);
+                    continue;
+                }
                 let l2_pa = e1 & W::PHYS_MASK;
                 let l2 = (hhdm_offset.wrapping_add(l2_pa)) as *const u64;
                 for i_l2 in 0..ENTRIES_PER_TABLE {
                     let e2 = ptr::read_volatile(l2.add(i_l2));
-                    if !W::is_valid(e2) || W::is_huge_or_block(e2) { continue; }
+                    if !W::is_valid(e2) { continue; }
+                    if W::is_huge_or_block(e2) {
+                        // A 2 MiB block leaf — the granule a hugetlbfs mapping
+                        // installs. Same reasoning as the 1 GiB case above.
+                        let va = ((i_l0 as u64) << L0_SHIFT)
+                               | ((i_l1 as u64) << L1_SHIFT)
+                               | ((i_l2 as u64) << L2_SHIFT);
+                        free_leaf(va, e2 & W::PHYS_MASK, crate::PageSize::P2M);
+                        continue;
+                    }
                     let l3_pa = e2 & W::PHYS_MASK;
                     let l3 = (hhdm_offset.wrapping_add(l3_pa)) as *const u64;
                     for i_l3 in 0..ENTRIES_PER_TABLE {
@@ -113,7 +130,7 @@ where
                                | ((i_l2 as u64) << L2_SHIFT)
                                | ((i_l3 as u64) << L3_SHIFT);
                         if W::is_valid(leaf) {
-                            free_leaf(va, leaf & W::PHYS_MASK);
+                            free_leaf(va, leaf & W::PHYS_MASK, crate::PageSize::P4K);
                         } else if let Some(entry) = W::unpack_swap_entry(leaf) {
                             free_swap(va, entry);
                         } else if let Some(entry) = W::unpack_migration_entry(leaf) {

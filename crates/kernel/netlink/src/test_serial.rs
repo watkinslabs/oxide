@@ -21,6 +21,7 @@ use std::sync::{Mutex, MutexGuard};
 static UEVENT: Mutex<()> = Mutex::new(());
 static GENL: Mutex<()> = Mutex::new(());
 static QUOTA_EVENTS: Mutex<()> = Mutex::new(());
+static AUDIT: Mutex<()> = Mutex::new(());
 
 /// Serialise access to the global `UEVENT_LISTENERS` broadcast registry.
 pub(crate) fn uevent() -> MutexGuard<'static, ()> {
@@ -38,4 +39,11 @@ pub(crate) fn genl() -> MutexGuard<'static, ()> {
 /// because the family's group id is statically reserved.
 pub(crate) fn quota_events() -> MutexGuard<'static, ()> {
     QUOTA_EVENTS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Serialise the audit system: there is exactly one record queue and one
+/// registered consumer, and a test that registers one would otherwise be
+/// refused by another test's live registration.
+pub(crate) fn audit() -> MutexGuard<'static, ()> {
+    AUDIT.lock().unwrap_or_else(|e| e.into_inner())
 }

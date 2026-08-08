@@ -10,16 +10,10 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use super::accounting::TmpfsSb;
 use super::flags::{F_SEAL_FUTURE_WRITE, F_SEAL_GROW, F_SEAL_SHRINK, F_SEAL_WRITE};
-use super::inode::{fsid_of, iget_or_build, next_ino};
+use super::inode::{fsid_of, iget_or_build};
 use super::limits::PG;
-
-/// Resolve the allocating task's memcg once, at the shmem page-allocation
-/// boundary.  A pre-scheduler kernel context is charged to the root memcg,
-/// matching Linux's root allocation context rather than inventing an owner
-/// later during reclaim or teardown. # C: O(log n)
-fn allocating_memcg() -> u64 {
-    sched::current().map(|t| cgroup::cgroup_of(t.tid as u64)).unwrap_or_else(cgroup::kernel_context_memcg)
-}
+use super::page::ensure_page;
+use super::quota::{self, QuotaOwner};
 
 /// One published shmem page.  The cgid is immutable page ownership: task
 /// migration, inode sharing, and cgroup removal never retarget the charge.
@@ -69,6 +63,14 @@ pub struct TmpfsFileData {
     pub(super) len: AtomicU64,
     /// Owning mount's space accounting (block charge/uncharge). # D33
     pub(super) acct: Arc<TmpfsSb>,
+    /// The owner this body's block charges are made against. Distinct from the
+    /// inode's uid/gid only in WHEN it is read: a body outlives its inode (an
+    /// unlinked file held open), and the pages it still holds must be returned
+    /// to the owner that was charged for them. A chown moves both together.
+    pub(super) owner: Spinlock<QuotaOwner, TaskListClass>,
+    /// The inode this body backs, so a block charge can keep `i_blocks` equal
+    /// to what the owner is charged for. Weak: the inode owns this body.
+    pub(super) inode: Spinlock<Weak<Inode>, TaskListClass>,
     /// memfd `F_*_SEALS` word (Linux `shmem_inode_info.seals`). Lives HERE in the
     /// per-fs inode-info, reached via `vfs::SealCarrier`; the owning `Inode`
     /// exposes it through `fcntl_seals()` only when this data was attached as the
@@ -83,103 +85,21 @@ impl vfs::SealCarrier for TmpfsFileData {
     fn seal_word(&self) -> &AtomicU32 { &self.seals }
 }
 
-/// Frame for `idx`, allocating + zeroing on first touch and charging one block
-/// against the mount's accounting (`ENOSPC` → `None` at the limit). The frame
-/// holds the inode's single object reference (refcount 1, mapcount 0).
-/// # C: O(log N_pages)
-pub(super) fn ensure_page(g: &mut BTreeMap<u64, ShmemPage>, idx: u64, acct: &TmpfsSb) -> KResult<u64> {
-    if let Some(page) = g.get(&idx).copied() {
-        if let Some(pa) = page.resident_pa() { return Ok(pa); }
-        let ShmemPage::Swapped { entry, cgid, .. } = page else { return Err(VfsError::Eagain); };
-        // A swapped shmem page retains its inode index and swap charge.  A
-        // refault allocates a new object frame, restores bytes, and only then
-        // consumes the old swap entry; failed reload leaves the index intact.
-        if !cgroup::try_charge_memory(cgid, cgroup::MemoryKind::Shmem, PG as u64) {
-            return Err(VfsError::Enomem);
-        }
-        let Some(pa) = pmm::setup::alloc_object_frame() else {
-            cgroup::uncharge_memory(cgid, cgroup::MemoryKind::Shmem, PG as u64);
-            return Err(VfsError::Enomem);
-        };
-        let Some(ptr) = pmm::setup::frame_ptr(pa) else {
-            // SAFETY: this unpublished object frame has only its allocation ref.
-            unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(pa); }
-            cgroup::uncharge_memory(cgid, cgroup::MemoryKind::Shmem, PG as u64);
-            return Err(VfsError::Enomem);
-        };
-        // SAFETY: `ptr` spans the newly allocated page and no PTE can name it.
-        let bytes = unsafe { core::slice::from_raw_parts_mut(ptr, PG) };
-        if pmm::swap::load_page(entry, bytes).is_err() {
-            // SAFETY: failed I/O left the frame private to this construction.
-            unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(pa); }
-            cgroup::uncharge_memory(cgid, cgroup::MemoryKind::Shmem, PG as u64);
-            return Err(VfsError::Eio);
-        }
-        pmm::setup::classify_shmem_page(pa, cgid);
-        if pmm::setup::admit_shmem_lru(pa).is_err() {
-            // The old swap entry remains authoritative until this admission is
-            // complete; don't publish a resident page outside reclaim state.
-            // SAFETY: no PTE owns this failed refault frame.
-            unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(pa); }
-            cgroup::uncharge_memory(cgid, cgroup::MemoryKind::Shmem, PG as u64);
-            return Err(VfsError::Eio);
-        }
-        g.insert(idx, ShmemPage::Resident { pa, cgid });
-        vfs::memory_accounting::account_shmem_publish(1);
-        // Data is present in the new page-index entry before the swap slot is
-        // released. `free_page` also removes the matching swap memcg charge.
-        let _ = pmm::swap::free_page(entry);
-        return Ok(pa);
-    }
-    if !acct.charge_block() { return Err(VfsError::Enospc); }
-    let cgid = allocating_memcg();
-    if !cgroup::try_charge_memory(cgid, cgroup::MemoryKind::Shmem, PG as u64) {
-        acct.free_blocks(1);
-        return Err(VfsError::Enomem);
-    }
-    let pa = match pmm::setup::alloc_object_frame() {
-        Some(p) => p,
-        None => {
-            cgroup::uncharge_memory(cgid, cgroup::MemoryKind::Shmem, PG as u64);
-            acct.free_blocks(1);
-            return Err(VfsError::Enomem);
-        }
-    };
-    let ptr = match pmm::setup::frame_ptr(pa) {
-        Some(p) => p,
-        None => {
-            // SAFETY: allocation published no page-index entry, so this is the
-            // sole object reference and the failed construction rolls back fully.
-            unsafe { pmm::setup::dec_object_ref_and_maybe_free_frame(pa); }
-            cgroup::uncharge_memory(cgid, cgroup::MemoryKind::Shmem, PG as u64);
-            acct.free_blocks(1);
-            return Err(VfsError::Enomem);
-        }
-    };
-    // SAFETY: pa is a freshly-allocated PMM frame; PG is the page granule.
-    hal::zerotrap::trap((ptr) as *const u8, (PG) as usize);
-    // SAFETY: ptr names the full freshly-allocated frame, and PG is its size.
-    unsafe { core::ptr::write_bytes(ptr, 0, PG); }
-    pmm::setup::classify_shmem_page(pa, cgid);
-    pmm::kassert!(pmm::setup::admit_shmem_lru(pa).is_ok(), "shmem lru admission invariant");
-    g.insert(idx, ShmemPage::Resident { pa, cgid });
-    vfs::memory_accounting::account_shmem_publish(1);
-    Ok(pa)
-}
-
 /// Build a regular tmpfs/memfd file inode. `sealable` enables the memfd seal
 /// word (`Inode::fcntl_seals`); `perm` is the caller-supplied permission bits
 /// (Linux honours the `open`/`creat` mode, masked by umask at the syscall
 /// layer); `sb` owns the inode (`fsid` derives from `s_dev`). # C: O(1)
 pub(super) fn make_tmpfs_file_inode(sealable: bool, perm: u16, uid: u32, gid: u32, sb: Weak<SuperBlock>, acct: Arc<TmpfsSb>) -> InodeRef {
-    let ino = next_ino();
+    let ino = acct.alloc_ino();
     let sb2 = sb.clone();
-    iget_or_build(&sb, ino, move || {
+    let inode = iget_or_build(&sb, ino, move || {
         let data = Arc::new(TmpfsFileData {
             self_ref: Spinlock::new(Weak::new()),
             pages: Spinlock::new(BTreeMap::new()),
             len:   AtomicU64::new(0),
             acct,
+            owner: Spinlock::new(QuotaOwner::new(uid, gid)),
+            inode: Spinlock::new(Weak::new()),
             seals: AtomicU32::new(0),
         });
         *data.self_ref.lock() = Arc::downgrade(&data);
@@ -197,7 +117,11 @@ pub(super) fn make_tmpfs_file_inode(sealable: bool, perm: u16, uid: u32, gid: u3
         if let Some(s) = sb2.upgrade() { b = b.sb(Arc::downgrade(&s)); }
         if sealable { b = b.seal_carrier(data); }
         b.build()
-    })
+    });
+    // The body reaches back to its inode so a block charge can keep `i_blocks`
+    // equal to the charge, which is what a later chown moves.
+    if let Some(d) = inode.private::<TmpfsFileData>() { *d.inode.lock() = Arc::downgrade(&inode); }
+    inode
 }
 
 /// Anonymous tmpfs file body (memfd / coredump), no owning SuperBlock. # C: O(1)
@@ -206,6 +130,36 @@ pub fn tmpfs_anon_file() -> InodeRef { make_tmpfs_file_inode(false, 0o644, 0, 0,
 pub fn tmpfs_sealable_file() -> InodeRef { make_tmpfs_file_inode(true, 0o644, 0, 0, Weak::new(), TmpfsSb::unlimited()) }
 
 impl TmpfsFileData {
+    /// Charge one data page to the mount and to this body's owner, and record
+    /// it in `i_blocks`. `ENOSPC` at the mount ceiling, `EDQUOT` at the
+    /// owner's — both refused before the frame exists. # C: O(MAXQUOTAS log N)
+    pub(super) fn acct_one_block(&self) -> KResult<()> {
+        quota::acct_blocks(&self.acct, *self.owner.lock(), 1)?;
+        self.note_blocks(1, true);
+        Ok(())
+    }
+    /// Return one charged-but-unused data page. # C: O(MAXQUOTAS log N)
+    pub(super) fn unacct_one_block(&self) { self.unacct_blocks(1); }
+    /// Return `pages` data pages to the mount and to this body's owner.
+    /// # C: O(MAXQUOTAS log N)
+    pub(super) fn unacct_blocks(&self, pages: u64) {
+        if pages == 0 { return; }
+        quota::unacct_blocks(&self.acct, *self.owner.lock(), pages);
+        self.note_blocks(pages, false);
+    }
+    /// Keep `i_blocks` equal to the charged page count, so `stat(2)` reports
+    /// what the owner pays for and a chown transfers that same amount.
+    /// # C: O(1)
+    fn note_blocks(&self, pages: u64, add: bool) {
+        let Some(inode) = self.inode.lock().upgrade() else { return; };
+        let delta = quota::blocks_of(pages);
+        let cur = inode.blocks();
+        inode.set_blocks(if add { cur.saturating_add(delta) } else { cur.saturating_sub(delta) });
+    }
+    /// Re-point this body's charged owner after a transfer has moved the
+    /// charge. The charge and the record of who holds it move together, so a
+    /// later release cannot credit the previous owner. # C: O(1)
+    pub(super) fn set_charged_owner(&self, owner: QuotaOwner) { *self.owner.lock() = owner; }
     /// Copy out cache bytes from `off` (sparse holes read as zero, tail past
     /// `len` short-reads). # C: O(buf.len)
     pub(super) fn read_bytes(&self, off: u64, buf: &mut [u8]) -> KResult<usize> {
@@ -223,7 +177,7 @@ impl TmpfsFileData {
                 match g.get(&idx).copied() {
                     Some(ShmemPage::Migrating { token, .. }) => Some(token),
                     Some(_) => {
-                        let pa = ensure_page(&mut g, idx, &self.acct)?;
+                        let pa = ensure_page(&mut g, idx, self)?;
                     let base = pmm::setup::frame_ptr(pa).ok_or(VfsError::Eio)?;
                     // SAFETY: pa is an inode-owned frame; HHDM mirror readable;
                     // [pgoff..pgoff+chunk] is within the page granule.
@@ -260,7 +214,7 @@ impl TmpfsFileData {
                 if let Some(ShmemPage::Migrating { token, .. }) = g.get(&idx).copied() {
                     Some(token)
                 } else {
-                    let pa = ensure_page(&mut g, idx, &self.acct)?;
+                    let pa = ensure_page(&mut g, idx, self)?;
                     let base = pmm::setup::frame_ptr(pa).ok_or(VfsError::Eio)?;
             // SAFETY: pa is an inode-owned frame; HHDM mirror writable;
             // [pgoff..pgoff+chunk] within the page granule; non-overlapping.
@@ -317,12 +271,12 @@ impl TmpfsFileData {
                     freed += 1;
                 }
             }
-            self.acct.free_blocks(freed); // return reclaimed blocks to f_bfree
+            self.unacct_blocks(freed); // return reclaimed blocks to the mount and the owner
             let tail = len as usize % PG;
             if tail != 0 {
                 let tail_idx = len / PG as u64;
                 if g.contains_key(&tail_idx) {
-                    let pa = ensure_page(&mut g, tail_idx, &self.acct)?;
+                    let pa = ensure_page(&mut g, tail_idx, self)?;
                     let base = pmm::setup::frame_ptr(pa).ok_or(VfsError::Eio)?;
                     // SAFETY: inode-owned frame; zero [tail..PG] within the granule.
                     hal::zerotrap::trap(unsafe { base.add(tail) } as *const u8, PG - tail);
@@ -350,7 +304,7 @@ impl TmpfsFileData {
                 if let Some(ShmemPage::Migrating { token, .. }) = g.get(&idx).copied() {
                     Some(token)
                 } else {
-                    let pa = ensure_page(&mut g, idx, &self.acct)?;
+                    let pa = ensure_page(&mut g, idx, self)?;
                     if zero_range {
                         let base = pmm::setup::frame_ptr(pa).ok_or(VfsError::Eio)?;
                 // SAFETY: pa is an inode-owned frame; range lies within page.
@@ -401,7 +355,9 @@ impl Drop for TmpfsFileData {
         }
         let resident = g.values().filter(|page| page.resident_pa().is_some()).count() as u64;
         vfs::memory_accounting::account_shmem_remove(resident);
-        self.acct.free_blocks(g.len() as u64); // return this inode's blocks to f_bfree
+        // The inode is already gone here, so the pages go back to the owner
+        // this body recorded when they were charged, not to a live inode's.
+        quota::unacct_blocks(&self.acct, *self.owner.lock(), g.len() as u64);
     }
 }
 
@@ -431,6 +387,16 @@ impl InodeOps for TmpfsFileInodeOps {
     /// `shmem_fallocate` — body in `falloc.rs`. # C: O(len/PG)
     fn fallocate(&self, inode: &Inode, mode: u32, off: u64, len: u64) -> KResult<()> {
         super::falloc::shmem_fallocate(inode, mode, off, len)
+    }
+    /// `shmem_setattr`: the generic attribute apply, which transfers this
+    /// inode's charged usage to the new owner when the owner changes, followed
+    /// by re-pointing the body at the owner that now holds the charge. Without
+    /// the second half the pages would be credited back to the previous owner
+    /// when the body is finally released. # C: O(MAXQUOTAS log N)
+    fn setattr(&self, inode: &Inode, idmap: &vfs::Idmap, ia: &vfs::Iattr) -> KResult<()> {
+        vfs::simple_setattr(inode, idmap, ia)?;
+        if let Some(d) = inode.private::<TmpfsFileData>() { d.set_charged_owner(QuotaOwner::of(inode)); }
+        Ok(())
     }
 }
 

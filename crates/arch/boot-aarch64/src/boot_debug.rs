@@ -67,6 +67,7 @@ pub(crate) fn boot_emit(bytes: &[u8]) {
 /// HHDM device block. Uses `lock_irqsave` per `06§3.1` for symmetry
 /// with the x86 path: any IRQ-context klog (timer, fault, panic) needs
 /// the IRQ-off window to avoid deadlock against a kernel-mode holder.
+/// # C: O(bytes)
 #[cfg(feature = "debug-boot")]
 pub(crate) fn boot_emit_pl011(bytes: &[u8]) {
     let mut g = BOOT_UART.lock_irqsave::<hal_aarch64::ArmIrqGate>();

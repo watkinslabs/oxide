@@ -29,13 +29,14 @@ fn existing_with_creat_and_excl_is_eexist() {
 
 #[test]
 fn existing_with_accmode_three_is_einval() {
-    // `mqueue.c:882-883`.
+    // An existing queue opened with an invalid access mode is EINVAL.
     assert_eq!(prepare_open(true, O_RDWR | O_WRONLY), Err(Errno::Einval));
 }
 
 #[test]
 fn eexist_outranks_the_accmode_error() {
-    // `mqueue.c:880` is tested before `:882`.
+    // The exclusive-create clash is tested before the access mode, so EEXIST
+    // is what an O_EXCL create with a bad access mode reports.
     assert_eq!(prepare_open(true, O_CREAT | O_EXCL | (O_RDWR | O_WRONLY)), Err(Errno::Eexist));
 }
 

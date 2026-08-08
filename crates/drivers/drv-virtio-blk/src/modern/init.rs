@@ -104,8 +104,8 @@ pub fn init_blk(init: BlkInit) -> u32 {
         blk_size,
         serial: [0u8; blk::BLK_SERIAL_LEN],
         bounce_pa,
-        // Linux `virtblk_get_cache_mode` → `blk_queue_write_cache`
-        // (`virtio_blk.c:1084`): the negotiated `F_FLUSH` bit IS the cache mode.
+        // The reference derives the queue's write-cache mode straight from
+        // the negotiated `F_FLUSH` bit: that bit IS the cache mode.
         write_cache: virtio::cache_mode_writeback(init.drv_features),
         inflight: Spinlock::new(RingShadow {
             avail_idx: seed, used_seen: seed, busy: false,

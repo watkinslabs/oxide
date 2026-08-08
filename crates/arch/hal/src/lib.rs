@@ -97,6 +97,47 @@ pub enum PageSize {
     P1G,
 }
 
+/// Four-level walk depth shared by both arches: L0 root … L3 page leaf.
+const WALK_LEVEL_1G: u8 = 1;
+const WALK_LEVEL_2M: u8 = 2;
+const WALK_LEVEL_4K: u8 = 3;
+
+impl PageSize {
+    /// Granule a leaf found at walk `level` covers. `None` for a level that
+    /// carries no legal leaf on either arch (the L0 root), so a caller can
+    /// never turn an unrecognised depth into a plausible-looking 4 KiB answer.
+    /// # C: O(1)
+    pub const fn from_walk_level(level: u8) -> Option<PageSize> {
+        match level {
+            WALK_LEVEL_4K => Some(PageSize::P4K),
+            WALK_LEVEL_2M => Some(PageSize::P2M),
+            WALK_LEVEL_1G => Some(PageSize::P1G),
+            _             => None,
+        }
+    }
+
+    /// Granule covering exactly `bytes`, or `None` when no leaf does.
+    /// # C: O(1)
+    pub const fn from_bytes(bytes: u64) -> Option<PageSize> {
+        match bytes {
+            b if b == PageSize::P4K.bytes() => Some(PageSize::P4K),
+            b if b == PageSize::P2M.bytes() => Some(PageSize::P2M),
+            b if b == PageSize::P1G.bytes() => Some(PageSize::P1G),
+            _                               => None,
+        }
+    }
+
+    /// Bytes this granule covers.
+    /// # C: O(1)
+    pub const fn bytes(self) -> u64 {
+        match self {
+            PageSize::P4K => 4 * 1024,
+            PageSize::P2M => 2 * 1024 * 1024,
+            PageSize::P1G => 1024 * 1024 * 1024,
+        }
+    }
+}
+
 /// Base page size in bytes per `01§1`. Both arches use 4 KiB at order 0.
 pub const PAGE_SIZE_BYTES: u64 = 4096;
 /// log2(`PAGE_SIZE_BYTES`); use for `Pfn ↔ PhysAddr` conversion.
@@ -199,6 +240,22 @@ pub trait MmuOps {
     /// Translate `va` to (`pa`, flags) if mapped.
     /// # C: O(1)
     fn translate(va: Va) -> Option<(Pa, PageFlags)>;
+
+    /// Translate `va` and report the GRANULE of the leaf that resolved it.
+    /// A zap loop that clears a block leaf believing it holds a 4 KiB page
+    /// retires the whole block while accounting one page, so every teardown
+    /// walk learns the installed size from the tables instead of assuming it.
+    /// `pa` carries the in-leaf offset exactly as [`MmuOps::translate`] does.
+    ///
+    /// The default answers `P4K` for every present leaf, which is correct only
+    /// for an implementation that installs nothing else. Every MMU whose `map`
+    /// accepts `P2M`/`P1G` MUST override this — both shipped arches do, and
+    /// `hal::tests::block_granule_is_reported` pins that they do not fall back
+    /// to the default.
+    /// # C: O(walk depth)
+    fn translate_sized(va: Va) -> Option<(Pa, PageFlags, PageSize)> {
+        Self::translate(va).map(|(pa, f)| (pa, f, PageSize::P4K))
+    }
 
     /// Issue a TLB shootdown for `va` (size = single page).
     /// # SAFETY: caller ensures cross-CPU IPI delivery as needed per 22.
@@ -433,6 +490,37 @@ impl Nanos {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_walk_level_names_the_granule_a_leaf_there_covers() {
+        assert_eq!(PageSize::from_walk_level(3), Some(PageSize::P4K));
+        assert_eq!(PageSize::from_walk_level(2), Some(PageSize::P2M));
+        assert_eq!(PageSize::from_walk_level(1), Some(PageSize::P1G));
+    }
+
+    #[test]
+    fn a_level_that_carries_no_leaf_resolves_to_nothing() {
+        // The L0 root holds no legal block leaf on either arch, so a teardown
+        // walk must never turn that depth into a plausible-looking granule.
+        assert_eq!(PageSize::from_walk_level(0), None);
+        assert_eq!(PageSize::from_walk_level(4), None);
+        assert_eq!(PageSize::from_walk_level(255), None);
+    }
+
+    #[test]
+    fn a_granule_round_trips_through_its_byte_size() {
+        for g in [PageSize::P4K, PageSize::P2M, PageSize::P1G] {
+            assert_eq!(PageSize::from_bytes(g.bytes()), Some(g));
+        }
+        assert_eq!(PageSize::P4K.bytes(), PAGE_SIZE_BYTES);
+    }
+
+    #[test]
+    fn a_size_no_leaf_covers_resolves_to_nothing() {
+        for b in [0u64, 1, 8192, 3 << 20, (2 << 20) + 1] {
+            assert_eq!(PageSize::from_bytes(b), None, "{b} bytes is not a granule");
+        }
+    }
 
     #[test]
     fn pfn_pa_roundtrip() {

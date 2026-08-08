@@ -1,0 +1,601 @@
+diff --git a/crates/arch/boot-aarch64/src/boot_debug.rs b/crates/arch/boot-aarch64/src/boot_debug.rs
+index e44f6e609..445692731 100644
+--- a/crates/arch/boot-aarch64/src/boot_debug.rs
++++ b/crates/arch/boot-aarch64/src/boot_debug.rs
+@@ -1,8 +1,5 @@
+-#[cfg(feature = "debug-boot")]
+ use crate::pl011::{Pl011, PL011_VIRT_BASE};
+-#[cfg(feature = "debug-boot")]
+ use klog::Uart;
+-#[cfg(feature = "debug-boot")]
+ use sync::{Spinlock, Tty as UartClass};
+ // Sole caller is `boot_emit`, which is `debug-boot`-gated; without that gate the
+ // semihosting sink is never installed.
+@@ -34,14 +31,16 @@ mod semihost {
+ }
+ 
+ // ---------------------------------------------------------------------------
+-// Boot-time klog sink. The self-bootstrap trampoline maps an HHDM
+-// device block over phys 0, so the PL011 at `0x0900_0000` is reachable
+-// at `ARM_SELFBOOT_HHDM + 0x0900_0000`; `boot_emit_pl011` drives it.
+-// ARM semihosting putc (`boot_emit`) remains as a paging-agnostic
+-// fallback sink for environments where the device block is absent.
++// Boot console. The self-bootstrap trampoline maps an HHDM device block over
++// phys 0, so the PL011 at `0x0900_0000` is reachable at
++// `ARM_SELFBOOT_HHDM + 0x0900_0000`; `boot_emit_pl011` drives it, UNGATED, so
++// output emitted before the driver model exists reaches the real serial line.
++// ARM semihosting putc (`boot_emit`) stays a `debug-boot`-only fallback for
++// environments where the device block is absent — the opcode is an undefined
++// instruction on a host that does not intercept it, so it is never the
++// unasked-for default (`crate::earlycon`).
+ // ---------------------------------------------------------------------------
+ 
+-#[cfg(feature = "debug-boot")]
+ static BOOT_UART: Spinlock<Pl011, UartClass>
+     = Spinlock::new(Pl011::new(PL011_VIRT_BASE));
+ 
+@@ -63,11 +62,11 @@ pub(crate) fn boot_emit(bytes: &[u8]) {
+     { let _ = bytes; }
+ }
+ 
+-/// Alternative klog sink via PL011 MMIO over the trampoline-installed
+-/// HHDM device block. Uses `lock_irqsave` per `06§3.1` for symmetry
+-/// with the x86 path: any IRQ-context klog (timer, fault, panic) needs
+-/// the IRQ-off window to avoid deadlock against a kernel-mode holder.
+-#[cfg(feature = "debug-boot")]
++/// Boot-console sink via PL011 MMIO over the trampoline-installed HHDM device
++/// block. Uses `lock_irqsave` per `06§3.1` for symmetry with the x86 path: any
++/// IRQ-context klog (timer, fault, panic) needs the IRQ-off window to avoid
++/// deadlock against a kernel-mode holder.
++/// # C: O(len)
+ pub(crate) fn boot_emit_pl011(bytes: &[u8]) {
+     let mut g = BOOT_UART.lock_irqsave::<hal_aarch64::ArmIrqGate>();
+     g.write_bytes(bytes);
+diff --git a/crates/arch/boot-aarch64/src/entry.rs b/crates/arch/boot-aarch64/src/entry.rs
+index a97a00910..d643f4359 100644
+--- a/crates/arch/boot-aarch64/src/entry.rs
++++ b/crates/arch/boot-aarch64/src/entry.rs
+@@ -1,5 +1,5 @@
+ #[cfg(target_os = "oxide-kernel")]
+-use crate::{boot_debug, boot_info_build, pl011};
++use crate::{boot_debug, boot_info_build, earlycon, pl011};
+ #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+ use crate::selfboot;
+ /// Rust-side boot continuation. Runs on the kernel stack we
+@@ -28,6 +28,25 @@ unsafe extern "C" fn _start_rust() -> ! {
+     // writes VBAR_EL1 to a kernel-owned 0x800-aligned vector table.
+     unsafe { hal_aarch64::install_default_vbar(); }
+ 
++    // Early console (Linux `earlycon`), the moment a fault would be reportable
++    // and long before the driver model, the allocator or the DTB walk exist.
++    // The trampoline's HHDM device block is what puts the PL011 in reach, so
++    // its offset is published first. The real serial console takes over later
++    // and unregisters this one; the two never drive the port at once.
++    let hhdm = if selfboot::is_selfboot() {
++        selfboot::ARM_SELFBOOT_HHDM
++    } else {
++        0
++    };
++    pl011::set_hhdm_offset(hhdm);
++    match earlycon::select(selfboot::is_selfboot(), cfg!(feature = "debug-boot")) {
++        earlycon::EarlyCon::Pl011Hhdm => klog::register_boot_console(boot_debug::boot_emit_pl011),
++        earlycon::EarlyCon::Semihosting => {
++            debug_boot! { klog::register_boot_console(boot_debug::boot_emit); }
++        }
++        earlycon::EarlyCon::None => {}
++    }
++
+     // Enable FP/SIMD at EL0/EL1 globally. v1 doesn't do lazy
+     // FP context switch (the per-task FpuStateAArch64 + trap-on-
+     // first-use machinery in hal_aarch64::fpu exists but is unused);
+@@ -50,28 +69,6 @@ unsafe extern "C" fn _start_rust() -> ! {
+     // SAFETY: BSP bring-up at EL1 before any task runs; the debug feature register is read-only with no side effects.
+     unsafe { hal_aarch64::hw_breakpoint::idreg::init(); }
+ 
+-    // The self-bootstrap Image trampoline installs the HHDM; hand its
+-    // offset to the PL011 driver so the UART is reachable after the MMU
+-    // is on. (A non-selfboot fallback keeps offset 0.)
+-    let hhdm = if selfboot::is_selfboot() {
+-        selfboot::ARM_SELFBOOT_HHDM
+-    } else {
+-        0
+-    };
+-    pl011::set_hhdm_offset(hhdm);
+-
+-    // Sink registration is gated behind `debug-boot` per
+-    // `04§4.0` (R06): default builds emit zero klog bytes. Self-boot
+-    // routes klog through the real PL011 over HHDM; the fallback uses
+-    // the paging-agnostic semihosting sink.
+-    debug_boot! {
+-        if selfboot::is_selfboot() {
+-            klog::set_byte_sink(boot_debug::boot_emit_pl011);
+-        } else {
+-            klog::set_byte_sink(boot_debug::boot_emit);
+-        }
+-    }
+-
+     // Generic-timer calibration: read CNTFRQ_EL0 (programmed by
+     // firmware) and stash kHz so `ArmTimerOps::monotonic_ns` works.
+     let cntfrq_hz: u64;
+diff --git a/crates/arch/boot-aarch64/src/lib.rs b/crates/arch/boot-aarch64/src/lib.rs
+index 3f645b203..86c26654c 100644
+--- a/crates/arch/boot-aarch64/src/lib.rs
++++ b/crates/arch/boot-aarch64/src/lib.rs
+@@ -30,16 +30,19 @@ extern crate alloc;
+ extern crate std;
+ 
+ pub mod dtb;
++pub mod earlycon;
+ pub mod efi_cmdline;
+ pub mod linear_map;
+ pub mod pl011;
+ #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+ pub mod selfboot;
+ 
+-// Per `04§4.0` (R06): every klog::* call site in this crate sits
+-// behind `debug-boot` — UART sink install, CPU/MMU dump, byte
+-// emit. Default builds emit zero log bytes; the call sites are
++// Per `04§4.0` (R06): every klog *trace* call site in this crate sits
++// behind `debug-boot` — CPU/MMU dump, boot breadcrumbs. Default builds
++// emit zero trace bytes; the call sites are
+ // absent from the binary, not "filtered at runtime".
++// The boot console itself is NOT gated: it carries whatever klog emits, and
++// a build that cannot show its own early output cannot be diagnosed.
+ // (Every expansion site is inside an `#[cfg(target_os = "oxide-kernel")]`
+ // entry fn, so the definition carries the same gate.)
+ #[cfg(all(target_os = "oxide-kernel", feature = "debug-boot"))]
+diff --git a/crates/arch/boot-x86_64/src/boot_debug.rs b/crates/arch/boot-x86_64/src/boot_debug.rs
+index 187229d5e..616499d6f 100644
+--- a/crates/arch/boot-x86_64/src/boot_debug.rs
++++ b/crates/arch/boot-x86_64/src/boot_debug.rs
+@@ -1,37 +1,40 @@
+-#[cfg(feature = "debug-boot")]
+ use klog::Uart;
+-#[cfg(feature = "debug-boot")]
+ use sync::{Spinlock, Tty as UartClass};
+-#[cfg(feature = "debug-boot")]
+ use crate::uart::{Uart16550, COM1};
+ 
+ // ---------------------------------------------------------------------------
+-// Boot-time UART sink for klog. Single instance behind `Spinlock` so the
+-// `klog::LogSink` thunk can drive it without `static mut` (`07§5`).
++// Boot console UART. Single instance behind `Spinlock` so the
++// `klog::ConsoleSink` thunk can drive it without `static mut` (`07§5`).
++//
++// UNGATED, unlike the `debug_boot!` trace sites whose bytes it happens to
++// carry. This is the early console: its whole purpose is that output emitted
++// before the driver model exists still reaches the wire, and gating it on a
++// debug feature is exactly what made an early boot failure indistinguishable
++// from a bootloader hang. It costs only the bytes klog emits anyway — the
++// trace call sites stay elidable per `04§4.0`, so a default build still emits
++// almost nothing through it.
+ // ---------------------------------------------------------------------------
+ 
+-#[cfg(feature = "debug-boot")]
+ static BOOT_UART: Spinlock<Uart16550, UartClass>
+     = Spinlock::new(Uart16550::new(COM1));
+ 
+-/// Initialise the boot UART before installing it as the klog sink.
++/// Program the boot UART before registering it as the boot console.
+ /// # SAFETY: boot-only, single-CPU, before any concurrent UART user exists.
+-#[cfg(feature = "debug-boot")]
+ pub(crate) unsafe fn init_boot_uart() {
+     // SAFETY: caller guarantees boot-only, single-CPU ownership of COM1.
+     unsafe { BOOT_UART.lock().init(); }
+ }
+ 
+-/// klog `LogSink` adapter — drives `BOOT_UART` for every byte slice
+-/// klog emits. Registered via `klog::set_byte_sink` from
+-/// `_start_rust` after `BOOT_UART::init()`.
++/// Boot-console sink — drives `BOOT_UART` for every byte slice klog emits.
++/// Registered via `klog::register_boot_console` from `_start_rust` after
++/// `init_boot_uart`, and replaced by the real serial console once the driver
++/// model binds the UART.
+ ///
+ /// Uses `lock_irqsave` per `06§3.1` because klog can be called from
+ /// IRQ context (timer ISR diagnostics, fault handlers, panic path). A
+ /// plain `lock()` would deadlock if a kernel-mode klog
+ /// holder were preempted by an IRQ that itself klogs.
+ /// # C: O(len)
+-#[cfg(feature = "debug-boot")]
+ pub(crate) fn boot_emit(bytes: &[u8]) {
+     let mut g = BOOT_UART.lock_irqsave::<hal_x86_64::X86IrqGate>();
+     g.write_bytes(bytes);
+diff --git a/crates/arch/boot-x86_64/src/entry.rs b/crates/arch/boot-x86_64/src/entry.rs
+index 4aa3a600b..3ca60db80 100644
+--- a/crates/arch/boot-x86_64/src/entry.rs
++++ b/crates/arch/boot-x86_64/src/entry.rs
+@@ -12,14 +12,14 @@ use crate::{boot_debug, boot_info_build};
+ #[cfg(target_os = "oxide-kernel")]
+ #[no_mangle]
+ unsafe extern "C" fn _start_rust() -> ! {
+-    // UART init + klog sink registration gated behind `debug-boot`
+-    // per `04§4.0` (R06): default builds emit zero klog bytes, so
+-    // the sink is never installed.
+-    debug_boot! {
+-        // SAFETY: COM1 owned by us pre-init; no other CPU alive yet; `init` programs the UART for 115200-8N1 + FIFO. After this call any klog emit will land on the serial port.
+-        unsafe { boot_debug::init_boot_uart(); }
+-        klog::set_byte_sink(boot_debug::boot_emit);
+-    }
++    // Boot console, first statement and unconditional (Linux `early_printk`):
++    // from here every klog byte reaches COM1, including the ones emitted long
++    // before the driver model, the allocator or the memory map exist. The real
++    // serial console takes over later and unregisters this one; the two never
++    // drive the port at the same instant.
++    // SAFETY: COM1 owned by us pre-init; no other CPU alive yet; `init` programs the UART for 115200-8N1 + FIFO. After this call any klog emit will land on the serial port.
++    unsafe { boot_debug::init_boot_uart(); }
++    klog::register_boot_console(boot_debug::boot_emit);
+     // SAFETY: single-CPU boot, IRQs masked; install_kernel_gdt populates a kernel-owned GDT (KERNEL_CS=0x28 / KERNEL_DS=0x30) and reloads CS via far return + DS/ES/SS/FS/GS via mov. Replaces the bootloader's GDT before any IDT entry could fire.
+     unsafe { hal_x86_64::install_kernel_gdt(); }
+     // SAFETY: single-CPU boot, IRQs masked; GDT just installed with TSS descriptor populated at TSS_SEL=0x48 (avail 64-bit TSS, type=9). install_tss issues `ltr 0x48` which marks the descriptor busy and binds CR0.TR to the kernel-wide TSS. RSP0 stays zero until first userspace task; pre-userspace IRQs (Phase 1 path) ignore RSP0 since they take from CPL=0.
+diff --git a/crates/arch/boot-x86_64/src/lib.rs b/crates/arch/boot-x86_64/src/lib.rs
+index c041c3efe..b31ffa8d7 100644
+--- a/crates/arch/boot-x86_64/src/lib.rs
++++ b/crates/arch/boot-x86_64/src/lib.rs
+@@ -8,7 +8,9 @@
+ // `_start` swaps to the kernel stack and calls `_start_rust`, which
+ // parses the multiboot2 info struct into a `BootInfo` and tail-calls
+ // `kmain::kernel_main`. UART (16550A on QEMU `-serial stdio`) lives
+-// here so klog has a sink before any driver exists.
++// here and is registered as the BOOT CONSOLE in `_start_rust`'s first
++// statement, so klog reaches the wire from the earliest point the kernel can
++// write at all; the driver-model serial console replaces it later.
+ 
+ #![no_std]
+ #![cfg_attr(target_os = "oxide-kernel", no_main)]
+@@ -28,10 +30,12 @@ extern crate std;
+ pub mod mb2;
+ pub mod uart;
+ 
+-// Per `04§4.0` (R06): every klog::* call site in this crate sits
+-// behind `debug-boot` — UART sink install, CPU/MMU dump, byte
+-// emit. Default builds emit zero log bytes; the call sites are
++// Per `04§4.0` (R06): every klog *trace* call site in this crate sits
++// behind `debug-boot` — CPU/MMU dump, boot pulse. Default builds emit
++// zero trace bytes; the call sites are
+ // absent from the binary, not "filtered at runtime".
++// The boot console itself is NOT gated: it carries whatever klog emits, and a
++// build that cannot show its own early output cannot be diagnosed.
+ // (Every expansion site is inside an `#[cfg(target_os = "oxide-kernel")]`
+ // entry fn, so the definition carries the same gate.)
+ #[cfg(all(target_os = "oxide-kernel", feature = "debug-boot"))]
+diff --git a/crates/kernel/kmain/src/kmain/runtime.rs b/crates/kernel/kmain/src/kmain/runtime.rs
+index d3aacdaf1..3e11a30b8 100644
+--- a/crates/kernel/kmain/src/kmain/runtime.rs
++++ b/crates/kernel/kmain/src/kmain/runtime.rs
+@@ -62,7 +62,15 @@ fn init_serial_console() {
+     // The serial /dev/ttyS0 tty is installed regardless; this gates only klog
+     // fan-out. No `console=` at all → default true (keep the sink).
+     if dev.bound() == Some(drv::Driver::name(uart_drv)) && crate::boot_cmdline::console_classes().0 {
++        // Takes over from the boot console the arch entry registered, replaying
++        // anything that console had not reached and dropping it in the same
++        // critical section (`klog::bootcon`).
+         klog::set_byte_sink(drv_serial::emit);
++    } else {
++        // No serial console this boot. The boot console has already put the
++        // early output on the wire, but it must not outlive that decision —
++        // the same point the reference retires its boot consoles.
++        klog::unregister_boot_console();
+     }
+ }
+ 
+diff --git a/crates/shared/klog/src/console.rs b/crates/shared/klog/src/console.rs
+index 438c2c20f..b6fdb147e 100644
+--- a/crates/shared/klog/src/console.rs
++++ b/crates/shared/klog/src/console.rs
+@@ -5,10 +5,10 @@
+ // `#![no_std]` and runs pre-alloc / in early boot, so the registry is a
+ // static array of `fn(&[u8])` pointers + flags guarded by atomics.
+ //
+-// `set_byte_sink` / `set_aux_sink` (lib.rs) are thin shims that occupy two
+-// reserved slots (BYTE = the serial console, AUX = the fbcon console), so
+-// the historical ordering ring → serial → fbcon is preserved bit-for-bit
+-// and pre-registration emits are safe no-ops.
++// `set_byte_sink` / `set_aux_sink` (lib.rs) and `bootcon` occupy three
++// reserved slots (BYTE = the serial console, AUX = the fbcon console, BOOT =
++// the early UART console), so the historical ordering ring → serial → fbcon is
++// preserved bit-for-bit and pre-registration emits are safe no-ops.
+ 
+ use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
+ 
+@@ -16,18 +16,19 @@ use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
+ /// newline, raw bytes). Plain `fn` pointer — no `dyn` (`07§5`).
+ pub type ConsoleSink = fn(&[u8]);
+ 
+-/// Registry capacity. Two slots are reserved (`SLOT_BYTE`, `SLOT_AUX`) for
+-/// the `set_byte_sink` / `set_aux_sink` shims; the rest are general
+-/// `register_console` slots. Sized for the kernel's console count
+-/// (serial + fbcon VT + headroom for netconsole / extra UARTs).
++/// Registry capacity. Three slots are reserved (`SLOT_BYTE`, `SLOT_AUX`, and
++/// `crate::bootcon::SLOT_BOOT`); the rest are general `register_console`
++/// slots. Sized for the kernel's console count (serial + fbcon VT + boot
++/// console + headroom for netconsole / extra UARTs).
+ pub const MAX_CONSOLES: usize = 8;
+ 
+ /// Reserved slot index for the primary byte sink (serial console).
+ pub const SLOT_BYTE: usize = 0;
+ /// Reserved slot index for the aux sink (fbcon VT console).
+ pub const SLOT_AUX: usize = 1;
+-/// First general-purpose `register_console` slot.
+-pub const SLOT_GENERAL: usize = 2;
++/// First general-purpose `register_console` slot. Slot 2 is reserved for the
++/// boot console (`crate::bootcon::SLOT_BOOT`).
++pub const SLOT_GENERAL: usize = 3;
+ 
+ /// `CON_ENABLED`: slot holds a live sink and receives emits.
+ pub const CON_ENABLED: u32 = 0x1;
+@@ -181,10 +182,10 @@ pub(crate) fn primary_only(bytes: &[u8]) {
+ mod tests {
+     use super::*;
+     use core::sync::atomic::AtomicUsize;
+-    use std::sync::Mutex;
+ 
+-    // Console registry is process-global; serialize the tests.
+-    static SERIAL: Mutex<()> = Mutex::new(());
++    // Console registry is process-global; serialize against every other klog
++    // test that touches it (`crate::testlock`).
++    use crate::testlock::global as test_lock;
+ 
+     fn reset_all() {
+         let mut i = 0usize;
+@@ -203,7 +204,7 @@ mod tests {
+ 
+     #[test]
+     fn register_n_consoles_all_get_bytes() {
+-        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
++        let _g = test_lock();
+         reset_all();
+         C0.store(0, Ordering::Relaxed);
+         C1.store(0, Ordering::Relaxed);
+@@ -220,7 +221,7 @@ mod tests {
+ 
+     #[test]
+     fn unregister_stops_one() {
+-        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
++        let _g = test_lock();
+         reset_all();
+         C0.store(0, Ordering::Relaxed);
+         C1.store(0, Ordering::Relaxed);
+@@ -235,7 +236,7 @@ mod tests {
+ 
+     #[test]
+     fn pre_registration_emit_is_noop() {
+-        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
++        let _g = test_lock();
+         reset_all();
+         // No consoles registered: fan_out must not panic and must do nothing.
+         fan_out(b"nothing here");
+@@ -244,7 +245,7 @@ mod tests {
+ 
+     #[test]
+     fn register_is_idempotent() {
+-        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
++        let _g = test_lock();
+         reset_all();
+         let a = register_console(s0);
+         let b = register_console(s0);
+@@ -254,7 +255,7 @@ mod tests {
+ 
+     #[test]
+     fn reserved_slots_fire_in_order() {
+-        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
++        let _g = test_lock();
+         reset_all();
+         C0.store(0, Ordering::Relaxed);
+         install_slot(SLOT_BYTE, s0);
+diff --git a/crates/shared/klog/src/lib.rs b/crates/shared/klog/src/lib.rs
+index e3da60c39..0066e859d 100644
+--- a/crates/shared/klog/src/lib.rs
++++ b/crates/shared/klog/src/lib.rs
+@@ -18,6 +18,14 @@ pub use console::{
+     register_console, unregister_console, ConsoleSink, CON_ENABLED, MAX_CONSOLES,
+ };
+ 
++pub mod bootcon;
++pub use bootcon::{
++    boot_console_registered, register_boot_console, unregister_boot_console,
++};
++
++#[cfg(test)]
++mod testlock;
++
+ pub mod lock;
+ pub use lock::{clear_cpu_fn, set_cpu_fn, CpuFn};
+ 
+@@ -73,14 +81,16 @@ pub struct InternedFormat {
+ /// `fn(&[u8])` without a `dyn` trait object (`07§5` bans `dyn HAL`).
+ pub type LogSink = fn(&[u8]);
+ 
+-/// Install the primary byte sink (the serial console). Thin shim over the
+-/// `console` registry's reserved `SLOT_BYTE` so historical callers + the
+-/// ring→serial→fbcon ordering are preserved (Linux: a UART registering its
+-/// `struct console`). `f` is called with prefix + message + `\n` for every
+-/// klog event whose level isn't suppressed.
+-/// # C: O(1)
++/// Install the primary byte sink (the serial console) in the `console`
++/// registry's reserved `SLOT_BYTE`, taking over from the boot console if one is
++/// live (Linux: a UART registering its `struct console` while a bootconsole
++/// holds the same port). The boot console is dropped and everything it had not
++/// yet reached is replayed, in one critical section — see `bootcon`.
++/// `f` is called with prefix + message + `\n` for every klog event whose level
++/// isn't suppressed.
++/// # C: O(bytes replayed)
+ pub fn set_byte_sink(f: LogSink) {
+-    console::install_slot(console::SLOT_BYTE, f);
++    bootcon::handover_to_primary(f);
+ }
+ 
+ /// Install the secondary sink (the fbcon VT console). Thin shim over the
+@@ -270,6 +280,14 @@ pub fn ring_total() -> usize {
+     RING.total.load(Ordering::Acquire)
+ }
+ 
++/// Position of the oldest byte the ring still holds, in the same total-stream
++/// terms as `ring_total`. Anything before it has been overwritten and cannot be
++/// replayed to a console registering now.
++/// # C: O(1)
++pub fn ring_oldest() -> usize {
++    ring_total().saturating_sub(RING_BYTES)
++}
++
+ struct DmesgRing {
+     buf:  core::cell::UnsafeCell<[u8; RING_BYTES]>,
+     head: core::sync::atomic::AtomicUsize,
+diff --git a/crates/shared/klog/src/tests.rs b/crates/shared/klog/src/tests.rs
+index 3c8bd4417..8168040ef 100644
+--- a/crates/shared/klog/src/tests.rs
++++ b/crates/shared/klog/src/tests.rs
+@@ -27,15 +27,18 @@
+     }
+ 
+     // ---------------------------------------------------------------------
+-    // Byte-sink tests. The sink is process-global; tests serialize on
+-    // SINK_SERIAL to keep concurrent `cargo test` honest.
++    // Byte-sink tests. The sink is process-global; tests serialize on the
++    // crate-wide test lock to keep concurrent `cargo test` honest.
++    //
++    // A console registering with no boot console live replays the ring
++    // (`bootcon`), so a test asserting on EXACT sink content drains the
++    // capture once after installing the sink — what it means to assert is
++    // "what this test emitted", not "what the process ever logged".
+     // ---------------------------------------------------------------------
+ 
+     use core::sync::atomic::{AtomicUsize, Ordering};
+     use std::sync::Mutex;
+ 
+-    static SINK_SERIAL: Mutex<()> = Mutex::new(());
+-
+     static SINK_BYTES: Mutex<alloc::vec::Vec<u8>> = Mutex::new(alloc::vec::Vec::new());
+     fn test_sink(bytes: &[u8]) {
+         SINK_BYTES.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(bytes);
+@@ -49,7 +52,7 @@
+     }
+ 
+     fn lock_sink() -> std::sync::MutexGuard<'static, ()> {
+-        SINK_SERIAL.lock().unwrap_or_else(|e| e.into_inner())
++        crate::testlock::global()
+     }
+ 
+     #[test]
+@@ -66,6 +69,7 @@
+         let _g = lock_sink();
+         let _ = drain_sink();
+         set_byte_sink(test_sink);
++        let _ = drain_sink(); // discard the registration replay
+         kinfo!("init started");
+         let out = drain_sink();
+         clear_byte_sink();
+@@ -77,6 +81,7 @@
+         let _g = lock_sink();
+         let _ = drain_sink();
+         set_byte_sink(test_sink);
++        let _ = drain_sink(); // discard the registration replay
+         kerror!("e");
+         kwarn!("w");
+         kinfo!("i");
+@@ -93,6 +98,7 @@
+         let _g = lock_sink();
+         let _ = drain_sink();
+         set_byte_sink(test_sink);
++        let _ = drain_sink(); // discard the registration replay
+         kinfo!("a");
+         clear_byte_sink();
+         kinfo!("b");
+@@ -108,9 +114,9 @@
+         // Replace the sink with one that just counts calls.
+         static N: AtomicUsize = AtomicUsize::new(0);
+         fn counting(_b: &[u8]) { N.fetch_add(1, Ordering::Relaxed); }
+-        N.store(0, Ordering::Relaxed);
+         set_cpu_fn(|| 0);
+         set_byte_sink(counting);
++        N.store(0, Ordering::Relaxed); // zero AFTER the registration replay
+         kinfo!("hi");
+         clear_byte_sink();
+         clear_cpu_fn();
+@@ -183,6 +189,86 @@
+         assert!(lines >= THREADS, "expected every emitter's assembled lines present");
+     }
+ 
++    // ---------------------------------------------------------------------
++    // Boot console + handover. The defect: everything klog emitted before the
++    // real console registered never reached the wire, so an early boot failure
++    // was indistinguishable from a bootloader hang.
++    // ---------------------------------------------------------------------
++
++    static EARLY_BYTES: Mutex<alloc::vec::Vec<u8>> = Mutex::new(alloc::vec::Vec::new());
++    fn early_sink(bytes: &[u8]) {
++        EARLY_BYTES.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(bytes);
++    }
++    fn drain_early() -> alloc::vec::Vec<u8> {
++        let mut g = EARLY_BYTES.lock().unwrap_or_else(|e| e.into_inner());
++        let out = g.clone();
++        g.clear();
++        out
++    }
++
++    fn contains(hay: &[u8], needle: &[u8]) -> bool {
++        hay.windows(needle.len()).any(|w| w == needle)
++    }
++
++    #[test]
++    fn boot_console_carries_output_emitted_before_the_primary_exists() {
++        let _g = lock_sink();
++        clear_byte_sink();
++        let _ = drain_sink();
++        let _ = drain_early();
++        register_boot_console(early_sink);
++        let _ = drain_early(); // discard the registration replay
++        write_raw(b"early-only-marker-A\n");
++        let early = drain_early();
++        unregister_boot_console();
++        assert!(contains(&early, b"early-only-marker-A"),
++                "boot console did not receive pre-primary output");
++        assert!(drain_sink().is_empty(), "primary sink was never installed");
++    }
++
++    #[test]
++    fn handover_neither_duplicates_nor_drops() {
++        let _g = lock_sink();
++        clear_byte_sink();
++        let _ = drain_sink();
++        let _ = drain_early();
++        register_boot_console(early_sink);
++        let _ = drain_early();
++        write_raw(b"pre-handover-marker-B\n");
++        assert!(contains(&drain_early(), b"pre-handover-marker-B"));
++
++        // The boot console is caught up, so the incoming primary must replay
++        // NOTHING — a duplicate here is the same line twice on one UART.
++        set_byte_sink(test_sink);
++        assert!(drain_sink().is_empty(), "handover replayed bytes the boot console already wrote");
++        assert!(!boot_console_registered(), "boot console outlived the primary it handed over to");
++
++        // ...and the boot console is gone, so post-handover output goes to the
++        // primary only.
++        write_raw(b"post-handover-marker-B\n");
++        let after = drain_sink();
++        let early_after = drain_early();
++        clear_byte_sink();
++        assert!(contains(&after, b"post-handover-marker-B"), "primary lost post-handover output");
++        assert!(early_after.is_empty(), "unregistered boot console still received output");
++    }
++
++    #[test]
++    fn primary_registering_with_no_boot_console_replays_the_buffer() {
++        let _g = lock_sink();
++        unregister_boot_console();
++        clear_byte_sink();
++        let _ = drain_sink();
++        // Emitted with no console at all: the ring is the only copy.
++        write_raw(b"buffered-marker-C\n");
++        assert!(drain_sink().is_empty());
++        set_byte_sink(test_sink);
++        let replayed = drain_sink();
++        clear_byte_sink();
++        assert!(contains(&replayed, b"buffered-marker-C"),
++                "console registering after the fact did not replay the buffer");
++    }
++
+     // ---------------------------------------------------------------------
+     // Console serialisation (B1433). Without the console lock, concurrent
+     // emitters interleave at byte granularity and splice each other's tokens

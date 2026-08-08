@@ -640,13 +640,13 @@ Every issue, breakage, divergence, deviation, gap, flake, or thing-worth-noting 
 row **in the same PR that finds it**, not later. A finding that lives only in a session
 report is lost the moment the session ends.
 
-**Where the row goes: `scratch/issues.d/<your-branch>.md`, not the curated ledger.**
-One file per lane, written only by that lane, so it cannot conflict. A single shared
-table does not survive concurrent lanes — it conflicted on every PR of a 15-lane wave and
-each conflict cost a rebase round-trip. `scratch/known_issues.md` stays the curated
-ledger; the integration owner folds drops into it and deletes the drop file.
-`tools/issues.sh` renders curated + drops, `--count` shows row counts. A row in a drop
-file is exactly as binding as one in the curated ledger.
+**Where the row goes: `scratch/known_issues.md`. There is no second store.**
+Add the row to the section it belongs to, in the same PR that finds it. Per-lane drop
+files under `scratch/issues.d/` are ABOLISHED: a row parked in a side file is a row
+nobody reads, and the fold step was skipped often enough that the ledger stopped being
+the ledger. A concurrent-lane conflict on this file is a rebase round-trip and is worth
+it — resolve it by taking BOTH sides' rows, never by dropping one.
+`tools/issues.sh` renders it; `--count` shows the row count.
 
 **Row shape: `| Status | Class | Sev | Issue | Evidence | Owner |`.** `Class` is
 `DEFECT` (behaviour diverges from Linux) | `MISSING` (absent Linux surface, or present

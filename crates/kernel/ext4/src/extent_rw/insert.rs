@@ -46,14 +46,14 @@ impl Mount {
             return Err(MountError::ExtentTreeFull);
         }
 
-        let left_lba = match self.alloc_block(hint_group) {
+        let left_lba = match self.alloc_block_nofail(hint_group) {
             Ok(lba) => lba,
             Err(e) => {
                 self.free_allocated_blocks(&child.allocated_meta_blocks);
                 return Err(e);
             }
         };
-        let right_lba = match self.alloc_block(hint_group) {
+        let right_lba = match self.alloc_block_nofail(hint_group) {
             Ok(lba) => lba,
             Err(e) => {
                 let _ = self.free_block(left_lba);
@@ -155,7 +155,7 @@ impl Mount {
             }
 
             let (left, right) = Self::split_extents_for_leaf(&extents);
-            let right_lba = self.alloc_block(hint_group)?;
+            let right_lba = self.alloc_block_nofail(hint_group)?;
             let mut right_buf = alloc::vec![0u8; bs];
             let right_hdr = inode::ExtentHeader {
                 magic: inode::EXT4_EXT_MAGIC,
@@ -222,7 +222,7 @@ impl Mount {
         }
 
         let (left_idxs, right_idxs) = Self::split_indices_for_node(&idxs);
-        let right_lba = match self.alloc_block(hint_group) {
+        let right_lba = match self.alloc_block_nofail(hint_group) {
             Ok(lba) => lba,
             Err(e) => {
                 self.free_allocated_blocks(&child.allocated_meta_blocks);
@@ -380,7 +380,7 @@ impl Mount {
         // from the real post-insert count, never predicted from `len() + 1`.
         let data_charged = prev_i_blocks.saturating_add(spb);
         self.account_i_blocks_delta(ino, prev_i_blocks, data_charged)?;
-        let phys = match self.alloc_block(hint_group) {
+        let phys = match self.alloc_block_flags(hint_group, self.data_reserve_flags(ino)) {
             Ok(phys) => phys,
             Err(e) => {
                 return Err(self.rollback_i_blocks_delta(ino, data_charged, prev_i_blocks, e));
@@ -418,7 +418,7 @@ impl Mount {
             if let Err(e) = self.account_i_blocks_delta(ino, data_charged, charged_i_blocks) {
                 return Err(self.rollback_insert_charge(ino, prev_i_blocks, data_charged, Some(phys), &[], e));
             }
-            let lba = match self.alloc_block(hint_group) {
+            let lba = match self.alloc_block_nofail(hint_group) {
                 Ok(lba) => lba,
                 Err(e) => {
                     return Err(self.rollback_insert_charge(ino, prev_i_blocks, charged_i_blocks, Some(phys), &[], e));

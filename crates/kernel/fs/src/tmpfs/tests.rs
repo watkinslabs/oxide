@@ -24,8 +24,8 @@ mod statfs_tests {
         assert_eq!((s0.f_type, s0.f_bsize as usize), (TMPFS_MAGIC, PG));
         assert_eq!((s0.f_blocks, s0.f_bfree, s0.f_files, s0.f_ffree), (4, 4, 4, 4));
         // Charge 4 blocks → 5th is refused (ENOSPC).
-        for _ in 0..4 { assert!(sb.charge_block()); }
-        assert!(!sb.charge_block());
+        for _ in 0..4 { assert!(sb.charge_blocks(1)); }
+        assert!(!sb.charge_blocks(1));
         assert_eq!(sb.statfs(TMPFS_MAGIC).f_bfree, 0);
         sb.free_blocks(2);
         assert_eq!(sb.statfs(TMPFS_MAGIC).f_bfree, 2);
@@ -67,8 +67,8 @@ mod statfs_tests {
     #[test]
     fn ramfs_and_tmpfs_report_their_own_magic_and_name() {
         use super::super::uapi::RAMFS_MAGIC;
-        let t = TmpfsFs::from_mount_data(String::from("/run"), "");
-        let r = TmpfsFs::ramfs_from_mount_data("");
+        let t = TmpfsFs::from_mount_data(String::from("/run"), "").unwrap();
+        let r = TmpfsFs::ramfs_from_mount_data("").unwrap();
         assert_eq!(t.magic(), TMPFS_MAGIC);
         assert_eq!(r.magic(), RAMFS_MAGIC);
         assert_ne!(TMPFS_MAGIC, RAMFS_MAGIC);
@@ -99,7 +99,7 @@ mod statfs_tests {
     #[test]
     fn a_bounded_instance_reports_its_real_limits() {
         let sb = TmpfsSb::new(100, 10);
-        assert!(sb.charge_block());
+        assert!(sb.charge_blocks(1));
         assert!(sb.charge_inode());
         let st = sb.statfs(TMPFS_MAGIC);
         assert_eq!((st.f_blocks, st.f_bfree, st.f_bavail), (100, 99, 99));
@@ -262,7 +262,7 @@ mod symlink_tests {
     // tmpfs symlink inode round-trips its target (the systemd /run case).
     #[test]
     fn symlink_inode_readlink_roundtrips() {
-        let s = make_tmpfs_symlink_inode(b"/usr/share/zoneinfo/UTC", 0, 0, Weak::new());
+        let s = make_tmpfs_symlink_inode(b"/usr/share/zoneinfo/UTC", 0, 0, Weak::new(), &TmpfsSb::unlimited());
         assert_eq!(s.file_type(), FileType::Symlink);
         assert_eq!(s.size(), 23);
         assert_eq!(s.readlink().unwrap(), b"/usr/share/zoneinfo/UTC".to_vec());
@@ -466,3 +466,4 @@ mod xattr_tests {
 // UID:UID; before the parser the option string was dropped, mounting root:root
 // 0755 which pam_systemd / `systemd --user` reject.
 mod mount_opts;
+mod quota;

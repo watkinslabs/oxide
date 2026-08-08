@@ -131,6 +131,10 @@ pub unsafe fn terminal(cmd: TerminalCmd) -> ! {
         TerminalCmd::PowerOff => klog::write_raw(b"power_cmd poweroff\n"),
         TerminalCmd::Halt => klog::write_raw(b"power_cmd halt\n"),
     }
+    // Linux snapshots the log in `kernel_restart` / `kernel_power_off`,
+    // BEFORE the drivers go down: a dumper whose backend rides on a device
+    // has nothing to write to once that device is stopped.
+    klog::kmsg_dump(klog::kmsg_dump::REASON_SHUTDOWN);
     shutdown_devices_once();
     match cmd {
         // SAFETY: terminal-state primitive; caller validated CAP_SYS_BOOT + magic per `man 2 reboot`; irreversible by design.

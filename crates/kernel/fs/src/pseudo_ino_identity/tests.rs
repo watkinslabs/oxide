@@ -115,7 +115,7 @@ fn two_inotify_groups_get_different_inode_numbers() {
 
 #[test]
 fn pipe_numbers_stay_inside_their_region() {
-    for _ in 0..64 { assert!(PIPE.contains(crate::pipe::make_pipe_inode().ino())); }
+    for _ in 0..64 { assert!(PIPE.contains(crate::pipe::make_pipe_inode().expect("pipe inode").ino())); }
     stays_inside(&PIPE);
 }
 

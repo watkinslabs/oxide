@@ -17,7 +17,7 @@ mod inode;
 mod ops;
 mod quota;
 mod mountquota;
-mod framecache;
+pub(crate) mod framecache;
 mod params;
 mod swapfile;
 
@@ -86,6 +86,10 @@ pub unsafe fn init_from_dev(dev: Arc<dyn BlockDevice>) -> Result<(), block::type
     // too slow. File data still writes through (data=writeback); only metadata
     // batches. Root fs only — fixture mounts keep per-op commits.
     st.mount.begin_batch();
+    // The root filesystem batches its metadata, so its running transaction is
+    // exactly the one `commit=` bounds the age of.
+    crate::commit_timer::arm();
+    crate::commit_timer::register(&st.mount);
     publish_root(st);
     Ok(())
 }

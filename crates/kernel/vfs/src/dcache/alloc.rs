@@ -25,11 +25,19 @@ pub static ANON_INODE_OPS: crate::dentry::DentryOps = crate::dentry::DentryOps {
 /// Allocate the root dentry for `sb`, install it as `s_root`, and record the
 /// inode alias. # C: O(1)
 pub fn d_make_root(inode: InodeRef, sb: &Arc<SuperBlock>) -> Arc<Dentry> {
+    d_make_root_ops(inode, sb, None)
+}
+
+/// [`d_make_root`] for an instance that installs its own dentry operations on
+/// the whole tree (Linux `sb->s_d_op`, set by `generic_set_sb_d_ops` before the
+/// root is created). A casefolded filesystem passes the vector
+/// [`crate::dentry::casefold::sb_enable_casefold`] returned. # C: O(1)
+pub fn d_make_root_ops(inode: InodeRef, sb: &Arc<SuperBlock>, d_op: Option<&'static crate::dentry::DentryOps>) -> Arc<Dentry> {
     // `new_inode(sb)` owns this association in Linux. Pseudo filesystems build
     // their root before `fill_super` has an SB, so the one VFS root-instantiation
     // boundary supplies the same ownership instead of every backend guessing it.
     let inode = if inode.bind_superblock(sb) { inode } else { inode.clone_for_superblock(sb) };
-    let root = Dentry::new_root_in_sb(inode.clone(), sb);
+    let root = Dentry::new_root_in_sb_ops(inode.clone(), sb, d_op);
     // Pin the root's `d_count` for the mount's lifetime (Linux `__d_alloc` seeds
     // `d_lockref.count = 1`; the mount owns that ref via `sb->s_root`). Without
     // it the root starts at 0, so the FIRST open (dget→1) + close (dput→0) drives

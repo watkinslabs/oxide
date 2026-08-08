@@ -15,6 +15,7 @@ bitflags = { version = "2", default-features = false }
 namespace-identity = { path = "../namespace-identity" }
 syscall     = { path = "../syscall" }
 user-namespace = { path = "../user-namespace" }
+utf8     = { path = "../../shared/utf8" }
 vmm      = { path = "../mm-vmm" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]

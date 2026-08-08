@@ -156,6 +156,19 @@ impl AddressSpace {
                     klog::write_raw(if vma.flags.contains(VmaFlags::SHARED) { b" SHARED" } else { b" PRIV" });
                     klog::write_raw(b"\n");
                 }
+                // A backing whose pages ARE huge pages resolves through a single
+                // block leaf. The base-page fill below would install a 4 KiB
+                // leaf over a huge page and leave its other base pages to fault
+                // one at a time — exactly the translation cost hugetlbfs exists
+                // to avoid, and a leaf the teardown walk would then have to
+                // reconcile against the huge page behind it.
+                let huge_bytes = backing.huge_page_size();
+                if huge_bytes != 0 {
+                    // SAFETY: forwards the live MMU and the PMM refcount callback unchanged; no page-table lock is held here.
+                    return unsafe { self.fill_huge_not_present::<M, _>(
+                        va, access, &vma, backing, *backing_off, huge_bytes, wp, inc_ref,
+                    ) };
+                }
                 // Device mappings install their owner frame for both mapping
                 // types. Page-cache frames do so only for MAP_SHARED; private
                 // file mappings retain the read-copy COW path below.

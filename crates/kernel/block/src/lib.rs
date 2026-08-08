@@ -7,6 +7,9 @@
 // `elevator.rs` — I/O-priority dispatch order for requests that had to wait.
 // `pagecache.rs` — `PageCache` (sync `read_page` / `write_page` /
 // `fsync` / `invalidate`); `CachedPage` with `PG_*` flags.
+// `bdev.rs` — the BLOCK-DEVICE page cache: the address space a raw
+// `/dev/<disk>` open reads and writes through, its two-pass writeback, and
+// `sync_bdevs` — the device half of `sync(2)`.
 //
 // The owned-request completion contract is present; individual driver queue
 // engines migrate from their synchronous compatibility path to it. Remaining:
@@ -20,6 +23,7 @@ extern crate alloc;
 #[cfg(any(test, feature = "hosted"))]
 extern crate std;
 
+pub mod bdev;
 pub mod blockdev;
 pub mod completion;
 pub mod devbridge;
@@ -32,6 +36,7 @@ pub mod task_io;
 pub mod types;
 pub mod uapi;
 
+pub use bdev::{sync_bdevs, BdevMapping};
 pub use blockdev::{BlockCompletion, BlockDevice, BlockRequest, MemDisk};
 pub use pagecache::{CachedPage, PageCache};
 pub use queue_limits::{QueueFeatures, QueueLimits, LINUX_SECTOR_BYTES, MAX_DISCARD_SECTORS};

@@ -15,14 +15,17 @@ use sync::{Spinlock, TaskList as ShmLockClass};
 //   rules        — pure `shm_may_destroy` / creator-exit destroy predicate
 //   creator      — `shm_creator` back-reference + `exit_shm`
 //   rmid_forced  — `kernel.shm_rmid_forced` per-namespace flag + orphan sweep
-//   shmctl       — `shmctl(2)` commands
+//   huge         — `SHM_HUGETLB` granule/size/permission decisions
+//   shmctl       — `shmctl(2)` commands (tests in `shmctl/tests.rs`)
 //   shmdt        — `shmdt(2)` attachment geometry
 pub mod creator;
+pub mod huge;
 pub mod rmid_forced;
 pub mod rules;
 mod shmctl;
 mod shmdt;
 pub use self::creator::exit_shm;
+pub use self::huge::{hugetlb_shm_group, set_hugetlb_shm_group};
 pub use self::rmid_forced::{set_shm_rmid_forced, shm_rmid_forced, RMID_FORCED_BOUNDS};
 pub use self::shmctl::sys_shmctl;
 pub use self::shmdt::sys_shmdt;
@@ -31,7 +34,6 @@ pub(super) const IPC_PRIVATE: i32 = 0;
 const IPC_CREAT: u64 = 0o1000;
 const IPC_EXCL: u64 = 0o2000;
 const IPC_MODE_MASK: u64 = 0o777;
-const SHM_HUGETLB: u64 = 0o4000;
 const SHM_RDONLY: u64 = 0o10000;
 const SHM_RND: u64 = 0o20000;
 const SHM_REMAP: u64 = 0o40000;
@@ -84,7 +86,7 @@ pub struct ShmSegment {
 /// has one `ipcperms()` for all three classes, and a private copy here is how
 /// the classes drift. `ShmSegment` keeps its ids inline rather than in an
 /// `IpcPerm`, so it calls the loose-field form.
-pub(super) use crate::sysv::perm::{current_ipc_cred, IpcCred};
+pub(super) use crate::sysv::perm::{current_ipc_cred, in_group, IpcCred};
 
 /// # C: O(log n)
 pub(super) fn ipc_permitted(seg: &ShmSegment, cred: &IpcCred, flg: u64) -> bool {
@@ -113,18 +115,29 @@ pub(crate) fn reap_namespace(ns: NamespaceId) {
     self::rmid_forced::reap_namespace(ns);
 }
 
+/// What kind of object a new segment must be built on. `Huge` names the
+/// granule and the whole-page byte size the file has to hold; `Shmem` is the
+/// ordinary anonymous shared-memory object, whose size grows on demand.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum SegBacking {
+    Shmem,
+    Huge { log: u32, bytes: u64 },
+}
+
 /// `shmget` registry entry. The syscalls shim passes a lazy `make_backing`
-/// closure because Linux allocates shmem only on the create path.
+/// closure because Linux allocates the backing object only on the create path,
+/// and because only the ABI layer can reach the filesystems the two kinds of
+/// object live on.
 /// # C: O(N_segments) on lookup
 pub fn shmget_with_backing<F>(key: i32, size: usize, flg: u64, cpid: u32, make_backing: F) -> i64
-where F: FnOnce() -> Arc<dyn vmm::FileBacking> {
+where F: FnOnce(SegBacking) -> Result<Arc<dyn vmm::FileBacking>, syscall::errno::Errno> {
     shmget_with_backing_cred(key, size, flg, cpid, current_ipc_cred(), make_backing)
 }
 
 fn shmget_with_backing_cred<F>(
     key: i32, size: usize, flg: u64, cpid: u32, cred: IpcCred, make_backing: F,
 ) -> i64
-where F: FnOnce() -> Arc<dyn vmm::FileBacking> {
+where F: FnOnce(SegBacking) -> Result<Arc<dyn vmm::FileBacking>, syscall::errno::Errno> {
     use syscall::errno::Errno;
     let owner = match crate::ipc_namespace::current() {
         Ok(owner) => owner, Err(_) => return -(Errno::Einval.as_i32() as i64),
@@ -153,9 +166,27 @@ where F: FnOnce() -> Arc<dyn vmm::FileBacking> {
     if !valid_new_size(size) {
         return -(Errno::Einval.as_i32() as i64);
     }
-    if flg & SHM_HUGETLB != 0 {
-        return -(Errno::Einval.as_i32() as i64);
-    }
+    // A huge segment is a hugetlbfs file, so the granule and the whole-page
+    // size are decided BEFORE anything is built, and an unusable selector
+    // beats every later failure. The permission grant sits between the
+    // selector and the file: the caller who named a real granule but may not
+    // have huge pages gets `EPERM`, not the pool's answer.
+    let want = match self::huge::huge_plan(flg, size) {
+        Ok(Some(h)) => {
+            if !self::huge::can_do_hugetlb_shm(&cred) {
+                return -(Errno::Eperm.as_i32() as i64);
+            }
+            SegBacking::Huge { log: h.log, bytes: h.bytes }
+        }
+        Ok(None) => SegBacking::Shmem,
+        Err(e) => return -(e.as_i32() as i64),
+    };
+    // The backing is built before the table slot is claimed, and outside the
+    // registry lock: it is the step that can fail on the pool, and the errno it
+    // reports is the one the caller must see.
+    let backing = match make_backing(want) {
+        Ok(b) => b, Err(e) => return -(e.as_i32() as i64),
+    };
     let mut g = REG.segs.lock();
     if g.iter().filter(|s| s.ns == ns).count() >= SHMMNI {
         return -(Errno::Enospc.as_i32() as i64);
@@ -171,7 +202,7 @@ where F: FnOnce() -> Arc<dyn vmm::FileBacking> {
         cpid,
         nattch: core::sync::atomic::AtomicI64::new(0),
         creator: Spinlock::new(self::creator::current_creator()),
-        backing: make_backing(),
+        backing,
     });
     g.push(seg);
     id as i64
@@ -194,6 +225,18 @@ struct ShmatPlan {
 
 pub(super) fn page_align_len(size: usize) -> Option<usize> {
     size.checked_add((PAGE_SIZE - 1) as usize).map(|v| v & !((PAGE_SIZE - 1) as usize))
+}
+
+/// Extent an attachment of `seg` covers — the size of the object behind it,
+/// which is the segment size rounded up to whole pages of whatever the backing
+/// is made of. A huge segment's file is whole huge pages, so an attachment
+/// covers all of them; an ordinary one rounds to base pages.
+///
+/// `shmat` maps this and `shmdt` sweeps it, so both read the same number and
+/// a partially-mapped huge segment cannot exist.
+/// # C: O(1)
+pub(super) fn seg_span(seg: &ShmSegment) -> Option<usize> {
+    self::huge::span_of(seg.size, self::huge::seg_page_size(&seg.backing))
 }
 
 /// The registered segment (in the caller's IPC namespace) whose shmem object
@@ -291,10 +334,17 @@ fn shmat_plan(
     let addr = shmat_addr(shmaddr, shmflg)?;
     let (prot, acc_mode) = shmat_prot_access(shmflg);
     if !ipc_permitted(seg, cred, acc_mode) { return Err(Errno::Eacces); }
-    let len = page_align_len(seg.size).ok_or(Errno::Enomem)?;
+    let page = self::huge::seg_page_size(&seg.backing);
+    let len = seg_span(seg).ok_or(Errno::Enomem)?;
     if let Some(a) = addr {
         let end = a.checked_add(len as u64).ok_or(Errno::Einval)?;
         if end > hal::USER_VA_END { return Err(Errno::Einval); }
+        // A huge segment resolves through one page-table leaf per huge page,
+        // and a leaf only exists on its own boundary — so a requested address
+        // off that boundary is not a worse placement, it is an impossible one.
+        // `SHM_RND` rounds to the attach boundary, which is smaller than the
+        // granule and therefore does not rescue an address that misses it.
+        if (a & (page - 1)) != 0 { return Err(Errno::Einval); }
         if (shmflg & SHM_REMAP) == 0 && overlaps { return Err(Errno::Einval); }
     }
     Ok(ShmatPlan { addr, len, prot, fixed: addr.is_some() && (shmflg & SHM_REMAP) != 0 })

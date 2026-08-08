@@ -17,6 +17,7 @@ hal   = { path = "../../arch/hal" }
 pmm   = { path = "../mm-pmm" }
 cgroup = { path = "../cgroup" }
 sched = { path = "../sched" }
+timer = { path = "../timer" }
 
 [dev-dependencies]
 boot-info = { path = "../../shared/boot-info" }

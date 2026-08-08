@@ -1,7 +1,7 @@
 // How an accepted mount-data string lands on a superblock's quota option
 // state — the state the mount path then turns into live quota accounting.
 
-use crate::mount_opts::{SbQuotaOpts, configure};
+use crate::mount_opts::{Ext4SbOpts, configure};
 use crate::mount_opts::flags::*;
 use super::{hidden, live, plain, project};
 
@@ -13,7 +13,7 @@ const LOADED: bool = true;
 
 #[test]
 fn usrquota_requests_user_limits_only() {
-    let mut sb = SbQuotaOpts::default();
+    let mut sb = Ext4SbOpts::default();
     configure("rw,usrquota", &plain(), &mut sb, FRESH).expect("configure");
     assert!(sb.test_opt(EXT4_MOUNT_QUOTA));
     assert!(sb.limits_requested(QuotaType::User));
@@ -23,8 +23,8 @@ fn usrquota_requests_user_limits_only() {
 
 #[test]
 fn quota_is_the_user_quota_spelling() {
-    let mut a = SbQuotaOpts::default();
-    let mut b = SbQuotaOpts::default();
+    let mut a = Ext4SbOpts::default();
+    let mut b = Ext4SbOpts::default();
     configure("quota", &plain(), &mut a, FRESH).expect("configure quota");
     configure("usrquota", &plain(), &mut b, FRESH).expect("configure usrquota");
     assert_eq!(a, b);
@@ -32,7 +32,7 @@ fn quota_is_the_user_quota_spelling() {
 
 #[test]
 fn prjquota_requests_project_limits_on_a_project_filesystem() {
-    let mut sb = SbQuotaOpts::default();
+    let mut sb = Ext4SbOpts::default();
     configure("prjquota", &project(), &mut sb, FRESH).expect("configure");
     assert!(sb.limits_requested(QuotaType::Project));
     assert!(!sb.limits_requested(QuotaType::User));
@@ -48,7 +48,7 @@ fn noquota_clears_options_already_on_the_superblock() {
 
 #[test]
 fn a_journalled_quota_file_records_its_name_format_and_implies_accounting() {
-    let mut sb = SbQuotaOpts::default();
+    let mut sb = Ext4SbOpts::default();
     configure("usrjquota=aquota.user,jqfmt=vfsv1", &plain(), &mut sb, FRESH).expect("configure");
     assert_eq!(sb.journalled_file(QuotaType::User), Some("aquota.user"));
     assert_eq!(sb.journalled_file(QuotaType::Group), None);
@@ -60,7 +60,7 @@ fn a_journalled_quota_file_records_its_name_format_and_implies_accounting() {
 
 #[test]
 fn both_journalled_quota_files_can_be_named_at_once() {
-    let mut sb = SbQuotaOpts::default();
+    let mut sb = Ext4SbOpts::default();
     configure("usrjquota=aquota.user,grpjquota=aquota.group,jqfmt=vfsv0", &plain(), &mut sb, FRESH)
         .expect("configure");
     assert_eq!(sb.journalled_file(QuotaType::User), Some("aquota.user"));
@@ -78,7 +78,7 @@ fn an_empty_journalled_name_removes_the_file_from_the_superblock() {
 
 #[test]
 fn hidden_quota_inodes_suppress_journalled_names_and_format() {
-    let mut sb = SbQuotaOpts::default();
+    let mut sb = Ext4SbOpts::default();
     configure("usrjquota=aquota.user,jqfmt=vfsv1,prjquota", &hidden(), &mut sb, FRESH)
         .expect("configure");
     assert_eq!(sb.journalled_file(QuotaType::User), None, "kernel-owned quota inodes win");
@@ -88,11 +88,19 @@ fn hidden_quota_inodes_suppress_journalled_names_and_format() {
 }
 
 #[test]
-fn unknown_options_do_not_disturb_quota_state() {
-    let mut sb = SbQuotaOpts::default();
+fn non_quota_options_do_not_disturb_quota_state() {
+    let mut sb = Ext4SbOpts::default();
     configure("rw,relatime,errors=remount-ro,data=ordered,nobarrier", &plain(), &mut sb, FRESH)
-        .expect("unknown options never fail an ext4 mount");
-    assert_eq!(sb, SbQuotaOpts::default());
+        .expect("a non-quota option never fails an ext4 mount");
+    // The quota half is untouched...
+    assert_eq!(sb.mount_opt, 0);
+    assert_eq!(sb.qf_names, Ext4SbOpts::default().qf_names);
+    assert_eq!(sb.jquota_fmt, 0);
+    // ...and the behavioural half took what it was written with, rather than
+    // dropping it. `nobarrier` used to leave the whole state at its default.
+    assert!(!sb.behaviour.barrier);
+    assert_eq!(sb.behaviour.errors, crate::mount_opts::ErrorsPolicy::RemountRo);
+    assert_eq!(sb.behaviour.data, crate::mount_opts::DataMode::Ordered);
 }
 
 #[test]

@@ -443,9 +443,8 @@ pub unsafe fn restore_signal_frame(frame: *mut SvcFrame, fpu: &mut [u8])
 /// `fpu` now holds an image to load, `None` = `-EINVAL`, which
 /// `sys_rt_sigreturn` turns into `arm64_notify_segfault`.
 ///
-/// An FPSIMD record is MANDATORY: `if (!user.fpsimd) return -EINVAL`
-/// (`signal.c:1044-1046`). A frame without one is invalid by Linux's own
-/// rules, not merely impoverished.
+/// An FPSIMD record is MANDATORY: a frame that carries none is EINVAL by the
+/// reference's own rule, not merely impoverished.
 /// # SAFETY: rt_sigreturn dispatch ctx; the active TTBR0 is the caller's user
 /// address space, so a VA proved below `USER_VA_END` reads the caller's own
 /// memory and nothing else.

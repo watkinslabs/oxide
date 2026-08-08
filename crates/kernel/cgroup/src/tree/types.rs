@@ -7,6 +7,7 @@ use vfs::Ino;
 
 use super::bpf_types::CgroupBpfState;
 use super::controllers::ALL;
+use super::hugetlb_types::{HierarchyKind, HugetlbState};
 
 pub type KResult<T> = core::result::Result<T, VfsError>;
 
@@ -244,6 +245,8 @@ pub struct Node {
     // cpuset controller
     pub cpuset_cpus: String,
     pub cpuset_mems: String,
+    /// hugetlb controller: the per-granule usage and reservation ledgers.
+    pub hugetlb: HugetlbState,
     pub(super) bpf: CgroupBpfState,
 }
 
@@ -264,6 +267,7 @@ impl Node {
             io_max: String::new(), io_weight: 100,
             io_rbytes: 0, io_wbytes: 0, io_rios: 0, io_wios: 0,
             cpuset_cpus: String::new(), cpuset_mems: String::new(),
+            hugetlb: HugetlbState::default(),
             bpf: CgroupBpfState::new(cgid),
         }
     }
@@ -282,6 +286,10 @@ pub struct Tree {
     /// Leaders that exited while another thread retained the process.
     pub(super) exited_procs: BTreeSet<u64>,
     pub(super) mounted: bool,
+    /// Which hierarchy this tree IS. Controllers whose interface and
+    /// semantics differ between the two read it rather than carrying a second
+    /// copy of the answer.
+    pub(super) hierarchy: HierarchyKind,
 }
 
 pub const ROOT: u64 = 1;
@@ -291,7 +299,8 @@ impl Tree {
     /// # C: O(1)
     pub const fn new() -> Self {
         Self { nodes: BTreeMap::new(), next_id: ROOT, next_ino: ROOT, proc_cg: BTreeMap::new(),
-               thread_cg: BTreeMap::new(), exited_procs: BTreeSet::new(), mounted: false }
+               thread_cg: BTreeMap::new(), exited_procs: BTreeSet::new(), mounted: false,
+               hierarchy: HierarchyKind::V2 }
     }
 
     /// True once the hierarchy is mounted.

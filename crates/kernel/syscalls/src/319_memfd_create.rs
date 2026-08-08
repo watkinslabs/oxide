@@ -32,6 +32,14 @@ fn read_memfd_name(name_ptr: u64) -> Result<String, i64> {
     Ok(vfs::path_from_bytes(&name))
 }
 
+/// The errno a failed huge-page file build reports — the three the reference's
+/// `hugetlb_file_setup` distinguishes.
+/// # C: O(1)
+fn huge_setup_errno(e: ::fs::hugetlbfs::HugetlbSetupError) -> Errno {
+    use ::fs::hugetlbfs::HugetlbSetupError as E;
+    match e { E::NoSuchSize => Errno::Enodev, E::NoMemory => Errno::Enomem, E::NoSpace => Errno::Enospc }
+}
+
 /// `sys_memfd_create(name, flags)` — slot 319, `SYSCALL_DEFINE2(memfd_create)`.
 /// Order is `sanitize_flags` → `alloc_name` →
 /// `memfd_alloc_file`, which is why an undefined flag bit beats a bad name
@@ -58,15 +66,6 @@ pub fn sys_memfd_create(args: &SyscallArgs) -> i64 {
         Err(e) => return e,
     };
     let st = setup(eff);
-    if st.hugetlb {
-        // `memfd_alloc_file` calls `hugetlb_file_setup`, whose
-        // !CONFIG_HUGETLBFS stub is `ERR_PTR(-ENOSYS)`
-        //. oxide has no hugetlbfs (mmap's
-        // MAP_HUGETLB is likewise refused in `mm-pmm/src/mmap_flags.rs`), so
-        // this is the honest CONFIG_HUGETLBFS=n answer, not a stub for a
-        // syscall we declined to write.
-        return err(Errno::Enosys);
-    }
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
     let fdt = match unsafe { cur.fd_table_ref() } {
         Some(t) => t.clone(), None => return err(Errno::Ebadf),
@@ -74,7 +73,19 @@ pub fn sys_memfd_create(args: &SyscallArgs) -> i64 {
     // Every memfd carries the seal word — a memfd created WITHOUT
     // MFD_ALLOW_SEALING is not "unsealable", it is born holding F_SEAL_SEAL,
     // so F_GET_SEALS reads 1 and F_ADD_SEALS is EPERM.
-    let inode = ::fs::tmpfs::tmpfs_sealable_file();
+    //
+    // `MFD_HUGETLB` chooses the OTHER backing `memfd_alloc_file` can build: a
+    // file on the kernel-private hugetlbfs mount, sized by the huge-page
+    // selector the flag word carries. It starts empty, exactly as the shmem
+    // one does, and grows when something maps it.
+    let inode = if st.hugetlb {
+        match ::fs::hugetlbfs::hugetlb_file_setup(0, st.huge_shift, st.perm, 0, 0) {
+            Ok(i) => i,
+            Err(e) => return err(huge_setup_errno(e)),
+        }
+    } else {
+        ::fs::tmpfs::tmpfs_sealable_file()
+    };
     if let Some(seals) = inode.fcntl_seals() {
         seals.store(st.seals, core::sync::atomic::Ordering::Release);
     }

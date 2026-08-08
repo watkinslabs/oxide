@@ -18,6 +18,7 @@
 // fixed 4 KiB inline array, which silently truncated every core dump.
 
 use super::*;
+use crate::pipe::limits::{pipe_def_size, pipe_max_size};
 use std::sync::{Barrier, Condvar, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -83,7 +84,7 @@ fn writer_push(pd: &PipeData, waiters: &LossyWaitList) {
 #[test]
 fn concurrent_write_never_leaves_reader_parked() {
     const ITERS: usize = 4_000;
-    let pd = PipeData::new(1);
+    let pd = PipeData::try_new(1).expect("charge");
     pd.writers.store(1, Ordering::Release);
     pd.readers.store(1, Ordering::Release);
     let waiters = LossyWaitList::default();
@@ -114,15 +115,15 @@ fn fill_bytes(pd: &PipeData, n: usize) -> usize {
 
 #[test]
 fn a_fresh_ring_holds_the_default_pipe_size_not_one_page() {
-    let pd = PipeData::new(1);
-    assert_eq!(pd.capacity(), PIPE_DEF_SIZE);
-    assert_eq!(fill_bytes(&pd, PIPE_DEF_SIZE + 1024), PIPE_DEF_SIZE,
+    let pd = PipeData::try_new(1).expect("charge");
+    assert_eq!(pd.capacity(), pipe_def_size());
+    assert_eq!(fill_bytes(&pd, pipe_def_size() + 1024), pipe_def_size(),
         "a ring capped at one page truncates every core dump");
 }
 
 #[test]
 fn the_backing_store_is_allocated_on_demand_not_up_front() {
-    let pd = PipeData::new(1);
+    let pd = PipeData::try_new(1).expect("charge");
     assert_eq!(pd.buf.lock().data.len(), 0, "an unused pipe must not reserve its ceiling");
     fill_bytes(&pd, 1);
     assert_eq!(pd.buf.lock().data.len(), PIPE_GROW_STEP);
@@ -132,7 +133,7 @@ fn the_backing_store_is_allocated_on_demand_not_up_front() {
 
 #[test]
 fn growth_across_a_wrapped_ring_preserves_byte_order() {
-    let pd = PipeData::new(1);
+    let pd = PipeData::try_new(1).expect("charge");
     // Fill the first unit, drain most of it so head moves off zero, then
     // write past the allocation so the ring both wraps and grows.
     assert_eq!(fill_bytes(&pd, PIPE_GROW_STEP), PIPE_GROW_STEP);
@@ -159,11 +160,11 @@ fn growth_across_a_wrapped_ring_preserves_byte_order() {
 
 #[test]
 fn a_write_up_to_pipe_buf_is_all_or_nothing() {
-    let pd = PipeData::new(1);
+    let pd = PipeData::try_new(1).expect("charge");
     pd.readers.store(1, Ordering::Release);
     pd.writers.store(1, Ordering::Release);
     // Leave less than PIPE_BUF of room.
-    let head = alloc::vec![0u8; PIPE_DEF_SIZE - (PIPE_BUF - 1)];
+    let head = alloc::vec![0u8; pipe_def_size() - (PIPE_BUF - 1)];
     assert_eq!(pd.write_iter_nb(None, &[&head], false).unwrap(), head.len());
     // A PIPE_BUF-sized write cannot be split, so it places nothing at all.
     let atomic = alloc::vec![1u8; PIPE_BUF];
@@ -176,24 +177,24 @@ fn a_write_up_to_pipe_buf_is_all_or_nothing() {
 
 #[test]
 fn a_write_that_exactly_fills_the_remaining_room_is_admitted() {
-    let pd = PipeData::new(1);
+    let pd = PipeData::try_new(1).expect("charge");
     pd.readers.store(1, Ordering::Release);
     pd.writers.store(1, Ordering::Release);
-    let head = alloc::vec![0u8; PIPE_DEF_SIZE - PIPE_BUF];
+    let head = alloc::vec![0u8; pipe_def_size() - PIPE_BUF];
     assert_eq!(pd.write_iter_nb(None, &[&head], false).unwrap(), head.len());
     let atomic = alloc::vec![1u8; PIPE_BUF];
     assert_eq!(pd.write_iter_nb(None, &[&atomic], false).unwrap(), PIPE_BUF);
-    assert_eq!(pd.buf.lock().len, PIPE_DEF_SIZE);
+    assert_eq!(pd.buf.lock().len, pipe_def_size());
 }
 
 #[test]
 fn pipe_buf_atomicity_still_binds_after_the_pipe_is_grown() {
-    let inode = make_pipe_inode();
+    let inode = make_pipe_inode().expect("pipe inode");
     let pd = pipe_data(&inode).unwrap();
     pd.readers.store(1, Ordering::Release);
     pd.writers.store(1, Ordering::Release);
-    let grown = set_pipe_size(&inode, 4 * PIPE_DEF_SIZE).unwrap();
-    assert!(grown > PIPE_DEF_SIZE, "the resize must have raised the ceiling");
+    let grown = set_pipe_size(&inode, 4 * pipe_def_size()).unwrap();
+    assert!(grown > pipe_def_size(), "the resize must have raised the ceiling");
 
     // One byte short of the room an atomic write needs, at the NEW capacity.
     let head = alloc::vec![0u8; grown - (PIPE_BUF - 1)];
@@ -211,28 +212,28 @@ fn pipe_buf_atomicity_still_binds_after_the_pipe_is_grown() {
 
 #[test]
 fn resizing_reports_at_least_what_was_asked_for_and_refuses_the_ceiling() {
-    let inode = make_pipe_inode();
-    assert_eq!(pipe_size(&inode), Some(PIPE_DEF_SIZE));
+    let inode = make_pipe_inode().expect("pipe inode");
+    assert_eq!(pipe_size(&inode), Some(pipe_def_size()));
     assert_eq!(set_pipe_size(&inode, PIPE_BUF + 1), Ok(2 * PIPE_GROW_STEP));
     assert_eq!(pipe_size(&inode), Some(2 * PIPE_GROW_STEP));
-    assert_eq!(set_pipe_size(&inode, PIPE_MAX_SIZE), Ok(PIPE_MAX_SIZE));
-    assert_eq!(set_pipe_size(&inode, PIPE_MAX_SIZE + 1), Err(VfsError::Eperm));
+    assert_eq!(set_pipe_size(&inode, pipe_max_size()), Ok(pipe_max_size()));
+    assert_eq!(set_pipe_size(&inode, pipe_max_size() + 1), Err(VfsError::Eperm));
     // A pipe never shrinks below one allocation unit.
     assert_eq!(set_pipe_size(&inode, 1), Ok(PIPE_GROW_STEP));
 }
 
 #[test]
 fn a_pipe_cannot_shrink_below_the_bytes_still_queued() {
-    let inode = make_pipe_inode();
+    let inode = make_pipe_inode().expect("pipe inode");
     let pd = pipe_data(&inode).unwrap();
     assert_eq!(fill_bytes(pd, 3 * PIPE_GROW_STEP), 3 * PIPE_GROW_STEP);
     assert_eq!(set_pipe_size(&inode, PIPE_GROW_STEP), Err(VfsError::Ebusy));
-    assert_eq!(pipe_size(&inode), Some(PIPE_DEF_SIZE), "a refused resize changes nothing");
+    assert_eq!(pipe_size(&inode), Some(pipe_def_size()), "a refused resize changes nothing");
 }
 
 #[test]
 fn a_shrunken_capacity_stops_accepting_bytes_at_the_new_ceiling() {
-    let inode = make_pipe_inode();
+    let inode = make_pipe_inode().expect("pipe inode");
     let pd = pipe_data(&inode).unwrap();
     assert_eq!(fill_bytes(pd, 2 * PIPE_GROW_STEP), 2 * PIPE_GROW_STEP);
     assert_eq!(set_pipe_size(&inode, 2 * PIPE_GROW_STEP), Ok(2 * PIPE_GROW_STEP));
@@ -245,12 +246,12 @@ fn a_shrunken_capacity_stops_accepting_bytes_at_the_new_ceiling() {
 
 #[test]
 fn poll_reports_writable_only_while_room_remains() {
-    let inode = make_pipe_inode();
+    let inode = make_pipe_inode().expect("pipe inode");
     let pd = pipe_data(&inode).unwrap();
     pd.readers.store(1, Ordering::Release);
     pd.writers.store(1, Ordering::Release);
     assert!(pd.poll_mask() & vfs::POLL_OUT != 0);
-    assert_eq!(fill_bytes(pd, PIPE_DEF_SIZE), PIPE_DEF_SIZE);
+    assert_eq!(fill_bytes(pd, pipe_def_size()), pipe_def_size());
     assert_eq!(pd.poll_mask() & vfs::POLL_OUT, 0, "a full pipe is not writable");
     assert!(pd.poll_mask() & vfs::POLL_IN != 0);
 }

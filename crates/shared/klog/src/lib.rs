@@ -26,6 +26,9 @@ pub use cont::{clear_caller_fn, set_caller_fn, CallerFn};
 
 pub mod syslog;
 
+pub mod kmsg_dump;
+pub use kmsg_dump::{clear_kmsg_dump_hook, kmsg_dump, set_kmsg_dump_hook, DumpFn};
+
 /// Maximum base-10 digits in a `u64` (`18446744073709551615`).
 const U64_DECIMAL_BYTES: usize = 20;
 

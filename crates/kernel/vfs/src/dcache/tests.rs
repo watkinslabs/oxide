@@ -95,7 +95,7 @@ assert!(max <= 12, "max chain {max} too long — not O(1)");
 
 // d_compare / d_hash hook: case-insensitive lookup hits a lower-case entry.
 static CI_OPS: DentryOps = DentryOps {
-d_hash:    Some(|name| {
+d_hash:    Some(|_dir, name| {
         let mut h: u64 = 0xcbf29ce484222325;
         for b in name.bytes() { h = (h ^ (b.to_ascii_lowercase() as u64)).wrapping_mul(0x100000001B3); }
         (h ^ (h >> 32)) as u32

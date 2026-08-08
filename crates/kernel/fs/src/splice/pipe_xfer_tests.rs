@@ -76,7 +76,7 @@ fn out_file(ops: Arc<dyn FileOps>) -> Arc<File> {
 /// A pipe holding `n` bytes, with a live writer and reader so neither side of
 /// the leg reads EOF.
 fn loaded_pipe(n: usize) -> (InodeRef, Arc<File>) {
-    let i: InodeRef = pipe::make_pipe_inode();
+    let i: InodeRef = pipe::make_pipe_inode().expect("pipe inode");
     let d = Dentry::new_root(Arc::clone(&i));
     let f = File::new(Arc::clone(&i), d, OpenFlags::O_RDWR);
     let p: &PipeData = pipe::pipe_data(&i).expect("pipe ring");

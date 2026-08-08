@@ -18,6 +18,7 @@ use syscall::errno::Errno;
 use vfs::{Dentry, FileType, InodeRef, VfsPath};
 
 use crate::domain::Domain;
+use crate::audit::RequestType;
 use crate::eval::{no_more_access, LayerMasks};
 use crate::uapi::*;
 use crate::walk::{self, Node};
@@ -168,6 +169,11 @@ pub fn check(dom: &Domain, old_dir: &VfsPath, old: &Target,
                        &c1, old.is_dir(),
                        c2.as_ref(), new.map(|n| n.is_dir()).unwrap_or(false));
     if ok { return Ok(()); }
+    // Both sides are reported: a reparenting is refused by whichever end lacks
+    // the rights, and an auditor that saw only one of them would look at the
+    // wrong directory.
+    dom.report_denial_masks(&m1, RequestType::FsAccess, req1);
+    dom.report_denial_masks(&m2, RequestType::FsAccess, req2);
     if m1.is_eacces(req1) || m2.is_eacces(req2) { return Err(Errno::Eacces); }
     Err(Errno::Exdev)
 }

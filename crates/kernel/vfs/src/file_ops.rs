@@ -228,6 +228,36 @@ pub trait FileOps: Send + Sync {
         inode.i_mapping().map_or(Ok(None), |m| m.shared_frame(off))
     }
 
+    /// Byte size of the huge page this file's pages ARE, or 0 for a file made
+    /// of ordinary base pages.
+    ///
+    /// This is the "is this a hugepage file" question every caller that must
+    /// treat one differently asks — a mapping that installs one page-table
+    /// leaf per huge page, an `mmap` length that rounds to the huge size, a
+    /// `cachestat` that refuses. The answer comes from the inode's own
+    /// filesystem, so no second registry of which files are huge can disagree
+    /// with it.
+    /// # C: O(1)
+    fn huge_page_size(&self, _inode: &Inode) -> u64 { 0 }
+
+    /// A PRIVATE copy of the huge page at `off`, for a mapping whose writes
+    /// must not reach the file.
+    ///
+    /// The frame comes back carrying the mapping's own reference and no other,
+    /// so the mapping owns it outright and [`FileOps::huge_put_frame`] returns
+    /// it to whatever pool it came from. `None` (default) = this file has no
+    /// huge pages to copy.
+    /// # C: O(huge page)
+    fn huge_cow_frame(&self, _inode: &Inode, _off: u64) -> KResult<Option<crate::SharedFrame>> {
+        Ok(None)
+    }
+
+    /// Release one reference to a huge page this file handed out. The file
+    /// owns the release because it is the only thing that knows which pool the
+    /// page came from.
+    /// # C: O(log nr)
+    fn huge_put_frame(&self, _inode: &Inode, _pa: u64) {}
+
     /// Whether this file vtable implements Linux `f_op->remap_file_range`.
     /// Default false so VFS admission reports the Linux no-op errno before
     /// calling into a backend. # C: O(1)
@@ -273,10 +303,18 @@ pub trait FileOps: Send + Sync {
     /// already been removed. # C: O(1)
     fn on_flush(&self, _inode: &Inode) -> KResult<()> { Ok(()) }
 
-    /// `f_op->flush` with access to the open file description. Backends whose
-    /// flush target is per-open state override this; default preserves
-    /// inode-only drivers. # C: O(1)
-    fn on_flush_file(&self, file: &File) -> KResult<()> {
+    /// `f_op->flush(file, id)` — the full slot: the open file description being
+    /// closed AND the lock owner closing it (Linux's `fl_owner_t`, which
+    /// `filp_close` takes from the descriptor table).
+    ///
+    /// The owner is not decoration. A backend that keeps per-open state on a
+    /// remote peer has to tell that peer WHICH handle is going away and WHOSE
+    /// byte-range locks go with it; without the owner it can only guess, and
+    /// the guess releases somebody else's locks. Backends override this;
+    /// the default drops both arguments and preserves inode-only drivers.
+    /// # C: O(1)
+    fn on_flush_file(&self, file: &File, owner: crate::inode::RecordOwner) -> KResult<()> {
+        let _ = owner;
         self.on_flush(file.inode())
     }
 

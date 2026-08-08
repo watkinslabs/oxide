@@ -14,6 +14,7 @@
 // Deliberately free of any target gate so the classification is hosted-testable.
 
 use crate::dir::DirError;
+use crate::mount_opts::ErrorsPolicy;
 use crate::{InodeError, MountError};
 
 use super::state::RootfsState;
@@ -54,9 +55,61 @@ pub(crate) fn report(st: &RootfsState, e: MountError) -> vfs::VfsError {
     #[cfg(feature = "debug-boot")]
     if bad { log_error(&e); }
     let mapped = super::inode::regular::vfs_error_from_mount(e);
-    if bad { vfs::fire_fs_error(watcher_fsid(st), None, mapped as i32); }
+    if bad {
+        act_on_error(st);
+        vfs::fire_fs_error(watcher_fsid(st), None, mapped as i32);
+    }
     mapped
 }
+
+/// What `-o errors=` asks the filesystem to DO when it finds itself wrong.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ErrorAction {
+    /// Keep serving the filesystem and let the caller see the error.
+    KeepGoing,
+    /// Stop accepting writes.
+    StopWriting,
+    /// Take the machine down rather than write anything else.
+    Halt,
+}
+
+/// The action a policy asks for. Split out from the acting so the decision is
+/// answerable on the host — the acting needs a live superblock.
+/// # C: O(1)
+pub(crate) fn action_for(policy: ErrorsPolicy) -> ErrorAction {
+    match policy {
+        ErrorsPolicy::Continue => ErrorAction::KeepGoing,
+        ErrorsPolicy::RemountRo => ErrorAction::StopWriting,
+        ErrorsPolicy::Panic => ErrorAction::Halt,
+    }
+}
+
+/// Carry out the mount's error policy.
+///
+/// `remount-ro` is the default and the one that matters: a filesystem that has
+/// contradicted itself must stop accepting writes, or the next write compounds
+/// the damage the first one revealed. Marking the superblock read-only is what
+/// makes every write path refuse — the permission check every writer already
+/// passes through, rather than a new refusal bolted onto each of them.
+/// # C: O(1)
+fn act_on_error(st: &RootfsState) {
+    let opts = st.opts();
+    #[cfg(feature = "debug-boot")]
+    if opts.behaviour.warn_on_error { klog::write_raw(WARN_ON_ERROR_LINE); }
+    match action_for(opts.behaviour.errors) {
+        ErrorAction::KeepGoing => {}
+        ErrorAction::StopWriting => { if let Some(sb) = st.i_sb() { sb.set_readonly(true); } }
+        ErrorAction::Halt => hal::kassert!(false, "ext4: panic forced after filesystem error"),
+    }
+}
+
+/// What `-o warn_on_error` announces. Behind the same gate every other
+/// diagnostic in this kernel carries (`04§4.0`): a log call site that is not
+/// `cfg`-elidable is a build failure here, so the option's announcement is a
+/// debug-build one. The option is still parsed, validated and recorded, and it
+/// is the only one whose entire observable effect is a message.
+#[cfg(feature = "debug-boot")]
+const WARN_ON_ERROR_LINE: &[u8] = b"[EXT4] filesystem error on a warn_on_error mount\n";
 
 /// Stable error-only diagnostic kind; no pathname or transient allocation.
 /// # C: O(1)
@@ -145,6 +198,34 @@ mod tests {
         assert!(!is_inconsistency(&MountError::Inode(InodeError::BadLen)));
         assert!(!is_inconsistency(&MountError::Dir(DirError::Full)));
         assert!(!is_inconsistency(&MountError::Dir(DirError::NotFound)));
+    }
+
+    /// `-o errors=` is the difference between a filesystem that keeps taking
+    /// writes after contradicting itself and one that stops. Before this the
+    /// option was accepted and dropped, so every mount behaved as `continue`
+    /// no matter what it was written with — including the `remount-ro` that a
+    /// root filesystem is mounted with.
+    /// # C: O(1)
+    #[test]
+    fn the_error_policy_decides_what_happens_after_an_inconsistency() {
+        assert_eq!(action_for(ErrorsPolicy::Continue), ErrorAction::KeepGoing);
+        assert_eq!(action_for(ErrorsPolicy::RemountRo), ErrorAction::StopWriting);
+        assert_eq!(action_for(ErrorsPolicy::Panic), ErrorAction::Halt);
+        // The default a mount that names no policy gets is the one that stops.
+        assert_eq!(action_for(crate::mount_opts::Ext4Behaviour::default().errors),
+            ErrorAction::StopWriting);
+    }
+
+    /// A superblock that records its own error policy supplies the default,
+    /// and an unrecognised value gets the conservative one.
+    /// # C: O(1)
+    #[test]
+    fn the_on_disk_error_policy_is_the_default() {
+        use crate::mount_opts::behaviour::{SB_ERRORS_CONTINUE, SB_ERRORS_PANIC, SB_ERRORS_RO};
+        assert_eq!(ErrorsPolicy::from_sb_errors(SB_ERRORS_CONTINUE), ErrorsPolicy::Continue);
+        assert_eq!(ErrorsPolicy::from_sb_errors(SB_ERRORS_PANIC), ErrorsPolicy::Panic);
+        assert_eq!(ErrorsPolicy::from_sb_errors(SB_ERRORS_RO), ErrorsPolicy::RemountRo);
+        assert_eq!(ErrorsPolicy::from_sb_errors(0), ErrorsPolicy::RemountRo);
     }
 
     /// A corrupt extent tree surfaces as an I/O error, which is the number the

@@ -217,7 +217,7 @@ fn sync_file_range_argument_ladder() {
 /// A pipe (or any non REG/BLK/DIR inode) is ESPIPE, not EINVAL.
 #[test]
 fn sync_file_range_on_a_pipe_is_espipe() {
-    let inode = fs::pipe::make_pipe_inode();
+    let inode = fs::pipe::make_pipe_inode().expect("pipe inode");
     let f = open(inode, OpenFlags::O_RDWR);
     assert_eq!(sync_file_range(&f, 0, 0, 0), errno(Errno::Espipe));
     // ... and the flag/offset checks still come FIRST.
@@ -240,7 +240,7 @@ fn readahead_ladder_over_real_inodes() {
     assert_eq!(readahead(&src, 0, 1u64 << 63), errno(Errno::Einval));
     // A pipe has no address space → EINVAL (NOT ESPIPE: `readahead(2)` filters
     // on S_ISREG||S_ISBLK before `generic_fadvise` can report ESPIPE).
-    let p = open(fs::pipe::make_pipe_inode(), OpenFlags::empty());
+    let p = open(fs::pipe::make_pipe_inode().expect("pipe inode"), OpenFlags::empty());
     assert_eq!(readahead(&p, 0, 8), errno(Errno::Einval));
     // A directory is EINVAL too.
     let dir = open(_fs.root_inode(), OpenFlags::empty());

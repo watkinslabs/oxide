@@ -144,15 +144,9 @@ impl PermState {
     }
 
     /// The audit rule recorded against this decision, or `None` when the
-    /// verdict carried no record.
-    ///
-    /// No caller yet: the justification a `FAN_AUDIT` verdict carries is meant
-    /// to reach a kernel audit log, and this kernel has no audit log to emit
-    /// into. The record is parsed, validated and stored so the verdict's
-    /// justification is not lost between the write that carried it and the
-    /// emitter that will render it; this is the read side of that store.
+    /// verdict carried no record. Read by the permission path when the verdict
+    /// asked to be audited, and written into the record as the justification.
     /// # C: O(1)
-    #[allow(dead_code)]
     pub(crate) fn audit_rule(&self) -> Option<crate::inotify::response::AuditRule> {
         *self.audit_rule.lock()
     }
