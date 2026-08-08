@@ -182,3 +182,44 @@ fn a_reparented_child_keeps_a_stable_parent_arc() {
         assert!(Arc::ptr_eq(&p, &init));
     }
 }
+
+/// The notification must happen on the dying task's OWN exit path, not on the
+/// context-switch tail: `live::mark_done` publishes the zombie by itself, with
+/// no scheduler switch anywhere in the picture.
+///
+/// This is what the reference does — `exit_notify` in `do_exit`, before the
+/// final schedule — and it is what keeps the notification's depth, and the
+/// task teardown its registry snapshot can open, off the stack of every path
+/// in the kernel that can block.
+#[test]
+fn mark_done_publishes_the_zombie_without_a_context_switch() {
+    let _g = registry_test_lock();
+    crate::registry::clear_for_tests();
+    let init = init_task();
+    let dying = task(9401, 941);
+    parent_of(&dying, &init);
+    assert!(!crate::live::zombies::has_zombies(init.tid), "nothing waitable yet");
+
+    crate::live::mark_done(&dying);
+
+    assert!(crate::live::zombies::has_zombies(init.tid),
+        "the parent must be able to wait4 as soon as the child's exit path has run");
+    assert_eq!(dying.state(), TaskState::Zombie, "and the task is published dead");
+}
+
+/// The notification runs BEFORE the namespace release inside `mark_done`: the
+/// reaper lookup and the orphaned-process-group walk read namespace state, and
+/// the reference likewise notifies while the namespaces are still live.
+#[test]
+fn the_notification_precedes_the_namespace_release() {
+    let _g = registry_test_lock();
+    crate::registry::clear_for_tests();
+    let init = init_task();
+    let dying = task(9402, 942);
+    parent_of(&dying, &init);
+
+    crate::live::mark_done(&dying);
+
+    assert!(crate::live::zombies::has_zombies(init.tid),
+        "a notification ordered after the namespace release finds no reaper");
+}
