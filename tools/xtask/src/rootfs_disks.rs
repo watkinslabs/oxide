@@ -25,6 +25,8 @@ mod gnome_input_classify;
 mod input_delivery;
 // - mutter_debug: opt-in mutter/clutter debug env injection for GNOME bring-up.
 mod mutter_debug;
+// - sockopt_diff: opt-in SOL_NETLINK / SOL_SOCKET-on-netlink-fd differential probe.
+mod sockopt_diff;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -125,6 +127,9 @@ fn build_root(
     }
     if std::env::var_os("OXIDE_WAIT_DIFF_SMOKE").is_some() {
         wait_diff::inject(&root_img, arch)?;
+    }
+    if std::env::var_os("OXIDE_SOCKOPT_DIFF_SMOKE").is_some() {
+        sockopt_diff::inject(&root_img, arch)?;
     }
     if std::env::var_os("OXIDE_REQUEST_KEY_SMOKE").is_some() {
         request_key::inject(&root_img, arch)?;

@@ -42,6 +42,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         smoke-devpts-x86 smoke-devpts-arm smoke-devpts \
         smoke-af-packet-diff-x86 smoke-af-packet-diff-arm smoke-af-packet-diff \
         smoke-wait-diff-x86 smoke-wait-diff-arm smoke-wait-diff wait-diff-selftest \
+        smoke-sockopt-diff-x86 smoke-sockopt-diff-arm smoke-sockopt-diff \
         frame-gate frame-gate-x86 frame-gate-arm \
         stack-gate stack-gate-x86 stack-gate-arm \
         irq-gate irq-gate-x86 irq-gate-arm \
@@ -489,6 +490,18 @@ smoke-wait-diff-arm:
 smoke-wait-diff:
 	$(MAKE) smoke-wait-diff-x86
 	$(MAKE) smoke-wait-diff-arm
+
+# SOL_NETLINK / SOL_SOCKET-on-netlink-fd differential — the level pair
+# af_packet_diff (SOL_PACKET) and glibc_conformance (neither) don't cover.
+SOCKOPT_DIFF_SMOKE_TIMEOUT ?= 900
+smoke-sockopt-diff-x86:
+	./tools/boot-smoke-sockopt-diff.sh x86 $(SOCKOPT_DIFF_SMOKE_TIMEOUT)
+smoke-sockopt-diff-arm:
+	./tools/boot-smoke-sockopt-diff.sh arm $(SOCKOPT_DIFF_SMOKE_TIMEOUT)
+# Recursive makes keep the two boots sequential even under a top-level -j.
+smoke-sockopt-diff:
+	$(MAKE) smoke-sockopt-diff-x86
+	$(MAKE) smoke-sockopt-diff-arm
 
 # GRUB self-bootstrap smoke (F372). Boots the GRUB multiboot2 ISO
 # headless and waits for $SMOKE_MARKER (default `oxide login:`). During

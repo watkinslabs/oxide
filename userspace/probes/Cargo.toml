@@ -9,13 +9,17 @@
 # - drm:         DRM/KMS modeset-info regression -> `drm_probe`.
 # - swapfile:    ext4 swapfile lifecycle + memcg swap accounting -> `swapfile_probe`.
 # - request_key: request_key(2) upcall reaches a real helper -> `request_key_probe`.
+# - sockopt_diff: SOL_NETLINK / SOL_SOCKET-on-netlink-fd differential -> `sockopt_diff`.
 #
-# Probes that compare against a real Linux run (`af_packet_diff`, `wait_diff`)
-# deliberately stay C: their host oracle is the same source compiled by the same
-# compiler, and moving one side alone would move the oracle.
+# Probes that compare against a real Linux run (`af_packet_diff`, `wait_diff`,
+# `sockopt_diff`) deliberately share source+compiler across host and guest:
+# their host oracle is the same source built the same way, so moving one side
+# alone would move the oracle. `af_packet_diff`/`wait_diff` stay C for that
+# reason; `sockopt_diff` gets the identical guarantee from Rust because BOTH
+# sides already target `*-unknown-linux-gnu` through the same toolchain.
 [workspace]
 resolver = "2"
-members = ["support", "drm", "swapfile", "request_key"]
+members = ["support", "drm", "swapfile", "request_key", "sockopt_diff"]
 
 [workspace.package]
 version = "0.1.0"
