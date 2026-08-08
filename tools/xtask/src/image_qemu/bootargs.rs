@@ -38,18 +38,32 @@ fn bootloader_supplies_boot_image(arch: &str) -> bool { arch == "aarch64" }
 /// not extra parameters were supplied. # C: O(len)
 fn alloc_extra(value: &str) -> String { format!("{value} ") }
 
-/// Kernel parameters that make a boot say what it is doing, for the case the
-/// whole set exists to serve: a boot that never completes and produces nothing
-/// to diagnose with.
+/// Kernel parameters EVERY boot carries, so a serial log is a normal property
+/// of running this image rather than something a caller has to remember to ask
+/// for. This is how a distribution is configured for a serial console, plus
+/// the `earlycon` a development image wants:
 ///
 /// `earlycon` brings a console up before device init, so the pre-console
-/// window stops being invisible; `keep_bootcon` stops it being handed over and
-/// dropped when the real console registers; `initcall_debug` makes each init
-/// step name itself before it runs, so a step that hangs is named;
-/// `ignore_loglevel` and `printk.time` make everything print, with times, so a
-/// slow step is distinguishable from a stuck one.
+/// window is not invisible; the registering serial console then replays what
+/// the ring already holds, so the log starts at the beginning either way.
+/// `printk.time=1` stamps each line, which is what distinguishes a slow step
+/// from a stuck one.
+///
+/// Deliberately NOT here: `initcall_debug` and `ignore_loglevel` change how
+/// much a boot prints and how fast it runs, and a default that does not match
+/// a normal boot is a default that hides the bugs only a normal boot has.
+pub(super) const KERNEL_CONSOLE_PARAMS: &str = "earlycon printk.time=1";
+
+/// Kernel parameters that make a boot narrate itself, for the case the set
+/// exists to serve: a boot that never completes and produces nothing to
+/// diagnose with.
+///
+/// `keep_bootcon` stops the boot console being handed over and dropped when
+/// the real console registers; `initcall_debug` makes each init step name
+/// itself before it runs, so a step that hangs is named; `ignore_loglevel`
+/// prints every record regardless of level.
 pub(super) const KERNEL_DEBUG_PARAMS: &str =
-    "earlycon keep_bootcon initcall_debug ignore_loglevel printk.time=1";
+    "keep_bootcon initcall_debug ignore_loglevel";
 
 /// Userspace parameters for the same case: a service that fails during boot
 /// cannot be restarted to observe it, because restarting is the one thing that
@@ -87,7 +101,7 @@ pub(super) fn kernel_cmdline(arch: &str, image_path: &str) -> String {
     // silence while every consumer expects a talkative boot is a line that
     // lies. A boot that wants it can pass it through OXIDE_CMDLINE_EXTRA.
     format!(
-        "{boot_image}root=/dev/oxide0 rw {extra}\
+        "{boot_image}root=/dev/oxide0 rw {KERNEL_CONSOLE_PARAMS} {extra}\
          console={ser},115200 console=tty0 \
          systemd.mask=firewalld.service systemd.mask=chronyd.service \
          systemd.mask=ModemManager.service systemd.mask=plymouth-start.service \
@@ -98,7 +112,7 @@ pub(super) fn kernel_cmdline(arch: &str, image_path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{kernel_cmdline, serial_console, KERNEL_DEBUG_PARAMS, USERSPACE_DEBUG_PARAMS};
+    use super::{kernel_cmdline, serial_console, KERNEL_CONSOLE_PARAMS, KERNEL_DEBUG_PARAMS, USERSPACE_DEBUG_PARAMS};
     use std::sync::Mutex;
 
     // The composer reads process environment; these tests mutate it.
@@ -179,8 +193,8 @@ mod tests {
     /// green until the list was spelled out.
     #[test]
     fn the_debug_preset_reaches_the_line() {
-        const REQUIRED: [&str; 8] = [
-            "earlycon", "keep_bootcon", "initcall_debug", "ignore_loglevel", "printk.time=1",
+        const REQUIRED: [&str; 6] = [
+            "keep_bootcon", "initcall_debug", "ignore_loglevel",
             "systemd.log_level=debug", "systemd.log_target=console",
             "systemd.journald.forward_to_console=1",
         ];
@@ -195,15 +209,39 @@ mod tests {
         assert_eq!(declared, REQUIRED.len(), "preset changed without updating what a debug boot must carry");
     }
 
-    /// Off by default: a boot that did not ask for the preset must not get it,
-    /// or the smoke gate measures a different kernel than the one it names.
+    /// Off by default: a boot that did not ask for the narrating preset must
+    /// not get it, or the smoke gate measures a different kernel than the one
+    /// it names. The console parameters are NOT part of that preset — they are
+    /// what every boot carries.
     #[test]
     fn the_preset_is_absent_unless_asked_for() {
         with_env(&[("OXIDE_CMDLINE_DEBUG", None), ("OXIDE_CMDLINE_EXTRA", None)], || {
             let line = kernel_cmdline("x86_64", "/img");
-            assert!(!line.contains("earlycon"), "{line}");
             assert!(!line.contains("initcall_debug"), "{line}");
+            assert!(!line.contains("ignore_loglevel"), "{line}");
+            assert!(!line.contains("keep_bootcon"), "{line}");
         });
+    }
+
+    /// The property the whole console configuration exists for: a boot nobody
+    /// configured still produces a serial log that starts at the beginning.
+    /// Every token is named here rather than read from the constant under
+    /// test — a check derived from its own subject cannot notice the subject
+    /// losing a member.
+    #[test]
+    fn every_boot_carries_the_console_parameters() {
+        with_env(&[("OXIDE_CMDLINE_DEBUG", None), ("OXIDE_CMDLINE_EXTRA", None)], || {
+            for (arch, ser) in [("x86_64", "ttyS0"), ("aarch64", "ttyAMA0")] {
+                let line = kernel_cmdline(arch, "/img");
+                for p in ["earlycon", "printk.time=1", &format!("console={ser},115200"), "console=tty0"] {
+                    assert!(line.split(' ').any(|t| t == p), "{arch} lost {p}: {line}");
+                }
+            }
+        });
+        assert_eq!(
+            KERNEL_CONSOLE_PARAMS.split(' ').count(), 2,
+            "a parameter joined the always-on set without being declared here",
+        );
     }
 
     /// A caller adding one parameter must not have to choose between it and
@@ -212,7 +250,7 @@ mod tests {
     fn extra_parameters_compose_with_the_preset() {
         with_env(&[("OXIDE_CMDLINE_DEBUG", Some("1")), ("OXIDE_CMDLINE_EXTRA", Some("loglevel=8 panic=30"))], || {
             let line = kernel_cmdline("aarch64", "/img");
-            assert!(line.split(' ').any(|t| t == "earlycon"), "{line}");
+            assert!(line.split(' ').any(|t| t == "initcall_debug"), "{line}");
             assert!(line.split(' ').any(|t| t == "loglevel=8"), "{line}");
             assert!(line.split(' ').any(|t| t == "panic=30"), "{line}");
         });
@@ -223,7 +261,7 @@ mod tests {
     #[test]
     fn an_explicit_zero_disables_the_preset() {
         with_env(&[("OXIDE_CMDLINE_DEBUG", Some("0")), ("OXIDE_CMDLINE_EXTRA", None)], || {
-            assert!(!kernel_cmdline("x86_64", "/img").contains("earlycon"));
+            assert!(!kernel_cmdline("x86_64", "/img").contains("initcall_debug"));
         });
     }
 

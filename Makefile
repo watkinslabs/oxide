@@ -29,11 +29,13 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
 # `make ci`              — what PR gate runs: spec-lint, test, both arches default + debug-all.
 # `make qemu-x86 / qemu-arm` — boot under QEMU with NO debug features;
 #                          `qemu-*-debug` is the firehose.
-# `make boot-debug-x86 / boot-debug-arm` — boot with the kernel debug cmdline
-#                          (earlycon + initcall_debug + ignore_loglevel), for a
-#                          boot that hangs and otherwise prints nothing.
-# `make smoke-debug`     — same, headless, serial log KEPT under
-#                          $(BOOT_LOG_DIR) whether it passes or fails.
+# `make boot-debug-x86 / boot-debug-arm` — boot with the narrating cmdline
+#                          (keep_bootcon + initcall_debug + ignore_loglevel) on
+#                          top of the console parameters every boot carries.
+# `make smoke-debug`     — same, headless, serial log KEPT at a stable name.
+# EVERY boot writes its serial log to $(BOOT_LOG_DIR)/<arch>-<stamp>.log, with
+# <arch>-latest.log pointing at the newest. OXIDE_SERIAL_LOG=<path> names one;
+# OXIDE_SERIAL_LOG=0 declines.
 # `make qemu-mcp`        — print the MCP tool list (interactive QEMU debug).
 # `make artifacts`       — export stable packaging artifacts to target/artifacts.
 # `make clean`           — `cargo clean`.
@@ -254,14 +256,18 @@ qemu-arm-debug:
 
 # Boot debugging — the answer to "it hangs and prints nothing".
 #
+# Every boot already carries `earlycon printk.time=1 console=<serial>,115200
+# console=tty0`, and a registering console is replayed the records the ring
+# already holds, so an ordinary boot's serial log starts at the beginning.
+# What is left for this preset is narration, not visibility.
+#
 # `OXIDE_CMDLINE_DEBUG=1` makes the ONE cmdline composer
-# (tools/xtask/src/image_qemu/bootargs.rs) prepend the debug preset:
-# `earlycon keep_bootcon initcall_debug ignore_loglevel printk.time=1` plus the
-# systemd side. `earlycon` brings a console up before device init, so the
-# pre-console window stops being invisible; `initcall_debug` makes each init
-# step name itself BEFORE it runs, so a boot that hangs names the step it
-# stopped in. Add anything else with `OXIDE_CMDLINE_EXTRA='panic=30 oops=panic'`
-# — it composes with the preset rather than replacing it.
+# (tools/xtask/src/image_qemu/bootargs.rs) add `keep_bootcon initcall_debug
+# ignore_loglevel` plus the systemd side. `initcall_debug` makes each init step
+# name itself BEFORE it runs, so a boot that hangs names the step it stopped
+# in; `ignore_loglevel` prints every record whatever its level. Add anything
+# else with `OXIDE_CMDLINE_EXTRA='panic=30 oops=panic'` — it composes with the
+# preset rather than replacing it.
 #
 # `make boot-debug-x86` / `boot-debug-arm` — interactive, output on the terminal.
 boot-debug-x86:
