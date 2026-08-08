@@ -37,50 +37,34 @@ use super::{mounts_publish_anon, mounts_unpublish_anon, new_mount_for_anon, Moun
 pub fn create_anon_mount(sb: Arc<SuperBlock>, mnt_flags: u64, lock_flags: u32,
     idmap: Option<Arc<crate::idmap::Idmap>>) -> KResult<Arc<Mount>>
 {
-    create_mount_in_new_ns(sb, mnt_flags, lock_flags, idmap, true).map(|(m, _ns)| m)
+    create_mount_in_anon_ns(sb, mnt_flags, lock_flags, idmap)
 }
 
-/// Create a real mount for `sb` as the root of a fresh NAMED mount namespace
-/// owned by the caller's user namespace — the namespace `fsmount(2)`'s
-/// namespace form hands back a descriptor for.
+/// Create a real mount for `sb` inside a fresh NAMED mount namespace — the
+/// namespace `fsmount(FSMOUNT_NAMESPACE)` hands back a descriptor for.
 ///
-/// The only difference from [`create_anon_mount`] is which KIND of namespace
-/// holds the mount, so both go through one constructor; a second copy of the
-/// publish/root/ownership sequence is a place for the two to drift.
-///
-/// A named namespace is one a task can enter, so the mount's root must be a
-/// directory — the reference refuses a non-directory here with ENOTDIR rather
-/// than minting a namespace nothing can resolve a path in.
-///
-/// The namespace comes back with the mount because the CALLER has to hold it:
-/// unlike the anonymous form, the mount does NOT retain its namespace here. It
-/// cannot — the mount arena retains the mount and the namespace's teardown is
-/// what empties the arena, so a mount holding its own namespace is a cycle
-/// nothing breaks, and the anonymous form only escapes it because
-/// [`dissolve_anon`] cuts the link by hand. Here the descriptor holds the
-/// namespace, the namespace's teardown reaps the mount, and closing the
-/// descriptor is all it takes.
+/// A thin naming of [`super::create_new_namespace`], which owns the whole shape
+/// (root copy, placement, propagation, freezing) so `fsmount` and `open_tree`
+/// cannot build two different namespaces. The namespace comes back with the
+/// mount because the CALLER has to hold it: unlike the anonymous form, nothing
+/// inside retains it, and its teardown is what reaps the mounts.
 /// # C: O(log N)
 pub fn create_ns_mount(sb: Arc<SuperBlock>, mnt_flags: u64, lock_flags: u32,
     idmap: Option<Arc<crate::idmap::Idmap>>)
     -> KResult<(Arc<Mount>, mntns::MntNamespaceRef)>
 {
-    let root_is_dir = sb.s_root()
-        .and_then(|d| d.inode())
-        .is_some_and(|i| matches!(i.file_type(), crate::FileType::Directory));
-    if !root_is_dir { return Err(VfsError::Enotdir); }
-    create_mount_in_new_ns(sb, mnt_flags, lock_flags, idmap, false)
+    super::create_new_namespace(super::NsMountSource::NewSuperblock {
+        sb, mnt_flags, lock_flags, idmap,
+    })
 }
 
-fn create_mount_in_new_ns(sb: Arc<SuperBlock>, mnt_flags: u64, lock_flags: u32,
-    idmap: Option<Arc<crate::idmap::Idmap>>, anon: bool)
-    -> KResult<(Arc<Mount>, mntns::MntNamespaceRef)>
+fn create_mount_in_anon_ns(sb: Arc<SuperBlock>, mnt_flags: u64, lock_flags: u32,
+    idmap: Option<Arc<crate::idmap::Idmap>>) -> KResult<Arc<Mount>>
 {
     // The namespace is owned by the caller's user namespace, as the reference's
     // `alloc_mnt_ns(current->nsproxy->mnt_ns->user_ns, …)` is.
     let owner = mntns::current_namespace().owner_user_namespace();
-    let ns = if anon { mntns::allocate_anon(owner) } else { mntns::allocate(owner) }
-        .map_err(|_| VfsError::Enomem)?;
+    let ns = mntns::allocate_anon(owner).map_err(|_| VfsError::Enomem)?;
     let mnt_id = NEXT_MNT_ID.fetch_add(1, Ordering::Relaxed);
     let m = new_mount_for_anon(sb, String::from("/"), mnt_id, ns.id());
     if mnt_flags != 0 { m.flags.store(mnt_flags & super::MNT_OPTION_MASK, Ordering::Release); }
@@ -90,13 +74,10 @@ fn create_mount_in_new_ns(sb: Arc<SuperBlock>, mnt_flags: u64, lock_flags: u32,
     ns.nr_mounts.store(1, Ordering::Release);
     // An ANONYMOUS namespace is referred to by nothing else, so the mount has
     // to hold it or it dies here and reaps the mount with it; `dissolve_anon`
-    // cuts that link when the descriptor goes. A NAMED namespace is held by the
-    // descriptor instead, and must NOT be held from here as well — the arena
-    // retains the mount and the namespace's teardown is what empties the arena,
-    // so a mount retaining its own namespace would keep both alive forever.
-    if anon { *m.anon_ns.lock() = Some(Arc::clone(&ns)); }
+    // cuts that link when the descriptor goes.
+    *m.anon_ns.lock() = Some(Arc::clone(&ns));
     mounts_publish_anon(Arc::clone(&m));
-    Ok((m, ns))
+    Ok(m)
 }
 
 /// Linux `anon_ns_root()`: is `m` still the root of an anonymous namespace?

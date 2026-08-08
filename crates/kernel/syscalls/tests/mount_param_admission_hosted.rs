@@ -11,9 +11,9 @@
 // Drives the ungated `mount_dispatch::dispatch_mount` against the real `vfs`
 // mount engine, hosted, no boot.
 //
-// This integration test compiles production modules directly via `#[path]` to
-// assert their ABI shape, and exercises only the part of each module the shape
-// under test needs. dead_code here measures the test's reach, not the kernel's.
+// Calls the LINKED `syscalls::mount_dispatch` — the same compilation the kernel
+// gets — not a `#[path]` copy of the source compiled into this binary. dead_code
+// below measures this test's own fixture reach, not the kernel's.
 #![allow(dead_code)]
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -21,23 +21,14 @@ extern crate alloc;
 
 use syscall::errno::Errno;
 use vfs::fs::{FileSystem, FsFlags, FsParamSpec, FsParamType, FsType};
-use mount_dispatch::MountCaps;
+use syscalls::mount_dispatch::{dispatch_mount, MountCaps};
 use vfs::inode::Inode;
 use vfs::{Dentry, FileType, InodeBuilder, InodeOps, InodeRef, KResult};
 
 #[path = "../../vfs/tests/common/mod.rs"]
 mod common;
 
-#[path = "../src/namei_common/errno.rs"]
-mod namei_common;
 
-// `mount_capable` is its own ungated module so the user-namespace rung is
-// testable on its own; `mount_dispatch` names it through the crate root, which
-// here is this test binary.
-#[path = "../src/mount_capable.rs"]
-mod mount_capable;
-#[path = "../src/fsmount_common/mount_dispatch.rs"]
-mod mount_dispatch;
 
 static SERIAL: Mutex<()> = Mutex::new(());
 static CUR_NS: Mutex<Option<vfs::mntns::MntNamespaceRef>> = Mutex::new(None);
@@ -150,7 +141,7 @@ fn an_undeclared_option_now_fails_the_real_mount() {
 
     // FAILS-BEFORE: this returned 0 and grafted a mount whose option string was
     // handed to the constructor unexamined.
-    let rv = mount_dispatch::dispatch_mount(None, "adm_decl_a", "/mnt/point", &target_d, None,
+    let rv = dispatch_mount(None, "adm_decl_a", "/mnt/point", &target_d, None,
         "size=64m,nosuchoption=1", 0, ROOT_CAPS);
     assert_eq!(rv, eno(Errno::Einval), "a key outside the table must fail the mount");
     assert!(vfs::mount::mount_at_path_exact(&target_d).is_none(),
@@ -165,7 +156,7 @@ fn a_declared_option_still_mounts_and_reaches_the_constructor() {
     register_declared("adm_decl_b", FsFlags::empty());
     let target_d = mount_tree("adm-b");
 
-    let rv = mount_dispatch::dispatch_mount(None, "adm_decl_b", "/mnt/point", &target_d, None,
+    let rv = dispatch_mount(None, "adm_decl_b", "/mnt/point", &target_d, None,
         "size=64m,mode=0700,noswap", 0, ROOT_CAPS);
     assert_eq!(rv, 0);
     let (_src, target, data) = seen();
@@ -183,7 +174,7 @@ fn a_value_key_given_as_a_bare_word_is_refused_not_read_as_a_device() {
     let _g = guard();
     register_declared("adm_decl_c", FsFlags::empty());
     let target_d = mount_tree("adm-c");
-    assert_eq!(mount_dispatch::dispatch_mount(None, "adm_decl_c", "/mnt/point", &target_d, None,
+    assert_eq!(dispatch_mount(None, "adm_decl_c", "/mnt/point", &target_d, None,
         "size", 0, ROOT_CAPS), eno(Errno::Einval));
     assert!(vfs::mount::mount_at_path_exact(&target_d).is_none());
 }
@@ -197,7 +188,7 @@ fn superblock_keywords_in_the_data_string_are_consumed_not_refused() {
     let _g = guard();
     register_declared("adm_decl_d", FsFlags::empty());
     let target_d = mount_tree("adm-d");
-    assert_eq!(mount_dispatch::dispatch_mount(None, "adm_decl_d", "/mnt/point", &target_d, None,
+    assert_eq!(dispatch_mount(None, "adm_decl_d", "/mnt/point", &target_d, None,
         "ro,noswap", 0, ROOT_CAPS), 0);
     let (_s, _t, data) = seen();
     assert_eq!(data, "noswap", "`ro` is a superblock flag, not a backend option");
@@ -217,7 +208,7 @@ fn a_filesystem_without_a_table_still_receives_its_blob_verbatim() {
     let target_d = mount_tree("adm-legacy-a");
 
     let blob = "gid=5,mode=620,ptmxmode=000,nosuchoption";
-    assert_eq!(mount_dispatch::dispatch_mount(None, "adm_legacy_a", "/mnt/point", &target_d, None,
+    assert_eq!(dispatch_mount(None, "adm_legacy_a", "/mnt/point", &target_d, None,
         blob, 0, ROOT_CAPS), 0, "an unconverted filesystem refuses nothing");
     let (_s, _t, data) = seen();
     assert_eq!(data, blob, "the blob is not split, reordered, or re-rendered");
@@ -229,7 +220,7 @@ fn the_source_and_target_still_reach_an_unconverted_constructor() {
     let _g = guard();
     register_legacy("adm_legacy_b");
     let target_d = mount_tree("adm-legacy-b");
-    assert_eq!(mount_dispatch::dispatch_mount(Some("/dev/vda1"), "adm_legacy_b", "/mnt/point",
+    assert_eq!(dispatch_mount(Some("/dev/vda1"), "adm_legacy_b", "/mnt/point",
         &target_d, None, "", 0, ROOT_CAPS), 0);
     let (src, target, data) = seen();
     assert_eq!(src.as_deref(), Some("/dev/vda1"));
@@ -249,11 +240,11 @@ fn options_are_judged_before_privilege() {
     register_declared("adm_decl_e", FsFlags::empty());   // no FS_USERNS_MOUNT
     let target_d = mount_tree("adm-e");
 
-    assert_eq!(mount_dispatch::dispatch_mount(None, "adm_decl_e", "/mnt/point", &target_d, None,
+    assert_eq!(dispatch_mount(None, "adm_decl_e", "/mnt/point", &target_d, None,
         "nosuchoption", 0, USERNS_CAPS), eno(Errno::Einval),
         "the malformed option is the reason, not the caller's privilege");
     // Same caller, same filesystem, VALID options: now privilege is the reason.
-    assert_eq!(mount_dispatch::dispatch_mount(None, "adm_decl_e", "/mnt/point", &target_d, None,
+    assert_eq!(dispatch_mount(None, "adm_decl_e", "/mnt/point", &target_d, None,
         "noswap", 0, USERNS_CAPS), eno(Errno::Eperm));
     assert!(vfs::mount::mount_at_path_exact(&target_d).is_none());
 }
@@ -265,7 +256,7 @@ fn a_device_backed_filesystem_without_a_source_is_einval() {
     let _g = guard();
     register_declared("adm_decl_f", FsFlags::FS_REQUIRES_DEV);
     let target_d = mount_tree("adm-f");
-    assert_eq!(mount_dispatch::dispatch_mount(None, "adm_decl_f", "/mnt/point", &target_d, None,
+    assert_eq!(dispatch_mount(None, "adm_decl_f", "/mnt/point", &target_d, None,
         "noswap", 0, ROOT_CAPS), eno(Errno::Einval));
     assert!(SEEN.lock().unwrap().is_none(), "no constructor runs without the device");
     assert!(vfs::mount::mount_at_path_exact(&target_d).is_none());

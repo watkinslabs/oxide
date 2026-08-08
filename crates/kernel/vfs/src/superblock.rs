@@ -40,6 +40,10 @@ pub use ops::{FileSystemType, SbStatFs, SimpleSuperOps, SuperOps};
 pub use registry::{fs_supers, next_anon_dev, register_super, sb_by_dev, sget, sget_result, sget_reused};
 pub use userns::{clear_current_user_ns_hook, set_current_user_ns_hook};
 pub(crate) use registry::alloc_anon_minor;
+// `current_user_ns()` for the layers that need the CALLER's user namespace, not
+// the superblock's: the mount-namespace constructor decides slave propagation on
+// exactly this comparison.
+pub(crate) use userns::mounting_user_ns;
 
 type FreezeParkHook = fn(usize);
 type FreezeScheduleHook = fn();

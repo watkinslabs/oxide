@@ -1,6 +1,6 @@
 // B1478: the SYSCALL-layer half of `mount_too_revealing`. Drives the extracted
 // `mount_dispatch::dispatch_mount` (ungated pure fn,
-// `src/fsmount_common/mount_dispatch.rs` — the body of `mount(2)`'s
+// `src/mount_dispatch.rs` — the body of `mount(2)`'s
 // new-superblock arm) against the real `vfs` mount engine, hosted.
 //
 // The vfs-side decision is proven in `vfs/tests/mount_too_revealing.rs`; this
@@ -16,10 +16,9 @@
 // It also proves `superblock_from_filesystem` stamps `s_iflags` from the
 // backend — without that, EVERY user-namespace mount of a
 // FS_USERNS_MOUNT_RESTRICTED type is refused by the `required_iflags` branch.
-// This integration test compiles production modules directly via `#[path]` to
-// assert their ABI shape, and exercises only the part of each module the shape
-// under test needs. dead_code here measures the test's reach, not the kernel's
-// -- the real signal lives in `xtask kernel`, which is dead_code-clean.
+// Calls the LINKED `syscalls::mount_dispatch` — the same compilation the kernel
+// gets — not a `#[path]` copy of the source compiled into this binary. dead_code
+// below measures this test's own fixture reach, not the kernel's.
 #![allow(dead_code)]
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -28,7 +27,7 @@ extern crate alloc;
 use namespace_identity::{NamespaceKind, NamespaceRef};
 use syscall::errno::Errno;
 use vfs::fs::{FileSystem, FsFlags, FsType};
-use mount_dispatch::MountCaps;
+use syscalls::mount_dispatch::{dispatch_mount, MountCaps};
 use vfs::inode::Inode;
 use vfs::mount::{MNT_LOCK_ATIME, MNT_LOCK_READONLY, MNT_RDONLY, MNT_RELATIME, MS_RDONLY};
 use vfs::superblock::SB_I_USERNS_REQUIRED;
@@ -37,16 +36,7 @@ use vfs::{FileType, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 #[path = "../../vfs/tests/common/mod.rs"]
 mod common;
 
-#[path = "../src/namei_common/errno.rs"]
-mod namei_common;
 
-// `mount_capable` is its own ungated module so the user-namespace rung is
-// testable on its own; `mount_dispatch` names it through the crate root, which
-// here is this test binary.
-#[path = "../src/mount_capable.rs"]
-mod mount_capable;
-#[path = "../src/fsmount_common/mount_dispatch.rs"]
-mod mount_dispatch;
 
 static SERIAL: Mutex<()> = Mutex::new(());
 static CUR_NS: Mutex<Option<vfs::mntns::MntNamespaceRef>> = Mutex::new(None);
@@ -147,7 +137,7 @@ fn a_userns_caller_cannot_mount_a_revealing_procfs() {
     // yes (CAP_SYS_ADMIN inside the userns) — and before this fix nothing else
     // was consulted, so the caller got a pristine instance showing everything
     // its own namespace's procfs had covered.
-    let rv = mount_dispatch::dispatch_mount(None, "revealproc", "/mnt/point", &target_d, None, "",
+    let rv = dispatch_mount(None, "revealproc", "/mnt/point", &target_d, None, "",
         0, USERNS_CAPS);
     assert_eq!(rv, eno(Errno::Eperm), "no already-visible instance ⇒ EPERM");
     assert!(vfs::mount::mount_at_path_exact(&target_d).is_none(), "a refused mount grafts nothing");
@@ -163,7 +153,7 @@ fn the_same_mount_succeeds_once_an_instance_is_already_visible() {
 
     // The NON-refusal half: `unshare -Urm --mount-proc` must keep working, so a
     // "refuse every userns mount" implementation cannot read as a pass here.
-    assert_eq!(mount_dispatch::dispatch_mount(None, "revealproc", "/mnt/point", &target_d, None, "",
+    assert_eq!(dispatch_mount(None, "revealproc", "/mnt/point", &target_d, None, "",
         0, USERNS_CAPS), 0);
     assert!(vfs::mount::mount_at_path_exact(&target_d).is_some(), "and it really grafted");
 }
@@ -179,7 +169,7 @@ fn the_initial_user_namespace_is_unaffected() {
     common::register("/", Arc::new(RootFs { tag: "reveal-c" })).expect("root mount");
     let target_d = common::dentry("/mnt/point");
 
-    assert_eq!(mount_dispatch::dispatch_mount(None, "revealproc", "/mnt/point", &target_d, None, "",
+    assert_eq!(dispatch_mount(None, "revealproc", "/mnt/point", &target_d, None, "",
         0, ROOT_CAPS), 0, "`ns->user_ns == &init_user_ns` ⇒ never too revealing");
     assert!(vfs::mount::mount_at_path_exact(&target_d).is_some());
 }
@@ -194,13 +184,13 @@ fn the_visible_instances_locks_are_forced_onto_and_installed_on_the_new_mount() 
     let target_d = common::dentry("/mnt/point");
 
     // A read-WRITE instance would launder away the read-only lock.
-    assert_eq!(mount_dispatch::dispatch_mount(None, "revealproc", "/mnt/point", &target_d, None, "",
+    assert_eq!(dispatch_mount(None, "revealproc", "/mnt/point", &target_d, None, "",
         0, USERNS_CAPS), eno(Errno::Eperm), "mount -t revealproc (rw) against a locked-ro instance");
     assert!(vfs::mount::mount_at_path_exact(&target_d).is_none(), "nothing grafted");
 
     // `mount -o ro` reproduces the lock, so it is admitted — and the mount that
     // lands carries the inherited MNT_LOCK_* bits, not just the option bits.
-    assert_eq!(mount_dispatch::dispatch_mount(None, "revealproc", "/mnt/point", &target_d, None, "",
+    assert_eq!(dispatch_mount(None, "revealproc", "/mnt/point", &target_d, None, "",
         MS_RDONLY, USERNS_CAPS), 0);
     let m = vfs::mount::mount_at_path_exact(&target_d).expect("grafted");
     assert_eq!(m.internal_flags() & (MNT_LOCK_READONLY | MNT_LOCK_ATIME),
@@ -218,7 +208,7 @@ fn a_locked_child_on_the_visible_instance_re_arms_the_refusal() {
     unprivileged_ns("reveal-e");
     graft_visible("/proc", MNT_RELATIME);
     let target_d = common::dentry("/mnt/point");
-    assert_eq!(mount_dispatch::dispatch_mount(None, "revealproc", "/mnt/point", &target_d, None, "",
+    assert_eq!(dispatch_mount(None, "revealproc", "/mnt/point", &target_d, None, "",
         0, USERNS_CAPS), 0, "fully visible ⇒ allowed");
     vfs::mount::unregister(&target_d);
 
@@ -230,7 +220,7 @@ fn a_locked_child_on_the_visible_instance_re_arms_the_refusal() {
     vfs::mount::mount_at_path_exact(&mask_d).expect("the mask").set_internal_flag(
         vfs::mount::MNT_LOCKED);
 
-    assert_eq!(mount_dispatch::dispatch_mount(None, "revealproc", "/mnt/point", &target_d, None, "",
+    assert_eq!(dispatch_mount(None, "revealproc", "/mnt/point", &target_d, None, "",
         0, USERNS_CAPS), eno(Errno::Eperm), "a locked child vetoes the vouch");
     assert!(vfs::mount::mount_at_path_exact(&target_d).is_none());
 }
