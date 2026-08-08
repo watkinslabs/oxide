@@ -41,8 +41,6 @@ pub struct Ipv6GetState {
     pub mtu: u32,
     /// Sticky extension headers, in slot order.
     pub headers: [Option<Vec<u8>>; Sticky::COUNT],
-    /// `IPV6_PKTINFO`'s `in6_pktinfo` payload: source address then ifindex.
-    pub pktinfo: [u8; 20],
     /// `IPV6_ADDRFORM` reports the family the socket currently carries.
     pub family: i32,
 }
@@ -79,7 +77,6 @@ pub fn read(optname: u64, sock: Ipv6Sock, s: &Ipv6GetState) -> Result<Value, Err
         }
         IPV6_V6ONLY => Value::Int(i32::from(s.v6only)),
         IPV6_RECVPKTINFO => bit(RECVPKTINFO),
-        IPV6_PKTINFO => Value::Bytes(s.pktinfo.to_vec()),
         IPV6_2292PKTINFO => bit(flag::RXOINFO),
         IPV6_RECVHOPLIMIT => bit(RECVHOPLIMIT),
         IPV6_2292HOPLIMIT => bit(flag::RXOHLIM),

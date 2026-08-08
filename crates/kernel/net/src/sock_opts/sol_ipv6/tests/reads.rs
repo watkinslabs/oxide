@@ -26,14 +26,18 @@ fn an_unset_hop_limit_resolves_through_the_route_then_the_default() {
     assert_eq!(get::read(IPV6_UNICAST_HOPS, dgram(), &named), Ok(Value::Int(5)));
 }
 
+// The sticky source this option writes has no read of its own: it is a write
+// and a per-message ancillary type, and the only interface that publishes it
+// back is the receive control message. Its real consumer is source selection
+// on transmit, so answering the read would be the second reader, not the
+// first.
 #[test]
-fn sticky_pktinfo_reads_back_as_an_in6_pktinfo() {
-    let mut pktinfo = [0u8; 20];
-    pktinfo[..16].copy_from_slice(&[0x20, 1, 0x0d, 0xb8, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0, 0, 9]);
-    pktinfo[16..].copy_from_slice(&7u32.to_ne_bytes());
-    let s = Ipv6GetState { pktinfo, ..state() };
-    assert_eq!(get::read(IPV6_PKTINFO, dgram(), &s), Ok(Value::Bytes(pktinfo.to_vec())));
+fn the_sticky_source_option_has_no_readback() {
+    assert_eq!(get::read(IPV6_PKTINFO, dgram(), &state()), Err(Errno::Enoprotoopt));
+    assert_eq!(get::read(IPV6_PKTINFO, stream(), &state()), Err(Errno::Enoprotoopt));
+    // The ancillary form of the same number stays readable as the receive
+    // personality bit it is.
+    assert!(get::read(IPV6_2292PKTINFO, dgram(), &state()).is_ok());
 }
 
 #[test]
