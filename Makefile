@@ -46,7 +46,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         stack-gate stack-gate-x86 stack-gate-arm \
         irq-gate irq-gate-x86 irq-gate-arm \
         feature-gate feature-gate-x86 feature-gate-arm feature-gate-atexit \
-        hosted-gate test-build-gate hosted-global-gate \
+        hosted-gate test-build-gate \
         smoke-ping smoke-ping-x86 smoke-ping-arm \
         stack-gate-baseline-x86 stack-gate-baseline-arm stack-report \
         clean clean-builds help
@@ -139,7 +139,7 @@ counters:
 # the same canonical ELF paths, and the size/depth gates contractually inspect
 # the default binary. Build debug-all first, then overwrite it with default.
 .NOTPARALLEL: ci
-ci: warnings-control lint-ratchet audit-counts matrix-gate hosted-global-gate hosted-gate test-build-gate test build-debug build frame-gate stack-gate irq-gate
+ci: warnings-control lint-ratchet audit-counts matrix-gate hosted-gate test-build-gate test build-debug build frame-gate stack-gate irq-gate
 
 # Structural gate on the syscall compliance ledger: one row per syscall number,
 # the declared column count on every row (escape-aware, so `\|` inside a cell is
@@ -162,6 +162,12 @@ matrix-gate:
 # gate fails on a NEW unguarded candidate and on a backlog row whose candidate
 # has since been guarded, so `tools/hosted-global-state-backlog.tsv` can only
 # shrink. `--list` prints the full audit including the guarded candidates.
+# Not in `ci`: the audit's result currently depends on which worktree runs
+# it -- the same commit, with identical tracked files and an identical set
+# of scanned sources, reports clean in one checkout and reports problems in
+# another, deterministically in each. Until that is understood the gate
+# cannot decide a PR. Run it by hand; the tool, its backlog and its findings
+# stay live so the audit data is not lost.
 hosted-global-gate:
 	python3 tools/hosted-global-audit.py --self-test
 	python3 tools/hosted-global-audit.py
