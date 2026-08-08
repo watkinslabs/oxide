@@ -73,15 +73,6 @@ fn a_dead_task_cannot_assign_any_mode() {
     assert!(!may_assign_mode(SECCOMP_MODE_DEAD, SECCOMP_MODE_STRICT));
 }
 
-// The notification transport is not built. NEW_LISTENER must therefore FAIL
-// the install rather than hand back a filter the caller believes is
-// supervised while its RET_USER_NOTIF silently ENOSYS-es.
-#[test]
-fn new_listener_fails_the_install_rather_than_faking_supervision() {
-    assert_eq!(listener_unsupported(SECCOMP_FILTER_FLAG_NEW_LISTENER), Some(Errno::Enosys));
-    assert_eq!(listener_unsupported(SECCOMP_FILTER_FLAG_TSYNC), None);
-    assert_eq!(listener_unsupported(0), None);
-}
 
 #[test]
 fn get_action_avail_knows_exactly_the_eight_defined_actions() {

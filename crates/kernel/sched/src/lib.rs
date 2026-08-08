@@ -202,6 +202,7 @@ mod stub_tests {
 }
 
 pub mod affinity;
+pub mod rwsem;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub mod cgroup;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]

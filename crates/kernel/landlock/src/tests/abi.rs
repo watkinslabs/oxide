@@ -182,6 +182,30 @@ fn a_port_rule_may_not_name_a_port_above_the_sixteen_bit_range() {
     assert_eq!(net_port_ok(PORT_MAX + 1), Err(Errno::Einval));
 }
 
+// A hierarchy rule may only be anchored on a descriptor a path walk can
+// reach. Every other kind — a ruleset fd, a pipe or socket with no vfsmount,
+// an anonymous-inode fd, a filesystem userspace cannot mount — is EBADFD:
+// open and valid, but the wrong kind of descriptor. Anchoring a rule there
+// would store a rule that can never match, i.e. a sandbox the caller believes
+// grants an access it does not.
+#[test]
+fn only_a_descriptor_reachable_by_a_path_walk_may_anchor_a_rule() {
+    let walkable = RuleTargetFd { is_ruleset: false, has_mount: true,
+                                  is_anon: false, sb_nouser: false };
+    assert_eq!(rule_target_fd_ok(walkable), Ok(()));
+    assert_eq!(rule_target_fd_ok(RuleTargetFd { is_ruleset: true, ..walkable }),
+               Err(Errno::Ebadfd));
+    assert_eq!(rule_target_fd_ok(RuleTargetFd { has_mount: false, ..walkable }),
+               Err(Errno::Ebadfd));
+    assert_eq!(rule_target_fd_ok(RuleTargetFd { is_anon: true, ..walkable }),
+               Err(Errno::Ebadfd));
+    assert_eq!(rule_target_fd_ok(RuleTargetFd { sb_nouser: true, ..walkable }),
+               Err(Errno::Ebadfd));
+    // The default is every disqualifier at once, so a caller that forgets to
+    // fill the struct refuses rather than admits.
+    assert_eq!(rule_target_fd_ok(RuleTargetFd::default()), Err(Errno::Ebadfd));
+}
+
 #[test]
 fn a_rule_on_a_file_may_only_carry_file_rights() {
     assert_eq!(path_target_ok(false, ACCESS_FS_READ_FILE), Ok(()));

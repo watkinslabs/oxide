@@ -126,6 +126,34 @@ pub fn net_port_ok(port: u64) -> Result<(), Errno> {
     Ok(())
 }
 
+/// What a descriptor offered as a rule's `parent_fd` is, as far as rule
+/// admission cares. Gathered by the caller so the decision stays pure.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct RuleTargetFd {
+    /// The descriptor is a ruleset fd: it names a policy, not a hierarchy.
+    pub is_ruleset: bool,
+    /// The descriptor was opened through a real mount. False for a descriptor
+    /// with no vfsmount at all — a pipe, a socket, an event fd.
+    pub has_mount: bool,
+    /// The inode came from an anonymous-inode factory.
+    pub is_anon: bool,
+    /// The filesystem behind the descriptor is not mountable by userspace.
+    pub sb_nouser: bool,
+}
+
+/// Admission for the descriptor a hierarchy rule is anchored on.
+///
+/// A rule may only name an object a path walk can reach. A descriptor with no
+/// mount behind it — a pipe, a socket, an anonymous-inode fd — names no
+/// hierarchy, so a rule anchored there could never match and the caller would
+/// believe it had granted an access it has not. The failure is EBADFD rather
+/// than EBADF: the descriptor is open and valid, it is the wrong KIND.
+/// # C: O(1)
+pub fn rule_target_fd_ok(t: RuleTargetFd) -> Result<(), Errno> {
+    if t.is_ruleset || !t.has_mount || t.is_anon || t.sb_nouser { return Err(Errno::Ebadfd); }
+    Ok(())
+}
+
 /// A rule anchored on a non-directory may only carry rights that mean something
 /// for a single file; directory-shaped rights on a file would silently never
 /// apply.

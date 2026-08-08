@@ -32,6 +32,10 @@ pub enum Verdict {
     /// with no `PTRACE_EVENT_SECCOMP` tracer and `RET_USER_NOTIF` with no
     /// listener.
     Skip { ret: i64 },
+    /// `SECCOMP_RET_USER_NOTIF` from a filter that OWNS a listener: hand the
+    /// syscall to that supervisor and wait for its answer. `entry::check`
+    /// resolves it into `Allow` or `Skip`, so the shim never sees one.
+    UserNotif { listener: u64 },
     /// `SECCOMP_RET_TRAP` — roll the syscall back, raise a CATCHABLE
     /// `SIGSYS`, skip the call.
     Trap(Sigsys),
@@ -83,6 +87,16 @@ pub fn more_restrictive(a: u32, b: u32) -> bool {
 /// falls into the KILL arm with Linux, never into ALLOW.
 /// # C: O(1)
 pub fn decide(filter_ret: u32, d: &SeccompData, tracer_armed: bool) -> Verdict {
+    decide_with_listener(filter_ret, d, tracer_armed, None)
+}
+
+/// `__seccomp_filter`'s action switch with `*match`'s listener in hand.
+///
+/// `listener` is the user-notification listener of the filter that produced
+/// `filter_ret`, `None` when that filter has none.
+/// # C: O(1)
+pub fn decide_with_listener(filter_ret: u32, d: &SeccompData, tracer_armed: bool,
+                            listener: Option<u64>) -> Verdict {
     let data = (filter_ret & SECCOMP_RET_DATA) as u16;
     let sigsys = Sigsys { call_addr: d.ip, syscall: d.nr, arch: d.arch, errno: data as i32 };
     match filter_ret & SECCOMP_RET_ACTION_FULL {
@@ -102,13 +116,15 @@ pub fn decide(filter_ret: u32, d: &SeccompData, tracer_armed: bool) -> Verdict {
             // that denies by tracing MUST NOT let the syscall through.
             else { Verdict::Skip { ret: enosys() } }
         }
-        // `seccomp_do_user_notification` opens with `err = -ENOSYS; if
-        // (!match->notif) goto out;`, and `out:` sets that as the return
-        // value and skips the call. No filter here can own a listener —
-        // `SECCOMP_FILTER_FLAG_NEW_LISTENER` install fails, see
-        // `install::listener_unsupported` — so every RET_USER_NOTIF takes
-        // exactly that listener-less path.
-        SECCOMP_RET_USER_NOTIF => Verdict::Skip { ret: enosys() },
+        // With a listener the syscall goes to that supervisor and waits.
+        // Without one — the filter never asked for a listener, or the
+        // listener fd has been closed — the call is ENOSYS'd and skipped: a
+        // filter that meant the call to be examined must not let it through
+        // unexamined.
+        SECCOMP_RET_USER_NOTIF => match listener {
+            Some(l) => Verdict::UserNotif { listener: l },
+            None => Verdict::Skip { ret: enosys() },
+        },
         SECCOMP_RET_KILL_PROCESS => Verdict::KillProcess(sigsys),
         SECCOMP_RET_KILL_THREAD  => Verdict::KillThread(sigsys),
         _ => Verdict::KillProcess(sigsys),

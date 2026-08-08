@@ -135,12 +135,29 @@ pub fn run_filter(prog: &[u64], data: &SeccompData) -> u32 {
 /// `SECCOMP_MODE_FILTER`.
 /// # C: O(F x I)
 pub fn run_chain(chain: &[sched::seccomp_filter::SeccompFilter], data: &SeccompData) -> u32 {
+    run_chain_match(chain, data).0
+}
+
+/// `seccomp_run_filters` including its `*match` output: the winning return
+/// AND the user-notification listener of the filter that produced it.
+///
+/// The walk is NEWEST filter first and replaces the result only on a STRICTLY
+/// more restrictive return, so on a tie the most recently installed filter
+/// wins. That is what lets a newly installed `SECCOMP_RET_USER_NOTIF` filter
+/// supervise calls an older one also notifies on; walking oldest-first hands
+/// every such call to the outer supervisor instead.
+/// # C: O(F x I)
+pub fn run_chain_match(chain: &[sched::seccomp_filter::SeccompFilter], data: &SeccompData)
+    -> (u32, Option<u64>)
+{
     let mut ret = SECCOMP_RET_ALLOW;
-    for f in chain.iter() {
+    let mut listener = None;
+    for f in chain.iter().rev() {
         let cur = run_filter(&f.prog, data);
         if ((cur & SECCOMP_RET_ACTION_FULL) as i32) < ((ret & SECCOMP_RET_ACTION_FULL) as i32) {
             ret = cur;
+            listener = f.listener;
         }
     }
-    ret
+    (ret, listener)
 }

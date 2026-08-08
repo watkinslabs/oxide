@@ -96,7 +96,13 @@ mod tests {
         let sqe = include_str!("io_uring_sqe.rs");
 
         assert_eq!(socket.matches("socket_fd::install").count(), 1);
-        assert_eq!(accept.matches("socket_fd::install").count(), 2);
+        // `accept` cannot publish in one step: its descriptor is reserved
+        // BEFORE the connection leaves the listener's queue, so the two halves
+        // are separated by the whole accept. `sock_route::accept_route` owns
+        // and tests that order; here we only pin that this route no longer
+        // reaches for the one-step publication that would undo it.
+        assert!(!accept.contains("socket_fd::install"));
+        assert_eq!(accept.matches("sock_route::accept_route(").count(), 1);
         assert!(!socket.contains("alloc_limit"));
         assert!(!accept.contains("alloc_limit"));
         assert!(!socket.contains("set_cloexec"));

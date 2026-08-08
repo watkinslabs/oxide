@@ -38,7 +38,7 @@ use vfs::{InodeRef, KResult};
 use crate::StaticFileInode;
 use crate::sysctl::{bound_sysctl_inode, SysctlInode};
 use crate::proc_handler::{
-    CheckedIntHook as HCheckedIntHook, IntHook as HIntHook, IntVar, NetGlobalIntHook as HNetGlobalIntHook,
+    CheckedIntHook as HCheckedIntHook, IntHook as HIntHook, IntVar, PermIntHook as HPermIntHook, NetGlobalIntHook as HNetGlobalIntHook,
     PerNetIntHook as HPerNetIntHook,
     PerPidIntHook as HPerPidIntHook,
     PerNetU16PairHook as HPerNetU16PairHook,
@@ -78,6 +78,9 @@ enum Leaf {
     /// `proc_dointvec_minmax` whose setter can REFUSE the write, for a value
     /// with a constraint the static bounds cannot express (a one-way ratchet).
     CheckedIntHook(fn() -> i64, fn(i64) -> Result<(), ()>, Option<(i64, i64)>),
+    /// `proc_dointvec_minmax` whose setter answers EPERM rather than EINVAL
+    /// when it refuses — a knob guarded by a capability or a one-way latch.
+    PermIntHook(fn() -> i64, fn(i64) -> KResult<()>, Option<(i64, i64)>),
     /// A `net/core` leaf whose backing variable is one global, writable only
     /// from the initial network namespace.
     NetGlobalIntHook(fn() -> i64, fn(i64), Option<(i64, i64)>),
@@ -297,6 +300,8 @@ fn make_leaf(leaf: &Leaf) -> InodeRef {
         Leaf::IntHook(get, set, bounds) => bound_sysctl_inode(Arc::new(HIntHook { get, set, bounds })),
         Leaf::CheckedIntHook(get, set, bounds) =>
             bound_sysctl_inode(Arc::new(HCheckedIntHook { get, set, bounds })),
+        Leaf::PermIntHook(get, set, bounds) =>
+            bound_sysctl_inode(Arc::new(HPermIntHook { get, set, bounds })),
         Leaf::NetGlobalIntHook(get, set, bounds) => bound_sysctl_inode(Arc::new(
             HNetGlobalIntHook { current_ns: current_net_ns, get, set, bounds })),
         ULong(def, bounds) => {
