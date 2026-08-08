@@ -21,6 +21,7 @@ fn routed_capture(stack: &NetStack, mtu: u32, dst: Ipv4Addr)
 
 #[test]
 fn non_hdrincl_transmit_supports_arbitrary_protocol_and_fragments() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let dst = Ipv4Addr::new(198, 51, 100, 20);
     let (_iface, dev) = routed_capture(&stack, 68, dst);
@@ -43,6 +44,7 @@ fn non_hdrincl_transmit_supports_arbitrary_protocol_and_fragments() {
 
 #[test]
 fn want_small_packet_clears_df_on_locked_pmtu_route() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let dst = Ipv4Addr::new(198, 51, 100, 21);
     let (iface, dev) = routed_capture(&stack, 1_500, dst);
@@ -63,6 +65,7 @@ fn want_small_packet_clears_df_on_locked_pmtu_route() {
 
 #[test]
 fn broadcast_transmit_requires_permission() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (_iface, dev) = routed_capture(&stack, 1_500, Ipv4Addr::BROADCAST);
     let raw = initial_endpoint(PROTOCOL);
@@ -76,6 +79,7 @@ fn broadcast_transmit_requires_permission() {
 
 #[test]
 fn hdrincl_rewrites_kernel_fields_preserves_user_header_and_never_fragments() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let dst = Ipv4Addr::new(203, 0, 113, 9);
     let (_iface, dev) = routed_capture(&stack, 80, dst);

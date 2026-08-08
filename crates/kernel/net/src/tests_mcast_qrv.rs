@@ -77,6 +77,7 @@ fn set_mld_qrv(query: &mut [u8], src: Ipv6Addr, qrv: u8) {
 
 #[test]
 fn learned_igmp_qrv_bounds_persistent_failed_change_transmissions() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     const QRV: usize = 5;
     let stack = NetStack::new();
     let dev = Arc::new(FailingXmitDev::new());
@@ -112,6 +113,7 @@ fn learned_igmp_qrv_bounds_persistent_failed_change_transmissions() {
 
 #[test]
 fn learned_mld_qrv_bounds_persistent_failed_change_transmissions() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     const QRV: usize = 6;
     let stack = NetStack::new();
     let dev = Arc::new(FailingXmitDev::new());

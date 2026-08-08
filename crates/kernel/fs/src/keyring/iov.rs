@@ -31,11 +31,13 @@ fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 pub trait UserMem {
     /// `access_ok` for `[base, base+len)` with `align` alignment. # C: O(1)
     fn validate(&mut self, base: u64, len: u64, align: u64) -> Result<(), i64>;
-    /// One `unsigned long` out of the already-validated iovec array. # C: O(1)
-    fn read_word(&mut self, at: u64) -> u64;
+    /// One `unsigned long` out of the already-validated iovec array. Fallible
+    /// because the read itself can fault: validation happened at an earlier
+    /// instant and nothing pins the mapping in between. # C: O(1)
+    fn read_word(&mut self, at: u64) -> Result<u64, i64>;
     /// Append `len` bytes from `base` to `out`. Called ONLY after every
     /// segment has been validated. # C: O(len)
-    fn copy_in(&mut self, base: u64, len: u64, out: &mut Vec<u8>);
+    fn copy_in(&mut self, base: u64, len: u64, out: &mut Vec<u8>) -> Result<(), i64>;
 }
 
 /// Gather `n` segments starting at `p` into one payload.
@@ -61,8 +63,8 @@ pub fn gather(m: &mut dyn UserMem, p: u64, n: u64) -> Result<Vec<u8>, i64> {
     let mut total: u64 = 0;
     for i in 0..n {
         let e = p + i * IOVEC_SIZE;
-        let base = m.read_word(e);
-        let len = m.read_word(e + IOVEC_LEN_OFFSET);
+        let base = m.read_word(e)?;
+        let len = m.read_word(e + IOVEC_LEN_OFFSET)?;
         if len == 0 { continue; }
         total = total.checked_add(len).ok_or(err(Errno::Einval))?;
         if total > KEY_MAX_PAYLOAD { return Err(err(Errno::Einval)); }
@@ -70,7 +72,7 @@ pub fn gather(m: &mut dyn UserMem, p: u64, n: u64) -> Result<Vec<u8>, i64> {
         segs.push((base, len));
     }
     let mut out = Vec::with_capacity(total as usize);
-    for (base, len) in segs { m.copy_in(base, len, &mut out); }
+    for (base, len) in segs { m.copy_in(base, len, &mut out)?; }
     Ok(out)
 }
 

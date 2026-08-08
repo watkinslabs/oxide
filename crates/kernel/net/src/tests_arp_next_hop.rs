@@ -70,6 +70,7 @@ fn arp_target(dev: &Wire) -> Option<Ipv4Addr> {
 
 #[test]
 fn an_on_link_destination_is_solicited_by_its_own_address() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let (stack, dev, iface) = guest_like();
     let (route, _lease, next_hop) = stack.route_v4_iface_in(0, GATEWAY, None).expect("a route");
     assert_eq!(route.iface, iface);
@@ -80,6 +81,7 @@ fn an_on_link_destination_is_solicited_by_its_own_address() {
 
 #[test]
 fn an_off_link_destination_is_solicited_by_the_gateway() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let (stack, _dev, _iface) = guest_like();
     let (_route, _lease, next_hop) = stack.route_v4_iface_in(0, OFFLINK, None).expect("a route");
     assert_eq!(next_hop, GATEWAY, "the default route's gateway carries the frame");
@@ -87,6 +89,7 @@ fn an_off_link_destination_is_solicited_by_the_gateway() {
 
 #[test]
 fn the_solicited_target_is_never_the_unspecified_address() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     // Whatever the route table says, a request for 0.0.0.0 cannot be answered.
     let (stack, _dev, _iface) = guest_like();
     for dst in [GATEWAY, OFFLINK, Ipv4Addr::new(10, 0, 2, 99)] {
@@ -102,6 +105,7 @@ fn the_solicited_target_is_never_the_unspecified_address() {
 /// transmitted forever and resolved nothing.
 #[test]
 fn a_zero_gateway_route_still_solicits_the_destination() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let dev = Arc::new(Wire { frames: Spinlock::new(Vec::new()) });
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn NetDev>);

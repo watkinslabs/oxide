@@ -111,13 +111,12 @@ pub(crate) fn read_user_path(ptr: u64) -> Result<String, i64> {
     if ptr == 0 || ptr >= USER_VA_END {
         return Err(-(Errno::Efault.as_i32() as i64));
     }
-    // SAFETY: ptr in user range; user page mapped (caller's AS); PATH_MAX bound.
-    let bytes = unsafe { devfs::read_user_cstr(ptr, vfs::path::PATH_MAX) }
+    let bytes = devfs::read_user_cstr(ptr, vfs::path::PATH_MAX)
         .ok_or(-(Errno::Efault.as_i32() as i64))?;
     if bytes.is_empty() {
         return Err(-(Errno::Enoent.as_i32() as i64));
     }
-    let path = vfs::path_from_bytes(bytes);
+    let path = vfs::path_from_bytes(&bytes);
     // No NUL within PATH_MAX bytes → pathname too long (Linux ENAMETOOLONG).
     vfs::path::check_path_len(&path).map_err(errno_from_vfs)?;
     Ok(path)
@@ -131,15 +130,14 @@ pub(crate) fn read_user_path_bytes(ptr: u64) -> Result<Vec<u8>, i64> {
     if ptr == 0 || ptr >= USER_VA_END {
         return Err(-(Errno::Efault.as_i32() as i64));
     }
-    // SAFETY: ptr in user range; user page mapped (caller's AS); PATH_MAX bound.
-    let bytes = unsafe { devfs::read_user_cstr(ptr, vfs::path::PATH_MAX) }
+    let bytes = devfs::read_user_cstr(ptr, vfs::path::PATH_MAX)
         .ok_or(-(Errno::Efault.as_i32() as i64))?;
     if bytes.is_empty() {
         return Err(-(Errno::Enoent.as_i32() as i64));
     }
-    let path = vfs::path_from_bytes(bytes);
+    let path = vfs::path_from_bytes(&bytes);
     vfs::path::check_path_len(&path).map_err(errno_from_vfs)?;
-    Ok(bytes.to_vec())
+    Ok(bytes)
 }
 
 pub(crate) fn dev_major(dev: u64) -> u32 {

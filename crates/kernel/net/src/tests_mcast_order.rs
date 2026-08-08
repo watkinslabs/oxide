@@ -137,6 +137,7 @@ fn finish_initial_v6(stack: &NetStack, iface: crate::NetIfaceId, group: Ipv6Addr
 
 #[test]
 fn igmp_leave_blocked_in_xmit_precedes_concurrent_rejoin() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = Arc::new(NetStack::new());
     let dev = Arc::new(OrderedXmitDev::new());
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn crate::NetDev>);
@@ -164,6 +165,7 @@ fn igmp_leave_blocked_in_xmit_precedes_concurrent_rejoin() {
 
 #[test]
 fn mld_leave_blocked_in_xmit_precedes_concurrent_rejoin() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = Arc::new(NetStack::new());
     let dev = Arc::new(OrderedXmitDev::new());
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn crate::NetDev>);
@@ -191,6 +193,7 @@ fn mld_leave_blocked_in_xmit_precedes_concurrent_rejoin() {
 
 #[test]
 fn teardown_during_blocked_xmit_removes_v4_and_v6_state() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = Arc::new(NetStack::new());
     let dev = Arc::new(OrderedXmitDev::new());
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn crate::NetDev>);
@@ -219,6 +222,7 @@ fn teardown_during_blocked_xmit_removes_v4_and_v6_state() {
 
 #[test]
 fn igmp_xmit_reentry_emits_leave_then_correction_without_deadlock() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = Arc::new(NetStack::new());
     let dev = Arc::new(OrderedXmitDev::new());
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn crate::NetDev>);
@@ -241,6 +245,7 @@ fn igmp_xmit_reentry_emits_leave_then_correction_without_deadlock() {
 
 #[test]
 fn mld_xmit_reentry_emits_leave_then_correction_without_deadlock() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = Arc::new(NetStack::new());
     let dev = Arc::new(OrderedXmitDev::new());
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn crate::NetDev>);
@@ -284,6 +289,7 @@ fn concurrent_deadline(stack: Arc<NetStack>, dev: Arc<OrderedXmitDev>) {
 
 #[test]
 fn concurrent_igmp_timers_consume_one_deadline_attempt() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = Arc::new(NetStack::new());
     let dev = Arc::new(OrderedXmitDev::new());
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn crate::NetDev>);
@@ -296,6 +302,7 @@ fn concurrent_igmp_timers_consume_one_deadline_attempt() {
 
 #[test]
 fn concurrent_mld_timers_consume_one_deadline_attempt() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = Arc::new(NetStack::new());
     let dev = Arc::new(OrderedXmitDev::new());
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn crate::NetDev>);
@@ -308,6 +315,7 @@ fn concurrent_mld_timers_consume_one_deadline_attempt() {
 
 #[test]
 fn stale_igmp_query_waiting_on_report_serializer_is_dropped() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = Arc::new(NetStack::new());
     let dev = Arc::new(OrderedXmitDev::new());
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn crate::NetDev>);
@@ -344,6 +352,7 @@ fn stale_igmp_query_waiting_on_report_serializer_is_dropped() {
 
 #[test]
 fn stale_mld_query_waiting_on_report_serializer_is_dropped() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = Arc::new(NetStack::new());
     let dev = Arc::new(OrderedXmitDev::new());
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn crate::NetDev>);
@@ -381,6 +390,7 @@ fn stale_mld_query_waiting_on_report_serializer_is_dropped() {
 
 #[test]
 fn igmp_failed_reported_retransmission_corrects_from_router_baseline() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = Arc::new(NetStack::new());
     let dev = Arc::new(OrderedXmitDev::new());
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn crate::NetDev>);
@@ -426,6 +436,7 @@ fn igmp_failed_reported_retransmission_corrects_from_router_baseline() {
 
 #[test]
 fn mld_failed_reported_retransmission_corrects_from_router_baseline() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = Arc::new(NetStack::new());
     let dev = Arc::new(OrderedXmitDev::new());
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn crate::NetDev>);

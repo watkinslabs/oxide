@@ -22,10 +22,7 @@ fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 /// is `EFAULT`; a name longer than the budget is `EINVAL`, not `ENAMETOOLONG`.
 fn read_memfd_name(name_ptr: u64) -> Result<String, i64> {
     if name_ptr == 0 { return Err(err(Errno::Efault)); }
-    let raw = match syscall::scan_user_cstr(name_ptr, (MFD_NAME_MAX_LEN + 1) as u64, |va| {
-        // SAFETY: scan_user_cstr bounds each user VA below USER_VA_END before asking for this byte.
-        unsafe { core::ptr::read_volatile(va as *const u8) }
-    }) {
+    let raw = match uaccess::strndup_user(name_ptr, (MFD_NAME_MAX_LEN + 1) as u64) {
         Ok(b) => b,
         Err(e) => return Err(err(name_scan_err(e))),
     };

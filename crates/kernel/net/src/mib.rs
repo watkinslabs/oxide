@@ -178,7 +178,14 @@ pub fn forget(net_ns: u64) {
 mod tests {
     use super::*;
 
-    const NS: u64 = 0x5150;
+    // One namespace per test: the table is process-global and keyed by id, so
+    // two tests sharing an id race each other's `forget`/`bump` sequence. That
+    // raced ~1 run in 30 at 24 threads.
+    const COUNTED_EVENT_NS: u64 = 0x5150;
+    const FORGET_NS: u64 = 0x5151;
+    const SNAPSHOT_NS: u64 = 0x5152;
+    const SEPARATE_A_NS: u64 = 0x5153;
+    const SEPARATE_B_NS: u64 = 0x5154;
 
     #[test]
     fn every_variant_has_its_own_slot() {
@@ -206,6 +213,9 @@ mod tests {
 
     #[test]
     fn initial_namespace_updates_bypass_the_dynamic_table() {
+        // Namespace 0 is process-global; owning it keeps the bump out of a
+        // concurrent test's sampled counters.
+        let _initial_net = crate::hosted_fixture::init_net_domain();
         assert!(!NAMESPACES.lock().contains_key(&INITIAL_NET_NS));
         bump(INITIAL_NET_NS, Mib::IpInReceives);
         assert!(!NAMESPACES.lock().contains_key(&INITIAL_NET_NS));
@@ -213,44 +223,44 @@ mod tests {
 
     #[test]
     fn a_counted_event_moves_only_its_own_column() {
-        forget(NS);
-        bump(NS, Mib::IpInReceives);
-        bump(NS, Mib::IpInReceives);
-        add(NS, Mib::UdpOutDatagrams, 5);
-        assert_eq!(get(NS, Mib::IpInReceives), 2);
-        assert_eq!(get(NS, Mib::UdpOutDatagrams), 5);
-        assert_eq!(get(NS, Mib::IpOutRequests), 0, "an event that never happened reads zero");
-        forget(NS);
+        forget(COUNTED_EVENT_NS);
+        bump(COUNTED_EVENT_NS, Mib::IpInReceives);
+        bump(COUNTED_EVENT_NS, Mib::IpInReceives);
+        add(COUNTED_EVENT_NS, Mib::UdpOutDatagrams, 5);
+        assert_eq!(get(COUNTED_EVENT_NS, Mib::IpInReceives), 2);
+        assert_eq!(get(COUNTED_EVENT_NS, Mib::UdpOutDatagrams), 5);
+        assert_eq!(get(COUNTED_EVENT_NS, Mib::IpOutRequests), 0, "an event that never happened reads zero");
+        forget(COUNTED_EVENT_NS);
     }
 
     #[test]
     fn namespaces_count_separately() {
-        forget(1); forget(2);
-        bump(1, Mib::IpInReceives);
-        assert_eq!(get(1, Mib::IpInReceives), 1);
-        assert_eq!(get(2, Mib::IpInReceives), 0);
-        forget(1); forget(2);
+        forget(SEPARATE_A_NS); forget(SEPARATE_B_NS);
+        bump(SEPARATE_A_NS, Mib::IpInReceives);
+        assert_eq!(get(SEPARATE_A_NS, Mib::IpInReceives), 1);
+        assert_eq!(get(SEPARATE_B_NS, Mib::IpInReceives), 0);
+        forget(SEPARATE_A_NS); forget(SEPARATE_B_NS);
     }
 
     #[test]
     fn a_forgotten_namespace_starts_over() {
-        forget(NS);
-        bump(NS, Mib::TcpInSegs);
-        assert_eq!(get(NS, Mib::TcpInSegs), 1);
-        forget(NS);
-        assert_eq!(get(NS, Mib::TcpInSegs), 0);
+        forget(FORGET_NS);
+        bump(FORGET_NS, Mib::TcpInSegs);
+        assert_eq!(get(FORGET_NS, Mib::TcpInSegs), 1);
+        forget(FORGET_NS);
+        assert_eq!(get(FORGET_NS, Mib::TcpInSegs), 0);
     }
 
     #[test]
     fn a_snapshot_reports_every_counter_in_order() {
-        forget(NS);
-        bump(NS, Mib::IpInReceives);
-        add(NS, Mib::UdpInDatagrams, 3);
-        let snap = snapshot(NS);
+        forget(SNAPSHOT_NS);
+        bump(SNAPSHOT_NS, Mib::IpInReceives);
+        add(SNAPSHOT_NS, Mib::UdpInDatagrams, 3);
+        let snap = snapshot(SNAPSHOT_NS);
         assert_eq!(snap.len(), COUNTERS);
         assert_eq!(snap[Mib::IpInReceives.index()], 1);
         assert_eq!(snap[Mib::UdpInDatagrams.index()], 3);
-        forget(NS);
+        forget(SNAPSHOT_NS);
     }
 }
 

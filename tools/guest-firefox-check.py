@@ -258,8 +258,9 @@ def diagnostics(conn, buf):
     # prefilter, so it remains available without a shell prompt: NUL arms it,
     # then t/c/w dump tasks, per-CPU scheduler state, and the current task.
     start = len(buf)
-    conn.sendall(b"\x00t\x00c\x00w")
-    pump(conn, buf, 2)
+    for key in b"btcw":
+        conn.sendall(b"\x00" + bytes([key]))
+        pump(conn, buf, 2)
     sysrq = ANSI.sub("", buf[start:].decode("utf-8", "replace"))
     print("--- guest SysRq diagnostics ---\n" + sysrq[-24000:], flush=True)
     commands = (

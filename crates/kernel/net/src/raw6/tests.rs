@@ -226,6 +226,7 @@ fn registry_is_exact_protocol_idempotent_and_weak() {
 
 #[test]
 fn raw6_hardness_matching_and_recverr_follow_linux() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = crate::NetStack::new();
     let (iface, _) = stack.register_loopback_in(NET_NS);
     let (other_iface, _) = stack.register_loopback_in(NET_NS);

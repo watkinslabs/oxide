@@ -82,15 +82,13 @@ impl Received {
     }
 }
 
-/// THE empty-receive decision, for every socket family — Linux
-/// `__skb_wait_for_more_packets` (`net/core/datagram.c`):
+/// THE empty-receive decision, for every socket family: an empty queue on a
+/// socket whose read side is shut down is end-of-file (a zero-length receive,
+/// no error), not EAGAIN.
 ///
-///     /* Socket shut down? */
-///     if (sk->sk_shutdown & RCV_SHUTDOWN)
-///             goto out_noerr;      /* -> *err = 0, i.e. EOF */
-///
-/// Linux makes this call ONCE, below every protocol, which is why no protocol
-/// can get it wrong. `recv_from_socket` used to re-derive it per arm: six arms
+/// The contract lives in ONE place, below every protocol, which is why no
+/// protocol can get it wrong. `recv_from_socket` used to re-derive it per arm:
+/// six arms
 /// carried an identical copy of the shutdown test and three AF_UNIX arms did
 /// not, so a shut-down AF_UNIX reader was told EAGAIN while `poll` reported
 /// POLLIN — an unkillable `epoll_wait`/`recvmsg` spin that shipped three times
