@@ -89,7 +89,8 @@ pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &
                 stack().send_udp_pmtu_to_bound_opts_owned(
                     &sock.owner, src_ip, src_port, dst, dst_port, segment, bound_iface, tos, ttl,
                     pmtudisc, ip_options.as_ref(), no_check,
-                )?;
+                ).map_err(|error| crate::socket_error::report_send_failure(&sock.error, net_ns,
+                    crate::addr::IpAddr::V4(dst), dst_port, bound_iface, error))?;
             }
             if crate::inet_tx::drains_loopback(multicast, mcast_loop) { drain_loopback(); }
             return Ok(payload.len());
@@ -98,7 +99,8 @@ pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &
     stack().send_udp_pmtu_to_bound_opts_owned(
         &sock.owner, src_ip, src_port, dst, dst_port, payload, bound_iface, tos, ttl, pmtudisc,
         ip_options.as_ref(), no_check,
-    )?;
+    ).map_err(|error| crate::socket_error::report_send_failure(&sock.error, net_ns,
+        crate::addr::IpAddr::V4(dst), dst_port, bound_iface, error))?;
     if crate::inet_tx::drains_loopback(multicast, mcast_loop) { drain_loopback(); }
     Ok(payload.len())
 }
