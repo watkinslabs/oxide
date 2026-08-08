@@ -82,7 +82,7 @@ fn write_remaining(rem: u64, left: u64) -> Result<(), i64> {
 }
 
 /// Linux `do_nanosleep`'s interrupted tail 
-/// plus `hrtimer_nanosleep`'s ABS/REL split (`hrtimer.c:2446-2458`):
+/// plus `hrtimer_nanosleep`'s ABS/REL split:
 ///
 /// * RELATIVE (`HRTIMER_MODE_REL` — every `nanosleep(2)` and a
 ///   `clock_nanosleep(2)` without `TIMER_ABSTIME`): copy the remaining time out
@@ -118,7 +118,7 @@ fn arm_restart_block(cur: &sched::Task, deadline: u64, rem: u64) {
 pub fn nanosleep_restart(cur: &sched::Task, deadline: u64, rem: u64) -> i64 {
     // Linux `hrtimer_nanosleep_restart` runs `do_nanosleep` DIRECTLY, not
     // through `hrtimer_nanosleep`, so the ABS/REL conversion at
-    // `hrtimer.c:2450` never applies: a resumed sleep keeps the relative
+    // The ABS/REL split never applies again: a resumed sleep keeps the relative
     // form's copy-out-and-rearm tail. Only the relative form ever arms a
     // block, so this is the only continuation that can be reached.
     sleep_until_deadline(cur, deadline, rem, false)

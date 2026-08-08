@@ -174,6 +174,14 @@ pub struct ThreadGroup {
     tty_old_pgrp: AtomicU32,
     user_ns: AtomicU64,
     system_ns: AtomicU64,
+    /// Linux `signal_struct::sum_sched_runtime` — the process-wide scheduler
+    /// runtime total `CLOCK_PROCESS_CPUTIME_ID` samples. A SEPARATE quantity
+    /// from `user_ns + system_ns`, which are tick-sampled: this is summed at
+    /// nanosecond precision from every member's schedule-out. Charged at the
+    /// same instant as the per-task total, so it already covers exited threads
+    /// and needs no registry walk — the shape `charge_cpu` and `GroupAcct`
+    /// already use.
+    sched_runtime_ns: AtomicU64,
     /// Linux `signal_struct`'s `c*` counters — every reaped child's resource
     /// use. Process-wide: whichever thread reaps a child, all its siblings'
     /// `getrusage(RUSAGE_CHILDREN)` / `times(2)` must see the cost.
@@ -218,6 +226,7 @@ impl ThreadGroup {
             tty_old_pgrp: AtomicU32::new(0),
             user_ns: AtomicU64::new(0),
             system_ns: AtomicU64::new(0),
+            sched_runtime_ns: AtomicU64::new(0),
             child_acct: child_acct::ChildAcct::new(),
             group_acct: group_acct::GroupAcct::new(),
         }
@@ -432,6 +441,18 @@ impl ThreadGroup {
     pub fn cpu_sample(&self) -> (u64, u64) {
         (self.user_ns.load(Ordering::Acquire), self.system_ns.load(Ordering::Acquire))
     }
+
+    /// Charge scheduler runtime from a member leaving a CPU. Every class that
+    /// charges the per-task total charges this in the same breath, so the two
+    /// cannot drift.
+    /// # C: O(1)
+    pub fn charge_sched_runtime(&self, delta_ns: u64) {
+        self.sched_runtime_ns.fetch_add(delta_ns, Ordering::Relaxed);
+    }
+
+    /// Process-wide scheduler runtime — what `CLOCK_PROCESS_CPUTIME_ID`
+    /// samples. # C: O(1)
+    pub fn sched_runtime_sample(&self) -> u64 { self.sched_runtime_ns.load(Ordering::Acquire) }
 
     /// Retire a switched-out task exactly once and delay an early leader until
     /// the final sibling exits. # C: O(N_subscribers)

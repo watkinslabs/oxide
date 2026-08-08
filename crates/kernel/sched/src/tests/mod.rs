@@ -3,6 +3,7 @@
 // - child_rusage: signal_struct c* counters — reap-time child accounting for
 //   getrusage(RUSAGE_CHILDREN) and times(2).
 // - common: shared hosted-test fixtures and serialisation helpers.
+// - cpu_clock_measure: VIRT/PROF/SCHED CPU-clock measures off the task + group totals.
 // - cpu_nanosleep: CPU-clock clock_nanosleep arm/resolve + accounting-tick service.
 // - exit_notify: exit_notify/forget_original_parent adoption order + autoreap.
 // - net_namespace: task-owned network namespace lifetime and exit ordering.
@@ -29,6 +30,7 @@ mod affinity;
 mod child_rusage;
 pub(crate) mod common;
 mod pi_boost;
+mod cpu_clock_measure;
 mod cpu_nanosleep;
 mod exit_notify;
 mod net_namespace;
