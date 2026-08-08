@@ -99,6 +99,12 @@ pub(super) fn qemu_run_grub_x86_64(
             "stdio,id=ser0,mux=on,signal=off".to_string()
         },
     };
+    // Every launch keeps its serial stream on disk as well as wherever the
+    // caller is watching it: a boot's console output is the primary evidence
+    // about that boot, and evidence living only in a scrollback cannot be
+    // re-read. `serial_log` owns where it goes.
+    let (uart_chardev, serial_log) = super::serial_log::with_logfile(uart_chardev, "x86_64");
+    if let Some(p) = &serial_log { println!("xtask: serial log -> {}", p.display()); }
     let netdev = ssh_fwd_netdev();
     let pcap_args = super::common::pcap_filter_args();
     // vhost-vsock guest CID is a HOST-GLOBAL kernel resource: only one qemu on

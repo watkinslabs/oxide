@@ -132,6 +132,12 @@ pub(super) fn qemu_run_aarch64_grub(
         _ => if headless { "stdio,id=ser0,signal=off".to_string() }
              else { "stdio,id=ser0,mux=on,signal=off".to_string() },
     };
+    // Every launch keeps its serial stream on disk as well as wherever the
+    // caller is watching it: a boot's console output is the primary evidence
+    // about that boot, and evidence living only in a scrollback cannot be
+    // re-read. `serial_log` owns where it goes.
+    let (uart_chardev, serial_log) = super::serial_log::with_logfile(uart_chardev, "aarch64");
+    if let Some(p) = &serial_log { println!("xtask: serial log -> {}", p.display()); }
     // Stage-2: ROOT + HOME disks attached as virtio-blk on aarch64 too
     // (lockstep with x86). The kernel identifies each by the virtio-blk
     // serial (oxide-root / oxide-home) via GET_ID.
