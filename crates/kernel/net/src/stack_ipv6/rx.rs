@@ -131,13 +131,27 @@ impl NetStack {
         )
     }
 
+    /// IPv6 local-input decision. Multicast groups and link-local addresses
+    /// are scoped to the receiving interface and answered by the per-interface
+    /// owner; every other destination runs the same three-step decision the
+    /// IPv4 half does, so a local-table route delivers an address no interface
+    /// owns — the transparent-proxy delivery shape, which the two families
+    /// must not disagree about. # C: O(N routes + N addrs)
     fn v6_dst_is_local_in(&self, net_ns: u64, iface: NetIfaceId, ip: Ipv6Addr) -> bool {
         if ip.is_multicast() || ip.is_link_local() { return self.v6_dst_is_local(iface, ip); }
-        if self.v6_anycast_owned_by(iface, ip) { return true; }
-        self.v6_addrs.lock().iter().any(|(id, addrs)| {
-            self.ifaces.lookup_in_ns(*id, net_ns).is_some()
-                && addrs.iter().any(|addr| addr.addr == ip && addr.usable_at(self.ra_now_ns()))
-        })
+        crate::transparent::delivers_locally(
+            self.v6_anycast_owned_by(iface, ip),
+            || self.v6_local_route_in(net_ns, ip),
+            || self.v6_addrs.lock().iter().any(|(id, addrs)| {
+                self.ifaces.lookup_in_ns(*id, net_ns).is_some()
+                    && addrs.iter().any(|addr| addr.addr == ip && addr.usable_at(self.ra_now_ns()))
+            }))
+    }
+
+    /// Whether the namespace's local route table delivers `ip` locally.
+    /// # C: O(N routes)
+    fn v6_local_route_in(&self, net_ns: u64, ip: Ipv6Addr) -> bool {
+        self.routes6.lookup_in_table_in(net_ns, crate::policy_rule::RT_TABLE_LOCAL, ip).is_some()
     }
 
     fn deliver_rx_ipv6_payload(
