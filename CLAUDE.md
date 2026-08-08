@@ -275,6 +275,37 @@ A green check that does not exercise what it claims is worse than no check — i
 
 **Require a positive control.** Reinstate the defect (or break the behaviour) and confirm the check goes RED, then restore and confirm GREEN. Report both. This applies to new tests, new gates, and any claim that an existing check covers a class.
 
+## Never state a conclusion a proxy cannot support (HARD RULE)
+
+**A timestamp, a count, an absence, or a single sample is evidence ABOUT the thing.
+It is not the thing.** Check the thing before saying what is true of it. This has
+cost real time repeatedly, always the same shape — one indirect signal, one confident
+sentence, and a user correcting a claim that was never checked:
+
+- **A file mtime is not a build's provenance.** An artifact's date was read as "this
+  boot ran a six-day-old kernel" and stated as fact. It was wrong, and it sent the
+  next twenty minutes chasing a stale-artifact theory instead of the bug.
+- **A grep returning zero is not absence.** `net/src/unix/` does not exist, so a grep
+  of it returned nothing and a fully-implemented feature was called missing across
+  three matrix rows. Separately, `sock_extended_err` greps to nothing while the record
+  is hand-rolled inside a target-gated file.
+- **One boot is not a rate.** A "not a regression" verdict rested on a single faulting
+  baseline boot, which turned out to be the only boot of ten that logged a watchdog
+  soft-lockup, on a host whose swap the harness itself had exhausted.
+- **A ledger row is not the code.** Roughly two-thirds of specific claimed gaps proved
+  already closed; several were wrong about the reference contract itself.
+
+**The rule.** Before asserting X, ask what would be true if X were false, and check
+THAT. If the check is cheap, run it — reading the file beats reading its date, running
+the binary beats reading its path, one hosted test beats three boots. If the check is
+expensive, say what you actually observed and what it does and does not establish:
+"the artifact is dated the 2nd" is a fact; "the boot ran a stale kernel" is a claim
+that needs the boot's own output.
+
+**Say "I observed A, which suggests B" — never "B", when you only have A.** The user
+can act on a hedged observation. They cannot act on a confident wrong conclusion, and
+correcting one costs more than the check would have.
+
 ## Re-verify a claimed gap before implementing it (HARD RULE)
 
 **A recorded gap is a hypothesis, not a fact.** Ledger and matrix text goes stale in
