@@ -220,15 +220,15 @@ pub unsafe extern "C" fn oxide_finish_task_switch() {
             // so an unreaped zombie does not pin 16 KiB and so reaping can
             // never free a stack a task is still running on.
             dying.release_kernel_stack();
-            let group = Arc::clone(&dying.thread_group);
-            match group.finish_exit(dying) {
-                crate::thread_group::ExitDisposition::WaitableLeader(leader) => {
-                    super::super::zombies::enqueue_zombie(leader);
-                }
-                crate::thread_group::ExitDisposition::AlreadyRetired
-                | crate::thread_group::ExitDisposition::ReleasedThread
-                | crate::thread_group::ExitDisposition::DeferredLeader => {}
-            }
+            // The exit notification is NOT here. Linux runs `exit_notify` in
+            // `do_exit`, on the dying task's own stack, before its final
+            // schedule — `live::mark_done` does the same. Running it here made
+            // every path in the kernel that can block carry the depth of the
+            // notification and of the teardown its registry snapshot opens.
+            // What is left is the hand-off: the reference goes to the drainer
+            // (Linux `put_task_struct_rcu_user`), never dropped under whichever
+            // task the scheduler just switched to.
+            crate::live::zombies::reclaim::defer_release(dying);
         }
     }
     // Linux `schedule_tail`'s trailing `put_user(task_pid_vnr(current),

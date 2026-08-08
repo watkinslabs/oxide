@@ -110,12 +110,54 @@ pub fn current_chroot_root() -> Option<String> {
     if r == "/" { None } else { Some(r) }
 }
 
-/// Mark a task `done` (Zombie state). A subsequent `schedule()` won't
-/// return to it because the re-enqueue gate (`state() == Runnable`)
-/// becomes false.
-/// # C: O(1)
+/// Retire the running task: notify, then publish Zombie state.
+///
+/// Linux `do_exit`'s tail — `exit_notify(tsk, group_dead)` and then
+/// `do_task_dead()`. Both happen on the dying task's OWN stack, before its
+/// final schedule, and both of this kernel's retirement sites (`sys_exit` and
+/// fatal-signal termination) already run there.
+///
+/// The notification used to run on the context-switch tail instead, which put
+/// it — and the whole task teardown its registry snapshot can open — on the
+/// stack of every path in the kernel that can block: 3.3 KiB of a 13 KiB
+/// aarch64 budget, charged to callers with nothing to do with task exit. The
+/// hazard that forced it there is gone: the kernel stack is now released by the
+/// switch tail rather than by the reaper (`Task::release_kernel_stack`), so a
+/// parent that reaps the instant the zombie is published cannot free a stack
+/// this task is still running on. The task itself stays alive across the
+/// notification because the runqueue holds a reference to the running task,
+/// exactly as `rq->curr` does.
+///
+/// Ordering: notify BEFORE `Task::mark_done`, which releases the namespaces the
+/// reaper lookup and the orphaned-process-group walk read. The reference has
+/// the same order — `exit_notify` runs while the namespaces are still live.
+/// # C: O(threads in group) + notification
+/// # Ctx: the dying task, on its own stack
 pub fn mark_done(task: &Task) {
+    exit_notify(task);
     task.mark_done();
+}
+
+/// Linux `exit_notify`: publish the group exit so `wait4` can see it, and hand
+/// the orphaned process group its POSIX hangup.
+///
+/// Takes its own reference through the task registry rather than reconstructing
+/// one from a raw pointer: this kernel has already paid once for hand-rolled
+/// `Arc` refcount machinery in the scheduler, and the registry is how every
+/// other subsystem obtains a task reference. A task with no registry entry has
+/// nothing to notify — it was never published.
+/// # C: O(threads in group)
+fn exit_notify(task: &Task) {
+    let Some(task) = crate::registry::lookup(task.tid) else { return };
+    let group = alloc::sync::Arc::clone(&task.thread_group);
+    match group.finish_exit(task) {
+        crate::thread_group::ExitDisposition::WaitableLeader(leader) => {
+            super::super::zombies::enqueue_zombie(leader);
+        }
+        crate::thread_group::ExitDisposition::AlreadyRetired
+        | crate::thread_group::ExitDisposition::ReleasedThread
+        | crate::thread_group::ExitDisposition::DeferredLeader => {}
+    }
 }
 
 /// Tear down the global runqueue and return run stats. Used by
