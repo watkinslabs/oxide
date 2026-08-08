@@ -132,14 +132,19 @@ pub fn flush_kernel_page(pa: u64) { flush_kernel_range(linear_va(pa), hal::PAGE_
 // The hosted harness has no live kernel page tables to re-granularise. The
 // capability query above is real there — it is pure architecture — so the
 // decisions that consult it stay checkable without a machine.
+/// # C: O(1)
 #[cfg(not(target_os = "oxide-kernel"))]
 pub fn set_direct_map_invalid_noflush(_pa: u64) -> Result<(), Errno> { Ok(()) }
+/// # C: O(1)
 #[cfg(not(target_os = "oxide-kernel"))]
 pub fn set_direct_map_default_noflush(_pa: u64) -> Result<(), Errno> { Ok(()) }
+/// # C: O(1)
 #[cfg(not(target_os = "oxide-kernel"))]
 pub fn kernel_page_present(_pa: u64) -> bool { true }
+/// # C: O(1)
 #[cfg(not(target_os = "oxide-kernel"))]
 pub fn flush_kernel_range(_va: u64, _len: u64) {}
+/// # C: O(1)
 #[cfg(not(target_os = "oxide-kernel"))]
 pub fn flush_kernel_page(_pa: u64) {}
 

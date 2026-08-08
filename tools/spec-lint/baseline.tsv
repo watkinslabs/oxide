@@ -42,7 +42,7 @@ crates/kernel/ipc	code/pub-fn-complexity	1
 crates/kernel/kernfs	code/pub-fn-complexity	22
 crates/kernel/kmain	code/klog-ungated	40
 crates/kernel/mm-pmm	code/klog-ungated	76
-crates/kernel/mm-pmm	code/pub-fn-complexity	9
+crates/kernel/mm-pmm	code/pub-fn-complexity	8
 crates/kernel/mm-vmm	code/pub-fn-complexity	7
 crates/kernel/modules	code/klog-ungated	7
 crates/kernel/modules	code/pub-fn-complexity	33

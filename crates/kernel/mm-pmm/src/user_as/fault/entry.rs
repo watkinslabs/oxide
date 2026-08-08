@@ -8,6 +8,7 @@ use super::resolve::do_handle;
 #[cfg(all(feature = "debug-mount", target_arch = "x86_64"))]
 use crate::user_as::debug::{STEP_ROOT, STEP_RIP, STEP_VA};
 
+/// # C: O(log N_vmas) + O(walk depth) on demand-page; O(1) reject
 #[cfg(target_arch = "x86_64")]
 pub fn user_fault_handler(vec: u64, err: u64, _rip: u64, cr2: u64) -> bool {
     if vec != 14 {

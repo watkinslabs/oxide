@@ -159,14 +159,14 @@ pub unsafe fn set_leaf_present_at_root<W: PtWalker>(
         let idx = ((va >> SHIFTS[level as usize]) & TABLE_IDX_MASK) as usize;
         // SAFETY: live root plus HHDM-mapped tables per the fn contract.
         let slot = unsafe { ((hhdm_offset.wrapping_add(current_pa)) as *mut u64).add(idx) };
-        // SAFETY: as above.
+        // SAFETY: `slot` was just derived from a live, HHDM-mapped table page under the caller's page-table lock, so this read of one aligned entry cannot race a table free.
         let entry = unsafe { ptr::read_volatile(slot) };
         if level == LEAF_LEVEL_4K {
             // A leaf that already translates is `is_valid`; one this function
             // previously cleared is not, and must still be found by its slot.
             // SAFETY: exclusive under the caller's lock.
             unsafe { ptr::write_volatile(slot, W::leaf_set_present(entry, present)); }
-            // SAFETY: privileged local invalidate.
+            // SAFETY: `set_leaf_present_at_root` just rewrote this leaf, so the local invalidate of `va` is required and legal at CPL=0 / EL1.
             unsafe { W::flush_va(va); }
             return true;
         }
