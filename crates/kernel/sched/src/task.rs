@@ -692,6 +692,19 @@ pub struct Task {
     pub robust_list_head: AtomicU64,
     pub robust_list_len:  AtomicU64,
 
+    /// Linux `task_struct::sysvsem.undo_list` — this task's handle on the
+    /// refcounted SysV `SEM_UNDO` adjustment list, 0 when it has none.
+    ///
+    /// PER-TASK and shared by handle, because that is exactly what
+    /// `CLONE_SYSVSEM` shares: the flag is independent of `CLONE_THREAD`, so a
+    /// plain `fork()` child starts with none while a `clone(CLONE_SYSVSEM)`
+    /// child WITHOUT `CLONE_THREAD` shares its parent's list. Keying the list
+    /// on the thread-group id instead reproduced only the two combinations
+    /// glibc happens to issue. The list, its refcount and its entries belong to
+    /// the SysV semaphore code; `sched` owns only this handle, since the handle
+    /// is a property of the task and `ipc` is the crate that depends on this one.
+    pub sysvsem_undo: AtomicU64,
+
     /// The scheduling class this task would run at with no PI boost in effect
     /// — its own, un-inherited class. `u64::MAX` means "not boosted"; any other
     /// value is an encoded [`crate::SchedClass`] saved by `live::pi_boost` when

@@ -30,7 +30,7 @@ pub const RESTART_FUTEX: u32 = 3;
 /// Linux `posix_cpu_nsleep_restart`:
 /// resume a `clock_nanosleep` on a CPU clock against the stored ABSOLUTE CPU
 /// expiry, re-entered as `TIMER_ABSTIME`.
-/// Payload: `[cpu_expiry_ns, rmtp_user_ptr, clock_key, 0, 0, 0]`.
+/// Payload: `[cpu_expiry_ns, rmtp_user_ptr, raw_clockid, 0, 0, 0]`.
 pub const RESTART_CPU_NANOSLEEP: u32 = 4;
 
 /// Payload slots per block, matching the widest continuation Linux stores

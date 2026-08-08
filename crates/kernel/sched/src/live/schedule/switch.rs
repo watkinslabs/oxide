@@ -79,17 +79,28 @@ fn update_curr(prev: &Task, inner: &RunqueueInner, now: u64) {
         let _ = crate::deadline::live::update_curr_dl(prev, now);
         return;
     }
-    if !matches!(prev.sched_class(), SchedClass::Normal { .. }) { return; }
-    let weight = prev.load_weight.load(Ordering::Acquire);
+    // The scheduler-runtime charge is CLASS-INDEPENDENT: fair, RT and deadline
+    // all fold the elapsed slice into the same per-task total, because
+    // `CLOCK_THREAD_CPUTIME_ID` and its process-wide sibling sample THAT
+    // total. Only the idle class runs unaccounted. Restricting the charge to
+    // the fair class left every SCHED_FIFO/SCHED_RR thread's CPU clock frozen
+    // at zero. The vruntime advance below is fair-only, so the two parts are
+    // gated separately.
     let start = prev.exec_start_ns.load(Ordering::Acquire);
     let delta = crate::cputime::clamp_delta(now, start, MAX_TICK_NS);
+    if !crate::cputime::accounts_exec_runtime(prev.sched_class()) { return; }
     if delta != 0 {
-        prev.sum_exec_runtime_ns.fetch_add(delta, Ordering::Relaxed);
+        crate::cputime::charge_exec_runtime(prev, delta);
         // Same ns, charged to the CPU that burned it, for CPU-context
         // `PERF_COUNT_SW_TASK_CLOCK` (Linux `task_clock_event_update`).
         crate::perf_sw::charge(crate::perf_sw::CpuSw::ExecNs,
             prev.cpu.load(Ordering::Acquire) as usize, delta);
     }
+    if !matches!(prev.sched_class(), SchedClass::Normal { .. }) {
+        prev.exec_start_ns.store(now, Ordering::Release);
+        return;
+    }
+    let weight = prev.load_weight.load(Ordering::Acquire);
     let vdelta = crate::cputime::vruntime_delta(delta, weight).max(1);
     let cur = prev.vruntime.load(Ordering::Acquire);
     let floor = inner.cfs.min_vruntime();

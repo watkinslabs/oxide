@@ -8,14 +8,20 @@ use crate::exit::notify::{Cldstop, CLD_CONTINUED, CLD_STOPPED};
 
 #[test]
 fn a_ptrace_stop_is_reported_to_the_tracer_as_trapped() {
-    assert_eq!(notify_target(StopKind::Ptrace), NotifyTarget::Tracer);
     assert_eq!(stop_si_code(StopKind::Ptrace), Cldstop::Trapped);
+    // A ptrace stop completes no group stop, so the tracer is its only
+    // audience however the tracee is parented.
+    for reparented in [false, true] {
+        assert_eq!(stop_audience(true, false, reparented),
+            StopAudience { tracer: true, real_parent: false });
+    }
 }
 
 #[test]
 fn a_job_control_stop_is_reported_to_the_real_parent_as_stopped() {
-    assert_eq!(notify_target(StopKind::JobControl), NotifyTarget::RealParent);
     assert_eq!(stop_si_code(StopKind::JobControl), Cldstop::Stopped);
+    assert_eq!(stop_audience(false, true, false),
+        StopAudience { tracer: false, real_parent: true });
 }
 
 #[test]
@@ -248,4 +254,57 @@ fn a_sigcont_resets_the_tally_so_the_next_stop_counts_from_full() {
     // would report CLD_STOPPED a thread early.
     assert!(!tg.join_group_stop(STOP_PENDING | STOP_CONSUME).completed || live == 1);
     assert_eq!(tg.group_stop_count(), live - 1);
+}
+
+/// A tracer learns of every stop of its tracee; the real parent learns only of
+/// a completed group stop. Emitting one notification to one target left one of
+/// the two parents uninformed at every stop a traced task took.
+#[test]
+fn a_traced_stop_reaches_the_tracer_and_the_real_parent_independently() {
+    // Untraced: the plain group-stop rule, and only on completion.
+    assert_eq!(stop_audience(false, true, false),
+        StopAudience { tracer: false, real_parent: true });
+    assert_eq!(stop_audience(false, false, false), StopAudience::none());
+
+    // Traced by a separate debugger: the tracer hears every stop, and the
+    // shell that started the job still hears the ^Z that completed it.
+    assert_eq!(stop_audience(true, true, true),
+        StopAudience { tracer: true, real_parent: true });
+    // A stop that completed no group stop is the tracer's business alone.
+    assert_eq!(stop_audience(true, false, true),
+        StopAudience { tracer: true, real_parent: false });
+
+    // Traced by its own real parent: one recipient, so the group-stop report
+    // must not be sent to that same process a second time.
+    assert_eq!(stop_audience(true, true, false),
+        StopAudience { tracer: true, real_parent: false });
+    assert_eq!(stop_audience(true, false, false),
+        StopAudience { tracer: true, real_parent: false });
+}
+
+/// Continuing is per-process: the real parent is always told, and a separate
+/// tracer of the GROUP LEADER is told too.
+#[test]
+fn a_continue_always_reaches_the_real_parent_and_a_separate_tracer_too() {
+    assert_eq!(continued_audience(false),
+        StopAudience { tracer: false, real_parent: true });
+    assert_eq!(continued_audience(true),
+        StopAudience { tracer: true, real_parent: true });
+    assert!(continued_audience(false).any());
+}
+
+/// The audience is orthogonal to the resume rule: a ptrace resume and a kill
+/// wake are not continue events at all, so no audience is ever consulted.
+#[test]
+fn only_a_real_sigcont_produces_a_continue_report() {
+    assert_eq!(resume_notify(StopKind::JobControl, WakeKind::Cont), Some(Cldstop::Continued));
+    for (kind, wake) in [
+        (StopKind::JobControl, WakeKind::PtraceResume),
+        (StopKind::JobControl, WakeKind::Kill),
+        (StopKind::Ptrace, WakeKind::Cont),
+        (StopKind::Ptrace, WakeKind::PtraceResume),
+        (StopKind::Ptrace, WakeKind::Kill),
+    ] {
+        assert_eq!(resume_notify(kind, wake), None);
+    }
 }
