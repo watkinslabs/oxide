@@ -273,8 +273,8 @@ fn mapped_v4_source(sock: &InetSocket, dst_ip: crate::Ipv4Addr,
 #[allow(clippy::too_many_arguments)]
 #[inline(never)]
 fn segmented_v6(sock: &InetSocket, dst_ip: crate::Ipv6Addr, dst_port: u16,
-    src_ip: [u8; 16], src_port: u16, _scope_id: u32, payload: &[u8],
-    iface: Option<crate::NetIfaceId>, hop: u8, tclass: u8, pmtudisc: i32, frag_size: u32,
+    src_ip: crate::Ipv6Addr, src_port: u16, _scope_id: u32, payload: &[u8],
+    iface: Option<crate::NetIfaceId>, hop: u8, tclass: u8, pmtudisc: i32, frag_size: i32,
     no_check: bool, msg: &crate::send_control::Raw6Control,
     control: &crate::send_control::Raw6Control) -> Result<bool, NetError>
 {
