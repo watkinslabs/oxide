@@ -8,12 +8,12 @@ use super::super::uapi::*;
 
 fn ctx(tid: u32, uid: u32) -> super::super::ops::Ctx {
     super::super::ops::Ctx::with_caps(
-        TaskIds { tid, tgid: tid, fsuid: uid, fsgid: uid, groups: alloc::vec::Vec::new() }, 0, false, false)
+        TaskIds { tid, tgid: tid, fsuid: uid, fsgid: uid, groups: alloc::vec::Vec::new(), ..TaskIds::default() }, 0, false, false)
 }
 
 fn thread_ctx(tid: u32, tgid: u32, uid: u32) -> super::super::ops::Ctx {
     super::super::ops::Ctx::with_caps(
-        TaskIds { tid, tgid, fsuid: uid, fsgid: uid, groups: alloc::vec::Vec::new() }, 0, false, false)
+        TaskIds { tid, tgid, fsuid: uid, fsgid: uid, groups: alloc::vec::Vec::new(), ..TaskIds::default() }, 0, false, false)
 }
 
 // A forked child shares the parent's session keyring — the reason a login
@@ -172,7 +172,7 @@ fn exit_leaves_the_user_keyrings_alone() {
     let t = ctx(4116, 4116);
     let u = get_keyring_id(&t, KEY_SPEC_USER_KEYRING, true);
     exit(t.t.tid, t.t.tgid, true);
-    assert_eq!(STORE.lock().user.get(&4116).copied(), Some(u as i32));
+    assert_eq!(STORE.lock().user.get(&(INITIAL_USER_NS, 4116)).copied(), Some(u as i32));
 }
 
 // Changing the filesystem ids moves the thread keyring's ownership with them,

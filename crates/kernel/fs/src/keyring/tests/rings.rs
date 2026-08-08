@@ -200,7 +200,8 @@ fn the_persistent_keyring_is_not_the_user_keyring() {
     assert_ne!(ring, user);
     let g = STORE.lock();
     assert_eq!(g.keys[&ring].description, "_persistent.6105");
-    let register = g.persistent_register.expect("the register was created on first use");
+    let register = g.persistent_register.get(&INITIAL_USER_NS).copied()
+        .expect("the register was created on first use");
     assert!(g.keys[&register].members.contains(&ring), "it lives in the register");
     assert_eq!(g.keys[&register].description, ".persistent_register");
 }

@@ -106,11 +106,24 @@ pub fn clear_core(c: &Ctx, ring_id: i32) -> i64 {
     }
 }
 
+/// `keyctl_restrict_keyring`'s argument admission, applied before either
+/// user pointer is read: a restriction STRING with no TYPE to parse it is
+/// EINVAL, because the string's grammar belongs to the type's
+/// `lookup_restriction` and there is nothing to hand it to. A type with no
+/// string is legal — it reaches the type's parser, which decides.
+/// # C: O(1)
+pub fn vet_restrict_args(have_type: bool, have_restriction: bool) -> Result<(), i64> {
+    if have_restriction && !have_type { return Err(e(Errno::Einval)); }
+    Ok(())
+}
+
 /// `KEYCTL_RESTRICT_KEYRING` core — Linux `keyctl_restrict_keyring` +
 /// `keyring_restrict`: `KEY_NEED_SETATTR` on the ring; ENOTDIR if it is not a
 /// keyring; EEXIST if a restriction is already installed. A NULL type installs
 /// the reject rule. The asymmetric type parses its restriction string once and
 /// leaves link-time signature verification with the keyring that owns links.
+/// [`vet_restrict_args`] is the argument admission the syscall entry applies
+/// before either pointer is read.
 /// # C: O(log N)
 pub fn restrict_core(c: &Ctx, ring_id: i32, key_type: Option<&str>, restriction: Option<&str>) -> i64 {
     let mut g = STORE.lock();

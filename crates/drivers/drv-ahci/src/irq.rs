@@ -113,7 +113,7 @@ fn bind_with<R: pci::ConfigSpaceReader>(
             return None;
         }
     };
-    if !arch_irq::register_pci_msi_handler(message.irq, hard_handler) {
+    if !arch_irq::register_pci_msi_handler(message.irq, arch_irq::DeviceAction::Ahci, hard_handler) {
         release_endpoint(endpoint);
         arch_irq::free_pci_msi(message.irq);
         return None;

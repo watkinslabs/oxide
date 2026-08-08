@@ -63,6 +63,9 @@ impl NetStack {
                 flowinfo: crate::cmsg::flowinfo(traffic_class, ancillary.flow_label),
                 ext_headers: ancillary.ext_headers.clone(),
                 frag_max: ancillary.frag_max,
+                // IP_CHECKSUM is an IPv4-level option; a native IPv6 receive
+                // publishes the IPv6 ancillary level, which has no counterpart.
+                checksum: None,
                 payload: body[..keep].to_vec(),
             }, udp.checksum == 0, gro_offered) {
                 crate::mib6::bump_udp(net_ns, crate::mib6::Udp6Mib::InDatagrams);

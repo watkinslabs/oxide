@@ -44,7 +44,7 @@ pub use keys::{add_key_core, chown_core, describe_core, get_security_core, inval
     read_core, revoke_core, set_timeout_core, setperm_core, update_core};
 pub use instantiate::{assume_authority_core, instantiate_core, reject_core, vet_iov_count};
 pub use links::{clear_core, link_core, move_core, request_key_core, restrict_core,
-    search_core, unlink_core};
+    search_core, unlink_core, vet_restrict_args};
 // Keyring-membership readback has no kernel-side caller — `keyctl` walks the
 // store directly; the hosted tests are what assert link/unlink membership.
 #[cfg(test)]

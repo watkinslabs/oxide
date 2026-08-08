@@ -88,11 +88,14 @@ impl Store {
         loop {
             let mut linked: Vec<i32> = Vec::new();
             for k in self.keys.values() { if k.is_keyring() { linked.extend_from_slice(&k.members); } }
-            for m in [&self.session, &self.thread, &self.process, &self.user, &self.usersess,
-                      &self.authkey] {
+            for m in [&self.session, &self.thread, &self.process, &self.authkey] {
                 for &v in m.values() { linked.push(v); }
             }
-            if let Some(r) = self.persistent_register { linked.push(r); }
+            // The per-uid keyrings are held by their namespace's register, not
+            // by any task, which is why they outlive every task that used them.
+            for &v in self.user.values() { linked.push(v); }
+            for &v in self.usersess.values() { linked.push(v); }
+            for &r in self.persistent_register.values() { linked.push(r); }
             // A key still under construction is referenced by the requester
             // waiting on it and by the authorisation token naming it, neither
             // of which is a keyring link.

@@ -21,11 +21,16 @@ use super::*;
 use super::upcall::HelperArgs;
 use super::super::ops::{add_key_core, assume_authority_core, get_keyring_id, instantiate_core,
     join_session, read_core, reject_core, request_key_core, vet_iov_count};
-use super::super::store::{TaskIds, STORE};
+use super::super::store::{KeyNs, TaskIds, STORE};
 
+/// The stand-in for `/sbin/request-key` itself: which behaviour a key
+/// description selects, and the body that carries it out.
+mod actor;
 /// The two transitions a real helper puts between "authority assumed" and "key
 /// answered": `exec` into the handler, `fork` into the program that answers.
 mod chain;
+
+use actor::test_helper;
 
 /// Synthetic helper tids, distinct from any requester's.
 static HELPER_TID: AtomicU32 = AtomicU32::new(900_000);
@@ -39,64 +44,10 @@ static CACHED_UPCALLS: AtomicU32 = AtomicU32::new(0);
 const CACHED_DESC: &str = "negate-cached";
 
 fn ctx(tid: u32, uid: u32) -> Ctx {
-    Ctx::with_caps(TaskIds { tid, tgid: tid, fsuid: uid, fsgid: uid, groups: Vec::new() }, 0, false, false)
+    Ctx::with_caps(TaskIds { tid, tgid: tid, fsuid: uid, fsgid: uid, groups: Vec::new(), ..TaskIds::default() }, 0, false, false)
 }
 
 fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
-
-/// The behaviour a test selects through the key description it asks for.
-fn behaviour(desc: &str) -> &'static str {
-    for b in ["unrunnable", "silent", "negate", "reject", "dest", "chain", "execonly", "borrow", "sessiondest",
-        "instantiate"]
-    {
-        if desc.starts_with(b) { return b; }
-    }
-    "instantiate"
-}
-
-/// A stand-in for `/sbin/request-key`, driven through the real keyctl cores.
-fn test_helper(a: &HelperArgs) -> i64 {
-    let desc = STORE.lock().keys.get(&a.key).map(|k| k.description.clone()).unwrap_or_default();
-    if desc == CACHED_DESC { CACHED_UPCALLS.fetch_add(1, Ordering::Relaxed); }
-    match behaviour(&desc) {
-        // The helper could not be run at all — what a missing binary or a
-        // closed usermode-helper gate looks like.
-        "unrunnable" => return -(Errno::Enoent.as_i32() as i64),
-        // The helper ran, exited 0, and never answered the key. Its exit status
-        // must NOT be mistaken for success.
-        "silent" => return 0,
-        _ => {}
-    }
-    let tid = HELPER_TID.fetch_add(1, Ordering::Relaxed);
-    STORE.lock().session.insert(tid, a.helper_keyring);
-    let h = ctx(tid, 0);
-    // Exactly what a helper does first: pick up the token it was handed.
-    let got = assume_authority_core(&h, a.key);
-    assert_eq!(got, a.authkey as i64, "the helper finds its own token by searching its keyrings");
-    let rc = match behaviour(&desc) {
-        "negate" => reject_core(&h, a.key, 60, Errno::Enokey.as_i32() as u32, 0),
-        "reject" => reject_core(&h, a.key, 60, Errno::Ekeyrejected.as_i32() as u32, 0),
-        // Instantiate into the REQUESTOR's keyring rather than naming one.
-        "dest" => instantiate_core(&h, a.key, b"from-helper".to_vec(), KEY_SPEC_REQUESTOR_KEYRING),
-        // The shape a real `/sbin/request-key` has: assume authority, EXEC the
-        // configured handler, and let a FORKED child answer the key. See
-        // `chain`.
-        "chain" => chain::answer_after_exec_and_fork(a, tid),
-        // The exec half on its own, so a divestment there is distinguishable
-        // from a fork that drops the token.
-        "execonly" => chain::answer_after_exec(a, &h, tid),
-        // A handler that needs one of the REQUESTER's keys reaches it through
-        // the token it holds. See `chain`.
-        "borrow" => chain::answer_after_borrowing_a_requester_key(a, &h),
-        // Name the requester's session keyring by serial, the way the stock
-        // handler's `%S` does. See `chain`.
-        "sessiondest" => chain::answer_into_requester_session(a, &h),
-        _ => instantiate_core(&h, a.key, b"from-helper".to_vec(), 0),
-    };
-    assert_eq!(rc, 0, "the helper answered the key: {desc}");
-    STORE.lock().session.remove(&tid);
-    0
-}
 
 /// Install the suite's actor. Idempotent: every test calls it.
 fn with_helper() { set_actor_for_test(Some(test_helper as Upcall)); }
@@ -152,7 +103,7 @@ fn the_helper_reads_the_callout_info_off_its_token() {
     let (key, auth) = {
         let mut g = STORE.lock();
         let key = g.mint_uninstantiated(types::lookup("user").expect("user type"), "callout-probe",
-            4304, 4304, 0, 0).expect("mint");
+            4304, 4304, 0, 0, KeyNs::initial()).expect("mint");
         let auth = super::super::auth::request_key_auth_new(&mut g, key, "create", b"afs@example",
             ring, &t.t).expect("token");
         let hring = g.resolve(KEY_SPEC_SESSION_KEYRING, &helper.t).expect("helper session");
@@ -182,7 +133,7 @@ fn the_operation_name_is_truncated_to_the_abi_field() {
     let ring = join_session(&t, None) as i32;
     let mut g = STORE.lock();
     let key = g.mint_uninstantiated(types::lookup("user").expect("user type"), "opname",
-        4325, 4325, 0, 0).expect("mint");
+        4325, 4325, 0, 0, KeyNs::initial()).expect("mint");
     let auth = super::super::auth::request_key_auth_new(&mut g, key, "negotiate-long", b"",
         ring, &t.t).expect("token");
     assert_eq!(g.keys[&auth].auth.as_ref().expect("record").op, "negotia");
@@ -340,7 +291,7 @@ fn a_token_authorises_exactly_one_key() {
     let victim = add_key_core(&t, "user", "other-key", b"v".to_vec(), true, ring) as i32;
     let mut g = STORE.lock();
     let mine = g.mint_uninstantiated(types::lookup("user").expect("user type"), "mine",
-        4316, 4316, 0, 0).expect("mint");
+        4316, 4316, 0, 0, KeyNs::initial()).expect("mint");
     let auth = super::super::auth::request_key_auth_new(&mut g, mine, "create", b"", ring, &t.t)
         .expect("token");
     g.link(ring, auth).expect("link the token where the caller can reach it");
@@ -388,7 +339,7 @@ fn a_key_cannot_be_instantiated_twice() {
     let ring = join_session(&t, None) as i32;
     let mut g = STORE.lock();
     let user = types::lookup("user").expect("user type");
-    let key = g.mint_uninstantiated(user, "twice", 4319, 4319, types::default_perm(user), 0)
+    let key = g.mint_uninstantiated(user, "twice", 4319, 4319, types::default_perm(user), 0, KeyNs::initial())
         .expect("mint");
     let auth = super::super::auth::request_key_auth_new(&mut g, key, "create", b"", ring, &t.t)
         .expect("token");
@@ -418,7 +369,7 @@ fn an_unanswered_key_is_eio() {
     join_session(&t, None);
     let mut g = STORE.lock();
     let key = g.mint_uninstantiated(types::lookup("user").expect("user type"), "unanswered",
-        4320, 4320, 0, 0).expect("mint");
+        4320, 4320, 0, 0, KeyNs::initial()).expect("mint");
     let rv = construction_result(&g, key, 0);
     drop(g);
     assert_eq!(rv, Err(errno(Errno::Eio)));
@@ -445,7 +396,7 @@ fn the_instantiation_destination_rejects_ids_that_name_no_keyring() {
     let ring = join_session(&t, None) as i32;
     let mut g = STORE.lock();
     let key = g.mint_uninstantiated(types::lookup("user").expect("user type"), "instdest",
-        4322, 4322, 0, 0).expect("mint");
+        4322, 4322, 0, 0, KeyNs::initial()).expect("mint");
     let auth = super::super::auth::request_key_auth_new(&mut g, key, "create", b"", ring, &t.t)
         .expect("token");
     let rec = g.keys[&auth].auth.clone().expect("record");
@@ -473,7 +424,7 @@ fn the_special_authorisation_ids_resolve_only_under_a_token() {
     }
     let mut g = STORE.lock();
     let key = g.mint_uninstantiated(types::lookup("user").expect("user type"), "specialids",
-        4323, 4323, 0, 0).expect("mint");
+        4323, 4323, 0, 0, KeyNs::initial()).expect("mint");
     let auth = super::super::auth::request_key_auth_new(&mut g, key, "create", b"", ring, &t.t)
         .expect("token");
     g.link(ring, auth).expect("link");
@@ -496,7 +447,7 @@ fn a_key_under_construction_survives_the_gc() {
     join_session(&t, None);
     let mut g = STORE.lock();
     let key = g.mint_uninstantiated(types::lookup("user").expect("user type"), "gc-survivor",
-        4324, 4324, 0, 0).expect("mint");
+        4324, 4324, 0, 0, KeyNs::initial()).expect("mint");
     // Linked into nothing at all — only the construction in flight holds it.
     g.collect();
     let alive = g.keys.contains_key(&key);

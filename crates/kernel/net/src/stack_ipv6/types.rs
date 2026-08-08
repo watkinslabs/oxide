@@ -25,6 +25,11 @@ pub struct Udp6Datagram {
     /// `(next-header kind, whole header bytes)`, in the order they arrived.
     pub ext_headers: Vec<(u8, Vec<u8>)>,
     pub frag_max: u32,
+    /// Whole-datagram checksum retained by the validating receive pass, set
+    /// only for a v4-mapped delivery: IP_CHECKSUM is an IPv4-level option, and
+    /// a v4-mapped receive publishes the IPv4 ancillary level. `None` for a
+    /// native IPv6 datagram and for a sender that suppressed the checksum.
+    pub checksum: Option<u32>,
     pub payload: Vec<u8>,
 }
 
@@ -35,7 +40,7 @@ impl Udp6Datagram {
                  traffic_class: u8, payload: Vec<u8>) -> Self
     {
         Self { src, sport, dst, dport: 0, iface, hop_limit, traffic_class, flowinfo: 0,
-               ext_headers: Vec::new(), frag_max: 0, payload }
+               ext_headers: Vec::new(), frag_max: 0, checksum: None, payload }
     }
 }
 
@@ -303,6 +308,8 @@ impl Udp6RxQueue {
             GroAdmit::Merge => {
                 let tail = state.datagrams.back_mut().expect("a merge names a tail");
                 tail.datagram.payload.extend_from_slice(&datagram.payload);
+                // The retained sum covered the head datagram alone.
+                tail.datagram.checksum = None;
                 tail.gro.extend(len);
             }
             GroAdmit::Separate { open } => {
