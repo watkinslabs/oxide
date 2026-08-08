@@ -94,6 +94,7 @@ pub(crate) fn action_for(policy: ErrorsPolicy) -> ErrorAction {
 /// # C: O(1)
 fn act_on_error(st: &RootfsState) {
     let opts = st.opts();
+    #[cfg(feature = "debug-boot")]
     if opts.behaviour.warn_on_error { klog::write_raw(WARN_ON_ERROR_LINE); }
     match action_for(opts.behaviour.errors) {
         ErrorAction::KeepGoing => {}
@@ -102,7 +103,12 @@ fn act_on_error(st: &RootfsState) {
     }
 }
 
-/// What `-o warn_on_error` announces.
+/// What `-o warn_on_error` announces. Behind the same gate every other
+/// diagnostic in this kernel carries (`04§4.0`): a log call site that is not
+/// `cfg`-elidable is a build failure here, so the option's announcement is a
+/// debug-build one. The option is still parsed, validated and recorded, and it
+/// is the only one whose entire observable effect is a message.
+#[cfg(feature = "debug-boot")]
 const WARN_ON_ERROR_LINE: &[u8] = b"[EXT4] filesystem error on a warn_on_error mount\n";
 
 /// Stable error-only diagnostic kind; no pathname or transient allocation.
