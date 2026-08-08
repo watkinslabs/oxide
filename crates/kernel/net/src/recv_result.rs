@@ -29,6 +29,9 @@ pub struct Received {
     /// Largest fragment the datagram was reassembled from, published by
     /// IP_RECVFRAGSIZE and IPV6_RECVFRAGSIZE.
     pub frag_max: u32,
+    /// Whole-datagram checksum the receive pass retained, published by
+    /// IP_CHECKSUM. `None` when the datagram carried no checksum to retain.
+    pub checksum: Option<u32>,
     /// Received IPv6 flow-info field, published by IPV6_FLOWINFO.
     pub flowinfo: u32,
     /// Received IPv6 extension headers in wire order, published by
@@ -47,6 +50,35 @@ impl Received {
     /// handing back whatever it had already copied. # C: O(1)
     pub fn eof(payload: alloc::vec::Vec<u8>) -> Self {
         Self { payload, ..Default::default() }
+    }
+
+    /// Project the captured header state onto the ancillary-message planner's
+    /// view of it. `security` is the peer label, which no receive path captures
+    /// — only a labelling module can answer it, and only in syscall context.
+    ///
+    /// One owner on purpose: this used to be written out field by field in the
+    /// syscall shim, where a field that was captured but never copied across
+    /// simply never reached a reader, with nothing red to show for it.
+    /// # C: O(headers)
+    pub fn rx_meta(&self, security: Option<alloc::vec::Vec<u8>>) -> crate::cmsg::RxMeta {
+        crate::cmsg::RxMeta {
+            dst: self.pktinfo.map(|(dst, iface)| (dst.octets(), iface.raw())),
+            ttl: self.ttl,
+            tos: self.tos,
+            options: self.options.clone(),
+            src: self.peer.map_or([0u8; 4], |(addr, _)| addr.octets()),
+            dport: self.dport,
+            frag_max: self.frag_max,
+            checksum: self.checksum,
+            security,
+            gro: self.gro,
+            dst6: self.pktinfo6.map(|(dst, iface)| (dst.0, iface.raw())),
+            hoplimit: self.hoplimit,
+            tclass: self.tclass,
+            flowinfo: self.flowinfo,
+            ext_headers: self.ext_headers.clone(),
+            scope_id: self.peer6.map_or(0, |(_, _, scope)| scope),
+        }
     }
 }
 

@@ -3,6 +3,7 @@
 
 use super::*;
 use super::super::ops::*;
+use super::super::store::KeyNs;
 
 // add_key links the new key into the session keyring; the keyring's members
 // contain its serial (real linkage, not a flat global bag).
@@ -289,7 +290,7 @@ fn set_timeout_accepts_the_authorisation_token_instead_of_setattr() {
     let (key, _auth) = {
         let mut g = STORE.lock();
         let user = super::super::types::lookup("user").expect("user type");
-        let key = g.mint_uninstantiated(user, "timeout-authtoken", 7106, 7106, 0, 0).expect("mint");
+        let key = g.mint_uninstantiated(user, "timeout-authtoken", 7106, 7106, 0, 0, KeyNs::initial()).expect("mint");
         let auth = super::super::auth::request_key_auth_new(&mut g, key, "create", b"", ring,
             &requester.t).expect("token");
         g.link(hring, auth).expect("hand the token to the helper");

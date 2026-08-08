@@ -72,6 +72,8 @@ pub mod udp;
 pub mod udp_gro;
 #[cfg(test)]
 mod udp_gro_endpoint_tests;
+#[cfg(test)]
+mod udp_checksum_tests;
 pub mod tcp_hdr;
 pub mod tcp_conn;
 pub mod tcp_fastopen;
@@ -145,6 +147,10 @@ mod sock_error;
 // Linux `sock_intr_errno` — NOT kernel-gated, so the ERESTARTSYS/EINTR rule
 // every socket wait shares is unit-tested hosted.
 pub mod sock_intr;
+// The receive result and the empty-receive decision carry no kernel dependency
+// and are the input every ancillary-message decision reads, so they sit outside
+// the gate covering the blocking receive machinery that produces them.
+pub mod recv_result;
 #[cfg(target_os = "oxide-kernel")]
 pub mod sock_io;
 #[cfg(target_os = "oxide-kernel")]

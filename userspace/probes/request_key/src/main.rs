@@ -62,7 +62,8 @@ fn run() -> Verdict {
         Ok(d) => d,
         Err(v) => return v,
     };
-    Verdict::Pass(format!("{plain} | {nested}"))
+    let fault = match iov_fault_ordering() { Ok(d) => d, Err(v) => return v };
+    Verdict::Pass(format!("{plain} | {nested} | {fault}"))
 }
 
 /// Ask for a key that does not exist, read the answer back, and require the
@@ -101,6 +102,61 @@ fn construct(case: &str, desc: &[u8], callout: &[u8], extra: &[u8]) -> Result<St
         return Err(fail(&format!("{case} payload serial={key} len={read} body={text}")));
     }
     Ok(format!("{case} serial={key} len={read} payload={text}"))
+}
+
+/// `KEYCTL_INSTANTIATE_IOV` gathers its payload out of user memory BEFORE it
+/// consults the caller's authorisation token, so an unprivileged process — which
+/// holds no token and could never instantiate anything — still learns whether
+/// the copy faulted. That makes the ordering observable from userspace:
+///
+///   * an unreadable iovec array is EFAULT, not the EPERM the missing token
+///     would give;
+///   * a READABLE array whose segment points nowhere is EFAULT too, which is
+///     the invariant that matters — the segment pointers are validated before
+///     any byte is copied;
+///   * a wholly valid vector gets past the copy and lands on EPERM, so the two
+///     answers are genuinely distinguishable rather than EFAULT for everything.
+///
+/// Without this the whole keyring surface had no EFAULT assertion anywhere.
+/// # C: O(1)
+fn iov_fault_ordering() -> Result<String, Verdict> {
+    /// An address no process maps. Kept far from anything the loader places.
+    const UNMAPPED: usize = 0x0000_7ffe_dead_0000;
+    let mut payload = *b"answer";
+
+    // A whole iovec array that is not readable.
+    let rc = keyctl_iov(UNMAPPED, 1);
+    if rc.1 != libc::EFAULT { return Err(fail(&format!("iov array rc={} errno={}", rc.0, rc.1))); }
+
+    // A readable array, one segment, pointing at unmapped memory.
+    let bad = [libc::iovec { iov_base: UNMAPPED as *mut libc::c_void, iov_len: payload.len() }];
+    let rc = keyctl_iov(bad.as_ptr() as usize, 1);
+    if rc.1 != libc::EFAULT { return Err(fail(&format!("iov segment rc={} errno={}", rc.0, rc.1))); }
+
+    // A valid vector: the copy succeeds and the MISSING TOKEN is what stops it.
+    let good = [libc::iovec {
+        iov_base: payload.as_mut_ptr() as *mut libc::c_void, iov_len: payload.len() }];
+    let rc = keyctl_iov(good.as_ptr() as usize, 1);
+    if rc.1 != libc::EPERM { return Err(fail(&format!("iov valid rc={} errno={}", rc.0, rc.1))); }
+    Ok(String::from("iov-efault ordering=copy-before-authority"))
+}
+
+/// `keyctl(KEYCTL_INSTANTIATE_IOV, <no such key>, iov, ioc, 0)`, returning the
+/// result and errno. The key id names nothing, which is deliberate: the
+/// authority check comes first among the checks that read the key, so a
+/// SUCCESSFUL copy can only end in EPERM. # C: O(1)
+fn keyctl_iov(iov: usize, ioc: libc::c_long) -> (libc::c_long, i32) {
+    /// A serial no key can have: the allocator hands out positive values only
+    /// from a high base, and this one is never minted.
+    const NO_SUCH_KEY: libc::c_long = 1;
+    // SAFETY: syscall(3) is glibc's raw-syscall entry point; `iov` is either a
+    // live iovec array owned by the caller or an address deliberately chosen to
+    // be unmapped, which is what the call is measuring.
+    let rc = unsafe {
+        libc::syscall(uapi::SYS_KEYCTL, uapi::KEYCTL_INSTANTIATE_IOV, NO_SUCH_KEY,
+            iov as libc::c_long, ioc, 0 as libc::c_long)
+    };
+    (rc, support::errno())
 }
 
 /// Whether `needle` appears anywhere in `haystack`. # C: O(n*m)

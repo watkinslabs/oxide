@@ -39,6 +39,11 @@ mod common;
 #[path = "../src/namei_common/errno.rs"]
 mod namei_common;
 
+// `mount_capable` is its own ungated module so the user-namespace rung is
+// testable on its own; `mount_dispatch` names it through the crate root, which
+// here is this test binary.
+#[path = "../src/mount_capable.rs"]
+mod mount_capable;
 #[path = "../src/fsmount_common/mount_dispatch.rs"]
 mod mount_dispatch;
 

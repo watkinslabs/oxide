@@ -68,7 +68,7 @@ pub const NO_MATCH: SearchErr = Errno::Eagain.as_i32();
 /// mirroring `ctx->result`, which each skipped candidate overwrites.
 /// # C: O(N)
 fn search_one(g: &Store, root: i32, t: &TaskIds, key_type: &str, description: &str, now_ns: u64,
-    expired: Expired) -> Result<i32, SearchErr>
+    expired: Expired, domain: u64) -> Result<i32, SearchErr>
 {
     let mut result = NO_MATCH;
     let mut visited: Vec<i32> = Vec::new();
@@ -92,6 +92,11 @@ fn search_one(g: &Store, root: i32, t: &TaskIds, key_type: &str, description: &s
             let k = match g.keys.get(&m) { Some(k) => k, None => continue };
             if k.is_keyring() { nested.push(m); }
             if k.key_type.name != key_type { continue; }
+            // The domain tag is part of the index key, so a key cached under
+            // another network namespace is not a candidate at all — not a
+            // skip with a reason, which would leak its existence into the
+            // caller's errno.
+            if k.domain != domain { continue; }
             // State is checked BEFORE the description is compared for the
             // revoked/expired pair, matching the iterator's order.
             if k.invalidated || k.revoked { result = Errno::Ekeyrevoked.as_i32(); continue; }
@@ -118,6 +123,17 @@ fn search_one(g: &Store, root: i32, t: &TaskIds, key_type: &str, description: &s
     Err(result)
 }
 
+/// The index-key domain a search for `key_type` runs in, taken from the
+/// SEARCHER's namespaces. An unregistered type name reaches here only from a
+/// path that already resolved the type, so the default domain is the right
+/// answer for it. # C: O(types)
+fn domain_of(t: &TaskIds, key_type: &str) -> u64 {
+    match super::super::types::lookup(key_type) {
+        Some(ty) => t.domain_for(ty),
+        None => DEFAULT_KEY_DOMAIN,
+    }
+}
+
 /// `search_cred_keyrings_rcu` over `roots` in order, merging the per-keyring
 /// outcomes by Linux's stated priority:
 ///
@@ -130,10 +146,11 @@ fn search_one(g: &Store, root: i32, t: &TaskIds, key_type: &str, description: &s
 pub fn search(g: &Store, roots: &[i32], t: &TaskIds, key_type: &str, description: &str,
     now_ns: u64, expired: Expired) -> Result<i32, SearchErr>
 {
+    let domain = domain_of(t, key_type);
     let mut ret: Option<SearchErr> = None;
     let mut err = NO_MATCH;
     for &root in roots {
-        match search_one(g, root, t, key_type, description, now_ns, expired) {
+        match search_one(g, root, t, key_type, description, now_ns, expired, domain) {
             Ok(s) => return Ok(s),
             Err(e) if e == Errno::Enokey.as_i32() => ret = Some(e),
             Err(e) if e == NO_MATCH => if ret.is_none() { ret = Some(NO_MATCH); },

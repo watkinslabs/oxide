@@ -61,7 +61,7 @@ pub(crate) fn bind_msix_vector(
     let page_off = entry_pa - page_pa;
 
     let message = arch_irq::alloc_pci_msi(pci_requester_id(d.bdf), queue_vector as u32)?;
-    if !arch_irq::register_pci_msi_handler(message.irq, handler) {
+    if !arch_irq::register_pci_msi_handler(message.irq, arch_irq::DeviceAction::VirtioPci, handler) {
         arch_irq::free_pci_msi(message.irq);
         return None;
     }

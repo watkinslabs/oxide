@@ -4,7 +4,7 @@
 
 use super::{e, Ctx};
 use super::super::perm::{check_perm, check_perm_with, Lookup, Possess};
-use super::super::store::{persistent_expiry, Quota, Store, TaskIds, STORE};
+use super::super::store::{persistent_expiry, KeyNs, Quota, Store, TaskIds, STORE};
 use super::super::types;
 use super::super::uapi::*;
 use syscall::errno::Errno;
@@ -34,13 +34,20 @@ pub fn join_session(c: &Ctx, name: Option<&str>) -> i64 {
     // replacement (it can EDQUOT); the very first one is charged OVERRUN so a
     // task can always be given credentials.
     let mode = if g.session.contains_key(&c.t.tid) { Quota::InQuota } else { Quota::Overrun };
+    let ns = KeyNs::of(&c.t, types::keyring_type());
     let serial = match name {
-        None => match g.new_keyring("_ses", c.t.fsuid, c.t.fsgid, SESSION_KEYRING_PERM, mode) {
+        None => match g.new_keyring("_ses", c.t.fsuid, c.t.fsgid, SESSION_KEYRING_PERM, mode, ns) {
             Ok(s) => s, Err(err) => return e(err),
         },
         Some(n) => {
+            // `find_keyring_by_name` walks the CALLER'S user namespace's name
+            // list, and skips any candidate whose owner uid that namespace
+            // cannot name. A keyring published in another namespace is not a
+            // candidate at all, so the same name in two namespaces is two
+            // keyrings and neither task can reach the other's.
             let found = g.keys.values()
-                .find(|k| k.is_keyring() && k.description == n && !k.revoked && !k.invalidated)
+                .find(|k| k.is_keyring() && k.description == n && k.user_ns == c.t.user_ns
+                    && c.t.uid_visible(k.uid) && !k.revoked && !k.invalidated)
                 .map(|k| k.serial);
             match found {
                 Some(s) => {
@@ -51,7 +58,7 @@ pub fn join_session(c: &Ctx, name: Option<&str>) -> i64 {
                     // that name is created instead of the call being denied.
                     if check_perm_with(&g, s, &c.t, KEY_NEED_SEARCH, c.now_ns, Possess::No).is_err() {
                         return match g.new_keyring(n, c.t.fsuid, c.t.fsgid,
-                            NAMED_SESSION_KEYRING_PERM, Quota::InQuota)
+                            NAMED_SESSION_KEYRING_PERM, Quota::InQuota, ns)
                         {
                             Ok(fresh) => { g.session.insert(c.t.tid, fresh); g.collect(); fresh as i64 }
                             Err(err) => e(err),
@@ -65,7 +72,7 @@ pub fn join_session(c: &Ctx, name: Option<&str>) -> i64 {
                     s
                 }
                 // A named session keyring is always charged IN_QUOTA.
-                None => match g.new_keyring(n, c.t.fsuid, c.t.fsgid, NAMED_SESSION_KEYRING_PERM, Quota::InQuota) {
+                None => match g.new_keyring(n, c.t.fsuid, c.t.fsgid, NAMED_SESSION_KEYRING_PERM, Quota::InQuota, ns) {
                     Ok(s) => s, Err(err) => return e(err),
                 },
             }
@@ -95,8 +102,8 @@ pub fn get_keyring_id(c: &Ctx, id: i32, create: bool) -> i64 {
             KEY_SPEC_THREAD_KEYRING       => Some(g.thread.contains_key(&t.tid)),
             KEY_SPEC_PROCESS_KEYRING      => Some(g.process.contains_key(&t.tgid)),
             KEY_SPEC_SESSION_KEYRING      => Some(g.session.contains_key(&t.tid)),
-            KEY_SPEC_USER_KEYRING         => Some(g.user.contains_key(&t.fsuid)),
-            KEY_SPEC_USER_SESSION_KEYRING => Some(g.usersess.contains_key(&t.fsuid)),
+            KEY_SPEC_USER_KEYRING         => Some(g.user.contains_key(&(t.user_ns, t.fsuid))),
+            KEY_SPEC_USER_SESSION_KEYRING => Some(g.usersess.contains_key(&(t.user_ns, t.fsuid))),
             _ => None,
         };
         if present == Some(false) { return e(Errno::Enokey); }
@@ -161,14 +168,18 @@ const NS_PER_SEC: u64 = 1_000_000_000;
 /// allocated outside the quota — a user must not be unable to reach its own
 /// persistent credentials because it is at its key limit. # C: O(N)
 fn persistent_keyring(g: &mut Store, uid: u32, t: &TaskIds) -> Result<i32, Errno> {
-    let register = match g.persistent_register {
+    let ns = KeyNs::of(t, types::keyring_type());
+    // One register PER USER NAMESPACE (`ns->persistent_keyring_register`): a
+    // uid's persistent credentials in one namespace are not the same object as
+    // the same uid's in another.
+    let register = match g.persistent_register.get(&t.user_ns).copied() {
         Some(r) => r,
         None => {
             // Owned by root, and dot-prefixed so no `KEYCTL_JOIN_SESSION_KEYRING`
             // can name it.
             let r = g.mint_not_in_quota(types::keyring_type(), PERSISTENT_REGISTER_NAME,
-                ROOT_UID, ROOT_UID, PERSISTENT_KEYRING_PERM)?;
-            g.persistent_register = Some(r);
+                ROOT_UID, ROOT_UID, PERSISTENT_KEYRING_PERM, ns)?;
+            g.persistent_register.insert(t.user_ns, r);
             r
         }
     };
@@ -176,9 +187,8 @@ fn persistent_keyring(g: &mut Store, uid: u32, t: &TaskIds) -> Result<i32, Errno
     let existing = g.keys.get(&register).map(|r| r.members.clone()).unwrap_or_default().into_iter()
         .find(|s| g.keys.get(s).map(|k| k.is_keyring() && k.description == name).unwrap_or(false));
     if let Some(s) = existing { return Ok(s); }
-    let _ = t;
     let ring = g.mint_not_in_quota(types::keyring_type(), &name, uid, GID_INVALID,
-        PERSISTENT_KEYRING_PERM)?;
+        PERSISTENT_KEYRING_PERM, ns)?;
     g.link(register, ring)?;
     Ok(ring)
 }

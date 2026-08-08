@@ -90,10 +90,9 @@ unsafe extern "C" fn oxide_arm_irq_dispatch() {
             crate::MSI_FIRES.fetch_add(1, Ordering::Relaxed);
             // /proc/interrupts per-CPU line count: SPI intid 32.. → device
             // line idx = intid-32 (LPIs ≥8192 exceed NLINES → skipped).
-            crate::irqstat::hit_line((intid as usize).saturating_sub(super::ids::SPI_BASE as usize));
+            crate::irqstat::hit_msi(intid);
             // Route only to the owning MSI handler. Unregistered device
-            // interrupts are left visible in irqstat/MSI_FIRES; they are not
-            // converted into shared softirq guesses.
+            // interrupts are not converted into shared softirq guesses.
             let _ = crate::invoke_arm_spi_handler(intid);
             let _ = crate::invoke_arm_spi_line_handler(intid);
         }

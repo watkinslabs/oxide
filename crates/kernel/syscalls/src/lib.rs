@@ -112,6 +112,16 @@ pub mod pivot_root_policy;
 // `SYSCALL_DEFINE5(fsconfig)`, including the EOPNOTSUPP-not-EINVAL default and
 // SET_FD's non-negative-aux rule. `431_fsconfig.rs` is kernel-gated.
 pub mod fsconfig_abi;
+// fsconfig(2) stage two: the user-memory copy-in ORDER and its per-stage errno,
+// behind a `UserCopy` trait so the EFAULT rungs are reachable from a hosted test.
+pub mod fsconfig_fetch;
+// fsmount(2): the flag words, the privilege they SELECT (which differs under
+// FSMOUNT_NAMESPACE), and the two post-creation superblock checks.
+pub mod fsmount_abi;
+// `mount_capable`: the ONE predicate mount(2) and fsconfig(CMD_CREATE) share for
+// "who may create a superblock of this type", and the only rung of either whose
+// answer depends on the caller's user namespaces.
+pub mod mount_capable;
 // mount(2)'s flag-word preamble: the MS_MGC_VAL magic strip and the MS_NOUSER
 // reject, whose ORDER is load-bearing (the magic value CONTAINS MS_NOUSER).
 pub mod mount_flags_policy;

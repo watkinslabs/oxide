@@ -124,6 +124,49 @@ fn asymmetric_key_or_keyring_restriction_verifies_the_issuer_signature() {
         err(Errno::Ekeyrejected));
 }
 
+// The argument admission the syscall entry applies before either pointer is
+// read. A restriction STRING with no TYPE has no parser to be handed to, and
+// naming neither is the reject rule rather than an error.
+#[test]
+fn restrict_argument_admission() {
+    assert_eq!(vet_restrict_args(false, false), Ok(()));
+    assert_eq!(vet_restrict_args(true, false), Ok(()));
+    assert_eq!(vet_restrict_args(true, true), Ok(()));
+    assert_eq!(vet_restrict_args(false, true), Err(einval()),
+        "a restriction string with no type to parse it is EINVAL");
+}
+
+// The restriction STRING is parsed, not discarded: each spelling the
+// asymmetric type accepts produces a different admission rule, and a spelling
+// it does not accept is EINVAL. A restriction whose string never reached the
+// parser would answer the same for all four.
+#[test]
+fn the_restriction_string_selects_the_rule() {
+    let t = ctx(1051, 6311);
+    let trust = add_key_core(&t, "asymmetric", "grammar-trust", super::pkey::certificate_payload(),
+        true, KEY_SPEC_SESSION_KEYRING) as i32;
+    let mut ring = 0;
+    let mut fresh = |name: &str| -> i32 {
+        ring += 1;
+        add_key_core(&t, "keyring", &alloc::format!("{name}{ring}"), alloc::vec![], false,
+            KEY_SPEC_SESSION_KEYRING) as i32
+    };
+    let r = fresh("grammar-a");
+    assert_eq!(restrict_core(&t, r, Some("asymmetric"), Some("builtin_trusted")), 0);
+    let r = fresh("grammar-b");
+    assert_eq!(restrict_core(&t, r, Some("asymmetric"), Some("builtin_and_secondary_trusted")), 0);
+    let r = fresh("grammar-c");
+    assert_eq!(restrict_core(&t, r, Some("asymmetric"), Some(&alloc::format!("key_or_keyring:{trust}:chain"))), 0);
+    let r = fresh("grammar-d");
+    assert_eq!(restrict_core(&t, r, Some("asymmetric"), Some("key_or_keyring:1:nonsense")), einval(),
+        "an unknown suffix is EINVAL, so the suffix was read");
+    let r = fresh("grammar-e");
+    assert_eq!(restrict_core(&t, r, Some("asymmetric"), Some("not_a_rule")), einval());
+    let r = fresh("grammar-f");
+    assert_eq!(restrict_core(&t, r, Some("asymmetric"), None), einval(),
+        "a named type with no string has nothing to parse");
+}
+
 #[test]
 fn asymmetric_chain_restriction_uses_existing_destination_certificates() {
     let t = ctx(1049, 6309);

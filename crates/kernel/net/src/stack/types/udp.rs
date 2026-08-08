@@ -28,6 +28,11 @@ pub struct UdpDatagram {
     /// The header's don't-fragment bit, which no ancillary message publishes
     /// but which two receives must share to coalesce.
     pub dont_fragment: bool,
+    /// Whole-datagram checksum retained by the validating receive pass, backing
+    /// IP_CHECKSUM. `None` when the sender suppressed the checksum, and cleared
+    /// again once this datagram heads a coalesced run, since the sum then no
+    /// longer describes the bytes handed to the reader.
+    pub checksum: Option<u32>,
     pub payload: Vec<u8>,
 }
 
@@ -38,7 +43,7 @@ impl UdpDatagram {
                  payload: Vec<u8>) -> Self
     {
         Self { src, sport, dst, dport: 0, iface, ttl, tos: 0, options: Default::default(),
-               frag_max: 0, dont_fragment: false, payload }
+               frag_max: 0, dont_fragment: false, checksum: None, payload }
     }
 }
 

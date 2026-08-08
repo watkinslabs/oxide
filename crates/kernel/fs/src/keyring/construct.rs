@@ -29,7 +29,7 @@ use syscall::errno::Errno;
 use super::auth;
 use super::ops::Ctx;
 use super::perm::{check_perm, Lookup};
-use super::store::{Quota, Store, TaskIds, STORE};
+use super::store::{KeyNs, Quota, Store, TaskIds, STORE};
 use super::types::{self, KeyType};
 use super::uapi::*;
 
@@ -126,8 +126,8 @@ pub fn construct_key_and_link(c: &Ctx, ty: &'static KeyType, desc: &str, callout
         let mut g = STORE.lock();
         let dest = dest_keyring(&mut g, c, given_dest)?;
         let quota = types::payload_quota(ty, 0);
-        let key = g.mint_uninstantiated(ty, desc, c.t.fsuid, c.t.fsgid, construct_perm(ty), quota)
-            .map_err(|e| -(e.as_i32() as i64))?;
+        let key = g.mint_uninstantiated(ty, desc, c.t.fsuid, c.t.fsgid, construct_perm(ty), quota,
+            KeyNs::of(&c.t, ty)).map_err(|e| -(e.as_i32() as i64))?;
         if let Some(d) = dest {
             if let Err(e) = g.link(d, key) { g.destroy(key); return Err(-(e.as_i32() as i64)); }
         }
@@ -256,7 +256,8 @@ pub fn helper_keyring_name(key: i32) -> String { alloc::format!("_req.{key}") }
 /// of ever obtaining another credential. # C: O(log N)
 pub fn new_helper_keyring(g: &mut Store, key: i32, t: &TaskIds) -> Result<i32, Errno> {
     let name = helper_keyring_name(key);
-    g.new_keyring(&name, t.fsuid, t.fsgid, REQKEY_HELPER_KEYRING_PERM, Quota::Overrun)
+    g.new_keyring(&name, t.fsuid, t.fsgid, REQKEY_HELPER_KEYRING_PERM, Quota::Overrun,
+        KeyNs::of(t, types::keyring_type()))
 }
 
 #[cfg(test)] mod tests;

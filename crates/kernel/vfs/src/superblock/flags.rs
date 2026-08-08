@@ -17,6 +17,10 @@ pub const SB_LAZYTIME:    u64 = 1 << 25;
 /// Internal lifecycle bits: `SB_BORN` (fill_super done), `SB_ACTIVE` (mounted).
 pub const SB_BORN:   u64 = 1 << 29;
 pub const SB_ACTIVE: u64 = 1 << 30;
+/// "This superblock may not be mounted by a user request." Set by the
+/// filesystem while filling the superblock, so it can only be tested AFTER the
+/// instance exists — which is where both `mount(2)` and `fsmount(2)` test it.
+pub const SB_NOUSER: u64 = 1 << 31;
 
 // `s_writers.frozen` freeze levels (Linux include/linux/fs.h). `freeze_super`
 // ratchets UNFROZEN → WRITE (block new write(2)) → PAGEFAULT (block mmap
