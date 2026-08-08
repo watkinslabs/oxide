@@ -9,8 +9,10 @@
 //
 // The rules, in the order the batch applies them:
 //
-// - the native entry never speaks the compat message layout, and rejects it
-//   before the timeout, the descriptor, or any entry is touched;
+// - the layout the whole batch speaks is settled FIRST, by the one owner of
+//   that question (`crate::msg_layout`), before the timeout, the descriptor,
+//   or any entry is touched — a native entry that was handed the compat flag
+//   reports EINVAL there and reaches none of the steps below;
 // - a supplied timeout is validated NEXT, still ahead of the descriptor, so a
 //   malformed one reports EINVAL whatever the descriptor is;
 // - a pending socket error is reported before the batch runs and consumed by
@@ -35,7 +37,7 @@
 
 use syscall::errno::Errno;
 
-use net::uapi::{MSG_CMSG_COMPAT, MSG_DONTWAIT, MSG_ERRQUEUE, MSG_WAITFORONE};
+use net::uapi::{MSG_DONTWAIT, MSG_ERRQUEUE, MSG_WAITFORONE};
 
 /// The order these rules compose in, and the only place they do.
 pub mod run;
@@ -51,13 +53,6 @@ pub const NSEC_PER_SEC: u64 = 1_000_000_000;
 
 /// Negative-errno form of one failed batch entry. # C: O(1)
 fn neg(e: Errno) -> i64 { -(e.as_i32() as i64) }
-
-/// The native entry rejects the compat message layout before it touches the
-/// timeout, the descriptor, or any entry. # C: O(1)
-pub fn admit_flags(flags: u64) -> Result<(), Errno> {
-    if flags & MSG_CMSG_COMPAT != 0 { return Err(Errno::Einval); }
-    Ok(())
-}
 
 /// Total nanoseconds of a supplied batch timeout. A negative second or
 /// nanosecond count, or a nanosecond count that is not less than a second, is

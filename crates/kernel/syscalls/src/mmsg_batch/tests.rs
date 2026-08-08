@@ -4,16 +4,33 @@
 
 use super::*;
 
-use net::uapi::{MSG_DONTWAIT, MSG_ERRQUEUE, MSG_PEEK, MSG_WAITFORONE};
+use net::uapi::{MSG_CMSG_COMPAT, MSG_DONTWAIT, MSG_ERRQUEUE, MSG_PEEK, MSG_WAITFORONE};
 
-use super::fake::{Entry, Fake, drive};
+use crate::msg_layout::{EntryAbi, MsgLayout, entry_layout};
 
+use super::fake::{Entry, Fake, drive, drive_abi};
+
+// The batch does not own the compat question any more — one owner does, for
+// every message syscall — but the ANSWER it acts on is still part of this
+// contract, so the rule is pinned where the batch reads it.
 #[test]
 fn the_compat_layout_is_refused_before_anything_else() {
-    assert_eq!(admit_flags(MSG_CMSG_COMPAT), Err(Errno::Einval));
-    assert_eq!(admit_flags(MSG_CMSG_COMPAT | MSG_DONTWAIT), Err(Errno::Einval));
-    assert_eq!(admit_flags(MSG_DONTWAIT | MSG_PEEK | MSG_WAITFORONE), Ok(()));
-    assert_eq!(admit_flags(0), Ok(()));
+    let native = EntryAbi::Native;
+    assert_eq!(entry_layout(MSG_CMSG_COMPAT, native), Err(Errno::Einval));
+    assert_eq!(entry_layout(MSG_CMSG_COMPAT | MSG_DONTWAIT, native), Err(Errno::Einval));
+    assert_eq!(entry_layout(MSG_DONTWAIT | MSG_PEEK | MSG_WAITFORONE, native),
+        Ok(MsgLayout::Native));
+    assert_eq!(entry_layout(0, native), Ok(MsgLayout::Native));
+}
+
+// A compat batch does not refuse itself: the entry that set the flag is the
+// one entitled to it, and the batch adopts the 32-bit shape before it reads
+// the timeout, resolves the descriptor, or imports an entry.
+#[test]
+fn a_compat_batch_adopts_the_compat_layout_before_any_other_step() {
+    let (result, fake) = drive_abi(MSG_CMSG_COMPAT, 2, Fake::queued(2), EntryAbi::Compat);
+    assert_eq!(result, 2);
+    assert_eq!(fake.layout, Some(MsgLayout::Compat));
 }
 
 #[test]
@@ -233,4 +250,71 @@ fn a_length_copyout_fault_follows_the_same_partial_batch_rule() {
     let (result, fake) = drive(0, 2, fake);
     assert_eq!(result, 1);
     assert_eq!(fake.latched, Some(Errno::Efault.as_i32()));
+}
+
+// ------------------------------------- interrupted batches and SA_RESTART --
+//
+// A blocking receive that a signal interrupts reports the restart sentinel,
+// not an errno, whenever the wait carried no socket timeout. The batch must
+// hand that sentinel out unchanged when nothing was delivered: it is the
+// syscall-return tail that decides between resuming the call and reporting
+// EINTR, from the delivered handler's SA_RESTART bit. Flattening it here would
+// make an SA_RESTART recvmmsg unresumable.
+
+const RESTART: i64 = syscall::restart::restart_sys();
+
+#[test]
+fn an_interrupted_empty_batch_reports_the_restart_sentinel_unchanged() {
+    let fake = Fake::new(alloc::vec![Entry::Failed(RESTART)]);
+    let (result, fake) = drive(0, 4, fake);
+    assert_eq!(result, RESTART, "the tail owns the restart decision, not the batch");
+    assert!(syscall::restart::is_restart_sys(result));
+    assert_eq!(fake.latched, None, "nothing was delivered, so nothing is remembered");
+}
+
+// The whole call restarts — there is no restart block for a socket receive,
+// so the resumed call re-reads the caller's ORIGINAL timespec. Writing the
+// remaining time back here would shorten every restarted batch.
+#[test]
+fn an_interrupted_empty_batch_leaves_the_callers_timeout_alone() {
+    let mut fake = Fake::new(alloc::vec![Entry::Failed(RESTART)]);
+    fake.timeout = Some((5, 0));
+    fake.remaining = alloc::vec![Some(4_000_000_000)];
+    let (result, fake) = drive(0, 4, fake);
+    assert_eq!(result, RESTART);
+    assert!(!fake.copied_timeout, "a restarted batch must see its full timeout again");
+}
+
+// With messages already delivered the count is the answer, and the sentinel
+// is latched as the socket's pending error for the next call to collect —
+// the same treatment any other late failure gets.
+#[test]
+fn a_delivered_prefix_outranks_a_later_interruption() {
+    let fake = Fake::new(alloc::vec![Entry::Got { oob: false }, Entry::Failed(RESTART)]);
+    let (result, fake) = drive(0, 4, fake);
+    assert_eq!(result, 1);
+    assert_eq!(fake.latched, Some(-RESTART as i32));
+    assert!(fake.copied_timeout || fake.timeout.is_none());
+}
+
+// The decisive statement of what the sentinel buys. Only an ERESTART* value
+// can resume; the batch's own EAGAIN and EINTR arms cannot, under any
+// handler/SA_RESTART combination.
+#[test]
+fn only_the_sentinel_a_batch_returns_can_be_resumed_by_the_tail() {
+    use syscall::restart::{RestartAction, signal_restart_action};
+    assert_eq!(signal_restart_action(RESTART, true, true), RestartAction::RestartSame);
+    assert_eq!(signal_restart_action(RESTART, true, false), RestartAction::Eintr);
+    assert_eq!(signal_restart_action(RESTART, false, false), RestartAction::RestartSame);
+    // Never through `restart_syscall(2)`: a socket receive keeps no restart
+    // block, so a resumed batch re-runs the call itself.
+    assert_ne!(signal_restart_action(RESTART, false, false), RestartAction::RestartBlockCall);
+    for flat in [neg(Errno::Eagain), neg(Errno::Eintr)] {
+        for handler in [false, true] {
+            for sa_restart in [false, true] {
+                assert_eq!(signal_restart_action(flat, handler, sa_restart), RestartAction::None,
+                    "flat={flat} handler={handler} sa_restart={sa_restart}");
+            }
+        }
+    }
 }
