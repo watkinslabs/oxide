@@ -89,6 +89,7 @@ debug-memtest = ["smoke/debug-memtest"]  # in-guest full-RAM memtest pass (opt-i
 debug-vmm  = ["pmm/debug-vmm", "kmacros/debug-vmm", "smoke/debug-vmm"]  # device-map MMIO sanity reads (HPET cap, GICD typer)
 debug-irq  = ["pmm/debug-irq", "kmacros/debug-irq", "smoke/debug-irq", "syscalls/debug-irq"]  # LAPIC/GIC enable diag + timer-IRQ soak + tick logs
 debug-acpi = ["firmware/debug-acpi", "kmacros/debug-acpi", "smoke/debug-acpi"]  # forwarded; impl in crates/firmware
+debug-power = ["power/debug-power"]  # `32§11` per-attempt reboot trace: which reset-ladder rung was reached
 debug-sched = ["sched/debug-sched","fs/debug-sched", "kmacros/debug-sched", "smoke/debug-sched"]  # first-kthread coroutine smoke + Context::switch trace
 debug-smp = ["sched/debug-smp", "sync/debug-smp", "syscalls/debug-smp"]  # spin-stall probe: names the lock CLASS rank of any Spinlock::lock() that spins past SPIN_WARN_ITERS (busy-spin livelock hunt)
 debug-task-fpu-provenance = ["sched/debug-task-fpu-provenance"]  # validates each Task's FP/SIMD save-area identity before raw scheduler/ptrace access

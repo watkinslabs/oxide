@@ -135,19 +135,22 @@ pub unsafe fn run_ladder() -> ! {
         match rung {
             ResetRung::Firmware => {
                 if let Some(a) = firmware {
-                    klog::write_raw(b"reset: firmware register\n");
+                    #[cfg(feature = "debug-power")]
+                    { klog::write_raw(b"reset: firmware register\n"); }
                     // SAFETY: performs the write firmware published as its reset register.
                     unsafe { firmware_reset(a) };
                     settle_us(FIRMWARE_SETTLE_US);
                 }
             }
             ResetRung::KeyboardController => {
-                klog::write_raw(b"reset: keyboard controller\n");
+                #[cfg(feature = "debug-power")]
+                { klog::write_raw(b"reset: keyboard controller\n"); }
                 // SAFETY: pulses the legacy controller's reset line; no other state is touched.
                 unsafe { keyboard_controller_reset() };
             }
             ResetRung::ResetControl => {
-                klog::write_raw(b"reset: reset control port\n");
+                #[cfg(feature = "debug-power")]
+                { klog::write_raw(b"reset: reset control port\n"); }
                 // SAFETY: performs the chipset's documented request-then-reset port sequence.
                 unsafe { reset_control() };
             }

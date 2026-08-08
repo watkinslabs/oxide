@@ -17,5 +17,13 @@ firmware = { path = "../firmware" }
 hal-x86_64 = { path = "../../arch/hal-x86_64" }
 mmio-map   = { path = "../mmio-map" }
 
+[features]
+default = []
+# `32§11`: log every reboot attempt. The reset ladder's per-rung trace is the
+# attempt-level detail this feature names; the reboot itself stays logged
+# unconditionally by `machine::terminal`, so a production reboot is still
+# visible without it.
+debug-power = []
+
 [lints]
 workspace = true
