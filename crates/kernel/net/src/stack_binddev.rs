@@ -10,6 +10,11 @@ use crate::route::{ResolvedRoute, RouteRecord, RTN_BLACKHOLE, RTN_LOCAL,
 use crate::route::RouteEntry;
 use crate::stack::{NetStack, TcpEntry};
 
+// Module manifest: `mss` owns the route-metrics, MSS and path-MTU questions a
+// socket asks about its route; this file owns SO_BINDTODEVICE resolution, the
+// bound-interface transmit entry points, and IPv4/IPv6 egress route selection.
+mod mss;
+
 /// The mark a lookup that is not a transmit carries: a metrics or path-MTU
 /// query answers about the route itself, not about one packet.
 pub(crate) const UNMARKED: u32 = 0;
@@ -29,16 +34,6 @@ fn usable_route(record: RouteRecord) -> NetResult<ResolvedRoute> {
 }
 
 impl NetStack {
-    /// Metrics from the exact IPv4 route selected for a new transport TCB. # C: O(N)
-    pub(crate) fn route_metrics_for_dst_in(&self, net_ns: u64, dst: IpAddr,
-        bound: Option<NetIfaceId>) -> crate::RouteMetrics {
-        let IpAddr::V4(dst) = dst else { return crate::RouteMetrics::NONE; };
-        match bound {
-            Some(iface) => self.route_v4_on_iface_in(net_ns, dst, iface, UNMARKED)
-                .ok().flatten().map(|route| route.metrics),
-            None => self.routes.lookup_result_in(net_ns, dst).ok().map(|route| route.metrics),
-        }.unwrap_or(crate::RouteMetrics::NONE)
-    }
 
     /// Resolve a raw SO_BINDTODEVICE ifindex. 0 means unbound. # C: O(N)
     pub fn bound_iface(&self, raw: u32) -> NetResult<Option<NetIfaceId>> {
@@ -52,60 +47,6 @@ impl NetStack {
         self.ifaces.lookup_in_ns(id, net_ns).map(|_| Some(id)).ok_or(NetError::Enodev)
     }
 
-    /// TCP MSS for `dst`, honoring a socket-bound egress interface. # C: O(N)
-    pub fn mss_for_dst_on_iface(&self, dst: IpAddr, bound: Option<NetIfaceId>) -> u16 {
-        self.mss_for_dst_on_iface_in(0, dst, bound)
-    }
-
-    /// TCP MSS in one network namespace, honoring a bound interface. # C: O(N)
-    pub fn mss_for_dst_on_iface_in(&self, net_ns: u64, dst: IpAddr, bound: Option<NetIfaceId>) -> u16 {
-        self.mss_for_dst_on_iface_pmtu_in(
-            net_ns, dst, bound, crate::uapi::IP_PMTUDISC_WANT)
-    }
-
-    /// TCP MSS from effective route PMTU and socket discovery policy. # C: O(N)
-    pub(crate) fn mss_for_dst_on_iface_pmtu_in(&self, net_ns: u64, dst: IpAddr,
-        bound: Option<NetIfaceId>, mode: i32) -> u16
-    {
-        self.mss_for_dst_on_iface_pmtu_modes_in(net_ns, dst, bound, mode, mode)
-    }
-
-    /// TCP MSS using the PMTU owner selected by destination family. # C: O(N)
-    pub(crate) fn mss_for_dst_on_iface_pmtu_modes_in(&self, net_ns: u64, dst: IpAddr,
-        bound: Option<NetIfaceId>, ip_mode: i32, ipv6_mode: i32) -> u16
-    {
-        let overhead = if matches!(dst, IpAddr::V6(_)) {
-            IPV6_TCP_OVERHEAD
-        } else { IPV4_TCP_OVERHEAD };
-        let route_advmss = match dst {
-            IpAddr::V4(dst) => match bound {
-                Some(iface) => self.route_v4_on_iface_in(net_ns, dst, iface, UNMARKED)
-                    .ok().flatten().map(|route| route.metrics.advmss),
-                None => self.routes.lookup_result_in(net_ns, dst)
-                    .ok().map(|route| route.metrics.advmss),
-            }.unwrap_or(0),
-            IpAddr::V6(_) => 0,
-        };
-        self.tcp_path_mtu_in(net_ns, dst, bound, ip_mode, ipv6_mode).ok()
-            .map(|mtu| mtu.saturating_sub(overhead).min(u16::MAX as u32) as u16)
-            .map(|mss| if route_advmss == 0 {
-                mss
-            } else {
-                mss.min(route_advmss.min(u16::MAX as u32) as u16)
-            })
-            .unwrap_or(0)
-    }
-
-    /// Path MTU selected by this TCP socket's destination family and PMTU mode. # C: O(N)
-    pub(crate) fn tcp_path_mtu_in(&self, net_ns: u64, dst: IpAddr, bound: Option<NetIfaceId>,
-        ip_mode: i32, ipv6_mode: i32) -> NetResult<u32>
-    {
-        let probe = match dst {
-            IpAddr::V4(_) => crate::uapi::ip_pmtudisc_uses_interface(ip_mode),
-            IpAddr::V6(_) => crate::uapi::ipv6_pmtudisc_uses_interface(ipv6_mode),
-        };
-        self.path_mtu_in(net_ns, dst, bound, probe)
-    }
 
     /// Build + transmit UDP/IPv4, optionally pinned to an iface. # C: O(payload + N)
     pub fn send_udp_to_bound(&self, src_ip: Ipv4Addr, src_port: u16,
@@ -493,3 +434,7 @@ mod tests {
 #[cfg(test)]
 #[path = "stack_binddev_pmtu_tests.rs"]
 mod pmtu_tests;
+
+#[cfg(test)]
+#[path = "stack_binddev_mark_tests.rs"]
+mod mark_tests;

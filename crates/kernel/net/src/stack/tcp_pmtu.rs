@@ -98,11 +98,12 @@ impl NetStack {
         let ip_mode = entry.ip_mtu_discover.load(Ordering::Acquire);
         let ipv6_mode = entry.ipv6_mtu_discover.load(Ordering::Acquire);
         let dst = entry.conn.lock().remote.ip;
+        let mark = entry.mark();
         let path_mtu = self.tcp_path_mtu_in(
-            entry.net_ns(), dst, entry.bound_iface(), ip_mode, ipv6_mode).unwrap_or(0);
+            entry.net_ns(), dst, entry.bound_iface(), ip_mode, ipv6_mode, mark).unwrap_or(0);
         let mss = crate::tcp_ext_hdr::mss_minus_ext_hdr(
             self.mss_for_dst_on_iface_pmtu_modes_in(
-                entry.net_ns(), dst, entry.bound_iface(), ip_mode, ipv6_mode), ext);
+                entry.net_ns(), dst, entry.bound_iface(), ip_mode, ipv6_mode, mark), ext);
         let mut conn = entry.conn.lock();
         if mss != 0 { conn.own_mss = mss; }
         conn.path_mtu = path_mtu;

@@ -41,22 +41,43 @@ pub fn dgram_peer_writable(peer_queued: usize, sndbuf: usize) -> bool {
     peer_queued < sndbuf
 }
 
-/// Linux `unix_peer(other) == sk` — the destination is connected back to the
-/// sender, i.e. a symmetrically connected pair (what `socketpair(AF_UNIX,
-/// SOCK_DGRAM)` produces).
+// A connected datagram peer is a SOCKET, so every test against it is an
+// identity comparison, never an address one: two names can resolve to one
+// receive queue, and a name can outlive the socket that published it, so an
+// address-keyed stand-in both under- and over-reports the relation.
+//
+// The two tests below are one relation read twice:
+//
+//   symmetric  ⇔  the destination's connected peer IS the sender
+//   may-send   ⇔  the destination has no connected peer at all, OR symmetric
+//
+// Identities are the destination's and the sender's stable receive-queue ids.
+// `None` for the sender means it owns no receive queue at all — a socket
+// nothing can connect to, hence never symmetric, hence allowed to address only
+// an unconnected destination.
+
+/// The destination is connected back to the sender: a symmetrically connected
+/// pair, which is what a datagram `socketpair` produces.
 ///
-/// This gates the receive-queue-full flow control on BOTH sides, and it must:
-/// `unix_dgram_sendmsg` refuses with EAGAIN only `if (other != sk &&
-/// unix_peer(other) != sk && unix_recvq_full_lockless(other))`, and
-/// `unix_dgram_poll` clears writability under the identical guard
-/// . Applying it to one side alone is what tells a writer
+/// Gates the receive-queue-full flow control on BOTH the send and the poll
+/// side — such a pair is bounded by the sender's own write memory instead, and
+/// applying the backlog test to one side alone is what reports a writer
 /// "writable" and then hands it EAGAIN forever.
 /// # C: O(1)
-pub fn dgram_symmetric_pair(peer_peer: Option<&crate::UnixAddr>, local_bound: Option<&crate::UnixAddr>) -> bool {
-    match (peer_peer, local_bound) {
-        (Some(back), Some(mine)) => back.key == mine.key,
+pub fn dgram_symmetric_pair(dest_peer: Option<u64>, sender: Option<u64>) -> bool {
+    match (dest_peer, sender) {
+        (Some(back), Some(mine)) => back == mine,
         _ => false,
     }
+}
+
+/// Whether this sender may address this destination at all. A datagram socket
+/// connected to a third party accepts traffic from that party alone; anyone
+/// else is refused with EPERM, both when connecting to it and on every
+/// individual send.
+/// # C: O(1)
+pub fn dgram_may_send(dest_peer: Option<u64>, sender: Option<u64>) -> bool {
+    dest_peer.is_none() || dgram_symmetric_pair(dest_peer, sender)
 }
 
 #[cfg(test)]
@@ -98,5 +119,46 @@ mod tests {
         assert!(dgram_peer_writable(0, 16384));
         assert!(dgram_peer_writable(16383, 16384));
         assert!(!dgram_peer_writable(16384, 16384));
+    }
+
+    // Queue identities; the values are arbitrary but distinct.
+    const SENDER: u64 = 7;
+    const DEST: u64 = 8;
+    const THIRD: u64 = 9;
+
+    #[test]
+    fn unconnected_destination_accepts_anyone() {
+        assert!(dgram_may_send(None, Some(SENDER)));
+        assert!(dgram_may_send(None, None));
+        assert!(!dgram_symmetric_pair(None, Some(SENDER)));
+    }
+
+    #[test]
+    fn destination_connected_to_a_third_party_refuses_the_sender() {
+        assert!(!dgram_may_send(Some(THIRD), Some(SENDER)));
+    }
+
+    #[test]
+    fn destination_connected_back_to_the_sender_is_symmetric_and_allowed() {
+        assert!(dgram_symmetric_pair(Some(SENDER), Some(SENDER)));
+        assert!(dgram_may_send(Some(SENDER), Some(SENDER)));
+    }
+
+    #[test]
+    fn a_sender_without_a_receive_queue_is_never_the_destinations_peer() {
+        // Nothing can be connected to a socket that publishes no queue, so a
+        // connected destination refuses it and it is never symmetric.
+        assert!(!dgram_symmetric_pair(Some(DEST), None));
+        assert!(!dgram_may_send(Some(DEST), None));
+    }
+
+    #[test]
+    fn identity_not_address_decides_symmetry() {
+        // The sender bound no address, yet the destination's stored peer is
+        // its queue: symmetric. An address-keyed comparison has nothing to
+        // compare here and would miss it.
+        assert!(dgram_symmetric_pair(Some(SENDER), Some(SENDER)));
+        // Distinct queues never become symmetric however their names compare.
+        assert!(!dgram_symmetric_pair(Some(DEST), Some(SENDER)));
     }
 }

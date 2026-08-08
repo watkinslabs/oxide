@@ -89,10 +89,11 @@ pub(super) fn listen_tcp(sock: &alloc::sync::Arc<InetSocket>, backlog: i32,
         crate::tcp_fastopen::init_key_once(&sock.net_namespace);
     }
     let bind = ensure_tcp_bind(sock, local_ip, &mut local_port, None)?;
-    let listener = stack().tcp_listen_reserved_fastopen_frag_pacing_ipv6(
+    let listener = stack().tcp_listen_reserved_fastopen_frag_pacing_ipv6_mark(
         &bind, sock.bpf_filter.clone(), sock.opts.ip_mtu_discover.clone(),
         sock.opts.ipv6_mtu_discover.clone(), sock.opts.ipv6.frag_size_cell(), sock.opts.ipv6.clone(), sock.opts.min_hop.clone(),
-        sock.opts.tcp.fastopen.clone(), sock.opts.base.generic.max_pacing_rate_cell())?;
+        sock.opts.tcp.fastopen.clone(), sock.opts.base.generic.max_pacing_rate_cell(),
+        sock.opts.base.mark_cell())?;
     listener.set_backlog(backlog, somaxconn);
     crate::sock_opts::sol_tcp::apply::to_listener(&sock.opts, &listener);
     listener.register_poll_subs(&sock.poll_subs);
@@ -165,6 +166,9 @@ fn connect_tcp(sock: &InetSocket, local_port: &mut Option<u16>, local_ip: crate:
         super::tcp_ip_options::tcp_entry_ip_options(sock),
         sock.opts.ipv6.clone(),
         sock.opts.base.generic.max_pacing_rate_cell(),
+        // The connection holds the socket's own mark cell, so a later
+        // `SO_MARK` reaches the route lookup every segment makes.
+        sock.opts.base.mark_cell(),
         super::tcp_fastopen::ActiveOpen::from(open), data,
     )?;
     entry.conn.lock().fastopen_confirming = confirming;

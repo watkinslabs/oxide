@@ -442,6 +442,7 @@ impl NetStack {
     {
         self.send_tcp_ipv4_segment_in(
             0, src, dst, l4, 0, None, crate::uapi::IP_PMTUDISC_WANT, None, None,
+            crate::stack_binddev::UNMARKED,
         ).map(|_| ())
     }
 

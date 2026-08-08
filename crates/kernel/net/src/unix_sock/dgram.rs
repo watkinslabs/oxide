@@ -59,12 +59,24 @@ impl core::ops::Deref for UnixDgramRecord {
     fn deref(&self) -> &Self::Target { &self.msg }
 }
 
+/// The connected peer of a datagram socket. The address is what a send
+/// re-resolves; `id` is the destination queue's stable identity, which is what
+/// the peer comparisons (symmetry, may-send) actually test. Stored as one
+/// value because they describe one association.
+#[derive(Clone)]
+pub struct DgramPeer {
+    pub addr: UnixAddr,
+    pub id: u64,
+}
+
 pub struct UnixDgramQueue {
     pub msgs: Spinlock<VecDeque<UnixDgramRecord>, UnixLockClass>,
     /// Bound local address for pathname/abstract datagram sockets.
     pub bound: Spinlock<Option<UnixAddr>, UnixLockClass>,
-    /// Connected peer address for AF_UNIX SOCK_DGRAM.
-    pub peer: Spinlock<Option<UnixAddr>, UnixLockClass>,
+    /// Connected peer for AF_UNIX SOCK_DGRAM: address AND socket identity in
+    /// ONE cell, so the name the send path re-resolves can never disagree with
+    /// the socket every peer comparison is actually made against.
+    peer: Spinlock<Option<DgramPeer>, UnixLockClass>,
     /// Bound socket owning this registry entry; its file credentials are the
     /// one source of truth for the publishing Landlock domain.
     owner_socket: Spinlock<Option<alloc::sync::Weak<crate::sock::InetSocket>>, UnixLockClass>,
@@ -154,10 +166,11 @@ impl UnixDgramQueue {
         *self.subs.lock() = Some(Arc::downgrade(subs));
     }
 
-    /// Store the connected datagram peer.
+    /// Store the connected datagram peer: the address it was named by and the
+    /// identity of the queue that name resolved to, together.
     /// # C: O(1)
-    pub fn set_peer(&self, addr: UnixAddr) {
-        *self.peer.lock() = Some(addr);
+    pub fn set_peer(&self, addr: UnixAddr, id: u64) {
+        *self.peer.lock() = Some(DgramPeer { addr, id });
     }
 
     /// Clear the connected datagram peer. # C: O(1)
@@ -165,11 +178,22 @@ impl UnixDgramQueue {
         *self.peer.lock() = None;
     }
 
-    /// Return the connected datagram peer, if any.
+    /// Return the connected datagram peer's address, if any.
     /// # C: O(1)
     pub fn peer(&self) -> Option<UnixAddr> {
-        self.peer.lock().clone()
+        self.peer.lock().as_ref().map(|p| p.addr.clone())
     }
+
+    /// Identity of the socket this queue is connected to — what every peer
+    /// comparison tests, as against the name it was reached by.
+    /// # C: O(1)
+    pub fn peer_id(&self) -> Option<u64> {
+        self.peer.lock().as_ref().map(|p| p.id)
+    }
+
+    /// This queue's own identity, as a connecting or sending peer sees it.
+    /// # C: O(1)
+    pub fn id(&self) -> u64 { self.gc.id() }
 
     /// Enqueue unless the owning socket shut down its receive half.
     /// # C: O(1)
