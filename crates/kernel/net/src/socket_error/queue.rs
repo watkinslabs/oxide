@@ -24,6 +24,10 @@ pub struct SocketError {
 
 struct SocketErrorState {
     errno: i32,
+    /// The non-fatal error a connection was told about but did not die of.
+    /// It never reaches a receive or a send — only the option read reports it,
+    /// once, and only when no fatal error is pending.
+    errno_soft: i32,
     recverr4: bool,
     recverr6: bool,
     recverr_rfc4884_4: bool,
@@ -63,7 +67,7 @@ impl SocketError {
     pub const fn new() -> Self {
         Self {
             state: Spinlock::new(SocketErrorState {
-                errno: 0, recverr4: false, recverr6: false,
+                errno: 0, errno_soft: 0, recverr4: false, recverr6: false,
                 recverr_rfc4884_4: false, recverr_rfc4884_6: false,
                 rmem_limit: SOCK_ERRQUEUE_RMEM_DEFAULT, rmem_used: 0, zerocopy_next_id: 0,
                 queue: VecDeque::new(),
@@ -89,6 +93,35 @@ impl SocketError {
 
     /// Observe pending error state without consuming it. # C: O(1)
     pub fn has(&self) -> bool { self.state.lock().errno != 0 }
+
+    /// Record a non-fatal error the connection survived. It replaces any
+    /// earlier one and is never reported by a receive or a send. # C: O(1)
+    pub fn set_soft(&self, errno: i32) -> bool {
+        if errno <= 0 { return false; }
+        self.state.lock().errno_soft = errno;
+        true
+    }
+
+    /// Forget the non-fatal error: something on this connection worked, so the
+    /// event it recorded no longer describes the connection. # C: O(1)
+    pub fn clear_soft(&self) { self.state.lock().errno_soft = 0; }
+
+    /// Observe the non-fatal error without consuming it, for the give-up path
+    /// that reports it as the cause instead of a bare timeout. # C: O(1)
+    pub fn soft(&self) -> i32 { self.state.lock().errno_soft }
+
+    /// The socket-option read of the pending error: the fatal error first,
+    /// read and cleared, and only when there is none the non-fatal one, also
+    /// read and cleared, so each is reported exactly once. # C: O(1)
+    pub fn take_reported(&self) -> i32 {
+        let mut state = self.state.lock();
+        let errno = state.errno;
+        state.errno = 0;
+        if errno != 0 { return errno; }
+        let soft = state.errno_soft;
+        state.errno_soft = 0;
+        soft
+    }
 
     /// Track the receive-memory budget the error queue may occupy. # C: O(1)
     pub fn set_rmem_limit(&self, bytes: usize) { self.state.lock().rmem_limit = bytes; }

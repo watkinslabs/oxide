@@ -138,8 +138,9 @@ fn this_level_never_narrows_a_read_to_one_byte() {
 #[test]
 fn the_ancillary_snapshot_is_a_stream_socket_read() {
     assert_eq!(get::read(IPV6_2292PKTOPTIONS, dgram(), &state()), Err(Errno::Enoprotoopt));
-    assert_eq!(get::read(IPV6_2292PKTOPTIONS, stream(), &state()),
-        Ok(Value::Bytes(Vec::new())));
+    // A stream socket gets an ancillary STREAM, not a value: the caller's
+    // length is a budget the messages pack into, so the read owns its copyout.
+    assert_eq!(get::read(IPV6_2292PKTOPTIONS, stream(), &state()), Ok(Value::ControlStream));
 }
 
 #[test]

@@ -33,7 +33,8 @@ pub(crate) fn connect_udp6_locked(sock: &InetSocket, local_port: &mut Option<u16
             sock.opts.ipv6_v6only.clone(),
             sock.peer6.clone(), sock.opts.ip_mtu_discover.clone(),
             sock.opts.ipv6_mtu_discover.clone(), sock.opts.udp.no_check6_rx.clone(),
-            sock.opts.udp.gro.clone(), sock.bpf_filter.clone(), sock.mcast.clone(),
+            sock.opts.udp.gro.clone(), sock.opts.udp.encap_type.clone(),
+            sock.bpf_filter.clone(), sock.mcast.clone(),
             policy.range,
         ).map_err(|error| if error == NetError::Eaddrinuse { NetError::Eagain } else { error })?;
         endpoint.register_poll_subs(&sock.poll_subs);
@@ -196,7 +197,8 @@ fn ensure_udp6_bound(sock: &InetSocket, dst_ip: crate::Ipv6Addr, scope_id: u32)
                     sock.opts.ipv6_v6only.clone(),
                     sock.peer6.clone(), sock.opts.ip_mtu_discover.clone(),
                     sock.opts.ipv6_mtu_discover.clone(), sock.opts.udp.no_check6_rx.clone(),
-                    sock.opts.udp.gro.clone(), sock.bpf_filter.clone(), sock.mcast.clone(),
+                    sock.opts.udp.gro.clone(), sock.opts.udp.encap_type.clone(),
+                    sock.bpf_filter.clone(), sock.mcast.clone(),
                     policy.range,
                 ).map_err(|error| if error == NetError::Eaddrinuse { NetError::Eagain } else { error })?;
                 endpoint.register_poll_subs(&sock.poll_subs);

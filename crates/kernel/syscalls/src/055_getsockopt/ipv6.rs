@@ -77,7 +77,44 @@ pub(super) fn get(sock: &Arc<InetSocket>, optname: u64, out: &OptOut) -> i64 {
     let value = match v6get::read(optname, net::sock_opts::describe_ipv6(sock), &view(sock)) {
         Ok(v) => v, Err(e) => return errno(e),
     };
+    if value == Value::ControlStream { return pktoptions_get(sock, out); }
     publish(out, value)
+}
+
+/// `IPV6_2292PKTOPTIONS`: the ancillary messages a stream socket publishes on
+/// demand, packed into the caller's buffer as a running budget.
+///
+/// This stack stashes no per-segment receive snapshot on a stream socket, so
+/// the synthesised answer — built from the socket's own sticky and receive
+/// state — is the path that always runs. WHICH messages, under WHICH receive
+/// bit, in WHAT order is owned by `net::sock_opts::sol_ipv6::pktoptions`.
+/// # C: O(messages)
+fn pktoptions_get(sock: &Arc<InetSocket>, out: &OptOut) -> i64 {
+    use net::sock_opts::sol_ipv6::set::{RECVHOPLIMIT, RECVPKTINFO, RECVTCLASS};
+    let requested = match requested_unchecked(out.optlen_p) {
+        Ok(v) => v, Err(e) => return errno(e),
+    };
+    if requested < 0 { return errno(Errno::Einval); }
+    let flags = view(sock).flags;
+    let (sticky_addr, sticky_ifindex) = sock.opts.ipv6.sticky_pktinfo();
+    let state = net::sock_opts::sol_ipv6::pktoptions::Published {
+        rxinfo: flags & RECVPKTINFO != 0,
+        rxhlim: flags & RECVHOPLIMIT != 0,
+        rxtclass: flags & RECVTCLASS != 0,
+        rxoinfo: flags & flag::RXOINFO != 0,
+        rxohlim: flags & flag::RXOHLIM != 0,
+        rxflow: flags & flag::RXFLOW != 0,
+        mcast_oif: sock.opts.ipv6_mcast_ifindex.load(Ordering::Acquire),
+        sticky_addr, sticky_ifindex,
+        daddr: sock.peer6.lock().map_or([0u8; 16], |(ip, _)| ip.0),
+        mcast_hops: sock.opts.ipv6_mcast_hops.load(Ordering::Acquire),
+        rcv_flowinfo: sock.opts.ipv6.rcv_flowinfo(),
+    };
+    let mut control = crate::recv_control::Control::new(requested as usize);
+    for msg in net::sock_opts::sol_ipv6::pktoptions::published(&state) {
+        control.push(msg.level, msg.kind, &msg.bytes);
+    }
+    out.exact(&control.to_bytes())
 }
 
 /// `IPV6_PATHMTU`: the whole information structure, refused rather than
@@ -141,7 +178,7 @@ fn publish(out: &OptOut, value: Value) -> i64 {
             Ok(len) => out.exact(&bytes[..len]),
             Err(e) => errno(e),
         },
-        Value::Delegated => errno(Errno::Enoprotoopt),
+        Value::Delegated | Value::ControlStream => errno(Errno::Enoprotoopt),
     }
 }
 

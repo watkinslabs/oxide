@@ -265,6 +265,18 @@ pub fn recvfrom(sock: &alloc::sync::Arc<InetSocket>, max_len: usize) -> Result<R
     recvfrom_opts(sock, max_len, RecvOptions::default())
 }
 
+/// Drain the socket's pending path-MTU notification, when the receive option
+/// that produces one is on. The condition is owned by
+/// `sol_ipv6::pathmtu::drains_before_queue`, so it is checkable without a
+/// socket. # C: O(1)
+fn take_path_mtu(sock: &InetSocket) -> Option<crate::sock_opts::sol_ipv6::pathmtu::PathMtu> {
+    use crate::sock_opts::sol_ipv6::{flag, pathmtu};
+    if !pathmtu::drains_before_queue(sock.opts.ipv6.flag(flag::RXPATHMTU),
+        sock.opts.ipv6.pathmtu_pending())
+    { return None; }
+    sock.opts.ipv6.take_pathmtu()
+}
+
 /// `recvfrom` variant with datagram flags that affect queue consumption.
 /// # C: O(payload bytes)
 pub fn recvfrom_opts(
@@ -272,6 +284,10 @@ pub fn recvfrom_opts(
     max_len: usize,
     opts: RecvOptions,
 ) -> Result<Received, NetError> {
+    // `IPV6_RECVPATHMTU` is drained by the ORDINARY receive, ahead of the
+    // datagram queue and without any receive flag selecting it. It is not the
+    // extended-error queue: one replace-in-place cell, no `MSG_ERRQUEUE`.
+    if let Some(note) = take_path_mtu(sock) { return Ok(Received::path_mtu(note)); }
     // No security decision here. A blocking receive polls this core once per
     // wakeup, so a verdict taken here would be asked many times for one
     // receive transaction; the one message hook has already admitted it.

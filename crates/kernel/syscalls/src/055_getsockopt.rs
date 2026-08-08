@@ -101,7 +101,7 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             net::socket_security::option::OptSock::plain(namespace, family),
             level as i32, optname as i32)
         { return errno_from_neterr(error); }
-        let pending = target.take_error();
+        let pending = target.take_reported_error();
         return out.i32(pending);
     }
     if level == SOL_SOCKET && matches!(optname, SO_LOCK_FILTER | SO_GET_FILTER) {

@@ -30,6 +30,10 @@ pub enum TcpChrono {
 pub struct TcpTelemetry {
     pub delivered: u32, pub delivered_mstamp_ns: u64, pub rate_delivered: u32,
     pub rate_interval_ns: u64, pub rate_app_limited: bool,
+    /// Packets delivered whose acknowledgement carried the congestion echo.
+    /// Only a connection negotiated for classic ECN feeds this; accurate ECN
+    /// would derive it from the wire counters instead.
+    pub delivered_ce: u32,
     pub chrono: TcpChrono, pub chrono_start_ns: u64, pub busy_time_ns: u64,
     pub rwnd_limited_ns: u64, pub sndbuf_limited_ns: u64,
     /// Current output pacing rate and next output eligibility, owned by this TCB.
@@ -38,7 +42,7 @@ pub struct TcpTelemetry {
 
 impl Default for TcpTelemetry {
     fn default() -> Self { Self { delivered: 0, delivered_mstamp_ns: 0, rate_delivered: 0,
-        rate_interval_ns: 0, rate_app_limited: false, chrono: TcpChrono::None,
+        rate_interval_ns: 0, rate_app_limited: false, delivered_ce: 0, chrono: TcpChrono::None,
         chrono_start_ns: 0, busy_time_ns: 0, rwnd_limited_ns: 0, sndbuf_limited_ns: 0,
         pacing_rate: 0, pacing_next_ns: 0 } }
 }

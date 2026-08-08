@@ -1,0 +1,18 @@
+[package]
+name = "sockopt_diff"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "sockopt_diff"
+path = "src/main.rs"
+
+[dependencies]
+libc = { workspace = true }
+# Not used for its PASS/FAIL report API (this probe emits area|test|detail
+# records instead) — pulled in for its build.rs, which stages the aarch64
+# cross toolchain's static libgcc as `-lgcc_s` (Fedora's cross gcc ships no
+# shared libgcc_s.so, so std's unwinder reference fails to link without it),
+# and for its errno() accessor so that reader has exactly one owner.
+support = { workspace = true }

@@ -9,6 +9,7 @@
 //! - `abi`   — `MSG_ERRQUEUE` wire encoding and the name/offender ladders.
 //! - `poll`   — the readiness bits the error state contributes.
 //! - `report` — local-origin reporting for host-detected transmit failures.
+//! - `icmp_tcp` — what an ICMP error does to a connection, by connection state.
 //! - `pathmtu` — `IPV6_RECVPATHMTU`'s one-slot report, collected by an
 //!   ORDINARY receive rather than by the error queue.
 //! - `zerocopy` — `MSG_ZEROCOPY` completion policy, shared by every family.
@@ -18,6 +19,7 @@ mod entry;
 mod queue;
 mod poll;
 mod report;
+mod icmp_tcp;
 pub mod pathmtu;
 pub mod uapi;
 mod zerocopy;
@@ -27,6 +29,7 @@ mod zerocopy;
 pub use entry::SocketErrorEntry;
 pub use poll::error_poll_mask;
 pub use report::{report_send_failure, report_send_failure_pmtu};
+pub use icmp_tcp::{icmp_tcp_verdict, IcmpTcpVerdict};
 pub use zerocopy::{complete_send as complete_zerocopy_send, notifies as zerocopy_notifies};
 pub use queue::{icmp_origin, SocketError};
 pub use uapi::*;

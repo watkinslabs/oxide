@@ -299,8 +299,10 @@ fn netlink_sol_socket_defers_to_the_one_generic_table() {
         "the argument import is the canonical one");
     assert!(source.contains("sol::set::admit(optname, arg, personality(), env)"),
         "the admission ladder is the canonical one");
-    assert!(source.contains("sol::get::value(optname, requested, &socket.generic, &view)"),
-        "the read table is the canonical one");
+    assert!(source.contains("::netlink::sol_socket::read(target.socket(), optname, requested,"),
+        "the read goes through the socket's one option owner, which uses the canonical table");
+    assert!(source.contains("::netlink::sol_socket::apply(socket, action)"),
+        "the write lands in that same one owner");
     // No arithmetic, no length rule and no capability gate of its own.
     for reimplementation in ["NSEC_PER_USEC", "TIMEVAL_BYTES", "may_scm_recv", "Errno::Edom"] {
         assert!(!source.contains(reimplementation),

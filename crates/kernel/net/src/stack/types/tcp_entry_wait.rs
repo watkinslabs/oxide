@@ -18,6 +18,38 @@ impl TcpEntry {
         true
     }
 
+    /// Keep a non-fatal error the connection survived. No observer is woken:
+    /// nothing about the connection changed. # C: O(1)
+    pub fn set_soft_error(&self, errno: i32) -> bool { self.error.set_soft(errno) }
+
+    /// Consume the error the socket-option read reports. # C: O(1)
+    pub fn take_reported_error(&self) -> i32 { self.error.take_reported() }
+
+    /// The fatal error a receive would see, without consuming it. # C: O(1)
+    #[cfg(test)]
+    pub fn error_snapshot(&self) -> i32 {
+        let errno = self.error.take();
+        if errno != 0 { self.error.set(errno); }
+        errno
+    }
+
+    /// Ask for extended errors on this connection's family. # C: O(1)
+    #[cfg(test)]
+    pub fn set_extended_errors4(&self, on: bool) { self.error.set_recverr4(on); }
+
+    /// Forget the non-fatal error after the peer acknowledged something. # C: O(1)
+    pub fn clear_soft_error(&self) { self.error.clear_soft(); }
+
+    /// The non-fatal error the give-up path reports instead of a bare
+    /// timeout, or zero when none was recorded. # C: O(1)
+    pub fn soft_error(&self) -> i32 { self.error.soft() }
+
+    /// Whether this connection's socket asked for extended errors, per the
+    /// family it runs over. # C: O(1)
+    pub fn wants_extended_errors(&self, v6: bool) -> bool {
+        if v6 { self.error.recverr6() } else { self.error.recverr4() }
+    }
+
     /// Publish terminal connection state before waking every blocked observer. # C: O(1)
     pub fn close_and_wake(&self) {
         self.close_with(|| {

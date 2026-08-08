@@ -37,20 +37,7 @@ pub(super) fn set(sock: &Arc<InetSocket>, optname: u64, optval: u64, optlen: u32
         ArgClass::Header => return set_header(sock, optname, optval, optlen, caps),
         ArgClass::PktInfo => return set_pktinfo(sock, optval, optlen),
         ArgClass::FlowLabel => return flow_label(sock, optval, optlen, caps),
-        // The ancillary-message stream form of the sticky headers: an empty
-        // write clears every slot, and anything else is an option list this
-        // table does not parse in the option path.
-        ArgClass::PktOptions => {
-            if optlen == 0 {
-                for slot in [Sticky::HopOpts, Sticky::RthdrDstOpts, Sticky::Rthdr,
-                    Sticky::DstOpts]
-                {
-                    sock.opts.ipv6.set_header(slot, None);
-                }
-                return 0;
-            }
-            return errno(Errno::Einval);
-        }
+        ArgClass::PktOptions => return set_pktoptions(sock, optval, optlen, caps),
         ArgClass::Int => {}
     }
     // This level reads a whole `int` or nothing at all: a short operand is
@@ -160,6 +147,38 @@ fn set_header(sock: &Arc<InetSocket>, optname: u64, optval: u64, optlen: u32,
         Ok(area) => { sock.opts.ipv6.set_header(slot, area); 0 }
         Err(e) => errno(e),
     }
+}
+
+/// `IPV6_2292PKTOPTIONS`: an ancillary-message stream that REPLACES the
+/// socket's whole sticky header block.
+///
+/// A zero-length write is the empty stream, which is why it clears all four
+/// slots; a stream naming one header therefore clears the other three too.
+/// The framing is the one control-stream walk, and which message settles which
+/// slot is `net::sock_opts::sol_ipv6::pktoptions`' rule. # C: O(optlen)
+fn set_pktoptions(sock: &Arc<InetSocket>, optval: u64, optlen: u32,
+                  caps: net::sock_opts::sol_socket::OptCaps) -> i64 {
+    use net::sock_opts::sol_ipv6::pktoptions;
+    if let Err(e) = pktoptions::admit_len(optlen) { return errno(e); }
+    let mut bytes = alloc::vec![0u8; optlen as usize];
+    if optlen != 0 && uaccess::copy_from_user(&mut bytes, optval).is_err() {
+        return errno(Errno::Efault);
+    }
+    let layout = crate::msg_layout::MsgLayout::Native;
+    let entries = match crate::msg_layout::cmsg::walk(layout, &bytes) {
+        Ok(v) => v, Err(e) => return errno(e),
+    };
+    let slots = match pktoptions::admit_stream(
+        entries.iter().map(|e| (e.level, e.ty, e.data(layout, &bytes))), caps)
+    { Ok(s) => s, Err(e) => return errno(e) };
+    for (slot, area) in [(Sticky::HopOpts, slots.hop),
+        (Sticky::RthdrDstOpts, slots.dst_before_routing),
+        (Sticky::Rthdr, slots.routing),
+        (Sticky::DstOpts, slots.dst_after_routing)]
+    {
+        sock.opts.ipv6.set_header(slot, area);
+    }
+    0
 }
 
 /// `IPV6_PKTINFO`: the sticky source address and outgoing interface.

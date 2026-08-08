@@ -46,6 +46,9 @@ pub struct NetlinkSocket {
     /// Effective receive timeout shared by generic socket options and netlink
     /// wait interruption. `0` means no timeout.
     pub rcvtimeo_ns: core::sync::atomic::AtomicU64,
+    /// Effective send timeout. `0` means no timeout. The wait it bounds is the
+    /// receive-buffer backpressure a unicast meets at its destination.
+    pub sndtimeo_ns: core::sync::atomic::AtomicU64,
     /// The generic `struct sock` option state every family carries, in the one
     /// type that owns it, so a SOL_SOCKET write on a netlink fd is stored where
     /// the SOL_SOCKET read looks for it.
@@ -150,6 +153,7 @@ impl NetlinkSocket {
         opener_user_ns: namespace_identity::NamespacePin, opener_caps: u64) -> Self {
         Self {
             rcvtimeo_ns: core::sync::atomic::AtomicU64::new(0),
+            sndtimeo_ns: core::sync::atomic::AtomicU64::new(0),
             generic: net::sock_opts::sol_socket::GenericSockOpts::default(),
             protocol,
             net_ns: Arc::clone(net_ns),
@@ -221,6 +225,9 @@ impl NetlinkSocket {
     pub fn take_pending_recv_error(&self) -> i32 {
         self.error.take()
     }
+    /// Consume the error the socket-option read reports: the fatal one first,
+    /// and only when there is none the non-fatal one. # C: O(1)
+    pub fn take_reported_error(&self) -> i32 { self.error.take_reported() }
 
     /// Observe whether a socket error is pending without consuming it. # C: O(1)
     pub fn has_pending_recv_error(&self) -> bool { self.error.has() }
