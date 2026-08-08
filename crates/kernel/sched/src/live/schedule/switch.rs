@@ -209,6 +209,11 @@ pub unsafe extern "C" fn oxide_finish_task_switch() {
         if !raw.is_null() {
             // SAFETY: `raw` came from `Arc::into_raw` in schedule()'s zombie path; reclaim it and hand ownership to ZOMBIES.
             let dying = unsafe { Arc::from_raw(raw) };
+            // A kernel thread's joiner may free the thread's stack the instant
+            // it observes the exit, so the exit is published HERE — on the
+            // incoming task, after the switch — and never by the dying thread,
+            // which is still executing on that stack until this point.
+            super::super::kthread::note_kthread_exited(&dying);
             let group = Arc::clone(&dying.thread_group);
             match group.finish_exit(dying) {
                 crate::thread_group::ExitDisposition::WaitableLeader(leader) => {
