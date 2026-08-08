@@ -42,7 +42,9 @@ impl SocketErrorState {
     /// Append one record when the receive-memory budget allows it. # C: O(1)
     fn enqueue(&mut self, entry: SocketErrorEntry) -> bool {
         let charge = entry.charged_bytes();
-        if self.rmem_used + charge > self.rmem_limit { return false; }
+        // A record that would fill the budget exactly is already too much: the
+        // budget is a strict ceiling on what the queue may hold.
+        if self.rmem_used + charge >= self.rmem_limit { return false; }
         self.rmem_used += charge;
         self.queue.push_back(entry);
         true
@@ -125,6 +127,12 @@ impl SocketError {
 
     /// Track the receive-memory budget the error queue may occupy. # C: O(1)
     pub fn set_rmem_limit(&self, bytes: usize) { self.state.lock().rmem_limit = bytes; }
+
+    /// Adopt the socket's receive budget. The error queue is admitted against
+    /// the SAME number the ordinary receive queue is, so one `SO_RCVBUF` write
+    /// names both; a socket that never names one keeps the default. A negative
+    /// budget cannot admit anything. # C: O(1)
+    pub fn adopt_rcvbuf(&self, bytes: i32) { self.set_rmem_limit(bytes.max(0) as usize); }
 
     /// Enable or disable IPv4 extended-error delivery. Disabling drops every
     /// queued record except the transmit-completion origins, and leaves the

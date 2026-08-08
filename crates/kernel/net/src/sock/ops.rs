@@ -384,8 +384,9 @@ mod tests {
     fn unix_dgram_af_unspec_connect_clears_peer() {
         let sock = alloc::sync::Arc::new(InetSocket::new_unix_dgram());
         let addr = crate::UnixAddr::from_sockaddr_path(b"\0svc".to_vec());
+        let other = crate::UnixDgramQueue::new();
         if let SockKind::UnixDgram(q) = &*sock.kind.lock() {
-            q.set_peer(addr);
+            q.set_peer(addr, other.id());
         } else {
             panic!("expected unix dgram socket");
         }

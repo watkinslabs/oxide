@@ -375,6 +375,7 @@ impl NetStack {
             Arc::new(crate::sock_opts::sol_ip::IpOpts::default()),
             Arc::new(crate::sock_opts::sol_ipv6::Ipv6Opts::default()),
             Arc::new(::core::sync::atomic::AtomicU64::new(u64::MAX)),
+            Arc::new(::core::sync::atomic::AtomicI32::new(super::types::UNMARKED_OPTION)),
             crate::sock::tcp_fastopen::ActiveOpen::default(), &[]).map(|(entry, _)| entry)
     }
 
@@ -391,6 +392,7 @@ impl NetStack {
         ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>,
         ipv6_opts: Arc<crate::sock_opts::sol_ipv6::Ipv6Opts>,
         max_pacing_rate: Arc<::core::sync::atomic::AtomicU64>,
+        mark: Arc<::core::sync::atomic::AtomicI32>,
         fastopen: crate::sock::tcp_fastopen::ActiveOpen,
         data: &[u8]) -> NetResult<(Arc<TcpEntry>, usize)>
     {
@@ -403,7 +405,7 @@ impl NetStack {
         if conns.contains_key(&key) { return Err(NetError::Eaddrnotavail); }
         let (entry, syn, carried) = self.build_active_child(bind, local_ip, remote_ip, remote_port,
             error, bpf_filter, ip_mtu_discover, ipv6_mtu_discover, ipv6_frag_size, min_hop, ip_opts, ipv6_opts,
-            max_pacing_rate, fastopen, data)?;
+            max_pacing_rate, mark, fastopen, data)?;
         conns.insert(key, entry.clone());
         drop(conns);
         if let Err(error) = self.send_tcp_segment_in(
@@ -442,6 +444,7 @@ impl NetStack {
         ip_opts: Arc<crate::sock_opts::sol_ip::IpOpts>,
         ipv6_opts: Arc<crate::sock_opts::sol_ipv6::Ipv6Opts>,
         max_pacing_rate: Arc<::core::sync::atomic::AtomicU64>,
+        mark: Arc<::core::sync::atomic::AtomicI32>,
         fastopen: crate::sock::tcp_fastopen::ActiveOpen,
         data: &[u8])
         -> NetResult<(Arc<TcpEntry>, alloc::vec::Vec<u8>, usize)>
@@ -459,21 +462,27 @@ impl NetStack {
             local_ip, remote_ip, bind.local.port, remote_port);
         let ip_mode = ip_mtu_discover.load(Ordering::Acquire);
         let ipv6_mode = ipv6_mtu_discover.load(Ordering::Acquire);
+        // The route this connection lives on is the one its own mark selects,
+        // so the path MTU, the MSS and the metrics all come from that route
+        // rather than from whatever an unmarked lookup would have found.
+        let mark_value = mark.load(Ordering::Acquire) as u32;
         conn.path_mtu = self.tcp_path_mtu_in(
-            bind.net_ns(), remote_ip, bind.bound_iface(), ip_mode, ipv6_mode).unwrap_or(0);
+            bind.net_ns(), remote_ip, bind.bound_iface(), ip_mode, ipv6_mode,
+            mark_value).unwrap_or(0);
         // The sticky option area rides ahead of the TCP header on every
         // segment, so the connection gives that many bytes up from its MSS.
         conn.own_mss = crate::tcp_ext_hdr::mss_minus_ext_hdr(
             self.mss_for_dst_on_iface_pmtu_modes_in(
-                bind.net_ns(), remote_ip, bind.bound_iface(), ip_mode, ipv6_mode),
+                bind.net_ns(), remote_ip, bind.bound_iface(), ip_mode, ipv6_mode, mark_value),
             crate::tcp_ext_hdr::ext_hdr_len(ip_opts.options().as_ref()));
-        conn.apply_route_metrics(self.route_metrics_for_dst_in(
-            bind.net_ns(), remote_ip, bind.bound_iface()));
+        conn.apply_route_metrics(self.route_metrics_for_dst_mark_in(
+            bind.net_ns(), remote_ip, bind.bound_iface(), mark_value));
         let (syn, carried) = conn.active_open_fastopen(fastopen.option, fastopen.payload(data))
             .map_err(|_| NetError::Eio)?;
-        Ok((Arc::new(TcpEntry::new_bound_ip_opts_pacing_ipv6(
+        Ok((Arc::new(TcpEntry::new_bound_ip_opts_pacing_ipv6_mark(
             conn, error, Some(bind.clone()), bpf_filter, ip_mtu_discover,
-            ipv6_mtu_discover, ipv6_frag_size, None, min_hop, ip_opts, ipv6_opts, max_pacing_rate)), syn, carried))
+            ipv6_mtu_discover, ipv6_frag_size, None, min_hop, ip_opts, ipv6_opts, max_pacing_rate,
+            mark)), syn, carried))
     }
 }
 

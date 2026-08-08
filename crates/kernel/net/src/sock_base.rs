@@ -35,7 +35,11 @@ pub struct SockBase {
     pub sndtimeo_ns: AtomicI64,
     pub rcvtimeo_ns: AtomicI64,
     pub priority: AtomicI32,
-    pub mark: AtomicI32,
+    /// `sk_mark`. Behind an `Arc` because the transport entry a stream socket
+    /// opens holds this same cell: the route every segment is resolved over is
+    /// selected by the mark, and the reference re-reads the socket's own mark
+    /// on each rebuild rather than working from a copy taken at connect time.
+    pub mark: Arc<AtomicI32>,
     /// `sk_tsflags`: the transmit/receive timestamp report selection.
     pub timestamping: AtomicI32,
     /// `sk_tskey`: the transmit-record key this socket reports next.
@@ -70,7 +74,7 @@ impl SockBase {
             sndtimeo_ns: AtomicI64::new(0),
             rcvtimeo_ns: AtomicI64::new(0),
             priority: AtomicI32::new(0),
-            mark: AtomicI32::new(0),
+            mark: Arc::new(AtomicI32::new(0)),
             timestamping: AtomicI32::new(0),
             tskey: AtomicU32::new(0),
             bound_ifindex: AtomicU32::new(0),
@@ -91,6 +95,11 @@ impl SockBase {
     pub fn set_rcvbuf_bytes(&self, bytes: usize) {
         self.rcvbuf.store(bytes.min(i32::MAX as usize) as i32, Ordering::Release);
     }
+
+    /// The `SO_MARK` cell itself, for a transport entry that must observe the
+    /// mark this socket carries at transmit time rather than a stale copy.
+    /// # C: O(1)
+    pub fn mark_cell(&self) -> Arc<AtomicI32> { self.mark.clone() }
 
     /// `sock_sndtimeo` in nanoseconds, `0` for no timeout. # C: O(1)
     pub fn sndtimeo(&self) -> i64 { self.sndtimeo_ns.load(Ordering::Acquire) }

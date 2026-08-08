@@ -86,15 +86,18 @@ impl NetStack {
     /// the socket's sticky option area. A compiled source route retargets the
     /// route lookup, the path MTU and the wire destination at its first hop;
     /// the segment's own checksum stays bound to the final destination, which
-    /// is why it is computed before this call. # C: O(payload + N)
+    /// is why it is computed before this call. `mark` is the sending socket's
+    /// `SO_MARK`, which selects the routing table this lookup runs against.
+    /// # C: O(payload + N)
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn send_tcp_ipv4_segment_in(&self, net_ns: u64, src: Ipv4Addr,
         dst: Ipv4Addr, l4: &[u8], tos: u8, bound: Option<NetIfaceId>, mode: i32,
         owner: Option<&crate::SocketOwner>,
-        opts: Option<&crate::ipv4_options::Compiled>)
+        opts: Option<&crate::ipv4_options::Compiled>, mark: u32)
         -> NetResult<crate::cgroup_bpf::EgressVerdict>
     {
         let wire_dst = crate::ipv4_options::wire_dst(opts, dst);
-        let (route, iface, next_hop) = self.route_v4_xmit_in(net_ns, wire_dst, bound, crate::stack_binddev::UNMARKED)?;
+        let (route, iface, next_hop) = self.route_v4_xmit_in(net_ns, wire_dst, bound, mark)?;
         if crate::ipv4_options::is_strict_route(opts) && next_hop != wire_dst {
             return Err(NetError::Enetunreach);
         }

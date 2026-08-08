@@ -100,15 +100,15 @@ fn addr(name: &str) -> UnixAddr { UnixAddr::from_abstract_or_test_path(alloc::st
 
 #[test]
 fn a_mutually_connected_pair_is_symmetric() {
-    let a = addr("/run/a");
-    let b = addr("/run/b");
-    // peer's peer == us -> symmetric.
-    assert!(dgram_symmetric_pair(Some(&a), Some(&a)));
-    // peer points elsewhere -> not symmetric, recvq flow control applies.
-    assert!(!dgram_symmetric_pair(Some(&b), Some(&a)));
-    // an unconnected peer, or an unbound sender, is never symmetric.
-    assert!(!dgram_symmetric_pair(None, Some(&a)));
-    assert!(!dgram_symmetric_pair(Some(&a), None));
+    let us = crate::UnixDgramQueue::new();
+    let them = crate::UnixDgramQueue::new();
+    // destination's peer IS us -> symmetric.
+    assert!(dgram_symmetric_pair(Some(us.id()), Some(us.id())));
+    // destination points elsewhere -> not symmetric, recvq flow control applies.
+    assert!(!dgram_symmetric_pair(Some(them.id()), Some(us.id())));
+    // an unconnected destination, or a sender owning no queue, is never symmetric.
+    assert!(!dgram_symmetric_pair(None, Some(us.id())));
+    assert!(!dgram_symmetric_pair(Some(us.id()), None));
 }
 
 /// THE invariant: for one pair, the cap the send applies and the cap poll

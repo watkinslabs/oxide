@@ -138,19 +138,19 @@ fn tcp_mss_selects_pmtu_mode_by_destination_family() {
 
     assert_eq!(stack.mss_for_dst_on_iface_pmtu_modes_in(
         0, IpAddr::V6(Ipv6Addr::LOOPBACK), Some(iface),
-        crate::uapi::IP_PMTUDISC_PROBE, crate::uapi::IPV6_PMTUDISC_WANT,
+        crate::uapi::IP_PMTUDISC_PROBE, crate::uapi::IPV6_PMTUDISC_WANT, UNMARKED,
     ), IPV6_LEARNED_MSS);
     assert_eq!(stack.mss_for_dst_on_iface_pmtu_modes_in(
         0, IpAddr::V6(Ipv6Addr::LOOPBACK), Some(iface),
-        crate::uapi::IP_PMTUDISC_WANT, crate::uapi::IPV6_PMTUDISC_PROBE,
+        crate::uapi::IP_PMTUDISC_WANT, crate::uapi::IPV6_PMTUDISC_PROBE, UNMARKED,
     ), IPV6_LOOPBACK_MSS);
     assert_eq!(stack.mss_for_dst_on_iface_pmtu_modes_in(
         0, IpAddr::V4(Ipv4Addr::LOOPBACK), Some(iface),
-        crate::uapi::IP_PMTUDISC_WANT, crate::uapi::IPV6_PMTUDISC_PROBE,
+        crate::uapi::IP_PMTUDISC_WANT, crate::uapi::IPV6_PMTUDISC_PROBE, UNMARKED,
     ), LEARNED_MSS);
     assert_eq!(stack.mss_for_dst_on_iface_pmtu_modes_in(
         0, IpAddr::V4(Ipv4Addr::LOOPBACK), Some(iface),
-        crate::uapi::IP_PMTUDISC_PROBE, crate::uapi::IPV6_PMTUDISC_WANT,
+        crate::uapi::IP_PMTUDISC_PROBE, crate::uapi::IPV6_PMTUDISC_WANT, UNMARKED,
     ), LOOPBACK_MSS);
 }
 
