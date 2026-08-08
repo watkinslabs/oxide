@@ -138,3 +138,46 @@ fn a_rejected_parameter_is_readable_and_names_the_parameter() {
     assert!(msg.starts_with("e "), "level-tagged: {msg:?}");
     assert!(msg.ends_with('\n'), "newline-terminated: {msg:?}");
 }
+
+// `read_message` is the whole of the descriptor's read: the file-operations
+// entry point is `#![cfg(target_os = "oxide-kernel")]`, so anything decided
+// there is untestable and the byte count, the ENODATA and the EMSGSIZE all
+// belong here.
+#[test]
+fn read_message_returns_the_byte_count_and_fills_the_caller_buffer() {
+    let mut fc = ctx();
+    fc.errorf("nope");
+    let mut buf = [0u8; 64];
+    let n = fc.read_message(&mut buf).expect("one message");
+    assert_eq!(&buf[..n], b"e nope\n");
+    assert_eq!(n, "e nope\n".len(), "the count is bytes, newline included and no NUL");
+    // Nothing is left behind, and the next call says so.
+    assert_eq!(fc.read_message(&mut buf).unwrap_err(), VfsError::Enodata);
+}
+
+// An empty ring is ENODATA and NOT a zero-byte read: end-of-file would tell a
+// caller the context is finished when it is merely quiet, and a userspace
+// reader looping until EOF would stop asking.
+#[test]
+fn an_empty_ring_is_enodata_not_a_zero_length_read() {
+    let mut fc = ctx();
+    let mut buf = [0u8; 64];
+    assert_eq!(fc.read_message(&mut buf).unwrap_err(), VfsError::Enodata);
+    assert!(fc.log_messages().is_empty());
+}
+
+// A short buffer must not consume the message — the caller retries larger and
+// gets it whole. A truncating read destroys the only copy of the diagnostic,
+// and the caller cannot tell that it happened.
+#[test]
+fn read_message_leaves_a_too_long_message_queued_for_a_bigger_buffer() {
+    let mut fc = ctx();
+    fc.errorf("a long enough diagnostic");
+    let want = "e a long enough diagnostic\n";
+    let mut small = vec![0u8; want.len() - 1];
+    assert_eq!(fc.read_message(&mut small).unwrap_err(), VfsError::Emsgsize);
+    assert!(small.iter().all(|&b| b == 0), "nothing was copied out");
+    let mut exact = vec![0u8; want.len()];
+    let n = fc.read_message(&mut exact).expect("fits exactly");
+    assert_eq!(&exact[..n], want.as_bytes());
+}

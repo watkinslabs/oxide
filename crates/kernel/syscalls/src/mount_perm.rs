@@ -38,6 +38,20 @@ pub(crate) fn may_mount_or_eperm() -> Option<i64> {
     if may_mount() { None } else { Some(-(Errno::Eperm.as_i32() as i64)) }
 }
 
+/// Linux `ns_capable(current_user_ns(), CAP_SYS_ADMIN)` — privilege over the
+/// caller's OWN user namespace. Distinct from [`may_mount`], which asks about
+/// the user namespace owning the caller's MOUNT namespace: a call that puts its
+/// new mount into a fresh namespace the caller is about to own needs only the
+/// former, and a caller inside an unprivileged user namespace holds exactly
+/// that one and not the other. # C: O(userns depth)
+pub(crate) fn cap_sys_admin_in_current_user_ns() -> bool {
+    let Some(cur) = sched::live::current() else { return false; };
+    let Some(user_ns) = cur.namespace_owner(namespace_identity::NamespaceKind::User) else {
+        return false;
+    };
+    nscg::proc_ns::has_cap_for(&cur, &user_ns.pin(), sched::cap::SYS_ADMIN)
+}
+
 /// Linux `capable(CAP_SYS_ADMIN)` — `ns_capable(&init_user_ns, CAP_SYS_ADMIN)`.
 /// `has_cap_for` requires the target user namespace to be the caller's own or a
 /// DESCENDANT of it, so a task inside a child user namespace fails this even
