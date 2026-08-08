@@ -278,62 +278,81 @@ impl AddressSpace {
                     klog::write_hex_u64(backing.ino());
                     klog::write_raw(b"\n");
                 }
-                // SAFETY: pa is a freshly-allocated PMM frame; HHDM mirror at hhdm_offset+pa is mapped writable; full page owned exclusively until M::map below makes it user-visible.
-                let short = unsafe {
-                    let dst = (hhdm_offset + pa) as *mut u8;
-                    hal::zerotrap::trap((dst) as *const u8, (page) as usize);
-                    core::ptr::write_bytes(dst, 0, page);
-                    let slice = core::slice::from_raw_parts_mut(dst, page);
-                    let mut filled = 0usize;
-                    let mut err = false;
-                    let mut no_mem = false;
-                    while filled < valid {
-                        match backing.read_at(file_off + filled as u64, &mut slice[filled..valid]) {
-                            Ok(0)   => break,                 // no progress → real short/EOF
-                            Ok(n)   => {
-                                #[cfg(feature = "debug-shortfill")]
-                                if filled + n < valid {
-                                    // A non-EOF region returned short — the exact B240 symptom,
-                                    // caught here even when the retry below recovers it.
-                                    klog::write_raw(b"[SHORT-FILE-FAULT ino="); klog::write_hex_u64(backing.ino());
-                                    klog::write_raw(b" off="); klog::write_hex_u64(file_off + filled as u64);
-                                    klog::write_raw(b" n="); klog::write_hex_u64(n as u64);
-                                    klog::write_raw(b" valid="); klog::write_hex_u64(valid as u64);
-                                    klog::write_raw(b" size="); klog::write_hex_u64(fsize);
-                                    klog::write_raw(b"]\n");
+                // The reference has NO notion of a short read here: a page is
+                // either uptodate or it is not, and when it is not it re-reads
+                // it ONCE, synchronously, then goes back around the lookup.
+                // Only a read that actually ERRORS becomes a fault; a read that
+                // merely failed to produce everything is retried. Giving up on
+                // the first no-progress return was the leg this path was
+                // missing, and it is why a page-cache build race or an extent
+                // boundary that the next read would have satisfied killed the
+                // faulting process instead of resolving.
+                //
+                // Each attempt re-derives the valid extent, because the size can
+                // move while a fault is in flight — a writer rewriting a file a
+                // reader has already mapped is the ordinary case, not a rare
+                // one, and judged against the size the fault STARTED with the
+                // backing's correct "no more bytes" at the new end reads as an
+                // unrecoverable short.
+                const FILL_ATTEMPTS: u32 = 2;
+                let valid0 = valid;
+                let mut read_err = false;
+                let mut no_mem = false;
+                let mut filled = 0usize;
+                for attempt in 0..FILL_ATTEMPTS {
+                    if attempt > 0 {
+                        let fsize_now = backing.size_hint();
+                        valid = if file_off >= fsize_now { 0usize }
+                                else { core::cmp::min(page as u64, fsize_now - file_off) as usize };
+                    }
+                    // SAFETY: pa is a freshly-allocated PMM frame; HHDM mirror at hhdm_offset+pa is mapped writable; full page owned exclusively until M::map below makes it user-visible.
+                    let r = unsafe {
+                        let dst = (hhdm_offset + pa) as *mut u8;
+                        hal::zerotrap::trap((dst) as *const u8, (page) as usize);
+                        core::ptr::write_bytes(dst, 0, page);
+                        let slice = core::slice::from_raw_parts_mut(dst, page);
+                        let mut filled = 0usize;
+                        let mut err = false;
+                        let mut no_mem = false;
+                        while filled < valid {
+                            match backing.read_at(file_off + filled as u64, &mut slice[filled..valid]) {
+                                Ok(0)   => break,                 // no progress → retry or EOF
+                                Ok(n)   => {
+                                    #[cfg(feature = "debug-shortfill")]
+                                    if filled + n < valid {
+                                        // A non-EOF region returned short — the exact B240 symptom,
+                                        // caught here even when the retry below recovers it.
+                                        klog::write_raw(b"[SHORT-FILE-FAULT ino="); klog::write_hex_u64(backing.ino());
+                                        klog::write_raw(b" off="); klog::write_hex_u64(file_off + filled as u64);
+                                        klog::write_raw(b" n="); klog::write_hex_u64(n as u64);
+                                        klog::write_raw(b" valid="); klog::write_hex_u64(valid as u64);
+                                        klog::write_raw(b" size="); klog::write_hex_u64(fsize);
+                                        klog::write_raw(b"]\n");
+                                    }
+                                    filled += n;
                                 }
-                                filled += n;
+                                Err(FileBackingError::NoMem) => { no_mem = true; err = true; break; }
+                                Err(_) => { err = true; break; }
                             }
-                            Err(FileBackingError::NoMem) => { no_mem = true; err = true; break; }
-                            Err(_) => { err = true; break; }
                         }
-                    }
-                    // A desync-recovered fill legitimately stops at the
-                    // BACKING's own EOF mid-page (the zeroed tail is real
-                    // bss); only a non-desync shortfall is fatal.
-                    (err, no_mem, filled)
-                };
-                let (read_err, no_mem, filled) = short;
-                let mut fatal = read_err || (filled < valid && !desync);
-                // The valid extent was derived from the size read BEFORE the
-                // fill. The reference re-reads i_size AFTER the read completes
-                // and decides against THAT, because the object can shrink while
-                // the fault is in flight — a writer rewriting a file a reader
-                // has already mapped is the ordinary case, not a rare one.
-                // Judged against the stale size, the backing's correct "no more
-                // bytes" at the NEW end looks like an unrecoverable short, and
-                // the reader is killed for the writer's truncate. Re-derive the
-                // extent and only then decide. A page that now lies WHOLLY past
-                // the end stays fatal: that is the reference's post-read
-                // index-beyond-EOF arm, and its answer there is a fault, not a
-                // zero page.
-                if fatal && !read_err && !desync {
-                    let fsize_now = backing.size_hint();
-                    if fsize_now < fsize && file_off < fsize_now {
-                        let revalid = core::cmp::min(page as u64, fsize_now - file_off) as usize;
-                        if filled >= revalid { fatal = false; }
-                    }
+                        (err, no_mem, filled)
+                    };
+                    read_err = r.0; no_mem = r.1; filled = r.2;
+                    // An error is terminal on the spot — that is the one leg the
+                    // reference answers with a fault. Anything else that filled
+                    // the extent is done; anything else that did not gets the
+                    // single re-read.
+                    if read_err || filled >= valid { break; }
                 }
+                // A desync-recovered fill legitimately stops at the BACKING's own
+                // EOF mid-page (the zeroed tail is real bss).
+                let mut fatal = read_err || (filled < valid && !desync);
+                // The page held file bytes when the fault began and now lies
+                // WHOLLY past the end: the object was truncated under the fault.
+                // The reference re-checks the size after the read and answers a
+                // fault there, not a zero page. A page that was past the end all
+                // along is the ordinary bss tail and still zero-fills.
+                if !read_err && !desync && valid0 > 0 && valid == 0 { fatal = true; }
                 if fatal {
                     // Unrecoverable: the backing could not supply the full
                     // file-valid extent. Do NOT install a partially-zero page
