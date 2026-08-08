@@ -63,6 +63,20 @@ pub fn is_ruleset_file(f: &Arc<vfs::File>) -> bool {
     f.inode().private::<LandlockRulesetInode>().is_some()
 }
 
+/// Classify a descriptor offered as a rule's `parent_fd`. The verdict itself
+/// is `landlock::abi::rule_target_fd_ok`; this only reads the descriptor.
+/// # C: O(1)
+pub fn rule_target_fd(f: &Arc<vfs::File>) -> ::landlock::abi::RuleTargetFd {
+    let inode = f.inode();
+    ::landlock::abi::RuleTargetFd {
+        is_ruleset: is_ruleset_file(f),
+        has_mount:  f.mnt_id() != 0,
+        is_anon:    inode.is_anon_file(),
+        sb_nouser:  inode.i_sb().map(|sb| sb.s_flags() & vfs::superblock::SB_NOUSER != 0)
+                         .unwrap_or(false),
+    }
+}
+
 /// The calling thread's enforced domain, or `None` when unconfined.
 /// # C: O(1)
 pub fn current_domain() -> Option<Arc<Domain>> {
