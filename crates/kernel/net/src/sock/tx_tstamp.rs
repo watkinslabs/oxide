@@ -31,10 +31,10 @@ pub fn tx_record_key(tsflags: u32, named: Option<u32>, next: u32) -> Option<u32>
 /// own key advances only when the socket generates it — a message that named
 /// its own identifier does not move the counter. # C: O(1)
 pub fn publish(sock: &InetSocket, tsflags: u32, named: Option<u32>, v6: bool) {
-    let next = sock.opts.tskey.load(Ordering::Acquire);
+    let next = sock.opts.base.tskey.load(Ordering::Acquire);
     let Some(key) = tx_record_key(tsflags, named, next) else { return; };
     if tsflags & SOF_TIMESTAMPING_OPT_ID != 0 && named.is_none() {
-        sock.opts.tskey.store(next.wrapping_add(1), Ordering::Release);
+        sock.opts.base.tskey.store(next.wrapping_add(1), Ordering::Release);
     }
     sock.error.publish_timestamping(SCM_TSTAMP_SND, key, v6, 0);
 }

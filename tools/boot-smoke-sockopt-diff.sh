@@ -65,6 +65,12 @@ normalize_records() {
     local input="$1" output="$2"
     LC_ALL=C sed $'s/\r$//; s/\033\\[[0-9;?]*[ -\/]*[@-~]//g' "$input" |
         LC_ALL=C awk -F '|' '
+            # The guest runs the probe from an interactive shell, so the FIRST
+            # record shares its line with the prompt that launched it. Strip a
+            # leading prompt before matching; a record line has no shell
+            # prompt punctuation ahead of its first separator, so this cannot
+            # eat one. Reassigning $0 recomputes NF.
+            { line = $0; sub(/^[^|]*[#$] /, "", line); $0 = line }
             /^[[:alnum:]_]+\|[[:alnum:]_]+\|/ && NF >= 3 { print }
         ' > "$output"
 }

@@ -1,29 +1,26 @@
 use super::*;
 
-/// `SO_ZEROCOPY` state. Completions and their identifiers live on the socket's
-/// one extended-error queue, not beside it.
-pub(super) struct State {
-    enabled: bool,
-}
-
-impl State {
-    pub(super) const fn new() -> Self { Self { enabled: false } }
-}
+// `SO_ZEROCOPY` is a generic socket flag: the switch lives in the socket base
+// every family embeds, and the completions it produces live on the socket's
+// one extended-error queue. Neither is stored here.
 
 impl VsockSocket {
     /// Apply connectible-VSOCK's boolean `SO_ZEROCOPY` policy. # C: O(1)
     pub fn set_zerocopy(&self, value: i32) -> Result<(), crate::NetError> {
         if self.is_datagram() { return Err(crate::NetError::Enoprotoopt); }
         if !(0..=1).contains(&value) { return Err(crate::NetError::Einval); }
-        self.zerocopy.lock().enabled = value != 0;
+        self.base.generic.set_flag(crate::sock_opts::sol_socket::flag::ZEROCOPY, value != 0);
         Ok(())
     }
 
     /// Read connectible-VSOCK's `SO_ZEROCOPY` flag. # C: O(1)
-    pub fn zerocopy_enabled(&self) -> bool { self.zerocopy.lock().enabled }
+    pub fn zerocopy_enabled(&self) -> bool {
+        self.base.generic.flag(crate::sock_opts::sol_socket::flag::ZEROCOPY)
+    }
 
     pub(super) fn inherit_zerocopy(&self, parent: &Self) {
-        self.zerocopy.lock().enabled = parent.zerocopy_enabled();
+        self.base.generic.set_flag(crate::sock_opts::sol_socket::flag::ZEROCOPY,
+            parent.zerocopy_enabled());
     }
 
     /// Publish one completed `MSG_ZEROCOPY` send. Oxide's VSOCK importer has
@@ -62,13 +59,14 @@ mod tests {
     #[test]
     fn option_is_boolean_connectible_and_inherited_without_inheriting_completions() {
         let listener = VsockSocket::new();
-        assert_eq!(listener.get_socket_option(crate::uapi::SOL_SOCKET, crate::uapi::SO_ZEROCOPY),
-            Ok(0));
+        let sol = crate::sock_opts::sol_socket::SO_ZEROCOPY;
+        assert_eq!(listener.sol_socket_read(sol, 4),
+            Ok(crate::sock_opts::sol_socket::get::Value::Int(0)));
         assert_eq!(listener.set_zerocopy(-1), Err(crate::NetError::Einval));
         assert_eq!(listener.set_zerocopy(2), Err(crate::NetError::Einval));
         assert_eq!(listener.set_zerocopy(1), Ok(()));
-        assert_eq!(listener.get_socket_option(crate::uapi::SOL_SOCKET, crate::uapi::SO_ZEROCOPY),
-            Ok(1));
+        assert_eq!(listener.sol_socket_read(sol, 4),
+            Ok(crate::sock_opts::sol_socket::get::Value::Int(1)));
         listener.complete_zerocopy_send(true, 1);
         let child = VsockSocket::new_accepted(&listener);
         assert!(child.zerocopy_enabled());

@@ -57,7 +57,7 @@ fn scoped_iface(sock: &InetSocket, dst: crate::Ipv6Addr, scope_id: u32)
     if scope_id == 0 { return crate::sock_mcast::bound_iface6(sock, dst); }
     let iface = NetIfaceId::from_raw(scope_id);
     if stack().ifaces.lookup_in_ns(iface, sock.net_ns()).is_none() { return Err(NetError::Enodev); }
-    let bound = sock.opts.bound_ifindex.load(core::sync::atomic::Ordering::Acquire);
+    let bound = sock.opts.base.bound_ifindex.load(core::sync::atomic::Ordering::Acquire);
     if bound != 0 && bound != scope_id { return Err(NetError::Enodev); }
     Ok(Some(iface))
 }
@@ -125,7 +125,7 @@ mod tests {
             setter.join().unwrap().unwrap();
             assert_eq!(bind_raw4(&sock, Ipv4Addr::ANY, 0).unwrap(), Ok(()));
             assert_eq!(endpoint.snapshot().bound_iface, next);
-            assert_eq!(sock.opts.bound_ifindex.load(Ordering::Acquire), next.map(NetIfaceId::raw).unwrap_or(0));
+            assert_eq!(sock.opts.base.bound_ifindex.load(Ordering::Acquire), next.map(NetIfaceId::raw).unwrap_or(0));
         }
         drop(sock);
         assert!(crate::global_stack().unregister_iface(first));
@@ -148,7 +148,7 @@ mod tests {
             setter.join().unwrap().unwrap();
             assert_eq!(bind_raw6(&sock, crate::Ipv6Addr::ANY, 0, 0).unwrap(), Ok(()));
             assert_eq!(endpoint.snapshot().bound_iface, next);
-            assert_eq!(sock.opts.bound_ifindex.load(Ordering::Acquire), next.map(NetIfaceId::raw).unwrap_or(0));
+            assert_eq!(sock.opts.base.bound_ifindex.load(Ordering::Acquire), next.map(NetIfaceId::raw).unwrap_or(0));
         }
         drop(sock);
         assert!(crate::global_stack().unregister_iface(first));

@@ -73,7 +73,7 @@ fn ipv6_peername_falls_through_to_the_v4_mapped_tuple() {
 fn ipv6_peername_carries_the_link_local_scope_id() {
     let sock = udp6();
     let link_local = net::Ipv6Addr([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
-    sock.opts.bound_ifindex.store(7, Ordering::Release);
+    sock.opts.base.bound_ifindex.store(7, Ordering::Release);
     *sock.peer6.lock() = Some((link_local, 22));
     let scoped = peer_sockaddr(&sock).expect("link-local peer answers");
     assert_eq!(&scoped.as_bytes()[24..28], &7u32.to_ne_bytes(),
@@ -185,7 +185,7 @@ fn ipv6_sockname_carries_the_link_local_scope_id() {
     let sock = udp6();
     let link_local = net::Ipv6Addr([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
     *sock.local_ip6.lock() = link_local;
-    sock.opts.bound_ifindex.store(3, Ordering::Release);
+    sock.opts.base.bound_ifindex.store(3, Ordering::Release);
     assert_eq!(&local_sockaddr(&sock).as_bytes()[24..28], &3u32.to_ne_bytes());
     let global = net::Ipv6Addr([0x20, 1, 0xd, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
     *sock.local_ip6.lock() = global;

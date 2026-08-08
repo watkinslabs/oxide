@@ -40,8 +40,8 @@ impl InetSocket {
         let _lifecycle = self.local_port.lock();
         if let SockKind::TcpConn(entry) = &*self.kind.lock() {
             use crate::sock_opts::sol_socket::{Scalar, flag};
-            let linger_on = self.opts.generic.flag(flag::LINGER);
-            let linger_s  = self.opts.generic.scalar(Scalar::LingerSeconds);
+            let linger_on = self.opts.base.generic.flag(flag::LINGER);
+            let linger_s  = self.opts.base.generic.scalar(Scalar::LingerSeconds);
             let (seg, src, dst, tos) = {
                 let mut c = entry.conn.lock();
                 let attempt = matches!(c.state, crate::tcp_state::TcpState::SynSent

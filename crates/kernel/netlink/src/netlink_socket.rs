@@ -25,6 +25,12 @@ pub const NETLINK_SEND_OVERHEAD: usize = 32;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SendError {
     Emsgsize,
+    /// The destination's receive budget refused the message and the sender
+    /// could not wait for it: a non-blocking send, or a send timeout that
+    /// expired first.
+    Again,
+    /// A signal reached a sender blocked on that budget.
+    Interrupted,
     Backend(vfs::VfsError),
 }
 
@@ -43,16 +49,13 @@ fn snapshot_iov<'a>(bufs: impl Iterator<Item = &'a [u8]> + Clone) -> vfs::KResul
 
 /// AF_NETLINK socket owning its nlmsg-aligned receive queue.
 pub struct NetlinkSocket {
-    /// Effective receive timeout shared by generic socket options and netlink
-    /// wait interruption. `0` means no timeout.
-    pub rcvtimeo_ns: core::sync::atomic::AtomicU64,
-    /// Effective send timeout. `0` means no timeout. The wait it bounds is the
-    /// receive-buffer backpressure a unicast meets at its destination.
-    pub sndtimeo_ns: core::sync::atomic::AtomicU64,
-    /// The generic `struct sock` option state every family carries, in the one
-    /// type that owns it, so a SOL_SOCKET write on a netlink fd is stored where
-    /// the SOL_SOCKET read looks for it.
-    pub generic: net::sock_opts::sol_socket::GenericSockOpts,
+    /// The one socket base every family embeds. Both timeouts, the buffer
+    /// budgets, the credential and label switches, SO_PRIORITY, SO_MARK, the
+    /// timestamp word, the device binding and the generic flag/scalar area all
+    /// live there, so a SOL_SOCKET write on a netlink fd is stored in the same
+    /// word the SOL_SOCKET read answers from — and in the same word the
+    /// internet and virtual-socket families use.
+    pub base: net::SockBase,
     pub protocol: u16,
     pub net_ns: NetworkNamespaceRef,
     /// Socket-file opener credentials retained by the socket owner. Cross-netns
@@ -64,15 +67,6 @@ pub struct NetlinkSocket {
     pub dst_port_id: AtomicU32,
     pub dst_groups: AtomicU32,
     pub connected: AtomicBool,
-    /// `sk_scm_credentials`, in the type every credential-carrying family
-    /// shares. Not netlink-private state: the flag, its family gate and the
-    /// receive decision all live with `net::scm`.
-    pub scm: net::scm::ScmCredentials,
-    /// `sk_scm_security`, sharing its state type with every SCM-capable
-    /// family while this standalone socket type has no `InetSocket` base.
-    pub scm_security: net::scm::ScmSecurity,
-    pub sndbuf: AtomicUsize,
-    pub rcvbuf: AtomicUsize,
     /// The pseudo-inode number of the file this socket is reachable through,
     /// which `/proc/net/netlink` reports and `ss` matches against `/proc/*/fd`.
     /// Zero until the inode is built.
@@ -90,6 +84,10 @@ pub struct NetlinkSocket {
     pub poll_subs: Arc<vfs::PollSubscribers>,
     #[cfg(target_os = "oxide-kernel")]
     pub waiters: sched::live::WaitList,
+    /// Senders blocked on THIS socket's receive budget, woken when its queue
+    /// drains — the wait a refused unicast serves.
+    #[cfg(target_os = "oxide-kernel")]
+    pub space_waiters: sched::live::WaitList,
 }
 
 impl NetlinkSocket {
@@ -152,9 +150,8 @@ impl NetlinkSocket {
     pub fn new_with_cred(protocol: u16, net_ns: &NetworkNamespaceRef,
         opener_user_ns: namespace_identity::NamespacePin, opener_caps: u64) -> Self {
         Self {
-            rcvtimeo_ns: core::sync::atomic::AtomicU64::new(0),
-            sndtimeo_ns: core::sync::atomic::AtomicU64::new(0),
-            generic: net::sock_opts::sol_socket::GenericSockOpts::default(),
+            base: net::SockBase::with_buffers(NETLINK_SNDBUF_DEFAULT as i32,
+                NETLINK_RCVBUF_DEFAULT as i32),
             protocol,
             net_ns: Arc::clone(net_ns),
             opener_user_ns,
@@ -164,10 +161,6 @@ impl NetlinkSocket {
             dst_port_id: AtomicU32::new(crate::NETLINK_UNCONNECTED_PORT_ID),
             dst_groups: AtomicU32::new(crate::NETLINK_UNCONNECTED_GROUPS),
             connected: AtomicBool::new(false),
-            scm: net::scm::ScmCredentials::new(),
-            scm_security: net::scm::ScmSecurity::new(),
-            sndbuf: AtomicUsize::new(NETLINK_SNDBUF_DEFAULT),
-            rcvbuf: AtomicUsize::new(NETLINK_RCVBUF_DEFAULT),
             ino: core::sync::atomic::AtomicU64::new(0),
             flags: crate::sockflags::NetlinkFlags::new(),
             rx_congested: AtomicBool::new(false),
@@ -179,6 +172,8 @@ impl NetlinkSocket {
             poll_subs: Arc::new(vfs::PollSubscribers::new()),
             #[cfg(target_os = "oxide-kernel")]
             waiters: sched::live::WaitList::new(),
+            #[cfg(target_os = "oxide-kernel")]
+            space_waiters: sched::live::WaitList::new(),
         }
     }
 
@@ -234,18 +229,26 @@ impl NetlinkSocket {
 
     /// Admit one userspace datagram before payload pages are copied. # C: O(1)
     pub fn preflight_send(&self, len: usize) -> Result<(), SendError> {
-        let limit = self.sndbuf.load(Ordering::Acquire).saturating_sub(NETLINK_SEND_OVERHEAD);
+        let limit = self.base.sndbuf_bytes().saturating_sub(NETLINK_SEND_OVERHEAD);
         if len > limit { Err(SendError::Emsgsize) } else { Ok(()) }
     }
 
     /// Commit one admitted userspace datagram through canonical protocol routing.
     /// Taking the decoded destination whole keeps the port and the group from
     /// ever being supplied in the wrong order. # C: O(len + listeners)
-    pub fn send_to(&self, buf: &[u8], dest: crate::NlDest) -> Result<usize, SendError> {
+    pub fn send_to(&self, buf: &[u8], dest: crate::NlDest, nonblock: bool)
+        -> Result<usize, SendError>
+    {
         self.preflight_send(buf.len())?;
         if dest.port_id != 0 {
-            if !crate::unicast_port(self, dest.port_id, buf) {
-                return Err(SendError::Backend(vfs::VfsError::Econnrefused));
+            match crate::unicast_port(self, dest.port_id, buf, nonblock) {
+                crate::admission::Unicast::NoPort =>
+                    return Err(SendError::Backend(vfs::VfsError::Econnrefused)),
+                crate::admission::Unicast::Again => return Err(SendError::Again),
+                crate::admission::Unicast::Interrupted => return Err(SendError::Interrupted),
+                // A message the destination's filter dropped still reports the
+                // length the caller handed over, as a delivered one does.
+                crate::admission::Unicast::Dropped | crate::admission::Unicast::Queued => {}
             }
             if dest.group == 0 { return Ok(buf.len()); }
         }

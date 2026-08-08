@@ -24,7 +24,7 @@ mod tcp;
 #[path = "055_getsockopt/udp.rs"]
 mod udp;
 #[path = "055_getsockopt/sol_socket.rs"]
-mod sol_socket;
+pub(crate) mod sol_socket;
 #[path = "055_getsockopt/packet.rs"]
 mod packet;
 #[path = "055_getsockopt/peerpidfd.rs"]
@@ -136,10 +136,12 @@ pub fn sys_getsockopt(args: &SyscallArgs) -> i64 {
             }
             return -(Errno::Enoprotoopt.as_i32() as i64);
         }
-        return match vsock.get_socket_option(level, optname) {
-            Ok(value) => out.i32(value),
-            Err(e) => errno_from_neterr(e),
-        };
+        if level != SOL_SOCKET { return -(Errno::Enoprotoopt.as_i32() as i64); }
+        if optname == SO_BINDTODEVICE {
+            return sol_socket::answer_bindtodevice(&vsock.base, vsock.net_ns(), optval, optlen_p);
+        }
+        return sol_socket::answer(&vsock.base, &vsock.sol_socket_view(), optname, optval,
+            optlen_p);
     }
     let sock = match socket_from_file(file) {
         Some(sock) => sock,
@@ -231,42 +233,10 @@ fn peercred_for_socket(sock: &alloc::sync::Arc<net::sock::InetSocket>)
 
 fn bind_to_device_name(s: &alloc::sync::Arc<net::sock::InetSocket>,
                        optval: u64, optlen_p: u64) -> i64 {
-    use core::sync::atomic::Ordering;
-    const IFNAMSIZ: usize = 16;
     if optval == 0 || optval >= USER_VA_END || optlen_p == 0 || optlen_p >= USER_VA_END {
         return -(Errno::Efault.as_i32() as i64);
     }
-    let mut raw_len = [0u8; 4];
-    if uaccess::copy_from_user(&mut raw_len, optlen_p).is_err() {
-        return -(Errno::Efault.as_i32() as i64);
-    }
-    let cap = u32::from_ne_bytes(raw_len) as usize;
-    let raw = s.opts.bound_ifindex.load(Ordering::Acquire);
-    if raw == 0 {
-        if uaccess::copy_to_user(optlen_p, &[0u8; 4]).is_err() {
-            return -(Errno::Efault.as_i32() as i64);
-        }
-        return 0;
-    }
-    let id = net::NetIfaceId::from_raw(raw);
-    let name = match net::sock::stack().ifaces.name_in_ns(id, s.net_ns()) {
-        Some(name) => name,
-        None => return -(Errno::Enodev.as_i32() as i64),
-    };
-    let name = name.as_bytes();
-    let need = name.len().saturating_add(1);
-    if need > IFNAMSIZ || cap < need || optval + need as u64 > USER_VA_END {
-        return -(Errno::Erange.as_i32() as i64);
-    }
-    let mut value = [0u8; IFNAMSIZ];
-    value[..name.len()].copy_from_slice(name);
-    if uaccess::copy_to_user(optval, &value[..need]).is_err() {
-        return -(Errno::Efault.as_i32() as i64);
-    }
-    if uaccess::copy_to_user(optlen_p, &(need as u32).to_ne_bytes()).is_err() {
-        return -(Errno::Efault.as_i32() as i64);
-    }
-    0
+    sol_socket::answer_bindtodevice(&s.opts.base, s.net_ns(), optval, optlen_p)
 }
 
 pub(crate) use net::sock_opts::identity::{socket_acceptconn, socket_protocol, socket_type};

@@ -192,7 +192,7 @@ fn set_pktinfo(sock: &Arc<InetSocket>, optval: u64, optlen: u32) -> i64 {
     let mut addr = [0u8; 16];
     addr.copy_from_slice(&bytes[..16]);
     let ifindex = u32::from_ne_bytes(bytes[16..20].try_into().unwrap());
-    let bound = sock.opts.bound_ifindex.load(Ordering::Acquire) as i32;
+    let bound = sock.opts.base.bound_ifindex.load(Ordering::Acquire) as i32;
     if let Err(e) = v6set::admit_pktinfo(optlen, ifindex, bound) { return errno(e); }
     sock.opts.ipv6.set_sticky_pktinfo(addr, ifindex);
     0
@@ -317,7 +317,7 @@ fn set_multicast_if(sock: &Arc<InetSocket>, val: i32, optlen: u32,
         return encode(sock.set_mcast_scalar(net::sock_mcast::McastScalar::V6Iface(0)));
     };
     let master = net::sock::iface::l3_master_index(sock.net_ns(), ifindex);
-    let bound = sock.opts.bound_ifindex.load(Ordering::Acquire) as i32;
+    let bound = sock.opts.base.bound_ifindex.load(Ordering::Acquire) as i32;
     match v6set::multicast_if_admit(ifindex, master, bound) {
         Ok(action) => apply(sock, action, val),
         Err(e) => errno(e),
@@ -331,7 +331,7 @@ fn set_unicast_if(sock: &Arc<InetSocket>, val: i32, optlen: u32) -> i64 {
     };
     let Some(ifindex) = requested else { sock.opts.ipv6.set_unicast_if(0); return 0; };
     let exists = net::sock::iface::iface_exists(sock.net_ns(), ifindex);
-    let bound = sock.opts.bound_ifindex.load(Ordering::Acquire) as i32;
+    let bound = sock.opts.base.bound_ifindex.load(Ordering::Acquire) as i32;
     match v6set::unicast_if_admit(ifindex, exists, bound) {
         Ok(action) => apply(sock, action, val),
         Err(e) => errno(e),

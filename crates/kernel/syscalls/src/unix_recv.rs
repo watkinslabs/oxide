@@ -71,11 +71,11 @@ fn finish_inq(sock: &Arc<InetSocket>, user: &RecvUser, files: alloc::vec::Vec<Ar
     carried: Option<net::unix_sock::MsgCred>,
     inq: Option<net::sock_opts::inq::InqCmsg>, flags: u64, out_flags: u32, name: &[u8])
     -> Result<(), i64> {
-    let passsec = sock.opts.generic.flag(net::sock_opts::sol_socket::flag::SCM_SECURITY);
-    let passpidfd = sock.opts.generic.flag(net::sock_opts::sol_socket::flag::SCM_PIDFD);
+    let passsec = sock.opts.base.scm_security.on();
+    let passpidfd = sock.opts.base.generic.flag(net::sock_opts::sol_socket::flag::SCM_PIDFD);
     let credentials = carried.as_ref().and_then(|cred| {
         let (pid, uid, gid) = cred.ids_for_reader();
-        net::scm::recv(sock.opts.passcred.on(), net::sock_opts::SenderCreds { pid, uid, gid })
+        net::scm::recv(sock.opts.base.passcred.on(), net::sock_opts::SenderCreds { pid, uid, gid })
     });
     let scm = recv_control::ScmReceive {
         credentials,
@@ -101,7 +101,7 @@ fn publish_empty(user: &RecvUser, flags: u64) -> i64 {
 /// `SIOCINQ` also answer from, so the three can never disagree.
 /// # C: O(queued frames)
 fn inq(sock: &Arc<InetSocket>) -> Option<net::sock_opts::inq::InqCmsg> {
-    if sock.opts.generic.scalar(net::sock_opts::sol_socket::Scalar::Inq) == 0 { return None; }
+    if sock.opts.base.generic.scalar(net::sock_opts::sol_socket::Scalar::Inq) == 0 { return None; }
     Some(net::sock_opts::inq::InqCmsg::socket(
         net::sock_opts::meminfo(sock).rmem_alloc.min(i32::MAX as u32) as i32))
 }
@@ -117,7 +117,7 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
         Urgent(Arc<net::UnixPair>, net::UnixEnd),
         Normal(Target),
     }
-    let inline = sock.opts.oobinline.load(Ordering::Acquire) != 0;
+    let inline = sock.opts.base.oobinline.load(Ordering::Acquire) != 0;
     // Classify under the socket-kind lock, but always drop it before entering
     // a receive path. In particular, `recv_urgent` obtains the peer path and
     // therefore needs to inspect `sock.kind` itself.
@@ -142,8 +142,8 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
     };
     let _transfer = net::transfer_guard();
     let peek = flags & MSG_PEEK != 0;
-    let passcred = sock.opts.passcred.on();
-    let deadline = net::sock::compute_deadline_ns(sock.opts.rcvtimeo_ns.load(Ordering::Acquire));
+    let passcred = sock.opts.base.passcred.on();
+    let deadline = net::sock::compute_deadline_ns(sock.opts.base.rcvtimeo_ns.load(Ordering::Acquire));
     let shutdown_generation = net::sock_recv::unix_shutdown_generation(sock);
     match target {
         Target::Stream(pair, end) => {

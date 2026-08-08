@@ -199,21 +199,12 @@ impl InetSocket {
 
 /// SOL_SOCKET options — Linux `int`-shaped cells. SO_LINGER pair.
 pub struct SockOpts {
-    pub reuseaddr: Arc<core::sync::atomic::AtomicI32>,
-    pub reuseport: Arc<core::sync::atomic::AtomicI32>,
-    pub keepalive: core::sync::atomic::AtomicI32,
-    pub broadcast: core::sync::atomic::AtomicI32,
-    pub oobinline: core::sync::atomic::AtomicI32,
-    /// F164: SO_SNDBUF (bytes); enforced by tcp_send → backpressure.
-    pub sndbuf:    core::sync::atomic::AtomicI32,
-    pub rcvbuf:    core::sync::atomic::AtomicI32,
-    /// Linux `SOCK_RCVBUF_LOCK`: set once `setsockopt(SO_RCVBUF)` names a
-    /// size, after which the transport must follow it instead of autotuning.
-    pub rcvbuf_locked: core::sync::atomic::AtomicBool,
-    pub sndtimeo_ns: core::sync::atomic::AtomicI64,
-    pub rcvtimeo_ns: core::sync::atomic::AtomicI64,
-    pub priority:  core::sync::atomic::AtomicI32,
-    pub mark:      core::sync::atomic::AtomicI32,
+    /// The generic `struct sock` state every family shares (`sock_base`).
+    /// SO_REUSEADDR/PORT, the keepalive/broadcast/urgent-inline switches, the
+    /// buffer budgets, both timeouts, SO_PRIORITY, SO_MARK, the timestamp
+    /// word, the device binding and the generic flag/scalar area live there,
+    /// in exactly one home for every socket family.
+    pub base: crate::sock_base::SockBase,
     pub ip_ttl:    core::sync::atomic::AtomicI32,
     pub ip_tos:    core::sync::atomic::AtomicI32,
     pub ip_pktinfo: core::sync::atomic::AtomicI32, pub ip_mcast_ttl: core::sync::atomic::AtomicI32, pub ip_mcast_loop: core::sync::atomic::AtomicI32, pub ip_mcast_ifaddr: core::sync::atomic::AtomicU32, pub ip_mcast_ifindex: core::sync::atomic::AtomicU32,
@@ -251,28 +242,17 @@ pub struct SockOpts {
     /// IPV6_RECVTCLASS: deliver IPV6_TCLASS ancillary (the received traffic
     /// class) on recvmsg. Twin of IPV6_RECVHOPLIMIT.
     pub ipv6_recvtclass: core::sync::atomic::AtomicI32,
-    /// SO_BINDTODEVICE: 0 means no bound egress/ingress interface.
-    pub bound_ifindex: core::sync::atomic::AtomicU32,
     pub tcp_nodelay: core::sync::atomic::AtomicI32,
     pub tcp_cork: core::sync::atomic::AtomicI32,
     pub tcp_keepidle_s: core::sync::atomic::AtomicI32,
     pub tcp_keepintvl_s: core::sync::atomic::AtomicI32,
     pub tcp_keepcnt: core::sync::atomic::AtomicI32,
-    /// `sk_scm_credentials`, in the type every credential-carrying family
-    /// shares (`net::scm`).
-    pub passcred: crate::scm::ScmCredentials,
-    pub timestamping: core::sync::atomic::AtomicI32,
-    /// The transmit-record key this socket reports next. A message that names
-    /// its own identifier replaces it for that message only.
-    pub tskey: core::sync::atomic::AtomicU32,
     /// SO_TYPE override (Linux `sock->type`) for AF_UNIX sockets whose
     /// `SockKind` doesn't itself encode the requested shape — chiefly a
     /// `SOCK_SEQPACKET` listener, which is byte-ring-backed internally but
     /// MUST report SOCK_SEQPACKET so `sd_is_socket()` socket-activation
     /// checks (systemd-udevd control socket) pass. `0` = derive from kind.
     pub so_type: core::sync::atomic::AtomicU8,
-    /// Generic SOL_SOCKET flag/scalar state (`sock_opts::sol_socket`).
-    pub generic: crate::sock_opts::sol_socket::GenericSockOpts,
     /// `IP_MINTTL` / `IPV6_MINHOPCOUNT`, shared with the transport entry the
     /// receive path reaches so the option has exactly one home.
     pub min_hop: Arc<crate::min_hop::MinHop>,
@@ -298,18 +278,7 @@ impl Default for SockOpts {
     fn default() -> Self {
         use core::sync::atomic::*;
         Self {
-            reuseaddr:   Arc::new(AtomicI32::new(0)),
-            reuseport:   Arc::new(AtomicI32::new(0)),
-            keepalive:   AtomicI32::new(0),
-            broadcast:   AtomicI32::new(0),
-            oobinline:   AtomicI32::new(0),
-            sndbuf:      AtomicI32::new(crate::sysctl::DEFAULT_WMEM_DEFAULT as i32),
-            rcvbuf:      AtomicI32::new(crate::sysctl::DEFAULT_RMEM_DEFAULT as i32),
-            rcvbuf_locked: core::sync::atomic::AtomicBool::new(false),
-            sndtimeo_ns: AtomicI64::new(0),
-            rcvtimeo_ns: AtomicI64::new(0),
-            priority:    AtomicI32::new(0),
-            mark:        AtomicI32::new(0),
+            base: crate::sock_base::SockBase::default(),
             ip_ttl:      AtomicI32::new(-1),
             ip_tos:      AtomicI32::new(0),
             ip_pktinfo:  AtomicI32::new(0), ip_mcast_ttl: AtomicI32::new(1), ip_mcast_loop: AtomicI32::new(1), ip_mcast_ifaddr: AtomicU32::new(0), ip_mcast_ifindex: AtomicU32::new(0), ip_rcv_tos: AtomicI32::new(0),
@@ -325,17 +294,12 @@ impl Default for SockOpts {
             ipv6_recvhoplimit: AtomicI32::new(0),
             ipv6_tclass: AtomicI32::new(-1),
             ipv6_recvtclass: AtomicI32::new(0),
-            bound_ifindex: AtomicU32::new(0),
             tcp_nodelay: AtomicI32::new(0),
             tcp_cork:    AtomicI32::new(0),
             tcp_keepidle_s: AtomicI32::new(crate::sock_opts::TCP_KEEPIDLE_DEFAULT_S),
             tcp_keepintvl_s: AtomicI32::new(crate::sock_opts::TCP_KEEPINTVL_DEFAULT_S),
             tcp_keepcnt:    AtomicI32::new(crate::sock_opts::TCP_KEEPCNT_DEFAULT),
-            passcred: crate::scm::ScmCredentials::new(),
-            timestamping: AtomicI32::new(0),
-            tskey: AtomicU32::new(0),
             so_type: AtomicU8::new(0),
-            generic: crate::sock_opts::sol_socket::GenericSockOpts::default(),
             min_hop: Arc::new(crate::min_hop::MinHop::new()),
             ip: Arc::new(crate::sock_opts::sol_ip::IpOpts::default()),
             ipv6: Arc::new(crate::sock_opts::sol_ipv6::Ipv6Opts::default()),

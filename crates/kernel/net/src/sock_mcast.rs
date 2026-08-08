@@ -17,7 +17,7 @@ fn resolve_v4_iface(sock: &InetSocket, requested: u32, ifaddr: Ipv4Addr,
                     group: Ipv4Addr) -> NetResult<NetIfaceId> {
     use core::sync::atomic::Ordering;
     let net_ns = sock.net_ns();
-    let bound = sock.opts.bound_ifindex.load(Ordering::Acquire);
+    let bound = sock.opts.base.bound_ifindex.load(Ordering::Acquire);
     let mut raw = requested;
     if raw == 0 && !ifaddr.is_unspecified() {
         raw = iface_for_addr(net_ns, ifaddr).ok_or(NetError::Enodev)?.raw();
@@ -45,7 +45,7 @@ fn resolve_v4_iface(sock: &InetSocket, requested: u32, ifaddr: Ipv4Addr,
 pub(crate) fn bound_iface(sock: &InetSocket, dst: Ipv4Addr) -> NetResult<Option<NetIfaceId>> {
     use core::sync::atomic::Ordering;
     let net_ns = sock.net_ns();
-    let device = sock.opts.bound_ifindex.load(Ordering::Acquire);
+    let device = sock.opts.base.bound_ifindex.load(Ordering::Acquire);
     let mut selected = sock.opts.ip_mcast_ifindex.load(Ordering::Acquire);
     if selected == 0 {
         let addr = Ipv4Addr::from_u32(sock.opts.ip_mcast_ifaddr.load(Ordering::Acquire));
@@ -69,7 +69,7 @@ pub(crate) fn bound_iface(sock: &InetSocket, dst: Ipv4Addr) -> NetResult<Option<
 pub(crate) fn bound_iface6(sock: &InetSocket, dst: Ipv6Addr) -> NetResult<Option<NetIfaceId>> {
     use core::sync::atomic::Ordering;
     if !dst.is_multicast() { return crate::sock::bound_iface(sock); }
-    let device = sock.opts.bound_ifindex.load(Ordering::Acquire);
+    let device = sock.opts.base.bound_ifindex.load(Ordering::Acquire);
     let mut selected = sock.opts.ipv6_mcast_ifindex.load(Ordering::Acquire);
     if device != 0 {
         if selected != 0 && selected != device { return Err(NetError::Enetunreach); }
@@ -116,7 +116,7 @@ impl InetSocket {
         use core::sync::atomic::Ordering;
         let _guard = self.mcast_guard()?;
         let net_ns = self.net_ns();
-        let bound = self.opts.bound_ifindex.load(Ordering::Acquire);
+        let bound = self.opts.base.bound_ifindex.load(Ordering::Acquire);
         let rtnl = stack().rtnl_lock();
         let addr_iface = if ifindex == 0 && !addr.is_unspecified() {
             Some(iface_for_addr(net_ns, addr).ok_or(NetError::Enodev)?.raw())
@@ -137,7 +137,7 @@ impl InetSocket {
         use core::sync::atomic::Ordering;
         let _guard = self.mcast_guard()?;
         let net_ns = self.net_ns();
-        let bound = self.opts.bound_ifindex.load(Ordering::Acquire);
+        let bound = self.opts.base.bound_ifindex.load(Ordering::Acquire);
         if bound != 0 && ifindex != 0 && ifindex != bound { return Err(NetError::Einval); }
         let rtnl = stack().rtnl_lock();
         if ifindex != 0 {
@@ -247,7 +247,7 @@ impl InetSocket {
     fn resolve_v6_mcast_iface(&self, requested: u32, group: Ipv6Addr) -> NetResult<NetIfaceId> {
         use core::sync::atomic::Ordering;
         crate::mcast_filter::resolve_v6_iface(stack(), self.net_ns(), requested,
-            self.opts.bound_ifindex.load(Ordering::Acquire),
+            self.opts.base.bound_ifindex.load(Ordering::Acquire),
             self.opts.ipv6_mcast_ifindex.load(Ordering::Acquire), group)
     }
 

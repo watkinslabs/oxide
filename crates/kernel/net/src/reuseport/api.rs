@@ -27,7 +27,7 @@ pub fn group_of(sock: &InetSocket) -> Option<Arc<ReuseportGroup>> {
 /// installed. SO_REUSEPORT must already be set; a socket that already names a
 /// group keeps it. # C: O(1)
 pub fn alloc_for_unhashed(sock: &Arc<InetSocket>) -> Result<Arc<ReuseportGroup>, Errno> {
-    if sock.opts.reuseport.load(Ordering::Acquire) == 0 { return Err(Errno::Einval); }
+    if sock.opts.base.reuseport.load(Ordering::Acquire) == 0 { return Err(Errno::Einval); }
     if let Some(group) = group_of(sock) { return Ok(group); }
     let group = ReuseportGroup::new();
     slot::join(&sock.reuseport_group, &group);
@@ -50,7 +50,7 @@ pub fn attach_prog(sock: &Arc<InetSocket>, prog: FilterProgram) -> Result<(), Er
 /// Remove the selection program from this socket's group. # C: O(1)
 pub fn detach_prog(sock: &InetSocket) -> Result<(), Errno> {
     let Some(group) = group_of(sock) else {
-        return Err(if sock.opts.reuseport.load(Ordering::Acquire) != 0 {
+        return Err(if sock.opts.base.reuseport.load(Ordering::Acquire) != 0 {
             Errno::Enoent
         } else {
             Errno::Einval

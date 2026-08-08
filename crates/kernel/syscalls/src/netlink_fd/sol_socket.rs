@@ -33,22 +33,39 @@ fn caps_for(target: &NetlinkFileRef) -> sol::OptCaps {
 pub fn set(target: &NetlinkFileRef, optname: u64, optval: u64, optlen: u64) -> i64 {
     let socket = target.socket();
     let optlen = optlen.min(u32::MAX as u64) as u32;
+    // The device binding takes a name, not an `int`, and its capability ladder
+    // runs before the name is even read — the same order every family uses.
+    if optname == sol::SO_BINDTODEVICE {
+        return bind_to_device(target, optval, optlen);
+    }
     let arg = match crate::s054_setsockopt::sol_socket::import(optname, optval, optlen) {
         Ok(arg) => arg,
         Err(e) => return errno(e),
     };
-    let env = sol::set::SetEnv {
-        caps: caps_for(target),
-        bound_device: false,
-        ceilings: net::sysctl::buf_ceilings(),
-        busy_poll_budget: socket.generic.scalar(sol::Scalar::BusyPollBudget),
-    };
-    let action = match sol::set::admit(optname, arg, personality(), env) {
+    let action = match sol::set::admit(optname, arg, personality(),
+        socket.base.set_env(caps_for(target)))
+    {
         Ok(action) => action,
         Err(e) => return errno(e),
     };
-    ::netlink::sol_socket::apply(socket, action);
-    0
+    match ::netlink::sol_socket::apply(socket, action) { Ok(()) => 0, Err(e) => errno(e) }
+}
+
+/// `sock_setbindtodevice` on a netlink socket. # C: O(N ifaces)
+fn bind_to_device(target: &NetlinkFileRef, optval: u64, optlen: u32) -> i64 {
+    let socket = target.socket();
+    if let Err(e) = sol::set::bind_device_allowed(caps_for(target), socket.base.bound_device()) {
+        return errno(e);
+    }
+    let (name, end) = match crate::s054_setsockopt::sol_socket::import_device_name(optval, optlen) {
+        Ok(imported) => imported,
+        Err(e) => return errno(e),
+    };
+    let Ok(text) = core::str::from_utf8(&name[..end]) else { return errno(Errno::Enodev); };
+    match ::netlink::sol_socket::bind_to_device_name(socket, text) {
+        Ok(()) => 0,
+        Err(e) => errno(e),
+    }
 }
 
 /// `sock_getsockopt` for a netlink socket, through the same value table every
@@ -58,9 +75,7 @@ pub fn get(target: &NetlinkFileRef, optname: u64, requested: usize)
     -> Option<Result<alloc::vec::Vec<u8>, i64>>
 {
     let requested = i32::try_from(requested).unwrap_or(i32::MAX);
-    let value = match ::netlink::sol_socket::read(target.socket(), optname, requested,
-        sol::next_cookie)
-    {
+    let value = match ::netlink::sol_socket::read(target.socket(), optname, requested) {
         Ok(value) => value,
         Err(e) => return Some(Err(errno(e))),
     };

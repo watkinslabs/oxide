@@ -41,7 +41,7 @@ pub(super) fn connect(sock: &Arc<InetSocket>, addr: crate::UnixAddr, nonblock: b
         }
         candidate.set_end_identity(crate::UnixEnd::B, Some(c.thread_group.leader_pid()));
     }
-    let timeout = sock.opts.sndtimeo_ns.load(core::sync::atomic::Ordering::Acquire);
+    let timeout = sock.opts.base.sndtimeo_ns.load(core::sync::atomic::Ordering::Acquire);
     let deadline_ns = compute_deadline_ns(timeout);
     loop {
         let missing = if addr.is_pathname() { NetError::Enoent } else { NetError::Econnrefused };

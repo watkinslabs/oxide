@@ -138,11 +138,14 @@ fn device_names_are_truncated_not_rejected() {
 
 #[test]
 fn cookie_options_enforce_their_own_length_rules() {
-    let state = GenericSockOpts::default();
-    let view = SockView { sock: tcp(), netns_cookie: 7, socket_cookie: 9, ..Default::default() };
+    let state = crate::sock_base::SockBase::default();
+    let view = SockView { sock: tcp(), netns_cookie: 7, ..Default::default() };
     assert_eq!(get::value(SO_COOKIE, 4, &state, &view), Err(Errno::Einval));
-    assert_eq!(get::value(SO_COOKIE, 8, &state, &view), Ok(Value::U64(9)));
-    assert_eq!(get::value(SO_COOKIE, 16, &state, &view), Ok(Value::U64(9)));
+    // The socket cookie is allocated by the read itself, once, and every
+    // later read of the same socket answers the same value.
+    let first = get::value(SO_COOKIE, 8, &state, &view).expect("the option is answered");
+    assert!(matches!(first, Value::U64(cookie) if cookie != 0));
+    assert_eq!(get::value(SO_COOKIE, 16, &state, &view), Ok(first));
     // The namespace cookie demands an exact length, not merely enough room.
     assert_eq!(get::value(SO_NETNS_COOKIE, 16, &state, &view), Err(Errno::Einval));
     assert_eq!(get::value(SO_NETNS_COOKIE, 8, &state, &view), Ok(Value::U64(7)));
@@ -150,7 +153,7 @@ fn cookie_options_enforce_their_own_length_rules() {
 
 #[test]
 fn sndlowat_is_fixed_and_unsettable() {
-    let state = GenericSockOpts::default();
+    let state = crate::sock_base::SockBase::default();
     let view = SockView { sock: tcp(), ..Default::default() };
     assert_eq!(get::value(SO_SNDLOWAT, 4, &state, &view), Ok(Value::Int(SNDLOWAT)));
     assert_eq!(set(SO_SNDLOWAT, 4096, tcp(), admin()), Err(Errno::Enoprotoopt));
@@ -158,9 +161,9 @@ fn sndlowat_is_fixed_and_unsettable() {
 
 #[test]
 fn socket_cookie_is_allocated_once() {
-    let state = GenericSockOpts::default();
-    let first = state.cookie(|| 41);
-    let second = state.cookie(|| 99);
+    let state = crate::sock_base::SockBase::default();
+    let first = state.generic.cookie(|| 41);
+    let second = state.generic.cookie(|| 99);
     assert_eq!(first, 41);
     assert_eq!(second, 41);
 }

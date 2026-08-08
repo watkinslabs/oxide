@@ -105,6 +105,11 @@ impl From<netlink::SendError> for Error {
     fn from(e: netlink::SendError) -> Self {
         match e {
             netlink::SendError::Emsgsize => Self::Emsgsize,
+            netlink::SendError::Again => Self::Eagain,
+            // A signal that reached a sender blocked on the destination's
+            // receive budget restarts the call, because the send timeout that
+            // bounded the wait is unset; a bounded wait reports EAGAIN above.
+            netlink::SendError::Interrupted => Self::Erestartsys,
             netlink::SendError::Backend(error) => Self::from(error),
         }
     }

@@ -24,7 +24,7 @@ pub fn name_scope_id(address: crate::Ipv6Addr, bound_ifindex: u32) -> u32 {
 /// # C: O(1)
 pub fn name_bound_ifindex(sock: &InetSocket) -> u32 {
     use core::sync::atomic::Ordering;
-    let configured = sock.opts.bound_ifindex.load(Ordering::Acquire);
+    let configured = sock.opts.base.bound_ifindex.load(Ordering::Acquire);
     if configured != IPV6_NO_SCOPE_ID { return configured; }
     if let Some(endpoint) = sock.udp6.lock().as_ref().cloned() {
         return endpoint.bound_ifindex.load(Ordering::Acquire);

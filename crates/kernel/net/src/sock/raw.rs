@@ -53,7 +53,7 @@ impl InetSocket {
         let sock = Self::new_udp_in(net_namespace);
         let endpoint = crate::raw4::Raw4Endpoint::new_ping(
             sock.owner.clone(), sock.bpf_filter.clone(), sock.mcast.clone(),
-            sock.error.clone(), sock.opts.reuseaddr.clone(),
+            sock.error.clone(), sock.opts.base.reuseaddr.clone(),
             sock.opts.ip_mtu_discover.clone(),
         );
         endpoint.register_poll_subs(&sock.poll_subs);
@@ -71,7 +71,7 @@ impl InetSocket {
         sock.opts.ipv6_v6only.store(1, core::sync::atomic::Ordering::Release);
         let endpoint = Arc::new(crate::raw6::Raw6Endpoint::new_ping(
             sock.owner.clone(), sock.bpf_filter.clone(), sock.mcast.clone(),
-            sock.error.clone(), sock.opts.reuseaddr.clone(),
+            sock.error.clone(), sock.opts.base.reuseaddr.clone(),
         ));
         endpoint.register_poll_subs(&sock.poll_subs);
         *sock.kind.lock() = SockKind::Raw6(endpoint);

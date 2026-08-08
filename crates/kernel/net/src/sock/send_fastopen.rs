@@ -79,7 +79,7 @@ pub fn send(sock: &Arc<InetSocket>, payload: &[u8], dest: Option<RemoteAddr>, no
     crate::sock_io::connect_wait_established(sock, &entry)?;
     let rest = &payload[carried..];
     if rest.is_empty() { return Ok(carried); }
-    let cap = sock.opts.sndbuf.load(::core::sync::atomic::Ordering::Acquire).max(0) as usize;
+    let cap = sock.opts.base.sndbuf.load(::core::sync::atomic::Ordering::Acquire).max(0) as usize;
     let nodelay = sock.opts.tcp_nodelay.load(::core::sync::atomic::Ordering::Acquire) != 0;
     let cork = sock.opts.tcp_cork.load(::core::sync::atomic::Ordering::Acquire) != 0;
     let sent = super::stack().tcp_send(&entry, rest, cap, nodelay, cork)?;

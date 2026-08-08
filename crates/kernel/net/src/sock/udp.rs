@@ -98,7 +98,7 @@ pub fn socket_sendto_ctl(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payloa
     let ip_options = msg.v4_options(sock.opts.ip.options());
     // `SO_NO_CHECK`: the datagram leaves with a zero checksum field, which an
     // IPv4 receiver reads as "not computed".
-    let no_check = sock.opts.generic.flag(crate::sock_opts::sol_socket::flag::NO_CHECK_TX);
+    let no_check = sock.opts.base.generic.flag(crate::sock_opts::sol_socket::flag::NO_CHECK_TX);
     // UDP_SEGMENT: one write becomes N wire datagrams of the segmentation
     // size, the last carrying the remainder.
     let gso = sock.opts.udp.gso_size();

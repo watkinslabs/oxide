@@ -36,14 +36,14 @@ fn rcvlowat_normalizes_the_stored_watermark() {
 
 #[test]
 fn unix_sockets_start_with_scm_rights_enabled_and_a_one_byte_watermark() {
-    let state = GenericSockOpts::default();
+    let state = crate::sock_base::SockBase::default();
     let view = SockView { sock: unix(), ..Default::default() };
-    assert_eq!(state.scalar(Scalar::RcvLowat), 1);
+    assert_eq!(state.generic.scalar(Scalar::RcvLowat), 1);
     assert_eq!(get::value(SO_RCVLOWAT, 4, &state, &view), Ok(Value::Int(1)));
     assert_eq!(get::value(SO_PASSRIGHTS, 4, &state, &view), Ok(Value::Int(1)));
     let off = admit(SO_PASSRIGHTS, Arg::Int(0), unix(), SetEnv { caps: none(), bound_device: false, ..Default::default() }).unwrap();
     assert_eq!(off, Action::Flag { bit: flag::SCM_RIGHTS_OFF, on: true });
-    state.set_flag(flag::SCM_RIGHTS_OFF, true);
+    state.generic.set_flag(flag::SCM_RIGHTS_OFF, true);
     assert_eq!(get::value(SO_PASSRIGHTS, 4, &state, &view), Ok(Value::Int(0)));
 }
 
@@ -72,7 +72,7 @@ fn options_with_their_own_argument_shape_never_reach_the_scalar_table() {
     }
     assert_eq!(arg_class(SO_DEVMEM_DONTNEED), ArgClass::Devmem);
     assert!(reads_int_argument(SO_DEVMEM_DONTNEED));
-    let state = GenericSockOpts::default();
+    let state = crate::sock_base::SockBase::default();
     let view = SockView { sock: tcp(), ..Default::default() };
     for optname in [SO_PEERSEC, SO_PEERGROUPS, SO_MEMINFO, SO_PEERNAME, SO_GET_FILTER] {
         assert_eq!(get::value(optname, 64, &state, &view), Err(Errno::Enoprotoopt));

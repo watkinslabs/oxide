@@ -139,6 +139,8 @@ pub use netdev::{
 
 pub mod sock;
 pub mod scm;
+pub mod sock_base;
+pub use sock_base::SockBase;
 // The one socket-message security boundary: every send and receive call site
 // asks it, and none re-implements a verdict.
 pub mod socket_security;

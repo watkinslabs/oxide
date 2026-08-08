@@ -341,7 +341,7 @@ fn enqueue_packet(sock: &Arc<InetSocket>, net_ns: u64, iface: NetIfaceId,
             payload, addr, aux,
             charge: linux_packet_skb_truesize(observation.bytes.len()),
         };
-        let limit = sock.opts.rcvbuf.load(Ordering::Acquire).max(0) as usize;
+        let limit = sock.opts.base.rcvbuf.load(Ordering::Acquire).max(0) as usize;
         let mut queue = rx.lock();
         route_packet_receive_locked(&mut rings, &mut queue, PacketRingInput {
             payload: &packet[..captured_len], addr, aux, datagram, rxhash,

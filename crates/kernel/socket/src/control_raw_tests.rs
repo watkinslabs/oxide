@@ -112,3 +112,45 @@ fn every_ipv6_extension_header_requires_net_raw() {
     let mut route = [0u8; 24]; route[1] = 2; route[2] = 2; route[3] = 1;
     assert!(parse_raw_control(&cmsg(41, 57, &route), true, false, 0).is_ok());
 }
+
+/// The IPv6 extension-header control messages are judged by the SAME owner the
+/// `IPV6_2292PKTOPTIONS` write uses, so the send path and the option path
+/// cannot answer one header differently. Each case is asserted through the
+/// send-control parser AND through that owner directly.
+#[test]
+fn the_extension_header_admission_is_the_same_owner_the_option_write_uses() {
+    use net::sock_opts::sol_ipv6::pktoptions;
+    const SOL_IPV6: i32 = 41;
+    const HOPOPTS: i32 = 54;
+    const RTHDR: i32 = 57;
+    let caps = |net_raw| net::sock_opts::sol_socket::OptCaps { net_raw, net_admin: net_raw };
+    let header = [0u8, 0, 0, 0, 0, 0, 0, 0];
+    let through_owner = |kind: i32, data: &[u8], net_raw: bool| {
+        let mut slots = pktoptions::Slots::default();
+        pktoptions::admit_one(kind, data, caps(net_raw), &mut slots).err()
+    };
+
+    // Constructing an options header is privileged, and the shape screen runs
+    // ahead of the privilege ladder.
+    assert_eq!(parse_raw_control(&cmsg(SOL_IPV6, HOPOPTS, &header), true, false, 0).err(),
+        Some(eperm()));
+    assert!(through_owner(HOPOPTS, &header, false).is_some());
+    assert_eq!(parse_raw_control(&cmsg(SOL_IPV6, HOPOPTS, &[0u8; 1]), true, false, 0).err(),
+        Some(einval()));
+    assert!(through_owner(HOPOPTS, &[0u8; 1], false).is_some());
+
+    // A second hop-by-hop header is refused rather than replacing the first.
+    let mut two = cmsg(SOL_IPV6, HOPOPTS, &header);
+    two.extend_from_slice(&cmsg(SOL_IPV6, HOPOPTS, &header));
+    assert_eq!(parse_raw_control(&two, true, true, 0).err(), Some(einval()));
+
+    // Only the type-2 routing header is admitted, and it is unprivileged.
+    let type2 = [0u8, 2, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    assert!(parse_raw_control(&cmsg(SOL_IPV6, RTHDR, &type2), true, false, 0)
+        .unwrap().raw6.routing.is_some());
+    assert_eq!(through_owner(RTHDR, &type2, false), None);
+    let type0 = { let mut h = type2; h[2] = 0; h };
+    assert_eq!(parse_raw_control(&cmsg(SOL_IPV6, RTHDR, &type0), true, true, 0).err(),
+        Some(einval()));
+    assert!(through_owner(RTHDR, &type0, true).is_some());
+}

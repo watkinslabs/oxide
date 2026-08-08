@@ -374,7 +374,7 @@ fn member_room(member: &PacketFanoutMember, charge: usize) -> PacketRoom {
     if let Some(room) = socket.packet_ring_room() { return room; }
     let kind = socket.kind.lock();
     let SockKind::Packet { rx, .. } = &*kind else { return PacketRoom::None; };
-    let limit = socket.opts.rcvbuf.load(Ordering::Acquire).max(0) as usize;
+    let limit = socket.opts.base.rcvbuf.load(Ordering::Acquire).max(0) as usize;
     let room = rx.lock().room(charge, limit);
     room
 }
@@ -384,7 +384,7 @@ fn member_normal(member: &PacketFanoutMember, charge: usize) -> bool {
     if let Some(room) = socket.packet_ring_room() { return room == PacketRoom::Normal; }
     let kind = socket.kind.lock();
     let SockKind::Packet { rx, .. } = &*kind else { return false; };
-    let limit = socket.opts.rcvbuf.load(Ordering::Acquire).max(0) as usize;
+    let limit = socket.opts.base.rcvbuf.load(Ordering::Acquire).max(0) as usize;
     let queue = rx.lock();
     !queue.pressured() && queue.room(charge, limit) == PacketRoom::Normal
 }

@@ -297,9 +297,9 @@ fn netlink_sol_socket_defers_to_the_one_generic_table() {
     let source = include_str!("netlink_fd/sol_socket.rs");
     assert!(source.contains("crate::s054_setsockopt::sol_socket::import(optname, optval, optlen)"),
         "the argument import is the canonical one");
-    assert!(source.contains("sol::set::admit(optname, arg, personality(), env)"),
+    assert!(source.contains("sol::set::admit(optname, arg, personality(),"),
         "the admission ladder is the canonical one");
-    assert!(source.contains("::netlink::sol_socket::read(target.socket(), optname, requested,"),
+    assert!(source.contains("::netlink::sol_socket::read(target.socket(), optname, requested)"),
         "the read goes through the socket's one option owner, which uses the canonical table");
     assert!(source.contains("::netlink::sol_socket::apply(socket, action)"),
         "the write lands in that same one owner");

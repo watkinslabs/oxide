@@ -65,12 +65,12 @@ impl InetSocket {
         // longer carries a verdict of its own, so this is the one place a
         // `read(2)`-shaped receive is admitted.
         crate::sock_opts::check_receive(self).map_err(vfs_from_neterr)?;
-        let timeo = self.opts.rcvtimeo_ns.load(core::sync::atomic::Ordering::Acquire);
+        let timeo = self.opts.base.rcvtimeo_ns.load(core::sync::atomic::Ordering::Acquire);
         let deadline_ns = compute_deadline_ns(timeo);
         match k {
             K::Unix(pair, end) => {
-                let passcred = self.opts.passcred.on();
-                let inline = self.opts.oobinline.load(core::sync::atomic::Ordering::Acquire) != 0;
+                let passcred = self.opts.base.passcred.on();
+                let inline = self.opts.base.oobinline.load(core::sync::atomic::Ordering::Acquire) != 0;
                 let result = crate::sock_io::read_unix_stream_blocking(&pair, end, buf, deadline_ns,
                     passcred, inline);
                 if matches!(result, Ok(n) if n != 0) { self.note_receive_now(); }
@@ -124,7 +124,7 @@ impl InetSocket {
         match k {
             K::Tcp(entry) => {
                 drain_loopback();
-                let inline = self.opts.oobinline.load(core::sync::atomic::Ordering::Acquire) != 0;
+                let inline = self.opts.base.oobinline.load(core::sync::atomic::Ordering::Acquire) != 0;
                 let got = stack().tcp_recv_with_offset_oob(&entry, buf.len(), false, 0, inline,
                     |bytes| Ok::<_, ()>((bytes.to_vec(), bytes.len())))
                     .ok().flatten().unwrap_or_default();
@@ -149,8 +149,8 @@ impl InetSocket {
             // AF_UNIX SOCK_STREAM: drain what's queued; empty → EOF (peer closed
             // + drained) gives Ok(0), else EAGAIN. Never parks.
             K::Unix(pair, end) => {
-                let passcred = self.opts.passcred.on();
-                let inline = self.opts.oobinline.load(core::sync::atomic::Ordering::Acquire) != 0;
+                let passcred = self.opts.base.passcred.on();
+                let inline = self.opts.base.oobinline.load(core::sync::atomic::Ordering::Acquire) != 0;
                 let got = pair.read_passcred(end, buf.len(), passcred, inline);
                 if !got.is_empty() {
                     let n = got.len();
@@ -238,9 +238,9 @@ impl InetSocket {
                     sched::live::send_signal_self(sched::live::Signum::Sigpipe);
                     return Err(vfs::VfsError::Epipe);
                 }
-                let cap = self.opts.sndbuf.load(core::sync::atomic::Ordering::Acquire)
+                let cap = self.opts.base.sndbuf.load(core::sync::atomic::Ordering::Acquire)
                     .max(0) as usize;
-                let timeo = self.opts.sndtimeo_ns.load(core::sync::atomic::Ordering::Acquire);
+                let timeo = self.opts.base.sndtimeo_ns.load(core::sync::atomic::Ordering::Acquire);
                 let deadline_ns = compute_deadline_ns(timeo);
                 let nodelay = self.opts.tcp_nodelay.load(core::sync::atomic::Ordering::Acquire) != 0;
                 let cork = self.opts.tcp_cork.load(core::sync::atomic::Ordering::Acquire) != 0;
@@ -273,10 +273,10 @@ impl InetSocket {
             _ => return Err(vfs::VfsError::Eopnotsupp),
         };
         crate::sock_opts::check_receive(self).map_err(vfs_from_neterr)?;
-        let timeo = self.opts.rcvtimeo_ns.load(core::sync::atomic::Ordering::Acquire);
+        let timeo = self.opts.base.rcvtimeo_ns.load(core::sync::atomic::Ordering::Acquire);
         let deadline_ns = compute_deadline_ns(timeo);
-        let passcred = self.opts.passcred.on();
-        let inline = self.opts.oobinline.load(core::sync::atomic::Ordering::Acquire) != 0;
+        let passcred = self.opts.base.passcred.on();
+        let inline = self.opts.base.oobinline.load(core::sync::atomic::Ordering::Acquire) != 0;
         let result = crate::sock_io::read_unix_stream_blocking(&pair, end, buf, deadline_ns,
             passcred, inline);
         if matches!(result, Ok(n) if n != 0) { self.note_receive_now(); }
@@ -296,7 +296,7 @@ impl InetSocket {
                 sched::live::send_signal_self(sched::live::Signum::Sigpipe);
                 return Err(vfs::VfsError::Epipe);
             }
-            let cap = self.opts.sndbuf.load(core::sync::atomic::Ordering::Acquire)
+            let cap = self.opts.base.sndbuf.load(core::sync::atomic::Ordering::Acquire)
                 .max(0) as usize;
             let entry = entry.clone();
             let eno = self.take_pending_recv_error();

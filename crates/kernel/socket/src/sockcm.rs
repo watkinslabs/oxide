@@ -115,10 +115,10 @@ pub(crate) fn env_for(ctx: &crate::SendContext<'_>, socket: &alloc::sync::Arc<ne
     SockCmEnv {
         net_raw: nscg::proc_ns::has_net_raw_for(ctx.task(), &socket.net_namespace),
         net_admin: nscg::proc_ns::has_net_admin_for(ctx.task(), &socket.net_namespace),
-        txtime: socket.opts.generic.flag(net::sock_opts::sol_socket::flag::TXTIME),
+        txtime: socket.opts.base.generic.flag(net::sock_opts::sol_socket::flag::TXTIME),
         tcp: matches!(*socket.kind.lock(), net::sock::SockKind::TcpConn(_)
             | net::sock::SockKind::TcpInit | net::sock::SockKind::TcpListener(_)),
-        tstamp_opt_id: socket.opts.timestamping.load(Ordering::Acquire) as u32
+        tstamp_opt_id: socket.opts.base.timestamping.load(Ordering::Acquire) as u32
             & SOF_TIMESTAMPING_OPT_ID != 0,
     }
 }

@@ -98,16 +98,13 @@ pub struct VsockSocket {
     /// is always finite, which is why the connect wait reports `-EINTR` and
     /// not `-ERESTARTSYS`.
     pub connect_timeout_ns: core::sync::atomic::AtomicU64,
-    /// Linux `sk->sk_rcvtimeo` / `sk->sk_sndtimeo`. AF_VSOCK carries no
-    /// setsockopt of its own for these: they are SOL_SOCKET options handled by
-    /// the generic `sock_setsockopt`, and VSOCK receive/send paths read them through
-    /// `sock_rcvtimeo`/`sock_sndtimeo` and hand them to `sock_intr_errno`.
-    /// `0` means "no timeout" — Linux's `MAX_SCHEDULE_TIMEOUT`.
-    pub rcvtimeo_ns: core::sync::atomic::AtomicU64,
-    pub sndtimeo_ns: core::sync::atomic::AtomicU64,
+    /// The one socket base every family embeds (`sock_base`). AF_VSOCK carries
+    /// no setsockopt of its own for the generic options: they are SOL_SOCKET
+    /// options answered by the one generic table, and the receive/send waits
+    /// read both timeouts from here.
+    pub base: crate::SockBase,
     /// Canonical Linux `sk_err`.
     pub error: crate::SocketError,
-    zerocopy: Spinlock<zerocopy::State, SockLockClass>,
     pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
     /// SHUT_RD latch → read returns EOF.
     pub read_shut: core::sync::atomic::AtomicBool,
@@ -129,12 +126,12 @@ impl VsockSocket {
     /// `sock_intr_errno` keys on.
     /// # C: O(1)
     pub fn recv_deadline_ns(&self) -> u64 {
-        crate::sock_intr::deadline_from_timeo(self.rcvtimeo_ns.load(core::sync::atomic::Ordering::Acquire))
+        crate::sock_intr::deadline_from_timeo(self.base.rcvtimeo_u64())
     }
 
     /// Absolute monotonic deadline for a send. # C: O(1)
     pub fn send_deadline_ns(&self) -> u64 {
-        crate::sock_intr::deadline_from_timeo(self.sndtimeo_ns.load(core::sync::atomic::Ordering::Acquire))
+        crate::sock_intr::deadline_from_timeo(self.base.sndtimeo_u64())
     }
 
     /// `socket(AF_VSOCK, SOCK_STREAM, 0)`. # C: O(1)
@@ -159,11 +156,9 @@ impl VsockSocket {
             buffer_size: core::sync::atomic::AtomicU64::new(crate::uapi::VSOCK_DEFAULT_BUFFER_SIZE),
             buffer_min_size: core::sync::atomic::AtomicU64::new(crate::uapi::VSOCK_DEFAULT_BUFFER_MIN_SIZE),
             buffer_max_size: core::sync::atomic::AtomicU64::new(crate::uapi::VSOCK_DEFAULT_BUFFER_MAX_SIZE),
-            rcvtimeo_ns: core::sync::atomic::AtomicU64::new(0),
-            sndtimeo_ns: core::sync::atomic::AtomicU64::new(0),
+            base: crate::SockBase::default(),
             connect_timeout_ns: core::sync::atomic::AtomicU64::new(vsock::VSOCK_CONNECT_TIMEOUT_NS),
             error: crate::SocketError::new(),
-            zerocopy: Spinlock::new(zerocopy::State::new()),
             bpf_filter: Arc::new(crate::bpf_filter::SocketFilter::new()),
             read_shut: core::sync::atomic::AtomicBool::new(false),
             dgram_write_shut: core::sync::atomic::AtomicBool::new(false),
@@ -343,6 +338,7 @@ impl VsockSocket {
 }
 
 mod lifecycle;
+pub mod sol_socket;
 mod io;
 mod zerocopy;
 mod file_ops;

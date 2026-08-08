@@ -336,8 +336,8 @@ pub fn recvfrom_opts(
         _ => None,
     };
     if let Some((pair, end)) = stream {
-        let passcred = sock.opts.passcred.on();
-        let inline = sock.opts.oobinline.load(core::sync::atomic::Ordering::Acquire) != 0;
+        let passcred = sock.opts.base.passcred.on();
+        let inline = sock.opts.base.oobinline.load(core::sync::atomic::Ordering::Acquire) != 0;
         let got = if opts.peek { pair.peek(end, max_len, inline) }
             else { pair.read_passcred(end, max_len, passcred, inline) };
         if !got.is_empty() {
@@ -413,7 +413,7 @@ pub fn recvfrom_opts(
     if let SockKind::TcpConn(entry) = &*sock.kind.lock() {
         let entry = entry.clone();
         drain_loopback();
-        let inline = sock.opts.oobinline.load(core::sync::atomic::Ordering::Acquire) != 0;
+        let inline = sock.opts.base.oobinline.load(core::sync::atomic::Ordering::Acquire) != 0;
         let payload = stack().tcp_recv_with_offset_oob(&entry, max_len, opts.peek, 0, inline,
             |bytes| Ok::<_, ()>((bytes.to_vec(), bytes.len())))
             .ok().flatten().unwrap_or_default();

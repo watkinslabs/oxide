@@ -37,6 +37,12 @@ pub fn current_namespace() -> NetworkNamespaceRef {
 /// Derive the short-lived table key for a retained namespace owner. # C: O(1)
 pub fn namespace_id(namespace: &NetworkNamespaceRef) -> u64 { namespace.id().as_u64() }
 
+/// `net_cookie`: the namespace's global namespace-tree identity, which is what
+/// `SO_NETNS_COOKIE` reports. It is NOT the stack-internal namespace index —
+/// that one is zero for the initial namespace, and the reference's cookie is
+/// never zero for any namespace. # C: O(1)
+pub fn namespace_cookie(namespace: &NetworkNamespaceRef) -> u64 { namespace.ns_id() }
+
 /// Clone the immortal initial network namespace owner. # C: O(log N)
 pub fn initial_namespace() -> NetworkNamespaceRef { network_namespace::initial() }
 

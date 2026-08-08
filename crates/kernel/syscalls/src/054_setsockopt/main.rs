@@ -150,19 +150,15 @@ fn sync_tcp_rcvbuf(sock: &net::sock::InetSocket, value: i32) {
 }
 
 fn bind_to_device(sock: &Arc<net::sock::InetSocket>, optval: u64, optlen: u32) -> i64 {
-    use net::sock_opts::sol_socket::set::{IFNAMSIZ, bind_device_allowed, device_name_len};
-    let bound = sock.opts.bound_ifindex.load(Ordering::Acquire) != 0;
+    use net::sock_opts::sol_socket::set::bind_device_allowed;
+    let bound = sock.opts.base.bound_device();
     if let Err(error) = bind_device_allowed(super::sol_socket::caps_for(sock), bound) {
         return -(error.as_i32() as i64);
     }
-    // Linux truncates an over-long option to `IFNAMSIZ - 1` instead of
-    // rejecting it, and an empty name clears the binding.
-    let n = device_name_len(optlen);
-    let mut name = [0u8; IFNAMSIZ];
-    if n != 0 && uaccess::copy_from_user(&mut name[..n], optval).is_err() {
-        return -(Errno::Efault.as_i32() as i64);
-    }
-    let end = name[..n].iter().position(|b| *b == 0).unwrap_or(n);
+    let (name, end) = match super::sol_socket::import_device_name(optval, optlen) {
+        Ok(imported) => imported,
+        Err(error) => return -(error.as_i32() as i64),
+    };
     if end == 0 { return sock.set_bound_iface(None).map_or_else(errno_from_neterr, |_| 0); }
     let Ok(text) = core::str::from_utf8(&name[..end]) else {
         return -(Errno::Enodev.as_i32() as i64);

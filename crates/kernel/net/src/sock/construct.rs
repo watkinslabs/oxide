@@ -69,8 +69,8 @@ impl InetSocket {
             unix_bound: Spinlock::new(None),
             file: Spinlock::new(alloc::sync::Weak::new()),
         };
-        sock.opts.sndbuf.store(sndbuf, core::sync::atomic::Ordering::Release);
-        sock.opts.rcvbuf.store(rcvbuf, core::sync::atomic::Ordering::Release);
+        sock.opts.base.sndbuf.store(sndbuf, core::sync::atomic::Ordering::Release);
+        sock.opts.base.rcvbuf.store(rcvbuf, core::sync::atomic::Ordering::Release);
         sock
     }
 
@@ -124,7 +124,7 @@ impl InetSocket {
         let mut sock = Self::new_owned(owner, bpf_filter, error, SockKind::TcpInit);
         sock.opts.ip_mtu_discover = ip_mtu_discover;
         sock.opts.ipv6_mtu_discover = ipv6_mtu_discover;
-        sock.opts.generic.use_max_pacing_rate_cell(max_pacing_rate);
+        sock.opts.base.generic.use_max_pacing_rate_cell(max_pacing_rate);
         sock
     }
 
@@ -198,7 +198,7 @@ impl InetSocket {
                 }
             }
         }
-        sock.opts.bound_ifindex.store(bound_ifindex, core::sync::atomic::Ordering::Release);
+        sock.opts.base.bound_ifindex.store(bound_ifindex, core::sync::atomic::Ordering::Release);
         // Linux `sk_clone_lock` copies the listening `struct sock` wholesale,
         // so an accepted child starts with the listener's buffer sizing and
         // its `sk_userlocks` — which is why `setsockopt(SO_RCVBUF)` on a
@@ -244,8 +244,8 @@ impl InetSocket {
         // A packet socket is not TCP: it keeps the generic buffer defaults.
         let (sndbuf, rcvbuf) = crate::sysctl::initial_bufs(&s.owner.net_namespace,
             crate::sysctl::BufPersonality::Generic);
-        s.opts.sndbuf.store(sndbuf, core::sync::atomic::Ordering::Release);
-        s.opts.rcvbuf.store(rcvbuf, core::sync::atomic::Ordering::Release);
+        s.opts.base.sndbuf.store(sndbuf, core::sync::atomic::Ordering::Release);
+        s.opts.base.rcvbuf.store(rcvbuf, core::sync::atomic::Ordering::Release);
         *s.kind.lock() = SockKind::Packet {
             ifindex: core::sync::atomic::AtomicU32::new(0),
             protocol: core::sync::atomic::AtomicU16::new(proto),

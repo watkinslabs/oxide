@@ -408,22 +408,22 @@ fn vsock_option_policy_is_typed_and_state_aware() {
     const ZERO_BUFFER_SIZE: u64 = 0;
     const MAXIMUM_U64_BUFFER_SIZE: u64 = u64::MAX;
     const UNKNOWN_VSOCK_OPTION: u64 = 99;
-    use crate::uapi::{SOL_SOCKET, SO_ACCEPTCONN, SO_DOMAIN, SO_PROTOCOL, SO_TYPE};
+    use crate::sock_opts::sol_socket::{SO_ACCEPTCONN, SO_DOMAIN, SO_PROTOCOL, SO_TYPE};
+    use crate::sock_opts::sol_socket::get::Value;
     let _guard = vsock::tests::test_domain();
     let sock = VsockSocket::new();
-    assert_eq!(sock.get_socket_option(SOL_SOCKET, SO_TYPE),
-        Ok(crate::socket_args::SOCK_STREAM as i32));
-    assert_eq!(sock.get_socket_option(SOL_SOCKET, SO_DOMAIN),
-        Ok(crate::socket_args::AF_VSOCK as i32));
-    assert_eq!(sock.get_socket_option(SOL_SOCKET, SO_PROTOCOL), Ok(0));
-    assert_eq!(sock.get_socket_option(SOL_SOCKET, SO_ACCEPTCONN), Ok(0));
+    assert_eq!(sock.sol_socket_read(SO_TYPE, 4),
+        Ok(Value::Int(crate::socket_args::SOCK_STREAM as i32)));
+    assert_eq!(sock.sol_socket_read(SO_DOMAIN, 4),
+        Ok(Value::Int(crate::socket_args::AF_VSOCK as i32)));
+    assert_eq!(sock.sol_socket_read(SO_PROTOCOL, 4), Ok(Value::Int(0)));
+    assert_eq!(sock.sol_socket_read(SO_ACCEPTCONN, 4), Ok(Value::Int(0)));
     sock.bind(crate::socket_args::AF_VSOCK as u16, 63_011, vsock::VMADDR_CID_ANY).unwrap();
     sock.listen().unwrap();
-    assert_eq!(sock.get_socket_option(SOL_SOCKET, SO_ACCEPTCONN), Ok(1));
-    assert_eq!(sock.get_socket_option(UNKNOWN_SOCKET_LEVEL, SO_TYPE),
-        Err(crate::NetError::Enoprotoopt));
-    assert_eq!(sock.get_socket_option(SOL_SOCKET, UNKNOWN_SOCKET_OPTION),
-        Err(crate::NetError::Enoprotoopt));
+    assert_eq!(sock.sol_socket_read(SO_ACCEPTCONN, 4), Ok(Value::Int(1)));
+    assert_eq!(sock.sol_socket_read(UNKNOWN_SOCKET_OPTION, 4),
+        Err(syscall::errno::Errno::Enoprotoopt));
+    let _ = UNKNOWN_SOCKET_LEVEL;
     assert_eq!(sock.set_vsock_buffer_option(crate::uapi::SO_VM_SOCKETS_BUFFER_SIZE,
         ZERO_BUFFER_SIZE), Ok(()));
     assert_eq!(sock.get_vsock_buffer_option(crate::uapi::SO_VM_SOCKETS_BUFFER_SIZE),

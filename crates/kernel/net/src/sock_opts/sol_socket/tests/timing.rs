@@ -34,10 +34,10 @@ fn linger_stores_the_flag_separately_from_the_stored_seconds() {
     assert_eq!(arg_class(SO_LINGER), ArgClass::Linger);
     // Clearing the switch must not publish the caller's seconds: Linux only
     // updates the stored linger time when the switch is on.
-    let state = GenericSockOpts::default();
-    state.set_flag(flag::LINGER, true);
-    state.set_scalar(Scalar::LingerSeconds, 9);
-    state.set_flag(flag::LINGER, false);
+    let state = crate::sock_base::SockBase::default();
+    state.generic.set_flag(flag::LINGER, true);
+    state.generic.set_scalar(Scalar::LingerSeconds, 9);
+    state.generic.set_flag(flag::LINGER, false);
     let view = SockView { sock: tcp(), ..Default::default() };
     assert_eq!(get::value(SO_LINGER, 8, &state, &view), Ok(Value::Linger { on: 0, seconds: 9 }));
 }
@@ -70,13 +70,14 @@ fn pacing_rate_uses_the_wide_form_only_when_the_caller_supplies_one() {
 
 #[test]
 fn timestamp_personalities_read_back_only_through_their_own_option() {
-    let state = GenericSockOpts::default();
-    let view = SockView { sock: tcp(), timestamping_flags: 0x11, ..Default::default() };
+    let state = crate::sock_base::SockBase::default();
+    let view = SockView { sock: tcp(), ..Default::default() };
+    state.timestamping.store(0x11, core::sync::atomic::Ordering::Release);
     let apply = |action: Action| {
         if let Action::RecvTimestamps { on, new, nanoseconds } = action {
-            state.set_flag(flag::RCVTSTAMP, on);
-            state.set_flag(flag::RCVTSTAMPNS, on && nanoseconds);
-            if on { state.set_flag(flag::TSTAMP_NEW, new); }
+            state.generic.set_flag(flag::RCVTSTAMP, on);
+            state.generic.set_flag(flag::RCVTSTAMPNS, on && nanoseconds);
+            if on { state.generic.set_flag(flag::TSTAMP_NEW, new); }
         }
     };
     apply(set(SO_TIMESTAMP_OLD, 1, tcp(), none()).unwrap());
@@ -95,14 +96,14 @@ fn timestamp_personalities_read_back_only_through_their_own_option() {
         Ok(Value::Timestamping { flags: 0x11, bind_phc: 0 }));
     assert_eq!(get::value(SO_TIMESTAMPING_NEW, 8, &state, &view),
         Ok(Value::Timestamping { flags: 0x11, bind_phc: 0 }));
-    state.set_flag(flag::TSTAMP_NEW, false);
+    state.generic.set_flag(flag::TSTAMP_NEW, false);
     assert_eq!(get::value(SO_TIMESTAMPING_NEW, 8, &state, &view),
         Ok(Value::Timestamping { flags: 0, bind_phc: 0 }));
 }
 
 #[test]
 fn read_side_lengths_match_the_linux_natural_widths() {
-    let state = GenericSockOpts::default();
+    let state = crate::sock_base::SockBase::default();
     let view = SockView { sock: unix(), ..Default::default() };
     let cases: [(u64, usize); 6] = [
         (SO_DEBUG, 4), (SO_LINGER, 8), (SO_RCVTIMEO_OLD, 16),
@@ -118,8 +119,8 @@ fn read_side_lengths_match_the_linux_natural_widths() {
 
 #[test]
 fn pacing_rate_readback_width_follows_the_caller_buffer() {
-    let state = GenericSockOpts::default();
-    state.set_max_pacing_rate(1 << 40);
+    let state = crate::sock_base::SockBase::default();
+    state.generic.set_max_pacing_rate(1 << 40);
     let view = SockView { sock: tcp(), ..Default::default() };
     assert_eq!(get::value(SO_MAX_PACING_RATE, 8, &state, &view), Ok(Value::U64(1 << 40)));
     // A four-byte request gets the saturated 32-bit form.

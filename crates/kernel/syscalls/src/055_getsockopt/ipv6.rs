@@ -123,7 +123,7 @@ fn path_mtu_info(sock: &Arc<InetSocket>, out: &OptOut) -> i64 {
     let requested = match requested_unchecked(out.optlen_p) { Ok(v) => v, Err(e) => return errno(e) };
     if let Err(e) = v6get::exact_len(IP6_MTUINFO_SIZE, requested) { return errno(e); }
     let Some((ip, _)) = *sock.peer6.lock() else { return errno(Errno::Enotconn); };
-    let raw = sock.opts.bound_ifindex.load(Ordering::Acquire);
+    let raw = sock.opts.base.bound_ifindex.load(Ordering::Acquire);
     let bound = if raw == 0 { None } else { Some(net::NetIfaceId::from_raw(raw)) };
     match net::sock::stack().path_mtu(net::IpAddr::V6(ip), bound, false) {
         Ok(mtu) => out.exact(&v6get::mtuinfo(mtu)),

@@ -69,6 +69,19 @@ pub fn deadline_from_timeo(timeo_ns: u64) -> u64 {
 #[cfg(not(target_os = "oxide-kernel"))]
 pub fn deadline_from_timeo(_timeo_ns: u64) -> u64 { NO_TIMEOUT }
 
+/// Whether an absolute wait deadline has passed. An unset deadline never
+/// expires, which is Linux's `MAX_SCHEDULE_TIMEOUT`. One owner, so no wait
+/// site invents its own comparison. # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+pub fn deadline_expired(deadline_ns: u64) -> bool {
+    deadline_ns != NO_TIMEOUT && crate::sock_io::monotonic_ns_safe() >= deadline_ns
+}
+
+/// A hosted build has no monotonic source, so no deadline is reachable there.
+/// # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+pub fn deadline_expired(_deadline_ns: u64) -> bool { false }
+
 /// `sock_intr_errno` straight to a `NetError`. # C: O(1)
 pub const fn sock_intr_net(deadline_ns: u64) -> NetError { sock_intr(deadline_ns).net() }
 

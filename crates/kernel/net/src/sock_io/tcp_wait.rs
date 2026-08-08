@@ -7,7 +7,7 @@ pub(crate) fn connect_wait_established(
     sock: &InetSocket, entry: &alloc::sync::Arc<TcpEntry>) -> Result<(), NetError>
 {
     let deadline_ns = crate::sock::compute_deadline_ns(
-        sock.opts.sndtimeo_ns.load(core::sync::atomic::Ordering::Acquire));
+        sock.opts.base.sndtimeo_ns.load(core::sync::atomic::Ordering::Acquire));
     loop {
         drain_loopback();
         #[cfg(target_os = "oxide-kernel")]

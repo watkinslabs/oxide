@@ -3,30 +3,16 @@
 use syscall::errno::Errno;
 use super::*;
 
-/// Non-generic socket state the SOL_SOCKET read table needs, snapshotted by
-/// the caller before the table runs. # C: O(1)
+/// Socket identity the SOL_SOCKET read table needs beyond the generic base.
+/// Every generic value is read from `SockBase` itself, so no family snapshots
+/// a second copy of it here. # C: O(1)
 #[derive(Copy, Clone, Default, Debug, Eq, PartialEq)]
 pub struct SockView {
     pub sock: OptSock,
-    pub reuseaddr: i32,
-    pub reuseport: i32,
-    pub keepalive: i32,
-    pub broadcast: i32,
-    pub oobinline: i32,
-    pub sndbuf: i32,
-    pub rcvbuf: i32,
-    pub priority: i32,
-    pub mark: i32,
-    pub passcred: i32,
-    pub timestamping_flags: i32,
-    pub sndtimeo_ns: i64,
-    pub rcvtimeo_ns: i64,
-    pub bound_ifindex: i32,
     pub acceptconn: i32,
     pub socket_type: i32,
     pub protocol: i32,
     pub netns_cookie: u64,
-    pub socket_cookie: u64,
     /// `sk_napi_id` recorded by the receive path. Identifiers below
     /// `MIN_NAPI_ID` are reserved and aggregate to zero on the way out.
     pub napi_id: u32,
@@ -93,25 +79,27 @@ pub fn encode(value: &Value, out: &mut [u8; 16]) -> usize {
 /// `SO_PEERGROUPS`, `SO_MEMINFO`, `SO_GET_FILTER`, `SO_LOCK_FILTER`) are the
 /// caller's responsibility and reach this table as `ENOPROTOOPT`.
 /// `SO_BUSY_POLL_BUDGET` has no read direction. # C: O(1)
-pub fn value(optname: u64, requested: i32, state: &GenericSockOpts, view: &SockView)
+pub fn value(optname: u64, requested: i32, base: &crate::sock_base::SockBase, view: &SockView)
     -> Result<Value, Errno>
 {
+    use core::sync::atomic::Ordering;
+    let state = &base.generic;
     let flag_int = |bit: u64| Value::Int(i32::from(state.flag(bit)));
     Ok(match optname {
         SO_DEBUG => flag_int(flag::DEBUG),
         SO_DONTROUTE => flag_int(flag::LOCALROUTE),
-        SO_BROADCAST => Value::Int(view.broadcast),
-        SO_SNDBUF => Value::Int(view.sndbuf),
-        SO_RCVBUF => Value::Int(view.rcvbuf),
-        SO_REUSEADDR => Value::Int(view.reuseaddr),
-        SO_REUSEPORT => Value::Int(view.reuseport),
-        SO_KEEPALIVE => Value::Int(view.keepalive),
+        SO_BROADCAST => Value::Int(base.broadcast.load(Ordering::Acquire)),
+        SO_SNDBUF => Value::Int(base.sndbuf.load(Ordering::Acquire)),
+        SO_RCVBUF => Value::Int(base.rcvbuf.load(Ordering::Acquire)),
+        SO_REUSEADDR => Value::Int(base.reuseaddr.load(Ordering::Acquire)),
+        SO_REUSEPORT => Value::Int(base.reuseport.load(Ordering::Acquire)),
+        SO_KEEPALIVE => Value::Int(base.keepalive.load(Ordering::Acquire)),
         SO_TYPE => Value::Int(view.socket_type),
         SO_PROTOCOL => Value::Int(view.protocol),
         SO_DOMAIN => Value::Int(view.sock.family as i32),
-        SO_OOBINLINE => Value::Int(view.oobinline),
+        SO_OOBINLINE => Value::Int(base.oobinline.load(Ordering::Acquire)),
         SO_NO_CHECK => flag_int(flag::NO_CHECK_TX),
-        SO_PRIORITY => Value::Int(view.priority),
+        SO_PRIORITY => Value::Int(base.priority.load(Ordering::Acquire)),
         SO_LINGER => Value::Linger {
             on: i32::from(state.flag(flag::LINGER)),
             seconds: state.scalar(Scalar::LingerSeconds),
@@ -132,7 +120,7 @@ pub fn value(optname: u64, requested: i32, state: &GenericSockOpts, view: &SockV
             // the same option; the legacy one always reports them.
             if optname == SO_TIMESTAMPING_OLD || state.flag(flag::TSTAMP_NEW) {
                 Value::Timestamping {
-                    flags: view.timestamping_flags,
+                    flags: base.timestamping.load(Ordering::Acquire),
                     bind_phc: state.scalar(Scalar::TimestampingBindPhc),
                 }
             } else {
@@ -140,22 +128,22 @@ pub fn value(optname: u64, requested: i32, state: &GenericSockOpts, view: &SockV
             }
         }
         SO_RCVTIMEO_OLD | SO_RCVTIMEO_NEW => {
-            let (sec, usec) = timeval_from_timeout_ns(view.rcvtimeo_ns);
+            let (sec, usec) = timeval_from_timeout_ns(base.rcvtimeo());
             Value::Timeval { sec, usec }
         }
         SO_SNDTIMEO_OLD | SO_SNDTIMEO_NEW => {
-            let (sec, usec) = timeval_from_timeout_ns(view.sndtimeo_ns);
+            let (sec, usec) = timeval_from_timeout_ns(base.sndtimeo());
             Value::Timeval { sec, usec }
         }
         SO_RCVLOWAT => Value::Int(state.scalar(Scalar::RcvLowat)),
         SO_SNDLOWAT => Value::Int(SNDLOWAT),
         SO_PASSCRED => {
             if !view.sock.may_scm_recv() { return Err(Errno::Eopnotsupp); }
-            Value::Int(view.passcred)
+            Value::Int(base.passcred.value())
         }
         SO_PASSSEC => {
             if !view.sock.may_scm_recv() { return Err(Errno::Eopnotsupp); }
-            flag_int(flag::SCM_SECURITY)
+            Value::Int(base.scm_security.value())
         }
         SO_PASSPIDFD => {
             if !view.sock.unix() { return Err(Errno::Eopnotsupp); }
@@ -166,7 +154,7 @@ pub fn value(optname: u64, requested: i32, state: &GenericSockOpts, view: &SockV
             Value::Int(i32::from(!state.flag(flag::SCM_RIGHTS_OFF)))
         }
         SO_ACCEPTCONN => Value::Int(view.acceptconn),
-        SO_MARK => Value::Int(view.mark),
+        SO_MARK => Value::Int(base.mark.load(Ordering::Acquire)),
         SO_RCVMARK => flag_int(flag::RCVMARK),
         SO_RCVPRIORITY => flag_int(flag::RCVPRIORITY),
         SO_RXQ_OVFL => flag_int(flag::RXQ_OVFL),
@@ -191,7 +179,7 @@ pub fn value(optname: u64, requested: i32, state: &GenericSockOpts, view: &SockV
         SO_INCOMING_CPU => Value::Int(state.scalar(Scalar::IncomingCpu)),
         SO_COOKIE => {
             if (requested as usize) < core::mem::size_of::<u64>() { return Err(Errno::Einval); }
-            Value::U64(view.socket_cookie)
+            Value::U64(state.cookie(next_cookie) as u64)
         }
         SO_ZEROCOPY => flag_int(flag::ZEROCOPY),
         SO_TXTIME => Value::TxTime {
@@ -199,7 +187,7 @@ pub fn value(optname: u64, requested: i32, state: &GenericSockOpts, view: &SockV
             flags: u32::from(state.flag(flag::TXTIME_DEADLINE_MODE)) * SOF_TXTIME_DEADLINE_MODE
                 | u32::from(state.flag(flag::TXTIME_REPORT_ERRORS)) * SOF_TXTIME_REPORT_ERRORS,
         },
-        SO_BINDTOIFINDEX => Value::Int(view.bound_ifindex),
+        SO_BINDTOIFINDEX => Value::Int(base.bound_ifindex.load(Ordering::Acquire) as i32),
         SO_NETNS_COOKIE => {
             if requested as usize != core::mem::size_of::<u64>() { return Err(Errno::Einval); }
             Value::U64(view.netns_cookie)

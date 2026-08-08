@@ -50,7 +50,7 @@ fn accept_common(args: &SyscallArgs, flags: u64) -> i64 {
         Routed::Inet(file, sock) => (file, sock),
     };
     let nonblock = file.flags().contains(vfs::OpenFlags::O_NONBLOCK);
-    let timeo = sock.opts.rcvtimeo_ns.load(Ordering::Acquire);
+    let timeo = sock.opts.base.rcvtimeo_ns.load(Ordering::Acquire);
     #[cfg(target_arch = "x86_64")]
     let now = || hal_x86_64::X86TimerOps::monotonic_ns().0;
     #[cfg(target_arch = "aarch64")]

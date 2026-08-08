@@ -10,10 +10,10 @@ fn prefer_busy_poll_enable_needs_net_admin_but_disable_does_not() {
         Ok(Action::Flag { bit: flag::PREFER_BUSY_POLL, on: true }));
     assert_eq!(set(SO_PREFER_BUSY_POLL, 0, tcp(), none()),
         Ok(Action::Flag { bit: flag::PREFER_BUSY_POLL, on: false }));
-    let state = GenericSockOpts::default();
+    let state = crate::sock_base::SockBase::default();
     let view = SockView { sock: tcp(), ..Default::default() };
     assert_eq!(get::value(SO_PREFER_BUSY_POLL, 4, &state, &view), Ok(Value::Int(0)));
-    state.set_flag(flag::PREFER_BUSY_POLL, true);
+    state.generic.set_flag(flag::PREFER_BUSY_POLL, true);
     assert_eq!(get::value(SO_PREFER_BUSY_POLL, 4, &state, &view), Ok(Value::Int(1)));
 }
 
@@ -33,14 +33,14 @@ fn busy_poll_budget_privilege_outranks_the_field_width_screen() {
     assert_eq!(budget(admin(), 0, BUSY_POLL_BUDGET_MAX),
         Ok(Action::Scalar { slot: Scalar::BusyPollBudget, value: BUSY_POLL_BUDGET_MAX }));
     // The budget has no read direction.
-    let state = GenericSockOpts::default();
+    let state = crate::sock_base::SockBase::default();
     let view = SockView { sock: tcp(), ..Default::default() };
     assert_eq!(get::value(SO_BUSY_POLL_BUDGET, 4, &state, &view), Err(Errno::Enoprotoopt));
 }
 
 #[test]
 fn incoming_napi_id_aggregates_reserved_identifiers_to_zero() {
-    let state = GenericSockOpts::default();
+    let state = crate::sock_base::SockBase::default();
     let below = SockView { sock: tcp(), napi_id: MIN_NAPI_ID - 1, ..Default::default() };
     let valid = SockView { sock: tcp(), napi_id: MIN_NAPI_ID, ..Default::default() };
     assert_eq!(get::value(SO_INCOMING_NAPI_ID, 4, &state, &below), Ok(Value::Int(0)));

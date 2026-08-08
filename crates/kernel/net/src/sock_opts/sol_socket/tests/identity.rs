@@ -28,7 +28,7 @@ fn rebinding_a_device_needs_cap_net_raw_only_when_one_is_already_bound() {
 
 #[test]
 fn read_side_rejects_unknown_options_and_family_gated_ones() {
-    let state = GenericSockOpts::default();
+    let state = crate::sock_base::SockBase::default();
     let view = SockView { sock: tcp(), ..Default::default() };
     assert_eq!(get::value(0xdead, 4, &state, &view), Err(Errno::Enoprotoopt));
     assert_eq!(get::value(SO_PASSCRED, 4, &state, &view), Err(Errno::Eopnotsupp));
@@ -62,7 +62,7 @@ fn so_inq_is_a_strict_boolean_and_the_family_screen_outranks_the_value_window() 
 fn so_inq_is_write_only_and_reads_back_as_a_missing_option() {
     // The option enables a control message; it is not itself readable, on any
     // family, including the one that accepts the write.
-    let state = GenericSockOpts::default();
+    let state = crate::sock_base::SockBase::default();
     for sock in [unix(), unix_dgram(), tcp()] {
         let view = SockView { sock, ..Default::default() };
         assert_eq!(get::value(SO_INQ, 4, &state, &view), Err(Errno::Enoprotoopt));
