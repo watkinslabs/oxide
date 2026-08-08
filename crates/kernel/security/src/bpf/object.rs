@@ -5,7 +5,8 @@ use alloc::sync::Arc;
 use syscall::errno::Errno;
 use vfs::{InodeRef, VfsPath};
 
-use super::{BPF_FS_MAGIC, BpfCgroupLinkInode, BpfMapInode, BpfProgInode, Caps, attr, btf, install_fd_access, uapi};
+use super::attr::Caps;
+use super::{BPF_FS_MAGIC, BpfCgroupLinkInode, BpfMapInode, BpfProgInode, attr, btf, install_fd_access, uapi};
 
 fn object_from_fd(fd: u32) -> Result<InodeRef, Errno> {
     let current = sched::current().ok_or(Errno::Ebadf)?;

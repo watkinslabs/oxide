@@ -1,29 +1,5 @@
 use super::*;
 
-fn hex(source: &str) -> Vec<u8> {
-    let compact: Vec<u8> = source.bytes().filter(|byte| !byte.is_ascii_whitespace()).collect();
-    compact.chunks_exact(2).map(|pair| {
-        let digit = |value: u8| match value {
-            b'0'..=b'9' => value - b'0',
-            b'a'..=b'f' => value - b'a' + 10,
-            _ => panic!("bad hex"),
-        };
-        digit(pair[0]) << 4 | digit(pair[1])
-    }).collect()
-}
-
-fn array(value_size: u32, max_entries: u32, flags: u32) -> InodeRef {
-    crate::bpf::map::allocate(
-        uapi::map_type::ARRAY, 4, value_size, max_entries, flags,
-    ).unwrap()
-}
-
-fn raw(opcode: u8, dst: u8, src: u8, off: i16, imm: i32) -> [u8; 8] {
-    let off = off.to_le_bytes();
-    let imm = imm.to_le_bytes();
-    [opcode, src << 4 | dst, off[0], off[1], imm[0], imm[1], imm[2], imm[3]]
-}
-
 #[test]
 fn accepts_systemd_257_socket_bind_object_program() {
     let mut insns = hex(
@@ -50,7 +26,7 @@ fn accepts_systemd_257_socket_bind_object_program() {
     insns[45 * 8 + 1] = 0x11;
     insns[45 * 8 + 4..45 * 8 + 8].copy_from_slice(&1i32.to_le_bytes());
     let maps = [array(12, 128, 0), array(12, 128, 0)];
-    assert_eq!(verify_cgroup_network(
+    assert_eq!(verify_program(
         uapi::prog_type::CGROUP_SOCK_ADDR,
         uapi::attach_type::CGROUP_INET4_BIND,
         &insns,
@@ -72,7 +48,7 @@ fn accepts_systemd_257_restrict_ifaces_object_program() {
     insns[7 * 8 + 4..7 * 8 + 8].copy_from_slice(&1i32.to_le_bytes());
     let hash = crate::bpf::map::allocate(uapi::map_type::HASH, 4, 1, 8, 0).unwrap();
     let rodata = array(1, 1, uapi::map_flags::RDONLY_PROG);
-    assert_eq!(verify_cgroup_network(
+    assert_eq!(verify_program(
         uapi::prog_type::CGROUP_SKB,
         uapi::attach_type::CGROUP_INET_EGRESS,
         &insns,
@@ -94,7 +70,7 @@ fn map_value_must_be_checked_for_null_before_dereference() {
     ].into_iter().flatten().collect();
     let map = array(4, 1, 0);
     assert_eq!(
-        verify_cgroup_network(
+        verify_program(
             uapi::prog_type::CGROUP_SKB,
             uapi::attach_type::CGROUP_INET_INGRESS,
             &insns,
@@ -111,7 +87,7 @@ fn rejects_unproved_infinite_jump_and_accepts_canonical_counter_loop() {
         raw(0x95, 0, 0, 0, 0),
     ].into_iter().flatten().collect();
     assert_eq!(
-        verify_cgroup_network(
+        verify_program(
             uapi::prog_type::CGROUP_SKB,
             uapi::attach_type::CGROUP_INET_INGRESS,
             &infinite,
@@ -127,7 +103,7 @@ fn rejects_unproved_infinite_jump_and_accepts_canonical_counter_loop() {
         raw(0x95, 0, 0, 0, 0),
     ].into_iter().flatten().collect();
     assert_eq!(
-        verify_cgroup_network(
+        verify_program(
             uapi::prog_type::CGROUP_SKB,
             uapi::attach_type::CGROUP_INET_INGRESS,
             &bounded,
@@ -150,7 +126,7 @@ fn rejects_a_loop_whose_nearest_initializer_can_be_bypassed() {
         raw(0x95, 0, 0, 0, 0),
     ].into_iter().flatten().collect();
     assert_eq!(
-        verify_cgroup_network(
+        verify_program(
             uapi::prog_type::CGROUP_SKB,
             uapi::attach_type::CGROUP_INET_INGRESS,
             &bypassed,
@@ -169,7 +145,7 @@ fn rejects_unreachable_network_instructions() {
         raw(0x95, 0, 0, 0, 0),
     ].into_iter().flatten().collect();
     assert_eq!(
-        verify_cgroup_network(
+        verify_program(
             uapi::prog_type::CGROUP_SKB,
             uapi::attach_type::CGROUP_INET_INGRESS,
             &unreachable,
@@ -187,7 +163,7 @@ fn infeasible_state_path_remains_structurally_reachable() {
         raw(0xb7, 0, 0, 0, 1),
         raw(0x95, 0, 0, 0, 0),
     ].into_iter().flatten().collect();
-    assert_eq!(verify_cgroup_network(
+    assert_eq!(verify_program(
         uapi::prog_type::CGROUP_SKB,
         uapi::attach_type::CGROUP_INET_INGRESS,
         &program,
@@ -201,25 +177,25 @@ fn attach_types_enforce_linux_return_ranges() {
         [raw(0xb7, 0, 0, 0, value), raw(0x95, 0, 0, 0, 0)]
             .into_iter().flatten().collect::<Vec<u8>>()
     };
-    assert_eq!(verify_cgroup_network(
+    assert_eq!(verify_program(
         uapi::prog_type::CGROUP_SKB,
         uapi::attach_type::CGROUP_INET_INGRESS,
         &returns(2),
         &[],
     ), Err(VerifyError::UnsupportedOpcode));
-    assert_eq!(verify_cgroup_network(
+    assert_eq!(verify_program(
         uapi::prog_type::CGROUP_SKB,
         uapi::attach_type::CGROUP_INET_EGRESS,
         &returns(3),
         &[],
     ), Ok(true));
-    assert_eq!(verify_cgroup_network(
+    assert_eq!(verify_program(
         uapi::prog_type::CGROUP_SOCK_ADDR,
         uapi::attach_type::CGROUP_INET4_CONNECT,
         &returns(2),
         &[],
     ), Err(VerifyError::UnsupportedOpcode));
-    assert_eq!(verify_cgroup_network(
+    assert_eq!(verify_program(
         uapi::prog_type::CGROUP_SOCK_ADDR,
         uapi::attach_type::CGROUP_INET4_BIND,
         &returns(3),
@@ -238,7 +214,7 @@ fn egress_contract_survives_converging_return_states() {
         raw(0xbf, 0, 0, 0, 0),
         raw(0x95, 0, 0, 0, 0),
     ].into_iter().flatten().collect();
-    assert_eq!(verify_cgroup_network(
+    assert_eq!(verify_program(
         uapi::prog_type::CGROUP_SKB,
         uapi::attach_type::CGROUP_INET_EGRESS,
         &program,
@@ -261,7 +237,7 @@ fn egress_contract_keeps_branch_correlation_until_exit() {
         raw(0x95, 0, 0, 0, 0),
         raw(0x95, 0, 0, 0, 0),
     ].into_iter().flatten().collect();
-    assert_eq!(verify_cgroup_network(
+    assert_eq!(verify_program(
         uapi::prog_type::CGROUP_SKB,
         uapi::attach_type::CGROUP_INET_EGRESS,
         &program,
@@ -280,7 +256,7 @@ fn set_retval_requires_the_linux_negative_errno_range() {
         ].into_iter().flatten().collect::<Vec<u8>>()
     };
     for value in [-4095, -1, 0] {
-        assert_eq!(verify_cgroup_network(
+        assert_eq!(verify_program(
             uapi::prog_type::CGROUP_SOCK_ADDR,
             uapi::attach_type::CGROUP_INET4_CONNECT,
             &program(value),
@@ -288,7 +264,7 @@ fn set_retval_requires_the_linux_negative_errno_range() {
         ), Ok(false));
     }
     for value in [-4096, 1] {
-        assert_eq!(verify_cgroup_network(
+        assert_eq!(verify_program(
             uapi::prog_type::CGROUP_SOCK_ADDR,
             uapi::attach_type::CGROUP_INET4_CONNECT,
             &program(value),
@@ -320,20 +296,20 @@ fn program_map_permissions_deny_reads_and_writes_independently() {
         raw(0xb7, 0, 0, 0, 1),
         raw(0x95, 0, 0, 0, 0),
     ].into_iter().flatten().collect();
-    assert_eq!(verify_cgroup_network(
+    assert_eq!(verify_program(
         uapi::prog_type::CGROUP_SKB,
         uapi::attach_type::CGROUP_INET_INGRESS,
         &read,
         &[array(4, 1, uapi::map_flags::WRONLY_PROG)],
     ), Err(VerifyError::UnsafeContextAccess));
-    assert_eq!(verify_cgroup_network(
+    assert_eq!(verify_program(
         uapi::prog_type::CGROUP_SKB,
         uapi::attach_type::CGROUP_INET_INGRESS,
         &write,
         &[array(4, 1, uapi::map_flags::RDONLY_PROG)],
     ), Err(VerifyError::UnsafeContextAccess));
     for flags in [uapi::map_flags::RDONLY_PROG, uapi::map_flags::WRONLY_PROG] {
-        assert_eq!(verify_cgroup_network(
+        assert_eq!(verify_program(
             uapi::prog_type::CGROUP_SKB,
             uapi::attach_type::CGROUP_INET_INGRESS,
             &atomic,
@@ -344,7 +320,7 @@ fn program_map_permissions_deny_reads_and_writes_independently() {
 
 #[test]
 fn sockaddr_context_access_is_aligned_and_field_contained() {
-    let verify = |attach, insns: &[[u8; 8]]| verify_cgroup_network(
+    let verify = |attach, insns: &[[u8; 8]]| verify_program(
         uapi::prog_type::CGROUP_SOCK_ADDR,
         attach,
         &insns.iter().flatten().copied().collect::<Vec<u8>>(),
@@ -393,7 +369,7 @@ fn large_straight_line_program_uses_bounded_fallible_state() {
         insns.extend_from_slice(&raw(0xb7, 0, 0, 0, 1));
     }
     insns.extend_from_slice(&raw(0x95, 0, 0, 0, 0));
-    assert_eq!(verify_cgroup_network(
+    assert_eq!(verify_program(
         uapi::prog_type::CGROUP_SKB,
         uapi::attach_type::CGROUP_INET_INGRESS,
         &insns,

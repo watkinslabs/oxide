@@ -13,8 +13,11 @@ use vfs::InodeRef;
 use super::attr::{self, Access, Attr, Caps};
 use super::uapi;
 use super::user;
-use super::{BpfMapInode, install_fd, make_bpf_map_inode, map_by_id, next_live_map_id, next_map_id};
+use super::install_fd;
+use inode::{BpfMapInode, make_bpf_map_inode, map_by_id, next_live_map_id, next_map_id};
 
+#[path = "map/inode.rs"]
+pub(crate) mod inode;
 #[path = "map/storage.rs"]
 mod storage;
 pub(crate) use storage::{BpfMapValue, MapStorage};

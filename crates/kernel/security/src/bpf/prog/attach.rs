@@ -10,9 +10,11 @@ use vfs::InodeRef;
 use super::super::attr::{self, Attr, Caps};
 use super::super::uapi;
 use super::super::user;
+use super::super::link::cgroup_link_by_id;
+use super::inode::prog_by_id;
 use super::super::{
-    BpfCgroupLinkInode, BpfLsmLinkInode, BpfProgInode, cgroup_link_by_id,
-    install_fd, make_bpf_lsm_link_inode, prime_bpf_cgroup_link, prog_by_id,
+    BpfCgroupLinkInode, BpfLsmLinkInode, BpfProgInode, 
+    install_fd, make_bpf_lsm_link_inode, prime_bpf_cgroup_link,
 };
 
 pub(super) struct ClassicAttach<P, T> {

@@ -29,15 +29,21 @@ impl Scalar {
     }
 }
 
+/// Range the exit value must lie in, or `None` for a program type whose
+/// return carries no kernel-side bound. `None` still requires R0 to be an
+/// initialized non-pointer scalar; it removes only the range. Socket
+/// filters are the `None` case — their return is a byte count the receive
+/// path clamps, so every value is meaningful.
 /// # C: O(1)
-pub(super) fn return_range(prog_type: u32, expected_attach_type: u32) -> Scalar {
-    if prog_type == uapi::prog_type::CGROUP_SKB
-        && expected_attach_type == uapi::attach_type::CGROUP_INET_EGRESS
-        || prog_type == uapi::prog_type::CGROUP_SOCK_ADDR
-            && matches!(expected_attach_type,
-                uapi::attach_type::CGROUP_INET4_BIND | uapi::attach_type::CGROUP_INET6_BIND) {
-        Scalar::range(0, 3)
-    } else {
-        Scalar::range(0, 1)
+pub(super) fn return_range(prog_type: u32, expected_attach_type: u32) -> Option<Scalar> {
+    use uapi::prog_type as p;
+    match prog_type {
+        p::SOCKET_FILTER => None,
+        p::CGROUP_SKB if expected_attach_type == uapi::attach_type::CGROUP_INET_EGRESS =>
+            Some(Scalar::range(0, 3)),
+        p::CGROUP_SOCK_ADDR if matches!(expected_attach_type,
+            uapi::attach_type::CGROUP_INET4_BIND | uapi::attach_type::CGROUP_INET6_BIND) =>
+            Some(Scalar::range(0, 3)),
+        _ => Some(Scalar::range(0, 1)),
     }
 }

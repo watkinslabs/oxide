@@ -11,8 +11,11 @@ use vfs::InodeRef;
 use super::attr::{self, Attr, Caps};
 use super::uapi;
 use super::user;
-use super::{install_fd, make_bpf_prog_inode_with_contract};
+use super::install_fd;
+use inode::make_bpf_prog_inode_with_contract;
 
+#[path = "prog/inode.rs"]
+pub(crate) mod inode;
 mod attach;
 mod bind_map;
 #[cfg(test)]
@@ -137,12 +140,11 @@ fn verify(
     maps: &[InodeRef],
 ) -> Result<bool, Errno> {
     let verdict = match prog_type {
-        uapi::prog_type::SOCKET_FILTER =>
-            crate::bpf_verify::verify_socket_filter(insns).map(|()| false),
         uapi::prog_type::CGROUP_DEVICE =>
             crate::bpf_verify::verify_cgroup_device(insns).map(|()| false),
-        uapi::prog_type::CGROUP_SKB | uapi::prog_type::CGROUP_SOCK_ADDR => {
-            crate::bpf_verify::verify_cgroup_network(
+        uapi::prog_type::SOCKET_FILTER | uapi::prog_type::CGROUP_SKB
+            | uapi::prog_type::CGROUP_SOCK_ADDR => {
+            crate::bpf_verify::verify_program(
                 prog_type, expected_attach_type, insns, maps,
             )
         }

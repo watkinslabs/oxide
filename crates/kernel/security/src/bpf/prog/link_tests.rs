@@ -4,8 +4,9 @@ use syscall::errno::Errno;
 use vfs::{FdTable, OpenFlags};
 
 use cgroup::tree::ROOT;
+use super::super::link::{cgroup_link_by_id, prime_bpf_cgroup_link_with};
 use super::super::{
-    cgroup_link_by_id, make_bpf_prog_inode, prime_bpf_cgroup_link_with,
+    make_bpf_prog_inode,
 };
 use super::super::uapi;
 
