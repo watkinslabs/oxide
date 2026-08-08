@@ -27,7 +27,22 @@ struct TcpInfo {
     tcpi_rcv_ooopack: u32, tcpi_snd_wnd: u32, tcpi_rcv_wnd: u32,
     tcpi_rehash: u32, tcpi_total_rto: u16, tcpi_total_rto_recoveries: u16,
     tcpi_total_rto_time: u32,
+    // Accurate-ECN tail. A connection that negotiated classic ECN reports zero
+    // in every counter here and names its mode in the packed word; the counters
+    // are fed only by the accurate-ECN wire option.
+    tcpi_received_ce: u32,
+    tcpi_delivered_e1_bytes: u32, tcpi_delivered_e0_bytes: u32, tcpi_delivered_ce_bytes: u32,
+    tcpi_received_e1_bytes: u32, tcpi_received_e0_bytes: u32, tcpi_received_ce_bytes: u32,
+    /// `ecn_mode:2, accecn_opt_seen:2, accecn_fail_mode:4, options2:24`.
+    tcpi_ecn_mode_opt2: u32,
 }
+
+/// Values of the two-bit ECN-mode field the packed tail word opens.
+const TCPI_ECN_MODE_DISABLED: u32 = 0;
+const TCPI_ECN_MODE_RFC3168: u32 = 1;
+/// Width and position of each field packed into `tcpi_ecn_mode_opt2`.
+const ECN_MODE_MASK: u32 = 0x3;
+const ECN_MODE_SHIFT: u32 = 0;
 
 /// Width and position of `tcpi_fastopen_client_fail` inside the bitfield byte
 /// `tcpi_delivery_rate_app_limited` opens.
@@ -144,6 +159,8 @@ fn populate_conn_at(c: &net::tcp_conn::TcpConn, now_ns: u64, info: &mut TcpInfo)
             .saturating_mul(u64::from(snd_mss)).saturating_mul(1_000_000_000) / c.telemetry.rate_interval_ns;
     }
     info.tcpi_delivered = c.telemetry.delivered;
+    info.tcpi_delivered_ce = c.telemetry.delivered_ce;
+    info.tcpi_ecn_mode_opt2 = (ecn_mode(c) & ECN_MODE_MASK) << ECN_MODE_SHIFT;
     let (busy, rwnd_limited, sndbuf_limited) = c.chrono_totals_at(now_ns);
     info.tcpi_busy_time = busy / 1_000;
     info.tcpi_rwnd_limited = rwnd_limited / 1_000;
@@ -157,6 +174,13 @@ fn populate_conn_at(c: &net::tcp_conn::TcpConn, now_ns: u64, info: &mut TcpInfo)
     // fastopen_client_fail:2`, so the reason rides bits 1-2.
     info.tcpi_delivery_rate_app_limited |=
         (c.fastopen_client_fail & FASTOPEN_CLIENT_FAIL_MASK) << FASTOPEN_CLIENT_FAIL_SHIFT;
+}
+
+/// Which explicit-congestion-notification feedback the connection settled on.
+/// Only classic feedback is negotiated here, so the accurate mode and the
+/// pending mode that precedes it are never reported. # C: O(1)
+fn ecn_mode(c: &net::tcp_conn::TcpConn) -> u32 {
+    if c.ecn_enabled { TCPI_ECN_MODE_RFC3168 } else { TCPI_ECN_MODE_DISABLED }
 }
 
 fn tcp_info_options(c: &net::tcp_conn::TcpConn) -> u8 {
@@ -179,7 +203,8 @@ fn state_to_byte(s: net::tcp_state::TcpState) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::{copy_tcp_info, populate_conn, populate_conn_at, populate_max_pacing_rate, tcp_info_options, TcpInfo, TCPI_OPT_ECN,
-        TCPI_OPT_SACK, TCPI_OPT_TIMESTAMPS, TCPI_OPT_WSCALE, TCP_INFO_LEN, TCP_INFO_PREFIX_LEN};
+        TCPI_OPT_SACK, TCPI_OPT_TIMESTAMPS, TCPI_OPT_WSCALE, TCP_INFO_LEN, TCP_INFO_PREFIX_LEN,
+        ECN_MODE_MASK, TCPI_ECN_MODE_DISABLED, TCPI_ECN_MODE_RFC3168};
 
     fn conn() -> net::tcp_conn::TcpConn {
         let ip = net::addr::IpAddr::V4(net::addr::Ipv4Addr::LOOPBACK);
@@ -348,6 +373,49 @@ mod tests {
         let mut info = TcpInfo::default();
         populate_conn_at(&conn, 0, &mut info);
         assert_eq!((info.tcpi_busy_time, info.tcpi_rwnd_limited, info.tcpi_sndbuf_limited), (2, 3, 4));
+    }
+
+    /// Byte size and tail offsets of the published structure. A caller that
+    /// sizes its buffer to the current ABI must be answered in full, and each
+    /// accurate-ECN member must sit where that ABI puts it.
+    #[test]
+    fn the_published_structure_carries_the_congestion_feedback_tail() {
+        assert_eq!(TCP_INFO_LEN, 280);
+        let at = |offset: usize| offset;
+        assert_eq!(core::mem::offset_of!(TcpInfo, tcpi_received_ce), at(248));
+        assert_eq!(core::mem::offset_of!(TcpInfo, tcpi_delivered_e1_bytes), at(252));
+        assert_eq!(core::mem::offset_of!(TcpInfo, tcpi_delivered_e0_bytes), at(256));
+        assert_eq!(core::mem::offset_of!(TcpInfo, tcpi_delivered_ce_bytes), at(260));
+        assert_eq!(core::mem::offset_of!(TcpInfo, tcpi_received_e1_bytes), at(264));
+        assert_eq!(core::mem::offset_of!(TcpInfo, tcpi_received_e0_bytes), at(268));
+        assert_eq!(core::mem::offset_of!(TcpInfo, tcpi_received_ce_bytes), at(272));
+        assert_eq!(core::mem::offset_of!(TcpInfo, tcpi_ecn_mode_opt2), at(276));
+    }
+
+    #[test]
+    fn the_feedback_mode_names_what_the_handshake_settled_on() {
+        let mut conn = conn();
+        let mut info = TcpInfo::default();
+        populate_conn_at(&conn, 0, &mut info);
+        assert_eq!(info.tcpi_ecn_mode_opt2 & ECN_MODE_MASK, TCPI_ECN_MODE_DISABLED);
+        conn.ecn_enabled = true;
+        populate_conn_at(&conn, 0, &mut info);
+        assert_eq!(info.tcpi_ecn_mode_opt2 & ECN_MODE_MASK, TCPI_ECN_MODE_RFC3168);
+        // Classic feedback carries no per-codepoint byte counters at all; the
+        // whole accurate-ECN counter block stays zero on such a connection.
+        assert_eq!((info.tcpi_received_ce, info.tcpi_delivered_e1_bytes,
+            info.tcpi_delivered_e0_bytes, info.tcpi_delivered_ce_bytes), (0, 0, 0, 0));
+        assert_eq!((info.tcpi_received_e1_bytes, info.tcpi_received_e0_bytes,
+            info.tcpi_received_ce_bytes), (0, 0, 0));
+    }
+
+    #[test]
+    fn the_congestion_tally_projects_the_echo_acknowledged_delivery() {
+        let mut conn = conn();
+        conn.telemetry.delivered_ce = 4;
+        let mut info = TcpInfo::default();
+        populate_conn_at(&conn, 0, &mut info);
+        assert_eq!(info.tcpi_delivered_ce, 4);
     }
 
     #[test]
