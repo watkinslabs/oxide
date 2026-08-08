@@ -194,6 +194,7 @@ pub mod attach_type {
     pub const CGROUP_INET4_CONNECT: u32 = 10;
     pub const CGROUP_INET6_CONNECT: u32 = 11;
     pub const LSM_MAC:             u32 = 27;
+    pub const TRACE_ITER:          u32 = 28;
     /// `__MAX_BPF_ATTACH_TYPE` in v7.2.0-rc4.
     pub const MAX:                 u32 = 62;
 }

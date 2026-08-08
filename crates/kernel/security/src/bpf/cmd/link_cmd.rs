@@ -37,7 +37,7 @@ pub(in super::super) fn get_next_id(a: &Attr, attr_ptr: u64, caps: Caps) -> Resu
 fn detach_verdict(kind: LinkKind) -> Result<(), Errno> {
     match kind {
         LinkKind::Cgroup => Ok(()),
-        LinkKind::Lsm => Err(Errno::Eopnotsupp),
+        LinkKind::Lsm | LinkKind::Iter => Err(Errno::Eopnotsupp),
     }
 }
 
@@ -47,13 +47,14 @@ fn detach_verdict(kind: LinkKind) -> Result<(), Errno> {
 fn update_verdict(kind: LinkKind) -> Result<(), Errno> {
     match kind {
         LinkKind::Cgroup => Ok(()),
-        LinkKind::Lsm => Err(Errno::Einval),
+        LinkKind::Lsm | LinkKind::Iter => Err(Errno::Einval),
     }
 }
 
-/// Whether a link kind is an iterator link. None is. # C: O(1)
+/// Whether a link kind is an iterator link. # C: O(1)
 fn iter_verdict(kind: LinkKind) -> Result<(), Errno> {
     match kind {
+        LinkKind::Iter => Ok(()),
         LinkKind::Cgroup | LinkKind::Lsm => Err(Errno::Einval),
     }
 }
@@ -112,15 +113,14 @@ fn same_prog_type(
 }
 
 /// `bpf_iter_create()`. The link must be an iterator link; every other
-/// link type is `-EINVAL`. This kernel mints no iterator links, so the
-/// ladder always ends there — see the missing-iterator-target row in
-/// `scratch/known_issues.md`. # C: O(1)
+/// link type is `-EINVAL`. # C: O(fd words)
 pub(in super::super) fn iter_create(a: &Attr) -> Result<i64, Errno> {
     use uapi::off::iter_create as o;
     attr::check_attr(a, o::LAST_END)?;
     if a.u32_at(o::FLAGS) != 0 { return Err(Errno::Einval); }
-    let (_inode, kind) = objfd::link_from_fd(a.u32_at(o::LINK_FD))?;
-    iter_verdict(kind).map(|()| 0)
+    let (inode, kind) = objfd::link_from_fd(a.u32_at(o::LINK_FD))?;
+    iter_verdict(kind)?;
+    super::super::iter::new_fd(inode)
 }
 
 #[cfg(test)]
@@ -199,8 +199,13 @@ mod tests {
         assert_eq!(detach_verdict(LinkKind::Lsm), Err(Errno::Eopnotsupp));
         assert_eq!(update_verdict(LinkKind::Cgroup), Ok(()));
         assert_eq!(update_verdict(LinkKind::Lsm), Err(Errno::Einval));
+        assert_eq!(detach_verdict(LinkKind::Iter), Err(Errno::Eopnotsupp));
+        assert_eq!(update_verdict(LinkKind::Iter), Err(Errno::Einval));
         assert_eq!(iter_verdict(LinkKind::Cgroup), Err(Errno::Einval));
         assert_eq!(iter_verdict(LinkKind::Lsm), Err(Errno::Einval));
+        // The one kind that IS an iterator link; without it the three
+        // ladders above would all be vacuously "no kind serves this".
+        assert_eq!(iter_verdict(LinkKind::Iter), Ok(()));
         assert_eq!(Errno::Eopnotsupp.as_i32(), 95);
         assert_eq!(Errno::Enotsupp.as_i32(), 524);
     }

@@ -138,6 +138,9 @@ pub mod link_create {
     pub const FLAGS:                   usize = 12;
     pub const TARGET_BTF_ID:           usize = 16;
     pub const CGROUP_RELATIVE_FD:      usize = 16;
+    /// Per-link iterator information, and its declared byte length.
+    pub const ITER_INFO:               usize = 16;
+    pub const ITER_INFO_LEN:           usize = 24;
     pub const CGROUP_EXPECTED_REVISION: usize = 24;
     pub const LAST_END:                usize = 64;
 }

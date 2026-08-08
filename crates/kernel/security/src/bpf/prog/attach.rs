@@ -331,7 +331,30 @@ pub(super) fn link_create(a: &Attr, caps: Caps) -> Result<i64, Errno> {
         ).map_err(super::super::cgroup_device::map_error)?;
         return Ok(primer.settle());
     }
+    if l.attach_type == uapi::attach_type::TRACE_ITER {
+        return iter_link_create(l, inode);
+    }
     lsm_link_create(l, inode)
+}
+
+/// `bpf_iter_link_attach()`. The target comes from the program's own attach
+/// target, resolved at load against the kernel's own type information; a
+/// program whose target no longer resolves has nothing to walk, which is
+/// the reference's `-ENOENT` rather than a malformed request. The link
+/// request itself names no target of its own.
+/// # C: O(target count)
+fn iter_link_create(l: attr::LinkCreate, prog: InodeRef) -> Result<i64, Errno> {
+    attr::iter_info_check(l.iter_info, l.iter_info_len)?;
+    if l.target_fd != 0 || l.target_btf_id != 0 || l.flags != 0 { return Err(Errno::Einval); }
+    let target = attach_target_iter(&prog).ok_or(Errno::Enoent)?;
+    install_fd(super::super::make_bpf_iter_link_inode(target, prog), "bpf-link")
+}
+
+/// Iterator target a loaded program named, resolved against the kernel's
+/// own type information. # C: O(target count)
+fn attach_target_iter(prog: &InodeRef) -> Option<super::super::IterTarget> {
+    let loaded = prog.private::<BpfProgInode>()?;
+    super::super::btf::iter_target_by_btf_id(loaded.attach_btf_id)
 }
 
 /// LSM link creation. `BPF_LSM_MAC` is the only attach type an LSM program

@@ -27,6 +27,10 @@ use sync::{KthreadPark as ParkGateClass, Spinlock};
 mod use_mm;
 pub use use_mm::{kthread_unuse_mm, kthread_use_mm};
 
+// Termination: `kthread_exit` plus the join half of `kthread_stop`.
+mod exit;
+pub use exit::{exit, has_exited, note_kthread_exited, result, stop_and_join};
+
 use crate::Task;
 use super::WaitList;
 

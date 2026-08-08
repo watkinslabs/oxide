@@ -78,6 +78,10 @@ pub fn terminate_current_with_signal(sig: u8) -> ! {
             // Runs before `mark_done` so the group-dead test still counts this
             // thread live.
             crate::live::run_keyring_exit(task);
+            // Registered io_uring rings are dropped alongside the fd table:
+            // the array holds file references of its own, so leaving them
+            // pinned would keep a ring alive past the task that registered it.
+            task.io_uring_rings_drain();
             // SAFETY: exiting task on this CPU; sole writer per single-mutator.
             unsafe { task.replace_fd_table(None); task.replace_mm(None); }
             // Linux `do_exit`: `if (group_dead) disassociate_ctty(1)`. A
