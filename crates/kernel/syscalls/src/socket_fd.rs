@@ -89,10 +89,11 @@ mod tests {
     fn every_socket_descriptor_route_uses_atomic_publication() {
         let socket = include_str!("041_socket.rs");
         let accept = include_str!("043_accept.rs");
-        // IORING_OP_* dispatch moved out of the io_uring manifest into its own
-        // child module when the ring grew a second (SQEs) region.
-        let uring = include_str!("io_uring/dispatch.rs");
-        let enter = include_str!("426_io_uring_enter.rs");
+        // IORING_OP_* dispatch is split by operation family; the socket ops
+        // live in their own child module, and the SQE wire decode in the
+        // shared entry decoder.
+        let uring = include_str!("io_uring/dispatch/net_ops.rs");
+        let sqe = include_str!("io_uring_sqe.rs");
 
         assert_eq!(socket.matches("socket_fd::install").count(), 1);
         assert_eq!(accept.matches("socket_fd::install").count(), 2);
@@ -100,7 +101,8 @@ mod tests {
         assert!(!accept.contains("alloc_limit"));
         assert!(!socket.contains("set_cloexec"));
         assert!(!accept.contains("set_cloexec"));
-        assert!(uring.contains("sys_accept4(&op.accept_args(eff_fd))"));
-        assert!(enter.contains("(sqe + 28) as *const u32"));
+        assert!(uring.contains("sys_accept4(&op.sqe.accept_args(op.fd))"));
+        // The accept flags come from the SQE's own flags word, not from `len`.
+        assert!(sqe.contains("op_flags: g32(28)"));
     }
 }

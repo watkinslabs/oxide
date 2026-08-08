@@ -31,12 +31,19 @@ fn registered_ring_lookup_reports_linux_errnos() {
 
 #[test]
 fn blind_registration_separates_ring_less_opcodes_from_the_rest() {
-    // Linux io_uring_register_blind(): four opcodes are legal with fd == -1,
-    // everything else is EINVAL.
-    for op in [IORING_REGISTER_SEND_MSG_RING, IORING_REGISTER_QUERY,
-               IORING_REGISTER_RESTRICTIONS, IORING_REGISTER_BPF_FILTER] {
-        assert_eq!(decode(op, -1, 0, 1), Err(Errno::Eopnotsupp), "op {op}");
+    // With no ring, only the forms that need none are legal.
+    assert_eq!(decode(IORING_REGISTER_SEND_MSG_RING, -1, 0x1000, 1).unwrap().op,
+               RegisterOp::SendMsgRing { arg: 0x1000 });
+    assert_eq!(decode(IORING_REGISTER_QUERY, -1, 0x1000, 0).unwrap().op,
+               RegisterOp::Query { arg: 0x1000, nr: 0 });
+    // A ring-less form still applies its own argument rules.
+    assert_eq!(decode(IORING_REGISTER_SEND_MSG_RING, -1, 0, 1), Err(Errno::Einval));
+    // Recognised but needing a mechanism this kernel lacks.
+    for op in [IORING_REGISTER_RESTRICTIONS, IORING_REGISTER_BPF_FILTER] {
+        assert_eq!(decode(op, -1, 0x1000, 1), Err(Errno::Eopnotsupp), "op {op}");
     }
+    // Everything else without a ring is an argument error, not a missing
+    // feature: the opcode exists, the caller just did not name a ring.
     assert_eq!(decode(IORING_REGISTER_BUFFERS, -1, 0x1000, 1), Err(Errno::Einval));
     assert_eq!(decode(IORING_REGISTER_PROBE, -1, 0x1000, 1), Err(Errno::Einval));
 }
@@ -86,24 +93,59 @@ fn probe_clamps_instead_of_failing() {
 }
 
 #[test]
-fn defined_but_unimplemented_opcodes_report_eopnotsupp_not_success() {
-    // Every opcode Linux defines that oxide does not execute. Returning 0 for
-    // any of these tells the caller a registration happened that did not.
-    for op in [IORING_REGISTER_PERSONALITY, IORING_UNREGISTER_PERSONALITY,
-               IORING_REGISTER_RESTRICTIONS, IORING_REGISTER_ENABLE_RINGS,
-               IORING_REGISTER_FILES2, IORING_REGISTER_FILES_UPDATE2,
-               IORING_REGISTER_BUFFERS2, IORING_REGISTER_BUFFERS_UPDATE,
-               IORING_REGISTER_IOWQ_AFF, IORING_UNREGISTER_IOWQ_AFF,
+fn opcodes_needing_an_absent_mechanism_report_eopnotsupp_not_success() {
+    // Each of these needs a whole mechanism this kernel does not have — a
+    // worker pool, a per-task registered-ring array, multi-frame ring
+    // regions, a zero-copy receive queue, busy-poll, or a program loader.
+    // Returning 0 for any of them would tell the caller a registration
+    // happened that did not.
+    for op in [IORING_REGISTER_IOWQ_AFF, IORING_UNREGISTER_IOWQ_AFF,
                IORING_REGISTER_IOWQ_MAX_WORKERS, IORING_REGISTER_RING_FDS,
-               IORING_UNREGISTER_RING_FDS, IORING_REGISTER_PBUF_RING,
-               IORING_UNREGISTER_PBUF_RING, IORING_REGISTER_SYNC_CANCEL,
-               IORING_REGISTER_FILE_ALLOC_RANGE, IORING_REGISTER_PBUF_STATUS,
-               IORING_REGISTER_NAPI, IORING_UNREGISTER_NAPI, IORING_REGISTER_CLOCK,
-               IORING_REGISTER_CLONE_BUFFERS, IORING_REGISTER_SEND_MSG_RING,
-               IORING_REGISTER_ZCRX_IFQ, IORING_REGISTER_RESIZE_RINGS,
-               IORING_REGISTER_MEM_REGION, IORING_REGISTER_QUERY,
+               IORING_UNREGISTER_RING_FDS, IORING_REGISTER_NAPI,
+               IORING_UNREGISTER_NAPI, IORING_REGISTER_ZCRX_IFQ,
+               IORING_REGISTER_RESIZE_RINGS, IORING_REGISTER_MEM_REGION,
                IORING_REGISTER_ZCRX_CTRL, IORING_REGISTER_BPF_FILTER] {
         assert_eq!(decode(op, RING_FD, 0x1000, 1), Err(Errno::Eopnotsupp), "op {op}");
+    }
+}
+
+#[test]
+fn the_ring_state_opcodes_decode_to_their_own_requests() {
+    let ok = |op, arg, nr| decode(op, RING_FD, arg, nr).unwrap().op;
+    assert_eq!(ok(IORING_REGISTER_PERSONALITY, 0, 0), RegisterOp::Personality);
+    // The personality id travels in nr_args, so only arg must be empty.
+    assert_eq!(ok(IORING_UNREGISTER_PERSONALITY, 0, 7),
+               RegisterOp::UnregisterPersonality { id: 7 });
+    assert_eq!(decode(IORING_UNREGISTER_PERSONALITY, RING_FD, 0x1000, 7), Err(Errno::Einval));
+    assert_eq!(ok(IORING_REGISTER_ENABLE_RINGS, 0, 0), RegisterOp::EnableRings);
+    assert_eq!(decode(IORING_REGISTER_ENABLE_RINGS, RING_FD, 0, 1), Err(Errno::Einval));
+    assert_eq!(ok(IORING_REGISTER_RESTRICTIONS, 0x1000, 3),
+               RegisterOp::Restrictions { arg: 0x1000, nr: 3 });
+    assert_eq!(ok(IORING_REGISTER_CLOCK, 0x1000, 0), RegisterOp::Clock { arg: 0x1000 });
+    assert_eq!(decode(IORING_REGISTER_CLOCK, RING_FD, 0x1000, 1), Err(Errno::Einval));
+    assert_eq!(ok(IORING_REGISTER_FILE_ALLOC_RANGE, 0x1000, 0),
+               RegisterOp::FileAllocRange { arg: 0x1000 });
+}
+
+#[test]
+fn tagged_resource_opcodes_carry_their_resource_kind() {
+    let ok = |op| decode(op, RING_FD, 0x1000, 1).unwrap().op;
+    assert_eq!(ok(IORING_REGISTER_FILES2), RegisterOp::Rsrc { arg: 0x1000, nr: 1, buffers: false });
+    assert_eq!(ok(IORING_REGISTER_BUFFERS2), RegisterOp::Rsrc { arg: 0x1000, nr: 1, buffers: true });
+    assert_eq!(ok(IORING_REGISTER_FILES_UPDATE2),
+               RegisterOp::RsrcUpdate { arg: 0x1000, nr: 1, buffers: false });
+    assert_eq!(ok(IORING_REGISTER_BUFFERS_UPDATE),
+               RegisterOp::RsrcUpdate { arg: 0x1000, nr: 1, buffers: true });
+}
+
+#[test]
+fn the_single_record_opcodes_demand_exactly_one_record() {
+    for op in [IORING_REGISTER_PBUF_RING, IORING_UNREGISTER_PBUF_RING,
+               IORING_REGISTER_PBUF_STATUS, IORING_REGISTER_SYNC_CANCEL,
+               IORING_REGISTER_CLONE_BUFFERS] {
+        assert!(decode(op, RING_FD, 0x1000, 1).is_ok(), "op {op}");
+        assert_eq!(decode(op, RING_FD, 0, 1), Err(Errno::Einval), "op {op} null arg");
+        assert_eq!(decode(op, RING_FD, 0x1000, 2), Err(Errno::Einval), "op {op} nr_args");
     }
 }
 
