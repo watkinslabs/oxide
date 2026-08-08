@@ -2,7 +2,7 @@
 
 FROZEN 2026-06-12. Dep:`01`,`02`,`07`,`15`,`16`,`18`,`19`,`22`,`34`,`35`,`50`. Provides:`drv-virtio-snd`,ALSA `/dev/snd/*`,OSS `/dev/dsp`,`50` (KIOCSOUND/KDMKTONE backend).
 
-Full Linux compat surface per virtio 1.2 §5.14 + `linux/include/uapi/sound/asound.h` (ALSA) + `linux/include/uapi/linux/soundcard.h` (OSS). No deferrals.
+Full Linux compat surface per virtio 1.2 §5.14 + the ALSA `asound` UAPI + the OSS `soundcard` UAPI. No deferrals.
 
 ## 1 Purpose
 
@@ -138,7 +138,7 @@ Per `linux/sound/core`. Major 116 (`SNDRV_MAJOR`). Created by the `sound` kernel
 | `/dev/snd/pcmC0D0c` | `card*32 + 16 + dev*2 + 1` | INPUT substream | `SNDRV_PCM_IOCTL_*` |
 | `/dev/snd/timerC0` | per `SNDRV_MINOR_TIMER` | period timer | `SNDRV_TIMER_IOCTL_*` |
 
-### 5.1 PCM ioctls (per `sound/asound.h`, ABI `SNDRV_PCM_VERSION` 2.0.x)
+### 5.1 PCM ioctls (per the ALSA `asound` UAPI, ABI `SNDRV_PCM_VERSION` 2.0.x)
 
 | ioctl | Behavior |
 |---|---|
@@ -168,7 +168,7 @@ Per `linux/sound/core`. Major 116 (`SNDRV_MAJOR`). Created by the `sound` kernel
 
 ## 6 OSS compat node (`/dev/dsp`, `/dev/mixer`, `/dev/audio`) — legacy surface
 
-Per `linux/include/uapi/linux/soundcard.h`. Major 14. `write(2)` of PCM → `pcm_write` on a lazily-opened OUTPUT stream; `read(2)` → capture. ioctls: `SNDCTL_DSP_SPEED` (rate), `_SETFMT` (`AFMT_S16_LE` etc. → format enum), `_CHANNELS`, `_GETBLKSIZE`, `_GETOSPACE`/`_GETISPACE`, `_SYNC`, `_RESET`, `_POST`. `/dev/audio` defaults to 8 kHz µ-law (`AFMT_MU_LAW`). `/dev/mixer` → `SOUND_MIXER_*` mapped onto the ALSA master element. OSS and ALSA nodes share the same underlying virtio streams; concurrent open of a busy stream → `EBUSY`.
+Per the Linux OSS `soundcard` UAPI. Major 14. `write(2)` of PCM → `pcm_write` on a lazily-opened OUTPUT stream; `read(2)` → capture. ioctls: `SNDCTL_DSP_SPEED` (rate), `_SETFMT` (`AFMT_S16_LE` etc. → format enum), `_CHANNELS`, `_GETBLKSIZE`, `_GETOSPACE`/`_GETISPACE`, `_SYNC`, `_RESET`, `_POST`. `/dev/audio` defaults to 8 kHz µ-law (`AFMT_MU_LAW`). `/dev/mixer` → `SOUND_MIXER_*` mapped onto the ALSA master element. OSS and ALSA nodes share the same underlying virtio streams; concurrent open of a busy stream → `EBUSY`.
 
 ## 7 Probe + bring-up
 
@@ -217,4 +217,4 @@ Per `linux/include/uapi/linux/soundcard.h`. Major 14. `write(2)` of PCM → `pcm
 
 ## 13 procfs + sysfs presence
 
-`/proc/asound/cards` (card list), `/proc/asound/devices` (minor map), `/proc/asound/card0/pcm0p/info`, `/sys/class/sound/{controlC0,pcmC0D0p,...}` symlinks per Linux `sound/core/info.c` + `sound/core/sound.c`. Read-only; sourced from the card tables built at probe.
+`/proc/asound/cards` (card list), `/proc/asound/devices` (minor map), `/proc/asound/card0/pcm0p/info`, `/sys/class/sound/{controlC0,pcmC0D0p,...}` symlinks per Linux's ALSA core `/proc`/`/sys` registration. Read-only; sourced from the card tables built at probe.

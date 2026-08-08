@@ -1,15 +1,10 @@
-// Linux `mm_context_t::pkey_allocation_map` — the per-mm protection-key
-// allocation bitmap, plus the `mm_pkey_*` helpers that read and mutate it.
-//
-// Mirrors `arch/x86/include/asm/pkeys.h` and `arch/arm64/include/asm/pkeys.h`
-// (`mm_pkey_is_allocated`, `mm_pkey_alloc`, `mm_pkey_free`) together with the
-// initial value each arch's `init_new_context` installs
-// (`arch/{x86,arm64}/include/asm/mmu_context.h`) and the fork copy
-// (`arch_dup_pkeys`).
+// The per-mm protection-key allocation bitmap, plus the helpers that read
+// and mutate it, together with the initial value each arch installs at mm
+// creation and the fork copy.
 //
 // The two arches genuinely differ, and the difference is NOT cosmetic — see
 // [`PkeyArch`]. The syscall-level ordering that consumes these helpers lives
-// in `syscalls::pkey` (`mm/mprotect.c` `SYSCALL_DEFINE2(pkey_alloc)` etc.).
+// in `syscalls::pkey` (pkey_alloc(2) etc.).
 //
 // Deliberately free of any `target_os` gate so the hosted suite can exercise
 // BOTH arch descriptors regardless of host arch.

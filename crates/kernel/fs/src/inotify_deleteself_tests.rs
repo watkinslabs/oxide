@@ -3,9 +3,10 @@
 // DELETE_SELF used to be fired by `unlink(2)` directly, which was wrong twice
 // over: a file with remaining hardlinks reported it on the FIRST name removed,
 // and `rmdir` — which never touched that code — reported it not at all, so a
-// watch on a removed directory never learned its watch was dead. Linux fires it
-// from the dcache: `dentry_unlink_inode` runs
-// `if (!inode->i_nlink) fsnotify_inoderemove(inode)` (`fs/dcache.c`).
+// watch on a removed directory never learned its watch was dead. The correct
+// point is dcache-driven: whenever a dentry's inode link goes to zero on
+// unlink (final name removed, i_nlink == 0), that is the DELETE_SELF trigger
+// — independent of which syscall (`unlink`, `rmdir`) drove the removal.
 //
 // Included as a child module of `inotify` via `#[path]`.
 

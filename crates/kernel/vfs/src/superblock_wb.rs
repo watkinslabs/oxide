@@ -64,8 +64,7 @@ impl SuperBlock {
     /// Count of dirty-pinned inodes (Linux per-bdi `b_dirty` length). # C: O(1)
     pub fn nr_dirty_inodes(&self) -> usize { self.s_wb.lock().len() }
 
-    /// `invalidate_inodes` / per-sb `drop_caches` (Linux fs/inode.c
-    /// `invalidate_inodes`, fs/drop_caches.c): sweep the inode cache dropping
+    /// `invalidate_inodes` / per-sb `drop_caches`: sweep the inode cache dropping
     /// every CLEAN, UNREFERENCED slot so a `drop_caches`/remount reclaim shrinks
     /// the icache without touching live or dirty state. A slot is reclaimable
     /// only when its inode is UNUSED — in this `Weak`-keyed cache that is a slot

@@ -221,11 +221,10 @@ pub fn has_cap_for(cur: &sched::Task, target_user_ns: &NamespacePin, cap: u32) -
     user_ns_is_ancestor(&cur_ns.pin(), target_user_ns)
 }
 
-/// Linux `ns_capable(ns->parent, cap)` (`kernel/user_namespace.c`
-/// `map_write`) — the writer must hold `cap` in `target_user_ns`'s PARENT
-/// (or an ancestor of the parent), not merely in `target_user_ns` itself.
-/// Gates uid_map/gid_map writes (`27§4`). The initial user namespace has
-/// no parent, so this is never satisfied for it. # C: O(depth)
+/// The writer must hold `cap` in `target_user_ns`'s PARENT (or an ancestor of
+/// the parent), not merely in `target_user_ns` itself. Gates uid_map/gid_map
+/// writes (`27§4`). The initial user namespace has no parent, so this is
+/// never satisfied for it. # C: O(depth)
 pub fn has_cap_in_parent_of(cur: &sched::Task, target_user_ns: &NamespacePin, cap: u32) -> bool {
     match target_user_ns.parent() {
         Some(parent) => has_cap_for(cur, &parent, cap),
@@ -260,8 +259,8 @@ pub fn has_net_bind_service_for(cur: &sched::Task, namespace: &NetworkNamespaceR
 /// the state swap. The permission ladder runs BEFORE any task slot is
 /// touched, so a rejected call leaves the caller exactly as it was.
 /// # C: O(depth)
-/// Linux `mntns_install` (`fs/namespace.c`). Entering a mount namespace is not
-/// just a pointer swap: the caller's root AND cwd must be re-pointed at the new
+/// Entering a mount namespace is not just a pointer swap: the caller's root
+/// AND cwd must be re-pointed at the new
 /// namespace's root, or it joins the namespace on paper while still resolving
 /// every path through the tree it came from — a containment escape, since a
 /// process that "entered" a container's mount namespace can still reach the

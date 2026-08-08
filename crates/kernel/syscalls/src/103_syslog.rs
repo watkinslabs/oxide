@@ -82,7 +82,7 @@ fn read_blocking(buf: u64, len: i32) -> i64 {
     loop {
         let got = klog::syslog::read_into(&mut tmp[..]);
         if got != 0 { copy_out(buf, &tmp[..got]); return got as i64; }
-        // Linux `syslog_print` (`kernel/printk/printk.c:1611`) waits with
+        // Linux `syslog_print` waits with
         // `wait_event_interruptible`, so an interrupted read is -ERESTARTSYS,
         // not EINTR. The doc line above already said `wait_event_interruptible`
         // while the code returned EINTR.

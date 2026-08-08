@@ -2,12 +2,12 @@
 //
 // Linux keeps this in `thread_info::flags`, i.e. on the task, NEVER per-CPU:
 //
-//   * `__resched_curr` (`kernel/sched/core.c`) stamps `rq->curr`'s
+//   * `__resched_curr` stamps `rq->curr`'s
 //     thread_info — the task that is actually running on the target CPU.
 //   * `__schedule` clears it on the OUTGOING task
-//     (`clear_tsk_need_resched(prev)`, `kernel/sched/core.c`), so the
+//     (`clear_tsk_need_resched(prev)`), so the
 //     incoming task starts its slice with its own, already-clear flag.
-//   * `exit_to_user_mode_loop` (`kernel/entry/common.c`) re-reads
+//   * `exit_to_user_mode_loop` re-reads
 //     `read_thread_flags()` — the task word — after each pass.
 //
 // Holding it per-CPU instead breaks the third point: a tick that lands while
@@ -63,7 +63,7 @@ fn hosted_anchor<R>(f: impl FnOnce(&AtomicBool) -> R) -> R { HOSTED_ANCHOR.with(
 #[cfg(not(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted"))))]
 fn hosted_anchor<R>(f: impl FnOnce(&AtomicBool) -> R) -> R { f(&ANCHOR[super::this_cpu()].0) }
 
-// ---- Linux's per-task accessors (`include/linux/sched.h`) ----
+// ---- Linux's per-task accessors ----
 
 /// Linux `set_tsk_need_resched(tsk)`. Idempotent.
 /// # C: O(1)

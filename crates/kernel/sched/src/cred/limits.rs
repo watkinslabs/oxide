@@ -1,5 +1,5 @@
 // Credential-ABI sentinels and validity predicates
-// (Linux `include/linux/uidgid.h` `INVALID_UID`/`uid_valid`).
+// (Linux's `INVALID_UID` sentinel and `uid_valid` predicate).
 
 /// `(uid_t)-1` / `(gid_t)-1`. Two distinct roles in the Linux ABI:
 ///   * `set{re,res}{u,g}id` — "leave this id unchanged".

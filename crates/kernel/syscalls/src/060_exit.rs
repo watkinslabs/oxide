@@ -23,7 +23,7 @@ pub fn sys_exit(args: &SyscallArgs) -> i64 {
     do_exit(status::from_exit_code(args.a0))
 }
 
-/// Linux `do_group_exit` (`kernel/exit.c`): take down every thread in the
+/// Linux `do_group_exit`: take down every thread in the
 /// group. Called by `exit_group(2)` AND by the fatal-signal path, so the
 /// `SIGNAL_GROUP_EXIT` latch is the single arbiter of the code the whole
 /// process reports.

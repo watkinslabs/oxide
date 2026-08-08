@@ -13,7 +13,7 @@ Load ELF64 binaries into an `AddressSpace`. Support static + dynamic (PIE). Esta
 3. PT_LOAD segments mapped with `mmap` (file-backed, MAP_PRIVATE), permissions per `p_flags`. W^X enforced (no segment both W and X).
 4. PT_INTERP load: read interp string, recursively load ld.so.
 5. Stack: 8 MiB initial, MAP_GROWSDOWN, MAP_STACK; argv/envp/auxv populated at top; SP aligned per ABI (16 on x86, 16 on arm).
-6. Brk: `start_brk` at the image end, moved to `ELF_ET_DYN_BASE` for a PIE with no PT_INTERP, then randomized within 1 GiB when `randomize_va_space > 1` (`fs/binfmt_elf.c:1310-1342`).
+6. Brk: `start_brk` at the image end, moved to `ELF_ET_DYN_BASE` for a PIE with no PT_INTERP, then randomized within 1 GiB when `randomize_va_space > 1` (Linux `load_elf_binary`'s brk-placement rule).
 
 ## 3 Public ifc
 

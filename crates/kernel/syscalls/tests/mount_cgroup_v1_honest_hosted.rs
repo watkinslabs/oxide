@@ -207,7 +207,7 @@ fn a_flagless_mount_still_gets_the_relatime_default() {
     assert!(!m.is_readonly() && !m.is_nosuid() && !m.is_nodev() && !m.is_noexec());
 }
 
-// B1478 (Linux `fs/super.c` `mount_capable`): `FS_USERNS_MOUNT` existed in
+// B1478 (`mount_capable`): `FS_USERNS_MOUNT` existed in
 // `vfs::fs::FsFlags` and was set on procfs/sysfs, but NOTHING read it. An
 // unprivileged user-namespace holder passes `may_mount()` by construction (it
 // has CAP_SYS_ADMIN inside its own userns), so it could mount ext4, tmpfs,

@@ -104,7 +104,7 @@ pub fn sys_fremovexattr(args: &SyscallArgs) -> i64 {
 }
 
 /// `setxattrat(dfd, path, at_flags, name, xattr_args*, usize)` — slot 463.
-/// Admission order and target selection are Linux's (`fs/xattr.c:701,740`);
+/// Admission order and target selection are Linux's;
 /// see `fs::xattr::admit_setxattrat` and `pathresolve::resolve_at_or_dirfd`.
 /// # C: O(N_path + N_xattrs)
 pub fn sys_setxattrat(args: &SyscallArgs) -> i64 {
@@ -132,7 +132,7 @@ pub fn sys_getxattrat(args: &SyscallArgs) -> i64 {
 
 /// `listxattrat(dfd, path, at_flags, list, size)` — slot 465. Takes the buffer
 /// DIRECTLY, not a `struct xattr_args`, and carries no name. A NULL/empty
-/// pathname resolves through the fd table, not the cwd (`fs/xattr.c:992`).
+/// pathname resolves through the fd table, not the cwd.
 /// # C: O(N_path + N_xattrs)
 pub fn sys_listxattrat(args: &SyscallArgs) -> i64 {
     if let Err(rv) = ::fs::xattr::admit_listxattrat(args.a2 as u32) { return rv; }

@@ -1,5 +1,5 @@
-// Fixed-arity fast paths — Linux `siphash_Nu64` in `lib/siphash.c` and the
-// `siphash_2u32`/`siphash_4u32` static inlines in `include/linux/siphash.h`.
+// Fixed-arity fast paths — Linux `siphash_Nu64` and the
+// `siphash_2u32`/`siphash_4u32` static inlines.
 // Each is exactly `siphash` over the little-endian serialisation of its
 // arguments; they exist so a caller with a small fixed record never builds a
 // scratch buffer. The `u32` forms pack argument pairs low-word-first, which is

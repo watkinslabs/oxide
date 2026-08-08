@@ -54,7 +54,7 @@ fn push_segment<'a>(out: &mut Vec<Component<'a>>, seg: &'a str) {
     }
 }
 
-/// Linux per-component name limit (`NAME_MAX`, `linux/limits.h`): the longest
+/// Linux per-component name limit (`NAME_MAX`): the longest
 /// single pathname component a filesystem accepts is 255 *bytes* (not scalar
 /// values). `link_path_walk`/`walk_component` reject a longer component with
 /// `ENAMETOOLONG` even when the whole pathname is well under `PATH_MAX` (the
@@ -87,7 +87,7 @@ pub fn check_component(name: &str) -> Result<(), crate::types::VfsError> {
     if on_disk_byte_len(name) > NAME_MAX { Err(crate::types::VfsError::Enametoolong) } else { Ok(()) }
 }
 
-/// Linux total-pathname limit (`PATH_MAX`, `linux/limits.h`): the kernel's
+/// Linux total-pathname limit (`PATH_MAX`): the kernel's
 /// `getname` pathname buffer is 4096 bytes INCLUDING the terminating NUL, so
 /// the longest pathname a syscall accepts is `PATH_MAX - 1` = 4095 on-disk
 /// bytes. A pathname of `PATH_MAX` bytes (or longer) is `ENAMETOOLONG` before

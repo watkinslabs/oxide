@@ -1,5 +1,5 @@
 // TTY driver registry — Linux `tty_register_driver` / `tty_std_termios`
-// keyed lookup (`drivers/tty/tty_io.c`, `tty_drivers` list). Device nodes
+// keyed lookup (mirrors Linux's `tty_drivers` list). Device nodes
 // (`/dev/ttyN`, `/dev/ttyS0`, `/dev/pts/*` in T5/T6/T8) resolve their
 // backing tty by (major, minor).
 //

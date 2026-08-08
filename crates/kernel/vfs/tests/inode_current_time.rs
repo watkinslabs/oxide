@@ -1,4 +1,4 @@
-//! `current_time` / `inode_set_ctime_current` (Linux fs/inode.c): the candidate
+//! `current_time` / `inode_set_ctime_current`: the candidate
 //! wall-clock timestamp is floored to the inode's superblock `s_time_gran`
 //! before it is stamped, so no sub-granularity precision is recorded. An
 //! SB-less inode keeps full ns precision. Reuses `SuperBlock::timestamp_truncate`

@@ -1,5 +1,5 @@
-// `SYSCALL_DEFINE2(pivot_root)`'s outer sequence (`fs/namespace.c`, Linux
-// v7.2.0-rc4): resolve `new_root`, resolve `put_old`, THEN `may_mount()`, then
+// Linux's `SYSCALL_DEFINE2(pivot_root)`'s outer sequence: resolve `new_root`,
+// resolve `put_old`, THEN `may_mount()`, then
 // the mount-tree work. The mount-tree admission ladder itself belongs to the
 // mount subsystem and lives in `vfs::mount::pivot_check` (docs/53).
 //

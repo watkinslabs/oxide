@@ -1,4 +1,4 @@
-// Linux `kernel/sys.c` gid-family work fns: `__sys_setgid`, `__sys_setregid`,
+// Linux's gid-family work fns: `__sys_setgid`, `__sys_setregid`,
 // `__sys_setresgid`, plus the trivial getters.
 //
 // commoncap installs NO `task_fix_setgid` hook (only the optional safesetid

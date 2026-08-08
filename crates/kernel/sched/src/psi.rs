@@ -1,4 +1,4 @@
-// PSI — Pressure Stall Information (Linux `kernel/sched/psi.c`), simplified but
+// PSI — Pressure Stall Information, simplified but
 // REAL. Per resource (cpu/memory/io) we accumulate two monotonic stall
 // counters in nanoseconds: SOME (>=1 task stalled) and FULL (every non-idle
 // task stalled). A state-machine `settle` charges the elapsed interval to
@@ -35,7 +35,7 @@ pub const WIN60_NS: u64 = 60_000_000_000;
 /// avg300 window in ns. # C: O(1)
 pub const WIN300_NS: u64 = 300_000_000_000;
 /// Trigger window floor (Linux `PSI_TRIG_MIN_WINDOW` 500ms). # C: O(1)
-/// Linux `WINDOW_MAX_US` (`kernel/sched/psi.c`) — 10s. Linux has NO minimum.
+/// Linux `WINDOW_MAX_US` — 10s. Linux has NO minimum.
 pub const WINDOW_MAX_US: u32 = 10_000_000;
 /// Linux: an unprivileged trigger's window must be a multiple of 2s so the
 /// existing averaging aggregation serves it and no RT thread is spawned.
@@ -261,8 +261,8 @@ impl core::fmt::Display for FmtPct {
     }
 }
 
-/// Parse+validate a trigger spec, Linux `psi_trigger_parse`
-/// (`kernel/sched/psi.c`), converting us→ns.
+/// Parse+validate a trigger spec, Linux `psi_trigger_parse`,
+/// converting us→ns.
 ///
 /// `privileged` is `CAP_SYS_RESOURCE` on the OPENING cred, which Linux checks
 /// because an unprivileged trigger must reuse the 2s averaging aggregation

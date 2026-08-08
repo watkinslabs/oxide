@@ -1,5 +1,5 @@
 // `statx(2)` ABI: `struct statx` wire layout, the mask/flag constants, the
-// input-validation ladder, and `cp_statx` (Linux `fs/stat.c:699-742`).
+// input-validation ladder, and `cp_statx`.
 //
 // Compiled into the kernel AND the hosted test build (no target gate) because
 // the byte offsets and the EINVAL ORDER are the whole observable contract, and
@@ -12,10 +12,10 @@ use vfs::getattr::Kstat;
 
 /// `sizeof(struct statx)` — 256 bytes, byte-identical on x86_64 and aarch64
 /// (every member is a fixed-width `__u*`/`__s64` with natural alignment; there
-/// is no `asm/statx.h` override and no compat variant).
+/// is no per-arch override and no compat variant).
 pub const STATX_SIZE: usize = 256;
 
-/// Field byte offsets (`include/uapi/linux/stat.h:99-193`). Named rather than
+/// Field byte offsets. Named rather than
 /// inlined so the encoder and its tests cite ONE table.
 pub mod off {
     pub const MASK:              usize = 0;
@@ -50,7 +50,7 @@ pub mod off {
     pub const SPARE3:            usize = 192;
 }
 
-/// `AT_*` bits `statx` understands (`include/uapi/linux/fcntl.h`).
+/// `AT_*` bits `statx` understands.
 pub const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
 pub const AT_NO_AUTOMOUNT:     u32 = 0x800;
 pub const AT_EMPTY_PATH:       u32 = 0x1000;
@@ -58,11 +58,11 @@ pub const AT_STATX_FORCE_SYNC: u32 = 0x2000;
 pub const AT_STATX_DONT_SYNC:  u32 = 0x4000;
 /// `AT_STATX_SYNC_TYPE` — the two-bit sync selector; BOTH bits set is EINVAL.
 pub const AT_STATX_SYNC_TYPE:  u32 = AT_STATX_FORCE_SYNC | AT_STATX_DONT_SYNC;
-/// The complete set `vfs_statx` accepts (Linux `fs/stat.c:348-350`).
+/// The complete set `vfs_statx` accepts.
 pub const STATX_VALID_FLAGS: u32 =
     AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT | AT_EMPTY_PATH | AT_STATX_SYNC_TYPE;
 
-/// `STATX__RESERVED` (`include/uapi/linux/stat.h:223`) — the ONE mask bit whose
+/// `STATX__RESERVED` — the ONE mask bit whose
 /// use is rejected. Note the double underscore: there is no `STATX_RESERVED`.
 pub const STATX__RESERVED: u32 = 0x8000_0000;
 /// `STATX_MNT_ID` (`:216`) — `stx_mnt_id` holds the legacy reusable mount id.
@@ -70,17 +70,17 @@ pub const STATX_MNT_ID: u32 = 0x0000_1000;
 /// `STATX_MNT_ID_UNIQUE` (`:218`) — `stx_mnt_id` holds the never-recycled id.
 /// Mutually exclusive with [`STATX_MNT_ID`] in the RESULT mask.
 pub const STATX_MNT_ID_UNIQUE: u32 = 0x0000_4000;
-/// `STATX_CHANGE_COOKIE` (`include/linux/stat.h:67`) — kernel-internal (nfsd).
+/// `STATX_CHANGE_COOKIE` — kernel-internal (nfsd).
 /// Stripped from the REQUEST mask on entry and from `stx_mask` on the way out.
 pub const STATX_CHANGE_COOKIE: u32 = 0x4000_0000;
 /// `STATX_ATTR_MOUNT_ROOT` (`:254`) — the resolved path is its mount's root.
 pub const STATX_ATTR_MOUNT_ROOT: u64 = 0x0000_2000;
-/// `STATX_ATTR_CHANGE_MONOTONIC` (`include/linux/stat.h:70`) — kernel-internal;
-/// `cp_statx` strips it from `stx_attributes` (`fs/stat.c:710`).
+/// `STATX_ATTR_CHANGE_MONOTONIC` — kernel-internal;
+/// `cp_statx` strips it from `stx_attributes`.
 pub const STATX_ATTR_CHANGE_MONOTONIC: u64 = 0x8000_0000_0000_0000;
 
 /// Which `statx` entry path a call takes. Linux picks this in
-/// `SYSCALL_DEFINE5(statx)` (`fs/stat.c:809-815`) BEFORE any validation: with
+/// `SYSCALL_DEFINE5(statx)` BEFORE any validation: with
 /// `AT_EMPTY_PATH` and a NULL/empty pathname and a non-negative `dfd`, the call
 /// becomes `fstat`-on-`dfd` and never walks a path.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -93,7 +93,7 @@ pub enum StatxEntry {
     Path,
 }
 
-/// Entry-path selection (`fs/stat.c:809-812`). `name_is_empty` is true when the
+/// Entry-path selection. `name_is_empty` is true when the
 /// pathname pointer is NULL, or `AT_EMPTY_PATH` is set and the first byte is
 /// `'\0'` (Linux `__getname_maybe_null`). # C: O(1)
 pub fn statx_entry(dfd: i32, name_is_empty: bool) -> StatxEntry {
@@ -103,11 +103,11 @@ pub fn statx_entry(dfd: i32, name_is_empty: bool) -> StatxEntry {
 /// The `statx` input ladder in Linux's exact order, returning the effective
 /// request mask on success.
 ///
-/// `do_statx`/`do_statx_fd` (`fs/stat.c:750-759`, `:774-783`):
+/// `do_statx`/`do_statx_fd`:
 ///   1. `mask & STATX__RESERVED` → EINVAL
 ///   2. `(flags & AT_STATX_SYNC_TYPE) == AT_STATX_SYNC_TYPE` → EINVAL
 ///   3. `mask &= ~STATX_CHANGE_COOKIE` (silent, no error)
-/// then, on the PATH entry only, `vfs_statx` (`fs/stat.c:348-350`):
+/// then, on the PATH entry only, `vfs_statx`:
 ///   4. `flags & ~STATX_VALID_FLAGS` → EINVAL
 ///
 /// Step 4 is deliberately absent from the fd entry: `vfs_statx_fd` →
@@ -125,8 +125,7 @@ pub fn statx_validate(entry: StatxEntry, flags: u32, mask: u32) -> Result<u32, E
 }
 
 /// Everything the encoder needs beyond the backend `Kstat`: the resolved mount
-/// identity and the two path-scoped attribute facts `vfs_statx_path` adds
-/// (`fs/stat.c:303-313`).
+/// identity and the two path-scoped attribute facts `vfs_statx_path` adds.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct StatxPathInfo {
     /// `real_mount(path->mnt)->mnt_id{,_unique}`. Oxide's `mnt_id` counter is
@@ -144,7 +143,7 @@ pub struct StatxPathInfo {
     pub rdev_minor: u32,
 }
 
-/// `cp_statx` (Linux `fs/stat.c:699-742`): render the resolved attributes into
+/// `cp_statx`: render the resolved attributes into
 /// the 256-byte wire struct. Every byte not assigned here is zero, matching
 /// Linux's `memset(&tmp, 0, sizeof(tmp))` — including the four
 /// `statx_timestamp.__reserved` words and the three `__spare` arrays.
@@ -229,7 +228,7 @@ mod tests {
         }
     }
 
-    /// The wire layout is 256 bytes with the exact `include/uapi/linux/stat.h`
+    /// The wire layout is 256 bytes with the exact `struct statx` UAPI
     /// offsets, and the offsets are the SAME on both arches. A shifted
     /// timestamp block silently clobbers `stx_rdev_major`, which is how the
     /// pre-fix layout bug presented. # C: O(1)
@@ -293,7 +292,7 @@ mod tests {
         let p = StatxPathInfo::default();
         let full = cp_statx(&sample(), &p, 0x100 /* STATX_INO only */);
         assert_eq!(rd_u32(&full, off::MASK) & STATX_BASIC_STATS, STATX_BASIC_STATS,
-            "basic stats are unconditional (fs/stat.c:188)");
+            "basic stats are unconditional");
         let mut no_btime = sample();
         no_btime.result_mask = STATX_BASIC_STATS;
         no_btime.btime = None;
@@ -309,7 +308,7 @@ mod tests {
     }
 
     /// `STATX_MNT_ID` and `STATX_MNT_ID_UNIQUE` are mutually exclusive in the
-    /// result mask, selected by the REQUEST mask (`fs/stat.c:303-309`).
+    /// result mask, selected by the REQUEST mask.
     /// # C: O(1)
     #[test]
     fn mnt_id_bits_are_mutually_exclusive() {
@@ -324,8 +323,8 @@ mod tests {
 
     /// `STATX_ATTR_*` are only claimed through `stx_attributes_mask`; the
     /// kernel-internal `STATX_ATTR_CHANGE_MONOTONIC` is stripped from
-    /// `stx_attributes` (`fs/stat.c:710`), and `MOUNT_ROOT` is always
-    /// advertised as known (`fs/stat.c:313`). # C: O(1)
+    /// `stx_attributes`, and `MOUNT_ROOT` is always
+    /// advertised as known. # C: O(1)
     #[test]
     fn attributes_and_attribute_mask_contract() {
         let mut st = sample();
@@ -345,8 +344,8 @@ mod tests {
         assert_eq!(rd_u64(&b, off::ATTRIBUTES) & STATX_ATTR_MOUNT_ROOT, 0);
     }
 
-    /// Validation order and the fd-vs-path asymmetry (`fs/stat.c:750-753`,
-    /// `:348-350`). The reserved-mask check beats the sync-type check, and the
+    /// Validation order and the fd-vs-path asymmetry.
+    /// The reserved-mask check beats the sync-type check, and the
     /// unknown-flag check exists ONLY on the path entry. # C: O(1)
     #[test]
     fn validation_ladder_and_fd_path_asymmetry() {
@@ -426,8 +425,8 @@ mod tests {
     }
 
     /// Entry selection: `AT_EMPTY_PATH` + empty/NULL name + `dfd >= 0` is the
-    /// `fstat` emulation; `AT_FDCWD` (-100) with an empty name is NOT
-    /// (`fs/stat.c:811`). # C: O(1)
+    /// `fstat` emulation; `AT_FDCWD` (-100) with an empty name is NOT.
+    /// # C: O(1)
     #[test]
     fn entry_selection_matches_syscall_dispatch() {
         assert_eq!(statx_entry(3, true), StatxEntry::Fd);

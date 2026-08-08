@@ -1,5 +1,5 @@
-// Page-table-side rmap glue per Linux `mm/rmap.c::page_add_anon_rmap`
-// + `page_remove_rmap` + `rmap_walk_anon`.
+// Page-table-side rmap glue: anon-rmap add/remove on fault/unmap, and the
+// rmap walk used to find every PTE mapping a given anonymous page.
 //
 // `PageRmap` is the per-PA descriptor a frame allocator (kernel
 // `pmm_setup`) parks on each `struct page` analogue. It carries:

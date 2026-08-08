@@ -1,7 +1,6 @@
 // Real POSIX credentials syscalls per `13§5` and docs/14 cred-ABI, tracking
-// Linux `kernel/sys.c` (set*id family), `kernel/groups.c` (get/setgroups),
-// `kernel/cred.c` (`commit_creds`) and `security/commoncap.c` (the
-// capability juggles) statement for statement.
+// Linux's set*id family, get/setgroups, `commit_creds` and the commoncap
+// capability juggles statement for statement.
 //
 // Module manifest:
 // - limits:   `(uid_t)-1` sentinel, `uid_valid`, `int` argument narrowing.

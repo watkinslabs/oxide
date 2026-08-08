@@ -9,13 +9,13 @@
 //
 // Linux never asks a general-purpose allocator for a small object: `kmalloc`
 // routes to a per-size `kmem_cache` whose free objects sit on an intrusive
-// LIFO list (`mm/slub.c`, `slab_alloc_node`/`do_slab_free` pop and push
+// LIFO list (Linux's `slab_alloc_node`/`do_slab_free` pop and push
 // `c->freelist`), and only a cache REFILL touches the page allocator. Same
 // shape here: a class pop/push is O(1), and the O(N) hole-list walk is paid
 // once per slab and amortised over every object carved from it.
 //
-// Class sizes are Linux's `kmalloc` caches (`mm/slab_common.c`
-// `kmalloc_info[]`), floored at this heap's 16-byte minimum block.
+// Class sizes are Linux's `kmalloc` caches (`kmalloc_info[]`),
+// floored at this heap's 16-byte minimum block.
 //
 // Diagnostic builds bypass the front end entirely (see `class_index`): the
 // corruption hunters (`debug-heappoison` quarantine, `debug-dealloc-diag`
@@ -25,7 +25,7 @@
 use core::alloc::Layout;
 use core::ptr::NonNull;
 
-/// Serviced object sizes. Linux `kmalloc_info[]` (`mm/slab_common.c`) minus the
+/// Serviced object sizes. Linux `kmalloc_info[]` minus the
 /// 8-byte cache, which is below this heap's `MIN_HOLE_SIZE`.
 pub const CLASS_SIZES: [usize; 11] =
     [16, 32, 64, 96, 128, 192, 256, 512, 1024, 2048, 4096];

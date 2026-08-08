@@ -55,8 +55,7 @@ fn read_events(file: &File, b: &mut [u8], nonblock: bool) -> vfs::KResult<usize>
 pub(super) struct DrmCardFileOps;
 impl vfs::FileOps for DrmCardFileOps {
     /// read(2) on the card fd drains queued KMS events (DRM page-flip
-    /// completions) as `drm_event_vblank` records — Linux `drm_read`
-    /// (`drivers/gpu/drm/drm_file.c`).
+    /// completions) as `drm_event_vblank` records — Linux `drm_read`.
     ///
     /// Linux NEVER returns 0 here: with nothing queued it answers `-EAGAIN`
     /// for `O_NONBLOCK` and otherwise sleeps on `file_priv->event_wait`. A

@@ -2,7 +2,7 @@
 // clone. Split out of `spawn.rs` so both arch fork paths share ONE copy of
 // the rule (docs/53 "one place" / no split source of truth).
 //
-// Linux `kernel/sched/core.c::sched_fork`: a child inherits the parent's
+// Linux `sched_fork`: a child inherits the parent's
 // policy, RT priority, nice and load weight; `sched_reset_on_fork` then
 // demotes an RT/DEADLINE child to `SCHED_NORMAL` at nice 0 (and lifts a
 // negative-nice child to nice 0), and the flag is CLEARED on the child so it
@@ -77,7 +77,7 @@ pub fn inherit_sched_params(child: &Task, parent: &Task) {
 
     // `dup_task_struct` copies `se.slice`/`custom_slice` and `uclamp_req`;
     // `sched_reset_on_fork` puts both back to the class defaults
-    // (`kernel/sched/core.c:4834` and `uclamp_fork`), and `uclamp_post_fork`
+    // (via `uclamp_fork`), and `uclamp_post_fork`
     // then re-applies the RT 100%-boost default to a non-user-defined
     // `UCLAMP_MIN`.
     let (uc_min, uc_max, uc_ud) = if reset {
@@ -97,7 +97,7 @@ pub fn inherit_sched_params(child: &Task, parent: &Task) {
 
     child.nice.store(nice, Ordering::Release);
     child.policy.store(policy, Ordering::Release);
-    // `__setscheduler_params` runs for the child too (`kernel/sched/core.c:4828`,
+    // `__setscheduler_params` runs for the child too (
     // via `sched_fork`), so a child that inherits — or is reset to — an RT
     // policy carries zero timer slack, and one reset to a fair policy gets its
     // default back rather than the parent's zero.

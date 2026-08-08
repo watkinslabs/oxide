@@ -29,7 +29,7 @@ pub(super) fn set_memfd_noexec(namespace: &namespace_identity::NamespaceRef, val
     namespace.set_pid_memfd_noexec_scope(value as u8).map_err(|_| VfsError::Einval)
 }
 /// `fs.suid_dumpable` lives with the credential code that consumes it
-/// (`sched::cred`, Linux `fs/exec.c int suid_dumpable`); this leaf binds to
+/// (`sched::cred`); this leaf binds to
 /// that variable rather than keeping a procfs-owned copy.
 pub(super) fn get_suid_dumpable() -> i64 { sched::cred::suid_dumpable() as i64 }
 pub(super) fn get_perf_paranoid() -> i64 { sched::perf_sw::paranoid() as i64 }
@@ -62,14 +62,14 @@ pub(super) fn set_legacy_va_layout(v: i64) { aslr::tunable::set_legacy_va_layout
 
 pub(super) fn get_mmap_rnd_bits() -> i64 { aslr::tunable::mmap_rnd_bits() as i64 }
 pub(super) fn set_mmap_rnd_bits(v: i64) { aslr::tunable::set_mmap_rnd_bits(v.max(0) as u32); }
-/// `fs.nr_open` binds to Linux's own owner of `sysctl_nr_open` (`fs/file.c` →
-/// `vfs::fdtable`), so `setrlimit(RLIMIT_NOFILE)`'s EPERM ceiling and this file
+/// `fs.nr_open` binds to Linux's own owner of `sysctl_nr_open`
+/// (`vfs::fdtable`), so `setrlimit(RLIMIT_NOFILE)`'s EPERM ceiling and this file
 /// can never disagree.
 pub(super) fn get_nr_open() -> i64 { vfs::fdtable::nr_open() as i64 }
 pub(super) fn set_nr_open(value: i64) { let _ = vfs::fdtable::set_nr_open(value as u32); }
 pub(super) fn set_dmesg_restrict(value: i64) { klog::syslog::set_dmesg_restrict(value != 0); }
 /// `fs.mqueue.*` binds to the per-IPC-namespace values `mq_open` measures a
-/// `struct mq_attr` against (`ipc/mq_sysctl.c`), so raising a ceiling here and
+/// `struct mq_attr` against, so raising a ceiling here and
 /// the EINVAL the syscall reports can never disagree. Every leaf is
 /// namespace-scoped: Linux's `set_lookup` resolves `current`'s `ipc_ns`.
 pub(super) fn get_ep_max_watches() -> i64 { vfs::epoll_limits::max_user_watches() }

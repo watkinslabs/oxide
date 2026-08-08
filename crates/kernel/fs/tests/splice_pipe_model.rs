@@ -3,8 +3,8 @@
 // these syscalls are defined over pipe semantics, and the pre-fix code — a bare
 // read/write loop — could not express any of them.
 //
-// Linux references: `fs/splice.c` `do_splice` (:1300-1395), `do_tee`
-// (:1938-1975), `vmsplice_to_pipe`/`vmsplice_to_user` (:1501-1560).
+// Pins the pipe-shape validation, EOF/EAGAIN distinction, and FMODE/ESPIPE
+// error ordering for `splice`, `tee`, and `vmsplice`.
 
 extern crate alloc;
 
@@ -85,7 +85,7 @@ fn tee_is_bounded_by_len_and_by_output_space() {
 }
 
 /// `tee` needs BOTH ends to be pipes, and they must be different pipes.
-/// EINVAL for every other shape (`fs/splice.c:1943`, `:1953`).
+/// EINVAL for every other shape.
 #[test]
 fn tee_rejects_non_pipes_and_self() {
     let (_ia, rd_a, wr_a) = pipe_pair();
@@ -103,7 +103,7 @@ fn tee_rejects_non_pipes_and_self() {
 }
 
 /// `tee` on an input pipe whose writers have all closed is EOF → 0, NOT EAGAIN,
-/// even though the ring is empty (`ipipe_prep`, `fs/splice.c:1661`).
+/// even though the ring is empty.
 #[test]
 fn tee_reports_eof_as_zero_not_eagain() {
     let (ia, rd_a, _wr_a) = pipe_pair();
@@ -125,7 +125,7 @@ fn splice_pipe_to_pipe_consumes_the_input() {
     assert_eq!(queued(pipe_data(&_ia).unwrap()), 0, "splice must have consumed the source");
 }
 
-/// Splicing a pipe to ITSELF is EINVAL (`fs/splice.c:1320`).
+/// Splicing a pipe to ITSELF is EINVAL.
 #[test]
 fn splice_same_pipe_is_einval() {
     let (_ia, rd_a, wr_a) = pipe_pair();
@@ -133,8 +133,8 @@ fn splice_same_pipe_is_einval() {
     assert_eq!(do_splice(&rd_a, None, &wr_a, None, 3, 0), errno(Errno::Einval));
 }
 
-/// Neither end a pipe → EINVAL (`fs/splice.c:1380-1382`). The pre-fix code
-/// happily copied between two regular files here.
+/// Neither end a pipe → EINVAL. The pre-fix code happily copied between two
+/// regular files here.
 #[test]
 fn splice_between_two_regular_files_is_einval() {
     let src = plain_file(0x9101, OpenFlags::empty());
@@ -143,7 +143,8 @@ fn splice_between_two_regular_files_is_einval() {
 }
 
 /// An offset supplied for a PIPE end is ESPIPE, and it fires before the FMODE
-/// gate (`fs/splice.c:1409-1418`).
+/// gate. (Not exercised here: both ends carry the matching FMODE in this test,
+/// so the ordering claim is unpinned — see coverage gap.)
 #[test]
 fn splice_offset_on_a_pipe_end_is_espipe() {
     let (_ia, rd_a, _wr_a) = pipe_pair();
@@ -174,8 +175,7 @@ fn vmsplice_direction_follows_fmode() {
         errno(Errno::Eagain));
 }
 
-/// `vmsplice` on a description that is not a pipe is EBADF, not EINVAL
-/// (`fs/splice.c:1512`, `:1545`).
+/// `vmsplice` on a description that is not a pipe is EBADF, not EINVAL.
 #[test]
 fn vmsplice_on_a_non_pipe_is_ebadf() {
     let reg = plain_file(0x9201, OpenFlags::O_RDWR);

@@ -1,6 +1,6 @@
 // Memory protection keys for userspace (PKU) — the PKRU register and the
-// CR4.PKE enablement that turns it on. Linux `arch/x86/mm/pkeys.c`,
-// `arch/x86/include/asm/pkru.h`, `setup_pku()` in `arch/x86/kernel/cpu/common.c`.
+// CR4.PKE enablement that turns it on, per Linux's `setup_pku()` CPU-feature
+// bring-up.
 //
 // PKRU is a per-thread 32-bit register holding two bits per key: AD
 // (access-disable) and WD (write-disable), for 16 keys. The hardware consults

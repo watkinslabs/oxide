@@ -61,7 +61,7 @@ pub(crate) const IN_UNMOUNT: u32 = 0x0000_2000;
 pub(crate) const INOTIFY_DEFAULT_MAX_QUEUED_EVENTS: usize =
     vfs::fsnotify::INOTIFY_DEFAULT_MAX_QUEUED_EVENTS as usize;
 
-// fanotify event-mask bits (`linux/fanotify.h`). The low bits coincide with the
+// fanotify event-mask bits. The low bits coincide with the
 // matching IN_* values, so the shared fire path treats a fanotify mask and an
 // inotify mask uniformly; the high bits (perm/ondir/on-child) are fanotify-only.
 pub(crate) const FAN_ACCESS:         u32 = 0x0000_0001;

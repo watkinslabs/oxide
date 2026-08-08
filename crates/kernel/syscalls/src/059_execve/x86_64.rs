@@ -13,7 +13,7 @@ use super::fd_table::unshare_fd_table_and_close_on_exec;
 /// RFLAGS the freshly-exec'd image starts with: IF=1 (preemptible) plus the
 /// always-set reserved bit 1, every other flag clear. Linux `start_thread`
 /// reaches the same state via `regs->flags = X86_EFLAGS_IF | X86_EFLAGS_FIXED`
-/// (`arch/x86/kernel/process_64.c` `start_thread_common`).
+/// (`start_thread_common`).
 const EXEC_ENTRY_RFLAGS: u64 = 0x202;
 
 /// `sys_execve(path, argv, envp)` per `15§5` / `31§4`. Thin wrapper
@@ -239,8 +239,8 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     };
     pmm::user_as::install_teardown(&new_as);
     // Linux `setup_new_exec` runs `arch_pick_mmap_layout` and `setup_arg_pages`
-    // BEFORE `load_elf_binary` places any PT_LOAD (`fs/binfmt_elf.c:1024-1028`
-    // vs `:1073`), because the interpreter and a no-interp PIE are placed by
+    // BEFORE `load_elf_binary` places any PT_LOAD, because the interpreter
+    // and a no-interp PIE are placed by
     // `get_unmapped_area` and therefore need `mmap_base` already armed.
     let rnd = crate::exec_transition::exec_rnd(&cur, creds.per_clear);
     // The RAW soft limit is kept alongside the mapped one: `RLIM_INFINITY` is
@@ -323,7 +323,7 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     unshare_fd_table_and_close_on_exec(&cur);
     reset_caught_signals(&cur);
     reset_per_execve_state(&cur);
-    // Linux `fs/binfmt_elf.c:226` `create_elf_tables()`: AT_RANDOM is 16
+    // Linux's `create_elf_tables()`: AT_RANDOM is 16
     // `get_random_bytes()` bytes drawn per exec.
     let random16 = crate::auxrandom::at_random_bytes();
     let argv_slices: alloc::vec::Vec<&[u8]> = argv_vec.iter().map(|v| v.as_slice()).collect();
@@ -342,7 +342,7 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
             cur.set_exe_path(Some(path_str.clone()));
             if let Some(mm) = cur.mm_ref() { mm.set_exe_path(path_str.clone()); }
             // Linux `exe_file_deny_write_access` on the new image, released on
-            // the old one (`kernel/fork.c` `replace_mm_exe_file`). Modern Linux
+            // the old one (`replace_mm_exe_file`). Modern Linux
             // dropped `VM_DENYWRITE` and hangs `ETXTBSY` off the exe_file, so
             // this retention is what stops a running binary's text being
             // rewritten under it. The image was already opened for exec above,
@@ -409,7 +409,7 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
         elf_load::commit_mm_layout(mm, &img, &layout);
     }
     // Redirect this syscall's return into the new image. Linux
-    // `start_thread` + `ELF_PLAT_INIT` (`arch/x86/include/asm/elf.h`) zero
+    // `start_thread` + `ELF_PLAT_INIT` zero
     // EVERY general-purpose register for the fresh program — glibc's `_start`
     // reads rdx as the "function to register with atexit", so a stale value
     // there is a call through garbage. The zeroing used to cover only the 7

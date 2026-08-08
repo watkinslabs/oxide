@@ -101,7 +101,7 @@ pub fn try_compat(nr: u64, args: &SyscallArgs) -> Option<i64> {
         // Misc ENOSYS.
         // NR_REMAP_FILE_PAGES moved to a real impl (F756,
         // syscalls/216_remap_file_pages.rs). Linux did NOT retire this syscall
-        // — it re-implemented it as an emulation over mmap in `mm/mmap.c`, so
+        // — it re-implemented it as an emulation over mmap, so
         // ENOSYS was a claim about Linux that Linux does not make.
         // NR_USTAT moved to a real impl (F756, syscalls/136_ustat.rs) over
         // `sb_by_dev` + the superblock's own statfs — the same `vfs_ustat` path

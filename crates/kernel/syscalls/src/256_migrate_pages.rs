@@ -1,5 +1,5 @@
 // 256 migrate_pages — `SYSCALL_DEFINE4(migrate_pages)` / `kernel_migrate_pages`
-// (`mm/mempolicy.c:1860`). ABI shim (docs/53).
+//. ABI shim (docs/53).
 
 #![cfg(target_os = "oxide-kernel")]
 

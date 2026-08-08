@@ -4,10 +4,8 @@
 // fork scaffold all read one struct instead of three ad-hoc layouts.
 // aarch64's `SvcFrame` is the mirror of this on the other arch.
 //
-// Modeled on Linux `struct pt_regs`
-// (`/home/nd/oxide/linux-master/arch/x86/include/asm/ptrace.h`, the
-// `#else /* __i386__ */` arm): callee-saved r15..rbx first, then the
-// callee-clobbered set, then the entry tag, then the IRETQ image
+// Modeled on Linux's x86_64 `struct pt_regs`: callee-saved r15..rbx first,
+// then the callee-clobbered set, then the entry tag, then the IRETQ image
 // (ip/cs/flags/sp/ss). Field ORDER is identical to Linux's.
 //
 // oxide deviation, deliberate: Linux overloads ONE slot (`orig_ax`) as
@@ -36,8 +34,8 @@ use syscall::SyscallArgs;
 
 /// `vector` value stamped by `oxide_syscall_entry`, i.e. "this frame is a
 /// `syscall` entry, not a trap". Linux answers the same question with
-/// `syscall_get_nr(current, regs) != -1` (`arch/x86/kernel/signal.c`
-/// `arch_do_signal_or_restart`); oxide uses a dedicated slot instead of
+/// `syscall_get_nr(current, regs) != -1` in `arch_do_signal_or_restart`;
+/// oxide uses a dedicated slot instead of
 /// overloading `orig_ax`, so the sentinel means the OPPOSITE of Linux's
 /// `-1` — see the module header.
 pub const PT_REGS_VECTOR_SYSCALL: u64 = u64::MAX;
@@ -120,7 +118,7 @@ const _: () = {
 impl PtRegs {
     /// Did this frame enter the kernel through the `syscall` instruction?
     /// Linux's equivalent test is `syscall_get_nr(current, regs) != -1`
-    /// (`arch/x86/kernel/signal.c` `arch_do_signal_or_restart`), which
+    /// in `arch_do_signal_or_restart`, which
     /// gates syscall restart and the `-ERESTART*` rewrite; a trap frame
     /// must never be restarted as if it were a syscall.
     /// # C: O(1)

@@ -1,5 +1,5 @@
-// Decision order for `adjtimex(2)` (`kernel/time/time.c`) and
-// `clock_adjtime(2)` (`kernel/time/posix-timers.c`). The two differ in three
+// Decision order for `adjtimex(2)` and
+// `clock_adjtime(2)`. The two differ in three
 // observable ways and nothing else, so they live together:
 //
 //   * `clock_adjtime` copies the buffer in BEFORE looking at `which_clock`, so

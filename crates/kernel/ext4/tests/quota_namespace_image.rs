@@ -132,12 +132,12 @@ fn project_inherit_namespace_ops_account_project_quota() {
     assert_eq!(curinodes(&sb, qid), 6, "non-final hardlink unlink does not release regular inode");
 
     // `/proj/fifo` names the regular file after the EXCHANGE above, and `file`
-    // is still a counted holder of it. `__ext4_unlink` (`fs/ext4/namei.c`)
-    // deletes the entry, `drop_nlink`s and `ext4_orphan_add`s — it calls no
-    // dquot function at all. The charge only comes back from
-    // `dquot_free_inode` inside `ext4_free_inode` (`fs/ext4/ialloc.c:275`),
-    // which `ext4_evict_inode` reaches on the LAST reference. That is the POSIX
-    // unlink-while-open guarantee expressed in quota terms.
+    // is still a counted holder of it. Unlink deletes the directory entry and
+    // drops the link count, orphaning the inode — it releases no quota
+    // charge at unlink time. The charge only comes back from the inode-free
+    // path reached when the LAST reference (open fd, dentry alias) goes away
+    // and the inode is evicted. That is the POSIX unlink-while-open
+    // guarantee expressed in quota terms.
     m.state().unlink_at(b"/proj/fifo").expect("unlink final name of a still-held inode");
     assert_eq!(m.state().lookup_path(b"/proj/fifo"), None, "the name goes immediately");
     assert_eq!(curinodes(&sb, qid), 6, "unlink of a HELD inode keeps its charge until eviction");
@@ -185,14 +185,14 @@ fn project_inherit_vfs_inode_ops_account_project_quota() {
     dir.unlink_child("file").expect("i_op unlink non-final name");
     assert_eq!(curinodes(&sb, qid), 5, "i_op non-final unlink does not release inode");
     // `file` is still a counted holder, so the final unlink only orphans the
-    // inode: `__ext4_unlink` (`fs/ext4/namei.c`) removes the dirent,
-    // `drop_nlink`s and `ext4_orphan_add`s, with no dquot call anywhere in it.
+    // inode: unlink removes the dirent and drops the link count, with no
+    // quota release at unlink time.
     dir.unlink_child("file-hard").expect("i_op unlink final name");
     assert!(dir.lookup("file-hard").is_err(), "the name goes immediately");
     assert_eq!(file.nlink(), 0, "final unlink zeroes the cached link count");
     assert_eq!(curinodes(&sb, qid), 5, "the charge survives an unlink that still has an i_count holder");
-    // `iput` → `ext4_evict_inode` → `ext4_free_inode` → `dquot_free_inode`
-    // (`fs/ext4/ialloc.c:275`) is what actually gives the charge back.
+    // The last `iput`, evicting the inode and freeing it, is what actually
+    // gives the charge back.
     vfs::file::iput(file);
     assert_eq!(curinodes(&sb, qid), 4, "eviction on the last iput releases the inode charge");
 }
@@ -345,9 +345,9 @@ fn project_inherit_write_append_and_xattr_account_project_space() {
     let charged = raw_space(&m, ino);
     m.state().unlink_at(b"/space/file").expect("unlink project file");
 
-    // The name is gone, but `file` still holds the inode. `__ext4_unlink`
-    // (`fs/ext4/namei.c`) frees NOTHING — no truncate, no `ext4_free_inode`, no
-    // dquot call — so the data blocks and the space charge both stay live for
+    // The name is gone, but `file` still holds the inode. Unlink
+    // frees NOTHING — no truncate, no inode free, no
+    // quota release — so the data blocks and the space charge both stay live for
     // as long as a reference exists. This is the invariant that makes an
     // unlinked-but-open file readable and writable through its fd.
     assert_eq!(m.state().lookup_path(b"/space/file"), None, "the name goes immediately");
@@ -357,8 +357,7 @@ fn project_inherit_write_append_and_xattr_account_project_space() {
     assert_ne!(m.state().mount.state_free_blocks(), free_blocks_before_file_data,
         "the data and xattr blocks stay allocated until eviction");
 
-    // `ext4_evict_inode` → `ext4_free_inode` → `dquot_free_inode`
-    // (`fs/ext4/ialloc.c:275`) is the release point.
+    // Eviction and inode-free is the release point.
     vfs::file::iput(file);
     let after = vfs::quota_getquota(&sb, qid).expect("quota after eviction");
     assert_eq!(after.dqb_curspace, base.dqb_curspace);

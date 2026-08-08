@@ -2,16 +2,16 @@ use super::decide::*;
 
 #[test]
 fn vhangup_needs_cap_sys_tty_config() {
-    // `fs/open.c:1532` — CAP_SYS_TTY_CONFIG, not CAP_SYS_ADMIN (which is what
-    // the TIOCVHANGUP ioctl checks).
+    // Linux's `vhangup(2)` gates on CAP_SYS_TTY_CONFIG, not CAP_SYS_ADMIN
+    // (which is what the TIOCVHANGUP ioctl checks).
     assert_eq!(vhangup_decision(false, true), VhangupOutcome::Eperm);
     assert_eq!(vhangup_decision(false, false), VhangupOutcome::Eperm);
 }
 
 #[test]
 fn a_caller_without_a_controlling_tty_succeeds_and_does_nothing() {
-    // `tty_vhangup_self` returns silently when `get_current_tty()` is NULL
-    // (`drivers/tty/tty_io.c:701-708`), and the syscall still returns 0.
+    // `tty_vhangup_self` returns silently when `get_current_tty()` is NULL,
+    // and the syscall still returns 0.
     // Signalling the caller's session instead would SIGHUP a whole session
     // that has no terminal at all.
     assert_eq!(vhangup_decision(true, false), VhangupOutcome::NoControllingTty);

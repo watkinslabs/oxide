@@ -1,5 +1,5 @@
 // 239 get_mempolicy — `SYSCALL_DEFINE5(get_mempolicy)` / `kernel_get_mempolicy`
-// (`mm/mempolicy.c:1954`) + `do_get_mempolicy` (`:1147`). ABI shim (docs/53).
+// + `do_get_mempolicy` (`:1147`). ABI shim (docs/53).
 
 #![cfg(target_os = "oxide-kernel")]
 
@@ -13,7 +13,7 @@ use crate::misc::mempolicy_common::{current_mm, err, errno_of, page_present, wri
 /// `get_mempolicy(policy, nmask, maxnode, addr, flags)`.
 ///
 /// `nmask != NULL && maxnode < nr_node_ids` is EINVAL BEFORE any policy
-/// lookup (`mm/mempolicy.c:1962`) — libnuma relies on that to size its
+/// lookup — libnuma relies on that to size its
 /// buffers.
 /// # C: O(maxnode / 8)
 pub fn sys_get_mempolicy(args: &SyscallArgs) -> i64 {

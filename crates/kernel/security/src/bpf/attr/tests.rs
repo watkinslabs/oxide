@@ -223,7 +223,6 @@ fn update_flags_above_bpf_exist_are_einval() {
 
 #[test]
 fn noexist_on_a_present_key_is_eexist_and_exist_on_absent_is_enoent() {
-    // check_flags() — kernel/bpf/hashtab.c.
     use uapi::elem_flags as e;
     assert_eq!(update_presence_verdict(e::NOEXIST, true), Err(Errno::Eexist));
     assert_eq!(update_presence_verdict(e::NOEXIST, false), Ok(()));

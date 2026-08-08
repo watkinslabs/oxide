@@ -1,4 +1,4 @@
-// Landlock cross-thread enforcement — Linux `security/landlock/tsync.c`.
+// Landlock cross-thread enforcement (TSYNC).
 //
 // A TSYNC caller must not write sibling credentials in a registry walk.  That
 // exposes a window in which siblings execute under different policies, misses

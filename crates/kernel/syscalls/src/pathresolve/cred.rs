@@ -41,7 +41,7 @@ fn cred_for_effective(c: &sched::Task, real: bool, effective: u64) -> vfs::Cred 
         (c.creds.fsuid.load(Ordering::Acquire), c.creds.fsgid.load(Ordering::Acquire))
     };
     let eff = if real {
-        // Linux `access_override_creds` (`fs/open.c`): the capability fixup runs
+        // Linux `access_override_creds`: the capability fixup runs
         // ONLY when `SECURE_NO_SETUID_FIXUP` is clear. With the securebit set, a
         // process that deliberately keeps its capabilities across a uid switch
         // keeps them here too, and recomputing from uid silently strips them —

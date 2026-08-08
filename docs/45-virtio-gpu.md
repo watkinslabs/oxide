@@ -2,7 +2,7 @@
 
 FROZEN 2026-05-09. Dep:`01`,`02`,`07`,`11`,`13`,`15`,`22`,`33`,`34`,`35`,`47`. Provides:`drv-virtio-gpu`,`47` (DRM backend),`49` (fbcon backend).
 
-Full Linux compat surface per `linux/include/uapi/linux/virtio_gpu.h` and virtio 1.2 §5.7. No deferrals.
+Full Linux compat surface per the Linux virtio_gpu UAPI and virtio 1.2 §5.7. No deferrals.
 
 ## 1 Purpose
 
@@ -106,7 +106,7 @@ struct virtio_gpu_resp_edid {
 };
 ```
 
-## 5 Command type constants (per `linux/include/uapi/linux/virtio_gpu.h`)
+## 5 Command type constants (per the Linux virtio_gpu UAPI)
 
 | Constant | Value |
 |---|---|
@@ -203,7 +203,7 @@ When `VIRTIO_GPU_F_VIRGL` is negotiated, the driver exposes the full virgl conte
 | `CMD_RESOURCE_MAP_BLOB` | `0x0208` | map a blob resource to the host shared region |
 | `CMD_RESOURCE_UNMAP_BLOB` | `0x0209` | unmap |
 
-3D contexts wired to `47` DRM render-node ioctls (`DRM_IOCTL_VIRTGPU_*` per `linux/include/uapi/drm/virtgpu_drm.h`).
+3D contexts wired to `47` DRM render-node ioctls (`DRM_IOCTL_VIRTGPU_*` per the Linux virtgpu_drm UAPI).
 
 ## 13 Resource blobs (`F_RESOURCE_BLOB`)
 

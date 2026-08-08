@@ -1,7 +1,7 @@
 // aarch64 → x86_64 syscall-number translation per docs/15§3.
 //
-// Linux uses a different numbering on aarch64 ("generic" ABI: see
-// linux/include/uapi/asm-generic/unistd.h) than on x86_64. The
+// Linux uses a different numbering on aarch64 (the "generic" ABI syscall
+// table) than on x86_64. The
 // oxide dispatcher table in `syscall_glue.rs` is keyed on x86_64
 // numbering, so the aarch64 entry path remaps before dispatch.
 //
@@ -11,7 +11,7 @@
 
 #![cfg_attr(not(any(target_arch = "aarch64", test)), allow(dead_code))]
 
-/// AArch64-native number for `restart_syscall(2)` (asm-generic/unistd.h `128`).
+/// AArch64-native number for `restart_syscall(2)`: `128` in the asm-generic syscall numbering.
 /// The restart-block re-entry path writes this into the SVC frame's x8; the
 /// dispatcher then maps it to `nrs::NR_RESTART_SYSCALL` on the way in.
 pub const AARCH64_NR_RESTART_SYSCALL: u64 = 128;
@@ -23,7 +23,7 @@ pub const AARCH64_NR_RESTART_SYSCALL: u64 = 128;
 pub fn aarch64_nr_to_x86(nr: u64) -> u64 {
     // Table sorted by aarch64 nr. Each (arm, x86) tuple translates
     // arm→x86. Out-of-table nrs return as-is.
-    // Full aarch64-generic table (asm-generic/unistd.h). Every arm nr
+    // Full aarch64-generic table (asm-generic syscall numbering). Every arm nr
     // an oxide kernel sees must land in either:
     //   (a) the x86 slot with matching semantics, or
     //   (b) an unmapped pass-through where x86 has the SAME nr too
@@ -402,7 +402,7 @@ pub fn aarch64_nr_to_x86(nr: u64) -> u64 {
 pub const NO_AARCH64_SLOT: u64 = u64::MAX;
 
 /// First syscall number shared by every architecture. From this number on,
-/// `include/uapi/asm-generic/unistd.h` and the x86_64 table assign the SAME
+/// the generic aarch64 syscall table and the x86_64 table assign the SAME
 /// number to the same syscall, so an unmapped number at or above it is a
 /// syscall newer than `MAP` rather than a mis-numbered one, and passing it
 /// through is correct.
@@ -412,7 +412,7 @@ pub const SHARED_NR_BASE: u64 = 424;
 ///
 /// BELOW `SHARED_NR_BASE` the two numberings are unrelated, so ANY number
 /// `MAP` does not translate is unassigned on arm64 and must be ENOSYS. The
-/// unassigned blocks are `include/uapi/asm-generic/unistd.h`'s
+/// unassigned blocks are the generic syscall table's
 /// `arch_specific_syscall` reservation (244..=259, used by riscv and not by
 /// arm64), the `/* 295 through 402 are unassigned to sync up with generic
 /// numbers, don't use */` hole, and 403..=423, the `*_time64` variants

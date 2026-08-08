@@ -50,7 +50,7 @@ fn read_file_caps(inode: &vfs::InodeRef) -> FileCaps {
 }
 
 /// Linux `ptracer_capable(current, new->user_ns)`. TRUE when no tracer is
-/// attached ("An absent tracer adds no restrictions", `kernel/ptrace.c`).
+/// attached ("An absent tracer adds no restrictions").
 ///
 /// Linux consults `tsk->ptracer_cred`, the tracer's credentials CAPTURED at
 /// attach; this tree keeps only the tracer's tid, so the tracer's LIVE
@@ -184,8 +184,8 @@ pub(crate) fn commit(cur: &sched::Task, t: &ExecTransition) {
 /// Draw this exec's address randomisation (`aslr::ExecRnd`).
 ///
 /// Linux applies `me->personality &= ~bprm->per_clear` inside `begin_new_exec`,
-/// which runs BEFORE `load_elf_binary` derives `PF_RANDOMIZE`
-/// (`fs/binfmt_elf.c:1021`). This kernel commits credentials later — past the
+/// which runs BEFORE `load_elf_binary` derives `PF_RANDOMIZE`.
+/// This kernel commits credentials later — past the
 /// point of no return — so `per_clear` has to be folded in here by hand.
 /// Reading the raw persona instead would let a caller pre-arm
 /// `ADDR_NO_RANDOMIZE`, exec a setuid binary and have it run at fixed
@@ -218,7 +218,7 @@ pub(crate) fn exec_mmap_layout(cur: &sched::Task, per_clear: u32, rnd: &aslr::Ex
 /// so a hostile caller cannot hand a setuid binary a pathological stack limit.
 /// # C: O(1)
 pub(crate) fn secure_stack_limit(rlim_stack: u64, secure_exec: bool) -> u64 {
-    /// Linux `include/uapi/linux/resource.h` `_STK_LIM` — 8 MiB.
+    /// Linux `_STK_LIM` — 8 MiB.
     const STK_LIM: u64 = 8 * 1024 * 1024;
     if secure_exec && rlim_stack > STK_LIM { STK_LIM } else { rlim_stack }
 }

@@ -1,7 +1,7 @@
-// Scheduler-policy decision core — Linux `kernel/sched/syscalls.c`
-// (`__sched_setscheduler`, `user_check_sched_setscheduler`,
-// `sys_sched_get_priority_{max,min}`, `sched_rr_get_interval`) and the
-// `kernel/sched/sched.h` policy predicates.
+// Scheduler-policy decision core — Linux's
+// `__sched_setscheduler`, `user_check_sched_setscheduler`,
+// `sys_sched_get_priority_{max,min}`, `sched_rr_get_interval`, and its
+// internal policy predicates.
 //
 // Deliberately NOT `#![cfg(target_os = "oxide-kernel")]`: the slot files
 // (142/143/144/145/146/147/148/314/315) are kernel-only, so every rule that
@@ -28,7 +28,7 @@ pub use sched::sched_enc::{SCHED_BATCH, SCHED_DEADLINE, SCHED_FIFO, SCHED_IDLE, 
 /// `sched_get_priority_{max,min}` switch accepts it unconditionally.
 pub const SCHED_EXT: u32 = 7;
 /// `SCHED_RESET_ON_FORK` — ORed into the `policy` argument of
-/// `sched_setscheduler(2)` (uapi/linux/sched.h).
+/// `sched_setscheduler(2)` (sched UAPI).
 pub const SCHED_RESET_ON_FORK: u32 = 0x4000_0000;
 
 /// Linux `MAX_RT_PRIO - 1` — the largest `sched_priority` any policy accepts.

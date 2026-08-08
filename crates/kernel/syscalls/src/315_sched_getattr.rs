@@ -1,5 +1,5 @@
 // 315 sched_getattr — one syscall, one file (docs/53 §0).
-// `sched_getattr(pid, uattr, usize, flags)`: Linux `kernel/sched/syscalls.c:1060`.
+// `sched_getattr(pid, uattr, usize, flags)`: Linux's `sys_sched_getattr`.
 // Thin shim over `crate::sched_attr` (the `copy_struct_to_user` size protocol)
 // and `crate::sched_policy::get_params` (Linux `get_params`).
 #![cfg(target_os = "oxide-kernel")]

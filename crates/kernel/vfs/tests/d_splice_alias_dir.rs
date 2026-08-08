@@ -1,5 +1,5 @@
 //! dcache-D29: `d_splice_alias` directory single-dentry invariant (Linux
-//! fs/dcache.c `d_splice_alias` → `__d_find_alias` → `__d_move`). When a
+//! `d_splice_alias` → `__d_find_alias` → `__d_move`). When a
 //! directory inode already carries a `D_DISCONNECTED` anon alias (from
 //! `d_obtain_alias` / exportfs handle decode), splicing it into a negative
 //! lookup dentry MUST reattach that one alias — never create a second positive

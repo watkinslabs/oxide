@@ -1,4 +1,4 @@
-//! Linux `ksys_msgget` -> `ipcget` -> `newque` (`ipc/msg.c`, `ipc/util.c`).
+//! `msgget`: resolve or create a message queue for a key.
 
 use namespace_identity::NamespaceId;
 use syscall::errno::Errno;

@@ -2,12 +2,10 @@
 // the `EXT4_FITS_IN_INODE` presence predicate that decides whether the extra
 // word exists at all, and the superblock time-range advertisement.
 //
-// Linux source of truth: `fs/ext4/ext4.h` (`ext4_encode_extra_time`,
-// `ext4_decode_extra_time`, `EXT4_INODE_SET_XTIME_VAL`,
-// `EXT4_INODE_GET_XTIME_VAL`, `EXT4_EINODE_GET_XTIME`, `EXT4_FITS_IN_INODE`,
-// the `EXT4_*_TIMESTAMP_*` limits) and `fs/ext4/super.c` (`__ext4_fill_super`
-// picking `s_time_gran`/`s_time_max`, `fs/ext4/inode.c` `ext4_iget` reading
-// `i_extra_isize`).
+// The extra-time encode/decode functions, the presence-predicate macro, the
+// timestamp-range limits, superblock time-range field selection, and the
+// inode read path's `i_extra_isize` handling are all on-disk ABI Linux
+// defines and this module mirrors.
 //
 // The seconds field is SIGNED: `EXT4_TIMESTAMP_MIN` is `S32_MIN`
 // (1901-12-13), so pre-1970 times are in range for ext4 and must sign-extend
@@ -50,7 +48,7 @@ pub const EXT4_EXTRA_TIMESTAMP_MAX: i64 = ((1i64 << 34) - 1) + EXT4_TIMESTAMP_MI
 pub const EXT4_NON_EXTRA_TIMESTAMP_MAX: i64 = i32::MAX as i64;
 
 /// `sizeof(struct ext4_inode) - EXT4_GOOD_OLD_INODE_SIZE` — the extra-region
-/// width `ext4_iget` (fs/ext4/inode.c) substitutes when the on-disk
+/// width the inode read path substitutes when the on-disk
 /// `i_extra_isize` is 0 but the inode is larger than 128 bytes ("the extra
 /// space is currently unused, use it"). # C: O(1)
 pub const EXT4_INODE_EXTRA_ISIZE_DEFAULT: usize = 32;
@@ -87,7 +85,7 @@ fn wr32(b: &mut [u8], off: usize, v: u32) {
     b[off..off + TIME_FIELD_LEN].copy_from_slice(&v.to_le_bytes());
 }
 
-/// `ei->i_extra_isize` as `ext4_iget` (fs/ext4/inode.c) computes it: 0 for a
+/// `ei->i_extra_isize` as the inode read path computes it: 0 for a
 /// 128-byte inode; otherwise the on-disk `i_extra_isize`, with 0 upgraded to
 /// [`EXT4_INODE_EXTRA_ISIZE_DEFAULT`] because Linux claims the unused extra
 /// region on first use. Bounded by the slot so a corrupt value cannot make
@@ -102,7 +100,7 @@ pub fn inode_extra_isize(raw: &[u8], inode_size: usize) -> usize {
     core::cmp::min(claimed, inode_size - EXT4_GOOD_OLD_INODE_SIZE)
 }
 
-/// `EXT4_FITS_IN_INODE` (fs/ext4/ext4.h) — true iff the field ENDING at
+/// `EXT4_FITS_IN_INODE` — true iff the field ENDING at
 /// `field_end` lies inside `EXT4_GOOD_OLD_INODE_SIZE + i_extra_isize`. This is
 /// the presence test for every extended field, not a size comparison against
 /// the slot: a 256-byte inode formatted by an old kernel may carry no extra
@@ -113,7 +111,7 @@ pub fn fits_in_inode(raw: &[u8], inode_size: usize, field_end: usize) -> bool {
         && field_end <= raw.len()
 }
 
-/// `ext4_encode_extra_time` (fs/ext4/ext4.h): pack the seconds ABOVE the
+/// `ext4_encode_extra_time`: pack the seconds ABOVE the
 /// signed 32-bit base field (2 bits) with the nanoseconds (30 bits).
 ///
 /// `sec - (sec as i32 as i64)` is C's `ts.tv_sec - (s32)ts.tv_sec` — what the
@@ -141,7 +139,7 @@ pub fn encode_base_clamped(ts: Timespec64) -> u32 {
     sec as i32 as u32
 }
 
-/// `ext4_decode_extra_time` (fs/ext4/ext4.h). The base word is SIGN-extended
+/// `ext4_decode_extra_time`. The base word is SIGN-extended
 /// (`(signed)le32_to_cpu(base)`) — zero-extending it is the pre-1970 read bug
 /// that turns a 1901 timestamp into year 2106 — then the epoch-high bits are
 /// added as a positive `<< 32` bias per the ext4.h encoding table.
@@ -162,7 +160,7 @@ pub fn decode_extra_time(base: u32, extra: u32) -> Timespec64 {
 /// # C: O(1)
 pub fn decode_base_only(base: u32) -> Timespec64 { Timespec64::from_secs(base as i32 as i64) }
 
-/// `EXT4_INODE_GET_XTIME_VAL` (fs/ext4/ext4.h): decode the `(base, extra)` pair
+/// `EXT4_INODE_GET_XTIME_VAL`: decode the `(base, extra)` pair
 /// at those offsets, falling back to seconds-only when the extra word is
 /// outside the inode's extra region. # C: O(1)
 pub(crate) fn get_xtime(raw: &[u8], inode_size: usize, base_off: usize, extra_off: usize)
@@ -176,10 +174,10 @@ pub(crate) fn get_xtime(raw: &[u8], inode_size: usize, base_off: usize, extra_of
     }
 }
 
-/// `EXT4_EINODE_GET_XTIME(i_crtime, ...)` (fs/ext4/ext4.h): the birth time
+/// `EXT4_EINODE_GET_XTIME(i_crtime, ...)`: the birth time
 /// exists only when the `i_crtime` field itself lies in the extra region —
-/// the same predicate `ext4_getattr` uses to decide whether to set
-/// `STATX_BTIME` in `result_mask` (fs/ext4/inode.c). `None` means "this inode
+/// the same predicate Linux `statx(2)` uses to decide whether to set
+/// `STATX_BTIME` in the result mask. `None` means "this inode
 /// stores no creation time", which is distinct from a creation time of the
 /// epoch second. # C: O(1)
 pub(crate) fn get_crtime(raw: &[u8], inode_size: usize) -> Option<Timespec64> {
@@ -187,7 +185,7 @@ pub(crate) fn get_crtime(raw: &[u8], inode_size: usize) -> Option<Timespec64> {
     Some(get_xtime(raw, inode_size, I_CRTIME, I_CRTIME_EXTRA))
 }
 
-/// `EXT4_INODE_SET_XTIME_VAL` (fs/ext4/ext4.h): write the `(base, extra)` pair
+/// `EXT4_INODE_SET_XTIME_VAL`: write the `(base, extra)` pair
 /// when the extra field is present, else the CLAMPED seconds-only base.
 /// # C: O(1)
 pub(crate) fn set_xtime(raw: &mut [u8], inode_size: usize, base_off: usize, extra_off: usize,
@@ -220,8 +218,8 @@ pub struct InodeTimes {
     pub btime: Option<Timespec64>,
 }
 
-/// The superblock time window ext4 advertises for `inode_size`
-/// (`__ext4_fill_super`, fs/ext4/super.c): `(s_time_gran, s_time_min,
+/// The superblock time window ext4 advertises for `inode_size`:
+/// `(s_time_gran, s_time_min,
 /// s_time_max)`. `i_atime_extra` is the LAST of the three `[acm]time` extras
 /// in the inode, so room for it implies room for all three — Linux tests
 /// exactly that field. Without it the fs stores whole seconds only, capped at

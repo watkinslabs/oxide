@@ -1,10 +1,10 @@
 //! POSIX unlink-while-open over a real ext4 image, with `e2fsck` as the gate.
 //!
 //! `unlink(2)` removes the NAME. The inode, its data blocks and its inode slot
-//! survive until the last open file description closes — Linux implements this
-//! with `ext4_orphan_add` at `__ext4_unlink` (`fs/ext4/namei.c`) and the
-//! truncate+free deferred to `ext4_evict_inode` (`fs/ext4/inode.c`), reached
-//! from `iput_final` (`fs/inode.c`). It is the mechanism behind `mkstemp`,
+//! survive until the last open file description closes — Linux records the
+//! inode on the on-disk orphan list at unlink time and defers the
+//! truncate+free to inode eviction, reached when the last reference (open fd,
+//! dentry alias) goes away. It is the mechanism behind `mkstemp`,
 //! compiler temporaries and shared-memory shims.
 //!
 //! Freeing at unlink time hands those blocks to the next allocation while the

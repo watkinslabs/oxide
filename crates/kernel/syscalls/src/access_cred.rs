@@ -1,5 +1,5 @@
 // `faccessat`'s credential override — Linux `access_override_creds`
-// (`fs/open.c`). Ungated so the rule is testable: the caller in
+//. Ungated so the rule is testable: the caller in
 // `pathresolve/cred.rs` is `#![cfg(target_os = "oxide-kernel")]`, where a
 // `#[cfg(test)] mod tests` compiles out silently.
 

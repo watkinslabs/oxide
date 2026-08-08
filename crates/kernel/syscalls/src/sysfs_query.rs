@@ -1,5 +1,5 @@
 // sysfs(2) slot 139 — the SysV filesystem-type query, unrelated to sysfs the
-// filesystem. Linux `fs/filesystems.c`:
+// filesystem. Linux's `sys_sysfs`:
 //
 //   SYSCALL_DEFINE3(sysfs, int option, unsigned long arg1, unsigned long arg2)
 //     1 -> fs_index((const char __user *)arg1)          name  -> index

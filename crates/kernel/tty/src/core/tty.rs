@@ -459,8 +459,8 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
         crate::ioctl::core_ioctl(self, cmd, arg)
     }
 
-    /// Hang up the tty — Linux `__tty_hangup(tty, exit_session)`
-    /// (`drivers/tty/tty_io.c:568-656`): reset the ldisc into its hung-up
+    /// Hang up the tty — Linux `__tty_hangup(tty, exit_session)`:
+    /// reset the ldisc into its hung-up
     /// state (queues flushed; reads → EOF, writes dropped), notify the driver,
     /// and clear the controlling-session linkage (`tty->ctrl.session` /
     /// `tty->ctrl.pgrp`). Idempotent.
@@ -468,7 +468,7 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
     /// `kind` selects Linux's `exit_session` argument. It decides ONLY whether
     /// the foreground process group is SIGHUP'd wholesale: `tty_signal_session
     /// _leader` sends `kill_pgrp(tty_pgrp, SIGHUP)` when `exit_session` is set
-    /// and NOT otherwise (`drivers/tty/tty_jobctrl.c:232-236`). Signalling the
+    /// and NOT otherwise. Signalling the
     /// SESSION LEADER is the caller's job — it needs the task list, which the
     /// driver hook cannot reach (`crate::hangup`).
     /// # C: O(P) fg-pgrp tasks on `SessionExit`, O(1) otherwise
@@ -488,7 +488,7 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
         self.wait.wake_all();
         // Hangup flips POLLHUP + read→EOF: wake poll/select/epoll waiters too
         // (same rationale as receive_from_driver). `tty_release` wakes both the
-        // read and the write queue (`drivers/tty/tty_io.c:1766-1785`).
+        // read and the write queue.
         self.subs.notify_mask(vfs::POLL_IN | vfs::POLL_OUT | vfs::POLL_HUP);
     }
 
@@ -498,8 +498,7 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
         self.inner.lock_irqsave::<W::Irq>().ldisc.is_hung_up()
     }
 
-    /// Linux `clear_bit(TTY_HUPPED, &tty->flags)` on a successful `tty_open`
-    /// (`drivers/tty/tty_io.c:2161`).
+    /// Linux `clear_bit(TTY_HUPPED, &tty->flags)` on a successful `tty_open`.
     /// # C: O(1)
     pub fn clear_hangup(&self) {
         self.inner.lock_irqsave::<W::Irq>().ldisc.clear_hangup();

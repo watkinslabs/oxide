@@ -1,6 +1,6 @@
-// Linux `struct pid_namespace::reboot` (`include/linux/pid_namespace.h`),
-// written by `reboot_pid_ns` (`kernel/pid_namespace.c:324-336`) and consumed
-// by `zap_pid_ns_processes` (`kernel/pid_namespace.c:278-279`):
+// Linux `struct pid_namespace::reboot`,
+// written by `reboot_pid_ns` and consumed
+// by `zap_pid_ns_processes`:
 //
 //     if (pid_ns->reboot)
 //             current->signal->group_exit_code = pid_ns->reboot;

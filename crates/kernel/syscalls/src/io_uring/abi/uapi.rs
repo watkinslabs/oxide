@@ -1,10 +1,7 @@
-// Linux io_uring UAPI numbers + `struct io_uring_params` wire form.
-// Source of truth read for every constant here:
-//   linux `include/uapi/linux/io_uring.h`  (IORING_SETUP_*, IORING_FEAT_*,
-//                                           IORING_OFF_*, struct io_uring_params,
-//                                           struct io_{sq,cq}ring_offsets)
-//   linux `io_uring/io_uring.h`            (IORING_SETUP_FLAGS, IORING_FEAT_FLAGS,
-//                                           IORING_MAX_ENTRIES)
+// Linux io_uring UAPI numbers + `struct io_uring_params` wire form:
+// IORING_SETUP_*, IORING_FEAT_*, IORING_OFF_*, `struct io_uring_params`,
+// `struct io_{sq,cq}ring_offsets`, and the IORING_SETUP_FLAGS /
+// IORING_FEAT_FLAGS / IORING_MAX_ENTRIES masks.
 // UAPI is not policy (CLAUDE.md): admission rules live in `layout`/`register_op`.
 
 /// `IORING_SETUP_IOPOLL` — polled completion (`io_context is polled`).
@@ -250,7 +247,7 @@ mod tests {
 
     #[test]
     fn setup_flag_mask_covers_every_defined_bit_and_nothing_else() {
-        // Linux `io_uring/io_uring.h` IORING_SETUP_FLAGS: bits 0..=20.
+        // Linux io_uring UAPI IORING_SETUP_FLAGS: bits 0..=20.
         assert_eq!(IORING_SETUP_FLAGS, (1u32 << 21) - 1);
         assert_eq!(IORING_SETUP_SQ_REWIND, 1 << 20);
     }

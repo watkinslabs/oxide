@@ -9,8 +9,7 @@ use crate::limits::{
     STACK_TOP,
 };
 
-/// Linux `arch_mmap_rnd()` — `arch/x86/mm/mmap.c:70-79` (`arch_rnd`) and the
-/// generic `mm/util.c:399-411`, which arm64 uses unchanged:
+/// Linux `arch_mmap_rnd()`, same formula both arches:
 /// `(get_random_long() & ((1UL << mmap_rnd_bits) - 1)) << PAGE_SHIFT`.
 ///
 /// The shift is what makes the result page-aligned; the mask is what bounds it
@@ -22,8 +21,7 @@ pub fn arch_mmap_rnd(raw: u64, rnd_bits: u32) -> u64 {
     (raw & ((1u64 << bits) - 1)) << PAGE_SHIFT
 }
 
-/// Linux `mmap_base()` — generic `mm/util.c:433-448` (arm64) and
-/// `arch/x86/mm/mmap.c:86-99` (x86_64). Both compute
+/// Linux `mmap_base()`. Both arches compute
 /// `PAGE_ALIGN(STACK_TOP - gap - rnd)` with
 /// `gap = clamp(rlim_stack + stack_guard_gap + (STACK_RND_MASK << PAGE_SHIFT),
 ///              MIN_GAP, MAX_GAP)`.
@@ -40,8 +38,8 @@ pub fn mmap_base(rnd: u64, rlim_stack: u64, randomize: bool, b: &Budget) -> u64 
     page_align_up(STACK_TOP.saturating_sub(gap).saturating_sub(rnd))
 }
 
-/// Linux `mmap_legacy_base()` — `arch/x86/mm/mmap.c:101-105` and the generic
-/// `mm/util.c:473`, both `TASK_UNMAPPED_BASE + random_factor`. This is the
+/// Linux `mmap_legacy_base()` — both arches compute
+/// `TASK_UNMAPPED_BASE + random_factor`. This is the
 /// FLOOR the legacy layout allocates upward from, where `mmap_base` is the
 /// CEILING the default layout allocates downward from; the two are different
 /// anchors for opposite search directions, not two spellings of one address.
@@ -50,8 +48,7 @@ pub fn mmap_legacy_base(rnd: u64, b: &Budget) -> u64 {
     b.task_unmapped_base().saturating_add(rnd)
 }
 
-/// Linux `mmap_is_legacy()` — `mm/util.c:413-426` (arm64) and
-/// `arch/x86/mm/mmap.c:62-67` (x86_64):
+/// Linux `mmap_is_legacy()`:
 ///
 /// ```text
 /// if (current->personality & ADDR_COMPAT_LAYOUT) return 1;
@@ -90,7 +87,7 @@ pub fn mmap_is_legacy(
 /// # C: O(1)
 pub const fn unlimited_stack_flips_layout() -> bool { cfg!(target_arch = "aarch64") }
 
-/// Linux `randomize_stack_top()` — `mm/util.c:341-355`. Both arches take the
+/// Linux `randomize_stack_top()`. Both arches take the
 /// non-`STACK_GROWSUP` branch, so the random page count is SUBTRACTED:
 /// `PAGE_ALIGN(stack_top) - ((get_random_long() & STACK_RND_MASK) << PAGE_SHIFT)`.
 /// # C: O(1)
@@ -99,7 +96,7 @@ pub fn randomize_stack_top(stack_top: u64, raw: u64, randomize: bool, b: &Budget
     page_align_up(stack_top).saturating_sub(var)
 }
 
-/// Linux `randomize_page()` — `mm/util.c:371-387`. Returns a page-aligned
+/// Linux `randomize_page()`. Returns a page-aligned
 /// address in `[PAGE_ALIGN(start), PAGE_ALIGN(start) + range)`.
 /// # C: O(1)
 pub fn randomize_page(start: u64, range: u64, raw: u64) -> u64 {
@@ -113,23 +110,21 @@ pub fn randomize_page(start: u64, range: u64, raw: u64) -> u64 {
     start + ((raw % pages) << PAGE_SHIFT)
 }
 
-/// Linux `arch_randomize_brk()` — `arch/x86/kernel/process.c:1027-1033` (x86's
-/// own strong symbol) and `mm/util.c:389-397` (the `__weak` fallback arm64
-/// uses). Both reduce to `randomize_page(mm->brk, SZ_1G)` for a native 64-bit
+/// Linux `arch_randomize_brk()` — x86 has its own strong symbol; arm64 uses
+/// the generic `__weak` fallback. Both reduce to `randomize_page(mm->brk, SZ_1G)` for a native 64-bit
 /// task; the `SZ_32M` arm is compat-only and this kernel has no 32-bit
 /// personality.
 /// # C: O(1)
 pub fn arch_randomize_brk(brk: u64, raw: u64) -> u64 { randomize_page(brk, BRK_RND_RANGE, raw) }
 
-/// Linux `load_elf_binary`'s ET_DYN-with-PT_INTERP branch
-/// (`fs/binfmt_elf.c:1139-1146`):
+/// Linux `load_elf_binary`'s ET_DYN-with-PT_INTERP branch:
 /// ```text
 /// load_bias = ELF_ET_DYN_BASE;
 /// if (current->flags & PF_RANDOMIZE) load_bias += arch_mmap_rnd();
 /// if (alignment) load_bias &= ~(alignment - 1);
 /// ```
-/// `max_align` is `maximum_alignment()` over the PT_LOADs
-/// (`fs/binfmt_elf.c:491-509`): the largest power-of-two `p_align`, which for
+/// `max_align` is `maximum_alignment()` over the PT_LOADs:
+/// the largest power-of-two `p_align`, which for
 /// a hugepage-aligned image can be far coarser than a page and would otherwise
 /// leave the segments misaligned against their own `p_vaddr % p_align`.
 /// # C: O(1)
@@ -138,9 +133,8 @@ pub fn elf_dyn_load_bias(rnd: u64, max_align: u64) -> u64 {
     if max_align > 1 && max_align.is_power_of_two() { bias & !(max_align - 1) } else { bias }
 }
 
-/// Linux `arch_align_stack()` — `arch/x86/kernel/process.c:1020-1025` and
-/// `arch/arm64/kernel/process.c:813-818`. Called once per exec on the initial
-/// string-area pointer (`fs/binfmt_elf.c:193`, `create_elf_tables`) to shuffle
+/// Linux `arch_align_stack()`, defined separately per-arch. Called once per exec on the initial
+/// string-area pointer (`create_elf_tables`) to shuffle
 /// cache-set alignment between processes, then hard-aligned to 16 for the
 /// SysV ABI.
 ///

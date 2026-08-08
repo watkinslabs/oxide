@@ -1,4 +1,4 @@
-// `ext4_fallocate` (Linux `fs/ext4/extents.c`) — the mode dispatch and the
+// `ext4_fallocate` — the mode dispatch and the
 // ext4-side `inode_newsize_ok` policy, split out of `regular.rs` so the
 // inode-ops manifest stays under the file cap.
 

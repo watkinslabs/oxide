@@ -1,5 +1,5 @@
 // Per-CPU software-event accumulators — the CPU-context half of Linux's
-// `perf_sw_event()` counters (`kernel/events/core.c`). A `perf_event_open`
+// `perf_sw_event()` counters. A `perf_event_open`
 // with `pid == -1` binds to one CPU (`perf_event_alloc` rejects `cpu == -1`
 // for a task-less event), so a CPU-context software counter must be summed
 // per CPU, not per task; the per-task half lives in `Task::{min_flt, maj_flt,
@@ -40,7 +40,7 @@ pub fn read(kind: CpuSw, cpu: usize) -> u64 {
 
 // ---- perf sysctls -------------------------------------------------------
 //
-// Linux keeps these in `kernel/events/core.c` next to `perf_event_open`:
+// Linux keeps these as globals next to `perf_event_open`:
 //   int sysctl_perf_event_paranoid __read_mostly = 2;
 //   int sysctl_perf_event_sample_rate __read_mostly = DEFAULT_MAX_SAMPLE_RATE;
 // oxide's `perf_event_open` work-fn lives in the `fs` crate, which `procfs`
@@ -51,9 +51,9 @@ pub fn read(kind: CpuSw, cpu: usize) -> u64 {
 
 use core::sync::atomic::AtomicI32;
 
-/// `kernel/events/core.c` initialiser.
+/// Linux's `sysctl_perf_event_paranoid` initialiser.
 pub const PARANOID_DEFAULT: i32 = 2;
-/// `DEFAULT_MAX_SAMPLE_RATE` (`kernel/events/core.c`).
+/// `DEFAULT_MAX_SAMPLE_RATE`.
 pub const SAMPLE_RATE_DEFAULT: i32 = 100_000;
 
 static PARANOID:    AtomicI32 = AtomicI32::new(PARANOID_DEFAULT);

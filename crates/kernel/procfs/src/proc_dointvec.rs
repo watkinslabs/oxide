@@ -1,5 +1,5 @@
-//! `proc_dointvec` / `proc_dointvec_minmax` write validation (Linux
-//! `kernel/sysctl.c` + `fs/proc/proc_sysctl.c`). Pure and host-testable: the
+//! `proc_dointvec` / `proc_dointvec_minmax` write validation, matching
+//! Linux's sysctl integer-leaf handlers. Pure and host-testable: the
 //! integer parse + range-check a writer's bytes go through before a bounded
 //! `/proc/sys/*` integer leaf accepts a store. A `SysctlInode` carrying
 //! `Some((min,max))` rejects an out-of-range or non-integer write with

@@ -39,8 +39,8 @@ struct DirData { kids: Mutex<BTreeMap<String, InodeRef>> }
 /// `Inode::mkdir`/`rmdir`/`unlink_child`/`symlink_child`/`link_child`
 /// dispatch into (`crates/kernel/vfs/src/inode/ops.rs`). Only the STORAGE is
 /// a `BTreeMap` instead of ext4; the EEXIST/ENOENT/ENOTEMPTY/ENOTDIR
-/// decisions mirror Linux `simple_*`-style in-memory fs backends
-/// (`fs/libfs.c`), same class as tmpfs.
+/// decisions mirror the `simple_*`-style in-memory fs backend contract,
+/// same class as tmpfs.
 pub struct WDirOps;
 
 impl InodeOps for WDirOps {

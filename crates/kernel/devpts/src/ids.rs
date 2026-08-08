@@ -11,7 +11,7 @@
 use vfs::pseudo_ino::DEVPTS;
 use vfs::Ino;
 
-/// `DEVPTS_SUPER_MAGIC` (`linux/magic.h`) — `statfs` `f_type` for the devpts
+/// `DEVPTS_SUPER_MAGIC` — `statfs` `f_type` for the devpts
 /// instance mounted at `/dev/pts`.
 pub const DEVPTS_MAGIC: u64 = 0x1cd1;
 

@@ -112,7 +112,7 @@ fn vdso_codes_are_classified_deliberately_not_by_accident() {
 
 #[test]
 fn every_code_the_uapi_header_assigns_is_classified() {
-    // The full `arch/x86/include/uapi/asm/prctl.h` assignment list. A code
+    // The full arch-prctl UAPI code assignment list. A code
     // that reaches the `default:` arm here is one this port forgot.
     for code in [0x1001u64, 0x1002, 0x1003, 0x1004, 0x1011, 0x1012,
                  0x1021, 0x1022, 0x1023, 0x1024, 0x1025,

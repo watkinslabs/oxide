@@ -64,11 +64,10 @@ signal-delivery check on return to user mode.
 
 ### Fix (B1471)
 
-Linux runs ONE loop before EVERY return to user mode — `kernel/entry/common.c`
-`__exit_to_user_mode_loop`, reached from `syscall_exit_to_user_mode_prepare`
-(syscall) and `irqentry_exit_to_user_mode_prepare` (interrupt + exception, via
-`irqentry_exit`'s `if (user_mode(regs))` arm). oxide had that work only at the
-syscall tail, open-coded, and not even as a loop.
+Linux runs ONE loop before EVERY return to user mode — the exit-to-user-mode
+work loop, reached from both the syscall-return path and the interrupt/
+exception-return path when returning to user mode. oxide had that work only
+at the syscall tail, open-coded, and not even as a loop.
 
 | Piece | Where |
 |---|---|
@@ -105,7 +104,7 @@ guest binary never contained the probe (F765 added it, plus the
 +wdiff|sysv_shm|nattch_tracks_fork|forked=1|after_exit=1   <- oxide
 ```
 
-Linux moves `shm_nattch` from `shm_vm_ops.open`/`.close` (`ipc/shm.c`), so it
+Linux moves `shm_nattch` from the SysV shm VMA's `open`/`close` operations, so it
 counts VMAs: fork copy, mprotect split, merge and `exit_mmap` all move it.
 oxide moved it only in `shmat`/`shmdt`, so `ipcs -m` under-reported forked
 attachers and — since teardown never decremented — a process exiting without
@@ -146,7 +145,7 @@ against the same absolute `deadline` and falls out of the
 `monotonic_ns() >= deadline` arm with `0` — the right `rc` by a different
 mechanism, with `rmtp` untouched.
 
-Linux `do_nanosleep` (`kernel/time/hrtimer.c:2404`) loops
+Linux `do_nanosleep` loops
 `while (t->task && !signal_pending(current))`, and a pending stop signal makes
 `signal_pending` true. So the loop EXITS, the tail copies the remainder to
 `rmtp` and returns `-ERESTART_RESTARTBLOCK`; the stop is taken later in
@@ -176,7 +175,7 @@ Scope it as one lane covering all three loops; do not sweep beyond that grep.
 **Fix as shipped.** `SleepWake::Stop(u32)` is deleted — `Task::sleep_wake` is
 now `signal_pending(current)` and nothing else, so a stop can no longer be
 expressed as an in-loop action. It also stops consuming the stop signal:
-`dequeue_signal` inside `get_signal` (`kernel/signal.c:643`) is Linux's only
+`dequeue_signal` inside `get_signal` is Linux's only
 consumer, and the tail's `take_lowest_pending` is ours. Both park loops
 (`035_nanosleep.rs` `sleep_until_deadline`, shared with slot 230 and the 219
 continuation; `034_pause.rs` both arms) return through their interrupted tail.
@@ -337,8 +336,7 @@ both blocked ~100 ms, and so did every futex timeout, `poll`, `select`,
 
 Fix: `sched::hrtimeout`, Linux's hrtimer range model —
 `soft = deadline`, `hard = soft + slack`, queue keyed by HARD (Linux's rbtree
-key, `include/linux/hrtimer.h:91-95`), sweep everything SOFT-due
-(`kernel/time/hrtimer.c:2093`). `next_interrupt_deadline()` folds the queue head
+key), sweep everything SOFT-due. `next_interrupt_deadline()` folds the queue head
 into the one-shot; the arch timer dispatchers sweep on every CPU before
 re-arming. Slack is `current->timer_slack_ns` (50 us) for the generic waits and
 `select_estimate_accuracy` (0.1% of the remaining timeout, floored at the task

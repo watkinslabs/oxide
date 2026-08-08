@@ -140,11 +140,10 @@ fn pause_unblockable_signal_bypasses_mask() {
 
 #[test]
 fn pause_default_stop_signal_unwinds_for_the_dispatch_tail() {
-    // Linux `sys_pause` (`kernel/signal.c:4832-4839`) loops on
-    // `!signal_pending(current)`, and `signal_wake_up_state` (`signal.c:721`)
-    // sets TIF_SIGPENDING for a stop signal like any other — so the loop EXITS
-    // and returns -ERESTARTNOHAND. `get_signal` -> `do_signal_stop` takes the
-    // stop on the way out, and `dequeue_signal` there is what clears the bit.
+    // `pause` loops on "no signal pending", and a stop signal sets that state
+    // like any other — so the loop EXITS and returns -ERESTARTNOHAND. Taking
+    // the stop itself happens on the way out through generic signal dispatch,
+    // which is what clears the pending bit.
     // B1456: pause used to stop inside its own park loop and `continue`, which
     // consumed the signal and skipped the restart decision entirely.
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());

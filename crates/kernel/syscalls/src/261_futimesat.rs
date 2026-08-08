@@ -2,12 +2,11 @@
 //
 // `futimesat(dfd, filename, struct timeval[2])` — three arguments, MICROsecond
 // resolution, no `flags`, always follows symlinks (`do_utimes(..., 0)`).
-// Linux keeps it live on x86_64 (`arch/x86/entry/syscalls/syscall_64.tbl:273`,
-// built because `arch/x86/include/asm/unistd.h:24` defines
-// `__ARCH_WANT_SYS_UTIME`), so it is a full implementation, not an ENOSYS slot.
+// Linux keeps it live on x86_64 (built when `__ARCH_WANT_SYS_UTIME` is
+// defined), so it is a full implementation, not an ENOSYS slot.
 //
 // It shares its entire decode with `utimes(2)`: Linux writes `sys_utimes` as
-// `do_futimesat(AT_FDCWD, filename, utimes)` (`fs/utimes.c:203-207`).
+// `do_futimesat(AT_FDCWD, filename, utimes)`.
 
 #![cfg(target_os = "oxide-kernel")]
 
@@ -20,7 +19,7 @@ use crate::utimes_abi::{iattr_from_times, iattr_touch};
 /// stamps to now (write permission suffices); otherwise both are explicit and
 /// the owner/CAP_FOWNER rule applies. The `tv_usec` range is validated BEFORE
 /// the path lookup, so a bad microsecond field is EINVAL even when the path
-/// does not exist (`fs/utimes.c:183-185`, ahead of `do_utimes`).
+/// does not exist (validated ahead of `do_utimes`).
 /// # C: O(N_path)
 pub fn sys_futimesat(args: &SyscallArgs) -> i64 {
     let dirfd = args.a0 as i32;

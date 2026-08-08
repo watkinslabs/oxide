@@ -1,6 +1,6 @@
-// Software-event counting + `read(2)` framing — Linux `kernel/events/core.c`
-// (`perf_swevent_init`, `cpu_clock_event_*`, `task_clock_event_*`,
-// `__perf_event_read_size`, `perf_read_one`, `perf_read_group`).
+// Software-event counting + `read(2)` framing: software-event init,
+// CPU-clock/task-clock event update, the per-read record-size computation,
+// and single-event vs. group-read framing.
 //
 // Pure over explicit inputs: the counter source value is passed in, so the
 // accumulate/enable/disable algebra and the read framing are hosted-testable.

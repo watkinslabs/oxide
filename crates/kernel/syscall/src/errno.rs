@@ -45,7 +45,7 @@ pub enum Errno {
     /// microsecond field that is not normalized into `0..1_000_000`.
     Edom    = 33,
     Erange  = 34,
-    /// `EDEADLK`/`EDEADLOCK`: Linux `posix_locks_deadlock` (`fs/locks.c:1101`)
+    /// `EDEADLK`/`EDEADLOCK`: Linux `posix_locks_deadlock` 
     /// rejecting an `fcntl(F_SETLKW)` that would close a wait cycle.
     Edeadlk = 35,
     Enametoolong = 36,
@@ -102,9 +102,9 @@ pub enum Errno {
     Euclean           = 117,
     Edquot            = 122,
     Ecanceled         = 125,
-    /// Keyring errnos (`include/uapi/asm-generic/errno.h`), returned by
-    /// `add_key`/`request_key`/`keyctl` per `security/keys/permission.c`
-    /// `key_validate` and the keyring search paths.
+    /// Keyring errnos, returned by
+    /// `add_key`/`request_key`/`keyctl`'s permission-validation and keyring
+    /// search paths.
     Enokey            = 126,
     Ekeyexpired       = 127,
     Ekeyrevoked       = 128,

@@ -1,4 +1,4 @@
-// 094 lchown — one syscall, one file (docs/53 §0). Linux `fs/open.c`
+// 094 lchown — one syscall, one file (docs/53 §0). Linux's
 // `SYSCALL_DEFINE3(lchown)` is `do_fchownat(AT_FDCWD, name, uid, gid,
 // AT_SYMLINK_NOFOLLOW)`: the FINAL component is NOT followed, so a symlink
 // path changes the LINK's ownership, never its target's. Slot 94 previously

@@ -1,5 +1,5 @@
-// devpts mount options — Linux `fs/devpts/inode.c` `struct pts_mount_opts`,
-// `devpts_param_specs`, `devpts_parse_param`, `devpts_show_options`.
+// devpts mount options — parse, store, and re-show the `-o` string
+// (uid/gid/mode/ptmxmode/max/newinstance) Linux devpts accepts.
 //
 // systemd mounts `/dev/pts -o gid=5,mode=620,ptmxmode=000` on every boot, so
 // these are not exotic: ignoring them gives every pty slave the wrong owner and
@@ -289,7 +289,7 @@ mod tests {
     }
 }
 
-/// `devpts_param_specs` (Linux `fs/devpts/inode.c`). Every name here is
+/// The devpts mount-option parameter table. Every name here is
 /// enforced: `uid`/`gid`/`mode` land on each slave node, `ptmxmode` on the
 /// instance `ptmx` node, `max` bounds index allocation, and `newinstance` is
 /// the reference's own accepted no-op.

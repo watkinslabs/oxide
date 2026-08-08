@@ -136,7 +136,7 @@ impl Nameidata {
         )
     }
 
-    /// `terminate_walk` (Linux `fs/namei.c`) — the SINGLE error/teardown exit
+    /// `terminate_walk` — the SINGLE error/teardown exit
     /// of the walk. In the default ref/Arc walk the resolver pins NOTHING via
     /// `d_count` (the `Arc` in `cur_dentry` is the only hold and drops on
     /// return), so the body is the rcu-mode unwind: leave LOOKUP_RCU
@@ -152,7 +152,7 @@ impl Nameidata {
         e
     }
 
-    /// `unlazy_walk` / `try_to_unlazy` (Linux `fs/namei.c`) — leave LOOKUP_RCU
+    /// `unlazy_walk` / `try_to_unlazy` — leave LOOKUP_RCU
     /// at a point that must block or take a lock (symlink `get_link`, mount
     /// crossing, the final component, a blocking permission check, or a dcache
     /// miss that needs `i_op->lookup` under `i_rwsem`). LEGITIMIZE the freshly

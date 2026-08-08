@@ -235,8 +235,8 @@ fn recvmsg_emits_ipv6_tclass_cmsg_gated_on_recvtclass() {
 
 // A dual-stack AF_INET6 socket that connected to an IPv4 peer took the IPv4
 // path, so its peer tuple is in `sock.peer`, not `sock.peer6`. Linux
-// `inet6_getname` still answers with `sk->sk_v6_daddr` == `::ffff:a.b.c.d`
-// (`net/ipv6/af_inet6.c`), so an empty `peer6` must FALL THROUGH to the
+// `inet6_getname` still answers with `sk->sk_v6_daddr` == `::ffff:a.b.c.d`,
+// so an empty `peer6` must FALL THROUGH to the
 // generic tuple rather than short-circuit to ENOTCONN — that early return
 // declared every `getaddrinfo(AI_V4MAPPED)` connection unconnected.
 

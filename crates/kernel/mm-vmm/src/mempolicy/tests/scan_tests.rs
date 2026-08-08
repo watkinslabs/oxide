@@ -1,4 +1,4 @@
-// `queue_pages_range` (`mm/mempolicy.c:979`): mbind's hole (EFAULT) and
+// The mbind(2)/move_pages(2) range scan: mbind's hole (EFAULT) and
 // MPOL_MF_STRICT (EIO) decisions.
 
 use hal::UserVirtAddr;

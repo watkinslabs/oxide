@@ -1,7 +1,7 @@
 // 285 fallocate — one syscall, one file (docs/53 §0). ABI shim only: the fd
-// lookup (EBADF FIRST — `ksys_fallocate`, `fs/open.c:355-363`) and the call.
-// The whole check ladder is `fs::fallocate::vfs_fallocate` (Linux
-// `fs/open.c:250-352`).
+// lookup (EBADF FIRST — Linux's `ksys_fallocate`) and the call.
+// The whole check ladder is `fs::fallocate::vfs_fallocate` (Linux's
+// `vfs_fallocate`).
 
 #![cfg(target_os = "oxide-kernel")]
 

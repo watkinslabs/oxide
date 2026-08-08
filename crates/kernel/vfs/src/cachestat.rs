@@ -1,5 +1,4 @@
-// `cachestat(2)` page-cache accounting contract (Linux `mm/filemap.c`
-// `filemap_cachestat`, `include/uapi/linux/mman.h struct cachestat`).
+// `cachestat(2)` page-cache accounting contract (`struct cachestat` ABI).
 //
 // The syscall walks ONE address_space's index space over an inclusive page
 // range and classifies every entry present there: a live cache page (with its

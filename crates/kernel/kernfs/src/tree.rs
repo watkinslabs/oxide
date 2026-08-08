@@ -461,8 +461,8 @@ impl PseudoDir {
         Ok(())
     }
 
-    /// `kernfs_iop_rename` (Linux `fs/kernfs/dir.c`) opens with `if (flags)
-    /// return -EINVAL;` — kernfs implements NO `renameat2` flag. Accepting
+    /// The pseudo-filesystem rename op rejects any non-zero `flags` outright —
+    /// it implements NO `renameat2` flag. Accepting
     /// `RENAME_NOREPLACE`/`RENAME_EXCHANGE` here (and silently dropping
     /// `RENAME_WHITEOUT`) would report success for a guarantee sysfs/cgroupfs
     /// cannot give. # C: O(log N)
@@ -480,8 +480,8 @@ impl PseudoDir {
         }
     }
 
-    /// `kernfs_fop_readdir` (Linux fs/kernfs/dir.c) — the ONE readdir loop every
-    /// pseudo filesystem built on [`PseudoDir`] shares (devfs, devpts, sysfs's
+    /// The ONE readdir loop every pseudo filesystem built on [`PseudoDir`]
+    /// shares (devfs, devpts, sysfs's
     /// static tree, procfs's registered tree, tracefs/debugfs, configfs).
     ///
     /// The cursor is a per-entry NAME cookie ([`vfs::name_cookie`]), not an

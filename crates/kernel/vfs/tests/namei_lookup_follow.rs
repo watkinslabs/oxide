@@ -1,4 +1,4 @@
-//! LOOKUP_FOLLOW (Linux `fs/namei.c`, fix-ledger namei D30): an explicit
+//! LOOKUP_FOLLOW (fix-ledger namei D30): an explicit
 //! `follow` flag for the trailing-symlink decision, a first-class counterpart to
 //! `no_follow_final`. When set it OVERRIDES no_follow_final so the final symlink
 //! is resolved (Linux's flag set never holds both; FOLLOW wins). Default-off:

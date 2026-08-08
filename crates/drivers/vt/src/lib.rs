@@ -2,7 +2,7 @@
 // /dev/console + /dev/tty (controlling). Multiplexes 63 consoles
 // over the fbcon glyph backend (49). Owns KDSETMODE/KDSKBMODE,
 // VT_OPENQRY/VT_GETSTATE/VT_ACTIVATE/VT_RELDISP per
-// linux/include/uapi/linux/vt.h + kd.h.
+// the Linux VT + kd UAPI.
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]

@@ -1,5 +1,5 @@
-// `mbind_range` (`mm/mempolicy.c:1039`) and `set_mempolicy_home_node`'s VMA
-// walk (`mm/mempolicy.c:1795..1820`) over the VMA tree.
+// mbind(2)'s VMA-policy rewrite and set_mempolicy_home_node(2)'s VMA
+// walk over the VMA tree.
 
 use alloc::vec::Vec;
 use hal::UserVirtAddr;

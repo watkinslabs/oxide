@@ -14,7 +14,7 @@
 
 use crate::task::SigInfo;
 
-/// `SI_TIMER` (`<asm-generic/siginfo.h>`) — "sent by timer expiration". Selects
+/// `SI_TIMER` (`siginfo(7)`) — "sent by timer expiration". Selects
 /// the `_timer` union arm on its own, for any signal number.
 pub const SI_TIMER: i32 = -2;
 

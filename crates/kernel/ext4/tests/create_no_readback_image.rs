@@ -1,7 +1,6 @@
 //! `create`/`tmpfile` must instantiate the VFS inode from the struct they just
 //! wrote, never by reading the slot back off disk — Linux `ext4_create` hands
-//! the live inode from `ext4_new_inode` to `d_instantiate_new` and never
-//! re-reads it (`fs/ext4/namei.c` `ext4_add_nondir`).
+//! the live inode straight to dentry instantiation and never re-reads it.
 //!
 //! The round-trip was the boot's
 //! `[NAMEI] openat-create ".../user-1000.journal" err=5`: `create_file` had

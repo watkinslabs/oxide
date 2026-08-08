@@ -1,5 +1,5 @@
 // seccomp verdict EXECUTION — the half of `__seccomp_filter`
-// (`kernel/seccomp.c`) that kills, signals and logs.
+// that kills, signals and logs.
 //
 // The decision itself belongs to `security::seccomp` (`docs/53` hollow
 // shell); it lives there because it is pure and hosted-testable. It lives

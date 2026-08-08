@@ -1,4 +1,4 @@
-// `path_pivot_root()`'s admission ladder (Linux `fs/namespace.c`, v7.2.0-rc4),
+// `path_pivot_root()`'s admission ladder,
 // as a pure function of the mount-tree facts it reads. Order is the ABI: a
 // shared `put_old` mount reports EINVAL even when `new_root` is also the
 // caller's root (which alone is EBUSY), and an unlinked `new_root` reports

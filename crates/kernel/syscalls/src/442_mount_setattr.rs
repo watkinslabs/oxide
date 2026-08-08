@@ -1,4 +1,4 @@
-// 442 mount_setattr — Linux `fs/namespace.c` prepare/commit shape.
+// 442 mount_setattr — Linux's prepare/commit shape for mount-attribute changes.
 #![cfg(target_os = "oxide-kernel")]
 
 use alloc::sync::Arc;

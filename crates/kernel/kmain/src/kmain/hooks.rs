@@ -60,7 +60,7 @@ pub unsafe fn tick_poll_combined(_from_user: bool) {
     // task dump if a Runnable task monopolises the CPU with no
     // reschedule past the stall threshold. Silent on a healthy boot.
     sched::diag::watchdog_tick(now_ns);
-    // NTP discipline (`kernel/time/ntp.c` `second_overflow` plus the frequency
+    // NTP discipline (Linux `second_overflow` plus the frequency
     // slew). Runs BEFORE the vvar publish so the vDSO snapshot carries the
     // corrected wall clock rather than lagging it by a tick. One relaxed load
     // and out on a system no NTP client has spoken to; lock-free-safe here

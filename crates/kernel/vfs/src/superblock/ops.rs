@@ -42,7 +42,7 @@ pub struct SbStatFs {
     /// `SuperBlock::statfs` defaults it from `s_dev`.
     pub f_fsid:   u64,
     /// `f_flags` — statvfs(3) `ST_*` mount flags. Per-MOUNT, not an
-    /// `s_op->statfs` output (Linux `calculate_f_flags`, fs/statfs.c): left `0`
+    /// `s_op->statfs` output: left `0`
     /// by `SuperBlock::statfs`, filled at the syscall layer where the owning
     /// mount is in hand.
     pub f_flags:  u64,
@@ -420,8 +420,8 @@ pub trait FileSystemType: Send + Sync {
     ) -> KResult<Arc<SuperBlock>> {
         self.mount_with_flags(src, opts, sb_flags)
     }
-    /// `file_system_type::fs_flags` (Linux `include/linux/fs.h`) — the
-    /// type-level classification the new-mount-API `vfs_get_tree` consults for
+    /// `file_system_type::fs_flags` — the
+    /// type-level classification the new-mount-API tree-getter consults for
     /// the `FS_REQUIRES_DEV` source check (D23). Default `empty()` = a pseudo /
     /// in-memory fs; block-device backends override with `FS_REQUIRES_DEV`.
     /// # C: O(1)

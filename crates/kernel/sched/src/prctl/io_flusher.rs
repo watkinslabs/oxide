@@ -1,4 +1,4 @@
-// `prctl(PR_SET_IO_FLUSHER / PR_GET_IO_FLUSHER)` — Linux `kernel/sys.c`.
+// `prctl(PR_SET_IO_FLUSHER / PR_GET_IO_FLUSHER)`.
 //
 // A userspace block-device server (nbd, iscsi, a FUSE daemon on the writeback
 // path) sets this on itself so that its OWN allocations never recurse into

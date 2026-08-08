@@ -1,12 +1,11 @@
-// `mknod(2)` / `mknodat(2)` decision logic — Linux `fs/namei.c` `may_mknod`
-// and the type-dependent half of `vfs_mknod`. Ungated so the whole matrix is
+// `mknod(2)` / `mknodat(2)` decision logic — the type-validation gate
+// and the type-dependent half of node creation. Ungated so the whole matrix is
 // hosted-testable; the syscall shim keeps only path resolution, the dcache
 // update, and the backend call.
 
 use vfs::Devt;
 
-/// `S_IFMT` and the node types `mknod(2)` names (Linux
-/// `include/uapi/linux/stat.h`).
+/// `S_IFMT` and the node types `mknod(2)` names.
 pub const S_IFMT:   u16 = 0o170000;
 pub const S_IFSOCK: u16 = 0o140000;
 pub const S_IFREG:  u16 = 0o100000;
@@ -15,10 +14,10 @@ pub const S_IFDIR:  u16 = 0o040000;
 pub const S_IFCHR:  u16 = 0o020000;
 pub const S_IFIFO:  u16 = 0o010000;
 
-/// `WHITEOUT_DEV` (Linux `include/linux/fs.h`) — the character device number
+/// `WHITEOUT_DEV` — the character device number
 /// `0:0` an overlay filesystem plants to hide a lower-layer name. It is not a
-/// device: `vfs_mknod` exempts it from BOTH the CAP_MKNOD requirement and the
-/// device-cgroup policy, which is what lets an unprivileged overlay mount
+/// device: node creation exempts it from BOTH the CAP_MKNOD requirement and
+/// the device-cgroup policy, which is what lets an unprivileged overlay mount
 /// record a deletion.
 pub const WHITEOUT_DEV: u32 = 0;
 
@@ -32,7 +31,7 @@ pub enum NodeType { Reg, Chr, Blk, Fifo, Sock }
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MayMknod { Ok(NodeType), Eperm, Einval }
 
-/// `may_mknod` (Linux `fs/namei.c`) — validate the type half of `mode` BEFORE
+/// `may_mknod` — validate the type half of `mode` BEFORE
 /// any path resolution, so a bad type reports its errno regardless of whether
 /// the path exists or the parent is writable. A zero type translates to
 /// `S_IFREG` ("zero mode translates to S_IFREG"). # C: O(1)

@@ -1,4 +1,4 @@
-//! Linux block-device UAPI constants (`include/uapi/linux/major.h`).
+//! Linux block-device UAPI major-number constants.
 
 /// `SCSI_DISK0_MAJOR`: first SCSI disk major. # C: O(1)
 pub const SCSI_DISK_MAJOR: u32 = 8;

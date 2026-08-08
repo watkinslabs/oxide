@@ -1,7 +1,6 @@
-// `struct perf_event_attr` decode + validation — Linux `kernel/events/core.c`
-// `perf_copy_attr()`. Pure over a byte slice: no user pointers, no task state,
-// so the whole extensible-struct protocol and every `-EINVAL` in Linux's order
-// is unit-testable hosted.
+// `struct perf_event_attr` decode + validation. Pure over a byte slice: no
+// user pointers, no task state, so the whole extensible-struct protocol and
+// every `-EINVAL` in the reference order is unit-testable hosted.
 
 use syscall::errno::Errno;
 
@@ -49,7 +48,7 @@ impl AttrErr {
 impl PerfAttr {
     /// # C: O(1)
     pub fn bit(&self, b: u32) -> bool { (self.bits >> b) & 1 == 1 }
-    /// `is_sampling_event()` (`include/linux/perf_event.h`). # C: O(1)
+    /// A nonzero sample period makes this a sampling event. # C: O(1)
     pub fn is_sampling(&self) -> bool { self.sample_period != 0 }
     /// `attr.freq` selects `sample_freq` over `sample_period` in the same union.
     /// # C: O(1)
@@ -170,9 +169,9 @@ pub fn parse_attr(raw: &[u8], size: u32, paranoid: i32, perfmon: bool)
 /// `perf_reg_validate(mask)` == 0. # C: O(1)
 pub fn reg_mask_ok(mask: u64) -> bool { mask != 0 && mask & regs::REJECT == 0 }
 
-/// `perf_allow_kernel()` (`kernel/events/core.c`) minus the LSM hook.
-/// # C: O(1)
+/// Kernel-address sampling admission (`perf_event_paranoid` gate) minus the
+/// LSM hook. # C: O(1)
 pub fn allow_kernel(paranoid: i32, perfmon: bool) -> bool { paranoid <= 1 || perfmon }
 
-/// `perf_allow_cpu()` (`include/linux/perf_event.h`). # C: O(1)
+/// CPU-wide (not self-task) counting admission (`perf_event_paranoid` gate). # C: O(1)
 pub fn allow_cpu(paranoid: i32, perfmon: bool) -> bool { paranoid <= 0 || perfmon }

@@ -1,5 +1,5 @@
-// `membarrier(2)` UAPI + admission — Linux `include/uapi/linux/membarrier.h`
-// and the `SYSCALL_DEFINE3(membarrier)` body in `kernel/sched/membarrier.c`.
+// `membarrier(2)` UAPI + admission — the membarrier UAPI command/flag space
+// and Linux's `SYSCALL_DEFINE3(membarrier)` body.
 //
 // Deliberately NOT kernel-cfg'd: slot files are
 // `#![cfg(target_os = "oxide-kernel")]` and unreachable from the hosted

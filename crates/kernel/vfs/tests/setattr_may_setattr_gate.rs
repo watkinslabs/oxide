@@ -1,4 +1,4 @@
-//! `may_setattr` (Linux `fs/attr.c`), the gate `notify_change` runs BEFORE
+//! `may_setattr`, the gate `notify_change` runs BEFORE
 //! `setattr_prepare`: an immutable (`chattr +i`) or append-only (`chattr +a`)
 //! inode refuses EVERY mode, owner, and explicit-timestamp change with EPERM,
 //! and no capability lifts it. The "set both timestamps to now" form is the

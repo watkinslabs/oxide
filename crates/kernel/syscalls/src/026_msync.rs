@@ -52,7 +52,7 @@ pub(crate) fn msync_vmas(start: u64, len: u64, flags: u64, vmas: &[vmm::Vma]) ->
                 let fstart = off.saturating_add(pos - vs);
                 let fend_excl = off.saturating_add(seg_end - vs);
                 // `vfs_fsync_range(vma->vm_file, fstart, fend, 1)`
-                // (`mm/msync.c:96`) — DURABLE, not merely written back. The old
+                // — DURABLE, not merely written back. The old
                 // `writeback_range` call handed the bytes to the filesystem and
                 // stopped there: no journal commit, no device barrier, so
                 // `MS_SYNC` bought nothing over `MS_ASYNC`.

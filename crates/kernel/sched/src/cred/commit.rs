@@ -1,4 +1,4 @@
-// Linux `commit_creds` (`kernel/cred.c`) side effects that are observable
+// Linux `commit_creds` side effects that are observable
 // through the credential syscalls: the dumpability downgrade and the
 // `pdeath_signal` reset that fire whenever a task's privilege identity
 // changes.
@@ -18,7 +18,7 @@ use core::sync::atomic::{AtomicU8, Ordering};
 use crate::Task;
 use crate::task::SUID_DUMP_DISABLE;
 
-/// Linux `fs/exec.c` `int suid_dumpable = 0`, exported to userspace as
+/// Linux's `int suid_dumpable = 0`, exported to userspace as
 /// `/proc/sys/fs/suid_dumpable`. Canonical here (the credential owner);
 /// procfs BINDS its sysctl leaf to this cell rather than keeping a copy.
 static SUID_DUMPABLE: AtomicU8 = AtomicU8::new(SUID_DUMP_DISABLE);

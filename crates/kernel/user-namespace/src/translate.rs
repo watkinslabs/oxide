@@ -1,5 +1,5 @@
-// Linux `make_kuid`/`from_kuid_munged` id translation (`kernel/user_namespace.c`
-// `map_id_range_down`/`map_id_up`). An id `x` inside the namespace maps to
+// Namespace-to-host and host-to-namespace id translation. An id `x` inside
+// the namespace maps to
 // `host_id + (x - ns_id)` for the extent with `ns_id <= x < ns_id + count`;
 // an id with no covering extent maps to the overflow id.
 

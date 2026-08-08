@@ -20,7 +20,7 @@ use vfs::inode::InodeBuilder;
 use vfs::superblock::{FileSystemType, SbStatFs, SuperBlock, SuperOps};
 use vfs::{default_file_ops, default_inode_ops, mk_mode, FileType, InodeRef, KResult};
 
-/// Linux `PROC_SUPER_MAGIC` (`include/uapi/linux/magic.h`) — a representative
+/// `PROC_SUPER_MAGIC` — a representative
 /// anon/pseudo-fs magic value; the exact number is not load-bearing here, only
 /// that the override is reported verbatim.
 const ANON_MAGIC: u64 = 0x9fa0;

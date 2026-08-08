@@ -1,6 +1,6 @@
 #![cfg(any(target_os = "oxide-kernel", test))]
 
-//! Block-device ioctls (Linux `block/ioctl.c blkdev_ioctl`). blkid, mkfs,
+//! Block-device ioctls (Linux `blkdev_ioctl`'s shape). blkid, mkfs,
 //! udev and systemd-fsck all probe `/dev/vda` with these right after opening
 //! it; a block node is NOT a CharDev, so without this they'd fall through the
 //! ioctl shim to `ENOTTY`. The disk geometry and discard operations come from

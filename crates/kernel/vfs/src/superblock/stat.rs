@@ -5,13 +5,13 @@ use crate::types::KResult;
 use super::{SbStatFs, SuperBlock};
 
 impl SuperBlock {
-    /// `statfs_by_dentry` (Linux fs/statfs.c): run `s_op->statfs`, then apply the
+    /// `statfs_by_dentry`: run `s_op->statfs`, then apply the
     /// VFS-side defaults — `f_type`/`f_bsize`/`f_fsid` from the superblock and
     /// `f_frsize = f_bsize` when the backend left it zero. `f_namelen` defaults
-    /// to `NAME_MAX`, the value every generic Linux `s_op->statfs`
+    /// to `NAME_MAX`, the value every generic `s_op->statfs`
     /// (`simple_statfs`, `shmem_statfs`) reports. Block/inode COUNTS are never
     /// defaulted: a backend that reports zero blocks has zero blocks, which is
-    /// what Linux reports for a pseudo filesystem.
+    /// the reported result for a pseudo filesystem.
     /// # C: O(1)
 pub fn statfs(&self) -> KResult<SbStatFs> {
         let mut st = self.s_op.statfs()?;
@@ -42,12 +42,12 @@ pub fn statfs(&self) -> KResult<SbStatFs> {
     /// `None`. # C: O(len stats)
     pub fn show_stats(&self) -> Option<String> { self.s_op.show_stats() }
 
-    /// `__mark_inode_dirty` (Linux fs/fs-writeback.c) → `s_op->dirty_inode`: run
-    /// the backend dirty-tracking hook for `inode` with the `I_DIRTY_*` `flags`
-    /// being applied (default ORs them into `i_state`). The icache-keyed
-    /// [`Self::mark_inode_dirty`] sets state + reconciles the writeback pin by
-    /// `ino`; THIS is the `s_op` dispatch in hand of the concrete inode (the path
-    /// `__mark_inode_dirty` takes before consulting the writeback list).
+    /// `s_op->dirty_inode` dispatch: run the backend dirty-tracking hook for
+    /// `inode` with the `I_DIRTY_*` `flags` being applied (default ORs them into
+    /// `i_state`). The icache-keyed [`Self::mark_inode_dirty`] sets state +
+    /// reconciles the writeback pin by `ino`; THIS is the `s_op` dispatch in
+    /// hand of the concrete inode (the notification step taken before
+    /// consulting the writeback list).
     /// # C: O(1)
     pub fn dirty_inode(&self, inode: &Inode, flags: u32) { self.s_op.dirty_inode(inode, flags); }
 

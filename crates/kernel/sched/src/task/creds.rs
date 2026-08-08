@@ -5,11 +5,11 @@ use sync::{Spinlock, TaskList as TaskListClass};
 use super::Task;
 
 /// Linux `cred->group_info`: a refcounted, ASCENDING-SORTED supplementary
-/// gid list (`kernel/groups.c` `groups_alloc`/`groups_sort`). `None` is the
+/// gid list (`groups_alloc`/`groups_sort`). `None` is the
 /// empty list (Linux `init_groups`, `ngroups == 0`) and costs no allocation.
 pub type GroupList = Option<Arc<[u32]>>;
 
-/// Linux securebits from `include/uapi/linux/securebits.h`.
+/// Linux securebits (`SECBIT_*`) and their `_LOCKED` companions.
 ///
 /// These are credential state, not independent task flags: `PR_SET_KEEPCAPS`
 /// is specified as a compatibility interface for `SECBIT_KEEP_CAPS`.
@@ -88,7 +88,7 @@ pub struct Creds {
     pub groups: Spinlock<GroupList, TaskListClass>,
 
     /// Linux capability bitmasks (CAP_*). 64-bit for v3 layout
-    /// per `capget(2)` / `capset(2)` and `capability.h`. Init = all
+    /// per `capget(2)` / `capset(2)`. Init = all
     /// bits set on root tasks; non-root inherits parent's. Real
     /// permission checks at privileged operations ride a follow-up;
     /// storage + capget/capset round-trip is the substrate.
@@ -104,7 +104,7 @@ pub struct Creds {
 }
 
 impl Creds {
-    /// Linux `NGROUPS_MAX` (`include/uapi/linux/limits.h`): the largest
+    /// Linux `NGROUPS_MAX`: the largest
     /// supplementary group list `setgroups(2)` accepts.
     pub const NGROUPS_MAX: usize = 65536;
 
@@ -126,8 +126,8 @@ impl Creds {
         }
     }
 
-    /// Linux `CAP_FULL_SET` == `CAP_VALID_MASK` == `BIT_ULL(CAP_LAST_CAP+1)-1`
-    /// (`include/linux/capability.h`), i.e. bits 0..=`CAP_CHECKPOINT_RESTORE`.
+    /// Linux `CAP_FULL_SET` == `CAP_VALID_MASK` == `BIT_ULL(CAP_LAST_CAP+1)-1`,
+    /// i.e. bits 0..=`CAP_CHECKPOINT_RESTORE`.
     /// Setting every one of the 64 bits instead leaks undefined capabilities
     /// out through `capget` and makes `capset` reject the mask Linux itself
     /// hands back (`mk_kernel_cap` masks with exactly this value).

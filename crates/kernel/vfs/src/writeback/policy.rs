@@ -5,7 +5,7 @@
 
 use crate::inode::{I_DIRTY, I_DIRTY_ALL, I_DIRTY_INODE, I_DIRTY_SYNC, I_DIRTY_TIME};
 
-/// Linux `dirtytime_expire_interval` default (`fs/fs-writeback.c`, the
+/// Linux `dirtytime_expire_interval` default (the
 /// `vm.dirtytime_expire_seconds` sysctl): how long a lazily-deferred timestamp
 /// may sit in memory before a background writeback pass forces it to disk.
 pub const DIRTYTIME_EXPIRE_SECS: u64 = 12 * 60 * 60;

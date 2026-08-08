@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// copy_tree / clone_mnt / commit_tree — Linux `fs/namespace.c` subtree clone
+// copy_tree / clone_mnt / commit_tree — subtree clone
 // (`copy_tree`/`clone_mnt`/`commit_tree`), the structural primitive shared by
 // mount propagation (`propagate_mnt`) and the MS_REC recursive bind. A clone
 // SHARES the source superblock (one extra `s_active`), copies its option flags

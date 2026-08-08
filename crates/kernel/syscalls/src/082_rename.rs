@@ -1,7 +1,7 @@
 // 082 rename — one syscall, one file (docs/53 §0). Hosts the shared
 // rename_impl core (also used by 264_renameat + 316_renameat2).
 //
-// Structure mirrors Linux `fs/namei.c` `filename_renameat2` step for step,
+// Structure mirrors Linux's `filename_renameat2` step for step,
 // because rename's observable surface is an errno LADDER whose ORDER is the
 // contract. The pure decisions live in `crate::rename_policy` (ungated, unit
 // tested); this file only fetches paths, resolves parents, and applies them.

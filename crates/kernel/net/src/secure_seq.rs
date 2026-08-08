@@ -1,11 +1,11 @@
-// TCP initial sequence numbers and ephemeral-port offsets — the Linux
-// `net/core/secure_seq.c` owner, keyed from the one kernel CSPRNG.
+// TCP initial sequence numbers and ephemeral-port offsets — ports Linux's
+// `secure_seq` owner, keyed from the one kernel CSPRNG.
 //
 // Module manifest:
 //   `hash`    — the pure keyed constructions (RFC 6528 `F`, `seq_scale`, the
 //               port-offset hash). No globals, no clock: all testable.
 //   `perturb` — the connect-time port-offset perturb table
-//               (Linux `table_perturb`, `net/ipv4/inet_hashtables.c`).
+//               (Linux `table_perturb`).
 //
 // What this replaces and why it mattered: the ISN used to be one global
 // counter starting at a fixed 0x10000000 and stepping 0x1000, so every boot

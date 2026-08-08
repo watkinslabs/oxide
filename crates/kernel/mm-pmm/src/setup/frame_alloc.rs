@@ -7,8 +7,8 @@ use super::metadata::cow_dbg_rmap_report;
 fn alloc_frame_with_meta(refcount: u32, mapcount: u32) -> Option<u64> {
     use core::sync::atomic::Ordering;
     let p = pmm_static()?;
-    // Linux page-allocator invariant (`mm/page_alloc.c` `check_new_page`):
-    // a frame on the free list is unreferenced — its struct-page refcount
+    // Linux page-allocator invariant: a frame on the free list is
+    // unreferenced — its struct-page refcount
     // is 0. If the buddy hands back a frame whose refcount is non-zero it
     // is still mapped in some live AS (a buddy/struct-page desync — e.g. a
     // frame that re-entered the free list while a peer mapping still holds

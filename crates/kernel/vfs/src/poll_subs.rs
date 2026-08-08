@@ -62,8 +62,8 @@ pub trait EpollNotify: Send + Sync {
 /// One subscriber entry: epoll instance id + wake callback ref +
 /// interest mask. `id` lets epoll_ctl(DEL) find + drop the right
 /// entry without pointer comparisons on the trait object. `mask`
-/// is the subscriber's interest (epitem `event.events`, Linux
-/// fs/eventpoll.c) — `notify_mask` skips a subscriber whose
+/// is the subscriber's interest (the epitem `event.events` mask)
+/// — `notify_mask` skips a subscriber whose
 /// interest does not intersect the fired event, matching
 /// `ep_poll_callback`'s key check. `!0` = interested in every
 /// event (the plain `subscribe` default → preserves wake-all).
@@ -81,7 +81,7 @@ pub struct Subscription {
 
 /// Events that wake an epoll subscriber unconditionally, regardless
 /// of its requested interest mask: `EPOLLERR | EPOLLHUP` are always
-/// reported (Linux fs/eventpoll.c `ep_item_poll` OR-s them into the
+/// reported (`ep_item_poll` OR-s them into the
 /// effective mask; `poll(2)` likewise always returns them). An event
 /// site that emits one of these wakes every subscriber even if none
 /// asked for it.
@@ -184,7 +184,7 @@ impl PollSubscribers {
     }
 
     /// Add a subscriber keyed by `id` with an explicit interest `mask`
-    /// (the epitem `event.events`, Linux fs/eventpoll.c). `notify_mask`
+    /// (the epitem `event.events` mask). `notify_mask`
     /// wakes this subscriber only when a fired event intersects `mask`
     /// (plus the always-reported `EPOLLERR|EPOLLHUP`). Idempotent: a
     /// re-add with the same id replaces both the Weak and the mask,
@@ -286,8 +286,8 @@ impl Default for PollSubscribers { fn default() -> Self { Self::new() } }
 /// Whether an on-disk inode of `ft` needs its own poll wait queue, independent
 /// of which filesystem stores it.
 ///
-/// Linux `init_special_inode` gives an `S_IFIFO` node `pipefifo_fops`, and
-/// `fifo_open` (`fs/pipe.c:1219`) attaches an `i_pipe` whose `rd_wait`/
+/// `init_special_inode` gives an `S_IFIFO` node `pipefifo_fops`, and
+/// `fifo_open` attaches an `i_pipe` whose `rd_wait`/
 /// `wr_wait` ARE the queues `pipe_poll` registers on — the backing filesystem
 /// never enters into it. Every `S_IFIFO` constructor must therefore attach a
 /// subscriber list; `fs::pipe`'s notify sites read it back through

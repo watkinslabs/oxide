@@ -1,6 +1,6 @@
 // Hosted unit tests for the ioprio decision core.
-// Reference: Linux v7.2.0-rc4 `block/ioprio.c`, `include/linux/ioprio.h`,
-// `include/uapi/linux/ioprio.h`.
+// Reference: Linux's `sys_ioprio_set`/`sys_ioprio_get` and the ioprio UAPI
+// class/data encoding.
 
 use super::*;
 

@@ -1,6 +1,6 @@
 // 187 readahead — one syscall, one file (docs/53 §0). ABI shim only: the
 // admission ladder and the cache fill are `fs::readahead::readahead`
-// (Linux `mm/readahead.c` `ksys_readahead`).
+// (`ksys_readahead`).
 //
 // The slot previously fell through to the compat table's `sys_fadvise_validate`,
 // which checked only that `fd` was open and returned 0 — accept-and-ignore.
@@ -11,7 +11,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
 /// `sys_readahead(fd, offset, count)` — slot 187. EBADF for a closed fd comes
-/// first (`mm/readahead.c:730-731`); everything else is decided by the work-fn.
+/// first ; everything else is decided by the work-fn.
 /// # C: O(pages in range)
 pub fn sys_readahead(args: &SyscallArgs) -> i64 {
     let fd = args.a0 as i32;

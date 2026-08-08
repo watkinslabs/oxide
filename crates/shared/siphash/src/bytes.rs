@@ -1,5 +1,5 @@
-// `siphash(data, key)` over an arbitrary byte buffer — Linux
-// `__siphash_unaligned` in `lib/siphash.c`. Rust slices carry their length, so
+// `siphash(data, key)` over an arbitrary byte buffer — Linux's
+// `__siphash_unaligned`. Rust slices carry their length, so
 // the aligned/unaligned split and the `load_unaligned_zeropad` fast path have
 // no analogue here; the byte-at-a-time trailer below is the portable
 // `switch (left)` arm, which produces identical output.

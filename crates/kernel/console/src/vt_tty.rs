@@ -2,7 +2,7 @@
 // 1..=63) gets a REAL `TtyStruct<VtConsoleDriver, KernelWait>` — the same
 // N_TTY core the system console (`static_console`) uses — replacing the
 // legacy `tty::live` per-VT ring + ad-hoc line discipline. Position in
-// the stack (mirrors Linux `drivers/tty/vt/vt.c` con_ops):
+// the stack (mirrors Linux VT `con_ops`):
 //
 //   /dev/ttyN inode ─▶ TtyStruct ─▶ N_TTY ─▶ VtConsoleDriver ─▶ fbcon
 //                          │ block/wake (KernelWait, lost-wakeup-free)

@@ -69,13 +69,13 @@ pub fn id_aa64isar0_el1() -> u64 {
 }
 
 /// Decode the optional `AT_HWCAP` crypto/CRC bits from an `ID_AA64ISAR0_EL1`
-/// value (Linux `arch/arm64/kernel/cpufeature.c`). A 4-bit field of 0 means
+/// value, per Linux's cpufeature detection. A 4-bit field of 0 means
 /// "not implemented" so a HWCAP bit is set only when its field is non-zero —
 /// we can never advertise an instruction the CPU lacks. Pure + host-tested
 /// so the bit math can't drift. # C: O(1).
 pub fn isar0_hwcap(isar0: u64) -> u64 {
     // ID_AA64ISAR0_EL1 fields: AES[7:4], SHA1[11:8], SHA2[15:12], CRC32[19:16].
-    // AArch64 HWCAP bits (uapi/asm/hwcap.h): AES=1<<3, PMULL=1<<4, SHA1=1<<5,
+    // AArch64 HWCAP bits from the auxv AT_HWCAP word: AES=1<<3, PMULL=1<<4, SHA1=1<<5,
     // SHA2=1<<6, CRC32=1<<7.
     const HWCAP_AES: u64 = 1 << 3;
     const HWCAP_PMULL: u64 = 1 << 4;

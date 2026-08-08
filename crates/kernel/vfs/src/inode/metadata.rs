@@ -85,7 +85,7 @@ impl Inode {
     pub fn gid(&self) -> Option<u32> { Some(self.i_gid.load(Ordering::Relaxed)) }
     /// `i_projid`. # C: O(1)
     pub fn projid(&self) -> u32 { self.i_projid.load(Ordering::Relaxed) }
-    /// `inode_get_atime` (Linux include/linux/fs.h) — the `i_atime_sec` /
+    /// `inode_get_atime` — the `i_atime_sec` /
     /// `i_atime_nsec` pair as one [`Timespec64`]. # C: O(1)
     pub fn atime(&self) -> Option<Timespec64> { Some(load_ts(&self.i_atime_sec, &self.i_atime_nsec)) }
     /// `inode_get_mtime`. # C: O(1)
@@ -185,10 +185,10 @@ impl Inode {
     /// Set `i_flags`. # C: O(1)
     pub fn set_i_flags(&self, flags: u32) { self.i_flags.store(flags, Ordering::Relaxed); }
 
-    /// `IS_SYNC(inode)` (Linux `include/linux/fs.h`): the `chattr +S` per-inode
+    /// `IS_SYNC(inode)`: the `chattr +S` per-inode
     /// synchronous-write flag. Makes every write on this inode behave as if the
     /// description had `O_SYNC`, which is why `iocb_is_dsync` tests it
-    /// alongside `IOCB_DSYNC` (`include/linux/fs.h:2652-2656`). # C: O(1)
+    /// alongside `IOCB_DSYNC`. # C: O(1)
     pub fn is_sync(&self) -> bool {
         self.i_flags.load(Ordering::Relaxed) & super::flags::S_SYNC != 0
     }
@@ -197,7 +197,7 @@ impl Inode {
     /// address_space. # C: O(1)
     pub fn wb_err(&self) -> &crate::errseq::Errseq { &self.i_wb_err }
 
-    /// `mapping_set_error` (Linux `include/linux/pagemap.h:238-255`): record a
+    /// `mapping_set_error`: record a
     /// deferred writeback failure so the NEXT `fsync`/`syncfs` reports it, even
     /// though the call that hit the error (background writeback, inode
     /// eviction, `msync`) had no one to return it to.
@@ -284,7 +284,7 @@ impl Inode {
     }
 }
 
-/// Linux `i_writecount` accessors (`include/linux/fs.h:2798-2830`). The counter
+/// `i_writecount` accessors. The counter
 /// is one word with two signs: `>0` writers, `<0` execs. Both directions refuse
 /// the other, which is what makes `ETXTBSY` mutual — a running binary cannot be
 /// opened for write, and a file open for write cannot be executed.

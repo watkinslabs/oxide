@@ -257,7 +257,7 @@ where F: FnMut(usize, &[u8]) -> Result<usize, i64>
             Err(e) => return if total != 0 { Ok(total) } else { Err(e) },
         }
         if nonblock { return if total != 0 { Ok(total) } else { Err(err(Errno::Eagain)) }; }
-        // Linux `tcp_recvmsg_locked` (`net/ipv4/tcp.c:2783-2786`):
+        // Linux `tcp_recvmsg_locked`:
         // `copied = sock_intr_errno(timeo)` on the nothing-copied arm, while a
         // partial transfer breaks out and returns the count (`tcp.c:2735-2742`).
         if sched::live::deliverable_signals_self() != 0 {

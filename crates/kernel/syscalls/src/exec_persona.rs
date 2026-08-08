@@ -1,5 +1,5 @@
 // The persona half of `execve`: Linux's `SET_PERSONALITY2` /
-// `elf_read_implies_exec` (`fs/binfmt_elf.c:1016-1018`) and the
+// `elf_read_implies_exec` and the
 // `MMAP_PAGE_ZERO` emulation at the tail of `load_elf_binary` (`:1349-1361`).
 //
 // Both arches this kernel targets are 64-bit-only, which fixes both halves of

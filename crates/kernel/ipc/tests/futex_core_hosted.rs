@@ -352,7 +352,7 @@ mod futex;
 
 use futex::core::{FUTEX_BITSET_MATCH_ANY, FUTEX_PRIVATE_FLAG};
 
-// Linux `linux/futex.h` op numbers — mirrored here (like every syscall shim
+// Linux futex UAPI op numbers — mirrored here (like every syscall shim
 // in this codebase mirrors them locally) since `wait.rs`'s per-op constants
 // are `pub(super)` to the `futex` module tree, not part of its public API.
 const FUTEX_WAIT: u32 = 0;

@@ -160,7 +160,7 @@ fn a_three_owner_wait_chain_is_walked_to_the_cycle() {
 
 #[test]
 fn an_ofd_owner_is_never_asked_for_deadlock_detection() {
-    // Linux `fs/locks.c:1114` bails out for `FL_OFDLCK` before walking, so the
+    // OFD-owned locks are excluded from deadlock detection before walking, so the
     // caller must gate on this rather than the graph doing it.
     assert!(RecordOwner::Ofd(FIRST_FILE).is_ofd());
     assert!(!files(FIRST_TABLE).is_ofd());

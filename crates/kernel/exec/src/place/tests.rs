@@ -8,7 +8,7 @@ fn seg(vaddr: u64, mem_sz: u64, align: u64) -> LoadSegment {
     }
 }
 
-/// `fs/binfmt_elf.c:463-478`: lowest PT_LOAD page start to highest PT_LOAD end.
+/// Linux `total_mapping_size()`: lowest PT_LOAD page start to highest PT_LOAD end.
 /// Reserving less than this splits an image across two holes; reserving from
 /// the raw `p_vaddr` instead of its page start loses the head fragment.
 #[test]
@@ -41,7 +41,7 @@ fn total_mapping_size_is_always_page_granular() {
     }
 }
 
-/// `fs/binfmt_elf.c:491-509`: coarsest power-of-two `p_align`, page-aligned;
+/// Linux `maximum_alignment()`: coarsest power-of-two `p_align`, page-aligned;
 /// non-power-of-two alignments are skipped rather than adopted.
 #[test]
 fn maximum_alignment_takes_the_coarsest_power_of_two() {

@@ -26,7 +26,7 @@ pub const FS_CASEFOLD_FL:  u32 = 0x4000_0000;
 pub const FS_COMMON_FL:    u32 = FS_SYNC_FL | FS_IMMUTABLE_FL | FS_APPEND_FL
     | FS_NODUMP_FL | FS_NOATIME_FL | FS_DAX_FL | FS_PROJINHERIT_FL | FS_VERITY_FL;
 
-/// `FS_XFLAG_*` (`uapi/linux/fs.h`) — the whole published set, so no caller
+/// `FS_XFLAG_*` — the whole published set, so no caller
 /// re-declares a subset of its own.
 pub const FS_XFLAG_REALTIME:  u32 = 0x0000_0001;
 pub const FS_XFLAG_PREALLOC:  u32 = 0x0000_0002;
@@ -49,7 +49,7 @@ pub const FS_XFLAG_CASEFOLD:  u32 = 0x0004_0000;
 pub const FS_XFLAG_CASENONPRESERVING: u32 = 0x0008_0000;
 pub const FS_XFLAG_HASATTR:   u32 = 0x8000_0000;
 
-/// `include/linux/fileattr.h` masks — shared between `flags` and `xflags`,
+/// `FS_XFLAG_*` masks — shared between `flags` and `xflags`,
 /// read-only, value-carrying, directory-only, and misc-settable.
 pub const FS_XFLAG_COMMON:    u32 = FS_XFLAG_SYNC | FS_XFLAG_IMMUTABLE | FS_XFLAG_APPEND
     | FS_XFLAG_NODUMP | FS_XFLAG_NOATIME | FS_XFLAG_DAX | FS_XFLAG_PROJINHERIT | FS_XFLAG_VERITY;
@@ -117,9 +117,9 @@ pub const S_CASEFOLD:  u32 = 1 << 15;
 pub const S_ANON_INODE: u32 = 1 << 19;
 pub const S_VERITY:    u32 = 1 << 16;
 /// oxide-internal `i_flags` bit (like `I_PUBLIC_DEV` in `inode/metadata.rs`).
-/// Linux's `inode->i_flags` has no `NODUMP` — `FS_NODUMP_FL` "does not require
-/// any action in i_flags" (`mm/shmem.c` `shmem_set_inode_flags`), so shmem
-/// parks it in `shmem_inode_info.fsflags`. The oxide inode carries the whole
+/// Linux's `inode->i_flags` has no `NODUMP` — `FS_NODUMP_FL` requires no
+/// action in `i_flags`, so shmem parks it in a filesystem-private field
+/// instead. The oxide inode carries the whole
 /// `chattr` word in `i_flags`, so the bit lives here instead of in a
 /// per-filesystem shadow field that could disagree with it.
 pub const S_NODUMP:    u32 = 1 << 17;
@@ -128,7 +128,7 @@ pub const POLL_IN:    u32 = 0x0001;
 pub const POLL_OUT:   u32 = 0x0004;
 pub const POLL_HUP:   u32 = 0x0010;
 pub const POLL_RDNORM: u32 = 0x0040;
-/// `EPOLLWRNORM` (`include/uapi/linux/eventpoll.h`) — the companion of
+/// `EPOLLWRNORM` — the companion of
 /// `EPOLLOUT` that every writability wake carries (`sk_stream_write_space`
 /// wakes with `EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND`).
 pub const POLL_WRNORM: u32 = 0x0100;

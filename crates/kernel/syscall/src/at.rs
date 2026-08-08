@@ -1,4 +1,4 @@
-// `AT_*` dirfd/`*at` flags (`uapi/linux/fcntl.h`). One owner for the ABI
+// `AT_*` dirfd/`*at` flags (fcntl UAPI). One owner for the ABI
 // numbers so a shim, a work-fn crate and a test cannot drift apart on them.
 
 /// `AT_FDCWD` — resolve relative to the calling task's cwd.

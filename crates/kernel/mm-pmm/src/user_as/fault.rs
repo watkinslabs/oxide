@@ -556,7 +556,7 @@ fn handle(va_raw: u64, fault: FaultKind, user_mode: bool) -> bool {
     // is a kernel bug, not something to paper over against a shared AS — return
     // unhandled so it surfaces. The boot PID-1 stack is mapped eagerly via
     // `prefault_stack` (setup_arg_pages), so no boot-context user fault occurs.
-    // Linux `mm_account_fault()` (`mm/memory.c`) charges every *completed*
+    // Linux charges every *completed*
     // user fault to `current->min_flt`, or to `maj_flt` when the fill had to
     // reach backing store (`VM_FAULT_MAJOR`). oxide's file fill
     // (`mm-vmm address_space/fault/fill.rs`) has no page-cache short-circuit:

@@ -1,5 +1,5 @@
-// `consw` renderer abstraction (Linux `struct consw`,
-// include/linux/console.h). The VT layer drives a `Consw` to render a
+// `consw` renderer abstraction (Linux `struct consw`).
+// The VT layer drives a `Consw` to render a
 // `Vc` cell grid; concrete renderers (fbcon, vgacon) implement it. No
 // `dyn` — `Consw` is a generic trait monomorphized at each call site
 // (mirrors the HAL-trait rule, CLAUDE.md §Code style / docs/52).

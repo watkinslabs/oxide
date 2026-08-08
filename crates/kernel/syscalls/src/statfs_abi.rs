@@ -6,8 +6,8 @@
 use vfs::SbStatFs;
 
 /// `sizeof(struct statfs)` — identical LP64 layout on x86_64 and aarch64
-/// (`include/uapi/asm-generic/statfs.h`; x86_64's `asm/statfs.h` keeps the
-/// generic definition for the 64-bit ABI): 11 `__kernel_long_t` fields, a
+/// (x86_64 keeps the generic definition for the 64-bit ABI): 11
+/// `__kernel_long_t` fields, a
 /// 2×`int` `__kernel_fsid_t`, and `f_spare[4]`.
 pub const STATFS_BYTES: usize = 120;
 
@@ -26,7 +26,7 @@ pub const OFF_FLAGS:   usize = 80;
 /// `f_spare[4]` — always zero, the tail Linux `memset`s.
 pub const OFF_SPARE:   usize = 88;
 
-// statvfs(3) `ST_*` mount flags (sys/statvfs.h) reported in statfs `f_flags`.
+// `statvfs(3)` `ST_*` mount flags reported in statfs `f_flags`.
 // These are a SEPARATE bit-space from the kernel `MNT_*`/`SB_*` bits and are
 // mapped BY NAME below (e.g. `MNT_RELATIME`=1<<21 → `ST_RELATIME`=1<<12 — same
 // concept, different bit), exactly as Linux `calculate_f_flags` does.

@@ -1,4 +1,4 @@
-// `forget_original_parent` / `reparent_leader` (Linux `kernel/exit.c`).
+// `forget_original_parent` / `reparent_leader` reparenting a dying task's children.
 //
 // Adoption order is NOT "always init": a live thread of the dying task's own
 // group comes first (`find_alive_thread`), then the nearest

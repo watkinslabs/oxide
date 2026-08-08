@@ -1,11 +1,10 @@
-//! B243 [D21]: `move_mount` (MS_MOVE) validation, faithful to Linux
-//! `do_move_mount` (`fs/namespace.c`). Two universal rejections that were
+//! B243 [D21]: `move_mount` (MS_MOVE) validation. Two universal rejections that were
 //! missing:
-//!   * moving the namespace ROOT mount itself (`!mnt_has_parent(old)`);
-//!   * moving a mount INTO its own subtree (`for(p=dest;...) if(p==old)`).
-//! NOT covered (deliberately allowed): moving ONTO `/` — systemd
-//! `mount_move_root` (`mount(new, "/", MS_MOVE)` + `chroot(".")`) depends on
-//! it and Linux permits overmounting the root that way (see
+//!   * moving the namespace ROOT mount itself (no parent mount);
+//!   * moving a mount INTO its own subtree (destination walk hits the source).
+//! NOT covered (deliberately allowed): moving ONTO `/` — a root-pivoting
+//! sequence (`mount(new, "/", MS_MOVE)` + `chroot(".")`) depends on
+//! it, and overmounting the root that way is permitted (see
 //! `sandbox_repro::sandbox_ms_move_staging_to_root`).
 //! A legitimate relocation between two non-root mountpoints still succeeds.
 //! Exercises the real global mount engine via the hosted fixture, no QEMU.

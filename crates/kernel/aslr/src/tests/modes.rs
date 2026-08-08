@@ -2,7 +2,7 @@ use crate::exec::ExecRnd;
 use crate::limits::{X86_64, AARCH64};
 use crate::mode::*;
 
-/// `Documentation/admin-guide/sysctl/kernel.rst:1208-1227` plus the two read
+/// `kernel.randomize_va_space` sysctl ABI plus the two read
 /// sites: `!= 0` arms everything, `> 1` additionally arms `brk`.
 #[test]
 fn three_modes_fold_exactly_as_linux_folds_them() {
@@ -68,7 +68,7 @@ fn addr_no_randomize_pins_the_layout_at_every_mode() {
     assert!(live.randomize && live.randomize_brk);
 }
 
-/// The gate combination Linux writes at `fs/binfmt_elf.c:1332`.
+/// The gate combination Linux's `arch_randomize_brk` call site requires.
 #[test]
 fn brk_gate_needs_both_the_mode_and_the_personality() {
     assert!(randomize_brk(Mode::Full, false));

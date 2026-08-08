@@ -5,7 +5,7 @@
 // nanosleep(2) (035), pause(2) (034) and clock_nanosleep(2) (230) each carried
 // a private copy of this triage. The clock_nanosleep copy tested the RAW
 // `sigpending & !sigmask`, so a signal Linux drops at send time
-// (`kernel/signal.c` `sig_ignored`/`prepare_signal`: SIG_IGN, or SIG_DFL whose
+// (`sig_ignored`/`prepare_signal`: SIG_IGN, or SIG_DFL whose
 // signal(7) default action is Ignore) truncated the sleep — a SIGWINCH
 // terminal resize or a SIGURG cut every `clock_nanosleep` short. Lives on
 // `Task` next to `deliverable_signals` so there is one owner, not four.
@@ -39,13 +39,13 @@ impl Task {
     /// filtered pending set — so an ignored signal never wakes the sleeper.
     ///
     /// A SIG_DFL job-control stop is *not* special here. `complete_signal` ->
-    /// `signal_wake_up_state` (`kernel/signal.c:721-736`) sets TIF_SIGPENDING
+    /// `signal_wake_up_state` sets TIF_SIGPENDING
     /// for SIGSTOP/SIGTSTP/SIGTTIN/SIGTTOU like any other signal, so
     /// `do_nanosleep`'s `while (t->task && !signal_pending(current))`
-    /// (`kernel/time/hrtimer.c:2404`) and `sys_pause`'s
-    /// `while (!signal_pending(current))` (`kernel/signal.c:4834`) both EXIT
+    /// and `sys_pause`'s
+    /// `while (!signal_pending(current))` both EXIT
     /// on it. The stop is taken later, in `get_signal` -> `do_signal_stop`, on
-    /// the way back to user mode — and `dequeue_signal` (`signal.c:643`) is the
+    /// the way back to user mode — and `dequeue_signal` is the
     /// only place the pending bit clears. Handling the stop inside the park
     /// loop instead bypassed the interrupted tail entirely: `nanosleep(2)` never
     /// copied the remainder to `rmtp` and never armed the restart block, so a
@@ -75,8 +75,7 @@ impl Task {
 }
 
 /// Linux `TASK_INTERRUPTIBLE` vs `TASK_KILLABLE`, as
-/// `signal_pending_state(state, current)` distinguishes them
-/// (`include/linux/sched/signal.h:409-417`).
+/// `signal_pending_state(state, current)` distinguishes them.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum WaitState {
     /// `TASK_INTERRUPTIBLE` — any deliverable signal ends the wait.
@@ -106,7 +105,7 @@ impl WaitOutcome {
     pub const fn interrupted(self) -> bool { matches!(self, WaitOutcome::Interrupted) }
 }
 
-/// Linux `signal_pending_state(state, p)` (`sched/signal.h:409-417`):
+/// Linux `signal_pending_state(state, p)`:
 ///
 /// ```text
 /// if (!(state & (TASK_INTERRUPTIBLE | TASK_WAKEKILL))) return 0;
@@ -116,7 +115,7 @@ impl WaitOutcome {
 ///
 /// `signal_pending(p)` is [`Task::deliverable_signals`], the `sig_ignored`-
 /// filtered set. `__fatal_signal_pending` is SIGKILL ONLY
-/// (`sched/signal.h:399-402`) — not SIGSTOP, which stops rather than kills, so
+/// — not SIGSTOP, which stops rather than kills, so
 /// a killable sleeper must stay asleep across a job-control stop.
 /// # C: O(N_sig)
 pub fn signal_pending_state(task: &Task, state: WaitState) -> bool {
@@ -167,7 +166,7 @@ mod tests {
 
     #[test]
     fn default_ignored_signals_never_truncate_a_sleep() {
-        // Linux SIG_KERNEL_IGNORE_MASK (`include/linux/signal.h:434-436`):
+        // Linux SIG_KERNEL_IGNORE_MASK:
         // SIGCHLD, SIGCONT, SIGWINCH, SIGURG are dropped at send time, so a
         // terminal resize can never cut a sleep short.
         for sig in [Signum::Sigwinch, Signum::Sigurg, Signum::Sigchld, Signum::Sigcont] {
@@ -228,7 +227,7 @@ mod tests {
     #[test]
     fn default_stop_signal_ends_the_wait_and_stays_pending_for_the_tail() {
         // B1456: the sleeper must NOT consume the stop. `dequeue_signal`
-        // (`kernel/signal.c:643`) inside `get_signal` is the only consumer, and
+        // inside `get_signal` is the only consumer, and
         // the syscall-return tail is what runs `do_signal_stop` — a sleeper
         // that swallowed the bit left the tail nothing to stop on, so the
         // ERESTART* restart decision never ran.
@@ -290,7 +289,7 @@ mod tests {
 
     #[test]
     fn sigstop_is_not_fatal_so_a_killable_wait_survives_a_job_control_stop() {
-        // `__fatal_signal_pending` tests SIGKILL ONLY (`sched/signal.h:399-402`).
+        // `__fatal_signal_pending` tests SIGKILL ONLY.
         // SIGSTOP stops the task rather than killing it, so a killable sleeper
         // must stay asleep across it — treating UNBLOCKABLE (KILL|STOP) as fatal
         // would end uninterruptible waits on a plain job-control stop.

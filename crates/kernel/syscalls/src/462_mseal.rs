@@ -1,4 +1,4 @@
-// 462 mseal — `SYSCALL_DEFINE3(mseal)` / `do_mseal` (`mm/mseal.c:143`).
+// 462 mseal — `SYSCALL_DEFINE3(mseal)` / `do_mseal`.
 // ABI shim (docs/53): the EINVAL ladder is `vmm::mseal::mseal_args`
 // (hosted-tested), the seal itself is `AddressSpace::mseal`.
 
@@ -23,7 +23,7 @@ pub fn sys_mseal(args: &SyscallArgs) -> i64 {
         Ok(r) => r,
         Err(_) => return err(Errno::Einval),
     };
-    // `end == start` returns 0 without taking mmap_lock (`mm/mseal.c:167`).
+    // `end == start` returns 0 without taking mmap_lock.
     let Some((start, end)) = range else { return 0 };
     let Some(cur) = sched::live::current() else { return err(Errno::Einval) };
     // SAFETY: mm slot single-mutator per `13§5`; running task on this CPU.

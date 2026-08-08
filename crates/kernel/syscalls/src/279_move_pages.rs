@@ -1,5 +1,5 @@
-// 279 move_pages — `SYSCALL_DEFINE6(move_pages)` / `kernel_move_pages`
-// (`mm/migrate.c:2592`), `do_pages_move` (`:2347`), `do_pages_stat` (`:2508`).
+// 279 move_pages — `SYSCALL_DEFINE6(move_pages)` / `kernel_move_pages`,
+// `do_pages_move`, `do_pages_stat`.
 // ABI shim (docs/53).
 
 #![cfg(target_os = "oxide-kernel")]
@@ -21,7 +21,7 @@ fn store_status(status: u64, i: u64, value: i32) -> Result<(), i64> {
     uaccess::copy_to_user(at, &value.to_ne_bytes()).map_err(|_| err(Errno::Efault))
 }
 
-/// `add_folio_for_migration` (`mm/migrate.c:2281`) reduced to the single-node
+/// `add_folio_for_migration` reduced to the single-node
 /// case: a page already on the destination node returns 0 ("nothing to do"),
 /// which `do_pages_move` then stores as the node id.
 /// # C: O(log N_vmas + walk depth)

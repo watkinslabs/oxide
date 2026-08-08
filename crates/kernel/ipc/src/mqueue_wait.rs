@@ -1,5 +1,5 @@
-// POSIX message-queue blocking rules — Linux `ipc/mqueue.c` `wq_sleep`
-// (`:708-752`) and `prepare_timeout` (`:838-846`).
+// POSIX message-queue blocking rules — the wait-loop exit ladder and the
+// absolute-timeout preparation a blocked send/receive relies on.
 //
 // Non-gated on purpose: `live::posix_mq` is kernel-only, and these two rules
 // are the entire user-visible contract of a blocked `mq_timedsend(2)` /
@@ -12,23 +12,23 @@
 
 use syscall::errno::Errno;
 
-/// Linux `wq_sleep`'s exit ladder, in Linux's order. The order is the
+/// The parked-wait exit ladder, checked in a fixed order. The order is the
 /// contract: a task that is BOTH signalled and past its deadline reports the
-/// signal, because `mqueue.c:738` is tested before `:742`.
+/// signal, because the signal check runs before the deadline check.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum MqWait {
-    /// `ewp->state == STATE_READY` (`mqueue.c:734-737`) — the queue moved.
+    /// The queue moved (a slot opened or a message arrived).
     Ready,
-    /// `signal_pending(current)` -> `-ERESTARTSYS` (`mqueue.c:738-740`). NOT
+    /// A signal is pending -> `-ERESTARTSYS`. NOT
     /// `-EINTR`: with no handler frame the syscall restarts.
     Restartsys,
-    /// `time == 0` -> `-ETIMEDOUT` (`mqueue.c:742-744`).
+    /// The deadline passed -> `-ETIMEDOUT`.
     Timedout,
-    /// None of the above — go round again (`mqueue.c:717` `for (;;)`).
+    /// None of the above — go round again.
     Park,
 }
 
-/// Linux `wq_sleep`'s per-iteration decision.
+/// The parked-wait per-iteration decision.
 /// # C: O(1)
 pub const fn wq_sleep_verdict(ready: bool, signal_pending: bool, timed_out: bool) -> MqWait {
     if ready { return MqWait::Ready; }
@@ -52,13 +52,13 @@ impl MqWait {
     }
 }
 
-/// Linux `prepare_timeout` (`mqueue.c:838-846`): `get_timespec64` (EFAULT)
-/// then `timespec64_valid` (EINVAL). A NULL `u_abs_timeout` means "no
+/// Timeout copy-in and validation: a bad pointer is EFAULT, an invalid
+/// timespec value is EINVAL. A NULL `u_abs_timeout` means "no
 /// timeout" and is not validated at all.
 ///
-/// Both `SYSCALL_DEFINE5(mq_timedsend)` (`mqueue.c:1236-1244`) and
-/// `mq_timedreceive` (`:1250-1258`) run this in the syscall WRAPPER, before
-/// `do_mq_timedsend`/`do_mq_timedreceive` reach `fdget(mqdes)` — so a
+/// Both `mq_timedsend` and
+/// `mq_timedreceive` run this in the syscall WRAPPER, before
+/// the descriptor is fetched — so a
 /// malformed timespec beats EBADF on a bad descriptor.
 /// # C: O(1)
 pub fn prepare_timeout(sec: i64, nsec: i64) -> Result<u64, Errno> {
@@ -79,7 +79,7 @@ mod tests {
 
     #[test]
     fn a_signal_outranks_an_expired_deadline() {
-        // `mqueue.c:738` is tested before `:742`.
+        // The signal check runs before the deadline check.
         assert_eq!(wq_sleep_verdict(false, true, true), MqWait::Restartsys);
         assert_eq!(wq_sleep_verdict(false, true, false), MqWait::Restartsys);
     }

@@ -57,7 +57,7 @@ pub struct SigPayload {
 }
 
 /// `siginfo_t::_sifields._sigpoll` — the arm `SIGPOLL`/`SIGIO` (and any
-/// `F_SETSIG` replacement) selects (`include/uapi/asm-generic/siginfo.h`).
+/// `F_SETSIG` replacement) selects.
 ///
 /// `si_band` is an `__ARCH_SI_BAND_T` = `long` on both x86_64 and aarch64, so
 /// it covers the two 4-byte words `si_pid`/`si_uid` occupy, and `si_fd` follows
@@ -74,7 +74,7 @@ pub struct SigPoll {
 }
 
 /// `siginfo_t::_sifields._sigfault` — the arm SIGSEGV, SIGBUS, SIGILL, SIGFPE
-/// and SIGTRAP select (`include/uapi/asm-generic/siginfo.h`).
+/// and SIGTRAP select.
 ///
 /// `addr` is the faulting instruction / memory reference. `addr_lsb` is
 /// meaningful for SIGBUS machine-checks; `pkey` occupies the same inner-union
@@ -91,8 +91,8 @@ pub struct SigFault {
     pub pkey: i32,
 }
 
-/// `siginfo_t::_sifields._sigsys` (`include/uapi/asm-generic/siginfo.h`),
-/// filled by `force_sig_seccomp` (`kernel/signal.c`) for both
+/// `siginfo_t::_sifields._sigsys`,
+/// filled by Linux's `force_sig_seccomp` for both
 /// `SECCOMP_RET_TRAP` and the `SECCOMP_RET_KILL_*` core dump. A `SIGSYS`
 /// handler reads `si_syscall`/`si_arch` to decide which call was rejected,
 /// and `si_errno` is the filter's own 16-bit data — all zero without this.
@@ -112,7 +112,7 @@ pub struct Sigsys {
     pub errno: i32,
 }
 
-/// `si_code` values for the `_sigfault` signals (`asm-generic/siginfo.h`).
+/// `si_code` values for the `_sigfault` signals (`siginfo(7)`).
 /// The ONE owner: every fault classifier and every test names a constant here
 /// instead of open-coding `1`/`2` (`07§5`).
 pub mod code {
@@ -326,7 +326,7 @@ pub fn layout(sig: u32, si_code: i32) -> Layout {
     Layout::Kill
 }
 
-/// siginfo_t field offsets (`asm-generic/siginfo.h`) — identical on x86_64 and
+/// siginfo_t field offsets (`siginfo(7)`) — identical on x86_64 and
 /// aarch64, so both frame builders share one writer.
 const SI_SIGNO: usize = 0;
 /// `int si_errno`, between si_signo and si_code. Only the `_sigsys` arm uses

@@ -372,8 +372,8 @@ pub fn set_session_and_fg(sid: u32, pgid: u32) {
     }
 }
 
-/// Linux `__tty_hangup(tty, exit_session)` on the serial console
-/// (`drivers/tty/tty_io.c:568-656`): drop the ldisc into its hung-up state
+/// Linux `__tty_hangup(tty, exit_session)` on the serial console:
+/// drop the ldisc into its hung-up state
 /// (reads EOF, writes dropped), notify the driver, clear `tty->ctrl.session` /
 /// `tty->ctrl.pgrp`, and wake every parked reader and poller. The SESSION
 /// walk (ctty revocation + SIGHUP/SIGCONT to session leaders) is the caller's

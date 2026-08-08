@@ -1,6 +1,6 @@
-// User-memory edge shared by pselect6 (270) and ppoll (271): Linux
-// `fs/select.c::poll_select_set_timeout` / `poll_select_finish` and
-// `kernel/signal.c::set_user_sigmask`. The pure rules these apply live in
+// User-memory edge shared by pselect6 (270) and ppoll (271): Linux's
+// `poll_select_set_timeout` / `poll_select_finish` and
+// `set_user_sigmask`. The pure rules these apply live in
 // `crate::pselect_ppoll`; this file owns only the user reads/writes and the
 // task-state effects, in ONE place so the two slots cannot drift.
 #![cfg(any(target_os = "oxide-kernel", test))]
@@ -75,8 +75,7 @@ pub(crate) fn set_user_sigmask(cur: Option<&sched::Task>, ss_ptr: u64, ss_len: u
 ///      completed wait into an error because the caller put its timespec in
 ///      read-only memory. It does, however, fold `-ERESTARTNOHAND` down to
 ///      `-EINTR` there and under `STICKY_TIMEOUTS`, because a call whose
-///      residual timeout never reached userspace cannot be restarted
-///      (`fs/select.c:353-363`).
+///      residual timeout never reached userspace cannot be restarted.
 /// # C: O(1)
 pub(crate) fn poll_select_finish(cur: Option<&sched::Task>, rv: i64, tsp: u64,
                                  req_sec: i64, req_nsec: i64,

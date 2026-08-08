@@ -1,5 +1,5 @@
 // fsconfig(2) 431: the command set and the argument-admission switch of
-// `fs/fsopen.c` `SYSCALL_DEFINE5(fsconfig)`. Linux validates `_key`, `_value`
+// Linux's `SYSCALL_DEFINE5(fsconfig)`. Linux validates `_key`, `_value`
 // and `aux` per command BEFORE it touches the context fd, and every command has
 // a different rule — `SET_FLAG` wants no value and `aux == 0`, `SET_BINARY`
 // wants `0 < aux <= 1 MiB`, `SET_PATH*` wants `AT_FDCWD` or a non-negative
@@ -12,7 +12,7 @@
 
 use syscall::errno::Errno;
 
-/// `FSCONFIG_*` (`include/uapi/linux/mount.h`).
+/// `FSCONFIG_*`.
 pub const FSCONFIG_SET_FLAG:        u64 = 0;
 pub const FSCONFIG_SET_STRING:      u64 = 1;
 pub const FSCONFIG_SET_BINARY:      u64 = 2;
@@ -23,7 +23,7 @@ pub const FSCONFIG_CMD_CREATE:      u64 = 6;
 pub const FSCONFIG_CMD_RECONFIGURE: u64 = 7;
 pub const FSCONFIG_CMD_CREATE_EXCL: u64 = 8;
 
-/// `strndup_user(_key, 256)` (`fs/fsopen.c`).
+/// `strndup_user(_key, 256)`.
 pub const KEY_MAX: usize = 256;
 /// `strndup_user(_value, 256)` for `FSCONFIG_SET_STRING`.
 pub const VALUE_MAX: usize = 256;
@@ -117,7 +117,7 @@ pub fn classify(fd: i32, cmd: u64, key: u64, value: u64, aux: i32) -> Result<Fsc
     }
 }
 
-/// `strndup_user(p, n)` (`mm/util.c`) applied to bytes already copied in.
+/// `strndup_user(p, n)` applied to bytes already copied in.
 /// `bytes` is what a NUL-stopping bounded read produced, so it is `n` bytes long
 /// exactly when no terminator was found inside the bound — Linux's `length > n`
 /// rejection. The distinction matters: a silent `n`-byte prefix would turn an

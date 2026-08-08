@@ -1,5 +1,5 @@
 // How an image's load bias is chosen. Linux `load_elf_binary`
-// (`fs/binfmt_elf.c:1073-1202`) has exactly two strategies and picks between
+// has exactly two strategies and picks between
 // them on `e_type` and whether a PT_INTERP is present; this module is that
 // choice plus the two phdr scans it needs.
 
@@ -13,17 +13,17 @@ use crate::{LoadError, PAGE};
 pub(crate) enum Placement {
     /// An explicit bias, mapped `MAP_FIXED`. ET_EXEC uses `0` (`p_vaddr` is
     /// absolute); a PIE that carries a PT_INTERP uses
-    /// `ELF_ET_DYN_BASE + arch_mmap_rnd()` (`fs/binfmt_elf.c:1140-1146`, where
-    /// Linux sets `MAP_FIXED_NOREPLACE`).
+    /// `ELF_ET_DYN_BASE + arch_mmap_rnd()`, where
+    /// Linux sets `MAP_FIXED_NOREPLACE`.
     Fixed(u64),
     /// Hint `0` with no `MAP_FIXED`, so `get_unmapped_area` picks the address
-    /// (`fs/binfmt_elf.c:686-689` for the interpreter, `:1175` for a PIE with
+    /// (both for the interpreter and for a PIE with
     /// no interpreter). Inherits `mmap_base`'s randomisation rather than
     /// drawing its own.
     Unmapped,
 }
 
-/// Linux `total_mapping_size()` (`fs/binfmt_elf.c:463-478`): the VA span from
+/// Linux `total_mapping_size()`: the VA span from
 /// the lowest PT_LOAD's page start to the highest PT_LOAD's end. This is the
 /// size reserved as one unit so the image cannot be split across two holes.
 ///
@@ -50,7 +50,7 @@ pub(crate) fn min_vaddr(loads: &[LoadSegment]) -> u64 {
     loads.iter().map(|s| align_down(s.vaddr)).min().unwrap_or(0)
 }
 
-/// Linux `maximum_alignment()` (`fs/binfmt_elf.c:491-509`): the coarsest
+/// Linux `maximum_alignment()`: the coarsest
 /// power-of-two `p_align` across the PT_LOADs, page-aligned. Non-power-of-two
 /// `p_align` values are skipped exactly as Linux skips them.
 /// # C: O(phdrs)
@@ -65,7 +65,7 @@ pub(crate) fn maximum_alignment(loads: &[LoadSegment]) -> u64 {
 /// Resolve a `Placement` to the concrete bias added to every `p_vaddr`.
 ///
 /// For `Fixed`, Linux's `load_bias = ELF_PAGESTART(load_bias - vaddr)`
-/// (`fs/binfmt_elf.c:1185`) — which runs only in the ET_DYN branch, so ET_EXEC
+/// — which runs only in the ET_DYN branch, so ET_EXEC
 /// keeps a bias of exactly `0`. For `Unmapped`, the bias is whatever makes the
 /// image start at the address the arena search returned.
 /// # C: O(phdrs) + O(N) hole search

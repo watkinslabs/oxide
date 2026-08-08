@@ -89,8 +89,8 @@ fn a_job_control_stop_signals_the_parent_and_wakes_its_wait4() {
 
 #[test]
 fn sigchld_ignored_or_nocldstop_suppresses_the_signal_but_never_the_wake() {
-    // `kernel/signal.c:2342-2344`: "Even if SIGCHLD is not generated, we must
-    // wake up wait4 calls." A waitpid(WUNTRACED) that slept through the stop
+    // Linux: even if SIGCHLD is not generated, wait4 callers must still be
+    // woken. A waitpid(WUNTRACED) that slept through the stop
     // it was waiting for is exactly the B1451 `outcome=timeout`.
     for parent in [IGNORING, NOCLDSTOP] {
         let n = cldstop_notify(Cldstop::Stopped, parent);

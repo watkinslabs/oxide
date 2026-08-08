@@ -19,7 +19,7 @@ pub(crate) const AT_SECURE: u64 = 23;
 pub(crate) const AT_RANDOM: u64 = 25;
 pub(crate) const AT_EXECFN: u64 = 31;
 pub(crate) const AT_SYSINFO_EHDR: u64 = 33;
-/// Linux `AT_MINSIGSTKSZ` (`include/uapi/linux/auxvec.h`): bytes of stack one
+/// Linux `AT_MINSIGSTKSZ`: bytes of stack one
 /// signal delivery needs on THIS CPU. Dynamic — the frame carries the FPU/SIMD
 /// save area — which is why Linux exports it rather than leaving userspace
 /// with the frozen `MINSIGSTKSZ`; glibc 2.34+ answers

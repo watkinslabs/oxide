@@ -1,4 +1,4 @@
-// `struct __kernel_timex` wire layout (`include/uapi/linux/timex.h`), the
+// `struct __kernel_timex` wire layout, the
 // 208-byte LP64 form both x86_64 and aarch64 pass to `adjtimex`/`clock_adjtime`.
 //
 // Not `target_os`-gated: this is the one place a field offset can be wrong, and

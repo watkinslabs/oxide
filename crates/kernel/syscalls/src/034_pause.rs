@@ -9,7 +9,7 @@ fn current_task() -> Option<&'static sched::Task> { sched::live::current() }
 #[cfg(not(target_os = "oxide-kernel"))]
 fn current_task() -> Option<&'static sched::Task> { sched::current() }
 
-/// Linux `SYSCALL_DEFINE0(pause)` (`kernel/signal.c:4832-4839`):
+/// Linux `SYSCALL_DEFINE0(pause)`:
 /// `while (!signal_pending(current)) { set TASK_INTERRUPTIBLE; schedule(); }`
 /// then `return -ERESTARTNOHAND`. A SIG_DFL job-control stop satisfies
 /// `signal_pending` like any other signal, so it ENDS the loop; the

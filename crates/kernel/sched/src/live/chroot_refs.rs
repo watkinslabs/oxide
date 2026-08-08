@@ -1,4 +1,4 @@
-// pivot_root chroot-refs hook (Linux `fs/namespace.c:chroot_fs_refs`).
+// pivot_root chroot-refs hook (Linux `chroot_fs_refs`).
 //
 // vfs commits a pivot_root then calls the installed hook with the OLD and NEW
 // root mount ids; vfs cannot walk the task table (sched owns it), so the real

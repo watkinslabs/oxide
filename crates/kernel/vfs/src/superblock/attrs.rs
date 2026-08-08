@@ -31,16 +31,17 @@ impl SuperBlock {
     /// True iff every bit of `flag` is set in `s_iflags`. # C: O(1)
     pub fn sb_has_iflag(&self, flag: u64) -> bool { (self.s_iflags() & flag) == flag }
 
-    /// `SB_I_NOEXEC` — the superblock half of Linux `path_noexec`
-    /// (`fs/exec.c`: `mnt->mnt_sb->s_iflags & SB_I_NOEXEC`). # C: O(1)
+    /// `SB_I_NOEXEC` — the superblock half of the noexec check: exec always
+    /// refuses when this filesystem's superblock has the bit set. # C: O(1)
     pub fn is_sb_i_noexec(&self) -> bool { (self.s_iflags() & SB_I_NOEXEC) != 0 }
 
-    /// `SB_I_NODEV` — the superblock half of Linux `may_open_dev`
-    /// (`fs/namei.c`: `!(path->mnt->mnt_sb->s_iflags & SB_I_NODEV)`). # C: O(1)
+    /// `SB_I_NODEV` — the superblock half of the device-open check: device
+    /// nodes never function when this filesystem's superblock has the bit set.
+    /// # C: O(1)
     pub fn is_sb_i_nodev(&self) -> bool { (self.s_iflags() & SB_I_NODEV) != 0 }
 
     /// `SB_I_RESTRICTED_VARIANT` — this instance shows only a subset of the
-    /// filesystem (`fs/proc/root.c` sets it for `-o subset=pid`). # C: O(1)
+    /// filesystem (procfs sets it for `-o subset=pid`). # C: O(1)
     pub fn is_restricted_variant(&self) -> bool {
         (self.s_iflags() & SB_I_RESTRICTED_VARIANT) != 0
     }
@@ -48,7 +49,7 @@ impl SuperBlock {
     /// True iff this superblock is mounted read-only (`SB_RDONLY`). # C: O(1)
     pub fn is_readonly(&self) -> bool { (self.s_flags() & SB_RDONLY) != 0 }
 
-    /// `sb_rdonly` (Linux include/linux/fs.h) — explicit-name alias of
+    /// `sb_rdonly` — explicit-name alias of
     /// [`Self::is_readonly`] for call sites that read better as the kernel
     /// predicate. # C: O(1)
     pub fn sb_rdonly(&self) -> bool { self.is_readonly() }
@@ -120,7 +121,7 @@ impl SuperBlock {
         if ro { self.set_s_flags(SB_RDONLY, 0); } else { self.set_s_flags(0, SB_RDONLY); }
     }
 
-    /// `reconfigure_super` (Linux fs/super.c) — apply a flag-delta remount to
+    /// `reconfigure_super` — apply a flag-delta remount to
     /// this LIVE superblock in place, without rebuilding it (`mount(2) MS_REMOUNT`
     /// / `fsconfig(CMD_RECONFIGURE)` sb-flag half). `set`/`clear` are the
     /// `s_flags` bits to add/remove; the proposed result is
@@ -208,7 +209,7 @@ impl SuperBlock {
     /// drift from it. # C: O(1)
     pub fn s_blocksize_bits(&self) -> u32 { self.s_blocksize.trailing_zeros() }
 
-    /// `generic_write_check_limits` (Linux fs/read_write.c), the `s_maxbytes`
+    /// `generic_write_check_limits`, the `s_maxbytes`
     /// half: bound a write of `count` bytes starting at byte offset `pos`
     /// against the largest file size this filesystem can represent.
     /// - `Some(n)` ⇒ the write is admissible; `n` is `count` CLAMPED so
@@ -304,7 +305,7 @@ impl SuperBlock {
         self.s_time_max.store(max, Ordering::Release);
     }
 
-    /// `timestamp_truncate` (Linux fs/inode.c): clamp a wall-clock timestamp's
+    /// `timestamp_truncate`: clamp a wall-clock timestamp's
     /// SIGNED seconds field to `[s_time_min, s_time_max]`, then floor its
     /// sub-second field to this superblock's `s_time_gran`, so a setattr never
     /// records either an out-of-window instant the backend cannot persist or

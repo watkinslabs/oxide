@@ -1,7 +1,7 @@
 // statfs shared helpers — used by ≥2 statfs handlers (docs/53 §0).
 //
 // `f_type`/`f_bsize`/usage derive from the resolved mounted-instance
-// SuperBlock, the Linux source of truth — NOT a hardcoded path-prefix magic
+// SuperBlock, the canonical per-mount state — NOT a hardcoded path-prefix magic
 // table. Every production mount carries a real filled `SuperBlock`, so the `s_magic`/
 // `s_op::statfs` reported here is the instance's own identity.
 //

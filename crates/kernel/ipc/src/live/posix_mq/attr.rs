@@ -1,5 +1,5 @@
-// `mq_getsetattr(2)` (slot `NR_MQ_GETSETATTR`) — Linux `do_mq_getsetattr`
-// (`ipc/mqueue.c:1387-1425`) and `SYSCALL_DEFINE3(mq_getsetattr)` (`:1427-…`).
+// `mq_getsetattr(2)` (slot `NR_MQ_GETSETATTR`): reads the current attrs and,
+// when a new-attr pointer is given, applies only the flag bits it permits.
 
 use syscall::errno::Errno;
 use vfs::OpenFlags;
@@ -17,11 +17,11 @@ use super::user::{errno, read_user_i64, write_user_i64};
 ///
 /// `mq_maxmsg`/`mq_msgsize`/`mq_curmsgs` are read-only queue facts; the only
 /// settable field is `O_NONBLOCK` in `mq_flags`, and any other bit in a
-/// supplied `mq_flags` is `EINVAL` BEFORE the descriptor is fetched
-/// (`mqueue.c:1392-1393`), so it outranks `EBADF`.
+/// supplied `mq_flags` is `EINVAL` BEFORE the descriptor is fetched,
+/// so it outranks `EBADF`.
 ///
-/// `mq_flags` reported in `old` is the OPEN FILE DESCRIPTION's `O_NONBLOCK`
-/// (`mqueue.c:1409`), which is the same bit `fcntl(F_SETFL)` moves — one truth,
+/// `mq_flags` reported in `old` is the OPEN FILE DESCRIPTION's `O_NONBLOCK`,
+/// which is the same bit `fcntl(F_SETFL)` moves — one truth,
 /// not a per-inode shadow copy.
 /// # C: O(1)
 pub fn sys_mq_getsetattr(args: &syscall::SyscallArgs) -> i64 {

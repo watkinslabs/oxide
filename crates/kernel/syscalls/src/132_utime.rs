@@ -11,7 +11,7 @@ use crate::utimes_abi::{iattr_from_times, iattr_touch};
 /// NULL ⇒ both = now. Routes through `notify_change` (owner/CAP_FOWNER for the
 /// explicit times, EROFS). Always follows symlinks.
 ///
-/// `SYSCALL_DEFINE2(utime)` (`fs/utimes.c:208-221`) validates NOTHING: both
+/// `SYSCALL_DEFINE2(utime)` validates NOTHING: both
 /// fields land in `tv_sec` with `tv_nsec = 0`, so a negative `actime` is an
 /// ordinary pre-1970 request — which is how `tar -x` restores an old archive.
 /// # C: O(N_path)

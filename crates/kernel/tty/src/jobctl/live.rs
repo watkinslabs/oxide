@@ -1,7 +1,6 @@
 // The live job-control gate: gather the calling task's context (pgrp, ctty
 // match, stop-signal disposition, orphan status) and apply
-// [`super::decide`] (Linux `__tty_check_change`, `drivers/tty/tty_jobctrl.c:33-66`,
-// `28§6`). On a Stop decision, send SIGTTIN/SIGTTOU to the pgrp (default-stops
+// [`super::decide`] (Linux `__tty_check_change`, `28§6`). On a Stop decision, send SIGTTIN/SIGTTOU to the pgrp (default-stops
 // it) and fail the syscall with ERESTARTSYS, so the access re-runs once the job
 // is continued.
 //

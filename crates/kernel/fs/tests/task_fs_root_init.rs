@@ -1,10 +1,9 @@
-//! Linux `fs/namespace.c init_mount_tree()`: once the root filesystem is
-//! mounted, `init_fs` carries root == pwd == the namespace root `struct path`,
-//! and every task's `fs_struct` starts from it.
+//! Once the root filesystem is mounted, the init task's fs-context carries
+//! root == pwd == the namespace root path, and every task's fs-context
+//! starts from it.
 //!
-//! `/proc/<pid>/root` resolves out of `fs->root` (`fs/proc/base.c`
-//! `proc_root_link` → `get_task_root`), so a task whose root is unset makes
-//! that magic link ENOENT. systemd's `running_in_chroot()` compares
+//! `/proc/<pid>/root` resolves out of that root, so a task whose root is
+//! unset makes that magic link ENOENT. systemd's `running_in_chroot()` compares
 //! `/proc/1/root` with `/`, reads the failure as "I am in a chroot", and every
 //! systemd/udev tool then short-circuits — `udevadm trigger` prints "Running in
 //! chroot, ignoring request" and the udev database stays empty for the whole

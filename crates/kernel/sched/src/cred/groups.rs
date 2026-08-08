@@ -1,4 +1,4 @@
-// Linux `kernel/groups.c`: `SYSCALL_DEFINE2(getgroups)` /
+// Linux's `SYSCALL_DEFINE2(getgroups)` /
 // `SYSCALL_DEFINE2(setgroups)` plus `may_setgroups`.
 //
 // Error ORDER is part of the contract and is exercised by the hosted tests:

@@ -1,6 +1,6 @@
-//! `i_version` change-counter (Linux `include/linux/iversion.h`). The lazy
+//! `i_version` change-counter. The lazy
 //! NFS/IMA/statx-`STATX_CHANGE_COOKIE` version counter. This proves: the
-//! QUERIED-bit layout matches Linux's numeric reps; the lazy bump skips the
+//! QUERIED-bit layout matches the reference numeric representation; the lazy bump skips the
 //! write until a reader has queried; `inode_inc_iversion` forces a bump; query
 //! latches the flag and reports the real (`>> 1`) version; and a fresh inode
 //! reports `0`.
@@ -29,7 +29,7 @@ fn plain() -> InodeRef {
     InodeBuilder::new(7, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops()).build()
 }
 
-/// Linux `include/linux/iversion.h` numeric reps: the flag is bit 0, an
+/// The reference numeric representation: the flag is bit 0, an
 /// increment steps by 2 to clear the flag bit.
 #[test]
 fn iversion_bit_layout_matches_linux() {

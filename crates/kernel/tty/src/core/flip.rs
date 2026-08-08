@@ -1,4 +1,4 @@
-// Linux `drivers/tty/tty_buffer.c` — the flip buffer that separates the
+// Linux's tty_buffer flip-buffer layer — the flip buffer that separates the
 // device interrupt from the line discipline.
 //
 // Linux's serial ISR does NOT run the ldisc. `serial8250_handle_irq` reads the

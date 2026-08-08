@@ -1,6 +1,4 @@
-// `SYSCALL_DEFINE6(copy_file_range)` (Linux `fs/read_write.c:1649-1703`) →
-// `vfs_copy_file_range` (`:1553-1646`) → `generic_copy_file_checks`
-// (`:1482-1546`).
+// `copy_file_range(2)` work-fn: admission checks, then the staged copy.
 //
 // The pre-fix implementation was a bare read/write loop with NO checks at all:
 // it copied between directories, between filesystems, over an O_APPEND output,
@@ -12,12 +10,12 @@ use alloc::vec;
 use syscall::errno::Errno;
 use vfs::{File, FileType, OpenFlags};
 
-/// `MAX_RW_COUNT` (`include/linux/fs.h:2424`).
+/// Maximum single-call read/write byte count, page-aligned down from `i32::MAX`.
 const MAX_RW_COUNT: u64 = (i32::MAX as u64) & !0xfff;
-/// One batch of the fallback `do_splice_direct` copy. Heap, not stack.
+/// One batch of the fallback staged copy. Heap, not stack.
 const STAGE: usize = 4096;
 
-/// Facts `generic_copy_file_checks` decides on, gathered from the two
+/// Facts the admission checks decide on, gathered from the two
 /// descriptions by the caller.
 #[derive(Copy, Clone, Debug)]
 pub struct CopyCheckIn {
@@ -42,18 +40,28 @@ pub struct CopyCheckIn {
     pub len: u64,
 }
 
-/// `generic_copy_file_checks` (`fs/read_write.c:1482-1546`) in Linux's exact
-/// order, returning the CLAMPED byte count.
+/// `copy_file_range(2)` admission ladder, returning the CLAMPED byte count.
 ///
-/// The order carries real information: `EISDIR` before `EINVAL` for a
-/// non-regular file, `EBADF` (which also covers `O_APPEND` on the output —
-/// `fs/read_write.c:1796-1799`, deliberately not EINVAL as in `splice`),
-/// `EXDEV`, `EPERM`, `ETXTBSY`, `EOVERFLOW`, then the EOF clamp, then
-/// `RLIMIT_FSIZE`, and only LAST the same-file overlap test — which compares
-/// the ALREADY-CLAMPED count, so a copy whose tail was clipped to EOF can stop
-/// overlapping and become legal. # C: O(1)
+/// The order carries real information:
+/// 1. `EISDIR` if either side is a directory.
+/// 2. `EINVAL` if either side is a non-regular file that isn't a directory.
+/// 3. `EBADF` if the input isn't readable, the output isn't writable, or the
+/// output is `O_APPEND` (this call reports `O_APPEND` as EBADF —
+/// deliberately not EINVAL, unlike `splice`).
+/// 4. `EXDEV` if the two files are on different filesystems (superblock
+/// test; with no backend `->copy_file_range` op anywhere, cross-fs is
+/// never otherwise supported).
+/// 5. `EPERM` if the output is immutable.
+/// 6. `ETXTBSY` if either side is a swapfile.
+/// 7. `EOVERFLOW` if `pos_in + len` or `pos_out + len` overflows — NOT EINVAL.
+/// 8. EOF clamp: at or past the input's EOF the copy is simply zero bytes,
+/// otherwise the count is clamped to what remains before EOF.
+/// 9. `RLIMIT_FSIZE`: if set, `EFBIG` when `pos_out` is already at/over the
+/// limit, else the count clamps to what remains under the limit.
+/// 10. LAST: same-file range overlap is `EINVAL` — compared against the
+/// ALREADY-CLAMPED count, so a copy whose tail was clipped to EOF can
+/// stop overlapping and become legal. # C: O(1)
 pub fn copy_file_range_checks(c: &CopyCheckIn) -> Result<u64, Errno> {
-    // `generic_file_rw_checks` (`fs/read_write.c:1785-1802`).
     if c.in_type == FileType::Directory || c.out_type == FileType::Directory {
         return Err(Errno::Eisdir);
     }
@@ -61,25 +69,23 @@ pub fn copy_file_range_checks(c: &CopyCheckIn) -> Result<u64, Errno> {
         return Err(Errno::Einval);
     }
     if !c.in_readable || !c.out_writable || c.out_append { return Err(Errno::Ebadf); }
-    // Cross-filesystem (`fs/read_write.c:1506-1514`). With no backend
-    // `->copy_file_range` op anywhere, the rule reduces to the superblock test.
+    // Cross-filesystem. With no backend `->copy_file_range` op anywhere, the
+    // rule reduces to the superblock test.
     if !c.same_sb { return Err(Errno::Exdev); }
     if c.out_immutable { return Err(Errno::Eperm); }
     if c.swapfile { return Err(Errno::Etxtbsy); }
-    // `pos_in + count < pos_in || pos_out + count < pos_out` → EOVERFLOW,
-    // NOT EINVAL (`fs/read_write.c:1524`).
+    // Overflow of either resulting end position is EOVERFLOW, NOT EINVAL.
     if c.pos_in.checked_add(c.len).is_none() || c.pos_out.checked_add(c.len).is_none() {
         return Err(Errno::Eoverflow);
     }
-    // EOF clamp (`:1528-1532`): at or past EOF the copy is simply zero bytes.
+    // EOF clamp: at or past EOF the copy is simply zero bytes.
     let mut count = if c.pos_in >= c.size_in { 0 } else { c.len.min(c.size_in - c.pos_in) };
-    // `generic_write_check_limits` (`:1710-1733`): RLIMIT_FSIZE clamps, and a
-    // start position already at/over the limit is EFBIG.
+    // RLIMIT_FSIZE clamps, and a start position already at/over the limit is EFBIG.
     if c.fsize_limit != u64::MAX {
         if c.pos_out >= c.fsize_limit { return Err(Errno::Efbig); }
         count = count.min(c.fsize_limit - c.pos_out);
     }
-    // Same-file overlap (`:1539-1542`) — last, on the clamped count.
+    // Same-file overlap — last, on the clamped count.
     if c.same_inode && count > 0
         && c.pos_out + count > c.pos_in && c.pos_out < c.pos_in + count {
         return Err(Errno::Einval);
@@ -87,21 +93,21 @@ pub fn copy_file_range_checks(c: &CopyCheckIn) -> Result<u64, Errno> {
     Ok(count.min(MAX_RW_COUNT))
 }
 
-/// `vfs_copy_file_range` over resolved descriptions. `pos_in`/`pos_out` are the
-/// working offsets; the caller decides whether they came from user pointers or
-/// from `f_pos`, and writes them back on success (`fs/read_write.c:1684-1701`,
-/// which updates offsets ONLY when `ret > 0`).
+/// `copy_file_range(2)` transfer over resolved descriptions. `pos_in`/`pos_out`
+/// are the working offsets; the caller decides whether they came from user
+/// pointers or from `f_pos`, and writes them back on success (offsets update
+/// ONLY when the return value is `> 0`).
 ///
-/// The transfer is the `do_splice_direct` fallback every filesystem without a
-/// `->copy_file_range` op lands on: a bounded staged copy. Short returns are
-/// legal and documented (`fs/read_write.c:1549-1551`); returning the full
-/// requested count while having copied less would be a data-integrity lie, so
-/// the loop reports exactly what it wrote. # C: O(len)
+/// The transfer is the staged-copy fallback every filesystem without a
+/// dedicated copy-offload op lands on: a bounded staged copy. Short returns
+/// are legal and documented; returning the full requested count while having
+/// copied less would be a data-integrity lie, so the loop reports exactly
+/// what it wrote. # C: O(len)
 pub fn copy_file_range(in_file: &File, pos_in: &mut u64,
                        out_file: &File, pos_out: &mut u64,
                        len: u64, flags: u64, fsize_limit: u64) -> i64 {
-    // `if (flags != 0) return -EINVAL;` (`fs/read_write.c:1679`) — after the
-    // offset copy-in, which the shim has already done.
+    // Any nonzero flags value is EINVAL — checked after the offset copy-in,
+    // which the shim has already done.
     if flags != 0 { return -(Errno::Einval.as_i32() as i64); }
     let c = CopyCheckIn {
         in_type: in_file.inode().file_type(),
@@ -121,8 +127,8 @@ pub fn copy_file_range(in_file: &File, pos_in: &mut u64,
         len,
     };
     let count = match copy_file_range_checks(&c) { Ok(n) => n, Err(e) => return -(e.as_i32() as i64) };
-    // `if (len == 0) return 0;` — AFTER the checks, so a bad argument still
-    // reports its errno for a zero-length request (`fs/read_write.c:1577`).
+    // The zero-length short-circuit runs AFTER the checks, so a bad argument
+    // still reports its errno for a zero-length request.
     if count == 0 { return 0; }
     let mut total: u64 = 0;
     let mut buf = vec![0u8; STAGE];
@@ -151,8 +157,7 @@ pub fn copy_file_range(in_file: &File, pos_in: &mut u64,
     total as i64
 }
 
-/// `file_inode(file_in)->i_sb == file_inode(file_out)->i_sb`
-/// (`fs/read_write.c:1512`) expressed over oxide's canonical filesystem
+/// Same-filesystem test, expressed over oxide's canonical filesystem
 /// identity, `Inode::fsid()` — the same value `stat` encodes into `st_dev`, so
 /// "same filesystem" here means exactly what userspace can observe. Comparing
 /// the `Arc<SuperBlock>` directly would be wrong for an inode that has no
@@ -176,7 +181,7 @@ mod tests {
     }
 
     /// A directory on either side is EISDIR and beats the "not a regular file"
-    /// EINVAL (`fs/read_write.c:1791-1794`). # C: O(1)
+    /// EINVAL. # C: O(1)
     #[test]
     fn directory_is_eisdir_other_nonregular_is_einval() {
         assert_eq!(copy_file_range_checks(&CopyCheckIn { in_type: FileType::Directory, ..base() }),
@@ -269,7 +274,7 @@ mod tests {
     }
 
     /// `RLIMIT_FSIZE` clamps the count, and a start already at the limit is
-    /// EFBIG (`fs/read_write.c:1710-1733`). # C: O(1)
+    /// EFBIG. # C: O(1)
     #[test]
     fn rlimit_fsize_clamps_then_efbig() {
         assert_eq!(copy_file_range_checks(&CopyCheckIn { fsize_limit: 1000, pos_out: 900, ..base() }),

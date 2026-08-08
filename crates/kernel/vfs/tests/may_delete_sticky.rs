@@ -1,4 +1,4 @@
-//! `may_delete` (Linux `fs/namei.c`) gate: the sticky-dir (`S_ISVTX`)
+//! `may_delete` gate: the sticky-dir (`S_ISVTX`)
 //! restricted-deletion owner-match, the append-only-parent block, the
 //! immutable/append-only victim block, and the isdir type agreement.
 //! Synthetic `Inode` impls carrying explicit mode/uid/gid + `i_flags`;

@@ -7,8 +7,8 @@
 //! ../run/systemd/resolve/stub-resolv.conf` acts on the TARGET's name in the
 //! TARGET's directory, and a link whose target does not exist yet is created
 //! THROUGH rather than reported as a name already taken. `EEXIST` is only ever
-//! correct for `O_EXCL`, which the reference implements by forcing `O_NOFOLLOW`
-//! (`fs/open.c` `build_open_flags`) so the link is not followed at all.
+//! correct for `O_EXCL`, which is implemented by forcing `O_NOFOLLOW`
+//! at open-flags build time so the link is not followed at all.
 //!
 //! Each case drives the real walker. `parent_of` is exactly what the open slot
 //! file asks for on the create path: the directory the new name goes in, plus

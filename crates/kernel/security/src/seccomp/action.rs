@@ -1,16 +1,16 @@
-// Filter-return-action -> verdict. This is `__seccomp_filter`'s switch
-// (`kernel/seccomp.c`) as a pure function so it is testable; the shim in
-// `syscalls/src/dispatch` executes the verdict (`docs/53` hollow shell).
+// Filter-return-action -> verdict, as a pure function so it is testable; the
+// shim in `syscalls/src/dispatch` executes the verdict (`docs/53` hollow
+// shell).
 //
 // UNGATED (`CLAUDE.md` phantom-test rule).
 
 use super::insn::SeccompData;
 use super::uapi::*;
 
-/// The `_sigsys` siginfo arm Linux's `force_sig_seccomp` fills
-/// (`kernel/signal.c`): `si_code = SYS_SECCOMP`, `si_errno` = the filter's
-/// low 16 bits, `si_call_addr` = the user PC, `si_syscall` = the syscall the
-/// filter rejected, `si_arch` = `syscall_get_arch()`.
+/// The `_sigsys` siginfo arm a rejected syscall fills: `si_code =
+/// SYS_SECCOMP`, `si_errno` = the filter's low 16 bits, `si_call_addr` =
+/// the user PC, `si_syscall` = the syscall the filter rejected, `si_arch` =
+/// the running task's syscall ABI/arch token.
 ///
 /// ONE definition, in `hal`, shared with the signal queue (`sched::SigInfo`)
 /// and the per-arch frame builders — a local copy plus a conversion at the

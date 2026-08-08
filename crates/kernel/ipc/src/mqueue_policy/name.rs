@@ -8,12 +8,12 @@ use super::limits::{NAME_MAX, PATH_MAX};
 /// the leading `/` before the syscall, so a kernel-visible mq name is a single
 /// path component under the per-namespace mqueue root:
 ///
-/// 1. `getname()` (`fs/namei.c`): the empty string is `ENOENT`; a string that
+/// 1. Name copy-in: the empty string is `ENOENT`; a string that
 ///    does not fit in `PATH_MAX` bytes including its NUL is `ENAMETOOLONG`.
-/// 2. `lookup_noperm_common` (`fs/namei.c:3085-3101`), reached through
-///    `start_creating_noperm` / `start_removing_noperm`: `.`, `..`, or any
+/// 2. Path-component validation, reached through
+///    the create/remove lookup path: `.`, `..`, or any
 ///    embedded `/` or NUL is `EACCES`.
-/// 3. `simple_lookup` (`fs/libfs.c`), mqueuefs's `->lookup`: a component
+/// 3. mqueuefs's `->lookup`: a component
 ///    longer than `NAME_MAX` is `ENAMETOOLONG`.
 ///
 /// The ORDER is the contract: an over-long name that also contains a `/` is

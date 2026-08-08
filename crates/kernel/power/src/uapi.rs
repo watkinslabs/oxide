@@ -1,4 +1,5 @@
-// Linux `include/uapi/linux/reboot.h` verbatim. The header spells the MAGIC2
+// reboot(2) UAPI magic/command numbers, verbatim from Linux's uapi header.
+// The header spells the MAGIC2
 // family in decimal; the hex here is the same bit pattern (672274793 =
 // 0x28121969, 85072278 = 0x05121996, 369367448 = 0x16041998, 537993216 =
 // 0x20112000) and the tests pin both spellings against each other.
@@ -31,7 +32,7 @@ pub const LINUX_REBOOT_CMD_SW_SUSPEND: u32 = 0xD000FCE2;
 /// `LINUX_REBOOT_CMD_KEXEC`.
 pub const LINUX_REBOOT_CMD_KEXEC: u32 = 0x45584543;
 
-/// `sizeof(buffer)` in `SYSCALL_DEFINE4(reboot)` (`kernel/reboot.c:732`): 256
+/// `sizeof(buffer)` in Linux's reboot(2) RESTART2 path: 256
 /// bytes, of which `strncpy_from_user` fills at most 255 before the explicit
 /// NUL terminator. A longer user string is TRUNCATED, not rejected.
 pub const RESTART2_CMD_BYTES: usize = 256;

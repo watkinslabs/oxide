@@ -1,5 +1,5 @@
-// Per-task `restart_block` — Linux `struct restart_block`
-// (`include/linux/restart_block.h`), the continuation `restart_syscall(2)`
+// Per-task `restart_block` — Linux `struct restart_block`,
+// the continuation `restart_syscall(2)`
 // dispatches through after a signal interrupted a resumable call.
 //
 // Linux stores a function pointer plus a per-kind payload union. `docs/07§5`
@@ -16,18 +16,18 @@ pub const RESTART_NONE: u32 = 0;
 /// Linux `hrtimer_nanosleep_restart`: resume an absolute-deadline sleep.
 /// Payload: `[deadline_ns, rmtp_user_ptr, 0, 0, 0, 0]`. Armed by the RELATIVE
 /// form of both `nanosleep(2)` and `clock_nanosleep(2)`; the `TIMER_ABSTIME`
-/// form arms nothing (`kernel/time/hrtimer.c:2449-2453`).
+/// form arms nothing.
 pub const RESTART_NANOSLEEP: u32 = 1;
-/// Linux `do_restart_poll` (`fs/select.c:1042-1058`): resume `poll(2)`, whose
+/// Linux `do_restart_poll`: resume `poll(2)`, whose
 /// `int timeout_msecs` argument cannot carry the residual timeout back to
 /// userspace the way `ppoll`'s timespec does.
 /// Payload: `[ufds, nfds, has_timeout, end_time_ns, 0, 0]`.
 pub const RESTART_POLL: u32 = 2;
-/// Linux `futex_wait_restart` (`kernel/futex/waitwake.c:773-785`): resume a
+/// Linux `futex_wait_restart`: resume a
 /// TIMED `FUTEX_WAIT`/`FUTEX_WAIT_BITSET` against the SAME absolute deadline.
 /// Payload: `[uaddr, op_full, val, bitset, deadline_ns, 0]`.
 pub const RESTART_FUTEX: u32 = 3;
-/// Linux `posix_cpu_nsleep_restart` (`kernel/time/posix-cpu-timers.c:1657-1665`):
+/// Linux `posix_cpu_nsleep_restart`:
 /// resume a `clock_nanosleep` on a CPU clock against the stored ABSOLUTE CPU
 /// expiry, re-entered as `TIMER_ABSTIME`.
 /// Payload: `[cpu_expiry_ns, rmtp_user_ptr, clock_key, 0, 0, 0]`.

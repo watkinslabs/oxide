@@ -34,9 +34,8 @@ impl IdMapKind {
     }
 }
 
-/// Linux `/proc/<pid>/setgroups` value (`kernel/user_namespace.c`
-/// `proc_setgroups_write`). Default `Allow`; `Deny` is a one-way door once
-/// `gid_map` is populated (CVE-2014-8989).
+/// `/proc/<pid>/setgroups` value. Default `Allow`; `Deny` is a one-way door
+/// once `gid_map` is populated (CVE-2014-8989).
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum SetgroupsPolicy { Allow, Deny }
 

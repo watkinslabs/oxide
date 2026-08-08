@@ -1,5 +1,5 @@
-//! superblock `generic_shutdown_super` / `evict_inodes` (Linux fs/super.c +
-//! fs/inode.c): the last-`s_active`-drop teardown must, in order, sync dirty
+//! superblock `generic_shutdown_super` / `evict_inodes`: the
+//! last-`s_active`-drop teardown must, in order, sync dirty
 //! state, clear the live `SB_ACTIVE` flag bit, evict every unreferenced inode
 //! from the per-SB icache (reporting any BUSY inode left referenced past
 //! unmount), then run `put_super`. Before this the teardown was an inline

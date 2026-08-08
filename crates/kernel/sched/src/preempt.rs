@@ -181,7 +181,7 @@ pub(crate) fn preempt_count_set(value: u32) {
     { preempt_count_slot().store(value, Ordering::Release); }
 }
 
-// ---- Linux preempt_count bit-field layout (`include/linux/preempt.h`) ----
+// ---- Linux preempt_count bit-field layout ----
 //
 // The per-CPU count is partitioned exactly like Linux: the low byte is the
 // PREEMPT-disable nesting (`preempt_disable`/`enable`, ±1), the next byte is

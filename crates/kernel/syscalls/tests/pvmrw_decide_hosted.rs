@@ -1,6 +1,6 @@
-//! Slots 310/311 `process_vm_readv`/`process_vm_writev` against Linux
-//! `mm/process_vm_access.c` and the `lib/iov_iter.c` import path it runs its
-//! two iov arrays through.
+//! Slots 310/311 `process_vm_readv`/`process_vm_writev` against Linux's
+//! process-vm-access syscall bodies and the iovec import path they run
+//! their two iov arrays through.
 //!
 //! The decision core is deliberately outside the `target_os = "oxide-kernel"`
 //! slot files: a `#[cfg(test)] mod tests` inside `310_process_vm_readv.rs`

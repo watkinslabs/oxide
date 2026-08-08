@@ -81,7 +81,7 @@ pub(super) const EPOLL_DATA_OFF: usize = 4;
 #[cfg(target_arch = "aarch64")]
 pub(super) const EPOLL_DATA_OFF: usize = 8;
 
-/// Linux `EP_MAX_EVENTS = INT_MAX / sizeof(struct epoll_event)` (fs/eventpoll.c):
+/// `EP_MAX_EVENTS = INT_MAX / sizeof(struct epoll_event)`:
 /// `epoll_wait`'s `maxevents` upper bound, rejected with EINVAL beyond this —
 /// guards the `maxevents * sizeof(epoll_event)` output-buffer size against
 /// overflow on the ABI's ioctl/copy path.
@@ -272,12 +272,11 @@ pub struct EpollData {
 impl EpollData {
     /// Level-interest fallback for sources that publish NO readiness callback.
     ///
-    /// Linux has no counterpart: `ep_poll` is strictly `rdllist`-driven, items
-    /// enter it only from `ep_poll_callback` / `ep_insert` / `ep_modify` /
-    /// level re-injection in `ep_send_events`, and `fs/eventpoll.c` contains no
-    /// timer, workqueue or rescan of the interest tree at all. Every readiness
-    /// transition there is a wait-queue wakeup, so a source with no wakeup is
-    /// simply broken and visibly so.
+    /// Real epoll implementations have no counterpart: the ready list is
+    /// strictly driven by wait-queue wakeups from insert/modify/level
+    /// re-injection, with no timer, workqueue, or rescan of the interest tree
+    /// at all. Every readiness transition is a wakeup, so a source with no
+    /// wakeup is simply broken and visibly so.
     ///
     /// This kernel still has a handful of pollable objects whose mask moves
     /// with no `PollSubscribers` behind it, so dropping the fallback outright
@@ -357,9 +356,9 @@ impl EpollData {
     pub(super) unsafe fn prepare_park(&self, observed_global: u64, deadline_ns: u64) -> bool {
         let ready = self.ready.lock();
         if !ready.is_empty() || GLOBAL_EPOLL_GEN.load(Ordering::Acquire) != observed_global { return false; }
-        // `epoll_wait` coalesces exactly like poll/select — `fs/eventpoll.c:2251`
-        // `slack = select_estimate_accuracy(timeout);` feeding
-        // `schedule_hrtimeout_range(to, slack, HRTIMER_MODE_ABS)` at `:2332`.
+        // `epoll_wait` coalesces exactly like poll/select: the deadline sleep
+        // uses an accuracy-derived slack window rather than an exact wakeup,
+        // letting the timer subsystem batch nearby deadlines together.
         let slack_ns = sched::hrtimeout::select_estimate_accuracy(deadline_ns);
         // SAFETY: caller is current in process context; ready lock serializes callback/global wake against park preparation.
         unsafe { self.waiters.park_with_deadline_range(deadline_ns, slack_ns); }

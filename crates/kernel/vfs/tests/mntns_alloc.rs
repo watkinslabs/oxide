@@ -1,5 +1,5 @@
-//! Mount-namespace id allocation (Linux `fs/namespace.c::alloc_mnt_ns`,
-//! `seq = atomic64_add_return(1, &mnt_ns_seq)`): `clone(CLONE_NEWNS)` /
+//! Mount-namespace id allocation (a monotonic atomic sequence counter):
+//! `clone(CLONE_NEWNS)` /
 //! `unshare(CLONE_NEWNS)` must mint a fresh id that is (a) never 0 — id 0 is the
 //! init mount namespace every task starts in, so reusing it would silently fold
 //! the new ns back into init — and (b) NEVER reused, even after the previous

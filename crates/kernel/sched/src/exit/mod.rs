@@ -1,4 +1,4 @@
-// Linux `kernel/exit.c` decision logic, free of runqueue / arch state so
+// Linux exit-path decision logic, free of runqueue / arch state so
 // `cargo test -p sched` proves it without a QEMU boot.
 //
 // Module manifest:

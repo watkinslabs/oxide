@@ -12,7 +12,7 @@ fn record_is_exactly_sixty_four_bytes() {
     assert_eq!(AcctFacts::default().encode().len(), 64);
 }
 
-/// Every field lands at the offset `include/uapi/linux/acct.h struct acct_v3`
+/// Every field lands at the offset the standard `struct acct_v3` wire layout
 /// puts it. Written as distinct sentinel values so a swapped pair of adjacent
 /// fields cannot pass.
 #[test]

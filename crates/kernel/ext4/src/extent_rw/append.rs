@@ -81,11 +81,10 @@ impl Mount {
         let hint_group = Self::extent_hint_group(self, &leaf_extents, logical);
         let spb = self.sb.sectors_per_block();
         // Linux charges each allocation as it happens, never a prediction:
-        // `ext4_mb_new_blocks` (fs/ext4/mballoc.c) calls `dquot_alloc_block`
-        // BEFORE handing out the block, and `dquot_alloc_block` ->
-        // `__dquot_alloc_space` (fs/quota/dquot.c) is what does
-        // `inode_add_bytes` — so i_blocks and the quota charge are one act, per
-        // block actually allocated. Charge the DATA block here; the extent-tree
+        // block allocation charges quota BEFORE handing out the block, and
+        // that same charge call is what updates i_blocks — so i_blocks and
+        // the quota charge are one act, per block actually allocated. Charge
+        // the DATA block here; the extent-tree
         // metadata blocks are charged below, once the merge-aware insert says
         // how many of them the tree really needs (`ext4_ext_new_meta_block`
         // charges its own via the same path).

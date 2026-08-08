@@ -1,5 +1,5 @@
 // 314 sched_setattr — one syscall, one file (docs/53 §0).
-// `sched_setattr(pid, uattr, flags)`: Linux `kernel/sched/syscalls.c:960`.
+// `sched_setattr(pid, uattr, flags)`: Linux's `sys_sched_setattr`.
 // Thin shim: the extensible-struct copy protocol is `crate::sched_attr`
 // (Linux `sched_copy_attr` + `copy_struct_from_user`) and the policy/priority/
 // permission rules are `crate::sched_policy` (`__sched_setscheduler`), shared

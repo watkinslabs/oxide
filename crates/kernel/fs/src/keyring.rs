@@ -57,7 +57,7 @@ mod report;
 mod store;
 mod trace;
 mod types;
-// The complete `uapi/linux/keyctl.h` + `include/linux/key.h` number space:
+// The complete keyring UAPI number space:
 // KEY_SPEC_* special ids, KEYCTL_* opcodes, KEY_REQKEY_DEFL_* defaults,
 // KEY_NEED_*/KEY_{POS,USR,GRP,OTH}_* permission bits and the
 // KEYCTL_CAPABILITIES byte-0/1 feature bits. Entries with no reader are the

@@ -21,8 +21,8 @@ use crate::s059_execve::execve_inner;
 #[inline]
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
-/// `execveat(dirfd, path, argv, envp, flags)` — `SYSCALL_DEFINE5(execveat)`
-/// (`fs/exec.c:1953`). `AT_EMPTY_PATH` execs the open file description behind
+/// `execveat(dirfd, path, argv, envp, flags)` — `SYSCALL_DEFINE5(execveat)`.
+/// `AT_EMPTY_PATH` execs the open file description behind
 /// `dirfd` (the kernel side of `fexecve(3)`); a relative pathname resolves
 /// from `dirfd`; `AT_SYMLINK_NOFOLLOW` refuses a symlink target with `ELOOP`;
 /// `AT_EXECVE_CHECK` runs the checks and returns without exec'ing.
@@ -85,7 +85,7 @@ fn exec_pathname(dirfd: i32, pathp: u64, argv: u64, envp: u64, flags: u32) -> i6
     let check    = flags & AT_EXECVE_CHECK != 0;
     let mut path = raw;
     if at_base || nofollow || check {
-        // `AT_SYMLINK_NOFOLLOW` clears `LOOKUP_FOLLOW` (`fs/exec.c:782`).
+        // `AT_SYMLINK_NOFOLLOW` clears `LOOKUP_FOLLOW`.
         let lf = vfs::LookupFlags { no_follow_final: nofollow, follow: !nofollow, ..Default::default() };
         match crate::pathresolve::resolve_at_path(dirfd, &path, lf) {
             Ok(vp) => {
@@ -131,7 +131,7 @@ fn render_resolved(vp: &vfs::VfsPath, dirfd: i32, rel: &str) -> String {
     join_dirfd_path(&vfs::mount::render_path_for_mount(f.mnt_id(), f.dentry()), rel)
 }
 
-/// `AT_EXECVE_CHECK` (`fs/exec.c:1485`) for an exec'able reached through a file
+/// `AT_EXECVE_CHECK` for an exec'able reached through a file
 /// DESCRIPTOR, which carries no resolved mount: everything `bprm_execve` does
 /// up to and including the credential check runs, then the call returns without
 /// parsing or replacing the image. The pathname form uses

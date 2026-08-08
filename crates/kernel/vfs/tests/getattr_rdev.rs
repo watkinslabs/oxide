@@ -1,8 +1,8 @@
 //! inode-D4b (getattr part): `Kstat.st_rdev` carries the device number ONLY for
 //! character/block device inodes, with the Linux `new_encode_dev` huge-dev
 //! split (minor's low 8 bits + 12-bit major + minor's high bits in `[20..32)`),
-//! and is 0 for every non-device inode — matching `generic_fillattr` (Linux
-//! `fs/stat.c`), where `stat->rdev = inode->i_rdev` only resolves to a number on
+//! and is 0 for every non-device inode — matching `generic_fillattr`, where
+//! `stat->rdev = inode->i_rdev` only resolves to a number on
 //! device nodes. Driven over minimal `Inode` impls, no QEMU.
 //!
 //! The huge-dev split is the part the naive `(major<<8)|minor` legacy form gets

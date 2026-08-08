@@ -1,5 +1,5 @@
-// Pure `reboot(2)` decisions — Linux `SYSCALL_DEFINE4(reboot)`
-// (`kernel/reboot.c:728-816`) and `reboot_pid_ns` (`kernel/pid_namespace.c:319-346`).
+// Pure `reboot(2)` decisions, matching Linux's reboot syscall and its
+// pid-namespace reboot handling.
 //
 // Kept out of the syscall slot (which is `#![cfg(target_os = "oxide-kernel")]`
 // and therefore untestable) and out of the machine layer (which cannot be run
@@ -25,13 +25,13 @@ pub enum RebootAction {
     /// `LINUX_REBOOT_CMD_RESTART2`: read the command string from `arg` first,
     /// then restart. Split out because the copy-in can fail with EFAULT AFTER
     /// the magic and capability checks have passed but BEFORE anything
-    /// irreversible happens (`kernel/reboot.c:787-796`).
+    /// irreversible happens.
     Restart2,
     /// `CAD_ON` / `CAD_OFF`: latch the Ctrl-Alt-Del disposition, return 0.
     SetCad(bool),
 }
 
-/// Validate the `reboot(2)` magic pair (`kernel/reboot.c:739-745`). Four
+/// Validate the `reboot(2)` magic pair. Four
 /// distinct MAGIC2 values are accepted, all of them dates.
 /// # C: O(1)
 pub fn check_magic(magic1: u32, magic2: u32) -> bool {
@@ -42,8 +42,8 @@ pub fn check_magic(magic1: u32, magic2: u32) -> bool {
             || magic2 == LINUX_REBOOT_MAGIC2C)
 }
 
-/// `reboot(2)`'s admission ladder, in Linux's order
-/// (`kernel/reboot.c:735-745`): CAP_SYS_BOOT FIRST, the magic pair SECOND.
+/// `reboot(2)`'s admission ladder, in Linux's order:
+/// CAP_SYS_BOOT FIRST, the magic pair SECOND.
 ///
 /// The order is observable and is the whole difference between "you may not
 /// reboot this machine" and "your magic numbers are wrong". An unprivileged
@@ -57,8 +57,7 @@ pub fn reboot_precheck(cap_sys_boot: bool, magic1: u32, magic2: u32) -> KResult<
     Ok(())
 }
 
-/// Classify a `cmd` for a caller in the INITIAL pid namespace
-/// (`kernel/reboot.c:765-813`).
+/// Classify a `cmd` for a caller in the INITIAL pid namespace.
 ///
 /// `SW_SUSPEND` and `KEXEC` fall through to `default: ret = -EINVAL` unless
 /// `CONFIG_HIBERNATION` / `CONFIG_KEXEC_CORE` are set, so EINVAL is the
@@ -78,7 +77,7 @@ pub fn classify_cmd(cmd: u32) -> KResult<RebootAction> {
 }
 
 /// Signal a child pid namespace records when one of its members calls
-/// `reboot(2)` (`kernel/pid_namespace.c:324-336`). The namespace's init exits
+/// `reboot(2)`. The namespace's init exits
 /// with this as its group exit code, which is how a supervisor outside the
 /// namespace learns "reboot" from "poweroff".
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -91,8 +90,8 @@ impl NsRebootSignal {
     }
 }
 
-/// `reboot_pid_ns` for a caller OUTSIDE the initial pid namespace
-/// (`kernel/pid_namespace.c:319-346`): the machine is never touched. RESTART /
+/// `reboot_pid_ns` for a caller OUTSIDE the initial pid namespace:
+/// the machine is never touched. RESTART /
 /// RESTART2 record SIGHUP, POWER_OFF / HALT record SIGINT, and every other
 /// command — INCLUDING `CAD_ON`/`CAD_OFF`, which succeed in the initial
 /// namespace — is EINVAL. On success Linux SIGKILLs the namespace's
@@ -147,8 +146,8 @@ mod tests {
 
     #[test]
     fn the_capability_check_precedes_the_magic_check() {
-        // Both wrong -> EPERM, because `ns_capable(CAP_SYS_BOOT)` runs first
-        // (`kernel/reboot.c:736-737`, ahead of `kernel/reboot.c:740-745`).
+        // Both wrong -> EPERM, because `ns_capable(CAP_SYS_BOOT)` runs first,
+        // ahead of the magic-pair check.
         assert_eq!(reboot_precheck(false, 0, 0), Err(Error::Perm));
         assert_eq!(reboot_precheck(false, LINUX_REBOOT_MAGIC1, LINUX_REBOOT_MAGIC2),
                    Err(Error::Perm));

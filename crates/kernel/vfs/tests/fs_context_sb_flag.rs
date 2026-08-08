@@ -1,4 +1,4 @@
-//! `vfs_parse_sb_flag` keyword step (Linux `fs/fs_context.c`). Before the LSM or
+//! `vfs_parse_sb_flag` keyword step. Before the LSM or
 //! backend `parse_param` runs, [`vfs_parse_fs_param`] maps a bare FLAG whose key
 //! is a common superblock-flag keyword (`ro`/`rw`/`sync`/`async`/`dirsync`/
 //! `mand`/`nomand`/`lazytime`/`nolazytime`) onto `fc.sb_flags` and consumes it.

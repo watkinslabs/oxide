@@ -2,19 +2,17 @@
 // no lock, no clock — so every rule below is exercised by `cargo test` rather
 // than only by a boot (`hrtimeout/tests.rs`).
 //
-// Two times per armed wait, Linux `include/linux/hrtimer.h:91-95`
-// (`hrtimer_set_expires_range_ns`):
+// Two times per armed wait, set by Linux's `hrtimer_set_expires_range_ns`:
 //
 //   soft (`_softexpires`) — the caller's own deadline. A wait may not end
-//                           before it. `hrtimer_types.h:26`: "the absolute
-//                           earliest expiry time".
-//   hard (`node.expires`) — `soft + slack`; the latest instant Linux permits.
-//                           `hrtimer_types.h:23-25`: "Is setup by adding slack
-//                           to the `_softexpires` value".
+//                           before it: "the absolute earliest expiry time".
+//   hard (`node.expires`) — `soft + slack`; the latest instant Linux permits:
+//                           "Is setup by adding slack to the `_softexpires`
+//                           value".
 //
 // The queue is ordered by HARD (Linux's rbtree key) and the hardware one-shot
 // is armed from the head's hard time, while `__hrtimer_run_queues`
-// (`kernel/time/hrtimer.c:2093`) fires everything whose SOFT time has passed:
+// fires everything whose SOFT time has passed:
 //
 //     if (basenow < hrtimer_get_softexpires(timer))
 //             break;
@@ -29,25 +27,25 @@ use alloc::vec::Vec;
 /// Linux `NSEC_PER_MSEC`.
 const NSEC_PER_MSEC: u64 = 1_000_000;
 
-/// Linux `fs/select.c:51` `MAX_SLACK` — the ceiling `select_estimate_accuracy`
+/// Linux `MAX_SLACK` — the ceiling `select_estimate_accuracy`
 /// puts on poll/select/epoll coalescing.
 pub const MAX_SLACK_NS: u64 = 100 * NSEC_PER_MSEC;
 
-/// Linux `fs/select.c:56` `divfactor` — poll/select/epoll spend 0.1% of the
+/// Linux `divfactor` — poll/select/epoll spend 0.1% of the
 /// remaining timeout as slack.
 const SLACK_DIVISOR: u64 = 1000;
 
-/// Linux `fs/select.c:62` `divfactor = divfactor / 5` — a `nice > 0` task
+/// Linux `divfactor = divfactor / 5` — a `nice > 0` task
 /// spends 0.5% instead, because its wakeups matter less.
 const SLACK_DIVISOR_NICE: u64 = SLACK_DIVISOR / 5;
 
-/// `ktime_add_safe` (`kernel/time/hrtimer.c`): the hard expiry saturates rather
+/// `ktime_add_safe`: the hard expiry saturates rather
 /// than wrapping, so a `KTIME_MAX`-clamped absolute deadline plus slack cannot
 /// alias to a near-term one.
 /// # C: O(1)
 pub fn hard_expiry(soft_ns: u64, slack_ns: u64) -> u64 { soft_ns.saturating_add(slack_ns) }
 
-/// Linux `select_estimate_accuracy` (`fs/select.c:76-91`) — the slack
+/// Linux `select_estimate_accuracy` — the slack
 /// poll/select/epoll_wait grant a timeout. Zero task slack (an RT/deadline
 /// task) means exact, floor at the task's own slack, cap at `MAX_SLACK_NS`.
 /// `remaining_ns` is `deadline - now`, Linux's `timespec64_sub(*tv, now)`.
@@ -63,13 +61,13 @@ pub fn estimate_accuracy(remaining_ns: u64, task_slack_ns: u64, nice_positive: b
 }
 
 /// Fold the earliest armed wait expiry into an already-resolved next-interrupt
-/// deadline. Linux `__hrtimer_get_next_event` (`hrtimer.c:622-644`) takes the
-/// min over active bases; `hrtimer_reprogram` (`hrtimer.c:890`) then only
+/// deadline. Linux `__hrtimer_get_next_event` takes the
+/// min over active bases; `hrtimer_reprogram` then only
 /// touches the device when the candidate is strictly earlier than what is
 /// already programmed — which `min` expresses.
 ///
 /// A wait whose hard expiry is already in the PAST is deliberately dropped
-/// instead of programmed: Linux's own reason at `tick-sched.c:833-838` is that
+/// instead of programmed: Linux's own reason is that
 /// arming for an expired timer re-arms at minimal delta and "Lather, rinse and
 /// repeat". The interrupt that services it is already on its way — the caller's
 /// `base_ns` is bounded by the accounting tick.
@@ -88,7 +86,7 @@ pub struct Armed<P> {
 }
 
 /// Deadline-ordered set of armed waits — Linux's per-CPU
-/// `timerqueue_linked_head` (`include/linux/timerqueue_types.h:22-24`), whose
+/// `timerqueue_linked_head`, whose
 /// sort key is the HARD expiry and whose leftmost entry is cached for O(1)
 /// "what is the next event".
 ///
@@ -135,7 +133,7 @@ impl<P> DeadlineQueue<P> {
 
     /// Take the next expiry whose SOFT time has passed, Linux
     /// `__hrtimer_run_queues`' `if (basenow < hrtimer_get_softexpires(timer))
-    /// break;` (`hrtimer.c:2093`). Returns `None` while the earliest-hard entry
+    /// break;`. Returns `None` while the earliest-hard entry
     /// is not yet soft-due, exactly as Linux stops the walk there — a later
     /// entry that IS soft-due is left for the interrupt its own hard expiry
     /// will raise anyway.

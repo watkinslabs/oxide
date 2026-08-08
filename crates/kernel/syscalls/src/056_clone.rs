@@ -155,7 +155,7 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
             }
         };
         let hhdm = pmm::user_as::hhdm_offset();
-        // F157: COW fork (Linux mm/memory.c semantic). Walks parent
+        // F157: COW fork (Linux's fork-time page-table COW semantic). Walks parent
         // PT, bumps struct-page refcount via inc_ref, maps same PA
         // RO in child + remaps parent RO. First write on either
         // side triggers handle_page_fault_cow which copies+splits.
@@ -383,7 +383,7 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
     // F205: ALWAYS inherit sigmask on clone/fork, regardless of
     // CLONE_SIGHAND. Per POSIX fork(2) "process signal mask" is in
     // the unconditional-inherit list; per Linux copy_thread() the
-    // mask is unconditionally copied (kernel/fork.c). The prior
+    // mask is unconditionally copied. The prior
     // CLONE_SIGHAND-only condition meant that musl's `fork() →
     // __block_all_sigs() → _Fork() → __restore_sigs(saved=...)`
     // chain corrupted the child's mask: child started at 0, the
@@ -444,7 +444,7 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
         }
     }
     // aarch64 stores it in TPIDR_EL0, which `switch_to`'s asm restores from
-    // `ContextAArch64::tpidr`. Linux `arch/arm64/kernel/process.c` `copy_thread`:
+    // `ContextAArch64::tpidr`. Linux's aarch64 `copy_thread`:
     // `if (clone_flags & CLONE_SETTLS) p->thread.uw.tp_value = tls;`, applied by
     // `tls_thread_switch()`.
     //

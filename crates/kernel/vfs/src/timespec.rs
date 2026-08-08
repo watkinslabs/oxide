@@ -1,18 +1,18 @@
-//! `struct timespec64` (Linux `include/linux/time64.h`) — the VFS wall-clock
+//! `struct timespec64` — the VFS wall-clock
 //! timestamp representation.
 //!
-//! Linux stores file times as `time64_t tv_sec` (a SIGNED 64-bit second count)
+//! File times are `time64_t tv_sec` (a SIGNED 64-bit second count)
 //! plus an unsigned sub-second `tv_nsec` in `[0, NSEC_PER_SEC)`, and the inode
-//! keeps them as the `i_atime_sec`/`i_atime_nsec` field pair
-//! (`include/linux/fs.h`). Pre-epoch times are ordinary and legal: `fs/utimes.c`
-//! `nsec_valid` validates only `tv_nsec`, never `tv_sec`, so
+//! keeps them as the `i_atime_sec`/`i_atime_nsec` field pair.
+//! Pre-epoch times are ordinary and legal: timestamp validation
+//! checks only `tv_nsec`, never `tv_sec`, so
 //! `utimensat(..., {.tv_sec = -1000000})` succeeds — `tar`/`rsync`/`cp -p`
 //! restoring pre-1970 archives depend on it.
 //!
 //! A single 64-bit nanosecond scalar CANNOT carry this contract: it spans only
 //! 1677..2262, while the default superblock window is `TIME64_MIN..TIME64_MAX`
-//! (`fs/super.c`) and ext4's own `s_time_max` is `EXT4_EXTRA_TIMESTAMP_MAX`
-//! (year 2446, `fs/ext4/ext4.h`). Hence the split pair, not `i64` ns.
+//! and ext4's own max stored timestamp reaches year 2446. Hence the split
+//! pair, not `i64` ns.
 //!
 //! Field order is `sec` then `nsec` so the derived `Ord` IS
 //! `timespec64_compare` — seconds first (signed), then the sub-second field
@@ -33,8 +33,8 @@ pub const USEC_PER_SEC: i64 = 1_000_000;
 /// `timespec64`. # C: O(1)
 pub const NSEC_PER_USEC: i64 = 1_000;
 
-/// `24*60*60` — the relatime staleness window in seconds (Linux fs/inode.c
-/// `relatime_need_update`). # C: O(1)
+/// `24*60*60` — the relatime staleness window in seconds
+/// (`relatime_need_update`'s one-day threshold). # C: O(1)
 pub const SECS_PER_DAY: i64 = 24 * 60 * 60;
 
 /// `struct timespec64` — a wall-clock instant relative to the Unix epoch.
@@ -51,8 +51,7 @@ impl Timespec64 {
     /// is an ordinary, representable time. # C: O(1)
     pub const ZERO: Self = Self { sec: 0, nsec: 0 };
 
-    /// Widest representable instant (`TIME64_MIN`/`TIME64_MAX`, Linux
-    /// `include/linux/time64.h`). # C: O(1)
+    /// Widest representable instant (`TIME64_MIN`/`TIME64_MAX`). # C: O(1)
     pub const MIN: Self = Self { sec: i64::MIN, nsec: 0 };
     /// See [`Self::MIN`]. # C: O(1)
     pub const MAX: Self = Self { sec: i64::MAX, nsec: NSEC_PER_SEC - 1 };

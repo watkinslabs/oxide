@@ -1,4 +1,4 @@
-//! Locked mount flags (`docs/16§6`, Linux `fs/namespace.c` `lock_mnt_tree` /
+//! Locked mount flags (`docs/16§6`; mirrors `lock_mnt_tree` /
 //! `can_change_locked_flags` / `__has_locked_children`).
 //!
 //! When a mount tree is copied into a mount namespace owned by a DIFFERENT user
@@ -50,8 +50,8 @@ pub(super) fn lock_mnt_ns(ns: u64) {
     for m in mounts_in_ns(ns) { lock_one(&m, Some(m.mnt_id) != root); }
 }
 
-/// Linux `lock_mnt_tree(new_ns_root)` at `fs/namespace.c` `create_new_namespace`
-/// — the `open_tree(OPEN_TREE_CLONE)` / `fsmount` detached-copy path. Linux
+/// Linux `lock_mnt_tree(new_ns_root)`, run when a new mount namespace is
+/// created — the `open_tree(OPEN_TREE_CLONE)` / `fsmount` detached-copy path. Linux
 /// hangs the copy under a synthetic nullfs namespace root and locks from THAT
 /// root, so the copy's own root node is `p != mnt` and does receive `MNT_LOCKED`;
 /// this tree's [`DetachedMountTree`] has no synthetic root, so every node is
@@ -101,8 +101,8 @@ pub fn has_locked_children(m: &Arc<Mount>, base: &Arc<Dentry>) -> bool {
 mod tests {
     use super::*;
 
-    /// Bit values are the REAL Linux ones (`include/linux/mount.h` enum
-    /// `mount_flags`); a wrong value would silently alias another flag.
+    /// Bit values are the REAL Linux `mount_flags` enum ones; a wrong value
+    /// would silently alias another flag.
     #[test]
     fn lock_bit_values_match_linux() {
         assert_eq!(MNT_LOCK_ATIME,    0x040000);

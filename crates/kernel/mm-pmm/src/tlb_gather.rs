@@ -1,4 +1,4 @@
-// Deferred-free TLB gather for user page teardown — Linux `mm/mmu_gather.c`.
+// Deferred-free TLB gather for user page teardown.
 //
 // Tearing a user PTE down and handing its frame back to the allocator is a
 // two-party operation: the page tables say the mapping is gone, but every CPU
@@ -7,17 +7,15 @@
 // recycled into an unrelated allocation and the stale (writable) TLB entry
 // scribbles over it.
 //
-// Linux states the required order verbatim in `include/asm-generic/tlb.h`
-// (the `mmu_gather` header comment):
+// The required order is invariant and load-bearing:
 //     1) unhook page  2) TLB invalidate page  3) free page
-//     "we must never free a page before we have ensured there are no live
-//      translations left to it. Otherwise it might be possible to observe
-//      (or worse, change) the page content after it has been reused."
-// and enforces it structurally in `mm/mmu_gather.c` `tlb_flush_mmu()`, which
-// is exactly `tlb_flush_mmu_tlbonly()` (invalidate everywhere) followed by
-// `tlb_flush_mmu_free()` (release the batched pages). `tlb_remove_page` only
-// ever queues a page into the batch — it never frees inline, so a frame
-// cannot outlive its own invalidation.
+// A page must never be freed before every live translation to it has been
+// invalidated — otherwise the reused frame's content could be observed, or
+// worse, changed, through the stale mapping. This module enforces that
+// ordering structurally: the batched-flush step is exactly "invalidate
+// everywhere" followed by "release the batched pages", and queuing a page
+// into the batch never frees it inline, so a frame cannot outlive its own
+// invalidation.
 //
 // This module owns that ordering as pure, target-independent logic so it is
 // unit-testable on the host: `user_as` (where the real PTE walkers live) is
@@ -30,19 +28,16 @@
 // Per-arch invalidation (`20§5`). The two arches differ fundamentally:
 //   x86_64: `invlpg` acts only on the CPU that executes it and only on the
 //           currently-loaded CR3; there is no hardware broadcast. Reaching a
-//           peer CPU REQUIRES a synchronous IPI — Linux `flush_tlb_mm_range`
-//           -> `flush_tlb_multi(mm_cpumask(mm))` -> `on_each_cpu_cond_mask`
-//           with `wait = 1` (`arch/x86/mm/tlb.c`, `kernel/smp.c`), which does
-//           not return until every target has run the flush.
+//           peer CPU REQUIRES a synchronous IPI that blocks until every
+//           target has run the flush.
 //   aarch64: `tlbi vae1is` is inner-shareable — hardware broadcasts the
 //           invalidate to every PE in the domain and `dsb ish` waits for
 //           completion, so the "local" invalidate already covers peers.
-//           arm64 Linux has NO TLB-shootdown IPI at all (its IPI enum in
-//           `arch/arm64/kernel/smp.c` has no TLB entry); our shootdown hook
+//           arm64 Linux has NO TLB-shootdown IPI at all; our shootdown hook
 //           is correspondingly never installed there and is a no-op.
 //           Linux supplies the target ASID as an explicit TLBI operand
-//           (`__TLBI_VADDR(addr, ASID(mm))`) so a non-current mm can be
-//           invalidated; oxide runs every address space at ASID 0
+//           so a non-current mm can be invalidated; oxide runs every
+//           address space at ASID 0
 //           (`hal-aarch64` `mmu_ops`), so the same instruction covers a
 //           foreign root without an ASID switch.
 // Both arches drive the same two calls; the arch decides which one carries

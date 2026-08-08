@@ -1,6 +1,6 @@
 //! B252 [D11 + mnt_flags model]: the kernel-internal `mnt_flags` bit set
-//! (MNT_LOCKED/MNT_INTERNAL/MNT_DOOMED/MNT_MARKED/MNT_UMOUNT, Linux
-//! include/linux/mount.h) lives in a DISJOINT word from the MS_*-valued option
+//! (MNT_LOCKED/MNT_INTERNAL/MNT_DOOMED/MNT_MARKED/MNT_UMOUNT)
+//! lives in a DISJOINT word from the MS_*-valued option
 //! mask, and the option mask has typed readback (RDONLY/NOSUID/NODEV/NOEXEC/
 //! RELATIME) + an atime-policy resolver. Pre-fix only the raw `flags()` u64 and
 //! the `Propagation` enum existed — no MNT_LOCKED/MNT_INTERNAL bits (grep
@@ -119,7 +119,7 @@ fn internal_flags_disjoint_from_option_mask() {
 // request mask into that space with Linux atime precedence. Pure value math.
 #[test]
 fn ms_to_mnt_maps_request_flags_to_real_mnt_values() {
-    // Real Linux include/linux/mount.h per-mount values.
+    // Real Linux per-mount `mnt_flags` values.
     assert_eq!(MNT_NOSUID, 0x01);
     assert_eq!(MNT_NODEV, 0x02);
     assert_eq!(MNT_NOEXEC, 0x04);

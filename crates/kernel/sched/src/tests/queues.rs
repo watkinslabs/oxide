@@ -263,16 +263,16 @@ fn cfs_rotation_is_round_robin_for_equal_weight() {
 }
 
 // Linux `__schedule`'s `prepare_task(next)` store order: `on_cpu` goes up
-// BEFORE the task leaves the tree (`on_rq` goes down). `kernel/sched/core.c`
-// spells the pairing out next to ttwu's `smp_load_acquire(&p->on_cpu)`:
+// BEFORE the task leaves the tree (`on_rq` goes down), paired against
+// `try_to_wake_up`'s `smp_load_acquire(&p->on_cpu)`:
 //
 //   __schedule() (switch to task 'p')      try_to_wake_up()
 //     STORE p->on_cpu = 1                    LOAD p->on_rq
 //   __schedule() (put 'p' to sleep)
 //     STORE p->on_rq = 0                     LOAD p->on_cpu
 //
-// "One must be running (->on_cpu == 1) in order to remove oneself from the
-// runqueue" — so a reader must never observe BOTH clear for a task being
+// Invariant: a task must be running (on_cpu == 1) to remove itself from the
+// runqueue — so a reader must never observe BOTH clear for a task being
 // switched to. `Task::pending_wake` is that reader.
 
 use crate::task::PendingWake;

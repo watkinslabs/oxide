@@ -1,7 +1,7 @@
 // Hosted unit tests for the `struct sched_attr` extensible-struct ABI.
-// Reference: Linux v7.2.0-rc4 `kernel/sched/syscalls.c` (`sched_copy_attr`,
-// `sys_sched_getattr`, `uclamp_validate`, `__setscheduler_uclamp`) and
-// `include/linux/uaccess.h` (`copy_struct_from_user`, `copy_struct_to_user`).
+// Reference: Linux's `sched_copy_attr`,
+// `sys_sched_getattr`, `uclamp_validate`, `__setscheduler_uclamp`,
+// `copy_struct_from_user`, and `copy_struct_to_user`.
 
 use super::*;
 

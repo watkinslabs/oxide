@@ -1,5 +1,5 @@
-// Shared `do_tkill` for slots 200 (tkill) and 234 (tgkill) — Linux
-// `kernel/signal.c` `do_tkill` → `do_send_specific`. One owner for the
+// Shared `do_tkill` for slots 200 (tkill) and 234 (tgkill) — Linux's
+// `do_tkill` → `do_send_specific`. One owner for the
 // thread-directed signal path so `tkill` cannot drift from `tgkill`.
 //
 // Module manifest:
@@ -105,7 +105,7 @@ mod live {
     /// Linux `prepare_kill_siginfo(sig, &info, PIDTYPE_PID)` + the
     /// `do_send_sig_info(..., PIDTYPE_PID)` delivery: si_code = SI_TKILL,
     /// si_pid = `task_tgid_vnr(current)`, si_uid = `current_uid()` — the
-    /// sender's REAL uid, not the effective one (`include/linux/cred.h`
+    /// sender's REAL uid, not the effective one (Linux's
     /// `current_uid()` is `current_cred()->uid`).
     ///
     /// EVERY signal gets a record, not just the realtime range: glibc's

@@ -1,5 +1,5 @@
 // 221 fadvise64 — POSIX file access-pattern advice (docs/53 §0).
-// Linux `mm/fadvise.c`: `ksys_fadvise64_64` resolves the fd, then
+// Linux's `ksys_fadvise64_64` resolves the fd, then
 // `generic_fadvise` validates and acts.
 //
 // The four state hints are REAL state, not decoration: NORMAL/SEQUENTIAL/RANDOM

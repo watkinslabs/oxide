@@ -1,4 +1,4 @@
-// `prctl(PR_GET_AUXV, addr, len)` — Linux `kernel/sys.c prctl_get_auxv`.
+// `prctl(PR_GET_AUXV, addr, len)` — Linux `prctl_get_auxv`.
 //
 // Reports the auxiliary vector this process was exec'd with, from the copy
 // the kernel keeps in the mm (Linux `mm_struct::saved_auxv`), which is also
@@ -28,7 +28,7 @@ pub fn copy_plan(len: u64) -> (usize, i64) {
     (size, SAVED_AUXV_BYTES as i64)
 }
 
-/// `if (arg4 || arg5) return -EINVAL;` — the tail rule `kernel/sys.c` applies
+/// `if (arg4 || arg5) return -EINVAL;` — the tail rule Linux applies
 /// before calling the helper. arg2 (the buffer) and arg3 (its length) are
 /// unrestricted; a bad buffer is EFAULT from the copy, not EINVAL.
 /// # C: O(1)

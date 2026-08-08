@@ -13,8 +13,7 @@ fn may_open_dev_flags(mnt_flags: u64, sb_iflags: u64) -> bool {
 ///
 /// `mnt_id` must come from `VfsPath.mnt_id`; retaining the per-mount identity
 /// is what distinguishes a nodev bind mount from another mount of the same
-/// superblock. Missing/detached identities fail closed. Linux source:
-/// `fs/namei.c` `may_open_dev`.
+/// superblock. Missing/detached identities fail closed.
 /// # C: O(log mounts)
 pub fn may_open_dev(mnt_id: u64) -> bool {
     let Some(mnt) = crate::mount::mount_by_id(mnt_id) else { return false };

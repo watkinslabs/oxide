@@ -10,7 +10,7 @@ use syscall::errno::Errno;
 use vfs::{File, InodeRef};
 
 /// Wall-clock ns for the inode_times overlay (mtime/ctime stamping) — Linux
-/// `current_time` (`fs/inode.c`) reads `ktime_get_coarse_real_ts64`, i.e.
+/// `current_time` reads `ktime_get_coarse_real_ts64`, i.e.
 /// CLOCK_REALTIME. This used to return the MONOTONIC counter, so every
 /// `notify_change` ctime stamp was the machine's uptime rather than an
 /// epoch-relative time, and `ls -l` after a chmod showed 1970 plus a few
@@ -117,7 +117,7 @@ pub(crate) fn with_mnt_write(mnt_id: u64, f: impl FnOnce() -> i64) -> i64 {
     rv
 }
 
-/// Kernel `notify_change` (Linux `fs/attr.c`): the single convergence point for
+/// Kernel `notify_change`: the single convergence point for
 /// chmod/chown/truncate/utimes. EROFS gate on the owning mount, then the vfs
 /// `setattr_prepare` DAC+idmap decision, then the inode's `i_op->setattr`
 /// (`simple_setattr` default for pseudo-fs; ext4 additionally journals the

@@ -35,7 +35,7 @@ fn background_write_under_tostop_stops_or_allows() {
 
 #[test]
 fn a_background_access_that_stops_the_pgrp_returns_erestartsys_not_eintr() {
-    // `drivers/tty/tty_jobctrl.c:55-59` — kill_pgrp + TIF_SIGPENDING +
+    // Linux `__tty_check_change`'s Stop arm: kill_pgrp + TIF_SIGPENDING +
     // -ERESTARTSYS, so the access re-runs after the job is continued.
     assert_eq!(Decision::Stop.vfs_err(), Some(vfs::VfsError::Erestartsys));
     assert_ne!(Decision::Stop.vfs_err(), Some(vfs::VfsError::Eintr));

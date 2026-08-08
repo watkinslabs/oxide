@@ -25,8 +25,8 @@ pub(crate) fn next_programmed_interrupt(now_ns: u64, earliest_ns: u64,
     if earliest_ns <= now_ns { tick_deadline_ns } else { tick_deadline_ns.min(earliest_ns) }
 }
 
-/// Linux `hrtimer_forward_now` for the accounting tick (`kernel/time/tick-sched.c`
-/// `tick_nohz_handler`: `hrtimer_forward(&ts->sched_timer, now, TICK_NSEC)`).
+/// Linux `hrtimer_forward_now` for the accounting tick (`tick_nohz_handler`:
+/// `hrtimer_forward(&ts->sched_timer, now, TICK_NSEC)`).
 ///
 /// The tick is an ABSOLUTE periodic deadline that only moves when it expires.
 /// Deriving it as `now + TICK_NSEC` on every reprogram instead — which is what
@@ -65,7 +65,7 @@ pub(crate) fn arm_domain(clock: ClockSpec, absolute: bool) -> ClockSpec {
 pub(crate) enum Notify {
     None,
     Signal { signo: u32, value: u64, target_tid: u32 },
-    /// Linux `cpu_timer_fire`'s nanosleep branch (`posix-cpu-timers.c:682-688`):
+    /// Linux `cpu_timer_fire`'s nanosleep branch:
     /// a timer created by `do_cpu_nanosleep` carries `it.cpu.nanosleep = true`
     /// and, when it fires, WAKES the sleeping task instead of queueing a
     /// signal. `service_wake` intercepts this before `expire`, so the

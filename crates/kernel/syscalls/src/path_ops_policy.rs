@@ -1,7 +1,7 @@
-// Directory-operation decision core — the order-sensitive half of Linux
-// `fs/namei.c` `filename_create` / `filename_mkdirat` / `filename_rmdir` /
+// Directory-operation decision core — the order-sensitive half of Linux's
+// `filename_create` / `filename_mkdirat` / `filename_rmdir` /
 // `filename_unlinkat` / `filename_symlinkat` / `filename_linkat` and
-// `fs/stat.c` `do_readlinkat`.
+// `do_readlinkat`.
 //
 // Deliberately NOT `#![cfg(target_os = "oxide-kernel")]`: the slot files
 // (083/084/086/087/088/089/258/263/265/266/267/133) are kernel-only, so

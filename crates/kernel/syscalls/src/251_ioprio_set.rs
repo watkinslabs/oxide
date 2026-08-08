@@ -1,5 +1,5 @@
 // 251 ioprio_set — one syscall, one file (docs/53 §0).
-// `ioprio_set(which, who, ioprio)`: Linux `block/ioprio.c:65`. Thin shim over
+// `ioprio_set(which, who, ioprio)`: Linux's `sys_ioprio_set`. Thin shim over
 // `crate::ioprio` (Linux `ioprio_check_cap`) and `priority_common` for the
 // which/who target set; the stored value is the raw `int`, as
 // the task's `io_context` holds it, so a CLONE_IO sibling observes the write.

@@ -1,11 +1,11 @@
 // `io_uring_setup(2)` admission ladder + oxide's SQ/CQ/SQE region geometry.
 //
-// Linux reference, read for every rule below:
-//   io_uring/io_uring.c  io_uring_sanitise_params()  — flag mask + combinations
-//   io_uring/io_uring.c  io_uring_fill_params()      — the entries ladder
-//   io_uring/io_uring.c  rings_size()                — region sizing
-//   io_uring/io_uring.c  io_prepare_config()         — sq_off/cq_off writeback
-//   io_uring/io_uring.c  io_allocate_scq_urings()    — ring header seeding
+// The Linux stages every rule below mirrors:
+//   sanitise params  — flag mask + rejected flag combinations
+//   fill params      — the entries ladder
+//   rings size       — region sizing
+//   prepare config   — sq_off/cq_off writeback
+//   allocate urings  — ring header seeding
 //
 // Two regions, exactly like Linux: a "rings" region (SQ/CQ headers, the CQE
 // array, and the SQ index array) and a separate "SQEs" region. They are

@@ -19,21 +19,21 @@ impl SuperBlock {
     /// # C: O(dirty)
     pub fn sync_fs(&self, wait: bool) -> KResult<()> { self.s_op.sync_fs(wait) }
 
-    /// `sync_filesystem` (Linux fs/sync.c): flush this superblock's dirty state
+    /// `sync_filesystem`: flush this superblock's dirty state
     /// to the backend in the canonical two-phase order — an async kick
-    /// (`sync_fs(wait=0)`, Linux `writeback_inodes_sb` + `sync_fs(0)`) followed by
-    /// the blocking pass (`sync_fs(wait=1)`, Linux `sync_inodes_sb` + `sync_fs(1)`)
+    /// (`sync_fs(wait=0)`, `writeback_inodes_sb` + `sync_fs(0)`) followed by
+    /// the blocking pass (`sync_fs(wait=1)`, `sync_inodes_sb` + `sync_fs(1)`)
     /// that waits for the queued writeback to reach stable storage. A read-only
-    /// superblock has nothing to flush (Linux `if (sb_rdonly(sb)) return 0`), so
+    /// superblock has nothing to flush, so
     /// the call short-circuits `Ok`. An async-pass error aborts before the wait
-    /// pass (Linux returns the first error). Run by `generic_shutdown_super`
+    /// pass (the first error wins). Run by `generic_shutdown_super`
     /// before `put_super` and by `freeze_super`/`sync(2)`. # C: O(dirty)
     pub fn sync_filesystem(&self) -> KResult<()> {
         if self.is_readonly() { return Ok(()); }
         // Inode metadata goes out BEFORE each `sync_fs`, not after: a backend's
-        // `sync_fs` is what makes the preceding writes durable (ext4 commits the
-        // running transaction), so an inode written after it sits in a
-        // transaction nobody committed. Linux orders each pass the same way —
+        // `sync_fs` is what makes the preceding writes durable (a journaling fs
+        // commits the running transaction), so an inode written after it sits
+        // in a transaction nobody committed. Each pass is ordered the same way —
         // `writeback_inodes_sb` then `sync_fs(0)`, `sync_inodes_sb` then
         // `sync_fs(1)`. The second pass is `WB_SYNC_ALL`, which is what forces
         // every deferred lazy timestamp out regardless of its age.
@@ -111,7 +111,7 @@ impl SuperBlock {
     /// Live `sb_start_write` holder count (the freeze drain target). # C: O(1)
     pub fn sb_writers(&self) -> u32 { self.s_writers_count.load(Ordering::Acquire) }
 
-    /// `freeze_super` (Linux fs/super.c): quiesce the fs for a consistent
+    /// `freeze_super`: quiesce the fs for a consistent
     /// snapshot. Ratchets UNFROZEN → WRITE (block new writers) → sync → FS
     /// (`s_op->freeze_fs`) → COMPLETE. `Ebusy` if already frozen. On a
     /// `freeze_fs` error the level is unwound to UNFROZEN (writers resume).
@@ -140,7 +140,7 @@ impl SuperBlock {
         }
     }
 
-    /// `thaw_super` (Linux fs/super.c): resume after a freeze. `s_op->thaw_fs`
+    /// `thaw_super`: resume after a freeze. `s_op->thaw_fs`
     /// then drop the level back to UNFROZEN (writers re-admitted). `Einval` if
     /// not frozen. # C: O(1)
     pub fn thaw_super(&self) -> KResult<()> {
@@ -182,10 +182,10 @@ impl SuperBlock {
         self as *const SuperBlock as usize
     }
 
-    /// `generic_shutdown_super` (Linux fs/super.c): the last-`s_active`-drop
+    /// `generic_shutdown_super`: the last-`s_active`-drop
     /// teardown sequence. Flush dirty state (`sync_filesystem`), clear the live
     /// `SB_ACTIVE` flag bit so no operation treats the instance as mounted from
-    /// here on (Linux `sb->s_flags &= ~SB_ACTIVE`), `evict_inodes` the now-idle
+    /// here on (`sb->s_flags &= ~SB_ACTIVE`), `evict_inodes` the now-idle
     /// inode cache, then run `put_super` (backend teardown + drop root dentry +
     /// clear icache). Returns the busy-inode count `evict_inodes` found — `0` on
     /// a clean unmount, nonzero is the "Busy inodes after unmount" leak the

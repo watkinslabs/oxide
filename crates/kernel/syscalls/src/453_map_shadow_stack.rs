@@ -17,7 +17,7 @@ use syscall::errno::Errno;
 ///
 /// The errno is EOPNOTSUPP, not ENOSYS. Mainline's first act is
 /// `if (!cpu_feature_enabled(X86_FEATURE_USER_SHSTK)) return -EOPNOTSUPP;`
-/// (`arch/x86/kernel/shstk.c`); the flags check that follows is unreachable
+/// ; the flags check that follows is unreachable
 /// on such a CPU, so this single answer is the whole contract. A previous
 /// comment here quoted ENOSYS — that was never verified against source.
 /// # C: O(1)

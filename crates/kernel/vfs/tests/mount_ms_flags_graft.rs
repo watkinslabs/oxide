@@ -12,10 +12,10 @@
 //! Every assertion below is NEGATIVE — it checks that the restriction actually
 //! REFUSES something. A happy-path "the bit is set" test is what let this ship.
 //!
-//! Linux source mirrored: `fs/namespace.c` `path_mount` (the "Separate the
-//! per-mountpoint flags" block + "The default atime for remount is
-//! preservation"), `do_add_mount` (`newmnt->mnt.mnt_flags = mnt_flags`), and
-//! `__mnt_is_readonly`.
+//! Contract mirrored: `path_mount` separates the per-mountpoint MS_* flags
+//! from the fs-specific data string and defaults atime-on-remount to
+//! preservation; `do_add_mount` stamps the resolved `mnt_flags` onto the new
+//! mount; `__mnt_is_readonly` reads them back.
 //!
 //! Own test binary → own copy of the vfs statics; `SERIAL`-guarded.
 
@@ -79,7 +79,7 @@ fn ms_to_mnt_mirrors_path_mount() {
     assert_eq!(ms_to_mnt(MS_NOEXEC) & MNT_NOEXEC, MNT_NOEXEC);
     assert_eq!(ms_to_mnt(MS_NODIRATIME) & MNT_NODIRATIME, MNT_NODIRATIME);
 
-    // MS_NOSYMFOLLOW (uapi/linux/mount.h = 256) was not even DEFINED before, so
+    // MS_NOSYMFOLLOW (mount UAPI value 256) was not even DEFINED before, so
     // the request bit was silently dropped and the mount followed symlinks.
     assert_eq!(MS_NOSYMFOLLOW, 256);
     assert_eq!(ms_to_mnt(MS_NOSYMFOLLOW) & MNT_NOSYMFOLLOW, MNT_NOSYMFOLLOW);

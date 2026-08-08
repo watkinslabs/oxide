@@ -16,12 +16,12 @@ pub const MAX_SYMLINK_DEPTH: u32 = 40;
 /// exceeded is ELOOP (Linux rejects both over-nesting and over-counting).
 pub const MAX_NESTED_LINKS: u32 = 8;
 
-/// `MAY_*` access mask bits (Linux `include/linux/fs.h`).
+/// `MAY_*` access mask bits.
 pub const MAY_EXEC:  u32 = 0x01;
 pub const MAY_WRITE: u32 = 0x02;
 pub const MAY_READ:  u32 = 0x04;
 
-/// Mode bits that carry privilege (Linux `include/uapi/linux/stat.h`).
+/// Mode bits that carry privilege.
 /// `S_ISUID`/`S_ISGID` are killed on chown of a regular file; `S_ISGID`
 /// is killed on chmod when the caller is outside the file's group.
 pub const S_ISUID: u16 = 0o4000;
@@ -38,7 +38,7 @@ pub struct LookupFlags {
     /// O_NOFOLLOW / AT_SYMLINK_NOFOLLOW: a symlink as the FINAL component is
     /// returned as-is rather than followed.
     pub no_follow_final: bool,
-    /// LOOKUP_FOLLOW (Linux `fs/namei.c`): explicitly FOLLOW a trailing symlink.
+    /// LOOKUP_FOLLOW: explicitly FOLLOW a trailing symlink.
     /// First-class counterpart to `no_follow_final` — when set it OVERRIDES the
     /// no-follow short-circuit so the final symlink is resolved even if
     /// `no_follow_final` is also set (Linux's flag set never holds both, and
@@ -114,7 +114,7 @@ pub struct LookupFlags {
     /// retry on a blocking path (Linux `try_to_unlazy`/`LOOKUP_CACHED` →
     /// `-EAGAIN`). A cached NEGATIVE dentry is still a definitive `ENOENT`.
     pub cached: bool,
-    /// LOOKUP_RCU (Linux `fs/namei.c`) — OPT-IN lock-free "lazy" walk.
+    /// LOOKUP_RCU — OPT-IN lock-free "lazy" walk.
     /// DEFAULT OFF: the proven, D22-validated ref/Arc walk is the
     /// default-correct path. When set, the walk runs in rcu (lazy) mode,
     /// resolving components from the seqcount-gated dcache probe and only
@@ -131,8 +131,8 @@ pub struct LookupFlags {
 impl LookupFlags {
     /// True when the START directory (the `*at` dirfd) IS the resolution root,
     /// so the walk must be seeded from it rather than from the process root —
-    /// Linux `fs/namei.c` `path_init`'s `LOOKUP_IS_SCOPED` branch
-    /// (`LOOKUP_BENEATH | LOOKUP_IN_ROOT`), which sets `nd->root = nd->path`.
+    /// the scoped-resolution case (`LOOKUP_BENEATH | LOOKUP_IN_ROOT`), which
+    /// pins the resolution root to the start position.
     ///
     /// Single owner for the predicate: the resolver seeds `Nameidata` on it and
     /// the syscall layer picks its resolve entry point on it, and the two may
@@ -141,7 +141,7 @@ impl LookupFlags {
 
     /// Apply an `open(O_CREAT)`'s trailing-component rule to a parent walk.
     ///
-    /// The reference derives it once, in `fs/open.c` `build_open_flags`: `O_EXCL`
+    /// `O_EXCL`
     /// FORCES `O_NOFOLLOW` on the open, and `LOOKUP_FOLLOW` is then set only when
     /// `O_NOFOLLOW` is absent. So a plain create follows its trailing link and
     /// acts on the target; `O_EXCL` and `O_NOFOLLOW` both keep the link itself as
@@ -230,7 +230,7 @@ pub struct MountTarget {
     pub mountpoint: Arc<Dentry>,
 }
 
-/// Linux `nd->last_type` (`fs/namei.c`) — the classification of a LOOKUP_PARENT
+/// The `last_type` classification of a LOOKUP_PARENT
 /// walk's final segment, derived from `VfsPath.last_component`. A caller
 /// (`do_rmdir`/`do_unlinkat`/`do_renameat2`) matches on this to reject the
 /// dot-forms WITHOUT re-parsing the pathname: `rmdir(".")` → `EINVAL` (`Dot`),
@@ -242,10 +242,10 @@ pub struct MountTarget {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LastType { Norm, Dot, Dotdot, Root }
 
-/// `i_op->get_link` result (Linux `fs/namei.c get_link`): either the symlink
+/// `i_op->get_link` result: either the symlink
 /// BODY to follow as a path string (`Path`), or a MAGIC-link JUMP target — an
 /// already-resolved `(mnt,dentry,inode)` the walk RESETS its current position
-/// to (Linux `nd_jump_link`) INSTEAD of splicing a path string. Only magic
+/// to INSTEAD of splicing a path string. Only magic
 /// inodes (`/proc/<pid>/fd/<n>` and friends) produce `Jump`; every ordinary /
 /// inline symlink produces `Path`, so the no-magic-link walk is unchanged.
 pub enum LinkTarget {

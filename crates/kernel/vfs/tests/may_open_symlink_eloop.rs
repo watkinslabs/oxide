@@ -1,4 +1,4 @@
-//! `may_open` (Linux `fs/namei.c`) rejects a SYMLINK final inode with ELOOP.
+//! `may_open` rejects a SYMLINK final inode with ELOOP.
 //! This is the path `open(O_NOFOLLOW)` without `O_PATH` takes: the namei walk
 //! returns the symlink as-is (`no_follow_final`), then `may_open`'s `i_mode`
 //! switch turns `S_IFLNK` into ELOOP. Companion checks: a regular file opens,

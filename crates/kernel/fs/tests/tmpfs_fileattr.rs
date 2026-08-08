@@ -1,10 +1,10 @@
-//! tmpfs `i_op->fileattr_{get,set}` (Linux `mm/shmem.c` `shmem_fileattr_get` /
-//! `shmem_fileattr_set`). Reached by `file_getattr(2)`/`file_setattr(2)`
-//! (468/469) and by `FS_IOC_{GET,SET}FLAGS` (slot 16).
+//! tmpfs's `fileattr_get`/`fileattr_set` inode ops. Reached by
+//! `file_getattr(2)`/`file_setattr(2)` (468/469) and by
+//! `FS_IOC_{GET,SET}FLAGS` (slot 16).
 //!
 //! Before F761 tmpfs implemented neither op, so `InodeOps`'s default `ENOTTY`
 //! made every `/tmp`, `/run` and `/dev/shm` inode answer `EOPNOTSUPP` where
-//! Linux answers `0` — `chattr +i /tmp/x` could not work at all.
+//! the correct answer is `0` — `chattr +i /tmp/x` could not work at all.
 
 use fs::tmpfs::tmpfs_anon_file;
 use vfs::inode::{FS_APPEND_FL, FS_CASEFOLD_FL, FS_IMMUTABLE_FL, FS_NOATIME_FL, FS_NODUMP_FL,

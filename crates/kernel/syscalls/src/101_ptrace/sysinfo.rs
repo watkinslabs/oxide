@@ -3,7 +3,7 @@
 // ladders. Pure bytes-in / bytes-out so every offset and errno is reachable
 // from `cargo test`; the live register plumbing is the kernel-only sibling.
 //
-// Layout (`include/uapi/linux/ptrace.h`, 64-bit):
+// Layout (`struct ptrace_syscall_info` wire layout, 64-bit):
 //   op u8 @0, reserved u8 @1, flags u16 @2, arch u32 @4,
 //   instruction_pointer u64 @8, stack_pointer u64 @16, union @24
 //     entry   { nr u64 @24, args[6] u64 @32 }              end 80

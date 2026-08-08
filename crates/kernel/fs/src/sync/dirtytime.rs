@@ -1,10 +1,9 @@
-// `start_dirtytime_writeback` / `wakeup_dirtytime_writeback` (Linux
-// fs/fs-writeback.c) — the periodic work that bounds how long a `lazytime`
+// Dirtytime writeback: the periodic work that bounds how long a `lazytime`
 // mount may hold a timestamp in memory. Without it the deferral is unbounded on
 // an idle filesystem: nothing else ever visits an inode that is only READ.
 //
-// Re-armed from inside its own handler, exactly as Linux re-schedules
-// `dirtytime_work` at the tail of every run.
+// Re-armed from inside its own handler, at the tail of every run, so the
+// sweep keeps recurring without an external scheduler entry.
 
 #![cfg(target_os = "oxide-kernel")]
 

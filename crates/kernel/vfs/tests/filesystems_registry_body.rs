@@ -8,7 +8,7 @@
 //! different answer from each. `vfs::fs::filesystems_proc_body` renders the
 //! live registry, so the two agree by construction.
 //!
-//! Linux shape (`fs/filesystems.c` `regen_filesystems_string`):
+//! Line format mirrors `regen_filesystems_string`:
 //! `"%s\t%s\n"` with an EMPTY prefix for `FS_REQUIRES_DEV` and `nodev`
 //! otherwise, in registration order.
 

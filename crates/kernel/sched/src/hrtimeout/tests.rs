@@ -6,7 +6,7 @@ use super::model::*;
 
 const MS: u64 = 1_000_000;
 const US: u64 = 1_000;
-/// Linux `init/init_task.c:183` `.timer_slack_ns = 50000`.
+/// Linux default task `.timer_slack_ns = 50000`.
 const DEFAULT_SLACK: u64 = 50 * US;
 
 fn q() -> DeadlineQueue<u32> { DeadlineQueue::new() }
@@ -122,7 +122,7 @@ fn poll_slack_is_a_tenth_of_a_percent_floored_at_task_slack_capped_at_100ms() {
     assert_eq!(estimate_accuracy(1000 * MS, DEFAULT_SLACK, true), 5 * MS);
 }
 
-/// `fs/select.c:81-82`: a task with zero slack (SCHED_FIFO/RR/DEADLINE) gets an
+/// A task with zero slack (SCHED_FIFO/RR/DEADLINE) gets an
 /// exact wait, never a coalesced one.
 #[test]
 fn a_realtime_task_gets_zero_slack_at_every_timeout_length() {

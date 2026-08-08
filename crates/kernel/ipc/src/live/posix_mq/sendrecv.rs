@@ -1,5 +1,4 @@
-// `mq_timedsend(2)` / `mq_timedreceive(2)` — Linux `do_mq_timedsend`
-// (`ipc/mqueue.c:1037-1140`) and `do_mq_timedreceive` (`:1142-1231`).
+// `mq_timedsend(2)` / `mq_timedreceive(2)`.
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -15,12 +14,10 @@ use super::model::{queue_of, MqMsg, MqQueue};
 use super::user::{errno, read_user_bytes, write_user_bytes, write_user_u32};
 use super::wait::{mq_abs_deadline, mq_wait_verdict};
 
-/// The descriptor half of `do_mq_timedsend`/`do_mq_timedreceive`: `EBADF` for
-/// a closed fd, `EBADF` again when the fd is not an mq descriptor (Linux
-/// `f_op != &mqueue_file_operations`, `mqueue.c:1066`), and `EBADF` a third
-/// time when the open description lacks the needed access
-/// (`!(f_mode & FMODE_WRITE)`, `:1071`). The access mode is recomputed with
-/// Linux's `OPEN_FMODE` from the description's own flags, so an `O_RDONLY`
+/// The descriptor half of send/receive: `EBADF` for
+/// a closed fd, `EBADF` again when the fd is not an mq descriptor, and `EBADF` a third
+/// time when the open description lacks the needed access. The access mode is
+/// recomputed from the description's own flags, so an `O_RDONLY`
 /// queue descriptor genuinely cannot send.
 /// # C: O(1)
 fn fd_to_mq(fd: i32, want_write: bool) -> Result<(Arc<MqQueue>, bool), Errno> {
@@ -41,7 +38,7 @@ fn fd_to_mq(fd: i32, want_write: bool) -> Result<(Arc<MqQueue>, bool), Errno> {
 /// `sys_mq_timedsend(mqdes, msg_ptr, msg_len, msg_prio, abs_timeout)` — slot
 /// `NR_MQ_TIMEDSEND`. `abs_timeout` is an ABSOLUTE CLOCK_REALTIME deadline;
 /// expiry is `ETIMEDOUT` and a deliverable signal is `ERESTARTSYS`, signal
-/// first (`ipc/mqueue.c:738-744`).
+/// first.
 /// # C: O(msg_len + N_queue)
 pub fn sys_mq_timedsend(args: &syscall::SyscallArgs) -> i64 {
     let mqdes = args.a0 as i32;
@@ -49,8 +46,8 @@ pub fn sys_mq_timedsend(args: &syscall::SyscallArgs) -> i64 {
     let len = args.a2 as usize;
     let prio = args.a3 as u32;
 
-    // `prepare_timeout` runs in the syscall wrapper, ahead of the descriptor
-    // lookup (`mqueue.c:1236-1244`).
+    // The timeout is parsed and validated in the syscall wrapper, ahead of the
+    // descriptor lookup.
     let deadline = match mq_abs_deadline(args.a4) { Ok(d) => d, Err(rv) => return rv };
     if prio >= MQ_PRIO_MAX { return errno(Errno::Einval); }
     let (q, nonblock) = match fd_to_mq(mqdes, true) { Ok(t) => t, Err(e) => return errno(e) };
@@ -73,17 +70,15 @@ pub fn sys_mq_timedsend(args: &syscall::SyscallArgs) -> i64 {
             g.insert(pos, m);
             drop(g);
             q.wait_recv.wake_one();
-            // `mq_curmsgs` grew, so `mqueue_poll_file` now reports EPOLLIN:
-            // wake `info->wait_q` (Linux `__do_notify`'s trailing `wake_up`,
-            // `mqueue.c:835`). Unconditional here, unlike the notification
+            // `mq_curmsgs` grew, so poll now reports EPOLLIN: wake the poll
+            // waiters unconditionally here, unlike the notification
             // below, because this implementation always INSERTS the message —
-            // it has no `pipelined_send` hand-off that leaves `mq_curmsgs`
+            // it has no pipelined hand-off that leaves `mq_curmsgs`
             // unchanged, so the polled observable changes on every send.
             q.notify_readable();
-            // `__do_notify` fires only when the queue went 0 -> 1 AND nobody
-            // was waiting synchronously: Linux hands a pipelined message
-            // straight to a waiting receiver and skips the notification
-            // (`mqueue.c:779-783, :1121-1130`).
+            // The notification fires only when the queue went 0 -> 1 AND nobody
+            // was waiting synchronously: a pipelined message handed
+            // straight to a waiting receiver skips the notification.
             if notify_due { notify_sender_side(&q); }
             return 0;
         }
@@ -108,7 +103,7 @@ fn notify_sender_side(q: &MqQueue) {
 
 /// `sys_mq_timedreceive(mqdes, msg_ptr, msg_len, msg_prio_p, abs_timeout)` —
 /// slot `NR_MQ_TIMEDRECEIVE`. Returns the byte count received; the message's
-/// priority goes to `msg_prio_p` when non-NULL (`mqueue.c:1224`).
+/// priority goes to `msg_prio_p` when non-NULL.
 /// # C: O(msg_len)
 pub fn sys_mq_timedreceive(args: &syscall::SyscallArgs) -> i64 {
     let mqdes = args.a0 as i32;
@@ -118,7 +113,7 @@ pub fn sys_mq_timedreceive(args: &syscall::SyscallArgs) -> i64 {
 
     let deadline = match mq_abs_deadline(args.a4) { Ok(d) => d, Err(rv) => return rv };
     let (q, nonblock) = match fd_to_mq(mqdes, false) { Ok(t) => t, Err(e) => return errno(e) };
-    // `mqueue.c:1175`: the buffer must be able to hold ANY message the queue
+    // The buffer must be able to hold ANY message the queue
     // may carry, not merely the one at its head.
     if buflen < q.msgsize { return errno(Errno::Emsgsize); }
 
@@ -129,9 +124,7 @@ pub fn sys_mq_timedreceive(args: &syscall::SyscallArgs) -> i64 {
             drop(g);
             q.wait_send.wake_one();
             // A slot came free: `mq_curmsgs < mq_maxmsg` now holds, so the
-            // queue reports EPOLLOUT (Linux `pipelined_receive`'s
-            // `/* for poll */ wake_up_interruptible(&info->wait_q)`,
-            // `mqueue.c:1029`). Unconditional for the same reason as the send
+            // queue reports EPOLLOUT. Unconditional for the same reason as the send
             // side: the removal always happens, so the observable always moves.
             q.notify_writable();
             break m;

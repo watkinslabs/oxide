@@ -399,7 +399,7 @@ pub struct TcpConn {
     pub rcv_space: u32,
     pub rcv_space_stamp_ns: u64,
     pub rcv_space_read_seq: u32,
-    /// Linux `sk->sk_userlocks & SOCK_RCVBUF_LOCK` (`net/core/sock.c:975`):
+    /// Linux `sk->sk_userlocks & SOCK_RCVBUF_LOCK`:
     /// once `setsockopt(SO_RCVBUF)` names a size, receive-window autotuning
     /// stops and the advertised window follows the caller's number.
     pub rcv_buf_locked: bool,

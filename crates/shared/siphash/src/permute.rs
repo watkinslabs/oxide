@@ -1,7 +1,6 @@
 // The SipHash-2-4 core: IV constants, the ARX permutation, and the
-// preamble/postamble that bracket every variant. Mirrors the
-// `SIPHASH_PERMUTATION` / `PREAMBLE` / `POSTAMBLE` macros in Linux
-// `include/linux/siphash.h` and `lib/siphash.c`.
+// preamble/postamble that bracket every variant. Mirrors Linux's
+// `SIPHASH_PERMUTATION` / `PREAMBLE` / `POSTAMBLE` macros.
 
 /// Linux `SIPHASH_CONST_0`..`_3` — the ASCII of "somepseudorandomlygeneratedbytes".
 const IV0: u64 = 0x736f_6d65_7073_6575;

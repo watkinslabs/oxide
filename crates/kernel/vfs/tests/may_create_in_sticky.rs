@@ -1,4 +1,4 @@
-//! `may_create_in_sticky` (Linux `fs/namei.c`) gate for `O_CREAT` opens of
+//! `may_create_in_sticky` gate for `O_CREAT` opens of
 //! entries that already exist in sticky directories.
 
 use vfs::namei::may_create_in_sticky;

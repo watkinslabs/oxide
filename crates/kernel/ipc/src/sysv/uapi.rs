@@ -7,7 +7,7 @@
 use super::perm::IpcPerm;
 use core::sync::atomic::Ordering;
 
-/// `struct ipc64_perm` (`asm-generic/ipcbuf.h`), identical on both targets.
+/// `struct ipc64_perm`, identical on both targets.
 pub const IPC64_PERM_BYTES: usize = 48;
 pub const IPC64_PERM_KEY_OFF:  usize = 0;
 pub const IPC64_PERM_UID_OFF:  usize = 4;
@@ -17,10 +17,10 @@ pub const IPC64_PERM_CGID_OFF: usize = 16;
 pub const IPC64_PERM_MODE_OFF: usize = 20;
 pub const IPC64_PERM_SEQ_OFF:  usize = 24;
 
-/// `struct semid64_ds`. x86_64 uses `arch/x86/include/uapi/asm/sembuf.h`,
-/// which interleaves an unused 64-bit word after each of `sem_otime` and
-/// `sem_ctime`; aarch64 takes `asm-generic/sembuf.h`, which does not. Getting
-/// this wrong hands userspace a `sem_nsems` read out of padding.
+/// `struct semid64_ds`. x86_64's ABI interleaves an unused 64-bit word after
+/// each of `sem_otime` and `sem_ctime` (a historical y2038 padding word);
+/// aarch64's does not. Getting this wrong hands userspace a `sem_nsems`
+/// read out of padding.
 #[cfg(target_arch = "x86_64")]
 pub const SEMID64_OTIME_OFF: usize = 48;
 #[cfg(target_arch = "x86_64")]

@@ -1,5 +1,5 @@
-// process_vm_readv/writev (310/311) decision core — Linux
-// `mm/process_vm_access.c` plus the `lib/iov_iter.c` import path
+// process_vm_readv/writev (310/311) decision core — Linux's
+// process-vm-access syscall bodies plus the iovec import path
 // (`copy_iovec_from_user` / `iovec_from_user` / `__import_iovec` /
 // `import_ubuf`) those two syscalls run their iov arrays through.
 //
@@ -10,14 +10,14 @@
 
 use syscall::errno::Errno;
 
-/// Linux `UIO_MAXIOV` (`include/uapi/linux/uio.h`): segment-count ceiling
+/// Linux `UIO_MAXIOV`: segment-count ceiling
 /// `iovec_from_user` enforces for both iov arrays.
 pub const UIO_MAXIOV: usize = 1024;
 
 /// `sizeof(struct iovec)` on both LP64 targets: `void *` + `size_t`.
 pub const IOVEC_BYTES: usize = core::mem::size_of::<u64>() * 2;
 
-/// Linux `MAX_RW_COUNT` (`include/linux/fs.h`) — the ceiling
+/// Linux `MAX_RW_COUNT` — the ceiling
 /// `__import_iovec`/`import_ubuf` TRUNCATE the local iov total to.
 pub use uaccess::MAX_RW_COUNT;
 

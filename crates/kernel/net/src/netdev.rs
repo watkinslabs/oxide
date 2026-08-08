@@ -93,8 +93,8 @@ pub struct IfaceSnapshot {
     pub stats: NetStats,
 }
 
-/// Linux `/sys/class/net/<if>/statistics/` field names, in the order
-/// `net/core/net-sysfs.c` registers them. Every name resolves to a
+/// Linux `/sys/class/net/<if>/statistics/` field names, in Linux's
+/// registration order. Every name resolves to a
 /// u64 decimal. `sysfs` reads this for both `readdir` and per-field
 /// `lookup`. Names match Linux exactly.
 pub const STAT_FIELDS: &[&str] = &[

@@ -1,4 +1,4 @@
-// Module-syscall admission: Linux `kernel/module/main.c may_init_module()`
+// Module-syscall admission, matching Linux's module-init admission ladder,
 // plus the `kernel.modules_disabled` variable it reads.
 //
 // Kept out of the syscall slot files (which are `#![cfg(target_os =
@@ -9,8 +9,8 @@
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
-/// Linux `MODULE_NAME_LEN` = `64 - sizeof(unsigned long)`
-/// (`include/linux/moduleparam.h __MODULE_NAME_LEN`). `delete_module` copies at
+/// Linux `MODULE_NAME_LEN` = `64 - sizeof(unsigned long)`.
+/// `delete_module` copies at
 /// most this many bytes and treats a full buffer as "no such module".
 pub const MODULE_NAME_LEN: usize = 64 - core::mem::size_of::<u64>();
 
@@ -29,7 +29,7 @@ pub const MODULE_INIT_FLAGS_ALL: u64 =
 /// reference count is non-zero (`try_force_unload`).
 pub const DELETE_MODULE_FORCE: u64 = 0o1000;
 
-/// Linux `static int modules_disabled` (`kernel/module/main.c`), exported as
+/// Linux's `modules_disabled` state, exported as
 /// `/proc/sys/kernel/modules_disabled`. A one-way latch: hardened systems set
 /// it once at boot and no later write can clear it.
 static MODULES_DISABLED: AtomicBool = AtomicBool::new(false);

@@ -1,5 +1,5 @@
-// `SYSCALL_DEFINE4(tee)` (Linux `fs/splice.c:1977-1994`) → `do_tee`
-// (`:1938-1975`) → `link_pipe` (`:1850-1930`).
+// `tee(2)` work-fn: admission, prep both pipe ends, then a non-consuming
+// pipe-to-pipe link.
 
 use vfs::{File, OpenFlags};
 
@@ -34,7 +34,7 @@ pub fn do_tee(in_file: &File, out_file: &File, len: usize, flags: u64) -> i64 {
     let nonblock = flags & SPLICE_F_NONBLOCK != 0
         || in_file.flags().contains(OpenFlags::O_NONBLOCK)
         || out_file.flags().contains(OpenFlags::O_NONBLOCK);
-    // `ipipe_prep` then `opipe_prep` then `link_pipe` (`fs/splice.c:1961-1965`).
+    // Prep order: input readiness first, then output readiness, then the link.
     match pipe::ipipe_prep(inp, nonblock) {
         Ok(true)  => {}
         Ok(false) => return 0,                       // EOF: all writers gone

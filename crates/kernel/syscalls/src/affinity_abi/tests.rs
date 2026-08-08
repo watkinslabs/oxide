@@ -2,7 +2,7 @@
 // files are `#![cfg(target_os = "oxide-kernel")]`, so before this module the
 // `len`-in-BYTES rules, the getaffinity return value glibc depends on, and the
 // permission ordering were all unreachable from `cargo test`.
-// Reference: Linux `kernel/sched/syscalls.c` (v7.2.0-rc4).
+// Reference: Linux's sched-affinity syscall bodies.
 
 use super::*;
 

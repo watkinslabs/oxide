@@ -1,5 +1,5 @@
 // fadvise64(2) slot 221 — POSIX_FADV_* constants and the `generic_fadvise`
-// admission ladder (Linux `mm/fadvise.c`).
+// admission ladder.
 //
 // Order is the whole observable contract for a hint syscall whose successful
 // effect is invisible, so it lives outside the kernel-gated slot file where the
@@ -15,7 +15,7 @@
 
 use syscall::errno::Errno;
 
-/// `POSIX_FADV_NORMAL` (`include/uapi/linux/fadvise.h`).
+/// `POSIX_FADV_NORMAL`.
 pub const POSIX_FADV_NORMAL:     i32 = 0;
 /// `POSIX_FADV_RANDOM`.
 pub const POSIX_FADV_RANDOM:     i32 = 1;

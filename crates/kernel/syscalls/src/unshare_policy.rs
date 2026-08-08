@@ -1,6 +1,6 @@
-// unshare(2) flag contract — Linux `kernel/fork.c` (`ksys_unshare`,
-// `check_unshare_flags`) and `kernel/nsproxy.c`
-// (`unshare_nsproxy_namespaces`).
+// unshare(2) flag contract — Linux's `ksys_unshare`,
+// `check_unshare_flags`, and
+// `unshare_nsproxy_namespaces`.
 //
 // Kept OUTSIDE the `target_os = "oxide-kernel"` gate: the implied-flag
 // expansion, the EINVAL ladder and "which capability does this flag set need"
@@ -17,7 +17,7 @@ pub const CLONE_SIGHAND:  u64 = 0x0000_0800;
 pub const CLONE_THREAD:   u64 = 0x0001_0000;
 pub const CLONE_NEWNS:    u64 = 0x0002_0000;
 pub const CLONE_SYSVSEM:  u64 = 0x0004_0000;
-/// Linux `UNSHARE_EMPTY_MNTNS` (`include/uapi/linux/sched.h`) — aliases
+/// Linux `UNSHARE_EMPTY_MNTNS` — aliases
 /// `CLONE_PARENT_SETTID` in the 32-bit unshare flag word.
 pub const UNSHARE_EMPTY_MNTNS: u64 = 0x0010_0000;
 pub const CLONE_NEWCGROUP: u64 = 0x0200_0000;

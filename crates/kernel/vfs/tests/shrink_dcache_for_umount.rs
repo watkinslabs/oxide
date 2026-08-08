@@ -1,5 +1,5 @@
 //! Umount-time FORCE teardown of a whole superblock dentry tree
-//! (`shrink_dcache_for_umount`, Linux `fs/dcache.c` `do_one_tree`).
+//! (`shrink_dcache_for_umount`).
 //!
 //! [`vfs::dcache::shrink_dcache_sb`] is the GENTLE per-sb prune: it evicts only
 //! UNUSED (`d_count == 0`) dentries and leaves in-use ones cached. That is wrong

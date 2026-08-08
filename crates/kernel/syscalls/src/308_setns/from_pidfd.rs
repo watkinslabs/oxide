@@ -1,5 +1,5 @@
 // `setns(pidfd, nstype)` — Linux `validate_nsset` + `commit_nsset`
-// (`kernel/nsproxy.c`). Installs EVERY namespace named in `nstype`, taken from
+//. Installs EVERY namespace named in `nstype`, taken from
 // the pidfd's target process, in one all-or-nothing step.
 
 use syscall::errno::Errno;

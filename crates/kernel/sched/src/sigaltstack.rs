@@ -3,10 +3,10 @@
 // table can be proptested without a runqueue. Owners:
 //   `syscalls/131_sigaltstack.rs` — the ABI shim, calls `apply`/`report`.
 //   `fs::sig_dispatch`            — calls `sigsp`/`report` per delivery.
-// Linux references: `kernel/signal.c do_sigaltstack`,
-// `include/linux/sched/signal.h {on_sig_stack,sas_ss_flags,sigsp}`.
+// Modelled on Linux `do_sigaltstack` and the `on_sig_stack`/`sas_ss_flags`/
+// `sigsp` helpers.
 
-/// `SS_ONSTACK` (`uapi/linux/signal.h`).
+/// `SS_ONSTACK`.
 pub const SS_ONSTACK: i32 = 1;
 /// `SS_DISABLE`.
 pub const SS_DISABLE: i32 = 2;
@@ -17,7 +17,7 @@ pub const SS_AUTODISARM: i32 = 1 << 31;
 pub const SS_FLAG_BITS: i32 = SS_AUTODISARM;
 
 /// `MINSIGSTKSZ` — the arch's smallest signal-frame-plus-slack budget an
-/// alternate stack must be able to hold (`asm/signal.h`). x86_64 keeps the
+/// alternate stack must be able to hold. x86_64 keeps the
 /// asm-generic 2048; arm64 needs 5120 because its `sigcontext.__reserved`
 /// alone is 4096.
 #[cfg(target_arch = "aarch64")]

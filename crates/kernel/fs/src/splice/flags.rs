@@ -1,5 +1,5 @@
-// `SPLICE_F_*` (Linux `include/linux/splice.h:17-24` — NOT in uapi/fcntl.h)
-// and the pure admission decisions of `do_splice`, `do_tee` and `vmsplice`.
+// `SPLICE_F_*` flag bits and the pure admission decisions of `splice`, `tee`
+// and `vmsplice`.
 // No fd or task access, so the ORDER of every EINVAL/ESPIPE/EBADF is unit
 // tested hosted.
 
@@ -8,7 +8,7 @@ use syscall::errno::Errno;
 /// `SPLICE_F_MOVE` — move pages instead of copying where the backend can.
 pub const SPLICE_F_MOVE:     u64 = 0x01;
 /// `SPLICE_F_NONBLOCK` — do not block; `EAGAIN` instead. Note this is ORed with
-/// `O_NONBLOCK` from EITHER description in `do_splice` (`fs/splice.c:1323`).
+/// `O_NONBLOCK` from EITHER description in the `splice` admission path.
 pub const SPLICE_F_NONBLOCK: u64 = 0x02;
 /// `SPLICE_F_MORE` — more data is coming (a hint to the network stack).
 pub const SPLICE_F_MORE:     u64 = 0x04;
@@ -18,7 +18,7 @@ pub const SPLICE_F_GIFT:     u64 = 0x08;
 /// `SPLICE_F_ALL` — every other bit is `EINVAL` in all three syscalls.
 pub const SPLICE_F_ALL: u64 = SPLICE_F_MOVE | SPLICE_F_NONBLOCK | SPLICE_F_MORE | SPLICE_F_GIFT;
 
-/// Which of the three transfer shapes `do_splice` selects (`fs/splice.c:1315-1382`).
+/// Which of the three transfer shapes `splice(2)` selects.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum SpliceCase {
     /// Both ends are pipes — `splice_pipe_to_pipe`.
@@ -49,17 +49,16 @@ pub struct SpliceIn {
     pub out_append: bool,
 }
 
-/// `do_splice()` admission (`fs/splice.c:1300-1382`) in Linux's exact order.
-///
-/// The pipe-side ESPIPE checks fire in `__do_splice` BEFORE the offsets are
-/// even copied in (`fs/splice.c:1409-1418`), so they precede any EFAULT; the
-/// FMODE_READ/WRITE pair is next (`:1308-1310`); then the per-case rules. Note
-/// the asymmetry Linux deliberately keeps: an offset supplied for a PIPE end is
-/// `ESPIPE`, but an offset supplied for a non-seekable FILE end is `EINVAL`
-/// (`:1330-1336`, `:1359-1365`), and `O_APPEND` on the output is `EINVAL`
-/// (`:1338`) — not EBADF as in `copy_file_range`. # C: O(1)
+/// `splice(2)` admission ladder. Order:
+/// 1. An offset supplied for a PIPE end (either side) is `ESPIPE` — checked
+/// BEFORE the offsets are even copied in, so this precedes any EFAULT.
+/// 2. The FMODE_READ/FMODE_WRITE pair is `EBADF`.
+/// 3. Per-case rules: an offset supplied for a non-seekable FILE end is
+/// `EINVAL` (the asymmetry with step 1 is deliberate — pipe-end offset is
+/// ESPIPE, file-end non-seekable offset is EINVAL), and `O_APPEND` on the
+/// output is `EINVAL` — not EBADF as in `copy_file_range`. # C: O(1)
 pub fn splice_case(i: &SpliceIn) -> Result<SpliceCase, Errno> {
-    // `__do_splice`: an offset for a pipe end is meaningless.
+    // An offset for a pipe end is meaningless.
     if i.in_is_pipe && i.off_in { return Err(Errno::Espipe); }
     if i.out_is_pipe && i.off_out { return Err(Errno::Espipe); }
     if !i.in_readable || !i.out_writable { return Err(Errno::Ebadf); }
@@ -77,13 +76,12 @@ pub fn splice_case(i: &SpliceIn) -> Result<SpliceCase, Errno> {
         if i.off_in && !i.in_pread { return Err(Errno::Einval); }
         return Ok(SpliceCase::FileToPipe);
     }
-    // Neither end is a pipe (`fs/splice.c:1380-1382`).
+    // Neither end is a pipe.
     Err(Errno::Einval)
 }
 
-/// `do_tee()` admission (`fs/splice.c:1938-1953`). The FMODE pair is checked
-/// BEFORE the pipe test, and "not a pipe" / "same pipe" share one EINVAL (the
-/// function's initialiser `ret = -EINVAL` falls through for both). # C: O(1)
+/// `tee(2)` admission. The FMODE pair is checked
+/// BEFORE the pipe test, and "not a pipe" / "same pipe" share one EINVAL. # C: O(1)
 pub fn tee_admit(in_is_pipe: bool, out_is_pipe: bool, same_pipe: bool,
                  in_readable: bool, out_writable: bool) -> Result<(), Errno> {
     if !in_readable || !out_writable { return Err(Errno::Ebadf); }
@@ -91,22 +89,21 @@ pub fn tee_admit(in_is_pipe: bool, out_is_pipe: bool, same_pipe: bool,
     Ok(())
 }
 
-/// `vmsplice` transfer direction, chosen PURELY from `f_mode`
-/// (`fs/splice.c:1593-1598`) — not from whether the fd happens to be a read or
-/// write pipe end. A description that is both readable and writable splices
-/// user memory INTO the pipe.
+/// `vmsplice` transfer direction, chosen PURELY from `f_mode` — not from
+/// whether the fd happens to be a read or write pipe end. A description that
+/// is both readable and writable splices user memory INTO the pipe.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum VmspliceDir {
-    /// `ITER_SOURCE` — user pages into the pipe (`vmsplice_to_pipe`).
+    /// User pages into the pipe.
     ToPipe,
-    /// `ITER_DEST` — pipe bytes out to user memory (`vmsplice_to_user`).
+    /// Pipe bytes out to user memory.
     ToUser,
 }
 
 /// Direction selection. `EBADF` when the description is neither readable nor
 /// writable (an `O_PATH` fd). Whether the fd is actually a PIPE is decided
-/// later, inside the direction helpers, and is also `EBADF`, never `EINVAL`
-/// (`fs/splice.c:1512`, `:1545`). # C: O(1)
+/// later, inside the direction helpers, and is also `EBADF`, never `EINVAL`.
+/// # C: O(1)
 pub fn vmsplice_dir(writable: bool, readable: bool) -> Result<VmspliceDir, Errno> {
     if writable { return Ok(VmspliceDir::ToPipe); }
     if readable { return Ok(VmspliceDir::ToUser); }
@@ -156,7 +153,8 @@ mod tests {
 
     /// An offset for a PIPE end is ESPIPE and beats the FMODE check; an offset
     /// for a non-seekable FILE end is EINVAL. Two different errnos for what
-    /// looks like the same mistake — `fs/splice.c:1409-1418` vs `:1330`/`:1359`.
+    /// looks like the same mistake — the pipe-offset check and the file-end
+    /// seekability check are two distinct steps in the admission ladder.
     /// # C: O(1)
     #[test]
     fn offset_rules_espipe_for_pipes_einval_for_files() {
@@ -174,7 +172,7 @@ mod tests {
                    Ok(SpliceCase::PipeToFile));
     }
 
-    /// `O_APPEND` on a splice OUTPUT is EINVAL (`fs/splice.c:1338`), checked
+    /// `O_APPEND` on a splice OUTPUT is EINVAL, checked
     /// after the FMODE_PWRITE rule; unlike `copy_file_range`, where the same
     /// condition is EBADF. # C: O(1)
     #[test]

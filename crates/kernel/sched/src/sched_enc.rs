@@ -7,7 +7,7 @@ use crate::task::{SchedClass, SchedPolicy};
 
 /// Linux `SCHED_CAPACITY_SCALE` — the utilization-clamp upper bound and the
 /// default `uclamp_req[UCLAMP_MAX]` value every task starts with
-/// (`uclamp_none(UCLAMP_MAX)`, `kernel/sched/sched.h:3682`).
+/// (`uclamp_none(UCLAMP_MAX)`).
 pub const UCLAMP_CAPACITY_SCALE: u32 = 1024;
 
 impl SchedPolicy {
@@ -76,9 +76,8 @@ impl crate::task::Task {
     }
 
     /// Linux `rt_or_dl_task_policy(tsk)` — SCHED_FIFO / SCHED_RR /
-    /// SCHED_DEADLINE. `prctl(PR_SET_TIMERSLACK)` is a no-op for these
-    /// (`kernel/sys.c`: `if (rt_or_dl_task_policy(current)) break;`), since a
-    /// real-time task's wakeups are not coalescable.
+    /// SCHED_DEADLINE. `prctl(PR_SET_TIMERSLACK)` is a no-op for these,
+    /// since a real-time task's wakeups are not coalescable.
     /// # C: O(1)
     pub fn is_rt_or_dl_policy(&self) -> bool {
         matches!(self.policy.load(core::sync::atomic::Ordering::Acquire),
@@ -111,7 +110,7 @@ pub const RR_TIMESLICE_TICKS: u32 = (RR_TIMESLICE_NS / crate::posix_clock::TICK_
 
 /// `SCHED_NORMAL` == `SCHED_OTHER`.
 pub const SCHED_NORMAL: u32 = 0;
-/// `SCHED_FIFO` (`include/uapi/linux/sched.h`).
+/// `SCHED_FIFO`.
 pub const SCHED_FIFO: u32 = 1;
 /// `SCHED_RR`.
 pub const SCHED_RR: u32 = 2;
@@ -128,8 +127,8 @@ pub const SCHED_DEADLINE: u32 = 6;
 pub mod requeue;
 pub mod wakeup;
 
-/// The `task_tick` decision as a pure function — Linux `task_tick_rt`
-/// (`kernel/sched/rt.c`). Split out so it is testable without a runqueue: the
+/// The `task_tick` decision as a pure function — Linux `task_tick_rt`.
+/// Split out so it is testable without a runqueue: the
 /// live tick supplies `slice_left` and `has_peer` and applies the result.
 ///
 /// `SCHED_FIFO` returns false unconditionally (FIFO has no timeslice and runs

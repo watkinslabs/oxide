@@ -1,6 +1,6 @@
 // 136 ustat — the SysV "free blocks/inodes on this device" query (docs/53 §0).
 // Deprecated but real: Linux still implements it in full over the superblock's
-// own statfs. `fs/statfs.c`:
+// own statfs:
 //
 //   SYSCALL_DEFINE2(ustat, unsigned dev, struct ustat __user *ubuf)
 //       vfs_ustat(new_decode_dev(dev), &sbuf)      -> EINVAL if no such super

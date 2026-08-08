@@ -7,7 +7,7 @@
 
 use alloc::sync::Arc;
 
-/// PROC_SUPER_MAGIC (linux/magic.h) — procfs `f_type`/`s_magic`.
+/// PROC_SUPER_MAGIC — procfs `f_type`/`s_magic`.
 const PROC_SUPER_MAGIC: u64 = 0x9fa0;
 /// `PAGE_SIZE` — procfs statfs `f_bsize` (Linux `proc_fill_super` → `s_blocksize
 /// = PAGE_SIZE`). # C: O(1)
@@ -46,7 +46,7 @@ impl Default for ProcfsFs {
 
 /// `super_operations` for procfs. procfs is a zero-sized pseudo filesystem:
 /// `statfs(2)` reports the magic + `PAGE_SIZE` block size and zero block/inode
-/// counts (Linux `simple_statfs`, fs/libfs.c, used by `proc_fill_super`).
+/// counts, matching Linux's `simple_statfs` pseudo-fs convention.
 struct ProcfsSuperOps;
 impl vfs::SuperOps for ProcfsSuperOps {
     /// `simple_statfs`: f_type=PROC_SUPER_MAGIC, f_bsize=PAGE_SIZE, all
@@ -72,11 +72,11 @@ impl vfs::SuperOps for ProcfsSuperOps {
 impl vfs::fs::FileSystem for ProcfsFs {
     /// # C: O(1)
     fn name(&self) -> &str { "procfs" }
-    /// PROC_SUPER_MAGIC (linux/magic.h).
+    /// PROC_SUPER_MAGIC (the statfs f_type value).
     /// # C: O(1)
     fn magic(&self) -> u64 { PROC_SUPER_MAGIC }
-    /// Linux `fs/proc/root.c` `proc_fill_super`: "User space would break if
-    /// executables or devices appear on proc" — `s->s_iflags |= SB_I_NOEXEC |
+    /// Linux's proc superblock setup disallows executables or devices
+    /// appearing on proc — `s->s_iflags |= SB_I_NOEXEC |
     /// SB_I_NODEV`. These are also the `required_iflags` `mount_too_revealing`
     /// demands of every `FS_USERNS_MOUNT_RESTRICTED` filesystem; without them a
     /// user-namespace `mount -t proc` is refused outright. # C: O(1)

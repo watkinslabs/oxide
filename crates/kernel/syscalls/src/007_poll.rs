@@ -140,8 +140,8 @@ pub fn sys_poll(args: &SyscallArgs) -> i64 {
     arm_poll_restart(rv, args.a0, args.a1, deadline_ns)
 }
 
-/// Linux `SYSCALL_DEFINE3(poll)`'s tail (`fs/select.c:1074-1087`) and the
-/// self-re-arm inside `do_restart_poll` (`fs/select.c:1054-1055`). `poll(2)`
+/// Linux `SYSCALL_DEFINE3(poll)`'s tail and the
+/// self-re-arm inside `do_restart_poll`. `poll(2)`
 /// is the ONE member of this family that needs a restart block: `ppoll` and
 /// `select`/`pselect6` hand the residual timeout back through the caller's
 /// timespec/timeval and restart in place, but poll's `int timeout_msecs` has

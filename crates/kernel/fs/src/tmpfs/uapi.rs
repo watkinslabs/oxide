@@ -1,6 +1,6 @@
-/// TMPFS_MAGIC (linux/magic.h) — statfs `f_type`.
+/// TMPFS_MAGIC — statfs `f_type`.
 pub(super) const TMPFS_MAGIC: u64 = vfs::uapi::TMPFS_SUPER_MAGIC;
-/// RAMFS_MAGIC (linux/magic.h). ramfs reuses tmpfs's in-memory tree here but is
+/// RAMFS_MAGIC. ramfs reuses tmpfs's in-memory tree here but is
 /// a DISTINCT filesystem type to userspace: it reports its own `f_type` and its
 /// own `/proc/mounts` name, exactly as Linux `ramfs_fill_super` does. Reporting
 /// TMPFS_MAGIC for a ramfs mount breaks every `statfs`-based fs probe.

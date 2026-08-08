@@ -94,7 +94,7 @@ fn dumpable_round_trips_valid_values_and_defaults_to_user() {
 
 #[test]
 fn dumpable_rejects_suid_dump_root_from_userspace() {
-    // Linux `kernel/sys.c`: `if (arg2 != TASK_DUMPABLE_OFF && arg2 !=
+    // Linux `PR_SET_DUMPABLE`: `if (arg2 != TASK_DUMPABLE_OFF && arg2 !=
     // TASK_DUMPABLE_OWNER) { error = -EINVAL; break; }`. SUID_DUMP_ROOT (2) is
     // a state the KERNEL enters on a privilege change (`commit_creds` ->
     // `fs.suid_dumpable`); PR_GET_DUMPABLE can report it but PR_SET_DUMPABLE

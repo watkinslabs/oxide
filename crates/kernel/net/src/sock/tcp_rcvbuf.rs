@@ -25,7 +25,7 @@ pub(crate) fn apply_tcp_rcvbuf_opt(sock: &InetSocket, entry: &Arc<TcpEntry>) {
 }
 
 /// Copy the listener's socket-buffer sizing onto an accepted child, the part
-/// of Linux `sk_clone_lock` (`net/core/sock.c`) this kernel's readiness and
+/// of Linux `sk_clone_lock` this kernel's readiness and
 /// backpressure paths depend on: `sk_sndbuf`, `sk_rcvbuf` and the
 /// `SOCK_RCVBUF_LOCK` userlock. Broader `SO_*` inheritance at accept is still
 /// absent — tracked in `scratch/audit-net-sec.md`.

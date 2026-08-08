@@ -12,7 +12,7 @@ impl sync::LockClass for FilePos {
 }
 
 bitflags::bitflags! {
-    /// `file->f_mode` access bits (Linux `include/linux/fs.h` `FMODE_*`).
+    /// `file->f_mode` access bits (`FMODE_*`).
     /// Derived once from the open access mode at `File` construction so
     /// permission checks read the canonical capability rather than
     /// re-deriving from `O_*` flags at each call. Numeric values match
@@ -49,7 +49,7 @@ bitflags::bitflags! {
         /// FMODE_NOWAIT — the backend can answer `RWF_NOWAIT` honestly: either
         /// complete without sleeping or report `EAGAIN`. Linux `(1 << 27)`;
         /// `kiocb_set_rw_flags` rejects `RWF_NOWAIT` with `EOPNOTSUPP` on a
-        /// description that lacks it (`include/linux/fs.h:3442-3445`), so the
+        /// description that lacks it, so the
         /// bit is what separates "we support this" from "we would have blocked
         /// while pretending not to".
         const NOWAIT   = 0x0800_0000;
@@ -63,15 +63,15 @@ bitflags::bitflags! {
 pub(crate) const O_DIRECT:  u32 = 0o40000;
 pub(crate) const O_NOATIME: u32 = 0o1000000;
 
-/// `O_ASYNC`/`FASYNC` (asm-generic, both arches — Linux `fcntl.h` `0o20000`).
+/// `O_ASYNC`/`FASYNC` (same value on both arches, `0o20000`).
 /// Settable via `F_SETFL`; toggling it (de)registers the open file description
-/// for fasync SIGIO/SIGURG delivery to its `f_owner` (Linux `setfl`'s
+/// for fasync SIGIO/SIGURG delivery to its `f_owner` (`setfl`'s
 /// `FASYNC` branch calling `f_op->fasync`). Not declared in `OpenFlags` (no
 /// other in-`vfs` consumer), so matched here by raw value, and the stored bit
 /// is read by `File::is_async`.
 pub(crate) const O_ASYNC: u32 = 0o20000;
 
-/// Linux `SETFL_MASK` (`fs/fcntl.c`): the only `f_flags` bits `fcntl(F_SETFL)`
+/// `SETFL_MASK`: the only `f_flags` bits `fcntl(F_SETFL)`
 /// may change on an already-open file description. The access mode
 /// (`O_RDONLY`/`O_WRONLY`/`O_RDWR`) and the creation-time flags
 /// (`O_CREAT`/`O_EXCL`/`O_TRUNC`/`O_CLOEXEC`/`O_DIRECTORY`/…) are fixed at open

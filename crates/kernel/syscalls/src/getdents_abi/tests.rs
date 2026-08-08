@@ -2,7 +2,7 @@
 // the rules that regressed silently: the slot file is
 // `#![cfg(target_os = "oxide-kernel")]`, so every byte-offset and every errno
 // in the return rule was unreachable from `cargo test`.
-// Reference: Linux `fs/readdir.c` + `include/linux/dirent.h` (v7.2.0-rc4).
+// Reference: Linux's getdents record fill logic and dirent wire layouts.
 
 use super::*;
 use alloc::vec;

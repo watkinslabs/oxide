@@ -1,6 +1,6 @@
-// `vfs_fallocate` (Linux `fs/open.c:250-352`) — everything `fallocate(2)`
+// `vfs_fallocate` — everything `fallocate(2)`
 // decides above the filesystem. The fd lookup stays in the syscall shim
-// (`docs/53`), exactly as Linux keeps it in `ksys_fallocate`, so an invalid or
+// (`docs/53`), so an invalid or
 // `O_PATH` descriptor is `EBADF` before any argument here is looked at.
 
 use alloc::sync::Arc;
@@ -9,14 +9,14 @@ use vfs::{File, FileType, SuperBlock};
 
 use super::mode::{falloc_mode_ok, FALLOC_FL_KEEP_SIZE};
 
-/// `S_SWAPFILE` (Linux `include/linux/fs.h`) — swapon captured this inode's
+/// `S_SWAPFILE` — swapon captured this inode's
 /// block map, so no operation may move its blocks.
 const S_SWAPFILE: u32 = 1 << 8;
 
 /// `-errno` in the syscall return convention. # C: O(1)
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
-/// `file_start_write`/`file_end_write` (Linux `fs/super.c` `sb_start_write`)
+/// `file_start_write`/`file_end_write` (the superblock freeze-writer count)
 /// held across the backend call so a concurrent `freeze_super` counts this
 /// allocation as an in-flight writer. `None` = no live superblock (anon file),
 /// which is not freeze-gated. # C: O(1)
@@ -35,7 +35,7 @@ fn file_start_write(file: &File) -> Result<SbWriteGuard, Errno> {
     }
 }
 
-/// `vfs_fallocate` (Linux `fs/open.c`) — the whole `fallocate(2)` ladder above
+/// `vfs_fallocate` — the whole `fallocate(2)` ladder above
 /// the filesystem, in Linux's order, returning `0` or `-errno`.
 ///
 /// Order is load-bearing and is NOT the order the arguments suggest:

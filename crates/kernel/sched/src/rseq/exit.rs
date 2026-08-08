@@ -1,6 +1,5 @@
 // rseq exit-to-user work: id writeback (`rseq_set_ids_get_csaddr`) and the
-// critical-section abort (`rseq_update_user_cs`), per
-// `include/linux/rseq_entry.h`.
+// critical-section abort (`rseq_update_user_cs`).
 
 use core::sync::atomic::Ordering;
 use syscall::rseq as abi;
@@ -51,8 +50,8 @@ fn update_ids(cur: &crate::Task, ptr: u64) -> bool {
 /// Republish the rseq ids on the syscall-return path.
 ///
 /// No critical-section work here: an rseq critical section may not contain a
-/// syscall (`Documentation/userspace-api/rseq.rst`), so the user PC on this
-/// path is by construction outside every `rseq_cs` range. The abort lives on
+/// syscall, so the user PC on this path is by construction outside every
+/// `rseq_cs` range. The abort lives on
 /// the preemption path, `rseq_preempt_return`.
 /// # C: O(1)
 /// # Ctx: syscall-return tail

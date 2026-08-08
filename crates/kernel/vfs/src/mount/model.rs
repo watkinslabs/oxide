@@ -82,7 +82,7 @@ pub struct Mount {
     /// has been unlinked from its namespace tree by an umount. While set, the
     /// final [`mntput`] (`mnt_count` 1 → 0) runs the deferred `deactivate_super`.
     detached: AtomicBool,
-    /// Kernel-internal `mnt_flags` (Linux `include/linux/mount.h`): MNT_LOCKED,
+    /// Kernel-internal `mnt_flags`: MNT_LOCKED,
     /// MNT_INTERNAL, MNT_DOOMED, MNT_MARKED, MNT_UMOUNT, plus the synthetic
     /// MNT_EXPIRE_MARK standing in for Linux's separate `mnt_expiry_mark` int.
     /// SEPARATE namespace from the MS_*-valued option mask in `flags` — see
@@ -400,7 +400,7 @@ pub fn root_mount_id(ns: u64) -> Option<u64> { mntns::ns_root_id(ns) }
 
 /// Namespace `ns`'s root as a Linux `struct path` — `mnt_ns->root` paired with
 /// that mount's `mnt_root` dentry and inode. This is the value
-/// `fs/namespace.c init_mount_tree()` installs into `init_fs`'s root and pwd,
+/// `init_mount_tree()` installs into `init_fs`'s root and pwd,
 /// so it is the ONE definition of "the root a task resolves from when it has
 /// not chrooted". `None` before the root filesystem is mounted. # C: O(log N)
 pub fn root_path_for_ns(ns: u64) -> Option<crate::VfsPath> {

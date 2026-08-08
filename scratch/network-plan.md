@@ -133,8 +133,9 @@ fresh branch from current `origin/main`.
 - Use hosted tests for the development loop. Run x86 and ARM target builds on
   each kernel branch. The campaign ends with one integrated dual smoke; use
   the user-authorized smoke skip on intermediate pushes after focused gates.
-- Linux source and glibc ABI are authoritative. When an old objective differs
-  from Linux, correct the objective instead of implementing the mismatch.
+- Reference kernel behaviour and glibc ABI are authoritative. When an old
+  objective differs from that behaviour, correct the objective instead of
+  implementing the mismatch.
 
 ## Baseline
 
@@ -2278,9 +2279,9 @@ through userspace/system services but did not reach SSH command execution or
 retain a probe frame before the shared deadline; cleanup removed QEMU. This is
 not ARM runtime evidence and leaves the ARM differential gate open.
 
-Current-tree B1274 N27 Linux receive ordering (2026-07-20): upstream
-`net/core/datagram.c::__skb_try_recv_datagram()` consumes `sock_error()` before
-inspecting the receive queue. The canonical NETLINK owner now applies the same
+Current-tree B1274 N27 Linux receive ordering (2026-07-20): the reference
+datagram-receive path consumes `sock_error()` before inspecting the receive
+queue. The canonical NETLINK owner now applies the same
 `sk_err`-before-datagram rule for `read`, `recvfrom`, and `recvmsg`, including
 `MSG_PEEK`. Its hosted suite passes 117/117. The focused host/Linux probe now
 proves `MSG_PEEK` preserves one `NLMSG_ERROR` datagram and that a null-iovec

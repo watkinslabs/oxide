@@ -1,6 +1,6 @@
 use crate::{NFT_CHAIN_POLICY_DROP, active_generation, nft_expr};
 
-/// Netfilter verdict per `linux/netfilter.h`.
+/// Netfilter verdict.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Verdict {
     Drop,

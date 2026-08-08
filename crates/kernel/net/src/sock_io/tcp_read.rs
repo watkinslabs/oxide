@@ -27,7 +27,7 @@ pub(crate) fn read_tcp_blocking(
         if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) { return Ok(0); }
         if tcp_recv_eof(entry.conn.lock().state) { return Ok(0); }
         #[cfg(target_os = "oxide-kernel")]
-        // Linux `tcp_recvmsg_locked` (`net/ipv4/tcp.c:2784`): `sock_intr_errno(timeo)`.
+        // Linux `tcp_recvmsg_locked`: `sock_intr_errno(timeo)`.
         if sched::live::deliverable_signals_self() != 0 {
             return Err(crate::sock_intr::sock_intr_vfs(deadline_ns));
         }

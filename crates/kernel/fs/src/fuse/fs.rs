@@ -40,13 +40,12 @@ pub fn fuse_data(inode: &Inode) -> KResult<&FuseInodeData> {
 /// live cached inode for the nodeid (identity) when present. `mode` is the full
 /// `S_IF*|perm` word from the attr. # C: O(log N_nodes)
 /// Daemon-supplied `fuse_attr` time pair as a [`Timespec64`]. The wire seconds
-/// field is `uint64_t` but Linux assigns it straight into a `time64_t`
-/// (`fs/fuse/inode.c` `fuse_change_attributes_common`:
-/// `inode_set_atime(inode, attr->atime, attr->atimensec)`), so the value is
+/// field is `uint64_t` but is assigned straight into a signed `time64_t`
+/// (`inode_set_atime(inode, attr->atime, attr->atimensec)`), so the value is
 /// REINTERPRETED as signed — a pre-1970 fuse timestamp arrives as a large
 /// unsigned and must land as a negative second, not a year-2500 one. The
-/// sub-second field is CLAMPED, not rejected, matching the
-/// `min_t(u32, attr->atimensec, NSEC_PER_SEC - 1)` immediately above it.
+/// sub-second field is CLAMPED, not rejected, to the max in-range nanosecond
+/// value (`NSEC_PER_SEC - 1`).
 /// # C: O(1)
 pub(crate) fn attr_time(sec: u64, nsec: u32) -> Timespec64 {
     Timespec64 { sec: sec as i64, nsec: nsec.min(NSEC_PER_SEC - 1) }

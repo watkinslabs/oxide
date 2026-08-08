@@ -2,11 +2,11 @@
 
 FROZEN 2026-08-06. Dep:`01`,`02`,`07`,`13`,`15`,`16`,`19`,`35`,`36`,`45`,`47`. Provides:`/dev/fb0..fbN`,`49` (fbcon backend),legacy SDL/efifb/`Xorg fbdev` userspace.
 
-Full Linux fbdev UAPI per `linux/include/uapi/linux/fb.h`. No deferrals.
+Full Linux fbdev UAPI. No deferrals.
 
 ## 1 Purpose
 
-Linux fbdev UAPI per `linux/include/uapi/linux/fb.h`. `/dev/fb0` is a memory-mapped linear framebuffer with `FBIOGET_FSCREENINFO`/`VSCREENINFO`/`PUT_VSCREENINFO`/`PAN_DISPLAY`/`BLANK` ioctls. Backed by a driver-owned scanout: DRM/virtio guest RAM or the firmware linear framebuffer fallback (`36`).
+Linux fbdev UAPI. `/dev/fb0` is a memory-mapped linear framebuffer with `FBIOGET_FSCREENINFO`/`VSCREENINFO`/`PUT_VSCREENINFO`/`PAN_DISPLAY`/`BLANK` ioctls. Backed by a driver-owned scanout: DRM/virtio guest RAM or the firmware linear framebuffer fallback (`36`).
 
 ## 2 Invariants (frozen)
 
@@ -36,7 +36,7 @@ impl vfs::Inode for FbInode {
 ## 4 fb_var_screeninfo + fb_fix_screeninfo
 
 ```c
-// from linux/uapi/linux/fb.h
+// fbdev UAPI
 struct fb_bitfield { __u32 offset, length, msb_right; };
 
 struct fb_var_screeninfo {

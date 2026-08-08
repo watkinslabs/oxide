@@ -1,5 +1,4 @@
-// Linux `__sys_setuid` / `__sys_setgid` / `__sys_setreuid` / `__sys_setregid`
-// (`kernel/sys.c`).
+// Linux's `__sys_setuid` / `__sys_setgid` / `__sys_setreuid` / `__sys_setregid`.
 
 use super::fixtures::{err, gids, grant_caps, privileged, set_gids, set_uids, uids, unprivileged};
 use crate::cred::gid::{setgid_on, setregid_on};

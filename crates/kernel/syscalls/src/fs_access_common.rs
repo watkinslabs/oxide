@@ -6,7 +6,7 @@
 
 use syscall::errno::Errno;
 
-/// `R_OK`/`W_OK`/`X_OK` (uapi `unistd.h`); `F_OK` = 0.
+/// `R_OK`/`W_OK`/`X_OK` (access UAPI); `F_OK` = 0.
 const R_OK: u32 = 4;
 const W_OK: u32 = 2;
 const X_OK: u32 = 1;

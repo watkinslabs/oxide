@@ -1,5 +1,5 @@
 // Hosted unit tests for the rename(2) family decision core. Every expectation
-// below is read out of `/home/nd/oxide/linux-master/fs/namei.c`
+// below is verified against Linux's actual implementation
 // (`filename_renameat2`, `__start_renaming`, `lookup_one_qstr_excl`), not from
 // a man page.
 

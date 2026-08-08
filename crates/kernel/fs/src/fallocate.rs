@@ -1,6 +1,6 @@
-// Linux `fs/open.c` `vfs_fallocate()` (`fs/open.c:250-352`). Module manifest.
+// `fallocate(2)` work-fn — the `vfs_fallocate` ladder. Module manifest.
 //
-//   mode.rs — the mode-combination decision (`fs/open.c:259-285`), unit tested
+//   mode.rs — the mode-combination decision, unit tested
 //             hosted, plus the `FALLOC_FL_*` re-export from the shared
 //             `vfs::uapi` values every backend also decodes.
 //   vfs.rs  — the full `vfs_fallocate` ladder over a live description.

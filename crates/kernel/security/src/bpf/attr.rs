@@ -7,15 +7,9 @@
 // `#[cfg(target_os = "oxide-kernel")]` and silently compile their
 // tests out, so decision logic must live here, not there.
 //
-// Linux source of truth (linux-master v7.2.0-rc4):
-//   kernel/bpf/syscall.c  `__sys_bpf()`, `bpf_check_uarg_tail_zero()`,
-//                         `CHECK_ATTR()`, `map_create_alloc()`,
-//                         `bpf_prog_load()`, `bpf_prog_attach()`,
-//                         `bpf_get_file_flag()`, `map_get_sys_perms()`
-//   kernel/bpf/hashtab.c  `htab_map_alloc_check()`, `check_flags()`
-//   include/linux/bpf.h   `bpf_map_check_op_flags()`,
-//                         `bpf_map_flags_access_ok()`
-//   include/linux/capability.h `bpf_capable()`, `perfmon_capable()`
+// Covers: the `union bpf_attr` extensible-struct size/tail-zero protocol,
+// per-command attr validation, the unprivileged-bpf sysctl gate, map-flag
+// validation, and the capability checks each `bpf(2)` command demands.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -47,10 +41,9 @@ impl Attr {
     }
 }
 
-/// `sysctl_unprivileged_bpf_disabled` (kernel/bpf/syscall.c). Linux's
-/// build-time default is `IS_BUILTIN(CONFIG_BPF_UNPRIV_DEFAULT_OFF) ? 2 : 0`;
-/// every distro this kernel targets ships `=y`, so 2 (locked-off) is the
-/// matching default. Non-zero means MAP_CREATE and PROG_LOAD demand
+/// `sysctl_unprivileged_bpf_disabled` value. Every distro this kernel
+/// targets ships with unprivileged BPF off by default, so 2 is the matching
+/// default here. Non-zero means MAP_CREATE and PROG_LOAD demand
 /// `bpf_capable()`; element ops on an already-open map fd are never gated.
 static UNPRIV_BPF_DISABLED: AtomicU32 = AtomicU32::new(2);
 
@@ -65,20 +58,22 @@ pub fn set_unpriv_bpf_disabled(v: u32) { UNPRIV_BPF_DISABLED.store(v, Ordering::
 pub struct Caps { pub bpf: bool, pub sys_admin: bool, pub net_admin: bool, pub perfmon: bool }
 
 impl Caps {
-    /// `bpf_capable()` — include/linux/capability.h. # C: O(1)
+    /// `CAP_BPF` alone is sufficient; `CAP_SYS_ADMIN` is always an
+    /// accepted superset. # C: O(1)
     pub fn bpf_capable(&self) -> bool { self.bpf || self.sys_admin }
-    /// `perfmon_capable()` — include/linux/capability.h. # C: O(1)
+    /// `CAP_PERFMON` alone is sufficient; `CAP_SYS_ADMIN` is always an
+    /// accepted superset. # C: O(1)
     pub fn perfmon_capable(&self) -> bool { self.perfmon || self.sys_admin }
-    /// `bpf_token_capable(NULL, CAP_NET_ADMIN)` — kernel/bpf/token.c
-    /// falls back to `capable(cap) || capable(CAP_SYS_ADMIN)`. # C: O(1)
+    /// Falls back to `CAP_NET_ADMIN || CAP_SYS_ADMIN` when there is no BPF
+    /// token granting the capability. # C: O(1)
     pub fn net_admin_capable(&self) -> bool { self.net_admin || self.sys_admin }
 }
 
-/// `bpf_check_uarg_tail_zero()` size arithmetic. Returns
+/// Size-protocol arithmetic for the extensible `union bpf_attr`. Returns
 /// `(copy_len, tail_len)`: copy `copy_len` bytes into a zeroed [`Attr`],
 /// and require the `tail_len` bytes past `ATTR_SIZE` to be all zero.
-/// `-E2BIG` for a "silly large" size, exactly as Linux does *before*
-/// any capability or per-command check. # C: O(1)
+/// `-E2BIG` for a "silly large" size, checked *before* any capability or
+/// per-command check. # C: O(1)
 pub fn size_protocol(size: u32) -> Result<(usize, usize), Errno> {
     let actual = size as usize;
     if actual > uapi::ATTR_MAX_USER_SIZE { return Err(Errno::E2big); }
@@ -93,20 +88,20 @@ pub fn tail_verdict(all_zero: bool) -> Result<(), Errno> {
     if all_zero { Ok(()) } else { Err(Errno::E2big) }
 }
 
-/// `CHECK_ATTR(CMD)` — every byte past the command's last field must
-/// be zero, else `-EINVAL`. # C: O(ATTR_SIZE)
+/// Every byte past the command's last field must be zero, else `-EINVAL`.
+/// # C: O(ATTR_SIZE)
 pub fn check_attr(a: &Attr, last_end: usize) -> Result<(), Errno> {
     if a.tail_is_zero(last_end) { Ok(()) } else { Err(Errno::Einval) }
 }
 
-/// `__sys_bpf()`'s `switch` reach: commands Linux dispatches vs the
-/// `default: -EINVAL` arm. A command number at or above
-/// `__MAX_BPF_CMD` is EINVAL on Linux too. # C: O(1)
+/// Command dispatch reach: commands actually implemented vs the
+/// `default: -EINVAL` arm. A command number at or above the known-command
+/// count is `-EINVAL`. # C: O(1)
 pub fn cmd_is_known(cmd: u32) -> bool { cmd < uapi::cmd::MAX }
 
 // ---------------------------------------------------------------- caps
 
-/// `is_net_admin_prog_type()` — kernel/bpf/syscall.c. # C: O(1)
+/// Program types that require `CAP_NET_ADMIN` to load. # C: O(1)
 pub fn is_net_admin_prog_type(t: u32) -> bool {
     use uapi::prog_type as p;
     matches!(t, p::SCHED_CLS | p::SCHED_ACT | p::XDP | p::LWT_IN | p::LWT_OUT
@@ -115,16 +110,15 @@ pub fn is_net_admin_prog_type(t: u32) -> bool {
         | p::CGROUP_SYSCTL | p::SOCK_OPS | p::EXT | p::NETFILTER)
 }
 
-/// `is_perfmon_prog_type()` — kernel/bpf/syscall.c. # C: O(1)
+/// Program types that require `CAP_PERFMON` to load. # C: O(1)
 pub fn is_perfmon_prog_type(t: u32) -> bool {
     use uapi::prog_type as p;
     matches!(t, p::KPROBE | p::TRACEPOINT | p::PERF_EVENT | p::RAW_TRACEPOINT
         | p::RAW_TRACEPOINT_WRITABLE | p::TRACING | p::LSM | p::STRUCT_OPS | p::EXT)
 }
 
-/// `find_prog_type()` — Linux indexes `bpf_prog_types[]`, which
-/// `include/linux/bpf_types.h` populates only for prog types whose
-/// `CONFIG_*` is built in; a type with no entry is `-EINVAL`.
+/// The set of prog types actually indexed and dispatchable is a
+/// build-time-selected subset; a type with no entry is `-EINVAL`.
 ///
 /// The built-in set here is exactly the set that can be *executed*:
 /// socket filters plus the cgroup device and network hooks.
@@ -188,12 +182,14 @@ pub fn map_create_check(a: &Attr, caps: Caps, unpriv_disabled: bool) -> Result<M
     Ok(m)
 }
 
-/// `htab_map_alloc_check()` — kernel/bpf/hashtab.c. # C: O(1)
+/// Per-command create-flag/field validation for a `BPF_MAP_TYPE_HASH` map.
+/// # C: O(1)
 fn htab_map_alloc_check(m: &MapCreate, caps: Caps) -> Result<(), Errno> {
     use uapi::map_flags as f;
     if m.map_flags & f::ZERO_SEED != 0 && !caps.sys_admin { return Err(Errno::Eperm); }
     if m.map_flags & !f::HTAB_CREATE_MASK != 0 { return Err(Errno::Einval); }
-    // `bpf_map_flags_access_ok()`.
+    // Requesting both read-only-from-prog and write-only-from-prog together
+    // is contradictory.
     if m.map_flags & (f::RDONLY_PROG | f::WRONLY_PROG) == (f::RDONLY_PROG | f::WRONLY_PROG) {
         return Err(Errno::Einval);
     }
@@ -204,7 +200,9 @@ fn htab_map_alloc_check(m: &MapCreate, caps: Caps) -> Result<(), Errno> {
     Ok(())
 }
 
-/// `array_map_alloc_check()` — kernel/bpf/arraymap.c. # C: O(1)
+/// Per-command create-flag/field validation for a `BPF_MAP_TYPE_ARRAY` map:
+/// key size is fixed at 4 bytes (the index), value/entry count non-zero.
+/// # C: O(1)
 fn array_map_alloc_check(m: &MapCreate) -> Result<(), Errno> {
     use uapi::map_flags as f;
     if m.map_flags & !f::ARRAY_CREATE_MASK != 0
@@ -214,7 +212,9 @@ fn array_map_alloc_check(m: &MapCreate) -> Result<(), Errno> {
     Ok(())
 }
 
-/// `trie_map_alloc()` — kernel/bpf/lpm_trie.c. # C: O(1)
+/// Per-command create-flag/field validation for a `BPF_MAP_TYPE_LPM_TRIE`
+/// map: NO_PREALLOC is mandatory (an LPM trie cannot be preallocated), key
+/// size covers a prefixlen field plus 1-256 bytes of matched data. # C: O(1)
 fn lpm_map_alloc_check(m: &MapCreate) -> Result<(), Errno> {
     use uapi::map_flags as f;
     if m.map_flags & !f::LPM_CREATE_MASK != 0
@@ -269,7 +269,7 @@ pub fn check_update_flags(flags: u64) -> Result<(), Errno> {
     Ok(())
 }
 
-/// `check_flags()` — kernel/bpf/hashtab.c. BPF_NOEXIST on a present key
+/// Presence gate on a map-element update: BPF_NOEXIST on a present key
 /// is EEXIST; BPF_EXIST on an absent key is ENOENT. # C: O(1)
 pub fn update_presence_verdict(flags: u64, present: bool) -> Result<(), Errno> {
     use uapi::elem_flags as e;
@@ -338,9 +338,9 @@ pub fn expected_attach_type_check(prog_type: u32, attach_type: u32) -> Result<()
 
 // ------------------------------------------------------------ PROG_ATTACH
 
-/// `attach_type_to_prog_type()` — kernel/bpf/syscall.c. Returns
-/// `BPF_PROG_TYPE_UNSPEC` for an attach type Linux does not map, which
-/// `bpf_prog_attach()` turns into `-EINVAL`. # C: O(1)
+/// Maps an attach type to the prog type it is valid for. Returns
+/// `BPF_PROG_TYPE_UNSPEC` for an attach type with no mapping, which the
+/// PROG_ATTACH path turns into `-EINVAL`. # C: O(1)
 pub fn attach_type_to_prog_type(attach_type: u32) -> u32 {
     use uapi::attach_type as at;
     use uapi::prog_type as p;

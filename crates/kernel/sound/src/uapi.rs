@@ -1,5 +1,5 @@
 // ALSA UAPI constants + struct offsets, transcribed from the authoritative
-// `sound/asound.h` (SNDRV_PCM_VERSION 2.0.15) shipped in the cross
+// ALSA UAPI header (SNDRV_PCM_VERSION 2.0.15) shipped in the cross
 // toolchain. Offsets are for the LP64 layout (both oxide arches are 64-bit;
 // snd_pcm_uframes_t = unsigned long = 8 B). ioctls are matched by magic +
 // nr (the size/dir bits vary across the time32/time64 struct variants).

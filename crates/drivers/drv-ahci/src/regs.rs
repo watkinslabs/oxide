@@ -53,7 +53,7 @@ pub const TFD_ERR: u32 = 1 << 0; // Error
 pub const TFD_DRQ: u32 = 1 << 3; // Data Request
 pub const TFD_BSY: u32 = 1 << 7; // Busy
 
-/// PxIS/PxIE bits used by Linux `DEF_PORT_IRQ` (`drivers/ata/ahci.h`).
+/// PxIS/PxIE bits used by Linux's `DEF_PORT_IRQ` AHCI interrupt-enable set.
 pub const PIS_DHRS: u32 = 1 << 0;
 pub const PIS_PSS:  u32 = 1 << 1;
 pub const PIS_DSS:  u32 = 1 << 2;

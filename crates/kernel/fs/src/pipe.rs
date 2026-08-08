@@ -31,7 +31,7 @@ mod splice_ops;
 mod fifo_tests;
 pub use eventfd::{EventfdData, is_eventfd, make_eventfd_inode};
 pub use ring::{make_pipe_inode, pipe_data, pipe_size, set_pipe_size, write_dump, PipeData};
-/// `splice`/`tee`/`vmsplice` pipe-side primitives (Linux `fs/splice.c`).
+/// `splice`/`tee`/`vmsplice` pipe-side primitives.
 pub use splice_ops::{advance, fill, ipipe_prep, link_pipe, opipe_prep, peek, pipe_info,
     queued, space, wake_readers, wake_writers, PipeRef};
 /// Hosted-test stand-in: WaitList only exists under the live
@@ -153,7 +153,7 @@ impl FileOps for PipeFileOps {
     fn fasync_file(&self, fd: i32, file: &Arc<File>, on: bool) -> KResult<()> { file.set_fasync_state(fd, on); Ok(()) }
 }
 
-// Named FIFO (S_IFIFO) — Linux `fs/pipe.c` `fifo_open` + `pipefifo_fops`.
+// Named FIFO (S_IFIFO) — open-time reader/writer rendezvous + fops.
 //
 // A named pipe is a filesystem inode (tmpfs/ext4/devnode `mknod`) whose on-disk
 // `i_fop` is a metadata-only / EIO stub — a bare read/write of a FIFO inode is
@@ -289,20 +289,19 @@ fn fifo_release(inode: &Inode, dec_read: bool, dec_write: bool) {
     fifo_gc(inode, &p);
 }
 
-/// FIFO `open(2)` — Linux `fs/pipe.c` `fifo_open`. Attaches/looks up the shared
+/// FIFO `open(2)`. Attaches/looks up the shared
 /// ring, runs the access-mode reader/writer rendezvous, and returns the `f_op`
-/// the caller installs on this open's `File` (Linux `filp->f_op =
-/// &pipefifo_fops`). Reader/writer counts taken here are released by
-/// `FifoFileOps::on_release_file` at last close.
+/// the caller installs on this open's `File`. Reader/writer counts taken here
+/// are released by `FifoFileOps::on_release_file` at last close.
 ///
-/// Rendezvous (Linux, `is_pipe == false`):
+/// Rendezvous:
 /// - `O_RDONLY`: `readers++`, wake writers. No writer yet and NOT `O_NONBLOCK` →
 ///   BLOCK until a writer opens; `O_NONBLOCK` → succeed immediately.
 /// - `O_WRONLY`: no reader yet and `O_NONBLOCK` → `ENXIO` (no count taken).
 ///   Else `writers++`, wake readers; no reader yet and NOT `O_NONBLOCK` → BLOCK
 ///   until a reader opens.
-/// - `O_RDWR`: `readers++` and `writers++`, wake both; NEVER blocks (Linux FIFO
-///   quirk).
+/// - `O_RDWR`: `readers++` and `writers++`, wake both; NEVER blocks (a
+///   long-standing quirk of the standard semantics).
 /// A blocking wait is interruptible by a deliverable signal → `Eintr`
 /// (`-ERESTARTSYS`), which undoes the count it took.
 ///
@@ -337,8 +336,9 @@ pub fn fifo_open(inode: &InodeRef, flags: u32) -> KResult<Arc<dyn FileOps>> {
                         let prev = p.writers.fetch_sub(1, Ordering::AcqRel);
                         if prev <= 1 { p.read_waiters.wake_all(); }
                         fifo_gc(inode, &p);
-                        // Linux `wait_for_partner` (`fs/pipe.c:1211`):
-                        // `return cur == *cnt ? -ERESTARTSYS : 0;`.
+                        // Partner rendezvous wait: interrupted while still no
+                        // partner is `-ERESTARTSYS`; a partner having shown up
+                        // in the meantime is success (0), not an error.
                         return Err(VfsError::Erestartsys);
                     }
                     // SAFETY: running task; preempt-off; park bumps the Arc + marks Sleeping; a reader open (or its close) will wake write_waiters.
@@ -349,7 +349,7 @@ pub fn fifo_open(inode: &InodeRef, flags: u32) -> KResult<Arc<dyn FileOps>> {
             }
         }
         O_RDWR => {
-            // O_RDWR on a FIFO takes BOTH ends and never blocks (Linux quirk).
+            // O_RDWR on a FIFO takes BOTH ends and never blocks (standard quirk).
             p.readers.fetch_add(1, Ordering::AcqRel);
             p.writers.fetch_add(1, Ordering::AcqRel);
             p.read_waiters.wake_all();
@@ -369,8 +369,9 @@ pub fn fifo_open(inode: &InodeRef, flags: u32) -> KResult<Arc<dyn FileOps>> {
                         let prev = p.readers.fetch_sub(1, Ordering::AcqRel);
                         if prev <= 1 { p.write_waiters.wake_all(); }
                         fifo_gc(inode, &p);
-                        // Linux `wait_for_partner` (`fs/pipe.c:1211`):
-                        // `return cur == *cnt ? -ERESTARTSYS : 0;`.
+                        // Partner rendezvous wait: interrupted while still no
+                        // partner is `-ERESTARTSYS`; a partner having shown up
+                        // in the meantime is success (0), not an error.
                         return Err(VfsError::Erestartsys);
                     }
                     // SAFETY: running task; preempt-off; park bumps the Arc + marks Sleeping; a writer open (or its close) will wake read_waiters.

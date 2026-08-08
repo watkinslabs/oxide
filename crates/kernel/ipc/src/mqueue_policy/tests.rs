@@ -1,5 +1,5 @@
-// Hosted tests for the mqueue policy ladders. Every case cites the
-// `ipc/mqueue.c` / `fs/namei.c` line it pins.
+// Hosted tests for the mqueue policy ladders. Every case pins one specific
+// errno/ordering decision from the policy module it exercises.
 //
 // Module manifest:
 // - `name`:   `check_name` — the ENOENT/EACCES/ENAMETOOLONG ordering.

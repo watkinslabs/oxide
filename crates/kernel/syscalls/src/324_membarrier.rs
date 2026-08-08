@@ -7,7 +7,7 @@ use syscall::errno::Errno;
 use crate::membarrier::{decide, registrations_mask, Op, QUERY_MASK};
 
 /// `sys_membarrier(cmd, flags, cpu_id)` — slot 324, Linux
-/// `SYSCALL_DEFINE3(membarrier)` (`kernel/sched/membarrier.c`).
+/// `SYSCALL_DEFINE3(membarrier)`.
 ///
 /// Shim only: admission + `cpu_id` normalisation live in
 /// `crate::membarrier` (hosted-tested), the barriers and the per-mm

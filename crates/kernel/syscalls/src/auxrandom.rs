@@ -1,8 +1,8 @@
-// AT_RANDOM auxiliary-vector entropy, per Linux `fs/binfmt_elf.c`
+// AT_RANDOM auxiliary-vector entropy, per Linux's
 // `create_elf_tables()`:
 //
-//     unsigned char k_rand_bytes[16];                      /* :179 */
-//     get_random_bytes(k_rand_bytes, sizeof(k_rand_bytes)); /* :226 */
+//     unsigned char k_rand_bytes[16];
+//     get_random_bytes(k_rand_bytes, sizeof(k_rand_bytes));
 //
 // Drawn from the CSPRNG, per exec — not per boot, not per task. glibc reads
 // these 16 bytes to derive `__stack_chk_guard` (the stack canary) and the

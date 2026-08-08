@@ -35,7 +35,7 @@ fn file(ino: u64) -> InodeRef {
     InodeBuilder::new(ino, mk_mode(FileType::Regular, 0o644), default_inode_ops(), default_file_ops()).build()
 }
 
-/// Linux `include/linux/fs.h` numeric reps: the new bits sit at exactly the
+/// Linux `i_state` numeric reps: the new bits sit at exactly the
 /// Linux positions and `I_DIRTY` is the SYNC|DATASYNC|PAGES aggregate.
 #[test]
 fn i_state_bits_match_linux() {
@@ -94,7 +94,7 @@ fn mark_inode_dirty_sets_only_dirty_bits() {
     assert_eq!(sb.i_state(13) & I_FREEING, 0, "lifecycle bit masked out");
 }
 
-/// `clear_inode` (Linux fs/inode.c) is the terminal eviction state:
+/// `clear_inode` is the terminal eviction state:
 /// `I_FREEING | I_CLEAR`, every dirty bit dropped.
 #[test]
 fn clear_inode_is_terminal_state() {

@@ -1,11 +1,8 @@
 // `file_operations` for the two halves of a pty pair (`28§5`).
 //
-// Slave (`/dev/pts/<n>`) read/write run the job-control gate first, exactly
-// where Linux does: n_tty's `job_control` at the top of `n_tty_read`
-// (`drivers/tty/n_tty.c:2200`, before the O_NONBLOCK branch at `:2207`) and
-// `tty_check_change` at the top of `n_tty_write` (`drivers/tty/n_tty.c`).
-// Master (`/dev/ptmx`) is nobody's controlling terminal
-// (`drivers/tty/tty_io.c:2166-2167`), so it is never gated.
+// Slave (`/dev/pts/<n>`) read/write run the job-control gate first: on
+// read, before the O_NONBLOCK check; on write, at entry. Master
+// (`/dev/ptmx`) is nobody's controlling terminal, so it is never gated.
 
 
 use vfs::{FileOps, Inode, Ino, KResult, VfsError};
@@ -114,10 +111,9 @@ impl FileOps for PtyMasterFileOps {
             g.master_hangup();
             g.foreground_pgid
         };
-        // Linux `pty_close` wakes BOTH halves' read/write queues, then
-        // `tty_vhangup(tty->link)` (`drivers/tty/pty.c:58-77`): the slave's
-        // poll must report EPOLLHUP|EPOLLIN immediately, not on the next
-        // unrelated event.
+        // Linux wakes BOTH halves' read/write queues on master last-close,
+        // then hangs up the slave: the slave's poll must report
+        // EPOLLHUP|EPOLLIN immediately, not on the next unrelated event.
         pair.wake_both_subs(vfs::POLL_IN | vfs::POLL_OUT | vfs::POLL_HUP);
         // Master last-close = carrier loss. Linux `__tty_hangup` delivers
         // SIGHUP + SIGCONT to the slave's foreground process group (SIGCONT
@@ -141,9 +137,8 @@ impl FileOps for PtySlaveFileOps {
         let pair = pair_of(inode)?;
         if pair.is_locked() { return Err(VfsError::Eio); }
         pair.open_endpoint(false, current_has_sys_admin())?;
-        // Linux `tty_open` ends with `clear_bit(TTY_HUPPED, &tty->flags)`
-        // (`drivers/tty/tty_io.c:2161`), so a `vhangup(2)` revokes the OPEN
-        // descriptors and a fresh open revives the line. A hangup that came
+        // Linux clears the hangup flag on open, so a `vhangup(2)` revokes the
+        // OPEN descriptors and a fresh open revives the line. A hangup that came
         // from the master's last close stays: that pty is gone for good.
         if pair.master_is_open() { pair.with_pair(|p| p.clear_hangup()); }
         Ok(())
@@ -208,9 +203,8 @@ impl FileOps for PtySlaveFileOps {
 }
 
 /// A master-side read drained `s_to_m`, so the SLAVE regained write room —
-/// Linux `pty_unthrottle` → `tty_wakeup(tty->link)` →
-/// `wake_up_interruptible_poll(&tty->write_wait, EPOLLOUT)`
-/// (`drivers/tty/pty.c:91-95`, `drivers/tty/tty_io.c:520`). # C: O(N_subs)
+/// Linux wakes the other half's write-wait queue with EPOLLOUT when its
+/// buffer is unthrottled. # C: O(N_subs)
 fn master_read_freed_slave_space(pair: &LockedPair) { pair.wake_subs(false, vfs::POLL_OUT); }
 
 /// A slave-side read drained `m_to_s`, so the MASTER regained write room.

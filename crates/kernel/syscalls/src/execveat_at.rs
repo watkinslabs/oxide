@@ -1,7 +1,7 @@
-// execveat(2) AT_* flag policy — Linux `fs/exec.c` `do_open_execat` (l.774,
-// the EINVAL mask + `LOOKUP_NO_FOLLOW`), `SYSCALL_DEFINE5(execveat)` (l.1953),
-// `fs/namei.c` `do_getname` (l.204, empty-path ENOENT) and `may_open` (l.4236,
-// the file-type ladder) as of linux-master v7.2.0-rc4.
+// execveat(2) AT_* flag policy — Linux's `do_open_execat` (
+// the EINVAL mask + `LOOKUP_NO_FOLLOW`), `SYSCALL_DEFINE5(execveat)`,
+// `do_getname` (empty-path ENOENT) and `may_open` (
+// the file-type ladder).
 //
 // NOT target-gated: `322_execveat.rs` carries `#![cfg(target_os =
 // "oxide-kernel")]`, so a `#[cfg(test)]` block inside it never compiles. The
@@ -11,14 +11,14 @@
 use alloc::string::String;
 use syscall::errno::Errno;
 
-/// `include/uapi/linux/fcntl.h:132,138,190`.
+/// `AT_*` execveat flag bits, fcntl UAPI code space.
 pub const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
 pub const AT_EMPTY_PATH:       u32 = 0x1000;
 pub const AT_EXECVE_CHECK:     u32 = 0x10000;
-/// The complete set `do_open_execat` tolerates (`fs/exec.c:779`).
+/// The complete set `do_open_execat` tolerates.
 pub const AT_EXEC_VALID: u32 = AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH | AT_EXECVE_CHECK;
 
-/// `AT_FDCWD` (`include/uapi/linux/fcntl.h`), re-stated here so the hosted
+/// `AT_FDCWD`, re-stated here so the hosted
 /// tests do not need the kernel-only `pathresolve` module.
 pub const AT_FDCWD: i32 = -100;
 
@@ -32,7 +32,7 @@ pub fn validate_flags(flags: u32) -> Result<(), Errno> {
 }
 
 /// `getname_uflags` maps `AT_EMPTY_PATH` to `LOOKUP_EMPTY`; without it
-/// `do_getname` turns the empty pathname into `ENOENT` (`fs/namei.c:202`).
+/// `do_getname` turns the empty pathname into `ENOENT`.
 /// # C: O(1)
 pub fn empty_path_verdict(flags: u32) -> Result<(), Errno> {
     if flags & AT_EMPTY_PATH == 0 { return Err(Errno::Enoent); }
@@ -61,7 +61,7 @@ pub fn join_dirfd_path(dir: &str, rel: &str) -> String {
 }
 
 /// The exec target's file-type verdict from `may_open(..., MAY_EXEC, ...)`
-/// (`fs/namei.c:4246`): a symlink reached with `LOOKUP_NO_FOLLOW` is `ELOOP`,
+///: a symlink reached with `LOOKUP_NO_FOLLOW` is `ELOOP`,
 /// a directory or any non-regular file is `EACCES`, a regular file proceeds to
 /// the DAC `inode_permission` test.
 /// # C: O(1)
@@ -74,7 +74,7 @@ pub fn may_exec_file_type(ft: vfs::FileType) -> Result<(), Errno> {
 }
 
 /// The pathname `alloc_bprm` records for an `AT_EMPTY_PATH` exec
-/// (`fs/exec.c:1444`: `kasprintf(..., "/dev/fd/%d", fd)`). oxide's
+/// (Linux's `alloc_bprm`: `kasprintf(..., "/dev/fd/%d", fd)`). oxide's
 /// `pathresolve::lookup::dup_fd_target` recognises exactly this spelling as a
 /// pure string fast-path — `proc_fd_file` hands back the OPEN FILE
 /// DESCRIPTION's inode with no `/proc` mount involved — so exec'ing the fd

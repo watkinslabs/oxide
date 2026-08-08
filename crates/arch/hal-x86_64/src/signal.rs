@@ -79,7 +79,7 @@ const RED_ZONE: u64 = 128;
 const FRAME_ALIGN: u64 = 16;
 /// Byte width of the `pretcode` slot the handler's `ret` pops.
 const PRETCODE_BYTES: u64 = 8;
-/// Linux `UC_SIGCONTEXT_SS` (`arch/x86/include/uapi/asm/ucontext.h`) —
+/// Linux `UC_SIGCONTEXT_SS` —
 /// `uc_mcontext.ss` carries the interrupted SS.
 const UC_SIGCONTEXT_SS: u64 = 0x2;
 /// Linux `UC_STRICT_RESTORE_SS` — sigreturn must restore SS verbatim rather
@@ -109,7 +109,7 @@ pub struct FrameLayout {
     pub math: u64,
 }
 
-/// Linux `get_sigframe` (`arch/x86/kernel/signal.c`) placement arithmetic, as
+/// Linux `get_sigframe` placement arithmetic, as
 /// a pure function of the math-frame size so the caller's `access_ok` check
 /// and the builder's write can never disagree about WHERE the frame lands.
 /// `None` when the arithmetic underflows — a process is free to run
@@ -185,7 +185,7 @@ fn frame_span(user_sp: u64, alt: hal::AltStack, math: u64) -> Option<(u64, u64, 
     // Linux `get_sigframe`: "If we are on the alternate signal stack and would
     // overflow it, don't. Return an always-bogus address instead so we will
     // die with SIGSEGV." `__on_sig_stack(sp)` is `sp > ss_sp && sp - ss_sp <=
-    // ss_size` (`include/linux/sched/signal.h:574`).
+    // ss_size`.
     //
     // Load-bearing since B1466 grew the frame past the legacy `MINSIGSTKSZ`:
     // an XSAVE-carrying frame is ~3.3 KB, `sigaltstack(2)` still accepts
@@ -255,7 +255,7 @@ pub unsafe fn build_signal_frame(regs: *mut PtRegs, handler: u64, restorer: u64,
     // Linux `frame_uc_flags()`.
     sf.uc.uc_flags = UC_SIGCONTEXT_SS | UC_STRICT_RESTORE_SS
                      | if have_fpu && area != 0 { UC_FP_XSTATE } else { 0 };
-    // Linux `__unsafe_setup_sigcontext` (`arch/x86/kernel/signal_64.c`):
+    // Linux `__unsafe_setup_sigcontext`:
     // every GP register straight out of `pt_regs`, `trapno`/`err` from the
     // task's last trap, `cs`/`ss` from `pt_regs` (NOT literals — the frame
     // knows which selectors it will iretq/sysretq with). `rcx` and `r11` are
@@ -386,7 +386,7 @@ pub unsafe fn restore_signal_frame(regs: *mut PtRegs, fpu: &mut [u8])
     if mc.rip >= hal::USER_VA_END || mc.rsp >= hal::USER_VA_END { return None; }
     // SAFETY: `mc.fpstate` is user-supplied; `restore_fpstate` proves the whole area lies below USER_VA_END and is alignment-legal before it reads a byte.
     let fpu_dirty = unsafe { restore_fpstate(mc.fpstate, fpu) }?;
-    // Linux `restore_sigcontext` (`arch/x86/kernel/signal_64.c`):
+    // Linux `restore_sigcontext`:
     // `regs->flags = (regs->flags & ~FIX_EFLAGS) | (sc.flags & FIX_EFLAGS)`.
     // MUST be read before the write below overwrites it. `sysretq` reloads
     // RFLAGS straight from this slot and the Intel SDM's SYSRET mask

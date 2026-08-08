@@ -1,5 +1,4 @@
-// `prctl(PR_FUTEX_HASH, cmd, slots, 0)` — Linux `kernel/futex/core.c
-// futex_hash_prctl`.
+// `prctl(PR_FUTEX_HASH, cmd, slots, 0)` — Linux `futex_hash_prctl`.
 //
 // The option asks the kernel to give THIS process a private futex hash table
 // of `slots` buckets instead of sharing the global one, and to report how

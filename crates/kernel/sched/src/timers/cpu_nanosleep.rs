@@ -1,10 +1,9 @@
-// CPU-time `clock_nanosleep(2)` — Linux `kernel/time/posix-cpu-timers.c`
-// `do_cpu_nanosleep` (`:1537-1626`), `posix_cpu_nsleep` (`:1630-1655`) and
-// `posix_cpu_nsleep_restart` (`:1657-1665`).
+// CPU-time `clock_nanosleep(2)` — Linux `do_cpu_nanosleep`,
+// `posix_cpu_nsleep` and `posix_cpu_nsleep_restart`.
 //
 // Linux does NOT convert a CPU clock to a wall deadline. `do_cpu_nanosleep`
 // arms a TEMPORARY `k_itimer` with `it.cpu.nanosleep = true` and blocks; when
-// the timer fires, `cpu_timer_fire` (`:682-688`) takes its wake branch instead
+// the timer fires, `cpu_timer_fire` takes its wake branch instead
 // of queueing a signal. Converting to wall time — which this kernel used to do
 // — makes a process-CPU sleep expire on ELAPSED time, which is wrong whenever
 // the caller is not the only runnable task.
@@ -20,8 +19,7 @@
 use crate::posix_clock::ClockSpec;
 use crate::Task;
 
-/// Linux `posix_cpu_nsleep`'s "diagnose required errors first"
-/// (`posix-cpu-timers.c:1637-1642`):
+/// Linux `posix_cpu_nsleep`'s "diagnose required errors first":
 ///
 /// ```c
 /// if (CPUCLOCK_PERTHREAD(which_clock) &&
@@ -38,18 +36,17 @@ pub const fn perthread_names_self(per_thread: bool, target_pid: u32, caller_pid:
 }
 
 /// What an interrupted CPU sleep returns — Linux `do_cpu_nanosleep`'s tail
-/// (`posix-cpu-timers.c:1606-1620`) plus `posix_cpu_nsleep`'s ABS/REL split
-/// (`:1646-1653`).
+/// plus `posix_cpu_nsleep`'s ABS/REL split.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum CpuSleepExit {
     /// `if ((it.it_value.tv_sec | it.it_value.tv_nsec) == 0) return 0;` — the
     /// timer did fire after all, so the sleep completed.
     Completed,
     /// `TIMER_ABSTIME` — `-ERESTARTNOHAND`, no restart block, no remainder
-    /// copied out (`:1648-1649`).
+    /// copied out.
     RestartNoHand,
     /// Relative — arm `posix_cpu_nsleep_restart` with the ABSOLUTE CPU expiry
-    /// and return `-ERESTART_RESTARTBLOCK` (`:1616-1619`, `:1651-1652`).
+    /// and return `-ERESTART_RESTARTBLOCK`.
     RestartBlock,
 }
 
@@ -126,10 +123,10 @@ mod tests {
 }
 
 /// `pid_for_clock(which_clock, false)` — Linux `posix_cpu_timer_create`
-/// (`posix-cpu-timers.c:386-411`) resolves the encoded clockid to a
+/// resolves the encoded clockid to a
 /// `struct pid` ONCE and stores it on the timer; every later sample reads that
 /// task, never the encoding. `do_cpu_nanosleep` runs the same create for its
-/// stack timer (`:1552`), so a CPU sleep is armed and sampled on the RESOLVED
+/// stack timer, so a CPU sleep is armed and sampled on the RESOLVED
 /// clock.
 ///
 /// Skipping that step is what made a CPU-clock sleep a no-op here: the static
@@ -174,8 +171,7 @@ pub fn names_self(current: &Task, clock: ClockSpec) -> bool {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct CpuSleep { pub id: usize, pub clock: ClockSpec, pub deadline_ns: u64 }
 
-/// What arming produced, as `do_cpu_nanosleep`'s first loop test reads it
-/// (`posix-cpu-timers.c:1571-1580`).
+/// What arming produced, as `do_cpu_nanosleep`'s first loop test reads it.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum CpuArm {
     /// `!cpu_timer_getexpires(&timer.it.cpu)` on entry — the clock is already
@@ -187,7 +183,7 @@ pub enum CpuArm {
 }
 
 /// Linux `posix_cpu_timer_set`'s failure modes as `do_cpu_nanosleep` returns
-/// them (`:1562-1566`).
+/// them.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum CpuArmError {
     /// `pid_for_clock` named no live task — `-EINVAL`.
@@ -196,7 +192,7 @@ pub enum CpuArmError {
     NoSlot,
 }
 
-/// Arm the temporary timer `do_cpu_nanosleep` blocks on (`:1546-1570`).
+/// Arm the temporary timer `do_cpu_nanosleep` blocks on.
 ///
 /// Non-gated on purpose: this is the whole decision — resolve, sample, project
 /// the expiry, take a slot — and it must be reachable from hosted tests, which
@@ -222,7 +218,7 @@ pub fn arm(current: &Task, clock: ClockSpec, absolute: bool, value_ns: u64)
     Ok(CpuArm::Armed(CpuSleep { id, clock: resolved, deadline_ns: deadline }))
 }
 
-/// `it.it_value` after the wait — the CPU time still owed (`:1595-1604`) — and
+/// `it.it_value` after the wait — the CPU time still owed — and
 /// release the slot (`posix_cpu_timer_del`). 0 means the sleep completed.
 /// # C: O(N_tasks)
 pub fn disarm(current: &Task, sleep: CpuSleep) -> u64 {
@@ -241,7 +237,7 @@ pub fn disarm(current: &Task, sleep: CpuSleep) -> u64 {
 }
 
 /// Whether the armed expiry has been reached — `do_cpu_nanosleep`'s
-/// `!cpu_timer_getexpires(&timer.it.cpu)` loop test (`:1571-1580`), read off
+/// `!cpu_timer_getexpires(&timer.it.cpu)` loop test, read off
 /// the clock the timer samples rather than off the slot, so a tick that could
 /// not take the timer lock only delays the wake and never loses it.
 /// # C: O(N_tasks)
@@ -249,7 +245,7 @@ pub fn fired(sleep: CpuSleep) -> bool {
     super::clock::now_ns(sleep.clock).map(|now| now >= sleep.deadline_ns).unwrap_or(true)
 }
 
-/// Linux `do_cpu_nanosleep` (`posix-cpu-timers.c:1537-1626`): arm a temporary
+/// Linux `do_cpu_nanosleep`: arm a temporary
 /// timer on the CPU clock, block until it fires or a signal lands, then report
 /// the CPU time still owed.
 ///
@@ -270,7 +266,7 @@ pub unsafe fn body(current: &Task, clock: ClockSpec, absolute: bool, value_ns: u
         // same "nothing owed" tail the caller maps to a completed sleep.
         _ => return 0,
     };
-    // `while (!signal_pending(current)) { … schedule(); }` (`:1571-1589`) —
+    // `while (!signal_pending(current)) { … schedule(); }` —
     // TASK_INTERRUPTIBLE, no timeout: a CPU sleep has no wall deadline, and
     // only `cpu_timer_fire`'s wake or a signal ends it.
     // SAFETY: process context on the running task with the runqueue installed;

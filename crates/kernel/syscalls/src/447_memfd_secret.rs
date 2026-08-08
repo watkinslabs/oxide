@@ -1,4 +1,4 @@
-// 447 memfd_secret — `SYSCALL_DEFINE1(memfd_secret)` (`mm/secretmem.c:224`).
+// 447 memfd_secret — `SYSCALL_DEFINE1(memfd_secret)`.
 // ABI shim (docs/53); the ladder is `crate::secretmem` (hosted-tested).
 //
 // Previously this slot did not exist: `route_b.rs` rewrote the arguments and

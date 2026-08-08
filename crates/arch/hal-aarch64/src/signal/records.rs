@@ -2,8 +2,7 @@
 //
 // Linux fills `__reserved` with a chain of `struct _aarch64_ctx { magic, size }`
 // records terminated by a zero record, and `restore_sigframe` REQUIRES an
-// `FPSIMD_MAGIC` record: `if (!user.fpsimd) return -EINVAL`
-// (`arch/arm64/kernel/signal.c:1044-1046`). A frame without one is not a
+// `FPSIMD_MAGIC` record: `if (!user.fpsimd) return -EINVAL`. A frame without one is not a
 // "reduced" frame, it is a frame Linux itself rejects — and without the record
 // a handler that calls any glibc string routine (all NEON-optimised) destroys
 // the interrupted code's Q registers with nothing to put them back.

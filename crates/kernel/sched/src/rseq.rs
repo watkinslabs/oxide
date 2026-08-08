@@ -1,6 +1,5 @@
 // `sys_rseq(2)` (slot 334) + the exit-to-user machinery restartable
-// sequences actually require. Linux `kernel/rseq.c` +
-// `include/linux/rseq_entry.h`.
+// sequences actually require.
 //
 // Module manifest:
 //   `uaccess` — VMA-validated user reads/writes (this kernel has no
@@ -159,7 +158,7 @@ fn registration(cur: &crate::Task) -> Option<abi::Registration> {
 /// thread start.
 ///
 /// The errno ladder is `syscall::rseq::decide` (EINVAL/EPERM/EBUSY ordering
-/// straight out of `kernel/rseq.c:547`); the two uaccess steps Linux folds
+/// matching Linux's `sys_rseq`); the two uaccess steps Linux folds
 /// into `rseq_register`/`rseq_unregister` (initialise the user area, reset
 /// the ids) live here because they touch the caller's address space.
 ///

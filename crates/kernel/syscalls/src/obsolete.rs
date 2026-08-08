@@ -8,9 +8,8 @@
 
 use syscall::nrs::*;
 
-/// The OBSOLETE set, in numeric order: exactly the rows of Linux
-/// `arch/x86/entry/syscalls/syscall_64.tbl` carrying no entry point or
-/// `sys_ni_syscall`.
+/// The OBSOLETE set, in numeric order: exactly the x86_64 Linux syscall
+/// numbers that are allocated but carry no entry point.
 pub const OBSOLETE_NRS: [u64; 17] = [
     NR_USELIB, NR__SYSCTL, NR_CREATE_MODULE, NR_GET_KERNEL_SYMS,
     NR_QUERY_MODULE, NR_NFSSERVCTL, NR_GETPMSG, NR_PUTPMSG, NR_AFS_SYSCALL,
@@ -59,7 +58,7 @@ mod tests {
         ];
         let mut ours = OBSOLETE_NRS;
         ours.sort_unstable();
-        assert_eq!(ours, linux, "OBSOLETE set drifted from Linux syscall_64.tbl");
+        assert_eq!(ours, linux, "OBSOLETE set drifted from the Linux x86_64 syscall numbering");
     }
 
     #[test]

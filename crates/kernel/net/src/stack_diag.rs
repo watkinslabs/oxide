@@ -37,7 +37,7 @@ const AF_INET6: u8 = 10;
 const IPPROTO_TCP: u8 = 6;
 const IPPROTO_UDP: u8 = 17;
 
-// Linux TCP_* inet_diag state numbers from include/net/tcp_states.h.
+// Linux TCP_* inet_diag state numbers, per the Linux TCP state-machine UAPI.
 const TCP_ESTABLISHED: u8 = 1;
 const TCP_SYN_SENT: u8 = 2;
 const TCP_SYN_RECV: u8 = 3;

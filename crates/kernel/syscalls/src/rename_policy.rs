@@ -1,4 +1,4 @@
-// rename(2)/renameat(2)/renameat2(2) decision core — Linux `fs/namei.c`
+// rename(2)/renameat(2)/renameat2(2) decision core — Linux's
 // `filename_renameat2` + `__start_renaming` + `vfs_rename`.
 //
 // Deliberately NOT `#![cfg(target_os = "oxide-kernel")]`: the slot files

@@ -17,7 +17,7 @@ use crate::memfd_flags::{
 #[inline]
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
-/// `alloc_name` (`mm/memfd.c:428`): `"memfd:"` then
+/// `alloc_name`: `"memfd:"` then
 /// `strncpy_from_user(uname, MFD_NAME_MAX_LEN + 1)`. A NULL/unreadable pointer
 /// is `EFAULT`; a name longer than the budget is `EINVAL`, not `ENAMETOOLONG`.
 fn read_memfd_name(name_ptr: u64) -> Result<String, i64> {
@@ -32,8 +32,8 @@ fn read_memfd_name(name_ptr: u64) -> Result<String, i64> {
     Ok(vfs::path_from_bytes(&name))
 }
 
-/// `sys_memfd_create(name, flags)` — slot 319, `SYSCALL_DEFINE2(memfd_create)`
-/// (`mm/memfd.c:505`). Order is `sanitize_flags` → `alloc_name` →
+/// `sys_memfd_create(name, flags)` — slot 319, `SYSCALL_DEFINE2(memfd_create)`.
+/// Order is `sanitize_flags` → `alloc_name` →
 /// `memfd_alloc_file`, which is why an undefined flag bit beats a bad name
 /// pointer and a bad name pointer beats the hugetlb backing store's error.
 /// # C: O(N_fds) for the fd-table alloc
@@ -61,7 +61,7 @@ pub fn sys_memfd_create(args: &SyscallArgs) -> i64 {
     if st.hugetlb {
         // `memfd_alloc_file` calls `hugetlb_file_setup`, whose
         // !CONFIG_HUGETLBFS stub is `ERR_PTR(-ENOSYS)`
-        // (`include/linux/hugetlb.h:531`). oxide has no hugetlbfs (mmap's
+        //. oxide has no hugetlbfs (mmap's
         // MAP_HUGETLB is likewise refused in `mm-pmm/src/mmap_flags.rs`), so
         // this is the honest CONFIG_HUGETLBFS=n answer, not a stub for a
         // syscall we declined to write.
@@ -72,8 +72,8 @@ pub fn sys_memfd_create(args: &SyscallArgs) -> i64 {
         Some(t) => t.clone(), None => return err(Errno::Ebadf),
     };
     // Every memfd carries the seal word — a memfd created WITHOUT
-    // MFD_ALLOW_SEALING is not "unsealable", it is born holding F_SEAL_SEAL
-    // (`mm/shmem.c:3030`), so F_GET_SEALS reads 1 and F_ADD_SEALS is EPERM.
+    // MFD_ALLOW_SEALING is not "unsealable", it is born holding F_SEAL_SEAL,
+    // so F_GET_SEALS reads 1 and F_ADD_SEALS is EPERM.
     let inode = ::fs::tmpfs::tmpfs_sealable_file();
     if let Some(seals) = inode.fcntl_seals() {
         seals.store(st.seals, core::sync::atomic::Ordering::Release);

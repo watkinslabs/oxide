@@ -259,7 +259,7 @@ impl UnixDgramQueue {
     ///
     /// Send admission charges a message before filtering; filtering changes
     /// its length, not its charged size; and
-    /// `net/core/sock.c` `sock_wfree` releases that original `truesize` whether
+    /// Linux `sock_wfree` releases that original `truesize` whether
     /// the filter drops or truncates the skb.
     fn try_push_from_with_rights_bounded_owned(&self, mut msg: UnixDgram, sender: Option<UnixAddr>,
         rights: GcRights, cap: usize, owner: Option<Arc<UnixDgramQueue>>, charge: usize)

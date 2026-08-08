@@ -1,5 +1,5 @@
 // `will_become_orphaned_pgrp` / `has_stopped_jobs` / `kill_orphaned_pgrp`
-// (Linux `kernel/exit.c`, POSIX 2.2.2.52 + 3.2.2.2).
+// (Linux's exit path, POSIX 2.2.2.52 + 3.2.2.2).
 //
 // A process group is orphaned when no member has a parent that is in a
 // DIFFERENT process group of the SAME session — i.e. nothing outside the group

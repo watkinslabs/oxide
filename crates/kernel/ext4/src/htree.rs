@@ -1,5 +1,5 @@
-// ext4 htree (indexed directory) hash + index descent, per Linux
-// fs/ext4/hash.c + namei.c. Read of an htree directory works via the
+// ext4 htree (indexed directory) hash + index descent.
+// Read of an htree directory works via the
 // linear leaf scan in `lookup_in_dir` (leaf blocks are ordinary
 // `ext4_dir_entry_2` blocks). For WRITE we must place a new name in
 // the leaf block whose hash range covers `hash(name)`, so Linux's own

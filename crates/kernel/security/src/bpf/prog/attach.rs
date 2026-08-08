@@ -1,5 +1,4 @@
 // Legacy and link cgroup attachment, ordering, query, and fd resolution.
-// Linux: kernel/bpf/syscall.c and kernel/bpf/cgroup.c (v7.2.0-rc4).
 
 extern crate alloc;
 use alloc::sync::Arc;

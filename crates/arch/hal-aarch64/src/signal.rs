@@ -144,7 +144,7 @@ pub unsafe fn svc_frame_user_sp(frame: *mut SvcFrame) -> u64 {
     unsafe { (*frame).sp_el0 }
 }
 
-/// Linux `get_sigframe` (`arch/arm64/kernel/signal.c:1405-1429`) placement
+/// Linux `get_sigframe` placement
 /// arithmetic, as a pure function so the caller's `access_ok` check and the
 /// builder's write can never disagree about WHERE the frame lands. AArch64
 /// has no red zone, so the non-alt top is the interrupted SP itself. `None`

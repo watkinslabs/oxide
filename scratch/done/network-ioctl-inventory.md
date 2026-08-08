@@ -1,7 +1,7 @@
 # Network ioctl inventory
 
 Status: IN-PROGRESS. Branch: B1280-siocrtmsg-order. Linux UAPI source:
-`linux/sockios.h` plus `asm-generic/sockios.h`; implementation audit source:
+the socket-ioctl (`SIOC*`) command numbering, generic and arch; implementation audit source:
 `crates/kernel/syscalls/src/016_ioctl/` and `siocgif.rs`.
 
 | Commands | Linux owner | Oxide owner / status | Evidence | Closure test |

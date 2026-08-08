@@ -1,5 +1,4 @@
-// Init death (Linux `kernel/exit.c` `do_exit`, `kernel/pid_namespace.c`
-// `zap_pid_ns_processes`).
+// Init death (Linux's `do_exit` and `zap_pid_ns_processes`).
 //
 //   if (unlikely(is_global_init(tsk)))
 //           panic("Attempted to kill init! exitcode=0x%08x\n", ...);

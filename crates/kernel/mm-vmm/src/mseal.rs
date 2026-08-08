@@ -1,22 +1,22 @@
-// mseal(2) argument ladder — `do_mseal` (`mm/mseal.c:143`).
+// mseal(2) argument ladder.
 //
 // NOT target-gated: `462_mseal.rs` is `#![cfg(target_os = "oxide-kernel")]`, so
 // a test written there never compiles. Every EINVAL-vs-ENOMEM decision lives
 // here; the slot only fetches the mm and applies the seal.
 //
 // Which operations a sealed VMA then rejects (all `-EPERM`):
-//   munmap / MAP_FIXED overlap-clear  `mm/vma.c:1422,1442` (vms_gather_munmap_vmas)
-//   mprotect / pkey_mprotect          `mm/mprotect.c:737`  (mprotect_fixup)
-//   mremap, either end                `mm/mremap.c:1736`   (check_prep_vma)
-//   destructive madvise               `mm/madvise.c:1295`  (can_madvise_modify)
+//   munmap / MAP_FIXED overlap-clear
+//   mprotect / pkey_mprotect
+//   mremap, either end
+//   destructive madvise
 // Nothing else is blocked, and there is no unseal.
 
 use crate::Error;
 
-/// `PAGE_ALIGN(len_in)`; `Err(Inval)` when a non-zero length rounds up to
-/// zero. `do_mbind` tolerates that wrap (it becomes a zero-length no-op);
-/// `do_mseal` does not, because silently sealing nothing would be a security
-/// answer the caller did not ask for (`mm/mseal.c:158`).
+/// Page-align `len_in`; `Err(Inval)` when a non-zero length rounds up to
+/// zero. `mbind(2)` tolerates that wrap (it becomes a zero-length no-op);
+/// `mseal(2)` does not, because silently sealing nothing would be a security
+/// answer the caller did not ask for.
 /// # C: O(1)
 fn mseal_len(len_in: u64) -> Result<u64, Error> {
     let len = len_in.wrapping_add(hal::PAGE_SIZE_BYTES - 1) & !(hal::PAGE_SIZE_BYTES - 1);
@@ -24,7 +24,7 @@ fn mseal_len(len_in: u64) -> Result<u64, Error> {
     Ok(len)
 }
 
-/// `do_mseal`'s validation, in order. `Ok(None)` is the `end == start` early
+/// mseal(2)'s validation, in order. `Ok(None)` is the `end == start` early
 /// success — a zero-length mseal seals nothing and returns 0, NOT ENOMEM.
 ///
 /// Every failure here is EINVAL; ENOMEM belongs exclusively to the
@@ -75,8 +75,8 @@ mod tests {
 
     #[test]
     fn zero_length_succeeds_without_sealing_anything() {
-        // `end == start` returns 0 (`mm/mseal.c:167`). The old shim reached
-        // seal_range, which rejected start >= end and reported ENOMEM.
+        // `end == start` returns 0. The old shim reached seal_range, which
+        // rejected start >= end and reported ENOMEM.
         assert_eq!(mseal_args(0x4000_0000, 0, 0), Ok(None));
     }
 

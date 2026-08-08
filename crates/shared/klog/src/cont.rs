@@ -1,5 +1,5 @@
 // Console line assembly — Linux `vprintk_store`'s `LOG_CONT` /
-// `prb_reserve_in_last` (`kernel/printk/printk.c`).
+// `prb_reserve_in_last` logic.
 //
 // `lock.rs` serialises ONE `emit_bytes_at` call. It does not serialise a LINE:
 // every trace site in this kernel builds a line out of many calls —

@@ -1,4 +1,4 @@
-//! Per-inode poll-subscriber mask filtering (Linux fs/eventpoll.c
+//! Per-inode poll-subscriber mask filtering (mirrors the epoll
 //! `ep_poll_callback` key check + always-reported `EPOLLERR|EPOLLHUP`).
 //!
 //! `PollSubscribers::notify_mask(events)` must wake ONLY subscribers

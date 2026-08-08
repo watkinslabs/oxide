@@ -1,6 +1,6 @@
 // `prctl(PR_SET_NAME / PR_GET_NAME / PR_SET_DUMPABLE / PR_GET_DUMPABLE)` —
-// Linux `kernel/sys.c` (`strncpy_from_user` + `set_task_comm`,
-// `get_task_comm` + `copy_to_user`, `task_exec_state_{set,get}_dumpable`).
+// Linux `strncpy_from_user` + `set_task_comm`, `get_task_comm` +
+// `copy_to_user`, `task_exec_state_{set,get}_dumpable`.
 
 use core::sync::atomic::Ordering;
 use syscall::SyscallArgs;

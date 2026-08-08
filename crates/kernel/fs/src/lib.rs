@@ -28,23 +28,22 @@ pub mod inotify;
 pub mod userfaultfd;
 pub mod flock;
 pub mod posix_lock;
-/// `truncate(2)`/`ftruncate(2)` size-change work-fns (Linux `fs/open.c`).
+/// `truncate(2)`/`ftruncate(2)` size-change work-fns.
 pub mod truncate;
 pub mod chattr;
 pub mod mknod;
-/// `getcwd(2)`/`chdir(2)`/`fchdir(2)` pwd work-fns (Linux `fs/d_path.c`, `fs/open.c`).
+/// `getcwd(2)`/`chdir(2)`/`fchdir(2)` pwd work-fns.
 pub mod cwd;
-/// `fsync(2)`/`fdatasync(2)` + `sync_file_range(2)` work-fns (Linux `fs/sync.c`).
+/// `fsync(2)`/`fdatasync(2)` + `sync_file_range(2)` work-fns.
 pub mod sync;
-/// `fallocate(2)` work-fn — the `vfs_fallocate` ladder (Linux `fs/open.c`).
+/// `fallocate(2)` work-fn — the mode-decision + extend/punch ladder.
 pub mod fallocate;
-/// `readahead(2)` work-fn (Linux `mm/readahead.c` `ksys_readahead`).
+/// `readahead(2)` work-fn.
 pub mod readahead;
-/// `splice(2)`/`tee(2)`/`vmsplice(2)`/`copy_file_range(2)` work-fns
-/// (Linux `fs/splice.c` + `fs/read_write.c`).
+/// `splice(2)`/`tee(2)`/`vmsplice(2)`/`copy_file_range(2)` work-fns.
 pub mod splice;
 pub mod xattr;
-/// `file_getattr(2)`/`file_setattr(2)` `struct file_attr` ABI (Linux `fs/file_attr.c`).
+/// `file_getattr(2)`/`file_setattr(2)` `struct file_attr` ABI.
 pub mod fileattr;
 pub mod keyring;
 /// Boot binding of the keyring's `/proc/keys`, `/proc/key-users` and
@@ -57,7 +56,7 @@ pub mod fuse;
 pub mod autofs;
 pub mod binfmt_misc;
 pub mod coredump;
-/// BSD process accounting (`acct(2)`, Linux `kernel/acct.c`): one `acct_v3`
+/// BSD process accounting (`acct(2)`): one `acct_v3`
 /// record appended per process exit.
 pub mod acct;
 pub mod ptrace;

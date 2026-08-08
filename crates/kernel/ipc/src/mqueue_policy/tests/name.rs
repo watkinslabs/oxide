@@ -19,7 +19,7 @@ fn the_empty_name_is_enoent_not_einval() {
 
 #[test]
 fn dot_dotdot_and_embedded_slash_are_eacces() {
-    // `lookup_noperm_common` (`fs/namei.c:3094-3101`).
+    // Path-component validation rejects `.`, `..`, and any embedded `/` or NUL.
     assert_eq!(check_name("."), Err(Errno::Eacces));
     assert_eq!(check_name(".."), Err(Errno::Eacces));
     assert_eq!(check_name("a/b"), Err(Errno::Eacces));
@@ -37,7 +37,7 @@ fn a_dotlike_but_longer_name_is_fine() {
 
 #[test]
 fn over_name_max_is_enametoolong() {
-    // `simple_lookup` (`fs/libfs.c`).
+    // mqueuefs's lookup rejects a component longer than NAME_MAX.
     assert_eq!(check_name(&rep(NAME_MAX + 1, 'q')), Err(Errno::Enametoolong));
 }
 

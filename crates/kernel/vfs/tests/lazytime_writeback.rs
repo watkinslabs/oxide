@@ -1,5 +1,5 @@
-//! `SB_LAZYTIME` end to end (Linux fs/inode.c `inode_time_dirty_flag`,
-//! fs/fs-writeback.c `__mark_inode_dirty` / `__writeback_single_inode` /
+//! `SB_LAZYTIME` end to end (`inode_time_dirty_flag`,
+//! `__mark_inode_dirty` / `__writeback_single_inode` /
 //! `sync_lazytime`, mount(8) "lazytime").
 //!
 //! The failure mode of a lazytime implementation is SILENT DATA LOSS, so every

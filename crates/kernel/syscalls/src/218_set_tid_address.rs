@@ -3,9 +3,8 @@
 
 use syscall::SyscallArgs;
 
-/// `sys_set_tid_address(tidptr)` — slot 218. Linux `kernel/fork.c`:
-///     current->clear_child_tid = tidptr;
-///     return task_pid_vnr(current);
+/// `sys_set_tid_address(tidptr)` — slot 218. Linux's `sys_set_tid_address`
+/// stores `tidptr` as `current->clear_child_tid` and returns `task_pid_vnr(current)`.
 ///
 /// Unconditional store (a NULL `tidptr` disarms), no user-pointer validation —
 /// Linux validates nothing here because the exit-time write is a best-effort

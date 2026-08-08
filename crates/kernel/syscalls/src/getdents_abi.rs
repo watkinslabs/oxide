@@ -1,7 +1,7 @@
-// `getdents(2)`/`getdents64(2)` record ABI + fill accounting — Linux
-// `fs/readdir.c` (`filldir`, `filldir64`, `verify_dirent_name`,
-// `SYSCALL_DEFINE3(getdents)`, `SYSCALL_DEFINE3(getdents64)`) and
-// `include/linux/dirent.h` (v7.2.0-rc4).
+// `getdents(2)`/`getdents64(2)` record ABI + fill accounting — Linux's
+// `filldir`, `filldir64`, `verify_dirent_name`,
+// `SYSCALL_DEFINE3(getdents)`, `SYSCALL_DEFINE3(getdents64)`, and the
+// `linux_dirent`/`linux_dirent64` wire layouts.
 //
 // Deliberately NOT `#![cfg(target_os = "oxide-kernel")]`: slot file
 // `217_getdents64.rs` is kernel-only, so the record layout, the reclen
@@ -20,16 +20,16 @@ use syscall::errno::Errno;
 #[cfg(test)]
 mod tests;
 
-/// Linux `PATH_MAX` (`include/uapi/linux/limits.h`) — `verify_dirent_name`
+/// Linux `PATH_MAX` — `verify_dirent_name`
 /// rejects a name at or above this length as filesystem corruption.
 pub const PATH_MAX: usize = 4096;
 
-/// `linux_dirent` (`fs/readdir.c`): `d_ino`@0 (unsigned long), `d_off`@8
+/// `linux_dirent`: `d_ino`@0 (unsigned long), `d_off`@8
 /// (unsigned long), `d_reclen`@16 (unsigned short), `d_name`@18. `d_type` has
 /// NO field: it is smuggled into the record's LAST byte (`d_reclen - 1`).
 pub const DIRENT_NAME_OFF: usize = 18;
 
-/// `linux_dirent64` (`include/linux/dirent.h`): `d_ino`@0 (u64), `d_off`@8
+/// `linux_dirent64`: `d_ino`@0 (u64), `d_off`@8
 /// (s64), `d_reclen`@16 (unsigned short), `d_type`@18 (unsigned char),
 /// `d_name`@19.
 pub const DIRENT64_NAME_OFF: usize = 19;
@@ -87,7 +87,7 @@ impl DirentLayout {
     }
 }
 
-/// Linux `verify_dirent_name` (`fs/readdir.c`): a directory entry whose name is
+/// Linux `verify_dirent_name`: a directory entry whose name is
 /// empty, at least `PATH_MAX` long, or contains `/` is filesystem corruption
 /// that would confuse every caller of `readdir(3)`; the walk stops with EIO
 /// rather than handing the name out. # C: O(name.len())

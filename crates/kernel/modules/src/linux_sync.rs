@@ -22,14 +22,13 @@ const WRITER: i32 = -1;
 const COMPLETE_ALL: u32 = u32::MAX;
 const TASK_WAKE: u32 = 1;
 const LINUX_EINTR: i32 = 4;
-/// Linux `ERESTARTSYS` (`include/linux/errno.h:12`). `mutex_lock_interruptible`
-/// (`kernel/locking/mutex.c:713-714`) and `down_interruptible`
-/// (`kernel/locking/semaphore.c:307`) really do report `-EINTR`, but
-/// `prepare_to_wait_event` (`kernel/sched/wait.c:309`) and
-/// `wait_for_completion_interruptible` (`kernel/sched/completion.c:93-94`)
+/// Linux `ERESTARTSYS`. `mutex_lock_interruptible`
+/// and `down_interruptible` really do report `-EINTR`, but
+/// `prepare_to_wait_event` and
+/// `wait_for_completion_interruptible`
 /// report this, and a module that sees EINTR from them loses its restart.
 const LINUX_ERESTARTSYS: i32 = 512;
-/// Linux `TASK_INTERRUPTIBLE` (`include/linux/sched.h`).
+/// Linux `TASK_INTERRUPTIBLE`.
 const LINUX_TASK_INTERRUPTIBLE: i32 = 0x0001;
 /// Linux `TASK_WAKEKILL`; `TASK_KILLABLE` is this OR'd with
 /// `TASK_UNINTERRUPTIBLE`.
@@ -401,9 +400,8 @@ fn completion_wait_common(c: *mut LinuxCompletion, interruptible: bool) -> i32 {
     loop {
         let gate = cell.gate.lock();
         if completion_take(c) { drop(gate); return 0; }
-        // `do_wait_for_common` sets `timeout = -ERESTARTSYS`
-        // (`kernel/sched/completion.c:93-94`), returned through
-        // `wait_for_completion_interruptible` (`completion.c:223`).
+        // Linux's completion wait sets `timeout = -ERESTARTSYS`,
+        // returned through `wait_for_completion_interruptible`.
         if interruptible && signal_pending() { drop(gate); return -LINUX_ERESTARTSYS; }
         cell.park_locked();
         drop(gate);

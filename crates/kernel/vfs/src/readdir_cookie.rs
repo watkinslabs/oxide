@@ -1,4 +1,4 @@
-// Stable readdir cookies for the synthetic filesystems (Linux fs/kernfs/dir.c).
+// Stable readdir cookies for the synthetic filesystems (mirrors kernfs).
 //
 // An ORDINAL cursor ("I emitted 7 entries, resume at 7") is not a `d_off`
 // cookie. `getdents` is paginated, so a create/unlink between two calls shifts

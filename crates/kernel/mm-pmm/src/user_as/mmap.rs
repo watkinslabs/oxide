@@ -60,7 +60,7 @@ pub fn glue_mmap(
     let want_no_replace = flags & MAP_FIXED_NOREPLACE != 0;
     let hint = mmap_address_hint(addr, len_aligned as u64, flags)?;
     let requested_prot = prot_from_linux(prot);
-    // Linux: MAP_STACK is a NO-OP hint (mman.h: "provided for
+    // Linux: MAP_STACK is a NO-OP hint (mmap UAPI: "provided for
     // compatibility"), NOT an alias for MAP_GROWSDOWN — treating it as
     // GROWSDOWN armed the 8 MiB auto-extend under every pthread stack, so a
     // stray fault in a hole below one silently extended the stack over the

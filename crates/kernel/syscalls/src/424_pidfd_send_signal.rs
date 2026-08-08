@@ -82,7 +82,7 @@ fn resolve_pidfd(cur: &sched::Task, fd: i32) -> Result<(Arc<sched::Task>, Scope)
         return Err(-(Errno::Ebadf.as_i32() as i64));
     };
     let Some(task) = identity.task() else { return Err(-(Errno::Esrch.as_i32() as i64)) };
-    // `PIDFD_THREAD` is `O_EXCL` on the pidfd (`include/uapi/linux/pidfd.h`).
+    // `PIDFD_THREAD` is `O_EXCL` on the pidfd.
     let scope = if file.flags().contains(vfs::OpenFlags::O_EXCL) { Scope::Thread }
                 else { Scope::ThreadGroup };
     Ok((task, scope))

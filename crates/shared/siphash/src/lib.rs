@@ -1,5 +1,5 @@
-// SipHash-2-4, the keyed short-input PRF. Port of Linux `lib/siphash.c` +
-// `include/linux/siphash.h` (Jason A. Donenfeld), byte-for-byte compatible:
+// SipHash-2-4, the keyed short-input PRF. Port of Linux's kernel siphash
+// implementation (Jason A. Donenfeld), byte-for-byte compatible:
 // the same key and input produce the same 64-bit output as the kernel's.
 //
 // Module manifest:

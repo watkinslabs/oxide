@@ -1,7 +1,7 @@
 // Dentry flag constants. Numeric values live here so `dentry.rs` stays focused
 // on object state and lifecycle logic.
 
-/// `d_flags` bits (Linux `include/linux/dcache.h` subset).
+/// `d_flags` bits (Linux `DCACHE_*` subset).
 pub const D_ROOT:       u32 = 0x0001; // this dentry is a superblock root
 pub const D_NEGATIVE:   u32 = 0x0002; // d_inode == None
 pub const D_HASHED:     u32 = 0x0004; // present in the global dentry_hashtable
@@ -74,7 +74,7 @@ pub const D_OP_MASK: u32 = D_OP_HASH | D_OP_COMPARE | D_OP_REVALIDATE | D_OP_DEL
 // inode is associated (`build` / `set_inode`). Linux keeps these so the hot
 // path (`d_is_dir` in the walker, `d_is_symlink` before a symlink follow)
 // branches on the dentry WITHOUT read-locking + dereferencing `d_inode`.
-// Layout mirrors Linux `include/linux/dcache.h`: the type occupies bits 20..22
+// Layout mirrors Linux `DCACHE_ENTRY_TYPE`: the type occupies bits 20..22
 // (`7 << 20`), `MISS == 0` so a negative dentry's type field is naturally clear.
 // ---------------------------------------------------------------------------
 /// Mask selecting the cached-type field (Linux `DCACHE_ENTRY_TYPE`).

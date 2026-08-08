@@ -10,17 +10,17 @@ pub struct SigInfo {
     pub pid:   u32, // si_pid
     pub uid:   u32, // si_uid
     pub value: u64, // sigval_t (sigqueue(2) value.sival_int|sival_ptr)
-    /// `_sigsys` union arm (`force_sig_seccomp`, `kernel/signal.c`) — `Some`
+    /// `_sigsys` union arm (`force_sig_seccomp`) — `Some`
     /// only for a seccomp-raised SIGSYS. siginfo_t OVERLAYS it on the same
     /// `_sifields` bytes `pid`/`uid`/`value` use, so the delivery path must
     /// pick one arm; `hal::write_siginfo` does.
     pub sys: Option<hal::Sigsys>,
-    /// `_sigfault` union arm (`force_sig_fault`, `kernel/signal.c`) — `Some`
+    /// `_sigfault` union arm (`force_sig_fault`) — `Some`
     /// for every synchronous fault signal. Carries si_addr / si_addr_lsb, which
     /// OVERLAY `pid`/`uid`/`value` in `siginfo_t`, so the delivery path and
     /// `copy_siginfo_to_user` must pick this arm when it is present.
     pub fault: Option<hal::SigFault>,
-    /// `_sigpoll` union arm (`send_sigio_to_task`, `fs/fcntl.c`) — `Some` for an
+    /// `_sigpoll` union arm (`send_sigio_to_task`) — `Some` for an
     /// `O_ASYNC`/`F_SETSIG` readiness signal. Carries si_band / si_fd, which
     /// OVERLAY `pid`/`uid`/`value`, so the delivery path must pick this arm when
     /// it is present.

@@ -1,6 +1,5 @@
 // Readiness predicates for a pty pair — Linux `n_tty_poll`
-// (`drivers/tty/n_tty.c:2419-2458`) and `pty_write_room`
-// (`drivers/tty/pty.c:126-131`).
+// and `pty_write_room`.
 //
 // They live in `tty`, not in the devpts VFS shim, for two reasons: the tty is
 // the source of truth for its own state (`28§5`), and
@@ -11,7 +10,7 @@
 use super::pair::Pair;
 
 impl Pair {
-    /// Linux `n_tty_poll` (`drivers/tty/n_tty.c:2419-2458`) for the MASTER
+    /// Linux `n_tty_poll` for the MASTER
     /// half of the pair: `EPOLLIN` from `input_available_p`, `EPOLLOUT` while
     /// `tty_write_room(tty) > 0`. `tty_chars_in_buffer` is 0 for a pty (the
     /// pty driver has no `chars_in_buffer` op), so the `< WAKEUP_CHARS` arm is
@@ -29,8 +28,8 @@ impl Pair {
 
     /// `n_tty_poll` for the SLAVE half. `EPOLLHUP` mirrors the
     /// `test_bit(TTY_OTHER_CLOSED, &tty->flags)` arm, which `pty_close` sets on
-    /// the link when the master's last descriptor goes away
-    /// (`drivers/tty/pty.c:68`) — the end-of-session signal every terminal
+    /// the link when the master's last descriptor goes away —
+    /// the end-of-session signal every terminal
     /// event loop watches for.
     /// # C: O(1) raw, O(N) queued bytes under ICANON
     pub fn slave_poll_mask(&self) -> u32 {
@@ -41,10 +40,10 @@ impl Pair {
         mask
     }
 
-    /// Linux `pty_write_room` (`drivers/tty/pty.c:126-131`) for the MASTER
+    /// Linux `pty_write_room` for the MASTER
     /// half: bytes the master may still push at the slave, i.e. free space in
     /// the peer's buffer. `n_tty_poll` reports `EPOLLOUT` only while this is
-    /// non-zero (`drivers/tty/n_tty.c:2452-2455`). # C: O(1)
+    /// non-zero. # C: O(1)
     pub fn master_write_room(&self) -> usize { self.m_to_s.space() }
 
     /// `pty_write_room` for the SLAVE half. Linux returns 0 outright while

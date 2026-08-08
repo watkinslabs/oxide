@@ -1,4 +1,4 @@
-// Linux `SYSCALL_DEFINE3(getresuid)` / `getresgid` (`kernel/sys.c`).
+// Linux's `getresuid`/`getresgid` syscalls.
 //
 // Three independent `put_user`s in r, e, s order, stopping at the FIRST
 // failure — a NULL pointer is a fault like any other unwritable address, so

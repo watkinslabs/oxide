@@ -1,7 +1,7 @@
-//! `init_special_inode` (Linux fs/inode.c) — bind the op set by S_IFMT.
+//! `init_special_inode` — bind the op set by S_IFMT.
 //! S_IFCHR/S_IFBLK get a device node (rdev set, def_chr/blk dispatch),
 //! S_IFIFO a fifo, S_IFSOCK a socket inode; rdev is ignored for fifo/sock,
-//! a socket node cannot be opened by path (ENXIO, Linux `sock_no_open`), and
+//! a socket node cannot be opened by path (ENXIO), and
 //! a fifo/socket node is not directly readable as a file (the pipe/socket
 //! f_op is bound by the pipe/socket subsystem at open, not the bare inode).
 

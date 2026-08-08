@@ -42,7 +42,7 @@ Not supplied by this handoff, and therefore owned by the kernel:
 
 ## 4 EDK2 / U-Boot (aarch64)
 
-Kernel is a PE32+ arm64 `Image` (64-byte Linux Image header, `Documentation/arm64/booting.rst`) wrapping the kernel ELF's loadable image, with an EFI stub entry.
+Kernel is a PE32+ arm64 `Image` (64-byte Linux Image header, per the Linux arm64 boot protocol) wrapping the kernel ELF's loadable image, with an EFI stub entry.
 
 UEFI path (the one CI boots): OVMF → GRUB `arm64-efi` → `linux /boot/oxide-aarch64.Image`. The stub, still in Boot Services:
 - Reads the cmdline from the loaded-image protocol's UCS-2 `LoadOptions`. This firmware publishes no FDT, so there is no `/chosen/bootargs` to read.

@@ -1,6 +1,6 @@
-//! Linux `ksys_msgsnd` / `do_msgsnd` (`ipc/msg.c`).
+//! `msgsnd`: validate, copy the payload in, enqueue or block.
 //!
-//! Linux's `pipelined_send` hands the message straight to a parked receiver
+//! Linux's pipelined-send path hands the message straight to a parked receiver
 //! whose `r_msgtype` matches and whose `r_maxsize` fits. Here the message is
 //! always appended and every parked receiver is woken to re-run `find_msg`
 //! under the queue lock, which reaches the same observable end state (the
@@ -77,7 +77,7 @@ pub fn msgsnd(ns: NamespaceId, msqid: i32, uptr: u64, msgsz: u64, msgflg: i32, c
         // SAFETY: the park armed above is published and `state` is dropped, satisfying `yield_and_classify`'s contract that no waker-visible lock is held across the yield.
         if unsafe { block::yield_and_classify(NO_DEADLINE) } == Wake::Signal {
                     block::unpublish_park(&q.senders);
-                    // Linux `ipc/msg.c:930`: `-ERESTARTNOHAND`, NOT `-EINTR`.
+                    // A signal waking a blocked msgsnd yields `-ERESTARTNOHAND`, NOT `-EINTR`.
                     // With no user handler frame the syscall RESTARTS; only a
                     // delivered handler turns it into EINTR. The sentinel is
                     // not an errno, so it cannot travel through `Errno` — it

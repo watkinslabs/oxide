@@ -1,5 +1,5 @@
-// ext4 `i_op->rename` — Linux `fs/ext4/namei.c` `ext4_rename2` →
-// `ext4_rename` / `ext4_cross_rename`. Split out of `special.rs` per `08§7`.
+// ext4 `i_op->rename` — same-dir and cross-dir rename, plus the RENAME_EXCHANGE
+// and RENAME_WHITEOUT variants. Split out of `special.rs` per `08§7`.
 //
 // What lives here that did not exist before: the ENOTEMPTY gate on a
 // directory destination (without it a rename over a populated directory ran

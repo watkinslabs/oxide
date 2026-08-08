@@ -1,5 +1,5 @@
-// ext4 group descriptor table parser per Linux fs/ext4/ext4.h
-// `ext4_group_desc`. The GDT lives in the block immediately
+// ext4 group descriptor table parser (on-disk `ext4_group_desc` layout).
+// The GDT lives in the block immediately
 // following the superblock (block 1 for 1 KiB-block FS, block
 // 1 still for 4 KiB FS where superblock + padding share block 0).
 //

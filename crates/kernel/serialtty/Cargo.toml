@@ -1,5 +1,5 @@
-# Serial tty driver (T6 of tty-rebuild-plan). The `ttyS0` `tty_driver`
-# (Linux `drivers/tty/serial/serial_core.c`): a `TtyDriver` whose output
+# Serial tty driver (T6 of tty-rebuild-plan). Linux's `ttyS0` `tty_driver`
+# shape (serial_core layer): a `TtyDriver` whose output
 # goes to the UART (`drv_serial::emit`). The console crate owns the one live
 # UART RX registration and feeds this driver through its flip-buffer worker.
 #

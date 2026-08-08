@@ -1,5 +1,5 @@
 // 471 rseq_slice_yield — one syscall, one file (docs/53 §0).
-// Linux `kernel/rseq.c:812`.
+// Linux's `sys_rseq_slice_yield`.
 #![cfg(target_os = "oxide-kernel")]
 
 use core::sync::atomic::Ordering;

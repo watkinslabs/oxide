@@ -1,5 +1,5 @@
-//! [D20]: `pivot_root(2)` validation, faithful to Linux
-//! `SYSCALL_DEFINE2(pivot_root)` (`fs/namespace.c`). The safety rejections that
+//! [D20]: `pivot_root(2)` validation, faithful to the
+//! `pivot_root` syscall entry point. The safety rejections that
 //! were missing (all -EINVAL):
 //!   * the new_root mount must not be MNT_LOCKED
 //!     (`new_mnt->mnt.mnt_flags & MNT_LOCKED`);

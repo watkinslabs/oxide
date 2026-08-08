@@ -2,20 +2,20 @@
 
 FROZEN 2026-05-09. Dep:`01`,`02`,`07`,`13`,`15`,`16`,`19`,`35`,`45`,`48`. Provides:`/dev/dri/card0` (master),`/dev/dri/renderD128` (render),`48` (fbdev backend),`49` (fbcon backend).
 
-Full Linux DRM/KMS UAPI per `linux/include/uapi/drm/drm.h` + `drm_mode.h` + `drm_fourcc.h` + per-driver headers. No deferrals.
+Full Linux DRM/KMS UAPI (core ioctls + modesetting + fourcc formats + per-driver extensions). No deferrals.
 
 ## 1 Purpose
 
-Linux DRM/KMS UAPI per `linux/include/uapi/drm/drm.h` + `drm_mode.h`. Master node `/dev/dri/card0` for modesetting; render node `/dev/dri/renderD128` for buffer alloc + sync without modeset privileges. Backed by `45` (virtio-gpu) on QEMU virt; future backends (i915 / amdgpu / nouveau) plug into the same DRM core via the `Driver` trait.
+Linux DRM/KMS UAPI (core ioctls + modesetting). Master node `/dev/dri/card0` for modesetting; render node `/dev/dri/renderD128` for buffer alloc + sync without modeset privileges. Backed by `45` (virtio-gpu) on QEMU virt; future backends (i915 / amdgpu / nouveau) plug into the same DRM core via the `Driver` trait.
 
 ## 2 Invariants (frozen)
 
 1. `/dev/dri/card0` ino = `0x70000000`. `/dev/dri/renderD128` ino = `0x70000080`. devfs registers both at boot.
-2. DRM ioctl numbers are stable per `drm.h` — driver must NOT renumber.
+2. DRM ioctl numbers are stable per the core DRM UAPI — driver must NOT renumber.
 3. Master/render split per Linux DRM 4.x: card-node ioctls require `DRM_AUTH` + master rights for modesetting; render-node accepts `DRM_RENDER_ALLOW`-flagged ioctls without master.
 4. GEM dumb-buffer is the universal buffer surface; per-driver buffer objects (i915 GTT, amdgpu BO, virtio-gpu blob) coexist via the `DrmDriver` trait — each driver crate owns its allocator, exports via PRIME / `RESOURCE_HANDLE_TO_FD`.
 5. Atomic modesetting (`DRM_IOCTL_MODE_ATOMIC`) is the modesetting path; legacy `MODE_SETCRTC` / `MODE_PAGE_FLIP` accepted but route through atomic internally.
-6. Format modifiers per `linux/include/uapi/drm/drm_fourcc.h` advertised per-plane via `MODE_GETPLANE.format_modifiers`; per-driver advertise their supported set (§20).
+6. Format modifiers per the Linux `drm_fourcc` UAPI, advertised per-plane via `MODE_GETPLANE.format_modifiers`; per-driver advertise their supported set (§20).
 7. Sync objects + fence FDs per §19; `OUT_FENCE_PTR` on atomic commits returns a fence fd that signals on hardware completion.
 8. Hot-plug per §21; `DRM_EVENT_HOTPLUG` posts to every fd on `/dev/dri/card0` when `45` notifies a connector state change.
 
@@ -48,7 +48,7 @@ Card-node-only (require master): `MODE_SETCRTC`, `MODE_PAGE_FLIP`, `MODE_ATOMIC`
 
 Render-node-allowed: `VERSION`, `GET_CAP`, `MODE_GETRESOURCES`, `MODE_GETCONNECTOR`, `MODE_GETENCODER`, `MODE_GETCRTC`, `MODE_GETPLANE`, `MODE_CREATE_DUMB`, `MODE_MAP_DUMB`, `MODE_DESTROY_DUMB`, `MODE_ADDFB`, `MODE_ADDFB2`, `MODE_RMFB`, `MODE_GETFB`, `PRIME_HANDLE_TO_FD`, `PRIME_FD_TO_HANDLE`.
 
-## 5 Core ioctls (per `drm.h`)
+## 5 Core ioctls (per the core DRM UAPI)
 
 | Name | Code | Behavior |
 |---|---|---|
@@ -63,7 +63,7 @@ Render-node-allowed: `VERSION`, `GET_CAP`, `MODE_GETRESOURCES`, `MODE_GETCONNECT
 | `DRM_IOCTL_SET_MASTER` | `0x0000641e` | become master (noop ok, single-master) |
 | `DRM_IOCTL_DROP_MASTER` | `0x0000641f` | drop master (noop) |
 
-## 6 Mode ioctls (per `drm_mode.h`)
+## 6 Mode ioctls (per the DRM/KMS modesetting UAPI)
 
 | Name | Code | Behavior |
 |---|---|---|
@@ -223,7 +223,7 @@ Connector exports the EDID block as a blob property:
 
 ## 19 Sync objects + fences
 
-`DRM_CAP_SYNCOBJ` and `DRM_CAP_SYNCOBJ_TIMELINE` reported as 1. The drm_syncobj API per `linux/include/uapi/drm/drm.h`:
+`DRM_CAP_SYNCOBJ` and `DRM_CAP_SYNCOBJ_TIMELINE` reported as 1. The drm_syncobj API, per the Linux DRM UAPI:
 
 | ioctl | Code | Behavior |
 |---|---|---|
@@ -243,7 +243,7 @@ Atomic commits accept `OUT_FENCE_PTR` per-CRTC: kernel returns a fence fd that s
 
 ## 20 Format modifiers
 
-`DRM_CAP_ADDFB2_MODIFIERS` reported as 1. `MODE_ADDFB2` accepts a per-plane `modifier[4]` array. Modifiers per `linux/include/uapi/drm/drm_fourcc.h`:
+`DRM_CAP_ADDFB2_MODIFIERS` reported as 1. `MODE_ADDFB2` accepts a per-plane `modifier[4]` array. Modifiers per the Linux `drm_fourcc` UAPI:
 
 | Modifier name | Value | Use |
 |---|---|---|

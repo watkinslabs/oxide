@@ -4,7 +4,7 @@ pub const DRM_MAJOR: u32 = 226;
 pub const DRM_RENDER_MINOR_BASE: u32 = 128;
 pub const DRM_NODE_MODE: u16 = 0o666;
 
-// Core ioctl numbers (per linux/include/uapi/drm/drm.h)
+// Core ioctl numbers, per the Linux DRM UAPI.
 pub const DRM_IOCTL_VERSION:        u64 = 0xc0406400;
 pub const DRM_IOCTL_GET_UNIQUE:     u64 = 0xc0106401;
 pub const DRM_IOCTL_GET_MAGIC:      u64 = 0x80046402;
@@ -23,7 +23,7 @@ pub const DRM_IOCTL_AUTH_MAGIC:     u64 = 0x40046411;
 pub const DRM_IOCTL_SET_MASTER:     u64 = 0x0000641e;
 pub const DRM_IOCTL_DROP_MASTER:    u64 = 0x0000641f;
 
-// virtio-gpu driver-specific ioctls (DRM_COMMAND_BASE=0x40; linux/virtio_gpu.h).
+// virtio-gpu driver-specific ioctls (DRM_COMMAND_BASE=0x40; the virtio-gpu driver-specific UAPI).
 // Mesa's `virtio_gpu` gallium driver probes these right after DRM_IOCTL_VERSION
 // reports driver name "virtio_gpu"; without them it can't decide 3D support and
 // spins, so mutter never reaches KMS. We answer the 2D/no-virgl path
@@ -33,11 +33,11 @@ pub const DRM_IOCTL_DROP_MASTER:    u64 = 0x0000641f;
 pub const DRM_IOCTL_VIRTGPU_GETPARAM: u64 = 0xc0106443; // _IOWR('d',0x43,drm_virtgpu_getparam[16])
 pub const DRM_IOCTL_VIRTGPU_GET_CAPS: u64 = 0xc0186449; // _IOWR('d',0x49,drm_virtgpu_get_caps[24])
 
-// VIRTGPU_GETPARAM param ids (linux/virtio_gpu.h).
+// VIRTGPU_GETPARAM param ids (the virtio-gpu driver-specific UAPI).
 pub const VIRTGPU_PARAM_3D_FEATURES:       u64 = 1;
 pub const VIRTGPU_PARAM_CAPSET_QUERY_FIX:  u64 = 2;
 
-// Mode ioctls (drm_mode.h)
+// Mode ioctls (the DRM/KMS modesetting UAPI)
 pub const DRM_IOCTL_MODE_GETRESOURCES:      u64 = 0xc04064a0;
 pub const DRM_IOCTL_MODE_GETCRTC:           u64 = 0xc06864a1;
 pub const DRM_IOCTL_MODE_SETCRTC:           u64 = 0xc06864a2;
@@ -63,7 +63,7 @@ pub const DRM_IOCTL_MODE_MAP_DUMB:          u64 = 0xc01064b3;
 pub const DRM_IOCTL_MODE_DESTROY_DUMB:      u64 = 0xc00464b4;
 pub const DRM_IOCTL_MODE_GETPLANERESOURCES: u64 = 0xc01064b5;
 pub const DRM_IOCTL_MODE_GETPLANE:          u64 = 0xc02064b6;
-// `drm_mode_set_plane` (drm_mode.h) is twelve 32-bit fields = 48 (0x30) bytes.
+// `drm_mode_set_plane` (DRM/KMS modesetting UAPI) is twelve 32-bit fields = 48 (0x30) bytes.
 // The src_* rectangle is 16.16 fixed point but each field is still `__u32`, so
 // widening them to u64 produced a 64-byte struct and a 0x40 size field that
 // libdrm's SETPLANE request number never matched: the universal-plane path fell
@@ -77,7 +77,7 @@ pub const DRM_IOCTL_MODE_OBJ_SETPROPERTY:   u64 = 0xc01864ba;
 // CURSOR2 is nr 0xBB (drm_mode_cursor2, 36 bytes) — the earlier 0xBF byte was a
 // transcription error (0xBF is SYNCOBJ_CREATE's nr) and never matched libdrm.
 pub const DRM_IOCTL_MODE_CURSOR2:           u64 = 0xc02464bb;
-// `struct drm_mode_atomic` (drm_mode.h) is flags+count_objs (2×u32) + 6×u64 =
+// `struct drm_mode_atomic` (DRM/KMS modesetting UAPI) is flags+count_objs (2×u32) + 6×u64 =
 // 56 (0x38) bytes, so DRM_IOWR(0xBC, ..) encodes 0x38, not 0x40. The former
 // 0x40 size never matched libdrm's request number, so every drmModeAtomicCommit
 // fell through the card-node dispatch to ENOTTY ("Inappropriate ioctl for
@@ -139,7 +139,7 @@ pub const DRM_MODE_OBJECT_BLOB:      u32 = 0xbbbbbbbb;
 pub const DRM_MODE_OBJECT_PLANE:     u32 = 0xeeeeeeee;
 pub const DRM_MODE_OBJECT_ANY:       u32 = 0;
 
-// Property flag bits (`DRM_MODE_PROP_*`, drm_mode.h). The legacy type bits are
+// Property flag bits (`DRM_MODE_PROP_*`, DRM/KMS modesetting UAPI). The legacy type bits are
 // a 1-bit-each mask; the extended types are `DRM_MODE_PROP_TYPE(n) = n << 6`.
 // `ATOMIC` marks a property hidden from clients that have not set
 // `DRM_CLIENT_CAP_ATOMIC` (`drm_mode_object_get_properties`).
@@ -170,7 +170,7 @@ pub const DRM_MODE_ATOMIC_TEST_ONLY:     u32 = 0x0100;
 pub const DRM_MODE_ATOMIC_NONBLOCK:      u32 = 0x0200;
 pub const DRM_MODE_ATOMIC_ALLOW_MODESET: u32 = 0x0400;
 
-// drm_event types (per linux/include/uapi/drm/drm.h)
+// drm_event types, per the Linux DRM UAPI.
 pub const DRM_EVENT_VBLANK:        u32 = 0x01;
 pub const DRM_EVENT_FLIP_COMPLETE: u32 = 0x02;
 pub const DRM_EVENT_CRTC_SEQUENCE: u32 = 0x03;
@@ -215,7 +215,7 @@ impl Default for DrmModeModeinfo {
     }
 }
 
-// `struct drm_mode_crtc` (drm_mode.h) — 0xc06864a1, 104 bytes.
+// `struct drm_mode_crtc` (DRM/KMS modesetting UAPI) — 0xc06864a1, 104 bytes.
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct DrmModeCrtc {
@@ -237,7 +237,7 @@ impl Default for DrmModeCrtc {
     }
 }
 
-// `struct drm_mode_get_encoder` (drm_mode.h) — 0xc01464a6, 20 bytes.
+// `struct drm_mode_get_encoder` (DRM/KMS modesetting UAPI) — 0xc01464a6, 20 bytes.
 #[repr(C)]
 #[derive(Copy, Clone, Default, Debug)]
 pub struct DrmModeGetEncoder {
@@ -248,7 +248,7 @@ pub struct DrmModeGetEncoder {
     pub possible_clones: u32,
 }
 
-// `struct drm_mode_get_connector` (drm_mode.h) — 0xc05064a7, 80 bytes.
+// `struct drm_mode_get_connector` (DRM/KMS modesetting UAPI) — 0xc05064a7, 80 bytes.
 #[repr(C)]
 #[derive(Copy, Clone, Default, Debug)]
 pub struct DrmModeGetConnector {
@@ -270,7 +270,7 @@ pub struct DrmModeGetConnector {
     pub pad:             u32,
 }
 
-// `struct drm_mode_get_plane_res` (drm_mode.h) — 0xc00864b5, 16 bytes.
+// `struct drm_mode_get_plane_res` (DRM/KMS modesetting UAPI) — 0xc00864b5, 16 bytes.
 #[repr(C)]
 #[derive(Copy, Clone, Default, Debug)]
 pub struct DrmModeGetPlaneRes {
@@ -279,7 +279,7 @@ pub struct DrmModeGetPlaneRes {
     pub pad:          u32,
 }
 
-// `struct drm_mode_get_plane` (drm_mode.h) — 0xc02064b6, 32 bytes.
+// `struct drm_mode_get_plane` (DRM/KMS modesetting UAPI) — 0xc02064b6, 32 bytes.
 #[repr(C)]
 #[derive(Copy, Clone, Default, Debug)]
 pub struct DrmModeGetPlane {
@@ -292,21 +292,21 @@ pub struct DrmModeGetPlane {
     pub format_type_ptr:    u64,
 }
 
-// drm_mode connection status (drm_mode.h)
+// drm_mode connection status (DRM/KMS modesetting UAPI)
 pub const DRM_MODE_CONNECTED:         u32 = 1;
 pub const DRM_MODE_DISCONNECTED:      u32 = 2;
 pub const DRM_MODE_UNKNOWNCONNECTION: u32 = 3;
 
-// drm_mode connector types (drm_mode.h)
+// drm_mode connector types (DRM/KMS modesetting UAPI)
 pub const DRM_MODE_CONNECTOR_VIRTUAL: u32 = 15;
 
-// drm_mode encoder types (drm_mode.h)
+// drm_mode encoder types (DRM/KMS modesetting UAPI)
 pub const DRM_MODE_ENCODER_VIRTUAL: u32 = 5;
 
-// drm_mode subpixel order (drm_mode.h)
+// drm_mode subpixel order (DRM/KMS modesetting UAPI)
 pub const DRM_MODE_SUBPIXEL_UNKNOWN: u32 = 1;
 
-// drm_mode mode type / flags (drm_mode.h)
+// drm_mode mode type / flags (DRM/KMS modesetting UAPI)
 pub const DRM_MODE_TYPE_PREFERRED: u32 = 1 << 3;
 pub const DRM_MODE_TYPE_DRIVER:    u32 = 1 << 6;
 pub const DRM_MODE_FLAG_PHSYNC:    u32 = 1 << 0;
@@ -315,7 +315,7 @@ pub const DRM_MODE_FLAG_PVSYNC:    u32 = 1 << 2;
 pub const DRM_MODE_FLAG_NVSYNC:    u32 = 1 << 3;
 pub const DRM_MODE_FLAG_INTERLACE: u32 = 1 << 4;
 
-// fourcc pixel formats (drm_fourcc.h)
+// fourcc pixel formats (DRM fourcc pixel-format UAPI)
 pub const DRM_FORMAT_XRGB8888: u32 = 0x3432_5258; // 'XR24'
 pub const DRM_FORMAT_ARGB8888: u32 = 0x3432_5241; // 'AR24'
 
@@ -336,11 +336,11 @@ pub struct DrmEventVblank {
 
 // ---------------------------------------------------------------------------
 // Additional KMS ioctl structs (read/written wholesale via repr(C) — no inline
-// field offsets). Layouts copied EXACTLY from linux/include/uapi/drm/drm_mode.h.
+// field offsets). Layouts match the Linux DRM/KMS UAPI byte-for-byte.
 // ---------------------------------------------------------------------------
 
 /// `struct drm_mode_set_plane` — 0xc03064b7, 48 bytes. src_* are 16.16 fixed
-/// point but each is a `__u32`. Field order follows drm_mode.h exactly: the
+/// point but each is a `__u32`. Field order follows the DRM/KMS modesetting UAPI exactly: the
 /// source rectangle is declared x, y, **h, w** (height before width).
 #[repr(C)]
 #[derive(Copy, Clone, Default, Debug)]
@@ -464,15 +464,15 @@ pub struct DrmModeDestroyBlob {
     pub blob_id: u32,
 }
 
-// SETPLANE flags (drm_mode.h).
+// SETPLANE flags (DRM/KMS modesetting UAPI).
 pub const DRM_MODE_PRESENT_TOP_FIELD:    u32 = 1 << 0;
 pub const DRM_MODE_PRESENT_BOTTOM_FIELD: u32 = 1 << 1;
 
-// drm_mode_cursor `flags` (drm_mode.h): which cursor op the ioctl performs.
+// drm_mode_cursor `flags` (DRM/KMS modesetting UAPI): which cursor op the ioctl performs.
 pub const DRM_MODE_CURSOR_BO:   u32 = 1 << 0; // set the cursor image (handle)
 pub const DRM_MODE_CURSOR_MOVE: u32 = 1 << 1; // move the cursor (x,y)
 
-// Connector DPMS property values (drm_mode.h).
+// Connector DPMS property values (DRM/KMS modesetting UAPI).
 pub const DRM_MODE_DPMS_ON:      u64 = 0;
 pub const DRM_MODE_DPMS_STANDBY: u64 = 1;
 pub const DRM_MODE_DPMS_SUSPEND: u64 = 2;

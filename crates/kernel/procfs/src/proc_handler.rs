@@ -1,4 +1,4 @@
-//! Linux `proc_handler` model (`kernel/sysctl.c`): the per-leaf binding that
+//! Linux `proc_handler` model: the per-leaf binding that
 //! ties a `/proc/sys/*` file to its **live kernel variable** (the ctl_table
 //! `data`/`extra1`/`extra2`). A read FORMATS the live variable; a write PARSES
 //! + range-checks (against `extra1`/`extra2` min/max) + UPDATES the live

@@ -1,11 +1,12 @@
-// Linux xattr DECISION layer, with no user-buffer access and no storage, so the
+// xattr DECISION layer, with no user-buffer access and no storage, so the
 // hosted `cargo test` suite drives every rule here directly:
-//   * `xattr_resolve_name` (fs/xattr.c) — which namespaces have a handler.
-//   * `may_write_xattr` + `xattr_permission` (fs/xattr.c) — the permission model.
-//   * `cap_inode_setxattr` / `cap_inode_removexattr` / `cap_convert_nscap`
-//     (security/commoncap.c) — the `security.*` capability gate.
-//   * `setxattr_copy` (fs/xattr.c) — flag / name / value-size limits.
-//   * the `ERANGE` vs `E2BIG` buffer arithmetic of `do_getxattr` / `listxattr`.
+//   * name resolution — which namespaces have a handler.
+//   * write-gate + permission model — immutable/append-only inodes, and the
+//     per-namespace DAC/capability rules.
+//   * the `security.*` capability gate (file-capability blob validation and
+//     the CAP_SYS_ADMIN / CAP_SETFCAP split).
+//   * flag / name / value-size limits on set.
+//   * the `ERANGE` vs `E2BIG` buffer-fit arithmetic for get/list.
 
 extern crate alloc;
 use alloc::string::String;
@@ -15,18 +16,18 @@ use core::sync::atomic::Ordering;
 use syscall::errno::Errno;
 use vfs::{FileType, InodeRef};
 
-/// `XATTR_CREATE` / `XATTR_REPLACE` (`uapi/linux/xattr.h`).
+/// `XATTR_CREATE` / `XATTR_REPLACE` (xattr UAPI).
 pub const XATTR_CREATE:  u32 = 0x1;
 pub const XATTR_REPLACE: u32 = 0x2;
 /// Every flag bit `setxattr_copy` accepts; anything else is `EINVAL`.
 pub const XATTR_SET_FLAGS: u32 = XATTR_CREATE | XATTR_REPLACE;
 
-/// `XATTR_NAME_MAX` / `XATTR_SIZE_MAX` / `XATTR_LIST_MAX` (`uapi/linux/limits.h`).
+/// `XATTR_NAME_MAX` / `XATTR_SIZE_MAX` / `XATTR_LIST_MAX`.
 pub const XATTR_NAME_MAX: usize = 255;
 pub const XATTR_SIZE_MAX: usize = 65536;
 pub const XATTR_LIST_MAX: usize = 65536;
 
-/// Namespace prefixes (`uapi/linux/xattr.h`).
+/// Namespace prefixes (xattr UAPI).
 pub const SECURITY_PREFIX: &str = "security.";
 pub const SYSTEM_PREFIX:   &str = "system.";
 pub const TRUSTED_PREFIX:  &str = "trusted.";
@@ -38,7 +39,7 @@ pub const NAME_ACL_ACCESS:  &str = "system.posix_acl_access";
 pub const NAME_ACL_DEFAULT: &str = "system.posix_acl_default";
 
 /// `VFS_CAP_REVISION_2` / `_3` and their exact blob sizes
-/// (`uapi/linux/capability.h`): `XATTR_CAPS_SZ_2` = 4*(1+2*2), `_3` = 4*(2+2*2).
+/// (capability UAPI): `XATTR_CAPS_SZ_2` = 4*(1+2*2), `_3` = 4*(2+2*2).
 const VFS_CAP_REVISION_MASK: u32 = 0xFF00_0000;
 const VFS_CAP_REVISION_2:    u32 = 0x0200_0000;
 const VFS_CAP_REVISION_3:    u32 = 0x0300_0000;
@@ -62,7 +63,7 @@ impl XattrCred {
     /// Fully privileged (early boot has no task; Linux boots as root). # C: O(1)
     pub fn root() -> Self { Self { cred: vfs::Cred::root(), sys_admin: true, setfcap: true } }
 
-    /// `inode_owner_or_capable` (Linux `fs/inode.c`). # C: O(1)
+    /// True if the caller owns the inode or holds CAP_FOWNER. # C: O(1)
     pub fn owns(&self, inode: &InodeRef) -> bool {
         self.cred.cap_fowner || self.cred.uid == inode.uid().unwrap_or(0)
     }
@@ -136,9 +137,9 @@ pub fn resolve_name(name: &str) -> Result<(), i64> {
     Err(err(Errno::Eopnotsupp))
 }
 
-/// `path_{set,get,list,remove}xattrat` (fs/xattr.c): the `*xattrat` family
-/// accepts only `AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH`; every other bit is
-/// `EINVAL`, and the check runs BEFORE the name/value import. # C: O(1)
+/// The `*xattrat` family accepts only `AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH`;
+/// every other bit is `EINVAL`, and the check runs BEFORE the name/value
+/// import. # C: O(1)
 pub fn check_at_flags(at_flags: u32) -> Result<(), i64> {
     if at_flags & !syscall::at::AT_NOFOLLOW_EMPTY != 0 { return Err(err(Errno::Einval)); }
     Ok(())

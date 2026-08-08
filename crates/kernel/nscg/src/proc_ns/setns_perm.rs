@@ -1,16 +1,11 @@
-// `setns(2)` install-time permission ladder — the per-namespace
-// `ns_common_ops->install()` callbacks Linux runs from `validate_ns`
-// (`kernel/nsproxy.c`).
+// `setns(2)` install-time permission ladder — the per-namespace-kind
+// capability gate run before a namespace fd is actually installed on the
+// caller.
 //
-// Sources: `kernel/utsname.c:utsns_install`, `ipc/namespace.c:ipcns_install`,
-// `net/core/net_namespace.c:netns_install`, `fs/namespace.c:mntns_install`,
-// `kernel/cgroup/namespace.c:cgroupns_install`,
-// `kernel/pid_namespace.c:pidns_install`,
-// `kernel/user_namespace.c:userns_install`.
-//
-// Every one of those callbacks is a capability gate. Without them any
-// unprivileged process holding an `/proc/<pid>/ns/*` fd walks into the
-// namespace — which is the whole container boundary.
+// Every namespace kind (uts, ipc, net, mnt, cgroup, pid, user) has its own
+// gate here. Without them any unprivileged process holding an
+// `/proc/<pid>/ns/*` fd walks into the namespace — which is the whole
+// container boundary.
 
 use namespace_identity::{NamespaceKind, NamespacePin};
 use syscall::errno::Errno;

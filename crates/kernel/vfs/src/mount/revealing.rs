@@ -1,4 +1,4 @@
-//! `mount_too_revealing` (`docs/16§6`, Linux `fs/namespace.c`
+//! `mount_too_revealing` (`docs/16§6`, Linux
 //! `mount_too_revealing` / `mnt_already_visible`).
 //!
 //! `mount_capable` decides WHETHER an unprivileged user-namespace holder may

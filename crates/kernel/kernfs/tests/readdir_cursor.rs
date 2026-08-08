@@ -1,5 +1,5 @@
-//! The synthetic-filesystem readdir CURSOR (Linux fs/kernfs/dir.c
-//! `kernfs_fop_readdir`). Every pseudo filesystem built on `PseudoDir` — devfs,
+//! The synthetic-filesystem readdir CURSOR. Every pseudo filesystem built on
+//! `PseudoDir` — devfs,
 //! devpts, sysfs's static tree, procfs's registered tree, tracefs/debugfs,
 //! configfs — shares this one loop, so these are the tests for all of them.
 //!

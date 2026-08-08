@@ -1,5 +1,4 @@
-//! `mq_open(2)`'s existence / access-mode ladder — Linux `prepare_open`
-//! (`ipc/mqueue.c:861-886`) and `OPEN_FMODE` (`include/linux/fs.h`).
+//! `mq_open(2)`'s existence / access-mode ladder.
 
 use syscall::errno::Errno;
 
@@ -39,13 +38,13 @@ pub const fn open_fmode(oflag: i32) -> (bool, bool) {
     (m & 1 != 0, m & 2 != 0)
 }
 
-/// Linux `prepare_open` (`ipc/mqueue.c:861-886`), minus the DAC call the
+/// The existence/create decision, minus the DAC call the
 /// caller makes with the mask this returns.
 ///
 /// * absent + no `O_CREAT` → `ENOENT`
 /// * present + `O_CREAT|O_EXCL` → `EEXIST`
-/// * present + `O_ACCMODE == 3` → `EINVAL` (`mqueue.c:882-883`; only on the
-///   already-exists arm — Linux never runs this test when creating)
+/// * present + `O_ACCMODE == 3` → `EINVAL` (only on the
+///   already-exists arm — this test never runs when creating)
 /// # C: O(1)
 pub fn prepare_open(exists: bool, oflag: i32) -> Result<OpenAction, Errno> {
     if !exists {

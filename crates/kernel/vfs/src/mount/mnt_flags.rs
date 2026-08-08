@@ -1,4 +1,4 @@
-//! `mnt_flags` model (`docs/16§6`, Linux `include/linux/mount.h`).
+//! `mnt_flags` model (`docs/16§6`).
 //!
 //! TWO disjoint flag spaces ride a `Mount`:
 //!   * the per-mount MNT_* OPTION mask in `Mount.flags` (RDONLY/NOSUID/NODEV/
@@ -16,16 +16,16 @@
 
 use super::*;
 
-// --- Kernel-internal mnt_flags (Linux include/linux/mount.h real values). ---
+// --- Kernel-internal mnt_flags. ---
 /// Kernel-internal mount (rootfs / kern_mount); never user-visible, never
 /// auto-expired. Linux `MNT_INTERNAL`.
 pub const MNT_INTERNAL: u32 = 0x4000;
-// --- MNT_LOCK_* — the sticky "this option may never be relaxed again" bits
-// (Linux `include/linux/mount.h` real values). Stamped by `lock_mnt_tree` when a
-// mount tree is copied into a mount namespace owned by a DIFFERENT (i.e.
-// unprivileged) user namespace, and honoured by `can_change_locked_flags` on
-// every remount / mount_setattr. Once set they are NEVER cleared, which is what
-// lets `can_change_locked_flags` run lock-free (Linux's comment says so). ---
+// --- MNT_LOCK_* — the sticky "this option may never be relaxed again" bits.
+// Stamped by `lock_mnt_tree` when a mount tree is copied into a mount
+// namespace owned by a DIFFERENT (i.e. unprivileged) user namespace, and
+// honoured by `can_change_locked_flags` on every remount / mount_setattr.
+// Once set they are NEVER cleared, which is what lets
+// `can_change_locked_flags` run lock-free. ---
 /// atime policy frozen: a remount must reproduce the same `MNT_ATIME_MASK`.
 pub const MNT_LOCK_ATIME: u32 = 0x04_0000;
 /// `MNT_NOEXEC` frozen on.
@@ -75,7 +75,7 @@ pub const UMOUNT_VALID: u64 = MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOL
 pub enum AtimePolicy { Strict, Relatime, Noatime }
 
 // --- [D51/D52] MOUNT_ATTR_* — the `mount_setattr(2)`/`fsmount(2)` attribute
-// request space (`uapi/linux/mount.h`). A THIRD flag space, DISJOINT from both
+// request space (mount UAPI). A THIRD flag space, DISJOINT from both
 // the MS_* mount(2) request mask AND the per-mount MNT_* option bits:
 // `mount_attr_to_mnt` maps it into the MNT_* space at fsmount-graft (D51) and
 // `mount_setattr` (D52) time. ---
@@ -88,7 +88,7 @@ pub const MOUNT_ATTR_NOEXEC:      u64 = 0x0000_0008;
 pub const MOUNT_ATTR__ATIME:      u64 = 0x0000_0070;
 /// relatime is encoded as the ZERO value of the atime sub-field, so nothing
 /// ever matches this constant — it names the default the sub-field decodes to.
-#[allow(dead_code, reason = "complete uapi/linux/mount.h MOUNT_ATTR_* space; relatime is the zero value of the MOUNT_ATTR__ATIME sub-field and is therefore unmatchable by construction")]
+#[allow(dead_code, reason = "complete mount UAPI MOUNT_ATTR_* space; relatime is the zero value of the MOUNT_ATTR__ATIME sub-field and is therefore unmatchable by construction")]
 pub const MOUNT_ATTR_RELATIME:    u64 = 0x0000_0000;
 pub const MOUNT_ATTR_NOATIME:     u64 = 0x0000_0010;
 pub const MOUNT_ATTR_STRICTATIME: u64 = 0x0000_0020;
@@ -137,10 +137,10 @@ impl Mount {
     pub fn is_nodev(&self) -> bool { self.flags() & MNT_NODEV != 0 }
     /// Execution of binaries disallowed (`MNT_NOEXEC`). # C: O(1)
     pub fn is_noexec(&self) -> bool { self.flags() & MNT_NOEXEC != 0 }
-    /// Linux `fs/namespace.c` `mnt_may_suid`: whether `execve` of a binary on
-    /// this mount may honour its set-user-ID / set-group-ID bits AND its
-    /// `security.capability` xattr — one gate covers both, per
-    /// `security/commoncap.c` `get_file_caps`.
+    /// Whether `execve` of a binary on this mount may honour its
+    /// set-user-ID / set-group-ID bits AND its `security.capability` xattr —
+    /// one gate covers both, since a nosuid mount must not launder file
+    /// capabilities either.
     ///
     /// Linux also demands `check_mnt(real_mount(mnt))` (the mount belongs to
     /// the caller's mount namespace, so a foreign mount reached through

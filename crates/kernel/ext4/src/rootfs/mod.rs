@@ -202,7 +202,7 @@ pub struct Ext4RootfsFs;
 
 impl vfs::fs::FileSystem for Ext4RootfsFs {
     fn name(&self) -> &str { "ext4" }
-    /// EXT4_SUPER_MAGIC (linux/magic.h).
+    /// EXT4_SUPER_MAGIC (the statfs f_type value).
     fn magic(&self) -> u64 { crate::EXT4_SUPER_MAGIC as u64 }
     /// Linux ext4: block-device backed and supports idmapped mounts. # C: O(1)
     fn fs_flags(&self) -> vfs::fs::FsFlags {

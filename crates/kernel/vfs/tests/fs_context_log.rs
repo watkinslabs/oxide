@@ -1,5 +1,5 @@
-//! `fc->log` diagnostic ring (Linux `struct fc_log`, `fs/fs_context.c`
-//! `logfc`/`errorf`/`warnf`/`infof`/`invalf`). A failed mount build accumulates
+//! `fc->log` diagnostic ring (Linux `struct fc_log`, the
+//! `logfc`/`errorf`/`warnf`/`infof`/`invalf` helpers). A failed mount build accumulates
 //! human-readable messages on the context that `fsconfig`'s reader returns to
 //! userspace. Fails-before: `FsContext` had no log; a rejected param surfaced a
 //! bare errno with no diagnostic. These prove the level-tagged ring records

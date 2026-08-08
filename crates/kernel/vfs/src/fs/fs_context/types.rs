@@ -28,14 +28,11 @@ pub enum FsContextPhase {
     Failed,
 }
 
-/// `enum fs_value_type` (`include/linux/fs_context.h`) payloads. `File` mirrors
-/// `fs_value_is_file`: Linux carries BOTH `param->file` (the pinned
-/// `struct file *` from `fget_raw(aux)`) and `param->dirfd` (the fd number the
-/// caller passed). `fs_param_is_fd`/`fs_param_is_file_or_string`
-/// (`fs/fs_parser.c`) read the number; `fs/fuse/inode.c`, `fs/autofs/inode.c`,
-/// `fs/coda/inode.c`, `fs/overlayfs/params.c` and `fs/proc/root.c` read the
-/// file. Carrying only the number would force a second fd-table lookup after
-/// the caller could have closed the fd, so both travel together.
+/// `fsconfig(2)` parameter payload variants. `File` carries BOTH the pinned
+/// file reference (taken at parse time from the caller's fd) and the fd
+/// number the caller passed, because different filesystem parsers consume
+/// one or the other. Carrying only the number would force a second fd-table
+/// lookup after the caller could have closed the fd, so both travel together.
 #[derive(Clone)]
 pub enum FsValue {
     Flag,
@@ -83,8 +80,8 @@ impl FsParameter {
     pub fn flag(key: &str) -> Self { Self { key: key.to_string(), value: FsValue::Flag } }
     /// # C: O(len key+value)
     pub fn string(key: &str, value: &str) -> Self { Self { key: key.to_string(), value: FsValue::String(value.to_string()) } }
-    /// `FSCONFIG_SET_FD` (`fs/fsopen.c`): `fd` is the caller's `aux`, `file`
-    /// the reference `fget_raw(aux)` pinned for the duration of the parse.
+    /// `FSCONFIG_SET_FD`: `fd` is the caller's passed descriptor, `file`
+    /// the reference pinned for the duration of the parse.
     /// # C: O(len key)
     pub fn fd(key: &str, fd: i32, file: Arc<File>) -> Self { Self { key: key.to_string(), value: FsValue::File { fd, file } } }
     /// # C: O(len key+path)

@@ -14,14 +14,14 @@ pub(crate) const FICLONE:   u64 = 0x4004_9409;
 pub(crate) const FICLONERANGE: u64 = 0x4020_940D;
 pub(crate) const FIDEDUPERANGE: u64 = 0xC018_9436;
 pub(crate) const SIOCOUTQ:  u64 = 0x5411;
-/// Socket `f_owner` controls from `asm-generic/sockios.h`.
+/// Socket `f_owner` controls.
 pub(crate) const FIOSETOWN: u64 = 0x8901;
 pub(crate) const SIOCSPGRP: u64 = 0x8902;
 pub(crate) const FIOGETOWN: u64 = 0x8903;
 pub(crate) const SIOCGPGRP: u64 = 0x8904;
 pub(crate) const SIOCOUTQNSD: u64 = 0x894B;
 pub(crate) const SIOCATMARK: u64 = 0x8905;
-/// Linux `SIOCGSTAMP*` receive timestamp ioctls from `linux/sockios.h`.
+/// Linux `SIOCGSTAMP*` receive timestamp ioctls.
 pub(crate) const SIOCGSTAMP_OLD: u64 = 0x8906;
 pub(crate) const SIOCGSTAMPNS_OLD: u64 = 0x8907;
 pub(crate) const SIOCGSTAMP_NEW: u64 = 0x8010_8906;
@@ -95,7 +95,7 @@ pub(crate) const REMAP_FILE_CAN_SHORTEN: u32 = 2;
 pub(crate) const FILE_DEDUPE_RANGE_SAME: i32 = 0;
 pub(crate) const FILE_DEDUPE_RANGE_DIFFERS: i32 = 1;
 
-// `FS_*_FL` / `FS_XFLAG_*` and the `include/linux/fileattr.h` masks are owned
+// `FS_*_FL` / `FS_XFLAG_*` and the fileattr flag masks are owned
 // by `vfs::inode::flags` (the fileattr state they describe lives there); this
 // module re-exports rather than re-declaring, so the two can never disagree.
 // The consumer (`016_ioctl`) is kernel-gated, so a hosted build re-exports

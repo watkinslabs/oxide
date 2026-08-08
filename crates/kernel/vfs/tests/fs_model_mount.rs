@@ -15,7 +15,7 @@ use vfs::superblock::{next_anon_dev, FileSystemType, SbStatFs, SuperBlock, Super
 use vfs::{FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError,
           default_file_ops, mk_mode};
 
-const RAM_MAGIC: u64 = 0x858458f6; // ramfs (linux/magic.h)
+const RAM_MAGIC: u64 = 0x858458f6; // ramfs statfs f_type value
 
 struct RamType;
 impl FileSystemType for RamType {

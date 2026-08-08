@@ -1,8 +1,8 @@
 // B48: SIOC* network-interface ioctls. dhcpcd's bring-up flow
 // drives this surface to probe + configure eth0 before sending
-// the DHCPDISCOVER. Linux SIOC* numbers per linux/sockios.h.
+// the DHCPDISCOVER. Linux SIOC* interface ioctl numbering.
 //
-// ifreq layout (linux/if.h):
+// ifreq layout:
 //   char ifr_name[16];
 //   union {
 //       struct sockaddr  ifr_addr;     // sa_family + 14 bytes

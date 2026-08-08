@@ -1,5 +1,5 @@
-// Hosted proof of the `capget`/`capset` admission policy against Linux
-// `kernel/capability.c` + `security/commoncap.c`.
+// Hosted proof of the `capget`/`capset` admission policy against Linux's
+// own capability and commoncap logic.
 
 use super::*;
 

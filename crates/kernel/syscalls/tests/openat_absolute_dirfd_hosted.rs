@@ -1,6 +1,6 @@
 //! B1407: Linux `path_init` never looks at `dirfd` when the pathname is
 //! absolute — it jumps straight to the resolution root before `dirfd` is
-//! fetched or validated (`fs/namei.c`). `dirfd_base()`
+//! fetched or validated. `dirfd_base()`
 //! (`crates/kernel/syscalls/src/pathresolve/at.rs`) used to resolve/validate
 //! `dirfd` unconditionally, so an absolute path handed a non-directory or a
 //! closed/invalid `dirfd` wrongly returned `ENOTDIR`/`EBADF` instead of

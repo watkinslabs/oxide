@@ -1,4 +1,4 @@
-// FUSE wire protocol codec (`uapi/linux/fuse.h`) — the byte-faithful encode/
+// FUSE wire protocol codec (FUSE UAPI) — the byte-faithful encode/
 // decode of every request/reply struct the read-path daemon exchanges over the
 // `/dev/fuse` channel. All integers are LITTLE-ENDIAN on the wire (the FUSE
 // channel is host-endian; oxide targets are LE), packed with NO padding beyond
@@ -33,7 +33,7 @@ pub const FUSE_KERNEL_MINOR_VERSION: u32 = 45;
 pub const FUSE_ROOT_ID: u64 = 1;
 
 // ---------------------------------------------------------------------------
-// `enum fuse_opcode` (`uapi/linux/fuse.h`) — the request opcodes. Only the ones
+// `enum fuse_opcode` (FUSE UAPI) — the request opcodes. Only the ones
 // this read-path implementation issues or recognises are named; the numeric
 // values are the canonical libfuse assignments.
 // ---------------------------------------------------------------------------

@@ -1,9 +1,9 @@
-//! inode-D4b (statx richness): `generic_fillattr` (Linux `fs/stat.c`) populates
+//! inode-D4b (statx richness): `generic_fillattr` populates
 //! the statx result mask (`stx_mask`), the creation time (`stx_btime` +
 //! `STATX_BTIME`), and the `stx_attributes`/`stx_attributes_mask` flag report
 //! derived from the VFS `i_flags`. Driven over minimal `Inode` impls, no QEMU.
 //!
-//! Linux contract pinned here:
+//! Contract pinned here:
 //!   * `stx_mask` reflects EXACTLY the filled fields — always the eleven
 //!     `STATX_BASIC_STATS`, plus `STATX_BTIME` only when the inode stores a
 //!     real birth time (never substituted from ctime).

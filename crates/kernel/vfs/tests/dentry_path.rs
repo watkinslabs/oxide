@@ -1,5 +1,5 @@
 // dcache: filesystem-internal path reconstruction (Linux `__dentry_path` /
-// `dentry_path_raw`, fs/d_path.c). Asserts the d_parent walk to a stop root,
+// `dentry_path_raw`). Asserts the d_parent walk to a stop root,
 // the root-renders-as-"/" rule, the explicit-root truncation, and the
 // " (deleted)" suffix for unlinked-but-open and anonymous-disconnected
 // dentries. This is the within-superblock reconstructor `getcwd`,

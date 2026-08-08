@@ -7,10 +7,10 @@ use crate::types::{FileType, KResult, VfsError};
 use super::{Cred, MAY_EXEC, MAY_WRITE};
 use super::permission::inode_permission;
 
-/// `may_create` (Linux `fs/namei.c` `may_create_dentry`) — the gate for adding
-/// a new name to directory `dir`. The caller owns the `EEXIST` half (Linux
-/// reads it off the child dentry it already holds); this is the rest, in
-/// Linux's order:
+/// `may_create` (`may_create_dentry`) — the gate for adding
+/// a new name to directory `dir`. The caller owns the `EEXIST` half (read
+/// off the child dentry it already holds); this is the rest, in the
+/// reference order:
 ///   1. a DEAD directory — one whose last name was already removed by `rmdir`,
 ///      so it can never gain another child — is `ENOENT`, not `EACCES`. This
 ///      stands AHEAD of the DAC check, so a writable-but-doomed directory
@@ -29,13 +29,13 @@ pub fn may_create(dir: &InodeRef, cred: &Cred) -> KResult<()> {
 
 /// `(uid_t)-1` is the reserved "no such id" sentinel: an inode carrying it
 /// cannot be written back correctly, and a caller holding it cannot own a new
-/// object. Linux spells this `vfsuid_valid`/`vfsgid_valid`. # C: O(1)
+/// object. The reference predicate pair is `vfsuid_valid`/`vfsgid_valid`. # C: O(1)
 pub(super) fn id_representable(id: u32) -> bool { id != u32::MAX }
 
 const PROTECTED_FIFOS: u8 = 1;
 const PROTECTED_REGULAR: u8 = 2;
 
-/// `may_create_in_sticky` (Linux `fs/namei.c`): an `O_CREAT` open of an entry
+/// `may_create_in_sticky`: an `O_CREAT` open of an entry
 /// that already exists in a sticky directory is denied unless the existing
 /// inode is owned by the caller or by the directory owner. The sysctl defaults
 /// match this tree's `/proc/sys/fs/protected_{fifos,regular}` leaves. # C: O(1)

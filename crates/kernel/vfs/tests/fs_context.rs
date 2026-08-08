@@ -1,5 +1,5 @@
-//! fs_context — the modern mount-API context object model (Linux
-//! `fs/fs_context.c`). Drives the VFS-layer phases the `fsopen`/`fsconfig`/
+//! fs_context — the modern mount-API context object model. Drives the
+//! VFS-layer phases the `fsopen`/`fsconfig`/
 //! `fsmount`/`fspick` syscalls call: param accumulation (no longer dropped),
 //! `vfs_get_tree` materialising a superblock + pinning `fc->root`, the
 //! `sb_flags`/purpose/phase state, and `reconfigure_super` applying flags to a

@@ -230,7 +230,7 @@ pub fn load_image(
     let exec_parsed = parse(blob, ARCH_MACHINE)?;
     let has_interp = exec_parsed.interp.is_some();
 
-    // Linux `load_elf_binary` (`fs/binfmt_elf.c:1097-1186`). ET_EXEC is
+    // Linux `load_elf_binary` placement decision. ET_EXEC is
     // absolute. A PIE WITH an interpreter is the case Linux randomises
     // explicitly — `ELF_ET_DYN_BASE + arch_mmap_rnd()`. A PIE WITHOUT one
     // (static-PIE, or ld.so invoked directly) gets `load_bias = 0` and a

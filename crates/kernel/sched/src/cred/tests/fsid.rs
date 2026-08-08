@@ -1,4 +1,4 @@
-// Linux `__sys_setfsuid` / `__sys_setfsgid` (`kernel/sys.c`): they return the
+// Linux `__sys_setfsuid` / `__sys_setfsgid`: they return the
 // PREVIOUS id on every path and can never report an error.
 
 use core::sync::atomic::Ordering;

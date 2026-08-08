@@ -7,10 +7,9 @@
 // userspace then owns two objects on one wd — one removal succeeds, the next
 // is EINVAL.
 //
-// Linux references: `include/linux/fsnotify.h` `fsnotify_inoderemove`,
-// `fs/notify/fsnotify.c` `__fsnotify_inode_delete`,
-// `fs/notify/inotify/inotify_fsnotify.c` `inotify_ignored_and_remove_idr` /
-// `event_compare`.
+// Covers inode-removal notification (fire DELETE_SELF, then tear down every
+// mark on the dying inode) and the wd-reuse/queue-admission ordering that
+// keeps a dead watch's events from being confused with a fresh one's.
 //
 // Included as a child module of `inotify` via `#[path]`.
 

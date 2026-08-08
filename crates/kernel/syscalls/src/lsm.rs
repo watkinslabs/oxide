@@ -1,5 +1,5 @@
-// LSM self-attribute UAPI constants and admission logic (Linux
-// `include/uapi/linux/lsm.h`, `security/security.c`). Shared by slots 459/460.
+// LSM self-attribute UAPI constants and admission logic (the LSM UAPI
+// numbers and Linux's security-core dispatch). Shared by slots 459/460.
 //
 // Decision logic lives here, NOT kernel-cfg'd, so the errno ORDERING is
 // reachable from the hosted suite; the slot files are
@@ -9,7 +9,7 @@ use syscall::errno::Errno;
 
 /// `LSM_ID_UNDEF`.
 pub const LSM_ID_UNDEF: u64 = 0;
-/// `LSM_ID_CAPABILITY` (`include/uapi/linux/lsm.h:54`).
+/// `LSM_ID_CAPABILITY`.
 pub const LSM_ID_CAPABILITY: u64 = 100;
 /// `LSM_ID_LANDLOCK`.
 pub const LSM_ID_LANDLOCK: u64 = 110;
@@ -25,7 +25,7 @@ pub const LSM_SET_MAX_SIZE: u32 = 4096;
 /// What `security_getselfattr` decides before touching user memory.
 /// `Err` short-circuits; `Ok` means "keep going and read user memory".
 ///
-/// Linux order (`security/security.c`): attr==UNDEF -> EINVAL; size==NULL ->
+/// Linux order: attr==UNDEF -> EINVAL; size==NULL ->
 /// EINVAL; then the user reads (EFAULT); then, if flags is set, it must be
 /// exactly LSM_FLAG_SINGLE and uctx must be non-NULL -> EINVAL.
 /// # C: O(1)
@@ -56,8 +56,8 @@ pub const LSM_ID_BYTES: u32 = 8;
 /// Linux `lsm_idlist[0..lsm_active_cnt]` — the ids `lsm_list_modules` reports.
 ///
 /// `capability` is declared `LSM_ORDER_FIRST` with no `enabled` toggle and no
-/// `LSM_FLAG_EXCLUSIVE` (`security/commoncap.c:1517-1521`), so
-/// `lsm_order_append` (`security/lsm_init.c:153-190`) can never skip it: every
+/// `LSM_FLAG_EXCLUSIVE`, so
+/// `lsm_order_append` can never skip it: every
 /// `CONFIG_SECURITY=y` kernel reports at least this module, and reporting an
 /// empty list would be a kernel with the syscall compiled out — which answers
 /// ENOSYS, not success. oxide enforces the POSIX capability model
@@ -65,7 +65,7 @@ pub const LSM_ID_BYTES: u32 = 8;
 /// privileged syscall consults), so `capability` is the one active module.
 ///
 /// `capability` supplies no `getselfattr`/`setselfattr` hook (its hook list is
-/// `capability_hooks`, `security/commoncap.c:1490-1512`), so slots 459/460
+/// `capability_hooks`), so slots 459/460
 /// still answer EOPNOTSUPP — the two facts are consistent, not contradictory.
 /// Landlock is the second: it is unconditionally registered wherever its
 /// syscalls answer, and slots 444/445/446 here do. Both modules supply
@@ -74,8 +74,7 @@ pub const LSM_ID_BYTES: u32 = 8;
 /// separate facts, and inventing the second would be worse than an empty set.
 pub const ACTIVE_LSM_IDS: &[u64] = &[LSM_ID_CAPABILITY, LSM_ID_LANDLOCK];
 
-/// `lsm_list_modules`' only argument rule: `flags` is reserved and must be 0
-/// (`security/lsm_syscalls.c:112-113`).
+/// `lsm_list_modules`' only argument rule: `flags` is reserved and must be 0.
 /// # C: O(1)
 pub fn list_modules_precheck(flags: u32) -> Result<(), Errno> {
     if flags != 0 { return Err(Errno::Einval); }
@@ -89,7 +88,7 @@ pub const fn list_modules_total_size() -> u32 {
     ACTIVE_LSM_IDS.len() as u32 * LSM_ID_BYTES
 }
 
-/// `if (usize < total_size) return -E2BIG` (`lsm_syscalls.c:121-122`). E2BIG,
+/// `if (usize < total_size) return -E2BIG`. E2BIG,
 /// not ENOSPC: the caller re-reads `size` for the required byte count and
 /// retries. The write-back happens BEFORE this check, so a too-small buffer
 /// still learns the size.
@@ -171,7 +170,7 @@ mod tests {
 
     #[test]
     fn the_capability_module_is_always_reported() {
-        // `security/commoncap.c:1517` DEFINE_LSM(capability) has no `enabled`
+        // Linux's `DEFINE_LSM(capability)` has no `enabled`
         // toggle and no EXCLUSIVE flag, so `lsm_active_cnt` is never 0 on a
         // CONFIG_SECURITY=y kernel. An empty list would misreport oxide as a
         // kernel with no capability enforcement at all.
@@ -189,7 +188,7 @@ mod tests {
     #[test]
     fn a_short_buffer_is_e2big_not_enospc() {
         // The sibling `lsm_set_self_attr` uses E2BIG for "too big"; this one
-        // uses E2BIG for "too small". Both come straight from the source.
+        // uses E2BIG for "too small". Both match Linux's errno choice.
         let total = list_modules_total_size();
         assert_eq!(list_modules_fits(0), Err(Errno::E2big));
         assert_eq!(list_modules_fits(total - 1), Err(Errno::E2big));

@@ -1,4 +1,4 @@
-//! `shmdt(2)` — Linux `ksys_shmdt` (`ipc/shm.c`).
+//! `shmdt(2)` — Linux `ksys_shmdt`.
 //!
 //! Detaching is not "unmap a page at this address". Linux searches the address
 //! space for a VMA that belongs to a shm segment AND whose file offset equals

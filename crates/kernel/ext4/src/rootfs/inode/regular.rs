@@ -13,7 +13,7 @@ use super::data::{Ext4FileData, remove_inode_xattr, set_inode_xattr};
 use super::ids::ext4_wrap_ino;
 use super::super::state::RootfsState;
 
-/// `ext4_sync_file` (Linux `fs/ext4/fsync.c`) — the shared body of the
+/// `ext4_sync_file` — the shared body of the
 /// `f_op->fsync` slot that ext4 installs on BOTH its regular-file and its
 /// directory operations. Commits the journal transaction carrying this inode
 /// and flushes the OWNING mount's device.
@@ -204,7 +204,7 @@ impl InodeOps for Ext4RegInodeOps {
 pub(crate) struct Ext4RegFileOps;
 
 impl FileOps for Ext4RegFileOps {
-    /// `ext4_sync_file` (Linux `fs/ext4/fsync.c`) — the `f_op->fsync` slot.
+    /// `ext4_sync_file` — the `f_op->fsync` slot.
     /// Commits the journal transaction carrying THIS inode and flushes the
     /// owning mount's device, so the file's data and the metadata reaching it
     /// are on disk when `fsync(2)` returns.

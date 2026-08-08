@@ -1,4 +1,4 @@
-// NUMA memory policy (`mm/mempolicy.c`, `include/uapi/linux/mempolicy.h`).
+// NUMA memory policy: set_mempolicy(2)/get_mempolicy(2)/mbind(2) ABI and model.
 //
 // Module manifest:
 //   uapi     MPOL_* / MPOL_F_* / MPOL_MF_* numbers, MAX_NUMNODES, nr_node_ids

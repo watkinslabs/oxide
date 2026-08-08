@@ -1,14 +1,14 @@
-// Controlling-terminal acquisition when a pty half is opened — Linux
-// `tty_open`'s `tty_open_proc_set_tty` arm (`drivers/tty/tty_io.c:2163-2169`,
-// `drivers/tty/tty_jobctrl.c:132-160`), POSIX §11.1.3.
+// Controlling-terminal acquisition when a pty half is opened, per POSIX
+// §11.1.3: opening a tty from a session leader with no controlling terminal
+// and no O_NOCTTY makes that tty the caller's controlling terminal.
 //
-// Linux's `noctty` term excludes only the pty MASTER half
-// (`TTY_DRIVER_TYPE_PTY` + `PTY_TYPE_MASTER`, `tty_io.c:2166-2167`); the SLAVE
-// half takes the ordinary rule. Oxide had no pts arm at all — `console`'s
-// `acquire_ctty_on_open` short-circuits on anything outside the console
-// char-device band — so a session leader opening `/dev/pts/<n>` never made it
-// its ctty, `tty_check_change` short-circuited on `is_ctty == false`, and a
-// backgrounded read of a pty neither raised SIGTTIN nor resumed after `fg`.
+// The pty MASTER half is never eligible to become a controlling terminal;
+// the SLAVE half takes the ordinary rule. Oxide had no pts arm at all —
+// `console`'s `acquire_ctty_on_open` short-circuits on anything outside the
+// console char-device band — so a session leader opening `/dev/pts/<n>`
+// never made it its ctty, `tty_check_change` short-circuited on
+// `is_ctty == false`, and a backgrounded read of a pty neither raised
+// SIGTTIN nor resumed after `fg`.
 
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;

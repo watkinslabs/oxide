@@ -1,5 +1,4 @@
-// perf-event pseudo-inode + `f_op` — Linux `kernel/events/core.c`
-// `perf_fops` (`perf_read`, `__perf_read`, `perf_poll`).
+// perf-event pseudo-inode + `f_op`: read, the underlying read primitive, poll.
 
 use alloc::sync::Arc;
 

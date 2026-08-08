@@ -1,13 +1,14 @@
-// `truncate(2)` / `ftruncate(2)` work-fns — Linux `fs/open.c` (`vfs_truncate`,
-// `do_ftruncate`, `do_truncate`) plus the `fs/attr.c` `inode_newsize_ok` size
-// gate. The syscall shims own only argument fetch and path/fd resolution.
+// `truncate(2)` / `ftruncate(2)` work-fns, matching the observable ABI of
+// the path (`vfs_truncate`) and descriptor (`do_ftruncate`) size-change
+// forms plus the `inode_newsize_ok` size gate. The syscall shims own only
+// argument fetch and path/fd resolution.
 
 use syscall::errno::Errno;
 use vfs::{File, FileType, InodeRef, VfsPath};
 
-/// `send_sig(SIGXFSZ, current, 0)` from Linux `inode_newsize_ok` — a soft
-/// `RLIMIT_FSIZE` violation signals before it reports `EFBIG`. Hosted builds
-/// have no signal machinery. # C: O(1)
+/// A soft `RLIMIT_FSIZE` violation delivers `SIGXFSZ` to the current task
+/// before the size-change call reports `EFBIG`. Hosted builds have no signal
+/// machinery. # C: O(1)
 fn send_sigxfsz() {
     #[cfg(target_os = "oxide-kernel")]
     sched::live::sigpend::send_signal_self(sched::live::sigpend::Signum::Sigxfsz);
@@ -36,15 +37,15 @@ fn rlimit_fsize_allows(offset: u64) -> bool {
 /// # C: O(1)
 pub fn install_rlimit_fsize_hook() { vfs::set_rlimit_fsize_hook(rlimit_fsize_allows); }
 
-/// `do_truncate` (Linux `fs/open.c`): set-user-ID / set-group-ID drop
-/// (`dentry_needs_remove_privs`), then `notify_change` with `ATTR_SIZE` plus
-/// whatever timestamp bits the caller wants. The `RLIMIT_FSIZE` / `s_maxbytes`
-/// gate lives one level down in `setattr_prepare`, where Linux puts it, so
-/// every `ATTR_SIZE` path (`O_TRUNC` open, `file_setattr`) shares it.
+/// Common size-change body shared by the path and descriptor truncate forms:
+/// drop set-user-ID / set-group-ID privilege bits the size change would
+/// invalidate, then apply an attr-change carrying `ATTR_SIZE` plus whatever
+/// timestamp bits the caller wants. The `RLIMIT_FSIZE` / max-file-size gate
+/// lives one level down, in attr-change validation, so every `ATTR_SIZE`
+/// path (`O_TRUNC` open, `file_setattr`) shares it.
 ///
 /// `times` is `0` for the path form and `ATTR_MTIME | ATTR_CTIME` for the
-/// descriptor form — the same split Linux makes between `vfs_truncate` and
-/// `do_ftruncate`.
+/// descriptor form — the same split between the path and descriptor forms.
 ///
 /// `ATTR_FORCE` is always set: both callers have already established write
 /// authority (`inode_permission(MAY_WRITE)` for the path form, `FMODE_WRITE`
@@ -52,8 +53,8 @@ pub fn install_rlimit_fsize_hook() { vfs::set_rlimit_fsize_hook(rlimit_fsize_all
 /// `notify_change`. # C: O(1)
 pub fn do_truncate(inode: &InodeRef, mnt_id: u64, len: u64, times: u32, cred: &vfs::Cred) -> i64 {
     let mut valid = vfs::ATTR_SIZE | vfs::ATTR_FORCE | times;
-    // Linux `dentry_needs_remove_privs`: a size change drops the privilege
-    // bits, so a set-user-ID binary cannot be re-shaped and keep its setid.
+    // A size change drops the privilege bits, so a set-user-ID binary
+    // cannot be re-shaped and keep its setid.
     valid |= vfs::setattr_should_drop_suidgid(inode.as_ref(), cred);
     let now = wall_now_ns();
     let mut ia = vfs::Iattr {
@@ -69,11 +70,10 @@ pub fn do_truncate(inode: &InodeRef, mnt_id: u64, len: u64, times: u32, cred: &v
     }
 }
 
-/// `vfs_truncate` (Linux `fs/open.c`) — the `truncate(2)` path form. Error
-/// order is Linux's: type gate (`EISDIR` for a directory, `EINVAL` for any
-/// other non-regular), then `inode_permission(MAY_WRITE)` (`EACCES`), then the
-/// mount read-only gate (`EROFS`) and the append-only reject (`EPERM`) inside
-/// `notify_change`. # C: O(1)
+/// `truncate(2)` path form. Error order: 1) type gate (`EISDIR` for a
+/// directory, `EINVAL` for any other non-regular file), 2) write permission
+/// check (`EACCES`), 3) mount read-only gate (`EROFS`) and append-only
+/// reject (`EPERM`) inside the attr-change apply. # C: O(1)
 pub fn vfs_truncate(vp: &VfsPath, len: u64, cred: &vfs::Cred) -> i64 {
     match vp.inode.file_type() {
         // "For directories it's -EISDIR, for other non-regulars - -EINVAL".
@@ -100,7 +100,7 @@ pub fn vfs_truncate(vp: &VfsPath, len: u64, cred: &vfs::Cred) -> i64 {
     rc
 }
 
-/// `do_ftruncate` (Linux `fs/open.c`) — the `ftruncate(2)` descriptor form.
+/// `ftruncate(2)` descriptor form.
 /// Only a regular file opened for WRITING is truncatable through an fd; every
 /// other combination is `EINVAL` (never `EISDIR`, unlike the path form). An
 /// append-only inode is `EPERM` ahead of the mount read-only gate. Timestamps

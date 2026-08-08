@@ -1,4 +1,4 @@
-//! `umount2(2)`'s admission ladder (Linux `fs/namespace.c::do_umount`), as a
+//! `umount2(2)`'s admission ladder (`do_umount`), as a
 //! PURE decision over facts the syscall shim samples.
 //!
 //! The ladder is the whole observable contract of a refused unmount, and three

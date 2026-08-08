@@ -84,7 +84,7 @@ fn pop_one_cfs(rq: &Runqueue) -> Option<Arc<Task>> {
     t
 }
 
-/// Linux `can_migrate_task` (`kernel/sched/fair.c`), the two unconditional
+/// Linux `can_migrate_task`, the two unconditional
 /// refusals. Both are correctness, not policy:
 ///
 ///   * `task_on_cpu(env->src_rq, p)` — a task still executing on its source CPU

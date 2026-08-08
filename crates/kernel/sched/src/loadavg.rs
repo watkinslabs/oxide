@@ -1,5 +1,5 @@
 //! Linux load average — EWMA of the runnable task count over 1/5/15 min,
-//! resampled every ~5s (Linux `kernel/sched/loadavg.c` CALC_LOAD). Fixed-point
+//! resampled every ~5s (Linux `CALC_LOAD`). Fixed-point
 //! FSHIFT=11. `/proc/loadavg` reads `snapshot()`.
 //!
 //! `active` is the runnable task count (Linux also counts TASK_UNINTERRUPTIBLE;
@@ -8,9 +8,9 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-/// Scheduler fixed-point shift for the load averages (Linux
-/// `include/linux/sched/loadavg.h`). The `sysinfo(2)` ABI carries them at
-/// `SI_LOAD_SHIFT` instead and rescales at the syscall boundary.
+/// Scheduler fixed-point shift for the load averages. The `sysinfo(2)` ABI
+/// carries them at `SI_LOAD_SHIFT` instead and rescales at the syscall
+/// boundary.
 pub const FSHIFT: u32 = 11;
 const FIXED_1: u64 = 1 << FSHIFT;     // 1.0 in fixed point
 const EXP_1:  u64 = 1884;             // 1/exp(5s/1min)  fixed point

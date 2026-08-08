@@ -1,6 +1,6 @@
 // `vm.mmap_rnd_bits` — the live entropy width `arch_mmap_rnd()` reads.
-// Linux `mm/mmap.c:66-75` plus its `proc_dointvec_minmax` registration
-// (`mm/mmap.c:1539-1560`, mode 0600), bounded by the arch's Kconfig pair.
+// Registered as a `proc_dointvec_minmax` sysctl, mode 0600, bounded by the
+// arch's Kconfig pair.
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -8,7 +8,7 @@ use crate::limits::CURRENT;
 
 /// Linux `int mmap_rnd_bits __read_mostly = CONFIG_ARCH_MMAP_RND_BITS`.
 /// Neither x86 nor arm64 sets `ARCH_MMAP_RND_BITS_DEFAULT`, so the boot value
-/// is the arch minimum (`arch/Kconfig:1227-1232`).
+/// is the arch minimum.
 static MMAP_RND_BITS: AtomicU32 = AtomicU32::new(CURRENT.mmap_rnd_bits);
 
 /// Linux `const int mmap_rnd_bits_min`. # C: O(1)
@@ -28,7 +28,7 @@ pub fn set_mmap_rnd_bits(v: u32) {
     MMAP_RND_BITS.store(v.clamp(mmap_rnd_bits_min(), mmap_rnd_bits_max()), Ordering::Relaxed);
 }
 
-/// Linux `int sysctl_legacy_va_layout` (`mm/util.c`), registered as
+/// Linux `int sysctl_legacy_va_layout`, registered as
 /// `vm.legacy_va_layout` with a 0..1 range. Non-zero makes EVERY exec take the
 /// legacy bottom-up mmap layout, independently of any persona.
 static LEGACY_VA_LAYOUT: core::sync::atomic::AtomicBool =

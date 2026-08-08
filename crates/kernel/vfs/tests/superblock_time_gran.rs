@@ -1,5 +1,5 @@
-//! superblock-D: `s_time_gran` timestamp rounding (Linux `timestamp_truncate`,
-//! fs/inode.c). The SB stores a per-fs granularity (set at `fill_super` via
+//! superblock-D: `s_time_gran` timestamp rounding (Linux `timestamp_truncate`).
+//! The SB stores a per-fs granularity (set at `fill_super` via
 //! `set_time_gran`); `timestamp_truncate` floors a wall-clock timestamp DOWN
 //! to that granularity so a setattr never records sub-granularity precision the
 //! backend cannot persist (ext4 1ns vs a coarse-time backend). The rounding is

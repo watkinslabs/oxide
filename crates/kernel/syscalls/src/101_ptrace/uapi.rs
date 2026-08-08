@@ -1,5 +1,5 @@
-// ptrace(2) ABI constants — `include/uapi/linux/ptrace.h`,
-// `arch/x86/include/uapi/asm/ptrace-abi.h`, `include/uapi/linux/elf.h`.
+// ptrace(2) ABI constants — the ptrace UAPI request/option numbers, the x86
+// ptrace-abi register-set numbers, and the ELF NT_* note-type space.
 // Numbers only; no policy (`52` UAPI-is-not-policy rule).
 
 /// Classic request numbers (identical on x86_64 and arm64).
@@ -90,7 +90,7 @@ pub use syscall::ptrace::{
 /// (`SIGTRAP | 0x80`) and from every `SIGTRAP | (event << 8)` event stop.
 pub use syscall::ptrace::SIGTRAP as SIGTRAP_CODE;
 
-/// `NT_*` regset note types (`include/uapi/linux/elf.h`). `PTRACE_GETREGSET`
+/// `NT_*` regset note types. `PTRACE_GETREGSET`
 /// takes one of these in `addr`.
 pub const NT_PRSTATUS: u64 = 1;
 pub const NT_PRFPREG:  u64 = 2;

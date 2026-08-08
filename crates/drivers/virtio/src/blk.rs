@@ -141,7 +141,7 @@ pub fn decode_status(status: u8) -> Result<(), u8> {
 }
 
 /// Device cache mode after feature negotiation — Linux
-/// `virtblk_get_cache_mode` (`drivers/block/virtio_blk.c:1069-1087`).
+/// `virtblk_get_cache_mode`.
 ///
 /// Without `VIRTIO_BLK_F_CONFIG_WCE` (which neither we nor the QEMU
 /// configurations we boot negotiate) Linux's fallback is exactly this line:
@@ -151,7 +151,7 @@ pub fn decode_status(status: u8) -> Result<(), u8> {
 /// `true` → writeback cache, a `VIRTIO_BLK_T_FLUSH` barrier is both legal and
 /// REQUIRED for durability. `false` → write-through: Linux calls
 /// `blk_queue_write_cache(q, false, false)`, after which `blk_insert_flush`
-/// (`block/blk-flush.c`) completes a flush-only request immediately and
+/// completes a flush-only request immediately and
 /// `VIRTIO_BLK_T_FLUSH` is never put on the wire. Issuing it anyway is a spec
 /// violation (Virtio 1.2 §5.2.6: the request type is valid only when `F_FLUSH`
 /// was negotiated) that a conforming device answers with `S_UNSUPP`.
@@ -165,7 +165,7 @@ mod cache_mode_tests {
     use super::*;
 
     /// The negotiated `F_FLUSH` bit is the ONLY input to the cache mode, per
-    /// `virtio_blk.c:1084`. Note the argument is the post-negotiation
+    /// Linux's `virtblk_get_cache_mode`. Note the argument is the post-negotiation
     /// `driver_feature` word (`dev_features & wanted`), never the device's raw
     /// offer — a bit the device offers but we mask out is not negotiated.
     /// # C: O(1)
@@ -182,12 +182,12 @@ mod cache_mode_tests {
         }
     }
 
-    /// `VIRTIO_BLK_F_FLUSH` is bit 9 (`include/uapi/linux/virtio_blk.h:50`).
+    /// `VIRTIO_BLK_F_FLUSH` is bit 9 per the Linux virtio_blk UAPI.
     /// An off-by-one here silently disables every barrier. # C: O(1)
     #[test]
     fn flush_feature_is_bit_nine() {
         assert_eq!(VIRTIO_BLK_F_FLUSH, 1 << 9);
-        assert_eq!(VIRTIO_BLK_T_FLUSH, 4); // uapi/linux/virtio_blk.h:174
+        assert_eq!(VIRTIO_BLK_T_FLUSH, 4); // VIRTIO_BLK_T_FLUSH request-type value
     }
 
     /// `S_UNSUPP` and `S_IOERR` are DIFFERENT device answers and must stay

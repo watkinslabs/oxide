@@ -32,7 +32,7 @@ pub const KERNEL_SYSCTLS: &[Node] = &[
         // report a protection the loader is not applying (or the reverse), which
         // is the exact falsehood hardening scanners were being told before ASLR
         // existed. Linux registers this leaf with plain `proc_dointvec` and NO
-        // extra1/extra2 (`mm/memory.c:128-136`), so no bounds here either.
+        // extra1/extra2, so no bounds here either.
         File("randomize_va_space",    IntHook(get_randomize_va_space,
                                               set_randomize_va_space, None)),
         // Bound to the live value `perf_event_open` consults (`sched::perf_sw`),
@@ -64,7 +64,7 @@ pub const KERNEL_SYSCTLS: &[Node] = &[
                                               Some((0, INT_MAX)))),
         File("core_uses_pid",         Int(1, Some((0, 1)))),
         File("sysrq",                 Int(16, Some((0, 511)))),
-        // `security/keys/sysctl.c` registers the four per-uid key ceilings against
+        // Linux's keys sysctl table registers the four per-uid key ceilings against
         // the LIVE `key_quota_*` variables `key_alloc` tests, each a
         // `proc_dointvec_minmax` over [1, INT_MAX], plus the persistent-keyring
         // window over [0, INT_MAX]. Bound to the key store's own accessors: a

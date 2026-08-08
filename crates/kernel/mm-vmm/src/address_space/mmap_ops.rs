@@ -48,8 +48,8 @@ impl AddressSpace {
     ///
     /// The ELF loader needs this for the two images Linux places by hint-0
     /// mmap rather than by an explicit bias — the PT_INTERP dynamic linker
-    /// (`fs/binfmt_elf.c:686-689`) and a PIE with no interpreter
-    /// (`fs/binfmt_elf.c:1175`) — so both inherit `mmap_base`'s randomisation.
+    /// and a PIE with no interpreter — so both inherit `mmap_base`'s
+    /// randomisation.
     /// Reserving-then-unmapping to learn the same address would open a window
     /// where another mapping lands in the hole.
     /// # C: O(N) over VMAs
@@ -59,7 +59,7 @@ impl AddressSpace {
         self.unmapped_area(&tree, len as u64).ok_or(Error::NoMem)
     }
 
-    /// Linux `mm_get_unmapped_area` (`mm/mmap.c:806`): one entry point that
+    /// One entry point that
     /// dispatches on `MMF_TOPDOWN` to `arch_get_unmapped_area_topdown` or, for
     /// the legacy layout, to `arch_get_unmapped_area`. Every hole search goes
     /// through here so the two directions cannot disagree about which anchor

@@ -8,7 +8,7 @@ use crate::KResult;
 
 use super::policy::{is_eager_timestamp, mark_dirty_transition, time_dirty_flag};
 
-/// `__mark_inode_dirty(inode, flags)` (Linux fs/fs-writeback.c). Applies the
+/// Mark `inode` dirty with `flags`. Applies the
 /// [`mark_dirty_transition`] result: supersede a pending lazy stamp, notify the
 /// backend through `s_op->dirty_inode`, latch the new bits, start the expiry
 /// clock, and reconcile the superblock's writeback pin so a dirty inode cannot
@@ -46,8 +46,8 @@ pub fn mark_inode_dirty_on(sb: Option<&crate::superblock::SuperBlock>, inode: &I
     if let Some(sb) = sb { sb.wb_pin(inode.ino(), inode); }
 }
 
-/// `sync_lazytime(inode)` (Linux fs/fs-writeback.c) — force a deferred timestamp
-/// out of the lazy state, against the superblock that owns the inode (see
+/// Force a deferred timestamp out of the lazy state, against the superblock
+/// that owns the inode (see
 /// [`mark_inode_dirty_on`] for why the owner is passed rather than read off the
 /// inode). Returns false when nothing was pending.
 ///

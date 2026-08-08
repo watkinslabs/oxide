@@ -471,7 +471,7 @@ impl Mount {
         })
     }
 
-    /// `__ext4_unlink` (`fs/ext4/namei.c`): drop `name` from `parent_ino` and
+    /// `__ext4_unlink`: drop `name` from `parent_ino` and
     /// decrement the target's link count. **When the last link goes the inode
     /// is put on the on-disk orphan list — its data blocks and inode slot are
     /// NOT freed here.**
@@ -544,8 +544,8 @@ impl Mount {
     /// Returns the parsed in-memory `Inode` matching the bytes just written, so
     /// a caller can instantiate the VFS inode from it WITHOUT reading the slot
     /// back off disk — Linux `ext4_new_inode` likewise returns a live
-    /// `struct inode` that `ext4_create` hands straight to `d_instantiate_new`
-    /// (`fs/ext4/namei.c`); it never re-reads what it just allocated.
+    /// `struct inode` that create hands straight to dentry instantiation;
+    /// it never re-reads what it just allocated.
     /// # C: O(1) I/O
     pub fn init_inode(&self, parent_ino: u32, ino: u32, mode: u16, nlink: u16, uid: u32, gid: u32)
         -> Result<Inode, MountError>

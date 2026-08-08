@@ -1,5 +1,5 @@
-// `can_migrate_task` — Linux `kernel/sched/fair.c`'s two unconditional
-// migration refusals. The `on_cpu` one is memory safety, not policy: pulling a
+// `can_migrate_task` — Linux's two unconditional migration refusals.
+// The `on_cpu` one is memory safety, not policy: pulling a
 // task that is still executing on its source CPU lets the destination pick and
 // run it while the source is still saving its registers.
 

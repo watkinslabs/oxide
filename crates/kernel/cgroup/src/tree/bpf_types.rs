@@ -148,7 +148,7 @@ pub(super) struct BpfAttachState {
 
 impl BpfAttachState {
     fn new() -> Self {
-        // kernel/cgroup/cgroup.c initializes every `cgrp->bpf.revisions[]` to 1.
+        // Revision counters start at 1, not 0, so a first attach is always observable as a change.
         Self { direct: Vec::new(), revision: 1, mode: None }
     }
 }

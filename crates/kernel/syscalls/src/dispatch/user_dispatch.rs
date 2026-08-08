@@ -1,5 +1,5 @@
-// `prctl(PR_SET_SYSCALL_USER_DISPATCH)` EXECUTION — the half of Linux
-// `kernel/entry/syscall_user_dispatch.c syscall_user_dispatch()` that reads
+// `prctl(PR_SET_SYSCALL_USER_DISPATCH)` EXECUTION — the half of Linux's
+// `syscall_user_dispatch()` that reads
 // the selector, rolls the syscall back and raises the signal.
 //
 // The decision (range predicate, selector ladder, mode encoding) lives in
@@ -13,7 +13,7 @@ use sched::prctl::sud::{self, Action};
 use security::seccomp::native_audit_arch;
 
 /// `si_code` for a syscall-user-dispatch `SIGSYS`
-/// (`SYS_USER_DISPATCH`, `include/uapi/asm-generic/siginfo.h`). Distinct from
+/// (`SYS_USER_DISPATCH`, siginfo UAPI code space). Distinct from
 /// the seccomp code so a handler can tell which mechanism trapped it.
 const SYS_USER_DISPATCH: i32 = 2;
 

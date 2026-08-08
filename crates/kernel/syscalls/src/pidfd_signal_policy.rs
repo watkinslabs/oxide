@@ -17,7 +17,7 @@ pub const PIDFD_SEND_SIGNAL_FLAGS: u32 =
     PIDFD_SIGNAL_THREAD | PIDFD_SIGNAL_THREAD_GROUP | PIDFD_SIGNAL_PROCESS_GROUP;
 
 /// `PIDFD_SELF_THREAD` — the magic fd naming the CALLING THREAD, so a process
-/// can signal itself without opening a pidfd (`include/uapi/linux/fcntl.h`).
+/// can signal itself without opening a pidfd.
 pub const PIDFD_SELF_THREAD: i32 = -10000;
 /// `PIDFD_SELF_THREAD_GROUP` — the magic fd naming the caller's thread group.
 pub const PIDFD_SELF_THREAD_GROUP: i32 = -10001;

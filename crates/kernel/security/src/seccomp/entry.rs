@@ -227,8 +227,8 @@ fn sync_threads(cur: &sched::Task) {
     }
 }
 
-/// Linux `prctl_set_seccomp` (`kernel/seccomp.c`): the legacy `prctl` front
-/// door onto `do_seccomp`. `SECCOMP_MODE_STRICT` maps onto
+/// The legacy `prctl` front door onto the `seccomp(2)` install path.
+/// `SECCOMP_MODE_STRICT` maps onto
 /// `SECCOMP_SET_MODE_STRICT` with a forced-NULL filter argument,
 /// `SECCOMP_MODE_FILTER` onto `SECCOMP_SET_MODE_FILTER` with arg3 as the
 /// `sock_fprog`, anything else EINVAL. Flags are always zero — the `prctl`

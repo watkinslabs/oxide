@@ -82,7 +82,7 @@ decl_lock_class! {
     AddressSpace = 30,
     Inode        = 40,
     // Global blocked-record-lock graph (Linux `blocked_lock_lock` guarding
-    // `blocked_hash`, `fs/locks.c`): the "owner X is parked on owner Y" edges
+    // `blocked_hash`): the "owner X is parked on owner Y" edges
     // `posix_locks_deadlock` walks. Cross-inode by nature, so it cannot live
     // in the per-inode lock context. Taken AFTER an `Inode` (40) file-lock
     // context has been released — never nested inside one — and takes no

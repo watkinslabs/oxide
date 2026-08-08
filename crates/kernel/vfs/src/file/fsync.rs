@@ -4,10 +4,11 @@
 // These live in `vfs` rather than in `fs` because every part they touch —
 // `i_mapping`, `f_op->fsync`, the `errseq` latches on the inode/superblock —
 // is a `vfs` object, and because `File::write`/`pwrite`/`write_iter` must be
-// able to call `generic_write_sync` at exactly the point Linux does (the tail
-// of `generic_file_write_iter`, `include/linux/fs.h:2663`). Routing that
-// through `fs` would need an upward dependency or a hook registry, and a hook
-// is the wrong shape for a mandatory step of the write contract.
+// able to call `generic_write_sync` at exactly the point Linux does — the
+// tail of the generic write path, after the bytes are accounted but before
+// the call returns. Routing that through `fs` would need an upward
+// dependency or a hook registry, and a hook is the wrong shape for a
+// mandatory step of the write contract.
 
 use core::sync::atomic::Ordering;
 
@@ -15,12 +16,12 @@ use crate::errseq::ErrseqVal;
 use crate::file::File;
 use crate::types::{FileType, KResult, OpenFlags, VfsError};
 
-/// `LLONG_MAX` — Linux's "to EOF" inclusive end byte (`vfs_fsync`,
-/// `fs/sync.c:190`).
+/// Linux's "to EOF" inclusive end byte for a whole-file sync — the signed
+/// `loff_t` maximum, not `u64::MAX`.
 pub const SYNC_TO_EOF: u64 = i64::MAX as u64;
 
-/// Which `file_operations` install an `fsync` slot (Linux `vfs_fsync_range`
-/// returns `EINVAL` for the ones that do not, `fs/sync.c:180-181`).
+/// Which `file_operations` install an `fsync` slot — `fsync(2)` returns
+/// `EINVAL` for the ones that do not.
 ///
 /// Byte-addressable descriptions — regular file, directory, block device — do.
 /// Every stream or anon description does NOT: pipe and FIFO (`pipefifo_fops`),
@@ -39,9 +40,8 @@ pub const fn fsync_slot_present(ft: FileType) -> bool {
 
 /// Effective `IOCB_DSYNC` / `IOCB_SYNC` for one write.
 ///
-/// Linux keeps these on the `kiocb`, seeded from the description by
-/// `iocb_flags()` (`include/linux/fs.h:3413-3425`) and then OR-ed with the
-/// per-operation `RWF_*` bits by `kiocb_set_rw_flags`.
+/// Seeded from the open description's sync flags, then OR-ed with the
+/// per-operation `RWF_*` bits for that one write.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
 pub struct SyncMode {
     /// `IOCB_DSYNC` — sync the data (and the metadata needed to read it).
@@ -57,8 +57,8 @@ impl SyncMode {
         SyncMode { dsync: self.dsync || other.dsync, sync: self.sync || other.sync }
     }
 
-    /// The `datasync` argument `generic_write_sync` passes down:
-    /// `(ki_flags & IOCB_SYNC) ? 0 : 1` (`include/linux/fs.h:2668`).
+    /// The `datasync` argument `generic_write_sync` passes down: full-sync
+    /// mode yields `datasync == false`, data-sync-only mode yields `true`.
     ///
     /// Note the direction — `O_SYNC` asks for MORE than `O_DSYNC`, so it is
     /// the one that yields `datasync == false`. Getting this backwards makes
@@ -66,8 +66,8 @@ impl SyncMode {
     pub const fn datasync(self) -> bool { !self.sync }
 }
 
-/// `iocb_flags(file)` (`include/linux/fs.h:3413-3425`) plus the `IS_SYNC(inode)`
-/// leg of `iocb_is_dsync` (`:2652-2656`).
+/// A description's effective sync flags: the open-time `O_SYNC`/`O_DSYNC`
+/// bits, plus whether the inode itself is marked always-sync.
 ///
 /// `O_SYNC` is `__O_SYNC | O_DSYNC` in the uapi, so an `O_SYNC` open sets BOTH
 /// bits and a plain `O_DSYNC` open sets only `dsync` — which is precisely how
@@ -90,10 +90,10 @@ pub fn iocb_sync_mode(file: &File) -> SyncMode {
 /// fd-based `vfs_fsync_range` and the VMA-based [`Inode::mapping_fsync_range`]
 /// — route through here so the order can never drift between them.
 ///
-/// Linux `ext4_sync_file` (`fs/ext4/fsync.c:166-198`):
-/// 1. `file_write_and_wait_range` — push dirty page-cache data out and wait.
-/// 2. `ext4_fsync_journal` — commit the transaction carrying this inode.
-/// 3. `blkdev_issue_flush` — the device barrier.
+/// The journaling-filesystem `fsync` contract, in order:
+/// 1. push dirty page-cache data out and wait for it to land.
+/// 2. commit the transaction carrying this inode's metadata.
+/// 3. issue the device write barrier.
 ///
 /// Steps 2+3 are `backend`. They are SKIPPED when step 1 failed, exactly as
 /// Linux's `goto out` does: committing metadata that claims data landed, when
@@ -108,7 +108,7 @@ fn fsync_ordered(
     end_incl: u64,
     backend: impl FnOnce() -> KResult<()>,
 ) -> KResult<()> {
-    // `if (lend < lstart) return 0;` (`mm/filemap.c` file_write_and_wait_range).
+    // An inverted range (end before start) is a no-op, not an error.
     if end_incl >= start {
         if let Some(mapping) = inode.i_mapping() {
             // Half-open [start, end) from Linux's INCLUSIVE endbyte.
@@ -132,14 +132,14 @@ impl crate::inode::Inode {
     /// `vfs_fsync_range` reached through a VMA instead of an fd — the
     /// `msync(MS_SYNC)` path.
     ///
-    /// Linux's `msync` holds `vma->vm_file` and calls `vfs_fsync_range(file,
-    /// fstart, fend, 1)` (`mm/msync.c:96`). Our VMA carries the address_space
+    /// `msync` holds the VMA's backing file and syncs the mapped range with
+    /// `datasync = true` unconditionally. Our VMA carries the address_space
     /// rather than the description, so the backend half comes from
     /// [`crate::AddressSpaceOps::sync_backing`] instead of `f_op->fsync`. The
     /// ORDER is identical because both go through [`fsync_ordered`].
     ///
-    /// Note `datasync` is implicit: Linux passes `1` unconditionally here, so
-    /// `msync` is an `fdatasync` over the range, never a full `fsync`.
+    /// Note `datasync` is implicit and always true here, so `msync` is an
+    /// `fdatasync` over the range, never a full `fsync`.
     /// # C: O(N_dirty in range) + O(journal tx)
     pub fn mapping_fsync_range(&self, start: u64, end_incl: u64) -> KResult<()> {
         let Some(mapping) = self.i_mapping() else { return Ok(()) };
@@ -149,8 +149,7 @@ impl crate::inode::Inode {
 }
 
 impl File {
-    /// `file_check_and_advance_wb_err` (`mm/filemap.c:1055-1080`): report the
-    /// writeback error recorded on this inode's address_space since THIS
+    /// Report the writeback error recorded on this inode's address_space since THIS
     /// description last looked, and advance the snapshot past it.
     ///
     /// The report-once-per-fd rule is the whole contract: a database that gets
@@ -167,8 +166,8 @@ impl File {
         }
     }
 
-    /// `errseq_check_and_advance(&sb->s_wb_err, &file->f_sb_err)` — the
-    /// `syncfs(2)` half (`fs/sync.c:162`). Separate snapshot from
+    /// The superblock-level errseq check-and-advance — the
+    /// `syncfs(2)` half. Separate snapshot from
     /// [`Self::check_and_advance_wb_err`] because `fsync` and `syncfs` advance
     /// independently: reporting an error to one must not hide it from the
     /// other. # C: O(1)
@@ -183,31 +182,31 @@ impl File {
         }
     }
 
-    /// `vfs_fsync_range(file, start, end_incl, datasync)` — `fs/sync.c:176-187`
-    /// composed with what ext4 does inside its `f_op->fsync`
-    /// (`ext4_sync_file`, `fs/ext4/fsync.c:166-198`).
+    /// `vfs_fsync_range(file, start, end_incl, datasync)` — the fd-based
+    /// full fsync/fdatasync entry point, composed with the ordered contract a
+    /// journaling filesystem's `f_op->fsync` owes it.
     ///
     /// ORDER IS THE POINT, and it is the reverse of what this function used to
-    /// do. Linux runs:
+    /// do. The steps run:
     ///
-    /// 1. `file_write_and_wait_range` — push the dirty page-cache data out and
-    ///    wait for it. This is what allocates the extents and settles `i_size`,
-    ///    i.e. it CREATES the metadata the next step has to commit.
-    /// 2. `ext4_fsync_journal` — commit the transaction carrying this inode.
-    /// 3. `blkdev_issue_flush` — the device barrier.
-    /// 4. `file_check_and_advance_wb_err` — harvest a deferred error.
+    /// 1. push the dirty page-cache data out and wait for it. This is what
+    ///    allocates the extents and settles `i_size`, i.e. it CREATES the
+    ///    metadata the next step has to commit.
+    /// 2. commit the transaction carrying this inode's metadata.
+    /// 3. issue the device write barrier.
+    /// 4. harvest a deferred writeback error.
     ///
-    /// Steps 2 and 3 are the backend's `f_op->fsync` here (ext4's does
-    /// `commit_batch` then `dev.flush`). Committing BEFORE the data is written
-    /// back commits a transaction that does not yet describe the data — the
+    /// Steps 2 and 3 are the backend's `f_op->fsync` here (a journal commit
+    /// then a device flush). Committing BEFORE the data is written back
+    /// commits a transaction that does not yet describe the data — the
     /// bytes and their extents land after the barrier, so `fsync` returns 0
     /// having fenced nothing that matters. That is not a weaker guarantee, it
     /// is no guarantee.
     ///
     /// A writeback failure is recorded via `mapping_set_error` before it is
     /// returned, so a caller that ignores this return still cannot make the
-    /// error vanish for the next `fsync`/`syncfs` (Linux records it inside
-    /// writeback for the same reason).
+    /// error vanish for the next `fsync`/`syncfs` — the error is latched
+    /// inside writeback state for the same reason.
     ///
     /// `end_incl` is INCLUSIVE, like Linux's `endbyte`; [`SYNC_TO_EOF`] means
     /// "to the end of the file". # C: O(N_dirty in range)
@@ -215,7 +214,7 @@ impl File {
         // Whether there is a page cache to write back first is a property of
         // the description; whether `fsync` is legal at all is `f_op->fsync`'s
         // own answer (`EINVAL` from the generic default for a pipe / socket /
-        // eventfd, `fs/sync.c:180-181`). Keeping those two questions apart is
+        // eventfd). Keeping those two questions apart is
         // what lets a backend install a real `fsync` slot on a type the generic
         // table calls streaming without a second list contradicting it.
         let ret = if self.f_op().fsync_needs_writeback(self) {
@@ -230,9 +229,8 @@ impl File {
             // `vfs_fsync_range` before any `mapping_set_error`).
             self.f_op().fsync(self, datasync)
         };
-        // `err = file_check_and_advance_wb_err(file); if (ret == 0) ret = err;`
-        // (`fs/ext4/fsync.c:195-197`) — a deferred error is reported only when
-        // this call had nothing worse of its own.
+        // A deferred writeback error is reported only when this call had
+        // nothing worse of its own.
         let deferred = self.check_and_advance_wb_err();
         match ret {
             Err(e) => Err(e),
@@ -263,19 +261,18 @@ impl File {
         }
     }
 
-    /// `vfs_fsync(file, datasync)` = the whole file (`fs/sync.c:189-192`).
+    /// `vfs_fsync(file, datasync)` = the whole file.
     /// # C: O(N_dirty)
     pub fn vfs_fsync(&self, datasync: bool) -> KResult<()> {
         self.vfs_fsync_range(0, SYNC_TO_EOF, datasync)
     }
 
-    /// `generic_write_sync(iocb, count)` (`include/linux/fs.h:2663-2676`) —
-    /// the step that makes `O_SYNC`/`O_DSYNC`/`RWF_SYNC`/`RWF_DSYNC` mean
-    /// anything.
+    /// `generic_write_sync(iocb, count)` — the step that makes
+    /// `O_SYNC`/`O_DSYNC`/`RWF_SYNC`/`RWF_DSYNC` mean anything.
     ///
     /// Called at the tail of every successful write with `end_pos` = the file
-    /// offset just past the bytes written (Linux's `iocb->ki_pos`, already
-    /// advanced) and `count` = how many bytes those were. Linux syncs exactly
+    /// offset just past the bytes written (the iocb's file position, already
+    /// advanced) and `count` = how many bytes those were. Syncs exactly
     /// `[ki_pos - count, ki_pos - 1]` rather than the whole file, so an
     /// `O_SYNC` append to a huge log does not rewrite the log.
     ///
@@ -305,7 +302,7 @@ mod tests {
     use super::*;
 
     /// `O_SYNC` is strictly stronger than `O_DSYNC`: it is the one that yields
-    /// `datasync == false` (`include/linux/fs.h:2668`). Inverting this is a
+    /// `datasync == false`. Inverting this is a
     /// silent downgrade of the stronger flag.
     /// # C: O(1)
     #[test]
@@ -354,7 +351,7 @@ mod tests {
         assert!(!fsync_slot_present(FileType::Symlink));
     }
 
-    /// `SYNC_TO_EOF` is Linux's `LLONG_MAX` (`fs/sync.c:191`), not `u64::MAX` —
+    /// `SYNC_TO_EOF` is the signed `loff_t` maximum, not `u64::MAX` —
     /// the range arithmetic is signed `loff_t` on the kernel side.
     /// # C: O(1)
     #[test]

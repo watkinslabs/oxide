@@ -40,7 +40,7 @@ pub fn registered_filesystems() -> Vec<Arc<dyn FileSystemType>> {
     v
 }
 
-/// `/proc/filesystems` body (Linux `fs/filesystems.c` `regen_filesystems_string`
+/// `/proc/filesystems` body (`regen_filesystems_string`
 /// / `filesystems_proc_show_fallback`): one `"%s\t%s\n"` line per registered
 /// type in registration order, the prefix EMPTY for `FS_REQUIRES_DEV` and
 /// `nodev` otherwise. Rendered from [`registered_filesystems`] — the same list

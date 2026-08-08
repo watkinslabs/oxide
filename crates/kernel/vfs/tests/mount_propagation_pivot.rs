@@ -196,7 +196,7 @@ fn mount_pseudo(root: &Arc<Dentry>, path: &str, name: &'static str, ino: u64) ->
 /// END-TO-END model of the COMPLETE systemd per-service mount-namespace +
 /// switch-root idiom sysinit runs, so post-pivot behavior (`umount2` MNT_DETACH,
 /// `MS_MOVE`) is pinned hosted instead of discovered one-boot-at-a-time. Sequence
-/// (systemd `setup_namespace` + `mount_switch_root`, Linux fs/namespace.c):
+/// (systemd `setup_namespace` + `mount_switch_root`):
 ///   1. boot: make-rshared `/` (recursive).
 ///   2. per service: unshare(CLONE_NEWNS) -> sandbox ns.
 ///   3. make-rslave `/` (recursive) — detach propagation from host.

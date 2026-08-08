@@ -1,4 +1,4 @@
-// Linux `struct arpreq` and SIOC*ARP command contract from uapi/linux/if_arp.h.
+// Linux `struct arpreq` and SIOC*ARP command contract.
 
 pub const SIOCDARP: u64 = 0x8953;
 pub const SIOCGARP: u64 = 0x8954;

@@ -1,5 +1,5 @@
-// `/proc/sys` ctl_table model (Linux `fs/proc/proc_sysctl.c` + `kernel/
-// sysctl.c`). D22: a declarative, NESTED `ctl_table` tree whose every leaf
+// `/proc/sys` ctl_table model, matching Linux's sysctl registration and
+// proc_sysctl inode binding. D22: a declarative, NESTED `ctl_table` tree whose every leaf
 // binds — via a `proc_handler` (`proc_handler.rs`) — to a LIVE kernel variable.
 // `register_sysctl_table` walks the tree, building each leaf's `/proc/sys/...`
 // path and installing the bound inode into procfs's own `PROC_REG` kernfs
@@ -50,7 +50,7 @@ use crate::proc_handler::{
 /// `proc_dointvec_minmax` window upper bound for a 32-bit-int knob.
 const INT_MAX: i64 = i32::MAX as i64;
 
-/// `fs.mqueue.{msg_max,msg_default}` window (`ipc/mq_sysctl.c` `msg_max_limit_*`).
+/// `fs.mqueue.{msg_max,msg_default}` window.
 const MQ_MSG_BOUNDS: (i64, i64) =
     (ipc::mqueue_policy::limits::MIN_MSGMAX, ipc::mqueue_policy::limits::HARD_MSGMAX);
 /// `fs.mqueue.{msgsize_max,msgsize_default}` window (`msg_maxsize_limit_*`).
@@ -152,7 +152,7 @@ const SYSCTL_TREE: &[Node] = &[
         File("protected_symlinks",    Int(1, Some((0, 1)))),
         File("suid_dumpable",         IntHook(get_suid_dumpable, set_suid_dumpable, Some((0, 2)))),
         Dir("mqueue", &[
-            // `ipc/mq_sysctl.c`: `queues_max` is a plain `proc_dointvec`; the
+            // `queues_max` is a plain `proc_dointvec`; the
             // four size knobs are `proc_dointvec_minmax` between the MIN_* an
             // admin may lower to and the HARD_* even CAP_SYS_RESOURCE cannot pass.
             File("queues_max",       IntHook(get_mq_queues_max, set_mq_queues_max, None)),
@@ -161,8 +161,8 @@ const SYSCTL_TREE: &[Node] = &[
             File("msg_default",      IntHook(get_mq_msg_default, set_mq_msg_default, Some(MQ_MSG_BOUNDS))),
             File("msgsize_default",  IntHook(get_mq_msgsize_default, set_mq_msgsize_default, Some(MQ_MSGSIZE_BOUNDS))),
         ]),
-        // `fs/notify/inotify/inotify_user.c` + `fs/notify/fanotify/
-        // fanotify_user.c` register these against LIVE variables — the two
+        // Linux's inotify + fanotify subsystems register these against LIVE
+        // variables — the two
         // `max_user_*` leaves are the user-namespace ucount ceilings the add
         // paths charge against (ENOSPC/EMFILE), the `max_queued_events` leaf is
         // the per-group queue depth snapshotted at group creation. Bound here,
@@ -198,7 +198,7 @@ const SYSCTL_TREE: &[Node] = &[
         // `vm.memfd_noexec` belongs to the active PID namespace. A child
         // copies its parent's effective scope and cannot write below the
         // parent's current floor; writes require CAP_SYS_ADMIN in the PID
-        // namespace's owning user namespace (`kernel/pid_sysctl.h`).
+        // namespace's owning user namespace.
         File("memfd_noexec", PerPidIntHook(get_memfd_noexec,
             check_memfd_noexec_write, set_memfd_noexec,
             Some((namespace_identity::PID_MEMFD_NOEXEC_SCOPE_EXEC as i64,
@@ -211,13 +211,13 @@ const SYSCTL_TREE: &[Node] = &[
         File("legacy_va_layout",        IntHook(get_legacy_va_layout,
                                                 set_legacy_va_layout, Some((0, 1)))),
         // `vm.mmap_rnd_bits` — the live entropy width `arch_mmap_rnd()` uses,
-        // bounded by this arch's Kconfig pair (`mm/mmap.c:66-75`). Linux has a
+        // bounded by this arch's Kconfig pair. Linux has a
         // `mmap_rnd_compat_bits` sibling only under `CONFIG_COMPAT`; this
         // kernel has no 32-bit personality, so there is nothing to register.
         File("mmap_rnd_bits",           IntHook(get_mmap_rnd_bits, set_mmap_rnd_bits,
             Some((aslr::tunable::mmap_rnd_bits_min() as i64,
                   aslr::tunable::mmap_rnd_bits_max() as i64)))),
-        // `vm.unprivileged_userfaultfd` (`mm/userfaultfd.c` `vm_userfaultfd_table`):
+        // `vm.unprivileged_userfaultfd`:
         // `proc_dointvec_minmax` over `sysctl_unprivileged_userfaultfd`, window
         // [SYSCTL_ZERO, SYSCTL_ONE], zero-initialised. `userfaultfd(2)` reads it
         // to decide whether an unprivileged caller may create a context able to
@@ -345,7 +345,7 @@ fn register_tree(prefix: &str, nodes: &[Node]) {
 /// # C: O(N leaves)
 pub fn register_sysctl_table(boot_id: &'static [u8]) {
     net::net_ns::materialize_state(&network_namespace::initial());
-    // The two `proc_do_uuid` leaves (`drivers/char/random.c` `random_table`).
+    // The two `proc_do_uuid` leaves, matching Linux's random.c sysctl table.
     // `boot_id` has `.data = &sysctl_bootid`: generated once, then stable.
     // `uuid` has NO `.data`, so each read generates a fresh v4 UUID — a
     // generator inode, not a snapshot every reader on this boot would share.

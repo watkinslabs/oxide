@@ -3,9 +3,9 @@
 //!
 //! `257_openat.rs` resolves an open in TWO phases: a scoped full-path walk,
 //! and — when that returns ENOENT and `O_CREAT` is set — a `LOOKUP_PARENT`
-//! walk that yields the directory the new file is created in. Linux hands the
-//! SAME `op->lookup_flags` to both (`fs/open.c` `build_open_flags` →
-//! `fs/namei.c` `path_openat`); there is no create-path exception. The slot
+//! walk that yields the directory the new file is created in. The same
+//! resolved lookup-flags value is handed to both phases; there is no
+//! create-path exception. The slot
 //! file built phase 2 from `LookupFlags::default()`, so every `RESOLVE_*` bit
 //! stopped constraining resolution the instant a create was involved.
 //!

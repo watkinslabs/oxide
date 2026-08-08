@@ -1,5 +1,5 @@
 // /proc/filesystems — every registered filesystem type, rendered from the LIVE
-// `vfs::fs` type registry (Linux `fs/filesystems.c` `filesystems_proc_show`).
+// `vfs::fs` type registry, matching Linux's filesystems_proc_show format.
 // The registry is the same list `sysfs(2)` indexes, so the file and the syscall
 // cannot disagree; a hardcoded body could and did.
 #![cfg(target_os = "oxide-kernel")]

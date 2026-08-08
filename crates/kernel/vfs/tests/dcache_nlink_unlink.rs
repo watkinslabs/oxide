@@ -119,8 +119,8 @@ fn last_unlink_with_open_fd_defers_eviction() {
 }
 
 // --- fsnotify_inoderemove gating ---------------------------------------------
-// Linux `dentry_unlink_inode`: `if (!inode->i_nlink) fsnotify_inoderemove()`
-// (`fs/dcache.c`). The count is what decides, not which syscall ran — which is
+// `dentry_unlink_inode`: `if (!inode->i_nlink) fsnotify_inoderemove()`.
+// The count is what decides, not which syscall ran — which is
 // why this lives here and not in `unlink(2)`.
 
 static DELETE_SELF_HITS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);

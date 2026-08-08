@@ -1,5 +1,5 @@
-// `membarrier(2)` admission tests. Every assertion mirrors a line of
-// `SYSCALL_DEFINE3(membarrier)` in Linux `kernel/sched/membarrier.c`.
+// `membarrier(2)` admission tests. Every assertion mirrors a step of
+// Linux's `SYSCALL_DEFINE3(membarrier)`.
 
 use super::*;
 

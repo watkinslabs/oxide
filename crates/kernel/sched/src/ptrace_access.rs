@@ -1,9 +1,9 @@
-// `__ptrace_may_access()` — Linux `kernel/ptrace.c`.
+// `__ptrace_may_access()`.
 //
 // Owned here rather than in the ptrace syscall shim because it is a pure
 // credential predicate that several subsystems consult: `ptrace(2)` itself,
 // `kcmp(2)`, `pidfd_getfd(2)`, `process_vm_readv(2)`, and
-// `perf_event_open(2)`'s `perf_check_permission()` (`kernel/events/core.c`).
+// `perf_event_open(2)`'s `perf_check_permission()`.
 // A second copy in any of those callers would be a split source of truth.
 
 use core::sync::atomic::Ordering;

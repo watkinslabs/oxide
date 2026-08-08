@@ -9,14 +9,14 @@ use super::may_create::may_create;
 use super::may_delete::may_delete;
 use super::permission::inode_permission;
 
-/// `renameat2(2)` flag bits (Linux `include/uapi/linux/fs.h`). The VFS-crate
+/// `renameat2(2)` flag bits. The VFS-crate
 /// canonical definitions; the syscall shim reuses these rather than re-deriving
 /// the bit values at the ABI boundary.
 pub const RENAME_NOREPLACE: u32 = 1 << 0;
 pub const RENAME_EXCHANGE:  u32 = 1 << 1;
 pub const RENAME_WHITEOUT:  u32 = 1 << 2;
 
-/// `do_renameat2` flag validation (Linux `fs/namei.c`): reject unknown bits and
+/// `do_renameat2` flag validation: reject unknown bits and
 /// the mutually-exclusive combinations. `RENAME_EXCHANGE` may not be combined
 /// with `RENAME_NOREPLACE` or `RENAME_WHITEOUT` (both `EINVAL`). # C: O(1)
 pub fn rename_flags_check(flags: u32) -> KResult<()> {
@@ -28,7 +28,7 @@ pub fn rename_flags_check(flags: u32) -> KResult<()> {
     Ok(())
 }
 
-/// `vfs_rename` permission gate (Linux `fs/namei.c`) — the DAC + type-agreement
+/// `vfs_rename` permission gate — the DAC + type-agreement
 /// checks for renaming the existing entry `old_victim` (in `old_dir`) onto a
 /// name in `new_dir`, where `new_target` is the entry currently at the
 /// destination (`None` if the destination name is free). `same_parent` is

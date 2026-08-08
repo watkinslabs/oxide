@@ -269,7 +269,7 @@ pub fn unpark_self_from_wait4() {
 ///     and without that assertion the task runs on two CPUs with a half-saved
 ///     context. Linux defers exactly this case to the owner
 ///     CPU's wake-list (`try_to_wake_up`'s `smp_load_acquire(&p->on_cpu)` ->
-///     `ttwu_queue_wakelist`, `kernel/sched/core.c`). The raw enqueue also
+///     `ttwu_queue_wakelist`). The raw enqueue also
 ///     ignored `cpus_allowed`, which only `select_task_rq` consults.
 /// # C: O(N_waiters + N_cpus)
 /// # Lk: WAITERS (released before the wake)

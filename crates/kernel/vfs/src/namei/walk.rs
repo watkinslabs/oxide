@@ -243,13 +243,13 @@ impl Nameidata {
                 // enforced separately at the frame push below.
                 self.total_link_count += 1;
                 if self.total_link_count > MAX_SYMLINK_DEPTH { return Err(VfsError::Eloop); }
-                // `i_op->get_link` (Linux `get_link`): a MAGIC link
+                // `i_op->get_link`: a MAGIC link
                 // (`/proc/<pid>/fd/<n>` …) yields a resolved JUMP target the
-                // walk RESETS to (Linux `nd_jump_link`); an ordinary symlink
+                // walk RESETS to; an ordinary symlink
                 // yields its BODY string to splice as a new path frame. Only
                 // magic inodes ever take the `Jump` arm, so the common symlink
                 // walk below is byte-for-byte unchanged.
-                // Linux `get_link` (fs/namei.c): a symlink traversed by the walk
+                // A symlink traversed by the walk
                 // has ITS atime bumped before the body is read, so `relatime`
                 // sees a followed symlink as an access.
                 let link_inode = child.inode().ok_or(VfsError::Enoent)?;

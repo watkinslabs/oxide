@@ -1,6 +1,5 @@
-// memfd_create(2) flag policy — Linux `mm/memfd.c` `sanitize_flags` (l.407),
-// `check_sysctl_memfd_noexec` (l.344), `memfd_alloc_file` (l.454) and
-// `alloc_name` (l.428) as of linux-master v7.2.0-rc4.
+// memfd_create(2) flag policy — Linux's `sanitize_flags`,
+// `check_sysctl_memfd_noexec`, `memfd_alloc_file` and `alloc_name`.
 //
 // NOT target-gated: `319_memfd_create.rs` carries `#![cfg(target_os =
 // "oxide-kernel")]`, so a `#[cfg(test)]` block inside it never compiles. The
@@ -9,25 +8,24 @@
 
 use syscall::errno::Errno;
 
-/// `include/uapi/linux/memfd.h`.
+/// memfd UAPI flag bits.
 pub const MFD_CLOEXEC:       u32 = 0x0001;
 pub const MFD_ALLOW_SEALING: u32 = 0x0002;
 pub const MFD_HUGETLB:       u32 = 0x0004;
 pub const MFD_NOEXEC_SEAL:   u32 = 0x0008;
 pub const MFD_EXEC:          u32 = 0x0010;
-/// `MFD_ALL_FLAGS` (`mm/memfd.c:342`).
+/// `MFD_ALL_FLAGS`.
 pub const MFD_ALL_FLAGS: u32 =
     MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_HUGETLB | MFD_NOEXEC_SEAL | MFD_EXEC;
-/// Huge-page size encoding admitted alongside `MFD_HUGETLB` only
-/// (`include/uapi/asm-generic/hugetlb_encode.h:20`).
+/// Huge-page size encoding admitted alongside `MFD_HUGETLB` only.
 pub const MFD_HUGE_SHIFT: u32 = 26;
 pub const MFD_HUGE_MASK:  u32 = 0x3f;
 
-/// `F_SEAL_*` (`include/uapi/linux/fcntl.h:47`). The seal word a fresh memfd
+/// `F_SEAL_*`. The seal word a fresh memfd
 /// carries; `F_ADD_SEALS`/`F_GET_SEALS` in `072_fcntl.rs` read the same word.
 pub use vfs::{F_SEAL_EXEC, F_SEAL_SEAL};
 
-/// `pidns_memfd_noexec_scope` levels (`include/linux/pid_namespace.h:21`).
+/// `pidns_memfd_noexec_scope` levels.
 pub const MEMFD_NOEXEC_SCOPE_EXEC: u32 =
     namespace_identity::PID_MEMFD_NOEXEC_SCOPE_EXEC as u32;
 pub const MEMFD_NOEXEC_SCOPE_NOEXEC_SEAL: u32 =
@@ -35,13 +33,13 @@ pub const MEMFD_NOEXEC_SCOPE_NOEXEC_SEAL: u32 =
 pub const MEMFD_NOEXEC_SCOPE_NOEXEC_ENFORCED: u32 =
     namespace_identity::PID_MEMFD_NOEXEC_SCOPE_NOEXEC_ENFORCED as u32;
 
-/// `shmem_get_inode(..., S_IFREG | S_IRWXUGO, ...)` (`mm/shmem.c:5793`) — a
+/// `shmem_get_inode(..., S_IFREG | S_IRWXUGO,...)` — a
 /// memfd inode is born 0777, NOT 0644.
 pub const MEMFD_PERM: u16 = 0o777;
-/// `MFD_NOEXEC_SEAL`: `inode->i_mode &= ~0111` (`mm/memfd.c:489`).
+/// `MFD_NOEXEC_SEAL`: `inode->i_mode &= ~0111`.
 pub const MEMFD_PERM_NOEXEC: u16 = MEMFD_PERM & !0o111;
 
-/// `MFD_NAME_PREFIX` / `MFD_NAME_MAX_LEN` (`mm/memfd.c:338`).
+/// `MFD_NAME_PREFIX` / `MFD_NAME_MAX_LEN`.
 pub const MFD_NAME_PREFIX: &[u8] = b"memfd:";
 pub const MFD_NAME_MAX_LEN: usize = vfs::path::NAME_MAX - MFD_NAME_PREFIX.len();
 
@@ -92,7 +90,7 @@ pub fn sanitize_flags_for_pidns(flags: u32,
 
 /// Seal word / inode mode / fd flags `memfd_alloc_file` derives from the
 /// sanitized flags. A shmem inode is born with `F_SEAL_SEAL` set
-/// (`mm/shmem.c:3030`); `MFD_ALLOW_SEALING` and `MFD_NOEXEC_SEAL` are the only
+/// ; `MFD_ALLOW_SEALING` and `MFD_NOEXEC_SEAL` are the only
 /// two flags that clear it, and `MFD_NOEXEC_SEAL` additionally sets
 /// `F_SEAL_EXEC` and strips the inode's exec bits.
 /// # C: O(1)
@@ -150,7 +148,7 @@ mod tests {
 
     #[test]
     fn hugetlb_and_allow_sealing_is_not_rejected() {
-        // No current check pairs them (`mm/memfd.c:407..426` only rejects
+        // No current check pairs them (Linux's `sanitize_flags` only rejects
         // undefined bits and EXEC|NOEXEC_SEAL); hugetlbfs grew seal support.
         assert!(sanitize_flags(MFD_HUGETLB | MFD_ALLOW_SEALING, DEFAULT).is_ok());
     }

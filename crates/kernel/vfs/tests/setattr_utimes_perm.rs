@@ -1,5 +1,5 @@
-//! `setattr_prepare` utimes permission gate (Linux `fs/utimes.c`
-//! `utimes_common` + `fs/attr.c` `setattr_prepare`). The `ATTR_TIMES_SET`
+//! `setattr_prepare` utimes permission gate (`utimes_common` +
+//! `setattr_prepare`). The `ATTR_TIMES_SET`
 //! distinction: setting BOTH atime AND mtime to "now" (NULL `times[]` or both
 //! UTIME_NOW) needs only MAY_WRITE (or owner/CAP_FOWNER); ANY other explicit
 //! `times[]` — a specific time, OR a per-field selection touching only one of

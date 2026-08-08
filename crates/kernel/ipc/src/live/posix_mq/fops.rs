@@ -1,4 +1,4 @@
-// `mqueue_file_operations` (`ipc/mqueue.c:1594-1600`): an mq descriptor is a
+// An mq descriptor is a
 // real file. `read(2)` reports the queue's state line, `poll(2)` reports
 // readability/writability, `flush` (every `close(2)`) drops the caller's
 // notification registration, and `write(2)` has no method at all — the POSIX
@@ -40,7 +40,7 @@ fn put(out: &mut [u8], at: &mut usize, s: &[u8]) {
     for &b in s { out[*at] = b; *at += 1; }
 }
 
-/// Linux `mqueue_read_file` (`ipc/mqueue.c:629-656`):
+/// The state line format is
 /// `"QSIZE:%-10lu NOTIFY:%-5d SIGNO:%-5d NOTIFY_PID:%-6d\n"`, where `QSIZE` is
 /// the total BYTES queued, `NOTIFY` the registered `sigev_notify` (0 when
 /// unregistered), `SIGNO` the signal only for a SIGEV_SIGNAL registration, and
@@ -87,8 +87,8 @@ impl FileOps for MqFileOps {
         Ok(n)
     }
 
-    /// Linux `mqueue_poll_file` (`ipc/mqueue.c:670-687`). # C: O(1)
-    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
+    /// Reports readiness without touching the wait queue. # C: O(1)
+    /// This description has a `->poll`. # C: O(1)
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
     fn poll_file(&self, inode: &Inode, _pos: u64) -> u32 {
         let Some(p) = inode.private::<super::model::MqInodePrivate>() else { return 0 };
@@ -100,7 +100,7 @@ impl FileOps for MqFileOps {
         mask
     }
 
-    /// Linux `mqueue_flush_file` (`ipc/mqueue.c:658-668`): every `close(2)` on
+    /// Every `close(2)` on
     /// a descriptor whose owner registered the notification tears that
     /// registration down, so a process that exits (or execs — mq descriptors
     /// are unconditionally `O_CLOEXEC`) never leaves a notification aimed at a

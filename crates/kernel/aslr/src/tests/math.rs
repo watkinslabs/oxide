@@ -26,7 +26,7 @@ fn mmap_rnd_is_page_aligned_and_within_budget() {
     }
 }
 
-/// `mm/util.c:433-448`. `mmap_base` must be page-aligned, must sit below
+/// `mmap_base` must be page-aligned, must sit below
 /// `STACK_TOP` by at least `MIN_GAP`, and must stay above the bottom of user
 /// space for every legal `RLIMIT_STACK`.
 #[test]
@@ -59,7 +59,7 @@ fn mmap_base_clears_the_lowest_possible_stack() {
     }
 }
 
-/// `mm/util.c:341-355`: the random page count is SUBTRACTED (both arches take
+/// Linux `randomize_stack_top`: the random page count is SUBTRACTED (both arches take
 /// the non-`STACK_GROWSUP` branch). A sign error here puts the stack above
 /// `USER_VA_END` and every exec faults immediately.
 #[test]
@@ -77,7 +77,7 @@ fn randomize_stack_top_subtracts_and_stays_aligned() {
     }
 }
 
-/// `mm/util.c:371-387`. Result is page-aligned, at or above the aligned start,
+/// Linux `randomize_page`. Result is page-aligned, at or above the aligned start,
 /// and strictly inside `start + range`.
 #[test]
 fn randomize_page_stays_in_range() {
@@ -95,7 +95,7 @@ fn randomize_page_stays_in_range() {
     assert_eq!(randomize_page(0x2000, PAGE_SIZE_BYTES - 1, u64::MAX), 0x2000);
 }
 
-/// `fs/binfmt_elf.c:1144-1145`: the bias is masked DOWN to the image's
+/// Linux's ET_DYN load-bias masking: the bias is masked DOWN to the image's
 /// coarsest `p_align`, so a 2 MiB-aligned image stays 2 MiB-aligned after
 /// randomisation. Losing this makes the segment's `p_vaddr % p_align`
 /// wrong and the image mis-maps.

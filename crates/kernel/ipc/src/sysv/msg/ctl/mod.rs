@@ -1,4 +1,4 @@
-//! `msgctl` (`ipc/msg.c` `ksys_msgctl`).
+//! `msgctl`.
 //!
 //! Module manifest:
 //!   `entry` — `msqid`/`cmd` validation and the command dispatch.

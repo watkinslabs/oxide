@@ -112,7 +112,7 @@ where F: FnMut(u32) -> Option<alloc::vec::Vec<u8>>
 mod tests {
     use super::*;
 
-    /// Reference vectors from glibc/elf/dl-hash.h test suite.
+    /// Reference vectors for the ELF GNU/SysV symbol-hash functions.
     #[test]
     fn elf_hash_known_vectors() {
         assert_eq!(elf_hash(b""), 0);

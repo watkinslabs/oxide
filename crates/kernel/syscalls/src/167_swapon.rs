@@ -8,7 +8,7 @@ use crate::swap_abi::swapon_precheck;
 /// `swapon(special, swap_flags)` — slot 167. Resolves a real block node or
 /// swapfile and activates its canonical PMM swap area.
 ///
-/// Argument order follows `mm/swapfile.c:3610-3614`: the `swap_flags` validity
+/// Argument order follows Linux's `SYSCALL_DEFINE2(swapon)`: the `swap_flags` validity
 /// mask is applied BEFORE `capable(CAP_SYS_ADMIN)`, so an unprivileged caller
 /// passing a bad flag gets EINVAL. Reversing the two turns every malformed
 /// call from an unprivileged process into EPERM and hides the caller's bug.
@@ -73,7 +73,7 @@ pub fn sys_swapon(args: &SyscallArgs) -> i64 {
             { klog::write_raw(b"[SWAPON] activate "); klog::write_raw(backing.name.as_bytes()); klog::write_raw(b"\n"); }
             pmm::swap::activate_file_with_options(backing.name, path, backing.device, flags.priority, discard)
         }
-        // `claim_swapfile` (`mm/swapfile.c`) accepts S_ISBLK and S_ISREG only.
+        // `claim_swapfile` accepts S_ISBLK and S_ISREG only.
         _ => return errno(Errno::Einval),
     };
     #[cfg(any(feature = "debug-boot", feature = "debug-swap"))]

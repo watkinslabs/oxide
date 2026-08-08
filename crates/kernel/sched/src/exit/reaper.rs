@@ -1,4 +1,4 @@
-// `find_child_reaper` / `find_new_reaper` (Linux `kernel/exit.c`): who adopts
+// `find_child_reaper` / `find_new_reaper` (Linux's exit path): who adopts
 // the children of an exiting task.
 //
 //   1. another live thread of our own thread group, if one exists

@@ -1,6 +1,6 @@
 // x86_64 signal-frame FPU/extended-state area (`uc_mcontext.fpstate`).
 //
-// Linux `arch/x86/kernel/fpu/signal.c` writes the task's XSAVE image into
+// Linux writes the task's XSAVE image into
 // the signal frame and re-loads it at `rt_sigreturn`. Without it a handler
 // that runs ANY glibc string/memory routine — every one of which is
 // SSE/AVX-optimised — destroys the interrupted code's XMM/YMM/ZMM and
@@ -10,8 +10,7 @@
 // host-unit-tested in `xstate/tests.rs`. The caller (`super`) owns the
 // user-memory accesses; this module never dereferences a user pointer.
 //
-// Byte map of the area `sigcontext.fpstate` points at (Linux
-// `struct _xstate`, `arch/x86/include/uapi/asm/sigcontext.h:149-197`):
+// Byte map of the area `sigcontext.fpstate` points at (Linux `struct _xstate`):
 //
 //   0x000..0x200  legacy FXSAVE image (`struct _fpstate_64`)
 //   0x0d0..0x0e0    mxcsr @0x18, mxcsr_mask @0x1c inside it
@@ -70,8 +69,8 @@ pub const XFEATURE_MASK_YMM: u64 = 1 << 2;
 /// `XFEATURE_PKRU` — the four-byte PKRU component whose standard-format
 /// offset is supplied by CPUID.0Dh:9.
 pub const XFEATURE_PKRU: u64 = 1 << 9;
-/// Fallback `mxcsr_feature_mask` when the CPU reports `mxcsr_mask == 0`
-/// (`arch/x86/kernel/fpu/init.c` `fpu__init_system_mxcsr`).
+/// Fallback `mxcsr_feature_mask` when the CPU reports `mxcsr_mask == 0`,
+/// per Linux's `fpu__init_system_mxcsr`.
 // Consumed by `fpu::mxcsr_mask_init`, which is kernel-target-only.
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub const MXCSR_DEFAULT_FEATURE_MASK: u32 = 0x0000_ffbf;
@@ -177,7 +176,7 @@ pub enum SwCheck {
     FxOnly,
 }
 
-/// Linux `check_xstate_in_sigframe()` (`fpu/signal.c:27-64`), as a pure
+/// Linux's sigframe xstate admission check, as a pure
 /// decision over the two words the caller fetched from user memory.
 /// `kernel_user_size` is our own `fpstate->user_size` — the user cannot
 /// claim a larger image than the kernel is prepared to consume.
@@ -198,7 +197,7 @@ pub fn check_xstate_in_sigframe(sw: &FpxSwBytes, magic2: u32, kernel_user_size: 
     SwCheck::Xstate { xstate_size: sw.xstate_size as usize, xfeatures: sw.xfeatures }
 }
 
-/// Linux `validate_user_xstate_header()` (`fpu/xstate.c:431-453`). On the
+/// Linux's user xstate-header validation. On the
 /// x86_64 fast path Linux lets `XRSTOR` raise #GP on exactly these
 /// conditions and treats the #GP as fatal; we copy-then-restore, so the
 /// check has to happen HERE or the `xrstor64` in `fpu_restore` faults inside
@@ -215,7 +214,7 @@ pub fn header_is_valid(img: &[u8], allowed_xfeatures: u64) -> bool {
 }
 
 /// Linux's x86_64 arm of the MXCSR check: "Reject invalid MXCSR values"
-/// (`fpu/signal.c:395-398`, `fpu/xstate.c:1343`). 32-bit masks instead; we
+/// on sigreturn. Linux uses 32-bit masks instead; we
 /// are 64-bit, so `build_restore_image` invokes this when FP, SSE, or YMM
 /// is being restored. A reserved MXCSR bit would then #GP `xrstor64`.
 /// # C: O(1)

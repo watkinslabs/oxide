@@ -1,10 +1,10 @@
-// Linux `___wait_event` (`include/linux/wait.h:302-327`) and
-// `prepare_to_wait_event` (`kernel/sched/wait.c:289-320`) — the ONE
+// Linux `___wait_event` and
+// `prepare_to_wait_event` — the ONE
 // interruptible-sleep loop every blocking path is built from.
 //
 // Why this exists: `prepare_to_wait_event` returns `-ERESTARTSYS`
-// (`wait.c:309`) when `signal_pending_state()` holds, and `___wait_event`
-// propagates it (`wait.h:315-318`). So in Linux `-ERESTARTSYS` is the DEFAULT
+// when `signal_pending_state()` holds, and `___wait_event`
+// propagates it. So in Linux `-ERESTARTSYS` is the DEFAULT
 // outcome of an interrupted wait and a real `-EINTR` is the exception a
 // syscall opts into. This kernel had no such primitive: 46 hand-rolled loops
 // each re-derived enqueue / signal-check / recheck / park, and every one of

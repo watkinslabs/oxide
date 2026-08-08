@@ -10,7 +10,7 @@ fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 /// # C: O(1)
 fn current_task() -> Option<&'static sched::Task> { sched::live::current() }
 
-/// Linux `wait_for_random_bytes()` (`drivers/char/random.c`): loop until
+/// Linux `wait_for_random_bytes()`: loop until
 /// `crng_ready()`, waking on a 1 s timeout so a pool that becomes ready with no
 /// explicit wakeup still releases waiters, and returning `-ERESTARTSYS` when a
 /// signal arrives first.
@@ -52,8 +52,8 @@ fn monotonic_ns() -> u64 {
 
 /// `sys_getrandom(buf, len, flags)` — slot 318. Fills `buf` from the kernel
 /// CSPRNG (`crng`: ChaCha20 with fast key erasure, seeded from virtio-rng /
-/// RDRAND / RNDR plus cycle-counter jitter — Linux
-/// `drivers/char/random.c`'s construction).
+/// RDRAND / RNDR plus cycle-counter jitter — Linux's CRNG
+/// construction).
 ///
 /// Flags per Linux `getrandom(2)`: unknown bits and `GRND_RANDOM|GRND_INSECURE`
 /// together are `EINVAL` (`syscall::getrandom::validate_grnd_flags`).

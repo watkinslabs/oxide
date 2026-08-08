@@ -2,7 +2,7 @@
 
 FROZEN 2026-08-06. Dep:`01`,`02`,`07`,`08`,`13`,`15`,`28`,`35`,`36`,`45`,`47`,`48`,`50`. Provides:graphical console glyph backend for `50` (VT).
 
-Full Linux fbcon-equivalent surface per `linux/drivers/video/console/fbcon.c` + `linux/drivers/tty/vt/vt.c` console code paths. No deferrals.
+Full Linux fbcon-equivalent surface: the framebuffer console driver plus the VT console code paths it serves. No deferrals.
 
 ## 1 Purpose
 
@@ -10,7 +10,7 @@ Linux fbcon-equivalent kernel module. Renders glyphs into a driver-neutral 0x00R
 
 ## 2 Invariants (frozen)
 
-1. Font format PSF v1 (`PSF1_MAGIC=0x36 0x04`) and PSF v2 (`PSF2_MAGIC=0x72 0xb5 0x4a 0x86`) per `linux/include/uapi/linux/kd.h` + `pcscreen_font.h`. Compiled-in defaults: 8×16 IBM VGA, 8×8 mini, 16×32 SUN. Runtime font load via `KDFONTOP` (`50` VT layer).
+1. Font format PSF v1 (`PSF1_MAGIC=0x36 0x04`) and PSF v2 (`PSF2_MAGIC=0x72 0xb5 0x4a 0x86`) per the Linux `kd` UAPI + PSF font format. Compiled-in defaults: 8×16 IBM VGA, 8×8 mini, 16×32 SUN. Runtime font load via `KDFONTOP` (`50` VT layer).
 2. Cell size matches loaded font; cell grid = `(xres / cw, yres / ch)`. Default 8×16 → 80×30 @ 640×480 / 80×25 @ 640×400 / 100×37 @ 800×600 / 128×48 @ 1024×768.
 3. Renderer surface: one 32-bit 0x00RRGGBB buffer for the active console; the driver sink preserves or converts the damaged pixels to its native format.
 4. Scrolling rerenders affected cells in software; fbcon issues one driver callback for the merged dirty rectangle.
@@ -51,7 +51,7 @@ struct psf2_header {
 };
 ```
 
-V1 parser supports v2 only (PSF v1 256-glyph 8×y header is half the size; rejected for now). Builtin font: `linux/lib/fonts/font_8x16.c` re-exported as a static byte-array.
+V1 parser supports v2 only (PSF v1 256-glyph 8×y header is half the size; rejected for now). Builtin font: the standard 8x16 VGA console font, re-exported as a static byte-array.
 
 ## 5 ANSI / CSI subset
 

@@ -1,6 +1,4 @@
-// Robust-futex list decoding and `handle_futex_death`'s branch ladder — Linux
-// `kernel/futex/core.c` `fetch_robust_entry` (`:1085-1099`) and
-// `handle_futex_death` (`:968-1082`).
+// Robust-futex list decoding and the death-handler's branch ladder.
 //
 // Non-gated: `live::futex::robust` is kernel-only, and these rules decide
 // whether a dying thread's peers are released or stranded forever.
@@ -12,20 +10,17 @@
 // the list stayed owned by a dead thread, silently, with its waiters blocked.
 
 /// `sizeof(struct robust_list_head)` on a 64-bit ABI: `robust_list list` (8) +
-/// `long futex_offset` (8) + `robust_list *list_op_pending` (8)
-/// (`include/uapi/linux/futex.h:212-231`). `set_robust_list(2)` accepts NO
-/// other length, and `get_robust_list(2)` reports THIS constant — never the
-/// length the caller happened to register.
+/// `long futex_offset` (8) + `robust_list *list_op_pending` (8). ABI-fixed:
+/// `set_robust_list(2)` accepts NO other length, and `get_robust_list(2)`
+/// reports THIS constant — never the length the caller happened to register.
 pub const ROBUST_LIST_HEAD_SIZE: u64 = 24;
 
-/// `include/uapi/linux/futex.h:207` — bit 0 of a `robust_list` pointer tags a
-/// PI futex.
+/// Bit 0 of a `robust_list` pointer tags a PI futex.
 pub const FUTEX_ROBUST_MOD_PI: u64 = 0x1;
-/// `include/uapi/linux/futex.h:208`.
+/// Mask covering all tag bits packed into a `robust_list` pointer.
 pub const FUTEX_ROBUST_MOD_MASK: u64 = FUTEX_ROBUST_MOD_PI;
 
-/// A decoded `robust_list` pointer: Linux's `(*entry, *mod)` pair from
-/// `fetch_robust_entry`.
+/// A decoded `robust_list` pointer: the address with tag bits split out.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct RobustPtr {
     /// The pointer with the mod bits cleared.
@@ -35,49 +30,47 @@ pub struct RobustPtr {
 }
 
 impl RobustPtr {
-    /// Linux `fetch_robust_entry`'s split:
-    /// `*entry = uentry & ~FUTEX_ROBUST_MOD_MASK; *mod = uentry & FUTEX_ROBUST_MOD_MASK;`
-    /// # C: O(1)
+    /// Split a raw fetched pointer word into its clean address and its tag
+    /// bits. # C: O(1)
     pub const fn decode(uentry: u64) -> Self {
         Self { addr: uentry & !FUTEX_ROBUST_MOD_MASK, mod_bits: uentry & FUTEX_ROBUST_MOD_MASK }
     }
 
-    /// `bool pi = !!(mod & FUTEX_ROBUST_MOD_PI);` (`core.c:971`).
-    /// # C: O(1)
+    /// True when the PI tag bit is set. # C: O(1)
     pub const fn pi(self) -> bool { self.mod_bits & FUTEX_ROBUST_MOD_PI != 0 }
 }
 
-/// Which list position an entry was reached from — Linux's `pending_op`
-/// argument (`HANDLE_DEATH_LIST` / `HANDLE_DEATH_PENDING`, `core.c:962-963`).
+/// Which list position an entry was reached from: the ordinary `list` chain,
+/// or the single in-flight `list_op_pending` slot.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum DeathSite {
-    /// Walked off `head->list` (`core.c:1146-1147`).
+    /// Walked off `head->list`.
     List,
-    /// Reached via `head->list_op_pending` (`core.c:1164-1165`).
+    /// Reached via `head->list_op_pending`.
     Pending,
 }
 
-/// What `handle_futex_death` does with one robust word.
+/// What the death handler does with one robust word.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum DeathAction {
-    /// `core.c:1022-1026`: wake a potential waiter WITHOUT touching the word.
+    /// Wake a potential waiter WITHOUT touching the word.
     WakeOnly,
-    /// `core.c:1042-1077`: cmpxchg OWNER_DIED in, then wake if non-PI.
+    /// cmpxchg OWNER_DIED in, then wake if non-PI.
     SetOwnerDied,
-    /// `core.c:1029-1030`: `owner != task_pid_vnr(curr)` — not ours.
+    /// `owner != task_pid_vnr(curr)` — not ours.
     Skip,
 }
 
-/// Linux `handle_futex_death`'s branch ladder, in Linux's order.
+/// The robust-death branch ladder, evaluated in this exact order.
 ///
 /// The `WakeOnly` case is subtle and is why `pending_op` and `pi` both have to
 /// be threaded down here: a REGULAR futex reached through `list_op_pending`
 /// whose owner field is already zero means userspace released the lock and was
 /// killed before it could issue the waking `futex()` call. Waking without
-/// setting OWNER_DIED is correct there — "If the futex value is zero, the rest
+/// setting OWNER_DIED is correct there — if the futex value is zero, the rest
 /// of the user space mutex state is consistent, so a woken waiter will just
-/// take over the uncontended futex. Setting the OWNER_DIED bit would create
-/// inconsistent state" (`core.c:1010-1018`). A PI futex never takes this path.
+/// take over the uncontended futex; setting the OWNER_DIED bit would create
+/// inconsistent state. A PI futex never takes this path.
 /// # C: O(1)
 pub const fn death_verdict(owner: u32, curr_tid: u32, pi: bool, site: DeathSite) -> DeathAction {
     if matches!(site, DeathSite::Pending) && !pi && owner == 0 { return DeathAction::WakeOnly; }
@@ -134,7 +127,7 @@ mod tests {
 
     #[test]
     fn a_released_pending_regular_futex_is_woken_without_setting_owner_died() {
-        // core.c:1022 — pending_op && !pi && !owner.
+        // WakeOnly requires all three: pending_op && !pi && owner == 0.
         assert_eq!(death_verdict(0, TID, false, DeathSite::Pending), DeathAction::WakeOnly);
     }
 

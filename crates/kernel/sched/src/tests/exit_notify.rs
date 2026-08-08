@@ -1,7 +1,7 @@
 // `exit_notify` / `forget_original_parent` driven against the REAL task
 // registry: adoption order, the SIGCHLD disposition that suppresses a zombie,
-// and the process-group orphan rule. These are the parts of `kernel/exit.c`
-// that only show their bugs once several tasks exist at once.
+// and the process-group orphan rule. These are the parts of Linux exit
+// notification that only show their bugs once several tasks exist at once.
 
 use alloc::sync::Arc;
 use alloc::vec::Vec as AVec;

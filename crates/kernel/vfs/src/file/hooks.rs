@@ -64,7 +64,7 @@ struct InodeHooks {
     inode_evict: Option<fn(&InodeRef)>,
     /// `fsnotify_change` — a successful `notify_change`. Args: (inode, ia_valid).
     /// The subscriber owns the `ATTR_*` → event-mask mapping, exactly as
-    /// Linux's `fsnotify_change` inline does (`include/linux/fsnotify.h`).
+    /// Linux's `fsnotify_change` inline does.
     setattr: Option<fn(&InodeRef, u32)>,
     /// A filesystem reported an on-disk inconsistency or an I/O failure of its
     /// own structures. Args: (`st_dev` of the filesystem, the inode the failure
@@ -154,8 +154,8 @@ pub fn set_dirent_create_hook(f: fn(&InodeRef, &str, bool)) { HOOKS.lock().diren
 pub fn set_dirent_delete_hook(f: fn(&InodeRef, &str, bool)) { HOOKS.lock().dirent_delete = Some(f); }
 
 /// Install the delete-self hook. Fired from the dcache, where Linux fires it:
-/// `dentry_unlink_inode` runs `if (!inode->i_nlink) fsnotify_inoderemove(inode)`
-/// (`fs/dcache.c`). Firing from `unlink(2)` instead both over-reported (a file
+/// the dentry-unlink path fires it exactly when the inode's link count drops
+/// to zero. Firing from `unlink(2)` instead both over-reported (a file
 /// with remaining hardlinks got IN_DELETE_SELF on the first name removed) and
 /// under-reported (`rmdir` never sent it at all, so a watch on a removed
 /// directory never learned it was gone). # C: O(1)
@@ -182,8 +182,8 @@ pub fn fire_inode_evict_hook(inode: &InodeRef) {
 }
 
 /// Install the setattr hook. Fired from the ONE point Linux fires it: after
-/// `i_op->setattr` succeeds inside `notify_change` (`fs/attr.c` `notify_change`
-/// → `fsnotify_change`). Per-syscall firing cannot work — it misses every
+/// `i_op->setattr` succeeds inside `notify_change`, which then calls
+/// `fsnotify_change`. Per-syscall firing cannot work — it misses every
 /// caller that does not go through that syscall (`fchmod`, `fchmodat`,
 /// `fchown`, `fchownat`, `truncate`, `ftruncate`, `utimensat`), and aarch64
 /// has no legacy `chmod`/`chown` slots at all. # C: O(1)

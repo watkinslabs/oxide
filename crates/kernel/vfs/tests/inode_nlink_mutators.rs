@@ -1,9 +1,9 @@
-//! inode `i_nlink` mutators (Linux fs/inode.c `set_nlink`/`inc_nlink`/
+//! inode `i_nlink` mutators (`set_nlink`/`inc_nlink`/
 //! `drop_nlink`). The authoritative `i_nlink` lives icache-side in the owning
 //! superblock's inode cache: seeded from the built inode's `nlink()` when the
 //! slot is built, then mutated by these three ops. The load-bearing observable
-//! is the drop-to-zero predicate — `i_nlink == 0` is Linux's "no names left →
-//! evict on last `iput`" flag (`i_nlink_zero`).
+//! is the drop-to-zero predicate — `i_nlink == 0` is the "no names left →
+//! evict on last `iput`" flag.
 
 use std::sync::Arc;
 

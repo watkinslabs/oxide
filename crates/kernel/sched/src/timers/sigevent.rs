@@ -7,7 +7,7 @@ use syscall::errno::Errno;
 
 use crate::timer_model::Notify;
 
-/// `include/uapi/asm-generic/siginfo.h`. SIGEV_THREAD_ID is a bit, not an
+/// `SIGEV_*` notification kinds. SIGEV_THREAD_ID is a bit, not an
 /// ordinal — the kernel BUILD_BUG_ONs that it shares no bit with the others.
 pub const SIGEV_SIGNAL: i32 = 0;
 pub const SIGEV_NONE: i32 = 1;

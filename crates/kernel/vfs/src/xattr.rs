@@ -37,7 +37,7 @@ pub enum XattrError {
     Fs(crate::VfsError),
 }
 
-/// `simple_xattrs` (Linux `fs/xattr.c`) — a per-inode name→value map under the
+/// `simple_xattrs` — a per-inode name→value map under the
 /// inode's own lock (rank `Inode`, 40). Embedded in an inode's `i_xattrs`, so
 /// the store is OWNED by the inode object and dies with it — no global table,
 /// no cross-fs leakage. # C: O(log N) per op

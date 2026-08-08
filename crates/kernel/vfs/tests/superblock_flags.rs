@@ -94,7 +94,7 @@ fn shutdown_clears_active_flag_keeps_born() {
 
 #[test]
 fn flag_constants_match_linux_values() {
-    // Linux include/linux/fs.h numeric values (MS_*/SB_* one-to-one in low bits).
+    // Linux numeric values (MS_*/SB_* one-to-one in low bits).
     assert_eq!(SB_RDONLY, 1);
     assert_eq!(SB_NOSUID, 2);
     assert_eq!(SB_NODEV, 4);

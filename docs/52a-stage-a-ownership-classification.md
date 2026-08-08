@@ -263,7 +263,7 @@ Order matters: domain crates may depend on `pmm-setup`, `sched`, and
    binary (keep in `kernel/src/smoke/`)? Currently they're invoked
    from `kernel_main` and produce boot-log lines — runtime smokes.
 3. **`signal` vs `sig_dispatch`**: rename crate to `signal` for
-   clarity vs Linux convention (`kernel/signal.c`)?
+   clarity vs Linux's own naming convention?
 4. **Exact split of `syscall_glue.rs:999`**: the dispatch table
    assembly + per-syscall NR table glue currently live together.
    Spec says the dispatch table assembly stays in `kernel/`. Where

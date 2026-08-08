@@ -1,5 +1,6 @@
-// Linux-conformance tests for the xattr decision layer. Every case cites the
-// `fs/xattr.c` / `security/commoncap.c` / `fs/posix_acl.c` rule it pins.
+// Conformance tests for the xattr decision layer. Every case pins one
+// namespace/permission/capability rule from the ABI (xattr namespace
+// permission model, the `security.*` capability gate, POSIX ACL handling).
 
 extern crate alloc;
 use alloc::string::String;
@@ -179,7 +180,7 @@ fn immutable_and_append_only_inodes_reject_every_xattr_write() {
     }
 }
 
-// --- `security/commoncap.c` gate ------------------------------------------
+// --- `security.*` capability gate ------------------------------------------
 
 #[test]
 fn security_namespace_needs_cap_sys_admin_except_file_caps() {

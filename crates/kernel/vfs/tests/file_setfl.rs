@@ -1,4 +1,4 @@
-//! `File::set_fl` — the `fcntl(F_SETFL)` work fn (Linux `setfl`, `fs/fcntl.c`).
+//! `File::set_fl` — the `fcntl(F_SETFL)` work fn.
 //! `F_SETFL` may change ONLY the status flags `O_APPEND`/`O_NONBLOCK`/
 //! `O_DIRECT`/`O_NOATIME` on an already-open file description; the access mode
 //! (`O_RDONLY`/`O_WRONLY`/`O_RDWR`) and the creation-time flags
@@ -89,8 +89,8 @@ fn noatime_settable_and_region_overwritten() {
 }
 
 /// `F_SETFL` may NOT switch a regular file to `O_DIRECT` when the backend has
-/// no direct-I/O path: `if (!S_ISFIFO(inode->i_mode) && (arg & O_DIRECT) &&
-/// !(filp->f_mode & FMODE_CAN_ODIRECT)) return -EINVAL;` (`fs/fcntl.c:62-65`).
+/// no direct-I/O path: on a non-FIFO inode, requesting `O_DIRECT` without
+/// backend direct-I/O support is EINVAL.
 ///
 /// Accepting it and continuing to buffer is the failure this rejects — a caller
 /// that sets `O_DIRECT` for correctness would be told it succeeded while its
@@ -108,8 +108,8 @@ fn direct_rejected_without_backend_support() {
 }
 
 /// The `O_DIRECT` gate is scoped to regular files. On a FIFO the bit selects
-/// packet mode (`pipe2(2)`), which Linux exempts by name — `fs/fcntl.c:61`
-/// "Pipe packetized mode is controlled by O_DIRECT flag".
+/// packet mode (`pipe2(2)`), which is exempted from the direct-I/O backend
+/// check by name.
 #[test]
 fn direct_still_settable_on_a_fifo() {
     let ino: InodeRef = InodeBuilder::new(0x60, mk_mode(FileType::Fifo, 0),

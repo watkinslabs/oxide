@@ -1,5 +1,5 @@
-//! `setattr_prepare` owner gate on an IDMAPPED mount (Linux `fs/attr.c`
-//! `setattr_prepare` → `inode_owner_or_capable` → `vfsuid_has_mapping`). The
+//! `setattr_prepare` owner gate on an IDMAPPED mount (via
+//! `inode_owner_or_capable` → vfsuid mapping check). The
 //! chmod / specific-time-utimes owner branch must reduce to
 //! `inode_owner_or_capable`, NOT the open-coded `uid == vfsuid || cap_fowner`:
 //! when an idmapped mount's extents do not cover the inode's fs owner, the

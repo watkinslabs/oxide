@@ -1,13 +1,12 @@
-// `SECCOMP_SET_MODE_FILTER` flag bits + the validation ladder
-// `seccomp_set_mode_filter` (`kernel/seccomp.c`) runs before it touches
-// anything else.
+// `SECCOMP_SET_MODE_FILTER` flag bits + the validation ladder that must run
+// before anything else is touched.
 //
 // UNGATED on purpose (`CLAUDE.md` phantom-test rule): the decision lives
 // here so `#[cfg(test)]` below actually compiles and runs.
 
 use syscall::errno::Errno;
 
-/// `include/uapi/linux/seccomp.h`.
+/// seccomp filter-install ABI flag bits.
 pub const SECCOMP_FILTER_FLAG_TSYNC:              u64 = 1 << 0;
 pub const SECCOMP_FILTER_FLAG_LOG:                u64 = 1 << 1;
 pub const SECCOMP_FILTER_FLAG_SPEC_ALLOW:         u64 = 1 << 2;

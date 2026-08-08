@@ -18,8 +18,8 @@ vmm     = { path = "../../kernel/mm-vmm" }
 devfs   = { path = "../../kernel/devfs" }
 vfs     = { path = "../../kernel/vfs" }
 timekeeper = { path = "../../kernel/timekeeper" }
-# mq_notify(SIGEV_THREAD) delivers its cookie on a netlink socket, exactly as
-# ipc/mqueue.c calls netlink_getsockbyfd()/netlink_sendskb().
+# mq_notify(SIGEV_THREAD) delivers its cookie on a netlink socket looked up
+# by the notifying thread's fd, then sent as a single skb.
 netlink = { path = "../../kernel/netlink" }
 
 # Arch MMU for shared-futex physical-page keying (translate user va->pa under

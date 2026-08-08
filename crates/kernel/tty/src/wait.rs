@@ -2,7 +2,7 @@
 //
 // Linux blocks a tty reader on `tty->read_wait` with the classic
 // `add_wait_queue` / `prepare_to_wait` → re-check condition → `schedule`
-// loop (`drivers/tty/n_tty.c:n_tty_read`). The load-bearing property is
+// loop (Linux's `n_tty_read`). The load-bearing property is
 // that enqueuing the waiter happens BEFORE the final condition re-check,
 // and that both the enqueue and the producer's (queue-bytes + wake) run
 // under the SAME serializing lock — so a byte arriving in the window

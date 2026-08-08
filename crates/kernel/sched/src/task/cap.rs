@@ -1,4 +1,4 @@
-// Linux capability numbers per `linux/capability.h`. Bit position in
+// Linux capability numbers per the capability UAPI. Bit position in
 // `cap_effective` / `cap_permitted` / `cap_bounding` masks. v1
 // recognises every defined capability slot 0..40; unknowns return
 // false from `Creds::has_cap`. Split from task.rs for the 1000-line

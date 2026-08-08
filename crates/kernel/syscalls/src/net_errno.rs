@@ -61,7 +61,7 @@ pub(crate) fn sock_intr_errno(deadline_ns: u64) -> i64 {
 
 /// The interrupted-wait arm of a blocking stream RECEIVE. Linux breaks out of
 /// `tcp_recvmsg_locked`'s loop with the bytes already copied whenever any were
-/// (`net/ipv4/tcp.c:2735-2742`) and reports `sock_intr_errno(timeo)` only on the
+/// and reports `sock_intr_errno(timeo)` only on the
 /// nothing-copied arm (`tcp.c:2783-2786`); `unix_stream_read_generic` has the
 /// same split against the `total`-carrying
 /// caller). # C: O(1)

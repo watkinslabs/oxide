@@ -14,7 +14,7 @@ use vfs::InodeRef;
 pub const TRACEFS_SUPER_MAGIC: u64 = 0x7472_6163;
 pub const DEBUGFS_SUPER_MAGIC: u64 = 0x6462_6720;
 
-/// tracefs. `TRACEFS_MAGIC` (linux/magic.h).
+/// tracefs. `TRACEFS_MAGIC` — the tracefs statfs f_type value.
 pub struct TracefsFs;
 
 impl vfs::fs::FileSystem for TracefsFs {
@@ -33,7 +33,7 @@ impl vfs::fs::FileSystem for TracefsFs {
     }
 }
 
-/// debugfs. `DEBUGFS_MAGIC` (linux/magic.h).
+/// debugfs. `DEBUGFS_MAGIC` — the debugfs statfs f_type value.
 pub struct DebugfsFs;
 
 impl vfs::fs::FileSystem for DebugfsFs {
@@ -51,7 +51,7 @@ impl vfs::fs::FileSystem for DebugfsFs {
     }
 }
 
-/// configfs. `CONFIGFS_MAGIC` (linux/magic.h).
+/// configfs. `CONFIGFS_MAGIC` — the configfs statfs f_type value.
 pub struct ConfigfsFs;
 
 impl vfs::fs::FileSystem for ConfigfsFs {

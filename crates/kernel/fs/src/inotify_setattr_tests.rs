@@ -5,8 +5,9 @@
 // slots only. aarch64 has none of those three slots, and glibc routes chmod()
 // through fchmodat and chown() through fchownat on x86_64 too, so fchmod,
 // fchown, fchmodat, fchownat, truncate, ftruncate and utimensat produced NO
-// event at all. Linux fires once, from `notify_change` (`fs/attr.c`), which is
-// where the hook now lives.
+// event at all. The fix is to fire once, from the single VFS setattr choke
+// point every attribute change funnels through, which is where the hook now
+// lives.
 //
 // Included as a child module of `inotify` via `#[path]`, so `use super::*`
 // reaches the module-private dispatch items.
@@ -38,7 +39,7 @@ fn root_cred() -> Cred {
     }
 }
 
-// ---- the Linux table (include/linux/fsnotify.h `fsnotify_change`) ----------
+// ---- the ATTR_* -> inotify event-mask table --------------------------------
 
 #[test]
 fn owner_and_mode_changes_are_attrib() {
@@ -160,7 +161,7 @@ fn a_rejected_setattr_fires_nothing() {
     assert_eq!(masks(&g), Vec::<u32>::new(), "a rejected setattr is silent");
 }
 
-// --- inotify_read shape (Linux fs/notify/inotify/inotify_user.c) -------------
+// --- inotify_read shape ------------------------------------------------------
 // `read` and `read_nonblock` are ONE Linux function differing only by the
 // O_NONBLOCK arm, so every drain/short-buffer rule must hold identically on
 // both. `read_nonblock` used to delegate to the blocking read, which is only

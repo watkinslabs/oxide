@@ -185,7 +185,7 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
             }
             // `MmuOps::unmap` does NOT invalidate on either arch (both walkers
             // just clear the leaf), so the invalidate has to happen here,
-            // BEFORE the frame is released below (Linux `mm/mmu_gather.c`:
+            // BEFORE the frame is released below (Linux's invariant order:
             // unhook -> invalidate -> free, never reordered).
             // aarch64 needs this at least as much as x86: `tlbi vae1is` is the
             // ONLY invalidation ARM gets, because `shootdown_others_va` is a
@@ -315,7 +315,7 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
             // corrupting grandchild's view of the same struct.
             // `MmuOps::unmap` does NOT invalidate on either arch (both walkers
             // just clear the leaf), so the invalidate has to happen here,
-            // BEFORE the frame is released below (Linux `mm/mmu_gather.c`:
+            // BEFORE the frame is released below (Linux's invariant order:
             // unhook -> invalidate -> free, never reordered).
             // aarch64 needs this at least as much as x86: `tlbi vae1is` is the
             // ONLY invalidation ARM gets, because `shootdown_others_va` is a

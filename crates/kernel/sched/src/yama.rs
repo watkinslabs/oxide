@@ -1,4 +1,4 @@
-// Yama's ptrace restrictions — `security/yama/yama_lsm.c`, reachable through
+// Yama's ptrace restrictions, reachable through
 // `/proc/sys/kernel/yama/ptrace_scope`.
 //
 // Owned by `sched` beside `ptrace_access` because it is the second half of one
@@ -32,20 +32,17 @@ pub fn scope() -> u8 { SCOPE.load(Ordering::Acquire) }
 
 /// Install a new scope.
 ///
-/// The knob locks only once it reaches its MAXIMUM, not on every raise. The
-/// reference's handler copies the table and, when the current value already
-/// equals the maximum, raises the minimum to that maximum — so `[0, max)` stays
-/// freely writable in both directions and only `max` is a one-way door:
-///
-///   /* Lock the max value if it ever gets set. */
-///   if (*(int *)table_copy.data == *(int *)table_copy.extra2)
-///           table_copy.extra1 = table_copy.extra2;
+/// The knob locks only once it reaches its MAXIMUM, not on every raise: once
+/// the current value equals the maximum, the minimum accepted value is raised
+/// to that same maximum, so `[0, max)` stays freely writable in both
+/// directions right up until the write that reaches `max`, and only `max`
+/// itself is a one-way door.
 ///
 /// Refusing every lowering instead made the default value a floor, so the
 /// boot-time sysctl apply — which writes 0 from the shipped configuration —
 /// was refused with EINVAL and failed the whole unit.
 ///
-/// Returns false for a refused write (the reference's `-EINVAL`).
+/// Returns false for a refused write (Linux's `-EINVAL`).
 /// # C: O(1)
 pub fn set_scope(new: i64) -> bool {
     if !(0..=SCOPE_MAX as i64).contains(&new) { return false; }
@@ -66,8 +63,7 @@ static RELATIONS: Spinlock<Vec<Relation>, TaskListClass> = Spinlock::new(Vec::ne
 
 /// `yama_ptracer_add`: record that `tracee` permits `tracer`. `tracer ==
 /// None` is `PR_SET_PTRACER_ANY`. A second call for the same tracee REPLACES
-/// the first, matching Linux's `if (relation->tracee == tracee) { ... break; }`
-/// update-in-place.
+/// the first entry in place, matching Linux's update-in-place semantics.
 /// # C: O(N_relations)
 pub fn ptracer_add(tracee: u32, tracer: Option<u32>) {
     let mut g = RELATIONS.lock();

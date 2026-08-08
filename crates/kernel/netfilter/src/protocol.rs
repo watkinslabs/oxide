@@ -1,4 +1,4 @@
-/// 4-byte `struct nfgenmsg` per `linux/netfilter/nfnetlink.h`.
+/// 4-byte `struct nfgenmsg` — the nfnetlink message header.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default)]
 pub struct Nfgenmsg {

@@ -285,9 +285,8 @@ pub trait FileBacking: Send + Sync {
     fn writeback_range(&self, _start: u64, _end: u64) -> Result<(), ()> { Ok(()) }
 
     /// `msync(MS_SYNC)`: make `[start,end)` DURABLE, not merely written —
-    /// Linux `mm/msync.c:96` calls `vfs_fsync_range(vma->vm_file, fstart, fend,
-    /// 1)`, which is page-cache writeback FOLLOWED BY the filesystem's journal
-    /// commit and a device barrier.
+    /// Linux's fsync-range call is page-cache writeback FOLLOWED BY the
+    /// filesystem's journal commit and a device barrier.
     ///
     /// Distinct from [`Self::writeback_range`], which only hands the bytes to
     /// the filesystem. A backing that stops at `writeback_range` gives

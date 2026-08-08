@@ -72,7 +72,7 @@ mod statfs_tests {
         assert_eq!(t.magic(), TMPFS_MAGIC);
         assert_eq!(r.magic(), RAMFS_MAGIC);
         assert_ne!(TMPFS_MAGIC, RAMFS_MAGIC);
-        assert_eq!(RAMFS_MAGIC, 0x8584_58f6, "linux/magic.h RAMFS_MAGIC");
+        assert_eq!(RAMFS_MAGIC, 0x8584_58f6, "RAMFS_MAGIC statfs f_type value");
         assert_eq!(t.name(), "tmpfs");
         assert_eq!(r.name(), "ramfs");
         // The magic reaches statfs through `s_op`, not just `FileSystem::magic`.

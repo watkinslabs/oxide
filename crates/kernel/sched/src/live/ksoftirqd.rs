@@ -1,4 +1,4 @@
-//! Per-CPU `ksoftirqd` kthreads, per Linux `kernel/softirq.c`
+//! Per-CPU `ksoftirqd` kthreads, per Linux
 //! (`run_ksoftirqd` / `wakeup_softirqd`, registered per-CPU via smpboot). One
 //! thread per online CPU, each PINNED to its CPU (`cpus_allowed`), draining
 //! ONLY that CPU's softirq pending mask in PROCESS context when the IRQ-tail

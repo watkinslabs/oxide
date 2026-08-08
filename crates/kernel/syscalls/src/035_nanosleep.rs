@@ -81,7 +81,7 @@ fn write_remaining(rem: u64, left: u64) -> Result<(), i64> {
     Ok(())
 }
 
-/// Linux `do_nanosleep`'s interrupted tail (`kernel/time/hrtimer.c:2408-2422`)
+/// Linux `do_nanosleep`'s interrupted tail 
 /// plus `hrtimer_nanosleep`'s ABS/REL split (`hrtimer.c:2446-2458`):
 ///
 /// * RELATIVE (`HRTIMER_MODE_REL` — every `nanosleep(2)` and a
@@ -91,7 +91,7 @@ fn write_remaining(rem: u64, left: u64) -> Result<(), i64> {
 ///   `-ERESTART_RESTARTBLOCK`. Carrying the absolute deadline is the entire
 ///   point — re-entering the relative call would sleep the FULL duration again.
 /// * `TIMER_ABSTIME` (`HRTIMER_MODE_ABS`): the syscall entry already forced
-///   `rmtp = NULL` (`kernel/time/posix-timers.c:1400-1401`), so nothing is
+/// `rmtp = NULL`, so nothing is
 ///   copied out, NO restart block is armed, and the code is `-ERESTARTNOHAND`
 ///   — re-entering the same absolute call is already the remainder.
 /// # C: O(1)
@@ -180,8 +180,8 @@ pub fn sys_nanosleep(args: &SyscallArgs) -> i64 {
     // do_no_restart_syscall` before the sleep, so a fresh call never inherits
     // a previous one's continuation.
     cur.restart_block.disarm();
-    // `nanosleep(2)` is always `HRTIMER_MODE_REL` + CLOCK_MONOTONIC
-    // (`kernel/time/hrtimer.c:2480`), so it can never take the ABSTIME arm.
+    // `nanosleep(2)` is always `HRTIMER_MODE_REL` + CLOCK_MONOTONIC,
+    // so it can never take the ABSTIME arm.
     sleep_until_deadline(cur, deadline, rem, false)
 }
 

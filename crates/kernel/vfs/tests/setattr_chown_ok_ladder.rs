@@ -1,4 +1,4 @@
-//! `chown_ok` / `chgrp_ok` (Linux `fs/attr.c`) — the exact authorization
+//! `chown_ok` / `chgrp_ok` — the exact authorization
 //! ladder `chown(2)` runs, and the `EOVERFLOW` owner-mapping rule that follows
 //! it in `notify_change`.
 //!

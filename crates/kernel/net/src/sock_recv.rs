@@ -14,7 +14,7 @@ pub fn recv_blocking(sock: &Arc<InetSocket>, max_len: usize, opts: RecvOptions, 
             Err(NetError::Eagain) => {}
             Err(e) => return Err(e),
         }
-        // Linux `__skb_wait_for_more_packets` (`net/core/datagram.c:128`):
+        // Linux `__skb_wait_for_more_packets`:
         // `sock_intr_errno(*timeo)` — ERESTARTSYS with no SO_RCVTIMEO,
         // EINTR with one, because a timed wait cannot carry its remaining
         // time across a restart.

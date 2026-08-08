@@ -3,8 +3,8 @@
 //
 // Split out of `linux_sync.rs` at the 500-line cap (`docs/08§7`). The
 // interesting one is `prepare_to_wait_event`: Linux returns `-ERESTARTSYS`
-// from it (`kernel/sched/wait.c:309`) and `___wait_event` propagates that
-// (`include/linux/wait.h:315-318`), so a shim returning a flat `0` makes every
+// from it when a signal is pending, and `___wait_event` propagates that
+// return value, so a shim returning a flat `0` makes every
 // module-side `wait_event_interruptible` UNINTERRUPTIBLE.
 
 use core::ffi::c_void;
@@ -50,10 +50,10 @@ pub(super) extern "C" fn init_wait_entry(e: *mut LinuxWaitQueueEntry, flags: i32
     // SAFETY: non-null pointer names caller-owned wait entry storage.
     unsafe { (*e).flags = flags as u32; (*e).private = core::ptr::null_mut(); (*e).func = core::ptr::null_mut(); (*e).seq = 0; }
 }
-/// Linux `prepare_to_wait_event` (`kernel/sched/wait.c:289-320`). The
-/// `-ERESTARTSYS` at `wait.c:309` is the entire reason `wait_event_interruptible`
-/// is interruptible at all: `___wait_event` propagates this return
-/// (`include/linux/wait.h:315-318`). Returning a flat `0`, as this shim did,
+/// Linux `prepare_to_wait_event`. The
+/// `-ERESTARTSYS` return on a pending signal is the entire reason
+/// `wait_event_interruptible` is interruptible at all: `___wait_event`
+/// propagates this return value. Returning a flat `0`, as this shim did,
 /// made every module-side `wait_event_interruptible` UNINTERRUPTIBLE — a
 /// signal could never break the loop.
 pub(super) extern "C" fn prepare_to_wait_event(w: *mut LinuxWaitQueueHead, e: *mut LinuxWaitQueueEntry, state: i32) -> isize {

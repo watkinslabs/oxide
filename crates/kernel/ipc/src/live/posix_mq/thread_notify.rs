@@ -1,10 +1,9 @@
-// `mq_notify(SIGEV_THREAD)`'s netlink half — Linux `netlink_getsockbyfd`
-// (`net/netlink/af_netlink.c`) + `netlink_attachskb` / `netlink_sendskb`
-// called from `do_mq_notify` (`ipc/mqueue.c:1287-1318, :824-827`).
+// `mq_notify(SIGEV_THREAD)`'s netlink half: resolves the registrant's netlink
+// socket by fd and delivers the stamped cookie on it.
 //
 // The registration holds the SOCKET, not the descriptor number: delivery runs
 // in the SENDING process's context, where the registrant's fd number means
-// nothing, and Linux likewise `sock_hold()`s the socket for the life of the
+// nothing, so the socket is held for the life of the
 // registration. That is what lets glibc's `mq_notify` helper thread keep
 // working after it closes its own copy of the fd.
 

@@ -1,5 +1,5 @@
-// Linux `arch_do_signal_or_restart(regs)` (`arch/x86/kernel/signal.c`,
-// `arch/arm64/kernel/signal.c`): dequeue one signal, deliver it, and apply the
+// Linux `arch_do_signal_or_restart(regs)` (x86_64 and aarch64 alike):
+// dequeue one signal, deliver it, and apply the
 // syscall-restart decision. Called from the ONE return-to-user work loop, so
 // an IRQ or exception return reaches exactly the same body a syscall return
 // does — the point of B1471.

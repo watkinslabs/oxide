@@ -1,10 +1,10 @@
-//! dcache-D27: `d_count` lockref production guards (Linux `lib/lockref.c`).
+//! dcache-D27: `d_count` lockref production guards.
 //! The bare `inc_count`/`dec_count` accounting is unconditional; the dcache
-//! RCU lookup + `__dentry_kill` race needs three more primitives:
-//!   - `inc_count_not_zero`  (Linux `lockref_get_not_zero`): pin only count > 0.
-//!   - `inc_count_not_dead`  (Linux `lockref_get_not_dead`): pin unless dead;
-//!     DOES resurrect an unused count-0 dentry (the `__d_lookup_rcu` pin).
-//!   - `mark_dead`/`is_dead` (Linux `lockref_mark_dead`): stamp `LOCKREF_DEAD`,
+//! RCU lookup + dentry-kill race needs three more primitives:
+//!   - `inc_count_not_zero`: pin only count > 0.
+//!   - `inc_count_not_dead`: pin unless dead;
+//!     DOES resurrect an unused count-0 dentry (the RCU lookup pin).
+//!   - `mark_dead`/`is_dead`: stamp `LOCKREF_DEAD`,
 //!     after which no `get` resurrects the dentry.
 //! Pre-change these did not exist (compile failure); this proves the semantics.
 

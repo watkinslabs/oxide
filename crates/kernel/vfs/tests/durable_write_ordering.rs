@@ -7,11 +7,11 @@
 //! layers are invoked in and whether a failure at each layer reaches the
 //! caller.
 //!
-//! Linux `ext4_sync_file` (`fs/ext4/fsync.c:166-198`):
-//!   1. `file_write_and_wait_range` — push dirty page-cache data out, and wait.
-//!   2. `ext4_fsync_journal` — commit the transaction carrying this inode.
-//!   3. `blkdev_issue_flush` — the device barrier.
-//!   4. `file_check_and_advance_wb_err` — harvest a deferred error.
+//! The journaled-fs fsync contract, in order:
+//!   1. push dirty page-cache data out, and wait for it.
+//!   2. commit the transaction carrying this inode.
+//!   3. issue the device barrier.
+//!   4. harvest a deferred writeback error.
 //!
 //! Steps 2+3 are the backend's `f_op->fsync` here. The pre-fix `vfs_fsync` ran
 //! that FIRST and the writeback after, so the transaction it made durable did
@@ -104,8 +104,8 @@ fn fsync_writes_back_before_the_backend_commits() {
         "the journal commit + device barrier MUST come second; got {s:?}");
 }
 
-/// The same order holds for `fdatasync`, and `datasync` reaches the backend
-/// rather than being dropped (`fs/sync.c:186`).
+/// The same order holds for `fdatasync`, and the datasync flag reaches the
+/// backend rather than being dropped.
 #[test]
 fn fdatasync_keeps_the_order_and_forwards_datasync() {
     let log = new_log();
@@ -139,9 +139,8 @@ fn to_eof_sentinel_survives_the_conversion() {
     assert_eq!(steps(&log)[0], Step::Writeback(0, u64::MAX));
 }
 
-/// `if (lend < lstart) return 0;` — an empty range does no I/O at all, but the
-/// backend commit still runs (Linux `vfs_fsync_range` always reaches
-/// `f_op->fsync`).
+/// An inverted (empty) range does no I/O at all, but the backend commit still
+/// runs — a range fsync always reaches the filesystem's fsync callback.
 #[test]
 fn inverted_range_skips_writeback_but_still_commits() {
     let log = new_log();
@@ -179,8 +178,8 @@ fn writeback_failure_aborts_before_committing() {
 
 // ------------------------------------------------------------ errseq report
 
-/// `file_check_and_advance_wb_err` (`mm/filemap.c:1055`): a writeback failure is
-/// reported to each open description EXACTLY ONCE. The second `fsync` on the
+/// A writeback failure is latched and reported to each open description
+/// EXACTLY ONCE. The second `fsync` on the
 /// same fd, with nothing new having gone wrong, succeeds.
 #[test]
 fn writeback_error_reported_once_per_description() {
@@ -227,10 +226,9 @@ fn fsync_and_syncfs_latches_advance_independently() {
 
 // ------------------------------------------------------- O_SYNC / O_DSYNC
 
-/// `open(O_SYNC)` + `write()` must be durable when `write` returns — Linux
-/// calls `generic_write_sync` at the tail of every buffered write
-/// (`include/linux/fs.h:2663`). Pre-fix the flag was parsed, stored, masked by
-/// `F_SETFL`, and consulted by nothing.
+/// `open(O_SYNC)` + `write()` must be durable when `write` returns — every
+/// buffered write ends with a sync-on-write check. Pre-fix the flag was
+/// parsed, stored, masked by `F_SETFL`, and consulted by nothing.
 #[test]
 fn o_sync_write_syncs_the_bytes_it_wrote() {
     let log = new_log();
@@ -240,8 +238,8 @@ fn o_sync_write_syncs_the_bytes_it_wrote() {
     assert_eq!(s, vec![
         // Exactly the bytes written — [0, 10) — not the whole file.
         Step::Writeback(0, 10),
-        // O_SYNC is FILE-integrity: datasync == false (`fs/fs.h:2668` passes 0
-        // when IOCB_SYNC is set). Inverting this makes O_SYNC the weaker flag.
+        // O_SYNC is FILE-integrity: datasync == false. Inverting this makes
+        // O_SYNC the weaker flag.
         Step::Backend { datasync: false },
     ], "O_SYNC write must sync its own range with full-fsync semantics; got {s:?}");
 }
@@ -270,7 +268,7 @@ fn plain_write_does_not_sync() {
 }
 
 /// `IS_SYNC(inode)` — the `chattr +S` flag — makes writes synchronous with no
-/// `O_SYNC` on the description (`include/linux/fs.h:2652-2656`).
+/// `O_SYNC` on the description.
 #[test]
 fn inode_s_sync_flag_forces_synchronous_writes() {
     let log = new_log();
@@ -319,7 +317,7 @@ fn o_sync_write_iter_syncs_the_aggregate_range() {
 
 /// The per-operation `RWF_SYNC`/`RWF_DSYNC` path: an fd with no `O_SYNC` still
 /// syncs when the OPERATION asks for it, and `RWF_SYNC` is the stronger of the
-/// two (`kiocb_set_rw_flags`, `include/linux/fs.h:3455-3462`).
+/// two (it implies file-integrity sync even when only `RWF_DSYNC` is also set).
 #[test]
 fn rwf_sync_upgrades_a_plain_description() {
     let log = new_log();
@@ -340,9 +338,8 @@ fn rwf_sync_upgrades_a_plain_description() {
 
 // ----------------------------------------------------------------- EINVAL
 
-/// A description with no `fsync` slot is `EINVAL` — `vfs_fsync_range` returns
-/// before touching anything (`fs/sync.c:180-181`). `default_file_ops` is the
-/// generic "no slot installed" vtable.
+/// A description with no `fsync` slot is `EINVAL`, rejected before touching
+/// anything. `default_file_ops` is the generic "no slot installed" vtable.
 #[test]
 fn stream_description_with_no_slot_is_einval() {
     let inode: InodeRef = InodeBuilder::new(

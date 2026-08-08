@@ -1,5 +1,5 @@
 //! `notify_change` floors the applied timestamps to the backing superblock's
-//! `s_time_gran` (Linux `fs/attr.c` `notify_change`, which runs each `ia_*time`
+//! `s_time_gran` (`notify_change` runs each `ia_*time`
 //! through `timestamp_truncate`). A coarse-time backend must never be handed
 //! sub-granularity precision it cannot persist. The ctime stamped on every
 //! change is floored too; an inode with no `i_sb` (anon/pseudo) keeps full ns.

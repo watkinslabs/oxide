@@ -12,7 +12,7 @@ use crate::stat_common::{stat_gid, stat_uid};
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 
 /// Does the pathname argument mean "no path" for entry selection? Linux's
-/// `getname_maybe_null` (`include/linux/fs.h:2541-2549`) answers yes for a NULL
+/// `getname_maybe_null` answers yes for a NULL
 /// pointer, and — only with `AT_EMPTY_PATH` — for a pointer whose first byte is
 /// `'\0'`. Without `AT_EMPTY_PATH` a NULL pointer is `EFAULT` from `getname`,
 /// which the resolver reports. # C: O(1)
@@ -34,7 +34,7 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
     let mask      = args.a3 as u32;
     let buf       = args.a4;
 
-    // Entry selection precedes every check (Linux `fs/stat.c:809-812`): an
+    // Entry selection precedes every check: an
     // `AT_EMPTY_PATH` + empty-name + `dfd >= 0` call is `fstat`-on-dfd and
     // takes `do_statx_fd`, which strips `AT_NO_AUTOMOUNT` and — deliberately —
     // performs NO unknown-flag rejection.
@@ -47,7 +47,7 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
 
     // Centralized `*at` resolution: AT_EMPTY_PATH → LOOKUP_EMPTY; a normal
     // statx FOLLOWS the trailing symlink (LOOKUP_FOLLOW), AT_SYMLINK_NOFOLLOW
-    // does not (Linux `statx_lookup_flags`, `fs/stat.c:284-294`).
+    // does not (Linux's `statx_lookup_flags`).
     // ENOTDIR/ELOOP/EACCES/EFAULT/ENAMETOOLONG preserved by the engine.
     let nofollow = (flags & AT_SYMLINK_NOFOLLOW) != 0;
     let lf = vfs::LookupFlags {

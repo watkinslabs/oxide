@@ -8,7 +8,7 @@ use super::alloc::{d_add, d_add_negative};
 use super::lifecycle::d_drop;
 
 // ---------------------------------------------------------------------------
-// Global rename seqlock (`16§2`, Linux `rename_lock` in `fs/dcache.c`). A SINGLE
+// Global rename seqlock (`16§2`, Linux `rename_lock`). A SINGLE
 // process-wide seqcount the lock-free WHOLE-PATH walker brackets a multi-
 // component read in: any `d_move` anywhere advances it, so a path walk that
 // raced a rename detects it and retries — the per-dentry `d_seq` only guards the

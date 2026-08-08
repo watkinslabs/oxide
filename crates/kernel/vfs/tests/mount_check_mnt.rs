@@ -1,5 +1,5 @@
 //! mount/D32 (check_mnt foreign-ns guard) + D22 (walk_to_mount no cross-ns
-//! leak). `check_mnt(m)` (Linux `fs/namespace.c`) is true iff `m` is in the
+//! leak). `check_mnt(m)` is true iff `m` is in the
 //! caller's mount namespace; `mount_by_id` is deliberately ns-AGNOSTIC (the
 //! global arena), so any by-id / resolved handle must be gated on `check_mnt`
 //! before it crosses a namespace boundary. `walk_to_mount` now gates on it:

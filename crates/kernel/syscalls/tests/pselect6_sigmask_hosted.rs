@@ -1,4 +1,4 @@
-//! Slot 270 `pselect6` against Linux `fs/select.c::SYSCALL_DEFINE6(pselect6)`
+//! Slot 270 `pselect6` against Linux's `SYSCALL_DEFINE6(pselect6)`
 //! → `get_sigset_argpack` → `do_pselect`: the six-argument sigset argpack,
 //! the `set_user_sigmask`/`TIF_RESTORE_SIGMASK` handshake, the timespec rules,
 //! and the remaining-time writeback.
@@ -159,7 +159,7 @@ fn args(nfds: u64, readfds: &mut u64, tsp: u64, pack: u64) -> SyscallArgs {
 
 // Linux `do_poll`/`core_sys_select` end an interrupted wait with
 // `-ERESTARTNOHAND`, and `poll_select_finish` folds it to `-EINTR` only when
-// the residual timeout could not be written back (`fs/select.c:361-363`).
+// the residual timeout could not be written back.
 // Every case below either has no timeout buffer or a zero timeout, so the
 // restart code survives to the syscall tail — which restarts the call when no
 // handler frame was built.

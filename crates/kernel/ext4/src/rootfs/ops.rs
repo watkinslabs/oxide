@@ -8,8 +8,7 @@ use super::state::RootfsState;
 
 pub use mountfs::{Ext4Mount, Ext4SuperOps};
 
-/// ext4 dirent `file_type` byte for an inode's `S_IFMT` (Linux
-/// `ext4_type_by_mode` / `fs/ext4/dir.c`). Used by the atomic
+/// ext4 dirent `file_type` byte for an inode's `S_IFMT`. Used by the atomic
 /// exchange/whiteout dirent rewrites so a swapped char/block/fifo/sock
 /// entry keeps its correct `d_type`, not a blanket `DT_REG`. # C: O(1)
 pub(crate) fn dirent_dt(i: &crate::Inode) -> u8 {
@@ -104,10 +103,10 @@ impl RootfsState {
     /// Wrap the regular file just written by `init_inode`, using the in-memory
     /// `Inode` the create returned instead of reading the slot back off disk.
     ///
-    /// Linux never re-reads what it just allocated: `ext4_create` hands the
-    /// live `struct inode` from `ext4_new_inode` straight to
-    /// `d_instantiate_new` (`fs/ext4/namei.c` `ext4_add_nondir`). Round-tripping
-    /// through the disk made every create depend on an inode-table read that
+    /// Linux never re-reads what it just allocated: a successful create
+    /// instantiates the dentry directly from the live in-memory inode it just
+    /// built. Round-tripping through the disk made every create depend on an
+    /// inode-table read that
     /// can legitimately fail (`BadChecksum`, `BlockIo`, a torn group descriptor)
     /// and collapsed all of them into a bare `EIO` from a create that had in
     /// fact SUCCEEDED — the boot's

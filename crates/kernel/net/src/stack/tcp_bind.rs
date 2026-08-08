@@ -134,8 +134,8 @@ impl NetStack {
             reuseport, v6only, None, port_range)
     }
 
-    /// Auto-bind for an outbound connection — Linux `inet_hash_connect`
-    /// (`net/ipv4/inet_hashtables.c`). Knowing the peer lets the scan start at
+    /// Auto-bind for an outbound connection — Linux `inet_hash_connect`.
+    /// Knowing the peer lets the scan start at
     /// the keyed 4-tuple offset instead of a uniform random one, which is what
     /// keeps two connections to *different* destinations from walking the same
     /// port order. # C: O(range * N_port)

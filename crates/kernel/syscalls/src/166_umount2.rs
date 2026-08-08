@@ -1,6 +1,6 @@
 // 166 umount2 — one syscall, one file (docs/53 §0).
 //
-// `sys_umount2(target, flags)`, shaped as Linux `fs/namespace.c` `ksys_umount`
+// `sys_umount2(target, flags)`, shaped as Linux's `ksys_umount`
 // → `path_umount` → `can_umount` + `do_umount`: validate the flag word, resolve
 // the target, run `can_umount`'s rungs, then the `do_umount` ladder (owned as a
 // pure decision by `vfs::mount::umount_check`), fire `s_op->umount_begin` when

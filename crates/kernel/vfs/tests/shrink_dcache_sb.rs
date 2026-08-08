@@ -1,4 +1,4 @@
-//! dcache-LRU per-superblock reclaim (`shrink_dcache_sb`, Linux `fs/dcache.c`).
+//! dcache-LRU per-superblock reclaim (`shrink_dcache_sb`).
 //!
 //! The global [`vfs::dcache::shrink_dcache`] is a count-bounded two-hand-clock
 //! shrinker that respects the `D_REFERENCED` bit, and `shrink_dcache_parent`

@@ -5,8 +5,8 @@
 // downgrades or removes a user PTE, every other CPU running the SAME mm
 // keeps the stale translation cached. A peer thread then writes through
 // a now-COW-shared frame (write-while-shared corruption) or touches a
-// freed/realloc'd frame. Linux's `flush_tlb_others` IPIs the mm's
-// cpumask and waits; this is the same, broadcast to all online CPUs.
+// freed/realloc'd frame. Linux IPIs the mm's cpumask and waits for every
+// target to ACK; this is the same, broadcast to all online CPUs.
 //
 // PROTOCOL (single in-flight shootdown, one ROUND at a time):
 //   * One global slot serialized by `OWNER` (CAS). A second would-be
@@ -21,9 +21,9 @@
 //     target still inside `service()` when the owner tears the round down
 //     can clear its bit in the NEXT round having flushed the PREVIOUS
 //     round's VA — the owner then frees a frame the target still has
-//     cached. Linux gets this for free from the per-CPU `csd` lock, which
-//     a second call to the same CPU cannot reuse until the first
-//     completes (`kernel/smp.c` `csd_lock`/`csd_unlock`).
+//     cached. Linux gets this for free from its per-CPU call-descriptor
+//     lock, which a second call to the same CPU cannot reuse until the
+//     first completes.
 //
 // The owner's own bit is never in `PENDING`, so its in-loop `service()`
 // is a no-op; it just waits for the targets. No frame is freed by a
@@ -31,15 +31,14 @@
 // mapping against a reused frame.
 //
 // LIVENESS — the honest statement. Linux requires the SENDER to have
-// interrupts enabled (`kernel/smp.c` `smp_call_function_many_cond`:
-// `lockdep_assert_irqs_enabled()`, "Can deadlock when called with
-// interrupts disabled"; `arch/x86/mm/tlb.c:flush_tlb_mm_range` asserts the
-// same), and no Linux path spins unboundedly with IRQs off, so every target
-// reaches its IPI. Oxide syscall work and process faults now run IRQ-on, but a
-// target inside an explicit atomic section still cannot ACK until it finishes.
-// The wait therefore escalates the way
-// Linux's `csd_lock_wait_toolong` does — warn, re-send the IPI, NMI-backtrace
-// the stuck CPU — and NEVER gives up: abandoning the round and freeing the
+// interrupts enabled — sending with interrupts disabled can deadlock, and
+// its TLB-flush path asserts this — and no Linux path spins unboundedly
+// with IRQs off, so every target reaches its IPI. Oxide syscall work and
+// process faults now run IRQ-on, but a target inside an explicit atomic
+// section still cannot ACK until it finishes. The wait therefore escalates
+// the way Linux's stuck-CSD handling does — warn, re-send the IPI,
+// NMI-backtrace the stuck CPU — and NEVER gives up: abandoning the round
+// and freeing the
 // frame anyway is a use-after-free with a live writable translation on the
 // peer, which is strictly worse than a loud hang.
 
@@ -61,7 +60,7 @@ static PENDING: AtomicU64 = AtomicU64::new(0);
 static ROUND: AtomicU64 = AtomicU64::new(0);
 
 /// Escalation base: warn + re-send the IPI + NMI-backtrace the stuck CPU.
-/// Linux `kernel/smp.c` `csd_lock_timeout = 5000` ms. Repeats back off from
+/// Matches Linux's stuck-CSD timeout of 5000 ms. Repeats back off from
 /// here via `tlb_round::escalation_gap`, as Linux's do.
 const STUCK_WARN_NS: u64 = 5_000_000_000;
 /// Clock-free equivalent, used only while the TSC is uncalibrated
@@ -186,8 +185,8 @@ fn shootdown(va: u64, mask: u64) {
     // Wait for every target to ACK. `service()` is a no-op for the owner (its
     // bit isn't in PENDING); it is here to break the sender<->sender wait.
     //
-    // Linux `__csd_lock_wait` (`kernel/smp.c`) is an unconditional `for(;;)`
-    // whose `csd_lock_wait_toolong` arm warns, NMI-dumps the stuck CPU and
+    // Linux's own CSD-lock wait is an unconditional loop whose
+    // stuck-detection arm warns, NMI-dumps the stuck CPU and
     // re-sends the IPI. This does the same, for the same reason: the alternative
     // — declare the flush missed and let the caller free the frame — leaves a
     // peer holding a live writable translation into a page the buddy is about to
@@ -219,7 +218,7 @@ fn shootdown(va: u64, mask: u64) {
 #[inline]
 fn now_ns() -> u64 { hal_x86_64::X86TimerOps::monotonic_ns().0 }
 
-/// Linux `csd_lock_wait_toolong` (`kernel/smp.c`): name the CPUs that owe an
+/// Matches Linux's stuck-CSD handling: name the CPUs that owe an
 /// ACK, re-send the IPI in case it was lost, and NMI-backtrace them so the
 /// blocking kernel section is identified rather than inferred. Non-fatal — the
 /// wait continues, exactly as Linux's does.

@@ -1,6 +1,6 @@
 // 302 prlimit64 — one syscall, one file (docs/53 §0). ABI shim only: target
 // resolution + copy-in/copy-out; the decision ladder is
-// `sched::Task::do_prlimit` (Linux `kernel/sys.c`), shared with 097/160.
+// `sched::Task::do_prlimit`, shared with 097/160.
 #![cfg(target_os = "oxide-kernel")]
 
 use syscall::SyscallArgs;

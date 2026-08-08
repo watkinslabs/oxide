@@ -1,4 +1,4 @@
-// `do_get_mempolicy` (`mm/mempolicy.c:1147`).
+// get_mempolicy(2).
 //
 // The pre-F763 slot ignored `flags` and `addr` entirely and always wrote
 // MPOL_DEFAULT into `*policy`, so every case below was answered "0".

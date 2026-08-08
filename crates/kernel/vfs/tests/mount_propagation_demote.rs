@@ -1,5 +1,5 @@
-//! B243: `change_mnt_propagation` / `do_make_slave` COMPLETENESS (Linux
-//! `fs/pnode.c`). Demoting a SHARED mount that owns slaves to SLAVE/PRIVATE/
+//! B243: `change_mnt_propagation` / `do_make_slave` COMPLETENESS.
+//! Demoting a SHARED mount that owns slaves to SLAVE/PRIVATE/
 //! UNBINDABLE must RE-HOME those slaves onto the inheriting master (a surviving
 //! peer), not leave them pointing at a mount that has stopped originating
 //! propagation. Pre-fix `set_propagation` cleared the demoted mount's master

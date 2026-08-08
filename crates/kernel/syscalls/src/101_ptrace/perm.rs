@@ -1,5 +1,5 @@
 // ptrace(2) permission gate — single choke point for every request the
-// `101_ptrace` shim and `ptrace_fpu` dispatch. Linux `kernel/ptrace.c`:
+// `101_ptrace` shim and `ptrace_fpu` dispatch. Linux's
 // `__ptrace_may_access`, `ptrace_attach`, `ptrace_check_attach`.
 //
 // Compiled hosted as well as `oxide-kernel`: the checks touch only

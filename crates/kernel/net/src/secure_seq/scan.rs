@@ -1,6 +1,5 @@
 // The ephemeral-port scan order — Linux `__inet_hash_connect`
-// (`net/ipv4/inet_hashtables.c`) and `inet_csk_find_open_port`
-// (`net/ipv4/inet_connection_sock.c`), which differ only in starting parity.
+// and `inet_csk_find_open_port`, which differ only in starting parity.
 //
 // Pure: a function of (range, starting offset, parity). The whole point of the
 // change is that the *offset* is unpredictable; the walk from it stays a

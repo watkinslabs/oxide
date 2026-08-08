@@ -9,7 +9,7 @@ use crate::pkey;
 
 /// `pkey_alloc(flags, access_rights)` — slot 330 (arm64 289).
 ///
-/// Linux `mm/mprotect.c` `SYSCALL_DEFINE2(pkey_alloc)` validates first and
+/// Linux's `SYSCALL_DEFINE2(pkey_alloc)` validates first and
 /// allocates second: non-zero `flags` -> EINVAL, `init_val` outside the arch's
 /// `PKEY_ACCESS_MASK` -> EINVAL, then `mm_pkey_alloc` -> ENOSPC when no key is
 /// free, then `arch_set_user_pkey_access`. The syscalls are compiled in on

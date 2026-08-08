@@ -230,7 +230,7 @@ core::arch::global_asm!(
     "    pop  rax",                            // dispatch retval back
     // SYSRET-eligibility, exactly Linux's: `do_syscall_64` runs the same
     // checks in C and returns a bool its asm caller branches on
-    // (`arch/x86/entry/entry_64.S`: "Try to use SYSRET instead of IRET if
+    // ("Try to use SYSRET instead of IRET if
     // we're returning to a completely clean 64-bit userspace context").
     // `SYSRETQ` forces RIP := RCX and RFLAGS := R11, so it CANNOT return a
     // frame whose rcx/r11 are an independent interrupted context —
@@ -320,8 +320,8 @@ extern "C" {
     fn oxide_syscall_entry();
 }
 
-/// Asm-callable mirror of the tail of Linux's `do_syscall_64()`
-/// (`arch/x86/entry/syscall_64.c`), which likewise runs these checks in C and
+/// Asm-callable mirror of the tail of Linux's `do_syscall_64()`,
+/// which likewise runs these checks in C and
 /// hands its asm caller a bool: may this return use `SYSRETQ`, or must it take
 /// the slower full-fidelity `IRETQ` path?
 ///

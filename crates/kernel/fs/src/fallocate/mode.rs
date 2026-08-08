@@ -1,5 +1,5 @@
 // The pure mode-combination decision `vfs_fallocate` makes before it touches
-// the inode (Linux `fs/open.c:259-285`). The `FALLOC_FL_*` values themselves
+// the inode. The `FALLOC_FL_*` values themselves
 // are shared UAPI in `vfs::uapi` — the filesystem backends decode the same
 // `mode` word and must not carry a second copy of the numbers.
 
@@ -9,7 +9,7 @@ pub use vfs::uapi::{FALLOC_FL_ALLOCATE_RANGE, FALLOC_FL_COLLAPSE_RANGE, FALLOC_F
     FALLOC_FL_KEEP_SIZE, FALLOC_FL_MODE_MASK, FALLOC_FL_NO_HIDE_STALE, FALLOC_FL_PUNCH_HOLE,
     FALLOC_FL_UNSHARE_RANGE, FALLOC_FL_WRITE_ZEROES, FALLOC_FL_ZERO_RANGE};
 
-/// Mode-combination gate from `vfs_fallocate` (Linux `fs/open.c:259-285`).
+/// Mode-combination gate from `vfs_fallocate`.
 ///
 /// Every rejection here is `EOPNOTSUPP`, never `EINVAL`: `vfs_fallocate` spends
 /// its single `EINVAL` on the `offset`/`len` range check and reports every
@@ -46,7 +46,7 @@ mod tests {
 
     #[test]
     fn mode_mask_matches_linux_composite() {
-        assert_eq!(FALLOC_FL_MODE_MASK, 0xFA, "include/linux/falloc.h FALLOC_FL_MODE_MASK");
+        assert_eq!(FALLOC_FL_MODE_MASK, 0xFA, "FALLOC_FL_MODE_MASK must match the standard composite mask");
         assert_eq!(FALLOC_FL_MODE_MASK & FALLOC_FL_NO_HIDE_STALE, 0, "NO_HIDE_STALE is not a mode");
         assert_eq!(FALLOC_FL_MODE_MASK & FALLOC_FL_KEEP_SIZE, 0, "KEEP_SIZE is a flag, not a mode");
     }

@@ -61,9 +61,9 @@ fn accept_common(args: &SyscallArgs, flags: u64) -> i64 {
             Ok(a)  => break a,
             Err(net::NetError::Eagain) => {
                 // Linux `inet_csk_wait_for_connect`
-                // (`net/ipv4/inet_connection_sock.c:635-637`) and, for AF_UNIX,
+                // and, for AF_UNIX,
                 // `unix_accept` -> `skb_recv_datagram` ->
-                // `__skb_wait_for_more_packets` (`net/core/datagram.c:128`):
+                // `__skb_wait_for_more_packets`:
                 // `err = sock_intr_errno(timeo)` off `sock_rcvtimeo`.
                 let wait = net::sock_intr::accept_wait_verdict(nonblock,
                     sched::live::deliverable_signals_self() != 0,

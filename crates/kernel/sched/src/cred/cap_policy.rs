@@ -1,24 +1,23 @@
 // Pure decision logic for `capget(2)` / `capset(2)` — no user memory, no
 // `current()`, no cfg gating, so hosted `cargo test` proves it. `caps.rs` is
 // the marshalling shell that reads the header, resolves the target, and calls
-// in here. Linux sources: `kernel/capability.c` (`cap_validate_magic`,
-// `SYSCALL_DEFINE2(capget)`, `SYSCALL_DEFINE2(capset)`, `mk_kernel_cap`) and
-// `security/commoncap.c` (`cap_capset`, `cap_inh_is_capped`).
+// in here. Tracks Linux's `cap_validate_magic`, `SYSCALL_DEFINE2(capget)`,
+// `SYSCALL_DEFINE2(capset)`, `mk_kernel_cap`, `cap_capset`, and
+// `cap_inh_is_capped`.
 
 use syscall::errno::Errno;
 
-/// Linux `_LINUX_CAPABILITY_VERSION_{1,2,3}` magics
-/// (`include/uapi/linux/capability.h`). v2 is deprecated but carries the same
-/// two-block layout as v3, which is why `cap_validate_magic` falls through.
+/// Linux `_LINUX_CAPABILITY_VERSION_{1,2,3}` magics. v2 is deprecated but
+/// carries the same two-block layout as v3, which is why `cap_validate_magic`
+/// falls through.
 pub const CAPV1: u32 = 0x1998_0330;
 pub const CAPV2: u32 = 0x2007_1026;
 pub const CAPV3: u32 = 0x2008_0522;
 
-/// Linux `CAP_LAST_CAP` == `CAP_CHECKPOINT_RESTORE`
-/// (`include/uapi/linux/capability.h`).
+/// Linux `CAP_LAST_CAP` == `CAP_CHECKPOINT_RESTORE`.
 pub const CAP_LAST_CAP: u32 = 40;
 
-/// Linux `CAP_VALID_MASK` (`include/linux/capability.h`):
+/// Linux `CAP_VALID_MASK`:
 /// `BIT_ULL(CAP_LAST_CAP + 1) - 1`. Every set entering the kernel through
 /// `capset` is masked with this by `mk_kernel_cap`, so undefined high bits are
 /// dropped silently rather than rejected — a `capset` that writes `~0` into a
@@ -75,7 +74,7 @@ pub fn capget_early(ver: u32, datap: u64) -> CapgetEarly {
 }
 
 /// The caller's pre-`capset` capability state, as `cap_capset` reads it off
-/// `old` (`security/commoncap.c`).
+/// `old`.
 #[derive(Copy, Clone, Debug)]
 pub struct CapsetOld {
     pub effective:   u64,

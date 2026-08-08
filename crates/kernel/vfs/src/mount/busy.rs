@@ -1,4 +1,4 @@
-//! `propagate_mount_busy` (Linux `fs/pnode.c`) — the PROPAGATION-AWARE busy
+//! `propagate_mount_busy` — the PROPAGATION-AWARE busy
 //! test `umount(2)` and the expiry sweep both apply before detaching anything.
 //!
 //! Busy-ness is not a property of the named mount alone. Unmounting a mount

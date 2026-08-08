@@ -1,5 +1,5 @@
-//! idmap copy-out munge (`from_kuid_munged`/`from_kgid_munged`,
-//! `kernel/user_namespace.c`): the stat(2) `st_uid`/`st_gid` copy-out boundary
+//! idmap copy-out munge (`from_kuid_munged`/`from_kgid_munged`):
+//! the stat(2) `st_uid`/`st_gid` copy-out boundary
 //! turns the INVALID miss sentinel `(uid_t)-1` into the global `overflowuid`
 //! (65534) so an unmapped owner on an idmapped mount shows up as "nobody"
 //! rather than leaking `0xffffffff` into userspace. `map_out_*` keeps INVALID

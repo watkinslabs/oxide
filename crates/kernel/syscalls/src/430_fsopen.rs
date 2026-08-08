@@ -8,8 +8,8 @@ use vfs::InodeRef;
 use crate::fsmount_common::*;
 
 /// `sys_fsopen(fsname, flags)` — slot 430. Creates an `fs_context` fd for
-/// `fsname`. The `flags` word carries ONLY `FSOPEN_CLOEXEC` (Linux
-/// `fs/fsopen.c`: `if (flags & ~FSOPEN_CLOEXEC) return -EINVAL`) — fsopen has NO
+/// `fsname`. The `flags` word carries ONLY `FSOPEN_CLOEXEC` (Linux's
+/// `sys_fsopen`: `if (flags & ~FSOPEN_CLOEXEC) return -EINVAL`) — fsopen has NO
 /// superblock-flag bits, so the context is seeded `sb_flags=0` (superblock D19);
 /// the user-settable `SB_*` flags (`ro`/`sync`/…) arrive later via
 /// `fsconfig(FSCONFIG_SET_FLAG)` and are committed at `vfs_get_tree`. `FSOPEN_CLOEXEC = 1`.

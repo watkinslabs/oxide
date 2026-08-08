@@ -1,4 +1,4 @@
-// Per-pid `/proc` file POLICY — Linux `fs/proc/base.c`: the `tgid_base_stuff`
+// Per-pid `/proc` file POLICY, matching Linux's tgid_base_stuff
 // mode column, `task_dump_owner` / `pid_update_inode`, and which entries gate
 // their CONTENT behind `ptrace_may_access` (`lock_trace` for the `ONE(...)`
 // entries, `proc_mem_open`/`mm_access` for `environ`/`auxv`/`maps`/`smaps`).

@@ -166,8 +166,8 @@ impl RunqueueInner {
     /// picked task's `on_cpu` BEFORE it leaves the tree, and report whether
     /// someone already owned it. Returns `(task, was_already_on_cpu)`.
     ///
-    /// The order is load-bearing and is Linux's, stated in `kernel/sched/core.c`
-    /// beside `try_to_wake_up`'s `smp_load_acquire(&p->on_cpu)`:
+    /// The order is load-bearing and is Linux's, documented beside
+    /// `try_to_wake_up`'s `smp_load_acquire(&p->on_cpu)`:
     ///
     /// ```text
     /// __schedule() (switch to task 'p')      try_to_wake_up()

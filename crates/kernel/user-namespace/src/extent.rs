@@ -1,6 +1,6 @@
-// One `uid_map`/`gid_map` line + the batch validation Linux applies to a
-// whole write(2) before any of it is committed (`kernel/user_namespace.c`
-// `map_write`/`mappings_overlap`).
+// One `uid_map`/`gid_map` line + the batch validation applied to a whole
+// write(2) before any of it is committed — extents must not overlap each
+// other in the namespace or host id-space.
 
 use alloc::vec::Vec;
 

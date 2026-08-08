@@ -1,7 +1,7 @@
 # TCP edge inventory
 
-Status: IN-PROGRESS. Branch: D353-tcp-edge-inventory. Linux owner sources:
-`net/ipv4/tcp_input.c`, `tcp_output.c`, `tcp_timer.c`, and `tcp_ipv4.c`.
+Status: IN-PROGRESS. Branch: D353-tcp-edge-inventory. Covers the TCP input,
+output, timer, and IPv4-binding mechanisms.
 Oxide evidence is from `crates/kernel/net` and syscall work functions.
 
 | Edge contract | Linux owner | Current Oxide evidence | Status | Required closure proof |

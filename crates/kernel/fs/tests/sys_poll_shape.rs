@@ -276,10 +276,10 @@ fn sys_poll_zero_fds_blocks_until_signal_for_negative_timeout() {
     install_current_with_fdt(Some(fdt));
     poll::poll_common::SIGNAL_ON_PARK.store(true, Ordering::SeqCst);
 
-    // Linux `SYSCALL_DEFINE3(poll)` (`fs/select.c:1074-1087`): `do_sys_poll`
-    // returns -ERESTARTNOHAND, and poll(2) — alone in this family — converts
-    // it into an armed `do_restart_poll` block plus -ERESTART_RESTARTBLOCK,
-    // because its `int timeout_msecs` cannot carry the residual timeout back.
+    // The underlying poll wait returns -ERESTARTNOHAND, and poll(2) — alone in
+    // this family — converts it into an armed restart block plus
+    // -ERESTART_RESTARTBLOCK, because its `int timeout_msecs` cannot carry
+    // the residual timeout back.
     assert_eq!(poll_syscall::sys_poll(&args(0, 0, -1)), syscall::restart::restart_block());
     assert_eq!(userbuf::READ_CALLS.load(Ordering::SeqCst), 0);
     assert_eq!(userbuf::WRITE_CALLS.load(Ordering::SeqCst), 0);

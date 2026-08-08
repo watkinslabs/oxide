@@ -1,5 +1,5 @@
-// `/proc/<pid>/limits` + `/proc/self/limits` table rendering (Linux
-// `proc_pid_limits`, fs/proc/base.c).
+// `/proc/<pid>/limits` + `/proc/self/limits` table rendering, matching
+// Linux's proc_pid_limits format.
 //
 // Pure formatting over the `(cur, max)` pairs themselves — no `Task`, no
 // scheduler, no `live` module — so it compiles in the hosted test build and

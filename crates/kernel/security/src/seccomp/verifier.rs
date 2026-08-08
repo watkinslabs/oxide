@@ -1,7 +1,6 @@
-// cBPF load-time verifier — `bpf_check_classic` + `check_load_and_stores`
-// (`net/core/filter.c`) followed by `seccomp_check_filter`
-// (`kernel/seccomp.c`), which is the pair `bpf_prog_create_from_user` runs
-// for every `SECCOMP_SET_MODE_FILTER`.
+// cBPF load-time verifier: the generic classic-BPF structural check
+// followed by the seccomp-specific filter check, run as a pair for every
+// `SECCOMP_SET_MODE_FILTER` install.
 //
 // UNGATED (`CLAUDE.md` phantom-test rule). An UNVERIFIED filter is itself a
 // kernel primitive: without the `BPF_LD|BPF_W|BPF_ABS` bound an attacker

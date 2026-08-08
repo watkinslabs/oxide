@@ -1,26 +1,24 @@
 // Entropy budgets and address anchors. Every number here is a Linux constant,
-// cited to the file it came from; nothing is invented.
+// verified against the reference kernel; nothing is invented.
 
 use hal::{PAGE_SIZE_BYTES, USER_VA_END};
 
 /// `PAGE_SHIFT` — random words are drawn in PAGE units and shifted up, so a
-/// randomised base is page-aligned by construction (`mm/util.c:347`).
+/// randomised base is page-aligned by construction.
 pub const PAGE_SHIFT: u32 = PAGE_SIZE_BYTES.trailing_zeros();
 
 /// Linux `DEFAULT_MAP_WINDOW`: the VA span the default mapping window covers.
-/// x86_64 spells it `(1UL << 47) - PAGE_SIZE`
-/// (`arch/x86/include/asm/page_64_types.h:54`); arm64 spells the same idea as
-/// `1 << VA_BITS_MIN` (`arch/arm64/include/asm/memory.h:56`). This kernel pins
+/// x86_64 spells it `(1UL << 47) - PAGE_SIZE`; arm64 spells the same idea as
+/// `1 << VA_BITS_MIN`. This kernel pins
 /// ONE user ceiling for both arches — `hal::USER_VA_END`, 47 bits per `01§1` —
 /// so both derive the window from it instead of from Linux's per-arch literal.
 pub const DEFAULT_MAP_WINDOW: u64 = USER_VA_END - PAGE_SIZE_BYTES;
 
 /// Linux `ELF_ET_DYN_BASE`: the un-randomised load base for a PIE executable
-/// that carries a PT_INTERP. x86_64 (`arch/x86/include/asm/elf.h:234`):
-/// `DEFAULT_MAP_WINDOW / 3 * 2`. arm64 (`arch/arm64/include/asm/elf.h:143`):
+/// that carries a PT_INTERP. x86_64: `DEFAULT_MAP_WINDOW / 3 * 2`. arm64:
 /// `2 * DEFAULT_MAP_WINDOW_64 / 3`. Same two-thirds-of-window rule, so one
 /// expression serves both. Page-aligned here because `load_bias` is fed
-/// through `ELF_PAGESTART` in `load_elf_binary` (`fs/binfmt_elf.c:1185`).
+/// through `ELF_PAGESTART` in `load_elf_binary`.
 pub const ELF_ET_DYN_BASE: u64 = (DEFAULT_MAP_WINDOW / 3 * 2) & !(PAGE_SIZE_BYTES - 1);
 
 /// Bytes reserved above `STACK_TOP`. Linux puts `STACK_TOP` at `TASK_SIZE`;
@@ -31,17 +29,16 @@ pub const STACK_TOP_RESERVE: u64 = 0x1_0000;
 /// Linux `STACK_TOP` — the pre-randomisation top of the initial stack.
 pub const STACK_TOP: u64 = USER_VA_END - STACK_TOP_RESERVE;
 
-/// Linux `stack_guard_gap` (`mm/mmap.c`, default `256 << PAGE_SHIFT`): the
+/// Linux `stack_guard_gap`, default `256 << PAGE_SHIFT`: the
 /// unmapped band a growable stack keeps below itself. Folded into the mmap
 /// gap so the arena can never be adjacent to the stack.
 pub const STACK_GUARD_GAP: u64 = 256 * PAGE_SIZE_BYTES;
 
-/// Linux `MIN_GAP` (`mm/util.c:428` `SZ_128M`; `arch/x86/mm/mmap.c:60`
-/// `SIZE_128M`): the floor on the distance from `STACK_TOP` down to
+/// Linux `MIN_GAP`, `SZ_128M` on both arches: the floor on the distance from `STACK_TOP` down to
 /// `mmap_base`.
 pub const MIN_GAP: u64 = 128 * 1024 * 1024;
 
-/// Linux `MAX_GAP` (`mm/util.c:429`): `STACK_TOP / 6 * 5`.
+/// Linux `MAX_GAP`: `STACK_TOP / 6 * 5`.
 pub const MAX_GAP: u64 = STACK_TOP / 6 * 5;
 
 /// Ceiling on the stack VMA this kernel maps up front at execve. Linux maps
@@ -51,8 +48,7 @@ pub const MAX_GAP: u64 = STACK_TOP / 6 * 5;
 /// `ELF_ET_DYN_BASE` for every reachable `RLIMIT_STACK`.
 pub const RLIM_STACK_MAP_CAP: u64 = 1024 * 1024 * 1024;
 
-/// Linux `arch_randomize_brk` range for a native 64-bit task: `SZ_1G`
-/// (`arch/x86/kernel/process.c:1032`, generic `mm/util.c:396`).
+/// Linux `arch_randomize_brk` range for a native 64-bit task on both arches: `SZ_1G`.
 pub const BRK_RND_RANGE: u64 = 1024 * 1024 * 1024;
 
 /// Per-arch randomisation budget. Linux scatters these across Kconfig
@@ -63,8 +59,7 @@ pub const BRK_RND_RANGE: u64 = 1024 * 1024 * 1024;
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Budget {
     /// `CONFIG_ARCH_MMAP_RND_BITS` boot value. Neither x86 nor arm64 defines
-    /// `ARCH_MMAP_RND_BITS_DEFAULT`, so both boot at their `_MIN`
-    /// (`arch/Kconfig:1227`).
+    /// `ARCH_MMAP_RND_BITS_DEFAULT`, so both boot at their `_MIN`.
     pub mmap_rnd_bits: u32,
     /// `CONFIG_ARCH_MMAP_RND_BITS_MIN` — `vm.mmap_rnd_bits` floor.
     pub mmap_rnd_bits_min: u32,
@@ -93,10 +88,10 @@ impl Budget {
     }
 }
 
-/// x86_64. `mmap_rnd_bits` 28..32 (`arch/x86/Kconfig:358-364`),
-/// `STACK_RND_MASK = 0x3fffff` (`arch/x86/include/asm/elf.h:326`, 22 bits =
+/// x86_64. `mmap_rnd_bits` 28..32 (Kconfig),
+/// `STACK_RND_MASK = 0x3fffff` (22 bits =
 /// 16 GiB of stack-top slop), `arch_align_stack` subtracts
-/// `get_random_u32_below(8192)` (`arch/x86/kernel/process.c:1023`).
+/// `get_random_u32_below(8192)`.
 pub const X86_64: Budget = Budget {
     mmap_rnd_bits:     28,
     mmap_rnd_bits_min: 28,
@@ -106,13 +101,12 @@ pub const X86_64: Budget = Budget {
     task_unmapped_div: 3,
 };
 
-/// aarch64, 4 KiB pages. `mmap_rnd_bits` min 18 (`arch/arm64/Kconfig:299`);
-/// max 30 — the Kconfig's own `ARM64_VA_BITS=47` row (`arch/arm64/Kconfig:307`),
+/// aarch64, 4 KiB pages. `mmap_rnd_bits` min 18 (Kconfig);
+/// max 30 — the Kconfig's own `ARM64_VA_BITS=47` row,
 /// which is this kernel's user VA width, NOT the 33 that a 48-bit-VA arm64
 /// would use. `STACK_RND_MASK = 0x3ffff >> (PAGE_SHIFT - 12)`
-/// (`arch/arm64/include/asm/elf.h:194`, 18 bits = 1 GiB). `arch_align_stack`
-/// subtracts `get_random_u32_below(PAGE_SIZE)`
-/// (`arch/arm64/kernel/process.c:816`) — narrower than x86's fixed 8192.
+/// (18 bits = 1 GiB). `arch_align_stack`
+/// subtracts `get_random_u32_below(PAGE_SIZE)` — narrower than x86's fixed 8192.
 pub const AARCH64: Budget = Budget {
     mmap_rnd_bits:     18,
     mmap_rnd_bits_min: 18,

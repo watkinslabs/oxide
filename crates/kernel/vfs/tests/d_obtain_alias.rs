@@ -1,4 +1,4 @@
-//! dcache-D29: `d_obtain_alias` + `DCACHE_DISCONNECTED` (Linux fs/dcache.c).
+//! dcache-D29: `d_obtain_alias` + `DCACHE_DISCONNECTED`.
 //! A dentry referring to an inode WITHOUT a path/parent — reusing an existing
 //! alias (mandatory for directories) or allocating a new anonymous dentry on
 //! `s_anon`. Driven against a real ramfs SuperBlock so `i_sb()` resolves and

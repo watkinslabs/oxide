@@ -2,7 +2,7 @@
 //
 // ABI shim only: the id list, the byte-count arithmetic and the E2BIG rule
 // live in `crate::lsm` (ungated, host-tested); this file performs the two user
-// copies in the order `security/lsm_syscalls.c:105-129` performs them.
+// copies in the order Linux's `lsm_module_list` syscall performs them.
 //
 // That order is not obvious: Linux reads `*size`, then WRITES the required
 // size back, and only then decides E2BIG. A caller probing with `size = 0`

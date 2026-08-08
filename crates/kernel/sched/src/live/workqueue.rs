@@ -1,4 +1,4 @@
-// Workqueue + per-CPU `kworker` — Linux `kernel/workqueue.c` (`skizm.md` §2,
+// Workqueue + per-CPU `kworker` — Linux model (`skizm.md` §2,
 // Step 4a).
 //
 // The one place in this kernel where work that MUST SLEEP can be handed off

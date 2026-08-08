@@ -1,8 +1,7 @@
-// Linux keyring UAPI constants — `include/uapi/linux/keyctl.h` and
-// `include/linux/key.h`. Numbers only; every policy decision lives in
+// Keyring UAPI constants. Numbers only; every policy decision lives in
 // `perm.rs` / `ops/`.
 
-/// Special (negative) keyring ids (`uapi/linux/keyctl.h`).
+/// Special (negative) keyring ids.
 pub const KEY_SPEC_THREAD_KEYRING:       i32 = -1;
 pub const KEY_SPEC_PROCESS_KEYRING:      i32 = -2;
 pub const KEY_SPEC_SESSION_KEYRING:      i32 = -3;
@@ -61,8 +60,8 @@ pub const KEY_REQKEY_DEFL_USER_SESSION_KEYRING: i32 = 5;
 pub const KEY_REQKEY_DEFL_GROUP_KEYRING:        i32 = 6;
 pub const KEY_REQKEY_DEFL_REQUESTOR_KEYRING:    i32 = 7;
 
-/// `KEY_NEED_*` need bits (`include/linux/key.h`), expressed as the
-/// other-byte mask `key_task_permission` selects.
+/// `KEY_NEED_*` need bits, expressed as the
+/// other-byte mask the key-permission check selects.
 pub const KEY_NEED_VIEW:    u32 = 0x01;
 pub const KEY_NEED_READ:    u32 = 0x02;
 pub const KEY_NEED_WRITE:   u32 = 0x04;
@@ -95,8 +94,8 @@ pub const KEY_USR_VIEW:    u32 = KEY_NEED_VIEW    << KEY_PERM_USR_SHIFT;
 pub const KEY_USR_READ:    u32 = KEY_NEED_READ    << KEY_PERM_USR_SHIFT;
 pub const KEY_USR_LINK:    u32 = KEY_NEED_LINK    << KEY_PERM_USR_SHIFT;
 
-/// `install_thread_keyring_to_cred` / `install_process_keyring_to_cred`
-/// (`security/keys/process_keys.c`): `KEY_POS_ALL | KEY_USR_VIEW`.
+/// Default permission installed on an implicit thread/process keyring:
+/// `KEY_POS_ALL | KEY_USR_VIEW`.
 pub const THREAD_KEYRING_PERM: u32 = KEY_POS_ALL | KEY_USR_VIEW;
 /// `install_session_keyring_to_cred`: adds `KEY_USR_READ`.
 pub const SESSION_KEYRING_PERM: u32 = KEY_POS_ALL | KEY_USR_VIEW | KEY_USR_READ;
@@ -105,7 +104,7 @@ pub const NAMED_SESSION_KEYRING_PERM: u32 = KEY_POS_ALL | KEY_USR_VIEW | KEY_USR
 /// `look_up_user_keyrings`: `(KEY_POS_ALL & ~KEY_POS_SETATTR) | KEY_USR_ALL`.
 pub const USER_KEYRING_PERM: u32 = (KEY_POS_ALL & !KEY_POS_SETATTR) | KEY_USR_ALL;
 
-/// `KEYCTL_CAPABILITIES` byte 0/1 bits (`uapi/linux/keyctl.h`).
+/// `KEYCTL_CAPABILITIES` byte 0/1 bits.
 pub const KEYCTL_CAPS0_CAPABILITIES:      u8 = 0x01;
 pub const KEYCTL_CAPS0_PERSISTENT_KEYRINGS: u8 = 0x02;
 pub const KEYCTL_CAPS0_DIFFIE_HELLMAN:    u8 = 0x04;
@@ -197,7 +196,7 @@ pub const MPI_MAX_IMPORT_BITS: usize = 16384;
 
 /// `key_get_type_from_user` buffer size (`char type[32]`).
 pub const KEY_TYPE_MAX: usize = 32;
-/// `KEY_MAX_DESC_SIZE` (`security/keys/internal.h`).
+/// `KEY_MAX_DESC_SIZE`.
 pub const KEY_MAX_DESC_SIZE: usize = 4096;
 /// `SYSCALL_DEFINE5(add_key)`: `plen > 1024 * 1024 - 1` is EINVAL.
 pub const KEY_MAX_PAYLOAD: u64 = 1024 * 1024 - 1;

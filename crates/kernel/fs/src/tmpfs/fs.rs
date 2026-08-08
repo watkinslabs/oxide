@@ -125,7 +125,7 @@ impl TmpfsFs {
 impl vfs::fs::FileSystem for TmpfsFs {
     /// # C: O(1)
     fn name(&self) -> &str { self.fsname }
-    /// TMPFS_MAGIC / RAMFS_MAGIC (linux/magic.h), per instance type. # C: O(1)
+    /// TMPFS_MAGIC / RAMFS_MAGIC (the statfs f_type value), per instance type. # C: O(1)
     fn magic(&self) -> u64 { self.magic }
     /// Both tmpfs and ramfs are user-namespace mountable; Linux shmem/tmpfs,
     /// unlike ramfs, also advertises `FS_ALLOW_IDMAP`. # C: O(1)

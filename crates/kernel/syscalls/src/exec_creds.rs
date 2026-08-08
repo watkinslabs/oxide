@@ -1,11 +1,10 @@
 // The credential transition execve(2) performs, as one pure function.
 //
-// Linux splits it across three files; the decision is one thing:
-//   * `fs/exec.c` `bprm_fill_uid`             — S_ISUID / S_ISGID honouring
-//   * `security/commoncap.c`
-//       `cap_bprm_creds_from_file`            — capability sets + `secureexec`
-//       `get_file_caps` / `bprm_caps_from_vfs_caps` / `handle_privileged_root`
-//   * `fs/exec.c` `begin_new_exec`            — dumpability + `per_clear`
+// Linux splits it across three call sites; the decision is one thing:
+// * `bprm_fill_uid` — S_ISUID / S_ISGID honouring
+// * `cap_bprm_creds_from_file`            — capability sets + `secureexec`
+//   `get_file_caps` / `bprm_caps_from_vfs_caps` / `handle_privileged_root`
+// * `begin_new_exec` — dumpability + `per_clear`
 //
 // UNGATED ON PURPOSE. The `059_execve/{x86_64,aarch64}.rs` slot files are
 // `#![cfg(target_os = "oxide-kernel")]`, so a `#[cfg(test)] mod tests` placed
@@ -44,7 +43,7 @@ pub struct FileCaps {
 
 /// Everything outside the caller's own credentials that the transition reads.
 ///
-/// `mnt_may_suid` is Linux `fs/namespace.c` `mnt_may_suid`: it gates BOTH the
+/// `mnt_may_suid` is Linux's `mnt_may_suid`: it gates BOTH the
 /// setuid bits and file capabilities, which is why one flag covers both.
 /// `file_uid_mapped` / `file_gid_mapped` are `vfsuid_has_mapping` /
 /// `vfsgid_has_mapping` against the exec'ing task's user namespace.
@@ -73,7 +72,7 @@ pub struct ExecContext<'a> {
     /// `LSM_UNSAFE_SHARE`: another task shares this task's `fs_struct`.
     pub fs_shared: bool,
     /// Linux `ptracer_capable(current, new->user_ns)`. TRUE when there is no
-    /// tracer at all (`kernel/ptrace.c`: "An absent tracer adds no
+    /// tracer at all (Linux: "An absent tracer adds no
     /// restrictions"), so an untraced exec is never downgraded by this clause.
     pub ptracer_capable: bool,
     /// `ns_capable(new->user_ns, CAP_SETUID)` evaluated against the CALLER's
@@ -102,21 +101,21 @@ pub struct ExecTransition {
     pub dumpable: u8,
 }
 
-/// Linux `include/linux/capability.h` `VFS_CAP_FLAGS_EFFECTIVE`.
+/// Linux `VFS_CAP_FLAGS_EFFECTIVE`.
 pub const VFS_CAP_FLAGS_EFFECTIVE: u32 = 0x01;
 
-/// Linux `fs/exec.c` `file_caps_enabled`, the `no_file_caps` boot parameter.
+/// Linux's `file_caps_enabled`, the `no_file_caps` boot parameter.
 /// Default-on and never turned off here; named so the `get_file_caps` gate
 /// reads the same as the kernel it mirrors.
 const FILE_CAPS_ENABLED: bool = true;
 
-/// Linux `in_group_p(grp)` (`kernel/groups.c`): true when `grp` equals the
+/// Linux `in_group_p(grp)`: true when `grp` equals the
 /// caller's `fsgid` or appears in its sorted supplementary list.
 fn in_group_p(old: &TaskCreds, groups: &[u32], grp: u32) -> bool {
     grp == old.fsgid || groups.binary_search(&grp).is_ok()
 }
 
-/// Linux `security/commoncap.c` `root_privileged()`: `!issecure(SECURE_NOROOT)`.
+/// Linux's `root_privileged()`: `!issecure(SECURE_NOROOT)`.
 fn root_privileged(securebits: u32) -> bool {
     securebits & sched::securebits::SECBIT_NOROOT == 0
 }
@@ -132,7 +131,7 @@ pub fn transition(cx: &ExecContext<'_>) -> Result<ExecTransition, Errno> {
     let mut new = old;
     let mut per_clear = 0u32;
 
-    // --- fs/exec.c `bprm_fill_uid` -----------------------------------------
+    // --- Linux's `bprm_fill_uid` --------------------------------------------
     // Every one of these guards is a suppression rule: a nosuid mount, a
     // no_new_privs task, a file whose exec bit vanished, and an owner with no
     // mapping in the caller's user namespace each leave the ids untouched.
@@ -154,7 +153,7 @@ pub fn transition(cx: &ExecContext<'_>) -> Result<ExecTransition, Errno> {
         }
     }
 
-    // --- security/commoncap.c `get_file_caps` ------------------------------
+    // --- Linux's `get_file_caps` --------------------------------------------
     // `cap_clear(bprm->cred->cap_permitted)` FIRST: exec starts from an empty
     // permitted set and everything below is a grant, never a carry-over.
     new.cap_permitted = 0;
@@ -243,7 +242,7 @@ pub fn transition(cx: &ExecContext<'_>) -> Result<ExecTransition, Errno> {
 }
 
 /// Decode a `security.capability` xattr value into [`FileCaps`]
-/// (Linux `get_vfs_caps_from_disk`, `include/uapi/linux/capability.h`):
+/// (Linux `get_vfs_caps_from_disk`, the file-caps xattr wire layout):
 ///
 /// ```text
 ///   magic_etc   u32   low 24 bits = VFS_CAP_REVISION_*, high 8 = flags

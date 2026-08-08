@@ -50,7 +50,7 @@ impl Nameidata {
             None if self.rcu => { self.rcu = false; return Ok(ChildLookup::Restart); }
             None => {}
         }
-        // `lookup_slow` (Linux `fs/namei.c`): take the PARENT directory's
+        // `lookup_slow`: take the PARENT directory's
         // `i_rwsem` SHARED across the blocking `i_op->lookup` + dcache install, so
         // the (parent,name) resolution is consistent against a concurrent mutator
         // that holds the SAME `i_rwsem` EXCLUSIVE (create/unlink/rename, in the

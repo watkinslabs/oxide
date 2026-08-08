@@ -1,5 +1,5 @@
-// VT console tty driver (T5 of tty-rebuild-plan §3-T5). The Linux
-// `drivers/tty/vt/vt.c` console `tty_driver`: a `TtyDriver` whose output
+// VT console tty driver (T5 of tty-rebuild-plan §3-T5). Linux's VT
+// console `tty_driver` shape: a `TtyDriver` whose output
 // path runs the ECMA-48 emulator over a per-VT `Vc`, then renders the
 // dirtied cells through a `Consw` (fbcon). Assembles the whole VT stack:
 //

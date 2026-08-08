@@ -1,7 +1,5 @@
 // The irreversible half: driver shutdown, then the per-arch machine
-// transition. Linux `kernel_restart` / `kernel_halt` / `kernel_power_off`
-// (`kernel/reboot.c`), `native_machine_restart` (`arch/x86/kernel/reboot.c`),
-// `machine_restart` (`arch/arm64/kernel/process.c`).
+// transition, matching Linux's restart/halt/power-off machine ops per arch.
 //
 // x86_64: POWER_OFF → QEMU/Bochs ACPI shutdown port 0x604 = 0x2000; RESTART →
 //   triple fault via a zero IDTR + int3; HALT → `hlt` forever.

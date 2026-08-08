@@ -1,5 +1,5 @@
-//! `may_setattr` + the `chown_ok` / `chgrp_ok` authorization predicates
-//! (Linux `fs/attr.c`), split out of `setattr.rs` so the DAC decision for an
+//! `may_setattr` + the `chown_ok` / `chgrp_ok` authorization predicates,
+//! split out of `setattr.rs` so the DAC decision for an
 //! attribute change lives in one named place.
 //!
 //! `may_setattr` is the gate `notify_change` runs BEFORE `setattr_prepare`:
@@ -34,7 +34,7 @@ pub fn attr_times_set(valid: u32) -> bool {
     valid & (ATTR_ATIME | ATTR_MTIME) != 0 && !attr_touch(valid)
 }
 
-/// `may_setattr` (Linux `fs/attr.c`) — the gate ahead of `setattr_prepare`.
+/// `may_setattr` — the gate ahead of `setattr_prepare`.
 /// An immutable or append-only inode refuses a mode / owner / explicit-time
 /// change outright; an immutable inode additionally refuses the "touch" form,
 /// which is otherwise open to any writer. Note a *size* change is deliberately
@@ -54,7 +54,7 @@ pub fn may_setattr(idmap: &Idmap, inode: &InodeRef, valid: u32, cred: &Cred) -> 
     Ok(())
 }
 
-/// `chown_ok` (Linux `fs/attr.c`) — may this caller set the inode's owner to
+/// `chown_ok` — may this caller set the inode's owner to
 /// `ia_vfsuid`? The unprivileged clause is NOT "the id is unchanged": it is
 /// "the caller IS the owner *and* the target equals the current owner", i.e. a
 /// no-op chown by the owner. A stranger naming the file's existing uid is
@@ -68,7 +68,7 @@ pub fn chown_ok(idmap: &Idmap, inode: &InodeRef, ia_vfsuid: u32, cred: &Cred) ->
     cred.cap_chown
 }
 
-/// `chgrp_ok` (Linux `fs/attr.c`) — may this caller set the inode's group to
+/// `chgrp_ok` — may this caller set the inode's group to
 /// `ia_vfsgid`? The owner may move the file into any group they are a member
 /// of, or leave it in the group it is already in; everyone else needs
 /// CAP_CHOWN. A non-owner naming the file's existing gid is refused.

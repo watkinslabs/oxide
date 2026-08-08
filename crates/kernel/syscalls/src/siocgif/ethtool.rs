@@ -13,8 +13,7 @@ use syscall::errno::Errno;
 
 pub(super) const SIOCETHTOOL: u64 = 0x8946;
 
-/// `ethtool_value` command selector (`ETHTOOL_GLINK`) per Linux
-/// `include/uapi/linux/ethtool.h`.
+/// `ethtool_value` command selector (`ETHTOOL_GLINK`) per the ethtool UAPI.
 const ETHTOOL_GLINK: u32 = 0x0000_000a;
 /// `struct ethtool_value` = `{ __u32 cmd; __u32 data; }`.
 const ETHTOOL_VALUE_LEN: usize = 8;
