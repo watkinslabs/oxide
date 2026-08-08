@@ -156,7 +156,7 @@ impl Task {
             }
             hal::kassert!(gh == eh && gt == et, "Task canary corrupted");
         }
-        if let Some(gstack) = self.stack.as_ref() {
+        if let Some(gstack) = self.stack.lock().as_ref() {
             let stack = gstack.as_slice();
             let guard_len = core::cmp::min(TASK_STACK_GUARD_BYTES, stack.len());
             let watermark_live = stack.len() >= TASK_STACK_WATERMARK_OFF + guard_len
@@ -362,7 +362,7 @@ impl Task {
             arch_ctx: UnsafeCell::new(ArchCtxBuf([0u8; ARCH_CTX_SIZE])),
             mm: UnsafeCell::new(mm),
             mm_pin_lock: Spinlock::new(()),
-            stack: None,
+            stack: Spinlock::new(None),
             parent_tid: AtomicU32::new(0),
             forknoexec: AtomicBool::new(true),
             nproc_exceeded: AtomicBool::new(false),
@@ -511,10 +511,30 @@ impl Task {
                     .fill(TASK_STACK_GUARD);
             }
         }
-        self.stack = Some(stack);
+        *self.stack.lock() = Some(stack);
         crate::kstack::note_owner(top, self.tid);
         self.kernel_stack.store(top, Ordering::Release);
         true
+    }
+
+    /// Release this task's kernel stack (Linux `put_task_stack`).
+    ///
+    /// Called from the context-switch tail once the task is off-CPU for the
+    /// last time. A zombie has finished running, so it does not need its stack
+    /// while it waits to be reaped, and holding it until the `Arc<Task>` drops
+    /// both pins 16 KiB per unreaped child and makes reaping able to free a
+    /// stack a task might still be running on.
+    ///
+    /// Idempotent: a second call, or one for a task that owns no stack, is a
+    /// no-op. Clears `kernel_stack` with the storage so nothing can be resumed
+    /// onto freed memory.
+    /// # C: O(stack pages)
+    /// # Lk: takes `stack` (leaf)
+    /// # Ctx: any, with the owning task off-CPU
+    pub fn release_kernel_stack(&self) {
+        let released = self.stack.lock().take();
+        if released.is_some() { self.kernel_stack.store(core::ptr::null_mut(), Ordering::Release); }
+        drop(released);
     }
 
     /// Charge the already-installed stack before task publication. The
@@ -522,7 +542,7 @@ impl Task {
     /// # C: O(depth · subtree)
     pub fn try_charge_kernel_stack(&self, cgid: u64) -> bool {
         self.debug_check_canary("try_charge_kernel_stack");
-        let bytes = match self.stack.as_ref() { Some(stack) => stack.len() as u64, None => return true };
+        let bytes = match self.stack.lock().as_ref() { Some(stack) => stack.len() as u64, None => return true };
         if bytes == 0 || !cgroup::is_mounted() { return true; }
         if !cgroup::try_charge_memory(cgid, cgroup::MemoryKind::KernelStack, bytes) { return false; }
         if self.kernel_stack_memcg.compare_exchange(cgroup::NO_MEMCG, cgid, Ordering::AcqRel, Ordering::Acquire).is_err() {

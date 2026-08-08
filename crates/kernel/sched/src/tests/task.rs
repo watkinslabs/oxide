@@ -361,3 +361,29 @@ fn parked_child_tid_write_is_claimed_exactly_once() {
     assert_eq!(t.take_set_child_tid(), None);
     assert_eq!(t.set_child_tid.load(Ordering::Acquire), 0);
 }
+
+/// A task that owns no stack — the idle task, the boot frame, a hosted
+/// fixture — must keep its `kernel_stack` pointer when the release runs.
+/// Clearing it would take the boot frame's stack pointer out from under the
+/// CPU that is executing on it, and the release runs on every task the switch
+/// tail retires, not only on ones the spawn path gave storage to.
+#[test]
+fn releasing_a_borrowed_stack_leaves_its_pointer_alone() {
+    let t = Task::new(9301, "no-owned-stack", SchedClass::Normal { weight: 1024 });
+    let borrowed = 0x1234_5678usize as *mut u8;
+    t.kernel_stack.store(borrowed, Ordering::Release);
+    assert!(t.stack.lock().is_none(), "fixture owns no stack storage");
+    t.release_kernel_stack();
+    assert_eq!(t.kernel_stack.load(Ordering::Acquire), borrowed,
+        "a task whose stack it does not own must keep its stack pointer");
+}
+
+/// The release is idempotent: the switch tail can retire a task the exit path
+/// already released, and a second pass must not fault or re-clear.
+#[test]
+fn releasing_twice_is_a_no_op() {
+    let t = Task::new(9302, "twice", SchedClass::Normal { weight: 1024 });
+    t.release_kernel_stack();
+    t.release_kernel_stack();
+    assert!(t.stack.lock().is_none());
+}

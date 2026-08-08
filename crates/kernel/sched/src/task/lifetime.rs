@@ -14,7 +14,7 @@ impl Drop for Task {
         #[cfg(feature = "debug-taskdrop")]
         {
             let top = self.kernel_stack.load(Ordering::Acquire) as u64;
-            let len = self.stack.as_ref().map(|s| s.len() as u64).unwrap_or(0);
+            let len = self.stack.lock().as_ref().map(|s| s.len() as u64).unwrap_or(0);
             klog::write_raw(b"[TASK-DROP] tid=");
             klog::write_dec_u64(self.tid as u64);
             klog::write_raw(b" stack_top=0x");

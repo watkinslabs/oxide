@@ -349,13 +349,20 @@ pub struct Task {
     /// Exact charged byte extent, retained with the Box for final release.
     pub kernel_stack_charge_bytes: AtomicU64,
 
-    /// Backing storage for the kernel stack — allocated by the
-    /// spawn path, freed when the `Arc<Task>` drops. `None` for
-    /// tasks that don't own a stack (idle, boot frame, hosted tests
-    /// constructing Tasks for runqueue logic only). The pointer
-    /// in `kernel_stack` aliases `stack[stack.len()]` (one past
-    /// the last byte = top-of-stack on x86_64 / aarch64).
-    pub stack: Option<crate::kstack::GuardedStack>,
+    /// Backing storage for the kernel stack — allocated by the spawn path and
+    /// released by the context-switch tail once this task is off-CPU for the
+    /// last time (Linux `put_task_stack` in `finish_task_switch`), NOT when the
+    /// `Arc<Task>` drops. A zombie waiting to be reaped is a task that has
+    /// finished running, so holding its stack until the parent calls `wait4`
+    /// pins 16 KiB per unreaped child for no reason — and it is what forces the
+    /// exit notification onto the switch tail, since a parent that reaped
+    /// earlier would free the stack out from under a task still running on it.
+    ///
+    /// `None` for tasks that own no stack (idle, boot frame, hosted fixtures)
+    /// and for one whose stack has been released. The pointer in `kernel_stack`
+    /// aliases `stack[stack.len()]` (one past the last byte = top-of-stack on
+    /// x86_64 / aarch64) and is cleared with it.
+    pub stack: Spinlock<Option<crate::kstack::GuardedStack>, TaskListClass>,
 
     /// Opaque per-arch HAL `Context` (per `14§5.2`/`14§6.2`). Sized
     /// to `ARCH_CTX_SIZE`; aligned for the arch-specific Context's
