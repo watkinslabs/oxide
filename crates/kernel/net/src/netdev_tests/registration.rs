@@ -71,6 +71,7 @@ fn driver_carrier_transition_updates_the_reported_link_state() {
 
 #[test]
 fn ingress_admission_requires_exact_device_arc() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = crate::NetStack::new();
     let installed = Arc::new(DummyDev {
         name: "owner0", mtu: 1500, stats: NetStats::default(),

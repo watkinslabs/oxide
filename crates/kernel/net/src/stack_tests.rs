@@ -348,6 +348,7 @@ fn bound_udp_send_uses_requested_iface() {
 
 #[test]
 fn udp_send_can_stamp_ipv4_tos_and_ttl() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let eth = Arc::new(CountDev::new());
     let eth_id = stack.ifaces.register(eth.clone());
@@ -379,6 +380,7 @@ fn udp_send_can_stamp_ipv4_tos_and_ttl() {
 
 #[test]
 fn ipv4_l4_send_fragments_to_iface_mtu() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let eth = Arc::new(CountDev::with_mtu(68));
     let eth_id = stack.ifaces.register(eth.clone());
@@ -437,6 +439,7 @@ fn ipv6_l4_send_uses_route_table_iface() {
 
 #[test]
 fn ipv6_l4_send_fragments_to_iface_mtu() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let eth = Arc::new(CountDev::with_mtu(1280));
     let eth_id = stack.ifaces.register(eth.clone());
@@ -465,6 +468,7 @@ fn ipv6_l4_send_fragments_to_iface_mtu() {
 
 #[test]
 fn ipv6_udp_send_fragments_to_iface_mtu() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let eth = Arc::new(CountDev::with_mtu(1280));
     let eth_id = stack.ifaces.register(eth.clone());

@@ -111,6 +111,7 @@ fn one_message_controls_build_ipv4_header_without_endpoint_mutation() {
 
 #[test]
 fn source_route_uses_first_hop_route_source_and_mtu() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let first_hop = Ipv4Addr::new(192, 0, 2, 1);
     let hop_source = Ipv4Addr::new(192, 0, 2, 99);
@@ -139,6 +140,7 @@ fn source_route_uses_first_hop_route_source_and_mtu() {
 
 #[test]
 fn non_copy_options_are_nops_after_fragment_zero() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let dev = Arc::new(Capture { mtu: 68, packets: Spinlock::new(Vec::new()) });
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn NetDev>);
@@ -172,6 +174,7 @@ fn timestamp_address_mode_advances_pointer_and_writes_route_source() {
 
 #[test]
 fn message_pktinfo_iface_overrides_socket_multicast_iface() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let socket_dev = Arc::new(Capture { mtu: 1500, packets: Spinlock::new(Vec::new()) });
     let message_dev = Arc::new(Capture { mtu: 1500, packets: Spinlock::new(Vec::new()) });
@@ -206,6 +209,7 @@ fn dont_route_rejects_gateway_and_non_link_scope() {
 
 #[test]
 fn dont_route_with_explicit_iface_sends_on_link_without_route() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let dev = Arc::new(Capture { mtu: 1500, packets: Spinlock::new(Vec::new()) });
     let iface = stack.ifaces.register(dev.clone() as Arc<dyn NetDev>);

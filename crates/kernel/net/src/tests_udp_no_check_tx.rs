@@ -57,6 +57,7 @@ fn emit(no_check: bool) -> Vec<u8> {
 /// datagram is otherwise byte-identical to the checksummed one.
 #[test]
 fn so_no_check_zeroes_the_transmitted_udp_checksum() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let suppressed = emit(true);
     let checked = emit(false);
     let field = IPV4_HDR_LEN + 6;
@@ -73,6 +74,7 @@ fn so_no_check_zeroes_the_transmitted_udp_checksum() {
 /// computed" on IPv4 and is never validated.
 #[test]
 fn a_suppressed_checksum_datagram_still_parses_at_the_receiver() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let packet = emit(true);
     let header = crate::udp::UdpHdr::parse(&packet[IPV4_HDR_LEN..], SRC, DST).unwrap();
     assert_eq!(header.checksum, 0);

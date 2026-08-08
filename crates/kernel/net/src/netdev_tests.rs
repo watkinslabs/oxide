@@ -47,6 +47,7 @@ fn owner() -> network_namespace::NetworkNamespaceRef {
 
 #[test]
 fn register_assigns_increasing_ids() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let r = IfaceRegistry::new();
     let a = r.register(Arc::new(DummyDev { name: "lo", mtu: 65535, stats: NetStats::default() }));
     let b = r.register(Arc::new(DummyDev { name: "eth0", mtu: 1500, stats: NetStats::default() }));
@@ -58,6 +59,7 @@ fn register_assigns_increasing_ids() {
 
 #[test]
 fn ifindex_is_namespace_local_while_internal_ids_remain_unique() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let r = IfaceRegistry::new();
     let init_lo = r.register_in_ns(Arc::new(DummyDev {
         name: "lo", mtu: 65535, stats: NetStats::default(),
@@ -86,6 +88,7 @@ fn lookup_missing_returns_none() {
 
 #[test]
 fn legacy_multicast_uses_the_canonical_packet_filter_owner() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = crate::NetStack::new();
     const NAMESPACE: u64 = 0;
     const MULTICAST_MAC: [u8; 6] = [0x01, 0x00, 0x5e, 0x00, 0x00, 0x01];
@@ -100,6 +103,7 @@ fn legacy_multicast_uses_the_canonical_packet_filter_owner() {
 
 #[test]
 fn snapshot_lists_all() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let r = IfaceRegistry::new();
     r.register(Arc::new(DummyDev { name: "lo", mtu: 65535, stats: NetStats::default() }));
     r.register(Arc::new(DummyDev { name: "eth0", mtu: 1500, stats: NetStats::default() }));
@@ -111,6 +115,7 @@ fn snapshot_lists_all() {
 
 #[test]
 fn snapshot_carries_live_stats_without_second_lookup() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let r = IfaceRegistry::new();
     let stats = NetStats {
         rx_packets: 11, rx_bytes: 1100, rx_errors: 1, rx_dropped: 2,
