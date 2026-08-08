@@ -477,6 +477,7 @@ impl Task {
             rseq_slice_granted: AtomicBool::new(false),
             rseq_slice_expires_ns: AtomicU64::new(0),
             rseq_slice_yielded: AtomicBool::new(false),
+            rseq_force_fixup: AtomicBool::new(false),
             creds: Creds::root(),
             #[cfg(feature = "debug-smp")]
             dbg_canary_tail: AtomicU64::new(task_canary_tail(tid)),

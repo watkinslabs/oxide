@@ -294,7 +294,13 @@ unsafe extern "C" fn oxide_irq_exit_to_user(regs: *mut hal_aarch64::SvcFrame) {
     // task, so its rseq critical section remains valid.
     let slice_granted = sched::live::current().is_some_and(|t|
         t.rseq_slice_granted.load(Ordering::Acquire));
-    if preempted && !slice_granted {
+    // `MEMBARRIER_CMD_PRIVATE_EXPEDITED_RSEQ` owes an abort on every target
+    // whether or not the barrier preempted it, and a slice grant does not
+    // excuse it — the barrier's whole promise is that no critical section
+    // straddles it. Read-and-clear unconditionally so the latch cannot leak
+    // into an unrelated later return.
+    let forced = sched::rseq::take_force_fixup();
+    if forced || (preempted && !slice_granted) {
         // The thread just lost the CPU inside EL0 code. If it was inside a
         // declared rseq critical section, invalidate it and restart at
         // `abort_ip` BEFORE the eret resumes, so the commit never runs against

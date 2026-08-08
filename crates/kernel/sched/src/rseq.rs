@@ -35,6 +35,28 @@ fn clear_slice_ctrl(cur: &crate::Task) {
     }
 }
 
+/// Demand a restartable-sequence evaluation on this thread's next return to
+/// user mode, independent of whether it was preempted.
+///
+/// The preemption-driven abort only fires when the thread actually lost the
+/// CPU. `MEMBARRIER_CMD_PRIVATE_EXPEDITED_RSEQ` owes the abort unconditionally
+/// on every target, so the barrier IPI latches it here instead.
+/// # C: O(1)
+/// # Ctx: IRQ
+pub fn force_fixup() {
+    let Some(cur) = crate::live::current() else { return };
+    cur.rseq_force_fixup.store(true, Ordering::Release);
+}
+
+/// Read-and-clear the forced-fixup latch. The return-to-user path must call
+/// this exactly once per return whether or not it acts on the answer, or a
+/// stale latch aborts an unrelated critical section on some later return.
+/// # C: O(1)
+/// # Ctx: return-to-user
+pub fn take_force_fixup() -> bool {
+    crate::live::current().is_some_and(|c| c.rseq_force_fixup.swap(false, Ordering::AcqRel))
+}
+
 /// Revoke an active grant before every syscall body.  In particular, the
 /// slice-yield syscall observes the latch set here, after the grant is gone.
 /// # C: O(1)
