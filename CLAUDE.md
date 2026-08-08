@@ -225,6 +225,31 @@ If a question cannot be answered hosted because the code is `#![cfg(target_os = 
 
 Boot as the FINAL gate, once, when the change is otherwise green — never as the dev loop. If you have booted more than twice to chase one bug, stop and build the harness instead.
 
+**NO BOOTS FOR TESTING. A BOOT IS FINAL VERIFICATION ONLY — ONE, AT THE END (HARD RULE).**
+Testing is a harness. Speed is the point: a hosted test is milliseconds, a boot is
+minutes and serialises against every other lane on the box. This rule has been given
+repeatedly and broken repeatedly, so it is written here as an absolute:
+
+- **Never boot to find something out.** Not to see what a parameter does, not to check
+  whether a change works, not to compare before and after, not to "confirm" a gate that
+  already answered. Build the harness — extract the decision into an ungated function
+  and test it. Every time this rule was broken, the harness or the gate was what actually
+  found the defect, and the boots only cost wall-clock.
+- **One boot, at the very end, when everything else is green.** Not one per arch per
+  question. If you are about to run a second boot in a lane, you are testing with boots
+  — stop and write the check instead.
+- **A gate is not a boot and gates are cheap: run those freely.** `cargo test`,
+  `feature-gate`, `matrix-gate`, `hosted-gate`, `stack-gate`, `lint-ratchet`. Exhaust
+  them before the single final boot. They catch more, faster, and leave something behind
+  that can fail next time.
+- **"But this question is genuinely about a real boot" is the trap.** Even then it is
+  ONE boot that answers it, at the end, and its output is captured so the answer is
+  re-readable without booting again. If you find yourself booting to answer a follow-up
+  about the boot you just ran, you needed a captured log, not another boot.
+
+Violating this wastes the user's wall-clock, which is the scarcest thing in this project.
+There is no "to be safe" boot and no ritual boot.
+
 **Run the two arches CONCURRENTLY, never one after the other (HARD RULE).** `make smoke` already does: the builds are prerequisites and only the boots overlap, and the two boots contend for nothing — separate build namespaces, separate root images, separate qemu instances. Running them back to back doubles the wall clock of every lockstep check for zero information. If you invoke the scripts by hand, background both and `wait` on both, collecting each exit status so one run reports both answers:
 
 ```
