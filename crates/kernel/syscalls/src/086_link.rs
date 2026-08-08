@@ -56,6 +56,11 @@ pub(crate) fn link_path_at(srcp: &vfs::VfsPath, dirfd: i32, raw_link: &str) -> i
     if let Err(e) = vfs::may_link_source(&src, &cred) {
         return errno_from_vfs(e);
     }
+    // A hard link changes two objects: the destination directory gains a name,
+    // and the source inode gains a link (its ctime moves). Recall the
+    // delegations on both, destination first, after every permission gate.
+    if let Some(rv) = crate::deleg_break::break_deleg_for_mutation(&parent.inode) { return rv; }
+    if let Some(rv) = crate::deleg_break::break_deleg_for_mutation(&src) { return rv; }
     let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: 0 };
     let r = { let _g = parent.inode.inode_lock(); parent.inode.link_child(&src, &name, &ctx) };
     match r {

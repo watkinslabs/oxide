@@ -295,6 +295,11 @@ pub fn notify_change(idmap: &Idmap, inode: &InodeRef, ia: &mut Iattr, cred: &Cre
     reject_symlink_mode(inode, ia.valid)?;
     setattr_prepare(idmap, inode, ia, cred)?;
     check_owner_mappings(idmap, inode, ia.valid, ia.uid, ia.gid)?;
+    // An attribute change moves ctime, so it invalidates a delegation holder's
+    // cached copy: break the delegation before the change lands, AFTER every
+    // permission gate above (a caller who may not chmod must not be able to
+    // recall someone else's delegation). Plain leases are untouched.
+    crate::file::break_deleg(inode)?;
     notify_change_applied(idmap, inode, ia)
 }
 
@@ -341,6 +346,9 @@ pub fn notify_change_mnt(inode: &InodeRef, mnt_id: u64, ia: &mut Iattr, cred: &C
     if inode.is_public_device() && ia.valid & (ATTR_UID | ATTR_GID | ATTR_MODE) != 0 {
         return Ok(());
     }
+    // Same delegation break as [`notify_change`], after every gate and before
+    // the change lands.
+    crate::file::break_deleg(inode)?;
     ia.ctime = Timespec64::from_clock_ns(now_ns);
     notify_change_applied(&idmap, inode, ia)
 }

@@ -99,7 +99,7 @@ fn positional_pwritev(args: &SyscallArgs, mut off: u64, flags: u64) -> i64 {
     if let Err(e) = ::fs::inotify::check_file_area_perm(&file.inode(), true, Some(off), want) {
         let r = errno(e); cur.account_write_result(r); return r;
     }
-    let iocb = vfs::WriteIocb { append: eff.append, nowait: eff.nowait };
+    let iocb = vfs::WriteIocb { append: eff.append, nowait: eff.nowait, more: false };
     let start = off;
     let mut total: u64 = 0;
     for (base, len) in ranges {

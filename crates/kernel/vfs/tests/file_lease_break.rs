@@ -52,18 +52,18 @@ fn conflicting_open_breaks_lease_and_signals_holder() {
     let ino = reg_inode();
     let holder = file_on(&ino);
     // Holder takes a write lease and is registered (what F_SETLEASE does).
-    holder.set_lease(F_WRLCK);
+    holder.set_lease_of(vfs::file::FL_LEASE, F_WRLCK);
     holder.f_setown(4321, vfs::file::owner_type::F_OWNER_PID, 0, 0);
     vfs::file::lease_register(&holder);
     assert_eq!(vfs::file::lease_registered(), 1, "one registered lease holder");
 
     // A write lease conflicts with ANY open (read or write).
-    assert!(vfs::file::lease_conflict(&ino, false), "write lease vs read open conflicts");
-    assert!(vfs::file::lease_conflict(&ino, true),  "write lease vs write open conflicts");
+    assert!(vfs::file::lease_conflict(&ino, vfs::file::FL_LEASE, false), "write lease vs read open conflicts");
+    assert!(vfs::file::lease_conflict(&ino, vfs::file::FL_LEASE, true),  "write lease vs write open conflicts");
 
     // The conflicting open signals the holder (default SIGIO to its f_owner).
     GOT_FIRES.store(0, Ordering::Release);
-    vfs::file::lease_break_signal(&ino, true);
+    vfs::file::lease_break_signal(&ino, vfs::file::FL_LEASE, true);
     assert_eq!(GOT_FIRES.load(Ordering::Acquire), 1, "holder signalled once");
     assert_eq!(GOT_OWNER.load(Ordering::Acquire), 4321, "signal routed to f_owner");
     assert_eq!(GOT_SIG.load(Ordering::Acquire), SIGIO, "default SIGIO (no F_SETSIG)");
@@ -72,9 +72,9 @@ fn conflicting_open_breaks_lease_and_signals_holder() {
                "a lease break names POLL_MSG as its si_band");
 
     // Holder never downgrades → the break-timeout force-breaks the lease.
-    vfs::file::lease_force_break(&ino, true);
-    assert_eq!(holder.lease(), F_UNLCK, "force-break drops the lease to F_UNLCK");
-    assert!(!vfs::file::lease_conflict(&ino, true), "no conflict after break → open proceeds");
+    vfs::file::lease_force_break(&ino, vfs::file::FL_LEASE, true);
+    assert_eq!(holder.lease_of(vfs::file::FL_LEASE), F_UNLCK, "force-break drops the lease to F_UNLCK");
+    assert!(!vfs::file::lease_conflict(&ino, vfs::file::FL_LEASE, true), "no conflict after break → open proceeds");
     assert_eq!(vfs::file::lease_registered(), 0, "holder unregistered after break");
 }
 
@@ -83,13 +83,13 @@ fn read_lease_only_breaks_on_write_open() {
     let _g = GATE.lock().unwrap();
     let ino = reg_inode();
     let holder = file_on(&ino);
-    holder.set_lease(F_RDLCK);
+    holder.set_lease_of(vfs::file::FL_LEASE, F_RDLCK);
     holder.f_setown(10, vfs::file::owner_type::F_OWNER_PID, 0, 0);
     vfs::file::lease_register(&holder);
     // A read open does NOT break a read lease; a write open does.
-    assert!(!vfs::file::lease_conflict(&ino, false), "read lease + read open: no conflict");
-    assert!(vfs::file::lease_conflict(&ino, true),   "read lease + write open: conflict");
-    holder.set_lease(F_UNLCK);
+    assert!(!vfs::file::lease_conflict(&ino, vfs::file::FL_LEASE, false), "read lease + read open: no conflict");
+    assert!(vfs::file::lease_conflict(&ino, vfs::file::FL_LEASE, true),   "read lease + write open: conflict");
+    holder.set_lease_of(vfs::file::FL_NONE, F_UNLCK);
     vfs::file::lease_unregister(&holder);
     assert_eq!(vfs::file::lease_registered(), 0);
 }
@@ -100,7 +100,7 @@ fn no_lease_open_is_zero_cost_false() {
     let ino = reg_inode();
     // The common boot path: no lease anywhere → fast-path false, no scan.
     assert_eq!(vfs::file::lease_registered(), 0, "no leases registered");
-    assert!(!vfs::file::lease_conflict(&ino, true), "no lease → never conflicts");
+    assert!(!vfs::file::lease_conflict(&ino, vfs::file::FL_LEASE, true), "no lease → never conflicts");
 }
 
 #[test]

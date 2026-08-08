@@ -4,6 +4,18 @@ use alloc::vec::Vec;
 
 use super::EXTENT_LEN_MAX;
 
+/// Build an `Extent` record from a physical run `{block, phys, len}`,
+/// re-applying the unwritten marker `ee_len` carries in its top bit. `len` must
+/// be `1..=EXTENT_LEN_MAX`. # C: O(1)
+pub(in crate::extent_rw) fn extent_run(block: u32, phys: u64, len: u32, unwritten: bool) -> Extent {
+    Extent {
+        block,
+        len: if unwritten { len as u16 + EXTENT_LEN_MAX } else { len as u16 },
+        start_hi: (phys >> 32) as u16,
+        start_lo: (phys & 0xFFFF_FFFF) as u32,
+    }
+}
+
 impl Mount {
     pub(super) fn extent_for(logical: u32, phys: u64) -> Extent {
         Extent {

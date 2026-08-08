@@ -4,9 +4,11 @@
 //
 //   flags.rs        — SPLICE_F_* values and the pure admission decisions
 //                     (`do_splice` case selection, `do_tee` gate, vmsplice
-//                     direction). No fd/task access, unit tested hosted.
+//                     direction, the per-batch MORE-DATA hint). No fd/task
+//                     access, unit tested hosted.
 //   pipe_xfer.rs    — the three transfer legs (file->pipe, pipe->file,
-//                     pipe->pipe) over the ring primitives in `crate::pipe`.
+//                     pipe->pipe) over the ring primitives in `crate::pipe`;
+//                     `pipe_xfer_tests.rs` drives them over a real ring.
 //   splice_sys.rs   — `do_splice` (slot 275).
 //   tee_sys.rs      — `do_tee` (slot 276): duplicates, never consumes.
 //   vmsplice_sys.rs — `do_vmsplice_to_pipe` / `do_vmsplice_to_user` (slot 278).

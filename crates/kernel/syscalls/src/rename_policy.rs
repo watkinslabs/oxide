@@ -115,6 +115,20 @@ pub fn check_existence(old_exists: bool, new_exists: bool, flags: u32) -> Result
     Ok(())
 }
 
+/// Which of a rename's four objects must have their delegations recalled
+/// before the change lands: `(old_parent, new_parent, source, target)`.
+///
+/// The two directories lose / gain a name. The same directory on both sides is
+/// broken ONCE — a second break of the same inode would signal its holder
+/// twice for one change. The two file legs cover the objects whose ctime moves,
+/// and skip directories: a renamed or replaced directory's change is already
+/// carried by its parents. A rename with no victim has no target leg. # C: O(1)
+pub fn deleg_break_plan(same_parent: bool, has_target: bool, src_is_dir: bool, dst_is_dir: bool)
+    -> (bool, bool, bool, bool)
+{
+    (true, !same_parent, !src_is_dir, has_target && !dst_is_dir)
+}
+
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 #[path = "rename_policy/tests.rs"]
 mod tests;

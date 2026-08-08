@@ -161,6 +161,25 @@ fn rename_resolved(s: &RenameSides, from_raw: &str, to_raw: &str, flags: u32) ->
         &crate::pathresolve::current_cred()) {
         return errno_from_vfs(e);
     }
+    // Recall every delegation this rename invalidates, in the order the objects
+    // are affected: the old parent loses a name, the new parent gains one
+    // (skipped when both are the same directory — one break covers it), then
+    // the moved file and any overwritten victim, whose ctimes move. The two
+    // file legs skip directories: a renamed or replaced DIRECTORY is already
+    // covered by its parents' breaks. After every permission gate, before the
+    // backend rename.
+    let plan = rename_policy::deleg_break_plan(
+        same_parent(old_parent, new_parent), new_target.is_some(), old_is_dir, new_is_dir);
+    let legs = [
+        (plan.0, Some(&old_parent.inode)), (plan.1, Some(&new_parent.inode)),
+        (plan.2, Some(&old_victim)),       (plan.3, new_target.as_ref()),
+    ];
+    for (wanted, inode) in legs {
+        if !wanted { continue; }
+        if let Some(i) = inode {
+            if let Some(rv) = crate::deleg_break::break_deleg_for_mutation(i) { return rv; }
+        }
+    }
     // D29: hold BOTH parent dirs' `i_rwsem` via `lock_rename` (Linux
     // `vfs_rename` → `lock_rename`) across the backend rename. `lock_rename`
     // orders the two rank-40 `i_rwsem`s by address (deadlock-safe vs. a reverse

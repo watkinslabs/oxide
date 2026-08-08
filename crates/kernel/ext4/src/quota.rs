@@ -1,11 +1,13 @@
 // Module manifest:
-// - backend: ext4 hidden-quota VFS hooks and quota-file qtree IO.
+// - backend: ext4 hidden-quota VFS hooks.
+// - blocks: quota-file byte IO, journalled as filesystem metadata.
 // - cleanup: visible quota-file flag/time cleanup for quota-off.
 // - insert: quota-file qtree insertion and record write helpers.
 // - scan: quota-file qtree lookup/enumeration helpers.
 // - enable: quotactl quota-on path and hidden-inode enable flow.
 
 mod backend;
+mod blocks;
 mod ids;
 mod cleanup;
 mod delete;
