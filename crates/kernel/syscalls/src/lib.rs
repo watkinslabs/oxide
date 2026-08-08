@@ -122,6 +122,18 @@ pub mod fsmount_abi;
 // "who may create a superblock of this type", and the only rung of either whose
 // answer depends on the caller's user namespaces.
 pub mod mount_capable;
+// The VfsError -> negative-errno table. Ungated and at the crate root because
+// every ungated decision module that reports a VFS failure needs it; the
+// kernel-only `namei_common` re-exports THIS one rather than owning a copy.
+#[path = "namei_common/errno.rs"]
+pub mod vfs_errno;
+// mount(2)'s new-superblock arm: resolve the fstype, admit the option string,
+// test `mount_capable`, run the visibility gate, graft — or report the honest
+// errno. Ungated and LINKED (it used to live under the `target_os`-gated
+// `fsmount_common`, where `cargo test` compiled none of it and the tests reached
+// it by `#[path]`-including the file, so a break in the module the kernel
+// actually links could not turn any of them red).
+pub mod mount_dispatch;
 // mount(2)'s flag-word preamble: the MS_MGC_VAL magic strip and the MS_NOUSER
 // reject, whose ORDER is load-bearing (the magic value CONTAINS MS_NOUSER).
 pub mod mount_flags_policy;

@@ -365,16 +365,15 @@ fn the_preserved_lock_bits_are_installed_by_the_graft() {
 }
 
 #[test]
-fn lock_new_mount_bits_freezes_what_is_on_and_hides_the_mount() {
+fn lock_bits_freeze_what_is_on_and_leave_the_positional_bit_out() {
     let _g = guard();
-    // `create_new_namespace`'s `lock_mnt_tree(new_ns_root)`, as the word
-    // `fsmount(2)` hands to the graft: atime frozen unconditionally, each
-    // protection frozen only when currently on, plus MNT_LOCKED (the copy's own
-    // root IS `p != mnt` in Linux, because the synthetic ns root is `mnt`).
-    assert_eq!(vfs::mount::lock_new_mount_bits(MNT_RELATIME),
-        MNT_LOCK_ATIME | MNT_LOCKED);
-    assert_eq!(vfs::mount::lock_new_mount_bits(MNT_RELATIME | MNT_RDONLY),
-        MNT_LOCK_ATIME | MNT_LOCK_READONLY | MNT_LOCKED);
+    // The option half of the cross-user-namespace freeze: atime frozen
+    // unconditionally, each protection frozen only when currently on. MNT_LOCKED
+    // is NOT part of it — that one depends on the node's POSITION in the tree
+    // being frozen, which only the tree walk knows.
+    assert_eq!(vfs::mount::lock_bits_for(MNT_RELATIME), MNT_LOCK_ATIME);
+    assert_eq!(vfs::mount::lock_bits_for(MNT_RELATIME | MNT_RDONLY),
+        MNT_LOCK_ATIME | MNT_LOCK_READONLY);
     assert_eq!(vfs::mount::lock_bits_for(MNT_RELATIME) & MNT_LOCKED, 0,
         "lock_bits_for is the option half only — MNT_LOCKED is positional");
 }

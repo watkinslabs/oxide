@@ -61,13 +61,6 @@ pub fn lock_detached_tree(tree: &DetachedMountTree) {
     for node in tree.iter() { lock_one(&node.m, true); }
 }
 
-/// [`lock_detached_tree`] for the single not-yet-grafted mount `fsmount(2)`
-/// produces (Linux `create_new_namespace` with `MOUNT_COPY_NEW` → `clone_mnt`,
-/// then `lock_mnt_tree(new_ns_root)`): the internal-flag word to install on a
-/// mount whose option mask will be `opts`. The graft applies it, because the
-/// `Mount` does not exist yet at the point the decision is made. # C: O(1)
-pub fn lock_new_mount_bits(opts: u64) -> u32 { lock_bits_for(opts) | MNT_LOCKED }
-
 /// Linux `can_change_locked_flags`: `new_opts` (the MNT_* option word the
 /// caller's remount / `mount_setattr` would install) may not drop a protection
 /// this mount has frozen, nor alter a frozen atime policy. Callers turn `false`

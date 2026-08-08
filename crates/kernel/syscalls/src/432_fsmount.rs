@@ -8,7 +8,7 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-use crate::fsmount_abi::{self, FsmountCaps};
+use crate::fsmount_abi;
 use crate::fsmount_common::*;
 
 /// `sys_fsmount(fs_fd, flags, attr_flags)` — slot 432. Materialises a real
@@ -45,7 +45,7 @@ pub fn sys_fsmount(args: &SyscallArgs) -> i64 {
     // space, exactly what the mount will carry. The locked attributes the
     // visibility gate feeds back travel on the mount object.
     let mnt_flags = vfs::mount::mount_attr_to_mnt(admitted.attrs);
-    let mut lock_flags = match vfs::mount::mount_too_revealing(&sb, mnt_flags) {
+    let lock_flags = match vfs::mount::mount_too_revealing(&sb, mnt_flags) {
         Ok(l) => l,
         Err(_) => {
             // The errno is shared with the privilege rungs, so without this the
@@ -64,12 +64,14 @@ pub fn sys_fsmount(args: &SyscallArgs) -> i64 {
     // `read(2)` on this descriptor returns — the caller that set the option is
     // the party that needs to hear it, and it can.
     if fsmount_abi::warns_mandlock(fc.sb_flags()) { fc.warnf(fsmount_abi::MANDLOCK_MSG); }
-    if crate::mount_perm::current_user_ns_differs_from_mount_ns_owner() {
-        lock_flags |= vfs::mount::lock_new_mount_bits(mnt_flags);
-    }
     // The mount is REAL from here: its own id, its own root, belonging to a
     // namespace no task is in until `move_mount(2)` (anonymous form) or until
     // someone enters it (namespace form).
+    //
+    // The cross-user-namespace freeze is NOT applied here. It is a decision
+    // about the TREE the namespace form builds — which nodes get frozen, and
+    // which one is left removable — so it belongs to the constructor that knows
+    // the tree's shape. The anonymous form builds no tree to freeze.
     let created = if admitted.namespace {
         vfs::mount::create_ns_mount(sb, mnt_flags, lock_flags, None).map(|(m, ns)| (m, Some(ns)))
     } else {
@@ -112,15 +114,4 @@ pub fn sys_fsmount(args: &SyscallArgs) -> i64 {
         mnt_id: anon.mnt_id, dentry: mnt_root, inode: root_inode, last_component: None,
     };
     install_mount_path_fd(path, anon.mnt_id, admitted.cloexec)
-}
-
-/// The two capability facts the flag word chooses between, sampled before the
-/// context lock (the capability walk reads scheduler state). Both are taken
-/// because which one applies is settled inside the ungated admission.
-/// # C: O(userns depth)
-fn sample_caps() -> FsmountCaps {
-    FsmountCaps {
-        cap_sys_admin_current_user_ns: crate::mount_perm::cap_sys_admin_in_current_user_ns(),
-        may_mount: crate::mount_perm::may_mount(),
-    }
 }

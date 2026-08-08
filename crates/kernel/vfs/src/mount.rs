@@ -7,6 +7,7 @@
 //! - `attach`: superblock materialization plus root/submount registration.
 //! - `clone_tree`: open_tree/bind clone construction and recursive graft commit.
 //! - `recursive`: recursive attach and mount-subtree predicates.
+//! - `new_namespace`: the namespace form of fsmount/open_tree — one constructor.
 //! - `namespace`: bind/move namespace-tree mutations and the pivot retree commit.
 //! - `pivot`: `pivot_root(2)` tree surgery — slot swap, re-root, re-render.
 //! - `namespace_lifecycle`: mount refcount, namespace copy, and namespace reap.
@@ -49,6 +50,12 @@ pub use crate::mntns::{
 // the line cap; its public surface stays `vfs::mount::*` verbatim.
 mod anon;
 pub use anon::{anon_ns_root, create_anon_mount, create_ns_mount, dissolve_anon, graft_anon_mount_at};
+
+// The namespace form of `fsmount(2)` and `open_tree(2)`: ONE constructor for the
+// namespace both build, so the root-copy / placement / propagation / freezing
+// shape exists exactly once.
+mod new_namespace;
+pub use new_namespace::{create_new_namespace, NsMountSource};
 
 mod propagation;
 pub use propagation::{change_type_by_id, join_peer_group, peer_group_of, propagate_mount, set_group,
@@ -112,7 +119,7 @@ pub use shrink::shrink_submounts;
 mod locked;
 pub use locked::{
     can_change_locked_flags, can_change_locked_options, has_locked_children, lock_bits_for,
-    lock_detached_tree, lock_new_mount_bits,
+    lock_detached_tree,
 };
 
 // Idmapped mount installation is one VFS transaction over detached mount

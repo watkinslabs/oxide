@@ -10,8 +10,11 @@ use alloc::vec::Vec;
 use syscall::errno::Errno;
 use hal::USER_VA_END;
 
-mod errno;
-pub(crate) use errno::errno_from_vfs;
+// The VfsError->errno table lives UNGATED at the crate root (`crate::vfs_errno`)
+// so every module that reports a VFS failure is compiled — and testable —
+// hosted. This file is kernel-only; a copy of the table here would be a second
+// one, reachable only from a build no test runs.
+pub(crate) use crate::vfs_errno::errno_from_vfs;
 
 #[cfg(feature = "debug-udevdb")]
 fn is_udevdb_path_bytes(path: &[u8]) -> bool {

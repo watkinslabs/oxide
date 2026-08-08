@@ -3,7 +3,7 @@
 use alloc::sync::Arc;
 use vfs::Dentry;
 
-use super::mount_dispatch::dispatch_mount;
+use crate::mount_dispatch::dispatch_mount;
 use super::registry::ensure_filesystems_registered;
 
 /// `ms_flags` is the raw `mount(2)` flag word; the per-mount MNT_* option mask is

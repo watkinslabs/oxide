@@ -1,20 +1,21 @@
 // Module manifest: `registry` owns fs-type admission/registration;
+// `caps` owns the one capability sampler fsmount(2)/open_tree(2) share;
 // `mount_ops` owns the kernel-only glue (registration + user-string reads);
-// `mount_dispatch` owns the pure fstype→mount_capable→graft-or-honest-errno decision
-// (ungated, hosted-testable); `objects` owns fs_context and detached-mount
+// `objects` owns fs_context and detached-mount
 // inode types; `fscontext_ops` owns `read(2)` on the context fd; `fd` owns
 // user-string/fd installation helpers.
 
 #![cfg(target_os = "oxide-kernel")]
 
+mod caps;
 mod fd;
 mod fscontext_ops;
-mod mount_dispatch;
 mod mount_ops;
 mod objects;
 mod registry;
 
-pub(crate) use mount_dispatch::{mount_capable, MountCaps};
+pub(crate) use caps::sample_caps;
+pub(crate) use crate::mount_capable::{mount_capable, MountCaps};
 pub(crate) use fd::{
     fd_file, fd_inode, install_fd, install_mount_path_fd, install_path_fd, read_cstr_req,
     read_path_allow_empty,
