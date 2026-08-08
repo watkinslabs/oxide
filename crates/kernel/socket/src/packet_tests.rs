@@ -58,6 +58,7 @@ impl MessageIo for PacketKickIo {
 
 #[test]
 fn packet_tx_ring_kick_skips_payload_materialization() {
+    let _policy = crate::test_support::unpoliced();
     let task = sched::Task::new(19, "packet-kick", sched::SchedClass::Normal { weight: 1024 });
     let ctx = SendContext::new(&task);
     let mut io = PacketKickIo { target: packet_tx_ring_file(), events: Vec::new() };
@@ -82,6 +83,7 @@ impl BatchIo for PacketKickBatch {
 
 #[test]
 fn packet_tx_ring_sendmmsg_kick_skips_each_payload_import() {
+    let _policy = crate::test_support::unpoliced();
     let task = sched::Task::new(20, "packet-batch", sched::SchedClass::Normal { weight: 1024 });
     let ctx = SendContext::new(&task);
     let mut io = PacketKickBatch { target: packet_tx_ring_file(),
