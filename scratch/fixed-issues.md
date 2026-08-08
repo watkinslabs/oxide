@@ -1,5 +1,11 @@
 # Fixed issues
 
+### B1985-fault-fill-failure-reports-sigbus
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED f89821ff6 | DEFECT | med | A file-mapping fill that FAILS is delivered to userspace as `SIGSEGV`/`SEGV_MAPERR`, where the reference answers `SIGBUS`/`BUS_ADRERR`. `mm-pmm/src/user_as/fault/entry.rs::handle` collapses the resolver's `Result` to a bare `bool`, so `Err(Error::Io)` from the short-read guard in `mm-vmm/src/address_space/fault/fill.rs:330` is indistinguishable from "no VMA covers this address"; `force_user_fault_x86` then classifies the signal from the `#PF` error code alone. The fill code's own comment already names the intended answer ("`filemap_fault` VM_FAULT_SIGBUS leg", `fill.rs:210`, `:320`). Besides being the wrong signal, this is why the row above cannot be told apart from a lost mapping without a debug build. | `entry.rs:345-360` returns `true`/`false` only; `signal.rs:32-41` derives `(cls, addr)` from `err`/`cr2` with no input from the resolver. No test can currently fail on it: nothing pins the signal a failed file fill produces. Closed by `vmm::fault_signal`: the resolver's failure reason reaches the signal decision through one ungated mapping consulted by both architectures. `fault_signal::tests` (9) pin the reason->signal table; `tests_shortfill::{failed_file_fill_classifies_as_a_bus_error,absent_mapping_still_classifies_as_a_segmentation_fault}` drive the production file-fault arm against a short-reading backing and a hole, so the fill's own error value is what gets classified. Positive controls: collapsing `signal_for`'s BusError arm back to the hardware classification turns 5 tests red; collapsing `failure_of`'s `Io` arm turns 4 red; both green on restore. 393 vmm + 149 pmm tests pass, both arch kernels build, `make hosted-gate` PASS, `make smoke` PASS on x86 (64s) and arm (122s), attempt 1 each. | B1985-fault-fill-failure-reports-sigbus |
+
 ### F839-live-proc-interrupts-device-counters
 
 | Status | Class | Sev | Issue | Evidence | Owner |
