@@ -311,9 +311,30 @@ impl AddressSpace {
                     // A desync-recovered fill legitimately stops at the
                     // BACKING's own EOF mid-page (the zeroed tail is real
                     // bss); only a non-desync shortfall is fatal.
-                    (err || (filled < valid && !desync), no_mem)
+                    (err, no_mem, filled)
                 };
-                if short.0 {
+                let (read_err, no_mem, filled) = short;
+                let mut fatal = read_err || (filled < valid && !desync);
+                // The valid extent was derived from the size read BEFORE the
+                // fill. The reference re-reads i_size AFTER the read completes
+                // and decides against THAT, because the object can shrink while
+                // the fault is in flight — a writer rewriting a file a reader
+                // has already mapped is the ordinary case, not a rare one.
+                // Judged against the stale size, the backing's correct "no more
+                // bytes" at the NEW end looks like an unrecoverable short, and
+                // the reader is killed for the writer's truncate. Re-derive the
+                // extent and only then decide. A page that now lies WHOLLY past
+                // the end stays fatal: that is the reference's post-read
+                // index-beyond-EOF arm, and its answer there is a fault, not a
+                // zero page.
+                if fatal && !read_err && !desync {
+                    let fsize_now = backing.size_hint();
+                    if fsize_now < fsize && file_off < fsize_now {
+                        let revalid = core::cmp::min(page as u64, fsize_now - file_off) as usize;
+                        if filled >= revalid { fatal = false; }
+                    }
+                }
+                if fatal {
                     // Unrecoverable: the backing could not supply the full
                     // file-valid extent. Do NOT install a partially-zero page
                     // (silent corruption). Free the fresh frame and fail the
@@ -327,7 +348,7 @@ impl AddressSpace {
                         klog::write_raw(b"]\n");
                     }
                     dec_ref(pa);
-                    return Err(if short.1 { Error::NoMem } else { Error::Io });
+                    return Err(if no_mem { Error::NoMem } else { Error::Io });
                 }
                 // DIAG (debug-atexit): sample the JUST-FILLED frame vs a fresh
                 // backing read for lib-arena pages. If they DISAGREE now, the

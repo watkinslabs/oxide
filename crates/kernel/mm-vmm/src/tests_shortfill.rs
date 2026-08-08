@@ -13,7 +13,7 @@
 
 use alloc::sync::Arc;
 use core::cell::RefCell;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::collections::HashMap;
 use std::thread_local;
 
@@ -116,6 +116,28 @@ impl FileBacking for ShortForever {
     fn ino(&self) -> u64 { 0x5252 }
 }
 
+/// A file that SHRINKS while the fault is in flight — the shape a writer
+/// rewriting an object a reader has already mapped produces. `size_hint` says
+/// two pages when the valid extent is computed; by the time the fill runs the
+/// object ends half a page in, so the backing correctly reports no further
+/// progress there. Judged against the size the fault STARTED with that looks
+/// like an unrecoverable short and kills the reader; judged against the size
+/// after the read — which is what the reference does — the shortfall is an
+/// ordinary end-of-file tail and the page is legitimately zero past it.
+struct ShrinkUnderFault { real: u64, size: AtomicU64 }
+impl FileBacking for ShrinkUnderFault {
+    fn read_at(&self, off: u64, dst: &mut [u8]) -> Result<usize, FileBackingError> {
+        // The writer's truncate lands here: from now on the object is `real`.
+        self.size.store(self.real, Ordering::SeqCst);
+        let avail = self.real.saturating_sub(off) as usize;
+        let n = avail.min(dst.len());
+        for b in &mut dst[..n] { *b = 0xAB; }
+        Ok(n)
+    }
+    fn size_hint(&self) -> u64 { self.size.load(Ordering::SeqCst) }
+    fn ino(&self) -> u64 { 0x5353 }
+}
+
 fn mmap_file(root: u64, va: u64, backing: Arc<dyn FileBacking>) -> Arc<AddressSpace> {
     let as_ = AddressSpace::new(root).expect("AS::new");
     let s = hal::UserVirtAddr::new(va).expect("va");
@@ -180,6 +202,27 @@ fn unrecoverable_short_errors_not_partial() {
     // No leaf installed for the faulting VA.
     activate_root(r);
     assert!(MultiMmu::translate(Va(va)).is_none(), "no partial page may be mapped");
+}
+
+/// A file that shrank between the extent calculation and the fill must NOT kill
+/// the faulting reader: the bytes past the NEW end are an end-of-file tail, so
+/// the fault resolves with a zero tail. Positive control: drop the post-read
+/// size re-check in `fill.rs` and this goes red with `Err(Io)` — which is the
+/// SIGSEGV a mapped-file reader dies with when a writer rewrites the file.
+#[test]
+fn a_file_that_shrinks_under_the_fault_is_an_eof_tail_not_a_fatal_short() {
+    reset();
+    let r = 0x1000;
+    let va = 0x40_0000u64;
+    let backing: Arc<dyn FileBacking> =
+        Arc::new(ShrinkUnderFault { real: PG / 2, size: AtomicU64::new(2 * PG) });
+    let as_ = mmap_file(r, va, backing);
+
+    fault(&as_, r, va).expect("a racing shrink is an EOF tail, not a fatal short");
+
+    let pa = cur_pa(r, va);
+    for i in 0..(PG / 2) as usize { assert_eq!(read_byte(pa, i), 0xAB, "surviving head must be filled"); }
+    for i in (PG / 2) as usize..PG as usize { assert_eq!(read_byte(pa, i), 0x00, "tail past the new end must be zero"); }
 }
 
 /// A page wholly past EOF (valid == 0) is legitimately all-zero and must still
