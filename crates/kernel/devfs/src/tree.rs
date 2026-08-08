@@ -24,7 +24,7 @@
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use kernfs::PseudoDir;
+use kernfs::{DirFileattr, PseudoDir};
 use sync::{Spinlock, TaskList as TaskListClass};
 use vfs::InodeRef;
 
@@ -41,7 +41,7 @@ static ROOTS: Spinlock<BTreeMap<u64, Arc<PseudoDir>>, TaskListClass> = Spinlock:
 fn ns_root(ns: u64) -> Arc<PseudoDir> {
     let mut g = ROOTS.lock();
     if let Some(r) = g.get(&ns) { return Arc::clone(r); }
-    let r = PseudoDir::new_root(0x5000_0001, crate::DEVFS_FSID);
+    let r = PseudoDir::new_root_with_fileattr(0x5000_0001, crate::DEVFS_FSID, DirFileattr::Shmem);
     g.insert(ns, Arc::clone(&r));
     r
 }
@@ -53,7 +53,7 @@ fn ns_root(ns: u64) -> Arc<PseudoDir> {
 fn all_roots_ensure0() -> Vec<Arc<PseudoDir>> {
     let mut g = ROOTS.lock();
     if !g.contains_key(&0) {
-        let r = PseudoDir::new_root(0x5000_0001, crate::DEVFS_FSID);
+        let r = PseudoDir::new_root_with_fileattr(0x5000_0001, crate::DEVFS_FSID, DirFileattr::Shmem);
         g.insert(0, r);
     }
     g.values().map(Arc::clone).collect()

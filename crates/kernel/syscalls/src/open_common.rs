@@ -135,10 +135,14 @@ pub(crate) fn enforce_open_perm(
 pub(crate) fn break_lease_for_open(inode: &vfs::InodeRef, flags: u32) -> Option<i64> {
     let accmode = flags & O_ACCMODE;
     let writes = accmode == O_WRONLY || accmode == O_RDWR || (flags & O_TRUNC) != 0;
+    // An open is a LEASE-flavoured breaker: it breaks plain leases AND
+    // delegations. (A mutation is delegation-flavoured and breaks only the
+    // latter — `crate::deleg_break`.)
+    let flavour = vfs::file::FL_LEASE;
     // Fast path: no conflicting lease (almost always). One atomic load at zero.
-    if !vfs::file::lease_conflict(inode, writes) { return None; }
-    // A conflict exists — signal the holder(s) once (Linux `__break_lease`).
-    vfs::file::lease_break_signal(inode, writes);
+    if !vfs::file::lease_conflict(inode, flavour, writes) { return None; }
+    // A conflict exists — signal the holder(s) once.
+    vfs::file::lease_break_signal(inode, flavour, writes);
     if (flags & O_NONBLOCK) != 0 { return Some(-(Errno::Eagain.as_i32() as i64)); }
     let cur = match sched::live::current() { Some(c) => c, None => return None };
     use hal::TimerOps;
@@ -147,11 +151,11 @@ pub(crate) fn break_lease_for_open(inode: &vfs::InodeRef, flags: u32) -> Option<
     let deadline = now().saturating_add(vfs::file::LEASE_BREAK_NS);
     // Wait for the holder to downgrade/release; force-break on timeout. Yields
     // the CPU like F_SETLKW; interruptible by a deliverable signal.
-    while vfs::file::lease_conflict(inode, writes) {
+    while vfs::file::lease_conflict(inode, flavour, writes) {
         if sched::live::sigpend::deliverable_signals(cur) != 0 {
             return Some(-(Errno::Eintr.as_i32() as i64));
         }
-        if now() >= deadline { vfs::file::lease_force_break(inode, writes); break; }
+        if now() >= deadline { vfs::file::lease_force_break(inode, flavour, writes); break; }
         // SAFETY: process ctx; preempt-off; runqueue installed; voluntary schedule() yields the CPU; we stay Runnable so the scheduler reselects us.
         unsafe { sched::live::schedule::schedule(); }
     }

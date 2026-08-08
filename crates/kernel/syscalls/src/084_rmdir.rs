@@ -39,6 +39,11 @@ pub(crate) fn do_rmdir_at(dirfd: i32, raw: &str) -> i64 {
         // is mounted on top of keeps its name until the mount goes away.
         if d.is_mounted() { return -(syscall::errno::Errno::Ebusy.as_i32() as i64); }
     }
+    // The parent directory loses a name: recall any delegation on it before the
+    // backend removes the subdirectory. Only the parent — a directory being
+    // removed is empty, so nothing cached about the victim survives its
+    // disappearance.
+    if let Some(rv) = crate::deleg_break::break_deleg_for_mutation(&parent.inode) { return rv; }
     // D29: parent dir `i_rwsem` EXCLUSIVE across the backend rmdir (Linux
     // `do_rmdir` locks the parent); dropped before the dcache invalidate below.
     let r = { let _g = parent.inode.inode_lock(); parent.inode.rmdir(&name) };

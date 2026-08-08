@@ -11,6 +11,8 @@
 
 use hal::pt_walker::{self, PtWalker, WalkErr};
 
+pub mod linear;
+
 const VALID:    u64 = 1 << 0;
 const TABLE:    u64 = 1 << 1;       // also "PAGE" at L3
 // AttrIndx is descriptor bits[4:2]. AttrIdx1 is bit 2 and AttrIdx2 is bit 3;
@@ -20,6 +22,10 @@ const ATTR_NORMAL_NC: u64 = 1 << 3; // AttrIdx 2
 const SH0:      u64 = 1 << 8;
 const SH1:      u64 = 1 << 9;       // SH = 0b11 = Inner Shareable
 const AF:       u64 = 1 << 10;
+/// Contiguous hint — a run of leaves the TLB may fold into one entry.
+const CONT:     u64 = 1 << 52;
+/// Bottom (4 KiB) level index in the shared four-level walker.
+const LEAF_LEVEL_4K: u8 = 3;
 const PXN:      u64 = 1 << 53;
 const UXN:      u64 = 1 << 54;
 const PO_INDEX_SHIFT: u8 = 60;
@@ -33,12 +39,27 @@ const SWAP_OFFSET_SHIFT: u8 = 12;
 const MIGRATION_MARKER: u64 = 1 << 11;
 // AP[2] — clear = writable, set = read-only, at both exception levels.
 const AP2_RDONLY: u64 = 1 << 7;
-// Descriptor bit 58 is software-reserved on this architecture, so a valid leaf
-// can carry the userfaultfd write-protect marker without changing translation.
+// Descriptor bit 58 is software-reserved on this architecture, so a leaf can
+// carry the userfaultfd write-protect marker without changing translation —
+// and with VALID=0 the whole descriptor is software state anyway.
+//
+// The SAME bit carries the state on a NON-PRESENT leaf without ambiguity: it
+// lies outside every field the three non-present encodings are identified or
+// decoded by. Swap entries are named by bit 1 and decode bits 2..=6 and
+// 12..=51; migration entries are named by bit 11 and decode 12..=51; markers
+// are named by bit 10 and decode 12..=13. Bit 58 is in none of those, so it
+// changes no identity and no payload, and the "valid or not" question — which
+// the two predicates below split on — is exactly what separates a page's own
+// barrier from the barrier riding on a reference to a page that is elsewhere.
 const UFFD_WP_BIT: u64 = 1 << 58;
 // With VALID=0, bit 10 is ignored by translation and is disjoint from the swap
-// (bit 1) and migration (bit 11) markers.
-const POISON_MARKER: u64 = 1 << 10;
+// (bit 1) and migration (bit 11) markers, so a marker leaf decodes as neither
+// and neither decodes as a marker. The kinds ride in the same payload field the
+// swap offset and the migration token occupy: that field can never make a swap
+// or migration entry out of a marker, because those two are identified by bits
+// 1 and 11 and a marker sets neither.
+const PTE_MARKER: u64 = 1 << 10;
+const PTE_MARKER_KIND_SHIFT: u8 = 12;
 
 /// Errors `map_device_4k` can return. Mirrors `WalkErr` 1:1.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -168,7 +189,12 @@ impl PtWalker for PtWalkerArm {
         // AP[2:1] in bits 6:7. AP=0b00 = EL1 RW. AP=0b01 = EL0/EL1 RW.
         // AP=0b10 = EL1 RO. AP=0b11 = EL0/EL1 RO.
         let user = flags.contains(hal::PageFlags::USER);
-        let writable = flags.contains(hal::PageFlags::WRITE);
+        // A monitor's barrier and write permission are one fact: a leaf built
+        // protected is never briefly writable, so a peer thread cannot slip a
+        // write past the barrier between the install and a later re-protect.
+        let protected = flags.contains(hal::PageFlags::UFFD_WP);
+        if protected { e |= UFFD_WP_BIT; }
+        let writable = flags.contains(hal::PageFlags::WRITE) && !protected;
         let ap = match (user, writable) {
             (false, true)  => 0b00, // kernel RW
             (false, false) => 0b10, // kernel RO
@@ -228,12 +254,55 @@ impl PtWalker for PtWalkerArm {
         hal::pt_walker::MigrationEntry::new((raw >> SWAP_OFFSET_SHIFT) & hal::pt_walker::MigrationEntry::MAX_TOKEN)
     }
 
+    /// Answered by `linear::page_removable_from_linear_map`: either the linear
+    /// map's RAM already has a bottom-level leaf for every page, in which case
+    /// no granularity changes at all, or the implementation advertises that a
+    /// live one is free of translation-conflict aborts. The boot policy
+    /// supplies the first, so the answer does not depend on the second.
+    fn can_split_kernel_leaf() -> bool {
+        linear::page_removable_from_linear_map(
+            linear::LINEAR_MAP_RAM_PAGE_GRANULAR, linear::read_id_aa64mmfr2())
+    }
+
+    fn split_child_leaf(block: u64, child_pa: u64, child_level: u8) -> u64 {
+        // Descriptor kind is the only field that differs between a block leaf
+        // and a bottom-level page leaf: the same bit reads as "block" when
+        // clear above the bottom level and must be SET on a bottom-level page.
+        // The contiguous hint is dropped because the split children no longer
+        // form the run the hint promised.
+        let e = (block & !Self::PHYS_MASK & !CONT) | (child_pa & Self::PHYS_MASK);
+        if child_level == LEAF_LEVEL_4K { e | TABLE } else { e & !TABLE }
+    }
+
+    /// A table walker on this architecture is not coherent with the store
+    /// buffer, so the table fill needs a store barrier — not merely release
+    /// ordering — before the entry that publishes it becomes visible.
+    fn publish_table_barrier() {
+        #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+        // SAFETY: `dsb ishst` is an unprivileged store barrier over the
+        // inner-shareable domain; it touches no memory and has no operands.
+        unsafe { core::arch::asm!("dsb ishst", options(nostack, preserves_flags)); }
+    }
+
+    fn leaf_set_present(raw: u64, present: bool) -> u64 {
+        if present { raw | VALID } else { raw & !VALID }
+    }
+
     fn leaf_wrprotect(raw: u64) -> u64 { raw | AP2_RDONLY }
     fn leaf_set_uffd_wp(raw: u64) -> u64 { raw | UFFD_WP_BIT }
     fn leaf_clear_uffd_wp(raw: u64) -> u64 { raw & !UFFD_WP_BIT }
     fn leaf_is_uffd_wp(raw: u64) -> bool { (raw & VALID) != 0 && (raw & UFFD_WP_BIT) != 0 }
-    fn pack_poison_marker() -> u64 { POISON_MARKER }
-    fn is_poison_marker(raw: u64) -> bool { (raw & VALID) == 0 && (raw & POISON_MARKER) != 0 }
+    fn nonpresent_set_uffd_wp(raw: u64) -> u64 { raw | UFFD_WP_BIT }
+    fn nonpresent_clear_uffd_wp(raw: u64) -> u64 { raw & !UFFD_WP_BIT }
+    fn nonpresent_is_uffd_wp(raw: u64) -> bool { (raw & VALID) == 0 && (raw & UFFD_WP_BIT) != 0 }
+    fn pack_pte_marker(m: hal::pt_walker::PteMarker) -> u64 {
+        PTE_MARKER | ((m.bits() as u64) << PTE_MARKER_KIND_SHIFT)
+    }
+    fn unpack_pte_marker(raw: u64) -> Option<hal::pt_walker::PteMarker> {
+        if (raw & VALID) != 0 || (raw & PTE_MARKER) == 0 { return None; }
+        hal::pt_walker::PteMarker::from_bits(
+            ((raw >> PTE_MARKER_KIND_SHIFT) as u32) & hal::pt_walker::PteMarker::MASK)
+    }
 }
 
 /// Install a 4 KiB Device-nGnRnE mapping `va → pa` into TTBR1_EL1.
@@ -257,27 +326,4 @@ pub unsafe fn map_device_4k<F: FnMut() -> Option<u64>>(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn map_err_distinct() {
-        assert_ne!(MapErr::AllocFailed, MapErr::HitBlockDescriptor);
-        assert_ne!(MapErr::HitBlockDescriptor, MapErr::AlreadyMapped);
-    }
-
-    #[test]
-    fn arm_walker_pack_unpack_roundtrip() {
-        let pa = 0xdead_b000_u64;
-        let leaf = PtWalkerArm::pack_device_leaf(pa);
-        assert!(PtWalkerArm::is_valid(leaf));
-        // L3 page leaves keep TABLE set; the walker driver only
-        // calls is_huge_or_block on intermediate entries.
-        assert_eq!(leaf & PtWalkerArm::PHYS_MASK, pa);
-        let table = PtWalkerArm::pack_table(pa);
-        assert!(PtWalkerArm::is_valid(table));
-        assert!(!PtWalkerArm::is_huge_or_block(table));
-        assert_eq!(table & PtWalkerArm::PHYS_MASK, pa);
-    }
-
-}
+mod tests;

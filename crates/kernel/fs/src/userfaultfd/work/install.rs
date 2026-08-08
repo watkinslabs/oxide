@@ -11,8 +11,8 @@ use syscall::errno::Errno;
 
 use vmm::address_space::uffd::UffdVma;
 
-use super::super::policy::FillKind;
-use super::arch::{flush, hhdm, leaf, set_leaf, Mmu, Walker};
+use super::arch::{flush, hhdm, leaf, Mmu, Walker};
+use super::leaf::{fill_dst_ok, fill_page_flags, fill_source, FillSource};
 use super::{FillReq, Progress};
 
 /// 4 KiB granule of the fill loop.
@@ -33,30 +33,29 @@ impl Source {
 /// Obtain the frame for one page, already carrying its contents.
 /// # C: O(1) + O(page) copy
 fn source_for(req: &FillReq, vma: &UffdVma, va: u64, done: u64) -> Result<Source, Errno> {
-    let file_off = vma.file_off(va);
-    match (req.kind, vma.file.as_ref()) {
-        // A continue maps the page the backing ALREADY holds. A backing with
-        // no page for this offset is the monitor asking to continue something
-        // that was never started.
-        (FillKind::Continue, Some((backing, _))) => {
-            let off = file_off.ok_or(Errno::Efault)?;
-            match backing.fault_around_frame(off) {
-                Ok(Some(f)) => Ok(Source::Backing(f.pa)),
-                _ => Err(Errno::Efault),
-            }
+    let Some((backing, _)) = vma.file.as_ref() else {
+        // No object behind the mapping: the only source is a private frame.
+        fill_source(req.kind, false, false)?;
+        let pa = pmm::setup::alloc_one_frame().ok_or(Errno::Enomem)?;
+        fill_frame(pa, req, done)?;
+        return Ok(Source::Fresh(pa));
+    };
+    let off = vma.file_off(va).ok_or(Errno::Efault)?;
+    // The probe RETAINS a mapping reference, so it is taken once and released
+    // on the arms that do not install a PTE from it.
+    let held = match backing.fault_around_frame(off) { Ok(Some(f)) => Some(f.pa), _ => None };
+    let decided = fill_source(req.kind, true, held.is_some());
+    if !matches!(decided, Ok(FillSource::Existing)) {
+        if let Some(pa) = held {
+            // SAFETY: `pa` carries only the prospective mapping reference this probe took, and no PTE was installed from it.
+            unsafe { pmm::setup::rmap_aware_dec_and_maybe_free(pa); }
         }
-        // A fill into shared storage must land IN the storage, or the monitor
-        // would populate a private page while every other mapper of the object
-        // still sees a hole.
-        (_, Some((backing, _))) => {
-            let off = file_off.ok_or(Errno::Efault)?;
-            if let Ok(Some(f)) = backing.fault_around_frame(off) {
-                // Already present in the backing: refuse rather than overwrite
-                // contents another mapper may be using.
-                // SAFETY: `f.pa` carries only the prospective mapping reference this probe took, and no PTE was installed from it.
-                unsafe { pmm::setup::rmap_aware_dec_and_maybe_free(f.pa); }
-                return Err(Errno::Eexist);
-            }
+    }
+    match decided? {
+        FillSource::Existing => Ok(Source::Backing(held.expect("the object holds the page"))),
+        // A fill into an object must land IN the object, or the monitor would
+        // populate a private page while every other mapper still sees a hole.
+        FillSource::IntoObject => {
             let pa = match backing.shared_frame(off) {
                 Ok(Some(f)) => f.pa,
                 Ok(None) => return Err(Errno::Einval),
@@ -65,7 +64,7 @@ fn source_for(req: &FillReq, vma: &UffdVma, va: u64, done: u64) -> Result<Source
             fill_frame(pa, req, done)?;
             Ok(Source::Backing(pa))
         }
-        _ => {
+        FillSource::Fresh => {
             let pa = pmm::setup::alloc_one_frame().ok_or(Errno::Enomem)?;
             fill_frame(pa, req, done)?;
             Ok(Source::Fresh(pa))
@@ -106,15 +105,16 @@ fn anon_rmap(mm: &vmm::AddressSpace, vma: &UffdVma, va: u64, pa: u64) {
 /// count and the short-fill return.
 /// # C: O(len/PAGE) walks + frame work
 pub fn fill_pages(mm: &vmm::AddressSpace, req: &FillReq, vma: &UffdVma) -> Progress {
-    let flags = vma.prot.to_page_flags();
+    let flags = fill_page_flags(vma.prot.to_page_flags(), req.wp);
     let mut done = 0u64;
     while done < req.len {
         let va = req.dst + done;
         let _pt = mm.lock_page_table();
-        // The destination must be a hole: a monitor must never overwrite a
-        // page the process is already using, and must never bury a poison
-        // marker under a fresh page.
-        if leaf(mm, va).is_some_and(|l| l != 0) { return (done, Some(Errno::Eexist)); }
+        // The destination must be a hole or a marker this monitor left there:
+        // a fill must never overwrite a page the process is already using, and
+        // a write-protected address with no page is exactly where the monitor
+        // is expected to supply one.
+        if let Err(e) = fill_dst_ok::<Walker>(leaf(mm, va)) { return (done, Some(e)); }
         let source = match source_for(req, vma, va, done) { Ok(s) => s, Err(e) => return (done, Some(e)) };
         let pa = source.pa();
         // SAFETY: `pa` carries this page's contents and one reference for the mapping about to be installed; `va` is page-aligned and inside `vma`, which belongs to the address space rooted at `mm.root_pa()`; map_at installs the leaf, allocating intermediate tables from the PMM.
@@ -125,12 +125,6 @@ pub fn fill_pages(mm: &vmm::AddressSpace, req: &FillReq, vma: &UffdVma) -> Progr
             // mapping reference, so drop it rather than leak.
             // SAFETY: `old` was reachable only through the leaf map_at just replaced, so its mapping reference is ours to drop.
             unsafe { pmm::setup::rmap_aware_dec_and_maybe_free(old.0); }
-        }
-        if req.wp {
-            if let Some(l) = leaf(mm, va) {
-                set_leaf(mm, va, <Walker as hal::pt_walker::PtWalker>::leaf_set_uffd_wp(
-                    <Walker as hal::pt_walker::PtWalker>::leaf_wrprotect(l)));
-            }
         }
         flush(mm, va);
         if matches!(source, Source::Fresh(_)) { anon_rmap(mm, vma, va, pa); }

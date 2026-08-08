@@ -1,7 +1,7 @@
 use crate::inode::Inode;
 use crate::mount::Mount;
 
-use super::backend::{MAX_QTREE_DEPTH, QBLK_BITS, QBLK_SIZE, QT_DQDBHEADER, QT_TREEOFF, Qinfo, entries_per_blk, entry_unused, le16, le32, map_mount, put16, put32, qindex, read_qblk, write_qblk};
+use super::backend::{write_file_bytes, MAX_QTREE_DEPTH, QBLK_BITS, QBLK_SIZE, QT_DQDBHEADER, QT_TREEOFF, Qinfo, entries_per_blk, entry_unused, le16, le32, put16, put32, qindex, read_qblk, write_qblk};
 use super::format::{entry_size, mem_to_disk};
 
 pub(super) fn insert_dquot(m: &Mount, ino: u32, inode: &Inode, qi: &mut Qinfo, qid: vfs::Kqid) -> vfs::KResult<u64> {
@@ -165,14 +165,15 @@ fn check_dqdb_header(qi: &Qinfo, buf: &[u8]) -> vfs::KResult<()> {
     Ok(())
 }
 
-pub(super) fn write_existing_dquot(m: &Mount, inode: &Inode, off: u64, id: u32, dq: vfs::MemDqblk, fmt: u32) -> vfs::KResult<()> {
+/// Overwrite one id's record in place. The record is quota-file metadata, so it
+/// is staged through the enclosing transaction rather than written straight to
+/// its target: a crash after the transaction is published replays the record,
+/// and a crash before it leaves the previous record whole.
+pub(super) fn write_existing_dquot(m: &Mount, ino: u32, inode: &Inode, off: u64, id: u32, dq: vfs::MemDqblk, fmt: u32) -> vfs::KResult<()> {
     #[cfg(not(target_os = "oxide-kernel"))]
     if m.faults.next_quota_record_write.swap(false, core::sync::atomic::Ordering::AcqRel) { return Err(vfs::VfsError::Eio); }
-    let bs = m.sb.block_size as u64;
-    let file_blk = (off / bs) as u32;
-    let mut blk = m.read_file_block(inode, file_blk).map_err(map_mount)?;
-    let in_blk = (off % bs) as usize;
     let size = entry_size(fmt)?;
-    mem_to_disk(id, dq, &mut blk[in_blk..in_blk + size]);
-    m.write_file_block(inode, file_blk, &blk).map_err(map_mount)
+    let mut rec = alloc::vec![0u8; size];
+    mem_to_disk(id, dq, &mut rec);
+    write_file_bytes(m, ino, inode, off, &rec)
 }

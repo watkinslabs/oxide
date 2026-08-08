@@ -21,6 +21,9 @@
 //   - mod.rs (this file): context state, inode ctor, sys_userfaultfd.
 //   - msg.rs: the message type, the blocking read/poll, and the ONE fault
 //     delivery path every mode goes through.
+//   - events.rs: the cooperative half — the in-flight-change charge every
+//     resolve is refused against, and the address-space announcements a
+//     tracking monitor blocks the changing thread on.
 //   - uapi.rs: numbers, struct sizes/offsets, feature and mode bits.
 //   - policy/: UNGATED decision logic — every ladder, errno and reply bitmap.
 //   - ioctl/: UFFDIO_* dispatch and the per-command ABI shims.
@@ -41,6 +44,7 @@ use vfs::{InodeBuilder, InodeRef, PollSubscribers, default_inode_ops, mk_mode};
 pub mod policy;
 pub mod uapi;
 pub mod work;
+mod events;
 mod ioctl;
 mod msg;
 #[cfg(test)]
@@ -71,10 +75,40 @@ pub struct RegisteredRange {
     pub mode:  u64,
 }
 
+/// One queued address-space announcement plus the slot its generator is
+/// blocked on. The generator does not return until `consumed` flips, which is
+/// what makes the change invisible to the monitor before it has been told.
+pub struct PendingEvent {
+    /// `uffd_msg.event`.
+    pub event: u8,
+    /// The message's three argument slots — the union every event shares.
+    pub a0: u64,
+    pub a1: u64,
+    pub a2: u64,
+    /// The context the CHILD address space carries, for a fork announcement.
+    /// It becomes a descriptor in the READING process, because that is the
+    /// process that must end up holding it. `None` for every other event.
+    pub fork_child: Option<Arc<UfData>>,
+    /// Flipped by the reader once the message has been handed over.
+    pub consumed: Arc<core::sync::atomic::AtomicBool>,
+    /// True while this announcement's in-flight-change charge is outstanding.
+    /// Cleared by whichever side ends the announcement, so a withdrawal racing
+    /// a read cannot release it twice.
+    pub charge: Arc<core::sync::atomic::AtomicBool>,
+}
+
 /// Locked userfaultfd state.
 pub struct UfState {
     pub ranges:  Vec<RegisteredRange>,
-    pub events:  VecDeque<UffdMsg>,
+    /// Page-fault messages, each with a faulting thread blocked behind it.
+    pub faults:  VecDeque<UffdMsg>,
+    /// Address-space announcements, each with the changing thread blocked
+    /// behind it. Drained only once `faults` is empty (`policy::next_message`).
+    pub events:  VecDeque<PendingEvent>,
+    /// Child contexts minted by [`UffdContext::fork_dup`] and not yet
+    /// announced. One is taken per fork announcement, so a context forked
+    /// twice hands out the two children in the order they were made.
+    pub pending_forks: VecDeque<Arc<UfData>>,
 }
 
 /// Per-inode userfaultfd state (Linux `i_private` + `userfaultfd_ctx`).
@@ -106,6 +140,15 @@ pub struct UfData {
     /// The inode's epoll/poll subscriber set (same `Arc` the inode holds),
     /// so delivery can notify pollers from `&UfData` alone.
     poll: Arc<PollSubscribers>,
+    /// Address-space changes in flight against this context. Non-zero refuses
+    /// every resolve with EAGAIN: the layout the monitor last saw is not the
+    /// one a resolve would land in.
+    mmap_changing: AtomicU32,
+    /// Threads blocked in an address-space change waiting for the monitor to
+    /// read its announcement. Separate from the fault waiters: a resolve wakes
+    /// faulters, and waking a change on a resolve would let it return before
+    /// the monitor had seen it.
+    change_waiters: WaitList,
 }
 
 impl UfData {
@@ -139,24 +182,47 @@ static NEXT_UFFD_INO: vfs::pseudo_ino::RegionAllocator
 /// bound to for its whole life.
 /// # C: O(1)
 pub fn make_userfaultfd_inode(flags: u32, mm: Weak<vmm::AddressSpace>) -> InodeRef {
+    inode_for(new_context(flags, 0, mm))
+}
+
+/// A fresh context. `features` is 0 for a `userfaultfd(2)` fd — the handshake
+/// installs them — and the parent's negotiated set for a fork child, which
+/// inherits the whole agreement rather than renegotiating one the monitor
+/// never asked for.
+/// # C: O(1)
+pub(crate) fn new_context(flags: u32, features: u64, mm: Weak<vmm::AddressSpace>)
+    -> Arc<UfData> {
+    Arc::new(UfData {
+        state: Spinlock::new(UfState {
+            ranges:  Vec::new(),
+            faults:  VecDeque::new(),
+            events:  VecDeque::new(),
+            pending_forks: VecDeque::new(),
+        }),
+        flags: AtomicU32::new(flags),
+        features: AtomicU64::new(features),
+        mm,
+        read_waiters:  WaitList::new(),
+        fault_waiters: WaitList::new(),
+        change_waiters: WaitList::new(),
+        wake_gen: AtomicU64::new(0),
+        mmap_changing: AtomicU32::new(0),
+        poll: Arc::new(PollSubscribers::new()),
+    })
+}
+
+/// Wrap an EXISTING context in a fresh inode. A fork child is minted while the
+/// address space is being built and only becomes a descriptor when the monitor
+/// reads the announcement, so the context outlives the point at which its
+/// inode is created.
+/// # C: O(1)
+pub(crate) fn inode_for(data: Arc<UfData>) -> InodeRef {
     let ino = NEXT_UFFD_INO.alloc();
-    let poll = Arc::new(PollSubscribers::new());
+    let poll = data.poll.clone();
     InodeBuilder::new(ino, mk_mode(vfs::FileType::Regular, 0),
         default_inode_ops(), Arc::new(msg::UffdFileOps))
-        .poll_subs_arc(poll.clone())
-        .private(Arc::new(UfData {
-            state: Spinlock::new(UfState {
-                ranges:  Vec::new(),
-                events:  VecDeque::new(),
-            }),
-            flags: AtomicU32::new(flags),
-            features: AtomicU64::new(0),
-            mm,
-            read_waiters:  WaitList::new(),
-            fault_waiters: WaitList::new(),
-            wake_gen: AtomicU64::new(0),
-            poll,
-        }))
+        .poll_subs_arc(poll)
+        .private(data)
         .build()
 }
 

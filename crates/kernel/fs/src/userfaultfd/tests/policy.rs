@@ -72,23 +72,44 @@ fn api_rejects_a_foreign_api_number() {
 /// behaviour a monitor can observe, or refused — never accepted and ignored.
 #[test]
 fn api_offers_exactly_the_features_that_are_wired() {
-    // The fork-event capability check runs BEFORE the "do we implement it"
-    // rejection, so an unprivileged request for it reports EPERM.
+    // The fork-event capability check runs BEFORE anything else about the
+    // feature word, so an UNPRIVILEGED request for it is EPERM even though the
+    // feature exists — the ordering is observable and is the whole reason a
+    // monitor tracking forks needs the tracing capability.
     assert_eq!(api_negotiate(UFFD_API, feature::EVENT_FORK, false, 0).err(), Some(Errno::Eperm));
-    assert_eq!(api_negotiate(UFFD_API, feature::EVENT_FORK, true, 0).err(), Some(Errno::Einval));
-    for unwired in [feature::SIGBUS, feature::EVENT_REMAP, feature::EXACT_ADDRESS,
-                    feature::MISSING_HUGETLBFS, feature::MINOR_HUGETLBFS,
-                    feature::WP_UNPOPULATED, feature::WP_ASYNC, feature::WP_HUGETLBFS_SHMEM] {
+    assert!(api_negotiate(UFFD_API, feature::EVENT_FORK, true, 0).is_ok());
+    for unwired in [feature::SIGBUS, feature::EXACT_ADDRESS,
+                    feature::MISSING_HUGETLBFS, feature::MINOR_HUGETLBFS] {
         assert_eq!(api_negotiate(UFFD_API, unwired, true, 0).err(), Some(Errno::Einval),
                    "unwired feature {unwired:#x} must be refused, not accepted and ignored");
     }
     for wired in [feature::THREAD_ID, feature::PAGEFAULT_FLAG_WP, feature::MISSING_SHMEM,
-                  feature::MINOR_SHMEM, feature::POISON, feature::MOVE] {
+                  feature::MINOR_SHMEM, feature::POISON, feature::MOVE,
+                  feature::WP_UNPOPULATED, feature::WP_ASYNC, feature::WP_HUGETLBFS_SHMEM,
+                  feature::EVENT_FORK, feature::EVENT_REMAP, feature::EVENT_REMOVE,
+                  feature::EVENT_UNMAP] {
         assert!(api_negotiate(UFFD_API, wired, true, 0).is_ok(),
                 "wired feature {wired:#x} must be offered");
     }
     let all = api_negotiate(UFFD_API, 0, false, 0).expect("handshake").features;
     assert_eq!(all, UFFD_API_FEATURES);
+}
+
+/// Asking for asynchronous write faults installs the unpopulated-address
+/// coverage with it. A monitor that never reads the fd has no other way to
+/// learn about a write to an address that had no page, so without this the
+/// mode it asked for would miss exactly the writes it exists to record.
+#[test]
+fn asynchronous_write_faults_bring_the_unpopulated_coverage_with_them() {
+    let r = api_negotiate(UFFD_API, feature::WP_ASYNC, true, 0).expect("handshake");
+    assert!(wp_async(r.ctx_features));
+    assert!(wp_unpopulated(r.ctx_features), "the coverage must be installed unasked");
+    // On its own it stays the monitor's own choice, in both directions.
+    let r = api_negotiate(UFFD_API, feature::WP_UNPOPULATED, true, 0).expect("handshake");
+    assert!(wp_unpopulated(r.ctx_features));
+    assert!(!wp_async(r.ctx_features));
+    let r = api_negotiate(UFFD_API, 0, true, 0).expect("handshake");
+    assert!(!wp_unpopulated(r.ctx_features) && !wp_async(r.ctx_features));
 }
 
 #[test]

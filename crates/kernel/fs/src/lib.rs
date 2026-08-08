@@ -51,6 +51,8 @@ pub mod keyring;
 pub mod perf;
 /// Identity vs numbering for this crate's anon-inode families.
 pub mod pseudo_ino_identity;
+/// Secret memory: pages removed from the kernel's linear map while owned.
+pub mod secretmem;
 pub mod tmpfs;
 pub mod fuse;
 pub mod autofs;

@@ -10,7 +10,8 @@
 // tail-calls the shared `_start`.
 //
 // Address-space layout the boot page tables install (4 KiB granule,
-// 1 GiB level-1 block descriptors, 48-bit VA):
+// 48-bit VA; device space in 1 GiB level-1 blocks, RAM in 4 KiB leaves
+// per `linear_map`):
 //   TTBR0 (low / identity, VA[47]=0):
 //     0..1 GiB    -> phys 0..1 GiB   Device-nGnRE (GIC, PL011 @0x0900_0000)
 //     1..4 GiB    -> phys 1..4 GiB   Normal-WB     (RAM; kernel @0x4000_0000)

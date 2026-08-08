@@ -185,3 +185,26 @@ pub fn ring_of(file: &Arc<File>) -> Result<InodeRef, syscall::errno::Errno> {
 pub fn ring_ctx(inode: &InodeRef) -> Option<Arc<IoUringInode>> {
     Arc::clone(inode.i_private()).downcast::<IoUringInode>().ok()
 }
+
+/// Cancel a ring's outstanding work when its last descriptor goes away.
+///
+/// A request that is still armed holds a reference to the ring, so a ring with
+/// an armed timeout or an armed poll would otherwise stay alive — and keep the
+/// submitter's address space and descriptor table alive with it — until a
+/// deadline or a peer decided otherwise. The submitter is already gone by
+/// then, so there is nobody left to report to.
+/// # C: O(N_inflight)
+fn release_hook(inode: &InodeRef, _writable: bool, _dentry: &Arc<vfs::Dentry>) {
+    // Cheap first: only inode numbers out of io_uring's own range can be
+    // rings, and this hook is on every description's close path.
+    if !INO_REGION.contains(inode.ino()) { return; }
+    if let Some(iu) = ring_ctx(inode) { iu.cancel_all(); }
+}
+
+/// Install the release hook once, at the first ring creation. # C: O(1)
+pub fn install_release_hook() {
+    use core::sync::atomic::{AtomicBool, Ordering};
+    static DONE: AtomicBool = AtomicBool::new(false);
+    if DONE.swap(true, Ordering::AcqRel) { return; }
+    vfs::set_close_hook(release_hook);
+}

@@ -183,3 +183,45 @@ fn an_address_outside_every_local_route_is_still_refused() {
     assert_eq!(classify_v4(NS0, outside, None), V4AddrType::Other);
     assert_eq!(screen_v4(NS0, outside, None, none()), Err(NetError::Eaddrnotavail));
 }
+
+/// The local table answers with an address TYPE, not with "a row exists".
+///
+/// That table carries broadcast and anycast rows beside the local ones. A
+/// broadcast row makes its address claimable — a bind may name it — but never
+/// makes it an address this host owns; an anycast row makes it neither.
+/// Reading the table alone classified all three as `Local`, which let an
+/// address whose only local-table row is a broadcast one be used as a
+/// transmit SOURCE, the other decision this classification feeds.
+#[test]
+fn a_local_table_row_classifies_by_route_type_not_by_the_table_it_sits_in() {
+    let owner = test_support::allocate_namespace();
+    let ns = owner.id().as_u64();
+    crate::net_ns::materialize_state(&owner);
+    let routes = &crate::global_stack().routes;
+    let base = crate::route::RouteEntry {
+        table: crate::policy_rule::RT_TABLE_LOCAL, dst: Ipv4Addr::ANY, prefix_len: 32,
+        iface: crate::NetIfaceId::from_raw(1), gateway: None, src_hint: None,
+    };
+    let at = |last: u8| Ipv4Addr::new(203, 0, 113, last);
+    let row = |dst, kind| {
+        let mut record = crate::route::RouteRecord::kernel(crate::route::RouteEntry { dst, ..base });
+        record.kind = kind;
+        routes.add_record_in(ns, record);
+    };
+
+    row(at(1), crate::route::RTN_LOCAL);
+    assert_eq!(classify_v4(ns, at(1), None), V4AddrType::Local);
+
+    row(at(2), crate::route::RTN_BROADCAST);
+    assert_eq!(classify_v4(ns, at(2), None), V4AddrType::Broadcast);
+    // Claimable, like every broadcast classification, with no permission.
+    assert_eq!(screen_v4(ns, at(2), None, none()), Ok(()));
+    // Not an owned source: the transmit screen refuses it without the
+    // any-source permission, which a `Local` answer would have granted.
+    assert_eq!(crate::transparent::classify_v4_source(ns, at(2)),
+        crate::transparent::V4Source::Foreign);
+
+    row(at(3), crate::route::RTN_ANYCAST);
+    assert_eq!(classify_v4(ns, at(3), None), V4AddrType::Other);
+    assert_eq!(screen_v4(ns, at(3), None, none()), Err(NetError::Eaddrnotavail));
+}

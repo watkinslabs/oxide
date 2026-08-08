@@ -122,7 +122,9 @@ pub fn op_supported(op: u8) -> bool {
         | IORING_OP_LISTEN | IORING_OP_PIPE
         | IORING_OP_FILES_UPDATE | IORING_OP_MSG_RING
         | IORING_OP_PROVIDE_BUFFERS | IORING_OP_REMOVE_BUFFERS
-        | IORING_OP_FIXED_FD_INSTALL)
+        | IORING_OP_FIXED_FD_INSTALL
+        | IORING_OP_TIMEOUT | IORING_OP_TIMEOUT_REMOVE | IORING_OP_LINK_TIMEOUT
+        | IORING_OP_ASYNC_CANCEL | IORING_OP_POLL_ADD | IORING_OP_POLL_REMOVE)
 }
 
 /// Whether the opcode reads its data through a provided-buffer group when the

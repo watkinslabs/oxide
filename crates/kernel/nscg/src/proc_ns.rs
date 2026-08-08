@@ -224,14 +224,39 @@ pub fn user_ns_is_ancestor(ancestor: &NamespacePin, descendant: &NamespacePin) -
     false
 }
 
-/// Per-user-NS cap check (`27§4`). Returns true when `cur` holds
-/// `cap` in its effective set AND `target_user_ns` is `cur.user_ns`
-/// or a descendant of it.
+/// Per-user-NS cap check (`27§4`) — Linux `cap_capable`.
+///
+/// Walks from `target_user_ns` up towards the caller's own user namespace, and
+/// grants on the FIRST of two rules to match:
+///
+/// 1. The target IS the caller's own namespace: the answer is the caller's
+///    effective set. Reaching it after ascending is the "a capability held in a
+///    parent applies to every descendant" rule.
+/// 2. The target's PARENT is the caller's namespace and the caller's effective
+///    uid is the one that CREATED the target. The creator of a user namespace
+///    holds every capability inside it, whatever it holds outside — that is
+///    what makes rootless `unshare(CLONE_NEWUSER|CLONE_NEWNS)` work, and it is
+///    the rule this check previously lacked entirely, so an unprivileged
+///    creator was refused CAP_SYS_ADMIN in the namespace it had just made.
+///
+/// Running out of parents without reaching the caller's namespace means the
+/// target is not a descendant, which is a refusal.
 /// # C: O(depth)
 pub fn has_cap_for(cur: &sched::Task, target_user_ns: &NamespacePin, cap: u32) -> bool {
-    if !cur.has_cap(cap) { return false; }
     let Some(cur_ns) = cur.namespace_owner(NamespaceKind::User) else { return false; };
-    user_ns_is_ancestor(&cur_ns.pin(), target_user_ns)
+    let cred_ns = cur_ns.pin();
+    let euid = cur.creds.euid.load(core::sync::atomic::Ordering::Acquire);
+    let mut ns = target_user_ns.clone();
+    loop {
+        if NamespacePin::ptr_eq(&cred_ns, &ns) { return cur.has_cap(cap); }
+        let Some(parent) = ns.parent() else { return false };
+        if NamespacePin::ptr_eq(&cred_ns, &parent)
+            && user_namespace::owner_euid(&ns) == Ok(Some(euid))
+        {
+            return true;
+        }
+        ns = parent;
+    }
 }
 
 /// The writer must hold `cap` in `target_user_ns`'s PARENT (or an ancestor of
@@ -450,6 +475,9 @@ fn time_setns_rejects_released_destination_without_freezing_target() {
 
 #[cfg(test)]
 mod setns_fd_tests;
+
+#[cfg(test)]
+mod cap_ns_tests;
 
 #[cfg(test)]
 mod setns_perm_tests;

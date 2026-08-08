@@ -106,3 +106,29 @@ const WO: u32 = RENAME_WHITEOUT;
     // Plain rename happily replaces.
     assert_eq!(check_existence(true, true, 0), Ok(()));
 }
+
+// Which delegations a rename recalls. A same-directory rename breaks that
+// directory ONCE (a second break of the same inode would signal its holder
+// twice for one change); a cross-directory rename breaks both. The moved file
+// and the overwritten victim are broken only when they are NOT directories —
+// a directory's move is already carried by its parents.
+#[test] fn deleg_break_plan_covers_every_changed_object() {
+    // Cross-directory move of a file over an existing file: all four.
+    assert_eq!(deleg_break_plan(false, true, false, false), (true, true, true, true));
+    // Same directory: the one parent, once.
+    assert_eq!(deleg_break_plan(true, true, false, false), (true, false, true, true));
+    // No victim: no target leg.
+    assert_eq!(deleg_break_plan(false, false, false, false), (true, true, true, false));
+    // Moving a DIRECTORY: parents only, not the directory itself.
+    assert_eq!(deleg_break_plan(false, false, true, false), (true, true, false, false));
+    // Replacing a directory with a directory: parents only.
+    assert_eq!(deleg_break_plan(false, true, true, true), (true, true, false, false));
+    // A directory victim is skipped even when the source is a file.
+    assert_eq!(deleg_break_plan(true, true, false, true), (true, false, true, false));
+    // The old parent is ALWAYS broken — it always loses a name.
+    for sp in [false, true] { for t in [false, true] {
+        for sd in [false, true] { for dd in [false, true] {
+            assert!(deleg_break_plan(sp, t, sd, dd).0, "old parent always changes");
+        }}
+    }}
+}

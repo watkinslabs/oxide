@@ -63,13 +63,14 @@ pub fn terminate_current_with_signal(sig: u8) -> ! {
                 let vt = task.vtid.load(Ordering::Acquire);
                 crate::live::run_pi_exit(if vt != 0 { vt } else { task.tid });
             }
-            // SysV SEM_UNDO recovery (Linux do_exit -> exit_sem). Unconditional
-            // here: the group-exit latch above has already made this a
-            // group-fatal death, so the whole thread group — the unit the undo
-            // list is keyed on — is going away.
+            // SysV SEM_UNDO recovery (Linux do_exit -> exit_sem). Every dying
+            // task runs it: the list is shared by CLONE_SYSVSEM and refcounted,
+            // so this drops only THIS task's reference and the adjustments are
+            // applied by whichever holder happens to be last.
             let vtg = task.vtgid.load(Ordering::Acquire);
             let tg = task.tgid.load(Ordering::Acquire);
-            crate::live::run_sysvsem_exit(if vtg != 0 { vtg } else { tg });
+            crate::live::run_sysvsem_exit(&task.sysvsem_undo,
+                if vtg != 0 { vtg } else { tg });
             // Final `put_cred` for the keyring state (Linux `exit_creds`). A
             // task killed by a fatal signal strands exactly the same thread
             // keyring, assumed authority and session reference as one that

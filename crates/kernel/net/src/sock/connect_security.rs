@@ -1,19 +1,17 @@
-//! Canonical AF socket connect security admission.
+//! The socket-facing connect admission: one namespace and family, handed to
+//! the family-agnostic owner in `crate::sock_admit`.
 
 use super::{InetSocket, NetError};
 
-/// Canonical successful admission for one connect transaction.
-pub struct ConnectAdmission(());
+/// Canonical successful admission for one connect transaction. One type
+/// across every family (`crate::sock_admit`).
+pub use crate::sock_admit::AddrAdmission as ConnectAdmission;
 
-/// Apply generic connect security before protocol parsing or name lookup. # C: O(1)
+/// Apply generic connect security before protocol parsing or name lookup.
+/// # C: O(1)
 pub fn admit_connect(sock: &InetSocket) -> Result<ConnectAdmission, NetError> {
-    let context = security::network::Context::op(sock.net_ns(),
-        sock.family.load(core::sync::atomic::Ordering::Acquire), 0, 0,
-        security::network::Operation::Connect);
-    if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
-        return Err(NetError::Eacces);
-    }
-    Ok(ConnectAdmission(()))
+    crate::sock_admit::admit_connect_in(sock.net_ns(),
+        sock.family.load(core::sync::atomic::Ordering::Acquire))
 }
 
 #[cfg(test)]

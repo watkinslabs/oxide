@@ -1,6 +1,11 @@
 // `ext4_fallocate` — the mode dispatch and the
 // ext4-side `inode_newsize_ok` policy, split out of `regular.rs` so the
 // inode-ops manifest stays under the file cap.
+//
+// Module manifest:
+// - range: COLLAPSE_RANGE / INSERT_RANGE argument admission (pure, hosted).
+
+mod range;
 
 use block::types::InodeId;
 use core::sync::atomic::Ordering;
@@ -24,17 +29,19 @@ const PAGE_MASK: u64 = !(hal::PAGE_SIZE_BYTES - 1);
 
 /// `ext4_fallocate` — decode `mode` and run the matching extent operation.
 ///
-/// COLLAPSE_RANGE and INSERT_RANGE are `EOPNOTSUPP`: both re-index every extent
-/// past the range (shifting logical block numbers down or up across the whole
-/// tree), which this extent implementation cannot do. Linux itself returns
-/// `EOPNOTSUPP` from these modes on filesystems that lack the shift, so the
-/// errno is the honest one rather than a stand-in.
+/// COLLAPSE_RANGE and INSERT_RANGE both re-index every extent past the range —
+/// logical block numbers move down or up across the whole tree — so both are
+/// served by the extent shift primitive rather than by the in-place edits the
+/// other modes use. Their extra argument rules live in `range`.
 /// # C: O(len/blocksize)
 pub(crate) fn ext4_fallocate(inode: &Inode, mode: u32, off: u64, len: u64) -> KResult<()> {
     if mode & !EXT4_SUPPORTED_MODES != 0 { return Err(VfsError::Eopnotsupp); }
     let d = inode.private::<Ext4FileData>().ok_or(VfsError::Eio)?;
-    let _mutation = d.begin_swap_mutation()?;
+    let _mutation = d.begin_swap_mutation(inode)?;
     let keep_size = mode & FALLOC_FL_KEEP_SIZE != 0;
+    // A range shift moves every byte from `off` to EOF, so the cached tail is
+    // stale everywhere past `off`, not just across the request.
+    let mut invalidate_to_eof = false;
     match mode & FALLOC_FL_MODE_MASK {
         // Preallocation: map the range as UNWRITTEN extents (no data I/O).
         FALLOC_FL_ALLOCATE_RANGE => {
@@ -54,10 +61,28 @@ pub(crate) fn ext4_fallocate(inode: &Inode, mode: u32, off: u64, len: u64) -> KR
             grow_check(inode, d, keep_size, off, len)?;
             zero_range(d, keep_size, off, len)?;
         }
+        // Remove the range and pull the tail down; `i_size` shrinks by `len`.
+        FALLOC_FL_COLLAPSE_RANGE => {
+            let bs = d.st.mount.sb.block_size as u64;
+            range::collapse_range_ok(off, len, d.size_hint.load(Ordering::Acquire), bs)?;
+            flush_before_shift(d)?;
+            invalidate_to_eof = true;
+            d.st.mount.collapse_range_inode(d.ino, off, len).map_err(|e| fs_err(&d.st, e))?;
+        }
+        // Open a hole at the offset and push the tail up; `i_size` grows by `len`.
+        FALLOC_FL_INSERT_RANGE => {
+            let bs = d.st.mount.sb.block_size as u64;
+            let maxbytes = inode.i_sb().map_or(u64::MAX, |sb| sb.s_maxbytes());
+            range::insert_range_ok(off, len, d.size_hint.load(Ordering::Acquire), bs, maxbytes)?;
+            flush_before_shift(d)?;
+            invalidate_to_eof = true;
+            d.st.mount.insert_range_inode(d.ino, off, len).map_err(|e| fs_err(&d.st, e))?;
+        }
         _ => return Err(VfsError::Eopnotsupp),
     }
     d.st.page_cache.invalidate(InodeId(d.ino as u64));
-    if let Some(end) = off.checked_add(len) { d.frames.invalidate_range(off & PAGE_MASK, end); }
+    let invalidate_end = if invalidate_to_eof { Some(u64::MAX) } else { off.checked_add(len) };
+    if let Some(end) = invalidate_end { d.frames.invalidate_range(off & PAGE_MASK, end); }
     d.refresh_size();
     inode.set_size(d.size_hint.load(Ordering::Acquire));
     d.refresh_inode_usage(inode);
@@ -76,6 +101,16 @@ fn grow_check(inode: &Inode, d: &Ext4FileData, keep_size: bool, off: u64, len: u
     let end = off.checked_add(len).ok_or(VfsError::Einval)?;
     if end <= d.size_hint.load(Ordering::Acquire) { return Ok(()); }
     vfs::inode_newsize_ok(inode, end)
+}
+
+/// Drain dirty cached pages before a range shift re-indexes the extents.
+/// The cache is keyed by file offset, so writeback after the shift would land
+/// buffered bytes at the offsets they occupied BEFORE the move. Once the data
+/// is on disk the cached copies are dropped by the invalidation in the caller.
+/// # C: O(dirty pages) I/O
+fn flush_before_shift(d: &Ext4FileData) -> KResult<()> {
+    d.frames.writeback().map_err(|_| VfsError::Eio)?;
+    Ok(())
 }
 
 /// Write zeros across `[off, off+len)` one filesystem block at a time,

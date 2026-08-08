@@ -8,7 +8,9 @@
 // - `hooks`: fsnotify/inotify close/open/read/write and clone hook registry.
 // - `lock_wait`: typed scheduler hooks for blocking POSIX/BSD file locks.
 // - `async_notify`: fasync/SIGIO owner delivery registry.
-// - `lease`: Linux lease and dnotify registries plus per-file lease methods.
+// - `lease`: lease and dnotify registries plus per-file lease methods.
+// - `lease_policy`: lease flavour / break-state / set-lease validation decisions.
+// - `deleg`: delegation breaking on mutation (the non-open half of a break).
 // - `model`: constructors, path/accessors, flags, version, readahead methods.
 // - `io`: read/write/seek/pread/pwrite/readv/writev data paths.
 // - `iocb`: per-operation `RWF_*` write modifiers (append/nowait).
@@ -31,11 +33,13 @@ use crate::inode::InodeRef;
 
 mod async_notify;
 mod cred;
+mod deleg;
 mod epoll;
 mod hooks;
 mod io;
 mod iocb;
 mod lease;
+mod lease_policy;
 mod lock_wait;
 mod lifetime;
 mod model;
@@ -49,7 +53,9 @@ pub use async_notify::{band_for, owner_type, deliver as deliver_fasync, fasync_r
 pub use cred::FileCred;
 pub use epoll::FileEpollLink;
 pub use hooks::{fire_clone_hook, fire_dirent_create, fire_fs_error, set_fs_error_hook, fire_delete_self_hook, fire_dirent_delete, fire_inode_evict_hook, fire_setattr_hook, set_clone_hook, set_close_hook, set_dirent_create_hook, set_delete_self_hook, set_dirent_delete_hook, set_inode_evict_hook, set_drop_hook, set_open_hook, set_read_hook, set_setattr_hook, set_write_hook};
-pub use lease::{dnotify_emit, dnotify_register, dnotify_registered, dnotify_unregister, lease_break_signal, lease_conflict, lease_force_break, lease_register, lease_registered, lease_unregister, DN_ACCESS, DN_ATTRIB, DN_CREATE, DN_DELETE, DN_MODIFY, DN_RENAME, LEASE_BREAK_NS};
+pub use deleg::{break_deleg, break_deleg_wait, set_deleg_wait_hook, try_break_deleg, DelegBreakWaitHook, DelegatedInode};
+pub use lease::{add_lease_conflict, dnotify_emit, dnotify_register, dnotify_registered, dnotify_unregister, lease_break_signal, lease_conflict, lease_force_break, lease_register, lease_registered, lease_unregister, DN_ACCESS, DN_ATTRIB, DN_CREATE, DN_DELETE, DN_MODIFY, DN_RENAME, LEASE_BREAK_NS};
+pub use lease_policy::{getlease_report, may_lease, open_conflicts, setlease_check, LeaseKind, LeaseTarget, FL_DELEG, FL_LEASE, FL_NONE};
 pub use lock_wait::{clear_file_lock_wait_hooks, file_lock_interrupted, file_lock_park, file_lock_schedule, file_lock_wake, set_file_lock_wait_hooks};
 pub use lifetime::{fput, get_file, iput};
 pub use mode::{Fmode, SeekFrom};
@@ -150,11 +156,12 @@ pub struct File {
     /// delivered to the handler as `si_fd`. Linux records it in
     /// `fasync_insert_entry` from the `f_op->fasync` argument; `-1` until then.
     fa_fd: ::core::sync::atomic::AtomicI32,
-    /// `F_SETLEASE`/`F_GETLEASE` lease type held on this open file description
-    /// (Linux `fl->fl_type` of the `FL_LEASE` lock): `F_RDLCK`(0) read lease,
-    /// `F_WRLCK`(1) write lease, `F_UNLCK`(2) = no lease. Default `F_UNLCK`.
-    /// Storage + validation only; the lease-break delivery (a conflicting
-    /// open signalling the lease holder) is the lease-manager follow-up.
+    /// The ONE lease word of this open file description: the FLAVOUR held
+    /// (plain lease via `F_SETLEASE`, delegation via `F_SETDELEG`), the type
+    /// (`F_RDLCK`(0) read / `F_WRLCK`(1) write / `F_UNLCK`(2) none), and any
+    /// outstanding break. A lease and a delegation are one object seen through
+    /// two commands, so they share one word — a second field beside this one
+    /// could disagree with it. Layout and every decision over it: `lease_policy`.
     lease: ::core::sync::atomic::AtomicI32,
     /// `F_NOTIFY` (dnotify) directory-change watch mask (Linux `dnotify_struct
     /// .dn_mask`): the `DN_*` events this directory fd wants `F_SETSIG`/`SIGIO`

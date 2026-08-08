@@ -43,7 +43,7 @@ fn listen_uses_retained_namespace_security_and_somaxconn() {
     assert_eq!(crate::sysctl::set_somaxconn_in(namespace_id, TEST_BACKLOG_LIMIT), Ok(()));
     let socket = VsockSocket::new_type_in(crate::socket_args::SOCK_STREAM, namespace);
     assert_eq!(socket.bind(crate::socket_args::AF_VSOCK as u16, TEST_LISTEN_PORT,
-        TEST_GUEST_CID), Ok(()));
+        TEST_GUEST_CID, crate::sock_admit::AddrAdmission::for_test()), Ok(()));
 
     assert_eq!(security::network::install(namespace_id, security::network::Operation::Listen,
         deny_vsock_listen), None);
@@ -76,7 +76,7 @@ fn relisten_replaces_cap_without_replacing_listener_or_admitting_more_children()
     assert_eq!(crate::sysctl::set_somaxconn_in(namespace_id, TEST_BACKLOG_LIMIT), Ok(()));
     let socket = VsockSocket::new_type_in(crate::socket_args::SOCK_STREAM, namespace);
     assert_eq!(socket.bind(crate::socket_args::AF_VSOCK as u16, TEST_LISTEN_PORT,
-        TEST_GUEST_CID), Ok(()));
+        TEST_GUEST_CID, crate::sock_admit::AddrAdmission::for_test()), Ok(()));
     assert_eq!(socket.listen_with_backlog(INITIAL_BACKLOG), Ok(()));
     let listener = match &*socket.kind.lock() {
         VsockKind::Listener(listener) => listener.clone(),
@@ -110,20 +110,29 @@ fn lifecycle_operations_admit_before_vsock_state_transition() {
     let namespace = crate::net_ns::test_support::allocate_namespace();
     let namespace_id = crate::net_ns::namespace_id(&namespace);
 
+    // Bind and connect are admitted in the generic layer, above the family:
+    // the hook never sees an address, so no address-shape screen — not even a
+    // short `sockaddr_vm` — may outrank its denial. The family entry points
+    // demand the token, so a denial that produces none stops the transition
+    // by construction, and the state below proves nothing moved.
     let bind_socket = VsockSocket::new_type_in(crate::socket_args::SOCK_STREAM, namespace.clone());
+    let family = crate::socket_args::AF_VSOCK as u16;
     assert_eq!(security::network::install(namespace_id, security::network::Operation::Bind,
         deny_vsock_operation), None);
-    assert_eq!(bind_socket.bind(crate::socket_args::AF_VSOCK as u16, TEST_BIND_PORT,
-        vsock::VMADDR_CID_ANY), Err(crate::NetError::Eacces));
+    assert!(matches!(crate::sock_admit::admit_bind_in(namespace_id, family),
+        Err(crate::NetError::Eacces)));
     assert!(matches!(*bind_socket.kind.lock(), VsockKind::Init));
     assert!(security::network::remove(namespace_id, security::network::Operation::Bind).is_some());
+    bind_socket.bind(family, TEST_BIND_PORT, vsock::VMADDR_CID_ANY,
+        crate::sock_admit::admit_bind_in(namespace_id, family).unwrap()).unwrap();
 
     let connect_socket = Arc::new(VsockSocket::new_type_in(crate::socket_args::SOCK_STREAM,
         namespace.clone()));
     assert_eq!(security::network::install(namespace_id, security::network::Operation::Connect,
         deny_vsock_operation), None);
-    assert_eq!(connect_socket.connect_transport(TEST_PEER_CID, TEST_PEER_PORT, true),
-        Err(crate::NetError::Eacces));
+    assert!(matches!(crate::sock_admit::admit_connect_in(namespace_id, family),
+        Err(crate::NetError::Eacces)));
+    let _ = (TEST_PEER_CID, TEST_PEER_PORT, &connect_socket);
     assert!(matches!(*connect_socket.kind.lock(), VsockKind::Init));
     assert!(security::network::remove(namespace_id, security::network::Operation::Connect).is_some());
 

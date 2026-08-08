@@ -4,7 +4,7 @@
 use syscall::errno::Errno;
 use vfs::{File, OpenFlags};
 
-use super::flags::{splice_case, SpliceCase, SpliceIn, SPLICE_F_NONBLOCK};
+use super::flags::{splice_case, SpliceCase, SpliceIn, SPLICE_F_MORE, SPLICE_F_NONBLOCK};
 use super::pipe_xfer::{err, file_to_pipe, pipe_to_file, pipe_to_pipe};
 use crate::pipe;
 
@@ -45,6 +45,9 @@ pub fn do_splice(in_file: &File, off_in: Option<&mut u64>,
     let nonblock = flags & SPLICE_F_NONBLOCK != 0
         || in_file.flags().contains(OpenFlags::O_NONBLOCK)
         || out_file.flags().contains(OpenFlags::O_NONBLOCK);
+    // `SPLICE_F_MORE` marks every batch of this call; a batch followed by
+    // another batch of the same call is marked too, decided per batch.
+    let user_more = flags & SPLICE_F_MORE != 0;
 
     let mut total: usize = 0;
     // Explicit-offset ends work on a local cursor that the caller writes back;
@@ -60,7 +63,8 @@ pub fn do_splice(in_file: &File, off_in: Option<&mut u64>,
             SpliceCase::PipeToPipe => pipe_to_pipe(
                 ipipe.as_deref().unwrap(), in_file, opipe.as_deref().unwrap(), out_file, want, nonblock),
             SpliceCase::PipeToFile => pipe_to_file(
-                ipipe.as_deref().unwrap(), in_file, out_file, &mut out_pos, use_out_pos, want, nonblock),
+                ipipe.as_deref().unwrap(), in_file, out_file, &mut out_pos, use_out_pos, want, nonblock,
+                user_more),
             SpliceCase::FileToPipe => file_to_pipe(
                 in_file, &mut in_pos, use_in_pos, opipe.as_deref().unwrap(), out_file, want, nonblock),
         };

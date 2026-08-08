@@ -5,20 +5,9 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
+use crate::fcntl_deleg;
+use crate::fcntl_lease::{fowner_euid, fowner_uid, read_delegation, set_lease, write_delegation};
 use crate::userbuf::validate_user_buf;
-
-/// Linux `f_modown`'s `fown->uid = current_uid()` — the REAL uid, not the
-/// fsuid the VFS `Cred` carries for DAC. # C: O(1)
-fn fowner_uid() -> u32 {
-    use core::sync::atomic::Ordering;
-    sched::live::current().map(|t| t.creds.ruid.load(Ordering::Acquire)).unwrap_or(0)
-}
-
-/// Linux `f_modown`'s `fown->euid = current_euid()`. # C: O(1)
-fn fowner_euid() -> u32 {
-    use core::sync::atomic::Ordering;
-    sched::live::current().map(|t| t.creds.euid.load(Ordering::Acquire)).unwrap_or(0)
-}
 
 /// `sys_fcntl(fd, cmd, arg)` — slot 72. F_DUPFD / F_DUPFD_CLOEXEC /
 /// F_GETFD / F_SETFD / F_GETFL / F_SETFL / F_GETPIPE_SZ /
@@ -26,42 +15,16 @@ fn fowner_euid() -> u32 {
 /// + F_OFD_* via `handle_record_lock`.
 /// # C: O(1) per cmd; O(N_fds) for F_DUPFD.
 pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
-    const F_DUPFD: u64 = 0; const F_GETFD: u64 = 1; const F_SETFD: u64 = 2;
-    const F_GETFL: u64 = 3; const F_SETFL: u64 = 4;
-    const F_GETLK: u64 = 5; const F_SETLK: u64 = 6; const F_SETLKW: u64 = 7;
-    const F_OFD_GETLK: u64 = 36; const F_OFD_SETLK: u64 = 37; const F_OFD_SETLKW: u64 = 38;
-    const F_DUPFD_CLOEXEC: u64 = 1030;
-    /// Linux 6.10 `F_DUPFD_QUERY` (`f_dupfd_query`): "do these two
-    /// descriptors refer to the same open file description?". systemd asks this
-    /// on every fd it might already hold — 182 times in one boot here — and got
-    /// EINVAL, because the command simply did not exist.
-    const F_DUPFD_QUERY: u64 = 1027;
-    /// Linux 6.12 `F_CREATED_QUERY` (`f_created_query`): "did the
-    /// open that produced this fd CREATE the file?". Reads `FMODE_CREATED`,
-    /// which this kernel defined and tested but never set nor read.
-    const F_CREATED_QUERY: u64 = 1028;
-    /// `F_GETOWNER_UIDS` — copy out `f_owner.uid` / `f_owner.euid`, the pair
-    /// `F_SETOWN` snapshots and `sigio_perm` gates delivery on. Without this
-    /// command the snapshot was write-only.
-    const F_GETOWNER_UIDS: u64 = 17;
-    const F_GETPIPE_SZ: u64 = 1032; const F_SETPIPE_SZ: u64 = 1031;
-    const F_ADD_SEALS: u64 = 1033; const F_GET_SEALS: u64 = 1034;
-    const F_GETOWN: u64 = 9; const F_SETOWN: u64 = 8;
-    const F_SETSIG: u64 = 10; const F_GETSIG: u64 = 11;
-    const F_SETOWN_EX: u64 = 15; const F_GETOWN_EX: u64 = 16;
+    use crate::fcntl_cmds::{
+        allowed_on_o_path, F_ADD_SEALS, F_CREATED_QUERY, F_DUPFD, F_DUPFD_CLOEXEC,
+        F_DUPFD_QUERY, F_GETFD, F_GETFL, F_GETLEASE, F_GETLK, F_GETOWN, F_GETOWNER_UIDS,
+        F_GETOWN_EX, F_GETPIPE_SZ, F_GETSIG, F_GET_RW_HINT, F_GET_SEALS, F_NOTIFY,
+        F_OFD_GETLK, F_OFD_SETLK, F_OFD_SETLKW, F_SETFD, F_SETFL, F_SETLEASE, F_SETLK,
+        F_SETLKW, F_SETOWN, F_SETOWN_EX, F_SETPIPE_SZ, F_SETSIG, F_SET_RW_HINT,
+    };
     use vfs::file::owner_type::{F_OWNER_PGRP, F_OWNER_PID, F_OWNER_TID};
-    // F_*LEASE / F_NOTIFY (Linux fcntl UAPI, asm-generic).
-    const F_SETLEASE: u64 = 1024; const F_GETLEASE: u64 = 1025; const F_NOTIFY: u64 = 1026;
-    // F_{GET,SET}_RW_HINT + the per-file variants (Linux fcntl UAPI). arg is a
-    // pointer to a u64 RWH_WRITE_LIFE_* value (NOT_SET=0 … EXTREME=5).
-    // F_{GET,SET}_RW_HINT. The per-file variants (1037/1038) were removed from
-    // Linux's `do_fcntl` and now fall to its `default:` EINVAL, so they are not
-    // accepted here either — the uapi numbers survive only for source compat.
-    const F_GET_RW_HINT: u64 = 1035; const F_SET_RW_HINT: u64 = 1036;
     const RWH_WRITE_LIFE_EXTREME: u64 = 5;
     const O_ASYNC: u64 = 0o20000;
-    // Lease types (== the l_type record-lock values): read / write / unlock.
-    const F_RDLCK: i32 = 0; const F_WRLCK: i32 = 1; const F_UNLCK: i32 = 2;
     // dnotify F_NOTIFY DN_* event bits + DN_MULTISHOT (Linux fcntl UAPI).
     const DN_VALID: u32 = 0x0000_003f; // ACCESS|MODIFY|CREATE|DELETE|RENAME|ATTRIB
     const DN_MULTISHOT: u32 = 0x8000_0000;
@@ -80,6 +43,11 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
         };
     }
     let file = match fdt.get(fd) { Ok(f) => f, Err(_) => return ebadf };
+    // An `O_PATH` descriptor names a location, not an open file: only the
+    // commands that operate on the descriptor itself are admitted, and every
+    // other one answers EBADF. Ahead of the whole dispatch, so no command can
+    // reach a file that has no backend behind it.
+    if file.f_mode().contains(vfs::Fmode::PATH) && !allowed_on_o_path(cmd) { return ebadf; }
     if cmd == F_CREATED_QUERY {
         // `!!(filp->f_mode & FMODE_CREATED)`.
         return file.f_mode().contains(vfs::Fmode::CREATED) as i64;
@@ -262,39 +230,35 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
             file.f_setown(pid, ty, fowner_uid(), fowner_euid());
             0
         }
-        // F_GETLEASE (Linux `fcntl_getlease`): the lease type held on the open
-        // file description — F_RDLCK / F_WRLCK, or F_UNLCK when none.
-        F_GETLEASE => file.lease() as i64,
-        // F_SETLEASE (Linux `do_fcntl_add_lease`): take/drop a read/write lease.
-        // Only regular files may hold a lease (EINVAL otherwise). Records the
-        // type AND indexes the holder in the lease registry so a later
-        // conflicting open can find + signal it (`break_lease`). EBADF-class
-        // checks already passed (fd resolved). Returns 0 on success.
-        F_SETLEASE => {
-            let ty = arg as i32;
-            if !matches!(ty, F_RDLCK | F_WRLCK | F_UNLCK) {
-                return -(Errno::Einval.as_i32() as i64);
-            }
-            if !matches!(file.inode().file_type(), vfs::FileType::Regular) {
-                return -(Errno::Einval.as_i32() as i64);
-            }
-            file.set_lease(ty);
-            // F_UNLCK drops the registry entry; otherwise index it. Ensure a SIGIO
-            // target + delivery hook exist so the lease-break signal lands even
-            // without a prior F_SETOWN — default `f_owner` to the holder process
-            // (Linux delivers via the file's fown, defaulting to the opener).
-            if ty == F_UNLCK {
-                vfs::file::lease_unregister(&file);
-            } else {
-                if file.owner.load(core::sync::atomic::Ordering::Acquire) == 0 {
-                    let tgid = cur.tgid.load(core::sync::atomic::Ordering::Acquire) as i32;
-                    file.f_setown(tgid, F_OWNER_PID, fowner_uid(), fowner_euid());
-                }
-                sched::live::sigpend::install_sigio_hook();
-                vfs::file::lease_register(&file);
-            }
+        // F_GETLEASE: the PLAIN lease type held on this open file description —
+        // F_RDLCK / F_WRLCK, or F_UNLCK when none. A delegation held on the
+        // same description is invisible here; F_GETDELEG is its query.
+        F_GETLEASE => file.lease_of(vfs::file::FL_LEASE) as i64,
+        // F_SETLEASE: take/drop a read/write lease. Records the type AND
+        // indexes the holder in the lease registry so a later conflicting open
+        // can find + signal it. EBADF-class checks already passed (fd
+        // resolved). Returns 0 on success.
+        F_SETLEASE => set_lease(&cur, &file, vfs::file::LeaseKind::Lease, arg as i32),
+        // F_GETDELEG: the DELEGATION held on this description, written back
+        // into the caller's `struct delegation`. A plain lease is invisible
+        // here, exactly as a delegation is to F_GETLEASE — one break path, two
+        // separate queries.
+        fcntl_deleg::F_GETDELEG => {
+            // The request is READ and validated before the answer is produced:
+            // a caller passing a reserved field it invented is told EINVAL, not
+            // handed a delegation type it never asked for.
+            if let Err(rv) = read_delegation(arg) { return rv; }
+            write_delegation(arg, file.lease_of(vfs::file::FL_DELEG));
             0
         }
+        // F_SETDELEG: take/drop a delegation. Same storage, same registry and
+        // the same break path as a lease; it differs in that a DIRECTORY may
+        // be delegated (read-only) where it may never be leased, and in which
+        // breaker disturbs it.
+        fcntl_deleg::F_SETDELEG => match read_delegation(arg) {
+            Ok(d)   => set_lease(&cur, &file, vfs::file::LeaseKind::Deleg, d.d_type),
+            Err(rv) => rv,
+        },
         // F_NOTIFY (Linux `fcntl_dirnotify`, dnotify): arm a directory-change
         // watch. Only a directory fd is valid (ENOTDIR otherwise). `arg == 0`
         // clears the watch; otherwise the DN_* mask is validated and stored,
@@ -378,8 +342,7 @@ fn handle_record_lock(
     use core::sync::atomic::Ordering;
     use fs::posix_lock::{decode_flock, encode_flock, fmode_ok_for_setlk, getlk, owner_for,
                          resolve, setlk, setlkw, FLOCK_BYTES, F_UNLCK};
-    const F_GETLK: u64 = 5; const F_SETLK: u64 = 6; const F_SETLKW: u64 = 7;
-    const F_OFD_GETLK: u64 = 36; const F_OFD_SETLK: u64 = 37; const F_OFD_SETLKW: u64 = 38;
+    use crate::fcntl_cmds::{F_GETLK, F_OFD_GETLK, F_OFD_SETLK, F_OFD_SETLKW, F_SETLK, F_SETLKW};
     if let Err(rv) = validate_user_buf(arg, FLOCK_BYTES as u64, 8) { return rv; }
     let mut bytes = [0u8; FLOCK_BYTES];
     // SAFETY: arg validated FLOCK_BYTES below USER_VA_END; CPL=0 reads through caller's AS.

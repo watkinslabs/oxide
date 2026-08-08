@@ -18,6 +18,7 @@ use sync::{RwLock, Inode as InodeClass};
 
 mod dentry_paths;
 mod file_fd;
+mod write_hint;
 mod superblock_ownership;
 
 // ---------------------------------------------------------------------------

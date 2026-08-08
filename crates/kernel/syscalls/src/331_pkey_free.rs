@@ -21,6 +21,6 @@ pub fn sys_pkey_free(args: &SyscallArgs) -> i64 {
     // SAFETY: mm slot single-mutator per `13§5`; the Arc clone keeps this mm alive across the pkey-map update below.
     let mm = match unsafe { cur.mm_ref() } { Some(m) => m.clone(), None => return errno(Errno::Einval) };
     let abi = pkey::with_mm(pkey::ARCH, mm.pkeys().arch());
-    let r = mm.pkeys().with_map(|map| pkey::pkey_free(&abi, map, args.a0 as i32));
+    let r = mm.pkeys().with_state(|st| pkey::pkey_free(&abi, st, args.a0 as i32));
     match r { Ok(()) => 0, Err(e) => errno(e) }
 }

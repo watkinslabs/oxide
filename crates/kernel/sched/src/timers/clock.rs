@@ -51,7 +51,8 @@ fn pid_namespace(current: &Task) -> NamespaceRef {
 pub(super) fn resolve_clock(current: &Task, clock: ClockSpec, gettime: bool)
     -> Option<ClockSpec>
 {
-    let ClockSpec::CpuEncoded { pid, per_thread, measure } = clock else { return Some(clock) };
+    let ClockSpec::CpuEncoded { pid, per_thread, measure, dynamic } = clock
+        else { return Some(clock) };
     // CPUCLOCK_WHICH(clock) >= CPUCLOCK_MAX.
     if measure == CpuMeasure::Invalid { return None; }
     let target = if pid == 0 {
@@ -71,28 +72,40 @@ pub(super) fn resolve_clock(current: &Task, clock: ClockSpec, gettime: bool)
             task.tid
         }
     };
-    Some(ClockSpec::Cpu(CpuClock { target, per_thread, measure }))
+    Some(ClockSpec::Cpu(CpuClock { target, per_thread, measure, dynamic }))
 }
 
+/// The three CPU-clock measures are three DIFFERENT quantities, not one
+/// quantity at three granularities:
+///
+/// - `Virt` is user time, `Prof` is user + system — both from the tick's
+///   sampled accounting, so both advance in whole ticks.
+/// - `Sched` is the scheduler's own runtime total for the task, accumulated at
+///   nanosecond precision every time the task leaves a CPU. It is the measure
+///   both static CPU clock ids select, and the reason their reported resolution
+///   is one nanosecond rather than a tick — folding it onto user + system makes
+///   a `Sched` sleep or timer expire at the wrong point, and makes the
+///   advertised resolution a lie.
 fn task_cpu_sample(task: &Task, measure: CpuMeasure) -> u64 {
     match measure {
         CpuMeasure::Prof => task.utime_ns.load(Ordering::Acquire)
             .saturating_add(task.stime_ns.load(Ordering::Acquire)),
         CpuMeasure::Virt => task.utime_ns.load(Ordering::Acquire),
-        CpuMeasure::Sched => task.utime_ns.load(Ordering::Acquire)
-            .saturating_add(task.stime_ns.load(Ordering::Acquire)),
+        CpuMeasure::Sched => task.sum_exec_runtime_ns.load(Ordering::Acquire),
         CpuMeasure::Invalid => 0,
     }
 }
 
 /// `thread_group_cputime()` — the process-wide sample, off an already-held
 /// group. One owner so the registry-resolved and tick-local readings can never
-/// disagree.
+/// disagree. `Sched` reads the group's own scheduler-runtime total for the
+/// same reason [`task_cpu_sample`] does.
 fn group_cpu_sample(group: &crate::thread_group::ThreadGroup, measure: CpuMeasure) -> u64 {
     let (user, system) = group.cpu_sample();
     match measure {
         CpuMeasure::Virt => user,
-        CpuMeasure::Prof | CpuMeasure::Sched => user.saturating_add(system),
+        CpuMeasure::Prof => user.saturating_add(system),
+        CpuMeasure::Sched => group.sched_runtime_sample(),
         CpuMeasure::Invalid => 0,
     }
 }

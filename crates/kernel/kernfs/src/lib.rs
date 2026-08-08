@@ -29,6 +29,7 @@ mod fs;
 mod reval;
 mod tree;
 
+pub use dir_ops::{DirFileattr, PseudoDirOps};
 pub use fs::{PseudoFs, PSEUDO_ROOT_INO};
 pub use reval::KERNFS_DENTRY_OPS;
 pub use tree::{PseudoDir, PseudoDirHooks, PseudoSymlink, dir_ino};

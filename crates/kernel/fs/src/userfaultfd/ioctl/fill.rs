@@ -19,6 +19,7 @@ use super::structs::{err, read_req, write_reply, UffdioCopy, UffdioRangeOp};
 /// # C: O(len/PAGE)
 pub fn ioc_copy(ufd: &UfData, arg: u64) -> i64 {
     if let Err(rv) = validate_user_buf_writable(arg, UFFDIO_COPY_SIZE, 1) { return rv; }
+    if let Some(rv) = refuse_if_changing(ufd, arg + UFFDIO_COPY_COPY_OFF) { return rv; }
     // SAFETY: arg validated writable for the full uffdio_copy object.
     let c: UffdioCopy = unsafe { read_req(arg) };
     // The SOURCE is validated before the destination, and the mode word after
@@ -41,6 +42,7 @@ pub fn ioc_copy(ufd: &UfData, arg: u64) -> i64 {
 /// # C: O(len/PAGE)
 pub fn ioc_zeropage(ufd: &UfData, arg: u64) -> i64 {
     let Some(z) = range_op(arg, UFFDIO_ZEROPAGE_SIZE) else { return err(Errno::Efault) };
+    if let Some(rv) = refuse_if_changing(ufd, arg + UFFDIO_ZEROPAGE_ZEROPAGE_OFF) { return rv; }
     if let Err(e) = policy::validate_range(z.range.start, z.range.len) { return err(e); }
     if let Err(e) = policy::check_zeropage_mode(z.mode) { return err(e); }
     let req = work::FillReq {
@@ -55,6 +57,7 @@ pub fn ioc_zeropage(ufd: &UfData, arg: u64) -> i64 {
 /// # C: O(len/PAGE)
 pub fn ioc_continue(ufd: &UfData, arg: u64) -> i64 {
     let Some(k) = range_op(arg, UFFDIO_CONTINUE_SIZE) else { return err(Errno::Efault) };
+    if let Some(rv) = refuse_if_changing(ufd, arg + UFFDIO_CONTINUE_MAPPED_OFF) { return rv; }
     if let Err(e) = policy::validate_range(k.range.start, k.range.len) { return err(e); }
     if let Err(e) = policy::check_continue_mode(k.mode) { return err(e); }
     let req = work::FillReq {
@@ -69,12 +72,25 @@ pub fn ioc_continue(ufd: &UfData, arg: u64) -> i64 {
 /// # C: O(len/PAGE)
 pub fn ioc_poison(ufd: &UfData, arg: u64) -> i64 {
     let Some(p) = range_op(arg, UFFDIO_POISON_SIZE) else { return err(Errno::Efault) };
+    if let Some(rv) = refuse_if_changing(ufd, arg + UFFDIO_POISON_UPDATED_OFF) { return rv; }
     if let Err(e) = policy::validate_range(p.range.start, p.range.len) { return err(e); }
     if let Err(e) = policy::check_poison_mode(p.mode) { return err(e); }
     let req = work::FillReq {
         kind: FillKind::Poison, dst: p.range.start, src: None, len: p.range.len, wp: false,
     };
     fill(ufd, &req, p.mode, arg + UFFDIO_POISON_UPDATED_OFF)
+}
+
+/// The in-flight-change refusal, in the position every fill shares: AFTER the
+/// request object has been proven writable (the reply word has to be written
+/// for the monitor to read the errno out of it) and BEFORE anything in the
+/// request is looked at. A monitor that gets this back has a pending event to
+/// read, after which the same command succeeds.
+/// # C: O(1)
+fn refuse_if_changing(ufd: &UfData, reply_slot: u64) -> Option<i64> {
+    let e = policy::check_mmap_changing(ufd.changes_in_flight()).err()?;
+    write_reply(reply_slot, err(e));
+    Some(err(e))
 }
 
 /// Read one of the three range-shaped request objects. `None` when the object

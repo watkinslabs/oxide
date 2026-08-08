@@ -3,9 +3,12 @@
 // `locking` owns `i_rwsem` helpers,
 // `ops` owns the `i_op`/`i_fop` delegators, `builder` owns construction, and
 // `helpers`/`flags` own shared utility routines and ABI constants; `file_lock`
-// owns the inode-local advisory-lock context.
+// owns the inode-local advisory-lock context; `fileattr_shmem` owns the single
+// shmem-backed `i_op->fileattr_{get,set}` body shared by every shmem-backed
+// mount (tmpfs and the device filesystem's directory tree).
 
 mod builder;
+mod fileattr_shmem;
 mod flags;
 mod file_lock;
 mod helpers;
@@ -16,6 +19,7 @@ mod ops;
 mod rwsem;
 
 pub use builder::InodeBuilder;
+pub use fileattr_shmem::{shmem_fileattr_get, shmem_fileattr_set};
 pub use flags::{
     FIEMAP_EXTENT_DATA_ENCRYPTED, FIEMAP_EXTENT_DATA_INLINE, FIEMAP_EXTENT_DELALLOC,
     FIEMAP_EXTENT_ENCODED, FIEMAP_EXTENT_LAST, FIEMAP_EXTENT_MERGED, FIEMAP_EXTENT_NOT_ALIGNED,

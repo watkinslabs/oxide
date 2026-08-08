@@ -239,6 +239,18 @@ mod s028_madvise;
 // that decide a rejected call are unit-tested hosted.
 pub mod memfd_flags;
 pub mod fcntl_seal;
+// fcntl F_GETDELEG/F_SETDELEG (1039/1040): the `struct delegation` wire form
+// and its reserved-field validation, outside the kernel-only slot file.
+pub mod fcntl_deleg;
+// fcntl command numbers (one owner) + the `O_PATH` descriptor admission gate.
+pub mod fcntl_cmds;
+// Sleeping half of a delegation break, installed into the VFS at boot.
+#[cfg(target_os = "oxide-kernel")]
+pub mod deleg_break;
+// fcntl's lease/delegation commands, split from the 072 slot file for the
+// file cap; ABI shim only, every decision lives in the VFS lease policy.
+#[cfg(target_os = "oxide-kernel")]
+mod fcntl_lease;
 pub mod execveat_at;
 
 #[cfg(target_os = "oxide-kernel")]

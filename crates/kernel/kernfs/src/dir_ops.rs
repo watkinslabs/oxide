@@ -1,14 +1,52 @@
-use vfs::{DirContext, FileOps, Inode, InodeOps, InodeRef, KResult, VfsError};
+use vfs::{DirContext, FileAttr, FileOps, Inode, InodeOps, InodeRef, KResult, VfsError};
 
 use crate::tree::PseudoDir;
 
-pub(crate) struct PseudoDirOps;
+/// Which `i_op->fileattr_{get,set}` surface a pseudo-directory publishes. The
+/// choice belongs to the OWNING filesystem — it is part of the inode-op vector
+/// that filesystem installs — so it rides on the tree root and is inherited by
+/// every directory beneath it. No second registry, no per-directory override.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DirFileattr {
+    /// Pseudo-filesystem default: no fileattr vector at all, so the ABI edge
+    /// reports `EOPNOTSUPP`. sysfs/procfs/tracefs/devpts/cgroup/… sit here.
+    Absent,
+    /// shmem-backed mount: the same chattr surface a tmpfs directory answers.
+    /// The device filesystem's directory tree is such a mount.
+    Shmem,
+}
+
+pub struct PseudoDirOps {
+    fileattr: DirFileattr,
+}
+
+impl PseudoDirOps {
+    /// Inode-op vector for a pseudo-directory publishing `fileattr`. # C: O(1)
+    pub const fn new(fileattr: DirFileattr) -> Self { Self { fileattr } }
+}
 
 fn pdir(inode: &Inode) -> KResult<&PseudoDir> {
     inode.private::<PseudoDir>().ok_or(VfsError::Einval)
 }
 
 impl InodeOps for PseudoDirOps {
+    /// An absent vector answers `Enotty` — the same value the trait default
+    /// produces — which the ABI edge renders as `EOPNOTSUPP`. # C: O(1)
+    fn fileattr_get(&self, inode: &Inode) -> KResult<FileAttr> {
+        match self.fileattr {
+            DirFileattr::Absent => Err(VfsError::Enotty),
+            DirFileattr::Shmem => vfs::inode::shmem_fileattr_get(inode),
+        }
+    }
+
+    /// Set half of [`PseudoDirOps::fileattr_get`]. # C: O(1)
+    fn fileattr_set(&self, inode: &Inode, fa: &FileAttr) -> KResult<()> {
+        match self.fileattr {
+            DirFileattr::Absent => Err(VfsError::Enotty),
+            DirFileattr::Shmem => vfs::inode::shmem_fileattr_set(inode, fa),
+        }
+    }
+
     fn lookup(&self, inode: &Inode, name: &str) -> KResult<InodeRef> {
         pdir(inode)?.op_lookup(name)
     }

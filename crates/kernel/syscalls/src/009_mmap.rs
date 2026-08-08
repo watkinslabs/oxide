@@ -52,6 +52,9 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
     let rier = (prot & PROT_READ) != 0
         && sched::live::current().map(|c| sched::personality::read_implies_exec(c)).unwrap_or(false);
     let mut may_prot = vmm::VmaProt::READ | vmm::VmaProt::WRITE | vmm::VmaProt::EXEC;
+    // Properties the mapped FILE imposes on the VMA, independent of the flags
+    // the caller passed.
+    let mut file_vma_flags = vmm::VmaFlags::empty();
     // File-backed mmap: resolve fd, wrap as FileBacking, pass to glue_mmap.
     // A device exposing a contiguous physical range (e.g. /dev/fbN, the
     // framebuffer) is mapped straight to that PA (Linux remap_pfn_range) via
@@ -126,6 +129,17 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
                 };
             }
         }
+        // Secret memory: its pages are absent from the kernel's linear map,
+        // so they can be neither swapped nor dumped and there is no private
+        // copy to make. The mapping must be shared, and it carries the locked
+        // and never-dumped properties whether the caller asked or not — which
+        // is also what charges it against the memlock limit below.
+        if ::fs::secretmem::is_secretmem(inode) {
+            match crate::secretmem::secretmem_mmap_prepare(shared) {
+                Ok(f) => file_vma_flags |= f,
+                Err(e) => return -(e.as_i32() as i64),
+            }
+        }
         // DRM dumb buffers: the `offset` is a MODE_MAP_DUMB cookie that
         // selects the buffer. Pin the dumb handle for the VMA lifetime and map
         // it through the file-backed shared-frame path so PTE refs keep pages
@@ -137,7 +151,7 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
             }
             let drm_backing: alloc::sync::Arc<dyn vmm::FileBacking> =
                 alloc::sync::Arc::new(DrmDumbBacking { pin });
-            return match pmm::user_as::glue_mmap(args.a0, args.a1, prot, args.a3, fd as i64, 0, Some(drm_backing), None, None, may_prot) {
+            return match pmm::user_as::glue_mmap(args.a0, args.a1, prot, args.a3, fd as i64, 0, Some(drm_backing), None, None, may_prot, vmm::VmaFlags::empty()) {
                 Ok(va)  => va as i64,
                 Err(rv) => rv,
             };
@@ -153,7 +167,7 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
         // heap (the root cause the corruption hunt traced, state.md).
         if let Some((pa, len)) = crate::io_uring::mmap_backing(inode, offset) {
             if args.a1 > len { return -(Errno::Einval.as_i32() as i64); }
-            return match pmm::user_as::glue_mmap(args.a0, args.a1, prot, args.a3, fd as i64, 0, None, None, Some(pa), may_prot) {
+            return match pmm::user_as::glue_mmap(args.a0, args.a1, prot, args.a3, fd as i64, 0, None, None, Some(pa), may_prot, vmm::VmaFlags::empty()) {
                 Ok(va)  => va as i64,
                 Err(rv) => rv,
             };
@@ -161,7 +175,7 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
         if let Some(result) = crate::packet_mmap::backing(&file, offset, args.a1, flags) {
             let packet_backing = match result { Ok(value) => value, Err(error) => return error };
             return match pmm::user_as::glue_mmap(args.a0, args.a1, prot, args.a3,
-                                                fd as i64, 0, Some(packet_backing), None, None, may_prot) {
+                                                fd as i64, 0, Some(packet_backing), None, None, may_prot, vmm::VmaFlags::empty()) {
                 Ok(va) => va as i64,
                 Err(error) => error,
             };
@@ -176,7 +190,7 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
         if let Some(result) = crate::tcp_zerocopy::mmap_backing(&file, prot, args.a1) {
             let zc_backing = match result { Ok(value) => value, Err(error) => return error };
             return match pmm::user_as::glue_mmap(args.a0, args.a1, prot, args.a3,
-                                                fd as i64, 0, Some(zc_backing), None, None, may_prot) {
+                                                fd as i64, 0, Some(zc_backing), None, None, may_prot, vmm::VmaFlags::empty()) {
                 Ok(va) => va as i64,
                 Err(error) => error,
             };
@@ -234,7 +248,7 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
     }
     let result = pmm::user_as::glue_mmap(
         args.a0, args.a1, prot, args.a3, fd as i64, offset, backing, phys_range,
-        None, may_prot,
+        None, may_prot, file_vma_flags,
     );
     drop(seal_write_reservation);
     match result {

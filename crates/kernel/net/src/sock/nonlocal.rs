@@ -6,17 +6,10 @@
 use super::{InetSocket, NetError};
 use crate::bind_screen::{self, SockNonlocal};
 use crate::NetIfaceId;
-use crate::sock_opts::sol_ip::flag;
 
-/// The socket's nonlocal-bind permission. Both bits live in the `IPPROTO_IP`
-/// option word: the `IPPROTO_IPV6` option numbers write the same storage.
-/// # C: O(1)
-pub fn permission(sock: &InetSocket) -> SockNonlocal {
-    SockNonlocal {
-        freebind: sock.opts.ip.flag(flag::FREEBIND),
-        transparent: sock.opts.ip.flag(flag::TRANSPARENT),
-    }
-}
+/// The socket's nonlocal-address permission, read off the option state the
+/// socket shares with its transport endpoint — never a copy. # C: O(1)
+pub fn permission(sock: &InetSocket) -> SockNonlocal { sock.opts.ip.nonlocal() }
 
 /// Screen a candidate IPv4 local address for this socket. # C: O(N_addrs)
 pub fn screen_v4(sock: &InetSocket, addr: crate::Ipv4Addr, iface: Option<NetIfaceId>)

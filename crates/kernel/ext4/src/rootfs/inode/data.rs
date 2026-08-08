@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use vfs::{FileType, Inode};
 use vfs::xattr::XattrError;
@@ -20,13 +20,12 @@ pub(crate) struct Ext4FileData {
     /// dirty (mmap-written) frames to disk. Shared (same `Arc`) with this
     /// inode's `Ext4FileMapping`.
     pub(crate) frames:    Arc<super::super::framecache::Ext4FrameStore>,
-    /// Active ext4 swapfile ownership. Mutators reject while this remains
-    /// set, preserving the extent map used by direct swap I/O.
-    pub(crate) swap_active: Arc<AtomicBool>,
-    /// Mutations that passed their active-swap check and may still change
-    /// cached data or the extent tree. Activation first publishes
-    /// `swap_active`, then drains this count, so it cannot race a writer that
-    /// observed the file before activation.
+    /// Mutations that passed their swapfile check and may still change cached
+    /// data or the extent tree. Activation first publishes the inode's
+    /// `S_SWAPFILE` flag, then drains this count, so it cannot race a mutation
+    /// that observed the file before activation. Whether the file IS a live
+    /// swapfile is deliberately NOT recorded here: that lives only in the
+    /// inode flag, which is what the generic gate above the filesystem reads.
     pub(crate) swap_mutations: Arc<AtomicU64>,
 }
 
@@ -39,25 +38,30 @@ impl Drop for SwapMutation<'_> {
 }
 
 impl Ext4FileData {
-    /// Admit one data/extent mutation unless the inode is an active swapfile.
+    /// Admit one data/extent mutation unless the inode is a live swapfile.
     /// The increment-before-test order closes the activation race: an activator
-    /// that publishes `swap_active` waits for every earlier admission, while a
-    /// later admission sees the active flag and fails with `EBUSY`.
-    pub(crate) fn begin_swap_mutation(&self) -> Result<SwapMutation<'_>, vfs::VfsError> {
+    /// that publishes `S_SWAPFILE` waits for every earlier admission, while a
+    /// later admission sees the flag and is refused.
+    ///
+    /// The errno is `ETXTBSY`, the same answer the generic gate gives, because
+    /// the two are the same rejection seen from two heights: the generic gate
+    /// runs first and answers every ordinary call, and this one exists only to
+    /// catch a mutation that raced activation. A different errno here would
+    /// make the outcome depend on the timing.
+    pub(crate) fn begin_swap_mutation(&self, inode: &Inode) -> Result<SwapMutation<'_>, vfs::VfsError> {
         self.swap_mutations.fetch_add(1, Ordering::AcqRel);
-        if self.swap_active.load(Ordering::Acquire) {
+        if inode.is_swapfile() {
             self.swap_mutations.fetch_sub(1, Ordering::Release);
-            return Err(vfs::VfsError::Ebusy);
+            return Err(vfs::VfsError::Etxtbsy);
         }
         Ok(SwapMutation { file: self })
     }
 
-    /// Publish swap ownership then wait until every mutation admitted before
-    /// publication has finished. The caller must clear `swap_active` if its
-    /// subsequent validation or persistence step fails.
-    pub(crate) fn begin_swap_activation(&self) -> Result<(), vfs::VfsError> {
-        self.swap_active.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| vfs::VfsError::Ebusy)?;
+    /// Publish swap ownership on the INODE, then wait until every mutation
+    /// admitted before publication has finished. The caller must release the
+    /// claim if its subsequent validation or persistence step fails.
+    pub(crate) fn begin_swap_activation(&self, inode: &Inode) -> Result<(), vfs::VfsError> {
+        inode.claim_swapfile()?;
         while self.swap_mutations.load(Ordering::Acquire) != 0 {
             crate::mount::cooperative_yield();
         }

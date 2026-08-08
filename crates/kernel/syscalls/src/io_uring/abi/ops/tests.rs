@@ -4,14 +4,24 @@ use super::*;
 fn probe_never_claims_an_opcode_dispatch_would_reject() {
     // Real opcodes the engine does not run. Reporting one as supported makes
     // a caller submit an SQE that comes back -EINVAL.
-    for op in [IORING_OP_POLL_ADD, IORING_OP_POLL_REMOVE, IORING_OP_TIMEOUT,
-               IORING_OP_TIMEOUT_REMOVE, IORING_OP_ASYNC_CANCEL, IORING_OP_LINK_TIMEOUT,
-               IORING_OP_SPLICE, IORING_OP_URING_CMD, IORING_OP_SEND_ZC,
+    for op in [IORING_OP_SPLICE, IORING_OP_URING_CMD, IORING_OP_SEND_ZC,
                IORING_OP_SENDMSG_ZC, IORING_OP_READ_MULTISHOT, IORING_OP_WAITID,
                IORING_OP_FUTEX_WAIT, IORING_OP_FUTEX_WAKE, IORING_OP_FUTEX_WAITV,
                IORING_OP_RECV_ZC, IORING_OP_EPOLL_WAIT, IORING_OP_READV_FIXED,
                IORING_OP_WRITEV_FIXED, IORING_OP_NOP128, IORING_OP_URING_CMD128] {
         assert!(!op_supported(op), "op {op}");
+    }
+}
+
+#[test]
+fn probe_claims_the_asynchronous_opcodes_the_engine_arms() {
+    // These never complete inside the submission that issued them: the engine
+    // arms them on a clock, on a description or on the in-flight table. A
+    // probe that hid them would tell a caller with an async engine underneath
+    // it that there is none.
+    for op in [IORING_OP_POLL_ADD, IORING_OP_POLL_REMOVE, IORING_OP_TIMEOUT,
+               IORING_OP_TIMEOUT_REMOVE, IORING_OP_ASYNC_CANCEL, IORING_OP_LINK_TIMEOUT] {
+        assert!(op_supported(op), "op {op}");
     }
 }
 

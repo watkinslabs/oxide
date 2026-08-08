@@ -13,11 +13,19 @@ const PAGE: u64 = hal::PAGE_SIZE_BYTES;
 
 /// A private anonymous mapping owned by no userfaultfd.
 fn anon() -> RegVma {
-    RegVma { anonymous: true, shmem: false, may_write: true, owned_by_other_uffd: false }
+    RegVma { anonymous: true, shmem: false, file_backed: false, may_write: true,
+             owned_by_other_uffd: false }
 }
 /// A memory-backed shared mapping.
 fn shmem() -> RegVma {
-    RegVma { anonymous: false, shmem: true, may_write: true, owned_by_other_uffd: false }
+    RegVma { anonymous: false, shmem: true, file_backed: true, may_write: true,
+             owned_by_other_uffd: false }
+}
+/// An ordinary file mapping: a page cache stands behind it, so a fault there
+/// cannot be answered by a monitor, but a write to it can still be caught.
+fn filemap() -> RegVma {
+    RegVma { anonymous: false, shmem: false, file_backed: true, may_write: true,
+             owned_by_other_uffd: false }
 }
 
 // ---- registration modes ---------------------------------------------------
@@ -42,35 +50,58 @@ fn modes_are_refused_on_vmas_that_cannot_deliver_them() {
     let wp = VmaFlags::UFFD_WP;
     let minor = VmaFlags::UFFD_MINOR;
     // Missing faults happen on both kinds of memory.
-    assert!(vma_can_userfault(&anon(), missing));
-    assert!(vma_can_userfault(&shmem(), missing));
+    assert!(vma_can_userfault(&anon(), missing, false));
+    assert!(vma_can_userfault(&shmem(), missing, false));
     // A minor fault needs a backing that can already hold the page.
-    assert!(vma_can_userfault(&shmem(), minor));
-    assert!(!vma_can_userfault(&anon(), minor));
-    // Write-protect state lives in a present anonymous leaf.
-    assert!(vma_can_userfault(&anon(), wp));
-    assert!(!vma_can_userfault(&shmem(), wp));
-    // A mapping that is neither takes nothing at all.
-    let other = RegVma { anonymous: false, shmem: false, may_write: true,
+    assert!(vma_can_userfault(&shmem(), minor, false));
+    assert!(!vma_can_userfault(&anon(), minor, false));
+    // Write-protect no longer needs the page to be there to carry the state, so
+    // it is legal over shared storage too.
+    assert!(vma_can_userfault(&anon(), wp, false));
+    assert!(vma_can_userfault(&shmem(), wp, false));
+    // A mapping that is neither takes nothing a monitor would be told about.
+    let other = RegVma { anonymous: false, shmem: false, file_backed: false, may_write: true,
                          owned_by_other_uffd: false };
-    for m in [missing, wp, minor] { assert!(!vma_can_userfault(&other, m)); }
+    for m in [missing, wp, minor] { assert!(!vma_can_userfault(&other, m, false)); }
     // A combination is legal only where EVERY member of it is.
-    assert!(!vma_can_userfault(&anon(), missing | minor));
-    assert!(!vma_can_userfault(&shmem(), missing | wp));
+    assert!(!vma_can_userfault(&anon(), missing | minor, false));
+    assert!(vma_can_userfault(&shmem(), missing | wp, false));
+}
+
+/// A monitor that RESOLVES its own write faults reports nothing and blocks
+/// nobody, so write-protect alone needs no interception point: it is admitted
+/// over an ordinary file mapping, which could never take a mode that delivers a
+/// message. Every other mode, and every combination, still needs one — and a
+/// mapping backed by no page this kernel accounts takes nothing at all, because
+/// the write it would catch lands in memory whose lifetime the kernel does not
+/// own.
+#[test]
+fn resolving_write_faults_admits_a_file_mapping_that_no_reported_mode_could_take() {
+    let wp = VmaFlags::UFFD_WP;
+    assert!(!vma_can_userfault(&filemap(), wp, false));
+    assert!(vma_can_userfault(&filemap(), wp, true));
+    assert!(!vma_can_userfault(&filemap(), VmaFlags::UFFD_MISSING, true));
+    assert!(!vma_can_userfault(&filemap(), wp | VmaFlags::UFFD_MISSING, true));
+    let device = RegVma { anonymous: false, shmem: false, file_backed: false, may_write: true,
+                          owned_by_other_uffd: false };
+    assert!(!vma_can_userfault(&device, wp, true));
 }
 
 #[test]
 fn register_vma_scan_enforces_maywrite_and_single_owner() {
     let m = VmaFlags::UFFD_MISSING;
-    assert_eq!(check_register_vma(&anon(), m), Ok(()));
-    assert_eq!(check_register_vma(&RegVma { anonymous: false, ..anon() }, m), Err(Errno::Einval));
-    assert_eq!(check_register_vma(&RegVma { may_write: false, ..anon() }, m), Err(Errno::Eperm));
-    assert_eq!(check_register_vma(&RegVma { owned_by_other_uffd: true, ..anon() }, m),
+    assert_eq!(check_register_vma(&anon(), m, false), Ok(()));
+    assert_eq!(check_register_vma(&RegVma { anonymous: false, ..anon() }, m, false),
+               Err(Errno::Einval));
+    assert_eq!(check_register_vma(&RegVma { may_write: false, ..anon() }, m, false),
+               Err(Errno::Eperm));
+    assert_eq!(check_register_vma(&RegVma { owned_by_other_uffd: true, ..anon() }, m, false),
                Err(Errno::Ebusy));
     // Order: a VMA the mode is illegal on reports EINVAL even when it is also
     // unwritable and owned elsewhere.
-    assert_eq!(check_register_vma(&RegVma { anonymous: false, shmem: false, may_write: false,
-                                            owned_by_other_uffd: true }, m), Err(Errno::Einval));
+    assert_eq!(check_register_vma(&RegVma { anonymous: false, shmem: false, file_backed: false,
+                                            may_write: false, owned_by_other_uffd: true },
+                                  m, false), Err(Errno::Einval));
 }
 
 /// The reply is a promise that the listed ops will succeed on this range, so a
@@ -208,17 +239,41 @@ fn write_protect_mode_bits_are_not_the_fill_assignment() {
 
 #[test]
 fn write_protect_requires_every_vma_in_the_range_to_be_wp_registered() {
-    let reg = |start, end| WpVma { start, end, uffd_wp: true };
+    let reg = |start, end| WpVma { start, end, uffd_wp: true, anonymous: true, wp_unpopulated: false };
     assert_eq!(check_wp_vma(0, 4 * PAGE, &[reg(0, 4 * PAGE)]), Ok(()));
     assert_eq!(check_wp_vma(0, 4 * PAGE, &[reg(0, 2 * PAGE), reg(2 * PAGE, 4 * PAGE)]), Ok(()));
     // An unregistered VMA in the range, a hole in the range, and an empty
     // range all mean "this context does not own that memory".
-    assert_eq!(check_wp_vma(0, 4 * PAGE, &[WpVma { start: 0, end: 4 * PAGE, uffd_wp: false }]),
+    assert_eq!(check_wp_vma(0, 4 * PAGE, &[WpVma { start: 0, end: 4 * PAGE, uffd_wp: false, anonymous: true, wp_unpopulated: false }]),
                Err(Errno::Enoent));
     assert_eq!(check_wp_vma(0, 4 * PAGE, &[reg(0, PAGE), reg(2 * PAGE, 4 * PAGE)]),
                Err(Errno::Enoent));
     assert_eq!(check_wp_vma(0, 4 * PAGE, &[]), Err(Errno::Enoent));
     assert_eq!(check_wp_vma(0, 4 * PAGE, &[reg(0, 2 * PAGE)]), Err(Errno::Enoent));
+}
+
+/// Whether the barrier reaches addresses with no page is a PER-VMA answer, and
+/// it is not the same question for the two kinds of memory. Anything with a
+/// backing needs it unconditionally — the page a write would land on can be in
+/// the backing while the page table has nothing, so leaving that address alone
+/// lets the write through unseen. Private anonymous memory has nothing behind
+/// it, so there it is the monitor's to ask for and costs page tables for
+/// addresses that may never be touched.
+#[test]
+fn only_the_monitor_extends_the_barrier_over_untouched_anonymous_addresses() {
+    let anon = |wp_unpopulated| WpVma { start: 0, end: PAGE, uffd_wp: true, anonymous: true,
+                                        wp_unpopulated };
+    let backed = |wp_unpopulated| WpVma { start: 0, end: PAGE, uffd_wp: true, anonymous: false,
+                                          wp_unpopulated };
+    assert!(!wp_use_markers(&anon(false)));
+    assert!(wp_use_markers(&anon(true)));
+    assert!(wp_use_markers(&backed(false)));
+    assert!(wp_use_markers(&backed(true)));
+    // A VMA the barrier is not armed on gets nothing planted on it whatever the
+    // monitor negotiated — a marker there would divert a fault to a context
+    // that is not listening for it.
+    assert!(!wp_use_markers(&WpVma { uffd_wp: false, ..anon(true) }));
+    assert!(!wp_use_markers(&WpVma { uffd_wp: false, ..backed(true) }));
 }
 
 // ---- move -----------------------------------------------------------------

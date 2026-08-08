@@ -242,7 +242,35 @@ impl Creds {
             & securebits::SECBIT_KEEP_CAPS != 0
     }
 
+    /// Linux `set_cred_user_ns`: the credentials a task carries INTO a user
+    /// namespace it has just created.
+    ///
+    /// It starts with the same capabilities as init and useless for doing
+    /// anything outside — the sets are full, but every capability check scopes
+    /// them to the namespace they were granted in, so they confer nothing in
+    /// the parent. Inheritable and ambient are emptied rather than carried,
+    /// because a set inherited from outside would survive an execve and reach
+    /// back out; the bounding set is full so the namespace can hand its own
+    /// capabilities to the programs it runs.
+    ///
+    /// MUST NOT run before the task's user namespace is the new one: full sets
+    /// scoped to the OLD namespace are a privilege escalation, not a grant.
+    /// # C: O(1)
+    pub fn enter_new_user_namespace(&self) {
+        self.securebits.store(SECUREBITS_DEFAULT, Ordering::Release);
+        self.cap_inheritable.store(CAP_EMPTY, Ordering::Release);
+        self.cap_ambient.store(CAP_EMPTY, Ordering::Release);
+        self.cap_permitted.store(Self::CAP_FULL, Ordering::Release);
+        self.cap_effective.store(Self::CAP_FULL, Ordering::Release);
+        self.cap_bounding.store(Self::CAP_FULL, Ordering::Release);
+    }
 }
+
+/// Linux `SECUREBITS_DEFAULT` — no secure bit set and none locked.
+pub const SECUREBITS_DEFAULT: u32 = 0;
+
+/// Linux `CAP_EMPTY_SET`.
+pub const CAP_EMPTY: u64 = 0;
 
 impl Task {
     /// Linux clears `SECBIT_KEEP_CAPS` at every successful execve. The lock

@@ -15,13 +15,17 @@ use crate::sockaddr_encode::{encoded_sockaddr_for_socket, encoded_sockaddr_in,
 /// `sk->sk_prot->getname(sock, addr, peer=1)`: the peer address a connected
 /// socket reports, shared by `getpeername(2)` and `SO_PEERNAME`. # C: O(1)
 pub(crate) fn peer_sockaddr(sock: &Arc<InetSocket>) -> Result<EncodedSockaddr, Errno> {
+    // A peer name carries the flow information a connect settled, and only
+    // for a socket that asked to send one; a local name never carries any.
+    let flowinfo = peer_flowinfo(sock);
     let raw = match &*sock.kind.lock() {
         SockKind::Raw4(endpoint) => match endpoint.snapshot().remote {
             Some(peer) => Some(encoded_sockaddr_in(peer.as_u32().to_be(), 0)),
             None => return Err(Errno::Enotconn),
         },
         SockKind::Raw6(endpoint) => match endpoint.peer() {
-            Some(peer) => Some(encoded_sockaddr_in6(peer.addr.0, 0, peer.scope_id)),
+            Some(peer) => Some(encoded_sockaddr_in6(peer.addr.0, 0, peer.scope_id,
+                flowinfo)),
             None => return Err(Errno::Enotconn),
         },
         _ => None,
@@ -60,13 +64,13 @@ pub(crate) fn peer_sockaddr(sock: &Arc<InetSocket>) -> Result<EncodedSockaddr, E
         if let Some((ip, port)) = *sock.peer6.lock() {
             let bound_ifindex = net::sock_v6_name::name_bound_ifindex(sock);
             return Ok(encoded_sockaddr_in6(ip.0, port.to_be(),
-                net::sock_v6_name::name_scope_id(ip, bound_ifindex)));
+                net::sock_v6_name::name_scope_id(ip, bound_ifindex), flowinfo));
         }
     }
     let (ip, port) = match *sock.peer.lock() {
         Some(t) => t, None => return Err(Errno::Enotconn),
     };
-    Ok(encoded_sockaddr_for_socket(sock, ip, port))
+    Ok(encoded_sockaddr_for_socket(sock, ip, port, flowinfo))
 }
 
 /// `sk->sk_prot->getname(sock, addr, peer=0)`: the local address a socket
@@ -82,7 +86,7 @@ pub(crate) fn local_sockaddr(sock: &Arc<InetSocket>) -> EncodedSockaddr {
         SockKind::Raw6(endpoint) => {
             let local = endpoint.local();
             Some(encoded_sockaddr_in6(local.addr.0, endpoint.ping_ident().to_be(),
-                local.scope_id))
+                local.scope_id, 0))
         }
         _ => None,
     };
@@ -101,12 +105,21 @@ pub(crate) fn local_sockaddr(sock: &Arc<InetSocket>) -> EncodedSockaddr {
         // to an IPv4 peer took the v4 path, so its local address is in the
         // IPv4 tuple; reading `local_ip6` unconditionally reported `[::]`
         // for every such socket.
-        if v6_name_is_v4_mapped(ip6, ip) { return encoded_sockaddr_for_socket(sock, ip, port); }
+        if v6_name_is_v4_mapped(ip6, ip) {
+            return encoded_sockaddr_for_socket(sock, ip, port, 0);
+        }
         let bound_ifindex = net::sock_v6_name::name_bound_ifindex(sock);
         return encoded_sockaddr_in6(ip6.0, port.to_be(),
-            net::sock_v6_name::name_scope_id(ip6, bound_ifindex));
+            net::sock_v6_name::name_scope_id(ip6, bound_ifindex), 0);
     }
-    encoded_sockaddr_for_socket(sock, ip, port)
+    encoded_sockaddr_for_socket(sock, ip, port, 0)
+}
+
+/// The `sin6_flowinfo` this socket's PEER name carries. # C: O(1)
+pub(crate) fn peer_flowinfo(sock: &InetSocket) -> u32 {
+    net::sock_opts::sol_ipv6::sndflow::reported(
+        sock.opts.ipv6.flag(net::sock_opts::sol_ipv6::flag::SNDFLOW),
+        sock.opts.ipv6.flow_label())
 }
 
 fn family(sock: &InetSocket) -> u16 {

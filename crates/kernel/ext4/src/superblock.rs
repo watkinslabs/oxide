@@ -183,6 +183,8 @@ pub const SB_OFF_WTIME:          usize = 0x30;
 pub const SB_OFF_MNT_COUNT:      usize = 0x34;
 /// `s_state` (__le16 @0x3A): filesystem state bitmask.
 pub const SB_OFF_STATE:          usize = 0x3A;
+/// `s_feature_incompat` (__le32 @0x60): incompatible-feature bitmask.
+pub const SB_OFF_FEATURE_INCOMPAT: usize = 0x60;
 
 /// `s_state` EXT4_VALID_FS — set when the fs was cleanly unmounted. A rw mount
 /// clears it (Linux `ext4_setup_super`); a clean unmount restores it. e2fsck
@@ -243,7 +245,7 @@ impl Superblock {
             inodes_per_group:  rd_u32(buf, 0x28),
             magic,
             feature_compat:    rd_u32(buf, 0x5C),
-            feature_incompat:  rd_u32(buf, 0x60),
+            feature_incompat:  rd_u32(buf, SB_OFF_FEATURE_INCOMPAT),
             feature_ro_compat: rd_u32(buf, 0x64),
             inode_size,
             first_data_block:  rd_u32(buf, 0x14),

@@ -7,7 +7,7 @@ use sync::{Kernfs as KernfsClass, Spinlock};
 use vfs::superblock::SuperBlock;
 use vfs::{CookieEntry, CreateCtx, DirContext, FileType, Ino, Inode, InodeBuilder, InodeRef, KResult, VfsError, default_file_ops, default_inode_ops, mk_mode};
 
-use crate::dir_ops::{PseudoDirFileOps, PseudoDirOps};
+use crate::dir_ops::{DirFileattr, PseudoDirFileOps, PseudoDirOps};
 
 /// Deterministic inode number from a path (FNV-1a, tagged into the
 /// synthetic-dir range so it never collides with leaf inodes). # C: O(len)
@@ -19,6 +19,9 @@ pub fn dir_ino(path: &str) -> Ino {
     }
     0x5000_0000_0000_0000 | (h & 0x0fff_ffff_ffff_ffff)
 }
+
+// Child module manifest: `clone` owns the per-mount-namespace deep copy.
+mod clone;
 
 fn components(path: &str) -> Vec<&str> {
     path.split('/').filter(|c| !c.is_empty()).collect()
@@ -81,6 +84,11 @@ pub struct PseudoDir {
     pub(crate) children: Spinlock<BTreeMap<String, PseudoEntry>, KernfsClass>,
     pub(crate) inode: Spinlock<Weak<Inode>, KernfsClass>,
     pub(crate) hooks: Spinlock<Option<Arc<dyn PseudoDirHooks>>, KernfsClass>,
+    /// The `i_op` vector every directory inode in THIS tree is built with —
+    /// the owning filesystem's inode-op default, fixed at root creation and
+    /// inherited by every child dir. One choke point: `as_inode` is the only
+    /// place a pseudo-directory inode is constructed.
+    pub(crate) dir_iops: Arc<dyn vfs::InodeOps>,
 }
 
 pub trait PseudoDirHooks: Send + Sync {
@@ -95,7 +103,16 @@ pub trait PseudoDirHooks: Send + Sync {
 }
 
 impl PseudoDir {
+    /// Tree root with the pseudo-filesystem inode-op default (no fileattr
+    /// vector). # C: O(1)
     pub fn new_root(root_ino: Ino, fsid: u64) -> Arc<PseudoDir> {
+        Self::new_root_with_fileattr(root_ino, fsid, DirFileattr::Absent)
+    }
+
+    /// Tree root whose directory inodes publish `fileattr`. The device
+    /// filesystem passes [`DirFileattr::Shmem`] because its tree is a
+    /// shmem-backed mount. # C: O(1)
+    pub fn new_root_with_fileattr(root_ino: Ino, fsid: u64, fileattr: DirFileattr) -> Arc<PseudoDir> {
         Arc::new(PseudoDir {
             ino: root_ino,
             path: String::new(),
@@ -104,10 +121,12 @@ impl PseudoDir {
             children: Spinlock::new(BTreeMap::new()),
             inode: Spinlock::new(Weak::new()),
             hooks: Spinlock::new(None),
+            dir_iops: Arc::new(PseudoDirOps::new(fileattr)),
         })
     }
 
-    fn child_at(path: String, fsid: u64, sb: Weak<SuperBlock>) -> Arc<PseudoDir> {
+    fn child_at(path: String, fsid: u64, sb: Weak<SuperBlock>,
+                dir_iops: Arc<dyn vfs::InodeOps>) -> Arc<PseudoDir> {
         Arc::new(PseudoDir {
             ino: dir_ino(&path),
             path,
@@ -116,6 +135,7 @@ impl PseudoDir {
             children: Spinlock::new(BTreeMap::new()),
             inode: Spinlock::new(Weak::new()),
             hooks: Spinlock::new(None),
+            dir_iops,
         })
     }
 
@@ -138,7 +158,7 @@ impl PseudoDir {
             let mut b = InodeBuilder::new(
                 me.ino,
                 mk_mode(FileType::Directory, 0o755),
-                Arc::new(PseudoDirOps),
+                Arc::clone(&me.dir_iops),
                 Arc::new(PseudoDirFileOps),
             )
             .private(Arc::clone(&me) as Arc<dyn core::any::Any + Send + Sync>)
@@ -195,7 +215,7 @@ impl PseudoDir {
         let mut cp = self.path.clone();
         cp.push('/');
         cp.push_str(name);
-        let d = PseudoDir::child_at(cp, self.fsid, self.sb_weak());
+        let d = PseudoDir::child_at(cp, self.fsid, self.sb_weak(), Arc::clone(&self.dir_iops));
         g.insert(String::from(name), PseudoEntry::Dir(Arc::clone(&d)));
         d
     }
@@ -340,64 +360,6 @@ impl PseudoDir {
         out
     }
 
-    /// Independent copy of a device-node leaf inode for a fresh mount namespace:
-    /// same behaviour (i_op/i_fop/i_private/rdev — identical device + routing
-    /// ino) but its OWN mutable owner/mode so per-namespace chmod/chown does not
-    /// leak. # C: O(1)
-    fn clone_device_leaf(leaf: &InodeRef) -> InodeRef {
-        let inode = InodeBuilder::new(
-            leaf.ino(),
-            leaf.i_mode() as u32,
-            Arc::clone(leaf.i_op()),
-            Arc::clone(leaf.i_fop()),
-        )
-        .rdev(leaf.rdev())
-        .fsid(leaf.fsid())
-        .private(Arc::clone(leaf.i_private()))
-        .build();
-        let _ = inode.set_owner(leaf.uid().unwrap_or(0), leaf.gid().unwrap_or(0));
-        // Preserve the public-device (perm-immutable) mark so a per-namespace
-        // copy of /dev/null etc. keeps its universal-access invariant too.
-        if leaf.is_public_device() { inode.mark_public_device(); }
-        inode
-    }
-
-    pub fn deep_clone(&self) -> Arc<PseudoDir> {
-        let g = self.children.lock();
-        let mut nc: BTreeMap<String, PseudoEntry> = BTreeMap::new();
-        for (k, v) in g.iter() {
-            let nv = match v {
-                PseudoEntry::Dir(d) => PseudoEntry::Dir(d.deep_clone()),
-                // Device-node leaves carry per-namespace MUTABLE metadata
-                // (i_uid/i_gid/i_mode a service's PrivateDevices chmod/chown
-                // writes). Sharing the Arc across mount namespaces let one
-                // service's `chown /dev/null` corrupt /dev/null for EVERY other
-                // namespace (the greeter then hit EACCES → glib "Failed to open
-                // file to remap file descriptor"). Give each namespace its own
-                // copy; share the immutable behaviour (i_op/i_fop/i_private/rdev
-                // → same device, same routing ino). Non-device leaves (dynamic
-                // procfs/sysfs files + symlinks) carry no mutable per-ns state,
-                // so they stay shared.
-                PseudoEntry::Leaf(i) => PseudoEntry::Leaf(
-                    if matches!(i.file_type(), FileType::CharDev | FileType::BlockDev) {
-                        Self::clone_device_leaf(i)
-                    } else {
-                        Arc::clone(i)
-                    },
-                ),
-            };
-            nc.insert(k.clone(), nv);
-        }
-        Arc::new(PseudoDir {
-            ino: self.ino,
-            path: self.path.clone(),
-            fsid: self.fsid,
-            sb: Spinlock::new(self.sb.lock().clone()),
-            children: Spinlock::new(nc),
-            inode: Spinlock::new(Weak::new()),
-            hooks: Spinlock::new(self.hooks.lock().clone()),
-        })
-    }
 
     pub(crate) fn op_lookup(&self, name: &str) -> KResult<InodeRef> {
         let leaf = {
@@ -425,7 +387,7 @@ impl PseudoDir {
         let mut cp = self.path.clone();
         cp.push('/');
         cp.push_str(name);
-        let d = PseudoDir::child_at(cp, self.fsid, self.sb_weak());
+        let d = PseudoDir::child_at(cp, self.fsid, self.sb_weak(), Arc::clone(&self.dir_iops));
         g.insert(String::from(name), PseudoEntry::Dir(Arc::clone(&d)));
         Ok(d.as_inode())
     }

@@ -254,7 +254,11 @@ pub(crate) fn connect_tcp6_locked(sock: &InetSocket, local_port: &mut Option<u16
     } else if dst_ip == crate::Ipv6Addr::LOOPBACK {
         crate::Ipv6Addr::LOOPBACK
     } else {
-        crate::Ipv6Addr::ANY
+        // A wildcard-bound active open resolves its source HERE, from the
+        // route the destination selects — the connection's local address is
+        // settled at connect time and every later segment carries it verbatim.
+        // Leaving the wildcard in place put an unspecified source on the SYN.
+        super::v6_source::v6_connect_source(sock, dst_ip)?
     };
     connect_tcp(sock, local_port, crate::IpAddr::V6(local_ip),
         crate::IpAddr::V6(dst_ip), remote_port, source, data)

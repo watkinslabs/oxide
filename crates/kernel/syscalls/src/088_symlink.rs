@@ -41,6 +41,9 @@ pub(crate) fn symlink_impl(dirfd: i32, target: Vec<u8>, link: String) -> i64 {
     if let Err(e) = vfs::may_create(&parent.inode, &cred) {
         return errno_from_vfs(e);
     }
+    // A new name changes the parent directory: recall any delegation on it
+    // before the symlink appears, after every permission gate above.
+    if let Some(rv) = crate::deleg_break::break_deleg_for_mutation(&parent.inode) { return rv; }
     let ctx = vfs::CreateCtx { idmap: &vfs::IDENTITY, cred: &cred, umask: 0 };
     // D29: parent dir `i_rwsem` EXCLUSIVE across the backend symlink (Linux
     // `filename_create` → `->symlink`); dropped before the dcache update below.

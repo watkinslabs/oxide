@@ -6,6 +6,7 @@
 // `metadata` owns PageMeta installation, reclaim metadata, debug attribution.
 // `rmap` owns the tagged PageMeta mapping owner and page-lock protocol.
 // `contig` owns contiguous allocation and final frame free paths.
+// `direct_map` owns kernel linear-map granularity and translation-validity control.
 // `alloc_integrity` owns debug-cow shadow allocation tracking.
 // `tests` owns setup unit tests.
 
@@ -24,6 +25,7 @@ mod refs;
 mod metadata;
 mod rmap;
 mod contig;
+mod direct_map;
 mod page_tables;
 mod percpu;
 #[cfg(feature = "debug-cow")]
@@ -49,6 +51,7 @@ pub use metadata::fwm_peer_maps;
 pub use metadata::set_dec_ctx;
 pub(crate) use metadata::page_meta;
 pub use contig::{alloc_contig, alloc_contig_object, free_contig, free_one_frame};
+pub use direct_map::{can_set_direct_map, flush_kernel_page, flush_kernel_range, kernel_page_present, set_direct_map_default_noflush, set_direct_map_invalid_noflush};
 pub use page_tables::{alloc_page_table_frame, page_table_snapshot, PageTableSnapshot};
 pub use percpu::{alloc_percpu_page, percpu_snapshot, PerCpuSnapshot};
 pub use crate::watermark::{allocation_policy, watermark_snapshot, AllocationPolicy, WatermarkSnapshot};

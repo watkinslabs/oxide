@@ -155,7 +155,7 @@ fn anon_charge_rolls_back_when_first_touch_allocation_fails() {
     let r = unsafe {
         mm.handle_page_fault_cow_rmap::<HostMmu, _, _, _, _, _, _, _, _>(
             hal::UserVirtAddr::new(0x40_0000).unwrap(),
-            FaultKind::NotPresent { access: FaultAccess::Read }, 0,
+            FaultKind::NotPresent { access: FaultAccess::Read }, 0, false,
             || None, |_pa| 0, |_pa| {}, |_pa, _av, _idx| {}, |_pa| {}, |_pa| false,
             || { charges.set(charges.get() + 1); Ok(()) },
             || { rollbacks.set(rollbacks.get() + 1); },
@@ -178,7 +178,7 @@ fn anon_charge_rolls_back_when_cow_allocation_fails() {
     let r = unsafe {
         mm.handle_page_fault_cow_rmap::<HostMmu, _, _, _, _, _, _, _, _>(
             hal::UserVirtAddr::new(0x41_0000).unwrap(),
-            FaultKind::Protection { access: FaultAccess::Write }, 0,
+            FaultKind::Protection { access: FaultAccess::Write }, 0, false,
             || None, |_pa| 2, |_pa| {}, |_pa, _av, _idx| {}, |_pa| {}, |_pa| false,
             || { charges.set(charges.get() + 1); Ok(()) },
             || { rollbacks.set(rollbacks.get() + 1); },
@@ -308,4 +308,54 @@ fn repeat_fork_cow_chain_grows_then_settles() {
     assert_eq!(av.live_target_count(), 4);
     av.gc_dangling();
     assert_eq!(av.raw_chain_len(), 4);
+}
+
+/// A read fault on an address that carried the write-protect barrier with no
+/// page must publish the page ALREADY protected.
+///
+/// The barrier is not something applied to the page afterwards: resolving the
+/// fault and re-protecting the result leaves the page writable between the two
+/// steps, and a peer thread of the same address space that writes in that window
+/// escapes the barrier exactly once — silently, with no message to the monitor.
+/// Threading the fact into the fill is what makes the install and the barrier
+/// one store.
+#[test]
+fn a_read_fault_over_a_protected_hole_installs_the_page_already_protected() {
+    reset_pt();
+    let mm = mk_anon_as(0x50_0000, 0x50_2000);
+    // SAFETY: hosted PT is empty; the allocator hands out real host pages.
+    let r = unsafe {
+        mm.handle_page_fault_cow_rmap::<HostMmu, _, _, _, _, _, _, _, _>(
+            hal::UserVirtAddr::new(0x50_0000).unwrap(),
+            FaultKind::NotPresent { access: FaultAccess::Read }, 0, true,
+            || Some(fresh_pa()), |_pa| 1, |_pa| {}, |_pa, _av, _idx| {}, |_pa| {}, |_pa| false,
+            || Ok(()), || {},
+        )
+    };
+    assert_eq!(r, Ok(()));
+    let flags = pt_with(|pt| PageFlags::from_bits_retain(pt.leaves.get(&0x50_0000).expect("page installed").1));
+    assert!(flags.contains(PageFlags::UFFD_WP),
+            "the fill must publish the barrier, not leave it for a second pass");
+}
+
+/// The same fill with no barrier asked for installs an ordinary writable page —
+/// so the barrier is carried because the fault said so, not because every
+/// anonymous first touch is protected.
+#[test]
+fn an_ordinary_read_fault_installs_a_page_with_no_barrier() {
+    reset_pt();
+    let mm = mk_anon_as(0x51_0000, 0x51_2000);
+    // SAFETY: hosted PT is empty; the allocator hands out real host pages.
+    let r = unsafe {
+        mm.handle_page_fault_cow_rmap::<HostMmu, _, _, _, _, _, _, _, _>(
+            hal::UserVirtAddr::new(0x51_0000).unwrap(),
+            FaultKind::NotPresent { access: FaultAccess::Read }, 0, false,
+            || Some(fresh_pa()), |_pa| 1, |_pa| {}, |_pa, _av, _idx| {}, |_pa| {}, |_pa| false,
+            || Ok(()), || {},
+        )
+    };
+    assert_eq!(r, Ok(()));
+    let flags = pt_with(|pt| PageFlags::from_bits_retain(pt.leaves.get(&0x51_0000).expect("page installed").1));
+    assert!(!flags.contains(PageFlags::UFFD_WP));
+    assert!(flags.contains(PageFlags::WRITE));
 }

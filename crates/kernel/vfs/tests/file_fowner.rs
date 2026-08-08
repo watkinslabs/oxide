@@ -324,11 +324,11 @@ fn a_readiness_mask_classifies_to_one_reason_by_linux_precedence() {
 #[test]
 fn lease_and_dnotify_round_trip() {
     let f = file();
-    assert_eq!(f.lease(), 2, "default lease = F_UNLCK(2)");
-    f.set_lease(1);
-    assert_eq!(f.lease(), 1, "F_WRLCK lease stored");
-    f.set_lease(2);
-    assert_eq!(f.lease(), 2, "F_UNLCK drops the lease");
+    assert_eq!(f.lease_of(vfs::file::FL_LEASE), 2, "default lease = F_UNLCK(2)");
+    f.set_lease_of(vfs::file::FL_LEASE, 1);
+    assert_eq!(f.lease_of(vfs::file::FL_LEASE), 1, "F_WRLCK lease stored");
+    f.set_lease_of(vfs::file::FL_NONE, 2);
+    assert_eq!(f.lease_of(vfs::file::FL_LEASE), 2, "F_UNLCK drops the lease");
     assert_eq!(f.dnotify(), 0, "no dnotify watch by default");
     f.set_dnotify(0x2);
     assert_eq!(f.dnotify(), 0x2, "DN_MODIFY watch stored");

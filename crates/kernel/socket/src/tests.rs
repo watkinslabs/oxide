@@ -15,3 +15,4 @@ mod vsock;
 mod unix_scm;
 mod family_ancillary;
 mod unix_dgram_pair;
+mod sndflow;

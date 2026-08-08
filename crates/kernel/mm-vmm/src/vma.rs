@@ -129,6 +129,13 @@ bitflags::bitflags! {
         /// a page the VMA's backing already holds resident is routed to the
         /// registered `uffd` context instead of being mapped straight in.
         const UFFD_MINOR = 1 << 18;
+        /// A mapping of secret memory: pages that are absent from the
+        /// kernel's linear map. The reference identifies these by the VMA's
+        /// operations table, which this kernel does not have per VMA, so the
+        /// marker is a flag — the same shape [`VmaFlags::SYSVSHM`] uses. It is
+        /// what refuses a pin of such a page and what stops the mapping from
+        /// being unlocked.
+        const SECRETMEM = 1 << 19;
     }
 }
 
@@ -302,6 +309,25 @@ pub trait FileBacking: Send + Sync {
     /// page-aligned file offset. `true` means a fault would not need backing I/O.
     /// # C: O(log N_pages)
     fn mincore_page(&self, _off: u64) -> bool { false }
+
+    /// Whether the object's page store OWNS this page-aligned offset in ANY
+    /// form — resident, mid-migration, or evicted to swap — as opposed to the
+    /// offset being a hole the object has never held contents for.
+    ///
+    /// Distinct from [`Self::fault_around_frame`], which answers the narrower
+    /// "can a PTE be installed from this right now" and must therefore report
+    /// nothing for an evicted page. This one answers "does the object hold this
+    /// page at all", which is the fact a userfaultfd MINOR registration turns
+    /// on: a minor fault means "the object already has these contents, only the
+    /// page table is missing them", and that stays true across eviction.
+    /// Deciding it from the narrower query silently downgrades a minor fault to
+    /// a missing one — the monitor is then asked to supply contents that
+    /// already exist, and the page it writes replaces them.
+    ///
+    /// Non-faulting like every other residency query: no allocation, no
+    /// swap-in, no backing I/O.
+    /// # C: O(log N_pages)
+    fn backing_holds_page(&self, _off: u64) -> bool { false }
 
     /// Linux `can_do_mincore`: reveal exact file page-cache state only when the
     /// caller owns/can-write the mapped file; otherwise mincore reports resident.

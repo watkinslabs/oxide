@@ -50,6 +50,31 @@ pub fn clamp_delta(now_ns: u64, exec_start_ns: u64, max_tick_ns: u64) -> u64 {
     (now_ns - exec_start_ns).min(max_tick_ns)
 }
 
+/// Whether a class charges scheduler runtime for the time its tasks run.
+///
+/// Fair, RT and deadline all do — they share one accounting helper upstream,
+/// and `CLOCK_THREAD_CPUTIME_ID` / `CLOCK_PROCESS_CPUTIME_ID` sample the total
+/// it maintains, so a class that skipped the charge would report a frozen CPU
+/// clock to every thread in it. Only the per-CPU idle class runs unaccounted.
+/// # C: O(1)
+pub fn accounts_exec_runtime(class: crate::task::SchedClass) -> bool {
+    !matches!(class, crate::task::SchedClass::Idle)
+}
+
+/// Fold one elapsed slice into the task's scheduler-runtime total AND its
+/// thread group's, in one place so the two can never disagree — the pair a
+/// per-thread and a process-wide CPU clock respectively sample.
+///
+/// Every accounting class routes its charge through here, from exactly one
+/// site each, which is what keeps a slice from being counted twice.
+/// # C: O(1)
+/// # Ctx: scheduler / timer IRQ
+pub fn charge_exec_runtime(task: &crate::Task, delta_ns: u64) {
+    use core::sync::atomic::Ordering;
+    task.sum_exec_runtime_ns.fetch_add(delta_ns, Ordering::Relaxed);
+    task.thread_group.charge_sched_runtime(delta_ns);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,5 +125,18 @@ mod tests {
         assert_eq!(clamp_delta(50, 100, tick), 0);    // backwards
         assert_eq!(clamp_delta(105, 100, tick), 5);   // normal
         assert_eq!(clamp_delta(1 << 40, 0, tick), tick); // huge → one tick
+    }
+
+    /// Restricting the charge to the fair class froze every SCHED_FIFO /
+    /// SCHED_RR / SCHED_DEADLINE thread's CPU clock at zero, because those
+    /// clocks sample the scheduler-runtime total this decision gates.
+    #[test]
+    fn every_class_but_idle_charges_scheduler_runtime() {
+        use crate::task::{SchedClass, SchedPolicy};
+        assert!(accounts_exec_runtime(SchedClass::Normal { weight: NICE_0_WEIGHT }));
+        assert!(accounts_exec_runtime(SchedClass::Deadline));
+        assert!(accounts_exec_runtime(SchedClass::Rt { prio: 1, policy: SchedPolicy::Fifo }));
+        assert!(accounts_exec_runtime(SchedClass::Rt { prio: 99, policy: SchedPolicy::Rr }));
+        assert!(!accounts_exec_runtime(SchedClass::Idle), "the idle task runs unaccounted");
     }
 }

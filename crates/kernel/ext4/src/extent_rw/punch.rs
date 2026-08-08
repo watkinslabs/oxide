@@ -5,19 +5,9 @@
 
 use crate::inode::{self, Extent, I_BLOCK_LEN};
 use crate::mount::{Mount, MountError};
-use super::EXTENT_LEN_MAX;
 use alloc::vec::Vec;
 
-/// Build an `Extent` from a physical run `{block, phys, len}`, re-applying the
-/// unwritten flag. `len` must be 1..=EXTENT_LEN_MAX. # C: O(1)
-fn mk_extent(block: u32, phys: u64, len: u32, unwritten: bool) -> Extent {
-    Extent {
-        block,
-        len: if unwritten { len as u16 + EXTENT_LEN_MAX } else { len as u16 },
-        start_hi: (phys >> 32) as u16,
-        start_lo: (phys & 0xFFFF_FFFF) as u32,
-    }
-}
+use super::records::extent_run as mk_extent;
 
 impl Mount {
     /// fallocate `FALLOC_FL_PUNCH_HOLE` (always with KEEP_SIZE): deallocate
@@ -98,7 +88,7 @@ impl Mount {
 
     /// Collect ONLY the extent-tree metadata node blocks (interior + leaf), not
     /// data blocks. No-op for a depth-0 inline tree. # C: O(tree) block reads
-    fn collect_extent_meta(&self, i_block: &[u8; I_BLOCK_LEN], hdr: &inode::ExtentHeader, out: &mut Vec<u64>) -> Result<(), MountError> {
+    pub(super) fn collect_extent_meta(&self, i_block: &[u8; I_BLOCK_LEN], hdr: &inode::ExtentHeader, out: &mut Vec<u64>) -> Result<(), MountError> {
         if hdr.depth == 0 { return Ok(()); }
         for i in 0..hdr.entries {
             if let Some(idx) = inode::parse_extent_idx(i_block, hdr, i) {
@@ -126,7 +116,7 @@ impl Mount {
     /// 0) for ≤4 extents, else depth-1 leaves under an inline root (≤4 leaves).
     /// Recomputes `i_blocks` and persists the inode. A list too large for a
     /// depth-1 tree (very fragmented, >4·leaf_max extents) is `ExtentTreeFull`.
-    fn write_extent_tree(&self, ino: u32, ibytes: &mut Vec<u8>, extents: &[Extent]) -> Result<(u32, u32), MountError> {
+    pub(super) fn write_extent_tree(&self, ino: u32, ibytes: &mut Vec<u8>, extents: &[Extent]) -> Result<(u32, u32), MountError> {
         let bs = self.sb.block_size as usize;
         let gen = Self::inode_generation(ibytes);
         let mut i_block = [0u8; I_BLOCK_LEN];

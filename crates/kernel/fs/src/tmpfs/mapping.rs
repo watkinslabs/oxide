@@ -44,6 +44,11 @@ impl AddressSpaceOps for TmpfsFileData {
         Ok(Some(vfs::SharedFrame { pa, map_ref_held: true }))
     }
 
+    /// Every index the store owns, whatever state it is in. # C: O(log N_pages)
+    fn backing_holds_page(&self, off: u64) -> bool {
+        self.pages.lock().contains_key(&(off / PG as u64))
+    }
+
     /// Read-fault / MAP_PRIVATE cache copy. # C: O(dst.len)
     fn read_at(&self, off: u64, dst: &mut [u8]) -> KResult<usize> { self.read_bytes(off, dst) }
 

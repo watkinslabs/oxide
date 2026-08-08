@@ -20,6 +20,9 @@ use hal::{kassert, pt_walker, MmuOps, Pa, PageFlags, PageSize, Va};
 use hal::pt_walker::PtWalker;
 use crate::vmm::PtWalkerX86;
 
+/// Bottom (4 KiB) level of the shared four-level walk.
+const MARKER_LEAF_LEVEL: u8 = 3;
+
 /// Bytes covered by each `PageSize` per `01§1` + `20§5`.
 const PAGE_BYTES_4K: u64 = 4 * 1024;
 const PAGE_BYTES_2M: u64 = 2 * 1024 * 1024;
@@ -359,11 +362,39 @@ impl MmuOps for X86Mmu {
         unsafe { pt_walker::migration_entry_4k_at_root::<PtWalkerX86>(root_pa, va.0, hhdm) }
     }
 
-    unsafe fn map_swap_at(root_pa: u64, va: Va, entry: hal::pt_walker::SwapEntry) -> Result<(), hal::pt_walker::WalkErr> {
+    fn pte_marker_at(root_pa: u64, va: Va) -> Option<hal::pt_walker::PteMarker> {
+        let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
+        if hhdm == 0 { return None; }
+        // SAFETY: explicit root is live; this is a read-only page-table walk.
+        let raw = unsafe { pt_walker::read_leaf_4k_at_root::<PtWalkerX86>(root_pa, va.0, hhdm) }?;
+        PtWalkerX86::unpack_pte_marker(raw)
+    }
+
+    unsafe fn map_marker_at(root_pa: u64, va: Va, m: hal::pt_walker::PteMarker)
+        -> Result<(), hal::pt_walker::WalkErr> {
+        let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
+        if hhdm == 0 { return Err(hal::pt_walker::WalkErr::AllocFailed); }
+        // SAFETY: caller owns the unpublished child root and serializes mutation; a marker leaf is non-present, so publishing it creates no mapping and no reference.
+        unsafe {
+            pt_walker::map_at_level_with_root::<PtWalkerX86, _>(
+                root_pa, va.0, MARKER_LEAF_LEVEL, PtWalkerX86::pack_pte_marker(m), hhdm,
+                &mut (|| alloc_frame(root_pa)))
+        }
+    }
+
+    fn nonpresent_uffd_wp_at(root_pa: u64, va: Va) -> bool {
+        let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
+        if hhdm == 0 { return false; }
+        // SAFETY: explicit root is live; this is a read-only page-table walk.
+        unsafe { pt_walker::read_leaf_4k_at_root::<PtWalkerX86>(root_pa, va.0, hhdm) }
+            .is_some_and(PtWalkerX86::nonpresent_is_uffd_wp)
+    }
+
+    unsafe fn map_swap_at(root_pa: u64, va: Va, entry: hal::pt_walker::SwapEntry, uffd_wp: bool) -> Result<(), hal::pt_walker::WalkErr> {
         let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
         if hhdm == 0 { return Err(hal::pt_walker::WalkErr::AllocFailed); }
         // SAFETY: caller owns the unpublished child root and serializes mutation.
-        unsafe { pt_walker::install_swap_4k_at_root::<PtWalkerX86, _>(root_pa, va.0, entry, hhdm, || alloc_frame(root_pa)) }
+        unsafe { pt_walker::install_swap_4k_at_root::<PtWalkerX86, _>(root_pa, va.0, entry, uffd_wp, hhdm, || alloc_frame(root_pa)) }
     }
 
     unsafe fn clear_swap_at(root_pa: u64, va: Va, entry: hal::pt_walker::SwapEntry) -> bool {
@@ -406,6 +437,10 @@ fn unpack_flags(leaf: u64, large: bool) -> PageFlags {
     if (leaf & (1 << 8)) != 0 { n |= PageFlags::GLOBAL; }
     n = n.with_pkey(((leaf >> 59) & 0xF) as u8);
     if (leaf & (1u64 << 63)) == 0 { n |= PageFlags::EXEC; }
+    // Reported so a caller that reads a leaf's protection, adjusts it and writes
+    // it back keeps the monitor's barrier. Dropping it here would make every
+    // such rewrite silently disarm the page.
+    if PtWalkerX86::leaf_is_uffd_wp(leaf) { n |= PageFlags::UFFD_WP; }
     n
 }
 

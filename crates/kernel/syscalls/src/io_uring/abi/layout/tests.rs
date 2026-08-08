@@ -199,13 +199,13 @@ fn features_claim_only_what_the_ring_actually_does() {
     // resources, silent success, and link-order file resolution.
     for f in [IORING_FEAT_NODROP, IORING_FEAT_SUBMIT_STABLE, IORING_FEAT_RW_CUR_POS,
               IORING_FEAT_CUR_PERSONALITY, IORING_FEAT_EXT_ARG, IORING_FEAT_RSRC_TAGS,
-              IORING_FEAT_CQE_SKIP, IORING_FEAT_LINKED_FILE] {
+              IORING_FEAT_CQE_SKIP, IORING_FEAT_LINKED_FILE,
+              IORING_FEAT_FAST_POLL, IORING_FEAT_NATIVE_WORKERS, IORING_FEAT_POLL_32BITS] {
         assert_ne!(REPORTED_FEATURES & f, 0, "feature {f:#x}");
     }
-    // Claiming these would promise a worker pool, a poll entry, a poll thread
-    // or a registered-ring array that does not exist.
-    for f in [IORING_FEAT_FAST_POLL, IORING_FEAT_NATIVE_WORKERS, IORING_FEAT_POLL_32BITS,
-              IORING_FEAT_SQPOLL_NONFIXED, IORING_FEAT_REG_REG_RING] {
+    // Claiming these would promise a submission-poll thread or a per-task
+    // registered-ring array that does not exist.
+    for f in [IORING_FEAT_SQPOLL_NONFIXED, IORING_FEAT_REG_REG_RING] {
         assert_eq!(REPORTED_FEATURES & f, 0, "feature {f:#x}");
     }
 }
