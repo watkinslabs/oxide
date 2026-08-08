@@ -201,6 +201,18 @@ struct ThreadGroupState {
 // applied when the array lived on `Task` (which is `Sync` for the same reason).
 unsafe impl Sync for ThreadGroup {}
 
+/// Hand a retiring task's last reference to the deferred drainer rather than
+/// dropping it here: `finish_exit` runs on the context-switch tail, where a
+/// final drop would run the whole teardown cascade under whichever task the
+/// scheduler switched to (Linux `put_task_struct_rcu_user`, not
+/// `put_task_struct`). Without a scheduler compiled in there is no tail to
+/// protect and no drainer to hand it to.
+/// # C: O(1)
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+fn release_reference(task: Arc<Task>) { crate::live::zombies::reclaim::defer_release(task) }
+#[cfg(not(any(target_os = "oxide-kernel", test, feature = "hosted")))]
+fn release_reference(_task: Arc<Task>) {}
+
 impl ThreadGroup {
     /// Create a one-task group around its leader PID identity. # C: O(1)
     pub fn new(leader: Arc<PidIdentity>) -> Self {
@@ -458,6 +470,11 @@ impl ThreadGroup {
     /// the final sibling exits. # C: O(N_subscribers)
     pub fn finish_exit(&self, task: Arc<Task>) -> ExitDisposition {
         if !task.pid.claim_exit_retirement() {
+            // The reference still has to go somewhere, and it must not be here:
+            // `finish_exit` runs on the context-switch tail, where a final drop
+            // would run the task's whole teardown cascade (Linux
+            // `put_task_struct_rcu_user`, not `put_task_struct`).
+            release_reference(task);
             return ExitDisposition::AlreadyRetired;
         }
         if task.pid.is_group_leader() {
@@ -484,6 +501,10 @@ impl ThreadGroup {
                 state.live -= 1;
                 if state.live == 0 { state.pending_leader.take() } else { None }
             };
+            // Same reason as the retirement early-return: hand the thread's
+            // last reference to the deferred drainer rather than dropping it
+            // on the switch tail.
+            release_reference(task);
             if let Some(leader) = pending_leader {
                 self.leader.publish_group_exit();
                 ExitDisposition::WaitableLeader(leader)

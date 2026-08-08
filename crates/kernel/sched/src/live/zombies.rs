@@ -32,6 +32,7 @@ mod orphan;
 mod pidns;
 mod ns_reboot;
 mod terminate;
+pub mod reclaim;
 pub use reparent::{reap_orphans, reparent_children};
 pub use pidns::{in_initial_pid_namespace, is_namespace_init, initial_init_task, namespace_child_reaper, pid_namespace_chain, zap_pid_namespace};
 pub use ns_reboot::{apply_pid_namespace_reboot_status, set_pid_namespace_reboot};
