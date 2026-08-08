@@ -8,24 +8,25 @@
 // slot file stays a thin shim (`docs/53`) that calls `decide` and then one
 // `sched::membarrier` work fn per command.
 //
-// WHAT IS ADVERTISED, AND WHY THE MASK IS SMALLER THAN LINUX'S.
-// `QUERY_MASK` is a promise: userspace (glibc, liburcu) issues exactly what
-// the mask claims. Four Linux commands are therefore left OUT and answer
-// `EINVAL`, which is precisely how Linux answers them on a kernel built
-// without the matching config:
-//   * `PRIVATE_EXPEDITED_SYNC_CORE` + its REGISTER
-//     (`!CONFIG_ARCH_HAS_MEMBARRIER_SYNC_CORE`). The contract covers threads
-//     that are NOT running: the arch must guarantee a core-serializing
-//     instruction before they resume user mode, which Linux implements with a
-//     per-mm flag consulted on every return-to-user
-//     (`membarrier_mm_sync_core_before_usermode`). That hook does not exist
-//     here, so the guarantee could not be honoured for a descheduled thread.
-//   * `PRIVATE_EXPEDITED_RSEQ` + its REGISTER (`!CONFIG_RSEQ`). The command
-//     must RESTART rseq critical sections on the target CPUs;
-//     `sched::rseq` registers the user struct and writes `cpu_id` back but
-//     has no `rseq_cs` / IP-fixup machinery, so there is nothing to restart.
-// `GLOBAL`, `GLOBAL_EXPEDITED`, `PRIVATE_EXPEDITED`, both surviving
-// REGISTERs, and `GET_REGISTRATIONS` are backed by real work.
+// WHAT IS ADVERTISED. `QUERY_MASK` is a promise: userspace (glibc, liburcu)
+// issues exactly what the mask claims, so the mask and the command switch are
+// written from one constant and a test pins them equal. Every command in the
+// enum is advertised, because every one is backed by real work:
+//   * `PRIVATE_EXPEDITED_SYNC_CORE` + its REGISTER — the barrier IPI runs a
+//     core-serializing instruction on each target, and a per-mm bit makes the
+//     context-switch tail serialize for a thread that was NOT running when the
+//     barrier was issued. Both arches this kernel targets provide the primitive
+//     (x86_64 explicitly, aarch64 inherently via its user return), so refusing
+//     the command would be a divergence, not parity.
+//   * `PRIVATE_EXPEDITED_RSEQ` + its REGISTER — the same IPI latches a forced
+//     restartable-sequence evaluation on each target, which the return-to-user
+//     path honours whether or not the barrier preempted the thread, so no
+//     critical section can straddle the barrier.
+// An earlier revision refused all four and justified it as parity with a build
+// that has neither feature configured. That was wrong in both directions: the
+// reference selects core-serialization support on x86_64 AND aarch64, and
+// enables restartable sequences by default on both — so the refusal was a
+// divergence recorded as compliance.
 
 use syscall::errno::Errno;
 
@@ -41,13 +42,13 @@ pub const CMD_REGISTER_GLOBAL_EXPEDITED: i32 = 1 << 2;
 pub const CMD_PRIVATE_EXPEDITED: i32 = 1 << 3;
 /// `MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED`.
 pub const CMD_REGISTER_PRIVATE_EXPEDITED: i32 = 1 << 4;
-/// `MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE` — refused, see module head.
+/// `MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE`.
 pub const CMD_PRIVATE_EXPEDITED_SYNC_CORE: i32 = 1 << 5;
-/// `MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED_SYNC_CORE` — refused.
+/// `MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED_SYNC_CORE`.
 pub const CMD_REGISTER_PRIVATE_EXPEDITED_SYNC_CORE: i32 = 1 << 6;
-/// `MEMBARRIER_CMD_PRIVATE_EXPEDITED_RSEQ` — refused, see module head.
+/// `MEMBARRIER_CMD_PRIVATE_EXPEDITED_RSEQ`.
 pub const CMD_PRIVATE_EXPEDITED_RSEQ: i32 = 1 << 7;
-/// `MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED_RSEQ` — refused.
+/// `MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED_RSEQ`.
 pub const CMD_REGISTER_PRIVATE_EXPEDITED_RSEQ: i32 = 1 << 8;
 /// `MEMBARRIER_CMD_GET_REGISTRATIONS`.
 pub const CMD_GET_REGISTRATIONS: i32 = 1 << 9;
@@ -72,17 +73,9 @@ pub const LINUX_CMD_BITMASK: i32 = CMD_GLOBAL
     | CMD_REGISTER_PRIVATE_EXPEDITED_RSEQ
     | CMD_GET_REGISTRATIONS;
 
-/// Commands answered with `EINVAL` — the module head says why each one
-/// cannot be honoured. Linux drops the same bits when
-/// `CONFIG_ARCH_HAS_MEMBARRIER_SYNC_CORE` / `CONFIG_RSEQ` are off.
-pub const REFUSED_MASK: i32 = CMD_PRIVATE_EXPEDITED_SYNC_CORE
-    | CMD_REGISTER_PRIVATE_EXPEDITED_SYNC_CORE
-    | CMD_PRIVATE_EXPEDITED_RSEQ
-    | CMD_REGISTER_PRIVATE_EXPEDITED_RSEQ;
-
 /// What `MEMBARRIER_CMD_QUERY` returns. Every bit is backed by a
-/// `sched::membarrier` work fn.
-pub const QUERY_MASK: i32 = LINUX_CMD_BITMASK & !REFUSED_MASK;
+/// `sched::membarrier` work fn, and nothing is withheld.
+pub const QUERY_MASK: i32 = LINUX_CMD_BITMASK;
 
 /// One admitted request. The shim maps each arm to exactly one work fn.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -93,6 +86,10 @@ pub enum Op {
     RegisterGlobalExpedited,
     PrivateExpedited { cpu_id: i32 },
     RegisterPrivateExpedited,
+    PrivateExpeditedSyncCore { cpu_id: i32 },
+    RegisterPrivateExpeditedSyncCore,
+    PrivateExpeditedRseq { cpu_id: i32 },
+    RegisterPrivateExpeditedRseq,
     GetRegistrations,
 }
 
@@ -119,8 +116,9 @@ pub fn validate_flags(cmd: i32, flags: u32) -> Result<(), Errno> {
 }
 
 /// Full admission in Linux's order: flags, then `cpu_id` normalisation, then
-/// the command switch. Commands outside `QUERY_MASK` — unknown values and the
-/// four unimplemented Linux commands alike — are `EINVAL`.
+/// the command switch. Only values outside the command enum are `EINVAL`;
+/// every advertised command is admitted and answered by a work fn, where a
+/// missing registration reports `EPERM` rather than `EINVAL`.
 /// # C: O(1)
 pub fn decide(cmd: i32, flags: u32, cpu_id: i32) -> Result<Op, Errno> {
     validate_flags(cmd, flags)?;
@@ -132,19 +130,30 @@ pub fn decide(cmd: i32, flags: u32, cpu_id: i32) -> Result<Op, Errno> {
         CMD_REGISTER_GLOBAL_EXPEDITED   => Ok(Op::RegisterGlobalExpedited),
         CMD_PRIVATE_EXPEDITED           => Ok(Op::PrivateExpedited { cpu_id }),
         CMD_REGISTER_PRIVATE_EXPEDITED  => Ok(Op::RegisterPrivateExpedited),
+        CMD_PRIVATE_EXPEDITED_SYNC_CORE => Ok(Op::PrivateExpeditedSyncCore { cpu_id }),
+        CMD_REGISTER_PRIVATE_EXPEDITED_SYNC_CORE => Ok(Op::RegisterPrivateExpeditedSyncCore),
+        CMD_PRIVATE_EXPEDITED_RSEQ      => Ok(Op::PrivateExpeditedRseq { cpu_id }),
+        CMD_REGISTER_PRIVATE_EXPEDITED_RSEQ => Ok(Op::RegisterPrivateExpeditedRseq),
         CMD_GET_REGISTRATIONS           => Ok(Op::GetRegistrations),
         _ => Err(Errno::Einval),
     }
 }
 
 /// `MEMBARRIER_CMD_GET_REGISTRATIONS` encoding: the set of REGISTER commands
-/// previously issued against the caller's mm. The SYNC_CORE / RSEQ REGISTERs
-/// can never appear because they are refused at admission.
+/// previously issued against the caller's mm, one bit each.
+///
+/// The inputs test EITHER bit of each intent/ready pair, which is a WEAKER
+/// test than the one gating `EPERM`. Registering SYNC_CORE or RSEQ sets the
+/// shared private-expedited intent bit without its ready bit, so this reports
+/// `REGISTER_PRIVATE_EXPEDITED` too while plain `PRIVATE_EXPEDITED` still
+/// answers `EPERM`.
 /// # C: O(1)
-pub fn registrations_mask(global_ready: bool, private_ready: bool) -> i32 {
+pub fn registrations_mask(global: bool, private: bool, sync_core: bool, rseq: bool) -> i32 {
     let mut m = 0;
-    if global_ready  { m |= CMD_REGISTER_GLOBAL_EXPEDITED; }
-    if private_ready { m |= CMD_REGISTER_PRIVATE_EXPEDITED; }
+    if global    { m |= CMD_REGISTER_GLOBAL_EXPEDITED; }
+    if private   { m |= CMD_REGISTER_PRIVATE_EXPEDITED; }
+    if sync_core { m |= CMD_REGISTER_PRIVATE_EXPEDITED_SYNC_CORE; }
+    if rseq      { m |= CMD_REGISTER_PRIVATE_EXPEDITED_RSEQ; }
     m
 }
 

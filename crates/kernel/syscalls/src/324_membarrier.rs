@@ -4,16 +4,18 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
+use sched::membarrier::Kind;
+
 use crate::membarrier::{decide, registrations_mask, Op, QUERY_MASK};
 
 /// `sys_membarrier(cmd, flags, cpu_id)` — slot 324, Linux
 /// `SYSCALL_DEFINE3(membarrier)`.
 ///
 /// Shim only: admission + `cpu_id` normalisation live in
-/// `crate::membarrier` (hosted-tested), the barriers and the per-mm
-/// registration state live in `sched::membarrier` + `vmm::AddressSpace`.
-/// Commands outside `QUERY_MASK` answer `EINVAL`, exactly as Linux does
-/// without `CONFIG_ARCH_HAS_MEMBARRIER_SYNC_CORE` / `CONFIG_RSEQ`.
+/// `crate::membarrier` (hosted-tested), the barriers, the round kinds and the
+/// per-mm registration state live in `sched::membarrier` + `vmm::AddressSpace`.
+/// Every command in the enum is admitted; an unregistered mm gets `EPERM` from
+/// the work fn, and only a value outside the enum is `EINVAL`.
 /// # C: O(online CPUs) + IPI round trip for the expedited commands
 pub fn sys_membarrier(args: &SyscallArgs) -> i64 {
     let op = match decide(args.a0 as i32, args.a1 as u32, args.a2 as i32) {
@@ -25,10 +27,20 @@ pub fn sys_membarrier(args: &SyscallArgs) -> i64 {
         Op::Global                      => sched::membarrier::global().map(|()| 0),
         Op::GlobalExpedited             => sched::membarrier::global_expedited().map(|()| 0),
         Op::RegisterGlobalExpedited     => sched::membarrier::register_global_expedited().map(|()| 0),
-        Op::PrivateExpedited { cpu_id } => sched::membarrier::private_expedited(cpu_id).map(|()| 0),
-        Op::RegisterPrivateExpedited    => sched::membarrier::register_private_expedited().map(|()| 0),
+        Op::PrivateExpedited { cpu_id } =>
+            sched::membarrier::private_expedited(Kind::Mb, cpu_id).map(|()| 0),
+        Op::RegisterPrivateExpedited    =>
+            sched::membarrier::register_private_expedited(Kind::Mb).map(|()| 0),
+        Op::PrivateExpeditedSyncCore { cpu_id } =>
+            sched::membarrier::private_expedited(Kind::SyncCore, cpu_id).map(|()| 0),
+        Op::RegisterPrivateExpeditedSyncCore =>
+            sched::membarrier::register_private_expedited(Kind::SyncCore).map(|()| 0),
+        Op::PrivateExpeditedRseq { cpu_id } =>
+            sched::membarrier::private_expedited(Kind::Rseq, cpu_id).map(|()| 0),
+        Op::RegisterPrivateExpeditedRseq =>
+            sched::membarrier::register_private_expedited(Kind::Rseq).map(|()| 0),
         Op::GetRegistrations            => sched::membarrier::registrations()
-            .map(|(g, p)| registrations_mask(g, p) as i64),
+            .map(|(g, p, sc, rs)| registrations_mask(g, p, sc, rs) as i64),
     };
     match r { Ok(v) => v, Err(e) => -(e.as_i32() as i64) }
 }

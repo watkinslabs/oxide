@@ -921,6 +921,11 @@ pub struct Task {
     /// `rseq_slice_yield(2)` (slot 471). Set by `rseq_syscall_enter_work` when
     /// a GRANTED time-slice extension is relinquished through that syscall.
     pub rseq_slice_yielded: AtomicBool,
+    /// A restartable-sequence fixup this thread owes for a reason OTHER than
+    /// losing the CPU: `MEMBARRIER_CMD_PRIVATE_EXPEDITED_RSEQ` must abort a
+    /// critical section on every target whether or not the barrier happened to
+    /// preempt it. Set by the barrier IPI, consumed by the return-to-user path.
+    pub rseq_force_fixup: AtomicBool,
 
     /// POSIX credentials per `13§5` / docs/14 cred-ABI block.
     /// Real ruid/euid/suid + fsuid mirror; same triple for gid.

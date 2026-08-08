@@ -232,6 +232,28 @@ pub unsafe extern "C" fn oxide_finish_task_switch() {
     // preempt-enable above, since the store may sleep on that fault. Costs one
     // relaxed load per switch for every task that is not a fork return.
     publish_forked_child_tid();
+    membarrier_sync_core_before_usermode();
+}
+
+/// The half of `MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE` the barrier IPI
+/// cannot deliver.
+///
+/// That round only reaches CPUs that were RUNNING a thread of the mm. A thread
+/// descheduled at the time takes no IPI, so it would otherwise resume user mode
+/// with instructions it fetched before the code was rewritten still in flight.
+/// Here the switch has completed, the incoming mm is known, and no user
+/// instruction of it has executed yet.
+///
+/// Costs one relaxed load per switch for a mm that never registered. No-op on
+/// aarch64, whose `eret` is already a context synchronization event.
+/// # C: O(1)
+fn membarrier_sync_core_before_usermode() {
+    let Some(cur) = crate::live::current() else { return };
+    // SAFETY: membarrier_sync_core_before_usermode reads the running task's
+    // own mm slot from the task executing this switch tail; only execve/exit
+    // on THIS task replace it, and neither runs concurrently with this return.
+    let Some(mm) = (unsafe { cur.mm_ref() }) else { return };
+    crate::membarrier::sync_core_before_usermode(mm.membarrier_sync_core_before_usermode());
 }
 
 /// Perform the parked `CLONE_CHILD_SETTID` store, if this task owes one.
