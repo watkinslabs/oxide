@@ -55,7 +55,7 @@ pub use batch::{BatchIo, BatchSpec, UIO_MAXIOV, send_batch};
 pub use error::{Error, KResult};
 pub use filter::{FilterError, FilterFile};
 pub use message::{Message, SendOutcome};
-pub use oob::{unix_oob_plan, UnixOobPlan};
+pub use oob::{OobPlan, tcp_oob_plan, unix_oob_plan};
 pub use receive::{ReceiveFdResult, install_received_fds};
 pub use send::{ImportMode, MessageIo, SendContext, send, send_io, write, writev};
 pub use target::{SendFile, SendKind};

@@ -336,6 +336,11 @@ fn tcp_finish(sock: &Arc<InetSocket>, user: &RecvUser, flags: u64) -> Result<(),
 
 /// Internet and packet recvmsg copyout. # C: O(payload + control)
 pub(crate) fn recv_pinned(sock: &Arc<InetSocket>, file_nonblock: bool, user: &RecvUser, flags: u64) -> i64 {
+    // AF_PACKET screens the whole flag word first, before the error queue and
+    // before any state is consulted.
+    if matches!(*sock.kind.lock(), SockKind::Packet { .. })
+        && !net::sock::packet_recv_flags_allowed(flags)
+    { return err(Errno::Einval); }
     let tcp = matches!(*sock.kind.lock(), SockKind::TcpConn(_));
     if let Some(e) = oob_error(sock, flags) { return err(e); }
     if tcp {

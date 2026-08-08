@@ -295,12 +295,15 @@ fn destination_resolution_preserves_missing_foreign_down_and_short_address_error
     if let SockKind::Packet { ifindex, .. } = &*socket.kind.lock() {
         ifindex.store(0, Ordering::Release);
     }
-    assert_eq!(socket.kick_packet_tx_ring(None), Err(crate::NetError::Enodev));
+    // "No such device or address" — an unbound socket that named none, and a
+    // named index no device answers to, give the SAME answer, which is not
+    // the interface-configuration calls' ENODEV.
+    assert_eq!(socket.kick_packet_tx_ring(None), Err(crate::NetError::Enxio));
 
     let (foreign, _pin, _device, _) = fixture(crate::uapi::TPACKET_V1, RAW, false);
     let address = PacketTxAddress { ifindex: iface, protocol: crate::eth_p::IPV4,
         address: [0; 8], name_len: 20 };
-    assert_eq!(foreign.kick_packet_tx_ring(Some(address)), Err(crate::NetError::Enodev));
+    assert_eq!(foreign.kick_packet_tx_ring(Some(address)), Err(crate::NetError::Enxio));
 
     let (down, _pin, _device, iface) = fixture(crate::uapi::TPACKET_V1, RAW, false);
     {
@@ -314,4 +317,16 @@ fn destination_resolution_preserves_missing_foreign_down_and_short_address_error
     let short = PacketTxAddress { ifindex: iface, protocol: crate::eth_p::IPV4,
         address: [0; 8], name_len: 17 };
     assert_eq!(dgram.kick_packet_tx_ring(Some(short)), Err(crate::NetError::Einval));
+
+    // The device-sized name check is asked the moment the device is known and
+    // outranks the interface being down.
+    let (both, _pin, _device, iface) = fixture(crate::uapi::TPACKET_V1, DGRAM, false);
+    {
+        let rtnl = stack().rtnl_lock();
+        stack().ifaces.set_iface_flags_in_ns(&rtnl, crate::NetIfaceId::from_raw(iface),
+            both.net_ns(), 0, crate::netdev::iff::IFF_UP).unwrap();
+    }
+    let short = PacketTxAddress { ifindex: iface, protocol: crate::eth_p::IPV4,
+        address: [0; 8], name_len: 17 };
+    assert_eq!(both.kick_packet_tx_ring(Some(short)), Err(crate::NetError::Einval));
 }

@@ -47,7 +47,13 @@ pub(crate) fn ipv4_send_path(socket: &Arc<net::sock::InetSocket>,
 /// Admit one send's ancillary stream under the rule this socket's family
 /// speaks, and return the transmit overrides it settled. `address` is `None`
 /// for a family that has no IP destination, which is AF_PACKET.
+///
+/// `#[inline(never)]`: the walk's working set — the environment snapshot, the
+/// parse state and the settled overrides — belongs to the message that has
+/// ancillary data, not to the frame every send of every family passes through
+/// (Linux `noinline_for_stack`).
 /// # C: O(control bytes)
+#[inline(never)]
 pub(crate) fn admit(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSocket>,
     control: &[u8], address: Option<&InetAddress>) -> KResult<SendControl>
 {

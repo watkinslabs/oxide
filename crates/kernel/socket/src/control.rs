@@ -181,7 +181,7 @@ pub(crate) fn prepare_unix(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSo
         let scm = parse(ctx, &message.control, true)?;
         let oob = flags as u64 & net::uapi::MSG_OOB != 0;
         if crate::oob::unix_oob_plan(byte_stream, oob, message.requested_len)
-            == crate::oob::UnixOobPlan::Unsupported
+            == crate::oob::OobPlan::Unsupported
         { return Err(Error::Eopnotsupp); }
         // A byte stream refuses a destination outright, and the refusal names
         // the connection state. A seqpacket send discards `msg_namelen`

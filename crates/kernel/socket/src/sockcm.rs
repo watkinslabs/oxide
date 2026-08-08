@@ -98,7 +98,10 @@ pub(crate) fn admit(env: &SockCmEnv, cmsg: &Cmsg<'_>) -> KResult<()> {
 }
 
 /// Snapshot the socket state the generic rule branches on, once per message.
+/// `#[inline(never)]`: the capability lookups walk a namespace chain and are
+/// only reached by a message that carries ancillary data.
 /// # C: O(1)
+#[inline(never)]
 pub(crate) fn env_for(ctx: &crate::SendContext<'_>, socket: &alloc::sync::Arc<net::sock::InetSocket>)
     -> SockCmEnv
 {

@@ -95,6 +95,18 @@ pub(crate) fn teardown_packet_namespace(net_ns: u64) -> bool {
 /// Stable identity used only while a retained socket performs synchronous transmit. # C: O(1)
 pub fn packet_origin(sock: &InetSocket) -> usize { sock as *const InetSocket as usize }
 
+/// Whether one AF_PACKET receive's flags are the set this family accepts.
+///
+/// AF_PACKET is the one family that screens the whole receive flag word rather
+/// than reacting to the bits it knows: anything outside peek, nonblocking,
+/// truncate, the compat marker and the error queue is EINVAL, and the screen is
+/// the FIRST thing the receive does. # C: O(1)
+pub fn packet_recv_flags_allowed(flags: u64) -> bool {
+    const ALLOWED: u64 = crate::uapi::MSG_PEEK | crate::uapi::MSG_DONTWAIT
+        | crate::uapi::MSG_TRUNC | crate::uapi::MSG_CMSG_COMPAT | crate::uapi::MSG_ERRQUEUE;
+    flags & !ALLOWED == 0
+}
+
 /// Snapshot the Linux `packet_getname(peer=false)` address from packet-owned
 /// binding state and, while it is live, the canonical interface owner. An
 /// interface that disappeared after bind retains its ifindex/protocol but has

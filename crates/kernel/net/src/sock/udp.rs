@@ -24,6 +24,7 @@ pub fn socket_recv6(sock: &InetSocket) -> Option<(crate::Ipv6Addr, u16, Vec<u8>)
 /// port if not already bound, builds + xmits the datagram,
 /// drains lo so an immediate recv on the same socket sees it.
 /// # C: O(1)
+#[inline(always)]
 pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &[u8])
     -> Result<usize, NetError>
 {
