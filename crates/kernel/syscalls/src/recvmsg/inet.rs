@@ -37,17 +37,14 @@ pub(crate) fn recv_error(sock: &Arc<InetSocket>, user: &RecvUser, flags: u64) ->
         &entry.payload[..core::cmp::min(user.capacity, entry.payload.len())])
     { Ok(n) => n, Err(e) => return e };
     let name = abi::name_bytes(&entry, v6).unwrap_or_default();
-    if let Err(e) = user.copy_name(&name) { return e; }
     let opt_cmsg = sock.opts.timestamping.load(Ordering::Acquire)
         & net::uapi::SOF_TIMESTAMPING_OPT_CMSG != 0;
     let mut ctrl = Control::new(if user.control == 0 { 0 } else { user.controllen });
     let (level, kind) = abi::cmsg_slot(v6);
     ctrl.push(level, kind, &abi::errhdr_bytes(&entry, v6, opt_cmsg));
-    let ctrl_len = ctrl.copy_to_recv(user);
-    let mut out_flags = ctrl.flags | MSG_ERRQUEUE as u32 | crate::recv_control::output_flags(flags);
+    let mut out_flags = MSG_ERRQUEUE as u32 | crate::recv_control::output_flags(flags);
     if entry.payload.len() > copied { out_flags |= MSG_TRUNC as u32; }
-    if let Err(e) = user.finish(ctrl_len, out_flags) { return e; }
-    copied as i64
+    crate::recv_txn::publish(user, &mut ctrl, &name, out_flags, copied as i64)
 }
 /// The receive ancillary messages one datagram produces. WHICH messages, in
 /// WHAT order, with WHAT payload is decided by `net::cmsg` (`docs/53§4`); this
@@ -117,7 +114,7 @@ fn peer_label(sock: &InetSocket) -> Option<Vec<u8>> {
     })
 }
 
-fn copy_packet_name(user: &RecvUser, meta: net::sock::PacketAddr) -> Result<(), i64> {
+fn packet_name(meta: net::sock::PacketAddr) -> [u8; 20] {
     let mut sa = [0u8; 20];
     sa[0..2].copy_from_slice(&net::sock::AF_PACKET.to_ne_bytes());
     sa[2..4].copy_from_slice(&meta.protocol.to_be_bytes());
@@ -126,29 +123,33 @@ fn copy_packet_name(user: &RecvUser, meta: net::sock::PacketAddr) -> Result<(), 
     sa[10] = meta.pkttype;
     sa[11] = meta.halen;
     sa[12..20].copy_from_slice(&meta.addr);
-    user.copy_name(&sa)
+    sa
 }
 
-fn copy_name(user: &RecvUser, sock: &InetSocket, rcv: &Received) -> Result<(), i64> {
+/// The source sockaddr this receive answers with, built before any of it is
+/// published — the copy itself belongs to the one transaction owner
+/// (`crate::recv_txn`). An empty answer publishes a zero `msg_namelen`.
+/// # C: O(1)
+fn name_bytes(_user: &RecvUser, sock: &InetSocket, rcv: &Received) -> Vec<u8> {
     if matches!(*sock.kind.lock(), SockKind::Packet { .. }) {
         return match rcv.packet {
-            Some(meta) => copy_packet_name(user, meta.addr),
-            None => user.copy_name(&[]),
+            Some(meta) => packet_name(meta.addr).to_vec(),
+            None => Vec::new(),
         };
     }
     if let Some((ip, port, scope_id)) = rcv.peer6 {
         let port = if matches!(*sock.kind.lock(), SockKind::Raw6(_)) { 0 } else { port };
-        return user.copy_name(encoded_sockaddr_in6(ip.0, port.to_be(), scope_id).as_bytes());
+        return encoded_sockaddr_in6(ip.0, port.to_be(), scope_id).as_bytes().to_vec();
     }
     if let Some((ip, port)) = rcv.peer {
         let port = if matches!(*sock.kind.lock(), SockKind::Raw4(_)) { 0 } else { port };
-        return user.copy_name(encoded_sockaddr_for_socket(sock, ip, port).as_bytes());
+        return encoded_sockaddr_for_socket(sock, ip, port).as_bytes().to_vec();
     }
     if matches!(*sock.kind.lock(), SockKind::TcpConn(_)) {
         let (ip, port) = (*sock.peer.lock()).unwrap_or((net::Ipv4Addr::ANY, 0));
-        return user.copy_name(encoded_sockaddr_for_socket(sock, ip, port).as_bytes());
+        return encoded_sockaddr_for_socket(sock, ip, port).as_bytes().to_vec();
     }
-    user.copy_name(&[])
+    Vec::new()
 }
 
 fn note_receive(sock: &InetSocket, rcv: &Received) {
@@ -173,9 +174,10 @@ fn receive(sock: &Arc<InetSocket>, len: usize, flags: u64, file_nonblock: bool) 
     net::sock_recv::recv_blocking(sock, len, opts, deadline).map_err(errno_from_neterr)
 }
 
-pub(crate) fn tcp_with_copy_pinned<F>(sock: &Arc<InetSocket>, capacity: usize, flags: u64, file_nonblock: bool, mut copy: F) -> Result<usize, i64>
+pub(crate) fn tcp_with_copy_pinned<F>(sock: &Arc<InetSocket>, user: &RecvUser, flags: u64, file_nonblock: bool, mut copy: F) -> Result<usize, i64>
 where F: FnMut(usize, &[u8]) -> Result<usize, i64>
 {
+    let capacity = user.capacity;
     if capacity == 0 { return Ok(0); }
     super::rx_trace::event(b"enter");
     let entry = match &*sock.kind.lock() {
@@ -208,7 +210,7 @@ where F: FnMut(usize, &[u8]) -> Result<usize, i64>
                 }
                 if sock.read_shut.load(Ordering::Acquire) || net::sock_io::tcp_recv_eof(entry.conn.lock().state) { return Ok(total); }
             }
-            Err(e) => return if total != 0 { Ok(total) } else { Err(e) },
+            Err(e) => return crate::recv_txn::stream_result(total, e),
         }
         if nonblock { return if total != 0 { Ok(total) } else { Err(err(Errno::Eagain)) }; }
         // Linux `tcp_recvmsg_locked`:
@@ -241,10 +243,10 @@ fn tcp_oob_with_copy(sock: &Arc<InetSocket>, user: &RecvUser, flags: u64,
             user.copy_payload(byte).map(|_| ())
         }) {
             Ok(Some(_)) => {
-                if let Err(e) = copy_name(user, sock, &Received {
-                    payload: Vec::new(), full_len: 1, ..Default::default()
-                }) { return Err(e); }
-                tcp_finish(sock, user, flags)?;
+                let name = name_bytes(user, sock, &Received {
+                    payload: Vec::new(), full_len: 1, ..Default::default() });
+                let published = tcp_finish(sock, user, &name, flags, 1);
+                if published < 0 { return Err(published); }
                 return Ok(1);
             }
             Ok(None) => {
@@ -281,11 +283,28 @@ fn tcp_inq(sock: &Arc<InetSocket>) -> Option<net::sock_opts::inq::InqCmsg> {
 }
 
 /// Publish the TCP control block for one completed receive. # C: O(control)
-fn tcp_finish(sock: &Arc<InetSocket>, user: &RecvUser, flags: u64) -> Result<(), i64> {
+fn tcp_finish(sock: &Arc<InetSocket>, user: &RecvUser, name: &[u8], flags: u64,
+    success: i64) -> i64
+{
     let mut ctrl = Control::new(if user.control == 0 { 0 } else { user.controllen });
     ctrl.push_inq(tcp_inq(sock));
-    let ctrl_len = ctrl.copy_to_recv(user);
-    user.finish(ctrl_len, ctrl.flags | crate::recv_control::output_flags(flags))
+    crate::recv_txn::publish(user, &mut ctrl, name, crate::recv_control::output_flags(flags),
+        success)
+}
+
+/// The `IPV6_RECVPATHMTU` announcement, which an IPv6 socket collects from its
+/// ORDINARY receive ahead of anything queued — a datagram already in the queue
+/// waits until the announcement has been read. `None` when this socket has
+/// none pending, in which case the receive proceeds normally. # C: O(control)
+fn recv_pathmtu(sock: &Arc<InetSocket>, user: &RecvUser, flags: u64) -> Option<i64> {
+    use net::socket_error::pathmtu;
+    if sock.family.load(Ordering::Acquire) != net::sock::AF_INET6 { return None; }
+    if !sock.opts.ipv6.flag(net::sock_opts::sol_ipv6::flag::RXPATHMTU) { return None; }
+    let report = sock.error.pathmtu.take()?;
+    let mut ctrl = Control::new(if user.control == 0 { 0 } else { user.controllen });
+    ctrl.push(pathmtu::SOL_IPV6, pathmtu::IPV6_PATHMTU, &pathmtu::record_bytes(&report));
+    Some(crate::recv_txn::publish(user, &mut ctrl, &pathmtu::name_bytes(&report),
+        crate::recv_control::output_flags(flags), 0))
 }
 
 /// Internet and packet recvmsg copyout. # C: O(payload + control)
@@ -297,6 +316,7 @@ pub(crate) fn recv_pinned(sock: &Arc<InetSocket>, file_nonblock: bool, user: &Re
     { return err(Errno::Einval); }
     let tcp = matches!(*sock.kind.lock(), SockKind::TcpConn(_));
     if let Some(e) = oob_error(sock, flags) { return err(e); }
+    if let Some(answer) = recv_pathmtu(sock, user, flags) { return answer; }
     if tcp {
         if flags & MSG_OOB != 0 { return match tcp_oob_with_copy(sock, user, flags, file_nonblock) {
             Ok(copied) => {
@@ -305,27 +325,27 @@ pub(crate) fn recv_pinned(sock: &Arc<InetSocket>, file_nonblock: bool, user: &Re
             }
             Err(e) => e,
         }; }
-        let copied = match tcp_with_copy_pinned(sock, user.capacity, flags, file_nonblock, |offset, bytes| user.copy_payload_at(offset, bytes)) {
+        let copied = match tcp_with_copy_pinned(sock, user, flags, file_nonblock,
+            |offset, bytes| user.copy_payload_fragment(offset, bytes)) {
             Ok(copied) => copied,
             Err(e) => return e,
         };
-        if let Err(e) = copy_name(user, sock, &Received {
-            payload: Vec::new(), full_len: copied, ..Default::default()
-        }) { return e; }
-        if let Err(e) = tcp_finish(sock, user, flags) { return e; }
+        let name = name_bytes(user, sock, &Received {
+            payload: Vec::new(), full_len: copied, ..Default::default() });
+        let published = tcp_finish(sock, user, &name, flags, copied as i64);
         if copied != 0 { sock.note_receive_now(); }
-        return copied as i64;
+        return published;
     }
     let rcv = match receive(sock, user.capacity, flags, file_nonblock) { Ok(rcv) => rcv, Err(e) => return e };
     let copied = match user.copy_payload_record(&rcv.payload) { Ok(n) => n, Err(e) => return e };
     let mut ctrl = control(sock, &rcv, if user.control == 0 { 0 } else { user.controllen });
-    let ctrl_len = ctrl.copy_to_recv(user);
-    if let Err(e) = copy_name(user, sock, &rcv) { return e; }
-    let mut out_flags = ctrl.flags | crate::recv_control::output_flags(flags);
+    let mut out_flags = crate::recv_control::output_flags(flags);
     if rcv.full_len > copied { out_flags |= MSG_TRUNC as u32; }
-    if let Err(e) = user.finish(ctrl_len, out_flags) { return e; }
+    let success = if flags & MSG_TRUNC != 0 { rcv.full_len as i64 } else { copied as i64 };
+    let name = name_bytes(user, sock, &rcv);
+    let published = crate::recv_txn::publish(user, &mut ctrl, &name, out_flags, success);
     if rcv.full_len != 0 || rcv.peer.is_some() || rcv.peer6.is_some() || rcv.packet.is_some() {
         note_receive(sock, &rcv);
     }
-    if flags & MSG_TRUNC != 0 { rcv.full_len as i64 } else { copied as i64 }
+    published
 }

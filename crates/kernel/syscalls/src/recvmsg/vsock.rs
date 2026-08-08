@@ -13,15 +13,12 @@ pub(crate) fn recv_error(sock: &Arc<net::vsock_socket::VsockSocket>, user: &Recv
     flags: u64) -> i64
 {
     let Some(entry) = sock.error.take_extended() else { return err(Errno::Eagain); };
-    if let Err(error) = user.copy_name(&[]) { return error; }
     let mut control = crate::recv_control::Control::new(
         if user.control == 0 { 0 } else { user.controllen });
     control.push(net::uapi::SOL_VSOCK as i32, net::uapi::VSOCK_RECVERR as i32,
         &net::socket_error::abi::extended_err_bytes(&entry));
-    let control_len = control.copy_to_recv(user);
-    let output = control.flags | MSG_ERRQUEUE as u32 | crate::recv_control::output_flags(flags);
-    if let Err(error) = user.finish(control_len, output) { return error; }
-    0
+    let output = MSG_ERRQUEUE as u32 | crate::recv_control::output_flags(flags);
+    crate::recv_txn::publish(user, &mut control, &[], output, 0)
 }
 
 /// Linux-ordered state selected before one connectible VSOCK `recvmsg`.
@@ -111,7 +108,7 @@ where F: FnMut(usize, &[u8]) -> Result<usize, i64>, R: FnMut(&Arc<net::vsock_soc
                 retry(sock);
                 if sock.read_shut.load(core::sync::atomic::Ordering::Acquire) { return Ok(total); }
             }
-            Err(e) => return if total != 0 { Ok(total) } else { Err(e) },
+            Err(e) => return crate::recv_txn::stream_result(total, e),
         }
         if nonblock { return if total != 0 { Ok(total) } else { Err(err(Errno::Eagain)) }; }
         #[cfg(target_os = "oxide-kernel")]
@@ -150,13 +147,12 @@ pub(crate) fn recv_pinned(sock: &Arc<net::vsock_socket::VsockSocket>, file_nonbl
     }
     let RecvmsgState::Stream(conn) = state else { unreachable!("empty state returned above"); };
     let copied = match recv_connected_with_copy(sock, &conn, user.capacity, flags, file_nonblock,
-        |offset, bytes| user.copy_payload_at(offset, bytes), |_| {}) {
+        |offset, bytes| user.copy_payload_fragment(offset, bytes), |_| {}) {
         Ok(copied) => copied,
         Err(e) => return e,
     };
-    if let Err(e) = user.copy_name(&[]) { return e; }
-    if let Err(e) = user.finish(0, crate::recv_control::output_flags(flags)) { return e; }
-    copied as i64
+    crate::recv_txn::publish_settled(user, 0, &[], crate::recv_control::output_flags(flags),
+        copied as i64)
 }
 
 /// AF_VSOCK `SOCK_SEQPACKET` recvmsg through the canonical complete-record
@@ -214,12 +210,10 @@ fn recv_seqpacket_pinned(sock: &Arc<net::vsock_socket::VsockSocket>, conn: &Arc<
 fn finish_seqpacket(user: &RecvUser, flags: u64, returned: usize, truncated: bool,
     end_of_record: bool) -> i64
 {
-    if let Err(error) = user.copy_name(&[]) { return error; }
     let mut output = crate::recv_control::output_flags(flags);
     if truncated { output |= MSG_TRUNC as u32; }
     if end_of_record { output |= MSG_EOR as u32; }
-    if let Err(error) = user.finish(0, output) { return error; }
-    returned as i64
+    crate::recv_txn::publish_settled(user, 0, &[], output, returned as i64)
 }
 
 #[cfg(test)]

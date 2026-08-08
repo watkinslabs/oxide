@@ -338,6 +338,10 @@ mod packet_mmap;
 mod recv_user;
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 mod recv_control;
+// The receive copy-fault transaction: publication order and per-step fault
+// rule, shared by every family and both batch layers.
+#[cfg(all(test, not(target_os = "oxide-kernel")))]
+mod recv_txn;
 #[cfg(all(test, not(target_os = "oxide-kernel")))]
 #[path = "recvmsg/entry.rs"]
 mod recvmsg_entry_hosted;
