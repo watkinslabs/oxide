@@ -199,3 +199,47 @@ fn past_eof_page_zero_fills_ok() {
     for i in 0..(PG / 2) as usize { assert_eq!(read_byte(pa, i), 0xAB, "valid head must be filled"); }
     for i in (PG / 2) as usize..PG as usize { assert_eq!(read_byte(pa, i), 0x00, "EOF tail must be zero"); }
 }
+
+/// End-to-end: the error the PRODUCTION fill arm returns for an unrecoverable
+/// short read must classify as SIGBUS/BUS_ADRERR — the reference's answer for a
+/// mapping whose backing could not supply the page. Before this, the fault
+/// entry collapsed the resolver's `Result` to a bool and the signal was derived
+/// from the hardware error code, so this fault was reported as a segmentation
+/// fault and could not be told apart from a lost mapping.
+#[test]
+fn failed_file_fill_classifies_as_a_bus_error() {
+    use crate::fault_signal::{signal_of, FaultFailure, failure_of};
+    reset();
+    let r = 0x1000;
+    let va = 0x40_0000u64;
+    let backing: Arc<dyn FileBacking> = Arc::new(ShortForever { real: PG / 2, size: 2 * PG });
+    let as_ = mmap_file(r, va, backing);
+
+    let err = fault(&as_, r, va).expect_err("non-EOF short must fail the fault");
+    assert_eq!(failure_of(err), FaultFailure::BusError);
+    // The hardware said "no page present"; the resolver says "the backing
+    // failed". The resolver wins.
+    let arch = hal::fault_class::FaultSignal { signo: 11, code: hal::siginfo::code::SEGV_MAPERR };
+    let sig = signal_of(err, arch).expect("a failed fill must raise a signal");
+    assert_eq!(sig.signo, 7, "a failed file fill is SIGBUS, not SIGSEGV");
+    assert_eq!(sig.code, hal::siginfo::code::BUS_ADRERR);
+}
+
+/// The control for the test above: a fault on an address with NO mapping must
+/// still be a segmentation fault carrying the hardware's own si_code. If both
+/// classified the same way the distinction would be worthless.
+#[test]
+fn absent_mapping_still_classifies_as_a_segmentation_fault() {
+    use crate::fault_signal::{signal_of, FaultFailure, failure_of};
+    reset();
+    let r = 0x1000;
+    let va = 0x50_0000u64;
+    // Map one page, then fault a page that no VMA covers.
+    let backing: Arc<dyn FileBacking> = Arc::new(ShortThenFull { calls: AtomicUsize::new(0), size: 2 * PG });
+    let as_ = mmap_file(r, va, backing);
+
+    let err = fault(&as_, r, va + PG).expect_err("an unmapped address must fail the fault");
+    assert_eq!(failure_of(err), FaultFailure::BadArea);
+    let arch = hal::fault_class::FaultSignal { signo: 11, code: hal::siginfo::code::SEGV_MAPERR };
+    assert_eq!(signal_of(err, arch), Some(arch), "no mapping keeps SIGSEGV/SEGV_MAPERR");
+}
