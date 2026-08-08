@@ -132,7 +132,7 @@ mod tests {
     fn the_entry_line_is_emitted_before_the_step_runs() {
         let _g = crate::console::test_lock();
         SEEN.lock().unwrap_or_else(|e| e.into_inner()).clear();
-        crate::set_byte_sink(capture);
+        crate::set_byte_sink_no_replay(capture);
         set_enabled(true);
         run("stuck_step", || {
             // Stand-in for a step that never returns: what has reached the
