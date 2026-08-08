@@ -268,6 +268,18 @@ pub fn sendto_v6(sock: &InetSocket,
                   dst_ip: crate::Ipv6Addr, dst_port: u16,
                   scope_id: u32,
                   payload: &[u8]) -> Result<usize, NetError> {
+    sendto_v6_ctl(sock, dst_ip, dst_port, scope_id, payload,
+        &crate::send_control::Raw6Control::default())
+}
+
+/// The same send, carrying one message's IPv6 ancillary overrides. Each of
+/// them replaces exactly the socket-level choice its `setsockopt` counterpart
+/// makes, for this datagram only. # C: O(payload)
+pub fn sendto_v6_ctl(sock: &InetSocket,
+                  dst_ip: crate::Ipv6Addr, dst_port: u16,
+                  scope_id: u32,
+                  payload: &[u8],
+                  msg: &crate::send_control::Raw6Control) -> Result<usize, NetError> {
     let eno = sock.take_pending_recv_error();
     if eno != 0 { return Err(crate::sock_error::pending_net_error(eno)); }
     crate::inet_tx::validate_udp6_mapped_destination(
@@ -280,12 +292,15 @@ pub fn sendto_v6(sock: &InetSocket,
     if crate::udp::udp6_payload_too_large(payload.len()) { return Err(NetError::Emsgsize); }
     let src_port = ensure_udp6_bound(sock, dst_ip, scope_id)?;
     let sticky = sock.opts.ipv6.sticky_pktinfo();
-    let hop = resolve_v6_hop_limit(sock, dst_ip);
-    let tclass = resolve_v6_tclass(sock);
+    // `-1` is the reference's "use the socket's own choice" for both.
+    let hop = msg.v6_hop_limit(resolve_v6_hop_limit(sock, dst_ip));
+    let tclass = msg.v6_traffic_class(resolve_v6_tclass(sock));
     let pmtudisc = sock.opts.ipv6_mtu_discover.load(core::sync::atomic::Ordering::Acquire);
     let frag_size = sock.opts.ipv6.frag_size();
     // Linux gives the explicit scope/device choice precedence, then applies
     // sticky IPV6_PKTINFO's output interface before route lookup.
+    // `IPV6_PKTINFO` on the message outranks the sticky one it mirrors.
+    let sticky = msg.v6_pktinfo(sticky);
     let (src_ip, iface) = sticky_pktinfo_choice(*sock.local_ip6.lock(), sticky,
         scoped_iface(sock, dst_ip, scope_id)?);
     let iface = match iface {
@@ -298,7 +313,7 @@ pub fn sendto_v6(sock: &InetSocket,
         other => other,
     };
     let no_check = sock.opts.udp.no_check6_tx();
-    let mut control = crate::send_control::Raw6Control::default();
+    let mut control = msg.clone();
     control.merge_sticky_headers(&sock.opts.ipv6);
     // UDP_SEGMENT: one write becomes N wire datagrams of the segmentation
     // size, the last carrying the remainder.
@@ -312,8 +327,9 @@ pub fn sendto_v6(sock: &InetSocket,
             for segment in payload.chunks(plan.seg_size) {
                 stack().send_udp6_pmtu_to_bound_opts_owned(
                     &sock.owner, src_ip, src_port, dst_ip, dst_port, segment, iface, hop, tclass,
-                    pmtudisc, frag_size, no_check, sock.opts.ipv6.flow_label(),
-                    sock.opts.ipv6.flag(crate::sock_opts::sol_ipv6::flag::AUTOFLOWLABEL),
+                    pmtudisc, frag_size, no_check, msg.v6_flow_label(sock.opts.ipv6.flow_label()),
+                    msg.v6_autoflowlabel(
+                        sock.opts.ipv6.flag(crate::sock_opts::sol_ipv6::flag::AUTOFLOWLABEL)),
                     sock.opts.ipv6.srcprefs(), &control,
                 )?;
             }
@@ -323,8 +339,9 @@ pub fn sendto_v6(sock: &InetSocket,
     }
     stack().send_udp6_pmtu_to_bound_opts_owned(
         &sock.owner, src_ip, src_port, dst_ip, dst_port, payload,
-        iface, hop, tclass, pmtudisc, frag_size, no_check, sock.opts.ipv6.flow_label(),
-        sock.opts.ipv6.flag(crate::sock_opts::sol_ipv6::flag::AUTOFLOWLABEL),
+        iface, hop, tclass, pmtudisc, frag_size, no_check, msg.v6_flow_label(sock.opts.ipv6.flow_label()),
+        msg.v6_autoflowlabel(
+            sock.opts.ipv6.flag(crate::sock_opts::sol_ipv6::flag::AUTOFLOWLABEL)),
         sock.opts.ipv6.srcprefs(), &control,
     )?;
     drain_loopback();

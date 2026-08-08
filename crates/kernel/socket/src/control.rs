@@ -34,10 +34,6 @@ fn i32_at(bytes: &[u8], offset: usize) -> i32 {
     i32::from_ne_bytes(bytes[offset..offset + 4].try_into().unwrap())
 }
 
-fn u64_at(bytes: &[u8], offset: usize) -> u64 {
-    u64::from_ne_bytes(bytes[offset..offset + 8].try_into().unwrap())
-}
-
 fn credentials(data: &[u8], task: &sched::Task) -> KResult<net::sock::SenderCreds> {
     if data.len() != 12 { return Err(Error::Einval); }
     let pid = i32_at(data, 0);
@@ -61,43 +57,42 @@ fn credentials(data: &[u8], task: &sched::Task) -> KResult<net::sock::SenderCred
 fn parse(ctx: &SendContext<'_>, control: &[u8], allow_rights: bool) -> KResult<Scm> {
     let mut files = Vec::new();
     let mut creds = None;
-    let mut offset = 0usize;
-    while control.len().saturating_sub(offset) >= crate::ids::CMSG_HEADER_LEN {
-        let len = usize::try_from(u64_at(control, offset)).map_err(|_| Error::Einval)?;
-        if len < crate::ids::CMSG_HEADER_LEN || len > control.len() - offset { return Err(Error::Einval); }
-        let level = i32_at(control, offset + 8);
-        let kind = i32_at(control, offset + 12);
-        if level == SOL_SOCKET && kind == SCM_RIGHTS {
-            if !allow_rights { return Err(Error::Einval); }
-            let bytes = len - crate::ids::CMSG_HEADER_LEN;
-            if bytes % 4 != 0 || files.len().saturating_add(bytes / 4) > crate::ids::SCM_MAX_FD {
-                return Err(Error::Einval);
+    for item in crate::cmsg_walk::CmsgWalk::new(control) {
+        let item = item?;
+        if item.level != SOL_SOCKET { continue; }
+        match item.kind {
+            SCM_RIGHTS => {
+                // Descriptors ride only an AF_UNIX message; every other family
+                // that runs this parser refuses the type outright.
+                if !allow_rights { return Err(Error::Einval); }
+                let count = item.data.len() / 4;
+                if count > crate::ids::SCM_MAX_FD
+                    || files.len().saturating_add(count) > crate::ids::SCM_MAX_FD
+                { return Err(Error::Einval); }
+                for slot in item.data.chunks_exact(4) {
+                    // SAFETY: work caller passes the running task; its fd-table view is stable for this operation.
+                    let table = unsafe { ctx.task().fd_table_ref() }.ok_or(Error::Ebadf)?;
+                    let file = table.get(i32::from_ne_bytes(slot.try_into().unwrap()))
+                        .map_err(|_| Error::Ebadf)?;
+                    // An io_uring ring may not travel over SCM_RIGHTS. Which file
+                    // is a ring is Linux `io_is_uring_fops` — a comparison against
+                    // the vtable io_uring installs. This site used to carry its own
+                    // COPY of io_uring's inode-number tag, a second source of truth
+                    // for a number that proves no ownership anyway.
+                    if file.inode().i_fop().is_io_uring() { return Err(Error::Einval); }
+                    files.push(file);
+                }
             }
-            for at in (offset + crate::ids::CMSG_HEADER_LEN..offset + len).step_by(4) {
-                // SAFETY: work caller passes the running task; its fd-table view is stable for this operation.
-                let table = unsafe { ctx.task().fd_table_ref() }.ok_or(Error::Ebadf)?;
-                let file = table.get(i32_at(control, at)).map_err(|_| Error::Ebadf)?;
-                // An io_uring ring may not travel over SCM_RIGHTS. Which file
-                // is a ring is Linux `io_is_uring_fops` — a comparison against
-                // the vtable io_uring installs. This site used to carry its own
-                // COPY of io_uring's inode-number tag, a second source of truth
-                // for a number that proves no ownership anyway.
-                if file.inode().i_fop().is_io_uring() { return Err(Error::Einval); }
-                files.push(file);
-            }
-        } else if level == SOL_SOCKET && kind == SCM_CREDENTIALS {
-            creds = Some(credentials(&control[offset + crate::ids::CMSG_HEADER_LEN..offset + len], ctx.task())?);
-        } else if level == SOL_SOCKET { return Err(Error::Einval); }
-        let aligned = len.checked_add(crate::ids::CMSG_ALIGN_MASK).ok_or(Error::Einval)? & !crate::ids::CMSG_ALIGN_MASK;
-        let next = offset.checked_add(aligned).ok_or(Error::Einval)?;
-        if next > control.len() { break; }
-        offset = next;
+            SCM_CREDENTIALS => creds = Some(credentials(item.data, ctx.task())?),
+            _ => return Err(Error::Einval),
+        }
     }
     Ok(Scm { files, creds })
 }
 
-/// Validate ancillary data for a non-AF_UNIX target. # C: O(control bytes)
-pub(crate) fn validate_non_unix(ctx: &SendContext<'_>, control: &[u8]) -> KResult<()> {
+/// Validate ancillary data for a target whose family speaks the SCM rule but
+/// carries no descriptors — NETLINK. # C: O(control bytes)
+pub(crate) fn validate_scm_no_rights(ctx: &SendContext<'_>, control: &[u8]) -> KResult<()> {
     if control.is_empty() { return Ok(()); }
     parse(ctx, control, false).map(|_| ())
 }
@@ -167,11 +162,17 @@ fn datagram(ctx: &SendContext<'_>, message: &Message, scm: &Scm,
 pub(crate) fn prepare_unix(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSocket>,
     message: &Message, flags: u32) -> Option<KResult<UnixScm>>
 {
-    enum Kind { Datagram(Arc<net::UnixDgramQueue>), Stream }
-    let byte_stream = matches!(*socket.kind.lock(), net::sock::SockKind::Unix(_, _));
+    enum Kind { Datagram(Arc<net::UnixDgramQueue>), Stream, Unconnected }
+    // Every SOCK_STREAM flavour, connected or not: they share the out-of-band
+    // division and the rule that a destination address is not theirs to take.
+    let byte_stream = matches!(*socket.kind.lock(), net::sock::SockKind::Unix(_, _)
+        | net::sock::SockKind::UnixUnbound(_, _) | net::sock::SockKind::UnixListener(_));
+    let connected = matches!(*socket.kind.lock(), net::sock::SockKind::Unix(_, _));
     let kind = match &*socket.kind.lock() {
         net::sock::SockKind::UnixDgram(queue) => Kind::Datagram(queue.clone()),
         net::sock::SockKind::Unix(_, _) | net::sock::SockKind::UnixMsgPair(_, _) => Kind::Stream,
+        net::sock::SockKind::UnixUnbound(_, _) | net::sock::SockKind::UnixListener(_) =>
+            Kind::Unconnected,
         _ => return None,
     };
     Some((|| {
@@ -182,14 +183,28 @@ pub(crate) fn prepare_unix(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSo
         if crate::oob::unix_oob_plan(byte_stream, oob, message.requested_len)
             == crate::oob::UnixOobPlan::Unsupported
         { return Err(Error::Eopnotsupp); }
+        // A byte stream refuses a destination outright, and the refusal names
+        // the connection state. A seqpacket send discards `msg_namelen`
+        // instead and never looks, which is why only the stream kinds ask.
+        if byte_stream && message.name.is_some() {
+            return Err(if connected { Error::Eisconn } else { Error::Eopnotsupp });
+        }
         match kind {
+            // No peer was ever published, so there is nothing to send to.
+            Kind::Unconnected => Err(Error::Enotconn),
             Kind::Stream => Ok(UnixScm::Stream(scm)),
             Kind::Datagram(local) => {
                 if socket.write_shut.load(Ordering::Acquire) { return Err(Error::Epipe); }
                 let sender = local.bound();
                 let address = if let Some(name) = message.name.as_deref() {
                     crate::address::unix(ctx, name)?
-                } else { local.peer().ok_or(Error::Edestaddrreq)? };
+                } else {
+                    // No name and no peer: the datagram socket is not
+                    // connected, which is the answer — not "a destination is
+                    // required", which is what a socket that COULD take one
+                    // would say.
+                    local.peer().ok_or(Error::Enotconn)?
+                };
                 let queue = net::net_ns::unix_registry_for_addr_in(&socket.net_namespace, &address)
                     .dgram_lookup_addr(&address).ok_or(Error::Econnrefused)?;
                 let symmetric = net::unix_sock::dgram_symmetric_pair(

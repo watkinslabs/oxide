@@ -152,18 +152,16 @@ pub(crate) fn prepare(ctx: &SendContext<'_>, target: &SendFile, message: &Messag
         SendKind::Netlink(socket) => {
             if flags as u64 & net::uapi::MSG_OOB != 0 { return Err(Error::Eopnotsupp); }
             if message.requested_len == 0 { return Err(Error::Enodata); }
-            crate::control::validate_non_unix(ctx, &message.control)?;
+            crate::control::validate_scm_no_rights(ctx, &message.control)?;
             let dest = netlink_address(socket, message)?;
             socket.preflight_send(message.requested_len).map_err(Error::from)?;
             Ok(PreparedSend::Netlink(dest))
         }
         SendKind::Vsock(socket) => {
-            if message.name.is_some() {
-                return if matches!(*socket.kind.lock(), net::vsock_socket::VsockKind::Conn(_)) {
-                    Err(Error::Eisconn)
-                } else { Err(Error::Eopnotsupp) };
-            }
-            crate::control::validate_non_unix(ctx, &message.control)?;
+            // A vsock socket consults no ancillary data on send: it has no
+            // control message of its own and never runs the generic rule, so
+            // whatever the caller attached is stepped over rather than judged.
+            crate::vsock_addr::admit_destination(socket, message.name.as_deref())?;
             Ok(PreparedSend::Vsock)
         }
         SendKind::Inet(socket) => {
@@ -175,20 +173,25 @@ pub(crate) fn prepare(ctx: &SendContext<'_>, target: &SendFile, message: &Messag
             }
             if matches!(*socket.kind.lock(), net::sock::SockKind::Packet { .. }) {
                 crate::packet::validate(message.name.as_deref())?;
-                crate::control::validate_non_unix(ctx, &message.control)?;
+                crate::control_family::admit(ctx, socket, &message.control, None)?;
                 return Ok(PreparedSend::Inet(InetPrepared::Packet));
             }
+            // "Mirror BSD error message compatibility": the IPv4 datagram
+            // sender has no out-of-band channel and says so before it looks at
+            // the destination. The IPv6 sender carries no such check, so an
+            // AF_INET6 socket only reaches it once its destination has been
+            // decoded and found to be v4-mapped.
+            let oob = flags as u64 & net::uapi::MSG_OOB != 0;
+            let udp = matches!(*socket.kind.lock(), net::sock::SockKind::Udp);
+            if udp && oob
+                && socket.family.load(Ordering::Acquire) != net::socket_args::AF_INET6 as u16
+            { return Err(Error::Eopnotsupp); }
             let address = crate::address::inet(message.name.as_deref())?;
-            let raw_family = match &*socket.kind.lock() {
-                net::sock::SockKind::Raw4(_) => Some(false),
-                net::sock::SockKind::Raw6(_) => Some(true),
-                _ => None,
-            };
-            crate::control::validate_non_unix(ctx, &message.control)?;
-            let mut control = if let Some(ipv6) = raw_family {
-                let cap = nscg::proc_ns::has_net_raw_for(ctx.task(), &socket.net_namespace);
-                crate::control_raw::parse_raw_control(&message.control, ipv6, cap, socket.net_ns())?
-            } else { net::send_control::SendControl::default() };
+            if udp && oob && crate::control_family::ipv4_send_path(socket, Some(&address)) {
+                return Err(Error::Eopnotsupp);
+            }
+            let mut control = crate::control_family::admit(ctx, socket, &message.control,
+                Some(&address))?;
             control.apply_flags(flags as u64);
             Ok(PreparedSend::Inet(InetPrepared::Transport(address, control)))
         }
