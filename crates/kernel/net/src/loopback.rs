@@ -208,6 +208,7 @@ mod tests {
 
     #[test]
     fn drain_accounts_protocol_rejection() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
         let stack = crate::NetStack::new();
         let lo = alloc::sync::Arc::new(LoopbackDev::new());
         let iface = stack.ifaces.register(lo.clone());

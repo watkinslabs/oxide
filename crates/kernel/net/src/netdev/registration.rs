@@ -120,6 +120,10 @@ impl IfaceRegistry {
     pub(crate) fn publish(&self, rtnl: &crate::RtnlGuard<'_>,
                           mut reg: IfaceRegistration<'_>) -> bool {
         if !self.guard_matches(rtnl) { return false; }
+        #[cfg(test)]
+        if reg.owner.id().as_u64() == 0 {
+            crate::hosted_fixture::assert_initial_domain_held("publishing a namespace-0 interface");
+        }
         let g = self.inner.lock();
         let Some(entry) = g.entries.iter().find(|entry| entry.id == reg.id
             && entry.ns == reg.owner.id().as_u64()
@@ -187,6 +191,10 @@ impl IfaceRegistry {
     /// Hosted fully initialized namespace registration convenience. # C: O(1)
     #[cfg(not(target_os = "oxide-kernel"))]
     pub fn register_in_ns(&self, dev: Arc<dyn NetDev>, ns: u64) -> NetIfaceId {
+        #[cfg(test)]
+        if ns == 0 {
+            crate::hosted_fixture::assert_initial_domain_held("registering a namespace-0 interface");
+        }
         let mut g = self.inner.lock();
         let id = NetIfaceId::from_raw(g.alloc_id());
         let ifindex = g.entries.iter().filter(|entry| entry.ns == ns)
