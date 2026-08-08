@@ -3,7 +3,17 @@ use alloc::vec::Vec;
 
 use crate::Error;
 
-use crate::control_raw::parse_raw_control;
+use crate::control_raw::{IpControlEnv, parse_ip_control};
+use crate::sockcm::SockCmEnv;
+
+/// The IP-level rule as the raw sockets reach it: no v4-mapped fallback, and a
+/// generic environment with no capability of its own.
+fn parse_raw_control(control: &[u8], ipv6: bool, cap_net_raw: bool, net_ns: u64)
+    -> crate::KResult<net::send_control::SendControl>
+{
+    parse_ip_control(control, &IpControlEnv { ipv6, allow_v6_pktinfo: false, cap_net_raw,
+        net_ns, sockcm: SockCmEnv { net_raw: cap_net_raw, ..SockCmEnv::default() } })
+}
 
 fn cmsg(level: i32, kind: i32, data: &[u8]) -> Vec<u8> {
     let len = 16 + data.len();

@@ -54,7 +54,42 @@ impl SendControl {
     }
 }
 
+impl Raw4Control {
+    /// `IP_PKTINFO`'s `ipi_spec_dst` stands in for the bound source. # C: O(1)
+    pub fn v4_source(&self, socket: Ipv4Addr) -> Ipv4Addr { self.source.unwrap_or(socket) }
+    /// `IP_TTL`. # C: O(1)
+    pub fn v4_ttl(&self, socket: u8) -> u8 { self.ttl.unwrap_or(socket) }
+    /// `IP_TOS`. # C: O(1)
+    pub fn v4_tos(&self, socket: u8) -> u8 { self.tos.unwrap_or(socket) }
+    /// `IP_RETOPTS` replaces the sticky `IP_OPTIONS` area outright rather than
+    /// adding to it. # C: O(option bytes)
+    pub fn v4_options(&self, socket: Option<crate::ipv4_options::Compiled>)
+        -> Option<crate::ipv4_options::Compiled>
+    { self.options.clone().or(socket) }
+}
+
 impl Raw6Control {
+    /// `IPV6_HOPLIMIT`; `-1` restores the socket's own choice. # C: O(1)
+    pub fn v6_hop_limit(&self, socket: u8) -> u8 {
+        match self.hop_limit { Some(value) if value >= 0 => value as u8, _ => socket }
+    }
+    /// `IPV6_TCLASS`; `-1` restores the socket's own choice. # C: O(1)
+    pub fn v6_traffic_class(&self, socket: u8) -> u8 {
+        match self.traffic_class { Some(value) if value >= 0 => value as u8, _ => socket }
+    }
+    /// `IPV6_FLOWINFO`. A message that named a label also suppresses the
+    /// socket's automatic one, which exists to fill an unnamed label. # C: O(1)
+    pub fn v6_flow_label(&self, socket: u32) -> u32 { self.flowinfo.unwrap_or(socket) }
+    /// # C: O(1)
+    pub fn v6_autoflowlabel(&self, socket: bool) -> bool { self.flowinfo.is_none() && socket }
+    /// `IPV6_PKTINFO` on the message outranks the sticky one it mirrors, field
+    /// by field. # C: O(1)
+    pub fn v6_pktinfo(&self, sticky: ([u8; 16], u32)) -> ([u8; 16], u32) {
+        (self.source.map(|ip| ip.0).unwrap_or(sticky.0),
+            self.iface.map(|iface| iface.raw()).unwrap_or(sticky.1))
+    }
+
+
     /// Fill absent controls from one socket's canonical sticky state: the four
     /// extension headers, and the fragmentation refusal, which is a sticky
     /// socket flag as well as a per-message control and must reach the same
@@ -87,7 +122,62 @@ pub fn should_drain_loopback(multicast: bool, message: Option<bool>, socket: boo
 
 #[cfg(test)]
 mod tests {
-    use super::{should_drain_loopback, Raw6Control};
+    use super::{should_drain_loopback, Raw4Control, Raw6Control};
+    use crate::{Ipv4Addr, Ipv6Addr, NetIfaceId};
+
+    #[test]
+    fn absent_ipv4_message_controls_leave_every_socket_choice_alone() {
+        let none = Raw4Control::default();
+        assert_eq!(none.v4_source(Ipv4Addr::new(10, 0, 0, 1)), Ipv4Addr::new(10, 0, 0, 1));
+        assert_eq!(none.v4_ttl(64), 64);
+        assert_eq!(none.v4_tos(0x20), 0x20);
+        assert!(none.v4_options(None).is_none());
+    }
+
+    #[test]
+    fn each_ipv4_message_control_replaces_exactly_its_own_socket_choice() {
+        let message = Raw4Control { source: Some(Ipv4Addr::new(192, 0, 2, 9)), ttl: Some(3),
+            tos: Some(0x10), ..Raw4Control::default() };
+        assert_eq!(message.v4_source(Ipv4Addr::new(10, 0, 0, 1)), Ipv4Addr::new(192, 0, 2, 9));
+        assert_eq!(message.v4_ttl(64), 3);
+        assert_eq!(message.v4_tos(0x20), 0x10);
+        // The option area is the one that replaces rather than merges: a socket
+        // area survives only when the message named none.
+        let socket_area = crate::ipv4_options::Compiled::default();
+        assert!(message.v4_options(Some(socket_area)).is_some());
+    }
+
+    #[test]
+    fn the_ipv6_scalars_treat_minus_one_as_the_socket_choice() {
+        let restore = Raw6Control { hop_limit: Some(-1), traffic_class: Some(-1),
+            ..Raw6Control::default() };
+        assert_eq!(restore.v6_hop_limit(64), 64);
+        assert_eq!(restore.v6_traffic_class(0x20), 0x20);
+        let named = Raw6Control { hop_limit: Some(7), traffic_class: Some(0x10),
+            ..Raw6Control::default() };
+        assert_eq!(named.v6_hop_limit(64), 7);
+        assert_eq!(named.v6_traffic_class(0x20), 0x10);
+    }
+
+    #[test]
+    fn a_named_flow_label_suppresses_the_sockets_automatic_one() {
+        let none = Raw6Control::default();
+        assert_eq!(none.v6_flow_label(0x11111), 0x11111);
+        assert!(none.v6_autoflowlabel(true));
+        let named = Raw6Control { flowinfo: Some(0x22222), ..Raw6Control::default() };
+        assert_eq!(named.v6_flow_label(0x11111), 0x22222);
+        assert!(!named.v6_autoflowlabel(true));
+    }
+
+    #[test]
+    fn the_message_pktinfo_outranks_the_sticky_one_field_by_field() {
+        let sticky = ([9u8; 16], 4u32);
+        assert_eq!(Raw6Control::default().v6_pktinfo(sticky), sticky);
+        let source = Raw6Control { source: Some(Ipv6Addr([1; 16])), ..Raw6Control::default() };
+        assert_eq!(source.v6_pktinfo(sticky), ([1u8; 16], 4));
+        let iface = Raw6Control { iface: Some(NetIfaceId::from_raw(7)), ..Raw6Control::default() };
+        assert_eq!(iface.v6_pktinfo(sticky), ([9u8; 16], 7));
+    }
 
     #[test]
     fn multicast_loop_policy_honors_message_then_socket() {

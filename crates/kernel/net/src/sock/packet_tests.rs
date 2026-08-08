@@ -438,3 +438,17 @@ fn namespace_teardown_closes_packet_socket_and_releases_registry_state() {
     assert!(claimed.contains(&id));
     crate::net_ns::test_support::finish_claimed(&stack, &claimed);
 }
+
+/// The receive flag screen is a whitelist, not a reaction to known bits: a
+/// flag this family has no answer for is refused rather than ignored.
+#[test]
+fn a_packet_receive_accepts_exactly_the_flags_the_family_answers() {
+    use crate::sock::packet_recv_flags_allowed as allowed;
+    use crate::uapi::{MSG_CMSG_COMPAT, MSG_DONTWAIT, MSG_ERRQUEUE, MSG_OOB, MSG_PEEK, MSG_TRUNC,
+        MSG_WAITALL};
+    assert!(allowed(0));
+    assert!(allowed(MSG_PEEK | MSG_DONTWAIT | MSG_TRUNC | MSG_CMSG_COMPAT | MSG_ERRQUEUE));
+    assert!(!allowed(MSG_OOB));
+    assert!(!allowed(MSG_WAITALL));
+    assert!(!allowed(MSG_PEEK | MSG_WAITALL));
+}

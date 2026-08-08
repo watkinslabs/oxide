@@ -1,9 +1,10 @@
 use alloc::vec::Vec;
 
 use net::send_control::SendControl;
+use crate::cmsg_walk::{CmsgWalk, SOL_SOCKET};
+use crate::sockcm::SockCmEnv;
 use crate::{Error, KResult};
 
-const CMSG_HDR_LEN: usize = 16;
 const SOL_IP: i32 = 0;
 const SOL_IPV6: i32 = 41;
 const IP_TOS: i32 = 1;
@@ -28,28 +29,61 @@ const IPV6_TCLASS: i32 = 67;
 const IPV4_OPTION_MAX: usize = 40;
 
 fn i32_at(bytes: &[u8], at: usize) -> i32 { i32::from_ne_bytes(bytes[at..at + 4].try_into().unwrap()) }
-fn u64_at(bytes: &[u8], at: usize) -> u64 { u64::from_ne_bytes(bytes[at..at + 8].try_into().unwrap()) }
 
-/// Parse native LP64 IP controls into one immutable transmit override. # C: O(control)
-pub fn parse_raw_control(control: &[u8], ipv6: bool, cap_net_raw: bool, net_ns: u64)
-    -> KResult<SendControl>
-{
+/// One IP-level send-ancillary admission, snapshotted per message.
+///
+/// `allow_v6_pktinfo` is the AF_INET6 socket that fell back to the IPv4 send
+/// path for a v4-mapped destination: it, and only it, accepts an `IPV6_PKTINFO`
+/// carrying a v4-mapped source at the IPv4 level.
+pub(crate) struct IpControlEnv {
+    pub ipv6: bool,
+    pub allow_v6_pktinfo: bool,
+    pub cap_net_raw: bool,
+    pub net_ns: u64,
+    pub sockcm: SockCmEnv,
+}
+
+/// Parse native LP64 IP controls into one immutable transmit override.
+///
+/// This is the whole admission for every socket that speaks an IP transport —
+/// UDP, ICMP datagram, and raw alike. Levels the transport does not own are
+/// stepped over; its own level answers an unknown type with EINVAL; and
+/// SOL_SOCKET is handed to the one generic rule rather than re-answered here.
+/// # C: O(control)
+pub(crate) fn parse_ip_control(control: &[u8], env: &IpControlEnv) -> KResult<SendControl> {
     let mut out = SendControl::default();
-    let mut off = 0usize;
-    while control.len().saturating_sub(off) >= CMSG_HDR_LEN {
-        let len = usize::try_from(u64_at(control, off)).map_err(|_| Error::Einval)?;
-        if len < CMSG_HDR_LEN || len > control.len() - off { return Err(Error::Einval); }
-        let level = i32_at(control, off + 8);
-        let kind = i32_at(control, off + 12);
-        let data = &control[off + CMSG_HDR_LEN..off + len];
-        if ipv6 && level == SOL_IPV6 { parse_v6(kind, data, cap_net_raw, &mut out)?; }
-        else if !ipv6 && level == SOL_IP { parse_v4(kind, data, cap_net_raw, net_ns, &mut out)?; }
-        let aligned = len.checked_add(7).ok_or_else(|| Error::Einval)? & !7;
-        let next = off.checked_add(aligned).ok_or_else(|| Error::Einval)?;
-        if next > control.len() { break; }
-        off = next;
+    for item in CmsgWalk::new(control) {
+        let item = item?;
+        if !env.ipv6 && env.allow_v6_pktinfo && item.level == SOL_IPV6
+            && item.kind == IPV6_PKTINFO
+        {
+            parse_v4_mapped_pktinfo(item.data, &mut out)?;
+            continue;
+        }
+        if item.level == SOL_SOCKET { crate::sockcm::admit(&env.sockcm, &item)?; continue; }
+        if env.ipv6 && item.level == SOL_IPV6 {
+            parse_v6(item.kind, item.data, env.cap_net_raw, &mut out)?;
+        } else if !env.ipv6 && item.level == SOL_IP {
+            parse_v4(item.kind, item.data, env.cap_net_raw, env.net_ns, &mut out)?;
+        }
     }
     Ok(out)
+}
+
+/// The v4-mapped `IPV6_PKTINFO` an AF_INET6 socket may carry into the IPv4
+/// send path: the interface selects the egress, and the low four bytes of the
+/// mapped address select the source. A source that is not v4-mapped is EINVAL.
+/// # C: O(1)
+fn parse_v4_mapped_pktinfo(data: &[u8], out: &mut SendControl) -> KResult<()> {
+    if data.len() < 20 { return Err(Error::Einval); }
+    if data[..10].iter().any(|byte| *byte != 0) || data[10] != 0xff || data[11] != 0xff {
+        return Err(Error::Einval);
+    }
+    let index = i32_at(data, 16);
+    if index != 0 { out.raw4.iface = Some(net::NetIfaceId::from_raw(index as u32)); }
+    let source = net::Ipv4Addr::new(data[12], data[13], data[14], data[15]);
+    if !source.is_unspecified() { out.raw4.source = Some(source); }
+    Ok(())
 }
 fn parse_v4(kind: i32, data: &[u8], cap: bool, net_ns: u64, out: &mut SendControl)
     -> KResult<()>

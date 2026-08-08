@@ -77,17 +77,22 @@ pub(crate) fn resolve_packet_tx(socket: &InetSocket, address: Option<PacketTxAdd
     };
     let ifindex = address.map(|value| value.ifindex).unwrap_or(bound_ifindex);
     let protocol = address.map(|value| value.protocol).unwrap_or(bound_protocol);
-    if ifindex == 0 { return Err(crate::NetError::Enodev); }
+    // "No such device or address": an unbound socket that named none, and a
+    // named index no device answers to, give the SAME answer. ENODEV belongs
+    // to the interface-configuration calls, not to this send.
+    if ifindex == 0 { return Err(crate::NetError::Enxio); }
     let lease = stack().ifaces.acquire_egress_in_ns(
         crate::NetIfaceId::from_raw(ifindex), socket.net_ns())
-        .ok_or(crate::NetError::Enodev)?;
-    if lease.flags() & crate::netdev::iff::IFF_UP == 0 {
-        return Err(crate::NetError::Enetdown);
-    }
+        .ok_or(crate::NetError::Enxio)?;
+    // The device-sized name check outranks the interface being down: it is
+    // asked the moment the device is known, before its state is consulted.
     let datagram = kind == SOCK_DGRAM;
     if datagram && address.is_some_and(|value| {
         (value.name_len as usize) < SOCKADDR_LL_ADDR_OFFSET + lease.address_len() as usize
     }) { return Err(crate::NetError::Einval); }
+    if lease.flags() & crate::netdev::iff::IFF_UP == 0 {
+        return Err(crate::NetError::Enetdown);
+    }
     let mut destination = [0xff; 6];
     if let Some(value) = address { destination.copy_from_slice(&value.address[..6]); }
     let vnet_header_size = socket.packet_vnet_hdr_size()?;

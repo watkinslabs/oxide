@@ -4,7 +4,12 @@
 // - `target`: retained open-file classification.
 // - `send`: family routing, retry, and SIGPIPE completion.
 // - `address`: kernel-snapshot socket-address decoding and UNIX lookup.
-// - `control*`: SCM and raw IP ancillary policy.
+// - `cmsg_walk`: the one send-side ancillary cursor every rule iterates.
+// - `control`: the SCM rule (AF_UNIX descriptors and credentials, NETLINK).
+// - `control_raw`: the IP-level rule and its transmit overrides.
+// - `control_family`: WHICH of the rules a socket's family speaks.
+// - `sockcm`: the generic SOL_SOCKET rule every non-SCM family runs.
+// - `vsock_addr`: AF_VSOCK send-destination admission.
 // - `oob`: AF_UNIX out-of-band send division.
 // - `packet`: AF_PACKET message transmission.
 // - `batch`: lazy sendmmsg import/publication policy.
@@ -29,7 +34,9 @@ extern crate std;
 
 mod address;
 mod batch;
+mod cmsg_walk;
 mod control;
+mod control_family;
 mod control_raw;
 mod error;
 mod filter;
@@ -40,13 +47,15 @@ mod packet;
 mod receive;
 mod security;
 mod send;
+mod sockcm;
 mod target;
+mod vsock_addr;
 
 pub use batch::{BatchIo, BatchSpec, UIO_MAXIOV, send_batch};
 pub use error::{Error, KResult};
 pub use filter::{FilterError, FilterFile};
 pub use message::{Message, SendOutcome};
-pub use oob::{unix_oob_plan, UnixOobPlan};
+pub use oob::{OobPlan, tcp_oob_plan, unix_oob_plan};
 pub use receive::{ReceiveFdResult, install_received_fds};
 pub use send::{ImportMode, MessageIo, SendContext, send, send_io, write, writev};
 pub use target::{SendFile, SendKind};

@@ -133,7 +133,10 @@ fn send_netlink(socket: &netlink::NetlinkSocket, message: &Message, dest: netlin
 pub(crate) enum InetPrepared {
     Packet,
     Unix(crate::control::UnixScm),
-    Transport(crate::address::InetAddress, net::send_control::SendControl),
+    /// The settled transmit overrides live on the heap, not in this enum: the
+    /// value would otherwise be copied into three stack frames that all sit
+    /// under the deepest send path in the tree, once each.
+    Transport(crate::address::InetAddress, alloc::boxed::Box<net::send_control::SendControl>),
 }
 
 pub(crate) enum PreparedSend {
@@ -142,7 +145,14 @@ pub(crate) enum PreparedSend {
     Inet(InetPrepared),
 }
 
-/// Validate family policy and retain backend state before payload import. # C: backend-dependent
+/// Validate family policy and retain backend state before payload import.
+///
+/// `#[inline(never)]`: every family's validation working set — the decoded
+/// address, the ancillary overrides, the pinned SCM state — is live only
+/// until the send is prepared, so its frame must overlap the transmit path
+/// below rather than sum with it (Linux `noinline_for_stack`).
+/// # C: backend-dependent
+#[inline(never)]
 pub(crate) fn prepare(ctx: &SendContext<'_>, target: &SendFile, message: &Message, flags: u32)
     -> KResult<PreparedSend>
 {
@@ -152,45 +162,46 @@ pub(crate) fn prepare(ctx: &SendContext<'_>, target: &SendFile, message: &Messag
         SendKind::Netlink(socket) => {
             if flags as u64 & net::uapi::MSG_OOB != 0 { return Err(Error::Eopnotsupp); }
             if message.requested_len == 0 { return Err(Error::Enodata); }
-            crate::control::validate_non_unix(ctx, &message.control)?;
+            crate::control::validate_scm_no_rights(ctx, &message.control)?;
             let dest = netlink_address(socket, message)?;
             socket.preflight_send(message.requested_len).map_err(Error::from)?;
             Ok(PreparedSend::Netlink(dest))
         }
         SendKind::Vsock(socket) => {
-            if message.name.is_some() {
-                return if matches!(*socket.kind.lock(), net::vsock_socket::VsockKind::Conn(_)) {
-                    Err(Error::Eisconn)
-                } else { Err(Error::Eopnotsupp) };
-            }
-            crate::control::validate_non_unix(ctx, &message.control)?;
+            // A vsock socket consults no ancillary data on send: it has no
+            // control message of its own and never runs the generic rule, so
+            // whatever the caller attached is stepped over rather than judged.
+            crate::vsock_addr::admit_destination(socket, message.name.as_deref())?;
             Ok(PreparedSend::Vsock)
         }
         SendKind::Inet(socket) => {
-            if flags as u64 & net::uapi::MSG_OOB != 0
-                && matches!(*socket.kind.lock(), net::sock::SockKind::TcpConn(_))
-                && message.requested_len != 1 { return Err(Error::Einval); }
             if let Some(result) = crate::control::prepare_unix(ctx, socket, message, flags) {
                 return result.map(|scm| PreparedSend::Inet(InetPrepared::Unix(scm)));
             }
             if matches!(*socket.kind.lock(), net::sock::SockKind::Packet { .. }) {
                 crate::packet::validate(message.name.as_deref())?;
-                crate::control::validate_non_unix(ctx, &message.control)?;
+                crate::control_family::admit(ctx, socket, &message.control, None)?;
                 return Ok(PreparedSend::Inet(InetPrepared::Packet));
             }
+            // "Mirror BSD error message compatibility": the IPv4 datagram
+            // sender has no out-of-band channel and says so before it looks at
+            // the destination. The IPv6 sender carries no such check, so an
+            // AF_INET6 socket only reaches it once its destination has been
+            // decoded and found to be v4-mapped.
+            let oob = flags as u64 & net::uapi::MSG_OOB != 0;
+            let udp = matches!(*socket.kind.lock(), net::sock::SockKind::Udp);
+            if udp && oob
+                && socket.family.load(Ordering::Acquire) != net::socket_args::AF_INET6 as u16
+            { return Err(Error::Eopnotsupp); }
             let address = crate::address::inet(message.name.as_deref())?;
-            let raw_family = match &*socket.kind.lock() {
-                net::sock::SockKind::Raw4(_) => Some(false),
-                net::sock::SockKind::Raw6(_) => Some(true),
-                _ => None,
-            };
-            crate::control::validate_non_unix(ctx, &message.control)?;
-            let mut control = if let Some(ipv6) = raw_family {
-                let cap = nscg::proc_ns::has_net_raw_for(ctx.task(), &socket.net_namespace);
-                crate::control_raw::parse_raw_control(&message.control, ipv6, cap, socket.net_ns())?
-            } else { net::send_control::SendControl::default() };
+            if udp && oob && crate::control_family::ipv4_send_path(socket, Some(&address)) {
+                return Err(Error::Eopnotsupp);
+            }
+            let mut control = crate::control_family::admit(ctx, socket, &message.control,
+                Some(&address))?;
             control.apply_flags(flags as u64);
-            Ok(PreparedSend::Inet(InetPrepared::Transport(address, control)))
+            Ok(PreparedSend::Inet(InetPrepared::Transport(address,
+                alloc::boxed::Box::new(control))))
         }
     }
 }
@@ -202,6 +213,37 @@ fn monotonic_ns() -> u64 {
     { hal_x86_64::X86TimerOps::monotonic_ns().0 }
     #[cfg(target_arch = "aarch64")]
     { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
+}
+
+/// Mark the stream's last byte urgent once its in-band body is through. A send
+/// with no urgent tail returns its byte count untouched.
+///
+/// `#[inline(never)]`: the urgent path is one branch of one family's send and
+/// its frame must not ride under every other protocol's call.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+#[inline(never)]
+fn tcp_urgent_tail(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSocket>,
+    message: &Message, total: usize, signals_pipe: bool, flags: u32) -> KResult<usize>
+{
+    let byte = match crate::oob::tcp_oob_plan(flags as u64 & net::uapi::MSG_OOB != 0,
+        message.payload.len())
+    {
+        crate::oob::OobPlan::Split { .. } => *message.payload.last().ok_or(Error::Einval)?,
+        _ => return Ok(total),
+    };
+    let entry = match &*socket.kind.lock() {
+        net::sock::SockKind::TcpConn(entry) => entry.clone(),
+        _ => return Err(Error::Einval),
+    };
+    match net::sock::stack().tcp_send_urgent(&entry, byte) {
+        Ok(n) => { net::sock::drain_loopback(); Ok(total.saturating_add(n)) },
+        Err(error) => {
+            if total != 0 { return Ok(total); }
+            let result = Err(Error::from(error));
+            if signals_pipe { complete(ctx, flags, result) } else { result }
+        }
+    }
 }
 
 /// `#[inline(never)]`: this is one protocol family's send working set, and
@@ -240,24 +282,26 @@ fn send_inet(ctx: &SendContext<'_>, target: &SendFile, socket: &Arc<net::sock::I
         return if signals_pipe { complete(ctx, flags, result) } else { result };
     }
     let stream = matches!(&*socket.kind.lock(), net::sock::SockKind::TcpConn(_));
-    if flags as u64 & net::uapi::MSG_OOB != 0 && stream {
-        let byte = *message.payload.first().ok_or(Error::Einval)?;
-        let entry = match &*socket.kind.lock() {
-            net::sock::SockKind::TcpConn(entry) => entry.clone(),
-            _ => return Err(Error::Einval),
-        };
-        return match net::sock::stack().tcp_send_urgent(&entry, byte) {
-            Ok(n) => { net::sock::drain_loopback(); Ok(n) },
-            Err(error) => if signals_pipe { complete(ctx, flags, Err(Error::from(error))) }
-                else { Err(Error::from(error)) },
-        };
+    // The urgent pointer is set just past the last byte written, so an
+    // out-of-band stream send puts every byte but the last through the
+    // ordinary path and marks that one. A zero-length one has nothing to mark
+    // and reports zero; it is not refused.
+    let plan = if stream { crate::oob::tcp_oob_plan(flags as u64 & net::uapi::MSG_OOB != 0,
+        message.payload.len()) } else { crate::oob::OobPlan::Inband };
+    if plan == crate::oob::OobPlan::Unsupported { return Ok(0); }
+    let body = crate::oob::plan_body(plan, message.payload.len());
+    if stream && body == 0 && matches!(plan, crate::oob::OobPlan::Split { .. }) {
+        return tcp_urgent_tail(ctx, socket, message, 0, signals_pipe, flags);
     }
     let mut total = 0usize;
     loop {
-        match net::sock::sendto(socket, &message.payload[total..], dest.clone(), ctx.creds(), &control) {
+        let end = if stream { body } else { message.payload.len() };
+        match net::sock::sendto(socket, &message.payload[total..end], dest.clone(), ctx.creds(), &control) {
             Ok(bytes) if stream && bytes != 0 => {
                 total += bytes;
-                if total >= message.payload.len() { return Ok(total); }
+                if total >= body {
+                    return tcp_urgent_tail(ctx, socket, message, total, signals_pipe, flags);
+                }
             }
             Ok(bytes) => return Ok(total.saturating_add(bytes)),
             Err(net::NetError::Eagain) if nonblock => {
@@ -305,7 +349,7 @@ fn send_unix_blocking(ctx: &SendContext<'_>, target: &SendFile,
     let plan = crate::oob::unix_oob_plan(stream, flags as u64 & net::uapi::MSG_OOB != 0,
         message.requested_len);
     let body = crate::oob::plan_body(plan, message.payload.len());
-    let requested = if matches!(plan, crate::oob::UnixOobPlan::Split { .. }) { body + 1 } else { body };
+    let requested = if matches!(plan, crate::oob::OobPlan::Split { .. }) { body + 1 } else { body };
     let mut total = 0usize;
     loop {
         let tail = crate::oob::owes_oob(plan, total);

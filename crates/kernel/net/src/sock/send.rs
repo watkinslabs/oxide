@@ -165,12 +165,12 @@ pub fn sendto(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, creds
         }
     }
     if let Some(RemoteAddr::Inet6 { ip, port, scope_id }) = dest {
-        return crate::sock_v6::sendto_v6(sock, ip, port, scope_id, payload);
+        return crate::sock_v6::sendto_v6_ctl(sock, ip, port, scope_id, payload, &control.raw6);
     }
     if sock.family.load(core::sync::atomic::Ordering::Acquire) == AF_INET6 {
         let (ip, port) = sock.peer6.lock().ok_or(NetError::Edestaddrreq)?;
         let scope_id = sock.peer6_scope.load(core::sync::atomic::Ordering::Acquire);
-        return crate::sock_v6::sendto_v6(sock, ip, port, scope_id, payload);
+        return crate::sock_v6::sendto_v6_ctl(sock, ip, port, scope_id, payload, &control.raw6);
     }
     let (dst_ip, dst_port) = match dest {
         Some(RemoteAddr::Inet { ip, port }) => (ip, port),
@@ -178,5 +178,5 @@ pub fn sendto(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, creds
         Some(RemoteAddr::Inet6 { .. }) => unreachable!(),
         None => sock.peer.lock().ok_or(NetError::Edestaddrreq)?,
     };
-    socket_sendto(sock, dst_ip, dst_port, payload)
+    socket_sendto_ctl(sock, dst_ip, dst_port, payload, &control.raw4)
 }

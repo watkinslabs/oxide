@@ -11,6 +11,9 @@ pub enum NetError {
     Emsgsize,
     Eaddrinuse,
     Enodev,
+    /// "No such device or address" — the send paths' answer for a destination
+    /// no device answers to, which is not the configuration calls' ENODEV.
+    Enxio,
     Enetdown,
     Enetunreach,
     Ehostunreach,

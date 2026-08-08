@@ -24,15 +24,30 @@ pub fn socket_recv6(sock: &InetSocket) -> Option<(crate::Ipv6Addr, u16, Vec<u8>)
 /// port if not already bound, builds + xmits the datagram,
 /// drains lo so an immediate recv on the same socket sees it.
 /// # C: O(1)
+#[inline(always)]
 pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &[u8])
+    -> Result<usize, NetError>
+{
+    socket_sendto_ctl(sock, dst, dst_port, payload, &crate::send_control::Raw4Control::default())
+}
+
+/// The same send, carrying one message's IPv4 ancillary overrides. Each of
+/// them replaces exactly the socket-level choice its `setsockopt` counterpart
+/// makes, for this datagram only. # C: O(1)
+pub fn socket_sendto_ctl(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &[u8],
+    msg: &crate::send_control::Raw4Control)
     -> Result<usize, NetError>
 {
     let net_ns = sock.net_ns();
     let eno = sock.take_pending_recv_error();
     if eno != 0 { return Err(crate::sock_io::pending_net_error(eno)); }
     if crate::udp::udp4_payload_too_large(payload.len()) { return Err(NetError::Emsgsize); }
-    let src_port = sock.ensure_bound()?; let src_ip = *sock.local_ip.lock();
-    let bound_iface = if dst.is_multicast() { crate::sock_mcast::bound_iface(sock, dst)? }
+    let src_port = sock.ensure_bound()?;
+    // `IP_PKTINFO`'s `ipi_spec_dst` and `ipi_ifindex` stand in for the bound
+    // source and the egress interface for this datagram.
+    let src_ip = msg.v4_source(*sock.local_ip.lock());
+    let bound_iface = if msg.iface.is_some() { msg.iface }
+        else if dst.is_multicast() { crate::sock_mcast::bound_iface(sock, dst)? }
         else { super::iface::v4_egress_iface(sock)? };
     // F150: pick the right source IP for outbound. ANY-bound socket
     // → use loopback only when dst is loopback; else consult the
@@ -62,17 +77,18 @@ pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &
     };
     let multicast = dst.is_multicast();
     let mcast_loop = sock.opts.ip_mcast_loop.load(core::sync::atomic::Ordering::Acquire) != 0;
-    let ttl = crate::inet_tx::ipv4_ttl(
+    let ttl = msg.v4_ttl(crate::inet_tx::ipv4_ttl(
         sock.opts.ip_mcast_ttl.load(core::sync::atomic::Ordering::Acquire),
-        sock.opts.ip_ttl.load(core::sync::atomic::Ordering::Acquire), multicast);
-    let tos = sock.opts.ip_tos.load(core::sync::atomic::Ordering::Acquire) as u8;
+        sock.opts.ip_ttl.load(core::sync::atomic::Ordering::Acquire), multicast));
+    let tos = msg.v4_tos(sock.opts.ip_tos.load(core::sync::atomic::Ordering::Acquire) as u8);
     if crate::inet_tx::multicast_delivers_nowhere(multicast, mcast_loop,
         crate::sock_mcast::is_loopback_iface(bound_iface))
     { return Ok(payload.len()); }
     let pmtudisc = sock.opts.ip_mtu_discover.load(core::sync::atomic::Ordering::Acquire);
     // `IP_OPTIONS` rides every datagram this socket sends, and a source route
     // among them retargets the route lookup at its first hop.
-    let ip_options = sock.opts.ip.options();
+    // A control message replaces the socket's own option area outright.
+    let ip_options = msg.v4_options(sock.opts.ip.options());
     // `SO_NO_CHECK`: the datagram leaves with a zero checksum field, which an
     // IPv4 receiver reads as "not computed".
     let no_check = sock.opts.generic.flag(crate::sock_opts::sol_socket::flag::NO_CHECK_TX);
