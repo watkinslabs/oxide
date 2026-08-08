@@ -39,8 +39,14 @@ impl Task {
     /// # C: O(1) + Arc drop
     pub unsafe fn replace_fd_table(&self, new: Option<Arc<FdTable>>) {
         self.debug_check_canary("replace_fd_table");
-        let _pin = self.fd_table_pin_lock.lock();
-        // SAFETY: see fn-level contract; single-mutator on this CPU; pin lock excludes clone_fd_table readers.
-        unsafe { *self.fd_table.get() = new; }
+        let old = {
+            let _pin = self.fd_table_pin_lock.lock();
+            // SAFETY: see fn-level contract; single-mutator on this CPU; pin lock excludes clone_fd_table readers.
+            unsafe { core::mem::replace(&mut *self.fd_table.get(), new) }
+        };
+        // Closing the final table runs every file's release path and may
+        // block or inspect this task.  The pin only protects publication of
+        // the pointer, so its critical section must end before that drop.
+        drop(old);
     }
 }

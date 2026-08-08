@@ -1,0 +1,3 @@
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| OPEN | DEFECT | high | A Firefox graphical workload can corrupt task-exit/scheduler lifetime: after GNOME's user-mode segfault, the current `(sd-close)` task is absent from the live task registry, then holds the only CPU with no context switches. | Firefox run `3544207`: GNOME segfault at 104.220 s; SysRq at 105.008 s names current tid 5852 but the full registry snapshot has no tid 5852; at 114.430 s `[WATCHDOG] soft lockup ... tid=5852 ((sd-close)) last_syscall=close`, followed by 40 s no-progress. | B1953-firefox-task-exit-wedge |
