@@ -4,6 +4,21 @@ use crate::run;
 
 use super::common::{ensure_ahci_extra_img, ensure_ahci_img, ensure_nvme_extra_img, ensure_nvme_img, ensure_virtio_blk_extra_img, ssh_fwd_netdev, which};
 
+const X86_OVMF_CODE: &str = "/usr/share/OVMF/OVMF_CODE.fd";
+const X86_OVMF_VARS: &str = "/usr/share/OVMF/OVMF_VARS.fd";
+
+fn x86_uefi_vars(blobs: &std::path::Path) -> Result<std::path::PathBuf, u8> {
+    let code = std::path::Path::new(X86_OVMF_CODE);
+    let seed = std::path::Path::new(X86_OVMF_VARS);
+    if !code.is_file() || !seed.is_file() {
+        eprintln!("xtask grub: x86 UEFI needs {X86_OVMF_CODE} and {X86_OVMF_VARS}");
+        return Err(2);
+    }
+    let vars = blobs.join("ovmf-x86_64-vars.fd");
+    if !vars.is_file() { std::fs::copy(seed, &vars).map_err(|_| 1u8)?; }
+    Ok(vars)
+}
+
 /// Stage `boot/oxide-<arch>` + a `grub.cfg` that `multiboot2`-loads it,
 /// then `grub2-mkrescue` into a hybrid BIOS+UEFI ISO.
 pub(super) fn build_grub_iso(
@@ -34,8 +49,9 @@ pub(super) fn build_grub_iso(
     Ok(iso)
 }
 
-/// Boot the GRUB ISO under QEMU (SeaBIOS El Torito). Attaches the ext4
-/// rootfs as virtio-blk (/dev/oxide0) and serial→stdio for the console.
+/// Boot the GRUB ISO under QEMU. `OXIDE_QEMU_UEFI=1` selects OVMF; the
+/// default is SeaBIOS. Both firmware paths enter the same GRUB multiboot2
+/// handoff. Attaches the ext4 rootfs as virtio-blk and serial→stdio.
 pub(super) fn qemu_run_grub_x86_64(
     repo: &std::path::Path,
     id: Option<&str>,
@@ -43,6 +59,8 @@ pub(super) fn qemu_run_grub_x86_64(
     smp: u32,
 ) -> Result<(), u8> {
     let blobs = crate::buildns::blobs_dir(repo, id);
+    let uefi = std::env::var_os("OXIDE_QEMU_UEFI").is_some();
+    let ovmf_vars = if uefi { Some(x86_uefi_vars(&blobs)?) } else { None };
     let root_img = blobs.join("root-x86_64.img");
     let home_img = blobs.join("home-x86_64.img");
     // D3.5: NVMe scratch disk for the drv-nvme bring-up.
@@ -100,6 +118,12 @@ pub(super) fn qemu_run_grub_x86_64(
     let _ = std::fs::remove_file(&pidfile);
     let mut c = Command::new("qemu-system-x86_64");
     c.args(["-pidfile", pidfile.to_str().unwrap()]);
+    if let Some(ref vars) = ovmf_vars {
+        c.args([
+            "-drive", &format!("if=pflash,format=raw,readonly=on,file={X86_OVMF_CODE}"),
+            "-drive", &format!("if=pflash,format=raw,file={}", vars.display()),
+        ]);
+    }
     // Optional CPU/interrupt tracing: OXIDE_QEMU_DINT=<file> adds
     // `-d int,guest_errors -D <file>` so a boot fault's exception
     // cascade (the #PF preceding a #DF, with CR2/error code) is
@@ -251,6 +275,7 @@ pub(super) fn qemu_run_grub_x86_64(
             "-device", "ide-hd,drive=sata1,bus=ahci1.0,serial=oxahci1",
         ]);
     }
-    eprintln!("xtask grub: launching qemu (GRUB→multiboot2), smp={smp}, accel={accel}, headless={headless}");
+    let firmware = if uefi { "OVMF" } else { "SeaBIOS" };
+    eprintln!("xtask grub: launching qemu ({firmware}→GRUB→multiboot2), smp={smp}, accel={accel}, headless={headless}");
     run(c)
 }

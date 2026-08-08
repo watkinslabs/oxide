@@ -7,7 +7,7 @@ Define the boundary between bootloader (GRUB both arches) and kernel. What state
 
 ## 2 Invariants (frozen)
 
-1. x86_64: multiboot2. GRUB enters the kernel's own 32-bit trampoline; the trampoline reaches long mode before any Rust runs. No real-mode, no v8086, no BIOS calls after entry.
+1. x86_64: multiboot2 through GRUB from BIOS or x86_64 UEFI. GRUB enters the kernel's own 32-bit trampoline; the trampoline reaches long mode before any Rust runs. No real-mode, no v8086, no firmware calls after entry.
 2. aarch64: arm64 Image protocol. Either a UEFI application (EFI stub, entered by GRUB `linux` under EDK2) or a flat `Image` at a known phys addr (U-Boot `booti` / QEMU `-kernel`). CPU at EL2 or EL1 with MMU off after the stub drops it.
 3. Bootloader hands the kernel enough to build one `BootInfo`: memory map, ACPI RSDP or DTB pointer, kernel cmdline string.
 4. Kernel does not parse multiboot1, BIOS int 13h, or any protocol other than the two above.
@@ -16,7 +16,7 @@ Define the boundary between bootloader (GRUB both arches) and kernel. What state
 
 ## 3 Multiboot2 protocol (x86_64)
 
-Kernel ELF embeds a Multiboot2 header (spec §3.1.2) in the first 32 KiB. Its entry-address tag (type 3) names a 32-bit trampoline, not `_start`: GRUB enters in protected mode with paging off, so the kernel builds its own page tables before any Rust code runs.
+Kernel ELF embeds a Multiboot2 header (spec §3.1.2) in the first 32 KiB. GRUB's BIOS and x86_64 UEFI programs enter the same entry-address tag (type 3), naming a 32-bit trampoline instead of `_start`: the trampoline begins in protected mode with paging off and builds its own page tables before any Rust code runs.
 
 | Stage | State |
 |---|---|
@@ -73,7 +73,7 @@ Single-threaded boot until `smp_init`.
 
 ## 7 Test contract (frozen)
 
-- GRUB multiboot2 boot in QEMU q35 → "hello via UART" + clean QEMU exit (ISA-debug-exit).
+- GRUB multiboot2 boot in QEMU q35 under SeaBIOS and OVMF → "hello via UART" + clean QEMU exit (ISA-debug-exit).
 - GRUB EFI-stub boot in QEMU `virt` under OVMF: same sequence.
 - Both arches: `BootInfo.rsdp_pa` non-zero, MADT decodes, memmap total ≈ QEMU `-m`.
 - x86_64: RGB framebuffer tag round-trips base, pitch, geometry, channel masks; native scanout wins, otherwise simplefb registers with WC policy.
