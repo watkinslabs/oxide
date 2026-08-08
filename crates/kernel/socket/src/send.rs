@@ -201,7 +201,7 @@ pub(crate) fn prepare(ctx: &SendContext<'_>, target: &SendFile, message: &Messag
             }
             let mut control = crate::control_family::admit(ctx, socket, &message.control,
                 Some(&address))?;
-            control.apply_flags(flags as u64);
+            crate::control_family::settle(socket, &address, &mut control, flags as u64);
             Ok(PreparedSend::Inet(InetPrepared::Transport(address,
                 alloc::boxed::Box::new(control))))
         }

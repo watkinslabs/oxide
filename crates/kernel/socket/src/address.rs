@@ -6,7 +6,7 @@ use crate::{Error, KResult, SendContext};
 pub(crate) enum InetAddress {
     None,
     V4 { ip: net::Ipv4Addr, port: u16 },
-    V6 { ip: net::Ipv6Addr, port: u16, scope_id: u32 },
+    V6 { ip: net::Ipv6Addr, port: u16, scope_id: u32, flowinfo: u32 },
 }
 
 fn family(name: &[u8]) -> KResult<u16> {
@@ -72,7 +72,8 @@ pub(crate) fn inet(name: Option<&[u8]>) -> KResult<InetAddress> {
             let mut ip = [0u8; 16]; ip.copy_from_slice(&name[8..24]);
             Ok(InetAddress::V6 { ip: net::Ipv6Addr(ip),
                 port: u16::from_be_bytes(name[2..4].try_into().unwrap()),
-                scope_id: u32::from_ne_bytes(name[24..28].try_into().unwrap()) })
+                scope_id: u32::from_ne_bytes(name[24..28].try_into().unwrap()),
+                flowinfo: u32::from_be_bytes(name[4..8].try_into().unwrap()) })
         }
         _ => Err(Error::Eafnosupport),
     }
@@ -85,7 +86,7 @@ impl InetAddress {
         match self {
             Self::None => None,
             Self::V4 { ip, port } => Some(net::sock::RemoteAddr::Inet { ip, port }),
-            Self::V6 { ip, port, scope_id } =>
+            Self::V6 { ip, port, scope_id, .. } =>
                 Some(net::sock::RemoteAddr::Inet6 { ip, port, scope_id }),
         }
     }

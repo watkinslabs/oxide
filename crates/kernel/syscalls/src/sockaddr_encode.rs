@@ -76,14 +76,17 @@ pub(crate) fn encoded_sockaddr_in(addr_be: u32, port_be: u16) -> EncodedSockaddr
     out
 }
 
-/// `struct sockaddr_in6` — `inet6_getname` returns `sizeof(*sin)` with
-/// `sin6_flowinfo` zeroed unless `IPV6_FLOWINFO_SEND` is set on the socket.
-/// # C: O(1)
-pub(crate) fn encoded_sockaddr_in6(addr_bytes: [u8; 16], port_be: u16, scope_id: u32) -> EncodedSockaddr {
+/// `struct sockaddr_in6` — `inet6_getname` returns `sizeof(*sin)`.
+/// `flowinfo` is the settled flow information a peer name reports, which is
+/// zero for every local name and for a socket that never asked to send one
+/// (`net::sock_opts::sol_ipv6::sndflow`). # C: O(1)
+pub(crate) fn encoded_sockaddr_in6(addr_bytes: [u8; 16], port_be: u16, scope_id: u32,
+    flowinfo: u32) -> EncodedSockaddr
+{
     let mut out = EncodedSockaddr::new(SOCKADDR_IN6_LEN);
     out.put_u16(0, AF_INET6 as u16);
     out.put_u16(2, port_be);
-    out.put_u32(4, 0);
+    out.bytes[4..8].copy_from_slice(&flowinfo.to_be_bytes());
     out.bytes[8..24].copy_from_slice(&addr_bytes);
     out.put_u32(24, scope_id);
     out
@@ -158,8 +161,8 @@ pub(crate) fn v6_name_is_v4_mapped(ip6: net::Ipv6Addr, ip4: net::Ipv4Addr) -> bo
 /// `tcp_v4_connect`, and `inet6_getname` reports that verbatim. 127.0.0.1
 /// maps to `::ffff:127.0.0.1`, NOT `::1` — those are different addresses.
 /// # C: O(path len) for AF_UNIX, O(1) otherwise
-pub(crate) fn encoded_sockaddr_for_socket(sock: &InetSocket, ip: net::Ipv4Addr, port: u16)
-    -> EncodedSockaddr
+pub(crate) fn encoded_sockaddr_for_socket(sock: &InetSocket, ip: net::Ipv4Addr, port: u16,
+    flowinfo: u32) -> EncodedSockaddr
 {
     let fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
     if fam == net::sock::AF_UNIX {
@@ -167,7 +170,7 @@ pub(crate) fn encoded_sockaddr_for_socket(sock: &InetSocket, ip: net::Ipv4Addr, 
         return encoded_sockaddr_un(path.as_deref());
     }
     if fam == net::sock::AF_INET6 {
-        encoded_sockaddr_in6(v4_mapped_bytes(ip), port.to_be(), 0)
+        encoded_sockaddr_in6(v4_mapped_bytes(ip), port.to_be(), 0, flowinfo)
     } else {
         encoded_sockaddr_in(ip.as_u32().to_be(), port.to_be())
     }

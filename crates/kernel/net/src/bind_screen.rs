@@ -75,21 +75,28 @@ pub fn classify_v4(ns: u64, addr: Ipv4Addr, iface: Option<NetIfaceId>) -> V4Addr
     if rows.iter().any(|row| row.broadcast == Some(addr) && scoped(row.iface)) {
         return V4AddrType::Broadcast;
     }
-    // A route in the LOCAL table makes every address it covers local. The
-    // reference asks the local table only for the address TYPE — `RTN_LOCAL`
-    // and friends — and never compares the route's preferred-source
-    // annotation, which is metadata for choosing a source address on transmit,
-    // not a constraint on what may be bound.
+    // The local table answers with the address TYPE, not merely with "a row
+    // exists": that table also carries the broadcast and anycast rows a
+    // configured prefix installs beside its local one, and those are not the
+    // same answer. A LOCAL-type row classifies `Local`; a BROADCAST-type row
+    // classifies `Broadcast` (claimable, but not a source this host may put on
+    // the wire); every other type in that table is `Other`.
     //
-    // Requiring `src_hint == addr` made exactly one address in 127.0.0.0/8
-    // bindable, the 127.0.0.1 the loopback route was registered with, so every
-    // other loopback address answered EADDRNOTAVAIL — including the 127.0.0.53
-    // the stub resolver binds before it does anything else, which is why name
-    // resolution failed to start at all.
-    let local_route = crate::global_stack().routes.lookup_in(ns, addr).is_some_and(|route| {
-        route.table == crate::policy_rule::RT_TABLE_LOCAL && scoped(route.iface)
-    });
-    if local_route { V4AddrType::Local } else { V4AddrType::Other }
+    // The route's preferred-source annotation is never compared — it is
+    // metadata for choosing a source address on transmit, not a constraint on
+    // what may be bound. Requiring `src_hint == addr` made exactly one address
+    // in 127.0.0.0/8 bindable, the 127.0.0.1 the loopback route was registered
+    // with, so every other loopback address answered EADDRNOTAVAIL — including
+    // the 127.0.0.53 the stub resolver binds before it does anything else,
+    // which is why name resolution failed to start at all.
+    let local_route = crate::global_stack().routes.lookup_record_in(ns, addr)
+        .filter(|record| record.route.table == crate::policy_rule::RT_TABLE_LOCAL
+            && scoped(record.route.iface));
+    match local_route.map(|record| record.kind) {
+        Some(crate::route::RTN_LOCAL) => V4AddrType::Local,
+        Some(crate::route::RTN_BROADCAST) => V4AddrType::Broadcast,
+        _ => V4AddrType::Other,
+    }
 }
 
 /// Classify a candidate IPv6 local address. # C: O(N_addrs)

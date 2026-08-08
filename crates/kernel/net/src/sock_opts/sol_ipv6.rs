@@ -13,6 +13,8 @@
 // - `pathmtu`: `IPV6_RECVPATHMTU` — when the single-slot notification cell is
 //   filled, when an ordinary receive drains it, and its wire shape.
 // - `flowlabel`: the per-namespace flow-label table `IPV6_FLOWLABEL_MGR` leases from.
+// - `sndflow`: `IPV6_FLOWINFO_SEND` — the gate on a `sockaddr_in6`'s
+//   `sin6_flowinfo`, on connect, per message and in a reported peer name.
 // - `autolabel`: the one flow-label generation policy, read back by
 //   `IPV6_AUTOFLOWLABEL` and consulted by every transmit path.
 // - `tests`: hosted coverage for the ordering, capability and length rules.
@@ -27,6 +29,7 @@ pub mod hdr;
 pub mod pktoptions;
 pub mod pathmtu;
 pub mod autolabel;
+pub mod sndflow;
 pub mod flowlabel;
 #[cfg(test)]
 mod tests;

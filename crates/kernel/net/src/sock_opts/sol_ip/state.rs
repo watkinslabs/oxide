@@ -68,6 +68,18 @@ impl IpOpts {
         else { self.flags.fetch_and(!bit, Ordering::AcqRel); }
     }
 
+    /// The nonlocal-address permission this option word carries, read as one
+    /// pair. Both bits live here because the `IPPROTO_IPV6` option numbers
+    /// write this same storage; every bind and transmit screen in either
+    /// family reads them through this accessor and nowhere else. # C: O(1)
+    pub fn nonlocal(&self) -> crate::bind_screen::SockNonlocal {
+        let word = self.flag_word();
+        crate::bind_screen::SockNonlocal {
+            freebind: word & flag::FREEBIND != 0,
+            transparent: word & flag::TRANSPARENT != 0,
+        }
+    }
+
     /// `IP_MULTICAST_ALL`: deliver every multicast datagram arriving on a
     /// joined group's port, not only those passing the source filter. # C: O(1)
     pub fn multicast_all(&self) -> bool { !self.flag(flag::MC_ALL_OFF) }

@@ -180,7 +180,7 @@ fn disconnect_hides_reusable_state_until_exact_tuple_removal() {
     let (done_tx, done_rx) = std::sync::mpsc::channel();
     let reconnect = {
         let sock = sock.clone();
-        std::thread::spawn(move || done_tx.send(sock.connect_transport(2, 1024, true)).unwrap())
+        std::thread::spawn(move || done_tx.send(sock.connect_transport(2, 1024, true, crate::sock_admit::AddrAdmission::for_test())).unwrap())
     };
     assert!(done_rx.recv_timeout(Duration::from_millis(20)).is_err());
     release_rw();
@@ -201,7 +201,7 @@ fn release_keeps_bind_reserved_until_exact_tuple_removal() {
     let _ = vsock::driver_uninstall(transport);
     assert!(vsock::driver_install(transport, cid, tx_block_rw, rx_noop));
     let sock = Arc::new(VsockSocket::new());
-    sock.bind(crate::socket_args::AF_VSOCK as u16, port, cid).unwrap();
+    sock.bind(crate::socket_args::AF_VSOCK as u16, port, cid, crate::sock_admit::AddrAdmission::for_test()).unwrap();
     let conn = Arc::new(VsockConn::new(transport, cid, port, 2, 1024,
         VsockState::Connected));
     assert!(vsock::TABLE.insert(conn.clone()));
@@ -215,11 +215,11 @@ fn release_keeps_bind_reserved_until_exact_tuple_removal() {
     };
     wait_for_rw();
     let replacement = VsockSocket::new();
-    assert_eq!(replacement.bind(crate::socket_args::AF_VSOCK as u16, port, cid),
+    assert_eq!(replacement.bind(crate::socket_args::AF_VSOCK as u16, port, cid, crate::sock_admit::AddrAdmission::for_test()),
         Err(crate::NetError::Eaddrinuse));
     release_rw();
     release.join().unwrap();
-    assert_eq!(replacement.bind(crate::socket_args::AF_VSOCK as u16, port, cid), Ok(()));
+    assert_eq!(replacement.bind(crate::socket_args::AF_VSOCK as u16, port, cid, crate::sock_admit::AddrAdmission::for_test()), Ok(()));
     replacement.release_file();
     assert!(vsock::driver_uninstall(transport));
 }
@@ -254,7 +254,7 @@ fn transport_rst_reenters_send_shutdown_close_and_accept_response() {
     let port = 63_008;
     assert!(vsock::driver_install(transport, cid, tx_reenter_rst, rx_noop));
     let listener = VsockSocket::new();
-    listener.bind(crate::socket_args::AF_VSOCK as u16, port, cid).unwrap();
+    listener.bind(crate::socket_args::AF_VSOCK as u16, port, cid, crate::sock_admit::AddrAdmission::for_test()).unwrap();
     listener.listen().unwrap();
     let request = vsock::VsockHdr {
         src_cid: 2, dst_cid: cid, src_port: 1024, dst_port: port,
@@ -279,7 +279,7 @@ fn failed_accept_response_rolls_back_hidden_child() {
     let port = 63_009;
     assert!(vsock::driver_install(transport, cid, tx_fail_response, rx_noop));
     let listener = VsockSocket::new();
-    listener.bind(crate::socket_args::AF_VSOCK as u16, port, cid).unwrap();
+    listener.bind(crate::socket_args::AF_VSOCK as u16, port, cid, crate::sock_admit::AddrAdmission::for_test()).unwrap();
     listener.listen().unwrap();
     let request = vsock::VsockHdr {
         src_cid: 2, dst_cid: cid, src_port: 1025, dst_port: port,
@@ -304,7 +304,7 @@ fn deferred_credit_update_cannot_cross_tuple_reuse() {
     let port = 63_010;
     assert!(vsock::driver_install(transport, cid, tx_block_rw, rx_noop));
     let sock = Arc::new(VsockSocket::new());
-    sock.bind(crate::socket_args::AF_VSOCK as u16, port, cid).unwrap();
+    sock.bind(crate::socket_args::AF_VSOCK as u16, port, cid, crate::sock_admit::AddrAdmission::for_test()).unwrap();
     let old = Arc::new(VsockConn::new(transport, cid, port, 2, 1026,
         VsockState::Connected));
     old.rx.lock().push_back(7);
@@ -330,7 +330,7 @@ fn deferred_credit_update_cannot_cross_tuple_reuse() {
     assert_eq!(disconnect.join().unwrap(), Ok(()));
     assert!(!old.credit_update_pending.load(core::sync::atomic::Ordering::Acquire));
 
-    sock.connect_transport(2, 1026, true).unwrap();
+    sock.connect_transport(2, 1026, true, crate::sock_admit::AddrAdmission::for_test()).unwrap();
     let replacement = sock.conn().unwrap();
     assert_eq!(replacement.key(), old.key());
     assert!(!Arc::ptr_eq(&replacement, &old));

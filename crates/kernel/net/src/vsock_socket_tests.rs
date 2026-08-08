@@ -56,7 +56,7 @@ fn virtio_dgram_retains_linux_transport_and_shutdown_contracts() {
     let sock = VsockSocket::new_type(crate::socket_args::SOCK_DGRAM);
     assert_eq!(sock.socket_type(), VsockSocketType::Datagram);
     assert_eq!(sock.bind(crate::socket_args::AF_VSOCK as u16, EPHEMERAL_PORT,
-        vsock::VMADDR_CID_ANY), Err(crate::NetError::Eopnotsupp));
+        vsock::VMADDR_CID_ANY, crate::sock_admit::AddrAdmission::for_test()), Err(crate::NetError::Eopnotsupp));
     assert_eq!(sock.read_nonblock(FILE_OFFSET, &mut []), Err(vfs::VfsError::Eopnotsupp));
     assert_eq!(sock.write_nonblock(FILE_OFFSET, &[]), Err(vfs::VfsError::Eopnotsupp));
     assert_eq!(sock.shutdown(crate::uapi::ShutdownHow::Read), Err(crate::NetError::Enotconn));
