@@ -9,6 +9,7 @@
 // - `packet`: AF_PACKET message transmission.
 // - `batch`: lazy sendmmsg import/publication policy.
 // - `receive`: SCM_RIGHTS receive descriptor publication.
+// - `security`: the one send-side security hook call site.
 // - `filter`: common socket-filter target and mutation work.
 
 #![no_std]
@@ -35,6 +36,7 @@ mod message;
 mod oob;
 mod packet;
 mod receive;
+mod security;
 mod send;
 mod target;
 
@@ -61,5 +63,5 @@ mod filter_tests;
 #[path = "tests/netlink_preflight.rs"]
 mod netlink_preflight_tests;
 #[cfg(test)]
-#[path = "tests/landlock_hooks.rs"]
-mod landlock_hooks_tests;
+#[path = "tests/security_hooks.rs"]
+mod security_hooks_tests;

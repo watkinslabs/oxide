@@ -15,6 +15,10 @@ mod membarrier;
 mod affinity_abi;
 mod getdents_abi;
 mod net_errno;
+// Receive admission + protocol selection: kernel + hosted, so the rule that no
+// receive reaches a protocol unadmitted is provable under `cargo test` while
+// `recvmsg::dispatch` stays a pin-and-route shim.
+mod recv_admit;
 pub mod netlink_getsockopt_policy;
 pub mod mmsg_batch;
 // The one owner of "which message ABI does this call speak" plus both shapes.

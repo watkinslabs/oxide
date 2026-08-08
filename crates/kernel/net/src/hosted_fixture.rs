@@ -61,6 +61,34 @@ pub fn spin_until(what: &'static str, mut ready: impl FnMut() -> bool) {
     }
 }
 
+// Depth of live namespace-0 ownership on the current thread.
+//
+// Namespace 0 is not a per-`NetStack` resource: the netfilter hook, the MIB
+// counters, the address rows and the route records it names are all
+// process-global. A test that builds its own `NetStack` and registers a
+// namespace-0 interface therefore still traverses the hook an owning test
+// installed and still bumps the counters that test sampled — the fixture lock
+// on its own only serialises tests that ask for it, so ownership was partial
+// by construction and produced a ~40%-per-run flake at 24 threads.
+//
+// Registering a namespace-0 interface consequently requires this ownership,
+// and the requirement is checked here rather than left to convention: a test
+// added without the guard fails deterministically instead of corrupting a
+// concurrent test's counters. Namespace-private tests are unaffected.
+#[cfg(test)]
+std::thread_local! {
+    static DOMAIN_DEPTH: core::cell::Cell<usize> = const { core::cell::Cell::new(0) };
+}
+
+/// Reject a namespace-0 registration made without the ownership guard. # C: O(1)
+#[cfg(test)]
+#[track_caller]
+pub(crate) fn assert_initial_domain_held(what: &'static str) {
+    assert!(DOMAIN_DEPTH.with(core::cell::Cell::get) > 0,
+        "namespace-0 state is process-global: {what} requires \
+         hosted_fixture::init_net_domain(), or a private namespace");
+}
+
 /// Exclusive hosted ownership of namespace-0 address and process hook state.
 #[must_use = "the ownership guard must span the complete hosted fixture lifetime"]
 pub struct InitNetDomain {
@@ -86,6 +114,8 @@ impl InitNetDomain {
 
 impl Drop for InitNetDomain {
     fn drop(&mut self) {
+        #[cfg(test)]
+        DOMAIN_DEPTH.with(|depth| depth.set(depth.get() - 1));
         let stack = crate::global_stack();
         let created: Vec<_> = stack.ifaces.snapshot_devs_in_ns(0).into_iter()
             .map(|entry| entry.0).filter(|iface| !self.global_ifaces.contains(iface)).collect();
@@ -106,6 +136,8 @@ pub fn init_net_domain() -> InitNetDomain {
             poisoned.into_inner()
         }
     };
+    #[cfg(test)]
+    DOMAIN_DEPTH.with(|depth| depth.set(depth.get() + 1));
     InitNetDomain {
         _guard: guard,
         ipv4_rows: crate::iface_addr::snapshot_ns(0),

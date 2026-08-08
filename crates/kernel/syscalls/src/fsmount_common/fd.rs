@@ -11,10 +11,9 @@ use vfs::{File, InodeRef, OpenFlags};
 /// reversible path codec instead of requiring UTF-8. # C: O(PATH_MAX)
 pub(crate) fn read_path_allow_empty(p: u64) -> Result<String, i64> {
     if p == 0 || p >= USER_VA_END { return Err(-(Errno::Efault.as_i32() as i64)); }
-    // SAFETY: p in user range; bounded read via the shared helper.
-    let b = unsafe { devfs::read_user_cstr(p, vfs::path::PATH_MAX) }
+    let b = devfs::read_user_cstr(p, vfs::path::PATH_MAX)
         .ok_or(-(Errno::Efault.as_i32() as i64))?;
-    let path = vfs::path_from_bytes(b);
+    let path = vfs::path_from_bytes(&b);
     if !path.is_empty() {
         vfs::path::check_path_len(&path).map_err(crate::namei_common::errno_from_vfs)?;
     }
@@ -25,10 +24,9 @@ pub(crate) fn read_path_allow_empty(p: u64) -> Result<String, i64> {
 /// `EINVAL`. # C: O(max)
 pub(crate) fn read_cstr_req(p: u64, max: usize) -> Result<String, i64> {
     if p == 0 || p >= USER_VA_END { return Err(-(Errno::Efault.as_i32() as i64)); }
-    // SAFETY: p in user range; bounded read via the shared helper.
-    let b = unsafe { devfs::read_user_cstr(p, max) }
+    let b = devfs::read_user_cstr(p, max)
         .ok_or(-(Errno::Efault.as_i32() as i64))?;
-    core::str::from_utf8(b)
+    core::str::from_utf8(&b)
         .map(|s| s.to_string())
         .map_err(|_| -(Errno::Einval.as_i32() as i64))
 }

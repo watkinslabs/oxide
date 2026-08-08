@@ -208,6 +208,7 @@ dependencies = [
  "kernfs",
  "klog",
  "sync",
+ "uaccess",
  "vfs",
 ]
 
@@ -1648,6 +1649,7 @@ dependencies = [
  "hal",
  "hal-aarch64",
  "hal-x86_64",
+ "landlock",
  "net",
  "netlink",
  "network-namespace",

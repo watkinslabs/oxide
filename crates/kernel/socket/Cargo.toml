@@ -9,6 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 hal     = { path = "../../arch/hal" }
+landlock = { path = "../landlock" }
 netlink = { path = "../netlink" }
 nscg    = { path = "../nscg" }
 network-namespace = { path = "../network-namespace" }

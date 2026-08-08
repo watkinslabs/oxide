@@ -48,7 +48,7 @@ pub use pkru::{arch_max_pkey, ospke_enabled, pkru_init_value, pkru_write_default
 pub use debugreg::{validate_addr as validate_dr_addr, validate_dr7, DebugRegs, Dr6Status,
     Dr7Error, HBP_NUM};
 pub use fault::{
-    fixup_eligible, VEC_GP, VEC_PF,
+    fault_key, fixup_eligible, VEC_GP, VEC_PF,
     current_fault_frame, install_fault_handler, install_stack_name_hook, StackReport, install_user_trap_hook,
     vector_stub_addr, FaultHandler, UserTrapHook,
 };

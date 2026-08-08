@@ -92,36 +92,6 @@ impl<T> UserSlice<T> {
     }
 }
 
-/// Copy a NUL-terminated C string out of user memory starting at
-/// `base`, one byte at a time via `read`, into an owned `Vec` (NUL
-/// excluded). Bounds match Linux `strndup_user(..., max_len)` used by
-/// `getname_flags` on the execve path:
-///   * first `0` byte terminates → `Ok(bytes_before_nul)`;
-///   * reaching `USER_VA_END` before a NUL → `Efault` (the walk ran
-///     off the user half into unmapped/non-canonical space);
-///   * no NUL within `max_len` bytes → `Enametoolong`.
-///
-/// Pure over the byte-reader so the length policy is unit-testable
-/// off-target (the kernel caller passes a `read_volatile` closure).
-/// The caller handles `base == 0` (NULL) before calling.
-/// # C: O(max_len)
-pub fn scan_user_cstr(
-    base: u64,
-    max_len: u64,
-    mut read: impl FnMut(u64) -> u8,
-) -> Result<alloc::vec::Vec<u8>, Errno> {
-    if base >= USER_VA_END { return Err(Errno::Efault); }
-    let mut out: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
-    for i in 0..max_len {
-        let va = base.checked_add(i).ok_or(Errno::Efault)?;
-        if va >= USER_VA_END { return Err(Errno::Efault); }
-        let b = read(va);
-        if b == 0 { return Ok(out); }
-        out.push(b);
-    }
-    Err(Errno::Enametoolong)
-}
-
 #[inline]
 fn validate_range(raw: u64, bytes: u64) -> Result<(), Errno> {
     let end = raw.checked_add(bytes).ok_or(Errno::Efault)?;
@@ -139,55 +109,19 @@ fn validate_align(raw: u64, align: usize) -> Result<(), Errno> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::errno::Errno;
 
-    // Read a C string laid out at a fake `base` from a Rust buffer.
-    fn cstr_at(base: u64, bytes: &[u8], max: u64) -> Result<alloc::vec::Vec<u8>, Errno> {
-        scan_user_cstr(base, max, |va| bytes[(va - base) as usize])
+    #[test]
+    fn ptr_rejects_kernel_range_and_misalignment() {
+        assert_eq!(UserPtr::<u64>::new(USER_VA_END), Err(Errno::Efault));
+        assert_eq!(UserPtr::<u64>::new(USER_VA_END - 4), Err(Errno::Efault));
+        assert_eq!(UserPtr::<u64>::new(0x1004), Err(Errno::Efault));
+        assert!(UserPtr::<u64>::new(0x1000).is_ok());
     }
 
     #[test]
-    fn scan_reads_full_path_not_capped_at_64() {
-        // The exact user-session generator that regressed: 79 bytes, well
-        // past the old 64-byte cap. Must come back byte-for-byte intact.
-        let mut buf =
-            b"/usr/lib/systemd/user-environment-generators/30-systemd-environment-d-generator".to_vec();
-        assert_eq!(buf.len(), 79);
-        buf.push(0); // NUL terminator
-        let got = cstr_at(0x1000, &buf, 4096).expect("resolves");
-        assert_eq!(got.len(), 79);
-        assert_eq!(&got[..], &buf[..79]);
-    }
-
-    #[test]
-    fn scan_boundary_64_and_65() {
-        // 64-byte path terminates fine (was the largest that used to work).
-        let mut a = alloc::vec![b'a'; 64]; a.push(0);
-        assert_eq!(cstr_at(0x1000, &a, 4096).unwrap().len(), 64);
-        // 65-byte path used to be silently truncated → ENOENT; now intact.
-        let mut b = alloc::vec![b'b'; 65]; b.push(0);
-        assert_eq!(cstr_at(0x1000, &b, 4096).unwrap().len(), 65);
-    }
-
-    #[test]
-    fn scan_no_nul_within_max_is_enametoolong() {
-        // No terminator inside max_len → ENAMETOOLONG (Linux PATH_MAX rule),
-        // never a truncated success.
-        let buf = alloc::vec![b'x'; 16];
-        assert_eq!(cstr_at(0x1000, &buf, 8), Err(Errno::Enametoolong));
-    }
-
-    #[test]
-    fn scan_base_past_user_end_is_efault() {
-        assert_eq!(scan_user_cstr(USER_VA_END, 4096, |_| b'a'), Err(Errno::Efault));
-        assert_eq!(scan_user_cstr(USER_VA_END + 1, 4096, |_| b'a'), Err(Errno::Efault));
-    }
-
-    #[test]
-    fn scan_walks_off_user_end_before_nul_is_efault() {
-        // A non-terminated path that reaches USER_VA_END mid-walk faults
-        // rather than returning a partial string.
-        let base = USER_VA_END - 4;
-        assert_eq!(scan_user_cstr(base, 4096, |_| b'a'), Err(Errno::Efault));
+    fn slice_len_zero_is_allowed_anywhere_and_bytes_do_not_overflow() {
+        assert!(UserSlice::<u64>::new(0, 0).is_ok());
+        assert_eq!(UserSlice::<u64>::new(0x1000, usize::MAX), Err(Errno::Efault));
+        assert_eq!(UserSlice::<u8>::new(USER_VA_END - 2, 4), Err(Errno::Efault));
     }
 }

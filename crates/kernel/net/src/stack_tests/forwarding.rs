@@ -103,6 +103,7 @@ fn ipv4_forwarding_sysctl_gates_transit_packets() {
 
 #[test]
 fn ipv4_ingress_mib_names_unforwardable_and_unknown_packets() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (in_id, _) = stack.register_loopback();
 

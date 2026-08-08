@@ -109,6 +109,7 @@ fn compiled(bytes: &[u8]) -> Compiled { crate::ipv4_options::build_in(bytes, tru
 /// checksum covers the options.
 #[test]
 fn sticky_options_widen_the_udp_header() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (dev, iface) = device(&stack, 1500, SRC);
     stack.routes.add(RouteEntry::main(DST, 32, iface, None, Some(SRC)));
@@ -136,6 +137,7 @@ fn sticky_options_widen_the_udp_header() {
 /// only on the fragment carrying the first octet.
 #[test]
 fn fragmentation_accounts_for_the_option_area() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (dev, iface) = device(&stack, 68, SRC);
     stack.routes.add(RouteEntry::main(DST, 32, iface, None, Some(SRC)));
@@ -177,6 +179,7 @@ fn fragmentation_accounts_for_the_option_area() {
 /// follow that hop, while the option area carries the real destination.
 #[test]
 fn source_route_retargets_the_route_lookup_at_the_first_hop() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (direct, direct_iface) = device(&stack, 1500, SRC);
     let (hop_dev, hop_iface) = device(&stack, 1500, Ipv4Addr::new(192, 0, 2, 45));
