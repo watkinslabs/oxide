@@ -205,7 +205,7 @@ fn init_runtime_subsystems() {
     // SysV SEM_UNDO exit walk, same arrangement: a process killed by a fatal
     // fault must still have its registered semaphore adjustments applied, or
     // peers blocked on those semaphores never run again.
-    sched::live::set_sysvsem_exit_hook(ipc::sysv::sem::exit_sem);
+    sched::live::set_sysvsem_exit_hook(ipc::sysv::sem::undo::exit_sem);
     // PI-futex ownership handoff, same arrangement: a thread killed by a fatal
     // fault while owning a PTHREAD_PRIO_INHERIT mutex must hand it to the next
     // waiter with FUTEX_OWNER_DIED, or every waiter blocks on a dead owner.

@@ -77,6 +77,8 @@ pub(crate) fn encoded_sockaddr_un_path(path: Option<&[u8]>) -> EncodedSockaddr {
 /// Encode `struct sockaddr_vm` without touching user memory. # C: O(1)
 
 /// Encode a genuine IPv6 peer address. # C: O(1)
-pub(crate) fn encoded_sockaddr_in6_peer(ip: net::Ipv6Addr, port: u16) -> EncodedSockaddr {
-    encoded_sockaddr_in6(ip.0, port.to_be(), 0)
+pub(crate) fn encoded_sockaddr_in6_peer(ip: net::Ipv6Addr, port: u16, flowinfo: u32)
+    -> EncodedSockaddr
+{
+    encoded_sockaddr_in6(ip.0, port.to_be(), 0, flowinfo)
 }

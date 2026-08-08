@@ -23,7 +23,7 @@ use crate::timers::cpu_nanosleep::{arm, disarm, names_self, sleep_clock, CpuArm,
 
 /// `CLOCK_PROCESS_CPUTIME_ID` as `classify_clock` decodes it.
 const PROCESS_CPUTIME: ClockSpec =
-    ClockSpec::CpuEncoded { pid: 0, per_thread: false, measure: CpuMeasure::Sched };
+    ClockSpec::CpuEncoded { pid: 0, per_thread: false, measure: CpuMeasure::Sched, dynamic: false };
 /// The request `userspace/wait_diff/cputime.c` issues.
 const SLEEP_NS: u64 = 300_000_000;
 
@@ -58,7 +58,7 @@ fn a_process_cpu_sleep_arms_on_the_resolved_clock_not_the_encoding() {
     let resolved = sleep_clock(&task, PROCESS_CPUTIME)
         .expect("pid_for_clock resolves a process CPU clock naming pid 0 to the caller's group");
     assert_eq!(resolved, ClockSpec::Cpu(CpuClock {
-        target: 0x7200, per_thread: false, measure: CpuMeasure::Sched }));
+        target: 0x7200, per_thread: false, measure: CpuMeasure::Sched, dynamic: false }));
 
     match arm(&task, PROCESS_CPUTIME, false, SLEEP_NS) {
         Ok(CpuArm::Armed(sleep)) => {
@@ -90,8 +90,15 @@ fn the_accounting_tick_retires_an_armed_process_cpu_sleep() {
     assert_eq!(armed_deadline(&task, sleep.id), SLEEP_NS,
         "an unadvanced CPU clock must not retire the sleep");
 
+    // The tick-sampled user/system totals are a DIFFERENT measure from the one
+    // CLOCK_PROCESS_CPUTIME_ID selects, so charging them advances nothing here.
+    task.thread_group.charge_cpu(true, SLEEP_NS * 4);
+    crate::timers::account_cpu_tick(&sibling);
+    assert_eq!(armed_deadline(&task, sleep.id), SLEEP_NS,
+        "user+system time is not the scheduler-runtime clock this sleep samples");
+
     // The burner consumes past the expiry — `sibling_burn_completes`.
-    task.thread_group.charge_cpu(true, SLEEP_NS + 1);
+    task.thread_group.charge_sched_runtime(SLEEP_NS + 1);
     crate::timers::account_cpu_tick(&sibling);
     assert_eq!(armed_deadline(&task, sleep.id), 0,
         "cpu_timer_fire's nanosleep branch disarms the timer and wakes the sleeper");
@@ -132,7 +139,7 @@ fn the_tick_samples_a_process_cpu_clock_without_touching_the_registry() {
     // Same for a PER-THREAD clock naming the ticking task itself.
     let _ = disarm(&task, sleep);
     let per_thread = ClockSpec::CpuEncoded {
-        pid: 0x7271, per_thread: true, measure: CpuMeasure::Sched };
+        pid: 0x7271, per_thread: true, measure: CpuMeasure::Sched, dynamic: true };
     let Ok(CpuArm::Armed(sleep)) = arm(&task, per_thread, false, SLEEP_NS)
         else { panic!("a sibling's thread clock is a real sleep") };
     let before = crate::registry::LOOKUPS.load(O::Relaxed);
@@ -153,9 +160,9 @@ fn a_perthread_sleep_clock_resolves_only_within_the_callers_thread_group() {
     let stranger = leader(0x7230);
 
     let named = |pid: u32| ClockSpec::CpuEncoded {
-        pid, per_thread: true, measure: CpuMeasure::Sched };
+        pid, per_thread: true, measure: CpuMeasure::Sched, dynamic: true };
     assert_eq!(sleep_clock(&task, named(0x7221)), Some(ClockSpec::Cpu(CpuClock {
-        target: 0x7221, per_thread: true, measure: CpuMeasure::Sched })));
+        target: 0x7221, per_thread: true, measure: CpuMeasure::Sched, dynamic: true })));
     assert_eq!(sleep_clock(&task, named(stranger.tid)), None,
         "pid_for_clock rejects a per-thread clock outside the caller's group");
     assert!(matches!(arm(&task, named(stranger.tid), false, SLEEP_NS), Err(CpuArmError::Invalid)));
@@ -170,7 +177,7 @@ fn a_perthread_clock_naming_the_caller_is_diagnosed_against_the_resolved_task() 
     crate::registry::insert(&sibling);
 
     let named = |pid: u32| ClockSpec::CpuEncoded {
-        pid, per_thread: true, measure: CpuMeasure::Sched };
+        pid, per_thread: true, measure: CpuMeasure::Sched, dynamic: true };
     assert!(names_self(&task, named(0)), "pid 0 is the caller without any lookup");
     assert!(names_self(&task, named(0x7260)), "naming the caller can never make progress");
     assert!(!names_self(&task, named(0x7261)), "a sibling's clock DOES advance");
@@ -183,7 +190,7 @@ fn an_absolute_expiry_already_reached_completes_without_arming() {
     let _g = crate::tests::common::registry_test_lock();
     crate::registry::clear_for_tests();
     let task = leader(0x7240);
-    task.thread_group.charge_cpu(false, SLEEP_NS);
+    task.thread_group.charge_sched_runtime(SLEEP_NS);
     // `do_cpu_nanosleep`'s first loop test: expires already behind the clock.
     assert_eq!(arm(&task, PROCESS_CPUTIME, true, SLEEP_NS / 2), Ok(CpuArm::Expired));
 }

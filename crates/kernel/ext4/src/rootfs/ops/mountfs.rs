@@ -18,6 +18,15 @@ impl Ext4SuperOps {
     }
 }
 
+/// Whether a `sync_fs` pass owes the backing device a durability barrier.
+///
+/// Only the WAITING pass does. The non-waiting pass exists to start work, not to
+/// finish it: a barrier there orders writes nobody has waited for, while still
+/// costing a full device flush — and since the sync path issues BOTH passes,
+/// answering `true` for both doubles every whole-filesystem sync's device
+/// flushes. # C: O(1)
+fn sync_fs_needs_barrier(wait: bool) -> bool { wait }
+
 impl vfs::SuperOps for Ext4SuperOps {
     /// Linux `ext4_statfs`. `f_blocks` merges
     /// `s_blocks_count_hi` so a >16 TiB filesystem is not truncated to its low
@@ -112,7 +121,19 @@ impl vfs::SuperOps for Ext4SuperOps {
         inode.set_state(vfs::inode::I_FREEING | vfs::inode::I_CLEAR, vfs::inode::I_DIRTY);
     }
 
-    fn sync_fs(&self, _wait: bool) -> vfs::KResult<()> {
+    /// `s_op->sync_fs`. The `wait` argument selects how far this pass goes, and
+    /// ignoring it — which is what this did — makes every whole-filesystem sync
+    /// pay for the expensive half TWICE, because the sync path deliberately
+    /// issues both passes.
+    ///
+    /// Either pass starts the journal commit: the point of the non-waiting pass
+    /// is to get every filesystem's commit MOVING before any of them is waited
+    /// on. Only the waiting pass takes the device barrier, because a barrier is
+    /// a claim about writes that have already completed — issuing one on the
+    /// pass that does not wait guarantees nothing and costs a full device flush
+    /// per mount per `sync(2)`.
+    /// # C: O(dirty) + one device flush when `wait`
+    fn sync_fs(&self, wait: bool) -> vfs::KResult<()> {
         // sync(2)/syncfs(2): flush buffered file-data pages (Linux buffered
         // writes sit dirty in the page cache until writeback) before the
         // journal tx + device flush. fsync/msync flush per-inode; this is the
@@ -130,7 +151,9 @@ impl vfs::SuperOps for Ext4SuperOps {
         // authoritative for EVERY ext4 mount (incl. non-root `/home`), not
         // just the root helper `commit_rootfs_journal`.
         self.st.mount.commit_batch().map_err(|_| vfs::VfsError::Eio)?;
-        self.st.mount.dev.flush().map_err(|_| vfs::VfsError::Eio)?;
+        if sync_fs_needs_barrier(wait) {
+            self.st.mount.dev.flush().map_err(|_| vfs::VfsError::Eio)?;
+        }
         Ok(())
     }
 
@@ -286,5 +309,96 @@ impl core::ops::Drop for Ext4Mount {
         // cleanly unmounted. Best-effort on teardown.
         let _ = self.st.mount.mark_state_clean();
         let _ = self.st.mount.commit_batch();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::vec::Vec;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use block::{BlockDevice, BlockOp, BlockRequest, MemDisk};
+    use sync::TaskList;
+    use vfs::fs::FileSystem;
+
+    const IMAGE: &[u8] = include_bytes!("../../../tests/mini-j.img");
+    const SECTOR: u32 = 512;
+
+    /// A device that counts its durability barriers and forwards everything
+    /// else. The flush COUNT is the whole point: `wait` is not observable from
+    /// the return value, only from how much I/O the pass spends.
+    struct CountingDev { inner: Arc<MemDisk<TaskList>>, flushes: AtomicUsize }
+
+    impl BlockDevice for CountingDev {
+        fn block_size(&self) -> u32 { self.inner.block_size() }
+        fn capacity_blocks(&self) -> u64 { self.inner.capacity_blocks() }
+        fn submit_sync(&self, req: &mut BlockRequest) -> block::types::KResult<()> {
+            self.inner.submit_sync(req)
+        }
+        fn flush(&self) -> block::types::KResult<()> {
+            self.flushes.fetch_add(1, Ordering::SeqCst);
+            self.inner.flush()
+        }
+    }
+
+    fn fresh_dev() -> Arc<CountingDev> {
+        let cap = (IMAGE.len() as u64) / (SECTOR as u64);
+        let inner: Arc<MemDisk<TaskList>> = MemDisk::new(SECTOR, cap);
+        let mut req = BlockRequest {
+            op: BlockOp::Write, start_block: 0, len_blocks: cap as u32,
+            buffer: Vec::from(IMAGE), ..Default::default()
+        };
+        inner.submit_sync(&mut req).unwrap();
+        Arc::new(CountingDev { inner, flushes: AtomicUsize::new(0) })
+    }
+
+    /// The non-waiting pass starts the commit and stops there. Before the split
+    /// it also flushed the device, so the two passes the sync path issues cost
+    /// two full device flushes per mount for one `sync(2)`.
+    #[test]
+    fn nowait_sync_fs_starts_the_commit_without_a_device_barrier() {
+        let dev = fresh_dev();
+        let m = Ext4Mount::open(dev.clone() as Arc<dyn BlockDevice>).unwrap();
+        let ops = m.super_ops().expect("ext4 super_ops");
+        dev.flushes.store(0, Ordering::SeqCst);
+
+        ops.sync_fs(false).expect("nowait pass");
+        assert_eq!(dev.flushes.load(Ordering::SeqCst), 0,
+            "the pass that does not wait takes no device barrier");
+    }
+
+    /// The waiting pass is the one that owes the barrier, and owes exactly one.
+    #[test]
+    fn waiting_sync_fs_takes_exactly_one_device_barrier() {
+        let dev = fresh_dev();
+        let m = Ext4Mount::open(dev.clone() as Arc<dyn BlockDevice>).unwrap();
+        let ops = m.super_ops().expect("ext4 super_ops");
+        dev.flushes.store(0, Ordering::SeqCst);
+
+        ops.sync_fs(true).expect("waiting pass");
+        assert_eq!(dev.flushes.load(Ordering::SeqCst), 1,
+            "the waiting pass takes the barrier, once");
+    }
+
+    /// The pair as the sync path actually issues it: one barrier for the whole
+    /// filesystem, not one per pass.
+    #[test]
+    fn a_full_sync_pass_pair_costs_one_device_barrier() {
+        let dev = fresh_dev();
+        let m = Ext4Mount::open(dev.clone() as Arc<dyn BlockDevice>).unwrap();
+        let ops = m.super_ops().expect("ext4 super_ops");
+        dev.flushes.store(0, Ordering::SeqCst);
+
+        ops.sync_fs(false).expect("nowait pass");
+        ops.sync_fs(true).expect("waiting pass");
+        assert_eq!(dev.flushes.load(Ordering::SeqCst), 1,
+            "one whole-filesystem sync, one device barrier");
+    }
+
+    /// The barrier decision itself, stated once: the waiting pass and only it.
+    #[test]
+    fn only_the_waiting_pass_owes_a_barrier() {
+        assert!(!sync_fs_needs_barrier(false));
+        assert!(sync_fs_needs_barrier(true));
     }
 }

@@ -133,8 +133,23 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
         Ok(storage) => storage,
         Err(error) => return error,
     };
+    // The generic bind security decision, above the family branch and above
+    // every address-shape screen: the hook reads the socket's namespace and
+    // family, never the address, so a malformed `sockaddr` must not outrank a
+    // denial. One token, whatever the family answers with.
+    let (namespace, sock_family) = match &target {
+        Target::Netlink(target) => (net::net_ns::namespace_id(&target.socket().net_ns),
+            net::socket_args::AF_NETLINK_WIRE),
+        Target::Vsock(vs) => (vs.net_ns(), net::socket_args::AF_VSOCK as u16),
+        Target::Inet(sock) => (sock.net_ns(),
+            sock.family.load(core::sync::atomic::Ordering::Acquire)),
+    };
+    let admission = match net::sock_admit::admit_bind_in(namespace, sock_family) {
+        Ok(admission) => admission,
+        Err(error) => return errno_from_neterr(error),
+    };
     if let Target::Netlink(target) = &target {
-        return crate::netlink_fd::bind(target, &storage);
+        return crate::netlink_fd::bind(target, &storage, admission);
     }
     // D3.3: AF_VSOCK bind — record the local CID/port; listen() registers
     // the owner-keyed listener in the table.
@@ -143,7 +158,7 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
         let (family, port, cid) = match storage.vsock() {
             Some(t) => t, None => return -(Errno::Einval.as_i32() as i64),
         };
-        return match vs.bind(family, port, cid) {
+        return match vs.bind(family, port, cid, admission) {
             Ok(()) => 0,
             Err(e) => errno_from_neterr(e),
         };
@@ -152,11 +167,7 @@ pub fn sys_bind(args: &SyscallArgs) -> i64 {
         Target::Inet(sock) => sock,
         _ => unreachable!(),
     };
-    let admission = match net::sock::admit_bind(&sock) {
-        Ok(admission) => admission,
-        Err(error) => return errno_from_neterr(error),
-    };
-    let sock_fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
+    let sock_fam = sock_family;
     if sock_fam == AF_INET as u16 {
         if let Err(error) = require_sockaddr_in(copied_len) { return error; }
     } else if sock_fam == AF_INET6 as u16 {

@@ -96,10 +96,17 @@ pub struct ThreadGroup {
     /// is what makes `systemd --user` collect its session's orphans instead of
     /// leaking them to PID 1.
     is_child_subreaper: AtomicBool,
-    /// Linux `signal_struct::exec_update_lock` writer exclusion shared by
-    /// execve and Landlock TSYNC. Contention makes the later caller restart so
-    /// it can first run task work queued by the current transaction.
-    exec_update_busy: AtomicBool,
+    /// Linux `signal_struct::exec_update_lock`. Held for WRITE across execve's
+    /// point of no return and by Landlock TSYNC; contention there makes the
+    /// later writer restart so it can first run task work queued by the current
+    /// transaction. Held for READ by every caller that judges this process'
+    /// credentials and then acts on them (`pidfd_getfd`), so the judgement and
+    /// the act cannot straddle an exec that changes those credentials.
+    ///
+    /// A sleeping semaphore, not a spinlock: the write span covers the address
+    /// space swap, the fd-table unshare and the credential commit, which
+    /// allocate, fault and may be preempted.
+    exec_update: crate::rwsem::RwSem<()>,
     state: Spinlock<ThreadGroupState, TaskListClass>,
     /// Linux `signal_struct::group_exit_code` and its `SIGNAL_GROUP_EXIT`
     /// flag fused into one word: the status EVERY thread of this group
@@ -167,6 +174,14 @@ pub struct ThreadGroup {
     tty_old_pgrp: AtomicU32,
     user_ns: AtomicU64,
     system_ns: AtomicU64,
+    /// Linux `signal_struct::sum_sched_runtime` — the process-wide scheduler
+    /// runtime total `CLOCK_PROCESS_CPUTIME_ID` samples. A SEPARATE quantity
+    /// from `user_ns + system_ns`, which are tick-sampled: this is summed at
+    /// nanosecond precision from every member's schedule-out. Charged at the
+    /// same instant as the per-task total, so it already covers exited threads
+    /// and needs no registry walk — the shape `charge_cpu` and `GroupAcct`
+    /// already use.
+    sched_runtime_ns: AtomicU64,
     /// Linux `signal_struct`'s `c*` counters — every reaped child's resource
     /// use. Process-wide: whichever thread reaps a child, all its siblings'
     /// `getrusage(RUSAGE_CHILDREN)` / `times(2)` must see the cost.
@@ -186,13 +201,6 @@ struct ThreadGroupState {
 // applied when the array lived on `Task` (which is `Sync` for the same reason).
 unsafe impl Sync for ThreadGroup {}
 
-/// Writer guard for Linux `signal_struct::exec_update_lock`.
-pub struct ExecUpdateGuard<'a> { group: &'a ThreadGroup }
-
-impl Drop for ExecUpdateGuard<'_> {
-    fn drop(&mut self) { self.group.exec_update_busy.store(false, Ordering::Release); }
-}
-
 impl ThreadGroup {
     /// Create a one-task group around its leader PID identity. # C: O(1)
     pub fn new(leader: Arc<PidIdentity>) -> Self {
@@ -206,7 +214,7 @@ impl ThreadGroup {
             sid:  AtomicU32::new(seed),
             session_leader: AtomicBool::new(false),
             is_child_subreaper: AtomicBool::new(false),
-            exec_update_busy: AtomicBool::new(false),
+            exec_update: crate::rwsem::RwSem::new(()),
             state: Spinlock::new(ThreadGroupState { live: 1, pending_leader: None }),
             group_exit_code: AtomicI32::new(GROUP_EXIT_UNSET),
             group_stop_count: AtomicU32::new(0),
@@ -218,6 +226,7 @@ impl ThreadGroup {
             tty_old_pgrp: AtomicU32::new(0),
             user_ns: AtomicU64::new(0),
             system_ns: AtomicU64::new(0),
+            sched_runtime_ns: AtomicU64::new(0),
             child_acct: child_acct::ChildAcct::new(),
             group_acct: group_acct::GroupAcct::new(),
         }
@@ -311,11 +320,25 @@ impl ThreadGroup {
     /// restarts on contention; execve likewise retries before crossing its
     /// point of no return. The guard makes every later error path release it.
     /// # C: O(1)
-    pub fn try_exec_update(&self) -> Option<ExecUpdateGuard<'_>> {
-        self.exec_update_busy
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .ok()
-            .map(|_| ExecUpdateGuard { group: self })
+    pub fn try_exec_update(&self) -> Option<crate::rwsem::RwSemWriteGuard<'_, ()>> {
+        self.exec_update.try_write()
+    }
+
+    /// Take Linux `signal_struct::exec_update_lock` for READING
+    /// (`down_read_killable`). Every caller that checks this process'
+    /// credentials and then acts on the result — `pidfd_getfd`'s
+    /// `ptrace_may_access` followed by the fd fetch — must hold this across
+    /// both halves, or a concurrent `execve` can raise privileges (or drop
+    /// dumpability) between the judgement and the act.
+    ///
+    /// # SAFETY: process context only, holding no spinlock — this sleeps while
+    /// an `execve` on the target owns the write side.
+    /// # C: O(1) uncontended
+    /// # Sleeps: yes, while the target is mid-execve
+    #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+    pub unsafe fn exec_update_read(&self) -> crate::rwsem::RwSemReadGuard<'_, ()> {
+        // SAFETY: forwarded contract — the caller guarantees process context with no spinlock held.
+        unsafe { self.exec_update.read() }
     }
 
     /// Whether exactly one live task remains in this thread group. # C: O(1)
@@ -418,6 +441,18 @@ impl ThreadGroup {
     pub fn cpu_sample(&self) -> (u64, u64) {
         (self.user_ns.load(Ordering::Acquire), self.system_ns.load(Ordering::Acquire))
     }
+
+    /// Charge scheduler runtime from a member leaving a CPU. Every class that
+    /// charges the per-task total charges this in the same breath, so the two
+    /// cannot drift.
+    /// # C: O(1)
+    pub fn charge_sched_runtime(&self, delta_ns: u64) {
+        self.sched_runtime_ns.fetch_add(delta_ns, Ordering::Relaxed);
+    }
+
+    /// Process-wide scheduler runtime — what `CLOCK_PROCESS_CPUTIME_ID`
+    /// samples. # C: O(1)
+    pub fn sched_runtime_sample(&self) -> u64 { self.sched_runtime_ns.load(Ordering::Acquire) }
 
     /// Retire a switched-out task exactly once and delay an early leader until
     /// the final sibling exits. # C: O(N_subscribers)

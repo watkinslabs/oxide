@@ -285,14 +285,18 @@ impl NetStack {
     /// # Lk: matching stack RTNL held by `rtnl`
     fn configure_loopback_in_rtnl(&self, _rtnl: &crate::RtnlGuard<'_>, net_ns: u64,
                                    id: NetIfaceId) {
-        self.routes.add_in(net_ns, crate::route::RouteEntry {
-            table:      crate::policy_rule::RT_TABLE_LOCAL,
-            dst:        Ipv4Addr::new(127, 0, 0, 0),
-            prefix_len: 8,
-            iface:      id,
-            gateway:    None,
-            src_hint:   Some(Ipv4Addr::LOOPBACK),
-        });
+        // LOCAL type, not the unicast default: every address 127.0.0.0/8
+        // covers is delivered to this host, and the bind screen reads the
+        // type rather than the table it sits in.
+        self.routes.add_record_in(net_ns, crate::route::RouteRecord::local(
+            crate::route::RouteEntry {
+                table:      crate::policy_rule::RT_TABLE_LOCAL,
+                dst:        Ipv4Addr::new(127, 0, 0, 0),
+                prefix_len: 8,
+                iface:      id,
+                gateway:    None,
+                src_hint:   Some(Ipv4Addr::LOOPBACK),
+            }));
         self.routes6.add_in(net_ns, crate::route6::Route6Entry {
             table:      crate::policy_rule::RT_TABLE_LOCAL,
             dst:        Ipv6Addr::LOOPBACK,

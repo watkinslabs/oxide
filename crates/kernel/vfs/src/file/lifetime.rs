@@ -22,6 +22,11 @@ impl Drop for File {
                 crate::mount::dissolve_anon(&m);
             }
         }
+        // Release the inode write reference this description took at open
+        // (Linux `__fput` → `put_file_access`). Held for the WHOLE lifetime of
+        // the description, so a running executable stays `ETXTBSY`-protected
+        // against write-opens until the last fd referring to it is closed.
+        if self.holds_write_ref() { self.inode.put_write_access(); }
         self.release_epoll_links();
         // Drop any lease / dnotify registration (Linux `__fput` → `locks_remove_file`
         // / `dnotify_flush`). Weaks self-expire, but prune eagerly + fix the counters.

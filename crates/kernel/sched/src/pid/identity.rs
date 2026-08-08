@@ -20,6 +20,21 @@ pub struct PidIdentity {
     exit_retired: AtomicBool,
     poll: Arc<PollSubscribers>,
     info: Spinlock<Option<PidInfo>, TaskListClass>,
+    coredump: Spinlock<Option<CoredumpRecord>, TaskListClass>,
+}
+
+/// The coredump verdict this identity's process reached, latched by the dump
+/// path so a pidfd holder can still read it after the process is gone. Absent
+/// until the process actually faced a dump decision — which is what separates
+/// "did not crash" from "crashed and the dump was skipped".
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CoredumpRecord {
+    /// `PIDFD_COREDUMP*` bits: whether a dump happened and under whose rights.
+    pub mask:   u32,
+    /// The signal that caused it.
+    pub signal: u32,
+    /// The wait-encoded exit code the dump was taken at.
+    pub code:   u32,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -52,6 +67,7 @@ impl PidIdentity {
             exit_retired: AtomicBool::new(false),
             poll: Arc::new(PollSubscribers::new()),
             info: Spinlock::new(None),
+            coredump: Spinlock::new(None),
         }
     }
 
@@ -125,6 +141,17 @@ impl PidIdentity {
         }
     }
 
+    /// Latch this process' coredump verdict (Linux `pidfs_coredump`). Called
+    /// once, by the dump path, whether or not a dump is actually produced —
+    /// a refusal is itself the answer a pidfd holder asks for. # C: O(1)
+    pub fn record_coredump(&self, record: CoredumpRecord) {
+        *self.coredump.lock() = Some(record);
+    }
+
+    /// The latched coredump verdict, `None` while this process never reached a
+    /// dump decision. # C: O(1)
+    pub fn coredump(&self) -> Option<CoredumpRecord> { *self.coredump.lock() }
+
     /// Claim the one scheduler retirement for this identity. # C: O(1)
     pub fn claim_exit_retirement(&self) -> bool {
         !self.exit_retired.swap(true, Ordering::AcqRel)
@@ -138,9 +165,17 @@ impl Drop for PidIdentity {
 }
 
 fn snapshot_task(task: &Task) -> PidInfo {
+    // Every pid number here is answered in the READER's namespace, the way
+    // `task_pid_vnr`/`task_tgid_vnr`/`task_ppid_vnr` are: these fields are
+    // copied straight out to a caller that can only interpret them in its own
+    // namespace. Reporting the task's OWN numbers handed an ancestor-namespace
+    // reader a number naming a different process there, or none at all. `0`
+    // stands for "the reader's namespace does not number this task", matching
+    // the pid-number lookup that misses.
+    let reader = crate::registry::reader_pid_ns();
     PidInfo {
-        pid: task.vtid.load(Ordering::Acquire),
-        tgid: task.vtgid.load(Ordering::Acquire),
+        pid: crate::registry::vnr_in(task, &reader).unwrap_or(0),
+        tgid: crate::registry::tgid_nr_in(task, &reader).unwrap_or(0),
         ppid: crate::registry::parent_vpid(task.tid) as u32,
         ruid: task.creds.ruid.load(Ordering::Acquire),
         rgid: task.creds.rgid.load(Ordering::Acquire),

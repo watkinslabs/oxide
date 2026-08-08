@@ -6,13 +6,51 @@
 fn connect_security_precedes_family_parse_and_unix_lookup_once() {
     let source = include_str!("../042_connect.rs");
     let body = &source[source.find("pub fn sys_connect").expect("connect slot")..];
-    let admission = body.find("net::sock::admit_connect").expect("generic admission");
+    // One admission for every family, taken above the branch that picks one.
+    let admission = body.find("net::sock_admit::admit_connect_in").expect("generic admission");
     let family = body.find("let family = match storage.family()").expect("family parse");
     let unix_lookup = body.find("resolve_unix_addr").expect("UNIX lookup");
+    let vsock = body.find("require_sockaddr_vm(copied_len)").expect("vsock length screen");
+    let netlink = body.find("crate::netlink_fd::connect(").expect("netlink route");
     assert!(admission < family && admission < unix_lookup);
-    assert_eq!(body.matches("net::sock::admit_connect").count(), 1);
+    assert!(admission < vsock && admission < netlink);
+    assert_eq!(body.matches("net::sock_admit::admit_connect_in").count(), 1);
     assert!(body.contains("preflight_connect_admitted(&sock, admission)"));
     assert!(body.contains("connect_admitted("));
+    // A v6 connect settles the socket's flow information from its
+    // destination, through the one owner of that gate, and only after the
+    // connect took. (The gate's own coverage is
+    // `net::sock_opts::sol_ipv6::sndflow`; the value it produces is read back
+    // by `sock_name::tests`.)
+    let settle = body.find("sol_ipv6::sndflow::supplied").expect("flowinfo gate");
+    assert!(settle > body.find("storage.inet6()").expect("v6 destination parse"));
+    assert!(body.contains("sock.opts.ipv6.set_flow_label(flowinfo)"));
+}
+
+// The bind half of the same rule: one generic admission, above the family
+// branch and above every address-shape screen, so a short `sockaddr_vm` or
+// `sockaddr_nl` cannot report EINVAL where a denying module says EACCES.
+#[test]
+fn bind_security_precedes_every_family_and_its_address_screens() {
+    let source = include_str!("../049_bind.rs");
+    let body = &source[source.find("pub fn sys_bind").expect("bind slot")..];
+    let admission = body.find("net::sock_admit::admit_bind_in").expect("generic admission");
+    assert_eq!(body.matches("net::sock_admit::admit_bind_in").count(), 1);
+    for later in ["crate::netlink_fd::bind(", "require_sockaddr_vm(copied_len)",
+        "require_sockaddr_in(copied_len)", "let family = match storage.family()"]
+    {
+        assert!(admission < body.find(later).unwrap_or_else(|| panic!("{later}")), "{later}");
+    }
+    // Neither family carries its own copy of the decision any more.
+    let vsock = include_str!("../../../net/src/vsock_socket/lifecycle.rs");
+    let netlink = include_str!("../netlink_fd.rs");
+    let vsock_bind = vsock.split("pub fn bind(").nth(1).unwrap()
+        .split("pub fn listen").next().unwrap();
+    assert_eq!(vsock_bind.matches("security::network::Operation::Bind").count(), 0);
+    let netlink_bind = netlink.split("pub fn bind(").nth(1).unwrap()
+        .split("pub fn connect(").next().unwrap();
+    assert_eq!(netlink_bind.matches("security::network::Operation::Bind").count(), 0);
+    assert!(netlink_bind.contains("_admission: net::sock_admit::AddrAdmission"));
 }
 
 // Resolving a pathname AF_UNIX address for `connect(2)` carries a filesystem

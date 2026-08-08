@@ -4,9 +4,8 @@ use alloc::sync::Arc;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::net_sockaddr::*;
-use crate::net_common::{classify, Routed};
+use crate::net_common::{routed_from, Routed};
 use crate::net_errno::errno_from_neterr;
-use crate::sock_route::ControlOp;
 use net::socket_args::{AcceptFlags, parse_accept_flags};
 
 /// `accept(fd, sockaddr, addrlen)` slot 43 / `accept4` slot 288.
@@ -29,26 +28,56 @@ fn accept_common(args: &SyscallArgs, flags: u64) -> i64 {
     let addr_p = args.a1;
     let len_p  = args.a2;
     // An fd that names no open file is EBADF before the flag word is even
-    // read; a bad flag word is EINVAL before the file's protocol gets a say.
-    // Both, and netlink's "no accept operation" EOPNOTSUPP, come from the one
-    // ladder in `sock_route`.
+    // read; a bad flag word is EINVAL before the descriptor is reserved; the
+    // reservation precedes the file's protocol, so an exhausted table refuses
+    // before one connection can leave the listener's queue. `sock_route`
+    // owns that order, and netlink's "no accept operation" EOPNOTSUPP.
     let parsed = parse_accept_flags(flags);
-    let target = match classify(fd, ControlOp::Accept, parsed.as_ref().err().copied()) {
+    let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
+    // SAFETY: running task; sole reader of fd_table slot.
+    let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
+    let nofile = cur.nofile_soft();
+    let reserve_flags = match &parsed {
+        Ok(f) if f.cloexec => vfs::OpenFlags::O_CLOEXEC,
+        _ => vfs::OpenFlags::empty(),
+    };
+    let file = crate::net_common::fd_file(fd);
+    let endpoint = file.as_ref().map(crate::sock_route::endpoint_of);
+    let (endpoint, slot) = match crate::sock_route::accept_route(endpoint,
+        parsed.as_ref().err().copied(),
+        // The reservation's only refusal is an exhausted descriptor table.
+        || fdt.get_unused_fd_flags(reserve_flags, nofile).map_err(|_| Errno::Emfile),
+        |slot| fdt.put_unused_fd(slot))
+    {
+        Ok(routed) => routed,
+        Err(error) => {
+            if error == Errno::Enotsock { crate::net_trace::trace_enotsock_at(fd, b"accept"); }
+            return -(error.as_i32() as i64);
+        }
+    };
+    // `accept_route` classified a file, so the fd named an open description.
+    let opened = match file { Some(file) => file, None => return -(Errno::Ebadf.as_i32() as i64) };
+    let target = match routed_from(endpoint, opened) {
         Ok(target) => target,
-        Err(error) => return -(error.as_i32() as i64),
+        Err(error) => { fdt.put_unused_fd(slot); return -(error.as_i32() as i64); }
     };
     let acc_flags = match parsed {
-        Ok(f) => f, Err(e) => return -(e.as_i32() as i64),
+        Ok(f) => f, Err(e) => { fdt.put_unused_fd(slot); return -(e.as_i32() as i64); }
     };
+    let publish = |file: Arc<vfs::File>| { fdt.fd_install(slot, file); slot as i64 };
     let (file, sock) = match target {
-        // `route` refuses a netlink accept before classification returns.
-        Routed::Netlink(_) => return -(Errno::Eopnotsupp.as_i32() as i64),
+        // `accept_route` refuses a netlink accept before this point.
+        Routed::Netlink(_) => { fdt.put_unused_fd(slot); return -(Errno::Eopnotsupp.as_i32() as i64); }
         Routed::Vsock(vs) => {
             let nonblock = vs.is_nonblock();
-            return vsock_accept(&vs, addr_p, len_p, nonblock, acc_flags);
+            return match vsock_accept_file(&vs, addr_p, len_p, nonblock, acc_flags) {
+                Ok(file) => publish(file),
+                Err(rv) => { fdt.put_unused_fd(slot); rv }
+            };
         }
         Routed::Inet(file, sock) => (file, sock),
     };
+    macro_rules! refuse { ($rv:expr) => {{ fdt.put_unused_fd(slot); return $rv; }} }
     let nonblock = file.flags().contains(vfs::OpenFlags::O_NONBLOCK);
     let timeo = sock.opts.base.rcvtimeo_ns.load(Ordering::Acquire);
     #[cfg(target_arch = "x86_64")]
@@ -70,9 +99,9 @@ fn accept_common(args: &SyscallArgs, flags: u64) -> i64 {
                     deadline.is_some_and(|dl| now() >= dl),
                     deadline.unwrap_or(net::sock_intr::NO_TIMEOUT));
                 match wait {
-                    net::sock_intr::AcceptWaitVerdict::Eagain => return -(Errno::Eagain.as_i32() as i64),
+                    net::sock_intr::AcceptWaitVerdict::Eagain => refuse!(-(Errno::Eagain.as_i32() as i64)),
                     net::sock_intr::AcceptWaitVerdict::Interrupted(_) =>
-                        return crate::net_errno::sock_intr_errno(deadline.unwrap_or(net::sock_intr::NO_TIMEOUT)),
+                        refuse!(crate::net_errno::sock_intr_errno(deadline.unwrap_or(net::sock_intr::NO_TIMEOUT))),
                     net::sock_intr::AcceptWaitVerdict::Park => {}
                 }
                 // F160/F170: per-listener waitq park — TCP or AF_UNIX.
@@ -87,7 +116,7 @@ fn accept_common(args: &SyscallArgs, flags: u64) -> i64 {
                     LW::Tcp(l)  => match l.arm_accept_wait(park_dl) {
                         net::stack::TcpAcceptWait::Ready => {}
                         net::stack::TcpAcceptWait::Closed => {
-                            return -(Errno::Einval.as_i32() as i64);
+                            refuse!(-(Errno::Einval.as_i32() as i64));
                         }
                         net::stack::TcpAcceptWait::Parked => {
                             // SAFETY: arm_accept_wait registered current under the
@@ -113,11 +142,11 @@ fn accept_common(args: &SyscallArgs, flags: u64) -> i64 {
                             l.accept_waiters.remove_current();
                         }
                     }
-                    LW::None    => return -(Errno::Einval.as_i32() as i64),
+                    LW::None    => refuse!(-(Errno::Einval.as_i32() as i64)),
                 }
                 continue;
             }
-            Err(e) => return errno_from_neterr(e),
+            Err(e) => refuse!(errno_from_neterr(e)),
         }
     };
     let accepted = if addr_p != 0 {
@@ -127,68 +156,64 @@ fn accept_common(args: &SyscallArgs, flags: u64) -> i64 {
             if rv < 0 { Err(rv) } else { Ok(()) }
         }, |accepted| accepted.new_sock.release_file()) {
             Ok(accepted) => accepted,
-            Err(error) => return error,
+            Err(error) => refuse!(error),
         }
     } else { accepted };
     let unix_gc_pin = accepted.unix_gc_pin;
     let inode: vfs::InodeRef = net::sock::make_inet_socket_inode(accepted.new_sock);
-    let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
-    // SAFETY: running task; sole reader of fd_table slot.
-    let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
     let dentry = vfs::dcache::d_alloc_pseudo("socket", Arc::clone(&inode), &crate::anon_dname::SOCKET_OPS);
     let mut fl = vfs::OpenFlags::O_RDWR;
     if acc_flags.nonblock { fl |= vfs::OpenFlags::O_NONBLOCK; }
     let file_cred = match crate::pathresolve::file_cred_for(&cur) {
-        Some(cred) => cred, None => return -(Errno::Esrch.as_i32() as i64),
+        Some(cred) => cred, None => refuse!(-(Errno::Esrch.as_i32() as i64)),
     };
     let file = vfs::File::new_at(inode, dentry, fl, 0, file_cred);
     if let Some(sock) = crate::net_common::inode_as_inet_socket(file.inode()) {
         net::bind_file(&file, &sock);
     }
     drop(unix_gc_pin);
-    match crate::socket_fd::install(&fdt, file, cur.nofile_soft(), acc_flags.cloexec) {
-        Ok(fd) => fd as i64,
-        Err(e) => -(e as i64),
-    }
+    publish(file)
 }
 
 fn accepted_peer_sockaddr(sock: &net::sock::InetSocket) -> EncodedSockaddr {
     let fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
+    // The address an accept reports is the child's PEER name, so it carries
+    // flow information under the same rule `getpeername` follows.
+    let flowinfo = crate::sock_name::peer_flowinfo(sock);
     if fam == net::sock::AF_UNIX {
         let path = net::sock::unix_peer_path(sock).flatten();
         return encoded_sockaddr_un_path(path.as_deref());
     }
     if fam == net::sock::AF_INET6 {
         if let Some((ip, port)) = *sock.peer6.lock() {
-            return encoded_sockaddr_in6_peer(ip, port);
+            return encoded_sockaddr_in6_peer(ip, port, flowinfo);
         }
     }
     let (ip, port) = (*sock.peer.lock()).unwrap_or((net::Ipv4Addr::ANY, 0));
-    encoded_sockaddr_for_socket(sock, ip, port)
+    encoded_sockaddr_for_socket(sock, ip, port, flowinfo)
 }
 
 /// D3.3: AF_VSOCK accept. Pops one pending peer key from the listener's
 /// backlog (blocking unless O_NONBLOCK), looks up the connection
-/// deliver_rx already created, and installs it on a fresh VsockSocket fd.
+/// deliver_rx already created, and builds the child's file. The descriptor it
+/// will occupy is already reserved by the caller.
 /// # C: O(1) per accept
-fn vsock_accept(vs: &Arc<net::vsock_socket::VsockSocket>, addr_p: u64, len_p: u64,
-                nonblock: bool, acc_flags: AcceptFlags) -> i64 {
-    let listener = match vs.listener_for_accept() {
-        Ok(listener) => listener,
-        Err(error) => return crate::net_errno::errno_from_neterr(error),
-    };
+fn vsock_accept_file(vs: &Arc<net::vsock_socket::VsockSocket>, addr_p: u64, len_p: u64,
+                     nonblock: bool, acc_flags: AcceptFlags) -> Result<Arc<vfs::File>, i64> {
+    let listener = vs.listener_for_accept()
+        .map_err(crate::net_errno::errno_from_neterr)?;
     let conn = loop {
         if let Some(c) = net::vsock::TABLE.pop_accept_exact(&listener) { break c; }
         match net::sock_intr::accept_wait_verdict(nonblock,
             sched::live::deliverable_signals_self() != 0, false, vs.recv_deadline_ns()) {
-            net::sock_intr::AcceptWaitVerdict::Eagain => return -(Errno::Eagain.as_i32() as i64),
+            net::sock_intr::AcceptWaitVerdict::Eagain => return Err(-(Errno::Eagain.as_i32() as i64)),
             net::sock_intr::AcceptWaitVerdict::Interrupted(_) =>
-                return crate::net_errno::sock_intr_errno(vs.recv_deadline_ns()),
+                return Err(crate::net_errno::sock_intr_errno(vs.recv_deadline_ns())),
             net::sock_intr::AcceptWaitVerdict::Park => {}
         }
         match net::vsock::TABLE.arm_accept_wait_exact(&listener, 0) {
             net::vsock::AcceptWait::Ready => continue,
-            net::vsock::AcceptWait::Removed => return -(Errno::Einval.as_i32() as i64),
+            net::vsock::AcceptWait::Removed => return Err(-(Errno::Einval.as_i32() as i64)),
             net::vsock::AcceptWait::Armed => {
                 // SAFETY: owner wait gate registered current under listener locks.
                 unsafe { sched::live::schedule::schedule(); }
@@ -201,22 +226,15 @@ fn vsock_accept(vs: &Arc<net::vsock_socket::VsockSocket>, addr_p: u64, len_p: u6
         let rv = copy_sockaddr_to_user(addr_p, len_p, &sa);
         if rv < 0 {
             net::vsock::close(&conn);
-            return rv;
+            return Err(rv);
         }
     }
     let new_sock = Arc::new(net::vsock_socket::VsockSocket::new_accepted_with_filter(
         vs, conn.bpf_filter.clone()));
     *new_sock.kind.lock() = net::vsock_socket::VsockKind::Conn(conn);
     let inode: vfs::InodeRef = net::vsock_socket::make_vsock_socket_inode(new_sock);
-    let cur = match sched::live::current() { Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64) };
-    // SAFETY: running task; sole reader of fd_table slot.
-    let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return -(Errno::Ebadf.as_i32() as i64) };
     let dentry = vfs::dcache::d_alloc_pseudo("socket", Arc::clone(&inode), &crate::anon_dname::SOCKET_OPS);
     let mut fl = vfs::OpenFlags::O_RDWR;
     if acc_flags.nonblock { fl |= vfs::OpenFlags::O_NONBLOCK; }
-    let file = vfs::File::new(inode, dentry, fl);
-    match crate::socket_fd::install(&fdt, file, cur.nofile_soft(), acc_flags.cloexec) {
-        Ok(fd) => fd as i64,
-        Err(e) => -(e as i64),
-    }
+    Ok(vfs::File::new(inode, dentry, fl))
 }

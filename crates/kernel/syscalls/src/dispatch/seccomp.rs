@@ -32,6 +32,11 @@ pub(super) fn seccomp_gate(nr: u64, args: &[u64; 6]) -> Option<u64> {
         Verdict::Allow => None,
         Verdict::Log { syscall } => { log_action(syscall, b"log"); None }
         Verdict::Skip { ret } => Some(ret as u64),
+        // The supervisor is waited for inside `check`, which hands back the
+        // outcome as an ordinary verdict, so this arm never arrives. Denying
+        // rather than dispatching keeps "a filter that meant the call to be
+        // examined never lets it through unexamined" true even here.
+        Verdict::UserNotif { .. } => Some(enosys()),
         // `syscall_rollback(current, current_pt_regs())` then
         // `force_sig_seccomp(this_syscall, data, false)` — a CATCHABLE
         // SIGSYS — then `goto skip`. What the rollback leaves in the return

@@ -68,6 +68,10 @@ pub enum Errno {
     Ebadr   = 53,
     Enopkg  = 65,
     Enonet  = 64,
+    /// `EREMOTE` — the object named is real, but the caller's namespace cannot
+    /// name it, so no answer about it can be phrased in the caller's terms.
+    /// Distinct from `ESRCH`, which says the object is gone.
+    Eremote = 66,
     Eproto  = 71,
     Ehostdown = 112,
     Ebadmsg           = 74,

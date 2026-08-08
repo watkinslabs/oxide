@@ -16,6 +16,8 @@ use crate::stack::NetStack;
 
 // The transmit half, split out at the per-file size cutoff.
 mod transmit;
+// The outbound source screen, owned by the same split.
+mod source_screen;
 
 const PROTOCOL: u8 = 143;
 const OTHER_PROTOCOL: u8 = 144;

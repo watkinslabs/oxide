@@ -30,6 +30,10 @@ pub mod obsolete;
 // kernel-only cfg so the pinned slot set is actually unit-tested.
 pub mod unconfigured;
 mod access_cred;
+// Stale-handle retry rule shared by every path-based syscall. Ungated because
+// the `*at` resolution layer that applies it is kernel-only, and an unbounded
+// retry is the failure mode the rule exists to prevent.
+pub mod estale_retry;
 mod cachestat;
 // `process_mrelease`'s "is this mm really about to be freed" ladder. Ungated
 // because the slot file is kernel-only and this is the entire safety argument
@@ -42,6 +46,11 @@ mod pkey;
 // per-PAGE loop with a per-VMA one is exactly the kind of bound that has to be
 // tested, having wedged a CPU for 300+ s with interrupts masked (B1476).
 pub mod uaccess_range;
+// uretprobe(2) 335 / uprobe(2) 336: what each kernel-injected slot owes a
+// caller that did not arrive through a uprobe trampoline. Ungated because both
+// slot files are kernel-only, and the two answers differ in a way a userspace
+// feature probe reads directly.
+pub mod uprobe_abi;
 pub mod secretmem;
 // execve(2) 59: the AT_RANDOM auxv block. Kernel-gated slot files can't be
 // tested, and this is what glibc's stack canary + pointer guard come from.
@@ -79,6 +88,12 @@ pub mod handle_policy;
 // kernel-gated, and dropping a RESOLVE_* bit on the O_CREAT parent walk is a
 // sandbox escape, so the decision lives here where the hosted suite reaches it.
 pub mod openat2_resolve;
+// open(2) 2 / openat(2) 257 / openat2(2) 437: the `O_*` bit names plus the
+// pre-resolution flag/mode normalisation ladder shared by all three, and the
+// decode of an open's flag word into the `may_open` flag rungs. `257_openat.rs`
+// and `open_common.rs` are kernel-gated, and every rule here is observable only
+// as an errno or an errno ORDER, so it lives where the hosted suite reaches it.
+pub mod open_flags;
 // clone(2) 56 / fork(2) 57 / vfork(2) 58 / clone3(2) 435: the `CLONE_*` bit
 // names, the versioned `struct clone_args` layout and BOTH entry points'
 // validation ladders. The slot files are kernel-gated, and every rule here is
@@ -173,6 +188,10 @@ pub mod io_uring_identity;
 // record carries. Ungated so the mapping is testable — `acct_exit.rs` is
 // kernel-only.
 pub mod acct_ns;
+// pidfd ioctl (016 on a pidfd): the pidfs command vocabulary, the fixed vs
+// extensible match rules and the struct-length gate on the result mask.
+// Ungated so the ABI is unit-tested — `pidfd.rs` is kernel-only.
+pub mod pidfs_ioctl;
 mod fcntl_dup;
 mod exec_time;
 mod pidfd_signal_policy;
@@ -276,6 +295,9 @@ pub mod statx_abi;
 // x86_64 is invisible to any test that lives inside the gated slot file.
 #[cfg(any(target_os = "oxide-kernel", test))]
 pub mod rwf;
+// The usercopy half of the iovec importer. Kernel-only by nature (it reads
+// user memory); the RULES it applies live in `rwf` and are hosted-tested.
+pub mod iov;
 #[cfg(any(target_os = "oxide-kernel", test))]
 #[path = "063_uname/release.rs"] pub mod uname_release;
 #[cfg(any(target_os = "oxide-kernel", test))]

@@ -20,6 +20,7 @@ pub enum Error {
     Econnrefused = 111, Ehostdown = 112, Ehostunreach = 113,
     Ealready = 114, Einprogress = 115, Enonet = 64, Eproto = 71,
     Ebadfd = 77, Edestaddrreq = 89, Enotsock = 88, Erange = 34, Euclean = 117,
+    Estale = 116,
     Edquot = 122, Ecanceled = 125,
 }
 
@@ -64,7 +65,8 @@ impl From<vfs::VfsError> for Error {
             vfs::VfsError::Enotconn => Self::Enotconn, vfs::VfsError::Etimedout => Self::Etimedout,
             vfs::VfsError::Econnrefused => Self::Econnrefused,
             vfs::VfsError::Ehostdown => Self::Ehostdown, vfs::VfsError::Ehostunreach => Self::Ehostunreach,
-            vfs::VfsError::Euclean => Self::Euclean, vfs::VfsError::Edquot => Self::Edquot,
+            vfs::VfsError::Euclean => Self::Euclean, vfs::VfsError::Estale => Self::Estale,
+            vfs::VfsError::Edquot => Self::Edquot,
             vfs::VfsError::Ecanceled => Self::Ecanceled,
             // No socket path produces an owner-mapping overflow; report the
             // generic invalid-argument rather than inventing a socket errno.

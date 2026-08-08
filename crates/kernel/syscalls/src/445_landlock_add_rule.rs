@@ -60,9 +60,12 @@ fn add_path_beneath(rs: &Arc<Ruleset>, attr: u64, flags: u32) -> i64 {
     let pf = match fdt.get(parent_fd) {
         Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
-    // A ruleset fd names no hierarchy, so it can never anchor a rule; accepting
-    // it would install a rule that matches nothing.
-    if crate::landlock::is_ruleset_file(&pf) { return -(Errno::Ebadfd.as_i32() as i64); }
+    // A ruleset fd, a pipe, a socket or any other descriptor with no mount
+    // behind it names no hierarchy, so none of them can anchor a rule;
+    // accepting one would install a rule that matches nothing.
+    if let Err(e) = abi::rule_target_fd_ok(crate::landlock::rule_target_fd(&pf)) {
+        return -(e.as_i32() as i64);
+    }
     let inode = pf.inode().clone();
     let is_dir = inode.file_type() == FileType::Directory;
     match rs.add_fs(inode, is_dir, allowed, flags) {

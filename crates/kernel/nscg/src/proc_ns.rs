@@ -182,7 +182,24 @@ pub fn mnt_ns_inode(namespace: vfs::mntns::MntNamespaceRef) -> InodeRef {
 /// the namespace in `i_private` for an `O_NOFOLLOW`/`O_PATH` `setns`.
 /// Returns `ENOENT` when lookup races task namespace release. # C: O(1)
 pub fn ns_inode_for(task: &sched::Task, kind: NsKind) -> KResult<InodeRef> {
-    let owner = match kind {
+    let ns = NsInode::new(kind, owner_for(task, kind)?);
+    Ok(InodeBuilder::new(ns.ino(), mk_mode(FileType::Symlink, 0o777), Arc::new(NsLinkOps), default_file_ops())
+        .private(Arc::new(ns))
+        .build())
+}
+
+/// The nsfs node a descriptor for `task`'s `kind` namespace refers to — what a
+/// walk THROUGH `/proc/<pid>/ns/<type>` lands on, and what the pidfs
+/// namespace-descriptor ioctls hand back without a procfs path in between.
+/// Same retained owner, so `setns(2)` downcasts it identically.
+/// Returns `ENOENT` when the lookup races task namespace release. # C: O(1)
+pub fn ns_fd_inode_for(task: &sched::Task, kind: NsKind) -> KResult<InodeRef> {
+    Ok(ns_node(&NsInode::new(kind, owner_for(task, kind)?)))
+}
+
+/// `task`'s exact retained owner for `kind`. # C: O(1)
+fn owner_for(task: &sched::Task, kind: NsKind) -> KResult<NsOwner> {
+    Ok(match kind {
         NsKind::Cgroup => NsOwner::Cgroup(task.namespace_owner(NamespaceKind::Cgroup).ok_or(VfsError::Enoent)?),
         NsKind::Ipc => NsOwner::Ipc(task.namespace_owner(NamespaceKind::Ipc).ok_or(VfsError::Enoent)?),
         NsKind::Pid => NsOwner::Pid(task.namespace_owner(NamespaceKind::Pid).ok_or(VfsError::Enoent)?),
@@ -193,11 +210,7 @@ pub fn ns_inode_for(task: &sched::Task, kind: NsKind) -> KResult<InodeRef> {
         NsKind::Uts => NsOwner::Uts(task.namespace_owner(NamespaceKind::Uts).ok_or(VfsError::Enoent)?),
         NsKind::Mnt => NsOwner::Mnt(task.mount_namespace_snapshot().ok_or(VfsError::Enoent)?),
         NsKind::Net => NsOwner::Net(task.network_namespace_snapshot().ok_or(VfsError::Enoent)?),
-    };
-    let ns = NsInode::new(kind, owner);
-    Ok(InodeBuilder::new(ns.ino(), mk_mode(FileType::Symlink, 0o777), Arc::new(NsLinkOps), default_file_ops())
-        .private(Arc::new(ns))
-        .build())
+    })
 }
 
 /// True when `ancestor` is the exact owner or a concrete retained parent.
@@ -211,14 +224,39 @@ pub fn user_ns_is_ancestor(ancestor: &NamespacePin, descendant: &NamespacePin) -
     false
 }
 
-/// Per-user-NS cap check (`27§4`). Returns true when `cur` holds
-/// `cap` in its effective set AND `target_user_ns` is `cur.user_ns`
-/// or a descendant of it.
+/// Per-user-NS cap check (`27§4`) — Linux `cap_capable`.
+///
+/// Walks from `target_user_ns` up towards the caller's own user namespace, and
+/// grants on the FIRST of two rules to match:
+///
+/// 1. The target IS the caller's own namespace: the answer is the caller's
+///    effective set. Reaching it after ascending is the "a capability held in a
+///    parent applies to every descendant" rule.
+/// 2. The target's PARENT is the caller's namespace and the caller's effective
+///    uid is the one that CREATED the target. The creator of a user namespace
+///    holds every capability inside it, whatever it holds outside — that is
+///    what makes rootless `unshare(CLONE_NEWUSER|CLONE_NEWNS)` work, and it is
+///    the rule this check previously lacked entirely, so an unprivileged
+///    creator was refused CAP_SYS_ADMIN in the namespace it had just made.
+///
+/// Running out of parents without reaching the caller's namespace means the
+/// target is not a descendant, which is a refusal.
 /// # C: O(depth)
 pub fn has_cap_for(cur: &sched::Task, target_user_ns: &NamespacePin, cap: u32) -> bool {
-    if !cur.has_cap(cap) { return false; }
     let Some(cur_ns) = cur.namespace_owner(NamespaceKind::User) else { return false; };
-    user_ns_is_ancestor(&cur_ns.pin(), target_user_ns)
+    let cred_ns = cur_ns.pin();
+    let euid = cur.creds.euid.load(core::sync::atomic::Ordering::Acquire);
+    let mut ns = target_user_ns.clone();
+    loop {
+        if NamespacePin::ptr_eq(&cred_ns, &ns) { return cur.has_cap(cap); }
+        let Some(parent) = ns.parent() else { return false };
+        if NamespacePin::ptr_eq(&cred_ns, &parent)
+            && user_namespace::owner_euid(&ns) == Ok(Some(euid))
+        {
+            return true;
+        }
+        ns = parent;
+    }
 }
 
 /// The writer must hold `cap` in `target_user_ns`'s PARENT (or an ancestor of
@@ -437,6 +475,9 @@ fn time_setns_rejects_released_destination_without_freezing_target() {
 
 #[cfg(test)]
 mod setns_fd_tests;
+
+#[cfg(test)]
+mod cap_ns_tests;
 
 #[cfg(test)]
 mod setns_perm_tests;

@@ -217,6 +217,11 @@ pub enum VfsError {
     Econnrefused = 111,
     /// EUCLEAN — filesystem metadata is structurally corrupt.
     Euclean = 117,
+    /// ESTALE — the handle the walk resolved no longer names the object it
+    /// named. A server-backed filesystem reports it when the object was
+    /// replaced or removed behind the client's cached handle; the `*at`
+    /// resolution layer answers it with exactly ONE revalidating re-walk.
+    Estale  = 116,
     /// ECANCELED — timerfd read after TFD_TIMER_CANCEL_ON_SET clock change.
     Ecanceled = 125,
     /// EDQUOT — quota hard limit exceeded.

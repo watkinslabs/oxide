@@ -33,6 +33,7 @@ pub mod install;
 mod user;
 mod entry;
 pub mod ptrace_read;
+pub mod notif;
 
 pub use action::{more_restrictive, strict_allows, Sigsys, Verdict};
 pub use entry::{check, do_seccomp, mode_of_current, prctl_seccomp_op, prctl_set_seccomp, sys_seccomp};

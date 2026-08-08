@@ -169,3 +169,65 @@ fn a_job_control_stop_code_is_unchanged_by_the_widened_encoding() {
         assert_eq!(siginfo_from_event(WaitEventKind::Stopped, wstat), (CLD_STOPPED, sig));
     }
 }
+
+// `do_wait`'s loop ordering. Each test pins one rung against the rung above
+// it, so a reordering cannot pass by satisfying a different rung.
+
+#[test]
+fn an_available_event_outranks_a_pending_signal_and_wnohang() {
+    // The scan found something: nothing below Report may be consulted, even
+    // with no children left, WNOHANG set and a fatal signal queued.
+    assert_eq!(wait_step(true, false, WNOHANG, true), WaitStep::Report);
+    assert_eq!(wait_step(true, true, 0, true), WaitStep::Report);
+}
+
+#[test]
+fn echild_outranks_wnohang_and_the_signal_check() {
+    // No matchable child at all: WNOHANG must NOT convert the error into 0,
+    // and a pending signal must not convert it into a restart.
+    assert_eq!(wait_step(false, false, WNOHANG, false), WaitStep::Echild);
+    assert_eq!(wait_step(false, false, WNOHANG, true), WaitStep::Echild);
+    assert_eq!(wait_step(false, false, 0, true), WaitStep::Echild);
+}
+
+#[test]
+fn wnohang_outranks_the_signal_check_and_never_parks() {
+    // A matchable child with no event: a non-blocking wait reports 0 rather
+    // than ERESTARTSYS, because it never enters an interruptible sleep.
+    assert_eq!(wait_step(false, true, WNOHANG, true), WaitStep::Nohang);
+    assert_eq!(wait_step(false, true, WNOHANG, false), WaitStep::Nohang);
+    assert_eq!(wait_step(false, true, WNOHANG | WUNTRACED | __WALL, true), WaitStep::Nohang);
+}
+
+#[test]
+fn a_deliverable_signal_aborts_before_the_park_so_a_waiter_stays_killable() {
+    assert_eq!(wait_step(false, true, 0, true), WaitStep::Restart);
+    assert_eq!(wait_step(false, true, WCONTINUED, true), WaitStep::Restart);
+}
+
+#[test]
+fn a_blocking_wait_with_a_live_child_and_no_signal_parks() {
+    assert_eq!(wait_step(false, true, 0, false), WaitStep::Park);
+    assert_eq!(wait_step(false, true, WEXITED | WSTOPPED | WNOWAIT, false), WaitStep::Park);
+}
+
+#[test]
+fn every_input_combination_maps_to_exactly_one_step() {
+    // Exhaustive over the decision's whole input space, pinning the table so
+    // no rung can be silently widened.
+    for &has_event in &[false, true] {
+        for &has_children in &[false, true] {
+            for &nohang in &[false, true] {
+                for &sig in &[false, true] {
+                    let opts = if nohang { WNOHANG } else { 0 };
+                    let want = if has_event { WaitStep::Report }
+                        else if !has_children { WaitStep::Echild }
+                        else if nohang { WaitStep::Nohang }
+                        else if sig { WaitStep::Restart }
+                        else { WaitStep::Park };
+                    assert_eq!(wait_step(has_event, has_children, opts, sig), want);
+                }
+            }
+        }
+    }
+}

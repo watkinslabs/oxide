@@ -97,9 +97,9 @@ fn duplicate_explicit_bind_fails_at_bind() {
     let duplicate = VsockSocket::new();
     let port = 62_010;
     assert_eq!(first.bind(crate::socket_args::AF_VSOCK as u16, port,
-        vsock::VMADDR_CID_ANY), Ok(()));
+        vsock::VMADDR_CID_ANY, crate::sock_admit::AddrAdmission::for_test()), Ok(()));
     assert_eq!(duplicate.bind(crate::socket_args::AF_VSOCK as u16, port,
-        vsock::VMADDR_CID_ANY), Err(crate::NetError::Eaddrinuse));
+        vsock::VMADDR_CID_ANY, crate::sock_admit::AddrAdmission::for_test()), Err(crate::NetError::Eaddrinuse));
     assert!(matches!(*duplicate.kind.lock(), VsockKind::Init));
     first.release_file();
 }
@@ -109,7 +109,7 @@ fn privileged_vsock_port_requires_cap_net_bind_service() {
     let _guard = serial();
     let socket = VsockSocket::new();
     assert_eq!(socket.bind(crate::socket_args::AF_VSOCK as u16,
-        vsock::LAST_RESERVED_PORT, vsock::VMADDR_CID_ANY), Err(crate::NetError::Eacces));
+        vsock::LAST_RESERVED_PORT, vsock::VMADDR_CID_ANY, crate::sock_admit::AddrAdmission::for_test()), Err(crate::NetError::Eacces));
     assert!(matches!(*socket.kind.lock(), VsockKind::Init));
 }
 
@@ -176,7 +176,7 @@ fn socket_listen_consumes_its_own_reservation() {
     let _guard = serial();
     let sock = VsockSocket::new();
     assert_eq!(sock.bind(crate::socket_args::AF_VSOCK as u16, 62_017,
-        vsock::VMADDR_CID_ANY), Ok(()));
+        vsock::VMADDR_CID_ANY, crate::sock_admit::AddrAdmission::for_test()), Ok(()));
     assert_eq!(sock.listen(), Ok(()));
     let listener = match &*sock.kind.lock() {
         VsockKind::Listener(listener) => listener.clone(),
@@ -190,10 +190,10 @@ fn socket_listen_consumes_its_own_reservation() {
     assert_eq!(sock.listen(), Ok(()));
     let duplicate = VsockSocket::new();
     assert_eq!(duplicate.bind(crate::socket_args::AF_VSOCK as u16, 62_017,
-        vsock::VMADDR_CID_ANY), Err(crate::NetError::Eaddrinuse));
+        vsock::VMADDR_CID_ANY, crate::sock_admit::AddrAdmission::for_test()), Err(crate::NetError::Eaddrinuse));
     sock.release_file();
     assert_eq!(duplicate.bind(crate::socket_args::AF_VSOCK as u16, 62_017,
-        vsock::VMADDR_CID_ANY), Ok(()));
+        vsock::VMADDR_CID_ANY, crate::sock_admit::AddrAdmission::for_test()), Ok(()));
     duplicate.release_file();
 }
 
@@ -306,17 +306,17 @@ fn peer_receive_shutdown_blocks_writes_but_peer_send_shutdown_does_not() {
 fn bind_is_typed_one_way_state_transition_and_cannot_orphan_records() {
     let _guard = serial();
     let init = VsockSocket::new();
-    assert_eq!(init.bind(1, 62_004, vsock::VMADDR_CID_ANY), Err(crate::NetError::Eafnosupport));
+    assert_eq!(init.bind(1, 62_004, vsock::VMADDR_CID_ANY, crate::sock_admit::AddrAdmission::for_test()), Err(crate::NetError::Eafnosupport));
     assert!(matches!(*init.kind.lock(), VsockKind::Init));
     assert_eq!(init.bind(crate::socket_args::AF_VSOCK as u16, vsock::VMADDR_PORT_ANY,
-        vsock::VMADDR_CID_ANY), Ok(()));
+        vsock::VMADDR_CID_ANY, crate::sock_admit::AddrAdmission::for_test()), Ok(()));
     let bound_port = match *init.kind.lock() {
         VsockKind::Bound { port, owner: None } => port,
         _ => panic!("expected wildcard bound endpoint"),
     };
     assert_ne!(bound_port, vsock::VMADDR_PORT_ANY);
     assert_eq!(init.bind(crate::socket_args::AF_VSOCK as u16, 62_005,
-        vsock::VMADDR_CID_ANY), Err(crate::NetError::Einval));
+        vsock::VMADDR_CID_ANY, crate::sock_admit::AddrAdmission::for_test()), Err(crate::NetError::Einval));
     assert_eq!(init.local_addr(), Ok((bound_port, vsock::VMADDR_CID_ANY)));
 
     let (connected_sock, conn) = connected(0x0b00_0004, 62_006);
@@ -324,7 +324,7 @@ fn bind_is_typed_one_way_state_transition_and_cannot_orphan_records() {
         local_port: conn.local_port, peer_cid: conn.peer_cid, peer_port: conn.peer_port };
     assert!(vsock::TABLE.insert(conn.clone()));
     assert_eq!(connected_sock.bind(crate::socket_args::AF_VSOCK as u16, 62_007,
-        vsock::VMADDR_CID_ANY), Err(crate::NetError::Einval));
+        vsock::VMADDR_CID_ANY, crate::sock_admit::AddrAdmission::for_test()), Err(crate::NetError::Einval));
     assert!(Arc::ptr_eq(&vsock::TABLE.find(key).expect("connection retained"), &conn));
 
     let listener_owner = owner(0x0b00_0005);
@@ -333,7 +333,7 @@ fn bind_is_typed_one_way_state_transition_and_cannot_orphan_records() {
     let listener_sock = VsockSocket::new();
     *listener_sock.kind.lock() = VsockKind::Listener(listener.clone());
     assert_eq!(listener_sock.bind(crate::socket_args::AF_VSOCK as u16, 62_009,
-        vsock::VMADDR_CID_ANY), Err(crate::NetError::Einval));
+        vsock::VMADDR_CID_ANY, crate::sock_admit::AddrAdmission::for_test()), Err(crate::NetError::Einval));
     assert!(vsock::TABLE.is_listening(listener_owner, 62_008));
 
     connected_sock.release_file();

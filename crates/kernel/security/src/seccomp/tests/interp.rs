@@ -142,3 +142,35 @@ fn sock_filter_round_trips_through_the_packed_encoding() {
         assert_eq!(SockFilter::decode(f.encode()), f);
     }
 }
+
+// The chain walk also names WHICH filter produced the winning action, and
+// that filter's listener is the supervisor the syscall goes to. On a tie the
+// most recently installed filter wins, so a newly installed supervising
+// filter can supervise calls an older one also notifies on; picking the
+// oldest instead would hand every such call to the outer supervisor forever.
+#[test]
+fn the_chain_names_the_listener_of_the_filter_that_won() {
+    let d = data(0, [0; 6]);
+    let prog = |v: u32| p(&[(BPF_RET | BPF_K, 0, 0, v)]);
+    let plain = |v: u32| sched::seccomp_filter::SeccompFilter::new(prog(v), 0);
+    let watched = |v: u32, id: u64|
+        sched::seccomp_filter::SeccompFilter::with_listener(prog(v), 0, id);
+
+    // Oldest first in the chain, so the last entry is the newest install.
+    let chain = alloc::vec![watched(SECCOMP_RET_USER_NOTIF, 11),
+                            watched(SECCOMP_RET_USER_NOTIF, 22)];
+    assert_eq!(run_chain_match(&chain, &d), (SECCOMP_RET_USER_NOTIF, Some(22)));
+
+    // A strictly more restrictive filter wins outright, listener and all.
+    let chain = alloc::vec![watched(SECCOMP_RET_USER_NOTIF, 11), plain(SECCOMP_RET_ERRNO | 1)];
+    assert_eq!(run_chain_match(&chain, &d), (SECCOMP_RET_ERRNO | 1, None));
+
+    // A less restrictive newer filter does not steal the verdict.
+    let chain = alloc::vec![plain(SECCOMP_RET_ERRNO | 1), watched(SECCOMP_RET_USER_NOTIF, 11)];
+    assert_eq!(run_chain_match(&chain, &d), (SECCOMP_RET_ERRNO | 1, None));
+
+    // One supervised filter among unsupervised ones still gets its listener.
+    let chain = alloc::vec![plain(SECCOMP_RET_ALLOW), watched(SECCOMP_RET_USER_NOTIF, 7),
+                            plain(SECCOMP_RET_ALLOW)];
+    assert_eq!(run_chain_match(&chain, &d), (SECCOMP_RET_USER_NOTIF, Some(7)));
+}

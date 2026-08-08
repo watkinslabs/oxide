@@ -124,6 +124,22 @@ int main(void) {
     errno = 0;
     show("add_net_fault", add_rule((int)fd, LL_RULE_NET_PORT, partial, 0));
 
+    /* A descriptor with no mount behind it names no hierarchy: a pipe end and
+       the ruleset fd itself are both EBADFD, not EBADF and not success. */
+    int pipe_fds[2];
+    if (pipe(pipe_fds) == 0) {
+        struct ll_path_beneath_attr pb = {
+            .allowed_access = LL_ACCESS_FS_EXECUTE, .parent_fd = pipe_fds[0] };
+        errno = 0;
+        show("add_path_pipe_fd", add_rule((int)fd, LL_RULE_PATH_BENEATH, &pb, 0));
+        close(pipe_fds[0]);
+        close(pipe_fds[1]);
+    }
+    struct ll_path_beneath_attr self_pb = {
+        .allowed_access = LL_ACCESS_FS_EXECUTE, .parent_fd = (int)fd };
+    errno = 0;
+    show("add_path_ruleset_fd", add_rule((int)fd, LL_RULE_PATH_BENEATH, &self_pb, 0));
+
     errno = 0;
     show("restrict_privilege_before_flags", restrict_self(-1, 1U << 31));
     errno = 0;

@@ -38,6 +38,14 @@ pub fn sys_pidfd_getfd(args: &syscall::SyscallArgs) -> i64 {
         Some(target) => target,
         None => return -(Errno::Esrch.as_i32() as i64),
     };
+    // Linux `__pidfd_fget` holds the target's `exec_update_lock` for READING
+    // across BOTH the access check and the fd fetch. Without it the two halves
+    // straddle a concurrent `execve` on the target: the check passes against
+    // the pre-exec credentials, the target then execs a setuid image (or drops
+    // dumpability), and the fetch hands over an fd from a process the caller is
+    // no longer allowed to touch.
+    // SAFETY: syscall process context, no spinlock held; sleeps only while the target is mid-execve.
+    let _exec_update = unsafe { target.thread_group.exec_update_read() };
     if crate::s101_ptrace_perm::may_attach_access(&cur, &target).is_err() {
         return -(Errno::Eperm.as_i32() as i64);
     }
@@ -53,6 +61,7 @@ pub fn sys_pidfd_getfd(args: &syscall::SyscallArgs) -> i64 {
     let cloned = match target_fdt.get(target_fd) {
         Ok(f) => f, Err(_) => return -(Errno::Ebadf.as_i32() as i64),
     };
+    drop(_exec_update);
     match cur_fdt.alloc_limit(cloned, cur.nofile_soft()) {
         Ok(fd) => {
             let _ = cur_fdt.set_cloexec(fd, true);

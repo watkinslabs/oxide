@@ -86,13 +86,19 @@ pub const SUPPORTED_SETUP_FLAGS: u32 =
 ///   RSRC_TAGS      — a released tagged resource posts its tag.
 ///   CQE_SKIP       — a successful entry can ask for no completion.
 ///   LINKED_FILE    — a linked entry resolves its file in submission order.
-/// NOT claimed, and why: FAST_POLL and NATIVE_WORKERS (no worker pool to
-/// retry from), POLL_32BITS (no poll entry), SQPOLL_NONFIXED (no poll
-/// thread), REG_REG_RING (no registered-ring array).
+///   FAST_POLL      — an operation that would block is armed on its
+///                    description's readiness rather than holding a worker.
+///   NATIVE_WORKERS — deferred work runs on kernel threads that borrow the
+///                    submitter's address space, descriptor table and
+///                    credentials.
+///   POLL_32BITS    — a poll entry's whole 32-bit event mask is honoured.
+/// NOT claimed, and why: SQPOLL_NONFIXED (no submission-poll thread),
+/// REG_REG_RING (no per-task registered-ring array).
 pub const REPORTED_FEATURES: u32 =
     IORING_FEAT_SINGLE_MMAP | IORING_FEAT_NODROP | IORING_FEAT_SUBMIT_STABLE
     | IORING_FEAT_RW_CUR_POS | IORING_FEAT_CUR_PERSONALITY | IORING_FEAT_EXT_ARG
-    | IORING_FEAT_RSRC_TAGS | IORING_FEAT_CQE_SKIP | IORING_FEAT_LINKED_FILE;
+    | IORING_FEAT_RSRC_TAGS | IORING_FEAT_CQE_SKIP | IORING_FEAT_LINKED_FILE
+    | IORING_FEAT_FAST_POLL | IORING_FEAT_NATIVE_WORKERS | IORING_FEAT_POLL_32BITS;
 
 /// Region geometry derived from an admitted `struct io_uring_params`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

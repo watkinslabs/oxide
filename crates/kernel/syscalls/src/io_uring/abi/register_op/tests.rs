@@ -99,14 +99,34 @@ fn opcodes_needing_an_absent_mechanism_report_eopnotsupp_not_success() {
     // regions, a zero-copy receive queue, busy-poll, or a program loader.
     // Returning 0 for any of them would tell the caller a registration
     // happened that did not.
-    for op in [IORING_REGISTER_IOWQ_AFF, IORING_UNREGISTER_IOWQ_AFF,
-               IORING_REGISTER_IOWQ_MAX_WORKERS, IORING_REGISTER_RING_FDS,
+    for op in [IORING_REGISTER_RING_FDS,
                IORING_UNREGISTER_RING_FDS, IORING_REGISTER_NAPI,
                IORING_UNREGISTER_NAPI, IORING_REGISTER_ZCRX_IFQ,
                IORING_REGISTER_RESIZE_RINGS, IORING_REGISTER_MEM_REGION,
                IORING_REGISTER_ZCRX_CTRL, IORING_REGISTER_BPF_FILTER] {
         assert_eq!(decode(op, RING_FD, 0x1000, 1), Err(Errno::Eopnotsupp), "op {op}");
     }
+}
+
+#[test]
+fn the_worker_registrations_decode_to_their_own_requests() {
+    assert_eq!(decode(IORING_REGISTER_IOWQ_MAX_WORKERS, RING_FD, 0x1000, 2).unwrap().op,
+               RegisterOp::IowqMaxWorkers { arg: 0x1000 });
+    // One count per work class, and there are two classes: any other count
+    // means the caller and the kernel disagree about the argument's shape.
+    for nr in [0u32, 1, 3] {
+        assert_eq!(decode(IORING_REGISTER_IOWQ_MAX_WORKERS, RING_FD, 0x1000, nr),
+                   Err(Errno::Einval), "nr {nr}");
+    }
+    assert_eq!(decode(IORING_REGISTER_IOWQ_MAX_WORKERS, RING_FD, 0, 2), Err(Errno::Einval));
+    assert_eq!(decode(IORING_REGISTER_IOWQ_AFF, RING_FD, 0x1000, 8).unwrap().op,
+               RegisterOp::IowqAff { arg: 0x1000, len: 8 });
+    assert_eq!(decode(IORING_REGISTER_IOWQ_AFF, RING_FD, 0x1000, 0), Err(Errno::Einval));
+    assert_eq!(decode(IORING_REGISTER_IOWQ_AFF, RING_FD, 0, 8), Err(Errno::Einval));
+    // Unregistering names no mask at all; the two forms share one request.
+    assert_eq!(decode(IORING_UNREGISTER_IOWQ_AFF, RING_FD, 0, 0).unwrap().op,
+               RegisterOp::IowqAff { arg: 0, len: 0 });
+    assert_eq!(decode(IORING_UNREGISTER_IOWQ_AFF, RING_FD, 0x1000, 0), Err(Errno::Einval));
 }
 
 #[test]

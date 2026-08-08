@@ -79,21 +79,47 @@ pub fn clock(inode: &IoUringInode, arg: u64) -> i64 {
     0
 }
 
-/// `IORING_REGISTER_SYNC_CANCEL`: cancel matching requests that are still in
-/// flight. Every request completes inside the submission that issued it, so
-/// by the time any caller can make this call there is nothing in flight to
-/// match — which is exactly the answer a caller gets when its criteria match
-/// nothing. # C: O(1)
-pub fn sync_cancel(inode: &IoUringInode, arg: u64) -> i64 {
-    let mut b = [0u8; SYNC_CANCEL_BYTES as usize];
+/// `IORING_REGISTER_SYNC_CANCEL`: cancel matching in-flight requests and wait
+/// for the ones that are already running to finish, up to the caller's own
+/// deadline. Finding nothing is a success — the caller asked for those
+/// requests to be gone and they are — but a request that stays running past
+/// the deadline is ETIME, because that one is genuinely still there.
+/// # C: O(N_inflight) per attempt
+pub fn sync_cancel(inode: &Arc<IoUringInode>, arg: u64) -> i64 {
+    use crate::io_uring_abi::cancel::{decode_sync_cancel, sync_cancel_result, SYNC_CANCEL_BYTES};
+    let mut b = [0u8; SYNC_CANCEL_BYTES];
     if uaccess::copy_from_user(&mut b, arg).is_err() { return err(Errno::Efault); }
-    // pad and pad2 must be zero.
-    if b[41..64].iter().any(|&x| x != 0) { return err(Errno::Einval); }
-    let flags = u32::from_ne_bytes([b[12], b[13], b[14], b[15]]);
-    const CANCEL_VALID: u32 = 0x1f;
-    if flags & !CANCEL_VALID != 0 { return err(Errno::Einval); }
-    let _ = inode;
-    err(Errno::Enoent)
+    let sc = match decode_sync_cancel(&b) { Ok(s) => s, Err(e) => return err(e) };
+
+    let (nr, rv) = crate::io_uring::cancel::cancel(inode, &sc.key);
+    if rv != err(Errno::Ealready) {
+        return sync_cancel_result(crate::io_uring_abi::cancel::cancel_result(&sc.key, nr, rv));
+    }
+    let deadline = match sc.timeout {
+        None => 0,
+        Some((sec, nsec)) => match syscall::time::timespec_to_ns(sec, nsec) {
+            Ok(ns) => crate::io_uring::iowq::worker::now_ns().saturating_add(ns),
+            Err(e) => return err(e),
+        },
+    };
+    loop {
+        // SAFETY: process context in the syscall path on the running task's own CPU, holding no spinlock.
+        let outcome = unsafe {
+            sched::live::wait_event(&inode.cq_wait, sched::task::WaitState::Interruptible,
+                                    deadline, crate::io_uring::iowq::worker::now_ns,
+                                    || inode.inflight_reqs().iter()
+                                        .all(|r| !sc.key.matches(r.user_data(), r.sqe.fd, r.opcode())))
+        };
+        let (nr, rv) = crate::io_uring::cancel::cancel(inode, &sc.key);
+        if rv != err(Errno::Ealready) {
+            return sync_cancel_result(crate::io_uring_abi::cancel::cancel_result(&sc.key, nr, rv));
+        }
+        match outcome {
+            sched::task::WaitOutcome::Interrupted => return err(Errno::Eintr),
+            sched::task::WaitOutcome::TimedOut => return err(Errno::Etime),
+            sched::task::WaitOutcome::Ready => {}
+        }
+    }
 }
 
 /// `IORING_REGISTER_PBUF_STATUS`: how many buffers a provided-buffer group

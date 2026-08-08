@@ -10,8 +10,11 @@ use crate::types::{FileType, KResult, OpenFlags, VfsError};
 use super::{fire_read_hook, fire_write_hook, File, Fmode, SeekFrom, PAGE_SIZE};
 
 impl File {
+    /// Debug trace for a write refused by a read-only mount: names the op, the
+    /// mount and namespace ids, the mount and superblock read-only state, and
+    /// the resolved path. # C: O(path_len)
     #[cfg(feature = "debug-mnt")]
-    fn trace_write_erofs(&self, op: &'static [u8]) {
+    pub(crate) fn trace_write_erofs(&self, op: &'static [u8]) {
         klog::write_raw(b"[VFS-WRITE-EROFS] op=");
         klog::write_raw(op);
         klog::write_raw(b" mnt_id=");
@@ -109,7 +112,7 @@ impl File {
     /// `FileType::Regular` avoids holding the writer count across a parking
     /// pipe/socket write. An anon/regular file with no live superblock is not
     /// gated. # C: O(1) or sleeps
-    fn file_start_write(&self) -> KResult<SbWriteGuard> {
+    pub(crate) fn file_start_write(&self) -> KResult<SbWriteGuard> {
         if !matches!(self.inode.file_type(), FileType::Regular) {
             return Ok(SbWriteGuard(None));
         }
@@ -119,7 +122,11 @@ impl File {
         }
     }
 
-    fn write_limit(&self, off: u64, len: usize) -> KResult<usize> {
+    /// `generic_write_check_limits`' superblock half: clamp `len` to what the
+    /// filesystem's maximum file size leaves at `off`, or `EFBIG` when the
+    /// write starts beyond it. An inode with no live superblock is unbounded.
+    /// # C: O(1)
+    pub(crate) fn write_limit(&self, off: u64, len: usize) -> KResult<usize> {
         match self.inode.i_sb() {
             Some(sb) => sb.generic_write_check_limits(off, len).ok_or(VfsError::Efbig),
             None     => Ok(len),
@@ -216,7 +223,7 @@ impl File {
     /// do not carry an mtime the Linux `generic_file_write_iter` path would
     /// bump. No clock installed yet (early boot) → `current_time` floors 0 and
     /// the op is skipped. # C: O(1) + one backend inode writeback
-    fn file_update_time(&self) {
+    pub(crate) fn file_update_time(&self) {
         if !matches!(self.inode.file_type(), FileType::Regular) { return; }
         let raw = crate::inode_times::realtime_now_ns();
         if raw == 0 { return; }
@@ -348,41 +355,16 @@ impl File {
     /// (`generic_write_checks` `IOCB_APPEND` overrides `ki_pos`) — see
     /// `pwrite(2)` BUGS. O_NONBLOCK routes through `write_nonblock`.
     /// # C: depends on inode impl
+    /// Inlined deliberately: this is a two-line forwarder, and leaving it as a
+    /// real frame added ~80 B to every positional-write path — enough to push
+    /// the deepest aarch64 syscall chain past the stack ceiling.
+    #[inline]
     pub fn pwrite(&self, buf: &[u8], off: i64) -> KResult<usize> {
-        if off < 0 { return Err(VfsError::Einval); }
-        // FMODE_PWRITE gate (Linux `do_dentry_open`): set once at open for
-        // seekable files only; pipe/socket/fifo and O_PATH lack it → ESPIPE.
-        if !self.f_mode.contains(Fmode::PWRITE) {
-            return Err(VfsError::Espipe);
-        }
-        if !self.f_mode.contains(Fmode::WRITE) {
-            return Err(VfsError::Ebadf);
-        }
-        if self.mnt_readonly() {
-            #[cfg(feature = "debug-mnt")]
-            self.trace_write_erofs(b"pwrite");
-            return Err(VfsError::Erofs);
-        }
-        // D27: sb-freeze in-flight writer admission (Linux `file_start_write`);
-        // frozen sb sleeps until thaw. Guard releases on every return path.
-        let _sbw = self.file_start_write()?;
-        let f = self.flags();
-        // Linux pwrite + O_APPEND: IOCB_APPEND forces ki_pos = i_size,
-        // ignoring the caller's offset (documented quirk, pwrite(2) BUGS).
-        let pos = if f.contains(OpenFlags::O_APPEND) { self.inode.size() } else { off as u64 };
-        let buf = &buf[..self.write_limit(pos, buf.len())?];
-        // D2: dispatch through the cached `file->f_op` (snapshotted at open).
-        let n = if f.contains(OpenFlags::O_NONBLOCK) {
-            self.f_op.write_nonblock(&self.inode, pos, buf)?
-        } else {
-            self.f_op.write(&self.inode, pos, buf)?
-        };
-        if n > 0 {
-            self.file_update_time();
-            fire_write_hook(&self.inode, &self.dentry);
-            self.generic_write_sync(pos + n as u64, n, crate::file::SyncMode::default())?;
-        }
-        Ok(n)
+        // One ladder, in `pwrite_iocb`: this is the same call with the
+        // description's own `O_APPEND` and no per-operation modifiers. A second
+        // copy of the gate order here is exactly how the two drifted apart.
+        let append = self.flags().contains(OpenFlags::O_APPEND);
+        self.pwrite_iocb(buf, off, super::iocb::WriteIocb { append, nowait: false })
     }
 
     /// `readv(2)` core (Linux `vfs_readv` -> `do_iter_read`): aggregate the
@@ -511,7 +493,7 @@ impl File {
 /// in-flight writer (`sb_writers()`); `Drop` releases it on every return/error
 /// path. `None` = not freeze-gated (anon file / no superblock / non-regular).
 /// # C: O(1)
-struct SbWriteGuard(Option<Arc<crate::superblock::SuperBlock>>);
+pub(crate) struct SbWriteGuard(Option<Arc<crate::superblock::SuperBlock>>);
 impl Drop for SbWriteGuard {
     fn drop(&mut self) {
         if let Some(sb) = self.0.take() { sb.sb_end_write(); }

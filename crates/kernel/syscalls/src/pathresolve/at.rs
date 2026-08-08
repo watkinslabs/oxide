@@ -18,8 +18,17 @@ fn current_task() -> Option<&'static sched::Task> { sched::live::current() }
 #[cfg(not(target_os = "oxide-kernel"))]
 fn current_task() -> Option<&'static sched::Task> { sched::current() }
 
-/// # C: O(components × dir-lookup)
+/// Stale-handle retry applies here too — the confined (`RESOLVE_BENEATH` /
+/// `RESOLVE_IN_ROOT`) walk is a path walk like any other.
+/// # C: O(components × dir-lookup) × retries
 pub fn resolve_confined(dirfd: i32, raw: &str, flags: vfs::LookupFlags) -> Result<vfs::VfsPath, i64> {
+    crate::estale_retry::with_estale_retry(flags.reval, |reval| {
+        resolve_confined_once(dirfd, raw, vfs::LookupFlags { reval, ..flags })
+    })
+}
+
+/// # C: O(components × dir-lookup)
+fn resolve_confined_once(dirfd: i32, raw: &str, flags: vfs::LookupFlags) -> Result<vfs::VfsPath, i64> {
     let op = b"resolve_confined";
     // `false`: openat2 RESOLVE_BENEATH/RESOLVE_IN_ROOT (the only callers of
     // `resolve_confined`) make dirfd itself the resolution root — Linux
@@ -76,8 +85,21 @@ pub fn resolve_at_path(dirfd: i32, raw: &str, flags: vfs::LookupFlags) -> Result
     resolve_at_path_cred(dirfd, raw, flags, current_cred())
 }
 
+/// THE shared stale-handle retry point for the `*at` family: a walk that fails
+/// because a cached handle went stale is re-walked ONCE with forced
+/// revalidation, and that second walk's result is final whatever it is
+/// (`crate::estale_retry`). Every `*at` caller — access, stat, open, the
+/// xattr family — reaches the walk through here, so the rule is applied in one
+/// place rather than copied per syscall.
+/// # C: O(components × dir-lookup) + O(symlinks), × retries
+pub fn resolve_at_path_cred(dirfd: i32, raw: &str, flags: vfs::LookupFlags, cred: vfs::Cred) -> Result<vfs::VfsPath, i64> {
+    crate::estale_retry::with_estale_retry(flags.reval, |reval| {
+        resolve_at_path_cred_once(dirfd, raw, vfs::LookupFlags { reval, ..flags }, cred.clone())
+    })
+}
+
 /// # C: O(components × dir-lookup) + O(symlinks)
-pub fn resolve_at_path_cred(dirfd: i32, raw: &str, mut flags: vfs::LookupFlags, cred: vfs::Cred) -> Result<vfs::VfsPath, i64> {
+fn resolve_at_path_cred_once(dirfd: i32, raw: &str, mut flags: vfs::LookupFlags, cred: vfs::Cred) -> Result<vfs::VfsPath, i64> {
     // `true`: the plain `*at` family ignores dirfd entirely for an absolute
     // pathname (Linux `path_init`), so an open non-directory or a
     // closed/invalid dirfd must not error here.

@@ -41,6 +41,16 @@ pub const KERNEL_SYSCTLS: &[Node] = &[
         File("perf_event_paranoid",   IntHook(get_perf_paranoid, set_perf_paranoid, Some((-1, 4)))),
         File("perf_event_max_sample_rate",
             IntHook(get_perf_sample_rate, set_perf_sample_rate, Some((1, INT_MAX)))),
+        // Bound to the live cell `bpf(2)` consults before it lets an
+        // unprivileged caller create a map or load a program, not a
+        // procfs-local copy: a dead cell here would report the interface as
+        // closed while it kept accepting unprivileged callers. Writing 1 is a
+        // one-way latch and only the administrative capability may write at
+        // all, so the setter answers EPERM where a bad value would be EINVAL.
+        File("unprivileged_bpf_disabled",
+                                      PermIntHook(get_unpriv_bpf_disabled,
+                                                  set_unpriv_bpf_disabled,
+                                                  Some(security::bpf::attr::UNPRIV_BPF_BOUNDS))),
         File("dmesg_restrict",        IntHook(get_dmesg_restrict, set_dmesg_restrict, Some((0, 1)))),
         File("kptr_restrict",         Int(0, Some((0, 2)))),
         File("modules_disabled",      IntHook(get_modules_disabled, set_modules_disabled, Some((1, 1)))),

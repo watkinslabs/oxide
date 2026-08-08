@@ -15,6 +15,9 @@
 //   restriction — the per-ring register/SQE allow-lists.
 //   register_op — the `io_uring_register(2)` opcode + argument ladder
 //                 (the Linux `__io_uring_register` admission ladder).
+//   timeout     — `IORING_OP_TIMEOUT`/`LINK_TIMEOUT`/`TIMEOUT_REMOVE` decode.
+//   cancel      — cancellation keys and the match rule.
+//   poll        — `IORING_OP_POLL_ADD`/`POLL_REMOVE` decode + mask arithmetic.
 //
 // Deliberately NOT kernel-gated: the three slot files are
 // `#![cfg(target_os = "oxide-kernel")]`, so any decision left in them is
@@ -29,3 +32,6 @@ pub mod ops;
 pub mod link;
 pub mod register_op;
 pub mod restriction;
+pub mod timeout;
+pub mod cancel;
+pub mod poll;

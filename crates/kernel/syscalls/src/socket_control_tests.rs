@@ -154,14 +154,18 @@ fn netlink_getsockopt_keeps_linux_owned_options_and_rejects_unknowns() {
 fn netlink_connect_runs_one_admission_before_destination_state() {
     let route = include_str!("netlink_fd.rs");
     let owner = include_str!("../../netlink/src/destination.rs");
+    let slot = include_str!("042_connect.rs");
     let connect = route.split("pub fn connect(").nth(1).unwrap()
         .split("/// `setsockopt").next().unwrap();
-    let admission = connect.find("security::network::Operation::Connect").unwrap();
-    let disconnect = connect.find("socket.disconnect_destination()").unwrap();
-    let destination = connect.find("socket.connect_destination(dest.port_id, dest.group)").unwrap();
-    assert_eq!(connect.matches("security::network::Operation::Connect").count(), 1);
-    assert!(admission < disconnect && admission < destination);
+    // The decision is the generic layer's, taken before the family route is
+    // entered at all — so the family runs none of its own, and the token it
+    // demands is the proof one was taken.
+    assert_eq!(connect.matches("security::network::Operation::Connect").count(), 0);
+    assert!(connect.contains("_admission: net::sock_admit::AddrAdmission"));
     assert!(!owner.contains("security::network::Operation::Connect"));
+    let body = &slot[slot.find("pub fn sys_connect").expect("connect slot")..];
+    let admission = body.find("net::sock_admit::admit_connect_in").expect("generic admission");
+    assert!(admission < body.find("crate::netlink_fd::connect(").expect("netlink route"));
 }
 
 // SO_OOBINLINE stores Linux's normalized boolean, and the normalization lives

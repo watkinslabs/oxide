@@ -275,6 +275,70 @@ A green check that does not exercise what it claims is worse than no check — i
 
 **Require a positive control.** Reinstate the defect (or break the behaviour) and confirm the check goes RED, then restore and confirm GREEN. Report both. This applies to new tests, new gates, and any claim that an existing check covers a class.
 
+## Re-verify a claimed gap before implementing it (HARD RULE)
+
+**A recorded gap is a hypothesis, not a fact.** Ledger and matrix text goes stale in
+the pessimistic direction: it accumulates what was missing when someone last looked and
+is rarely revisited when the gap closes. Measured over one campaign across the syscall
+matrix, roughly **two-thirds of specific claimed gaps were already closed**. Implementing
+one of those wastes the lane and, worse, "confirms" a fix that was already there.
+
+Before writing code for any recorded gap: read the current code, then the reference,
+*then* implement. **Correcting a stale claim is worth as much as an implementation** —
+report it either way.
+
+**A grep that returns zero is not proof of absence.** Every false negative below cost a
+lane or a wrong conclusion:
+
+- **Wrong path.** `net/src/unix/` does not exist; the subsystem is `net/src/unix_sock/`.
+  A grep of a nonexistent directory returns zero and reads exactly like a missing feature.
+  Three matrix rows carried "AF_UNIX MSG_OOB not implemented" from this.
+- **Name-only miss.** `sock_extended_err` greps to nothing while the record is hand-rolled
+  inside a target-gated slot. The ABI existed; only the name did not.
+- **Gated from the searcher's build.** Behaviour compiled only into the kernel target, or
+  only into a *downstream* crate's build, is invisible to a hosted grep and to the owning
+  crate's own tests (see the two rules above and below).
+
+Grep for the behaviour and its call sites, not for one identifier, and confirm the path
+exists before trusting a zero.
+
+**"Remaining: coverage, not behaviour" is where live defects hide.** Three security-relevant
+bugs were found under exactly that phrasing: `accept` destroying an established peer
+connection to report a local descriptor limit; `pidfd_getfd` taking no read side on the
+exec-update lock, so a racing `execve` hands out a descriptor from a just-setuid process;
+and a Landlock rule on a pipe/socket/anon-inode stored where it could never match, so the
+sandbox appeared to grant an access it did not. When a row says the only gap is evidence,
+that usually means nobody has looked at the behaviour recently.
+
+**A wrong justification is worse than an open gap.** One row justified refusing four
+commands by claiming parity with a reference built without the relevant configs — both
+target arches select them upstream, so it was a divergence recorded as compliance. Check
+the *reason* a row gives, not just its status.
+
+## Out-of-lane work gets a lane, not a filed row (HARD RULE)
+
+A lane that finds a real fix outside its file ownership **must not stop at filing it**.
+Filing is how a backlog grows: "named but unfinished" accumulated dozens of rows across
+one campaign, every one of them a fix somebody had already diagnosed and nobody owned.
+
+- **The finder reports the boundary; the coordinator spawns a lane for it immediately.**
+  Not "later", not "a follow-up" — the item is understood *now*, while the diagnosis is
+  fresh, and that is the cheapest it will ever be to fix.
+- **Never route around a boundary with a duplicate.** Reaching into another lane's files,
+  or mirroring a field so you do not have to, is the split source of truth this project
+  forbids. Stop and report — that is correct behaviour, and the report is what the new
+  lane starts from.
+- **Blocked-on-a-sibling is a scheduling fact, not a scope reduction.** When the sibling
+  merges, the blocked item gets its lane. A row does not close because the work moved to
+  someone else's queue.
+- **Supporting work is in scope, not a reason to stop.** If the fix needs more command-line
+  parsing, a harness change, a probe, a missing test fixture, a `make` target, or a vendored
+  toolchain fetched — build it. Four separate lanes were blocked by harness defects
+  (a liveness fallback that made probe assertions never run; an all-or-nothing field guard
+  that silently discarded a declared identity; an arch-independent artifact path where one
+  build truncated the binary another was executing). Each was fixed by the lane that hit it,
+  and each fix outlived the row it unblocked.
+
 ## Phantom tests: kernel-gated files cannot be tested (HARD RULE)
 
 `crates/kernel/syscalls/src/kernel_body.rs` is `#[cfg(target_os = "oxide-kernel")]`, and every `#[path = "NNN_name.rs"] pub mod …` it declares inherits that gate. The same applies to any file carrying `#![cfg(target_os = "oxide-kernel")]` (`misc.rs`, the slot files, most of `sched`'s syscall entry points).

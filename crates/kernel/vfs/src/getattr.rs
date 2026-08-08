@@ -45,6 +45,10 @@ pub const STATX_BLOCKS:      u32 = 0x0000_0400;
 pub const STATX_BASIC_STATS: u32 = STATX_TYPE | STATX_MODE | STATX_NLINK | STATX_UID
     | STATX_GID | STATX_ATIME | STATX_MTIME | STATX_CTIME | STATX_INO | STATX_SIZE | STATX_BLOCKS;
 pub const STATX_BTIME:       u32 = 0x0000_0800;
+/// `STATX_DIOALIGN` — the caller wants (or the backend filled) the direct-I/O
+/// alignment pair. Request-GATED on purpose: resolving it can cost real work on
+/// a backend that has to consult the device, so a plain stat must not pay it.
+pub const STATX_DIOALIGN:    u32 = 0x0000_2000;
 /// `STATX_CHANGE_COOKIE` (statx(2) ABI, bit 30) — the
 /// caller wants / the kernel filled `stx_change_attr`, the opaque monotonic
 /// change cookie an NFS-style client compares to detect a modification without
@@ -53,15 +57,38 @@ pub const STATX_BTIME:       u32 = 0x0000_0800;
 /// QUERIED flag — a plain stat must not pay that side effect.
 pub const STATX_CHANGE_COOKIE: u32 = 0x4000_0000;
 
+/// `query_flags` sync selector reaching `i_op->getattr`. Defined here, at the
+/// layer both the syscall shim and every backend can see, so there is one copy:
+/// the shim validates the selector and the backend acts on it, and a second
+/// definition beside the shim would be free to disagree.
+///
+/// `FORCE_SYNC` demands fresh attributes from the authority; `DONT_SYNC`
+/// permits a cached answer. Local filesystems are free to ignore both — their
+/// attributes are always current — which is why only the network-backed
+/// backends read them.
+pub const AT_STATX_FORCE_SYNC: u32 = 0x2000;
+/// See [`AT_STATX_FORCE_SYNC`].
+pub const AT_STATX_DONT_SYNC:  u32 = 0x4000;
+/// The two-bit selector; BOTH bits set is `EINVAL` at the shim.
+pub const AT_STATX_SYNC_TYPE:  u32 = AT_STATX_FORCE_SYNC | AT_STATX_DONT_SYNC;
+
 /// `STATX_ATTR_*` bits (statx(2) ABI) — reported in
 /// `Kstat::attributes`, masked by `Kstat::attributes_mask` (the set of
 /// attributes the backend understands). `generic_fillattr` translates the VFS
 /// `i_flags` `S_IMMUTABLE`/`S_APPEND` bits into the matching attr bits.
+/// `STATX_ATTR_COMPRESSED` — the filesystem stores the contents compressed.
+pub const STATX_ATTR_COMPRESSED: u64 = 0x0000_0004;
 pub const STATX_ATTR_IMMUTABLE: u64 = 0x0000_0010;
 pub const STATX_ATTR_APPEND:    u64 = 0x0000_0020;
+/// `STATX_ATTR_NODUMP` — the file is excluded from a dump.
+pub const STATX_ATTR_NODUMP:    u64 = 0x0000_0040;
+/// `STATX_ATTR_ENCRYPTED` — the contents need a key to decrypt.
+pub const STATX_ATTR_ENCRYPTED: u64 = 0x0000_0800;
 /// `STATX_ATTR_AUTOMOUNT` — the resolved inode is a mount trigger
 /// (an automount point, `IS_AUTOMOUNT`).
 pub const STATX_ATTR_AUTOMOUNT: u64 = 0x0000_1000;
+/// `STATX_ATTR_VERITY` — the file is verity-protected.
+pub const STATX_ATTR_VERITY:    u64 = 0x0010_0000;
 /// `STATX_ATTR_DAX` — the inode is served directly from persistent memory.
 pub const STATX_ATTR_DAX:       u64 = 0x0020_0000;
 /// The pair the VFS advertises as authoritative on EVERY inode,
@@ -98,6 +125,12 @@ pub struct Kstat {
     pub btime: Option<Timespec64>,
     pub fsid: u64,
     pub change_cookie: u64,
+    /// Direct-I/O memory-buffer alignment, valid only with `STATX_DIOALIGN` in
+    /// `result_mask`.
+    pub dio_mem_align: u32,
+    /// Direct-I/O file-offset and length alignment, valid only with
+    /// `STATX_DIOALIGN` in `result_mask`.
+    pub dio_offset_align: u32,
     pub result_mask: u32,
     pub attributes: u64,
     pub attributes_mask: u64,
@@ -331,6 +364,11 @@ pub fn generic_fillattr(inode: &Inode, idmap: &Idmap) -> Kstat {
         // request-mask-gated `vfs_getattr_mask` populates it (Linux gates the
         // change-cookie on `STATX_CHANGE_COOKIE` for the same reason).
         change_cookie: 0,
+        // The direct-I/O alignment pair is request-gated and backend-supplied;
+        // the generic fill leaves it clear, and `STATX_DIOALIGN` stays out of
+        // `result_mask` so a caller cannot read a fabricated alignment.
+        dio_mem_align: 0,
+        dio_offset_align: 0,
         // Every base field above is filled; add BTIME only when present so
         // `stx_mask` reflects exactly the valid fields, no more.
         result_mask: STATX_BASIC_STATS | btime_bit,
@@ -393,8 +431,8 @@ pub fn vfs_getattr(inode: &crate::inode::InodeRef, idmap: &Idmap) -> Kstat {
 /// gated on the request mask and not done in the unconditional
 /// `generic_fillattr`. # C: O(1)
 pub fn vfs_getattr_mask(inode: &crate::inode::InodeRef, idmap: &Idmap,
-                        request_mask: u32) -> Kstat {
-    let mut st = inode.getattr(idmap);
+                        request_mask: u32, query_flags: u32) -> Kstat {
+    let mut st = inode.getattr_mask(idmap, request_mask, query_flags);
     vfs_getattr_post(inode, &mut st);
     if request_mask & STATX_CHANGE_COOKIE != 0 && inode.i_version_raw().is_some() {
         st.change_cookie = crate::inode::inode_query_iversion(inode.as_ref());

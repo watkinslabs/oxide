@@ -91,6 +91,7 @@ mod connect_security;
 mod admission;
 mod bind_policy;
 mod tcp_ip_options;
+mod v6_source;
 mod fastopen_result;
 mod accept_finalize;
 mod accept_admit;
@@ -154,7 +155,7 @@ pub use connect_security::{admit_connect, ConnectAdmission};
 pub use admission::{admit_accept, admit_listen, AcceptAdmission, ListenAdmission};
 pub use bind_policy::{BindPortPolicy, bind_port_policy};
 pub use accept_finalize::{Accepted, complete_accepted};
-pub use accept_admit::{AcceptShape, AcceptAdmit, admit_accept_shape};
+pub use accept_admit::{AcceptShape, AcceptAdmit, admit_accept_shape, accept_ladder};
 #[cfg(target_os = "oxide-kernel")]
 pub use connect_admission::{
     preflight_connect, preflight_connect_admitted, ConnectTransaction,

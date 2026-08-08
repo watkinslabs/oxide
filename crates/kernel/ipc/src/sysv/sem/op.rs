@@ -184,7 +184,16 @@ pub fn semop_in(ns: NamespaceId, cred: &IpcCred, semid: i32, sops: &[Sembuf],
     let tgid = block::current_tgid();
 
     let set = model::lookup_checked(ns, semid).ok_or(Errno::Einval)?;
-    if scan.undos { undo::find_alloc(tgid, ns, semid, set.nsems)?; }
+    // `find_alloc_undo` -> `get_undo_list`: the caller's list is created on
+    // first `SEM_UNDO` use and reached by HANDLE. It is never derived from the
+    // thread group — `CLONE_SYSVSEM` is what shares it, independently of
+    // `CLONE_THREAD`.
+    let undo_id = if scan.undos {
+        let slot = block::current_undo_slot().ok_or(Errno::Esrch)?;
+        let id = undo::get_undo_list(slot)?;
+        undo::find_alloc(id, ns, semid, set.nsems)?;
+        id
+    } else { undo::NO_UNDO_LIST };
     if scan.max as usize >= set.nsems { return Err(Errno::Efbig); }
     let want = if scan.alter { S_IWUGO } else { S_IRUGO };
     if !set.perm.permitted(cred, want) { return Err(Errno::Eacces); }
@@ -193,7 +202,7 @@ pub fn semop_in(ns: NamespaceId, cred: &IpcCred, semid: i32, sops: &[Sembuf],
         let mut st = set.state.lock();
         if st.removed { return Err(Errno::Eidrm); }
         let outcome = if scan.undos {
-            undo::with_semadj(tgid, ns, semid, |adj| match adj {
+            undo::with_semadj(undo_id, ns, semid, |adj| match adj {
                 // Linux `un->semid == -1`: an IPC_RMID invalidated this undo
                 // entry while the call was in flight, and the id may now name a
                 // different set entirely.
