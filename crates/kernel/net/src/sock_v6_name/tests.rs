@@ -38,6 +38,6 @@ fn multicast_scope_boundary_is_link_local() {
 fn socket_level_binding_outranks_the_absent_endpoint() {
     let sock = InetSocket::new_udp6();
     assert_eq!(name_bound_ifindex(&sock), 0, "an unbound socket names no device");
-    sock.opts.bound_ifindex.store(11, Ordering::Release);
+    sock.opts.base.bound_ifindex.store(11, Ordering::Release);
     assert_eq!(name_bound_ifindex(&sock), 11);
 }

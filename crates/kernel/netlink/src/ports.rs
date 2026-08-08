@@ -9,6 +9,7 @@ use core::sync::atomic::Ordering;
 use sync::{Socket as SockLockClass, Spinlock};
 
 use crate::NetlinkSocket;
+use crate::admission::Unicast;
 
 struct PortOwner {
     namespace: u64,
@@ -68,20 +69,62 @@ pub fn bind_port_id(socket: &Arc<NetlinkSocket>, requested: u32) -> Result<(), n
 }
 
 /// Deliver one userspace unicast to the live socket identified by the Linux
-/// Netlink namespace/protocol/port-ID key. # C: O(N live Netlink ports + len)
-pub(crate) fn unicast_port(sender: &NetlinkSocket, destination_port_id: u32, bytes: &[u8]) -> bool {
-    let wanted = (sender.net_ns.id().as_u64(), sender.protocol, destination_port_id);
-    let target = {
-        let mut owners = PORT_OWNERS.lock();
-        retain_live(&mut owners);
-        owners.iter().find(|owner| (owner.namespace, owner.protocol, owner.port_id) == wanted)
-            .and_then(|owner| owner.socket.upgrade())
-    };
-    let Some(target) = target else { return false; };
-    let source_port_id = sender.port_id.load(Ordering::Acquire);
-    if !target.accepts_unicast_from(source_port_id) { return false; }
-    target.enqueue_from_creds(bytes.to_vec(), source_port_id, net::sock_opts::SenderCreds::current());
-    true
+/// Netlink namespace/protocol/port-ID key, under the destination's receive
+/// budget. A refused message fails a non-blocking send and otherwise blocks
+/// this sender, bounded by ITS OWN send timeout, until the destination drains.
+/// # C: O(N live Netlink ports + len) per attempt
+pub(crate) fn unicast_port(sender: &NetlinkSocket, destination_port_id: u32, bytes: &[u8],
+    nonblock: bool) -> Unicast
+{
+    let deadline = if nonblock { 0 } else { sender.send_deadline_ns() };
+    loop {
+        // The destination is resolved on every attempt: a blocked sender must
+        // not hold the port it is waiting on alive by itself.
+        let wanted = (sender.net_ns.id().as_u64(), sender.protocol, destination_port_id);
+        let target = {
+            let mut owners = PORT_OWNERS.lock();
+            retain_live(&mut owners);
+            owners.iter().find(|owner| (owner.namespace, owner.protocol, owner.port_id) == wanted)
+                .and_then(|owner| owner.socket.upgrade())
+        };
+        let Some(target) = target else { return Unicast::NoPort; };
+        let source_port_id = sender.port_id.load(Ordering::Acquire);
+        if !target.accepts_unicast_from(source_port_id) { return Unicast::NoPort; }
+        match target.try_enqueue_from_creds(bytes.to_vec(), source_port_id,
+            net::sock_opts::SenderCreds::current())
+        {
+            Unicast::Again => {}
+            settled => return settled,
+        }
+        if nonblock { return Unicast::Again; }
+        match wait_for_space(&target, deadline) {
+            Some(verdict) => return verdict,
+            None => continue,
+        }
+    }
+}
+
+/// Block until the destination drains, its send timeout expires, or a signal
+/// arrives. `None` means "try again". # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+fn wait_for_space(target: &NetlinkSocket, deadline: u64) -> Option<Unicast> {
+    if sched::live::deliverable_signals_self() != 0 { return Some(Unicast::Interrupted); }
+    // SAFETY: this syscall process parks itself on the destination socket's
+    // sender wait list and is removed from it before returning.
+    unsafe { target.space_waiters.park_interruptible_with_deadline(deadline); }
+    // SAFETY: the running task is parked on that wait list.
+    unsafe { sched::live::schedule::schedule(); }
+    target.space_waiters.remove_current();
+    if sched::live::deliverable_signals_self() != 0 { return Some(Unicast::Interrupted); }
+    if net::sock_intr::deadline_expired(deadline) { return Some(Unicast::Again); }
+    None
+}
+
+/// A hosted build has no task to park, so a refused message reports the
+/// non-blocking answer. # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+fn wait_for_space(_target: &NetlinkSocket, _deadline: u64) -> Option<Unicast> {
+    Some(Unicast::Again)
 }
 
 #[cfg(test)]
@@ -110,11 +153,33 @@ mod tests {
         register_port_id(&sender);
         register_port_id(&target);
         let target_port = target.port_id.load(Ordering::Acquire);
-        assert!(unicast_port(&sender, target_port, b"netlink"));
+        assert_eq!(unicast_port(&sender, target_port, b"netlink", true), Unicast::Queued);
         assert_eq!(target.dequeue().map(|(bytes, _)| bytes), Some(b"netlink".to_vec()));
         let sender_port = sender.port_id.load(Ordering::Acquire);
         assert_eq!(target.connect_destination(sender_port.wrapping_add(1), 0), Ok(()));
-        assert!(!unicast_port(&sender, target_port, b"blocked"));
+        assert_eq!(unicast_port(&sender, target_port, b"blocked", true), Unicast::NoPort);
+    }
+
+    /// The destination's receive budget bounds a unicast: the first message is
+    /// always admitted, one that no longer fits is refused, and a refusal a
+    /// non-blocking sender meets is EAGAIN rather than a silent enqueue.
+    /// Draining the destination admits the next one.
+    #[test]
+    fn a_unicast_is_admitted_by_the_destination_receive_budget() {
+        let namespace = network_namespace::initial();
+        let sender = Arc::new(NetlinkSocket::new(crate::proto::NETLINK_ROUTE, &namespace));
+        let target = Arc::new(NetlinkSocket::new(crate::proto::NETLINK_ROUTE, &namespace));
+        register_port_id(&sender);
+        register_port_id(&target);
+        let target_port = target.port_id.load(Ordering::Acquire);
+        target.set_receive_buffer(8);
+        // An empty destination takes a message far larger than its budget.
+        assert_eq!(unicast_port(&sender, target_port, &[0u8; 64], true), Unicast::Queued);
+        // With that queued, the budget refuses the next one.
+        assert_eq!(unicast_port(&sender, target_port, b"x", true), Unicast::Again);
+        assert!(target.dequeue().is_some());
+        // A drained destination admits again.
+        assert_eq!(unicast_port(&sender, target_port, b"x", true), Unicast::Queued);
     }
 }
 

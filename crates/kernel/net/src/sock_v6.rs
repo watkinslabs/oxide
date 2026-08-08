@@ -29,7 +29,7 @@ pub(crate) fn connect_udp6_locked(sock: &InetSocket, local_port: &mut Option<u16
         let (port, endpoint) = alloc_ephemeral_udp6_owned(
             sock.owner.clone(), mapped_source.map(crate::Ipv6Addr::from_v4_mapped)
                 .unwrap_or_else(|| *sock.local_ip6.lock()), sock.error.clone(), iface,
-            sock.opts.reuseaddr.clone(), sock.opts.reuseport.clone(),
+            sock.opts.base.reuseaddr.clone(), sock.opts.base.reuseport.clone(),
             sock.opts.ipv6_v6only.clone(),
             sock.peer6.clone(), sock.opts.ip_mtu_discover.clone(),
             sock.opts.ipv6_mtu_discover.clone(), sock.opts.udp.no_check6_rx.clone(),
@@ -63,7 +63,7 @@ pub(crate) fn scoped_iface(sock: &InetSocket, dst: crate::Ipv6Addr, scope_id: u3
     let iface = crate::NetIfaceId::from_raw(scope_id);
     let net_ns = sock.net_ns();
     if stack().ifaces.lookup_in_ns(iface, net_ns).is_none() { return Err(NetError::Enodev); }
-    let bound = sock.opts.bound_ifindex.load(core::sync::atomic::Ordering::Acquire);
+    let bound = sock.opts.base.bound_ifindex.load(core::sync::atomic::Ordering::Acquire);
     if bound != 0 && bound != scope_id { return Err(NetError::Enodev); }
     Ok(Some(iface))
 }
@@ -193,7 +193,7 @@ fn ensure_udp6_bound(sock: &InetSocket, dst_ip: crate::Ipv6Addr, scope_id: u32)
                 let (p, endpoint) = alloc_ephemeral_udp6_owned(
                     sock.owner.clone(), bind_ip, sock.error.clone(),
                     scoped_iface(sock, dst_ip, scope_id)?,
-                    sock.opts.reuseaddr.clone(), sock.opts.reuseport.clone(),
+                    sock.opts.base.reuseaddr.clone(), sock.opts.base.reuseport.clone(),
                     sock.opts.ipv6_v6only.clone(),
                     sock.peer6.clone(), sock.opts.ip_mtu_discover.clone(),
                     sock.opts.ipv6_mtu_discover.clone(), sock.opts.udp.no_check6_rx.clone(),
@@ -243,7 +243,7 @@ fn sendto_v4_mapped(sock: &InetSocket, dst_ip: crate::Ipv4Addr, dst_port: u16,
         sock.opts.ip_tos.load(core::sync::atomic::Ordering::Acquire) as u8, ttl,
         sock.opts.ip_mtu_discover.load(core::sync::atomic::Ordering::Acquire),
         sock.opts.ip.options().as_ref(),
-        sock.opts.generic.flag(crate::sock_opts::sol_socket::flag::NO_CHECK_TX), tx,
+        sock.opts.base.generic.flag(crate::sock_opts::sol_socket::flag::NO_CHECK_TX), tx,
     ).map_err(|error| crate::socket_error::report_send_failure(&sock.error, sock.net_ns(),
         crate::addr::IpAddr::V4(dst_ip), dst_port, bound, error))?;
     if !dst_ip.is_multicast() || multicast_loop { drain_loopback(); }

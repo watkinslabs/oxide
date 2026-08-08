@@ -76,8 +76,8 @@ fn udp6_endpoint_shares_distinct_inet_socket_pmtudisc_modes() {
     sock.opts.ip_mtu_discover.store(crate::uapi::IP_PMTUDISC_DONT, Ordering::Release);
     sock.opts.ipv6_mtu_discover.store(crate::uapi::IPV6_PMTUDISC_DO, Ordering::Release);
     let endpoint = stack.bind_udp6_socket(
-        V6_A, PORT, None, sock.error.clone(), sock.opts.reuseaddr.clone(),
-        sock.opts.reuseport.clone(), sock.owner_uid, sock.opts.ipv6_v6only.clone(),
+        V6_A, PORT, None, sock.error.clone(), sock.opts.base.reuseaddr.clone(),
+        sock.opts.base.reuseport.clone(), sock.owner_uid, sock.opts.ipv6_v6only.clone(),
         sock.peer6.clone(), sock.opts.ip_mtu_discover.clone(),
         sock.opts.ipv6_mtu_discover.clone(), sock.bpf_filter.clone(), sock.mcast.clone(),
     ).unwrap();

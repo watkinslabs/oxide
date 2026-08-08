@@ -76,8 +76,12 @@ where I: IntoIterator<Item = (i32, i32, &'a [u8])>
     Ok(out)
 }
 
-/// One message of a written stream. # C: O(len)
-fn admit_one(kind: i32, data: &[u8], caps: OptCaps, out: &mut Slots) -> Result<(), Errno> {
+/// One message of a written stream, and the SAME admission a send-control
+/// stream's extension-header messages are judged by: the shape screens, the
+/// duplicate/replace rules, the privilege ladder and the type-2 routing screen
+/// have one owner, so a header a send accepts is one the option write accepts.
+/// # C: O(len)
+pub fn admit_one(kind: i32, data: &[u8], caps: OptCaps, out: &mut Slots) -> Result<(), Errno> {
     match kind {
         // Validated then dropped: the sticky block holds no per-datagram state.
         cmsg::IPV6_PKTINFO | cmsg::IPV6_2292PKTINFO => {

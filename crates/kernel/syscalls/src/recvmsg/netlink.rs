@@ -74,8 +74,8 @@ pub(crate) fn recv_pinned(file: &alloc::sync::Arc<vfs::File>, file_nonblock: boo
         protocol.push((SOL_NETLINK, NETLINK_LISTEN_ALL_NSID, nsid_wire.as_slice()));
     }
     let scm = crate::recv_control::ScmReceive {
-        credentials: net::scm::recv(sock.scm.on(), carried),
-        security: if sock.scm_security.on() { security } else { None },
+        credentials: net::scm::recv(sock.base.passcred.on(), carried),
+        security: if sock.base.scm_security.on() { security } else { None },
         pid: None,
         want_pidfd: false,
     };

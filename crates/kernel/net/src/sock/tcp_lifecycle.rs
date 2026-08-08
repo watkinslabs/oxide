@@ -17,8 +17,8 @@ pub(super) fn bind_tcp(sock: &alloc::sync::Arc<InetSocket>, ip: crate::IpAddr,
         Some(iface) => Some(iface),
         None => bound_iface(sock)?,
     };
-    let reuseaddr = sock.opts.reuseaddr.load(Ordering::Acquire) != 0;
-    let reuseport = sock.opts.reuseport.load(Ordering::Acquire) != 0;
+    let reuseaddr = sock.opts.base.reuseaddr.load(Ordering::Acquire) != 0;
+    let reuseport = sock.opts.base.reuseport.load(Ordering::Acquire) != 0;
     // `IP_BIND_ADDRESS_NO_PORT`: claim the address now and leave the port to
     // `connect`, so the 4-tuple hash may reuse a port another connection to a
     // different destination already holds.
@@ -47,8 +47,8 @@ fn ensure_tcp_bind(sock: &InetSocket, local_ip: crate::IpAddr,
         crate::IpAddr::V4(_) => super::iface::v4_egress_iface(sock)?,
         crate::IpAddr::V6(_) => super::iface::v6_egress_iface(sock)?,
     };
-    let reuseaddr = sock.opts.reuseaddr.load(Ordering::Acquire) != 0;
-    let reuseport = sock.opts.reuseport.load(Ordering::Acquire) != 0;
+    let reuseaddr = sock.opts.base.reuseaddr.load(Ordering::Acquire) != 0;
+    let reuseport = sock.opts.base.reuseport.load(Ordering::Acquire) != 0;
     let v6only = tcp_v6only(sock, local_ip);
     let policy = super::bind_port_policy(sock, 0);
     let bind = match peer {
@@ -92,7 +92,7 @@ pub(super) fn listen_tcp(sock: &alloc::sync::Arc<InetSocket>, backlog: i32,
     let listener = stack().tcp_listen_reserved_fastopen_frag_pacing_ipv6(
         &bind, sock.bpf_filter.clone(), sock.opts.ip_mtu_discover.clone(),
         sock.opts.ipv6_mtu_discover.clone(), sock.opts.ipv6.frag_size_cell(), sock.opts.ipv6.clone(), sock.opts.min_hop.clone(),
-        sock.opts.tcp.fastopen.clone(), sock.opts.generic.max_pacing_rate_cell())?;
+        sock.opts.tcp.fastopen.clone(), sock.opts.base.generic.max_pacing_rate_cell())?;
     listener.set_backlog(backlog, somaxconn);
     crate::sock_opts::sol_tcp::apply::to_listener(&sock.opts, &listener);
     listener.register_poll_subs(&sock.poll_subs);
@@ -164,7 +164,7 @@ fn connect_tcp(sock: &InetSocket, local_port: &mut Option<u16>, local_ip: crate:
         sock.opts.ipv6.frag_size_cell(), sock.opts.min_hop.clone(),
         super::tcp_ip_options::tcp_entry_ip_options(sock),
         sock.opts.ipv6.clone(),
-        sock.opts.generic.max_pacing_rate_cell(),
+        sock.opts.base.generic.max_pacing_rate_cell(),
         super::tcp_fastopen::ActiveOpen::from(open), data,
     )?;
     entry.conn.lock().fastopen_confirming = confirming;

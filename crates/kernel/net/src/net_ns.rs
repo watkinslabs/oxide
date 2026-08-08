@@ -15,7 +15,8 @@ mod state;
 mod teardown;
 
 pub use lifecycle::{
-    CreateError, current_namespace, initial_namespace, materialize_loopback_into, namespace_id,
+    CreateError, current_namespace, initial_namespace, materialize_loopback_into,
+    namespace_cookie, namespace_id,
 };
 #[cfg(target_os = "oxide-kernel")]
 pub use lifecycle::{create_namespace, materialize_loopback};

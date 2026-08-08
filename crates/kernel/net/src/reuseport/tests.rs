@@ -50,7 +50,7 @@ fn attach_on_an_unhashed_socket_needs_so_reuseport_then_builds_one_member_group(
     assert_eq!(super::attach_prog(&sock, prog(0)), Err(Errno::Einval));
     assert!(super::group_of(&sock).is_none());
 
-    sock.opts.reuseport.store(1, Ordering::Release);
+    sock.opts.base.reuseport.store(1, Ordering::Release);
     assert_eq!(super::attach_prog(&sock, prog(0)), Ok(()));
     let group = super::group_of(&sock).expect("attach allocated the group");
     assert!(group.has_prog());
@@ -73,7 +73,7 @@ fn attach_on_a_hashed_socket_bound_without_so_reuseport_is_einval() {
 
     assert_eq!(super::attach_prog(&sock, prog(0)), Err(Errno::Einval));
     // Setting the option after the bind does not retroactively create a group.
-    sock.opts.reuseport.store(1, Ordering::Release);
+    sock.opts.base.reuseport.store(1, Ordering::Release);
     assert_eq!(super::attach_prog(&sock, prog(0)), Err(Errno::Einval));
     assert!(super::group_of(&sock).is_none());
 }
@@ -84,7 +84,7 @@ fn detach_reports_einval_without_so_reuseport_and_enoent_once_it_is_set() {
     let sock = udp_socket();
     assert_eq!(super::detach_prog(&sock), Err(Errno::Einval));
 
-    sock.opts.reuseport.store(1, Ordering::Release);
+    sock.opts.base.reuseport.store(1, Ordering::Release);
     assert_eq!(super::detach_prog(&sock), Err(Errno::Enoent));
 
     super::alloc_for_unhashed(&sock).expect("SO_REUSEPORT allows the group");
@@ -101,7 +101,7 @@ fn detach_reports_einval_without_so_reuseport_and_enoent_once_it_is_set() {
 fn an_unhashed_socket_cannot_detach_from_a_group_holding_shutdown_members() {
     let _domain = crate::hosted_fixture::init_net_domain();
     let sock = udp_socket();
-    sock.opts.reuseport.store(1, Ordering::Release);
+    sock.opts.base.reuseport.store(1, Ordering::Release);
     let group = super::alloc_for_unhashed(&sock).unwrap();
     super::attach_prog(&sock, prog(0)).unwrap();
 
@@ -118,7 +118,7 @@ fn a_prebind_group_survives_a_bind_that_finds_no_key_mate() {
     let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let sock = udp_socket();
-    sock.opts.reuseport.store(1, Ordering::Release);
+    sock.opts.base.reuseport.store(1, Ordering::Release);
     let group = super::alloc_for_unhashed(&sock).unwrap();
     super::attach_prog(&sock, prog(2)).unwrap();
 

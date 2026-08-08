@@ -12,7 +12,7 @@ impl InetSocket {
             SockKind::Udp | SockKind::Raw4(_) | SockKind::Raw6(_) | SockKind::Packet { .. });
         let pending = crate::socket_error::error_poll_mask(
             self.has_pending_recv_error(), self.has_extended_error(),
-            self.opts.generic.flag(crate::sock_opts::sol_socket::flag::SELECT_ERR_QUEUE),
+            self.opts.base.generic.flag(crate::sock_opts::sol_socket::flag::SELECT_ERR_QUEUE),
             datagram);
         let packet_ring_ready = self.packet_ring_readable();
         let unix_listener = {
@@ -23,7 +23,7 @@ impl InetSocket {
         // The SAME cap the send paths enforce (`socket::send::send_unix_blocking`,
         // `sock_io::write_tcp_blocking`). Poll and `sendmsg` must read one
         // number, or the writer is told "writable" and handed `EAGAIN`.
-        let sndbuf_cap = self.opts.sndbuf.load(core::sync::atomic::Ordering::Acquire)
+        let sndbuf_cap = self.opts.base.sndbuf.load(core::sync::atomic::Ordering::Acquire)
             .max(0) as usize;
         // `unix_dgram_poll`'s connected-peer backlog arm. Resolved outside the
         // `kind` lock: the lookup takes the per-netns unix registry lock, which

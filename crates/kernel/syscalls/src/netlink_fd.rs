@@ -247,6 +247,14 @@ pub fn getsockopt(target: &NetlinkFileRef, level: u64, optname: u64, optval: u64
         Err(error) => return -(error.as_i32() as i64),
     };
     let mut bytes: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+    if level == net::uapi::SOL_SOCKET
+        && optname == net::sock_opts::sol_socket::SO_BINDTODEVICE
+    {
+        // The device binding answers with a NAME, not a scalar, so it takes
+        // the one read every family shares rather than the value table.
+        return crate::s055_getsockopt::sol_socket::answer_bindtodevice(&socket.base,
+            net::net_ns::namespace_id(&socket.net_ns), optval, optlen_p);
+    }
     if level == net::uapi::SOL_SOCKET {
         // The generic table truncates the answer to what the caller asked for
         // and publishes the truncated length, exactly as it does for every
@@ -376,7 +384,7 @@ pub fn send_coalesced_file(file: &Arc<vfs::File>, buf: &[u8], name: u64, namelen
         },
         None => socket.destination(),
     };
-    let result = socket.send_to(buf, dest);
+    let result = socket.send_to(buf, dest, file.flags().contains(vfs::OpenFlags::O_NONBLOCK));
     // Keep the diagnostic path available after coalesced sends moved to the
     // canonical destination owner. It is intentionally feature-gated, like
     // the imported-send trace, rather than being removed or made unconditional.
@@ -389,6 +397,8 @@ pub fn send_coalesced_file(file: &Arc<vfs::File>, buf: &[u8], name: u64, namelen
     match result {
         Ok(n) => n as i64,
         Err(::netlink::SendError::Emsgsize) => -(Errno::Emsgsize.as_i32() as i64),
+        Err(::netlink::SendError::Again) => -(Errno::Eagain.as_i32() as i64),
+        Err(::netlink::SendError::Interrupted) => -syscall::restart::ERESTARTSYS,
         Err(::netlink::SendError::Backend(error)) => -(error as i64),
     }
 }
@@ -413,7 +423,7 @@ pub fn sendmsg_imported(file: &Arc<vfs::File>, name: &[u8], payload: &[u8]) -> i
             Err(error) => return -(error as i64),
         }
     };
-    let result = sock.send_to(payload, dest);
+    let result = sock.send_to(payload, dest, file.flags().contains(vfs::OpenFlags::O_NONBLOCK));
     #[cfg(feature = "debug-uevent")]
     {
         let cooked = payload.len() >= 8 && &payload[..8] == b"libudev\0";
@@ -423,6 +433,8 @@ pub fn sendmsg_imported(file: &Arc<vfs::File>, name: &[u8], payload: &[u8]) -> i
     match result {
         Ok(n) => n as i64,
         Err(::netlink::SendError::Emsgsize) => -(Errno::Emsgsize.as_i32() as i64),
+        Err(::netlink::SendError::Again) => -(Errno::Eagain.as_i32() as i64),
+        Err(::netlink::SendError::Interrupted) => -syscall::restart::ERESTARTSYS,
         Err(::netlink::SendError::Backend(error)) => -(error as i64),
     }
 }

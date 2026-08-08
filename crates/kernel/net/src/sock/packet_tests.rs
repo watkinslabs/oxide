@@ -50,7 +50,7 @@ fn packet_protocol(owner: network_namespace::NetworkNamespaceRef, kind: u8,
 fn take(socket: &InetSocket) -> Vec<PacketFrame> {
     let kind = socket.kind.lock();
     let SockKind::Packet { rx, .. } = &*kind else { panic!("packet socket") };
-    let limit = socket.opts.rcvbuf.load(Ordering::Acquire).max(0) as usize;
+    let limit = socket.opts.base.rcvbuf.load(Ordering::Acquire).max(0) as usize;
     let frames = rx.lock().take_all(limit);
     frames
 }
@@ -348,7 +348,7 @@ fn packet_queue_pressure_and_statistics_are_byte_accounted_and_destructive() {
     let bytes = frame(LOCAL);
     let charge = linux_packet_skb_truesize(bytes.len());
     let limit = charge * 2 + 1;
-    socket.opts.rcvbuf.store(limit as i32, Ordering::Release);
+    socket.opts.base.rcvbuf.store(limit as i32, Ordering::Release);
     let stack = crate::NetStack::new();
     let iface = stack.ifaces.register_in_ns(Arc::new(FramingDev::new()), owner.id().as_u64());
     let lease = stack.ifaces.acquire_ingress(iface).unwrap();

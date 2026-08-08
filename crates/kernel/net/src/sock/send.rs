@@ -6,7 +6,7 @@ pub fn wait_transmit(sock: &InetSocket, deadline_ns: u64) -> bool {
     let entry = match &*sock.kind.lock() {
         SockKind::TcpConn(entry) => entry.clone(), _ => return false,
     };
-    let cap = sock.opts.sndbuf.load(core::sync::atomic::Ordering::Acquire)
+    let cap = sock.opts.base.sndbuf.load(core::sync::atomic::Ordering::Acquire)
         .max(0) as usize;
     if !entry.arm_transmit_wait(&sock.write_shut, cap, deadline_ns) { return true; }
     // SAFETY: arm_transmit_wait published current before dropping conn.
@@ -52,7 +52,7 @@ fn sendto_raw4(sock: &InetSocket, endpoint: &alloc::sync::Arc<crate::raw4::Raw4E
             sock.opts.ip_mcast_ttl.load(core::sync::atomic::Ordering::Acquire),
             sock.opts.ip_ttl.load(core::sync::atomic::Ordering::Acquire), multicast)),
         pmtudisc: sock.opts.ip_mtu_discover.load(core::sync::atomic::Ordering::Acquire),
-        broadcast: sock.opts.broadcast.load(core::sync::atomic::Ordering::Acquire) != 0,
+        broadcast: sock.opts.base.broadcast.load(core::sync::atomic::Ordering::Acquire) != 0,
         nodefrag: sock.opts.ip.flag(crate::sock_opts::sol_ip::state::flag::NODEFRAG),
     };
     let mut raw_control = control.raw4.clone();
@@ -81,7 +81,7 @@ pub fn sendto(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, creds
     // and the override this message settled over them.
     if sent.is_ok() {
         super::tx_tstamp::publish(sock,
-            control.sockcm.tsflags(sock.opts.timestamping.load(
+            control.sockcm.tsflags(sock.opts.base.timestamping.load(
                 core::sync::atomic::Ordering::Acquire) as u32),
             control.sockcm.ts_opt_id,
             sock.family.load(core::sync::atomic::Ordering::Acquire) == AF_INET6);
@@ -172,7 +172,7 @@ fn sendto_inner(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, cre
         if sock.write_shut.load(core::sync::atomic::Ordering::Acquire)
             || crate::stack::tcp_send_closed(entry.conn.lock().state)
         { return Err(NetError::Epipe); }
-        let cap = sock.opts.sndbuf.load(core::sync::atomic::Ordering::Acquire)
+        let cap = sock.opts.base.sndbuf.load(core::sync::atomic::Ordering::Acquire)
             .max(0) as usize;
         let nodelay = sock.opts.tcp_nodelay.load(core::sync::atomic::Ordering::Acquire) != 0;
         let cork = sock.opts.tcp_cork.load(core::sync::atomic::Ordering::Acquire) != 0;

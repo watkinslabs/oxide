@@ -20,7 +20,7 @@ fn received(state: ReceiveState) -> (alloc::vec::Vec<u8>, SenderCreds) {
 #[test]
 fn a_new_socket_does_not_pass_credentials() {
     for protocol in [proto::NETLINK_ROUTE, proto::NETLINK_KOBJECT_UEVENT] {
-        assert!(!socket(protocol).scm.on());
+        assert!(!socket(protocol).base.passcred.on());
     }
 }
 
@@ -60,12 +60,12 @@ fn the_report_follows_the_option_on_every_protocol() {
         let s = socket(protocol);
         s.enqueue(vec![0]);
         let (_, creds) = received(s.receive(false));
-        assert_eq!(scm_recv(s.scm.on(), creds), None);
+        assert_eq!(scm_recv(s.base.passcred.on(), creds), None);
 
         let s = socket(protocol);
-        s.scm.set(true);
+        s.base.passcred.set(true);
         s.enqueue(vec![0]);
         let (_, creds) = received(s.receive(false));
-        assert_eq!(scm_recv(s.scm.on(), creds), Some((0, 0, 0)));
+        assert_eq!(scm_recv(s.base.passcred.on(), creds), Some((0, 0, 0)));
     }
 }

@@ -4,36 +4,21 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use alloc::sync::Arc;
-use core::sync::atomic::Ordering;
 use syscall::errno::Errno;
 use net::sock::InetSocket;
 use net::sock_opts::sol_socket::get::{self, SockView};
 
 fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
-/// Snapshot the non-generic socket state the read table needs. # C: O(1)
+/// The socket identity the read table needs beyond the generic base. Every
+/// generic value is read straight from the base by the table itself. # C: O(1)
 pub(super) fn view(sock: &Arc<InetSocket>) -> SockView {
     SockView {
         sock: net::sock_opts::describe(sock),
-        reuseaddr: sock.opts.reuseaddr.load(Ordering::Acquire),
-        reuseport: sock.opts.reuseport.load(Ordering::Acquire),
-        keepalive: sock.opts.keepalive.load(Ordering::Acquire),
-        broadcast: sock.opts.broadcast.load(Ordering::Acquire),
-        oobinline: sock.opts.oobinline.load(Ordering::Acquire),
-        sndbuf: sock.opts.sndbuf.load(Ordering::Acquire),
-        rcvbuf: sock.opts.rcvbuf.load(Ordering::Acquire),
-        priority: sock.opts.priority.load(Ordering::Acquire),
-        mark: sock.opts.mark.load(Ordering::Acquire),
-        passcred: sock.opts.passcred.value(),
-        timestamping_flags: sock.opts.timestamping.load(Ordering::Acquire),
-        sndtimeo_ns: sock.opts.sndtimeo_ns.load(Ordering::Acquire),
-        rcvtimeo_ns: sock.opts.rcvtimeo_ns.load(Ordering::Acquire),
-        bound_ifindex: sock.opts.bound_ifindex.load(Ordering::Acquire) as i32,
         acceptconn: super::socket_acceptconn(sock),
         socket_type: super::socket_type(sock),
         protocol: super::socket_protocol(sock),
-        netns_cookie: sock.net_ns(),
-        socket_cookie: sock.opts.generic.cookie(net::sock_opts::sol_socket::next_cookie) as u64,
+        netns_cookie: net::net_ns::namespace_cookie(&sock.net_namespace),
         // No receive path in this stack runs inside a NAPI context, so no
         // socket ever records a valid identifier and the option reads zero.
         napi_id: 0,
@@ -44,11 +29,20 @@ pub(super) fn view(sock: &Arc<InetSocket>) -> SockView {
 /// one value, truncate to the natural width, then publish value and length.
 /// # C: O(1)
 pub(super) fn read(sock: &Arc<InetSocket>, optname: u64, optval: u64, optlen_p: u64) -> i64 {
+    answer(&sock.opts.base, &view(sock), optname, optval, optlen_p)
+}
+
+/// The one SOL_SOCKET read every family uses: import the caller length,
+/// resolve one value from the socket base, truncate to the natural width, then
+/// publish value and length. # C: O(1)
+pub(crate) fn answer(base: &net::SockBase, view: &SockView, optname: u64, optval: u64,
+                     optlen_p: u64) -> i64
+{
     let mut raw_len = [0u8; core::mem::size_of::<i32>()];
     if uaccess::copy_from_user(&mut raw_len, optlen_p).is_err() { return errno(Errno::Efault); }
     let requested = i32::from_ne_bytes(raw_len);
     if requested < 0 { return errno(Errno::Einval); }
-    let value = match get::value(optname, requested, &sock.opts.generic, &view(sock)) {
+    let value = match get::value(optname, requested, base, view) {
         Ok(value) => value,
         Err(e) => return errno(e),
     };
@@ -59,6 +53,40 @@ pub(super) fn read(sock: &Arc<InetSocket>, optname: u64, optval: u64, optlen_p: 
         return errno(Errno::Efault);
     }
     if uaccess::copy_to_user(optlen_p, &(take as u32).to_ne_bytes()).is_err() {
+        return errno(Errno::Efault);
+    }
+    0
+}
+
+/// `SO_BINDTODEVICE` read, for every family: the answer is the bound
+/// interface's name and a published length of `strlen + 1`, or an empty answer
+/// of published length zero when the socket has no binding. # C: O(N ifaces)
+pub(crate) fn answer_bindtodevice(base: &net::SockBase, namespace: u64, optval: u64,
+                                  optlen_p: u64) -> i64
+{
+    let mut raw_len = [0u8; core::mem::size_of::<i32>()];
+    if uaccess::copy_from_user(&mut raw_len, optlen_p).is_err() { return errno(Errno::Efault); }
+    let requested = i32::from_ne_bytes(raw_len);
+    if requested < 0 { return errno(Errno::Einval); }
+    let name = match base.bound_device_name(namespace, requested as usize) {
+        Ok(name) => name,
+        Err(e) => return errno(e),
+    };
+    let published = match name {
+        None => 0usize,
+        Some(name) => {
+            let mut bytes = [0u8; net::sock_opts::sol_socket::set::IFNAMSIZ];
+            let text = name.as_bytes();
+            let published = text.len() + 1;
+            if published > bytes.len() { return errno(Errno::Einval); }
+            bytes[..text.len()].copy_from_slice(text);
+            if uaccess::copy_to_user(optval, &bytes[..published]).is_err() {
+                return errno(Errno::Efault);
+            }
+            published
+        }
+    };
+    if uaccess::copy_to_user(optlen_p, &(published as u32).to_ne_bytes()).is_err() {
         return errno(Errno::Efault);
     }
     0

@@ -20,7 +20,7 @@ fn trace_rx(event: &'static [u8], value: usize) {
 /// the datagrams so multicast overrun and `sk_err` share one canonical owner.
 pub(crate) struct ReceiveQueue {
     datagrams: alloc::collections::VecDeque<(Vec<u8>, u32, u32, Option<i32>, SenderCreds, Option<Vec<u8>>)>,
-    bytes: usize,
+    pub(crate) bytes: usize,
 }
 
 impl ReceiveQueue {
@@ -32,7 +32,8 @@ impl ReceiveQueue {
         bytes.capacity().saturating_add(core::mem::size_of::<(Vec<u8>, u32, u32, Option<i32>, SenderCreds, Option<Vec<u8>>)>() )
     }
 
-    fn push(&mut self, bytes: Vec<u8>, src_port: u32, multicast_group: u32, nsid: Option<i32>, creds: SenderCreds,
+    /// Charge one datagram to the queue budget and queue it. # C: O(1)
+    pub(crate) fn push(&mut self, bytes: Vec<u8>, src_port: u32, multicast_group: u32, nsid: Option<i32>, creds: SenderCreds,
         security: Option<Vec<u8>>) {
         self.bytes = self.bytes.saturating_add(Self::charge(&bytes));
         self.datagrams.push_back((bytes, src_port, multicast_group, nsid, creds, security));
@@ -168,7 +169,7 @@ impl NetlinkSocket {
     pub(crate) fn enqueue_multicast(&self, msg: Vec<u8>, group: u32, nsid: Option<i32>) -> bool {
         let mut queue = self.rx_queue.lock();
         let fits = queue.bytes.checked_add(msg.len()).is_some_and(|used| {
-            used <= self.rcvbuf.load(Ordering::Acquire)
+            used <= self.base.rcvbuf_bytes()
         });
         if fits {
             queue.push(msg, 0, group, nsid, SenderCreds::default(),
@@ -205,7 +206,7 @@ impl NetlinkSocket {
 
     /// Set the canonical NETLINK receive-buffer budget. # C: O(1)
     pub fn set_receive_buffer(&self, bytes: usize) {
-        self.rcvbuf.store(bytes, Ordering::Release);
+        self.base.set_rcvbuf_bytes(bytes);
     }
 
     /// Enable Linux `NETLINK_NO_ENOBUFS` suppression for multicast loss. # C: O(1)
@@ -218,8 +219,10 @@ impl NetlinkSocket {
     pub fn dequeue(&self) -> Option<(Vec<u8>, u32)> {
         let mut queue = self.rx_queue.lock();
         let dgram = queue.pop();
-        if queue.is_empty() { self.rx_congested.store(false, Ordering::Release); }
+        let drained = queue.is_empty();
+        if drained { self.rx_congested.store(false, Ordering::Release); }
         drop(queue);
+        if drained { self.wake_space_waiters(); }
         if dgram.is_some() { self.advance_dump(); }
         dgram.map(|(bytes, src_port, _, _, _, _)| (bytes, src_port))
     }
@@ -250,7 +253,9 @@ impl NetlinkSocket {
         } else {
             ReceiveState::Empty
         };
+        let drained = queue.is_empty();
         drop(queue);
+        if drained { self.wake_space_waiters(); }
         if !peek && matches!(state, ReceiveState::Datagram(_)) { self.advance_dump(); }
         state
     }
@@ -260,7 +265,13 @@ impl NetlinkSocket {
     /// both inode reads and the recvmsg syscall path.
     /// # C: O(1)
     pub fn recv_deadline_ns(&self) -> u64 {
-        net::sock_intr::deadline_from_timeo(self.rcvtimeo_ns.load(Ordering::Acquire))
+        net::sock_intr::deadline_from_timeo(self.base.rcvtimeo_u64())
+    }
+
+    /// SO_SNDTIMEO as the absolute monotonic deadline that bounds a sender
+    /// blocked on a destination's receive budget. # C: O(1)
+    pub fn send_deadline_ns(&self) -> u64 {
+        net::sock_intr::deadline_from_timeo(self.base.sndtimeo_u64())
     }
 
     #[cfg(any(test, target_os = "oxide-kernel"))]

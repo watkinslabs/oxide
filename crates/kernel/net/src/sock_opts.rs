@@ -111,7 +111,7 @@ fn keepalive_secs_to_ns(secs: i32) -> u64 {
 /// Copy listener TCP keepalive policy to an accepted socket. # C: O(1)
 pub fn inherit_tcp_keepalive_opts(dst: &InetSocket, src: &InetSocket) {
     use core::sync::atomic::Ordering;
-    dst.opts.keepalive.store(src.opts.keepalive.load(Ordering::Acquire), Ordering::Release);
+    dst.opts.base.keepalive.store(src.opts.base.keepalive.load(Ordering::Acquire), Ordering::Release);
     dst.opts.tcp_keepidle_s.store(src.opts.tcp_keepidle_s.load(Ordering::Acquire), Ordering::Release);
     dst.opts.tcp_keepintvl_s.store(src.opts.tcp_keepintvl_s.load(Ordering::Acquire), Ordering::Release);
     dst.opts.tcp_keepcnt.store(src.opts.tcp_keepcnt.load(Ordering::Acquire), Ordering::Release);
@@ -133,14 +133,14 @@ pub fn record_accepted_header(dst: &InetSocket, entry: &TcpEntry) {
 /// Copy listener OOB-inline policy to an accepted TCP socket. # C: O(1)
 pub fn inherit_tcp_oobinline(dst: &InetSocket, src: &InetSocket) {
     use core::sync::atomic::Ordering;
-    dst.opts.oobinline.store(src.opts.oobinline.load(Ordering::Acquire), Ordering::Release);
+    dst.opts.base.oobinline.store(src.opts.base.oobinline.load(Ordering::Acquire), Ordering::Release);
 }
 
 /// Apply socket-level keepalive configuration to a live TCP TCB. # C: O(1)
 pub fn apply_tcp_keepalive_opts(sock: &InetSocket, entry: &Arc<TcpEntry>) {
     use core::sync::atomic::Ordering;
     let mut c = entry.conn.lock();
-    c.ka_enabled = sock.opts.keepalive.load(Ordering::Acquire) != 0;
+    c.ka_enabled = sock.opts.base.keepalive.load(Ordering::Acquire) != 0;
     c.ka_idle_ns = keepalive_secs_to_ns(sock.opts.tcp_keepidle_s.load(Ordering::Acquire));
     c.ka_intvl_ns = keepalive_secs_to_ns(sock.opts.tcp_keepintvl_s.load(Ordering::Acquire));
     c.ka_cnt_max = sock.opts.tcp_keepcnt.load(Ordering::Acquire).max(1) as u32;
@@ -195,7 +195,7 @@ pub fn describe_ip(sock: &InetSocket) -> sol_ip::set::IpSock {
     sol_ip::set::IpSock {
         stream, dgram, raw, inet_num,
         on_ra_chain,
-        bound_if: sock.opts.bound_ifindex.load(Ordering::Acquire) as i32,
+        bound_if: sock.opts.base.bound_ifindex.load(Ordering::Acquire) as i32,
     }
 }
 
@@ -222,7 +222,7 @@ pub fn describe_ipv6(sock: &InetSocket) -> sol_ipv6::set::Ipv6Sock {
         // No send is ever left half-committed across a socket option call in
         // this stack, so a conversion never races one.
         send_pending: false,
-        bound_if: sock.opts.bound_ifindex.load(Ordering::Acquire) as i32,
+        bound_if: sock.opts.base.bound_ifindex.load(Ordering::Acquire) as i32,
         on_ra_chain: sock.opts.ipv6.on_ra_chain(),
     }
 }
@@ -234,8 +234,8 @@ pub fn meminfo(sock: &InetSocket) -> sol_socket::varlen::MemInfo {
     use core::sync::atomic::Ordering;
     use crate::sock::SockKind;
     let mut info = sol_socket::varlen::MemInfo {
-        rcvbuf: sock.opts.rcvbuf.load(Ordering::Acquire).max(0) as u32,
-        sndbuf: sock.opts.sndbuf.load(Ordering::Acquire).max(0) as u32,
+        rcvbuf: sock.opts.base.rcvbuf.load(Ordering::Acquire).max(0) as u32,
+        sndbuf: sock.opts.base.sndbuf.load(Ordering::Acquire).max(0) as u32,
         ..Default::default()
     };
     let (rmem, wmem, drops) = match &*sock.kind.lock() {

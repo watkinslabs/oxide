@@ -37,7 +37,7 @@ pub(crate) fn recv_error(sock: &Arc<InetSocket>, user: &RecvUser, flags: u64) ->
         &entry.payload[..core::cmp::min(user.capacity, entry.payload.len())])
     { Ok(n) => n, Err(e) => return e };
     let name = abi::name_bytes(&entry, v6).unwrap_or_default();
-    let opt_cmsg = sock.opts.timestamping.load(Ordering::Acquire)
+    let opt_cmsg = sock.opts.base.timestamping.load(Ordering::Acquire)
         & net::uapi::SOF_TIMESTAMPING_OPT_CMSG != 0;
     let mut ctrl = Control::new(if user.control == 0 { 0 } else { user.controllen });
     let (level, kind) = abi::cmsg_slot(v6);
@@ -170,7 +170,7 @@ fn receive(sock: &Arc<InetSocket>, len: usize, flags: u64, file_nonblock: bool) 
     let pending = sock.take_pending_recv_error();
     if pending != 0 { return Err(-(pending as i64)); }
     if nonblock { return Err(err(Errno::Eagain)); }
-    let deadline = net::sock::compute_deadline_ns(sock.opts.rcvtimeo_ns.load(Ordering::Acquire));
+    let deadline = net::sock::compute_deadline_ns(sock.opts.base.rcvtimeo_ns.load(Ordering::Acquire));
     net::sock_recv::recv_blocking(sock, len, opts, deadline).map_err(errno_from_neterr)
 }
 
@@ -187,9 +187,9 @@ where F: FnMut(usize, &[u8]) -> Result<usize, i64>
     let nonblock = flags & MSG_DONTWAIT != 0 || file_nonblock;
     let peek = flags & MSG_PEEK != 0;
     let waitall = flags & MSG_WAITALL != 0;
-    let oobinline = sock.opts.oobinline.load(Ordering::Acquire) != 0;
+    let oobinline = sock.opts.base.oobinline.load(Ordering::Acquire) != 0;
     let mut total = 0usize;
-    let deadline = net::sock::compute_deadline_ns(sock.opts.rcvtimeo_ns.load(Ordering::Acquire));
+    let deadline = net::sock::compute_deadline_ns(sock.opts.base.rcvtimeo_ns.load(Ordering::Acquire));
     loop {
         net::sock::drain_loopback();
         let offset = if peek { total } else { 0 };
@@ -236,7 +236,7 @@ fn tcp_oob_with_copy(sock: &Arc<InetSocket>, user: &RecvUser, flags: u64,
     };
     let nonblock = flags & MSG_DONTWAIT != 0 || file_nonblock;
     let peek = flags & MSG_PEEK != 0;
-    let deadline = net::sock::compute_deadline_ns(sock.opts.rcvtimeo_ns.load(Ordering::Acquire));
+    let deadline = net::sock::compute_deadline_ns(sock.opts.base.rcvtimeo_ns.load(Ordering::Acquire));
     loop {
         net::sock::drain_loopback();
         match net::sock::stack().tcp_recv_urgent(&entry, peek, |byte| {

@@ -111,7 +111,7 @@ fn run(sock: &Arc<InetSocket>, op: &mut zc::Zc) -> Result<Option<u64>, Errno> {
     let done = entry.as_ref().map(|e| {
         sock.read_shut.load(Ordering::Acquire) || net::sock_io::tcp_recv_eof(e.conn.lock().state)
     }).unwrap_or(false);
-    let inline = sock.opts.oobinline.load(Ordering::Acquire) != 0;
+    let inline = sock.opts.base.oobinline.load(Ordering::Acquire) != 0;
     let timestamp = entry.as_ref().and_then(|entry| entry.conn.lock().recv_timestamp());
     let window = window_at(op.address);
     let offered = op.copybuf_len;
@@ -162,13 +162,13 @@ fn publish_timestamp(sock: &InetSocket, op: &mut zc::Zc, timestamp: Option<u64>)
     use net::sock_opts::sol_socket::{self as sol, flag};
     let Some(timestamp) = timestamp else { op.msg_flags = 0; return; };
     sock.note_receive_timestamp(timestamp);
-    if !sock.opts.generic.flag(flag::RCVTSTAMP) { op.msg_flags = 0; return; }
+    if !sock.opts.base.generic.flag(flag::RCVTSTAMP) { op.msg_flags = 0; return; }
     let sec = (timestamp / 1_000_000_000) as i64;
     let subsec = timestamp % 1_000_000_000;
-    let nanoseconds = sock.opts.generic.flag(flag::RCVTSTAMPNS);
+    let nanoseconds = sock.opts.base.generic.flag(flag::RCVTSTAMPNS);
     let kind = if nanoseconds {
-        if sock.opts.generic.flag(flag::TSTAMP_NEW) { sol::SO_TIMESTAMPNS_NEW } else { sol::SO_TIMESTAMPNS_OLD }
-    } else if sock.opts.generic.flag(flag::TSTAMP_NEW) { sol::SO_TIMESTAMP_NEW } else { sol::SO_TIMESTAMP_OLD };
+        if sock.opts.base.generic.flag(flag::TSTAMP_NEW) { sol::SO_TIMESTAMPNS_NEW } else { sol::SO_TIMESTAMPNS_OLD }
+    } else if sock.opts.base.generic.flag(flag::TSTAMP_NEW) { sol::SO_TIMESTAMP_NEW } else { sol::SO_TIMESTAMP_OLD };
     let frac = if nanoseconds { subsec as i64 } else { (subsec / 1_000) as i64 };
     let mut data = [0u8; 16];
     data[..8].copy_from_slice(&sec.to_ne_bytes());

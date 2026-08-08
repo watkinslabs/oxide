@@ -266,7 +266,7 @@ fn unnamed_send_reaches_the_connected_peer_port() {
     assert_ne!(peer_port, 0);
     assert_eq!(sender.connect_destination(peer_port, 0), Ok(()));
     assert_eq!(sender.destination(), NlDest { port_id: peer_port, group: 0 });
-    assert_eq!(sender.send_to(b"unicast", sender.destination()), Ok(7));
+    assert_eq!(sender.send_to(b"unicast", sender.destination(), true), Ok(7));
     assert_eq!(peer.dequeue().map(|(bytes, _)| bytes), Some(b"unicast".to_vec()));
     assert!(sender.dequeue().is_none(), "the sender did not receive its own datagram");
 }
@@ -281,7 +281,7 @@ fn a_named_send_to_an_unowned_port_is_econnrefused() {
     name[4..8].copy_from_slice(&u32::MAX.to_ne_bytes());
     let dest = parse_dest(&name).unwrap();
     assert_eq!(dest, NlDest { port_id: u32::MAX, group: 0 });
-    assert_eq!(sender.send_to(b"x", dest),
+    assert_eq!(sender.send_to(b"x", dest, true),
         Err(SendError::Backend(vfs::VfsError::Econnrefused)));
 }
 

@@ -65,7 +65,7 @@ impl InetSocket {
 fn resolve_iface(sock: &InetSocket, requested: u32, addr: Ipv6Addr) -> NetResult<NetIfaceId> {
     use core::sync::atomic::Ordering;
     let net_ns = sock.net_ns();
-    let bound = sock.opts.bound_ifindex.load(Ordering::Acquire);
+    let bound = sock.opts.base.bound_ifindex.load(Ordering::Acquire);
     if requested != 0 {
         if bound != 0 && requested != bound { return Err(NetError::Enodev); }
         let iface = NetIfaceId::from_raw(requested);

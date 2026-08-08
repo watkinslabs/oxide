@@ -46,7 +46,7 @@ impl InetSocket {
     /// Publish the zero-copy completion one send owes its error queue, and
     /// wake the readers waiting on it. # C: O(1) amortized
     pub fn complete_zerocopy_send(&self, requested: bool, bytes: usize) {
-        let enabled = self.opts.generic.flag(crate::sock_opts::sol_socket::flag::ZEROCOPY);
+        let enabled = self.opts.base.generic.flag(crate::sock_opts::sol_socket::flag::ZEROCOPY);
         let v6 = self.family.load(core::sync::atomic::Ordering::Acquire) == crate::sock::AF_INET6;
         if !crate::socket_error::complete_zerocopy_send(&self.error, enabled, requested, bytes, v6)
         { return; }
@@ -82,7 +82,7 @@ impl InetSocket {
             _ => {}
         }
         before_publish();
-        self.opts.bound_ifindex.store(iface.map(|id| id.raw()).unwrap_or(0), Ordering::Release);
+        self.opts.base.bound_ifindex.store(iface.map(|id| id.raw()).unwrap_or(0), Ordering::Release);
         Ok(())
     }
 
@@ -107,14 +107,14 @@ impl InetSocket {
         if let Some(port) = *local_port { return Ok(port); }
         crate::landlock_addr::check_autobind_udp(self)?;
         let net_ns = self.net_ns();
-        let iface = stack().bound_iface_in(net_ns, self.opts.bound_ifindex.load(Ordering::Acquire))?;
+        let iface = stack().bound_iface_in(net_ns, self.opts.base.bound_ifindex.load(Ordering::Acquire))?;
         // Linux `inet_autobind` keeps whatever local address the socket already
         // named; only the port is chosen here.
         let bind_ip = *self.local_ip.lock();
         let policy = super::bind_port_policy(self, 0);
         let (port, endpoint) = alloc_ephemeral_udp4_owned(
             self.owner.clone(), bind_ip, self.error.clone(), iface,
-            self.opts.reuseaddr.clone(), self.opts.reuseport.clone(),
+            self.opts.base.reuseaddr.clone(), self.opts.base.reuseport.clone(),
             self.opts.ip_mtu_discover.clone(), self.opts.udp.gro.clone(),
             self.opts.udp.encap_type.clone(),
             self.peer.clone(), self.bpf_filter.clone(), self.mcast.clone(),

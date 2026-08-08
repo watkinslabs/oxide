@@ -126,10 +126,10 @@ fn netlink_address(socket: &netlink::NetlinkSocket, message: &Message)
     }
 }
 
-fn send_netlink(socket: &netlink::NetlinkSocket, message: &Message, dest: netlink::NlDest)
-    -> KResult<usize>
+fn send_netlink(socket: &netlink::NetlinkSocket, message: &Message, dest: netlink::NlDest,
+    nonblock: bool) -> KResult<usize>
 {
-    socket.send_to(&message.payload, dest).map_err(Error::from)
+    socket.send_to(&message.payload, dest, nonblock).map_err(Error::from)
 }
 
 pub(crate) enum InetPrepared {
@@ -270,7 +270,7 @@ fn send_inet(ctx: &SendContext<'_>, target: &SendFile, socket: &Arc<net::sock::I
         _ => false,
     };
     let deadline = {
-        let timeout = socket.opts.sndtimeo_ns.load(Ordering::Acquire);
+        let timeout = socket.opts.base.sndtimeo_ns.load(Ordering::Acquire);
         if timeout > 0 { monotonic_ns().saturating_add(timeout as u64) } else { 0 }
     };
     // One call that both opens the connection and sends: the write reports
@@ -338,9 +338,9 @@ fn send_unix_blocking(ctx: &SendContext<'_>, target: &SendFile,
     scm: crate::control::UnixScm) -> KResult<usize>
 {
     let nonblock = target.nonblock() || flags as u64 & net::uapi::MSG_DONTWAIT != 0;
-    let timeout = socket.opts.sndtimeo_ns.load(Ordering::Acquire);
+    let timeout = socket.opts.base.sndtimeo_ns.load(Ordering::Acquire);
     let deadline = if timeout > 0 { monotonic_ns().saturating_add(timeout as u64) } else { 0 };
-    let cap = socket.opts.sndbuf.load(Ordering::Acquire).max(net::sock::TCP_SNDBUF_DEFAULT) as usize;
+    let cap = socket.opts.base.sndbuf.load(Ordering::Acquire).max(net::sock::TCP_SNDBUF_DEFAULT) as usize;
     let stream = matches!(&*socket.kind.lock(), net::sock::SockKind::Unix(_, _));
     let seqpacket = matches!(&*socket.kind.lock(),
         net::sock::SockKind::UnixMsgPair(pair, _) if pair.kind == net::UnixMsgKind::SeqPacket);
@@ -473,7 +473,8 @@ pub(crate) fn send_prepared(ctx: &SendContext<'_>, target: &SendFile, message: M
     let bytes = match (target.kind(), prepared) {
         (SendKind::Netlink(socket), PreparedSend::Netlink(dest)) => {
             if message.payload_faulted { return Err(Error::Efault); }
-            send_netlink(socket, &message, dest)
+            let nonblock = target.nonblock() || flags as u64 & net::uapi::MSG_DONTWAIT != 0;
+            send_netlink(socket, &message, dest, nonblock)
         }
         (SendKind::Vsock(socket), PreparedSend::Vsock) => {
             if message.payload_faulted && message.payload.is_empty() { return Err(Error::Efault); }

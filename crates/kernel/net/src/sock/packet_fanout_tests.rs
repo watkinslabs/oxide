@@ -281,7 +281,7 @@ fn rollover_uses_queue_pressure_and_accounts_selection() {
     let owner = crate::net_ns::test_support::allocate_namespace();
     let pressured = socket(owner.clone());
     let ready = socket(owner.clone());
-    pressured.opts.rcvbuf.store(32, Ordering::Release);
+    pressured.opts.base.rcvbuf.store(32, Ordering::Release);
     let flags = crate::uapi::PACKET_FANOUT_FLAG_ROLLOVER;
     ready.join_packet_fanout(request(106, crate::uapi::PACKET_FANOUT_LB, flags, 0)).unwrap();
     pressured.join_packet_fanout(request(106, crate::uapi::PACKET_FANOUT_LB, flags, 0)).unwrap();
@@ -379,7 +379,7 @@ fn rollover_mode_skips_a_pressured_first_member() {
     let owner = crate::net_ns::test_support::allocate_namespace();
     let pressured = socket(owner.clone());
     let ready = socket(owner.clone());
-    pressured.opts.rcvbuf.store(32, Ordering::Release);
+    pressured.opts.base.rcvbuf.store(32, Ordering::Release);
     pressured.join_packet_fanout(request(
         113, crate::uapi::PACKET_FANOUT_ROLLOVER, 0, 0)).unwrap();
     ready.join_packet_fanout(request(
@@ -419,7 +419,7 @@ fn defrag_group_receives_one_rebuilt_ipv4_packet() {
     assert_eq!(count(&socket), 1);
     let kind = socket.kind.lock();
     let SockKind::Packet { rx, .. } = &*kind else { panic!("packet socket") };
-    let limit = socket.opts.rcvbuf.load(Ordering::Acquire).max(0) as usize;
+    let limit = socket.opts.base.rcvbuf.load(Ordering::Acquire).max(0) as usize;
     let rebuilt = rx.lock().take_all(limit).remove(0).payload;
     assert_eq!(rebuilt.len(), 14 + 20 + 16);
     assert_eq!(&rebuilt[34..], b"abcdefghijklmnop");

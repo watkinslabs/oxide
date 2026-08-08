@@ -51,8 +51,9 @@ fn variable_shape_sol_socket_options_route_to_their_owners() {
     assert!(set.contains("ArgClass::Devmem => return devmem_dontneed("));
     assert!(set.contains("net::reuseport::attach_prog(sock, program)"));
     assert!(set.contains("net::reuseport::detach_prog(sock)"));
-    // The buffer ceilings come from the live sysctl pair, not a constant.
-    assert!(set.contains("ceilings: net::sysctl::buf_ceilings()"));
+    // The admission environment — including the live buffer ceilings — is
+    // built by the socket base, so no family assembles its own.
+    assert!(set.contains("sock.opts.base.set_env(caps_for(sock))"));
 
     let get = include_str!("../055_getsockopt.rs");
     for routed in ["SO_MEMINFO => return varlen::meminfo(",

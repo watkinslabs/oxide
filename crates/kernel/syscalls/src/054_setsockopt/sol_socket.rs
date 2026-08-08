@@ -4,10 +4,9 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use alloc::sync::Arc;
-use core::sync::atomic::Ordering;
 use syscall::errno::Errno;
 use net::sock::InetSocket;
-use net::sock_opts::sol_socket::{self as sol, Scalar, flag};
+use net::sock_opts::sol_socket::{self as sol};
 use net::sock_opts::sol_socket::set::{Action, Arg, ArgClass};
 
 fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
@@ -79,6 +78,22 @@ pub(crate) fn import(optname: u64, optval: u64, optlen: u32) -> Result<Arg, Errn
     }
 }
 
+/// `sock_setbindtodevice`: import the caller's interface name. An over-long
+/// name is truncated rather than rejected, and an empty one clears the
+/// binding, so this returns the name bytes the family must resolve — empty
+/// meaning "clear". # C: O(1)
+pub(crate) fn import_device_name(optval: u64, optlen: u32)
+    -> Result<([u8; sol::set::IFNAMSIZ], usize), Errno>
+{
+    let n = sol::set::device_name_len(optlen);
+    let mut name = [0u8; sol::set::IFNAMSIZ];
+    if n != 0 && uaccess::copy_from_user(&mut name[..n], optval).is_err() {
+        return Err(Errno::Efault);
+    }
+    let end = name[..n].iter().position(|b| *b == 0).unwrap_or(n);
+    Ok((name, end))
+}
+
 /// `sk_setsockopt` for one SOL_SOCKET write. # C: O(1)
 pub(super) fn set(sock: &Arc<InetSocket>, optname: u64, optval: u64, optlen: u32) -> i64 {
     debug_assert!(sol::reads_int_argument(optname));
@@ -92,12 +107,7 @@ pub(super) fn set(sock: &Arc<InetSocket>, optname: u64, optval: u64, optlen: u32
         ArgClass::Devmem => return devmem_dontneed(sock, personality, optval, optlen),
         _ => {}
     }
-    let env = net::sock_opts::sol_socket::set::SetEnv {
-        caps: caps_for(sock),
-        bound_device: sock.opts.bound_ifindex.load(Ordering::Acquire) != 0,
-        ceilings: net::sysctl::buf_ceilings(),
-        busy_poll_budget: sock.opts.generic.scalar(Scalar::BusyPollBudget),
-    };
+    let env = sock.opts.base.set_env(caps_for(sock));
     let action = match net::sock_opts::sol_socket::set::admit(optname, arg, personality, env) {
         Ok(action) => action,
         Err(e) => return errno(e),
@@ -154,66 +164,20 @@ fn devmem_dontneed(sock: &Arc<InetSocket>, personality: sol::OptSock, optval: u6
 }
 
 fn apply(sock: &Arc<InetSocket>, action: Action) -> i64 {
-    let generic = &sock.opts.generic;
+    // The write itself lands in the one socket base every family embeds; only
+    // the effects a live internet transport must be told about are here.
+    if !sock.opts.base.apply(action) {
+        let Action::BindToIfindex(index) = action else { return 0; };
+        return bind_to_ifindex(sock, index);
+    }
     match action {
-        Action::Accept => {}
-        Action::Flag { bit, on } => generic.set_flag(bit, on),
-        Action::Reuseaddr(v) => sock.opts.reuseaddr.store(v, Ordering::Release),
-        Action::Reuseport(v) => sock.opts.reuseport.store(v, Ordering::Release),
-        Action::Keepalive(v) => {
-            sock.opts.keepalive.store(v, Ordering::Release);
+        Action::Keepalive(_) => {
             if let net::sock::SockKind::TcpConn(entry) = &*sock.kind.lock() {
                 net::sock_opts::apply_tcp_keepalive_opts(sock, entry);
             }
         }
-        Action::Broadcast(v) => sock.opts.broadcast.store(v, Ordering::Release),
-        Action::Oobinline(v) => sock.opts.oobinline.store(v, Ordering::Release),
-        Action::SndBuf(v) => sock.opts.sndbuf.store(v, Ordering::Release),
-        Action::RcvBuf(v) => {
-            sock.opts.rcvbuf.store(v, Ordering::Release);
-            // Linux `__sock_set_rcvbuf` also takes `SOCK_RCVBUF_LOCK`, which
-            // stops receive-window autotuning from overriding the request.
-            sock.opts.rcvbuf_locked.store(true, Ordering::Release);
-            generic.set_scalar(Scalar::BufLock,
-                generic.scalar(Scalar::BufLock) | sol::SOCK_RCVBUF_LOCK);
-            super::main::sync_rcvbuf(sock, v);
-        }
-        Action::Priority(v) => sock.opts.priority.store(v, Ordering::Release),
-        Action::Mark(v) => sock.opts.mark.store(v, Ordering::Release),
-        Action::Passcred(v) => sock.opts.passcred.set(v != 0),
-        Action::Timestamping { flags, bind_phc, new } => {
-            sock.opts.timestamping.store(flags, Ordering::Release);
-            generic.set_scalar(Scalar::TimestampingBindPhc, bind_phc);
-            generic.set_flag(flag::TSTAMP_NEW, new);
-        }
-        Action::RecvTimestamps { on, new, nanoseconds } => {
-            generic.set_flag(flag::RCVTSTAMP, on);
-            generic.set_flag(flag::RCVTSTAMPNS, on && nanoseconds);
-            if on { generic.set_flag(flag::TSTAMP_NEW, new); }
-        }
-        Action::Linger { on, seconds } => {
-            generic.set_flag(flag::LINGER, on);
-            // Linux only republishes the linger time while the switch is on.
-            if on { generic.set_scalar(Scalar::LingerSeconds, seconds); }
-        }
-        Action::Timeout { send, ns } => {
-            let slot = if send { &sock.opts.sndtimeo_ns } else { &sock.opts.rcvtimeo_ns };
-            slot.store(ns, Ordering::Release);
-        }
-        Action::Scalar { slot, value } => {
-            if slot == Scalar::BufLock {
-                sock.opts.rcvbuf_locked.store(value & sol::SOCK_RCVBUF_LOCK != 0, Ordering::Release);
-            }
-            generic.set_scalar(slot, value);
-        }
-        Action::PacingRate(rate) => generic.set_max_pacing_rate(rate),
-        Action::BindToIfindex(index) => return bind_to_ifindex(sock, index),
-        Action::TxTime { clockid, deadline_mode, report_errors } => {
-            generic.set_flag(flag::TXTIME, true);
-            generic.set_scalar(Scalar::TxTimeClockid, clockid);
-            generic.set_flag(flag::TXTIME_DEADLINE_MODE, deadline_mode);
-            generic.set_flag(flag::TXTIME_REPORT_ERRORS, report_errors);
-        }
+        Action::RcvBuf(v) => super::main::sync_rcvbuf(sock, v),
+        _ => {}
     }
     0
 }

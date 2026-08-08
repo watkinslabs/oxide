@@ -120,7 +120,7 @@ fn set_unicast_if(sock: &Arc<InetSocket>, val: i32, optlen: u32) -> i64 {
         return 0;
     };
     let master = net::sock::iface::l3_master_index(sock.net_ns(), ifindex);
-    let bound = sock.opts.bound_ifindex.load(Ordering::Acquire) as i32;
+    let bound = sock.opts.base.bound_ifindex.load(Ordering::Acquire) as i32;
     match ipset::unicast_if_admit(ifindex, master, bound) {
         Ok(action) => apply(sock, action),
         Err(e) => errno(e),

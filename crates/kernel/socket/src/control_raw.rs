@@ -1,4 +1,3 @@
-use alloc::vec::Vec;
 
 use net::send_control::SendControl;
 use crate::cmsg_walk::{CmsgWalk, SOL_SOCKET};
@@ -128,23 +127,12 @@ fn parse_v6(kind: i32, data: &[u8], cap: bool, out: &mut SendControl) -> KResult
             out.raw6.flowinfo = Some(u32::from_be_bytes(data[..4].try_into().unwrap()) & 0x0fff_ffff);
         }
         IPV6_DONTFRAG => out.raw6.dontfrag = Some(match parse_i32_range(data, 0, 1)? { 0 => false, _ => true }),
-        IPV6_HOPOPTS | IPV6_2292HOPOPTS => {
-            if out.raw6.hop_options.is_some() { return Err(Error::Einval); }
-            out.raw6.hop_options = Some(parse_ext(data, cap)?);
-        }
-        IPV6_RTHDRDSTOPTS => out.raw6.dst_before_routing = Some(parse_ext(data, cap)?),
-        IPV6_DSTOPTS => out.raw6.dst_after_routing = Some(parse_ext(data, cap)?),
-        IPV6_2292DSTOPTS => {
-            if out.raw6.dst_after_routing.is_some() { return Err(Error::Einval); }
-            out.raw6.dst_after_routing = Some(parse_ext(data, cap)?);
-        }
-        IPV6_RTHDR | IPV6_2292RTHDR => {
-            let routing = parse_routing(data)?;
-            out.raw6.routing = Some(routing);
-            if kind == IPV6_2292RTHDR && out.raw6.dst_after_routing.is_some() {
-                out.raw6.dst_before_routing = out.raw6.dst_after_routing.take();
-            }
-        }
+        // The extension headers are judged by the one owner of that admission
+        // (`net::sock_opts::sol_ipv6::pktoptions`), which the socket-option
+        // write uses too — the duplicate/replace rules, the privilege ladder
+        // and the type-2 routing screen are the same rules in one place.
+        IPV6_HOPOPTS | IPV6_2292HOPOPTS | IPV6_RTHDRDSTOPTS | IPV6_DSTOPTS | IPV6_2292DSTOPTS
+            | IPV6_RTHDR | IPV6_2292RTHDR => return admit_ext_header(kind, data, cap, out),
         _ => return Err(Error::Einval),
     }
     Ok(())
@@ -161,21 +149,29 @@ fn parse_i32_range(data: &[u8], min: i32, max: i32) -> KResult<i32> {
     Ok(value)
 }
 
-fn parse_ext(data: &[u8], cap: bool) -> KResult<Vec<u8>> {
-    if data.len() < 2 { return Err(Error::Einval); }
-    let len = (data[1] as usize + 1) * 8;
-    if data.len() < len { return Err(Error::Einval); }
-    if !cap { return Err(Error::Eperm); }
-    Ok(data[..len].to_vec())
-}
-
-fn parse_routing(data: &[u8]) -> KResult<Vec<u8>> {
-    if data.len() < 4 { return Err(Error::Einval); }
-    let len = (data[1] as usize + 1) * 8;
-    if data.len() < len || data[2] != 2 || data[1] != 2 || data[3] != 1 {
-        return Err(Error::Einval);
-    }
-    Ok(data[..len].to_vec())
+/// Judge one IPv6 extension-header control message through the one admission
+/// owner, carrying the slots this stream has already settled in and out.
+/// # C: O(len)
+fn admit_ext_header(kind: i32, data: &[u8], cap: bool, out: &mut SendControl) -> KResult<()> {
+    use net::sock_opts::sol_ipv6::pktoptions;
+    let mut slots = pktoptions::Slots {
+        hop: out.raw6.hop_options.take(),
+        dst_before_routing: out.raw6.dst_before_routing.take(),
+        routing: out.raw6.routing.take(),
+        dst_after_routing: out.raw6.dst_after_routing.take(),
+    };
+    let caps = net::sock_opts::sol_socket::OptCaps { net_raw: cap, net_admin: cap };
+    let verdict = pktoptions::admit_one(kind, data, caps, &mut slots);
+    out.raw6.hop_options = slots.hop;
+    out.raw6.dst_before_routing = slots.dst_before_routing;
+    out.raw6.routing = slots.routing;
+    out.raw6.dst_after_routing = slots.dst_after_routing;
+    // The admission answers only these two: a shape or duplicate refusal, and
+    // the privilege refusal for a constructed options header.
+    verdict.map_err(|e| match e.as_i32() {
+        e if e == Error::Eperm as i32 => Error::Eperm,
+        _ => Error::Einval,
+    })
 }
 
 /// The `IP_OPTIONS` control message enters the same compile pass the

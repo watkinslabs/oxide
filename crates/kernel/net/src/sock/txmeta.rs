@@ -14,11 +14,11 @@ use crate::send_control::SockCm;
 use crate::TxMeta;
 
 /// `SO_MARK` as the option table holds it. # C: O(1)
-pub fn sock_mark(sock: &InetSocket) -> u32 { sock.opts.mark.load(Ordering::Acquire) as u32 }
+pub fn sock_mark(sock: &InetSocket) -> u32 { sock.opts.base.mark.load(Ordering::Acquire) as u32 }
 
 /// `SO_PRIORITY` as the option table holds it. # C: O(1)
 pub fn sock_priority(sock: &InetSocket) -> u32 {
-    sock.opts.priority.load(Ordering::Acquire) as u32
+    sock.opts.base.priority.load(Ordering::Acquire) as u32
 }
 
 /// The metadata this message's packets carry: the socket's own choices, each

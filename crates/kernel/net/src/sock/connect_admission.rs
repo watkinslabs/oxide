@@ -178,7 +178,7 @@ impl ConnectTransaction<'_> {
             }
             (ConnectKind::Raw4(endpoint), RemoteAddr::Inet { ip, .. }) => {
                 let iface = super::iface::v4_egress_iface(sock)?;
-                if ip.is_broadcast() && sock.opts.broadcast.load(
+                if ip.is_broadcast() && sock.opts.base.broadcast.load(
                     core::sync::atomic::Ordering::Acquire,
                 ) == 0 {
                     return Err(NetError::Eacces);

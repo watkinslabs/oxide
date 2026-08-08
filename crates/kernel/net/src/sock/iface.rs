@@ -24,7 +24,7 @@ pub(crate) fn iface_primary_ip(id: Option<NetIfaceId>) -> Option<Ipv4Addr> {
 pub(crate) fn bound_iface(sock: &InetSocket) -> Result<Option<NetIfaceId>, NetError> {
     stack().bound_iface_in(
         sock.net_ns(),
-        sock.opts.bound_ifindex.load(core::sync::atomic::Ordering::Acquire),
+        sock.opts.base.bound_ifindex.load(core::sync::atomic::Ordering::Acquire),
     )
 }
 

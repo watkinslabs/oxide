@@ -25,7 +25,7 @@ pub(super) fn socket_path_mtu(s: &Arc<net::sock::InetSocket>, ipv6: bool,
     if ipv6 != matches!(dst, net::IpAddr::V6(_)) {
         return -(Errno::Enotconn.as_i32() as i64);
     }
-    let raw = s.opts.bound_ifindex.load(Ordering::Acquire);
+    let raw = s.opts.base.bound_ifindex.load(Ordering::Acquire);
     let bound = if raw == 0 { None } else { Some(net::NetIfaceId::from_raw(raw)) };
     match net::sock::stack().path_mtu(dst, bound, false) {
         Ok(mtu) => out.i32(mtu.min(i32::MAX as u32) as i32),

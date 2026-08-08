@@ -19,8 +19,8 @@ use crate::stack::TcpEntry;
 /// the application actually named a size (Linux `SOCK_RCVBUF_LOCK`).
 /// # C: O(1)
 pub(crate) fn apply_tcp_rcvbuf_opt(sock: &InetSocket, entry: &Arc<TcpEntry>) {
-    if !sock.opts.rcvbuf_locked.load(Ordering::Acquire) { return; }
-    let bytes = sock.opts.rcvbuf.load(Ordering::Acquire).max(0) as u32;
+    if !sock.opts.base.rcvbuf_locked.load(Ordering::Acquire) { return; }
+    let bytes = sock.opts.base.rcvbuf.load(Ordering::Acquire).max(0) as u32;
     if bytes != 0 { entry.set_rcv_buf_cap(bytes); }
 }
 
@@ -31,8 +31,8 @@ pub(crate) fn apply_tcp_rcvbuf_opt(sock: &InetSocket, entry: &Arc<TcpEntry>) {
 /// absent — tracked in `scratch/audit-net-sec.md`.
 /// # C: O(1)
 pub(crate) fn inherit_buffer_opts(listener: &InetSocket, child: &InetSocket) {
-    child.opts.sndbuf.store(listener.opts.sndbuf.load(Ordering::Acquire), Ordering::Release);
-    child.opts.rcvbuf.store(listener.opts.rcvbuf.load(Ordering::Acquire), Ordering::Release);
-    child.opts.rcvbuf_locked.store(
-        listener.opts.rcvbuf_locked.load(Ordering::Acquire), Ordering::Release);
+    child.opts.base.sndbuf.store(listener.opts.base.sndbuf.load(Ordering::Acquire), Ordering::Release);
+    child.opts.base.rcvbuf.store(listener.opts.base.rcvbuf.load(Ordering::Acquire), Ordering::Release);
+    child.opts.base.rcvbuf_locked.store(
+        listener.opts.base.rcvbuf_locked.load(Ordering::Acquire), Ordering::Release);
 }

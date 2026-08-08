@@ -2,10 +2,6 @@ use syscall::errno::Errno;
 
 use crate::net_errno::errno_from_neterr;
 
-/// `SO_RCVTIMEO_OLD` / `SO_SNDTIMEO_OLD` (asm-generic socket UAPI).
-const SO_RCVTIMEO_VSOCK: u64 = 20;
-const SO_SNDTIMEO_VSOCK: u64 = 21;
-
 /// Parse one typed Linux `SOL_VSOCK` option from user memory. # C: O(1)
 pub(super) fn vsock_setsockopt(socket: &net::vsock_socket::VsockSocket, level: u64,
     optname: u64, optval: u64, signed_optlen: i32) -> i64
@@ -26,26 +22,13 @@ pub(super) fn vsock_setsockopt(socket: &net::vsock_socket::VsockSocket, level: u
             Err(e) => errno_from_neterr(e),
         };
     }
-    // AF_VSOCK has no setsockopt of its own for SOL_SOCKET options: Linux
-    // routes them through the generic `sock_setsockopt`, so SO_RCVTIMEO /
-    // SO_SNDTIMEO land on `sk->sk_{rcv,snd}timeo` and are read back by
-    // VSOCK receive and send waits feed them to `sock_intr_errno`. Rejecting
-    // them with ENOPROTOOPT, as this did,
-    // made a timed vsock recv impossible AND forced every interrupted vsock
-    // wait to report ERESTARTSYS.
-    if level == net::uapi::SOL_SOCKET
-        && (optname == SO_RCVTIMEO_VSOCK || optname == SO_SNDTIMEO_VSOCK)
-    {
-        if signed_optlen < VSOCK_TIMEVAL_BYTES { return -(Errno::Einval.as_i32() as i64); }
-        let mut bytes = [0u8; VSOCK_TIMEVAL_FIELD_BYTES * 2];
-        if uaccess::copy_from_user(&mut bytes, optval).is_err() { return -(Errno::Efault.as_i32() as i64); }
-        let sec = i64::from_ne_bytes(bytes[..VSOCK_TIMEVAL_FIELD_BYTES].try_into().unwrap());
-        let usec = i64::from_ne_bytes(bytes[VSOCK_TIMEVAL_FIELD_BYTES..].try_into().unwrap());
-        let ns = (sec.max(0) as i128 * 1_000_000_000 + usec.max(0) as i128 * 1_000)
-            .min(u64::MAX as i128) as u64;
-        let slot = if optname == SO_SNDTIMEO_VSOCK { &socket.sndtimeo_ns } else { &socket.rcvtimeo_ns };
-        slot.store(ns, core::sync::atomic::Ordering::Release);
-        return 0;
+    // AF_VSOCK has no option table of its own at SOL_SOCKET: the generic
+    // table answers it for every family, and the write lands on the socket
+    // base. Parsing the timeouts here, as this once did, was a second copy of
+    // a transform the generic owner already has — and it disagreed with it.
+    if level == net::uapi::SOL_SOCKET {
+        if signed_optlen < 0 { return -(Errno::Einval.as_i32() as i64); }
+        return sol_socket_set(socket, optname, optval, signed_optlen as u32);
     }
     if level != net::uapi::SOL_VSOCK { return -(Errno::Enoprotoopt.as_i32() as i64); }
     if signed_optlen < 0 { return -(Errno::Einval.as_i32() as i64); }
@@ -81,4 +64,49 @@ pub(super) fn vsock_setsockopt(socket: &net::vsock_socket::VsockSocket, level: u
         return 0;
     }
     -(Errno::Enoprotoopt.as_i32() as i64)
+}
+
+/// `sock_setsockopt` for a virtual socket: the same import, the same admission
+/// ladder and the same value transforms every other family is judged by.
+/// # C: O(1)
+fn sol_socket_set(socket: &net::vsock_socket::VsockSocket, optname: u64, optval: u64,
+                  optlen: u32) -> i64
+{
+    use net::sock_opts::sol_socket as sol;
+    if optname == sol::SO_BINDTODEVICE {
+        if let Err(e) = sol::set::bind_device_allowed(caps_for(socket),
+            socket.base.bound_device())
+        { return -(e.as_i32() as i64); }
+        let (name, end) = match super::sol_socket::import_device_name(optval, optlen) {
+            Ok(imported) => imported,
+            Err(e) => return -(e.as_i32() as i64),
+        };
+        let Ok(text) = core::str::from_utf8(&name[..end]) else {
+            return -(Errno::Enodev.as_i32() as i64);
+        };
+        return match socket.sol_socket_bind_device(text) { Ok(()) => 0, Err(e) => -(e.as_i32() as i64) };
+    }
+    let arg = match super::sol_socket::import(optname, optval, optlen) {
+        Ok(arg) => arg,
+        Err(e) => return -(e.as_i32() as i64),
+    };
+    let action = match sol::set::admit(optname, arg, socket.sol_socket_personality(),
+        socket.base.set_env(caps_for(socket)))
+    {
+        Ok(action) => action,
+        Err(e) => return -(e.as_i32() as i64),
+    };
+    match socket.sol_socket_apply(action) { Ok(()) => 0, Err(e) => -(e.as_i32() as i64) }
+}
+
+/// Caller's network capabilities in the socket's owning namespace. # C: O(1)
+fn caps_for(socket: &net::vsock_socket::VsockSocket) -> net::sock_opts::sol_socket::OptCaps {
+    let Some(cur) = sched::live::current() else {
+        return net::sock_opts::sol_socket::OptCaps::default();
+    };
+    let namespace = &socket.net_namespace;
+    net::sock_opts::sol_socket::OptCaps {
+        net_admin: nscg::has_net_admin_for(cur, namespace),
+        net_raw: nscg::has_net_raw_for(cur, namespace),
+    }
 }

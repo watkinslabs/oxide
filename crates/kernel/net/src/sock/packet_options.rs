@@ -252,7 +252,7 @@ impl InetSocket {
         let SockKind::Packet { rx, .. } = &*kind else {
             return Err(crate::NetError::Enoprotoopt);
         };
-        let limit = self.opts.rcvbuf.load(Ordering::Acquire).max(0) as usize;
+        let limit = self.opts.base.rcvbuf.load(Ordering::Acquire).max(0) as usize;
         let frames = rx.lock().take_all(limit);
         Ok(frames)
     }

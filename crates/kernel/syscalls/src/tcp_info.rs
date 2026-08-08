@@ -95,7 +95,7 @@ pub fn write_tcp_info(sock: &InetSocket, optval: u64, optlen_p: u64) -> i64 {
 
 #[cfg(target_os = "oxide-kernel")]
 fn populate(sock: &InetSocket, info: &mut TcpInfo) {
-    populate_max_pacing_rate(&sock.opts.generic, info);
+    populate_max_pacing_rate(&sock.opts.base.generic, info);
     let entry = match &*sock.kind.lock() {
         SockKind::TcpConn(e) => e.clone(),
         SockKind::TcpListener(_) => { info.tcpi_state = state_to_byte(net::tcp_state::TcpState::Listen); return; }
