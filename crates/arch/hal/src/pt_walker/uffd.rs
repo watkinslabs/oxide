@@ -127,7 +127,7 @@ pub unsafe fn uffd_wp_range_at_root<W: PtWalker>(
 /// # SAFETY: as [`read_leaf_4k_at_root`].
 /// # C: O(walk depth)
 pub unsafe fn is_uffd_wp_4k_at_root<W: PtWalker>(root_pa: u64, va: u64, hhdm: u64) -> bool {
-    // SAFETY: delegated read-only walk.
+    // SAFETY: delegated to `read_leaf_4k_at_root` under the caller's page-table lock; reads only.
     unsafe { read_leaf_4k_at_root::<W>(root_pa, va, hhdm).is_some_and(W::leaf_is_uffd_wp) }
 }
 
@@ -136,6 +136,6 @@ pub unsafe fn is_uffd_wp_4k_at_root<W: PtWalker>(root_pa: u64, va: u64, hhdm: u6
 /// # SAFETY: as [`read_leaf_4k_at_root`].
 /// # C: O(walk depth)
 pub unsafe fn is_poisoned_4k_at_root<W: PtWalker>(root_pa: u64, va: u64, hhdm: u64) -> bool {
-    // SAFETY: delegated read-only walk.
+    // SAFETY: delegated to `read_leaf_4k_at_root` under the caller's page-table lock; reads only.
     unsafe { read_leaf_4k_at_root::<W>(root_pa, va, hhdm).is_some_and(W::is_poison_marker) }
 }

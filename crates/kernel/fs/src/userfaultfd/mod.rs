@@ -210,7 +210,7 @@ pub fn sys_userfaultfd(args: &syscall::SyscallArgs) -> i64 {
     }
 }
 
-/// Lift a generic `vfs::InodeRef` to `Arc<UfData>` via `i_private`.
+/// Lift a generic `vfs::InodeRef` to `Arc<UfData>` via `i_private`. # C: O(1)
 pub(crate) fn as_uffd(inode: &vfs::InodeRef) -> Option<Arc<UfData>> {
     inode.i_private().clone().downcast::<UfData>().ok()
 }
