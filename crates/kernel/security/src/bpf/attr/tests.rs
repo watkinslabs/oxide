@@ -331,18 +331,48 @@ fn expected_attach_contract_accepts_arbitrary_device_and_socket_values() {
 }
 
 #[test]
-fn lsm_programs_are_not_loadable_because_no_hook_executes_them() {
-    // security::bpf_lsm::file_open() runs no program and returns "allow"
-    // unconditionally. Accepting an LSM load would issue an fd that
-    // stands for enforcement that does not happen; Linux without
-    // CONFIG_BPF_LSM has no bpf_prog_types[] entry either -> -EINVAL.
-    assert!(!prog_type_supported(uapi::prog_type::LSM));
-    // The load ladder still reaches the type check only for a caller
-    // that cleared CAP_PERFMON, since LSM is a perfmon prog type.
+fn lsm_programs_are_loadable_and_need_both_bpf_and_perfmon() {
+    assert!(prog_type_supported(uapi::prog_type::LSM));
+    // LSM is a perfmon prog type, so CAP_BPF alone does not carry a load;
+    // it is not a net-admin type, so CAP_NET_ADMIN does not substitute.
     let a = good_prog_load(uapi::prog_type::LSM, 1);
     assert_eq!(prog_load_check(&a, caps_bpf(), false), Err(Errno::Eperm));
+    let net = Caps { bpf: true, net_admin: true, ..Caps::default() };
+    assert_eq!(prog_load_check(&a, net, false), Err(Errno::Eperm));
+    let perfmon = Caps { perfmon: true, ..Caps::default() };
+    assert_eq!(prog_load_check(&a, perfmon, false), Err(Errno::Eperm));
     let caps = Caps { bpf: true, perfmon: true, ..Caps::default() };
     assert!(prog_load_check(&a, caps, false).is_ok());
+}
+
+#[test]
+fn only_a_program_type_that_attaches_to_a_target_may_name_one() {
+    use uapi::prog_type as p;
+    for prog_type in [p::TRACING, p::LSM, p::STRUCT_OPS, p::EXT] {
+        assert_eq!(prog_load_check_attach(prog_type, uapi::attach_type::LSM_MAC, 1), Ok(()));
+    }
+    for prog_type in [p::SOCKET_FILTER, p::CGROUP_DEVICE, p::KPROBE] {
+        assert_eq!(prog_load_check_attach(prog_type, 0, 1), Err(Errno::Einval));
+        // Naming no target at all leaves those types unaffected.
+        assert_eq!(prog_load_check_attach(prog_type, 0, 0), Ok(()));
+    }
+}
+
+#[test]
+fn an_attach_target_above_the_type_id_ceiling_is_refused() {
+    const MAX_TYPE_ID: u32 = 0x000f_ffff;
+    assert_eq!(
+        prog_load_check_attach(uapi::prog_type::LSM, uapi::attach_type::LSM_MAC, MAX_TYPE_ID),
+        Ok(()),
+    );
+    for attach_btf_id in [MAX_TYPE_ID + 1, u32::MAX] {
+        assert_eq!(
+            prog_load_check_attach(
+                uapi::prog_type::LSM, uapi::attach_type::LSM_MAC, attach_btf_id,
+            ),
+            Err(Errno::Einval),
+        );
+    }
 }
 
 // ------------------------------------------------------------ PROG_ATTACH

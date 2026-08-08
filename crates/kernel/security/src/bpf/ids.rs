@@ -11,6 +11,7 @@ pub(crate) const INO_MAP: Ino = INO_BASE | 0x02;
 pub(crate) const INO_LINK: Ino = INO_BASE | 0x03;
 pub(crate) const INO_BTF: Ino = INO_BASE | 0x04;
 pub(crate) const INO_TOKEN: Ino = INO_BASE | 0x05;
+pub(crate) const INO_STATS: Ino = INO_BASE | 0x06;
 
 #[cfg(test)]
 mod tests {
@@ -23,7 +24,7 @@ mod tests {
     #[test]
     fn bpf_numbers_no_longer_intersect_timerfd() {
         assert!(!vfs::pseudo_ino::overlaps(&BPF, &TIMERFD));
-        for ino in [INO_PROG, INO_MAP, INO_LINK, INO_BTF, INO_TOKEN] {
+        for ino in [INO_PROG, INO_MAP, INO_LINK, INO_BTF, INO_TOKEN, INO_STATS] {
             assert!(BPF.contains(ino), "{ino:#x} outside the bpf region");
             assert!(!TIMERFD.contains(ino), "{ino:#x} is a timerfd number");
         }
@@ -32,7 +33,7 @@ mod tests {
     /// Low bits unchanged by the move — one per object kind, all distinct.
     #[test]
     fn each_object_kind_keeps_its_own_low_bits() {
-        let all = [INO_PROG, INO_MAP, INO_LINK, INO_BTF, INO_TOKEN];
+        let all = [INO_PROG, INO_MAP, INO_LINK, INO_BTF, INO_TOKEN, INO_STATS];
         for (i, a) in all.iter().enumerate() {
             for b in &all[i + 1..] { assert_ne!(a, b); }
             assert_eq!(a & !BPF.start(), (i + 1) as Ino);

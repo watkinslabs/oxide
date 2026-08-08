@@ -268,6 +268,14 @@ pub fn run_with_helpers(insns: &[u8], pkt: &[u8], helpers: &[Helper]) -> Option<
     run_with_helpers_and_state(insns, pkt, helpers, &mut HelperState::default())
 }
 
+/// Run a socket filter: a read-only `__sk_buff` in R1 and the frame itself
+/// reachable only through the packet-load helper.
+/// # C: O(insn count × step budget)
+pub fn run_socket_filter(insns: &[u8], context: &[u8], packet: &[u8]) -> Option<i64> {
+    let memory = RunMemory::new(Context::ReadOnly(context), packet, &[]);
+    run_inner(insns, &[], &mut HelperState::default(), memory)
+}
+
 /// Stateful helper variant used by cgroup effective arrays. The caller owns
 /// the state and may reuse it for each program in attachment order.
 /// # C: O(insn count × step budget)

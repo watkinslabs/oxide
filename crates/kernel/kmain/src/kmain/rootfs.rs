@@ -165,15 +165,20 @@ fn install_network_hooks() {
         let result = netfilter::eval_in_with_mark(ns, h, p, fam, 0);
         net::stack::NfHookResult { verdict: result.verdict.as_u32(), mark: result.mark }
     });
+    use security::bpf::sk_filter::{self, SkFilterContext};
     net::stack::install_bpf_filter_runner(|kind, insns, packet| match kind {
+        // A socket with no netdevice carries neither an EtherType nor an
+        // ifindex, which is exactly the zeroed pair a filter sees there.
         net::bpf_filter::FilterKind::Ebpf =>
-            security::bpf_interp::run(insns, packet).map_or(0, |r| r as u32),
+            sk_filter::run(insns, SkFilterContext::bare(packet)),
         net::bpf_filter::FilterKind::Classic =>
             security::socket_filter::run(insns, packet),
     });
     net::stack::install_bpf_filter_context_runner(|kind, insns, ctx| match kind {
-        net::bpf_filter::FilterKind::Ebpf =>
-            security::bpf_interp::run(insns, ctx.packet).map_or(0, |r| r as u32),
+        net::bpf_filter::FilterKind::Ebpf => sk_filter::run(insns, SkFilterContext {
+            packet: ctx.packet, protocol: ctx.protocol,
+            ifindex: ctx.ifindex.unwrap_or(0),
+        }),
         net::bpf_filter::FilterKind::Classic =>
             security::socket_filter::run_with_context(insns, security::socket_filter::Context {
                 packet: ctx.packet, protocol: ctx.protocol,

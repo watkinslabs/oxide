@@ -153,7 +153,8 @@ fn evaluate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::{make_bpf_prog_inode, prog_by_id, uapi};
+    use super::super::prog::inode::prog_by_id;
+    use super::super::{make_bpf_prog_inode, uapi};
     use core::sync::atomic::{AtomicU32, Ordering};
 
     static LATE_CALLS: AtomicU32 = AtomicU32::new(0);

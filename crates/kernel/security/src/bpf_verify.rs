@@ -162,61 +162,13 @@ pub fn verify(insns: &[u8]) -> Result<(), VerifyError> {
     Ok(())
 }
 
-/// Verify the eBPF execution domain implemented by the socket-filter runner. # C: O(insns)
-pub fn verify_socket_filter(insns: &[u8]) -> Result<(), VerifyError> {
-    verify(insns)?;
-    let n = insns.len() / BPF_INSN_SIZE;
-    let decoded = decode_all(insns)?;
-    let mut pseudo_slots = try_filled_vec(n, false)?;
-    let mut pc = 0usize;
-    while pc < n {
-        let insn = decoded[pc];
-        if insn.opcode == BPF_LD_IMM_DW {
-            if !matches!(insn.src, 0 | crate::bpf::uapi::pseudo::MAP_FD
-                | crate::bpf::uapi::pseudo::MAP_VALUE) {
-                return Err(VerifyError::UnsupportedOpcode);
-            }
-            let pseudo = decode(&insns[(pc + 1) * BPF_INSN_SIZE..(pc + 2) * BPF_INSN_SIZE]);
-            if pseudo.opcode != 0 || pseudo.dst != 0 || pseudo.src != 0 || pseudo.off != 0 {
-                return Err(VerifyError::UnsupportedOpcode);
-            }
-            pseudo_slots[pc + 1] = true;
-            pc += 2;
-            continue;
-        }
-        let class = insn.opcode & BPF_CLASS_MASK;
-        let op = insn.opcode & 0xf0;
-        let src = insn.opcode & 0x08;
-        let supported = match class {
-            0x07 | 0x04 => matches!(op, 0x00 | 0x10 | 0x20 | 0x30 | 0x40 | 0x50
-                | 0x60 | 0x70 | 0x80 | 0x90 | 0xa0 | 0xb0 | 0xc0)
-                && (op != 0x80 || src == 0),
-            BPF_JMP | BPF_JMP32 => {
-                insn.opcode == BPF_OP_EXIT
-                    || (insn.opcode == BPF_OP_CALL
-                        && insn.dst == 0 && insn.src == 0 && insn.off == 0
-                        && insn.imm == crate::bpf::uapi::func_id::KTIME_GET_COARSE_NS as i32)
-                    || (insn.opcode != BPF_OP_CALL
-                    && matches!(op, 0x00 | 0x10 | 0x20 | 0x30 | 0x40 | 0x50
-                        | 0x60 | 0x70 | 0xa0 | 0xb0 | 0xc0 | 0xd0)
-                    && (op != 0 || src == 0))
-            }
-            0x01 | 0x02 | 0x03 => insn.opcode & 0xe0 == 0x60,
-            _ => false,
-        };
-        if !supported { return Err(VerifyError::UnsupportedOpcode); }
-        pc += 1;
-    }
-    loops::validate(&decoded, &pseudo_slots)
-}
-
 #[path = "bpf_verify/cgroup_device.rs"]
 mod cgroup_device;
 pub use cgroup_device::verify_cgroup_device;
 
-#[path = "bpf_verify/cgroup_network.rs"]
-mod cgroup_network;
-pub use cgroup_network::verify_cgroup_network;
+#[path = "bpf_verify/program.rs"]
+mod program;
+pub use program::{SK_FILTER_CONTEXT_BYTES, context, verify_lsm_program, verify_program};
 
 #[cfg(test)]
 mod tests {
@@ -310,35 +262,6 @@ mod tests {
         // 0x18 in the last slot — no pseudo-insn following.
         let p = cat(&[raw(0x18, 0, 0, 0, 0)]);
         assert_eq!(verify(&p), Err(VerifyError::TruncatedWideLoad));
-    }
-
-    #[test]
-    fn socket_filter_accepts_coarse_time_and_rejects_other_helpers() {
-        let coarse = cat(&[
-            raw(0x85, 0, 0, 0, crate::bpf::uapi::func_id::KTIME_GET_COARSE_NS as i32),
-            raw(0x95, 0, 0, 0, 0),
-        ]);
-        assert_eq!(verify_socket_filter(&coarse), Ok(()));
-        let call = cat(&[raw(0x85, 0, 0, 0, 1), raw(0x95, 0, 0, 0, 0)]);
-        assert_eq!(verify_socket_filter(&call), Err(VerifyError::UnsupportedOpcode));
-    }
-
-    #[test]
-    fn socket_filter_rejects_unsupported_load_at_load_time() {
-        let abs = cat(&[raw(0x20, 0, 0, 0, 0), raw(0x95, 0, 0, 0, 0)]);
-        assert_eq!(verify_socket_filter(&abs), Err(VerifyError::UnsupportedOpcode));
-    }
-
-    #[test]
-    fn socket_filter_rejects_an_unproved_backward_cycle() {
-        let infinite = cat(&[
-            raw(0x05, 0, 0, -1, 0),
-            raw(0x95, 0, 0, 0, 0),
-        ]);
-        assert_eq!(
-            verify_socket_filter(&infinite),
-            Err(VerifyError::UnsupportedOpcode),
-        );
     }
 
 }

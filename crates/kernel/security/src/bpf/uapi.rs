@@ -76,145 +76,48 @@ pub mod off_common {
     pub const LOG_TRUE_SIZE: usize = 16;
 }
 
-/// `union bpf_attr` field offsets, grouped by the command that owns
-/// the anonymous struct. `LAST_END` is
-/// `offsetofend(union bpf_attr, <CMD>_LAST_FIELD)` — the start of the
-/// region `CHECK_ATTR(CMD)` requires to be all-zero.
-pub mod off {
-    /// `BPF_MAP_CREATE`; `BPF_MAP_CREATE_LAST_FIELD excl_prog_hash_size`.
-    pub mod map_create {
-        pub const MAP_TYPE:    usize = 0;
-        pub const KEY_SIZE:    usize = 4;
-        pub const VALUE_SIZE:  usize = 8;
-        pub const MAX_ENTRIES: usize = 12;
-        pub const MAP_FLAGS:   usize = 16;
-        pub const NUMA_NODE:   usize = 24;
-        pub const MAP_EXTRA:   usize = 64;
-        pub const LAST_END:    usize = 92;
-    }
-    /// `BPF_MAP_*_ELEM` / `BPF_MAP_FREEZE`. `LAST_FIELD` differs per
-    /// command, so each gets its own `*_LAST_END`.
-    pub mod map_elem {
-        pub const MAP_FD:   usize = 0;
-        pub const KEY:      usize = 8;
-        pub const VALUE:    usize = 16;
-        pub const NEXT_KEY: usize = 16;
-        pub const FLAGS:    usize = 24;
-        /// `BPF_MAP_LOOKUP_ELEM_LAST_FIELD flags`, ditto UPDATE and
-        /// `BPF_MAP_LOOKUP_AND_DELETE_ELEM_LAST_FIELD flags`.
-        pub const FLAGS_LAST_END:    usize = 32;
-        /// `BPF_MAP_DELETE_ELEM_LAST_FIELD key`.
-        pub const KEY_LAST_END:      usize = 16;
-        /// `BPF_MAP_GET_NEXT_KEY_LAST_FIELD next_key`.
-        pub const NEXT_KEY_LAST_END: usize = 24;
-        /// `BPF_MAP_FREEZE_LAST_FIELD map_fd`.
-        pub const MAP_FD_LAST_END:   usize = 4;
-    }
-    /// `BPF_PROG_LOAD`; `BPF_PROG_LOAD_LAST_FIELD keyring_id` ends the
-    /// union, so `CHECK_ATTR(BPF_PROG_LOAD)` checks an empty region.
-    pub mod prog_load {
-        pub const PROG_TYPE:  usize = 0;
-        pub const INSN_CNT:   usize = 4;
-        pub const INSNS:      usize = 8;
-        pub const LICENSE:    usize = 16;
-        pub const PROG_FLAGS: usize = 44;
-        pub const EXPECTED_ATTACH_TYPE: usize = 68;
-        pub const LAST_END:   usize = 168;
-    }
-    /// `BPF_PROG_ATTACH` / `BPF_PROG_DETACH`;
-    /// `LAST_FIELD expected_revision`.
-    pub mod prog_attach {
-        pub const TARGET_FD:         usize = 0;
-        pub const ATTACH_BPF_FD:     usize = 4;
-        pub const ATTACH_TYPE:       usize = 8;
-        pub const ATTACH_FLAGS:      usize = 12;
-        pub const REPLACE_BPF_FD:    usize = 16;
-        pub const RELATIVE_FD:       usize = 20;
-        pub const EXPECTED_REVISION: usize = 24;
-        pub const LAST_END:          usize = 32;
-    }
-    /// `BPF_PROG_QUERY`; `LAST_FIELD query.revision`.
-    pub mod prog_query {
-        pub const TARGET_FD:         usize = 0;
-        pub const ATTACH_TYPE:       usize = 4;
-        pub const QUERY_FLAGS:       usize = 8;
-        pub const ATTACH_FLAGS:      usize = 12;
-        pub const PROG_IDS:          usize = 16;
-        pub const PROG_CNT:          usize = 24;
-        pub const PROG_ATTACH_FLAGS: usize = 32;
-        pub const LINK_IDS:          usize = 40;
-        pub const LINK_ATTACH_FLAGS: usize = 48;
-        pub const REVISION:          usize = 56;
-        pub const LAST_END:          usize = 64;
-    }
-    /// `BPF_PROG_GET_FD_BY_ID`; `LAST_FIELD prog_id`.
-    pub mod prog_get_fd_by_id {
-        pub const PROG_ID:  usize = 0;
-        pub const LAST_END: usize = 4;
-    }
-    /// `BPF_MAP_GET_FD_BY_ID`; `LAST_FIELD map_id`.
-    pub mod map_get_fd_by_id {
-        pub const MAP_ID:   usize = 0;
-        pub const LAST_END: usize = 4;
-    }
-    /// `BPF_OBJ_PIN`; pathname, descriptor, and file flags.
-    pub mod obj_pin {
-        pub const BPF_FD:     usize = 0;
-        pub const PATHNAME:   usize = 8;
-        pub const FILE_FLAGS: usize = 16;
-        pub const LAST_END:   usize = 20;
-    }
-    /// `BPF_OBJ_GET`; pathname and file flags.
-    pub mod obj_get {
-        pub const PATHNAME:   usize = 0;
-        pub const FILE_FLAGS: usize = 8;
-        pub const LAST_END:   usize = 12;
-    }
-    /// `BPF_PROG_BIND_MAP`; flags ends the 12-byte command payload.
-    pub mod prog_bind_map {
-        pub const PROG_FD:  usize = 0;
-        pub const MAP_FD:   usize = 4;
-        pub const FLAGS:    usize = 8;
-        pub const LAST_END: usize = 12;
-    }
-    pub mod btf_load {
-        pub const DATA:          usize = 0;
-        pub const LOG_BUF:       usize = 8;
-        pub const DATA_SIZE:     usize = 16;
-        pub const LOG_SIZE:      usize = 20;
-        pub const LOG_LEVEL:     usize = 24;
-        pub const LOG_TRUE_SIZE: usize = 28;
-        pub const FLAGS:         usize = 32;
-        pub const TOKEN_FD:      usize = 36;
-        pub const LAST_END:      usize = 40;
-    }
-    pub mod object_id {
-        pub const START_ID: usize = 0;
-        pub const NEXT_ID:  usize = 4;
-        pub const FLAGS:    usize = 8;
-        pub const TOKEN_FD: usize = 12;
-        pub const NEXT_LAST_END: usize = 8;
-        pub const FD_LAST_END:   usize = 16;
-    }
-    pub mod object_info {
-        pub const FD:       usize = 0;
-        pub const INFO_LEN: usize = 4;
-        pub const INFO:     usize = 8;
-        pub const LAST_END: usize = 16;
-    }
-    /// `BPF_LINK_CREATE`;
-    /// `LAST_FIELD link_create.uprobe_multi.path_fd` (ends at 64).
-    pub mod link_create {
-        pub const PROG_FD:                 usize = 0;
-        pub const TARGET_FD:               usize = 4;
-        pub const ATTACH_TYPE:             usize = 8;
-        pub const FLAGS:                   usize = 12;
-        pub const TARGET_BTF_ID:           usize = 16;
-        pub const CGROUP_RELATIVE_FD:      usize = 16;
-        pub const CGROUP_EXPECTED_REVISION: usize = 24;
-        pub const LAST_END:                usize = 64;
-    }
+#[path = "uapi/off.rs"]
+pub mod off;
+
+/// `enum bpf_stats_type`.
+pub mod stats_type {
+    pub const RUN_TIME: u32 = 0;
 }
+
+/// `BPF_F_TEST_*` flags on `attr.test.flags`.
+pub mod test_flags {
+    pub const RUN_ON_CPU:            u32 = 1 << 0;
+    pub const XDP_LIVE_FRAMES:       u32 = 1 << 1;
+    pub const SKB_CHECKSUM_COMPLETE: u32 = 1 << 2;
+    /// The only flag an skb-context test run accepts.
+    pub const SKB_MASK: u32 = SKB_CHECKSUM_COMPLETE;
+}
+
+/// `enum bpf_task_fd_type`.
+pub mod fd_type {
+    pub const RAW_TRACEPOINT: u32 = 0;
+}
+
+/// `BPF_OBJ_GET_NEXT_ID` refuses a starting id at or above `INT_MAX`
+/// before consulting any capability.
+pub const OBJECT_ID_LIMIT: u32 = i32::MAX as u32;
+
+/// `ETH_HLEN` — the minimum `data_size_in` an skb-context test run accepts.
+pub const ETH_HLEN: u32 = 14;
+
+/// One page; the "silly large" ceiling on a user-supplied context size and
+/// the budget the skb linear region is carved out of.
+pub const PAGE_SIZE: u32 = 4096;
+/// `NET_SKB_PAD + NET_IP_ALIGN` reserved ahead of the test frame.
+pub const SKB_HEADROOM: u32 = 64 + 2;
+/// `SKB_DATA_ALIGN(sizeof(struct skb_shared_info))` reserved behind it.
+pub const SKB_TAILROOM: u32 = 320;
+/// Largest linear region one page leaves after head and tail reservations.
+pub const TEST_RUN_LINEAR_MAX: u32 = PAGE_SIZE - SKB_HEADROOM - SKB_TAILROOM;
+/// `MAX_SKB_FRAGS` pages back everything past the linear region.
+pub const MAX_SKB_FRAGS: u32 = 17;
+/// Total input a test run can carry before the frag budget is exhausted.
+pub const TEST_RUN_DATA_MAX: u32 = TEST_RUN_LINEAR_MAX + MAX_SKB_FRAGS * PAGE_SIZE;
 
 /// `enum bpf_map_type`.
 pub mod map_type {

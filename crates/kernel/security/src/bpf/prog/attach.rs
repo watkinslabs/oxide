@@ -10,9 +10,11 @@ use vfs::InodeRef;
 use super::super::attr::{self, Attr, Caps};
 use super::super::uapi;
 use super::super::user;
+use super::super::link::cgroup_link_by_id;
+use super::inode::prog_by_id;
 use super::super::{
-    BpfCgroupLinkInode, BpfLsmLinkInode, BpfProgInode, cgroup_link_by_id,
-    install_fd, make_bpf_lsm_link_inode, prime_bpf_cgroup_link, prog_by_id,
+    BpfCgroupLinkInode, BpfLsmLinkInode, BpfProgInode, 
+    install_fd, make_bpf_lsm_link_inode, prime_bpf_cgroup_link,
 };
 
 pub(super) struct ClassicAttach<P, T> {
@@ -329,14 +331,34 @@ pub(super) fn link_create(a: &Attr, caps: Caps) -> Result<i64, Errno> {
         ).map_err(super::super::cgroup_device::map_error)?;
         return Ok(primer.settle());
     }
-    if l.attach_type != uapi::attach_type::LSM_MAC || l.target_fd != 0 || l.flags != 0 {
+    lsm_link_create(l, inode)
+}
+
+/// LSM link creation. `BPF_LSM_MAC` is the only attach type an LSM program
+/// links with, and the request may name no target of its own: a target
+/// program fd and a target type id are accepted only together, and an LSM
+/// program never has a target program, so both must be zero. The hook comes
+/// from the program's own attach target, resolved against the kernel's type
+/// information at load — never from the link request.
+/// # C: O(1)
+fn lsm_link_create(l: attr::LinkCreate, prog: InodeRef) -> Result<i64, Errno> {
+    if l.attach_type != uapi::attach_type::LSM_MAC
+        || l.target_fd != 0 || l.target_btf_id != 0 || l.flags != 0 {
         return Err(Errno::Einval);
     }
-    let hook = crate::bpf_lsm::hook_from_target_btf_id(l.target_btf_id)
-        .ok_or(Errno::Eopnotsupp)?;
-    let id = crate::bpf_lsm::register(hook);
-    let link = make_bpf_lsm_link_inode(BpfLsmLinkInode { id, _hook: hook, _prog: inode });
+    let hook = attach_target_hook(&prog).ok_or(Errno::Einval)?;
+    let id = crate::bpf_lsm::register(hook, Arc::clone(&prog));
+    let link = make_bpf_lsm_link_inode(BpfLsmLinkInode { id, _hook: hook, _prog: prog });
     install_fd(link, "bpf-link")
+}
+
+/// Hook a loaded program named as its attach target, resolved against the
+/// kernel's own type information. A program that named no target resolves
+/// to nothing, which is how a program with no hook fails to link.
+/// # C: O(hook count)
+fn attach_target_hook(prog: &InodeRef) -> Option<crate::bpf_lsm::Hook> {
+    let loaded = prog.private::<BpfProgInode>()?;
+    super::super::btf::lsm_hook_by_btf_id(loaded.attach_btf_id)
 }
 
 fn cgroup_attach_type(raw: u32) -> Option<cgroup::CgroupBpfAttachType> {

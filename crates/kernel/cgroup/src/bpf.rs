@@ -90,6 +90,18 @@ pub fn detach_link(
     TREE.lock().bpf_detach_link(cgid, attach_type, link_id)
 }
 
+/// Swap the program one attached link runs, in place.
+/// # C: O(descendants * effective programs)
+pub fn replace_link(
+    cgid: u64,
+    attach_type: CgroupBpfAttachType,
+    link_id: u64,
+    prog: InodeRef,
+    expect: Option<&InodeRef>,
+) -> Result<(), BpfAttachError> {
+    TREE.lock().bpf_replace_link(cgid, attach_type, link_id, prog, expect)
+}
+
 /// Snapshot one online cgroup/type effective array. # C: O(log nodes)
 pub fn effective(
     cgid: u64,
