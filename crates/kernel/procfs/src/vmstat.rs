@@ -44,6 +44,7 @@ fn body() -> Vec<u8> {
         ("pgfault", s.faults),
         ("pgscan_kswapd", s.reclaim_scanned),
         ("pgsteal_kswapd", s.reclaim_stolen),
+        ("oom_kill", sched::oom::kill_count()),
     ] {
         let _ = core::fmt::Write::write_fmt(&mut VecFmt(&mut out), format_args!("{key} {value}\n"));
     }

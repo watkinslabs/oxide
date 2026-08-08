@@ -89,24 +89,21 @@ fn resolver_signal(failure: Option<vmm::fault_signal::FaultFailure>,
         None    => Some(arch),
         Some(f) => vmm::fault_signal::signal_for(f, arch),
     };
-    // An out-of-memory fault raises no signal and re-takes the instruction, on
-    // the contract that the memory-pressure path has already posted a fatal
-    // signal on its chosen victim. If it did not, the instruction re-faults
-    // forever — so say so once, or a hang looks like a wedge with no cause.
-    // Latched: the retry re-enters this path on every re-fault, and an
-    // unbounded log would bury the console.
-    #[cfg(feature = "debug-faultdiag")]
-    if matches!(failure, Some(vmm::fault_signal::FaultFailure::Oom))
-        && !OOM_FAULT_REPORTED.swap(true, core::sync::atomic::Ordering::Relaxed) {
-        klog::write_raw(b"[FAULT-RESOLVE] out of memory; no signal, re-taking\n");
+    // A fill that could not obtain memory raises no signal on the faulting
+    // task — it runs the out-of-memory selector, which kills the process
+    // consuming the machine, and then re-takes the instruction so it can use
+    // what that process releases. Skipping the selector is what turns a
+    // pressure spike into an unbounded refault loop: nothing else on this path
+    // can change the answer the retry gets.
+    if failure.is_some_and(vmm::fault_signal::invokes_out_of_memory) {
+        // Out of memory with nothing left that may be killed is not a
+        // condition userspace can be told about: every survivor is protected,
+        // so the retry would spin the same instruction forever.
+        crate::kassert!(sched::oom::pagefault_out_of_memory() != sched::oom::FaultOutcome::Deadlocked,
+                        "out of memory and no killable process");
     }
     sig
 }
-
-/// One-shot latch for the out-of-memory fault report above.
-#[cfg(feature = "debug-faultdiag")]
-static OOM_FAULT_REPORTED: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(false);
 
 /// Resolve the mapping covering `ip` in the faulting task's own mm, for the
 /// unhandled-fault report's `print_vma_addr` tail. `None` when there is no

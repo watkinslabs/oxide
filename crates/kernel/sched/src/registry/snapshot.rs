@@ -39,6 +39,16 @@ pub fn try_snapshot() -> Option<Vec<Arc<Task>>> {
     Some(g.by_tid.values().filter_map(|w| w.upgrade()).collect())
 }
 
+/// Every live task, for a walk that must not miss one — the out-of-memory
+/// selector's whole-process-list scan. Unlike [`try_snapshot`] this blocks for
+/// `REG`: a selector that silently saw no tasks would report a machine with
+/// nothing left to kill, which is a far worse answer than waiting for the lock.
+/// # C: O(N_tasks)
+/// # Lk: REG
+pub fn snapshot() -> Vec<Arc<Task>> {
+    REG.lock_irqsave::<RegIrq>().by_tid.values().filter_map(|w| w.upgrade()).collect()
+}
+
 /// Snapshot live Task-owned kernel-stack charges.  This is the scheduler's
 /// canonical global `KernelStack` input: each Task contributes only the exact
 /// memcg charge retained with its owned stack, never a fixed stack-size guess.

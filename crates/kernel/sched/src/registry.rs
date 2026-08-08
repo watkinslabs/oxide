@@ -37,8 +37,8 @@ pub use pidfd::{
     PidfdAcquireError, PidfdKind,
 };
 pub use snapshot::{
-    kernel_stack_bytes_snapshot, live_counts, live_tids, next_live_tid_after, tasks_traced_by,
-    thread_entries, thread_group, try_snapshot,
+    kernel_stack_bytes_snapshot, live_counts, live_tids, next_live_tid_after, snapshot,
+    tasks_traced_by, thread_entries, thread_group, try_snapshot,
 };
 pub use mm::{mm_sharers, thread_group_members};
 pub(crate) use mm::{track_mm_before_replace, track_task_before_publish, untrack_mm_after_replace};
