@@ -16,7 +16,7 @@ mod entry;
 mod queue;
 mod poll;
 mod report;
-mod uapi;
+pub mod uapi;
 mod zerocopy;
 
 #[cfg(test)] mod tests;

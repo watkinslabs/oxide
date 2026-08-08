@@ -98,7 +98,7 @@ fn one_message_controls_build_ipv4_header_without_endpoint_mutation() {
     let endpoint = endpoint(253);
     let control = Raw4Control { source: Some(SRC), iface: Some(iface), ttl: Some(9),
         tos: Some(0x2e), protocol: Some(17), options: Some(compiled(&[1, 1, 0, 0])), ..Raw4Control::default() };
-    stack.send_raw4(&endpoint, DST, b"body", Raw4TxOptions::default(), &control).unwrap();
+    stack.send_raw4(&endpoint, DST, b"body", Raw4TxOptions::default(), &control, crate::TxMeta::NONE).unwrap();
     let packet = &dev.packets.lock()[0];
     assert_eq!(packet[0] & 0x0f, 6);
     assert_eq!(packet[1], 0x2e);
@@ -128,7 +128,7 @@ fn source_route_uses_first_hop_route_source_and_mtu() {
     let options = Raw4TxOptions { pmtudisc: crate::uapi::IP_PMTUDISC_DONT,
         ..Raw4TxOptions::default() };
 
-    stack.send_raw4(&endpoint(17), DST, &[0x5a; 80], options, &control).unwrap();
+    stack.send_raw4(&endpoint(17), DST, &[0x5a; 80], options, &control, crate::TxMeta::NONE).unwrap();
 
     assert!(final_dev.packets.lock().is_empty());
     let packets = hop_dev.packets.lock();
@@ -151,7 +151,7 @@ fn non_copy_options_are_nops_after_fragment_zero() {
     let options = Raw4TxOptions { pmtudisc: crate::uapi::IP_PMTUDISC_DONT,
         ..Raw4TxOptions::default() };
 
-    stack.send_raw4(&endpoint(17), DST, &[0x5a; 80], options, &control).unwrap();
+    stack.send_raw4(&endpoint(17), DST, &[0x5a; 80], options, &control, crate::TxMeta::NONE).unwrap();
 
     let packets = dev.packets.lock();
     assert_eq!(&packets[0][20..27], &[7, 7, 8, 192, 0, 2, 44]);
@@ -165,7 +165,7 @@ fn timestamp_address_mode_advances_pointer_and_writes_route_source() {
     let control = Raw4Control { options: Some(compiled(&[68, 12, 5, 1, 0, 0, 0, 0, 0, 0, 0, 0])),
         ..Raw4Control::default() };
 
-    stack.send_raw4(&endpoint(17), DST, b"x", Raw4TxOptions::default(), &control).unwrap();
+    stack.send_raw4(&endpoint(17), DST, b"x", Raw4TxOptions::default(), &control, crate::TxMeta::NONE).unwrap();
 
     let packets = dev.packets.lock();
     assert_eq!(packets[0][22], 13);
@@ -185,7 +185,7 @@ fn message_pktinfo_iface_overrides_socket_multicast_iface() {
     let control = Raw4Control { iface: Some(message_iface), ..Raw4Control::default() };
     let options = Raw4TxOptions { iface: Some(socket_iface), ..Raw4TxOptions::default() };
 
-    stack.send_raw4(&endpoint(17), DST, b"x", options, &control).unwrap();
+    stack.send_raw4(&endpoint(17), DST, b"x", options, &control, crate::TxMeta::NONE).unwrap();
 
     assert!(socket_dev.packets.lock().is_empty());
     assert_eq!(message_dev.packets.lock().len(), 1);
@@ -197,13 +197,13 @@ fn dont_route_rejects_gateway_and_non_link_scope() {
     let endpoint = endpoint(17);
     let control = Raw4Control { dont_route: true, ..Raw4Control::default() };
     let (gateway, _, _) = setup(0, Some(Ipv4Addr::new(192, 0, 2, 1)));
-    assert_eq!(gateway.send_raw4(&endpoint, DST, b"x", Raw4TxOptions::default(), &control),
+    assert_eq!(gateway.send_raw4(&endpoint, DST, b"x", Raw4TxOptions::default(), &control, crate::TxMeta::NONE),
         Err(NetError::Enetunreach));
     let (universe, _, _) = setup(0, None);
-    assert_eq!(universe.send_raw4(&endpoint, DST, b"x", Raw4TxOptions::default(), &control),
+    assert_eq!(universe.send_raw4(&endpoint, DST, b"x", Raw4TxOptions::default(), &control, crate::TxMeta::NONE),
         Err(NetError::Enetunreach));
     let (link, dev, _) = setup(253, None);
-    link.send_raw4(&endpoint, DST, b"x", Raw4TxOptions::default(), &control).unwrap();
+    link.send_raw4(&endpoint, DST, b"x", Raw4TxOptions::default(), &control, crate::TxMeta::NONE).unwrap();
     assert_eq!(dev.packets.lock().len(), 1);
 }
 
@@ -216,7 +216,7 @@ fn dont_route_with_explicit_iface_sends_on_link_without_route() {
     let control = Raw4Control { iface: Some(iface), dont_route: true,
         ..Raw4Control::default() };
 
-    stack.send_raw4(&endpoint(17), DST, b"x", Raw4TxOptions::default(), &control).unwrap();
+    stack.send_raw4(&endpoint(17), DST, b"x", Raw4TxOptions::default(), &control, crate::TxMeta::NONE).unwrap();
 
     assert_eq!(dev.packets.lock().len(), 1);
 }
@@ -233,10 +233,10 @@ fn ip_nodefrag_keeps_raw_hdrincl_fragments_out_of_local_out_defrag() {
     let last = fragment(92, FINAL_FRAGMENT_OFFSET, b"ijklmnop");
 
     stack.send_raw4(&raw, DST, &first, Raw4TxOptions::default(),
-        &Raw4Control::default()).unwrap();
+        &Raw4Control::default(), crate::TxMeta::NONE).unwrap();
     assert_eq!(LOCAL_OUT_CALLS.load(Ordering::Acquire), 0);
     stack.send_raw4(&raw, DST, &last, Raw4TxOptions::default(),
-        &Raw4Control::default()).unwrap();
+        &Raw4Control::default(), crate::TxMeta::NONE).unwrap();
     assert_eq!(LOCAL_OUT_CALLS.load(Ordering::Acquire), 1);
     assert_eq!(LOCAL_OUT_LEN.load(Ordering::Acquire), crate::IPV4_HDR_LEN + 16);
     assert_eq!(LOCAL_OUT_FLAGS.load(Ordering::Acquire), 0);
@@ -247,9 +247,9 @@ fn ip_nodefrag_keeps_raw_hdrincl_fragments_out_of_local_out_defrag() {
     let last = fragment(93, FINAL_FRAGMENT_OFFSET, b"ijklmnop");
     let options = Raw4TxOptions { nodefrag: true, ..Raw4TxOptions::default() };
     stack.send_raw4(&raw, DST, &first, options,
-        &Raw4Control::default()).unwrap();
+        &Raw4Control::default(), crate::TxMeta::NONE).unwrap();
     stack.send_raw4(&raw, DST, &last, options,
-        &Raw4Control::default()).unwrap();
+        &Raw4Control::default(), crate::TxMeta::NONE).unwrap();
     assert_eq!(LOCAL_OUT_CALLS.load(Ordering::Acquire), 2);
     assert_eq!(LOCAL_OUT_LEN.load(Ordering::Acquire), crate::IPV4_HDR_LEN + 8);
     assert_eq!(LOCAL_OUT_FLAGS.load(Ordering::Acquire), FINAL_FRAGMENT_OFFSET as usize);

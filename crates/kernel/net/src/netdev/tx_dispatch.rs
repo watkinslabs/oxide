@@ -18,7 +18,9 @@ fn exclude_local_softirq() -> Option<sched::bh::BhGuard> {
 #[cfg(not(target_os = "oxide-kernel"))]
 fn exclude_local_softirq() {}
 
-pub(super) const TX_QUEUE_CAPACITY: usize = 64;
+/// Slots per transmit band.
+pub(super) const TX_BAND_CAPACITY: usize = 64;
+pub(super) const TX_QUEUE_CAPACITY: usize = TX_BAND_CAPACITY * super::tx_band::TX_BANDS;
 
 pub(crate) struct TxDispatch {
     queue: Spinlock<TxQueue, SocketLockClass>,
@@ -27,8 +29,12 @@ pub(crate) struct TxDispatch {
 
 struct TxQueue {
     draining: bool,
-    head: usize,
-    len: usize,
+    /// One FIFO ring per transmit band, drained in band order — the default
+    /// transmit discipline. `head`/`len` are per band; the slot array is one
+    /// allocation holding all of them, band `b` owning
+    /// `b * TX_BAND_CAPACITY .. (b + 1) * TX_BAND_CAPACITY`.
+    head: [usize; super::tx_band::TX_BANDS],
+    len: [usize; super::tx_band::TX_BANDS],
     /// Ring slots, HEAP-allocated rather than an inline
     /// `[Option<TxJob>; TX_QUEUE_CAPACITY]`.
     ///
@@ -109,11 +115,12 @@ impl TxDispatch {
 
     fn enqueue(&self, job: TxJob) -> NetResult<()> {
         let _bh = exclude_local_softirq();
+        let band = job.band();
         let Some(done) = job.0.done.clone() else { return Ok(()); };
         let drain = {
             let mut queue = tx_lock!(self.queue);
-            if queue.full() { return Err(NetError::Enobufs); }
-            queue.push(job);
+            if queue.full(band) { return Err(NetError::Enobufs); }
+            queue.push(band, job);
             if queue.draining { false } else { queue.draining = true; true }
         };
         if drain { self.drain(); }
@@ -151,7 +158,7 @@ impl TxDispatch {
 
     #[cfg(test)]
     /// Pending queued jobs, excluding the job currently at hardware. # C: O(1)
-    pub(super) fn queue_len(&self) -> usize { tx_lock!(self.queue).len }
+    pub(super) fn queue_len(&self) -> usize { tx_lock!(self.queue).len.iter().sum() }
 
     /// Resume one neighbour-resolved job under this generation's hardware serialiser. # C: O(packet)
     pub(crate) fn resume(&self, job: TxJob) {
@@ -248,33 +255,37 @@ impl TxDispatch {
 
 impl TxQueue {
     const fn new() -> Self {
-        Self { draining: false, head: 0, len: 0, jobs: Vec::new() }
+        Self { draining: false, head: [0; super::tx_band::TX_BANDS],
+            len: [0; super::tx_band::TX_BANDS], jobs: Vec::new() }
     }
 
-    fn full(&self) -> bool { self.len == TX_QUEUE_CAPACITY }
+    /// A band is full on its own; a low-priority flood cannot take the slots a
+    /// higher-priority one would use.
+    fn full(&self, band: usize) -> bool { self.len[band] == TX_BAND_CAPACITY }
 
-    /// Materialise the ring on first use. Kept out of `new` so that stays
-    /// `const`; `full()` bounds `len` to `TX_QUEUE_CAPACITY`, so the ring is
-    /// allocated exactly once and never grows after this.
+    /// Materialise the rings on first use. Kept out of `new` so that stays
+    /// `const`; each band's `len` is bounded by `TX_BAND_CAPACITY`, so the
+    /// slots are allocated exactly once and never grow after this.
     fn ensure_slots(&mut self) {
         if self.jobs.is_empty() {
             self.jobs.resize_with(TX_QUEUE_CAPACITY, || None);
         }
     }
 
-    fn push(&mut self, job: TxJob) {
+    fn push(&mut self, band: usize, job: TxJob) {
         self.ensure_slots();
-        let tail = (self.head + self.len) % TX_QUEUE_CAPACITY;
+        let tail = band * TX_BAND_CAPACITY
+            + (self.head[band] + self.len[band]) % TX_BAND_CAPACITY;
         self.jobs[tail] = Some(job);
-        self.len += 1;
+        self.len[band] += 1;
     }
 
     fn pop(&mut self) -> Option<TxJob> {
-        if self.len == 0 { return None; }
-        // `len > 0` implies `push` ran, so the ring is materialised.
-        let job = self.jobs[self.head].take();
-        self.head = (self.head + 1) % TX_QUEUE_CAPACITY;
-        self.len -= 1;
+        let band = (0..super::tx_band::TX_BANDS).find(|band| self.len[*band] != 0)?;
+        // A nonzero length implies `push` ran, so the slots are materialised.
+        let job = self.jobs[band * TX_BAND_CAPACITY + self.head[band]].take();
+        self.head[band] = (self.head[band] + 1) % TX_BAND_CAPACITY;
+        self.len[band] -= 1;
         job
     }
 }
@@ -283,6 +294,16 @@ impl TxJob {
     fn new(lease: EgressLease, payload: TxPayload) -> Self {
         Self(alloc::boxed::Box::new(TxJobRecord { lease, payload,
             done: Some(Arc::new(TxCompletion { result: Spinlock::new(None) })) }))
+    }
+
+    /// The transmit band this job's packet priority selects. A frame built
+    /// outside the network layer carries no priority and takes the band a
+    /// priority of zero does. # C: O(1)
+    fn band(&self) -> usize {
+        match &self.0.payload {
+            TxPayload::Packet { pkt, .. } => super::tx_band::band_for(pkt.tx.priority),
+            TxPayload::Raw { .. } => super::tx_band::band_for(0),
+        }
     }
 
     /// Retained packet/frame byte count for neighbour queue accounting. # C: O(1)

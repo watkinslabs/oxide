@@ -183,11 +183,12 @@ impl ConnectTransaction<'_> {
                 ) == 0 {
                     return Err(NetError::Eacces);
                 }
-                endpoint.connect_routed(ip, iface)
+                endpoint.connect_routed(ip, iface, super::sock_mark(sock))
             }
             (ConnectKind::Raw6(endpoint), RemoteAddr::Inet6 { ip, scope_id, .. }) => {
                 let iface = crate::sock_v6::scoped_iface(sock, ip, scope_id)?;
-                endpoint.connect_routed(crate::raw6::Raw6Address::new(ip, scope_id), iface)
+                endpoint.connect_routed(crate::raw6::Raw6Address::new(ip, scope_id), iface,
+                    super::sock_mark(sock))
             }
             _ => Err(NetError::Eafnosupport),
         }

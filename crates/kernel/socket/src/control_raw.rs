@@ -60,7 +60,7 @@ pub(crate) fn parse_ip_control(control: &[u8], env: &IpControlEnv) -> KResult<Se
             parse_v4_mapped_pktinfo(item.data, &mut out)?;
             continue;
         }
-        if item.level == SOL_SOCKET { crate::sockcm::admit(&env.sockcm, &item)?; continue; }
+        if item.level == SOL_SOCKET { crate::sockcm::admit(&env.sockcm, &item, &mut out.sockcm)?; continue; }
         if env.ipv6 && item.level == SOL_IPV6 {
             parse_v6(item.kind, item.data, env.cap_net_raw, &mut out)?;
         } else if !env.ipv6 && item.level == SOL_IP {

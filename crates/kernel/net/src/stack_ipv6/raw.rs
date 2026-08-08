@@ -20,17 +20,17 @@ impl NetStack {
     /// Route and transmit one raw IPv6 message with immutable per-message controls. # C: O(payload + N)
     pub fn send_raw6(&self, endpoint: &crate::raw6::Raw6Endpoint, final_dst: Ipv6Addr,
         scoped: Option<NetIfaceId>, protocol_override: Option<u8>, payload: &[u8],
-        hop_limit: u8, pmtudisc: i32, control: &Raw6Control) -> NetResult<()>
+        hop_limit: u8, pmtudisc: i32, control: &Raw6Control, tx: crate::TxMeta) -> NetResult<()>
     {
         self.send_raw6_with_frag_size(endpoint, final_dst, scoped, protocol_override, payload,
-            hop_limit, pmtudisc, 0, control, 0)
+            hop_limit, pmtudisc, 0, control, 0, tx)
     }
 
     /// Route and transmit one socket-owned raw IPv6 message. # C: O(payload + N)
     pub fn send_raw6_with_frag_size(&self, endpoint: &crate::raw6::Raw6Endpoint,
         final_dst: Ipv6Addr, scoped: Option<NetIfaceId>, protocol_override: Option<u8>,
         payload: &[u8], hop_limit: u8, pmtudisc: i32, frag_size: i32,
-        control: &Raw6Control, source_prefs: i32) -> NetResult<()>
+        control: &Raw6Control, source_prefs: i32, tx: crate::TxMeta) -> NetResult<()>
     {
         if final_dst.is_unspecified() { return Err(NetError::Edestaddrreq); }
         let route_dst = control.route_destination(final_dst);
@@ -49,7 +49,7 @@ impl NetStack {
             let iface = self.ifaces.acquire_egress_in_ns(route.iface, endpoint.net_ns())
                 .ok_or(NetError::Enetunreach)?;
             (route.iface, iface, crate::route6::next_hop6_for(route.gateway, route_dst))
-        } else { self.route_v6_iface_in(endpoint.net_ns(), route_dst, bound)? };
+        } else { self.route_v6_iface_in(endpoint.net_ns(), route_dst, bound, tx.mark)? };
         if let Some(source) = control.source {
             if !self.v6_addr_owned_by(iface_id, source) { return Err(NetError::Einval); }
         }
@@ -81,7 +81,7 @@ impl NetStack {
         }
         if prepared.mode == crate::raw6::Raw6SendMode::CallerHeader {
             return emit_raw6_caller_header(&endpoint.owner, iface_id, iface, next_hop,
-                prepared.src, &prepared.bytes, mtu);
+                prepared.src, &prepared.bytes, mtu, tx);
         }
         let hop = match control.hop_limit { Some(value) if value >= 0 => value as u8, _ => hop_limit };
         let flowinfo = control.flowinfo.unwrap_or(0);
@@ -96,7 +96,7 @@ impl NetStack {
             && control.dontfrag != Some(true);
         self.xmit_ipv6_with_extensions(Some(&endpoint.owner), iface_id, iface, next_hop, prepared.src, final_dst,
             route_dst, prepared.next_header, &prepared.bytes, hop, tclass, flow, mtu,
-            may_fragment, control)
+            may_fragment, control, tx)
             .map(|_| ())
     }
 
@@ -124,7 +124,8 @@ impl NetStack {
         iface_id: NetIfaceId, iface: crate::EgressLease,
         next_hop: Ipv6Addr, src: Ipv6Addr, final_dst: Ipv6Addr, base_dst: Ipv6Addr,
         upper: u8, payload: &[u8], hop: u8, tclass: u8, flow: u32, policy_mtu: usize,
-        may_fragment: bool, control: &Raw6Control) -> NetResult<crate::cgroup_bpf::EgressVerdict>
+        may_fragment: bool, control: &Raw6Control, tx: crate::TxMeta)
+        -> NetResult<crate::cgroup_bpf::EgressVerdict>
     {
         let mtu = core::cmp::min(iface.mtu() as usize, policy_mtu);
         let (base_next, wire) = wire_payload(control, final_dst, upper, payload, None)?;
@@ -133,7 +134,7 @@ impl NetStack {
             &wire, hop, tclass, flow)?;
         if IPV6_HDR_LEN + wire.len() <= mtu {
             emit_packet_fragment(owner, iface_id, iface, next_hop, src, base_dst,
-                base_next, &wire, hop, tclass, flow)?;
+                base_next, &wire, hop, tclass, flow, tx)?;
             return Ok(verdict);
         }
         if !may_fragment { return Err(NetError::Emsgsize); }
@@ -158,7 +159,7 @@ impl NetStack {
             fragment.extend_from_slice(&fragmentable[off..off + take]);
             let (base_next, wire) = wire_payload(control, final_dst, NH_FRAGMENT, &fragment, Some(false))?;
             emit_packet_fragment(owner, iface_id, iface.clone(), next_hop, src, base_dst, base_next,
-                &wire, hop, tclass, flow)?;
+                &wire, hop, tclass, flow, tx)?;
             crate::mib6::bump_ip(
                 owner.map_or_else(crate::netdev::current_net_ns, crate::SocketOwner::net_ns),
                 crate::mib6::Ip6Mib::FragCreates,
@@ -275,9 +276,9 @@ fn build_packet(src: Ipv6Addr, dst: Ipv6Addr, next: u8, payload: &[u8],
 
 fn emit_packet_fragment(owner: Option<&crate::SocketOwner>, iface_id: NetIfaceId, iface: crate::EgressLease,
     next_hop: Ipv6Addr, src: Ipv6Addr, dst: Ipv6Addr, next: u8, payload: &[u8],
-    hop: u8, tclass: u8, flow: u32) -> NetResult<()> {
+    hop: u8, tclass: u8, flow: u32, tx: crate::TxMeta) -> NetResult<()> {
     let p = build_packet(src, dst, next, payload, hop, tclass, flow)?;
-    emit_ipv6_fragment(owner, iface_id, iface, next_hop, src, p)
+    emit_ipv6_fragment(owner, iface_id, iface, next_hop, src, p, tx)
 }
 
 /// Build the inspection packet away from the fragmentation frame. # C: O(packet)
@@ -307,8 +308,8 @@ fn prepare_ipv6_egress(owner: Option<&crate::SocketOwner>, iface_id: NetIfaceId,
 /// # C: O(packet)
 #[inline(never)]
 fn emit_raw6_caller_header(owner: &crate::SocketOwner, iface_id: NetIfaceId,
-    iface: crate::EgressLease, next_hop: Ipv6Addr, src: Ipv6Addr, bytes: &[u8], mtu: usize)
-    -> NetResult<()>
+    iface: crate::EgressLease, next_hop: Ipv6Addr, src: Ipv6Addr, bytes: &[u8], mtu: usize,
+    tx: crate::TxMeta) -> NetResult<()>
 {
     let mut p = crate::pkt::Pkt::with_capacity(0, bytes.len());
     p.put(bytes.len()).map_err(|_| NetError::Enobufs)?.copy_from_slice(bytes);
@@ -316,5 +317,5 @@ fn emit_raw6_caller_header(owner: &crate::SocketOwner, iface_id: NetIfaceId,
     if bytes.len() > core::cmp::min(iface.mtu() as usize, mtu) { return Err(NetError::Emsgsize); }
     let mut p = crate::pkt::Pkt::with_capacity(0, bytes.len());
     p.put(bytes.len()).map_err(|_| NetError::Enobufs)?.copy_from_slice(bytes);
-    emit_ipv6_fragment(Some(owner), iface_id, iface, next_hop, src, p)
+    emit_ipv6_fragment(Some(owner), iface_id, iface, next_hop, src, p, tx)
 }

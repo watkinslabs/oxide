@@ -144,3 +144,54 @@ fn deleting_builtin_main_rule_changes_ipv4_datapath() {
     assert!(!stack.policy_rules().snapshot_effective(NS, policy_rule::AF_INET).iter()
         .any(|row| row.priority == 32766 && row.table == policy_rule::RT_TABLE_MAIN));
 }
+
+/// The mark a send settles reaches the route lookup that selects its egress —
+/// the whole point of `SO_MARK` and of the per-message override that mirrors
+/// it. Before this the transmit route lookup asked with a mark of zero, so a
+/// mark-selecting rule could never fire for a socket's own packets.
+#[test]
+fn a_transmit_route_lookup_selects_the_table_the_send_mark_names() {
+    const NS: u64 = 0x8250_1962;
+    let stack = crate::NetStack::new();
+    let dst = Ipv4Addr::new(198, 51, 100, 62);
+    stack.routes.add_in(NS, RouteEntry::main(
+        Ipv4Addr::ANY, 0, NetIfaceId::from_raw(1), None, None));
+    stack.routes.add_in(NS, RouteEntry { table: 162, dst: Ipv4Addr::ANY, prefix_len: 0,
+        iface: NetIfaceId::from_raw(162), gateway: None, src_hint: None });
+    let marked = policy_rule::PolicyRule { fwmark: 0x40, fwmask: 0xf0, ..rule(NS, 162) };
+    { let rtnl = stack.rtnl_lock(); stack.policy_rules().insert_rtnl(&rtnl, marked); }
+
+    // The egress lease cannot be taken for an unregistered device, so the
+    // selection is read from the route the lookup would transmit on.
+    let route = |mark: u32| stack.routes.lookup_result_mark_in(NS, dst, mark)
+        .map(|route| route.iface);
+    assert_eq!(route(0x41), Ok(NetIfaceId::from_raw(162)));
+    assert_eq!(route(0), Ok(NetIfaceId::from_raw(1)));
+    // The lookup the transmit path performs is the same one, reached through
+    // the egress resolver every socket send uses.
+    assert!(matches!(stack.route_v4_iface_in(NS, dst, None, 0x41),
+        Err(crate::NetError::Enetunreach)));
+}
+
+/// The v6 rule table is the SAME table, and it was consulting its rules
+/// without ever looking at the mark: a mark-selecting rule matched every
+/// packet on the IPv6 side.
+#[test]
+fn an_ipv6_policy_lookup_skips_a_rule_whose_mark_the_packet_does_not_carry() {
+    const NS: u64 = 0x8250_1963;
+    let stack = crate::NetStack::new();
+    let dst = crate::Ipv6Addr([0x20, 0x01, 0xd, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 62]);
+    let route6 = |table: u32, iface: u32| crate::route6::Route6Entry {
+        table, dst: crate::Ipv6Addr::ANY, prefix_len: 0, iface: NetIfaceId::from_raw(iface),
+        gateway: None, src_hint: None, origin: crate::route6::Route6Origin::Static };
+    stack.routes6.add_in(NS, route6(crate::policy_rule::RT_TABLE_MAIN, 1));
+    stack.routes6.add_in(NS, route6(163, 163));
+    let marked = policy_rule::PolicyRule { family: policy_rule::AF_INET6,
+        fwmark: 0x40, fwmask: 0xf0, ..rule(NS, 163) };
+    { let rtnl = stack.rtnl_lock(); stack.policy_rules().insert_rtnl(&rtnl, marked); }
+
+    assert_eq!(stack.routes6.lookup_policy_mark_in(NS, dst, stack.policy_rules(), 0x41)
+        .map(|route| route.iface), Some(NetIfaceId::from_raw(163)));
+    assert_eq!(stack.routes6.lookup_policy_mark_in(NS, dst, stack.policy_rules(), 0)
+        .map(|route| route.iface), Some(NetIfaceId::from_raw(1)));
+}

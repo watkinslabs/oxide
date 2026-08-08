@@ -24,8 +24,8 @@ pub fn wait_transmit(sock: &InetSocket, deadline_ns: u64) -> bool {
 /// # C: O(payload bytes)
 #[inline(never)]
 fn sendto_raw4(sock: &InetSocket, endpoint: &alloc::sync::Arc<crate::raw4::Raw4Endpoint>,
-    payload: &[u8], dest: Option<RemoteAddr>, control: &crate::send_control::SendControl)
-    -> Result<usize, NetError>
+    payload: &[u8], dest: Option<RemoteAddr>, control: &crate::send_control::SendControl,
+    tx: crate::TxMeta) -> Result<usize, NetError>
 {
     if sock.write_shut.load(core::sync::atomic::Ordering::Acquire) { return Err(NetError::Epipe); }
     let probe;
@@ -63,7 +63,7 @@ fn sendto_raw4(sock: &InetSocket, endpoint: &alloc::sync::Arc<crate::raw4::Raw4E
         raw_control.multicast_loop = Some(
             sock.opts.ip_mcast_loop.load(core::sync::atomic::Ordering::Acquire) != 0);
     }
-    stack().send_raw4(endpoint, dst, payload, options, &raw_control)?;
+    stack().send_raw4(endpoint, dst, payload, options, &raw_control, tx)?;
     if crate::send_control::should_drain_loopback(multicast, raw_control.multicast_loop,
         sock.opts.ip_mcast_loop.load(core::sync::atomic::Ordering::Acquire) != 0)
     { drain_loopback(); }
@@ -75,15 +75,38 @@ pub fn sendto(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, creds
     control: &crate::send_control::SendControl)
     -> Result<usize, NetError>
 {
+    let sent = sendto_inner(sock, payload, dest, creds, control);
+    // A completed transmit publishes the record its timestamping bits asked
+    // for, once, here — the one place that knows both the socket's own bits
+    // and the override this message settled over them.
+    if sent.is_ok() {
+        super::tx_tstamp::publish(sock,
+            control.sockcm.tsflags(sock.opts.timestamping.load(
+                core::sync::atomic::Ordering::Acquire) as u32),
+            control.sockcm.ts_opt_id,
+            sock.family.load(core::sync::atomic::Ordering::Acquire) == AF_INET6);
+    }
+    sent
+}
+
+#[inline(never)]
+fn sendto_inner(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, creds: SenderCreds,
+    control: &crate::send_control::SendControl)
+    -> Result<usize, NetError>
+{
     // No security decision here. The transport is entered only after the one
     // message hook has admitted this send, and a second evaluation would both
     // double-count the transaction and let a policy change land mid-message.
+    // Every packet this message produces carries one answer for the mark, the
+    // transmit band and the departure time: the socket's own, each replaced by
+    // the override this message settled. Built once, here.
+    let tx = crate::sock::tx_meta(sock, &control.sockcm);
     if matches!(*sock.kind.lock(), SockKind::Packet { .. }) {
         return if sock.has_packet_tx_ring() { sock.kick_packet_tx_ring(None) }
             else { send_packet(sock, payload, None) };
     }
     if let SockKind::Raw4(endpoint) = &*sock.kind.lock() {
-        return sendto_raw4(sock, endpoint, payload, dest, control);
+        return sendto_raw4(sock, endpoint, payload, dest, control, tx);
     }
     if let SockKind::Raw6(endpoint) = &*sock.kind.lock() {
         if sock.write_shut.load(core::sync::atomic::Ordering::Acquire) { return Err(NetError::Epipe); }
@@ -101,7 +124,7 @@ pub fn sendto(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, creds
             _ => return Err(NetError::Eafnosupport),
         };
         return crate::sock_v6::sendto_raw6(sock, endpoint, dst, protocol, scope_id, payload,
-            &control.raw6);
+            &control.raw6, tx);
     }
     if matches!(*sock.kind.lock(), SockKind::Udp) {
         let pending = sock.take_pending_recv_error();
@@ -165,12 +188,12 @@ pub fn sendto(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, creds
         }
     }
     if let Some(RemoteAddr::Inet6 { ip, port, scope_id }) = dest {
-        return crate::sock_v6::sendto_v6_ctl(sock, ip, port, scope_id, payload, &control.raw6);
+        return crate::sock_v6::sendto_v6_ctl(sock, ip, port, scope_id, payload, &control.raw6, tx);
     }
     if sock.family.load(core::sync::atomic::Ordering::Acquire) == AF_INET6 {
         let (ip, port) = sock.peer6.lock().ok_or(NetError::Edestaddrreq)?;
         let scope_id = sock.peer6_scope.load(core::sync::atomic::Ordering::Acquire);
-        return crate::sock_v6::sendto_v6_ctl(sock, ip, port, scope_id, payload, &control.raw6);
+        return crate::sock_v6::sendto_v6_ctl(sock, ip, port, scope_id, payload, &control.raw6, tx);
     }
     let (dst_ip, dst_port) = match dest {
         Some(RemoteAddr::Inet { ip, port }) => (ip, port),
@@ -178,5 +201,5 @@ pub fn sendto(sock: &InetSocket, payload: &[u8], dest: Option<RemoteAddr>, creds
         Some(RemoteAddr::Inet6 { .. }) => unreachable!(),
         None => sock.peer.lock().ok_or(NetError::Edestaddrreq)?,
     };
-    socket_sendto_ctl(sock, dst_ip, dst_port, payload, &control.raw4)
+    socket_sendto_ctl(sock, dst_ip, dst_port, payload, &control.raw4, tx)
 }

@@ -262,6 +262,9 @@ pub struct SockOpts {
     /// shares (`net::scm`).
     pub passcred: crate::scm::ScmCredentials,
     pub timestamping: core::sync::atomic::AtomicI32,
+    /// The transmit-record key this socket reports next. A message that names
+    /// its own identifier replaces it for that message only.
+    pub tskey: core::sync::atomic::AtomicU32,
     /// SO_TYPE override (Linux `sock->type`) for AF_UNIX sockets whose
     /// `SockKind` doesn't itself encode the requested shape — chiefly a
     /// `SOCK_SEQPACKET` listener, which is byte-ring-backed internally but
@@ -330,6 +333,7 @@ impl Default for SockOpts {
             tcp_keepcnt:    AtomicI32::new(crate::sock_opts::TCP_KEEPCNT_DEFAULT),
             passcred: crate::scm::ScmCredentials::new(),
             timestamping: AtomicI32::new(0),
+            tskey: AtomicU32::new(0),
             so_type: AtomicU8::new(0),
             generic: crate::sock_opts::sol_socket::GenericSockOpts::default(),
             min_hop: Arc::new(crate::min_hop::MinHop::new()),

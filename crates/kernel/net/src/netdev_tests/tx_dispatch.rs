@@ -62,6 +62,12 @@ fn packet(id: u8) -> Pkt {
     pkt
 }
 
+fn prioritised_packet(id: u8, priority: u32) -> Pkt {
+    let mut pkt = packet(id);
+    pkt.tx.priority = priority;
+    pkt
+}
+
 fn unresolved_packet() -> Pkt {
     let mut pkt = Pkt::new(20);
     pkt.proto = crate::eth_p::IPV4;
@@ -149,8 +155,11 @@ fn full_dispatch_fifo_returns_enobufs() {
     crate::hosted_fixture::spin_until("the device xmit is entered",
         || dev.entered.load(Ordering::Acquire));
 
+    // A band fills on its own: every one of these frames carries the same
+    // priority, so they all land in the same band and it is that band's
+    // capacity — not the whole queue's — that reports the overrun.
     let mut pending = Vec::new();
-    for at in 0..super::super::tx_dispatch::TX_QUEUE_CAPACITY {
+    for at in 0..super::super::tx_dispatch::TX_BAND_CAPACITY {
         let queued = lease.clone();
         pending.push(std::thread::spawn(move || queued.xmit_raw_from(&frame(2), None)));
         crate::hosted_fixture::spin_until("the next frame is queued",
@@ -162,7 +171,7 @@ fn full_dispatch_fifo_returns_enobufs() {
     first_tx.join().unwrap().unwrap();
     for tx in pending { tx.join().unwrap().unwrap(); }
     assert_eq!(dev.calls.lock().unwrap().len(),
-        super::super::tx_dispatch::TX_QUEUE_CAPACITY + 1);
+        super::super::tx_dispatch::TX_BAND_CAPACITY + 1);
 }
 
 #[test]
@@ -206,4 +215,35 @@ fn stale_arp_sends_data_then_unicast_probes_after_delay() {
     assert_eq!(*dev.calls.lock().unwrap(), vec![0x45]);
     stack.arp_tick(crate::arp::ARP_DELAY_FIRST_PROBE_NS);
     assert_eq!(*dev.calls.lock().unwrap(), vec![0x45, 0]);
+}
+
+/// `SO_PRIORITY` — and the per-message override that mirrors it — selects the
+/// transmit band, and the bands drain in order. Queued while the hardware is
+/// held, three packets submitted lowest-band-last leave highest-band-first.
+#[test]
+fn a_packet_priority_selects_the_band_it_drains_in() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
+    let stack = Arc::new(crate::NetStack::new());
+    let dev = Arc::new(DispatchDev::new(true));
+    let iface = stack.ifaces.register(dev.clone());
+    let lease = stack.ifaces.acquire_egress_in_ns(iface, 0).unwrap();
+    let held = lease.clone();
+    let holding = std::thread::spawn(move || held.xmit(packet(1)));
+    crate::hosted_fixture::spin_until("the device xmit is entered",
+        || dev.entered.load(Ordering::Acquire));
+
+    // Submitted worst band first; every one carries a distinct id so the drain
+    // order is readable from the device's call log.
+    let mut pending = Vec::new();
+    for (at, (id, priority)) in [(0x22u8, 1u32), (0x11, 0), (0x00, 6)].into_iter().enumerate() {
+        let queued = lease.clone();
+        pending.push(std::thread::spawn(move || queued.xmit(prioritised_packet(id, priority))));
+        crate::hosted_fixture::spin_until("the next packet is queued",
+            || lease.queued_tx() == at + 1);
+    }
+
+    dev.release.store(true, Ordering::Release);
+    holding.join().unwrap().unwrap();
+    for tx in pending { tx.join().unwrap().unwrap(); }
+    assert_eq!(*dev.calls.lock().unwrap(), vec![1u8, 0x00, 0x11, 0x22]);
 }

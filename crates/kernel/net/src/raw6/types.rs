@@ -214,13 +214,13 @@ impl Raw6Endpoint {
     pub fn connect(&self, peer: Raw6Address) { self.state.lock().peer = Some(peer); }
 
     /// Connect and install the route-selected local address when unbound. # C: O(N)
-    pub fn connect_routed(&self, peer: Raw6Address, iface: Option<NetIfaceId>)
+    pub fn connect_routed(&self, peer: Raw6Address, iface: Option<NetIfaceId>, mark: u32)
         -> crate::netdev::NetResult<()>
     {
         if peer.addr.is_unspecified() { return Err(crate::netdev::NetError::Eaddrnotavail); }
         let stack = crate::global_stack();
         let net_ns = self.net_ns();
-        let (route_iface, _, _) = stack.route_v6_iface_in(net_ns, peer.addr, iface)?;
+        let (route_iface, _, _) = stack.route_v6_iface_in(net_ns, peer.addr, iface, mark)?;
         let hint = stack.routes6.lookup_in(net_ns, peer.addr)
             .filter(|route| route.iface == route_iface).and_then(|route| route.src_hint);
         let local = stack.v6_select_source(route_iface, peer.addr, hint)

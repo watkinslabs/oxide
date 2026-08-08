@@ -117,7 +117,7 @@ fn sticky_options_widen_the_udp_header() {
     let opts = compiled(&[IPOPT_RR, 11, 4, 0, 0, 0, 0, 0, 0, 0, 0, IPOPT_END]);
 
     stack.send_udp_pmtu_to_bound_opts_owned(&owner(), SRC, SPORT, DST, DPORT, b"body",
-        Some(iface), 0, 0, crate::uapi::IP_PMTUDISC_DONT, Some(&opts), false).unwrap();
+        Some(iface), 0, 0, crate::uapi::IP_PMTUDISC_DONT, Some(&opts), false, crate::TxMeta::NONE).unwrap();
 
     let packets = dev.packets.lock();
     assert_eq!(packets.len(), 1);
@@ -146,7 +146,7 @@ fn fragmentation_accounts_for_the_option_area() {
     let payload = [0x5au8; 120];
 
     stack.send_udp_pmtu_to_bound_opts_owned(&owner(), SRC, SPORT, DST, DPORT, &payload,
-        Some(iface), 0, 0, crate::uapi::IP_PMTUDISC_DONT, Some(&opts), false).unwrap();
+        Some(iface), 0, 0, crate::uapi::IP_PMTUDISC_DONT, Some(&opts), false, crate::TxMeta::NONE).unwrap();
 
     let packets = dev.packets.lock();
     let hdr = IPV4_HDR_LEN + 12;
@@ -193,7 +193,7 @@ fn source_route_retargets_the_route_lookup_at_the_first_hop() {
     let opts = compiled(&area);
 
     stack.send_udp_pmtu_to_bound_opts_owned(&owner(), SRC, SPORT, DST, DPORT, b"body",
-        None, 0, 0, crate::uapi::IP_PMTUDISC_DONT, Some(&opts), false).unwrap();
+        None, 0, 0, crate::uapi::IP_PMTUDISC_DONT, Some(&opts), false, crate::TxMeta::NONE).unwrap();
 
     assert!(direct.packets.lock().is_empty());
     let packets = hop_dev.packets.lock();
