@@ -16,7 +16,12 @@
 // nothing is hidden: real dead code still surfaces on `xtask kernel`.
 #![cfg_attr(not(target_os = "oxide-kernel"), allow(dead_code))]
 extern crate alloc;
-#[cfg(any(test, feature = "hosted"))]
+// Every build that is not the kernel target IS hosted: the preempt count there
+// lives in thread-local storage (`preempt`), which needs `std`. Gating on the
+// `hosted` feature instead made hosted-ness depend on whether a downstream test
+// crate remembered to ask for it, and a crate that did not silently got the
+// per-CPU-array count shared across every libtest worker thread.
+#[cfg(not(target_os = "oxide-kernel"))]
 extern crate std;
 
 pub mod bh;

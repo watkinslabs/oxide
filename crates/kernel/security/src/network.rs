@@ -294,4 +294,35 @@ mod tests {
         }
         assert_eq!(sched::preempt::softirq_count(), 0);
     }
+
+    /// The absolute-zero baseline above is only a leak detector while
+    /// bottom-half state is PRIVATE to the observing execution context. A
+    /// hosted test process is many threads in one address space, and libtest
+    /// runs these tests concurrently, so a bottom-half count kept in one shared
+    /// location would let a sibling test's `spin_lock_bh` be observed here —
+    /// reporting a leak that never happened and hiding one that did.
+    #[test]
+    fn bottom_half_state_is_private_to_the_observing_thread() {
+        use std::sync::{Arc, Barrier};
+        let held = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let (holder_held, holder_release) = (held.clone(), release.clone());
+        let holder = std::thread::spawn(move || {
+            let guard = HOOKS.lock();
+            assert_eq!(sched::preempt::softirq_count(),
+                sched::preempt::SOFTIRQ_DISABLE_OFFSET);
+            holder_held.wait();
+            holder_release.wait();
+            drop(guard);
+        });
+        held.wait();
+        let observed = sched::preempt::softirq_count();
+        // Release and join BEFORE asserting: a panic here would otherwise leave
+        // the holder parked on its barrier while still holding the lock, and a
+        // failing test would hang the run instead of reporting.
+        release.wait();
+        holder.join().unwrap();
+        assert_eq!(observed, 0,
+            "another thread's spin_lock_bh must not be visible in this context");
+    }
 }

@@ -15,20 +15,33 @@
 // `PreemptGuard` is the RAII pair: drop runs `preempt_enable()`,
 // which schedules iff count returned to zero and need_resched is set.
 
-use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicPtr, Ordering};
+#[cfg(target_os = "oxide-kernel")]
+use core::sync::atomic::AtomicU32;
 
+#[cfg(target_os = "oxide-kernel")]
 use cpu::MAX_CPUS;
 
 /// Cacheline-padded per-CPU slot so adjacent CPUs' preempt count never
 /// shares a cache line (`04§6` / `06§4`).
+#[cfg(target_os = "oxide-kernel")]
 #[repr(C, align(64))]
 struct Pcpu<T>(T);
 
+#[cfg(target_os = "oxide-kernel")]
 const PC_ZERO: Pcpu<AtomicU32>  = Pcpu(AtomicU32::new(0));
 
+/// THE preempt count on the kernel target. Hosted builds keep it in
+/// thread-local storage instead (below) and never compile this array, so there
+/// is exactly one owner of the count in either build.
+#[cfg(target_os = "oxide-kernel")]
 static PREEMPT_COUNT: [Pcpu<AtomicU32>;  MAX_CPUS] = [PC_ZERO; MAX_CPUS];
 
-#[cfg(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted")))]
+// Hosted preemption context. One per OS thread, because a hosted test process
+// is many threads sharing one address space: a single static slot would make
+// one thread's `local_bh_disable` visible to every other thread, which is both
+// unlike a real CPU and a source of cross-test interference.
+#[cfg(not(target_os = "oxide-kernel"))]
 std::thread_local! {
     static HOSTED_PREEMPT_COUNT: core::cell::Cell<u32> = const { core::cell::Cell::new(0) };
 }
@@ -51,16 +64,14 @@ fn this_cpu() -> usize {
     { use hal::CpuOps; (hal_x86_64::X86CpuOps::current_cpu() as usize).min(MAX_CPUS - 1) }
     #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
     { use hal::CpuOps; (hal_aarch64::ArmCpuOps::current_cpu() as usize).min(MAX_CPUS - 1) }
-    #[cfg(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted")))]
-    { 0 }
-    #[cfg(all(not(target_os = "oxide-kernel"), not(any(test, feature = "hosted"))))]
+    #[cfg(not(target_os = "oxide-kernel"))]
     { 0 }
 }
 
 /// Hosted execution has one preemption context per OS thread. A test process
 /// can create more workers than the kernel's fixed CPU maximum, so assigning
 /// hosted workers into that array aliases unrelated contexts. # C: O(1)
-#[cfg(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted")))]
+#[cfg(not(target_os = "oxide-kernel"))]
 fn hosted_preempt<R>(f: impl FnOnce(&core::cell::Cell<u32>) -> R) -> R {
     HOSTED_PREEMPT_COUNT.with(f)
 }
@@ -84,38 +95,38 @@ pub use resched::{need_resched, need_resched_on, set_need_resched, set_need_resc
                   take_need_resched};
 
 #[inline]
-#[cfg(not(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted"))))]
+#[cfg(target_os = "oxide-kernel")]
 fn preempt_count_slot() -> &'static AtomicU32 { &PREEMPT_COUNT[this_cpu()].0 }
 
 fn preempt_count_load() -> u32 {
-    #[cfg(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted")))]
+    #[cfg(not(target_os = "oxide-kernel"))]
     { return hosted_preempt(core::cell::Cell::get); }
-    #[cfg(not(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted"))))]
+    #[cfg(target_os = "oxide-kernel")]
     { preempt_count_slot().load(Ordering::Acquire) }
 }
 
 fn preempt_count_swap_local(incoming: u32) -> u32 {
-    #[cfg(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted")))]
+    #[cfg(not(target_os = "oxide-kernel"))]
     { return hosted_preempt(|count| count.replace(incoming)); }
-    #[cfg(not(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted"))))]
+    #[cfg(target_os = "oxide-kernel")]
     { preempt_count_slot().swap(incoming, Ordering::AcqRel) }
 }
 
 fn preempt_count_add_local(n: u32) {
-    #[cfg(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted")))]
+    #[cfg(not(target_os = "oxide-kernel"))]
     { hosted_preempt(|count| count.set(count.get().wrapping_add(n))); }
-    #[cfg(not(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted"))))]
+    #[cfg(target_os = "oxide-kernel")]
     { preempt_count_slot().fetch_add(n, Ordering::AcqRel); }
 }
 
 fn preempt_count_sub_local(n: u32) -> u32 {
-    #[cfg(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted")))]
+    #[cfg(not(target_os = "oxide-kernel"))]
     { return hosted_preempt(|count| {
         let prev = count.get();
         count.set(prev.wrapping_sub(n));
         prev
     }); }
-    #[cfg(not(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted"))))]
+    #[cfg(target_os = "oxide-kernel")]
     { preempt_count_slot().fetch_sub(n, Ordering::AcqRel) }
 }
 
@@ -126,9 +137,9 @@ fn preempt_count_sub_local(n: u32) -> u32 {
 /// Out-of-range yields 0.
 /// # C: O(1)
 pub fn preempt_count_on(cpu: usize) -> u32 {
-    #[cfg(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted")))]
+    #[cfg(not(target_os = "oxide-kernel"))]
     { let _ = cpu; return 0; }
-    #[cfg(not(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted"))))]
+    #[cfg(target_os = "oxide-kernel")]
     PREEMPT_COUNT.get(cpu).map_or(0, |s| s.0.load(Ordering::Acquire))
 }
 
@@ -164,9 +175,9 @@ pub fn preempt_count_swap(incoming: u32) -> u32 {
 /// The scheduler and softirq runner are the only recovery owners; ordinary
 /// nesting must use the paired add/sub helpers. # C: O(1)
 pub(crate) fn preempt_count_set(value: u32) {
-    #[cfg(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted")))]
+    #[cfg(not(target_os = "oxide-kernel"))]
     { hosted_preempt(|count| count.set(value)); }
-    #[cfg(not(all(not(target_os = "oxide-kernel"), any(test, feature = "hosted"))))]
+    #[cfg(target_os = "oxide-kernel")]
     { preempt_count_slot().store(value, Ordering::Release); }
 }
 
