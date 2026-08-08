@@ -84,3 +84,46 @@ fn ipv6_anycast_is_device_local_and_refcounted() {
     stack.v6_anycast_release(iface, anycast);
     assert!(!stack.v6_dst_is_local(iface, anycast));
 }
+
+#[test]
+fn ipv6_foreign_unicast_reaches_a_socket_bound_to_it_when_a_local_route_covers_it() {
+    // The transparent-proxy delivery shape, IPv6 half: no interface is
+    // configured with the destination, a local-table route selects local input
+    // for it, and the socket bound to that foreign address receives. Without
+    // the route the same datagram is not delivered — the twin of
+    // `ipv6_nonlocal_unicast_never_reaches_wildcard_udp` above.
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let stack = NetStack::new();
+    let (iface, _) = stack.register_loopback();
+    let foreign = Ipv6Addr::from_segments([0x2001, 0xdb8, 9, 0, 0, 0, 0, 1]);
+    let endpoint = stack.bind_udp6(foreign, 42_322).unwrap();
+
+    stack.routes6.add_in(0, crate::route6::Route6Entry {
+        table: crate::policy_rule::RT_TABLE_LOCAL,
+        dst: foreign, prefix_len: 128, iface, gateway: None, src_hint: None,
+        origin: crate::route6::Route6Origin::Static,
+    });
+
+    stack.deliver_rx_ipv6(
+        iface, &udp_packet(Ipv6Addr::LOOPBACK, foreign, 9_000, 42_322),
+    ).unwrap();
+
+    assert!(endpoint.recv(false).is_some(),
+        "a local-table route delivers a destination no interface owns");
+}
+
+#[test]
+fn ipv6_foreign_unicast_without_a_local_route_is_not_delivered() {
+    // Positive control for the test above: identical setup minus the route.
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let stack = NetStack::new();
+    let (iface, _) = stack.register_loopback();
+    let foreign = Ipv6Addr::from_segments([0x2001, 0xdb8, 9, 0, 0, 0, 0, 2]);
+    let endpoint = stack.bind_udp6(foreign, 42_323).unwrap();
+
+    let _ = stack.deliver_rx_ipv6(
+        iface, &udp_packet(Ipv6Addr::LOOPBACK, foreign, 9_000, 42_323),
+    );
+
+    assert!(endpoint.recv(false).is_none());
+}

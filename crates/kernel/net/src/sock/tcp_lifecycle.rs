@@ -185,6 +185,13 @@ pub(crate) fn connect_tcp4_locked(sock: &InetSocket, local_port: &mut Option<u16
     let net_ns = sock.net_ns();
     let configured = *sock.local_ip.lock();
     let local_ip = if configured != Ipv4Addr::ANY {
+        // The connection's source is the address the socket bound. Screening
+        // it here is what separates the two nonlocal-bind permissions: a
+        // transparent socket opens the connection from the foreign address, a
+        // freebind one has no route out of it.
+        crate::transparent::screen_v4_socket_source(net_ns, configured, dst_ip,
+            super::iface::v4_egress_iface(sock)?.is_some(),
+            super::nonlocal::permission(sock), false)?;
         configured
     } else if dst_ip.is_loopback() {
         Ipv4Addr::LOOPBACK
@@ -212,6 +219,9 @@ pub(crate) fn connect_tcp4_mapped_locked(sock: &InetSocket, local_port: &mut Opt
     };
     let net_ns = sock.net_ns();
     let local_ip = if configured != Ipv4Addr::ANY {
+        crate::transparent::screen_v4_socket_source(net_ns, configured, dst_ip,
+            super::iface::v4_egress_iface(sock)?.is_some(),
+            super::nonlocal::permission(sock), false)?;
         configured
     } else if dst_ip.is_loopback() {
         Ipv4Addr::LOOPBACK
