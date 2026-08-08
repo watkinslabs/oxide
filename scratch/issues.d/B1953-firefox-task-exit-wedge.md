@@ -1,0 +1,3 @@
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED 1a56b0b23 | DEFECT | high | A Firefox graphical workload could wedge task exit because fd-table teardown held the task pin while final file release ran. | Firefox run `3544207`: GNOME segfault at 104.220 s, then `(sd-close)` soft-lockup and no-progress. The pin now protects only table replacement; final close occurs unlocked. `cargo test -p sched --lib` passed 1199/1199, and fixed Firefox run `3778516` completed valid and invalid-DNS probes with no watchdog, CPU stall, or GNOME segfault. | B1953-firefox-task-exit-wedge |
