@@ -25,6 +25,10 @@ pub struct VmAccountingSnapshot {
     pub swap_pte_mappings: u64,
     pub kernel_pte_mappings: u64,
     pub device_pte_mappings: u64,
+    /// Huge leaves this mm holds, counted in BASE pages so every reader gets
+    /// the same unit. Deliberately absent from [`VmAccountingSnapshot::rss_pages`]'s
+    /// RSS classes — the reference reports hugetlb separately, never inside RSS.
+    pub hugetlb_pte_mappings: u64,
     pub root_page_table_frames: u64,
     /// Every live root and intermediate page-table frame owned by this mm.
     /// PMM changes this only at the real typed allocation/free boundary.
@@ -47,6 +51,7 @@ impl VmAccountingSnapshot {
             file:     self.file_pte_mappings,
             shmem:    self.kernel_pte_mappings,
             swapents: self.swap_pte_mappings,
+            hugetlb:  self.hugetlb_pte_mappings,
         }
     }
 }
@@ -59,6 +64,7 @@ pub(super) struct VmAccounting {
     swap_pte_mappings: AtomicU64,
     kernel_pte_mappings: AtomicU64,
     device_pte_mappings: AtomicU64,
+    hugetlb_pte_mappings: AtomicU64,
     root_page_table_frames: AtomicU64,
     page_table_frames: AtomicU64,
     faults: AtomicU64,
@@ -73,10 +79,14 @@ pub(super) struct VmAccounting {
 /// subsystem exists to prevent. Saturating keeps a released build's `VmRSS`
 /// from reading as sixteen exabytes; the debug assertion makes a hosted test
 /// fail loudly at the exact op instead. # C: O(1)
-fn dec(c: &AtomicU64) {
-    let prev = c.fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| Some(v.saturating_sub(1)));
+fn dec(c: &AtomicU64) { dec_by(c, 1) }
+
+/// Retire `n` base pages from a residency counter — one leaf's worth, which is
+/// more than one page when the leaf is a huge one. # C: O(1)
+fn dec_by(c: &AtomicU64, n: u64) {
+    let prev = c.fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| Some(v.saturating_sub(n)));
     #[cfg(test)]
-    assert!(prev.unwrap_or(0) > 0, "rss counter under-run: a PTE removal had no matching install");
+    assert!(prev.unwrap_or(0) >= n, "rss counter under-run: a PTE removal had no matching install");
     #[cfg(not(test))]
     let _ = prev;
 }
@@ -87,6 +97,7 @@ impl VmAccounting {
             committed_virtual_bytes: AtomicU64::new(0), locked_virtual_bytes: AtomicU64::new(0),
             anon_pte_mappings: AtomicU64::new(0), file_pte_mappings: AtomicU64::new(0), swap_pte_mappings: AtomicU64::new(0),
             kernel_pte_mappings: AtomicU64::new(0), device_pte_mappings: AtomicU64::new(0),
+            hugetlb_pte_mappings: AtomicU64::new(0),
             root_page_table_frames: AtomicU64::new(u64::from(root_pa != 0)),
             page_table_frames: AtomicU64::new(u64::from(root_pa != 0)),
             faults: AtomicU64::new(0), mlock_transitions: AtomicU64::new(0),
@@ -117,6 +128,7 @@ impl VmAccounting {
             swap_pte_mappings: self.swap_pte_mappings.load(Ordering::Acquire),
             kernel_pte_mappings: self.kernel_pte_mappings.load(Ordering::Acquire),
             device_pte_mappings: self.device_pte_mappings.load(Ordering::Acquire),
+            hugetlb_pte_mappings: self.hugetlb_pte_mappings.load(Ordering::Acquire),
             root_page_table_frames: self.root_page_table_frames.load(Ordering::Acquire),
             page_table_frames: self.page_table_frames.load(Ordering::Acquire),
             faults: self.faults.load(Ordering::Acquire),
@@ -150,13 +162,15 @@ impl VmAccounting {
     fn page_table_frame_allocated(&self) { self.page_table_frames.fetch_add(1, Ordering::AcqRel); }
     fn page_table_frame_released(&self) { self.page_table_frames.fetch_sub(1, Ordering::AcqRel); }
     pub(super) fn install_pte(&self, vma: &Vma) {
-        if let Some(c) = self.counter(class_of(&vma.backing)) { c.fetch_add(1, Ordering::AcqRel); }
+        let n = super::rss::pages_per_leaf(vma);
+        if let Some(c) = self.counter(class_of(&vma.backing)) { c.fetch_add(n, Ordering::AcqRel); }
         // Linux `update_hiwater_rss`: residency only ever grows here, so this
         // is the one transition that can raise the peak.
         self.hiwater_rss_pages.fetch_max(self.raw_snapshot().rss_pages().total(), Ordering::AcqRel);
     }
     pub(super) fn remove_pte(&self, vma: &Vma) {
-        if let Some(c) = self.counter(class_of(&vma.backing)) { dec(c); }
+        let n = super::rss::pages_per_leaf(vma);
+        if let Some(c) = self.counter(class_of(&vma.backing)) { dec_by(c, n); }
     }
     pub(super) fn install_swap_pte(&self) { self.swap_pte_mappings.fetch_add(1, Ordering::AcqRel); }
     pub(super) fn remove_swap_pte(&self) { dec(&self.swap_pte_mappings); }
@@ -169,6 +183,7 @@ impl VmAccounting {
         self.file_pte_mappings.fetch_add(t.pages.file, Ordering::AcqRel);
         self.kernel_pte_mappings.fetch_add(t.pages.shmem, Ordering::AcqRel);
         self.device_pte_mappings.fetch_add(t.device, Ordering::AcqRel);
+        self.hugetlb_pte_mappings.fetch_add(t.pages.hugetlb, Ordering::AcqRel);
         self.swap_pte_mappings.fetch_add(t.pages.swapents, Ordering::AcqRel);
         self.hiwater_rss_pages.fetch_max(self.raw_snapshot().rss_pages().total(), Ordering::AcqRel);
     }
@@ -176,6 +191,7 @@ impl VmAccounting {
         Some(match k {
             RssClass::Anon => &self.anon_pte_mappings, RssClass::File => &self.file_pte_mappings,
             RssClass::Shmem => &self.kernel_pte_mappings, RssClass::Device => &self.device_pte_mappings,
+            RssClass::Hugetlb => &self.hugetlb_pte_mappings,
             RssClass::Untracked => return None,
         })
     }

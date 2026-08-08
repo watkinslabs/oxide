@@ -138,7 +138,7 @@ impl Mount {
             };
             let mut new_meta = Vec::new();
             for (li, chunk) in extents.chunks(leaf_max).enumerate() {
-                let leaf_lba = match self.alloc_block(hint) {
+                let leaf_lba = match self.alloc_block_nofail(hint) {
                     Ok(lba) => lba,
                     Err(e) => {
                         self.free_allocated_blocks(&new_meta);

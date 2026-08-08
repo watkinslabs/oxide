@@ -276,6 +276,23 @@ pub trait FileBacking: Send + Sync {
     /// # C: O(1)
     fn huge_page_size(&self) -> u64 { 0 }
 
+    /// A PRIVATE copy of the huge page at `off`, for a mapping whose writes
+    /// must not reach the file.
+    ///
+    /// The frame comes back carrying the mapping's own reference and no other,
+    /// so the mapping owns it outright and [`FileBacking::huge_put_frame`]
+    /// returns it to whatever pool it came from. `None` = nothing to copy.
+    /// # C: O(huge page)
+    fn huge_cow_frame(&self, _off: u64) -> Result<Option<SharedFrame>, FileBackingError> {
+        Ok(None)
+    }
+
+    /// Release one reference to a huge page this backing handed out. The
+    /// backing owns the release because it is the only thing that knows which
+    /// pool the page came from.
+    /// # C: O(log nr)
+    fn huge_put_frame(&self, _pa: u64) {}
+
     /// Retained cache frame for Linux-style `map_pages` fault-around. This
     /// MUST be a non-faulting lookup: no allocation, swap-in, or backing I/O.
     /// `None` means the page is not currently eligible. # C: O(log N_pages)

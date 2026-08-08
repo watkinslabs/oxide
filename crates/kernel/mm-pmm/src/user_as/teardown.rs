@@ -47,8 +47,13 @@ pub unsafe extern "C" fn as_teardown(root_pa: u64) {
     let mut free_leaf = |_va: u64, pa: u64, size: hal::PageSize| {
         // A block leaf names a huge page, whose home is the hugetlb pool: the
         // ordinary release would hand pool memory to the buddy allocator and
-        // silently shrink the pool an operator sized.
-        if size != hal::PageSize::P4K { crate::hugetlb::huge_frame_unmap_ref(pa); return; }
+        // silently shrink the pool an operator sized. A private COW copy held
+        // only by this mapping goes back to the pool here; a file's page is
+        // still held by the file and merely loses one reference.
+        if let Some(huge) = crate::hugetlb::HugePageSize::from_leaf(size) {
+            crate::hugetlb::huge_frame_dec_and_maybe_release(huge, pa);
+            return;
+        }
         // Opt-in free-while-mapped backstop (debug-fwm); the always-on invariant
         // is the cheap own-mapcount check in release_frame_on_zero.
         #[cfg(feature = "debug-fwm")]
@@ -103,7 +108,10 @@ pub unsafe extern "C" fn as_teardown(root_pa: u64) {
     // SAFETY: per fn contract; HHDM covers PT memory; root quiesced.
     let mut free_leaf = |_va: u64, pa: u64, size: hal::PageSize| {
         // Block leaves go back to the hugetlb pool; mirror of x86_64 above.
-        if size != hal::PageSize::P4K { crate::hugetlb::huge_frame_unmap_ref(pa); return; }
+        if let Some(huge) = crate::hugetlb::HugePageSize::from_leaf(size) {
+            crate::hugetlb::huge_frame_dec_and_maybe_release(huge, pa);
+            return;
+        }
         // Opt-in free-while-mapped backstop (debug-fwm); mirror of x86_64 above.
         #[cfg(feature = "debug-fwm")]
         fwm_teardown_backstop(_va, pa, root_pa, hhdm);

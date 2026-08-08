@@ -132,6 +132,7 @@ impl Tree {
         v.extend_from_slice(CORE_FILES);
         if id != ROOT { v.extend_from_slice(NONROOT_FILES); }
         v.extend(controller_files(n.avail));
+        v.extend_from_slice(self.hugetlb_files(id));
         v
     }
 

@@ -7,6 +7,8 @@
 //             (persistent/surplus/reserve/free) with no allocator contact.
 //   `subpool` owns per-mount max/min accounting (`hugetlbfs` `size=` /
 //             `min_size=`) with no allocator contact.
+//   `charge`  owns the cgroup owner records for promised and handed-out pages
+//             and the charge/uncharge calls the pool makes around them.
 //   `pool`    owns the live pool: the reserved huge frames themselves,
 //             grow/shrink against the buddy, and hand-out/return.
 //   `tests`   owns the hosted unit tests for the three ungated modules.
@@ -16,6 +18,7 @@
 // touches physical memory.
 
 mod sizes;
+mod charge;
 mod hstate;
 mod subpool;
 mod pool;
@@ -25,9 +28,10 @@ mod tests;
 pub use sizes::{HugePageSize, size_from_log, DEFAULT_HUGE_SHIFT, HUGE_FLAG_ENCODE_MASK, HUGE_FLAG_ENCODE_SHIFT};
 pub use hstate::{HstateCounts, ResizePlan};
 pub use subpool::{Subpool, SubpoolCharge, NO_LIMIT};
+pub use charge::{PageCharge, granule_of, reparent_charges};
 pub use pool::{
     alloc_huge_frame, free_huge_frame, huge_frame_dec_and_maybe_release, huge_frame_inc_ref,
-    huge_frame_unmap_ref, nr_hugepages, free_hugepages, resv_hugepages, surplus_hugepages,
+    nr_hugepages, free_hugepages, resv_hugepages, surplus_hugepages,
     nr_overcommit_hugepages, set_nr_overcommit_hugepages, set_nr_hugepages, reserve, unreserve,
     owns,
 };

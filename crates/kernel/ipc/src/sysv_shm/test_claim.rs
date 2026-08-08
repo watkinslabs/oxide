@@ -41,4 +41,5 @@ pub(crate) fn reset_shm() {
     super::REG.next_id.store(1, Ordering::Release);
     super::REG.segs.lock().clear();
     super::set_shm_rmid_forced(0);
+    super::huge::set_hugetlb_shm_group(0);
 }

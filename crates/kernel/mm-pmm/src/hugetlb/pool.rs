@@ -9,9 +9,11 @@
 // the physical work each plan names. The pool lock is never held across a
 // buddy call: plan under the lock, release, allocate, re-take, commit.
 
+use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use sync::{HugetlbPool, Spinlock};
 
+use super::charge;
 use super::hstate::HstateCounts;
 use super::sizes::HugePageSize;
 
@@ -20,14 +22,16 @@ struct PoolState {
     counts: HstateCounts,
     /// Physical base addresses of the pool's unhanded-out huge pages.
     free: Vec<u64>,
-    /// Physical base addresses of every huge page the pool owns, so a frame
-    /// handed back can be recognised as the pool's rather than the buddy's.
-    owned: Vec<u64>,
+    /// Every huge page the pool owns, so a frame handed back can be recognised
+    /// as the pool's rather than the buddy's. A set, not a list: a page is
+    /// looked up here on every release, and a linear scan turns each release
+    /// into work proportional to the size of the pool.
+    owned: BTreeSet<u64>,
 }
 
 impl PoolState {
     const fn new() -> Self {
-        Self { counts: HstateCounts { max: 0, nr: 0, free: 0, resv: 0, surplus: 0, overcommit: 0 }, free: Vec::new(), owned: Vec::new() }
+        Self { counts: HstateCounts { max: 0, nr: 0, free: 0, resv: 0, surplus: 0, overcommit: 0 }, free: Vec::new(), owned: BTreeSet::new() }
     }
 }
 
@@ -99,11 +103,11 @@ pub fn set_nr_hugepages(size: HugePageSize, count: u64) -> u64 {
         let allocated = fresh.len() as u64;
         for _ in 0..core::cmp::min(now.release, g.free.len() as u64) {
             if let Some(pa) = g.free.pop() {
-                if let Some(i) = g.owned.iter().position(|&o| o == pa) { g.owned.swap_remove(i); }
+                g.owned.remove(&pa);
                 to_release.push(pa);
             }
         }
-        for &pa in fresh.iter() { g.free.push(pa); g.owned.push(pa); }
+        for &pa in fresh.iter() { g.free.push(pa); g.owned.insert(pa); }
         let released = to_release.len() as u64;
         g.counts.commit_resize(count, now.absorb_surplus, allocated, released);
         g.counts.persistent()
@@ -118,10 +122,18 @@ pub fn set_nr_hugepages(size: HugePageSize, count: u64) -> u64 {
 /// # C: O(delta * 2^order)
 pub fn reserve(size: HugePageSize, delta: u64) -> Result<(), ()> {
     if delta == 0 { return Ok(()); }
-    let need = { pool(size).lock().counts.plan_reserve(delta)? };
+    // The controller is charged at RESERVATION time, before the pool promises
+    // anything: a cgroup over its reservation limit must fail the mapping,
+    // not discover at fault time that the promise cannot be kept.
+    charge::charge_reserve(size, delta)?;
+    let need = match pool(size).lock().counts.plan_reserve(delta) {
+        Ok(n) => n,
+        Err(()) => { charge::uncharge_reserve(size, delta); return Err(()); }
+    };
     let mut fresh: Vec<u64> = Vec::new();
     if need > 0 && acquire_runs(size, need, &mut fresh) < need {
         release_runs(size, &fresh);
+        charge::uncharge_reserve(size, delta);
         return Err(());
     }
     let mut g = pool(size).lock();
@@ -132,11 +144,16 @@ pub fn reserve(size: HugePageSize, delta: u64) -> Result<(), ()> {
     match recheck {
         Ok(_) => {
             let added = fresh.len() as u64;
-            for &pa in fresh.iter() { g.free.push(pa); g.owned.push(pa); }
+            for &pa in fresh.iter() { g.free.push(pa); g.owned.insert(pa); }
             g.counts.commit_reserve(delta, added);
             Ok(())
         }
-        Err(()) => { drop(g); release_runs(size, &fresh); Err(()) }
+        Err(()) => {
+            drop(g);
+            release_runs(size, &fresh);
+            charge::uncharge_reserve(size, delta);
+            Err(())
+        }
     }
 }
 
@@ -145,6 +162,7 @@ pub fn reserve(size: HugePageSize, delta: u64) -> Result<(), ()> {
 pub fn unreserve(size: HugePageSize, delta: u64) {
     if delta == 0 { return; }
     pool(size).lock().counts.unreserve(delta);
+    charge::uncharge_reserve(size, delta);
 }
 
 /// Take one huge page out of the pool. `reserved` says the caller holds a
@@ -152,10 +170,19 @@ pub fn unreserve(size: HugePageSize, delta: u64) {
 /// unpromised remainder.
 /// # C: O(1)
 pub fn alloc_huge_frame(size: HugePageSize, reserved: bool) -> Option<u64> {
+    // Charged before the page is taken, with the pool lock not yet held: a
+    // cgroup at its limit must not consume a page it cannot be charged for.
+    let charged = charge::charge_alloc(size, reserved).ok()?;
     let mut g = pool(size).lock();
-    if !g.counts.dequeue(reserved) { return None; }
-    let Some(pa) = g.free.pop() else { g.counts.enqueue(); return None; };
+    if !g.counts.dequeue(reserved) { drop(g); charge::cancel_alloc(size, charged); return None; }
+    let Some(pa) = g.free.pop() else {
+        g.counts.enqueue();
+        drop(g);
+        charge::cancel_alloc(size, charged);
+        return None;
+    };
     drop(g);
+    charge::commit_alloc(size, pa, charged);
     // Seed the owner reference the caller now holds. A free-list page carries
     // none, so this is the only place a hugetlb page acquires one.
     // SAFETY: `pa` heads a pool-owned run that is off the free list and
@@ -167,11 +194,11 @@ pub fn alloc_huge_frame(size: HugePageSize, reserved: bool) -> Option<u64> {
 
 /// Put one huge page back. Only a page the pool owns is accepted; a frame from
 /// anywhere else would corrupt both the free list and the counters.
-/// # C: O(nr)
+/// # C: O(log nr)
 pub fn free_huge_frame(size: HugePageSize, pa: u64) {
     let mut g = pool(size).lock();
-    if !g.owned.iter().any(|&o| o == pa) { return; }
-    if g.free.iter().any(|&f| f == pa) { return; }
+    if !g.owned.contains(&pa) { return; }
+    if g.free.contains(&pa) { return; }
     g.free.push(pa);
     g.counts.enqueue();
 }
@@ -184,16 +211,6 @@ pub fn huge_frame_inc_ref(pa: u64) {
     unsafe { crate::setup::inc_ref(pa); }
 }
 
-/// Drop one MAPPING reference to a huge page. The page stays with its owning
-/// file, which still holds a reference of its own, so nothing is released here
-/// — unmapping a hugetlbfs mapping never takes the page away from the file.
-/// # C: O(1)
-pub fn huge_frame_unmap_ref(pa: u64) {
-    // SAFETY: `pa` is the head frame of a pool-owned run and the caller just
-    // tore down the PTE whose reference this drops.
-    unsafe { crate::setup::dec_ref_no_free(pa); }
-}
-
 /// Drop the OWNER's reference to a huge page and, when the last reference goes,
 /// return the page to the pool free list.
 ///
@@ -201,7 +218,7 @@ pub fn huge_frame_unmap_ref(pa: u64) {
 /// last user drops it: returning it to the buddy would silently shrink the pool
 /// the operator sized, and `nr_hugepages` would stop describing reality.
 /// Returns whether the page went back on the free list.
-/// # C: O(nr)
+/// # C: O(log nr)
 pub fn huge_frame_dec_and_maybe_release(size: HugePageSize, pa: u64) -> bool {
     // SAFETY: `pa` is a pool-owned head frame and the caller holds the owner
     // reference `alloc_huge_frame` handed out; the pool decides where the page
@@ -209,6 +226,10 @@ pub fn huge_frame_dec_and_maybe_release(size: HugePageSize, pa: u64) -> bool {
     let rest = unsafe { crate::setup::dec_ref_no_free(pa) };
     if rest != 0 { return false; }
     free_huge_frame(size, pa);
+    // The charge is released where the page is released, against the cgroup
+    // recorded when it was handed out — not against whoever happens to be
+    // running now, which is routinely a different one.
+    charge::uncharge_page(size, pa);
     true
 }
 
@@ -239,7 +260,7 @@ pub fn set_nr_overcommit_hugepages(size: HugePageSize, n: u64) {
 }
 
 /// Whether `pa` is the head of a page this pool owns.
-/// # C: O(nr)
+/// # C: O(log nr)
 pub fn owns(size: HugePageSize, pa: u64) -> bool {
-    pool(size).lock().owned.iter().any(|&o| o == pa)
+    pool(size).lock().owned.contains(&pa)
 }

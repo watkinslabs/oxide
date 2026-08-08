@@ -30,6 +30,7 @@ pub fn mem_status(task: &sched::Task) -> Option<MemStatus> {
         rss_shmem_pages:   rss.shmem,
         swap_pages:        rss.swapents,
         hiwater_rss_pages: a.hiwater_rss_pages,
+        hugetlb_pages:     rss.hugetlb,
         ..MemStatus::default()
     };
     for vma in mm.snapshot_vmas() {

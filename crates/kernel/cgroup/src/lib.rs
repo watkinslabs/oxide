@@ -13,6 +13,7 @@ extern crate alloc;
 pub mod selftest;
 
 pub mod export;
+pub mod hugetlb;
 pub mod inode;
 pub mod fs;
 pub mod bpf;
@@ -35,7 +36,8 @@ use vfs::{KResult, VfsError};
 pub use fs::{mount_at, realize_tree, CgroupFs};
 pub use policy::{CpuAction, cpu_bandwidth_decision, cpulist_to_mask, cpu_weight_to_cfs};
 pub use state::{
-    set_cpuset_hook, set_freeze_hook, set_notify_hook, set_pid_display_hook, set_pid_resolve_hook,
+    set_cpuset_hook, set_freeze_hook, set_hugetlb_reparent_hook, set_notify_hook,
+    set_pid_display_hook, set_pid_resolve_hook,
     set_memory_pressure_hook, set_migrate_hook, set_signal_hook, set_tid_display_hook,
     set_weight_hook,
 };
@@ -58,9 +60,11 @@ pub const NO_MEMCG: u64 = 0;
 /// root fallback. # C: O(1)
 static KERNEL_CONTEXT_MEMCG: AtomicU64 = AtomicU64::new(ROOT_CGROUP);
 
+pub use hugetlb::{try_charge_hugetlb, uncharge_hugetlb};
 pub use tree::{
     BpfAttachAnchor, BpfAttachError, BpfAttachMode, BpfAttachOrder, BpfAttachPosition, BpfAttachQuery,
     BpfDeviceError, BpfDeviceMode, BpfDeviceQuery, CgroupBpfAttachType, CgroupBpfRuntime,
+    HierarchyKind, HugeChargeRefused, HugeCounterKind, HugeGranule,
     MAX_BPF_ATTACH_PROGS, MemoryCharge, MemoryEvent, MemoryKind, MemoryPressure, MemoryPressureResult,
 };
 
@@ -249,14 +253,7 @@ pub fn mkdir_child(parent_cgid: u64, name: &str, uid: u32, gid: u32) -> KResult<
 /// `rmdir(2)` on a cgroup directory: remove the (empty) child node from
 /// `tree.rs`. No registry to clean up — inodes were synthesized.
 /// # C: O(log n)
-pub fn rmdir_child(parent_cgid: u64, name: &str) -> KResult<()> {
-    let id = {
-        let t = TREE.lock();
-        *t.node(parent_cgid).ok_or(VfsError::Enoent)?
-            .children.get(name).ok_or(VfsError::Enoent)?
-    };
-    TREE.lock().remove(id)
-}
+pub fn rmdir_child(parent_cgid: u64, name: &str) -> KResult<()> { hugetlb::remove_child(parent_cgid, name) }
 
 // --- sched glue ----------------------------------------------------
 

@@ -72,3 +72,59 @@ fn an_unmounted_filesystem_leaves_no_registration_behind() {
     assert!(!MOUNTS.lock().iter().any(|r| Weak::as_ptr(&r.mount) == Weak::as_ptr(&mount)),
         "the registration went with the mount");
 }
+
+/// A tick timestamp nobody else will reuse, and that always moves forward.
+/// The registry is global and these tests run in parallel, so a shared,
+/// monotonically increasing clock is what keeps one test's tick from looking
+/// like a backwards jump to another's mount.
+fn tick_now() -> u64 {
+    use core::sync::atomic::{AtomicU64, Ordering};
+    static CLOCK: AtomicU64 = AtomicU64::new(1_000_000_000_000);
+    CLOCK.fetch_add(due::NS_PER_SEC, Ordering::AcqRel)
+}
+
+/// The periodic walk is what DRIVES lazy inode-table initialisation: a mount
+/// that named the option gets a group done without anybody asking.
+#[test]
+fn the_periodic_walk_initialises_an_inode_table() {
+    let m = Ext4Mount::open_with_data(fresh_dev(), None, "init_itable=10").expect("mounts");
+    let mount = m.state().mount.clone();
+    let (off, len) = crate::itable_init::tests::dirty_the_table(&mount, 0);
+
+    run_itable_init(tick_now());
+    let after = crate::mount::read_byte_range_pub(&*mount.dev, off, len).unwrap();
+    assert!(after.iter().all(|b| *b == 0), "the walk zeroed the never-used table");
+}
+
+/// `noinit_itable` is honoured by the walk, not merely stored: the same image
+/// under the same tick is left exactly as it was.
+#[test]
+fn the_periodic_walk_leaves_a_mount_that_refused_the_job_alone() {
+    let m = Ext4Mount::open_with_data(fresh_dev(), None, "noinit_itable").expect("mounts");
+    let mount = m.state().mount.clone();
+    let (off, len) = crate::itable_init::tests::dirty_the_table(&mount, 0);
+
+    run_itable_init(tick_now());
+    let after = crate::mount::read_byte_range_pub(&*mount.dev, off, len).unwrap();
+    assert!(after.iter().any(|b| *b != 0), "a mount that refused the job was initialised anyway");
+}
+
+/// A mount pauses between groups by the multiple its option names, so the job
+/// never becomes a device-wide stall. The pause is priced by the tick that
+/// observes the group finished, which is why two ticks are needed to see it.
+#[test]
+fn a_mount_waits_out_the_pause_its_option_earned() {
+    const MULT: u64 = 10;
+    let m = Ext4Mount::open_with_data(fresh_dev(), None, "init_itable=10").expect("mounts");
+    let mount = m.state().mount.clone();
+    crate::itable_init::tests::dirty_the_table(&mount, 0);
+    let first = tick_now();
+
+    run_itable_init(first);
+    run_itable_init(tick_now());
+    let g = MOUNTS.lock();
+    let mine = g.iter().find(|r| Weak::as_ptr(&r.mount) == Arc::as_ptr(&mount)).expect("registered");
+    assert_eq!(mine.itable.last_ns, Some(first), "the pause is timed from the group it paid for");
+    assert!(mine.itable.wait_ns >= MULT * due::NS_PER_SEC,
+        "the pause is the measured work times the multiplier; saw {}", mine.itable.wait_ns);
+}

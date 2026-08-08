@@ -69,7 +69,9 @@ impl AddressSpace {
                     unsafe {
                         M::map_at(new_root_pa, Va(va), Pa(dst_pa), pte_flags, PageSize::P4K);
                     }
-                    tally.add(class);
+                    // Eager fork copies base pages only; a huge mapping never
+                    // reaches here because it takes the shared path.
+                    tally.add(class, 1);
                 }
                 va += PAGE_SIZE_BYTES;
             }

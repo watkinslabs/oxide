@@ -53,7 +53,7 @@ fn reset() { crate::sysv_shm::test_claim::reset_shm() }
 
 fn create(key: i32) -> i32 {
     let cpid = 0;
-    crate::sysv_shm::shmget_with_backing(key, SEG_SIZE, IPC_CREAT | SEG_MODE, cpid, backing) as i32
+    crate::sysv_shm::shmget_with_backing(key, SEG_SIZE, IPC_CREAT | SEG_MODE, cpid, |_| Ok(backing())) as i32
 }
 
 fn creator_of(id: i32) -> bool {

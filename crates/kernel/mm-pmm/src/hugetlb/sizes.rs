@@ -70,6 +70,18 @@ impl HugePageSize {
     /// # C: O(1)
     pub const fn mask(self) -> u64 { !(self.bytes() - 1) }
 
+    /// The granule a page-table leaf of `leaf` covers, or `None` when that
+    /// leaf is a base page — which no huge-page pool serves, so a teardown walk
+    /// can never mistake an ordinary page for a pool page and hand it over.
+    /// # C: O(1)
+    pub const fn from_leaf(leaf: PageSize) -> Option<HugePageSize> {
+        match leaf {
+            PageSize::P2M => Some(HugePageSize::Huge2M),
+            PageSize::P1G => Some(HugePageSize::Huge1G),
+            PageSize::P4K => None,
+        }
+    }
+
     /// The default granule, used whenever a caller asks for "a huge page"
     /// without naming a size — a zero size-log field.
     /// # C: O(1)

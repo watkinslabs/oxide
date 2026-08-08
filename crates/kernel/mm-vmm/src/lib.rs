@@ -160,6 +160,8 @@ mod tests_shortfill;
 // fault into the architecture-neutral leaf flags.
 #[cfg(test)]
 mod tests_phys_cache;
+#[cfg(test)]
+mod tests_hugetlb_cow;
 
 // F765: Linux `shm_vm_ops.open`/`.close` — `shm_nattch` counts VMAs, so fork,
 // split, merge and address-space teardown all move it.

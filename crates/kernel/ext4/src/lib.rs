@@ -63,6 +63,8 @@ pub mod journal;
 
 pub mod commit_timer;
 
+pub mod itable_init;
+
 #[cfg(feature = "debug-fsync-latency")]
 mod fsync_latency;
 

@@ -15,6 +15,11 @@ impl Tree {
         if let Some(bit) = file_controller(file) {
             if n.avail & bit == 0 { return Err(VfsError::Enoent); }
         }
+        // The hugetlb interface is named per granule, so it is resolved by the
+        // controller rather than listed among the fixed names below.
+        if self.hugetlb_files(id).contains(&file) {
+            if let Some(f) = self.hugetlb_file(file) { return self.read_hugetlb_file(id, f); }
+        }
         let s: String = match file {
             "cgroup.procs" => {
                 let mut o = String::new();
@@ -108,6 +113,9 @@ impl Tree {
         if let Some(bit) = file_controller(file) {
             let avail = self.nodes.get(&id).ok_or(VfsError::Enoent)?.avail;
             if avail & bit == 0 { return Err(VfsError::Enoent); }
+        }
+        if self.hugetlb_files(id).contains(&file) {
+            if let Some(f) = self.hugetlb_file(file) { return self.write_hugetlb_file(id, f, buf); }
         }
         let n = self.nodes.get_mut(&id).ok_or(VfsError::Enoent)?;
         let t = buf.trim();

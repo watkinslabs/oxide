@@ -16,6 +16,7 @@ fn sample() -> MemStatus {
         rss_shmem_pages:   1,
         swap_pages:        7,
         hiwater_rss_pages: 40,
+        hugetlb_pages:     0,
     }
 }
 
@@ -70,7 +71,7 @@ fn rows_appear_in_the_order_a_status_parser_expects() {
     assert_eq!(labels, alloc::vec![
         "VmPeak", "VmSize", "VmLck", "VmPin", "VmHWM", "VmRSS",
         "RssAnon", "RssFile", "RssShmem", "VmData", "VmStk",
-        "VmExe", "VmLib", "VmPTE", "VmSwap",
+        "VmExe", "VmLib", "VmPTE", "VmSwap", "HugetlbPages",
     ]);
 }
 
@@ -135,4 +136,33 @@ fn a_mapping_lands_in_exactly_one_accounting_bucket() {
     assert_eq!(classify(false, true, false, true), VmClass::Other);
     // A read-only private file mapping likewise.
     assert_eq!(classify(false, false, false, false), VmClass::Other);
+}
+
+/// Huge pages are held down by the process but are NOT resident-set memory:
+/// the reference keeps them out of every `Rss*` row and reports them on a row
+/// of their own, so a tool summing RSS never double-counts a reservation.
+#[test]
+fn hugetlb_pages_are_reported_on_their_own_row_and_in_no_rss_row() {
+    let m = MemStatus {
+        rss_anon_pages: 4, rss_file_pages: 2, rss_shmem_pages: 1,
+        hugetlb_pages: 1024,
+        ..MemStatus::default()
+    };
+    let out = String::from_utf8(render_status_rows(&m)).unwrap();
+    assert!(out.contains("HugetlbPages:\t"), "{out}");
+    assert!(out.contains(&alloc::format!("HugetlbPages:\t{} kB", 1024 * 4)), "{out}");
+    // 7 resident pages, and not one of the 1024 huge ones.
+    assert!(out.contains(&alloc::format!("VmRSS:\t{} kB", 7 * 4)), "{out}");
+    assert!(out.contains(&alloc::format!("RssFile:\t{} kB", 2 * 4)), "{out}");
+}
+
+/// `statm`'s resident and shared fields carry the same exclusion.
+#[test]
+fn statm_resident_excludes_hugetlb_pages() {
+    let m = MemStatus { rss_anon_pages: 4, rss_file_pages: 2, hugetlb_pages: 4096,
+                        ..MemStatus::default() };
+    let out = String::from_utf8(render_statm(&m)).unwrap();
+    let fields: alloc::vec::Vec<&str> = out.trim().split(' ').collect();
+    assert_eq!(fields[1], "6", "resident is anon+file only: {out}");
+    assert_eq!(fields[2], "2", "shared is file+shmem only: {out}");
 }

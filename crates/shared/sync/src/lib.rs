@@ -77,6 +77,12 @@ decl_lock_class! {
     // Never held ACROSS a buddy allocation: a resize computes its plan under
     // the lock, releases it, allocates, then re-takes it to commit.
     HugetlbPool  =  1,
+    // Huge-page cgroup owner records (`pmm::hugetlb::charge`): which cgroup a
+    // promised or handed-out huge page is charged to. Ranked directly above
+    // `HugetlbPool` because a charge is always taken with the pool lock
+    // RELEASED — the pool decides, drops its lock, then records the owner — so
+    // the two are never held together in the other order.
+    HugetlbCharge =  2,
     Timer        =  5,
     Slab         = 10,
     Reclaim      = 15,

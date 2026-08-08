@@ -47,6 +47,16 @@ fn low_flag_bits_never_leak_into_the_size_log_field() {
 }
 
 #[test]
+fn a_leaf_resolves_back_to_the_granule_that_installed_it() {
+    for g in [HugePageSize::Huge2M, HugePageSize::Huge1G] {
+        assert_eq!(HugePageSize::from_leaf(g.leaf()), Some(g));
+    }
+    // A base leaf names no huge granule, so a teardown walk can never mistake
+    // an ordinary page for a pool page and hand it to the pool.
+    assert_eq!(HugePageSize::from_leaf(hal::PageSize::P4K), None);
+}
+
+#[test]
 fn a_granule_maps_to_the_page_table_leaf_that_covers_it() {
     assert_eq!(HugePageSize::Huge2M.leaf().bytes(), HugePageSize::Huge2M.bytes());
     assert_eq!(HugePageSize::Huge1G.leaf().bytes(), HugePageSize::Huge1G.bytes());

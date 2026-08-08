@@ -15,6 +15,9 @@ sched   = { path = "../../kernel/sched" }
 namespace-identity = { path = "../../kernel/namespace-identity" }
 syscall = { path = "../../kernel/syscall" }
 vmm     = { path = "../../kernel/mm-vmm" }
+# `shmget(SHM_HUGETLB)` resolves its size selector against the huge-page pool's
+# own granule table instead of a second copy of the encoding here.
+pmm     = { path = "../../kernel/mm-pmm" }
 devfs   = { path = "../../kernel/devfs" }
 vfs     = { path = "../../kernel/vfs" }
 timekeeper = { path = "../../kernel/timekeeper" }

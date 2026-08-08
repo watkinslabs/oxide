@@ -233,6 +233,12 @@ pub(super) fn set_tcp_fastopen_key(ns: &network_namespace::NetworkNamespaceRef,
 /// value read back after a write is the pool's real size (Linux
 /// `set_max_huge_pages` returns the count it achieved).
 /// # C: O(1)
+/// `vm.hugetlb_shm_group`: the group whose members may create huge-page
+/// shared-memory segments without `CAP_IPC_LOCK`. Bound to the live variable
+/// the shm admission reads, so setting it here is what grants the right.
+pub(super) fn get_hugetlb_shm_group() -> i64 { ipc::sysv_shm::hugetlb_shm_group() }
+pub(super) fn set_hugetlb_shm_group(v: i64) { ipc::sysv_shm::set_hugetlb_shm_group(v) }
+
 pub(super) fn get_nr_hugepages() -> i64 {
     let size = pmm::hugetlb::HugePageSize::default_size();
     pmm::hugetlb::nr_hugepages(size) as i64

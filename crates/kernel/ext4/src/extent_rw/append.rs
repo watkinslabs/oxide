@@ -92,7 +92,7 @@ impl Mount {
         let data_charged = prev_i_blocks.saturating_add(spb);
         self.account_i_blocks_delta(ino, prev_i_blocks, data_charged)?;
 
-        let phys = match self.alloc_block(hint_group) {
+        let phys = match self.alloc_block_flags(hint_group, self.data_reserve_flags(ino)) {
             Ok(phys) => phys,
             Err(e) => {
                 return Err(self.rollback_i_blocks_delta(ino, data_charged, prev_i_blocks, e));

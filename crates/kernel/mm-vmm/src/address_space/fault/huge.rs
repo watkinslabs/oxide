@@ -8,7 +8,7 @@
 
 use hal::{MmuOps, Pa, PageSize, UserVirtAddr, Va};
 
-use crate::vma::{FileBackingError, Vma};
+use crate::vma::{FaultAccess, FileBackingError, Vma, VmaFlags};
 use crate::{Error, KResult};
 
 use super::super::super::AddressSpace;
@@ -131,13 +131,38 @@ impl AddressSpace {
     ) -> KResult<()> {
         let Some(t) = huge_fault_target(va.as_u64(), vma.start.as_u64(), backing_off, huge_bytes)
             else { return Err(Error::Inval) };
+        // A PRIVATE mapping's write must land on a page of its own. This is
+        // where a private huge mapping actually copies: the leaf was installed
+        // read-only by the read path (or write-protected by fork), and the
+        // write that faults here is the first one that must not reach the file.
+        if !vma.flags.contains(VmaFlags::SHARED) {
+            let frame = match backing.huge_cow_frame(t.file_off) {
+                Ok(Some(f))                  => f,
+                Ok(None)                     => return Err(Error::NoMem),
+                Err(FileBackingError::NoMem) => return Err(Error::NoMem),
+                Err(_)                       => return Err(Error::Io),
+            };
+            if (frame.pa & (huge_bytes - 1)) != 0 { return Err(Error::Inval); }
+            if !frame.map_ref_held { return Err(Error::Inval); }
+            // SAFETY: alignments proved above; the copy is owned solely by this
+            // mapping, and the displaced page's reference goes straight back to
+            // the backing below.
+            let replaced = unsafe { M::map(Va(t.va), Pa(frame.pa), vma.page_flags(), t.size) };
+            // SAFETY: privileged TLB invalidation is legal at CPL=0/EL1.
+            unsafe { M::flush_va(Va(t.va)); }
+            if let Some(old) = replaced {
+                hal::tlb::shootdown_others_va(t.va, self.cpumask());
+                backing.huge_put_frame(old.0 & !(huge_bytes - 1));
+            }
+            return Ok(());
+        }
         let frame = match backing.shared_frame(t.file_off) {
             Ok(Some(f))                  => f,
             Ok(None)                     => return Err(Error::NoMem),
             Err(FileBackingError::NoMem) => return Err(Error::NoMem),
             Err(_)                       => return Err(Error::Io),
         };
-        // A huge backing hands back its page WITHOUT a transient reference —
+        // A huge backing hands its SHARED page back WITHOUT a transient reference —
         // the install path takes the mapping's reference itself. One that did
         // hold a reference would leak it here, since this is a lookup that
         // keeps the existing mapping rather than an install that can pair with
@@ -162,6 +187,7 @@ impl AddressSpace {
     pub(super) unsafe fn fill_huge_not_present<M, IR>(
         &self,
         va: UserVirtAddr,
+        access: FaultAccess,
         vma: &Vma,
         backing: &alloc::sync::Arc<dyn crate::vma::FileBacking>,
         backing_off: u64,
@@ -176,15 +202,32 @@ impl AddressSpace {
         // A huge leaf covers `huge_bytes`; a VMA that ends inside one would
         // have the leaf expose addresses it never mapped.
         if vma.end.as_u64() < t.va.saturating_add(huge_bytes) { return Err(Error::Inval); }
-        let frame = match backing.shared_frame(t.file_off) {
-            Ok(Some(f))                     => f,
-            Ok(None)                        => return Err(Error::NoMem),
-            Err(FileBackingError::NoMem)    => return Err(Error::NoMem),
-            Err(_)                          => return Err(Error::Io),
+        // A PRIVATE mapping must not let its writes reach the file. Its first
+        // WRITE takes a copy it owns outright; a read maps the file's own page
+        // with the write bit stripped, so the first write faults again and
+        // lands on the copy path rather than on the file (`hugetlb_no_page`'s
+        // `cow_from_owner` leg).
+        let private = !vma.flags.contains(VmaFlags::SHARED);
+        let cow_now = private && matches!(access, FaultAccess::Write);
+        let frame = if cow_now {
+            match backing.huge_cow_frame(t.file_off) {
+                Ok(Some(f))                  => f,
+                Ok(None)                     => return Err(Error::NoMem),
+                Err(FileBackingError::NoMem) => return Err(Error::NoMem),
+                Err(_)                       => return Err(Error::Io),
+            }
+        } else {
+            match backing.shared_frame(t.file_off) {
+                Ok(Some(f))                  => f,
+                Ok(None)                     => return Err(Error::NoMem),
+                Err(FileBackingError::NoMem) => return Err(Error::NoMem),
+                Err(_)                       => return Err(Error::Io),
+            }
         };
         if (frame.pa & (huge_bytes - 1)) != 0 { return Err(Error::Inval); }
         if !frame.map_ref_held { inc_ref(frame.pa); }
-        let pte_flags = vma.page_flags() | wp;
+        let mut pte_flags = vma.page_flags() | wp;
+        if private && !cow_now { pte_flags.remove(hal::PageFlags::WRITE); }
         // SAFETY: `t.va` and `frame.pa` are both aligned to the granule the
         // backing reports, which `huge_fault_target` proved the page tables
         // express as one leaf; flags carry USER per `11§5`.
@@ -193,3 +236,4 @@ impl AddressSpace {
         Ok(())
     }
 }
+

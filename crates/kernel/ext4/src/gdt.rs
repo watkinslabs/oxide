@@ -26,6 +26,11 @@ pub enum GdtError {
     BadLen,
     /// Inode number was 0 or > sb.inodes_count.
     BadInode,
+    /// `bg_itable_unused` cannot be true of a group this size: it names more
+    /// unused inodes than the group holds, or leaves more live inodes than the
+    /// inode table has room for. Refused rather than believed — acting on it
+    /// would overwrite blocks holding live inodes.
+    BadItableUnused,
 }
 
 /// Decoded subset of one group descriptor.
@@ -122,6 +127,10 @@ pub const GD_OFF_ITABLE_UNUSED_HI: usize = 0x32;
 /// `bg_flags` bits per ext4 spec.
 pub const EXT4_BG_INODE_UNINIT: u16 = 0x0001;
 pub const EXT4_BG_BLOCK_UNINIT: u16 = 0x0002;
+/// The group's on-disk inode table has been written out as zeros. mkfs leaves
+/// it clear on a lazily-initialized filesystem and the kernel sets it once it
+/// has zeroed the table; e2fsck reads stale bytes as garbage inodes until then.
+pub const EXT4_BG_INODE_ZEROED: u16 = 0x0004;
 
 /// Read `bg_itable_unused` (merging hi half for 64-bit descriptors).
 /// # C: O(1)
@@ -166,6 +175,38 @@ pub fn block_uninit(buf: &[u8], n: u32, sb: &Superblock) -> bool {
     if off + GD_OFF_FLAGS + 2 > buf.len() { return false; }
     let flags = u16::from_le_bytes([buf[off + GD_OFF_FLAGS], buf[off + GD_OFF_FLAGS + 1]]);
     flags & EXT4_BG_BLOCK_UNINIT != 0
+}
+
+/// True if group `n`'s inode table has already been zeroed on disk. # C: O(1)
+pub fn inode_zeroed(buf: &[u8], n: u32, sb: &Superblock) -> bool {
+    let dsize = desc_size_for(sb) as usize;
+    let off = (n as usize) * dsize;
+    if off + GD_OFF_FLAGS + 2 > buf.len() { return true; }
+    let flags = u16::from_le_bytes([buf[off + GD_OFF_FLAGS], buf[off + GD_OFF_FLAGS + 1]]);
+    flags & EXT4_BG_INODE_ZEROED != 0
+}
+
+/// Record that group `n`'s inode table is now zeroed on disk, and restamp
+/// `bg_checksum` — the flag is part of the descriptor the checksum covers.
+/// # C: O(desc_size)
+pub fn set_inode_zeroed(buf: &mut [u8], n: u32, sb: &Superblock) {
+    let dsize = desc_size_for(sb) as usize;
+    let off = (n as usize) * dsize;
+    if off + dsize > buf.len() { return; }
+    let flags = u16::from_le_bytes([buf[off + GD_OFF_FLAGS], buf[off + GD_OFF_FLAGS + 1]])
+        | EXT4_BG_INODE_ZEROED;
+    buf[off + GD_OFF_FLAGS..off + GD_OFF_FLAGS + 2].copy_from_slice(&flags.to_le_bytes());
+    crate::csum::stamp_group_desc_csum(sb, buf, n);
+}
+
+/// `bg_itable_unused` of group `n`: how many inodes at the END of the group's
+/// table have never been used, and whose table blocks therefore hold nothing a
+/// reader may interpret. # C: O(1)
+pub fn itable_unused(buf: &[u8], n: u32, sb: &Superblock) -> u32 {
+    let dsize = desc_size_for(sb) as usize;
+    let off = (n as usize) * dsize;
+    if off + dsize > buf.len() { return 0; }
+    read_itable_unused(buf, off, dsize)
 }
 
 /// Post-inode-allocation descriptor upkeep for group `n`: clear the

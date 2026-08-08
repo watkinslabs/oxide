@@ -32,6 +32,7 @@ pub mod dmi;
 pub mod drm;
 pub mod input;
 pub mod kernel;
+pub mod mm;
 pub mod kobject;
 pub mod modules;
 mod net_class;
@@ -166,6 +167,7 @@ pub fn init() {
     register_dir("/sys/kernel/debug");
     register_dir("/sys/kernel/config");
     kernel::init();
+    mm::init();
     modules::init();
     register("/sys/class/net", net_class::make_sys_class_net_inode());
     register("/sys/devices/virtual/net", net_class::make_sys_devices_virtual_net_inode());

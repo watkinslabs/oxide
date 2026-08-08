@@ -49,6 +49,31 @@ pub fn build() -> Vec<u8> {
     ] {
         push(&mut b, key); push_u64(&mut b, value); push(&mut b, b" kB\n");
     }
+    // The huge-page rows the reference emits after the KiB block. The first
+    // four are PAGE COUNTS, not KiB, which is why they cannot ride the loop
+    // above — a `kB` suffix on them would misreport the pool by a factor of
+    // the page size.
+    let huge = pmm::hugetlb::HugePageSize::default_size();
+    for &(key, value) in &[
+        (b"HugePages_Total:   " as &[u8], pmm::hugetlb::nr_hugepages(huge)),
+        (b"HugePages_Free:    ", pmm::hugetlb::free_hugepages(huge)),
+        (b"HugePages_Rsvd:    ", pmm::hugetlb::resv_hugepages(huge)),
+        (b"HugePages_Surp:    ", pmm::hugetlb::surplus_hugepages(huge)),
+    ] {
+        push(&mut b, key); push_u64(&mut b, value); push(&mut b, b"\n");
+    }
+    push(&mut b, b"Hugepagesize:    ");
+    push_u64(&mut b, huge.bytes() / KIB_BYTES);
+    push(&mut b, b" kB\n");
+    // `Hugetlb` is the whole pool across every granule, so a reader sees the
+    // gigantic pages too rather than only the default size.
+    let hugetlb_kib = [pmm::hugetlb::HugePageSize::Huge2M, pmm::hugetlb::HugePageSize::Huge1G]
+        .iter()
+        .map(|&g| pmm::hugetlb::nr_hugepages(g).saturating_mul(g.bytes() / KIB_BYTES))
+        .fold(0u64, |a, v| a.saturating_add(v));
+    push(&mut b, b"Hugetlb:         ");
+    push_u64(&mut b, hugetlb_kib);
+    push(&mut b, b" kB\n");
     b
 }
 

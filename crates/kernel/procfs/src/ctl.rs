@@ -206,6 +206,8 @@ const SYSCTL_TREE: &[Node] = &[
         File("nr_overcommit_hugepages", IntHook(get_nr_overcommit_hugepages,
                                                 set_nr_overcommit_hugepages,
                                                 Some((0, INT_MAX)))),
+        File("hugetlb_shm_group",       IntHook(get_hugetlb_shm_group, set_hugetlb_shm_group,
+                                                Some((0, INT_MAX)))),
         File("mmap_min_addr",           Int(65536, Some((0, INT_MAX)))),
         // `vm.memfd_noexec` belongs to the active PID namespace. A child
         // copies its parent's effective scope and cannot write below the

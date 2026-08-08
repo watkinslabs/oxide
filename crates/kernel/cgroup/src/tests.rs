@@ -61,7 +61,7 @@ fn root_mounts_with_all_controllers() {
     assert!(t.mount_root());
     assert!(!t.mount_root()); // idempotent
     assert_eq!(s(&t.read_file(ROOT, "cgroup.controllers").unwrap()),
-        "cpu cpuset io memory pids\n");
+        "cpu cpuset io memory hugetlb pids\n");
     assert_eq!(s(&t.read_file(ROOT, "cgroup.subtree_control").unwrap()), "\n");
     assert_eq!(t.path_of(ROOT), "/");
 }

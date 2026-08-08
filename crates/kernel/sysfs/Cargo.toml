@@ -24,6 +24,7 @@ firmware = { path = "../firmware" }
 klog = { path = "../../shared/klog" }
 kalloc = { path = "../../shared/kalloc" }
 hal  = { path = "../../arch/hal" }
+pmm  = { path = "../mm-pmm" }
 drv-zram = { path = "../../drivers/drv-zram" }
 sched = { path = "../sched" }
 cmdline = { path = "../cmdline" }

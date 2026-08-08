@@ -295,7 +295,7 @@ impl AddressSpace {
                     unsafe {
                         M::map_at(new_root_pa, Va(va), Pa(pa), child_flags, granule);
                     }
-                    tally.add(class_of(&vma.backing));
+                    tally.add(class_of(&vma.backing), step / PAGE_SIZE_BYTES);
                     // If parent's PTE was writable, remap RO so the
                     // next parent write also triggers COW split. The
                     // M::map writes through the active CR3 (parent's

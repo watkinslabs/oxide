@@ -28,6 +28,13 @@ pub struct RssPages {
     /// Linux `MM_SWAPENTS`. Not resident, so excluded from RSS; carried here
     /// because `/proc/<pid>/status` reports it alongside.
     pub swapents: u64,
+    /// Huge pages this mapping holds down, counted in BASE pages.
+    ///
+    /// Excluded from RSS on purpose: the reference keeps hugetlb out of every
+    /// `MM_*` counter and reports it separately as `HugetlbPages`, because a
+    /// tool that added it to RSS would see a process's residency jump by the
+    /// whole reservation the moment it touched one page of it.
+    pub hugetlb: u64,
 }
 
 impl RssPages {
@@ -47,12 +54,17 @@ impl RssPages {
 /// with no `struct page`, and a `Special` leaf has no frame at all, so neither
 /// is resident to anybody.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RssClass { Anon, File, Shmem, Device, Untracked }
+pub enum RssClass { Anon, File, Shmem, Device, Hugetlb, Untracked }
 
 /// `# C: O(1)`
-pub const fn class_of(backing: &VmaBacking) -> RssClass {
+pub fn class_of(backing: &VmaBacking) -> RssClass {
     match backing {
         VmaBacking::Anonymous => RssClass::Anon,
+        // A hugetlbfs mapping is file-backed but is NOT file-class residency:
+        // the reference keeps hugetlb out of every `MM_*` counter and reports
+        // it on its own line. The backing is asked rather than the VMA,
+        // because the file is the only thing that knows how big its pages are.
+        VmaBacking::File { backing, .. } if backing.huge_page_size() != 0 => RssClass::Hugetlb,
         // A private file mapping's COW copy stays file-class until Linux
         // splits it; both it and a shared file page are `MM_FILEPAGES`. A
         // `KernelBytes` VMA is the same shape (a copy of kernel-owned bytes
@@ -61,6 +73,22 @@ pub const fn class_of(backing: &VmaBacking) -> RssClass {
         VmaBacking::KernelFrame { .. } => RssClass::Shmem,
         VmaBacking::PhysRange { .. } => RssClass::Device,
         VmaBacking::Special => RssClass::Untracked,
+    }
+}
+
+/// Base pages one present leaf of `vma` covers.
+///
+/// Asked of the BACKING, which is the only thing that knows how big its pages
+/// are, and asked identically by the install and the remove side so the two can
+/// never disagree about what one leaf was worth.
+/// # C: O(1)
+pub fn pages_per_leaf(vma: &crate::vma::Vma) -> u64 {
+    match &vma.backing {
+        VmaBacking::File { backing, .. } => match backing.huge_page_size() {
+            0    => 1,
+            huge => huge / PAGE_BYTES,
+        },
+        _ => 1,
     }
 }
 
@@ -74,13 +102,18 @@ pub struct RssTally {
 }
 
 impl RssTally {
+    /// Record one installed leaf covering `pages` base pages. Every counter is
+    /// in base pages, so a huge leaf contributes the number it covers rather
+    /// than one — a mapping of one 2 MiB page holds down 512 base pages and
+    /// must say so.
     /// # C: O(1)
-    pub fn add(&mut self, class: RssClass) {
+    pub fn add(&mut self, class: RssClass, pages: u64) {
         match class {
-            RssClass::Anon      => self.pages.anon += 1,
-            RssClass::File      => self.pages.file += 1,
-            RssClass::Shmem     => self.pages.shmem += 1,
-            RssClass::Device    => self.device += 1,
+            RssClass::Anon      => self.pages.anon += pages,
+            RssClass::File      => self.pages.file += pages,
+            RssClass::Shmem     => self.pages.shmem += pages,
+            RssClass::Device    => self.device += pages,
+            RssClass::Hugetlb   => self.pages.hugetlb += pages,
             RssClass::Untracked => {}
         }
     }
@@ -117,22 +150,33 @@ mod tests {
     #[test]
     fn a_tally_routes_each_class_to_its_own_member() {
         let mut t = RssTally::default();
-        t.add(RssClass::Anon); t.add(RssClass::Anon);
-        t.add(RssClass::File);
-        t.add(RssClass::Shmem);
-        t.add(RssClass::Device);
-        t.add(RssClass::Untracked);
+        t.add(RssClass::Anon, 1); t.add(RssClass::Anon, 1);
+        t.add(RssClass::File, 1);
+        t.add(RssClass::Shmem, 1);
+        t.add(RssClass::Device, 1);
+        // One huge leaf is worth every base page it covers.
+        t.add(RssClass::Hugetlb, 512);
+        t.add(RssClass::Untracked, 1);
         t.add_swap();
-        assert_eq!(t.pages, RssPages { anon: 2, file: 1, shmem: 1, swapents: 1 });
+        assert_eq!(t.pages, RssPages { anon: 2, file: 1, shmem: 1, swapents: 1, hugetlb: 512 });
         assert_eq!(t.device, 1);
-        // Device leaves and swap entries are not resident; only the three
-        // resident classes reach `VmRSS`.
+        // Device leaves, swap entries and hugetlb pages are all outside RSS;
+        // only the three resident classes reach `VmRSS`.
         assert_eq!(t.pages.total(), 4);
     }
 
     #[test]
     fn resident_set_excludes_swapped_out_pages() {
-        let r = RssPages { anon: 10, file: 3, shmem: 2, swapents: 100 };
+        let r = RssPages { anon: 10, file: 3, shmem: 2, swapents: 100, hugetlb: 0 };
+        assert_eq!(r.total(), 15);
+    }
+
+    #[test]
+    fn resident_set_excludes_hugetlb_pages() {
+        // The reference keeps hugetlb out of every `MM_*` counter and reports
+        // it on its own line, so a process that maps a huge page must not see
+        // its `VmRSS` jump by the whole reservation.
+        let r = RssPages { anon: 10, file: 3, shmem: 2, swapents: 0, hugetlb: 1024 };
         assert_eq!(r.total(), 15);
     }
 

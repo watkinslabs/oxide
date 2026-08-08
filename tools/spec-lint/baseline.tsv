@@ -3,7 +3,6 @@
 # Raising a count requires `spec-lint ratchet --update --allow-growth` and is a
 # policy decision, not a routine step: it retires enforcement this gate already had.
 # unit	rule	count
-crates/arch/boot-aarch64	code/pub-fn-complexity	1
 crates/arch/hal	code/pub-fn-complexity	2
 crates/arch/hal-aarch64	code/klog-ungated	33
 crates/arch/hal-x86_64	code/klog-ungated	12

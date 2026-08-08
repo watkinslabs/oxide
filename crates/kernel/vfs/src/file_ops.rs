@@ -240,6 +240,24 @@ pub trait FileOps: Send + Sync {
     /// # C: O(1)
     fn huge_page_size(&self, _inode: &Inode) -> u64 { 0 }
 
+    /// A PRIVATE copy of the huge page at `off`, for a mapping whose writes
+    /// must not reach the file.
+    ///
+    /// The frame comes back carrying the mapping's own reference and no other,
+    /// so the mapping owns it outright and [`FileOps::huge_put_frame`] returns
+    /// it to whatever pool it came from. `None` (default) = this file has no
+    /// huge pages to copy.
+    /// # C: O(huge page)
+    fn huge_cow_frame(&self, _inode: &Inode, _off: u64) -> KResult<Option<crate::SharedFrame>> {
+        Ok(None)
+    }
+
+    /// Release one reference to a huge page this file handed out. The file
+    /// owns the release because it is the only thing that knows which pool the
+    /// page came from.
+    /// # C: O(log nr)
+    fn huge_put_frame(&self, _inode: &Inode, _pa: u64) {}
+
     /// Whether this file vtable implements Linux `f_op->remap_file_range`.
     /// Default false so VFS admission reports the Linux no-op errno before
     /// calling into a backend. # C: O(1)

@@ -166,7 +166,7 @@ impl AddressSpace {
                 if huge_bytes != 0 {
                     // SAFETY: forwards the live MMU and the PMM refcount callback unchanged; no page-table lock is held here.
                     return unsafe { self.fill_huge_not_present::<M, _>(
-                        va, &vma, backing, *backing_off, huge_bytes, wp, inc_ref,
+                        va, access, &vma, backing, *backing_off, huge_bytes, wp, inc_ref,
                     ) };
                 }
                 // Device mappings install their owner frame for both mapping

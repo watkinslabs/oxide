@@ -154,7 +154,9 @@ impl Mount {
                        txn_depth: ::core::sync::atomic::AtomicU32::new(0),
                        creating: ::core::sync::atomic::AtomicBool::new(false),
                        opts: sync::Spinlock::new(crate::mount_opts::Ext4SbOpts {
-                           behaviour, ..Default::default() }) };
+                           behaviour, ..Default::default() }),
+                       #[cfg(not(target_os = "oxide-kernel"))]
+                       test_cred: sync::Spinlock::new(None) };
         // `noload`/`norecovery` decides this, and it decides it BEFORE the
         // replay rather than after. Every mount this code opens is writable, so
         // a dirty log plus the option is the combination that has no correct

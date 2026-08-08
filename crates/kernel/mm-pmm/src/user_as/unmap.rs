@@ -47,17 +47,24 @@ unsafe fn clear_leaf(va: u64, size: hal::PageSize) {
 /// the buddy allocator: dropping it through the ordinary free-on-zero path
 /// would return pool memory to the buddy and silently shrink the pool an
 /// operator sized. Base leaves keep the ordinary rmap-aware path.
+///
+/// The huge release is the same one for a shared page and for a private COW
+/// copy, and it has to be: the zap walk sees a leaf, not an owner. It works
+/// because the two carry different reference counts — a file's page is held by
+/// the file as well as by each mapping, so dropping a mapping never takes it to
+/// zero, while a private copy is held only by the mapping that owns it and goes
+/// straight back to the pool.
 /// # SAFETY: the leaf was cleared and invalidated on every CPU before this
 /// call, so no translation can still reach the frame.
-/// # C: O(1) amortised for a base page; O(nr_hugepages) for a huge page.
+/// # C: O(1) amortised for a base page; O(log nr_hugepages) for a huge page.
 unsafe fn release_leaf_frame(pa: u64, size: hal::PageSize) {
-    if size == hal::PageSize::P4K {
+    let Some(huge) = crate::hugetlb::HugePageSize::from_leaf(size) else {
         // SAFETY: per this function's contract; the ordinary path releases to
         // the buddy only when no address space maps the frame any more.
         unsafe { crate::setup::rmap_aware_dec_and_maybe_free(pa & PAGE_ALIGN_MASK); }
         return;
-    }
-    crate::hugetlb::huge_frame_unmap_ref(pa & !(size.bytes() - 1));
+    };
+    crate::hugetlb::huge_frame_dec_and_maybe_release(huge, pa & !(size.bytes() - 1));
 }
 
 /// Whether this range would cut a huge mapping off a huge-page boundary.

@@ -316,6 +316,94 @@ fn a_remount_naming_one_option_leaves_the_rest_alone() {
     let _ = String::new();
 }
 
+// ── resuid= / resgid= ──────────────────────────────────────────────────────
+
+/// Byte offset of `s_r_blocks_count_lo` in the image.
+const R_BLOCKS_OFF: usize = 1024 + ext4::superblock::SB_OFF_R_BLOCKS_LO;
+
+/// The same image with every free block reserved, so the reserve gate is the
+/// only thing standing between a caller and an allocation.
+fn all_reserved_dev() -> Arc<SpyDev> {
+    let dev = spy(false);
+    let mut sb = alloc::vec![0u8; SECTOR as usize * 4];
+    let mut rd = BlockRequest {
+        op: BlockOp::Read, start_block: 0, len_blocks: 4,
+        buffer: core::mem::take(&mut sb), ..Default::default()
+    };
+    rd.buffer.resize(SECTOR as usize * 4, 0);
+    dev.inner.submit_sync(&mut rd).expect("read sb");
+    let mut image = rd.buffer;
+    image[R_BLOCKS_OFF..R_BLOCKS_OFF + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+    let mut wr = BlockRequest {
+        op: BlockOp::Write, start_block: 0, len_blocks: 4,
+        buffer: image, ..Default::default()
+    };
+    dev.inner.submit_sync(&mut wr).expect("write sb");
+    dev
+}
+
+/// An unprivileged caller may not have the reserved blocks. Without the gate
+/// the superblock's reserved count is a number nobody consults.
+#[test]
+fn an_unprivileged_caller_is_refused_the_reserved_blocks() {
+    let m = mount(all_reserved_dev(), "");
+    let mount = m.state().mount.clone();
+    const UNPRIVILEGED: u32 = 1000;
+    mount.set_alloc_cred_for_tests(UNPRIVILEGED, &[], false);
+    assert_eq!(mount.alloc_block(0), Err(ext4::MountError::NoSpace));
+}
+
+/// The same filesystem serves root, whom the reserve is FOR — so the test
+/// above measures the gate and not an image that had no free blocks.
+#[test]
+fn the_same_filesystem_still_serves_the_reserved_user() {
+    let m = mount(all_reserved_dev(), "");
+    let mount = m.state().mount.clone();
+    const ROOT: u32 = 0;
+    mount.set_alloc_cred_for_tests(ROOT, &[], false);
+    mount.alloc_block(0).expect("root reaches the reserve");
+}
+
+/// `resuid=` moves the reserve to the named user, and away from root.
+#[test]
+fn resuid_moves_the_reserve_to_the_user_it_names() {
+    let m = mount(all_reserved_dev(), "resuid=1000");
+    let mount = m.state().mount.clone();
+    mount.set_alloc_cred_for_tests(1000, &[], false);
+    mount.alloc_block(0).expect("the named user reaches the reserve");
+
+    let other = mount_all_reserved("resuid=1000");
+    other.set_alloc_cred_for_tests(0, &[], false);
+    assert_eq!(other.alloc_block(0), Err(ext4::MountError::NoSpace),
+        "the reserve moved away from root");
+}
+
+/// `resgid=` admits a member of the named group.
+#[test]
+fn resgid_admits_a_member_of_the_group_it_names() {
+    let member = mount_all_reserved("resgid=50");
+    member.set_alloc_cred_for_tests(1000, &[10, 50], false);
+    member.alloc_block(0).expect("a member reaches the reserve");
+
+    let outsider = mount_all_reserved("resgid=50");
+    outsider.set_alloc_cred_for_tests(1000, &[10, 51], false);
+    assert_eq!(outsider.alloc_block(0), Err(ext4::MountError::NoSpace));
+}
+
+/// Metadata a caller cannot back out of reaches the reserve on its own
+/// account, so a tree rewrite is never left half-built by a full disk.
+#[test]
+fn committed_metadata_reaches_the_reserve_without_a_credential() {
+    let mount = mount_all_reserved("");
+    mount.set_alloc_cred_for_tests(1000, &[], false);
+    assert_eq!(mount.alloc_block(0), Err(ext4::MountError::NoSpace));
+    mount.alloc_block_nofail(0).expect("committed metadata is not refused");
+}
+
+fn mount_all_reserved(data: &str) -> Arc<ext4::Mount> {
+    mount(all_reserved_dev(), data).state().mount.clone()
+}
+
 // ── noload on a DIRTY log ──────────────────────────────────────────────────
 
 /// Byte offset of `s_feature_incompat` in the image.

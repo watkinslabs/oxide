@@ -38,6 +38,7 @@ mod lifecycle;
 mod quota;
 
 pub(crate) use io::read_byte_range_pub;
+pub(crate) use io::write_byte_range as io_write_byte_range;
 
 /// Errors at the Mount layer.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -166,6 +167,13 @@ pub struct Mount {
     /// state object, which could not see an option it owned itself.
     /// # Lk: leaf — takes nothing, and never taken while `state` is held.
     pub(crate) opts: Spinlock<crate::mount_opts::Ext4SbOpts, SuperblockLockClass>,
+    /// Hosted-test override of the allocating context's credentials. There is
+    /// no running task under `cargo test`, so without it every hosted
+    /// allocation is the kernel's own and the reserve gate can only ever be
+    /// exercised from the admitted side.
+    /// # Lk: leaf.
+    #[cfg(not(target_os = "oxide-kernel"))]
+    pub(crate) test_cred: Spinlock<Option<crate::balloc::reserve::AllocCred>, SuperblockLockClass>,
 }
 
 impl Mount {
@@ -180,4 +188,11 @@ impl Mount {
     /// and only with a context that has already been accepted in full.
     /// # C: O(MAXQUOTAS)
     pub(crate) fn set_opts(&self, next: crate::mount_opts::Ext4SbOpts) { *self.opts.lock() = next; }
+
+    /// Credentials the next block allocation is charged to. # C: O(len(groups))
+    pub(crate) fn alloc_cred(&self) -> crate::balloc::reserve::AllocCred {
+        #[cfg(not(target_os = "oxide-kernel"))]
+        if let Some(c) = self.test_cred.lock().clone() { return c; }
+        crate::balloc::reserve::current_alloc_cred()
+    }
 }
