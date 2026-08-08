@@ -5,11 +5,13 @@ use syscall::errno::Errno;
 
 use uaccess::MAX_RW_COUNT;
 
-const MSGHDR_LEN: usize = 56;
+use crate::msg_layout::{MsgLayout, entry::published_flags};
+
+/// Largest `msghdr` either ABI presents, so one stack buffer serves both.
+const MSGHDR_MAX: usize = 56;
 /// `sizeof(struct sockaddr_storage)` — Linux `__copy_msghdr` clamps an
 /// oversized `msg_namelen` to this before the receive.
 const SOCKADDR_STORAGE_LEN: u32 = 128;
-const IOVEC_LEN: usize = 16;
 const UIO_MAXIOV: usize = 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -27,60 +29,65 @@ pub(crate) struct RecvUser {
     pub controllen: usize,
     pub iov: Vec<IoVec>,
     pub capacity: usize,
+    /// The shape `msgp` and the control stream are written back in, decided
+    /// once by the entry (`crate::msg_layout`) and never re-derived here.
+    pub layout: MsgLayout,
 }
 
 fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
-fn u32_at(bytes: &[u8], at: usize) -> u32 {
-    u32::from_ne_bytes(bytes[at..at + 4].try_into().unwrap())
-}
-
-fn u64_at(bytes: &[u8], at: usize) -> u64 {
-    u64::from_ne_bytes(bytes[at..at + 8].try_into().unwrap())
-}
-
-/// Import a native Linux msghdr and complete iovec metadata array. # C: O(iovlen + faults)
-pub(crate) fn import(msgp: u64) -> Result<RecvUser, i64> {
-    let mut hdr = [0u8; MSGHDR_LEN];
-    uaccess::copy_from_user(&mut hdr, msgp).map_err(errno)?;
-    let name = u64_at(&hdr, 0);
+/// Import one Linux msghdr and its complete iovec metadata array, in the
+/// layout the entry decided. # C: O(iovlen + faults)
+pub(crate) fn import(msgp: u64, layout: MsgLayout) -> Result<RecvUser, i64> {
+    let mut raw_hdr = [0u8; MSGHDR_MAX];
+    let hdr = &mut raw_hdr[..layout.msghdr_size()];
+    uaccess::copy_from_user(hdr, msgp).map_err(errno)?;
+    let at = layout.msghdr();
+    let name = layout.word_at(hdr, at.name);
     // Linux `__copy_msghdr`: when a name buffer is supplied, a negative
     // `msg_namelen` is EINVAL (before any receive) and an oversized one is
     // clamped to `sockaddr_storage`. Without the buffer the length is unused.
     // (The recvfrom path validates its own value-result pointer in `copy_name`.)
-    let namelen = u32_at(&hdr, 8);
+    let namelen = layout.u32_at(hdr, at.namelen);
     let namelen = if name != 0 {
         if (namelen as i32) < 0 { return Err(errno(Errno::Einval)); }
         namelen.min(SOCKADDR_STORAGE_LEN)
     } else { namelen };
-    let iovp = u64_at(&hdr, 16);
-    let iovlen = usize::try_from(u64_at(&hdr, 24)).map_err(|_| errno(Errno::Emsgsize))?;
-    let control = u64_at(&hdr, 32);
-    let controllen = usize::try_from(u64_at(&hdr, 40)).map_err(|_| errno(Errno::Einval))?;
+    let iovp = layout.word_at(hdr, at.iov);
+    let iovlen = usize::try_from(layout.word_at(hdr, at.iovlen))
+        .map_err(|_| errno(Errno::Emsgsize))?;
+    let control = layout.word_at(hdr, at.control);
+    let controllen = usize::try_from(layout.word_at(hdr, at.controllen))
+        .map_err(|_| errno(Errno::Einval))?;
     if iovlen > UIO_MAXIOV { return Err(errno(Errno::Emsgsize)); }
-    import_iov_inner(msgp, name, namelen, control, controllen, iovp, iovlen)
+    import_iov_inner(msgp, name, namelen, control, controllen, iovp, iovlen, layout)
 }
 
-fn import_iov_inner(msgp: u64, name: u64, namelen: u32, control: u64, controllen: usize, iovp: u64, iovlen: usize) -> Result<RecvUser, i64> {
-    let bytes_len = iovlen.checked_mul(IOVEC_LEN).ok_or_else(|| errno(Errno::Emsgsize))?;
+fn import_iov_inner(msgp: u64, name: u64, namelen: u32, control: u64, controllen: usize,
+    iovp: u64, iovlen: usize, layout: MsgLayout) -> Result<RecvUser, i64>
+{
+    let stride = layout.iovec_size();
+    let bytes_len = iovlen.checked_mul(stride).ok_or_else(|| errno(Errno::Emsgsize))?;
     let mut raw = vec![0u8; bytes_len];
     if bytes_len != 0 { uaccess::copy_from_user(&mut raw, iovp).map_err(errno)?; }
     let mut iov = Vec::with_capacity(iovlen);
     let mut capacity = 0usize;
-    for entry in raw.chunks_exact(IOVEC_LEN) {
-        let base = u64_at(entry, 0);
-        let len = usize::try_from(u64_at(entry, 8)).map_err(|_| errno(Errno::Einval))?;
+    for entry in raw.chunks_exact(stride) {
+        let base = layout.word_at(entry, 0);
+        let len = usize::try_from(layout.word_at(entry, layout.word()))
+            .map_err(|_| errno(Errno::Einval))?;
         if len != 0 && !uaccess::access_ok(base, len) { return Err(errno(Errno::Efault)); }
         capacity = core::cmp::min(MAX_RW_COUNT, capacity.saturating_add(len));
         iov.push(IoVec { base, len });
     }
-    Ok(RecvUser { msgp, name, namelen, name_len_ptr: 0, control, controllen, iov, capacity })
+    Ok(RecvUser { msgp, name, namelen, name_len_ptr: 0, control, controllen, iov, capacity,
+        layout })
 }
 
 /// Import a readv iovec array into the common receive destination shape. # C: O(iovlen + faults)
 pub(crate) fn import_iov(iovp: u64, iovlen: usize) -> Result<RecvUser, i64> {
     if iovlen > UIO_MAXIOV { return Err(errno(Errno::Einval)); }
-    import_iov_inner(0, 0, 0, 0, 0, iovp, iovlen)
+    import_iov_inner(0, 0, 0, 0, 0, iovp, iovlen, MsgLayout::Native)
 }
 
 /// Import a recvfrom payload and defer source-length access until delivery. # C: O(1)
@@ -89,7 +96,8 @@ pub(crate) fn import_recvfrom(base: u64, len: usize, name: u64,
 {
     let capacity = core::cmp::min(MAX_RW_COUNT, len);
     RecvUser { msgp: 0, name, namelen: 0, name_len_ptr, control: 0,
-        controllen: 0, iov: vec![IoVec { base, len: capacity }], capacity }
+        controllen: 0, iov: vec![IoVec { base, len: capacity }], capacity,
+        layout: MsgLayout::Native }
 }
 
 impl RecvUser {
@@ -152,11 +160,18 @@ impl RecvUser {
         uaccess::copy_to_user(self.name, &sa[..take]).map_err(errno)
     }
 
-    /// Publish output controllen and flags after payload/address/ancillary handling. # C: O(faults)
+    /// Publish output controllen and flags after payload/address/ancillary
+    /// handling. `MSG_CMSG_COMPAT` is kernel bookkeeping: it records which
+    /// layout the call speaks and is stripped before the caller sees
+    /// `msg_flags`. # C: O(faults)
     pub fn finish(&self, controllen: usize, flags: u32) -> Result<(), i64> {
         if self.msgp == 0 { return Ok(()); }
-        uaccess::copy_to_user(self.msgp + 48, &flags.to_ne_bytes()).map_err(errno)?;
-        uaccess::copy_to_user(self.msgp + 40, &(controllen as u64).to_ne_bytes()).map_err(errno)
+        let at = self.layout.msghdr();
+        uaccess::copy_to_user(self.msgp + at.flags as u64,
+            &published_flags(flags).to_ne_bytes()).map_err(errno)?;
+        let word = self.layout.word();
+        uaccess::copy_to_user(self.msgp + at.controllen as u64,
+            &self.layout.word_bytes(controllen as u64)[..word]).map_err(errno)
     }
 
     /// Publish the true source address length. # C: O(faults)
@@ -165,163 +180,13 @@ impl RecvUser {
             return uaccess::copy_to_user(self.name_len_ptr, &len.to_ne_bytes()).map_err(errno);
         }
         if self.msgp != 0 {
-            return uaccess::copy_to_user(self.msgp + 8, &len.to_ne_bytes()).map_err(errno);
+            let at = self.layout.msghdr().namelen as u64;
+            return uaccess::copy_to_user(self.msgp + at, &len.to_ne_bytes()).map_err(errno);
         }
         Ok(())
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn hdr(iov: u64, iovlen: u64) -> [u8; MSGHDR_LEN] {
-        let mut out = [0u8; MSGHDR_LEN];
-        out[16..24].copy_from_slice(&iov.to_ne_bytes());
-        out[24..32].copy_from_slice(&iovlen.to_ne_bytes());
-        out
-    }
-
-    // Linux `__copy_msghdr` rejects a negative `msg_namelen` (when a name
-    // buffer is supplied) before the receive; without a buffer it is ignored.
-    #[test]
-    fn negative_msg_namelen_with_name_buffer_is_einval() {
-        let name = [0u8; 16];
-        let mut h = hdr(0, 0);
-        h[0..8].copy_from_slice(&(name.as_ptr() as u64).to_ne_bytes());
-        h[8..12].copy_from_slice(&u32::MAX.to_ne_bytes()); // -1 as i32
-        assert_eq!(import(h.as_ptr() as u64).err(), Some(errno(Errno::Einval)));
-    }
-
-    #[test]
-    fn negative_msg_namelen_without_name_buffer_is_ignored() {
-        let mut h = hdr(0, 0);
-        h[0..8].copy_from_slice(&0u64.to_ne_bytes()); // msg_name = NULL
-        h[8..12].copy_from_slice(&u32::MAX.to_ne_bytes());
-        // Import succeeds (no iovecs, empty receive capacity); the length is unused.
-        assert!(import(h.as_ptr() as u64).is_ok());
-    }
-
-    #[test]
-    fn oversized_msg_namelen_is_clamped_to_sockaddr_storage() {
-        let name = [0u8; 200];
-        let mut h = hdr(0, 0);
-        h[0..8].copy_from_slice(&(name.as_ptr() as u64).to_ne_bytes());
-        h[8..12].copy_from_slice(&200u32.to_ne_bytes());
-        let imported = import(h.as_ptr() as u64).unwrap();
-        assert_eq!(imported.namelen, SOCKADDR_STORAGE_LEN);
-    }
-
-    #[test]
-    fn imports_all_iovecs_before_payload_copy() {
-        let mut a = [0u8; 3];
-        let mut b = [0u8; 2];
-        let mut raw = [0u8; IOVEC_LEN * 2];
-        raw[0..8].copy_from_slice(&(a.as_mut_ptr() as u64).to_ne_bytes());
-        raw[8..16].copy_from_slice(&(a.len() as u64).to_ne_bytes());
-        raw[16..24].copy_from_slice(&(b.as_mut_ptr() as u64).to_ne_bytes());
-        raw[24..32].copy_from_slice(&(b.len() as u64).to_ne_bytes());
-        let h = hdr(raw.as_ptr() as u64, 2);
-        let imported = import(h.as_ptr() as u64).unwrap();
-        assert_eq!(imported.capacity, 5);
-        assert_eq!(imported.copy_payload(b"abcde"), Ok(5));
-        assert_eq!(&a, b"abc");
-        assert_eq!(&b, b"de");
-    }
-
-    #[test]
-    fn copies_waitall_suffix_across_iovec_boundary() {
-        let mut a = [0u8; 3];
-        let mut b = [0u8; 3];
-        let imported = RecvUser { msgp: 0, name: 0, namelen: 0, name_len_ptr: 0, control: 0,
-            controllen: 0, iov: vec![IoVec { base: a.as_mut_ptr() as u64, len: 3 },
-                IoVec { base: b.as_mut_ptr() as u64, len: 3 }], capacity: 6 };
-        assert_eq!(imported.copy_payload_at(0, b"ab"), Ok(2));
-        assert_eq!(imported.copy_payload_at(2, b"cdef"), Ok(4));
-        assert_eq!(&a, b"abc");
-        assert_eq!(&b, b"def");
-    }
-
-    #[test]
-    fn record_copy_rejects_a_landed_prefix_while_stream_copy_returns_it() {
-        let mut stream = [0u8; 1];
-        let stream_user = RecvUser { msgp: 0, name: 0, namelen: 0, name_len_ptr: 0,
-            control: 0, controllen: 0,
-            iov: vec![IoVec { base: stream.as_mut_ptr() as u64, len: 1 }], capacity: 2 };
-        assert_eq!(stream_user.copy_payload(b"ab"), Ok(1));
-        assert_eq!(stream, *b"a");
-
-        let mut record = [0u8; 1];
-        let record_user = RecvUser { msgp: 0, name: 0, namelen: 0, name_len_ptr: 0,
-            control: 0, controllen: 0,
-            iov: vec![IoVec { base: record.as_mut_ptr() as u64, len: 1 }], capacity: 2 };
-        assert_eq!(record_user.copy_payload_record(b"ab"), Err(errno(Errno::Efault)));
-        assert_eq!(record, *b"a");
-    }
-
-    #[test]
-    fn rejects_iov_count_with_linux_emsgsize() {
-        let h = hdr(0, (UIO_MAXIOV + 1) as u64);
-        assert_eq!(import(h.as_ptr() as u64).err(), Some(errno(Errno::Emsgsize)));
-    }
-
-    #[test]
-    fn recvfrom_defers_payload_fault_until_copy() {
-        let user = import_recvfrom(1, 4, 0, 0);
-        assert_eq!(user.capacity, 4);
-        assert_eq!(user.iov, vec![IoVec { base: 1, len: 4 }]);
-        assert_eq!(user.validate_payload_range(), Ok(()));
-    }
-
-    #[test]
-    fn recvfrom_rejects_out_of_range_payload_before_receive() {
-        let user = import_recvfrom(u64::MAX, 0, 0, 0);
-        assert_eq!(user.validate_payload_range(), Err(errno(Errno::Efault)));
-    }
-
-    #[test]
-    fn recvfrom_source_length_is_late_and_reports_true_size() {
-        let mut addr = [0xa5u8; 2];
-        let mut len = 2i32;
-        let user = import_recvfrom(0, 0, addr.as_mut_ptr() as u64,
-            (&mut len as *mut i32) as u64);
-        assert_eq!(user.copy_name(b"abcd"), Ok(()));
-        assert_eq!(addr, *b"ab");
-        assert_eq!(len, 4);
-    }
-
-    #[test]
-    fn recvfrom_negative_source_length_fails_after_payload_phase() {
-        let mut addr = [0xa5u8; 4];
-        let mut len = -1i32;
-        let user = import_recvfrom(0, 0, addr.as_mut_ptr() as u64,
-            (&mut len as *mut i32) as u64);
-        assert_eq!(user.copy_name(b"abcd"), Err(errno(Errno::Einval)));
-        assert_eq!(addr, [0xa5; 4]);
-        assert_eq!(len, -1);
-    }
-
-    #[test]
-    fn recvfrom_null_source_ignores_length_pointer() {
-        let user = import_recvfrom(0, 0, 0, 1);
-        assert_eq!(user.copy_name(b"abcd"), Ok(()));
-    }
-
-    #[test]
-    fn recvfrom_nonnull_source_requires_length_pointer_late() {
-        let mut addr = [0xa5u8; 4];
-        let user = import_recvfrom(0, 0, addr.as_mut_ptr() as u64, 0);
-        assert_eq!(user.copy_name(b"abcd"), Err(errno(Errno::Efault)));
-        assert_eq!(addr, [0xa5; 4]);
-    }
-
-    #[test]
-    fn null_name_leaves_namelen_untouched() {
-        let mut h = [0u8; MSGHDR_LEN];
-        h[8..12].copy_from_slice(&77u32.to_ne_bytes());
-        let user = RecvUser { msgp: h.as_mut_ptr() as u64, name: 0, namelen: 77, name_len_ptr: 0,
-            control: 0, controllen: 0, iov: Vec::new(), capacity: 0 };
-        assert_eq!(user.copy_name(b"ignored"), Ok(()));
-        assert_eq!(u32_at(&h, 8), 77);
-    }
-}
+#[path = "recv_user/tests.rs"]
+mod tests;
