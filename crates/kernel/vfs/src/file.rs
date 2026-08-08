@@ -43,7 +43,7 @@ mod open;
 pub(crate) mod readahead;
 mod fsync;
 
-pub use async_notify::{band_for, owner_type, deliver as deliver_fasync, fasync_register, fasync_registered, fasync_unregister, kill_fasync, reason, reason_for_mask, set_sigio_hook, sicode_for, AsyncSignal};
+pub use async_notify::{band_for, owner_type, deliver as deliver_fasync, fasync_register, fasync_registered, fasync_unregister, kill_fasync, reason, reason_for_mask, set_sigio_hook, sicode_for, AsyncSignal, SIGIO, SIGURG};
 pub use cred::FileCred;
 pub use epoll::FileEpollLink;
 pub use hooks::{fire_clone_hook, fire_dirent_create, fire_fs_error, set_fs_error_hook, fire_delete_self_hook, fire_dirent_delete, fire_inode_evict_hook, fire_setattr_hook, set_clone_hook, set_close_hook, set_dirent_create_hook, set_delete_self_hook, set_dirent_delete_hook, set_inode_evict_hook, set_drop_hook, set_open_hook, set_read_hook, set_setattr_hook, set_write_hook};

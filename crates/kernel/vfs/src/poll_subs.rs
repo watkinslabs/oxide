@@ -161,10 +161,7 @@ impl PollSubscribers {
     /// other reason (`sk_wake_async(SOCK_WAKE_URG, POLL_PRI)` vs the rest).
     /// # C: O(N)
     fn fasync_notify(&self, events: u32) {
-        /// `SIGIO` (== `SIGPOLL`, `asm-generic/signal.h`).
-        const SIGIO: i32 = 29;
-        /// `SIGURG`.
-        const SIGURG: i32 = 23;
+        use crate::file::{SIGIO, SIGURG};
         let snapshot = self.fasync_snapshot();
         if snapshot.is_empty() { return; }
         for f in snapshot {

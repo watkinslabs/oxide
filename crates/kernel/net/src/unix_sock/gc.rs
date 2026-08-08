@@ -71,6 +71,14 @@ impl GcNode {
     /// Numeric identity for diagnostics and deterministic tests. # C: O(1)
     pub fn id(&self) -> u64 { self.0.id }
 
+    /// The open file description that owns this receive queue (Linux
+    /// `sk->sk_socket->file`), while one is bound. `None` for a socket
+    /// userspace holds no descriptor for, which is exactly the case Linux's
+    /// `sk_send_sigurg` skips. # C: O(1)
+    pub fn owner_file(&self) -> Option<Arc<vfs::File>> {
+        self.0.file.lock().as_ref().and_then(Weak::upgrade)
+    }
+
     #[cfg(test)]
     pub(crate) fn is_bound_to(&self, file: &Arc<vfs::File>) -> bool {
         self.0.file.lock().as_ref().and_then(Weak::upgrade)
