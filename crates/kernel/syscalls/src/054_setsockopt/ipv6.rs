@@ -90,6 +90,7 @@ fn apply(sock: &Arc<InetSocket>, action: Action, raw_val: i32) -> i64 {
                     sock.opts.ipv6_recvtclass.store(i32::from(on), Ordering::Release),
                 flag::MC_ALL_OFF => sock.mcast.set_multicast_all_v6(!on),
                 flag::AUTOFLOWLABEL => sock.opts.ipv6.set_flag(flag::AUTOFLOWLABEL_SET, true),
+                flag::RECVERR_RFC4884 => sock.error.set_recverr_rfc4884_6(on),
                 _ => {}
             }
         }

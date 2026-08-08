@@ -116,6 +116,8 @@ pub const TP_STATUS_TS_RAW_HARDWARE: u32 = 1 << 31;
 
 pub const SOF_TIMESTAMPING_SOFTWARE: i32 = 1 << 4;
 pub const SOF_TIMESTAMPING_RAW_HARDWARE: i32 = 1 << 6;
+/// Ask for ancillary data beside a transmit timestamp on the error queue.
+pub const SOF_TIMESTAMPING_OPT_CMSG: i32 = 1 << 10;
 
 // Socket-level option numbers. The generic SOL_SOCKET table carries `sock`'s
 // gate, but ungated callers (`vsock_socket`) need these, so the numbers are

@@ -7,26 +7,17 @@ use crate::recv_user::RecvUser;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
-fn zerocopy_error_data((first, last, copied): (u32, u32, bool)) -> [u8; 16] {
-    let mut out = [0u8; 16];
-    out[4] = net::socket_error::SO_EE_ORIGIN_ZEROCOPY;
-    if copied { out[6] = net::socket_error::SO_EE_CODE_ZEROCOPY_COPIED; }
-    out[8..12].copy_from_slice(&first.to_ne_bytes());
-    out[12..16].copy_from_slice(&last.to_ne_bytes());
-    out
-}
-
-/// Consume one VSOCK zerocopy completion through Linux's standard error queue.
-/// # C: O(control copy)
+/// Consume one AF_VSOCK error-queue record. VSOCK answers `MSG_ERRQUEUE` with
+/// the bare extended error and no offender sockaddr. # C: O(control copy)
 pub(crate) fn recv_error(sock: &Arc<net::vsock_socket::VsockSocket>, user: &RecvUser,
     flags: u64) -> i64
 {
-    let Some(completion) = sock.take_zerocopy_completion() else { return err(Errno::Eagain); };
+    let Some(entry) = sock.error.take_extended() else { return err(Errno::Eagain); };
     if let Err(error) = user.copy_name(&[]) { return error; }
     let mut control = crate::recv_control::Control::new(
         if user.control == 0 { 0 } else { user.controllen });
     control.push(net::uapi::SOL_VSOCK as i32, net::uapi::VSOCK_RECVERR as i32,
-        &zerocopy_error_data(completion));
+        &net::socket_error::abi::extended_err_bytes(&entry));
     let control_len = control.copy_to_recv(user);
     let output = control.flags | MSG_ERRQUEUE as u32 | crate::recv_control::output_flags(flags);
     if let Err(error) = user.finish(control_len, output) { return error; }

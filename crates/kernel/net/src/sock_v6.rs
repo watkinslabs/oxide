@@ -240,7 +240,8 @@ fn sendto_v4_mapped(sock: &InetSocket, dst_ip: crate::Ipv4Addr, dst_port: u16,
         sock.opts.ip_mtu_discover.load(core::sync::atomic::Ordering::Acquire),
         sock.opts.ip.options().as_ref(),
         sock.opts.generic.flag(crate::sock_opts::sol_socket::flag::NO_CHECK_TX),
-    )?;
+    ).map_err(|error| crate::socket_error::report_send_failure(&sock.error, sock.net_ns(),
+        crate::addr::IpAddr::V4(dst_ip), dst_port, bound, error))?;
     if !dst_ip.is_multicast() || multicast_loop { drain_loopback(); }
     Ok(payload.len())
 }
@@ -316,7 +317,8 @@ pub fn sendto_v6(sock: &InetSocket,
                     sock.opts.ipv6.generates_flow_label(
                         crate::sysctl::ipv6_auto_flowlabels_in(sock.net_ns())),
                     sock.opts.ipv6.srcprefs(), &control,
-                )?;
+                ).map_err(|error| crate::socket_error::report_send_failure(&sock.error,
+                    sock.net_ns(), crate::addr::IpAddr::V6(dst_ip), dst_port, iface, error))?;
             }
             drain_loopback();
             return Ok(payload.len());
@@ -328,7 +330,8 @@ pub fn sendto_v6(sock: &InetSocket,
         sock.opts.ipv6.generates_flow_label(
             crate::sysctl::ipv6_auto_flowlabels_in(sock.net_ns())),
         sock.opts.ipv6.srcprefs(), &control,
-    )?;
+    ).map_err(|error| crate::socket_error::report_send_failure(&sock.error, sock.net_ns(),
+        crate::addr::IpAddr::V6(dst_ip), dst_port, iface, error))?;
     drain_loopback();
     Ok(payload.len())
 }

@@ -1,26 +1,13 @@
-use alloc::collections::VecDeque;
-
 use super::*;
 
-/// One Linux `SO_EE_ORIGIN_ZEROCOPY` completion range. # C: O(1)
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct Completion {
-    pub first: u32,
-    pub last: u32,
-    pub copied: bool,
-    count: u64,
-}
-
+/// `SO_ZEROCOPY` state. Completions and their identifiers live on the socket's
+/// one extended-error queue, not beside it.
 pub(super) struct State {
     enabled: bool,
-    next_id: u32,
-    queue: VecDeque<Completion>,
 }
 
 impl State {
-    pub(super) const fn new() -> Self {
-        Self { enabled: false, next_id: 0, queue: VecDeque::new() }
-    }
+    pub(super) const fn new() -> Self { Self { enabled: false } }
 }
 
 impl VsockSocket {
@@ -43,33 +30,22 @@ impl VsockSocket {
     /// already copied the payload, so every completion carries Linux's
     /// `SO_EE_CODE_ZEROCOPY_COPIED` fallback bit. # C: O(1) amortized
     pub fn complete_zerocopy_send(&self, requested: bool, bytes: usize) {
-        if !requested || bytes == 0 { return; }
-        let mut state = self.zerocopy.lock();
-        if !state.enabled { return; }
-        let id = state.next_id;
-        state.next_id = state.next_id.wrapping_add(1);
-        if let Some(last) = state.queue.back_mut() {
-            if last.copied && last.last.wrapping_add(1) == id && last.count + 1 < (1u64 << 32) {
-                last.last = id;
-                last.count += 1;
-                drop(state);
-                self.poll_subs.notify_mask(vfs::POLL_ERR);
-                return;
-            }
-        }
-        state.queue.push_back(Completion { first: id, last: id, copied: true, count: 1 });
-        drop(state);
+        let enabled = self.zerocopy_enabled();
+        if !crate::socket_error::complete_zerocopy_send(&self.error, enabled, requested, bytes,
+            false)
+        { return; }
         self.poll_subs.notify_mask(vfs::POLL_ERR);
     }
 
     /// Consume the oldest completion range. # C: O(1)
     pub fn take_zerocopy_completion(&self) -> Option<(u32, u32, bool)> {
-        self.zerocopy.lock().queue.pop_front()
-            .map(|completion| (completion.first, completion.last, completion.copied))
+        let entry = self.error.take_extended()?;
+        Some((entry.info, entry.data,
+            entry.code & crate::socket_error::SO_EE_CODE_ZEROCOPY_COPIED != 0))
     }
 
     /// Observe whether `MSG_ERRQUEUE` can consume a completion. # C: O(1)
-    pub fn has_zerocopy_completion(&self) -> bool { !self.zerocopy.lock().queue.is_empty() }
+    pub fn has_zerocopy_completion(&self) -> bool { self.error.has_extended() }
 }
 
 #[cfg(test)]
