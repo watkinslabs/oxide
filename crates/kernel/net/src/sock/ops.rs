@@ -309,18 +309,17 @@ pub fn listen(sock: &alloc::sync::Arc<InetSocket>, backlog: i32) -> Result<(), N
 /// wraps the returned `InetSocket` in a vfs::File and allocates a fd.
 /// # C: O(1) + drain
 pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError> {
-    super::admit_accept(sock)?;
-    let shape = match &*sock.kind.lock() {
-        SockKind::TcpListener(_) | SockKind::UnixListener(_) =>
-            super::AcceptShape::Listener,
-        SockKind::Udp | SockKind::Raw4(_) | SockKind::Raw6(_) |
-        SockKind::Packet { .. } | SockKind::UnixDgram(_) =>
-            super::AcceptShape::NoAcceptOp,
-        _ => super::AcceptShape::StreamState,
-    };
-    if let super::AcceptAdmit::Refuse(error) = super::admit_accept_shape(shape) {
-        return Err(error);
-    }
+    if let super::AcceptAdmit::Refuse(error) = super::accept_ladder(
+        || super::admit_accept(sock).map(|_| ()),
+        || match &*sock.kind.lock() {
+            SockKind::TcpListener(_) | SockKind::UnixListener(_) =>
+                super::AcceptShape::Listener,
+            SockKind::Udp | SockKind::Raw4(_) | SockKind::Raw6(_) |
+            SockKind::Packet { .. } | SockKind::UnixDgram(_) =>
+                super::AcceptShape::NoAcceptOp,
+            _ => super::AcceptShape::StreamState,
+        })
+    { return Err(error); }
     drain_loopback();
     // AF_UNIX listener: pop one queued UnixPair.
     let unix_listener = {
