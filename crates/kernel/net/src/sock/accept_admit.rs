@@ -30,9 +30,49 @@ pub fn admit_accept_shape(shape: AcceptShape) -> AcceptAdmit {
     }
 }
 
+/// The complete `accept(2)` admission ladder, in order.
+///
+/// The security decision precedes the shape screen, so a denied accept never
+/// discloses whether the socket was a listener at all, and it precedes the
+/// listener's queue, so a denial cannot consume a pending connection. Both
+/// rungs are caller-supplied and evaluated in ladder order, which is what
+/// makes the order observable rather than incidental.
+/// # C: O(1) + security
+pub fn accept_ladder(security: impl FnOnce() -> Result<(), NetError>,
+                     shape: impl FnOnce() -> AcceptShape) -> AcceptAdmit
+{
+    if let Err(error) = security() { return AcceptAdmit::Refuse(error); }
+    admit_accept_shape(shape())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::cell::Cell;
+
+    #[test]
+    fn a_denied_accept_never_asks_the_socket_what_shape_it_is() {
+        for shape in [AcceptShape::Listener, AcceptShape::StreamState,
+                      AcceptShape::NoAcceptOp] {
+            let shaped = Cell::new(0u32);
+            let admit = accept_ladder(|| Err(NetError::Eacces),
+                || { shaped.set(shaped.get() + 1); shape });
+            assert_eq!(admit, AcceptAdmit::Refuse(NetError::Eacces), "{shape:?}");
+            // EACCES outranks EINVAL and EOPNOTSUPP, and a denial that read
+            // the socket's state would leak whether it could have accepted.
+            assert_eq!(shaped.get(), 0, "{shape:?}");
+        }
+    }
+
+    #[test]
+    fn an_admitted_accept_reports_its_own_shape_verdict() {
+        let allow = || Ok(());
+        assert_eq!(accept_ladder(allow, || AcceptShape::Listener), AcceptAdmit::Listener);
+        assert_eq!(accept_ladder(allow, || AcceptShape::StreamState),
+            AcceptAdmit::Refuse(NetError::Einval));
+        assert_eq!(accept_ladder(allow, || AcceptShape::NoAcceptOp),
+            AcceptAdmit::Refuse(NetError::Eopnotsupp));
+    }
 
     #[test]
     fn listener_reaches_its_accept_queue() {

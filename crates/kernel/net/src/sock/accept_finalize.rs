@@ -45,6 +45,26 @@ mod tests {
     }
 
     #[test]
+    fn a_tcp_child_is_born_into_its_listeners_network_namespace() {
+        // Linux `sk_clone_lock` gives the child the listener's `sock_net`. A
+        // child that fell back to the accepting task's namespace would answer
+        // routing, sysctl and visibility questions from the wrong network.
+        let owner = crate::net_ns::test_support::allocate_namespace();
+        let namespace = owner.id().as_u64();
+        let listener = Arc::new(InetSocket::new_tcp_in(owner));
+        let local = crate::Endpoint { ip: crate::IpAddr::V4(crate::Ipv4Addr::LOOPBACK), port: 41_002 };
+        let remote = crate::Endpoint { ip: crate::IpAddr::V4(crate::Ipv4Addr::new(192, 0, 2, 2)), port: 443 };
+        let entry = Arc::new(crate::stack::TcpEntry::new(
+            crate::TcpConn::new_client(local, remote, 1)));
+
+        let child = InetSocket::from_accepted_tcp(&listener, entry);
+
+        assert_eq!(child.net_ns(), namespace);
+        assert_eq!(child.family.load(core::sync::atomic::Ordering::Acquire),
+            listener.family.load(core::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
     fn successful_copyout_keeps_the_accepted_socket_open() {
         use core::sync::atomic::Ordering;
         let child = Arc::new(InetSocket::new_tcp());
