@@ -7,6 +7,7 @@
 /// - `uapi`: option numbers, encapsulation types, and the segmentation limits.
 /// - `state`: `UdpOpts`, the per-socket cells every level-17 option reads.
 /// - `table`: the set/get decision tables (validation + errno ordering).
+/// - `encap`: the `UDP_ENCAP` receive-side verdict the stack's UDP arms call.
 /// - `cork`: `UDP_CORK` accumulation, destination pinning, and the push decision.
 /// - `segment`: the `UDP_SEGMENT` transmit plan and its rejection ladder.
 /// - `emit`: the transmit half — the only part that needs a live send path.
@@ -15,6 +16,7 @@
 pub mod uapi;
 pub mod state;
 pub mod table;
+pub mod encap;
 pub mod cork;
 pub mod segment;
 pub mod emit;
@@ -23,6 +25,7 @@ mod tests;
 
 pub use state::{CorkDest, CorkPending, UdpOpts};
 pub use table::{SetEffect, get, set};
+pub use encap::{EncapConsumed, EncapVerdict, rx_verdict};
 pub use segment::{SegmentPlan, plan, plan_v4, plan_v6};
 
 use crate::sock::InetSocket;

@@ -48,6 +48,16 @@ impl NetStack {
             ) { continue; }
             let packet = &payload[..udp.length as usize];
             let body = &packet[crate::udp::UDP_HDR_LEN..];
+            // Linux runs the socket's installed `UDP_ENCAP` receive handler
+            // before the datagram is queued; a datagram the handler takes is
+            // still counted as delivered to the transport and is never seen
+            // by the socket.
+            if crate::sock_opts::sol_udp::rx_verdict(
+                q.encap_type.load(core::sync::atomic::Ordering::Acquire), body,
+            ).consumed() {
+                crate::mib6::bump_udp(net_ns, crate::mib6::Udp6Mib::InDatagrams);
+                continue;
+            }
             let Some(keep) = crate::bpf_filter::retained_payload_len(
                 q.bpf_filter.verdict_with_context(crate::bpf_filter::FilterContext {
                     packet, protocol: crate::addr::eth_p::IPV6,

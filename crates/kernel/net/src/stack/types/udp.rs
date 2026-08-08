@@ -80,6 +80,9 @@ pub struct UdpRxQueue {
     /// `UDP_GRO`, shared with the owning socket: while set, arriving
     /// datagrams of one flow coalesce into a single receive.
     pub gro: Arc<::core::sync::atomic::AtomicI32>,
+    /// `UDP_ENCAP`, shared with the owning socket: the encapsulation identity
+    /// whose receive handler screens arriving datagrams before they queue.
+    pub encap_type: Arc<::core::sync::atomic::AtomicI32>,
     pub bound_ifindex: ::core::sync::atomic::AtomicU32,
     /// F181a: per-fd epoll subscribers.
     pub poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,

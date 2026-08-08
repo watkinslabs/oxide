@@ -70,6 +70,7 @@ pub fn bind_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr,
                     alloc_ephemeral_udp4_owned(sock.owner.clone(), ip, sock.error.clone(), iface,
                                          sock.opts.reuseaddr.clone(), sock.opts.reuseport.clone(),
                                          sock.opts.ip_mtu_discover.clone(), sock.opts.udp.gro.clone(),
+                                         sock.opts.udp.encap_type.clone(),
                                          sock.peer.clone(), sock.bpf_filter.clone(), sock.mcast.clone(),
                                          policy.range)?
                 } else {
@@ -77,6 +78,7 @@ pub fn bind_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr,
                         sock.owner.clone(), ip, port, iface, sock.error.clone(),
                         sock.opts.reuseaddr.clone(), sock.opts.reuseport.clone(),
                         sock.opts.ip_mtu_discover.clone(), sock.opts.udp.gro.clone(),
+                        sock.opts.udp.encap_type.clone(),
                         sock.peer.clone(), sock.bpf_filter.clone(), sock.mcast.clone(),
                     )?)
                 };
@@ -108,6 +110,7 @@ pub fn bind_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr,
                                          sock.peer6.clone(), sock.opts.ip_mtu_discover.clone(),
                                          sock.opts.ipv6_mtu_discover.clone(),
                                          sock.opts.udp.no_check6_rx.clone(), sock.opts.udp.gro.clone(),
+                                         sock.opts.udp.encap_type.clone(),
                                          sock.bpf_filter.clone(), sock.mcast.clone(),
                                          policy.range)?
                 } else {
@@ -118,6 +121,7 @@ pub fn bind_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: BoundAddr,
                         sock.peer6.clone(), sock.opts.ip_mtu_discover.clone(),
                         sock.opts.ipv6_mtu_discover.clone(),
                         sock.opts.udp.no_check6_rx.clone(), sock.opts.udp.gro.clone(),
+                        sock.opts.udp.encap_type.clone(),
                         sock.bpf_filter.clone(), sock.mcast.clone(),
                     )?)
                 };

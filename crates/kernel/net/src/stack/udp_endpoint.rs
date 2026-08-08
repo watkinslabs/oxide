@@ -13,6 +13,7 @@ impl UdpRxQueue {
             Arc::new(::core::sync::atomic::AtomicI32::new(0)),
             Arc::new(::core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)),
             Arc::new(::core::sync::atomic::AtomicI32::new(0)),
+            Arc::new(::core::sync::atomic::AtomicI32::new(0)),
             crate::SocketOwner::root(network_namespace::initial(), 0),
             Arc::new(Spinlock::new(None)), Arc::new(crate::bpf_filter::SocketFilter::new()),
             Arc::new(crate::mcast_filter::SocketMcast::new()))
@@ -24,6 +25,7 @@ impl UdpRxQueue {
                       reuseport: Arc<::core::sync::atomic::AtomicI32>,
                       ip_mtu_discover: Arc<::core::sync::atomic::AtomicI32>,
                       gro: Arc<::core::sync::atomic::AtomicI32>,
+                      encap_type: Arc<::core::sync::atomic::AtomicI32>,
                       owner: Arc<crate::SocketOwner>,
                       peer: Arc<Spinlock<Option<(Ipv4Addr, u16)>, StackLockClass>>,
                       bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
@@ -33,7 +35,7 @@ impl UdpRxQueue {
             state: Spinlock::new(UdpRxState { accepting: true, datagrams: VecDeque::new() }),
             #[cfg(target_os = "oxide-kernel")]
             waiters: sched::live::WaitList::new(),
-            error, peer, reuseaddr, reuseport, ip_mtu_discover, gro,
+            error, peer, reuseaddr, reuseport, ip_mtu_discover, gro, encap_type,
             bound_ifindex: ::core::sync::atomic::AtomicU32::new(0),
             poll_subs: Spinlock::new(None), bpf_filter, mcast,
             reuseport_group: crate::reuseport::new_slot(),

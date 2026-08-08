@@ -35,8 +35,10 @@ pub struct CorkPending { pub dest: CorkDest, pub payload: Vec<u8> }
 pub struct UdpOpts {
     /// `UDP_CORK`: hold partial datagrams until the cork clears.
     pub cork: AtomicI32,
-    /// `UDP_ENCAP`: the encapsulation identity this socket announces.
-    pub encap_type: AtomicI32,
+    /// `UDP_ENCAP`: the encapsulation identity this socket announces. Shared
+    /// with the bound endpoints so the receive-path encapsulation handler and
+    /// the option read can never disagree.
+    pub encap_type: Arc<AtomicI32>,
     /// `UDP_NO_CHECK6_TX`: emit IPv6 datagrams with a zero checksum.
     pub no_check6_tx: AtomicI32,
     /// `UDP_NO_CHECK6_RX`: accept IPv6 datagrams that carry a zero checksum.
@@ -57,7 +59,7 @@ impl Default for UdpOpts {
     fn default() -> Self {
         Self {
             cork: AtomicI32::new(0),
-            encap_type: AtomicI32::new(super::uapi::UDP_ENCAP_NONE),
+            encap_type: Arc::new(AtomicI32::new(super::uapi::UDP_ENCAP_NONE)),
             no_check6_tx: AtomicI32::new(0),
             no_check6_rx: Arc::new(AtomicI32::new(0)),
             gso_size: AtomicI32::new(0),

@@ -79,6 +79,9 @@ pub struct Udp6RxQueue {
     /// `UDP_GRO`, shared with the owning socket: while set, arriving
     /// datagrams of one flow coalesce into a single receive.
     pub gro: Arc<core::sync::atomic::AtomicI32>,
+    /// `UDP_ENCAP`, shared with the owning socket: the encapsulation identity
+    /// whose receive handler screens arriving datagrams before they queue.
+    pub encap_type: Arc<core::sync::atomic::AtomicI32>,
     pub bound_ifindex: core::sync::atomic::AtomicU32,
     pub poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, StackLockClass>,
     pub bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
@@ -188,6 +191,7 @@ impl Udp6RxQueue {
             Arc::new(core::sync::atomic::AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT)),
             Arc::new(core::sync::atomic::AtomicI32::new(0)),
             Arc::new(core::sync::atomic::AtomicI32::new(0)),
+            Arc::new(core::sync::atomic::AtomicI32::new(0)),
             Arc::new(crate::bpf_filter::SocketFilter::new()), Arc::new(crate::mcast_filter::SocketMcast::new()))
     }
 
@@ -202,6 +206,7 @@ impl Udp6RxQueue {
                       ipv6_mtu_discover: Arc<core::sync::atomic::AtomicI32>,
                       no_check6_rx: Arc<core::sync::atomic::AtomicI32>,
                       gro: Arc<core::sync::atomic::AtomicI32>,
+                      encap_type: Arc<core::sync::atomic::AtomicI32>,
                       bpf_filter: Arc<crate::bpf_filter::SocketFilter>,
                       mcast: Arc<crate::mcast_filter::SocketMcast>) -> Self {
         Self {
@@ -220,6 +225,7 @@ impl Udp6RxQueue {
             ipv6_mtu_discover,
             no_check6_rx,
             gro,
+            encap_type,
             bound_ifindex: core::sync::atomic::AtomicU32::new(0),
             poll_subs: Spinlock::new(None),
             bpf_filter,
