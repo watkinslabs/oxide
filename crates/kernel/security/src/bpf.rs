@@ -6,6 +6,9 @@
 //                (no target gate — hosted-tested in attr/tests.rs)
 //   user.rs      user-memory access for the attr + insn + key/value copies
 //   dispatch.rs  the command table and the per-call capability snapshot
+//   cmd/         one module per command whose object is not a prog/map/btf:
+//                test_run, next_id, links, stats, batch, and the ladders
+//                whose backing subsystem this kernel does not have
 //   prog.rs      PROG_LOAD, PROG_ATTACH/DETACH, LINK_CREATE, program object
 //   map.rs       MAP_CREATE, the element/freeze commands, map object
 //   link.rs      cgroup and LSM link objects and the link id registry
@@ -24,6 +27,10 @@ pub mod uapi;
 pub mod attr;
 mod user;
 mod dispatch;
+// Directory `bpf/cmd/`; the module is `command` because `cmd` names the
+// UAPI command-number module this file already imports.
+#[path = "bpf/cmd.rs"]
+mod command;
 mod prog;
 mod cgroup_device;
 mod cgroup_network;
@@ -43,7 +50,8 @@ pub(super) const BPF_FD_MODE: u16 = 0o600;
 
 pub use prog::inode::{
     BpfProgInode, make_bpf_prog_inode, make_bpf_prog_inode_with_meta,
-    make_bpf_prog_inode_with_contract,
+    make_bpf_prog_inode_with_contract, make_bpf_prog_inode_with_attach_target,
+    NO_ATTACH_TARGET,
 };
 pub use map::inode::{BpfMapInode, make_bpf_map_inode};
 pub use link::{

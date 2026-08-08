@@ -221,6 +221,33 @@ impl Tree {
         Ok(())
     }
 
+    /// Swap the program one link-owned entry runs, keeping its position in
+    /// the direct list. `expect` names the program the caller believes is
+    /// attached; a mismatch is `Denied`, and a link with no entry in this
+    /// list is `Missing`. # C: O(descendants * effective programs)
+    pub fn bpf_replace_link(
+        &mut self,
+        cgid: u64,
+        attach_type: CgroupBpfAttachType,
+        link_id: u64,
+        prog: InodeRef,
+        expect: Option<&InodeRef>,
+    ) -> Result<(), BpfAttachError> {
+        let node = self.nodes.get_mut(&cgid).ok_or(BpfAttachError::Offline)?;
+        let state = node.bpf.state_mut(attach_type);
+        let pos = state.direct.iter().position(|entry| matches!(
+            &entry.owner, BpfAttachOwner::Link { id, .. } if *id == link_id
+        )).ok_or(BpfAttachError::Missing)?;
+        if let (Some(expect), BpfAttachOwner::Link { prog: attached, .. }) =
+            (expect, &state.direct[pos].owner) {
+            if !Arc::ptr_eq(attached, expect) { return Err(BpfAttachError::Denied); }
+        }
+        state.direct[pos].owner = BpfAttachOwner::Link { id: link_id, prog };
+        state.revision = state.revision.wrapping_add(1);
+        self.rebuild_bpf_attach(cgid, attach_type);
+        Ok(())
+    }
+
     /// Snapshot one online cgroup/type effective list. # C: O(log nodes)
     pub fn bpf_effective(
         &self,
