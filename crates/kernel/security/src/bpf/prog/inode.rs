@@ -17,6 +17,9 @@ pub struct BpfProgInode {
     pub id: u32,
     pub prog_type: u32,
     pub expected_attach_type: u32,
+    /// In-kernel BTF type id naming this program's attach target. Zero when
+    /// the program type takes its target from the attach call instead.
+    pub attach_btf_id: u32,
     /// Set only when verifier return-range analysis makes the expected
     /// attach direction part of the program's attach contract.
     pub enforce_expected_attach_type: bool,
@@ -90,12 +93,33 @@ pub fn make_bpf_prog_inode_with_meta(
     make_bpf_prog_inode_with_contract(prog_type, expected_attach_type, false, insns, maps)
 }
 
-/// Build a loaded program with the verifier-derived attach contract.
-/// # C: O(1)
+/// Build a loaded program with the verifier-derived attach contract, for a
+/// program type whose attach target is named at attach time rather than at
+/// load time. # C: O(1)
 pub fn make_bpf_prog_inode_with_contract(
     prog_type: u32,
     expected_attach_type: u32,
     enforce_expected_attach_type: bool,
+    insns: Vec<u8>,
+    maps: Vec<InodeRef>,
+) -> InodeRef {
+    make_bpf_prog_inode_with_attach_target(
+        prog_type, expected_attach_type, enforce_expected_attach_type,
+        NO_ATTACH_TARGET, insns, maps,
+    )
+}
+
+/// A program whose target is not named by a BTF type id carries this.
+pub const NO_ATTACH_TARGET: u32 = 0;
+
+/// Build a loaded program that names its attach target by in-kernel BTF type
+/// id. The single owner of program-object construction; every other
+/// constructor above narrows to this one. # C: O(1)
+pub fn make_bpf_prog_inode_with_attach_target(
+    prog_type: u32,
+    expected_attach_type: u32,
+    enforce_expected_attach_type: bool,
+    attach_btf_id: u32,
     insns: Vec<u8>,
     maps: Vec<InodeRef>,
 ) -> InodeRef {
@@ -106,7 +130,7 @@ pub fn make_bpf_prog_inode_with_contract(
         .size(size)
         .private(Arc::new(BpfProgInode {
             id, prog_type, expected_attach_type, enforce_expected_attach_type,
-            insns, maps: Spinlock::new(maps),
+            attach_btf_id, insns, maps: Spinlock::new(maps),
         }))
         .build();
     PROGRAMS_BY_ID.lock().insert(id, Arc::downgrade(&inode));

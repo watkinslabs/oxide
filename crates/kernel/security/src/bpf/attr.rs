@@ -45,7 +45,7 @@ pub use prog_cmd::{
     LinkCreate, ProgBindMap, ProgLoad, ProgQuery, attach_type_to_prog_type,
     cgroup_link_flags_check, expected_attach_type_check, link_create_check,
     prog_attach_check, prog_attach_verdict, prog_bind_map_check, prog_get_fd_by_id_check,
-    prog_load_check, prog_query_check,
+    prog_load_check, prog_load_check_attach, prog_query_check,
 };
 
 #[cfg(test)]

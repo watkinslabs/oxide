@@ -5,6 +5,8 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
 use super::attr::Caps;
+use super::command;
+use super::command::batch::{BatchOp, batch};
 use super::uapi::cmd;
 use super::{attr, btf, map, prog, token, user};
 
@@ -62,6 +64,24 @@ pub(super) fn dispatch(args: &SyscallArgs) -> Result<i64, Errno> {
         cmd::BTF_GET_NEXT_ID            => btf::get_next_id(&a, args.a1, caps),
         cmd::OBJ_GET_INFO_BY_FD         => btf::get_info_by_fd(&a, args.a1),
         cmd::TOKEN_CREATE               => token::create(&a),
+        cmd::PROG_TEST_RUN              => command::test_run::test_run(&a, args.a1),
+        cmd::PROG_GET_NEXT_ID           => command::next_id::get_next_id(
+            &a, args.a1, caps, prog::inode::next_live_prog_id,
+        ),
+        cmd::LINK_GET_NEXT_ID           => command::link_cmd::get_next_id(&a, args.a1, caps),
+        cmd::LINK_GET_FD_BY_ID          => command::link_cmd::get_fd_by_id(&a, caps),
+        cmd::LINK_DETACH                => command::link_cmd::detach(&a),
+        cmd::LINK_UPDATE                => command::link_cmd::update(&a),
+        cmd::ITER_CREATE                => command::link_cmd::iter_create(&a),
+        cmd::ENABLE_STATS               => command::stats::enable(&a, caps),
+        cmd::MAP_LOOKUP_BATCH           => batch(&a, args.a1, BatchOp::Lookup),
+        cmd::MAP_LOOKUP_AND_DELETE_BATCH => batch(&a, args.a1, BatchOp::LookupAndDelete),
+        cmd::MAP_UPDATE_BATCH           => batch(&a, args.a1, BatchOp::Update),
+        cmd::MAP_DELETE_BATCH           => batch(&a, args.a1, BatchOp::Delete),
+        cmd::RAW_TRACEPOINT_OPEN        => command::trace::raw_tracepoint_open(&a),
+        cmd::TASK_FD_QUERY              => command::trace::task_fd_query(&a, caps),
+        cmd::PROG_STREAM_READ_BY_FD     => command::stream::read(&a),
+        cmd::PROG_ASSOC_STRUCT_OPS      => command::struct_ops::assoc(&a),
         // The command table's own `default`, reached only after the attr
         // size protocol above has had its say.
         _ => Err(Errno::Einval),

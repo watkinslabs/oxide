@@ -114,6 +114,15 @@ pub enum Errno {
     Ekeyrevoked       = 128,
     Ekeyrejected      = 129,
     Eftype            = 134,
+    /// The object a link stood for is gone: `bpf(BPF_LINK_UPDATE)` on a
+    /// link whose attachment was already released.
+    Enolink           = 67,
+    /// Kernel-internal errno above the standard range that several
+    /// `bpf(2)` commands return verbatim to userspace: an object whose
+    /// type implements no operation for the requested command. Distinct
+    /// from `Eopnotsupp` (95), which other `bpf(2)` commands return for
+    /// the same shape of refusal.
+    Enotsupp          = 524,
 }
 
 impl Errno {

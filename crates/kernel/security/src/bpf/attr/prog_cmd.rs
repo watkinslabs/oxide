@@ -13,6 +13,7 @@ pub struct ProgLoad {
     pub insns: u64,
     pub license: u64,
     pub expected_attach_type: u32,
+    pub attach_btf_id: u32,
 }
 
 /// `bpf_prog_load()`'s pre-copy ladder, in Linux's order:
@@ -36,6 +37,7 @@ pub fn prog_load_check(a: &Attr, caps: Caps, unpriv_disabled: bool) -> Result<Pr
         prog_type: a.u32_at(o::PROG_TYPE), insn_cnt: a.u32_at(o::INSN_CNT),
         insns: a.u64_at(o::INSNS), license: a.u64_at(o::LICENSE),
         expected_attach_type: a.u32_at(o::EXPECTED_ATTACH_TYPE),
+        attach_btf_id: a.u32_at(o::ATTACH_BTF_ID),
     };
     let ceiling = if bpf_cap { uapi::COMPLEXITY_LIMIT_INSNS } else { uapi::MAXINSNS };
     if p.insn_cnt == 0 || p.insn_cnt > ceiling { return Err(Errno::E2big); }
@@ -46,7 +48,30 @@ pub fn prog_load_check(a: &Attr, caps: Caps, unpriv_disabled: bool) -> Result<Pr
     Ok(p)
 }
 
-/// `bpf_prog_load_check_attach()` for the implemented program types.
+/// `bpf_prog_load_check_attach()`: the attach-target block first, then the
+/// per-prog-type expected-attach-type switch.
+///
+/// A nonzero attach target must name a type some object could declare, and
+/// only the program types whose contract is fixed by an attach target may
+/// name one at all. This kernel's own type information is always available,
+/// so the reference's "no BTF to resolve against" EINVAL cannot fire here.
+/// # C: O(1)
+pub fn prog_load_check_attach(
+    prog_type: u32,
+    attach_type: u32,
+    attach_btf_id: u32,
+) -> Result<(), Errno> {
+    use uapi::prog_type as p;
+    if attach_btf_id != 0 {
+        if attach_btf_id > super::super::btf::MAX_TYPE_ID { return Err(Errno::Einval); }
+        if !matches!(prog_type, p::TRACING | p::LSM | p::STRUCT_OPS | p::EXT) {
+            return Err(Errno::Einval);
+        }
+    }
+    expected_attach_type_check(prog_type, attach_type)
+}
+
+/// The expected-attach-type switch of `bpf_prog_load_check_attach()`.
 /// # C: O(1)
 pub fn expected_attach_type_check(prog_type: u32, attach_type: u32) -> Result<(), Errno> {
     use uapi::attach_type as a;

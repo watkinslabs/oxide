@@ -35,6 +35,17 @@ use state::{
 
 pub use context::SK_FILTER_CONTEXT_BYTES;
 
+/// Everything the per-type rules need to judge one program: its Linux
+/// program type, the attach direction it declared, and — for a program
+/// whose contract is fixed by an attach target rather than by its type —
+/// the hook it resolved to.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub(super) struct Profile {
+    pub(super) prog_type: u32,
+    pub(super) expected_attach_type: u32,
+    pub(super) hook: Option<crate::bpf_lsm::Hook>,
+}
+
 fn enqueue(
     states: &mut [worklist::StateSet<State>],
     queue: &mut VecDeque<(usize, State)>,
@@ -57,11 +68,41 @@ pub fn verify_program(
     insns: &[u8],
     maps: &[InodeRef],
 ) -> Result<bool, VerifyError> {
+    verify_profile(
+        Profile { prog_type, expected_attach_type, hook: None }, insns, maps,
+    )
+}
+
+/// Verify one `BPF_PROG_TYPE_LSM` program against the contract of the hook
+/// its attach target resolved to. Same verifier, same instruction
+/// admission; the hook supplies the context shape and the return range.
+/// # C: O(instructions × control-flow state updates)
+pub fn verify_lsm_program(
+    hook: crate::bpf_lsm::Hook,
+    insns: &[u8],
+    maps: &[InodeRef],
+) -> Result<(), VerifyError> {
+    verify_profile(
+        Profile {
+            prog_type: uapi::prog_type::LSM,
+            expected_attach_type: uapi::attach_type::LSM_MAC,
+            hook: Some(hook),
+        },
+        insns, maps,
+    ).map(|_| ())
+}
+
+fn verify_profile(
+    profile: Profile,
+    insns: &[u8],
+    maps: &[InodeRef],
+) -> Result<bool, VerifyError> {
+    let Profile { prog_type, expected_attach_type, .. } = profile;
     verify(insns)?;
     let decoded = decode_all(insns)?;
     let pseudo = wide_slots(&decoded, maps)?;
     let reachable = super::loops::reachable(&decoded, &pseudo)?;
-    let context_bytes = context::context_size(prog_type);
+    let context_bytes = context::context_size(&profile);
     let mut states = worklist::state_sets(decoded.len())?;
     let mut queue = try_queue(decoded.len())?;
     enqueue(&mut states, &mut queue, &pseudo, 0, State::entry())?;
@@ -149,7 +190,7 @@ pub fn verify_program(
                     // R0 must be a readable, non-pointer value at every exit;
                     // only then does the per-type return range apply.
                     let actual = scalar(state.regs[0])?;
-                    if let Some(allowed) = return_range(prog_type, expected_attach_type) {
+                    if let Some(allowed) = return_range(&profile) {
                         if actual.min < allowed.min || actual.max > allowed.max {
                             return Err(VerifyError::UnsupportedOpcode);
                         }
@@ -213,9 +254,7 @@ pub fn verify_program(
                     Kind::Context(base) => {
                         let at = range(base, insn.off, size, context_bytes)
                             .map_err(|_| VerifyError::UnsafeContextAccess)?;
-                        if !context::valid_context(
-                            prog_type, expected_attach_type, at, size, false,
-                        ) {
+                        if !context::valid_context(&profile, at, size, false) {
                             return Err(VerifyError::UnsafeContextAccess);
                         }
                     }
@@ -254,9 +293,7 @@ pub fn verify_program(
                     Kind::Context(base) if !atomic => {
                         let at = range(base, insn.off, size, context_bytes)
                             .map_err(|_| VerifyError::UnsafeContextAccess)?;
-                        if !context::valid_context(
-                            prog_type, expected_attach_type, at, size, true,
-                        ) {
+                        if !context::valid_context(&profile, at, size, true) {
                             return Err(VerifyError::UnsafeContextAccess);
                         }
                     }

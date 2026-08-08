@@ -40,15 +40,11 @@ pub fn is_perfmon_prog_type(t: u32) -> bool {
 /// build-time-selected subset; a type with no entry is `-EINVAL`.
 ///
 /// The built-in set here is exactly the set that can be *executed*:
-/// socket filters plus the cgroup device and network hooks.
-/// `BPF_PROG_TYPE_LSM` is deliberately absent —
-/// `security::bpf_lsm` holds a link registry whose `file_open` hook
-/// executes no program and returns "allow" unconditionally, so
-/// admitting an LSM load would hand userspace an fd standing for a MAC
-/// guarantee that is not enforced. Linux built without `CONFIG_BPF_LSM`
-/// answers those loads with the same EINVAL.
+/// socket filters, the cgroup device and network hooks, and the LSM hooks
+/// this kernel publishes as attach targets.
 /// # C: O(1)
 pub fn prog_type_supported(t: u32) -> bool {
     matches!(t, uapi::prog_type::SOCKET_FILTER | uapi::prog_type::CGROUP_DEVICE
-        | uapi::prog_type::CGROUP_SKB | uapi::prog_type::CGROUP_SOCK_ADDR)
+        | uapi::prog_type::CGROUP_SKB | uapi::prog_type::CGROUP_SOCK_ADDR
+        | uapi::prog_type::LSM)
 }

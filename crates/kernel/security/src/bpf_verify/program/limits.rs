@@ -1,6 +1,11 @@
 //! Scalar ranges for helper arguments and program return values.
 
 use crate::bpf::uapi;
+use crate::bpf_lsm::{Ret, spec};
+use super::Profile;
+
+/// Largest magnitude a program may return as a negative errno.
+pub(super) const MAX_ERRNO: i64 = 4095;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(super) struct Scalar {
@@ -35,10 +40,21 @@ impl Scalar {
 /// filters are the `None` case — their return is a byte count the receive
 /// path clamps, so every value is meaningful.
 /// # C: O(1)
-pub(super) fn return_range(prog_type: u32, expected_attach_type: u32) -> Option<Scalar> {
+pub(super) fn return_range(profile: &Profile) -> Option<Scalar> {
     use uapi::prog_type as p;
-    match prog_type {
+    let expected_attach_type = profile.expected_attach_type;
+    match profile.prog_type {
         p::SOCKET_FILTER => None,
+        // An LSM hook's return contract is the hook's, not the program
+        // type's: an int-returning hook admits success or a negative
+        // errno, a bool hook admits only the two truth values, and a
+        // void hook constrains nothing beyond R0 being a live scalar.
+        p::LSM => match profile.hook.map(|hook| spec(hook).ret) {
+            Some(Ret::Errno) => Some(Scalar::range(-MAX_ERRNO, 0)),
+            Some(Ret::Bool) => Some(Scalar::range(0, 1)),
+            Some(Ret::Void) => None,
+            None => Some(Scalar::exact(0)),
+        },
         p::CGROUP_SKB if expected_attach_type == uapi::attach_type::CGROUP_INET_EGRESS =>
             Some(Scalar::range(0, 3)),
         p::CGROUP_SOCK_ADDR if matches!(expected_attach_type,

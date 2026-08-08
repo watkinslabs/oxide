@@ -7,7 +7,7 @@
 use vfs::InodeRef;
 
 use super::super::{Insn, VerifyError};
-use super::limits::Scalar;
+use super::limits::{MAX_ERRNO, Scalar};
 use super::state::{Kind, State, map_at, mark_stack, range, scalar, stack_ready};
 use crate::bpf::uapi;
 
@@ -61,9 +61,6 @@ pub(super) fn verify_helper(
     state.regs[0] = result;
     Ok(())
 }
-
-/// Largest magnitude a program may return as a negative errno.
-const MAX_ERRNO: i64 = 4095;
 
 /// R1 must be a map, R2 an initialized stack slice at least `key_size`
 /// wide; the result is a nullable pointer into that map's value.

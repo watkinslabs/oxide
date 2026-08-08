@@ -40,13 +40,9 @@ pub(super) fn get_fd_by_id(a: &Attr, caps: Caps) -> Result<i64, Errno> {
     install_fd(inode, "bpf-map")
 }
 
+/// `BPF_MAP_GET_NEXT_ID` over the one map id registry. # C: O(live maps)
 pub(super) fn get_next_id(a: &Attr, attr_ptr: u64, caps: Caps) -> Result<i64, Errno> {
-    use uapi::off::object_id as o;
-    attr::check_attr(a, o::NEXT_LAST_END)?;
-    if !caps.sys_admin { return Err(Errno::Eperm); }
-    let next = next_live_map_id(a.u32_at(o::START_ID)).ok_or(Errno::Enoent)?;
-    user::write_bytes(attr_ptr.checked_add(o::NEXT_ID as u64).ok_or(Errno::Efault)?, &next.to_ne_bytes())?;
-    Ok(0)
+    super::command::next_id::get_next_id(a, attr_ptr, caps, next_live_map_id)
 }
 
 /// Allocate one validated map inode and its backing storage.

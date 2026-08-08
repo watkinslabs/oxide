@@ -3,9 +3,8 @@
 // attachment behind it exists.
 
 extern crate alloc;
-use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use sync::{Spinlock, TaskList as TaskListClass};
 use syscall::errno::Errno;
@@ -13,15 +12,11 @@ use vfs::{FileType, InodeRef, InodeBuilder, default_inode_ops, default_file_ops,
 
 use super::{BPF_FD_MODE, ids};
 
-static NEXT_CGROUP_LINK_ID: AtomicU32 = AtomicU32::new(1);
-
-enum CgroupLinkIdSlot {
-    Unsettled,
-    Settled(alloc::sync::Weak<vfs::Inode>),
-}
-
-static CGROUP_LINKS_BY_ID: Spinlock<BTreeMap<u32, CgroupLinkIdSlot>, TaskListClass> =
-    Spinlock::new(BTreeMap::new());
+#[path = "link/registry.rs"]
+mod registry;
+pub(crate) use registry::{
+    cancel_link_id, link_by_id, next_live_link_id, reserve_link_id, settle_link_id,
+};
 
 /// fd-backed BPF LSM link. Dropping the last fd reference removes the
 /// registry entry.
@@ -35,12 +30,18 @@ impl Drop for BpfLsmLinkInode {
     fn drop(&mut self) { crate::bpf_lsm::unregister(self.id); }
 }
 
-/// Build the `Arc<Inode>` for a BPF LSM link fd. # C: O(1)
+/// Build the `Arc<Inode>` for a BPF LSM link fd, and give it a link id in
+/// the same registry the cgroup links use — one id space for every link
+/// kind, so an LSM link is reachable by LINK_GET_FD_BY_ID and appears in
+/// a LINK_GET_NEXT_ID walk. The object and its hook registration come
+/// into being together, so the id needs no reservation window. # C: O(log links)
 pub fn make_bpf_lsm_link_inode(link: BpfLsmLinkInode) -> InodeRef {
-    InodeBuilder::new(ids::INO_LINK, mk_mode(FileType::CharDev, BPF_FD_MODE),
+    let inode = InodeBuilder::new(ids::INO_LINK, mk_mode(FileType::CharDev, BPF_FD_MODE),
         default_inode_ops(), default_file_ops())
         .private(Arc::new(link))
-        .build()
+        .build();
+    registry::publish_link_id(&inode);
+    inode
 }
 
 /// fd-backed cgroup link. The cgroup hierarchy owns attachment state; the
@@ -49,16 +50,58 @@ pub struct BpfCgroupLinkInode {
     pub(super) id: u32,
     pub(super) cgid: u64,
     pub(super) attach_type: cgroup::CgroupBpfAttachType,
-    pub(super) _prog: InodeRef,
+    /// The program this link runs. Linux keeps it on the link and lets
+    /// the effective arrays derive from it, so LINK_UPDATE swaps this and
+    /// the cgroup entry together rather than leaving two answers.
+    prog: Spinlock<InodeRef, TaskListClass>,
     attached: AtomicBool,
+}
+
+impl BpfCgroupLinkInode {
+    /// Program currently attached through this link. # C: O(1)
+    pub(crate) fn prog(&self) -> InodeRef { Arc::clone(&*self.prog.lock()) }
+
+    /// `cgroup_bpf_replace()`: swap the program this link runs, keeping
+    /// its position in the cgroup's direct list. A link whose attachment
+    /// is already released is `-ENOLINK`; a caller naming the wrong
+    /// currently-attached program is `-EPERM`.
+    /// # C: O(descendants * effective programs)
+    pub(crate) fn replace_prog(
+        &self,
+        new_prog: InodeRef,
+        expect: Option<&InodeRef>,
+    ) -> Result<i64, Errno> {
+        let mut current = self.prog.lock();
+        if !self.attached.load(Ordering::Acquire) { return Err(Errno::Enolink); }
+        if let Some(expect) = expect {
+            if !Arc::ptr_eq(&*current, expect) { return Err(Errno::Eperm); }
+        }
+        cgroup::bpf::replace_link(
+            self.cgid, self.attach_type, self.id as u64,
+            Arc::clone(&new_prog), Some(&*current),
+        ).map_err(replace_error)?;
+        *current = new_prog;
+        Ok(0)
+    }
+
+    /// `BPF_LINK_DETACH`: drop the cgroup attachment while the descriptor
+    /// stays open. The id remains resolvable — a detached link is still a
+    /// live object — and a second detach is a no-op success, matching a
+    /// link whose cgroup went away underneath it. # C: O(descendants * programs)
+    pub(crate) fn detach(&self) -> Result<i64, Errno> {
+        if self.attached.swap(false, Ordering::AcqRel) {
+            let _ = cgroup::bpf::detach_link(self.cgid, self.attach_type, self.id as u64);
+        }
+        Ok(0)
+    }
 }
 
 impl Drop for BpfCgroupLinkInode {
     fn drop(&mut self) {
         if self.attached.load(Ordering::Acquire) {
             let _ = cgroup::bpf::detach_link(self.cgid, self.attach_type, self.id as u64);
-            CGROUP_LINKS_BY_ID.lock().remove(&self.id);
         }
+        registry::forget_link_id(self.id);
     }
 }
 
@@ -70,61 +113,20 @@ pub fn make_bpf_cgroup_link_inode(link: BpfCgroupLinkInode) -> InodeRef {
         .build()
 }
 
-fn reserve_cgroup_link_id() -> u32 {
-    loop {
-        let id = NEXT_CGROUP_LINK_ID.fetch_add(1, Ordering::Relaxed);
-        if id == 0 { continue; }
-        let mut links = CGROUP_LINKS_BY_ID.lock();
-        if links.contains_key(&id) { continue; }
-        links.insert(id, CgroupLinkIdSlot::Unsettled);
-        return id;
+/// Direct-list outcomes the replace path can produce. `Missing` means the
+/// link has no entry in the list it believed it owned.
+fn replace_error(error: cgroup::BpfAttachError) -> Errno {
+    match error {
+        cgroup::BpfAttachError::Offline | cgroup::BpfAttachError::Missing => Errno::Enolink,
+        cgroup::BpfAttachError::Denied => Errno::Eperm,
+        _ => Errno::Einval,
     }
 }
 
-/// Resolve a settled link by id. A reserved-but-unpublished id answers
-/// `EAGAIN`, matching the window in which the object exists but its
-/// attachment has not been made observable. # C: O(log links)
-pub(crate) fn cgroup_link_by_id(id: u32) -> Result<InodeRef, Errno> {
-    if id == 0 { return Err(Errno::Enoent); }
-    let links = CGROUP_LINKS_BY_ID.lock();
-    match links.get(&id) {
-        Some(CgroupLinkIdSlot::Unsettled) => Err(Errno::Eagain),
-        Some(CgroupLinkIdSlot::Settled(link)) => match link.upgrade() {
-            Some(inode) => Ok(inode),
-            None => Err(Errno::Enoent),
-        },
-        None => Err(Errno::Enoent),
-    }
-}
-
-/// Lowest live link id strictly above `start`. # C: O(live links)
-pub(crate) fn next_live_link_id(start: u32) -> Option<u32> {
-    let mut links = CGROUP_LINKS_BY_ID.lock();
-    let id = links.range((core::ops::Bound::Excluded(start), core::ops::Bound::Unbounded))
-        .find_map(|(id, slot)| match slot {
-            CgroupLinkIdSlot::Settled(link) if link.strong_count() != 0 => Some(*id),
-            _ => None,
-        });
-    links.retain(|_, slot| match slot {
-        CgroupLinkIdSlot::Unsettled => true,
-        CgroupLinkIdSlot::Settled(link) => link.strong_count() != 0,
-    });
-    id
-}
-
-fn settle_cgroup_link_id(id: u32, inode: &InodeRef) {
-    let old = CGROUP_LINKS_BY_ID.lock()
-        .insert(id, CgroupLinkIdSlot::Settled(Arc::downgrade(inode)));
-    hal::kassert!(
-        matches!(old, Some(CgroupLinkIdSlot::Unsettled)),
-        "settling an unreserved BPF cgroup link ID"
-    );
-}
-
-fn cancel_cgroup_link_id(id: u32) {
-    let mut links = CGROUP_LINKS_BY_ID.lock();
-    if matches!(links.get(&id), Some(CgroupLinkIdSlot::Unsettled)) { links.remove(&id); }
-}
+/// Resolve a settled link by id, for the cgroup ordering anchors that
+/// name a link by `BPF_F_ID`. The caller re-checks the kind.
+/// # C: O(log links)
+pub(crate) fn cgroup_link_by_id(id: u32) -> Result<InodeRef, Errno> { link_by_id(id) }
 
 /// Primed cgroup link resources. Attachment happens while the ID remains
 /// unobservable and fd publication cannot fail. # C: O(fd words + log links)
@@ -146,7 +148,7 @@ impl BpfCgroupLinkPrimer {
         let link = self.inode.private::<BpfCgroupLinkInode>()
             .expect("BPF cgroup primer inode");
         link.attached.store(true, Ordering::Release);
-        settle_cgroup_link_id(self.id, &self.inode);
+        settle_link_id(self.id, &self.inode);
         self.fdt.fd_install(self.fd, Arc::clone(&self.file));
         self.settled = true;
         self.fd as i64
@@ -156,7 +158,7 @@ impl BpfCgroupLinkPrimer {
 impl Drop for BpfCgroupLinkPrimer {
     fn drop(&mut self) {
         if !self.settled {
-            cancel_cgroup_link_id(self.id);
+            cancel_link_id(self.id);
             self.fdt.put_unused_fd(self.fd);
         }
     }
@@ -185,9 +187,10 @@ pub(crate) fn prime_bpf_cgroup_link_with(
     use vfs::{File, OpenFlags};
     let fd = fdt.get_unused_fd_flags(OpenFlags::O_CLOEXEC, limit)
         .map_err(|_| Errno::Emfile)?;
-    let id = reserve_cgroup_link_id();
+    let id = reserve_link_id();
     let inode = make_bpf_cgroup_link_inode(BpfCgroupLinkInode {
-        id, cgid, attach_type, _prog: prog, attached: AtomicBool::new(false),
+        id, cgid, attach_type, prog: Spinlock::new(prog),
+        attached: AtomicBool::new(false),
     });
     let dentry = vfs::dcache::d_alloc_pseudo(
         "bpf-link", Arc::clone(&inode), &crate::anon_dname::ANON_INODE_OPS,

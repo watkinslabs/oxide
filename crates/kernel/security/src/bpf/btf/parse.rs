@@ -27,6 +27,20 @@ impl BtfIndex {
     #[cfg(test)]
     /// # C: O(1)
     pub(super) fn layouts(&self) -> &[Layout] { &self._layouts }
+    /// Name of the `BTF_KIND_FUNC` record at `id`, read out of `raw`'s
+    /// string section. `None` when `id` names no type or names a kind
+    /// other than a function, which is how an attach target that is not a
+    /// function is refused without a second type table.
+    /// # C: O(name length)
+    pub(super) fn func_name<'a>(&self, raw: &'a [u8], id: u32) -> Option<&'a [u8]> {
+        let t = id.checked_sub(1).and_then(|i| self._types.get(i as usize))?;
+        if t.kind != Kind::Func { return None; }
+        let strings = raw.get(self._strings.clone())?;
+        let off = t.name_off as usize;
+        let end = strings.get(off..)?.iter().position(|b| *b == EMPTY_STRING)?;
+        Some(&strings[off..off + end])
+    }
+
     #[cfg(test)]
     /// # C: O(1)
     pub(super) fn type_by_id(&self, id: u32) -> Option<&BtfType> {

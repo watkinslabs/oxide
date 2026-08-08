@@ -168,7 +168,7 @@ pub use cgroup_device::verify_cgroup_device;
 
 #[path = "bpf_verify/program.rs"]
 mod program;
-pub use program::{SK_FILTER_CONTEXT_BYTES, context, verify_program};
+pub use program::{SK_FILTER_CONTEXT_BYTES, context, verify_lsm_program, verify_program};
 
 #[cfg(test)]
 mod tests {

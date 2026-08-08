@@ -12,7 +12,7 @@ use super::attr::{self, Attr, Caps};
 use super::uapi;
 use super::user;
 use super::install_fd;
-use inode::make_bpf_prog_inode_with_contract;
+use inode::make_bpf_prog_inode_with_attach_target;
 
 #[path = "prog/inode.rs"]
 pub(crate) mod inode;
@@ -34,33 +34,42 @@ const LICENSE_MAX: usize = 128;
 pub(super) fn load(a: &Attr, caps: Caps) -> Result<i64, Errno> {
     let p = attr::prog_load_check(a, caps, attr::unpriv_bpf_disabled())?;
     let total = p.insn_cnt as usize * uapi::INSN_SIZE as usize;
-    let mut insns = expected_attach_then(
-        p.prog_type, p.expected_attach_type, || {
-            // Linux copies insns then license before `find_prog_type()`.
-            let insns = user::read_vec(p.insns, total)?;
-            read_license(p.license)?;
-            Ok(insns)
-        },
-    )?;
+    let (mut insns, license) = load_check_attach_then(&p, || {
+        // Linux copies insns then license before `find_prog_type()`.
+        let insns = user::read_vec(p.insns, total)?;
+        let license = read_license(p.license)?;
+        Ok((insns, license))
+    })?;
     if !attr::prog_type_supported(p.prog_type) { return Err(Errno::Einval); }
     let maps = relocate_maps(&mut insns)?;
-    let enforce_expected_attach_type =
-        verify(p.prog_type, p.expected_attach_type, &insns, &maps)?;
-    let inode = make_bpf_prog_inode_with_contract(
-        p.prog_type, p.expected_attach_type, enforce_expected_attach_type, insns, maps,
+    let enforce_expected_attach_type = verify(&p, gpl_compatible(&license), &insns, &maps)?;
+    let inode = make_bpf_prog_inode_with_attach_target(
+        p.prog_type, p.expected_attach_type, enforce_expected_attach_type,
+        p.attach_btf_id, insns, maps,
     );
     install_fd(inode, "bpf-prog")
 }
 
-/// Linux validates the expected attach contract before either user copy.
+/// Linux validates the attach contract before either user copy.
 /// # C: O(1) plus `next`
-fn expected_attach_then<T>(
-    prog_type: u32,
-    expected_attach_type: u32,
+fn load_check_attach_then<T>(
+    p: &attr::ProgLoad,
     next: impl FnOnce() -> Result<T, Errno>,
 ) -> Result<T, Errno> {
-    attr::expected_attach_type_check(prog_type, expected_attach_type)?;
+    attr::prog_load_check_attach(p.prog_type, p.expected_attach_type, p.attach_btf_id)?;
     next()
+}
+
+/// Licenses that place a program under the kernel's own terms, which is
+/// what a hook may demand before it will run one.
+const GPL_LICENSES: [&[u8]; 6] = [
+    b"GPL", b"GPL v2", b"GPL and additional rights",
+    b"Dual BSD/GPL", b"Dual MIT/GPL", b"Dual MPL/GPL",
+];
+
+/// Whether the declared license is one of those terms. # C: O(1)
+fn gpl_compatible(license: &[u8]) -> bool {
+    GPL_LICENSES.contains(&license)
 }
 
 /// Resolve userspace map fds embedded in `BPF_LD_IMM64`, replace them with
@@ -129,32 +138,52 @@ fn read_license(ptr: u64) -> Result<Vec<u8>, Errno> {
 /// Structural bytecode verification. Each advertised type has a matching
 /// runner and verifier.
 ///
-/// The structural rejects all map onto verifier failures returning
-/// `-EINVAL`: an out-of-range jump target, a final instruction that is
-/// neither an exit nor a jump, an invalid register number, or an unknown
-/// opcode. # C: O(insn_cnt)
+/// The structural rejects map onto verifier failures returning `-EINVAL`:
+/// an out-of-range jump target, a final instruction that is neither an exit
+/// nor a jump, an invalid register number, or an unknown opcode. An access
+/// the program's context does not admit is `-EACCES` instead — the program
+/// is well formed and the access is refused, which is a different answer
+/// from "this is not a program". # C: O(insn_cnt)
 fn verify(
-    prog_type: u32,
-    expected_attach_type: u32,
+    p: &attr::ProgLoad,
+    gpl: bool,
     insns: &[u8],
     maps: &[InodeRef],
 ) -> Result<bool, Errno> {
-    let verdict = match prog_type {
+    let verdict = match p.prog_type {
         uapi::prog_type::CGROUP_DEVICE =>
             crate::bpf_verify::verify_cgroup_device(insns).map(|()| false),
         uapi::prog_type::SOCKET_FILTER | uapi::prog_type::CGROUP_SKB
             | uapi::prog_type::CGROUP_SOCK_ADDR => {
             crate::bpf_verify::verify_program(
-                prog_type, expected_attach_type, insns, maps,
+                p.prog_type, p.expected_attach_type, insns, maps,
             )
         }
+        uapi::prog_type::LSM =>
+            crate::bpf_verify::verify_lsm_program(lsm_hook(p, gpl)?, insns, maps)
+                .map(|()| false),
         _ => return Err(Errno::Einval),
     };
     verdict.map_err(|error| match error {
         crate::bpf_verify::VerifyError::TooManyInsns => Errno::E2big,
         crate::bpf_verify::VerifyError::NoMemory => Errno::Enomem,
+        crate::bpf_verify::VerifyError::UnsafeContextAccess => Errno::Eacces,
         _ => Errno::Einval,
     })
+}
+
+/// Hook an LSM program attaches to, resolved against the kernel's own type
+/// information. The attach direction, the license and the attach target are
+/// all part of the same verification step, so each failure is `-EINVAL`:
+/// only `BPF_LSM_MAC` is a hook attachment, a hook will not run a program
+/// released under other terms, and a target that names no published hook
+/// stub has nothing to attach to.
+/// # C: O(hook count)
+fn lsm_hook(p: &attr::ProgLoad, gpl: bool) -> Result<crate::bpf_lsm::Hook, Errno> {
+    if p.expected_attach_type != uapi::attach_type::LSM_MAC || !gpl {
+        return Err(Errno::Einval);
+    }
+    super::btf::lsm_hook_by_btf_id(p.attach_btf_id).ok_or(Errno::Einval)
 }
 
 /// `bpf_prog_attach()` / `bpf_prog_detach()`. # C: O(descendants * programs)

@@ -7,6 +7,8 @@
 //! rather than read back as a zero the program would trust.
 
 use crate::bpf::uapi;
+use crate::bpf_lsm::{self, Hook};
+use super::Profile;
 
 /// `struct __sk_buff` field offsets. Named because every one of them is an
 /// ABI position a compiled filter encodes directly in its instructions.
@@ -68,11 +70,12 @@ pub const SK_FILTER_CONTEXT_BYTES: usize = sk_buff::SIZE;
 /// Context window a cgroup program's pointer arithmetic may address.
 const CGROUP_CONTEXT_BYTES: usize = 64;
 
-/// Upper bound on context-relative addressing for one program type.
+/// Upper bound on context-relative addressing for one program.
 /// # C: O(1)
-pub(super) fn context_size(prog_type: u32) -> usize {
-    match prog_type {
-        uapi::prog_type::SOCKET_FILTER => SK_FILTER_CONTEXT_BYTES,
+pub(super) fn context_size(profile: &Profile) -> usize {
+    match (profile.prog_type, profile.hook) {
+        (uapi::prog_type::SOCKET_FILTER, _) => SK_FILTER_CONTEXT_BYTES,
+        (uapi::prog_type::LSM, Some(hook)) => bpf_lsm::context_bytes(hook),
         _ => CGROUP_CONTEXT_BYTES,
     }
 }
@@ -80,21 +83,37 @@ pub(super) fn context_size(prog_type: u32) -> usize {
 /// Whether one context access is admitted for this program type.
 /// # C: O(1)
 pub(super) fn valid_context(
-    prog_type: u32,
-    expected_attach_type: u32,
+    profile: &Profile,
     offset: usize,
     size: usize,
     write: bool,
 ) -> bool {
-    match prog_type {
+    match profile.prog_type {
         uapi::prog_type::SOCKET_FILTER => sk_filter_access(offset, size, write),
         uapi::prog_type::CGROUP_SKB =>
             !write && size == sk_buff::WORD
                 && matches!(offset, sk_buff::LEN | sk_buff::PROTOCOL | sk_buff::IFINDEX),
         uapi::prog_type::CGROUP_SOCK_ADDR =>
-            sock_addr_access(expected_attach_type, offset, size, write),
+            sock_addr_access(profile.expected_attach_type, offset, size, write),
+        uapi::prog_type::LSM =>
+            profile.hook.is_some_and(|hook| lsm_access(hook, offset, size, write)),
         _ => false,
     }
+}
+
+/// LSM hook context: one register-wide slot per declared hook argument,
+/// then the slot holding the return value the chain has produced so far.
+/// A slot is read whole or not at all, nothing past the last slot is
+/// addressable, and no slot is writable.
+///
+/// An argument slot holds a typed kernel pointer. This verifier proves no
+/// field access through it, so a program may observe the slot's value and
+/// may never follow it; a load through the loaded value is refused as an
+/// access through a non-pointer.
+/// # C: O(1)
+fn lsm_access(hook: Hook, offset: usize, size: usize, write: bool) -> bool {
+    !write && size == bpf_lsm::SLOT_BYTES && offset % bpf_lsm::SLOT_BYTES == 0
+        && offset < bpf_lsm::context_bytes(hook)
 }
 
 /// Covers `[start, start + size)` entirely within `[from, to)`. # C: O(1)
