@@ -47,6 +47,9 @@ pub const IPV6_HOPLIMIT: i32 = 52;
 pub const IPV6_HOPOPTS: i32 = 54;
 pub const IPV6_RTHDR: i32 = 57;
 pub const IPV6_DSTOPTS: i32 = 59;
+/// `IPV6_RECVPATHMTU`'s notification, which is not gated by a `Want` bit: the
+/// notification only exists on a socket that asked for it.
+pub const IPV6_PATHMTU: i32 = 61;
 pub const IPV6_TCLASS: i32 = 67;
 pub const IPV6_ORIGDSTADDR: i32 = 74;
 pub const IPV6_RECVFRAGSIZE: i32 = 77;
@@ -145,6 +148,10 @@ pub struct RxMeta {
     /// `(header kind, whole header bytes)`, in the order they arrived.
     pub ext_headers: Vec<(u8, Vec<u8>)>,
     pub scope_id: u32,
+    /// A drained path-MTU notification. Present only when this "receive" IS
+    /// the notification, in which case it is the WHOLE control answer — the
+    /// datagram queue was never consulted.
+    pub pathmtu: Option<crate::sock_opts::sol_ipv6::pathmtu::PathMtu>,
 }
 
 /// `ip6_flowinfo`: the traffic class and flow label, without the version
@@ -157,6 +164,15 @@ pub fn flowinfo(traffic_class: u8, flow_label: u32) -> u32 {
 /// control buffer carries them. # C: O(headers)
 pub fn plan(want: &Want, meta: &RxMeta) -> Vec<Msg> {
     let mut out = Vec::new();
+    // A drained path-MTU notification is the whole answer, and it is NOT
+    // gated by a receive-option bit here: the cell it came from is only ever
+    // filled on a socket that enabled the option, so a second gate could only
+    // ever drop a notification the socket asked for.
+    if let Some(note) = &meta.pathmtu {
+        out.push(Msg::raw(SOL_IPV6, IPV6_PATHMTU,
+            &crate::sock_opts::sol_ipv6::pathmtu::mtuinfo(note)));
+        return out;
+    }
     if !want.any() { return out; }
     // The segmentation size of a coalesced receive precedes the IP-level
     // ancillary data on both families. Whether it exists at all is the

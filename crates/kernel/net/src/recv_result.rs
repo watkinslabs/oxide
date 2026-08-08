@@ -42,6 +42,10 @@ pub struct Received {
     /// the reader can split the payload back into datagrams. `None` when this
     /// receive is one datagram, which is when no such control message exists.
     pub gro: Option<i32>,
+    /// `IPV6_RECVPATHMTU`: this receive drained the socket's path-MTU
+    /// notification instead of the datagram queue, so it carries no payload
+    /// and exactly one control message.
+    pub pathmtu: Option<crate::sock_opts::sol_ipv6::pathmtu::PathMtu>,
 }
 
 impl Received {
@@ -78,6 +82,19 @@ impl Received {
             flowinfo: self.flowinfo,
             ext_headers: self.ext_headers.clone(),
             scope_id: self.peer6.map_or(0, |(_, _, scope)| scope),
+            pathmtu: self.pathmtu,
+        }
+    }
+
+    /// The receive one drained path-MTU notification produces: no payload, and
+    /// the unreachable destination as the peer name — so a caller that passed
+    /// `msg_name` learns which destination the notification is about.
+    /// # C: O(1)
+    pub fn path_mtu(note: crate::sock_opts::sol_ipv6::pathmtu::PathMtu) -> Self {
+        Self {
+            peer6: Some((crate::Ipv6Addr(note.dst), 0, note.scope_id)),
+            pathmtu: Some(note),
+            ..Default::default()
         }
     }
 }

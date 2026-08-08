@@ -71,6 +71,9 @@ pub struct Ipv6Opts {
     headers: Spinlock<[Option<Vec<u8>>; Sticky::COUNT], LockClass>,
     /// Flow labels this socket holds a reference on.
     labels: Spinlock<Vec<u32>, LockClass>,
+    /// `IPV6_RECVPATHMTU`: ONE pending path-MTU notification, replaced in
+    /// place. Deliberately not the extended-error queue — see `pathmtu`.
+    pathmtu: Spinlock<Option<super::pathmtu::PathMtu>, LockClass>,
     router_alert: Arc<Ipv6RouterAlert>,
 }
 
@@ -101,6 +104,7 @@ impl Default for Ipv6Opts {
             sticky_pktinfo: Spinlock::new(([0u8; 16], 0)),
             headers: Spinlock::new([const { None }; Sticky::COUNT]),
             labels: Spinlock::new(Vec::new()),
+            pathmtu: Spinlock::new(None),
             router_alert: Arc::new(Ipv6RouterAlert {
                 selector: AtomicI32::new(crate::router_alert::V6_NO_SLOT),
                 isolate: AtomicBool::new(false),
@@ -234,4 +238,16 @@ impl Ipv6Opts {
     }
     /// Every label this socket still holds, for teardown. # C: O(labels)
     pub fn take_labels(&self) -> Vec<u32> { core::mem::take(&mut *self.labels.lock()) }
+
+    /// Post one path-MTU notification. The cell holds ONE: an unread earlier
+    /// notification is replaced, never queued behind. # C: O(1)
+    pub fn set_pathmtu(&self, note: super::pathmtu::PathMtu) {
+        *self.pathmtu.lock() = Some(note);
+    }
+    /// Whether a notification is waiting, without consuming it. # C: O(1)
+    pub fn pathmtu_pending(&self) -> bool { self.pathmtu.lock().is_some() }
+    /// Consume the pending notification. # C: O(1)
+    pub fn take_pathmtu(&self) -> Option<super::pathmtu::PathMtu> {
+        self.pathmtu.lock().take()
+    }
 }
