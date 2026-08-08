@@ -93,12 +93,17 @@ pub fn sys_unshare(args: &SyscallArgs) -> i64 {
     let bits = ns_bits_from_flags(flags);
     if bits == 0 && !unshare_files && !unshare_fs && !sysvsem { return 0; }
     // Linux `unshare_nsproxy_namespaces`: ONE capability test covers the whole
-    // requested namespace set, in the user namespace the new set will be owned
+    // requested namespace set, in the user namespace the new set will be OWNED
     // by. `CLONE_NEWUSER` alone is exempt — creating a user namespace is
-    // unprivileged. Checking against the caller's own user namespace is the
-    // same decision as checking against the not-yet-allocated child, because
-    // `has_cap_for` accepts the caller's namespace and every descendant of it.
-    if needs_sys_admin(flags) {
+    // unprivileged.
+    //
+    // When CLONE_NEWUSER rides along, that owning namespace is the one this
+    // call is about to create, so the test cannot happen here: it runs inside
+    // `apply_new_namespaces`, immediately after the allocation. Testing the
+    // caller's OWN namespace instead — as this did — is a different and
+    // strictly stricter decision, and it is what made rootless
+    // `unshare(CLONE_NEWUSER|CLONE_NEWNS)` fail closed with EPERM.
+    if needs_sys_admin(flags) && (flags & CLONE_NEWUSER) == 0 {
         if let Err(error) = may_unshare_namespaces(&cur) {
             return -(error.as_i32() as i64);
         }
@@ -139,7 +144,8 @@ pub fn sys_unshare(args: &SyscallArgs) -> i64 {
     if sysvsem {
         let vtg = cur.vtgid.load(core::sync::atomic::Ordering::Acquire);
         let tg = cur.tgid.load(core::sync::atomic::Ordering::Acquire);
-        ipc::sysv::sem::exit_sem(if vtg != 0 { vtg } else { tg });
+        ipc::sysv::sem::undo::exit_sem(&cur.sysvsem_undo,
+            if vtg != 0 { vtg } else { tg });
     }
     if let Some(table) = new_fd_table {
         // SAFETY: current task is the sole writer of its fd-table owner slot.
@@ -171,6 +177,14 @@ pub(crate) fn apply_new_namespaces(task: &sched::Task,
     if has_bit(bits, USER_BIT) {
         snapshot.user = allocate_identity(NamespaceKind::User, &current_user,
             Some(current_user.clone()))?;
+        // Linux `create_user_ns`'s `ns->owner = new->euid`. This is what lets
+        // the creator hold every capability INSIDE the namespace it just made
+        // without holding any outside it, and it must be recorded before the
+        // namespace is reachable — the CAP_SYS_ADMIN gate for the rest of the
+        // requested set is decided against it moments later.
+        ::user_namespace::register_owner(&snapshot.user,
+            task.creds.euid.load(core::sync::atomic::Ordering::Acquire))
+            .map_err(|_| Errno::Eio)?;
         // Linux `create_user_ns`: the new namespace remembers the account
         // that made it and the `RLIMIT_NPROC` ceiling that account was under
         // (`set_userns_rlimit_max(ns, UCOUNT_RLIMIT_NPROC, enforced_nproc_rlimit())`).
@@ -180,6 +194,17 @@ pub(crate) fn apply_new_namespaces(task: &sched::Task,
             sched::ucounts::register_user_namespace(&creator, snapshot.user.id().as_u64());
         }
         snapshot.user.register_finalizer(forget_ucounts_link);
+        // Linux `unshare_nsproxy_namespaces`' `ns_capable(new_cred->user_ns,
+        // CAP_SYS_ADMIN)`, tested with the caller's CURRENT credentials against
+        // the namespace that will own the rest of the set. It cannot run before
+        // the allocation above: the whole point is that the creator is granted
+        // the capability BY having created this namespace, which is how
+        // rootless `unshare(CLONE_NEWUSER|CLONE_NEWNS)` succeeds.
+        if bits & !(1u64 << USER_BIT) != 0
+            && !nscg::proc_ns::has_cap_for(task, &snapshot.user.pin(), sched::cap::SYS_ADMIN)
+        {
+            return Err(Errno::Eperm);
+        }
     }
     let owner_user = snapshot.user.clone();
 
@@ -267,6 +292,12 @@ pub(crate) fn apply_new_namespaces(task: &sched::Task,
     }
 
     task.replace_namespace_set(snapshot).map_err(|_| Errno::Esrch)?;
+    // Linux `set_cred_user_ns`, run with `commit_creds` — AFTER the namespace
+    // set is published, never before. Full capability sets scoped to the OLD
+    // user namespace would be an escalation rather than a grant, and every
+    // check above this line is decided with the credentials the caller
+    // actually had.
+    if has_bit(bits, USER_BIT) { task.creds.enter_new_user_namespace(); }
     if let Some(namespace) = network {
         task.replace_network_namespace(namespace).map_err(|_| Errno::Esrch)?;
     }

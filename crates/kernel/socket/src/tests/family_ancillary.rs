@@ -122,7 +122,7 @@ fn an_ipv6_socket_runs_the_ipv6_rule_and_its_v4_mapped_fallback_runs_the_ipv4_on
     let mut mapped = [0u8; 16];
     mapped[10] = 0xff; mapped[11] = 0xff; mapped[12..].copy_from_slice(&[10, 0, 0, 1]);
     let address = crate::address::InetAddress::V6 { ip: net::Ipv6Addr(mapped), port: 53,
-        scope_id: 0 };
+        scope_id: 0, flowinfo: 0 };
     let settled = admit(&ctx, &udp6, &cmsg(SOL_IP, IP_TTL, &7i32.to_ne_bytes()),
         Some(&address)).unwrap();
     assert_eq!(settled.raw4.ttl, Some(7));

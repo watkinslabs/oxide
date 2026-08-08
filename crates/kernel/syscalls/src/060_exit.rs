@@ -210,15 +210,19 @@ pub fn do_exit(status: i32) -> i64 {
                 let vt = task.vtid.load(Ordering::Acquire);
                 ipc::live::futex::exit_pi_state_list(if vt != 0 { vt } else { task.tid });
             }
-            // SysV SEM_UNDO recovery (Linux do_exit -> exit_sem): adjustments
-            // registered by semop(SEM_UNDO) are applied when the LAST thread of
-            // the group exits, which is where the undo list is keyed — a
-            // pthread_exit from one thread must not release semaphores its
-            // siblings are still using.
-            if task.thread_group.is_single_member() {
+            // SysV SEM_UNDO recovery (Linux do_exit -> exit_sem): this task
+            // drops its reference on the adjustment list, and the adjustments
+            // are applied only when the LAST holder does. Unconditional, and
+            // NOT gated on the thread group: what shares the list is
+            // CLONE_SYSVSEM, so the refcount — not the group — is what decides
+            // whether a pthread_exit may release semaphores. Gating on the
+            // group instead lost the adjustments of a clone(CLONE_SYSVSEM)
+            // child that was not a thread.
+            {
                 let vtg = task.vtgid.load(Ordering::Acquire);
                 let tg = task.tgid.load(Ordering::Acquire);
-                ipc::sysv::sem::exit_sem(if vtg != 0 { vtg } else { tg });
+                ipc::sysv::sem::undo::exit_sem(&task.sysvsem_undo,
+                    if vtg != 0 { vtg } else { tg });
             }
             // Final `put_cred` for the keyring state (Linux `exit_creds`):
             // drop the thread keyring, the assumed authority, the `jit_keyring`

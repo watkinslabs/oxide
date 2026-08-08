@@ -119,6 +119,12 @@ pub enum RegisterOp {
     SyncCancel { arg: u64 },
     Query { arg: u64, nr: u32 },
     SendMsgRing { arg: u64 },
+    /// `IORING_REGISTER_IOWQ_MAX_WORKERS` — two counts in, the previous two
+    /// out.
+    IowqMaxWorkers { arg: u64 },
+    /// `IORING_REGISTER_IOWQ_AFF` / `IORING_UNREGISTER_IOWQ_AFF`; `arg == 0`
+    /// is the unregistering form.
+    IowqAff { arg: u64, len: u32 },
 }
 
 /// A decoded `io_uring_register(2)` call.
@@ -130,6 +136,10 @@ pub struct Request {
     pub opcode: u32,
     pub op: RegisterOp,
 }
+
+/// `nr_args` `IORING_REGISTER_IOWQ_MAX_WORKERS` takes: one count per work
+/// class, and there are two classes.
+pub const IOWQ_MAX_WORKERS_ARGS: u32 = 2;
 
 /// Opcodes this kernel recognises but cannot execute, each because a whole
 /// mechanism it needs is absent — a worker pool, a per-task registered-ring
@@ -198,6 +208,16 @@ fn ring_op(opcode: u32, arg: u64, nr_args: u32) -> Result<RegisterOp, Errno> {
         IORING_REGISTER_SYNC_CANCEL => one(RegisterOp::SyncCancel { arg }),
         IORING_REGISTER_QUERY => Ok(RegisterOp::Query { arg, nr: nr_args }),
         IORING_REGISTER_SEND_MSG_RING => one(RegisterOp::SendMsgRing { arg }),
+        IORING_REGISTER_IOWQ_MAX_WORKERS => {
+            // Two counts, one per work class, in one array.
+            if arg == 0 || nr_args != IOWQ_MAX_WORKERS_ARGS { return Err(Errno::Einval); }
+            Ok(RegisterOp::IowqMaxWorkers { arg })
+        }
+        IORING_REGISTER_IOWQ_AFF => {
+            if arg == 0 || nr_args == 0 { return Err(Errno::Einval); }
+            Ok(RegisterOp::IowqAff { arg, len: nr_args })
+        }
+        IORING_UNREGISTER_IOWQ_AFF => no_args(RegisterOp::IowqAff { arg: 0, len: 0 }),
         _ => Err(unsupported(opcode)),
     }
 }

@@ -58,11 +58,10 @@ impl ClockOps for Ops {
     fn set_realtime(&mut self, ns: u64) { self.set_to = Some(ns); }
 }
 
-fn clockfd(fd: i32) -> u64 { (((!fd) << 3) | 3) as i32 as i64 as u64 }
+fn clockfd(fd: i32) -> u64 { posix_clock::encode_clockfd(fd) as i64 as u64 }
 
-fn cpu_id(pid: u32, per_thread: bool, measure: i32) -> u64 {
-    let id = ((!pid as i32) << 3) | if per_thread { 4 } else { 0 } | measure;
-    id as i64 as u64
+fn cpu_id(pid: u32, per_thread: bool, measure: CpuMeasure) -> u64 {
+    posix_clock::encode_cpu_clock(pid, per_thread, measure) as i64 as u64
 }
 
 #[test]
@@ -108,12 +107,12 @@ fn every_static_clock_reports_its_own_time_none_aliased_to_another() {
 #[test]
 fn gettime_accepts_the_negative_cpu_clock_encodings_clock_getcpuclockid_returns() {
     let mut ops = Ops::ok();
-    assert_eq!(clock_gettime(&mut ops, cpu_id(1234, false, 2), GOOD), Ok(()));
+    assert_eq!(clock_gettime(&mut ops, cpu_id(1234, false, CpuMeasure::Sched), GOOD), Ok(()));
     assert_eq!(ops.writes, alloc::vec![(GOOD, 0, CPU_NS)]);
     // An encoding naming no live task in the caller's namespace is EINVAL,
     // exactly like `pid_for_clock()` returning NULL.
     let mut ops = Ops { cpu_valid: false, capable: true, ..Ops::default() };
-    assert_eq!(clock_gettime(&mut ops, cpu_id(4242, true, 0), GOOD), Err(Errno::Einval));
+    assert_eq!(clock_gettime(&mut ops, cpu_id(4242, true, CpuMeasure::Prof), GOOD), Err(Errno::Einval));
 }
 
 #[test]
@@ -141,7 +140,7 @@ fn getres_returns_the_real_resolution_and_accepts_a_null_pointer() {
             "COARSE resolution is the real tick period, not a guessed 1ms");
     }
     let mut ops = Ops::ok();
-    assert_eq!(clock_getres(&mut ops, cpu_id(7, false, 0), GOOD), Ok(()));
+    assert_eq!(clock_getres(&mut ops, cpu_id(7, false, CpuMeasure::Prof), GOOD), Ok(()));
     assert_eq!(ops.writes, alloc::vec![(GOOD, 0, TICK_NSEC)],
         "CPUCLOCK_PROF resolution is (NSEC_PER_SEC + HZ - 1) / HZ");
 }
@@ -153,7 +152,7 @@ fn getres_with_a_null_pointer_writes_nothing_but_still_validates() {
     assert!(ops.writes.is_empty());
     assert_eq!(clock_getres(&mut ops, 10, 0), Err(Errno::Einval));
     let mut ops = Ops { cpu_valid: false, ..Ops::default() };
-    assert_eq!(clock_getres(&mut ops, cpu_id(9, false, 2), 0), Err(Errno::Einval),
+    assert_eq!(clock_getres(&mut ops, cpu_id(9, false, CpuMeasure::Sched), 0), Err(Errno::Einval),
         "the getres callback validates the CPU target before the NULL-res shortcut");
 }
 
@@ -196,8 +195,8 @@ fn settime_order_is_clock_then_fault_then_value_then_capability() {
 
 #[test]
 fn settime_on_a_cpu_clock_is_eperm_when_the_target_resolves_and_einval_otherwise() {
-    for id in [CLOCK_PROCESS_CPUTIME_ID as u64, CLOCK_THREAD_CPUTIME_ID as u64,
-        cpu_id(11, false, 2)]
+    for id in [cpu_id(11, false, CpuMeasure::Sched), cpu_id(11, true, CpuMeasure::Sched),
+        cpu_id(0, false, CpuMeasure::Prof)]
     {
         let mut ops = Ops::ok().with(1, 0);
         assert_eq!(clock_settime(&mut ops, id, GOOD), Err(Errno::Eperm));
@@ -205,6 +204,24 @@ fn settime_on_a_cpu_clock_is_eperm_when_the_target_resolves_and_einval_otherwise
         let mut ops = Ops { cpu_valid: false, capable: true, ..Ops::default() }.with(1, 0);
         assert_eq!(clock_settime(&mut ops, id, GOOD), Err(Errno::Einval));
     }
+}
+
+/// The two STATIC CPU ids are their own clock-table entries and carry NO
+/// setter, so they never reach the validate-then-EPERM path the dynamic
+/// encoding takes: the refusal is EINVAL and the value is never even read.
+/// Nothing separates them from an encoding naming pid 0 except provenance.
+#[test]
+fn settime_on_a_static_cpu_clock_is_einval_before_the_value_is_read() {
+    for id in [CLOCK_PROCESS_CPUTIME_ID as u64, CLOCK_THREAD_CPUTIME_ID as u64] {
+        let mut ops = Ops::ok().with(1, 0);
+        assert_eq!(clock_settime(&mut ops, id, GOOD), Err(Errno::Einval));
+        assert!(ops.reads.is_empty(), "no setter callback, so no copy-in");
+        assert!(ops.set_to.is_none());
+    }
+    // The equivalent DYNAMIC encoding — same pid, same scope, same measure —
+    // does have a setter, so it answers EPERM instead.
+    let mut ops = Ops::ok().with(1, 0);
+    assert_eq!(clock_settime(&mut ops, cpu_id(0, true, CpuMeasure::Sched), GOOD), Err(Errno::Eperm));
 }
 
 #[test]
@@ -223,12 +240,12 @@ fn settod_matches_timespec64_valid_settod() {
 
 #[test]
 fn cpu_clock_decode_keeps_the_measure_and_scope_the_encoding_carried() {
-    assert_eq!(classify(cpu_id(31337, true, 1)), Ok(ClockSpec::CpuEncoded {
-        pid: 31337, per_thread: true, measure: CpuMeasure::Virt }));
-    assert_eq!(classify(cpu_id(31337, false, 0)), Ok(ClockSpec::CpuEncoded {
-        pid: 31337, per_thread: false, measure: CpuMeasure::Prof }));
+    assert_eq!(classify(cpu_id(31337, true, CpuMeasure::Virt)), Ok(ClockSpec::CpuEncoded {
+        pid: 31337, per_thread: true, measure: CpuMeasure::Virt, dynamic: true }));
+    assert_eq!(classify(cpu_id(31337, false, CpuMeasure::Prof)), Ok(ClockSpec::CpuEncoded {
+        pid: 31337, per_thread: false, measure: CpuMeasure::Prof, dynamic: true }));
     assert_eq!(classify(CLOCK_PROCESS_CPUTIME_ID as u64), Ok(ClockSpec::CpuEncoded {
-        pid: 0, per_thread: false, measure: CpuMeasure::Sched }));
+        pid: 0, per_thread: false, measure: CpuMeasure::Sched, dynamic: false }));
     assert_eq!(classify(CLOCK_THREAD_CPUTIME_ID as u64), Ok(ClockSpec::CpuEncoded {
-        pid: 0, per_thread: true, measure: CpuMeasure::Sched }));
+        pid: 0, per_thread: true, measure: CpuMeasure::Sched, dynamic: false }));
 }

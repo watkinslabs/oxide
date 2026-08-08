@@ -48,10 +48,13 @@ fn inet_and_inet6_lengths_match_their_structs() {
     let v4 = encoded_sockaddr_in(0x0100_007f, 80u16.to_be());
     assert_eq!(v4.len(), 16);
     assert_eq!(&v4.as_bytes()[8..16], &[0u8; 8], "sin_zero is cleared");
-    let v6 = encoded_sockaddr_in6([0u8; 16], 80u16.to_be(), 3);
+    let v6 = encoded_sockaddr_in6([0u8; 16], 80u16.to_be(), 3, 0);
     assert_eq!(v6.len(), 28);
     assert_eq!(&v6.as_bytes()[4..8], &[0u8; 4], "sin6_flowinfo is zero without IPV6_FLOWINFO_SEND");
     assert_eq!(&v6.as_bytes()[24..28], &3u32.to_ne_bytes(), "sin6_scope_id trails the address");
+    // The word is network order, between the port and the address.
+    let flowed = encoded_sockaddr_in6([0u8; 16], 80u16.to_be(), 3, 0x0012_3456);
+    assert_eq!(&flowed.as_bytes()[4..8], &0x0012_3456u32.to_be_bytes());
 }
 
 #[test]

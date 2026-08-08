@@ -76,6 +76,16 @@ impl SockaddrStorage {
             u16::from_be_bytes([self.bytes[2], self.bytes[3]]), scope))
     }
 
+    /// `sin6_flowinfo`, in host order. The field sits between the port and
+    /// the address, so every `sockaddr_in6` long enough to carry an address
+    /// carries it too — its meaning, not its presence, is what
+    /// `IPV6_FLOWINFO_SEND` decides (`sock_opts::sol_ipv6::sndflow`).
+    /// # C: O(1)
+    pub fn inet6_flowinfo(&self) -> Option<u32> {
+        if self.len < 24 { return None; }
+        Some(u32::from_be_bytes(self.bytes[4..8].try_into().ok()?))
+    }
+
     /// Raw network-order IPv4 fields for `bpf_sock_addr`. # C: O(1)
     pub fn bpf_fields_v4(&self) -> Option<(u32, [u32; 4], u32)> {
         let port = u16::from_ne_bytes([*self.bytes.get(2)?, *self.bytes.get(3)?]) as u32;

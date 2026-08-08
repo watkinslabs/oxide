@@ -17,6 +17,12 @@
 //   rsrc        — registered files, buffers, personalities, buffer groups
 //   pin         — pinned user memory behind registered buffers
 //   personality — credentials an entry runs under
+//   req         — one in-flight request and the ring's in-flight table
+//   defer       — which entries cannot finish inline, and how they are armed
+//   iowq        — the worker pool that runs deferred work
+//   timeout     — armed timeouts, completion-count gates and link timeouts
+//   poll        — armed polls and the poll-armed retry
+//   cancel      — the in-flight search and how a waiting request is ended
 //
 // The ABI numbers, the setup admission ladder, the enter argument forms, the
 // register-opcode ladder and the restriction tables live in
@@ -36,6 +42,12 @@ pub mod register;
 pub mod rsrc;
 pub mod pin;
 pub mod personality;
+pub mod req;
+pub mod defer;
+pub mod iowq;
+pub mod timeout;
+pub mod poll;
+pub mod cancel;
 
 pub use ctx::IoUringInode;
 pub use ring::{make_io_uring_inode, mmap_backing, ring_ctx, ring_of, IoUring};

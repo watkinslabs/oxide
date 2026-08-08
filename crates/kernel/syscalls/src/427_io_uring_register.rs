@@ -107,6 +107,8 @@ fn run(inode: &Arc<IoUringInode>, op: RegisterOp) -> i64 {
         RegisterOp::SendMsgRing { arg }     => work::rings::send_msg_ring(arg),
         RegisterOp::PbufRing { arg }        => work::pbuf::register(inode, arg),
         RegisterOp::UnregisterPbufRing { arg } => work::pbuf::unregister(inode, arg),
+        RegisterOp::IowqMaxWorkers { arg }  => work::iowq::max_workers(inode, arg),
+        RegisterOp::IowqAff { arg, len }    => work::iowq::affinity(arg, len),
     }
 }
 

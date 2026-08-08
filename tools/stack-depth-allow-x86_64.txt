@@ -63,7 +63,17 @@
 # `ContextX86_64` also grew 0x40 -> 0x48 for the user `gs_base` the swapgs
 # conversion introduced; it is embedded in `Task` and is part of the +32 above,
 # not a separate charge.
-20000	_start
-19984	_start_rust
-19840	kmain::kmain::entry::kernel_main
-16640	kmain::kmain::rootfs::init
+#
+# B1973 raised each of these by 16 B. Two fields the Linux model requires:
+# `Task::sysvsem_undo`, the per-task handle on the refcounted SysV `SEM_UNDO`
+# list (`CLONE_SYSVSEM` shares the list by handle, independently of
+# `CLONE_THREAD`, so the owner cannot be the thread group), and
+# `ThreadGroup::sched_runtime_ns`, the process-wide scheduler-runtime total
+# `CLOCK_PROCESS_CPUTIME_ID` samples. The boot path builds one of each on this
+# stack; 8 B + 8 B rounds to 16 B after alignment. Struct-size consequence of
+# the fields existing, not a new call chain — the same shape as the F774 and
+# B1634 entries above.
+20016	_start
+20000	_start_rust
+19856	kmain::kmain::entry::kernel_main
+16656	kmain::kmain::rootfs::init

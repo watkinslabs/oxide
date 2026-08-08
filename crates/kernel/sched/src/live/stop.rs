@@ -68,10 +68,7 @@ pub fn stop_until_cont_code(code: u32, kind: StopKind) {
         StopKind::JobControl => jobctl::STOPPED,
     }, Ordering::Release);
     cur.set_state(TaskState::Stopped);
-    if group_stop_notifies(cur, kind) {
-        notify_parent_cldstop(cur, jobctl::stop_si_code(kind), sig as u32,
-                              jobctl::notify_target(kind));
-    }
+    notify_stop(cur, kind, sig as u32);
     loop {
         // SAFETY: process context, preempt-off, single-CPU; same as voluntary `schedule()` per `13§8`.
         unsafe { crate::live::schedule(); }
@@ -88,14 +85,12 @@ pub fn stop_until_cont_code(code: u32, kind: StopKind) {
                 cur.stop_code.store(code, Ordering::Release);
                 cur.stop_pending.store(true, Ordering::Release);
                 cur.set_state(TaskState::Stopped);
-                notify_parent_cldstop(cur, jobctl::stop_si_code(kind), sig as u32,
-                                      jobctl::notify_target(kind));
+                notify_stop(cur, kind, sig as u32);
                 continue;
             }
             cur.jobctl.store(jc & !jobctl::STOPPED, Ordering::Release);
             if let Some(why) = jobctl::resume_notify(kind, wake) {
-                notify_parent_cldstop(cur, why, crate::Signum::Sigcont as u32,
-                                      NotifyTarget::RealParent);
+                notify_continued(cur, why);
             }
             return;
         }
@@ -115,17 +110,17 @@ fn dying(cur: &crate::Task) -> bool {
     cur.sigpending.load(Ordering::Acquire) & crate::Signum::Sigkill.bit() != 0
 }
 
-/// Linux `task_participate_group_stop` folded together with `do_signal_stop`'s
-/// `notify` decision: whether THIS park is the one that owes a report.
+/// Linux `task_participate_group_stop`: whether THIS park completed the group
+/// stop.
 ///
-/// A ptrace stop always reports — it is per-tracee, and its audience is the
-/// tracer. A job-control stop is per-PROCESS: the group stop is complete only
-/// once every thread has parked, and exactly ONE `CLD_STOPPED` is owed for it.
-/// Reporting per-thread made a `^Z` on a threaded process fire one `SIGCHLD`
-/// per thread at the shell.
+/// A group stop is per-PROCESS — complete only once every thread has parked,
+/// and exactly ONE `CLD_STOPPED` is owed for it. Reporting per-thread made a
+/// `^Z` on a threaded process fire one `SIGCHLD` per thread at the shell. A
+/// ptrace stop is not a group stop and completes nothing; its own report to the
+/// tracer is unconditional and does not come from here.
 /// # C: O(1)
-fn group_stop_notifies(cur: &crate::Task, kind: StopKind) -> bool {
-    if kind == StopKind::Ptrace { return true; }
+fn group_stop_done(cur: &crate::Task, kind: StopKind) -> bool {
+    if kind == StopKind::Ptrace { return false; }
     // Take on the counter debt unless this thread already carries one, so a
     // thread re-parking inside one group stop cannot pay for it twice.
     let jc = cur.jobctl.fetch_or(jobctl::STOP_PENDING | jobctl::STOP_CONSUME, Ordering::AcqRel)
@@ -133,6 +128,67 @@ fn group_stop_notifies(cur: &crate::Task, kind: StopKind) -> bool {
     let step = cur.thread_group.join_group_stop(jc);
     cur.jobctl.store(step.jobctl, Ordering::Release);
     step.completed
+}
+
+/// The tracer of `task`, if it has one that is still alive.
+/// # C: O(N_tasks)
+fn tracer_of(task: &crate::Task) -> Option<alloc::sync::Arc<crate::Task>> {
+    let tid = task.traced_by.load(Ordering::Acquire);
+    if tid == 0 { None } else { crate::registry::lookup(tid) }
+}
+
+/// `ptrace_reparented(task)` — the tracer is not in the real parent's thread
+/// group, so notifying both parents reaches two different processes rather than
+/// sending one supervisor the same SIGCHLD twice.
+/// # C: O(N_tasks)
+fn ptrace_reparented(task: &crate::Task) -> bool {
+    let (Some(tracer), Some(real)) = (tracer_of(task), task.parent()) else { return false };
+    tracer.tgid.load(Ordering::Acquire) != real.tgid.load(Ordering::Acquire)
+}
+
+/// The thread group's leader, falling back to the thread itself when the
+/// registry cannot name it.
+/// # C: O(N_tasks)
+fn group_leader(task: &crate::Task) -> Option<alloc::sync::Arc<crate::Task>> {
+    crate::registry::lookup(task.tgid.load(Ordering::Acquire))
+}
+
+/// Report one stop to every parent it is owed to.
+///
+/// A traced task parking has TWO audiences and they are told independently: the
+/// tracer learns of every stop, the real parent only of a completed group stop.
+/// Emitting a single notification to one target meant a tracer never saw its
+/// tracee's group stop, and a shell whose child was being traced by a separate
+/// debugger never saw the `^Z` it had just typed.
+/// # C: O(N_tasks + N_waiters)
+fn notify_stop(cur: &crate::Task, kind: StopKind, sig: u32) {
+    let gstop_done = group_stop_done(cur, kind);
+    let traced = cur.traced_by.load(Ordering::Acquire) != 0;
+    // The reparented test costs two registry lookups, so it is only asked when
+    // its answer can change the outcome.
+    let audience = jobctl::stop_audience(traced, gstop_done,
+        gstop_done && traced && ptrace_reparented(cur));
+    if !audience.any() { return; }
+    let why = jobctl::stop_si_code(kind);
+    if audience.tracer { notify_parent_cldstop(cur, why, sig, NotifyTarget::Tracer); }
+    if audience.real_parent { notify_parent_cldstop(cur, why, sig, NotifyTarget::RealParent); }
+}
+
+/// Report a resume to every parent it is owed to. Continuing is a per-process
+/// event, so the second recipient is the GROUP LEADER's tracer, not this
+/// thread's.
+/// # C: O(N_tasks + N_waiters)
+fn notify_continued(cur: &crate::Task, why: Cldstop) {
+    let leader = group_leader(cur);
+    let leader_ref = leader.as_deref().unwrap_or(cur);
+    let audience = jobctl::continued_audience(ptrace_reparented(leader_ref));
+    let cont = crate::Signum::Sigcont as u32;
+    if audience.real_parent {
+        notify_parent_cldstop(cur, why, cont, NotifyTarget::RealParent);
+    }
+    if audience.tracer {
+        notify_parent_cldstop(leader_ref, why, cont, NotifyTarget::Tracer);
+    }
 }
 
 /// Linux `do_notify_parent_cldstop` wiring for a self-stop / resume. Posts
