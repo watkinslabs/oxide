@@ -32,7 +32,7 @@ mod walk;
 pub use lookup::{mount_target_from_resolved_path, mountpoint_lookup_at_root_cred, path_lookup, path_lookup_at_cred, path_lookup_at_root_cred, path_lookup_cred, path_lookup_path};
 pub use create::vfs_create_at;
 pub use device_permission::{device_permission, may_open_dev, set_device_permission_hook, DevicePermissionHook};
-pub use permission::{generic_permission, inode_permission, may_open};
+pub use permission::{generic_permission, inode_permission, may_open, may_open_at, OpenIntent};
 pub use may_create::{may_create, may_create_in_sticky};
 pub use may_delete::{may_delete, may_delete_dentry};
 pub use may_link::{may_link, may_link_source, may_linkat};

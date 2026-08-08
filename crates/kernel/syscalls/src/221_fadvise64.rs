@@ -18,19 +18,12 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
 use crate::fadvise_policy::{POSIX_FADV_DONTNEED, POSIX_FADV_NORMAL, POSIX_FADV_RANDOM,
-    POSIX_FADV_SEQUENTIAL, POSIX_FADV_WILLNEED, fadvise_check};
+    POSIX_FADV_SEQUENTIAL, POSIX_FADV_WILLNEED, dontneed_page_range, fadvise_check,
+    fadvise_endbyte};
 
 const PAGE: u64 = hal::PAGE_SIZE_BYTES;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
-
-/// Linux `generic_fadvise`'s inclusive `endbyte`: `offset + len`, with `len ==
-/// 0` ("as much as possible") and the unsigned wrap both collapsing to
-/// `LLONG_MAX`. # C: O(1)
-fn endbyte_of(offset: i64, len: i64) -> i64 {
-    let end = (offset as u64).wrapping_add(len as u64);
-    if len == 0 || end < len as u64 { i64::MAX } else { (end - 1) as i64 }
-}
 
 /// `sys_fadvise64(fd, offset, len, advice)` — slot 221.
 /// Errors: EBADF (fd), ESPIPE (fd is a FIFO), EINVAL (negative offset/len, or
@@ -70,7 +63,7 @@ pub fn sys_fadvise64(args: &SyscallArgs) -> i64 {
         return 0;
     }
     let mapping = match inode.i_mapping() { Some(m) => m, None => return 0 };
-    let endbyte = endbyte_of(offset, len);
+    let endbyte = fadvise_endbyte(offset, len);
 
     match advice {
         POSIX_FADV_WILLNEED => {
@@ -91,14 +84,18 @@ pub fn sys_fadvise64(args: &SyscallArgs) -> i64 {
             }
         }
         POSIX_FADV_DONTNEED => {
-            // Linux flushes the range first (`filemap_flush_range`) so no dirty
-            // data is lost, then invalidates. `writeback_range`/
-            // `invalidate_range` take an EXCLUSIVE end; `endbyte` is inclusive.
-            let end = (endbyte as u64).saturating_add(1);
-            let _ = mapping.writeback_range(offset as u64, end);
-            // `invalidate_range` already implements Linux's whole-page rule:
-            // a page straddling either boundary is retained.
-            let _ = mapping.invalidate_range(offset as u64, end);
+            // Flush the range first so no dirty data is lost, then invalidate.
+            // `writeback_range` takes an EXCLUSIVE end; `endbyte` is inclusive.
+            let _ = mapping.writeback_range(offset as u64, (endbyte as u64).saturating_add(1));
+            // The victim set is whole pages only, minus the trailing partial
+            // page unless it is the EOF page — `dontneed_page_range` owns that
+            // arithmetic (hosted-tested; this file is target-gated). The
+            // primitive is the BEST-EFFORT one: DONTNEED is a hint, so a
+            // mapped/dirty/in-flight page is skipped, unlike `truncate`'s
+            // unconditional `invalidate_range`.
+            if let Some((lo, hi)) = dontneed_page_range(offset, len, mapping.size()) {
+                let _ = mapping.try_invalidate_pages(lo, hi);
+            }
         }
         _ => {}
     }

@@ -54,6 +54,32 @@ fn ipv6_peername_answers_from_the_native_v6_tuple() {
     assert_eq!(&sa.as_bytes()[8..24], &ip.0);
 }
 
+/// `sin6_flowinfo` is inert in a reported name until the socket asked to send
+/// one: a caller who never set `IPV6_FLOWINFO_SEND` sees zero however much
+/// flow information the connection settled. With the option set, the peer name
+/// carries exactly what was settled, and the LOCAL name still carries none —
+/// the reference reports flow information in the peer branch alone.
+#[test]
+fn a_peer_name_carries_flow_information_only_for_a_socket_that_sends_one() {
+    const SETTLED: u32 = 0x0abc_de12;
+    let sock = udp6();
+    let ip = net::Ipv6Addr([0x20, 1, 0xd, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7]);
+    *sock.peer6.lock() = Some((ip, 443));
+    sock.opts.ipv6.set_flow_label(SETTLED);
+
+    let quiet = peer_sockaddr(&sock).expect("peer answers");
+    assert_eq!(&quiet.as_bytes()[4..8], &[0u8; 4]);
+
+    sock.opts.ipv6.set_flag(net::sock_opts::sol_ipv6::flag::SNDFLOW, true);
+    let flowed = peer_sockaddr(&sock).expect("peer answers");
+    assert_eq!(&flowed.as_bytes()[4..8], &SETTLED.to_be_bytes());
+    // The address and port the name reports are untouched by the word.
+    assert_eq!(&flowed.as_bytes()[8..24], &ip.0);
+    assert_eq!(&flowed.as_bytes()[2..4], &443u16.to_be_bytes());
+    // A local name never carries it, whatever the option says.
+    assert_eq!(&local_sockaddr(&sock).as_bytes()[4..8], &[0u8; 4]);
+}
+
 #[test]
 fn ipv6_peername_falls_through_to_the_v4_mapped_tuple() {
     // A dual-stack socket that connected to an IPv4 peer holds its peer in

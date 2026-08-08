@@ -151,6 +151,37 @@ pub const MAX_RW_COUNT: u64 = (i32::MAX as u64) & !0xfff;
 /// operation returning 0, NOT an error.
 pub const UIO_MAXIOV: u64 = 1024;
 
+/// What the iovec importer does with one segment, given the bytes already
+/// accepted from earlier segments.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum IovSeg {
+    /// Zero-length segment: contributes nothing, walk continues.
+    Skip,
+    /// Accept this many bytes (may be less than the segment's own length when
+    /// the running total reaches `MAX_RW_COUNT`).
+    Take(u64),
+    /// The running total already sits at `MAX_RW_COUNT`; the rest of the vector
+    /// is dropped WITHOUT an error.
+    Stop,
+}
+
+/// One segment of the `import_iovec` rule set, shared by every
+/// `readv`/`writev`/`preadv*`/`pwritev*` entry so the two directions cannot
+/// drift apart.
+///
+/// Two rules are easy to omit and both were missing on the write side: a
+/// segment whose length is negative when read as `ssize_t` is `EINVAL` (it is
+/// NOT treated as a huge unsigned length), and the running total TRUNCATES at
+/// `MAX_RW_COUNT` instead of erroring — a vector totalling more than 2 GiB is a
+/// short transfer, never `EINVAL`. # C: O(1)
+pub fn iov_import_seg(len: u64, total: u64) -> Result<IovSeg, Errno> {
+    if (len as i64) < 0 { return Err(Errno::Einval); }
+    if len == 0 { return Ok(IovSeg::Skip); }
+    let room = MAX_RW_COUNT.saturating_sub(total);
+    if room == 0 { return Ok(IovSeg::Stop); }
+    Ok(IovSeg::Take(len.min(room)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,5 +291,68 @@ mod tests {
     fn abi_limits() {
         assert_eq!(MAX_RW_COUNT, 0x7fff_f000);
         assert_eq!(UIO_MAXIOV, 1024);
+    }
+
+    /// A segment length that is negative as `ssize_t` is `EINVAL` — NOT a
+    /// nearly-2^64-byte transfer. The write side skipped this rule entirely
+    /// and passed the raw `u64` to the usercopy validator, where the only
+    /// thing standing between a `-1` length and a wild range was that
+    /// validator's own bounds check. # C: O(1)
+    #[test]
+    fn negative_segment_length_is_einval() {
+        for bad in [u64::MAX, 1u64 << 63, (i64::MIN as u64), 0xffff_ffff_ffff_f000] {
+            assert_eq!(iov_import_seg(bad, 0), Err(Errno::Einval), "{bad:#x}");
+            // Still EINVAL when earlier segments already contributed bytes:
+            // the rule is per-segment, not a property of the running total.
+            assert_eq!(iov_import_seg(bad, 4096), Err(Errno::Einval), "{bad:#x}");
+        }
+        // The largest non-negative length is legal and simply clamps.
+        assert_eq!(iov_import_seg(i64::MAX as u64, 0), Ok(IovSeg::Take(MAX_RW_COUNT)));
+    }
+
+    /// The running total TRUNCATES at `MAX_RW_COUNT`; it never errors. A vector
+    /// totalling more than the cap is a SHORT transfer, so the tail segments
+    /// are dropped silently once the cap is reached. # C: O(1)
+    #[test]
+    fn total_truncates_at_max_rw_count_and_never_errors() {
+        // Wholly below the cap: taken in full.
+        assert_eq!(iov_import_seg(4096, 0), Ok(IovSeg::Take(4096)));
+        assert_eq!(iov_import_seg(4096, MAX_RW_COUNT - 8192), Ok(IovSeg::Take(4096)));
+        // Straddling the cap: only the room that is left.
+        assert_eq!(iov_import_seg(4096, MAX_RW_COUNT - 1000), Ok(IovSeg::Take(1000)));
+        assert_eq!(iov_import_seg(MAX_RW_COUNT, 1), Ok(IovSeg::Take(MAX_RW_COUNT - 1)));
+        // At the cap: the rest of the vector is dropped, WITHOUT an error.
+        assert_eq!(iov_import_seg(4096, MAX_RW_COUNT), Ok(IovSeg::Stop));
+        assert_eq!(iov_import_seg(1, u64::MAX), Ok(IovSeg::Stop));
+        // Zero-length segments contribute nothing and never stop the walk, even
+        // once the cap has been reached.
+        assert_eq!(iov_import_seg(0, 0), Ok(IovSeg::Skip));
+        assert_eq!(iov_import_seg(0, MAX_RW_COUNT), Ok(IovSeg::Skip));
+    }
+
+    /// Walking a whole vector through the rule reproduces the observable
+    /// contract: the returned count is the clamp, not an error, and the
+    /// accepted total never exceeds `MAX_RW_COUNT` no matter the shape.
+    /// # C: O(n)
+    #[test]
+    fn vector_walk_totals_are_capped() {
+        fn walk(lens: &[u64]) -> Result<u64, Errno> {
+            let mut total = 0u64;
+            for &l in lens {
+                match iov_import_seg(l, total)? {
+                    IovSeg::Skip    => continue,
+                    IovSeg::Stop    => break,
+                    IovSeg::Take(n) => total += n,
+                }
+            }
+            Ok(total)
+        }
+        assert_eq!(walk(&[0, 0, 0]), Ok(0));
+        assert_eq!(walk(&[10, 0, 20]), Ok(30));
+        // Three near-cap segments: the total stops exactly at the cap.
+        let big = MAX_RW_COUNT / 2;
+        assert_eq!(walk(&[big, big, big]), Ok(MAX_RW_COUNT));
+        // A negative length anywhere fails the whole import.
+        assert_eq!(walk(&[10, u64::MAX, 10]), Err(Errno::Einval));
     }
 }

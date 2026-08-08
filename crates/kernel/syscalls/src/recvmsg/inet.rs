@@ -139,15 +139,18 @@ fn name_bytes(_user: &RecvUser, sock: &InetSocket, rcv: &Received) -> Vec<u8> {
     }
     if let Some((ip, port, scope_id)) = rcv.peer6 {
         let port = if matches!(*sock.kind.lock(), SockKind::Raw6(_)) { 0 } else { port };
-        return encoded_sockaddr_in6(ip.0, port.to_be(), scope_id).as_bytes().to_vec();
+        // A received name never carries flow information: the arriving
+        // packet's own reaches the caller as an `IPV6_FLOWINFO` ancillary
+        // message, not through the name.
+        return encoded_sockaddr_in6(ip.0, port.to_be(), scope_id, 0).as_bytes().to_vec();
     }
     if let Some((ip, port)) = rcv.peer {
         let port = if matches!(*sock.kind.lock(), SockKind::Raw4(_)) { 0 } else { port };
-        return encoded_sockaddr_for_socket(sock, ip, port).as_bytes().to_vec();
+        return encoded_sockaddr_for_socket(sock, ip, port, 0).as_bytes().to_vec();
     }
     if matches!(*sock.kind.lock(), SockKind::TcpConn(_)) {
         let (ip, port) = (*sock.peer.lock()).unwrap_or((net::Ipv4Addr::ANY, 0));
-        return encoded_sockaddr_for_socket(sock, ip, port).as_bytes().to_vec();
+        return encoded_sockaddr_for_socket(sock, ip, port, 0).as_bytes().to_vec();
     }
     Vec::new()
 }

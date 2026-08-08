@@ -158,6 +158,27 @@ impl OpenIn {
     }
 }
 
+/// `struct fuse_fsync_in`: `fh,fsync_flags,padding`. FSYNC/FSYNCDIR request.
+/// # C: O(1)
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
+pub struct FsyncIn {
+    pub fh: u64,
+    pub fsync_flags: u32,
+}
+
+impl FsyncIn {
+    /// Append the 16-byte FSYNC request body. # C: O(1)
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        put_u64(out, self.fh);
+        put_u32(out, self.fsync_flags);
+        put_u32(out, 0); // padding
+    }
+    /// Decode a 16-byte FSYNC request body. # C: O(1)
+    pub fn decode(b: &[u8]) -> Option<FsyncIn> {
+        Some(FsyncIn { fh: get_u64(b, 0)?, fsync_flags: get_u32(b, 8)? })
+    }
+}
+
 /// `struct fuse_getattr_in`: `getattr_flags,dummy,fh`. # C: O(1)
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub struct GetattrIn {

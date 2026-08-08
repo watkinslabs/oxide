@@ -38,6 +38,12 @@ use vfs::{Dentry, FdTable, File, FileType, InodeBuilder, InodeRef, OpenFlags, Vf
 #[path = "../src/pathresolve/at.rs"]
 mod at;
 
+// The REAL stale-handle retry rule `at.rs` wraps its walks in, not a stand-in:
+// a stub here would let a retry regression pass this file unnoticed. Its own
+// contract is pinned in `estale_retry_hosted.rs`.
+#[path = "../src/estale_retry.rs"]
+mod estale_retry;
+
 mod cred {
     pub(crate) fn current_cred() -> vfs::Cred { vfs::Cred::root() }
 }

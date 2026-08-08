@@ -177,17 +177,20 @@ fn accept_common(args: &SyscallArgs, flags: u64) -> i64 {
 
 fn accepted_peer_sockaddr(sock: &net::sock::InetSocket) -> EncodedSockaddr {
     let fam = sock.family.load(core::sync::atomic::Ordering::Acquire);
+    // The address an accept reports is the child's PEER name, so it carries
+    // flow information under the same rule `getpeername` follows.
+    let flowinfo = crate::sock_name::peer_flowinfo(sock);
     if fam == net::sock::AF_UNIX {
         let path = net::sock::unix_peer_path(sock).flatten();
         return encoded_sockaddr_un_path(path.as_deref());
     }
     if fam == net::sock::AF_INET6 {
         if let Some((ip, port)) = *sock.peer6.lock() {
-            return encoded_sockaddr_in6_peer(ip, port);
+            return encoded_sockaddr_in6_peer(ip, port, flowinfo);
         }
     }
     let (ip, port) = (*sock.peer.lock()).unwrap_or((net::Ipv4Addr::ANY, 0));
-    encoded_sockaddr_for_socket(sock, ip, port)
+    encoded_sockaddr_for_socket(sock, ip, port, flowinfo)
 }
 
 /// D3.3: AF_VSOCK accept. Pops one pending peer key from the listener's

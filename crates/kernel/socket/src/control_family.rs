@@ -81,3 +81,20 @@ pub(crate) fn admit(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSocket>,
     };
     crate::control_raw::parse_ip_control(control, &env)
 }
+
+/// Fold this send's `MSG_*` flags and its destination's `sin6_flowinfo` into
+/// the overrides the ancillary stream settled.
+///
+/// The flow word replaces, for this message alone, whatever flow information a
+/// connect settled — but only for a socket that asked to send one, and only
+/// when the same message named no `IPV6_FLOWLABEL` of its own, which outranks
+/// it. # C: O(1)
+pub(crate) fn settle(socket: &Arc<net::sock::InetSocket>, address: &InetAddress,
+    control: &mut SendControl, flags: u64)
+{
+    control.apply_flags(flags);
+    let InetAddress::V6 { flowinfo, .. } = *address else { return; };
+    if control.raw6.flowinfo.is_some() { return; }
+    control.raw6.flowinfo = net::sock_opts::sol_ipv6::sndflow::supplied(
+        socket.opts.ipv6.flag(net::sock_opts::sol_ipv6::flag::SNDFLOW), flowinfo);
+}

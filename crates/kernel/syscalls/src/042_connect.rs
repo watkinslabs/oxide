@@ -55,6 +55,23 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
         Some(f) => f,
         None => return -(Errno::Ebadf.as_i32() as i64),
     };
+    // The descriptor is judged a socket before its address is copied: a
+    // non-socket answers ENOTSOCK whatever the address looks like.
+    enum Target {
+        Netlink(crate::netlink_fd::NetlinkFileRef),
+        Vsock(crate::net_common::VsockFileRef),
+        Inet(alloc::sync::Arc<net::sock::InetSocket>),
+    }
+    let target = if let Some(target) = crate::netlink_fd::from_file(file.clone()) {
+        Target::Netlink(target)
+    } else if let Some(target) = vsock_from_file(file.clone()) {
+        Target::Vsock(target)
+    } else if let Some(sock) = inode_as_inet_socket(file.inode()) {
+        Target::Inet(sock)
+    } else {
+        trace_enotsock_at(fd, b"connect");
+        return -(Errno::Enotsock.as_i32() as i64);
+    };
     let copied_len = match move_sockaddr_to_kernel_shape(addr_p, addrlen) {
         Ok(n) => n,
         Err(e) => return e,
@@ -63,10 +80,22 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
         Ok(storage) => storage,
         Err(error) => return error,
     };
-    if let Some(target) = crate::netlink_fd::from_file(file.clone()) {
-        return crate::netlink_fd::connect(&target, &storage);
+    // The generic connect security decision, above the family branch and
+    // above every address-shape screen. One token, whatever the family.
+    let (namespace, sock_family) = match &target {
+        Target::Netlink(target) => (net::net_ns::namespace_id(&target.socket().net_ns),
+            net::socket_args::AF_NETLINK_WIRE),
+        Target::Vsock(vs) => (vs.net_ns(), net::socket_args::AF_VSOCK as u16),
+        Target::Inet(sock) => (sock.net_ns(), sock.family.load(Ordering::Acquire)),
+    };
+    let admission = match net::sock_admit::admit_connect_in(namespace, sock_family) {
+        Ok(admission) => admission,
+        Err(error) => return errno_from_neterr(error),
+    };
+    if let Target::Netlink(target) = &target {
+        return crate::netlink_fd::connect(target, &storage, admission);
     }
-    if let Some(vs) = vsock_from_file(file.clone()) {
+    if let Target::Vsock(vs) = &target {
         if let Err(e) = require_sockaddr_vm(copied_len) { return e; }
         let (fam, port, cid) = match storage.vsock() {
             Some(t) => t, None => return -(Errno::Efault.as_i32() as i64),
@@ -114,25 +143,23 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
                 Ok(()) => 0,
                 Err(e) => map_vsock_err(e),
             },
-            VsockConnect::Start => match vs.connect_transport(cid, port, vs.is_nonblock()) {
+            VsockConnect::Start => match vs.connect_transport(cid, port, vs.is_nonblock(),
+                admission) {
                 Ok(()) if vs.is_nonblock() => -(Errno::Einprogress.as_i32() as i64),
                 Ok(()) => 0,
                 Err(e) => map_vsock_err(e),
             },
         };
     }
-    let sock = match inode_as_inet_socket(file.inode()) {
-        Some(s) => s, None => { trace_enotsock_at(fd, b"connect"); return -(Errno::Enotsock.as_i32() as i64); }
-    };
-    let admission = match net::sock::admit_connect(&sock) {
-        Ok(admission) => admission,
-        Err(error) => return errno_from_neterr(error),
+    let sock = match target {
+        Target::Inet(sock) => sock,
+        _ => unreachable!(),
     };
     let family = match storage.family() {
         Some(family) if copied_len >= 2 => family as u32,
         _ => return -(Errno::Einval.as_i32() as i64),
     };
-    let sock_fam = sock.family.load(core::sync::atomic::Ordering::Acquire) as u32;
+    let sock_fam = sock_family as u32;
     let addr = if family == net::socket_args::AF_UNSPEC {
         net::sock::RemoteAddr::Unspec
     } else if sock_fam == AF_INET || sock_fam == AF_INET6 {
@@ -181,10 +208,19 @@ pub fn sys_connect(args: &SyscallArgs) -> i64 {
             };
             net::sock::RemoteAddr::Inet6 { ip, port, scope_id }
         };
+        // A connect settles the socket's flow information from its
+        // destination, so every packet the connection sends carries it and
+        // `getpeername` reports it back. Only a socket that asked to send one
+        // reads the word; published after the connect took, never before.
+        let supplied = net::sock_opts::sol_ipv6::sndflow::supplied(
+            sock.opts.ipv6.flag(net::sock_opts::sol_ipv6::flag::SNDFLOW),
+            storage.inet6_flowinfo().unwrap_or(0));
         return match transaction.commit(
             addr, file.flags().contains(vfs::OpenFlags::O_NONBLOCK),
         ) {
-            Ok(()) => { net::bind_file(&file, &sock); 0 }
+            Ok(()) => {
+                if let Some(flowinfo) = supplied { sock.opts.ipv6.set_flow_label(flowinfo); }
+                net::bind_file(&file, &sock); 0 }
             Err(net::NetError::Eio) => -(Errno::Etimedout.as_i32() as i64),
             Err(error) => errno_from_neterr(error),
         };

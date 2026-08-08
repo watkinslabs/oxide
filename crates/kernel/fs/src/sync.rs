@@ -8,13 +8,17 @@
 //              is not an fsync substitute — it only pushes the given range's
 //              dirty data toward disk (and optionally waits for that write).
 //   dirtytime.rs — the periodic sweep that bounds a `lazytime` mount's deferral.
+//   order.rs   — the whole-system `sync(2)` phase order (`SyncPhase`), executed
+//                by the slot-162 shim.
 
 mod fsync;
+mod order;
 mod range;
 #[cfg(target_os = "oxide-kernel")]
 mod dirtytime;
 
 pub use fsync::{vfs_fsync, vfs_fsync_range};
+pub use order::{ksys_sync, SyncPhase, KSYS_SYNC_PHASES};
 #[cfg(target_os = "oxide-kernel")]
 pub use dirtytime::start_dirtytime_writeback;
 pub use range::{sync_file_range, SyncRange, SYNC_FILE_RANGE_VALID_FLAGS,

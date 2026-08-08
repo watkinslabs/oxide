@@ -5,51 +5,12 @@
 
 use syscall::errno::Errno;
 
-pub(crate) const O_CREAT:     u32 = 0o100;
-/// `O_EXCL` (asm-generic, both arches): with `O_CREAT`, an existing final
-/// component → `EEXIST` (Linux `do_last`/`lookup_open`).
-pub(crate) const O_EXCL:      u32 = 0o200;
-pub(crate) const O_TRUNC:     u32 = 0o1000;
-pub(crate) const O_APPEND:    u32 = 0o2000;
-pub(crate) const O_DIRECTORY: u32 = 0o200000;
-// O_* flag VALUES are arch-specific (Linux fcntl UAPI per-arch overrides):
-// x86_64 = asm-generic (O_NOFOLLOW=0o400000); aarch64 uses the arm override
-// (O_NOFOLLOW=0o100000, while 0x20000 is O_LARGEFILE which musl-aarch64 sets).
-#[cfg(target_arch = "x86_64")]
-pub(crate) const O_NOFOLLOW:  u32 = 0o400000;
-#[cfg(target_arch = "aarch64")]
-pub(crate) const O_NOFOLLOW:  u32 = 0o100000;
-/// `__O_TMPFILE` per the Linux fcntl UAPI (full O_TMPFILE = this | O_DIRECTORY).
-pub(crate) const O_TMPFILE:   u32 = 0o20000000;
-/// `O_PATH` (asm-generic, both arches): an fd-reference open with no read/write
-/// access — bypasses `may_open`'s access-mode permission check.
-pub(crate) const O_PATH:      u32 = 0o10000000;
-pub(crate) const O_CLOEXEC:   u32 = 0o2000000;
-/// `O_ACCMODE` mask + the writable access modes.
-pub(crate) const O_ACCMODE:   u32 = 0o3;
-pub(crate) const O_WRONLY:    u32 = 0o1;
-pub(crate) const O_RDWR:      u32 = 0o2;
-/// `O_NONBLOCK` (asm-generic, both arches): a non-blocking conflicting open
-/// fails the lease-break with `EWOULDBLOCK` instead of waiting.
-pub(crate) const O_NONBLOCK:  u32 = 0o4000;
-const O_NOCTTY:    u64 = 0o400;
-const O_DSYNC:     u64 = 0o10000;
-const O_ASYNC:     u64 = 0o20000;
-const O_DIRECT:    u64 = 0o40000;
-const O_LARGEFILE: u64 = 0o100000;
-const O_NOATIME:   u64 = 0o1000000;
-const __O_SYNC:    u64 = 0o4000000;
-const O_SYNC:      u64 = 0o4010000;
-pub(crate) const O_EMPTYPATH: u64 = 0o400000000;
-pub(crate) const OPENAT2_REGULAR: u64 = 0o40000000000;
-const VALID_OPEN_FLAGS: u64 = O_CREAT as u64 | O_EXCL as u64 | O_TRUNC as u64
-    | O_APPEND as u64
-    | O_DIRECTORY as u64 | O_NOFOLLOW as u64 | O_TMPFILE as u64 | O_PATH as u64
-    | O_CLOEXEC as u64 | O_ACCMODE as u64 | O_NONBLOCK as u64 | O_NOCTTY
-    | O_DSYNC | O_ASYNC | O_DIRECT | O_LARGEFILE | O_NOATIME | O_SYNC | O_EMPTYPATH;
-const VALID_OPENAT2_FLAGS: u64 = VALID_OPEN_FLAGS | OPENAT2_REGULAR;
-const O_PATH_FLAGS: u64 = O_DIRECTORY as u64 | O_NOFOLLOW as u64 | O_PATH as u64
-    | O_CLOEXEC as u64 | O_EMPTYPATH;
+// The `O_*` bit names and the flag/mode normalisation ladder live in the
+// UNGATED `open_flags` module so the hosted suite can exercise them; this file
+// is kernel-gated and only wires them to the resolved inode + mount.
+pub(crate) use crate::open_flags::{normalize_open_flags, O_ACCMODE, O_CREAT, O_EMPTYPATH,
+    O_EXCL, O_DIRECTORY, O_NOFOLLOW, O_NONBLOCK, O_PATH, O_RDWR, O_TMPFILE, O_TRUNC, O_WRONLY,
+    OPENAT2_REGULAR};
 
 #[cfg(feature = "debug-mount")]
 fn trace_open_erofs(inode: &vfs::InodeRef, mnt_id: u64, flags: u32, mnt_flags: u64, mp: &str) {
@@ -80,49 +41,32 @@ fn trace_open_erofs(inode: &vfs::InodeRef, mnt_id: u64, flags: u32, mnt_flags: u
     klog::write_raw(b"\n");
 }
 
-/// Linux `build_open_how` / `build_open_flags` validation needed before path
-/// mutation. Legacy open/openat mask unsupported bits and let `O_PATH` strip
-/// every non-path flag; openat2 keeps the full 64-bit flags word for unknown-bit
-/// rejection. # C: O(1)
-pub(crate) fn normalize_open_flags(flags: u64, mode: u64, openat2: bool) -> Result<(u32, u32), i64> {
-    let mut f = flags;
-    let mut m = mode;
-    if !openat2 {
-        f &= VALID_OPEN_FLAGS;
-        m &= 0o7777;
-        if (f & O_PATH as u64) != 0 { f &= O_PATH_FLAGS; }
-        if (f & (O_CREAT as u64 | O_TMPFILE as u64)) == 0 { m = 0; }
-    } else {
-        if (f & !VALID_OPENAT2_FLAGS) != 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
-        if (f & (O_CREAT as u64 | O_TMPFILE as u64)) != 0 {
-            if (m & !0o7777) != 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
-        } else if m != 0 {
-            return Err(-(Errno::Einval.as_i32() as i64));
-        }
-        if (f & O_PATH as u64) != 0 && (f & !O_PATH_FLAGS) != 0 {
-            return Err(-(Errno::Einval.as_i32() as i64));
-        }
-    }
-    if (f & (O_DIRECTORY as u64 | O_CREAT as u64)) == (O_DIRECTORY as u64 | O_CREAT as u64) {
-        return Err(-(Errno::Einval.as_i32() as i64));
-    }
-    if (f & O_TMPFILE as u64) != 0 {
-        if (f & O_DIRECTORY as u64) == 0 { return Err(-(Errno::Einval.as_i32() as i64)); }
-        let acc = (f as u32) & O_ACCMODE;
-        if acc != O_WRONLY && acc != O_RDWR { return Err(-(Errno::Einval.as_i32() as i64)); }
-    }
-    if (f & (O_DIRECTORY as u64 | OPENAT2_REGULAR)) == (O_DIRECTORY as u64 | OPENAT2_REGULAR) {
-        return Err(-(Errno::Einval.as_i32() as i64));
-    }
-    if (f & __O_SYNC) != 0 { f |= O_DSYNC; }
-    Ok((f as u32, m as u32))
-}
-
-/// Linux `do_open` access enforcement, run after path resolution: `EROFS` for a
-/// write through a read-only mount (`mnt_want_write`), then the `may_open` DAC
-/// check (EACCES / EISDIR). The DAC check is skipped for a freshly `O_CREAT`'d
-/// file (Linux passes acc_mode=0), for `O_PATH` descriptors, and for anonymous
-/// inodes (`mnt_id == 0`: ptmx/tty/pipe — governed by their own open hooks).
+/// Open access enforcement, run after path resolution.
+///
+/// Order is the contract, not an implementation detail:
+///
+/// 1. `O_TRUNC` on a REGULAR file takes mount write admission FIRST, so a
+///    truncating open of a read-only mount is `EROFS` whatever the caller's
+///    permissions are — the truncate is part of the open, and the mount cannot
+///    host it.
+/// 2. The device-node mount policy (`may_open_dev`) stands ahead of the
+///    `O_CREAT` permission bypass, so bind mounts of one superblock keep
+///    distinct `MNT_NODEV` policy.
+/// 3. The full permission ladder (`may_open`): file type, access-mode DAC,
+///    append-only inode, `O_NOATIME` ownership.
+///
+/// The write admission for a PLAIN write-open is deliberately NOT here: it runs
+/// after this ladder, in the VFS open path, together with the inode writer
+/// reference. That is why `open(path, O_WRONLY)` of a file the caller may not
+/// write, on a read-only mount, reports `EACCES` and not `EROFS` — the caller is
+/// told the reason that would still stand if the mount were writable.
+///
+/// The access-mode part is skipped for a freshly `O_CREAT`'d file (its creation
+/// already carried the permission decision) and for anonymous inodes
+/// (`mnt_id == 0`: ptmx/tty/pipe — governed by their own open hooks); the
+/// FLAG-decided rungs still run, because they are decided by the flags rather
+/// than by the requested access. An `O_PATH` descriptor takes no access at all.
+///
 /// Returns `Some(neg_errno)` to fail the open, `None` to allow it.
 /// # C: O(ngroups)
 pub(crate) fn enforce_open_perm(
@@ -136,21 +80,16 @@ pub(crate) fn enforce_open_perm(
     let accmode    = flags & O_ACCMODE;
     let want_write = accmode == O_WRONLY || accmode == O_RDWR || (flags & O_TRUNC) != 0;
     let want_read  = accmode != O_WRONLY;
-    // EROFS: writing through a read-only mount (Linux `mnt_want_write`) — BUT
-    // Linux EXEMPTS special files. `do_dentry_open` skips the write-access
-    // check when `special_file(inode->i_mode)` (char/block device, FIFO,
-    // socket): writing to a device or FIFO doesn't modify the filesystem, so a
-    // read-only mount must not block it. Without this exemption a service's
-    // sandbox (systemd bind-mounts /dev read-only) could not open /dev/kmsg
-    // O_WRONLY for logging → the child aborts with EXIT_NAMESPACE(226), which
-    // fails EVERY sandboxed unit (dbus-broker, systemd-udevd, logind, gdm, …)
-    // and stalls the whole boot before the graphical target.
-    let special = matches!(
-        inode.file_type(),
-        vfs::types::FileType::CharDev | vfs::types::FileType::BlockDev
-            | vfs::types::FileType::Fifo | vfs::types::FileType::Socket
-    );
-    if want_write && mnt_id != 0 && !special {
+    // Truncating a regular file needs the mount to admit a write before the
+    // permission ladder runs. Special files (char/block device, FIFO, socket)
+    // ignore `O_TRUNC` outright — an open of a device or FIFO addresses the
+    // driver, not filesystem data, so a read-only mount must not block it.
+    // Without that exemption a service's sandbox (a read-only bind mount of
+    // /dev) could not open /dev/kmsg for logging, which fails every sandboxed
+    // unit and stalls the boot before the graphical target.
+    if mnt_id != 0
+        && crate::open_flags::trunc_needs_mount_write(flags, inode.file_type(), created)
+    {
         if let Some(m) = vfs::mount::mount_by_id(mnt_id) {
             let mnt_flags = m.flags.load(Ordering::Acquire);
             if (mnt_flags & vfs::mount::MNT_RDONLY) != 0 {
@@ -160,17 +99,21 @@ pub(crate) fn enforce_open_perm(
             }
         }
     }
-    // Linux `may_open` applies `may_open_dev(path)` BEFORE the `O_CREAT`
-    // permission bypass. The VFS helper consumes the resolved mount identity,
-    // so bind mounts of one superblock retain distinct MNT_NODEV policy.
+    // The device-node mount policy consumes the resolved mount identity, so
+    // bind mounts of one superblock retain distinct `MNT_NODEV` policy. Ahead
+    // of the `O_CREAT` bypass below.
     if mnt_id != 0
         && matches!(inode.file_type(), vfs::types::FileType::CharDev | vfs::types::FileType::BlockDev)
         && !vfs::may_open_dev(mnt_id)
     {
         return Some(-(Errno::Eacces.as_i32() as i64));
     }
-    if created || mnt_id == 0 { return None; }
-    if let Err(e) = vfs::may_open(inode, want_read, want_write, &crate::pathresolve::current_cred()) {
+    if mnt_id == 0 { return None; }
+    let intent = crate::open_flags::open_intent(flags, created);
+    let cred = crate::pathresolve::current_cred();
+    if let Err(e) = vfs::namei::may_open_at(
+        inode, want_read && !created, want_write && !created, intent, &cred)
+    {
         return Some(-(e as i64));
     }
     None

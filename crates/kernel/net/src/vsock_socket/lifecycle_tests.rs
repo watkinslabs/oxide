@@ -56,7 +56,7 @@ fn blocking_connect_releases_kind_before_wait() {
     assert!(vsock::driver_install(transport, cid, tx_ok, rx_noop));
     let sock = Arc::new(VsockSocket::new());
     *sock.connect_wait_hook.lock() = Some(observe_connect_wait);
-    assert_eq!(sock.connect_transport(2, 1024, false), Ok(()));
+    assert_eq!(sock.connect_transport(2, 1024, false, crate::sock_admit::AddrAdmission::for_test()), Ok(()));
     sock.disconnect().unwrap();
     sock.release_file();
     assert!(vsock::driver_uninstall(transport));
@@ -71,17 +71,17 @@ fn explicit_bind_survives_connect_disconnect_and_releases_on_close() {
     let _ = vsock::driver_uninstall(transport);
     assert!(vsock::driver_install(transport, cid, tx_ok, rx_noop));
     let sock = Arc::new(VsockSocket::new());
-    sock.bind(crate::socket_args::AF_VSOCK as u16, port, cid).unwrap();
-    sock.connect_transport(2, 1024, true).unwrap();
+    sock.bind(crate::socket_args::AF_VSOCK as u16, port, cid, crate::sock_admit::AddrAdmission::for_test()).unwrap();
+    sock.connect_transport(2, 1024, true, crate::sock_admit::AddrAdmission::for_test()).unwrap();
     sock.disconnect().unwrap();
     assert!(matches!(*sock.kind.lock(), VsockKind::Bound { port: p, .. } if p == port));
     let duplicate = VsockSocket::new();
-    assert_eq!(duplicate.bind(crate::socket_args::AF_VSOCK as u16, port, cid),
+    assert_eq!(duplicate.bind(crate::socket_args::AF_VSOCK as u16, port, cid, crate::sock_admit::AddrAdmission::for_test()),
         Err(crate::NetError::Eaddrinuse));
-    sock.connect_transport(2, 1024, true).unwrap();
+    sock.connect_transport(2, 1024, true, crate::sock_admit::AddrAdmission::for_test()).unwrap();
     sock.disconnect().unwrap();
     sock.release_file();
-    assert_eq!(duplicate.bind(crate::socket_args::AF_VSOCK as u16, port, cid), Ok(()));
+    assert_eq!(duplicate.bind(crate::socket_args::AF_VSOCK as u16, port, cid, crate::sock_admit::AddrAdmission::for_test()), Ok(()));
     duplicate.release_file();
     assert!(vsock::driver_uninstall(transport));
 }
@@ -94,11 +94,11 @@ fn auto_bind_is_released_by_disconnect_and_can_be_rebound() {
     let _ = vsock::driver_uninstall(transport);
     assert!(vsock::driver_install(transport, cid, tx_ok, rx_noop));
     let sock = Arc::new(VsockSocket::new());
-    sock.connect_transport(2, 1024, true).unwrap();
+    sock.connect_transport(2, 1024, true, crate::sock_admit::AddrAdmission::for_test()).unwrap();
     let local_port = sock.conn().expect("connected socket").local_port;
     sock.disconnect().unwrap();
     assert!(matches!(*sock.kind.lock(), VsockKind::Init));
-    assert_eq!(sock.bind(crate::socket_args::AF_VSOCK as u16, local_port, cid), Ok(()));
+    assert_eq!(sock.bind(crate::socket_args::AF_VSOCK as u16, local_port, cid, crate::sock_admit::AddrAdmission::for_test()), Ok(()));
     sock.release_file();
     assert!(vsock::driver_uninstall(transport));
 }
@@ -113,7 +113,7 @@ fn nonblocking_rst_publishes_reset_poll_retains_port_and_reconnects() {
     let _ = vsock::driver_uninstall(transport);
     assert!(vsock::driver_install(transport, cid, tx_ok, rx_noop));
     let sock = Arc::new(VsockSocket::new());
-    sock.connect_transport(2, 1024, true).unwrap();
+    sock.connect_transport(2, 1024, true, crate::sock_admit::AddrAdmission::for_test()).unwrap();
     let conn = sock.conn().expect("pending connection");
     let port = conn.local_port;
     let rst = vsock::VsockHdr {
@@ -134,7 +134,7 @@ fn nonblocking_rst_publishes_reset_poll_retains_port_and_reconnects() {
 
     assert!(matches!(vsock::TABLE.reserve_bind(Some(transport), Some(port)),
         Err(crate::NetError::Eaddrinuse)));
-    sock.connect_transport(2, 1025, true).unwrap();
+    sock.connect_transport(2, 1025, true, crate::sock_admit::AddrAdmission::for_test()).unwrap();
     assert!(matches!(*sock.kind.lock(), VsockKind::Conn(_)));
     sock.disconnect().unwrap();
     sock.release_file();
@@ -151,19 +151,19 @@ fn failed_connect_preserves_explicit_bind_and_allows_reconnect() {
     let _ = vsock::driver_uninstall(transport);
     assert!(vsock::driver_install(transport, cid, tx_ok, rx_noop));
     let sock = Arc::new(VsockSocket::new());
-    sock.bind(crate::socket_args::AF_VSOCK as u16, port, cid).unwrap();
-    sock.connect_transport(2, 1024, true).unwrap();
+    sock.bind(crate::socket_args::AF_VSOCK as u16, port, cid, crate::sock_admit::AddrAdmission::for_test()).unwrap();
+    sock.connect_transport(2, 1024, true, crate::sock_admit::AddrAdmission::for_test()).unwrap();
     let failed = sock.conn().expect("pending connection");
     assert!(vsock::fail_connect(&failed, crate::NetError::Etimedout));
     assert!(matches!(*sock.kind.lock(), VsockKind::Bound { port: p, .. } if p == port));
     assert_eq!(sock.take_pending_recv_error(), Errno::Etimedout as i32);
     let duplicate = VsockSocket::new();
-    assert_eq!(duplicate.bind(crate::socket_args::AF_VSOCK as u16, port, cid),
+    assert_eq!(duplicate.bind(crate::socket_args::AF_VSOCK as u16, port, cid, crate::sock_admit::AddrAdmission::for_test()),
         Err(crate::NetError::Eaddrinuse));
-    sock.connect_transport(2, 1025, true).unwrap();
+    sock.connect_transport(2, 1025, true, crate::sock_admit::AddrAdmission::for_test()).unwrap();
     sock.disconnect().unwrap();
     sock.release_file();
-    assert_eq!(duplicate.bind(crate::socket_args::AF_VSOCK as u16, port, cid), Ok(()));
+    assert_eq!(duplicate.bind(crate::socket_args::AF_VSOCK as u16, port, cid, crate::sock_admit::AddrAdmission::for_test()), Ok(()));
     duplicate.release_file();
     assert!(vsock::driver_uninstall(transport));
 }
@@ -177,7 +177,7 @@ fn driver_removal_completes_pending_connect_through_socket_owner() {
     let _ = vsock::driver_uninstall(transport);
     assert!(vsock::driver_install(transport, cid, tx_ok, rx_noop));
     let sock = Arc::new(VsockSocket::new());
-    sock.connect_transport(2, 1024, true).unwrap();
+    sock.connect_transport(2, 1024, true, crate::sock_admit::AddrAdmission::for_test()).unwrap();
     assert!(vsock::driver_uninstall(transport));
     assert!(matches!(*sock.kind.lock(), VsockKind::Bound { .. }));
     assert_eq!(sock.take_pending_recv_error(), Errno::Enetunreach as i32);
@@ -195,12 +195,12 @@ fn blocking_failure_uses_same_consumable_completion() {
     assert!(vsock::driver_install(transport, cid, tx_ok, rx_noop));
     let sock = Arc::new(VsockSocket::new());
     *sock.connect_wait_hook.lock() = Some(refuse_connect);
-    assert_eq!(sock.connect_transport(2, 1024, false), Err(crate::NetError::Econnrefused));
+    assert_eq!(sock.connect_transport(2, 1024, false, crate::sock_admit::AddrAdmission::for_test()), Err(crate::NetError::Econnrefused));
     assert!(matches!(*sock.kind.lock(), VsockKind::Bound { .. }));
     assert_eq!(sock.poll() & (vfs::POLL_ERR | vfs::POLL_OUT),
         vfs::POLL_ERR | vfs::POLL_OUT);
     assert_eq!(sock.take_pending_recv_error(), Errno::Econnrefused as i32);
-    sock.connect_transport(2, 1025, true).unwrap();
+    sock.connect_transport(2, 1025, true, crate::sock_admit::AddrAdmission::for_test()).unwrap();
     sock.disconnect().unwrap();
     sock.release_file();
     assert!(vsock::driver_uninstall(transport));
@@ -214,11 +214,11 @@ fn pending_reentry_and_stale_failure_preserve_current_arc() {
     let _ = vsock::driver_uninstall(transport);
     assert!(vsock::driver_install(transport, cid, tx_ok, rx_noop));
     let sock = Arc::new(VsockSocket::new());
-    sock.connect_transport(2, 1024, true).unwrap();
+    sock.connect_transport(2, 1024, true, crate::sock_admit::AddrAdmission::for_test()).unwrap();
     let old = sock.conn().expect("first pending connection");
-    assert_eq!(sock.connect_transport(2, 1025, true), Err(crate::NetError::Ealready));
+    assert_eq!(sock.connect_transport(2, 1025, true, crate::sock_admit::AddrAdmission::for_test()), Err(crate::NetError::Ealready));
     sock.disconnect().unwrap();
-    sock.connect_transport(2, 1025, true).unwrap();
+    sock.connect_transport(2, 1025, true, crate::sock_admit::AddrAdmission::for_test()).unwrap();
     let current = sock.conn().expect("replacement pending connection");
     assert!(!Arc::ptr_eq(&old, &current));
     assert!(!vsock::fail_connect(&old, crate::NetError::Econnrefused));
@@ -237,7 +237,7 @@ fn nonblocking_deadline_completes_exact_arc_with_timeout_readiness() {
     let _ = vsock::driver_uninstall(transport);
     assert!(vsock::driver_install(transport, cid, tx_ok, rx_noop));
     let sock = Arc::new(VsockSocket::new());
-    sock.connect_transport(2, 1024, true).unwrap();
+    sock.connect_transport(2, 1024, true, crate::sock_admit::AddrAdmission::for_test()).unwrap();
     let conn = sock.conn().expect("pending connection");
     let port = conn.local_port;
     vsock::cancel_connect_timeout(&conn);
@@ -263,7 +263,7 @@ fn cancelled_connect_deadline_releases_both_timer_arc_owners() {
     let _ = vsock::driver_uninstall(transport);
     assert!(vsock::driver_install(transport, cid, tx_ok, rx_noop));
     let sock = Arc::new(VsockSocket::new());
-    sock.connect_transport(2, 1024, true).unwrap();
+    sock.connect_transport(2, 1024, true, crate::sock_admit::AddrAdmission::for_test()).unwrap();
     let conn = sock.conn().expect("pending connection");
     let armed = Arc::strong_count(&conn);
     vsock::cancel_connect_timeout(&conn);
@@ -285,7 +285,7 @@ fn immediate_response_during_start_sees_published_socket() {
     let sock = Arc::new(VsockSocket::new());
     sock.error.set(syscall::errno::Errno::Etimedout as i32);
 
-    assert_eq!(sock.connect_transport(2, 1024, true), Ok(()));
+    assert_eq!(sock.connect_transport(2, 1024, true, crate::sock_admit::AddrAdmission::for_test()), Ok(()));
     let conn = sock.conn().expect("synchronously connected socket");
     assert_eq!(*conn.st.lock(), VsockState::Connected);
     assert_eq!(Arc::strong_count(&conn), 3);
@@ -304,7 +304,7 @@ fn immediate_rst_during_start_rolls_back_exact_published_socket() {
     assert!(vsock::driver_install(transport, cid, tx_immediate_rst, rx_noop));
     let sock = Arc::new(VsockSocket::new());
 
-    assert_eq!(sock.connect_transport(2, 1024, true), Ok(()));
+    assert_eq!(sock.connect_transport(2, 1024, true, crate::sock_admit::AddrAdmission::for_test()), Ok(()));
     assert!(matches!(*sock.kind.lock(), VsockKind::Bound { .. }));
     assert_eq!(sock.take_pending_recv_error(), Errno::Econnreset as i32);
     sock.release_file();
@@ -321,7 +321,7 @@ fn immediate_driver_removal_during_start_completes_published_socket() {
     assert!(vsock::driver_install(transport, cid, tx_immediate_remove, rx_noop));
     let sock = Arc::new(VsockSocket::new());
 
-    assert_eq!(sock.connect_transport(2, 1024, true), Ok(()));
+    assert_eq!(sock.connect_transport(2, 1024, true, crate::sock_admit::AddrAdmission::for_test()), Ok(()));
     assert!(matches!(*sock.kind.lock(), VsockKind::Bound { .. }));
     assert_eq!(sock.take_pending_recv_error(), Errno::Enetunreach as i32);
     sock.release_file();
@@ -335,7 +335,7 @@ fn disconnect_releases_armed_timer_arc_immediately() {
     let _ = vsock::driver_uninstall(transport);
     assert!(vsock::driver_install(transport, cid, tx_ok, rx_noop));
     let sock = Arc::new(VsockSocket::new());
-    sock.connect_transport(2, 1024, true).unwrap();
+    sock.connect_transport(2, 1024, true, crate::sock_admit::AddrAdmission::for_test()).unwrap();
     let conn = sock.conn().expect("armed connection");
 
     sock.disconnect().unwrap();
@@ -354,7 +354,7 @@ fn release_releases_armed_timer_arc_immediately() {
     let _ = vsock::driver_uninstall(transport);
     assert!(vsock::driver_install(transport, cid, tx_ok, rx_noop));
     let sock = Arc::new(VsockSocket::new());
-    sock.connect_transport(2, 1024, true).unwrap();
+    sock.connect_transport(2, 1024, true, crate::sock_admit::AddrAdmission::for_test()).unwrap();
     let conn = sock.conn().expect("armed connection");
 
     sock.release_file();
@@ -372,7 +372,7 @@ fn stale_so_error_survives_rejected_attempt_and_clears_after_publication() {
     let _ = vsock::driver_uninstall(transport);
     assert!(vsock::driver_install(transport, cid, tx_ok, rx_noop));
     let sock = Arc::new(VsockSocket::new());
-    sock.connect_transport(2, 1024, true).unwrap();
+    sock.connect_transport(2, 1024, true, crate::sock_admit::AddrAdmission::for_test()).unwrap();
     let failed = sock.conn().expect("failed connection");
     let port = failed.local_port;
     assert!(vsock::fail_connect(&failed, crate::NetError::Etimedout));
@@ -380,10 +380,10 @@ fn stale_so_error_survives_rejected_attempt_and_clears_after_publication() {
         VsockState::Connecting));
     assert!(vsock::TABLE.insert(collision.clone()));
 
-    assert_eq!(sock.connect_transport(2, 1025, true), Err(crate::NetError::Eaddrinuse));
+    assert_eq!(sock.connect_transport(2, 1025, true, crate::sock_admit::AddrAdmission::for_test()), Err(crate::NetError::Eaddrinuse));
     assert_ne!(sock.poll() & vfs::POLL_ERR, 0);
     assert!(vsock::TABLE.remove_conn(&collision));
-    sock.connect_transport(2, 1025, true).unwrap();
+    sock.connect_transport(2, 1025, true, crate::sock_admit::AddrAdmission::for_test()).unwrap();
     assert_eq!(sock.take_pending_recv_error(), 0);
     sock.disconnect().unwrap();
     sock.release_file();
@@ -418,7 +418,7 @@ fn vsock_option_policy_is_typed_and_state_aware() {
         Ok(Value::Int(crate::socket_args::AF_VSOCK as i32)));
     assert_eq!(sock.sol_socket_read(SO_PROTOCOL, 4), Ok(Value::Int(0)));
     assert_eq!(sock.sol_socket_read(SO_ACCEPTCONN, 4), Ok(Value::Int(0)));
-    sock.bind(crate::socket_args::AF_VSOCK as u16, 63_011, vsock::VMADDR_CID_ANY).unwrap();
+    sock.bind(crate::socket_args::AF_VSOCK as u16, 63_011, vsock::VMADDR_CID_ANY, crate::sock_admit::AddrAdmission::for_test()).unwrap();
     sock.listen().unwrap();
     assert_eq!(sock.sol_socket_read(SO_ACCEPTCONN, 4), Ok(Value::Int(1)));
     assert_eq!(sock.sol_socket_read(UNKNOWN_SOCKET_OPTION, 4),

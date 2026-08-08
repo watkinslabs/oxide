@@ -11,6 +11,7 @@
 // - `lease`: Linux lease and dnotify registries plus per-file lease methods.
 // - `model`: constructors, path/accessors, flags, version, readahead methods.
 // - `io`: read/write/seek/pread/pwrite/readv/writev data paths.
+// - `iocb`: per-operation `RWF_*` write modifiers (append/nowait).
 // - `lifetime`: `Drop`, `get_file`, `fput`, `iput`, and `Debug`.
 // - `epoll`: weak eventpoll backlinks released from final `File::drop`.
 // - `open`: post-lookup open/install helpers.
@@ -33,6 +34,7 @@ mod cred;
 mod epoll;
 mod hooks;
 mod io;
+mod iocb;
 mod lease;
 mod lock_wait;
 mod lifetime;
@@ -54,6 +56,7 @@ pub use mode::{Fmode, SeekFrom};
 pub use kernel_open::kernel_open_at_root;
 pub use open::{install_open_at, open_dentry_at, open_file_at};
 pub use readahead::FileRaState;
+pub use iocb::WriteIocb;
 pub use fsync::{iocb_sync_mode, fsync_slot_present, SyncMode, SYNC_TO_EOF};
 
 pub(super) use async_notify::SIGIO_HOOK;

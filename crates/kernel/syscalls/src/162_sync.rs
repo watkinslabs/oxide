@@ -5,30 +5,72 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-/// `sync(2)` — flush ALL mounted filesystems to disk. Linux `ksys_sync`
-/// iterates the super_blocks list calling `sync_filesystem` on each. Bind
-/// mounts share one superblock, so dedup by `Arc` identity. Always returns 0.
-/// # C: O(N_mounts x dirty)
+/// `sync(2)` — flush every filesystem and every block device to durable
+/// storage, in the canonical five-phase order ([`fs::sync::KSYS_SYNC_PHASES`]):
+/// data-integrity inode writeback everywhere, `sync_fs(wait=0)` everywhere,
+/// `sync_fs(wait=1)` everywhere, then the device-level passes underneath.
+///
+/// Two properties of that order are the point of it. Each filesystem's commits
+/// are KICKED before any of them is WAITED on, so N filesystems cost one commit
+/// latency rather than N. And the sweep is over the superblock REGISTRY, not the
+/// mount table: an instance whose last mount was lazily detached while file
+/// descriptions remain open is still live and still dirty, and a mount-table
+/// walk simply never reaches it.
+///
+/// Always returns 0. A failed pass is not silently lost — the writeback path
+/// latches it against the failing inode and its filesystem, so the next
+/// `fsync`/`syncfs` reports it exactly once.
+/// # C: O(N_sb x dirty + N_disks)
 pub fn sys_sync(_args: &SyscallArgs) -> i64 {
-    let mounts = vfs::mount::all_mounts();
-    let mut synced: alloc::vec::Vec<*const ()> = alloc::vec::Vec::new();
-    for m in mounts.iter() {
-        let sb = m.sb();
-        let key = alloc::sync::Arc::as_ptr(sb) as *const ();
-        if synced.contains(&key) { continue; }
-        synced.push(key);
-        // `sync(2)` itself always reports 0, but a failed pass must not vanish:
-        // Linux records the failure into `s_wb_err` (via the writeback path's
-        // `mapping_set_error`) so the NEXT `syncfs`/`fsync` on that filesystem
-        // reports it exactly once. Dropping the `Err` here — which is what this
-        // did — made a failed whole-system sync invisible to every later call.
-        if let Err(e) = sb.sync_filesystem() { sb.s_wb_err.set(e as u32); }
-    }
+    let now = vfs::inode_times::realtime_now_ns();
+    fs::sync::ksys_sync(|phase| match phase {
+        // `sync_inodes_sb`: the data-integrity metadata pass, which is what
+        // forces out every deferred lazy timestamp regardless of age.
+        fs::sync::SyncPhase::Inodes => vfs::superblock::iterate_supers(|sb| {
+            if !sb.sb_rdonly() { let _ = sb.wb_writeback_pass(true, now); }
+        }),
+        fs::sync::SyncPhase::FsNoWait => vfs::superblock::iterate_supers(|sb| {
+            if !sb.sb_rdonly() { let _ = sb.sync_fs(false); }
+        }),
+        fs::sync::SyncPhase::FsWait => vfs::superblock::iterate_supers(|sb| {
+            if !sb.sb_rdonly() { let _ = sb.sync_fs(true); }
+        }),
+        fs::sync::SyncPhase::BdevNoWait => sync_bdevs(false),
+        fs::sync::SyncPhase::BdevWait   => sync_bdevs(true),
+    });
     // Commit the ext4 root running journal transaction (cross-op batching): the
     // per-sb sync flushed dirty pages into the running txn; sync(2) must make it
     // durable. No-op when batching is off / empty / non-ext4 root.
     let _ = ext4::commit_rootfs_journal();
     0
+}
+
+/// `sync_bdevs`: the device-level half of `sync(2)`, run after every filesystem
+/// above the devices has committed.
+///
+/// The pass is split into submit and wait because a block device normally holds
+/// its own cache of dirty buffers written back asynchronously: submit starts
+/// that writeback everywhere, wait collects it. Here a write to a raw block
+/// device goes straight to the driver, so there is no deferred device-level
+/// cache to submit and the submit half has nothing to start.
+///
+/// DELIBERATE DEVIATION, stated because it costs something: the wait half takes
+/// a durability BARRIER per device rather than waiting on device writeback,
+/// since a barrier is the only device-level durability action available with no
+/// such writeback to wait for. That is what makes `sync(2)` durable for a device
+/// written raw, with no filesystem above it to flush on its behalf — but it also
+/// means a device that a filesystem already barriered in the `sync_fs(wait=1)`
+/// phase is barriered a second time. Removing the second one requires the
+/// device-level writeback this layer does not yet have; until then `sync(2)`
+/// pays it, while `syncfs(2)`, freeze and unmount — which do not run this pass —
+/// take one barrier per filesystem instead of two.
+///
+/// Errors are dropped deliberately: `sync(2)` reports 0 regardless, and a device
+/// with no filesystem above it has no per-inode latch to record into.
+/// # C: O(N_disks)
+fn sync_bdevs(wait: bool) {
+    if !wait { return; }
+    for disk in block::registry::snapshot() { let _ = disk.dev.flush(); }
 }
 
 /// `syncfs(fd)` — flush the filesystem CONTAINING `fd` (Linux `sys_syncfs`:

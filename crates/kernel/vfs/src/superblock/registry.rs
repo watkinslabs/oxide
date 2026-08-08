@@ -40,6 +40,43 @@ pub fn fs_supers() -> Vec<Arc<SuperBlock>> {
     FS_SUPERS.lock().iter().filter_map(Weak::upgrade).collect()
 }
 
+/// `iterate_supers`: run `f` over every REGISTERED superblock instance that is
+/// still usable, in registration order.
+///
+/// This is the whole-system sweep `sync(2)` walks, and it is deliberately NOT
+/// the mount table: an instance whose last mount has been lazily detached while
+/// file descriptions remain open is still live, still dirty, and still owes its
+/// backend a flush — walking mounts loses exactly that superblock.
+///
+/// The discipline is the reference's, and each part earns its place:
+/// * the registry lock is held only to SNAPSHOT, never across `f`, because `f`
+///   blocks on device I/O and a sweep that held the lock would serialise every
+///   mount and unmount in the system behind it;
+/// * upgrading the `Weak` takes the existence reference that keeps the instance
+///   alive for the duration of the call, so a concurrent last-umount cannot free
+///   it underneath `f`;
+/// * a DYING or not-yet-published instance is skipped — no root dentry, or the
+///   mounted flag already cleared by teardown — because its backend state is
+///   being dismantled and a flush into it is at best wasted and at worst a use
+///   of half-torn-down state;
+/// * `f` runs under `s_umount` shared, the lock the per-superblock flush path
+///   requires, so a remount cannot flip the instance between read-only and
+///   read-write while it is being written back.
+/// # C: O(N_sb x f)
+pub fn iterate_supers(mut f: impl FnMut(&Arc<SuperBlock>)) {
+    let live: Vec<Arc<SuperBlock>> = fs_supers();
+    for sb in live.iter() {
+        if !sb_iterable(sb.is_mounted(), sb.s_root().is_some()) { continue; }
+        sb.with_s_umount_read(|| f(sb));
+    }
+}
+
+/// Whether an instance in the registry is one a whole-system sweep may touch:
+/// published (a root dentry exists) and not yet dismantled (still flagged
+/// mounted). Split out from [`iterate_supers`] so the predicate is checkable on
+/// its own. # C: O(1)
+pub fn sb_iterable(mounted: bool, has_root: bool) -> bool { mounted && has_root }
+
 /// Find a live superblock by backing `s_dev`. # C: O(N_sb)
 pub fn sb_by_dev(dev: u64) -> Option<Arc<SuperBlock>> {
     FS_SUPERS.lock().iter().filter_map(Weak::upgrade).find(|sb| sb.s_dev == dev)
