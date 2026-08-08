@@ -248,23 +248,38 @@ pub fn connect_admitted(sock: &alloc::sync::Arc<InetSocket>, addr: RemoteAddr, n
 /// call publishes it as connectable. F176: SO_REUSEADDR forwarded.
 /// # C: O(1)
 pub fn listen(sock: &alloc::sync::Arc<InetSocket>, backlog: i32) -> Result<(), NetError> {
-    super::admit_listen(sock)?;
     let net_ns = sock.net_ns();
-    let somaxconn = crate::sysctl::somaxconn_in(net_ns).ok_or(NetError::Enodev)?;
+    let is_unix = sock.family.load(core::sync::atomic::Ordering::Acquire) == AF_UNIX;
+    let step = crate::listen_admit::listen_ladder(
+        crate::sysctl::somaxconn_in(net_ns), backlog,
+        |_| super::admit_listen(sock).map(|_| ()),
+        || if is_unix {
+            match &*sock.kind.lock() {
+                SockKind::UnixDgram(_) => crate::listen_admit::ListenShape::UnixDatagram,
+                SockKind::UnixListener(_) => crate::listen_admit::ListenShape::UnixListening,
+                SockKind::UnixUnbound(_, _) => crate::listen_admit::ListenShape::UnixBound,
+                _ => crate::listen_admit::ListenShape::UnixUnnameable,
+            }
+        } else {
+            // A datagram or raw INET socket has no listen operation at all,
+            // which is a different refusal from a stream socket in the wrong
+            // state. Only the stream kinds reach `listen_tcp`.
+            match &*sock.kind.lock() {
+                SockKind::Packet { .. } | SockKind::Udp | SockKind::Raw4(_) | SockKind::Raw6(_) =>
+                    crate::listen_admit::ListenShape::NoListenOp,
+                _ => crate::listen_admit::ListenShape::Stream,
+            }
+        });
+    let (backlog, somaxconn) = match step {
+        crate::listen_admit::ListenStep::Refuse(error) => return Err(error),
+        crate::listen_admit::ListenStep::UnixListener(b) |
+        crate::listen_admit::ListenStep::Stream(b) => (b as i32, b),
+    };
     // AF_UNIX listener (incl. socket-activated /run/udev/control passed to
     // udevd): register the listener's epoll subscribers against the socket's
     // `poll_subs` so `UnixRegistry::connect`'s `notify_subs` targets the epoll
     // that ADD'd this fd — not just the global rescan fallback (60§R22).
-    if sock.family.load(core::sync::atomic::Ordering::Acquire) == AF_UNIX {
-        let shape = match &*sock.kind.lock() {
-            SockKind::UnixDgram(_) => crate::listen_admit::ListenShape::UnixDatagram,
-            SockKind::UnixListener(_) => crate::listen_admit::ListenShape::UnixListening,
-            SockKind::UnixUnbound(_, _) => crate::listen_admit::ListenShape::UnixBound,
-            _ => crate::listen_admit::ListenShape::UnixUnnameable,
-        };
-        if let crate::listen_admit::ListenAdmit::Refuse(error) =
-            crate::listen_admit::admit_listen(shape)
-        { return Err(error); }
+    if is_unix {
         let listener = {
             let mut kind = sock.kind.lock();
             if let SockKind::UnixListener(l) = &*kind {
@@ -286,17 +301,6 @@ pub fn listen(sock: &alloc::sync::Arc<InetSocket>, backlog: i32) -> Result<(), N
         sock.connect_waiters.wake_all();
         return Ok(());
     }
-    // A datagram or raw INET socket has no listen operation at all, which is
-    // a different refusal from a stream socket in the wrong state. Only the
-    // stream kinds reach `listen_tcp`.
-    let shape = match &*sock.kind.lock() {
-        SockKind::Packet { .. } | SockKind::Udp | SockKind::Raw4(_) | SockKind::Raw6(_) =>
-            crate::listen_admit::ListenShape::NoListenOp,
-        _ => crate::listen_admit::ListenShape::Stream,
-    };
-    if let crate::listen_admit::ListenAdmit::Refuse(error) =
-        crate::listen_admit::admit_listen(shape)
-    { return Err(error); }
     super::tcp_lifecycle::listen_tcp(sock, backlog, somaxconn)
 }
 
