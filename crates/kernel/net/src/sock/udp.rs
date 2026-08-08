@@ -28,14 +28,20 @@ pub fn socket_recv6(sock: &InetSocket) -> Option<(crate::Ipv6Addr, u16, Vec<u8>)
 pub fn socket_sendto(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &[u8])
     -> Result<usize, NetError>
 {
-    socket_sendto_ctl(sock, dst, dst_port, payload, &crate::send_control::Raw4Control::default())
+    socket_sendto_ctl(sock, dst, dst_port, payload, &crate::send_control::Raw4Control::default(),
+        crate::sock::tx_meta(sock, &crate::send_control::SockCm::default()))
+}
+
+/// The route this send's mark selects. # C: O(N rules * N routes)
+fn marked_route(net_ns: u64, dst: Ipv4Addr, mark: u32) -> Option<crate::route::RouteEntry> {
+    stack().routes.lookup_record_mark_in(net_ns, dst, mark).map(|record| record.route)
 }
 
 /// The same send, carrying one message's IPv4 ancillary overrides. Each of
 /// them replaces exactly the socket-level choice its `setsockopt` counterpart
 /// makes, for this datagram only. # C: O(1)
 pub fn socket_sendto_ctl(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payload: &[u8],
-    msg: &crate::send_control::Raw4Control)
+    msg: &crate::send_control::Raw4Control, tx: crate::TxMeta)
     -> Result<usize, NetError>
 {
     let net_ns = sock.net_ns();
@@ -69,10 +75,11 @@ pub fn socket_sendto_ctl(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payloa
         crate::inet_tx::SourceChoice::Loopback => Ipv4Addr::LOOPBACK,
         // The outbound interface's primary IPv4, via the route table.
         crate::inet_tx::SourceChoice::Route => bound_iface
-            .and_then(|iface| stack().route_v4_on_iface_in(net_ns, dst, iface).ok().flatten()
-                .and_then(|route| route.src_hint))
-            .or_else(|| stack().routes.lookup_in(net_ns, dst).and_then(|route| route.src_hint))
-            .or_else(|| iface_primary_ip(bound_iface.or_else(|| stack().routes.lookup_in(net_ns, dst).map(|r| r.iface))))
+            .and_then(|iface| stack().route_v4_on_iface_in(net_ns, dst, iface, tx.mark)
+                .ok().flatten().and_then(|route| route.src_hint))
+            .or_else(|| marked_route(net_ns, dst, tx.mark).and_then(|route| route.src_hint))
+            .or_else(|| iface_primary_ip(bound_iface
+                .or_else(|| marked_route(net_ns, dst, tx.mark).map(|r| r.iface))))
             .unwrap_or(Ipv4Addr::LOOPBACK),
     };
     let multicast = dst.is_multicast();
@@ -104,7 +111,7 @@ pub fn socket_sendto_ctl(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payloa
             for segment in payload.chunks(plan.seg_size) {
                 stack().send_udp_pmtu_to_bound_opts_owned(
                     &sock.owner, src_ip, src_port, dst, dst_port, segment, bound_iface, tos, ttl,
-                    pmtudisc, ip_options.as_ref(), no_check,
+                    pmtudisc, ip_options.as_ref(), no_check, tx,
                 ).map_err(|error| crate::socket_error::report_send_failure(&sock.error, net_ns,
                     crate::addr::IpAddr::V4(dst), dst_port, bound_iface, error))?;
             }
@@ -114,7 +121,7 @@ pub fn socket_sendto_ctl(sock: &InetSocket, dst: Ipv4Addr, dst_port: u16, payloa
     }
     stack().send_udp_pmtu_to_bound_opts_owned(
         &sock.owner, src_ip, src_port, dst, dst_port, payload, bound_iface, tos, ttl, pmtudisc,
-        ip_options.as_ref(), no_check,
+        ip_options.as_ref(), no_check, tx,
     ).map_err(|error| crate::socket_error::report_send_failure(&sock.error, net_ns,
         crate::addr::IpAddr::V4(dst), dst_port, bound_iface, error))?;
     if crate::inet_tx::drains_loopback(multicast, mcast_loop) { drain_loopback(); }

@@ -30,7 +30,7 @@ fn non_hdrincl_transmit_supports_arbitrary_protocol_and_fragments() {
         ..Raw4TxOptions::default() };
 
     stack.send_raw4(&raw, dst, &[0x5a; 100], options,
-        &crate::send_control::Raw4Control::default()).unwrap();
+        &crate::send_control::Raw4Control::default(), crate::TxMeta::NONE).unwrap();
 
     let packets = dev.packets.lock();
     assert_eq!(packets.len(), 3);
@@ -56,7 +56,7 @@ fn want_small_packet_clears_df_on_locked_pmtu_route() {
         ..Raw4TxOptions::default() };
 
     stack.send_raw4(&raw, dst, b"small", options,
-        &crate::send_control::Raw4Control::default()).unwrap();
+        &crate::send_control::Raw4Control::default(), crate::TxMeta::NONE).unwrap();
 
     let packets = dev.packets.lock();
     assert_eq!(packets.len(), 1);
@@ -70,10 +70,10 @@ fn broadcast_transmit_requires_permission() {
     let (_iface, dev) = routed_capture(&stack, 1_500, Ipv4Addr::BROADCAST);
     let raw = initial_endpoint(PROTOCOL);
     assert_eq!(stack.send_raw4(&raw, Ipv4Addr::BROADCAST, b"x",
-        Raw4TxOptions::default(), &crate::send_control::Raw4Control::default()), Err(NetError::Eacces));
+        Raw4TxOptions::default(), &crate::send_control::Raw4Control::default(), crate::TxMeta::NONE), Err(NetError::Eacces));
     stack.send_raw4(&raw, Ipv4Addr::BROADCAST, b"x", Raw4TxOptions {
         broadcast: true, ..Raw4TxOptions::default()
-    }, &crate::send_control::Raw4Control::default()).unwrap();
+    }, &crate::send_control::Raw4Control::default(), crate::TxMeta::NONE).unwrap();
     assert_eq!(dev.packets.lock().len(), 1);
 }
 
@@ -92,7 +92,7 @@ fn hdrincl_rewrites_kernel_fields_preserves_user_header_and_never_fragments() {
     user[10..12].copy_from_slice(&0xdead_u16.to_be_bytes());
 
     stack.send_raw4(&raw, dst, &user, Raw4TxOptions::default(),
-        &crate::send_control::Raw4Control::default()).unwrap();
+        &crate::send_control::Raw4Control::default(), crate::TxMeta::NONE).unwrap();
 
     let packets = dev.packets.lock();
     assert_eq!(packets.len(), 1);
@@ -107,11 +107,11 @@ fn hdrincl_rewrites_kernel_fields_preserves_user_header_and_never_fragments() {
 
     let oversized = alloc::vec![0u8; 81];
     assert_eq!(stack.send_raw4(&raw, dst, &oversized, Raw4TxOptions::default(),
-        &crate::send_control::Raw4Control::default()),
+        &crate::send_control::Raw4Control::default(), crate::TxMeta::NONE),
         Err(NetError::Einval));
     let valid_oversized = packet(PROTOCOL, Ipv4Addr::ANY, dst, 0, 0, &[], &[0; 61]);
     assert_eq!(stack.send_raw4(&raw, dst, &valid_oversized, Raw4TxOptions::default(),
-        &crate::send_control::Raw4Control::default()),
+        &crate::send_control::Raw4Control::default(), crate::TxMeta::NONE),
         Err(NetError::Emsgsize));
     assert_eq!(dev.packets.lock().len(), 1);
 }
@@ -198,4 +198,23 @@ fn unconnected_raw4_error_requires_recverr() {
         crate::icmp::ICMP_TYPE_DEST_UNREACH, 3, &quote);
     assert_eq!(raw.error.take(), syscall::errno::Errno::Econnrefused as i32);
     assert_eq!(raw.error.take_extended().unwrap().destination_port, 0);
+}
+
+/// The mark, the transmit band and the departure time a send settles reach the
+/// packet. Before this every one of them was admitted by the ancillary rule
+/// and by the option table and then dropped: nothing downstream could see any
+/// of the three.
+#[test]
+fn a_sends_mark_band_and_departure_time_reach_the_packet() {
+    let _initial_net = crate::hosted_fixture::init_net_domain();
+    let stack = NetStack::new();
+    let dst = Ipv4Addr::new(198, 51, 100, 62);
+    let (_iface, dev) = routed_capture(&stack, 1_500, dst);
+    let raw = initial_endpoint(PROTOCOL);
+    let settled = crate::TxMeta { mark: 0x5a5a, priority: 6, transmit_time: 0x1234_5678 };
+
+    stack.send_raw4(&raw, dst, b"marked", Raw4TxOptions::default(),
+        &crate::send_control::Raw4Control::default(), settled).unwrap();
+
+    assert_eq!(*dev.metas.lock(), alloc::vec![settled]);
 }

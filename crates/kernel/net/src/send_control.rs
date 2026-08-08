@@ -4,10 +4,49 @@ use alloc::vec::Vec;
 
 use crate::{Ipv4Addr, Ipv6Addr, NetIfaceId};
 
+/// The SOL_SOCKET overrides one message settles for its own duration.
+///
+/// Every field answers a question the SOCKET also answers, so it is kept as
+/// "absent, or this override" and resolved against the socket's own choice at
+/// the point that consumes it — never copied into a second place that could
+/// then disagree with either.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SockCm {
+    /// `SO_MARK`: the mark the route lookup and the packet carry.
+    pub mark: Option<u32>,
+    /// `SO_PRIORITY`: the transmit band this packet is queued in.
+    pub priority: Option<u32>,
+    /// `SCM_TXTIME`: the departure time the packet carries.
+    pub transmit_time: Option<u64>,
+    /// `SO_TIMESTAMPING`: the transmit-record bits for this message alone.
+    pub tsflags: Option<u32>,
+    /// `SCM_TS_OPT_ID`: the key a transmit record is reported under.
+    pub ts_opt_id: Option<u32>,
+}
+
+impl SockCm {
+    /// # C: O(1)
+    pub fn mark(&self, socket: u32) -> u32 { self.mark.unwrap_or(socket) }
+    /// # C: O(1)
+    pub fn priority(&self, socket: u32) -> u32 { self.priority.unwrap_or(socket) }
+    /// The transmit-record bits in force for this message. The override
+    /// replaces the socket's record bits outright and leaves every other bit
+    /// of the socket's timestamping state alone. # C: O(1)
+    pub fn tsflags(&self, socket: u32) -> u32 {
+        match self.tsflags {
+            Some(flags) => (socket & !crate::uapi::SOF_TIMESTAMPING_TX_RECORD_MASK) | flags,
+            None => socket,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SendControl {
     pub raw4: Raw4Control,
     pub raw6: Raw6Control,
+    /// SOL_SOCKET overrides, settled by every family that runs the generic
+    /// rule — not only the two that own an IP level of their own.
+    pub sockcm: SockCm,
     /// Message-level out-of-band request. The ICMP datagram endpoint class has
     /// no out-of-band channel and reports that before it screens the message
     /// type, so the flag has to reach the transport.

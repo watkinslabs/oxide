@@ -24,8 +24,11 @@ pub(crate) enum UnixScm {
         /// side any more than in `poll`.
         symmetric: bool,
         /// The SENDING socket's own queue — Linux's `sk`, whose
-        /// `sk_wmem_alloc` this send is charged against.
-        local: Arc<net::UnixDgramQueue>,
+        /// `sk_wmem_alloc` this send is charged against. A datagram socketpair
+        /// end owns no such queue: it is unbound and unpublished, so a message
+        /// it addresses by name is charged against the destination's receive
+        /// queue alone.
+        local: Option<Arc<net::UnixDgramQueue>>,
     },
     Stream(Scm),
 }
@@ -142,18 +145,20 @@ fn stream(_ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSocket>, payload: 
 
 fn datagram(ctx: &SendContext<'_>, message: &Message, scm: &Scm,
     queue: Arc<net::UnixDgramQueue>, sender: Option<net::UnixAddr>, address: net::UnixAddr,
-    cap: usize, local: &Arc<net::UnixDgramQueue>, sndbuf: usize)
+    cap: usize, local: Option<&Arc<net::UnixDgramQueue>>, sndbuf: usize)
     -> KResult<usize>
 {
     let creds = scm.creds.unwrap_or_else(|| ctx.creds());
     let datagram = net::UnixDgram { payload: message.payload.clone(),
         creds: creds.stamp(), fds: Vec::new() };
+    let rights = net::classify_files(scm.files.clone());
     // `sock_alloc_send_pskb` + `skb_set_owner_w`: the sender's own write memory
     // is charged and bounds this send, which is the ONLY bound a symmetrically
     // connected pair has (`unix_dgram_sendmsg` skips the peer recvq test there).
-    queue.try_push_owned(datagram, sender,
-        net::classify_files(scm.files.clone()), cap, local, sndbuf)
-        .map_err(Error::from)?;
+    match local {
+        Some(local) => queue.try_push_owned(datagram, sender, rights, cap, local, sndbuf),
+        None => queue.try_push_from_with_rights_bounded(datagram, sender, rights, cap),
+    }.map_err(Error::from)?;
     net::trace_dgram_journal(&address.display, &message.payload);
     Ok(message.payload.len())
 }
@@ -162,7 +167,7 @@ fn datagram(ctx: &SendContext<'_>, message: &Message, scm: &Scm,
 pub(crate) fn prepare_unix(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSocket>,
     message: &Message, flags: u32) -> Option<KResult<UnixScm>>
 {
-    enum Kind { Datagram(Arc<net::UnixDgramQueue>), Stream, Unconnected }
+    enum Kind { Datagram(Arc<net::UnixDgramQueue>), PairDatagram, Stream, Unconnected }
     // Every SOCK_STREAM flavour, connected or not: they share the out-of-band
     // division and the rule that a destination address is not theirs to take.
     let byte_stream = matches!(*socket.kind.lock(), net::sock::SockKind::Unix(_, _)
@@ -170,6 +175,12 @@ pub(crate) fn prepare_unix(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSo
     let connected = matches!(*socket.kind.lock(), net::sock::SockKind::Unix(_, _));
     let kind = match &*socket.kind.lock() {
         net::sock::SockKind::UnixDgram(queue) => Kind::Datagram(queue.clone()),
+        // A DATAGRAM socketpair end runs the datagram send, so a supplied
+        // destination is resolved by the ordinary name lookup and outranks the
+        // peer it was created with. A SEQPACKET one discards `msg_namelen`
+        // before the datagram send ever sees it, so it keeps the pair.
+        net::sock::SockKind::UnixMsgPair(pair, _)
+            if pair.kind == net::UnixMsgKind::Datagram => Kind::PairDatagram,
         net::sock::SockKind::Unix(_, _) | net::sock::SockKind::UnixMsgPair(_, _) => Kind::Stream,
         net::sock::SockKind::UnixUnbound(_, _) | net::sock::SockKind::UnixListener(_) =>
             Kind::Unconnected,
@@ -193,6 +204,20 @@ pub(crate) fn prepare_unix(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSo
             // No peer was ever published, so there is nothing to send to.
             Kind::Unconnected => Err(Error::Enotconn),
             Kind::Stream => Ok(UnixScm::Stream(scm)),
+            Kind::PairDatagram => {
+                if socket.write_shut.load(Ordering::Acquire) { return Err(Error::Epipe); }
+                // No name: the pair's own peer, which is what the socketpair
+                // was created around. A named one is resolved and delivered
+                // like any other datagram; the sending end owns no queue, so
+                // it publishes no source address and charges no write memory
+                // of its own.
+                let Some(name) = message.name.as_deref() else { return Ok(UnixScm::Stream(scm)); };
+                let address = crate::address::unix(ctx, name)?;
+                let queue = net::net_ns::unix_registry_for_addr_in(&socket.net_namespace, &address)
+                    .dgram_lookup_addr(&address).ok_or(Error::Econnrefused)?;
+                Ok(UnixScm::Datagram { scm, queue, sender: None, address,
+                    symmetric: false, local: None })
+            }
             Kind::Datagram(local) => {
                 if socket.write_shut.load(Ordering::Acquire) { return Err(Error::Epipe); }
                 let sender = local.bound();
@@ -209,7 +234,8 @@ pub(crate) fn prepare_unix(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSo
                     .dgram_lookup_addr(&address).ok_or(Error::Econnrefused)?;
                 let symmetric = net::unix_sock::dgram_symmetric_pair(
                     queue.peer().as_ref(), local.bound().as_ref());
-                Ok(UnixScm::Datagram { scm, queue, sender, address, symmetric, local })
+                Ok(UnixScm::Datagram { scm, queue, sender, address, symmetric,
+                    local: Some(local) })
             }
         }
     })())
@@ -226,7 +252,7 @@ pub(crate) fn send_unix_once(ctx: &SendContext<'_>, socket: &Arc<net::sock::Inet
         // the sender's own `sk_wmem_alloc` watermark (never skipped).
         UnixScm::Datagram { scm, queue, sender, address, symmetric, local } =>
             datagram(ctx, message, scm, queue.clone(), sender.clone(), address.clone(),
-                if *symmetric { usize::MAX } else { cap }, local, cap),
+                if *symmetric { usize::MAX } else { cap }, local.as_ref(), cap),
         // The out-of-band tail is the payload's LAST byte; the body loop stops
         // one short of it and this step queues it as the urgent record.
         UnixScm::Stream(scm) if oob =>
@@ -246,13 +272,15 @@ pub(crate) fn wait_unix_send(socket: &Arc<net::sock::InetSocket>, scm: &UnixScm,
         // SENDER's write-space list: for a symmetric pair it is the only bound,
         // so parking on the destination's receive queue would spin instead.
         UnixScm::Datagram { queue, symmetric, local, .. } => {
-            if let net::unix_sock::dgram::ArmDgramWrite::Parked =
-                local.arm_write_wmem(len, cap, deadline_ns)
-            {
-                // SAFETY: local armed current under its own message lock.
-                unsafe { sched::live::schedule::schedule(); }
-                local.writers.remove_current();
-                return Ok(());
+            if let Some(local) = local {
+                if let net::unix_sock::dgram::ArmDgramWrite::Parked =
+                    local.arm_write_wmem(len, cap, deadline_ns)
+                {
+                    // SAFETY: local armed current under its own message lock.
+                    unsafe { sched::live::schedule::schedule(); }
+                    local.writers.remove_current();
+                    return Ok(());
+                }
             }
             match queue.arm_write(len, if *symmetric { usize::MAX } else { cap }, deadline_ns) {
             net::unix_sock::dgram::ArmDgramWrite::Retry => Ok(()),

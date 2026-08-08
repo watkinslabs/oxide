@@ -94,6 +94,9 @@ mod tcp_ip_options;
 mod fastopen_result;
 mod accept_finalize;
 mod accept_admit;
+mod txmeta;
+pub use txmeta::{sock_mark, sock_priority, tx_meta};
+pub mod tx_tstamp;
 #[cfg(target_os = "oxide-kernel")]
 mod connect_admission;
 mod tcp_rcvbuf;

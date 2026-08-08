@@ -94,7 +94,7 @@ impl NetStack {
         -> NetResult<crate::cgroup_bpf::EgressVerdict>
     {
         let wire_dst = crate::ipv4_options::wire_dst(opts, dst);
-        let (route, iface, next_hop) = self.route_v4_xmit_in(net_ns, wire_dst, bound)?;
+        let (route, iface, next_hop) = self.route_v4_xmit_in(net_ns, wire_dst, bound, crate::stack_binddev::UNMARKED)?;
         if crate::ipv4_options::is_strict_route(opts) && next_hop != wire_dst {
             return Err(NetError::Enetunreach);
         }
@@ -122,7 +122,7 @@ impl NetStack {
         dst: Ipv4Addr, dst_port: u16, payload: &[u8], bound: Option<NetIfaceId>,
         tos: u8, ttl: u8, mode: i32) -> NetResult<()> {
         self.send_udp_pmtu_to_bound_opts_owner(None, net_ns, src, src_port, dst, dst_port,
-            payload, bound, tos, ttl, mode, None, false)
+            payload, bound, tos, ttl, mode, None, false, crate::TxMeta::NONE)
     }
 
     /// Build and transmit socket-owned UDP/IPv4. `no_check` is the socket's
@@ -132,9 +132,10 @@ impl NetStack {
     pub fn send_udp_pmtu_to_bound_opts_owned(&self, owner: &crate::SocketOwner,
         src: Ipv4Addr, src_port: u16, dst: Ipv4Addr, dst_port: u16, payload: &[u8],
         bound: Option<NetIfaceId>, tos: u8, ttl: u8, mode: i32,
-        opts: Option<&crate::ipv4_options::Compiled>, no_check: bool) -> NetResult<()> {
+        opts: Option<&crate::ipv4_options::Compiled>, no_check: bool, tx: crate::TxMeta)
+        -> NetResult<()> {
         self.send_udp_pmtu_to_bound_opts_owner(Some(owner), owner.net_ns(), src, src_port,
-            dst, dst_port, payload, bound, tos, ttl, mode, opts, no_check)
+            dst, dst_port, payload, bound, tos, ttl, mode, opts, no_check, tx)
     }
 
     /// The route, PMTU policy and header a UDP/IPv4 datagram leaves on. A
@@ -145,15 +146,16 @@ impl NetStack {
     fn send_udp_pmtu_to_bound_opts_owner(&self, owner: Option<&crate::SocketOwner>,
         net_ns: u64, src: Ipv4Addr, src_port: u16, dst: Ipv4Addr, dst_port: u16,
         payload: &[u8], bound: Option<NetIfaceId>, tos: u8, ttl: u8, mode: i32,
-        opts: Option<&crate::ipv4_options::Compiled>, no_check: bool)
+        opts: Option<&crate::ipv4_options::Compiled>, no_check: bool, tx: crate::TxMeta)
         -> NetResult<()> {
         let wire_dst = crate::ipv4_options::wire_dst(opts, dst);
-        let (route, iface, next_hop) = self.route_v4_xmit_in(net_ns, wire_dst, bound)?;
+        let (route, iface, next_hop) = self.route_v4_xmit_in(net_ns, wire_dst, bound, tx.mark)?;
         let (mtu, df, may_fragment) = self.ipv4_route_pmtu_policy(
             net_ns, route, wire_dst, iface.mtu(), mode,
         );
         let udp_len = crate::udp::UDP_HDR_LEN + payload.len();
         let mut packet = Pkt::with_capacity(0, udp_len);
+        packet.tx = tx;
         let udp = packet.put(udp_len).map_err(|_| NetError::Enobufs)?;
         UdpHdr::build_into_opts(src_port, dst_port, src, wire_dst, payload, udp, no_check);
         let id = { let mut next = self.next_ip_id.lock(); *next = next.wrapping_add(1); *next };

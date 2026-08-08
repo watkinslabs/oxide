@@ -222,13 +222,16 @@ impl Raw4Endpoint {
     }
 
     /// Connect and install the route-selected local address when unbound. # C: O(N)
-    pub fn connect_routed(&self, remote: Ipv4Addr, iface: Option<NetIfaceId>) -> NetResult<()> {
+    pub fn connect_routed(&self, remote: Ipv4Addr, iface: Option<NetIfaceId>, mark: u32)
+        -> NetResult<()>
+    {
         if remote.is_unspecified() { return Err(NetError::Eaddrnotavail); }
         let stack = crate::global_stack();
         let net_ns = self.net_ns();
-        let (route, _, _) = stack.route_v4_iface_in(net_ns, remote, iface)?;
+        let (route, _, _) = stack.route_v4_iface_in(net_ns, remote, iface, mark)?;
         let route_iface = route.iface;
-        let local = stack.routes.lookup_in(net_ns, remote)
+        let local = stack.routes.lookup_record_mark_in(net_ns, remote, mark)
+            .map(|record| record.route)
             .filter(|route| route.iface == route_iface).and_then(|route| route.src_hint)
             .or_else(|| crate::iface_addr::primary(net_ns, route_iface).map(|row| row.0))
             .ok_or(NetError::Eaddrnotavail)?;

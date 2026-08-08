@@ -19,7 +19,7 @@ mod queue;
 mod poll;
 mod report;
 pub mod pathmtu;
-mod uapi;
+pub mod uapi;
 mod zerocopy;
 
 #[cfg(test)] mod tests;

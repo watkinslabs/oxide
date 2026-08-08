@@ -137,9 +137,18 @@ pub fn connect(target: &NetlinkFileRef, storage: &net::SockaddrStorage) -> i64 {
     if address.len() < ::netlink::SOCKADDR_NL_SIZE {
         return -(Errno::Einval.as_i32() as i64);
     }
-    let port_id = u32::from_ne_bytes(address[4..8].try_into().unwrap());
-    let groups = u32::from_ne_bytes(address[8..12].try_into().unwrap());
-    socket.connect_destination(port_id, groups).map_or_else(crate::net_errno::errno_from_neterr, |_| 0)
+    // The destination a connect settles is gated exactly as a supplied send
+    // destination is, and for the same reason: it becomes the pair every later
+    // destination-less send uses without being asked again.
+    let dest = match ::netlink::admit_dest(::netlink::NlDest {
+        port_id: u32::from_ne_bytes(address[4..8].try_into().unwrap()),
+        group: ::netlink::first_group(u32::from_ne_bytes(address[8..12].try_into().unwrap())),
+    }, socket.protocol, socket.net_admin()) {
+        Ok(dest) => dest,
+        Err(error) => return -(error as i64),
+    };
+    socket.connect_destination(dest.port_id, dest.group)
+        .map_or_else(crate::net_errno::errno_from_neterr, |_| 0)
 }
 
 /// `setsockopt(fd, level, optname, optval, optlen)` for netlink. At
@@ -359,7 +368,9 @@ pub fn send_coalesced_file(file: &Arc<vfs::File>, buf: &[u8], name: u64, namelen
         net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Send)
     { return crate::net_errno::errno_from_neterr(error); }
     let dest = match user_sockaddr_nl(name, namelen) {
-        Some(name) => match ::netlink::parse_dest(&name) {
+        Some(name) => match ::netlink::parse_supplied_dest(&name, socket.protocol,
+            socket.net_admin())
+        {
             Ok(dest) => dest,
             Err(error) => return -(error as i64),
         },
@@ -397,7 +408,7 @@ pub fn sendmsg_imported(file: &Arc<vfs::File>, name: &[u8], payload: &[u8]) -> i
         net::socket_args::AF_NETLINK_WIRE, security::network::Operation::Send)
     { return crate::net_errno::errno_from_neterr(error); }
     let dest = if name.is_empty() { sock.destination() } else {
-        match ::netlink::parse_dest(name) {
+        match ::netlink::parse_supplied_dest(name, sock.protocol, sock.net_admin()) {
             Ok(dest) => dest,
             Err(error) => return -(error as i64),
         }

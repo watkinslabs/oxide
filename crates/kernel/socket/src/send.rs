@@ -114,13 +114,15 @@ pub fn writev(ctx: &SendContext<'_>, file: Arc<vfs::File>, bufs: &[&[u8]]) -> KR
 }
 
 /// Resolve one netlink send destination: the supplied `msg_name`, else the
-/// socket's connected destination. # C: O(1)
+/// socket's connected destination. Only the supplied one is capability-gated;
+/// the connected pair was admitted when the socket connected. # C: O(1)
 fn netlink_address(socket: &netlink::NetlinkSocket, message: &Message)
     -> KResult<netlink::NlDest>
 {
     match message.name.as_deref() {
         None => Ok(socket.destination()),
-        Some(name) => netlink::parse_dest(name).map_err(Error::from),
+        Some(name) => netlink::parse_supplied_dest(name, socket.protocol, socket.net_admin())
+            .map_err(Error::from),
     }
 }
 

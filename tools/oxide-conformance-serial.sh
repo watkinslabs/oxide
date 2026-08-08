@@ -9,6 +9,8 @@ TESTS="${2:-t_mmsg}"
 TIMEOUT="${3:-180}"
 QEMU_TIMEOUT_MAX=180
 GUEST_USER="${OXIDE_CONFORMANCE_USER:-oxide}"
+HOST_UNPRIV_USER="${OXIDE_CONFORMANCE_HOST_USER:-nobody}"
+HOST_CMD=()
 case "$ARCH" in
     x86_64) QEMU_ARCH=x86_64 ;;
     aarch64) QEMU_ARCH=aarch64 ;;
@@ -96,13 +98,30 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# A short or malformed row must never be silently completed with defaults: a row
+# that declares uid=root and is then run unprivileged is a discarded contract,
+# not a passing test. Every executable row carries all ten fields explicitly.
+manifest_validate() {
+    awk -F '\t' -v file="$MANIFEST" '
+        /^#/ { next }
+        /^[[:space:]]*$/ { next }
+        NF != 10 {
+            printf "oxide-conformance: %s line %d (row %s, probe %s): %d fields, expected 10\n",
+                file, NR, $1, $4, NF > "/dev/stderr"; bad = 1; next
+        }
+        $8 != "root" && $8 != "unprivileged" {
+            printf "oxide-conformance: %s line %d (row %s, probe %s): uid must be root or unprivileged, got %s\n",
+                file, NR, $1, $4, $8 > "/dev/stderr"; bad = 1
+        }
+        $9 != "differential" && $9 != "target-pass-exact" {
+            printf "oxide-conformance: %s line %d (row %s, probe %s): output policy must be differential or target-pass-exact, got %s\n",
+                file, NR, $1, $4, $9 > "/dev/stderr"; bad = 1
+        }
+        END { exit bad ? 1 : 0 }' "$MANIFEST"
+}
 probe_meta() {
     awk -F '\t' -v probe="$1" '$1 !~ /^#/ && $4 == probe {
-        argv = NF >= 10 ? $7 : "-"
-        uid = NF >= 10 ? $8 : "unprivileged"
-        policy = NF >= 10 ? $9 : "differential"
-        stdout = NF >= 10 ? $10 : "-"
-        print $1 "\t" $2 "\t" $3 "\t" $5 "\t" argv "\t" uid "\t" policy "\t" stdout
+        print $1 "\t" $2 "\t" $3 "\t" $5 "\t" $7 "\t" $8 "\t" $9 "\t" $10
         found=1
     } END { exit !found }' "$MANIFEST"
 }
@@ -131,6 +150,37 @@ guest_command() {
         *) return 1 ;;
     esac
 }
+# The host counterpart of guest_command. Without it the oracle runs as whatever
+# uid invoked the script, so a root-invoked run compares a privileged host
+# against an unprivileged guest and calls the capability difference a kernel
+# difference. Missing privilege fails the run; it never downgrades.
+host_command() {
+    local uid="$1" host="$2" base
+    base=(env -i PATH=/usr/bin:/bin LC_ALL=C TZ=UTC HOME=/ "$host" "${PROBE_ARGV[@]}")
+    case "$uid" in
+        root)
+            if [ "$(id -u)" -eq 0 ]; then HOST_CMD=("${base[@]}"); return 0; fi
+            if ! sudo -n true 2>/dev/null; then
+                echo "oxide-conformance: uid=root host oracle needs passwordless sudo" >&2
+                return 1
+            fi
+            HOST_CMD=(sudo -n -- "${base[@]}")
+            ;;
+        unprivileged)
+            if [ "$(id -u)" -ne 0 ]; then HOST_CMD=("${base[@]}"); return 0; fi
+            if ! command -v runuser >/dev/null 2>&1; then
+                echo "oxide-conformance: uid=unprivileged host oracle needs runuser to drop root" >&2
+                return 1
+            fi
+            if ! runuser -u "$HOST_UNPRIV_USER" -- test -x "$host" 2>/dev/null; then
+                echo "oxide-conformance: $HOST_UNPRIV_USER cannot execute $host; set OXIDE_CONFORMANCE_HOST_USER to an identity that can, or invoke unprivileged" >&2
+                return 1
+            fi
+            HOST_CMD=(runuser -u "$HOST_UNPRIV_USER" -- "${base[@]}")
+            ;;
+        *) return 1 ;;
+    esac
+}
 frame_b64() { base64 -w 0 "$1"; }
 debugfs_write() {
     local src="$1" dst="$2" mode="$3" image="target/builds/$ID/root-$QEMU_ARCH.img"
@@ -139,6 +189,7 @@ debugfs_write() {
     debugfs -w -R "sif $dst mode $mode" "$image" >/dev/null
 }
 
+manifest_validate || exit 2
 echo "oxide-conformance: prepare arch=$ARCH tests=$TESTS id=$ID transport=serial-disk"
 PHASE=rootfs; write_harness false 0
 cargo run -q -p xtask -- rootfs --arch "$QEMU_ARCH" --id "$ID"
@@ -241,9 +292,11 @@ for name in ${TESTS//,/ }; do
     guest_err="$(mktemp /tmp/oxide-conformance-guest-err-XXXXXX)"
     guest_status_file="$(mktemp /tmp/oxide-conformance-guest-status-XXXXXX)"
     if [ "$output_policy" = differential ]; then
+        host_command "$probe_uid" "target/glibc-conf/$ID/${name}.host" || {
+            echo "oxide-conformance: cannot run the $name host oracle at uid=$probe_uid" >&2; exit 1;
+        }
         set +e
-        env -i PATH=/usr/bin:/bin LC_ALL=C TZ=UTC HOME=/ \
-            "target/glibc-conf/${name}.host" "${PROBE_ARGV[@]}" >"$expected_out" 2>"$expected_err"
+        "${HOST_CMD[@]}" >"$expected_out" 2>"$expected_err"
         expected_status=$?
         set -e
     else

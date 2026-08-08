@@ -66,8 +66,8 @@ pub(crate) fn admit(ctx: &SendContext<'_>, socket: &Arc<net::sock::InetSocket>,
         _ => None,
     };
     let Some(ipv6) = ipv6 else {
-        crate::sockcm::admit_socket_level_only(control, &sockcm)?;
-        return Ok(SendControl::default());
+        return Ok(SendControl { sockcm: crate::sockcm::admit_socket_level_only(control, &sockcm)?,
+            ..SendControl::default() });
     };
     let env = crate::control_raw::IpControlEnv {
         ipv6,

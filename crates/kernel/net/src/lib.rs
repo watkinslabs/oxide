@@ -188,7 +188,7 @@ pub use loopback::LoopbackDev;
 pub use addr::{
     eth_p, IpAddr, IpProto, Ipv4Addr, Ipv6Addr, MacAddr, NetIfaceId, Port,
 };
-pub use pkt::{Pkt, PktError, KResult as PktKResult, DEFAULT_HEADROOM};
+pub use pkt::{Pkt, PktError, TxMeta, KResult as PktKResult, DEFAULT_HEADROOM};
 pub use tcp_state::{transition, TcpEvent, TcpState};
 
 #[cfg(test)]
