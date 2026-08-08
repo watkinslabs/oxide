@@ -33,6 +33,8 @@ pub struct Sqe {
     /// `addr_len` — the low half of the same word as `splice_fd_in`.
     pub addr_len: u16,
     pub addr3: u64,
+    /// `__pad2[0]` — reserved; several opcodes refuse a non-zero value.
+    pub pad2: u64,
 }
 
 impl Sqe {
@@ -48,6 +50,7 @@ impl Sqe {
             off: g64(8), addr: g64(16), len: g32(24), op_flags: g32(28),
             user_data: g64(32), buf_index: g16(40), personality: g16(42),
             splice_fd_in: g32(44) as i32, addr_len: g16(44), addr3: g64(48),
+            pad2: g64(56),
         }
     }
 

@@ -31,6 +31,7 @@ use crate::io_uring_sqe::{Sqe, SQE_BYTES};
 use super::cqe::Cqe;
 use super::ctx::{state, IoUringInode};
 use super::dispatch::{dispatch_op, OpOutcome};
+use super::req::IoReq;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
@@ -92,26 +93,107 @@ fn issue(inode: &Arc<IoUringInode>, sqe: &Sqe) -> OpOutcome {
     dispatch_op(inode, sqe)
 }
 
+/// Build the request object a deferred entry needs. # C: O(1)
+fn build(inode: &Arc<IoUringInode>, sqe: &Sqe) -> Arc<IoReq> {
+    let creds = if sqe.personality == 0 { None } else {
+        inode.reg.lock().personality(sqe.personality as u32)
+    };
+    IoReq::new(inode, sqe, creds, inode.owner_ctx())
+}
+
+/// Attach `req` to the deferred chain ending at `tail`. An
+/// `IORING_OP_LINK_TIMEOUT` is not a chain member: it is the guard on the
+/// entry ahead of it, so it is hung off that entry instead of behind it.
+/// # C: O(1)
+fn attach(tail: &Arc<IoReq>, req: &Arc<IoReq>) {
+    if req.sqe.opcode == IORING_OP_LINK_TIMEOUT {
+        req.inner.lock().guarded = Some(alloc::sync::Arc::downgrade(tail));
+        tail.inner.lock().ltimeout = Some(Arc::clone(req));
+        return;
+    }
+    tail.inner.lock().link = Some(Arc::clone(req));
+}
+
+/// A deferred entry that could not be prepared: it still consumes the entry
+/// and still reports, and it takes the rest of its chain down with it.
+/// # C: O(N_chain)
+fn refuse(inode: &Arc<IoUringInode>, sqe: &Sqe, e: Errno) {
+    if posts_cqe(sqe.flags, err(e)) {
+        inode.post_cqe(Cqe { user_data: sqe.user_data, res: -(e.as_i32()), flags: 0 });
+    }
+}
+
 /// Drain up to `to_submit` entries. Returns how many were consumed — the
 /// number of completions the caller can expect, since every consumed entry
 /// produces one unless it asked for its success to be silent.
-/// # C: O(to_submit) operations
+///
+/// An entry runs inline unless it cannot: a timeout, a poll and an entry the
+/// submitter marked `IOSQE_ASYNC` are handed to the engine straight away, and
+/// once one member of a chain has been deferred every member behind it is
+/// deferred too — running the rest inline would put them AHEAD of the entry
+/// they were supposed to follow, which is the one thing a link promises not to
+/// do. # C: O(to_submit) operations
 pub fn submit_sqes(inode: &Arc<IoUringInode>, to_submit: u32) -> i64 {
     // SAFETY: process context in the syscall path, holding no spinlock; the guard is dropped before any wait.
     let _batch = unsafe { inode.submit.lock() };
     let submit_all = inode.flags & IORING_SETUP_SUBMIT_ALL != 0;
     let mut consumed: u32 = 0;
     let mut chain = Chain::default();
+    let mut pending: Option<(Arc<IoReq>, Arc<IoReq>)> = None;
 
     while consumed < to_submit {
         let Some(sqe) = next_sqe(inode) else { break };
         consumed += 1;
 
+        if let Some((head, tail)) = pending.take() {
+            let cont = sqe.flags & SQE_LINK_FLAGS != 0;
+            match admit(inode, &sqe) {
+                Err(e) => { refuse(inode, &sqe, e); start_chain(&head); if !submit_all { break; } }
+                Ok(()) => {
+                    let req = build(inode, &sqe);
+                    if let Err(e) = crate::io_uring::defer::prepare(&req) {
+                        refuse(inode, &sqe, e);
+                        start_chain(&head);
+                        if !submit_all { break; }
+                        continue;
+                    }
+                    attach(&tail, &req);
+                    let next_tail = if sqe.opcode == IORING_OP_LINK_TIMEOUT { tail } else { req };
+                    if cont { pending = Some((head, next_tail)); } else { start_chain(&head); }
+                }
+            }
+            continue;
+        }
+
+        // A barrier cannot be satisfied by construction any more: work of
+        // this ring may still be running, so the barrier has to wait for it.
+        let deferred = crate::io_uring::defer::defers(&sqe)
+            || (wants_drain(sqe.flags) && !inode.inflight_reqs().is_empty());
         let (out, init_failed) = match chain.action(sqe.flags) {
             // Everything behind a broken link is cancelled, not executed.
             Action::Cancel => (OpOutcome::res(err(Errno::Ecanceled)), false),
             Action::Run => match admit(inode, &sqe) {
                 Err(e) => (OpOutcome::res(err(e)), true),
+                Ok(()) if deferred => {
+                    // A link timeout with nothing ahead of it guards nothing.
+                    if sqe.opcode == IORING_OP_LINK_TIMEOUT {
+                        (OpOutcome::res(err(Errno::Einval)), true)
+                    } else {
+                        let req = build(inode, &sqe);
+                        match crate::io_uring::defer::prepare(&req) {
+                            Err(e) => (OpOutcome::res(err(e)), true),
+                            Ok(()) => {
+                                if sqe.flags & SQE_LINK_FLAGS != 0 {
+                                    pending = Some((Arc::clone(&req), req));
+                                } else {
+                                    start_chain(&req);
+                                }
+                                chain.advance(sqe.flags, 0);
+                                continue;
+                            }
+                        }
+                    }
+                }
                 Ok(()) => (issue(inode, &sqe), false),
             },
         };
@@ -124,5 +206,14 @@ pub fn submit_sqes(inode: &Arc<IoUringInode>, to_submit: u32) -> i64 {
 
         if init_failed && !submit_all { break; }
     }
+    // A chain whose last entry never arrived still has to run: the submitter
+    // asked for it and is waiting for its completions.
+    if let Some((head, _)) = pending { start_chain(&head); }
     consumed as i64
+}
+
+/// Hand a prepared chain to the engine. # C: O(1)
+fn start_chain(head: &Arc<IoReq>) {
+    crate::io_uring::iowq::WQ.start();
+    crate::io_uring::iowq::run::start(head);
 }

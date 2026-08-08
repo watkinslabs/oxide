@@ -67,6 +67,12 @@ impl IoUringInode {
     /// completion is lost, and it is counted in the ring's `cq_overflow`
     /// so the caller can see that it happened. # C: O(N_flushed)
     pub fn post_cqe(&self, c: Cqe) {
+        self.posted.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
+        // A completion is what a count-gated timeout is waiting for, and the
+        // only thing that can notice one became due is a worker.
+        if self.has_count_timers() {
+            for a in crate::io_uring::iowq::WQ.acct.iter() { a.wait.wake_all(); }
+        }
         let drained = self.flush_overflow();
         {
             let r = self.ring.lock();
