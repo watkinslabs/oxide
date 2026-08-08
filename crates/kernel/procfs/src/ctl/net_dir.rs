@@ -58,6 +58,11 @@ pub const NET_SYSCTLS: &[Node] = &[
         ]),
         Dir("ipv6", &[
             File("ip_nonlocal_bind",   NetInt(net::net_ns::NetSysctlKey::Ipv6NonlocalBind, Some((0, 1)))),
+            // Whether packets carry a generated flow label: off, opt-out
+            // (the default — sockets are in unless they say otherwise),
+            // opt-in, or forced on every socket.
+            File("auto_flowlabels",    NetInt(net::net_ns::NetSysctlKey::Ipv6AutoFlowLabels,
+                Some((0, net::sock_opts::sol_ipv6::autolabel::MAX_POLICY)))),
             Dir("conf", &[
                 Dir("all",     &[ File("disable_ipv6", NetInt(net::net_ns::NetSysctlKey::Ipv6DisableAll, Some((0, 1)))) ]),
                 Dir("default", &[ File("disable_ipv6", NetInt(net::net_ns::NetSysctlKey::Ipv6DisableDefault, Some((0, 1)))) ]),

@@ -9,6 +9,8 @@
 // - `get`: Linux value/length table for every read.
 // - `hdr`: sticky extension-header shape screen.
 // - `flowlabel`: the per-namespace flow-label table `IPV6_FLOWLABEL_MGR` leases from.
+// - `autolabel`: the one flow-label generation policy, read back by
+//   `IPV6_AUTOFLOWLABEL` and consulted by every transmit path.
 // - `tests`: hosted coverage for the ordering, capability and length rules.
 //
 // No target gate: the decision logic must run under hosted `cargo test`.
@@ -18,6 +20,7 @@ pub mod state;
 pub mod set;
 pub mod get;
 pub mod hdr;
+pub mod autolabel;
 pub mod flowlabel;
 #[cfg(test)]
 mod tests;

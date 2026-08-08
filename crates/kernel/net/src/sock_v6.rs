@@ -145,8 +145,8 @@ fn merge_sticky_raw6_control(sock: &InetSocket, control: &crate::send_control::R
         let addr = crate::Ipv6Addr(addr);
         if !addr.is_unspecified() { effective.source = Some(addr); }
     }
-    effective.automatic_flow_label = sock.opts.ipv6.flag(
-        crate::sock_opts::sol_ipv6::flag::AUTOFLOWLABEL);
+    effective.automatic_flow_label = sock.opts.ipv6.generates_flow_label(
+        crate::sysctl::ipv6_auto_flowlabels_in(sock.net_ns()));
     effective.merge_sticky_headers(&sock.opts.ipv6);
     effective
 }
@@ -313,7 +313,8 @@ pub fn sendto_v6(sock: &InetSocket,
                 stack().send_udp6_pmtu_to_bound_opts_owned(
                     &sock.owner, src_ip, src_port, dst_ip, dst_port, segment, iface, hop, tclass,
                     pmtudisc, frag_size, no_check, sock.opts.ipv6.flow_label(),
-                    sock.opts.ipv6.flag(crate::sock_opts::sol_ipv6::flag::AUTOFLOWLABEL),
+                    sock.opts.ipv6.generates_flow_label(
+                        crate::sysctl::ipv6_auto_flowlabels_in(sock.net_ns())),
                     sock.opts.ipv6.srcprefs(), &control,
                 )?;
             }
@@ -324,7 +325,8 @@ pub fn sendto_v6(sock: &InetSocket,
     stack().send_udp6_pmtu_to_bound_opts_owned(
         &sock.owner, src_ip, src_port, dst_ip, dst_port, payload,
         iface, hop, tclass, pmtudisc, frag_size, no_check, sock.opts.ipv6.flow_label(),
-        sock.opts.ipv6.flag(crate::sock_opts::sol_ipv6::flag::AUTOFLOWLABEL),
+        sock.opts.ipv6.generates_flow_label(
+            crate::sysctl::ipv6_auto_flowlabels_in(sock.net_ns())),
         sock.opts.ipv6.srcprefs(), &control,
     )?;
     drain_loopback();

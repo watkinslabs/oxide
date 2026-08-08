@@ -212,6 +212,14 @@ pub fn set_optmem_max(value: usize) -> Result<(), ()> {
     Ok(())
 }
 
+/// `net.ipv6.auto_flowlabels` in a live namespace: the flow-label policy a
+/// socket that named none of its own inherits, and the one that overrides
+/// every socket in both directions. # C: O(log N)
+pub fn ipv6_auto_flowlabels_in(ns: u64) -> i64 {
+    value_in(ns, NetSysctlKey::Ipv6AutoFlowLabels)
+        .unwrap_or(crate::sock_opts::sol_ipv6::autolabel::DEFAULT_POLICY)
+}
+
 /// `net.core.somaxconn` in a live namespace. # C: O(log N)
 pub fn somaxconn_in(ns: u64) -> Option<usize> {
     value_in(ns, NetSysctlKey::Somaxconn).map(|value| value as usize)

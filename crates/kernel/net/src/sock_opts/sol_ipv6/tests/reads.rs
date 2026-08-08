@@ -77,8 +77,14 @@ fn source_preferences_read_back_as_a_complete_set() {
 
 #[test]
 fn automatic_flow_labels_fall_back_to_the_namespace_policy() {
-    let s = Ipv6GetState { default_autoflowlabel: true, ..state() };
+    use super::super::autolabel;
+    // A socket that named no policy publishes the namespace's — and the
+    // compiled namespace policy opts sockets IN, so an untouched socket reads
+    // back 1, not 0.
+    let s = Ipv6GetState { auto_flowlabels: autolabel::DEFAULT_POLICY, ..state() };
     assert_eq!(get::read(IPV6_AUTOFLOWLABEL, dgram(), &s), Ok(Value::Int(1)));
+    let opt_in_ns = Ipv6GetState { auto_flowlabels: autolabel::OPTIN, ..state() };
+    assert_eq!(get::read(IPV6_AUTOFLOWLABEL, dgram(), &opt_in_ns), Ok(Value::Int(0)));
     let named_off = Ipv6GetState { flags: flag::AUTOFLOWLABEL_SET, ..s.clone() };
     assert_eq!(get::read(IPV6_AUTOFLOWLABEL, dgram(), &named_off), Ok(Value::Int(0)));
     let named_on = Ipv6GetState {
