@@ -68,7 +68,8 @@ fn kstat_timestamps_pass_through_unscaled() {
         ino: 1, mode: 0o40_755, nlink: 2, uid: 0, gid: 0, rdev: 0,
         size: 0, blksize: 4096, blocks: 0,
         atime: t, mtime: Timespec64::ZERO, ctime: t, btime: None,
-        fsid: 0, change_cookie: 0, result_mask: 0, attributes: 0, attributes_mask: 0,
+        fsid: 0, change_cookie: 0, dio_mem_align: 0, dio_offset_align: 0,
+        result_mask: 0, attributes: 0, attributes_mask: 0,
     };
     let out = new_stat_from_kstat(&st, 0x0803).unwrap();
     assert_eq!(out.atime, t);

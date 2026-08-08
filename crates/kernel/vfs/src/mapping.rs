@@ -241,6 +241,39 @@ pub trait AddressSpaceOps: Send + Sync {
     /// stale post-EOF bytes. # C: O(pages in range)
     fn invalidate_range(&self, start: u64, end: u64) -> usize { let _ = (start, end); 0 }
 
+    /// Try to evict the resident cache pages in the INCLUSIVE page-index range
+    /// `[start_idx, end_idx]`, skipping every page that is not safely
+    /// droppable (Linux `invalidate_mapping_pages`). This is the
+    /// `POSIX_FADV_DONTNEED` primitive, and it is a HINT: a page is left alone
+    /// when it is
+    ///
+    /// - MAPPED into any address space — its residency is not this cache's to
+    ///   revoke, and the mapper must keep seeing the same frame every other
+    ///   mapper and every `read`/`write` of the inode sees;
+    /// - DIRTY — the data is not yet on the backing store, and eviction would
+    ///   lose it (the caller flushes first, but a flush is asynchronous, so a
+    ///   page may still be dirty here); or
+    /// - under WRITEBACK — the flush owns the frame until it completes.
+    ///
+    /// This is the difference from [`AddressSpaceOps::invalidate_range`], which
+    /// is `truncate`'s unconditional removal: after a truncate the bytes are
+    /// GONE, so retaining a mapped page would serve stale post-EOF data, while
+    /// after a DONTNEED hint the bytes still exist and every mapper must keep
+    /// aliasing one frame. Wiring DONTNEED to the truncate primitive silently
+    /// unshares a live `MAP_SHARED` mapping: the next mapper refills a NEW
+    /// frame from disk and the two mappings stop seeing each other's writes.
+    ///
+    /// Returns the count of indices whose contents were invalidated. Default
+    /// `0` — an address space with no droppable resident frames, which is also
+    /// the honest answer for one whose pages ARE its storage (dropping them
+    /// would lose data, so nothing is evictable). Note the default does NOT
+    /// forward to `invalidate_range`: an unconditional drop is never a valid
+    /// implementation of a best-effort one. # C: O(pages in range)
+    fn try_invalidate_pages(&self, start_idx: u64, end_idx: u64) -> usize {
+        let _ = (start_idx, end_idx);
+        0
+    }
+
     /// Optional backing-owned MAP_SHARED pageout. `None` preserves generic
     /// file-cache eviction; tmpfs returns its exact migration transaction.
     /// # C: O(pages in range)

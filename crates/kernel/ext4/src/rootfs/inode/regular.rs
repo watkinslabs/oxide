@@ -116,12 +116,34 @@ impl InodeOps for Ext4RegInodeOps {
         Ok(())
     }
 
-    fn getattr(&self, inode: &Inode, idmap: &vfs::idmap::Idmap)
-        -> vfs::getattr::Kstat
+    /// `ext4_getattr`. Beyond the generic fill this reports the six attribute
+    /// bits the on-disk flag word carries. Reporting them needs the ON-DISK
+    /// `i_flags`, not the generic VFS flag word, which mirrors only two of the
+    /// six — which is why compressed/encrypted/nodump/verity were invisible.
+    /// # C: O(1) + one inode read
+    fn getattr(&self, inode: &Inode, idmap: &vfs::idmap::Idmap,
+               request_mask: u32, query_flags: u32) -> vfs::getattr::Kstat
     {
+        let _ = query_flags; // a local filesystem's attributes are always current
         let mut k = vfs::getattr::generic_fillattr(inode, idmap);
         if let Some(d) = inode.private::<Ext4FileData>() {
-            if let Ok(i) = d.st.mount.read_inode(d.ino) { k.blocks = i.i_blocks; }
+            if let Ok(i) = d.st.mount.read_inode(d.ino) {
+                k.blocks = i.i_blocks;
+                let (a, mask) = crate::inode::flags::statx_attributes(i.i_flags);
+                k.attributes |= a;
+                k.attributes_mask |= mask;
+            }
+            // Request-gated, and only for a regular file: resolving the pair
+            // means consulting the device, so an unasked-for stat must not pay
+            // it and must not report a fabricated alignment either.
+            if request_mask & vfs::getattr::STATX_DIOALIGN != 0
+                && inode.file_type() == vfs::FileType::Regular
+            {
+                let (m, o) = crate::inode::dio::dio_alignment(1, d.st.mount.dev.block_size());
+                k.dio_mem_align = m;
+                k.dio_offset_align = o;
+                k.result_mask |= vfs::getattr::STATX_DIOALIGN;
+            }
         }
         k
     }
@@ -396,6 +418,10 @@ impl AddressSpaceOps for Ext4FileMapping {
 
     fn invalidate_range(&self, start: u64, end: u64) -> usize {
         self.data.frames.invalidate_range(start, end)
+    }
+
+    fn try_invalidate_pages(&self, start_idx: u64, end_idx: u64) -> usize {
+        self.data.frames.try_invalidate_pages(start_idx, end_idx)
     }
 
     fn size(&self) -> u64 { self.data.size_hint.load(Ordering::Acquire) }

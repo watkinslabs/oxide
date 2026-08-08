@@ -1,7 +1,7 @@
 use crate::rootfs::{RootfsState, ext4_wrap_ino};
 
-const EXT4_IMMUTABLE_FL: u32 = 0x0000_0010;
-const EXT4_NOATIME_FL:   u32 = 0x0000_0080;
+use crate::inode::flags::{EXT4_IMMUTABLE_FL, EXT4_NOATIME_FL};
+
 const EXT4_QUOTA_FLAGS:  u32 = EXT4_IMMUTABLE_FL | EXT4_NOATIME_FL;
 
 /// Set Linux visible-quota-file protection flags after quota-on. # C: O(1)

@@ -33,6 +33,12 @@ use vfs::{Dentry, FdTable, File, FileType, InodeBuilder, InodeOps, InodeRef,
 #[path = "../src/pathresolve/at.rs"]
 mod at;
 
+// The REAL stale-handle retry rule `at.rs` wraps its walks in, not a stand-in:
+// a stub here would let a retry regression pass this file unnoticed. Its own
+// contract is pinned in `estale_retry_hosted.rs`.
+#[path = "../src/estale_retry.rs"]
+mod estale_retry;
+
 // `at.rs` reaches these two collaborators via `super::`; stand-ins live at
 // this file's crate root so the relative paths resolve identically to the
 // real `pathresolve` module.
@@ -74,7 +80,7 @@ mod namei_common {
             vfs::VfsError::Eaddrnotavail => Errno::Eaddrnotavail, vfs::VfsError::Enetunreach => Errno::Enetunreach, vfs::VfsError::Ehostunreach => Errno::Ehostunreach,
             vfs::VfsError::Enobufs => Errno::Enobufs, vfs::VfsError::Enametoolong => Errno::Enametoolong, vfs::VfsError::Enotconn => Errno::Enotconn,
             vfs::VfsError::Econnaborted => Errno::Econnaborted, vfs::VfsError::Econnreset => Errno::Econnreset, vfs::VfsError::Etimedout => Errno::Etimedout, vfs::VfsError::Econnrefused => Errno::Econnrefused,
-            vfs::VfsError::Euclean => Errno::Euclean, vfs::VfsError::Edquot => Errno::Edquot, vfs::VfsError::Ecanceled => Errno::Ecanceled,
+            vfs::VfsError::Euclean => Errno::Euclean, vfs::VfsError::Estale => Errno::Estale, vfs::VfsError::Edquot => Errno::Edquot, vfs::VfsError::Ecanceled => Errno::Ecanceled,
             vfs::VfsError::Enonet => Errno::Enonet, vfs::VfsError::Enoprotoopt => Errno::Enoprotoopt, vfs::VfsError::Eproto => Errno::Eproto,
             vfs::VfsError::Ebadfd => Errno::Ebadfd,
             vfs::VfsError::Ehostdown => Errno::Ehostdown, vfs::VfsError::Eoverflow => Errno::Eoverflow,

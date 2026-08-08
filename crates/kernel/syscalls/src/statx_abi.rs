@@ -54,10 +54,9 @@ pub mod off {
 pub const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
 pub const AT_NO_AUTOMOUNT:     u32 = 0x800;
 pub const AT_EMPTY_PATH:       u32 = 0x1000;
-pub const AT_STATX_FORCE_SYNC: u32 = 0x2000;
-pub const AT_STATX_DONT_SYNC:  u32 = 0x4000;
-/// `AT_STATX_SYNC_TYPE` — the two-bit sync selector; BOTH bits set is EINVAL.
-pub const AT_STATX_SYNC_TYPE:  u32 = AT_STATX_FORCE_SYNC | AT_STATX_DONT_SYNC;
+/// The sync selector is owned by the VFS, which is where the backends that act
+/// on it can see it; re-declaring it here would be a second copy free to drift.
+pub use vfs::getattr::{AT_STATX_DONT_SYNC, AT_STATX_FORCE_SYNC, AT_STATX_SYNC_TYPE};
 /// The complete set `vfs_statx` accepts.
 pub const STATX_VALID_FLAGS: u32 =
     AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT | AT_EMPTY_PATH | AT_STATX_SYNC_TYPE;
@@ -183,6 +182,12 @@ pub fn cp_statx(st: &Kstat, p: &StatxPathInfo, request_mask: u32) -> [u8; STATX_
     put_u32(&mut b, off::DEV_MAJOR, p.dev_major);
     put_u32(&mut b, off::DEV_MINOR, p.dev_minor);
     put_u64(&mut b, off::MNT_ID, p.mnt_id);
+    // Only written when the backend actually filled them; the pair is
+    // request-gated, so an unrequested statx leaves both words zero.
+    if st.result_mask & vfs::getattr::STATX_DIOALIGN != 0 {
+        put_u32(&mut b, off::DIO_MEM_ALIGN, st.dio_mem_align);
+        put_u32(&mut b, off::DIO_OFFSET_ALIGN, st.dio_offset_align);
+    }
     b
 }
 
@@ -221,7 +226,7 @@ mod tests {
             mtime: Timespec64 { sec: 1_600_000_000, nsec: 1 },
             ctime: Timespec64 { sec: 1_700_000_000, nsec: 999_999_999 },
             btime: Some(Timespec64::from_secs(1_400_000_000)),
-            fsid: 7, change_cookie: 0,
+            fsid: 7, change_cookie: 0, dio_mem_align: 0, dio_offset_align: 0,
             result_mask: STATX_BASIC_STATS | STATX_BTIME,
             attributes: STATX_ATTR_IMMUTABLE,
             attributes_mask: STATX_ATTR_IMMUTABLE | STATX_ATTR_APPEND | STATX_ATTR_AUTOMOUNT | STATX_ATTR_DAX,
@@ -280,6 +285,34 @@ mod tests {
         assert!(b[off::SPARE3..STATX_SIZE].iter().all(|&x| x == 0));
         // Nothing we do not fill is nonzero: dio/subvol/atomic-write stay 0.
         assert_eq!(rd_u32(&b, off::DIO_MEM_ALIGN), 0);
+        assert_eq!(rd_u64(&b, off::SUBVOL), 0);
+    }
+
+    /// The direct-I/O alignment pair reaches the wire at its own two offsets,
+    /// and ONLY when the backend actually filled it. Writing it unconditionally
+    /// would hand every caller a fabricated alignment with the mask bit clear;
+    /// writing it at the wrong offset would land it inside `stx_subvol`.
+    /// # C: O(1)
+    #[test]
+    fn dio_alignment_is_written_only_when_the_backend_filled_it() {
+        // Not filled: both words stay zero even with non-zero values present.
+        let mut st = sample();
+        st.dio_mem_align = 512;
+        st.dio_offset_align = 4096;
+        let p = StatxPathInfo { mnt_id: 42, ..StatxPathInfo::default() };
+        let b = cp_statx(&st, &p, STATX_BASIC_STATS);
+        assert_eq!(rd_u32(&b, off::DIO_MEM_ALIGN), 0, "unrequested alignment must not be reported");
+        assert_eq!(rd_u32(&b, off::DIO_OFFSET_ALIGN), 0);
+
+        // Filled: each word lands at its own offset and nothing else moves.
+        st.result_mask |= vfs::getattr::STATX_DIOALIGN;
+        let b = cp_statx(&st, &p, STATX_BASIC_STATS | vfs::getattr::STATX_DIOALIGN);
+        assert_eq!(rd_u32(&b, off::DIO_MEM_ALIGN), 512);
+        assert_eq!(rd_u32(&b, off::DIO_OFFSET_ALIGN), 4096);
+        assert_eq!(rd_u32(&b, off::MASK) & vfs::getattr::STATX_DIOALIGN,
+            vfs::getattr::STATX_DIOALIGN, "the mask must advertise the filled pair");
+        // The neighbouring field is untouched: a four-byte offset slip here
+        // would corrupt `stx_subvol` instead.
         assert_eq!(rd_u64(&b, off::SUBVOL), 0);
     }
 

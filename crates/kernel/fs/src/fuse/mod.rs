@@ -25,6 +25,7 @@ pub mod conn;
 pub mod dev;
 pub mod fs;
 pub mod fops;
+pub mod fsync;
 mod params;
 mod context;
 

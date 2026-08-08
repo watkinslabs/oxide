@@ -31,12 +31,21 @@ impl InodeOps for Ext4StatInodeOps {
         d.st.wrap_any_ino(child).ok_or(VfsError::Enoent)
     }
 
-    fn getattr(&self, inode: &Inode, idmap: &vfs::idmap::Idmap)
-        -> vfs::getattr::Kstat
+    /// `ext4_getattr` for the non-regular inodes (directories, symlinks, device
+    /// nodes): the same on-disk attribute report as the regular-file path.
+    /// # C: O(1) + one inode read
+    fn getattr(&self, inode: &Inode, idmap: &vfs::idmap::Idmap,
+               request_mask: u32, query_flags: u32) -> vfs::getattr::Kstat
     {
+        let _ = (request_mask, query_flags);
         let mut k = vfs::getattr::generic_fillattr(inode, idmap);
         if let Some(d) = inode.private::<Ext4StatData>() {
-            if let Ok(i) = d.st.mount.read_inode(d.ino) { k.blocks = i.i_blocks; }
+            if let Ok(i) = d.st.mount.read_inode(d.ino) {
+                k.blocks = i.i_blocks;
+                let (a, mask) = crate::inode::flags::statx_attributes(i.i_flags);
+                k.attributes |= a;
+                k.attributes_mask |= mask;
+            }
         }
         k
     }
