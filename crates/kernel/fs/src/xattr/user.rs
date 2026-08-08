@@ -28,9 +28,8 @@ pub struct SetCtx { pub name: String, pub value: Vec<u8>, pub flags: u32 }
 /// # C: O(len)
 pub fn import_name(name_ptr: u64) -> Result<String, i64> {
     validate_user_buf(name_ptr, 1, 1)?;
-    // SAFETY: first byte user-buffer validated; read_user_cstr bounds the remaining C-string scan.
-    let bytes = unsafe { devfs::read_user_cstr(name_ptr, XATTR_NAME_MAX + 1) };
-    let name = vfs::path_from_bytes(bytes.ok_or(err(Errno::Efault))?);
+    let bytes = devfs::read_user_cstr(name_ptr, XATTR_NAME_MAX + 1);
+    let name = vfs::path_from_bytes(&bytes.ok_or(err(Errno::Efault))?);
     check_name(&name)?;
     Ok(name)
 }

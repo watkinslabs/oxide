@@ -1,6 +1,5 @@
 #![cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
 
-use hal::USER_VA_END;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
@@ -119,36 +118,11 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     };
     let mut ext4_blob: Option<alloc::vec::Vec<u8>> = Some(v);
     let mut blob: &[u8] = ext4_blob.as_deref().expect("just set");
-    const ARG_MAX_BYTES: usize = 128 * 1024;
-    const ARG_MAX_ENTRIES: usize = 1024;
-    const ARG_MAX_STR: usize = 4096;
     let mut argv_vec: alloc::vec::Vec<alloc::vec::Vec<u8>> = alloc::vec::Vec::new();
     let mut envp_vec: alloc::vec::Vec<alloc::vec::Vec<u8>> = alloc::vec::Vec::new();
     let mut total_bytes: usize = 0;
-    let read_vec = |uva: u64, out: &mut alloc::vec::Vec<alloc::vec::Vec<u8>>, total: &mut usize| -> bool {
-        if uva == 0 || uva >= USER_VA_END { return true; }
-        for i in 0..ARG_MAX_ENTRIES {
-            let p = uva + (i as u64) * 8;
-            if p >= USER_VA_END { return false; }
-            // SAFETY: argv/envp entries are 8-byte aligned per Linux ABI; bounded ARG_MAX_ENTRIES; CPL=0 reads through caller's active AS.
-            let s = unsafe { core::ptr::read_volatile(p as *const u64) };
-            if s == 0 { return true; }
-            if s >= USER_VA_END { return false; }
-            let mut buf: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
-            for j in 0..ARG_MAX_STR {
-                // SAFETY: bounded read up to ARG_MAX_STR from user pointer < USER_VA_END; CPL=0 reads through caller's AS.
-                let b = unsafe { core::ptr::read_volatile((s + j as u64) as *const u8) };
-                if b == 0 { break; }
-                buf.push(b);
-                *total += 1;
-                if *total > ARG_MAX_BYTES { return false; }
-            }
-            out.push(buf);
-        }
-        true
-    };
-    if !read_vec(args.a1, &mut argv_vec, &mut total_bytes) { return -(Errno::E2big.as_i32() as i64); }
-    if !read_vec(args.a2, &mut envp_vec, &mut total_bytes) { return -(Errno::E2big.as_i32() as i64); }
+    if !crate::execve_common::read_user_string_vector(args.a1, &mut argv_vec, &mut total_bytes) { return -(Errno::E2big.as_i32() as i64); }
+    if !crate::execve_common::read_user_string_vector(args.a2, &mut envp_vec, &mut total_bytes) { return -(Errno::E2big.as_i32() as i64); }
     #[cfg(feature = "debug-desktop")]
     if path_owned.windows(b"gnome-shell".len()).any(|part| part == b"gnome-shell") {
         for entry in &envp_vec {

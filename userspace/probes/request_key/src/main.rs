@@ -63,7 +63,8 @@ fn run() -> Verdict {
         Err(v) => return v,
     };
     let fault = match iov_fault_ordering() { Ok(d) => d, Err(v) => return v };
-    Verdict::Pass(format!("{plain} | {nested} | {fault}"))
+    let strings = match unmapped_string_arguments() { Ok(d) => d, Err(v) => return v };
+    Verdict::Pass(format!("{plain} | {nested} | {fault} | {strings}"))
 }
 
 /// Ask for a key that does not exist, read the answer back, and require the
@@ -139,6 +140,52 @@ fn iov_fault_ordering() -> Result<String, Verdict> {
     let rc = keyctl_iov(good.as_ptr() as usize, 1);
     if rc.1 != libc::EPERM { return Err(fail(&format!("iov valid rc={} errno={}", rc.0, rc.1))); }
     Ok(String::from("iov-efault ordering=copy-before-authority"))
+}
+
+/// Every syscall that takes a STRING from userspace reads it through one shared
+/// reader. This drives that reader from the outside with a pointer that is in
+/// the user half and mapped by nothing — the shape that used to kill the boot,
+/// because a range check said "user address" and the byte read had no
+/// exception-table fixup behind it.
+///
+/// Each of these reaches the shared reader by a different route: `openat` and
+/// `stat` through the path reader, `execve` through the exec-path reader (which
+/// applies the ENAMETOOLONG bound on top), `memfd_create` through the name
+/// reader, and `execve`'s ARGV through the string-vector walk that used to be
+/// duplicated per architecture. All must answer EFAULT with the kernel alive; a
+/// regression here does not fail this assertion, it ends the boot.
+/// # C: O(1)
+fn unmapped_string_arguments() -> Result<String, Verdict> {
+    /// An address no process maps. Kept far from anything the loader places.
+    const UNMAPPED: usize = 0x0000_7ffe_dead_0000;
+    let p = UNMAPPED as *const libc::c_char;
+    let ok: [*const libc::c_char; 1] = [core::ptr::null()];
+    let bad_argv = [UNMAPPED as *const libc::c_char, core::ptr::null()];
+    // A path that always resolves, so the argv case reaches the string walk
+    // instead of stopping at the image open.
+    let self_exe = b"/proc/self/exe\0".as_ptr() as *const libc::c_char;
+
+    let mut names = String::new();
+    for name in ["openat", "stat", "execve-path", "execve-argv", "memfd_create"] {
+        // SAFETY: every pointer here is NULL, a live local, or an address
+        // deliberately chosen to be unmapped — measuring what the kernel does
+        // with the last of those is the point, and glibc passes it through.
+        let rc = unsafe { match name {
+            "openat"       => libc::openat(libc::AT_FDCWD, p, libc::O_RDONLY) as libc::c_long,
+            "stat"         => libc::syscall(libc::SYS_newfstatat, libc::AT_FDCWD, p,
+                                  core::ptr::null_mut::<libc::stat>(), 0),
+            "execve-path"  => { libc::execve(p, ok.as_ptr(), ok.as_ptr()) as libc::c_long }
+            "execve-argv"  => { libc::execve(self_exe, bad_argv.as_ptr(), ok.as_ptr()) as libc::c_long }
+            _              => libc::syscall(libc::SYS_memfd_create, p, 0),
+        } };
+        let e = support::errno();
+        if rc != -1 || e != libc::EFAULT {
+            return Err(fail(&format!("{name} rc={rc} errno={e}, want -1/EFAULT")));
+        }
+        if !names.is_empty() { names.push(','); }
+        names.push_str(name);
+    }
+    Ok(format!("unmapped-cstr-efault [{names}]"))
 }
 
 /// `keyctl(KEYCTL_INSTANTIATE_IOV, <no such key>, iov, ioc, 0)`, returning the

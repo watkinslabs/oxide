@@ -89,28 +89,12 @@ fn key_string_from_bytes(bytes: &[u8]) -> String {
     vfs::path_from_bytes(bytes)
 }
 
-/// `strndup_user`. The scan range-checks each address; the MAPPING check is
-/// added here, once per page crossed, because the byte read below has no
-/// exception-table fixup — an address in the user half that nothing maps would
-/// fault the kernel instead of answering EFAULT. An unmapped page ends the scan
-/// (a reader that cannot read sees no more string) and the result is EFAULT.
-/// # C: O(len + pages)
+/// `strndup_user`. An over-long name is EINVAL here rather than ENAMETOOLONG —
+/// the keyctl ABI reports a bad argument, not a bad path. Everything else,
+/// including the fault an unmapped page earns, belongs to the shared reader.
+/// # C: O(max)
 fn read_user_key_cstr(p: u64, max: usize) -> Result<Vec<u8>, i64> {
-    if p == 0 { return Err(err(Errno::Efault)); }
-    let page_mask = !(hal::PAGE_SIZE_BYTES - 1);
-    let mut checked: u64 = u64::MAX;
-    let mut unmapped = false;
-    let scanned = syscall::scan_user_cstr(p, max as u64, |va| {
-        let page = va & page_mask;
-        if page != checked {
-            if validate_user_buf_readable(va, 1, 1).is_err() { unmapped = true; return 0; }
-            checked = page;
-        }
-        // SAFETY: this byte's page was proved mapped and readable in the caller's address space immediately above, and scan_user_cstr range-checked the address.
-        unsafe { core::ptr::read_unaligned(va as *const u8) }
-    });
-    if unmapped { return Err(err(Errno::Efault)); }
-    match scanned {
+    match uaccess::strndup_user(p, max as u64) {
         Ok(b) => Ok(b),
         Err(Errno::Enametoolong) => Err(err(Errno::Einval)),
         Err(e) => Err(err(e)),
@@ -142,23 +126,14 @@ fn read_user_key_desc_optional(p: u64) -> Result<String, i64> {
     read_user_key_desc(p)
 }
 
-/// A bounded copy of an exact user byte range.
-///
-/// The validation walks the caller's VMAs rather than only range-checking the
-/// address. A range check alone is `access_ok`, which in Linux is safe only
-/// because the copy itself is fixed up by the exception table and returns
-/// EFAULT from a fault; a raw read here has no fixup, so an address that is
-/// merely IN the user half but mapped by nothing faults the KERNEL instead of
-/// answering the caller EFAULT. Found by a probe passing an unmapped user
-/// pointer: the kernel took a #PF on it and died. # C: O(pages + len)
+/// A bounded copy of an exact user byte range, through the exception-table
+/// copy: a page the caller has not mapped stops the copy at the faulting byte
+/// and answers EFAULT instead of faulting the kernel. # C: O(len)
 fn read_user_bytes(p: u64, len: u64) -> Result<Vec<u8>, i64> {
     if len == 0 { return Ok(Vec::new()); }
     if len > KEY_MAX_PAYLOAD { return Err(err(Errno::Einval)); }
-    validate_user_buf_readable(p, len, 1)?;
-    let len = len as usize;
-    let mut out = alloc::vec![0u8; len];
-    // SAFETY: exact user byte range validated; destination is a kernel-owned Vec.
-    unsafe { for i in 0..len { out[i] = core::ptr::read_unaligned((p + i as u64) as *const u8); } }
+    let mut out = alloc::vec![0u8; len as usize];
+    uaccess::copy_from_user(&mut out, p).map_err(err)?;
     Ok(out)
 }
 
@@ -170,20 +145,22 @@ fn read_user_iov(p: u64, n: u64) -> Result<Vec<u8>, i64> {
     struct Live;
     impl iov::UserMem for Live {
         fn validate(&mut self, base: u64, len: u64, align: u64) -> Result<(), i64> {
-            // Mapping-checked, not merely range-checked: the copy below has no
-            // exception-table fixup, so an unmapped user address has to be
-            // refused HERE or it faults the kernel. See `read_user_bytes`.
+            // Mapping-checked, not merely range-checked. The copies below
+            // recover a fault on their own, so this is not what keeps the
+            // kernel alive; it is what makes the ORDER observable — every
+            // segment refused BEFORE any is copied, so a bad pointer in the
+            // last one leaves no half-gathered payload.
             validate_user_buf_readable(base, len, align)
         }
-        fn read_word(&mut self, at: u64) -> u64 {
-            // SAFETY: the whole iovec array was validated readable and 8-byte aligned before any word of it is read, and `at` lies inside it.
-            unsafe { core::ptr::read_volatile(at as *const u64) }
+        fn read_word(&mut self, at: u64) -> Result<u64, i64> {
+            let mut w = [0u8; 8];
+            uaccess::copy_from_user(&mut w, at).map_err(err)?;
+            Ok(u64::from_ne_bytes(w))
         }
-        fn copy_in(&mut self, base: u64, len: u64, out: &mut Vec<u8>) {
-            for i in 0..len {
-                // SAFETY: every segment was validated readable before this copy began and the caller holds no lock that could have let it be unmapped since.
-                out.push(unsafe { core::ptr::read_unaligned((base + i) as *const u8) });
-            }
+        fn copy_in(&mut self, base: u64, len: u64, out: &mut Vec<u8>) -> Result<(), i64> {
+            let at = out.len();
+            out.resize(at + len as usize, 0);
+            uaccess::copy_from_user(&mut out[at..], base).map_err(err)
         }
     }
     iov::gather(&mut Live, p, n)

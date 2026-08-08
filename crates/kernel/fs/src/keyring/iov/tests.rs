@@ -45,14 +45,15 @@ impl UserMem for Fake {
     fn validate(&mut self, base: u64, len: u64, _align: u64) -> Result<(), i64> {
         if self.admits(base, len) { Ok(()) } else { Err(efault()) }
     }
-    fn read_word(&mut self, at: u64) -> u64 {
+    fn read_word(&mut self, at: u64) -> Result<u64, i64> {
         let i = ((at - self.array_base) / 8) as usize;
-        self.words.get(i).copied().unwrap_or(0)
+        Ok(self.words.get(i).copied().unwrap_or(0))
     }
-    fn copy_in(&mut self, base: u64, len: u64, out: &mut Vec<u8>) {
+    fn copy_in(&mut self, base: u64, len: u64, out: &mut Vec<u8>) -> Result<(), i64> {
         self.copied += len as usize;
         let f = self.fill_of(base);
         for _ in 0..len { out.push(f); }
+        Ok(())
     }
 }
 
