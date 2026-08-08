@@ -214,6 +214,12 @@ pub unsafe extern "C" fn oxide_finish_task_switch() {
             // incoming task, after the switch — and never by the dying thread,
             // which is still executing on that stack until this point.
             super::super::kthread::note_kthread_exited(&dying);
+            // Linux `put_task_stack()` in `finish_task_switch`: the task is off
+            // this CPU for the last time, so its stack is dead storage from
+            // here. Released now rather than when the last `Arc<Task>` drops,
+            // so an unreaped zombie does not pin 16 KiB and so reaping can
+            // never free a stack a task is still running on.
+            dying.release_kernel_stack();
             let group = Arc::clone(&dying.thread_group);
             match group.finish_exit(dying) {
                 crate::thread_group::ExitDisposition::WaitableLeader(leader) => {
