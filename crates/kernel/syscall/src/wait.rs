@@ -163,6 +163,41 @@ pub const fn siginfo_from_event(kind: WaitEventKind, wstat: i32) -> (i32, i32) {
     }
 }
 
+/// What one pass of the blocking wait loop must do once the child scan has
+/// run. Owns the ordering `do_wait`/`__do_wait` fix between them, so the
+/// target-gated engine obeys it rather than restating it.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum WaitStep {
+    /// An event was found: report it. Outranks every other outcome, so a
+    /// waiter with a signal pending still reports a child it can already see.
+    Report,
+    /// Nothing this wait could ever match — the `notask_error` seed survives.
+    Echild,
+    /// A matchable child exists but has no event and the caller said
+    /// `WNOHANG`: return 0 without blocking.
+    Nohang,
+    /// A matchable child exists, the caller would block, and a deliverable
+    /// signal is pending: `-ERESTARTSYS`. Ordered BEFORE the park, or a
+    /// parked waiter is unkillable.
+    Restart,
+    /// Block.
+    Park,
+}
+
+/// One iteration of `do_wait`'s loop. `has_event` is the child scan's result,
+/// `has_children` whether any child could ever match, `signal_pending`
+/// whether a deliverable (or unblockable) signal is queued.
+/// # C: O(1)
+pub const fn wait_step(has_event: bool, has_children: bool, options: u64, signal_pending: bool)
+    -> WaitStep
+{
+    if has_event { return WaitStep::Report; }
+    if !has_children { return WaitStep::Echild; }
+    if (options & WNOHANG) != 0 { return WaitStep::Nohang; }
+    if signal_pending { return WaitStep::Restart; }
+    WaitStep::Park
+}
+
 #[cfg(test)]
 #[path = "wait/tests.rs"]
 mod tests;

@@ -182,7 +182,24 @@ pub fn mnt_ns_inode(namespace: vfs::mntns::MntNamespaceRef) -> InodeRef {
 /// the namespace in `i_private` for an `O_NOFOLLOW`/`O_PATH` `setns`.
 /// Returns `ENOENT` when lookup races task namespace release. # C: O(1)
 pub fn ns_inode_for(task: &sched::Task, kind: NsKind) -> KResult<InodeRef> {
-    let owner = match kind {
+    let ns = NsInode::new(kind, owner_for(task, kind)?);
+    Ok(InodeBuilder::new(ns.ino(), mk_mode(FileType::Symlink, 0o777), Arc::new(NsLinkOps), default_file_ops())
+        .private(Arc::new(ns))
+        .build())
+}
+
+/// The nsfs node a descriptor for `task`'s `kind` namespace refers to — what a
+/// walk THROUGH `/proc/<pid>/ns/<type>` lands on, and what the pidfs
+/// namespace-descriptor ioctls hand back without a procfs path in between.
+/// Same retained owner, so `setns(2)` downcasts it identically.
+/// Returns `ENOENT` when the lookup races task namespace release. # C: O(1)
+pub fn ns_fd_inode_for(task: &sched::Task, kind: NsKind) -> KResult<InodeRef> {
+    Ok(ns_node(&NsInode::new(kind, owner_for(task, kind)?)))
+}
+
+/// `task`'s exact retained owner for `kind`. # C: O(1)
+fn owner_for(task: &sched::Task, kind: NsKind) -> KResult<NsOwner> {
+    Ok(match kind {
         NsKind::Cgroup => NsOwner::Cgroup(task.namespace_owner(NamespaceKind::Cgroup).ok_or(VfsError::Enoent)?),
         NsKind::Ipc => NsOwner::Ipc(task.namespace_owner(NamespaceKind::Ipc).ok_or(VfsError::Enoent)?),
         NsKind::Pid => NsOwner::Pid(task.namespace_owner(NamespaceKind::Pid).ok_or(VfsError::Enoent)?),
@@ -193,11 +210,7 @@ pub fn ns_inode_for(task: &sched::Task, kind: NsKind) -> KResult<InodeRef> {
         NsKind::Uts => NsOwner::Uts(task.namespace_owner(NamespaceKind::Uts).ok_or(VfsError::Enoent)?),
         NsKind::Mnt => NsOwner::Mnt(task.mount_namespace_snapshot().ok_or(VfsError::Enoent)?),
         NsKind::Net => NsOwner::Net(task.network_namespace_snapshot().ok_or(VfsError::Enoent)?),
-    };
-    let ns = NsInode::new(kind, owner);
-    Ok(InodeBuilder::new(ns.ino(), mk_mode(FileType::Symlink, 0o777), Arc::new(NsLinkOps), default_file_ops())
-        .private(Arc::new(ns))
-        .build())
+    })
 }
 
 /// True when `ancestor` is the exact owner or a concrete retained parent.

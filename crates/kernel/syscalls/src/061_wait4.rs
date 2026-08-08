@@ -10,7 +10,8 @@ use syscall::errno::Errno;
 use syscall::rusage::Rusage;
 use syscall::SyscallArgs;
 use syscall::wait::{
-    int_arg_from_reg, wait4_options_valid, wait4_upid_is_esrch, WaitEventKind, WaitEvents, WNOHANG,
+    int_arg_from_reg, wait4_options_valid, wait4_upid_is_esrch, wait_step, WaitEventKind,
+    WaitEvents, WaitStep,
 };
 use sched::registry::WaitChildSnapshot;
 
@@ -79,39 +80,45 @@ where
         None    => return -(Errno::Einval.as_i32() as i64),
     };
     loop {
-        if let Some((child, kind, wstat)) = take_event(&req, w) {
-            if let Err(rv) = write_status(kind, wstat) { return rv; }
-            if let Err(rv) = write_usage(child) { return rv; }
-            if kind == WaitEventKind::Exited && req.consume { drop_sigchld_if_drained(&req, w); }
-            debug_sched! { klog::write_raw(b"[INFO]  sys_wait4: reaped\n"); }
-            return child.vpid as i64;
-        }
-        if !sched::live::registry::has_wait_children(w.0, w.1, req.pid, w.2, req.options) {
-            #[cfg(feature = "debug-boot")]
-            {
-                klog::write_raw(b"[wait4 ECHILD] parent="); klog::write_dec_u64(w.0 as u64);
-                klog::write_raw(b" reqpid="); klog::write_hex_u64(req.pid as u32 as u64);
-                if let Some(c) = sched::live::current() {
-                    c.with_exe_path(|p| if let Some(p) = p {
-                        klog::write_raw(b" exe="); klog::write_raw(p.as_bytes());
-                    });
-                }
-                klog::write_raw(b"\n");
+        let event = take_event(&req, w);
+        // Ordering owned by `syscall::wait::wait_step` (`do_wait`/`__do_wait`):
+        // an available event outranks a pending signal; ECHILD outranks
+        // WNOHANG; and the signal check is ordered BEFORE the park, or a task
+        // parked here is unkillable — kill() wakes it (wake_if_sleeping) but
+        // it just re-parks, never returning to the dispatch tail that turns
+        // SIGKILL into the SIG_DFL terminate.
+        let step = wait_step(
+            event.is_some(),
+            sched::live::registry::has_wait_children(w.0, w.1, req.pid, w.2, req.options),
+            req.options,
+            signal_aborts_wait());
+        match step {
+            WaitStep::Report => {
+                let (child, kind, wstat) = match event { Some(e) => e, None => continue };
+                if let Err(rv) = write_status(kind, wstat) { return rv; }
+                if let Err(rv) = write_usage(child) { return rv; }
+                if kind == WaitEventKind::Exited && req.consume { drop_sigchld_if_drained(&req, w); }
+                debug_sched! { klog::write_raw(b"[INFO]  sys_wait4: reaped\n"); }
+                return child.vpid as i64;
             }
-            return -(Errno::Echild.as_i32() as i64);
+            WaitStep::Echild => {
+                #[cfg(feature = "debug-boot")]
+                {
+                    klog::write_raw(b"[wait4 ECHILD] parent="); klog::write_dec_u64(w.0 as u64);
+                    klog::write_raw(b" reqpid="); klog::write_hex_u64(req.pid as u32 as u64);
+                    if let Some(c) = sched::live::current() {
+                        c.with_exe_path(|p| if let Some(p) = p {
+                            klog::write_raw(b" exe="); klog::write_raw(p.as_bytes());
+                        });
+                    }
+                    klog::write_raw(b"\n");
+                }
+                return -(Errno::Echild.as_i32() as i64);
+            }
+            WaitStep::Nohang  => return 0,
+            WaitStep::Restart => return syscall::restart::restart_sys(),
+            WaitStep::Park    => {}
         }
-        if (req.options & WNOHANG) != 0 { return 0; }
-        // Interruptible wait: `do_wait` runs at TASK_INTERRUPTIBLE. A
-        // deliverable (unmasked) signal — and ALWAYS SIGKILL/SIGSTOP
-        // regardless of mask, since signal(7) makes both unblockable —
-        // aborts the blocking wait with -ERESTARTSYS. The syscall-return tail
-        // (dispatch.rs `take_lowest_pending`) then runs the fatal-signal
-        // default action (SIG_DFL terminate). Ordered AFTER the event scan
-        // above (an available event is reported even with a signal pending)
-        // and BEFORE park: without it a task parked here is unkillable —
-        // kill() wakes it (wake_if_sleeping) but it just re-parks, never
-        // returning to the dispatch tail that converts SIGKILL→terminate.
-        if signal_aborts_wait() { return syscall::restart::restart_sys(); }
         // SAFETY: process ctx; runqueue installed; preempt-off; park+schedule per `13§8`.
         unsafe { sched::live::park_for_wait4(); }
         // F143: post-park recheck closes the missed-wakeup race where a child

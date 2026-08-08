@@ -4,25 +4,35 @@
 
 use syscall::SyscallArgs;
 
+use crate::uprobe_abi::{uretprobe_no_trampoline, NoTrampoline};
+
 /// `sys_uretprobe()` — slot 335. Not a userspace API: the kernel injects the
-/// call at the return site of a uprobe return-probe, with
-/// `struct uretprobe_syscall_args` staged on the user stack. `SYSCALL_DEFINE0
-/// (uretprobe)` validates three things before
-/// touching that frame — a trampoline exists, `regs->ip` equals
-/// `trampoline_check_ip(tramp)`, and the args copy in — and every failure
-/// jumps to `sigill:`, i.e. `force_sig(SIGILL)`.
+/// call at the return site of a uprobe return-probe, with the probed frame
+/// staged on the user stack. The reference validates a trampoline exists, that
+/// the user PC equals the single address allowed to make this call, and that
+/// the staged frame copies in; every failure forces SIGILL.
 ///
-/// oxide installs no uprobe trampoline, so `uprobe_get_trampoline_vaddr()` is
-/// unconditionally `UPROBE_NO_TRAMPOLINE_VADDR` and EVERY call takes the first
-/// `goto sigill`. `force_sig` resets the disposition to `SIG_DFL` and unblocks
-/// the signal first, so the caller cannot catch, ignore or block its way out —
-/// which is why this terminates rather than merely setting the pending bit.
+/// oxide maps no uprobe trampoline, so EVERY call fails the first of those and
+/// the forced-signal arm is the whole reachable body. Forcing resets the
+/// disposition to SIG_DFL and unblocks the signal first, so the caller cannot
+/// catch, ignore or block its way out of a call it had no business making.
+///
+/// The signal is QUEUED and this returns; the default-action triage, the core
+/// dump SIGILL owes and the tracer's signal-delivery stop all belong to the
+/// ordinary return-to-user path. This slot used to call the group-exit helper
+/// directly instead, which latched an exit status carrying the core-dumped bit
+/// while writing no core, and skipped the tracer stop entirely.
 ///
 /// The slot exists on x86_64 only: 335 is in the x86_64 syscall table and
-/// absent from the generic aarch64 syscall table, whose 295-402 range is
-/// unassigned.
+/// absent from the generic aarch64 table, whose 295-402 range is unassigned.
 /// `syscall::arm_abi::arm_nr_is_unassigned` keeps an aarch64 caller out of here.
 /// # C: O(1)
 pub fn sys_uretprobe(_args: &SyscallArgs) -> i64 {
-    sched::live::terminate_current_with_signal(sched::signum::Signum::Sigill.as_u8())
+    match uretprobe_no_trampoline() {
+        NoTrampoline::ForceSignal { sig, code, rv } => {
+            sched::live::force_sig_fault(sig, code, 0, 0);
+            rv
+        }
+        NoTrampoline::Errno(e) => -(e as i64),
+    }
 }
