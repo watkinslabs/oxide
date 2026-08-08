@@ -59,7 +59,7 @@ pub fn sys_io_setup(nr_events: u32, ctxp: u64) -> i64 {
     };
     let user_base = match pmm::user_as::glue_mmap(
         0, map_bytes, RING_PROT, RING_MAP_FLAGS, -1, 0, None, None, Some(base_pa),
-        vmm::VmaProt::READ | vmm::VmaProt::WRITE,
+        vmm::VmaProt::READ | vmm::VmaProt::WRITE, vmm::VmaFlags::empty(),
     ) {
         Ok(va) => va,
         Err(rv) => { drop_ring(base_pa, order); ctx::uncharge_aio_nr(plan.max_reqs); return rv; }

@@ -17,6 +17,7 @@ impl AddressSpace {
         va: UserVirtAddr,
         access: FaultAccess,
         hhdm_offset: u64,
+        install_uffd_wp: bool,
         alloc_frame: &mut A,
         dec_ref: &mut DR,
         set_rmap: &mut SR,
@@ -44,12 +45,20 @@ impl AddressSpace {
         }
         let va_page = va.as_u64() & !(PAGE_SIZE_BYTES - 1);
         if self.brk_fault_past_current(&vma, va_page) { return Err(Error::Inval); }
+        // Folded into every leaf this fill publishes, so the page is protected
+        // by the same store that makes it visible rather than by a second pass
+        // a peer thread's write could slip between.
+        let wp = if install_uffd_wp { hal::PageFlags::UFFD_WP } else { hal::PageFlags::empty() };
+        // Speculative neighbour installs are suppressed while a monitor watches
+        // the range: they publish ordinary leaves over addresses the monitor
+        // armed, dropping barriers no fault ever touched.
+        let around_ok = !crate::uffd::fault_around_disabled(vma.flags & VmaFlags::UFFD_MASK);
 
         match &vma.backing {
             VmaBacking::Anonymous => {
                 // SAFETY: forwards the live MMU and PMM callbacks unchanged.
                 unsafe { self.handle_anonymous_not_present::<M, _, _, _, _, _>(
-                    va, &vma, hhdm_offset, alloc_frame, dec_ref, set_rmap,
+                    va, &vma, hhdm_offset, wp, alloc_frame, dec_ref, set_rmap,
                     charge_anon, uncharge_anon,
                 ) }
             }
@@ -90,7 +99,7 @@ impl AddressSpace {
                         }
                     }
                 }
-                let pte_flags = vma.page_flags();
+                let pte_flags = vma.page_flags() | wp;
                 // DIAG (debug-atexit): KernelBytes-arm install in the lib arena
                 // — this arm zeros BSS tail bytes and NEVER logged before; if it
                 // fires at a library VA the VMA consulted was a KernelBytes VMA
@@ -168,7 +177,7 @@ impl AddressSpace {
                         klog::write_raw(b"\n");
                     }
                     if !map_ref_held { inc_ref(spa); }
-                    let pte_flags = vma.page_flags();
+                    let pte_flags = vma.page_flags() | wp;
                     // SAFETY: va_page is page aligned; spa is the owner-backed
                     // frame whose refcount was bumped; flags carry USER.
                     let replaced = unsafe { M::map(Va(va_page), Pa(spa), pte_flags, PageSize::P4K) };
@@ -178,7 +187,7 @@ impl AddressSpace {
                         hal::tlb::shootdown_others_va(va_page, self.cpumask());
                         dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
                     }
-                    if !matches!(access, FaultAccess::Write) {
+                    if around_ok && !matches!(access, FaultAccess::Write) {
                         // SAFETY: the demand leaf is committed and the same
                         // live MMU/PMM callbacks govern adjacent PTE installs.
                         unsafe { self.map_file_fault_around::<M, _, _>(
@@ -402,7 +411,7 @@ impl AddressSpace {
                     klog::write_raw(b" pa=");  klog::write_hex_u64(pa);
                     klog::write_raw(b"\n");
                 }
-                let pte_flags = vma.page_flags();
+                let pte_flags = vma.page_flags() | wp;
                 // Linux's post-fault pte_same/!pte_none re-check:
                 // `backing.read_at` above SLEEPS on the block device (ext4 ->
                 // virtio-blk park_blk -> schedule()), so a PEER THREAD of this
@@ -446,7 +455,7 @@ impl AddressSpace {
                     hal::tlb::shootdown_others_va(va_page, self.cpumask());
                     dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
                 }
-                if !matches!(access, FaultAccess::Write) {
+                if around_ok && !matches!(access, FaultAccess::Write) {
                     // SAFETY: the demand leaf is committed and the same live
                     // MMU/PMM callbacks govern adjacent PTE installs.
                     unsafe { self.map_file_fault_around::<M, _, _>(

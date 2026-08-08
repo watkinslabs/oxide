@@ -330,7 +330,7 @@ fn enqueued_pagefault_msg_drains_through_read() {
     let addr = REGION + PAGE;
     // missing_fault under hosted enqueues + returns (no park).
     assert!(d.fault(addr, UffdFaultKind::Missing, true, true));
-    assert_eq!(d.state.lock().events.len(), 1);
+    assert_eq!(d.state.lock().faults.len(), 1);
     let mut buf = [0u8; 32];
     let n = UffdFileOps.read(&inode, 0, &mut buf).expect("read event");
     assert_eq!(n, 32);
@@ -358,9 +358,9 @@ fn a_user_mode_only_context_refuses_a_kernel_mode_fault() {
     handshake(&inode);
     let d = ufd_of(&inode);
     assert!(!d.fault(REGION, UffdFaultKind::Missing, true, false), "kernel-mode fault must be refused");
-    assert_eq!(d.state.lock().events.len(), 0, "a refused fault must not enqueue");
+    assert_eq!(d.state.lock().faults.len(), 0, "a refused fault must not enqueue");
     assert!(d.fault(REGION, UffdFaultKind::Missing, true, true));
-    assert_eq!(d.state.lock().events.len(), 1);
+    assert_eq!(d.state.lock().faults.len(), 1);
 }
 
 #[test]

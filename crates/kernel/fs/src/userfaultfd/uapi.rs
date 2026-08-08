@@ -138,22 +138,37 @@ pub mod feature {
 /// anything outside this set is refused rather than told yes and left without
 /// the behaviour.
 ///
-/// Absent on purpose, each for a reason that shows up as behaviour elsewhere:
-/// the hugetlbfs bits (no hugetlb mappings exist), `WP_HUGETLBFS_SHMEM` /
-/// `WP_UNPOPULATED` / `WP_ASYNC` (write-protect state lives in present leaves
-/// only, so an unpopulated or non-anonymous page cannot carry it — which is
-/// exactly why registration refuses `MODE_WP` on a non-anonymous VMA), and the
-/// event bits (fork/remap/remove/unmap events are not generated, and a monitor
-/// that believed they were would wait forever).
+/// Absent on purpose: the two hugetlbfs-only bits, because nothing in this
+/// kernel is backed by a huge-page filesystem, so no range could ever be
+/// registered for either of them.
+///
+/// `WP_HUGETLBFS_SHMEM` IS offered although it names that filesystem too: it is
+/// ONE bit covering two backings, the half that exists here — write-protect
+/// over memory-backed shared storage — is implemented, and the half that does
+/// not exist has no mapping to be asked about.
 pub const UFFD_API_FEATURES: u64 = feature::THREAD_ID
     | feature::PAGEFAULT_FLAG_WP
     | feature::MISSING_SHMEM
     | feature::MINOR_SHMEM
     | feature::POISON
-    | feature::MOVE;
+    | feature::MOVE
+    | feature::WP_HUGETLBFS_SHMEM
+    | feature::WP_UNPOPULATED
+    | feature::WP_ASYNC
+    | feature::EVENT_FORK
+    | feature::EVENT_REMAP
+    | feature::EVENT_REMOVE
+    | feature::EVENT_UNMAP;
 
-/// `uffd_msg.event` values.
+/// `uffd_msg.event` values. The four non-fault events are the cooperative
+/// half of the protocol: the thread performing the address-space change
+/// BLOCKS until the monitor has read the message, so a monitor never observes
+/// a mapping it has not been told about.
 pub const UFFD_EVENT_PAGEFAULT: u8 = 0x12;
+pub const UFFD_EVENT_FORK:      u8 = 0x13;
+pub const UFFD_EVENT_REMAP:     u8 = 0x14;
+pub const UFFD_EVENT_REMOVE:    u8 = 0x15;
+pub const UFFD_EVENT_UNMAP:     u8 = 0x16;
 /// `uffd_msg.arg.pagefault.flags` bits.
 pub const UFFD_PAGEFAULT_FLAG_WRITE: u64 = 1 << 0;
 pub const UFFD_PAGEFAULT_FLAG_WP:    u64 = 1 << 1;

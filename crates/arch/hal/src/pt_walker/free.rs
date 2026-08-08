@@ -156,7 +156,11 @@ pub unsafe fn clear_swap_4k_at_root<W: PtWalker>(
         if !W::is_valid(e2) || W::is_huge_or_block(e2) { return false; }
         let l3 = (hhdm_offset.wrapping_add(e2 & W::PHYS_MASK)) as *mut u64;
         let slot = l3.add(i_l3);
-        if ptr::read_volatile(slot) != W::pack_swap_entry(expected) { return false; }
+        // Compared by DECODED identity, not by raw word: a swap leaf may carry
+        // userfaultfd write-protect state alongside its slot reference, and a
+        // raw comparison would refuse to clear exactly the protected entries —
+        // leaking their slots for the life of the mapping.
+        if W::unpack_swap_entry(ptr::read_volatile(slot)) != Some(expected) { return false; }
         ptr::write_volatile(slot, EMPTY_PTE);
         true
     }
@@ -320,9 +324,25 @@ pub unsafe fn replace_present_4k_with_swap_at_root<W: PtWalker>(
         let slot = l3.add(i_l3);
         let leaf = ptr::read_volatile(slot);
         if !W::is_valid(leaf) { return None; }
-        ptr::write_volatile(slot, W::pack_swap_entry(entry));
+        ptr::write_volatile(slot, carry_uffd_wp_out::<W>(leaf, W::pack_swap_entry(entry)));
         Some(leaf)
     }
+}
+
+/// A page leaving memory takes its userfaultfd write-protect barrier with it:
+/// the state moves from the departing leaf's permissions into the non-present
+/// entry that replaces it. Without this the eviction disarms the barrier, and
+/// the write it existed to catch happens unobserved once the page returns.
+/// # C: O(1)
+fn carry_uffd_wp_out<W: PtWalker>(old_leaf: u64, nonpresent: u64) -> u64 {
+    if W::leaf_is_uffd_wp(old_leaf) { W::nonpresent_set_uffd_wp(nonpresent) } else { nonpresent }
+}
+
+/// The inverse: a page coming back is installed already protected, in the one
+/// store that publishes it, so it is never briefly writable.
+/// # C: O(1)
+fn carry_uffd_wp_in<W: PtWalker>(old_nonpresent: u64, flags: crate::PageFlags) -> crate::PageFlags {
+    if W::nonpresent_is_uffd_wp(old_nonpresent) { flags | crate::PageFlags::UFFD_WP } else { flags }
 }
 
 /// Replace a present 4 KiB leaf only if it still maps `expected_pa`. The
@@ -355,7 +375,7 @@ pub unsafe fn replace_present_4k_with_swap_if_pa_at_root<W: PtWalker>(
         let slot = l3.add(i_l3);
         let leaf = ptr::read_volatile(slot);
         if !W::is_valid(leaf) || leaf & W::PHYS_MASK != expected_pa & W::PHYS_MASK { return None; }
-        ptr::write_volatile(slot, W::pack_swap_entry(entry));
+        ptr::write_volatile(slot, carry_uffd_wp_out::<W>(leaf, W::pack_swap_entry(entry)));
         Some(leaf)
     }
 }
@@ -390,7 +410,12 @@ pub unsafe fn replace_present_4k_flags_if_pa_at_root<W: PtWalker>(
         let slot = l3.add(i_l3);
         let leaf = ptr::read_volatile(slot);
         if !W::is_valid(leaf) || leaf & W::PHYS_MASK != expected_pa & W::PHYS_MASK { return false; }
-        ptr::write_volatile(slot, W::pack_4k_leaf(expected_pa, flags));
+        // A protection rewrite changes the mapping's permissions; it does not
+        // decide whether a monitor is watching the page. Rebuilding the leaf
+        // from VMA-derived flags alone would drop the barrier, so it is carried
+        // across explicitly — which also keeps the leaf unwritable.
+        let kept = if W::leaf_is_uffd_wp(leaf) { flags | crate::PageFlags::UFFD_WP } else { flags };
+        ptr::write_volatile(slot, W::pack_4k_leaf(expected_pa, kept));
         true
     }
 }
@@ -425,8 +450,9 @@ pub unsafe fn replace_swap_4k_with_present_at_root<W: PtWalker>(
         if !W::is_valid(e2) || W::is_huge_or_block(e2) { return false; }
         let l3 = (hhdm_offset.wrapping_add(e2 & W::PHYS_MASK)) as *mut u64;
         let slot = l3.add(i_l3);
-        if W::unpack_swap_entry(ptr::read_volatile(slot)) != Some(expected) { return false; }
-        ptr::write_volatile(slot, W::pack_4k_leaf(pa, flags));
+        let old = ptr::read_volatile(slot);
+        if W::unpack_swap_entry(old) != Some(expected) { return false; }
+        ptr::write_volatile(slot, W::pack_4k_leaf(pa, carry_uffd_wp_in::<W>(old, flags)));
         W::flush_va(va);
         true
     }

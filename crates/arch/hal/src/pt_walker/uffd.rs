@@ -1,5 +1,6 @@
 // Page-table primitives the userfaultfd modes are built on: raw leaf
-// read/exchange, the write-protect range walk, and the poison marker.
+// read/exchange, the write-protect range walk, and the marker leaves the walk
+// plants where there is no page to carry the state.
 //
 // These deliberately expose the RAW leaf rather than decoded `PageFlags`.
 // Write-protect state, poison state and a moved page's permissions are
@@ -10,7 +11,10 @@
 
 use core::ptr;
 
-use super::{PtWalker, L0_SHIFT, L1_SHIFT, L2_SHIFT, L3_SHIFT, TABLE_IDX_MASK};
+use super::{PteMarker, PtWalker, L0_SHIFT, L1_SHIFT, L2_SHIFT, L3_SHIFT, TABLE_IDX_MASK};
+
+/// Bottom (4 KiB) level of the shared four-level walk.
+const LEAF_LEVEL_4K: u8 = 3;
 
 /// Address of the L3 leaf slot for `va` in the tree rooted at `root_pa`, or
 /// `None` when any level of the walk is absent or a huge/block leaf.
@@ -86,56 +90,89 @@ pub unsafe fn swap_leaf_if_4k_at_root<W: PtWalker>(
     }
 }
 
-/// Walk `[start, end)` in 4 KiB steps applying the userfaultfd write-protect
-/// transition to every PRESENT leaf: `protect` sets the marker and drops write
-/// permission, `!protect` clears the marker and leaves the leaf read-only so
-/// the next write takes an ordinary protection fault.
+/// The leaf one page of a userfaultfd write-protect transition must end up
+/// holding, or `None` to leave it exactly as it is.
 ///
-/// Absent leaves and non-present encodings (swap, migration, poison) are
-/// skipped: they carry no write permission to remove, and the fault that
-/// materialises them consults the VMA registration.
+/// `protect` arms the barrier, `!protect` resolves it. `markers` is whether
+/// this mapping carries the protection over addresses with NO resident page —
+/// without it an absent leaf is left alone, and the barrier applies only to
+/// pages that already exist.
 ///
-/// Returns the number of leaves rewritten. The caller invalidates the range.
+/// The cases, and why each is what it is:
 ///
-/// # SAFETY: as [`write_leaf_4k_at_root`], for every page of the range.
+/// - A present leaf carries the state in its own permissions: arming removes
+///   write permission AND sets the marker bit; resolving clears the marker bit
+///   and stops there, so the next write takes an ordinary protection fault,
+///   which is where write access is decided.
+/// - An address with no page has no permissions to remove, so the state has to
+///   become an entry of its own: a marker leaf. Resolving one removes it, and
+///   the address goes back to being a hole that faults in normally.
+/// - A marker declaring the contents unrecoverable is left alone in BOTH
+///   directions. Contents that are gone outrank a barrier over writes to them,
+///   and dropping the marker to resolve a barrier would turn a permanent memory
+///   error into a page of fresh zeroes.
+/// - A swapped-out page and a page in transit take the state INTO the entry
+///   that names them. Neither carries write permission right now, so leaving
+///   them alone looks harmless — but the fault that brings either back builds a
+///   fresh leaf from the mapping's permissions, which is writable. The barrier
+///   has to survive in the only thing that survives the round trip: the entry.
+/// # C: O(1)
+pub fn uffd_wp_step<W: PtWalker>(raw: Option<u64>, protect: bool, markers: bool) -> Option<u64> {
+    let raw = raw.unwrap_or(0);
+    if raw == 0 {
+        return if protect && markers { Some(W::pack_uffd_wp_marker()) } else { None };
+    }
+    if W::is_valid(raw) {
+        let new = if protect { W::leaf_set_uffd_wp(W::leaf_wrprotect(raw)) }
+                  else       { W::leaf_clear_uffd_wp(raw) };
+        return if new != raw { Some(new) } else { None };
+    }
+    if let Some(m) = W::unpack_pte_marker(raw) {
+        return match m {
+            m if m.contains(PteMarker::UFFD_WP) && !protect =>
+                Some(match m.without(PteMarker::UFFD_WP) {
+                    Some(rest) => W::pack_pte_marker(rest),
+                    None => 0,
+                }),
+            _ => None,
+        };
+    }
+    let new = if protect { W::nonpresent_set_uffd_wp(raw) } else { W::nonpresent_clear_uffd_wp(raw) };
+    if new != raw { Some(new) } else { None }
+}
+
+/// Apply [`uffd_wp_step`] to every page of `[start, end)`, returning the number
+/// of leaves rewritten. `alloc` supplies the intermediate tables an address
+/// that has never been touched needs before it can hold a marker; a page whose
+/// step needs no table is never charged one.
+///
+/// The caller invalidates the range.
+///
+/// # SAFETY: as [`write_leaf_4k_at_root`], for every page of the range, plus
+/// `alloc` returns kernel-owned zeroed frames.
 /// # C: O((end - start) / 4096 * walk depth)
-pub unsafe fn uffd_wp_range_at_root<W: PtWalker>(
-    root_pa: u64, start: u64, end: u64, protect: bool, hhdm: u64,
+pub unsafe fn uffd_wp_range_at_root<W: PtWalker, F: FnMut() -> Option<u64>>(
+    root_pa: u64, start: u64, end: u64, protect: bool, markers: bool, hhdm: u64, alloc: &mut F,
 ) -> usize {
     let mut changed = 0usize;
     let mut va = start;
     while va < end {
-        // SAFETY: per fn contract — one leaf slot at a time under the caller's page-table lock.
+        // SAFETY: per fn contract — one leaf slot at a time under the caller's page-table lock; the map path allocates only intermediate tables and publishes a non-present leaf, so it creates no mapping reference.
         unsafe {
-            if let Some(slot) = leaf_slot::<W>(root_pa, va, hhdm) {
-                let old = ptr::read_volatile(slot);
-                if W::is_valid(old) {
-                    let new = if protect { W::leaf_set_uffd_wp(W::leaf_wrprotect(old)) }
-                              else       { W::leaf_clear_uffd_wp(old) };
-                    if new != old { ptr::write_volatile(slot, new); changed += 1; }
+            let slot = leaf_slot::<W>(root_pa, va, hhdm);
+            let old = slot.map(|s| ptr::read_volatile(s));
+            if let Some(new) = uffd_wp_step::<W>(old, protect, markers) {
+                match slot {
+                    Some(s) => { ptr::write_volatile(s, new); changed += 1; }
+                    None => {
+                        let placed = super::map_at_level_with_root::<W, _>(
+                            root_pa, va, LEAF_LEVEL_4K, new, hhdm, alloc);
+                        if placed.is_ok() { changed += 1; }
+                    }
                 }
             }
         }
         va = va.wrapping_add(1u64 << L3_SHIFT);
     }
     changed
-}
-
-/// Whether the leaf for `va` is present and carries the userfaultfd
-/// write-protect marker.
-///
-/// # SAFETY: as [`read_leaf_4k_at_root`].
-/// # C: O(walk depth)
-pub unsafe fn is_uffd_wp_4k_at_root<W: PtWalker>(root_pa: u64, va: u64, hhdm: u64) -> bool {
-    // SAFETY: delegated to `read_leaf_4k_at_root` under the caller's page-table lock; reads only.
-    unsafe { read_leaf_4k_at_root::<W>(root_pa, va, hhdm).is_some_and(W::leaf_is_uffd_wp) }
-}
-
-/// Whether the leaf for `va` is a poison marker.
-///
-/// # SAFETY: as [`read_leaf_4k_at_root`].
-/// # C: O(walk depth)
-pub unsafe fn is_poisoned_4k_at_root<W: PtWalker>(root_pa: u64, va: u64, hhdm: u64) -> bool {
-    // SAFETY: delegated to `read_leaf_4k_at_root` under the caller's page-table lock; reads only.
-    unsafe { read_leaf_4k_at_root::<W>(root_pa, va, hhdm).is_some_and(W::is_poison_marker) }
 }

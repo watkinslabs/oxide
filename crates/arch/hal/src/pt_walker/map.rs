@@ -16,7 +16,7 @@ const SWAP_LEAF_LEVEL: usize = 3;
 /// fresh table-frame allocator through the architecture wrapper.
 /// # C: O(walk depth)
 pub unsafe fn install_swap_4k_at_root<W: PtWalker, F: FnMut() -> Option<u64>>(
-    root_pa: u64, va: u64, entry: SwapEntry, hhdm_offset: u64, mut alloc_pa: F,
+    root_pa: u64, va: u64, entry: SwapEntry, uffd_wp: bool, hhdm_offset: u64, mut alloc_pa: F,
 ) -> Result<(), WalkErr> {
     let mut current_pa = root_pa;
     let shifts = [L0_SHIFT, L1_SHIFT, L2_SHIFT, L3_SHIFT];
@@ -31,7 +31,9 @@ pub unsafe fn install_swap_4k_at_root<W: PtWalker, F: FnMut() -> Option<u64>>(
         let table = (hhdm_offset.wrapping_add(current_pa)) as *mut u64;
         let slot = table.add(leaf_idx);
         if ptr::read_volatile(slot) != EMPTY_PTE { return Err(WalkErr::AlreadyMapped); }
-        ptr::write_volatile(slot, W::pack_swap_entry(entry));
+        let mut leaf = W::pack_swap_entry(entry);
+        if uffd_wp { leaf = W::nonpresent_set_uffd_wp(leaf); }
+        ptr::write_volatile(slot, leaf);
     }
     Ok(())
 }

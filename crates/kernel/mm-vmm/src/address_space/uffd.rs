@@ -3,8 +3,9 @@
 //
 // These lookups exist instead of `find_vma`/`snapshot_vmas` because
 // `Vma::clone` IS the fork-dup path: it deliberately drops `uffd` and clears
-// the whole mode mask (no fork event feature, so a child inherits no
-// registration). Any caller that clones a VMA out of the tree therefore sees
+// the whole mode mask, and [`dup_uffd_registrations`] then re-installs a
+// registration on the child only for a monitor that tracks forks. Any caller
+// that clones a VMA out of the tree therefore sees
 // `uffd == None` no matter what is registered, which would make "is this
 // destination uffd-registered?" answer "no" for every address — exactly the
 // kind of silently-wrong authorization fact `docs/02` rule 3 calls a split
@@ -171,6 +172,87 @@ impl AddressSpace {
             hal::tlb::shootdown_others_va(va, mask);
             va += hal::PAGE_SIZE_BYTES;
         }
+    }
+}
+
+impl AddressSpace {
+    /// Charge an impending change over `[start, end)` against every DISTINCT
+    /// monitor covering it that tracks `kind`, and return them so the change
+    /// can be announced once it is done.
+    ///
+    /// Taken before the change becomes visible: from here until the matching
+    /// [`uffd_change_complete`] every resolve on those contexts is refused,
+    /// which is what stops a monitor from filling pages into a range that is
+    /// being discarded or unmapped under it.
+    /// # C: O(N_vmas)
+    pub fn uffd_change_begin(&self, start: u64, end: u64, kind: crate::uffd::UffdEventKind)
+        -> Vec<Arc<dyn UffdContext>> {
+        let mut out: Vec<Arc<dyn UffdContext>> = Vec::new();
+        if !self.maybe_uffd() { return out; }
+        let g = self.vmas.read();
+        for v in g.iter().filter(|v| v.end.as_u64() > start && v.start.as_u64() < end) {
+            let Some(ctx) = v.uffd.as_ref() else { continue };
+            if !ctx.wants_event(kind) { continue; }
+            if out.iter().any(|c| Arc::ptr_eq(c, ctx)) { continue; }
+            ctx.change_begin();
+            out.push(Arc::clone(ctx));
+        }
+        out
+    }
+}
+
+/// Announce a completed change to every monitor charged for it, blocking on
+/// each until it has read the message, and release the charges.
+///
+/// Not a method: it must be callable once the address space it named may
+/// already have had the range removed from it, and it needs no address space
+/// at all — only the contexts.
+/// # C: O(N_watchers) + block
+pub fn uffd_change_complete(watchers: Vec<Arc<dyn UffdContext>>, ev: crate::uffd::UffdEvent) {
+    for ctx in watchers { ctx.change_complete(ev); }
+}
+
+/// Carry the parent's userfaultfd registrations into a freshly built `child`
+/// address space, and announce the fork to every monitor that tracks mappings.
+///
+/// Two rules, both observable:
+///
+/// - A monitor that did not ask to be told about forks gets NOTHING in the
+///   child. Its registration covers addresses in one address space; letting it
+///   silently cover a second hands it faults from a process it has no record
+///   of, and leaves every resolve ambiguous between the two.
+/// - A monitor that did ask gets a SEPARATE context for the child — one per
+///   distinct parent context however many VMAs carry it, and exactly one
+///   announcement for it. The announcement blocks the forking thread until the
+///   monitor has read it, so the child never runs before the monitor knows it
+///   exists.
+///
+/// Called once the child's tree and reverse maps are published, and with no VMA
+/// lock held: the announcement blocks.
+/// # C: O(N_vmas * N_ctxs)
+pub fn dup_uffd_registrations(parent: &AddressSpace, child: &Arc<AddressSpace>) {
+    if !parent.maybe_uffd() { return; }
+    let regs: Vec<(u64, u64, VmaFlags, Arc<dyn UffdContext>)> = {
+        let g = parent.vmas.read();
+        g.iter()
+            .filter_map(|v| v.uffd.clone()
+                .map(|c| (v.start.as_u64(), v.end.as_u64(), v.flags & VmaFlags::UFFD_MASK, c)))
+            .collect()
+    };
+    if regs.is_empty() { return; }
+    // One child context per DISTINCT parent context, whatever the VMA count.
+    let mut pairs: Vec<(Arc<dyn UffdContext>, Option<Arc<dyn UffdContext>>)> = Vec::new();
+    for (_, _, _, ctx) in &regs {
+        if pairs.iter().any(|(p, _)| Arc::ptr_eq(p, ctx)) { continue; }
+        let kid = ctx.fork_dup(Arc::downgrade(child));
+        pairs.push((Arc::clone(ctx), kid));
+    }
+    for (start, end, modes, ctx) in &regs {
+        let Some((_, Some(kid))) = pairs.iter().find(|(p, _)| Arc::ptr_eq(p, ctx)) else { continue };
+        child.set_uffd(*start, *end, Arc::clone(kid), *modes);
+    }
+    for (parent_ctx, kid) in &pairs {
+        if kid.is_some() { parent_ctx.change_complete(crate::uffd::UffdEvent::Fork); }
     }
 }
 

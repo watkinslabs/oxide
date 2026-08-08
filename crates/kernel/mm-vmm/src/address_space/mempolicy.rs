@@ -40,12 +40,24 @@ impl AddressSpace {
         match tree.find_containing(uva) { Some(v) => Ok(v.mempolicy), None => Err(()) }
     }
 
-    /// Whether the VMA covering `addr` permits reads. `lookup_node()` calls
-    /// `get_user_pages_fast(addr, 1, 0, &p)`, whose `check_vma_flags` refuses
-    /// a range without `VM_READ` with `-EFAULT`.
+    /// Whether a page pinned on this task's own behalf at `addr` may be read.
+    /// `check_vma_flags` refuses a range without `VM_READ`, and then refuses
+    /// one whose protection key denies this thread — a pin has no hardware
+    /// check of its own, so the key must be tested here or not at all.
+    ///
+    /// `allows` decodes the caller's live rights register; the register's bit
+    /// layout stays owned by the arch that defines it.
     /// # C: O(log N)
-    pub fn range_readable_at(&self, addr: u64) -> bool {
+    pub fn gup_read_permitted(&self, addr: u64, allows: impl FnOnce(u8, bool, bool) -> bool) -> bool {
         let Some(uva) = UserVirtAddr::new(addr) else { return false };
-        self.vmas.read().find_containing(uva).is_some_and(|v| v.prot.contains(crate::vma::VmaProt::READ))
+        let tree = self.vmas.read();
+        let Some(v) = tree.find_containing(uva) else { return false };
+        if !v.prot.contains(crate::vma::VmaProt::READ) { return false; }
+        // A secret-memory page has no kernel-visible address at all, so it can
+        // never be pinned for anyone.
+        if v.flags.contains(crate::vma::VmaFlags::SECRETMEM) { return false; }
+        // A pin is a data access issued for this mm, never an instruction
+        // fetch and never foreign.
+        super::pkeys::vma_access_permitted(&self.pkeys.arch(), v.pkey, false, false, false, allows)
     }
 }

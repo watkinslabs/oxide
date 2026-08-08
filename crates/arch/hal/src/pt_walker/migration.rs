@@ -19,12 +19,20 @@ unsafe fn leaf_slot<W: PtWalker>(root: u64, va: u64, hhdm: u64) -> Option<*mut u
     }
 }
 
-/// Atomically replace an exact present frame with a migration marker. # C: O(walk depth)
+/// Atomically replace an exact present frame with a migration marker. A page
+/// leaving its leaf takes its userfaultfd write-protect barrier with it, or the
+/// move would disarm a monitor that never asked for one. # C: O(walk depth)
 pub unsafe fn replace_present_4k_with_migration_if_pa_at_root<W: PtWalker>(root: u64, va: u64, pa: u64, entry: MigrationEntry, hhdm: u64) -> bool {
     // SAFETY: caller holds the target mm PTE lock and root remains live.
     let Some(slot) = (unsafe { leaf_slot::<W>(root, va, hhdm) }) else { return false; };
     // SAFETY: leaf_slot returned the protected L3 slot.
-    unsafe { let old = ptr::read_volatile(slot); if !W::is_valid(old) || old & W::PHYS_MASK != pa & W::PHYS_MASK { return false; } ptr::write_volatile(slot, W::pack_migration_entry(entry)); }
+    unsafe {
+        let old = ptr::read_volatile(slot);
+        if !W::is_valid(old) || old & W::PHYS_MASK != pa & W::PHYS_MASK { return false; }
+        let mut marker = W::pack_migration_entry(entry);
+        if W::leaf_is_uffd_wp(old) { marker = W::nonpresent_set_uffd_wp(marker); }
+        ptr::write_volatile(slot, marker);
+    }
     true
 }
 
@@ -33,7 +41,13 @@ pub unsafe fn replace_migration_4k_with_swap_at_root<W: PtWalker>(root: u64, va:
     // SAFETY: caller owns PTE serialization and marker lifetime.
     let Some(slot) = (unsafe { leaf_slot::<W>(root, va, hhdm) }) else { return false; };
     // SAFETY: leaf_slot returned the protected L3 slot.
-    unsafe { if W::unpack_migration_entry(ptr::read_volatile(slot)) != Some(expected) { return false; } ptr::write_volatile(slot, W::pack_swap_entry(entry)); }
+    unsafe {
+        let old = ptr::read_volatile(slot);
+        if W::unpack_migration_entry(old) != Some(expected) { return false; }
+        let mut swapped = W::pack_swap_entry(entry);
+        if W::nonpresent_is_uffd_wp(old) { swapped = W::nonpresent_set_uffd_wp(swapped); }
+        ptr::write_volatile(slot, swapped);
+    }
     true
 }
 
@@ -42,7 +56,13 @@ pub unsafe fn replace_migration_4k_with_present_at_root<W: PtWalker>(root: u64, 
     // SAFETY: caller owns PTE serialization and original frame lifetime.
     let Some(slot) = (unsafe { leaf_slot::<W>(root, va, hhdm) }) else { return false; };
     // SAFETY: leaf_slot returned the protected L3 slot.
-    unsafe { if W::unpack_migration_entry(ptr::read_volatile(slot)) != Some(expected) { return false; } ptr::write_volatile(slot, W::pack_4k_leaf(pa, flags)); W::flush_va(va); }
+    unsafe {
+        let old = ptr::read_volatile(slot);
+        if W::unpack_migration_entry(old) != Some(expected) { return false; }
+        let kept = if W::nonpresent_is_uffd_wp(old) { flags | crate::PageFlags::UFFD_WP } else { flags };
+        ptr::write_volatile(slot, W::pack_4k_leaf(pa, kept));
+        W::flush_va(va);
+    }
     true
 }
 

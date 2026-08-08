@@ -18,9 +18,22 @@ use super::uapi::{UFFD_EVENT_PAGEFAULT, UFFD_PAGEFAULT_FLAG_MINOR,
                   UFFD_PAGEFAULT_FLAG_WP, UFFD_PAGEFAULT_FLAG_WRITE};
 use super::UfData;
 
-/// `struct uffd_msg` — 32 bytes per event. Field ORDER is ABI: the pagefault
-/// arm places `flags` at byte 8 and `address` at byte 16 (a real monitor reads
-/// the address at offset 16), with the thread id at byte 24.
+/// `struct uffd_msg` — 32 bytes per message. Field ORDER is ABI: a one-byte
+/// event code, seven bytes of padding, then a THREE-SLOT union every message
+/// type reuses. The slots are named by position, not by any one type's meaning,
+/// because they hold different things per event:
+///
+/// ```text
+/// PAGEFAULT  a0 = flags        a1 = address   a2 = thread id
+/// FORK       a0 = descriptor   —              —
+/// REMAP      a0 = from         a1 = to        a2 = length
+/// REMOVE     a0 = start        a1 = end       —
+/// UNMAP      a0 = start        a1 = end       —
+/// ```
+///
+/// A monitor reads the fault address at byte 16 and the remap source at byte 8;
+/// naming the slots after the pagefault arm is what makes that easy to get
+/// wrong when a second event type is added.
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct UffdMsg {
@@ -28,9 +41,22 @@ pub struct UffdMsg {
     pub _r0:    u8,
     pub _r1:    u16,
     pub _r2:    u32,
-    pub flags:  u64,
-    pub addr:   u64,
-    pub ptid:   u64,
+    pub a0:     u64,
+    pub a1:     u64,
+    pub a2:     u64,
+}
+
+impl UffdMsg {
+    /// The three-slot union, zeroed, under `event`. # C: O(1)
+    pub fn new(event: u8, a0: u64, a1: u64, a2: u64) -> Self {
+        UffdMsg { event, _r0: 0, _r1: 0, _r2: 0, a0, a1, a2 }
+    }
+
+    /// Fault address — slot 1 for a PAGEFAULT message. # C: O(1)
+    pub fn addr(&self) -> u64 { self.a1 }
+
+    /// Fault flags — slot 0 for a PAGEFAULT message. # C: O(1)
+    pub fn flags(&self) -> u64 { self.a0 }
 }
 
 /// `i_fop` for a userfaultfd inode. # C: O(1)
@@ -50,9 +76,7 @@ impl FileOps for UffdFileOps {
         }
         if buf.len() < core::mem::size_of::<UffdMsg>() { return Err(vfs::VfsError::Einval); }
         loop {
-            if let Some(m) = d.state.lock().events.pop_front() {
-                return Ok(copy_msg_out(&m, buf));
-            }
+            if let Some(r) = take_next(d, buf) { return r; }
             #[cfg(target_os = "oxide-kernel")]
             {
                 // A pending signal ends the wait so the read restarts rather
@@ -78,10 +102,7 @@ impl FileOps for UffdFileOps {
             return Err(vfs::VfsError::Einval);
         }
         if buf.len() < core::mem::size_of::<UffdMsg>() { return Err(vfs::VfsError::Einval); }
-        match d.state.lock().events.pop_front() {
-            Some(m) => Ok(copy_msg_out(&m, buf)),
-            None    => Err(vfs::VfsError::Eagain),
-        }
+        take_next(d, buf).unwrap_or(Err(vfs::VfsError::Eagain))
     }
 
     /// This description has a poll method. # C: O(1)
@@ -93,10 +114,84 @@ impl FileOps for UffdFileOps {
     fn poll(&self, inode: &Inode) -> u32 {
         let Some(d) = inode.private::<UfData>() else { return 0 };
         if !policy::is_initialized(d.features.load(Ordering::Acquire)) { return vfs::POLL_ERR; }
-        if !d.state.lock().events.is_empty() { vfs::POLL_IN } else { 0 }
+        let g = d.state.lock();
+        let ready = policy::next_message(!g.faults.is_empty(), !g.events.is_empty());
+        if ready != policy::NextMessage::None { vfs::POLL_IN } else { 0 }
     }
 
     fn write(&self, _inode: &Inode, _o: u64, _b: &[u8]) -> KResult<usize> { Err(vfs::VfsError::Einval) }
+}
+
+/// Pop whatever a reader should be handed next, or `None` when both queues are
+/// empty. Faults first, always (`policy::next_message`).
+///
+/// A fork announcement can only be completed in the READING process, because
+/// the descriptor it carries has to land in that process's table. If that
+/// fails the announcement goes back to the FRONT of the queue and its
+/// generator stays blocked — losing it would strand the forking thread
+/// forever, and losing the child context would strand the child's faults.
+/// # C: O(1)
+fn take_next(d: &UfData, buf: &mut [u8]) -> Option<KResult<usize>> {
+    enum Picked { Fault(UffdMsg), Event(super::PendingEvent) }
+    let picked = {
+        let mut g = d.state.lock();
+        match policy::next_message(!g.faults.is_empty(), !g.events.is_empty()) {
+            policy::NextMessage::Fault =>
+                Picked::Fault(g.faults.pop_front().expect("a fault was reported queued")),
+            policy::NextMessage::Event =>
+                Picked::Event(g.events.pop_front().expect("an event was reported queued")),
+            policy::NextMessage::None => return None,
+        }
+    };
+    match picked {
+        Picked::Fault(m) => Some(Ok(copy_msg_out(&m, buf))),
+        Picked::Event(ev) => {
+            let a0 = match ev.fork_child.as_ref() {
+                None => ev.a0,
+                Some(child) => match install_fork_fd(child.clone()) {
+                    Ok(fd) => fd,
+                    Err(e) => { d.state.lock().events.push_front(ev); return Some(Err(e)); }
+                },
+            };
+            let n = copy_msg_out(&UffdMsg::new(ev.event, a0, ev.a1, ev.a2), buf);
+            d.finish_event(&ev);
+            Some(Ok(n))
+        }
+    }
+}
+
+/// Give the READING process a descriptor for a fork child's context.
+///
+/// The descriptor is created here rather than at fork time on purpose: the fork
+/// happens in the process being monitored, and a descriptor minted there would
+/// land in the wrong table — the monitor would never get it, and the monitored
+/// process would hold a fd it has no use for.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+fn install_fork_fd(child: alloc::sync::Arc<UfData>) -> KResult<u64> {
+    use vfs::{File, OpenFlags};
+    let Some(cur) = sched::current() else { return Err(vfs::VfsError::Esrch) };
+    // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
+    let Some(fdt) = (unsafe { cur.fd_table_ref() }) else { return Err(vfs::VfsError::Ebadf) };
+    let fdt = fdt.clone();
+    let flags = child.flags.load(Ordering::Acquire);
+    let inode = super::inode_for(child);
+    let dentry = vfs::dcache::d_alloc_pseudo("[userfaultfd]", inode.clone(),
+                                             &crate::anon_dname::ANON_INODE_OPS);
+    let mut fl = OpenFlags::O_RDWR;
+    if flags & uapi::O_NONBLOCK != 0 { fl |= OpenFlags::O_NONBLOCK; }
+    let fd = fdt.alloc_limit(File::new(inode, dentry, fl), cur.nofile_soft())?;
+    if flags & uapi::O_CLOEXEC != 0 { let _ = fdt.set_cloexec(fd, true); }
+    Ok(fd as u64)
+}
+
+/// Hosted counterpart: there is no process to receive the descriptor, so the
+/// announcement is left queued and its generator left blocked — the same arm
+/// the live path takes when the reader's table is full.
+/// # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+fn install_fork_fd(_child: alloc::sync::Arc<UfData>) -> KResult<u64> {
+    Err(vfs::VfsError::Esrch)
 }
 
 /// Serialise one event into the caller's buffer. # C: O(1)
@@ -143,19 +238,15 @@ impl vmm::UffdContext for UfData {
         } else { 0 };
         #[cfg(not(target_os = "oxide-kernel"))]
         let ptid = 0u64;
-        let msg = UffdMsg {
-            event: UFFD_EVENT_PAGEFAULT,
-            _r0: 0, _r1: 0, _r2: 0,
-            addr,
-            flags: kind_flag(kind) | if write { UFFD_PAGEFAULT_FLAG_WRITE } else { 0 },
-            ptid,
-        };
+        let msg = UffdMsg::new(UFFD_EVENT_PAGEFAULT,
+                               kind_flag(kind) | if write { UFFD_PAGEFAULT_FLAG_WRITE } else { 0 },
+                               addr, ptid);
         let _ = feats;
         // Snapshot the wake generation BEFORE publishing: any resolve that
         // races between here and the park below advances it, so the loop
         // returns instead of sleeping through the wake.
         let start_gen = self.wake_gen.load(Ordering::Acquire);
-        self.state.lock().events.push_back(msg);
+        self.state.lock().faults.push_back(msg);
         self.read_waiters.wake_all();
         self.poll.notify();
         #[cfg(target_os = "oxide-kernel")]
@@ -172,5 +263,32 @@ impl vmm::UffdContext for UfData {
         // Silence unused-var warning on hosted (no loop reads start_gen).
         let _ = start_gen;
         true
+    }
+
+    /// # C: O(1)
+    fn wp_async(&self) -> bool { policy::wp_async(self.features.load(Ordering::Acquire)) }
+
+    /// # C: O(1)
+    fn wp_unpopulated(&self) -> bool {
+        policy::wp_unpopulated(self.features.load(Ordering::Acquire))
+    }
+
+    /// # C: O(1)
+    fn wants_event(&self, kind: vmm::UffdEventKind) -> bool { self.wants(kind) }
+
+    /// # C: O(1)
+    fn change_begin(&self) { self.charge_change(); }
+
+    /// # C: O(1) enqueue + block
+    fn change_complete(&self, ev: vmm::UffdEvent) { self.announce(ev); }
+
+    /// # C: O(1)
+    fn change_abort(&self) { self.release_change(); }
+
+    /// # C: O(1)
+    fn fork_dup(&self, child_mm: alloc::sync::Weak<vmm::AddressSpace>)
+        -> Option<alloc::sync::Arc<dyn vmm::UffdContext>> {
+        if !self.wants(vmm::UffdEventKind::Fork) { return None; }
+        Some(self.dup_for_fork(child_mm))
     }
 }

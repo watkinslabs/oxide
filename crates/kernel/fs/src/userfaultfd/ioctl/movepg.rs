@@ -19,6 +19,10 @@ use super::structs::{ctx_is, err, read_req, write_reply, UffdioMove};
 /// # C: O(N_vmas) + O(len/PAGE)
 pub fn ioc_move(ufd: &Arc<UfData>, arg: u64) -> i64 {
     if let Err(rv) = validate_user_buf_writable(arg, UFFDIO_MOVE_SIZE, 1) { return rv; }
+    if let Err(e) = policy::check_mmap_changing(ufd.changes_in_flight()) {
+        write_reply(arg + UFFDIO_MOVE_MOVE_OFF, err(e));
+        return err(e);
+    }
     // SAFETY: arg validated writable for the full uffdio_move object.
     let m: UffdioMove = unsafe { read_req(arg) };
     let Some(mm) = ufd.mm() else { return err(Errno::Esrch) };

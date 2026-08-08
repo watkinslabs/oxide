@@ -249,9 +249,9 @@ fn every_fault_kind_is_delivered_through_the_same_queue() {
         (UffdFaultKind::Minor, false, UFFD_PAGEFAULT_FLAG_MINOR),
     ] {
         assert!(d.fault(REGION, kind, write, true));
-        let m = d.state.lock().events.pop_front().expect("event");
+        let m = d.state.lock().faults.pop_front().expect("fault");
         assert_eq!(m.event, UFFD_EVENT_PAGEFAULT);
-        assert_eq!(m.addr, REGION);
-        assert_eq!(m.flags, want, "{kind:?} must carry its own flags");
+        assert_eq!(m.addr(), REGION);
+        assert_eq!(m.flags(), want, "{kind:?} must carry its own flags");
     }
 }

@@ -26,7 +26,7 @@ pub fn sys_pkey_alloc(args: &SyscallArgs) -> i64 {
     // SAFETY: mm slot single-mutator per `13§5`; the Arc clone keeps this mm alive across the pkey-map update below.
     let mm = match unsafe { cur.mm_ref() } { Some(m) => m.clone(), None => return errno(Errno::Einval) };
     let abi = pkey::with_mm(pkey::ARCH, mm.pkeys().arch());
-    let r = mm.pkeys().with_map(|map| pkey::pkey_alloc(&abi, map, args.a0, args.a1));
+    let r = mm.pkeys().with_state(|st| pkey::pkey_alloc(&abi, st, args.a0, args.a1));
     let key = match r { Ok(key) => key, Err(e) => return errno(e) };
     let rights = pkey_access_rights(key as u16, args.a1);
     sched::pkey_rights::write_live(rights);
