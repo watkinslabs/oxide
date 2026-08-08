@@ -121,3 +121,37 @@ fn rfc4884_metadata_has_its_own_ipv6_switch() {
     error.publish(entry, false, true);
     assert_eq!(error.take_extended().map(|queued| queued.data), Some(0x0008));
 }
+
+// `IPV6_RECVPATHMTU` is a SECOND way to learn the rejecting MTU, and it is
+// not the error queue: the announcement is stashed only when the socket asked
+// for it, only for an IPv6 destination, and only for a size failure. It never
+// touches the queue, so a socket with both switched on is told the same number
+// twice rather than one of them being lost.
+#[test]
+fn the_path_mtu_announcement_is_stashed_only_when_the_socket_asked_for_it() {
+    use crate::socket_error::report_send_failure_pmtu as report;
+    use crate::NetError;
+    let v6 = IpAddr::V6(Ipv6Addr::LOOPBACK);
+    let v4 = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 9));
+
+    let error = SocketError::new();
+    assert_eq!(report(&error, 0, v6, 53, None, NetError::Emsgsize, false), NetError::Emsgsize);
+    assert!(!error.pathmtu.pending(), "a socket that did not ask is charged nothing");
+
+    let error = SocketError::new();
+    assert_eq!(report(&error, 0, v4, 53, None, NetError::Emsgsize, true), NetError::Emsgsize);
+    assert!(!error.pathmtu.pending(), "the announcement is an IPv6 mechanism");
+
+    let error = SocketError::new();
+    assert_eq!(report(&error, 0, v6, 53, None, NetError::Enetunreach, true),
+        NetError::Enetunreach);
+    assert!(!error.pathmtu.pending(), "only a size failure names an MTU");
+
+    let error = SocketError::new();
+    error.set_recverr6(true);
+    assert_eq!(report(&error, 0, v6, 53, None, NetError::Emsgsize, true), NetError::Emsgsize);
+    assert!(error.pathmtu.pending());
+    assert_eq!(error.pathmtu.take().map(|r| r.dst), Some(Ipv6Addr::LOOPBACK));
+    assert_eq!(error.take_extended().map(|entry| entry.origin), Some(SO_EE_ORIGIN_LOCAL),
+        "reading the announcement leaves the queue record alone");
+}

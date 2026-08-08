@@ -41,9 +41,14 @@ pub(crate) struct Control {
 }
 
 
-/// Linux receive paths generally ignore `put_cmsg`'s EFAULT after payload
-/// delivery; the failed entry advances no control cursor. # C: O(1)
-fn recv_copy_result(result: Result<usize, i64>) -> usize { result.unwrap_or(0) }
+/// One control-stream copyout: how far the cursor advanced, and whether an
+/// entry faulted. The two are independent — the entries that landed before a
+/// faulting one keep their space.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ControlCopy {
+    pub copied: usize,
+    pub faulted: bool,
+}
 
 impl Control {
     /// Create one receive-control cursor with the imported user capacity. # C: O(1)
@@ -61,15 +66,21 @@ impl Control {
         if let Some(inq) = inq { self.push(inq.level, inq.ty, &inq.data()); }
     }
 
-    /// Emit queued cmsgs through one Linux-style advancing cursor. # C: O(entries + data + faults)
+    /// Emit queued cmsgs through one Linux-style advancing cursor. The option
+    /// ABI wants a fault to be the answer; the receive ABI does not, and asks
+    /// [`copy_to_recv`](Self::copy_to_recv) instead.
+    /// # C: O(entries + data + faults)
     pub fn copy_to(&mut self, user: &RecvUser) -> Result<usize, i64> {
-        self.copy_to_at(user, 0)
+        let copy = self.copy_to_at(user, 0);
+        if copy.faulted { return Err(errno(syscall::errno::Errno::Efault)); }
+        Ok(copy.copied)
     }
 
-    /// Emit receive ancillary data without undoing an already delivered payload.
-    /// # C: O(entries + data + faults)
+    /// Emit receive ancillary data, applying the receive fault rule owned by
+    /// [`crate::recv_txn`]. # C: O(entries + data + faults)
     pub fn copy_to_recv(&mut self, user: &RecvUser) -> usize {
-        recv_copy_result(self.copy_to(user))
+        let copy = self.copy_to_at(user, 0);
+        crate::recv_txn::control_len(copy)
     }
 
     /// Emit the control stream at the option ABI's raw user pointer. # C: O(entries + data + faults)
@@ -78,18 +89,31 @@ impl Control {
             control, controllen: self.cap, iov: Vec::new(), capacity: 0, layout: MsgLayout::Native })
     }
 
-    fn copy_to_at(&mut self, user: &RecvUser, at: usize) -> Result<usize, i64> {
+    /// One entry at a time, exactly as Linux's `put_cmsg` cursor runs: an
+    /// entry that faults advances nothing and ends the stream, and every entry
+    /// that already landed keeps the space it took. # C: O(entries + data + faults)
+    fn copy_to_at(&mut self, user: &RecvUser, at: usize) -> ControlCopy {
+        self.copy_stream(user.layout, user.control, at,
+            |dst, bytes| uaccess::copy_to_user(dst, bytes).is_ok())
+    }
+
+    /// The cursor itself, with the byte move left to the caller so the
+    /// composition is checkable against a scripted fault. # C: O(entries + data)
+    fn copy_stream<W>(&mut self, layout: MsgLayout, base: u64, at: usize, mut write: W)
+        -> ControlCopy
+    where W: FnMut(u64, &[u8]) -> bool
+    {
         let mut copied = 0usize;
         for (level, ty, data) in &self.entries {
             let Some((entry, advance, truncated)) =
-                encode_entry(user.layout, *level, *ty, data, self.cap.saturating_sub(copied))
+                encode_entry(layout, *level, *ty, data, self.cap.saturating_sub(copied))
             else { self.flags |= MSG_CTRUNC as u32; continue; };
             if truncated { self.flags |= MSG_CTRUNC as u32; }
-            let Some(dst) = user.control.checked_add(at.saturating_add(copied) as u64) else { continue; };
-            uaccess::copy_to_user(dst, &entry).map_err(errno)?;
+            let Some(dst) = base.checked_add(at.saturating_add(copied) as u64) else { continue; };
+            if !write(dst, &entry) { return ControlCopy { copied, faulted: true }; }
             copied += advance;
         }
-        Ok(copied)
+        ControlCopy { copied, faulted: false }
     }
 
     /// The same stream as one buffer, for the option read that publishes a
@@ -196,7 +220,7 @@ pub(crate) fn deliver(user: &RecvUser, files: Vec<Arc<File>>, scm: ScmReceive,
             let fd = prepared.as_ref().map_or(-1, pidfd::Prepared::fd);
             let mut pidfd = Control::new(cap - off);
             pidfd.push(SOL_SOCKET, SCM_PIDFD, &fd.to_ne_bytes());
-            let copied = recv_copy_result(pidfd.copy_to_at(user, off));
+            let copied = crate::recv_txn::control_len(pidfd.copy_to_at(user, off));
             if copied != 0 {
                 if let Some(prepared) = prepared { prepared.commit(); }
                 off += copied;
@@ -349,9 +373,59 @@ mod tests {
         }
     }
 
+    /// Three entries, with the byte move scripted to fail on the `fail_at`th.
+    /// Returns the cursor answer and which entries the cursor tried to write.
+    fn scripted(fail_at: usize, cap: usize) -> (Control, ControlCopy, Vec<usize>) {
+        let mut control = Control::new(cap);
+        control.push(SOL_SOCKET, SCM_CREDENTIALS, &[1u8; 4]);
+        control.push(SOL_SOCKET, SCM_SECURITY, &[2u8; 4]);
+        control.push(SOL_SOCKET, SCM_PIDFD, &[3u8; 4]);
+        let mut attempts = Vec::new();
+        let copy = control.copy_stream(MsgLayout::Native, 0x1000, 0, |_, _| {
+            attempts.push(attempts.len());
+            attempts.len() - 1 != fail_at
+        });
+        (control, copy, attempts)
+    }
+
+    // A control entry that faults ends the stream and advances nothing, and
+    // every entry that already landed keeps the space it took. Losing that
+    // prefix would report a `msg_controllen` of zero for a buffer that holds
+    // one complete control message.
     #[test]
-    fn a_put_cmsg_fault_does_not_undo_an_already_delivered_payload() {
-        assert_eq!(recv_copy_result(Err(errno(syscall::errno::Errno::Efault))), 0);
-        assert_eq!(recv_copy_result(Ok(32)), 32);
+    fn a_faulting_control_entry_keeps_the_prefix_that_landed() {
+        let one = aligned(CMSG_HDR + 4);
+        for (fail_at, expect) in [(0usize, 0usize), (1, one), (2, one * 2)] {
+            let (_, copy, attempts) = scripted(fail_at, one * 3);
+            assert_eq!(copy, ControlCopy { copied: expect, faulted: true }, "fail_at={fail_at}");
+            assert_eq!(attempts.len(), fail_at + 1, "the stream stops at the fault");
+        }
+    }
+
+    // The receive ABI never fails for a control fault; the option ABI, which
+    // publishes a control stream as its whole answer, always does.
+    #[test]
+    fn the_two_control_abis_answer_a_fault_differently() {
+        let user = RecvUser { msgp: 0, name: 0, namelen: 0, name_len_ptr: 0, control: 0,
+            controllen: 64, iov: Vec::new(), capacity: 0, layout: MsgLayout::Native };
+        let mut control = Control::new(64);
+        control.push(SOL_SOCKET, SCM_CREDENTIALS, &[0u8; 4]);
+        assert_eq!(control.copy_to(&user), Err(errno(syscall::errno::Errno::Efault)));
+        let mut control = Control::new(64);
+        control.push(SOL_SOCKET, SCM_CREDENTIALS, &[0u8; 4]);
+        assert_eq!(control.copy_to_recv(&user), 0);
+    }
+
+    // A truncated entry raises `MSG_CTRUNC` before its bytes are attempted, so
+    // an entry that is both cut short and unwritable still reports the flag —
+    // the receive survives the fault and publishes `msg_flags`.
+    #[test]
+    fn truncation_is_reported_even_when_the_same_entry_faults() {
+        let mut control = Control::new(CMSG_HDR + 2);
+        control.push(SOL_SOCKET, SCM_CREDENTIALS, &[0u8; 8]);
+        let copy = control.copy_stream(MsgLayout::Native, 0x1000, 0, |_, _| false);
+        assert!(copy.faulted);
+        assert_eq!(copy.copied, 0);
+        assert_ne!(control.flags & MSG_CTRUNC as u32, 0);
     }
 }

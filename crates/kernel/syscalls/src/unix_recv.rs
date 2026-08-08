@@ -84,8 +84,16 @@ fn finish_inq(sock: &Arc<InetSocket>, user: &RecvUser, files: alloc::vec::Vec<Ar
         want_pidfd: passpidfd,
     };
     let delivered = recv_control::deliver(user, files, scm, inq, &[], flags)?;
-    user.copy_name(name)?;
-    user.finish(delivered.len, out_flags | delivered.flags)
+    match crate::recv_txn::publish_settled(user, delivered.len, name,
+        out_flags | delivered.flags, 0)
+    { 0 => Ok(()), error => Err(error) }
+}
+
+/// A receive that carries nothing — end of stream, a shutdown wakeup, a
+/// zero-capacity read — still publishes an empty answer through the one
+/// transaction owner. # C: O(faults)
+fn publish_empty(user: &RecvUser, flags: u64) -> i64 {
+    crate::recv_txn::publish_settled(user, 0, &[], recv_control::output_flags(flags), 0)
 }
 
 /// Bytes still queued for the reader, published as `SCM_INQ` when the socket
@@ -153,11 +161,11 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
             loop {
                 let offset = if peek { total } else { 0 };
                 match pair.read_stream_with_offset(end, user.capacity - total, peek, offset, passcred, committed.as_ref(), inline, |data, _, _| {
-                    let copied = user.copy_payload_at(total, data)?;
+                    let copied = user.copy_payload_fragment(total, data)?;
                     Ok::<_, i64>((copied, copied))
                 }) {
                     Err(e) => {
-                        if total == 0 { return e; }
+                        if crate::recv_txn::stream_result(total, e).is_err() { return e; }
                         if let Err(e) = finish_inq(sock, user, all_files, last_cred.clone(), inq(sock), flags, 0, sa.as_bytes()) { return e; }
                         sock.note_receive_now();
                         return total as i64;
@@ -176,7 +184,7 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
                     }
                     Ok(None) => {
                         if user.capacity == 0 {
-                            if let Err(e) = user.copy_name(&[]).and_then(|_| user.finish(0, recv_control::output_flags(flags))) { return e; }
+                            { let published = publish_empty(user, flags); if published < 0 { return published; } }
                             return 0;
                         }
                         if total == 0 {
@@ -195,7 +203,7 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
                         }
                         if pair.is_eof(end) {
                             if total == 0 {
-                                if let Err(e) = user.copy_name(&[]).and_then(|_| user.finish(0, recv_control::output_flags(flags))) { return e; }
+                                { let published = publish_empty(user, flags); if published < 0 { return published; } }
                                 return 0;
                             }
                             if let Err(e) = finish_inq(sock, user, all_files, last_cred.clone(), inq(sock), flags, 0, sa.as_bytes()) { return e; }
@@ -241,7 +249,7 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
                     if pending != 0 { return -(pending as i64); }
                     if pair.take_reset(end) { return err(Errno::Econnreset); }
                     if pair.is_eof(end) {
-                        if let Err(e) = user.copy_name(&[]).and_then(|_| user.finish(0, recv_control::output_flags(flags))) { return e; }
+                        { let published = publish_empty(user, flags); if published < 0 { return published; } }
                         return 0;
                     }
                 }
@@ -249,8 +257,7 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
             match wait_nonblock(sock, nonblock, flags, deadline, shutdown_generation) {
                 Err(e) => return e,
                 Ok(WaitOutcome::DatagramShutdown) => {
-                    if let Err(e) = user.copy_name(&[]).and_then(|_| user.finish(0,
-                        recv_control::output_flags(flags))) { return e; }
+                    { let published = publish_empty(user, flags); if published < 0 { return published; } }
                     return 0;
                 }
                 Ok(WaitOutcome::Retry) => {}
@@ -280,8 +287,7 @@ pub(crate) fn recvmsg(sock: &Arc<InetSocket>, nonblock: bool, user: &RecvUser, f
             match wait_nonblock(sock, nonblock, flags, deadline, shutdown_generation) {
                 Err(e) => return e,
                 Ok(WaitOutcome::DatagramShutdown) => {
-                    if let Err(e) = user.copy_name(&[]).and_then(|_| user.finish(0,
-                        recv_control::output_flags(flags))) { return e; }
+                    { let published = publish_empty(user, flags); if published < 0 { return published; } }
                     return 0;
                 }
                 Ok(WaitOutcome::Retry) => {}

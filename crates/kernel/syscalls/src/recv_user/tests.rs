@@ -230,3 +230,25 @@ fn the_compat_marker_is_stripped_from_published_msg_flags() {
             net::uapi::MSG_TRUNC as u32, "layout={layout:?}");
     }
 }
+
+// A stream transport consumes queued fragments whole. A fragment whose
+// destination faults partway must report the fault, not the prefix: reporting
+// the prefix would retire bytes the transport still holds, and the caller
+// would be told it received data it cannot read. A fragment merely larger
+// than the caller's remaining buffer is not a fault and reports what fit.
+#[test]
+fn a_stream_fragment_is_all_or_nothing_only_when_the_destination_faults() {
+    let mut room = [0u8; 4];
+    let dest = RecvUser { msgp: 0, name: 0, namelen: 0, name_len_ptr: 0, control: 0,
+        controllen: 0, iov: vec![IoVec { base: room.as_mut_ptr() as u64, len: 4 }],
+        capacity: 4, layout: MsgLayout::Native };
+    assert_eq!(dest.copy_payload_fragment(0, b"abcdefgh"), Ok(4), "buffer ran out, no fault");
+
+    let faulting = RecvUser { msgp: 0, name: 0, namelen: 0, name_len_ptr: 0, control: 0,
+        controllen: 0, iov: vec![IoVec { base: room.as_mut_ptr() as u64, len: 4 },
+            IoVec { base: u64::MAX - 63, len: 4 }], capacity: 8, layout: MsgLayout::Native };
+    assert_eq!(faulting.copy_payload_fragment(0, b"abcdefgh"), Err(errno(Errno::Efault)));
+    // The byte-granular form is what the receive loops used to call, and it is
+    // the reason a half-placed fragment was reported as delivered.
+    assert_eq!(faulting.copy_payload_at(0, b"abcdefgh"), Ok(4));
+}
