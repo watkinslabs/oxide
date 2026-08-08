@@ -64,13 +64,26 @@ struct UserNsState {
     gid_map: Option<Vec<IdMapExtent>>,
     projid_map: Option<Vec<IdMapExtent>>,
     setgroups: SetgroupsPolicy,
+    /// Linux `user_namespace::owner` — the effective uid of the task that
+    /// created this namespace, recorded once at creation. It is what the
+    /// capability check consults to decide that the creator holds every
+    /// capability INSIDE the namespace it made, without holding any outside it.
+    ///
+    /// `None` means no creation was recorded. That grants NOTHING: defaulting
+    /// an unrecorded namespace to uid 0 would hand every root-euid task every
+    /// capability in every child namespace it did not create.
+    owner_euid: Option<u32>,
 }
 
 impl Default for UserNsState {
     fn default() -> Self {
-        Self { uid_map: None, gid_map: None, projid_map: None, setgroups: SetgroupsPolicy::Allow }
+        Self { uid_map: None, gid_map: None, projid_map: None,
+               setgroups: SetgroupsPolicy::Allow, owner_euid: None }
     }
 }
+
+/// The initial user namespace is created by the boot path and owned by root.
+const INITIAL_OWNER_EUID: u32 = 0;
 
 static STATE: sync::Spinlock<BTreeMap<NamespaceId, UserNsState>, sync::TaskList> =
     sync::Spinlock::new(BTreeMap::new());
@@ -145,6 +158,28 @@ pub(crate) fn with_map<H: core::ops::Deref<Target = Namespace>, R>(owner: &H, ki
     let states = STATE.lock();
     let map = states.get(&owner.id()).and_then(|s| map_field(s, kind).as_deref());
     Ok(f(map.unwrap_or(&[])))
+}
+
+/// Linux `create_user_ns`'s `ns->owner = new->euid`: record the creating
+/// task's effective uid on a freshly allocated user namespace. Called once, at
+/// creation, before the namespace is reachable by anyone else.
+/// # C: O(log N)
+pub fn register_owner(owner: &NamespaceRef, euid: u32) -> Result<(), UserNsError> {
+    let id = owner_id(owner)?;
+    STATE.lock().entry(id).or_default().owner_euid = Some(euid);
+    Ok(())
+}
+
+/// Linux `user_namespace::owner`, or `None` when no creation was recorded for
+/// this namespace. The initial namespace is created by the boot path and is
+/// owned by root.
+/// # C: O(log N)
+pub fn owner_euid<H: core::ops::Deref<Target = Namespace>>(owner: &H)
+    -> Result<Option<u32>, UserNsError>
+{
+    owner_id(owner)?;
+    if owner.is_initial() { return Ok(Some(INITIAL_OWNER_EUID)); }
+    Ok(STATE.lock().get(&owner.id()).and_then(|s| s.owner_euid))
 }
 
 /// Snapshot the current `setgroups` policy. The initial user namespace is

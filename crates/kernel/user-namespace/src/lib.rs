@@ -21,8 +21,8 @@ mod resolve;
 mod translate;
 mod uapi;
 
-pub use engine::{setgroups_policy, snapshot_map, write_map, write_setgroups, IdMapKind,
-    SetgroupsPolicy, UserNsError};
+pub use engine::{owner_euid, register_owner, setgroups_policy, snapshot_map, write_map,
+    write_setgroups, IdMapKind, SetgroupsPolicy, UserNsError};
 pub use extent::{validate_extents, ExtentError, IdMapExtent};
 pub use resolve::{is_mapped, to_host as resolve_to_host, to_ns as resolve_to_ns};
 pub use translate::{has_mapping, to_host, to_host_checked, to_ns, to_ns_checked, OverflowId};

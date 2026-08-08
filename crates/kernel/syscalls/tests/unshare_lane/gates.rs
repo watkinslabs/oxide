@@ -40,6 +40,57 @@ fn sys_unshare_newuser_alone_needs_no_cap_sys_admin() {
         &current.namespace_snapshot().unwrap().user));
 }
 
+/// The rootless-container primitive: an unprivileged task pairing
+/// `CLONE_NEWUSER` with another namespace flag is granted CAP_SYS_ADMIN by
+/// having CREATED the user namespace that will own the rest of the set.
+///
+/// This fails closed when the capability test is run against the caller's OWN
+/// user namespace instead of the one about to be created — the whole point is
+/// that the caller holds nothing where it is now.
+#[test]
+fn rootless_unshare_of_a_user_namespace_carries_the_rest_of_the_set() {
+    let _guard = guard();
+    let current = install_current(918);
+    let before = current.namespace_snapshot().unwrap();
+    current.creds.cap_effective.store(0, Ordering::Release);
+    current.creds.euid.store(1000, Ordering::Release);
+
+    assert_eq!(s272_unshare::sys_unshare(&args(CLONE_NEWUSER | CLONE_NEWNS)), 0,
+        "the creator of the new user namespace is privileged inside it");
+    let after = current.namespace_snapshot().unwrap();
+    assert!(!NamespaceRef::ptr_eq(&before.user, &after.user));
+    assert!(!alloc::sync::Arc::ptr_eq(&before.mount, &after.mount),
+        "the mount namespace the capability gated must actually be new");
+
+    // Linux `set_cred_user_ns`: init's capabilities, scoped to the new
+    // namespace. Without them the very next in-namespace operation is EPERM.
+    assert_eq!(current.creds.cap_effective.load(Ordering::Acquire),
+        sched::task::Creds::CAP_FULL);
+    assert_eq!(current.creds.cap_bounding.load(Ordering::Acquire),
+        sched::task::Creds::CAP_FULL);
+    assert_eq!(current.creds.cap_inheritable.load(Ordering::Acquire), 0);
+    assert_eq!(current.creds.cap_ambient.load(Ordering::Acquire), 0,
+        "an ambient set carried in from outside would survive an execve");
+}
+
+/// The grant is not "CLONE_NEWUSER disables the gate": it comes from OWNING
+/// the new namespace, so a namespace flag WITHOUT CLONE_NEWUSER is still
+/// refused, and the caller keeps the capabilities it had.
+#[test]
+fn a_namespace_flag_without_newuser_is_still_refused() {
+    let _guard = guard();
+    let current = install_current(919);
+    let before = current.namespace_snapshot().unwrap();
+    current.creds.cap_effective.store(0, Ordering::Release);
+    current.creds.euid.store(1000, Ordering::Release);
+
+    assert_eq!(s272_unshare::sys_unshare(&args(CLONE_NEWNS)),
+        -(Errno::Eperm.as_i32() as i64));
+    assert_same_set(&before, &current.namespace_snapshot().unwrap());
+    assert_eq!(current.creds.cap_effective.load(Ordering::Acquire), 0,
+        "a refused unshare grants nothing");
+}
+
 /// The unprivileged resource unshares are not namespace operations and carry
 /// no capability requirement.
 #[test]
