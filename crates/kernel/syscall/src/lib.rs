@@ -45,7 +45,7 @@ pub mod wait;
 
 pub use args::SyscallArgs;
 pub use errno::{Errno, KResult};
-pub use userptr::{scan_user_cstr, UserPtr, UserSlice};
+pub use userptr::{UserPtr, UserSlice};
 
 /// Subsystem-level error per `38`. Kept for the existing skeleton
 /// `init` shim; the canonical syscall-error type is `Errno` above.

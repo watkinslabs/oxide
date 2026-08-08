@@ -143,8 +143,9 @@ const PATH_MAX: u64 = 4096;
 /// Read a NUL-terminated path (up to `PATH_MAX` bytes incl. NUL) from a
 /// userspace pointer into an owned Vec. Empty Vec ↔ NULL/empty user
 /// pointer. Errors come back negated for the caller to forward:
-///   * `EFAULT` — pointer at/above `USER_VA_END`, incl. a path that runs
-///     into the non-canonical/kernel half before terminating.
+///   * `EFAULT` — pointer at/above `USER_VA_END`, a path that runs into the
+///     non-canonical/kernel half before terminating, or one that runs into a
+///     page the caller has not mapped.
 ///   * `ENAMETOOLONG` — no NUL within `PATH_MAX` bytes.
 /// Previously capped at 64 bytes, silently truncating any longer path
 /// (e.g. `/usr/lib/systemd/user-environment-generators/30-systemd-\
@@ -155,12 +156,10 @@ const PATH_MAX: u64 = 4096;
 /// # C: O(PATH_MAX)
 pub(crate) fn read_user_exec_path(path_ptr: u64) -> Result<alloc::vec::Vec<u8>, i64> {
     if path_ptr == 0 { return Ok(alloc::vec::Vec::new()); }
-    // Length/bounds policy lives in `syscall::scan_user_cstr` (pure,
-    // hosted-tested). We supply the per-byte user read.
-    syscall::scan_user_cstr(path_ptr, PATH_MAX, |va|
-        // SAFETY: `va` proven < USER_VA_END by scan_user_cstr each iteration; CPL=0 / EL1 reads through caller's AS pre-activate.
-        unsafe { core::ptr::read_volatile(va as *const u8) }
-    ).map_err(|e| -(e.as_i32() as i64))
+    // Policy and the fault-recovered read both live in `uaccess`; the read
+    // goes through the exception-table copy, so an unmapped in-range pointer
+    // answers EFAULT instead of faulting the kernel.
+    uaccess::strndup_user(path_ptr, PATH_MAX).map_err(|e| -(e.as_i32() as i64))
 }
 
 /// Read the exec image, falling back to the raw rootfs reader ONLY when the
@@ -285,4 +284,45 @@ pub(crate) fn open_interp(path: &[u8])
 {
     let (blob, vp) = crate::pathresolve::open_exec(path).ok()?;
     Some((blob, Some(image_backing(&vp))))
+}
+
+/// Total argv+envp payload accepted, matching the reference's per-exec budget.
+const ARG_MAX_BYTES: usize = 128 * 1024;
+/// Pointers walked in one argv/envp array before the walk is refused.
+const ARG_MAX_ENTRIES: usize = 1024;
+/// Longest single argument or environment string.
+const ARG_MAX_STR: u64 = 4096;
+
+/// Walk one NULL-terminated user array of string pointers (argv or envp) and
+/// copy every string it names into kernel storage, accumulating the shared byte
+/// budget. `false` means the walk exceeded a bound and the caller must answer
+/// `E2BIG`; a NULL array is an empty vector, not an error.
+///
+/// One copy for both architectures. It was two identical closures, which is how
+/// a fix to one of them silently misses the other — and this walk is on every
+/// exec, so a fault here is a fault the whole system takes.
+///
+/// Every read goes through the exception-table reader: the array entries and
+/// the strings they point at are both user memory whose mapping the caller
+/// controls, and a raw dereference of an in-range unmapped pointer faults the
+/// kernel rather than answering the caller.
+/// # C: O(entries * ARG_MAX_STR)
+pub(crate) fn read_user_string_vector(
+    uva: u64,
+    out: &mut alloc::vec::Vec<alloc::vec::Vec<u8>>,
+    total: &mut usize,
+) -> bool {
+    if uva == 0 { return true; }
+    for i in 0..ARG_MAX_ENTRIES {
+        let mut w = [0u8; 8];
+        let at = match uva.checked_add((i as u64) * 8) { Some(v) => v, None => return false };
+        if uaccess::copy_from_user(&mut w, at).is_err() { return false; }
+        let s = u64::from_ne_bytes(w);
+        if s == 0 { return true; }
+        let buf = match uaccess::strncpy_from_user(s, ARG_MAX_STR) { Ok(b) => b, Err(_) => return false };
+        *total += buf.len();
+        if *total > ARG_MAX_BYTES { return false; }
+        out.push(buf);
+    }
+    true
 }

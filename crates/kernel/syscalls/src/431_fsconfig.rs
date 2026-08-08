@@ -103,10 +103,10 @@ struct KernelUserCopy;
 impl UserCopy for KernelUserCopy {
     /// # C: O(max)
     fn cstr(&self, ptr: u64, max: usize) -> Result<Vec<u8>, Errno> {
-        if ptr == 0 || ptr >= hal::USER_VA_END { return Err(Errno::Efault); }
-        // SAFETY: ptr checked to lie in the user range; the shared helper stops
-        // at the first NUL or at `max` bytes, whichever comes first.
-        unsafe { devfs::read_user_cstr(ptr, max) }.map(|b| b.to_vec()).ok_or(Errno::Efault)
+        // The shared helper stops at the first NUL or at `max` bytes,
+        // whichever comes first, and refuses a null / out-of-range / unmapped
+        // pointer without dereferencing it.
+        devfs::read_user_cstr(ptr, max).ok_or(Errno::Efault)
     }
 
     /// # C: O(len)

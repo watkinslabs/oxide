@@ -158,24 +158,22 @@ pub fn snapshot_ns(src: &vfs::mntns::MntNamespaceRef, dst: &vfs::mntns::MntNames
     tree::snapshot_ns(src, dst);
 }
 
-/// Read a NUL-terminated string from user memory at `ptr`, bounded
-/// at `max` bytes. Returns the slice (trimmed of NUL) borrowed
-/// against the user page.
-/// # SAFETY: ptr in user range; user page mapped; CPL=0 reads pass
-/// through user mappings.
+/// Read a NUL-terminated string from user memory at `ptr`, bounded at `max`
+/// bytes, into kernel-owned storage. `None` means the read faulted — a null or
+/// out-of-range pointer, or a page the caller has not mapped.
+///
+/// A string that fills `max` without terminating comes back as `max` bytes, NOT
+/// as an error: callers here apply their own over-long verdict (ENAMETOOLONG,
+/// EINVAL, ERANGE) and detect the case by the returned length.
+///
+/// The bytes are COPIED rather than borrowed against the user page. A slice
+/// aliasing user memory outlives nothing in particular and can be unmapped
+/// under the kernel while it is being read; and the copy goes through the
+/// exception-table reader, so an unmapped page answers `None` instead of
+/// faulting the kernel at a raw dereference.
 /// # C: O(strlen)
-pub unsafe fn read_user_cstr<'a>(ptr: u64, max: usize) -> Option<&'a [u8]> {
-    if ptr == 0 || ptr >= hal::USER_VA_END { return None; }
-    let mut len = 0;
-    while len < max {
-        // SAFETY: ptr+len < ptr+max ≤ USER_VA_END (caller's responsibility for mapped page); 1-byte read.
-        let b = unsafe { core::ptr::read_volatile((ptr + len as u64) as *const u8) };
-        if b == 0 { break; }
-        len += 1;
-    }
-    if len == 0 { return Some(&[]); }
-    // SAFETY: same range; we've just probed every byte.
-    Some(unsafe { core::slice::from_raw_parts(ptr as *const u8, len) })
+pub fn read_user_cstr(ptr: u64, max: usize) -> Option<alloc::vec::Vec<u8>> {
+    uaccess::strncpy_from_user(ptr, max as u64).ok()
 }
 
 

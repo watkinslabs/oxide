@@ -30,13 +30,12 @@ fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 /// belongs to the namei path, not to this query.
 /// # C: O(strlen)
 fn read_type_name(ptr: u64) -> Result<Vec<u8>, i64> {
-    // SAFETY: read_user_cstr itself range-checks `ptr` against USER_VA_END and reads only mapped user bytes of the running task's AS, bounded at PATH_MAX.
-    let bytes = match unsafe { devfs::read_user_cstr(ptr, vfs::path::PATH_MAX) } {
+    let bytes = match devfs::read_user_cstr(ptr, vfs::path::PATH_MAX) {
         Some(b) => b,
         None    => return Err(err(Errno::Efault)),
     };
     if bytes.len() >= vfs::path::PATH_MAX { return Err(err(Errno::Einval)); }
-    Ok(bytes.to_vec())
+    Ok(bytes)
 }
 
 /// `sys_sysfs(option, arg1, arg2)` — slot 139.
