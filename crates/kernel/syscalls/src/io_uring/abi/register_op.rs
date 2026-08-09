@@ -129,6 +129,9 @@ pub enum RegisterOp {
     RingFds { arg: u64, nr: u32 },
     /// `IORING_UNREGISTER_RING_FDS` — same argument shape.
     UnregisterRingFds { arg: u64, nr: u32 },
+    /// `IORING_REGISTER_RESIZE_RINGS` — `arg` is a `struct io_uring_params`
+    /// carrying the requested depth in and the built depth out.
+    ResizeRings { arg: u64 },
 }
 
 /// A decoded `io_uring_register(2)` call.
@@ -146,9 +149,9 @@ pub struct Request {
 pub const IOWQ_MAX_WORKERS_ARGS: u32 = 2;
 
 /// Opcodes this kernel recognises but cannot execute, each because a whole
-/// mechanism it needs is absent — a worker pool, a per-task registered-ring
-/// array, multi-frame ring regions, a zero-copy receive queue, busy-poll, or
-/// a BPF program loader. `EOPNOTSUPP` says "recognised, not supported"; a
+/// mechanism it needs is absent — a per-task registered-ring array, a
+/// user-provided or parameter memory region, a zero-copy receive queue,
+/// busy-poll, or a BPF program loader. `EOPNOTSUPP` says "recognised, not supported"; a
 /// zero would tell the caller its registration took effect. # C: O(1)
 fn unsupported(_opcode: u32) -> Errno { Errno::Eopnotsupp }
 
@@ -210,6 +213,7 @@ fn ring_op(opcode: u32, arg: u64, nr_args: u32) -> Result<RegisterOp, Errno> {
         IORING_UNREGISTER_PBUF_RING => one(RegisterOp::UnregisterPbufRing { arg }),
         IORING_REGISTER_PBUF_STATUS => one(RegisterOp::PbufStatus { arg }),
         IORING_REGISTER_SYNC_CANCEL => one(RegisterOp::SyncCancel { arg }),
+        IORING_REGISTER_RESIZE_RINGS => one(RegisterOp::ResizeRings { arg }),
         IORING_REGISTER_QUERY => Ok(RegisterOp::Query { arg, nr: nr_args }),
         IORING_REGISTER_SEND_MSG_RING => one(RegisterOp::SendMsgRing { arg }),
         IORING_REGISTER_IOWQ_MAX_WORKERS => {

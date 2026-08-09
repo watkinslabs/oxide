@@ -7,6 +7,7 @@
 // posts completions.
 //
 // Module manifest:
+//   region      — one shared region's physical run, its lifetime and refcounting
 //   ring        — the two shared regions, their lifetime, the inode, mmap routing
 //   ctx         — one ring's state and its three locks
 //   cqe         — completion posting and the overflow backlog
@@ -32,6 +33,7 @@
 #![cfg(target_os = "oxide-kernel")]
 #![allow(dead_code)]
 
+pub mod region;
 pub mod ring;
 pub mod ctx;
 pub mod cqe;

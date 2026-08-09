@@ -16,20 +16,47 @@ use syscall::errno::Errno;
 
 use super::uapi::*;
 
-/// Bytes in one region. Both regions are a single refcounted kernel frame
-/// (`hal::PAGE_SIZE_BYTES`); `map_kernel_frame` maps ONE frame per VMA, so a
-/// region cannot span pages without VMM work.
-pub const REGION_BYTES: u32 = 4096;
-
-/// Largest SQ ring oxide builds: one region of 64-byte SQEs, so 64 entries.
-/// Linux's `IORING_MAX_ENTRIES` is 32768; oxide's ceiling is lower because a
-/// region is one frame (`map_kernel_frame` maps a single frame per VMA). The
-/// ladder past the ceiling is Linux's own — `EINVAL`, or clamp under
-/// `IORING_SETUP_CLAMP` — so callers see a smaller kernel, not a different
-/// contract. Raising it needs a multi-frame `VmaBacking`, not a change here.
-pub const MAX_ENTRIES: u32 = REGION_BYTES / SQE_SIZE as u32;
-/// Largest CQ ring oxide builds (Linux: `IORING_MAX_CQ_ENTRIES = 2 * max`).
+/// `IORING_MAX_ENTRIES`: deepest SQ ring a caller may ask for. Past it the
+/// ladder is `EINVAL`, or a clamp under `IORING_SETUP_CLAMP`.
+pub const MAX_ENTRIES: u32 = 32768;
+/// `IORING_MAX_CQ_ENTRIES` — twice the SQ ceiling.
 pub const MAX_CQ_ENTRIES: u32 = 2 * MAX_ENTRIES;
+
+/// Cacheline the CQE array's tail is padded to before the SQ index array, so
+/// the two never share a line.
+pub const SMP_CACHE_BYTES: u32 = 64;
+
+/// Largest run one region may occupy, in pages. The entries ladder already
+/// bounds every geometry well under this (the deepest ring needs 512 pages per
+/// region); the constant is the structural ceiling the sizing refuses past.
+pub const MAX_REGION_PAGES: u64 = 1024;
+
+/// How a region's byte size becomes a physical allocation: `bytes` rounded up
+/// to whole pages, held in one contiguous refcounted run of `2^order` pages.
+///
+/// The run is contiguous because the mapping is a `VmaBacking::KernelFrame`,
+/// whose fault path resolves the page at VMA offset `O` to `base_pa + O` and
+/// takes one reference per installed PTE. Only `map_bytes` is exposed to
+/// `mmap(2)`; the pages the order-rounding adds past it are never mapped.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct RegionPlan {
+    /// Page-aligned bytes userspace may map — the region's real size.
+    pub map_bytes: u64,
+    /// Pages those bytes occupy.
+    pub pages: u64,
+    /// Buddy order of the run that holds them (`2^order >= pages`).
+    pub order: u8,
+}
+
+/// Plan one region's allocation at page size `page`. # C: O(1)
+pub fn region_plan(bytes: u32, page: u64) -> Result<RegionPlan, Errno> {
+    if page == 0 || !page.is_power_of_two() { return Err(Errno::Einval); }
+    let map_bytes = (bytes as u64).checked_add(page - 1).ok_or(Errno::Eoverflow)? & !(page - 1);
+    let pages = core::cmp::max(map_bytes / page, 1);
+    if pages > MAX_REGION_PAGES { return Err(Errno::Eoverflow); }
+    let order = (pages.next_power_of_two().trailing_zeros()) as u8;
+    Ok(RegionPlan { map_bytes: core::cmp::max(map_bytes, page), pages, order })
+}
 
 /// Rings-region field offsets. These are the values reported in
 /// `p->sq_off`/`p->cq_off`, so userspace and `io_uring_enter` agree by
@@ -186,10 +213,14 @@ fn fill_entries(p: &mut Params) -> Result<(), Errno> {
 }
 
 /// Linux `rings_size`: place the CQE array and the SQ index array, and refuse
-/// a geometry that does not fit a region (`-EOVERFLOW`). # C: O(1)
+/// an arithmetic overflow (`-EOVERFLOW`). The region sizes it reports are
+/// turned into allocations by `region_plan`; nothing here is capped at one
+/// page. # C: O(1)
 fn rings_size(flags: u32, sq_entries: u32, cq_entries: u32) -> Result<(u32, u32, u32), Errno> {
     let cqes_bytes = cq_entries.checked_mul(CQE_SIZE as u32).ok_or(Errno::Eoverflow)?;
     let mut off = RING_CQES.checked_add(cqes_bytes).ok_or(Errno::Eoverflow)?;
+    // The SQ index array starts on its own cacheline.
+    off = off.checked_add(SMP_CACHE_BYTES - 1).ok_or(Errno::Eoverflow)? & !(SMP_CACHE_BYTES - 1);
     let sq_array_off = if flags & IORING_SETUP_NO_SQARRAY == 0 {
         let at = off;
         off = off.checked_add(sq_entries.checked_mul(4).ok_or(Errno::Eoverflow)?).ok_or(Errno::Eoverflow)?;
@@ -198,7 +229,6 @@ fn rings_size(flags: u32, sq_entries: u32, cq_entries: u32) -> Result<(u32, u32,
         NO_SQ_ARRAY
     };
     let sqes_bytes = sq_entries.checked_mul(SQE_SIZE as u32).ok_or(Errno::Eoverflow)?;
-    if off > REGION_BYTES || sqes_bytes > REGION_BYTES { return Err(Errno::Eoverflow); }
     Ok((sq_array_off, off, sqes_bytes))
 }
 
@@ -208,10 +238,40 @@ fn rings_size(flags: u32, sq_entries: u32, cq_entries: u32) -> Result<(u32, u32,
 /// the syscall's first argument; Linux stores it into `p->sq_entries` before
 /// `io_uring_create`. # C: O(1)
 pub fn prepare(p: &mut Params, entries: u32) -> Result<Geometry, Errno> {
-    // Linux `io_uring_setup()` checks `p->resv` before anything else.
+    // Linux `io_uring_setup()` checks `p->resv` before anything else. The
+    // check belongs to the syscall, not to the shared config path, so
+    // `IORING_REGISTER_RESIZE_RINGS` does not inherit it.
     if p.resv != [0; 3] { return Err(Errno::Einval); }
-    sanitise(p.flags)?;
     p.sq_entries = entries;
+    prepare_config(p)
+}
+
+/// Flags `IORING_REGISTER_RESIZE_RINGS` lets the caller restate. Every other
+/// bit in the request is `EINVAL`.
+pub const RESIZE_FLAGS: u32 = IORING_SETUP_CQSIZE | IORING_SETUP_CLAMP;
+/// Flags a resize inherits from the ring it resizes: the ones that decide the
+/// region LAYOUT, which a resize may not change under the ring's feet.
+pub const COPY_FLAGS: u32 =
+    IORING_SETUP_NO_SQARRAY | IORING_SETUP_SQE128 | IORING_SETUP_CQE32
+    | IORING_SETUP_NO_MMAP | IORING_SETUP_CQE_MIXED | IORING_SETUP_SQE_MIXED;
+
+/// Admission for `IORING_REGISTER_RESIZE_RINGS` (Linux
+/// `io_register_resize_rings`' front half): only a ring built with
+/// `IORING_SETUP_DEFER_TASKRUN` may be resized, the request may carry only
+/// `RESIZE_FLAGS`, and the layout flags come from the ring rather than the
+/// request. `p.sq_entries` carries the requested depth in and the built depth
+/// out, exactly as at setup. # C: O(1)
+pub fn prepare_resize(p: &mut Params, ring_flags: u32) -> Result<Geometry, Errno> {
+    if ring_flags & IORING_SETUP_DEFER_TASKRUN == 0 { return Err(Errno::Einval); }
+    if p.flags & !RESIZE_FLAGS != 0 { return Err(Errno::Einval); }
+    p.flags |= ring_flags & COPY_FLAGS;
+    prepare_config(p)
+}
+
+/// Linux `io_prepare_config`: sanitise, fill the entries ladder, size the
+/// regions, publish the offsets. Shared by setup and resize. # C: O(1)
+fn prepare_config(p: &mut Params) -> Result<Geometry, Errno> {
+    sanitise(p.flags)?;
     fill_entries(p)?;
     let (sq_array_off, rings_bytes, sqes_bytes) = rings_size(p.flags, p.sq_entries, p.cq_entries)?;
 

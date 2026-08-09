@@ -13,6 +13,8 @@
 //   ops         — `IORING_OP_*` / `IOSQE_*` and which opcodes dispatch runs.
 //   link        — link chains, drain barriers and silent success.
 //   restriction — the per-ring register/SQE allow-lists.
+//   resize      — what moves between the old and new rings on
+//                 `IORING_REGISTER_RESIZE_RINGS`, and when it is refused.
 //   register_op — the `io_uring_register(2)` opcode + argument ladder
 //                 (the Linux `__io_uring_register` admission ladder).
 //   timeout     — `IORING_OP_TIMEOUT`/`LINK_TIMEOUT`/`TIMEOUT_REMOVE` decode.
@@ -31,6 +33,7 @@ pub mod enter;
 pub mod ops;
 pub mod link;
 pub mod register_op;
+pub mod resize;
 pub mod restriction;
 pub mod timeout;
 pub mod cancel;

@@ -134,38 +134,91 @@ fn reported_offsets_are_the_ones_io_uring_enter_uses() {
 
 /// The old single-page layout put the SQ index array at 0x10 and the CQ header
 /// at 0x100, so a 64-entry ring's SQ array (0x10..0x110) overlapped the CQ
-/// header, and its SQE array (0x800 + 64*64 = 0x1800) ran off the end of the
-/// 4 KiB frame. Nothing may overlap and everything must fit.
+/// header. Nothing may overlap, and the SQ index array starts on its own
+/// cacheline.
 #[test]
-fn no_region_overlaps_and_every_geometry_fits() {
-    for e in [1u32, 2, 4, 8, 16, 32, MAX_ENTRIES] {
+fn no_region_overlaps_at_any_geometry() {
+    for e in [1u32, 2, 4, 8, 16, 32, 64, 1024, MAX_ENTRIES] {
         for flags in [0, IORING_SETUP_NO_SQARRAY] {
             let mut p = req(flags);
             let g = prepare(&mut p, e).unwrap();
             let cqes_end = RING_CQES + g.cq_entries * CQE_SIZE as u32;
+            let aligned = (cqes_end + SMP_CACHE_BYTES - 1) & !(SMP_CACHE_BYTES - 1);
             if g.sq_array_off == NO_SQ_ARRAY {
-                assert_eq!(g.rings_bytes, cqes_end);
+                assert_eq!(g.rings_bytes, aligned);
             } else {
+                assert_eq!(g.sq_array_off, aligned, "SQ array starts on its own cacheline");
                 assert!(g.sq_array_off >= cqes_end, "sq array overlaps the CQE array");
                 assert_eq!(g.rings_bytes, g.sq_array_off + g.sq_entries * 4);
             }
             assert!(cqes_end > RING_CQ_OVERFLOW, "CQE array must clear the header");
             assert_eq!(RING_CQES, 0x40, "header is 64 bytes");
-            assert!(g.rings_bytes <= REGION_BYTES, "entries={e} rings={}", g.rings_bytes);
             assert_eq!(g.sqes_bytes, g.sq_entries * SQE_SIZE as u32);
-            assert!(g.sqes_bytes <= REGION_BYTES, "entries={e} sqes={}", g.sqes_bytes);
         }
     }
 }
 
+/// The entries ceiling is the reference's, and it is no longer a function of
+/// one page: the deepest ring's SQE region is 2 MiB.
 #[test]
-fn max_entries_uses_the_whole_sqe_region_and_no_more() {
-    assert_eq!(MAX_ENTRIES * SQE_SIZE as u32, REGION_BYTES);
+fn the_entries_ceiling_is_the_reference_bound() {
+    assert_eq!(MAX_ENTRIES, 32768);
     assert_eq!(MAX_CQ_ENTRIES, 2 * MAX_ENTRIES);
-    // Worst case rings region: the deepest SQ with its 2:1 CQ.
     let mut p = req(0);
     let g = prepare(&mut p, MAX_ENTRIES).unwrap();
-    assert!(g.rings_bytes <= REGION_BYTES);
+    assert_eq!(g.sq_entries, MAX_ENTRIES);
+    assert_eq!(g.cq_entries, MAX_CQ_ENTRIES);
+    assert_eq!(g.sqes_bytes, MAX_ENTRIES * SQE_SIZE as u32);
+    assert!(g.sqes_bytes > 4096 * 100, "a deep ring is many pages, not one");
+}
+
+/// A region is `bytes` rounded to whole pages, held in a contiguous run of
+/// `2^order` pages. Only the page-aligned bytes are exposed to `mmap(2)`.
+#[test]
+fn region_plan_rounds_bytes_to_pages_and_pages_to_a_run() {
+    for (bytes, map_bytes, pages, order) in [
+        (1u32,     4096u64, 1u64, 0u8),
+        (4096,     4096,    1,    0),
+        (4097,     8192,    2,    1),
+        (3 * 4096, 12288,   3,    2),   // 3 pages need an order-2 run
+        (4 * 4096, 16384,   4,    2),
+        (0,        4096,    1,    0),   // never a zero-page region
+    ] {
+        let plan = region_plan(bytes, 4096).unwrap();
+        assert_eq!((plan.map_bytes, plan.pages, plan.order), (map_bytes, pages, order),
+                   "bytes={bytes}");
+        assert!(plan.map_bytes <= (1u64 << plan.order) * 4096,
+                "the run must cover every exposed byte");
+        assert!(plan.map_bytes >= bytes as u64, "every requested byte must be mappable");
+    }
+}
+
+/// Both arches' page size, and the refusal past the structural ceiling.
+#[test]
+fn region_plan_is_page_size_generic_and_bounded() {
+    assert_eq!(region_plan(4096, 16384).unwrap().map_bytes, 16384);
+    assert_eq!(region_plan(65537, 65536).unwrap().pages, 2);
+    assert_eq!(region_plan(u32::MAX, 4096), Err(Errno::Eoverflow));
+    assert_eq!(region_plan(8192, 3000), Err(Errno::Einval));
+}
+
+/// Every admitted geometry must fit a region this kernel can actually
+/// allocate — the entries ladder, not a page, is what bounds it.
+#[test]
+fn every_admitted_geometry_has_a_region_plan() {
+    for e in [1u32, 8, 1024, MAX_ENTRIES] {
+        for flags in [0, IORING_SETUP_NO_SQARRAY, IORING_SETUP_CLAMP] {
+            let mut p = req(flags);
+            let g = prepare(&mut p, e).unwrap();
+            for page in [4096u64, 16384] {
+                let rings = region_plan(g.rings_bytes, page).expect("rings region must be allocatable");
+                let sqes = region_plan(g.sqes_bytes, page).expect("SQE region must be allocatable");
+                assert!(rings.map_bytes >= g.rings_bytes as u64);
+                assert!(sqes.map_bytes >= g.sqes_bytes as u64);
+                assert!(rings.pages <= MAX_REGION_PAGES && sqes.pages <= MAX_REGION_PAGES);
+            }
+        }
+    }
 }
 
 #[test]
