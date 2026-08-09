@@ -95,4 +95,8 @@ pub(super) fn clear_locked(g: &mut Registry) {
     g.by_tid.clear();
     g.vpid_hint.clear();
     super::mm::clear_for_tests();
+    // The zombie/waiter lists are keyed by tid, so a stale entry from an
+    // earlier case answers `has_zombies`/`reap_one` for a task the reset just
+    // dropped. Reset them with the table they refer into.
+    crate::live::zombies::clear_for_tests();
 }
