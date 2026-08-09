@@ -153,12 +153,13 @@ fn anon_charge_rolls_back_when_first_touch_allocation_fails() {
     // SAFETY: hosted PT is empty; allocator deliberately returns no frame so
     // the test reaches only the charge/admission rollback contract.
     let r = unsafe {
-        mm.handle_page_fault_cow_rmap::<HostMmu, _, _, _, _, _, _, _, _>(
+        mm.handle_page_fault_cow_rmap::<HostMmu, _, _, _, _, _, _, _, _, _>(
             hal::UserVirtAddr::new(0x40_0000).unwrap(),
             FaultKind::NotPresent { access: FaultAccess::Read }, 0, false,
             || None, |_pa| 0, |_pa| {}, |_pa, _av, _idx| {}, |_pa| {}, |_pa| false,
             || { charges.set(charges.get() + 1); Ok(()) },
             || { rollbacks.set(rollbacks.get() + 1); },
+            |_pa| {},
         )
     };
     assert_eq!(r, Err(Error::NoMem));
@@ -176,12 +177,13 @@ fn anon_charge_rolls_back_when_cow_allocation_fails() {
     // SAFETY: hosted PT has a writable anon source; reuse is refused so the
     // write fault must obtain a provisional charge before its COW allocation.
     let r = unsafe {
-        mm.handle_page_fault_cow_rmap::<HostMmu, _, _, _, _, _, _, _, _>(
+        mm.handle_page_fault_cow_rmap::<HostMmu, _, _, _, _, _, _, _, _, _>(
             hal::UserVirtAddr::new(0x41_0000).unwrap(),
             FaultKind::Protection { access: FaultAccess::Write }, 0, false,
             || None, |_pa| 2, |_pa| {}, |_pa, _av, _idx| {}, |_pa| {}, |_pa| false,
             || { charges.set(charges.get() + 1); Ok(()) },
             || { rollbacks.set(rollbacks.get() + 1); },
+            |_pa| {},
         )
     };
     assert_eq!(r, Err(Error::NoMem));
@@ -325,11 +327,12 @@ fn a_read_fault_over_a_protected_hole_installs_the_page_already_protected() {
     let mm = mk_anon_as(0x50_0000, 0x50_2000);
     // SAFETY: hosted PT is empty; the allocator hands out real host pages.
     let r = unsafe {
-        mm.handle_page_fault_cow_rmap::<HostMmu, _, _, _, _, _, _, _, _>(
+        mm.handle_page_fault_cow_rmap::<HostMmu, _, _, _, _, _, _, _, _, _>(
             hal::UserVirtAddr::new(0x50_0000).unwrap(),
             FaultKind::NotPresent { access: FaultAccess::Read }, 0, true,
             || Some(fresh_pa()), |_pa| 1, |_pa| {}, |_pa, _av, _idx| {}, |_pa| {}, |_pa| false,
             || Ok(()), || {},
+            |_pa| {},
         )
     };
     assert_eq!(r, Ok(()));
@@ -347,11 +350,12 @@ fn an_ordinary_read_fault_installs_a_page_with_no_barrier() {
     let mm = mk_anon_as(0x51_0000, 0x51_2000);
     // SAFETY: hosted PT is empty; the allocator hands out real host pages.
     let r = unsafe {
-        mm.handle_page_fault_cow_rmap::<HostMmu, _, _, _, _, _, _, _, _>(
+        mm.handle_page_fault_cow_rmap::<HostMmu, _, _, _, _, _, _, _, _, _>(
             hal::UserVirtAddr::new(0x51_0000).unwrap(),
             FaultKind::NotPresent { access: FaultAccess::Read }, 0, false,
             || Some(fresh_pa()), |_pa| 1, |_pa| {}, |_pa, _av, _idx| {}, |_pa| {}, |_pa| false,
             || Ok(()), || {},
+            |_pa| {},
         )
     };
     assert_eq!(r, Ok(()));

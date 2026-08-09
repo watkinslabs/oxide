@@ -97,7 +97,7 @@ impl AddressSpace {
         // user-fault dispatcher uses `handle_page_fault_cow_rmap`.
         // SAFETY: forwarded preconditions per `handle_page_fault_cow_rmap`.
         unsafe {
-            self.handle_page_fault_cow_rmap::<M, _, _, _, _, _, _, _, _>(
+            self.handle_page_fault_cow_rmap::<M, _, _, _, _, _, _, _, _, _>(
                 va, fault, hhdm_offset, false,
                 alloc_frame, frame_refcount, dec_ref,
                 |_pa, _av, _idx| {},
@@ -105,6 +105,7 @@ impl AddressSpace {
                 |_pa| false, // no PageMeta exclusivity proof → copy-always
                 || Ok(()),
                 || {},
+                |_pa| {},
             )
         }
     }
@@ -123,7 +124,7 @@ impl AddressSpace {
     /// it afterwards would leave it briefly writable, and a peer thread's write
     /// in that window escapes the barrier once — so the fill builds the leaf
     /// protected and publishes it in the one store that makes it visible.
-    pub unsafe fn handle_page_fault_cow_rmap<M, A, RC, DR, SR, IR, XR, CA, UA>(
+    pub unsafe fn handle_page_fault_cow_rmap<M, A, RC, DR, SR, IR, XR, CA, UA, MR>(
         &self,
         va: UserVirtAddr,
         fault: FaultKind,
@@ -137,6 +138,7 @@ impl AddressSpace {
         mut reuse_ok: XR,
         mut charge_anon: CA,
         mut uncharge_anon: UA,
+        mut mark_referenced: MR,
     ) -> KResult<()>
     where
         M:  MmuOps,
@@ -160,6 +162,10 @@ impl AddressSpace {
         // free while making the PMM/cgroup ownership boundary explicit.
         CA: FnMut() -> KResult<()>,
         UA: FnMut(),
+        // `mark_referenced(pa)` forwards to `handle_not_present` — see that
+        // function's doc for the recency gate. Hosted/no-op callers pass
+        // `|_| {}`.
+        MR: FnMut(u64),
     {
         self.accounting.fault();
         // Linux `handle_pte_fault`: when the PTE is ABSENT the fault is a
@@ -253,10 +259,10 @@ impl AddressSpace {
 
         // SAFETY: dispatches the NotPresent backing fill under the same callback contracts.
         unsafe {
-            self.handle_not_present::<M, _, _, _, _, _, _>(
+            self.handle_not_present::<M, _, _, _, _, _, _, _>(
                 va, access, hhdm_offset, install_uffd_wp, &mut alloc_frame,
                 &mut dec_ref, &mut set_rmap, &mut inc_ref,
-                &mut charge_anon, &mut uncharge_anon,
+                &mut charge_anon, &mut uncharge_anon, &mut mark_referenced,
             )
         }
     }

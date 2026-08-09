@@ -312,6 +312,18 @@ pub trait FileBacking: Send + Sync {
     /// Device-owned frame installed directly for either mapping type. # C: O(1)
     fn direct_frame(&self, _off: u64) -> Option<u64> { None }
 
+    /// `FMODE_NOREUSE` on the open file this mapping was established from
+    /// (`POSIX_FADV_NOREUSE`, `fadvise64(2)`) — read by
+    /// [`crate::recency::vma_has_recency`] to suppress LRU promotion on
+    /// access. Snapshotted at mapping-establishment time; a later
+    /// `fadvise64` on the same fd does not retroactively change an
+    /// already-mapped VMA (`52`: mm-vmm carries no live `vfs::File`
+    /// reference, matching how this mapping already snapshots the file's
+    /// readahead-state class of hints rather than tracking them live).
+    /// Default false — the correct value for every non-file-open backing
+    /// (anonymous, tmpfs-internal, device). # C: O(1)
+    fn noreuse(&self) -> bool { false }
+
     /// The concrete backing object behind this mapping, for a subsystem that
     /// must recognise one of ITS OWN mappings by identity rather than by
     /// address — the equivalent of Linux comparing `vma->vm_ops` against the

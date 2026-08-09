@@ -56,7 +56,7 @@ pub(super) fn do_fault(mm: &AddressSpace, va: u64, fault: FaultKind) {
     // SAFETY: hosted harness; MultiMmu active root set to `mm`; closures mirror
     // the kernel fault dispatcher's real inc/dec/refcount/alloc/rmap wiring.
     let _ = unsafe {
-        mm.handle_page_fault_cow_rmap::<MultiMmu, _, _, _, _, _, _, _, _>(
+        mm.handle_page_fault_cow_rmap::<MultiMmu, _, _, _, _, _, _, _, _, _>(
             uva, fault, 0, false,
             alloc_frame,
             rc_get,
@@ -75,6 +75,7 @@ pub(super) fn do_fault(mm: &AddressSpace, va: u64, fault: FaultKind) {
                 && RMAP.with(|r| r.borrow().contains_key(&pa)),
             || Ok(()),
             || {},
+            |_pa| {},
         )
     };
 }

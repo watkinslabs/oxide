@@ -128,6 +128,8 @@ impl File {
             owner_creds: AtomicU64::new(0),
             f_sig: ::core::sync::atomic::AtomicI32::new(0),
             f_created: ::core::sync::atomic::AtomicBool::new(false),
+            f_random: ::core::sync::atomic::AtomicBool::new(false),
+            f_noreuse: ::core::sync::atomic::AtomicBool::new(false),
             owner_type: ::core::sync::atomic::AtomicI32::new(super::async_notify::owner_type::F_OWNER_PID),
             fa_fd: ::core::sync::atomic::AtomicI32::new(-1),
             // F_UNLCK (2) = no lease held (Linux `F_GETLEASE` default).
@@ -201,11 +203,14 @@ impl File {
         }
     }
 
-    /// `f_mode` (FMODE_* capability bits), including `FMODE_CREATED` when this
-    /// open created the file. # C: O(1)
+    /// `f_mode` (FMODE_* capability bits), including `FMODE_CREATED` /
+    /// `FMODE_RANDOM` / `FMODE_NOREUSE` when set. # C: O(1)
     pub fn f_mode(&self) -> Fmode {
-        if self.f_created.load(Ordering::Acquire) { self.f_mode | Fmode::CREATED }
-        else { self.f_mode }
+        let mut m = self.f_mode;
+        if self.f_created.load(Ordering::Acquire) { m |= Fmode::CREATED; }
+        if self.f_random.load(Ordering::Acquire)  { m |= Fmode::RANDOM; }
+        if self.f_noreuse.load(Ordering::Acquire) { m |= Fmode::NOREUSE; }
+        m
     }
 
     /// Publish `FMODE_CREATED` (Linux `do_dentry_open`'s `FMODE_CREATED` for an
@@ -213,6 +218,26 @@ impl File {
     /// once the description exists; `fcntl(F_CREATED_QUERY)` reads it back.
     /// # C: O(1)
     pub fn set_created(&self) { self.f_created.store(true, Ordering::Release); }
+
+    /// `POSIX_FADV_RANDOM`'s `f_mode` half (`generic_fadvise`:
+    /// `spin_lock(&f_lock); file->f_mode |= FMODE_RANDOM;`). The readahead
+    /// ceiling itself is set separately by [`File::ra_set_random`]. # C: O(1)
+    pub fn set_random(&self) { self.f_random.store(true, Ordering::Release); }
+
+    /// `POSIX_FADV_NOREUSE`'s `f_mode` half (`generic_fadvise`:
+    /// `spin_lock(&f_lock); file->f_mode |= FMODE_NOREUSE;`). Read back by the
+    /// `vma_has_recency`-equivalent predicate. # C: O(1)
+    pub fn set_noreuse(&self) { self.f_noreuse.store(true, Ordering::Release); }
+
+    /// `POSIX_FADV_NORMAL`'s `f_mode` half (`generic_fadvise`:
+    /// `file->f_mode &= ~(FMODE_RANDOM | FMODE_NOREUSE);`), under the same
+    /// lock as the two setters above. The reference clears both bits in one
+    /// store; this clears both fold-back cells so `f_mode()` cannot observe
+    /// one cleared and the other still set. # C: O(1)
+    pub fn clear_random_and_noreuse(&self) {
+        self.f_random.store(false, Ordering::Release);
+        self.f_noreuse.store(false, Ordering::Release);
+    }
 
     /// `f_op` — the vtable this open file description was bound to at open
     /// (Linux `file->f_op`, which a `f_op->open` may have swapped away from

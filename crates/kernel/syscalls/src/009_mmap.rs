@@ -299,8 +299,12 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
                 // a core dump can tell a debugger which object to reopen for
                 // the pages it did not carry.
                 let map_path = file.dentry().dentry_path(None);
-                backing = Some(crate::mmap_file::InodeFileBacking::new_named(
-                    inode.clone(), map_path.into_bytes()));
+                // `POSIX_FADV_NOREUSE` on the mapping fd, snapshotted for the
+                // fault path's `vma_has_recency` predicate — see
+                // `FileBacking::noreuse`'s doc for why this is a snapshot.
+                let noreuse = file.f_mode().contains(vfs::Fmode::NOREUSE);
+                backing = Some(crate::mmap_file::InodeFileBacking::new_named_from_file(
+                    inode.clone(), map_path.into_bytes(), noreuse));
             },
         },
         }

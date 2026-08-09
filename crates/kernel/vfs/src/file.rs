@@ -97,6 +97,15 @@ pub struct File {
     /// back into [`File::f_mode`], which stays the single reported `f_mode`.
     /// `fcntl(F_CREATED_QUERY)` is its consumer.
     f_created: ::core::sync::atomic::AtomicBool,
+    /// `FMODE_RANDOM` — `POSIX_FADV_RANDOM` on this open. Same fold-back
+    /// pattern as `f_created`: `f_mode` is fixed at construction, but
+    /// `fadvise64(2)` mutates this bit under `f_lock` for the life of the
+    /// description (`generic_fadvise`).
+    f_random: ::core::sync::atomic::AtomicBool,
+    /// `FMODE_NOREUSE` — `POSIX_FADV_NOREUSE` on this open. Same fold-back
+    /// pattern as `f_random`; `vma_has_recency` reads it back through
+    /// [`File::f_mode`].
+    f_noreuse: ::core::sync::atomic::AtomicBool,
     /// `f_cred` — opener's credentials snapshot (Linux `file->f_cred`).
     /// Lets a deferred read/write enforce without re-reading task creds.
     f_cred: FileCred,
