@@ -152,12 +152,12 @@ pub(super) fn which(prog: &str) -> Option<std::path::PathBuf> {
     None
 }
 
-/// Default virtio-gpu scanout size the guest is powered on with. QEMU's own
-/// default is smaller than a usable desktop, and it is what
-/// `GET_DISPLAY_INFO` reports as the connector's preferred mode, so the
-/// compositor adopts it verbatim. Override with `OXIDE_GPU_XRES`/`OXIDE_GPU_YRES`.
-pub const DEFAULT_GPU_XRES: u32 = 1920;
-pub const DEFAULT_GPU_YRES: u32 = 1080;
+/// Default virtio-gpu scanout size the guest is powered on with. The 2D
+/// backend copies every presented pixel through the guest CPU, so keep the
+/// interactive default within its software-render budget. Override with
+/// `OXIDE_GPU_XRES`/`OXIDE_GPU_YRES` when validating a larger mode.
+pub const DEFAULT_GPU_XRES: u32 = 1280;
+pub const DEFAULT_GPU_YRES: u32 = 800;
 
 /// `-device` argument for the primary virtio-gpu, carrying the scanout size.
 /// # C: O(1)
