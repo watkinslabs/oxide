@@ -95,17 +95,9 @@ fn trace_uev_bind(nl_groups: u32, via: &[u8]) {
 /// # C: O(1)
 pub fn bind(target: &NetlinkFileRef, storage: &net::SockaddrStorage,
     _admission: net::sock_admit::AddrAdmission) -> i64 {
-    const SOCKADDR_FAMILY_BYTES: usize = core::mem::size_of::<u16>();
     let address = storage.as_bytes();
-    if address.len() < ::netlink::SOCKADDR_NL_SIZE {
-        return -(Errno::Einval.as_i32() as i64);
-    }
-    let family = u16::from_ne_bytes(address[..SOCKADDR_FAMILY_BYTES].try_into().unwrap());
-    if family != ::netlink::AF_NETLINK { return -(Errno::Einval.as_i32() as i64); }
-    let port_id = u32::from_ne_bytes(address[::netlink::SOCKADDR_NL_PORT_ID_OFFSET
-        ..::netlink::SOCKADDR_NL_PORT_ID_OFFSET + core::mem::size_of::<u32>()].try_into().unwrap());
-    let nl_groups = u32::from_ne_bytes(address[::netlink::SOCKADDR_NL_GROUPS_OFFSET
-        ..::netlink::SOCKADDR_NL_GROUPS_OFFSET + core::mem::size_of::<u32>()].try_into().unwrap());
+    if ::netlink::validate_shape(address).is_err() { return -(Errno::Einval.as_i32() as i64); }
+    let (port_id, nl_groups) = ::netlink::raw_fields(address);
     let s = target.socket();
     if let Err(error) = ::netlink::bind_port_id(s, port_id) {
         return crate::net_errno::errno_from_neterr(error);
@@ -123,23 +115,24 @@ pub fn connect(target: &NetlinkFileRef, storage: &net::SockaddrStorage,
     _admission: net::sock_admit::AddrAdmission) -> i64 {
     const SOCKADDR_FAMILY_BYTES: usize = core::mem::size_of::<u16>();
     let address = storage.as_bytes();
-    if address.len() < SOCKADDR_FAMILY_BYTES { return -(Errno::Einval.as_i32() as i64); }
-    let family = u16::from_ne_bytes(address[..SOCKADDR_FAMILY_BYTES].try_into().unwrap());
     let socket = target.socket();
-    if family as u32 == net::socket_args::AF_UNSPEC {
-        return socket.disconnect_destination().map_or_else(crate::net_errno::errno_from_neterr, |_| 0);
+    // AF_UNSPEC is checked ahead of the full sockaddr_nl shape gate: Linux
+    // reads only sa_family before deciding to disconnect, so a short-but-
+    // AF_UNSPEC address must not fall through to the length rejection below.
+    if address.len() >= SOCKADDR_FAMILY_BYTES {
+        let family = u16::from_ne_bytes(address[..SOCKADDR_FAMILY_BYTES].try_into().unwrap());
+        if family as u32 == net::socket_args::AF_UNSPEC {
+            return socket.disconnect_destination().map_or_else(crate::net_errno::errno_from_neterr, |_| 0);
+        }
     }
-    if family != ::netlink::AF_NETLINK { return -(Errno::Einval.as_i32() as i64); }
-    if address.len() < ::netlink::SOCKADDR_NL_SIZE {
-        return -(Errno::Einval.as_i32() as i64);
-    }
+    let dest_raw = match ::netlink::parse_dest(address) {
+        Ok(dest) => dest,
+        Err(_) => return -(Errno::Einval.as_i32() as i64),
+    };
     // The destination a connect settles is gated exactly as a supplied send
     // destination is, and for the same reason: it becomes the pair every later
     // destination-less send uses without being asked again.
-    let dest = match ::netlink::admit_dest(::netlink::NlDest {
-        port_id: u32::from_ne_bytes(address[4..8].try_into().unwrap()),
-        group: ::netlink::first_group(u32::from_ne_bytes(address[8..12].try_into().unwrap())),
-    }, socket.protocol, socket.net_admin()) {
+    let dest = match ::netlink::admit_dest(dest_raw, socket.protocol, socket.net_admin()) {
         Ok(dest) => dest,
         Err(error) => return -(error as i64),
     };

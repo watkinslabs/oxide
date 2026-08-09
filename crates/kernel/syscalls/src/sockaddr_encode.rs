@@ -11,17 +11,18 @@ use net::sock::InetSocket;
 pub(crate) const AF_INET:  u32 = 2;
 pub(crate) const AF_INET6: u32 = 10;
 pub(crate) const AF_UNIX:  u16 = 1;
-pub(crate) const AF_NETLINK: u16 = 16;
+pub(crate) use ::netlink::AF_NETLINK;
 pub(crate) const AF_PACKET: u16 = 17;
 
-pub(crate) const SOCKADDR_UN_LEN:    usize = 110;
-pub(crate) const SOCKADDR_IN_LEN:    usize = 16;
+// Shape/length constants owned by `net::sockaddr` (AF_UNIX/AF_INET/AF_VSOCK)
+// and `netlink::SOCKADDR_NL_SIZE` (AF_NETLINK) — re-used here, not
+// re-declared, so the encode side and the validate side can't drift apart.
+pub(crate) use net::sockaddr::{SOCKADDR_UN_LEN, SOCKADDR_IN_LEN, SOCKADDR_VM_LEN};
 pub(crate) const SOCKADDR_IN6_LEN:   usize = 28;
-pub(crate) const SOCKADDR_NL_LEN:    usize = 12;
+pub(crate) use ::netlink::SOCKADDR_NL_SIZE as SOCKADDR_NL_LEN;
 pub(crate) const SOCKADDR_LL_BASE_LEN: usize = 12;
 /// `sockaddr_ll.sll_addr[8]`.
 pub(crate) const SOCKADDR_LL_ADDR_LEN: usize = 8;
-pub(crate) const SOCKADDR_VM_LEN:    usize = 16;
 pub(crate) const SOCKADDR_STORAGE:   usize = SOCKADDR_UN_LEN;
 /// `sizeof(sa_family_t)` — the length `unix_getname` returns for a socket
 /// with no bound name at all.

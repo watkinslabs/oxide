@@ -7,16 +7,57 @@ pub const SOCKADDR_STORAGE_LEN: usize = 128;
 pub const SOCKADDR_UN_LEN: usize = 110;
 /// `offsetof(struct sockaddr_un, sun_path)`.
 pub const SOCKADDR_UN_PATH_OFFSET: usize = 2;
+/// `sizeof(struct sockaddr_in)` — Linux `inet_bind`/`inet_getname` never
+/// accept or report a shorter/longer one; there is no optional tail field.
+pub const SOCKADDR_IN_LEN: usize = 16;
+/// Linux `SIN6_LEN_RFC2133` — the minimum `sockaddr_in6` length
+/// `inet6_bind`/`inet6_dgram_connect` accept; the trailing `sin6_scope_id`
+/// is optional on input (`sizeof(struct sockaddr_in6)` is 28).
+pub const SIN6_MIN_LEN: usize = 24;
+/// `sizeof(struct sockaddr_vm)` — AF_VSOCK has no optional tail field either.
+pub const SOCKADDR_VM_LEN: usize = 16;
+
+use syscall::errno::Errno;
+
+/// Linux `move_addr_to_kernel`: reject a negative `int` socklen (the syscall
+/// ABI carries it as `size_t`, but the kernel treats it as signed) and one
+/// exceeding `sockaddr_storage`, before any family-specific parse.
+/// # C: O(1)
+pub fn validate_sockaddr_len(addrlen: i64) -> Result<usize, Errno> {
+    if addrlen < 0 || addrlen > SOCKADDR_STORAGE_LEN as i64 { return Err(Errno::Einval); }
+    Ok(addrlen as usize)
+}
 
 /// `unix_validate_addr`: the caller length must reach past `sun_family` and
 /// must not exceed `struct sockaddr_un`, and the family must be AF_UNIX.
 /// # C: O(1)
-pub fn validate_unix_addr(family: u16, addrlen: usize) -> Result<(), syscall::errno::Errno> {
+pub fn validate_unix_addr(family: u16, addrlen: usize) -> Result<(), Errno> {
     if addrlen <= SOCKADDR_UN_PATH_OFFSET || addrlen > SOCKADDR_UN_LEN {
-        return Err(syscall::errno::Errno::Einval);
+        return Err(Errno::Einval);
     }
-    if family != crate::socket_args::AF_UNIX as u16 { return Err(syscall::errno::Errno::Einval); }
+    if family != crate::socket_args::AF_UNIX as u16 { return Err(Errno::Einval); }
     Ok(())
+}
+
+/// Linux `__inet_bind`/`inet_dgram_connect`: the copied address must reach
+/// the complete `struct sockaddr_in`. The family comparison against the
+/// socket's own family is a separate, later decision (EAFNOSUPPORT, not
+/// EINVAL) owned by the caller — this is only the shape gate. # C: O(1)
+pub fn require_sockaddr_in(addrlen: usize) -> Result<(), Errno> {
+    if addrlen < SOCKADDR_IN_LEN { Err(Errno::Einval) } else { Ok(()) }
+}
+
+/// Linux `inet6_bind`/`inet6_dgram_connect`: the copied address must reach
+/// `SIN6_LEN_RFC2133`; the optional `sin6_scope_id` may be absent.
+/// # C: O(1)
+pub fn require_sockaddr_in6(addrlen: usize) -> Result<(), Errno> {
+    if addrlen < SIN6_MIN_LEN { Err(Errno::Einval) } else { Ok(()) }
+}
+
+/// Linux `vsock_bind`/`vsock_dgram_connect`/`vsock_stream_connect`: the
+/// copied address must reach the complete `struct sockaddr_vm`. # C: O(1)
+pub fn require_sockaddr_vm(addrlen: usize) -> Result<(), Errno> {
+    if addrlen < SOCKADDR_VM_LEN { Err(Errno::Einval) } else { Ok(()) }
 }
 
 pub struct SockaddrStorage {
@@ -142,6 +183,50 @@ impl SockaddrStorage {
 
 #[cfg(test)]
 mod tests {
+    // `move_addr_to_kernel`: negative socklen and one past sockaddr_storage
+    // are both EINVAL; the boundary itself is accepted.
+    #[test]
+    fn sockaddr_len_is_bounded_by_sockaddr_storage() {
+        use syscall::errno::Errno;
+        assert_eq!(super::validate_sockaddr_len(-1), Err(Errno::Einval));
+        assert_eq!(super::validate_sockaddr_len(0), Ok(0));
+        assert_eq!(super::validate_sockaddr_len(super::SOCKADDR_STORAGE_LEN as i64), Ok(128));
+        assert_eq!(super::validate_sockaddr_len(super::SOCKADDR_STORAGE_LEN as i64 + 1),
+            Err(Errno::Einval));
+    }
+
+    // `__inet_bind`/`inet_dgram_connect`: exact-boundary accept, one byte
+    // short rejects, oversize (no upper bound of its own — the generic
+    // storage bound already screened it) still accepts.
+    #[test]
+    fn inet_addresses_require_the_full_sockaddr_in() {
+        use syscall::errno::Errno;
+        assert_eq!(super::require_sockaddr_in(super::SOCKADDR_IN_LEN - 1), Err(Errno::Einval));
+        assert_eq!(super::require_sockaddr_in(super::SOCKADDR_IN_LEN), Ok(()));
+        assert_eq!(super::require_sockaddr_in(super::SOCKADDR_IN_LEN + 1), Ok(()));
+    }
+
+    // `inet6_bind`/`inet6_dgram_connect`: SIN6_LEN_RFC2133 is the floor, not
+    // the full `sizeof(struct sockaddr_in6)` — the trailing scope ID is
+    // optional on input.
+    #[test]
+    fn inet6_addresses_require_sin6_len_rfc2133() {
+        use syscall::errno::Errno;
+        assert_eq!(super::require_sockaddr_in6(super::SIN6_MIN_LEN - 1), Err(Errno::Einval));
+        assert_eq!(super::require_sockaddr_in6(super::SIN6_MIN_LEN), Ok(()));
+        assert_eq!(super::require_sockaddr_in6(28), Ok(())); // full struct, with scope id
+    }
+
+    // `vsock_bind`/`vsock_*_connect`: exact-boundary accept, one byte short
+    // rejects.
+    #[test]
+    fn vsock_addresses_require_the_full_sockaddr_vm() {
+        use syscall::errno::Errno;
+        assert_eq!(super::require_sockaddr_vm(super::SOCKADDR_VM_LEN - 1), Err(Errno::Einval));
+        assert_eq!(super::require_sockaddr_vm(super::SOCKADDR_VM_LEN), Ok(()));
+        assert_eq!(super::require_sockaddr_vm(super::SOCKADDR_VM_LEN + 1), Ok(()));
+    }
+
     // `unix_validate_addr` bounds: an address that only covers `sun_family`
     // carries no name, and one longer than `struct sockaddr_un` is rejected
     // outright rather than truncated to the embedded path.

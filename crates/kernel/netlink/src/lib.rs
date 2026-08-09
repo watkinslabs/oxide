@@ -86,7 +86,7 @@ pub use sockflags::{get_answer, nonroot_recv, set_action, GetAnswer, NetlinkFlag
     F_BROADCAST_SEND_ERROR, F_CAP_ACK, F_EXT_ACK, F_LISTEN_ALL_NSID, F_RECV_NO_ENOBUFS,
     F_RECV_PKTINFO, F_STRICT_CHK};
 pub use sockaddr::{admit_dest, encode_dest, first_group, nonroot_send, parse_dest,
-    parse_supplied_dest, NlDest};
+    parse_supplied_dest, raw_fields, validate_shape, NlDest};
 pub use wire::{alloc_port_id, flags, msg, nlmsg_align, proto, AF_NETLINK,
     KOBJECT_UEVENT_KERNEL_GROUP_MASK, KOBJECT_UEVENT_UDEV_GROUP_MASK,
     NETLINK_UNCONNECTED_GROUPS, NETLINK_UNCONNECTED_PORT_ID, SOCKADDR_NL_SIZE,
