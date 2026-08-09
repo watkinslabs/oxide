@@ -23,6 +23,7 @@ extern crate alloc;
 
 pub mod types;
 pub mod lifecycle;
+pub mod metrics;
 pub mod timers;
 pub mod io;
 pub mod sack;

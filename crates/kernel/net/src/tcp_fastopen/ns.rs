@@ -62,9 +62,9 @@ pub fn blackhole_times(namespace: &NetworkNamespaceRef) -> u32 {
 
 /// What this namespace's clients learned about one destination. # C: O(log N)
 pub fn cached_cookie(namespace: &NetworkNamespaceRef, src: crate::addr::IpAddr,
-                     dst: crate::addr::IpAddr, now_ns: u64) -> super::cache::Cached
+                     dst: crate::addr::IpAddr, now_ns: u64) -> crate::tcp_metrics::store::Cached
 {
-    crate::net_ns::materialize_state(namespace).fastopen_cache.get(src, dst, now_ns)
+    crate::net_ns::materialize_state(namespace).metrics_cache.get(src, dst, now_ns)
 }
 
 /// Record what one handshake taught this namespace about a destination.
@@ -74,16 +74,16 @@ pub fn cache_learned(namespace: &NetworkNamespaceRef, src: crate::addr::IpAddr,
                      dst: crate::addr::IpAddr, now_ns: u64, mss: u16,
                      learned: &super::learn::Learned)
 {
-    crate::net_ns::materialize_state(namespace).fastopen_cache.set(
+    crate::net_ns::materialize_state(namespace).metrics_cache.set(
         src, dst, now_ns, mss, learned.cookie, learned.syn_lost, learned.try_exp);
 }
 
 /// The live fast-open metrics row for one destination in this namespace.
 /// # C: O(log N)
 pub fn cache_metrics(namespace: &NetworkNamespaceRef, src: Option<crate::addr::IpAddr>,
-                     dst: crate::addr::IpAddr, now_ns: u64) -> Option<super::cache::Metrics>
+                     dst: crate::addr::IpAddr, now_ns: u64) -> Option<crate::tcp_metrics::store::Metrics>
 {
-    crate::net_ns::materialize_state(namespace).fastopen_cache.metrics(src, dst, now_ns)
+    crate::net_ns::materialize_state(namespace).metrics_cache.metrics(src, dst, now_ns)
 }
 
 /// The namespace's default keys, or `None` while it has drawn none.

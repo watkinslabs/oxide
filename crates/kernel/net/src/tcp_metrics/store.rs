@@ -1,5 +1,9 @@
-// The client cookie cache: what this host learned from each destination it
-// fast-opened to.
+// The per-destination metrics cache: what this host learned from every
+// destination it has spoken to. One row per address pair holds both the
+// congestion metrics a closing connection writes back and the fast-open state
+// a client presents on its next handshake — the reference keeps them in the
+// same block for the same reason, because both are facts about a destination
+// rather than about any one connection.
 //
 // A cookie names a host pair, not a connection (`super::cookie`), so one
 // learned on any connection to a server is presentable on every later one.
@@ -34,6 +38,8 @@ use sync::{Socket as SockLockClass, Spinlock};
 
 use crate::addr::IpAddr;
 use crate::tcp_conn::fastopen::Cookie;
+
+use super::ids;
 
 /// Nanoseconds in one second.
 const NS_PER_SEC: u64 = 1_000_000_000;
@@ -74,6 +80,11 @@ struct Entry {
     syn_loss: u16,
     /// When the most recent one was recorded.
     last_syn_loss_ns: u64,
+    /// Congestion metrics closing connections left behind, indexed by
+    /// `super::ids`.
+    vals: [u32; ids::COUNT],
+    /// Slots an administrator pinned against the connection-driven update.
+    lock: u32,
 }
 
 /// What the cache knows about one destination.
@@ -85,7 +96,7 @@ pub struct Cached {
     pub try_exp: bool,
 }
 
-/// One fast-open cache row projected for the TCP metrics ABI.
+/// One cache row projected for the TCP metrics ABI.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Metrics {
     pub src: IpAddr,
@@ -95,9 +106,12 @@ pub struct Metrics {
     pub syn_loss: u16,
     pub syn_loss_age_ns: u64,
     pub cookie: Option<Cookie>,
+    /// Congestion metrics, indexed by `super::ids`.
+    pub vals: [u32; ids::COUNT],
+    pub lock: u32,
 }
 
-/// One namespace's client cookie cache.
+/// One namespace's destination metrics cache.
 ///
 /// The bucket array is a separate heap allocation reached by pointer, not an
 /// inline member. Inline, `BUCKETS` locks made this 8192 B and, embedded in
@@ -106,11 +120,11 @@ pub struct Metrics {
 /// a 16 KiB kernel stack, on a path reachable from softirq receive. The
 /// reference keeps its destination-metrics hash in exactly this shape: a
 /// separately allocated bucket array the namespace refers to.
-pub struct ClientCache {
+pub struct MetricsCache {
     chains: Box<[Spinlock<Vec<Entry>, SockLockClass>]>,
 }
 
-impl Default for ClientCache {
+impl Default for MetricsCache {
     /// # C: O(BUCKETS)
     fn default() -> Self { Self::new() }
 }
@@ -127,7 +141,7 @@ fn bucket(dst: IpAddr) -> usize {
     (acc as usize) % BUCKETS
 }
 
-impl ClientCache {
+impl MetricsCache {
     /// Buckets are pushed one at a time into a heap vector, never built as an
     /// array temporary — the temporary is what put `BUCKETS` locks on the
     /// stack. # C: O(BUCKETS)
@@ -229,10 +243,93 @@ impl ClientCache {
             mss: entry.mss, syn_loss: entry.syn_loss,
             syn_loss_age_ns: now_ns.wrapping_sub(entry.last_syn_loss_ns),
             cookie: entry.cookie.filter(|cookie| !cookie.is_request()),
+            vals: entry.vals, lock: entry.lock,
         })
+    }
+
+    /// The congestion metrics held for one destination. A miss and a
+    /// destination nothing is known about read the same, which is what makes
+    /// the compiled defaults the answer to both. # C: O(depth)
+    pub fn cached(&self, src: IpAddr, dst: IpAddr) -> super::init::CachedMetrics {
+        let chain = self.chains[bucket(dst)].lock();
+        chain.iter().find(|e| e.src == Some(src) && e.dst == Some(dst))
+            .map(|e| super::init::CachedMetrics { vals: e.vals, lock: e.lock })
+            .unwrap_or_default()
+    }
+
+    /// Whether a previous connection to this destination proved it reachable.
+    ///
+    /// A stored round-trip time is the evidence: it can only have come from a
+    /// connection this host completed. The reference asks exactly this
+    /// question of exactly this field. # C: O(depth)
+    pub fn peer_is_proven(&self, src: IpAddr, dst: IpAddr) -> bool {
+        self.cached(src, dst).get(ids::RTT) != 0
+    }
+
+    /// Fold one closing connection's measurements into its destination's row,
+    /// creating the row if this is the first connection to reach it.
+    /// # C: O(depth)
+    pub fn record(&self, src: IpAddr, dst: IpAddr, now_ns: u64, conn: super::update::Closing) {
+        let mut chain = self.chains[bucket(dst)].lock();
+        let existing = chain.iter().position(|e| e.src == Some(src) && e.dst == Some(dst));
+        let row = existing.map(|index| super::update::Row {
+            vals: chain[index].vals, lock: chain[index].lock,
+        }).unwrap_or_default();
+        match super::update::update(row, conn) {
+            super::update::Update::Store(row) => {
+                let index = match existing {
+                    Some(index) => index,
+                    None => Self::insert(&mut chain, src, dst),
+                };
+                chain[index].vals = row.vals;
+                chain[index].stamp_ns = now_ns;
+            }
+            // A connection that measured nothing creates no row: an entry
+            // holding only the absence of a round-trip time is what a miss
+            // already reads as.
+            super::update::Update::ForgetRtt => {
+                if let Some(index) = existing {
+                    if !ids::locked(chain[index].lock, ids::RTT) {
+                        chain[index].vals[ids::RTT] = 0;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Administrative write of one destination's metrics, which also pins
+    /// every slot it names against the connection-driven update. # C: O(depth)
+    pub fn pin(&self, src: IpAddr, dst: IpAddr, now_ns: u64, vals: [Option<u32>; ids::COUNT]) {
+        let mut chain = self.chains[bucket(dst)].lock();
+        let index = match chain.iter().position(|e| e.src == Some(src) && e.dst == Some(dst)) {
+            Some(index) => index,
+            None => Self::insert(&mut chain, src, dst),
+        };
+        let entry = &mut chain[index];
+        entry.stamp_ns = now_ns;
+        for (metric, value) in vals.iter().enumerate() {
+            let Some(value) = *value else { continue; };
+            entry.vals[metric] = value;
+            entry.lock = ids::with_lock(entry.lock, metric);
+        }
+    }
+
+    /// Drop one destination's whole row, or every row naming that
+    /// destination when no source narrows it. Reports whether anything was
+    /// held. # C: O(depth)
+    pub fn forget(&self, src: Option<IpAddr>, dst: IpAddr) -> bool {
+        let mut chain = self.chains[bucket(dst)].lock();
+        let before = chain.len();
+        chain.retain(|e| !(e.dst == Some(dst) && (src.is_none() || e.src == src)));
+        before != chain.len()
+    }
+
+    /// Drop every row this namespace holds. # C: O(BUCKETS × depth)
+    pub fn forget_all(&self) {
+        for chain in self.chains.iter() { chain.lock().clear(); }
     }
 }
 
 #[cfg(test)]
-#[path = "cache_tests.rs"]
+#[path = "store_tests.rs"]
 mod tests;

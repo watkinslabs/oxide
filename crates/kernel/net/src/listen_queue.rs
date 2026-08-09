@@ -85,17 +85,18 @@ pub fn admit_unproven_request(qlen: usize, max_syn_backlog: i64, syncookies_on: 
 
 /// Whether a previous connection to this peer proved it reachable.
 ///
-/// The reference answers this from a per-destination metrics cache populated
-/// when a connection to that address closes. This host keeps no such cache, so
-/// it can vouch for nobody — which is also the answer the reference gives for
-/// every peer on a host whose cache is empty, and the answer it gives forever
-/// when the cache is compiled out. The reserve in [`admit_unproven_request`]
-/// is therefore held against every peer here rather than only unknown ones.
-///
-/// One named place on purpose: when the destination metrics cache exists, this
-/// is the single call that consults it, and nothing else needs to change.
+/// The per-destination metrics cache answers it, and a stored round-trip time
+/// is the evidence: it can only have come from a connection this host
+/// completed. A namespace that has never spoken to the address vouches for
+/// nobody, which is what the reference answers for a peer its own cache has
+/// never held. The address pair is the key, not the peer alone — the same
+/// remote reached from a different local address is a different path.
 /// # C: O(1)
-pub fn peer_is_proven(_net_ns: u64, _peer: crate::addr::IpAddr) -> bool { false }
+pub fn peer_is_proven(net_ns: u64, local: crate::addr::IpAddr, peer: crate::addr::IpAddr)
+    -> bool
+{
+    crate::tcp_metrics::peer_is_proven(net_ns, local, peer)
+}
 
 /// What a listener does with a completed handshake it has no accept-queue room
 /// for.

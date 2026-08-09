@@ -74,7 +74,7 @@ impl NetStack {
             && !crate::listen_queue::admit_unproven_request(
                 listener.syn_qlen(), crate::sysctl::tcp_max_syn_backlog_in(net_ns),
                 mode != crate::syncookies::OFF,
-                crate::listen_queue::peer_is_proven(net_ns, src_ip))
+                crate::listen_queue::peer_is_proven(net_ns, dst_ip, src_ip))
         {
             if reserved { listener.syn_backlog_used.fetch_sub(1,
                 ::core::sync::atomic::Ordering::AcqRel); }

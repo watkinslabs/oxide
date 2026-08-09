@@ -203,7 +203,6 @@ fn sk_filter_access(offset: usize, size: usize, write: bool) -> bool {
 /// against `len`, which is the same route a socket filter takes.
 /// # C: O(1)
 fn sk_reuseport_access(offset: usize, size: usize, write: bool) -> bool {
-    use sk_reuseport_md as md;
     if write || size == 0 || !size.is_power_of_two() || offset % size != 0 { return false; }
     // The access lies wholly inside one published member. Width is bounded by
     // that alone: a member is one word, so a doubleword read of one is an

@@ -284,6 +284,16 @@ pub fn tcp_abort_on_overflow_in(ns: u64) -> i64 {
         .unwrap_or(crate::listen_queue::DEFAULT_ABORT_ON_OVERFLOW)
 }
 
+/// `net.ipv4.tcp_nometrics_save` in a live namespace. # C: O(log N)
+pub fn tcp_nometrics_save_in(ns: u64) -> bool {
+    value_in(ns, NetSysctlKey::TcpNoMetricsSave).unwrap_or(0) != 0
+}
+
+/// `net.ipv4.tcp_no_ssthresh_metrics_save` in a live namespace. # C: O(log N)
+pub fn tcp_no_ssthresh_metrics_save_in(ns: u64) -> bool {
+    value_in(ns, NetSysctlKey::TcpNoSsthreshMetricsSave).unwrap_or(0) != 0
+}
+
 /// Linux unsigned backlog clamp performed by `__sys_listen_socket`.
 /// Negative `i32` values therefore clamp to `somaxconn`. # C: O(1)
 pub fn normalize_listen_backlog(backlog: i32, limit: usize) -> usize {
