@@ -677,6 +677,27 @@ pub struct Task {
     /// across fork, cleared at exec (`arch_setup_new_exec`).
     pub nocpuid: AtomicBool,
 
+    /// Emulated x86 IOPL (`iopl(2)`), 0-3. Level 3 permits every I/O port;
+    /// 0-2 permit none. Per-THREAD and inherited across fork.
+    ///
+    /// EMULATED, not the EFLAGS IOPL field: a real IOPL=3 would also let user
+    /// mode run `cli`/`sti` and wedge the machine. The port grant is published
+    /// through the TSS permit-everything window instead, which is exactly the
+    /// grant `iopl(3)` promises and nothing more.
+    pub iopl_emul: core::sync::atomic::AtomicU8,
+
+    /// This thread's `ioperm(2)` port permission map, or `None` when it holds
+    /// no per-port grant. Shared by reference with forked children until one
+    /// of them edits it (`Arc::make_mut`), matching the reference's refcounted
+    /// bitmap. Logic lives in `crate::ioport`.
+    pub io_bitmap: Spinlock<Option<Arc<crate::ioport::IoBitmap>>, TaskListClass>,
+
+    /// The reference's `TIF_IO_BITMAP`: true when this thread holds ANY port
+    /// grant (`iopl_emul == 3` or a map). Recomputed from those two wherever
+    /// either changes; it exists so the context-switch path decides in a
+    /// single relaxed load whether the TSS window needs touching at all.
+    pub tif_io_bitmap: AtomicBool,
+
     /// This thread's aarch64 POR_EL0 snapshot. x86 PKRU belongs to the xstate
     /// image, which is saved and restored with every other x86 user register.
     ///

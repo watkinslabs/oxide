@@ -67,6 +67,15 @@ pub const KDADDIO: u64 = 0x4B34;
 pub const KDDELIO: u64 = 0x4B35;
 pub const KDENABIO: u64 = 0x4B36;
 pub const KDDISABIO: u64 = 0x4B37;
+
+/// First port `KDADDIO`/`KDDELIO` will grant. The VT layer refuses anything
+/// outside `GPFIRST..=GPLAST` even though the underlying `ioperm` would
+/// accept a wider range.
+pub const GPFIRST: u64 = 0x3b4;
+/// Last port `KDADDIO`/`KDDELIO` will grant.
+pub const GPLAST: u64 = 0x3df;
+/// Port count `KDENABIO`/`KDDISABIO` grant or withdraw in one call.
+pub const GPNUM: u64 = GPLAST - GPFIRST + 1;
 pub const KIOCSOUND: u64 = 0x4B2F;
 pub const KDMKTONE: u64 = 0x4B30;
 pub const KDFONTOP: u64 = 0x4B72;

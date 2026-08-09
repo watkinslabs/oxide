@@ -20,8 +20,6 @@ use syscall::nrs::*;
 ///
 /// | Slot | Linux config | Mechanism |
 /// |---|---|---|
-/// | `iopl` | `CONFIG_X86_IOPL_IOPERM` | the `#else` branch: `SYSCALL_DEFINE1(iopl) { return -ENOSYS; }` |
-/// | `ioperm` | `CONFIG_X86_IOPL_IOPERM` | same `#else` branch: `SYSCALL_DEFINE3(ioperm) { return -ENOSYS; }` |
 /// | `kexec_load` | `CONFIG_KEXEC` | `COND_SYSCALL(kexec_load)` |
 /// | `kexec_file_load` | `CONFIG_KEXEC_FILE` | `COND_SYSCALL(kexec_file_load)` |
 ///
@@ -33,19 +31,23 @@ use syscall::nrs::*;
 /// refusal was a divergence recorded as compliance. Slot 154 now has a per-`mm`
 /// LDT, a per-CPU GDT descriptor and an `lldt` reload on address-space switch
 /// (`crate::ldt_abi`, `vmm::ldt`, `sched::ldt`).
-/// - `iopl` / `ioperm` hand userspace direct port I/O. That is backed by the
-///   TSS I/O permission bitmap plus per-task bitmap state carried across
-///   context switch. Without that state a success return is a SECURITY LIE:
-///   the caller believes it holds port access it does not have, and proceeds
-///   to drive hardware through `outb`/`inb` that fault (or, worse, would not).
-///   A grant we cannot enforce is strictly worse than an honest refusal.
+///
+/// `iopl` / `ioperm` are NOT here either, and left for the same reason plus one
+/// more. The citation was a `CONFIG_X86_IOPL_IOPERM=n` build; that option is
+/// `default y` and is set on the kernels this port targets, so it did not hold.
+/// The OTHER objection did: a port grant nothing enforces is a security lie,
+/// because the caller believes it holds access it does not have. That was
+/// answered by building the enforcement rather than keeping the refusal — a
+/// per-task refcounted permission map, the TSS window it is published through,
+/// and the context-switch update that makes the grant follow its thread
+/// (`syscalls/{172_iopl,173_ioperm}.rs` over `sched::ioport`).
 /// - `kexec_load` / `kexec_file_load` load a replacement kernel image for a
 ///   subsequent `reboot(LINUX_REBOOT_CMD_KEXEC)`. `reboot(2)` already answers
 ///   the KEXEC command with EINVAL (`syscalls/169_reboot.rs`), so refusing the
 ///   load keeps the pair consistent: nothing can stage an image that the
 ///   reboot path would then refuse to boot.
-pub const UNCONFIGURED_NRS: [u64; 4] = [
-    NR_IOPL, NR_IOPERM, NR_KEXEC_LOAD, NR_KEXEC_FILE_LOAD,
+pub const UNCONFIGURED_NRS: [u64; 2] = [
+    NR_KEXEC_LOAD, NR_KEXEC_FILE_LOAD,
 ];
 
 /// True for a slot this kernel deliberately answers with ENOSYS because the
@@ -55,7 +57,7 @@ pub const UNCONFIGURED_NRS: [u64; 4] = [
 /// counterpart, not the accidental dispatch fall-through — which is
 /// indistinguishable from it at the ABI but carries no evidence that anyone
 /// checked what Linux returns.
-/// # C: O(5)
+/// # C: O(3)
 pub fn is_unconfigured(nr: u64) -> bool { UNCONFIGURED_NRS.contains(&nr) }
 
 #[cfg(test)]
@@ -68,9 +70,7 @@ mod tests {
     /// implement, fails here instead of silently ENOSYS-ing a live syscall.
     #[test]
     fn set_matches_the_pinned_linux_slot_numbers() {
-        let expected: [u64; 4] = [
-            172, // iopl            ioport.c #else -> -ENOSYS
-            173, // ioperm          ioport.c #else -> -ENOSYS
+        let expected: [u64; 2] = [
             246, // kexec_load      COND_SYSCALL
             320, // kexec_file_load COND_SYSCALL
         ];
@@ -100,18 +100,19 @@ mod tests {
     #[test]
     fn implemented_neighbours_are_not_members() {
         for nr in [NR_INIT_MODULE, NR_FINIT_MODULE, NR_DELETE_MODULE, NR_ACCT, NR_REBOOT,
-                   NR_MODIFY_LDT] {
+                   NR_MODIFY_LDT, NR_IOPL, NR_IOPERM] {
             assert!(!is_unconfigured(nr), "slot {nr} is implemented and must not be refused");
         }
     }
 
-    /// `iopl` refuses BEFORE validating its level argument, exactly like the
-    /// `CONFIG_X86_IOPL_IOPERM=n` branch — which returns `-ENOSYS` with no
-    /// `level > 3` test. A kernel that answered EINVAL for a bad level and
-    /// ENOSYS otherwise would leak that the feature is half-present.
+    /// `iopl` / `ioperm` are IMPLEMENTED and must never fall back into this
+    /// set. The justification they once carried — parity with
+    /// `CONFIG_X86_IOPL_IOPERM=n` — was wrong about the reference, which sets
+    /// the option by default; a regression that re-added them here would
+    /// resurrect a refusal Linux does not make.
     #[test]
-    fn iopl_refusal_does_not_depend_on_its_argument() {
-        assert!(is_unconfigured(NR_IOPL));
-        assert!(is_unconfigured(NR_IOPERM));
+    fn the_port_io_slots_are_implemented_not_refused() {
+        assert!(!is_unconfigured(NR_IOPL));
+        assert!(!is_unconfigured(NR_IOPERM));
     }
 }

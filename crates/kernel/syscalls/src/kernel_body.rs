@@ -95,6 +95,8 @@ mod io_uring_sqe;
 mod module_admit;
 mod acct_exit;
 #[path = "163_acct.rs"] pub mod s163_acct;
+#[path = "172_iopl.rs"] pub mod s172_iopl;
+#[path = "173_ioperm.rs"] pub mod s173_ioperm;
 #[path = "175_init_module.rs"] pub mod s175_init_module;
 #[path = "176_delete_module.rs"] pub mod s176_delete_module;
 #[path = "313_finit_module.rs"] pub mod s313_finit_module;

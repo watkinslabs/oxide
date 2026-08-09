@@ -92,6 +92,9 @@ pub(super) fn inherit_from_parent(task: &mut Task) {
     // feature/lock pair: a child of a shadow-stack thread must not be able to
     // re-open a facility its parent locked.
     task.nocpuid.store(parent.nocpuid.load(Ordering::Acquire), Ordering::Release);
+    // `io_bitmap_share` + the inherited `iopl_emul`: a child starts with the
+    // parent's port grant, sharing the map by reference until either edits it.
+    crate::ioport::inherit(parent, task);
     inherit_fpu_state(task, parent);
     // POR_EL0 is separate from the aarch64 FPSIMD image, so it is inherited
     // explicitly. x86 PKRU rides in the xstate copy above.

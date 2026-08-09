@@ -94,7 +94,11 @@ pub use timer::{set_tsc_khz, X86TimerOps};
 pub use tsd::{cr4_with_tsd, set_tsd, CR4_TSD};
 pub use tss::{
     install_tss, install_tss_for_cpu, set_rsp0, setup_ist_stacks, tss_base_addr, Tss64,
-    TSS_SEL, IST_STACK_BYTES,
+    TssFull, TssIoBitmap, TSS_SEL, IST_STACK_BYTES, KERNEL_TSS_LIMIT,
+};
+pub use tss::io_bitmap::{
+    tss_update_io_bitmap, IO_BITMAP_BITS, IO_BITMAP_BYTES, IO_BITMAP_LONGS,
+    IO_BITMAP_OFFSET_INVALID, IO_BITMAP_OFFSET_VALID_ALL, IO_BITMAP_OFFSET_VALID_MAP,
 };
 pub use uaccess::{raw_copy_from_user, raw_copy_to_user};
 

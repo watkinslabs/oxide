@@ -72,11 +72,16 @@ pub fn try_compat(nr: u64, args: &SyscallArgs) -> Option<i64> {
         // NR_INIT_MODULE / NR_FINIT_MODULE / NR_DELETE_MODULE have been
         // dispatched by `route_c` to real `modules`-crate implementations
         // since P3; their arm here was dead and is gone (F757).
-        // NR_KEXEC_LOAD / NR_KEXEC_FILE_LOAD / NR_IOPL / NR_IOPERM answer
-        // ENOSYS through `syscalls::unconfigured` (F757) — the errno Linux
-        // itself returns with CONFIG_KEXEC / CONFIG_X86_IOPL_IOPERM unset.
-        // EPERM was a lie about the reason: no privilege exists that makes
-        // an absent feature appear, so a root caller retried forever.
+        // NR_KEXEC_LOAD / NR_KEXEC_FILE_LOAD answer ENOSYS through
+        // `syscalls::unconfigured` (F757) — the errno Linux itself returns
+        // with CONFIG_KEXEC unset. EPERM was a lie about the reason: no
+        // privilege exists that makes an absent feature appear, so a root
+        // caller retried forever.
+        // NR_IOPL / NR_IOPERM moved to real impls (B2023,
+        // syscalls/{172_iopl,173_ioperm}.rs over `sched::ioport`): a per-task
+        // permission map published through the TSS I/O window. Their old
+        // ENOSYS cited CONFIG_X86_IOPL_IOPERM=n, which is not how the
+        // reference is built.
 
         // ---- substrate-not-implemented ----
         // PTRACE moved to real (narrow) impl in P22a/P22b — TRACEME +

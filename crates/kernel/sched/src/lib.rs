@@ -63,6 +63,7 @@ pub mod exit;
 pub mod exec_flush;
 pub mod personality;
 pub mod rlimit;
+pub mod ioport;
 pub mod ioprio;
 pub mod rt;
 pub mod session;

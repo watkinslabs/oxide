@@ -15,7 +15,14 @@
 // own IST would clobber the outer frame. The gate `ist` index is per-gate
 // (shared IDT); the STACK it selects is per-CPU via the running CPU's TSS.
 //
-// 64-bit TSS layout (104 B, no IO bitmap):
+// Module manifest:
+//   this file    — `Tss64` hardware header, the per-CPU `TssFull` statics,
+//                  RSP0/IST publication, `ltr` install.
+//   io_bitmap.rs — the appended I/O permission windows (`ioperm`/`iopl`
+//                  enforcement), their offsets, the descriptor limit, and the
+//                  per-CPU window programming used by the switch path.
+//
+// 64-bit TSS layout (104 B header, I/O bitmap appended after it):
 //   0x00  reserved (4)
 //   0x04  RSP0 (8)         ← kernel stack on CPL3→CPL0 transition
 //   0x0C  RSP1 (8)
@@ -24,10 +31,11 @@
 //   0x24  IST1..IST7 (7×8)
 //   0x5C  reserved (8)
 //   0x64  reserved (2)
-//   0x66  IO-bitmap base offset (2)  ← 0x68 = past TSS = no bitmap
+//   0x66  IO-bitmap base offset (2)  ← `io_bitmap::IO_BITMAP_OFFSET_*`
+//   0x68  I/O permission windows (`TssIoBitmap`, 16400 B)
 //
 // 16-byte system descriptor at GDT[9..11]:
-//   bits 0..15   limit_lo (= 103)
+//   bits 0..15   limit_lo (= `io_bitmap::KERNEL_TSS_LIMIT`)
 //   bits 16..39  base_lo (24)
 //   bits 40..47  access (P|DPL|S=0|TYPE=9)  → 0x89 (avail 64-bit TSS)
 //   bits 48..51  limit_hi
@@ -38,7 +46,11 @@
 
 extern crate alloc;
 
+pub mod io_bitmap;
+
 use core::cell::UnsafeCell;
+
+pub use io_bitmap::{TssIoBitmap, KERNEL_TSS_LIMIT};
 
 /// Selector for the kernel TSS in the GDT (offset 0x50, post-P2-02).
 pub const TSS_SEL: u16 = 0x50;
@@ -87,7 +99,11 @@ pub struct Tss64 {
 }
 
 impl Tss64 {
-    /// Empty TSS with iomap_base = sizeof(Tss64) (= no IO bitmap).
+    /// All-zero header. `iomap_base` is zero — NOT a usable "no bitmap"
+    /// value, since offset 0 aims the CPU's port check at the header itself.
+    /// `io_bitmap::init_for_cpu` replaces it with `IO_BITMAP_OFFSET_INVALID`
+    /// before this CPU's `ltr`; the zero image is what puts the 1 MiB of
+    /// per-CPU bitmap in `.bss` instead of the kernel image.
     /// # C: O(1)
     pub const fn empty() -> Self {
         Self {
@@ -98,13 +114,32 @@ impl Tss64 {
             ist5: 0, ist6: 0, ist7: 0,
             _resv2: 0,
             _resv3: 0,
-            iomap_base: core::mem::size_of::<Tss64>() as u16,
+            iomap_base: 0,
         }
     }
 }
 
-#[repr(C, align(16))]
-struct TssCell(UnsafeCell<Tss64>);
+/// The complete per-CPU TSS: the 104-byte hardware header the CPU reads for
+/// RSP0/IST, immediately followed by the two I/O permission windows the
+/// header's `iomap_base` selects between. The descriptor limit
+/// (`io_bitmap::KERNEL_TSS_LIMIT`) covers the whole struct.
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct TssFull {
+    pub hw: Tss64,
+    pub io: TssIoBitmap,
+}
+
+impl TssFull {
+    /// # C: O(1)
+    pub const fn empty() -> Self { Self { hw: Tss64::empty(), io: TssIoBitmap::zeroed() } }
+}
+
+// Page-aligned like the reference: the hardware header must not straddle a
+// page boundary, and the alignment also keeps each CPU's bitmap off its
+// neighbour's cache lines.
+#[repr(C, align(4096))]
+struct TssCell(UnsafeCell<TssFull>);
 
 // SAFETY: each CPU mutates only its OWN slot (`TSS[current_cpu()]`) via
 // `set_rsp0`; the 8-byte RSP0 store is a single mov, and the CPU re-reads
@@ -121,7 +156,19 @@ pub const NR_TSS: usize = 64;
 /// Per-CPU TSS array. CPU `i` uses `TSS[i]`, loaded via `ltr(TSS_SEL +
 /// i*0x10)` and updated via `set_rsp0` (indexed by `current_cpu()`).
 static TSS: [TssCell; NR_TSS] =
-    [const { TssCell(UnsafeCell::new(Tss64::empty())) }; NR_TSS];
+    [const { TssCell(UnsafeCell::new(TssFull::empty())) }; NR_TSS];
+
+/// Exclusive reference to CPU `cpu`'s TSS. Every writer is that CPU itself
+/// (RSP0 on switch, IST at bring-up, the I/O window), so no slot is ever
+/// written from two CPUs.
+///
+/// # SAFETY: caller is CPU `cpu` (or its single-threaded bring-up / a hosted
+/// test), and must not hold two overlapping borrows of the same slot.
+/// # C: O(1)
+pub(crate) unsafe fn tss_mut(cpu: usize) -> &'static mut TssFull {
+    // SAFETY: sole-writer contract handed down from this fn's own contract; the static outlives the kernel.
+    unsafe { &mut *TSS[cpu.min(NR_TSS - 1)].0.get() }
+}
 
 /// Linear address of CPU `cpu`'s TSS. Used by `gdt::install_kernel_gdt`
 /// to stamp the per-CPU TSS descriptors' split base fields.
@@ -142,8 +189,8 @@ pub unsafe fn set_rsp0(rsp0: u64) {
     use hal::CpuOps;
     let cpu = (crate::X86CpuOps::current_cpu() as usize).min(NR_TSS - 1);
     // SAFETY: this CPU is the sole writer of its own slot; single mov store.
-    let tss = unsafe { &mut *TSS[cpu].0.get() };
-    tss.rsp0 = rsp0;
+    let tss = unsafe { tss_mut(cpu) };
+    tss.hw.rsp0 = rsp0;
 }
 
 /// Allocate CPU `cpu`'s per-CPU IST exception stacks (#DF/NMI/#DB/#MC) and
@@ -175,11 +222,11 @@ pub unsafe fn setup_ist_stacks(cpu: u16) {
     // SAFETY: this CPU is the sole writer of its own TSS slot during setup;
     // each store is an aligned 8-byte mov to a field the CPU only re-reads
     // when it takes the matching IST-routed exception (serialized by entry).
-    let tss = unsafe { &mut *TSS[cpu].0.get() };
-    tss.ist1 = df;  // IST_DF
-    tss.ist2 = nmi; // IST_NMI
-    tss.ist3 = db;  // IST_DB
-    tss.ist4 = mc;  // IST_MC
+    let tss = unsafe { tss_mut(cpu) };
+    tss.hw.ist1 = df;  // IST_DF
+    tss.hw.ist2 = nmi; // IST_NMI
+    tss.hw.ist3 = db;  // IST_DB
+    tss.hw.ist4 = mc;  // IST_MC
 }
 
 /// Read CPU `cpu`'s TSS IST slot `ist` (1..=7). Test-only helper: not
@@ -190,10 +237,10 @@ pub unsafe fn setup_ist_stacks(cpu: u16) {
 pub fn tss_ist(cpu: usize, ist: u8) -> u64 {
     // SAFETY: read-only load of a u64 field; no concurrent writer once
     // `setup_ist_stacks` has run for this CPU (slots are write-once).
-    let tss = unsafe { &*TSS[cpu.min(NR_TSS - 1)].0.get() };
+    let tss = unsafe { tss_mut(cpu) };
     match ist {
-        1 => tss.ist1, 2 => tss.ist2, 3 => tss.ist3, 4 => tss.ist4,
-        5 => tss.ist5, 6 => tss.ist6, 7 => tss.ist7, _ => 0,
+        1 => tss.hw.ist1, 2 => tss.hw.ist2, 3 => tss.hw.ist3, 4 => tss.hw.ist4,
+        5 => tss.hw.ist5, 6 => tss.hw.ist6, 7 => tss.hw.ist7, _ => 0,
     }
 }
 
@@ -246,11 +293,21 @@ pub unsafe fn install_tss_for_cpu(cpu: u16) {
     #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
     {
         let sel = TSS_SEL + cpu * 0x10;
+        // The I/O windows must be real BEFORE the CPU can consult them: the
+        // statics are zero-filled, and a zero `iomap_base` inside the
+        // descriptor limit would let ring 3 pass the port check against the
+        // TSS header's own (mostly zero) bytes.
+        // SAFETY: this is CPU `cpu`'s own bring-up, single-threaded, and it is the sole writer of its TSS slot.
+        unsafe { io_bitmap::init_for_cpu(cpu as usize); }
         // SAFETY: single `ltr`; legal at CPL=0; descriptor available per fn contract.
         unsafe { oxide_load_tr(sel); }
     }
     #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
-    { let _ = cpu; }
+    {
+        // SAFETY: hosted build has no `ltr`, but the window init is pure
+        // memory and keeps the hosted TSS image identical to the kernel's.
+        unsafe { io_bitmap::init_for_cpu(cpu as usize); }
+    }
 }
 
 #[cfg(test)]
@@ -259,8 +316,10 @@ mod tests {
 
     #[test]
     fn tss_size_is_104() {
-        // SDM Vol. 3 §7.7: 64-bit TSS = 104 bytes (no IO bitmap).
+        // SDM Vol. 3 §7.7: the 64-bit TSS header is 104 bytes; the I/O
+        // permission windows are appended after it.
         assert_eq!(core::mem::size_of::<Tss64>(), 104);
+        assert_eq!(core::mem::offset_of!(TssFull, io), 104);
     }
 
     #[test]
@@ -275,10 +334,17 @@ mod tests {
     }
 
     #[test]
-    fn empty_tss_iomap_base_is_size() {
-        // iomap_base == sizeof(TSS) ⇒ no IO bitmap (Intel SDM 19.5.2).
-        let t = Tss64::empty();
-        assert_eq!(t.iomap_base as usize, core::mem::size_of::<Tss64>());
+    fn zeroed_tss_gets_an_invalid_iomap_base_at_install() {
+        // The static image is all-zero so the 64 per-CPU bitmaps live in
+        // `.bss`. Zero is NOT a safe resting value — it aims the CPU's port
+        // check at the TSS header — so the install path must replace it with
+        // a base outside the descriptor limit before `ltr`.
+        let base = Tss64::empty().iomap_base;
+        assert_eq!(base, 0);
+        let cpu = 11u16;
+        // SAFETY: hosted single-threaded test; sole writer of TSS[11].
+        unsafe { install_tss_for_cpu(cpu); }
+        assert_eq!(io_bitmap::iomap_base(cpu as usize), io_bitmap::IO_BITMAP_OFFSET_INVALID);
     }
 
     #[test]
@@ -304,7 +370,7 @@ mod tests {
         // SAFETY: hosted test entry; single-threaded with no concurrent writers; defers to set_rsp0 whose contract requires single-CPU serialisation.
         unsafe { set_rsp0(0xDEAD_BEEF_CAFE_BABE); }
         // SAFETY: hosted test; only this thread accesses TSS, so a raw read of the UnsafeCell payload races nothing.
-        let read = unsafe { (*TSS[0].0.get()).rsp0 };
+        let read = unsafe { tss_mut(0) }.hw.rsp0;
         assert_eq!(read, 0xDEAD_BEEF_CAFE_BABE);
         // SAFETY: hosted test reset; same single-thread justification as the prior set_rsp0 call above.
         unsafe { set_rsp0(0); }

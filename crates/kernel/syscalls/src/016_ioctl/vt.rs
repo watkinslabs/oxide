@@ -286,9 +286,16 @@ pub(super) fn handle_vt_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Opti
         vt::KDFONTOP | vt::PIO_UNIMAP | vt::GIO_UNIMAP | vt::PIO_UNIMAPCLR => {
             handle_font_ioctl(req, arg)
         }
-        // KIOCSOUND / KDMKTONE / KDADDIO — accept silently or EPERM.
+        // KIOCSOUND / KDMKTONE — accept silently.
         vt::KIOCSOUND | vt::KDMKTONE => Some(0),
-        vt::KDADDIO => Some(errno(Errno::Eperm)),
+        // The legacy port-IO grants. Linux implements all four as a
+        // `ksys_ioperm` over the VGA-adjacent port window, refusing anything
+        // outside it and collapsing every `ioperm` failure to ENXIO. They
+        // answered EPERM here only for as long as there was no I/O permission
+        // bitmap to grant against; `sched::ioport` is that bitmap.
+        vt::KDADDIO | vt::KDDELIO => Some(kd_port_range(arg, arg, 1, req == vt::KDADDIO)),
+        vt::KDENABIO | vt::KDDISABIO =>
+            Some(kd_port_range(vt::GPFIRST, vt::GPFIRST, vt::GPNUM, req == vt::KDENABIO)),
         _ => None,
     }
 }
@@ -310,4 +317,19 @@ fn vt_apply_winsize(rows: u16, cols: u16) {
             sched::live::send_sig_priv_group(&t, sched::Signum::Sigwinch as u32);
         }
     }
+}
+
+/// `KDADDIO`/`KDDELIO`/`KDENABIO`/`KDDISABIO` over the port permission
+/// bitmap. `probe` is the single port the VT layer range-checks (the same
+/// value as `from` for the whole-window commands), and every `ioperm` failure
+/// collapses to ENXIO — the VT interface reports "no such device", not the
+/// underlying EPERM/EINVAL.
+/// # C: O(num)
+fn kd_port_range(probe: u64, from: u64, num: u64, turn_on: bool) -> i64 {
+    use syscall::errno::Errno;
+    let errno = |e: Errno| -(e.as_i32() as i64);
+    if probe < vt::GPFIRST || probe > vt::GPLAST { return errno(Errno::Einval); }
+    let Some(cur) = sched::live::current() else { return errno(Errno::Enxio) };
+    let capable = crate::perm_common::capable(&cur, sched::cap::SYS_RAWIO);
+    if sched::ioport::ioperm(&cur, from, num, turn_on, capable) != 0 { errno(Errno::Enxio) } else { 0 }
 }

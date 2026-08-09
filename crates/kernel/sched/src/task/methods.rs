@@ -424,6 +424,9 @@ impl Task {
             ptrace_fpu_dirty: AtomicBool::new(false),
             singlestep:    AtomicU32::new(0),
             nocpuid:       AtomicBool::new(false),
+            iopl_emul:     core::sync::atomic::AtomicU8::new(0),
+            io_bitmap:     Spinlock::new(None),
+            tif_io_bitmap: AtomicBool::new(false),
             // POR_EL0 begins restrictive; a thread opens keys deliberately.
             #[cfg(target_arch = "aarch64")]
             pkey_rights:   AtomicU64::new(crate::pkey_rights::init_value()),
