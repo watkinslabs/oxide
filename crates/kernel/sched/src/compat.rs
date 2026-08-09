@@ -108,10 +108,13 @@ pub fn try_compat(nr: u64, args: &SyscallArgs) -> Option<i64> {
         // Linux uses. NR_SYSFS moved to a real impl (F756,
         // syscalls/139_sysfs.rs) over the live filesystem-type registry, the
         // same list /proc/filesystems renders.
-        // NR_MODIFY_LDT answers ENOSYS through `syscalls::unconfigured`
-        // (F757) — Linux's own `COND_SYSCALL(modify_ldt)` result with
-        // CONFIG_MODIFY_LDT_SYSCALL unset, and the only honest answer on
-        // aarch64, which has no such slot at all.
+        // NR_MODIFY_LDT moved to a real impl (B2024,
+        // syscalls/154_modify_ldt.rs over `vmm::ldt` + `sched::ldt`): a per-mm
+        // descriptor table, a per-CPU GDT descriptor and an `lldt` reload on
+        // address-space switch. The earlier ENOSYS claimed parity with
+        // CONFIG_MODIFY_LDT_SYSCALL unset, but that option defaults on and is
+        // set in the kernel this port targets. x86_64 only; no aarch64 number
+        // translates onto slot 154 (pinned in `syscall::arm_abi`).
         | NR_LOOKUP_DCOOKIE
         | NR_USELIB
         // QUOTACTL / QUOTACTL_FD moved to real impls (F4) — faithful

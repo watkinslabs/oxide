@@ -304,6 +304,10 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     trace_swap_exec_stage(&path_owned, b"after-activate-mm");
     // SAFETY: we are the running task on this CPU; preempt-off; no concurrent execve writer; reading the still-current old mm before replace.
     if let Some(old) = unsafe { cur.mm_ref() } { old.clear_cpu(me); }
+    // `execve` builds a NEW address space, so the process starts with no LDT
+    // (Linux gets this from the fresh `mm_struct`). LDTR must stop naming the
+    // outgoing mm's table before that table is freed with it.
+    sched::ldt::clear_local();
     // SAFETY: we are the running task on this CPU; preempt-off; no concurrent reader of mm on another CPU (UP v1).
     unsafe { cur.replace_mm(Some(new_as)); }
     #[cfg(feature = "debug-swap")]

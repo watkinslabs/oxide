@@ -6,6 +6,8 @@ pub(super) fn dispatch_route_a(nr: u64, args: &SyscallArgs) -> Option<i64> {
     Some(match nr {
         #[cfg(target_arch = "x86_64")]
         syscall::nrs::NR_ARCH_PRCTL => crate::s158_arch_prctl::kernel_arch_prctl(args),
+        #[cfg(target_arch = "x86_64")]
+        syscall::nrs::NR_MODIFY_LDT => crate::s154_modify_ldt::kernel_modify_ldt(args),
         syscall::nrs::NR_CLOCK_GETTIME => crate::time::kernel_clock_gettime(args),
         syscall::nrs::NR_CLOCK_GETRES => crate::time::kernel_clock_getres(args),
         syscall::nrs::NR_CLOCK_SETTIME => crate::time::kernel_clock_settime(args),

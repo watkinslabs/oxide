@@ -20,6 +20,8 @@ mod idt;
 pub mod ioapic;
 mod irq;
 mod irq_gate;
+// LDTR programming for `modify_ldt(2)`: per-CPU GDT LDT descriptor + `lldt`.
+pub mod ldt;
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub mod linux_retpoline;
 mod mmu;

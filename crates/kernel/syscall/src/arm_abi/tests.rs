@@ -285,6 +285,24 @@ fn arm_unassigned_numbers_do_not_reach_x86_only_syscalls() {
 
 fn syscall_nr_kexec_file_load() -> u64 { crate::nrs::NR_KEXEC_FILE_LOAD }
 
+/// arm64 has no `modify_ldt(2)` either: the LDT is an x86 descriptor table and
+/// the asm-generic syscall numbering assigns the call no number. Slot 154's x86
+/// handler installs a segment descriptor into the caller's address space, so a
+/// fall-through would run a descriptor install for an arm caller that asked for
+/// something else — and the integer 154 IS assigned on arm64, to `setpgid`.
+/// This is the recorded misroute class: an unmapped aarch64 number that lands in
+/// the x86 table runs the wrong syscall, so the mapping is pinned here.
+#[test]
+fn no_aarch64_number_reaches_the_modify_ldt_slot() {
+    use crate::nrs::NR_MODIFY_LDT;
+    assert_eq!(aarch64_nr_to_x86(154), crate::nrs::NR_SETPGID,
+               "arm 154 is setpgid, not modify_ldt");
+    for arm in 0..1024u64 {
+        assert_ne!(aarch64_nr_to_x86(arm), NR_MODIFY_LDT,
+            "aarch64 nr {arm} translates onto x86 modify_ldt (slot {NR_MODIFY_LDT})");
+    }
+}
+
 /// arm64 has no `arch_prctl(2)` at all: the sub-code space describes FS/GS
 /// segment bases, CPUID faulting, XSAVE permission and CET, none of which
 /// exist on aarch64, and the asm-generic syscall numbering assigns it no number. Slot

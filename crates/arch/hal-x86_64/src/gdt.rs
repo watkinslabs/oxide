@@ -40,7 +40,34 @@ use core::cell::UnsafeCell;
 ///
 /// MSR_STAR with STAR[63:48] = 0x38 satisfies the sysretq selector
 /// triple. STAR[47:32] = 0x28 keeps kernel CS for syscall entry.
-pub const GDT_LEN: usize = 10 + crate::tss::NR_TSS * 2;
+///   sel 0x50 + NR_TSS*0x10 + cpu*0x10  per-CPU LDT descriptor (16-byte
+///                        system descriptor, type=0x2). One slot per CPU
+///                        because this port keeps ONE shared GDT: the
+///                        reference has a per-CPU GDT and can reuse a single
+///                        index, but here two CPUs running different address
+///                        spaces would otherwise fight over one descriptor.
+///                        See `crate::ldt`.
+pub const GDT_LEN: usize = 10 + crate::tss::NR_TSS * 4;
+
+/// GDT index of CPU 0's LDT descriptor. Each CPU owns two consecutive
+/// entries from here (a 64-bit system descriptor is 16 bytes).
+pub const LDT_GDT_INDEX_BASE: usize = 10 + crate::tss::NR_TSS * 2;
+
+/// Write one 16-byte system descriptor into the shared GDT.
+///
+/// Callers own the index: each CPU writes only the pair reserved for it, so
+/// concurrent writers never touch the same bytes and no lock is needed.
+/// # SAFETY: `index + 1` must be inside `GDT_LEN`, and the pair must not be
+/// an entry any CPU currently has loaded in a segment register.
+/// # C: O(1)
+pub(crate) unsafe fn write_system_descriptor(index: usize, lo: u64, hi: u64) {
+    // SAFETY: the GDT static outlives the kernel; `06§11` bans `static mut`
+    // so the array is reached through its UnsafeCell, and the caller's
+    // contract restricts the index to a pair it exclusively owns.
+    let gdt = unsafe { &mut *GDT.0.get() };
+    gdt[index] = lo;
+    gdt[index + 1] = hi;
+}
 
 /// User CS64 selector (DPL=3, L=1). Used by `iretq` to ring 3 and
 /// returned by `sysretq` (CS = STAR[63:48]+16 with RPL forced 3).
@@ -336,7 +363,7 @@ mod tests {
     #[test]
     fn gdt_size_holds_base_plus_percpu_tss() {
         // 10 base slots + NR_TSS × 2 (one 16-byte TSS descriptor per CPU).
-        assert_eq!(GDT_LEN, 10 + crate::tss::NR_TSS * 2);
+        assert_eq!(GDT_LEN, 10 + crate::tss::NR_TSS * 4);
         assert_eq!(core::mem::size_of::<[u64; GDT_LEN]>(), GDT_LEN * 8);
         // CPU i's TSS selector = 0x50 + i*0x10 = GDT index (10 + i*2) * 8.
         assert_eq!((10 + 0 * 2) * 8, 0x50);

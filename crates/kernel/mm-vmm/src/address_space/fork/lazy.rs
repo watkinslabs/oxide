@@ -24,6 +24,11 @@ impl AddressSpace {
             dst.insert(child_vma(vma)).map_err(|_| Error::NoMem)?;
         }
         let accounting = super::super::accounting::VmAccounting::from_vmas(new_root_pa, &dst);
+        // Linux `ldt_dup_context`: the child inherits a COPY of the parent's
+        // descriptors. Built before the child exists so an allocation failure
+        // is reported instead of silently producing a table-less child that
+        // would fault on the first segment load the parent's code performs.
+        let ldt = self.dup_ldt().map_err(|_| Error::NoMem)?;
         let child = Arc::new_cyclic(|w| Self {
             vmas: super::super::rwsem::MmapRwsem::new(dst),
             pt_lock: Spinlock::new(()),
@@ -48,6 +53,7 @@ impl AddressSpace {
             mm_layout: super::super::mmfields::MmLayout::forked(&self.mm_layout),
             pkeys: super::super::pkeys::PkeyContext::forked(&self.pkeys),
             accounting,
+            ldt,
         });
         super::super::accounting::register_page_table_owner(new_root_pa, &child.accounting);
         super::super::register_live_address_space(new_root_pa, Arc::downgrade(&child));
