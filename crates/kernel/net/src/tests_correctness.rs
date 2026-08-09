@@ -51,3 +51,5 @@ mod tcp_send;
 mod tcp_established;
 #[path = "tests_correctness/tcp_passive_open.rs"]
 mod tcp_passive_open;
+#[path = "tests_correctness/tcp_cork_splice.rs"]
+mod tcp_cork_splice;

@@ -108,6 +108,13 @@ impl vfs::FileOps for InetFileOps {
         match inode.private::<InetSocket>() { Some(s) => s.write_nonblock(off, buf), None => Err(vfs::VfsError::Einval) }
     }
     #[cfg(target_os = "oxide-kernel")]
+    fn write_more_file(&self, file: &vfs::File, off: u64, buf: &[u8], nonblock: bool, more: bool) -> vfs::KResult<usize> {
+        match file.inode().private::<InetSocket>() {
+            Some(s) => s.write_more(off, buf, nonblock, more),
+            None => Err(vfs::VfsError::Einval),
+        }
+    }
+    #[cfg(target_os = "oxide-kernel")]
     fn write_iter_file(&self, file: &vfs::File, off: u64, bufs: &[&[u8]], nonblock: bool) -> vfs::KResult<usize> {
         let Some(sock) = file.inode().private::<InetSocket>() else { return Err(vfs::VfsError::Einval); };
         let record = matches!(&*sock.kind.lock(),

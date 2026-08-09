@@ -20,6 +20,7 @@
 // - oob_class: per-kind `recv(MSG_OOB)` and `SIOCATMARK` answers.
 // - inode: VFS inode wrapper and file operations bridge.
 // - io: socket read/write/poll methods.
+// - write_more_policy: splice/sendfile MORE-DATA hint's cork decision (ungated, hosted-testable).
 // - udp: datagram receive/send helpers and iface source hook.
 // - raw_bind: raw IPv4/IPv6 bind lifecycle serialization.
 // - unix: AF_UNIX connect lifecycle and backlog waiting.
@@ -73,6 +74,7 @@ pub mod iface;
 mod inode;
 #[cfg(target_os = "oxide-kernel")]
 mod io;
+mod write_more_policy;
 #[cfg(target_os = "oxide-kernel")]
 mod udp;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]

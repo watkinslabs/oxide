@@ -1,4 +1,5 @@
 use super::*;
+use super::write_more_policy::{plan_write_more, WriteMorePlan};
 
 // Readiness, the integer ioctls and the queue-length answers they report,
 // split out at the per-file size cutoff.
@@ -232,23 +233,31 @@ impl InetSocket {
                 Err(crate::UnixMsgError::PeerClosed) => Err(vfs::VfsError::Epipe),
                 Err(crate::UnixMsgError::PeerRefused) => Err(vfs::VfsError::Econnrefused),
             },
-            K::Tcp(entry) => {
-                if self.write_shut.load(core::sync::atomic::Ordering::Acquire) {
-                    #[cfg(target_os = "oxide-kernel")]
-                    sched::live::send_signal_self(sched::live::Signum::Sigpipe);
-                    return Err(vfs::VfsError::Epipe);
-                }
-                let cap = self.opts.base.sndbuf.load(core::sync::atomic::Ordering::Acquire)
-                    .max(0) as usize;
-                let timeo = self.opts.base.sndtimeo_ns.load(core::sync::atomic::Ordering::Acquire);
-                let deadline_ns = compute_deadline_ns(timeo);
-                let nodelay = self.opts.tcp_nodelay.load(core::sync::atomic::Ordering::Acquire) != 0;
-                let cork = self.opts.tcp_cork.load(core::sync::atomic::Ordering::Acquire) != 0;
-                crate::sock_io::write_tcp_blocking(self, &entry, buf, cap, deadline_ns, nodelay, cork)
-            }
+            K::Tcp(entry) => self.write_tcp_blocking_entry(&entry, buf, false),
             K::Other => crate::sock::sendto(self, buf, None, current_sender_creds(),
                 &crate::send_control::SendControl::default()).map_err(vfs_from_neterr),
         }
+    }
+
+    /// Blocking TCP write, corked for this call when `extra_cork` is set —
+    /// the splice/`write_more_file` MORE-DATA hint, ORed with the sticky
+    /// `TCP_CORK` sockopt so neither can undercut the other.
+    /// # C: backend-dependent
+    fn write_tcp_blocking_entry(&self, entry: &Arc<TcpEntry>, buf: &[u8], extra_cork: bool)
+        -> vfs::KResult<usize>
+    {
+        if self.write_shut.load(core::sync::atomic::Ordering::Acquire) {
+            #[cfg(target_os = "oxide-kernel")]
+            sched::live::send_signal_self(sched::live::Signum::Sigpipe);
+            return Err(vfs::VfsError::Epipe);
+        }
+        let cap = self.opts.base.sndbuf.load(core::sync::atomic::Ordering::Acquire)
+            .max(0) as usize;
+        let timeo = self.opts.base.sndtimeo_ns.load(core::sync::atomic::Ordering::Acquire);
+        let deadline_ns = compute_deadline_ns(timeo);
+        let nodelay = self.opts.tcp_nodelay.load(core::sync::atomic::Ordering::Acquire) != 0;
+        let cork = self.tcp_cork_decision(extra_cork);
+        crate::sock_io::write_tcp_blocking(self, entry, buf, cap, deadline_ns, nodelay, cork)
     }
 
     /// Write a kernel-owned AF_UNIX stream without delivering SIGPIPE to the
@@ -289,41 +298,81 @@ impl InetSocket {
     /// write() — neither blocks on send today.
     /// # C: backend-dependent
     pub fn write_nonblock(&self, _off: u64, buf: &[u8]) -> vfs::KResult<usize> {
-        if let SockKind::TcpConn(entry) = &*self.kind.lock() {
-            crate::sock_opts::check_send(self).map_err(vfs_from_neterr)?;
-            if self.write_shut.load(core::sync::atomic::Ordering::Acquire) {
-                #[cfg(target_os = "oxide-kernel")]
-                sched::live::send_signal_self(sched::live::Signum::Sigpipe);
-                return Err(vfs::VfsError::Epipe);
-            }
-            let cap = self.opts.base.sndbuf.load(core::sync::atomic::Ordering::Acquire)
-                .max(0) as usize;
-            let entry = entry.clone();
-            let eno = self.take_pending_recv_error();
-            if eno != 0 { return Err(crate::sock_io::tcp_vfs_error(eno)); }
-            // F166/F167: closing/closed send side → SIGPIPE + EPIPE
-            // before tcp_send so we don't queue bytes into a corpse.
-            let st = entry.conn.lock().state;
-            if matches!(st,
-                crate::tcp_state::TcpState::Closed
-                | crate::tcp_state::TcpState::LastAck
-                | crate::tcp_state::TcpState::Closing
-                | crate::tcp_state::TcpState::TimeWait
-                | crate::tcp_state::TcpState::FinWait1
-                | crate::tcp_state::TcpState::FinWait2
-            ) {
-                sched::live::send_signal_self(sched::live::Signum::Sigpipe);
-                return Err(vfs::VfsError::Epipe);
-            }
-            let nodelay = self.opts.tcp_nodelay.load(core::sync::atomic::Ordering::Acquire) != 0;
-            let cork = self.opts.tcp_cork.load(core::sync::atomic::Ordering::Acquire) != 0;
-            return match stack().tcp_send(&entry, buf, cap, nodelay, cork) {
-                Ok(n) => { drain_loopback(); Ok(n) }
-                Err(crate::NetError::Eagain) => Err(vfs::VfsError::Eagain),
-                Err(_) => Err(vfs::VfsError::Eio),
-            };
+        let entry = match &*self.kind.lock() { SockKind::TcpConn(e) => Some(e.clone()), _ => None };
+        match entry {
+            Some(entry) => self.write_tcp_nonblock_entry(&entry, buf, false),
+            None => self.write(_off, buf),
         }
-        self.write(_off, buf)
+    }
+
+    /// Non-blocking TCP write, corked for this call when `extra_cork` is set
+    /// — see [`Self::write_tcp_blocking_entry`]. # C: backend-dependent
+    fn write_tcp_nonblock_entry(&self, entry: &Arc<TcpEntry>, buf: &[u8], extra_cork: bool)
+        -> vfs::KResult<usize>
+    {
+        crate::sock_opts::check_send(self).map_err(vfs_from_neterr)?;
+        if self.write_shut.load(core::sync::atomic::Ordering::Acquire) {
+            #[cfg(target_os = "oxide-kernel")]
+            sched::live::send_signal_self(sched::live::Signum::Sigpipe);
+            return Err(vfs::VfsError::Epipe);
+        }
+        let cap = self.opts.base.sndbuf.load(core::sync::atomic::Ordering::Acquire)
+            .max(0) as usize;
+        let eno = self.take_pending_recv_error();
+        if eno != 0 { return Err(crate::sock_io::tcp_vfs_error(eno)); }
+        // F166/F167: closing/closed send side → SIGPIPE + EPIPE
+        // before tcp_send so we don't queue bytes into a corpse.
+        let st = entry.conn.lock().state;
+        if matches!(st,
+            crate::tcp_state::TcpState::Closed
+            | crate::tcp_state::TcpState::LastAck
+            | crate::tcp_state::TcpState::Closing
+            | crate::tcp_state::TcpState::TimeWait
+            | crate::tcp_state::TcpState::FinWait1
+            | crate::tcp_state::TcpState::FinWait2
+        ) {
+            sched::live::send_signal_self(sched::live::Signum::Sigpipe);
+            return Err(vfs::VfsError::Epipe);
+        }
+        let nodelay = self.opts.tcp_nodelay.load(core::sync::atomic::Ordering::Acquire) != 0;
+        let cork = self.tcp_cork_decision(extra_cork);
+        match stack().tcp_send(entry, buf, cap, nodelay, cork) {
+            Ok(n) => { drain_loopback(); Ok(n) }
+            Err(crate::NetError::Eagain) => Err(vfs::VfsError::Eagain),
+            Err(_) => Err(vfs::VfsError::Eio),
+        }
+    }
+
+    /// `f_op->write` carrying the splice/`sendfile` MORE-DATA hint (VFS
+    /// [`vfs::FileOps::write_more_file`]): `more` says another pipe segment
+    /// follows immediately, so a TCP write corks this call even when
+    /// `TCP_CORK` is not set — same one-shot cork a `MSG_MORE` send applies,
+    /// released the moment a write with `more == false` runs (the final
+    /// segment of the splice, or any ordinary send). Non-TCP kinds have no
+    /// cork machinery to plug the hint into and fall back to the plain write.
+    /// # C: backend-dependent
+    pub fn write_more(&self, off: u64, buf: &[u8], nonblock: bool, more: bool) -> vfs::KResult<usize> {
+        let entry = match &*self.kind.lock() { SockKind::TcpConn(e) => Some(e.clone()), _ => None };
+        match entry {
+            None => if nonblock { self.write_nonblock(off, buf) } else { self.write(off, buf) },
+            Some(entry) if nonblock => self.write_tcp_nonblock_entry(&entry, buf, more),
+            Some(entry) => self.write_tcp_blocking_entry(&entry, buf, more),
+        }
+    }
+
+    /// The corked-or-not decision one TCP write makes, from
+    /// [`write_more_policy::plan_write_more`] — the hosted-testable policy
+    /// this file (target-gated end to end) cannot carry its own test of.
+    /// `extra` is the splice/`write_more` hint, or `false` for a plain
+    /// `write`/`write_nonblock`. # C: O(1)
+    fn tcp_cork_decision(&self, extra: bool) -> bool {
+        let sockopt_cork = self.opts.tcp_cork.load(core::sync::atomic::Ordering::Acquire) != 0;
+        match plan_write_more(true, sockopt_cork, extra) {
+            WriteMorePlan::Tcp { cork } => cork,
+            // `is_tcp = true` above always yields `WriteMorePlan::Tcp`; this
+            // arm exists only so the match is exhaustive without a panic.
+            WriteMorePlan::PlainWrite => sockopt_cork,
+        }
     }
 
     /// Datagram writability:
