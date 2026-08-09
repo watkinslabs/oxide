@@ -83,6 +83,10 @@ mod tcp;
 mod tcp_timer;
 mod tcp_fastopen;
 mod tcp_listener_deliver;
+mod tcp_syncookies;
+#[cfg(test)]
+#[path = "stack/tcp_syncookies_tests.rs"]
+mod tcp_syncookies_tests;
 mod tcp_reqsk;
 mod tcp_open;
 pub(crate) mod tcp_writable;

@@ -182,6 +182,11 @@ impl NetStack {
         // arrive for a listener that was never bound, so priming on every
         // reservation is sufficient (`secure_seq::prime`).
         crate::secure_seq::prime();
+        // The cookie secret has exactly the same constraint and the same
+        // sufficiency argument: it is read from softirq when a SYN arrives on
+        // a queue that is full, and no such SYN can arrive for a port nobody
+        // reserved.
+        crate::syncookies::prime();
         let net_ns = owner.net_ns();
         let tables = self.inet_tables_for(&owner.net_namespace);
         let mut binds = tables.tcp_binds.lock();

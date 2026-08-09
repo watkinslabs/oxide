@@ -217,6 +217,7 @@ impl TcpListenEntry {
             synack_retries: ::core::sync::atomic::AtomicU8::new(0),
             fastopen,
             fastopen_no_cookie: ::core::sync::atomic::AtomicBool::new(false),
+            synq_overflow_ns: ::core::sync::atomic::AtomicU64::new(crate::syncookies::NEVER),
             closed: ::core::sync::atomic::AtomicBool::new(false),
             #[cfg(target_os = "oxide-kernel")]
             accept_waiters: sched::live::WaitList::new(),
@@ -242,6 +243,25 @@ impl TcpListenEntry {
             self.syn_backlog_young.fetch_add(1, ::core::sync::atomic::Ordering::AcqRel);
         }
         reserved
+    }
+
+    /// Record that this listener answered a request with a cookie because its
+    /// SYN queue could not hold one. Rewritten at most once a second: a flood
+    /// is the one moment where dirtying a shared line per SYN costs most.
+    /// # C: O(1)
+    pub fn note_synq_overflow(&self, now_ns: u64) {
+        use ::core::sync::atomic::Ordering;
+        let last = self.synq_overflow_ns.load(Ordering::Relaxed);
+        if crate::syncookies::restamp_overflow(last, now_ns) {
+            self.synq_overflow_ns.store(now_ns, Ordering::Relaxed);
+        }
+    }
+
+    /// Whether this listener has NOT overflowed recently enough to believe a
+    /// cookie. # C: O(1)
+    pub fn no_recent_synq_overflow(&self, now_ns: u64) -> bool {
+        crate::syncookies::no_recent_overflow(
+            self.synq_overflow_ns.load(::core::sync::atomic::Ordering::Relaxed), now_ns)
     }
 
     /// Reserve one completed accept backlog slot. # C: O(1)

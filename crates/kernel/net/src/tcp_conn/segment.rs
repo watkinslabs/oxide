@@ -68,7 +68,7 @@ impl TcpConn {
         SynOptions {
             mss: Some(mss),
             timestamp: (!synack || self.ts_enabled).then(|| (
-                crate::tcp_conn::tcp_now_ms().wrapping_add(self.ts_off), self.ts_recent)),
+                self.handshake_tsval(), self.ts_recent)),
             sack_perm: !synack || self.sack_ok,
             wscale: (!synack || self.wscale_ok).then_some(self.snd_wscale),
             // Whatever the fast-open decision left for this handshake: a
@@ -77,6 +77,22 @@ impl TcpConn {
             // retired one, or nothing at all.
             fastopen: self.fastopen_opt,
         }
+    }
+
+    /// The timestamp value a handshake segment carries. A cookie SYN-ACK
+    /// spends the low six bits of it on the option negotiation the cookie has
+    /// no room for, since nothing about this handshake is being remembered;
+    /// every other segment carries the plain clock. The connection's offset is
+    /// added either way, so the peer's echo is decoded by removing it.
+    /// # C: O(1)
+    fn handshake_tsval(&self) -> u32 {
+        let now = crate::tcp_conn::tcp_now_ms();
+        let base = match self.syncookie() {
+            Some(_) => crate::syncookies::tsopt::init_timestamp(
+                now, self.wscale_ok.then_some(self.rcv_wscale), self.sack_ok, self.ecn_enabled),
+            None => now,
+        };
+        base.wrapping_add(self.ts_off)
     }
 
     pub(super) fn build_syn_with_opts_at(&self, seq: u32, flag_bits: u8) -> Vec<u8> {

@@ -77,6 +77,7 @@ mod udp_checksum_tests;
 pub mod tcp_hdr;
 pub mod tcp_conn;
 pub mod tcp_fastopen;
+pub mod syncookies;
 pub use tcp_conn::{Endpoint, TcpCongestionControl, TcpConn, TcpConnError};
 
 pub mod unix_sock;

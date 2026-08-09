@@ -221,6 +221,18 @@ impl TcpConn {
                     self.ecn_enabled = true;
                     sa_flags |= flags::ECE;
                 }
+                // A cookie handshake keeps no request, so the sequence number
+                // this side sends has to BE the request: the keyed ISN above
+                // is replaced by the cookie the listener minted, and the MSS
+                // the connection believes the peer announced is the one the
+                // cookie can actually carry back. Everything else the SYN
+                // taught is negotiated into the SYN-ACK's timestamp instead
+                // (`syn_options`).
+                if let Some(cookie) = self.syncookie() {
+                    self.snd_una = cookie.isn;
+                    self.snd_nxt = cookie.isn;
+                    self.peer_mss = cookie.mss;
+                }
                 // A SYN whose data was accepted delivers that data now, before
                 // the SYN-ACK is built: the acknowledgement it carries has to
                 // cover the payload, or the peer retransmits what this side
