@@ -48,8 +48,10 @@ Only `read`, `write`, `_exit`, `rt_sigreturn` allowed; everything else → SIGKI
 ### 5.2 Filter mode
 BPF prog evaluated on every syscall; returns action (`ALLOW`,`KILL`,`KILL_PROCESS`,`TRAP`,`ERRNO`,`USER_NOTIF`,`LOG`,`TRACE`).
 
-Now: returns ENOSYS for filter mode (BPF tracked as phase 23). Strict mode works.
-Phase 23: ship the BPF subset needed for seccomp filters.
+`SECCOMP_SET_MODE_FILTER` installs a verified classic-BPF program; the
+interpreter evaluates it per syscall and every action above is honoured,
+`USER_NOTIF` including its listener fd. `bpf(2)` is a separate surface with its
+own path-sensitive eBPF verifier and program types (`21§?`, `docs/15`).
 
 ## 6 Landlock
 
