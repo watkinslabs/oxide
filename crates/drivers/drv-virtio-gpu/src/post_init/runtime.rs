@@ -20,7 +20,7 @@ pub(super) fn retain_ctx_after_submit(ctx: &mut ScanoutCtx, retired: bool) -> bo
 
 fn submit_ctrl_for_key<F: Fn(&mut [u8]) -> usize>(driver_key: drm::node::ScanoutDriverKey, encode: F) -> bool {
     let owner = key_from_scanout_driver(driver_key);
-    let mut g = CTX.lock();
+    let mut g = ctx_lock();
     let ctx = match g.iter_mut().find(|ctx| ctx.device_key == owner) { Some(c) => c, None => return false };
     if ctx.quiesced {
         return false;
@@ -72,7 +72,7 @@ pub fn unref_scanout_resource_for_key(driver_key: drm::node::ScanoutDriverKey, r
     // drop the record; leaving it would let a later present skip the rebind.
     {
         let owner = key_from_scanout_driver(driver_key);
-        let mut g = CTX.lock();
+        let mut g = ctx_lock();
         if let Some(ctx) = g.iter_mut().find(|ctx| ctx.device_key == owner) {
             if ctx.bound.is_some_and(|b| b.res_id == res_id) { ctx.bound = None; }
         }
@@ -109,7 +109,7 @@ pub fn present_rect_for_key(driver_key: drm::node::ScanoutDriverKey, res_id: u32
     if !scanout_ready_for_key(owner) || w == 0 || h == 0 { return false; }
     let Some(rect) = present::clamp_rect(rect, w, h) else { return false };
     let next = present::Binding { res_id, w, h };
-    let mut g = CTX.lock();
+    let mut g = ctx_lock();
     let Some(ctx) = g.iter_mut().find(|ctx| ctx.device_key == owner) else { return false };
     if ctx.quiesced { return false; }
     let (steps, n) = present::plan(ctx.bound, next, rect, damage::BYTES_PER_PIXEL as u32);
@@ -156,7 +156,7 @@ pub fn set_cursor_for_key(driver_key: drm::node::ScanoutDriverKey, res_id: u32,
     w: u32, h: u32, x: i32, y: i32, hot_x: i32, hot_y: i32) -> bool {
     if res_id == 0 {
         let owner = key_from_scanout_driver(driver_key);
-        let mut g = CTX.lock();
+        let mut g = ctx_lock();
         let ctx = match g.iter_mut().find(|ctx| ctx.device_key == owner) { Some(c) => c, None => return false };
         if ctx.quiesced { return false; }
         // SAFETY: `submit_cursor_one`'s contract — `CTX` is held, so the ctx's
@@ -173,7 +173,7 @@ pub fn set_cursor_for_key(driver_key: drm::node::ScanoutDriverKey, res_id: u32,
         return false;
     }
     let owner = key_from_scanout_driver(driver_key);
-    let mut g = CTX.lock();
+    let mut g = ctx_lock();
     let ctx = match g.iter_mut().find(|ctx| ctx.device_key == owner) { Some(c) => c, None => return false };
     if ctx.quiesced { return false; }
     let cmd_buf_va = ctx.cmd_buf_va as *mut u8;
@@ -199,7 +199,7 @@ pub fn set_cursor_for_key(driver_key: drm::node::ScanoutDriverKey, res_id: u32,
 /// Reposition the current cursor without re-uploading its resource.
 pub fn move_cursor_for_key(driver_key: drm::node::ScanoutDriverKey, x: i32, y: i32) -> bool {
     let owner = key_from_scanout_driver(driver_key);
-    let mut g = CTX.lock();
+    let mut g = ctx_lock();
     let ctx = match g.iter_mut().find(|ctx| ctx.device_key == owner) { Some(c) => c, None => return false };
     if ctx.quiesced { return false; }
     // SAFETY: `submit_cursor_one`'s contract — `CTX` is held, so the ctx's 4 KiB
@@ -240,7 +240,7 @@ pub fn unregister_drm_hooks(card_id: u32) {
 
 pub fn flush_scanout_for_key(driver_key: fbdev::FbDriverKey) {
     let owner = key_from_raw(driver_key.raw());
-    let mut g = CTX.lock();
+    let mut g = ctx_lock();
     let ctx = match g.iter_mut().find(|ctx| ctx.device_key == owner) { Some(c) => c, None => return };
     if ctx.quiesced {
         return;
