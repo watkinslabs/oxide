@@ -66,6 +66,13 @@ fn an_fsmounted_filesystem_is_a_real_mount_before_it_is_moved_anywhere() {
         "it is in the mount arena, so statmount on its own fd can answer");
     assert!(vfs::mount::anon_ns_root(&m), "it is the root of its anonymous namespace");
     assert!(m.mnt_root().is_some(), "and it has a real root dentry to open as a dirfd");
+    // The last clause of the gap this test closes: the descriptor used to wrap
+    // an anon-inode REGULAR file, so every dirfd use of it (`openat`,
+    // `fstatat`, `fchdir`, the path-resolving `move_mount` arm) answered
+    // ENOTDIR. The root it now carries is a directory.
+    let root_inode = m.mnt_root().and_then(|d| d.inode()).expect("root inode");
+    assert_eq!(root_inode.file_type(), vfs::FileType::Directory,
+        "the fd's inode must be a directory, or every dirfd use of it is ENOTDIR");
 }
 
 /// ...and it is nobody's: not in the caller's namespace, so no path walk
