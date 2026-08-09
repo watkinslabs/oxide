@@ -338,6 +338,8 @@ impl AddressSpace {
         hal::tlb::shootdown_others_all(self.cpumask());
         let accounting = super::super::accounting::VmAccounting::from_vmas(new_root_pa, &dst);
         accounting.seed_ptes(&tally);
+        // Linux `ldt_dup_context`: a private copy of the parent's descriptors.
+        let ldt = self.dup_ldt().map_err(|_| Error::NoMem)?;
         let child = Arc::new_cyclic(|w| Self {
             vmas: super::super::rwsem::MmapRwsem::new(dst),
             pt_lock: Spinlock::new(()),
@@ -362,6 +364,7 @@ impl AddressSpace {
             mm_layout: super::super::mmfields::MmLayout::forked(&self.mm_layout),
             pkeys: super::super::pkeys::PkeyContext::forked(&self.pkeys),
             accounting,
+            ldt,
         });
         // A child that never joins these directories is invisible to every
         // owner that routes by page-table root: its page-table frames are

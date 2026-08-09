@@ -41,6 +41,10 @@ pub unsafe fn kthread_use_mm(mm: &Arc<AddressSpace>) {
     unsafe { cur.replace_borrowed_mm(Some(Arc::clone(mm))); }
     // SAFETY: forwarded fn-level contract — the root carries the shared kernel half, so kernel mappings stay valid across the write.
     unsafe { ActiveMmu::activate(mm.root_pa()); }
+    // A kernel thread executes no user segment load, but it may be preempted
+    // and it must not leave the previous mm's descriptors reachable through
+    // LDTR while borrowing a different address space.
+    crate::ldt::switch_ldt(None, Some(mm));
 }
 
 /// Release the borrow. The root STAYS installed — this processor is now lazily

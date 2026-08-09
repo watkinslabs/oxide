@@ -20,7 +20,6 @@ use syscall::nrs::*;
 ///
 /// | Slot | Linux config | Mechanism |
 /// |---|---|---|
-/// | `modify_ldt` | `CONFIG_MODIFY_LDT_SYSCALL` | `COND_SYSCALL(modify_ldt)`; the x86 build only compiles the LDT object when set |
 /// | `iopl` | `CONFIG_X86_IOPL_IOPERM` | the `#else` branch: `SYSCALL_DEFINE1(iopl) { return -ENOSYS; }` |
 /// | `ioperm` | `CONFIG_X86_IOPL_IOPERM` | same `#else` branch: `SYSCALL_DEFINE3(ioperm) { return -ENOSYS; }` |
 /// | `kexec_load` | `CONFIG_KEXEC` | `COND_SYSCALL(kexec_load)` |
@@ -28,10 +27,12 @@ use syscall::nrs::*;
 ///
 /// Why each is refused rather than implemented:
 ///
-/// - `modify_ldt` needs a per-`mm` Local Descriptor Table, an LDT descriptor
-///   installed in the GDT, and an `lldt` reload on every address-space switch.
-///   None of that exists, and it is x86-only — aarch64 has no such slot in the
-///   generic ABI, so ENOSYS is the only answer that is honest on both arches.
+/// `modify_ldt` is NOT here. It was, justified as parity with a build lacking
+/// `CONFIG_MODIFY_LDT_SYSCALL` — but that option defaults on and is set in the
+/// kernel this port targets, so the reference implements the syscall and the
+/// refusal was a divergence recorded as compliance. Slot 154 now has a per-`mm`
+/// LDT, a per-CPU GDT descriptor and an `lldt` reload on address-space switch
+/// (`crate::ldt_abi`, `vmm::ldt`, `sched::ldt`).
 /// - `iopl` / `ioperm` hand userspace direct port I/O. That is backed by the
 ///   TSS I/O permission bitmap plus per-task bitmap state carried across
 ///   context switch. Without that state a success return is a SECURITY LIE:
@@ -43,8 +44,8 @@ use syscall::nrs::*;
 ///   the KEXEC command with EINVAL (`syscalls/169_reboot.rs`), so refusing the
 ///   load keeps the pair consistent: nothing can stage an image that the
 ///   reboot path would then refuse to boot.
-pub const UNCONFIGURED_NRS: [u64; 5] = [
-    NR_MODIFY_LDT, NR_IOPL, NR_IOPERM, NR_KEXEC_LOAD, NR_KEXEC_FILE_LOAD,
+pub const UNCONFIGURED_NRS: [u64; 4] = [
+    NR_IOPL, NR_IOPERM, NR_KEXEC_LOAD, NR_KEXEC_FILE_LOAD,
 ];
 
 /// True for a slot this kernel deliberately answers with ENOSYS because the
@@ -67,8 +68,7 @@ mod tests {
     /// implement, fails here instead of silently ENOSYS-ing a live syscall.
     #[test]
     fn set_matches_the_pinned_linux_slot_numbers() {
-        let expected: [u64; 5] = [
-            154, // modify_ldt      COND_SYSCALL, x86-only
+        let expected: [u64; 4] = [
             172, // iopl            ioport.c #else -> -ENOSYS
             173, // ioperm          ioport.c #else -> -ENOSYS
             246, // kexec_load      COND_SYSCALL
@@ -77,6 +77,8 @@ mod tests {
         let mut ours = UNCONFIGURED_NRS;
         ours.sort_unstable();
         assert_eq!(ours, expected, "unconfigured slot set drifted from Linux's numbering");
+        assert!(!UNCONFIGURED_NRS.contains(&NR_MODIFY_LDT),
+            "modify_ldt is implemented; the reference builds it by default");
     }
 
     /// The whole point of the lane: none of these may answer EPERM. A caller
@@ -97,7 +99,8 @@ mod tests {
     /// implemented outright.
     #[test]
     fn implemented_neighbours_are_not_members() {
-        for nr in [NR_INIT_MODULE, NR_FINIT_MODULE, NR_DELETE_MODULE, NR_ACCT, NR_REBOOT] {
+        for nr in [NR_INIT_MODULE, NR_FINIT_MODULE, NR_DELETE_MODULE, NR_ACCT, NR_REBOOT,
+                   NR_MODIFY_LDT] {
             assert!(!is_unconfigured(nr), "slot {nr} is implemented and must not be refused");
         }
     }

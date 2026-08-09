@@ -24,6 +24,10 @@ pub mod mmsg_batch;
 // The one owner of "which message ABI does this call speak" plus both shapes.
 pub mod msg_layout;
 pub mod arch_prctl_abi;
+// `modify_ldt(2)` decision core: descriptor packing, `user_desc` decode, the
+// sub-function table and the write ladder. Ungated because the slot file is
+// kernel-only and one wrong bit in the packing is a silent privilege bug.
+pub mod ldt_abi;
 pub mod obsolete;
 // Slots refused with the errno Linux returns when the backing CONFIG is unset
 // (modify_ldt, iopl, ioperm, kexec_load, kexec_file_load). Outside the

@@ -50,6 +50,8 @@ pub mod diag;
 pub mod kthread;
 pub mod kstack;
 pub mod preempt;
+// Per-mm LDT <-> LDTR glue (Linux `switch_ldt`); no-op on aarch64.
+pub mod ldt;
 pub mod exit_to_user;
 pub mod syscall_work;
 pub mod landlock_tsync;

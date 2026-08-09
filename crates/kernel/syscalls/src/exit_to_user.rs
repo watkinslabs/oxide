@@ -218,10 +218,28 @@ pub unsafe fn exit_to_user_mode_loop(regs: *mut UserRegs, syscall_rv: Option<i64
     if passes >= sched::exit_to_user::MAX_PASSES {
         klog::write_raw(b"[BUG] exit_to_user_mode_loop: work never cleared\n");
     }
+    // Linux's `install_ldt` IPIs every CPU in the mm's cpumask so a sibling
+    // thread sees a new descriptor immediately. This port has no general
+    // cross-CPU call — the only IPI vector is the TLB shootdown's single-slot
+    // one — so convergence happens here instead: no thread re-enters user mode
+    // with an LDTR older than its own address space. The gate is a relaxed
+    // load of a global no system sets unless something called `modify_ldt`.
+    if vmm::any_ldt_in_use() { reload_ldt_if_stale(); }
     match arch_retval {
         Some(v) => v,
         None => syscall::restart::normalize_user_return(rv) as u64,
     }
+}
+
+/// Bring this CPU's LDTR up to date with the current task's address space.
+/// Split out so the hot path is one relaxed load and a call that is never
+/// taken on a system without an LDT.
+/// # C: O(1)
+#[inline(never)]
+fn reload_ldt_if_stale() {
+    let Some(cur) = sched::live::current() else { return };
+    // SAFETY: the running task on this CPU; no concurrent mm writer per `13§5`.
+    if let Some(mm) = unsafe { cur.mm_ref() } { sched::ldt::reload_current(mm); }
 }
 
 /// The registered `sched::exit_to_user::hook` body: Linux `irqentry_exit`.

@@ -429,6 +429,20 @@ pub unsafe fn schedule() {
         if let Some(pm) = unsafe { prev_ref.mm_ref() } { active_mm_grab(me, pm, rq); }
     }
 
+    // Linux `switch_ldt`: LDTR follows the mm, not the task. Runs after the
+    // CR3 reload and before the register switch, while both mms are still
+    // reachable. A no-op — one relaxed load — unless something on this system
+    // has actually called `modify_ldt`.
+    {
+        // SAFETY: both Task references are live for this preempt-off scope
+        // under the runqueue invariant, exactly as the mm reads above.
+        let prev_mm = unsafe { prev_ref.mm_ref() };
+        // SAFETY: next_arc is still owned by this scope; swap_current has not
+        // run yet.
+        let next_mm = unsafe { next_arc.mm_ref() };
+        crate::ldt::switch_ldt(prev_mm.map(|m| &**m), next_mm.map(|m| &**m));
+    }
+
     // SAFETY: prev_ref aliases the prev Task's arch_ctx buffer storage; per-active-CPU single-mutator invariant from `13§5` keeps this sound.
     let prev_ctx_ptr: *mut ArchCtx = unsafe { prev_ref.arch_ctx_ptr::<ArchCtx>() };
     // SAFETY: next_arc aliases the next Task's arch_ctx; will be active on this CPU after swap_current; size fits per compile-time assert.

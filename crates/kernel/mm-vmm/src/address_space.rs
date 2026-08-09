@@ -96,6 +96,7 @@ mod live_registry_tests {
 }
 
 mod accounting;
+mod ldt_ctx;
 pub mod rss;
 mod fault;
 mod fork;
@@ -249,6 +250,10 @@ pub struct AddressSpace {
     /// Initial value and semantics are arch-specific; see the `pkeys` child
     /// module.
     pkeys: pkeys::PkeyContext,
+    /// Linux `mm_context_t::ldt` — this address space's Local Descriptor
+    /// Table. Owned by the mm so `CLONE_VM` siblings share one table and a
+    /// `fork` child gets a private copy; freed with the mm. See `crate::ldt`.
+    ldt: crate::ldt::LdtState,
 }
 
 impl Drop for AddressSpace {
@@ -342,6 +347,7 @@ impl AddressSpace {
             membarrier: membarrier::MembarrierState::new(),
             mdwe: mdwe::MdweState::new(),
             pkeys: pkeys::PkeyContext::new(),
+            ldt: crate::ldt::LdtState::new(),
         });
         accounting::register_page_table_owner(root_pa, &as_.accounting);
         register_live_address_space(root_pa, Arc::downgrade(&as_));
