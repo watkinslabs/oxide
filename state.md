@@ -1,29 +1,34 @@
-# state.md — B1916 handoff
+# Session hand-off — 2026-08-09 (boot-freeze campaign)
 
-Branch: `B1916-netlink-remaining-socket-flags`.
-Committed checkpoint: `f43bb83df netlink: wire namespace multicast flags`.
-No B1916 PR, push, or merge exists.
+## Headline
+The intermittent ~5s boot freeze is ROOT-CAUSED and FIXED (B2010, PR #4902):
+`local_bh_enable` drained softirqs inside irqsave sections; a drained
+InputDrain re-took the VT port lock its own stack held. GDB-captured RIP.
+Alongside it, ten one-CPU softirq-vs-process deadlock instances were fixed
+across gpu/block/snd/input/vsock/ahci/net (B2007-B2009, B2011). Boots now
+reach graphical.target at ~75s attempt 1; the sssd-kcm/udisks2 failures were
+freeze collateral and are healthy (PR #4903 closed the row with evidence).
 
-## Feature state
+## Merged today
+#4894 VT=/dev/console (serial mirrors) · #4895 packet-ring BhGuard ·
+#4896 GPU 1280x800 · #4897 minimal-boot-time rule · #4898 ext4 unwritten-split
+(34x less I/O) · #4899 gpu CTX lock_bh · #4900 block DiskState/MappingState ·
+#4901 snd/input/vsock/ahci locks · #4902 bh-enable irqs-off drain guard ·
+#4903 services-row close · #4904 NET_RX per-instance locks via FibLock.
 
-- `RTM_NEWNSID` now accepts FD or PID peer references; `RTM_GETNSID` accepts
-  FD, PID, caller-local NSID, and target-NSID forms. Target lookup enforces
-  `CAP_NET_ADMIN` in the target namespace owner.
-- Namespace-ID parser errors retain rejected attribute offsets. The live
-  handler emits `NLMSGERR_ATTR_OFFS`; ACK shaping retains that TLV only with
-  `NETLINK_EXT_ACK` enabled.
-- `NetworkNamespace::peer_by_id` is the canonical reverse lookup.
+## Open, in priority order
+1. SUSPECTED softirq-lock remainder (raw4/raw6/ping RX, AF_PACKET fanout) —
+   audit agent report goes in `scratch/known_issues.md`; fix shape = FibLock
+   conversion, proven mechanical.
+2. VT detached-sink: fbcon render still runs under the port lock irqsave
+   (latency, not deadlock) — row filed, serial's split is the template.
+3. ext4 drops `datasync` — full design in the row (per-mount commit
+   generation + per-inode sync/datasync tids + barrier watermark; the
+   accidental-safety shortcut is documented as forbidden).
+4. Stack-gate red on clean main (boot-stack rows need their own root class
+   via the tool's --irq-roots mechanism) — every push needs SKIP_STACK_GATE=1.
+5. GNOME desktop layer (greeter/session) — untouched today; boot layer is
+   now solid underneath it.
 
-`RTM_GETNSID` emits multipart dumps from the canonical peer-ID map. Linux has
-no `RTM_DELNSID` handler, so none was added. LISTEN_ALL_NSID checks the socket
-opener's retained `CAP_NET_BROADCAST` snapshot against the source namespace.
-
-## Verification
-
-- `cargo test -q -p network-namespace -- --nocapture` — 4 passed.
-- `cargo test -q -p netlink -- --nocapture` — 275 passed.
-- `cargo run -q -p xtask -- kernel --arch x86_64 --check` — passed.
-- `cargo run -q -p xtask -- kernel --arch aarch64 --check` — passed.
-- `make smoke` — x86 passed in 52 s; arm passed in 108 s.
-
-First command: `git status --short --branch`
+## First command next session
+grep -n "OPEN" scratch/known_issues.md | head -30
