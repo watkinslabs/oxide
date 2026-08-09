@@ -8,6 +8,8 @@
 //
 // Module manifest:
 //   region      — one shared region's physical run, its lifetime and refcounting
+//   mem_region  — a registered `IORING_REGISTER_MEM_REGION` region: kernel-
+//                 allocated (mappable) or caller-provided (pinned)
 //   ring        — the two shared regions, their lifetime, the inode, mmap routing
 //   ctx         — one ring's state and its three locks
 //   cqe         — completion posting and the overflow backlog
@@ -34,6 +36,7 @@
 #![allow(dead_code)]
 
 pub mod region;
+pub mod mem_region;
 pub mod ring;
 pub mod ctx;
 pub mod cqe;

@@ -126,6 +126,29 @@ impl PinnedRange {
         }
         Ok(done)
     }
+
+    /// Copy `out.len()` bytes out of the range, starting `off` bytes in.
+    ///
+    /// The region-shaped accessor: a pinned range is whatever physical pages
+    /// happened to back the caller's memory, so a read that spans a page
+    /// boundary lands in two unrelated frames. Every caller that treats a
+    /// pinned range as one addressable object — an `IORING_REGISTER_MEM_REGION`
+    /// region, a registered wait record read out of one — goes through here
+    /// rather than through a single base pointer, which is what lets a region
+    /// be discontiguous at all. A short read is `EFAULT`: the caller asked for
+    /// a whole record and got part of one. # C: O(out.len() / PAGE)
+    pub fn read_at(&self, off: u64, out: &mut [u8]) -> Result<(), Errno> {
+        let n = out.len() as u64;
+        let mut done: usize = 0;
+        let got = self.for_each_chunk(off, n, |chunk| {
+            let take = chunk.len();
+            out[done..done + take].copy_from_slice(&chunk[..take]);
+            done += take;
+            Some(take)
+        })?;
+        if got as u64 != n { return Err(Errno::Efault); }
+        Ok(())
+    }
 }
 
 impl Drop for PinnedRange {

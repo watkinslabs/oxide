@@ -59,6 +59,15 @@ pub struct IoUringInode {
     /// Armed timeouts gated on this ring's completion count. Non-zero means a
     /// completion can make one due, so posting one must rouse the pool.
     pub count_timers: core::sync::atomic::AtomicU32,
+    /// `IORING_REGISTER_MEM_REGION`: the one region a ring may register.
+    /// `Some` is what makes a second registration `EBUSY`.
+    pub param_region: Spinlock<Option<super::mem_region::MemRegion>, RingLockClass>,
+    /// Bytes of `param_region` exposed as the registered wait area, or zero
+    /// for a ring that registered a region WITHOUT
+    /// `IORING_MEM_REGION_REG_WAIT_ARG`. Zero is load-bearing: it is what
+    /// makes every `IORING_ENTER_EXT_ARG_REG` offset fault on such a ring,
+    /// with no separate "is there an area" test.
+    pub cq_wait_size: core::sync::atomic::AtomicU64,
 }
 
 /// `state` bits.
@@ -102,6 +111,8 @@ impl IoUringInode {
                 core::sync::atomic::AtomicU32::new(0),
             ],
             count_timers: core::sync::atomic::AtomicU32::new(0),
+            param_region: Spinlock::new(None),
+            cq_wait_size: core::sync::atomic::AtomicU64::new(0),
         }))
     }
 
@@ -137,6 +148,24 @@ impl IoUringInode {
             Err(owner) if owner == cur.tid => Ok(()),
             Err(_) => Err(syscall::errno::Errno::Eexist),
         }
+    }
+
+    /// Read one `struct io_uring_reg_wait` out of the registered wait area at
+    /// byte offset `argp` — the `IORING_ENTER_EXT_ARG_REG` form, where `argp`
+    /// is an offset into a region the ring registered rather than a user
+    /// pointer. A ring with no wait area has size zero, so every offset
+    /// faults. # C: O(1)
+    pub fn reg_wait(&self, argp: u64)
+        -> Result<[u8; crate::io_uring_abi::enter::REG_WAIT_BYTES as usize], syscall::errno::Errno>
+    {
+        use crate::io_uring_abi::mem_region::ext_arg_reg_offset;
+        use core::sync::atomic::Ordering;
+        let off = ext_arg_reg_offset(argp, self.cq_wait_size.load(Ordering::Acquire))?;
+        let mut b = [0u8; crate::io_uring_abi::enter::REG_WAIT_BYTES as usize];
+        let g = self.param_region.lock();
+        let r = g.as_ref().ok_or(syscall::errno::Errno::Efault)?;
+        r.read_at(off, &mut b)?;
+        Ok(b)
     }
 
     /// Record that a completion could not be delivered. # C: O(1)

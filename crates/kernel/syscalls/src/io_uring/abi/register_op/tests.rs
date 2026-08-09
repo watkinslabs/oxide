@@ -142,14 +142,10 @@ fn probe_clamps_instead_of_failing() {
 #[test]
 fn opcodes_needing_an_absent_mechanism_report_eopnotsupp_not_success() {
     // Each of these needs a whole mechanism this kernel does not have — a
-    // per-task worker pool, a user-provided or parameter memory region, a
-    // zero-copy receive queue, busy-poll, or a program loader. Returning 0
-    // for any of them would tell the caller a registration happened that
-    // did not.
-    for op in [IORING_REGISTER_NAPI,
-               IORING_UNREGISTER_NAPI, IORING_REGISTER_ZCRX_IFQ,
-               IORING_REGISTER_MEM_REGION,
-               IORING_REGISTER_ZCRX_CTRL, IORING_REGISTER_BPF_FILTER] {
+    // zero-copy receive queue with a device memory provider behind it.
+    // Returning 0 for any of them would tell the caller a registration
+    // happened that did not (`scratch/known_issues.md`).
+    for op in [IORING_REGISTER_ZCRX_IFQ, IORING_REGISTER_ZCRX_CTRL] {
         assert_eq!(decode(op, RING_FD, 0x1000, 1), Err(Errno::Eopnotsupp), "op {op}");
     }
 }

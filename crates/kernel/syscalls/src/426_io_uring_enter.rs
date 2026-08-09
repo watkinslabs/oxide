@@ -34,7 +34,7 @@ fn ring_for(fd: i32, registered: bool) -> Result<Arc<IoUringInode>, i64> {
 
 /// Read the caller's wait parameters, whichever argument shape it used.
 /// # C: O(1)
-fn ext_arg_of(flags: u32, argp: u64, argsz: u64) -> Result<ExtArg, i64> {
+fn ext_arg_of(inode: &IoUringInode, flags: u32, argp: u64, argsz: u64) -> Result<ExtArg, i64> {
     match arg_kind(flags, argsz).map_err(err)? {
         ArgKind::BareSigmask => Ok(bare_sigmask_arg(argp, argsz, flags)),
         ArgKind::Getevents => {
@@ -50,10 +50,14 @@ fn ext_arg_of(flags: u32, argp: u64, argsz: u64) -> Result<ExtArg, i64> {
                 iowait: flags & IORING_ENTER_NO_IOWAIT == 0,
             })
         }
-        // The registered form reads its wait record out of a wait region the
-        // ring registered. No region can be registered, so the offset the
-        // caller passed can only be outside it.
-        ArgKind::RegisteredWait => Err(err(Errno::Efault)),
+        // The registered form: `argp` is a byte OFFSET into the wait area the
+        // ring registered with `IORING_REGISTER_MEM_REGION`, not a user
+        // pointer. Nothing is copied from userspace — the record is read
+        // straight out of the region, which is the point of the flag.
+        ArgKind::RegisteredWait => {
+            let b = inode.reg_wait(argp).map_err(err)?;
+            decode_reg_wait(&b, flags).map_err(err)
+        }
     }
 }
 
@@ -111,7 +115,7 @@ pub fn sys_io_uring_enter(args: &syscall::SyscallArgs) -> i64 {
 /// charged to their depth. # C: wait
 #[inline(never)]
 fn wait_half(inode: &Arc<IoUringInode>, min_cmpl: u32, flags: u32, argp: u64, argsz: u64) -> i64 {
-    let ext = match ext_arg_of(flags, argp, argsz) { Ok(e) => e, Err(e) => return e };
+    let ext = match ext_arg_of(inode, flags, argp, argsz) { Ok(e) => e, Err(e) => return e };
     let armed = match arm_sigmask(&ext) { Ok(a) => a, Err(e) => return e };
     let wait_rv = crate::io_uring::wait::cq_wait(inode, min_cmpl, &ext);
     // An interrupted wait KEEPS the temporary mask so the handler runs under

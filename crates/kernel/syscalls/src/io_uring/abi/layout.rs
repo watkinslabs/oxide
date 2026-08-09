@@ -297,16 +297,19 @@ fn prepare_config(p: &mut Params) -> Result<Geometry, Errno> {
 /// Which region an `mmap(2)` offset on the ring fd selects (Linux
 /// `io_uring_mmap` switches on `offset & IORING_OFF_MMAP_MASK`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum MmapRegion { Rings, Sqes, Invalid }
+pub enum MmapRegion { Rings, Sqes, Param, Invalid }
 
 /// Classify an mmap offset. `IORING_OFF_CQ_RING` selects the SAME region as
 /// `IORING_OFF_SQ_RING` because oxide reports `IORING_FEAT_SINGLE_MMAP`.
+/// `Param` selects a kernel-allocated `IORING_REGISTER_MEM_REGION` region; a
+/// caller-provided one is never mappable here (`io_uring_abi::mem_region`).
 /// # C: O(1)
 pub fn mmap_region(offset: u64) -> MmapRegion {
     match offset & IORING_OFF_MMAP_MASK {
         IORING_OFF_SQ_RING => MmapRegion::Rings,
         IORING_OFF_CQ_RING => MmapRegion::Rings,
         IORING_OFF_SQES    => MmapRegion::Sqes,
+        super::mem_region::IORING_MAP_OFF_PARAM_REGION => MmapRegion::Param,
         _                  => MmapRegion::Invalid,
     }
 }
