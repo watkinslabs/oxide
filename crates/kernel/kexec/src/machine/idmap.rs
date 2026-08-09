@@ -22,6 +22,7 @@ use crate::machine::plan::{BLOCK_LEVEL, BLOCK_SIZE};
 /// once the tables take effect; writable because every destination page is
 /// written through them. Narrowing either would fault the trampoline at a
 /// point where nothing is left able to report it.
+/// # C: O(1)
 pub fn leaf_flags() -> PageFlags { PageFlags::READ | PageFlags::WRITE | PageFlags::EXEC }
 
 /// Install `phys → phys` block leaves over every byte of `ranges`.

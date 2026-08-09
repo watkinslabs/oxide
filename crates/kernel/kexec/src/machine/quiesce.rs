@@ -89,8 +89,8 @@ const STOP_SPIN_BUDGET: u64 = 200_000_000;
 /// otherwise hang a machine that has a perfectly good image loaded; the
 /// reference gives its stop a timeout for the same reason and says so in the
 /// log.
-/// # C: O(spin budget)
 #[cfg(target_os = "oxide-kernel")]
+/// # C: O(spin budget)
 pub fn stop_other_cpus() {
     let online = cpu::smp::online_mask();
     #[cfg(target_arch = "x86_64")]

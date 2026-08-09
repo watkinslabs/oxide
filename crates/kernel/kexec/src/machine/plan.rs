@@ -122,6 +122,23 @@ pub fn control_pages_needed(ranges: &[(u64, u64)]) -> u64 {
     table_pages(ranges) + TRANSITION_TABLE_PAGES
 }
 
+// --- relocation-entry bit positions --------------------------------------
+
+// One architecture tests the relocation tags as MASKS (`test cl, imm8`) and the
+// other as BIT POSITIONS (`tbz xN, #bit`). Both must name the same bits, so the
+// positions are derived from the masks rather than written down a second time:
+// a literal `#3` beside `IND_SOURCE = 1 << 3` is two sources of truth for one
+// fact, and only one of them moves when the encoding does.
+
+/// Bit position of [`crate::uapi::IND_DESTINATION`].
+pub const IND_DESTINATION_BIT: u32 = crate::uapi::IND_DESTINATION.trailing_zeros();
+/// Bit position of [`crate::uapi::IND_INDIRECTION`].
+pub const IND_INDIRECTION_BIT: u32 = crate::uapi::IND_INDIRECTION.trailing_zeros();
+/// Bit position of [`crate::uapi::IND_DONE`].
+pub const IND_DONE_BIT: u32 = crate::uapi::IND_DONE.trailing_zeros();
+/// Bit position of [`crate::uapi::IND_SOURCE`].
+pub const IND_SOURCE_BIT: u32 = crate::uapi::IND_SOURCE.trailing_zeros();
+
 // --- x86_64 entry state --------------------------------------------------
 
 /// `CR4.PGE`. Cleared before the identity tables take effect: a global TLB
@@ -262,6 +279,21 @@ mod tests {
         // PGE must not survive the keep mask, or the stale global entries the
         // clear exists to drop come straight back.
         assert_eq!(CR4_KEEP & CR4_PGE, 0);
+    }
+
+    #[test]
+    fn every_relocation_bit_position_reconstructs_its_mask() {
+        // The aarch64 trampoline branches on these positions and the x86_64 one
+        // tests the masks; a divergence would make one arch relocate an image
+        // the other could not, with no other check able to see it.
+        use crate::uapi::*;
+        for (bit, mask) in [(IND_DESTINATION_BIT, IND_DESTINATION),
+                            (IND_INDIRECTION_BIT, IND_INDIRECTION),
+                            (IND_DONE_BIT, IND_DONE),
+                            (IND_SOURCE_BIT, IND_SOURCE)] {
+            assert_eq!(1u64 << bit, mask);
+            assert!(bit < 12, "a tag bit inside the page-offset field would be masked away");
+        }
     }
 
     #[test]
