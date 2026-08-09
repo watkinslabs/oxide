@@ -89,7 +89,12 @@ pub fn store(opts: &SockOpts, action: &Action) -> Effects {
         }
         Action::QueueSeq { .. } | Action::RepairWindow(_) | Action::RepairOptions { .. } =>
             Effects::default(),
-        Action::SaveSyn(v) => { tcp.save_syn.store(*v, Ordering::Release); Effects::default() }
+        // A live listener's requests are the ones this decides about, so the
+        // listener's projected copy is reloaded the moment the option moves.
+        Action::SaveSyn(v) => {
+            tcp.save_syn.store(*v, Ordering::Release);
+            Effects { listener: true, ..Effects::default() }
+        }
         Action::Fastopen(v) => {
             tcp.fastopen.set_max_qlen(*v);
             Effects { fastopen_keys: true, ..Effects::default() }
@@ -260,6 +265,9 @@ pub fn to_listener(opts: &SockOpts, listener: &crate::stack::TcpListenEntry) {
         Ordering::Release);
     listener.fastopen_no_cookie.store(
         opts.tcp.fastopen_no_cookie.load(Ordering::Acquire), Ordering::Release);
+    listener.save_syn.store(
+        opts.tcp.save_syn.load(Ordering::Acquire).clamp(0, u8::MAX as i32) as u8,
+        Ordering::Release);
 }
 
 /// Hand the handshake packet the connection was opened by to the accepted

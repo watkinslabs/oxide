@@ -232,6 +232,7 @@ impl TcpListenEntry {
             synack_retries: ::core::sync::atomic::AtomicU8::new(0),
             fastopen,
             fastopen_no_cookie: ::core::sync::atomic::AtomicBool::new(false),
+            save_syn: ::core::sync::atomic::AtomicU8::new(0),
             synq_overflow_ns: ::core::sync::atomic::AtomicU64::new(crate::syncookies::NEVER),
             closed: ::core::sync::atomic::AtomicBool::new(false),
             #[cfg(target_os = "oxide-kernel")]

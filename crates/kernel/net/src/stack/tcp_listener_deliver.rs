@@ -267,12 +267,16 @@ pub(super) fn build_passive_child(local_ep: Endpoint, own_mss: u16, path_mtu: u3
         conn.own_mss = own_mss;
         conn.path_mtu = path_mtu;
         conn.apply_route_metrics(metrics);
-        // Record the handshake packet the child was opened by, from the network
-        // header onward, so an accepted socket that asked for it with
-        // `TCP_SAVE_SYN` has something to collect. It is dropped with the
-        // connection if nobody does.
-        conn.syn_bytes = Some(
-            packet[..::core::cmp::min(packet.len(), crate::stack::SAVED_SYN_MAX)].to_vec());
+        // Record the handshake packet the child was opened by, from the
+        // network header onward, so an accepted socket that asked for it with
+        // `TCP_SAVE_SYN` has something to collect — and ONLY then. A listener
+        // that never asked would otherwise give every half-open a heap copy
+        // of a SYN nobody will ever read, which is precisely the cost a flood
+        // is trying to impose.
+        if listener.save_syn.load(::core::sync::atomic::Ordering::Acquire) != 0 {
+            conn.syn_bytes = Some(
+                packet[..::core::cmp::min(packet.len(), crate::stack::SAVED_SYN_MAX)].to_vec());
+        }
         let (iif, ttl, tos) = crate::tcp_conn::passive_rcv_header(packet, ipv6, iface.raw());
         conn.rcv_iif = iif;
         conn.rcv_ttl = ttl;

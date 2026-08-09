@@ -97,6 +97,10 @@ mod tcp_accept_overflow_tests;
 #[cfg(test)]
 #[path = "stack/tcp_metrics_tests.rs"]
 mod tcp_metrics_tests;
+
+#[cfg(test)]
+#[path = "stack/tcp_save_syn_tests.rs"]
+mod tcp_save_syn_tests;
 mod tcp_reqsk;
 mod tcp_metrics;
 mod tcp_open;

@@ -53,6 +53,12 @@ pub struct TcpListenEntry {
     /// block is the source of truth; this is the applied copy, in the same
     /// unit, reloaded whenever the option is written.
     pub fastopen_no_cookie: ::core::sync::atomic::AtomicBool,
+    /// `TCP_SAVE_SYN` on the listening socket, projected here so an arriving
+    /// request can be told whether the packet that opened it is worth
+    /// recording. A request whose listener never asked records nothing, which
+    /// is what keeps a flood of half-opens from each carrying a heap copy of
+    /// the SYN nobody will read.
+    pub save_syn: ::core::sync::atomic::AtomicU8,
     /// When this listener's SYN queue last overflowed, as a monotonic
     /// nanosecond reading, or [`crate::syncookies::NEVER`].
     ///
