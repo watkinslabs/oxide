@@ -235,6 +235,11 @@ pub(crate) fn service_packet_ring_timers(now_ns: u64) {
 impl InetSocket {
     /// Service one socket's V3 retirement deadline. # C: O(1)
     pub(crate) fn service_packet_v3_timer(&self, now_ns: u64) -> bool {
+        // Packet RX takes packet_rings, kind, and rx from NET_RX.  ktimers is
+        // process context, so exclude that local bottom half over the complete
+        // lock chain; otherwise NET_RX can interrupt this callback and spin on
+        // its interrupted owner for the rest of the CPU's time slice.
+        let _bh = sched::bh::BhGuard::new();
         let mut rings = self.packet_rings.lock();
         let Some(ring) = rings.rx.clone() else { return false; };
         let Some(state) = rings.rx_v3.as_mut() else { return false; };
