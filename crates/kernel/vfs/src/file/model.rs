@@ -112,6 +112,7 @@ impl File {
             f_mode,
             f_cred: cred,
             private_data: AtomicU64::new(0),
+            f_revoke_gen: AtomicU64::new(0),
             opened_device: Spinlock::new(None),
             pos:   AtomicU64::new(0),
             f_pos_lock: Spinlock::new(()),
@@ -255,6 +256,16 @@ impl File {
 
     /// `file->private_data` slot write. # C: O(1)
     pub fn set_private_data(&self, v: u64) { self.private_data.store(v, Ordering::Release); }
+
+    /// Revocation epoch this description was opened at (`0` = not bound to a
+    /// revocable device). The device compares its current epoch against this
+    /// to decide whether the description is dead. # C: O(1)
+    pub fn revoke_gen(&self) -> u64 { self.f_revoke_gen.load(Ordering::Acquire) }
+
+    /// Record the device's revocation epoch on this description. Called once,
+    /// from the device's open hook, with the epoch that open observed.
+    /// # C: O(1)
+    pub fn set_revoke_gen(&self, v: u64) { self.f_revoke_gen.store(v, Ordering::Release); }
 
     /// `f_op->poll` for this open file description. This is the Linux
     /// `struct file *` poll shape; inode-only polling remains the default for

@@ -1,5 +1,5 @@
 use tty::ReadOutcome;
-use vfs::{FileOps, Ino, Inode, InodeRef, KResult, VfsError};
+use vfs::{File, FileOps, Ino, Inode, InodeRef, KResult, VfsError};
 
 use crate::ids;
 use crate::routing::foreground_vt;
@@ -21,8 +21,8 @@ pub(crate) fn set_session_and_fg(sid: u32, pgid: u32) {
     crate::static_console::set_session_and_fg(sid, pgid);
 }
 
-pub(crate) fn poll() -> u32 {
-    crate::static_console::poll()
+pub(crate) fn poll(gen: u64) -> u32 {
+    crate::static_console::poll_open(gen)
 }
 
 fn serial_jobctl(access: tty::jobctl::Access) -> KResult<()> {
@@ -35,10 +35,14 @@ fn serial_jobctl(access: tty::jobctl::Access) -> KResult<()> {
     )
 }
 
-pub(crate) fn serial_read(buf: &mut [u8]) -> KResult<usize> {
+/// Blocking read for the description that sampled hangup generation `gen`.
+/// A revoked one reads EOF without the job-control gate — `hung_up_tty_fops`
+/// has no `job_control` step. # C: backend-dependent
+pub(crate) fn serial_read(gen: u64, buf: &mut [u8]) -> KResult<usize> {
     if buf.is_empty() {
         return Ok(0);
     }
+    if crate::static_console::hung_up_open(gen) { return Ok(tty::hangup::revoke::HUNG_UP_READ); }
     serial_jobctl(tty::jobctl::Access::Read)?;
     match crate::static_console::read(buf) {
         ReadOutcome::Bytes(n) => Ok(n),
@@ -47,10 +51,12 @@ pub(crate) fn serial_read(buf: &mut [u8]) -> KResult<usize> {
     }
 }
 
-pub(crate) fn serial_read_nonblock(buf: &mut [u8]) -> KResult<usize> {
+/// Non-blocking read; empty ⇒ `Eagain`, revoked ⇒ EOF. # C: O(buf.len())
+pub(crate) fn serial_read_nonblock(gen: u64, buf: &mut [u8]) -> KResult<usize> {
     if buf.is_empty() {
         return Ok(0);
     }
+    if crate::static_console::hung_up_open(gen) { return Ok(tty::hangup::revoke::HUNG_UP_READ); }
     serial_jobctl(tty::jobctl::Access::Read)?;
     let n = crate::static_console::read_nonblock(buf);
     if n == 0 {
@@ -59,7 +65,9 @@ pub(crate) fn serial_read_nonblock(buf: &mut [u8]) -> KResult<usize> {
     Ok(n)
 }
 
-pub(crate) fn serial_write(buf: &[u8]) -> KResult<usize> {
+/// Write; `EIO` once the description has been revoked. # C: backend-dependent
+pub(crate) fn serial_write(gen: u64, buf: &[u8]) -> KResult<usize> {
+    if crate::static_console::hung_up_open(gen) { return Err(VfsError::Eio); }
     serial_jobctl(tty::jobctl::Access::Write)?;
     Ok(crate::static_console::write(buf))
 }
@@ -67,26 +75,29 @@ pub(crate) fn serial_write(buf: &[u8]) -> KResult<usize> {
 pub(crate) struct SerialFileOps;
 
 impl FileOps for SerialFileOps {
-    fn on_open(&self, _i: &Inode) -> KResult<()> {
-        crate::static_console::open()
+    fn on_open_file(&self, file: &File) -> KResult<()> {
+        // Bind this description to the generation the open observed; a later
+        // hangup retires it permanently (`tty::hangup::revoke`).
+        file.set_revoke_gen(crate::static_console::open_revocable()?);
+        Ok(())
     }
 
     fn on_release(&self, _i: &Inode) {
         crate::static_console::close();
     }
 
-    fn read(&self, _i: &Inode, _off: u64, buf: &mut [u8]) -> KResult<usize> {
-        serial_read(buf)
+    fn read_file(&self, file: &File, _off: u64, buf: &mut [u8]) -> KResult<usize> {
+        serial_read(file.revoke_gen(), buf)
     }
 
-    fn read_nonblock(&self, _i: &Inode, _off: u64, buf: &mut [u8]) -> KResult<usize> {
-        serial_read_nonblock(buf)
+    fn read_nonblock_file(&self, file: &File, _off: u64, buf: &mut [u8]) -> KResult<usize> {
+        serial_read_nonblock(file.revoke_gen(), buf)
     }
 
     /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
-    fn poll(&self, _i: &Inode) -> u32 {
-        crate::static_console::poll()
+    fn poll_open_file(&self, file: &File) -> u32 {
+        crate::static_console::poll_open(file.revoke_gen())
     }
 
     /// `/dev/ttyS0`'s poll waiters belong on the serial `TtyStruct`'s own
@@ -97,8 +108,12 @@ impl FileOps for SerialFileOps {
         crate::static_console::poll_subscribers()
     }
 
-    fn write(&self, _i: &Inode, _off: u64, buf: &[u8]) -> KResult<usize> {
-        serial_write(buf)
+    fn write_file(&self, file: &File, _off: u64, buf: &[u8]) -> KResult<usize> {
+        serial_write(file.revoke_gen(), buf)
+    }
+
+    fn write_nonblock_file(&self, file: &File, off: u64, buf: &[u8]) -> KResult<usize> {
+        self.write_file(file, off, buf)
     }
 }
 

@@ -197,11 +197,13 @@ pub fn write(buf: &[u8]) -> usize {
     }
 }
 
-/// Poll mask (POLLIN when a read would return; POLLOUT always).
+/// Poll mask (POLLIN when a read would return; POLLOUT always) for the
+/// description that sampled hangup generation `gen`; a revoked one reports the
+/// full `hung_up_tty_poll` mask.
 /// # C: O(1)
-pub fn poll() -> u32 {
+pub fn poll_open(gen: u64) -> u32 {
     match console() {
-        Some(tty) => tty.poll(),
+        Some(tty) => tty.poll_open(gen),
         // Writable but never readable before install.
         None => tty::ldisc::pollmask::POLLOUT,
     }
@@ -215,14 +217,22 @@ pub fn poll_subscribers() -> Option<alloc::sync::Arc<vfs::PollSubscribers>> {
     console().map(|tty| tty.poll_subs_arc())
 }
 
-/// Open admission for the serial console tty (`tty_reopen` TTY_EXCLUSIVE).
-/// # C: O(1)
-pub fn open() -> vfs::KResult<()> {
+/// Open admission for the serial console tty (`tty_reopen` TTY_EXCLUSIVE),
+/// returning the hangup generation to record on the opening description
+/// (`tty::hangup::revoke`). Before `install` there is no tty to revoke, so the
+/// description is left unbound. # C: O(1)
+pub fn open_revocable() -> vfs::KResult<u64> {
     let cap = sched::current().map(|t| t.has_cap(sched::cap::SYS_ADMIN)).unwrap_or(false);
     match console() {
-        Some(tty) => tty.open_with_cap_sys_admin(cap).map(|_| ()),
-        None => Ok(()),
+        Some(tty) => tty.open_revocable(cap),
+        None => Ok(tty::hangup::revoke::NOT_BOUND),
     }
+}
+
+/// True when the description that sampled `gen` was open across a hangup of
+/// the serial console tty (Linux `tty_hung_up_p`). # C: O(1)
+pub fn hung_up_open(gen: u64) -> bool {
+    console().map(|tty| tty.hung_up_open(gen)).unwrap_or(false)
 }
 
 /// Last-close release for the serial console tty. # C: O(1)

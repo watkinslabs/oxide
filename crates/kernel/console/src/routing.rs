@@ -31,6 +31,34 @@ pub fn route(inode: &Inode) -> Option<TtyTarget> {
     })
 }
 
+/// Linux `tty_hung_up_p(filp)` for a console description: true once a hangup
+/// has retired it, and true for the rest of its life. The tty it names is the
+/// one the open bound (`file->private_data`), falling back to the inode's live
+/// resolution for a description built outside the open hook — the boot
+/// `/dev/console` fd table, which carries no generation and is never revoked.
+/// # C: O(1)
+pub fn hung_up_open(file: &vfs::File) -> bool {
+    let gen = file.revoke_gen();
+    if gen == tty::hangup::revoke::NOT_BOUND { return false; }
+    match route(file.inode()) {
+        None => false,
+        Some(TtyTarget::Serial) => crate::static_console::hung_up_open(gen),
+        Some(TtyTarget::Vt(vt)) => {
+            let bound = file.private_data() as u8;
+            vt_tty::vt_tty(if bound != 0 { bound } else { vt }).hung_up_open(gen)
+        }
+    }
+}
+
+/// `hung_up_tty_ioctl`: every command on a revoked description is `EIO`, except
+/// `TIOCSPGRP`, which is `ENOTTY` — a shell that lost its terminal must learn
+/// it is no longer a terminal, not that the device errored. `None` = live,
+/// run the normal handler. # C: O(1)
+pub fn hung_up_ioctl(file: &vfs::File, req: u32) -> Option<vfs::VfsError> {
+    if !hung_up_open(file) { return None; }
+    Some(tty::hangup::revoke::hung_up_ioctl(req))
+}
+
 /// The current foreground video VT (1-based). `/dev/console` + the keyboard
 /// follow this. # C: O(1)
 pub fn foreground_vt() -> u8 {
