@@ -42,6 +42,24 @@ syscall in the Linux contract is built to full semantics. Exactly two states:
   `get_thread_area`(211), `lookup_dcookie`(212), `epoll_ctl_old`(214),
   `epoll_wait_old`(215), `vserver`(236). Nothing else is OBSOLETE.
 
+  This set is DERIVED, not asserted. It is every native row of the reference's
+  x86_64 syscall table that carries no entry point, or names `sys_ni_syscall`
+  explicitly: the table generator emits `sys_ni_syscall` for a row with no
+  handler, and the 64-bit dispatcher's default arm is `sys_ni_syscall` too, so a
+  blank entry point IS the ENOSYS. Re-derive it with:
+
+  ```
+  awk '$1 ~ /^[0-9]+$/ && ($2=="common"||$2=="64") \
+      { if (NF<4 || $4=="sys_ni_syscall") print $1, $3 }' <table>
+  ```
+
+  Two rows look like exceptions and are not. `set_thread_area`(205) and
+  `get_thread_area`(211) DO have implementations upstream, but only at the i386
+  numbers 243/244, and the file holding them builds solely for 32-bit or IA32
+  emulation — the native 64-bit slots carry no handler, so a 64-bit caller gets
+  ENOSYS whatever the config. Verified 2026-08-09 against the reference tree:
+  the derivation yields exactly these 17 numbers and no others.
+
 There is no `V1`/`V2`/`STUB`/`NEVER` any more — those licensed deferral and
 drifted from the live dispatcher (see `syscal_anal.md`). A syscall is `IMPL`
 or it is one of the 17 `OBSOLETE` numbers above. Where a syscall has a modern
