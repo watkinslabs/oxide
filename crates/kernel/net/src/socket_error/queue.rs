@@ -6,7 +6,7 @@
 //! re-derives it from the record that becomes the new head.
 
 use alloc::collections::VecDeque;
-use sync::{Socket as SocketLockClass, Spinlock};
+use sync::{Socket as SocketLockClass};
 
 use super::entry::SocketErrorEntry;
 use super::uapi::{is_icmp_origin, survives_recverr_purge, SO_EE_ORIGIN_ICMP, SO_EE_ORIGIN_ICMP6,
@@ -16,7 +16,7 @@ use crate::addr::IpAddr;
 /// Canonical Linux-style `sk_err` plus `sk_error_queue`, shared by socket and
 /// transport owner.
 pub struct SocketError {
-    state: Spinlock<SocketErrorState, SocketLockClass>,
+    state: crate::fib_lock::FibLock<SocketErrorState, SocketLockClass>,
     /// `IPV6_RECVPATHMTU`'s one-slot report. Not part of the queue and not
     /// governed by its budget or its pending errno — see `super::pathmtu`.
     pub pathmtu: super::pathmtu::PathMtuSlot,
@@ -68,7 +68,7 @@ impl SocketError {
     /// Empty socket error state. # C: O(1)
     pub const fn new() -> Self {
         Self {
-            state: Spinlock::new(SocketErrorState {
+            state: crate::fib_lock::FibLock::new(SocketErrorState {
                 errno: 0, errno_soft: 0, recverr4: false, recverr6: false,
                 recverr_rfc4884_4: false, recverr_rfc4884_6: false,
                 rmem_limit: SOCK_ERRQUEUE_RMEM_DEFAULT, rmem_used: 0, zerocopy_next_id: 0,

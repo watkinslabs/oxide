@@ -53,7 +53,7 @@ pub(crate) struct PacketFanoutGroup {
     max_members: u32,
     protocol: u16,
     ifindex: u32,
-    state: Spinlock<PacketFanoutState, SockLockClass>,
+    state: crate::fib_lock::FibLock<PacketFanoutState, SockLockClass>,
 }
 
 static PACKET_FANOUT_GROUPS: Spinlock<Vec<Arc<PacketFanoutGroup>>, SockLockClass>
@@ -129,7 +129,7 @@ impl InetSocket {
                 let group = Arc::new(PacketFanoutGroup {
                     net_ns: self.net_ns(), id: request.id, mode, flags, max_members,
                     protocol, ifindex,
-                    state: Spinlock::new(PacketFanoutState {
+                    state: crate::fib_lock::FibLock::new(PacketFanoutState {
                         members: Vec::new(), rr: 0,
                         random: ((self.net_ns() << 16) ^ request.id as u64).wrapping_add(1),
                         filter: Arc::new(SocketFilter::new()),
