@@ -200,16 +200,22 @@ fn install_network_hooks() {
     net::stack::install_bpf_filter_runner(|kind, insns, packet| match kind {
         // A socket with no netdevice carries neither an EtherType nor an
         // ifindex, which is exactly the zeroed pair a filter sees there.
-        net::bpf_filter::FilterKind::Ebpf =>
+        net::bpf_filter::FilterKind::Ebpf | net::bpf_filter::FilterKind::SkReuseport =>
             sk_filter::run(insns, SkFilterContext::bare(packet)),
         net::bpf_filter::FilterKind::Classic =>
             security::socket_filter::run(insns, packet),
     });
+    net::stack::install_bpf_reuseport_runner(|insns, ctx|
+        security::bpf::sk_reuseport::run(insns, security::bpf::sk_reuseport::SkReuseportContext {
+            packet: ctx.packet, eth_protocol: ctx.eth_protocol,
+            ip_protocol: ctx.ip_protocol, bind_inany: ctx.bind_inany, hash: ctx.hash,
+        }));
     net::stack::install_bpf_filter_context_runner(|kind, insns, ctx| match kind {
-        net::bpf_filter::FilterKind::Ebpf => sk_filter::run(insns, SkFilterContext {
-            packet: ctx.packet, protocol: ctx.protocol,
-            ifindex: ctx.ifindex.unwrap_or(0),
-        }),
+        net::bpf_filter::FilterKind::Ebpf | net::bpf_filter::FilterKind::SkReuseport =>
+            sk_filter::run(insns, SkFilterContext {
+                packet: ctx.packet, protocol: ctx.protocol,
+                ifindex: ctx.ifindex.unwrap_or(0),
+            }),
         net::bpf_filter::FilterKind::Classic =>
             security::socket_filter::run_with_context(insns, security::socket_filter::Context {
                 packet: ctx.packet, protocol: ctx.protocol,

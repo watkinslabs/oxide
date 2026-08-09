@@ -179,7 +179,7 @@ fn verify(
         uapi::prog_type::CGROUP_DEVICE =>
             crate::bpf_verify::verify_cgroup_device(insns).map(|()| false),
         uapi::prog_type::SOCKET_FILTER | uapi::prog_type::CGROUP_SKB
-            | uapi::prog_type::CGROUP_SOCK_ADDR => {
+            | uapi::prog_type::CGROUP_SOCK_ADDR | uapi::prog_type::SK_REUSEPORT => {
             crate::bpf_verify::verify_program(
                 p.prog_type, p.expected_attach_type, insns, maps,
             )

@@ -193,7 +193,7 @@ fn select_listener_for_syn(stack: &NetStack, net_ns: u64, iface: NetIfaceId, src
     // F192: an attached SO_REUSEPORT program picks the listener; without
     // one the 4-tuple hash distributes. Single-entry bucket -> idx 0.
     let idx = super::tcp_listener::select_listener_index(
-        &bucket, src_ip, hdr.src_port, hdr.dst_port, seg);
+        &bucket, src_ip, hdr.src_port, hdr.dst_port, seg, hdr.payload_offset())?;
     let mut listener = None;
     for off in 0..bucket.len() {
         let cand = bucket[(idx + off) % bucket.len()].clone();

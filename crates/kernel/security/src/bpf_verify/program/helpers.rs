@@ -22,8 +22,10 @@ fn in_proto(prog_type: u32, func: u32) -> bool {
     use uapi::prog_type as p;
     if base_proto(func) { return true; }
     match func {
+        // The reference gives the reuseport flavour its own implementation
+        // of this helper; both read the same packet the context describes.
         uapi::func_id::SKB_LOAD_BYTES =>
-            matches!(prog_type, p::SOCKET_FILTER | p::CGROUP_SKB),
+            matches!(prog_type, p::SOCKET_FILTER | p::CGROUP_SKB | p::SK_REUSEPORT),
         uapi::func_id::GET_RETVAL | uapi::func_id::SET_RETVAL =>
             prog_type == p::CGROUP_SOCK_ADDR,
         _ => false,

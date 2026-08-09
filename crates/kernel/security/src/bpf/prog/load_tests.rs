@@ -192,3 +192,14 @@ fn a_tracing_program_that_is_not_an_iterator_is_refused() {
             "attach type {attach_type} was admitted");
     }
 }
+
+#[test]
+fn a_reuseport_selection_program_is_a_type_this_kernel_loads() {
+    // The attach path resolves this type from a program fd, so a load that
+    // refused it would leave `SO_ATTACH_REUSEPORT_EBPF` with nothing to find.
+    let p = request(uapi::prog_type::SK_REUSEPORT, 0, 0);
+    assert_eq!(verify(&p, GPL, &returns(1), &[]), Ok(false));
+    assert_eq!(verify(&p, GPL, &returns(0), &[]), Ok(false));
+    // Its return contract is the two actions and nothing else.
+    assert_eq!(verify(&p, GPL, &returns(2), &[]), Err(Errno::Einval));
+}

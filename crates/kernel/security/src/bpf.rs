@@ -41,6 +41,7 @@ mod log;
 mod link;
 mod fd;
 pub mod sk_filter;
+pub mod sk_reuseport;
 pub(crate) mod map;
 mod ids;
 mod token;
@@ -73,6 +74,7 @@ pub(crate) use map::BpfMapValue;
 
 /// Re-exported for `SO_ATTACH_BPF` in the setsockopt slot.
 pub use uapi::prog_type::SOCKET_FILTER as BPF_PROG_TYPE_SOCKET_FILTER;
+pub use uapi::prog_type::SK_REUSEPORT as BPF_PROG_TYPE_SK_REUSEPORT;
 pub use cgroup_device::{
     DEVCG_ACC_MKNOD, DEVCG_ACC_READ, DEVCG_ACC_WRITE, DEVCG_DEV_BLOCK, DEVCG_DEV_CHAR,
     check as check_device_access,

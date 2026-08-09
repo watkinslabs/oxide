@@ -56,7 +56,8 @@ pub use crate::netfilter_hook::{NfHookFn, NfHookResult, install_nf_hook, NFPROTO
 use crate::netfilter_hook::nf_output;
 
 pub use crate::bpf_filter::{
-    install_bpf_filter_context_runner, install_bpf_filter_runner, BpfFilterContextFn, BpfFilterFn,
+    install_bpf_filter_context_runner, install_bpf_filter_runner, install_bpf_reuseport_runner,
+    BpfFilterContextFn, BpfFilterFn, BpfReuseportFn,
 }; // bridge in bpf_filter.rs
 
 /// The most of an opening handshake packet `TCP_SAVE_SYN` records: a maximal

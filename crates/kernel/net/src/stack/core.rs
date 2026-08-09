@@ -321,11 +321,13 @@ impl NetStack {
         self.udp_demux_in(0, src, sport, dst, dport, iface, &[])
     }
 
-    /// Select endpoints in the ingress interface's network namespace. `payload`
-    /// is the received datagram body, which a reuseport selection program
-    /// classifies. # C: O(N_port)
+    /// Select endpoints in the ingress interface's network namespace.
+    /// `datagram` is the received UDP datagram from its header onward, which
+    /// is where a reuseport selection program's view of the packet starts.
+    /// # C: O(N_port)
     pub(crate) fn udp_demux_in(&self, net_ns: u64, src: Ipv4Addr, sport: u16, dst: Ipv4Addr,
-                            dport: u16, iface: NetIfaceId, payload: &[u8]) -> Vec<Arc<UdpRxQueue>> {
+                            dport: u16, iface: NetIfaceId, datagram: &[u8])
+        -> Vec<Arc<UdpRxQueue>> {
         let tables = self.inet_tables(net_ns);
         let group = tables.udp.lock().get(&dport).cloned().unwrap_or_default();
         let mut matched = Vec::new();
@@ -357,9 +359,20 @@ impl NetStack {
         });
         let hash = src.as_u32().rotate_left(7) ^ dst.as_u32().rotate_left(19)
             ^ u32::from(sport).rotate_left(11) ^ u32::from(dport);
-        let index = crate::reuseport::slot::group(&winner.reuseport_group)
-            .and_then(|group| group.select(hash, matched.len(), payload))
-            .unwrap_or(hash as usize % matched.len());
+        let index = match crate::reuseport::slot::group(&winner.reuseport_group)
+            .map_or(crate::reuseport::Select::Hash, |group| {
+                group.select(crate::reuseport::SelectInput {
+                    hash, members_len: matched.len(), transport: datagram,
+                    hdr_len: crate::udp::UDP_HDR_LEN,
+                    eth_protocol: crate::addr::eth_p::IPV4,
+                    ip_protocol: crate::addr::IpProto::Udp as u8,
+                })
+            })
+        {
+            crate::reuseport::Select::Member(index) => index,
+            crate::reuseport::Select::Hash => hash as usize % matched.len(),
+            crate::reuseport::Select::Drop => return Vec::new(),
+        };
         let selected = matched.swap_remove(index);
         alloc::vec![selected]
     }
