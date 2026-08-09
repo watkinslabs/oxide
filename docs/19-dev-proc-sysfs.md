@@ -14,6 +14,8 @@ Three pseudo-FSes that present kernel state as a tree of files. Surface defined 
 4. Reads from `/proc` and `/sys` files: data snapshot taken at first `read`; consistent across the read sequence (until next `open`).
 5. No file in `/proc`,`/sys`,`/dev` ever returns size > emitted bytes (i.e., `stat.st_size` matches actual content for variable files: 0).
 6. Permissions: `/proc/<pid>/*` follow Linux's `hidepid` defaults; `/sys` defaults `r--r--r--` for read, `rw-------` for writable; `/dev` per device.
+7. A range printed in `/proc/iomem` or `/proc/ioports` names its LAST byte, not one past it. A consumer places into the holes between these ranges, so an exclusive end makes adjacent ranges appear to overlap and a hole disappear.
+8. A physical range appears in `/proc/iomem` only if the kernel can vouch for it. Omitting a range costs a consumer a placement it could have made; inventing one sends a placement into memory that is not there, and `kexec_load(2)` (`15`) is the caller that acts on the answer.
 
 ## 3 Public ifc
 
@@ -73,6 +75,7 @@ Global (`/proc/`):
 | `diskstats` | per-disk I/O counters from `17§3a` (Linux `diskstats_show`) |
 | `kallsyms` | sym table; gated by `kptr_restrict` |
 | `interrupts`,`softirqs` | per-cpu counters |
+| `iomem`,`ioports` | claimed physical-address / port ranges, `start-end : name`, ends INCLUSIVE |
 | `self`,`thread-self` | symlinks |
 | `sys/...` | sysctl tree (sparse subset; see `27§13`) |
 

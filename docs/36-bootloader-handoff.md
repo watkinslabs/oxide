@@ -13,6 +13,7 @@ Define the boundary between bootloader (GRUB both arches) and kernel. What state
 4. Kernel does not parse multiboot1, BIOS int 13h, or any protocol other than the two above.
 5. Kernel image format: ELF64 loaded by multiboot2 (x86_64); PE32+ arm64 Image (aarch64).
 6. No initramfs and no bootloader module list. Root is an ext4 block device named by the cmdline (`39§5`).
+7. Where the handoff carries a flattened device tree, the tree SURVIVES boot: its memory is reserved before any allocator can claim it, and the raw blob stays readable for the life of the kernel. Consuming it into `BootInfo` and dropping the pointer is not sufficient — see `§4.1`.
 
 ## 3 Multiboot2 protocol (x86_64)
 
@@ -54,6 +55,20 @@ U-Boot / QEMU `-kernel` path: `booti` loads the flat Image at the RAM base and j
 Both paths converge on the same trampoline: drop EL2→EL1 if needed, build identity + higher-half + HHDM tables, enable the MMU, jump to the higher-half VA, clear TTBR0, tail-call `_start`.
 
 AP startup is PSCI `CPU_ON` driven by the kernel off the DTB `/cpus` list or the MADT — no bootloader parks APs.
+
+### 4.1 The device tree outlives the handoff
+
+The boot tree is not scratch space for `BootInfo`. Later subsystems need the tree ITSELF, not the facts extracted from it, and the one that makes this load-bearing is `kexec`: the arm64 boot protocol hands the next kernel a device tree in `x0`, so a kernel that cannot produce its own tree cannot hand one on, and `kexec_load(2)`'s userspace loader refuses before it ever reaches the syscall.
+
+| Requirement | Why |
+|---|---|
+| Reserve the blob's pages before the page allocator is seeded | Otherwise the tree is handed out as ordinary RAM and overwritten by whoever draws it, with nothing to notice |
+| Record a checksum of the blob at scan time and re-check it before publishing | Retention must be VERIFIABLE, not assumed; a tree that no longer matches what was scanned is not published at all |
+| Publish the raw blob at `/sys/firmware/fdt`, admin-readable | The interface `kexec_load(2)`'s loader reads to build the tree it passes on |
+| Publish the unflattened tree under `/proc/device-tree` | The interface everything else reads |
+| Reach the blob from a kernel-wide accessor, not a boot-private static | A pointer visible only inside the arch boot stub cannot serve `19`, `27` or `kexec` |
+
+The x86_64 handoff carries no device tree, so none of this applies there; ACPI (`33`) is the equivalent surface and has its own retention rule.
 
 ## 5 Cmdline
 
