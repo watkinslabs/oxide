@@ -509,7 +509,15 @@ pub unsafe fn schedule() {
     if prev_cpu != u16::MAX && prev_cpu != me as u16 {
         // SAFETY: rq.current is the incoming task just published by swap_current; relaxed counter bump only.
         unsafe { rq.current_ref() }.nr_migrations.fetch_add(1, Ordering::Relaxed);
-        crate::perf_sw::charge_deferred(crate::perf_sw::CpuSw::Migration, me, 1);
+        // `perf_event_task_migrate(p)` charges the MIGRATING task, which is the
+        // incoming one — not whoever this CPU is running when the deferred
+        // opportunity is drained.
+        // SAFETY: rq.current is the incoming task just published by
+        // swap_current, and this schedule runs preempt-off, so the runqueue's
+        // Arc keeps the borrow alive for the two relaxed loads below.
+        let inc = unsafe { rq.current_ref() };
+        crate::perf_sw::charge_deferred(crate::perf_sw::CpuSw::Migration, me, 1,
+                                        inc.tgid.load(Ordering::Relaxed), inc.tid);
     }
     // The entry recovery above must have consumed the previous handoff before
     // this schedule acquired the same rq lock. Publishing over a live token
@@ -530,7 +538,11 @@ pub unsafe fn schedule() {
     if let Some(p) = prev_arc_opt.as_ref() {
         let preempted = matches!(p.state(), TaskState::Runnable);
         crate::rusage_charge::ctxsw(p, !preempted);
-        crate::perf_sw::charge_deferred(crate::perf_sw::CpuSw::ContextSwitch, me, 1);
+        // `perf_event_task_sched_out(prev, next)` runs while `current` is still
+        // `prev`, so the switch counter is charged to the OUTGOING task. The
+        // deferred drain happens after the switch, hence the explicit identity.
+        crate::perf_sw::charge_deferred(crate::perf_sw::CpuSw::ContextSwitch, me, 1,
+                                        p.tgid.load(Ordering::Relaxed), p.tid);
         // `perf_event_switch`'s two identities. THIS is the only point that
         // knows both sides, so they are parked here and the switch tail emits
         // the pair of `PERF_RECORD_SWITCH` records.

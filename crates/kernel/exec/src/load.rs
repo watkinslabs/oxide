@@ -5,7 +5,7 @@ use hal::UserVirtAddr;
 use vmm::{AddressSpace, FileBacking, VmaBacking, VmaFlags, VmaProt};
 
 use crate::place::{self, Placement};
-use crate::{ARCH_MACHINE, LoadError, LoadStaging, LoadedImage, PAGE};
+use crate::{ARCH_MACHINE, ImageMapping, LoadError, LoadStaging, LoadedImage, PAGE};
 
 struct ZeroTailBacking { inner: Arc<dyn FileBacking>, zero_from: u64 }
 impl FileBacking for ZeroTailBacking {
@@ -30,6 +30,8 @@ pub(crate) fn place_image(
     as_: &AddressSpace,
     placement: Placement,
     file: Option<&Arc<dyn FileBacking>>,
+    dev: u64,
+    mappings: &mut alloc::vec::Vec<ImageMapping>,
 ) -> Result<LoadedImage, LoadError> {
     let parsed = elf::parse(blob, ARCH_MACHINE)?;
     if !matches!(parsed.elf_type, ElfType::Dyn | ElfType::Exec) {
@@ -113,10 +115,17 @@ pub(crate) fn place_image(
                     (s.file_end - s.vstart) as usize,
                     s.prot,
                     VmaFlags::PRIVATE,
-                    VmaBacking::File { backing, off: s.file_pgoff },
+                    VmaBacking::File { backing: Arc::clone(&backing), off: s.file_pgoff },
                     true,
                 )
                 .map_err(|_| LoadError::Enomem)?;
+            // `perf_event_mmap(vma)` on the PT_LOAD the reference has just
+            // installed: this is the mapping that lets a consumer turn a
+            // sampled IP in the executable into an object and an offset.
+            mappings.push(ImageMapping {
+                addr: s.vstart, len: s.file_end - s.vstart, pgoff: s.file_pgoff,
+                prot: s.prot, file: Some(backing), dev,
+            });
         }
         if s.vend > s.file_end {
             let data: Arc<[u8]> = as_.stash_bytes(s.padded.into_boxed_slice());
@@ -131,6 +140,12 @@ pub(crate) fn place_image(
                     true,
                 )
                 .map_err(|_| LoadError::Enomem)?;
+            // The zero tail is anonymous — the reference reports it too, with
+            // no name, because it is still a VMA a sample can land in.
+            mappings.push(ImageMapping {
+                addr: s.file_end, len: s.vend - s.file_end, pgoff: 0,
+                prot: s.prot, file: None, dev: 0,
+            });
         }
         let _ = s.head_pad;
     }

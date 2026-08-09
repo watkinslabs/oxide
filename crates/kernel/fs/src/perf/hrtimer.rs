@@ -131,7 +131,7 @@ fn fire(arg: usize, id: timer::TimerId) {
     // empty ring — the record's period, time, tid and read payload are all
     // real, only the IP is unavailable.
     emit::deliver(&ev, &SwSite { kind: CpuSw::ExecNs, cpu, nr: 1, ip: 0, addr: 0,
-                                 user: false }, pid, tid, Some(period));
+                                 user: false, charged: None }, pid, tid, Some(period));
     arm(&ev, period);
 }
 

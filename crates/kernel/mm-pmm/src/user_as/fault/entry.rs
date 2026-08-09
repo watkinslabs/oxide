@@ -302,6 +302,8 @@ fn handle(va_raw: u64, fault: FaultKind, user_mode: bool, ip: u64)
                 // frame's return PC is the instruction that faulted, and the
                 // faulting linear address is what `PERF_SAMPLE_ADDR` reports.
                 ip: ip, addr: uva.as_u64(), user: user_mode,
+                // An inline site charges `current`, which IS the faulting task.
+                charged: None,
             });
         }
     }

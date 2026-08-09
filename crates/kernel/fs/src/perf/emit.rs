@@ -25,6 +25,10 @@ use super::uapi::{fmt, record, sample};
 pub fn init() {
     sched::perf_sw::set_sample_hook(on_sw_event);
     sched::perf_sw::set_switch_hook(on_switch);
+    // `perf_event_comm(tsk, exec)`, emitted by the one function that writes
+    // `comm` — so a `prctl(PR_SET_NAME)`, a `/proc/<pid>/comm` write and an
+    // `execve` all report without any of them naming perf.
+    sched::set_comm_hook(on_comm);
     // The bottom half that runs the opportunities the runqueue-locked sites
     // parked — the reference's `irq_work`, on the mechanism oxide has.
     sched::perf_sw::init_softirq();
@@ -40,19 +44,38 @@ fn on_switch(cpu: usize, n: sched::perf_sw::SwitchNote) {
     super::sideband::switch(n.next_tid, c, false, false, n.prev_pid, n.prev_tid);
 }
 
+/// `perf_event_comm(task, exec)` — the task was renamed. `exec` is the
+/// `execve` form and sets `PERF_RECORD_MISC_COMM_EXEC`.
+/// # C: O(events attached to this task)
+fn on_comm(tid: u32, cpu: i32, name: &[u8], exec: bool) {
+    super::sideband::comm(tid, cpu, name, exec);
+}
+
 /// `perf_sw_event(event_id, nr, regs, addr)`. Runs in the charging site's own
 /// context (process context for a page fault), takes no lock the caller holds,
 /// and allocates nothing on the sampling path.
 /// # C: O(events attached to this context)
 fn on_sw_event(site: &SwSite) {
     if !registry::any_registered() { return; }
+    // The task the units were CHARGED to. An inline site charges `current`, so
+    // it carries no identity and `current` is the answer; a site whose
+    // opportunity was parked inside the runqueue-locked region and drained
+    // later carries the charged task explicitly, because by drain time
+    // `current` is somebody else. Attributing a switch to the task that ran
+    // after it is exactly the misattribution a profile must not have.
     let cur = sched::current();
-    let (pid, tid) = match cur.as_ref() {
-        Some(c) => (c.tgid.load(core::sync::atomic::Ordering::Relaxed), c.tid),
-        None    => (0, 0),
+    let (pid, tid) = match site.charged {
+        Some(c) => (c.pid, c.tid),
+        None => match cur.as_ref() {
+            Some(c) => (c.tgid.load(core::sync::atomic::Ordering::Relaxed), c.tid),
+            None    => (0, 0),
+        },
     };
-    if let Some(c) = cur.as_ref() {
-        for ev in registry::live_task_events(c.tid) { sample_one(&ev, site, pid, tid); }
+    // The task-scoped events walked are the charged task's, for the same
+    // reason: a `PERF_COUNT_SW_CONTEXT_SWITCHES` event attached to the
+    // outgoing task must see its own switch.
+    if tid != 0 {
+        for ev in registry::live_task_events(tid) { sample_one(&ev, site, pid, tid); }
     }
     for ev in registry::live_cpu_events(site.cpu as i32) {
         sample_one(&ev, site, pid, tid);
@@ -221,7 +244,7 @@ mod tests {
     }
 
     fn site(ip: u64, addr: u64, user: bool) -> SwSite {
-        SwSite { kind: CpuSw::MinFlt, cpu: 0, nr: 1, ip, addr, user }
+        SwSite { kind: CpuSw::MinFlt, cpu: 0, nr: 1, ip, addr, user, charged: None }
     }
 
     fn u64_at(rec: &[u8], i: usize) -> u64 {
@@ -266,6 +289,50 @@ mod tests {
         let rb = ev.buffer().unwrap();
         sample_one(&ev, &site(0, 0, false), 7, 9);
         assert_eq!(u64_at(&rb.peek_data(0, 16), 0), 0);
+    }
+
+    /// A deferred context-switch opportunity reaches the CHARGED task's event,
+    /// and the record NAMES that task — although the drain runs in a context
+    /// that is not that task.
+    ///
+    /// This is the misattribution the parked identity exists to prevent: the
+    /// `PerfDeferred` softirq runs after the switch, so the task running at
+    /// drain time is the INCOMING one while the charge belongs to the outgoing
+    /// one. A profile that swaps them blames every switch on its successor.
+    #[test]
+    fn a_deferred_switch_sample_names_the_charged_task_not_the_drainer() {
+        use sched::perf_sw::Charged;
+        let attr = PerfAttr { sample_period: 1, sample_type: sample::TID,
+                              ..PerfAttr::default() };
+        let ev = PerfEvent::new(attr, SwSource::TaskCount(TaskCount::ContextSwitches),
+                                Some(6001), -1, None);
+        ev.state.lock().buffer = Some(PerfBuffer::hosted(2, 0, false));
+        let rb = ev.buffer().unwrap();
+        // Nothing about the calling context names task 6001 — only the charge does.
+        on_sw_event(&SwSite { kind: CpuSw::ContextSwitch, cpu: 0, nr: 1, ip: 0,
+                              addr: 0, user: false,
+                              charged: Some(Charged { pid: 5000, tid: 6001 }) });
+        let rec = rb.peek_data(0, 16);
+        assert_eq!(u32::from_le_bytes(rec[0..4].try_into().unwrap()), record::SAMPLE);
+        assert_eq!(u64_at(&rec, 0), 6001u64 << 32 | 5000,
+                   "PERF_SAMPLE_TID names the charged task, not the drainer");
+    }
+
+    /// The same event must NOT be fed an opportunity charged to a different
+    /// task, which is what a drain that fell back to `current` would do.
+    #[test]
+    fn a_charge_against_another_task_does_not_reach_this_events_ring() {
+        use sched::perf_sw::Charged;
+        let attr = PerfAttr { sample_period: 1, sample_type: sample::TID,
+                              ..PerfAttr::default() };
+        let ev = PerfEvent::new(attr, SwSource::TaskCount(TaskCount::ContextSwitches),
+                                Some(6002), -1, None);
+        ev.state.lock().buffer = Some(PerfBuffer::hosted(2, 0, false));
+        let rb = ev.buffer().unwrap();
+        on_sw_event(&SwSite { kind: CpuSw::ContextSwitch, cpu: 0, nr: 1, ip: 0,
+                              addr: 0, user: false,
+                              charged: Some(Charged { pid: 1, tid: 6003 }) });
+        assert_eq!(rb.unread(), 0, "another task's switch is not this task's sample");
     }
 
     /// `perf_output_wakeup`: a record that crosses the watermark wakes the

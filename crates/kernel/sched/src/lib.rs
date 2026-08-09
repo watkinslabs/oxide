@@ -96,6 +96,7 @@ pub use cfs::CfsRunqueue;
 pub use dl::DlRunqueue;
 pub use deadline::{DlEntity, DlParams};
 pub use task::current_ioprio;
+pub use task::set_comm_hook;
 pub use cmdline::argv_to_cmdline;
 pub use rt::{RtRunqueue, RT_PRIO_COUNT};
 pub use registry::kernel_stack_bytes_snapshot;
