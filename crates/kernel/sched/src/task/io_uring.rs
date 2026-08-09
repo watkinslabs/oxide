@@ -80,13 +80,17 @@ impl Task {
 
     /// Resolve a registered-ring index to its file.
     ///
-    /// `EINVAL` past the end of the array, `EBADF` for an empty in-range slot —
-    /// the same split the reference draws between "no such slot" and "that slot
-    /// names no descriptor".
+    /// `EINVAL` past the end of the array AND when the array has never been
+    /// allocated at all (Linux `io_uring_ctx_get_file`: no `io_uring_task`
+    /// yet is the same `-EINVAL` as an out-of-range offset, checked before
+    /// the array is even indexed); `EBADF` for an empty in-range slot once
+    /// the array exists — "no such slot" vs. "that slot names no descriptor".
     /// # C: O(1)
     pub fn io_uring_ring_lookup(&self, offset: u32) -> Result<Arc<File>, Errno> {
         let idx = slot_index(offset)?;
-        self.registered_rings.lock().as_ref().and_then(|s| s[idx].clone()).ok_or(Errno::Ebadf)
+        let g = self.registered_rings.lock();
+        let Some(slots) = g.as_ref() else { return Err(Errno::Einval) };
+        slots[idx].clone().ok_or(Errno::Ebadf)
     }
 
     /// How many slots currently hold a registration. # C: O(IO_RINGFD_REG_MAX)
@@ -141,7 +145,8 @@ mod tests {
         assert!(t.registered_rings.lock().is_none());
         assert_eq!(t.io_uring_rings_registered(), 0);
         assert_eq!(t.io_uring_ring_remove(0), Ok(false));
-        assert_eq!(t.io_uring_ring_lookup(0).err(), Some(Errno::Ebadf));
+        assert_eq!(t.io_uring_ring_lookup(0).err(), Some(Errno::Einval),
+            "no array allocated is the same -EINVAL as `!tctx` in the reference, not EBADF");
         assert!(t.registered_rings.lock().is_none(),
             "a query must not be what allocates the context");
     }

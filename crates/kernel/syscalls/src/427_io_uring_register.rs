@@ -11,9 +11,8 @@ use syscall::errno::Errno;
 use crate::io_uring::ctx::IoUringInode;
 use crate::io_uring::register as work;
 use crate::io_uring::{ring_ctx, ring_of};
-use crate::io_uring_abi::register_op::{decode, registered_ring_error, RegisterOp,
-                                       RSRC_REGISTER_BYTES, RSRC_UPDATE2_BYTES,
-                                       CLONE_BUFFERS_BYTES};
+use crate::io_uring_abi::register_op::{decode, RegisterOp, RSRC_REGISTER_BYTES,
+                                       RSRC_UPDATE2_BYTES, CLONE_BUFFERS_BYTES};
 use crate::io_uring_abi::uapi::IORING_SETUP_R_DISABLED;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
@@ -24,6 +23,22 @@ fn ring_for(fd: i32) -> Result<Arc<IoUringInode>, i64> {
     // SAFETY: running task on this CPU; preempt-off; sole reader of the fd_table slot.
     let Some(fdt) = (unsafe { cur.fd_table_ref() }) else { return Err(err(Errno::Ebadf)) };
     let file = match fdt.clone().get(fd) { Ok(f) => f, Err(_) => return Err(err(Errno::Ebadf)) };
+    let inode = ring_of(&file).map_err(err)?;
+    ring_ctx(&inode).ok_or(err(Errno::Eopnotsupp))
+}
+
+/// Resolve `fd` through the calling task's registered-ring array — Linux
+/// `io_uring_ctx_get_file(fd, registered=true)`: negative or past-the-end is
+/// `EINVAL` (folded into the `u32` cast, which sends a negative `fd` far
+/// past [`sched::task::io_uring::IO_RINGFD_REG_MAX`]), an in-range empty
+/// slot is `EBADF` — both already the array lookup's own errno split. Unlike
+/// [`ring_for`] this never `fput`s: the array holds the reference for the
+/// registration's lifetime, `io_uring_register` only borrows it. # C: O(1)
+fn registered_ring_for(fd: i32) -> Result<Arc<IoUringInode>, i64> {
+    let Some(cur) = sched::live::current() else { return Err(err(Errno::Ebadf)) };
+    let file = match cur.io_uring_ring_lookup(fd as u32) {
+        Ok(f) => f, Err(e) => return Err(err(e)),
+    };
     let inode = ring_of(&file).map_err(err)?;
     ring_ctx(&inode).ok_or(err(Errno::Eopnotsupp))
 }
@@ -109,6 +124,12 @@ fn run(inode: &Arc<IoUringInode>, op: RegisterOp) -> i64 {
         RegisterOp::UnregisterPbufRing { arg } => work::pbuf::unregister(inode, arg),
         RegisterOp::IowqMaxWorkers { arg }  => work::iowq::max_workers(inode, arg),
         RegisterOp::IowqAff { arg, len }    => work::iowq::affinity(arg, len),
+        // Task-scoped, not ring-scoped: the array these write belongs to the
+        // calling task, not to `inode`. `run` still needs a resolved ring
+        // (the reference resolves `file` first too), but neither work fn
+        // touches it.
+        RegisterOp::RingFds { arg, nr }           => work::ring_fds::register(arg, nr),
+        RegisterOp::UnregisterRingFds { arg, nr } => work::ring_fds::unregister(arg, nr),
     }
 }
 
@@ -121,9 +142,6 @@ pub fn sys_io_uring_register(args: &syscall::SyscallArgs) -> i64 {
     let nr_args = args.a3 as u32;
 
     let req = match decode(opcode, fd, arg, nr_args) { Ok(r) => r, Err(e) => return err(e) };
-    // The registered-ring selector indexes the task's registered-ring array,
-    // which stays empty without a ring-fd registration.
-    if req.registered_ring { return err(registered_ring_error(fd)); }
     if fd == -1 {
         // The blind forms take no ring at all.
         return match req.op {
@@ -133,7 +151,12 @@ pub fn sys_io_uring_register(args: &syscall::SyscallArgs) -> i64 {
         };
     }
 
-    let inode = match ring_for(fd) { Ok(i) => i, Err(e) => return e };
+    // The registered-ring selector indexes `fd` through the calling task's
+    // registered-ring array (`IORING_REGISTER_USE_REGISTERED_RING`) instead
+    // of the fd table — Linux `io_uring_ctx_get_file(fd, registered=true)`.
+    let inode = match if req.registered_ring { registered_ring_for(fd) } else { ring_for(fd) } {
+        Ok(i) => i, Err(e) => return e,
+    };
     if let Err(e) = inode.claim_issuer() { return err(e); }
     // A ring's own register allow-list, once it is enabled.
     if inode.flags & IORING_SETUP_R_DISABLED == 0 || !inode.test_state(crate::io_uring::ctx::state::DISABLED) {

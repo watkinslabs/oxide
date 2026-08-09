@@ -22,11 +22,58 @@ fn use_registered_ring_is_a_flag_not_an_unknown_opcode() {
 }
 
 #[test]
-fn registered_ring_lookup_reports_linux_errnos() {
-    // No IORING_REGISTER_RING_FDS support, so every in-range slot is empty.
-    assert_eq!(registered_ring_error(0), Errno::Ebadf);
-    assert_eq!(registered_ring_error(IO_RINGFD_REG_MAX as i32 - 1), Errno::Ebadf);
-    assert_eq!(registered_ring_error(IO_RINGFD_REG_MAX as i32), Errno::Einval);
+fn ring_fds_register_ladder_bounds_nr_args() {
+    // Linux: `if (!nr_args || nr_args > IO_RINGFD_REG_MAX) return -EINVAL;`
+    assert_eq!(decode(IORING_REGISTER_RING_FDS, RING_FD, 0x1000, 0), Err(Errno::Einval));
+    assert_eq!(decode(IORING_REGISTER_RING_FDS, RING_FD, 0x1000, IO_RINGFD_REG_MAX + 1),
+               Err(Errno::Einval));
+    assert_eq!(decode(IORING_REGISTER_RING_FDS, RING_FD, 0x1000, IO_RINGFD_REG_MAX).unwrap().op,
+               RegisterOp::RingFds { arg: 0x1000, nr: IO_RINGFD_REG_MAX });
+    assert_eq!(decode(IORING_REGISTER_RING_FDS, RING_FD, 0x1000, 1).unwrap().op,
+               RegisterOp::RingFds { arg: 0x1000, nr: 1 });
+}
+
+#[test]
+fn ring_fds_unregister_ladder_bounds_nr_args() {
+    assert_eq!(decode(IORING_UNREGISTER_RING_FDS, RING_FD, 0x1000, 0), Err(Errno::Einval));
+    assert_eq!(decode(IORING_UNREGISTER_RING_FDS, RING_FD, 0x1000, IO_RINGFD_REG_MAX + 1),
+               Err(Errno::Einval));
+    assert_eq!(decode(IORING_UNREGISTER_RING_FDS, RING_FD, 0x1000, 1).unwrap().op,
+               RegisterOp::UnregisterRingFds { arg: 0x1000, nr: 1 });
+}
+
+#[test]
+fn ring_fds_opcodes_are_not_blind_eligible() {
+    // Linux `io_uring_register_blind` has no RING_FDS case: `fd == -1` must
+    // stay -EINVAL for these, never fall through to the ring-fd ladder.
+    assert_eq!(decode(IORING_REGISTER_RING_FDS, -1, 0x1000, 1), Err(Errno::Einval));
+    assert_eq!(decode(IORING_UNREGISTER_RING_FDS, -1, 0x1000, 1), Err(Errno::Einval));
+}
+
+#[test]
+fn ring_fds_reg_admission_rejects_nonzero_resv() {
+    assert_eq!(ring_fds_reg_admission(0), Ok(()));
+    assert_eq!(ring_fds_reg_admission(1), Err(Errno::Einval));
+}
+
+#[test]
+fn ring_fds_unreg_admission_checks_resv_data_and_bounds() {
+    assert_eq!(ring_fds_unreg_admission(0, 0, 0), Ok(()));
+    assert_eq!(ring_fds_unreg_admission(1, 0, 0), Err(Errno::Einval), "resv must be zero");
+    assert_eq!(ring_fds_unreg_admission(0, 7, 0), Err(Errno::Einval), "data must be zero");
+    assert_eq!(ring_fds_unreg_admission(0, 0, IO_RINGFD_REG_MAX), Err(Errno::Einval),
+               "offset must be in range");
+    assert_eq!(ring_fds_unreg_admission(0, 0, IO_RINGFD_REG_MAX - 1), Ok(()));
+}
+
+#[test]
+fn ring_fds_result_follows_the_reference_partial_success_rule() {
+    // Linux: `return i ? i : ret;` — anything committed wins over the error
+    // that stopped the loop.
+    assert_eq!(ring_fds_result(0, Err(Errno::Ebusy)), -(Errno::Ebusy.as_i32() as i64));
+    assert_eq!(ring_fds_result(3, Err(Errno::Ebusy)), 3, "committed entries win over the failure");
+    assert_eq!(ring_fds_result(5, Ok(())), 5);
+    assert_eq!(ring_fds_result(0, Ok(())), 0);
 }
 
 #[test]
@@ -95,12 +142,10 @@ fn probe_clamps_instead_of_failing() {
 #[test]
 fn opcodes_needing_an_absent_mechanism_report_eopnotsupp_not_success() {
     // Each of these needs a whole mechanism this kernel does not have — a
-    // worker pool, a per-task registered-ring array, multi-frame ring
-    // regions, a zero-copy receive queue, busy-poll, or a program loader.
-    // Returning 0 for any of them would tell the caller a registration
-    // happened that did not.
-    for op in [IORING_REGISTER_RING_FDS,
-               IORING_UNREGISTER_RING_FDS, IORING_REGISTER_NAPI,
+    // worker pool, multi-frame ring regions, a zero-copy receive queue,
+    // busy-poll, or a program loader. Returning 0 for any of them would tell
+    // the caller a registration happened that did not.
+    for op in [IORING_REGISTER_NAPI,
                IORING_UNREGISTER_NAPI, IORING_REGISTER_ZCRX_IFQ,
                IORING_REGISTER_RESIZE_RINGS, IORING_REGISTER_MEM_REGION,
                IORING_REGISTER_ZCRX_CTRL, IORING_REGISTER_BPF_FILTER] {
