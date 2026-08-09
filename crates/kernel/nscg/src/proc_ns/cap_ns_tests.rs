@@ -103,3 +103,45 @@ fn an_unrecorded_owner_grants_nothing() {
         NamespaceKind::User, initial_user(), Some(initial_user())).unwrap();
     assert!(!has_cap_for(&t, &orphan.pin(), sched::cap::SYS_ADMIN));
 }
+
+/// `setns` into a user namespace must rewrite the caller's credential sets the
+/// same way creating one does (Linux `userns_install` -> `set_cred_user_ns`).
+///
+/// Without it the two ways of entering a user namespace answer differently:
+/// the namespace WALK grants the owner everything either way, but the caller's
+/// own `cap_effective` stays empty, so `capget` and `/proc/self/status` report
+/// no capabilities inside a namespace where the task can in fact do everything.
+#[test]
+fn entering_a_user_namespace_by_setns_grants_the_full_set() {
+    use core::sync::atomic::Ordering;
+    let t = task(706, "setns-enter", CREATOR_UID);
+    let target = child_of(initial_user(), CREATOR_UID);
+    assert_eq!(t.creds.cap_effective.load(Ordering::Acquire), 0, "holds nothing to start");
+
+    let ns = NsInode { kind: NsKind::User, owner: NsOwner::User(target.clone()) };
+    assert_eq!(super::setns_apply(&ns, 0, &t), 0, "the owner may enter what it created");
+
+    assert_eq!(t.creds.cap_effective.load(Ordering::Acquire), sched::Creds::CAP_FULL,
+        "entering rewrites the effective set, as creating one does");
+    assert_eq!(t.creds.cap_permitted.load(Ordering::Acquire), sched::Creds::CAP_FULL);
+    assert_eq!(t.creds.cap_bounding.load(Ordering::Acquire), sched::Creds::CAP_FULL);
+    assert_eq!(t.creds.cap_inheritable.load(Ordering::Acquire), 0, "inheritable is cleared");
+    assert_eq!(t.creds.cap_ambient.load(Ordering::Acquire), 0, "ambient is cleared");
+}
+
+/// The rewrite is the LAST step: a refused install must leave the caller's
+/// credentials untouched, or a failed `setns` becomes a way to gain the full
+/// capability set without moving namespaces.
+#[test]
+fn a_refused_user_namespace_install_leaves_credentials_alone() {
+    use core::sync::atomic::Ordering;
+    let t = task(707, "setns-refused", CREATOR_UID);
+    // A namespace created by somebody else: the walk grants nothing, so
+    // `userns_install`'s CAP_SYS_ADMIN gate refuses.
+    let target = child_of(initial_user(), STRANGER_UID);
+    let ns = NsInode { kind: NsKind::User, owner: NsOwner::User(target) };
+
+    assert_ne!(super::setns_apply(&ns, 0, &t), 0, "a stranger's namespace is refused");
+    assert_eq!(t.creds.cap_effective.load(Ordering::Acquire), 0,
+        "a refused install must not hand out the full set");
+}

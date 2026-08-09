@@ -379,8 +379,21 @@ pub fn setns_apply(ns: &NsInode, nstype: u64, cur: &sched::Task) -> i64 {
     }
     let installed = match &ns.owner {
         NsOwner::Pid(owner) => cur.replace_pid_namespace_for_children(owner.clone()).is_ok(),
+        NsOwner::User(owner) => {
+            let ok = cur.replace_namespace(owner.clone()).is_ok();
+            // Linux `userns_install` -> `set_cred_user_ns`: entering a user
+            // namespace rewrites the caller's credential sets, exactly as
+            // CREATING one does. Without it a task that `setns`'d into a
+            // namespace it owns holds nothing in it by its own capability
+            // sets, so `capget` and `/proc/self/status` disagree with what the
+            // namespace walk grants — and the same rule was applied on the
+            // unshare/clone path and not here, which is one rule with two
+            // answers depending on how the namespace was entered.
+            if ok { cur.creds.enter_new_user_namespace(); }
+            ok
+        }
         NsOwner::Cgroup(owner) | NsOwner::Ipc(owner)
-        | NsOwner::User(owner) | NsOwner::Uts(owner) => cur.replace_namespace(owner.clone()).is_ok(),
+        | NsOwner::Uts(owner) => cur.replace_namespace(owner.clone()).is_ok(),
         NsOwner::Time(_) => false,
         NsOwner::Mnt(owner) => return mntns_install(owner, cur),
         NsOwner::Net(owner) => cur.replace_network_namespace(owner.clone()).is_ok(),
