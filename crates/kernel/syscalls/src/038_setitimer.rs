@@ -30,14 +30,14 @@ fn timeval_to_ns(sec: i64, usec: i64) -> Result<u64, i64> {
 fn read_itimerval(ptr: u64) -> Result<(u64, u64), i64> {
     if ptr == 0 { return Ok((0, 0)); }
     validate_user_buf(ptr, ITIMERVAL_SIZE, 1)?;
-    // SAFETY: ptr was validated readable for one itimerval; unaligned loads match Linux copy_from_user layout.
-    let (i_s, i_us, v_s, v_us) = unsafe {
-        let a = core::ptr::read_unaligned( ptr       as *const i64);
-        let b = core::ptr::read_unaligned((ptr +  8) as *const i64);
-        let c = core::ptr::read_unaligned((ptr + 16) as *const i64);
-        let d = core::ptr::read_unaligned((ptr + 24) as *const i64);
-        (a, b, c, d)
-    };
+    // Linux `copy_from_user`: the range check proves the number is small
+    // enough, not that the page is there, so the copy goes through the
+    // exception table and an unmapped address answers EFAULT.
+    let mut raw = [0u8; ITIMERVAL_SIZE as usize];
+    uaccess::copy_from_user(&mut raw, ptr)
+        .map_err(|e| -(e.as_i32() as i64))?;
+    let field = |i: usize| i64::from_ne_bytes(raw[i * 8..i * 8 + 8].try_into().expect("8 of 32"));
+    let (i_s, i_us, v_s, v_us) = (field(0), field(1), field(2), field(3));
     Ok((timeval_to_ns(i_s, i_us)?, timeval_to_ns(v_s, v_us)?))
 }
 

@@ -41,6 +41,7 @@ mod cachestat;
 pub mod process_mrelease;
 mod lsm;
 mod pkey;
+mod sigaltstack_abi;
 // User-buffer range coverage, the decision half of `userbuf`'s access checks.
 // Ungated because `userbuf.rs` is kernel-only: the walk that replaced a
 // per-PAGE loop with a per-VMA one is exactly the kind of bound that has to be
