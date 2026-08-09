@@ -58,6 +58,17 @@ static ZOMBIES: Spinlock<Vec<Arc<Task>>, TaskListClass>
 static WAITERS: Spinlock<Vec<Arc<Task>>, TaskListClass>
     = Spinlock::new(Vec::new());
 
+/// Test-only: drop every queued zombie and parked waiter. Both lists are
+/// process-global in a hosted test binary, so a case that publishes a zombie
+/// and does not reap it leaves one visible to every later case that queries by
+/// tid — `registry::clear_for_tests` resets the task table alongside it.
+/// # C: O(N_zombies + N_waiters)
+#[cfg(any(test, feature = "hosted"))]
+pub fn clear_for_tests() {
+    ZOMBIES.lock().clear();
+    WAITERS.lock().clear();
+}
+
 
 /// Mark the exit path for deferred parent publication. The switch tail owns the
 /// Arc and calls `enqueue_zombie`, which must make the child waitable before
