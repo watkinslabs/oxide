@@ -70,13 +70,15 @@ fn sample_one(ev: &Arc<PerfEvent>, kind: CpuSw, cpu: usize, nr: u64, addr: u64,
 
     // Decide under the event's own lock, then release it: the ring lock ranks
     // BELOW `PerfEvent::state`, so the two are never held together.
-    let (fired, period, enabled_read) = {
+    let (fired, period) = {
         let mut g = ev.state.lock();
+        // A disabled event counts nothing and samples nothing —
+        // `perf_swevent_event`'s `state != PERF_EVENT_STATE_ACTIVE` return.
         if !g.counter.enabled { return; }
         let o = account(&mut g.hw, ev.attr.sample_type, ev.attr.freq(), nr);
-        (o.count, o.period, g.counter.enabled)
+        (o.count, o.period)
     };
-    if fired == 0 || !enabled_read { return; }
+    if fired == 0 { return; }
 
     let v = SampleValues {
         id: out.id, stream_id: ev.id,

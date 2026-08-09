@@ -11,6 +11,8 @@ use alloc::collections::BTreeMap;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 use sync::{PerfTaskEvents, Spinlock};
 
 use super::event::PerfEvent;
@@ -38,6 +40,16 @@ struct Registry {
 static EVENTS: Spinlock<Registry, PerfTaskEvents> =
     Spinlock::new(Registry { task: BTreeMap::new(), cpu: BTreeMap::new() });
 
+/// Registered-context count, maintained alongside `EVENTS` purely so the
+/// counter sites can answer "is perf in use at all" without touching the lock.
+/// A user page fault consults this on EVERY fault, and taking a spinlock there
+/// would tax the hottest path in the kernel for a facility almost no boot uses
+/// — the same job Linux gives `static_key_false(&perf_swevent_enabled[id])`.
+/// It may lag the table by one registration, which only ever costs one missed
+/// sample on the first event a context registers; the table itself stays the
+/// single source of truth for WHICH events exist.
+static NR_CONTEXTS: AtomicUsize = AtomicUsize::new(0);
+
 fn push(list: &mut Vec<Entry>, ev: &Arc<PerfEvent>) {
     list.retain(|e| e.weak.strong_count() > 0);
     let owner = if ev.parent.is_some() { Some(Arc::clone(ev)) } else { None };
@@ -55,6 +67,11 @@ pub(super) fn register(ev: &Arc<PerfEvent>) {
         Some(tid) => push(g.task.entry(tid).or_default(), ev),
         None      => push(g.cpu.entry(ev.cpu).or_default(), ev),
     }
+    refresh_count(&g);
+}
+
+fn refresh_count(g: &Registry) {
+    NR_CONTEXTS.store(g.task.len() + g.cpu.len(), Ordering::Release);
 }
 
 fn snapshot(list: &mut Vec<Entry>) -> Vec<Arc<PerfEvent>> {
@@ -71,6 +88,7 @@ pub(super) fn live_task_events(tid: u32) -> Vec<Arc<PerfEvent>> {
     let Some(list) = g.task.get_mut(&tid) else { return Vec::new() };
     let out = snapshot(list);
     if list.is_empty() { g.task.remove(&tid); }
+    refresh_count(&g);
     out
 }
 
@@ -80,6 +98,7 @@ pub(super) fn live_cpu_events(cpu: i32) -> Vec<Arc<PerfEvent>> {
     let Some(list) = g.cpu.get_mut(&cpu) else { return Vec::new() };
     let out = snapshot(list);
     if list.is_empty() { g.cpu.remove(&cpu); }
+    refresh_count(&g);
     out
 }
 
@@ -87,16 +106,49 @@ pub(super) fn live_cpu_events(cpu: i32) -> Vec<Arc<PerfEvent>> {
 /// including the registry's own keep-alive on each inherited child so the
 /// caller's fold-back is the last thing that touches it. # C: O(N)
 pub(super) fn retire_task(tid: u32) -> Vec<Arc<PerfEvent>> {
-    let entries = EVENTS.lock().task.remove(&tid);
+    let entries = { let mut g = EVENTS.lock(); let e = g.task.remove(&tid); refresh_count(&g); e };
     entries.into_iter().flatten()
         .filter_map(|e| e.owner.or_else(|| e.weak.upgrade()))
         .collect()
 }
 
-/// True when any registered event might want a sample. Lets the hot software
-/// counter sites skip the registry walk entirely when perf is not in use —
-/// Linux's `static_key_false(&perf_swevent_enabled[event_id])`. # C: O(1)
-pub(super) fn any_registered() -> bool {
-    let g = EVENTS.lock();
-    !g.task.is_empty() || !g.cpu.is_empty()
+/// True when any registered event might want a sample. LOCK-FREE: a user page
+/// fault asks this on every fault, so it reads the atomic rather than the
+/// table. # C: O(1)
+pub(super) fn any_registered() -> bool { NR_CONTEXTS.load(Ordering::Acquire) != 0 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::perf::attr::PerfAttr;
+    use crate::perf::counter::SwSource;
+
+    static NEXT_TID: AtomicUsize = AtomicUsize::new(800_000);
+
+    /// The lock-free fast path must agree with the table it stands in for:
+    /// registering makes it true, and retiring the last context makes it false
+    /// again. A stuck-true value only costs a wasted walk; a stuck-false one
+    /// silently drops every sample, which is why this is pinned.
+    #[test]
+    fn the_lock_free_gate_tracks_the_table() {
+        let tid = NEXT_TID.fetch_add(1, Ordering::Relaxed) as u32;
+        let ev = PerfEvent::new(PerfAttr::default(), SwSource::Zero, Some(tid), -1, None);
+        assert!(any_registered());
+        assert_eq!(live_task_events(tid).len(), 1);
+        drop(ev);
+        // The dead entry is pruned by the next walk, which also refreshes the
+        // count — the table remains the source of truth for WHICH events exist.
+        assert!(live_task_events(tid).is_empty());
+        let _ = retire_task(tid);
+    }
+
+    #[test]
+    fn a_cpu_wide_event_registers_under_its_cpu_not_a_tid() {
+        let ev = PerfEvent::new(PerfAttr::default(), SwSource::Zero, None, 7, None);
+        assert_eq!(live_cpu_events(7).len(), 1);
+        assert!(live_cpu_events(6).is_empty());
+        assert!(live_task_events(0).is_empty());
+        drop(ev);
+        assert!(live_cpu_events(7).is_empty());
+    }
 }
