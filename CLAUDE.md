@@ -250,6 +250,21 @@ repeatedly and broken repeatedly, so it is written here as an absolute:
 Violating this wastes the user's wall-clock, which is the scarcest thing in this project.
 There is no "to be safe" boot and no ritual boot.
 
+**MINIMAL boot time when a boot IS required (HARD RULE).** A boot runs only as long as
+the question needs, never to completion by default. Before launching, name the marker
+that answers the question; cut the boot the moment the marker appears (or its absence
+is decided) — fail-fast grep on the serial log, kill the guest at the marker.
+
+| question | marker | ~time |
+|---|---|---|
+| early boot / journald start / kernel init | the init or `[FAILED]` line | 15-30s |
+| login, service startup, syscall surface | `basic.target` / debug-shell answer | ~90s |
+| desktop / greeter / GNOME session | `graphical.target`+ | full boot |
+
+Never block-wait on a full `make smoke` when a shorter targeted run answers the
+question; background long runs and keep working. A boot left running past its marker
+is the same waste as a boot that should never have started.
+
 **Run the two arches CONCURRENTLY, never one after the other (HARD RULE).** `make smoke` already does: the builds are prerequisites and only the boots overlap, and the two boots contend for nothing — separate build namespaces, separate root images, separate qemu instances. Running them back to back doubles the wall clock of every lockstep check for zero information. If you invoke the scripts by hand, background both and `wait` on both, collecting each exit status so one run reports both answers:
 
 ```
