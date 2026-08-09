@@ -24,6 +24,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod bdev;
+mod bh_gate;
 pub mod blockdev;
 pub mod completion;
 pub mod devbridge;
