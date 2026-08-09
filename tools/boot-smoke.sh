@@ -30,40 +30,11 @@ case "$ARCH" in
 esac
 TIMEOUT="${2:-${SMOKE_TIMEOUT:-600}}"
 
-# Vendor preflight. `vendor/` holds fetched, gitignored boot artifacts, so a
-# fresh feature worktree has none — and an arm boot then fails on missing
-# arm64-efi GRUB modules, which reads as a kernel fault but is not one. Five
-# separate lanes lost an ARM smoke to this and hand-symlinked from the main
-# tree. Fetch instead: fetch-vendor.sh restores firmware from the shared cache
-# and delegates the GRUB modules to fetch-grub.sh.
+# Vendor preflight, shared with every other harness that boots a guest so the
+# fix cannot go missing from one entry point (`tools/vendor-preflight.sh`).
 SMOKE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-vendor_ready() {
-    [ "$ARCH" != arm ] || {
-        [ -f "$SMOKE_ROOT/vendor/grub/arm64-efi/modinfo.sh" ] \
-            && [ -f "$SMOKE_ROOT/vendor/grub/arm64-efi/linux.mod" ] \
-            && [ -f "$SMOKE_ROOT/vendor/grub/arm64-efi/archelp.mod" ] \
-            && [ -f "$SMOKE_ROOT/vendor/firmware/ovmf-aarch64.fd" ]
-    }
-}
-if ! vendor_ready; then
-    mkdir -p "$SMOKE_ROOT/target"
-    exec {VENDOR_LOCK_FD}>"$SMOKE_ROOT/target/.vendor-fetch.lock"
-    if ! flock "$VENDOR_LOCK_FD"; then
-        echo "boot-smoke: could not lock vendor preflight" >&2
-        exit 2
-    fi
-    echo "boot-smoke: vendor/ incomplete in this tree — running tools/fetch-vendor.sh" >&2
-    if ! vendor_ready && ! sh "$SMOKE_ROOT/tools/fetch-vendor.sh" >&2; then
-        echo "boot-smoke: vendor fetch FAILED — boot would fail on missing boot artifacts, not on kernel code" >&2
-        exit 2
-    fi
-    if ! vendor_ready; then
-        echo "boot-smoke: vendor fetch incomplete — required ARM GRUB/firmware artifacts still absent" >&2
-        exit 2
-    fi
-    flock -u "$VENDOR_LOCK_FD"
-    exec {VENDOR_LOCK_FD}>&-
-fi
+. "$SMOKE_ROOT/tools/vendor-preflight.sh"
+vendor_preflight || exit 2
 
 # Serial marker signalling success. The quick-boot root is now a glibc
 # systemd image (images repo), which logs to serial (journald

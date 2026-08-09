@@ -15,6 +15,11 @@ case "$ARCH" in
     *) usage ;;
 esac
 
+# Vendor preflight: a fresh worktree has no `vendor/`, and an ARM guest then
+# fails before QEMU starts with a message that reads like a kernel fault.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tools/vendor-preflight.sh"
+vendor_preflight || exit 2
+
 LOG="$(mktemp /tmp/oxide-drm-render-${ARCH}-XXXXXX.log)"
 PIDFILE="$(mktemp /tmp/oxide-drm-render-${ARCH}-XXXXXX.pid)"
 UART="$(mktemp -u /tmp/oxide-drm-render-${ARCH}-uart-XXXXXX.sock)"

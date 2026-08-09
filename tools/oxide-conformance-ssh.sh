@@ -17,6 +17,11 @@ case "$ARCH" in
     aarch64) QEMU_ARCH=aarch64; GUEST_TRIPLE=aarch64-unknown-linux-gnu ;;
     *) echo "usage: $0 <x86_64|aarch64> <test[,test...]> [timeout]" >&2; exit 2 ;;
 esac
+
+# Vendor preflight: a fresh worktree has no `vendor/`, and an ARM guest then
+# fails before QEMU starts with a message that reads like a kernel fault.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tools/vendor-preflight.sh"
+vendor_preflight || exit 2
 if [ "$ARCH" = aarch64 ] && [ "${OXIDE_CONFORMANCE_TRANSPORT:-serial}" != ssh ]; then
     exec "$(dirname "$0")/oxide-conformance-serial.sh" "$@"
 fi
