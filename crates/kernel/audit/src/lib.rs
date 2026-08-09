@@ -18,6 +18,7 @@
 //   state      — the single live instance, under one lock
 //   clock      — the time source, compiler-gated at the module boundary
 //   producers  — record bodies for kernel producers outside this crate
+//   tty        — per-thread-group terminal-input accumulation and its flushes
 //
 // Nothing here reads a task, a socket, or a filesystem: the netlink layer
 // gathers the caller's facts and the producers supply theirs, so every
@@ -44,9 +45,11 @@ pub mod emit;
 pub mod state;
 pub mod clock;
 pub mod producers;
+pub mod tty;
 
 pub use admission::Caller;
 pub use control::{handle, Reply, Request};
 pub use emit::{log, log_if_enabled, Admitted, Refusal};
-pub use producers::{log_fanotify, log_seccomp, FanotifyInfo, SeccompEvent};
+pub use producers::{log_fanotify, log_seccomp, log_tty, FanotifyInfo, SeccompEvent,
+    TtyActor};
 pub use record::Record;

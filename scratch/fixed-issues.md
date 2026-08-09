@@ -1,5 +1,14 @@
 # Fixed issues
 
+### B2031-tty-audit-producer
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2031 | MISSING | low | Rows 60/231: tty-audit. The two rows this replaces both claimed there was no audit subsystem to hook to; that premise was stale — the audit subsystem is real (queue, backlog/lost accounting, rate limiting, NETLINK_AUDIT control surface, two live producers), so the tty half had somewhere to hook after all. B2031 added the third producer: per-thread-group input accumulation flushed as an `AUDIT_TTY` record on a full buffer, a device change, a canonical-mode change, a completed canonical line and — the item that closes these rows — the last thread of the group exiting, from the `do_exit` tail beside `exit_shm`. `AUDIT_TTY_GET`/`AUDIT_TTY_SET` carry the per-group mask, `clone` inherits it into a new thread group, and the read path is gated by an armed flag so a system with no audited group pays one relaxed load per read. | B2031. `cargo test -p audit` 95 -> 120. Positive control: making `TtyAudit::exit` drop its buffer instead of flushing turns `exit_flushes_the_tail_of_the_session` RED plus 3 siblings (116 passed / 4 failed); restoring it returns 120/0. | audit lane |
+| FIXED B2031 | MISSING | low | Rows 60/231 restated: "no tty-audit, because there is no audit subsystem to hook it to; `netlink/src/audit.rs` is a 70-line ACK sink, no record buffer, no log emission anywhere in `crates/`". STALE PREMISE, corrected here: `crates/kernel/audit` is a full subsystem and `netlink/src/audit.rs` is its transport, not a stub. Closed by the row above. | B2031. `cargo test -p audit` 120/0. | audit lane |
+| FIXED B2031 | MISSING | med | Restated: "no audit subsystem exists, so the tty-audit surface has nothing to hook to and neither do the Landlock logging flags, the fanotify `FAN_AUDIT` justification or any `AUDIT_*` record". STALE PREMISE on every clause: the subsystem exists, the fanotify justification producer is wired from `fs/src/inotify/perm.rs` and the seccomp one from `syscalls/src/dispatch/seccomp.rs`. The tty clause is closed by the row above; the Landlock logging flags are a separate open row. | B2031. `audit::producers::{log_fanotify, log_seccomp, log_tty}`, all three with live call sites. | audit lane |
+
+
 ### B1984-missing-platform-uefi-usb
 ### B1981-missing-fs-vfs-surface (lane drop fold)
 

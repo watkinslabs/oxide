@@ -13,6 +13,7 @@ use crate::config::Config;
 use crate::consumer::Consumer;
 use crate::queue::Backlog;
 use crate::ratelimit::RateState;
+use crate::tty::TtyAudit;
 
 /// Everything the audit system owns.
 pub struct AuditState {
@@ -22,6 +23,8 @@ pub struct AuditState {
     pub rate: RateState,
     /// When the "records were lost" warning was last emitted.
     pub last_lost_msg_ms: u64,
+    /// Per-thread-group terminal-input auditing.
+    pub tty: TtyAudit,
 }
 
 impl AuditState {
@@ -33,6 +36,7 @@ impl AuditState {
             backlog: Backlog::new(),
             rate: RateState { messages: 0, last_check_ms: 0 },
             last_lost_msg_ms: 0,
+            tty: TtyAudit::new(),
         }
     }
 }

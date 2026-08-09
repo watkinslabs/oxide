@@ -34,6 +34,7 @@ extern crate alloc;
 // identity DECISION is ungated and host-tested.
 
 mod devnum;
+mod tty_audit;
 pub mod identity;
 pub mod ids;
 pub mod nodes;

@@ -258,6 +258,13 @@ pub fn do_exit(status: i32) -> i64 {
             // group SIGHUP'd, line revoked, every session member's terminal
             // cleared. The hook's own group-dead test keeps a `pthread_exit`
             // from touching the session.
+            // Linux `do_exit`: `if (group_dead) tty_audit_exit()`. The last
+            // thread of an audited thread group writes out the terminal input
+            // it had buffered but not yet flushed — the tail of the session,
+            // after its last completed line, which nothing else would ever
+            // record. Ordered with the other group-dead teardown, and BEFORE
+            // the terminal itself is disassociated.
+            fs::tty_audit::on_group_exit(task);
             sched::live::run_disassociate_ctty(task);
             sched::live::reparent_children(task.tid);
             sched::live::mark_done(task);

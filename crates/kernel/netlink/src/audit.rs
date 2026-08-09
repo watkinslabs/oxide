@@ -48,6 +48,10 @@ pub(crate) fn handle(sock: &NetlinkSocket, hdr: &Nlmsghdr, msg: &[u8]) -> Vec<u8
     match reply {
         Reply::Status(body) => single_reply(hdr, AUDIT_GET, &body),
         Reply::Features(body) => single_reply(hdr, AUDIT_GET_FEATURE, &body),
+        // Both TTY status messages answer with the same struct under their own
+        // request type, so a daemon issuing GET and SET concurrently can tell
+        // which reply is which.
+        Reply::TtyStatus(body) => single_reply(hdr, hdr.nlmsg_type, &body),
         Reply::Done => {
             let mut done = alloc::vec![0u8; Nlmsghdr::SIZE];
             Nlmsghdr::done(hdr.nlmsg_seq, hdr.nlmsg_pid).write_to(&mut done);
