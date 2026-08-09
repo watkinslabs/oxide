@@ -139,3 +139,22 @@ pub fn kernel_kexec() -> KResult<()> {
         }
     })
 }
+
+/// Reset every piece of process-global kexec state: both image slots (freeing
+/// their pages), the kexec lock, and the `kexec_load_disabled` latch.
+///
+/// Covering ALL of it is the point. A reset that emptied only the slots would
+/// leave the latch set from a previous case, so a later `load_permitted` would
+/// answer false for a reason its own test never established — the half-reset
+/// failure this repo has already paid for once. The lock is included because a
+/// test that panics mid-`with_kexec_lock` never releases it, and every later
+/// case would then see EBUSY and blame its own code.
+/// # C: O(N_pages)
+#[cfg(test)]
+pub fn clear_for_tests<F: Frames>(f: &mut F) {
+    let mut old = { let mut s = SLOTS.lock(); (s.normal.take(), s.crash.take()) };
+    if let Some(img) = old.0.as_mut() { img.free(f); }
+    if let Some(img) = old.1.as_mut() { img.free(f); }
+    KEXEC_LOCK.store(false, Ordering::Release);
+    LOAD_DISABLED.store(false, Ordering::Relaxed);
+}

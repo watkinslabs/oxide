@@ -6,6 +6,7 @@ use alloc::vec::Vec;
 use core::cell::Cell;
 
 use super::fake::{FakeFrames, PatternSource};
+use super::gate::exclusive_store;
 use crate::file_load::{kexec_file_load, probe, FileImage};
 use crate::stage::Limits;
 use crate::store;
@@ -32,6 +33,11 @@ fn the_unload_flag_short_circuits_before_a_descriptor_is_read() {
     // unload fail on a closed descriptor that the reference never looks at.
     let read_ran = Cell::new(false);
     let mut f = FakeFrames::new(0x80_0000);
+    // This case UNLOADS the global slot, so without the gate it can free an
+    // image a concurrent case just staged — and it takes the kexec lock, so a
+    // concurrent holder makes it EBUSY. Both are real behaviour; neither is
+    // what this case is asking about.
+    let _g = exclusive_store(&mut f);
     let r = kexec_file_load(&mut f, KEXEC_FILE_UNLOAD, || {
         read_ran.set(true);
         Ok(img(b"\0"))
@@ -43,6 +49,7 @@ fn the_unload_flag_short_circuits_before_a_descriptor_is_read() {
 #[test]
 fn a_descriptor_error_is_reported_before_the_command_line_is_judged() {
     let mut f = FakeFrames::new(0x80_0000);
+    let _g = exclusive_store(&mut f);
     assert_eq!(kexec_file_load(&mut f, 0, || Err(Error::BadFd)), Err(Error::BadFd));
 }
 
@@ -51,6 +58,7 @@ fn a_command_line_without_its_nul_is_refused_before_the_loader_probe() {
     // EINVAL, not ENOEXEC: the caller's mistake is the command line, and it is
     // decided first — the reference checks the last byte right after the copy.
     let mut f = FakeFrames::new(0x80_0000);
+    let _g = exclusive_store(&mut f);
     assert_eq!(kexec_file_load(&mut f, 0, || Ok(img(b"ro quiet"))), Err(Error::Inval));
     assert_eq!(kexec_file_load(&mut f, 0, || Ok(img(b"ro quiet\0"))), Err(Error::NoExec));
     // An empty command line is legal and reaches the probe.
@@ -63,6 +71,7 @@ fn a_command_line_without_its_nul_is_refused_before_the_loader_probe() {
 #[test]
 fn the_slots_the_lock_and_the_reboot_entry_behave_as_one_state_machine() {
     let mut f = FakeFrames::new(0x80_0000);
+    let _g = exclusive_store(&mut f);
     let src = PatternSource::new(PAGE_SIZE as usize);
     let seg = KexecSegment { buf: 0, bufsz: PAGE_SIZE, mem: 0x20_0000, memsz: PAGE_SIZE };
 
@@ -93,7 +102,10 @@ fn the_slots_the_lock_and_the_reboot_entry_behave_as_one_state_machine() {
     assert_eq!(store::kernel_kexec(), Err(Error::NoSys));
 
     // A caller that finds the lock held gets EBUSY rather than blocking behind
-    // a kexec that may never come back.
+    // a kexec that may never come back. Asserted by nesting the lock EXPLICITLY
+    // rather than by racing another test thread: the contract is "held means
+    // refused", and a deterministic nest proves that, while a thread race only
+    // proves the harness scheduled two cases at once.
     let nested = store::with_kexec_lock(|| store::with_kexec_lock(|| Ok(())));
     assert_eq!(nested, Err(Error::Busy));
     // The failed inner attempt did not clear the outer holder's lock.

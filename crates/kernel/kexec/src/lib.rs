@@ -14,12 +14,17 @@
 // - `file_load`: `kexec_file_load`'s ladder and the arch loader registry.
 // - `store`:    the two image slots, the kexec lock, `kernel_kexec`.
 // - `machine`:  the arch relocate-and-enter step — refused, with a diagnosis.
-// - `tests`:    host-run provenance for the order and the staging invariants.
+// - `tests`:    host-run provenance for the order and the staging invariants,
+//               with `tests::gate` serialising everything that reads the store.
 
 #![no_std]
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 extern crate alloc;
+// The test gate and the global-state reset hook use `std::sync::Mutex`, the
+// same serialisation every other crate here uses for a process-wide static.
+#[cfg(test)]
+extern crate std;
 
 pub mod uapi;
 pub mod validate;
