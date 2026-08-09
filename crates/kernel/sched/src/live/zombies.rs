@@ -147,6 +147,8 @@ pub fn enqueue_zombie(task: Arc<Task>) {
     // Linux `exit_notify` + `do_notify_parent`: which signal the parent gets,
     // and whether a `wait4`-reapable zombie is left at all.
     let decision = exit_notify_decision(&task, parent.as_deref());
+    // Seam: a reaper released here has not yet been offered the zombie.
+    #[cfg(test)] crate::tests::interleave::point("exit:pre-publish");
     // POSIX SIGCHLD=SIG_IGN / SA_NOCLDWAIT: the child is reaped automatically
     // and never parked for the parent's `wait4`. Publishing it first and
     // removing it after would race a concurrent reaper, so an autoreaped child
@@ -161,6 +163,11 @@ pub fn enqueue_zombie(task: Arc<Task>) {
     let notify = parent.as_ref().and_then(|p| {
         decision.signal.map(|signo| (signo, child_exit_info(&task, signo, p)))
     });
+    // Seam: past the publication decision, before the auto-reap release. This
+    // is the only window in which a publish-then-remove auto-reap would be
+    // visible to a concurrent reaper, so a check for that defect has to be able
+    // to place one here.
+    #[cfg(test)] crate::tests::interleave::point("exit:notify-built");
     if decision.autoreap { registry::mark_reaped(&task); }
     // A newly childless process group may have just been orphaned with stopped
     // jobs still in it (Linux `exit_notify` -> `kill_orphaned_pgrp(group_leader,
@@ -183,6 +190,9 @@ pub fn enqueue_zombie(task: Arc<Task>) {
         let _ = super::send::send_signal(&p, signo,
             crate::sigsend::SigSource::Info(info), crate::sigsend::SigTarget::Process);
     }
+    // Seam: publication and the SIGCHLD send are done, the waiter wake is not.
+    // A reaper released here is the parent that wakes one instruction later.
+    #[cfg(test)] crate::tests::interleave::point("exit:pre-wake");
     // `wake_parent` covers the autoreap case: a parent blocked in `wait4` must
     // still be roused so it can observe that no child remains and return ECHILD.
     if decision.wake_parent || !decision.autoreap { wake_wait4_parent(parent_tid); }
@@ -378,6 +388,9 @@ pub fn peek_one(parent: u32, parent_tgid: u32, pid: i32, parent_pgid: u32, optio
 
 /// # C: O(N_zombies)
 pub fn reap_one(parent: u32, parent_tgid: u32, pid: i32, parent_pgid: u32, options: u64) -> Option<(WaitChildSnapshot, i32)> {
+    // Seam: before the list lock, so a schedule can place a reaper anywhere in
+    // an exiting task's publication sequence.
+    #[cfg(test)] crate::tests::interleave::point("reap:entry");
     let mut q = ZOMBIES.lock();
     #[cfg(feature = "debug-ssh")]
     {

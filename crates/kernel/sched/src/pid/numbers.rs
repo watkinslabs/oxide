@@ -146,7 +146,16 @@ impl PidIdentity {
     pub fn namespaces(&self) -> Vec<NamespacePin> {
         let guard = self.mappings.lock();
         let Some(mappings) = guard.as_ref() else { return Vec::new() };
-        mappings.iter().filter_map(|mapping| mapping.namespace.upgrade()).collect()
+        let mut live = Vec::new();
+        for mapping in mappings.iter() {
+            // Seam: the window a concurrent namespace teardown must not be able
+            // to open — between deciding a level is live and using it.
+            #[cfg(test)] crate::tests::interleave::point("pidns:before-upgrade");
+            let Some(owner) = mapping.namespace.upgrade() else { continue };
+            #[cfg(test)] crate::tests::interleave::point("pidns:after-upgrade");
+            live.push(owner);
+        }
+        live
     }
 
     /// Depth of the namespace chain this identity is numbered in; 0 before any
@@ -166,6 +175,9 @@ impl PidIdentity {
         let Some(mappings) = self.mappings.lock().take() else { return };
         for mapping in mappings.iter() {
             if !mapping.owned { continue }
+            // Seam: a number is about to be returned to a namespace that may be
+            // going away underneath this walk.
+            #[cfg(test)] crate::tests::interleave::point("pidns:before-release");
             let Some(owner) = mapping.namespace.upgrade() else { continue };
             owner.pid_numbers().free(mapping.nr);
         }
