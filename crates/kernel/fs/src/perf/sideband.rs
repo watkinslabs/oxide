@@ -20,7 +20,7 @@ use alloc::sync::Arc;
 
 use super::event::{now_ns, PerfEvent};
 use super::registry;
-use super::sample::{RecordBuf, SampleValues};
+use super::sample::SampleValues;
 use super::uapi::{attr_bit, record as rec, sample as samp};
 
 pub use record::MmapInfo;
@@ -30,7 +30,7 @@ pub use record::MmapInfo;
 /// the trailer's contents depend on that event's `sample_type` and ids.
 fn iterate_sb<W, B>(tid: u32, cpu: i32, want: W, build: B)
 where W: Fn(&Arc<PerfEvent>) -> bool,
-      B: Fn(&Arc<PerfEvent>, &SampleValues) -> Option<RecordBuf>
+      B: Fn(&Arc<PerfEvent>, &SampleValues) -> Option<record::SbBuf>
 {
     if !registry::any_registered() { return; }
     for ev in registry::live_task_events(tid) { one(&ev, tid, cpu, &want, &build); }
@@ -39,7 +39,7 @@ where W: Fn(&Arc<PerfEvent>) -> bool,
 
 fn one<W, B>(ev: &Arc<PerfEvent>, tid: u32, cpu: i32, want: &W, build: &B)
 where W: Fn(&Arc<PerfEvent>) -> bool,
-      B: Fn(&Arc<PerfEvent>, &SampleValues) -> Option<RecordBuf>
+      B: Fn(&Arc<PerfEvent>, &SampleValues) -> Option<record::SbBuf>
 {
     if !want(ev) { return; }
     // A side-band record is not a sample: it carries no period budget and is
@@ -54,7 +54,7 @@ where W: Fn(&Arc<PerfEvent>) -> bool,
     let Some(r) = build(&out, &v) else { return };
     let st = out.attr.sample_type;
     let all = out.attr.bit(attr_bit::SAMPLE_ID_ALL);
-    match rb.output(r.as_slice(), |lost| super::sample::lost_record(st, all, lost, &v)) {
+    match rb.output(r.as_slice(), |lost| super::sample::lost_record::<{ record::SIDEBAND_MAX }>(st, all, lost, &v)) {
         Some(w) => if w.wakeup { out.wakeup(); },
         None    => { rb.note_lost(); }
     }

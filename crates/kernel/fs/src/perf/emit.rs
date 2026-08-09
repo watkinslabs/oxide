@@ -25,6 +25,9 @@ use super::uapi::{fmt, record, sample};
 pub fn init() {
     sched::perf_sw::set_sample_hook(on_sw_event);
     sched::perf_sw::set_switch_hook(on_switch);
+    // The bottom half that runs the opportunities the runqueue-locked sites
+    // parked — the reference's `irq_work`, on the mechanism oxide has.
+    sched::perf_sw::init_softirq();
 }
 
 /// `perf_event_switch(task, next_prev, sched_in)` — the reference emits BOTH
@@ -131,7 +134,7 @@ pub fn deliver(ev: &Arc<PerfEvent>, site: &SwSite, pid: u32, tid: u32,
             ev.state.lock().lost_samples += 1;
             continue;
         };
-        match rb.output(rec.as_slice(), |lost| lost_record(st, sample_id_all, lost, &v)) {
+        match rb.output(rec.as_slice(), |lost| lost_record::<{ super::sample::MAX_RECORD }>(st, sample_id_all, lost, &v)) {
             Some(w) => wake |= w.wakeup,
             None    => ev.state.lock().lost_samples += 1,
         }

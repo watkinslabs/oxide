@@ -191,8 +191,8 @@ impl PerfBuffer {
     /// which the caller turns into the poll wake and `SIGIO` the reference's
     /// `irq_work` delivers.
     /// # C: O(record bytes)
-    pub fn output<F>(&self, sample: &[u8], build_lost: F) -> Option<Wrote>
-    where F: FnOnce(u64) -> Option<RecordBuf>
+    pub fn output<F, const N: usize>(&self, sample: &[u8], build_lost: F) -> Option<Wrote>
+    where F: FnOnce(u64) -> Option<RecordBuf<N>>
     {
         let tail = self.data_tail();
         let mut g = self.state.lock();
@@ -322,7 +322,7 @@ mod tests {
         assert_eq!(head(&rb), 0);
 
         let rec = [0xABu8; 24];
-        assert!(is_ok(rb.output(&rec, |_| None)));
+        assert!(is_ok(rb.output(&rec, |_| None::<crate::perf::sample::RecordBuf>)));
         assert_eq!(head(&rb), 24, "data_head advertises exactly the bytes written");
         assert_eq!(read_data(&rb, 0, 24), rec);
         assert_eq!(rb.unread(), 24);
@@ -335,7 +335,7 @@ mod tests {
         // Park the producer 8 bytes short of the wrap, then write 24.
         rb.state.lock().head = ds - 8;
         let rec: alloc::vec::Vec<u8> = (0u8..24).collect();
-        assert!(is_ok(rb.output(&rec, |_| None)));
+        assert!(is_ok(rb.output(&rec, |_| None::<crate::perf::sample::RecordBuf>)));
         assert_eq!(head(&rb), ds + 16);
         assert_eq!(read_data(&rb, ds - 8, 8), rec[..8], "tail of the ring");
         assert_eq!(read_data(&rb, 0, 16), rec[8..], "wrapped remainder at offset 0");
@@ -346,7 +346,7 @@ mod tests {
         let rb = PerfBuffer::hosted(2, 0, true);
         rb.state.lock().head = PAGE_BYTES - 8;
         let rec: alloc::vec::Vec<u8> = (0u8..16).collect();
-        assert!(is_ok(rb.output(&rec, |_| None)));
+        assert!(is_ok(rb.output(&rec, |_| None::<crate::perf::sample::RecordBuf>)));
         assert_eq!(read_data(&rb, PAGE_BYTES - 8, 16), rec);
     }
 
@@ -357,13 +357,13 @@ mod tests {
         let rb = PerfBuffer::hosted(1, 0, false);
         let ds = rb.data_size();
         rb.state.lock().head = ds - 4;
-        assert!(!is_ok(rb.output(&[0u8; 8], |_| None)));
-        assert!(!is_ok(rb.output(&[0u8; 8], |_| None)));
+        assert!(!is_ok(rb.output(&[0u8; 8], |_| None::<crate::perf::sample::RecordBuf>)));
+        assert!(!is_ok(rb.output(&[0u8; 8], |_| None::<crate::perf::sample::RecordBuf>)));
         assert_eq!(rb.state.lock().lost, 2);
         // The consumer catches up; the next record is prefixed by the loss report.
         set_tail(&rb, ds - 4);
         let prologue = |lost: u64| {
-            let mut r = crate::perf::sample::RecordBuf::new(
+            let mut r = crate::perf::sample::RecordBuf::<1024>::new(
                 crate::perf::uapi::record::LOST, 0);
             r.u64(0x77);
             r.u64(lost);
@@ -385,16 +385,16 @@ mod tests {
     fn a_paused_ring_writes_nothing_and_pausing_a_pageless_ring_is_ignored() {
         let rb = PerfBuffer::hosted(1, 0, true);
         rb.set_paused(true);
-        assert!(!is_ok(rb.output(&[0u8; 8], |_| None)));
+        assert!(!is_ok(rb.output(&[0u8; 8], |_| None::<crate::perf::sample::RecordBuf>)));
         assert_eq!(head(&rb), 0);
         rb.set_paused(false);
-        assert!(is_ok(rb.output(&[0u8; 8], |_| None)));
+        assert!(is_ok(rb.output(&[0u8; 8], |_| None::<crate::perf::sample::RecordBuf>)));
 
         let empty = PerfBuffer::hosted(0, 0, true);
         assert_eq!(empty.size(), PAGE_BYTES);
         assert_eq!(empty.data.len(), 0, "no data page to map");
         empty.set_paused(false);
-        assert!(!is_ok(empty.output(&[0u8; 8], |_| None)));
+        assert!(!is_ok(empty.output(&[0u8; 8], |_| None::<crate::perf::sample::RecordBuf>)));
     }
 
     /// `perf_mmap_to_page`'s bounds: page 0 is the control page, pages
@@ -413,11 +413,11 @@ mod tests {
     fn a_watermark_crossing_latches_the_poll_readiness_once() {
         let rb = PerfBuffer::hosted(1, 64, true);
         // `perf_output_wakeup` did not run, so the caller must not wake anyone.
-        assert_eq!(rb.output(&[0u8; 32], |_| None), Some(Wrote { wakeup: false }));
+        assert_eq!(rb.output(&[0u8; 32], |_| None::<crate::perf::sample::RecordBuf>), Some(Wrote { wakeup: false }));
         assert_eq!(rb.take_poll(), 0, "below the watermark");
         // The crossing both latches `rb->poll` AND tells the caller to run the
         // wake the reference's `irq_work` delivers.
-        assert_eq!(rb.output(&[0u8; 40], |_| None), Some(Wrote { wakeup: true }));
+        assert_eq!(rb.output(&[0u8; 40], |_| None::<crate::perf::sample::RecordBuf>), Some(Wrote { wakeup: true }));
         assert_eq!(rb.take_poll(), POLL_READY);
         assert_eq!(rb.take_poll(), 0, "the read clears it");
     }

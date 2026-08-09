@@ -16,6 +16,18 @@ use super::super::uapi::record;
 /// one missing the mapping entirely.
 pub const NAME_MAX: usize = 256;
 
+/// Stack budget for a side-band record. The largest form is `PERF_RECORD_MMAP2`:
+/// an 8-byte header, `{pid,tid}`, `addr`/`len`/`pgoff`, the 32-byte identity
+/// block, `prot`/`flags`, the padded name and the 48-byte `sample_id` trailer.
+/// Rounded up to the next multiple of 8 with room to spare. These emitters are
+/// reachable from `execve` and `mmap(2)` — the deepest paths in the kernel — so
+/// they must NOT carry the sample path's 1 KiB buffer; doing so cost 472 B of
+/// the boot chain's stack-depth budget.
+pub const SIDEBAND_MAX: usize = 8 + 8 + 24 + 32 + 8 + NAME_MAX + 48;
+
+/// The buffer every side-band record is built in.
+pub type SbBuf = RecordBuf<SIDEBAND_MAX>;
+
 /// `PERF_RECORD_MISC_MMAP_DATA` / `_COMM_EXEC` / `_SWITCH_OUT` — one bit,
 /// reused per record type.
 pub const MISC_MMAP_DATA: u16 = 1 << 13;
@@ -48,7 +60,7 @@ pub struct MmapInfo<'a> {
 
 /// Append `name`, NUL-terminated and zero-padded to a u64 boundary — the
 /// reference's `ALIGN(strlen(name) + 1, sizeof(u64))`. # C: O(name)
-fn push_name(r: &mut RecordBuf, name: &[u8]) {
+fn push_name(r: &mut SbBuf, name: &[u8]) {
     let n = core::cmp::min(name.len(), NAME_MAX - 1);
     // A name is a path or a comm; an embedded NUL would end it early, so the
     // truncation point is the first NUL if there is one.
@@ -63,11 +75,11 @@ fn push_name(r: &mut RecordBuf, name: &[u8]) {
 /// inode and protection fields spliced between `pgoff` and the filename.
 /// # C: O(name)
 pub fn mmap_record(sample_type: u64, sample_id_all: bool, mmap2: bool,
-                   m: &MmapInfo, v: &SampleValues) -> Option<RecordBuf>
+                   m: &MmapInfo, v: &SampleValues) -> Option<SbBuf>
 {
     let misc = if m.executable { 0 } else { MISC_MMAP_DATA };
     let ty = if mmap2 { record::MMAP2 } else { record::MMAP };
-    let mut r = RecordBuf::new(ty, misc);
+    let mut r = SbBuf::new(ty, misc);
     r.pair32(m.pid, m.tid);
     r.u64(m.addr);
     r.u64(m.len);
@@ -90,9 +102,9 @@ pub fn mmap_record(sample_type: u64, sample_id_all: bool, mmap2: bool,
 /// # C: O(name)
 pub fn comm_record(sample_type: u64, sample_id_all: bool, exec: bool,
                    pid: u32, tid: u32, comm: &[u8], v: &SampleValues)
-    -> Option<RecordBuf>
+    -> Option<SbBuf>
 {
-    let mut r = RecordBuf::new(record::COMM, if exec { MISC_COMM_EXEC } else { 0 });
+    let mut r = SbBuf::new(record::COMM, if exec { MISC_COMM_EXEC } else { 0 });
     r.pair32(pid, tid);
     push_name(&mut r, comm);
     if sample_id_all { push_sample_id(&mut r, sample_type, v); }
@@ -103,9 +115,9 @@ pub fn comm_record(sample_type: u64, sample_id_all: bool, exec: bool,
 /// one layout, differing only in the header type. # C: O(1)
 pub fn task_record(ty: u32, sample_type: u64, sample_id_all: bool,
                    pid: u32, ppid: u32, tid: u32, ptid: u32, time: u64,
-                   v: &SampleValues) -> Option<RecordBuf>
+                   v: &SampleValues) -> Option<SbBuf>
 {
-    let mut r = RecordBuf::new(ty, 0);
+    let mut r = SbBuf::new(ty, 0);
     r.pair32(pid, ppid);
     r.pair32(tid, ptid);
     r.u64(time);
@@ -120,7 +132,7 @@ pub fn task_record(ty: u32, sample_type: u64, sample_id_all: bool,
 pub fn switch_record(sample_type: u64, sample_id_all: bool, cpu_wide: bool,
                      switching_out: bool, preempt: bool,
                      next_prev_pid: u32, next_prev_tid: u32, v: &SampleValues)
-    -> Option<RecordBuf>
+    -> Option<SbBuf>
 {
     let mut misc = 0u16;
     if switching_out {
@@ -128,7 +140,7 @@ pub fn switch_record(sample_type: u64, sample_id_all: bool, cpu_wide: bool,
         if preempt { misc |= MISC_SWITCH_OUT_PREEMPT; }
     }
     let ty = if cpu_wide { record::SWITCH_CPU_WIDE } else { record::SWITCH };
-    let mut r = RecordBuf::new(ty, misc);
+    let mut r = SbBuf::new(ty, misc);
     if cpu_wide { r.pair32(next_prev_pid, next_prev_tid); }
     if sample_id_all { push_sample_id(&mut r, sample_type, v); }
     r.finish()

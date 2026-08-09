@@ -239,13 +239,6 @@ pub unsafe extern "C" fn oxide_finish_task_switch() {
     // relaxed load per switch for every task that is not a fork return.
     publish_forked_child_tid();
     membarrier_sync_core_before_usermode();
-    // The context-switch and migration sampling opportunities this switch
-    // charged from inside the runqueue-locked region. Linux takes them inline
-    // from `perf_event_task_sched_out`/`_in`, which its lockless ring and RCU
-    // swevent hlist tolerate under `rq->lock`; oxide's sampler takes two
-    // spinlocks that rank below the runqueue, so the opportunity lands here —
-    // the same switch, the same CPU, the first instant the lock is gone.
-    crate::perf_sw::drain_deferred(sched_current_cpu() as usize);
 }
 
 /// The half of `MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE` the barrier IPI

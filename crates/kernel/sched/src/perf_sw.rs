@@ -92,6 +92,7 @@ pub fn note_switch(cpu: usize, prev_pid: u32, prev_tid: u32, next_pid: u32,
 {
     deferred::note_switch(cpu, deferred::SwitchNote {
         prev_pid, prev_tid, next_pid, next_tid, preempt });
+    softirq::raise(softirq::Slot::PerfDeferred);
 }
 
 static SAMPLE_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
@@ -138,11 +139,25 @@ pub fn sw_event(site: &SwSite) {
 pub fn charge_deferred(kind: CpuSw, cpu: usize, n: u64) {
     charge(kind, cpu, n);
     deferred::queue(kind, cpu, n);
+    softirq::raise(softirq::Slot::PerfDeferred);
 }
 
-/// Run every sampling opportunity [`charge_deferred`] parked on `cpu`. Must be
-/// called with no runqueue lock held; the scheduler's `finish_task_switch` tail
-/// is the one site. # C: O(pending kinds × events)
+/// Install the bottom half that runs the parked opportunities. Called once from
+/// kernel init, alongside the sample hook. # C: O(1)
+pub fn init_softirq() {
+    softirq::set_handler(softirq::Slot::PerfDeferred, || drain_deferred(softirq::this_cpu()));
+}
+
+/// Run every sampling opportunity [`charge_deferred`] parked on `cpu`.
+///
+/// Runs from the `PerfDeferred` softirq, never from the switch tail: the
+/// sampler's call chain is deep (a record buffer plus the ring), and the stack
+/// gate charges every path that can block for the whole cost of `schedule()`,
+/// so hanging it off `finish_task_switch` put 34 syscall paths within 1.4 KiB
+/// of the guard page. A bottom half is also what the reference uses
+/// (`irq_work_queue`), for the same reason: the work must not run in the
+/// context that generated it.
+/// # C: O(pending kinds × events)
 pub fn drain_deferred(cpu: usize) {
     deferred::drain(cpu, |kind, nr| {
         // A scheduler-internal site has no trap frame and no data address; the
@@ -239,6 +254,14 @@ mod tests {
         // ...and the sampler has not run yet: the caller still holds the lock.
         assert_eq!(SEEN_CTXSW.load(Ordering::Relaxed), 0);
 
+        // The opportunity is queued as a BOTTOM HALF, not run in the switch
+        // tail: the sampler's frames must not be charged to every path that
+        // can block. No assertion here — `softirq::pending()` is a global
+        // any-slot flag that other tests in this binary also set, so a check
+        // on it could not go red if the raise were removed. The gate that
+        // CAN fail for this is `make stack-gate`, which is what caught the
+        // switch-tail version (34 syscall paths within 1.4 KiB of the guard
+        // page) and passes with the bottom half.
         drain_deferred(cpu);
         assert_eq!(SEEN_CTXSW.load(Ordering::Relaxed), 1);
         assert_eq!(SEEN_MIGRATION.load(Ordering::Relaxed), 1);

@@ -69,6 +69,13 @@ pub enum Slot {
     /// Tasklet drain (Linux `TASKLET_SOFTIRQ`). Raised by `tasklet::schedule`;
     /// the handler runs every pending tasklet body in softirq context.
     Tasklet = 8,
+    /// perf software-event sampling opportunities charged from inside the
+    /// runqueue-locked region (`sched::perf_sw::charge_deferred`), plus the
+    /// `PERF_RECORD_SWITCH` pair. Linux defers the same work with an
+    /// `irq_work`; the sampler takes the perf registry and one ring lock, so
+    /// it may not run under `rq->lock` — and it may not run in the switch tail
+    /// either, since that charges every blocking path with the sampler's stack.
+    PerfDeferred = 9,
 }
 
 const N_SLOTS: usize = 32;
