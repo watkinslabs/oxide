@@ -5,6 +5,9 @@
 // - common: shared hosted-test fixtures and serialisation helpers.
 // - cpu_clock_measure: VIRT/PROF/SCHED CPU-clock measures off the task + group totals.
 // - cpu_nanosleep: CPU-clock clock_nanosleep arm/resolve + accounting-tick service.
+// - interleave: deterministic two-actor step ordering for hosted race tests.
+// - interleave_wait: reap-vs-exit races for wait4/waitid, both orders pinned.
+// - interleave_pidfd: pidfd lifetime across namespace teardown and reap.
 // - exit_notify: exit_notify/forget_original_parent adoption order + autoreap.
 // - net_namespace: task-owned network namespace lifetime and exit ordering.
 // - namespaces: concrete non-network owner lifetime and exit ordering.
@@ -34,6 +37,9 @@ mod pi_boost;
 mod cpu_clock_measure;
 mod cpu_nanosleep;
 mod exit_notify;
+pub(crate) mod interleave;
+mod interleave_wait;
+mod interleave_pidfd;
 mod net_namespace;
 mod namespaces;
 pub(crate) mod keyring_hooks;
