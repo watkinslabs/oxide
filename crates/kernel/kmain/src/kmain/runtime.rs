@@ -2,9 +2,12 @@ use crate::{BootInfo, tick_poll_combined};
 use super::entry::step;
 
 /// Runtime hook, console, device, and SMP bring-up.
+///
+/// Out of line for the same reason as `early::init` — see that function.
 /// # SAFETY: caller must satisfy `kernel_main` boot-entry contract.
 /// # C: not measured (one-shot init)
 #[cfg(target_os = "oxide-kernel")]
+#[inline(never)]
 pub unsafe fn init(info: &BootInfo) {
     arch_irq::set_tick_poll_hook(tick_poll_combined);
     step("arch_irq::install_timer_deadline_hook", || arch_irq::install_timer_deadline_hook());

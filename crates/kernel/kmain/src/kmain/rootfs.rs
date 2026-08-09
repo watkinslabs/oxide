@@ -4,15 +4,42 @@ use crate::BootInfo;
 use super::entry::step;
 
 /// Rootfs, mount graph, keymap, and first-userspace handoff.
+///
+/// Every phase below is a SEPARATE frame on purpose (Linux
+/// `noinline_for_stack`). They run strictly in sequence and nothing one
+/// builds outlives it — the ext4 root mount, the hook installs, the three
+/// `TmpfsFs` and their `Arc<dyn FileSystem>` temporaries are all dead before
+/// the handoff — but folded into one function the compiler reserves the whole
+/// pile in a single prologue and holds it live underneath the deepest chain in
+/// the kernel (`run_as_task` -> `install_default_runqueue` ->
+/// `Task::new_with_mm`, and `init_exports` -> `spawn_kernel_thread` ->
+/// `Task::new_with_mm`). Split, the phases overlap instead of summing.
 /// # SAFETY: caller must satisfy `kernel_main` boot-entry contract.
 /// # C: not measured (one-shot init)
 #[cfg(target_os = "oxide-kernel")]
+#[inline(never)]
 pub unsafe fn init(info: &BootInfo) {
     // SAFETY: forwarded boot-entry contract — single CPU, no user address space
     // live, so republishing the kernel-half master has no concurrent copier.
     #[cfg(target_arch = "x86_64")]
     unsafe { hal_x86_64::mmu_ops::resync_kernel_master(); }
+    // SAFETY: forwarded boot-entry contract, which is what each phase requires;
+    // each returns before the next is entered.
+    unsafe { mount_root(); }
+    mount_boot_filesystems();
+    log_dev_null_owner();
+    debug_boot_rootfs();
+    step("load_keymap", load_keymap);
+    step("handoff_to_userspace", || handoff_to_userspace(info));
+}
 
+/// Root ext4 mount plus the one-shot hook installs that must precede it.
+/// Its own frame; see `init`.
+/// # SAFETY: caller must satisfy `kernel_main` boot-entry contract.
+/// # C: not measured (one-shot init)
+#[cfg(target_os = "oxide-kernel")]
+#[inline(never)]
+unsafe fn mount_root() {
     // SAFETY: forwarded boot-entry contract; these one-shot hook installs run
     // before the first mount, so nothing can observe a half-installed hook.
     unsafe {
@@ -42,33 +69,36 @@ pub unsafe fn init(info: &BootInfo) {
         modules::registry::init_exports();
         crate::syscalls::mount::install_vfs_hooks();
         crate::syscalls::ensure_mount_filesystems_registered();
-        if let Some(ext4_ty) = vfs::fs::get_fs_type("ext4") {
-            let _ = vfs::mount::register_typed(ext4_ty, None, Arc::new(ext4::rootfs::Ext4RootfsFs));
-        }
-        boot_register("devtmpfs", "/dev",  Arc::new(::devfs::DevfsFs));
-        boot_register("proc",     "/proc", Arc::new(procfs::fs_impl::ProcfsFs::default()));
-        boot_register("sysfs",    "/sys",  Arc::new(crate::sysfs::SysfsFs));
-        boot_register_cgroup();
-        let tmp = fs::tmpfs::TmpfsFs::new(alloc::string::String::from("/tmp"));
-        let tmp_root = tmp.root_inode();
-        boot_register_bind("tmpfs", "/tmp", tmp, tmp_root);
-        let shm = fs::tmpfs::TmpfsFs::new(alloc::string::String::from("/dev/shm"));
-        let shm_root = shm.root_inode();
-        boot_register_bind("tmpfs", "/dev/shm", shm, shm_root);
-        let run = fs::tmpfs::TmpfsFs::new(alloc::string::String::from("/run"));
-        let run_root = run.root_inode();
-        boot_register_bind("tmpfs", "/run", run, run_root);
-        if let Some(home_dev) = block::registry::by_serial("oxide-home") {
-            if let Ok(home_fs) = ext4::rootfs::Ext4Mount::open(home_dev) {
-                boot_register("ext4", "/home", home_fs);
-            }
+    }
+}
+
+/// The boot mount graph: every filesystem attached under the mounted root.
+/// Its own frame; see `init`.
+/// # C: not measured (one-shot init)
+#[cfg(target_os = "oxide-kernel")]
+#[inline(never)]
+fn mount_boot_filesystems() {
+    if let Some(ext4_ty) = vfs::fs::get_fs_type("ext4") {
+        let _ = vfs::mount::register_typed(ext4_ty, None, Arc::new(ext4::rootfs::Ext4RootfsFs));
+    }
+    boot_register("devtmpfs", "/dev",  Arc::new(::devfs::DevfsFs));
+    boot_register("proc",     "/proc", Arc::new(procfs::fs_impl::ProcfsFs::default()));
+    boot_register("sysfs",    "/sys",  Arc::new(crate::sysfs::SysfsFs));
+    boot_register_cgroup();
+    let tmp = fs::tmpfs::TmpfsFs::new(alloc::string::String::from("/tmp"));
+    let tmp_root = tmp.root_inode();
+    boot_register_bind("tmpfs", "/tmp", tmp, tmp_root);
+    let shm = fs::tmpfs::TmpfsFs::new(alloc::string::String::from("/dev/shm"));
+    let shm_root = shm.root_inode();
+    boot_register_bind("tmpfs", "/dev/shm", shm, shm_root);
+    let run = fs::tmpfs::TmpfsFs::new(alloc::string::String::from("/run"));
+    let run_root = run.root_inode();
+    boot_register_bind("tmpfs", "/run", run, run_root);
+    if let Some(home_dev) = block::registry::by_serial("oxide-home") {
+        if let Ok(home_fs) = ext4::rootfs::Ext4Mount::open(home_dev) {
+            boot_register("ext4", "/home", home_fs);
         }
     }
-
-    log_dev_null_owner();
-    debug_boot_rootfs();
-    step("load_keymap", load_keymap);
-    step("handoff_to_userspace", || handoff_to_userspace(info));
 }
 
 #[cfg(target_os = "oxide-kernel")]
@@ -201,7 +231,13 @@ fn socket_filter_cpu() -> u32 {
     hal_aarch64::ArmCpuOps::current_cpu()
 }
 
+/// Its own frame; see `init`. The keymap parser works out of a multi-kilobyte
+/// scan buffer, and inlined here it would be reserved for the whole of
+/// `init` — including the userspace handoff, which runs after the keymap is
+/// already loaded and is the deepest chain in the kernel.
+/// # C: O(keymap bytes)
 #[cfg(target_os = "oxide-kernel")]
+#[inline(never)]
 fn load_keymap() {
     if let Some(blob) = ext4::rootfs::read_file(b"/etc/keymap") {
         match drv_virtio_input::keymap::load_text(&blob) {
@@ -217,7 +253,12 @@ fn load_keymap() {
     }
 }
 
+/// First-userspace handoff. Its own frame; see `init`. `run_as_task` carries
+/// the widest frame on the boot path, and folded into `init` it would sit
+/// above the mount phase, which is over by the time the handoff runs.
+/// # C: not measured (one-shot init)
 #[cfg(target_os = "oxide-kernel")]
+#[inline(never)]
 fn handoff_to_userspace(info: &BootInfo) {
     let _ = info; // only the x86_64 handoff reads the boot info
     // Userspace exists from here on, so a kernel -> userspace helper may run.

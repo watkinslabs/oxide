@@ -46,9 +46,16 @@ fn log_boot_cmdline() {
 }
 
 /// Early boot bring-up before runtime device and filesystem init.
+///
+/// Out of line (Linux `noinline_for_stack`): kernel_main is this phase's only
+/// caller, so LLVM inlines it by default and every early-boot local stays
+/// reserved in kernel_main's prologue for the whole boot — underneath the
+/// deepest chain in the kernel. The phases run strictly in sequence, so their
+/// frames must overlap rather than sum.
 /// # SAFETY: caller must satisfy `kernel_main` boot-entry contract.
 /// # C: not measured (one-shot init)
 #[cfg(target_os = "oxide-kernel")]
+#[inline(never)]
 pub unsafe fn init(info: &BootInfo) {
     init_boot_percpu();
 

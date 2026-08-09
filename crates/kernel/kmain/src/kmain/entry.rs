@@ -35,6 +35,28 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // which is `runtime::init`'s ordering precondition.
     unsafe { super::runtime::init(info); }
     klog::initcall::finish("runtime::init", t, 0);
+    spawn_kthreads();
+    klog::initcall::level("rootfs");
+    let t = klog::initcall::start("rootfs::init");
+    // SAFETY: forwarded boot-entry contract; the runqueue, workqueues and
+    // kthreads that `rootfs::init` mounts and execs through all exist by now.
+    unsafe { super::rootfs::init(info); }
+    klog::initcall::finish("rootfs::init", t, 0);
+    sched::halt_forever()
+}
+
+/// kthread phase of `kernel_main`: every pinned per-CPU kernel thread and the
+/// deferred-work backends that need one.
+///
+/// Its own frame (Linux `noinline_for_stack`). The phase is sequential — each
+/// spawn's locals are dead before the next runs and all of them are dead
+/// before the rootfs mount and the userspace handoff — but inlined into
+/// `kernel_main` the whole pile is reserved in one prologue and stays live
+/// underneath the deepest chain in the kernel.
+/// # C: not measured (one-shot init)
+#[cfg(target_os = "oxide-kernel")]
+#[inline(never)]
+fn spawn_kthreads() {
     klog::initcall::level("kthreads");
     if step("spawn_timer_driver", sched::live::spawn_timer_driver).is_err() {
         klog::kerror!("fatal: timer driver spawn failed");
@@ -85,11 +107,4 @@ pub unsafe fn kernel_main(info: &BootInfo) -> ! {
     // Tasklet drain (Linux TASKLET_SOFTIRQ) — dynamic softirq-context callbacks.
     step("sched::live::tasklet::init_softirq", sched::live::tasklet::init_softirq);
     step("net::stp_softirq_init", net::stp_softirq_init);
-    klog::initcall::level("rootfs");
-    let t = klog::initcall::start("rootfs::init");
-    // SAFETY: forwarded boot-entry contract; the runqueue, workqueues and
-    // kthreads that `rootfs::init` mounts and execs through all exist by now.
-    unsafe { super::rootfs::init(info); }
-    klog::initcall::finish("rootfs::init", t, 0);
-    sched::halt_forever()
 }
