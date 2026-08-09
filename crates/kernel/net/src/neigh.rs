@@ -11,7 +11,7 @@ extern crate alloc;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
 
-use sync::{Spinlock, Socket as NeighLockClass};
+use sync::{Socket as NeighLockClass};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::addr::MacAddr;
@@ -66,7 +66,7 @@ pub struct NeighEntry<A: NeighAddr> {
 }
 
 pub struct NeighCache<A: NeighAddr> {
-    pub(crate) inner: Spinlock<BTreeMap<A, NeighEntry<A>>, NeighLockClass>,
+    pub(crate) inner: crate::fib_lock::FibLock<BTreeMap<A, NeighEntry<A>>, NeighLockClass>,
     closed: AtomicBool,
 }
 
@@ -120,7 +120,7 @@ pub(crate) struct NeighTick<A: NeighAddr> {
 impl<A: NeighAddr> NeighCache<A> {
     /// # C: O(1)
     pub const fn new() -> Self {
-        Self { inner: Spinlock::new(BTreeMap::new()), closed: AtomicBool::new(false) }
+        Self { inner: crate::fib_lock::FibLock::new(BTreeMap::new()), closed: AtomicBool::new(false) }
     }
 
     /// Insert/refresh an entry with the caller-supplied monotonic

@@ -15,7 +15,7 @@ pub(crate) struct RxPollEntry {
 
 impl NetStack {
     /// This CPU's backlog slot. # C: O(1)
-    fn softnet_this_cpu(&self) -> &Spinlock<SoftnetData, StackLockClass> {
+    fn softnet_this_cpu(&self) -> &crate::fib_lock::FibLock<SoftnetData, StackLockClass> {
         &self.softnet[softirq::this_cpu()]
     }
 

@@ -32,7 +32,7 @@ impl UdpRxQueue {
                       mcast: Arc<crate::mcast_filter::SocketMcast>) -> Self {
         Self {
             owner, bound_ip, bound_port,
-            state: Spinlock::new(UdpRxState { accepting: true, datagrams: VecDeque::new() }),
+            state: crate::fib_lock::FibLock::new(UdpRxState { accepting: true, datagrams: VecDeque::new() }),
             #[cfg(target_os = "oxide-kernel")]
             waiters: sched::live::WaitList::new(),
             error, peer, reuseaddr, reuseport, ip_mtu_discover, gro, encap_type,

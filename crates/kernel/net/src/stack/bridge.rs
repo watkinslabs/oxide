@@ -3,7 +3,7 @@
 use super::*;
 
 pub(crate) struct BridgeTable {
-    pub(super) state: Spinlock<BTreeMap<NetIfaceId, Bridge>, StackLockClass>,
+    pub(super) state: crate::fib_lock::FibLock<BTreeMap<NetIfaceId, Bridge>, StackLockClass>,
 }
 
 pub(super) struct Bridge {
@@ -52,7 +52,7 @@ pub(crate) struct BridgeIngress {
 }
 
 impl BridgeTable {
-    pub(crate) const fn new() -> Self { Self { state: Spinlock::new(BTreeMap::new()) } }
+    pub(crate) const fn new() -> Self { Self { state: crate::fib_lock::FibLock::new(BTreeMap::new()) } }
 
     /// Register one already-published bridge interface. # C: O(log N)
     /// # Lk: matching stack RTNL held by `rtnl`
