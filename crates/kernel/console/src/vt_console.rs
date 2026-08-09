@@ -91,6 +91,12 @@ fn file_vt(file: &File) -> u8 { file.private_data() as u8 }
 pub(crate) struct ConsoleFileOps;
 
 impl FileOps for ConsoleFileOps {
+    fn tty_audit_facts(&self, file: &File) -> Option<vfs::TtyAuditFacts> {
+        let v = file_vt(file);
+        let v = if v == 0 { foreground_vt() } else { v };
+        Some(crate::tty_audit::facts(crate::devnum::vt_rdev(v), &vt_tty::vt_tty(v).termios()))
+    }
+
     fn on_open_file(&self, file: &File) -> KResult<()> {
         let vt = console_vt(file.inode())?;
         let v = if vt == 0 { foreground_vt() } else { vt };
@@ -160,6 +166,22 @@ fn sys_console_vt(file: &File) -> u8 { file.private_data() as u8 }
 pub(crate) struct SystemConsoleFileOps;
 
 impl FileOps for SystemConsoleFileOps {
+    /// `/dev/console` speaks for whichever backend the command line selected,
+    /// so the facts come from the tty it is actually bound to.
+    fn tty_audit_facts(&self, file: &File) -> Option<vfs::TtyAuditFacts> {
+        match cmdline::preferred_console() {
+            cmdline::ConsoleKind::Serial =>
+                Some(crate::tty_audit::facts(crate::devnum::serial_rdev(),
+                                             &crate::static_console::termios_get())),
+            cmdline::ConsoleKind::Vt(_) => {
+                let v = sys_console_vt(file);
+                let v = if v == 0 { foreground_vt() } else { v };
+                Some(crate::tty_audit::facts(crate::devnum::vt_rdev(v),
+                                             &vt_tty::vt_tty(v).termios()))
+            }
+        }
+    }
+
     fn on_open_file(&self, file: &File) -> KResult<()> {
         match cmdline::preferred_console() {
             cmdline::ConsoleKind::Serial => {

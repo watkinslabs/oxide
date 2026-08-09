@@ -65,15 +65,20 @@ pub fn needs_hex(s: &[u8]) -> bool {
     s.iter().any(|c| *c == b'"' || *c < FIRST_PRINTABLE || *c > LAST_PRINTABLE)
 }
 
+/// Append a byte string as two upper-case hex digits per byte, with no
+/// separator and no length prefix. An empty input appends nothing: the field's
+/// `key=` is already written and a value of no bytes is exactly what that says.
+/// # C: O(len)
+pub fn hex_bytes(out: &mut Vec<u8>, s: &[u8]) {
+    for c in s { out.push(HEX_UPPER[(c >> 4) as usize]); out.push(HEX_UPPER[(c & 0xF) as usize]); }
+}
+
 /// Append a value that came from userspace: quoted when every byte is safely
 /// printable, otherwise the byte-for-byte hex encoding.
 /// # C: O(len)
 pub fn untrusted(out: &mut Vec<u8>, s: &[u8]) {
     if s.is_empty() { out.extend_from_slice(b"(null)"); return; }
-    if needs_hex(s) {
-        for c in s { out.push(HEX_UPPER[(c >> 4) as usize]); out.push(HEX_UPPER[(c & 0xF) as usize]); }
-        return;
-    }
+    if needs_hex(s) { hex_bytes(out, s); return; }
     out.push(b'"');
     out.extend_from_slice(s);
     out.push(b'"');

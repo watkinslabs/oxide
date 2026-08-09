@@ -32,9 +32,29 @@ fn slave_jobctl(pair: &LockedPair, ino: Ino, access: tty::jobctl::Access) -> KRe
     tty::jobctl::check(fg, sid, ino, lflag, access)
 }
 
+/// The terminal facts a pty endpoint reports to the input auditor: its device
+/// number, the two termios flags that separate a typed line from a password,
+/// and which half it is. # C: O(1)
+fn pty_audit_facts(inode: &Inode, master: bool) -> Option<vfs::TtyAuditFacts> {
+    let pair = pair_of(inode).ok()?;
+    let lflag = pair.with_pair(|p| p.lflag());
+    let dev = vfs::Devt::from_raw(inode.rdev());
+    Some(vfs::TtyAuditFacts {
+        major: dev.major(),
+        minor: dev.minor(),
+        icanon: lflag & tty::pty::lflag::ICANON != 0,
+        echo: lflag & tty::pty::lflag::ECHO != 0,
+        pty_master: master,
+    })
+}
+
 /// `file_operations` for the master (`/dev/ptmx`) side of a pty pair.
 pub(crate) struct PtyMasterFileOps;
 impl FileOps for PtyMasterFileOps {
+    fn tty_audit_facts(&self, file: &vfs::File) -> Option<vfs::TtyAuditFacts> {
+        pty_audit_facts(file.inode(), true)
+    }
+
     fn on_open(&self, inode: &Inode) -> KResult<()> {
         let pair = pair_of(inode)?;
         pair.open_endpoint(true, current_has_sys_admin())
@@ -130,6 +150,10 @@ impl FileOps for PtyMasterFileOps {
 /// `file_operations` for the slave (`/dev/pts/<n>`) side of a pty pair.
 pub(crate) struct PtySlaveFileOps;
 impl FileOps for PtySlaveFileOps {
+    fn tty_audit_facts(&self, file: &vfs::File) -> Option<vfs::TtyAuditFacts> {
+        pty_audit_facts(file.inode(), false)
+    }
+
     /// Linux `pts_unix98_lookup`: a `TIOCSPTLCK`-locked slave can't be
     /// opened (`-EIO`) — the master must `unlockpt` first.
     /// # C: O(1)

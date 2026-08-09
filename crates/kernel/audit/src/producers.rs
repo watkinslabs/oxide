@@ -8,7 +8,8 @@ use alloc::vec::Vec;
 
 use crate::emit::{self, Admitted, Refusal};
 use crate::fmt;
-use crate::uapi::{AUDIT_FANOTIFY, AUDIT_SECCOMP};
+use crate::tty;
+use crate::uapi::{AUDIT_FANOTIFY, AUDIT_SECCOMP, AUDIT_TTY};
 
 /// The justification a permission daemon attached to its verdict: which of its
 /// rules decided, and how far it trusts each side.
@@ -110,6 +111,66 @@ pub fn seccomp_body(e: SeccompEvent) -> Vec<u8> {
 /// # C: O(1)
 pub fn log_seccomp(e: SeccompEvent) -> Result<Admitted, Refusal> {
     emit::log_if_enabled(AUDIT_SECCOMP, &seccomp_body(e))
+}
+
+/// Who read the terminal input a record accounts for.
+///
+/// Every field is supplied by the caller: this crate reads no task. `auid` and
+/// `ses` are the login identity the input is attributed to, which is the whole
+/// point of the record — the effective uid of a shell says nothing about which
+/// human typed into it.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+pub struct TtyActor<'a> {
+    pub pid: u32,
+    pub uid: u32,
+    pub auid: u32,
+    pub ses: u32,
+    /// Command name, as read from the task. Untrusted: a process names itself.
+    pub comm: &'a [u8],
+}
+
+/// `tty` — buffered terminal input.
+pub const TTY_DESC_INPUT: &[u8] = b"tty";
+/// `ioctl=TIOCSTI` — a byte pushed into a terminal's input queue by ioctl
+/// rather than typed, which is a way to make another process run a command.
+pub const TTY_DESC_TIOCSTI: &[u8] = b"ioctl=TIOCSTI";
+
+/// Body of a terminal-input record.
+///
+/// `data` is always hex, never quoted: it is raw terminal input, so it
+/// routinely holds control bytes, and an encoding that varied with the content
+/// would let input choose how it is framed.
+/// # C: O(comm len + data len)
+pub fn tty_body(desc: &[u8], a: TtyActor<'_>, dev: tty::Devno, data: &[u8]) -> Vec<u8> {
+    let mut b = Vec::new();
+    b.extend_from_slice(desc);
+    b.extend_from_slice(b" pid=");
+    fmt::dec(&mut b, a.pid as u64);
+    b.extend_from_slice(b" uid=");
+    fmt::dec(&mut b, a.uid as u64);
+    b.extend_from_slice(b" auid=");
+    fmt::dec(&mut b, a.auid as u64);
+    b.extend_from_slice(b" ses=");
+    fmt::dec(&mut b, a.ses as u64);
+    b.extend_from_slice(b" major=");
+    fmt::dec(&mut b, dev.major as u64);
+    b.extend_from_slice(b" minor=");
+    fmt::dec(&mut b, dev.minor as u64);
+    b.extend_from_slice(b" comm=");
+    fmt::untrusted(&mut b, a.comm);
+    b.extend_from_slice(b" data=");
+    fmt::hex_bytes(&mut b, data);
+    b
+}
+
+/// Log one terminal-input record. The caller has already decided that audit is
+/// on — a flush empties its buffer whether or not it writes anything, so the
+/// enable test belongs to the flush, not here.
+/// # C: O(comm len + data len)
+pub fn log_tty(desc: &[u8], a: TtyActor<'_>, dev: tty::Devno, data: &[u8])
+    -> Result<Admitted, Refusal>
+{
+    emit::log(AUDIT_TTY, &tty_body(desc, a, dev, data))
 }
 
 #[cfg(test)]

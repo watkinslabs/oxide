@@ -63,6 +63,7 @@ pub mod coredump;
 /// record appended per process exit.
 pub mod acct;
 pub mod ptrace;
+pub mod tty_audit;
 pub mod sig_dispatch;
 mod userbuf;
 
@@ -87,4 +88,5 @@ pub fn init() {
     pipe::install_close_hook();
     epoll::install_epoll_broadcast();
     timerfd::install_clock_was_set_hook();
+    tty_audit::install();
 }

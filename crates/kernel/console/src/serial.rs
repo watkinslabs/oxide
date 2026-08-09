@@ -75,6 +75,10 @@ pub(crate) fn serial_write(gen: u64, buf: &[u8]) -> KResult<usize> {
 pub(crate) struct SerialFileOps;
 
 impl FileOps for SerialFileOps {
+    fn tty_audit_facts(&self, _file: &File) -> Option<vfs::TtyAuditFacts> {
+        Some(crate::tty_audit::facts(serial_rdev(), &crate::static_console::termios_get()))
+    }
+
     fn on_open_file(&self, file: &File) -> KResult<()> {
         // Bind this description to the generation the open observed; a later
         // hangup retires it permanently (`tty::hangup::revoke`).

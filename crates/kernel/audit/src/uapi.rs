@@ -37,6 +37,8 @@ pub const AUDIT_LAST_USER_MSG2:  u16 = 2999;
 // ---- kernel-generated record types ---------------------------------------
 
 pub const AUDIT_CONFIG_CHANGE:   u16 = 1305;
+/// Input read from a terminal whose thread group is marked for tty auditing.
+pub const AUDIT_TTY:             u16 = 1319;
 pub const AUDIT_SECCOMP:         u16 = 1326;
 pub const AUDIT_FEATURE_CHANGE:  u16 = 1328;
 pub const AUDIT_FANOTIFY:        u16 = 1331;

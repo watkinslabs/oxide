@@ -54,6 +54,14 @@ pub trait FileOps: Send + Sync {
         self.read(file.inode(), off, buf)
     }
 
+    /// What this description is, as a terminal, for input auditing: the
+    /// device number, the two termios flags that decide whether the input is
+    /// a line being typed or a password being entered, and whether this is the
+    /// controlling half of a pty pair. `None` — the default — means the
+    /// description is not a terminal and its reads are never audited as one.
+    /// # C: O(1)
+    fn tty_audit_facts(&self, _file: &File) -> Option<crate::TtyAuditFacts> { None }
+
     /// `f_op->write` — write `buf` at byte offset `off`. Default `EISDIR`/`EINVAL`
     /// per `S_IFMT` (Linux `vfs_write`). # C: backend-dependent
     fn write(&self, inode: &Inode, _off: u64, _buf: &[u8]) -> KResult<usize> {

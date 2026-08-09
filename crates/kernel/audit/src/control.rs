@@ -16,6 +16,7 @@ use crate::config::{self, apply_features, FeatureRequest, Field};
 use crate::consumer::{pid_action, Consumer, PidAction};
 use crate::record::Record;
 use crate::state::AuditState;
+use crate::tty;
 use crate::uapi::*;
 use crate::wire::Status;
 use crate::{fmt, record};
@@ -45,6 +46,10 @@ pub enum Reply {
     Status(Vec<u8>),
     /// A `AUDIT_GET_FEATURE` reply body.
     Features(Vec<u8>),
+    /// A `struct audit_tty_status` reply body. Both `AUDIT_TTY_GET` and
+    /// `AUDIT_TTY_SET` answer with one: the setter reports the status it
+    /// replaced, so a daemon can put it back.
+    TtyStatus(Vec<u8>),
     /// End an empty dump.
     Done,
     /// Acknowledge with this value in the error field. Zero is success; a
@@ -77,6 +82,11 @@ pub fn handle(s: &mut AuditState, req: &Request<'_>) -> Reply {
                 Err(e) => Reply::Ack(-(e.as_i32())),
             }
         }
+        AUDIT_TTY_GET => Reply::TtyStatus(tty::encode_status(s.tty.mask(req.caller_pid)).into()),
+        AUDIT_TTY_SET => match tty_set(s, req) {
+            Ok(body) => Reply::TtyStatus(body),
+            Err(e) => Reply::Ack(-(e.as_i32())),
+        },
         // No rules are installed, so the list is empty. The dump must still be
         // terminated or a rule loader's pre-load listing blocks forever.
         AUDIT_LIST_RULES => Reply::Done,
@@ -122,6 +132,21 @@ fn set_status(s: &mut AuditState, req: &Request<'_>) -> Result<i32, Errno> {
         return Ok(actual as i32);
     }
     Ok(0)
+}
+
+/// `AUDIT_TTY_SET`: mark the SENDER's own thread group for terminal-input
+/// auditing, and report the status it replaced.
+///
+/// The setter reaches only its own thread group, so a daemon that wants a
+/// login session audited sets the mask in a process it has already placed
+/// inside that session; the mask then reaches every process the session starts
+/// through the fork inheritance.
+/// # C: O(N_groups)
+fn tty_set(s: &mut AuditState, req: &Request<'_>) -> Result<Vec<u8>, Errno> {
+    let want = tty::decode_status(req.data)?;
+    let old = s.tty.set_mask(req.caller_pid, want);
+    tty::republish(s);
+    Ok(tty::encode_status(old).into())
 }
 
 /// Apply one configuration field and record the attempt.

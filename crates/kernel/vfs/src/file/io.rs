@@ -38,6 +38,23 @@ impl File {
         klog::write_raw(b"\n");
     }
 
+    /// The one `f_op->read` dispatch, shared by `read(2)` and `readv(2)`.
+    ///
+    /// Terminal-input auditing fires here rather than at either caller: bytes
+    /// read through a vector are as much a session's input as bytes read into
+    /// one buffer, and a hook wired to only one of the two would record a
+    /// partial transcript, which is worse than none.
+    /// # C: backend-dependent
+    fn dispatch_read(&self, off: u64, buf: &mut [u8], nonblock: bool) -> KResult<usize> {
+        let n = if nonblock {
+            self.f_op.read_nonblock_file(self, off, buf)?
+        } else {
+            self.f_op.read_file(self, off, buf)?
+        };
+        if n > 0 && super::tty_audit_armed() { super::fire_tty_audit(self, &buf[..n]); }
+        Ok(n)
+    }
+
     /// `read(2)` — advances the cursor by the byte count returned by
     /// the inode's `read`. Rejects writes-only opens with `Ebadf`.
     /// O_NONBLOCK routes through `Inode::read_nonblock`, which the
@@ -76,11 +93,7 @@ impl File {
             self.submit_readahead(index, req);
         }
         // D2: dispatch through the cached `file->f_op` (snapshotted at open).
-        let n = if f.contains(OpenFlags::O_NONBLOCK) {
-            self.f_op.read_nonblock_file(self, pos, buf)?
-        } else {
-            self.f_op.read_file(self, pos, buf)?
-        };
+        let n = self.dispatch_read(pos, buf, f.contains(OpenFlags::O_NONBLOCK))?;
         self.pos.store(pos + n as u64, Ordering::Release);
         drop(pos_guard); // release before the (possibly lock-taking) inotify hook
         // `file_accessed` — the atime bump the
@@ -345,11 +358,7 @@ impl File {
             let want = buf.len();
             let off = pos + total;
             // D2: dispatch through the cached `file->f_op` (snapshotted at open).
-            let r = if nonblock {
-                self.f_op.read_nonblock_file(self, off, buf)
-            } else {
-                self.f_op.read_file(self, off, buf)
-            };
+            let r = self.dispatch_read(off, buf, nonblock);
             match r {
                 Ok(0)                => break,                   // EOF
                 Ok(n)                => { total += n as u64; if n < want { break; } }

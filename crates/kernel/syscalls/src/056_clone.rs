@@ -276,6 +276,13 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
         // GetSessionByPID then returned NoSessionForPID and GNOME never logged
         // in.
         child.vtgid.store(cur.vtgid.load(Ordering::Acquire), Ordering::Release);
+    } else {
+        // Linux `copy_signal` -> `tty_audit_fork`: a NEW thread group inherits
+        // the parent's terminal-audit mask, and only the mask. A CLONE_THREAD
+        // child shares the parent's group and therefore its state already, so
+        // it takes this path only when a real process was created. Auditing a
+        // login shell without this would record nothing the shell ran.
+        fs::tty_audit::on_fork(cur, child.visible_pid());
     }
     let prepared_pidfd = match publication::prepare_pidfd(cur, &child, flags, pidfd_ptr) {
         Ok(prepared) => prepared,
