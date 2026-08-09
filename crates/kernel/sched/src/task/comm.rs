@@ -163,33 +163,27 @@ mod tests {
 
     static CALLS: AtomicU32 = AtomicU32::new(0);
     static EXECS: AtomicU32 = AtomicU32::new(0);
-    static LAST:  spin_name::Slot = spin_name::Slot::new();
+    /// A hook body cannot capture, so the observed name is parked here.
+    static SEEN: [core::sync::atomic::AtomicU8; TASK_COMM_LEN] =
+        [const { core::sync::atomic::AtomicU8::new(0) }; TASK_COMM_LEN];
+    static SEEN_LEN: core::sync::atomic::AtomicUsize =
+        core::sync::atomic::AtomicUsize::new(0);
 
-    /// A hook body cannot capture, so the observed name is parked in a static.
-    mod spin_name {
-        use core::sync::atomic::{AtomicUsize, Ordering};
-        pub struct Slot { buf: [core::sync::atomic::AtomicU8; 16], len: AtomicUsize }
-        impl Slot {
-            pub const fn new() -> Self {
-                Slot { buf: [const { core::sync::atomic::AtomicU8::new(0) }; 16],
-                       len: AtomicUsize::new(0) }
-            }
-            pub fn set(&self, b: &[u8]) {
-                let n = b.len().min(16);
-                for i in 0..n { self.buf[i].store(b[i], Ordering::Relaxed); }
-                self.len.store(n, Ordering::Release);
-            }
-            pub fn get(&self) -> alloc::vec::Vec<u8> {
-                let n = self.len.load(Ordering::Acquire);
-                (0..n).map(|i| self.buf[i].load(Ordering::Relaxed)).collect()
-            }
-        }
+    fn seen_set(b: &[u8]) {
+        let n = b.len().min(TASK_COMM_LEN);
+        for i in 0..n { SEEN[i].store(b[i], Ordering::Relaxed); }
+        SEEN_LEN.store(n, Ordering::Release);
+    }
+
+    fn seen() -> alloc::vec::Vec<u8> {
+        let n = SEEN_LEN.load(Ordering::Acquire);
+        (0..n).map(|i| SEEN[i].load(Ordering::Relaxed)).collect()
     }
 
     fn hook(_tid: u32, _cpu: i32, name: &[u8], exec: bool) {
         CALLS.fetch_add(1, Ordering::Relaxed);
         if exec { EXECS.fetch_add(1, Ordering::Relaxed); }
-        LAST.set(name);
+        seen_set(name);
     }
 
     fn armed() -> std::sync::MutexGuard<'static, ()> {
@@ -197,7 +191,7 @@ mod tests {
         set_comm_hook(hook);
         CALLS.store(0, Ordering::Relaxed);
         EXECS.store(0, Ordering::Relaxed);
-        LAST.set(b"");
+        seen_set(b"");
         g
     }
 
@@ -218,7 +212,7 @@ mod tests {
         t.set_comm_raw(b"worker");
         assert_eq!(CALLS.load(Ordering::Relaxed), 1, "the setter reported the rename");
         assert_eq!(EXECS.load(Ordering::Relaxed), 0, "a prctl rename is not an exec");
-        assert_eq!(LAST.get(), b"worker".to_vec());
+        assert_eq!(seen(), b"worker".to_vec());
         assert_eq!(t.comm(), "worker", "and the stored comm is the same one reported");
     }
 
@@ -231,7 +225,7 @@ mod tests {
         t.set_comm_bytes(Task::pack(b"viafs"));
         assert_eq!(CALLS.load(Ordering::Relaxed), 1);
         assert_eq!(EXECS.load(Ordering::Relaxed), 0);
-        assert_eq!(LAST.get(), b"viafs".to_vec());
+        assert_eq!(seen(), b"viafs".to_vec());
     }
 
     /// `execve`'s rename carries the exec marker, which is the only thing that
@@ -243,7 +237,7 @@ mod tests {
         t.set_comm_exec("bash");
         assert_eq!(CALLS.load(Ordering::Relaxed), 1);
         assert_eq!(EXECS.load(Ordering::Relaxed), 1, "PERF_RECORD_MISC_COMM_EXEC");
-        assert_eq!(LAST.get(), b"bash".to_vec());
+        assert_eq!(seen(), b"bash".to_vec());
     }
 
     /// A fork does NOT report a rename: the reference copies `comm` as part of
@@ -266,7 +260,7 @@ mod tests {
         let _g = armed();
         let t = task();
         t.set_comm_raw(b"0123456789abcdefOVERFLOW");
-        assert_eq!(LAST.get(), t.comm().as_bytes().to_vec());
-        assert_eq!(LAST.get().len(), TASK_COMM_LEN - 1);
+        assert_eq!(seen(), t.comm().as_bytes().to_vec());
+        assert_eq!(seen().len(), TASK_COMM_LEN - 1);
     }
 }
