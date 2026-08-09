@@ -7,10 +7,18 @@ fn probe_never_claims_an_opcode_dispatch_would_reject() {
     for op in [IORING_OP_SPLICE, IORING_OP_URING_CMD, IORING_OP_SEND_ZC,
                IORING_OP_SENDMSG_ZC, IORING_OP_READ_MULTISHOT, IORING_OP_WAITID,
                IORING_OP_FUTEX_WAIT, IORING_OP_FUTEX_WAKE, IORING_OP_FUTEX_WAITV,
-               IORING_OP_RECV_ZC, IORING_OP_EPOLL_WAIT, IORING_OP_READV_FIXED,
+               IORING_OP_EPOLL_WAIT, IORING_OP_READV_FIXED,
                IORING_OP_WRITEV_FIXED, IORING_OP_NOP128, IORING_OP_URING_CMD128] {
         assert!(!op_supported(op), "op {op}");
     }
+}
+
+/// Zero-copy receive is dispatched, so the probe must claim it: a caller that
+/// was told otherwise would fall back to a copying receive it had already
+/// registered an area for.
+#[test]
+fn probe_claims_zero_copy_receive() {
+    assert!(op_supported(IORING_OP_RECV_ZC));
 }
 
 #[test]

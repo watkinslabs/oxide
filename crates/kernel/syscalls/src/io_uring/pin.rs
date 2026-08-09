@@ -149,6 +149,23 @@ impl PinnedRange {
         if got as u64 != n { return Err(Errno::Efault); }
         Ok(())
     }
+
+    /// Copy `src` INTO the range, starting `off` bytes in — the write half of
+    /// [`Self::read_at`], and page-walking for the same reason. A short write
+    /// is `EFAULT`: a caller that asked for a whole record and got part of one
+    /// would read the rest as stale bytes. # C: O(src.len() / PAGE)
+    pub fn write_at(&self, off: u64, src: &[u8]) -> Result<(), Errno> {
+        let n = src.len() as u64;
+        let mut done: usize = 0;
+        let got = self.for_each_chunk(off, n, |chunk| {
+            let take = chunk.len();
+            chunk[..take].copy_from_slice(&src[done..done + take]);
+            done += take;
+            Some(take)
+        })?;
+        if got as u64 != n { return Err(Errno::Efault); }
+        Ok(())
+    }
 }
 
 impl Drop for PinnedRange {

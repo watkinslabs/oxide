@@ -83,7 +83,9 @@ impl IfaceRegistry {
         let flags = initial_flags(dev_hw);
         let gate = Arc::new(IngressGate::registration_pending(owner, 1));
         let name = String::from(dev.name());
+        let rx_queues = Arc::new(super::RxQueues::new(dev.rx_queue_count()));
         g.entries.push(IfaceEntry { id, ifindex, ns, dev, parent, name, flags: AtomicU32::new(flags),
+            rx_queues,
             carrier: core::sync::atomic::AtomicBool::new(initial_carrier(dev_hw)),
             mcast_report: Arc::new(McastReportState::new()),
             packet_filter: Arc::new(PacketDeviceFilter::new()),
@@ -202,7 +204,9 @@ impl IfaceRegistry {
         let dev_hw = dev.hardware_type();
         let flags = initial_flags(dev_hw);
         let name = String::from(dev.name());
+        let rx_queues = Arc::new(super::RxQueues::new(dev.rx_queue_count()));
         g.entries.push(IfaceEntry { id, ifindex, ns, dev, parent: None, name, flags: AtomicU32::new(flags),
+            rx_queues,
             carrier: core::sync::atomic::AtomicBool::new(initial_carrier(dev_hw)),
             mcast_report: Arc::new(McastReportState::new()),
             packet_filter: Arc::new(PacketDeviceFilter::new()),

@@ -154,7 +154,7 @@ pub fn retry(req: &Arc<IoReq>) -> bool {
     let Some(subs) = file.poll_subscribers() else { return false };
     let reads = matches!(req.opcode(),
         IORING_OP_READ | IORING_OP_READV | IORING_OP_READ_FIXED | IORING_OP_RECV
-        | IORING_OP_RECVMSG | IORING_OP_ACCEPT);
+        | IORING_OP_RECVMSG | IORING_OP_ACCEPT | IORING_OP_RECV_ZC);
     let waker = Arc::new(PollWaker { req: Arc::downgrade(req), id: next_id() });
     let weak: Weak<dyn vfs::EpollNotify> = Arc::downgrade(&(Arc::clone(&waker) as Arc<dyn vfs::EpollNotify>));
     let mask = retry_mask(reads);

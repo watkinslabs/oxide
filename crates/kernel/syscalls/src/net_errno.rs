@@ -8,6 +8,7 @@ pub(crate) fn errno_from_neterr(error: net::NetError) -> i64 {
     // SO_{RCV,SND}TIMEO and therefore IS restartable.
     -(match error {
         net::NetError::Erestartsys => return syscall::restart::restart_sys(),
+        net::NetError::Eexist => Errno::Eexist,
         net::NetError::Eaddrinuse => Errno::Eaddrinuse,
         net::NetError::Eaddrnotavail => Errno::Eaddrnotavail,
         net::NetError::Edestaddrreq => Errno::Edestaddrreq,

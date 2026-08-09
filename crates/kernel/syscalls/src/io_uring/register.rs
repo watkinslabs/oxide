@@ -19,6 +19,7 @@
 //   iowq     — worker limits and worker processor affinity
 //   ring_fds — the calling task's registered-ring array
 //   task_restrict — the ring-less form of `IORING_REGISTER_RESTRICTIONS`
+//   zcrx     — zero-copy receive registration and its control operations
 
 #[path = "register/tags.rs"]     pub mod tags;
 #[path = "register/buffers.rs"]  pub mod buffers;
@@ -34,3 +35,4 @@
 #[path = "register/iowq.rs"]     pub mod iowq;
 #[path = "register/ring_fds.rs"] pub mod ring_fds;
 #[path = "register/task_restrict.rs"] pub mod task_restrict;
+#[path = "register/zcrx.rs"] pub mod zcrx;

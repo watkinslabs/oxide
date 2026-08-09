@@ -17,7 +17,7 @@ use crate::io_uring_abi::layout::{
     RING_SQ_RING_ENTRIES, RING_SQ_RING_MASK,
 };
 use super::region::Region;
-use crate::io_uring_abi::uapi::{CQE_SIZE, SQE_SIZE};
+use crate::io_uring_abi::uapi::SQE_SIZE;
 
 use super::ctx::IoUringInode;
 
@@ -36,6 +36,8 @@ pub struct IoUring {
     /// for a ring built with `IORING_SETUP_NO_SQARRAY`.
     pub sq_array_off: u32,
     pub flags: u32,
+    /// Bytes one CQE occupies — see `layout::cqe_size`.
+    pub cqe_size: u32,
 }
 
 impl IoUring {
@@ -46,7 +48,7 @@ impl IoUring {
         let r = Self {
             rings, sqes,
             sq_entries: g.sq_entries, cq_entries: g.cq_entries,
-            sq_array_off: g.sq_array_off, flags: g.flags,
+            sq_array_off: g.sq_array_off, flags: g.flags, cqe_size: g.cqe_size,
         };
         r.seed_constants();
         Some(r)
@@ -84,7 +86,7 @@ impl IoUring {
 
     /// Address of CQE `idx & (cq_entries - 1)`. # C: O(1)
     pub fn cqe_at(&self, idx: u32) -> u64 {
-        self.rings.kva + RING_CQES as u64 + (idx & (self.cq_entries - 1)) as u64 * CQE_SIZE as u64
+        self.rings.kva + RING_CQES as u64 + (idx & (self.cq_entries - 1)) as u64 * self.cqe_size as u64
     }
 
     /// Address of SQE `idx & (sq_entries - 1)` in the SQEs region. # C: O(1)
@@ -110,6 +112,8 @@ impl IoUring {
             MmapRegion::Sqes    => Some((self.sqes.base_pa, self.sqes.map_bytes)),
             // Owned by the inode, not by this struct — routed in `mmap_backing`.
             MmapRegion::Param   => None,
+            // Owned by the inode's instance table, not by this struct.
+            MmapRegion::Zcrx(_) => None,
             MmapRegion::Invalid => None,
         }
     }
@@ -128,9 +132,16 @@ pub fn mmap_backing(inode: &vfs::InodeRef, offset: u64) -> Option<(u64, u64)> {
     // A registered memory region lives on the inode, not in `IoUring`. Only
     // the kernel-allocated arm is mappable; a caller-provided region reports a
     // zero-length region, and so does a ring that registered none.
-    if mmap_region(offset) == MmapRegion::Param {
-        let g = iu.param_region.lock();
-        return Some(g.as_ref().and_then(|r| r.mmap_backing()).unwrap_or((0, 0)));
+    match mmap_region(offset) {
+        MmapRegion::Param => {
+            let g = iu.param_region.lock();
+            return Some(g.as_ref().and_then(|r| r.mmap_backing()).unwrap_or((0, 0)));
+        }
+        // A refill queue lives on the instance the offset names; an offset
+        // naming no instance reports a zero-length region, which `009_mmap`
+        // turns into EINVAL.
+        MmapRegion::Zcrx(id) => return Some(iu.zcrx_mmap_backing(id).unwrap_or((0, 0))),
+        _ => {}
     }
     let g = iu.ring.lock();
     Some(g.region(offset).unwrap_or((g.rings.base_pa, 0)))
@@ -193,6 +204,10 @@ fn release_hook(inode: &InodeRef, _writable: bool, _dentry: &Arc<vfs::Dentry>) {
     // otherwise start work the cancel sweep has already walked past.
     crate::io_uring::sqpoll::finish(&iu);
     iu.cancel_all();
+    // Unbinds every device receive queue: the binding holds the instance and
+    // the instance holds the queue array, so nothing here is freed until the
+    // cycle is broken explicitly.
+    iu.zcrx_teardown();
 }
 
 /// Install the release hook once, at the first ring creation. # C: O(1)

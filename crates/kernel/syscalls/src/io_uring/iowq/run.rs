@@ -25,7 +25,7 @@ pub fn complete(req: &Arc<IoReq>, res: i64, cqe_flags: u32) {
     req.finish();
     if posts_cqe(req.sqe.flags, res) {
         let r32 = if res > i32::MAX as i64 { i32::MAX } else { res as i32 };
-        req.ring.post_cqe(Cqe { user_data: req.user_data(), res: r32, flags: cqe_flags });
+        req.ring.post_cqe(Cqe { user_data: req.user_data(), res: r32, flags: cqe_flags, big: [0; 2] });
     }
     disarm_link_timeout(req);
     // A barrier entry waits for this ring to have nothing outstanding, and a
@@ -48,7 +48,7 @@ pub fn complete(req: &Arc<IoReq>, res: i64, cqe_flags: u32) {
 pub fn post_more(req: &Arc<IoReq>, res: i64, cqe_flags: u32) {
     let r32 = if res > i32::MAX as i64 { i32::MAX } else { res as i32 };
     req.ring.post_cqe(Cqe {
-        user_data: req.user_data(), res: r32, flags: cqe_flags | IORING_CQE_F_MORE,
+        user_data: req.user_data(), res: r32, flags: cqe_flags | IORING_CQE_F_MORE, big: [0; 2],
     });
 }
 
@@ -70,7 +70,7 @@ pub fn cancel_chain(head: &Arc<IoReq>) {
                 req.ring.post_cqe(Cqe {
                     user_data: req.user_data(),
                     res: -(Errno::Ecanceled.as_i32()),
-                    flags: 0,
+                    flags: 0, big: [0; 2],
                 });
             }
             disarm_link_timeout(&req);
@@ -105,7 +105,7 @@ fn disarm_link_timeout(req: &Arc<IoReq>) {
     if !lt.claim() { return; }
     lt.finish();
     lt.ring.post_cqe(Cqe {
-        user_data: lt.user_data(), res: -(Errno::Ecanceled.as_i32()), flags: 0,
+        user_data: lt.user_data(), res: -(Errno::Ecanceled.as_i32()), flags: 0, big: [0; 2],
     });
 }
 

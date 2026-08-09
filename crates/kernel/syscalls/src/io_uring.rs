@@ -29,6 +29,7 @@
 //   poll        — armed polls and the poll-armed retry
 //   cancel      — the in-flight search and how a waiting request is ended
 //   iopoll      — driving a backend's completion poll for an IORING_SETUP_IOPOLL ring
+//   zcrx        — zero-copy receive: the interface queue, its area and its refill queue
 //
 // The ABI numbers, the setup admission ladder, the enter argument forms, the
 // register-opcode ladder and the restriction tables live in
@@ -39,6 +40,7 @@
 #![allow(dead_code)]
 
 pub mod region;
+pub mod zcrx;
 pub mod mem_region;
 pub mod ring;
 pub mod ctx;

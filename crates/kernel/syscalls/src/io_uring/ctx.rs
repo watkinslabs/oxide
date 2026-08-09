@@ -87,6 +87,9 @@ pub struct IoUringInode {
     /// nothing has been timed yet, which is what makes the first transfer spin
     /// outright rather than sleep against a guess.
     pub hybrid_poll_time: core::sync::atomic::AtomicU64,
+    /// `IORING_REGISTER_ZCRX_IFQ`: the zero-copy receive instances this ring
+    /// registered, indexed by the id it handed the caller.
+    pub zcrx: Spinlock<alloc::vec::Vec<zcrx::Slot>, RingLockClass>,
 }
 
 /// `state` bits.
@@ -140,6 +143,7 @@ impl IoUringInode {
             iopoll_list: Spinlock::new(alloc::vec::Vec::new()),
             hybrid_poll_time: core::sync::atomic::AtomicU64::new(
                 crate::io_uring_abi::iopoll::NO_ESTIMATE),
+            zcrx: Spinlock::new(alloc::vec::Vec::new()),
         }))
     }
 
@@ -219,3 +223,4 @@ impl IoUringInode {
 }
 
 #[path = "ctx/async_state.rs"] mod async_state;
+#[path = "ctx/zcrx.rs"] pub mod zcrx;

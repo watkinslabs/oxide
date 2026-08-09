@@ -28,6 +28,10 @@ pub struct Sqe {
     /// `buf_index`, also `buf_group`.
     pub buf_index: u16,
     pub personality: u16,
+    /// `zcrx_ifq_idx` — the FULL 32-bit word `buf_index` occupies the low half
+    /// of. `IORING_OP_RECV_ZC` names a zero-copy receive instance there, and
+    /// an id above 65535 would be truncated by reading `buf_index` alone.
+    pub zcrx_ifq_idx: u32,
     /// `splice_fd_in`, also `file_index`.
     pub splice_fd_in: i32,
     /// `addr_len` — the low half of the same word as `splice_fd_in`.
@@ -49,6 +53,7 @@ impl Sqe {
             opcode: b[0], flags: b[1], ioprio: g16(2), fd: g32(4) as i32,
             off: g64(8), addr: g64(16), len: g32(24), op_flags: g32(28),
             user_data: g64(32), buf_index: g16(40), personality: g16(42),
+            zcrx_ifq_idx: g32(40),
             splice_fd_in: g32(44) as i32, addr_len: g16(44), addr3: g64(48),
             pad2: g64(56),
         }

@@ -134,6 +134,8 @@ fn run(inode: &Arc<IoUringInode>, op: RegisterOp) -> i64 {
         RegisterOp::MemRegion { arg }       => work::mem_region::register(inode, arg),
         RegisterOp::Napi { arg }            => work::napi::register(inode, arg),
         RegisterOp::UnregisterNapi { arg }  => work::napi::unregister(inode, arg),
+        RegisterOp::ZcrxIfq { arg }         => work::zcrx::register(inode, arg),
+        RegisterOp::ZcrxCtrl { arg, nr }    => work::zcrx::ctrl(inode, arg, nr),
         RegisterOp::BpfFilter { arg }       => work::bpf_filter::register(inode, arg),
         RegisterOp::BpfFilterTask { arg, nr } => work::bpf_filter::register_task(arg, nr),
         RegisterOp::RestrictionsTask { arg, nr } => work::task_restrict::register_task(arg, nr),

@@ -133,7 +133,7 @@ fn attach(tail: &Arc<IoReq>, req: &Arc<IoReq>) {
 /// # C: O(N_chain)
 fn refuse(inode: &Arc<IoUringInode>, sqe: &Sqe, e: Errno) {
     if posts_cqe(sqe.flags, err(e)) {
-        inode.post_cqe(Cqe { user_data: sqe.user_data, res: -(e.as_i32()), flags: 0 });
+        inode.post_cqe(Cqe { user_data: sqe.user_data, res: -(e.as_i32()), flags: 0, big: [0; 2] });
     }
 }
 
@@ -214,7 +214,7 @@ pub fn submit_sqes(inode: &Arc<IoUringInode>, to_submit: u32) -> i64 {
 
         if posts_cqe(sqe.flags, out.res) {
             let res32 = if out.res > i32::MAX as i64 { i32::MAX } else { out.res as i32 };
-            inode.post_cqe(Cqe { user_data: sqe.user_data, res: res32, flags: out.cqe_flags });
+            inode.post_cqe(Cqe { user_data: sqe.user_data, res: res32, flags: out.cqe_flags, big: [0; 2] });
         }
         chain.advance(sqe.flags, out.res);
 

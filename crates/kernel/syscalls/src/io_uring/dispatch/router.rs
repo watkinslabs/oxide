@@ -99,6 +99,7 @@ fn run(op: &Op) -> i64 {
 
         IORING_OP_SEND            => net_ops::send(op),
         IORING_OP_RECV            => net_ops::recv(op),
+        IORING_OP_RECV_ZC         => net_ops::recv_zc(op),
         IORING_OP_SENDMSG         => net_ops::sendmsg(op),
         IORING_OP_RECVMSG         => net_ops::recvmsg(op),
         IORING_OP_ACCEPT          => net_ops::accept(op),

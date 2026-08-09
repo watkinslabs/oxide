@@ -32,6 +32,8 @@ mod error;
 mod registry_views;
 #[path = "netdev/device.rs"]
 mod device;
+#[path = "netdev/rx_queue.rs"]
+pub mod rx_queue;
 pub use ingress::{EgressLease, IngressLease};
 pub(crate) use ingress::ControlEffectLease;
 pub(crate) use ingress::{IfaceTeardown, IfaceUnregisterClaim};
@@ -42,6 +44,7 @@ pub use packet_metadata::{PacketChecksum, PacketRxMetadata, PacketVirtioMetadata
 pub(crate) use packet_filter::PacketDeviceFilter;
 pub use error::{NetError, NetResult};
 pub use device::{NetDev, WanSettings};
+pub use rx_queue::{HdsConfig, QueueCaps, RxQueue, RxQueues};
 
 type NetdevChangeHook = fn(&str, Option<&Arc<drv::Device>>);
 static NETDEV_CHANGE_HOOK: Spinlock<Option<NetdevChangeHook>, SocketLockClass> = Spinlock::new(None);
@@ -214,6 +217,11 @@ pub struct IfaceEntry {
     /// IPv6 half of the same neighbour table.
     pub(crate) ndp: Arc<crate::neigh::NeighCache<crate::Ipv6Addr>>,
     ingress: Arc<IngressGate>,
+    /// This device's receive queues. Held by `Arc` because a memory-provider
+    /// binding outlives the registry row: a provider bound to a queue keeps
+    /// the queue alive until it unbinds, so an unregistering device can never
+    /// strand one.
+    pub(crate) rx_queues: Arc<super::netdev::RxQueues>,
 }
 
 /// Process-global iface table. `register_netdev` pushes; `iface`
@@ -296,13 +304,16 @@ impl IfaceRegistry {
             entry.ingress.clone()
         };
         gate.wait();
-        let (dev, old_name, parent) = {
+        let (dev, old_name, parent, rxq) = {
             let mut g = self.inner.lock();
             let pos = g.entries.iter().position(|entry| entry.id == id
                 && Arc::ptr_eq(&entry.ingress, &gate) && gate.drained())?;
             let entry = g.entries.remove(pos);
-            (entry.dev, entry.name, entry.parent)
+            (entry.dev, entry.name, entry.parent, entry.rx_queues)
         };
+        // Off the registry lock: a provider learning its queue is gone runs
+        // its own teardown, which must not re-enter the registry.
+        rx_queue::uninstall_all(&rxq);
         notify_changed(&old_name, parent.as_ref());
         gate.finish();
         Some(dev)
