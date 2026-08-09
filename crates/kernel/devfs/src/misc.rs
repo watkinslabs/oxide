@@ -130,6 +130,22 @@ impl FileOps for KmsgFileOps {
     }
 }
 
+/// One vectored `/dev/kmsg` write, joined into a single record before it
+/// reaches the log (Linux `devkmsg_write` consumes the whole `iov_iter`).
+/// Split out from the device method so the joining is provable without a
+/// `File` to hang it off.
+/// # C: O(sum lens)
+fn kmsg_write_iter(bufs: &[&[u8]]) -> KResult<usize> {
+    let total = bufs.iter().try_fold(0usize, |sum, b| sum.checked_add(b.len()))
+        .ok_or(VfsError::Einval)?;
+    if bufs.len() == 1 { kmsg_write_record(bufs[0]); return Ok(total); }
+    let mut record = alloc::vec::Vec::new();
+    record.try_reserve_exact(total).map_err(|_| VfsError::Enomem)?;
+    for b in bufs { record.extend_from_slice(b); }
+    kmsg_write_record(&record);
+    Ok(total)
+}
+
 /// `/dev/kmsg` write body (Linux `devkmsg_write`): strip an optional leading
 /// `<N>` syslog-priority prefix, inject one record into the kernel log ring,
 /// ensuring a trailing newline. Shared by `KmsgFileOps` (devfs inode) and
@@ -306,12 +322,59 @@ impl vfs::CharDevOps for MemCharDevOps {
             _ => Err(VfsError::Enxio),
         }
     }
+
+    /// `/dev/kmsg` is record-oriented: ONE `writev` is ONE record, however many
+    /// iovecs carry it (Linux `devkmsg_write` consumes the whole `iov_iter`).
+    ///
+    /// The stream default writes each iovec separately, which turns every
+    /// vectored log line into that many records. The system log daemon sends a
+    /// line as identifier, `[pid]: `, and message in separate iovecs, so a
+    /// console showed `systemd`, `[1]: ` and the message as three timestamped
+    /// lines instead of one — the boot log became unreadable exactly when it
+    /// matters most.
+    ///
+    /// Every other minor here is a stream (`/dev/null`, `/dev/zero`,
+    /// `/dev/random`), so they keep the default.
+    /// # C: O(sum lens)
+    fn write_iter_file(&self, devt: vfs::Devt, file: &vfs::File, off: u64,
+        bufs: &[&[u8]], nonblock: bool) -> KResult<usize>
+    {
+        if devt.minor() != 11 {
+            return vfs::file_ops::stream_write_iter_with(off, bufs, |pos, buf| {
+                if nonblock { self.write_nonblock_file(devt, file, pos, buf) }
+                else { self.write_file(devt, file, pos, buf) }
+            });
+        }
+        kmsg_write_iter(bufs)
+    }
 }
 
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One `writev` to `/dev/kmsg` is ONE record, however many iovecs carry
+    /// it. The system log daemon sends a line as identifier, `[pid]: ` and
+    /// message in separate iovecs; splitting them gives every fragment its own
+    /// timestamp, which is what made the boot console unreadable.
+    #[test]
+    fn a_vectored_kmsg_write_is_one_record() {
+        let before = klog::ring_total();
+        let ops = MemCharDevOps;
+        let devt = vfs::Devt::new(1, 11);
+        let _ = (&ops, devt);
+        let bufs: [&[u8]; 3] = [b"systemd", b"[1]: ", b"Detected virtualization kvm.\n"];
+        let n = kmsg_write_iter(&bufs).unwrap();
+        assert_eq!(n, bufs.iter().map(|b| b.len()).sum::<usize>(), "reports every byte accepted");
+
+        let mut out = alloc::vec![0u8; klog::ring_total() - before];
+        let (got, _) = klog::ring_read(before, &mut out);
+        let text = core::str::from_utf8(&out[..got]).unwrap_or("");
+        assert!(text.contains("systemd[1]: Detected virtualization kvm."),
+            "the three iovecs must reach the log as one line: {text:?}");
+        assert_eq!(text.matches('\n').count(), 1, "one record, one newline: {text:?}");
+    }
 
     /// Mixing entropy must perturb the CSPRNG: the stream after a mix
     /// differs from the stream without it.
