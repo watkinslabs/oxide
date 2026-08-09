@@ -473,7 +473,7 @@ pub struct NetStack {
         BTreeMap<u64, super::inet_tables::InetNamespaceTables>,
     >,
     /// Monotonic id for IP packets we emit.
-    pub(crate) next_ip_id: Spinlock<u16, StackLockClass>,
+    pub(crate) next_ip_id: crate::fib_lock::FibLock<u16, StackLockClass>,
     /// Monotonic ISN base for TCP active opens.
     /// F180c: IPv6 neighbor cache keyed by ingress/egress interface.
     /// F195: IPv4 reassembly table.
@@ -490,9 +490,9 @@ pub struct NetStack {
     /// Per-CPU receive backlog. Frames land here from a device's transmit-side
     /// caller and leave on the NET_RX bottom half's own stack, which is what
     /// keeps receive traversal off every transmit call chain.
-    pub(crate) softnet: [Spinlock<super::rx_backlog::SoftnetData, StackLockClass>; cpu::MAX_CPUS],
+    pub(crate) softnet: [crate::fib_lock::FibLock<super::rx_backlog::SoftnetData, StackLockClass>; cpu::MAX_CPUS],
     /// Receive sources the bottom half polls, registered at device creation.
-    pub(crate) rx_poll: Spinlock<Vec<super::rx_backlog::RxPollEntry>, StackLockClass>,
+    pub(crate) rx_poll: crate::fib_lock::FibLock<Vec<super::rx_backlog::RxPollEntry>, StackLockClass>,
     #[cfg(not(target_os = "oxide-kernel"))]
     pub(crate) ra_now_ns: ::core::sync::atomic::AtomicU64,
 }

@@ -66,7 +66,7 @@ pub struct UdpRxQueue {
     pub bound_port: u16,
     /// Datagrams waiting for a reader, each carrying the header fields the
     /// ancillary messages publish.
-    pub(crate) state: Spinlock<UdpRxState, StackLockClass>,
+    pub(crate) state: crate::fib_lock::FibLock<UdpRxState, StackLockClass>,
     /// F162: blocking sys_recvfrom waiters (kernel only).
     #[cfg(target_os = "oxide-kernel")]
     pub waiters: sched::live::WaitList,
