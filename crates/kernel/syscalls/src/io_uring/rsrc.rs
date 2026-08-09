@@ -85,6 +85,13 @@ pub struct IoUringReg {
     /// The clock `IORING_REGISTER_CLOCK` selected for wait timeouts;
     /// `CLOCK_MONOTONIC` until a caller changes it.
     pub clockid: u32,
+    /// `IORING_REGISTER_NAPI`: the busy-poll window and tracking mode a wait
+    /// on this ring honours. `NapiState::inactive()` until a caller registers,
+    /// which the constructor sets — `Default` would leave a zero here, and a
+    /// zero tracking mode means DYNAMIC, not "off".
+    pub napi: crate::io_uring_abi::napi::NapiState,
+    /// Receive queues this ring busy-polls. Empty polls nothing.
+    pub napi_ids: Vec<u32>,
 }
 
 /// `CLOCK_MONOTONIC`.

@@ -135,6 +135,11 @@ pub enum RegisterOp {
     /// `IORING_REGISTER_MEM_REGION` — `arg` is a
     /// `struct io_uring_mem_region_reg` naming a `struct io_uring_region_desc`.
     MemRegion { arg: u64 },
+    /// `IORING_REGISTER_NAPI` — `arg` is a `struct io_uring_napi`.
+    Napi { arg: u64 },
+    /// `IORING_UNREGISTER_NAPI` — `arg` may be null, which means "do not
+    /// report the settings being cleared".
+    UnregisterNapi { arg: u64 },
 }
 
 /// A decoded `io_uring_register(2)` call.
@@ -218,6 +223,13 @@ fn ring_op(opcode: u32, arg: u64, nr_args: u32) -> Result<RegisterOp, Errno> {
         IORING_REGISTER_SYNC_CANCEL => one(RegisterOp::SyncCancel { arg }),
         IORING_REGISTER_RESIZE_RINGS => one(RegisterOp::ResizeRings { arg }),
         IORING_REGISTER_MEM_REGION => one(RegisterOp::MemRegion { arg }),
+        IORING_REGISTER_NAPI => one(RegisterOp::Napi { arg }),
+        IORING_UNREGISTER_NAPI => {
+            // A null `arg` is legal here and only here: it asks for the
+            // settings to be cleared without reporting what they were.
+            if nr_args != 1 { return Err(Errno::Einval); }
+            Ok(RegisterOp::UnregisterNapi { arg })
+        }
         IORING_REGISTER_QUERY => Ok(RegisterOp::Query { arg, nr: nr_args }),
         IORING_REGISTER_SEND_MSG_RING => one(RegisterOp::SendMsgRing { arg }),
         IORING_REGISTER_IOWQ_MAX_WORKERS => {

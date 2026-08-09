@@ -13,6 +13,7 @@
 //              buffer-group status, cross-ring messages
 //   resize   — `IORING_REGISTER_RESIZE_RINGS`: new regions, move, swap
 //   mem_region — `IORING_REGISTER_MEM_REGION`: the one region a ring registers
+//   napi     — the busy-poll window and the receive queues a wait drives
 //   pbuf     — provided-buffer rings
 //   iowq     — worker limits and worker processor affinity
 //   ring_fds — the calling task's registered-ring array
@@ -25,6 +26,7 @@
 #[path = "register/rings.rs"]    pub mod rings;
 #[path = "register/resize.rs"]   pub mod resize;
 #[path = "register/mem_region.rs"] pub mod mem_region;
+#[path = "register/napi.rs"]     pub mod napi;
 #[path = "register/pbuf.rs"]     pub mod pbuf;
 #[path = "register/iowq.rs"]     pub mod iowq;
 #[path = "register/ring_fds.rs"] pub mod ring_fds;

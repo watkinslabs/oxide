@@ -132,6 +132,8 @@ fn run(inode: &Arc<IoUringInode>, op: RegisterOp) -> i64 {
         RegisterOp::UnregisterRingFds { arg, nr } => work::ring_fds::unregister(arg, nr),
         RegisterOp::ResizeRings { arg }     => work::resize::resize_rings(inode, arg),
         RegisterOp::MemRegion { arg }       => work::mem_region::register(inode, arg),
+        RegisterOp::Napi { arg }            => work::napi::register(inode, arg),
+        RegisterOp::UnregisterNapi { arg }  => work::napi::unregister(inode, arg),
     }
 }
 

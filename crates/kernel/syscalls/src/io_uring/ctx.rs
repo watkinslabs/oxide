@@ -91,7 +91,9 @@ impl IoUringInode {
         Some(Arc::new(Self {
             ring: Spinlock::new(ring),
             reg:  Spinlock::new(IoUringReg {
-                clockid: super::rsrc::CLOCK_MONOTONIC, ..IoUringReg::default()
+                clockid: super::rsrc::CLOCK_MONOTONIC,
+                napi: crate::io_uring_abi::napi::NapiState::inactive(),
+                ..IoUringReg::default()
             }),
             overflow: Spinlock::new(VecDeque::new()),
             submit: sched::live::Mutex::new(()),

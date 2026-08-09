@@ -15,6 +15,8 @@
 //   restriction — the per-ring register/SQE allow-lists.
 //   resize      — what moves between the old and new rings on
 //                 `IORING_REGISTER_RESIZE_RINGS`, and when it is refused.
+//   napi        — `IORING_REGISTER_NAPI`: the busy-poll window, the tracking
+//                 mode and the receive queues a wait drives.
 //   mem_region  — `IORING_REGISTER_MEM_REGION`: the region descriptor, its
 //                 admission ladder, and the registered-wait offset check.
 //   register_op — the `io_uring_register(2)` opcode + argument ladder
@@ -35,6 +37,7 @@ pub mod enter;
 pub mod ops;
 pub mod link;
 pub mod mem_region;
+pub mod napi;
 pub mod register_op;
 pub mod resize;
 pub mod restriction;
