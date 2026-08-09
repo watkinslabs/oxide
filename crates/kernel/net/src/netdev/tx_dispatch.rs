@@ -138,14 +138,16 @@ impl TxDispatch {
             };
             let job = match job.admit_arp() {
                 Ok(job) => job,
-                Err(NeighAdmission::DeferredV4 { probe, dropped, queued }) => {
-                    Self::finish_deferred_neighbour(probe, dropped, queued);
-                    continue;
-                }
-                Err(NeighAdmission::DeferredV6 { probe, dropped, queued }) => {
-                    Self::finish_deferred_neighbour6(probe, dropped, queued);
-                    continue;
-                }
+                Err(deferred) => match *deferred {
+                    NeighAdmission::DeferredV4 { probe, dropped, queued } => {
+                        Self::finish_deferred_neighbour(probe, dropped, queued);
+                        continue;
+                    }
+                    NeighAdmission::DeferredV6 { probe, dropped, queued } => {
+                        Self::finish_deferred_neighbour6(probe, dropped, queued);
+                        continue;
+                    }
+                },
             };
             let done = job.0.done.clone();
             let result = {
@@ -353,7 +355,7 @@ impl TxJob {
     /// packet to every new IPv6 neighbour was lost.
     /// # C: O(log N)
     fn admit_ndp(self, next_hop: crate::Ipv6Addr, source: crate::Ipv6Addr)
-        -> Result<Self, NeighAdmission>
+        -> Result<Self, alloc::boxed::Box<NeighAdmission>>
     {
         if next_hop.is_multicast() {
             return Ok(self.with_l2(crate::ndp::multicast_ethernet(next_hop)));
@@ -363,11 +365,11 @@ impl TxJob {
         match cache.resolve_or_queue(next_hop, source, self, crate::stack::net_now_ns()) {
             crate::neigh::NeighResolution::Send { job, mac } => Ok(job.with_l2(mac)),
             crate::neigh::NeighResolution::Deferred { probe, dropped, queued } =>
-                Err(NeighAdmission::DeferredV6 { probe, dropped, queued }),
+                Err(alloc::boxed::Box::new(NeighAdmission::DeferredV6 { probe, dropped, queued })),
         }
     }
 
-    fn admit_arp(self) -> Result<Self, NeighAdmission> {
+    fn admit_arp(self) -> Result<Self, alloc::boxed::Box<NeighAdmission>> {
         if self.0.lease.device().hardware_type() != crate::uapi::ARPHRD_ETHER { return Ok(self); }
         let (next_hop, source) = match &self.0.payload {
             TxPayload::Packet { pkt, .. } if pkt.proto == crate::addr::eth_p::IPV6 =>
@@ -440,7 +442,7 @@ impl TxJob {
         match lease.arp_cache().resolve_or_queue(next_hop, source, self, crate::stack::net_now_ns()) {
             crate::neigh::NeighResolution::Send { job, mac } => Ok(job.with_l2(mac)),
             crate::neigh::NeighResolution::Deferred { probe, dropped, queued } =>
-                Err(NeighAdmission::DeferredV4 { probe, dropped, queued }),
+                Err(alloc::boxed::Box::new(NeighAdmission::DeferredV4 { probe, dropped, queued })),
         }
     }
 
@@ -481,6 +483,12 @@ impl TxJob {
 
 /// What a neighbour admission decided. The resolved case is
 /// family-independent; only the solicitation differs.
+/// Returned BOXED (`Result<TxJob, Box<NeighAdmission>>`): the drain loop is the
+/// deepest point of the aarch64 transmit path, and an unboxed variant — a
+/// `NeighProbe` with its egress lease, both addresses and the target MAC, plus
+/// the dropped-job vector — is reserved in that loop's frame on every pass,
+/// including the overwhelmingly common one where the neighbour is already
+/// resolved and no admission is deferred at all.
 pub(crate) enum NeighAdmission {
     DeferredV4 {
         probe: Option<crate::neigh::NeighProbe<crate::Ipv4Addr>>,

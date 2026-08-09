@@ -12,68 +12,20 @@
 # Burn this down. Regenerate with:
 #   make stack-gate-baseline-x86
 #
-# B1618 removed the whole network TX/RX/socket-control family from this file.
-# B1620 removed the fork/clone family and, with it, the syscall entry/dispatch
-# roots — with the deepest syscall under the ceiling the roots are under it
-# too. Only the boot path is left. Anything that trips the gate now is a
-# regression, not a candidate for a new entry here.
-
-# Boot path, and NOT on a task stack. `_start` -> `kernel_main` runs on the
-# static boot stack before any `Task` exists, and `kstack::alloc` has not yet
-# handed out a 16 KiB guard-paged stack. The depth is real but the budget is
-# a different one; re-check this block if the boot stack is ever resized.
+# EMPTY, and it stays that way. B1618 removed the whole network TX/RX/socket-
+# control family; B1620 removed fork/clone and, with it, the syscall entry and
+# dispatch roots. B2038 removed the last four — `_start`, `_start_rust`,
+# `kernel_main` and `rootfs::init` — the boot family, which had been carrying a
+# ~20 KB budget on a 16 KB stack and had drifted 472 B past even that.
 #
-# F774 raised each of these by 192 B: adding the SCHED_DEADLINE class grew
-# `Task` by its deadline entity and `RunqueueInner` by a third class tree, and
-# the boot path builds one of each on this stack (the idle task and the
-# runqueue). Split 96 B in `install_default_runqueue` + 96 B in the task
-# construction below it; it is a struct-size consequence of the class
-# existing, not a new call chain.
+# Nothing about that path was inherently deep. Boot runs in strict phases and
+# no phase's locals outlive it, but the phases were written as one function
+# each, so the compiler reserved early-boot, the kthread spawns, the mount
+# graph, the keymap scan buffer and the userspace handoff in a single prologue
+# and held them all live underneath the deepest chain in the kernel. Splitting
+# them into their own frames (Linux `noinline_for_stack`) took `_start` from
+# 20488 B to 11096 B without moving a single line of logic.
 #
-# B1634 raised each of these by 16 B, x86_64 only (aarch64 absorbed it without
-# moving). Namespace-aware quota ids require the superblock to record the user
-# namespace it was mounted from, which grew `SuperBlock` 584 -> 592 B; the boot
-# path tears a superblock down on this stack, so the extra 8 B lands in the
-# teardown frames and rounds to 16 B after alignment. Struct-size consequence
-# of the field existing, not a new call chain.
-#
-# The same lane also SHORTENED this family by 288 B before this 16 B: quota-off
-# reached `dqput`, which upgraded the dquot's weak back-reference to its
-# superblock, and the resulting temporary made superblock teardown appear to
-# re-enter itself. A dquot does not own its superblock, so the teardown path
-# now passes the borrowed one it already holds.
-#
-# B1638 raised each of these by 64 B. Measured, not estimated: `Task` grew
-# 3624 -> 3656 B (+32) across the ptrace/prctl/arch_prctl/personality work, and
-# the boot chain materialises a `Task` in TWO frames on the same path (the idle
-# task's construction and the runqueue install above it), so a +32 struct shows
-# up as +64 on each recorded root. This is the same shape as the F774 entry
-# above, which split its +192 the same way.
-#
-# The +32 is eight new per-task fields, each one a value some syscall now
-# CONSUMES rather than merely stores: `nocpuid` (ARCH_SET_CPUID), `shstk_features`
-# and `shstk_locked` (the CET facility set and its lock), `tsc_sigsegv`
-# (PR_SET_TSC's CR4.TSD trap), `tagged_addr` (arm64 PR_SET_TAGGED_ADDR_CTRL),
-# `jobctl` (the group-stop / PTRACE_LISTEN latch), and the two `Lazy` handles for
-# the x86 and arm64 hardware debug-register shadows. The debug-register shadows
-# are deliberately behind `Lazy` — inline they would have been hundreds of bytes
-# per task and would have pushed the aarch64 syscall path over its ceiling, which
-# has no allowlist to absorb it.
-#
-# `ContextX86_64` also grew 0x40 -> 0x48 for the user `gs_base` the swapgs
-# conversion introduced; it is embedded in `Task` and is part of the +32 above,
-# not a separate charge.
-#
-# B1973 raised each of these by 16 B. Two fields the Linux model requires:
-# `Task::sysvsem_undo`, the per-task handle on the refcounted SysV `SEM_UNDO`
-# list (`CLONE_SYSVSEM` shares the list by handle, independently of
-# `CLONE_THREAD`, so the owner cannot be the thread group), and
-# `ThreadGroup::sched_runtime_ns`, the process-wide scheduler-runtime total
-# `CLOCK_PROCESS_CPUTIME_ID` samples. The boot path builds one of each on this
-# stack; 8 B + 8 B rounds to 16 B after alignment. Struct-size consequence of
-# the fields existing, not a new call chain — the same shape as the F774 and
-# B1634 entries above.
-20016	_start
-20000	_start_rust
-19856	kmain::kmain::entry::kernel_main
-16656	kmain::kmain::rootfs::init
+# So every x86_64 path the linker can see is now under 13000 B with the
+# schedule() blocking tail already charged, and ANY entry added here is a
+# regression to fix, not a budget to record.

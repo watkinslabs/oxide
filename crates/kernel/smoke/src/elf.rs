@@ -158,8 +158,15 @@ pub unsafe fn run_as_task(_hhdm_offset: u64) -> ! {
 /// syscall (musl crt1's `__init_main_thread` caches the
 /// set_tid_address return as `__libc.tid`).
 ///
+/// Kept out of line (Linux `noinline_for_stack`): this is the widest frame on
+/// the boot path — a fresh `AddressSpace`, the `ExecRnd` draw, the ELF image
+/// and the argv/stack build — and inlined into `run_as_task` it would be live
+/// underneath `install_default_runqueue`, whose own chain builds a `Task`.
+/// The two never overlap in time, so they must not overlap in the frame.
+///
 /// # SAFETY: same preconditions as this fn.
 /// # C: O(phdrs) parse + O(log N) enqueue
+#[inline(never)]
 unsafe fn spawn_user_blob_with_vpid(
     blob:      &'static [u8],
     name:      &'static str,
