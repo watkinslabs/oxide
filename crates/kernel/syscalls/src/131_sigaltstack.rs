@@ -43,7 +43,7 @@ pub fn sys_sigaltstack(args: &SyscallArgs) -> i64 {
     let mut new = None;
     if ss != 0 {
         if let Err(rv) = validate_user_buf(ss, STACK_T_BYTES, 1) { return rv; }
-        new = Some(read_stack_t(ss));
+        new = Some(match read_stack_t(ss) { Ok(v) => v, Err(rv) => return rv });
     }
     // SAFETY: syscall dispatch context; the entry frame is live and owned here.
     let user_sp = unsafe { ::fs::sig_dispatch::current_user_sp(crate::arch_frame::current_user_regs()) };
@@ -75,18 +75,16 @@ fn errno_for(e: AltStackError) -> syscall::errno::Errno {
     }
 }
 
-/// Decode a user `stack_t`. Caller must have validated `p` readable for
-/// `STACK_T_BYTES`. # C: O(1)
-fn read_stack_t(p: u64) -> AltStack {
-    // SAFETY: caller validated p readable for STACK_T_BYTES, which covers all
-    // three fields (highest is SS_SIZE_OFF + 8 = 24).
-    unsafe {
-        AltStack {
-            sp:    core::ptr::read_unaligned(p as *const u64),
-            flags: core::ptr::read_unaligned((p + SS_FLAGS_OFF) as *const i32),
-            size:  core::ptr::read_unaligned((p + SS_SIZE_OFF) as *const u64),
-        }
-    }
+/// Read a user `stack_t` (Linux `copy_from_user`).
+///
+/// The caller's range check proves the address is small enough, not that the
+/// page is there, so the copy goes through the exception table and an unmapped
+/// address answers EFAULT instead of faulting the kernel.
+/// # C: O(1)
+fn read_stack_t(p: u64) -> Result<AltStack, i64> {
+    let mut raw = [0u8; crate::sigaltstack_abi::STACK_T_BYTES];
+    uaccess::copy_from_user(&mut raw, p).map_err(|e| -(e.as_i32() as i64))?;
+    Ok(crate::sigaltstack_abi::decode_stack_t(&raw))
 }
 
 /// Encode a user `stack_t`, zeroing the tail padding Linux's `memset(oss, 0,

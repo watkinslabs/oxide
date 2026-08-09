@@ -13,8 +13,6 @@ static RT_SIGTIMEDWAITERS: sched::live::WaitList = sched::live::WaitList::new();
 
 /// `struct timespec` — two `__kernel_time64_t`, 16 bytes on both arches.
 const TIMESPEC_BYTES: u64 = 2 * core::mem::size_of::<i64>() as u64;
-/// Byte offset of `tv_nsec` within `struct timespec`.
-const TV_NSEC_OFF: u64 = core::mem::size_of::<i64>() as u64;
 
 /// `sys_rt_sigtimedwait(set, info, timeout, sigsetsize)` — slot 128.
 ///
@@ -57,8 +55,14 @@ pub fn sys_rt_sigtimedwait(args: &SyscallArgs) -> i64 {
     if timeout != 0 {
         if let Err(rv) = validate_user_buf(timeout, TIMESPEC_BYTES, 1) { return rv; }
     }
-    // SAFETY: set validated as a readable 8-byte user sigset_t.
-    let requested = unsafe { core::ptr::read_unaligned(set as *const u64) };
+    // Linux `copy_from_user`: an address inside the user range but not mapped
+    // answers EFAULT rather than faulting the kernel. The range check above
+    // proves the number is small enough, not that anything is there.
+    let mut raw_set = [0u8; SIGSET_BYTES as usize];
+    if uaccess::copy_from_user(&mut raw_set, set).is_err() {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    let requested = u64::from_ne_bytes(raw_set);
     // Linux `sigdelsetmask(&mask, sigmask(SIGKILL)|sigmask(SIGSTOP))`: a waiter
     // must never swallow a fatal signal, or the task becomes unkillable.
     let wanted = requested & !(Signum::Sigkill.bit() | Signum::Sigstop.bit());
@@ -68,10 +72,10 @@ pub fn sys_rt_sigtimedwait(args: &SyscallArgs) -> i64 {
     // `Some(0)` is Linux's poll (`timeout` falsy ⇒ never sleep); `None` is a
     // NULL timespec, which waits forever.
     let total = if timeout != 0 {
-        // SAFETY: timeout validated as readable 16-byte timespec storage.
-        let secs = unsafe { core::ptr::read_unaligned(timeout as *const i64) };
-        // SAFETY: timeout+8 is inside the validated 16-byte timespec.
-        let nsec = unsafe { core::ptr::read_unaligned((timeout + TV_NSEC_OFF) as *const i64) };
+        let (secs, nsec) = match crate::time_common::read_user_timespec(timeout) {
+            Ok(v) => v,
+            Err(e) => return -(e.as_i32() as i64),
+        };
         // `timespec64_valid` + the `ktime_set` clamp in one: rejects a negative
         // tv_sec or an out-of-range tv_nsec, and caps a huge-but-valid tv_sec
         // at KTIME_MAX_NS instead of installing an unbounded deadline.
