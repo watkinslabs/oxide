@@ -29,6 +29,11 @@ pub enum RebootAction {
     Restart2,
     /// `CAD_ON` / `CAD_OFF`: latch the Ctrl-Alt-Del disposition, return 0.
     SetCad(bool),
+    /// `LINUX_REBOOT_CMD_KEXEC`: boot the image `kexec_load(2)` staged.
+    /// Dispatched by the syscall shim to the kexec subsystem rather than
+    /// handled here, exactly as `reboot.c` calls out to `kernel_kexec()` —
+    /// this crate owns the machine's own reset paths, not the image store.
+    Kexec,
 }
 
 /// Validate the `reboot(2)` magic pair. Four
@@ -59,10 +64,15 @@ pub fn reboot_precheck(cap_sys_boot: bool, magic1: u32, magic2: u32) -> KResult<
 
 /// Classify a `cmd` for a caller in the INITIAL pid namespace.
 ///
-/// `SW_SUSPEND` and `KEXEC` fall through to `default: ret = -EINVAL` unless
-/// `CONFIG_HIBERNATION` / `CONFIG_KEXEC_CORE` are set, so EINVAL is the
-/// unconditional answer here — not a stub, the same answer a kernel built
-/// without those options gives.
+/// `KEXEC` is a real command now that images can be staged (B2026): it maps to
+/// `RebootAction::Kexec`, which the shim hands to `kexec::kernel_kexec`. It
+/// answered EINVAL while nothing could stage an image, which is what a kernel
+/// built without `CONFIG_KEXEC_CORE` returns — keeping that after the load
+/// syscalls landed would have been a split truth, with one half of the pair
+/// accepting an image the other half refused to boot.
+///
+/// `SW_SUSPEND` still falls through to `default: ret = -EINVAL`, the answer a
+/// kernel built without `CONFIG_HIBERNATION` gives.
 /// # C: O(1)
 pub fn classify_cmd(cmd: u32) -> KResult<RebootAction> {
     match cmd {
@@ -72,6 +82,7 @@ pub fn classify_cmd(cmd: u32) -> KResult<RebootAction> {
         LINUX_REBOOT_CMD_HALT => Ok(RebootAction::Terminal(TerminalCmd::Halt)),
         LINUX_REBOOT_CMD_CAD_ON => Ok(RebootAction::SetCad(true)),
         LINUX_REBOOT_CMD_CAD_OFF => Ok(RebootAction::SetCad(false)),
+        LINUX_REBOOT_CMD_KEXEC => Ok(RebootAction::Kexec),
         _ => Err(Error::Inval),
     }
 }
@@ -174,10 +185,15 @@ mod tests {
     }
 
     #[test]
-    fn kexec_and_sw_suspend_are_einval_without_their_config() {
-        assert_eq!(classify_cmd(LINUX_REBOOT_CMD_KEXEC), Err(Error::Inval));
+    fn kexec_is_a_command_and_sw_suspend_is_still_einval() {
+        // KEXEC stopped being EINVAL when `kexec_load(2)` landed: refusing to
+        // boot an image this kernel had just accepted and staged would be one
+        // half of the pair contradicting the other.
+        assert_eq!(classify_cmd(LINUX_REBOOT_CMD_KEXEC), Ok(RebootAction::Kexec));
         assert_eq!(classify_cmd(LINUX_REBOOT_CMD_SW_SUSPEND), Err(Error::Inval));
         assert_eq!(classify_cmd(0xDEAD_BEEF), Err(Error::Inval));
+        // A child pid namespace still has no KEXEC arm, so it stays EINVAL there.
+        assert_eq!(pid_ns_reboot(LINUX_REBOOT_CMD_KEXEC), Err(Error::Inval));
     }
 
     #[test]

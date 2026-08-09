@@ -36,6 +36,7 @@ pstore    = { path = "../pstore" }
 kmacros   = { path = "../../shared/kmacros" }
 kalloc  = { path = "../../shared/kalloc" }
 pmm     = { path = "../mm-pmm" }
+kexec   = { path = "../kexec" }
 procfs  = { path = "../procfs" }
 sysfs   = { path = "../sysfs" }
 sched   = { path = "../sched" }

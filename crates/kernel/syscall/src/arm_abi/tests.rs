@@ -319,3 +319,26 @@ fn no_aarch64_number_reaches_the_arch_prctl_slot() {
             "aarch64 nr {arm} translates onto x86 arch_prctl (slot {NR_ARCH_PRCTL})");
     }
 }
+
+/// Both kexec slots are IMPLEMENTED now (they answered ENOSYS as "not built"
+/// until B2026), so a misroute into either is no longer a harmless refusal: it
+/// hands an aarch64 caller that asked for something else a syscall that stages
+/// a replacement kernel. Exactly ONE arm number may reach each — 104 for
+/// `kexec_load`, 294 for `kexec_file_load` — and nothing else in the table may
+/// fall through to them.
+#[test]
+fn exactly_one_aarch64_number_reaches_each_kexec_slot() {
+    use crate::nrs::{NR_KEXEC_FILE_LOAD, NR_KEXEC_LOAD};
+    assert_eq!(aarch64_nr_to_x86(104), NR_KEXEC_LOAD);
+    assert_eq!(aarch64_nr_to_x86(294), NR_KEXEC_FILE_LOAD);
+    let mut load = 0;
+    let mut file = 0;
+    for arm in 0..1024u64 {
+        match aarch64_nr_to_x86(arm) {
+            n if n == NR_KEXEC_LOAD => { load += 1; assert_eq!(arm, 104, "arm {arm} misroutes to kexec_load"); }
+            n if n == NR_KEXEC_FILE_LOAD => { file += 1; assert_eq!(arm, 294, "arm {arm} misroutes to kexec_file_load"); }
+            _ => {}
+        }
+    }
+    assert_eq!((load, file), (1, 1), "each kexec slot has exactly one arm route");
+}

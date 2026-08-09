@@ -882,6 +882,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "kexec"
+version = "0.1.0"
+dependencies = [
+ "klog",
+ "pmm",
+ "sync",
+]
+
+[[package]]
 name = "klog"
 version = "0.1.0"
 
@@ -1803,6 +1812,7 @@ dependencies = [
  "ipc",
  "kalloc",
  "kernfs",
+ "kexec",
  "klog",
  "kmacros",
  "landlock",
