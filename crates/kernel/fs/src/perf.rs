@@ -12,6 +12,7 @@
 //   event    live `struct perf_event` and its counter sources
 //   file     the anon inode and its `f_op`
 //   ioctl    `_perf_ioctl` classification and per-command rules (pure)
+//   inherit  fork propagation + exit fold-back of `attr.inherit` events
 //   glue     user-memory copies, fd install, ioctl dispatch
 //
 // Scope: oxide registers the *software* PMUs only. `PERF_TYPE_HARDWARE`,
@@ -26,6 +27,7 @@ pub mod counter;
 pub mod event;
 pub mod file;
 pub mod ioctl;
+pub mod inherit;
 mod glue;
 #[cfg(test)]
 mod tests;

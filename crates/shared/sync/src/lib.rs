@@ -132,6 +132,12 @@ decl_lock_class! {
     Namespace    = 75,
     FdTable      = 80,
     SignalQueue  = 90,
+    // Per-tid registry of open task-scoped perf events (`fs::perf::inherit`),
+    // Linux's per-task `perf_event_context::event_list`. Snapshotted (Arcs
+    // cloned out, lock dropped) BEFORE any per-event `PerfEvent::state`
+    // (`TaskList`, 100) lock is taken, so the two are never held together;
+    // ranked below `TaskList` purely to keep that ordering documented.
+    PerfTaskEvents = 92,
     // Internal gate of a SLEEPING mutex (`sched::live::Mutex`). Held only to
     // decide "take it or enqueue", never across the sleep itself, and the
     // enqueue takes the wait list (`TaskList`, 100) while holding it — so it

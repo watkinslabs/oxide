@@ -523,6 +523,14 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
     // keying. Must run BEFORE publication, or a child scheduled immediately can
     // observe a keyring-less cred it is supposed to have inherited.
     fs::keyring::fork_keys(cur.tid, child_tid);
+    // Linux `perf_event_init_task` → `inherit_task_group`: every
+    // `attr.inherit` task-scoped perf event the parent has open gets a clone
+    // targeting the child, so a later read of the parent's fd folds in
+    // whatever the child counts before it exits (`fold_into_parent` at
+    // `sys_exit`/`do_exit`). Must run before publication like the keyring
+    // copy above — the child must already carry its events the instant it
+    // becomes schedulable.
+    fs::perf::inherit::on_fork(cur.tid, child_tid, (flags & CLONE_THREAD) != 0);
     publication::commit(&child, (flags & CLONE_THREAD) != 0, prepared_pidfd);
 
     // Linux `_do_fork`: "forking complete and child started to run, tell
