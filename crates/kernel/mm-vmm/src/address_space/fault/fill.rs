@@ -12,7 +12,7 @@ impl AddressSpace {
     /// file/private page-cache copy, shmem direct frame, kernel frame, or PFNMAP.
     /// # SAFETY: caller supplies the live MMU implementation and valid PMM/rmap callbacks.
     /// # C: O(log N_vmas) + O(page) for copied backings.
-    pub(super) unsafe fn handle_not_present<M, A, DR, SR, IR, CA, UA>(
+    pub(super) unsafe fn handle_not_present<M, A, DR, SR, IR, CA, UA, MR>(
         &self,
         va: UserVirtAddr,
         access: FaultAccess,
@@ -24,6 +24,7 @@ impl AddressSpace {
         inc_ref: &mut IR,
         charge_anon: &mut CA,
         uncharge_anon: &mut UA,
+        mark_referenced: &mut MR,
     ) -> KResult<()>
     where
         M:  MmuOps,
@@ -33,6 +34,13 @@ impl AddressSpace {
         IR: FnMut(u64),
         CA: FnMut() -> KResult<()>,
         UA: FnMut(),
+        // `mark_referenced(pa)` — Linux `folio_mark_accessed` on a resident
+        // file page mapped into this VMA (`filemap_fault`'s trailing
+        // `folio_mark_accessed`). Called ONLY when
+        // `recency::vma_has_recency` says this VMA/file combination should
+        // bias reclaim aging; a `POSIX_FADV_NOREUSE` file or a
+        // MADV_SEQUENTIAL/MADV_RANDOM VMA skips it, matching the reference.
+        MR: FnMut(u64),
     {
         // Clone the VMA then drop the read guard before File/SHARED backing I/O;
         // holding `vmas` across block sleep deadlocks peer mmap/munmap writers.
@@ -190,6 +198,15 @@ impl AddressSpace {
                         klog::write_raw(b"\n");
                     }
                     if !map_ref_held { inc_ref(spa); }
+                    // Linux `filemap_fault`: a resident page brought into
+                    // this mapping is marked accessed, biasing it away from
+                    // reclaim — UNLESS this file/VMA combination has no
+                    // recency (`POSIX_FADV_NOREUSE`, `MADV_SEQUENTIAL`,
+                    // `MADV_RANDOM`), in which case the page is left exactly
+                    // where reclaim last put it.
+                    if crate::recency::vma_has_recency(vma.flags, backing.noreuse()) {
+                        mark_referenced(spa);
+                    }
                     let pte_flags = vma.page_flags() | wp;
                     // SAFETY: va_page is page aligned; spa is the owner-backed
                     // frame whose refcount was bumped; flags carry USER.

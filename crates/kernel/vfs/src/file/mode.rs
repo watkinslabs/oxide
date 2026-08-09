@@ -53,6 +53,21 @@ bitflags::bitflags! {
         /// bit is what separates "we support this" from "we would have blocked
         /// while pretending not to".
         const NOWAIT   = 0x0800_0000;
+        /// FMODE_RANDOM — `POSIX_FADV_RANDOM` set on this open (`f_mode`
+        /// mirror of the reference's `spin_lock(&f_lock); f_mode |=
+        /// FMODE_RANDOM`). The readahead ceiling (`File::ra_set_random`,
+        /// `ra_pages == 0`) is the acted-upon state `page_cache_sync_ra`
+        /// reads; this bit exists only so `POSIX_FADV_NORMAL` has a single
+        /// `f_mode` word to clear alongside `FMODE_NOREUSE`, matching the
+        /// reference's one `f_mode &= ~(FMODE_RANDOM | FMODE_NOREUSE)`.
+        /// Linux `(1 << 12)`.
+        const RANDOM   = 0x0000_1000;
+        /// FMODE_NOREUSE — `POSIX_FADV_NOREUSE` set on this open. The sole
+        /// consumer is a reclaim-recency predicate (`vma_has_recency`):
+        /// pages faulted through a `NOREUSE` file are not promoted on
+        /// access, so reclaim takes them sooner. Cleared together with
+        /// `RANDOM` by `POSIX_FADV_NORMAL`. Linux `(1 << 23)`.
+        const NOREUSE  = 0x0080_0000;
     }
 }
 

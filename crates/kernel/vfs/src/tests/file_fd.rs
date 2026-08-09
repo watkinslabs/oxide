@@ -260,6 +260,30 @@ fn file_f_mode_derivation() {
     assert_eq!(rw.f_mode() - seek, Fmode::READ | Fmode::WRITE);
 }
 
+/// `set_noreuse`/`set_random` fold into `f_mode()`, and
+/// `clear_random_and_noreuse` drops both together — mirrors the reference's
+/// `f_mode &= ~(FMODE_RANDOM | FMODE_NOREUSE)` clearing both bits in one
+/// store rather than requiring two separate calls to fully reset. # C: O(1)
+#[test]
+fn file_noreuse_and_random_fold_into_f_mode_and_clear_together() {
+    use crate::file::Fmode;
+    let f = mk_file();
+    assert!(!f.f_mode().contains(Fmode::NOREUSE));
+    assert!(!f.f_mode().contains(Fmode::RANDOM));
+
+    f.set_noreuse();
+    assert!(f.f_mode().contains(Fmode::NOREUSE));
+    assert!(!f.f_mode().contains(Fmode::RANDOM), "NOREUSE must not set RANDOM");
+
+    f.set_random();
+    assert!(f.f_mode().contains(Fmode::RANDOM));
+    assert!(f.f_mode().contains(Fmode::NOREUSE), "RANDOM must not clear a prior NOREUSE");
+
+    f.clear_random_and_noreuse();
+    assert!(!f.f_mode().contains(Fmode::NOREUSE), "NORMAL clears NOREUSE");
+    assert!(!f.f_mode().contains(Fmode::RANDOM), "NORMAL clears RANDOM");
+}
+
 #[test]
 fn file_f_cred_snapshot() {
     const TEST_CAP: u32 = 5;

@@ -6,8 +6,11 @@
 // move the per-open `f_ra.ra_pages` ceiling that `File::ra_ondemand` reads on
 // every buffered read, so a program that declares a sequential scan gets a
 // wider window and one that declares random access gets none. DONTNEED flushes
-// then drops whole resident cache pages; WILLNEED populates them. NOREUSE only
-// biases LRU activation in Linux, which is the one hint with no local effect.
+// then drops whole resident cache pages; WILLNEED populates them. NOREUSE sets
+// `FMODE_NOREUSE` on the open file, which the mmap fault path's
+// `vma_has_recency` predicate reads to skip LRU promotion on access; NORMAL
+// clears it (and RANDOM) together, matching the reference's one `f_mode`
+// clear.
 //
 // Admission ladder + advice set live in `crate::fadvise_policy` (hosted-tested);
 // this file is the shim (docs/53).
@@ -17,8 +20,8 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
-use crate::fadvise_policy::{POSIX_FADV_DONTNEED, POSIX_FADV_NORMAL, POSIX_FADV_RANDOM,
-    POSIX_FADV_SEQUENTIAL, POSIX_FADV_WILLNEED, dontneed_page_range, fadvise_check,
+use crate::fadvise_policy::{POSIX_FADV_DONTNEED, POSIX_FADV_NOREUSE, POSIX_FADV_NORMAL,
+    POSIX_FADV_RANDOM, POSIX_FADV_SEQUENTIAL, POSIX_FADV_WILLNEED, dontneed_page_range, fadvise_check,
     fadvise_endbyte};
 
 const PAGE: u64 = hal::PAGE_SIZE_BYTES;
@@ -49,15 +52,26 @@ pub fn sys_fadvise64(args: &SyscallArgs) -> i64 {
     // without acting — not to `!mapping`.
     if let Err(e) = fadvise_check(is_fifo, true, offset, len, advice) { return err(e); }
 
-    // The state-setting half of `generic_fadvise`: these change what a later
-    // read PREFETCHES (`File::submit_readahead` is what turns `ra_pages` into
-    // I/O) and never touch residency. POSIX_FADV_NOREUSE is in this class and
-    // records nothing — see `fadvise_policy::advice_sets_readahead_state`.
+    // The state-setting half of `generic_fadvise`: NORMAL/SEQUENTIAL/RANDOM
+    // change what a later read PREFETCHES (`File::submit_readahead` turns
+    // `ra_pages` into I/O); NOREUSE sets `FMODE_NOREUSE` on `f_mode` instead —
+    // see `fadvise_policy::advice_sets_readahead_state`.
     if crate::fadvise_policy::advice_sets_readahead_state(advice) {
         match advice {
-            POSIX_FADV_NORMAL     => file.ra_set_normal(),
+            // Linux clears `FMODE_RANDOM | FMODE_NOREUSE` in the SAME store
+            // that resets `ra_pages` — one `f_mode &=` under `f_lock`, so a
+            // reader can never observe the ceiling reset with either bit
+            // still set.
+            POSIX_FADV_NORMAL     => { file.ra_set_normal(); file.clear_random_and_noreuse(); }
             POSIX_FADV_SEQUENTIAL => file.ra_set_sequential(),
-            POSIX_FADV_RANDOM     => file.ra_set_random(),
+            // Linux sets ONLY `FMODE_RANDOM` here — `ra_pages` is untouched by
+            // this case in `generic_fadvise`. `File::ra_set_random` additionally
+            // zeroes `ra_pages` (`ra_ondemand`'s existing single-representation
+            // encoding of "no readahead", documented on that method) so the two
+            // reads of "is this file random" — the `f_mode` bit and the ceiling
+            // — cannot disagree.
+            POSIX_FADV_RANDOM     => { file.ra_set_random(); file.set_random(); }
+            POSIX_FADV_NOREUSE    => file.set_noreuse(),
             _ => {}
         }
         return 0;

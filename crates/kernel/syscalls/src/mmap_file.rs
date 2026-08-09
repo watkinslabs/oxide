@@ -24,18 +24,31 @@ pub struct InodeFileBacking {
     /// Path this backing was established from, for the mapping table a core
     /// dump carries. Empty when the mapper had no name for the object.
     path: alloc::vec::Vec<u8>,
+    /// `FMODE_NOREUSE` on the fd this mapping was established through
+    /// (`vmm::FileBacking::noreuse`), snapshotted at `mmap(2)` time — see
+    /// that trait method's doc for why this is a snapshot, not a live read.
+    /// `false` for every backing with no originating open file description
+    /// (anon-via-MAP_ANON hugetlbfs/tmpfs, `execve`'s image mapping).
+    noreuse: bool,
 }
 
 impl InodeFileBacking {
     /// # C: O(1)
     pub fn new(inode: InodeRef) -> Arc<Self> {
-        Arc::new(Self { inode, cache: PageCache::new(), path: alloc::vec::Vec::new() })
+        Arc::new(Self { inode, cache: PageCache::new(), path: alloc::vec::Vec::new(), noreuse: false })
     }
 
     /// Same, naming the path the mapping was established from.
     /// # C: O(path)
     pub fn new_named(inode: InodeRef, path: alloc::vec::Vec<u8>) -> Arc<Self> {
-        Arc::new(Self { inode, cache: PageCache::new(), path })
+        Arc::new(Self { inode, cache: PageCache::new(), path, noreuse: false })
+    }
+
+    /// Same as [`Self::new_named`], carrying the mapping fd's `FMODE_NOREUSE`
+    /// (`vfs::Fmode::NOREUSE`) forward into the backing so the fault path's
+    /// `vma_has_recency` predicate can read it back. # C: O(path)
+    pub fn new_named_from_file(inode: InodeRef, path: alloc::vec::Vec<u8>, noreuse: bool) -> Arc<Self> {
+        Arc::new(Self { inode, cache: PageCache::new(), path, noreuse })
     }
 }
 
@@ -164,6 +177,9 @@ impl FileBacking for InodeFileBacking {
     fn map_path(&self) -> Option<&[u8]> {
         if self.path.is_empty() { None } else { Some(&self.path) }
     }
+
+    /// # C: O(1)
+    fn noreuse(&self) -> bool { self.noreuse }
 
     /// The inode's kernel identity — the address of the refcounted `InodeRef`
     /// the inode cache hands to every opener of this file. Every mapping of one

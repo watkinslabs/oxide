@@ -189,7 +189,7 @@ pub(in crate::user_as) fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault
         #[cfg(target_arch = "x86_64")]
         let admitted_memcg = core::cell::Cell::new(cgroup::NO_MEMCG);
         #[cfg(target_arch = "x86_64")]
-        let r = as_.handle_page_fault_cow_rmap::<hal_x86_64::mmu_ops::X86Mmu, _, _, _, _, _, _, _, _>(
+        let r = as_.handle_page_fault_cow_rmap::<hal_x86_64::mmu_ops::X86Mmu, _, _, _, _, _, _, _, _, _>(
             uva, fault, hhdm, install_uffd_wp,
             || crate::setup::alloc_one_frame(),
             |pa| crate::setup::frame_refcount(pa),
@@ -217,11 +217,15 @@ pub(in crate::user_as) fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault
                 if memcg != cgroup::NO_MEMCG {
                     cgroup::uncharge_memcg(memcg, PAGE_BYTES);
                 }
-            });
+            },
+            // Linux `filemap_fault`'s trailing `folio_mark_accessed`, gated
+            // by `vma_has_recency` at the fill call site (mm-vmm). B221:
+            // `mark_lru_referenced` had zero callers before this wiring.
+            |pa| { let _ = crate::setup::mark_lru_referenced(pa); });
         #[cfg(target_arch = "aarch64")]
         let admitted_memcg = core::cell::Cell::new(cgroup::NO_MEMCG);
         #[cfg(target_arch = "aarch64")]
-        let r = as_.handle_page_fault_cow_rmap::<hal_aarch64::mmu_ops::ArmMmu, _, _, _, _, _, _, _, _>(
+        let r = as_.handle_page_fault_cow_rmap::<hal_aarch64::mmu_ops::ArmMmu, _, _, _, _, _, _, _, _, _>(
             uva, fault, hhdm, install_uffd_wp,
             || crate::setup::alloc_one_frame(),
             |pa| crate::setup::frame_refcount(pa),
@@ -248,7 +252,8 @@ pub(in crate::user_as) fn do_handle(as_: &AddressSpace, uva: UserVirtAddr, fault
                 if memcg != cgroup::NO_MEMCG {
                     cgroup::uncharge_memcg(memcg, PAGE_BYTES);
                 }
-            });
+            },
+            |pa| { let _ = crate::setup::mark_lru_referenced(pa); });
         // Shared file/shmem pages are owned by the backing inode's i_mmap
         // reverse-map tree.  Bind PageMeta only after the PTE commit succeeded;
         // a failed/stale fault must not leave a frame pointing at an unrelated

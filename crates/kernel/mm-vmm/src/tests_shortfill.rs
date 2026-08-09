@@ -167,12 +167,12 @@ fn fault(as_: &AddressSpace, root: u64, va: u64) -> Result<(), crate::Error> {
     activate_root(root);
     // SAFETY: hosted; ACTIVE root set; fresh_pa frames are live host memory; hhdm=0 identity.
     unsafe {
-        as_.handle_page_fault_cow_rmap::<MultiMmu, _, _, _, _, _, _, _, _>(
+        as_.handle_page_fault_cow_rmap::<MultiMmu, _, _, _, _, _, _, _, _, _>(
             hal::UserVirtAddr::new(va).unwrap(),
             FaultKind::NotPresent { access: FaultAccess::Read }, 0, false,
             fresh_pa_opt, rc_get_u32, rc_dec,
             |_p, _av, _i| {}, rc_inc, |_p| false,
-            || Ok(()), || {},
+            || Ok(()), || {}, |_p| {},
         )
     }
 }

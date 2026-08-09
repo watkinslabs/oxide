@@ -42,12 +42,15 @@ pub fn advice_known(advice: i32) -> bool {
 /// prefetches and never move a page. The slot dispatches on this, so the two
 /// halves of `generic_fadvise` cannot drift.
 ///
-/// The state is one word, `f_ra.ra_pages`: Linux's `FMODE_RANDOM` is expressed
-/// here as `ra_pages == 0` so there is a single representation of "no
-/// readahead". `POSIX_FADV_NOREUSE` records nothing — its only Linux effect is
-/// a reclaim bias (`vma_has_recency`) on a reference-sampling path this kernel
-/// does not yet have, and recording a flag no code reads would be worse than
-/// the honest no-op.
+/// The readahead ceiling (`f_ra.ra_pages`) is one word: `POSIX_FADV_RANDOM`
+/// zeroes it and `POSIX_FADV_NORMAL` restores the default, so there is a
+/// single representation of "no readahead" rather than two that can
+/// disagree. `POSIX_FADV_NOREUSE` sets `FMODE_NOREUSE` on the open file
+/// (`File::set_noreuse`), the bit `vma_has_recency` reads to suppress LRU
+/// promotion on access (`mark_lru_referenced`, gated in the mmap fault path).
+/// `POSIX_FADV_NORMAL` clears `FMODE_RANDOM | FMODE_NOREUSE` together
+/// (`File::clear_random_and_noreuse`), matching the reference's one
+/// `f_mode &= ~(FMODE_RANDOM | FMODE_NOREUSE)`.
 /// # C: O(1)
 pub fn advice_sets_readahead_state(advice: i32) -> bool {
     matches!(advice, POSIX_FADV_NORMAL | POSIX_FADV_RANDOM | POSIX_FADV_SEQUENTIAL | POSIX_FADV_NOREUSE)
