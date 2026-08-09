@@ -28,6 +28,11 @@ pub(super) fn console_owner_key() -> Option<virtio::VirtioChildDeviceKey> {
 /// `write_volatile` loop whose IRQ-masked window stalled the timer tick for
 /// seconds — but left it whole-frame; this cuts the extent.
 pub fn fbcon_flush_pixels(pixels: &[u8], rect: fbcon::kernel::FlushRect) {
+    // Bare acquisition, deliberately: this runs from the `FbconFlush` softirq
+    // (or from process context with bottom halves already off, via repaint).
+    // Every process-context holder goes through `ctx_lock()`, which excludes
+    // local bottom halves for the hold, so this can never interrupt a holder
+    // on its own CPU; contention is only ever cross-CPU and bounded.
     let mut g = CTX.lock();
     let owner = match console_owner_key() { Some(key) => key, None => return };
     let ctx = match g.iter_mut().find(|ctx| ctx.device_key == owner) { Some(c) => c, None => return };
@@ -100,7 +105,7 @@ unsafe fn copy_damage(src: &[u8], dst: *mut u8, plan: &damage::CopyPlan) {
 
 pub fn blank_scanout_for_key(driver_key: fbdev::FbDriverKey) {
     let owner = key_from_fb_driver(driver_key);
-    let mut g = CTX.lock();
+    let mut g = ctx_lock();
     let ctx = match g.iter_mut().find(|ctx| ctx.device_key == owner) { Some(c) => c, None => return };
     if ctx.quiesced {
         return;
@@ -140,7 +145,7 @@ pub(super) fn install_scanout_ctx(
     ctrlq: virtio::VirtQueueResource, cursorq: virtio::VirtQueueResource,
     cmd_buf_va: u64, cmd_buf_pa: u64, hhdm: u64,
 ) -> bool {
-    let mut ctxs = CTX.lock();
+    let mut ctxs = ctx_lock();
     if ctxs.iter().any(|ctx| ctx.device_key == device_key) {
         return false;
     }
@@ -153,7 +158,7 @@ pub(super) fn install_scanout_ctx(
 
 #[cfg(any(target_os = "oxide-kernel", test))]
 fn set_scanout_fbdev_idx(device_key: virtio::VirtioChildDeviceKey, fbdev_idx: Option<u32>) -> bool {
-    let mut ctxs = CTX.lock();
+    let mut ctxs = ctx_lock();
     let Some(ctx) = ctxs.iter_mut().find(|ctx| ctx.device_key == device_key) else {
         return false;
     };
@@ -163,7 +168,7 @@ fn set_scanout_fbdev_idx(device_key: virtio::VirtioChildDeviceKey, fbdev_idx: Op
 
 #[cfg(any(target_os = "oxide-kernel", test))]
 fn take_scanout_fbdev_idx(device_key: virtio::VirtioChildDeviceKey) -> Option<u32> {
-    let mut ctxs = CTX.lock();
+    let mut ctxs = ctx_lock();
     let ctx = ctxs.iter_mut().find(|ctx| ctx.device_key == device_key)?;
     ctx.fbdev_idx.take()
 }
@@ -206,7 +211,7 @@ fn commit_console_owner_key(device_key: virtio::VirtioChildDeviceKey, idx: u32) 
 
 pub fn uninstall_scanout(device_key: virtio::VirtioChildDeviceKey) -> bool {
     let ctx = {
-        let mut guard = CTX.lock();
+        let mut guard = ctx_lock();
         match guard.iter().position(|ctx| ctx.device_key == device_key) {
             Some(idx) => Some(guard.remove(idx)),
             None => None,
@@ -249,7 +254,7 @@ fn release_scanout_dma(ctx: &ScanoutCtx, reset_confirmed: bool) {
 
 pub fn shutdown_scanout(device_key: virtio::VirtioChildDeviceKey) -> bool {
     let cfg_va = {
-        let mut guard = CTX.lock();
+        let mut guard = ctx_lock();
         let Some(ctx) = guard.iter_mut().find(|ctx| ctx.device_key == device_key) else {
             return false;
         };
@@ -262,7 +267,7 @@ pub fn shutdown_scanout(device_key: virtio::VirtioChildDeviceKey) -> bool {
 
 pub fn uninstall_scanout_after_failed_probe(device_key: virtio::VirtioChildDeviceKey) -> bool {
     let ctx = {
-        let mut guard = CTX.lock();
+        let mut guard = ctx_lock();
         match guard.iter().position(|ctx| ctx.device_key == device_key) {
             Some(idx) => Some(guard.remove(idx)),
             None => None,
@@ -281,10 +286,10 @@ pub fn uninstall_scanout_after_failed_probe(device_key: virtio::VirtioChildDevic
     true
 }
 
-pub fn scanout_ready() -> bool { !CTX.lock().is_empty() }
+pub fn scanout_ready() -> bool { !ctx_lock().is_empty() }
 
 pub fn scanout_ready_for_key(device_key: virtio::VirtioChildDeviceKey) -> bool {
-    CTX.lock().iter().any(|ctx| ctx.device_key == device_key)
+    ctx_lock().iter().any(|ctx| ctx.device_key == device_key)
 }
 
 pub fn dimensions() -> Option<(u32, u32)> {
@@ -293,7 +298,7 @@ pub fn dimensions() -> Option<(u32, u32)> {
 }
 
 pub fn dimensions_for_key(device_key: virtio::VirtioChildDeviceKey) -> Option<(u32, u32)> {
-    CTX.lock().iter().find(|c| c.device_key == device_key).map(|c| (c.w, c.h))
+    ctx_lock().iter().find(|c| c.device_key == device_key).map(|c| (c.w, c.h))
 }
 
 pub fn framebuffer() -> Option<(u64, u64, u64, u32, u32, u32)> {
@@ -302,7 +307,7 @@ pub fn framebuffer() -> Option<(u64, u64, u64, u32, u32, u32)> {
 }
 
 pub fn framebuffer_for_key(device_key: virtio::VirtioChildDeviceKey) -> Option<(u64, u64, u64, u32, u32, u32)> {
-    let g = CTX.lock();
+    let g = ctx_lock();
     let c = g.iter().find(|ctx| ctx.device_key == device_key)?;
     Some((c.fb_va - c.hhdm, c.fb_va, c.fb_bytes, c.w * 4, c.w, c.h))
 }
@@ -417,7 +422,7 @@ mod tests {
 
     fn reset_publication_state() {
         CONSOLE_OWNER_KEY.store(NO_CONSOLE_OWNER_KEY, Ordering::Release);
-        CTX.lock().clear();
+        ctx_lock().clear();
         fbdev::FBS.lock().clear();
     }
 
@@ -425,8 +430,8 @@ mod tests {
     fn fbdev_idx_is_stored_and_taken_by_owner_key() {
         let _guard = super::super::TEST_LOCK.lock();
         reset_publication_state();
-        CTX.lock().push(ctx(key(0x10)));
-        CTX.lock().push(ctx(key(0x20)));
+        ctx_lock().push(ctx(key(0x10)));
+        ctx_lock().push(ctx(key(0x20)));
 
         assert!(set_scanout_fbdev_idx(key(0x10), Some(3)));
         assert!(set_scanout_fbdev_idx(key(0x20), Some(7)));
@@ -443,12 +448,12 @@ mod tests {
     fn console_owner_commits_after_fbdev_idx_is_stored() {
         let _guard = super::super::TEST_LOCK.lock();
         reset_publication_state();
-        CTX.lock().push(ctx(key(0x10)));
+        ctx_lock().push(ctx(key(0x10)));
 
         let idx = install_console_fbdev(key(0x10)).unwrap();
 
         assert_eq!(console_owner_key(), None);
-        assert_eq!(CTX.lock()[0].fbdev_idx, Some(idx));
+        assert_eq!(ctx_lock()[0].fbdev_idx, Some(idx));
         assert_eq!(fbdev::count(), 1);
         assert!(commit_console_owner_key(key(0x10), idx));
         assert_eq!(console_owner_key(), Some(key(0x10)));
@@ -460,14 +465,14 @@ mod tests {
     fn console_owner_commit_failure_unwinds_stored_fbdev_idx() {
         let _guard = super::super::TEST_LOCK.lock();
         reset_publication_state();
-        CTX.lock().push(ctx(key(0x10)));
+        ctx_lock().push(ctx(key(0x10)));
         CONSOLE_OWNER_KEY.store(key(0x20).raw(), Ordering::Release);
 
         let idx = install_console_fbdev(key(0x10)).unwrap();
 
         assert!(!commit_console_owner_key(key(0x10), idx));
         assert_eq!(console_owner_key(), Some(key(0x20)));
-        assert_eq!(CTX.lock()[0].fbdev_idx, None);
+        assert_eq!(ctx_lock()[0].fbdev_idx, None);
         assert_eq!(fbdev::count(), 0);
 
         reset_publication_state();
@@ -484,11 +489,11 @@ mod tests {
         ctx.cmd_buf_pa = 0x9000;
         let idx = fbdev::init_scanout(0x4000, ctx.fb_va, ctx.fb_bytes, 128, 32, 16);
         ctx.fbdev_idx = Some(idx);
-        CTX.lock().push(ctx);
+        ctx_lock().push(ctx);
 
         assert!(shutdown_scanout(key(0x10)));
 
-        let guard = CTX.lock();
+        let guard = ctx_lock();
         assert_eq!(guard.len(), 1);
         assert!(guard[0].quiesced);
         assert_eq!(guard[0].fbdev_idx, Some(idx));

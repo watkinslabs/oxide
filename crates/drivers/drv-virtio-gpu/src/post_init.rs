@@ -96,6 +96,26 @@ struct ScanoutCtx {
 }
 
 static CTX: Spinlock<Vec<ScanoutCtx>, DriverLockClass> = Spinlock::new(Vec::new());
+
+/// Bottom-half gate for `CTX` holders: real softirq exclusion in the kernel,
+/// a no-op under hosted tests, which have no softirqs to exclude.
+#[cfg(target_os = "oxide-kernel")]
+type CtxBh = sched::bh::SchedBh;
+#[cfg(not(target_os = "oxide-kernel"))]
+type CtxBh = sync::NoopBh;
+
+/// Process-context `CTX` acquisition. `CTX` is shared with the `FbconFlush`
+/// softirq (`scanout::fbcon_flush_pixels`), so every process-context hold must
+/// exclude local bottom halves for its whole duration; a softirq arriving on
+/// IRQ-exit over a bare holder spins forever on the lock whose owner it just
+/// interrupted — a one-CPU deadlock that freezes the boot the moment the VT
+/// becomes `/dev/console` and status output keeps the flush pending.
+/// The softirq itself takes `CTX.lock()` bare: with every other holder gated,
+/// it can no longer interrupt one, and cross-CPU contention is bounded.
+/// # C: O(contention) # Lk: CTX; softirqs off on this CPU
+fn ctx_lock() -> sync::LockBhGuard<'static, Vec<ScanoutCtx>, DriverLockClass, CtxBh> {
+    CTX.lock_bh::<CtxBh>()
+}
 #[cfg(test)]
 static TEST_LOCK: Spinlock<(), DriverLockClass> = Spinlock::new(());
 const NO_CONSOLE_OWNER_KEY: u32 = u32::MAX;
