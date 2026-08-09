@@ -371,6 +371,30 @@ commands by claiming parity with a reference built without the relevant configs 
 target arches select them upstream, so it was a divergence recorded as compliance. Check
 the *reason* a row gives, not just its status.
 
+## A hard row never blocks the queue (HARD RULE)
+
+**One stubborn row must never stall every other row.** There is a schedule, and
+throughput across the ledger beats closing any single item.
+
+- **Two honest attempts is the signal.** After that, stop attacking it. Write the
+  row up with what you MEASURED — the numbers, what was tried, what was
+  disproved, which premises turned out false — and pick a different row,
+  preferably in a different subsystem.
+- **A row left open with a precise diagnosis is a good outcome.** A stalled queue
+  is not. The next lane starting from "these two approaches are dead ends, here
+  is the evidence" is worth more than a third failed attempt tonight.
+- **Never report a blockage as a reason to stop working.** Record it and move.
+  Announcing "I stopped rather than continue" while dozens of actionable rows sit
+  untouched is the failure this rule exists to prevent.
+- This does NOT license giving up early, silently narrowing scope, or leaving a
+  regression in the tree. Revert failed attempts, keep the tree green, and record
+  the negative results — those are first-class deliverables (`Known issues`).
+
+Learned the expensive way: the aarch64 stack-ceiling row consumed most of one
+session across three approaches, two of which were measured regressions and one
+of which rested on a premise that proved false, while the rest of the ledger went
+untouched.
+
 ## Out-of-lane work gets a lane, not a filed row (HARD RULE)
 
 A lane that finds a real fix outside its file ownership **must not stop at filing it**.
