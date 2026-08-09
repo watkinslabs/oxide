@@ -142,15 +142,30 @@ fn probe_clamps_instead_of_failing() {
 #[test]
 fn opcodes_needing_an_absent_mechanism_report_eopnotsupp_not_success() {
     // Each of these needs a whole mechanism this kernel does not have — a
-    // worker pool, multi-frame ring regions, a zero-copy receive queue,
-    // busy-poll, or a program loader. Returning 0 for any of them would tell
-    // the caller a registration happened that did not.
+    // per-task worker pool, a user-provided or parameter memory region, a
+    // zero-copy receive queue, busy-poll, or a program loader. Returning 0
+    // for any of them would tell the caller a registration happened that
+    // did not.
     for op in [IORING_REGISTER_NAPI,
                IORING_UNREGISTER_NAPI, IORING_REGISTER_ZCRX_IFQ,
-               IORING_REGISTER_RESIZE_RINGS, IORING_REGISTER_MEM_REGION,
+               IORING_REGISTER_MEM_REGION,
                IORING_REGISTER_ZCRX_CTRL, IORING_REGISTER_BPF_FILTER] {
         assert_eq!(decode(op, RING_FD, 0x1000, 1), Err(Errno::Eopnotsupp), "op {op}");
     }
+}
+
+/// `IORING_REGISTER_RESIZE_RINGS` takes exactly one `io_uring_params`.
+#[test]
+fn resize_rings_takes_one_params_pointer() {
+    assert_eq!(decode(IORING_REGISTER_RESIZE_RINGS, RING_FD, 0x1000, 1).unwrap().op,
+               RegisterOp::ResizeRings { arg: 0x1000 });
+    assert_eq!(decode(IORING_REGISTER_RESIZE_RINGS, RING_FD, 0, 1), Err(Errno::Einval));
+    for nr in [0u32, 2] {
+        assert_eq!(decode(IORING_REGISTER_RESIZE_RINGS, RING_FD, 0x1000, nr),
+                   Err(Errno::Einval), "nr {nr}");
+    }
+    // No ring, no rings to resize.
+    assert_eq!(decode(IORING_REGISTER_RESIZE_RINGS, -1, 0x1000, 1), Err(Errno::Einval));
 }
 
 #[test]

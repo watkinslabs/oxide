@@ -130,6 +130,7 @@ fn run(inode: &Arc<IoUringInode>, op: RegisterOp) -> i64 {
         // touches it.
         RegisterOp::RingFds { arg, nr }           => work::ring_fds::register(arg, nr),
         RegisterOp::UnregisterRingFds { arg, nr } => work::ring_fds::unregister(arg, nr),
+        RegisterOp::ResizeRings { arg }     => work::resize::resize_rings(inode, arg),
     }
 }
 
