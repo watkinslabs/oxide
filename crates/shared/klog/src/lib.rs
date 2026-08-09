@@ -541,6 +541,27 @@ macro_rules! klog {
     }};
 }
 
+/// Announce an irreversible machine transition. UNCONDITIONAL by design —
+/// the one form `04§4.0`'s cfg-elidability rule does not cover.
+///
+/// The rule exists for hot paths: one atomic per ungated emit is the
+/// difference between perf-budgeted and perf-blown on the timer tick and the
+/// syscall fast path. A transition that happens at most once per boot, and
+/// after which this kernel does not run again, is the exact opposite of that
+/// — and gating it means a machine that rebooted, powered off or kexec'd is
+/// indistinguishable in the log from one that refused to, which is the single
+/// question anyone asks of such a log.
+///
+/// Deliberately narrow so it cannot become a waiver: `&'static str` only (the
+/// interning rule of `07§5`), emitted at warning priority so a default level
+/// filter keeps it, and legal only on a path that does not return to ordinary
+/// kernel work. Spec-lint permits this one name and no other.
+/// # C: O(len)
+pub fn announce(msg: &'static str) {
+    write_raw_at(msg.as_bytes(), syslog::LOGLEVEL_WARNING);
+    write_raw_at(b"\n", syslog::LOGLEVEL_WARNING);
+}
+
 /// Convenience wrappers per `04` log surface.
 #[macro_export]
 macro_rules! kerror { ($msg:literal $(,)?) => { $crate::klog!(Error, $msg) }; }

@@ -54,7 +54,7 @@ crates/kernel/network-namespace	code/pub-fn-complexity	2
 crates/kernel/nscg	code/pub-fn-complexity	9
 crates/kernel/pci-boot	code/pub-fn-complexity	18
 crates/kernel/pidfd	code/pub-fn-complexity	1
-crates/kernel/power	code/klog-ungated	6
+crates/kernel/power	code/klog-ungated	3
 crates/kernel/procfs	code/klog-ungated	21
 crates/kernel/procfs	code/pub-fn-complexity	14
 crates/kernel/sched	code/klog-ungated	163

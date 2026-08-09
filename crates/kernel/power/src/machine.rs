@@ -127,9 +127,9 @@ pub unsafe fn power_off() -> ! {
 /// # C: O(N_devices)
 pub unsafe fn terminal(cmd: TerminalCmd) -> ! {
     match cmd {
-        TerminalCmd::Restart => klog::write_raw(b"power_cmd restart\n"),
-        TerminalCmd::PowerOff => klog::write_raw(b"power_cmd poweroff\n"),
-        TerminalCmd::Halt => klog::write_raw(b"power_cmd halt\n"),
+        TerminalCmd::Restart => klog::announce("power_cmd restart"),
+        TerminalCmd::PowerOff => klog::announce("power_cmd poweroff"),
+        TerminalCmd::Halt => klog::announce("power_cmd halt"),
     }
     // Linux snapshots the log in `kernel_restart` / `kernel_power_off`,
     // BEFORE the drivers go down: a dumper whose backend rides on a device

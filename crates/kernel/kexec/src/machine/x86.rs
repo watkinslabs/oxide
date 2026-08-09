@@ -244,7 +244,8 @@ pub fn prepare<F: Frames>(image: &mut KImage, f: &mut F) -> KResult<()> {
 
     image.arch_pgt = root;
     image.arch_entry_off = ident_off;
-    klog::kinfo!("kexec: relocation tables built");
+    #[cfg(feature = "debug-kexec")]
+    { klog::write_raw(b"kexec: relocation tables built\n"); }
     Ok(())
 }
 
@@ -271,7 +272,7 @@ pub fn kexec(image: &KImage) -> KResult<()> {
     // SAFETY: the machine is committed; every other CPU has been asked to
     // halt and this CPU performs the relocation with nothing left to preempt it.
     unsafe { mask_interrupts() };
-    klog::kinfo!("kexec: starting new kernel");
+    klog::announce("kexec: starting new kernel");
     let entry = pmm::user_as::hhdm_offset().wrapping_add(image.control_code_page);
     let ident = image.control_code_page + image.arch_entry_off;
     // SAFETY: `entry` is the kernel address of the control page `prepare`

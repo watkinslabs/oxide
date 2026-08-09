@@ -138,7 +138,15 @@ pub fn kernel_kexec() -> KResult<()> {
             // shutdown method runs BEFORE the relocation, because a device
             // still mastering the bus writes into the new kernel's memory
             // after the copy has finished and nothing is left to notice.
-            Some(img) => { crate::machine::shutdown_devices(); crate::machine::kexec(img) }
+            Some(img) => {
+                // The log snapshot goes out BEFORE the drivers stop, because a
+                // dumper whose backend rides on a device has nothing left to
+                // write to once they have. Same order, same reason, as the
+                // terminal reboot path.
+                klog::kmsg_dump(klog::kmsg_dump::REASON_SHUTDOWN);
+                crate::machine::shutdown_devices();
+                crate::machine::kexec(img)
+            }
         }
     })
 }

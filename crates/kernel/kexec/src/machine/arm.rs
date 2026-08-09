@@ -213,7 +213,8 @@ pub fn prepare<F: Frames>(image: &mut KImage, f: &mut F) -> KResult<()> {
 
     image.arch_pgt = root;
     image.arch_entry_off = 0;
-    klog::kinfo!("kexec: relocation tables built");
+    #[cfg(feature = "debug-kexec")]
+    { klog::write_raw(b"kexec: relocation tables built\n"); }
     Ok(())
 }
 
@@ -222,7 +223,7 @@ pub fn prepare<F: Frames>(image: &mut KImage, f: &mut F) -> KResult<()> {
 pub fn kexec(image: &KImage) -> KResult<()> {
     if image.arch_pgt == 0 || image.control_code_page == 0 { return Err(Error::Inval); }
     quiesce::stop_other_cpus();
-    klog::kinfo!("kexec: starting new kernel");
+    klog::announce("kexec: starting new kernel");
     // SAFETY: the machine is committed. DAIF is masked so nothing can be
     // delivered once the vector table's translation stops being valid; the
     // identity map goes into TTBR0 and the branch target is a physical address
