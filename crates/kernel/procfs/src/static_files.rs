@@ -37,6 +37,7 @@ pub fn build_proc_root() -> alloc::collections::BTreeMap<alloc::string::String, 
     c.insert("partitions".to_string(),  crate::partitions::make_proc_partitions());
     c.insert("misc".to_string(),        StaticFileInode::new(b""));
     c.insert("buddyinfo".to_string(),   crate::buddyinfo::make_proc_buddyinfo());
+    c.insert("iomem".to_string(),       crate::iomem::make_proc_iomem());
     c.insert("zoneinfo".to_string(),    StaticFileInode::new(b"Node 0, zone Normal\n  pages free 1024\n"));
     c.insert("vmstat".to_string(),       crate::vmstat::make_proc_vmstat());
     c.insert("interrupts".to_string(),  crate::interrupts::make_proc_interrupts());

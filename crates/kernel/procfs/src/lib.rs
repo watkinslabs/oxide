@@ -47,6 +47,7 @@ pub use vfs::StaticFileInode;  // generic inode lives in vfs
 #[cfg(target_os = "oxide-kernel")] pub mod filesystems;
 #[cfg(target_os = "oxide-kernel")] pub mod syscpu;
 #[cfg(target_os = "oxide-kernel")] pub mod buddyinfo;
+pub mod iomem;
 #[cfg(target_os = "oxide-kernel")] pub mod fdinfo;
 #[cfg(target_os = "oxide-kernel")] pub mod sysctl;
 #[cfg(target_os = "oxide-kernel")] pub mod ctl;
