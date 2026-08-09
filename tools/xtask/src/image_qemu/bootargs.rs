@@ -30,10 +30,15 @@ fn bootloader_supplies_boot_image(arch: &str) -> bool { arch == "aarch64" }
 /// Kernel parameters passed by the bootloader for `arch`, loading
 /// `image_path`.
 ///
-/// `console=` order is load-bearing: Linux registers a printk console per
-/// token and the LAST one backs `/dev/console`, so serial-then-VT keeps the
-/// serial log while the VT stays the interactive console — identical on both
-/// arches.
+/// `console=` order is load-bearing: a printk console is registered per token
+/// and the LAST one backs `/dev/console`. Serial goes LAST, which is how a
+/// distribution is configured for a serial console: the init system writes its
+/// status output (`[  OK  ] Started ...`) to `/dev/console`, so putting the VT
+/// there sends the readable half of the boot to a framebuffer nobody can
+/// scrape, and leaves the serial log carrying only what printk emits. Both
+/// consoles still receive kernel output; only `/dev/console` moves. The VT
+/// remains the interactive console and the graphical session still starts on
+/// it.
 /// One trailing space so the caller's format string stays readable whether or
 /// not extra parameters were supplied. # C: O(len)
 fn alloc_extra(value: &str) -> String { format!("{value} ") }
@@ -102,7 +107,7 @@ pub(super) fn kernel_cmdline(arch: &str, image_path: &str) -> String {
     // lies. A boot that wants it can pass it through OXIDE_CMDLINE_EXTRA.
     format!(
         "{boot_image}root=/dev/oxide0 rw {KERNEL_CONSOLE_PARAMS} {extra}\
-         console={ser},115200 console=tty0 \
+         console=tty0 console={ser},115200 \
          systemd.mask=firewalld.service systemd.mask=chronyd.service \
          systemd.mask=ModemManager.service systemd.mask=plymouth-start.service \
          systemd.mask=NetworkManager-wait-online.service \
@@ -167,14 +172,16 @@ mod tests {
         assert_eq!(serial_console("aarch64"), "ttyAMA0");
     }
 
-    /// `console=` order decides `/dev/console`: the VT token must come last on
+    /// `console=` order decides `/dev/console`: the SERIAL token must come last on
     /// both arches so the preferred console matches across the lockstep gate.
     #[test]
     fn vt_console_token_is_last_on_both_arches() {
         for arch in ["x86_64", "aarch64"] {
             let line = kernel_cmdline(arch, "/img");
             let last = line.rmatch_indices("console=").next().unwrap().0;
-            assert!(line[last..].starts_with("console=tty0 "), "{arch}: {line}");
+            let ser = super::serial_console(arch);
+            assert!(line[last..].starts_with(&format!("console={ser},115200")),
+                "{arch}: /dev/console must be the serial line: {line}");
         }
     }
 
