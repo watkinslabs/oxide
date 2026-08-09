@@ -11,7 +11,7 @@ use syscall::errno::Errno;
 
 use super::event::PerfEvent;
 use super::ring::sizing::{self, MlockCtx};
-use super::ring::PerfBuffer;
+use super::ring::{locked_vm, PerfBuffer};
 use super::uapi::attr_bit;
 
 /// What `perf_mmap` needs to know about the caller's request and limits.
@@ -25,6 +25,9 @@ pub struct MmapCtx {
     pub shared:    bool,
     /// `vma->vm_flags & VM_WRITE` — a writable mapping is a NON-overwrite ring.
     pub writable:  bool,
+    /// `current_user()` — whose `locked_vm` the mapping is booked against and
+    /// whose it is given back to when the last mapping goes away.
+    pub uid:       u32,
     pub mlock:     MlockCtx,
 }
 
@@ -64,10 +67,13 @@ pub fn plan(attr_inherit: bool, cpu: i32, has_buffer: bool, buffer_pages: u64,
     let nr = sizing::data_pages(c.vma_pages)?;
     if has_buffer {
         if buffer_pages != nr { return Err(Errno::Einval); }
-        // Aliasing an existing ring costs the same accounting but allocates
-        // nothing; the caller sees `nr_data_pages == buffer_pages` and reuses.
-        let charge = sizing::calc_limits(&c.mlock)?;
-        return Ok(MmapPlan { nr_data_pages: nr, overwrite: !c.writable, charge });
+        // Aliasing an existing ring allocates nothing and pins nothing further:
+        // the pages are already charged to the user who first mapped them, and
+        // that one charge is released when the last mapping of the buffer goes
+        // away. The admission ladder is not re-run, so a caller whose earlier
+        // mapping already reached the allowance can still map it again.
+        return Ok(MmapPlan { nr_data_pages: nr, overwrite: !c.writable,
+                             charge: sizing::MlockCharge::default() });
     }
     let charge = sizing::calc_limits(&c.mlock)?;
     let _ = (watermark_bit, wakeup_watermark);
@@ -80,6 +86,7 @@ pub fn attach(ev: &Arc<PerfEvent>, c: &MmapCtx, wakeup_watermark: u32)
     -> Result<Arc<PerfBuffer>, Errno>
 {
     let existing = ev.buffer();
+    let c = &live_mlock(c);
     let p = plan(ev.attr.bit(attr_bit::INHERIT), ev.cpu, existing.is_some(),
                  existing.as_ref().map_or(0, |b| b.nr_data_pages()),
                  ev.attr.bit(attr_bit::WATERMARK), wakeup_watermark, c)?;
@@ -87,6 +94,10 @@ pub fn attach(ev: &Arc<PerfEvent>, c: &MmapCtx, wakeup_watermark: u32)
     let ds = sizing::data_size(p.nr_data_pages);
     let wm = sizing::watermark(ds, wakeup_watermark, ev.attr.bit(attr_bit::WATERMARK));
     let rb = PerfBuffer::alloc(p.nr_data_pages, wm, p.overwrite).ok_or(Errno::Enomem)?;
+    // `rb->mmap_user = user; rb->mmap_locked = extra`. The pages are booked
+    // when the first VMA opens and given back when the last one closes
+    // (`ring::mapping`), so a ring that never gets mapped costs nothing.
+    rb.acct().record(c.uid, p.charge.user_extra);
     // `perf_event_update_userpage` right after the attach, so a consumer that
     // maps and immediately reads the control page sees a live snapshot.
     let (count, enabled, running) = ev.read_value();
@@ -95,13 +106,39 @@ pub fn attach(ev: &Arc<PerfEvent>, c: &MmapCtx, wakeup_watermark: u32)
     Ok(rb)
 }
 
+/// The request with `user->locked_vm` filled in from the live per-user ledger.
+///
+/// The syscall shim cannot supply this total: it would be a second place the
+/// answer lives, and the first version of this path passed a zero placeholder
+/// that made the per-user half of the ladder unable to refuse anything.
+/// # C: O(N_users)
+pub fn live_mlock(c: &MmapCtx) -> MmapCtx {
+    let mut c = *c;
+    c.mlock.user_locked = locked_vm::charged(c.uid);
+    c
+}
+
+/// Linux `perf_mmap_open`: one more VMA maps `rb`. # C: O(N_users)
+pub fn vma_opened(rb: &Arc<PerfBuffer>) { rb.acct().opened(); }
+
+/// Linux `perf_mmap_close`: one VMA mapping `rb` is gone. The last one gives
+/// the per-user pages back and detaches the buffer from its event
+/// (`ring_buffer_attach(event, NULL)`), so the next `mmap` of the fd allocates
+/// a fresh ring and is admitted against a ledger that no longer counts this
+/// one. # C: O(N_users)
+pub fn vma_closed(ev: &Arc<PerfEvent>, rb: &Arc<PerfBuffer>) {
+    if !rb.acct().closed() { return; }
+    let mut st = ev.state.lock();
+    if st.buffer.as_ref().is_some_and(|b| Arc::ptr_eq(b, rb)) { st.buffer = None; }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn ctx(vma_pages: u64) -> MmapCtx {
         MmapCtx {
-            vma_pages, pgoff: 0, shared: true, writable: true,
+            vma_pages, pgoff: 0, shared: true, writable: true, uid: 0,
             mlock: MlockCtx { vma_pages, user_locked: 0,
                               mlock_kb: sizing::MLOCK_KB_DEFAULT, nr_online_cpus: 1,
                               pinned_vm: 0, rlimit_pages: 0, paranoid: true,
@@ -175,6 +212,38 @@ mod tests {
         let c = ctx(5);
         assert!(plan(false, 0, true, 4, false, 0, &c).is_ok());
         assert_eq!(plan(false, 0, true, 8, false, 0, &c), Err(Errno::Einval));
+    }
+
+    /// The admission ladder must see the user's REAL running total. A zero
+    /// placeholder here — what this path shipped with before the ledger
+    /// existed — makes the per-user allowance unable to refuse anything, since
+    /// every mapping looks like the user's first.
+    #[test]
+    fn the_ladder_reads_the_live_per_user_total() {
+        let u = 0x7200_0001;
+        let mut c = ctx(5);
+        c.uid = u;
+        assert_eq!(live_mlock(&c).mlock.user_locked, 0);
+        locked_vm::charge(u, 40);
+        assert_eq!(live_mlock(&c).mlock.user_locked, 40);
+        // ... and the ladder charges the remainder against that total.
+        let limit = sizing::user_lock_limit_pages(sizing::MLOCK_KB_DEFAULT, 1);
+        c.vma_pages = limit;
+        c.mlock.vma_pages = limit;
+        c.mlock.cap_ipc_lock = true;
+        let p = plan(false, 0, false, 0, false, 0, &live_mlock(&c)).unwrap();
+        assert_eq!(p.charge.user_extra, limit - 40, "40 pages are already the user's");
+        assert_eq!(p.charge.extra, 40, "the rest spills into the pinned half");
+        locked_vm::release(u, 40);
+    }
+
+    /// Re-mapping an already-attached ring pins nothing further, so it does
+    /// not re-run the per-user ladder and takes no second charge.
+    #[test]
+    fn aliasing_an_attached_ring_takes_no_further_charge() {
+        let c = ctx(5);
+        let p = plan(false, 0, true, 4, false, 0, &c).unwrap();
+        assert_eq!(p.charge, sizing::MlockCharge::default());
     }
 
     #[test]

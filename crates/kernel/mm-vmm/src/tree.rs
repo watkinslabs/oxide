@@ -602,6 +602,25 @@ impl VmaTree {
         cursor >= end
     }
 
+    /// True if `[start, end)` would cut a VMA whose mapped object refuses to
+    /// be split (Linux `vm_ops->may_split` returning an error). A range that
+    /// covers such a VMA whole, or misses it, is fine — only an interior cut
+    /// is refused. munmap/mprotect/mremap call this first and report EINVAL.
+    /// # C: O(N_vma in range)
+    pub fn refuses_split_raw_end(&self, start: UserVirtAddr, end: u64) -> bool {
+        let Some(end_key) = raw_end_key(end) else { return false };
+        let s = start.as_u64();
+        self.map.range(..end_key).any(|(_, v)| {
+            let (vs, ve) = (v.start.as_u64(), v.end.as_u64());
+            ve > s && (vs < s || end < ve) && !crate::vm_ops::vma_may_split(v)
+        })
+    }
+
+    /// # C: O(N_vma in range)
+    pub fn refuses_split(&self, start: UserVirtAddr, end: UserVirtAddr) -> bool {
+        self.refuses_split_raw_end(start, end.as_u64())
+    }
+
     /// # C: O(N_vma in range)
     pub fn any_sealed_raw_end(&self, start: UserVirtAddr, end: u64) -> bool {
         let Some(end_key) = raw_end_key(end) else { return false };

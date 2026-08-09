@@ -15,6 +15,7 @@ use sync::{PerfRing, Spinlock};
 
 use super::super::sample::RecordBuf;
 use super::sizing::{data_size, PAGE_BYTES};
+use super::mapping::MmapAccount;
 use super::state::{copy_plan, RingState};
 use super::userpage;
 
@@ -63,6 +64,9 @@ pub struct PerfBuffer {
     state: Spinlock<RingState, PerfRing>,
     /// `rb->poll`, latched by a watermark crossing and cleared by `poll(2)`.
     poll:  AtomicU32,
+    /// `rb->mmap_count`/`mmap_user`/`mmap_locked` — how long the per-user
+    /// locked-page charge this ring took lives.
+    acct:  MmapAccount,
 }
 
 impl PerfBuffer {
@@ -97,6 +101,7 @@ impl PerfBuffer {
             user, data,
             state: Spinlock::new(RingState::new(ds, watermark_req, overwrite)),
             poll:  AtomicU32::new(0),
+            acct:  MmapAccount::new(),
         };
         rb.zero_data();
         rb.with_user_page(|p| userpage::init(p, ds));
@@ -110,6 +115,10 @@ impl PerfBuffer {
         let data = (0..nr_data_pages).map(|_| page()).collect();
         Self::build(Pages::Heap(alloc::vec![page()]), Pages::Heap(data), watermark_req, overwrite)
     }
+
+    /// The buffer's mapping account — `perf_mmap_open`/`perf_mmap_close` and
+    /// the per-user charge they bracket. # C: O(1)
+    pub fn acct(&self) -> &MmapAccount { &self.acct }
 
     /// `perf_mmap_to_page(rb, pgoff)` — page 0 is the control page, the rest
     /// are data pages. `None` past the end is the reference's `-EINVAL`.

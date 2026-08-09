@@ -254,6 +254,10 @@ impl AddressSpace {
             // Linux checks MDWE before `__mmap_region` removes MAP_FIXED
             // overlaps. A denied W+X request must leave the old mapping intact.
             if tree.any_sealed(start_va, end) { return Err(Error::Perm.into()); }
+            // Linux `vm_ops->may_split`: a MAP_FIXED landing part-way across a
+            // mapping whose object refuses splitting fails the whole mmap and
+            // leaves the old mapping intact.
+            if tree.refuses_split(start_va, end) { return Err(Error::Inval.into()); }
             let removed = tree.remove_range(start_va, end);
             for vma in &removed { self.accounting.remove_vma(vma); }
         }

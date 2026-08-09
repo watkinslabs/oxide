@@ -87,6 +87,9 @@ pub fn sys_mremap(args: &SyscallArgs) -> i64 {
     let old_ua = match UserVirtAddr::new(old) { Some(u) => u, None => return -(Errno::Einval.as_i32() as i64) };
     // mseal(2): a sealed source range rejects mremap with EPERM.
     if mm.range_sealed(old_ua, old_size) { return -(Errno::Eperm.as_i32() as i64); }
+    // Linux `vm_ops->may_split`: moving part of a mapping whose object refuses
+    // splitting is EINVAL, before the source is touched.
+    if mm.range_refuses_split(old_ua, old_size) { return einval; }
     let new_ua = if implies_new_addr || new_addr != 0 { UserVirtAddr::new(new_addr) } else { None };
     let dontunmap = (flags & MREMAP_DONTUNMAP) != 0;
     // MREMAP_FIXED discards any existing mapping at the destination (Linux
