@@ -91,6 +91,24 @@ unsafe impl Sync for RegionBuf {}
 static REGION_BUF: RegionBuf = RegionBuf(UnsafeCell::new(
     [UsableRegion { start: Pfn(0), len_pfn: 0 }; MAX_REGIONS],
 ));
+/// Entries of `REGION_BUF` that `init_from_boot_info` filled.
+static REGION_COUNT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// The usable-RAM ranges this PMM was seeded from, in boot-map order — the
+/// reference's `pfn_mapped`. Empty before `init_from_boot_info` succeeds.
+///
+/// Published because a caller building page tables that must cover all of RAM
+/// (kexec's identity map) needs the same list the buddy was seeded with; a
+/// second list derived from a high-water mark would map holes as RAM and could
+/// disagree with this one about where memory actually is.
+/// # C: O(1)
+pub fn usable_regions() -> &'static [UsableRegion] {
+    let n = REGION_COUNT.load(Ordering::Acquire);
+    // SAFETY: `REGION_BUF[0..n]` was written once during single-CPU init and
+    // never mutated afterwards; `REGION_COUNT` is published with release
+    // ordering after those writes.
+    unsafe { core::slice::from_raw_parts(REGION_BUF.0.get() as *const UsableRegion, n) }
+}
 
 /// Bring PMM up from a `BootInfo`. Single-call.
 ///
@@ -265,6 +283,7 @@ pub unsafe fn init_from_boot_info(
         n_regions += 1;
     }
 
+    REGION_COUNT.store(n_regions, Ordering::Release);
     let backing = HhdmBacking { hhdm: info.hhdm_offset, bitmaps };
     // SAFETY: same single-CPU init invariant; we read what we just wrote.
     let regs: &[UsableRegion] = unsafe {

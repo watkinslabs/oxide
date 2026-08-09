@@ -8,9 +8,26 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
-klog = { path = "../../shared/klog" }
-sync = { path = "../../shared/sync" }
-pmm  = { path = "../mm-pmm" }
+klog  = { path = "../../shared/klog" }
+sync  = { path = "../../shared/sync" }
+pmm   = { path = "../mm-pmm" }
+hal   = { path = "../../arch/hal" }
+cpu   = { path = "../cpu" }
+power = { path = "../power" }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+hal-x86_64 = { path = "../../arch/hal-x86_64" }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+hal-aarch64 = { path = "../../arch/hal-aarch64" }
+
+[features]
+default = []
+# `04§4.0`: every klog call site is cfg-elidable, so the relocation's own
+# trace is gated. The reference logs this transition unconditionally
+# (`pr_info("Bye!")`, `pr_notice("Starting new kernel")`); the divergence is
+# recorded in `scratch/known_issues.md` rather than taken silently.
+debug-kexec = []
 
 [lints]
 workspace = true

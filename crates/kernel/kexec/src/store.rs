@@ -134,8 +134,19 @@ pub fn kernel_kexec() -> KResult<()> {
             // Nothing staged: the reference's `-EINVAL`, and the reason
             // `systemctl kexec` falls back to a normal reboot.
             None => Err(Error::Inval),
-            // Never returns on success.
-            Some(img) => crate::machine::kexec(img),
+            // `kernel_restart_prepare("kexec reboot")`: every driver's
+            // shutdown method runs BEFORE the relocation, because a device
+            // still mastering the bus writes into the new kernel's memory
+            // after the copy has finished and nothing is left to notice.
+            Some(img) => {
+                // The log snapshot goes out BEFORE the drivers stop, because a
+                // dumper whose backend rides on a device has nothing left to
+                // write to once they have. Same order, same reason, as the
+                // terminal reboot path.
+                klog::kmsg_dump(klog::kmsg_dump::REASON_SHUTDOWN);
+                crate::machine::shutdown_devices();
+                crate::machine::kexec(img)
+            }
         }
     })
 }

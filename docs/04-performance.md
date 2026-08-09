@@ -96,7 +96,10 @@ One logger. `klog`. Not `println!`/`log`/three traits.
   - a `#[cfg(feature = "debug-<sub>")]` block, attribute on enclosing fn/mod, or
   - one of the `debug_<sub>!` macro pairs (cfg-on → `$($t)*`, cfg-off → empty).
 - The `<sub>` is the subsystem the message belongs to (the §3 catalog: `pmm`, `vmm`, `irq`, `acpi`, `boot`, `sched`, …).
-- `fatal!` is the lone exception (panics; spec calls for unconditional emission — but even there the body is a single literal, not a hot path).
+- `fatal!` and `klog::announce` are the only exceptions.
+  - `fatal!` panics; spec calls for unconditional emission — and even there the body is a single literal, not a hot path.
+  - `klog::announce(&'static str)` announces an **irreversible machine transition** — reboot, power-off, halt, kexec relocation. Gating these inverts the rule's own rationale: the cost argument is about paths taken millions of times, and these are taken at most once per boot on a path that never returns to ordinary kernel work. Gated, the log cannot distinguish a machine that transitioned from one that refused to, which is the only question such a log is ever read to answer. Emitted at warning priority so a default level filter keeps it.
+  - `announce` is bounded so it cannot become a waiver: one name, `&'static str` only, and legal ONLY where this kernel does not run again afterwards. It is not a general "important message" channel — anything that returns to normal execution takes the ordinary gated form. Spec-lint permits this one name and no other.
 - Spec-lint enforces this via `code/klog-ungated`: any `klog::` use whose enclosing scope is not under one of the allowed cfg forms is a build failure.
 
 Why: the runtime threshold check is one atomic Relaxed load (§4.5). For the kernel's hottest call sites (timer tick, syscall fast-path) one atomic per ungated emit is the difference between perf-budgeted and perf-blown. The discipline is "if you don't need this trace in production, the binary doesn't carry it." Per-feature gates enable a developer to dial in *exactly* the subsystem they're chasing without paying for the rest.

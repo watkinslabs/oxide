@@ -63,6 +63,11 @@ pub fn stage_image<F: Frames, S: SegmentSource>(
         if ty == ImageType::Default { image.swap_page = image.alloc_control_page(f)?; }
         for i in 0..image.segments.len() { load_segment(image, f, i, src)?; }
         image.terminate(f);
+        // `machine_kexec_prepare`, in the reference's position: after the
+        // relocation list is complete, while a failure is still an errno the
+        // caller of `kexec_load(2)` sees. Deferring it to the jump would move
+        // every one of its failure modes past the point of no return.
+        crate::machine::prepare(image, f)?;
         Ok(())
     };
     match build(&mut image, f) {

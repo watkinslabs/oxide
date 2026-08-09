@@ -78,6 +78,12 @@ fn klog_call_at(line: &str, col: usize) -> Option<&'static str> {
         ("klog::kfatal!", "klog::kfatal!"),
         ("klog::klog!",   "klog::klog!"),
     ];
+    // `klog::announce` is the sanctioned UNCONDITIONAL form for an
+    // irreversible machine transition (`04§4.0`). It is checked before
+    // FN_NAMES because no prefix in that list matches it, and it is listed
+    // here rather than left to fall through so the exemption is visible at
+    // the point the rule is enforced.
+    if rest.starts_with("klog::announce(") { return None; }
     for (pat, name) in FN_NAMES { if rest.starts_with(pat) { return Some(name); } }
     for (pat, name) in MAC_NAMES { if rest.starts_with(pat) { return Some(name); } }
     None

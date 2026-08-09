@@ -13,7 +13,8 @@
 // - `stage`:    `kimage_alloc_init` + the per-segment load, global-state free.
 // - `file_load`: `kexec_file_load`'s ladder and the arch loader registry.
 // - `store`:    the two image slots, the kexec lock, `kernel_kexec`.
-// - `machine`:  the arch relocate-and-enter step — refused, with a diagnosis.
+// - `machine`:  the identity tables, the relocation trampoline and the
+//               machine stop — see its own manifest for the ungated halves.
 // - `tests`:    host-run provenance for the order and the staging invariants,
 //               with `tests::gate` serialising everything that reads the store.
 

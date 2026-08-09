@@ -29,6 +29,12 @@ pub trait Frames {
     /// Highest physical address a CONTROL page may sit at
     /// (`KEXEC_CONTROL_MEMORY_LIMIT`).
     fn control_limit(&self) -> u64 { u64::MAX }
+    /// Usable-RAM ranges, the reference's `pfn_mapped`. The identity tables
+    /// the trampoline runs under have to cover every one of them, because the
+    /// relocation reads its source pages out of exactly this memory.
+    fn ram_range_count(&self) -> usize { 0 }
+    /// Range `i` as `[start, end)` physical bytes.
+    fn ram_range(&self, i: usize) -> Option<(u64, u64)> { let _ = i; None }
 }
 
 /// Fill `pa` with zeroes.
@@ -72,5 +78,13 @@ impl Frames for PmmFrames {
     /// # C: O(MAX_ORDER); # Lk: Buddy
     fn total_ram_pages(&self) -> u64 {
         pmm::setup::pmm_static().map_or(0, |p| p.snapshot().managed_pages)
+    }
+    /// # C: O(1)
+    fn ram_range_count(&self) -> usize { pmm::setup::usable_regions().len() }
+    /// # C: O(1)
+    fn ram_range(&self, i: usize) -> Option<(u64, u64)> {
+        let r = pmm::setup::usable_regions().get(i)?;
+        let start = r.start.0 * PAGE_SIZE;
+        Some((start, start + r.len_pfn * PAGE_SIZE))
     }
 }
