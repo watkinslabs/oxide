@@ -30,9 +30,11 @@
 //
 // The entry state is the arm64 boot protocol (`docs/36 §4`): x0 = DTB
 // physical address, x1..x3 zero, EL1 with all of DAIF masked, MMU off, caches
-// off. `kexec_load(2)` carries no device tree — the reference sets
-// `arch.dtb_mem` only in the file-load path — so x0 is zero and the purgatory
-// the caller staged is what supplies one.
+// off. The address comes from `KImage::boot_arg`, which the file-load path's
+// `Image` loader sets to the tree it built — the reference sets its
+// `arch.dtb_mem` in exactly that path and nowhere else. A `kexec_load(2)`
+// image leaves it zero, because there the caller supplies whatever the new
+// kernel needs inside its own segments and its purgatory installs it.
 
 #![cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
 
@@ -240,6 +242,6 @@ pub fn kexec(image: &KImage) -> KResult<()> {
             options(nostack, preserves_flags),
         );
         let f: RelocateFn = core::mem::transmute(image.control_code_page as usize);
-        f(image.head, image.start, 0)
+        f(image.head, image.start, image.boot_arg)
     }
 }

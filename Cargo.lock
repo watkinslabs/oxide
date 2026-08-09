@@ -887,6 +887,8 @@ name = "kexec"
 version = "0.1.0"
 dependencies = [
  "cpu",
+ "crng",
+ "crypt",
  "hal",
  "hal-aarch64",
  "hal-x86_64",

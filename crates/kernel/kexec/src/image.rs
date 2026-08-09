@@ -38,6 +38,14 @@ const NO_DEST: u64 = u64::MAX;
 pub struct KImage {
     /// Entry point the trampoline jumps to once relocation is complete.
     pub start: u64,
+    /// Address handed to the new kernel as its boot argument — the device tree
+    /// on aarch64, where the boot protocol puts it in `x0`.
+    ///
+    /// Zero for a `kexec_load(2)` image on every architecture: the reference
+    /// sets its equivalent only in the file-load path, because the caller of
+    /// `kexec_load` supplies whatever the new kernel needs inside its own
+    /// segments and its purgatory is what installs it.
+    pub boot_arg: u64,
     /// Default (reboot) or crash image.
     pub ty: ImageType,
     /// First relocation entry.
@@ -71,7 +79,7 @@ impl KImage {
     /// # C: O(1)
     pub fn new(start: u64, ty: ImageType, segments: Vec<KexecSegment>) -> Self {
         Self {
-            start, ty, head: 0, control_code_page: 0, swap_page: 0,
+            start, ty, head: 0, boot_arg: 0, control_code_page: 0, swap_page: 0,
             arch_pgt: 0, arch_entry_off: 0, segments,
             preserve_context: false, cursor: Loc::Head,
             control_pages: Vec::new(), dest_pages: Vec::new(),
