@@ -49,7 +49,7 @@ pub(super) fn run_completion_bottom_half() {
     let devices: Vec<Arc<BlkState>> = DEVICES.lock_bh::<sched::bh::SchedBh>()
         .iter().map(|record| record.state.clone()).collect();
     for device in devices {
-        device.drain_owned_completions();
+        let _reaped = device.drain_owned_completions();
     }
     // Wake the in-flight turn-holder (≤1 waiter, no herd), then hand a chance to
     // ONE turn-waiter in case the drain freed the engine turn for an async

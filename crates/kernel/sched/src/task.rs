@@ -411,6 +411,15 @@ pub struct Task {
     /// this set.
     pub io_uring_filters: Spinlock<Option<alloc::vec::Vec<io_uring::IouFilterReg>>,
         TaskListClass>,
+    /// io_uring restrictions this task imposed on ITSELF — the ring-less form
+    /// of `IORING_REGISTER_RESTRICTIONS`. Every ring the task later creates
+    /// starts from this allow-list, so a confined process cannot escape by
+    /// opening a fresh ring. `Some` — even `Some` of an EMPTY list — means the
+    /// task has registered, which is both what makes a second registration
+    /// refuse and what makes an empty registration forbid everything rather
+    /// than allow everything.
+    pub io_uring_restrict: Spinlock<Option<alloc::vec::Vec<io_uring::IouRestrictReg>>,
+        TaskListClass>,
 
     /// Pending signal bitmap per `27§3` (Linux kernel_sigset_t = 64
     /// bits). Bit i set ⇔ signal i+1 pending. Updated atomically by

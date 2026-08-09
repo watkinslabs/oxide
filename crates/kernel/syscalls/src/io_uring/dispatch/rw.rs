@@ -26,9 +26,38 @@ fn file_of(fd: i32) -> Result<Arc<File>, i64> {
     fdt.clone().get(fd).map_err(|_| err(Errno::Ebadf))
 }
 
+/// The polled-ring admission for one transfer, and the high-priority refusal
+/// for a ring that is not polled.
+///
+/// Resolved here rather than in the entry's own admission because the answer
+/// depends on the DESCRIPTION, not on the entry: whether the transfer bypasses
+/// the page cache, and whether the backend behind this description exposes a
+/// poll for completed I/O at all. Reported as `EOPNOTSUPP`, which is what
+/// separates "this file cannot serve a polled transfer" from the `EINVAL` a
+/// malformed entry gets. # C: O(1)
+fn polled_admission(op: &Op, hipri: bool) -> Result<(), i64> {
+    use crate::io_uring_abi::iopoll::{admit_rw, RwTarget};
+    let ring_iopoll = crate::io_uring::iopoll::polled(&op.inode);
+    if !ring_iopoll && !hipri { return Ok(()); }
+    let file = file_of(op.fd)?;
+    let t = RwTarget {
+        ring_iopoll,
+        direct: file.flags().contains(vfs::OpenFlags::O_DIRECT),
+        file_pollable: crate::io_uring::iopoll::file_pollable(&file),
+        hipri,
+    };
+    admit_rw(&t).map_err(err)
+}
+
+/// `RWF_HIPRI` out of the vectored forms' `rw_flags` word. # C: O(1)
+fn hipri_of(op: &Op) -> bool {
+    op.sqe.op_flags as u64 & crate::rwf::RWF_HIPRI != 0
+}
+
 /// # C: O(len)
 #[inline(always)]
 pub fn read(op: &Op) -> i64 {
+    if let Err(e) = polled_admission(op, false) { return e; }
     if op.sqe.off == CUR_POS {
         call(crate::s000_read::sys_read, [op.fd as u64, op.addr, op.len as u64, 0, 0, 0])
     } else {
@@ -39,6 +68,7 @@ pub fn read(op: &Op) -> i64 {
 /// # C: O(len)
 #[inline(always)]
 pub fn write(op: &Op) -> i64 {
+    if let Err(e) = polled_admission(op, false) { return e; }
     if op.sqe.off == CUR_POS {
         call(crate::s001_write::sys_write, [op.fd as u64, op.addr, op.len as u64, 0, 0, 0])
     } else {
@@ -50,6 +80,7 @@ pub fn write(op: &Op) -> i64 {
 /// vectored syscall already treats `-1` as "current position". # C: O(len)
 #[inline(always)]
 pub fn readv(op: &Op) -> i64 {
+    if let Err(e) = polled_admission(op, hipri_of(op)) { return e; }
     call(crate::s295_preadv::sys_preadv2,
          [op.fd as u64, op.addr, op.len as u64, op.sqe.off, 0, op.sqe.op_flags as u64])
 }
@@ -57,6 +88,7 @@ pub fn readv(op: &Op) -> i64 {
 /// # C: O(len)
 #[inline(always)]
 pub fn writev(op: &Op) -> i64 {
+    if let Err(e) = polled_admission(op, hipri_of(op)) { return e; }
     call(crate::s296_pwritev::sys_pwritev2,
          [op.fd as u64, op.addr, op.len as u64, op.sqe.off, 0, op.sqe.op_flags as u64])
 }
@@ -66,6 +98,7 @@ pub fn writev(op: &Op) -> i64 {
 /// mapping, so the transfer is unaffected by anything the process does to its
 /// address space in between. # C: O(len)
 fn fixed(op: &Op, write: bool) -> i64 {
+    if let Err(e) = polled_admission(op, false) { return e; }
     let file = match file_of(op.fd) { Ok(f) => f, Err(e) => return e };
     // Take an owning handle on the pinned buffer and drop the lock: the
     // transfer below sleeps, and no spinlock may be held across it.

@@ -124,6 +124,16 @@ impl BlockDevice for StatsDev {
 
     fn flush(&self) -> KResult<()> { self.inner.flush() }
 
+    /// A decorator that answered the trait default here would hide the wrapped
+    /// driver's poll operation, and every disk in the registry is wrapped —
+    /// the capability must pass straight through. # C: O(1)
+    fn can_poll(&self) -> bool { self.inner.can_poll() }
+
+    /// In-flight accounting is decremented by the wrapped completion closure
+    /// installed in `submit`, which the drain invokes, so the poll needs no
+    /// counter of its own here. # C: O(completions reaped)
+    fn poll_completions(&self) -> usize { self.inner.poll_completions() }
+
     fn swap_slot_free_notify(&self, start_block: u64, len_blocks: u32) -> KResult<()> {
         self.inner.swap_slot_free_notify(start_block, len_blocks)
     }

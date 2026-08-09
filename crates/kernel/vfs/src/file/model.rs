@@ -343,6 +343,17 @@ impl File {
     /// # C: backend-dependent
     pub fn open_hook(&self) -> crate::KResult<()> { self.f_op.on_open_file(self) }
 
+    /// Run `file_operations->iopoll` on this description: reap what its backend
+    /// has already finished, without waiting. `None` = no poll operation here
+    /// (Linux `f_op->iopoll == NULL`); `Some(n)` = polled, `n` reaped, and
+    /// `Some(0)` is "none ready", not "cannot". # C: backend-dependent
+    pub fn iopoll(&self) -> Option<usize> { self.f_op.iopoll(self) }
+
+    /// Whether that poll operation exists, asked without reaping — the
+    /// admission question, kept apart from the count for the reason spelled out
+    /// on [`crate::file_ops::FileOps::can_iopoll`]. # C: O(1)
+    pub fn can_iopoll(&self) -> bool { self.f_op.can_iopoll(self) }
+
     /// Retain the exact driver whose open callback succeeded. # C: O(1)
     pub(crate) fn retain_opened_device(&self, opened: crate::devnode::OpenedDevice) {
         *self.opened_device.lock() = Some(opened);

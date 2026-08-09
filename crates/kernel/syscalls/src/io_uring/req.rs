@@ -89,6 +89,12 @@ pub struct ReqInner {
     /// The readiness callback registered on that description. Owned here
     /// because the description holds only a weak reference to it.
     pub poll_waker: Option<Arc<super::poll::PollWaker>>,
+    /// The description a POLLED ring's transfer is outstanding against —
+    /// Linux `ctx->iopoll_list`. Deliberately NOT `poll_file` above: that one
+    /// is a readiness subscription ("tell me when this can be read"), this one
+    /// names a backend to ask "have you finished my I/O". Sharing one field
+    /// would make a readiness wait drive a completion poll and the reverse.
+    pub iopoll_file: Option<Arc<vfs::File>>,
 }
 
 /// One request the ring is still to finish.

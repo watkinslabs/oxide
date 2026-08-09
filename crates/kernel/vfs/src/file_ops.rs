@@ -201,6 +201,32 @@ pub trait FileOps: Send + Sync {
     /// # C: O(1)
     fn can_poll(&self, file: &File) -> bool { self.poll_subscribers(file).is_some() }
 
+    /// `f_op->iopoll` — reap completions this description's backend has ALREADY
+    /// finished, without waiting.
+    ///
+    /// `None` is Linux's `f_op->iopoll == NULL`: this description has no
+    /// completion-polling operation, so a caller whose whole model is a polled
+    /// ring (io_uring `IORING_SETUP_IOPOLL`) must refuse it rather than spin on
+    /// something that will never report. `Some(n)` means the backend WAS polled
+    /// and reaped `n` completions — `Some(0)` is "none ready right now", which
+    /// is a different answer and must not be folded into `None`.
+    ///
+    /// Default `None`: a backend claims pollability, never inherits it. The
+    /// failure mode of the other default is a poll loop that never completes
+    /// and no indication of why. # C: backend-dependent
+    fn iopoll(&self, _file: &File) -> Option<usize> { None }
+
+    /// `f_op->iopoll != NULL` — does this description have a completion-polling
+    /// operation at all, asked WITHOUT reaping anything.
+    ///
+    /// An admission check cannot use [`Self::iopoll`] for this: a pollable
+    /// backend with nothing ready answers `Some(0)`, and asking the question by
+    /// polling would also consume a completion the caller has not yet recorded
+    /// a target for. Every backend that overrides `iopoll` overrides this too;
+    /// the two answers come from the same place so they cannot disagree.
+    /// # C: O(1)
+    fn can_iopoll(&self, _file: &File) -> bool { false }
+
     /// `f_op->fasync` — backend admission for `FIOASYNC`/`F_SETFL(O_ASYNC)`.
     /// Default means no fasync op installed; async-capable stream backends call
     /// [`File::set_fasync_state`] to link/unlink the open description.

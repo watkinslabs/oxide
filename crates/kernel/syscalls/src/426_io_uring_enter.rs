@@ -139,7 +139,14 @@ fn sqpoll_half(inode: &Arc<IoUringInode>, to_submit: u32, flags: u32) -> Option<
 fn wait_half(inode: &Arc<IoUringInode>, min_cmpl: u32, flags: u32, argp: u64, argsz: u64) -> i64 {
     let ext = match ext_arg_of(inode, flags, argp, argsz) { Ok(e) => e, Err(e) => return e };
     let armed = match arm_sigmask(&ext) { Ok(a) => a, Err(e) => return e };
-    let wait_rv = crate::io_uring::wait::cq_wait(inode, min_cmpl, &ext);
+    // A polled ring finds its completions by asking the backend, not by
+    // sleeping until something announces one — on a polled backend there is
+    // nothing to do the announcing, so the ordinary wait would park forever.
+    let wait_rv = if crate::io_uring::iopoll::polled(inode) {
+        crate::io_uring::iopoll::cq_poll(inode, min_cmpl)
+    } else {
+        crate::io_uring::wait::cq_wait(inode, min_cmpl, &ext)
+    };
     // An interrupted wait KEEPS the temporary mask so the handler runs under
     // it; anything else restores the caller's own mask now.
     if armed && wait_rv != err(Errno::Eintr) {

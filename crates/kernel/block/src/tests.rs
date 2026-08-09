@@ -324,3 +324,50 @@ fn an_unset_request_is_stamped_at_submission() {
     // the point under test is that the path stamps rather than drops the field.
     assert_eq!(spy.seen.lock().as_slice(), &[sched::current_ioprio()]);
 }
+
+// ---------------------------------------------------------------------------
+// Completion polling (`blk_mq_ops->poll`)
+// ---------------------------------------------------------------------------
+
+/// A backend WITH a poll operation: `queue` stands in for a used ring the
+/// device has already published, and one poll drains it. Shared with the
+/// `devbridge` tests so both levels exercise the same fixture.
+pub(crate) struct PollableDisk {
+    inner:  Arc<Disk>,
+    queued: Spinlock<usize, InodeClass>,
+}
+
+impl PollableDisk {
+    pub(crate) fn new(ready: usize) -> Arc<Self> {
+        Arc::new(Self { inner: Disk::new(512, 8), queued: Spinlock::new(ready) })
+    }
+}
+
+impl BlockDevice for PollableDisk {
+    fn block_size(&self) -> u32 { self.inner.block_size() }
+    fn capacity_blocks(&self) -> u64 { self.inner.capacity_blocks() }
+    fn submit_sync(&self, req: &mut BlockRequest) -> Result<(), BlockError> { self.inner.submit_sync(req) }
+    fn flush(&self) -> Result<(), BlockError> { self.inner.flush() }
+    fn can_poll(&self) -> bool { true }
+    fn poll_completions(&self) -> usize { core::mem::replace(&mut *self.queued.lock(), 0) }
+}
+
+// The default is "not pollable", NOT "pollable and found nothing". A caller
+// that has to refuse an unpollable backend keys on the predicate, and a count
+// of zero from a real poll is a different answer it must not confuse with this.
+#[test]
+fn a_backend_that_overrides_nothing_reports_no_poll_operation() {
+    let d = Disk::new(512, 8);
+    assert!(!d.can_poll(), "no poll op unless the backend installs one");
+    assert_eq!(d.poll_completions(), 0);
+}
+
+// A poll reports exactly what it reaped, and reaps nothing twice.
+#[test]
+fn a_pollable_backend_reaps_each_completion_once() {
+    let d = PollableDisk::new(3);
+    assert!(d.can_poll());
+    assert_eq!(d.poll_completions(), 3, "poll returns the count it delivered");
+    assert_eq!(d.poll_completions(), 0, "nothing is reaped twice");
+    assert!(d.can_poll(), "an empty queue does not revoke the operation");
+}

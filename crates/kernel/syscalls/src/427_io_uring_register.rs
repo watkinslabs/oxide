@@ -136,6 +136,7 @@ fn run(inode: &Arc<IoUringInode>, op: RegisterOp) -> i64 {
         RegisterOp::UnregisterNapi { arg }  => work::napi::unregister(inode, arg),
         RegisterOp::BpfFilter { arg }       => work::bpf_filter::register(inode, arg),
         RegisterOp::BpfFilterTask { arg, nr } => work::bpf_filter::register_task(arg, nr),
+        RegisterOp::RestrictionsTask { arg, nr } => work::task_restrict::register_task(arg, nr),
     }
 }
 
@@ -154,6 +155,7 @@ pub fn sys_io_uring_register(args: &syscall::SyscallArgs) -> i64 {
             RegisterOp::Query { arg, nr }   => work::probe::query(arg, nr),
             RegisterOp::SendMsgRing { arg } => work::rings::send_msg_ring(arg),
             RegisterOp::BpfFilterTask { arg, nr } => work::bpf_filter::register_task(arg, nr),
+            RegisterOp::RestrictionsTask { arg, nr } => work::task_restrict::register_task(arg, nr),
             _ => err(Errno::Einval),
         };
     }

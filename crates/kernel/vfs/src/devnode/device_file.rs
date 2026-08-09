@@ -140,6 +140,25 @@ impl FileOps for DeviceFileOps {
         }
     }
 
+    /// Completion polling belongs to the driver that owns the opened device.
+    /// A character device has no block completion queue, so it keeps the
+    /// "no iopoll slot" answer; a block device asks its own driver, which is
+    /// the only thing that knows whether its queue can be drained. # C: driver
+    fn iopoll(&self, file: &File) -> Option<usize> {
+        match file.opened_device() {
+            Some(OpenedDevice::Block { devt, ops }) => ops.iopoll(devt),
+            Some(OpenedDevice::Char { .. }) | None => None,
+        }
+    }
+
+    /// # C: driver-dependent
+    fn can_iopoll(&self, file: &File) -> bool {
+        match file.opened_device() {
+            Some(OpenedDevice::Block { devt, ops }) => ops.can_iopoll(devt),
+            Some(OpenedDevice::Char { .. }) | None => false,
+        }
+    }
+
     fn poll_subscribers(&self, file: &File) -> Option<Arc<PollSubscribers>> {
         match file.opened_device() {
             Some(OpenedDevice::Char { devt, ops }) => ops.poll_subscribers_file(devt, file),

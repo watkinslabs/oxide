@@ -393,17 +393,31 @@ impl BlkState {
     }
 
     /// Consume every used-ring entry published by the device and run owned
-    /// completions after releasing queue state. This is called from BlockIo
-    /// softirq, never from the hard IRQ that merely raised that softirq.
-    pub(super) fn drain_owned_completions(&self) {
+    /// completions after releasing queue state, returning how many completions
+    /// were delivered.
+    ///
+    /// Two callers, one walker: the BlockIo softirq (never the hard IRQ, which
+    /// only raises it) and [`BlockDevice::poll_completions`] in process
+    /// context. A second used-ring walker beside this one could disagree with
+    /// it about `used_seen` and consume an entry twice.
+    ///
+    /// # Lk: `inflight` (`lock_bh`) is taken and released once per entry, and
+    /// `used_seen` advances under it, so two concurrent drains never claim the
+    /// same entry — the loser re-reads `used_seen == used.idx` and stops.
+    /// Completion continuations run with the lock DROPPED, which is why this is
+    /// callable from process context as well as the softirq.
+    /// # Ctx: softirq or process; never hard IRQ.
+    /// # C: O(completions reaped)
+    pub(super) fn drain_owned_completions(&self) -> usize {
+        let mut found = 0usize;
         let h = hhdm();
-        if h == 0 || self.requestq.device_pa == 0 || self.requestq.size == 0 { return; }
+        if h == 0 || self.requestq.device_pa == 0 || self.requestq.size == 0 { return found; }
         // A synchronous request owns its descriptor and waits on `used.idx`
         // itself. Its interrupt still raises this softirq, but the completion
         // is not an owned asynchronous request and must not be consumed here.
         // Leaving it in the used ring lets the synchronous waiter observe it;
         // `run_completion_bottom_half` wakes that waiter after this returns.
-        if self.inflight.lock_bh::<sched::bh::SchedBh>().busy { return; }
+        if self.inflight.lock_bh::<sched::bh::SchedBh>().busy { return found; }
         loop {
             let pending = {
                 let mut ring = self.inflight.lock_bh::<sched::bh::SchedBh>();
@@ -413,7 +427,7 @@ impl BlkState {
                 // byte 2 as an aligned u16; the volatile load re-reads the
                 // device's publish rather than caching it.
                 let used_index = unsafe { core::ptr::read_volatile(used.add(core::mem::size_of::<u16>()) as *const u16) };
-                if ring.used_seen == used_index { return; }
+                if ring.used_seen == used_index { return found; }
                 let slot = (ring.used_seen % self.requestq.size) as usize;
                 let entry = core::mem::size_of::<u16>() * 2 + slot * (core::mem::size_of::<u32>() * 2);
                 // SAFETY: same used frame; `slot < size` and `size` is capped to
@@ -459,6 +473,11 @@ impl BlkState {
             // SAFETY: the device returned this descriptor head in used.ring;
             // the DMA region is no longer reachable by the device.
             unsafe { pmm::setup::free_contig(pending.bounce_pa, pmm::Order(BOUNCE_ORDER)); }
+            // Counted at DELIVERY, not at ring-entry consumption: a used entry
+            // whose head matches no pending request poisons the device above
+            // and delivers nothing, and reporting it as a completion would tell
+            // a poll loop it made progress it did not make.
+            found += 1;
             (pending.completion)(request, result);
             self.start_deferred_requests();
         }
@@ -586,6 +605,17 @@ impl BlockDevice for BlkState {
     fn flush(&self) -> KResult<()> {
         self.issue_flush()
     }
+
+    /// This driver installs a completion-polling operation unconditionally, the
+    /// way the reference installs `.poll` in its `blk_mq_ops` for every device
+    /// rather than per-instance. A device whose queue is not programmed, or one
+    /// that has been poisoned, reaps zero — "polled, none ready" — which is the
+    /// truthful answer for a queue that exists and has nothing in it. # C: O(1)
+    fn can_poll(&self) -> bool { true }
+
+    /// Reap through the SAME used-ring walker the completion softirq runs.
+    /// # C: O(completions reaped)
+    fn poll_completions(&self) -> usize { self.drain_owned_completions() }
 }
 
 /// The reference's status mapping: `S_UNSUPP` is

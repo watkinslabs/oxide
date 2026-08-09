@@ -28,6 +28,7 @@
 //   timeout     — armed timeouts, completion-count gates and link timeouts
 //   poll        — armed polls and the poll-armed retry
 //   cancel      — the in-flight search and how a waiting request is ended
+//   iopoll      — driving a backend's completion poll for an IORING_SETUP_IOPOLL ring
 //
 // The ABI numbers, the setup admission ladder, the enter argument forms, the
 // register-opcode ladder and the restriction tables live in
@@ -57,6 +58,7 @@ pub mod sqpoll;
 pub mod timeout;
 pub mod poll;
 pub mod cancel;
+pub mod iopoll;
 
 pub use ctx::IoUringInode;
 pub use ring::{make_io_uring_inode, mmap_backing, ring_ctx, ring_of, IoUring};
