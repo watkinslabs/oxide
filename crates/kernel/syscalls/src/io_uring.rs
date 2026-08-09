@@ -8,12 +8,15 @@
 //
 // Module manifest:
 //   region      — one shared region's physical run, its lifetime and refcounting
+//   mem_region  — a registered `IORING_REGISTER_MEM_REGION` region: kernel-
+//                 allocated (mappable) or caller-provided (pinned)
 //   ring        — the two shared regions, their lifetime, the inode, mmap routing
 //   ctx         — one ring's state and its three locks
 //   cqe         — completion posting and the overflow backlog
 //   submit      — the submission engine: links, drain, silent success
 //   wait        — the `min_complete` wait
 //   dispatch    — `IORING_OP_*` → the work each opcode does
+//   filter      — running a ring's BPF filters against one submission
 //   register    — the `io_uring_register(2)` work functions
 //   rsrc        — registered files, buffers, personalities, buffer groups
 //   pin         — pinned user memory behind registered buffers
@@ -35,12 +38,14 @@
 #![allow(dead_code)]
 
 pub mod region;
+pub mod mem_region;
 pub mod ring;
 pub mod ctx;
 pub mod cqe;
 pub mod submit;
 pub mod wait;
 pub mod dispatch;
+pub mod filter;
 pub mod register;
 pub mod rsrc;
 pub mod pin;

@@ -63,7 +63,7 @@ fn next_sqe(inode: &IoUringInode) -> Option<Sqe> {
 /// here is an init failure: it still consumes the entry and still posts a
 /// completion, but it stops the batch unless the ring asked for
 /// `IORING_SETUP_SUBMIT_ALL`. # C: O(1)
-fn admit(inode: &IoUringInode, sqe: &Sqe) -> Result<(), Errno> {
+fn admit(inode: &Arc<IoUringInode>, sqe: &Sqe) -> Result<(), Errno> {
     if sqe.opcode >= OP_LAST { return Err(Errno::Einval); }
     if sqe.flags & !SQE_VALID_FLAGS != 0 { return Err(Errno::Einval); }
     if sqe.flags & IOSQE_BUFFER_SELECT != 0 && !op_buffer_select(sqe.opcode) {
@@ -78,6 +78,9 @@ fn admit(inode: &IoUringInode, sqe: &Sqe) -> Result<(), Errno> {
     if !inode.reg.lock().restrictions.allows_sqe(sqe.opcode, sqe.flags) {
         return Err(Errno::Eacces);
     }
+    // The ring's BPF filters, beside the allow-list and for the same reason:
+    // a request the policy refuses must not take its side effect first.
+    super::filter::admit(inode, sqe)?;
     if !op_supported(sqe.opcode) { return Err(Errno::Einval); }
     Ok(())
 }

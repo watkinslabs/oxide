@@ -117,13 +117,20 @@ impl SeccompData {
     }
 }
 
-/// Load the 32-bit word at byte offset `off` of a `seccomp_data` image.
-/// `seccomp_check_filter` already rejected unaligned / out-of-range offsets
-/// at install time, so an out-of-range read here can only come from an
-/// unverified program; it reads 0 rather than walking off the struct.
+/// Load the 32-bit word at byte offset `off` of a classic-BPF CONTEXT image —
+/// `struct seccomp_data` for a seccomp filter, whatever struct the owning
+/// subsystem passes for any other.
+///
+/// The load-time verifier already rejected unaligned / out-of-range offsets
+/// against the same length, so an out-of-range read here can only come from an
+/// unverified program; it reads 0 rather than walking off the image.
 /// # C: O(1)
-pub fn data_word(b: &[u8; SECCOMP_DATA_BYTES as usize], off: u32) -> u32 {
-    if off % 4 != 0 || off.saturating_add(4) > SECCOMP_DATA_BYTES { return 0; }
+pub fn ctx_word(b: &[u8], off: u32) -> u32 {
+    let len = b.len() as u32;
+    if off % 4 != 0 || off.saturating_add(4) > len { return 0; }
     let o = off as usize;
     u32::from_ne_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
 }
+
+/// [`ctx_word`] over a `seccomp_data` image. # C: O(1)
+pub fn data_word(b: &[u8; SECCOMP_DATA_BYTES as usize], off: u32) -> u32 { ctx_word(b, off) }

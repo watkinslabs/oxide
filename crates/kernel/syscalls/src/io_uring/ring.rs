@@ -108,6 +108,8 @@ impl IoUring {
         match mmap_region(offset) {
             MmapRegion::Rings   => Some((self.rings.base_pa, self.rings.map_bytes)),
             MmapRegion::Sqes    => Some((self.sqes.base_pa, self.sqes.map_bytes)),
+            // Owned by the inode, not by this struct — routed in `mmap_backing`.
+            MmapRegion::Param   => None,
             MmapRegion::Invalid => None,
         }
     }
@@ -123,6 +125,13 @@ impl IoUring {
 /// `009_mmap`'s `len > region` test turns it into `EINVAL`. # C: O(1)
 pub fn mmap_backing(inode: &vfs::InodeRef, offset: u64) -> Option<(u64, u64)> {
     let iu = inode.private::<IoUringInode>()?;
+    // A registered memory region lives on the inode, not in `IoUring`. Only
+    // the kernel-allocated arm is mappable; a caller-provided region reports a
+    // zero-length region, and so does a ring that registered none.
+    if mmap_region(offset) == MmapRegion::Param {
+        let g = iu.param_region.lock();
+        return Some(g.as_ref().and_then(|r| r.mmap_backing()).unwrap_or((0, 0)));
+    }
     let g = iu.ring.lock();
     Some(g.region(offset).unwrap_or((g.rings.base_pa, 0)))
 }

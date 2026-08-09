@@ -67,6 +67,14 @@ pub fn cq_wait(inode: &Arc<IoUringInode>, min_complete: u32, ext: &ExtArg) -> i6
     let clockid = inode.reg.lock().clockid;
     let start = monotonic_ns();
     let deadline = deadline_of(ext, clockid).unwrap_or(0);
+
+    // Busy-poll before parking, if the ring registered a window
+    // (`IORING_REGISTER_NAPI`). Nothing else in the wait changes: this only
+    // moves work the receive softirq would have done later into the waiter's
+    // own window, which is the whole point — the completion arrives without
+    // waiting for the device interrupt to be taken.
+    if busy_poll(inode, deadline, min) { return finish(inode, 0); }
+
     let started_with = inode.cq_ready();
 
     // The batching window: hold out for the full batch until it passes.
@@ -98,6 +106,34 @@ pub fn cq_wait(inode: &Arc<IoUringInode>, min_complete: u32, ext: &ExtArg) -> i6
         WaitOutcome::Interrupted => finish(inode, wait_result(err(Errno::Eintr), inode.cq_nonempty())),
         WaitOutcome::TimedOut    => finish(inode, wait_result(err(Errno::Etime), inode.cq_nonempty())),
     }
+}
+
+/// Spin the receive path for the ring's registered busy-poll window, stopping
+/// as soon as the waiter's condition is met.
+///
+/// What it drives is the device poll list the NET_RX bottom half runs, so a
+/// packet already in a device queue is delivered here instead of at the next
+/// interrupt. Reports whether the wait is already satisfied.
+/// # C: O(window / poll cost)
+fn busy_poll(inode: &Arc<IoUringInode>, deadline: u64, min: u32) -> bool {
+    use crate::io_uring_abi::napi::{busy_poll_until, busy_poll_wanted};
+    let (st, n_ids) = { let g = inode.reg.lock(); (g.napi, g.napi_ids.len()) };
+    if !busy_poll_wanted(&st, n_ids) { return false; }
+    let now = monotonic_ns();
+    let until = busy_poll_until(now, &st, deadline);
+    while monotonic_ns() < until {
+        net::backlog::napi::poll_all();
+        inode.flush_overflow();
+        if should_wake(inode.cq_ready(), min) { return true; }
+        // A spinning waiter must still yield to anything the poll routines
+        // made runnable, or the completion it is waiting for cannot be posted.
+        if sched::live::global().is_some() {
+            // SAFETY: process context in the syscall path on the running task's own CPU, holding no spinlock and no submission lock; the task stays runnable across the yield.
+            unsafe { sched::live::sched_yield(); }
+        }
+    }
+    inode.flush_overflow();
+    should_wake(inode.cq_ready(), min)
 }
 
 /// Flush what the wait made room for, and report a dropped completion once.

@@ -85,10 +85,12 @@ fn blind_registration_separates_ring_less_opcodes_from_the_rest() {
                RegisterOp::Query { arg: 0x1000, nr: 0 });
     // A ring-less form still applies its own argument rules.
     assert_eq!(decode(IORING_REGISTER_SEND_MSG_RING, -1, 0, 1), Err(Errno::Einval));
+    // A task filtering ITSELF needs no ring. Its argument count travels with
+    // the request because the permission check is decided before it.
+    assert_eq!(decode(IORING_REGISTER_BPF_FILTER, -1, 0x1000, 1).unwrap().op,
+               RegisterOp::BpfFilterTask { arg: 0x1000, nr: 1 });
     // Recognised but needing a mechanism this kernel lacks.
-    for op in [IORING_REGISTER_RESTRICTIONS, IORING_REGISTER_BPF_FILTER] {
-        assert_eq!(decode(op, -1, 0x1000, 1), Err(Errno::Eopnotsupp), "op {op}");
-    }
+    assert_eq!(decode(IORING_REGISTER_RESTRICTIONS, -1, 0x1000, 1), Err(Errno::Eopnotsupp));
     // Everything else without a ring is an argument error, not a missing
     // feature: the opcode exists, the caller just did not name a ring.
     assert_eq!(decode(IORING_REGISTER_BUFFERS, -1, 0x1000, 1), Err(Errno::Einval));
@@ -142,14 +144,10 @@ fn probe_clamps_instead_of_failing() {
 #[test]
 fn opcodes_needing_an_absent_mechanism_report_eopnotsupp_not_success() {
     // Each of these needs a whole mechanism this kernel does not have — a
-    // per-task worker pool, a user-provided or parameter memory region, a
-    // zero-copy receive queue, busy-poll, or a program loader. Returning 0
-    // for any of them would tell the caller a registration happened that
-    // did not.
-    for op in [IORING_REGISTER_NAPI,
-               IORING_UNREGISTER_NAPI, IORING_REGISTER_ZCRX_IFQ,
-               IORING_REGISTER_MEM_REGION,
-               IORING_REGISTER_ZCRX_CTRL, IORING_REGISTER_BPF_FILTER] {
+    // zero-copy receive queue with a device memory provider behind it.
+    // Returning 0 for any of them would tell the caller a registration
+    // happened that did not (`scratch/known_issues.md`).
+    for op in [IORING_REGISTER_ZCRX_IFQ, IORING_REGISTER_ZCRX_CTRL] {
         assert_eq!(decode(op, RING_FD, 0x1000, 1), Err(Errno::Eopnotsupp), "op {op}");
     }
 }

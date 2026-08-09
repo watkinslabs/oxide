@@ -132,6 +132,21 @@ pub enum RegisterOp {
     /// `IORING_REGISTER_RESIZE_RINGS` — `arg` is a `struct io_uring_params`
     /// carrying the requested depth in and the built depth out.
     ResizeRings { arg: u64 },
+    /// `IORING_REGISTER_MEM_REGION` — `arg` is a
+    /// `struct io_uring_mem_region_reg` naming a `struct io_uring_region_desc`.
+    MemRegion { arg: u64 },
+    /// `IORING_REGISTER_NAPI` — `arg` is a `struct io_uring_napi`.
+    Napi { arg: u64 },
+    /// `IORING_UNREGISTER_NAPI` — `arg` may be null, which means "do not
+    /// report the settings being cleared".
+    UnregisterNapi { arg: u64 },
+    /// `IORING_REGISTER_BPF_FILTER` against a ring — `arg` is a
+    /// `struct io_uring_bpf`.
+    BpfFilter { arg: u64 },
+    /// The same opcode with no ring: the calling task filters ITSELF. `nr` is
+    /// carried through rather than checked here, because the reference decides
+    /// the permission before the argument count.
+    BpfFilterTask { arg: u64, nr: u32 },
 }
 
 /// A decoded `io_uring_register(2)` call.
@@ -148,11 +163,11 @@ pub struct Request {
 /// class, and there are two classes.
 pub const IOWQ_MAX_WORKERS_ARGS: u32 = 2;
 
-/// Opcodes this kernel recognises but cannot execute, each because a whole
-/// mechanism it needs is absent — a per-task registered-ring array, a
-/// user-provided or parameter memory region, a zero-copy receive queue,
-/// busy-poll, or a BPF program loader. `EOPNOTSUPP` says "recognised, not supported"; a
-/// zero would tell the caller its registration took effect. # C: O(1)
+/// Opcodes this kernel recognises but cannot execute, because a whole
+/// mechanism they need is absent — a zero-copy receive queue with a device
+/// memory provider behind it. `EOPNOTSUPP` says "recognised, not supported"; a
+/// zero would tell the caller its registration took effect
+/// (`scratch/known_issues.md`). # C: O(1)
 fn unsupported(_opcode: u32) -> Errno { Errno::Eopnotsupp }
 
 /// Per-opcode argument ladder. # C: O(1)
@@ -214,6 +229,20 @@ fn ring_op(opcode: u32, arg: u64, nr_args: u32) -> Result<RegisterOp, Errno> {
         IORING_REGISTER_PBUF_STATUS => one(RegisterOp::PbufStatus { arg }),
         IORING_REGISTER_SYNC_CANCEL => one(RegisterOp::SyncCancel { arg }),
         IORING_REGISTER_RESIZE_RINGS => one(RegisterOp::ResizeRings { arg }),
+        IORING_REGISTER_MEM_REGION => one(RegisterOp::MemRegion { arg }),
+        IORING_REGISTER_NAPI => one(RegisterOp::Napi { arg }),
+        IORING_REGISTER_BPF_FILTER => {
+            // Exactly one record; a null pointer is left to the copy, which
+            // reports EFAULT — the reference checks no pointer here.
+            if nr_args != 1 { return Err(Errno::Einval); }
+            Ok(RegisterOp::BpfFilter { arg })
+        }
+        IORING_UNREGISTER_NAPI => {
+            // A null `arg` is legal here and only here: it asks for the
+            // settings to be cleared without reporting what they were.
+            if nr_args != 1 { return Err(Errno::Einval); }
+            Ok(RegisterOp::UnregisterNapi { arg })
+        }
         IORING_REGISTER_QUERY => Ok(RegisterOp::Query { arg, nr: nr_args }),
         IORING_REGISTER_SEND_MSG_RING => one(RegisterOp::SendMsgRing { arg }),
         IORING_REGISTER_IOWQ_MAX_WORKERS => {
@@ -248,7 +277,11 @@ fn blind(opcode: u32, arg: u64, nr_args: u32) -> Result<RegisterOp, Errno> {
             Ok(RegisterOp::SendMsgRing { arg })
         }
         IORING_REGISTER_QUERY => Ok(RegisterOp::Query { arg, nr: nr_args }),
-        IORING_REGISTER_RESTRICTIONS | IORING_REGISTER_BPF_FILTER => Err(unsupported(opcode)),
+        // A task filtering itself needs no ring; the permission check inside
+        // the work function runs before the argument count, so `nr` travels
+        // with the request instead of being screened here.
+        IORING_REGISTER_BPF_FILTER => Ok(RegisterOp::BpfFilterTask { arg, nr: nr_args }),
+        IORING_REGISTER_RESTRICTIONS => Err(unsupported(opcode)),
         _ => Err(Errno::Einval),
     }
 }
