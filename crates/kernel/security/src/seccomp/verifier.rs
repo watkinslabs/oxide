@@ -66,11 +66,24 @@ pub fn bpf_check_classic(prog: &[u64]) -> Result<(), Errno> {
 /// offset inside `struct seccomp_data`.
 /// # C: O(I)
 pub fn seccomp_check_filter(prog: &[u64]) -> Result<(), Errno> {
+    check_cbpf_ctx_filter(prog, SECCOMP_DATA_BYTES)
+}
+
+/// The same opcode whitelist against an arbitrary context struct — the check
+/// every classic-BPF filter over a fixed kernel-supplied record needs, whether
+/// that record is `struct seccomp_data` or an io_uring request descriptor.
+///
+/// `ctx_bytes` is the ONLY thing that varies, and it is what bounds the
+/// `BPF_LD|BPF_W|BPF_ABS` load. A second copy of this list with a different
+/// bound is exactly how one subsystem's filters end up reading past the record
+/// the other one sized, so there is one list and it takes the length.
+/// # C: O(I)
+pub fn check_cbpf_ctx_filter(prog: &[u64], ctx_bytes: u32) -> Result<(), Errno> {
     for w in prog.iter() {
         let i = SockFilter::decode(*w);
         let c = i.code;
         if c == BPF_LD | BPF_W | BPF_ABS {
-            if i.k >= SECCOMP_DATA_BYTES || i.k & 3 != 0 { return Err(Errno::Einval); }
+            if i.k >= ctx_bytes || i.k & 3 != 0 { return Err(Errno::Einval); }
             continue;
         }
         if c == BPF_LD | BPF_W | BPF_LEN || c == BPF_LDX | BPF_W | BPF_LEN { continue; }

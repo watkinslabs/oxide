@@ -29,6 +29,28 @@ pub const IO_RINGFD_ALLOC_ANY: u32 = u32::MAX;
 /// The registered-ring slot array itself. Allocated on first registration.
 pub type RegisteredRings = [Option<Arc<File>>; IO_RINGFD_REG_MAX];
 
+/// One io_uring BPF filter registration, kept in the order it was made.
+///
+/// A task can install filters on ITSELF (the ring-less form of
+/// `IORING_REGISTER_BPF_FILTER`), and every ring the task later creates starts
+/// from that set — which is the whole point: a process confines itself once and
+/// cannot escape by opening a fresh ring.
+///
+/// The record is deliberately shapeless here. What an opcode number means,
+/// what `deny_rest` does to the opcodes NOT named, and how a program is
+/// verified and run all belong to the ring layer; this module owns only the
+/// list's lifetime, exactly as it owns the ring slots above. Storing the
+/// derived per-opcode table instead would put that meaning in two places.
+#[derive(Clone)]
+pub struct IouFilterReg {
+    /// The io_uring opcode this filter was registered for.
+    pub opcode: u32,
+    /// The registration also planted deny markers on unfiltered opcodes.
+    pub deny_rest: bool,
+    /// The verified classic-BPF program, one instruction per word.
+    pub prog: Arc<alloc::vec::Vec<u64>>,
+}
+
 /// A fresh, empty slot array. # C: O(IO_RINGFD_REG_MAX)
 fn empty_rings() -> Box<RegisteredRings> { Box::new([const { None }; IO_RINGFD_REG_MAX]) }
 
@@ -97,6 +119,23 @@ impl Task {
     pub fn io_uring_rings_registered(&self) -> usize {
         self.registered_rings.lock().as_ref()
             .map_or(0, |s| s.iter().filter(|e| e.is_some()).count())
+    }
+
+    /// Append one self-imposed io_uring filter registration. Order is kept:
+    /// replaying the list in order is what reproduces the set the task built.
+    /// # C: O(1)
+    pub fn io_uring_filter_push(&self, reg: IouFilterReg) -> Result<(), Errno> {
+        let mut g = self.io_uring_filters.lock();
+        let v = g.get_or_insert_with(alloc::vec::Vec::new);
+        v.try_reserve(1).map_err(|_| Errno::Enomem)?;
+        v.push(reg);
+        Ok(())
+    }
+
+    /// The task's own filter registrations, in order, or `None` when it has
+    /// imposed none. # C: O(N_regs)
+    pub fn io_uring_filters_snapshot(&self) -> Option<alloc::vec::Vec<IouFilterReg>> {
+        self.io_uring_filters.lock().clone()
     }
 
     /// Drop every registration. Runs at task exit and at `execve`, because a

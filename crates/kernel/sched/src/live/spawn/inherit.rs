@@ -120,6 +120,11 @@ pub(super) fn inherit_from_parent(task: &mut Task) {
     let parent_chain = parent.seccomp_filters.lock().clone();
     *task.seccomp_filters.lock() = parent_chain;
     task.seccomp_mode.store(parent.seccomp_mode.load(Ordering::Acquire), Ordering::Release);
+    // io_uring self-imposed filters follow the same rule and for the same
+    // reason: a child that did not inherit them could open a ring the parent
+    // confined itself out of.
+    let parent_iou = parent.io_uring_filters.lock().clone();
+    *task.io_uring_filters.lock() = parent_iou;
     // Landlock ruleset chain is likewise inherited across fork and kept
     // across execve — a Landlock-confined process's children stay confined.
     let parent_domain = parent.landlock_domain.lock().clone();

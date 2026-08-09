@@ -85,10 +85,12 @@ fn blind_registration_separates_ring_less_opcodes_from_the_rest() {
                RegisterOp::Query { arg: 0x1000, nr: 0 });
     // A ring-less form still applies its own argument rules.
     assert_eq!(decode(IORING_REGISTER_SEND_MSG_RING, -1, 0, 1), Err(Errno::Einval));
+    // A task filtering ITSELF needs no ring. Its argument count travels with
+    // the request because the permission check is decided before it.
+    assert_eq!(decode(IORING_REGISTER_BPF_FILTER, -1, 0x1000, 1).unwrap().op,
+               RegisterOp::BpfFilterTask { arg: 0x1000, nr: 1 });
     // Recognised but needing a mechanism this kernel lacks.
-    for op in [IORING_REGISTER_RESTRICTIONS, IORING_REGISTER_BPF_FILTER] {
-        assert_eq!(decode(op, -1, 0x1000, 1), Err(Errno::Eopnotsupp), "op {op}");
-    }
+    assert_eq!(decode(IORING_REGISTER_RESTRICTIONS, -1, 0x1000, 1), Err(Errno::Eopnotsupp));
     // Everything else without a ring is an argument error, not a missing
     // feature: the opcode exists, the caller just did not name a ring.
     assert_eq!(decode(IORING_REGISTER_BUFFERS, -1, 0x1000, 1), Err(Errno::Einval));

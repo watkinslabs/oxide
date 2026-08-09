@@ -434,6 +434,7 @@ impl Task {
             shstk_locked:   AtomicU64::new(0),
             #[cfg(target_arch = "aarch64")]
             svc_frame:     core::sync::atomic::AtomicU64::new(0),
+            io_uring_filters: Spinlock::new(None),
             seccomp_filters: Spinlock::new(alloc::vec::Vec::new()),
             seccomp_mode:    AtomicU8::new(0),
             robust_list_head: AtomicU64::new(0),

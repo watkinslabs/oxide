@@ -404,6 +404,13 @@ pub struct Task {
     /// ring and must not pay for the slots. Dropped at exit and at `execve`.
     pub registered_rings: Spinlock<Option<alloc::boxed::Box<io_uring::RegisteredRings>>,
         TaskListClass>,
+    /// io_uring filters this task imposed on ITSELF, in registration order.
+    /// Inherited across fork and kept across `execve` — like seccomp, a
+    /// confinement a task accepts must not be shed by replacing its image, or
+    /// the confinement is advisory. Every ring the task creates starts from
+    /// this set.
+    pub io_uring_filters: Spinlock<Option<alloc::vec::Vec<io_uring::IouFilterReg>>,
+        TaskListClass>,
 
     /// Pending signal bitmap per `27§3` (Linux kernel_sigset_t = 64
     /// bits). Bit i set ⇔ signal i+1 pending. Updated atomically by

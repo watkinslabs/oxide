@@ -12,11 +12,17 @@
 use super::insn::*;
 use super::uapi::*;
 
-/// Run one verified filter program over `data`. Returns the raw 32-bit filter
-/// return value (action | 16-bit data).
+/// Run one verified filter program over a classic-BPF CONTEXT image and return
+/// what its `BPF_RET` produced, or `None` when the program reached a state
+/// verification is supposed to have made impossible.
+///
+/// `None` rather than a sentinel value: what an impossible state MEANS is the
+/// owning subsystem's decision, and it differs. Seccomp must fail closed by
+/// killing; an io_uring opcode filter must fail closed by DENYING, and the
+/// seccomp kill value is a non-zero word that an io_uring filter would read as
+/// "allow". One shared sentinel could only be wrong for one of them.
 /// # C: O(I) instructions, bounded by the step budget
-pub fn run_filter(prog: &[u64], data: &SeccompData) -> u32 {
-    let img = data.bytes();
+pub fn run_filter_bytes(prog: &[u64], img: &[u8]) -> Option<u32> {
     let mut a: u32 = 0;
     let mut x: u32 = 0;
     let mut mem = [0u32; BPF_MEMWORDS];
@@ -28,7 +34,7 @@ pub fn run_filter(prog: &[u64], data: &SeccompData) -> u32 {
     let max_steps = (n as u32).saturating_mul(4).max(BPF_MAXINSNS as u32);
     while pc < n {
         steps = steps.saturating_add(1);
-        if steps > max_steps { return SECCOMP_RET_KILL_PROCESS; }
+        if steps > max_steps { return None; }
         let ins = SockFilter::decode(prog[pc]);
         let class = ins.code & BPF_CLASS_MASK;
         let mode  = ins.code & BPF_MODE_MASK;
@@ -37,32 +43,32 @@ pub fn run_filter(prog: &[u64], data: &SeccompData) -> u32 {
         let op    = ins.code & BPF_OP_MASK;
         match class {
             BPF_LD => match (mode, size) {
-                (BPF_ABS, BPF_W) => { a = data_word(&img, ins.k); pc += 1; }
+                (BPF_ABS, BPF_W) => { a = ctx_word(img, ins.k); pc += 1; }
                 (BPF_IMM, _)     => { a = ins.k; pc += 1; }
                 // `seccomp_check_filter` rewrites `BPF_LD|W|LEN` into
                 // `BPF_LD|IMM` with k = sizeof(struct seccomp_data).
-                (BPF_LEN, BPF_W) => { a = SECCOMP_DATA_BYTES; pc += 1; }
+                (BPF_LEN, BPF_W) => { a = img.len() as u32; pc += 1; }
                 (BPF_MEM, _) => {
-                    if ins.k as usize >= BPF_MEMWORDS { return SECCOMP_RET_KILL_PROCESS; }
+                    if ins.k as usize >= BPF_MEMWORDS { return None; }
                     a = mem[ins.k as usize]; pc += 1;
                 }
-                _ => return SECCOMP_RET_KILL_PROCESS,
+                _ => return None,
             },
             BPF_LDX => match (mode, size) {
                 (BPF_IMM, _)     => { x = ins.k; pc += 1; }
-                (BPF_LEN, BPF_W) => { x = SECCOMP_DATA_BYTES; pc += 1; }
+                (BPF_LEN, BPF_W) => { x = img.len() as u32; pc += 1; }
                 (BPF_MEM, _) => {
-                    if ins.k as usize >= BPF_MEMWORDS { return SECCOMP_RET_KILL_PROCESS; }
+                    if ins.k as usize >= BPF_MEMWORDS { return None; }
                     x = mem[ins.k as usize]; pc += 1;
                 }
-                _ => return SECCOMP_RET_KILL_PROCESS,
+                _ => return None,
             },
             BPF_ST => {
-                if ins.k as usize >= BPF_MEMWORDS { return SECCOMP_RET_KILL_PROCESS; }
+                if ins.k as usize >= BPF_MEMWORDS { return None; }
                 mem[ins.k as usize] = a; pc += 1;
             }
             BPF_STX => {
-                if ins.k as usize >= BPF_MEMWORDS { return SECCOMP_RET_KILL_PROCESS; }
+                if ins.k as usize >= BPF_MEMWORDS { return None; }
                 mem[ins.k as usize] = x; pc += 1;
             }
             BPF_ALU => {
@@ -87,7 +93,7 @@ pub fn run_filter(prog: &[u64], data: &SeccompData) -> u32 {
                     BPF_DIV => if v == 0 { 0 } else { a / v },
                     BPF_MOD => if v == 0 { 0 } else { a % v },
                     BPF_NEG => 0u32.wrapping_sub(a),
-                    _ => return SECCOMP_RET_KILL_PROCESS,
+                    _ => return None,
                 };
                 pc += 1;
             }
@@ -101,7 +107,7 @@ pub fn run_filter(prog: &[u64], data: &SeccompData) -> u32 {
                         BPF_JGT  => a >  v,
                         BPF_JGE  => a >= v,
                         BPF_JSET => (a & v) != 0,
-                        _ => return SECCOMP_RET_KILL_PROCESS,
+                        _ => return None,
                     };
                     let off = if cond { ins.jt as usize } else { ins.jf as usize };
                     pc = pc.wrapping_add(1).wrapping_add(off);
@@ -110,18 +116,26 @@ pub fn run_filter(prog: &[u64], data: &SeccompData) -> u32 {
             // `BPF_RVAL`, not `BPF_SRC`: `BPF_RET|BPF_A` is 0x16 and masking
             // it with 0x08 reads as `BPF_RET|BPF_K`, returning `k` (0) —
             // i.e. `SECCOMP_RET_KILL_THREAD` — instead of the accumulator.
-            BPF_RET => return if ins.code & BPF_RVAL_MASK == BPF_A { a } else { ins.k },
+            BPF_RET => return Some(if ins.code & BPF_RVAL_MASK == BPF_A { a } else { ins.k }),
             BPF_MISC => match ins.code & BPF_MISCOP_MASK {
                 BPF_TAX => { x = a; pc += 1; }
                 BPF_TXA => { a = x; pc += 1; }
-                _ => return SECCOMP_RET_KILL_PROCESS,
+                _ => return None,
             },
-            _ => return SECCOMP_RET_KILL_PROCESS,
+            _ => return None,
         }
     }
     // Verification guarantees the last instruction is a RET, so falling off
     // the end is unreachable for a verified program.
-    SECCOMP_RET_KILL_PROCESS
+    None
+}
+
+/// [`run_filter_bytes`] over a `seccomp_data` image, with seccomp's own answer
+/// to an impossible state: `SECCOMP_RET_KILL_PROCESS` — `seccomp_run_filters`'
+/// "ensure unexpected behavior doesn't result in failing open".
+/// # C: O(I)
+pub fn run_filter(prog: &[u64], data: &SeccompData) -> u32 {
+    run_filter_bytes(prog, &data.bytes()).unwrap_or(SECCOMP_RET_KILL_PROCESS)
 }
 
 /// `seccomp_run_filters` — evaluate the whole chain and keep the LEAST

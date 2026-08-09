@@ -92,6 +92,10 @@ pub struct IoUringReg {
     pub napi: crate::io_uring_abi::napi::NapiState,
     /// Receive queues this ring busy-polls. Empty polls nothing.
     pub napi_ids: Vec<u32>,
+    /// `IORING_REGISTER_BPF_FILTER`: per-opcode submission filters. Starts
+    /// from whatever the creating task imposed on ITSELF, so a confined task
+    /// cannot escape its own filters by opening a fresh ring.
+    pub bpf: crate::io_uring_abi::bpf_filter::FilterSet,
 }
 
 /// `CLOCK_MONOTONIC`.

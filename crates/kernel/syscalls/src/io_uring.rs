@@ -16,6 +16,7 @@
 //   submit      — the submission engine: links, drain, silent success
 //   wait        — the `min_complete` wait
 //   dispatch    — `IORING_OP_*` → the work each opcode does
+//   filter      — running a ring's BPF filters against one submission
 //   register    — the `io_uring_register(2)` work functions
 //   rsrc        — registered files, buffers, personalities, buffer groups
 //   pin         — pinned user memory behind registered buffers
@@ -43,6 +44,7 @@ pub mod cqe;
 pub mod submit;
 pub mod wait;
 pub mod dispatch;
+pub mod filter;
 pub mod register;
 pub mod rsrc;
 pub mod pin;

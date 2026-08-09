@@ -140,6 +140,13 @@ pub enum RegisterOp {
     /// `IORING_UNREGISTER_NAPI` — `arg` may be null, which means "do not
     /// report the settings being cleared".
     UnregisterNapi { arg: u64 },
+    /// `IORING_REGISTER_BPF_FILTER` against a ring — `arg` is a
+    /// `struct io_uring_bpf`.
+    BpfFilter { arg: u64 },
+    /// The same opcode with no ring: the calling task filters ITSELF. `nr` is
+    /// carried through rather than checked here, because the reference decides
+    /// the permission before the argument count.
+    BpfFilterTask { arg: u64, nr: u32 },
 }
 
 /// A decoded `io_uring_register(2)` call.
@@ -224,6 +231,12 @@ fn ring_op(opcode: u32, arg: u64, nr_args: u32) -> Result<RegisterOp, Errno> {
         IORING_REGISTER_RESIZE_RINGS => one(RegisterOp::ResizeRings { arg }),
         IORING_REGISTER_MEM_REGION => one(RegisterOp::MemRegion { arg }),
         IORING_REGISTER_NAPI => one(RegisterOp::Napi { arg }),
+        IORING_REGISTER_BPF_FILTER => {
+            // Exactly one record; a null pointer is left to the copy, which
+            // reports EFAULT — the reference checks no pointer here.
+            if nr_args != 1 { return Err(Errno::Einval); }
+            Ok(RegisterOp::BpfFilter { arg })
+        }
         IORING_UNREGISTER_NAPI => {
             // A null `arg` is legal here and only here: it asks for the
             // settings to be cleared without reporting what they were.
@@ -264,7 +277,11 @@ fn blind(opcode: u32, arg: u64, nr_args: u32) -> Result<RegisterOp, Errno> {
             Ok(RegisterOp::SendMsgRing { arg })
         }
         IORING_REGISTER_QUERY => Ok(RegisterOp::Query { arg, nr: nr_args }),
-        IORING_REGISTER_RESTRICTIONS | IORING_REGISTER_BPF_FILTER => Err(unsupported(opcode)),
+        // A task filtering itself needs no ring; the permission check inside
+        // the work function runs before the argument count, so `nr` travels
+        // with the request instead of being screened here.
+        IORING_REGISTER_BPF_FILTER => Ok(RegisterOp::BpfFilterTask { arg, nr: nr_args }),
+        IORING_REGISTER_RESTRICTIONS => Err(unsupported(opcode)),
         _ => Err(Errno::Einval),
     }
 }
