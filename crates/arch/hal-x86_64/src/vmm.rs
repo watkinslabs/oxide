@@ -265,5 +265,18 @@ pub unsafe fn map_device_4k<F: FnMut() -> Option<u64>>(
         .map_err(MapErr::from)
 }
 
+/// Whether a present leaf permits instruction fetch in kernel mode.
+///
+/// The inverse of what [`PtWalkerX86::pack_4k_leaf`] writes for a leaf without
+/// `EXEC`, and the only way to ASSERT that a page a kernel is about to jump to
+/// is actually executable. A kernel whose linear map happens to be built
+/// without `NX` executes such a page by luck; nothing in that arrangement is
+/// checked, and the luck runs out the moment the map is tightened.
+///
+/// Answered for a leaf at any level: the no-execute control sits in the same
+/// bit of a block descriptor as of a bottom-level one.
+/// # C: O(1)
+pub fn leaf_is_kernel_exec(entry: u64) -> bool { entry & NX_BIT == 0 }
+
 #[cfg(test)]
 mod tests;

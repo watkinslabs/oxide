@@ -92,6 +92,10 @@ impl KImage {
     /// because the supplier is not reachable from the image.
     /// # C: O(N_pages)
     pub fn free<F: Frames>(&mut self, f: &mut F) {
+        // Undo the arch's mapping changes FIRST. A control page whose kernel
+        // mapping was narrowed for the trampoline must be back at the linear
+        // map's default before the allocator can hand it to anyone else.
+        crate::machine::cleanup(self);
         for list in [&mut self.control_pages, &mut self.dest_pages, &mut self.unusable_pages,
                      &mut self.source_pages, &mut self.ind_pages] {
             for pa in list.drain(..) {

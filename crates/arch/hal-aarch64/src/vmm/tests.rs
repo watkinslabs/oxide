@@ -262,3 +262,49 @@ fn the_write_protect_step_covers_every_leaf_encoding() {
     }
 }
 
+
+// --- kernel-execute decode -------------------------------------------------
+//
+// See the x86_64 twin. The trap this pins is arm-specific: `UXN` is set on
+// EVERY kernel leaf, so a decode that consulted it — or that required both
+// execute-never controls clear — would report the kernel's own text as
+// non-executable and refuse a perfectly good trampoline.
+
+use crate::vmm::leaf_is_kernel_exec;
+
+#[test]
+fn kernel_execute_is_decided_by_pxn_alone() {
+    let pa = 0x1234_5000u64;
+    let kx = PtWalkerArm::pack_4k_leaf(pa, hal::PageFlags::READ | hal::PageFlags::EXEC);
+    let knx = PtWalkerArm::pack_4k_leaf(pa, hal::PageFlags::READ | hal::PageFlags::WRITE);
+    assert!(leaf_is_kernel_exec(kx));
+    assert!(!leaf_is_kernel_exec(knx));
+    // Both kernel leaves carry UXN; only PXN moved.
+    assert_ne!(kx & UXN, 0);
+    assert_ne!(knx & UXN, 0);
+    assert_eq!(kx & PXN, 0);
+    assert_ne!(knx & PXN, 0);
+}
+
+#[test]
+fn a_user_executable_leaf_is_not_kernel_executable() {
+    // EL0-executable and EL1-executable are different permissions and the
+    // kernel must never read one as the other.
+    let ux = PtWalkerArm::pack_4k_leaf(
+        0x2000u64, hal::PageFlags::READ | hal::PageFlags::EXEC | hal::PageFlags::USER);
+    assert_eq!(ux & UXN, 0);
+    assert!(!leaf_is_kernel_exec(ux));
+}
+
+#[test]
+fn the_decode_reads_the_same_control_in_a_block_leaf() {
+    let pa = 0x4000_0000u64;
+    let f = hal::PageFlags::READ | hal::PageFlags::WRITE;
+    assert!(!leaf_is_kernel_exec(PtWalkerArm::pack_block_leaf(pa, f)));
+    assert!(leaf_is_kernel_exec(PtWalkerArm::pack_block_leaf(pa, f | hal::PageFlags::EXEC)));
+}
+
+#[test]
+fn a_device_leaf_is_never_kernel_executable() {
+    assert!(!leaf_is_kernel_exec(PtWalkerArm::pack_device_leaf(0x0900_0000)));
+}

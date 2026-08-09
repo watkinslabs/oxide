@@ -110,6 +110,153 @@ fn set_linear_present(pa: u64, present: bool) -> Result<(), Errno> {
     Ok(())
 }
 
+// --- execute permission ----------------------------------------------------
+//
+// A kernel that copies code into the linear map and then CALLS it is relying on
+// that mapping permitting instruction fetch. Until this existed nothing here
+// asserted it: the boot tables happen to build the direct map out of large
+// leaves with no no-execute control set, so the call worked by inheritance.
+// That is not a property anyone chose, nothing would notice it changing, and
+// the reference does not depend on it — it narrows the page it is about to run
+// from to read-only-and-executable, explicitly, before jumping.
+//
+// Read-only AND executable, not merely executable: the code is complete by the
+// time this runs, and a page that is about to be entered has no reason to stay
+// writable. Narrowing both in one rewrite is also the only way to avoid a
+// window in which the page is simultaneously writable and executable.
+
+/// Whether a raw leaf permits instruction fetch in kernel mode, decoded by the
+/// architecture that packed it.
+/// # C: O(1)
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+fn leaf_is_kernel_exec(entry: u64) -> bool { hal_x86_64::vmm::leaf_is_kernel_exec(entry) }
+/// See the x86_64 arm.
+/// # C: O(1)
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+fn leaf_is_kernel_exec(entry: u64) -> bool { hal_aarch64::vmm::leaf_is_kernel_exec(entry) }
+
+/// `set_memory_rox`: make `pages` pages at `va` read-only and executable in the
+/// kernel's own map, and flush the change everywhere.
+///
+/// `va` is a kernel address, not a physical one — the caller names the mapping
+/// it is going to run through, which on the linear map is the HHDM alias of the
+/// page it copied code into.
+///
+/// Fails rather than silently succeeding when the architecture cannot
+/// re-granularise the mapping. A caller here is about to jump into the page; a
+/// quiet "could not, carry on" is the shape of failure that produces a machine
+/// which stops with nothing left able to say why.
+/// # C: O(pages * walk depth)
+/// # Lk: CPA_LOCK acquired
+#[cfg(target_os = "oxide-kernel")]
+pub fn set_memory_rox(va: u64, pages: u64) -> Result<(), Errno> {
+    if pages == 0 { return Ok(()); }
+    if !can_set_direct_map() { return Err(Errno::Eopnotsupp); }
+    let hhdm = crate::user_as::hhdm_offset();
+    if hhdm == 0 { return Err(Errno::Einval); }
+    let flags = hal::PageFlags::READ | hal::PageFlags::EXEC;
+    // SAFETY: privileged read of the active kernel translation base; the
+    // returned root is the tree every CPU walks for kernel addresses.
+    let root = unsafe { ArchWalker::read_pt_base(va) };
+    {
+        let _g = CPA_LOCK.lock();
+        for i in 0..pages {
+            let page_va = va.wrapping_add(i * hal::PAGE_SIZE_BYTES);
+            // SAFETY: the lock makes the kernel tables exclusively ours for this
+            // walk; HHDM covers page-table memory; the allocator yields fresh
+            // kernel frames the kernel owns outright.
+            let split = unsafe {
+                hal::pt_walker::split_kernel_leaf_at_root::<ArchWalker, _>(
+                    root, page_va, hhdm, || super::alloc_page_table_frame(0))
+            };
+            match split {
+                Ok(()) => {}
+                Err(hal::pt_walker::WalkErr::AllocFailed) => return Err(Errno::Enomem),
+                Err(_) => return Err(Errno::Einval),
+            }
+            // SAFETY: same lock, same live root; the rewrite keeps the leaf's
+            // output address and replaces only its permissions.
+            let n = unsafe {
+                hal::pt_walker::protect_4k_at_root::<ArchWalker>(
+                    root, page_va, page_va + hal::PAGE_SIZE_BYTES, flags, hhdm)
+            };
+            // The split guarantees a bottom-level leaf exists, so nothing
+            // rewritten means the address is not in the kernel map at all.
+            if n == 0 { return Err(Errno::Einval); }
+        }
+    }
+    flush_kernel_range(va, pages * hal::PAGE_SIZE_BYTES);
+    Ok(())
+}
+
+/// The inverse of [`set_memory_rox`]: writable and never executable, which is
+/// what every ordinary page of the linear map is.
+///
+/// Not an optional tidy-up. A page narrowed to read-only-and-executable and
+/// then returned to the page allocator is handed to the next caller with a
+/// kernel mapping that faults on the first write — a fault in whatever
+/// unrelated subsystem drew the recycled page, arbitrarily far from the code
+/// that narrowed it. Every `set_memory_rox` needs this on the release path.
+/// # C: O(pages * walk depth)
+/// # Lk: CPA_LOCK acquired
+#[cfg(target_os = "oxide-kernel")]
+pub fn set_memory_rw_nx(va: u64, pages: u64) -> Result<(), Errno> {
+    if pages == 0 { return Ok(()); }
+    if !can_set_direct_map() { return Ok(()); }
+    let hhdm = crate::user_as::hhdm_offset();
+    if hhdm == 0 { return Err(Errno::Einval); }
+    let flags = hal::PageFlags::READ | hal::PageFlags::WRITE;
+    // SAFETY: privileged read of the active kernel translation base.
+    let root = unsafe { ArchWalker::read_pt_base(va) };
+    {
+        let _g = CPA_LOCK.lock();
+        for i in 0..pages {
+            let page_va = va.wrapping_add(i * hal::PAGE_SIZE_BYTES);
+            // SAFETY: same lock, same live root; the rewrite keeps the leaf's
+            // output address and replaces only its permissions. No split is
+            // attempted: a page this is restoring was split by `set_memory_rox`,
+            // and one that was not is already at the map's default.
+            unsafe {
+                hal::pt_walker::protect_4k_at_root::<ArchWalker>(
+                    root, page_va, page_va + hal::PAGE_SIZE_BYTES, flags, hhdm)
+            };
+        }
+    }
+    flush_kernel_range(va, pages * hal::PAGE_SIZE_BYTES);
+    Ok(())
+}
+
+/// Whether every one of `pages` pages at `va` currently permits instruction
+/// fetch in kernel mode.
+///
+/// Separate from [`set_memory_rox`] so a caller can ASSERT the property it
+/// depends on rather than assume the rewrite it just asked for had the effect
+/// it wanted. The two are not the same claim: the rewrite reports that it
+/// found a leaf to change, this reports what the leaf now says.
+/// # C: O(pages * walk depth)
+/// # Lk: CPA_LOCK acquired
+#[cfg(target_os = "oxide-kernel")]
+pub fn kernel_range_is_executable(va: u64, pages: u64) -> bool {
+    let hhdm = crate::user_as::hhdm_offset();
+    if hhdm == 0 { return false; }
+    // SAFETY: privileged read of the active kernel translation base.
+    let root = unsafe { ArchWalker::read_pt_base(va) };
+    let _g = CPA_LOCK.lock();
+    (0..pages).all(|i| {
+        let page_va = va.wrapping_add(i * hal::PAGE_SIZE_BYTES);
+        // SAFETY: read-only walk of the live kernel tables through the HHDM,
+        // under the lock that serializes every mutation of them.
+        match unsafe { hal::pt_walker::read_leaf_4k_at_root::<ArchWalker>(root, page_va, hhdm) } {
+            Some(leaf) => ArchWalker::is_valid(leaf) && leaf_is_kernel_exec(leaf),
+            // No bottom-level table covers the address. The mapping is a large
+            // leaf this walk cannot read, so the honest answer is "not known to
+            // be executable" — and a caller about to jump must treat an unknown
+            // as a refusal, not as permission.
+            None => false,
+        }
+    })
+}
+
 /// Make a completed linear-map change visible on every CPU. The local
 /// invalidate already happened as each leaf was written; this is the remote
 /// half, and it targets EVERY online CPU because the kernel's linear map is
@@ -144,6 +291,15 @@ pub fn kernel_page_present(_pa: u64) -> bool { true }
 /// # C: O(1)
 #[cfg(not(target_os = "oxide-kernel"))]
 pub fn flush_kernel_range(_va: u64, _len: u64) {}
+/// # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+pub fn set_memory_rox(_va: u64, _pages: u64) -> Result<(), Errno> { Ok(()) }
+/// # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+pub fn kernel_range_is_executable(_va: u64, _pages: u64) -> bool { true }
+/// # C: O(1)
+#[cfg(not(target_os = "oxide-kernel"))]
+pub fn set_memory_rw_nx(_va: u64, _pages: u64) -> Result<(), Errno> { Ok(()) }
 /// # C: O(1)
 #[cfg(not(target_os = "oxide-kernel"))]
 pub fn flush_kernel_page(_pa: u64) {}

@@ -54,6 +54,25 @@ pub fn prepare<F: Frames>(image: &mut KImage, f: &mut F) -> KResult<()> {
     { let _ = (image, f); Ok(()) }
 }
 
+/// `machine_kexec_cleanup(image)`: undo every mapping change `prepare` made,
+/// BEFORE the image's pages go back to the allocator.
+///
+/// Not a tidy-up. `prepare` narrows the control page's kernel mapping to
+/// read-only so the trampoline can be entered through it; a page released in
+/// that state is handed to the next caller with a mapping that faults on its
+/// first write, in whatever unrelated subsystem happened to draw it. The
+/// failure would appear arbitrarily far from the code that caused it.
+///
+/// Idempotent, because it runs on every teardown path — the successful unload,
+/// the replaced image, and the half-staged image a failing `prepare` frees.
+/// # C: O(1)
+pub fn cleanup(image: &KImage) {
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    { x86::cleanup(image); }
+    #[cfg(not(all(target_os = "oxide-kernel", target_arch = "x86_64")))]
+    { let _ = image; }
+}
+
 /// `device_shutdown()` from `kernel_restart_prepare("kexec reboot")`.
 ///
 /// Separate from [`kexec`] because it is the only step here that is NOT past
