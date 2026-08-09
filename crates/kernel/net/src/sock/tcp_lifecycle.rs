@@ -69,11 +69,19 @@ pub(super) fn listen_tcp(sock: &alloc::sync::Arc<InetSocket>, backlog: i32,
     if sock.released.load(Ordering::Acquire) { return Err(NetError::Einval); }
     {
         let kind = sock.kind.lock();
-        if let SockKind::TcpListener(listener) = &*kind {
-            listener.set_backlog(backlog, somaxconn);
-            return Ok(());
+        let shape = match &*kind {
+            SockKind::TcpInit => crate::listen_admit::TcpKindShape::Init,
+            SockKind::TcpListener(_) => crate::listen_admit::TcpKindShape::Listening,
+            _ => crate::listen_admit::TcpKindShape::Other,
+        };
+        match crate::listen_admit::tcp_listen_transition(shape) {
+            crate::listen_admit::TcpListenTransition::Republish => {
+                if let SockKind::TcpListener(listener) = &*kind { listener.set_backlog(backlog, somaxconn); }
+                return Ok(());
+            }
+            crate::listen_admit::TcpListenTransition::Refuse => return Err(NetError::Einval),
+            crate::listen_admit::TcpListenTransition::Start => {}
         }
-        if !matches!(*kind, SockKind::TcpInit) { return Err(NetError::Einval); }
     }
     let family = sock.family.load(Ordering::Acquire);
     let local_ip = if family == AF_INET6 {

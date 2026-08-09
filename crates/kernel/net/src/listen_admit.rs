@@ -103,6 +103,49 @@ pub fn listen_ladder(somaxconn: Option<usize>, backlog: i32,
     }
 }
 
+/// Which `SockKind` a TCP-family socket is in, as seen by a second (or
+/// first) `listen(2)` once the ladder above has already admitted the call.
+/// The caller maps its own `SockKind` onto this; nothing here reads a socket.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TcpKindShape {
+    /// Fresh, never bound into a listener or a connection.
+    Init,
+    /// Already listening.
+    Listening,
+    /// Any other state — bound-but-connecting, established, closing. A
+    /// stream socket in any of these fails `sock->state == SS_UNCONNECTED`.
+    Other,
+}
+
+/// What a TCP-family `listen(2)` does once its `SockKind` is known.
+///
+/// Linux's `inet_listen` (`net/ipv4/af_inet.c`) refuses unless
+/// `sock->state == SS_UNCONNECTED`; `inet_csk_listen_start`
+/// (`net/ipv4/inet_connection_sock.c`) runs only on that first transition.
+/// A later `listen(2)` on an already-listening socket takes the same
+/// `SS_UNCONNECTED`-guard success path and republishes the backlog
+/// (`sk->sk_max_ack_backlog = backlog`) without rebuilding the listener —
+/// it does not refuse and it does not strand connections already queued.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TcpListenTransition {
+    /// First transition into listening: build a real listener.
+    Start,
+    /// Already listening: republish this backlog on the existing listener.
+    Republish,
+    /// Any other state (e.g. connected): EINVAL.
+    Refuse,
+}
+
+/// The TCP-kind rung of the `listen(2)` ladder, once the generic security
+/// and shape rungs above have already admitted the call. # C: O(1)
+pub fn tcp_listen_transition(shape: TcpKindShape) -> TcpListenTransition {
+    match shape {
+        TcpKindShape::Init      => TcpListenTransition::Start,
+        TcpKindShape::Listening => TcpListenTransition::Republish,
+        TcpKindShape::Other     => TcpListenTransition::Refuse,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,5 +253,24 @@ mod tests {
     #[test]
     fn a_stream_socket_reaches_the_protocol_state_machine() {
         assert_eq!(admit_listen(ListenShape::Stream), ListenAdmit::Stream);
+    }
+
+    #[test]
+    fn a_fresh_socket_starts_a_new_listener() {
+        assert_eq!(tcp_listen_transition(TcpKindShape::Init), TcpListenTransition::Start);
+    }
+
+    #[test]
+    fn an_already_listening_socket_only_republishes_its_backlog() {
+        assert_eq!(tcp_listen_transition(TcpKindShape::Listening), TcpListenTransition::Republish);
+    }
+
+    /// A connected (or otherwise non-`SS_UNCONNECTED`) stream socket is
+    /// EINVAL, matching `net/ipv4/af_inet.c:inet_listen`'s
+    /// `sock->state != SS_UNCONNECTED` refusal. Positive control: swapping
+    /// this arm to `Start` or `Republish` turns this test RED.
+    #[test]
+    fn any_other_state_refuses_with_einval() {
+        assert_eq!(tcp_listen_transition(TcpKindShape::Other), TcpListenTransition::Refuse);
     }
 }
