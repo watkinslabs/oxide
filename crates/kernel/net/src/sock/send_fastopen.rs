@@ -76,7 +76,7 @@ pub fn send(sock: &Arc<InetSocket>, payload: &[u8], dest: Option<RemoteAddr>, no
     let transaction = super::preflight_connect_admitted(sock, admission)?;
     let (entry, carried) = transaction.commit_write(addr, payload)?;
     if nonblock { return super::fastopen_result::nonblock_write_result(carried); }
-    crate::sock_io::connect_wait_established(sock, &entry)?;
+    crate::sock::tcp_connect_wait::connect_wait_established(sock, &entry)?;
     let rest = &payload[carried..];
     if rest.is_empty() { return Ok(carried); }
     let cap = sock.opts.base.sndbuf.load(::core::sync::atomic::Ordering::Acquire).max(0) as usize;

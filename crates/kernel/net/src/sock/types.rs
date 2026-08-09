@@ -109,11 +109,9 @@ pub struct InetSocket {
     /// SYN has gone out: it waits for the write that will supply the payload
     /// to put in it. Holds the addresses that write opens with.
     pub fastopen_deferred: Spinlock<Option<DeferredConnect>, SockLockClass>,
-    #[cfg(target_os = "oxide-kernel")]
-    pub recv_waiters: sched::live::WaitList,
+    pub recv_waiters: crate::sock_wait::SockWaitQueue,
     /// Calls waiting to connect this socket, independent of target listener.
-    #[cfg(target_os = "oxide-kernel")]
-    pub connect_waiters: sched::live::WaitList,
+    pub connect_waiters: crate::sock_wait::SockWaitQueue,
     /// F181: per-fd epoll subscribers.
     pub poll_subs: Arc<vfs::PollSubscribers>,
     /// Immutable creation identity shared with every asynchronous transport owner.

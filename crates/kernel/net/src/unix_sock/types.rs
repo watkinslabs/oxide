@@ -40,7 +40,6 @@ impl PeerCred {
 
     /// The running task's identity, taken as one snapshot at the instant a
     /// pair is created, connected, or published for accept. # C: O(1)
-    #[cfg(target_os = "oxide-kernel")]
     pub fn of_current() -> Option<Self> {
         use core::sync::atomic::Ordering;
         let cur = sched::live::current()?;

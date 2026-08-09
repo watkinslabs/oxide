@@ -21,7 +21,7 @@
 // nothing is hidden: real dead code still surfaces on `xtask kernel`.
 #![cfg_attr(not(target_os = "oxide-kernel"), allow(dead_code))]
 extern crate alloc;
-#[cfg(any(test, feature = "hosted"))]
+#[cfg(not(target_os = "oxide-kernel"))]
 extern crate std;
 
 pub mod addr;
@@ -153,6 +153,11 @@ pub mod vsock_socket;
 // Pure errno mapping with no socket state: ungated, so every build and every
 // hosted test sees the one owner of it.
 mod sock_error;
+/// Monotonic clock + SO_*TIMEO deadline arithmetic shared by every blocking
+/// socket path. Ungated: a deadline decision must be checkable hosted.
+pub mod sock_clock;
+/// The socket sleep queue every blocking socket path parks on.
+pub mod sock_wait;
 // Linux `sock_intr_errno` — NOT kernel-gated, so the ERESTARTSYS/EINTR rule
 // every socket wait shares is unit-tested hosted.
 pub mod sock_intr;

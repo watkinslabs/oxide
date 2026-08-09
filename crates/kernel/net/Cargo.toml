@@ -46,6 +46,15 @@ sched = { path = "../sched", features = ["hosted"] }
 sync = { path = "../../shared/sync", features = ["hosted"] }
 
 
+# Every non-kernel build of this crate is a HOST build: there is no other
+# reason to compile it off the kernel target. The socket wait layer therefore
+# always has a real park-until-woken implementation available (`sched/hosted`
+# for the live wait list, `sync/hosted` so a spinning waiter yields its core),
+# instead of existing only under `cfg(test)` in some dependents and not others.
+[target.'cfg(not(target_os = "oxide-kernel"))'.dependencies]
+sched = { path = "../sched", features = ["hosted"] }
+sync  = { path = "../../shared/sync", features = ["hosted"] }
+
 # F159: TCP retx scanner needs monotonic_ns. Per-arch HAL only links
 # in for the matching kernel target; hosted tests skip the call site
 # via `target_os = "oxide-kernel"`.

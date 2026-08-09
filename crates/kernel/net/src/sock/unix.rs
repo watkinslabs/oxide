@@ -47,7 +47,7 @@ pub(super) fn connect(sock: &Arc<InetSocket>, addr: crate::UnixAddr, nonblock: b
         candidate.set_end_identity(crate::UnixEnd::B, Some(c.thread_group.leader_pid()));
     }
     let timeout = sock.opts.base.sndtimeo_ns.load(core::sync::atomic::Ordering::Acquire);
-    let deadline_ns = compute_deadline_ns(timeout);
+    let deadline_ns = crate::sock_clock::compute_deadline_ns(timeout);
     loop {
         let missing = if addr.is_pathname() { NetError::Enoent } else { NetError::Econnrefused };
         let listener = registry.lookup_listener_addr(&addr).ok_or(missing)?;
@@ -60,13 +60,14 @@ pub(super) fn connect(sock: &Arc<InetSocket>, addr: crate::UnixAddr, nonblock: b
                 if sched::live::deliverable_signals_self() != 0 {
                     return Err(crate::sock_intr::sock_intr_net(deadline_ns));
                 }
-                if deadline_ns != 0 && crate::sock_io::monotonic_ns_safe() >= deadline_ns {
+                if crate::sock_clock::deadline_expired(deadline_ns) {
                     return Err(NetError::Eagain);
                 }
                 if listener.arm_socket_connect_wait(sock, deadline_ns) {
-                    // SAFETY: arm_connect_wait registered current under the
-                    // listener state lock; accept, relisten, and close wake it.
-                    unsafe { sched::live::schedule::schedule(); }
+                    // SAFETY: arm_socket_connect_wait published this caller on
+                    // the socket's sleep queue under the listener state lock,
+                    // which is now dropped; accept, relisten and close wake it.
+                    unsafe { sock.connect_waiters.wait(); }
                     sock.connect_waiters.remove_current();
                     listener.unregister_socket_connect_wait(sock);
                 }

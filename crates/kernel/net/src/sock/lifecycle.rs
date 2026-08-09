@@ -21,7 +21,6 @@ impl InetSocket {
         }
         let changed = self.error.set(errno);
         if changed {
-            #[cfg(target_os = "oxide-kernel")]
             { self.recv_waiters.wake_all(); self.connect_waiters.wake_all(); }
             self.poll_subs.notify_mask(vfs::POLL_ERR);
         }

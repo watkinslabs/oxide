@@ -44,12 +44,11 @@ use alloc::vec::Vec;
 use crate::{NetStack, LoopbackDev, Ipv4Addr, NetIfaceId, NetError};
 use crate::stack::{TcpEntry, TcpListenEntry};
 use sync::{Spinlock, Socket as SockLockClass};
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 use crate::sock_opts::{apply_tcp_keepalive_opts, inherit_tcp_keepalive_opts, inherit_tcp_oobinline,
     record_accepted_header};
 pub use crate::sock_opts::SenderCreds;
-#[cfg(target_os = "oxide-kernel")]
-pub use crate::sock_io::compute_deadline_ns;
+pub use crate::sock_clock::compute_deadline_ns;
 
 mod globals;
 mod types;
@@ -79,7 +78,7 @@ mod write_more_policy;
 mod udp;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 mod raw;
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 mod unix;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 mod shutdown;
@@ -100,19 +99,23 @@ mod accept_admit;
 mod txmeta;
 pub use txmeta::{sock_mark, sock_priority, tx_meta};
 pub mod tx_tstamp;
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 mod connect_admission;
+// The blocking active-open wait: park until the handshake settles.
+pub(crate) mod tcp_connect_wait;
 mod tcp_rcvbuf;
 mod legacy_ioctl;
 pub mod tcp_fastopen;
 #[cfg(target_os = "oxide-kernel")]
 pub mod send_fastopen;
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub(crate) mod tcp_lifecycle;
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 mod ops;
 #[cfg(target_os = "oxide-kernel")]
 mod send;
+#[cfg(test)]
+mod unix_connect_tests;
 #[cfg(test)]
 mod packet_tests;
 #[cfg(test)]
@@ -158,7 +161,7 @@ pub use admission::{admit_accept, admit_listen, AcceptAdmission, ListenAdmission
 pub use bind_policy::{BindPortPolicy, bind_port_policy};
 pub use accept_finalize::{Accepted, complete_accepted};
 pub use accept_admit::{AcceptShape, AcceptAdmit, admit_accept_shape, accept_ladder};
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub use connect_admission::{
     preflight_connect, preflight_connect_admitted, ConnectTransaction,
 };
@@ -167,11 +170,11 @@ pub use legacy_ioctl::legacy_ioctl_errno;
 pub use inode::*;
 #[cfg(target_os = "oxide-kernel")]
 pub use udp::*;
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub(crate) use raw_bind::*;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub use shutdown::*;
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 pub use ops::*;
 #[cfg(target_os = "oxide-kernel")]
 pub use send::*;

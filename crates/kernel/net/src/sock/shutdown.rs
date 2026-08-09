@@ -138,7 +138,6 @@ fn shutdown_admitted(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError
         Target::UnixUnconnected => {
             if how.read() { sock.read_shut.store(true, Release); }
             if how.write() { sock.write_shut.store(true, Release); }
-            #[cfg(target_os = "oxide-kernel")]
             {
                 sock.recv_waiters.wake_all();
                 sock.connect_waiters.wake_all();
@@ -194,7 +193,6 @@ fn shutdown_admitted(sock: &InetSocket, how: ShutdownHow) -> Result<(), NetError
         Target::Unconnected => {
             if how.read() { sock.read_shut.store(true, Release); }
             if how.write() { sock.write_shut.store(true, Release); }
-            #[cfg(target_os = "oxide-kernel")]
             {
                 sock.recv_waiters.wake_all();
                 sock.connect_waiters.wake_all();

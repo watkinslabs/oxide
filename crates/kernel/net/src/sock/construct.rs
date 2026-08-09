@@ -55,10 +55,8 @@ impl InetSocket {
             write_shut: core::sync::atomic::AtomicBool::new(false),
             released: core::sync::atomic::AtomicBool::new(false),
             mcast_ops: crate::mcast_filter::SocketMcastGate::new(),
-            #[cfg(target_os = "oxide-kernel")]
-            recv_waiters: sched::live::WaitList::new(),
-            #[cfg(target_os = "oxide-kernel")]
-            connect_waiters: sched::live::WaitList::new(),
+            recv_waiters: crate::sock_wait::SockWaitQueue::new(),
+            connect_waiters: crate::sock_wait::SockWaitQueue::new(),
             poll_subs: Arc::new(vfs::PollSubscribers::new()),
             local_ip6: Spinlock::new(crate::Ipv6Addr([0; 16])), peer6: Arc::new(Spinlock::new(None)),
             peer6_scope: core::sync::atomic::AtomicU32::new(0),

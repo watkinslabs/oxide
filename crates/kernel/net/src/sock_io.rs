@@ -5,14 +5,12 @@ use crate::netdev::NetError;
 use crate::sock::{drain_loopback, stack, InetSocket, SockKind, AF_INET6};
 use crate::stack::TcpEntry;
 
-mod tcp_wait;
 mod tcp_read;
 mod packet;
 pub use crate::recv_result::{recv_empty, recv_empty_with, Received, RecvOptions};
 pub(crate) use crate::sock_error::pending_net_error;
 pub use tcp_read::tcp_recv_eof;
 pub(crate) use tcp_read::{arm_tcp_read_after_mode, read_tcp_blocking, tcp_vfs_error};
-pub(crate) use tcp_wait::connect_wait_established;
 
 /// F164: blocking TCP write. Repeatedly tcp_send into the conn,
 /// parking on `entry.rx_waiters` (woken by `deliver_tcp` on every
@@ -233,29 +231,11 @@ pub(crate) fn read_unix_msg_blocking(
     }
 }
 
-/// F169: monotonic-ns reader visible to io helpers without
-/// crossing the kernel-vs-hosted boundary at every call site.
-#[cfg(target_os = "oxide-kernel")]
-pub(crate) fn monotonic_ns_safe() -> u64 {
-    use hal::TimerOps;
-    #[cfg(target_arch = "x86_64")]
-    { return hal_x86_64::X86TimerOps::monotonic_ns().0; }
-    #[cfg(target_arch = "aarch64")]
-    { return hal_aarch64::ArmTimerOps::monotonic_ns().0; }
-    #[allow(unreachable_code)]
-    0
-}
-
-/// F169: convert a SO_RCVTIMEO / SO_SNDTIMEO ns value into an
-/// absolute monotonic deadline. `0` (no timeout configured) →
-/// `0` (indefinite wait). Saturating add prevents wrap.
-/// # C: O(1)
-pub fn compute_deadline_ns(timeo_ns: i64) -> u64 {
-    if timeo_ns <= 0 { return 0; }
-    let now = monotonic_ns_safe();
-    if now == 0 { return 0; }
-    now.saturating_add(timeo_ns as u64)
-}
+// Deadline arithmetic and the monotonic reading behind it are owned by
+// `crate::sock_clock`, so a blocking path outside this gated module reaches the
+// same clock. Re-exported for the call sites already spelt against this module.
+pub(crate) use crate::sock_clock::monotonic_ns_safe;
+pub use crate::sock_clock::compute_deadline_ns;
 
 /// `recvfrom` per `recvfrom(2)`. work fn. Returns the payload
 /// and an optional peer address (None for AF_UNIX SOCK_DGRAM and
