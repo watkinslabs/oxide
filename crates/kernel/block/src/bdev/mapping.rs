@@ -78,7 +78,7 @@ impl BdevMapping {
 
     /// Dirty page count — the work the submit half of `sync(2)` has to do.
     /// # C: O(1)
-    pub fn dirty_pages(&self) -> usize { self.st.lock().dirty.count() }
+    pub fn dirty_pages(&self) -> usize { self.st.lock_bh::<crate::bh_gate::BlockBh>().dirty.count() }
 
     /// Device capacity in bytes (Linux `bdev_nr_bytes`, the `i_size` of the
     /// block special inode). # C: O(1)
@@ -109,9 +109,9 @@ impl BdevMapping {
     /// caller is about to overwrite every byte of it (Linux skips the read
     /// under `block_write_begin` for a full-folio write). # C: O(page fill)
     fn resident(&self, idx: u64, whole_page_write: bool) -> KResult<()> {
-        if self.st.lock().pages.contains_key(&idx) { return Ok(()); }
+        if self.st.lock_bh::<crate::bh_gate::BlockBh>().pages.contains_key(&idx) { return Ok(()); }
         let page = if whole_page_write { vec![0u8; PAGE_BYTES] } else { self.fill_page(idx)? };
-        let mut g = self.st.lock();
+        let mut g = self.st.lock_bh::<crate::bh_gate::BlockBh>();
         // Never overwrite: a concurrent writer may have inserted and DIRTIED
         // this page while the fill above ran with no lock held, and clobbering
         // it with the medium's older bytes would silently lose that write.
@@ -145,7 +145,7 @@ impl BdevMapping {
             let inner = (cur % PG) as usize;
             let take = core::cmp::min(PAGE_BYTES - inner, len - done);
             self.resident(idx, false)?;
-            let g = self.st.lock();
+            let g = self.st.lock_bh::<crate::bh_gate::BlockBh>();
             let page = g.pages.get(&idx).ok_or(BlockError::Eio)?;
             dst[done..done + take].copy_from_slice(&page[inner..inner + take]);
             drop(g);
@@ -170,7 +170,7 @@ impl BdevMapping {
             // A full-page store within capacity needs no read-modify-write.
             let whole = take == PAGE_BYTES && (idx + 1) * PG <= self.size();
             self.resident(idx, whole)?;
-            let mut g = self.st.lock();
+            let mut g = self.st.lock_bh::<crate::bh_gate::BlockBh>();
             let page = g.pages.get_mut(&idx).ok_or(BlockError::Eio)?;
             page[inner..inner + take].copy_from_slice(&data[done..done + take]);
             g.dirty.set_dirty(idx);

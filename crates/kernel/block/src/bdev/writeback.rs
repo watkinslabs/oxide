@@ -34,7 +34,7 @@ impl BdevMapping {
         if self.nrpages() == 0 { return; }
         let (lo, hi) = page_span(start, end);
         let batch: Vec<(u64, Vec<u8>)> = {
-            let mut g = self.st.lock();
+            let mut g = self.st.lock_bh::<crate::bh_gate::BlockBh>();
             let idxs = g.dirty.take_writeback_range(lo, hi);
             let mut batch = Vec::with_capacity(idxs.len());
             for idx in idxs {
@@ -77,7 +77,7 @@ impl BdevMapping {
     /// (Linux `mapping_set_error`). # C: O(log N)
     fn complete_page(&self, idx: u64, result: KResult<()>) {
         {
-            let mut g = self.st.lock();
+            let mut g = self.st.lock_bh::<crate::bh_gate::BlockBh>();
             g.writeback.remove(&idx);
             if let Err(e) = result {
                 g.dirty.set_dirty(idx);
@@ -98,7 +98,7 @@ impl BdevMapping {
     /// block-device fd still sees its own failure. # C: O(in-flight)
     pub fn fdatawait_keep_errors(&self) -> i32 {
         self.wait_for_writeback();
-        self.st.lock().dirty.check_and_keep_errors()
+        self.st.lock_bh::<crate::bh_gate::BlockBh>().dirty.check_and_keep_errors()
     }
 
     /// `filemap_write_and_wait` — submit, wait, and CONSUME the error (the
@@ -107,7 +107,7 @@ impl BdevMapping {
     pub fn write_and_wait(self: &Arc<Self>) -> KResult<()> {
         self.fdatawrite();
         self.wait_for_writeback();
-        match self.st.lock().dirty.check_errors() {
+        match self.st.lock_bh::<crate::bh_gate::BlockBh>().dirty.check_errors() {
             0 => Ok(()),
             e if e == BlockError::Enospc as i32 => Err(BlockError::Enospc),
             _ => Err(BlockError::Eio),
@@ -125,7 +125,7 @@ impl BdevMapping {
         self.fdatawrite_range(start, end);
         self.wait_for_writeback();
         let (lo, hi) = page_span(start, end);
-        let mut g = self.st.lock();
+        let mut g = self.st.lock_bh::<crate::bh_gate::BlockBh>();
         let victims: Vec<u64> = g.pages.range(lo..hi).map(|(i, _)| *i).collect();
         let mut dropped = 0usize;
         for idx in victims {
@@ -151,7 +151,7 @@ impl BdevMapping {
     /// stay, because dropping them would lose data the medium has not got yet.
     /// Returns the number of pages dropped. # C: O(N_pages)
     pub fn invalidate_clean(&self) -> usize {
-        let mut g = self.st.lock();
+        let mut g = self.st.lock_bh::<crate::bh_gate::BlockBh>();
         let victims: Vec<u64> = g.pages.keys().copied().collect();
         let mut dropped = 0usize;
         for idx in victims {
@@ -166,7 +166,7 @@ impl BdevMapping {
 
     /// Whether page-aligned `off` is resident (Linux `filemap_get_entry`).
     /// # C: O(log N)
-    pub fn is_resident(&self, off: u64) -> bool { self.st.lock().pages.contains_key(&(off / PG)) }
+    pub fn is_resident(&self, off: u64) -> bool { self.st.lock_bh::<crate::bh_gate::BlockBh>().pages.contains_key(&(off / PG)) }
 }
 
 /// Page payload length invariant shared by the cache and its writeback.

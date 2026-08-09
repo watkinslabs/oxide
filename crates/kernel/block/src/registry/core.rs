@@ -57,7 +57,7 @@ pub struct Disk {
 impl Disk {
     /// VFS open file descriptions currently holding this disk (Linux
     /// `bd_openers`). # C: O(1)
-    pub fn opener_count(&self) -> u32 { self.state.lock().openers }
+    pub fn opener_count(&self) -> u32 { self.state.lock_bh::<crate::bh_gate::BlockBh>().openers }
 }
 
 /// The generic block-device lifetime state. Holders are kernel consumers such
@@ -78,7 +78,7 @@ struct SubmissionToken { state: Arc<Spinlock<DiskState, DevicesClass>> }
 
 impl Drop for SubmissionToken {
     fn drop(&mut self) {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_bh::<crate::bh_gate::BlockBh>();
         hal::kassert!(state.in_flight != 0, "block submission underflow");
         state.in_flight -= 1;
     }
@@ -94,7 +94,7 @@ struct AdmissionDev {
 
 impl AdmissionDev {
     fn admit(&self) -> KResult<SubmissionToken> {
-        let mut state = self.state.lock();
+        let mut state = self.state.lock_bh::<crate::bh_gate::BlockBh>();
         if state.detached { return Err(BlockError::Eio); }
         if state.quiesced { return Err(BlockError::Ebusy); }
         let Some(next) = state.in_flight.checked_add(1) else { return Err(BlockError::Ebusy); };
@@ -133,7 +133,7 @@ impl BlockDevice for AdmissionDev {
     fn block_size(&self) -> u32 { self.inner.block_size() }
     fn queue_limits(&self) -> KResult<QueueLimits> {
         let limits = self.inner.queue_limits()?;
-        limits.with_discard(limits.max_hw_discard_sectors(), self.state.lock().max_discard_sectors,
+        limits.with_discard(limits.max_hw_discard_sectors(), self.state.lock_bh::<crate::bh_gate::BlockBh>().max_discard_sectors,
             limits.discard_granularity())
     }
     fn supports_discard(&self) -> bool { self.inner.supports_discard() }
@@ -214,7 +214,7 @@ impl DiskQuiesce {
         // The disk is detached, so reopening its admission gate is meaningless —
         // and I/O arriving on a stale handle from here on is a dead-device error,
         // not a retryable hold.
-        disk.state.lock().detached = true;
+        disk.state.lock_bh::<crate::bh_gate::BlockBh>().detached = true;
         self.active = false;
         true
     }
@@ -222,7 +222,7 @@ impl DiskQuiesce {
 
 impl Drop for DiskQuiesce {
     fn drop(&mut self) {
-        if self.active { self.disk.state.lock().quiesced = false; }
+        if self.active { self.disk.state.lock_bh::<crate::bh_gate::BlockBh>().quiesced = false; }
     }
 }
 
@@ -332,7 +332,7 @@ pub fn by_name(name: &str) -> Option<Arc<Disk>> { TABLE.lock().iter().find(|d| d
 pub fn claim(name: &str) -> bool {
     let table = TABLE.lock();
     let Some(disk) = table.iter().find(|disk| disk.name == name) else { return false; };
-    let mut state = disk.state.lock();
+    let mut state = disk.state.lock_bh::<crate::bh_gate::BlockBh>();
     if state.quiesced { return false; }
     let Some(next) = state.holders.checked_add(1) else { return false; };
     state.holders = next;
@@ -342,7 +342,7 @@ pub fn claim(name: &str) -> bool {
 pub fn release(name: &str) -> bool {
     let table = TABLE.lock();
     let Some(disk) = table.iter().find(|disk| disk.name == name) else { return false; };
-    let mut state = disk.state.lock();
+    let mut state = disk.state.lock_bh::<crate::bh_gate::BlockBh>();
     if state.holders == 0 { return false; }
     state.holders -= 1;
     true
@@ -356,7 +356,7 @@ pub fn open_by_dev(dev_t: u32) -> bool {
     let (major, minor) = decode_dev(dev_t);
     let table = TABLE.lock();
     let Some(disk) = table.iter().find(|disk| disk.number == DevNum { major, minor }) else { return false; };
-    let mut state = disk.state.lock();
+    let mut state = disk.state.lock_bh::<crate::bh_gate::BlockBh>();
     if state.quiesced { return false; }
     let Some(next) = state.openers.checked_add(1) else { return false; };
     state.openers = next;
@@ -368,7 +368,7 @@ pub fn close_by_dev(dev_t: u32) -> bool {
     let (major, minor) = decode_dev(dev_t);
     let table = TABLE.lock();
     let Some(disk) = table.iter().find(|disk| disk.number == DevNum { major, minor }) else { return false; };
-    let mut state = disk.state.lock();
+    let mut state = disk.state.lock_bh::<crate::bh_gate::BlockBh>();
     if state.openers == 0 { return false; }
     state.openers -= 1;
     true
@@ -385,7 +385,7 @@ pub fn try_quiesce(name: &str) -> Option<DiskQuiesce> {
     if let Some(disk) = by_name(name) { let _ = disk.mapping.write_and_wait(); }
     let table = TABLE.lock();
     let disk = table.iter().find(|disk| disk.name == name)?.clone();
-    let mut state = disk.state.lock();
+    let mut state = disk.state.lock_bh::<crate::bh_gate::BlockBh>();
     if state.quiesced || state.holders != 0 || state.openers != 0 || state.in_flight != 0 { return None; }
     state.quiesced = true;
     drop(state);
@@ -395,17 +395,17 @@ pub fn try_quiesce(name: &str) -> Option<DiskQuiesce> {
 /// True when any holder or VFS opener keeps the disk busy. # C: O(N_disks)
 pub fn is_claimed(name: &str) -> bool {
     by_name(name).is_some_and(|disk| {
-        let state = disk.state.lock();
+        let state = disk.state.lock_bh::<crate::bh_gate::BlockBh>();
         state.holders != 0 || state.openers != 0
     })
 }
 /// Number of in-kernel block holders currently admitted. # C: O(N_disks)
 pub fn holder_count(name: &str) -> Option<u32> {
-    by_name(name).map(|disk| disk.state.lock().holders)
+    by_name(name).map(|disk| disk.state.lock_bh::<crate::bh_gate::BlockBh>().holders)
 }
 /// Number of VFS open file descriptions currently admitted. # C: O(N_disks)
 pub fn opener_count(name: &str) -> Option<u32> {
-    by_name(name).map(|disk| disk.state.lock().openers)
+    by_name(name).map(|disk| disk.state.lock_bh::<crate::bh_gate::BlockBh>().openers)
 }
 /// Return canonical limits, including the Linux-writable discard user cap. # C: O(N_disks)
 pub fn queue_limits(name: &str) -> KResult<QueueLimits> { by_name(name).ok_or(BlockError::Enxio)?.dev.queue_limits() }
@@ -418,7 +418,7 @@ pub fn set_discard_max_bytes(name: &str, bytes: u64) -> KResult<()> {
     if granularity == 0 || bytes % granularity != 0
         || bytes / u64::from(crate::LINUX_SECTOR_BYTES) > u64::from(limits.max_hw_discard_sectors()) { return Err(BlockError::Einval); }
     let sectors = u32::try_from(bytes / u64::from(crate::LINUX_SECTOR_BYTES)).map_err(|_| BlockError::Einval)?;
-    disk.state.lock().max_discard_sectors = sectors;
+    disk.state.lock_bh::<crate::bh_gate::BlockBh>().max_discard_sectors = sectors;
     Ok(())
 }
 /// Look up a registered disk by publication index. # C: O(N_disks)
