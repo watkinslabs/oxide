@@ -50,7 +50,7 @@ pub(super) fn inherit_from_parent(task: &mut Task) {
     // copies task_struct::comm in dup_task_struct — a pthread_create'd
     // thread starts with the creator's name until it renames itself via
     // prctl(PR_SET_NAME)/pthread_setname_np.
-    task.set_comm_bytes(parent.comm_bytes());
+    task.set_comm_inherited(parent.comm_bytes());
     // SUID_DUMP_* / THP_DISABLE are inherited across fork/clone (Linux
     // copies mm->flags).
     task.dumpable.store(parent.dumpable.load(Ordering::Acquire), Ordering::Release);

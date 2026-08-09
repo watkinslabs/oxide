@@ -276,12 +276,26 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
     let exec_image = elf_load::Image {
         blob,
         file: exec_vp.as_ref().map(crate::execve_common::image_backing),
+        // `st_dev` of the image's filesystem, which the mapping record reports
+        // so a consumer can match it against the object it opens.
+        dev: exec_vp.as_ref().map_or(0, |vp| vp.inode.fsid()),
     };
-    let img = match elf_load::load_image(
-        exec_image, Some(&crate::execve_common::open_interp), &new_as, &rnd) {
+    // `perf_event_mmap(vma)` fires from the VMA layer in the reference, which
+    // is why an `execve`'s own PT_LOADs are reported there without the loader
+    // knowing. Here the loader reports what it mapped and the records are
+    // emitted below, once the new image is committed.
+    let mut exec_maps = alloc::vec::Vec::new();
+    let img = match elf_load::load_image_reporting(
+        exec_image, Some(&crate::execve_common::open_interp), &new_as, &rnd,
+        &mut exec_maps) {
         Ok(i) => i,
         Err(_) => return -(Errno::Enoexec.as_i32() as i64),
     };
+    // The stack is mapped by this shim, not the loader, so it is reported here.
+    exec_maps.push(elf_load::ImageMapping {
+        addr: exec_user_stack_va, len: exec_user_stack_len as u64, pgoff: 0,
+        prot: VmaProt::READ | VmaProt::WRITE, file: None, dev: 0,
+    });
     // Linux `exec_mmap()` takes `signal_struct::exec_update_lock` for writing,
     // the same lock Landlock TSYNC holds. Contention restarts before the point
     // of no return so this thread can run any queued pseudo-signal task work.
@@ -360,11 +374,12 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
             // fresh name.
             let base = path_str.rsplit('/').next().unwrap_or(path_str.as_str());
             if !base.is_empty() {
-                cur.set_comm(base);
-                // `perf_event_comm(current, true)`: the exec form, which a
-                // consumer distinguishes from a `prctl(PR_SET_NAME)` rename by
-                // `PERF_RECORD_MISC_COMM_EXEC`.
-                crate::perf_sideband::note_comm(base.as_bytes(), true);
+                // `__set_task_comm(me, kbasename(bprm->filename), true)`: the
+                // setter itself emits `perf_event_comm(tsk, exec)`, so the
+                // rename reports from the one place that performs it — an
+                // `execve` here, a `prctl(PR_SET_NAME)` or a `/proc/<pid>/comm`
+                // write elsewhere, all through the same owner.
+                cur.set_comm_exec(base);
             }
             Some(path_str)
         } else {
@@ -372,6 +387,11 @@ pub fn execve_inner(args: &SyscallArgs, path_owned: alloc::vec::Vec<u8>) -> i64 
         }
     };
     let _ = exec_path_for_caps;
+    // `PERF_RECORD_COMM` (above) then `PERF_RECORD_MMAP` — the reference's
+    // order, because `begin_new_exec` renames the task before `load_elf_binary`
+    // maps a single segment. A consumer therefore learns the new name before
+    // the objects that name resolves against.
+    crate::perf_sideband::note_exec_mappings(&exec_maps);
     // Past the point of no return: install the credentials decided above
     // (Linux `commit_creds(bprm->cred)` inside `begin_new_exec`).
     crate::exec_transition::commit(cur, &creds);

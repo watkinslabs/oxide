@@ -57,6 +57,7 @@ mod types;
 mod uapi;
 
 pub use arch::{ArchCtxBuf, ArchFpuBuf, PosixTimer};
+pub use comm::set_comm_hook;
 pub use creds::{securebits, Creds, GroupList};
 pub use fs_context::{FsContext, FsContextSnapshot, UMASK_MASK};
 pub use io_context::current_ioprio;
