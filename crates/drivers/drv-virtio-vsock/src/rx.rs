@@ -17,7 +17,7 @@ const RX_BUF_LEN: u32 = crate::consts::FRAME_BYTES as u32;
 /// Pre-post every RX descriptor on q0 + bump avail.idx by RX_RING_BUFS,
 /// then kick the device. Called once at install. # C: O(RX_RING_BUFS)
 pub(crate) fn prepost_all(device_key: virtio::VirtioChildDeviceKey) {
-    let mut g = CTX.lock();
+    let mut g = CTX.lock_bh::<crate::registry::VsockBh>();
     let ctx = match g.iter_mut().find(|ctx| ctx.device_key == device_key) {
         Some(c) => c,
         None => return,
@@ -62,10 +62,10 @@ pub(crate) fn prepost_all(device_key: virtio::VirtioChildDeviceKey) {
 pub(crate) fn drain() -> usize {
     // Snapshot the work under the lock, copy out the payloads, release
     // the lock, THEN call deliver_rx (which may re-enter the TX hook to
-    // send RST/credit — re-entering CTX.lock() would deadlock).
+    // send RST/credit — re-entering CTX.lock_bh::<crate::registry::VsockBh>() would deadlock).
     let mut pkts: alloc::vec::Vec<(net::vsock::VsockOwner, VsockHdr, alloc::vec::Vec<u8>)> = alloc::vec::Vec::new();
     {
-        let mut g = CTX.lock();
+        let mut g = CTX.lock_bh::<crate::registry::VsockBh>();
         for ctx in g.iter_mut() {
             let Some(owner) = net::vsock::VsockOwner::from_raw(ctx.device_key.raw()) else {
                 continue;

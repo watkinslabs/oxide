@@ -84,7 +84,7 @@ fn rx_period(ctx: &mut Ctx, stream_id: u32, out: &mut [u8]) -> usize {
 pub fn cap_hw_params(
     owner: sound::SoundOwnerKey, rate: u8, format: u8, channels: u8, period_bytes: u32, buffer_bytes: u32,
 ) -> bool {
-    let mut g = CTX.lock();
+    let mut g = CTX.lock_bh::<crate::state::SndBh>();
     let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return false };
     let stream = match ctx.in_stream { Some(s) => s, None => return false };
     let ch = channels.clamp(1, 2);
@@ -104,7 +104,7 @@ pub fn cap_hw_params(
 }
 
 pub fn cap_prepare(owner: sound::SoundOwnerKey) -> bool {
-    let mut g = CTX.lock();
+    let mut g = CTX.lock_bh::<crate::state::SndBh>();
     let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return false };
     if ctx.cap_state == PcmState::Idle { return false; }
     let stream = match ctx.in_stream { Some(s) => s, None => return false };
@@ -114,7 +114,7 @@ pub fn cap_prepare(owner: sound::SoundOwnerKey) -> bool {
 }
 
 pub fn cap_trigger(owner: sound::SoundOwnerKey, start: bool) -> bool {
-    let mut g = CTX.lock();
+    let mut g = CTX.lock_bh::<crate::state::SndBh>();
     let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return false };
     let stream = match ctx.in_stream { Some(s) => s, None => return false };
     let code = if start { VIRTIO_SND_R_PCM_START } else { VIRTIO_SND_R_PCM_STOP };
@@ -124,7 +124,7 @@ pub fn cap_trigger(owner: sound::SoundOwnerKey, start: bool) -> bool {
 }
 
 pub fn cap_hw_free(owner: sound::SoundOwnerKey) -> bool {
-    let mut g = CTX.lock();
+    let mut g = CTX.lock_bh::<crate::state::SndBh>();
     let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return false };
     if ctx.cap_state == PcmState::Idle { return true; }
     let stream = match ctx.in_stream { Some(s) => s, None => return false };
@@ -136,7 +136,7 @@ pub fn cap_hw_free(owner: sound::SoundOwnerKey) -> bool {
 }
 
 pub fn pcm_recv(owner: sound::SoundOwnerKey, out: &mut [u8]) -> usize {
-    let mut g = CTX.lock();
+    let mut g = CTX.lock_bh::<crate::state::SndBh>();
     let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return 0 };
     if ctx.cap_state != PcmState::Running { return 0; }
     let stream = match ctx.in_stream { Some(s) => s, None => return 0 };

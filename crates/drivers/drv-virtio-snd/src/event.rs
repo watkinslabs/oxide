@@ -12,7 +12,7 @@ pub fn raise_event() {
 }
 
 pub(super) fn event_softirq() {
-    let mut g = CTX.lock();
+    let mut g = CTX.lock_bh::<crate::state::SndBh>();
     for ctx in g.iter_mut() {
         drain_eventq(ctx);
     }

@@ -36,31 +36,31 @@ pub(super) fn read_device_config(resources: virtio::VirtioResources) -> Option<S
     Some(SndDeviceConfig { jacks, streams, chmaps, controls })
 }
 
-pub fn present() -> bool { !CTX.lock().is_empty() }
+pub fn present() -> bool { !CTX.lock_bh::<crate::state::SndBh>().is_empty() }
 
 pub fn present_for(device_key: DeviceKey) -> bool {
-    CTX.lock().iter().any(|ctx| ctx.device_key == device_key)
+    CTX.lock_bh::<crate::state::SndBh>().iter().any(|ctx| ctx.device_key == device_key)
 }
 
 pub fn config(owner: sound::SoundOwnerKey) -> Option<(u32, u32, u32, u32)> {
-    active_ctx_for(&CTX.lock(), owner).map(|c| (c.jacks, c.streams, c.chmaps, c.controls))
+    active_ctx_for(&CTX.lock_bh::<crate::state::SndBh>(), owner).map(|c| (c.jacks, c.streams, c.chmaps, c.controls))
 }
 
 pub fn eventq_state() -> Option<(u16, u16, u16)> {
-    active_ctx(&CTX.lock()).and_then(|ctx| {
+    active_ctx(&CTX.lock_bh::<crate::state::SndBh>()).and_then(|ctx| {
         ctx.eventq.map(|eventq| (eventq.size, ctx.event_last_used, ctx.event_avail_idx))
     })
 }
 
 pub fn eventq_state_for(device_key: DeviceKey) -> Option<(u16, u16, u16)> {
-    CTX.lock()
+    CTX.lock_bh::<crate::state::SndBh>()
         .iter()
         .find(|ctx| ctx.device_key == device_key)
         .and_then(|ctx| ctx.eventq.map(|eventq| (eventq.size, ctx.event_last_used, ctx.event_avail_idx)))
 }
 
 pub fn event_stats_for(device_key: DeviceKey) -> Option<(u64, u64)> {
-    CTX.lock()
+    CTX.lock_bh::<crate::state::SndBh>()
         .iter()
         .find(|ctx| ctx.device_key == device_key)
         .map(|ctx| (ctx.event_drained, ctx.event_last_raw))
@@ -75,7 +75,7 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
     let device_cfg = read_device_config(p.resources)?;
     let txq = p.resources.require_queue_at_least(2, 3);
     let rxq = p.resources.require_queue_at_least(3, 3);
-    if CTX.lock().iter().any(|ctx| ctx.device_key == p.device_key) {
+    if CTX.lock_bh::<crate::state::SndBh>().iter().any(|ctx| ctx.device_key == p.device_key) {
         return None;
     }
     let owner = sound_owner(p.device_key)?;
@@ -115,7 +115,7 @@ pub fn install(p: SndInstall) -> Option<SndProbe> {
         // device_pa is an HHDM-mapped used ring; aligned u16 load of used.idx.
         unsafe { core::ptr::read_volatile(rxu.add(1)) }
     } else { 0 };
-    let mut g = CTX.lock();
+    let mut g = CTX.lock_bh::<crate::state::SndBh>();
     if g.iter().any(|ctx| ctx.device_key == p.device_key) {
         drop(g);
         return None;
