@@ -147,6 +147,11 @@ pub enum RegisterOp {
     /// carried through rather than checked here, because the reference decides
     /// the permission before the argument count.
     BpfFilterTask { arg: u64, nr: u32 },
+    /// `IORING_REGISTER_RESTRICTIONS` with no ring: the calling task restricts
+    /// ITSELF, and every ring it later creates starts from that allow-list.
+    /// `nr` travels for the same reason the filter form's does — the
+    /// permission is decided before the argument count.
+    RestrictionsTask { arg: u64, nr: u32 },
 }
 
 /// A decoded `io_uring_register(2)` call.
@@ -281,7 +286,8 @@ fn blind(opcode: u32, arg: u64, nr_args: u32) -> Result<RegisterOp, Errno> {
         // the work function runs before the argument count, so `nr` travels
         // with the request instead of being screened here.
         IORING_REGISTER_BPF_FILTER => Ok(RegisterOp::BpfFilterTask { arg, nr: nr_args }),
-        IORING_REGISTER_RESTRICTIONS => Err(unsupported(opcode)),
+        // A task restricting itself needs no ring either.
+        IORING_REGISTER_RESTRICTIONS => Ok(RegisterOp::RestrictionsTask { arg, nr: nr_args }),
         _ => Err(Errno::Einval),
     }
 }

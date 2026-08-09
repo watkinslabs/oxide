@@ -45,13 +45,16 @@ pub fn restrictions(inode: &IoUringInode, arg: u64, nr: u32) -> i64 {
     img.resize(bytes, 0);
     if bytes > 0 && uaccess::copy_from_user(&mut img[..], arg).is_err() { return err(Errno::Efault); }
 
-    let mut built = Restrictions::default();
+    let mut pairs: Vec<(u16, u8)> = Vec::new();
+    if pairs.try_reserve_exact(nr as usize).is_err() { return err(Errno::Enomem); }
     for i in 0..nr as usize {
         let at = i * RESTRICTION_BYTES as usize;
-        let Some((kind, val)) = decode_one(&img[at..]) else { return err(Errno::Einval) };
-        if let Err(e) = built.apply(kind, val) { return err(e); }
+        let Some(p) = decode_one(&img[at..]) else { return err(Errno::Einval) };
+        pairs.push(p);
     }
-    if nr == 0 { built.arm_empty(); }
+    // Folded through the same builder the task form uses, so the two cannot
+    // disagree about what an empty registration means.
+    let built = match Restrictions::build(&pairs) { Ok(b) => b, Err(e) => return err(e) };
     inode.reg.lock().restrictions = built;
     0
 }

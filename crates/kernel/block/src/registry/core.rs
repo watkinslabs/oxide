@@ -171,6 +171,14 @@ impl BlockDevice for AdmissionDev {
         drop(token);
         result
     }
+    /// # C: O(1)
+    fn can_poll(&self) -> bool { self.inner.can_poll() }
+    /// Reaping deliberately takes NO admission token, unlike every submitting
+    /// op above. The gate exists to stop NEW I/O entering a disk that is being
+    /// quiesced, and quiescing then waits for the in-flight population to
+    /// drain; refusing the reap of already-submitted requests would be the one
+    /// caller holding that drain up. Polling starts nothing. # C: O(reaped)
+    fn poll_completions(&self) -> usize { self.inner.poll_completions() }
     fn swap_slot_free_notify(&self, start_block: u64, len_blocks: u32) -> KResult<()> {
         let token = self.admit()?;
         let result = self.inner.swap_slot_free_notify(start_block, len_blocks);

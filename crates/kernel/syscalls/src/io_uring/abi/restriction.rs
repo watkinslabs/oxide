@@ -33,6 +33,22 @@ pub const IORING_RESTRICTION_LAST: u16 = 4;
 pub const IORING_MAX_RESTRICTIONS: u32 =
     (1 << 14) + IORING_REGISTER_LAST + OP_LAST as u32;
 
+/// `struct io_uring_task_restriction` header — {flags u16, nr_res u16,
+/// resv[3] u32}, with the restriction array following it. The task form of the
+/// registration takes exactly one of these, and the count of rules is inside
+/// the record rather than in `nr_args`.
+pub const TASK_RESTRICTION_HDR: u64 = 16;
+
+/// Decode and admit the task-form header, returning how many rules follow.
+/// Every reserved word and every undefined flag must be zero: a caller that
+/// set one is asking for a confinement this kernel would not apply.
+/// # C: O(1)
+pub fn admit_task_header(b: &[u8; TASK_RESTRICTION_HDR as usize]) -> Result<u32, Errno> {
+    if u16::from_le_bytes([b[0], b[1]]) != 0 { return Err(Errno::Einval); }
+    if b[4..].iter().any(|&x| x != 0) { return Err(Errno::Einval); }
+    Ok(u16::from_le_bytes([b[2], b[3]]) as u32)
+}
+
 /// A ring's restriction state. `Default` is "nothing registered", which
 /// permits everything. # C: n/a
 #[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
@@ -88,6 +104,20 @@ impl Restrictions {
     pub fn arm_empty(&mut self) {
         self.op_registered = true;
         self.reg_registered = true;
+    }
+
+    /// Fold a whole decoded registration in, in order.
+    ///
+    /// The empty registration is the case that must not be got wrong: no rules
+    /// at all arms BOTH ladders with nothing allowed, which is a ring that can
+    /// do nothing — not a ring with no restrictions. Both the ring form and
+    /// the task form build through here so the two cannot disagree about it.
+    /// # C: O(N_regs)
+    pub fn build(regs: &[(u16, u8)]) -> Result<Self, Errno> {
+        let mut r = Self::default();
+        for &(kind, val) in regs { r.apply(kind, val)?; }
+        if regs.is_empty() { r.arm_empty(); }
+        Ok(r)
     }
 
     /// Whether anything at all has been registered. # C: O(1)

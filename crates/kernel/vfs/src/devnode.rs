@@ -192,6 +192,14 @@ pub trait BlockDevOps: Send + Sync {
     fn ioctl(&self, devt: Devt, cmd: u32, arg: usize) -> KResult<usize> {
         let _ = (devt, cmd, arg); Err(VfsError::Enotty)
     }
+    /// `block_device_operations` completion polling — reap what the driver has
+    /// already finished, without waiting. `None` = this driver installs no poll
+    /// operation (Linux `blk_mq_ops->poll` absent); `Some(n)` = polled, `n`
+    /// completions reaped, where `Some(0)` means "none ready", not "cannot".
+    /// # C: driver-dependent
+    fn iopoll(&self, devt: Devt) -> Option<usize> { let _ = devt; None }
+    /// Whether that poll operation exists, asked without reaping. # C: O(1)
+    fn can_iopoll(&self, devt: Devt) -> bool { let _ = devt; false }
     /// `blkdev_issue_flush` — force the device's volatile write cache to
     /// stable media. `fsync(2)` on a block-device fd is required to issue it;
     /// the generic file-ops default answers `Ok(())` for a block device, which

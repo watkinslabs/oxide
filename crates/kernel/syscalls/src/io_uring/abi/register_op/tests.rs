@@ -89,8 +89,14 @@ fn blind_registration_separates_ring_less_opcodes_from_the_rest() {
     // the request because the permission check is decided before it.
     assert_eq!(decode(IORING_REGISTER_BPF_FILTER, -1, 0x1000, 1).unwrap().op,
                RegisterOp::BpfFilterTask { arg: 0x1000, nr: 1 });
-    // Recognised but needing a mechanism this kernel lacks.
-    assert_eq!(decode(IORING_REGISTER_RESTRICTIONS, -1, 0x1000, 1), Err(Errno::Eopnotsupp));
+    // A task restricting ITSELF needs no ring either, and for the same
+    // reason carries its argument count through rather than being screened
+    // here.
+    assert_eq!(decode(IORING_REGISTER_RESTRICTIONS, -1, 0x1000, 1).unwrap().op,
+               RegisterOp::RestrictionsTask { arg: 0x1000, nr: 1 });
+    assert_eq!(decode(IORING_REGISTER_RESTRICTIONS, -1, 0x1000, 4).unwrap().op,
+               RegisterOp::RestrictionsTask { arg: 0x1000, nr: 4 },
+               "a wrong count is the work function's EINVAL, not the decoder's");
     // Everything else without a ring is an argument error, not a missing
     // feature: the opcode exists, the caller just did not name a ring.
     assert_eq!(decode(IORING_REGISTER_BUFFERS, -1, 0x1000, 1), Err(Errno::Einval));

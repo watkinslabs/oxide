@@ -13,6 +13,7 @@ mod chain;
 mod chunking;
 mod config;
 mod helpers;
+mod iopoll;
 mod lifecycle;
 mod lost_wakeup;
 mod naming;

@@ -271,7 +271,7 @@ fn features_claim_only_what_the_ring_actually_does() {
 fn every_setup_flag_is_either_implemented_or_refused() {
     // (bit, implemented?, why)
     const TABLE: &[(u32, bool, &str)] = &[
-        (IORING_SETUP_IOPOLL,             false, "no backend can be polled for completed I/O"),
+        (IORING_SETUP_IOPOLL,             true,  "abi::iopoll + BlockDevice::poll_completions"),
         (IORING_SETUP_SQPOLL,             true,  "io_uring/sqpoll.rs poll thread"),
         (IORING_SETUP_SQ_AFF,             true,  "poll thread pinned to p->sq_thread_cpu"),
         (IORING_SETUP_CQSIZE,             true,  "fill_entries"),
@@ -288,7 +288,7 @@ fn every_setup_flag_is_either_implemented_or_refused() {
         (IORING_SETUP_NO_MMAP,            false, "no path adopts caller pages as the ring"),
         (IORING_SETUP_REGISTERED_FD_ONLY, false, "only reachable with NO_MMAP"),
         (IORING_SETUP_NO_SQARRAY,         true,  "rings_size + IoUring::sq_index"),
-        (IORING_SETUP_HYBRID_IOPOLL,      false, "only reachable with IOPOLL"),
+        (IORING_SETUP_HYBRID_IOPOLL,      false, "no per-request service-time estimate to sleep against"),
         (IORING_SETUP_CQE_MIXED,          false, "CQE size is fixed at 16 bytes"),
         (IORING_SETUP_SQE_MIXED,          false, "SQE size is fixed at 64 bytes"),
         (IORING_SETUP_SQ_REWIND,          false, "userspace could rewind over entries already read"),
@@ -311,7 +311,7 @@ fn every_setup_flag_is_either_implemented_or_refused() {
 /// `SUPPORTED_SETUP_FLAGS` and still be admitted by an earlier rule.
 #[test]
 fn every_unimplemented_setup_flag_is_refused_by_setup_itself() {
-    for bit in [IORING_SETUP_IOPOLL, IORING_SETUP_ATTACH_WQ, IORING_SETUP_SQE128,
+    for bit in [IORING_SETUP_ATTACH_WQ, IORING_SETUP_SQE128,
                 IORING_SETUP_CQE32, IORING_SETUP_NO_MMAP, IORING_SETUP_REGISTERED_FD_ONLY,
                 IORING_SETUP_HYBRID_IOPOLL, IORING_SETUP_CQE_MIXED, IORING_SETUP_SQE_MIXED,
                 IORING_SETUP_SQ_REWIND] {
@@ -332,7 +332,7 @@ fn every_implemented_setup_flag_is_admitted_and_reported_back() {
                   IORING_SETUP_TASKRUN_FLAG | IORING_SETUP_COOP_TASKRUN,
                   IORING_SETUP_SINGLE_ISSUER,
                   IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_SINGLE_ISSUER,
-                  IORING_SETUP_NO_SQARRAY] {
+                  IORING_SETUP_NO_SQARRAY, IORING_SETUP_IOPOLL] {
         let mut p = req(extra);
         if extra & IORING_SETUP_CQSIZE != 0 { p.cq_entries = 8; }
         let g = prepare(&mut p, 8).unwrap_or_else(|e| panic!("flags {extra:#x} refused: {e:?}"));

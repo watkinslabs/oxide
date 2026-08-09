@@ -125,6 +125,11 @@ pub(super) fn inherit_from_parent(task: &mut Task) {
     // confined itself out of.
     let parent_iou = parent.io_uring_filters.lock().clone();
     *task.io_uring_filters.lock() = parent_iou;
+    // Self-imposed io_uring restrictions likewise: the reference clones the
+    // task's restriction set into the child at fork, so a confined parent
+    // cannot produce an unconfined child that opens a ring on its behalf.
+    let parent_res = parent.io_uring_restrict.lock().clone();
+    *task.io_uring_restrict.lock() = parent_res;
     // Landlock ruleset chain is likewise inherited across fork and kept
     // across execve — a Landlock-confined process's children stay confined.
     let parent_domain = parent.landlock_domain.lock().clone();

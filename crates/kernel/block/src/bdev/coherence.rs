@@ -90,6 +90,14 @@ impl BlockDevice for CoherentDev {
 
     fn flush(&self) -> KResult<()> { self.inner.flush() }
 
+    /// Pass the wrapped driver's poll operation through: a decorator that took
+    /// the trait default would report every disk unpollable. Cache coherence is
+    /// reconciled at SUBMIT, before the device sees the request, so reaping a
+    /// completion needs no further reconciliation here. # C: driver-dependent
+    fn can_poll(&self) -> bool { self.inner.can_poll() }
+    /// # C: O(completions reaped)
+    fn poll_completions(&self) -> usize { self.inner.poll_completions() }
+
     fn swap_slot_free_notify(&self, start_block: u64, len_blocks: u32) -> KResult<()> {
         self.inner.swap_slot_free_notify(start_block, len_blocks)
     }

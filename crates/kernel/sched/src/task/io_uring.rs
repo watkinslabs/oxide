@@ -51,6 +51,23 @@ pub struct IouFilterReg {
     pub prog: Arc<alloc::vec::Vec<u64>>,
 }
 
+/// One rule out of a self-imposed `IORING_REGISTER_RESTRICTIONS`, kept in the
+/// order it was registered.
+///
+/// Shapeless here for the same reason [`IouFilterReg`] is: what a restriction
+/// KIND means, which opcode numbers are in range and how an empty registration
+/// differs from no registration all belong to the ring layer. This module owns
+/// the list's lifetime and nothing about its meaning; storing the derived
+/// allow-list bitmaps instead would put that meaning in two places.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct IouRestrictReg {
+    /// `io_uring_restriction::opcode` — which kind of rule this is.
+    pub kind: u16,
+    /// The rule's single byte of payload: a register opcode, an SQE opcode, or
+    /// an SQE flag mask, depending on `kind`.
+    pub val: u8,
+}
+
 /// A fresh, empty slot array. # C: O(IO_RINGFD_REG_MAX)
 fn empty_rings() -> Box<RegisteredRings> { Box::new([const { None }; IO_RINGFD_REG_MAX]) }
 
@@ -136,6 +153,28 @@ impl Task {
     /// imposed none. # C: O(N_regs)
     pub fn io_uring_filters_snapshot(&self) -> Option<alloc::vec::Vec<IouFilterReg>> {
         self.io_uring_filters.lock().clone()
+    }
+
+    /// Install the task's one self-imposed restriction set.
+    ///
+    /// `EPERM` if the task already registered one: the reference allows
+    /// exactly one, and letting a second replace the first would let a
+    /// confined task widen its own allow-list. An EMPTY list is a real
+    /// registration and takes the slot, which is why the presence of the
+    /// `Some` — not its length — is what refuses. # C: O(N_regs)
+    pub fn io_uring_restrict_set(&self, regs: alloc::vec::Vec<IouRestrictReg>)
+        -> Result<(), Errno>
+    {
+        let mut g = self.io_uring_restrict.lock();
+        if g.is_some() { return Err(Errno::Eperm); }
+        *g = Some(regs);
+        Ok(())
+    }
+
+    /// The task's own restriction registration, in order, or `None` when it
+    /// has imposed none. # C: O(N_regs)
+    pub fn io_uring_restrict_snapshot(&self) -> Option<alloc::vec::Vec<IouRestrictReg>> {
+        self.io_uring_restrict.lock().clone()
     }
 
     /// Drop every registration. Runs at task exit and at `execve`, because a

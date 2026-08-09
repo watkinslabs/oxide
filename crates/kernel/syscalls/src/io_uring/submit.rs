@@ -82,6 +82,9 @@ fn admit(inode: &Arc<IoUringInode>, sqe: &Sqe) -> Result<(), Errno> {
     // a request the policy refuses must not take its side effect first.
     super::filter::admit(inode, sqe)?;
     if !op_supported(sqe.opcode) { return Err(Errno::Einval); }
+    // A polled ring takes only the entries a backend poll could complete;
+    // anything else would sit outstanding with nothing ever looking for it.
+    crate::io_uring_abi::iopoll::admit_opcode(super::iopoll::polled(inode), sqe.opcode)?;
     Ok(())
 }
 
@@ -101,7 +104,15 @@ fn build(inode: &Arc<IoUringInode>, sqe: &Sqe) -> Arc<IoReq> {
     let creds = if sqe.personality == 0 { None } else {
         inode.reg.lock().personality(sqe.personality as u32)
     };
-    IoReq::new(inode, sqe, creds, inode.owner_ctx())
+    let req = IoReq::new(inode, sqe, creds, inode.owner_ctx());
+    // A deferred transfer on a polled ring is the only work a poll can find:
+    // an entry that ran inline has already posted its completion. Recording
+    // the description here — on the object the in-flight table tracks — is
+    // what makes the poll loop's target set follow the work's own lifetime.
+    if let Some(f) = super::iopoll::outstanding_file(inode, sqe) {
+        req.inner.lock().iopoll_file = Some(f);
+    }
+    req
 }
 
 /// Attach `req` to the deferred chain ending at `tail`. An

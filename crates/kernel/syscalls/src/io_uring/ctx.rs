@@ -98,6 +98,7 @@ impl IoUringInode {
                 clockid: super::rsrc::CLOCK_MONOTONIC,
                 napi: crate::io_uring_abi::napi::NapiState::inactive(),
                 bpf: super::register::bpf_filter::inherited_filters(),
+                restrictions: super::register::task_restrict::inherited_restrictions(),
                 ..IoUringReg::default()
             }),
             overflow: Spinlock::new(VecDeque::new()),

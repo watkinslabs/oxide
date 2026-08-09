@@ -159,6 +159,21 @@ impl BlockDevOps for DiskBlkOps {
     fn write(&self, _devt: Devt, off: u64, buf: &[u8]) -> KResult<usize> {
         self.disk.mapping.write_at(off, buf).map_err(block_err)
     }
+    /// The one link between `f_op->iopoll` and the driver's queue: the disk's
+    /// own `BlockDevice` decides both whether it can be polled at all and how
+    /// many completions a poll reaped. The capability is asked FIRST and
+    /// separately, because a device that reaped nothing must still answer
+    /// `Some(0)` — "polled, none ready" — while one with no poll operation
+    /// answers `None` and gets refused by the caller instead of spun on.
+    /// # C: driver-dependent
+    fn iopoll(&self, _devt: Devt) -> Option<usize> {
+        if !self.disk.dev.can_poll() { return None; }
+        Some(self.disk.dev.poll_completions())
+    }
+    /// The same capability the reap above gates on, answered without reaping —
+    /// one source, so an admission check and a poll can never disagree about
+    /// whether this disk has a poll operation. # C: O(1)
+    fn can_iopoll(&self, _devt: Devt) -> bool { self.disk.dev.can_poll() }
     /// Linux `blkdev_fsync`: write back the device's page cache and wait for
     /// it, THEN `blkdev_issue_flush`. The barrier alone would report a
     /// durability the cached bytes never reached.
@@ -314,6 +329,52 @@ mod tests {
         assert_eq!(super::sector_size(raw), Some(512));
         assert_eq!(super::size_bytes(0xDEAD), None, "unknown dev_t → None");
         registry::unregister("vds");
+    }
+
+    // `f_op->iopoll == NULL` for a device whose driver installs no poll
+    // operation. This is the exact distinction io_uring's IOPOLL admission
+    // ladder keys its EOPNOTSUPP on, so `None` must not degrade to `Some(0)`.
+    #[test]
+    fn iopoll_is_absent_for_a_device_with_no_poll_operation() {
+        let idx = registry::register("vdp1", disk(8));
+        let devt = vfs::Devt(dev_t_of("vdp1", idx).unwrap());
+        let ops = vfs::lookup_blkdev(devt).unwrap();
+        assert_eq!(ops.iopoll(devt), None, "no poll op → no iopoll slot");
+        registry::unregister("vdp1");
+    }
+
+    // A pollable driver reaches `f_op->iopoll` through the registry's decorator
+    // stack (stats / admission / coherence). A decorator taking the trait
+    // default instead of forwarding would report every disk unpollable here.
+    #[test]
+    fn iopoll_reports_the_count_a_pollable_device_reaped() {
+        let dev = crate::tests::PollableDisk::new(2);
+        let idx = registry::register("vdp2", dev);
+        let devt = vfs::Devt(dev_t_of("vdp2", idx).unwrap());
+        let ops = vfs::lookup_blkdev(devt).unwrap();
+        assert_eq!(ops.iopoll(devt), Some(2), "polled, two completions reaped");
+        assert_eq!(ops.iopoll(devt), Some(0), "polled, none left — NOT None");
+        registry::unregister("vdp2");
+    }
+
+    // The whole chain a caller actually walks: `file->f_op->iopoll` on an open
+    // `/dev/vdX` description → the device node's block dispatch → this bridge →
+    // the driver's poll. Each link is defaulted to "no poll op", so a missing
+    // link anywhere collapses this to `None`.
+    #[test]
+    fn f_op_iopoll_on_an_open_block_description_reaches_the_driver() {
+        let dev = crate::tests::PollableDisk::new(1);
+        let idx = registry::register("vdp3", dev);
+        let devt = vfs::Devt(dev_t_of("vdp3", idx).unwrap());
+        let sb = test_sb();
+        let node = make_device_node_inode(1, FileType::BlockDev, devt, 0o660, Arc::downgrade(&sb));
+        let file = File::new(node.clone(), vfs::dcache::d_obtain_alias(node), OpenFlags::empty());
+        file.open_hook().expect("block description opens");
+        let fop = file.inode().i_fop().clone();
+        assert_eq!(fop.iopoll(&file), Some(1), "f_op->iopoll reaches the driver's poll");
+        assert_eq!(fop.iopoll(&file), Some(0));
+        drop(file);
+        registry::unregister("vdp3");
     }
 
     #[test]

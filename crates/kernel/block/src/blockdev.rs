@@ -132,6 +132,28 @@ pub trait BlockDevice: Send + Sync {
     /// # C: depends on driver
     fn flush(&self) -> KResult<()>;
 
+    /// Whether this backend has a completion-polling operation at all — Linux
+    /// `blk_mq_ops->poll` being installed, not "did a poll just find work".
+    ///
+    /// Deliberately separate from [`Self::poll_completions`]: a count of zero
+    /// means "none finished right now", which is a different answer from "this
+    /// backend can never be polled". An admission ladder (io_uring
+    /// `IORING_SETUP_IOPOLL`) keys its `EOPNOTSUPP` on THIS predicate; collapsing
+    /// the two would refuse a pollable device that happens to be idle and admit
+    /// one that can never make progress. # C: O(1)
+    fn can_poll(&self) -> bool { false }
+
+    /// Reap completions the device has ALREADY finished, without waiting, and
+    /// return how many were delivered (Linux `blk_mq_ops->poll` → the `found`
+    /// count `blk_mq_poll` accumulates). Zero means nothing was ready on this
+    /// call, never that polling is unsupported — that is [`Self::can_poll`].
+    ///
+    /// The default reports "found none" rather than an error because a caller
+    /// that already passed the capability check must not have to distinguish an
+    /// idle device from a refusal on every iteration of its poll loop.
+    /// # C: O(completions reaped)
+    fn poll_completions(&self) -> usize { 0 }
+
     /// Notify a swap-capable device that the indicated page-sized backing
     /// extent has no remaining swap PTE references. Most block devices have
     /// no in-memory slot to release, so the default is deliberately inert;

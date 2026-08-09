@@ -16,6 +16,7 @@
 //   ops         — `IORING_OP_*` / `IOSQE_*` and which opcodes dispatch runs.
 //   link        — link chains, drain barriers and silent success.
 //   restriction — the per-ring register/SQE allow-lists.
+//   iopoll      — the polled-ring admission ladders and the poll-wait loop.
 //   resize      — what moves between the old and new rings on
 //                 `IORING_REGISTER_RESIZE_RINGS`, and when it is refused.
 //   bpf_filter  — `IORING_REGISTER_BPF_FILTER`: the record a filter reads,
@@ -48,6 +49,7 @@ pub mod napi;
 pub mod register_op;
 pub mod resize;
 pub mod restriction;
+pub mod iopoll;
 pub mod timeout;
 pub mod cancel;
 pub mod poll;
