@@ -10,6 +10,9 @@
 //                 `kernel.io_uring_group`, CAP_SYS_ADMIN) → EPERM.
 //   enter       — `io_uring_enter` flag/argument decode, CQ-occupancy and
 //                 SQ-index decisions, and the wait ladder.
+//   sqpoll      — `IORING_SETUP_SQPOLL`/`SQ_AFF`: the idle window, the pin-CPU
+//                 ladder, the poll loop's transitions and the
+//                 `IORING_SQ_NEED_WAKEUP` handshake.
 //   ops         — `IORING_OP_*` / `IOSQE_*` and which opcodes dispatch runs.
 //   link        — link chains, drain barriers and silent success.
 //   restriction — the per-ring register/SQE allow-lists.
@@ -30,6 +33,7 @@ pub mod uapi;
 pub mod allowed;
 pub mod layout;
 pub mod enter;
+pub mod sqpoll;
 pub mod ops;
 pub mod link;
 pub mod register_op;

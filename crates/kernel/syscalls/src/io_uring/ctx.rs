@@ -56,6 +56,10 @@ pub struct IoUringInode {
     pub iowq_max: [core::sync::atomic::AtomicU32; super::iowq::acct::NR],
     /// How many are running right now.
     pub iowq_running: [core::sync::atomic::AtomicU32; super::iowq::acct::NR],
+    /// This ring's submission-polling thread, for an `IORING_SETUP_SQPOLL`
+    /// ring. `None` otherwise, which is what makes `io_uring_enter` submit
+    /// inline rather than defer to a thread that does not exist.
+    pub sq: Spinlock<Option<Arc<super::sqpoll::SqData>>, RingLockClass>,
     /// Armed timeouts gated on this ring's completion count. Non-zero means a
     /// completion can make one due, so posting one must rouse the pool.
     pub count_timers: core::sync::atomic::AtomicU32,
@@ -101,6 +105,7 @@ impl IoUringInode {
                 core::sync::atomic::AtomicU32::new(0),
                 core::sync::atomic::AtomicU32::new(0),
             ],
+            sq: Spinlock::new(None),
             count_timers: core::sync::atomic::AtomicU32::new(0),
         }))
     }

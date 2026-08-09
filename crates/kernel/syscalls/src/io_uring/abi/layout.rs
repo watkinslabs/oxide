@@ -82,20 +82,42 @@ pub const NO_SQ_ARRAY: u32 = u32::MAX;
 
 /// Setup flags this kernel implements. Every other bit is refused with
 /// `EINVAL` — the same answer a kernel that predates the flag gives, because
-/// the bit is simply absent from its own mask. Refusing is mandatory:
-/// accepting `IORING_SETUP_SQPOLL` without a poll thread would leave the
-/// caller spinning on an SQ ring nobody drains.
+/// the bit is simply absent from its own mask.
 ///
-/// The task-work flags are honoured rather than ignored: every entry runs to
-/// completion inside the submission that issued it, so there is never deferred
-/// work to signal, notify or defer, and the `IORING_SQ_TASKRUN` bit a
-/// `TASKRUN_FLAG` ring watches is correctly never raised. `SINGLE_ISSUER` is
-/// enforced — a second task submitting to such a ring is refused.
+/// No bit is ever accepted and ignored. A flag names behaviour a caller builds
+/// on; accepting one without the behaviour turns a refusal the caller can
+/// handle into a hang it cannot. Every bit is therefore in exactly one of two
+/// states, with the reason recorded here and pinned by `layout/tests.rs`:
+///
+/// | flag | verdict | why |
+/// |---|---|---|
+/// | `IOPOLL` | refused | completion polling needs a backend that can be polled for finished I/O; nothing under this block layer exposes one, so a polled ring would never complete. |
+/// | `SQPOLL` | implemented | `io_uring/sqpoll.rs` + [`super::sqpoll`]. |
+/// | `SQ_AFF` | implemented | the poll thread is pinned to `p->sq_thread_cpu`. |
+/// | `CQSIZE` | implemented | `fill_entries`. |
+/// | `CLAMP` | implemented | `fill_entries`. |
+/// | `ATTACH_WQ` | refused | one poll thread and one worker pool per ring; there is no second ring's work queue to join. |
+/// | `R_DISABLED` | implemented | `ctx::state::DISABLED`. |
+/// | `SUBMIT_ALL` | implemented | `submit::submit_sqes`. |
+/// | `COOP_TASKRUN` | implemented | vacuously: an entry finishes inside the submission that issued it or on a worker that posts its own completion, so no task work is ever queued back at the submitter and no signal is ever needed to run it. |
+/// | `TASKRUN_FLAG` | implemented | same reason — `IORING_SQ_TASKRUN` is correctly never raised, because there is never task work pending. |
+/// | `SQE128` | refused | the SQE array is sized and indexed at 64 bytes. |
+/// | `CQE32` | refused | the CQE array is sized and indexed at 16 bytes. |
+/// | `SINGLE_ISSUER` | implemented | `ctx::claim_issuer` refuses a second submitter. |
+/// | `DEFER_TASKRUN` | implemented | vacuously, per `COOP_TASKRUN`; also the gate `RESIZE_RINGS` requires. |
+/// | `NO_MMAP` | refused | ring memory is kernel-allocated; there is no path that adopts a caller's pages as the ring. |
+/// | `REGISTERED_FD_ONLY` | refused | it is only reachable with `NO_MMAP`, which is refused. |
+/// | `NO_SQARRAY` | implemented | `rings_size` + `IoUring::sq_index`. |
+/// | `HYBRID_IOPOLL` | refused | it is only reachable with `IOPOLL`, which is refused. |
+/// | `CQE_MIXED` | refused | it varies CQE size per completion; the CQE array is fixed at 16 bytes. |
+/// | `SQE_MIXED` | refused | it varies SQE size per entry; the SQE array is fixed at 64 bytes. |
+/// | `SQ_REWIND` | refused | it lets userspace move the SQ tail backwards over entries the kernel may already have read. |
 pub const SUPPORTED_SETUP_FLAGS: u32 =
     IORING_SETUP_CQSIZE | IORING_SETUP_CLAMP | IORING_SETUP_NO_SQARRAY
     | IORING_SETUP_SUBMIT_ALL | IORING_SETUP_R_DISABLED
     | IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_COOP_TASKRUN
-    | IORING_SETUP_TASKRUN_FLAG | IORING_SETUP_DEFER_TASKRUN;
+    | IORING_SETUP_TASKRUN_FLAG | IORING_SETUP_DEFER_TASKRUN
+    | IORING_SETUP_SQPOLL | IORING_SETUP_SQ_AFF;
 
 /// `p->features` oxide reports. Claiming a bit we do not implement is a lie
 /// liburing acts on, so the set is deliberately small:
@@ -119,13 +141,18 @@ pub const SUPPORTED_SETUP_FLAGS: u32 =
 ///                    submitter's address space, descriptor table and
 ///                    credentials.
 ///   POLL_32BITS    — a poll entry's whole 32-bit event mask is honoured.
-/// NOT claimed, and why: SQPOLL_NONFIXED (no submission-poll thread),
-/// REG_REG_RING (no per-task registered-ring array).
+///   SQPOLL_NONFIXED— a submission-poll thread runs entries naming ordinary
+///                    descriptors, not only registered ones: it borrows the
+///                    creating task's descriptor table for its whole life.
+///   REG_REG_RING   — `io_uring_register` accepts a registered-ring index in
+///                    place of a descriptor
+///                    (`IORING_REGISTER_USE_REGISTERED_RING`).
 pub const REPORTED_FEATURES: u32 =
     IORING_FEAT_SINGLE_MMAP | IORING_FEAT_NODROP | IORING_FEAT_SUBMIT_STABLE
     | IORING_FEAT_RW_CUR_POS | IORING_FEAT_CUR_PERSONALITY | IORING_FEAT_EXT_ARG
     | IORING_FEAT_RSRC_TAGS | IORING_FEAT_CQE_SKIP | IORING_FEAT_LINKED_FILE
-    | IORING_FEAT_FAST_POLL | IORING_FEAT_NATIVE_WORKERS | IORING_FEAT_POLL_32BITS;
+    | IORING_FEAT_FAST_POLL | IORING_FEAT_NATIVE_WORKERS | IORING_FEAT_POLL_32BITS
+    | IORING_FEAT_SQPOLL_NONFIXED | IORING_FEAT_REG_REG_RING;
 
 /// Region geometry derived from an admitted `struct io_uring_params`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

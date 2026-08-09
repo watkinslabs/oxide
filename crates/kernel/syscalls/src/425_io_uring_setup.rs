@@ -59,18 +59,37 @@ pub fn sys_io_uring_setup(args: &syscall::SyscallArgs) -> i64 {
 
     let inode = match IoUringInode::new(&geom) { Some(i) => i, None => return err(Errno::Enomem) };
 
+    // Linux io_uring_create(): the submission-poll thread is built once the
+    // regions exist and BEFORE the params copy-back and the fd install, so a
+    // refused `sq_thread_cpu` leaves neither a descriptor nor a thread behind.
+    // It also runs for a ring WITHOUT `IORING_SETUP_SQPOLL`, because that is
+    // where `IORING_SETUP_SQ_AFF` alone is refused.
+    if let Err(e) = crate::io_uring::sqpoll::offload_create(&inode, &p) {
+        crate::io_uring::sqpoll::finish(&inode);
+        return err(e);
+    }
+
     // Linux io_uring_create() sets p->features only once the rings exist, then
     // copies the params back BEFORE installing the fd, so a failed copy-back
     // never leaks a descriptor.
     p.features = REPORTED_FEATURES;
-    if uaccess::copy_to_user(params_p, &p.to_bytes()).is_err() { return err(Errno::Efault); }
+    if uaccess::copy_to_user(params_p, &p.to_bytes()).is_err() {
+        crate::io_uring::sqpoll::finish(&inode);
+        return err(Errno::Efault);
+    }
 
     let cur = match sched::live::current() { Some(c) => c, None => return err(Errno::Ebadf) };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return err(Errno::Ebadf) };
     crate::io_uring::ring::install_release_hook();
+    let inode_for_teardown = inode.clone();
     let inode_ref: vfs::InodeRef = make_io_uring_inode(inode);
     let dentry = vfs::dcache::d_alloc_pseudo("[io_uring]", inode_ref.clone(), &crate::anon_dname::ANON_INODE_OPS);
     let file = File::new(inode_ref, dentry, OpenFlags::O_RDWR);
-    match fdt.alloc_limit(file, cur.nofile_soft()) { Ok(fd) => fd as i64, Err(e) => -(e as i64) }
+    match fdt.alloc_limit(file, cur.nofile_soft()) {
+        Ok(fd) => fd as i64,
+        // No descriptor was installed, so the ring's own close path will never
+        // run: end its poll thread here instead of leaving it to notice.
+        Err(e) => { crate::io_uring::sqpoll::finish(&inode_for_teardown); -(e as i64) }
+    }
 }

@@ -34,12 +34,26 @@ pub fn max_workers(inode: &IoUringInode, arg: u64) -> i64 {
 /// which is a different answer from asking for something forbidden.
 pub const MAX_CPUS: u32 = 64;
 
+/// Apply a worker mask to the ring's submission-poll thread, if it has one.
+/// Linux routes an `IORING_SETUP_SQPOLL` ring's affinity registration through
+/// the poll thread, and parks it across the change: a thread moved between
+/// processors mid-pass would resume its loop on a processor the caller has
+/// just said it may not use. # C: O(1) + the park
+fn apply_to_poll_thread(inode: &IoUringInode, mask: u64) {
+    let Some(sqd) = crate::io_uring::sqpoll::of(inode) else { return };
+    // SAFETY: process context in the register syscall path on the caller's own CPU, holding no lock the poll thread takes; the caller is a user task, never the poll thread itself.
+    unsafe { sqd.park(); }
+    sqd.set_cpus_allowed(mask);
+    sqd.unpark();
+}
+
 /// `IORING_REGISTER_IOWQ_AFF`, and its unregistering form when `len == 0`:
 /// which processors workers may run on. # C: O(1)
-pub fn affinity(arg: u64, len: u32) -> i64 {
+pub fn affinity(inode: &IoUringInode, arg: u64, len: u32) -> i64 {
     if len == 0 {
         // Unregistering restores the unrestricted set.
         pool::set_cpu_mask(0);
+        apply_to_poll_thread(inode, 0);
         return 0;
     }
     // The caller's mask is a byte array; anything past the word this kernel
@@ -50,5 +64,6 @@ pub fn affinity(arg: u64, len: u32) -> i64 {
     let mask = u64::from_ne_bytes(b);
     if mask == 0 { return err(Errno::Einval); }
     pool::set_cpu_mask(mask);
+    apply_to_poll_thread(inode, mask);
     0
 }

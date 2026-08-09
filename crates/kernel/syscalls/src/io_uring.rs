@@ -21,6 +21,7 @@
 //   req         — one in-flight request and the ring's in-flight table
 //   defer       — which entries cannot finish inline, and how they are armed
 //   iowq        — the worker pool that runs deferred work
+//   sqpoll      — the submission-polling thread of an IORING_SETUP_SQPOLL ring
 //   timeout     — armed timeouts, completion-count gates and link timeouts
 //   poll        — armed polls and the poll-armed retry
 //   cancel      — the in-flight search and how a waiting request is ended
@@ -47,6 +48,7 @@ pub mod personality;
 pub mod req;
 pub mod defer;
 pub mod iowq;
+pub mod sqpoll;
 pub mod timeout;
 pub mod poll;
 pub mod cancel;

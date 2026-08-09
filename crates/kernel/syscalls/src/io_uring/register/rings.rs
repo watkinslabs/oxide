@@ -61,6 +61,10 @@ pub fn restrictions(inode: &IoUringInode, arg: u64, nr: u32) -> i64 {
 pub fn enable_rings(inode: &IoUringInode) -> i64 {
     if inode.flags & IORING_SETUP_R_DISABLED == 0 { return err(Errno::Ebadfd); }
     if !inode.clear_state(state::DISABLED) { return err(Errno::Ebadfd); }
+    // A submission-poll thread sleeps on a disabled ring however full its SQ
+    // is — the entries are not its to consume — so enabling the ring is the
+    // only thing that can wake it, and nothing else will.
+    if let Some(sqd) = crate::io_uring::sqpoll::of(inode) { sqd.wake(); }
     0
 }
 
