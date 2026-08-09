@@ -69,6 +69,18 @@ fn exec(kind: u32, arg: u64) {
             }
         }
         Some(CallKind::LdtReload) => sched::ldt::flush_ldt_remote(arg),
+        Some(CallKind::Stop) => {
+            // Publish BEFORE parking: the waiter frees nothing, but it does
+            // proceed to overwrite the pages this CPU was running out of, so
+            // the bit must mean "already stopped", never "about to".
+            hal::smp_call::mark_stopped(this_cpu() as u32);
+            loop {
+                // SAFETY: terminal park; `hlt` is legal at CPL 0 and this CPU
+                // runs no further kernel code — the machine is on its way to a
+                // different kernel.
+                unsafe { core::arch::asm!("cli", "hlt", options(nomem, nostack)) };
+            }
+        }
         // A slot that decodes to no kind cannot be executed and must not be
         // guessed at; the drain still releases it, so the sender proceeds.
         None => {}

@@ -15,6 +15,8 @@ static VECTOR_PINS: [AtomicU64; 256] =
 
 const IOREGSEL: u64 = 0x00;
 const IOWIN: u64 = 0x10;
+/// Version register; bits 23:16 hold the highest redirection-entry index.
+const IOAPIC_VER: u32 = 0x01;
 
 /// Publish the I/O APIC MMIO kernel VA. # C: O(1)
 pub fn set_base_va(va: u64) { IOAPIC_VA.store(va, Ordering::Release); }
@@ -98,6 +100,24 @@ pub unsafe fn mask(pin: u32) {
     unsafe {
         let lo = read_reg(lo_idx) | (1 << 16);
         write_reg(lo_idx, lo);
+    }
+}
+
+/// Mask every redirection entry this I/O APIC implements.
+///
+/// The count comes from the version register's maximum-redirection-entry
+/// field rather than a constant, because a constant would be right for one
+/// platform and silently leave lines asserting on another. A no-op when no
+/// I/O APIC has been mapped.
+/// # SAFETY: as `program_redirect`. # C: O(pins)
+pub unsafe fn mask_all() {
+    if IOAPIC_VA.load(Ordering::Acquire) == 0 { return; }
+    // SAFETY: per fn contract — the window is mapped; register 0x01 is the
+    // architected version register.
+    let maxred = unsafe { (read_reg(IOAPIC_VER) >> 16) & 0xff };
+    for pin in 0..=maxred {
+        // SAFETY: `pin` is within the entry count the device just reported.
+        unsafe { mask(pin) };
     }
 }
 

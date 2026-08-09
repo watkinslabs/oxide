@@ -46,6 +46,13 @@ pub struct KImage {
     pub control_code_page: u64,
     /// Scratch page the trampoline uses to swap a page with its destination.
     pub swap_page: u64,
+    /// Physical root of the identity page tables the trampoline runs under,
+    /// built by `machine::prepare` at LOAD time out of control pages.
+    pub arch_pgt: u64,
+    /// Byte offset within the control page of the half of the trampoline that
+    /// runs identity-mapped. Zero on an architecture whose trampoline is
+    /// entered identity-mapped from its first instruction.
+    pub arch_entry_off: u64,
     /// The caller's segment list, as validated.
     pub segments: Vec<KexecSegment>,
     /// `KEXEC_PRESERVE_CONTEXT` was requested.
@@ -64,7 +71,8 @@ impl KImage {
     /// # C: O(1)
     pub fn new(start: u64, ty: ImageType, segments: Vec<KexecSegment>) -> Self {
         Self {
-            start, ty, head: 0, control_code_page: 0, swap_page: 0, segments,
+            start, ty, head: 0, control_code_page: 0, swap_page: 0,
+            arch_pgt: 0, arch_entry_off: 0, segments,
             preserve_context: false, cursor: Loc::Head,
             control_pages: Vec::new(), dest_pages: Vec::new(),
             unusable_pages: Vec::new(), source_pages: Vec::new(), ind_pages: Vec::new(),
@@ -97,6 +105,8 @@ impl KImage {
         self.cursor = Loc::Head;
         self.control_code_page = 0;
         self.swap_page = 0;
+        self.arch_pgt = 0;
+        self.arch_entry_off = 0;
     }
 
     /// True when `[start, end]` intersects any segment's destination range.

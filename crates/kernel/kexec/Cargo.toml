@@ -8,9 +8,18 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
-klog = { path = "../../shared/klog" }
-sync = { path = "../../shared/sync" }
-pmm  = { path = "../mm-pmm" }
+klog  = { path = "../../shared/klog" }
+sync  = { path = "../../shared/sync" }
+pmm   = { path = "../mm-pmm" }
+hal   = { path = "../../arch/hal" }
+cpu   = { path = "../cpu" }
+power = { path = "../power" }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+hal-x86_64 = { path = "../../arch/hal-x86_64" }
+
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+hal-aarch64 = { path = "../../arch/hal-aarch64" }
 
 [lints]
 workspace = true

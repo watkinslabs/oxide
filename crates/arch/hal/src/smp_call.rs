@@ -22,7 +22,7 @@
 // is a no-op: arm64 broadcasts TLB invalidation in hardware and has no
 // LDT, and the harness is single-CPU.
 
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 /// What a queued cross-CPU call asks the target to do.
 ///
@@ -39,6 +39,15 @@ pub enum CallKind {
     /// but only if this CPU currently has that address space loaded. The
     /// reference's `flush_ldt`.
     LdtReload = 2,
+    /// Record this CPU as stopped and park it forever — the reference's
+    /// reboot IPI, used to take every other CPU off the machine before a
+    /// kexec relocation overwrites the pages they are executing out of.
+    ///
+    /// The one handler that never returns, and the only one for which that is
+    /// correct: its caller must not wait on the queue slot (`wait: false`) and
+    /// waits on [`stopped_mask`] instead, which the handler publishes BEFORE
+    /// it parks.
+    Stop = 3,
 }
 
 impl CallKind {
@@ -53,6 +62,7 @@ impl CallKind {
         match v {
             1 => Some(CallKind::TlbFlush),
             2 => Some(CallKind::LdtReload),
+            3 => Some(CallKind::Stop),
             _ => None,
         }
     }
@@ -61,6 +71,25 @@ impl CallKind {
 /// Sentinel VA meaning "flush everything", not a single page. `u64::MAX` is
 /// never a valid user VA.
 pub const ALL: u64 = u64::MAX;
+
+/// CPUs that have run [`CallKind::Stop`] and parked.
+///
+/// Lives beside the kind rather than in the subsystem that asks for the stop:
+/// the handler is here, and a counter kept elsewhere would be a second record
+/// of the same fact that only one of the two updates.
+static STOPPED: AtomicU64 = AtomicU64::new(0);
+
+/// Record `cpu` as stopped. Called by the handler immediately before it parks,
+/// so a waiter that observes the bit knows the CPU is no longer executing
+/// anything that could be relocated out from under it.
+/// # C: O(1)
+pub fn mark_stopped(cpu: u32) {
+    if cpu < 64 { STOPPED.fetch_or(1u64 << cpu, Ordering::Release); }
+}
+
+/// The set of parked CPUs.
+/// # C: O(1)
+pub fn stopped_mask() -> u64 { STOPPED.load(Ordering::Acquire) }
 
 /// `fn(mask, kind, arg, wait)`. Stored as `usize` because `AtomicPtr` over a
 /// function pointer is not a stable atomic form; only `set_call_hook` writes

@@ -1,68 +1,84 @@
-// The machine-specific half: stop the machine, then relocate and enter.
+// The machine-specific half: build the tables at load time, stop the machine,
+// then relocate and enter.
 //
-// STATUS: refused, with a diagnosis rather than a stub. A staged image is
-// complete and correct — the relocation list, the control pages and the source
-// pages are all built the way the trampoline needs them — but the trampoline
-// that consumes it is not built on either arch, so `reboot(2)`'s KEXEC command
-// refuses instead of jumping. `scratch/known_issues.md` carries the row.
+// Split the way the reference splits it. `machine_kexec_prepare` runs while a
+// syscall can still return an errno and does everything that can fail — the
+// identity page tables, the trampoline copy, the size and reachability checks.
+// `machine_kexec` runs past the point of no return and allocates nothing.
 //
-// Returning success here would be the worst available answer: the caller's
-// last observation would be a syscall that returned 0, on a machine that then
-// kept running the old kernel, with no way to tell that from a kexec that
-// booted an identical kernel.
+// Module manifest:
+// - `plan`:    ungated — the ranges the identity map covers, what that costs
+//              in control pages, and the control-register state at entry.
+// - `walk`:    ungated — the IND_* walk the trampoline performs, so its order
+//              is checkable without a boot.
+// - `idmap`:   ungated — the identity + transition mappings, over the kernel's
+//              own page-table walker.
+// - `quiesce`: ungated — which CPUs must stop and when the stop is complete.
+// - `x86`:     x86_64 `relocate_kernel` and the privileged steps around it.
+// - `arm`:     aarch64 `arm64_relocate_new_kernel` and the same.
 //
-// What the jump needs, per arch, so the next lane starts from the list and not
-// from the reference:
-//
-// x86_64 — `machine_kexec_prepare` + `relocate_kernel`:
-//   1. An identity page table (PML4 → 1 GiB pages over all of RAM) built into
-//      image-owned control pages, plus the transition mapping that keeps the
-//      trampoline's own page executable across the CR3 switch. It must live in
-//      pages the relocation cannot overwrite — which is what
-//      `KImage::alloc_control_page` already guarantees.
-//   2. The trampoline copied into `control_code_page`, entered with IRQs
-//      masked, on the identity CR3, after `swapgs` state is irrelevant: it
-//      walks `head` following IND_DESTINATION / IND_SOURCE, copies page by
-//      page, then `jmp`s to `start` with the boot protocol's register state.
-//   3. Machine quiesce: stop the APs (they must not be executing pages the
-//      copy is overwriting), mask the IOAPIC and the LAPIC timer, and quiesce
-//      every DMA-capable device — a virtio queue still running rewrites the
-//      new kernel's memory after the copy.
-//
-// aarch64 — `machine_kexec` + `arm64_relocate_new_kernel`:
-//   1. The same list walk, but performed with the MMU OFF, so the trampoline
-//      page must be identity mapped before `SCTLR_EL1.M` is cleared, per the
-//      register-clobber and entry-state rules in `docs/54 §1`.
-//   2. Every copied page cleaned to the point of coherency and the I-cache
-//      invalidated before the branch, because the new kernel starts with
-//      caches off and would otherwise execute stale lines.
-//   3. Entry per the arm64 boot protocol `docs/36 §4` — x0 = DTB phys,
-//      x1..x3 zero, EL1 or EL2 with interrupts masked.
-//
-// Both also need `machine_shutdown()`'s CPU-stop path, which this kernel has
-// only in the halt/reset direction (`power::machine`), never in a form that
-// leaves the machine able to run more code afterwards.
+// WHY THE TRAMPOLINE COPIES ITSELF ONTO A CONTROL PAGE. The pages it is about
+// to move include the ones the running kernel occupies — a second kernel is
+// normally loaded exactly where the first one lives. Any code still executing
+// out of the kernel image at that moment is overwritten mid-instruction. A
+// control page is the one supply guaranteed to sit outside every destination
+// range, so code copied there survives its own relocation.
 
+pub mod plan;
+pub mod walk;
+pub mod idmap;
+pub mod quiesce;
+
+#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+pub mod x86;
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+pub mod arm;
+
+use crate::frames::Frames;
 use crate::image::KImage;
-use crate::validate::{Error, KResult};
+use crate::validate::KResult;
 
-/// `machine_kexec_prepare(image)`. Nothing arch-specific is required at STAGE
-/// time on either arch here: the identity tables x86_64 builds in prepare are
-/// derived from the image, so they belong to the jump that does not exist yet.
-/// Kept as the seam the reference has, so the next lane adds the table build
-/// in one place instead of threading it through the load.
-/// # C: O(1)
-pub fn prepare(_image: &KImage) -> KResult<()> { Ok(()) }
+/// `machine_kexec_prepare(image)`: everything the jump needs, built while a
+/// failure is still an errno.
+///
+/// Called from the tail of staging, after the relocation list is terminated,
+/// because the identity map has to cover every destination range and those are
+/// not all known until then.
+/// # C: O(RAM / 2 MiB)
+pub fn prepare<F: Frames>(image: &mut KImage, f: &mut F) -> KResult<()> {
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    { x86::prepare(image, f) }
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+    { arm::prepare(image, f) }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { let _ = (image, f); Ok(()) }
+}
+
+/// `device_shutdown()` from `kernel_restart_prepare("kexec reboot")`.
+///
+/// Separate from [`kexec`] because it is the only step here that is NOT past
+/// the point of no return: the reference runs it while the machine could still
+/// abort, and it is idempotent so a later reboot does not drive every device
+/// twice.
+/// # C: O(N_devices)
+pub fn shutdown_devices() {
+    #[cfg(target_os = "oxide-kernel")]
+    power::machine::shutdown_devices_once();
+}
 
 /// `machine_kexec(image)`: never returns on success.
-///
-/// See the module comment for exactly what is missing. `ENOSYS` is a
-/// divergence — the reference has no errno for "the trampoline is not built",
-/// because there it always is — and it is the only value that cannot be
-/// confused with the two refusals the reference DOES make here (`EBUSY` for
-/// the lock, `EINVAL` for no image loaded).
-/// # C: O(1)
-pub fn kexec(_image: &KImage) -> KResult<()> {
-    klog::kwarn!("kexec: image staged, relocation trampoline not built, refusing to jump");
-    Err(Error::NoSys)
+/// # C: O(image size)
+pub fn kexec(image: &KImage) -> KResult<()> {
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
+    { x86::kexec(image) }
+    #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+    { arm::kexec(image) }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    {
+        // The hosted harness has no machine to replace. Reporting success
+        // would make every store-level test assert on a jump that did not
+        // happen; `ENOSYS` is what a build with no relocation support answers.
+        let _ = image;
+        Err(crate::validate::Error::NoSys)
+    }
 }

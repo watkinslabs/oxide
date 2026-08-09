@@ -234,13 +234,13 @@ fn a_staged_image_keeps_the_entry_point_and_the_validated_segment_list() {
 
 #[test]
 fn the_machine_step_refuses_rather_than_reporting_a_jump_it_did_not_make() {
-    // The staged image is complete; the trampoline that consumes it is not
-    // built. Returning Ok here would leave the caller unable to distinguish a
-    // kexec that never happened from one that booted an identical kernel.
+    // The hosted harness has no machine to replace, so the jump reports
+    // ENOSYS. Returning Ok here would leave every store-level case asserting
+    // on a relocation that did not happen.
     let mut f = FakeFrames::new(0x80_0000);
     let src = PatternSource::new(PAGE_SIZE as usize);
     let segs = vec![seg(0x20_0000, PAGE_SIZE, PAGE_SIZE)];
-    let img = stage_image(&mut f, 0x20_0000, segs, 0, Limits::default(), &src).expect("ok");
-    assert_eq!(crate::machine::prepare(&img), Ok(()));
+    let mut img = stage_image(&mut f, 0x20_0000, segs, 0, Limits::default(), &src).expect("ok");
+    assert_eq!(crate::machine::prepare(&mut img, &mut f), Ok(()));
     assert_eq!(crate::machine::kexec(&img), Err(Error::NoSys));
 }

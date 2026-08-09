@@ -44,6 +44,14 @@ SECTIONS {
 
     .text ALIGN(4K) : AT(ADDR(.text) - KERNEL_BASE + KERNEL_PHYS) {
         __text_start = .;
+        /* kexec's relocation trampoline is COPIED, as a blob, into a control
+         * page and executed there after the kernel it was linked into has
+         * stopped existing. The linker owns its bounds — not the assembler —
+         * so that nothing can be placed between them and so the size check is
+         * a link failure rather than an errno from kexec_load(2). */
+        __relocate_kernel_start = .;
+        KEEP(*(.text.kexec_relocate))
+        __relocate_kernel_end = .;
         *(.text .text.*)
         __text_end = .;
     }
@@ -102,6 +110,15 @@ SECTIONS {
     __kernel_end = .;
     /* Total image size (incl. .bss): arm64 Image header AND PE SizeOfImage. */
     __image_size = __kernel_end - __kernel_start;
+
+    /* Room for the trampoline's own stack in the same control page: it runs
+     * with RSP/SP at the page's top and the code below it. */
+    ASSERT(__relocate_kernel_end - __relocate_kernel_start <= 4096 - 256,
+           "kexec relocation trampoline does not fit its control page")
+    /* The blob is copied to offset 0 of the control page and entered there, so
+     * its first byte must be its entry point. */
+    ASSERT(__relocate_kernel_start == oxide_kexec_arm_relocate_start,
+           "kexec control page must start with the trampoline entry point")
 
     /DISCARD/ : {
         *(.eh_frame)
