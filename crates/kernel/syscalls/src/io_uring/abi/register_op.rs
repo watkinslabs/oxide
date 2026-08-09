@@ -125,6 +125,10 @@ pub enum RegisterOp {
     /// `IORING_REGISTER_IOWQ_AFF` / `IORING_UNREGISTER_IOWQ_AFF`; `arg == 0`
     /// is the unregistering form.
     IowqAff { arg: u64, len: u32 },
+    /// `IORING_REGISTER_RING_FDS` — `arg` is a `struct io_uring_rsrc_update[nr]`.
+    RingFds { arg: u64, nr: u32 },
+    /// `IORING_UNREGISTER_RING_FDS` — same argument shape.
+    UnregisterRingFds { arg: u64, nr: u32 },
 }
 
 /// A decoded `io_uring_register(2)` call.
@@ -218,6 +222,14 @@ fn ring_op(opcode: u32, arg: u64, nr_args: u32) -> Result<RegisterOp, Errno> {
             Ok(RegisterOp::IowqAff { arg, len: nr_args })
         }
         IORING_UNREGISTER_IOWQ_AFF => no_args(RegisterOp::IowqAff { arg: 0, len: 0 }),
+        IORING_REGISTER_RING_FDS => {
+            if nr_args == 0 || nr_args > IO_RINGFD_REG_MAX { return Err(Errno::Einval); }
+            Ok(RegisterOp::RingFds { arg, nr: nr_args })
+        }
+        IORING_UNREGISTER_RING_FDS => {
+            if nr_args == 0 || nr_args > IO_RINGFD_REG_MAX { return Err(Errno::Einval); }
+            Ok(RegisterOp::UnregisterRingFds { arg, nr: nr_args })
+        }
         _ => Err(unsupported(opcode)),
     }
 }
@@ -248,11 +260,30 @@ pub fn decode(raw_opcode: u32, fd: i32, arg: u64, nr_args: u32) -> Result<Reques
     Ok(Request { registered_ring, opcode, op: ring_op(opcode, arg, nr_args)? })
 }
 
-/// Resolving `fd` through the task's registered-ring array. No
-/// `IORING_REGISTER_RING_FDS` is executed, so every slot is empty: past the
-/// array is `EINVAL`, an empty slot inside it is `EBADF`. # C: O(1)
-pub fn registered_ring_error(fd: i32) -> Errno {
-    if fd < 0 || fd as u32 >= IO_RINGFD_REG_MAX { Errno::Einval } else { Errno::Ebadf }
+/// `IORING_REGISTER_RING_FDS` per-entry admission: `resv` must be zero.
+/// `offset == -1U` (`IO_RINGFD_ALLOC_ANY`) picks the next free slot; any
+/// other value is passed through — the array installer itself bounds-checks
+/// an explicit index. # C: O(1)
+pub fn ring_fds_reg_admission(resv: u32) -> Result<(), Errno> {
+    if resv != 0 { return Err(Errno::Einval); }
+    Ok(())
+}
+
+/// `IORING_UNREGISTER_RING_FDS` per-entry admission: `resv` and `data` must
+/// be zero and `offset` must name a real slot. # C: O(1)
+pub fn ring_fds_unreg_admission(resv: u32, data: u64, offset: u32) -> Result<(), Errno> {
+    if resv != 0 || data != 0 || offset >= IO_RINGFD_REG_MAX { return Err(Errno::Einval); }
+    Ok(())
+}
+
+/// The reference's partial-success convention for both ring-fd opcodes: the
+/// count of entries already committed wins over the error that stopped the
+/// loop early — `return i ? i : ret;`. Zero committed and no error can only
+/// happen for a caller that supplied zero entries, which the ladder above
+/// already rejects with `EINVAL` before this is ever consulted. # C: O(1)
+pub fn ring_fds_result(committed: u32, last: Result<(), Errno>) -> i64 {
+    if committed > 0 { return committed as i64; }
+    match last { Ok(()) => 0, Err(e) => -(e.as_i32() as i64) }
 }
 
 /// Buffer-registration admission: EBUSY before the count check. # C: O(1)

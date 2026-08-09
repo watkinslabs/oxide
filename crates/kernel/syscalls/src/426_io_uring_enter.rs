@@ -16,16 +16,18 @@ use crate::io_uring_abi::enter::*;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
-/// Resolve the ring behind the first argument. # C: O(1)
+/// Resolve the ring behind the first argument — `IORING_ENTER_REGISTERED_RING`
+/// indexes the calling task's registered-ring array instead of the fd table
+/// (Linux `io_uring_ctx_get_file`). # C: O(1)
 fn ring_for(fd: i32, registered: bool) -> Result<Arc<IoUringInode>, i64> {
-    use crate::io_uring_abi::register_op::registered_ring_error;
-    // No registered-ring array is populated, so this form can only report the
-    // errno an empty array gives.
-    if registered { return Err(err(registered_ring_error(fd))); }
     let Some(cur) = sched::live::current() else { return Err(err(Errno::Ebadf)) };
-    // SAFETY: running task on this CPU; preempt-off; sole reader of the fd_table slot.
-    let Some(fdt) = (unsafe { cur.fd_table_ref() }) else { return Err(err(Errno::Ebadf)) };
-    let file = match fdt.clone().get(fd) { Ok(f) => f, Err(_) => return Err(err(Errno::Ebadf)) };
+    let file = if registered {
+        match cur.io_uring_ring_lookup(fd as u32) { Ok(f) => f, Err(e) => return Err(err(e)) }
+    } else {
+        // SAFETY: running task on this CPU; preempt-off; sole reader of the fd_table slot.
+        let Some(fdt) = (unsafe { cur.fd_table_ref() }) else { return Err(err(Errno::Ebadf)) };
+        match fdt.clone().get(fd) { Ok(f) => f, Err(_) => return Err(err(Errno::Ebadf)) }
+    };
     let inode = ring_of(&file).map_err(err)?;
     ring_ctx(&inode).ok_or(err(Errno::Eopnotsupp))
 }
