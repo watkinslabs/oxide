@@ -15,9 +15,15 @@ static NEXT_PERF_INO: vfs::pseudo_ino::RegionAllocator
 /// Build the anon inode backing one `perf_event_open` fd. # C: O(1)
 pub fn make_perf_event_inode(ev: Arc<PerfEvent>) -> InodeRef {
     let ino = NEXT_PERF_INO.alloc();
+    // The wait queue belongs to the EVENT (`event->waitq`/`event->fasync`), and
+    // the inode publishes that same `Arc` rather than minting a second list —
+    // `fasync_add` reaches it through the inode, `perf_output_wakeup` through
+    // the event, and both must be the one queue.
+    let waitq = Arc::clone(&ev.waitq);
     InodeBuilder::new(ino, mk_mode(vfs::FileType::Regular, 0),
         default_inode_ops(), Arc::new(PerfFileOps))
         .private(ev)
+        .poll_subs_arc(waitq)
         .build()
 }
 
@@ -38,9 +44,6 @@ pub fn is_perf_inode(inode: &InodeRef) -> bool { event_of(inode).is_some() }
 struct PerfFileOps;
 
 impl FileOps for PerfFileOps {
-    /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
-    fn can_poll(&self, _file: &vfs::File) -> bool { true }
-
     /// `perf_poll`: `EPOLLHUP` for an event with no ring buffer, otherwise the
     /// latched `rb->poll` — set when a record crossed the wakeup watermark and
     /// cleared by this read, exactly as the reference's `atomic_xchg` does.

@@ -90,5 +90,14 @@ pub fn apply_state(members: &[alloc::sync::Arc<PerfEvent>], what: PerfIoctl) {
             PerfIoctl::Reset   => g.counter.reset(src),
             _ => {}
         }
+        drop(g);
+        // `pmu::add`/`pmu::del`: the clock PMUs overflow from a timer, so
+        // enabling arms it and disabling cancels it. `Reset` leaves the armed
+        // state alone — the reference resets the count, not the schedule.
+        match what {
+            PerfIoctl::Enable  => super::hrtimer::start(ev),
+            PerfIoctl::Disable => super::hrtimer::stop(ev),
+            _ => {}
+        }
     }
 }

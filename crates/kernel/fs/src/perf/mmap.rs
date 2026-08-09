@@ -50,9 +50,16 @@ pub fn plan(attr_inherit: bool, cpu: i32, has_buffer: bool, buffer_pages: u64,
     if cpu == -1 && attr_inherit { return Err(Errno::Einval); }
     if !c.shared { return Err(Errno::Einval); }
     if c.vma_pages > sizing::NR_PAGES_MAX { return Err(Errno::Enomem); }
-    // The AUX area needs a PMU that produces hardware trace data. oxide
-    // registers only software PMUs, so `rb_alloc_aux` has nothing to set up
-    // and the reference's `!has_aux(event)` arm applies.
+    // A nonzero `vm_pgoff` selects the AUX area. The reference reaches
+    // `-EINVAL` here for EVERY event whose PMU produces no AUX data, and it
+    // does so BEFORE the allocator's `-EOPNOTSUPP` is reachable: the AUX
+    // mapping's first two gates read `user_page->aux_offset`/`aux_size`, which
+    // only an AUX-capable PMU ever writes, and reject an `aux_offset` below
+    // `perf_data_size(rb) + PAGE_SIZE` — which zero always is. An event with no
+    // ring at all takes the same `-EINVAL` one line earlier. So this is not a
+    // stand-in for absent machinery; it is the outcome, with the same errno, of
+    // the reference's own AUX ladder on a kernel whose PMUs declare no AUX
+    // capability — which is every PMU oxide registers.
     if c.pgoff != 0 { return Err(Errno::Einval); }
     let nr = sizing::data_pages(c.vma_pages)?;
     if has_buffer {
@@ -129,6 +136,28 @@ mod tests {
         let mut c = ctx(5);
         c.pgoff = 5;
         assert_eq!(ok(&c), Err(Errno::Einval));
+    }
+
+    /// The AUX offset is refused with EINVAL whether or not a ring is already
+    /// attached, and at every size — the reference's AUX ladder cannot get
+    /// past its `aux_offset` gates when no PMU ever published an `aux_offset`,
+    /// so EINVAL is the answer for a software event, not a placeholder for
+    /// machinery that would otherwise return something else.
+    #[test]
+    fn the_aux_offset_is_einval_at_every_size_and_with_or_without_a_ring() {
+        for pages in [1u64, 2, 4, 5, 9] {
+            for (has_buffer, buffer_pages) in [(false, 0u64), (true, 4), (true, 8)] {
+                let mut c = ctx(pages);
+                c.pgoff = pages;
+                assert_eq!(plan(false, 0, has_buffer, buffer_pages, false, 0, &c),
+                           Err(Errno::Einval), "pages {pages} buffered {has_buffer}");
+            }
+        }
+        // It is decided before the ring-size match a re-mmap would otherwise
+        // fail on, so the errno cannot depend on which gate ran first.
+        let mut c = ctx(5);
+        c.pgoff = 1;
+        assert_eq!(plan(false, 0, true, 4, false, 0, &c), Err(Errno::Einval));
     }
 
     #[test]

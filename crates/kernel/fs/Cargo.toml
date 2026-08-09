@@ -27,6 +27,9 @@ nscg     = { path = "../nscg" }
 umh      = { path = "../umh" }
 pidfd    = { path = "../pidfd" }
 timekeeper = { path = "../timekeeper" }
+# perf's software-clock PMUs are hrtimer-driven (`perf_swevent_start_hrtimer`);
+# this is the wheel that fires them.
+timer    = { path = "../timer" }
 # `capable(CAP_SYS_PTRACE)` for userfaultfd(2) is `ns_capable(&init_user_ns, …)`,
 # so the gate needs the initial-user-namespace test, not just the effective set.
 namespace-identity = { path = "../namespace-identity" }

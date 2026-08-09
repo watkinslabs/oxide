@@ -236,6 +236,10 @@ pub fn do_exit(status: i32) -> i64 {
             // themselves) goes away, so a parent's later `read(2)` on its own
             // fd reports the total across every child that ever inherited
             // from it, not just what the parent itself counted.
+            // `perf_event_exit_event` — emitted BEFORE the fold-back retires
+            // this task's events, so the record still has a ring to land in.
+            crate::perf_sideband::note_exit(task.tid, task.tgid.load(Ordering::Relaxed),
+                                            task.tid, task.tgid.load(Ordering::Relaxed));
             fs::perf::inherit::on_task_exit(task.tid);
             // Registered io_uring rings hold file references of their own, so
             // they are released alongside the fd table — a ring must not

@@ -221,7 +221,13 @@ pub fn execve_inner(args: &SyscallArgs, mut path_owned: alloc::vec::Vec<u8>) -> 
             // prior prctl(PR_SET_NAME) rename — a fresh program image gets a
             // fresh name.
             let base = path_str.rsplit('/').next().unwrap_or(path_str.as_str());
-            if !base.is_empty() { cur.set_comm(base); }
+            if !base.is_empty() {
+                cur.set_comm(base);
+                // `perf_event_comm(current, true)`: the exec form, which a
+                // consumer distinguishes from a `prctl(PR_SET_NAME)` rename by
+                // `PERF_RECORD_MISC_COMM_EXEC`.
+                crate::perf_sideband::note_comm(base.as_bytes(), true);
+            }
             Some(path_str)
         } else {
             None

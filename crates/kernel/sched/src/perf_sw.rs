@@ -49,31 +49,133 @@ pub fn read(kind: CpuSw, cpu: usize) -> u64 {
 
 use core::sync::atomic::AtomicPtr;
 
-/// `(event id, cpu, count, data address, faulted-from-user)`.
-pub type SampleFn = fn(CpuSw, usize, u64, u64, bool);
+mod deferred;
+pub use deferred::SwitchNote;
+
+/// One counter site's `perf_sw_event(event_id, nr, regs, addr)` call, carrying
+/// everything the sampler reads out of the reference's `struct pt_regs *regs`:
+/// `perf_instruction_pointer(regs)` and `user_mode(regs)`. A site with no trap
+/// frame passes `ip: 0` and the record reports it as such, which is what a
+/// reference PMU that supplied nothing does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SwSite {
+    pub kind: CpuSw,
+    pub cpu:  usize,
+    /// `nr` — how many units of the event this site is charging.
+    pub nr:   u64,
+    /// `perf_instruction_pointer(regs)`: the trapped PC.
+    pub ip:   u64,
+    /// `addr` — the faulting data address, `0` where the site has none.
+    pub addr: u64,
+    /// `user_mode(regs)`, which selects `PERF_RECORD_MISC_USER`/`_KERNEL`.
+    pub user: bool,
+}
+
+pub type SampleFn = fn(&SwSite);
+
+/// `perf_event_switch(task, next_prev, sched_in)` — `(cpu, note)`. Separate
+/// from [`SampleFn`] because a `PERF_RECORD_SWITCH` is a side-band record, not
+/// a counter overflow: it is emitted for `attr.context_switch` events whether
+/// or not anything is sampling.
+pub type SwitchFn = fn(usize, deferred::SwitchNote);
+
+static SWITCH_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Install the `PERF_RECORD_SWITCH` emitter. # C: O(1)
+pub fn set_switch_hook(f: SwitchFn) { SWITCH_HOOK.store(f as *mut (), Ordering::Release); }
+
+/// Park this switch's two identities for the tail to emit. Called from inside
+/// the runqueue-locked region, which is the only place both sides are known.
+/// # C: O(1)
+pub fn note_switch(cpu: usize, prev_pid: u32, prev_tid: u32, next_pid: u32,
+                   next_tid: u32, preempt: bool)
+{
+    deferred::note_switch(cpu, deferred::SwitchNote {
+        prev_pid, prev_tid, next_pid, next_tid, preempt });
+    softirq::raise(softirq::Slot::PerfDeferred);
+}
 
 static SAMPLE_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
 /// Install the perf sampler. # C: O(1)
 pub fn set_sample_hook(f: SampleFn) { SAMPLE_HOOK.store(f as *mut (), Ordering::Release); }
 
-/// `perf_sw_event(event_id, nr, regs, addr)` — charge the accumulator, then
-/// give every attached sampling event its overflow opportunity.
-///
-/// Callers must be in a context that may take the perf registry and one ring
-/// lock: process context, no runqueue lock held. The context-switch and
-/// migration sites charge from inside the runqueue-locked region and therefore
-/// still call [`charge`] directly.
-/// # C: O(events attached to this context)
-pub fn sw_event(kind: CpuSw, cpu: usize, n: u64, addr: u64, user: bool) {
-    charge(kind, cpu, n);
+/// Hand `site` to the installed sampler without touching the accumulator —
+/// `perf_swevent_event()` alone. The deferred drain uses this because the
+/// charge already happened inside the locked region. # C: O(events)
+pub fn sample_only(site: &SwSite) {
     let p = SAMPLE_HOOK.load(Ordering::Acquire);
     if p.is_null() { return; }
     // SAFETY: installed via `set_sample_hook` with the `SampleFn` signature;
     // the Acquire load pairs with that setter's Release store and the pointer
     // is a `'static` fn address.
     let f: SampleFn = unsafe { core::mem::transmute::<*mut (), SampleFn>(p) };
-    f(kind, cpu, n, addr, user);
+    f(site);
+}
+
+/// `perf_sw_event(event_id, nr, regs, addr)` — charge the accumulator, then
+/// give every attached sampling event its overflow opportunity.
+///
+/// Callers must be in a context that may take the perf registry and one ring
+/// lock: process context, no runqueue lock held. Sites inside the
+/// runqueue-locked region use [`charge_deferred`] instead.
+/// # C: O(events attached to this context)
+pub fn sw_event(site: &SwSite) {
+    charge(site.kind, site.cpu, site.nr);
+    sample_only(site);
+}
+
+/// The runqueue-locked form: charge now, take the sampling opportunity at the
+/// next [`drain_deferred`].
+///
+/// The reference takes it inline — `perf_event_task_sched_out`/`_in` both run
+/// under `rq->lock`, which its RCU swevent hlist and lockless ring reservation
+/// tolerate. oxide's registry and ring are both spinlocked and rank below the
+/// runqueue, so the opportunity moves to the first point after the switch where
+/// the lock is gone (`finish_task_switch`, which is where the reference already
+/// runs the rest of its per-switch perf work). Same CPU, same task, once per
+/// switch — only the instant differs.
+/// # C: O(1)
+pub fn charge_deferred(kind: CpuSw, cpu: usize, n: u64) {
+    charge(kind, cpu, n);
+    deferred::queue(kind, cpu, n);
+    softirq::raise(softirq::Slot::PerfDeferred);
+}
+
+/// Install the bottom half that runs the parked opportunities. Called once from
+/// kernel init, alongside the sample hook. # C: O(1)
+pub fn init_softirq() {
+    softirq::set_handler(softirq::Slot::PerfDeferred, || drain_deferred(softirq::this_cpu()));
+}
+
+/// Run every sampling opportunity [`charge_deferred`] parked on `cpu`.
+///
+/// Runs from the `PerfDeferred` softirq, never from the switch tail: the
+/// sampler's call chain is deep (a record buffer plus the ring), and the stack
+/// gate charges every path that can block for the whole cost of `schedule()`,
+/// so hanging it off `finish_task_switch` put 34 syscall paths within 1.4 KiB
+/// of the guard page. A bottom half is also what the reference uses
+/// (`irq_work_queue`), for the same reason: the work must not run in the
+/// context that generated it.
+/// # C: O(pending kinds × events)
+pub fn drain_deferred(cpu: usize) {
+    deferred::drain(cpu, |kind, nr| {
+        // A scheduler-internal site has no trap frame and no data address; the
+        // reference passes `regs = NULL, addr = 0` from the very same place
+        // (`__perf_sw_event_sched(..., 1, 0)`), and `perf_swevent_get_recursion_
+        // context`'s caller then samples with `regs` synthesised as the current
+        // kernel context.
+        sample_only(&SwSite { kind, cpu, nr, ip: 0, addr: 0, user: false });
+    });
+    if let Some(note) = deferred::take_switch(cpu) {
+        let p = SWITCH_HOOK.load(Ordering::Acquire);
+        if p.is_null() { return; }
+        // SAFETY: installed via `set_switch_hook` with the `SwitchFn`
+        // signature; the Acquire load pairs with that setter's Release store
+        // and the pointer is a `'static` fn address.
+        let f: SwitchFn = unsafe { core::mem::transmute::<*mut (), SwitchFn>(p) };
+        f(cpu, note);
+    }
 }
 
 // ---- perf sysctls -------------------------------------------------------
@@ -119,6 +221,58 @@ mod tests {
         assert_eq!(read(CpuSw::MinFlt, 0), before0 + 3);
         assert_eq!(read(CpuSw::MinFlt, 1), before1);
         assert_eq!(read(CpuSw::MajFlt, 0), other);
+    }
+
+    /// The runqueue-locked sites must still reach the sampler. Before the
+    /// deferral they called `charge` alone, so `PERF_COUNT_SW_CONTEXT_SWITCHES`
+    /// and `_CPU_MIGRATIONS` counted but never sampled.
+    #[test]
+    fn a_runqueue_locked_charge_still_reaches_the_sampler() {
+        use core::sync::atomic::AtomicU64;
+        static SEEN_CTXSW: AtomicU64 = AtomicU64::new(0);
+        static SEEN_MIGRATION: AtomicU64 = AtomicU64::new(0);
+        static SEEN_IP: AtomicU64 = AtomicU64::new(!0);
+        fn hook(s: &SwSite) {
+            match s.kind {
+                CpuSw::ContextSwitch => { SEEN_CTXSW.fetch_add(s.nr, Ordering::Relaxed); }
+                CpuSw::Migration     => { SEEN_MIGRATION.fetch_add(s.nr, Ordering::Relaxed); }
+                _ => {}
+            }
+            SEEN_IP.store(s.ip, Ordering::Relaxed);
+        }
+        set_sample_hook(hook);
+        let cpu = 5;
+        drain_deferred(cpu);
+        SEEN_CTXSW.store(0, Ordering::Relaxed);
+        SEEN_MIGRATION.store(0, Ordering::Relaxed);
+
+        let before = read(CpuSw::ContextSwitch, cpu);
+        charge_deferred(CpuSw::ContextSwitch, cpu, 1);
+        charge_deferred(CpuSw::Migration, cpu, 1);
+        // The counter advances at the charge, as it always did.
+        assert_eq!(read(CpuSw::ContextSwitch, cpu), before + 1);
+        // ...and the sampler has not run yet: the caller still holds the lock.
+        assert_eq!(SEEN_CTXSW.load(Ordering::Relaxed), 0);
+
+        // The opportunity is queued as a BOTTOM HALF, not run in the switch
+        // tail: the sampler's frames must not be charged to every path that
+        // can block. No assertion here — `softirq::pending()` is a global
+        // any-slot flag that other tests in this binary also set, so a check
+        // on it could not go red if the raise were removed. The gate that
+        // CAN fail for this is `make stack-gate`, which is what caught the
+        // switch-tail version (34 syscall paths within 1.4 KiB of the guard
+        // page) and passes with the bottom half.
+        drain_deferred(cpu);
+        assert_eq!(SEEN_CTXSW.load(Ordering::Relaxed), 1);
+        assert_eq!(SEEN_MIGRATION.load(Ordering::Relaxed), 1);
+        // A scheduler site has no trap frame, so it reports no instruction
+        // pointer rather than a fabricated one.
+        assert_eq!(SEEN_IP.load(Ordering::Relaxed), 0);
+
+        // A second drain with nothing parked fires nothing.
+        drain_deferred(cpu);
+        assert_eq!(SEEN_CTXSW.load(Ordering::Relaxed), 1);
+        SAMPLE_HOOK.store(core::ptr::null_mut(), Ordering::Release);
     }
 
     #[test]

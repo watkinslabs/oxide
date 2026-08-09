@@ -509,7 +509,7 @@ pub unsafe fn schedule() {
     if prev_cpu != u16::MAX && prev_cpu != me as u16 {
         // SAFETY: rq.current is the incoming task just published by swap_current; relaxed counter bump only.
         unsafe { rq.current_ref() }.nr_migrations.fetch_add(1, Ordering::Relaxed);
-        crate::perf_sw::charge(crate::perf_sw::CpuSw::Migration, me, 1);
+        crate::perf_sw::charge_deferred(crate::perf_sw::CpuSw::Migration, me, 1);
     }
     // The entry recovery above must have consumed the previous handoff before
     // this schedule acquired the same rq lock. Publishing over a live token
@@ -528,8 +528,19 @@ pub unsafe fn schedule() {
     // runnable. `PERF_COUNT_SW_CONTEXT_SWITCHES` reports their sum, and
     // `/proc/<pid>/status` reports them separately.
     if let Some(p) = prev_arc_opt.as_ref() {
-        crate::rusage_charge::ctxsw(p, !matches!(p.state(), TaskState::Runnable));
-        crate::perf_sw::charge(crate::perf_sw::CpuSw::ContextSwitch, me, 1);
+        let preempted = matches!(p.state(), TaskState::Runnable);
+        crate::rusage_charge::ctxsw(p, !preempted);
+        crate::perf_sw::charge_deferred(crate::perf_sw::CpuSw::ContextSwitch, me, 1);
+        // `perf_event_switch`'s two identities. THIS is the only point that
+        // knows both sides, so they are parked here and the switch tail emits
+        // the pair of `PERF_RECORD_SWITCH` records.
+        // SAFETY: rq.current is the incoming task just published by
+        // swap_current, and this schedule runs preempt-off, so the runqueue's
+        // Arc keeps the borrow alive for the two relaxed loads below.
+        let next = unsafe { rq.current_ref() };
+        crate::perf_sw::note_switch(me,
+            p.tgid.load(Ordering::Relaxed), p.tid,
+            next.tgid.load(Ordering::Relaxed), next.tid, preempted);
     }
     VOLUNTARY.fetch_add(1, Ordering::Relaxed);
     crate::diag::note_switch();

@@ -10,7 +10,7 @@ use crate::user_as::debug::{STEP_ROOT, STEP_RIP, STEP_VA};
 
 /// # C: O(log N_vmas) + O(walk depth) on demand-page; O(1) reject
 #[cfg(target_arch = "x86_64")]
-pub fn user_fault_handler(vec: u64, err: u64, _rip: u64, cr2: u64) -> bool {
+pub fn user_fault_handler(vec: u64, err: u64, rip: u64, cr2: u64) -> bool {
     if vec != 14 {
         // B44: non-#PF traps (#GP, #UD, #DE, #SS, #AC, ...). If they
         // came from user mode (CPL=3 in saved CS), the right answer
@@ -29,8 +29,8 @@ pub fn user_fault_handler(vec: u64, err: u64, _rip: u64, cr2: u64) -> bool {
                 // (SIGILL for #UD, SIGFPE for #DE, SIGBUS for #AC, …), queued
                 // with its `_sigfault` record. Reporting every one as a
                 // terminating SIGSEGV made a handled SIGFPE unhandleable.
-                signal::trace_user_fault_x86(vec, err, _rip, cr2);
-                return force_user_fault_x86(vec, err, _rip, cr2, None);
+                signal::trace_user_fault_x86(vec, err, rip, cr2);
+                return force_user_fault_x86(vec, err, rip, cr2, None);
             }
         }
         return false;
@@ -72,7 +72,7 @@ pub fn user_fault_handler(vec: u64, err: u64, _rip: u64, cr2: u64) -> bool {
                                     // SAFETY: live PtRegs on the kernel stack; set TF (bit 8).
                                     unsafe { (*f).rflags |= 0x100; }
                                     STEP_ROOT.store(root, Ordering::Release);
-                                    STEP_RIP.store(_rip, Ordering::Release);
+                                    STEP_RIP.store(rip, Ordering::Release);
                                     STEP_VA.store(cr2, Ordering::Release);
                                     return true;
                                 }
@@ -87,14 +87,14 @@ pub fn user_fault_handler(vec: u64, err: u64, _rip: u64, cr2: u64) -> bool {
     // access that faulted was issued at CPL=3. Kernel-mode faults on a user VA
     // (uaccess, exec's direct stack pushes) clear it, and a
     // `UFFD_USER_MODE_ONLY` context refuses to intercept those.
-    let failure = match handle(cr2, kind, err & 0x4 != 0) {
+    let failure = match handle(cr2, kind, err & 0x4 != 0, rip) {
         Ok(())   => return true,
         Err(f)   => f,
     };
     // debug-cow probe 2: the fault is now fatal (the demand-page resolver
     // refused it). Dump the failing VA + VMA + PTE/frame before SIGSEGV.
     #[cfg(feature = "debug-cow")]
-    segv_dump(_rip, cr2, err);
+    segv_dump(rip, cr2, err);
     // Unhandled fault from user mode. Linux `bad_area` -> `force_sig_fault`:
     // queue the signal the RESOLVER's reason earns — a hardware-classified
     // SIGSEGV (SEGV_MAPERR / SEGV_ACCERR / SEGV_PKUERR) for an absent or
@@ -102,15 +102,15 @@ pub fn user_fault_handler(vec: u64, err: u64, _rip: u64, cr2: u64) -> bool {
     // not supply the page, and no signal at all for the out-of-memory and
     // retry reasons, which resume userspace so the instruction re-faults.
     if err & 0x4 != 0 {
-        signal::trace_user_fault_x86(vec, err, _rip, cr2);
-        return force_user_fault_x86(vec, err, _rip, cr2, Some(failure));
+        signal::trace_user_fault_x86(vec, err, rip, cr2);
+        return force_user_fault_x86(vec, err, rip, cr2, Some(failure));
     }
     false
 }
 
 /// # C: O(log N_vmas) + O(walk depth) on demand-page; O(1) reject
 #[cfg(target_arch = "aarch64")]
-pub fn user_fault_handler(esr: u64, far: u64, _elr: u64) -> bool {
+pub fn user_fault_handler(esr: u64, far: u64, elr: u64) -> bool {
     let kind = match classify_arm_abort(esr, far) {
         Some(k) => k,
         None    => return false,
@@ -119,7 +119,7 @@ pub fn user_fault_handler(esr: u64, far: u64, _elr: u64) -> bool {
     // LOWER exception level (EL0 user); 0x21/0x25 are the same-EL (kernel
     // uaccess) forms, which clear the flag.
     let user_mode = matches!((esr >> 26) & 0x3F, 0x20 | 0x24);
-    let failure = match handle(far, kind, user_mode) {
+    let failure = match handle(far, kind, user_mode, elr) {
         Ok(())  => return true,
         Err(f)  => f,
     };
@@ -146,7 +146,7 @@ pub fn user_fault_handler(esr: u64, far: u64, _elr: u64) -> bool {
         klog::write_raw(b" far=");
         klog::write_hex_u64(far);
         klog::write_raw(b" elr=");
-        klog::write_hex_u64(_elr);
+        klog::write_hex_u64(elr);
         klog::write_raw(b"\n");
     }
     // D339: distinguish a missing VMA from a page-table/fault-fill failure
@@ -178,15 +178,15 @@ pub fn user_fault_handler(esr: u64, far: u64, _elr: u64) -> bool {
     // debug-cow probe 2: fatal fault — dump VA/VMA/PTE before SIGSEGV.
     // (ELR / FAR / ESR map to the rip / cr2 / err columns.)
     #[cfg(feature = "debug-cow")]
-    segv_dump(_elr, far, esr);
+    segv_dump(elr, far, esr);
     // Same SIGSEGV-on-user-fault contract as x86. ESR EC bits 26..31
     // distinguish lower-EL (user) from same-EL (kernel-mode user-buf
     // access): EC=0x20/0x24 are EL0 (user), EC=0x21/0x25 are EL1
     // same-EL (kernel-side). Only terminate the task on the EL0 case.
     let ec = (esr >> 26) & 0x3F;
     if matches!(ec, 0x20 | 0x24) {
-        signal::trace_user_fault_arm(esr, far, _elr);
-        return force_user_fault_arm(esr, far, _elr, Some(failure));
+        signal::trace_user_fault_arm(esr, far, elr);
+        return force_user_fault_arm(esr, far, elr, Some(failure));
     }
     false
 }
@@ -201,7 +201,7 @@ pub fn user_fault_handler(esr: u64, far: u64, _elr: u64) -> bool {
 /// reason earns (`vmm::fault_signal`) instead of guessing from the hardware
 /// error code alone.
 /// # C: O(log N_vmas) + O(walk depth)
-fn handle(va_raw: u64, fault: FaultKind, user_mode: bool)
+fn handle(va_raw: u64, fault: FaultKind, user_mode: bool, ip: u64)
     -> Result<(), vmm::fault_signal::FaultFailure>
 {
     let hhdm = HHDM_OFFSET.load(Ordering::Acquire);
@@ -296,8 +296,13 @@ fn handle(va_raw: u64, fault: FaultKind, user_mode: bool)
             // sampling opportunity, and `PERF_SAMPLE_ADDR` reports the faulting
             // address. Process context with no runqueue lock held, so the
             // sampler may take the perf registry and one ring lock.
-            sched::perf_sw::sw_event(kind, c.cpu.load(Ordering::Acquire) as usize, 1,
-                uva.as_u64(), user_mode);
+            sched::perf_sw::sw_event(&sched::perf_sw::SwSite {
+                kind, cpu: c.cpu.load(Ordering::Acquire) as usize, nr: 1,
+                // `perf_instruction_pointer(regs)` and `data.addr`: the trap
+                // frame's return PC is the instruction that faulted, and the
+                // faulting linear address is what `PERF_SAMPLE_ADDR` reports.
+                ip: ip, addr: uva.as_u64(), user: user_mode,
+            });
         }
     }
     #[cfg(all(feature = "debug-faultdiag", target_arch = "x86_64"))]

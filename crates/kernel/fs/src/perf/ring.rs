@@ -16,4 +16,4 @@ pub mod state;
 pub mod userpage;
 mod buffer;
 
-pub use buffer::PerfBuffer;
+pub use buffer::{PerfBuffer, Wrote};

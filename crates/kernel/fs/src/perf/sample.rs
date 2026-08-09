@@ -15,28 +15,37 @@ use super::uapi::{record, sample};
 /// truncated record would desynchronise the whole ring.
 pub const MAX_RECORD: usize = 1024;
 
-/// A record under construction. `push_*` silently stops at `MAX_RECORD` and
-/// sets `overflow`, which `finish` reports.
-pub struct RecordBuf {
-    buf:      [u8; MAX_RECORD],
+/// A record under construction. `push_*` silently stops at `N` and sets
+/// `overflow`, which `finish` reports.
+///
+/// `N` is a stack budget, not an ABI limit: a `PERF_RECORD_SAMPLE` needs the
+/// full [`MAX_RECORD`] because `PERF_SAMPLE_READ`'s payload scales with the
+/// group, while a side-band record's largest form is a fixed few hundred bytes.
+/// The side-band emitters are reachable from `execve` and `mmap(2)`, i.e. from
+/// the deepest paths in the kernel, so they carry the smaller buffer — a 1 KiB
+/// array there cost 472 B on the boot chain's stack-depth budget.
+pub struct RecordBuf<const N: usize = MAX_RECORD> {
+    buf:      [u8; N],
     len:      usize,
     overflow: bool,
 }
 
-impl RecordBuf {
+impl<const N: usize> RecordBuf<N> {
     /// # C: O(1)
-    pub fn new(ty: u32, misc: u16) -> RecordBuf {
-        let mut r = RecordBuf { buf: [0u8; MAX_RECORD], len: 0, overflow: false };
+    pub fn new(ty: u32, misc: u16) -> RecordBuf<N> {
+        let mut r = RecordBuf { buf: [0u8; N], len: 0, overflow: false };
         r.u32(ty);
         r.u16(misc);
         r.u16(0); // header.size — patched by `finish`
         r
     }
     fn raw(&mut self, b: &[u8]) {
-        if self.len + b.len() > MAX_RECORD { self.overflow = true; return; }
+        if self.len + b.len() > N { self.overflow = true; return; }
         self.buf[self.len..self.len + b.len()].copy_from_slice(b);
         self.len += b.len();
     }
+    /// # C: O(1)
+    pub fn byte(&mut self, v: u8) { self.raw(&[v]); }
     /// # C: O(1)
     pub fn u16(&mut self, v: u16) { self.raw(&v.to_le_bytes()); }
     /// # C: O(1)
@@ -53,7 +62,7 @@ impl RecordBuf {
     /// fit. Records are always a multiple of 8 bytes, so a record whose length
     /// is not is a layout bug and is refused rather than shipped.
     /// # C: O(1)
-    pub fn finish(mut self) -> Option<RecordBuf> {
+    pub fn finish(mut self) -> Option<RecordBuf<N>> {
         if self.overflow || self.len > u16::MAX as usize || self.len % 8 != 0 { return None; }
         let size = self.len as u16;
         self.buf[6..8].copy_from_slice(&size.to_le_bytes());
@@ -103,7 +112,7 @@ pub fn sample_id_size(sample_type: u64) -> usize {
 /// record when `attr.sample_id_all` is set. Its field order differs from the
 /// sample body's (no IP/ADDR/PERIOD, and IDENTIFIER comes LAST rather than
 /// first), which is the whole point of the separate writer. # C: O(1)
-pub fn push_sample_id(r: &mut RecordBuf, sample_type: u64, v: &SampleValues) {
+pub fn push_sample_id<const N: usize>(r: &mut RecordBuf<N>, sample_type: u64, v: &SampleValues) {
     if sample_type & sample::TID       != 0 { r.pair32(v.pid, v.tid); }
     if sample_type & sample::TIME      != 0 { r.u64(v.time); }
     if sample_type & sample::ID        != 0 { r.u64(v.id); }
@@ -163,8 +172,8 @@ pub fn sample_record(sample_type: u64, misc: u16, v: &SampleValues, read_payload
 /// The `PERF_RECORD_LOST` `__perf_output_begin` prepends once `rb->lost` is
 /// nonzero: `{header; u64 id; u64 lost;}` plus the `sample_id` trailer.
 /// # C: O(1)
-pub fn lost_record(sample_type: u64, sample_id_all: bool, lost: u64, v: &SampleValues)
-    -> Option<RecordBuf>
+pub fn lost_record<const N: usize>(sample_type: u64, sample_id_all: bool, lost: u64,
+                                   v: &SampleValues) -> Option<RecordBuf<N>>
 {
     let mut r = RecordBuf::new(record::LOST, 0);
     r.u64(v.id);
@@ -293,7 +302,7 @@ mod tests {
         let st = sample::IDENTIFIER | sample::IP | sample::TID | sample::TIME
                | sample::ID | sample::STREAM_ID | sample::CPU | sample::PERIOD;
         let v = vals();
-        let mut r = RecordBuf::new(record::LOST, 0);
+        let mut r = RecordBuf::<MAX_RECORD>::new(record::LOST, 0);
         push_sample_id(&mut r, st, &v);
         let body = u64s(&r.as_slice()[record::HEADER_BYTES..]);
         assert_eq!(body, alloc::vec![
@@ -310,13 +319,13 @@ mod tests {
     #[test]
     fn lost_record_is_id_then_count_then_optional_trailer() {
         let v = vals();
-        let bare = lost_record(sample::TID, false, 9, &v).unwrap();
+        let bare = lost_record::<MAX_RECORD>(sample::TID, false, 9, &v).unwrap();
         assert_eq!(bare.len(), record::HEADER_BYTES + 16);
         let b = bare.as_slice();
         assert_eq!(u32::from_le_bytes(b[0..4].try_into().unwrap()), record::LOST);
         assert_eq!(u64s(&b[record::HEADER_BYTES..]), alloc::vec![0x1111, 9]);
 
-        let with_id = lost_record(sample::TID | sample::TIME, true, 9, &v).unwrap();
+        let with_id = lost_record::<MAX_RECORD>(sample::TID | sample::TIME, true, 9, &v).unwrap();
         assert_eq!(with_id.len(), record::HEADER_BYTES + 16 + 16);
         assert_eq!(u64s(&with_id.as_slice()[record::HEADER_BYTES..]),
                    alloc::vec![0x1111, 9, 0x31u64 << 32 | 0x30, 0x4444]);
