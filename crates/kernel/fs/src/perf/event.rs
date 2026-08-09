@@ -38,6 +38,13 @@ pub struct EventState {
     pub period: u64,
     /// Group members, leader-first, when this event is a group leader.
     pub siblings: Vec<Weak<PerfEvent>>,
+    /// Folded-in totals from every inherited child that has exited —
+    /// Linux `child_count`/`child_total_time_enabled`/`child_total_time_running`.
+    /// Added into `read_value()` unconditionally (`perf_event_count`),
+    /// independent of `attr.inherit_stat` (`24` inherit propagation).
+    pub child_count:        u64,
+    pub child_time_enabled: u64,
+    pub child_time_running: u64,
 }
 
 /// A live perf event — one open file description.
@@ -54,6 +61,10 @@ pub struct PerfEvent {
     pub cpu:    i32,
     /// Group leader, when this event joined a group. `None` == own leader.
     pub leader: Option<Weak<PerfEvent>>,
+    /// The event this one was cloned from on fork (`attr.inherit`) — Linux
+    /// `perf_event::parent`. `None` for an event opened directly by
+    /// `perf_event_open`.
+    pub parent: Option<Weak<PerfEvent>>,
     pub state:  Spinlock<EventState, PerfLockClass>,
 }
 
@@ -62,21 +73,63 @@ impl PerfEvent {
     pub fn new(attr: PerfAttr, source: SwSource, tid: Option<u32>, cpu: i32,
                leader: Option<Weak<PerfEvent>>) -> Arc<PerfEvent>
     {
+        Self::new_inner(attr, source, tid, cpu, leader, None)
+    }
+
+    /// Fork-inherited child event — Linux `inherit_event`. Same `attr`/
+    /// `source`/`cpu` as `parent`, targets `child_tid`, and opens its own
+    /// counter window from this instant (the child's count starts at 0, like
+    /// a freshly opened event — Linux likewise gives the child its own
+    /// `hw`/`count` state rather than sharing the parent's). `parent` is
+    /// remembered so the child's exit can fold its final count back
+    /// (`fold_into_parent`). Never joins a group: Linux inherits groups
+    /// leader-first via `inherit_group`, but oxide's group support is
+    /// single-open-time only, so an inherited event is always its own leader
+    /// — matching `is_orphaned_event()`'s "individual events" fallback.
+    /// # C: O(1)
+    pub fn new_inherited(parent: &Arc<PerfEvent>, child_tid: u32) -> Arc<PerfEvent> {
+        Self::new_inner(parent.attr, parent.source, Some(child_tid), parent.cpu,
+            None, Some(Arc::downgrade(parent)))
+    }
+
+    fn new_inner(attr: PerfAttr, source: SwSource, tid: Option<u32>, cpu: i32,
+               leader: Option<Weak<PerfEvent>>, parent: Option<Weak<PerfEvent>>) -> Arc<PerfEvent>
+    {
         let enabled = !attr.bit(super::uapi::attr_bit::DISABLED);
         let now = now_ns();
         let ev = Arc::new_cyclic(|me| PerfEvent {
-            me: me.clone(), attr, source, tid, cpu, leader,
+            me: me.clone(), attr, source, tid, cpu, leader, parent,
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             state: Spinlock::new(EventState {
                 counter: SwCounter::new(0, now, enabled),
                 refresh: 0, period: attr.sample_period, siblings: Vec::new(),
+                child_count: 0, child_time_enabled: 0, child_time_running: 0,
             }),
         });
         // Sample the source once the event exists so the first read reports the
         // delta since open, not since boot.
         let src = ev.sample();
         ev.state.lock().counter.base = src;
+        // Task-scoped events (a concrete tid, not a CPU-wide context) are the
+        // only ones a fork can ever inherit (Linux `perf_event_init_context`
+        // only walks `current->perf_event_ctxp`, a per-TASK context) — so only
+        // those get registered for `inherit::on_fork` to find.
+        if let Some(t) = tid { super::inherit::register(t, &ev); }
         ev
+    }
+
+    /// `sync_child_event`: fold this (about-to-die, inherited) child's final
+    /// count into its parent's `child_count`, so the parent's next
+    /// `read_value()` reports the total across every child that ever
+    /// inherited from it. No-op when `parent` is gone or this was never an
+    /// inherited event. # C: O(1)
+    pub fn fold_into_parent(&self) {
+        let Some(parent) = self.parent.as_ref().and_then(Weak::upgrade) else { return };
+        let (count, enabled, running) = self.read_value();
+        let mut g = parent.state.lock();
+        g.child_count        = g.child_count.wrapping_add(count);
+        g.child_time_enabled = g.child_time_enabled.saturating_add(enabled);
+        g.child_time_running = g.child_time_running.saturating_add(running);
     }
 
     /// Current raw value of this event's counter source. # C: O(1) task lookup
@@ -96,13 +149,17 @@ impl PerfEvent {
         }
     }
 
-    /// `__perf_event_read_value` + `perf_event_count`. # C: O(1)
+    /// `__perf_event_read_value` + `perf_event_count`. `perf_event_count`
+    /// adds `child_count` unconditionally, so a parent's read reflects every
+    /// inherited child that has since exited. # C: O(1)
     pub fn read_value(&self) -> (u64, u64, u64) {
         let src = self.sample();
         let now = now_ns();
         let g = self.state.lock();
         let t = g.counter.time_enabled(now);
-        (g.counter.count(src), t, t)
+        (g.counter.count(src).wrapping_add(g.child_count),
+         t.saturating_add(g.child_time_enabled),
+         t.saturating_add(g.child_time_running))
     }
 
     /// Group members leader-first; a solo event yields just itself.

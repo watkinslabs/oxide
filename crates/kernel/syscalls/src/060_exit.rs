@@ -230,6 +230,13 @@ pub fn do_exit(status: i32) -> i64 {
             // process keyring on the last thread. Runs before `mark_done` so
             // the hook's own group-dead test still counts this thread live.
             sched::live::run_keyring_exit(task);
+            // Linux `perf_event_exit_task` -> `sync_child_event`: fold every
+            // inherited event this task held back into its parent's
+            // `child_count` before the fd table (and with it the events
+            // themselves) goes away, so a parent's later `read(2)` on its own
+            // fd reports the total across every child that ever inherited
+            // from it, not just what the parent itself counted.
+            fs::perf::inherit::on_task_exit(task.tid);
             // Registered io_uring rings hold file references of their own, so
             // they are released alongside the fd table — a ring must not
             // outlive the task that registered it by index.
