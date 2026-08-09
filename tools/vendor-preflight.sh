@@ -16,8 +16,14 @@
 VENDOR_PREFLIGHT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Whether this tree has everything an ARM guest needs to reach its bootloader.
+#
+# Both spellings are checked: the smoke scripts take `arm`, the conformance
+# runners take `aarch64`. Matching only one silently skips the preflight for
+# every harness that uses the other, which is the failure this file exists to
+# stop.
 vendor_ready() {
-    [ "${ARCH:-}" != arm ] || {
+    case "${ARCH:-}" in arm|aarch64) ;; *) return 0 ;; esac
+    {
         [ -f "$VENDOR_PREFLIGHT_ROOT/vendor/grub/arm64-efi/modinfo.sh" ] \
             && [ -f "$VENDOR_PREFLIGHT_ROOT/vendor/grub/arm64-efi/linux.mod" ] \
             && [ -f "$VENDOR_PREFLIGHT_ROOT/vendor/grub/arm64-efi/archelp.mod" ] \
