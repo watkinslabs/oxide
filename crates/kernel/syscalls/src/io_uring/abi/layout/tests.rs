@@ -74,17 +74,9 @@ fn unknown_setup_bits_are_einval() {
     assert_eq!(prepare(&mut req(1 << 31), 4), Err(Errno::Einval));
 }
 
-#[test]
-fn unimplemented_setup_bits_are_refused_not_ignored() {
-    // Accepting these silently is the bug this file exists to prevent: a ring
-    // asked for SQPOLL and handed a ring with no poll thread spins forever.
-    for f in [IORING_SETUP_IOPOLL, IORING_SETUP_SQPOLL, IORING_SETUP_SQ_AFF,
-              IORING_SETUP_ATTACH_WQ, IORING_SETUP_SQE128, IORING_SETUP_CQE32,
-              IORING_SETUP_NO_MMAP, IORING_SETUP_HYBRID_IOPOLL,
-              IORING_SETUP_CQE_MIXED, IORING_SETUP_SQE_MIXED] {
-        assert_eq!(prepare(&mut req(f), 4), Err(Errno::Einval), "flag {f:#x}");
-    }
-}
+// The per-flag verdicts this used to spot-check now live in
+// `every_setup_flag_is_either_implemented_or_refused` and its two companions
+// at the end of this file, which cover every bit rather than a chosen ten.
 
 #[test]
 fn linux_flag_combination_rules_hold() {
@@ -256,9 +248,110 @@ fn features_claim_only_what_the_ring_actually_does() {
               IORING_FEAT_FAST_POLL, IORING_FEAT_NATIVE_WORKERS, IORING_FEAT_POLL_32BITS] {
         assert_ne!(REPORTED_FEATURES & f, 0, "feature {f:#x}");
     }
-    // Claiming these would promise a submission-poll thread or a per-task
-    // registered-ring array that does not exist.
+    // A submission-poll thread now exists and borrows the creating task's
+    // descriptor table, so an entry naming an ordinary descriptor works;
+    // `io_uring_register` accepts a registered-ring index.
     for f in [IORING_FEAT_SQPOLL_NONFIXED, IORING_FEAT_REG_REG_RING] {
-        assert_eq!(REPORTED_FEATURES & f, 0, "feature {f:#x}");
+        assert_ne!(REPORTED_FEATURES & f, 0, "feature {f:#x}");
     }
+    // No feature bit outside the UAPI's own set.
+    assert_eq!(REPORTED_FEATURES & !((1u32 << 14) - 1), 0);
+}
+
+/// Every `IORING_SETUP_*` bit, in exactly one of two states: implemented, or
+/// refused with `EINVAL`. There is no third column — a bit accepted without
+/// its behaviour is a hang the caller cannot diagnose, since the flag it asked
+/// for came back set in `p->flags`.
+///
+/// The list is exhaustive by construction: the loop walks bits 0..=20 and the
+/// assertion below proves the mask has no bit outside that range, so a flag
+/// added to the UAPI without a verdict here fails this test rather than
+/// silently inheriting one.
+#[test]
+fn every_setup_flag_is_either_implemented_or_refused() {
+    // (bit, implemented?, why)
+    const TABLE: &[(u32, bool, &str)] = &[
+        (IORING_SETUP_IOPOLL,             false, "no backend can be polled for completed I/O"),
+        (IORING_SETUP_SQPOLL,             true,  "io_uring/sqpoll.rs poll thread"),
+        (IORING_SETUP_SQ_AFF,             true,  "poll thread pinned to p->sq_thread_cpu"),
+        (IORING_SETUP_CQSIZE,             true,  "fill_entries"),
+        (IORING_SETUP_CLAMP,              true,  "fill_entries"),
+        (IORING_SETUP_ATTACH_WQ,          false, "no second ring's work queue to join"),
+        (IORING_SETUP_R_DISABLED,         true,  "ctx::state::DISABLED"),
+        (IORING_SETUP_SUBMIT_ALL,         true,  "submit::submit_sqes"),
+        (IORING_SETUP_COOP_TASKRUN,       true,  "no task work is ever queued at the submitter"),
+        (IORING_SETUP_TASKRUN_FLAG,       true,  "IORING_SQ_TASKRUN correctly never raised"),
+        (IORING_SETUP_SQE128,             false, "the SQE array is sized and indexed at 64 bytes"),
+        (IORING_SETUP_CQE32,              false, "the CQE array is sized and indexed at 16 bytes"),
+        (IORING_SETUP_SINGLE_ISSUER,      true,  "ctx::claim_issuer refuses a second submitter"),
+        (IORING_SETUP_DEFER_TASKRUN,      true,  "vacuous, and the RESIZE_RINGS gate"),
+        (IORING_SETUP_NO_MMAP,            false, "no path adopts caller pages as the ring"),
+        (IORING_SETUP_REGISTERED_FD_ONLY, false, "only reachable with NO_MMAP"),
+        (IORING_SETUP_NO_SQARRAY,         true,  "rings_size + IoUring::sq_index"),
+        (IORING_SETUP_HYBRID_IOPOLL,      false, "only reachable with IOPOLL"),
+        (IORING_SETUP_CQE_MIXED,          false, "CQE size is fixed at 16 bytes"),
+        (IORING_SETUP_SQE_MIXED,          false, "SQE size is fixed at 64 bytes"),
+        (IORING_SETUP_SQ_REWIND,          false, "userspace could rewind over entries already read"),
+    ];
+
+    assert_eq!(IORING_SETUP_FLAGS, (1u32 << TABLE.len()) - 1,
+               "a setup flag was added to the UAPI without a verdict in this table");
+    let mut seen = 0u32;
+    for (bit, implemented, why) in TABLE {
+        assert_eq!(seen & bit, 0, "duplicate row for {bit:#x}");
+        seen |= bit;
+        assert_eq!(SUPPORTED_SETUP_FLAGS & bit != 0, *implemented,
+                   "flag {bit:#x} verdict disagrees with SUPPORTED_SETUP_FLAGS ({why})");
+    }
+    assert_eq!(seen, IORING_SETUP_FLAGS, "the table must name every bit exactly once");
+}
+
+/// The refused half of the table, exercised through the real admission ladder
+/// rather than against the mask — a bit could be absent from
+/// `SUPPORTED_SETUP_FLAGS` and still be admitted by an earlier rule.
+#[test]
+fn every_unimplemented_setup_flag_is_refused_by_setup_itself() {
+    for bit in [IORING_SETUP_IOPOLL, IORING_SETUP_ATTACH_WQ, IORING_SETUP_SQE128,
+                IORING_SETUP_CQE32, IORING_SETUP_NO_MMAP, IORING_SETUP_REGISTERED_FD_ONLY,
+                IORING_SETUP_HYBRID_IOPOLL, IORING_SETUP_CQE_MIXED, IORING_SETUP_SQE_MIXED,
+                IORING_SETUP_SQ_REWIND] {
+        assert_eq!(prepare(&mut req(bit), 8), Err(Errno::Einval), "flag {bit:#x} must be refused");
+    }
+    // And a bit outside the UAPI's own set, which no kernel accepts.
+    assert_eq!(prepare(&mut req(1 << 21), 8), Err(Errno::Einval));
+}
+
+/// The implemented half: setup admits it and reports it back, so a caller can
+/// tell "the ring has this" from "the kernel dropped it on the floor".
+#[test]
+fn every_implemented_setup_flag_is_admitted_and_reported_back() {
+    // Combination rules force some flags to travel with a companion.
+    for extra in [0, IORING_SETUP_SQPOLL, IORING_SETUP_SQ_AFF | IORING_SETUP_SQPOLL,
+                  IORING_SETUP_CQSIZE, IORING_SETUP_CLAMP, IORING_SETUP_R_DISABLED,
+                  IORING_SETUP_SUBMIT_ALL, IORING_SETUP_COOP_TASKRUN,
+                  IORING_SETUP_TASKRUN_FLAG | IORING_SETUP_COOP_TASKRUN,
+                  IORING_SETUP_SINGLE_ISSUER,
+                  IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_SINGLE_ISSUER,
+                  IORING_SETUP_NO_SQARRAY] {
+        let mut p = req(extra);
+        if extra & IORING_SETUP_CQSIZE != 0 { p.cq_entries = 8; }
+        let g = prepare(&mut p, 8).unwrap_or_else(|e| panic!("flags {extra:#x} refused: {e:?}"));
+        assert_eq!(g.flags & extra, extra, "flags {extra:#x} must survive admission");
+        assert_eq!(p.flags & extra, extra, "and be reported back to the caller");
+    }
+}
+
+/// SQPOLL's combination rules, which the reference checks before any of the
+/// per-flag work.
+#[test]
+fn sqpoll_refuses_the_flags_that_contradict_it() {
+    for bad in [IORING_SETUP_COOP_TASKRUN, IORING_SETUP_TASKRUN_FLAG,
+                IORING_SETUP_DEFER_TASKRUN] {
+        assert_eq!(prepare(&mut req(IORING_SETUP_SQPOLL | bad), 8), Err(Errno::Einval),
+                   "a signalling flag {bad:#x} means nothing to a ring nobody signals");
+    }
+    // SQ_REWIND is refused outright, but the reference refuses it with SQPOLL
+    // for its own reason too, so neither ordering can admit the pair.
+    assert_eq!(prepare(&mut req(IORING_SETUP_SQPOLL | IORING_SETUP_SQ_REWIND
+                                | IORING_SETUP_NO_SQARRAY), 8), Err(Errno::Einval));
 }

@@ -113,6 +113,10 @@ pub enum Errno {
     Ekeyexpired       = 127,
     Ekeyrevoked       = 128,
     Ekeyrejected      = 129,
+    /// The thread that owned the state is gone: `io_uring_enter` on a ring
+    /// whose submission-poll thread has exited, and the robust-futex owner-died
+    /// report.
+    Eownerdead        = 130,
     Eftype            = 134,
     /// The object a link stood for is gone: `bpf(BPF_LINK_UPDATE)` on a
     /// link whose attachment was already released.

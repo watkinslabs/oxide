@@ -97,13 +97,35 @@ pub fn sys_io_uring_enter(args: &syscall::SyscallArgs) -> i64 {
     if inode.test_state(state::DISABLED) { return err(Errno::Ebadfd); }
     if let Err(e) = inode.claim_issuer() { return err(e); }
 
-    let submitted = if to_submit > 0 {
-        crate::io_uring::submit::submit_sqes(&inode, to_submit)
-    } else {
-        0
+    // A ring with a submission-poll thread submits nothing here: the thread
+    // owns the SQ ring. All this call does is ring the doorbell the submitter
+    // decided to ring, and report the count the submitter says it published.
+    let submitted = match sqpoll_half(&inode, to_submit, flags) {
+        Some(rv) => match rv { Ok(n) => n, Err(e) => return e },
+        None if to_submit > 0 => crate::io_uring::submit::submit_sqes(&inode, to_submit),
+        None => 0,
     };
     if !runs_getevents(submitted, to_submit, flags) { return submitted; }
     enter_result(submitted, wait_half(&inode, min_cmpl, flags, argp, argsz))
+}
+
+/// The submit half of an `IORING_SETUP_SQPOLL` ring. `None` means the ring has
+/// no poll thread and the caller submits inline.
+///
+/// The wake is not re-decided here against `sq_flags`: the submitter already
+/// made that decision when it read the word, and a poll thread that has since
+/// retracted the doorbell may be on its way into `schedule()`.
+/// # C: O(1) + the SQ_WAIT wait
+fn sqpoll_half(inode: &Arc<IoUringInode>, to_submit: u32, flags: u32) -> Option<Result<i64, i64>> {
+    use crate::io_uring_abi::sqpoll::{enter_action, enter_submitted};
+    let sqd = crate::io_uring::sqpoll::of(inode)?;
+    // The thread is what submits; without it nothing ever will, and reporting
+    // a submission that cannot happen would hang the caller instead.
+    if sqd.dead() { return Some(Err(err(Errno::Eownerdead))); }
+    let act = enter_action(flags);
+    if act.wake { sqd.wake(); }
+    if act.wait_room { crate::io_uring::sqpoll::wait_sq_room(&sqd, inode); }
+    Some(Ok(enter_submitted(to_submit)))
 }
 
 /// The wait half, kept out of the submission frame: the deepest operations run

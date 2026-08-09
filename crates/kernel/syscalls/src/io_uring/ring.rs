@@ -166,6 +166,9 @@ pub fn ring_ctx(inode: &InodeRef) -> Option<Arc<IoUringInode>> {
 
 /// Cancel a ring's outstanding work when its last descriptor goes away.
 ///
+/// The ring's submission-polling thread is ended here too: it exists only to
+/// serve descriptors that no longer exist.
+///
 /// A request that is still armed holds a reference to the ring, so a ring with
 /// an armed timeout or an armed poll would otherwise stay alive — and keep the
 /// submitter's address space and descriptor table alive with it — until a
@@ -176,7 +179,11 @@ fn release_hook(inode: &InodeRef, _writable: bool, _dentry: &Arc<vfs::Dentry>) {
     // Cheap first: only inode numbers out of io_uring's own range can be
     // rings, and this hook is on every description's close path.
     if !INO_REGION.contains(inode.ino()) { return; }
-    if let Some(iu) = ring_ctx(inode) { iu.cancel_all(); }
+    let Some(iu) = ring_ctx(inode) else { return };
+    // Before the cancellations: a poll thread still draining the ring would
+    // otherwise start work the cancel sweep has already walked past.
+    crate::io_uring::sqpoll::finish(&iu);
+    iu.cancel_all();
 }
 
 /// Install the release hook once, at the first ring creation. # C: O(1)

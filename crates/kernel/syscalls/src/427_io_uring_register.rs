@@ -123,7 +123,7 @@ fn run(inode: &Arc<IoUringInode>, op: RegisterOp) -> i64 {
         RegisterOp::PbufRing { arg }        => work::pbuf::register(inode, arg),
         RegisterOp::UnregisterPbufRing { arg } => work::pbuf::unregister(inode, arg),
         RegisterOp::IowqMaxWorkers { arg }  => work::iowq::max_workers(inode, arg),
-        RegisterOp::IowqAff { arg, len }    => work::iowq::affinity(arg, len),
+        RegisterOp::IowqAff { arg, len }    => work::iowq::affinity(inode, arg, len),
         // Task-scoped, not ring-scoped: the array these write belongs to the
         // calling task, not to `inode`. `run` still needs a resolved ring
         // (the reference resolves `file` first too), but neither work fn
