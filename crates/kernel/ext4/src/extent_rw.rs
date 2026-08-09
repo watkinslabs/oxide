@@ -10,6 +10,7 @@
 // - inode_io: raw inode byte I/O, extent-block writes, and block-group helpers.
 // - meta: on-disk mode/owner/timestamp writeback (the ext4 half of setattr).
 // - collect: extent leaf collection for SEEK_HOLE/SEEK_DATA.
+// - convert: unwritten -> written conversion on the write path (split vs zero).
 // - write: random writes, fallocate, and direct inode size updates.
 // - limits: bounded writeback-cluster sizing shared with the frame cache.
 // - truncate: extent-tree truncation, subtree freeing, and i_blocks accounting.
@@ -19,6 +20,7 @@
 
 mod append;
 mod collect;
+mod convert;
 mod inode_io;
 pub(crate) mod meta;
 mod insert;
