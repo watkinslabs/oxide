@@ -103,15 +103,14 @@ fn write_ldt(mm: &vmm::AddressSpace, ptr: u64, bytecount: u64, func: LdtFunc) ->
         Ok(e) => e,
         Err(e) => return -(e.as_i32() as i64),
     };
-    if let Err(e) = mm.ldt().install(entry.entry_number, entry.desc) {
+    // Grow-and-swap the table, reload LDTR on this CPU and on every CPU
+    // running this mm, and only then free the displaced table — one work fn,
+    // because the ORDER of those three steps is the safety property.
+    if let Err(e) = sched::ldt::install_entry(mm, entry.entry_number, entry.desc) {
         return match e {
             vmm::LdtError::NoMem => -(Errno::Enomem.as_i32() as i64),
             vmm::LdtError::Range => -(Errno::Einval.as_i32() as i64),
         };
     }
-    // Make the entry usable on THIS CPU before returning: the caller may load
-    // the selector on its very next instruction. Siblings on other CPUs pick
-    // it up at their next return to user mode.
-    sched::ldt::reload_current(mm);
     0
 }

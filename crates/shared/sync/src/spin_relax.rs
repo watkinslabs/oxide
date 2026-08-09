@@ -22,7 +22,7 @@
 // free the frame anyway — a use-after-free with a live writable translation on
 // the peer.
 //
-// So the spin itself services pending cross-CPU work. `arch-irq::tlb::install`
+// So the spin itself services pending cross-CPU work. `arch-irq::call_fn::install`
 // wires the hook to `tlb::service()`, which takes no locks and is idempotent —
 // the same deadlock-breaker `shootdown`'s own acquire loop already ran, now
 // reaching every spin instead of only sender-vs-sender. aarch64 installs

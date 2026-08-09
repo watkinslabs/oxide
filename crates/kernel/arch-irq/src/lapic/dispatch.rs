@@ -183,12 +183,13 @@ unsafe extern "C" fn oxide_irq_dispatch(regs: *mut hal_x86_64::PtRegs) {
             // is a target of an in-flight round.
             sched::membarrier::service();
         }
-        hal_x86_64::VEC_TLB_SHOOTDOWN => {
-            // Cross-CPU TLB shootdown: another CPU downgraded/removed a
-            // user PTE in an mm we may have cached. Invalidate the
-            // requested VA (or full-flush) locally and ACK. EOI already
-            // issued above. No resched implied.
-            crate::tlb::service();
+        hal_x86_64::VEC_CALL_FUNCTION => {
+            // Cross-CPU call function: another CPU queued work for us —
+            // a TLB invalidate for an mm we may have cached, an LDT
+            // reload after a sibling installed a descriptor, and so on.
+            // Run everything queued and release each descriptor. EOI
+            // already issued above. No resched implied.
+            crate::call_fn::service();
         }
         v if v >= hal_x86_64::VEC_MSI_POOL_FIRST
           && v <= hal_x86_64::VEC_MSI_POOL_LAST => {

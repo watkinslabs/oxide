@@ -6,23 +6,24 @@
 // child a COPY (`dup`), `execve` builds a fresh `AddressSpace` and so starts
 // with no table at all, and teardown is the `Box` dropping with the mm.
 //
-// Allocation strategy, and where it deviates from the reference:
+// ALLOCATION — sized to the highest entry in use, grown by swapping the
+// whole table, exactly as the reference does. An install allocates a table
+// large enough for the new highest entry, copies the old descriptors in,
+// writes the new one, and publishes the pair (base, nr_entries) atomically.
+// The OLD table is NOT freed here: `install` hands it back in an `LdtSwap`
+// that the caller may only release once every CPU running this mm has
+// reloaded LDTR. Freeing before that point leaves a sibling CPU's LDTR
+// pointing at recycled memory — a descriptor-table use-after-free — which is
+// why the swap and the cross-CPU call landed together.
 //
-// The reference sizes the allocation to the highest entry in use and swaps
-// the whole table on every grow, freeing the old one only after an IPI has
-// made every CPU running the mm reload LDTR. This port has no general
-// cross-CPU call — the only IPI is the TLB shootdown's single-slot vector —
-// so a swap-and-free would leave a sibling CPU's LDTR pointing at freed
-// memory, which is a descriptor-table use-after-free and strictly worse than
-// the memory it saves. Instead the table is allocated ONCE at full size and
-// entries are written in place. The base address is then immutable for the
-// life of the mm, an 8-byte aligned descriptor store is atomic against the
-// CPU's own descriptor read, and nothing is ever freed while loaded.
-//
-// Cost: 64 KiB per address space that ever calls `modify_ldt`, against the
-// reference's 4 KiB for a small table. Nothing else observes the difference —
-// `nr_entries` still tracks what the process claimed, so read-back size and
-// the LDTR limit are unchanged.
+// PUBLICATION — `base` and `nr_entries` must be read as a PAIR. A reader
+// that pairs the new base with the old count would program a limit that does
+// not match the table, so the two are published under a sequence counter and
+// `view()` retries across a concurrent install. The reader must additionally
+// hold interrupts off from the `view()` until the `lldt` that consumes it
+// (see `sched::ldt`): otherwise a converge IPI can land between them and the
+// stale base would be loaded AFTER the sender concluded everyone had
+// converged.
 
 use alloc::boxed::Box;
 use alloc::vec;
@@ -56,7 +57,7 @@ pub struct LdtView {
     pub base: u64,
     pub nr_entries: u32,
     /// Bumped on every install. A CPU records the value it loaded so a later
-    /// return-to-user can tell whether the table grew under it.
+    /// return-to-user can tell whether the table changed under it.
     pub generation: u64,
 }
 
@@ -69,15 +70,44 @@ impl LdtView {
     pub fn is_loaded(self) -> bool { self.nr_entries != 0 }
 }
 
-/// Per-mm LDT. Zero-sized in effect until the first write: the 64 KiB
-/// backing allocation is made on demand.
+/// The old table an install displaced, plus the view that replaced it.
+///
+/// Freeing the old table is the caller's job and its ORDERING is the whole
+/// contract: not until every CPU in the mm's `cpumask` has reloaded LDTR.
+/// `#[must_use]` because dropping this value on the floor at the wrong point
+/// is precisely the use-after-free the type exists to prevent — the drop is
+/// the free.
+#[must_use = "the displaced table may only be freed after every CPU running this mm has reloaded LDTR"]
+pub struct LdtSwap {
+    old: Option<Box<[u64]>>,
+    view: LdtView,
+}
+
+impl LdtSwap {
+    /// The view now published — what a converging CPU will load.
+    /// # C: O(1)
+    pub fn view(&self) -> LdtView { self.view }
+
+    /// True when this install actually displaced a table. A first install
+    /// has nothing to free and needs no converge for SAFETY (only for
+    /// visibility).
+    /// # C: O(1)
+    pub fn displaced_a_table(&self) -> bool { self.old.is_some() }
+
+    /// Free the displaced table. Call only after the cross-CPU reload has
+    /// completed on every target.
+    /// # C: O(1)
+    pub fn release_after_converge(self) { drop(self.old); }
+}
+
+/// Per-mm LDT. Zero-sized in effect until the first write.
 pub struct LdtState {
-    /// Owns the backing table. Taken only to publish an entry; never held
-    /// across an allocation.
+    /// Owns the backing table. Taken only across a swap; never held across
+    /// an allocation and never held across the cross-CPU converge.
     table: Spinlock<Option<Box<[u64]>>, AddressSpaceClass>,
-    /// Kernel VA of the table's first entry, 0 while unallocated. Immutable
-    /// once non-zero, which is what lets the switch path read it without a
-    /// lock.
+    /// Publication sequence: even = stable, odd = an install is mid-publish.
+    seq: AtomicU64,
+    /// Kernel VA of the table's first entry, 0 while unallocated.
     base: AtomicU64,
     /// Entries the process has claimed. Only ever grows.
     nr_entries: AtomicU32,
@@ -98,12 +128,21 @@ impl Default for LdtState {
     fn default() -> Self { Self::new() }
 }
 
+/// Allocate a zeroed table of `n` descriptors without aborting on OOM.
+fn alloc_table(n: usize) -> Result<Box<[u64]>, LdtError> {
+    let mut v = vec::Vec::new();
+    v.try_reserve_exact(n).map_err(|_| LdtError::NoMem)?;
+    v.resize(n, 0u64);
+    Ok(v.into_boxed_slice())
+}
+
 impl LdtState {
     /// A process that has not called `modify_ldt`.
     /// # C: O(1)
     pub const fn new() -> Self {
         Self {
             table: Spinlock::new(None),
+            seq: AtomicU64::new(0),
             base: AtomicU64::new(0),
             nr_entries: AtomicU32::new(0),
             generation: AtomicU64::new(0),
@@ -112,18 +151,22 @@ impl LdtState {
 
     /// Lock-free snapshot for the context-switch and return-to-user paths.
     ///
-    /// Safe without the lock because the base is immutable once published and
-    /// the table outlives every CPU that can be running this mm: it is freed
-    /// only when the `AddressSpace` itself drops, at which point no CPU holds
-    /// the mm.
-    /// # C: O(1)
+    /// Retries while an install is mid-publish, so `base` and `nr_entries`
+    /// are always the pair one install wrote. Lock-free rather than
+    /// lock-taking because it runs from the switch path with interrupts
+    /// masked, where blocking on the install's spinlock would deadlock
+    /// against an installer waiting for this CPU to converge.
+    /// # C: O(1) uncontended
     pub fn view(&self) -> LdtView {
-        let nr = self.nr_entries.load(Ordering::Acquire);
-        if nr == 0 { return LdtView::NONE; }
-        LdtView {
-            base: self.base.load(Ordering::Acquire),
-            nr_entries: nr,
-            generation: self.generation.load(Ordering::Acquire),
+        loop {
+            let s1 = self.seq.load(Ordering::Acquire);
+            if s1 & 1 != 0 { core::hint::spin_loop(); continue; }
+            let nr = self.nr_entries.load(Ordering::Acquire);
+            let base = self.base.load(Ordering::Acquire);
+            let generation = self.generation.load(Ordering::Acquire);
+            if self.seq.load(Ordering::Acquire) != s1 { core::hint::spin_loop(); continue; }
+            if nr == 0 { return LdtView::NONE; }
+            return LdtView { base, nr_entries: nr, generation };
         }
     }
 
@@ -131,6 +174,11 @@ impl LdtState {
     /// back.
     /// # C: O(1)
     pub fn nr_entries(&self) -> u32 { self.nr_entries.load(Ordering::Acquire) }
+
+    /// Bytes the live table occupies. The allocation is sized to this, so it
+    /// is also what a full read-back copies.
+    /// # C: O(1)
+    pub fn table_bytes(&self) -> u64 { self.nr_entries() as u64 * LDT_ENTRY_SIZE as u64 }
 
     /// Copy `dst.len()` bytes of the table out, starting at entry 0. Bytes
     /// beyond the live table are left untouched — the caller has already
@@ -149,47 +197,49 @@ impl LdtState {
         dst[..n].copy_from_slice(&src[..n]);
     }
 
-    /// Install one packed descriptor at `entry`, growing the claimed entry
-    /// count to cover it.
+    /// Install one packed descriptor at `entry`, growing the table to cover
+    /// it and returning the table the grow displaced.
     ///
-    /// The store itself is an aligned 8-byte write into a table a sibling CPU
-    /// may have loaded. That is deliberate and is the reason the table is
-    /// never reallocated: the CPU's descriptor read of an aligned quadword
-    /// cannot tear, so a sibling sees either the old descriptor or the new
-    /// one, never a mixture.
-    /// # C: O(1) amortised; O(table) on the first call
-    /// # Lk: AddressSpace acquired
-    pub fn install(&self, entry: u32, desc: u64) -> Result<(), LdtError> {
+    /// The reference reallocates on every write rather than patching in
+    /// place, and so does this: a table whose base never moves would have to
+    /// be allocated at the architectural maximum up front, and an in-place
+    /// patch of a descriptor a sibling CPU has loaded relies on the CPU's
+    /// descriptor read being an atomic aligned quadword — true, but it
+    /// leaves the sibling running the OLD descriptor for an unbounded time,
+    /// which is the visibility defect the converge exists to close.
+    /// # C: O(new table)
+    /// # Lk: AddressSpace acquired (never held across the allocation)
+    pub fn install(&self, entry: u32, desc: u64) -> Result<LdtSwap, LdtError> {
         if entry >= LDT_ENTRIES { return Err(LdtError::Range); }
-        // Allocate outside the lock; the common case is that the table
-        // already exists and this never runs.
-        let mut fresh = if self.base.load(Ordering::Acquire) == 0 {
-            let mut v = vec::Vec::new();
-            v.try_reserve_exact(LDT_ENTRIES as usize).map_err(|_| LdtError::NoMem)?;
-            v.resize(LDT_ENTRIES as usize, 0u64);
-            Some(v.into_boxed_slice())
-        } else {
-            None
-        };
-
-        let mut g = self.table.lock();
-        if g.is_none() {
-            let t = fresh.take().ok_or(LdtError::NoMem)?;
-            self.base.store(t.as_ptr() as u64, Ordering::Release);
-            *g = Some(t);
+        let mut want = (entry + 1).max(self.nr_entries.load(Ordering::Acquire)) as usize;
+        loop {
+            let mut fresh = alloc_table(want)?;
+            let mut g = self.table.lock();
+            let have = g.as_ref().map(|t| t.len()).unwrap_or(0);
+            if have > fresh.len() {
+                // A concurrent install grew the table past our allocation
+                // while the lock was free. Retry with the size it now needs.
+                drop(g);
+                want = have.max(entry as usize + 1);
+                continue;
+            }
+            if let Some(src) = g.as_ref() { fresh[..have].copy_from_slice(src); }
+            fresh[entry as usize] = desc;
+            let base = fresh.as_ptr() as u64;
+            let nr = fresh.len() as u32;
+            let generation = self.generation.load(Ordering::Relaxed).wrapping_add(1);
+            // Publish base/nr/generation as one unit. `view()` refuses to
+            // read between the two sequence bumps.
+            self.seq.fetch_add(1, Ordering::AcqRel);
+            self.base.store(base, Ordering::Release);
+            self.nr_entries.store(nr, Ordering::Release);
+            self.generation.store(generation, Ordering::Release);
+            self.seq.fetch_add(1, Ordering::AcqRel);
+            let old = g.replace(fresh);
+            drop(g);
+            ANY_LDT_IN_USE.store(true, Ordering::Relaxed);
+            return Ok(LdtSwap { old, view: LdtView { base, nr_entries: nr, generation } });
         }
-        let t = g.as_mut().ok_or(LdtError::NoMem)?;
-        t[entry as usize] = desc;
-        // Publish the descriptor before the count that makes it reachable:
-        // a CPU that sees the larger limit must already see the entry.
-        let want = entry + 1;
-        if self.nr_entries.load(Ordering::Relaxed) < want {
-            self.nr_entries.store(want, Ordering::Release);
-        }
-        self.generation.fetch_add(1, Ordering::AcqRel);
-        drop(g);
-        ANY_LDT_IN_USE.store(true, Ordering::Relaxed);
-        Ok(())
     }
 
     /// Build the child's LDT for `fork`: a private copy, not a share. Two
@@ -200,13 +250,13 @@ impl LdtState {
         let child = Self::new();
         let nr = self.nr_entries.load(Ordering::Acquire);
         if nr == 0 { return Ok(child); }
-        let mut v = vec::Vec::new();
-        v.try_reserve_exact(LDT_ENTRIES as usize).map_err(|_| LdtError::NoMem)?;
-        v.resize(LDT_ENTRIES as usize, 0u64);
-        let mut t = v.into_boxed_slice();
+        let mut t = alloc_table(nr as usize)?;
         {
             let g = self.table.lock();
-            if let Some(src) = g.as_ref() { t.copy_from_slice(src); }
+            if let Some(src) = g.as_ref() {
+                let n = src.len().min(t.len());
+                t[..n].copy_from_slice(&src[..n]);
+            }
         }
         child.base.store(t.as_ptr() as u64, Ordering::Release);
         *child.table.lock() = Some(t);

@@ -345,11 +345,13 @@ pub unsafe fn init_percpu_hardirq_stack(top: u64) {
 pub const VEC_TIMER:   u8 = 0x40;
 /// Cross-CPU resched IPI vector per `13§9`.
 pub const VEC_RESCHED: u8 = 0x41;
-/// Cross-CPU TLB-shootdown IPI vector per `20§5`. The sender (a CPU that
-/// downgraded/removed a user PTE) IPIs every other online CPU; each
-/// invalidates the target VA locally and ACKs. x86 has no hardware TLB
-/// broadcast, unlike aarch64's `tlbi vae1is`.
-pub const VEC_TLB_SHOOTDOWN: u8 = 0x42;
+/// Cross-CPU call-function IPI vector — the machine's ONLY cross-CPU work
+/// vector, carrying TLB shootdown (`20§5`), LDT reload and anything added
+/// later. The sender queues a call descriptor for each target and IPIs it;
+/// the target drains its queue and releases each descriptor once the call
+/// has RUN. x86 has no hardware TLB broadcast, unlike aarch64's
+/// `tlbi vae1is`, which is why a shootdown needs a vector at all.
+pub const VEC_CALL_FUNCTION: u8 = 0x42;
 /// MSI delivery vector (F57). Legacy alias for the first slot in
 /// the per-vector pool. Kept so existing callers compile; new code
 /// should call `alloc_x86_vector` and use the returned vector.
@@ -405,7 +407,7 @@ pub fn irq_stub_addr(vec: u8) -> u64 {
         match vec {
             VEC_TIMER   => return oxide_irq_vec_40 as *const () as usize as u64,
             VEC_RESCHED => return oxide_irq_vec_41 as *const () as usize as u64,
-            VEC_TLB_SHOOTDOWN => return oxide_irq_vec_42 as *const () as usize as u64,
+            VEC_CALL_FUNCTION => return oxide_irq_vec_42 as *const () as usize as u64,
             VEC_MSI_0 => return oxide_irq_vec_50 as *const () as usize as u64,
             VEC_MSI_1 => return oxide_irq_vec_51 as *const () as usize as u64,
             VEC_MSI_2 => return oxide_irq_vec_52 as *const () as usize as u64,

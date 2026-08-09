@@ -199,6 +199,8 @@ pub mod time;
 pub mod uregs;
 pub mod zerotrap;
 
+/// The one cross-CPU function-call boundary; `tlb` is a caller of it.
+pub mod smp_call;
 pub mod tlb;
 
 /// Local `kassert!` per `07§5` — bridges to `crates/err`'s real
