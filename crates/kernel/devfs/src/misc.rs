@@ -128,6 +128,19 @@ impl FileOps for KmsgFileOps {
         kmsg_write_record(b);
         Ok(b.len())
     }
+
+    /// One `writev` is ONE record, however many iovecs carry it (Linux
+    /// `devkmsg_write` consumes the whole `iov_iter`).
+    ///
+    /// The stream default writes each iovec separately, and the system log
+    /// daemon sends a line as identifier, `[pid]: ` and message in separate
+    /// iovecs — so the console showed three timestamped lines per log line,
+    /// each with a newline this code appended, exactly when the boot log
+    /// matters most.
+    /// # C: O(sum lens)
+    fn write_iter_file(&self, _f: &vfs::File, _o: u64, bufs: &[&[u8]], _nb: bool) -> KResult<usize> {
+        kmsg_write_iter(bufs)
+    }
 }
 
 /// One vectored `/dev/kmsg` write, joined into a single record before it
@@ -323,30 +336,6 @@ impl vfs::CharDevOps for MemCharDevOps {
         }
     }
 
-    /// `/dev/kmsg` is record-oriented: ONE `writev` is ONE record, however many
-    /// iovecs carry it (Linux `devkmsg_write` consumes the whole `iov_iter`).
-    ///
-    /// The stream default writes each iovec separately, which turns every
-    /// vectored log line into that many records. The system log daemon sends a
-    /// line as identifier, `[pid]: `, and message in separate iovecs, so a
-    /// console showed `systemd`, `[1]: ` and the message as three timestamped
-    /// lines instead of one — the boot log became unreadable exactly when it
-    /// matters most.
-    ///
-    /// Every other minor here is a stream (`/dev/null`, `/dev/zero`,
-    /// `/dev/random`), so they keep the default.
-    /// # C: O(sum lens)
-    fn write_iter_file(&self, devt: vfs::Devt, file: &vfs::File, off: u64,
-        bufs: &[&[u8]], nonblock: bool) -> KResult<usize>
-    {
-        if devt.minor() != 11 {
-            return vfs::file_ops::stream_write_iter_with(off, bufs, |pos, buf| {
-                if nonblock { self.write_nonblock_file(devt, file, pos, buf) }
-                else { self.write_file(devt, file, pos, buf) }
-            });
-        }
-        kmsg_write_iter(bufs)
-    }
 }
 
 
