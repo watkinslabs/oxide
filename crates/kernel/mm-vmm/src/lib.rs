@@ -174,6 +174,12 @@ mod tests_hugetlb_cow;
 #[cfg(test)]
 mod tests_vm_ops;
 
+// F843: the mapped object's OWN `vm_operations_struct` hooks — open/close
+// bracket every VMA birth and death, and `may_split` refuses an interior cut
+// of a mapping whose accounting is per mapping (the perf ring).
+#[cfg(test)]
+mod tests_vma_object_ops;
+
 // ld.so `needed != NULL` blocker: the write-protection fault must never
 // zero-fill over File/KernelBytes backing when the leaf is zapped between the
 // normalization translate and the CoW re-read (SMP TOCTOU).

@@ -1,5 +1,13 @@
-//! VMA open/close lifecycle hooks for the one user that needs
-//! them: SysV shared memory attach/detach refcounting.
+//! VMA open/close/may_split lifecycle hooks — Linux `vm_operations_struct`.
+//!
+//! Two dispatch shapes, one contract. The object's own
+//! [`crate::vma::FileBacking`] methods are the general one and run for every
+//! file-backed VMA, exactly as Linux's ops table belongs to whatever the
+//! mapping was created from; a mapping-lifetime charge (perf's per-user
+//! `locked_vm`) is released there. The `AtomicPtr` slots below are the SysV
+//! shm pair, which cannot be trait methods because the same shmem object also
+//! backs plain `MAP_SHARED|MAP_ANONYMOUS` mappings that are not attachments —
+//! `VmaFlags::SYSVSHM` is what tells the two apart.
 //!
 //! `shm_nattch` counts VMAs, not processes — `shm_open` runs on every VMA
 //! that comes into existence referencing the segment (`shmat`'s own mmap,
@@ -36,6 +44,10 @@ pub fn set_shm_vm_ops(open: VmaOpsFn, close: VmaOpsFn) {
 fn dispatch(slot: &AtomicPtr<()>, vma: &Vma) {
     if !vma.flags.contains(VmaFlags::SYSVSHM) { return; }
     let VmaBacking::File { backing, .. } = &vma.backing else { return };
+    dispatch_slot(slot, backing);
+}
+
+fn dispatch_slot(slot: &AtomicPtr<()>, backing: &alloc::sync::Arc<dyn crate::vma::FileBacking>) {
     let p = slot.load(Ordering::Acquire);
     if p.is_null() { return; }
     // SAFETY: `p` was stored by `set_shm_vm_ops` from a `VmaOpsFn` with this exact signature; the Acquire load pairs with that Release store, and a function address is 'static.
@@ -43,11 +55,29 @@ fn dispatch(slot: &AtomicPtr<()>, vma: &Vma) {
     f(backing);
 }
 
-/// Linux `vm_ops->open(vma)`: a new VMA now references this segment.
-/// # C: O(1) plus the callback
-pub(crate) fn vma_opened(vma: &Vma) { dispatch(&OPEN, vma); }
+/// The mapped object behind `vma`, if it has one.
+fn object_of(vma: &Vma) -> Option<&alloc::sync::Arc<dyn crate::vma::FileBacking>> {
+    match &vma.backing { VmaBacking::File { backing, .. } => Some(backing), _ => None }
+}
 
-/// Linux `vm_ops->close(vma)`: this VMA no longer references the segment.
-/// The callback owns the last-close destroy decision.
+/// Linux `vm_ops->open(vma)`: a new VMA now references the mapped object.
 /// # C: O(1) plus the callback
-pub(crate) fn vma_closed(vma: &Vma) { dispatch(&CLOSE, vma); }
+pub(crate) fn vma_opened(vma: &Vma) {
+    if let Some(b) = object_of(vma) { b.vma_open(); }
+    dispatch(&OPEN, vma);
+}
+
+/// Linux `vm_ops->close(vma)`: this VMA no longer references the object. The
+/// object's own hook owns whatever it charged while mapped; the SysV slot
+/// owns the last-close destroy decision.
+/// # C: O(1) plus the callback
+pub(crate) fn vma_closed(vma: &Vma) {
+    if let Some(b) = object_of(vma) { b.vma_close(); }
+    dispatch(&CLOSE, vma);
+}
+
+/// Linux `vm_ops->may_split(vma, addr)`: whether the mapped object tolerates
+/// its VMA being cut at an interior address. # C: O(1)
+pub(crate) fn vma_may_split(vma: &Vma) -> bool {
+    object_of(vma).is_none_or(|b| b.may_split())
+}

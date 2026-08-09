@@ -185,6 +185,11 @@ impl AddressSpace {
         // mseal(2): a sealed VMA anywhere in the range refuses the whole
         // unmap, before any split.
         if tree.any_sealed_raw_end(addr, end) { return Err(Error::Perm); }
+        // Linux `vm_ops->may_split`: an object accounted per MAPPING refuses
+        // an interior cut outright — two fragments carrying sizes and offsets
+        // the charge was never taken for is exactly how a charge outlives its
+        // release. Whole-VMA unmaps are unaffected.
+        if tree.refuses_split_raw_end(addr, end) { return Err(Error::Inval); }
         // A4-rmap (GAP A4-2): detach the anon_vma chain edges of every
         // VMA the unmap touches (their pre-split ranges), then re-attach
         // the surviving fragments' new ranges after the tree mutation.
@@ -327,6 +332,15 @@ impl AddressSpace {
                 error = Some(Error::Perm);
                 break;
             }
+            // Linux `vm_ops->may_split`: a partial mprotect of a mapping whose
+            // object refuses splitting is EINVAL, decided before any fragment
+            // exists.
+            if (cursor > vma.start.as_u64() || end.as_u64() < vma.end.as_u64())
+                && !crate::vm_ops::vma_may_split(vma)
+            {
+                error = Some(Error::Inval);
+                break;
+            }
             let step_end = vma.end.as_u64().min(end.as_u64());
             steps.push(MprotectStep {
                 start: UserVirtAddr::new(cursor).expect("validated user range"),
@@ -368,6 +382,17 @@ impl AddressSpace {
     pub fn range_sealed(&self, addr: UserVirtAddr, len: usize) -> bool {
         match end_of_raw(addr, len as u64) {
             Ok(end) => self.vmas.read().any_sealed_raw_end(addr, end),
+            Err(_)  => false,
+        }
+    }
+
+    /// True if `[addr, addr+len)` would cut a VMA whose mapped object refuses
+    /// to be split (Linux `vm_ops->may_split`). The syscall layer checks this
+    /// and returns EINVAL; a range covering whole VMAs is never refused.
+    /// # C: O(K)
+    pub fn range_refuses_split(&self, addr: UserVirtAddr, len: usize) -> bool {
+        match end_of_raw(addr, len as u64) {
+            Ok(end) => self.vmas.read().refuses_split_raw_end(addr, end),
             Err(_)  => false,
         }
     }
