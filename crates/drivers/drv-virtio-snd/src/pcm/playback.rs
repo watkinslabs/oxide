@@ -110,7 +110,7 @@ fn tx_period(ctx: &mut Ctx, stream_id: u32, pcm: &[u8]) -> bool {
 pub fn beep(hz: u32, ms: u32) -> bool { beep_diag(hz, ms) == 0 }
 
 pub fn beep_diag(hz: u32, ms: u32) -> u8 {
-    let mut g = CTX.lock();
+    let mut g = CTX.lock_bh::<crate::state::SndBh>();
     let ctx = match active_ctx_mut(&mut g) { Some(c) => c, None => return 1 };
     let stream = match ctx.out_stream { Some(s) => s, None => return 2 };
     if ctx.txq.is_none() { return 3; }
@@ -153,7 +153,7 @@ pub fn beep_diag(hz: u32, ms: u32) -> u8 {
 pub fn pcm_hw_params(
     owner: sound::SoundOwnerKey, rate: u8, format: u8, channels: u8, period_bytes: u32, buffer_bytes: u32,
 ) -> bool {
-    let mut g = CTX.lock();
+    let mut g = CTX.lock_bh::<crate::state::SndBh>();
     let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return false };
     let stream = match ctx.out_stream { Some(s) => s, None => return false };
     let ch = channels.clamp(1, 2);
@@ -173,7 +173,7 @@ pub fn pcm_hw_params(
 }
 
 pub fn pcm_prepare(owner: sound::SoundOwnerKey) -> bool {
-    let mut g = CTX.lock();
+    let mut g = CTX.lock_bh::<crate::state::SndBh>();
     let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return false };
     if ctx.pcm_state == PcmState::Idle { return false; }
     let stream = match ctx.out_stream { Some(s) => s, None => return false };
@@ -183,7 +183,7 @@ pub fn pcm_prepare(owner: sound::SoundOwnerKey) -> bool {
 }
 
 pub fn pcm_trigger(owner: sound::SoundOwnerKey, start: bool) -> bool {
-    let mut g = CTX.lock();
+    let mut g = CTX.lock_bh::<crate::state::SndBh>();
     let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return false };
     let stream = match ctx.out_stream { Some(s) => s, None => return false };
     let code = if start { VIRTIO_SND_R_PCM_START } else { VIRTIO_SND_R_PCM_STOP };
@@ -193,7 +193,7 @@ pub fn pcm_trigger(owner: sound::SoundOwnerKey, start: bool) -> bool {
 }
 
 pub fn pcm_hw_free(owner: sound::SoundOwnerKey) -> bool {
-    let mut g = CTX.lock();
+    let mut g = CTX.lock_bh::<crate::state::SndBh>();
     let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return false };
     if ctx.pcm_state == PcmState::Idle { return true; }
     let stream = match ctx.out_stream { Some(s) => s, None => return false };
@@ -205,7 +205,7 @@ pub fn pcm_hw_free(owner: sound::SoundOwnerKey) -> bool {
 }
 
 pub fn pcm_submit(owner: sound::SoundOwnerKey, bytes: &[u8]) -> usize {
-    let mut g = CTX.lock();
+    let mut g = CTX.lock_bh::<crate::state::SndBh>();
     let ctx = match active_ctx_mut_for(&mut g, owner) { Some(c) => c, None => return 0 };
     if ctx.pcm_state != PcmState::Running { return 0; }
     let stream = match ctx.out_stream { Some(s) => s, None => return 0 };

@@ -51,6 +51,18 @@ pub(super) struct Ctx {
 pub enum PcmState { Idle, Configured, Prepared, Running }
 
 pub(super) static CTX: Spinlock<Vec<Ctx>, DriverLockClass> = Spinlock::new(Vec::new());
+/// Bottom-half gate for the completion/drain-softirq-shared lock: real
+/// exclusion in the kernel, a no-op under hosted tests. Every acquisition of
+/// the lock goes through `lock_bh`, softirq context included — the disable
+/// counts and the enable drains only at the outermost level outside IRQ, i.e.
+/// the reference `spin_lock_bh` nesting. A bare process-context hold is the
+/// one-CPU deadlock B2007/B2008 fixed: the softirq spins on an owner it
+/// interrupted.
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) type SndBh = sched::bh::SchedBh;
+#[cfg(not(target_os = "oxide-kernel"))]
+pub(crate) type SndBh = sync::NoopBh;
+
 pub static DRAINED_EVENTS: AtomicU64 = AtomicU64::new(0);
 pub static LAST_EVENT: AtomicU64 = AtomicU64::new(0);
 
@@ -173,7 +185,7 @@ impl Drop for SoundCardReservation {
 }
 
 pub(super) fn remove_ctx(device_key: DeviceKey) -> Option<(Ctx, bool)> {
-    let mut guard = CTX.lock();
+    let mut guard = CTX.lock_bh::<crate::state::SndBh>();
     let idx = guard.iter().position(|ctx| ctx.device_key == device_key)?;
     let ctx = guard.remove(idx);
     let empty_after = guard.is_empty();

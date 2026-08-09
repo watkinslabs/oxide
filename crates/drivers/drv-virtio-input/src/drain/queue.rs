@@ -41,8 +41,21 @@ pub(super) struct QueueCtx {
 
 /// All installed input devices share one drain.
 pub(super) static CTXS:
-    Spinlock<[Option<QueueCtx>; crate::MAX_INPUT_DEVICES], DriverLockClass> =
+    Spinlock<[Option<QueueCtx>;
+ crate::MAX_INPUT_DEVICES], DriverLockClass> =
     Spinlock::new([const { None }; crate::MAX_INPUT_DEVICES]);
+
+/// Bottom-half gate for the completion/drain-softirq-shared lock: real
+/// exclusion in the kernel, a no-op under hosted tests. Every acquisition of
+/// the lock goes through `lock_bh`, softirq context included — the disable
+/// counts and the enable drains only at the outermost level outside IRQ, i.e.
+/// the reference `spin_lock_bh` nesting. A bare process-context hold is the
+/// one-CPU deadlock B2007/B2008 fixed: the softirq spins on an owner it
+/// interrupted.
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) type InputBh = sched::bh::SchedBh;
+#[cfg(not(target_os = "oxide-kernel"))]
+pub(crate) type InputBh = sync::NoopBh;
 
 pub(super) static HANDLER_INSTALLED: AtomicBool = AtomicBool::new(false);
 
@@ -135,7 +148,7 @@ pub fn install_eventq(
     zero_frame(hhdm, status_buf_pa);
     let mut installed = false;
     {
-        let mut g = CTXS.lock();
+        let mut g = CTXS.lock_bh::<crate::drain::queue::InputBh>();
         if g[slot_idx].is_none()
             && !g.iter().flatten().any(|ctx| ctx.device_key == device_key)
         {
@@ -179,7 +192,7 @@ pub fn install_eventq(
 }
 
 pub(super) fn take_eventq(device_key: virtio::VirtioChildDeviceKey) -> Option<(QueueCtx, bool)> {
-    let mut g = CTXS.lock();
+    let mut g = CTXS.lock_bh::<crate::drain::queue::InputBh>();
     let slot = g.iter_mut()
         .find(|slot| slot.as_ref().is_some_and(|ctx| ctx.device_key == device_key))?;
     let ctx = slot.take()?;
@@ -238,7 +251,7 @@ pub fn poll_all() { drain_softirq(); }
 /// # Ctx: process / softirq, IRQs enabled.
 /// # C: O(n_pending × n_devices)
 fn drain_softirq() {
-    let mut g = CTXS.lock();
+    let mut g = CTXS.lock_bh::<crate::drain::queue::InputBh>();
     for (id, slot) in g.iter_mut().enumerate() {
         let ctx = match slot.as_mut() { Some(c) => c, None => continue };
         ring::drain_one(ctx, id as u32);

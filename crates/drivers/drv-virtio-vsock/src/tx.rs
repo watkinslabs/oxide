@@ -5,7 +5,7 @@ use crate::registry::CTX;
 
 /// TX hook installed into `net::vsock`.
 pub fn tx_packet(owner: net::vsock::VsockOwner, frame: &[u8]) -> bool {
-    let mut g = CTX.lock();
+    let mut g = CTX.lock_bh::<crate::registry::VsockBh>();
     let ctx = match g.iter_mut().find(|ctx| ctx.device_key.raw() == owner.raw()) {
         Some(c) => c,
         None => return false,

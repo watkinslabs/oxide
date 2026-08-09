@@ -66,10 +66,22 @@ mod imp {
     }
 
     static DEVICES: Spinlock<Vec<AhciRecord>, DriverLockClass> = Spinlock::new(Vec::new());
+/// Bottom-half gate for the completion/drain-softirq-shared lock: real
+/// exclusion in the kernel, a no-op under hosted tests. Every acquisition of
+/// the lock goes through `lock_bh`, softirq context included — the disable
+/// counts and the enable drains only at the outermost level outside IRQ, i.e.
+/// the reference `spin_lock_bh` nesting. A bare process-context hold is the
+/// one-CPU deadlock B2007/B2008 fixed: the softirq spins on an owner it
+/// interrupted.
+#[cfg(target_os = "oxide-kernel")]
+type AhciBh = sched::bh::SchedBh;
+#[cfg(not(target_os = "oxide-kernel"))]
+type AhciBh = sync::NoopBh;
+
 
     fn run_completion_bottom_half() {
         let devices: Vec<Arc<AhciBlk>> = DEVICES
-            .lock()
+            .lock_bh::<AhciBh>()
             .iter()
             .map(|record| record.dev.clone())
             .collect();
@@ -77,7 +89,7 @@ mod imp {
     }
 
     fn unregister_completion_if_idle() {
-        if DEVICES.lock().is_empty() {
+        if DEVICES.lock_bh::<AhciBh>().is_empty() {
             let _ = block::completion::unregister(run_completion_bottom_half);
         }
     }
@@ -126,7 +138,7 @@ mod imp {
         mmio: mmio_map::Mapping,
         abar_off: u64,
     ) -> u32 {
-        if DEVICES.lock().iter().any(|rec| rec.device_key == device_key) {
+        if DEVICES.lock_bh::<AhciBh>().iter().any(|rec| rec.device_key == device_key) {
             return 0;
         }
         let mut a = match Ahci::bring_up(mmio, abar_off) { Ok(a) => a, Err(reason) => {
@@ -172,7 +184,7 @@ mod imp {
         let idx = block::registry::register_with_driver(
             block::registry::BlockDriver::fixed("sd", block::uapi::SCSI_DISK_MAJOR), &name, serial.as_deref(), block_dev);
         let published = if idx != 0 && !existed {
-            let mut devices = DEVICES.lock();
+            let mut devices = DEVICES.lock_bh::<AhciBh>();
             if devices.iter().any(|rec| rec.device_key == device_key) {
                 false
             } else {
@@ -228,7 +240,7 @@ mod imp {
     /// # C: O(N_ahci + N_disks + port shutdown)
     pub fn remove(device_key: pci::Bdf) -> bool {
         let rec = {
-            let mut devices = DEVICES.lock();
+            let mut devices = DEVICES.lock_bh::<AhciBh>();
             match devices.iter().position(|rec| rec.device_key == device_key) {
                 Some(i) => devices.remove(i),
                 None => return false,
@@ -245,7 +257,7 @@ mod imp {
     /// # C: O(N_ahci + port shutdown)
     pub fn shutdown(device_key: pci::Bdf) -> bool {
         let dev = match DEVICES
-            .lock()
+            .lock_bh::<AhciBh>()
             .iter()
             .find(|rec| rec.device_key == device_key)
             .map(|rec| rec.dev.clone())
@@ -261,7 +273,7 @@ mod imp {
     /// # C: O(N_ahci)
     pub fn command_orig_for(device_key: pci::Bdf) -> Option<u16> {
         DEVICES
-            .lock()
+            .lock_bh::<AhciBh>()
             .iter()
             .find(|rec| rec.device_key == device_key)
             .map(|rec| rec.command_orig)
