@@ -98,7 +98,7 @@ fn init_smp(info: &BootInfo) {
         unsafe {
             sched::live::install_default_runqueue();
             sched::live::set_send_resched_ipi_hook(arch_irq::lapic::send_resched_ipi);
-            arch_irq::tlb::install();
+            arch_irq::call_fn::install();
         }
         if started > 0 { smp_ipi_smoke(); }
     }

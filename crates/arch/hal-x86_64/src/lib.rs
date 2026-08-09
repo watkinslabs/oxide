@@ -69,7 +69,7 @@ pub use irq::{
     call_on_irq_stack, on_irq_stack,
     init_percpu_hardirq_stack,
     irq_stub_addr, VEC_MSI, VEC_MSI_POOL_FIRST, VEC_MSI_POOL_LAST, VEC_MSI_POOL_LEN,
-    VEC_RESCHED, VEC_TIMER, VEC_TLB_SHOOTDOWN,
+    VEC_RESCHED, VEC_TIMER, VEC_CALL_FUNCTION,
 };
 pub use irq_gate::X86IrqGate;
 pub use mmu::{

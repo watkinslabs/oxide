@@ -117,6 +117,46 @@ pub unsafe fn load(cpu: usize, base: u64, nr_entries: u32, generation: u64) {
     LOADED[cpu].store(load_token(generation), Ordering::Release);
 }
 
+/// Selector bit 2 — the table indicator. Set means the selector names the
+/// LDT rather than the GDT.
+pub const SEGMENT_TI_LDT: u16 = 1 << 2;
+
+/// Reload any of this CPU's data segment registers that still name an LDT
+/// selector, so the descriptor the CPU has cached for them is re-read from
+/// the table just installed (the reference's `refresh_ldt_segments`).
+///
+/// A segment register keeps a hidden copy of the descriptor it was loaded
+/// with; changing the table entry underneath it changes nothing until the
+/// selector is loaded again. In 64-bit kernel mode DS and ES are normally
+/// null, so this is usually a pair of reads and no writes.
+///
+/// # SAFETY: only selectors that already passed a load are reloaded, from a
+/// table that is present and live; CS/SS are deliberately untouched, since a
+/// user context never has an LDT selector in either and reloading SS at CPL 0
+/// is not a thing this path may do.
+/// # C: O(1)
+/// # Ctx: CPL 0, preempt-off, interrupts masked
+pub unsafe fn refresh_segments() {
+    #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+    {
+        let mut sel: u16;
+        // SAFETY: reading a segment selector into a register is always legal.
+        unsafe { core::arch::asm!("mov {0:x}, ds", out(reg) sel, options(nomem, nostack, preserves_flags)); }
+        if sel & SEGMENT_TI_LDT != 0 {
+            // SAFETY: `sel` is the selector DS already holds, so its
+            // descriptor is present in the table now loaded in LDTR.
+            unsafe { core::arch::asm!("mov ds, {0:x}", in(reg) sel, options(nostack, preserves_flags)); }
+        }
+        // SAFETY: reading a segment selector into a register is always legal.
+        unsafe { core::arch::asm!("mov {0:x}, es", out(reg) sel, options(nomem, nostack, preserves_flags)); }
+        if sel & SEGMENT_TI_LDT != 0 {
+            // SAFETY: `sel` is the selector ES already holds, so its
+            // descriptor is present in the table now loaded in LDTR.
+            unsafe { core::arch::asm!("mov es, {0:x}", in(reg) sel, options(nostack, preserves_flags)); }
+        }
+    }
+}
+
 /// Load a null LDT on this CPU (the reference's `clear_LDT`). Every segment
 /// register referencing the LDT becomes unusable, which is exactly what a
 /// switch to an address space without a table must produce.

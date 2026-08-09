@@ -196,3 +196,7 @@ mod tests {
 
 
 pub mod smp;
+
+/// Cross-CPU call-function queue protocol — the ungated decision half of the
+/// IPI mechanism whose arch driver lives in `arch-irq`.
+pub mod call_fn;
