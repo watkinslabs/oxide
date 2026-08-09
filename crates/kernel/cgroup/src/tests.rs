@@ -485,3 +485,4 @@ fn control_files_own_distinct_hierarchy_inodes() {
     assert_eq!(a.ino(), crate::inode::make_cg_file(ROOT, "cgroup.procs").ino(),
         "a synthesized inode keeps its control-file node identity");
 }
+mod mount_ns;

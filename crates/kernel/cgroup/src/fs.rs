@@ -52,13 +52,29 @@ impl FileSystem for CgroupFs {
     }
 }
 
-/// Mount the shared unified cgroup2 hierarchy on the caller-walked mountpoint.
+/// The cgroup the CALLER's mount of the hierarchy is rooted at: the caller's
+/// cgroup-namespace root, not the hierarchy root. A task inside
+/// `CLONE_NEWCGROUP` that mounts cgroup2 must see only its namespace's
+/// subtree — mount-root selection is where that containment happens; `/proc`
+/// path rendering alone cannot hide ancestors from a mounted tree. A namespace
+/// root path that no longer resolves (its cgroup was removed) falls back to
+/// the hierarchy root rather than failing the mount, matching the
+/// already-dead-namespace behaviour of the rendering path.
+/// # C: O(components · log n) + hook
+fn caller_mount_root_cg() -> u64 {
+    let ns_root = crate::state::caller_ns_root();
+    if ns_root == "/" { return tree::ROOT; }
+    TREE.lock().resolve(&ns_root).unwrap_or(tree::ROOT)
+}
+
+/// Mount the shared unified cgroup2 hierarchy on the caller-walked mountpoint,
+/// rooted at the caller's cgroup-namespace root.
 /// # C: O(N_mounts)
 pub fn mount_at(mount_point: &str, mp: Option<Arc<Dentry>>) -> KResult<()> {
     if mount_point != "/" && mp.is_none() { return Err(vfs::VfsError::Enoent); }
     let first = TREE.lock().mount_root();
     let fs = Arc::new(CgroupFs::new(mount_point));
-    let root = inode::make_cg_dir(tree::ROOT);
+    let root = inode::make_cg_dir(caller_mount_root_cg());
     let ty = vfs::fs::get_fs_type("cgroup2").ok_or(vfs::VfsError::Enodev)?;
     match vfs::mount::register_bind_typed(ty, mp, fs, root) {
         Ok(()) => Ok(()),
@@ -67,11 +83,12 @@ pub fn mount_at(mount_point: &str, mp: Option<Arc<Dentry>>) -> KResult<()> {
     }
 }
 
-/// fs_context `get_tree` realize for the unified cgroup2 hierarchy.
+/// fs_context `get_tree` realize for the unified cgroup2 hierarchy, rooted at
+/// the caller's cgroup-namespace root.
 /// # C: O(1)
 pub fn realize_tree() -> (Arc<dyn FileSystem>, InodeRef) {
     let _ = TREE.lock().mount_root();
     let fs: Arc<dyn FileSystem> = Arc::new(CgroupFs::new(""));
-    let root = inode::make_cg_dir(tree::ROOT);
+    let root = inode::make_cg_dir(caller_mount_root_cg());
     (fs, root)
 }
