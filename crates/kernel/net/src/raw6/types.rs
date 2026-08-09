@@ -79,7 +79,7 @@ pub struct Raw6Endpoint {
     pub mcast: Arc<SocketMcast>,
     pub error: Arc<SocketError>,
     pub(crate) router_alert: Option<Arc<crate::sock_opts::sol_ipv6::Ipv6RouterAlert>>,
-    pub(super) state: Spinlock<Raw6State, LockClass>,
+    pub(super) state: crate::fib_lock::FibLock<Raw6State, LockClass>,
     #[cfg(target_os = "oxide-kernel")]
     pub waiters: sched::live::WaitList,
     pub(super) poll_subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, LockClass>,
@@ -114,7 +114,7 @@ impl Raw6Endpoint {
                error: Arc<SocketError>, router_alert: Option<Arc<crate::sock_opts::sol_ipv6::Ipv6RouterAlert>>) -> Self {
         Self {
             owner, protocol, ping, bpf_filter, mcast, error, router_alert,
-            state: Spinlock::new(Raw6State {
+            state: crate::fib_lock::FibLock::new(Raw6State {
                 accepting: true, local: Raw6Address::UNSPECIFIED, explicit_local: false, peer: None,
                 bound_iface: None, datagrams: VecDeque::new(), queued_bytes: 0,
                 rcvbuf: DEFAULT_RAW6_RCVBUF, icmp_filter: Icmp6Filter::PASS_ALL,

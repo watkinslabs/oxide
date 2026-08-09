@@ -9,7 +9,7 @@ use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicI32, AtomicU16, Ordering};
 
-use sync::{Socket as LockClass, Spinlock};
+use sync::{Socket as LockClass};
 
 use crate::addr::{Ipv6Addr, NetIfaceId};
 use crate::netdev::NetError;
@@ -83,14 +83,14 @@ pub struct ReplyTuple {
 
 /// Canonical per-network-namespace identifier table.
 pub struct PingTable {
-    entries: Spinlock<BTreeMap<u16, Vec<Entry>>, LockClass>,
+    entries: crate::fib_lock::FibLock<BTreeMap<u16, Vec<Entry>>, LockClass>,
     rover: AtomicU16,
 }
 
 impl PingTable {
     /// An empty identifier table for one network namespace. # C: O(1)
     pub fn new() -> Self {
-        Self { entries: Spinlock::new(BTreeMap::new()), rover: AtomicU16::new(0) }
+        Self { entries: crate::fib_lock::FibLock::new(BTreeMap::new()), rover: AtomicU16::new(0) }
     }
 
     /// Acquire an identifier for one endpoint. A zero request scans for a free

@@ -81,7 +81,7 @@ pub struct Raw4Endpoint {
     /// Kernel-owned echo identifier, present only on an ICMP datagram endpoint.
     /// `None` is a raw endpoint, which demultiplexes by protocol instead.
     pub ping: Option<Arc<crate::ping::PingIdent>>,
-    state: Spinlock<EndpointState, LockClass>,
+    state: crate::fib_lock::FibLock<EndpointState, LockClass>,
     pub bpf_filter: Arc<SocketFilter>,
     pub mcast: Arc<SocketMcast>,
     pub error: Arc<SocketError>,
@@ -142,7 +142,7 @@ impl Raw4Endpoint {
             protocol,
             owner,
             ping,
-            state: Spinlock::new(EndpointState {
+            state: crate::fib_lock::FibLock::new(EndpointState {
                 local: Ipv4Addr::ANY,
                 explicit_local: false,
                 remote: None,
