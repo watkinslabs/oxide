@@ -66,6 +66,23 @@ pub fn local_bh_disable() {
     preempt::preempt_count_add(SOFTIRQ_DISABLE_OFFSET);
 }
 
+/// Whether this `local_bh_enable` may drain pending softirqs inline.
+///
+/// Refused inside a hard-IRQ handler (the tail drains on return), and refused
+/// while local interrupts are masked: an irqsave section that releases a
+/// `lock_bh` guard must not run softirq handlers on its own stack — a drained
+/// handler taking a lock the masked section holds (VT port `inner`, any
+/// irqsave-held lock) spins with IRQs off and no tick to break it, the
+/// self-deadlock behind the intermittent ~5s boot freeze. Linux states the
+/// same rule as `lockdep_assert_irqs_enabled` in `__local_bh_enable_ip`; the
+/// pending work is not lost — it runs at the next IRQ exit or `ksoftirqd`
+/// pass, exactly as it does for the hard-IRQ case.
+/// # C: O(1)
+pub(crate) fn bh_enable_may_drain(in_hardirq: bool, irqs_off: bool,
+    outermost: bool, pending: bool) -> bool {
+    !in_hardirq && !irqs_off && outermost && pending
+}
+
 /// Linux `local_bh_enable`: re-enable softirqs. If this is the outermost
 /// disable and work is pending, drain it first (still marked `in_serving` so
 /// preemption stays off and nested raises don't recurse), then drop the
@@ -82,7 +99,8 @@ pub unsafe fn local_bh_enable() {
     // stack that cannot be switched away from. The IRQ tail runs the drain
     // once the handler returns, so nothing is lost by skipping it.
     let interrupt = preempt::hardirq_count() != 0;
-    if !interrupt && preempt::softirq_count() == SOFTIRQ_DISABLE_OFFSET && softirq::pending() {
+    if bh_enable_may_drain(interrupt, preempt::irqs_disabled(),
+        preempt::softirq_count() == SOFTIRQ_DISABLE_OFFSET, softirq::pending()) {
         // Drop the disable portion but keep one SOFTIRQ_OFFSET: in_serving =
         // true, preempt still off, while we drain (Linux keeps preempt off
         // across the do_softirq call in __local_bh_enable_ip).
@@ -264,6 +282,25 @@ impl Drop for BhGuardNoDrain {
 
 #[cfg(test)]
 mod tests {
+    /// The decision behind the intermittent ~5s boot freeze: releasing a
+    /// `lock_bh` guard inside an irqsave section must NOT drain, however
+    /// pending and outermost the softirq state is.
+    #[test]
+    fn no_drain_while_irqs_are_masked() {
+        assert!(!bh_enable_may_drain(false, true, true, true));
+    }
+
+    /// Positive control for the guard itself: with IRQs on, the same state
+    /// drains — remove the `!irqs_off` conjunct and the first assertion here
+    /// goes red while this one keeps passing.
+    #[test]
+    fn drains_when_outermost_pending_and_irqs_on() {
+        assert!(bh_enable_may_drain(false, false, true, true));
+        assert!(!bh_enable_may_drain(true, false, true, true), "hard-IRQ tail owns the drain");
+        assert!(!bh_enable_may_drain(false, false, false, true), "nested disable defers");
+        assert!(!bh_enable_may_drain(false, false, true, false), "nothing pending");
+    }
+
     use alloc::sync::Arc;
     use super::*;
     use crate::preempt;

@@ -269,9 +269,11 @@ pub fn lockdep_context() -> u8 {
 /// masked is as safe as `lock_irqsave`, and without this the allocator (which
 /// masks IRQs itself around alloc/dealloc, then takes a plain lock) is reported
 /// as a violation on every boot.
+///
+/// Ungated: `local_bh_enable` consults it to refuse a softirq drain inside an
+/// IRQ-masked section, not only under lockdep.
 /// # C: O(1) — one register read
-#[cfg(feature = "debug-lockdep")]
-pub fn lockdep_irqs_disabled() -> bool {
+pub fn irqs_disabled() -> bool {
     #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
     {
         let f: u64;
@@ -297,9 +299,9 @@ pub fn install_lockdep() {
     // SAFETY: `lockdep_context` is a 'static fn with the documented ABI and
     // returns only 0/1/2; installed once from the single-CPU boot path.
     unsafe { sync::lockdep::set_context_hook(lockdep_context); }
-    // SAFETY: `lockdep_irqs_disabled` is a 'static fn that only reads a status
+    // SAFETY: `irqs_disabled` is a 'static fn that only reads a status
     // register — no allocation, no locking, safe from any context.
-    unsafe { sync::lockdep::set_irq_state_hook(lockdep_irqs_disabled); }
+    unsafe { sync::lockdep::set_irq_state_hook(irqs_disabled); }
 }
 
 /// May the caller sleep? (Linux `in_atomic()` / the `might_sleep` predicate.)
