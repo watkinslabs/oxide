@@ -29,22 +29,35 @@ impl NlDest {
 /// # C: O(1)
 pub fn first_group(groups: u32) -> u32 { groups & groups.wrapping_neg() }
 
-/// Decode one `msg_name` as an AF_NETLINK destination.
-///
-/// A name shorter than a `sockaddr_nl` and a name whose family is not
-/// AF_NETLINK are both EINVAL — the family mismatch is a malformed address for
-/// this socket, not an unsupported address family.
+/// Shared `sockaddr_nl` shape gate: Linux `netlink_bind`/`netlink_connect`
+/// both reject a name shorter than `struct sockaddr_nl` before reading any
+/// field, then reject a family other than AF_NETLINK — the family mismatch
+/// is a malformed address for this socket, not an unsupported address
+/// family. Every `sockaddr_nl` consumer (bind, connect, parse_dest) shares
+/// this one check so the shape decision can't drift between them.
 /// # C: O(1)
-pub fn parse_dest(name: &[u8]) -> Result<NlDest, vfs::VfsError> {
+pub fn validate_shape(name: &[u8]) -> Result<(), vfs::VfsError> {
     if name.len() < SOCKADDR_NL_SIZE { return Err(vfs::VfsError::Einval); }
     let family = u16::from_ne_bytes([name[0], name[1]]);
     if family != AF_NETLINK { return Err(vfs::VfsError::Einval); }
+    Ok(())
+}
+
+/// Read the raw `nl_pid`/`nl_groups` words of an already shape-validated
+/// `sockaddr_nl`, with no group reduction — `bind` persists the whole
+/// multicast subscription mask, unlike a send destination. # C: O(1)
+pub fn raw_fields(name: &[u8]) -> (u32, u32) {
     let word = |off: usize| u32::from_ne_bytes(
         [name[off], name[off + 1], name[off + 2], name[off + 3]]);
-    Ok(NlDest {
-        port_id: word(SOCKADDR_NL_PORT_ID_OFFSET),
-        group: first_group(word(SOCKADDR_NL_GROUPS_OFFSET)),
-    })
+    (word(SOCKADDR_NL_PORT_ID_OFFSET), word(SOCKADDR_NL_GROUPS_OFFSET))
+}
+
+/// Decode one `msg_name` as an AF_NETLINK destination.
+/// # C: O(1)
+pub fn parse_dest(name: &[u8]) -> Result<NlDest, vfs::VfsError> {
+    validate_shape(name)?;
+    let (port_id, groups) = raw_fields(name);
+    Ok(NlDest { port_id, group: first_group(groups) })
 }
 
 /// Whether this protocol declares its sends unprivileged. Exactly one does;
@@ -139,6 +152,22 @@ mod tests {
         assert_eq!(first_group(1 << 31), 1 << 31);
         assert_eq!(first_group(u32::MAX), 1);
         assert_eq!(parse_dest(&name(AF_NETLINK, 9, 0b1100)).unwrap().group, 0b0100);
+    }
+
+    // `bind` shares the same shape gate as `parse_dest`/`connect` but reads
+    // the raw group mask, not the send-reduced single bit — bind persists
+    // the whole multicast subscription.
+    #[test]
+    fn raw_fields_keeps_the_full_group_mask_unlike_parse_dest() {
+        use super::{raw_fields, validate_shape};
+        let full = name(AF_NETLINK, 42, 0b1100);
+        assert!(validate_shape(&full).is_ok());
+        assert_eq!(raw_fields(&full), (42, 0b1100));
+        assert_eq!(parse_dest(&full).unwrap().group, 0b0100);
+        for len in 0..SOCKADDR_NL_SIZE {
+            assert_eq!(validate_shape(&full[..len]), Err(vfs::VfsError::Einval), "len {len}");
+        }
+        assert_eq!(validate_shape(&name(2 /* AF_INET */, 1, 1)), Err(vfs::VfsError::Einval));
     }
 
     #[test]

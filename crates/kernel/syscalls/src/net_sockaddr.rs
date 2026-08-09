@@ -11,38 +11,37 @@ use syscall::errno::Errno;
 pub(crate) use crate::sockaddr_encode::{encoded_sockaddr_for_socket,
     encoded_sockaddr_in6, encoded_sockaddr_nl, encoded_sockaddr_un,
     encoded_sockaddr_vm, EncodedSockaddr};
-use crate::sockaddr_encode::{SOCKADDR_IN_LEN, SOCKADDR_VM_LEN};
 
-/// Linux `SIN6_LEN_RFC2133` — the minimum `sockaddr_in6` length `inet6_bind`
-/// and `inet6_dgram_connect` accept (the trailing `sin6_scope_id` is optional).
-const SIN6_MIN_LEN:       usize = 24;
+// The shape/length decision for every family (generic bound + AF_INET +
+// AF_INET6 + AF_VSOCK) is owned by `net::sockaddr`, which is ungated and
+// hosted-tested (docs/53: this crate is the ABI shim, not the decision).
+// This module supplies only the piece that needs `uaccess`: the actual
+// user-memory read.
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
-/// Linux `move_addr_to_kernel`: validate signed socklen, storage bound, and
-/// readable user range before any family-specific parse. # C: O(N pages)
+/// Linux `move_addr_to_kernel`: validate signed socklen and storage bound
+/// (`net::sockaddr::validate_sockaddr_len`), then the readable user range,
+/// before any family-specific parse. # C: O(N pages)
 pub(crate) fn move_sockaddr_to_kernel_shape(ptr: u64, addrlen: u64) -> Result<usize, i64> {
-    let len = addrlen as i32;
-    if len < 0 { return Err(err(Errno::Einval)); }
-    let len = len as usize;
-    if len > 128 { return Err(err(Errno::Einval)); }
+    let len = net::sockaddr::validate_sockaddr_len(addrlen as i32 as i64).map_err(err)?;
     if len != 0 { validate_user_buf_readable(ptr, len as u64, 1)?; }
     Ok(len)
 }
 
 /// Validate a copied sockaddr has the complete protocol struct. # C: O(1)
 pub(crate) fn require_sockaddr_in(addrlen: usize) -> Result<(), i64> {
-    if addrlen < SOCKADDR_IN_LEN { Err(err(Errno::Einval)) } else { Ok(()) }
+    net::sockaddr::require_sockaddr_in(addrlen).map_err(err)
 }
 
 /// Validate a copied sockaddr has the complete protocol struct. # C: O(1)
 pub(crate) fn require_sockaddr_in6(addrlen: usize) -> Result<(), i64> {
-    if addrlen < SIN6_MIN_LEN { Err(err(Errno::Einval)) } else { Ok(()) }
+    net::sockaddr::require_sockaddr_in6(addrlen).map_err(err)
 }
 
 /// Validate a copied sockaddr has the complete protocol struct. # C: O(1)
 pub(crate) fn require_sockaddr_vm(addrlen: usize) -> Result<(), i64> {
-    if addrlen < SOCKADDR_VM_LEN { Err(err(Errno::Einval)) } else { Ok(()) }
+    net::sockaddr::require_sockaddr_vm(addrlen).map_err(err)
 }
 
 
