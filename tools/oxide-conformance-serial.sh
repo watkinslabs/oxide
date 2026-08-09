@@ -16,6 +16,11 @@ case "$ARCH" in
     aarch64) QEMU_ARCH=aarch64 ;;
     *) echo "usage: $0 <x86_64|aarch64> <test[,test...]> [timeout]" >&2; exit 2 ;;
 esac
+
+# Vendor preflight: a fresh worktree has no `vendor/`, and an ARM guest then
+# fails before QEMU starts with a message that reads like a kernel fault.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tools/vendor-preflight.sh"
+vendor_preflight || exit 2
 if ! [[ "$TIMEOUT" =~ ^[0-9]+$ ]] || [ "$TIMEOUT" -eq 0 ] || [ "$TIMEOUT" -gt "$QEMU_TIMEOUT_MAX" ]; then
     echo "oxide-conformance: timeout must be 1..$QEMU_TIMEOUT_MAX seconds" >&2
     exit 2

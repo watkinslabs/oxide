@@ -178,11 +178,15 @@ fn listen_backlog_cap_reopens_after_passive_child_release() {
     let listener = listener(&stack, &owner, 41_014);
     listener.set_backlog(1, 1);
     let (_key, child) = reserved_child(&listener, 51_014, crate::tcp_state::TcpState::SynRecv);
+    // Backlog 1 holds two requests, so the second still fits and the third
+    // does not.
+    assert!(listener.reserve_backlog(), "a backlog of one holds a second request");
     assert!(!listener.reserve_backlog(), "configured backlog cap exceeded");
     assert_eq!(listener.syn_backlog_used.load(
-        ::core::sync::atomic::Ordering::Acquire), 1);
+        ::core::sync::atomic::Ordering::Acquire), 2);
 
     child.release_backlog();
+    listener.syn_backlog_used.fetch_sub(1, ::core::sync::atomic::Ordering::AcqRel);
     assert_eq!(listener.syn_backlog_used.load(
         ::core::sync::atomic::Ordering::Acquire), 0);
     assert!(listener.reserve_backlog(), "released backlog slot not reusable");
@@ -196,13 +200,17 @@ fn syn_and_accept_backlogs_exhaust_and_release_independently() {
     let listener = listener(&stack, &owner, 41_016);
     listener.set_backlog(1, 1);
 
+    // Each queue is bounded by the same backlog, and each holds one more than
+    // the number it was given.
     assert!(listener.reserve_backlog(), "SYN-RECV slot available");
+    assert!(listener.reserve_backlog(), "a backlog of one holds a second request");
     assert!(!listener.reserve_backlog(), "SYN-RECV queue exhausted");
     assert!(listener.reserve_accept_backlog(), "accept queue has independent capacity");
+    assert!(listener.reserve_accept_backlog(), "accept queue holds a second child too");
     assert!(!listener.reserve_accept_backlog(), "accept queue exhausted independently");
 
-    listener.syn_backlog_used.fetch_sub(1, ::core::sync::atomic::Ordering::AcqRel);
-    listener.accept_backlog_used.fetch_sub(1, ::core::sync::atomic::Ordering::AcqRel);
+    listener.syn_backlog_used.fetch_sub(2, ::core::sync::atomic::Ordering::AcqRel);
+    listener.accept_backlog_used.fetch_sub(2, ::core::sync::atomic::Ordering::AcqRel);
     assert!(listener.reserve_backlog(), "released SYN-RECV slot reusable");
     assert!(listener.reserve_accept_backlog(), "released accept slot reusable");
     assert_eq!(listener.syn_backlog_used.load(::core::sync::atomic::Ordering::Acquire), 1);
@@ -227,8 +235,10 @@ fn concurrent_syn_reservations_never_exceed_backlog_cap() {
     }).collect::<Vec<_>>();
     let reserved = outcomes.into_iter().map(|worker| worker.join().unwrap())
         .filter(|reserved| *reserved).count();
-    assert_eq!(reserved, cap);
-    assert_eq!(listener.syn_backlog_used.load(::core::sync::atomic::Ordering::Acquire), cap);
+    // A backlog of `cap` holds `cap + 1`: the fullness test is `>`, which is
+    // what makes `listen(fd, 0)` admit one connection.
+    assert_eq!(reserved, cap + 1);
+    assert_eq!(listener.syn_backlog_used.load(::core::sync::atomic::Ordering::Acquire), cap + 1);
     stack.tcp_unlisten_entry(&listener);
 }
 

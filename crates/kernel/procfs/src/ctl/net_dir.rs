@@ -27,6 +27,15 @@ pub const NET_SYSCTLS: &[Node] = &[
                 net::net_ns::Ipv4ConfDev::All, net::net_ns::Ipv4ConfKey::Forwarding), Some((0, 1)))),
             File("tcp_syncookies",     NetInt(net::net_ns::NetSysctlKey::TcpSyncookies, Some((0, 2)))),
             File("tcp_tw_reuse",       NetInt(net::net_ns::NetSysctlKey::TcpTwReuse, Some((0, 2)))),
+            // Bounds the reserve a listener holds for peers already proven
+            // reachable — NOT the size of the SYN queue, which the listen
+            // backlog bounds.
+            File("tcp_max_syn_backlog", NetInt(net::net_ns::NetSysctlKey::TcpMaxSynBacklog,
+                Some((0, INT_MAX)))),
+            // Whether a completed handshake the accept queue has no room for
+            // is reset at once, or held so the handshake can retry.
+            File("tcp_abort_on_overflow", NetInt(net::net_ns::NetSysctlKey::TcpAbortOnOverflow,
+                Some((0, 1)))),
             File("tcp_fin_timeout",    NetInt(net::net_ns::NetSysctlKey::TcpFinTimeout, Some((0, INT_MAX)))),
             File("tcp_keepalive_time", NetInt(net::net_ns::NetSysctlKey::TcpKeepaliveTime, Some((0, INT_MAX)))),
             File("tcp_wmem",           PerNetBufWindowHook(tcp_wmem, set_tcp_wmem,

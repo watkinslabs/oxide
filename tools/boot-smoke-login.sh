@@ -29,6 +29,11 @@ case "$ARCH" in
     arm)  MAKE_TARGET=qemu-arm ;;
     *)    usage ;;
 esac
+
+# Vendor preflight: a fresh worktree has no `vendor/`, and an ARM guest then
+# fails before QEMU starts with a message that reads like a kernel fault.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tools/vendor-preflight.sh"
+vendor_preflight || exit 2
 TIMEOUT="${2:-${SMOKE_TIMEOUT:-600}}"
 
 # Credentials are image-specific: the lite image ships alice/swordfish, the

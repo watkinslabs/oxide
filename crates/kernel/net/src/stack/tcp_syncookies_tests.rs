@@ -13,8 +13,8 @@ use crate::tcp_conn::syn_opts::SynOptions;
 use crate::tcp_hdr::flags;
 use crate::tcp_state::TcpState;
 
-const SERVER: Ipv4Addr = Ipv4Addr::LOOPBACK;
-const CLIENT_SEQ: u32 = 0x2000_0000;
+pub(super) const SERVER: Ipv4Addr = Ipv4Addr::LOOPBACK;
+pub(super) const CLIENT_SEQ: u32 = 0x2000_0000;
 
 /// A listener whose SYN queue holds exactly one request.
 fn fixture(stack: &NetStack, port: u16) -> (NetIfaceId, Arc<crate::loopback::LoopbackDev>,
@@ -22,13 +22,13 @@ fn fixture(stack: &NetStack, port: u16) -> (NetIfaceId, Arc<crate::loopback::Loo
 {
     let (iface, lo) = stack.register_loopback();
     let listener = stack.tcp_listen(SERVER, port, true).expect("listen");
-    listener.backlog.store(1, ::core::sync::atomic::Ordering::Release);
+    listener.backlog.store(0, ::core::sync::atomic::Ordering::Release);
     (iface, lo, listener)
 }
 
 /// Deliver one segment built from `flags`, `seq` and `ack`, offering the
 /// options a modern client offers.
-fn deliver(stack: &NetStack, iface: NetIfaceId, port: u16, client_port: u16,
+pub(super) fn deliver(stack: &NetStack, iface: NetIfaceId, port: u16, client_port: u16,
            flag_bits: u8, seq: u32, ack: u32, opts: SynOptions)
 {
     let opt_len = opts.encoded_len();
@@ -54,7 +54,7 @@ fn plain_syn_options() -> SynOptions {
     SynOptions { mss: Some(1460), ..SynOptions::default() }
 }
 
-fn child(stack: &NetStack, port: u16, client_port: u16) -> Option<Arc<TcpEntry>> {
+pub(super) fn child(stack: &NetStack, port: u16, client_port: u16) -> Option<Arc<TcpEntry>> {
     let key = TcpKey {
         local_ip: IpAddr::V4(SERVER), local_port: port,
         remote_ip: IpAddr::V4(SERVER), remote_port: client_port,
@@ -266,7 +266,7 @@ mod ipv6 {
         let stack = NetStack::new();
         let (iface, lo) = stack.register_loopback();
         let listener = stack.tcp_listen_ip(IpAddr::V6(SERVER6), 7_408, true).expect("listen");
-        listener.backlog.store(1, ::core::sync::atomic::Ordering::Release);
+        listener.backlog.store(0, ::core::sync::atomic::Ordering::Release);
         deliver6(&stack, iface, 7_408, 40_001, flags::SYN, CLIENT_SEQ, 0, syn_options());
         assert!(child6(&stack, 7_408, 40_001).is_some(), "the first SYN takes the one slot");
         drain(&lo);

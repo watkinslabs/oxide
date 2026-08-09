@@ -55,6 +55,31 @@ impl NetStack {
             crate::syncookies::admit(mode, !reserved)
         };
         if admit == crate::syncookies::Admit::Drop { return Ok(()); }
+        // A listener whose ACCEPT queue is already full drops the SYN here,
+        // before a request exists — completing a handshake the program can
+        // never be handed only costs both ends a connection that has to be
+        // torn down again. Asked after the SYN queue, so a listener under a
+        // flood still answers with a cookie rather than reaching this rung.
+        if syn && listener.accept_queue_full() {
+            if reserved { listener.syn_backlog_used.fetch_sub(1,
+                ::core::sync::atomic::Ordering::AcqRel); }
+            return Ok(());
+        }
+        // The last quarter of `tcp_max_syn_backlog` is reserved for peers a
+        // previous connection proved reachable, so forged SYNs from addresses
+        // this host has never completed a handshake with cannot crowd them
+        // out. Only where cookies are off — with cookies the overflow already
+        // has a stateless answer and needs no reserve.
+        if syn && admit != crate::syncookies::Admit::Cookie
+            && !crate::listen_queue::admit_unproven_request(
+                listener.syn_qlen(), crate::sysctl::tcp_max_syn_backlog_in(net_ns),
+                mode != crate::syncookies::OFF,
+                crate::listen_queue::peer_is_proven(net_ns, src_ip))
+        {
+            if reserved { listener.syn_backlog_used.fetch_sub(1,
+                ::core::sync::atomic::Ordering::AcqRel); }
+            return Ok(());
+        }
         // F184: SYN-ACK we're about to build advertises our MSS too.
         let bound = listener.bound_iface();
         let ip_mode = listener.ip_mtu_discover.load(

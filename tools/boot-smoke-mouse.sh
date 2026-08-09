@@ -13,6 +13,10 @@ set -uo pipefail
 
 ARCH="${1:-x86}"; TIMEOUT="${2:-${SMOKE_TIMEOUT:-900}}"
 case "$ARCH" in x86) MT=qemu-x86 ;; arm) MT=qemu-arm ;; *) echo "arch x86|arm"; exit 2 ;; esac
+# Vendor preflight: a fresh worktree has no `vendor/`, and an ARM guest then
+# fails before QEMU starts with a message that reads like a kernel fault.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/tools/vendor-preflight.sh"
+vendor_preflight || exit 2
 
 LOG="$(mktemp /tmp/oxide-mouse-${ARCH}-XXXXXX.log)"
 PIDFILE="$(mktemp /tmp/oxide-mouse-${ARCH}-XXXXXX.pid)"

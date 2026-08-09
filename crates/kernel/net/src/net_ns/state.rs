@@ -100,6 +100,14 @@ pub enum NetSysctlKey {
     /// `net.ipv4.igmp_max_msf` — how many sources one IPv4 multicast source
     /// filter may name (`crate::sock_opts::msfilter`).
     Ipv4IgmpMaxMsf,
+    /// `net.ipv4.tcp_max_syn_backlog` — NOT the size of the SYN queue, which
+    /// the listen backlog bounds. It bounds only the reserve a listener keeps
+    /// for peers already proven reachable (`crate::listen_queue`).
+    TcpMaxSynBacklog,
+    /// `net.ipv4.tcp_abort_on_overflow` — whether a completed handshake the
+    /// accept queue has no room for is reset at once or held for a retry
+    /// (`crate::listen_queue::AcceptOverflow`).
+    TcpAbortOnOverflow,
 }
 
 /// One slot of a three-value socket-buffer window. # C: O(1)
@@ -123,7 +131,9 @@ impl NetSysctlKey {
     const IPV6_FORWARDING: usize = Self::BASE_COUNT + Ipv4ConfDev::COUNT * Ipv4ConfKey::COUNT;
     const IPV6_AUTO_FLOWLABELS: usize = Self::IPV6_FORWARDING + 1;
     const IPV4_IGMP_MAX_MSF: usize = Self::IPV6_AUTO_FLOWLABELS + 1;
-    const COUNT: usize = Self::IPV4_IGMP_MAX_MSF + 1;
+    const TCP_MAX_SYN_BACKLOG: usize = Self::IPV4_IGMP_MAX_MSF + 1;
+    const TCP_ABORT_ON_OVERFLOW: usize = Self::TCP_MAX_SYN_BACKLOG + 1;
+    const COUNT: usize = Self::TCP_ABORT_ON_OVERFLOW + 1;
 
     const fn index(self) -> usize {
         match self {
@@ -142,6 +152,8 @@ impl NetSysctlKey {
             Self::Ipv6Forwarding => Self::IPV6_FORWARDING,
             Self::Ipv6AutoFlowLabels => Self::IPV6_AUTO_FLOWLABELS,
             Self::Ipv4IgmpMaxMsf => Self::IPV4_IGMP_MAX_MSF,
+            Self::TcpMaxSynBacklog => Self::TCP_MAX_SYN_BACKLOG,
+            Self::TcpAbortOnOverflow => Self::TCP_ABORT_ON_OVERFLOW,
         }
     }
 
@@ -166,6 +178,8 @@ impl NetSysctlKey {
             Self::IPV6_FORWARDING => Self::Ipv6Forwarding,
             Self::IPV6_AUTO_FLOWLABELS => Self::Ipv6AutoFlowLabels,
             Self::IPV4_IGMP_MAX_MSF => Self::Ipv4IgmpMaxMsf,
+            Self::TCP_MAX_SYN_BACKLOG => Self::TcpMaxSynBacklog,
+            Self::TCP_ABORT_ON_OVERFLOW => Self::TcpAbortOnOverflow,
             _ => {
                 let relative = index - Self::BASE_COUNT;
                 let dev = match Ipv4ConfDev::from_index(relative / Ipv4ConfKey::COUNT) {
@@ -192,6 +206,8 @@ impl NetSysctlKey {
             Self::IPV6_AUTO_FLOWLABELS =>
                 crate::sock_opts::sol_ipv6::autolabel::DEFAULT_POLICY,
             Self::IPV4_IGMP_MAX_MSF => crate::sock_opts::msfilter::DEFAULT_IGMP_MAX_MSF,
+            Self::TCP_MAX_SYN_BACKLOG => crate::listen_queue::DEFAULT_MAX_SYN_BACKLOG,
+            Self::TCP_ABORT_ON_OVERFLOW => crate::listen_queue::DEFAULT_ABORT_ON_OVERFLOW,
             _ if index >= Self::WMEM_BASE && index < Self::RMEM_BASE =>
                 crate::sysctl::DEFAULT_TCP_WMEM[index - Self::WMEM_BASE],
             _ if index >= Self::RMEM_BASE && index < Self::BASE_COUNT =>
