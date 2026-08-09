@@ -270,6 +270,20 @@ pub fn set_somaxconn(value: usize) -> Result<(), ()> {
     Ok(())
 }
 
+/// `net.ipv4.tcp_max_syn_backlog` in a live namespace. A namespace that has
+/// never written the knob is judged by the same default a fresh one carries.
+/// # C: O(log N)
+pub fn tcp_max_syn_backlog_in(ns: u64) -> i64 {
+    value_in(ns, NetSysctlKey::TcpMaxSynBacklog)
+        .unwrap_or(crate::listen_queue::DEFAULT_MAX_SYN_BACKLOG)
+}
+
+/// `net.ipv4.tcp_abort_on_overflow` in a live namespace. # C: O(log N)
+pub fn tcp_abort_on_overflow_in(ns: u64) -> i64 {
+    value_in(ns, NetSysctlKey::TcpAbortOnOverflow)
+        .unwrap_or(crate::listen_queue::DEFAULT_ABORT_ON_OVERFLOW)
+}
+
 /// Linux unsigned backlog clamp performed by `__sys_listen_socket`.
 /// Negative `i32` values therefore clamp to `somaxconn`. # C: O(1)
 pub fn normalize_listen_backlog(backlog: i32, limit: usize) -> usize {

@@ -87,6 +87,9 @@ mod tcp_syncookies;
 #[cfg(test)]
 #[path = "stack/tcp_syncookies_tests.rs"]
 mod tcp_syncookies_tests;
+#[cfg(test)]
+#[path = "stack/tcp_accept_overflow_tests.rs"]
+mod tcp_accept_overflow_tests;
 mod tcp_reqsk;
 mod tcp_open;
 pub(crate) mod tcp_writable;

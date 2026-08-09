@@ -185,6 +185,7 @@ pub mod stack_icmp;
 pub mod inet_tx;
 pub mod tcp_ext_hdr;
 pub mod listen_admit;
+pub mod listen_queue;
 pub mod ipv4_reasm;
 pub mod ipv6_reasm;
 pub use loopback::LoopbackDev;

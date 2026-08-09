@@ -233,7 +233,7 @@ impl TcpListenEntry {
         let reserved = self.syn_backlog_used.fetch_update(
             ::core::sync::atomic::Ordering::AcqRel,
             ::core::sync::atomic::Ordering::Acquire,
-            |used| (used < cap).then_some(used + 1),
+            |used| (!crate::listen_queue::syn_queue_is_full(used, cap)).then_some(used + 1),
         ).is_ok();
         if reserved && self.closed.load(::core::sync::atomic::Ordering::Acquire) {
             self.syn_backlog_used.fetch_sub(1, ::core::sync::atomic::Ordering::AcqRel);
@@ -271,13 +271,30 @@ impl TcpListenEntry {
         let reserved = self.accept_backlog_used.fetch_update(
             ::core::sync::atomic::Ordering::AcqRel,
             ::core::sync::atomic::Ordering::Acquire,
-            |used| (used < cap).then_some(used + 1),
+            |used| (!crate::listen_queue::accept_queue_is_full(used, cap)).then_some(used + 1),
         ).is_ok();
         if reserved && self.closed.load(::core::sync::atomic::Ordering::Acquire) {
             self.accept_backlog_used.fetch_sub(1, ::core::sync::atomic::Ordering::AcqRel);
             return false;
         }
         reserved
+    }
+
+    /// Whether this listener's accept queue can take no further child.
+    ///
+    /// Asked at the SYN, before any request is allocated: a listener whose
+    /// program has stopped accepting should not complete handshakes it can
+    /// never hand over. # C: O(1)
+    pub fn accept_queue_full(&self) -> bool {
+        use ::core::sync::atomic::Ordering;
+        crate::listen_queue::accept_queue_is_full(
+            self.accept_backlog_used.load(Ordering::Acquire),
+            self.backlog.load(Ordering::Acquire))
+    }
+
+    /// How many requests this listener currently holds half-open. # C: O(1)
+    pub fn syn_qlen(&self) -> usize {
+        self.syn_backlog_used.load(::core::sync::atomic::Ordering::Acquire)
     }
 
     /// Publish a completed passive child unless close already owns the queue. # C: O(1)

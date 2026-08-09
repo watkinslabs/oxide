@@ -301,9 +301,39 @@ impl NetStack {
             {
                 let Some(listener) = passive_listener else { return Ok(()); };
                 if !entry.promote_to_accept_backlog() {
+                    // The peer believes this connection is established. A
+                    // listener that merely has not drained its accept queue
+                    // yet is a transient condition, not a reason to destroy
+                    // it: the request stays half-open, its SYN-ACK
+                    // retransmits, and the acknowledgement that arrives after
+                    // the program calls accept completes the handshake
+                    // normally. Only a listener that is GOING AWAY, or a
+                    // namespace that asked for the reset, tears it down.
+                    let overflow = crate::listen_queue::accept_overflow(
+                        crate::sysctl::tcp_abort_on_overflow_in(net_ns));
+                    if !listener.is_closed()
+                        && overflow == crate::listen_queue::AcceptOverflow::RetainRequest
+                    {
+                        // Back to the request stage, still holding its SYN
+                        // slot, still in the table. Nothing is sent — silence
+                        // is what makes the peer's own retransmit drive the
+                        // retry.
+                        entry.conn.lock().state = crate::tcp_state::TcpState::SynRecv;
+                        return Ok(());
+                    }
+                    // Reset: tell the peer at once rather than leaving it to
+                    // discover the connection does not exist here.
+                    let rst = {
+                        let mut c = entry.conn.lock();
+                        c.state = crate::tcp_state::TcpState::SynRecv;
+                        c.drop_close()
+                    };
                     entry.release_syn_backlog();
-                    entry.conn.lock().state = crate::tcp_state::TcpState::Closed;
                     super::tcp_listener::remove_tcp_entry_exact(&tables, &key, &entry);
+                    if let Some(seg) = rst {
+                        let _ = self.send_tcp_segment_in(net_ns, dst_ip, src_ip, &seg, 0,
+                            entry.bound_iface(), TcpTxPolicy::Entry(&entry));
+                    }
                     return Ok(());
                 }
                 if !listener.enqueue_accepted(entry.clone()) {
