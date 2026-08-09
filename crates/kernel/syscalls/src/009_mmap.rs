@@ -214,6 +214,17 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
                 Err(rv) => rv,
             };
         }
+        // perf fd: the ring pages are REFCOUNTED kernel RAM, so they publish
+        // through the file-backed shared-frame arm (one PTE reference per
+        // page, released on unmap) — never a phys range, which counts none.
+        if let Some(result) = crate::perf_mmap::backing(&file, offset, args.a1, prot, flags) {
+            let perf_backing = match result { Ok(value) => value, Err(error) => return error };
+            return match pmm::user_as::glue_mmap(args.a0, args.a1, prot, args.a3,
+                                                fd as i64, offset, Some(perf_backing), None, None, may_prot, vmm::VmaFlags::empty()) {
+                Ok(va) => va as i64,
+                Err(error) => error,
+            };
+        }
         if let Some(result) = crate::packet_mmap::backing(&file, offset, args.a1, flags) {
             let packet_backing = match result { Ok(value) => value, Err(error) => return error };
             return match pmm::user_as::glue_mmap(args.a0, args.a1, prot, args.a3,

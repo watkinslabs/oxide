@@ -40,6 +40,18 @@ struct PerfFileOps;
 impl FileOps for PerfFileOps {
     /// Linux `file_can_poll` — this description has a `->poll`. # C: O(1)
     fn can_poll(&self, _file: &vfs::File) -> bool { true }
+
+    /// `perf_poll`: `EPOLLHUP` for an event with no ring buffer, otherwise the
+    /// latched `rb->poll` — set when a record crossed the wakeup watermark and
+    /// cleared by this read, exactly as the reference's `atomic_xchg` does.
+    /// # C: O(1)
+    fn poll(&self, inode: &Inode) -> u32 {
+        let Some(ev) = inode.private::<PerfEvent>() else { return vfs::POLL_ERR };
+        match ev.buffer() {
+            None     => vfs::POLL_HUP,
+            Some(rb) => rb.take_poll(),
+        }
+    }
     /// `perf_read` → `__perf_read`: the payload is fully determined by
     /// `attr.read_format`, and a buffer smaller than `event->read_size` is
     /// `-ENOSPC` (not a short read).
@@ -52,12 +64,14 @@ impl FileOps for PerfFileOps {
             let members = ev.group_members();
             let (_, enabled, running) = members[0].read_value();
             let vals: alloc::vec::Vec<MemberRead> = members.iter()
-                .map(|m| MemberRead { count: m.read_value().0, id: m.id, lost: 0 })
+                .map(|m| MemberRead { count: m.read_value().0, id: m.id,
+                                      lost: m.state.lock().lost_samples })
                 .collect();
             format_group(rf, &vals, enabled, running)
         } else {
             let (count, enabled, running) = ev.read_value();
-            format_one(rf, MemberRead { count, id: ev.id, lost: 0 }, enabled, running)
+            let lost = ev.state.lock().lost_samples;
+            format_one(rf, MemberRead { count, id: ev.id, lost }, enabled, running)
         };
         buf[..bytes.len()].copy_from_slice(&bytes);
         Ok(bytes.len())

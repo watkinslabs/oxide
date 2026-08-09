@@ -5,64 +5,15 @@
 // hosted-testable (`docs/53` — decision logic never lives in a gated shim).
 //
 // Only TASK-scoped events (`tid` came back `Some` from admission) are ever
-// registered here. A CPU-wide event (`pid == -1`) has no task to follow and
-// is invisible to a fork, exactly as `perf_event_init_context` only walks
+// inheritable. A CPU-wide event (`pid == -1`) has no task to follow and is
+// invisible to a fork, exactly as `perf_event_init_context` only walks
 // `current->perf_event_ctxp` — a per-TASK context, never the per-CPU one.
-
-use alloc::collections::BTreeMap;
-use alloc::sync::{Arc, Weak};
-use alloc::vec::Vec;
-
-use sync::{PerfTaskEvents, Spinlock};
+// Both kinds live in `registry`, which is the single table the sample path
+// walks too.
 
 use super::event::PerfEvent;
+use super::registry::{live_task_events, retire_task};
 use super::uapi::attr_bit;
-
-/// One task's registration of a live event. `weak` is the uniform handle
-/// used for lookup/iteration and for orphan detection (a closed fd drops the
-/// event's only OTHER owner, so `weak` dies and the entry prunes itself —
-/// matching Linux `is_orphaned_event()` silently excluding a closed event
-/// from inheritance). `owner` is the registry's OWN keep-alive, populated
-/// only for an inherited child event: unlike an `perf_event_open`-ed event,
-/// which is kept alive by its fd's inode, a fork-inherited child has no fd at
-/// all (Linux never publishes one either — `inherit_event` only ever links
-/// the clone onto the child's context) so the registry itself must be the
-/// strong owner until `on_task_exit` folds it into its parent and lets it go.
-struct Entry {
-    weak:  Weak<PerfEvent>,
-    owner: Option<Arc<PerfEvent>>,
-}
-
-/// tid -> every live task-scoped event that targets it (inherited or not).
-static TASK_EVENTS: Spinlock<BTreeMap<u32, Vec<Entry>>, PerfTaskEvents> =
-    Spinlock::new(BTreeMap::new());
-
-/// Register a task-scoped event so a later fork of `tid`, or its own exit,
-/// can find it. Called once from `PerfEvent::new_inner` for every event with
-/// a concrete target tid. # C: O(1) amortized
-pub(super) fn register(tid: u32, ev: &Arc<PerfEvent>) {
-    let mut g = TASK_EVENTS.lock();
-    let list = g.entry(tid).or_insert_with(Vec::new);
-    list.retain(|e| e.weak.strong_count() > 0);
-    let owner = if ev.parent.is_some() { Some(Arc::clone(ev)) } else { None };
-    list.push(Entry { weak: Arc::downgrade(ev), owner });
-}
-
-/// Every still-live event registered for `tid`, pruning dead entries and
-/// dropping the map slot entirely once empty. Snapshotting to owned `Arc`s
-/// and releasing the registry lock BEFORE touching any event's own state
-/// keeps `PerfTaskEvents` a strict leaf over `PerfEvent::state`. Does NOT
-/// remove `tid`'s live entries (the task is still running) — only
-/// `on_task_exit` retires a tid's registration outright.
-/// # C: O(N_tid_events)
-fn live_events(tid: u32) -> Vec<Arc<PerfEvent>> {
-    let mut g = TASK_EVENTS.lock();
-    let Some(list) = g.get_mut(&tid) else { return Vec::new() };
-    list.retain(|e| e.weak.strong_count() > 0);
-    let out: Vec<Arc<PerfEvent>> = list.iter().filter_map(|e| e.weak.upgrade()).collect();
-    if list.is_empty() { g.remove(&tid); }
-    out
-}
 
 /// Linux `perf_event_init_task` → `perf_event_init_context` →
 /// `inherit_task_group` → `inherit_event`, restricted to the software-only
@@ -85,7 +36,7 @@ fn live_events(tid: u32) -> Vec<Arc<PerfEvent>> {
 /// # C: O(N_parent_task_events)
 pub fn on_fork(parent_tid: u32, child_tid: u32, clone_thread: bool) -> usize {
     let mut n = 0;
-    for ev in live_events(parent_tid) {
+    for ev in live_task_events(parent_tid) {
         if !ev.attr.bit(attr_bit::INHERIT) { continue; }
         if clone_thread && !ev.attr.bit(attr_bit::INHERIT_THREAD) { continue; }
         // `PerfEvent::new_inherited` registers the child itself (every
@@ -108,23 +59,21 @@ pub fn on_fork(parent_tid: u32, child_tid: u32, clone_thread: bool) -> usize {
 /// is a no-op without a live `parent` — so it is simply dropped.
 /// # C: O(N_tid_events)
 pub fn on_task_exit(tid: u32) {
-    let entries = TASK_EVENTS.lock().remove(&tid);
-    let Some(entries) = entries else { return };
-    for e in entries {
-        if let Some(ev) = e.owner.or_else(|| e.weak.upgrade()) { ev.fold_into_parent(); }
-    }
+    for ev in retire_task(tid) { ev.fold_into_parent(); }
 }
 
 #[cfg(test)]
 mod tests {
     use core::sync::atomic::{AtomicU32, Ordering};
 
+    use alloc::sync::{Arc, Weak};
+
     use super::*;
     use crate::perf::attr::PerfAttr;
     use crate::perf::counter::SwSource;
 
     /// Every test claims a disjoint tid range from this counter so the
-    /// process-global `TASK_EVENTS` registry cannot let two tests observe
+    /// process-global event registry cannot let two tests observe
     /// each other's events under `cargo test`'s default parallel threads.
     static NEXT_TID: AtomicU32 = AtomicU32::new(900_000);
     fn fresh_tid() -> u32 { NEXT_TID.fetch_add(1, Ordering::Relaxed) }
@@ -147,7 +96,7 @@ mod tests {
         let ev = PerfEvent::new(attr(true), SwSource::Zero, Some(parent_tid), -1, None);
         let n = on_fork(parent_tid, child_tid, false);
         assert_eq!(n, 1);
-        let child_events = live_events(child_tid);
+        let child_events = live_task_events(child_tid);
         assert_eq!(child_events.len(), 1);
         assert!(child_events[0].parent.as_ref().and_then(Weak::upgrade).is_some());
         let _ = ev; // keep parent alive for the duration of the assertions
@@ -160,7 +109,7 @@ mod tests {
         let ev = PerfEvent::new(attr(false), SwSource::Zero, Some(parent_tid), -1, None);
         let n = on_fork(parent_tid, child_tid, false);
         assert_eq!(n, 0);
-        assert!(live_events(child_tid).is_empty());
+        assert!(live_task_events(child_tid).is_empty());
         let _ = ev;
     }
 
@@ -174,7 +123,7 @@ mod tests {
         let ev = PerfEvent::new(attr(true), SwSource::Zero, None, 0, None);
         let n = on_fork(parent_tid, child_tid, false);
         assert_eq!(n, 0);
-        assert!(live_events(child_tid).is_empty());
+        assert!(live_task_events(child_tid).is_empty());
         let _ = ev;
     }
 
@@ -204,7 +153,7 @@ mod tests {
         set_count(&parent, 10);
         let n = on_fork(parent_tid, child_tid, false);
         assert_eq!(n, 1);
-        let child = live_events(child_tid).into_iter().next().unwrap();
+        let child = live_task_events(child_tid).into_iter().next().unwrap();
         set_count(&child, 7);
 
         let (before, _, _) = parent.read_value();
@@ -215,7 +164,7 @@ mod tests {
         let (after, _, _) = parent.read_value();
         assert_eq!(after, 17, "parent read must fold in the exited child's count");
         // The registry drops the tid slot once its last live event is gone.
-        assert!(live_events(child_tid).is_empty());
+        assert!(live_task_events(child_tid).is_empty());
     }
 
     /// Positive control: without the fold-back call, the child's count is
@@ -227,7 +176,7 @@ mod tests {
         let parent = PerfEvent::new(attr(true), SwSource::Zero, Some(parent_tid), -1, None);
         set_count(&parent, 10);
         on_fork(parent_tid, child_tid, false);
-        let child = live_events(child_tid).into_iter().next().unwrap();
+        let child = live_task_events(child_tid).into_iter().next().unwrap();
         set_count(&child, 7);
         // Deliberately skip on_task_exit(child_tid) here.
         let (still, _, _) = parent.read_value();
@@ -241,10 +190,10 @@ mod tests {
         let c2 = fresh_tid();
         let parent = PerfEvent::new(attr(true), SwSource::Zero, Some(parent_tid), -1, None);
         on_fork(parent_tid, c1, false);
-        set_count(&live_events(c1).into_iter().next().unwrap(), 3);
+        set_count(&live_task_events(c1).into_iter().next().unwrap(), 3);
         on_task_exit(c1);
         on_fork(parent_tid, c2, false);
-        set_count(&live_events(c2).into_iter().next().unwrap(), 4);
+        set_count(&live_task_events(c2).into_iter().next().unwrap(), 4);
         on_task_exit(c2);
         let (total, _, _) = parent.read_value();
         assert_eq!(total, 7);

@@ -10,6 +10,8 @@ use sync::{Spinlock, TaskList as PerfLockClass};
 
 use super::attr::PerfAttr;
 use super::counter::{SwCounter, SwSource, TaskCount};
+use super::overflow::HwPeriod;
+use super::ring::PerfBuffer;
 
 /// `perf_event::id` allocator (`primary_event_id`).
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
@@ -45,6 +47,14 @@ pub struct EventState {
     pub child_count:        u64,
     pub child_time_enabled: u64,
     pub child_time_running: u64,
+    /// Sampling-period budget (`hw_perf_event`'s `sample_period`/`period_left`).
+    pub hw: HwPeriod,
+    /// The `mmap`ed ring this event's samples go to — Linux `event->rb`.
+    /// `None` until userspace maps the fd, which is why a counting-only
+    /// `perf_event_open` allocates nothing.
+    pub buffer: Option<Arc<PerfBuffer>>,
+    /// `event->lost_samples` — what `PERF_FORMAT_LOST` reports.
+    pub lost_samples: u64,
 }
 
 /// A live perf event — one open file description.
@@ -104,17 +114,18 @@ impl PerfEvent {
                 counter: SwCounter::new(0, now, enabled),
                 refresh: 0, period: attr.sample_period, siblings: Vec::new(),
                 child_count: 0, child_time_enabled: 0, child_time_running: 0,
+                hw: HwPeriod::new(attr.sample_period), buffer: None, lost_samples: 0,
             }),
         });
         // Sample the source once the event exists so the first read reports the
         // delta since open, not since boot.
         let src = ev.sample();
         ev.state.lock().counter.base = src;
-        // Task-scoped events (a concrete tid, not a CPU-wide context) are the
-        // only ones a fork can ever inherit (Linux `perf_event_init_context`
-        // only walks `current->perf_event_ctxp`, a per-TASK context) — so only
-        // those get registered for `inherit::on_fork` to find.
-        if let Some(t) = tid { super::inherit::register(t, &ev); }
+        // Every event joins the registry under the context it targets: a
+        // task-scoped one so `inherit::on_fork` can find it, a CPU-wide one so
+        // the sample path can. Only the former is ever inherited (Linux
+        // `perf_event_init_context` walks a per-TASK context).
+        super::registry::register(&ev);
         ev
     }
 
@@ -187,6 +198,19 @@ impl PerfEvent {
 
     /// Own `Arc`, for the paths that must hold a reference. # C: O(1)
     pub fn arc(&self) -> Option<Arc<PerfEvent>> { self.me.upgrade() }
+
+    /// `__perf_output_begin`'s redirection: an inherited event sends ALL of its
+    /// output to the parent's ring, since only the parent was ever mmapped.
+    /// `primary_event_id(event)` follows the same link. # C: O(1)
+    pub fn output_target(&self) -> Option<Arc<PerfEvent>> {
+        match self.parent.as_ref().and_then(Weak::upgrade) {
+            Some(p) => Some(p),
+            None    => self.me.upgrade(),
+        }
+    }
+
+    /// The ring this event's samples land in, if one is mapped. # C: O(1)
+    pub fn buffer(&self) -> Option<Arc<PerfBuffer>> { self.state.lock().buffer.clone() }
 }
 
 fn task_count(t: &sched::Task, k: TaskCount) -> u64 {
