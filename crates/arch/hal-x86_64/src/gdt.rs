@@ -236,7 +236,10 @@ pub unsafe fn install_kernel_gdt() {
     // Per-CPU TSS descriptors: CPU `i` at GDT[10 + i*2] (selector
     // 0x50 + i*0x10). Each points at that CPU's own TSS so `set_rsp0`
     // (indexed by current_cpu) never clobbers another CPU's RSP0.
-    let tss_limit = (core::mem::size_of::<crate::tss::Tss64>() - 1) as u32;
+    // Inclusive last valid byte of the TSS. It must cover the appended I/O
+    // permission windows, or the CPU would refuse to consult a bitmap that
+    // `ioperm`/`iopl` had legitimately installed and #GP on a permitted port.
+    let tss_limit = crate::tss::KERNEL_TSS_LIMIT;
     let mut i = 0usize;
     while i < crate::tss::NR_TSS {
         let base = crate::tss::tss_base_addr(i);

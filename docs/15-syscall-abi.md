@@ -222,8 +222,8 @@ replacement libc prefers, Notes points to it, but the legacy entry is still
 | 169 | reboot | IMPL | UEFI Runtime Services / platform reset. |
 | 170 | sethostname | IMPL | |
 | 171 | setdomainname | IMPL | |
-| 172 | iopl | IMPL | No raw port I/O for userspace. |
-| 173 | ioperm | IMPL | |
+| 172 | iopl | IMPL | Level 3 grants all 65536 ports via the TSS permit-all window; the EFLAGS IOPL field is never raised, so `cli`/`sti` stay privileged. |
+| 173 | ioperm | IMPL | Per-task refcounted permission bitmap, shared on fork, copy-on-write on edit, published into the TSS on context switch. |
 | 174 | create_module | OBSOLETE | Legacy module loading. |
 | 175 | init_module | IMPL | Use `finit_module`. |
 | 176 | delete_module | IMPL | |

@@ -39,7 +39,7 @@ When in doubt, drop. Add later if needed.
 | mount | `fsopen`/`fsconfig`/`fsmount`/`open_tree`/`move_mount`/`mount_setattr` | old `mount(2)` (thin compat shim only) |
 | misc | `prctl`,`getrandom`,`membarrier`,`close_range`,`pivot_root` | — |
 
-Hard `ENOSYS`: SysV IPC (msg/sem/shm), a.out/COFF/ECOFF (ELF64 only), `personality()` beyond `PER_LINUX`+`ADDR_NO_RANDOMIZE`, `uselib`,`init_module` (blob),`create_module`,`query_module`,`get_kernel_syms`,`nfsservctl`,`afs_syscall`,`tuxcall`,`vserver`,`iopl`,`ioperm`,`modify_ldt`,`olduname`/`oldolduname`,`fstatfs64`(use `fstatfs`),32-bit time syscalls (`*_time32`).
+Hard `ENOSYS`: SysV IPC (msg/sem/shm), a.out/COFF/ECOFF (ELF64 only), `personality()` beyond `PER_LINUX`+`ADDR_NO_RANDOMIZE`, `uselib`,`init_module` (blob),`create_module`,`query_module`,`get_kernel_syms`,`nfsservctl`,`afs_syscall`,`tuxcall`,`vserver`,`modify_ldt`,`olduname`/`oldolduname`,`fstatfs64`(use `fstatfs`),32-bit time syscalls (`*_time32`).
 
 Linux numbers reserved for dropped → `ENOSYS` (not `EINVAL`, not silent success). Fuzz: every nr 0..1024 asserted.
 
