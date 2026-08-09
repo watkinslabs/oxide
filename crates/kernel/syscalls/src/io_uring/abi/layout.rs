@@ -108,7 +108,7 @@ pub const NO_SQ_ARRAY: u32 = u32::MAX;
 /// | `NO_MMAP` | refused | ring memory is kernel-allocated; there is no path that adopts a caller's pages as the ring. |
 /// | `REGISTERED_FD_ONLY` | refused | it is only reachable with `NO_MMAP`, which is refused. |
 /// | `NO_SQARRAY` | implemented | `rings_size` + `IoUring::sq_index`. |
-/// | `HYBRID_IOPOLL` | refused | it sleeps for a fraction of the request's EXPECTED completion time before it starts spinning, which needs a per-request service-time estimate this block layer does not keep; refusing is the honest answer, since accepting it would give a pure spin under a name that promises a sleep. |
+/// | `HYBRID_IOPOLL` | implemented | [`super::iopoll::hybrid_sleep_ns`] + the ring's running service-time estimate: a polled transfer is stamped when it is issued, each poll pass folds the observed service time into the ring's minimum, and the next transfer sleeps for half of it before it starts spinning. |
 /// | `CQE_MIXED` | refused | it varies CQE size per completion; the CQE array is fixed at 16 bytes. |
 /// | `SQE_MIXED` | refused | it varies SQE size per entry; the SQE array is fixed at 64 bytes. |
 /// | `SQ_REWIND` | refused | it lets userspace move the SQ tail backwards over entries the kernel may already have read. |
@@ -117,7 +117,8 @@ pub const SUPPORTED_SETUP_FLAGS: u32 =
     | IORING_SETUP_SUBMIT_ALL | IORING_SETUP_R_DISABLED
     | IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_COOP_TASKRUN
     | IORING_SETUP_TASKRUN_FLAG | IORING_SETUP_DEFER_TASKRUN
-    | IORING_SETUP_SQPOLL | IORING_SETUP_SQ_AFF | IORING_SETUP_IOPOLL;
+    | IORING_SETUP_SQPOLL | IORING_SETUP_SQ_AFF | IORING_SETUP_IOPOLL
+    | IORING_SETUP_HYBRID_IOPOLL;
 
 /// `p->features` oxide reports. Claiming a bit we do not implement is a lie
 /// liburing acts on, so the set is deliberately small:

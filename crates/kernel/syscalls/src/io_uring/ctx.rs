@@ -72,6 +72,21 @@ pub struct IoUringInode {
     /// makes every `IORING_ENTER_EXT_ARG_REG` offset fault on such a ring,
     /// with no separate "is there an area" test.
     pub cq_wait_size: core::sync::atomic::AtomicU64,
+    /// Requests handed to a backend and not yet completed — Linux's
+    /// `ctx->iopoll_list`, and STRONG for the reason that list is: nothing else
+    /// holds a queued transfer. A timeout is held by the clock and a punted
+    /// operation by its worker, but a transfer the backend owns is held only by
+    /// the backend's completion, which owns the result slot and deliberately not
+    /// the request. Without this the request would be dropped at the end of the
+    /// submitting call and its completion would never be posted.
+    pub iopoll_list: Spinlock<alloc::vec::Vec<Arc<super::req::IoReq>>, RingLockClass>,
+    /// `IORING_SETUP_HYBRID_IOPOLL`: the shortest service time any transfer on
+    /// this ring has been observed to take, in nanoseconds — the reference's
+    /// `ctx->hybrid_poll_time`. The next transfer sleeps for half of it before
+    /// it starts spinning. [`crate::io_uring_abi::iopoll::NO_ESTIMATE`] means
+    /// nothing has been timed yet, which is what makes the first transfer spin
+    /// outright rather than sleep against a guess.
+    pub hybrid_poll_time: core::sync::atomic::AtomicU64,
 }
 
 /// `state` bits.
@@ -122,6 +137,9 @@ impl IoUringInode {
             count_timers: core::sync::atomic::AtomicU32::new(0),
             param_region: Spinlock::new(None),
             cq_wait_size: core::sync::atomic::AtomicU64::new(0),
+            iopoll_list: Spinlock::new(alloc::vec::Vec::new()),
+            hybrid_poll_time: core::sync::atomic::AtomicU64::new(
+                crate::io_uring_abi::iopoll::NO_ESTIMATE),
         }))
     }
 

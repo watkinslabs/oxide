@@ -174,6 +174,50 @@ impl BlockDevOps for DiskBlkOps {
     /// one source, so an admission check and a poll can never disagree about
     /// whether this disk has a poll operation. # C: O(1)
     fn can_iopoll(&self, _devt: Devt) -> bool { self.disk.dev.can_poll() }
+    /// Queue one direct transfer at the driver's request queue — the whole
+    /// point of a polled ring, and the half that was missing: a transfer that
+    /// completes inside the call that issued it has already posted its result
+    /// before any poll could look for it.
+    ///
+    /// It bypasses the disk's page cache, which is what `O_DIRECT` asks for,
+    /// but it is NOT the "second, uncached byte path" this module's header
+    /// rules out: the submission still goes through the disk's published
+    /// handle, so the coherence decorator writes back and drops the overlapping
+    /// cached pages before the device sees it, exactly as it does for every
+    /// other request. A raw direct write and a mounted filesystem still agree.
+    /// # C: O(1) submit; the transfer completes later
+    fn submit_direct(&self, _devt: Devt, io: vfs::file_ops::DirectIo)
+        -> vfs::file_ops::DirectSubmit
+    {
+        use vfs::file_ops::DirectSubmit;
+        // A backend nothing can poll must not accept work it finishes later:
+        // the completion would have nobody to find it.
+        if !self.disk.dev.can_poll() { return DirectSubmit::Unsupported(io); }
+        let bs = self.disk.dev.block_size();
+        let plan = match crate::direct::plan(io.write, io.off, io.len(), bs, self.disk.dev.capacity_blocks()) {
+            Ok(p) => p,
+            Err(e) => return DirectSubmit::Failed(e),
+        };
+        let vfs::file_ops::DirectIo { write, buf, done, .. } = io;
+        let (start_block, len_blocks, bytes) = match plan {
+            crate::direct::Plan::Done(n) => { done(buf, Ok(n)); return DirectSubmit::Queued; }
+            crate::direct::Plan::Io { start_block, len_blocks, bytes } => (start_block, len_blocks, bytes),
+        };
+        let mut request = BlockRequest {
+            op: if write { BlockOp::Write } else { BlockOp::Read },
+            start_block, len_blocks, buffer: buf,
+            ..BlockRequest::default()
+        };
+        // The clamp above may have shortened the transfer; the request's buffer
+        // is the transfer, so it is shortened to match rather than handing the
+        // device a length its block count disagrees with.
+        request.buffer.truncate(bytes);
+        if !write && request.buffer.len() < bytes { request.buffer.resize(bytes, 0); }
+        self.disk.dev.submit(request, alloc::boxed::Box::new(move |req: BlockRequest, res: BlockResult<()>| {
+            done(req.buffer, res.map(|()| bytes).map_err(block_err));
+        }));
+        DirectSubmit::Queued
+    }
     /// Linux `blkdev_fsync`: write back the device's page cache and wait for
     /// it, THEN `blkdev_issue_flush`. The barrier alone would report a
     /// durability the cached bytes never reached.
@@ -209,189 +253,5 @@ pub fn sector_size(dev_t: u32) -> Option<u32> {
 }
 
 #[cfg(test)]
-mod tests {
-    extern crate alloc;
-    use alloc::sync::Arc;
-    use alloc::vec;
-    use alloc::vec::Vec;
-
-    use crate::blockdev::{BlockDevice, MemDisk};
-    use crate::registry::{self, dev_t_of, opener_count};
-    use sync::Inode as InodeClass;
-    use vfs::superblock::{FileSystemType, SbStatFs, SuperBlock, SuperOps};
-    use vfs::{File, FileType, KResult, OpenFlags, make_device_node_inode};
-
-    struct TestFs;
-    impl FileSystemType for TestFs {
-        fn name(&self) -> &str { "block-test" }
-        fn mount(&self, _s: Option<&str>, _o: &str) -> KResult<Arc<SuperBlock>> { unreachable!() }
-    }
-    struct TestSbOps;
-    impl SuperOps for TestSbOps { fn statfs(&self) -> KResult<SbStatFs> { Ok(SbStatFs::default()) } }
-    fn test_sb() -> Arc<SuperBlock> {
-        SuperBlock::new(Arc::new(TestFs), Arc::new(TestSbOps), 0, 0, 4096, "block-test".into(), Arc::new(()))
-    }
-
-    // A `vd*` disk: 8 sectors of 512 B = 4096 B, major 254 (virtio-blk).
-    fn disk(cap_blocks: u64) -> Arc<dyn BlockDevice> {
-        MemDisk::<InodeClass>::new(512, cap_blocks)
-    }
-
-    // The core regression: before registration a `/dev/vdX` open would find no
-    // BLKDEV region → ENXIO; registration must publish one, and unregister must
-    // remove it. This is exactly what `open("/dev/vda")` in blkid/udev hits.
-    #[test]
-    fn register_publishes_blkdev_region_open_resolves() {
-        let idx = registry::register("vdq", disk(8));
-        assert_ne!(idx, 0, "register should succeed in hosted mode");
-        let devt = vfs::Devt(dev_t_of("vdq", idx).unwrap());
-        // Was ENXIO before this fix; must resolve to a driver now.
-        let ops = vfs::lookup_blkdev(devt).expect("BLKDEV region published on register");
-        ops.open(devt).expect("open dispatches to the disk");
-        registry::unregister("vdq");
-        assert!(vfs::lookup_blkdev(devt).is_none(), "region dropped on unregister");
-    }
-
-    // The published ops must actually move bytes to/from the backing device,
-    // including a write that straddles two sectors (RMW correctness).
-    #[test]
-    fn published_ops_read_write_roundtrip_across_sectors() {
-        let idx = registry::register("vdr", disk(8));
-        let devt = vfs::Devt(dev_t_of("vdr", idx).unwrap());
-        let ops = vfs::lookup_blkdev(devt).unwrap();
-        let data: Vec<u8> = (0..600u32).map(|i| i as u8).collect(); // 600 B spans 2 sectors
-        assert_eq!(ops.write(devt, 100, &data).unwrap(), 600);
-        let mut buf = vec![0u8; 600];
-        assert_eq!(ops.read(devt, 100, &mut buf).unwrap(), 600);
-        assert_eq!(buf, data, "RMW write then read returns the same bytes");
-        // A neighbouring untouched byte stays zero (no over-write of the RMW head).
-        let mut head = vec![0u8; 100];
-        ops.read(devt, 0, &mut head).unwrap();
-        assert!(head.iter().all(|&b| b == 0));
-        registry::unregister("vdr");
-    }
-
-    // Reads at/after end-of-device are short/EOF, never an error (Linux).
-    #[test]
-    fn read_past_end_is_eof_not_error() {
-        let idx = registry::register("vdu", disk(2)); // 1024 B
-        let devt = vfs::Devt(dev_t_of("vdu", idx).unwrap());
-        let ops = vfs::lookup_blkdev(devt).unwrap();
-        let mut buf = [0u8; 512];
-        assert_eq!(ops.read(devt, 1024, &mut buf).unwrap(), 0);
-        // A read straddling the end returns only the in-bounds tail.
-        assert_eq!(ops.read(devt, 1000, &mut buf).unwrap(), 24);
-        registry::unregister("vdu");
-    }
-
-    // `fsync` on a block-device fd is writeback THEN barrier: the bytes a
-    // buffered write left in the device's page cache must be on the medium
-    // when it returns, not merely ordered behind a flush of nothing.
-    #[test]
-    fn blockdev_fsync_writes_back_the_cache_then_flushes() {
-        let idx = registry::register("vdv", disk(8));
-        let devt = vfs::Devt(dev_t_of("vdv", idx).unwrap());
-        let ops = vfs::lookup_blkdev(devt).unwrap();
-        let d = registry::by_dev(devt.raw()).unwrap();
-        assert_eq!(ops.write(devt, 0, &[0xC3; 64]).unwrap(), 64);
-        assert_eq!(d.mapping.dirty_pages(), 1, "buffered, not written through");
-        ops.flush_cache(devt).unwrap();
-        assert_eq!(d.mapping.dirty_pages(), 0, "fsync wrote it back");
-        registry::unregister("vdv");
-    }
-
-    // Closing the LAST description writes the device's dirty pages back
-    // (Linux `bdev_release`) — the device pass of `sync(2)` skips a disk with
-    // no opener, so nothing else would.
-    #[test]
-    fn final_close_writes_back_the_device_cache() {
-        let idx = registry::register("vdw", disk(8));
-        let devt = vfs::Devt(dev_t_of("vdw", idx).unwrap());
-        let ops = vfs::lookup_blkdev(devt).unwrap();
-        let sb = test_sb();
-        let node = make_device_node_inode(1, FileType::BlockDev, devt, 0o660, Arc::downgrade(&sb));
-        let file = File::new(node.clone(), vfs::dcache::d_obtain_alias(node), OpenFlags::empty());
-        ops.open_file(devt, &file).unwrap();
-        let d = registry::by_dev(devt.raw()).unwrap();
-        ops.write(devt, 0, &[0xD4; 32]).unwrap();
-        assert_eq!(d.mapping.dirty_pages(), 1);
-        ops.release_file(devt, &file);
-        assert_eq!(d.mapping.dirty_pages(), 0, "final close flushed the cache");
-        registry::unregister("vdw");
-    }
-
-    // Size ioctl helpers report capacity in bytes + the logical sector size.
-    #[test]
-    fn size_and_sector_helpers() {
-        let idx = registry::register("vds", disk(8));
-        let raw = dev_t_of("vds", idx).unwrap();
-        assert_eq!(super::size_bytes(raw), Some(4096));
-        assert_eq!(super::sector_size(raw), Some(512));
-        assert_eq!(super::size_bytes(0xDEAD), None, "unknown dev_t → None");
-        registry::unregister("vds");
-    }
-
-    // `f_op->iopoll == NULL` for a device whose driver installs no poll
-    // operation. This is the exact distinction io_uring's IOPOLL admission
-    // ladder keys its EOPNOTSUPP on, so `None` must not degrade to `Some(0)`.
-    #[test]
-    fn iopoll_is_absent_for_a_device_with_no_poll_operation() {
-        let idx = registry::register("vdp1", disk(8));
-        let devt = vfs::Devt(dev_t_of("vdp1", idx).unwrap());
-        let ops = vfs::lookup_blkdev(devt).unwrap();
-        assert_eq!(ops.iopoll(devt), None, "no poll op → no iopoll slot");
-        registry::unregister("vdp1");
-    }
-
-    // A pollable driver reaches `f_op->iopoll` through the registry's decorator
-    // stack (stats / admission / coherence). A decorator taking the trait
-    // default instead of forwarding would report every disk unpollable here.
-    #[test]
-    fn iopoll_reports_the_count_a_pollable_device_reaped() {
-        let dev = crate::tests::PollableDisk::new(2);
-        let idx = registry::register("vdp2", dev);
-        let devt = vfs::Devt(dev_t_of("vdp2", idx).unwrap());
-        let ops = vfs::lookup_blkdev(devt).unwrap();
-        assert_eq!(ops.iopoll(devt), Some(2), "polled, two completions reaped");
-        assert_eq!(ops.iopoll(devt), Some(0), "polled, none left — NOT None");
-        registry::unregister("vdp2");
-    }
-
-    // The whole chain a caller actually walks: `file->f_op->iopoll` on an open
-    // `/dev/vdX` description → the device node's block dispatch → this bridge →
-    // the driver's poll. Each link is defaulted to "no poll op", so a missing
-    // link anywhere collapses this to `None`.
-    #[test]
-    fn f_op_iopoll_on_an_open_block_description_reaches_the_driver() {
-        let dev = crate::tests::PollableDisk::new(1);
-        let idx = registry::register("vdp3", dev);
-        let devt = vfs::Devt(dev_t_of("vdp3", idx).unwrap());
-        let sb = test_sb();
-        let node = make_device_node_inode(1, FileType::BlockDev, devt, 0o660, Arc::downgrade(&sb));
-        let file = File::new(node.clone(), vfs::dcache::d_obtain_alias(node), OpenFlags::empty());
-        file.open_hook().expect("block description opens");
-        let fop = file.inode().i_fop().clone();
-        assert_eq!(fop.iopoll(&file), Some(1), "f_op->iopoll reaches the driver's poll");
-        assert_eq!(fop.iopoll(&file), Some(0));
-        drop(file);
-        registry::unregister("vdp3");
-    }
-
-    #[test]
-    fn real_block_file_lifecycle_blocks_unregister_until_final_fput() {
-        let idx = registry::register("vdt", disk(8));
-        let devt = vfs::Devt(dev_t_of("vdt", idx).unwrap());
-        let sb = test_sb();
-        let node = make_device_node_inode(1, FileType::BlockDev, devt, 0o660, Arc::downgrade(&sb));
-        let file = File::new(node.clone(), vfs::dcache::d_obtain_alias(node), OpenFlags::empty());
-        file.open_hook().expect("block File ->open acquires generic opener");
-        assert_eq!(opener_count("vdt"), Some(1));
-        assert!(!registry::unregister("vdt"), "open file description blocks del_gendisk");
-        let duplicate = file.clone();
-        drop(file);
-        assert_eq!(opener_count("vdt"), Some(1), "dup is one opener");
-        drop(duplicate);
-        assert_eq!(opener_count("vdt"), Some(0));
-        assert!(registry::unregister("vdt"));
-    }
-}
+#[path = "devbridge/tests.rs"]
+mod tests;

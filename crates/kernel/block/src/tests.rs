@@ -362,6 +362,45 @@ fn a_backend_that_overrides_nothing_reports_no_poll_operation() {
     assert_eq!(d.poll_completions(), 0);
 }
 
+/// A backend that genuinely DEFERS: `submit` parks the request and its
+/// completion, and only `poll_completions` runs them — the shape a queued
+/// driver has, where the device publishes into a ring and something later
+/// drains it. Everything about submit-then-poll is invisible against a backend
+/// that completes inline, so the fixture that models one is the fixture the
+/// tests need.
+pub(crate) struct QueuedDisk {
+    inner:   Arc<Disk>,
+    parked:  Spinlock<Vec<(BlockRequest, crate::blockdev::BlockCompletion)>, InodeClass>,
+}
+
+impl QueuedDisk {
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self { inner: Disk::new(512, 8), parked: Spinlock::new(Vec::new()) })
+    }
+    /// How many transfers the device has accepted and not yet completed.
+    pub(crate) fn outstanding(&self) -> usize { self.parked.lock().len() }
+}
+
+impl BlockDevice for QueuedDisk {
+    fn block_size(&self) -> u32 { self.inner.block_size() }
+    fn capacity_blocks(&self) -> u64 { self.inner.capacity_blocks() }
+    fn submit(&self, request: BlockRequest, completion: crate::blockdev::BlockCompletion) {
+        self.parked.lock().push((request, completion));
+    }
+    fn submit_sync(&self, req: &mut BlockRequest) -> Result<(), BlockError> { self.inner.submit_sync(req) }
+    fn flush(&self) -> Result<(), BlockError> { self.inner.flush() }
+    fn can_poll(&self) -> bool { true }
+    fn poll_completions(&self) -> usize {
+        let parked = core::mem::take(&mut *self.parked.lock());
+        let n = parked.len();
+        for (mut req, done) in parked {
+            let r = self.inner.submit_sync(&mut req);
+            done(req, r);
+        }
+        n
+    }
+}
+
 // A poll reports exactly what it reaped, and reaps nothing twice.
 #[test]
 fn a_pollable_backend_reaps_each_completion_once() {

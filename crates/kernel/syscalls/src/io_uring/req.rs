@@ -95,6 +95,16 @@ pub struct ReqInner {
     /// names a backend to ask "have you finished my I/O". Sharing one field
     /// would make a readiness wait drive a completion poll and the reverse.
     pub iopoll_file: Option<Arc<vfs::File>>,
+    /// A transfer this ring handed to its backend and has not been told the
+    /// result of — the reference's `-EIOCBQUEUED` request sitting on
+    /// `ctx->iopoll_list`. `Some` is what makes the poll loop reap it; it is
+    /// cleared before the completion is posted, so a second poll pass racing
+    /// the first finds nothing left to reap for this request.
+    pub iopoll_io: Option<Arc<super::iopoll::queued::Queued>>,
+    /// The transfer's kernel buffer between preparation and issue. It moves
+    /// into the backend when the transfer is queued and comes back only if the
+    /// backend queues nothing, so the fallback path does not rebuild it.
+    pub iopoll_buf: Option<alloc::vec::Vec<u8>>,
 }
 
 /// One request the ring is still to finish.

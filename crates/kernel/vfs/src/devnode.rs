@@ -200,6 +200,17 @@ pub trait BlockDevOps: Send + Sync {
     fn iopoll(&self, devt: Devt) -> Option<usize> { let _ = devt; None }
     /// Whether that poll operation exists, asked without reaping. # C: O(1)
     fn can_iopoll(&self, devt: Devt) -> bool { let _ = devt; false }
+    /// Queue one direct transfer at the driver's request queue and return
+    /// before it completes — the block half of
+    /// [`crate::file_ops::FileOps::submit_direct`]. Paired with
+    /// [`Self::iopoll`], which is what finds the completion afterwards.
+    /// # C: driver-dependent
+    fn submit_direct(&self, devt: Devt, io: crate::file_ops::DirectIo)
+        -> crate::file_ops::DirectSubmit
+    {
+        let _ = devt;
+        crate::file_ops::DirectSubmit::Unsupported(io)
+    }
     /// `blkdev_issue_flush` — force the device's volatile write cache to
     /// stable media. `fsync(2)` on a block-device fd is required to issue it;
     /// the generic file-ops default answers `Ok(())` for a block device, which

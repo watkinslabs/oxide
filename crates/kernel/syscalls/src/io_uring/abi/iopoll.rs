@@ -16,6 +16,12 @@
 //   * whether a caller may ask for high-priority completion on a ring that is
 //     NOT polled, which is `EINVAL` — the ring would never poll for it.
 //
+// A polled transfer is SUBMIT-THEN-POLL: it is issued to its backend and
+// returns with no completion posted, and `io_uring_enter` with
+// `IORING_ENTER_GETEVENTS` is what finishes it. That is the reference's
+// `-EIOCBQUEUED` arm, and without it the flag pays for nothing — a transfer
+// that has already posted its result is not one a poll can find.
+//
 // The wait side is a spin, not a sleep. `io_uring_enter` with
 // `IORING_ENTER_GETEVENTS` on a polled ring drives the backend's poll in a
 // loop until the caller's `min_complete` is reachable, and the loop is allowed
@@ -26,13 +32,21 @@
 // again; that is the contract, and a loop that instead spun until
 // `min_complete` would hang the task.
 //
+// `IORING_SETUP_HYBRID_IOPOLL` sleeps for part of a transfer's expected
+// service time before it starts spinning. The estimate is the ring's own
+// running MINIMUM of observed service times, not a block-layer statistic: a
+// transfer is stamped when it is issued, each poll pass folds what it observed
+// back in, and the next transfer sleeps for half of it.
+//
 // This kernel deviates from the reference in one respect, recorded in
 // `scratch/known_issues.md`: the reference gives a polled ring its own
-// hardware queues with no interrupt wired to them, so a poll races nothing.
-// Here the queue polled is the same queue the interrupt drives, and the
-// serialisation is the driver's own completion lock plus the claim-once
-// completion — the same discipline that already makes the interrupt bottom
-// half and a sleeping waiter safe against each other.
+// hardware queues with no interrupt wired to them, so a poll races nothing and
+// a polled transfer costs no interrupt. Here the queue polled is the same queue
+// the interrupt drives, and the serialisation is the driver's own completion
+// lock plus the claim-once completion — the same discipline that already makes
+// the interrupt bottom half and a sleeping waiter safe against each other. The
+// difference is a cost, not a correctness gap: the completion is found either
+// way.
 
 use syscall::errno::Errno;
 
@@ -172,6 +186,125 @@ pub fn after_poll(events: u32, min_events: u32, signal: bool, resched: bool) -> 
     if resched { return Step::Stop; }
     if events >= min_events { return Step::Stop; }
     Step::Poll { oneshot: oneshot(min_events, false) }
+}
+
+// --- submit-then-poll ---------------------------------------------------
+
+/// The SQE offset meaning "use the description's own file position".
+pub const CUR_POS: u64 = u64::MAX;
+
+/// Whether this entry takes the submit-then-poll path: issued to the backend,
+/// returning with NO completion posted, and completed later by the poll.
+///
+/// Only the transfer family, and only on a polled ring. Everything else on
+/// such a ring finishes inside the submission that issued it — a no-op, a
+/// buffer registration, a cross-ring message — and a completion that has
+/// already been posted is not one a poll can find. That was the whole reason
+/// the poll loop paid for nothing: the transfers were finishing inline too, so
+/// the loop only ever ran for work a worker happened to be holding.
+///
+/// `off == -1` — "use the description's own position" — is excluded, and that
+/// exclusion is load-bearing rather than a shortcut: the position belongs to
+/// the DESCRIPTION, so two queued transfers naming it would both read the same
+/// value and both advance it, and there is no moment at which either could
+/// take it exclusively. Such an entry keeps the ordinary path, where the
+/// position is read and advanced inside one operation. # C: O(1)
+pub fn defers_to_backend(ring_iopoll: bool, opcode: u8, off: u64) -> bool {
+    if !ring_iopoll { return false; }
+    if off == CUR_POS { return false; }
+    matches!(opcode,
+        IORING_OP_READ | IORING_OP_WRITE
+        | IORING_OP_READV | IORING_OP_WRITEV
+        | IORING_OP_READ_FIXED | IORING_OP_WRITE_FIXED)
+}
+
+/// Whether this opcode moves bytes OUT of the caller's buffer. # C: O(1)
+pub fn is_write(opcode: u8) -> bool {
+    matches!(opcode, IORING_OP_WRITE | IORING_OP_WRITEV | IORING_OP_WRITE_FIXED)
+}
+
+/// The result a completed transfer's CQE carries.
+///
+/// A write reports what the DEVICE took: the payload left the caller's buffer
+/// at submission, so where it went afterwards is the device's answer alone. A
+/// read reports what LANDED in the caller's buffer, which is not always what
+/// the device delivered — the destination is written after the fact, and a page
+/// that has since been unmapped takes fewer bytes than were offered. Reporting
+/// the device's count there would tell a caller its buffer holds data that is
+/// not in it.
+///
+/// A read that delivered bytes and landed none is `EFAULT` rather than a
+/// zero-length read: zero means end-of-file, and a caller that treated a failed
+/// copy as EOF would stop reading a file it had barely started. # C: O(1)
+pub fn completed_res(write: bool, delivered: usize, landed: usize) -> i64 {
+    if write { return delivered as i64; }
+    if delivered != 0 && landed == 0 { return -(Errno::Efault.as_i32() as i64); }
+    landed as i64
+}
+
+// --- `IORING_SETUP_HYBRID_IOPOLL` ---------------------------------------
+
+/// No transfer has been timed yet, so there is nothing to sleep against.
+/// Sentinel rather than an `Option` because it is also the identity for the
+/// running minimum below: an unknown estimate loses to every real one.
+pub const NO_ESTIMATE: u64 = u64::MAX;
+
+/// How long a hybrid-polled transfer sleeps before it starts spinning.
+///
+/// Half the ring's current estimate, which is the reference's fraction. Two
+/// cases sleep for nothing at all and both matter: a ring that has never timed
+/// a transfer has no estimate to halve, and a request that has ALREADY slept
+/// once in an earlier pass must not sleep again — the sleep is meant to skip
+/// the front of one transfer's service time, not to be paid once per poll
+/// pass, and re-paying it would make a slow device slower the more often it
+/// was polled. # C: O(1)
+pub fn hybrid_sleep_ns(estimate: u64, slept_already: bool) -> u64 {
+    if slept_already { return 0; }
+    if estimate == NO_ESTIMATE { return 0; }
+    estimate / 2
+}
+
+/// Fold one observed service time into the ring's estimate.
+///
+/// The MINIMUM, not an average, and the reference is explicit about why: the
+/// ring may be polling backends of different speeds, and sleeping for longer
+/// than the fastest of them takes would hold back completions that were ready.
+/// An estimate that is too small only costs spinning, which is what the mode is
+/// for; one that is too large loses completions to sleep. # C: O(1)
+pub fn observe_runtime(estimate: u64, runtime: u64) -> u64 {
+    if runtime < estimate { runtime } else { estimate }
+}
+
+/// The service time one poll pass observed: elapsed since the transfer was
+/// issued, LESS whatever this pass spent asleep.
+///
+/// Subtracting the sleep is what keeps the estimate from ratcheting: an
+/// estimate that counted its own sleep would grow by half of itself every pass
+/// until the mode was a pure sleep. Saturating, because a clock that appears to
+/// go backwards must yield zero rather than an enormous estimate. # C: O(1)
+pub fn hybrid_runtime(now: u64, issued_at: u64, slept: u64) -> u64 {
+    now.saturating_sub(issued_at).saturating_sub(slept)
+}
+
+/// The errno a refused direct submission reports.
+///
+/// A queued transfer is refused before it reaches the device for exactly two
+/// reasons, and a caller acts differently on each: the request was not whole
+/// blocks, which is `EINVAL` and stays wrong however often it is retried, or it
+/// started past the end of the device, which is `ENOSPC` and is a fact about
+/// the device rather than the request. Anything else a backend invents is an
+/// I/O error, because the transfer neither ran nor was well-formed enough to
+/// name a better answer. # C: O(1)
+pub fn submit_errno(e: vfs::VfsError) -> Errno {
+    match e {
+        vfs::VfsError::Einval => Errno::Einval,
+        vfs::VfsError::Enospc => Errno::Enospc,
+        vfs::VfsError::Ebadf  => Errno::Ebadf,
+        vfs::VfsError::Enxio  => Errno::Enxio,
+        vfs::VfsError::Enomem => Errno::Enomem,
+        vfs::VfsError::Eopnotsupp => Errno::Eopnotsupp,
+        _ => Errno::Eio,
+    }
 }
 
 #[cfg(test)]

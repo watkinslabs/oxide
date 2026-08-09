@@ -181,7 +181,7 @@ pub fn submit_sqes(inode: &Arc<IoUringInode>, to_submit: u32) -> i64 {
 
         // A barrier cannot be satisfied by construction any more: work of
         // this ring may still be running, so the barrier has to wait for it.
-        let deferred = crate::io_uring::defer::defers(&sqe)
+        let deferred = crate::io_uring::defer::defers_on(inode, &sqe)
             || (wants_drain(sqe.flags) && !inode.inflight_reqs().is_empty());
         let (out, init_failed) = match chain.action(sqe.flags) {
             // Everything behind a broken link is cancelled, not executed.
