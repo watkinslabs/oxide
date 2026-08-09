@@ -13,6 +13,10 @@ use super::counter::{SwCounter, SwSource, TaskCount};
 use super::overflow::HwPeriod;
 use super::ring::PerfBuffer;
 
+/// `EPOLLIN | EPOLLRDNORM` — the readiness `perf_output_wakeup` publishes, and
+/// the key the wake carries so an `EPOLLOUT`-only waiter is not disturbed.
+const WAKEUP_MASK: u32 = vfs::POLL_IN | vfs::POLL_RDNORM;
+
 /// `perf_event::id` allocator (`primary_event_id`).
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -76,6 +80,15 @@ pub struct PerfEvent {
     /// `perf_event_open`.
     pub parent: Option<Weak<PerfEvent>>,
     pub state:  Spinlock<EventState, PerfLockClass>,
+    /// `event->waitq` + `event->fasync`: who `perf_output_wakeup` wakes when a
+    /// record crosses the watermark. It hangs off the EVENT, as in the
+    /// reference, and the event fd's inode publishes this same `Arc` as its
+    /// poll-subscriber list — one queue, so a `poll(2)` waiter and the record
+    /// that satisfies it can never be looking at different lists.
+    pub waitq:  Arc<vfs::PollSubscribers>,
+    /// `hw_perf_event::hrtimer` — the armed sampling timer's wheel id for the
+    /// clock PMUs, or `0` when none is armed. Owned by `super::hrtimer`.
+    pub hrtimer: AtomicU64,
 }
 
 impl PerfEvent {
@@ -110,6 +123,8 @@ impl PerfEvent {
         let ev = Arc::new_cyclic(|me| PerfEvent {
             me: me.clone(), attr, source, tid, cpu, leader, parent,
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            waitq: Arc::new(vfs::PollSubscribers::new()),
+            hrtimer: AtomicU64::new(0),
             state: Spinlock::new(EventState {
                 counter: SwCounter::new(0, now, enabled),
                 refresh: 0, period: attr.sample_period, siblings: Vec::new(),
@@ -126,6 +141,10 @@ impl PerfEvent {
         // the sample path can. Only the former is ever inherited (Linux
         // `perf_event_init_context` walks a per-TASK context).
         super::registry::register(&ev);
+        // `perf_swevent_init_hrtimer` + the `pmu::add` that follows an event
+        // opened without `PERF_FLAG_DISABLED`: a sampling clock-PMU event has
+        // no counter site to overflow it, so its timer is armed here or never.
+        super::hrtimer::start(&ev);
         ev
     }
 
@@ -211,6 +230,15 @@ impl PerfEvent {
 
     /// The ring this event's samples land in, if one is mapped. # C: O(1)
     pub fn buffer(&self) -> Option<Arc<PerfBuffer>> { self.state.lock().buffer.clone() }
+
+    /// `perf_output_wakeup`'s deferred half: wake every `poll(2)`/`epoll_wait`
+    /// waiter on this event and deliver `SIGIO` to its `O_ASYNC` holders with
+    /// `POLL_IN` as the reason. The reference queues an `irq_work` because it
+    /// runs this from the sampling interrupt; oxide's sampling sites are all
+    /// process context with no runqueue lock held (the scheduler ones drain
+    /// through `perf_sw::drain_deferred`), so the wake runs inline.
+    /// # C: O(subscribers)
+    pub fn wakeup(&self) { self.waitq.notify_mask(WAKEUP_MASK); }
 }
 
 fn task_count(t: &sched::Task, k: TaskCount) -> u64 {

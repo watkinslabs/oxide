@@ -48,6 +48,13 @@ impl Pages {
     }
 }
 
+/// Outcome of a successful [`PerfBuffer::output`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Wrote {
+    /// The record crossed `rb->wakeup`, so `perf_output_wakeup` ran.
+    pub wakeup: bool,
+}
+
 pub struct PerfBuffer {
     /// Page 0 of the mapping: `struct perf_event_mmap_page`.
     user:  Pages,
@@ -149,6 +156,21 @@ impl PerfBuffer {
         });
     }
 
+    /// Read `len` bytes of the data area back, for tests that must inspect the
+    /// exact record a producer wrote. # C: O(len)
+    #[cfg(test)]
+    pub fn peek_data(&self, at: u64, len: usize) -> alloc::vec::Vec<u8> {
+        let mut out = alloc::vec::Vec::new();
+        for i in 0..len as u64 {
+            let pos = (at + i) & (self.data_size() - 1);
+            let Some(p) = self.data.ptr((pos / PAGE_BYTES) as usize) else { break };
+            // SAFETY: test-only read of one buffer-owned data page, at an
+            // offset masked into that page.
+            out.push(unsafe { *p.add((pos % PAGE_BYTES) as usize) });
+        }
+        out
+    }
+
     /// `perf_poll`'s `atomic_xchg(&rb->poll, 0)`. # C: O(1)
     pub fn take_poll(&self) -> u32 { self.poll.swap(0, Ordering::AcqRel) }
 
@@ -163,10 +185,13 @@ impl PerfBuffer {
     /// once records have been dropped. Both records land in ONE reservation so
     /// a consumer never sees a sample whose loss report was itself lost.
     ///
-    /// `false` == the reference's `-ENOSPC`: the record is dropped and counted,
-    /// so the next successful one carries it.
+    /// `None` == the reference's `-ENOSPC`: the record is dropped and counted,
+    /// so the next successful one carries it. `Some(w)` reports whether this
+    /// record crossed the wakeup watermark — `perf_output_wakeup`'s trigger,
+    /// which the caller turns into the poll wake and `SIGIO` the reference's
+    /// `irq_work` delivers.
     /// # C: O(record bytes)
-    pub fn output<F>(&self, sample: &[u8], build_lost: F) -> bool
+    pub fn output<F>(&self, sample: &[u8], build_lost: F) -> Option<Wrote>
     where F: FnOnce(u64) -> Option<RecordBuf>
     {
         let tail = self.data_tail();
@@ -175,7 +200,7 @@ impl PerfBuffer {
         let lost_rec = if pending != 0 { build_lost(pending) } else { None };
         let lost_len = lost_rec.as_ref().map_or(0, |r| r.len());
         let total = (sample.len() + lost_len) as u64;
-        let res = match g.reserve(tail, total) { Ok(r) => r, Err(()) => return false };
+        let res = match g.reserve(tail, total) { Ok(r) => r, Err(()) => return None };
         if lost_rec.is_some() { g.take_lost(); }
         let head = g.head;
         if let Some(r) = lost_rec.as_ref() { self.write_at(res.offset, r.as_slice()); }
@@ -186,7 +211,7 @@ impl PerfBuffer {
         fence(Ordering::Release);
         self.with_user_page(|p| userpage::set_data_head(p, head));
         if res.wakeup { self.poll.store(POLL_READY, Ordering::Release); }
-        true
+        Some(Wrote { wakeup: res.wakeup })
     }
 
     /// Drop and count one record without formatting it — the arm
@@ -265,6 +290,8 @@ fn release(pa: u64) {
 mod tests {
     use super::*;
 
+    fn is_ok(w: Option<Wrote>) -> bool { w.is_some() }
+
     /// The hosted PMM hands out real frames, so the whole output path —
     /// reservation, page-crossing copy, wrap, control-page publication — runs
     /// here against real memory rather than a model.
@@ -295,7 +322,7 @@ mod tests {
         assert_eq!(head(&rb), 0);
 
         let rec = [0xABu8; 24];
-        assert!(rb.output(&rec, |_| None));
+        assert!(is_ok(rb.output(&rec, |_| None)));
         assert_eq!(head(&rb), 24, "data_head advertises exactly the bytes written");
         assert_eq!(read_data(&rb, 0, 24), rec);
         assert_eq!(rb.unread(), 24);
@@ -308,7 +335,7 @@ mod tests {
         // Park the producer 8 bytes short of the wrap, then write 24.
         rb.state.lock().head = ds - 8;
         let rec: alloc::vec::Vec<u8> = (0u8..24).collect();
-        assert!(rb.output(&rec, |_| None));
+        assert!(is_ok(rb.output(&rec, |_| None)));
         assert_eq!(head(&rb), ds + 16);
         assert_eq!(read_data(&rb, ds - 8, 8), rec[..8], "tail of the ring");
         assert_eq!(read_data(&rb, 0, 16), rec[8..], "wrapped remainder at offset 0");
@@ -319,7 +346,7 @@ mod tests {
         let rb = PerfBuffer::hosted(2, 0, true);
         rb.state.lock().head = PAGE_BYTES - 8;
         let rec: alloc::vec::Vec<u8> = (0u8..16).collect();
-        assert!(rb.output(&rec, |_| None));
+        assert!(is_ok(rb.output(&rec, |_| None)));
         assert_eq!(read_data(&rb, PAGE_BYTES - 8, 16), rec);
     }
 
@@ -330,8 +357,8 @@ mod tests {
         let rb = PerfBuffer::hosted(1, 0, false);
         let ds = rb.data_size();
         rb.state.lock().head = ds - 4;
-        assert!(!rb.output(&[0u8; 8], |_| None));
-        assert!(!rb.output(&[0u8; 8], |_| None));
+        assert!(!is_ok(rb.output(&[0u8; 8], |_| None)));
+        assert!(!is_ok(rb.output(&[0u8; 8], |_| None)));
         assert_eq!(rb.state.lock().lost, 2);
         // The consumer catches up; the next record is prefixed by the loss report.
         set_tail(&rb, ds - 4);
@@ -342,7 +369,7 @@ mod tests {
             r.u64(lost);
             r.finish()
         };
-        assert!(rb.output(&[0xEEu8; 8], prologue));
+        assert!(is_ok(rb.output(&[0xEEu8; 8], prologue)));
         assert_eq!(rb.state.lock().lost, 0, "the count is consumed by the record");
         let at = ds - 4;
         let got = read_data(&rb, at, 24);
@@ -358,16 +385,16 @@ mod tests {
     fn a_paused_ring_writes_nothing_and_pausing_a_pageless_ring_is_ignored() {
         let rb = PerfBuffer::hosted(1, 0, true);
         rb.set_paused(true);
-        assert!(!rb.output(&[0u8; 8], |_| None));
+        assert!(!is_ok(rb.output(&[0u8; 8], |_| None)));
         assert_eq!(head(&rb), 0);
         rb.set_paused(false);
-        assert!(rb.output(&[0u8; 8], |_| None));
+        assert!(is_ok(rb.output(&[0u8; 8], |_| None)));
 
         let empty = PerfBuffer::hosted(0, 0, true);
         assert_eq!(empty.size(), PAGE_BYTES);
         assert_eq!(empty.data.len(), 0, "no data page to map");
         empty.set_paused(false);
-        assert!(!empty.output(&[0u8; 8], |_| None));
+        assert!(!is_ok(empty.output(&[0u8; 8], |_| None)));
     }
 
     /// `perf_mmap_to_page`'s bounds: page 0 is the control page, pages
@@ -385,9 +412,12 @@ mod tests {
     #[test]
     fn a_watermark_crossing_latches_the_poll_readiness_once() {
         let rb = PerfBuffer::hosted(1, 64, true);
-        assert!(rb.output(&[0u8; 32], |_| None));
+        // `perf_output_wakeup` did not run, so the caller must not wake anyone.
+        assert_eq!(rb.output(&[0u8; 32], |_| None), Some(Wrote { wakeup: false }));
         assert_eq!(rb.take_poll(), 0, "below the watermark");
-        assert!(rb.output(&[0u8; 40], |_| None));
+        // The crossing both latches `rb->poll` AND tells the caller to run the
+        // wake the reference's `irq_work` delivers.
+        assert_eq!(rb.output(&[0u8; 40], |_| None), Some(Wrote { wakeup: true }));
         assert_eq!(rb.take_poll(), POLL_READY);
         assert_eq!(rb.take_poll(), 0, "the read clears it");
     }

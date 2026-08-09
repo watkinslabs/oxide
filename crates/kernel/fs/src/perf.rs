@@ -19,6 +19,7 @@
 //   overflow sampling-period accounting (pure)
 //   mmap     `perf_mmap` admission + ring attach
 //   emit     software-counter sites -> `PERF_RECORD_SAMPLE`
+//   hrtimer  the clock PMUs' sampling timer (`perf_swevent_hrtimer`)
 //   glue     user-memory copies, fd install, ioctl dispatch
 //
 // Scope: oxide registers the *software* PMUs only. `PERF_TYPE_HARDWARE`,
@@ -40,6 +41,7 @@ pub mod sample;
 pub mod overflow;
 pub mod mmap;
 pub mod emit;
+pub mod hrtimer;
 mod glue;
 #[cfg(test)]
 mod tests;

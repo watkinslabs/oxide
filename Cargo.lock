@@ -690,6 +690,7 @@ dependencies = [
  "sync",
  "syscall",
  "timekeeper",
+ "timer",
  "uaccess",
  "umh",
  "user-namespace",
