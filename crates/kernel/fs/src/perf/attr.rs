@@ -17,6 +17,9 @@ pub struct PerfAttr {
     pub sample_type:       u64,
     pub read_format:       u64,
     pub bits:              u64,
+    /// `wakeup_events` / `wakeup_watermark` — one slot, read as a byte
+    /// watermark only when `attr.watermark` is set.
+    pub wakeup_events:     u32,
     pub branch_sample_type:u64,
     pub clockid:           i32,
 }
@@ -100,6 +103,7 @@ pub fn parse_attr(raw: &[u8], size: u32, paranoid: i32, perfmon: bool)
         sample_type:        rd_u64(raw, attr_off::SAMPLE_TYPE),
         read_format:        rd_u64(raw, attr_off::READ_FORMAT),
         bits:               rd_u64(raw, attr_off::BITS),
+        wakeup_events:      rd_u32(raw, attr_off::WAKEUP_EVENTS),
         branch_sample_type: rd_u64(raw, attr_off::BRANCH_SAMPLE_TYPE),
         clockid:            rd_u32(raw, attr_off::CLOCKID) as i32,
     };

@@ -130,7 +130,15 @@ pub fn handle_perf_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> i64 {
             let value = u64::from_le_bytes(v);
             match period_result(ev.attr.is_sampling(), ev.attr.freq(), value, sched::perf_sw::sample_rate()) {
                 Err(e) => err(e),
-                Ok(())  => { ev.state.lock().period = value; 0 }
+                Ok(())  => {
+                    // `_perf_event_period` also re-arms the sampling budget so
+                    // the new period takes effect from the next event, rather
+                    // than after the old one finishes draining.
+                    let mut g = ev.state.lock();
+                    g.period = value;
+                    g.hw = super::overflow::HwPeriod::new(value);
+                    0
+                }
             }
         }
         PerfIoctl::Id => {
@@ -162,8 +170,13 @@ pub fn handle_perf_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> i64 {
         PerfIoctl::SetBpf   => err(Errno::Ebadf),
         // `perf_event_query_prog_array` on an event with no attached programs.
         PerfIoctl::QueryBpf => err(Errno::Enoent),
-        // `rb_toggle_paused` needs a mapped ring buffer.
-        PerfIoctl::PauseOutput => err(Errno::Einval),
+        PerfIoctl::PauseOutput => {
+            // `rb_toggle_paused(rb, !!arg)` — `-EINVAL` without a ring buffer.
+            match ev.buffer() {
+                None     => err(Errno::Einval),
+                Some(rb) => { rb.set_paused(arg != 0); 0 }
+            }
+        }
         PerfIoctl::ModifyAttributes => {
             let mut size_buf = [0u8; 4];
             if uaccess::copy_from_user(&mut size_buf, arg + attr_off::SIZE as u64).is_err() {

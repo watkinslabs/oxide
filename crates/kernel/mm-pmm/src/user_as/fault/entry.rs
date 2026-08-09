@@ -291,7 +291,13 @@ fn handle(va_raw: u64, fault: FaultKind, user_mode: bool)
         if let Some(c) = cur.as_ref() {
             sched::rusage_charge::fault(c, major);
             let kind = if major { sched::perf_sw::CpuSw::MajFlt } else { sched::perf_sw::CpuSw::MinFlt };
-            sched::perf_sw::charge(kind, c.cpu.load(Ordering::Acquire) as usize, 1);
+            // Linux `perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS{,_MIN,_MAJ}, 1,
+            // regs, address)`: the fault is both a counter advance and a
+            // sampling opportunity, and `PERF_SAMPLE_ADDR` reports the faulting
+            // address. Process context with no runqueue lock held, so the
+            // sampler may take the perf registry and one ring lock.
+            sched::perf_sw::sw_event(kind, c.cpu.load(Ordering::Acquire) as usize, 1,
+                uva.as_u64(), user_mode);
         }
     }
     #[cfg(all(feature = "debug-faultdiag", target_arch = "x86_64"))]

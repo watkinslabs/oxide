@@ -41,19 +41,68 @@ pub mod fmt {
     pub const MAX:                u64 = 1 << 5;
 }
 
-/// `enum perf_event_sample_format` — only the bits the open path branches on,
-/// plus the validity ceiling.
+/// `enum perf_event_sample_format`. Complete: the record writer emits fields
+/// in this declaration order, which IS the `PERF_RECORD_SAMPLE` layout.
 pub mod sample {
+    pub const IP:           u64 = 1 << 0;
+    pub const TID:          u64 = 1 << 1;
+    pub const TIME:         u64 = 1 << 2;
+    pub const ADDR:         u64 = 1 << 3;
     pub const READ:         u64 = 1 << 4;
+    pub const CALLCHAIN:    u64 = 1 << 5;
+    pub const ID:           u64 = 1 << 6;
+    pub const CPU:          u64 = 1 << 7;
+    pub const PERIOD:       u64 = 1 << 8;
+    pub const STREAM_ID:    u64 = 1 << 9;
+    pub const RAW:          u64 = 1 << 10;
     pub const BRANCH_STACK: u64 = 1 << 11;
     pub const REGS_USER:    u64 = 1 << 12;
     pub const STACK_USER:   u64 = 1 << 13;
     pub const WEIGHT:       u64 = 1 << 14;
+    pub const DATA_SRC:     u64 = 1 << 15;
+    pub const IDENTIFIER:   u64 = 1 << 16;
+    pub const TRANSACTION:  u64 = 1 << 17;
     pub const REGS_INTR:    u64 = 1 << 18;
     pub const PHYS_ADDR:    u64 = 1 << 19;
+    pub const AUX:          u64 = 1 << 20;
     pub const CGROUP:       u64 = 1 << 21;
+    pub const DATA_PAGE_SIZE: u64 = 1 << 22;
+    pub const CODE_PAGE_SIZE: u64 = 1 << 23;
     pub const WEIGHT_STRUCT:u64 = 1 << 24;
     pub const MAX:          u64 = 1 << 25;
+    /// `PERF_SAMPLE_WEIGHT_TYPE` — the two weight encodings share one slot.
+    pub const WEIGHT_TYPE:  u64 = WEIGHT | WEIGHT_STRUCT;
+    /// `PERF_SAMPLE_ID_ALL` — the fields a `struct sample_id` trailer carries.
+    pub const ID_ALL: u64 = TID | TIME | ID | STREAM_ID | CPU | IDENTIFIER;
+}
+
+/// `enum perf_event_type` — the `perf_event_header::type` codes, plus the
+/// `PERF_RECORD_MISC_*` bits of `header::misc`.
+pub mod record {
+    pub const MMAP:         u32 = 1;
+    pub const LOST:         u32 = 2;
+    pub const COMM:         u32 = 3;
+    pub const EXIT:         u32 = 4;
+    pub const THROTTLE:     u32 = 5;
+    pub const UNTHROTTLE:   u32 = 6;
+    pub const FORK:         u32 = 7;
+    pub const READ:         u32 = 8;
+    pub const SAMPLE:       u32 = 9;
+    pub const MMAP2:        u32 = 10;
+    pub const AUX:          u32 = 11;
+    pub const ITRACE_START: u32 = 12;
+    pub const LOST_SAMPLES: u32 = 13;
+    pub const SWITCH:       u32 = 14;
+    pub const SWITCH_CPU_WIDE: u32 = 15;
+    pub const NAMESPACES:   u32 = 16;
+
+    /// `struct perf_event_header` is `{u32 type; u16 misc; u16 size;}`.
+    pub const HEADER_BYTES: usize = 8;
+
+    /// `PERF_RECORD_MISC_CPUMODE_MASK` values.
+    pub const MISC_CPUMODE_UNKNOWN: u16 = 0;
+    pub const MISC_KERNEL:          u16 = 1;
+    pub const MISC_USER:            u16 = 2;
 }
 
 /// `enum perf_branch_sample_type` — priv-level bits + ceiling.
@@ -211,12 +260,29 @@ pub mod mmap_page {
     pub const OFF_TIME_ENABLED:   usize = 24;
     pub const OFF_TIME_RUNNING:   usize = 32;
     pub const OFF_CAPABILITIES:   usize = 40;
+    pub const OFF_PMC_WIDTH:      usize = 48;
+    pub const OFF_TIME_SHIFT:     usize = 50;
+    pub const OFF_TIME_MULT:      usize = 52;
+    pub const OFF_TIME_OFFSET:    usize = 56;
+    pub const OFF_TIME_ZERO:      usize = 64;
+    pub const OFF_SIZE:           usize = 72;
+    pub const OFF_TIME_CYCLES:    usize = 80;
+    pub const OFF_TIME_MASK:      usize = 88;
     pub const OFF_DATA_HEAD:      usize = 1024;
     pub const OFF_DATA_TAIL:      usize = 1032;
     pub const OFF_DATA_OFFSET:    usize = 1040;
     pub const OFF_DATA_SIZE:      usize = 1048;
+    pub const OFF_AUX_HEAD:       usize = 1056;
+    pub const OFF_AUX_TAIL:       usize = 1064;
+    pub const OFF_AUX_OFFSET:     usize = 1072;
+    pub const OFF_AUX_SIZE:       usize = 1080;
+    /// `perf_event_init_userpage`'s `userpg->size` —
+    /// `offsetof(struct perf_event_mmap_page, __reserved)`.
+    pub const HEADER_SIZE: u32 = 96;
     /// `cap_user_time`/`cap_user_rdpmc` all clear: userspace must use `read(2)`.
     pub const CAP_NONE: u64 = 0;
+    /// `cap_bit0_is_deprecated` — bit 1 of the `capabilities` word.
+    pub const CAP_BIT0_IS_DEPRECATED: u64 = 1 << 1;
     pub const VERSION:  u32 = 0;
 }
 

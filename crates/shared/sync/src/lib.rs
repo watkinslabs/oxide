@@ -138,6 +138,13 @@ decl_lock_class! {
     // (`TaskList`, 100) lock is taken, so the two are never held together;
     // ranked below `TaskList` purely to keep that ordering documented.
     PerfTaskEvents = 92,
+    // One perf ring buffer's producer state (`fs::perf::ring`) — Linux's
+    // `perf_buffer` head/nest/lost fields, which the reference protects with
+    // preempt-off + local_cmpxchg rather than a lock. A strict LEAF: the
+    // emit path samples the event under `PerfEvent::state` (`TaskList`, 100),
+    // releases it, formats the record, and only then takes this. No tracked
+    // lock is ever acquired while it is held.
+    PerfRing     = 93,
     // Internal gate of a SLEEPING mutex (`sched::live::Mutex`). Held only to
     // decide "take it or enqueue", never across the sleep itself, and the
     // enqueue takes the wait list (`TaskList`, 100) while holding it — so it

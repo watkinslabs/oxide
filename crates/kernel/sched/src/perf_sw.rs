@@ -38,6 +38,44 @@ pub fn read(kind: CpuSw, cpu: usize) -> u64 {
     ACC[kind as usize][cpu].load(Ordering::Relaxed)
 }
 
+// ---- sampling hook ------------------------------------------------------
+//
+// Linux's `perf_sw_event()` both advances the counter AND walks the per-CPU
+// swevent hash to hand every matching event an overflow opportunity. The walk
+// needs `perf_event`, which lives in `fs` — a crate ABOVE the counter sites
+// (`mm-pmm`'s fault path) — so it is reached through this hook. Keeping the
+// hook next to `charge` is what stops the two halves from growing separate
+// notions of which software event id a site is charging.
+
+use core::sync::atomic::AtomicPtr;
+
+/// `(event id, cpu, count, data address, faulted-from-user)`.
+pub type SampleFn = fn(CpuSw, usize, u64, u64, bool);
+
+static SAMPLE_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Install the perf sampler. # C: O(1)
+pub fn set_sample_hook(f: SampleFn) { SAMPLE_HOOK.store(f as *mut (), Ordering::Release); }
+
+/// `perf_sw_event(event_id, nr, regs, addr)` — charge the accumulator, then
+/// give every attached sampling event its overflow opportunity.
+///
+/// Callers must be in a context that may take the perf registry and one ring
+/// lock: process context, no runqueue lock held. The context-switch and
+/// migration sites charge from inside the runqueue-locked region and therefore
+/// still call [`charge`] directly.
+/// # C: O(events attached to this context)
+pub fn sw_event(kind: CpuSw, cpu: usize, n: u64, addr: u64, user: bool) {
+    charge(kind, cpu, n);
+    let p = SAMPLE_HOOK.load(Ordering::Acquire);
+    if p.is_null() { return; }
+    // SAFETY: installed via `set_sample_hook` with the `SampleFn` signature;
+    // the Acquire load pairs with that setter's Release store and the pointer
+    // is a `'static` fn address.
+    let f: SampleFn = unsafe { core::mem::transmute::<*mut (), SampleFn>(p) };
+    f(kind, cpu, n, addr, user);
+}
+
 // ---- perf sysctls -------------------------------------------------------
 //
 // Linux keeps these as globals next to `perf_event_open`:

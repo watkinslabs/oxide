@@ -12,7 +12,13 @@
 //   event    live `struct perf_event` and its counter sources
 //   file     the anon inode and its `f_op`
 //   ioctl    `_perf_ioctl` classification and per-command rules (pure)
+//   registry the one table of live events, keyed by task/CPU context
 //   inherit  fork propagation + exit fold-back of `attr.inherit` events
+//   ring     the mmapped ring buffer and its control page
+//   sample   `PERF_RECORD_*` byte layout (pure)
+//   overflow sampling-period accounting (pure)
+//   mmap     `perf_mmap` admission + ring attach
+//   emit     software-counter sites -> `PERF_RECORD_SAMPLE`
 //   glue     user-memory copies, fd install, ioctl dispatch
 //
 // Scope: oxide registers the *software* PMUs only. `PERF_TYPE_HARDWARE`,
@@ -28,10 +34,17 @@ pub mod event;
 pub mod file;
 pub mod ioctl;
 pub mod inherit;
+pub mod registry;
+pub mod ring;
+pub mod sample;
+pub mod overflow;
+pub mod mmap;
+pub mod emit;
 mod glue;
 #[cfg(test)]
 mod tests;
 
 pub use event::PerfEvent;
+pub use ring::PerfBuffer;
 pub use file::{event_of, is_perf_inode, make_perf_event_inode};
 pub use glue::{handle_perf_ioctl, sys_perf_event_open, task_ctxt_switches};
