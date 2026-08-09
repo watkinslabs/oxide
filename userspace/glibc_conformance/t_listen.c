@@ -40,11 +40,15 @@ int main(void) {
     close(ud);
 
     /* A bound stream socket accepts listen, and a negative backlog is clamped
-       (not an error). Re-listen updates the backlog and still succeeds. */
+       (not an error). Re-listen updates the backlog and still succeeds. A
+       zero backlog is likewise accepted, not an error. A backlog far above
+       net.core.somaxconn is silently clamped by __sys_listen, not refused. */
     int s = bound_stream();
     if (s >= 0) {
         errno = 0; r("stream_listen", listen(s, 5));
         errno = 0; r("stream_relisten_neg", listen(s, -1));
+        errno = 0; r("stream_relisten_zero", listen(s, 0));
+        errno = 0; r("stream_relisten_huge", listen(s, 1000000));
         close(s);
     }
 
@@ -52,6 +56,34 @@ int main(void) {
     int s2 = socket(AF_INET, SOCK_STREAM, 0);
     errno = 0; r("stream_unbound_listen", listen(s2, 5));
     close(s2);
+
+    /* listen on a connected stream socket: Linux inet_listen requires
+       sock->state == SS_UNCONNECTED, so an established (or connecting)
+       socket is EINVAL, not silently accepted. */
+    int lfd = socket(AF_INET, SOCK_STREAM, 0);
+    struct sockaddr_in la;
+    memset(&la, 0, sizeof(la));
+    la.sin_family = AF_INET;
+    la.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    int connected_ok = -1;
+    if (lfd >= 0 && bind(lfd, (struct sockaddr *)&la, sizeof(la)) == 0) {
+        socklen_t la_len = sizeof(la);
+        if (getsockname(lfd, (struct sockaddr *)&la, &la_len) == 0 && listen(lfd, 5) == 0) {
+            int cfd = socket(AF_INET, SOCK_STREAM, 0);
+            if (cfd >= 0 && connect(cfd, (struct sockaddr *)&la, sizeof(la)) == 0) {
+                connected_ok = cfd;
+            } else if (cfd >= 0) {
+                close(cfd);
+            }
+        }
+    }
+    if (connected_ok >= 0) {
+        errno = 0; r("stream_connected_listen", listen(connected_ok, 5));
+        close(connected_ok);
+    } else {
+        printf("stream_connected_listen skip=1\n");
+    }
+    close(lfd);
 
     /* Bad fd. */
     errno = 0; r("badfd", listen(-1, 5));
