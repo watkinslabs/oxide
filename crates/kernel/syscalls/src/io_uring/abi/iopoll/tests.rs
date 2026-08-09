@@ -165,3 +165,157 @@ fn a_zero_count_wait_stops_after_its_single_look() {
     // that found nothing must still end the call.
     assert_eq!(after_poll(0, 0, false, false), Step::Stop);
 }
+
+// --- submit-then-poll ---------------------------------------------------
+
+// The transfer family is what a poll can complete, and it is the ONLY thing a
+// polled ring hands to the backend without a result. An entry that finishes
+// inside submission has already posted its completion; putting one on this
+// path would leave a request nothing ever reaps.
+#[test]
+fn only_transfers_on_a_polled_ring_take_the_submit_then_poll_path() {
+    for op in [IORING_OP_READ, IORING_OP_WRITE, IORING_OP_READV, IORING_OP_WRITEV,
+               IORING_OP_READ_FIXED, IORING_OP_WRITE_FIXED] {
+        assert!(defers_to_backend(true, op, 0), "op {op} is a transfer");
+        assert!(!defers_to_backend(false, op, 0), "an ordinary ring polls for nothing");
+    }
+    for op in [IORING_OP_NOP, IORING_OP_MSG_RING, IORING_OP_PROVIDE_BUFFERS,
+               IORING_OP_REMOVE_BUFFERS, IORING_OP_FILES_UPDATE, IORING_OP_URING_CMD] {
+        assert!(!defers_to_backend(true, op, 0), "op {op} finishes inside submission");
+    }
+}
+
+// Every entry that defers to the backend is one the polled ring admits at all;
+// the reverse does not hold. A deferral of an opcode the ring refuses would be
+// a request submitted to a backend for an entry that never got past admission.
+#[test]
+fn everything_that_defers_is_admitted_by_the_polled_ring() {
+    for op in 0u8..=63 {
+        if defers_to_backend(true, op, 0) {
+            assert!(opcode_pollable(op), "op {op} defers but is not admitted");
+            assert_eq!(admit_opcode(true, op), Ok(()));
+        }
+    }
+}
+
+// The description's position cannot be shared between two outstanding
+// transfers: both would read the same value and both would advance it, and
+// there is no moment at which either could take it exclusively. Such an entry
+// keeps the ordinary path, where the position is read and advanced inside one
+// operation.
+#[test]
+fn a_transfer_at_the_descriptions_own_position_does_not_defer() {
+    for op in [IORING_OP_READ, IORING_OP_WRITE, IORING_OP_READV, IORING_OP_WRITEV,
+               IORING_OP_READ_FIXED, IORING_OP_WRITE_FIXED] {
+        assert!(!defers_to_backend(true, op, CUR_POS), "op {op} at -1 keeps the ordinary path");
+        assert!(defers_to_backend(true, op, CUR_POS - 1), "any other offset still defers");
+        assert!(defers_to_backend(true, op, 0));
+    }
+}
+
+// A refused direct submission has exactly two well-formed reasons, and they
+// mean different things to a caller: a request that was not whole blocks stays
+// wrong however often it is retried, while one that started past the end of the
+// device is a fact about the device.
+#[test]
+fn a_refused_direct_submission_reports_its_own_reason() {
+    assert_eq!(submit_errno(vfs::VfsError::Einval), Errno::Einval);
+    assert_eq!(submit_errno(vfs::VfsError::Enospc), Errno::Enospc);
+    assert_eq!(submit_errno(vfs::VfsError::Eio), Errno::Eio);
+    assert_eq!(submit_errno(vfs::VfsError::Eopnotsupp), Errno::Eopnotsupp);
+    // Anything a backend invents that names no better answer is an I/O error;
+    // it must NOT surface as success or as a refusal the caller would retry.
+    assert_eq!(submit_errno(vfs::VfsError::Eisdir), Errno::Eio);
+}
+
+// The direction decides which end of the transfer holds the caller's bytes at
+// submission time, so a mislabelled opcode moves the wrong bytes.
+#[test]
+fn the_write_half_of_the_transfer_family_is_named_exactly() {
+    for op in [IORING_OP_WRITE, IORING_OP_WRITEV, IORING_OP_WRITE_FIXED] {
+        assert!(is_write(op));
+    }
+    for op in [IORING_OP_READ, IORING_OP_READV, IORING_OP_READ_FIXED, IORING_OP_NOP] {
+        assert!(!is_write(op));
+    }
+}
+
+// --- hybrid poll --------------------------------------------------------
+
+// A ring that has never timed a transfer has nothing to sleep against, and
+// sleeping on a guess would delay the very completions the mode exists to
+// catch early.
+#[test]
+fn a_ring_with_no_estimate_yet_does_not_sleep() {
+    assert_eq!(hybrid_sleep_ns(NO_ESTIMATE, false), 0);
+}
+
+// The reference's fraction: half the estimate.
+#[test]
+fn the_sleep_is_half_the_rings_estimate() {
+    assert_eq!(hybrid_sleep_ns(1_000, false), 500);
+    assert_eq!(hybrid_sleep_ns(1, false), 0, "an estimate below the resolution sleeps none");
+    assert_eq!(hybrid_sleep_ns(0, false), 0);
+}
+
+// The sleep skips the front of ONE transfer's service time. Paying it again on
+// every pass would make a device slower the more often it was polled, which is
+// the opposite of what the caller asked for.
+#[test]
+fn a_request_that_already_slept_never_sleeps_again() {
+    assert_eq!(hybrid_sleep_ns(1_000, true), 0);
+    assert_eq!(hybrid_sleep_ns(NO_ESTIMATE, true), 0);
+}
+
+// The MINIMUM, not an average: with backends of different speeds, sleeping for
+// longer than the fastest takes loses completions that were already ready.
+#[test]
+fn the_estimate_is_the_smallest_service_time_seen() {
+    assert_eq!(observe_runtime(NO_ESTIMATE, 900), 900, "the first observation wins outright");
+    assert_eq!(observe_runtime(900, 400), 400);
+    assert_eq!(observe_runtime(400, 900), 400, "a slower backend does not raise it");
+    assert_eq!(observe_runtime(400, 400), 400);
+}
+
+// An estimate that counted its own sleep would grow by half of itself every
+// pass until the mode was a pure sleep with no poll left in it.
+#[test]
+fn the_observed_runtime_excludes_the_time_spent_asleep() {
+    assert_eq!(hybrid_runtime(1_000, 0, 400), 600);
+    assert_eq!(hybrid_runtime(1_000, 200, 0), 800);
+    // Feeding the estimate back through a sleep must not ratchet it upwards.
+    let mut est = 1_000u64;
+    for _ in 0..8 {
+        let slept = hybrid_sleep_ns(est, false);
+        est = observe_runtime(est, hybrid_runtime(slept + 1_000, 0, slept));
+    }
+    assert_eq!(est, 1_000, "the estimate is stable under its own sleep");
+}
+
+// A clock that appears to go backwards must yield zero, not an enormous
+// estimate that would then be halved into an enormous sleep.
+#[test]
+fn a_backwards_clock_observes_no_service_time() {
+    assert_eq!(hybrid_runtime(100, 900, 0), 0);
+    assert_eq!(hybrid_runtime(1_000, 0, 4_000), 0);
+}
+
+// A write reports what the device took; a read reports what reached the
+// caller's buffer. Reporting the device's count for a read would tell a caller
+// its buffer holds data that is not in it.
+#[test]
+fn a_completed_transfer_reports_the_count_its_own_direction_means() {
+    assert_eq!(completed_res(true, 4096, 4096), 4096);
+    assert_eq!(completed_res(false, 4096, 4096), 4096);
+    assert_eq!(completed_res(false, 4096, 512), 512, "a short copy reports what landed");
+    assert_eq!(completed_res(true, 512, 0), 512, "a write's payload already left the caller");
+}
+
+// Zero means end-of-file. A caller that read a failed copy as EOF would stop
+// reading a file it had barely started, so a read that delivered bytes and
+// landed none is EFAULT.
+#[test]
+fn a_read_that_landed_nothing_is_efault_not_end_of_file() {
+    assert_eq!(completed_res(false, 4096, 0), -(Errno::Efault.as_i32() as i64));
+    assert_eq!(completed_res(false, 0, 0), 0, "a transfer that delivered nothing IS end-of-file");
+}

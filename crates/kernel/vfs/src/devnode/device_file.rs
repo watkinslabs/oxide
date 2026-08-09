@@ -159,6 +159,19 @@ impl FileOps for DeviceFileOps {
         }
     }
 
+    /// A queued direct transfer belongs to the same driver that owns the
+    /// completion poll: only a backend with a request queue can accept work it
+    /// finishes later. A character device has none, so the request comes back
+    /// untouched and its caller serves it the ordinary way. # C: driver
+    fn submit_direct(&self, file: &File, io: crate::file_ops::DirectIo)
+        -> crate::file_ops::DirectSubmit
+    {
+        match file.opened_device() {
+            Some(OpenedDevice::Block { devt, ops }) => ops.submit_direct(devt, io),
+            Some(OpenedDevice::Char { .. }) | None => crate::file_ops::DirectSubmit::Unsupported(io),
+        }
+    }
+
     fn poll_subscribers(&self, file: &File) -> Option<Arc<PollSubscribers>> {
         match file.opened_device() {
             Some(OpenedDevice::Char { devt, ops }) => ops.poll_subscribers_file(devt, file),

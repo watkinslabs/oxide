@@ -43,6 +43,16 @@ pub fn forced_async(flags: u8) -> bool { flags & IOSQE_ASYNC != 0 }
 /// Whether this entry is deferred before it is ever attempted. # C: O(1)
 pub fn defers(sqe: &Sqe) -> bool { always_async(sqe.opcode) || forced_async(sqe.flags) }
 
+/// The same question for one ring: a transfer on a POLLED ring is deferred
+/// too, because that is what makes it pollable. It is issued to the backend
+/// and returns with no completion posted, and the ring's poll finishes it —
+/// which is the whole mechanism `IORING_SETUP_IOPOLL` names. # C: O(1)
+pub fn defers_on(ring: &Arc<super::ctx::IoUringInode>, sqe: &Sqe) -> bool {
+    if defers(sqe) { return true; }
+    crate::io_uring_abi::iopoll::defers_to_backend(super::iopoll::polled(ring), sqe.opcode, sqe.off)
+        && super::iopoll::queued::eligible(sqe.fd)
+}
+
 /// Read whatever an entry needs out of the submitter's address space before it
 /// leaves the submitting task. # C: O(1)
 pub fn prepare(req: &Arc<IoReq>) -> Result<(), Errno> {
@@ -50,6 +60,12 @@ pub fn prepare(req: &Arc<IoReq>) -> Result<(), Errno> {
         IORING_OP_TIMEOUT => super::timeout::prepare(req, false),
         IORING_OP_LINK_TIMEOUT => super::timeout::prepare(req, true),
         IORING_OP_POLL_ADD => super::poll::prepare(req),
+        // A transfer on a polled ring reads its segments and its write payload
+        // out of the submitter here, for the same reason a timeout reads its
+        // timespec here: the backend completes it in some other context, where
+        // a user address means nothing.
+        op if crate::io_uring_abi::iopoll::defers_to_backend(super::iopoll::polled(&req.ring), op, req.sqe.off) =>
+            super::iopoll::queued::prepare(req),
         _ => Ok(()),
     }
 }
@@ -62,6 +78,16 @@ pub fn arm(req: &Arc<IoReq>) -> Armed {
         // its clock must not start until the thing it is guarding does.
         IORING_OP_LINK_TIMEOUT => Armed::Waiting,
         IORING_OP_POLL_ADD => super::poll::arm(req),
+        // Queued at the backend, the request waits for a poll rather than for
+        // a worker. A backend that queues nothing hands it back, and it takes
+        // the ordinary worker path — the operation still runs, it just has
+        // nothing for the poll to find.
+        op if crate::io_uring_abi::iopoll::defers_to_backend(super::iopoll::polled(&req.ring), op, req.sqe.off) =>
+            match super::iopoll::queued::issue(req) {
+                Ok(true) => Armed::Waiting,
+                Ok(false) => Armed::Queue,
+                Err(e) => Armed::Failed(e),
+            },
         _ => Armed::Queue,
     }
 }

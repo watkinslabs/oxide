@@ -38,6 +38,28 @@ impl IoUringInode {
         t.live()
     }
 
+    /// Record a transfer the backend now owns. Strong, unlike the in-flight
+    /// table beside it: this list is the only thing keeping the request alive
+    /// while its backend has it. # C: O(1) amortised
+    pub fn track_queued(&self, req: &Arc<IoReq>) {
+        let mut g = self.iopoll_list.lock();
+        if g.try_reserve(1).is_err() { return; }
+        g.push(Arc::clone(req));
+    }
+
+    /// Every transfer this ring's backends still owe a result for, dropping the
+    /// ones that have finished. # C: O(N_queued)
+    pub fn queued_reqs(&self) -> alloc::vec::Vec<Arc<IoReq>> {
+        let mut g = self.iopoll_list.lock();
+        g.retain(|r| !r.is_done());
+        g.clone()
+    }
+
+    /// Release a transfer the ring no longer owns. # C: O(N_queued)
+    pub fn untrack_queued(&self, req: &Arc<IoReq>) {
+        self.iopoll_list.lock().retain(|r| !Arc::ptr_eq(r, req));
+    }
+
     /// Whether this ring may start another request of `class` right now. A
     /// registered worker limit is a limit on how much of this ring's work runs
     /// at once, so it is checked here and released when the request ends.
@@ -101,6 +123,14 @@ impl IoUringInode {
         for req in self.inflight_reqs() {
             let _ = crate::io_uring::cancel::cancel_one(&req);
         }
+        // A transfer a backend still owns is cancelled the same way, and then
+        // released: the list is strong, so leaving it populated would keep the
+        // request — and through it this ring — alive for as long as the device
+        // took, with nobody left to reap it.
+        for req in self.queued_reqs() {
+            let _ = crate::io_uring::cancel::cancel_one(&req);
+        }
+        self.iopoll_list.lock().clear();
         *self.owner.lock() = None;
     }
 }

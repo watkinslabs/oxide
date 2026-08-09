@@ -354,6 +354,14 @@ impl File {
     /// on [`crate::file_ops::FileOps::can_iopoll`]. # C: O(1)
     pub fn can_iopoll(&self) -> bool { self.f_op.can_iopoll(self) }
 
+    /// Queue one direct transfer at this description's backend and return
+    /// without completing it — Linux's `-EIOCBQUEUED` arm of
+    /// `f_op->read_iter`/`write_iter` under `IOCB_DIRECT`. The completion is
+    /// found later through [`Self::iopoll`]. # C: backend-dependent
+    pub fn submit_direct(&self, io: crate::file_ops::DirectIo) -> crate::file_ops::DirectSubmit {
+        self.f_op.submit_direct(self, io)
+    }
+
     /// Retain the exact driver whose open callback succeeded. # C: O(1)
     pub(crate) fn retain_opened_device(&self, opened: crate::devnode::OpenedDevice) {
         *self.opened_device.lock() = Some(opened);

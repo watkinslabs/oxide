@@ -90,7 +90,11 @@ fn linux_flag_combination_rules_hold() {
     assert!(prepare(&mut req(IORING_SETUP_TASKRUN_FLAG | IORING_SETUP_COOP_TASKRUN), 4).is_ok());
     assert_eq!(prepare(&mut req(IORING_SETUP_DEFER_TASKRUN), 4), Err(Errno::Einval));
     assert!(prepare(&mut req(IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_SINGLE_ISSUER), 4).is_ok());
+    // HYBRID_IOPOLL is implemented, so what this pins is the PAIRING rule: it
+    // is a way of driving a poll, and a ring that does not poll has none to
+    // drive. Alone it is EINVAL; with IOPOLL it is admitted.
     assert_eq!(prepare(&mut req(IORING_SETUP_HYBRID_IOPOLL), 4), Err(Errno::Einval));
+    assert!(prepare(&mut req(IORING_SETUP_HYBRID_IOPOLL | IORING_SETUP_IOPOLL), 4).is_ok());
     assert_eq!(prepare(&mut req(IORING_SETUP_SQ_REWIND), 4), Err(Errno::Einval));
 }
 
@@ -288,7 +292,7 @@ fn every_setup_flag_is_either_implemented_or_refused() {
         (IORING_SETUP_NO_MMAP,            false, "no path adopts caller pages as the ring"),
         (IORING_SETUP_REGISTERED_FD_ONLY, false, "only reachable with NO_MMAP"),
         (IORING_SETUP_NO_SQARRAY,         true,  "rings_size + IoUring::sq_index"),
-        (IORING_SETUP_HYBRID_IOPOLL,      false, "no per-request service-time estimate to sleep against"),
+        (IORING_SETUP_HYBRID_IOPOLL,      true,  "abi::iopoll::hybrid_sleep_ns + the ring's service-time estimate"),
         (IORING_SETUP_CQE_MIXED,          false, "CQE size is fixed at 16 bytes"),
         (IORING_SETUP_SQE_MIXED,          false, "SQE size is fixed at 64 bytes"),
         (IORING_SETUP_SQ_REWIND,          false, "userspace could rewind over entries already read"),
@@ -313,7 +317,7 @@ fn every_setup_flag_is_either_implemented_or_refused() {
 fn every_unimplemented_setup_flag_is_refused_by_setup_itself() {
     for bit in [IORING_SETUP_ATTACH_WQ, IORING_SETUP_SQE128,
                 IORING_SETUP_CQE32, IORING_SETUP_NO_MMAP, IORING_SETUP_REGISTERED_FD_ONLY,
-                IORING_SETUP_HYBRID_IOPOLL, IORING_SETUP_CQE_MIXED, IORING_SETUP_SQE_MIXED,
+                IORING_SETUP_CQE_MIXED, IORING_SETUP_SQE_MIXED,
                 IORING_SETUP_SQ_REWIND] {
         assert_eq!(prepare(&mut req(bit), 8), Err(Errno::Einval), "flag {bit:#x} must be refused");
     }
@@ -332,7 +336,8 @@ fn every_implemented_setup_flag_is_admitted_and_reported_back() {
                   IORING_SETUP_TASKRUN_FLAG | IORING_SETUP_COOP_TASKRUN,
                   IORING_SETUP_SINGLE_ISSUER,
                   IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_SINGLE_ISSUER,
-                  IORING_SETUP_NO_SQARRAY, IORING_SETUP_IOPOLL] {
+                  IORING_SETUP_NO_SQARRAY, IORING_SETUP_IOPOLL,
+                  IORING_SETUP_HYBRID_IOPOLL | IORING_SETUP_IOPOLL] {
         let mut p = req(extra);
         if extra & IORING_SETUP_CQSIZE != 0 { p.cq_entries = 8; }
         let g = prepare(&mut p, 8).unwrap_or_else(|e| panic!("flags {extra:#x} refused: {e:?}"));

@@ -16,6 +16,7 @@
 //   dir.rs    — directory-iteration shapes (`DirEmit`, `DirContext`) and the
 //               `SEEK_HOLE`/`SEEK_DATA` selector.
 //   stream.rs — the default vectored-write engine backends reuse.
+//   direct.rs — the queued direct-transfer shapes (`DirectIo`, `DirectSubmit`).
 
 extern crate alloc;
 use alloc::sync::Arc;
@@ -36,6 +37,9 @@ pub use dir::DirDebugBackend;
 
 mod stream;
 pub use stream::{stream_write_iter_file, stream_write_iter_with};
+
+mod direct;
+pub use direct::{DirectDone, DirectIo, DirectSubmit};
 
 /// `file_operations` — the inode's `i_fop` data-path vtable. # Lk: callers hold
 /// no inode lock; an op serialises its own backend state.
@@ -226,6 +230,20 @@ pub trait FileOps: Send + Sync {
     /// the two answers come from the same place so they cannot disagree.
     /// # C: O(1)
     fn can_iopoll(&self, _file: &File) -> bool { false }
+
+    /// `f_op->read_iter`/`write_iter` with `IOCB_DIRECT | IOCB_HIPRI` — queue
+    /// the transfer at the backend and return WITHOUT completing it, Linux's
+    /// `-EIOCBQUEUED`.
+    ///
+    /// Paired with [`Self::iopoll`], which is what later finds the completion:
+    /// a backend that queues here but cannot be polled would leave the transfer
+    /// with nothing to look for it. The default refuses by handing the request
+    /// back untouched, so a caller that asks a backend with no direct path
+    /// falls back to the ordinary transfer rather than losing the operation.
+    /// # C: backend-dependent
+    fn submit_direct(&self, _file: &File, io: DirectIo) -> DirectSubmit {
+        DirectSubmit::Unsupported(io)
+    }
 
     /// `f_op->fasync` — backend admission for `FIOASYNC`/`F_SETFL(O_ASYNC)`.
     /// Default means no fasync op installed; async-capable stream backends call

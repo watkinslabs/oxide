@@ -28,6 +28,7 @@ mod bh_gate;
 pub mod blockdev;
 pub mod completion;
 pub mod devbridge;
+pub mod direct;
 pub mod elevator;
 pub mod pagecache;
 pub mod queue_limits;
