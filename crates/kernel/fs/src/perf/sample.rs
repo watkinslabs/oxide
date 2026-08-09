@@ -38,6 +38,8 @@ impl RecordBuf {
         self.len += b.len();
     }
     /// # C: O(1)
+    pub fn byte(&mut self, v: u8) { self.raw(&[v]); }
+    /// # C: O(1)
     pub fn u16(&mut self, v: u16) { self.raw(&v.to_le_bytes()); }
     /// # C: O(1)
     pub fn u32(&mut self, v: u32) { self.raw(&v.to_le_bytes()); }

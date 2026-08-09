@@ -71,6 +71,9 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
     // `phys_range` instead of a page-cache FileBacking. Anonymous → None/None.
     let mut backing: Option<alloc::sync::Arc<dyn vmm::FileBacking>> = None;
     let mut phys_range: Option<(u64, vmm::PhysCacheMode)> = None;
+    // The mapped file's name and identity for `PERF_RECORD_MMAP`, captured
+    // before the backing takes ownership of the path.
+    let mut sideband_file: Option<(alloc::vec::Vec<u8>, u64, u64)> = None;
     let mut seal_write_reservation: Option<vmm::WritableMapReservation> = None;
     // MAP_SHARED|MAP_ANON: Linux `shmem_zero_setup` — back the mapping with a
     // fresh ANONYMOUS tmpfs (shmem) inode so its frames are owned by one
@@ -310,6 +313,7 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
                 // a core dump can tell a debugger which object to reopen for
                 // the pages it did not carry.
                 let map_path = file.dentry().dentry_path(None);
+                sideband_file = Some((map_path.clone().into_bytes(), inode.fsid(), inode.ino()));
                 // `POSIX_FADV_NOREUSE` on the mapping fd, snapshotted for the
                 // fault path's `vma_has_recency` predicate — see
                 // `FileBacking::noreuse`'s doc for why this is a snapshot.
@@ -320,6 +324,9 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
         },
         }
     }
+    // `perf_event_mmap(vma)` runs on the vma the reference has just installed,
+    // so the record's name and identity are captured here, before the backing
+    // is moved into the mapping.
     let result = pmm::user_as::glue_mmap(
         args.a0, len, prot, eff_flags, fd as i64, offset, backing, phys_range,
         None, may_prot, file_vma_flags,
@@ -335,6 +342,13 @@ pub fn kernel_mmap(args: &SyscallArgs) -> i64 {
                 klog::write_hex_u64(va);
                 klog::write_raw(b"\n");
             }
+            // `perf_event_mmap(vma)`: a new mapping is what lets a consumer
+            // turn a sampled instruction pointer into an object and an offset.
+            let (name, dev, ino) = match sideband_file.as_ref() {
+                Some((n, d, i)) => (n.as_slice(), *d, *i),
+                None            => (&[][..], 0, 0),
+            };
+            crate::perf_sideband::note_mmap(va, len, offset, prot, flags, name, dev, ino);
             va as i64
         },
         Err(rv) => rv,

@@ -22,7 +22,20 @@ use super::uapi::{fmt, record, sample};
 /// Install the sampler. Called once from kernel init; until it runs the
 /// counter sites do nothing beyond their accumulator update, which is exactly
 /// the state of a kernel with no perf events open. # C: O(1)
-pub fn init() { sched::perf_sw::set_sample_hook(on_sw_event); }
+pub fn init() {
+    sched::perf_sw::set_sample_hook(on_sw_event);
+    sched::perf_sw::set_switch_hook(on_switch);
+}
+
+/// `perf_event_switch(task, next_prev, sched_in)` — the reference emits BOTH
+/// sides of a switch: a `SWITCH_OUT` record against the outgoing task and a
+/// switch-in record against the incoming one.
+/// # C: O(events attached to either task)
+fn on_switch(cpu: usize, n: sched::perf_sw::SwitchNote) {
+    let c = cpu as i32;
+    super::sideband::switch(n.prev_tid, c, true, n.preempt, n.next_pid, n.next_tid);
+    super::sideband::switch(n.next_tid, c, false, false, n.prev_pid, n.prev_tid);
+}
 
 /// `perf_sw_event(event_id, nr, regs, addr)`. Runs in the charging site's own
 /// context (process context for a page fault), takes no lock the caller holds,

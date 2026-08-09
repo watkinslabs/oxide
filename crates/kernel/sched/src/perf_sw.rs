@@ -50,6 +50,7 @@ pub fn read(kind: CpuSw, cpu: usize) -> u64 {
 use core::sync::atomic::AtomicPtr;
 
 mod deferred;
+pub use deferred::SwitchNote;
 
 /// One counter site's `perf_sw_event(event_id, nr, regs, addr)` call, carrying
 /// everything the sampler reads out of the reference's `struct pt_regs *regs`:
@@ -71,6 +72,27 @@ pub struct SwSite {
 }
 
 pub type SampleFn = fn(&SwSite);
+
+/// `perf_event_switch(task, next_prev, sched_in)` — `(cpu, note)`. Separate
+/// from [`SampleFn`] because a `PERF_RECORD_SWITCH` is a side-band record, not
+/// a counter overflow: it is emitted for `attr.context_switch` events whether
+/// or not anything is sampling.
+pub type SwitchFn = fn(usize, deferred::SwitchNote);
+
+static SWITCH_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Install the `PERF_RECORD_SWITCH` emitter. # C: O(1)
+pub fn set_switch_hook(f: SwitchFn) { SWITCH_HOOK.store(f as *mut (), Ordering::Release); }
+
+/// Park this switch's two identities for the tail to emit. Called from inside
+/// the runqueue-locked region, which is the only place both sides are known.
+/// # C: O(1)
+pub fn note_switch(cpu: usize, prev_pid: u32, prev_tid: u32, next_pid: u32,
+                   next_tid: u32, preempt: bool)
+{
+    deferred::note_switch(cpu, deferred::SwitchNote {
+        prev_pid, prev_tid, next_pid, next_tid, preempt });
+}
 
 static SAMPLE_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
@@ -130,6 +152,15 @@ pub fn drain_deferred(cpu: usize) {
         // kernel context.
         sample_only(&SwSite { kind, cpu, nr, ip: 0, addr: 0, user: false });
     });
+    if let Some(note) = deferred::take_switch(cpu) {
+        let p = SWITCH_HOOK.load(Ordering::Acquire);
+        if p.is_null() { return; }
+        // SAFETY: installed via `set_switch_hook` with the `SwitchFn`
+        // signature; the Acquire load pairs with that setter's Release store
+        // and the pointer is a `'static` fn address.
+        let f: SwitchFn = unsafe { core::mem::transmute::<*mut (), SwitchFn>(p) };
+        f(cpu, note);
+    }
 }
 
 // ---- perf sysctls -------------------------------------------------------

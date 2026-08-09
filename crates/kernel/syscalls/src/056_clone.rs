@@ -538,6 +538,10 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
     // copy above — the child must already carry its events the instant it
     // becomes schedulable.
     fs::perf::inherit::on_fork(cur.tid, child_tid, (flags & CLONE_THREAD) != 0);
+    // `perf_event_fork(child)`: the side-band record that tells a consumer the
+    // new thread exists, so samples carrying its tid can be attributed.
+    crate::perf_sideband::note_fork(child_tid, child.tgid.load(Ordering::Relaxed),
+                                    cur.tid, cur.tgid.load(Ordering::Relaxed));
     publication::commit(&child, (flags & CLONE_THREAD) != 0, prepared_pidfd);
 
     // Linux `_do_fork`: "forking complete and child started to run, tell

@@ -82,6 +82,11 @@ pub mod utimensat_abi;
 // can reach them (docs/53, CLAUDE.md phantom-test rule).
 pub mod ustat_abi;
 pub mod sysfs_query;
+// perf side-band records (`PERF_RECORD_MMAP`/`COMM`/`FORK`/`EXIT`): the gather
+// the mmap/exec/clone/exit slots perform before calling the `fs::perf` work fn.
+// Ungated so the split it performs on `st_dev` is hosted-testable; every slot
+// that calls it is kernel-gated (CLAUDE.md phantom-test rule).
+pub mod perf_sideband;
 pub mod remap_policy;
 pub mod fadvise_policy;
 pub mod mlock_policy;
