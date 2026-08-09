@@ -29,14 +29,19 @@ impl OptionId {
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Context { pub namespace: u64, pub family: u16, pub socket_type: u32,
-    pub protocol: u32, pub operation: Operation, pub option: OptionId }
+    pub protocol: u32, pub operation: Operation, pub option: OptionId,
+    /// `listen(2)`'s backlog, post-`somaxconn` clamp, matching what the Linux
+    /// LSM hook receives via `security_socket_listen(sock, backlog)`. `None`
+    /// for every operation other than `Listen`.
+    pub backlog: Option<u32> }
 
 impl Context {
     /// One operation on a socket that names no option. # C: O(1)
     pub const fn op(namespace: u64, family: u16, socket_type: u32, protocol: u32,
                     operation: Operation) -> Self
     {
-        Self { namespace, family, socket_type, protocol, operation, option: OptionId::NONE }
+        Self { namespace, family, socket_type, protocol, operation, option: OptionId::NONE,
+               backlog: None }
     }
 
     /// One option access, carrying the level and option number the decision is
@@ -45,7 +50,16 @@ impl Context {
                         operation: Operation, level: i32, optname: i32) -> Self
     {
         Self { namespace, family, socket_type, protocol, operation,
-               option: OptionId { level, optname } }
+               option: OptionId { level, optname }, backlog: None }
+    }
+
+    /// A `listen(2)` decision, carrying the backlog the caller passed after
+    /// `somaxconn` clamping. # C: O(1)
+    pub const fn listen(namespace: u64, family: u16, socket_type: u32, protocol: u32,
+                        backlog: u32) -> Self
+    {
+        Self { namespace, family, socket_type, protocol, operation: Operation::Listen,
+               option: OptionId::NONE, backlog: Some(backlog) }
     }
 }
 

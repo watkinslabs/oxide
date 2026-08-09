@@ -11,6 +11,17 @@ pub fn check(namespace: u64, family: u16, operation: security::network::Operatio
     Ok(())
 }
 
+/// Evaluate a `listen(2)` decision, carrying the post-clamp backlog so an
+/// installed hook can see it — Linux passes `security_socket_listen(sock,
+/// backlog)` the same clamped value. # C: O(1)
+pub fn check_listen(namespace: u64, family: u16, backlog: u32) -> Result<(), crate::NetError> {
+    let context = security::network::Context::listen(namespace, family, 0, 0, backlog);
+    if matches!(security::network::evaluate(context), security::network::Verdict::Deny) {
+        return Err(crate::NetError::Eacces);
+    }
+    Ok(())
+}
+
 #[allow(unpredictable_function_pointer_comparisons, reason = "the assertion is `the hook I just installed came back`; both sides are the same non-generic fn item in the same codegen unit, so the lint's address-uniqueness caveat cannot apply")]
 #[cfg(test)]
 mod tests {

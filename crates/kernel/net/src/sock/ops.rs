@@ -252,7 +252,7 @@ pub fn listen(sock: &alloc::sync::Arc<InetSocket>, backlog: i32) -> Result<(), N
     let is_unix = sock.family.load(core::sync::atomic::Ordering::Acquire) == AF_UNIX;
     let step = crate::listen_admit::listen_ladder(
         crate::sysctl::somaxconn_in(net_ns), backlog,
-        |_| super::admit_listen(sock).map(|_| ()),
+        |backlog| super::admit_listen(sock, backlog as u32).map(|_| ()),
         || if is_unix {
             match &*sock.kind.lock() {
                 SockKind::UnixDgram(_) => crate::listen_admit::ListenShape::UnixDatagram,
