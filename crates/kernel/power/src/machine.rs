@@ -198,7 +198,12 @@ mod tests {
         for cmd in [LINUX_REBOOT_CMD_CAD_ON, LINUX_REBOOT_CMD_CAD_OFF] {
             assert!(matches!(classify_cmd(cmd), Ok(RebootAction::SetCad(_))));
         }
-        for cmd in [LINUX_REBOOT_CMD_KEXEC, LINUX_REBOOT_CMD_SW_SUSPEND, 0xDEAD_BEEF] {
+        // KEXEC is a command, but NOT a terminal one as far as this crate is
+        // concerned: the shim routes it to the kexec subsystem, which owns the
+        // machine-stop sequence for a relocation. It must never fall into
+        // `terminal()` and shut the drivers down behind kexec's back.
+        assert!(matches!(classify_cmd(LINUX_REBOOT_CMD_KEXEC), Ok(RebootAction::Kexec)));
+        for cmd in [LINUX_REBOOT_CMD_SW_SUSPEND, 0xDEAD_BEEF] {
             assert!(classify_cmd(cmd).is_err());
         }
     }

@@ -73,7 +73,7 @@ pub fn try_compat(nr: u64, args: &SyscallArgs) -> Option<i64> {
         // dispatched by `route_c` to real `modules`-crate implementations
         // since P3; their arm here was dead and is gone (F757).
         // NR_KEXEC_LOAD / NR_KEXEC_FILE_LOAD answer ENOSYS through
-        // `syscalls::unconfigured` (F757) — the errno Linux itself returns
+        // the slot's own refusal (F757) — the errno Linux itself returns
         // with CONFIG_KEXEC unset. EPERM was a lie about the reason: no
         // privilege exists that makes an absent feature appear, so a root
         // caller retried forever.

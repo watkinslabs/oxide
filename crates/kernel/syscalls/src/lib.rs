@@ -29,10 +29,10 @@ pub mod arch_prctl_abi;
 // kernel-only and one wrong bit in the packing is a silent privilege bug.
 pub mod ldt_abi;
 pub mod obsolete;
-// Slots refused with the errno Linux returns when the backing CONFIG is unset
-// (modify_ldt, iopl, ioperm, kexec_load, kexec_file_load). Outside the
-// kernel-only cfg so the pinned slot set is actually unit-tested.
-pub mod unconfigured;
+// `kexec_load`/`kexec_file_load` ABI edge: errno mapping, array sizing, the
+// pinned slot numbers and their aarch64 routes. Ungated because both slot
+// files are kernel-only, so tests written inside them would never run.
+pub mod kexec_abi;
 mod access_cred;
 // Stale-handle retry rule shared by every path-based syscall. Ungated because
 // the `*at` resolution layer that applies it is kernel-only, and an unbounded

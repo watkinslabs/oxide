@@ -1,0 +1,16 @@
+[package]
+name = "kexec"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+klog = { path = "../../shared/klog" }
+sync = { path = "../../shared/sync" }
+pmm  = { path = "../mm-pmm" }
+
+[lints]
+workspace = true
