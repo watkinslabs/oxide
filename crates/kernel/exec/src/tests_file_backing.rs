@@ -14,7 +14,7 @@ use aslr::ExecRnd;
 use hal::UserVirtAddr;
 use vmm::{AddressSpace, FileBacking, FileBackingError, VmaBacking};
 
-use crate::{load_image, load_static_blob, Image};
+use crate::{load_image, load_image_reporting, load_static_blob, Image};
 
 const PAGE: u64 = 0x1000;
 const EHDR: usize = 64;
@@ -51,6 +51,7 @@ impl FileBacking for RampFile {
     fn size_hint(&self) -> u64 { self.len }
     fn ino(&self) -> u64 { self.ino }
     fn i_mode(&self) -> u16 { self.mode }
+    fn map_path(&self) -> Option<&[u8]> { Some(b"/bin/ramp") }
 }
 
 /// ET_EXEC with an RX segment and an RW segment that ends in `.bss`. ET_EXEC
@@ -117,7 +118,7 @@ fn at(as_: &AddressSpace, va: u64) -> (VmaBacking, u64) {
 fn text_is_a_mapping_of_the_file_it_was_loaded_from() {
     let blob = two_segment_elf(false);
     let as_ = fresh_as();
-    load_image(Image { blob: &blob, file: Some(ramp()) }, None, &as_, &rnd_fixed()).expect("load");
+    load_image(Image { blob: &blob, file: Some(ramp()), dev: 0 }, None, &as_, &rnd_fixed()).expect("load");
 
     let (backing, end) = at(&as_, BASE);
     match backing {
@@ -138,7 +139,7 @@ fn text_is_a_mapping_of_the_file_it_was_loaded_from() {
 fn a_no_interpreter_pie_keeps_its_file_backed_text() {
     let blob = two_segment_elf(true);
     let as_ = fresh_as();
-    let img = load_image(Image { blob: &blob, file: Some(ramp()) }, None, &as_, &rnd_fixed())
+    let img = load_image(Image { blob: &blob, file: Some(ramp()), dev: 0 }, None, &as_, &rnd_fixed())
         .expect("load");
 
     match at(&as_, img.load_base + BASE).0 {
@@ -166,7 +167,7 @@ fn an_image_the_kernel_carries_has_no_file_behind_its_text() {
 fn a_data_segment_keeps_its_file_backed_boundary_page() {
     let blob = two_segment_elf(false);
     let as_ = fresh_as();
-    load_image(Image { blob: &blob, file: Some(ramp()) }, None, &as_, &rnd_fixed()).expect("load");
+    load_image(Image { blob: &blob, file: Some(ramp()), dev: 0 }, None, &as_, &rnd_fixed()).expect("load");
 
     let (backing, end) = at(&as_, DATA_VA);
     match backing {
@@ -189,7 +190,7 @@ fn a_data_segment_keeps_its_file_backed_boundary_page() {
 fn a_file_backed_segment_keeps_no_kernel_copy_of_its_bytes() {
     let blob = two_segment_elf(false);
     let as_ = fresh_as();
-    load_image(Image { blob: &blob, file: Some(ramp()) }, None, &as_, &rnd_fixed()).expect("load");
+    load_image(Image { blob: &blob, file: Some(ramp()), dev: 0 }, None, &as_, &rnd_fixed()).expect("load");
     // Text has no kernel-owned mapping anywhere in its range.
     let t = as_.vmas_for_test();
     let copies = t.iter()
@@ -197,4 +198,70 @@ fn a_file_backed_segment_keeps_no_kernel_copy_of_its_bytes() {
         .filter(|v| matches!(v.backing, VmaBacking::KernelBytes { .. }))
         .count();
     assert_eq!(copies, 0, "text still carries a kernel copy");
+}
+
+/// The loader REPORTS every mapping it installed, so the exec shim can emit
+/// `perf_event_mmap(vma)` for each.
+///
+/// The reference gets this from the VMA layer: `elf_map()` goes through
+/// `do_mmap()`, which emits. oxide's emitter sits above that layer, so a
+/// silently-empty report means an `execve`'d binary's own text is never
+/// described to a consumer and every sampled IP inside it resolves to nothing —
+/// the dynamic linker's DSOs go through `mmap(2)` and were never affected,
+/// which is exactly why the gap was invisible.
+#[test]
+fn the_loader_reports_the_text_segment_it_mapped() {
+    let as_ = fresh_as();
+    let blob = two_segment_elf(false);
+    let mut maps = Vec::new();
+    load_image_reporting(Image { blob: &blob, file: Some(ramp()), dev: 0x0803 },
+                         None, &as_, &rnd_fixed(), &mut maps).expect("load");
+
+    let text = maps.iter().find(|m| m.addr == BASE)
+        .expect("the RX PT_LOAD is reported");
+    assert!(text.prot.contains(vmm::VmaProt::EXEC), "reported as a code mapping");
+    assert_eq!(text.pgoff, TEXT_OFF, "file offset the consumer needs for symbols");
+    assert_eq!(text.dev, 0x0803, "the image's st_dev reaches the report");
+    let f = text.file.as_ref().expect("a file-backed segment names its file");
+    assert_eq!(f.map_path(), Some(&b"/bin/ramp"[..]));
+    assert_eq!(f.ino(), 4242);
+
+    // The RW segment is reported too, and is NOT a code mapping.
+    let data = maps.iter().find(|m| m.addr == DATA_VA).expect("the RW PT_LOAD is reported");
+    assert!(!data.prot.contains(vmm::VmaProt::EXEC));
+
+    // Every reported mapping is one that actually exists in the address space.
+    let live = as_.vmas_for_test();
+    for m in &maps {
+        assert!(live.iter().any(|v| v.start.as_u64() == m.addr),
+                "reported mapping {:#x} is a real VMA", m.addr);
+    }
+}
+
+/// The `.bss` tail and the heap window are reported as anonymous mappings —
+/// nameless, but still VMAs a sample can land in, which is how the reference
+/// treats them.
+#[test]
+fn the_bss_tail_and_heap_window_are_reported_without_a_file() {
+    let as_ = fresh_as();
+    let blob = two_segment_elf(false);
+    let mut maps = Vec::new();
+    load_image_reporting(Image { blob: &blob, file: Some(ramp()), dev: 0 },
+                         None, &as_, &rnd_fixed(), &mut maps).expect("load");
+    let anon: Vec<_> = maps.iter().filter(|m| m.file.is_none()).collect();
+    assert!(anon.len() >= 2, "the bss tail and the heap window, at least: {}", anon.len());
+    for m in anon { assert_eq!(m.pgoff, 0, "an anonymous mapping has no file offset"); }
+}
+
+/// A load that maps nothing reports nothing — the report tracks the mappings
+/// rather than being a fixed list.
+#[test]
+fn the_report_counts_the_mappings_actually_installed() {
+    let as_ = fresh_as();
+    let blob = two_segment_elf(false);
+    let mut maps = Vec::new();
+    load_image_reporting(Image { blob: &blob, file: Some(ramp()), dev: 0 },
+                         None, &as_, &rnd_fixed(), &mut maps).expect("load");
+    let file_backed = maps.iter().filter(|m| m.file.is_some()).count();
+    assert_eq!(file_backed, 2, "one per PT_LOAD with file content");
 }

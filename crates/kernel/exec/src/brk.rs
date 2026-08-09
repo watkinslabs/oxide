@@ -1,3 +1,4 @@
+extern crate alloc;
 // Where the heap starts, mirroring Linux's `load_elf_binary` brk placement.
 
 use aslr::ExecRnd;
@@ -5,7 +6,7 @@ use elf::ElfType;
 use hal::UserVirtAddr;
 use vmm::{AddressSpace, VmaBacking, VmaFlags, VmaProt};
 
-use crate::LoadError;
+use crate::{ImageMapping, LoadError};
 
 /// VA reserved above `start_brk` for `brk(2)` to grow into. Linux maps nothing
 /// here and extends the heap VMA on demand; this kernel pre-maps the window
@@ -28,6 +29,7 @@ pub(crate) fn install(
     has_interp: bool,
     image_end: u64,
     rnd: &ExecRnd,
+    mappings: &mut alloc::vec::Vec<ImageMapping>,
 ) -> Result<u64, LoadError> {
     let moved = elf_type == ElfType::Dyn && !has_interp;
     let elf_brk = if moved { aslr::ELF_ET_DYN_BASE } else { image_end };
@@ -45,6 +47,12 @@ pub(crate) fn install(
         true,
     )
     .map_err(|_| LoadError::Enomem)?;
+    // The heap window is a VMA like any other, and the reference reports it
+    // from `do_brk_flags`'s own `perf_event_mmap(vma)`.
+    mappings.push(ImageMapping {
+        addr: start_brk, len: HEAP_RESERVE, pgoff: 0,
+        prot: VmaProt::READ | VmaProt::WRITE, file: None, dev: 0,
+    });
     as_.set_brk_window(start_brk, end);
     Ok(start_brk)
 }

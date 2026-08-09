@@ -191,18 +191,52 @@ struct LoadStaging {
 pub struct Image<'a> {
     pub blob: &'a [u8],
     pub file: Option<alloc::sync::Arc<dyn vmm::FileBacking>>,
+    /// `st_dev` of the filesystem the image came from, for the mapping report.
+    /// An image the kernel carries has none.
+    pub dev: u64,
 }
 
 impl<'a> Image<'a> {
     /// An image the kernel carries rather than one it opened. # C: O(1)
-    pub fn embedded(blob: &'a [u8]) -> Self { Self { blob, file: None } }
+    pub fn embedded(blob: &'a [u8]) -> Self { Self { blob, file: None, dev: 0 } }
+}
+
+/// The bytes and identity of an opened PT_INTERP image.
+pub struct InterpImage {
+    pub blob: alloc::vec::Vec<u8>,
+    pub file: Option<alloc::sync::Arc<dyn vmm::FileBacking>>,
+    pub dev:  u64,
 }
 
 /// Opens the pathname a PT_INTERP names, yielding its bytes and its file.
 /// Callers without a resolved filesystem pass `None` and the loader falls back
 /// to the boot-time rootfs reader, which yields no file.
-pub type InterpOpen<'a> =
-    &'a dyn Fn(&[u8]) -> Option<(alloc::vec::Vec<u8>, Option<alloc::sync::Arc<dyn vmm::FileBacking>>)>;
+pub type InterpOpen<'a> = &'a dyn Fn(&[u8]) -> Option<InterpImage>;
+
+/// One mapping the loader installed, reported so the caller can emit the
+/// reference's `perf_event_mmap(vma)` for it.
+///
+/// The reference needs no such list: `elf_map()` reaches `mmap_region()`, which
+/// emits from the VMA-creation layer itself, so a PT_LOAD is reported by the
+/// same code that reports an `mmap(2)`. oxide's emitter lives above the VMA
+/// layer, so the loader reports what it mapped and the exec shim — which is
+/// where the file identities already are — emits.
+///
+/// Without this an `execve`'d binary's OWN segments never reach a consumer, so
+/// a sampled instruction pointer in the main executable resolves to no object
+/// at all. The dynamic linker's DSOs were never affected: those go through
+/// `mmap(2)`.
+pub struct ImageMapping {
+    pub addr:  u64,
+    pub len:   u64,
+    /// Page offset into the backing file; `0` for an anonymous mapping.
+    pub pgoff: u64,
+    pub prot:  vmm::VmaProt,
+    /// The file behind the mapping, or `None` for the BSS tail and the heap
+    /// window. Carries the name and inode the record reports.
+    pub file:  Option<alloc::sync::Arc<dyn vmm::FileBacking>>,
+    pub dev:   u64,
+}
 
 /// `rnd` is this exec's randomisation draw. Callers that are not an execve
 /// (boot smoke drivers) pass `aslr::exec::NONE` for a fixed layout.
@@ -222,6 +256,20 @@ pub fn load_image(
     interp_open: Option<InterpOpen<'_>>,
     as_: &AddressSpace,
     rnd: &aslr::ExecRnd,
+) -> Result<LoadedImage, LoadError> {
+    let mut ignored = alloc::vec::Vec::new();
+    load_image_reporting(exec_image, interp_open, as_, rnd, &mut ignored)
+}
+
+/// `load_image`, additionally reporting every mapping it installed so the
+/// caller can emit `perf_event_mmap(vma)` for each. See [`ImageMapping`].
+/// # C: O(phdrs) parse + O(phdrs) mmap
+pub fn load_image_reporting(
+    exec_image: Image<'_>,
+    interp_open: Option<InterpOpen<'_>>,
+    as_: &AddressSpace,
+    rnd: &aslr::ExecRnd,
+    mappings: &mut alloc::vec::Vec<ImageMapping>,
 ) -> Result<LoadedImage, LoadError> {
     let blob = exec_image.blob;
     // The kernel maps program bytes and transfers control. An ET_DYN image
@@ -243,7 +291,7 @@ pub fn load_image(
         (ElfType::Dyn, false) => Placement::Unmapped,
         _ => return Err(LoadError::Enoexec),
     };
-    let exec = place_image(blob, as_, placement, exec_image.file.as_ref())?;
+    let exec = place_image(blob, as_, placement, exec_image.file.as_ref(), exec_image.dev, mappings)?;
 
     let parsed = exec_parsed;
     let mut interp_base: u64 = 0;
@@ -256,13 +304,13 @@ pub fn load_image(
             klog::write_raw(b"\n");
         }
         let opened = interp_open.and_then(|open| open(interp_path));
-        let (interp_blob, interp_file) = match opened {
-            Some(pair) => pair,
+        let (interp_blob, interp_file, interp_dev) = match opened {
+            Some(i) => (i.blob, i.file, i.dev),
             None => match read_interp_blob(interp_path) {
                 Some(blob) => {
                     #[cfg(feature = "debug-execload")]
                     klog::write_raw(b"[INFO]  elf-load: interp read ok\n");
-                    (blob, None)
+                    (blob, None, 0)
                 }
                 None => {
                     #[cfg(feature = "debug-execload")]
@@ -272,7 +320,7 @@ pub fn load_image(
             },
         };
         let interp =
-            match place_image(&interp_blob, as_, Placement::Unmapped, interp_file.as_ref()) {
+            match place_image(&interp_blob, as_, Placement::Unmapped, interp_file.as_ref(), interp_dev, mappings) {
             Ok(img) => {
                 #[cfg(feature = "debug-execload")]
                 klog::write_raw(b"[INFO]  elf-load: interp place ok\n");
@@ -294,7 +342,8 @@ pub fn load_image(
 
     // Heap placement runs LAST, after the interpreter, exactly as Linux orders
     // it — `start_brk` depends on whether an interpreter was present.
-    let start_brk = brk::install(as_, parsed.elf_type, has_interp, exec.brk.as_u64(), rnd)?;
+    let start_brk = brk::install(as_, parsed.elf_type, has_interp, exec.brk.as_u64(), rnd,
+                                 mappings)?;
 
     Ok(LoadedImage {
         entry:        exec.entry,

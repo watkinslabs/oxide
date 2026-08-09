@@ -279,11 +279,10 @@ pub(crate) fn image_backing(vp: &vfs::VfsPath) -> alloc::sync::Arc<dyn vmm::File
 /// `None` leaves the loader on its boot-time rootfs reader, which resolves no
 /// inode and therefore yields no file.
 /// # C: O(components) + O(size/PAGE)
-pub(crate) fn open_interp(path: &[u8])
-    -> Option<(alloc::vec::Vec<u8>, Option<alloc::sync::Arc<dyn vmm::FileBacking>>)>
-{
+pub(crate) fn open_interp(path: &[u8]) -> Option<elf_load::InterpImage> {
     let (blob, vp) = crate::pathresolve::open_exec(path).ok()?;
-    Some((blob, Some(image_backing(&vp))))
+    let dev = vp.inode.fsid();
+    Some(elf_load::InterpImage { blob, file: Some(image_backing(&vp)), dev })
 }
 
 /// Total argv+envp payload accepted, matching the reference's per-exec budget.
