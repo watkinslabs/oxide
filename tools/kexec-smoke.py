@@ -124,7 +124,14 @@ def main():
     c.wait(marker("KEXEC-PATHS"), 60, "the second kernel's paths")
 
     flag = "-s " if a.file_load else ""
-    c.send(f'kexec {flag}-l $K --initrd=$I --command-line="console=ttyS0,115200 '
+    # BOTH console names, because the serial hardware differs by architecture
+    # and the new kernel names it by driver: a 16550 is `ttyS0`, a PL011 is
+    # `ttyAMA0`. Naming only one relocates into a kernel that boots perfectly
+    # and says nothing on the port being watched — which reads exactly like a
+    # relocation that did not land, and is the false negative most likely to be
+    # believed. Linux accepts several `console=` and prints on all of them.
+    consoles = "console=ttyS0,115200 console=ttyAMA0,115200"
+    c.send(f'kexec {flag}-l $K --initrd=$I --command-line="{consoles} '
            f'panic=10 rdinit=/bin/sh"; echo KEXEC-LOAD\"\"-RC=$?')
     c.wait(re.compile(rb"KEXEC-LOAD-RC=0\b"), 120,
            "kexec -l to succeed (a non-zero rc here is the syscall refusing)")
