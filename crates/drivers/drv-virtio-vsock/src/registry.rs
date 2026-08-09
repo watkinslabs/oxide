@@ -24,6 +24,18 @@ pub struct Ctx {
 }
 
 pub(crate) static CTX: Spinlock<Vec<Ctx>, DriverLockClass> = Spinlock::new(Vec::new());
+/// Bottom-half gate for the completion/drain-softirq-shared lock: real
+/// exclusion in the kernel, a no-op under hosted tests. Every acquisition of
+/// the lock goes through `lock_bh`, softirq context included — the disable
+/// counts and the enable drains only at the outermost level outside IRQ, i.e.
+/// the reference `spin_lock_bh` nesting. A bare process-context hold is the
+/// one-CPU deadlock B2007/B2008 fixed: the softirq spins on an owner it
+/// interrupted.
+#[cfg(target_os = "oxide-kernel")]
+pub(crate) type VsockBh = sched::bh::SchedBh;
+#[cfg(not(target_os = "oxide-kernel"))]
+pub(crate) type VsockBh = sync::NoopBh;
+
 pub(crate) static SOFTIRQ_INSTALLED: AtomicBool = AtomicBool::new(false);
 
 fn vsock_owner(device_key: virtio::VirtioChildDeviceKey) -> Option<net::vsock::VsockOwner> {
@@ -98,11 +110,11 @@ fn read_guest_cid(resources: virtio::VirtioResources) -> Option<u64> {
 }
 
 pub fn present() -> bool {
-    !CTX.lock().is_empty()
+    !CTX.lock_bh::<crate::registry::VsockBh>().is_empty()
 }
 
 pub fn present_for(device_key: virtio::VirtioChildDeviceKey) -> bool {
-    CTX.lock().iter().any(|ctx| ctx.device_key == device_key)
+    CTX.lock_bh::<crate::registry::VsockBh>().iter().any(|ctx| ctx.device_key == device_key)
 }
 
 pub fn install(device_key: virtio::VirtioChildDeviceKey, resources: virtio::VirtioResources,
@@ -123,7 +135,7 @@ pub fn install(device_key: virtio::VirtioChildDeviceKey, resources: virtio::Virt
     let Some(owner) = vsock_owner(device_key) else {
         return false;
     };
-    if CTX.lock().iter().any(|ctx| ctx.device_key == device_key) {
+    if CTX.lock_bh::<crate::registry::VsockBh>().iter().any(|ctx| ctx.device_key == device_key) {
         return false;
     }
     let mut probe = match VsockProbeState::reserve_and_alloc(device_key) {
@@ -157,7 +169,7 @@ pub fn install(device_key: virtio::VirtioChildDeviceKey, resources: virtio::Virt
         tx_used_seen,
         tx_buf_pa: probe.tx_buf_pa,
     };
-    let mut g = CTX.lock();
+    let mut g = CTX.lock_bh::<crate::registry::VsockBh>();
     if g.iter().any(|ctx| ctx.device_key == device_key) {
         return false;
     }
@@ -235,7 +247,7 @@ pub fn shutdown(device_key: virtio::VirtioChildDeviceKey) -> bool {
 }
 
 pub(crate) fn remove_ctx(device_key: virtio::VirtioChildDeviceKey) -> Option<(Ctx, bool)> {
-    let mut g = CTX.lock();
+    let mut g = CTX.lock_bh::<crate::registry::VsockBh>();
     let pos = g.iter().position(|ctx| ctx.device_key == device_key)?;
     let ctx = g.remove(pos);
     let empty_after = g.is_empty();
@@ -249,7 +261,7 @@ pub(crate) fn clear_rx_softirq_handler() {
 }
 
 pub fn guest_cid_for(device_key: virtio::VirtioChildDeviceKey) -> u64 {
-    CTX.lock()
+    CTX.lock_bh::<crate::registry::VsockBh>()
         .iter()
         .find(|ctx| ctx.device_key == device_key)
         .map(|ctx| ctx.guest_cid)
@@ -281,7 +293,7 @@ fn rx_poll_for_owner(_owner: net::vsock::VsockOwner) -> usize {
 #[cfg(test)]
 fn drain_ctxs_for_tests(mut release: impl FnMut(u64)) {
     let mut contexts = {
-        let mut registered = CTX.lock();
+        let mut registered = CTX.lock_bh::<crate::registry::VsockBh>();
         core::mem::take(&mut *registered)
     };
     for context in contexts.iter_mut() {
@@ -375,7 +387,7 @@ pub(crate) fn publish_failure_releases_context_and_endpoint_for_tests(
         Some(probe) => probe,
         None => return false,
     };
-    CTX.lock().push(Ctx {
+    CTX.lock_bh::<crate::registry::VsockBh>().push(Ctx {
         device_key,
         cfg_va: 0,
         hhdm: 0,

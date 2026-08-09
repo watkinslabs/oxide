@@ -233,7 +233,7 @@ pub fn send_status(
     device_key: virtio::VirtioChildDeviceKey,
     event: VirtioInputEvent,
 ) -> Result<(), StatusError> {
-    let mut contexts = CTXS.lock();
+    let mut contexts = CTXS.lock_bh::<crate::drain::queue::InputBh>();
     let ctx = contexts.iter_mut()
         .flatten()
         .find(|ctx| ctx.device_key == device_key)
@@ -248,7 +248,7 @@ pub fn send_status_batch(
     device_key: virtio::VirtioChildDeviceKey,
     events: &[VirtioInputEvent],
 ) -> Result<(), StatusError> {
-    let mut contexts = CTXS.lock();
+    let mut contexts = CTXS.lock_bh::<crate::drain::queue::InputBh>();
     let ctx = contexts.iter_mut()
         .flatten()
         .find(|ctx| ctx.device_key == device_key)
@@ -269,7 +269,7 @@ pub fn send_output_batch(
             value: event.value as u32,
         })
         .collect::<Vec<_>>();
-    let mut contexts = CTXS.lock();
+    let mut contexts = CTXS.lock_bh::<crate::drain::queue::InputBh>();
     let ctx = contexts.iter_mut()
         .flatten()
         .find(|ctx| ctx.device_key == device_key)

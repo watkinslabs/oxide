@@ -16,6 +16,7 @@ virtio  = { path = "../../drivers/virtio" }
 sync    = { path = "../../shared/sync" }
 pmm     = { path = "../../kernel/mm-pmm" }
 softirq = { path = "../../kernel/softirq" }
+sched   = { path = "../../kernel/sched" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64  = { path = "../../arch/hal-x86_64" }

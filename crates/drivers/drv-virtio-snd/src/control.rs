@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) fn pcm_info_scan(device_key: DeviceKey) -> Option<(u32, u32)> {
-    let mut g = CTX.lock();
+    let mut g = CTX.lock_bh::<crate::state::SndBh>();
     let ctx = g.iter_mut().find(|ctx| ctx.device_key == device_key)?;
     let count = ctx.streams;
     if count == 0 {
