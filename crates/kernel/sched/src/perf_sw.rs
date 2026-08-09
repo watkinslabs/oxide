@@ -10,9 +10,10 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use cpu::MAX_CPUS;
 
 /// Which per-CPU accumulator a software event reads.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CpuSw {
     /// ns of task execution charged on this CPU (`task_clock` in CPU context).
+    #[default]
     ExecNs        = 0,
     MinFlt        = 1,
     MajFlt        = 2,
@@ -69,7 +70,20 @@ pub struct SwSite {
     pub addr: u64,
     /// `user_mode(regs)`, which selects `PERF_RECORD_MISC_USER`/`_KERNEL`.
     pub user: bool,
+    /// The task the units were charged to, when that is NOT the task running
+    /// when the sampler sees the site.
+    ///
+    /// The reference has no equivalent because `__perf_sw_event_sched` samples
+    /// inline: `current` IS the charged task. A site whose opportunity was
+    /// parked and drained later must name the task it was charged to, or the
+    /// record is attributed to whoever happens to be running at drain time.
+    /// `None` means "the current task", which is what every inline site is.
+    pub charged: Option<Charged>,
 }
+
+/// A charged task's identity, carried across a deferral.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Charged { pub pid: u32, pub tid: u32 }
 
 pub type SampleFn = fn(&SwSite);
 
@@ -136,9 +150,9 @@ pub fn sw_event(site: &SwSite) {
 /// runs the rest of its per-switch perf work). Same CPU, same task, once per
 /// switch — only the instant differs.
 /// # C: O(1)
-pub fn charge_deferred(kind: CpuSw, cpu: usize, n: u64) {
+pub fn charge_deferred(kind: CpuSw, cpu: usize, n: u64, pid: u32, tid: u32) {
     charge(kind, cpu, n);
-    deferred::queue(kind, cpu, n);
+    deferred::queue(kind, cpu, n, pid, tid);
     softirq::raise(softirq::Slot::PerfDeferred);
 }
 
@@ -159,13 +173,18 @@ pub fn init_softirq() {
 /// context that generated it.
 /// # C: O(pending kinds × events)
 pub fn drain_deferred(cpu: usize) {
-    deferred::drain(cpu, |kind, nr| {
+    deferred::drain(cpu, |c| {
         // A scheduler-internal site has no trap frame and no data address; the
         // reference passes `regs = NULL, addr = 0` from the very same place
         // (`__perf_sw_event_sched(..., 1, 0)`), and `perf_swevent_get_recursion_
         // context`'s caller then samples with `regs` synthesised as the current
         // kernel context.
-        sample_only(&SwSite { kind, cpu, nr, ip: 0, addr: 0, user: false });
+        //
+        // The identity, though, is the CHARGED task's and not `current`'s: this
+        // drain runs after the switch that charged it, so `current` is by now
+        // somebody else.
+        sample_only(&SwSite { kind: c.kind, cpu, nr: c.nr, ip: 0, addr: 0, user: false,
+                              charged: Some(Charged { pid: c.pid, tid: c.tid }) });
     });
     if let Some(note) = deferred::take_switch(cpu) {
         let p = SWITCH_HOOK.load(Ordering::Acquire);
@@ -223,11 +242,19 @@ mod tests {
         assert_eq!(read(CpuSw::MajFlt, 0), other);
     }
 
+    /// `SAMPLE_HOOK` is one global, so the tests that install one run in turn
+    /// rather than racing each other's hook out of the slot.
+    static HOOK_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    fn hook_serial() -> std::sync::MutexGuard<'static, ()> {
+        HOOK_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// The runqueue-locked sites must still reach the sampler. Before the
     /// deferral they called `charge` alone, so `PERF_COUNT_SW_CONTEXT_SWITCHES`
     /// and `_CPU_MIGRATIONS` counted but never sampled.
     #[test]
     fn a_runqueue_locked_charge_still_reaches_the_sampler() {
+        let _serial = hook_serial();
         use core::sync::atomic::AtomicU64;
         static SEEN_CTXSW: AtomicU64 = AtomicU64::new(0);
         static SEEN_MIGRATION: AtomicU64 = AtomicU64::new(0);
@@ -247,8 +274,8 @@ mod tests {
         SEEN_MIGRATION.store(0, Ordering::Relaxed);
 
         let before = read(CpuSw::ContextSwitch, cpu);
-        charge_deferred(CpuSw::ContextSwitch, cpu, 1);
-        charge_deferred(CpuSw::Migration, cpu, 1);
+        charge_deferred(CpuSw::ContextSwitch, cpu, 1, 7, 9);
+        charge_deferred(CpuSw::Migration, cpu, 1, 7, 9);
         // The counter advances at the charge, as it always did.
         assert_eq!(read(CpuSw::ContextSwitch, cpu), before + 1);
         // ...and the sampler has not run yet: the caller still holds the lock.
@@ -272,6 +299,49 @@ mod tests {
         // A second drain with nothing parked fires nothing.
         drain_deferred(cpu);
         assert_eq!(SEEN_CTXSW.load(Ordering::Relaxed), 1);
+        SAMPLE_HOOK.store(core::ptr::null_mut(), Ordering::Release);
+    }
+
+    /// A parked opportunity names the task it was CHARGED to, not whoever is
+    /// running when the drain finally takes it.
+    ///
+    /// The drain here runs long after the charge, from a context that is not
+    /// task 9 at all — which is precisely the live case: the `PerfDeferred`
+    /// softirq fires after the switch, so `current` is the INCOMING task while
+    /// the context-switch charge belongs to the outgoing one. Before the
+    /// identity was carried across the deferral, the sampler fell back to
+    /// `current` and every switch record named the wrong task.
+    #[test]
+    fn a_deferred_charge_names_the_task_it_was_charged_to() {
+        let _serial = hook_serial();
+        use core::sync::atomic::AtomicU64;
+        static SEEN: AtomicU64 = AtomicU64::new(!0);
+        fn hook(s: &SwSite) {
+            if let Some(c) = s.charged { SEEN.store((c.pid as u64) << 32 | c.tid as u64, Ordering::Relaxed); }
+            else { SEEN.store(!0, Ordering::Relaxed); }
+        }
+        set_sample_hook(hook);
+        let cpu = 11;
+        drain_deferred(cpu);
+
+        charge_deferred(CpuSw::ContextSwitch, cpu, 1, 700, 900);
+        drain_deferred(cpu);
+        assert_eq!(SEEN.load(Ordering::Relaxed), 700 << 32 | 900,
+                   "the drain reported the charged task's identity");
+
+        // Two tasks charging the same CPU between drains keep their own
+        // identities rather than being merged into one.
+        charge_deferred(CpuSw::ContextSwitch, cpu, 1, 700, 900);
+        charge_deferred(CpuSw::ContextSwitch, cpu, 1, 800, 901);
+        drain_deferred(cpu);
+        assert_eq!(SEEN.load(Ordering::Relaxed), 800 << 32 | 901,
+                   "the last drained charge is the second task's, not a merge");
+
+        // An INLINE site still carries no identity: `current` is the charged
+        // task there, and fabricating one would be the opposite defect.
+        sw_event(&SwSite { kind: CpuSw::MinFlt, cpu, nr: 1, ip: 0, addr: 0,
+                           user: false, charged: None });
+        assert_eq!(SEEN.load(Ordering::Relaxed), !0);
         SAMPLE_HOOK.store(core::ptr::null_mut(), Ordering::Release);
     }
 
