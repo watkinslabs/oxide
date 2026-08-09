@@ -322,6 +322,25 @@ impl TcpEntry {
         true
     }
 
+    /// Take an accept-backlog slot for a child rebuilt from a SYN cookie.
+    ///
+    /// Such a child never held a SYN-RECV slot — the whole point of the cookie
+    /// is that the listener stored nothing — so the reservation every passive
+    /// child is born holding is dropped WITHOUT decrementing the listener,
+    /// which never counted it. Going through `promote_to_accept_backlog`
+    /// instead would underflow the listener's SYN occupancy and wedge it full
+    /// for good. # C: O(1)
+    pub fn adopt_cookie_accept_backlog(&self) -> bool {
+        use ::core::sync::atomic::Ordering;
+        self.syn_backlog_reserved.store(false, Ordering::Release);
+        self.syn_backlog_young_reserved.store(false, Ordering::Release);
+        let Some(listener) = self.passive_listener.as_ref().and_then(alloc::sync::Weak::upgrade)
+            else { return false; };
+        if !listener.reserve_accept_backlog() { return false; }
+        self.accept_backlog_reserved.store(true, Ordering::Release);
+        true
+    }
+
     /// Release this passive child's SYN-RECV reservation once. # C: O(1)
     pub fn release_syn_backlog(&self) {
         self.release_syn_backlog_young();

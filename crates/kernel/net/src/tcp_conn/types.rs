@@ -357,6 +357,20 @@ pub struct TcpConn {
     /// segment is built, so a SYN retransmit goes out bare — a middlebox that
     /// ate the first one is exactly what the retransmit has to get past.
     pub fastopen_opt: Option<crate::tcp_conn::fastopen::Cookie>,
+    /// The cookie this passive open is being answered with, and the MSS that
+    /// cookie encodes, when the listener chose a cookie over a stored request.
+    /// The sequence number is not chosen by the usual keyed construction — it
+    /// IS the request, so it has to be the cookie the listener minted — and
+    /// the SYN-ACK's own timestamp carries the option negotiation the cookie
+    /// has no room for.
+    ///
+    /// Two plain fields rather than an `Option<Request>` because the pinned
+    /// size budget below has no room for the discriminant: an MSS of zero is
+    /// not a legal announcement, so it names "this is an ordinary passive
+    /// open", which is every one that got a backlog slot. Read through
+    /// [`TcpConn::syncookie`], never directly.
+    pub(crate) syncookie_isn: u32,
+    pub(crate) syncookie_mss: u16,
     /// This side's opening SYN carried a fast-open option, and which kind.
     /// The answer's cookie is only believed when one was asked for.
     pub syn_fastopen: bool,

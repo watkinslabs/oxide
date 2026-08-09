@@ -71,9 +71,18 @@ pub enum TcpExt {
     TcpFastOpenPassiveAltKey,
     TcpFastOpenCookieReqd,
     TcpFastOpenListenOverflow,
+    /// A connection request answered with a cookie instead of a stored
+    /// request, because the SYN queue could not hold one.
+    SyncookiesSent,
+    /// An acknowledgement carrying a cookie this host minted.
+    SyncookiesRecv,
+    /// An acknowledgement reaching a listener that had overflowed recently,
+    /// whose sequence numbers decoded to no cookie this host minted. Ordinary
+    /// traffic produces these; a sustained count is a forgery attempt.
+    SyncookiesFailed,
 }
 
-const TCP_EXT_COUNTERS: usize = 5;
+const TCP_EXT_COUNTERS: usize = 8;
 
 impl TcpExt {
     /// # C: O(1)

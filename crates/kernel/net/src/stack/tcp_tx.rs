@@ -3,24 +3,35 @@ use alloc::boxed::Box;
 
 pub(super) enum TcpTxPolicy<'a> {
     Entry(&'a TcpEntry),
+    /// A segment the LISTENING socket owns rather than any connection: the
+    /// cookie SYN-ACK, which is answered on behalf of a request that was
+    /// deliberately not created. Every routing question it asks is the
+    /// listener's, and there is no connection to charge its counters to.
+    Listener(&'a TcpListenEntry),
 }
 
 impl TcpTxPolicy<'_> {
     fn owner(&self) -> &crate::SocketOwner {
         match self {
             Self::Entry(entry) => &entry.owner,
+            Self::Listener(listener) => &listener.owner,
         }
     }
 
     /// The `SO_MARK` this socket's segments are routed under.
     fn mark(&self) -> u32 {
-        match self { Self::Entry(entry) => entry.mark() }
+        match self {
+            Self::Entry(entry) => entry.mark(),
+            Self::Listener(listener) => listener.mark.load(
+                ::core::sync::atomic::Ordering::Acquire) as u32,
+        }
     }
 
     fn ipv4_mode(&self) -> i32 {
         use ::core::sync::atomic::Ordering;
         match self {
             Self::Entry(entry) => entry.ip_mtu_discover.load(Ordering::Acquire),
+            Self::Listener(listener) => listener.ip_mtu_discover.load(Ordering::Acquire),
         }
     }
 
@@ -28,6 +39,7 @@ impl TcpTxPolicy<'_> {
         use ::core::sync::atomic::Ordering;
         match self {
             Self::Entry(entry) => entry.ipv6_mtu_discover.load(Ordering::Acquire),
+            Self::Listener(listener) => listener.ipv6_mtu_discover.load(Ordering::Acquire),
         }
     }
 
@@ -35,6 +47,7 @@ impl TcpTxPolicy<'_> {
         use ::core::sync::atomic::Ordering;
         match self {
             Self::Entry(entry) => entry.ipv6_frag_size.load(Ordering::Acquire),
+            Self::Listener(listener) => listener.ipv6_frag_size.load(Ordering::Acquire),
         }
     }
 
@@ -43,16 +56,25 @@ impl TcpTxPolicy<'_> {
             Self::Entry(entry) => (entry.ipv6_opts.flow_label(),
                 entry.ipv6_opts.generates_flow_label(
                     crate::sysctl::ipv6_auto_flowlabels_in(net_ns))),
+            Self::Listener(listener) => (listener.ipv6_opts.flow_label(),
+                listener.ipv6_opts.generates_flow_label(
+                    crate::sysctl::ipv6_auto_flowlabels_in(net_ns))),
         }
     }
 
     fn ipv6_source_prefs(&self) -> i32 {
-        match self { Self::Entry(entry) => entry.ipv6_opts.srcprefs() }
+        match self {
+            Self::Entry(entry) => entry.ipv6_opts.srcprefs(),
+            Self::Listener(listener) => listener.ipv6_opts.srcprefs(),
+        }
     }
 
     fn ipv6_headers(&self) -> Box<crate::send_control::Raw6Control> {
         let mut control = crate::send_control::Raw6Control::default();
-        match self { Self::Entry(entry) => control.merge_sticky_headers(&entry.ipv6_opts) }
+        match self {
+            Self::Entry(entry) => control.merge_sticky_headers(&entry.ipv6_opts),
+            Self::Listener(listener) => control.merge_sticky_headers(&listener.ipv6_opts),
+        }
         Box::new(control)
     }
 
@@ -61,12 +83,18 @@ impl TcpTxPolicy<'_> {
     fn ipv4_options(&self) -> Option<crate::ipv4_options::Compiled> {
         match self {
             Self::Entry(entry) => entry.ip_opts.options(),
+            // A listening socket carries no sticky option area of its own; the
+            // children it opens start from an empty one.
+            Self::Listener(_) => None,
         }
     }
 
     fn note_congestion(&self) {
         match self {
             Self::Entry(entry) => crate::tcp_cc::on_ece(&mut entry.conn.lock()),
+            // There is no connection to slow down: the cookie handshake holds
+            // no congestion state until the acknowledgement rebuilds it.
+            Self::Listener(_) => {}
         }
     }
 
@@ -86,6 +114,9 @@ impl TcpTxPolicy<'_> {
                     conn.bytes_sent = conn.bytes_sent.saturating_add(payload_len as u64);
                 }
             }
+            // A cookie SYN-ACK belongs to no connection, so there are no
+            // per-connection segment counters to charge it to.
+            Self::Listener(_) => {}
         }
     }
 }

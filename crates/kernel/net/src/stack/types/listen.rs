@@ -53,6 +53,14 @@ pub struct TcpListenEntry {
     /// block is the source of truth; this is the applied copy, in the same
     /// unit, reloaded whenever the option is written.
     pub fastopen_no_cookie: ::core::sync::atomic::AtomicBool,
+    /// When this listener's SYN queue last overflowed, as a monotonic
+    /// nanosecond reading, or [`crate::syncookies::NEVER`].
+    ///
+    /// A listener believes a SYN cookie only while this is recent. Without
+    /// that bound every listener would spend a keyed hash on every stray
+    /// acknowledgement it ever receives, and an off-path attacker would have
+    /// an unlimited oracle against the cookie secret.
+    pub synq_overflow_ns: ::core::sync::atomic::AtomicU64,
     /// Listener close linearizes child admission and accept publication here.
     pub closed: ::core::sync::atomic::AtomicBool,
     pub local: Endpoint,

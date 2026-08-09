@@ -19,7 +19,20 @@ impl NetStack {
         hdr: &crate::tcp_hdr::TcpHdr, key: TcpKey, tables: &super::inet_tables::InetTables,
         hop: u8, ipv6: bool) -> NetResult<()>
     {
-        if (hdr.flags & tcp_flags::SYN) == 0 { return Ok(()); }
+        let syn = (hdr.flags & tcp_flags::SYN) != 0;
+        // An acknowledgement that matches a listener and no connection is how
+        // a SYN-cookie handshake completes: this side answered the SYN and
+        // deliberately kept nothing, so there is no half-open child for the
+        // acknowledgement to find. A reset is not a completing handshake, and
+        // neither is a segment carrying no acknowledgement at all.
+        if !syn && ((hdr.flags & tcp_flags::ACK) == 0 || (hdr.flags & tcp_flags::RST) != 0) {
+            return Ok(());
+        }
+        // `net.ipv4.tcp_syncookies` — the one stored copy, read here and
+        // nowhere else on this path. Off means an acknowledgement like that
+        // cannot be a cookie, because none was ever minted.
+        let mode = crate::syncookies::mode_in(net_ns);
+        if !syn && mode == crate::syncookies::OFF { return Ok(()); }
         let Some((listener, keep)) = select_listener_for_syn(
             self, net_ns, iface, src_ip, dst_ip, seg, packet, hdr, tables, hop, ipv6)
         else { return Ok(()); };
@@ -31,10 +44,17 @@ impl NetStack {
         if local_ep.ip == IpAddr::V4(Ipv4Addr::ANY) || local_ep.ip == IpAddr::V6(Ipv6Addr::ANY) {
             local_ep.ip = dst_ip;
         }
-        // F192: enforce listen backlog. Drop the SYN on the floor
-        // when accept_q is already at cap — peer retries naturally
-        // via SYN retx.
-        if !listener.reserve_backlog() { return Ok(()); }
+        // F192: enforce listen backlog, three-state. A SYN queue at cap only
+        // drops the request where the namespace forbids cookies; otherwise the
+        // request is answered statelessly instead, which is what keeps a
+        // listener under load answering connections it would otherwise refuse.
+        // At `tcp_syncookies=2` the queue is never consulted at all.
+        let mut reserved = false;
+        let admit = if !syn { crate::syncookies::Admit::Cookie } else {
+            if mode != crate::syncookies::ALWAYS { reserved = listener.reserve_backlog(); }
+            crate::syncookies::admit(mode, !reserved)
+        };
+        if admit == crate::syncookies::Admit::Drop { return Ok(()); }
         // F184: SYN-ACK we're about to build advertises our MSS too.
         let bound = listener.bound_iface();
         let ip_mode = listener.ip_mtu_discover.load(
@@ -50,6 +70,20 @@ impl NetStack {
         let path_mtu = self.tcp_path_mtu_in(net_ns, src_ip, bound, ip_mode, ipv6_mode, mark)
             .unwrap_or(0);
         let metrics = self.route_metrics_for_dst_mark_in(net_ns, src_ip, bound, mark);
+        if !syn {
+            // The acknowledgement half: rebuild the handshake the cookie
+            // proves happened, or stay silent.
+            let Some(req) = self.check_syn_cookie(net_ns, &listener, src_ip, dst_ip, seg, hdr,
+                ipv6) else { return Ok(()); };
+            return self.open_from_syn_cookie(net_ns, iface, src_ip, dst_ip, seg, packet, key,
+                tables, ipv6, local_ep, own_mss, path_mtu, metrics, &listener, &req);
+        }
+        if admit == crate::syncookies::Admit::Cookie {
+            // The SYN half: answer and remember nothing. No child, no table
+            // entry, no timer — a forged SYN costs this listener no memory.
+            return self.send_syn_cookie(net_ns, &listener, local_ep, src_ip, dst_ip, seg, hdr,
+                ipv6, own_mss, path_mtu, metrics);
+        }
         // Handshake input runs against the heap-resident child, so the
         // connection state never occupies a frame on the delivery path.
         // Decided before the SYN is processed: the handshake builds its
@@ -170,7 +204,7 @@ fn select_listener_for_syn(stack: &NetStack, net_ns: u64, iface: NetIfaceId, src
 /// # C: O(1)
 #[inline(never)]
 #[allow(clippy::too_many_arguments)]
-fn build_passive_child(local_ep: Endpoint, own_mss: u16, path_mtu: u32,
+pub(super) fn build_passive_child(local_ep: Endpoint, own_mss: u16, path_mtu: u32,
     metrics: crate::route_metrics::RouteMetrics, packet: &[u8],
     listener: &Arc<TcpListenEntry>, iface: NetIfaceId, ipv6: bool) -> Arc<TcpEntry>
 {

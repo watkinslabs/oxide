@@ -36,6 +36,7 @@ pub mod delivery;
 pub mod chrono;
 pub mod route_policy;
 pub mod reqsk;
+pub mod syncookie;
 
 pub use types::passive_rcv_header;
 pub use types::{
