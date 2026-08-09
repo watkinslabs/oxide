@@ -112,6 +112,16 @@ pub struct File {
     /// `file->private_data` — per-fd driver/anon-inode state slot.
     /// Default 0; opaque to the VFS core.
     private_data: AtomicU64,
+    /// Revocation epoch SAMPLED from the device at open — the per-open half of
+    /// a device revoke (Linux swaps `filp->f_op` to a dead vtable on every file
+    /// in the device's open-file list, which is per-open state reached through
+    /// the vtable pointer). The device owns the counter and is the only source
+    /// of truth; this word is a sample, exactly as `f_wb_err` samples the
+    /// address space's `wb_err` at open. A description whose sample predates
+    /// the device's current epoch has been revoked and stays revoked for its
+    /// whole life, no matter how many later opens the device serves.
+    /// `0` = this description is not bound to a revocable device.
+    f_revoke_gen: AtomicU64,
     /// Exact device driver selected by a successful open. The retained driver
     /// owns every later file operation and final release; registry changes do
     /// not retarget an already-open description.

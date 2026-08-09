@@ -56,7 +56,7 @@ pub use nodes::{make_console_inode, make_serial_inode, make_system_console_inode
 #[cfg(target_os = "oxide-kernel")]
 pub use devnodes::{register_devnodes, try_register_devnodes};
 #[cfg(target_os = "oxide-kernel")]
-pub use routing::{acquire_ctty_on_open, foreground_vt, route};
+pub use routing::{acquire_ctty_on_open, foreground_vt, hung_up_ioctl, hung_up_open, route};
 #[cfg(target_os = "oxide-kernel")]
 pub use serial::{kbd_input, system_console_inode, vt_reply_sink};
 #[cfg(target_os = "oxide-kernel")]

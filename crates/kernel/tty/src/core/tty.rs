@@ -1,4 +1,4 @@
-use ::core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use ::core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use sync::{Spinlock, Tty as TtyClass};
 
@@ -85,6 +85,13 @@ pub struct TtyStruct<D: TtyDriver, W: TtyWait> {
     /// Lives outside the port lock so the write-park loop can re-check it
     /// without holding the ldisc lock across `park_commit`.
     output_stopped: AtomicBool,
+    /// Hangup generation — the per-OPEN half of `__tty_hangup`, which the
+    /// reference gets by swapping every open file's `f_op` to a dead vtable.
+    /// Bumped once per hangup; each open description samples it and the data
+    /// path compares (`crate::hangup::revoke`). Starts at
+    /// `revoke::FIRST_GEN`, never decreases, so a revoked description stays
+    /// revoked across every later open of the same line.
+    pub(super) hup_gen: AtomicU64,
 }
 
 impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
@@ -103,6 +110,7 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
             exclusive: AtomicBool::new(false),
             subs: alloc::sync::Arc::new(vfs::PollSubscribers::new()),
             output_stopped: AtomicBool::new(false),
+            hup_gen: AtomicU64::new(crate::hangup::revoke::FIRST_GEN),
         }
     }
 
@@ -479,6 +487,11 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
             ldisc.hangup();
             if kind == HangupKind::SessionExit { driver.signal_fg_pgrp(Sig::Hup); }
             driver.hangup();
+            // Retire every description open across this hangup. Bumped under
+            // the port lock, which `open_revocable` also holds while it reads
+            // the generation, so an open racing a hangup lands on exactly one
+            // side of it and never samples a generation it did not get.
+            self.hup_gen.fetch_add(1, Ordering::AcqRel);
         }
         // Drop the controlling-tty linkage (Linux clears tty->session /
         // tty->pgrp on hangup) and wake any parked reader so it observes
@@ -520,3 +533,5 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
 
 // RX (device-interrupt staging + the workqueue cook) lives in `tty/rx.rs`.
 #[path = "tty/rx.rs"] mod rx;
+// Per-open revocation (the `hung_up_tty_fops` data path) lives in `tty/revoke.rs`.
+#[path = "tty/revoke.rs"] mod revoke;

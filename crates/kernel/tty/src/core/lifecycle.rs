@@ -41,15 +41,41 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
     /// descriptors without permanently killing the device. oxide's ttys are
     /// long-lived singletons; without this a single hangup on `/dev/console`
     /// would wedge the console for every later `login`.
+    ///
+    /// Clearing it is safe ONLY because a hangup also retires every
+    /// description open across it: the tty's flag says "the LINE works again",
+    /// never "the old session's descriptors work again"
+    /// (`crate::hangup::revoke`).
     /// # C: O(1)
     pub fn open(&self) -> u32 {
+        self.open_inner().0
+    }
+
+    /// `tty_open` for a description that wants to be revocable: same open, but
+    /// returns the hangup generation to record on the `struct file`
+    /// (`vfs::File::set_revoke_gen`). Clearing the tty's hung-up flag and
+    /// reading the generation happen under ONE port-lock hold, so an open
+    /// racing `hangup` samples either the pre- or the post-hangup generation
+    /// and never a value that would let a revoked description look live.
+    /// # C: O(1)
+    pub fn open_revocable(&self, cap_sys_admin: bool) -> Result<u64, VfsError> {
+        if self.exclusive() && self.open_count() != 0 && !cap_sys_admin {
+            return Err(VfsError::Ebusy);
+        }
+        Ok(self.open_inner().1)
+    }
+
+    /// The shared open body: count, driver 0→1 edge, `clear_bit(TTY_HUPPED)`,
+    /// and the generation this open is bound to. # C: O(1)
+    fn open_inner(&self) -> (u32, u64) {
         let prev = self.open_count.fetch_add(1, Ordering::AcqRel);
-        {
+        let gen = {
             let mut g = self.inner.lock_irqsave::<W::Irq>();
             g.ldisc.clear_hangup();
             if prev == 0 { g.driver.open(); }
-        }
-        prev + 1
+            self.hup_gen.load(Ordering::Acquire)
+        };
+        (prev + 1, gen)
     }
 
     /// Release reference: drop count; fire `driver.close()` on 1->0 only.

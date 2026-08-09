@@ -29,7 +29,7 @@ crates/drivers/vt	code/pub-fn-complexity	20
 crates/kernel/arch-irq	code/klog-ungated	15
 crates/kernel/block	code/pub-fn-complexity	4
 crates/kernel/cgroup	code/pub-fn-complexity	13
-crates/kernel/console	code/pub-fn-complexity	11
+crates/kernel/console	code/pub-fn-complexity	8
 crates/kernel/devpts	code/pub-fn-complexity	1
 crates/kernel/efence	code/pub-fn-complexity	1
 crates/kernel/exec	code/klog-ungated	1

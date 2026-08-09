@@ -12,6 +12,8 @@
 //
 // Module manifest:
 // - `decide`:      pure per-task rule + the syscall's own admission ladder.
+// - `revoke`:      the per-OPEN half — which descriptions a hangup kills, and
+//                  what a killed one returns (`hung_up_tty_fops`).
 // - `disassociate`: pure `disassociate_ctty` ladder — a session leader's exit
 //                  and TIOCNOTTY.
 // - `live`:        the session walk + pgrp signalling (needs `sched::live`),
@@ -21,6 +23,9 @@
 mod decide;
 pub use decide::{session_member_action, vhangup_decision, HangupKind, SessionMemberAction,
     VhangupOutcome};
+
+pub mod revoke;
+pub use revoke::{hung_up_ioctl, revoked, FIRST_GEN, HUNG_UP_POLL, HUNG_UP_READ, NOT_BOUND};
 
 pub mod disassociate;
 pub use disassociate::{disassociate_ctty, CttyFacts, DisassociateActions, DisassociateCause,

@@ -87,6 +87,12 @@ pub(super) fn handle_tty_ioctl(
     // derived from the inode's low byte.
     let con = console::route(inode);
     if pty_pair.is_none() && con.is_none() { return -(Errno::Enotty.as_i32() as i64); }
+    // `hung_up_tty_fops` has no real ioctl either: a description a hangup
+    // retired answers EIO (ENOTTY for TIOCSPGRP) and never reaches the tty the
+    // next session opened on the same line.
+    if let Some(e) = console::hung_up_ioctl(file, req as u32) {
+        return crate::vfs_errno::errno_from_vfs(e);
+    }
 
     match req {
         TIOCGWINSZ => {
