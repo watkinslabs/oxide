@@ -212,3 +212,16 @@ pub(crate) fn clock_nanosleep_supported(clk_id: u64) -> bool {
 pub(crate) fn clock_is_alarm(clk_id: u64) -> bool {
     matches!(classify(clk_id), Ok(clock) if sched::posix_clock::needs_wake_alarm(clock))
 }
+
+/// Wire size of `struct timespec`: two 64-bit fields, `tv_sec` then `tv_nsec`.
+pub(crate) const TIMESPEC_BYTES: usize = 16;
+
+/// Decode a `struct timespec` from its wire bytes. Split from the copy so the
+/// layout is provable without a user address space.
+/// # C: O(1)
+#[inline]
+pub(crate) fn decode_timespec(raw: &[u8; TIMESPEC_BYTES]) -> (i64, i64) {
+    let sec = i64::from_ne_bytes(raw[..8].try_into().expect("8 of 16"));
+    let nsec = i64::from_ne_bytes(raw[8..].try_into().expect("8 of 16"));
+    (sec, nsec)
+}

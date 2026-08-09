@@ -90,12 +90,17 @@ pub fn sys_futex(args: &SyscallArgs) -> i64 {
     // on a PI mutex a deadline decades in the future.
     let clock_realtime = (op & FUTEX_CLOCK_REALTIME) != 0 || op_base == FUTEX_LOCK_PI;
     let ts = args.a3;
-    let deadline_ns = if has_timeout && ts != 0 && ts < hal::USER_VA_END {
-        // SAFETY: ts validated < USER_VA_END; timespec is 2×i64 at +0/+8 in
-        // the caller's AS; CPL=0 reads via active CR3.
-        let secs = unsafe { core::ptr::read_volatile(ts as *const i64) };
-        // SAFETY: same validated range; tv_nsec at +8.
-        let nsec = unsafe { core::ptr::read_volatile((ts + 8) as *const i64) };
+    let deadline_ns = if has_timeout && ts != 0 {
+        // Linux `get_timespec64`: the copy goes through the exception table,
+        // so an address inside the user range but not mapped answers EFAULT
+        // rather than faulting the kernel. The range check this replaced
+        // proved only that the number was small enough, and it silently
+        // dropped the timeout for anything above the range instead of
+        // reporting the fault the caller's address deserves.
+        let (secs, nsec) = match crate::time_common::read_user_timespec(ts) {
+            Ok(v) => v,
+            Err(e) => return -(e.as_i32() as i64),
+        };
         // `ktime_set`-clamped decode (`syscall::time::timespec_to_ns`): a
         // FUTEX_WAIT_BITSET absolute timespec with a huge-but-valid tv_sec
         // clamps to KTIME_MAX_NS instead of installing an unbounded

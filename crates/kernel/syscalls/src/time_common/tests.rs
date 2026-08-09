@@ -143,3 +143,34 @@ fn known_clock_set_rejects_unknown_ids() {
     assert!(clock_is_alarm(CLOCK_BOOTTIME_ALARM));
     assert!(!clock_is_alarm(CLOCK_BOOTTIME));
 }
+
+/// `struct timespec` is `tv_sec` then `tv_nsec`, both 64-bit, in native byte
+/// order. Getting the halves the wrong way round turns a one-second timeout
+/// into a one-nanosecond one, which reads as a spurious wakeup rather than as
+/// a decode bug.
+#[test]
+fn a_timespec_decodes_seconds_then_nanoseconds() {
+    let mut raw = [0u8; TIMESPEC_BYTES];
+    raw[..8].copy_from_slice(&7i64.to_ne_bytes());
+    raw[8..].copy_from_slice(&123_456_789i64.to_ne_bytes());
+    assert_eq!(decode_timespec(&raw), (7, 123_456_789));
+}
+
+/// Negative fields survive the decode unchanged: rejecting them is the
+/// caller's rule (`timespec_to_ns`), not the reader's, and a reader that
+/// clamped here would hide an EINVAL the caller owes.
+#[test]
+fn a_timespec_decode_preserves_negative_fields() {
+    let mut raw = [0u8; TIMESPEC_BYTES];
+    raw[..8].copy_from_slice(&(-1i64).to_ne_bytes());
+    raw[8..].copy_from_slice(&(-2i64).to_ne_bytes());
+    assert_eq!(decode_timespec(&raw), (-1, -2));
+    assert!(syscall::time::timespec_to_ns(-1, -2).is_err(), "the caller rejects what the reader preserved");
+}
+
+/// The wire size is what the copy asks the exception-table reader for. If it
+/// drifted from the structure, the read would either truncate or overrun.
+#[test]
+fn the_timespec_wire_size_is_two_64_bit_fields() {
+    assert_eq!(TIMESPEC_BYTES, 2 * core::mem::size_of::<i64>());
+}

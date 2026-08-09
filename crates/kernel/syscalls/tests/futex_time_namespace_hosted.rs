@@ -101,6 +101,18 @@ mod time_common {
 
     pub fn monotonic_ns() -> u64 { 9 * NS_PER_SEC }
 
+    /// Stands in for the exception-table read. These tests pass a real host
+    /// pointer to a `timespec` they own, so the copy cannot fault; what is
+    /// under test is the decode and the deadline arithmetic above it.
+    pub fn read_user_timespec(ptr: u64) -> Result<(i64, i64), syscall::errno::Errno> {
+        if ptr == 0 { return Err(syscall::errno::Errno::Efault); }
+        // SAFETY: every caller in this harness passes the address of a live 16-byte timespec it owns for the duration of the call.
+        let raw = unsafe { core::slice::from_raw_parts(ptr as *const u8, 16) };
+        let sec = i64::from_ne_bytes(raw[..8].try_into().expect("8 of 16"));
+        let nsec = i64::from_ne_bytes(raw[8..].try_into().expect("8 of 16"));
+        Ok((sec, nsec))
+    }
+
     pub fn current_sleep_target_to_host(clockid: u64, absolute: bool, target: u64)
         -> Result<u64, ()>
     {
