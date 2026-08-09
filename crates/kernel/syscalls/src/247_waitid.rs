@@ -1,61 +1,36 @@
-// sys_waitid — ABI shim over the shared wait engine in `061_wait4.rs`.
-// idtype→pid-form mapping, per-class event gating, and the wstatus→siginfo
-// decode are pure and live in `syscall::wait`; this file resolves a pidfd,
-// drives the engine, and copies out `siginfo_t` + `rusage`.
+// sys_waitid — ABI shim over the shared wait engine in `061_wait4.rs`. The
+// option decode, the idtype ladder, the pidfd errno ladder, the forced-WNOHANG
+// rule, the siginfo image and the return-value tail are all pure and live in
+// `syscall::wait::{prepare, siginfo}`; this file resolves a pidfd through the
+// fd table, drives the engine, and copies out.
 
 #![cfg(target_os = "oxide-kernel")]
 
-use syscall::errno::Errno;
 use syscall::SyscallArgs;
 use syscall::wait::{
-    int_arg_from_reg, siginfo_from_event, waitid_options_valid, waitid_target, WaitEventKind,
-    WaitEvents, WaitTarget, WNOHANG, WNOWAIT,
+    pidfd_bind, siginfo_bytes, waitid_prepare, waitid_result, PidfdTarget, WaitEventKind,
+    WaitReport, WaitidPrepare, SIGINFO_BYTES,
 };
-
-use crate::wait::WaitRequest;
-
-const SIGINFO_BYTES: u64 = 128;
-const SIGINFO_OFF_SIGNO:  u64 = 0;
-const SIGINFO_OFF_ERRNO:  u64 = 4;
-const SIGINFO_OFF_CODE:   u64 = 8;
-const SIGINFO_OFF_PID:    u64 = 16;
-const SIGINFO_OFF_UID:    u64 = 20;
-const SIGINFO_OFF_STATUS: u64 = 24;
 
 /// `sys_waitid(idtype, id, infop, options, rusage)`.
 /// # C: same as wait4 — bounded by the child-event scan
 pub fn sys_waitid(args: &SyscallArgs) -> i64 {
-    let idtype  = int_arg_from_reg(args.a0);
-    let id      = args.a1 as i32;
-    let infop   = args.a2;
-    let options = int_arg_from_reg(args.a3);
-    let rusage  = args.a4;
-    if !waitid_options_valid(options) { return -(Errno::Einval.as_i32() as i64); }
+    let infop  = args.a2;
+    let rusage = args.a4;
 
-    let mut effective_options = options;
-    let mut pidfd_forced_nonblock = false;
-    let pid_for_wait4: i32 = match waitid_target(idtype, id) {
-        WaitTarget::Invalid     => return -(Errno::Einval.as_i32() as i64),
-        WaitTarget::Wait4Pid(p) => p,
-        WaitTarget::Pidfd(fd)   => match resolve_pidfd(fd, options) {
+    let (plan, forced_nonblock) = match waitid_prepare(args.a0, args.a1 as i32, args.a3) {
+        Err(e) => return -(e.as_i32() as i64),
+        Ok(WaitidPrepare::Ready(p)) => (p, false),
+        Ok(WaitidPrepare::Pidfd { fd, options }) => match pidfd_bind(options, resolve_pidfd(fd)) {
             Err(e) => return -(e.as_i32() as i64),
-            Ok((vpid, forced)) => {
-                if forced { effective_options |= WNOHANG; pidfd_forced_nonblock = true; }
-                vpid
-            }
+            Ok(v)  => v,
         },
     };
 
     let mut local_wstat: i32 = 0;
     let mut local_uid: u32 = 0;
     let mut local_kind = WaitEventKind::Exited;
-    let req = WaitRequest {
-        pid:     pid_for_wait4,
-        options: effective_options,
-        events:  WaitEvents::for_waitid(effective_options),
-        consume: (effective_options & WNOWAIT) == 0,
-    };
-    let rv = crate::wait::wait_engine(req, |kind, wstat| {
+    let rv = crate::wait::wait_engine(plan, |kind, wstat| {
         local_kind  = kind;
         local_wstat = wstat;
         Ok(())
@@ -65,49 +40,38 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
     });
 
     if infop != 0 {
-        if let Err(e) = crate::userbuf::validate_user_buf_writable(infop, SIGINFO_BYTES, 1) { return e; }
-        // No event (WNOHANG miss, or an error) leaves the whole siginfo zero,
-        // including si_signo — that is how userspace tells "nothing happened"
-        // apart from a real SIGCHLD report.
-        let (si_code, si_status) = if rv > 0 { siginfo_from_event(local_kind, local_wstat) } else { (0, 0) };
-        // SAFETY: full siginfo byte range validated writable in the caller's AS; fields stored at the fixed Linux siginfo_t offsets, remainder zeroed.
-        unsafe {
-            core::ptr::write_bytes(infop as *mut u8, 0, SIGINFO_BYTES as usize);
-            if rv > 0 {
-                core::ptr::write_unaligned((infop + SIGINFO_OFF_SIGNO)  as *mut i32, sched::signum::Signum::Sigchld.as_u8() as i32);
-                core::ptr::write_unaligned((infop + SIGINFO_OFF_ERRNO)  as *mut i32, 0);
-                core::ptr::write_unaligned((infop + SIGINFO_OFF_CODE)   as *mut i32, si_code);
-                core::ptr::write_unaligned((infop + SIGINFO_OFF_PID)    as *mut i32, rv as i32);
-                core::ptr::write_unaligned((infop + SIGINFO_OFF_UID)    as *mut u32, local_uid);
-                core::ptr::write_unaligned((infop + SIGINFO_OFF_STATUS) as *mut i32, si_status);
-            }
-        }
+        if let Err(e) = crate::userbuf::validate_user_buf_writable(infop, SIGINFO_BYTES as u64, 1) { return e; }
+        // The structure is written on every non-null `infop`, error returns
+        // included. No event leaves it entirely zero, `si_signo` included —
+        // that zero is how userspace tells "nothing happened" from a report.
+        let report = (rv > 0).then(|| WaitReport {
+            kind: local_kind, wstat: local_wstat, pid: rv as i32, uid: local_uid,
+        });
+        let bytes = siginfo_bytes(sched::signum::Signum::Sigchld.as_u8() as i32, report);
+        // SAFETY: full siginfo byte range validated writable in the caller's AS; a byte copy needs no alignment, as Linux copy_to_user permits.
+        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), infop as *mut u8, bytes.len()); }
     }
-    // A reported event returns 0, not the pid — waitid's whole result is the
-    // siginfo. A pidfd whose O_NONBLOCK forced WNOHANG reports EAGAIN rather
-    // than the "no children ready" 0 the caller never asked for.
-    if rv < 0 { rv }
-    else if rv == 0 && pidfd_forced_nonblock { -(Errno::Eagain.as_i32() as i64) }
-    else { 0 }
+    waitid_result(rv, forced_nonblock)
 }
 
-/// `P_PIDFD`: resolve the fd to the target's VPID. Returns the VPID and
-/// whether the pidfd's `O_NONBLOCK` must force `WNOHANG`.
+/// `P_PIDFD`: look the descriptor up in the caller's fd table. The errno
+/// ladder over the outcome is `syscall::wait::pidfd_bind`'s.
 /// # C: O(1)
-fn resolve_pidfd(fd: i32, options: u64) -> Result<(i32, bool), Errno> {
-    let current = sched::live::current().ok_or(Errno::Ebadf)?;
+fn resolve_pidfd(fd: i32) -> PidfdTarget {
+    let Some(current) = sched::live::current() else { return PidfdTarget::BadFd };
     let (target, flags) = match pidfd::task_and_flags_from_fd(current, fd) {
         Ok(v) => v,
-        Err(pidfd::ResolveError::Released) => return Err(Errno::Echild),
-        Err(pidfd::ResolveError::BadFd | pidfd::ResolveError::NotPidfd) => return Err(Errno::Ebadf),
+        Err(pidfd::ResolveError::Released) => return PidfdTarget::Released,
+        Err(pidfd::ResolveError::BadFd | pidfd::ResolveError::NotPidfd) => return PidfdTarget::BadFd,
     };
-    // A pidfd naming a THREAD (now producible: CLONE_THREAD|CLONE_PIDFD) is a
+    // A pidfd naming a THREAD (producible via CLONE_THREAD|CLONE_PIDFD) is a
     // thread-level pid. A wait keyed on it looks the target up as a thread
     // GROUP, finds nothing for a non-leader, and falls through to "no eligible
-    // child" — ECHILD. Only a tracer of that exact thread could match it, and
-    // a pidfd is never how a tracer reaches its tracee. So ECHILD here is the
-    // whole observable behaviour, not a shortcut around one.
-    if !target.pid.is_group_leader() { return Err(Errno::Echild); }
-    let forced = flags.contains(vfs::OpenFlags::O_NONBLOCK) && (options & WNOHANG) == 0;
-    Ok((sched::live::registry::display_vpid(target.tid) as i32, forced))
+    // child". Only a tracer of that exact thread could match it, and a pidfd is
+    // never how a tracer reaches its tracee.
+    if !target.pid.is_group_leader() { return PidfdTarget::NonLeader; }
+    PidfdTarget::Leader {
+        vpid:     sched::live::registry::display_vpid(target.tid) as i32,
+        nonblock: flags.contains(vfs::OpenFlags::O_NONBLOCK),
+    }
 }

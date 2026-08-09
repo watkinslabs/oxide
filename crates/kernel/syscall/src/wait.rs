@@ -3,6 +3,24 @@
 // wstatus→siginfo decode. The syscall slot files are
 // `#[cfg(target_os = "oxide-kernel")]`, so none of this may live there — a
 // `#[cfg(test)] mod tests` inside a gated file compiles away silently.
+//
+// Child modules:
+//   `prepare.rs` — `kernel_wait4`/`kernel_waitid_prepare` prologues (the errno
+//     ORDER), `P_PIDFD` binding, and `kernel_waitid`'s return-value tail.
+//   `scan.rs`    — one pass of `do_wait`'s child scan over injected lookups:
+//     class gating, exit-outranks-stop order, event→wait-status mapping.
+//   `siginfo.rs` — `waitid`'s `siginfo_t` image and layout.
+
+#[path = "wait/prepare.rs"]  pub mod prepare;
+#[path = "wait/scan.rs"]     pub mod scan;
+#[path = "wait/siginfo.rs"]  pub mod siginfo;
+
+pub use prepare::{
+    pidfd_bind, wait4_prepare, waitid_plan, waitid_prepare, waitid_result, PidfdTarget, WaitPlan,
+    WaitidPrepare,
+};
+pub use scan::{drains_sigchld, scan_pass, stop_event_wstatus};
+pub use siginfo::{siginfo_bytes, WaitReport, SIGINFO_BYTES};
 
 pub const WNOHANG:    u64 = 0x0000_0001;
 pub const WUNTRACED:  u64 = 0x0000_0002;
