@@ -112,6 +112,22 @@ pub(super) fn retire_task(tid: u32) -> Vec<Arc<PerfEvent>> {
         .collect()
 }
 
+/// Every live event in every context — the walk `perf_event_task_tick` makes
+/// over the contexts on a CPU, over oxide's one registry. Task-scoped events
+/// come first so a group leader registered against a task precedes nothing in
+/// particular; the caller's work is per-event and order-independent.
+/// # C: O(N)
+pub(super) fn all_events() -> Vec<Arc<PerfEvent>> {
+    let mut g = EVENTS.lock();
+    let mut out = Vec::new();
+    for list in g.task.values_mut() { out.extend(snapshot(list)); }
+    for list in g.cpu.values_mut()  { out.extend(snapshot(list)); }
+    g.task.retain(|_, l| !l.is_empty());
+    g.cpu.retain(|_, l| !l.is_empty());
+    refresh_count(&g);
+    out
+}
+
 /// True when any registered event might want a sample. LOCK-FREE: a user page
 /// fault asks this on every fault, so it reads the atomic rather than the
 /// table. # C: O(1)

@@ -52,6 +52,7 @@ use core::sync::atomic::AtomicPtr;
 
 mod deferred;
 pub use deferred::SwitchNote;
+mod sysctl;
 
 /// One counter site's `perf_sw_event(event_id, nr, regs, addr)` call, carrying
 /// everything the sampler reads out of the reference's `struct pt_regs *regs`:
@@ -197,35 +198,8 @@ pub fn drain_deferred(cpu: usize) {
     }
 }
 
-// ---- perf sysctls -------------------------------------------------------
-//
-// Linux keeps these as globals next to `perf_event_open`:
-//   int sysctl_perf_event_paranoid __read_mostly = 2;
-//   int sysctl_perf_event_sample_rate __read_mostly = DEFAULT_MAX_SAMPLE_RATE;
-// oxide's `perf_event_open` work-fn lives in the `fs` crate, which `procfs`
-// cannot depend on (`fs` depends on `procfs`). Owning the live values here —
-// the crate both the syscall path and `/proc/sys/kernel` can see — is what
-// keeps `/proc/sys/kernel/perf_event_paranoid` from becoming a dead cell that
-// disagrees with the gate `perf_event_open` actually applies.
-
-use core::sync::atomic::AtomicI32;
-
-/// Linux's `sysctl_perf_event_paranoid` initialiser.
-pub const PARANOID_DEFAULT: i32 = 2;
-/// `DEFAULT_MAX_SAMPLE_RATE`.
-pub const SAMPLE_RATE_DEFAULT: i32 = 100_000;
-
-static PARANOID:    AtomicI32 = AtomicI32::new(PARANOID_DEFAULT);
-static SAMPLE_RATE: AtomicI32 = AtomicI32::new(SAMPLE_RATE_DEFAULT);
-
-/// # C: O(1)
-pub fn paranoid() -> i32 { PARANOID.load(Ordering::Relaxed) }
-/// # C: O(1)
-pub fn set_paranoid(v: i32) { PARANOID.store(v, Ordering::Relaxed); }
-/// # C: O(1)
-pub fn sample_rate() -> i32 { SAMPLE_RATE.load(Ordering::Relaxed) }
-/// # C: O(1)
-pub fn set_sample_rate(v: i32) { SAMPLE_RATE.store(v, Ordering::Relaxed); }
+// The perf sysctl cells (`kernel.perf_event_*`) live in `perf_sw/sysctl.rs`.
+pub use sysctl::*;
 
 #[cfg(test)]
 mod tests {

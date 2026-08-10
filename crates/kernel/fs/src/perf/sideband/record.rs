@@ -111,6 +111,45 @@ pub fn comm_record(sample_type: u64, sample_id_all: bool, exec: bool,
     r.finish()
 }
 
+/// `PERF_RECORD_THROTTLE` and `PERF_RECORD_UNTHROTTLE` share one layout and
+/// differ only in the header type. The body is `{u64 time; u64 id;
+/// u64 stream_id;}`; `id` is the group's primary id and `stream_id` this
+/// event's own, so a group's throttle names the leader while still identifying
+/// the member stream.
+///
+/// A consumer that never sees this record cannot distinguish a throttled event
+/// from an idle one, so it is emitted even when nothing else about the event
+/// changed. # C: O(1)
+pub fn throttle_record(enable: bool, sample_type: u64, sample_id_all: bool,
+                       v: &SampleValues) -> Option<SbBuf>
+{
+    let ty = if enable { record::UNTHROTTLE } else { record::THROTTLE };
+    let mut r = SbBuf::new(ty, 0);
+    r.u64(v.time);
+    r.u64(v.id);
+    r.u64(v.stream_id);
+    if sample_id_all { push_sample_id(&mut r, sample_type, v); }
+    r.finish()
+}
+
+/// `PERF_RECORD_READ` — `{u32 pid; u32 tid;}` followed by the same
+/// `read_format` body a `read(2)` on the event returns.
+///
+/// Emitted for an `attr.inherit_stat` event when the task that inherited it
+/// exits, so a consumer can attribute that child's final count to the child
+/// rather than only seeing it folded into the parent's total.
+/// # C: O(read_payload)
+pub fn read_record<const N: usize>(sample_type: u64, sample_id_all: bool,
+                                   pid: u32, tid: u32, read_payload: &[u8],
+                                   v: &SampleValues) -> Option<RecordBuf<N>>
+{
+    let mut r = RecordBuf::<N>::new(record::READ, 0);
+    r.pair32(pid, tid);
+    r.bytes(read_payload);
+    if sample_id_all { push_sample_id(&mut r, sample_type, v); }
+    r.finish()
+}
+
 /// `perf_event_task_output` — `PERF_RECORD_FORK` and `PERF_RECORD_EXIT` share
 /// one layout, differing only in the header type. # C: O(1)
 pub fn task_record(ty: u32, sample_type: u64, sample_id_all: bool,

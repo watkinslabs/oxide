@@ -146,18 +146,21 @@ pub fn handle_perf_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> i64 {
             0
         }
         PerfIoctl::SetOutput => {
-            // Redirecting samples to another event's ring buffer. That buffer
-            // is something oxide's software PMUs never allocate, so the only
-            // reachable arm is `-EINVAL` for an event with no ring buffer,
-            // plus `-EBADF` for a non-perf fd.
-            if arg as i32 != -1 {
+            // `arg == -1` stops redirecting; anything else must be a perf fd,
+            // which is EBADF before any of the redirect constraints are looked
+            // at. The constraints themselves live in `super::output`.
+            let target = if arg as i32 == -1 { None } else {
                 let cur = match sched::current() { Some(c) => c, None => return err(Errno::Ebadf) };
                 // SAFETY: running task on this CPU; preempt-off; sole reader of the fd_table slot.
                 let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return err(Errno::Ebadf) };
-                let ok = fdt.get(arg as i32).ok().is_some_and(|f| is_perf_inode(&f.inode()));
-                if !ok { return err(Errno::Ebadf); }
-            }
-            err(Errno::Einval)
+                match fdt.get(arg as i32).ok().and_then(|f| {
+                    if is_perf_inode(&f.inode()) { event_of(&f.inode()) } else { None }
+                }) {
+                    Some(t) => Some(t),
+                    None    => return err(Errno::Ebadf),
+                }
+            };
+            match super::output::apply(&ev, target.as_ref()) { Ok(()) => 0, Err(e) => err(e) }
         }
         PerfIoctl::SetFilter => {
             // `strndup_user(arg, PAGE_SIZE)` first, then `-EINVAL` for an event

@@ -17,7 +17,9 @@
 //   ring     the mmapped ring buffer and its control page
 //   sample   `PERF_RECORD_*` byte layout (pure)
 //   overflow sampling-period accounting (pure)
-//   mmap     `perf_mmap` admission + ring attach
+//   throttle per-tick sampling budget + THROTTLE/UNTHROTTLE records
+//   mmap     ring mapping admission + ring attach
+//   output   `PERF_EVENT_IOC_SET_OUTPUT` redirect ladder (pure)
 //   emit     software-counter sites -> `PERF_RECORD_SAMPLE`
 //   hrtimer  the clock PMUs' sampling timer (`perf_swevent_hrtimer`)
 //   sideband MMAP/COMM/FORK/EXIT/SWITCH records — what resolves a sample's IP
@@ -40,7 +42,9 @@ pub mod registry;
 pub mod ring;
 pub mod sample;
 pub mod overflow;
+pub mod throttle;
 pub mod mmap;
+pub mod output;
 pub mod emit;
 pub mod hrtimer;
 pub mod sideband;

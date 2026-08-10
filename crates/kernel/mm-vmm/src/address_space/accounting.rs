@@ -35,6 +35,11 @@ pub struct VmAccountingSnapshot {
     pub page_table_frames: u64,
     pub faults: u64,
     pub mlock_transitions: u64,
+    /// Pages this mm has pinned on behalf of a kernel object that shares
+    /// refcounted RAM into it — the ledger the `RLIMIT_MEMLOCK` half of every
+    /// such admission is compared against. Distinct from
+    /// `locked_virtual_bytes`, which counts `VM_LOCKED` extents.
+    pub pinned_pages: u64,
     /// Peak `RssPages::total()` this mm has reached, in pages. Already folded
     /// with the live total per Linux `get_mm_hiwater_rss`, so a reader uses it
     /// directly.
@@ -69,6 +74,7 @@ pub(super) struct VmAccounting {
     page_table_frames: AtomicU64,
     faults: AtomicU64,
     mlock_transitions: AtomicU64,
+    pinned_pages: AtomicU64,
     /// Linux `mm_struct::hiwater_rss`, latched by `update_hiwater_rss` at the
     /// residency-growth boundary. Readers fold it with the live total.
     hiwater_rss_pages: AtomicU64,
@@ -101,6 +107,7 @@ impl VmAccounting {
             root_page_table_frames: AtomicU64::new(u64::from(root_pa != 0)),
             page_table_frames: AtomicU64::new(u64::from(root_pa != 0)),
             faults: AtomicU64::new(0), mlock_transitions: AtomicU64::new(0),
+            pinned_pages: AtomicU64::new(0),
             hiwater_rss_pages: AtomicU64::new(0),
         }
     }
@@ -133,6 +140,7 @@ impl VmAccounting {
             page_table_frames: self.page_table_frames.load(Ordering::Acquire),
             faults: self.faults.load(Ordering::Acquire),
             mlock_transitions: self.mlock_transitions.load(Ordering::Acquire),
+            pinned_pages: self.pinned_pages.load(Ordering::Acquire),
         }
     }
 
@@ -159,6 +167,13 @@ impl VmAccounting {
         self.mlock_transitions.fetch_add(1, Ordering::AcqRel);
     }
     pub(super) fn fault(&self) { self.faults.fetch_add(1, Ordering::AcqRel); }
+    /// Book `n` pages this mm has pinned. # C: O(1)
+    pub(super) fn charge_pinned(&self, n: u64) { self.pinned_pages.fetch_add(n, Ordering::AcqRel); }
+    /// Give `n` pinned pages back. Saturating: an unpaired release would
+    /// otherwise wrap the ledger and admit every later mapping unconditionally.
+    /// # C: O(1)
+    pub(super) fn release_pinned(&self, n: u64) { dec_by(&self.pinned_pages, n); }
+    pub(super) fn pinned_pages(&self) -> u64 { self.pinned_pages.load(Ordering::Acquire) }
     fn page_table_frame_allocated(&self) { self.page_table_frames.fetch_add(1, Ordering::AcqRel); }
     fn page_table_frame_released(&self) { self.page_table_frames.fetch_sub(1, Ordering::AcqRel); }
     pub(super) fn install_pte(&self, vma: &Vma) {
@@ -269,6 +284,7 @@ pub fn global_accounting_snapshot() -> VmAccountingSnapshot {
         out.page_table_frames = out.page_table_frames.saturating_add(next.page_table_frames);
         out.faults = out.faults.saturating_add(next.faults);
         out.mlock_transitions = out.mlock_transitions.saturating_add(next.mlock_transitions);
+        out.pinned_pages = out.pinned_pages.saturating_add(next.pinned_pages);
         out.hiwater_rss_pages = out.hiwater_rss_pages.saturating_add(next.hiwater_rss_pages);
     }
     out

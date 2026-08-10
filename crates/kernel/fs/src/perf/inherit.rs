@@ -1,35 +1,36 @@
-// Fork/exit propagation of `attr.inherit` events — Linux `inherit_task_group`
-// (creation side, `perf_event_init_task`) and `sync_child_event` /
-// `perf_event_exit_task` (fold-back). Pure over the registry + `PerfEvent`
-// API, no target gate, so the propagation and fold-back algebra are
-// hosted-testable (`docs/53` — decision logic never lives in a gated shim).
+// Fork/exit propagation of `attr.inherit` events: the creation side at fork,
+// and the fold-back plus `attr.inherit_stat` publication at exit. Pure over the
+// registry + `PerfEvent` API, no target gate, so the propagation and fold-back
+// algebra are hosted-testable (`docs/53` — decision logic never lives in a
+// gated shim).
 //
 // Only TASK-scoped events (`tid` came back `Some` from admission) are ever
-// inheritable. A CPU-wide event (`pid == -1`) has no task to follow and is
-// invisible to a fork, exactly as `perf_event_init_context` only walks
-// `current->perf_event_ctxp` — a per-TASK context, never the per-CPU one.
-// Both kinds live in `registry`, which is the single table the sample path
-// walks too.
+// inheritable. A CPU-wide event (opened with `pid == -1`) has no task to follow
+// and is invisible to a fork. Both kinds live in `registry`, which is the
+// single table the sample path walks too.
 
-use super::event::PerfEvent;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+
+use super::counter::{format_group, format_one, MemberRead};
+use super::event::{now_ns, PerfEvent};
 use super::registry::{live_task_events, retire_task};
-use super::uapi::attr_bit;
+use super::sample::SampleValues;
+use super::sideband::record::{read_record, SIDEBAND_MAX};
+use super::uapi::{attr_bit, fmt};
 
-/// Linux `perf_event_init_task` → `perf_event_init_context` →
-/// `inherit_task_group` → `inherit_event`, restricted to the software-only
-/// surface oxide implements: every event open against the forking parent
-/// with `attr.inherit` set gets a clone that targets the child and starts
-/// counting from the fork instant. An event with `attr.inherit` clear is
-/// skipped, matching `inherit_task_group`'s `!event->attr.inherit` early
-/// return — this is the row-298 gap: before this call a child born after an
-/// inheriting event was open got no event at all, so a `waitpid`-time read
-/// of the parent silently undercounted.
+/// Clone the forking task's inheritable events onto its new child: every event
+/// open against the parent with `attr.inherit` set gets a clone that targets
+/// the child and starts counting from the fork instant. Without it a child born
+/// after an inheriting event was opened gets no event at all, and a read of the
+/// parent at `waitpid` time silently undercounts.
 ///
-/// `clone_thread` is `flags & CLONE_THREAD`. `inherit_task_group` also skips
-/// an event when `(event->attr.inherit_thread && !(clone_flags &
-/// CLONE_THREAD))` fails to hold — i.e. by default (`inherit_thread == 0`) an
-/// event follows a `fork()`-born PROCESS child but not a `pthread_create()`-
-/// born thread, unless the event opted into `PERF_ATTR_INHERIT_THREAD`.
+/// GROUPS are cloned as groups, leader first, so a grouped read on the child's
+/// tree returns the same member list the parent's does.
+///
+/// `clone_thread` is `flags & CLONE_THREAD`: by default an event follows a
+/// `fork()`-born PROCESS child but not a `pthread_create()`-born thread, unless
+/// it set `attr.inherit_thread`.
 ///
 /// Returns the number of events inherited, for callers/tests that want to
 /// confirm propagation happened.
@@ -37,29 +38,95 @@ use super::uapi::attr_bit;
 pub fn on_fork(parent_tid: u32, child_tid: u32, clone_thread: bool) -> usize {
     let mut n = 0;
     for ev in live_task_events(parent_tid) {
+        // Groups are inherited leader-first and as a WHOLE: the leader's `attr`
+        // decides for every member, and a sibling reached here on its own is
+        // skipped so it is not cloned twice.
+        if ev.leader.is_some() { continue; }
         if !ev.attr.bit(attr_bit::INHERIT) { continue; }
+        // By default an event follows a `fork()`-born process child but not a
+        // thread of the same process; an event that asked to follow threads
+        // does both.
         if clone_thread && !ev.attr.bit(attr_bit::INHERIT_THREAD) { continue; }
         // `PerfEvent::new_inherited` registers the child itself (every
         // task-scoped event self-registers on construction, which is also
         // where the registry takes its owning keep-alive since an inherited
         // child has no fd of its own), so this loop only decides WHICH
-        // parent events qualify.
-        let _child = PerfEvent::new_inherited(&ev, child_tid);
+        // parent events qualify and how the child-side group is shaped.
+        let leader = PerfEvent::new_inherited(&ev, child_tid, None);
         n += 1;
+        for sib in ev.siblings() {
+            PerfEvent::new_inherited(&sib, child_tid, Some(&leader));
+            n += 1;
+        }
     }
     n
 }
 
-/// Linux `perf_event_exit_task` → `perf_event_exit_event` → `sync_child_event`:
-/// fold every inherited event this exiting task held back into its parent's
-/// `child_count`, then retire the task's registry entry outright — taking
-/// back the registry's own keep-alive on each inherited child so it is
-/// actually freed here, not merely orphaned. A non-inherited event (this
-/// task's own, never anyone's child) folds into nothing — `fold_into_parent`
-/// is a no-op without a live `parent` — so it is simply dropped.
+/// Exit side: publish each `attr.inherit_stat` child's final values as a
+/// record, fold every inherited event this exiting task held back into its
+/// parent's child totals, then retire the task's registry entry outright —
+/// taking back the registry's own keep-alive on each inherited child so it is
+/// actually freed here, not merely orphaned. A non-inherited event (this task's
+/// own, never anyone's child) folds into nothing and is simply dropped.
 /// # C: O(N_tid_events)
 pub fn on_task_exit(tid: u32) {
-    for ev in retire_task(tid) { ev.fold_into_parent(); }
+    for ev in retire_task(tid) {
+        sync_stat(&ev, tid);
+        ev.fold_into_parent();
+    }
+}
+
+/// `attr.inherit_stat`'s exit half: publish the dying child's own final
+/// counter values as a record, so a consumer can attribute them to the CHILD.
+/// Without it the counts are only ever visible folded into the parent's total,
+/// which is precisely the per-child breakdown the flag asks for.
+///
+/// Silent for an event that did not ask for it, that was never inherited, or
+/// whose tree has no ring mapped. # C: O(group)
+fn sync_stat(ev: &Arc<PerfEvent>, tid: u32) {
+    if !ev.attr.bit(attr_bit::INHERIT_STAT) { return; }
+    if ev.parent.is_none() { return; }
+    let Some(out) = ev.output_target() else { return };
+    let Some(rb) = out.buffer() else { return };
+    let payload = read_payload(ev);
+    let v = SampleValues {
+        id: out.id, stream_id: ev.id, ip: 0, addr: 0, period: 0,
+        pid: pid_of(tid), tid, time: now_ns(), cpu: ev.cpu.max(0) as u32,
+    };
+    let st = out.attr.sample_type;
+    let all = out.attr.bit(attr_bit::SAMPLE_ID_ALL);
+    let Some(r) = read_record::<SIDEBAND_MAX>(st, all, v.pid, tid, &payload, &v) else { return };
+    match rb.output(r.as_slice(),
+                    |lost| super::sample::lost_record::<SIDEBAND_MAX>(st, all, lost, &v)) {
+        Some(w) => if w.wakeup { out.wakeup(); },
+        None    => { rb.note_lost(); }
+    }
+}
+
+fn pid_of(tid: u32) -> u32 {
+    sched::registry::lookup(tid)
+        .map(|t| t.tgid.load(core::sync::atomic::Ordering::Relaxed))
+        .unwrap_or(tid)
+}
+
+/// The event's counter values framed by its own `read_format` — the same bytes
+/// a `read(2)` on it would return.
+fn read_payload(ev: &Arc<PerfEvent>) -> Vec<u8> {
+    let rf = ev.attr.read_format;
+    if rf & fmt::GROUP != 0 {
+        let members = ev.group_members();
+        if members.is_empty() { return Vec::new(); }
+        let (_, enabled, running) = members[0].read_value();
+        let vals: Vec<MemberRead> = members.iter()
+            .map(|m| MemberRead { count: m.read_value().0, id: m.id,
+                                  lost: m.state.lock().lost_samples })
+            .collect();
+        format_group(rf, &vals, enabled, running)
+    } else {
+        let (count, enabled, running) = ev.read_value();
+        let lost = ev.state.lock().lost_samples;
+        format_one(rf, MemberRead { count, id: ev.id, lost }, enabled, running)
+    }
 }
 
 #[cfg(test)]
@@ -129,8 +196,7 @@ mod tests {
 
     /// `clone_thread=true` (a `pthread_create`) does not inherit a plain
     /// `attr.inherit` event unless it also set `attr.inherit_thread` —
-    /// `inherit_task_group`'s `event->attr.inherit_thread && !(clone_flags &
-    /// CLONE_THREAD)` gate.
+    /// thread-follow gate.
     #[test]
     fn clone_thread_does_not_inherit_without_inherit_thread() {
         let parent_tid = fresh_tid();
@@ -181,6 +247,119 @@ mod tests {
         // Deliberately skip on_task_exit(child_tid) here.
         let (still, _, _) = parent.read_value();
         assert_eq!(still, 10, "without the fold call the parent must NOT see the child's count");
+    }
+
+    /// A GROUP survives the fork as a group: the child gets one leader with
+    /// the same number of siblings, every member points at the child leader,
+    /// and a grouped read on the child reports the whole group.
+    ///
+    /// POSITIVE CONTROL: pass `None` for the sibling's leader in `on_fork` and
+    /// the `group_members` count drops to 1 for each child event, failing the
+    /// last two assertions.
+    #[test]
+    fn a_group_is_inherited_as_a_group() {
+        let parent_tid = fresh_tid();
+        let child_tid = fresh_tid();
+        let leader = PerfEvent::new(attr(true), SwSource::Zero, Some(parent_tid), -1, None);
+        let mut sibs = alloc::vec::Vec::new();
+        for _ in 0..2 {
+            let s = PerfEvent::new(attr(true), SwSource::Zero, Some(parent_tid), -1,
+                                   Some(Arc::downgrade(&leader)));
+            leader.state.lock().siblings.push(Arc::downgrade(&s));
+            sibs.push(s);
+        }
+        assert_eq!(on_fork(parent_tid, child_tid, false), 3, "leader plus two siblings");
+
+        let kids = live_task_events(child_tid);
+        assert_eq!(kids.len(), 3);
+        let leaders: alloc::vec::Vec<_> = kids.iter().filter(|k| k.leader.is_none()).collect();
+        assert_eq!(leaders.len(), 1, "exactly one child-side leader");
+        assert_eq!(leaders[0].siblings().len(), 2, "both siblings joined it");
+        for k in kids.iter() {
+            assert_eq!(k.group_members().len(), 3,
+                       "every member sees the whole inherited group");
+        }
+        let _ = (leader, sibs);
+    }
+
+    /// A sibling reached on its own is not cloned a second time — the group is
+    /// inherited exactly once, through its leader.
+    #[test]
+    fn a_sibling_is_not_inherited_twice() {
+        let parent_tid = fresh_tid();
+        let child_tid = fresh_tid();
+        let leader = PerfEvent::new(attr(true), SwSource::Zero, Some(parent_tid), -1, None);
+        let sib = PerfEvent::new(attr(true), SwSource::Zero, Some(parent_tid), -1,
+                                 Some(Arc::downgrade(&leader)));
+        leader.state.lock().siblings.push(Arc::downgrade(&sib));
+        assert_eq!(on_fork(parent_tid, child_tid, false), 2);
+        assert_eq!(live_task_events(child_tid).len(), 2);
+        let _ = (leader, sib);
+    }
+
+    /// A group whose LEADER does not inherit is not inherited at all, however
+    /// its siblings are configured: the leader's setting decides for the group.
+    #[test]
+    fn a_non_inheriting_leader_takes_its_whole_group_with_it() {
+        let parent_tid = fresh_tid();
+        let child_tid = fresh_tid();
+        let leader = PerfEvent::new(attr(false), SwSource::Zero, Some(parent_tid), -1, None);
+        let sib = PerfEvent::new(attr(true), SwSource::Zero, Some(parent_tid), -1,
+                                 Some(Arc::downgrade(&leader)));
+        leader.state.lock().siblings.push(Arc::downgrade(&sib));
+        assert_eq!(on_fork(parent_tid, child_tid, false), 0);
+        assert!(live_task_events(child_tid).is_empty());
+        let _ = (leader, sib);
+    }
+
+    /// `inherit_stat` publishes the dying child's own final values as a record,
+    /// so a consumer sees the per-child breakdown and not only the parent's
+    /// folded total.
+    ///
+    /// POSITIVE CONTROL: the same test without the flag (below) must find no
+    /// such record, which proves this one is measuring the flag.
+    #[test]
+    fn inherit_stat_publishes_the_childs_final_read_at_exit() {
+        use crate::perf::ring::PerfBuffer;
+        use crate::perf::uapi::record as rec;
+        let parent_tid = fresh_tid();
+        let child_tid = fresh_tid();
+        let mut a = attr(true);
+        a.bits |= 1 << attr_bit::INHERIT_STAT;
+        let parent = PerfEvent::new(a, SwSource::Zero, Some(parent_tid), -1, None);
+        let rb = PerfBuffer::hosted(4, 0, false);
+        parent.state.lock().buffer = Some(Arc::clone(&rb));
+        on_fork(parent_tid, child_tid, false);
+        let child = live_task_events(child_tid).into_iter().next().unwrap();
+        set_count(&child, 11);
+
+        let before = rb.unread();
+        on_task_exit(child_tid);
+        assert!(rb.unread() > before, "the child's exit published a record");
+        let rec_ty = u32::from_le_bytes(rb.peek_data(before, 4).try_into().unwrap());
+        assert_eq!(rec_ty, rec::READ);
+        // `{pid, tid}` then the counter value in the default read format.
+        let body = rb.peek_data(before + 8, 16);
+        assert_eq!(u32::from_le_bytes(body[4..8].try_into().unwrap()), child_tid);
+        assert_eq!(u64::from_le_bytes(body[8..16].try_into().unwrap()), 11);
+        // The fold still happens: both halves of the contract, not one.
+        assert_eq!(parent.read_value().0, 11);
+    }
+
+    #[test]
+    fn positive_control_without_inherit_stat_no_record_is_published() {
+        use crate::perf::ring::PerfBuffer;
+        let parent_tid = fresh_tid();
+        let child_tid = fresh_tid();
+        let parent = PerfEvent::new(attr(true), SwSource::Zero, Some(parent_tid), -1, None);
+        let rb = PerfBuffer::hosted(4, 0, false);
+        parent.state.lock().buffer = Some(Arc::clone(&rb));
+        on_fork(parent_tid, child_tid, false);
+        set_count(&live_task_events(child_tid).into_iter().next().unwrap(), 11);
+        let before = rb.unread();
+        on_task_exit(child_tid);
+        assert_eq!(rb.unread(), before, "no flag, no record");
+        assert_eq!(parent.read_value().0, 11, "the fold is unconditional");
     }
 
     #[test]

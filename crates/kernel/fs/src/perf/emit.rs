@@ -16,6 +16,7 @@ use super::counter::{format_group, format_one, MemberRead, SwSource, TaskCount};
 use super::event::{now_ns, PerfEvent};
 use super::overflow::account;
 use super::registry;
+use super::throttle;
 use super::sample::{lost_record, sample_record, SampleValues};
 use super::uapi::{fmt, record, sample};
 
@@ -32,6 +33,8 @@ pub fn init() {
     // The bottom half that runs the opportunities the runqueue-locked sites
     // parked — the reference's `irq_work`, on the mechanism oxide has.
     sched::perf_sw::init_softirq();
+    // The tick that releases throttled events (`perf_event_task_tick`).
+    super::throttle::init();
 }
 
 /// `perf_event_switch(task, next_prev, sched_in)` — the reference emits BOTH
@@ -125,6 +128,10 @@ pub fn deliver(ev: &Arc<PerfEvent>, site: &SwSite, pid: u32, tid: u32,
         // A disabled event counts nothing and samples nothing —
         // `perf_swevent_event`'s `state != PERF_EVENT_STATE_ACTIVE` return.
         if !g.counter.enabled { return; }
+        // A throttled event drops the whole opportunity, which is what makes
+        // the throttle bound the sampling RATE rather than just the number of
+        // records that reach the ring.
+        if throttle::is_throttled(&g.interrupts) { return; }
         match forced_period {
             Some(p) => (1, p),
             None => {
@@ -151,16 +158,38 @@ pub fn deliver(ev: &Arc<PerfEvent>, site: &SwSite, pid: u32, tid: u32,
     let st = out.attr.sample_type;
 
     let mut wake = false;
-    for _ in 0..fired {
-        let Some(rec) = sample_record(st, misc, &v, read_payload.as_slice()) else {
-            rb.note_lost();
-            ev.state.lock().lost_samples += 1;
-            continue;
+    let seq = throttle::seq(site.cpu);
+    let budget = sched::perf_sw::max_samples_per_tick();
+    for i in 0..fired {
+        // The FIRST record of a counter-site burst is exempt from the budget
+        // and every one after it is charged, so a single counter overflow can
+        // never throttle on its own. A timer-driven expiry arrives one record
+        // at a time and IS charged, which is what bounds a short-period clock
+        // event.
+        let hit = {
+            let mut g = ev.state.lock();
+            throttle::account(&mut g.interrupts, seq, i > 0 || forced_period.is_some(), budget)
+        };
+        if hit {
+            // The marker goes in first and THIS record still goes out, then
+            // the burst stops: the marker precedes the last sample the event is
+            // allowed for this tick.
+            throttle::park_group(ev, site.cpu);
+        }
+        let rec = match sample_record(st, misc, &v, read_payload.as_slice()) {
+            Some(r) => r,
+            None    => {
+                rb.note_lost();
+                ev.state.lock().lost_samples += 1;
+                if hit { break; }
+                continue;
+            }
         };
         match rb.output(rec.as_slice(), |lost| lost_record::<{ super::sample::MAX_RECORD }>(st, sample_id_all, lost, &v)) {
             Some(w) => wake |= w.wakeup,
             None    => ev.state.lock().lost_samples += 1,
         }
+        if hit { break; }
     }
     // `perf_output_wakeup`: the wake belongs to the event that OWNS the ring
     // (an inherited child publishes into its parent's), and runs after the
