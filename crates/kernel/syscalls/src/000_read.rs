@@ -36,7 +36,7 @@ pub fn sys_read(args: &SyscallArgs) -> i64 {
         }
         if !uaccess::access_ok(buf, cnt) { return -(Errno::Efault.as_i32() as i64); }
         cnt = crate::userbuf::clamp_rw_count(cnt);
-        let user = crate::recv_user::RecvUser {
+        let user = crate::recv_user::RecvUser { sink: crate::recv_user::Sink::User,
             msgp: 0, name: 0, namelen: 0, name_len_ptr: 0, control: 0, controllen: 0,
             iov: alloc::vec![crate::recv_user::IoVec { base: buf, len: cnt }], capacity: cnt,
             layout: crate::msg_layout::MsgLayout::Native,

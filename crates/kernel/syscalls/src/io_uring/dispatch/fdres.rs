@@ -37,6 +37,22 @@ pub fn fixed_file(inode: &IoUringInode, idx: u32) -> Result<Arc<File>, i64> {
     }
 }
 
+/// Take an owning handle on a registered buffer.
+///
+/// Owning on purpose: the transfer below it sleeps, and the registration
+/// table's lock may not be held across that. The handle is what keeps the
+/// pinned frames alive if the registration is replaced or dropped while the
+/// transfer runs — a fixed-buffer transfer is exactly where a registration
+/// must not be able to outlive its pin. # C: O(1)
+pub fn reg_buf(inode: &IoUringInode, idx: u32)
+    -> Result<Arc<crate::io_uring::pin::PinnedRange>, i64>
+{
+    let g = inode.reg.lock();
+    let Some(bufs) = g.buffers.as_ref() else { return Err(err(Errno::Efault)) };
+    let Some(slot) = bufs.get(idx as usize) else { return Err(err(Errno::Efault)) };
+    Ok(Arc::clone(&slot.buf))
+}
+
 /// A descriptor installed for the life of one operation.
 pub struct ScratchFd(pub i32);
 

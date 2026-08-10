@@ -31,6 +31,8 @@ mod msg_layout {
 }
 
 mod recv_user {
+    pub enum Sink { User }
+
     pub struct IoVec {
         pub base: u64,
         pub len: usize,
@@ -46,6 +48,7 @@ mod recv_user {
         pub iov: alloc::vec::Vec<IoVec>,
         pub capacity: usize,
         pub layout: crate::msg_layout::MsgLayout,
+        pub sink: Sink,
     }
 }
 
