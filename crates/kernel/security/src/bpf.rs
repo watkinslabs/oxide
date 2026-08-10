@@ -42,7 +42,7 @@ mod link;
 mod fd;
 pub mod sk_filter;
 pub mod sk_reuseport;
-pub(crate) mod map;
+pub mod map;
 mod ids;
 mod token;
 mod object;

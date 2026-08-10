@@ -6,7 +6,7 @@ use syscall::errno::Errno;
 
 use super::group::ReuseportGroup;
 use super::slot;
-use crate::bpf_filter::FilterProgram;
+use super::prog::GroupProgram;
 use crate::sock::{InetSocket, SockKind};
 
 /// Whether the socket already occupies a transport hash, which is what decides
@@ -35,7 +35,7 @@ pub fn alloc_for_unhashed(sock: &Arc<InetSocket>) -> Result<Arc<ReuseportGroup>,
 }
 
 /// Install a selection program over this socket's group. # C: O(program bytes)
-pub fn attach_prog(sock: &Arc<InetSocket>, prog: FilterProgram) -> Result<(), Errno> {
+pub fn attach_prog(sock: &Arc<InetSocket>, prog: GroupProgram) -> Result<(), Errno> {
     let group = if is_hashed(sock) {
         // Already hashed without a group means the socket was bound without
         // SO_REUSEPORT, so no group can be created for it now.

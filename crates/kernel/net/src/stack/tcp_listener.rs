@@ -19,7 +19,7 @@ pub(super) fn reuseport_flow_hash(src_ip: IpAddr, src_port: u16, dst_port: u16) 
 /// the named form of the flow distribution `Select::Hash` applies, so a test
 /// can pin it without going through a group. # C: O(address bytes)
 #[cfg_attr(not(test), allow(dead_code))]
-pub(super) fn select_reuseport_listener(src_ip: IpAddr, src_port: u16,
+pub(crate) fn select_reuseport_listener(src_ip: IpAddr, src_port: u16,
                                          dst_port: u16, bucket_len: usize) -> usize {
     if bucket_len <= 1 { return 0; }
     reuseport_flow_hash(src_ip, src_port, dst_port) as usize % bucket_len
@@ -45,7 +45,8 @@ pub(crate) fn select_listener_index(bucket: &[Arc<TcpListenEntry>], src_ip: IpAd
             group.select(crate::reuseport::SelectInput {
                 hash, members_len: bucket.len(), transport: seg, hdr_len, eth_protocol,
                 ip_protocol: crate::addr::IpProto::Tcp as u8,
-            })
+                family: crate::reuseport::family_of(eth_protocol),
+            }, |handle| crate::reuseport::prog::member_index(handle, bucket))
         })
         .index(hash, bucket.len())
 }

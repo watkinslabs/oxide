@@ -173,6 +173,48 @@ impl<'a> RunMemory<'a> {
         self.pin_value(value, map.map_flags, 0).unwrap_or(0)
     }
 
+    /// Name one member of the running reuseport group through a socket map.
+    ///
+    /// The choice is recorded rather than returned: the program's own return
+    /// value stays the `SK_PASS` / `SK_DROP` action, and a program may call
+    /// this and then still refuse the packet. A call that names nothing
+    /// selectable leaves any previous selection in place and reports the
+    /// errno that says why. # C: O(1)
+    pub(super) fn sk_select_reuseport(
+        &mut self,
+        state: &mut super::HelperState,
+        map_addr: i64,
+        key_addr: i64,
+        flags: i64,
+        stack: &[u8],
+    ) -> i64 {
+        let err = |e: Errno| -(e.as_i32() as i64);
+        if flags != 0 { return err(Errno::Einval); }
+        let raw = map_addr as u64;
+        let Some(index) = raw.checked_sub(MAP_BASE).and_then(|v| usize::try_from(v).ok())
+            else { return err(Errno::Einval) };
+        let Some(inode) = self.maps.get(index) else { return err(Errno::Einval) };
+        let Some(map) = inode.private::<BpfMapInode>() else { return err(Errno::Einval) };
+        let Some(array) = map.storage.sock_array() else { return err(Errno::Einval) };
+        let mut key = Vec::new();
+        if key.try_reserve_exact(map.key_size as usize).is_err() { return err(Errno::Enomem); }
+        key.resize(map.key_size as usize, 0);
+        if self.read_bytes(key_addr, &mut key, stack).is_none() { return err(Errno::Efault); }
+        let handle = match array.lookup(&key, map.max_entries) {
+            Ok(Some(handle)) => handle,
+            Ok(None) => return err(Errno::Enoent),
+            Err(e) => return err(e),
+        };
+        let Some(runner) = state.reuseport_runner else { return err(Errno::Einval) };
+        if let Err(e) = crate::bpf::map::sockarray::select_check(
+            runner, crate::bpf::map::sockarray::sock_state(&handle))
+        {
+            return err(e);
+        }
+        state.selected_sock = Some(handle);
+        0
+    }
+
     /// Implement `bpf_skb_load_bytes`, including destination clearing on fault.
     /// # C: O(length)
     pub(super) fn skb_load_bytes(

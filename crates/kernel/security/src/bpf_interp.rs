@@ -50,6 +50,13 @@ const BPF_CALL: u8 = 0x85;
 #[derive(Default)]
 pub struct HelperState {
     pub retval: i32,
+    /// The group a reuseport selection program is running for. Absent for
+    /// every other program type, and a selection helper called without it
+    /// can name nothing.
+    pub reuseport_runner: Option<crate::bpf::map::sockarray::RunnerState>,
+    /// The member a selection program named, if it named one. A run that
+    /// ends without one leaves the group on its own distribution.
+    pub selected_sock: Option<crate::bpf::map::sockarray::SockHandle>,
 }
 
 /// Helper-call descriptor: a (helper-id, fn) pair. The interpreter hands
@@ -276,6 +283,21 @@ pub fn run_socket_filter(insns: &[u8], context: &[u8], packet: &[u8]) -> Option<
     run_inner(insns, &[], &mut HelperState::default(), memory)
 }
 
+/// Run a reuseport selection program: a read-only `sk_reuseport_md` in R1,
+/// the frame reachable through the packet-load helper, and the program's own
+/// relocated map set reachable through the selection helper.
+/// # C: O(insn count × step budget)
+pub fn run_reuseport(
+    insns: &[u8],
+    context: &[u8],
+    packet: &[u8],
+    maps: &[vfs::InodeRef],
+    helper_state: &mut HelperState,
+) -> Option<i64> {
+    let memory = RunMemory::new(Context::ReadOnly(context), packet, maps);
+    run_inner(insns, &[], helper_state, memory)
+}
+
 /// Stateful helper variant used by cgroup effective arrays. The caller owns
 /// the state and may reuse it for each program in attachment order.
 /// # C: O(insn count × step budget)
@@ -352,6 +374,9 @@ fn run_inner(
                 }
                 crate::bpf::uapi::func_id::SKB_LOAD_BYTES => {
                     memory.skb_load_bytes(regs[2], regs[3], regs[4], &mut stack)
+                }
+                crate::bpf::uapi::func_id::SK_SELECT_REUSEPORT => {
+                    memory.sk_select_reuseport(helper_state, regs[2], regs[3], regs[4], &stack)
                 }
                 crate::bpf::uapi::func_id::KTIME_GET_COARSE_NS => coarse_monotonic_ns(),
                 _ => {

@@ -28,6 +28,8 @@ fn in_proto(prog_type: u32, func: u32) -> bool {
             matches!(prog_type, p::SOCKET_FILTER | p::CGROUP_SKB | p::SK_REUSEPORT),
         uapi::func_id::GET_RETVAL | uapi::func_id::SET_RETVAL =>
             prog_type == p::CGROUP_SOCK_ADDR,
+        // Naming a member of a reuseport group is meaningful to nothing else.
+        uapi::func_id::SK_SELECT_REUSEPORT => prog_type == p::SK_REUSEPORT,
         _ => false,
     }
 }
@@ -50,6 +52,7 @@ pub(super) fn verify_helper(
         uapi::func_id::MAP_LOOKUP_ELEM => map_lookup(state, maps)?,
         uapi::func_id::KTIME_GET_COARSE_NS => Kind::Scalar(Scalar::unknown()),
         uapi::func_id::SKB_LOAD_BYTES => skb_load_bytes(state)?,
+        uapi::func_id::SK_SELECT_REUSEPORT => sk_select_reuseport(state, maps)?,
         uapi::func_id::GET_RETVAL => Kind::Scalar(Scalar::range(-MAX_ERRNO, 0)),
         uapi::func_id::SET_RETVAL => {
             if !scalar(state.regs[1])?.i32_within(-(MAX_ERRNO as i32), 0) {
@@ -78,6 +81,29 @@ fn map_lookup(state: &State, maps: &[InodeRef]) -> Result<Kind, VerifyError> {
     let start = range(base, 0, key, crate::bpf_interp::STACK_BYTES)?;
     if !stack_ready(state, start, key) { return Err(VerifyError::UninitializedStack); }
     Ok(Kind::Value { map, offset: 0, nullable: true })
+}
+
+/// R1 context, R2 a socket-holding map, R3 an initialized stack key at least
+/// `key_size` wide, R4 a flags word that must be a constant zero — no flag is
+/// defined, so a program passing an unknown value is refused at load rather
+/// than at run time. The result is an errno or zero.
+fn sk_select_reuseport(state: &State, maps: &[InodeRef]) -> Result<Kind, VerifyError> {
+    if !matches!(state.regs[1], Kind::Context(_)) {
+        return Err(VerifyError::UnsupportedOpcode);
+    }
+    let Kind::Map(map) = state.regs[2] else { return Err(VerifyError::UnsupportedOpcode); };
+    let object = map_at(maps, map)?;
+    if object.map_type != uapi::map_type::REUSEPORT_SOCKARRAY {
+        return Err(VerifyError::UnsupportedOpcode);
+    }
+    let Kind::Stack(base) = state.regs[3] else { return Err(VerifyError::UnsafeStackAccess); };
+    let key = object.key_size as usize;
+    let start = range(base, 0, key, crate::bpf_interp::STACK_BYTES)?;
+    if !stack_ready(state, start, key) { return Err(VerifyError::UninitializedStack); }
+    if scalar(state.regs[4])?.value() != Some(0) {
+        return Err(VerifyError::UnsupportedOpcode);
+    }
+    Ok(Kind::Scalar(Scalar::range(-MAX_ERRNO, 0)))
 }
 
 /// R1 context, R2 constant packet offset, R3 stack destination, R4 constant

@@ -46,6 +46,8 @@ pub fn map_create_check(a: &Attr, caps: Caps, unpriv_disabled: bool) -> Result<M
         uapi::map_type::HASH => htab_map_alloc_check(&m, caps)?,
         uapi::map_type::ARRAY => array_map_alloc_check(&m)?,
         uapi::map_type::LPM_TRIE => lpm_map_alloc_check(&m)?,
+        uapi::map_type::REUSEPORT_SOCKARRAY => super::super::map::sockarray::alloc_check(
+            m.key_size, m.value_size, m.max_entries, m.map_flags)?,
         _ => return Err(Errno::Einval),
     }
     if unpriv_disabled && !caps.bpf_capable() { return Err(Errno::Eperm); }

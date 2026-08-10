@@ -205,11 +205,20 @@ fn install_network_hooks() {
         net::bpf_filter::FilterKind::Classic =>
             security::socket_filter::run(insns, packet),
     });
-    net::stack::install_bpf_reuseport_runner(|insns, ctx|
-        security::bpf::sk_reuseport::run(insns, security::bpf::sk_reuseport::SkReuseportContext {
-            packet: ctx.packet, eth_protocol: ctx.eth_protocol,
-            ip_protocol: ctx.ip_protocol, bind_inany: ctx.bind_inany, hash: ctx.hash,
-        }));
+    net::stack::install_bpf_reuseport_runner(|insns, maps, runner, ctx| {
+        let verdict = security::bpf::sk_reuseport::run(
+            security::bpf::sk_reuseport::Run { insns, maps, runner },
+            security::bpf::sk_reuseport::SkReuseportContext {
+                packet: ctx.packet, eth_protocol: ctx.eth_protocol,
+                ip_protocol: ctx.ip_protocol, bind_inany: ctx.bind_inany, hash: ctx.hash,
+            });
+        net::bpf_filter::ReuseportVerdict {
+            action: verdict.action, selected: verdict.selected,
+        }
+    });
+    // A socket-holding map has to be able to say what a stored socket is; the
+    // network stack is the only owner of that answer.
+    net::sock::sockarray::install();
     net::stack::install_bpf_filter_context_runner(|kind, insns, ctx| match kind {
         net::bpf_filter::FilterKind::Ebpf | net::bpf_filter::FilterKind::SkReuseport =>
             sk_filter::run(insns, SkFilterContext {

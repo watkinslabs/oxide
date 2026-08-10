@@ -18,6 +18,10 @@ use inode::{BpfMapInode, make_bpf_map_inode, map_by_id, next_live_map_id, next_m
 
 #[path = "map/inode.rs"]
 pub(crate) mod inode;
+#[path = "map/sock_elem.rs"]
+pub(crate) mod sock_elem;
+#[path = "map/sockarray.rs"]
+pub mod sockarray;
 #[path = "map/storage.rs"]
 mod storage;
 pub(crate) use storage::{BpfMapValue, MapStorage};
@@ -140,6 +144,7 @@ pub(super) fn elem(a: &Attr, op: MapOp) -> Result<i64, Errno> {
 
     let key = user::read_vec(a.u64_at(o::KEY), m.key_size as usize)?;
     let value_ptr = a.u64_at(o::VALUE);
+    if sock_elem::holds_sockets(m.map_type) { return sock_elem_op(m, op, &key, value_ptr, flags); }
     match op {
         MapOp::Lookup => lookup_to_user(m, &key, value_ptr),
         MapOp::LookupAndDelete => lookup_delete_to_user(m, &key, value_ptr),
@@ -157,6 +162,24 @@ pub(super) fn elem(a: &Attr, op: MapOp) -> Result<i64, Errno> {
                 None => Err(Errno::Enoent),
             }
         }
+    }
+}
+
+/// The socket-holding map's element commands. Its values are descriptors in
+/// and cookies out rather than bytes, so none of the byte paths below apply,
+/// and `BPF_MAP_LOOKUP_AND_DELETE_ELEM` has no meaning for it at all.
+/// # C: O(1)
+fn sock_elem_op(m: &BpfMapInode, op: MapOp, key: &[u8], value_ptr: u64, flags: u64)
+    -> Result<i64, Errno>
+{
+    match op {
+        MapOp::Lookup => sock_elem::lookup(m, key, value_ptr),
+        MapOp::Update => {
+            let val = user::read_vec(value_ptr, m.value_size as usize)?;
+            sock_elem::update(m, key, &val, flags)
+        }
+        MapOp::Delete => sock_elem::delete(m, key),
+        MapOp::LookupAndDelete => Err(Errno::Einval),
     }
 }
 
@@ -220,7 +243,11 @@ pub(super) fn get_next_key(a: &Attr) -> Result<i64, Errno> {
     let key_in: Option<Vec<u8>> = if cur_key == 0 { None }
         else { Some(user::read_vec(cur_key, m.key_size as usize)?) };
 
-    let chosen = m.storage.next_key(key_in.as_deref(), m.max_entries)?;
+    let chosen = if sock_elem::holds_sockets(m.map_type) {
+        sock_elem::next_key(m, key_in.as_deref())?
+    } else {
+        m.storage.next_key(key_in.as_deref(), m.max_entries)?
+    };
     let next = chosen.ok_or(Errno::Enoent)?;
     user::write_bytes(next_key_ptr, &next)?;
     Ok(0)

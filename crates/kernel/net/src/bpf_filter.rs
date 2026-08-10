@@ -160,8 +160,16 @@ pub fn run_program(program: &FilterProgram, packet: &[u8]) -> u32 {
 /// `(kind, insns, packet) -> Linux socket-filter u32 verdict`.
 pub type BpfFilterFn = fn(FilterKind, &[u8], &[u8]) -> u32;
 pub type BpfFilterContextFn = fn(FilterKind, &[u8], FilterContext<'_>) -> u32;
-/// `(insns, md) -> SK_DROP | SK_PASS`.
-pub type BpfReuseportFn = fn(&[u8], ReuseportContext<'_>) -> u32;
+/// `(insns, maps, running group, md) -> action plus the member named, if any`.
+pub type BpfReuseportFn = fn(&[u8], &[vfs::InodeRef],
+    security::bpf::map::sockarray::RunnerState, ReuseportContext<'_>) -> ReuseportVerdict;
+
+/// What one selection run produced: the action, and the member the program
+/// named through a socket map if it named one.
+pub struct ReuseportVerdict {
+    pub action: u32,
+    pub selected: Option<security::bpf::map::sockarray::SockHandle>,
+}
 
 static BPF_RUNNER: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 static BPF_CONTEXT_RUNNER: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
@@ -184,14 +192,17 @@ pub fn install_bpf_reuseport_runner(f: BpfReuseportFn) {
 
 /// Run one `BPF_PROG_TYPE_SK_REUSEPORT` program over the packet metadata a
 /// bind key's members are being chosen by. A kernel with no runner installed
-/// drops nothing and leaves the group on its own distribution.
+/// drops nothing, names nobody, and leaves the group on its own distribution.
 /// # C: O(program)
-pub fn run_reuseport_program(insns: &[u8], ctx: ReuseportContext<'_>) -> u32 {
+pub fn run_reuseport_program(insns: &[u8], maps: &[vfs::InodeRef],
+    runner: security::bpf::map::sockarray::RunnerState, ctx: ReuseportContext<'_>)
+    -> ReuseportVerdict
+{
     let raw = BPF_REUSEPORT_RUNNER.load(Ordering::Acquire);
-    if raw.is_null() { return SK_PASS; }
+    if raw.is_null() { return ReuseportVerdict { action: SK_PASS, selected: None }; }
     // SAFETY: install_bpf_reuseport_runner stores only this exact function signature.
     let f: BpfReuseportFn = unsafe { core::mem::transmute(raw) };
-    f(insns, ctx)
+    f(insns, maps, runner, ctx)
 }
 
 fn run_filter(kind: FilterKind, insns: &[u8], packet: &[u8]) -> u32 {
