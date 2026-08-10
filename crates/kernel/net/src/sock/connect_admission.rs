@@ -204,6 +204,6 @@ fn finish_tcp_connect(sock: &InetSocket, open: super::tcp_lifecycle::TcpOpen,
         super::fastopen_result::ConnectResult::Return => Ok(()),
         super::fastopen_result::ConnectResult::Einprogress => Err(NetError::Einprogress),
         super::fastopen_result::ConnectResult::Wait =>
-            crate::sock_io::connect_wait_established(sock, open.entry().unwrap()),
+            super::tcp_connect_wait::connect_wait_established(sock, open.entry().unwrap()),
     }
 }

@@ -365,7 +365,7 @@ pub fn accept(sock: &alloc::sync::Arc<InetSocket>) -> Result<Accepted, NetError>
     Ok(Accepted { new_sock, peer: peer_v4, unix_gc_pin: None })
 }
 
-#[cfg(all(test, target_os = "oxide-kernel"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -393,11 +393,11 @@ mod tests {
 
         connect(&sock, RemoteAddr::Unspec, false).unwrap();
 
-        if let SockKind::UnixDgram(q) = &*sock.kind.lock() {
-            assert!(q.peer().is_none());
-        } else {
-            panic!("expected unix dgram socket");
-        }
+        let cleared = match &*sock.kind.lock() {
+            SockKind::UnixDgram(q) => q.peer().is_none(),
+            _ => panic!("expected unix dgram socket"),
+        };
+        assert!(cleared);
     }
 
     #[test]

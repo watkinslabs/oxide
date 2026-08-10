@@ -11,9 +11,8 @@ pub struct UnixListener {
     pub addr: UnixAddr,
     pub path: Vec<u8>,
     state: Spinlock<UnixListenerState, UnixLockClass>,
-    /// F170: per-listener waitlist for `sys_accept`.
-    #[cfg(target_os = "oxide-kernel")]
-    pub accept_waiters: sched::live::WaitList,
+    /// F170: per-listener sleep queue for `sys_accept`.
+    pub accept_waiters: crate::sock_wait::SockWaitQueue,
     /// The listener socket's epoll subscribers.
     pub subs: Spinlock<Option<alloc::sync::Weak<vfs::PollSubscribers>>, UnixLockClass>,
     /// Bound socket owning this registry entry.  Weak prevents the registry
@@ -34,11 +33,9 @@ struct UnixListenerState {
     /// accepted connection's server end so the client's `SO_PEERPIDFD` names
     /// the listening process itself, not whatever holds its pid number later.
     owner_identity: Option<Arc<sched::pid::PidIdentity>>,
-    #[cfg(target_os = "oxide-kernel")]
     connect_sockets: Vec<alloc::sync::Weak<crate::sock::InetSocket>>,
 }
 
-#[cfg(target_os = "oxide-kernel")]
 fn wake_connect_sockets(waiters: Vec<alloc::sync::Weak<crate::sock::InetSocket>>) {
     for waiter in waiters {
         if let Some(sock) = waiter.upgrade() { sock.connect_waiters.wake_all(); }
@@ -105,11 +102,9 @@ impl UnixListener {
                 accept_q: alloc::collections::VecDeque::new(),
                 owner_cred: crate::PeerCred::default(),
                 owner_identity: None,
-                #[cfg(target_os = "oxide-kernel")]
                 connect_sockets: Vec::new(),
             }),
-            #[cfg(target_os = "oxide-kernel")]
-            accept_waiters: sched::live::WaitList::new(),
+            accept_waiters: crate::sock_wait::SockWaitQueue::new(),
             subs: Spinlock::new(None),
             owner_socket: Spinlock::new(None),
             gc: GcNode::new(),
@@ -135,10 +130,8 @@ impl UnixListener {
         if identity.is_some() { st.owner_identity = identity; }
         st.backlog = crate::sysctl::normalize_listen_backlog(backlog, somaxconn);
         st.listening = !st.closed;
-        #[cfg(target_os = "oxide-kernel")]
         let waiters = core::mem::take(&mut st.connect_sockets);
         drop(st);
-        #[cfg(target_os = "oxide-kernel")]
         wake_connect_sockets(waiters);
     }
 
@@ -186,10 +179,8 @@ impl UnixListener {
         let mut st = self.state.lock();
         let pair = st.accept_q.pop_front();
         if pair.is_none() && (st.closed || st.receive_shutdown) { return Err(crate::NetError::Einval); }
-        #[cfg(target_os = "oxide-kernel")]
         let waiters = if pair.is_some() { core::mem::take(&mut st.connect_sockets) } else { Vec::new() };
         drop(st);
-        #[cfg(target_os = "oxide-kernel")]
         wake_connect_sockets(waiters);
         pair.map(|(pair, link)| { let pin = pair.gc_node(UnixEnd::A).pin(); drop(link); (pair, pin) }).ok_or(crate::NetError::Eagain)
     }
@@ -205,7 +196,6 @@ impl UnixListener {
         pair.set_end_identity(UnixEnd::A, st.owner_identity.clone());
         st.accept_q.push_back((pair.clone(), link));
         drop(st);
-        #[cfg(target_os = "oxide-kernel")]
         self.accept_waiters.wake_all();
         self.notify_subs();
         Ok(pair)
@@ -213,7 +203,6 @@ impl UnixListener {
 
     /// Atomically queue `pair` and commit the connecting socket state.
     /// # C: O(1)
-    #[cfg(target_os = "oxide-kernel")]
     pub(crate) fn connect_socket(&self, pair: Arc<UnixPair>, sock: &Arc<crate::sock::InetSocket>) -> Result<(), crate::NetError> {
         let link = self.gc.link(&pair.gc_node(UnixEnd::A));
         let mut st = self.state.lock();
@@ -251,18 +240,13 @@ impl UnixListener {
             st.closed = true;
             st.listening = false;
             let pending = core::mem::take(&mut st.accept_q);
-            #[cfg(target_os = "oxide-kernel")]
             let waiters = core::mem::take(&mut st.connect_sockets);
             drop(st);
-            #[cfg(target_os = "oxide-kernel")]
             wake_connect_sockets(waiters);
             pending
         };
         for (pair, pin) in pending { pair.abort_unaccepted(); drop(pin); } super::collect_scm_rights();
-        #[cfg(target_os = "oxide-kernel")]
-        {
-            self.accept_waiters.wake_all();
-        }
+        self.accept_waiters.wake_all();
     }
 
     /// Latch Linux `shutdown(2)` directions without destroying a listener's
@@ -273,10 +257,8 @@ impl UnixListener {
         if how.read() { state.receive_shutdown = true; }
         if how.write() { state.send_shutdown = true; }
         let mask = listener_poll_mask(&state);
-        #[cfg(target_os = "oxide-kernel")]
         let wake_accept = state.receive_shutdown;
         drop(state);
-        #[cfg(target_os = "oxide-kernel")]
         if wake_accept { self.accept_waiters.wake_all(); }
         self.notify_subs_mask(mask);
     }
@@ -295,7 +277,6 @@ impl UnixListener {
     /// be lost — the missed-wake that stalled socket-activated userdb/userwork
     /// accepts 15–37 s each (tmpfiles-setup-dev-early's 249 s boot stall).
     /// # C: O(1)
-    #[cfg(target_os = "oxide-kernel")]
     pub fn arm_accept_wait(&self, deadline_ns: u64) -> bool {
         let st = self.state.lock();
         if !st.accept_q.is_empty() || st.closed || st.receive_shutdown { return false; }
@@ -308,7 +289,6 @@ impl UnixListener {
 
     /// Race-free backlog wait that also rechecks the connecting socket state.
     /// # C: O(1)
-    #[cfg(target_os = "oxide-kernel")]
     pub fn arm_socket_connect_wait(&self, sock: &Arc<crate::sock::InetSocket>, deadline_ns: u64) -> bool {
         let mut st = self.state.lock();
         let kind = sock.kind.lock();
@@ -328,7 +308,6 @@ impl UnixListener {
 
     /// Remove one connect-call registration after wake, signal, or timeout.
     /// # C: O(waiters)
-    #[cfg(target_os = "oxide-kernel")]
     pub fn unregister_socket_connect_wait(&self, sock: &Arc<crate::sock::InetSocket>) {
         let mut st = self.state.lock();
         if let Some(i) = st.connect_sockets.iter().position(|w| w.as_ptr() == Arc::as_ptr(sock)) {

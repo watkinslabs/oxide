@@ -1,12 +1,16 @@
 use crate::netdev::NetError;
 use crate::sock::{drain_loopback, InetSocket};
-use crate::stack::{TcpConnectWait, TcpEntry};
+#[cfg(target_os = "oxide-kernel")]
+use crate::stack::TcpConnectWait;
+use crate::stack::TcpEntry;
 
 /// F159: blocking wait for TCP connect's SYN-ACK. # C: blocks until Established or Closed
 pub(crate) fn connect_wait_established(
-    sock: &InetSocket, entry: &alloc::sync::Arc<TcpEntry>) -> Result<(), NetError>
+    sock: &InetSocket,
+    #[cfg_attr(not(target_os = "oxide-kernel"), allow(unused_variables))]
+    entry: &alloc::sync::Arc<TcpEntry>) -> Result<(), NetError>
 {
-    let deadline_ns = crate::sock::compute_deadline_ns(
+    let deadline_ns = crate::sock_clock::compute_deadline_ns(
         sock.opts.base.sndtimeo_ns.load(core::sync::atomic::Ordering::Acquire));
     loop {
         drain_loopback();
@@ -16,8 +20,7 @@ pub(crate) fn connect_wait_established(
         if sched::live::deliverable_signals_self() != 0 {
             return Err(crate::sock_intr::sock_intr_net(deadline_ns));
         }
-        #[cfg(target_os = "oxide-kernel")]
-        if deadline_ns != 0 && crate::sock_io::monotonic_ns_safe() >= deadline_ns {
+        if crate::sock_clock::deadline_expired(deadline_ns) {
             // Linux leaves the active open in progress when SO_SNDTIMEO
             // expires; the timed blocking call reports EINPROGRESS rather
             // than the generic would-block errno.
