@@ -181,6 +181,7 @@ mod tests {
     /// overflow can never throttle.
     #[test]
     fn the_first_record_of_a_burst_is_never_throttled() {
+        let _wheel = crate::perf::hrtimer::tests::wheel();
         let mut h = hw();
         assert!(!account(&mut h, 1, false, 1), "throttle=0 exempts the first");
         assert_eq!(h.count, 1);
@@ -189,6 +190,7 @@ mod tests {
 
     #[test]
     fn the_budget_is_per_tick_and_a_new_seq_restarts_the_count() {
+        let _wheel = crate::perf::hrtimer::tests::wheel();
         let mut h = hw();
         for _ in 0..10 { assert!(!account(&mut h, 7, true, 100)); }
         assert_eq!(h.count, 10);
@@ -200,6 +202,7 @@ mod tests {
 
     #[test]
     fn crossing_the_budget_reports_a_throttle_at_exactly_the_limit() {
+        let _wheel = crate::perf::hrtimer::tests::wheel();
         let mut h = hw();
         for i in 1..4 { assert!(!account(&mut h, 1, true, 4), "interrupt {i}"); }
         assert!(account(&mut h, 1, true, 4), "the fourth interrupt hits the limit");
@@ -210,6 +213,7 @@ mod tests {
     /// assertion fails.
     #[test]
     fn park_and_release_move_the_sentinel() {
+        let _wheel = crate::perf::hrtimer::tests::wheel();
         let mut h = hw();
         assert!(!is_throttled(&h));
         park(&mut h);
@@ -228,6 +232,7 @@ mod tests {
     /// tick touching any event.
     #[test]
     fn advancing_a_cpu_moves_only_that_cpus_generation() {
+        let _wheel = crate::perf::hrtimer::tests::wheel();
         let (a, b) = (MAX_CPUS - 1, MAX_CPUS - 2);
         let (sa, sb) = (seq(a), seq(b));
         advance(a);
@@ -239,6 +244,7 @@ mod tests {
 
     #[test]
     fn the_parked_count_is_taken_by_the_tick_that_reads_it() {
+        let _wheel = crate::perf::hrtimer::tests::wheel();
         let cpu = MAX_CPUS - 3;
         advance(cpu);
         assert!(!any_throttled(cpu));
@@ -311,6 +317,7 @@ mod tests {
     /// opportunity in the same tick produces nothing at all.
     #[test]
     fn a_burst_past_the_budget_parks_the_event_and_marks_the_ring() {
+        let _wheel = crate::perf::hrtimer::tests::wheel();
         let (_g, saved) = with_budget_of_one();
         let ev = mapped(samp::IP);
         let rb = ev.buffer().unwrap();
@@ -333,6 +340,7 @@ mod tests {
     /// counterpart, and sampling resumes.
     #[test]
     fn the_next_tick_releases_the_event_and_marks_the_ring() {
+        let _wheel = crate::perf::hrtimer::tests::wheel();
         let (_g, saved) = with_budget_of_one();
         let ev = mapped(samp::IP);
         let rb = ev.buffer().unwrap();
@@ -359,6 +367,7 @@ mod tests {
     /// above are measuring the budget and not some unrelated cap.
     #[test]
     fn positive_control_a_budget_out_of_reach_throttles_nothing() {
+        let _wheel = crate::perf::hrtimer::tests::wheel();
         let (_g, saved) = with_budget_of_one();
         sched::perf_sw::set_sample_rate(saved.max(100_000));
         let ev = mapped(samp::IP);
@@ -376,6 +385,7 @@ mod tests {
     /// consumer can attribute the throttle to the stream it belongs to.
     #[test]
     fn the_marker_carries_time_id_and_stream_id() {
+        let _wheel = crate::perf::hrtimer::tests::wheel();
         let (_g, saved) = with_budget_of_one();
         let ev = mapped(samp::IP);
         let rb = ev.buffer().unwrap();
@@ -408,6 +418,7 @@ mod tests {
     /// would let one CPU's tick reset another's budget.
     #[test]
     fn an_out_of_range_cpu_is_dropped_not_aliased() {
+        let _wheel = crate::perf::hrtimer::tests::wheel();
         let s0 = seq(0);
         note_throttled(MAX_CPUS);
         assert_eq!(advance(MAX_CPUS), 0);

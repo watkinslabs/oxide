@@ -165,5 +165,25 @@ pub fn arm() {
 #[cfg(not(target_os = "oxide-kernel"))]
 pub fn arm() {}
 
+/// Exclusive right to run — or to be safe from — the periodic walk.
+///
+/// `tick` and `run_itable_init` walk EVERY registered mount, not the caller's,
+/// and a mount registers itself the moment it is opened. So a case that drives
+/// the walk advances the state of mounts belonging to cases running beside it:
+/// it closes out a group another case started, stamping that mount's `last_ns`
+/// with a timestamp that case never wrote, and it initialises inode tables a
+/// case was about to make assertions about. Both were measured — 5 failures in
+/// 400 runs of the whole binary across three cases, in two different modules.
+///
+/// Every case that drives the walk takes this, and so does every case whose
+/// own mount must not be walked underneath it. Registration is NOT serialised:
+/// other files hold live mounts throughout and that is harmless.
+/// # C: O(wait)
+#[cfg(test)]
+pub(crate) fn test_walk_claim() -> std::sync::MutexGuard<'static, ()> {
+    static WALK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    WALK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 #[cfg(test)]
 mod tests;

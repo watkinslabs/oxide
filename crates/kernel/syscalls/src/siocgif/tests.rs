@@ -1,30 +1,29 @@
+// PHANTOM until the module above loses its target gate.
+//
+// This file is declared by `siocgif.rs`, which is
+// `#![cfg(target_os = "oxide-kernel")]`, and a `#[cfg(test)]` module inherits
+// that gate: none of what follows compiles under `cargo test`, so it reports
+// as neither run nor skipped. B2043 moved the parts that are pure decisions --
+// the command table, the ABI sizes, the user-range check -- into the ungated
+// `siocgif_decide`, where their cases now run and were each shown able to fail.
+//
+// What is left here needs two things a hosted build does not have: user memory
+// reachable through a raw address (`handle_sioc_in`, `siocgifname` and the
+// other entry points take a `u64` the shim copies through the exception
+// table), and `net::sock::stack()` reached from the kernel's own namespace
+// wiring. Closing the gap means giving each entry point an inner form that
+// takes an already-copied `[u8; IFREQ_SIZE]` and returns the bytes to copy
+// back, leaving the gated function as the copy in, call, copy out -- the
+// shape `docs/53` asks for. Until that happens these cases are documentation.
+
 use super::*;
+
+// The command table, the ABI sizes and the user-range check moved to
+// `crate::siocgif_decide`, which is ungated: their cases run there instead of
+// being compiled out here.
 
 use alloc::sync::Arc;
 
-#[test]
-fn classifies_sioc_getters_and_mutators() {
-    const UNKNOWN_SIOC: u64 = 0x89ff;
-    for req in [
-        SIOCGIFNAME, SIOCGIFCONF, SIOCGIFFLAGS, SIOCGIFADDR,
-        SIOCGIFBRDADDR, SIOCGIFDSTADDR, SIOCGIFNETMASK, SIOCGIFMETRIC, SIOCGIFMTU, SIOCGIFHWADDR,
-        SIOCGIFINDEX, SIOCGIFTXQLEN, SIOCGIFPFLAGS, SIOCGIFCOUNT, SIOCGIFSLAVE,
-        SIOCSIFLINK, SIOCGIFMEM, SIOCSIFMEM, SIOCGIFENCAP, SIOCSIFENCAP,
-        SIOCDRARP, SIOCGRARP, SIOCSRARP,
-        net::uapi::SIOCRTMSG,
-        SIOCGIFMAP,
-        SIOCGIFBRDADDR, SIOCGIFNETMASK, SIOCGIFMETRIC, SIOCGIFMTU, SIOCGIFHWADDR,
-        SIOCGIFINDEX, SIOCGIFTXQLEN, SIOCGIFPFLAGS, SIOCGIFCOUNT,
-        SIOCGIFMAP, net::arp::uapi::SIOCGARP,
-    ] { assert_eq!(sioc_access(req, 0), Ok(Some(SiocAccess::Get))); }
-    for req in [
-        SIOCSIFFLAGS, SIOCSIFADDR, SIOCSIFBRDADDR, SIOCSIFDSTADDR, SIOCSIFNETMASK,
-        SIOCSIFMETRIC, SIOCSIFNAME, SIOCSIFMTU, SIOCSIFHWADDR, SIOCSIFTXQLEN,
-        SIOCSIFPFLAGS, SIOCADDRT, SIOCDELRT, SIOCSIFSLAVE, SIOCSIFMAP, SIOCSIFHWBROADCAST,
-        net::arp::uapi::SIOCSARP, net::arp::uapi::SIOCDARP,
-    ] { assert_eq!(sioc_access(req, 0), Ok(Some(SiocAccess::Mutate))); }
-    assert_eq!(sioc_access(UNKNOWN_SIOC, 0), Ok(None));
-}
 
 #[test]
 fn legacy_rarp_imports_ifreq_before_terminal_enotty() {
@@ -47,20 +46,7 @@ fn ipv4_getters_distinguish_missing_iface_from_missing_address() {
     let _ = stack.ifaces.unregister(iface);
 }
 
-#[test]
-fn user_ranges_reject_overflow_and_crossing_user_end() {
-    assert!(!user_range(0, IFREQ_SIZE));
-    assert!(!user_range(u64::MAX - 7, IFREQ_SIZE));
-    assert!(!user_range(USER_VA_END - IFREQ_SIZE as u64 + 1, IFREQ_SIZE));
-    assert!(user_range(USER_VA_END - IFREQ_SIZE as u64, IFREQ_SIZE));
-    assert!(!user_range(USER_VA_END - IFCONF_SIZE as u64 + 1, IFCONF_SIZE));
-}
 
-#[test]
-fn ifreq_uses_native_pointer_union_size() {
-    assert_eq!(IFREQ_SIZE, 40);
-    assert_eq!(IFREQ_SIZE - IFNAMSIZ - 16, 8);
-}
 
 #[test]
 fn ifname_missing_index_is_enodev_and_loopback_reports_loopback_type() {

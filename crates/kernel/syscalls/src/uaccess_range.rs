@@ -56,8 +56,32 @@ pub fn range_covered(ptr: u64, len: u64, mut probe: impl FnMut(u64) -> Option<Sp
     }
 }
 
+/// Clamp a single read/write byte count to the per-transfer ceiling.
+///
+/// Lives here rather than in `userbuf`, which is target-gated: the test that
+/// pins this to the reference ceiling was written there and had never compiled.
+/// # C: O(1)
+pub(crate) fn clamp_rw_count(n: usize) -> usize {
+    core::cmp::min(n, uaccess::MAX_RW_COUNT)
+}
+
 #[cfg(test)]
 mod tests {
+    /// One transfer is capped below the signed-int ceiling and on a page
+    /// boundary; a count already under it is handed through untouched.
+    #[test]
+    fn a_transfer_is_clamped_to_the_per_transfer_ceiling() {
+        use super::clamp_rw_count;
+        let max = uaccess::MAX_RW_COUNT;
+        assert_eq!(clamp_rw_count(0), 0);
+        assert_eq!(clamp_rw_count(max - 1), max - 1);
+        assert_eq!(clamp_rw_count(max), max);
+        assert_eq!(clamp_rw_count(max + 1), max);
+        assert_eq!(clamp_rw_count(usize::MAX), max);
+        assert!(max < i32::MAX as usize, "the ceiling stays below the signed-int limit");
+        assert_eq!(max % 4096, 0, "and lands on a page boundary");
+    }
+
     use super::*;
 
     /// A probe over a sorted list of `(start, end, allowed)` VMAs.

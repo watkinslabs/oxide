@@ -147,6 +147,7 @@ mod tests {
     /// silently drops every sample, which is why this is pinned.
     #[test]
     fn the_lock_free_gate_tracks_the_table() {
+    let _perf = crate::perf::hrtimer::tests::wheel();
         let tid = NEXT_TID.fetch_add(1, Ordering::Relaxed) as u32;
         let ev = PerfEvent::new(PerfAttr::default(), SwSource::Zero, Some(tid), -1, None);
         assert!(any_registered());
@@ -160,6 +161,7 @@ mod tests {
 
     #[test]
     fn a_cpu_wide_event_registers_under_its_cpu_not_a_tid() {
+    let _perf = crate::perf::hrtimer::tests::wheel();
         let ev = PerfEvent::new(PerfAttr::default(), SwSource::Zero, None, 7, None);
         assert_eq!(live_cpu_events(7).len(), 1);
         assert!(live_cpu_events(6).is_empty());

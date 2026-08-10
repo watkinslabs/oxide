@@ -9,10 +9,10 @@ use hal::USER_VA_END;
 /// and before the file op sees the userspace buffer. # C: O(1)
 pub(crate) use uaccess::MAX_RW_COUNT;
 
-/// Clamp a single read/write byte count to Linux `MAX_RW_COUNT`. # C: O(1)
-pub(crate) fn clamp_rw_count(n: usize) -> usize {
-    core::cmp::min(n, MAX_RW_COUNT)
-}
+// The clamp itself is a decision, so it lives in the ungated `uaccess_range`
+// beside the rest of this file's decision half; the case that pins it to the
+// reference ceiling was written here and had never compiled.
+pub(crate) use crate::uaccess_range::clamp_rw_count;
 
 /// Validate that a user buffer `[ptr, ptr + len)` lies entirely
 /// below `USER_VA_END` and is `align`-byte aligned at `ptr`.
@@ -31,20 +31,6 @@ pub(crate) fn validate_user_buf(ptr: u64, len: u64, align: u64) -> Result<(), i6
         return Err(-(Errno::Efault.as_i32() as i64));
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{clamp_rw_count, MAX_RW_COUNT};
-
-    #[test]
-    fn clamp_rw_count_matches_linux_max_rw_count() {
-        assert_eq!(clamp_rw_count(0), 0);
-        assert_eq!(clamp_rw_count(MAX_RW_COUNT - 1), MAX_RW_COUNT - 1);
-        assert_eq!(clamp_rw_count(MAX_RW_COUNT), MAX_RW_COUNT);
-        assert_eq!(clamp_rw_count(MAX_RW_COUNT + 1), MAX_RW_COUNT);
-        assert_eq!(clamp_rw_count(usize::MAX), MAX_RW_COUNT);
-    }
 }
 
 /// Same as `validate_user_buf` but also confirms every page in

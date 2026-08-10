@@ -330,6 +330,7 @@ mod tests {
     /// one. A profile that swaps them blames every switch on its successor.
     #[test]
     fn a_deferred_switch_sample_names_the_charged_task_not_the_drainer() {
+    let _perf = crate::perf::hrtimer::tests::wheel();
         use sched::perf_sw::Charged;
         let attr = PerfAttr { sample_period: 1, sample_type: sample::TID,
                               ..PerfAttr::default() };
@@ -351,6 +352,7 @@ mod tests {
     /// task, which is what a drain that fell back to `current` would do.
     #[test]
     fn a_charge_against_another_task_does_not_reach_this_events_ring() {
+    let _perf = crate::perf::hrtimer::tests::wheel();
         use sched::perf_sw::Charged;
         let attr = PerfAttr { sample_period: 1, sample_type: sample::TID,
                               ..PerfAttr::default() };
@@ -368,6 +370,7 @@ mod tests {
     /// event's queue; one that does not, does not.
     #[test]
     fn a_watermark_crossing_wakes_the_events_queue() {
+    let _perf = crate::perf::hrtimer::tests::wheel();
         let attr = PerfAttr { sample_period: 1, sample_type: sample::IP,
                               ..PerfAttr::default() };
         let ev = PerfEvent::new(attr, SwSource::TaskCount(TaskCount::PageFaultsMin),

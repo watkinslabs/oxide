@@ -45,6 +45,16 @@ mod cachestat;
 pub mod process_mrelease;
 mod lsm;
 mod pkey;
+// The network-interface ioctl shim's decisions: which commands exist, whether
+// each reads or changes device state, the ABI sizes it copies, and whether a
+// named user range is usable. Ungated because `siocgif.rs` is kernel-only, so
+// the twelve cases written beside it had never compiled once.
+#[path = "siocgif/decide.rs"]
+pub(crate) mod siocgif_decide;
+// The vDSO image's dynamic-symbol walk. Ungated because `vdso.rs` is
+// kernel-only AND its one case carried an aarch64 arch gate on top, so it
+// could never have compiled in any build that runs tests.
+pub(crate) mod vdso_elf;
 mod sigaltstack_abi;
 // User-buffer range coverage, the decision half of `userbuf`'s access checks.
 // Ungated because `userbuf.rs` is kernel-only: the walk that replaced a

@@ -1,12 +1,11 @@
 //! Legacy Linux bridge ioctl ABI: raw BRCTL vectors and `SIOCDEVPRIVATE`.
 
 use super::{copied_ifname, read_ifreq, user_range, SiocAccess, IFNAMSIZ};
+// The four command numbers are declared beside the rest of the table, so the
+// ungated check that this shim's commands never fall through to that table has
+// the same numbers this file dispatches on.
+use crate::siocgif_decide::{SIOCBRADDBR, SIOCBRADDIF, SIOCBRDELBR, SIOCBRDELIF};
 use syscall::errno::Errno;
-
-const SIOCBRADDBR: u64 = 0x89a0;
-const SIOCBRDELBR: u64 = 0x89a1;
-const SIOCBRADDIF: u64 = 0x89a2;
-const SIOCBRDELIF: u64 = 0x89a3;
 const SIOCGIFBR: u64 = 0x8940;
 const SIOCSIFBR: u64 = 0x8941;
 const SIOCDEVPRIVATE: u64 = 0x89f0;
