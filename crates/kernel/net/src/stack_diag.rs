@@ -34,7 +34,7 @@ pub struct RawDiagSnapshot {
 
 const AF_INET: u8 = 2;
 const AF_INET6: u8 = 10;
-const IPPROTO_TCP: u8 = 6;
+pub(crate) const IPPROTO_TCP: u8 = 6;
 const IPPROTO_UDP: u8 = 17;
 
 // Linux TCP_* inet_diag state numbers, per the Linux TCP state-machine UAPI.
@@ -57,7 +57,7 @@ fn family(ip: IpAddr) -> u8 {
     }
 }
 
-fn tcp_diag_state(state: TcpState) -> u8 {
+pub(crate) fn tcp_diag_state(state: TcpState) -> u8 {
     match state {
         TcpState::Closed => TCP_CLOSE,
         TcpState::Listen => TCP_LISTEN,
@@ -147,7 +147,26 @@ impl NetStack {
                         });
                     }
                 }
-                for entry in tables.tcp_conns.lock().values() {
+                for slot in tables.tcp_conns.lock().values() {
+                    // A half-open request is reported from the same table as a
+                    // full socket, in the SYN-RECV it is by definition in. It
+                    // owns no queues, so both depths are zero.
+                    if let crate::stack::TcpSlot::Req(req) = slot {
+                        out.push(InetDiagSnapshot {
+                            family: family(req.local.ip),
+                            protocol,
+                            state: tcp_diag_state(crate::tcp_state::TcpState::SynRecv),
+                            local_ip: req.local.ip,
+                            local_port: req.local.port,
+                            remote_ip: req.remote.ip,
+                            remote_port: req.remote.port,
+                            ifindex: req.bound_iface().map(|id| id.raw()).unwrap_or(0),
+                            rqueue: 0,
+                            wqueue: 0,
+                        });
+                        continue;
+                    }
+                    let Some(entry) = slot.sock() else { continue; };
                     let conn = entry.conn.lock();
                     out.push(InetDiagSnapshot {
                         family: family(conn.local.ip),

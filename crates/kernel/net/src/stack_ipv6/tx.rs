@@ -322,7 +322,9 @@ impl NetStack {
             remote_ip: crate::addr::IpAddr::V6(h.dst),
             remote_port: dst_port,
         };
-        if let Some(entry) = self.inet_tables(net_ns).tcp_conns.lock().get(&key).cloned() {
+        if let Some(entry) = self.inet_tables(net_ns).tcp_conns.lock().get(&key)
+            .and_then(crate::stack::TcpSlot::sock).cloned()
+        {
             let mut c = entry.conn.lock();
             if c.peer_mss == 0 || new_mss < c.peer_mss {
                 c.peer_mss = new_mss;

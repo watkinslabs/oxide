@@ -97,8 +97,49 @@ impl TcpTimers {
     }
 }
 
+/// The one timer a half-open request owns: the SYN-ACK retransmit that also
+/// counts the deferring period. A request has no data to retransmit, no
+/// delayed acknowledgement to withhold and no keepalive to run, so it carries
+/// one slot rather than a connection's four.
+pub(crate) struct ReqTimer {
+    live: AtomicBool,
+    write: TimerSlot,
+}
+
+impl ReqTimer {
+    /// # C: O(1)
+    pub(crate) const fn new() -> Self {
+        Self { live: AtomicBool::new(false), write: TimerSlot::new() }
+    }
+}
+
+/// What a firing timer belongs to. Both kinds live in the same connection
+/// table, so both drive their deadlines through the same owned-timer
+/// registration.
+#[derive(Clone)]
+enum TimerOwner {
+    Sock(Arc<TcpEntry>),
+    Req(Arc<super::tcp_req::TcpReq>),
+}
+
+impl TimerOwner {
+    fn slot(&self, kind: TimerKind) -> &TimerSlot {
+        match self {
+            Self::Sock(entry) => entry.poll_subs.timers.slot(kind),
+            Self::Req(req) => &req.timer.write,
+        }
+    }
+
+    fn live(&self) -> &AtomicBool {
+        match self {
+            Self::Sock(entry) => &entry.poll_subs.timers.live,
+            Self::Req(req) => &req.timer.live,
+        }
+    }
+}
+
 struct TimerContext {
-    entry: Arc<TcpEntry>,
+    owner: TimerOwner,
     kind: TimerKind,
     generation: u64,
 }
@@ -112,21 +153,29 @@ fn drop_context(arg: usize) {
 fn fire_context(arg: usize, id: timer::TimerId) {
     // SAFETY: the owned timer retains this Box for the duration of the call.
     let context = unsafe { &*(arg as *const TimerContext) };
-    let timers = &context.entry.poll_subs.timers;
-    let slot = timers.slot(context.kind);
+    let slot = context.owner.slot(context.kind);
     if slot.generation.load(Ordering::Acquire) != context.generation { return; }
     if slot.id.compare_exchange(id.raw(), 0, Ordering::AcqRel, Ordering::Acquire).is_err() {
         return;
     }
     slot.deadline.store(0, Ordering::Release);
-    if !timers.live.load(Ordering::Acquire) { return; }
+    if !context.owner.live().load(Ordering::Acquire) { return; }
     let now_ns = crate::tcp_conn::ka_now_ns();
     let stack = crate::sock::stack();
+    let entry = match &context.owner {
+        TimerOwner::Req(req) => {
+            let tables = stack.inet_tables(req.net_ns());
+            stack.tcp_reqsk_timer(&tables, &req.key(), req, now_ns);
+            stack.refresh_req_timer(req);
+            return;
+        }
+        TimerOwner::Sock(entry) => entry,
+    };
     match context.kind {
-        TimerKind::Write => stack.fire_tcp_write_timer(&context.entry, now_ns),
-        TimerKind::DelAck => stack.fire_tcp_delack_timer(&context.entry, now_ns),
-        TimerKind::KeepAlive => stack.fire_tcp_keepalive_timer(&context.entry, now_ns),
-        TimerKind::Cleanup => stack.fire_tcp_cleanup_timer(&context.entry, now_ns),
+        TimerKind::Write => stack.fire_tcp_write_timer(entry, now_ns),
+        TimerKind::DelAck => stack.fire_tcp_delack_timer(entry, now_ns),
+        TimerKind::KeepAlive => stack.fire_tcp_keepalive_timer(entry, now_ns),
+        TimerKind::Cleanup => stack.fire_tcp_cleanup_timer(entry, now_ns),
     }
 }
 
@@ -155,8 +204,32 @@ pub(super) fn cancel(entry: &TcpEntry) {
     cancel_slot(&entry.poll_subs.timers.cleanup);
 }
 
+/// Cancel the SYN-ACK timer a request owns, before it leaves the table.
+/// # C: O(1)
+pub(super) fn cancel_req(req: &super::tcp_req::TcpReq) {
+    req.timer.live.store(false, Ordering::Release);
+    cancel_slot(&req.timer.write);
+}
+
+/// Publish timer ownership for a request already visible in its table.
+/// # C: O(1)
+pub(super) fn activate_req(req: &Arc<super::tcp_req::TcpReq>) {
+    req.timer.live.store(true, Ordering::Release);
+}
+
+/// Re-arm a request's SYN-ACK timer from its own accounting. # C: O(1)
+pub(super) fn arm_req(req: &Arc<super::tcp_req::TcpReq>) {
+    let expires = req.rsk.lock().expires_ns;
+    arm_owned(TimerOwner::Req(req.clone()), TimerKind::Write,
+        (expires != 0).then_some(expires));
+}
+
 fn arm_slot(entry: &Arc<TcpEntry>, kind: TimerKind, deadline: Option<u64>) {
-    let slot = entry.poll_subs.timers.slot(kind);
+    arm_owned(TimerOwner::Sock(entry.clone()), kind, deadline);
+}
+
+fn arm_owned(owner: TimerOwner, kind: TimerKind, deadline: Option<u64>) {
+    let slot = owner.slot(kind);
     let target = deadline.map_or(0, |deadline| deadline.max(1));
     if target != 0 && slot.id.load(Ordering::Acquire) != 0
         && slot.deadline.load(Ordering::Acquire) == target
@@ -169,12 +242,12 @@ fn arm_slot(entry: &Arc<TcpEntry>, kind: TimerKind, deadline: Option<u64>) {
         let _ = timer::unregister_oneshot(id);
     }
     if target == 0 { return; }
-    if !entry.poll_subs.timers.live.load(Ordering::Acquire) { return; }
-    let context = Box::new(TimerContext { entry: entry.clone(), kind, generation });
+    if !owner.live().load(Ordering::Acquire) { return; }
+    let context = Box::new(TimerContext { owner: owner.clone(), kind, generation });
     let arg = Box::into_raw(context) as usize;
     let id = timer::register_oneshot_owned(target, arg, fire_context, drop_context);
     if slot.generation.load(Ordering::Acquire) != generation
-        || !entry.poll_subs.timers.live.load(Ordering::Acquire)
+        || !owner.live().load(Ordering::Acquire)
     {
         let _ = timer::unregister_oneshot(id);
         return;
@@ -185,7 +258,7 @@ fn arm_slot(entry: &Arc<TcpEntry>, kind: TimerKind, deadline: Option<u64>) {
         return;
     }
     if slot.generation.load(Ordering::Acquire) != generation
-        || !entry.poll_subs.timers.live.load(Ordering::Acquire)
+        || !owner.live().load(Ordering::Acquire)
     {
         if slot.id.compare_exchange(id.raw(), 0, Ordering::AcqRel, Ordering::Acquire).is_ok() {
             slot.deadline.store(0, Ordering::Release);
@@ -265,6 +338,18 @@ impl NetStack {
         }
     }
 
+    /// Publish timer ownership after a request is visible in its table.
+    /// # C: O(1)
+    pub(crate) fn activate_req_timer(&self, req: &Arc<super::tcp_req::TcpReq>) {
+        activate_req(req);
+        arm_req(req);
+    }
+
+    /// Re-arm a live request's SYN-ACK deadline. # C: O(1)
+    pub(crate) fn refresh_req_timer(&self, req: &Arc<super::tcp_req::TcpReq>) {
+        arm_req(req);
+    }
+
     /// Publish timer ownership after the connection is visible in its table. # C: O(retx_q)
     pub(crate) fn activate_tcp_timers(&self, entry: &Arc<TcpEntry>) {
         entry.poll_subs.timers.live.store(true, Ordering::Release);
@@ -287,7 +372,7 @@ impl NetStack {
         let key = key(entry);
         let tables = self.inet_tables(entry.net_ns());
         if entry.conn.lock().state == crate::tcp_state::TcpState::SynRecv {
-            self.tcp_reqsk_timer(&tables, &key, entry, now_ns);
+            self.tcp_synack_timer_sock(&tables, &key, entry, now_ns);
             self.refresh_tcp_timers(entry);
             return;
         }

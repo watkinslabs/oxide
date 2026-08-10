@@ -541,10 +541,26 @@ pub fn passive_rcv_header(packet: &[u8], ipv6: bool, iif: u32) -> (u32, u8, u8) 
 
 #[cfg(test)]
 mod size_tests {
-    /// The passive-open path builds a `TcpConn` on the SOFTIRQ stack
-    /// (`build_passive_child`), and that stack is the 16 KiB per-CPU hardirq
-    /// stack whose measured peak is already ~14.5 KiB. Print-and-pin the size so
-    /// a growth shows up here rather than as a guard-page double fault.
+    /// A half-open passive connection is a request, not a connection, and the
+    /// number below is what that buys. A full socket costs `TcpEntry` bytes
+    /// (which contains the whole `TcpConn`); a request costs this, because it
+    /// owns no send buffer, no receive buffer, no retransmit queue and no
+    /// delivery telemetry — none of which can hold anything before the
+    /// handshake ends. At a full SYN backlog the difference is the whole cost
+    /// a flood is trying to impose, so it is pinned rather than assumed.
+    #[test]
+    fn a_half_open_request_costs_a_fraction_of_a_full_socket() {
+        let req = core::mem::size_of::<crate::stack::TcpReq>();
+        let sock = core::mem::size_of::<crate::stack::TcpEntry>();
+        assert!(req <= 320, "a request is {req} bytes; it must stay request-shaped");
+        assert!(req * 2 < sock,
+            "a request is {req} bytes against a socket's {sock}: the split has stopped paying");
+    }
+
+    /// The passive-open path builds a `TcpConn` on the SOFTIRQ stack, and that
+    /// stack is the 16 KiB per-CPU hardirq stack whose measured peak is already
+    /// ~14.5 KiB. Print-and-pin the size so a growth shows up here rather than
+    /// as a guard-page double fault.
     #[test]
     fn a_tcp_conn_is_small_enough_to_build_on_the_softirq_stack() {
         let n = core::mem::size_of::<super::TcpConn>();

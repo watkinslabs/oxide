@@ -98,8 +98,9 @@ fn active_and_passive_tcp_consume_the_selected_metrics() {
         remote_ip: IpAddr::V4(REMOTE),
         remote_port: 42_000,
     };
-    let child = stack.tcp_conns_map().lock().get(&key).cloned().unwrap();
-    let conn = child.conn.lock();
+    let request = stack.tcp_conns_map().lock().get(&key)
+        .and_then(crate::stack::TcpSlot::req).cloned().unwrap();
+    let conn = request.open_conn();
     assert_eq!((conn.own_mss, conn.congestion, conn.cwnd), (
         1_200, TcpCongestionControl::Reno, 7_200,
     ));

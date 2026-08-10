@@ -96,29 +96,11 @@ pub(crate) fn listener_poll_mask(accept_ready: bool, pending: u32) -> u32 {
     (if accept_ready { vfs::POLL_IN } else { 0 }) | pending
 }
 
-pub(super) fn remove_tcp_entry_exact(tables: &super::inet_tables::InetTables,
-                                     key: &TcpKey, entry: &Arc<TcpEntry>) -> bool {
-    let mut conns = tables.tcp_conns.lock();
-    if !conns.get(key).is_some_and(|current| Arc::ptr_eq(current, entry)) { return false; }
-    conns.remove(key);
-    drop(conns);
-    super::tcp_timer::cancel(entry);
-    true
-}
-
-pub(super) fn publish_passive_child(tables: &super::inet_tables::InetTables,
-                                    listener: &TcpListenEntry, key: TcpKey,
-                                    entry: &Arc<TcpEntry>) -> bool {
-    let mut conns = tables.tcp_conns.lock();
-    if listener.is_closed() || conns.contains_key(&key) {
-        drop(conns);
-        entry.release_backlog();
-        entry.close_and_wake();
-        return false;
-    }
-    conns.insert(key, entry.clone());
-    true
-}
+// Connection-table publication and removal live in `table.rs`.
+#[path = "tcp_listener/table.rs"]
+mod table;
+pub(super) use table::{publish_passive_child, publish_request, remove_tcp_entry_exact,
+    remove_tcp_request_exact, replace_request_with_child};
 
 impl TcpListenEntry {
     /// # C: O(1)
@@ -450,17 +432,29 @@ impl NetStack {
             }
         }
         let mut removed = Vec::new();
+        let mut dropped_requests = Vec::new();
         {
             let mut conns = tables.tcp_conns.lock();
-            conns.retain(|_, child| {
-                let listener_owned = !child.accepted.load(
-                    ::core::sync::atomic::Ordering::Acquire)
-                    && child.passive_listener.as_ref()
-                        .and_then(alloc::sync::Weak::upgrade)
-                        .is_some_and(|owner| Arc::ptr_eq(&owner, entry));
-                if listener_owned { removed.push(child.clone()); }
-                !listener_owned
+            conns.retain(|_, slot| match slot {
+                super::TcpSlot::Req(req) => {
+                    let owned = req.listener().is_some_and(|owner| Arc::ptr_eq(&owner, entry));
+                    if owned { dropped_requests.push(req.clone()); }
+                    !owned
+                }
+                super::TcpSlot::Sock(child) => {
+                    let listener_owned = !child.accepted.load(
+                        ::core::sync::atomic::Ordering::Acquire)
+                        && child.passive_listener.as_ref()
+                            .and_then(alloc::sync::Weak::upgrade)
+                            .is_some_and(|owner| Arc::ptr_eq(&owner, entry));
+                    if listener_owned { removed.push(child.clone()); }
+                    !listener_owned
+                }
             });
+        }
+        for req in &dropped_requests {
+            super::tcp_timer::cancel_req(req);
+            req.release_syn_backlog();
         }
         for child in queued.iter().chain(removed.iter()) {
             child.release_backlog();

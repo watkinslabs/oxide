@@ -12,7 +12,7 @@
 
 use super::*;
 use crate::tcp_hdr::flags;
-use crate::tcp_state::TcpState;
+
 use super::tcp_syncookies_tests::{child, deliver, drain, sent, head, syn_options, CLIENT_SEQ,
     SERVER};
 
@@ -90,9 +90,8 @@ fn a_completed_handshake_the_accept_queue_cannot_hold_keeps_its_request() {
     deliver(&stack, iface, 7_502, 40_002, flags::ACK, CLIENT_SEQ.wrapping_add(1),
         second.seq.wrapping_add(1), syn_options());
 
-    let held = child(&stack, 7_502, 40_002).expect("the request was KEPT, not destroyed");
-    assert_eq!(held.conn.lock().state, TcpState::SynRecv,
-        "it went back to the request stage rather than being closed");
+    assert!(super::tcp_syncookies_tests::request(&stack, 7_502, 40_002).is_some(),
+        "the request was KEPT, not destroyed, and is still a request");
     assert_eq!(listener.accept_q.lock().len(), 1, "and was not queued for accept");
     assert_eq!(listener.syn_backlog_used.load(::core::sync::atomic::Ordering::Acquire), 1,
         "it still holds its SYN-queue slot, so its SYN-ACK can retransmit");

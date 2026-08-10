@@ -83,7 +83,8 @@ impl NetStack {
     /// Find an exact TCP origin that accepts a quoted frag-needed sequence. # C: O(log N)
     pub(crate) fn tcp_frag_needed_entry_in(&self, net_ns: u64, key: TcpKey,
                                             quoted_seq: u32) -> Option<Arc<TcpEntry>> {
-        let entry = self.inet_tables(net_ns).tcp_conns.lock().get(&key).cloned()?;
+        let entry = self.inet_tables(net_ns).tcp_conns.lock().get(&key)
+            .and_then(super::TcpSlot::sock).cloned()?;
         entry.accepts_frag_needed(quoted_seq).then_some(entry)
     }
 

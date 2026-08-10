@@ -357,7 +357,18 @@ pub fn handle_error_in(stack: &NetStack, net_ns: u64, iface: crate::NetIfaceId, 
                 remote_ip:   IpAddr::V4(orig_hdr.dst),
                 remote_port: dst_port,
             };
-            if let Some(entry) = stack.inet_tables(net_ns).tcp_conns.lock().get(&key).cloned() {
+            let slot = stack.inet_tables(net_ns).tcp_conns.lock().get(&key).cloned();
+            // A hard error against a half-open request has no socket to report
+            // to: the request is abandoned instead, exactly as it is when its
+            // retransmits run out.
+            if let Some(crate::stack::TcpSlot::Req(req)) = &slot {
+                if crate::socket_error::icmp_tcp_verdict(crate::tcp_state::TcpState::SynRecv,
+                    false) == crate::socket_error::IcmpTcpVerdict::Fatal
+                {
+                    stack.drop_tcp_request(net_ns, req);
+                }
+            }
+            if let Some(entry) = slot.as_ref().and_then(crate::stack::TcpSlot::sock).cloned() {
                 let state = entry.conn.lock().state;
                 match crate::socket_error::icmp_tcp_verdict(state,
                     entry.wants_extended_errors(false))

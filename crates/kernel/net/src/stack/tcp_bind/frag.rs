@@ -98,7 +98,8 @@ impl NetStack {
         }
         if !bind.reuseaddr {
             let conns = tables.tcp_conns.lock();
-            let conflict = conns.values().any(|entry| entry.conn.lock().state
+            let conflict = conns.values().filter_map(super::super::TcpSlot::sock)
+                .any(|entry| entry.conn.lock().state
                 == crate::tcp_state::TcpState::TimeWait && entry.bind.as_ref().is_some_and(|old|
                     old.local.port == bind.local.port && addr_overlap(old, bind)
                         && iface_overlap(old.bound_iface(), bind.bound_iface())));

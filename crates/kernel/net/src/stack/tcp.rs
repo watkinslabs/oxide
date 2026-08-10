@@ -158,11 +158,28 @@ impl NetStack {
         let mut entries = Vec::new();
         for (owner, tables) in table_sets {
             let snapshot: Vec<(TcpKey, Arc<TcpEntry>)> = tables.tcp_conns.lock().iter()
-                .map(|(key, entry)| (*key, entry.clone())).collect();
+                .filter_map(|(key, slot)| Some((*key, slot.sock()?.clone()))).collect();
             entries.extend(snapshot.into_iter()
                 .map(|(key, entry)| (owner.clone(), tables.clone(), key, entry)));
         }
         entries
+    }
+
+    /// Hosted-test snapshot of the half-open requests every namespace holds.
+    /// # C: O(N_conns)
+    #[cfg(test)]
+    pub(crate) fn tcp_tick_requests(&self)
+        -> Vec<(Arc<super::inet_tables::InetTables>, TcpKey, Arc<super::TcpReq>)>
+    {
+        let tables: Vec<Arc<super::inet_tables::InetTables>> = self.inet.lock().values()
+            .map(|entry| entry.tables.clone()).collect();
+        let mut out = Vec::new();
+        for table in tables {
+            let snapshot: Vec<(TcpKey, Arc<super::TcpReq>)> = table.tcp_conns.lock().iter()
+                .filter_map(|(key, slot)| Some((*key, slot.req()?.clone()))).collect();
+            out.extend(snapshot.into_iter().map(|(key, req)| (table.clone(), key, req)));
+        }
+        out
     }
 
     /// TCP demux. Look up an established connection by 4-tuple
@@ -199,11 +216,36 @@ impl NetStack {
         };
         let tables = self.inet_tables(net_ns);
         // Established-conn lookup first.
-        let entry = {
+        let slot = {
             let g = tables.tcp_conns.lock();
             g.get(&key).cloned()
         };
-        if let Some(entry) = entry {
+        // A half-open request answers for its own 4-tuple. It owns no
+        // connection, so its segments go to the request-only check rather than
+        // to a state machine.
+        if let Some(super::TcpSlot::Req(req)) = &slot {
+            if req.bound_iface().is_some_and(|id| id != iface) { return Ok(()); }
+            let Some(listener) = req.listener() else { return Ok(()); };
+            if listener.min_hop.refuses(hop, ipv6) { return Ok(()); }
+            let protocol = match dst_ip {
+                IpAddr::V4(_) => crate::addr::eth_p::IPV4,
+                IpAddr::V6(_) => crate::addr::eth_p::IPV6,
+            };
+            if !crate::cgroup_bpf::ingress(&listener.owner, packet, protocol, iface) {
+                return Ok(());
+            }
+            let Some(keep) = crate::bpf_filter::retained_tcp_len(
+                listener.bpf_filter.verdict_with_context(crate::bpf_filter::FilterContext {
+                    packet: seg, protocol, ifindex: Some(iface.raw()),
+                    pay_offset: hdr.payload_offset() as u32,
+                    hatype: self.ifaces.lookup_in_ns(iface, net_ns)
+                        .map_or(0, |dev| dev.hardware_type()),
+                }), seg,
+            ) else { return Ok(()); };
+            return self.deliver_tcp_to_request(net_ns, src_ip, dst_ip, &seg[..keep], &hdr, key,
+                &tables, req);
+        }
+        if let Some(entry) = slot.and_then(|slot| slot.sock().cloned()) {
             if entry.bound_iface().is_some_and(|id| id != iface) { return Ok(()); }
             // The generalized hop-limit check runs before the segment reaches
             // the state machine, and drops silently.
@@ -230,15 +272,6 @@ impl NetStack {
                 }), seg,
             ) else { return Ok(()); };
             let seg = &seg[..keep];
-            // The listener-side check a segment for a half-open request passes
-            // before any state machine sees it: a deferring listener drops the
-            // bare acknowledgement, so the request stays in SYN-RECV and the
-            // peer's handshake is left unconfirmed.
-            if let Some(listener) = passive_listener.as_ref() {
-                if super::tcp_reqsk::defers_segment(&entry, listener, &hdr, seg) {
-                    return Ok(());
-                }
-            }
             // F158: wake on either recv_buf growth or terminal state
             let (_pre_len, pre_state, input, _post_len, post_state, fastopen_child, urgent, acked) = {
                 let mut c = entry.conn.lock();

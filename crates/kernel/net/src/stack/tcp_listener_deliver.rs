@@ -115,6 +115,14 @@ impl NetStack {
         // SYN-ACK from this, and a SYN whose data is taken must deliver that
         // data before the acknowledgement covering it is built.
         let plan = super::tcp_fastopen::plan(&listener, hdr, seg, src_ip, dst_ip, &metrics);
+        if !plan.accept {
+            // The ordinary passive open. Nothing about this SYN needs a
+            // connection yet, so none is kept: the negotiation runs once and
+            // what it produced is retained as a request a fraction of the
+            // size.
+            return self.open_request(net_ns, iface, src_ip, dst_ip, seg, packet, hdr, key,
+                &tables, &listener, local_ep, own_mss, path_mtu, metrics, plan, ipv6);
+        }
         let new_entry = build_passive_child(local_ep, own_mss, path_mtu, metrics, packet, &listener,
             iface, ipv6);
         plan.install(&new_entry);
@@ -147,6 +155,60 @@ impl NetStack {
             crate::mib::bump(net_ns, crate::mib::Mib::TcpPassiveOpens);
         }
         self.activate_tcp_timers(&new_entry);
+        Ok(())
+    }
+
+    /// Negotiate one SYN and keep the result as a request.
+    ///
+    /// The negotiation runs on a connection that exists only for the length of
+    /// this call — the same shape the stateless cookie answer uses — and what
+    /// it decided is recorded. The SYN-ACK is then built from that record, so
+    /// the segment this sends and the segments the retransmit timer sends come
+    /// from one place.
+    /// # C: O(segment)
+    #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
+    fn open_request(&self, net_ns: u64, iface: NetIfaceId, src_ip: IpAddr, dst_ip: IpAddr,
+        seg: &[u8], packet: &[u8], hdr: &crate::tcp_hdr::TcpHdr, key: TcpKey,
+        tables: &super::inet_tables::InetTables, listener: &Arc<TcpListenEntry>,
+        local_ep: Endpoint, own_mss: u16, path_mtu: u32,
+        metrics: crate::route_metrics::RouteMetrics, plan: super::tcp_fastopen::Plan,
+        ipv6: bool) -> NetResult<()>
+    {
+        let mut conn = alloc::boxed::Box::new(TcpConn::new_listener(local_ep));
+        conn.own_mss = own_mss;
+        conn.path_mtu = path_mtu;
+        conn.apply_route_metrics(metrics);
+        plan.install_conn(&mut conn);
+        let (iif, ttl, tos) = crate::tcp_conn::passive_rcv_header(packet, ipv6, iface.raw());
+        conn.rcv_iif = iif;
+        conn.rcv_ttl = ttl;
+        conn.rcv_tos = tos;
+        if conn.input_prevalidated(src_ip, dst_ip, seg).is_err() {
+            listener.syn_backlog_used.fetch_sub(1, ::core::sync::atomic::Ordering::AcqRel);
+            return Err(NetError::Einval);
+        }
+        // Record the handshake packet the request was opened by only where the
+        // listener asked for it. A listener that never did would otherwise
+        // give every half-open a heap copy of a SYN nobody will read, which is
+        // precisely the cost a flood is trying to impose.
+        let syn_bytes = (listener.save_syn.load(::core::sync::atomic::Ordering::Acquire) != 0)
+            .then(|| packet[..::core::cmp::min(packet.len(), crate::stack::SAVED_SYN_MAX)].to_vec());
+        let req = Arc::new(TcpReq::from_negotiated(&conn, local_ep, hdr.window, listener, iface,
+            ipv6, listener.mark.load(::core::sync::atomic::Ordering::Acquire), metrics,
+            syn_bytes));
+        drop(conn);
+        if !super::tcp_listener::publish_request(tables, listener, key, &req) { return Ok(()); }
+        let segment = req.synack();
+        if let Err(error) = self.send_tcp_segment_in(net_ns, dst_ip, src_ip, &segment, 0,
+            listener.bound_iface(), super::tcp_tx::TcpTxPolicy::Listener(listener))
+        {
+            req.release_syn_backlog();
+            super::tcp_listener::remove_tcp_request_exact(tables, &key, &req);
+            return Err(error);
+        }
+        crate::mib::bump(net_ns, crate::mib::Mib::TcpPassiveOpens);
+        self.activate_req_timer(&req);
         Ok(())
     }
 }

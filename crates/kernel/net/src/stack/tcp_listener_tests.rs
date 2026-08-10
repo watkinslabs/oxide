@@ -271,6 +271,7 @@ fn duplicate_tuple_publication_preserves_first_child_and_one_backlog_slot() {
     let tables = stack.inet_tables(owner.id().as_u64());
     assert!(!publish_passive_child(&tables, &listener, duplicate_key, &duplicate));
     assert!(tables.tcp_conns.lock().get(&key)
+        .and_then(crate::stack::TcpSlot::sock)
         .is_some_and(|current| Arc::ptr_eq(current, &first)));
     assert_eq!(listener.syn_backlog_used.load(::core::sync::atomic::Ordering::Acquire), 1);
     assert_eq!(duplicate.conn.lock().state, crate::tcp_state::TcpState::Closed);
@@ -288,10 +289,11 @@ fn stale_exact_removal_does_not_delete_tuple_replacement() {
     let (_replacement_key, replacement) = reserved_child(
         &listener, 51_006, crate::tcp_state::TcpState::SynRecv);
     let tables = stack.inet_tables(owner.id().as_u64());
-    tables.tcp_conns.lock().insert(key, replacement.clone());
+    tables.tcp_conns.lock().insert(key, crate::stack::TcpSlot::Sock(replacement.clone()));
 
     assert!(!remove_tcp_entry_exact(&tables, &key, &stale));
     assert!(tables.tcp_conns.lock().get(&key)
+        .and_then(crate::stack::TcpSlot::sock)
         .is_some_and(|current| Arc::ptr_eq(current, &replacement)));
     stale.release_backlog();
     replacement.release_backlog();
