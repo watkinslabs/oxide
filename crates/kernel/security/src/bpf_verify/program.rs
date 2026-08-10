@@ -33,7 +33,7 @@ use state::{
     wide_slots,
 };
 
-pub use context::SK_FILTER_CONTEXT_BYTES;
+pub use context::{SK_FILTER_CONTEXT_BYTES, SK_REUSEPORT_CONTEXT_BYTES};
 
 /// Everything the per-type rules need to judge one program: its Linux
 /// program type, the attach direction it declared, and — for a program

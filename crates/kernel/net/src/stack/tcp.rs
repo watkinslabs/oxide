@@ -91,7 +91,10 @@ impl NetStack {
             let s = c.local_close().map_err(|_| NetError::Eio)?;
             (s, c.local.ip, c.remote.ip, ecn_tos(&c))
         };
-        super::tcp_fastopen::drain_client(self, entry, crate::tcp_conn::ka_now_ns());
+        let now_ns = crate::tcp_conn::ka_now_ns();
+        super::tcp_fastopen::drain_client(self, entry, now_ns);
+        // What this connection measured about the path outlives it.
+        super::tcp_metrics::record_to_cache(entry, now_ns);
         let result = self.send_tcp_segment_in(entry.net_ns(), src, dst, &seg, tos,
             entry.bound_iface(), TcpTxPolicy::Entry(entry));
         if result.is_ok() { stamp_last_sent(entry, 1); }
@@ -288,6 +291,13 @@ impl NetStack {
                 }
                 Err(_) => return Err(NetError::Einval),
             };
+            // The handshake is over, so what this host remembers about the
+            // destination seeds the connection before it sends any data.
+            if pre_state != crate::tcp_state::TcpState::Established
+                && post_state == crate::tcp_state::TcpState::Established
+            {
+                super::tcp_metrics::seed_from_cache(&entry);
+            }
             if pre_state == crate::tcp_state::TcpState::SynRecv
                 && post_state == crate::tcp_state::TcpState::Established
                 && fastopen_child

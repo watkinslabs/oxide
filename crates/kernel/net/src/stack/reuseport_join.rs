@@ -36,8 +36,12 @@ fn resolve(existing: Option<Arc<ReuseportGroup>>, sock_slot: &ReuseportSlot)
         .unwrap_or_else(ReuseportGroup::new)
 }
 
+/// `inany` is whether the joining socket was bound to a wildcard address.
+/// The group's own flag is sticky: one wildcard member makes the whole key
+/// wildcard-bound as far as a selection program is concerned.
 fn publish(sock_slot: &ReuseportSlot, endpoint_slot: &ReuseportSlot,
-           group: Arc<ReuseportGroup>) {
+           group: Arc<ReuseportGroup>, inany: bool) {
+    group.note_bind_inany(inany);
     slot::join(sock_slot, &group);
     slot::set_endpoint_group(endpoint_slot, Some(group));
 }
@@ -54,7 +58,8 @@ impl NetStack {
                 .find(|old| !Arc::ptr_eq(old, endpoint) && udp4_same_key(old, endpoint))
                 .and_then(|old| slot::group(&old.reuseport_group))
         });
-        publish(sock_slot, &endpoint.reuseport_group, resolve(existing, sock_slot));
+        publish(sock_slot, &endpoint.reuseport_group, resolve(existing, sock_slot),
+            endpoint.bound_ip.is_unspecified());
     }
 
     /// Join one published IPv6 UDP endpoint's owning socket to the SO_REUSEPORT
@@ -69,7 +74,8 @@ impl NetStack {
                 .find(|old| !Arc::ptr_eq(old, endpoint) && udp6_same_key(old, endpoint))
                 .and_then(|old| slot::group(&old.reuseport_group))
         });
-        publish(sock_slot, &endpoint.reuseport_group, resolve(existing, sock_slot));
+        publish(sock_slot, &endpoint.reuseport_group, resolve(existing, sock_slot),
+            endpoint.bound_ip.is_unspecified());
     }
 
     /// Join one published TCP listener's owning socket to the SO_REUSEPORT group
@@ -85,6 +91,7 @@ impl NetStack {
                 .find(|old| !Arc::ptr_eq(old, listener) && tcp_same_key(old, listener))
                 .and_then(|old| slot::group(&old.reuseport_group))
         });
-        publish(sock_slot, &listener.reuseport_group, resolve(existing, sock_slot));
+        publish(sock_slot, &listener.reuseport_group, resolve(existing, sock_slot),
+            listener.local.ip.is_unspecified());
     }
 }

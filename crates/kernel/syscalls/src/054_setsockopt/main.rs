@@ -220,20 +220,42 @@ fn filter_errno(error: socket::FilterError) -> Errno {
     }
 }
 
-/// Resolve a SOCKET_FILTER BPF fd, preserving bad-fd versus wrong-object errors. # C: O(1)
-pub(super) fn bpf_prog(fd: i32) -> Result<net::bpf_filter::FilterProgram, Errno> {
+/// Resolve a loaded BPF program fd, preserving bad-fd versus wrong-object
+/// errors. `flavour` classifies what was found; the caller decides which
+/// types it accepts. # C: O(1)
+fn loaded_prog(fd: i32)
+    -> Result<(net::reuseport::ProgFlavour, alloc::vec::Vec<u8>), Errno>
+{
     let cur = sched::live::current().ok_or(Errno::Ebadf)?;
     // SAFETY: running task on this CPU; sole reader of the fd-table slot.
     let fdt = unsafe { cur.fd_table_ref() }.ok_or(Errno::Ebadf)?.clone();
     let f = fdt.get(fd).map_err(|_| Errno::Ebadf)?;
     let prog = f.inode().private::<security::bpf::BpfProgInode>().ok_or(Errno::Einval)?;
-    if prog.prog_type != security::bpf::BPF_PROG_TYPE_SOCKET_FILTER {
-        return Err(Errno::Einval);
-    }
-    Ok(net::bpf_filter::FilterProgram {
-        kind: net::bpf_filter::FilterKind::Ebpf,
-        insns: prog.insns.clone(),
-    })
+    let flavour = match prog.prog_type {
+        security::bpf::BPF_PROG_TYPE_SOCKET_FILTER => net::reuseport::ProgFlavour::SocketFilter,
+        security::bpf::BPF_PROG_TYPE_SK_REUSEPORT => net::reuseport::ProgFlavour::SkReuseport,
+        _ => net::reuseport::ProgFlavour::Other,
+    };
+    Ok((flavour, prog.insns.clone()))
+}
+
+/// Resolve a SOCKET_FILTER BPF fd, preserving bad-fd versus wrong-object errors. # C: O(1)
+pub(super) fn bpf_prog(fd: i32) -> Result<net::bpf_filter::FilterProgram, Errno> {
+    let (flavour, insns) = loaded_prog(fd)?;
+    if flavour != net::reuseport::ProgFlavour::SocketFilter { return Err(Errno::Einval); }
+    Ok(net::bpf_filter::FilterProgram { kind: net::bpf_filter::FilterKind::Ebpf, insns })
+}
+
+/// Resolve the program `SO_ATTACH_REUSEPORT_EBPF` names: either flavour the
+/// reference tries, screened against the socket a selection program would
+/// have to steer. # C: O(1)
+pub(super) fn bpf_reuseport_prog(sock: &net::sock::InetSocket, fd: i32)
+    -> Result<net::bpf_filter::FilterProgram, Errno>
+{
+    let (flavour, insns) = loaded_prog(fd)?;
+    let shape = net::reuseport::SockShape::of(&net::sock_opts::describe(sock));
+    let kind = net::reuseport::admit_reuseport_prog(flavour, shape)?;
+    Ok(net::bpf_filter::FilterProgram { kind, insns })
 }
 
 /// Copy native `struct sock_fprog` for SO_ATTACH_FILTER. # C: O(1)

@@ -289,12 +289,12 @@ impl NetStack {
                 // map lock before touching the queue itself. wake_all
                 // takes the waitlist lock + runqueue inner; we must
                 // not hold the udp-map lock across either.
-                // Reuseport selection classifies the datagram body, so resolve
-                // it before the demux rather than per selected endpoint.
-                let datagram_body = payload
-                    .get(crate::udp::UDP_HDR_LEN..udp.length as usize).unwrap_or(&[]);
+                // A reuseport selection program sees the datagram from its
+                // transport header, so resolve it once before the demux
+                // rather than per selected endpoint.
+                let datagram = payload.get(..udp.length as usize).unwrap_or(payload);
                 let endpoints = self.udp_demux_in(net_ns, hdr.src, udp.src_port, hdr.dst,
-                    udp.dst_port, iface, datagram_body);
+                    udp.dst_port, iface, datagram);
                 let hatype = self.ifaces.lookup_in_ns(iface, net_ns)
                     .map_or(0, |dev| dev.hardware_type());
                 let gro_offered = crate::udp_gro::device_offers_gro(hatype);
@@ -337,7 +337,7 @@ impl NetStack {
                 }
                 let endpoints6 = if !has_v4 || hdr.dst.is_multicast() || hdr.dst.is_broadcast() {
                     self.udp6_demux_v4_in(net_ns, hdr.src, udp.src_port, hdr.dst, udp.dst_port,
-                        iface, datagram_body)
+                        iface, datagram)
                 } else { Vec::new() };
                 let has_v6 = !endpoints6.is_empty();
                 for q in endpoints6 {

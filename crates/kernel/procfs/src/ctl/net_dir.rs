@@ -36,6 +36,13 @@ pub const NET_SYSCTLS: &[Node] = &[
             // is reset at once, or held so the handshake can retry.
             File("tcp_abort_on_overflow", NetInt(net::net_ns::NetSysctlKey::TcpAbortOnOverflow,
                 Some((0, 1)))),
+            // A closing connection tells the per-destination metrics cache
+            // nothing, so the next connection to that path rediscovers it.
+            File("tcp_nometrics_save", NetInt(net::net_ns::NetSysctlKey::TcpNoMetricsSave,
+                Some((0, 1)))),
+            // The cache neither stores nor believes a slow-start threshold.
+            File("tcp_no_ssthresh_metrics_save",
+                NetInt(net::net_ns::NetSysctlKey::TcpNoSsthreshMetricsSave, Some((0, 1)))),
             File("tcp_fin_timeout",    NetInt(net::net_ns::NetSysctlKey::TcpFinTimeout, Some((0, INT_MAX)))),
             File("tcp_keepalive_time", NetInt(net::net_ns::NetSysctlKey::TcpKeepaliveTime, Some((0, INT_MAX)))),
             File("tcp_wmem",           PerNetBufWindowHook(tcp_wmem, set_tcp_wmem,

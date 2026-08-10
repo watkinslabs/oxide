@@ -108,6 +108,12 @@ pub enum NetSysctlKey {
     /// accept queue has no room for is reset at once or held for a retry
     /// (`crate::listen_queue::AcceptOverflow`).
     TcpAbortOnOverflow,
+    /// `net.ipv4.tcp_nometrics_save` — a closing connection tells the
+    /// per-destination cache nothing (`crate::tcp_metrics`).
+    TcpNoMetricsSave,
+    /// `net.ipv4.tcp_no_ssthresh_metrics_save` — the cache neither stores nor
+    /// believes a slow-start threshold (`crate::tcp_metrics`).
+    TcpNoSsthreshMetricsSave,
 }
 
 /// One slot of a three-value socket-buffer window. # C: O(1)
@@ -133,7 +139,9 @@ impl NetSysctlKey {
     const IPV4_IGMP_MAX_MSF: usize = Self::IPV6_AUTO_FLOWLABELS + 1;
     const TCP_MAX_SYN_BACKLOG: usize = Self::IPV4_IGMP_MAX_MSF + 1;
     const TCP_ABORT_ON_OVERFLOW: usize = Self::TCP_MAX_SYN_BACKLOG + 1;
-    const COUNT: usize = Self::TCP_ABORT_ON_OVERFLOW + 1;
+    const TCP_NOMETRICS_SAVE: usize = Self::TCP_ABORT_ON_OVERFLOW + 1;
+    const TCP_NO_SSTHRESH_METRICS_SAVE: usize = Self::TCP_NOMETRICS_SAVE + 1;
+    const COUNT: usize = Self::TCP_NO_SSTHRESH_METRICS_SAVE + 1;
 
     const fn index(self) -> usize {
         match self {
@@ -154,6 +162,8 @@ impl NetSysctlKey {
             Self::Ipv4IgmpMaxMsf => Self::IPV4_IGMP_MAX_MSF,
             Self::TcpMaxSynBacklog => Self::TCP_MAX_SYN_BACKLOG,
             Self::TcpAbortOnOverflow => Self::TCP_ABORT_ON_OVERFLOW,
+            Self::TcpNoMetricsSave => Self::TCP_NOMETRICS_SAVE,
+            Self::TcpNoSsthreshMetricsSave => Self::TCP_NO_SSTHRESH_METRICS_SAVE,
         }
     }
 
@@ -180,6 +190,8 @@ impl NetSysctlKey {
             Self::IPV4_IGMP_MAX_MSF => Self::Ipv4IgmpMaxMsf,
             Self::TCP_MAX_SYN_BACKLOG => Self::TcpMaxSynBacklog,
             Self::TCP_ABORT_ON_OVERFLOW => Self::TcpAbortOnOverflow,
+            Self::TCP_NOMETRICS_SAVE => Self::TcpNoMetricsSave,
+            Self::TCP_NO_SSTHRESH_METRICS_SAVE => Self::TcpNoSsthreshMetricsSave,
             _ => {
                 let relative = index - Self::BASE_COUNT;
                 let dev = match Ipv4ConfDev::from_index(relative / Ipv4ConfKey::COUNT) {
@@ -208,6 +220,7 @@ impl NetSysctlKey {
             Self::IPV4_IGMP_MAX_MSF => crate::sock_opts::msfilter::DEFAULT_IGMP_MAX_MSF,
             Self::TCP_MAX_SYN_BACKLOG => crate::listen_queue::DEFAULT_MAX_SYN_BACKLOG,
             Self::TCP_ABORT_ON_OVERFLOW => crate::listen_queue::DEFAULT_ABORT_ON_OVERFLOW,
+            Self::TCP_NOMETRICS_SAVE | Self::TCP_NO_SSTHRESH_METRICS_SAVE => 0,
             _ if index >= Self::WMEM_BASE && index < Self::RMEM_BASE =>
                 crate::sysctl::DEFAULT_TCP_WMEM[index - Self::WMEM_BASE],
             _ if index >= Self::RMEM_BASE && index < Self::BASE_COUNT =>
@@ -223,11 +236,29 @@ impl NetSysctlKey {
     }
 }
 
-pub struct NetSysctls { values: [AtomicI64; NetSysctlKey::COUNT] }
+/// One namespace's sysctl values.
+///
+/// The value array is a separate heap allocation reached by pointer, not an
+/// inline member, for the same reason the destination metrics cache keeps its
+/// bucket array out of line: this struct is built inside `NsNet`, which is
+/// itself assembled as a temporary before it is moved into its `Arc`, so
+/// every inline byte here is a byte on the stack of the namespace-state
+/// lookup — a path reachable from the socket destructor cascade, which is
+/// already the deepest chain in the kernel. `NetSysctlKey::COUNT` is over a
+/// hundred slots, so inline it was the largest single contributor to that
+/// frame, and it grew every time a knob was added.
+pub struct NetSysctls { values: alloc::boxed::Box<[AtomicI64]> }
 
 impl NetSysctls {
+    /// Values are pushed one at a time into a heap vector, never built as an
+    /// array temporary — the temporary is what put the whole array on the
+    /// stack. # C: O(COUNT)
     fn new() -> Self {
-        Self { values: core::array::from_fn(|index| AtomicI64::new(NetSysctlKey::default_at(index))) }
+        let mut values = alloc::vec::Vec::with_capacity(NetSysctlKey::COUNT);
+        for index in 0..NetSysctlKey::COUNT {
+            values.push(AtomicI64::new(NetSysctlKey::default_at(index)));
+        }
+        Self { values: values.into_boxed_slice() }
     }
 
     pub(crate) fn get(&self, key: NetSysctlKey) -> i64 {
@@ -249,7 +280,9 @@ pub struct NsNet {
     /// that named none of its own mints fast-open cookies from.
     pub(crate) fastopen_keys: crate::tcp_fastopen::NsKeys,
     /// The cookies this namespace's clients learned, keyed by destination.
-    pub(crate) fastopen_cache: crate::tcp_fastopen::ClientCache,
+    /// Linux `tcp_metrics_hash`: what this namespace learned about each
+    /// destination's path, and the fast-open state for the same row.
+    pub(crate) metrics_cache: crate::tcp_metrics::MetricsCache,
     /// The pause on active fast open after a path here ate one.
     pub(crate) fastopen_blackhole: crate::tcp_fastopen::Blackhole,
     pub(crate) loopback: Spinlock<Option<(crate::NetIfaceId, Arc<LoopbackDev>)>, SockLockClass>,
@@ -280,7 +313,7 @@ impl NsNet {
             ports: crate::ephemeral::State::new(),
             ping_group: crate::ping::GroupRange::new(),
             fastopen_keys: Spinlock::new(None),
-            fastopen_cache: crate::tcp_fastopen::ClientCache::new(),
+            metrics_cache: crate::tcp_metrics::MetricsCache::new(),
             fastopen_blackhole: crate::tcp_fastopen::Blackhole::new(),
             loopback: Spinlock::new(None),
         })

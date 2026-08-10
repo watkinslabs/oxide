@@ -5,17 +5,20 @@
 // Module manifest:
 // - group: the group object — program slot, member set, closed/conn bookkeeping.
 // - slot: the per-socket / per-endpoint `sk_reuseport_cb` cell and join/leave.
+// - attach: which program types `SO_ATTACH_REUSEPORT_EBPF` accepts.
 // - api: socket-level `reuseport_attach_prog` / `reuseport_detach_prog` ladders.
 // - tests: errno ladders, bind-time join, member departure, program selection.
 // - transport_tests: the same join and selection contract on IPv6 UDP and TCP.
 
+pub mod attach;
 pub mod group;
 pub mod slot;
 
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 mod api;
 
-pub use group::ReuseportGroup;
+pub use attach::{admit_reuseport_prog, ProgFlavour, SockShape};
+pub use group::{select_udp, ReuseportGroup, Select, SelectInput};
 pub use slot::{ReuseportSlot, new_slot};
 
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]

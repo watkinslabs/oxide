@@ -15,24 +15,39 @@ pub(super) fn reuseport_flow_hash(src_ip: IpAddr, src_port: u16, dst_port: u16) 
     hash.wrapping_add(src_port as u32).wrapping_add(dst_port as u32)
 }
 
-/// Select one TCP reuseport listener using the incoming four-tuple. # C: O(address bytes)
+/// Select one TCP reuseport listener using the incoming four-tuple. Kept as
+/// the named form of the flow distribution `Select::Hash` applies, so a test
+/// can pin it without going through a group. # C: O(address bytes)
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn select_reuseport_listener(src_ip: IpAddr, src_port: u16,
                                          dst_port: u16, bucket_len: usize) -> usize {
     if bucket_len <= 1 { return 0; }
     reuseport_flow_hash(src_ip, src_port, dst_port) as usize % bucket_len
 }
 
-/// Apply the listen key's reuseport program before its flow-hash distribution.
-/// # C: O(program)
+/// Apply the listen key's reuseport program before its flow-hash
+/// distribution. `None` is a segment the selection program refused, which
+/// reaches no listener at all. `seg` starts at the TCP header, which is
+/// where a `sk_reuseport_md` context's data begins; a classic filter sees it
+/// advanced past that header instead. # C: O(program)
 pub(crate) fn select_listener_index(bucket: &[Arc<TcpListenEntry>], src_ip: IpAddr,
-                                    src_port: u16, dst_port: u16, seg: &[u8]) -> usize {
-    if bucket.len() <= 1 { return 0; }
+                                    src_port: u16, dst_port: u16, seg: &[u8],
+                                    hdr_len: usize) -> Option<usize> {
+    if bucket.len() <= 1 { return Some(0); }
+    let hash = reuseport_flow_hash(src_ip, src_port, dst_port);
+    let eth_protocol = match src_ip {
+        IpAddr::V4(_) => crate::addr::eth_p::IPV4,
+        IpAddr::V6(_) => crate::addr::eth_p::IPV6,
+    };
     bucket.first()
         .and_then(|entry| crate::reuseport::slot::group(&entry.reuseport_group))
-        .and_then(|group| {
-            group.select(reuseport_flow_hash(src_ip, src_port, dst_port), bucket.len(), seg)
+        .map_or(crate::reuseport::Select::Hash, |group| {
+            group.select(crate::reuseport::SelectInput {
+                hash, members_len: bucket.len(), transport: seg, hdr_len, eth_protocol,
+                ip_protocol: crate::addr::IpProto::Tcp as u8,
+            })
         })
-        .unwrap_or_else(|| select_reuseport_listener(src_ip, src_port, dst_port, bucket.len()))
+        .index(hash, bucket.len())
 }
 
 /// Linux `__inet_lookup_listener` bucket order: the exact-address tier before
@@ -217,6 +232,7 @@ impl TcpListenEntry {
             synack_retries: ::core::sync::atomic::AtomicU8::new(0),
             fastopen,
             fastopen_no_cookie: ::core::sync::atomic::AtomicBool::new(false),
+            save_syn: ::core::sync::atomic::AtomicU8::new(0),
             synq_overflow_ns: ::core::sync::atomic::AtomicU64::new(crate::syncookies::NEVER),
             closed: ::core::sync::atomic::AtomicBool::new(false),
             #[cfg(target_os = "oxide-kernel")]

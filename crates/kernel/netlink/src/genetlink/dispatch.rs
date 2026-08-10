@@ -109,6 +109,8 @@ pub fn handle(full_msg: &[u8], net_ns: u64, cred: GenlCred) -> Vec<u8> {
             ctrl::dumppolicy(&hdr, attrs),
         (_, tcp_metrics::cmd::GET, false) if fam.name == tcp_metrics::TCP_METRICS_FAMILY_NAME =>
             tcp_metrics::get(&hdr, attrs, net_ns),
+        (_, tcp_metrics::cmd::DEL, false) if fam.name == tcp_metrics::TCP_METRICS_FAMILY_NAME =>
+            tcp_metrics::del(&hdr, attrs, net_ns),
         // A family whose op table admitted the command but whose handler lives
         // outside the controller has no in-kernel producer yet.
         _ => message::error(&hdr, Err(Errno::Eopnotsupp)),

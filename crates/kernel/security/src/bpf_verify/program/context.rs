@@ -60,6 +60,39 @@ pub mod sk_buff {
     pub const WIDE:            usize = 8;
 }
 
+/// `struct sk_reuseport_md` field offsets: the context a
+/// `BPF_PROG_TYPE_SK_REUSEPORT` program receives when a bind key with more
+/// than one member has to choose which of them takes an arriving packet.
+/// Named for the same reason as the `__sk_buff` block above — a compiled
+/// program encodes each offset directly.
+pub mod sk_reuseport_md {
+    /// Start of the directly addressable bytes, at the transport header.
+    pub const DATA:         usize = 0;
+    pub const DATA_END:     usize = 8;
+    /// Packet length measured from the transport header.
+    pub const LEN:          usize = 16;
+    /// Link-layer protocol in network order, e.g. `ETH_P_IP`.
+    pub const ETH_PROTOCOL: usize = 20;
+    /// Transport protocol in host order, e.g. `IPPROTO_TCP`.
+    pub const IP_PROTOCOL:  usize = 24;
+    /// Whether the group was created for a wildcard-bound socket.
+    pub const BIND_INANY:   usize = 28;
+    /// Flow hash over the packet's four tuple.
+    pub const HASH:         usize = 32;
+    /// 4 bytes of padding before the pointer pair.
+    pub const PADDING:      usize = 36;
+    pub const SK:           usize = 40;
+    pub const MIGRATING_SK: usize = 48;
+    pub const SIZE:         usize = 56;
+    /// Word width of every `__u32` member.
+    pub const WORD:         usize = 4;
+    /// Width of the pointer-shaped members.
+    pub const WIDE:         usize = 8;
+}
+
+/// Bytes of context this kernel publishes for a reuseport selection program.
+pub const SK_REUSEPORT_CONTEXT_BYTES: usize = sk_reuseport_md::SIZE;
+
 /// Bytes of context this kernel publishes for a socket filter. The whole
 /// `struct __sk_buff` is materialised so that field admission is decided by
 /// the field rules below rather than by where a buffer happens to stop;
@@ -80,6 +113,7 @@ use crate::bpf::iter_context_bytes;
 pub(super) fn context_size(profile: &Profile) -> usize {
     match (profile.prog_type, profile.hook) {
         (uapi::prog_type::SOCKET_FILTER, _) => SK_FILTER_CONTEXT_BYTES,
+        (uapi::prog_type::SK_REUSEPORT, _) => SK_REUSEPORT_CONTEXT_BYTES,
         (uapi::prog_type::LSM, Some(hook)) => bpf_lsm::context_bytes(hook),
         (uapi::prog_type::TRACING, _) => iter_context_bytes(),
         _ => CGROUP_CONTEXT_BYTES,
@@ -96,6 +130,7 @@ pub(super) fn valid_context(
 ) -> bool {
     match profile.prog_type {
         uapi::prog_type::SOCKET_FILTER => sk_filter_access(offset, size, write),
+        uapi::prog_type::SK_REUSEPORT => sk_reuseport_access(offset, size, write),
         uapi::prog_type::CGROUP_SKB =>
             !write && size == sk_buff::WORD
                 && matches!(offset, sk_buff::LEN | sk_buff::PROTOCOL | sk_buff::IFINDEX),
@@ -157,6 +192,31 @@ fn sk_filter_access(offset: usize, size: usize, write: bool) -> bool {
     if hidden { return false; }
     if write && !starts_in(offset, sk_buff::CB, sk_buff::CB_END) { return false; }
     skb_field_access(offset, size, write) && modelled_sk_filter_field(offset, size)
+}
+
+/// `struct sk_reuseport_md` access contract. Nothing in this context is
+/// writable, and the four members whose value is a kernel pointer — the two
+/// packet bounds and the two socket handles — are refused outright: this
+/// kernel publishes no pointer a selection program could follow, so serving
+/// them as zeroes would let a program believe an empty packet and a socket
+/// at address zero. A program reads the packet through `bpf_skb_load_bytes`
+/// against `len`, which is the same route a socket filter takes.
+/// # C: O(1)
+fn sk_reuseport_access(offset: usize, size: usize, write: bool) -> bool {
+    if write || size == 0 || !size.is_power_of_two() || offset % size != 0 { return false; }
+    // The access lies wholly inside one published member. Width is bounded by
+    // that alone: a member is one word, so a doubleword read of one is an
+    // access running off its end.
+    modelled_sk_reuseport_field(offset, size)
+}
+
+/// Members the reuseport context builder actually fills, each read whole or
+/// as a power-of-two slice that stays inside it. # C: O(1)
+fn modelled_sk_reuseport_field(offset: usize, size: usize) -> bool {
+    use sk_reuseport_md as md;
+    [md::LEN, md::ETH_PROTOCOL, md::IP_PROTOCOL, md::BIND_INANY, md::HASH]
+        .into_iter()
+        .any(|field| within(offset, size, field, field + md::WORD))
 }
 
 /// Field rules shared by every skb-context program type. # C: O(1)

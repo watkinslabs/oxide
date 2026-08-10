@@ -7,7 +7,14 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 use sync::{Spinlock, Socket as SockLockClass};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum FilterKind { Classic, Ebpf }
+pub enum FilterKind {
+    Classic,
+    Ebpf,
+    /// `BPF_PROG_TYPE_SK_REUSEPORT`: a reuseport selection program, which
+    /// reads `sk_reuseport_md` rather than `__sk_buff` and answers with an
+    /// action rather than a byte count. Only a reuseport group runs one.
+    SkReuseport,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FilterProgram {
@@ -25,6 +32,22 @@ pub struct FilterContext<'a> {
     pub ifindex: Option<u32>,
     pub pay_offset: u32,
     pub hatype: u16,
+}
+
+/// `SK_DROP`: the selection program refuses the packet.
+pub const SK_DROP: u32 = 0;
+/// `SK_PASS`: the selection program is content with the group's answer.
+pub const SK_PASS: u32 = 1;
+
+/// Packet metadata a reuseport selection program is entitled to see. The
+/// bytes start at the transport header, which is where the reference leaves
+/// this program type's data pointer.
+pub struct ReuseportContext<'a> {
+    pub packet: &'a [u8],
+    pub eth_protocol: u16,
+    pub ip_protocol: u8,
+    pub bind_inany: bool,
+    pub hash: u32,
 }
 
 struct FilterState {
@@ -137,9 +160,12 @@ pub fn run_program(program: &FilterProgram, packet: &[u8]) -> u32 {
 /// `(kind, insns, packet) -> Linux socket-filter u32 verdict`.
 pub type BpfFilterFn = fn(FilterKind, &[u8], &[u8]) -> u32;
 pub type BpfFilterContextFn = fn(FilterKind, &[u8], FilterContext<'_>) -> u32;
+/// `(insns, md) -> SK_DROP | SK_PASS`.
+pub type BpfReuseportFn = fn(&[u8], ReuseportContext<'_>) -> u32;
 
 static BPF_RUNNER: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 static BPF_CONTEXT_RUNNER: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+static BPF_REUSEPORT_RUNNER: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
 /// Install the socket-filter runner. Idempotent. # C: O(1)
 pub fn install_bpf_filter_runner(f: BpfFilterFn) {
@@ -149,6 +175,23 @@ pub fn install_bpf_filter_runner(f: BpfFilterFn) {
 /// Install the metadata-aware socket-filter runner. Idempotent. # C: O(1)
 pub fn install_bpf_filter_context_runner(f: BpfFilterContextFn) {
     BPF_CONTEXT_RUNNER.store(f as *mut (), Ordering::Release);
+}
+
+/// Install the reuseport selection-program runner. Idempotent. # C: O(1)
+pub fn install_bpf_reuseport_runner(f: BpfReuseportFn) {
+    BPF_REUSEPORT_RUNNER.store(f as *mut (), Ordering::Release);
+}
+
+/// Run one `BPF_PROG_TYPE_SK_REUSEPORT` program over the packet metadata a
+/// bind key's members are being chosen by. A kernel with no runner installed
+/// drops nothing and leaves the group on its own distribution.
+/// # C: O(program)
+pub fn run_reuseport_program(insns: &[u8], ctx: ReuseportContext<'_>) -> u32 {
+    let raw = BPF_REUSEPORT_RUNNER.load(Ordering::Acquire);
+    if raw.is_null() { return SK_PASS; }
+    // SAFETY: install_bpf_reuseport_runner stores only this exact function signature.
+    let f: BpfReuseportFn = unsafe { core::mem::transmute(raw) };
+    f(insns, ctx)
 }
 
 fn run_filter(kind: FilterKind, insns: &[u8], packet: &[u8]) -> u32 {

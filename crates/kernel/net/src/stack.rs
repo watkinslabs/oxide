@@ -16,6 +16,8 @@
 // - tcp_timer: socket-owned write, delayed-ACK, keepalive, and cleanup timers.
 // - tcp_open: public active-open and disconnect entry points.
 // - tcp_tx: socket-owned TCP PMTU policy and family transmit dispatch.
+// - tcp_metrics: the two moments a connection reads and writes the
+//   per-destination metrics cache.
 // - tcp_pmtu: validated TCP path-MTU reduction and immediate retransmit.
 // - ipv4: IPv4 receive demux, loopback drain.
 // - ipv4_nf_defrag: IPv4 fragment gathering before netfilter hook traversal.
@@ -56,7 +58,8 @@ pub use crate::netfilter_hook::{NfHookFn, NfHookResult, install_nf_hook, NFPROTO
 use crate::netfilter_hook::nf_output;
 
 pub use crate::bpf_filter::{
-    install_bpf_filter_context_runner, install_bpf_filter_runner, BpfFilterContextFn, BpfFilterFn,
+    install_bpf_filter_context_runner, install_bpf_filter_runner, install_bpf_reuseport_runner,
+    BpfFilterContextFn, BpfFilterFn, BpfReuseportFn,
 }; // bridge in bpf_filter.rs
 
 /// The most of an opening handshake packet `TCP_SAVE_SYN` records: a maximal
@@ -90,7 +93,16 @@ mod tcp_syncookies_tests;
 #[cfg(test)]
 #[path = "stack/tcp_accept_overflow_tests.rs"]
 mod tcp_accept_overflow_tests;
+
+#[cfg(test)]
+#[path = "stack/tcp_metrics_tests.rs"]
+mod tcp_metrics_tests;
+
+#[cfg(test)]
+#[path = "stack/tcp_save_syn_tests.rs"]
+mod tcp_save_syn_tests;
 mod tcp_reqsk;
+mod tcp_metrics;
 mod tcp_open;
 pub(crate) mod tcp_writable;
 pub(crate) mod tcp_rx_trace;

@@ -17,7 +17,7 @@
 
 use crate::tcp_conn::fastopen::Cookie;
 
-use super::cache::{TRY_EXP_ASSIGNED, TRY_EXP_EXPERIMENTAL, TRY_EXP_NONE};
+use crate::tcp_metrics::store::{TRY_EXP_ASSIGNED, TRY_EXP_EXPERIMENTAL, TRY_EXP_NONE};
 use super::client::{TFO_DATA_NOT_ACKED, TFO_STATUS_NONE, TFO_SYN_RETRANSMITTED};
 
 /// One SYN-ACK answering an active open.

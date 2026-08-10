@@ -74,7 +74,7 @@ impl NetStack {
             && !crate::listen_queue::admit_unproven_request(
                 listener.syn_qlen(), crate::sysctl::tcp_max_syn_backlog_in(net_ns),
                 mode != crate::syncookies::OFF,
-                crate::listen_queue::peer_is_proven(net_ns, src_ip))
+                crate::listen_queue::peer_is_proven(net_ns, dst_ip, src_ip))
         {
             if reserved { listener.syn_backlog_used.fetch_sub(1,
                 ::core::sync::atomic::Ordering::AcqRel); }
@@ -193,7 +193,7 @@ fn select_listener_for_syn(stack: &NetStack, net_ns: u64, iface: NetIfaceId, src
     // F192: an attached SO_REUSEPORT program picks the listener; without
     // one the 4-tuple hash distributes. Single-entry bucket -> idx 0.
     let idx = super::tcp_listener::select_listener_index(
-        &bucket, src_ip, hdr.src_port, hdr.dst_port, seg);
+        &bucket, src_ip, hdr.src_port, hdr.dst_port, seg, hdr.payload_offset())?;
     let mut listener = None;
     for off in 0..bucket.len() {
         let cand = bucket[(idx + off) % bucket.len()].clone();
@@ -267,12 +267,16 @@ pub(super) fn build_passive_child(local_ep: Endpoint, own_mss: u16, path_mtu: u3
         conn.own_mss = own_mss;
         conn.path_mtu = path_mtu;
         conn.apply_route_metrics(metrics);
-        // Record the handshake packet the child was opened by, from the network
-        // header onward, so an accepted socket that asked for it with
-        // `TCP_SAVE_SYN` has something to collect. It is dropped with the
-        // connection if nobody does.
-        conn.syn_bytes = Some(
-            packet[..::core::cmp::min(packet.len(), crate::stack::SAVED_SYN_MAX)].to_vec());
+        // Record the handshake packet the child was opened by, from the
+        // network header onward, so an accepted socket that asked for it with
+        // `TCP_SAVE_SYN` has something to collect — and ONLY then. A listener
+        // that never asked would otherwise give every half-open a heap copy
+        // of a SYN nobody will ever read, which is precisely the cost a flood
+        // is trying to impose.
+        if listener.save_syn.load(::core::sync::atomic::Ordering::Acquire) != 0 {
+            conn.syn_bytes = Some(
+                packet[..::core::cmp::min(packet.len(), crate::stack::SAVED_SYN_MAX)].to_vec());
+        }
         let (iif, ttl, tos) = crate::tcp_conn::passive_rcv_header(packet, ipv6, iface.raw());
         conn.rcv_iif = iif;
         conn.rcv_ttl = ttl;

@@ -14,7 +14,9 @@
 // - `client`: what an active open does — whether the SYN waits for the first
 //   write, whether it carries data, and what its option says.
 // - `learn`: what the SYN-ACK answering an active open teaches.
-// - `cache`: the cookies this host learned, per destination.
+// - the cookies this host learned per destination live in the same row as
+//   that destination's path metrics (`crate::tcp_metrics::store`), which is
+//   where the reference keeps them too.
 // - `blackhole`: the namespace-wide pause on active fast open after a path
 //   ate one.
 // - `queue`: the per-accept-queue fast-open state — the bound on outstanding
@@ -31,7 +33,6 @@
 // can build (`docs/53§4`).
 
 mod blackhole;
-mod cache;
 mod client;
 mod cookie;
 mod flags;
@@ -42,8 +43,8 @@ mod queue;
 mod server;
 
 pub use blackhole::{detect, pause_at, pause_ns, Blackhole, Pause};
-pub use cache::{Cached, ClientCache, Metrics, BUCKETS, ENTRY_TIMEOUT_NS, RECLAIM_DEPTH,
-    TRY_EXP_ASSIGNED, TRY_EXP_EXPERIMENTAL, TRY_EXP_NONE};
+pub use crate::tcp_metrics::store::{Cached, Metrics, MetricsCache, BUCKETS, ENTRY_TIMEOUT_NS,
+    RECLAIM_DEPTH, TRY_EXP_ASSIGNED, TRY_EXP_EXPERIMENTAL, TRY_EXP_NONE};
 pub use client::{admit_send, carries_data, decide as decide_active, syn_option, Active, Open,
     SendAdmit, Source, TFO_COOKIE_UNAVAILABLE, TFO_DATA_NOT_ACKED, TFO_STATUS_NONE,
     TFO_SYN_RETRANSMITTED};

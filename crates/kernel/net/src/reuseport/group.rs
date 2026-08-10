@@ -18,6 +18,68 @@ pub struct ReuseportGroup {
     members: Spinlock<Vec<Weak<SlotCell>>, SockLockClass>,
     has_conns: AtomicBool,
     closed_socks: AtomicUsize,
+    /// Linux `sock_reuseport.bind_inany`, published to a selection program.
+    bind_inany: AtomicBool,
+}
+
+/// One arriving packet, as a reuseport group's selection sees it.
+pub struct SelectInput<'a> {
+    /// Flow hash over the four tuple: the value the group's own distribution
+    /// uses when no program answers.
+    pub hash: u32,
+    pub members_len: usize,
+    /// Packet bytes from the transport header onward.
+    pub transport: &'a [u8],
+    /// Length of that transport header, which is what a classic filter's
+    /// data pointer is advanced by before the program runs.
+    pub hdr_len: usize,
+    /// Link-layer protocol in host order, e.g. `ETH_P_IP`.
+    pub eth_protocol: u16,
+    /// Transport protocol, e.g. `IPPROTO_TCP`.
+    pub ip_protocol: u8,
+}
+
+/// What a group's selection produced for one packet.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum Select {
+    /// No program answered; the caller's flow-hash distribution decides.
+    Hash,
+    /// This member of the group takes the packet.
+    Member(usize),
+    /// The selection program refused the packet.
+    Drop,
+}
+
+/// One UDP endpoint group's selection over a received datagram, with the
+/// group's own flow-hash distribution folded in. `None` is a datagram the
+/// selection program refused, which reaches no endpoint. Shared by both
+/// families: only the link-layer protocol differs between them.
+/// # C: O(program)
+pub fn select_udp(slot: &super::slot::ReuseportSlot, hash: u32, members_len: usize,
+                  datagram: &[u8], eth_protocol: u16) -> Option<usize> {
+    super::slot::group(slot)
+        .map_or(Select::Hash, |group| {
+            group.select(SelectInput {
+                hash, members_len, transport: datagram,
+                hdr_len: crate::udp::UDP_HDR_LEN, eth_protocol,
+                ip_protocol: crate::addr::IpProto::Udp as u8,
+            })
+        })
+        .index(hash, members_len)
+}
+
+impl Select {
+    /// The member a caller takes, with the group's own flow-hash
+    /// distribution folded in as the answer for every packet no program
+    /// chose. `None` is a packet the selection program refused, which the
+    /// caller delivers to nobody. # C: O(1)
+    pub fn index(self, hash: u32, members_len: usize) -> Option<usize> {
+        match self {
+            Select::Member(index) => Some(index),
+            Select::Hash => (members_len != 0).then(|| hash as usize % members_len),
+            Select::Drop => None,
+        }
+    }
 }
 
 impl ReuseportGroup {
@@ -28,6 +90,7 @@ impl ReuseportGroup {
             members: Spinlock::new(Vec::new()),
             has_conns: AtomicBool::new(false),
             closed_socks: AtomicUsize::new(0),
+            bind_inany: AtomicBool::new(false),
         })
     }
 
@@ -47,21 +110,55 @@ impl ReuseportGroup {
     /// Observe whether a selection program is installed. # C: O(1)
     pub fn has_prog(&self) -> bool { self.prog.lock().is_some() }
 
-    /// Run the selection program and map its result onto a member index.
+    /// Run the selection program over one arriving packet.
     ///
-    /// The program's return value is the index Linux uses directly; a result at
-    /// or past the member count, an empty member set, and an absent program all
-    /// select nothing, leaving the caller on its flow-hash distribution. A
-    /// delivery path holding the received bytes supplies them as the program
-    /// input; a path holding only the flow identity supplies the hash itself.
+    /// Two program flavours share this slot and are not run the same way,
+    /// exactly as the reference distinguishes them:
+    ///
+    ///   * A classic filter answers with the member index directly, and sees
+    ///     the packet with its data pointer already advanced past the
+    ///     transport header — the payload, not the header.
+    ///   * A `BPF_PROG_TYPE_SK_REUSEPORT` program answers with an action and
+    ///     reads its input as `sk_reuseport_md`, whose data begins AT the
+    ///     transport header. It names the member it wants through a socket
+    ///     map rather than through its return value, so a program that names
+    ///     none leaves the group on its hash distribution and one that
+    ///     answers `SK_DROP` refuses the packet outright.
+    ///
+    /// An index at or past the member count, an empty member set, and an
+    /// absent program all leave the caller on the hash distribution.
     /// # C: O(program)
-    pub fn select(&self, hash: u32, members_len: usize, packet: &[u8]) -> Option<usize> {
-        if members_len == 0 { return None; }
-        let prog = self.prog.lock().clone()?;
-        let hash_bytes = hash.to_be_bytes();
-        let input = if packet.is_empty() { &hash_bytes[..] } else { packet };
-        let index = crate::bpf_filter::run_program(&prog, input) as usize;
-        (index < members_len).then_some(index)
+    pub fn select(&self, input: SelectInput<'_>) -> Select {
+        if input.members_len == 0 { return Select::Hash; }
+        let Some(prog) = self.prog.lock().clone() else { return Select::Hash; };
+        match prog.kind {
+            crate::bpf_filter::FilterKind::SkReuseport => {
+                let action = crate::bpf_filter::run_reuseport_program(&prog.insns,
+                    crate::bpf_filter::ReuseportContext {
+                        packet: input.transport,
+                        eth_protocol: input.eth_protocol,
+                        ip_protocol: input.ip_protocol,
+                        bind_inany: self.bind_inany(),
+                        hash: input.hash,
+                    });
+                if action == crate::bpf_filter::SK_DROP { Select::Drop } else { Select::Hash }
+            }
+            _ => {
+                let payload = input.transport.get(input.hdr_len..).unwrap_or(&[]);
+                let index = crate::bpf_filter::run_program(&prog, payload) as usize;
+                if index < input.members_len { Select::Member(index) } else { Select::Hash }
+            }
+        }
+    }
+
+    /// Whether any member of this group was bound to a wildcard address.
+    /// Sticky: the reference raises it and never lowers it. # C: O(1)
+    pub fn bind_inany(&self) -> bool { self.bind_inany.load(Ordering::Acquire) }
+
+    /// Record that a socket joining this group was bound to a wildcard
+    /// address. # C: O(1)
+    pub fn note_bind_inany(&self, inany: bool) {
+        if inany { self.bind_inany.store(true, Ordering::Release); }
     }
 
     /// Register one member cell. # C: O(N members)

@@ -463,3 +463,18 @@ fn the_default_option_block_leaves_the_connection_on_its_own_defaults() {
     assert!(c.quickack, "a socket is not in ping-pong mode until something puts it there");
     assert!(!c.repair);
 }
+
+#[test]
+fn asking_to_save_the_handshake_reaches_the_listener_that_decides_it() {
+    // The request that records the packet is created on the receive path,
+    // which cannot reach a socket's option block — the listening entry's
+    // projected copy is what it reads. An option write that did not reload
+    // that copy would leave every request recording the old answer.
+    let effects = |value: i32| {
+        let opts = SockOpts::default();
+        let mut c = conn();
+        write(&opts, &mut c, TCP_SAVE_SYN, value)
+    };
+    assert!(effects(1).listener, "a live listener has to be told");
+    assert!(effects(0).listener, "and told again when the option is withdrawn");
+}

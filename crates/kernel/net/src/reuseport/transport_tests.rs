@@ -115,17 +115,17 @@ fn tcp_listeners_on_one_key_share_a_group_whose_program_picks_the_listener() {
     for member in &members { assert!(Arc::ptr_eq(&slot::group(member).unwrap(), &group)); }
 
     let src = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7));
-    let hashed = tcp_listener::select_listener_index(&bucket, src, SOURCE_PORT, PORT, b"seg");
+    let hashed = tcp_listener::select_listener_index(&bucket, src, SOURCE_PORT, PORT, b"seg", 0);
     for index in 0..bucket.len() {
         group.attach_prog(prog(index as u32));
-        assert_eq!(tcp_listener::select_listener_index(&bucket, src, SOURCE_PORT, PORT, b"seg"),
-            index);
+        assert_eq!(tcp_listener::select_listener_index(&bucket, src, SOURCE_PORT, PORT, b"seg", 0),
+            Some(index));
     }
     group.attach_prog(prog(bucket.len() as u32));
-    assert_eq!(tcp_listener::select_listener_index(&bucket, src, SOURCE_PORT, PORT, b"seg"),
+    assert_eq!(tcp_listener::select_listener_index(&bucket, src, SOURCE_PORT, PORT, b"seg", 0),
         hashed);
     group.detach_prog().unwrap();
-    assert_eq!(tcp_listener::select_listener_index(&bucket, src, SOURCE_PORT, PORT, b"seg"),
+    assert_eq!(tcp_listener::select_listener_index(&bucket, src, SOURCE_PORT, PORT, b"seg", 0),
         hashed);
 
     let plain = listen(&stack, OTHER_PORT, false);
