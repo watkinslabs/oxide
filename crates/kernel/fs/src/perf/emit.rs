@@ -45,10 +45,11 @@ fn on_switch(cpu: usize, n: sched::perf_sw::SwitchNote) {
     let c = cpu as i32;
     super::sideband::switch(n.prev_tid, c, true, n.preempt, n.next_pid, n.next_tid);
     super::sideband::switch(n.next_tid, c, false, false, n.prev_pid, n.prev_tid);
-    // The context half of the same call: two threads carrying clones of one
-    // context bring their per-task counters up to date against each other, so
-    // the counts are readable while both are still alive.
-    super::context::sched_out(n.prev_tid, n.next_tid);
+    // The context half of the same call: the outgoing thread's events stop
+    // counting, the incoming thread's start, and two threads carrying clones
+    // of one context bring their per-task counters up to date against each
+    // other. Stamped with the switch's own instant, not the drain's.
+    super::switch::sched_switch(n.prev_tid, n.next_tid, n.ts);
 }
 
 /// `perf_event_comm(task, exec)` — the task was renamed. `exec` is the
@@ -129,9 +130,12 @@ pub fn deliver(ev: &Arc<PerfEvent>, site: &SwSite, pid: u32, tid: u32,
     // BELOW `PerfEvent::state`, so the two are never held together.
     let (fired, period) = {
         let mut g = ev.state.lock();
-        // A disabled event counts nothing and samples nothing —
+        // An event that is not counting samples nothing —
         // `perf_swevent_event`'s `state != PERF_EVENT_STATE_ACTIVE` return.
-        if !g.counter.enabled { return; }
+        // That covers both an event disabled through its fd and one whose
+        // thread is not on a CPU: an opportunity charged to a thread cannot be
+        // taken by an event that was not scheduled in when it happened.
+        if !g.counter.counting() { return; }
         // A throttled event drops the whole opportunity, which is what makes
         // the throttle bound the sampling RATE rather than just the number of
         // records that reach the ring.

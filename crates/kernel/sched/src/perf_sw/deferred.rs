@@ -141,62 +141,6 @@ pub fn peek(cpu: usize) -> alloc::vec::Vec<Charge> {
     out
 }
 
-/// The identities of one context switch's two sides, parked by the switch site
-/// (which is the only place that knows both) for the tail to emit.
-/// `PERF_RECORD_SWITCH` needs them; the counter does not.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct SwitchNote {
-    pub prev_pid: u32,
-    pub prev_tid: u32,
-    pub next_pid: u32,
-    pub next_tid: u32,
-    /// The outgoing task was still runnable — `PERF_RECORD_MISC_SWITCH_OUT_PREEMPT`.
-    pub preempt:  bool,
-}
-
-/// One parked switch per CPU. Written only by that CPU's own switch, read only
-/// by that CPU's own tail, so a plain per-field atomic needs no lock; a switch
-/// that overtakes an undrained one replaces it, exactly as a coalescing
-/// `irq_work` would.
-struct NoteSlot {
-    prev: AtomicU64,
-    next: AtomicU64,
-    /// `1` = a note is parked, `2` = parked and the outgoing task was preempted.
-    flags: AtomicU32,
-}
-
-static NOTES: [NoteSlot; MAX_CPUS] = [const {
-    NoteSlot { prev: AtomicU64::new(0), next: AtomicU64::new(0), flags: AtomicU32::new(0) }
-}; MAX_CPUS];
-
-const NOTE_PRESENT: u32 = 1;
-const NOTE_PREEMPT: u32 = 2;
-
-fn pack(pid: u32, tid: u32) -> u64 { (pid as u64) << 32 | tid as u64 }
-fn unpack(v: u64) -> (u32, u32) { ((v >> 32) as u32, v as u32) }
-
-/// Park this switch's identities on `cpu`. # C: O(1)
-pub fn note_switch(cpu: usize, n: SwitchNote) {
-    if cpu >= MAX_CPUS { return; }
-    let s = &NOTES[cpu];
-    s.prev.store(pack(n.prev_pid, n.prev_tid), Ordering::Relaxed);
-    s.next.store(pack(n.next_pid, n.next_tid), Ordering::Relaxed);
-    s.flags.store(NOTE_PRESENT | if n.preempt { NOTE_PREEMPT } else { 0 },
-                  Ordering::Release);
-}
-
-/// Take `cpu`'s parked switch, if any. # C: O(1)
-pub fn take_switch(cpu: usize) -> Option<SwitchNote> {
-    if cpu >= MAX_CPUS { return None; }
-    let s = &NOTES[cpu];
-    let f = s.flags.swap(0, Ordering::AcqRel);
-    if f & NOTE_PRESENT == 0 { return None; }
-    let (prev_pid, prev_tid) = unpack(s.prev.load(Ordering::Relaxed));
-    let (next_pid, next_tid) = unpack(s.next.load(Ordering::Relaxed));
-    Some(SwitchNote { prev_pid, prev_tid, next_pid, next_tid,
-                      preempt: f & NOTE_PREEMPT != 0 })
-}
-
 /// `CpuSw` by discriminant, so `drain`'s index walk names the kind it fires.
 const KINDS: [CpuSw; NR_KINDS] = [
     CpuSw::ExecNs, CpuSw::MinFlt, CpuSw::MajFlt, CpuSw::ContextSwitch, CpuSw::Migration,
@@ -299,31 +243,7 @@ mod tests {
         assert_eq!(hits, 0);
     }
 
-    /// The switch note survives the park→drain round trip with both sides'
-    /// identities intact, and a drain with nothing parked reports nothing.
-    #[test]
-    fn a_parked_switch_note_carries_both_sides_and_drains_once() {
-        let cpu = 6;
-        let _ = take_switch(cpu);
-        assert_eq!(take_switch(cpu), None);
-        let n = SwitchNote { prev_pid: 10, prev_tid: 11, next_pid: 20, next_tid: 21,
-                             preempt: true };
-        note_switch(cpu, n);
-        assert_eq!(take_switch(cpu), Some(n));
-        assert_eq!(take_switch(cpu), None, "the drain consumed it");
-        note_switch(cpu, SwitchNote { preempt: false, ..n });
-        assert_eq!(take_switch(cpu).map(|x| x.preempt), Some(false));
-    }
 
-    #[test]
-    fn switch_notes_are_per_cpu_and_an_out_of_range_cpu_parks_nothing() {
-        let _ = take_switch(7); let _ = take_switch(8);
-        note_switch(7, SwitchNote { prev_tid: 1, ..SwitchNote::default() });
-        assert_eq!(take_switch(8), None);
-        assert_eq!(take_switch(7).map(|n| n.prev_tid), Some(1));
-        note_switch(MAX_CPUS, SwitchNote::default());
-        assert_eq!(take_switch(MAX_CPUS), None);
-    }
 
     /// The index walk in `drain` must report the kind that was parked; a
     /// mismatched `KINDS` table would silently sample the wrong software event.

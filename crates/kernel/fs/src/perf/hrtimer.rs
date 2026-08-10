@@ -57,11 +57,31 @@ pub fn period_ns(attr: &PerfAttr) -> Option<u64> {
 }
 
 /// Whether `ev` should have a timer armed right now: a sampling clock-PMU event
-/// that is enabled. # C: O(1)
+/// that is COUNTING — enabled, and belonging to a context that is scheduled in.
+/// A thread that is not on a CPU is not producing the clock its samples would
+/// claim to have observed. # C: O(1)
 pub fn wants_timer(ev: &Arc<PerfEvent>) -> bool {
     is_clock_source(ev.source)
         && period_ns(&ev.attr).is_some()
-        && ev.state.lock().counter.enabled
+        && ev.state.lock().counter.counting()
+}
+
+/// Arm the event's sampling timer only if it has none — the switch-in half of
+/// the start/stop pair.
+///
+/// Cancelling at the switch OUT would be the mirror image, and is what the
+/// reference does, but its timer wheel cancels in log time against a per-CPU
+/// tree while this one is a scan of every registration under one lock. Paying
+/// that on every context switch would tax the hottest path in the kernel to
+/// save at most one timer expiry. So the timer is left to retire ITSELF at its
+/// next expiry, which [`fire`] does the moment it finds the event scheduled
+/// out, and this re-arms it when the thread comes back. The observable
+/// behaviour is the same — a thread that is not running produces no samples —
+/// and the cost of a switch stays one atomic load.
+/// # C: O(1) when a timer is already armed
+pub fn resume(ev: &Arc<PerfEvent>) {
+    if ev.hrtimer.load(Ordering::Acquire) != 0 { return; }
+    start(ev);
 }
 
 /// Arm the event's sampling timer, replacing any already armed. Idempotent for
@@ -106,7 +126,10 @@ fn fire(arg: usize, id: timer::TimerId) {
     // slot now; this stale fire must neither emit nor re-arm.
     if ev.hrtimer.load(Ordering::Acquire) != id.raw() { return; }
     let Some(period) = period_ns(&ev.attr) else { return };
-    if !ev.state.lock().counter.enabled {
+    // Retire rather than re-arm when the event is not counting: disabled
+    // through its fd, or belonging to a thread that is no longer on a CPU.
+    // `PERF_EVENT_IOC_ENABLE` and the thread's next switch-in each re-arm.
+    if !ev.state.lock().counter.counting() {
         ev.hrtimer.store(0, Ordering::Release);
         return;
     }

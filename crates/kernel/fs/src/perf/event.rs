@@ -176,6 +176,7 @@ impl PerfEvent {
                leader: Option<Weak<PerfEvent>>, parent: Option<Weak<PerfEvent>>) -> Arc<PerfEvent>
     {
         let enabled = !attr.bit(super::uapi::attr_bit::DISABLED);
+        let inherited = parent.is_some();
         let now = now_ns();
         let ev = Arc::new_cyclic(|me| PerfEvent {
             me: me.clone(), attr, source, tid, cpu, leader, parent,
@@ -200,9 +201,19 @@ impl PerfEvent {
         // the sample path can. Only the former is ever inherited (Linux
         // `perf_event_init_context` walks a per-TASK context).
         super::registry::register(&ev);
+        // `perf_install_in_context`: the event joins its context in the state
+        // that context is already in. An event installed on a thread that is
+        // not running — a fork-inherited child, or an open against another
+        // thread — is scheduled OUT until that thread's own switch-in, or it
+        // counts the interval it spends waiting to run.
+        let cur = sched::current().map(|t| t.tid);
+        if !super::switch::install_active(tid, cur, inherited) {
+            ev.state.lock().counter.stop(src, now);
+        }
         // `perf_swevent_init_hrtimer` + the `pmu::add` that follows an event
         // opened without `PERF_FLAG_DISABLED`: a sampling clock-PMU event has
         // no counter site to overflow it, so its timer is armed here or never.
+        // A scheduled-out event arms nothing; its switch-in does.
         super::hrtimer::start(&ev);
         ev
     }

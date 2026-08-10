@@ -543,16 +543,19 @@ pub unsafe fn schedule() {
         // deferred drain happens after the switch, hence the explicit identity.
         crate::perf_sw::charge_deferred(crate::perf_sw::CpuSw::ContextSwitch, me, 1,
                                         p.tgid.load(Ordering::Relaxed), p.tid);
-        // `perf_event_switch`'s two identities. THIS is the only point that
-        // knows both sides, so they are parked here and the switch tail emits
-        // the pair of `PERF_RECORD_SWITCH` records.
+        // `perf_event_switch`'s two identities, and the instant of the switch.
+        // THIS is the only point that knows both sides, so they are parked
+        // here and the switch tail emits the pair of `PERF_RECORD_SWITCH`
+        // records and moves both threads' counting windows. `now` is the same
+        // timestamp the outgoing task's runtime was just charged with, so the
+        // window that closes and the window that opens meet exactly.
         // SAFETY: rq.current is the incoming task just published by
         // swap_current, and this schedule runs preempt-off, so the runqueue's
         // Arc keeps the borrow alive for the two relaxed loads below.
         let next = unsafe { rq.current_ref() };
         crate::perf_sw::note_switch(me,
             p.tgid.load(Ordering::Relaxed), p.tid,
-            next.tgid.load(Ordering::Relaxed), next.tid, preempted);
+            next.tgid.load(Ordering::Relaxed), next.tid, preempted, now);
     }
     VOLUNTARY.fetch_add(1, Ordering::Relaxed);
     crate::diag::note_switch();
