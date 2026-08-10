@@ -34,23 +34,34 @@ fn fixture(stack: &NetStack, port: u16, seconds: i32)
     (iface, lo_dev, listener)
 }
 
-/// The server-side entry for a client connecting from `client_port`.
-fn server_side(stack: &NetStack, port: u16, client_port: u16) -> Arc<TcpEntry> {
+/// The connection-table entry for a client connecting from `client_port`.
+fn slot(stack: &NetStack, port: u16, client_port: u16) -> Option<crate::stack::TcpSlot> {
     let key = TcpKey {
         local_ip: IpAddr::V4(Ipv4Addr::LOOPBACK), local_port: port,
         remote_ip: IpAddr::V4(Ipv4Addr::LOOPBACK), remote_port: client_port,
     };
     stack.inet_tables(0).tcp_conns.lock().get(&key).cloned()
-        .expect("the SYN reached the listener")
+}
+
+/// The half-open request the SYN opened.
+fn server_req(stack: &NetStack, port: u16, client_port: u16) -> Arc<crate::stack::TcpReq> {
+    slot(stack, port, client_port).and_then(|slot| slot.req().cloned())
+        .expect("the SYN opened a request")
+}
+
+/// The connection the completed handshake left in the request's place.
+fn server_sock(stack: &NetStack, port: u16, client_port: u16) -> Arc<TcpEntry> {
+    slot(stack, port, client_port).and_then(|slot| slot.sock().cloned())
+        .expect("the handshake completed")
 }
 
 fn handshake(stack: &NetStack, iface: NetIfaceId, lo_dev: &Arc<LoopbackDev>,
-             port: u16, client_port: u16) -> (Arc<TcpEntry>, Arc<TcpEntry>)
+             port: u16, client_port: u16) -> Arc<TcpEntry>
 {
     let client = stack.tcp_connect(Ipv4Addr::LOOPBACK, client_port,
         Ipv4Addr::LOOPBACK, port).expect("connect");
     for _ in 0..3 { stack.drain_loopback(iface, lo_dev); }
-    (client, server_side(stack, port, client_port))
+    client
 }
 
 #[test]
@@ -58,7 +69,8 @@ fn a_listener_that_did_not_defer_completes_on_the_bare_acknowledgement() {
     let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, lo_dev, listener) = fixture(&stack, 601, 0);
-    let (_client, server) = handshake(&stack, iface, &lo_dev, 601, CLIENT_PORT);
+    let _client = handshake(&stack, iface, &lo_dev, 601, CLIENT_PORT);
+    let server = server_sock(&stack, 601, CLIENT_PORT);
     assert_eq!(server.conn.lock().state, TcpState::Established);
     let accepted = stack.tcp_accept(&listener).expect("the third ACK completes the connection");
     assert!(Arc::ptr_eq(&accepted, &server));
@@ -69,14 +81,13 @@ fn a_deferring_listener_leaves_the_bare_acknowledgement_uncompleted() {
     let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, lo_dev, listener) = fixture(&stack, 602, 30);
-    let (client, server) = handshake(&stack, iface, &lo_dev, 602, CLIENT_PORT + 2);
+    let client = handshake(&stack, iface, &lo_dev, 602, CLIENT_PORT + 2);
 
-    let c = server.conn.lock();
-    assert_eq!(c.state, TcpState::SynRecv, "the connection is still a request");
-    assert!(c.rsk.acked, "the peer's acknowledgement was seen, and dropped");
-    assert!(c.rsk.armed(), "the request keeps its own retransmit timer");
-    assert_eq!(c.retx_q.len(), 1, "the SYN-ACK is still unacknowledged");
-    drop(c);
+    let server = server_req(&stack, 602, CLIENT_PORT + 2);
+    let rsk = *server.rsk.lock();
+    assert!(rsk.acked, "the peer\'s acknowledgement was seen, and dropped");
+    assert!(rsk.armed(), "the request keeps its own retransmit timer");
+    assert_eq!(rsk.num_retrans, 0, "the SYN-ACK is still unacknowledged, and unrepeated");
 
     assert!(listener.accept_q.lock().is_empty(),
         "a request is not a queued child: nothing was published to accept");
@@ -94,13 +105,14 @@ fn data_promotes_a_deferred_request_and_the_bytes_it_carried_survive() {
     let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, lo_dev, listener) = fixture(&stack, 603, 30);
-    let (client, server) = handshake(&stack, iface, &lo_dev, 603, CLIENT_PORT + 3);
-    assert_eq!(server.conn.lock().state, TcpState::SynRecv);
+    let client = handshake(&stack, iface, &lo_dev, 603, CLIENT_PORT + 3);
+    let _request = server_req(&stack, 603, CLIENT_PORT + 3);
 
     assert_eq!(stack.tcp_send(&client, b"GET /", crate::sock::TCP_SNDBUF_DEFAULT as usize,
         true, false), Ok(5));
     for _ in 0..3 { stack.drain_loopback(iface, &lo_dev); }
 
+    let server = server_sock(&stack, 603, CLIENT_PORT + 3);
     assert_eq!(server.conn.lock().state, TcpState::Established,
         "the data the listener was waiting for completes the request");
     let accepted = stack.tcp_accept(&listener).expect("the connection is acceptable now");
@@ -117,25 +129,27 @@ fn a_deferred_request_retransmits_nothing_while_it_waits_for_data() {
     let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, lo_dev, _listener) = fixture(&stack, 604, 30);
-    let (_client, server) = handshake(&stack, iface, &lo_dev, 604, CLIENT_PORT + 4);
+    let _client = handshake(&stack, iface, &lo_dev, 604, CLIENT_PORT + 4);
+    let server = server_req(&stack, 604, CLIENT_PORT + 4);
     let count = defer_count(30);
 
-    let mut now = server.conn.lock().rsk.expires_ns;
+    let mut now = server.rsk.lock().expires_ns;
     for fired in 1..count {
         stack.tcp_reqsk_tick_at(now);
-        let c = server.conn.lock();
-        assert_eq!(c.state, TcpState::SynRecv, "the request outlives the firing");
-        assert_eq!(c.rsk.num_timeout, fired, "the firing is counted");
-        assert_eq!(c.retx_q.front().expect("SYN-ACK held").retries, 0,
+        assert!(slot(&stack, 604, CLIENT_PORT + 4).is_some_and(|slot| slot.req().is_some()),
+            "the request outlives the firing");
+        let rsk = *server.rsk.lock();
+        assert_eq!(rsk.num_timeout, fired, "the firing is counted");
+        assert_eq!(rsk.num_retrans, 0,
             "an acknowledged request waiting for data retransmits nothing");
-        now = c.rsk.expires_ns;
+        now = rsk.expires_ns;
     }
     // The last firing of the deferring period solicits the acknowledgement
     // that will complete the connection.
     stack.tcp_reqsk_tick_at(now);
-    let c = server.conn.lock();
-    assert_eq!(c.rsk.num_timeout, count);
-    assert_eq!(c.retx_q.front().expect("SYN-ACK held").retries, 1,
+    let rsk = *server.rsk.lock();
+    assert_eq!(rsk.num_timeout, count);
+    assert_eq!(rsk.num_retrans, 1,
         "one SYN-ACK goes out as the deferring period ends");
 }
 
@@ -144,17 +158,19 @@ fn the_end_of_the_deferring_period_completes_the_connection() {
     let _domain = crate::hosted_fixture::init_net_domain();
     let stack = NetStack::new();
     let (iface, lo_dev, listener) = fixture(&stack, 605, 30);
-    let (_client, server) = handshake(&stack, iface, &lo_dev, 605, CLIENT_PORT + 5);
+    let _client = handshake(&stack, iface, &lo_dev, 605, CLIENT_PORT + 5);
+    let request = server_req(&stack, 605, CLIENT_PORT + 5);
     let count = defer_count(30);
 
     for _ in 0..count {
-        let now = server.conn.lock().rsk.expires_ns;
+        let now = request.rsk.lock().expires_ns;
         stack.tcp_reqsk_tick_at(now);
         for _ in 0..3 { stack.drain_loopback(iface, &lo_dev); }
     }
     // The peer answered the solicited SYN-ACK, and by then the deferral no
     // longer drops that acknowledgement: the connection is handed over with
     // nothing received, rather than being lost.
+    let server = server_sock(&stack, 605, CLIENT_PORT + 5);
     assert_eq!(server.conn.lock().state, TcpState::Established);
     let accepted = stack.tcp_accept(&listener).expect("the deferring period has run out");
     assert!(Arc::ptr_eq(&accepted, &server));
@@ -169,23 +185,20 @@ fn an_unanswered_request_is_abandoned_at_the_retransmit_ceiling() {
     // A SYN with nothing behind it: the SYN-ACK is queued on the loopback and
     // never drained, so it is never acknowledged.
     let key = syn_only(&stack, iface, 606, CLIENT_PORT + 6);
-    let server = stack.inet_tables(0).tcp_conns.lock().get(&key).cloned()
-        .expect("the SYN opened a request");
+    let server = server_req(&stack, 606, CLIENT_PORT + 6);
     assert_eq!(listener.syn_backlog_used.load(Ordering::Acquire), 1);
 
     for fired in 1..=reqsk::SYNACK_RETRIES_DEFAULT {
-        let now = server.conn.lock().rsk.expires_ns;
+        let now = server.rsk.lock().expires_ns;
         stack.tcp_reqsk_tick_at(now);
-        let c = server.conn.lock();
-        assert_eq!(c.rsk.num_timeout, fired);
-        assert_eq!(c.retx_q.front().expect("SYN-ACK held").retries, fired as u32,
+        let rsk = *server.rsk.lock();
+        assert_eq!(rsk.num_timeout, fired);
+        assert_eq!(rsk.num_retrans, fired,
             "every firing of an unanswered request retransmits the SYN-ACK");
     }
     // The next firing finds the ceiling reached.
-    let now = server.conn.lock().rsk.expires_ns;
+    let now = server.rsk.lock().expires_ns;
     stack.tcp_reqsk_tick_at(now);
-    assert_eq!(server.conn.lock().state, TcpState::Closed,
-        "the request is abandoned once it runs out of retransmits");
     assert!(stack.inet_tables(0).tcp_conns.lock().get(&key).is_none(),
         "an abandoned request is unhooked from the connection table");
     assert_eq!(listener.syn_backlog_used.load(Ordering::Acquire), 0,

@@ -196,20 +196,21 @@ fn a_passive_child_takes_the_listening_socket_mark_as_its_own() {
     stack.deliver_tcp(0, iface, IpAddr::V4(REMOTE),
         IpAddr::V4(Ipv4Addr::LOOPBACK), &syn).unwrap();
 
-    let child = stack.inet_tables(0).tcp_conns.lock().get(&TcpKey {
+    let request = stack.inet_tables(0).tcp_conns.lock().get(&TcpKey {
         local_ip: IpAddr::V4(Ipv4Addr::LOOPBACK), local_port: listen_port,
         remote_ip: IpAddr::V4(REMOTE), remote_port: client_port,
-    }).cloned().expect("the SYN opened a passive child");
+    }).and_then(crate::stack::TcpSlot::req).cloned().expect("the SYN opened a request");
 
-    assert_eq!(child.mark(), MARK);
+    assert_eq!(request.mark as u32, MARK);
     // The request answered under the listener's mark, so the MSS it advertised
     // and the initial RTT it started from are the marked route's, not the ones
     // an unmarked lookup would have found. The RTT is the sharper of the two:
     // only the metrics query the delivery path makes can have supplied it.
-    assert_eq!(child.conn.lock().own_mss, MARKED_ADVMSS as u16);
-    assert_eq!(child.conn.lock().srtt_ns, u64::from(MARKED_RTT_MS) * 1_000_000);
-    // The child owns the value from here: the listening socket's later writes
-    // are its own, the way an accepted connection's mark is its own.
+    let child = request.open_conn();
+    assert_eq!(child.own_mss, MARKED_ADVMSS as u16);
+    assert_eq!(child.srtt_ns, u64::from(MARKED_RTT_MS) * 1_000_000);
+    // The request owns the value from here: the listening socket's later
+    // writes are its own, the way an accepted connection's mark is its own.
     listener_mark.store(OTHER_MARK as i32, Ordering::Release);
-    assert_eq!(child.mark(), MARK);
+    assert_eq!(request.mark as u32, MARK);
 }

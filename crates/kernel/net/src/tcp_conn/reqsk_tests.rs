@@ -18,7 +18,7 @@ fn a_firing_is_the_unit_the_option_converts_its_seconds_against() {
 }
 
 fn req(num_timeout: u8, acked: bool) -> ReqSock {
-    ReqSock { num_timeout, acked, expires_ns: 0 }
+    ReqSock { num_timeout, acked, expires_ns: 0, num_retrans: 0 }
 }
 
 /// The count a listener asking for `seconds` of deferral stores.

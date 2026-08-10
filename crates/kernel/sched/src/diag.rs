@@ -15,6 +15,7 @@ pub mod nmi;
 pub mod percpu;
 pub mod ring;
 mod syscall_names;
+pub mod sysrq;
 pub mod watchdog;
 
 #[cfg(target_os = "oxide-kernel")]
@@ -28,6 +29,7 @@ pub(super) fn current_task() -> Option<&'static Task> {
 }
 
 pub use emit::{dump_tasks, note_init_exit, sysrq_rx};
+pub use sysrq::{set_mask as set_sysrq_mask, trigger as sysrq_trigger};
 pub use format::{copy_into, fmt_dec, syscall_name};
 #[cfg(feature = "debug-getdents")]
 pub use getdents::{getdents_begin, getdents_clear, getdents_progress, getdents_stage};

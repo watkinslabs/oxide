@@ -352,6 +352,32 @@ mod imp {
         PRESENT.store(false, Ordering::Release);
     }
 
+    /// Take the console off the interrupt-driven transmit queue and put it on
+    /// the synchronous one, flushing whatever the queue already holds.
+    ///
+    /// The queue is drained by the transmit-empty INTERRUPT. A caller that is
+    /// about to silence every interrupt source — a panic, the stop before a
+    /// relocation — leaves every byte written after that point sitting in a
+    /// ring nothing will ever drain, which is a console that goes quiet at
+    /// exactly the moment its output is the only thing left. Observed: a crash
+    /// boot whose log stopped mid-word after the interrupt controller was
+    /// cleared, on a machine that was still running.
+    ///
+    /// Idempotent, and safe to call with interrupts already masked: everything
+    /// after the switch is a polled write.
+    /// # SAFETY: writes the port's IER and data registers at CPL 0.
+    /// # C: O(queued bytes * bounded THRE polls)
+    pub unsafe fn console_to_polled() {
+        let port = BASE.load(Ordering::Acquire) as u16;
+        if port == 0 { return; }
+        let mut state = PORT.lock_irqsave::<hal_x86_64::X86IrqGate>();
+        if !state.runtime() { return; }
+        state.stop_runtime();
+        // SAFETY: the port lock owns the IER shadow/register pair.
+        unsafe { outb(port + IER, state.ier()); }
+        while let Some(byte) = state.pop_for_poll() { poll_byte(port, byte); }
+    }
+
     /// Stop UART RX interrupt delivery for terminal system shutdown while
     /// keeping the console TX path bound for late shutdown logging.
     /// # SAFETY: called by driver-core shutdown; no concurrent probe/remove.
@@ -400,9 +426,13 @@ mod imp {
     /// # SAFETY: shell; no side effects.
     /// # C: O(1)
     pub(super) unsafe fn shutdown() {}
+    /// No 16550 on non-x86 arches.
+    /// # SAFETY: shell; no side effects.
+    /// # C: O(1)
+    pub unsafe fn console_to_polled() {}
 }
 
-pub use imp::{emit, rx_isr, set_baud};
+pub use imp::{console_to_polled, emit, rx_isr, set_baud};
 
 // ------------------------------------------------ drv model
 /// The 16550 console as a drv model driver. Probe performs detection and

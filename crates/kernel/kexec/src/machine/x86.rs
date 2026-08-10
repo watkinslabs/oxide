@@ -350,20 +350,27 @@ pub fn cleanup(image: &KImage) {
 ///
 /// # SAFETY: irreversible; the caller is committed to leaving this kernel.
 unsafe fn machine_shutdown() {
+    // The console FIRST, before any interrupt source is silenced: from here on
+    // its own output is the only account of what the machine did, and a queue
+    // drained by an interrupt that will not come publishes none of it.
+    klog::to_polled_mode();
     // SAFETY: the I/O APIC window was mapped at boot; clearing every
     // redirection entry stops device lines from asserting during the copy and
     // retires any level assertion still in service.
     unsafe { hal_x86_64::ioapic::clear_all() };
+    klog::announce_emergency("kexec: io-apic silent");
     // SAFETY: CPL 0; disabling interrupts is always legal and nothing after
     // this point re-enables them.
     unsafe { core::arch::asm!("cli", options(nomem, nostack)) };
     quiesce::stop_other_cpus();
+    klog::announce_emergency("kexec: other cpus stopped");
     // SAFETY: this CPU has interrupts masked and is the only one still
     // running, so no delivery can be in flight while the entries are masked.
     unsafe { arch_irq::lapic::shutdown() };
     // SAFETY: same — the local APIC has just been taken down and this CPU is
     // its only writer.
     unsafe { arch_irq::lapic::restore_boot_irq_mode() };
+    klog::announce_emergency("kexec: local apic in boot mode");
 }
 
 /// `machine_kexec`. Allocates nothing: everything it needs was built by
@@ -371,10 +378,16 @@ unsafe fn machine_shutdown() {
 /// # C: O(image size)
 pub fn kexec(image: &KImage) -> KResult<()> {
     if image.arch_pgt == 0 || image.control_code_page == 0 { return Err(Error::Inval); }
+    // Announced BEFORE the machine stops, not after. Everything from here on
+    // runs with interrupts off and the other CPUs halted, so a step that wedges
+    // produces no further output at all — and a console that simply stops is
+    // indistinguishable from a jump that landed in a kernel which said nothing.
+    // The two lines together bracket the irreversible half.
+    klog::announce_emergency("kexec: stopping the machine");
     // SAFETY: the machine is committed; this stops every other CPU and silences
     // every interrupt source, and nothing after it can be undone.
     unsafe { machine_shutdown() };
-    klog::announce("kexec: starting new kernel");
+    klog::announce_emergency("kexec: starting new kernel");
     let entry = pmm::user_as::hhdm_offset().wrapping_add(image.control_code_page);
     let ident = image.control_code_page + image.arch_entry_off;
     // SAFETY: `entry` is the kernel address of the control page `prepare`

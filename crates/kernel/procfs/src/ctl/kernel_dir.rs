@@ -100,7 +100,8 @@ pub const KERNEL_SYSCTLS: &[Node] = &[
                                               crate::hooks::set_core_pipe_limit,
                                               Some((0, INT_MAX)))),
         File("core_uses_pid",         Int(1, Some((0, 1)))),
-        File("sysrq",                 Int(16, Some((0, 511)))),
+        File("sysrq",                 IntHook(crate::sysrq::mask, crate::sysrq::set_mask,
+                                              Some(crate::sysrq::SYSRQ_BOUNDS))),
         // The keys sysctl table registers the four per-uid key ceilings against
         // the LIVE `key_quota_*` variables `key_alloc` tests, each a
         // `proc_dointvec_minmax` over [1, INT_MAX], plus the persistent-keyring

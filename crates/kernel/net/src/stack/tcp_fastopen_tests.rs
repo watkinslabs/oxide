@@ -38,14 +38,14 @@ fn fixture(stack: &NetStack, port: u16, max_qlen: i32)
 /// Deliver one SYN carrying `option` and `payload`. Returns the child it
 /// opened, if the SYN reached the listener at all.
 fn syn(stack: &NetStack, iface: NetIfaceId, port: u16, client_port: u16,
-       option: Option<Cookie>, payload: &[u8]) -> Option<Arc<TcpEntry>>
+       option: Option<Cookie>, payload: &[u8]) -> Option<Server>
 {
     syn_flags(stack, iface, port, client_port, option, payload, crate::tcp_hdr::flags::SYN)
 }
 
 /// Deliver one SYN with an explicit control-flag set. # C: O(segment)
 fn syn_flags(stack: &NetStack, iface: NetIfaceId, port: u16, client_port: u16,
-             option: Option<Cookie>, payload: &[u8], flags: u8) -> Option<Arc<TcpEntry>>
+             option: Option<Cookie>, payload: &[u8], flags: u8) -> Option<Server>
 {
     let opts = SynOptions { mss: Some(1460), fastopen: option, ..SynOptions::default() };
     let opt_len = opts.encoded_len();
@@ -67,24 +67,62 @@ fn syn_flags(stack: &NetStack, iface: NetIfaceId, port: u16, client_port: u16,
         local_ip: IpAddr::V4(SERVER), local_port: port,
         remote_ip: peer, remote_port: client_port,
     };
-    stack.inet_tables(0).tcp_conns.lock().get(&key).cloned()
+    Server::of(stack.inet_tables(0).tcp_conns.lock().get(&key).cloned())
 }
 
-/// The fast-open option of the SYN-ACK this child sent, read back off the
-/// segment the retransmit queue holds — the same bytes that went to the wire.
-fn synack_option(server: &Arc<TcpEntry>) -> FastOpen {
-    let c = server.conn.lock();
-    let front = c.retx_q.front().expect("the SYN-ACK is held for retransmit");
-    let segment = c.build_retx(front);
-    crate::tcp_conn::fastopen::parse(&segment, true)
+/// The listener side of a delivered SYN. An ordinary passive open leaves a
+/// half-open request; a fast open whose data was taken leaves a connection,
+/// because the program is handed that one at the SYN.
+#[derive(Clone)]
+enum Server { Req(Arc<crate::stack::TcpReq>), Sock(Arc<TcpEntry>) }
+
+impl Server {
+    fn of(slot: Option<crate::stack::TcpSlot>) -> Option<Self> {
+        Some(match slot? {
+            crate::stack::TcpSlot::Req(req) => Self::Req(req),
+            crate::stack::TcpSlot::Sock(entry) => Self::Sock(entry),
+        })
+    }
+
+    /// The connection this side holds, or the one the request would open.
+    fn with_conn<R>(&self, read: impl FnOnce(&TcpConn) -> R) -> R {
+        match self {
+            Self::Req(req) => read(&req.open_conn()),
+            Self::Sock(entry) => read(&entry.conn.lock()),
+        }
+    }
+
+    fn state(&self) -> TcpState { self.with_conn(|c| c.state) }
+
+    /// Whether the accepted connection is this one.
+    fn is(&self, accepted: &Arc<TcpEntry>) -> bool {
+        matches!(self, Self::Sock(entry) if Arc::ptr_eq(entry, accepted))
+    }
+
+    /// The SYN-ACK bytes this side answered with — rebuilt from the request's
+    /// recorded negotiation, or read back off the queue holding it.
+    fn synack(&self) -> Vec<u8> {
+        match self {
+            Self::Req(req) => req.synack(),
+            Self::Sock(entry) => {
+                let c = entry.conn.lock();
+                let front = c.retx_q.front().expect("the SYN-ACK is held for retransmit");
+                c.build_retx(front)
+            }
+        }
+    }
+}
+
+/// The fast-open option the SYN-ACK carried — the same bytes that went to the
+/// wire.
+fn synack_option(server: &Server) -> FastOpen {
+    crate::tcp_conn::fastopen::parse(&server.synack(), true)
 }
 
 /// The acknowledgement number the SYN-ACK carries.
-fn synack_ack(server: &Arc<TcpEntry>) -> u32 {
-    let c = server.conn.lock();
-    let front = c.retx_q.front().expect("the SYN-ACK is held for retransmit");
-    let segment = c.build_retx(front);
-    crate::tcp_hdr::parse_prevalidated(&segment).expect("a well-formed SYN-ACK").ack
+fn synack_ack(server: &Server) -> u32 {
+    crate::tcp_hdr::parse_prevalidated(&server.synack())
+        .expect("a well-formed SYN-ACK").ack
 }
 
 /// Ask for a cookie and read the one the SYN-ACK offers.
@@ -128,7 +166,7 @@ fn a_cookie_request_is_answered_on_the_syn_ack_without_completing_anything() {
     let FastOpen::Cookie(c) = synack_option(&server)
         else { unreachable!("a cookie request is answered on the SYN-ACK") };
     assert_eq!(c.len(), crate::tcp_conn::fastopen::COOKIE_SIZE);
-    assert_eq!(server.conn.lock().state, TcpState::SynRecv,
+    assert_eq!(server.state(), TcpState::SynRecv,
         "asking for a cookie opens an ordinary handshake");
     assert!(listener.accept_q.lock().is_empty(), "and publishes nothing to accept");
     assert_eq!(listener.fastopen.qlen(), 0, "and charges nothing against the bound");
@@ -145,15 +183,15 @@ fn presenting_the_cookie_delivers_the_syns_data_into_an_accepted_connection() {
         .expect("the SYN opened a child");
     let accepted = stack.tcp_accept(&listener)
         .expect("a fast-open child is acceptable at its SYN");
-    assert!(Arc::ptr_eq(&accepted, &server));
+    assert!(server.is(&accepted));
     assert_eq!(stack.tcp_recv(&accepted, 64), b"GET /",
         "the data the SYN carried is readable before the handshake finishes");
-    let conn = server.conn.lock();
-    assert_eq!(conn.state, TcpState::SynRecv,
-        "the acknowledgement completing the handshake is still outstanding");
-    assert_eq!(conn.data_segs_in, 1);
-    assert_eq!(conn.bytes_received, b"GET /".len() as u64);
-    drop(conn);
+    server.with_conn(|conn| {
+        assert_eq!(conn.state, TcpState::SynRecv,
+            "the acknowledgement completing the handshake is still outstanding");
+        assert_eq!(conn.data_segs_in, 1);
+        assert_eq!(conn.bytes_received, b"GET /".len() as u64);
+    });
     assert_eq!(listener.fastopen.qlen(), 1, "the request is charged against the bound");
 }
 
@@ -168,9 +206,9 @@ fn a_fast_open_syn_fin_delivers_data_then_enters_close_wait() {
         crate::tcp_hdr::flags::SYN | crate::tcp_hdr::flags::FIN).expect("a child");
 
     let accepted = stack.tcp_accept(&listener).expect("a fast-open child is acceptable at its SYN");
-    assert!(Arc::ptr_eq(&accepted, &server));
+    assert!(server.is(&accepted));
     assert_eq!(stack.tcp_recv(&accepted, 64), payload);
-    let (state, rcv_nxt) = { let conn = server.conn.lock(); (conn.state, conn.rcv_nxt) };
+    let (state, rcv_nxt) = server.with_conn(|conn| (conn.state, conn.rcv_nxt));
     assert_eq!(state, TcpState::CloseWait);
     assert_eq!(rcv_nxt, CLIENT_SEQ.wrapping_add(1 + payload.len() as u32 + 1));
     assert_eq!(synack_ack(&server), rcv_nxt);
@@ -201,9 +239,9 @@ fn a_forged_cookie_gets_a_fresh_one_and_an_ordinary_handshake() {
     let server = syn(&stack, iface, 704, 50_706, Some(forged), b"GET /")
         .expect("the SYN opened a request");
 
-    assert_eq!(server.conn.lock().state, TcpState::SynRecv);
+    assert_eq!(server.state(), TcpState::SynRecv);
     assert!(listener.accept_q.lock().is_empty(), "nothing is published to accept");
-    assert!(server.conn.lock().recv_buf.is_empty(),
+    assert!(server.with_conn(|c| c.recv_buf.is_empty()),
         "the data is not delivered: nothing proved the peer's address");
     assert_eq!(synack_ack(&server), CLIENT_SEQ.wrapping_add(1),
         "so the SYN-ACK covers the SYN alone and the peer will retransmit");
@@ -235,13 +273,13 @@ fn a_full_bound_falls_back_to_an_ordinary_handshake() {
 
     let second = syn(&stack, iface, 706, 50_710, Some(cookie), b"two")
         .expect("the SYN still opens a request");
-    assert_eq!(second.conn.lock().state, TcpState::SynRecv);
-    assert!(second.conn.lock().recv_buf.is_empty(),
+    assert_eq!(second.state(), TcpState::SynRecv);
+    assert!(second.with_conn(|c| c.recv_buf.is_empty()),
         "a full bound declines the data rather than the connection");
     assert_eq!(synack_option(&second), FastOpen::Absent,
         "and spends no hash on a cookie it would not have used");
     assert_eq!(listener.fastopen.qlen(), 1);
-    assert!(Arc::ptr_eq(&stack.tcp_accept(&listener).expect("the first child"), &first));
+    assert!(first.is(&stack.tcp_accept(&listener).expect("the first child")));
 }
 
 #[test]
@@ -251,7 +289,7 @@ fn data_in_a_syn_that_presented_nothing_is_not_taken() {
     let (iface, listener) = fixture(&stack, 707, 4);
     let server = syn(&stack, iface, 707, 50_711, None, b"GET /")
         .expect("the SYN opened a request");
-    assert!(server.conn.lock().recv_buf.is_empty());
+    assert!(server.with_conn(|c| c.recv_buf.is_empty()));
     assert_eq!(synack_option(&server), FastOpen::Absent);
     assert!(listener.accept_q.lock().is_empty());
     assert_eq!(listener.fastopen.qlen(), 0);
@@ -269,7 +307,7 @@ fn the_server_half_of_the_sysctl_gates_the_whole_path() {
     let server = syn(&stack, iface, 708, 50_713, Some(cookie), b"GET /")
         .expect("the SYN opened a request");
     assert_eq!(synack_option(&server), FastOpen::Absent);
-    assert!(server.conn.lock().recv_buf.is_empty());
+    assert!(server.with_conn(|c| c.recv_buf.is_empty()));
     assert!(listener.accept_q.lock().is_empty());
 }
 
@@ -282,7 +320,7 @@ fn a_waived_cookie_takes_the_data_from_a_syn_that_presented_none() {
 
     let server = syn(&stack, iface, 709, 50_714, None, b"GET /").expect("a child");
     let accepted = stack.tcp_accept(&listener).expect("acceptable at its SYN");
-    assert!(Arc::ptr_eq(&accepted, &server));
+    assert!(server.is(&accepted));
     assert_eq!(stack.tcp_recv(&accepted, 64), b"GET /");
     assert_eq!(synack_option(&server), FastOpen::Absent, "no cookie is minted for a waiver");
     assert_eq!(listener.fastopen.qlen(), 1);
@@ -302,7 +340,7 @@ fn a_listener_key_displaces_the_namespaces_for_that_listener() {
     // And the namespace's cookie no longer opens this listener.
     let server = syn(&stack, iface, 710, 50_717, Some(from_namespace), b"GET /")
         .expect("a request");
-    assert!(server.conn.lock().recv_buf.is_empty());
+    assert!(server.with_conn(|c| c.recv_buf.is_empty()));
     assert_eq!(listener.fastopen.qlen(), 0);
 }
 
@@ -320,7 +358,7 @@ fn a_cookie_minted_under_the_retired_key_is_honoured_and_upgraded() {
 
     let server = syn(&stack, iface, 711, 50_719, Some(old), b"GET /").expect("a child");
     let accepted = stack.tcp_accept(&listener).expect("the rotation did not break it");
-    assert!(Arc::ptr_eq(&accepted, &server));
+    assert!(server.is(&accepted));
     assert_eq!(stack.tcp_recv(&accepted, 64), b"GET /");
     let FastOpen::Cookie(fresh) = synack_option(&server)
         else { unreachable!("a backup-key match hands back a current cookie") };
@@ -353,8 +391,7 @@ fn a_fast_open_child_is_published_once_and_gives_its_charge_back_on_completion()
 
     // A fast-open child is already acceptable; unlike an ordinary request,
     // TCP_DEFER_ACCEPT must not drop the acknowledgement that finishes it.
-    let snd_nxt = server.conn.lock().snd_nxt;
-    let rcv_nxt = server.conn.lock().rcv_nxt;
+    let (snd_nxt, rcv_nxt) = server.with_conn(|c| (c.snd_nxt, c.rcv_nxt));
     let mut buf = alloc::vec![0u8; crate::tcp_hdr::TCP_HDR_MIN_LEN];
     let mut hdr = crate::tcp_hdr::TcpHdr {
         src_port: 50_722, dst_port: 713, seq: rcv_nxt, ack: snd_nxt, data_offset: 5,
@@ -364,11 +401,11 @@ fn a_fast_open_child_is_published_once_and_gives_its_charge_back_on_completion()
     stack.deliver_tcp_packet(0, iface, IpAddr::V4(SERVER), IpAddr::V4(SERVER), &buf, &buf)
         .expect("deliver the acknowledgement");
 
-    assert_eq!(server.conn.lock().state, TcpState::Established);
+    assert_eq!(server.state(), TcpState::Established);
     assert_eq!(listener.fastopen.qlen(), 0, "the finished handshake frees its slot");
     assert!(stack.tcp_accept(&listener).is_none(),
         "the child was published at its SYN and must not be published again");
-    assert!(Arc::ptr_eq(&accepted, &server));
+    assert!(server.is(&accepted));
 }
 
 /// A real client connection whose SYN is built by the client mechanism and
@@ -382,7 +419,7 @@ fn client_conn(client_port: u16, port: u16) -> crate::tcp_conn::TcpConn {
 
 /// Deliver a segment the client built, and return the listener's child.
 fn deliver_client(stack: &NetStack, iface: NetIfaceId, port: u16, client_port: u16,
-                  seg: &[u8]) -> Option<Arc<TcpEntry>>
+                  seg: &[u8]) -> Option<Server>
 {
     stack.deliver_tcp_packet(0, iface, IpAddr::V4(SERVER), IpAddr::V4(SERVER), seg, seg)
         .expect("deliver the client SYN");
@@ -390,7 +427,7 @@ fn deliver_client(stack: &NetStack, iface: NetIfaceId, port: u16, client_port: u
         local_ip: IpAddr::V4(SERVER), local_port: port,
         remote_ip: IpAddr::V4(SERVER), remote_port: client_port,
     };
-    stack.inet_tables(0).tcp_conns.lock().get(&key).cloned()
+    Server::of(stack.inet_tables(0).tcp_conns.lock().get(&key).cloned())
 }
 
 #[test]
@@ -410,8 +447,7 @@ fn a_client_request_and_a_server_offer_meet_over_real_segments() {
     // one instead. The client learns it and still owes its bytes.
     let FastOpen::Cookie(offered) = synack_option(&server)
         else { unreachable!("a cookie request is answered") };
-    let synack = { let c = server.conn.lock(); let front = c.retx_q.front().unwrap();
-        c.build_retx(front) };
+    let synack = server.synack();
     client.input(IpAddr::V4(SERVER), IpAddr::V4(SERVER), &synack).expect("the answer");
     assert_eq!(client.state, TcpState::Established, "the connection opened either way");
     let learned = client.fastopen_learned.expect("the answer was read");
@@ -434,8 +470,7 @@ fn a_client_presenting_the_offered_cookie_has_its_data_taken_and_acknowledged() 
     let server = deliver_client(&stack, iface, 731, 50_732, &syn_seg).expect("a child");
     assert!(stack.tcp_accept(&listener).is_some(), "the child is acceptable at its SYN");
 
-    let synack = { let c = server.conn.lock(); let front = c.retx_q.front().unwrap();
-        c.build_retx(front) };
+    let synack = server.synack();
     client.input(IpAddr::V4(SERVER), IpAddr::V4(SERVER), &synack).expect("the answer");
     assert!(client.syn_data_acked, "the data rode the SYN and was acknowledged with it");
     assert!(client.retx_q.is_empty(), "nothing is owed");
@@ -453,8 +488,7 @@ fn a_client_whose_cookie_the_listener_rejects_still_gets_a_connection() {
         .expect("the open");
     let server = deliver_client(&stack, iface, 732, 50_733, &syn_seg).expect("a request");
 
-    let synack = { let c = server.conn.lock(); let front = c.retx_q.front().unwrap();
-        c.build_retx(front) };
+    let synack = server.synack();
     client.input(IpAddr::V4(SERVER), IpAddr::V4(SERVER), &synack).expect("the answer");
     assert_eq!(client.state, TcpState::Established);
     let learned = client.fastopen_learned.expect("the answer was read");

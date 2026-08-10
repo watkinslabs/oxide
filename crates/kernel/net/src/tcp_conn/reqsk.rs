@@ -46,6 +46,10 @@ pub struct ReqSock {
     /// Timer firings this request has survived. It measures the deferring
     /// period in the units `TCP_DEFER_ACCEPT` stores, and doubles the timer.
     pub num_timeout: u8,
+    /// SYN-ACKs actually retransmitted. A firing that retransmits nothing —
+    /// which is every firing of an acknowledged request inside its deferring
+    /// period — counts a timeout without counting a retransmit.
+    pub num_retrans: u8,
     /// The peer acknowledged the SYN-ACK with nothing to deliver. The
     /// handshake is complete from the peer's side; only the data a deferring
     /// listener is waiting for is still owed.

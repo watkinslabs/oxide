@@ -434,8 +434,11 @@ impl NetStack {
         self.inet_tables(0).udp6.clone()
     }
 
+    /// The connection table of the initial namespace, for tests that assert
+    /// what a handshake left in it. # C: O(1)
     #[cfg(test)]
-    pub(crate) fn tcp_conns_map(&self) -> Arc<super::inet_tables::InetTableLock<BTreeMap<TcpKey, Arc<TcpEntry>>>> {
+    pub(crate) fn tcp_conns_map(&self)
+        -> Arc<super::inet_tables::InetTableLock<BTreeMap<TcpKey, super::TcpSlot>>> {
         self.inet_tables(0).tcp_conns.clone()
     }
 

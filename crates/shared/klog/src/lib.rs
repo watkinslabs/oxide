@@ -15,7 +15,8 @@ pub use ring::{Full, Record, Ring, MAIN_RING_CAP, NMI_RING_CAP};
 
 pub mod console;
 pub use console::{
-    register_console, unregister_console, ConsoleSink, CON_ENABLED, MAX_CONSOLES,
+    register_console, set_polled_hook, to_polled_mode, unregister_console, ConsoleSink,
+    CON_ENABLED, MAX_CONSOLES,
 };
 
 pub mod lock;
@@ -573,6 +574,32 @@ macro_rules! klog {
 pub fn announce(msg: &'static str) {
     write_raw_at(msg.as_bytes(), syslog::LOGLEVEL_WARNING);
     write_raw_at(b"\n", syslog::LOGLEVEL_WARNING);
+}
+
+/// Announce a machine transition that must be legible even when the ordinary
+/// console route cannot run.
+///
+/// The ordinary route fans out to auxiliary console sinks, and those may
+/// allocate and take locks. A caller announcing the last thing a machine will
+/// do — a panic's crash boot, the stop before a relocation — is exactly the
+/// caller that cannot afford either: the line came out TRUNCATED mid-word on a
+/// crash boot, and the console then went silent, which reads as a jump that
+/// landed somewhere quiet rather than as a message that never finished.
+/// # C: O(msg.len())
+pub fn announce_emergency(msg: &'static str) { announce_bytes(msg.as_bytes()); }
+
+/// Announce a line that has to be BUILT — a key list filtered by a live
+/// setting, a value an operator asked for — on the same unconditional
+/// emergency route.
+///
+/// Bytes rather than a static string, because such a line is assembled at the
+/// moment it is printed. It is still an announcement and not a trace: it is
+/// the machine's answer to something a person asked it, so it is not gated
+/// behind a debug feature.
+/// # C: O(bytes.len())
+pub fn announce_bytes(bytes: &[u8]) {
+    write_primary_raw(bytes);
+    write_primary_raw(b"\n");
 }
 
 /// Convenience wrappers per `04` log surface.

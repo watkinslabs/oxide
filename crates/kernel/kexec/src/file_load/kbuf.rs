@@ -95,6 +95,28 @@ pub fn locate_mem_hole(
     Err(Error::AddrNotAvail)
 }
 
+/// The memory a file-loaded image's segments may be placed in.
+///
+/// A crash image may use the reserved region and NOTHING else. In file mode
+/// the kernel chooses every destination, so this is where that rule has to be
+/// applied: a loader handed the whole memory map places its segments wherever
+/// they fit, staging then finds them outside the reservation, and the load is
+/// refused with EADDRNOTAVAIL — a machine with a perfectly good 512 MiB
+/// reservation reporting that it has nowhere to put the image. Narrowing the
+/// map instead means the loader's own search produces addresses that are legal
+/// by construction, which is the same rule stated once rather than twice.
+///
+/// The reserved region is INCLUSIVE at both ends; the map is half-open.
+/// # C: O(N_ranges)
+pub fn placement_ranges(
+    crash: bool, ram: &[(u64, u64)], reserved: Option<(u64, u64)>,
+) -> KResult<Vec<(u64, u64)>> {
+    if !crash { return Ok(ram.to_vec()); }
+    let (start, end) = reserved.ok_or(Error::AddrNotAvail)?;
+    if end < start { return Err(Error::AddrNotAvail); }
+    Ok(alloc::vec![(start, end + 1)])
+}
+
 /// True when `[at, at + len)` overlaps a destination already claimed.
 /// # C: O(N_placed)
 pub fn collides(at: u64, len: u64, placed: &[KexecSegment]) -> bool {
@@ -270,5 +292,43 @@ mod tests {
         assert_eq!(a, 0);
         assert_eq!(b % PAGE_SIZE, 0);
         assert_eq!(blob[b as usize], 2);
+    }
+
+    /// A crash image may use the reservation and nothing else. Handing the
+    /// loader the whole map made it place segments wherever they fit, and
+    /// staging then refused the load with EADDRNOTAVAIL — a machine with a
+    /// perfectly good 512 MiB reservation reporting it had nowhere to put the
+    /// image, which is what `kexec -p` was answered on a real boot.
+    #[test]
+    fn a_crash_image_may_be_placed_only_inside_the_reservation() {
+        let ram = [(0x10_0000u64, 0x8000_0000u64)];
+        let out = placement_ranges(true, &ram, Some((0x6000_0000, 0x7fff_ffff))).expect("a window");
+        assert_eq!(out, alloc::vec![(0x6000_0000, 0x8000_0000)]);
+    }
+
+    /// The reservation is an INCLUSIVE range and the placement map is
+    /// half-open. Carrying the inclusive end through loses the last page of
+    /// the window, which is exactly where a top-down loader puts the kernel.
+    #[test]
+    fn the_reservations_last_byte_is_placeable() {
+        let out = placement_ranges(true, &[], Some((0x1000, 0x1fff))).expect("a window");
+        assert_eq!(out, alloc::vec![(0x1000, 0x2000)]);
+        let at = locate_mem_hole(&KexecBuf::new(PAGE_SIZE, PAGE_SIZE), &out, &[]).expect("a hole");
+        assert_eq!(at, 0x1000);
+    }
+
+    /// An ordinary image is placed against the whole machine, unchanged.
+    #[test]
+    fn an_ordinary_image_sees_the_whole_memory_map() {
+        let ram = [(0x1000u64, 0x2000u64), (0x1_0000, 0x2_0000)];
+        assert_eq!(placement_ranges(false, &ram, None).expect("the map"), ram.to_vec());
+        assert_eq!(placement_ranges(false, &ram, Some((0x1000, 0x1fff))).expect("the map"), ram.to_vec());
+    }
+
+    /// No reservation and no image can be placed: the same refusal staging
+    /// makes, made before a loader lays anything out.
+    #[test]
+    fn a_crash_image_with_nothing_reserved_is_refused() {
+        assert_eq!(placement_ranges(true, &[(0, 0x8000_0000)], None).err(), Some(Error::AddrNotAvail));
     }
 }

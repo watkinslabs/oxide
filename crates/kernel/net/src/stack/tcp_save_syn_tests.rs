@@ -9,16 +9,15 @@
 
 use super::*;
 use crate::tcp_hdr::flags;
-use super::tcp_syncookies_tests::{child, deliver, syn_options, CLIENT_SEQ, SERVER};
+use super::tcp_syncookies_tests::{deliver, request, syn_options, CLIENT_SEQ, SERVER};
 
 /// Send one SYN and report whether the request it created recorded the packet.
 fn request_recorded_syn(stack: &NetStack, iface: NetIfaceId, port: u16, client_port: u16)
     -> bool
 {
     deliver(stack, iface, port, client_port, flags::SYN, CLIENT_SEQ, 0, syn_options());
-    let request = child(stack, port, client_port).expect("the SYN created a request");
-    let recorded = request.conn.lock().syn_bytes.is_some();
-    recorded
+    request(stack, port, client_port).expect("the SYN created a request")
+        .syn_bytes.is_some()
 }
 
 #[test]
@@ -62,8 +61,8 @@ fn the_record_never_exceeds_the_headers_the_option_publishes() {
     let listener = stack.tcp_listen(SERVER, 7_703, true).expect("listen");
     listener.save_syn.store(1, ::core::sync::atomic::Ordering::Release);
     deliver(&stack, iface, 7_703, 40_203, flags::SYN, CLIENT_SEQ, 0, syn_options());
-    let request = child(&stack, 7_703, 40_203).expect("the SYN created a request");
-    let recorded = request.conn.lock().syn_bytes.clone().expect("the listener asked");
+    let request = request(&stack, 7_703, 40_203).expect("the SYN created a request");
+    let recorded = request.syn_bytes.clone().expect("the listener asked");
     assert!(recorded.len() <= crate::stack::SAVED_SYN_MAX,
         "a maximal network header plus a maximal TCP header, and no payload");
 }

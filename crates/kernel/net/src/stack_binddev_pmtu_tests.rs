@@ -118,12 +118,20 @@ fn passive_child_uses_learned_pmtu_unless_listener_uses_interface() {
             local_ip: IpAddr::V4(Ipv4Addr::LOOPBACK), local_port: listen_port,
             remote_ip: IpAddr::V4(Ipv4Addr::LOOPBACK), remote_port: client_port,
         };
-        let child = stack.inet_tables(0).tcp_conns.lock().get(&key).cloned().unwrap();
-        assert_eq!(child.conn.lock().own_mss, expected, "mode={mode}");
+        // The SYN left a half-open request, which is where the route answers
+        // the passive open resolved are recorded until the child is built.
+        let request = stack.inet_tables(0).tcp_conns.lock().get(&key)
+            .and_then(crate::stack::TcpSlot::req).cloned().unwrap();
+        assert_eq!(request.own_mss, expected, "mode={mode}");
         let expected_pmtu = if mode == crate::uapi::IP_PMTUDISC_PROBE {
             65_535
         } else { u32::from(LEARNED_PMTU) };
-        assert_eq!(child.conn.lock().path_mtu, expected_pmtu, "mode={mode}");
+        assert_eq!(request.path_mtu.load(::core::sync::atomic::Ordering::Acquire),
+            expected_pmtu, "mode={mode}");
+        // And the connection the request opens carries them, which is the only
+        // way they reach the accepted socket.
+        let child = request.open_conn();
+        assert_eq!((child.own_mss, child.path_mtu), (expected, expected_pmtu), "mode={mode}");
     }
     assert_eq!(crate::mib::get(0, crate::mib::Mib::TcpPassiveOpens), before + 2);
 }

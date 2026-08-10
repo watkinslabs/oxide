@@ -67,6 +67,7 @@ fn init_serial_console() {
     // fan-out. No `console=` at all → default true (keep the sink).
     if dev.bound() == Some(drv::Driver::name(uart_drv)) && crate::boot_cmdline::console_classes().0 {
         klog::set_byte_sink(drv_serial::emit);
+        klog::set_polled_hook(drv_serial::console_to_polled);
     }
 }
 

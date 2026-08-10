@@ -78,12 +78,17 @@ fn klog_call_at(line: &str, col: usize) -> Option<&'static str> {
         ("klog::kfatal!", "klog::kfatal!"),
         ("klog::klog!",   "klog::klog!"),
     ];
-    // `klog::announce` is the sanctioned UNCONDITIONAL form for an
-    // irreversible machine transition (`04§4.0`). It is checked before
-    // FN_NAMES because no prefix in that list matches it, and it is listed
-    // here rather than left to fall through so the exemption is visible at
-    // the point the rule is enforced.
-    if rest.starts_with("klog::announce(") { return None; }
+    // The `klog::announce` FAMILY is the sanctioned UNCONDITIONAL form for an
+    // irreversible machine transition and for the machine's answer to
+    // something a person asked it (`04§4.0`): `announce` for a static line,
+    // `announce_emergency` for one that must survive the console's interrupt
+    // route being taken away, `announce_bytes` for one assembled at the moment
+    // it is printed. The prefix covers all of them deliberately — a member of
+    // the family that had to be listed separately is a member that gets
+    // forgotten. Checked before FN_NAMES because no prefix in that list
+    // matches it, and stated here so the exemption is visible where the rule
+    // is enforced.
+    if rest.starts_with("klog::announce") { return None; }
     for (pat, name) in FN_NAMES { if rest.starts_with(pat) { return Some(name); } }
     for (pat, name) in MAC_NAMES { if rest.starts_with(pat) { return Some(name); } }
     None

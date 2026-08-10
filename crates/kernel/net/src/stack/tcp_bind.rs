@@ -66,7 +66,7 @@ impl NetStack {
         }
         drop(listeners);
         let conns = tables.tcp_conns.lock();
-        conns.values().any(|entry| {
+        conns.values().filter_map(super::TcpSlot::sock).any(|entry| {
             let Some(old) = entry.bind.as_ref() else { return false; };
             let state = entry.conn.lock().state;
             state != crate::tcp_state::TcpState::Closed
@@ -411,7 +411,7 @@ impl NetStack {
         let (entry, syn, carried) = self.build_active_child(bind, local_ip, remote_ip, remote_port,
             error, bpf_filter, ip_mtu_discover, ipv6_mtu_discover, ipv6_frag_size, min_hop, ip_opts, ipv6_opts,
             max_pacing_rate, mark, fastopen, data)?;
-        conns.insert(key, entry.clone());
+        conns.insert(key, super::TcpSlot::Sock(entry.clone()));
         drop(conns);
         if let Err(error) = self.send_tcp_segment_in(
             bind.net_ns(), local_ip, remote_ip, &syn, 0, bind.bound_iface(),

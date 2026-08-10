@@ -59,6 +59,17 @@ fn alloc_extra(value: &str) -> String { format!("{value} ") }
 /// a normal boot is a default that hides the bugs only a normal boot has.
 pub(super) const KERNEL_CONSOLE_PARAMS: &str = "earlycon printk.time=1";
 
+/// The magic-SysRq enable mask this image runs with.
+///
+/// The kernel now ENFORCES `kernel.sysrq`, and the distribution configuration
+/// in the composed image sets it to a value that permits neither the task dump
+/// nor the per-CPU dump. Those two are how a wedged boot is diagnosed here —
+/// the smoke gate types them at a guest that stopped answering — so an image
+/// built to be debugged asks for all of them. A production configuration would
+/// not, which is exactly why this is a property of the boot line rather than
+/// of the kernel's default.
+pub(super) const SYSRQ_PARAMS: &str = "sysctl.kernel.sysrq=1";
+
 /// Kernel parameters that make a boot narrate itself, for the case the set
 /// exists to serve: a boot that never completes and produces nothing to
 /// diagnose with.
@@ -106,7 +117,7 @@ pub(super) fn kernel_cmdline(arch: &str, image_path: &str) -> String {
     // silence while every consumer expects a talkative boot is a line that
     // lies. A boot that wants it can pass it through OXIDE_CMDLINE_EXTRA.
     format!(
-        "{boot_image}root=/dev/oxide0 rw {KERNEL_CONSOLE_PARAMS} {extra}\
+        "{boot_image}root=/dev/oxide0 rw {KERNEL_CONSOLE_PARAMS} {SYSRQ_PARAMS} {extra}\
          console={ser},115200 console=tty0 \
          systemd.mask=firewalld.service systemd.mask=chronyd.service \
          systemd.mask=ModemManager.service systemd.mask=plymouth-start.service \
@@ -241,6 +252,19 @@ mod tests {
             assert!(!line.contains("initcall_debug"), "{line}");
             assert!(!line.contains("ignore_loglevel"), "{line}");
             assert!(!line.contains("keep_bootcon"), "{line}");
+        });
+    }
+
+    /// The dumps the smoke gate types at a wedged guest are mask-gated in the
+    /// kernel, and the image's own configuration would refuse them. A boot
+    /// that cannot be asked what it is stuck on is a boot nobody can diagnose.
+    #[test]
+    fn every_boot_asks_for_the_sysrq_commands_it_is_debugged_with() {
+        with_env(&[("OXIDE_CMDLINE_DEBUG", None), ("OXIDE_CMDLINE_EXTRA", None)], || {
+            for arch in ["x86_64", "aarch64"] {
+                let line = kernel_cmdline(arch, "/img");
+                assert!(line.split(' ').any(|t| t == "sysctl.kernel.sysrq=1"), "{arch}: {line}");
+            }
         });
     }
 

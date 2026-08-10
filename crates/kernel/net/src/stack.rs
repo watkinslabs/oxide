@@ -102,6 +102,12 @@ mod tcp_metrics_tests;
 #[path = "stack/tcp_save_syn_tests.rs"]
 mod tcp_save_syn_tests;
 mod tcp_reqsk;
+#[cfg(test)]
+#[path = "stack/tcp_req_tests.rs"]
+mod tcp_req_tests;
+// The slim half-open request record and the two-kind connection-table entry.
+pub(crate) mod tcp_req;
+pub(crate) use tcp_req::{TcpReq, TcpSlot};
 mod tcp_metrics;
 mod tcp_open;
 pub(crate) mod tcp_writable;

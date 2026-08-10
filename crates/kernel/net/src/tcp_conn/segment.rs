@@ -95,7 +95,7 @@ impl TcpConn {
         base.wrapping_add(self.ts_off)
     }
 
-    pub(super) fn build_syn_with_opts_at(&self, seq: u32, flag_bits: u8) -> Vec<u8> {
+    pub(crate) fn build_syn_with_opts_at(&self, seq: u32, flag_bits: u8) -> Vec<u8> {
         self.build_syn_with_data(seq, flag_bits, &[])
     }
 

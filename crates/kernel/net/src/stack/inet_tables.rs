@@ -45,7 +45,10 @@ pub(crate) struct InetTables {
     pub(crate) ping: Arc<crate::ping::PingTable>,
     pub(crate) udp: Arc<InetTableLock<BTreeMap<u16, Vec<Arc<UdpRxQueue>>>>>,
     pub(crate) udp6: Arc<InetTableLock<BTreeMap<u16, Vec<Arc<crate::stack_ipv6::Udp6RxQueue>>>>>,
-    pub(crate) tcp_conns: Arc<InetTableLock<BTreeMap<TcpKey, Arc<TcpEntry>>>>,
+    /// One connection hash for both entry kinds: a half-open request and a
+    /// full socket are told apart by which arm of `TcpSlot` holds them, so a
+    /// segment finds its owner in a single lookup.
+    pub(crate) tcp_conns: Arc<InetTableLock<BTreeMap<TcpKey, super::TcpSlot>>>,
     pub(crate) tcp_listens: Arc<InetTableLock<BTreeMap<TcpListenKey, Vec<Arc<TcpListenEntry>>>>>,
     pub(crate) tcp_binds: Arc<InetTableLock<BTreeMap<u16, Vec<alloc::sync::Weak<TcpBindReservation>>>>>,
     pub(crate) pmtu: super::pmtu_cache::PmtuCache,
@@ -107,9 +110,17 @@ impl InetTables {
                 listener.accept_waiters.wake_all();
             }
         }
-        for entry in ::core::mem::take(&mut *self.tcp_conns.lock()).into_values() {
-            super::tcp_timer::cancel(&entry);
-            entry.close_and_wake();
+        for slot in ::core::mem::take(&mut *self.tcp_conns.lock()).into_values() {
+            match slot {
+                super::TcpSlot::Sock(entry) => {
+                    super::tcp_timer::cancel(&entry);
+                    entry.close_and_wake();
+                }
+                super::TcpSlot::Req(req) => {
+                    super::tcp_timer::cancel_req(&req);
+                    req.release_syn_backlog();
+                }
+            }
         }
         self.tcp_binds.lock().clear();
     }

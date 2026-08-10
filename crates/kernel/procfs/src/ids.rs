@@ -50,6 +50,8 @@ pub(crate) const BUDDYINFO: u64 = 0x3000_1027;
 pub(crate) const IOMEM: u64 = 0x3000_1029;
 /// `/proc/kcore` — the synthetic core file of the running kernel.
 pub(crate) const KCORE: u64 = 0x3000_102A;
+/// `/proc/sysrq-trigger` — write-only magic-SysRq entry point.
+pub(crate) const SYSRQ_TRIGGER: u64 = 0x3000_102B;
 pub(crate) const MOUNTS: u64 = 0x3000_0D01;
 pub(crate) const MOUNTINFO: u64 = 0x3000_0D02;
 pub(crate) const FDINFO_ROOT: u64 = 0x3000_1800;

@@ -119,13 +119,18 @@ impl Plan {
     /// that makes the child deliver the payload and the charge against the
     /// listener's bound. # C: O(1)
     pub(crate) fn install(&self, entry: &Arc<TcpEntry>) {
-        let mut c = entry.conn.lock();
-        c.fastopen_opt = self.reply;
-        c.fastopen_child = self.accept;
-        drop(c);
+        self.install_conn(&mut entry.conn.lock());
         if self.accept {
             entry.fastopen_qlen.store(true, ::core::sync::atomic::Ordering::Release);
         }
+    }
+
+    /// The same decision applied to the connection that negotiates a request,
+    /// which has no entry to hold a charge against the listener's bound —
+    /// nothing was taken from its SYN. # C: O(1)
+    pub(crate) fn install_conn(&self, conn: &mut TcpConn) {
+        conn.fastopen_opt = self.reply;
+        conn.fastopen_child = self.accept;
     }
 }
 

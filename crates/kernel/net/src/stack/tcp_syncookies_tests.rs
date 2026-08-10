@@ -54,12 +54,23 @@ fn plain_syn_options() -> SynOptions {
     SynOptions { mss: Some(1460), ..SynOptions::default() }
 }
 
+/// The half-open request the SYN stored, if it stored one.
+pub(super) fn request(stack: &NetStack, port: u16, client_port: u16)
+    -> Option<Arc<crate::stack::TcpReq>>
+{
+    let key = TcpKey {
+        local_ip: IpAddr::V4(SERVER), local_port: port,
+        remote_ip: IpAddr::V4(SERVER), remote_port: client_port,
+    };
+    stack.inet_tables(0).tcp_conns.lock().get(&key).and_then(crate::stack::TcpSlot::req).cloned()
+}
+
 pub(super) fn child(stack: &NetStack, port: u16, client_port: u16) -> Option<Arc<TcpEntry>> {
     let key = TcpKey {
         local_ip: IpAddr::V4(SERVER), local_port: port,
         remote_ip: IpAddr::V4(SERVER), remote_port: client_port,
     };
-    stack.inet_tables(0).tcp_conns.lock().get(&key).cloned()
+    stack.inet_tables(0).tcp_conns.lock().get(&key).and_then(crate::stack::TcpSlot::sock).cloned()
 }
 
 /// The next TCP segment this stack transmitted, lifted out of its IPv4 packet.
@@ -84,12 +95,12 @@ pub(super) fn tsval(segment: &[u8]) -> u32 {
     crate::tcp_hdr::parse_ts_option(segment).expect("a cookie SYN-ACK carries a timestamp").0
 }
 
-pub(super) fn drain(lo: &crate::loopback::LoopbackDev) { while lo.rx_pop().is_some() {} }
+pub(crate) fn drain(lo: &crate::loopback::LoopbackDev) { while lo.rx_pop().is_some() {} }
 
 /// Fill the listener's single SYN-queue slot with a real half-open request.
 fn fill_syn_queue(stack: &NetStack, iface: NetIfaceId, port: u16, lo: &crate::loopback::LoopbackDev) {
     deliver(stack, iface, port, 40_001, flags::SYN, CLIENT_SEQ, 0, syn_options());
-    assert!(child(stack, port, 40_001).is_some(), "the first SYN takes the one slot");
+    assert!(request(stack, port, 40_001).is_some(), "the first SYN takes the one slot");
     drain(lo);
 }
 
@@ -103,7 +114,10 @@ fn a_full_syn_queue_answers_with_a_cookie_and_stores_nothing() {
     deliver(&stack, iface, 7_401, 40_002, flags::SYN, CLIENT_SEQ, 0, syn_options());
 
     // The whole point: the request was answered and NOTHING was kept.
-    assert!(child(&stack, 7_401, 40_002).is_none(), "a cookie handshake stores no child");
+    assert!(stack.inet_tables(0).tcp_conns.lock().get(&TcpKey {
+        local_ip: IpAddr::V4(SERVER), local_port: 7_401,
+        remote_ip: IpAddr::V4(SERVER), remote_port: 40_002,
+    }).is_none(), "a cookie handshake stores no child");
     assert_eq!(listener.syn_backlog_used.load(::core::sync::atomic::Ordering::Acquire), 1,
         "the cookie took no backlog slot");
     let segment = sent(&lo).expect("the SYN was answered, not dropped");
@@ -222,7 +236,7 @@ fn a_syn_queue_with_room_still_stores_a_request() {
     let stack = NetStack::new();
     let (iface, lo, listener) = fixture(&stack, 7_407);
     deliver(&stack, iface, 7_407, 40_001, flags::SYN, CLIENT_SEQ, 0, syn_options());
-    assert!(child(&stack, 7_407, 40_001).is_some(), "a request with room is stored");
+    assert!(request(&stack, 7_407, 40_001).is_some(), "a request with room is stored");
     assert_eq!(listener.syn_backlog_used.load(::core::sync::atomic::Ordering::Acquire), 1);
     assert!(listener.no_recent_synq_overflow(crate::tcp_conn::ka_now_ns()),
         "an ordinary passive open is not an overflow");
@@ -253,6 +267,10 @@ mod ipv6 {
     }
 
     fn child6(stack: &NetStack, port: u16, client_port: u16) -> Option<Arc<TcpEntry>> {
+        slot6(stack, port, client_port).and_then(|slot| slot.sock().cloned())
+    }
+
+    fn slot6(stack: &NetStack, port: u16, client_port: u16) -> Option<crate::stack::TcpSlot> {
         let key = TcpKey {
             local_ip: IpAddr::V6(SERVER6), local_port: port,
             remote_ip: IpAddr::V6(SERVER6), remote_port: client_port,
@@ -268,11 +286,11 @@ mod ipv6 {
         let listener = stack.tcp_listen_ip(IpAddr::V6(SERVER6), 7_408, true).expect("listen");
         listener.backlog.store(0, ::core::sync::atomic::Ordering::Release);
         deliver6(&stack, iface, 7_408, 40_001, flags::SYN, CLIENT_SEQ, 0, syn_options());
-        assert!(child6(&stack, 7_408, 40_001).is_some(), "the first SYN takes the one slot");
+        assert!(slot6(&stack, 7_408, 40_001).is_some(), "the first SYN takes the one slot");
         drain(&lo);
 
         deliver6(&stack, iface, 7_408, 40_002, flags::SYN, CLIENT_SEQ, 0, syn_options());
-        assert!(child6(&stack, 7_408, 40_002).is_none(), "a cookie handshake stores no child");
+        assert!(slot6(&stack, 7_408, 40_002).is_none(), "a cookie handshake stores no child");
         let segment = sent(&lo).expect("the SYN was answered, not dropped");
         let synack = head(&segment);
         assert_eq!(synack.flags & (flags::SYN | flags::ACK), flags::SYN | flags::ACK);

@@ -227,7 +227,7 @@ fn tcp_interface_and_omit_modes_cannot_update_shared_route_pmtu() {
         stack.inet_tables(0).tcp_conns.lock().insert(TcpKey {
             local_ip: local.ip, local_port: local.port,
             remote_ip: remote.ip, remote_port: remote.port,
-        }, entry.clone());
+        }, crate::stack::TcpSlot::Sock(entry.clone()));
 
         crate::stack_icmp::handle_error(
             &stack, iface, REMOTE, crate::icmp::ICMP_TYPE_DEST_UNREACH, 4,

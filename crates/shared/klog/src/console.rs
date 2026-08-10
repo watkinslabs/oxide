@@ -200,6 +200,30 @@ pub(crate) fn primary_only(bytes: &[u8]) {
     emit_slot(SLOT_BYTE, bytes);
 }
 
+/// Installed switch that takes the console off an interrupt-driven transmit
+/// queue. Null until a driver publishes one.
+static TO_POLLED: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Publish the console's polled-mode switch. # C: O(1)
+pub fn set_polled_hook(f: fn()) { TO_POLLED.store(f as *mut (), Ordering::Release); }
+
+/// Put the console on its synchronous route, flushing whatever an
+/// interrupt-driven queue already holds.
+///
+/// For the caller that is about to silence every interrupt source. Its output
+/// is the only thing left, and a queue drained by an interrupt that will not
+/// come publishes none of it — a crash boot's log stopped mid-word for exactly
+/// this reason, on a machine that was still running. No-op when no driver
+/// published a switch, which is every console that was already synchronous.
+/// # C: O(queued bytes)
+pub fn to_polled_mode() {
+    let raw = TO_POLLED.load(Ordering::Acquire);
+    if raw.is_null() { return; }
+    // SAFETY: TO_POLLED is written only by set_polled_hook, which casts a valid `fn()` through `as *mut ()`; the reverse cast restores the identical signature and `fn()` carries no unsafe contract.
+    let f: fn() = unsafe { core::mem::transmute::<*mut (), fn()>(raw) };
+    f();
+}
+
 /// Fire one reserved slot if it is live. # C: O(bytes.len())
 fn emit_slot(idx: usize, bytes: &[u8]) {
     let slot = &REGISTRY.slots[idx];

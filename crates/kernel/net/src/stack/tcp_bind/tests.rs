@@ -52,7 +52,7 @@ fn time_wait_reuseaddr_requires_both_sockets_to_opt_in() {
         Arc::new(crate::bpf_filter::SocketFilter::new()),
         Arc::new(::core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)),
         Arc::new(::core::sync::atomic::AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT))));
-    stack.inet_tables(0).tcp_conns.lock().insert(key, old_entry);
+    stack.inet_tables(0).tcp_conns.lock().insert(key, crate::stack::TcpSlot::Sock(old_entry));
 
     assert_eq!(stack.tcp_reserve(local, PORT + 2, None, true, false, UID, false).err(),
         Some(NetError::Eaddrinuse));
@@ -71,7 +71,7 @@ fn time_wait_reuseaddr_requires_both_sockets_to_opt_in() {
         Arc::new(crate::bpf_filter::SocketFilter::new()),
         Arc::new(::core::sync::atomic::AtomicI32::new(crate::uapi::IP_PMTUDISC_WANT)),
         Arc::new(::core::sync::atomic::AtomicI32::new(crate::uapi::IPV6_PMTUDISC_WANT))));
-    stack.inet_tables(0).tcp_conns.lock().insert(key, old_entry);
+    stack.inet_tables(0).tcp_conns.lock().insert(key, crate::stack::TcpSlot::Sock(old_entry));
     assert!(stack.tcp_reserve(local, PORT + 4, None, true, false, UID, false).is_ok());
 }
 
