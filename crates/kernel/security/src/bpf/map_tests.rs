@@ -29,7 +29,20 @@ fn live_map_ids_resolve_and_enumerate_through_inode_ownership() {
     let second = allocate(uapi::map_type::ARRAY, 4, 8, 1, 0).unwrap();
     let second_id = second.private::<BpfMapInode>().unwrap().id;
     assert_eq!(map_by_id(first_id).map(|inode| inode.ino()), Some(first.ino()));
-    assert_eq!(next_live_map_id(first_id), Some(second_id));
+    // Ids come from one process-global sequence, so a sibling test's map can
+    // be allocated between these two. The property under test is that
+    // enumeration reaches the second map without skipping it, not that it is
+    // the immediate successor.
+    let mut id = first_id;
+    let mut steps = 0u32;
+    loop {
+        id = next_live_map_id(id).expect("enumeration reaches the second map");
+        steps += 1;
+        assert!(steps < 100_000, "enumeration never reached the second map");
+        assert!(id > first_id, "enumeration only moves forward");
+        if id == second_id { break; }
+        assert!(id < second_id, "enumeration walked past the second map without visiting it");
+    }
 }
 
 #[test]
