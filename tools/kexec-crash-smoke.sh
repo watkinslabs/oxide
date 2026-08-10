@@ -12,7 +12,7 @@
 # Usage: kexec-crash-smoke.sh <x86|arm> [timeout_seconds]
 set -euo pipefail
 
-usage() { echo "usage: $0 <x86|arm> [timeout_seconds]" >&2; exit 2; }
+usage() { echo "usage: $0 <x86|arm> [timeout_seconds] [crash|reboot]" >&2; exit 2; }
 
 ARCH="${1:-}"
 TIMEOUT="${2:-${SMOKE_TIMEOUT:-900}}"
@@ -22,6 +22,13 @@ case "$ARCH" in
     *) usage ;;
 esac
 case "$TIMEOUT" in ''|*[!0-9]*) usage ;; esac
+# `reboot` drives the ORDINARY relocation on the same guest and the same
+# harness. It is the control for the crash run: the two share every step from
+# the machine stop onward, so a crash boot that stops producing output while an
+# ordinary one does not is a fact about the PANIC context and not about the
+# relocation.
+MODE="${3:-crash}"
+case "$MODE" in crash) SMOKE_FLAG=--crash ;; reboot) SMOKE_FLAG= ;; *) usage ;; esac
 
 ROOT="$(git rev-parse --show-toplevel)"
 . "$ROOT/tools/vendor-preflight.sh"
@@ -52,7 +59,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "kexec-crash-smoke: arch=$ARCH crashkernel=$CRASH_SIZE logs=$RUN_DIR"
+echo "kexec-crash-smoke: arch=$ARCH mode=$MODE crashkernel=$CRASH_SIZE logs=$RUN_DIR"
 
 # The image has to carry the loader and a SECOND kernel to relocate into, and
 # only one composed profile does. Booting the default profile gets `kexec:
@@ -78,11 +85,11 @@ done
 [ -S "$UART" ] || { echo "kexec-crash-smoke: FAIL - no UART socket" >&2; exit 1; }
 
 rc=0
-python3 "$ROOT/tools/kexec-smoke.py" "$UART" --crash --timeout "$TIMEOUT" --log "$UART_LOG" || rc=$?
+python3 "$ROOT/tools/kexec-smoke.py" "$UART" $SMOKE_FLAG --timeout "$TIMEOUT" --log "$UART_LOG" || rc=$?
 if [ "$rc" -eq 0 ]; then
-    echo "kexec-crash-smoke: PASS - $ARCH reached a crash kernel"
+    echo "kexec-crash-smoke: PASS - $ARCH reached a second kernel ($MODE)"
 else
-    echo "kexec-crash-smoke: FAIL - $ARCH rc=$rc" >&2
+    echo "kexec-crash-smoke: FAIL - $ARCH $MODE rc=$rc" >&2
 fi
 echo "kexec-crash-smoke: log=$UART_LOG"
 exit "$rc"
