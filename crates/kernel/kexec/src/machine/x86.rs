@@ -371,6 +371,12 @@ unsafe fn machine_shutdown() {
 /// # C: O(image size)
 pub fn kexec(image: &KImage) -> KResult<()> {
     if image.arch_pgt == 0 || image.control_code_page == 0 { return Err(Error::Inval); }
+    // Announced BEFORE the machine stops, not after. Everything from here on
+    // runs with interrupts off and the other CPUs halted, so a step that wedges
+    // produces no further output at all — and a console that simply stops is
+    // indistinguishable from a jump that landed in a kernel which said nothing.
+    // The two lines together bracket the irreversible half.
+    klog::announce("kexec: stopping the machine");
     // SAFETY: the machine is committed; this stops every other CPU and silences
     // every interrupt source, and nothing after it can be undone.
     unsafe { machine_shutdown() };
