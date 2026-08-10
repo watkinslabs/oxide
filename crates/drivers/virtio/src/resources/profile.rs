@@ -1,12 +1,21 @@
 pub const MAX_RESOURCE_QUEUES: usize = 8;
 pub const VIRTIO_MSI_NO_VECTOR: u16 = 0xFFFF;
+/// Virtqueue index a single-poll-queue device profile dedicates to polling.
+/// Polling queues occupy the TAIL of the queue array so interrupt-driven
+/// default queues keep the low indexes; with one of each that tail is index 1.
+pub const POLL_QUEUE_INDEX: u16 = 1;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct VirtioChildRequirements {
     pub required_queues: [bool; MAX_RESOURCE_QUEUES],
+    /// Queues the child USES when the device provides them and does without
+    /// otherwise. Absence never fails the probe; a required queue's does.
+    pub optional_queues: [bool; MAX_RESOURCE_QUEUES],
     pub needs_device_cfg: bool,
     pub needs_net_boot_payloads: bool,
 }
+
+const NO_QUEUES: [bool; MAX_RESOURCE_QUEUES] = [false; MAX_RESOURCE_QUEUES];
 
 impl VirtioChildRequirements {
     pub const fn new(
@@ -14,7 +23,13 @@ impl VirtioChildRequirements {
         needs_device_cfg: bool,
         needs_net_boot_payloads: bool,
     ) -> Self {
-        Self { required_queues, needs_device_cfg, needs_net_boot_payloads }
+        Self { required_queues, optional_queues: NO_QUEUES, needs_device_cfg, needs_net_boot_payloads }
+    }
+
+    /// Mark one virtqueue as usable-if-present. # C: O(1)
+    pub const fn with_optional_queue(mut self, index: usize) -> Self {
+        if index < MAX_RESOURCE_QUEUES { self.optional_queues[index] = true; }
+        self
     }
 
     pub const fn q0() -> Self {
@@ -113,6 +128,22 @@ impl VirtioTransportProfile {
             [None, None, None, None, None, None, None, None],
             VirtioEarlyPayloadPolicy::None,
             VirtioChildRequirements::q0_device_cfg(),
+        )
+    }
+
+    /// One interrupt-driven request queue plus an OPTIONAL polling queue at
+    /// index 1. The poll queue registers no completion handler, so the
+    /// transport binds it `VIRTIO_MSI_NO_VECTOR` and the device is left with
+    /// no vector to raise for it. Its notify doorbell is still mapped: a
+    /// poller must be able to kick. # C: O(1)
+    pub const fn q0_device_cfg_poll_q1(drv_features: u64, msix0_handler: Option<fn()>) -> Self {
+        Self::new(
+            drv_features,
+            msix0_handler,
+            [None, Some(VirtioQueuePlan::new(POLL_QUEUE_INDEX, None, true)), None, None, None, None, None, None],
+            VirtioEarlyPayloadPolicy::None,
+            VirtioChildRequirements::q0_device_cfg()
+                .with_optional_queue(POLL_QUEUE_INDEX as usize),
         )
     }
 

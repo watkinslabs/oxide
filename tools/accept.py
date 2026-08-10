@@ -75,7 +75,7 @@ def qemu_cmd(arch: str, image: Path) -> list[str]:
             "-cdrom", str(image),
             "-boot", "d",
             "-drive", f"if=none,id=hd0,format=raw,file={rootfs}",
-            "-device", "virtio-blk-pci,drive=hd0,bus=pcie.0,serial=oxide-virt-blk-0",
+            "-device", "virtio-blk-pci,drive=hd0,bus=pcie.0,serial=oxide-virt-blk-0,num-queues=2",
             "-display", "none",
             "-serial", "stdio",
             "-no-reboot",

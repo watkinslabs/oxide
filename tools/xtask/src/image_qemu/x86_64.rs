@@ -176,9 +176,9 @@ pub(super) fn qemu_run_grub_x86_64(
         // Stage-2: ROOT + HOME disks. The kernel identifies each by the
         // virtio-blk serial (oxide-root / oxide-home) via GET_ID.
         "-drive", &format!("if=none,id=root,format=raw,file={}", root_img.display()),
-        "-device", "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root,disable-legacy=on",
+        "-device", "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root,disable-legacy=on,num-queues=2",
         "-drive", &format!("if=none,id=home,format=raw,file={}", home_img.display()),
-        "-device", "virtio-blk-pci,drive=home,bus=pcie.0,serial=oxide-home,disable-legacy=on",
+        "-device", "virtio-blk-pci,drive=home,bus=pcie.0,serial=oxide-home,disable-legacy=on,num-queues=2",
         "-netdev", netdev.as_str(),
         "-device", "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
         // -vga none: q35 otherwise adds a default std-VGA that becomes the
@@ -249,7 +249,7 @@ pub(super) fn qemu_run_grub_x86_64(
         let drive = format!("if=none,id=blkscratch,format=raw,file={}", scratch.display());
         c.args([
             "-drive", drive.as_str(),
-            "-device", "virtio-blk-pci,drive=blkscratch,bus=pcie.0,serial=oxide-scratch,disable-legacy=on",
+            "-device", "virtio-blk-pci,drive=blkscratch,bus=pcie.0,serial=oxide-scratch,disable-legacy=on,num-queues=2",
         ]);
     }
     if std::env::var_os("OXIDE_VIRTIO_SND_MULTIDEV_SMOKE").is_some() {

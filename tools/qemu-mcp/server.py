@@ -626,9 +626,9 @@ def qemu_start(arch: str, name: str | None = None, features: str = "",
                 # Was a single stale rootfs-x86_64.img/oxide-virt-blk-0 → the
                 # kmain.rs:512 "root disk serial=oxide-root not found" panic.
                 "-drive", f"if=none,id=root,format=raw,file={root_img}",
-                "-device", "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root,disable-legacy=on",
+                "-device", "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root,disable-legacy=on,num-queues=2",
                 "-drive", f"if=none,id=home,format=raw,file={home_img}",
-                "-device", "virtio-blk-pci,drive=home,bus=pcie.0,serial=oxide-home,disable-legacy=on",
+                "-device", "virtio-blk-pci,drive=home,bus=pcie.0,serial=oxide-home,disable-legacy=on,num-queues=2",
                 # Phase 8 prep: explicit modern virtio-net so the
                 # kernel sees device 0x1041 (not the QEMU-default
                 # transitional 0x1000) and can DHCP/ARP through
@@ -678,9 +678,9 @@ def qemu_start(arch: str, name: str | None = None, features: str = "",
                 "-cdrom", str(img),
                 "-boot", "d",
                 "-drive", f"if=none,id=root,format=raw,file={root_img}",
-                "-device", "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root,disable-legacy=on",
+                "-device", "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root,disable-legacy=on,num-queues=2",
                 "-drive", f"if=none,id=home,format=raw,file={home_img}",
-                "-device", "virtio-blk-pci,drive=home,bus=pcie.0,serial=oxide-home,disable-legacy=on",
+                "-device", "virtio-blk-pci,drive=home,bus=pcie.0,serial=oxide-home,disable-legacy=on,num-queues=2",
                 # Phase 8 prep: explicit modern virtio-net (0x1041)
                 # symmetric with x86; aarch64 virt has no
                 # default-NIC so `-nic none` is unnecessary.

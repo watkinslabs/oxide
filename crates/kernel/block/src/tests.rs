@@ -306,7 +306,7 @@ fn an_explicit_request_priority_survives_the_registry_submit_path() {
     let disk = crate::registry::by_index(idx).expect("registered disk");
     let want = sched::ioprio::prio_value(sched::ioprio::CLASS_RT, 2);
     let mut req = BlockRequest { op: BlockOp::Read, start_block: 0, len_blocks: 1,
-        buffer: vec![0u8; 512], ioprio: want };
+        buffer: vec![0u8; 512], ioprio: want, polled: false };
     disk.dev.submit_sync(&mut req).unwrap();
     // The submission path must not overwrite a priority its caller chose.
     assert_eq!(spy.seen.lock().as_slice(), &[want]);
@@ -379,6 +379,14 @@ impl QueuedDisk {
     }
     /// How many transfers the device has accepted and not yet completed.
     pub(crate) fn outstanding(&self) -> usize { self.parked.lock().len() }
+    /// Whether every accepted transfer told the driver a poller would reap it.
+    /// A driver with a separate interrupt-free queue can only route on this,
+    /// so a submission path that leaves it unset silently keeps paying the
+    /// interrupt it was admitted for saving.
+    pub(crate) fn all_marked_polled(&self) -> bool {
+        let g = self.parked.lock();
+        !g.is_empty() && g.iter().all(|(request, _)| request.polled)
+    }
 }
 
 impl BlockDevice for QueuedDisk {

@@ -315,3 +315,36 @@ fn real_block_file_lifecycle_blocks_unregister_until_final_fput() {
     assert_eq!(opener_count("vdt"), Some(0));
     assert!(registry::unregister("vdt"));
 }
+
+/// The half of the polled contract that reaches the DRIVER: a transfer
+/// submitted through the direct path is stamped as one a poller will reap, so
+/// a driver holding a dedicated interrupt-free queue issues it there. Without
+/// the stamp the request lands on the queue the device still interrupts and
+/// the polled ring saves the wait but not the interrupt.
+#[test]
+fn a_direct_transfer_tells_the_driver_a_poller_will_reap_it() {
+    let dev = crate::tests::QueuedDisk::new();
+    let idx = registry::register("vdq9", Arc::clone(&dev) as Arc<dyn BlockDevice>);
+    let devt = vfs::Devt(dev_t_of("vdq9", idx).unwrap());
+    let ops = vfs::lookup_blkdev(devt).unwrap();
+    let (_slot, done) = direct_probe();
+
+    assert!(ops.submit_direct(devt, vfs::file_ops::DirectIo {
+        write: false, off: 0, buf: vec![0u8; 512], done,
+    }).is_queued());
+
+    assert!(dev.all_marked_polled(), "the direct path marks its transfer polled");
+    assert_eq!(ops.iopoll(devt), Some(1));
+    registry::unregister("vdq9");
+}
+
+/// Ordinary buffered I/O is NOT polled: nothing will call a poll for it, so a
+/// driver must issue it where its completion is signalled. Marking everything
+/// polled would park writeback on a queue nobody drains.
+#[test]
+fn buffered_io_is_not_marked_polled() {
+    let request = crate::BlockRequest::new_read(0, 1, 512);
+    assert!(!request.polled);
+    assert!(!crate::BlockRequest::new_write(0, 1, vec![0u8; 512]).polled);
+    assert!(!crate::BlockRequest::new_flush().polled);
+}

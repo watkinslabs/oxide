@@ -97,6 +97,17 @@ impl VirtioChildResourceState {
                 resources.set_queue(self.queue(index as u16)?);
             }
         }
+        // An OPTIONAL queue is handed over when the transport actually
+        // programmed it and withheld silently when it did not. A device that
+        // offers fewer queues than the driver can use must still probe: the
+        // driver takes the queues that are there.
+        for (index, optional) in requirements.optional_queues.iter().copied().enumerate() {
+            if !optional { continue; }
+            let Some(queue) = self.queue(index as u16) else { continue };
+            if queue.index == index as u16 && queue.is_runtime_valid() {
+                resources.set_queue(queue);
+            }
+        }
         Some(resources)
     }
 }

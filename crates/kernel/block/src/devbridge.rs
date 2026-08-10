@@ -206,6 +206,11 @@ impl BlockDevOps for DiskBlkOps {
         let mut request = BlockRequest {
             op: if write { BlockOp::Write } else { BlockOp::Read },
             start_block, len_blocks, buffer: buf,
+            // A poller, not an interrupt, will find this completion — the
+            // `can_poll` gate above is what makes that true. Stating it on the
+            // request is how a driver with a dedicated interrupt-free queue
+            // knows to issue it there and spend no interrupt on it.
+            polled: true,
             ..BlockRequest::default()
         };
         // The clamp above may have shortened the transfer; the request's buffer

@@ -16,7 +16,7 @@ pub use identity::{
 mod profile;
 pub use profile::{
     VirtioChildRequirements, VirtioEarlyPayloadPolicy, VirtioQueuePlan, VirtioTransportProfile,
-    VIRTIO_MSI_NO_VECTOR, MAX_RESOURCE_QUEUES,
+    VIRTIO_MSI_NO_VECTOR, MAX_RESOURCE_QUEUES, POLL_QUEUE_INDEX,
 };
 
 mod handoff;

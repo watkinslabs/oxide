@@ -206,6 +206,24 @@ pub fn program_queue<A: VirtioQueueAllocator>(
     })
 }
 
+/// Read back the MSI-X vector bound to virtqueue `qi`, restoring the queue
+/// selector afterwards. `VIRTIO_MSI_NO_VECTOR` means the device has no vector
+/// to raise for that queue at all — the device-side fact behind an
+/// interrupt-free queue, read from the device rather than assumed.
+/// # SAFETY: caller mapped `cfg_va` as a Device-attr virtio common-cfg window.
+/// # C: O(1)
+pub fn read_queue_msix_vector(cfg_va: u64, qi: u16) -> u16 {
+    // SAFETY: cfg_va is the Device-attr-mapped common-cfg window; queue_select
+    // and queue_msix_vector are aligned u16 fields inside it (Virtio 1.2
+    // §4.1.4.3), and the selector is restored to queue 0 before returning.
+    unsafe {
+        core::ptr::write_volatile((cfg_va + CFG_QUEUE_SELECT) as *mut u16, qi);
+        let vector = core::ptr::read_volatile((cfg_va + CFG_QUEUE_MSIX) as *const u16);
+        core::ptr::write_volatile((cfg_va + CFG_QUEUE_SELECT) as *mut u16, QUEUE_ZERO);
+        vector
+    }
+}
+
 const fn queue_addr_low(pa: u64) -> u32 {
     (pa & QUEUE_ADDR_LOW_MASK) as u32
 }

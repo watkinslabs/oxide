@@ -14,7 +14,7 @@ crates/drivers/drv-ahci	code/klog-ungated	2
 crates/drivers/drv-ahci	code/pub-fn-complexity	1
 crates/drivers/drv-nvme	code/pub-fn-complexity	1
 crates/drivers/drv-virtio-blk	code/klog-ungated	4
-crates/drivers/drv-virtio-blk	code/pub-fn-complexity	17
+crates/drivers/drv-virtio-blk	code/pub-fn-complexity	16
 crates/drivers/drv-virtio-gpu	code/pub-fn-complexity	25
 crates/drivers/drv-virtio-input	code/pub-fn-complexity	26
 crates/drivers/drv-virtio-rng	code/pub-fn-complexity	13

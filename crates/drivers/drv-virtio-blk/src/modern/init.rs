@@ -2,6 +2,7 @@ use super::*;
 
 const BLK_CFG_CAPACITY_BYTES: usize = 8;
 const BLK_CFG_BLK_SIZE_BYTES: usize = 4;
+const BLK_CFG_NUM_QUEUES_BYTES: usize = 2;
 const DISK_NAME_BUF_BYTES: usize = 8;
 
 fn read_device_config(resources: virtio::VirtioResources, drv_features: u64) -> Option<BlkDeviceConfig> {
@@ -34,7 +35,57 @@ fn read_device_config(resources: virtio::VirtioResources, drv_features: u64) -> 
         }
     }
 
-    Some(BlkDeviceConfig { capacity, blk_size })
+    let mut num_queues: u16 = 1;
+    if drv_features & virtio::VIRTIO_BLK_F_MQ != 0 {
+        let mut nqb = [0u8; BLK_CFG_NUM_QUEUES_BYTES];
+        for i in 0..BLK_CFG_NUM_QUEUES_BYTES {
+            let off = virtio::BLK_CFG_OFF_NUM_QUEUES + i as u64;
+            // SAFETY: read_device_config uses a transport-mapped virtio device config byte address.
+            nqb[i] = unsafe { core::ptr::read_volatile((cfg + off) as *const u8) };
+        }
+        num_queues = u16::from_le_bytes(nqb);
+    }
+
+    Some(BlkDeviceConfig { capacity, blk_size, num_queues })
+}
+
+/// The used-ring index the device left after reset, so the driver's cursor
+/// starts where the device's does instead of at zero. # C: O(1)
+fn seed_used_index(h: u64, res: &virtio::VirtQueueResource) -> u16 {
+    if h == 0 || res.device_pa == 0 { return 0; }
+    let used = h.wrapping_add(res.device_pa) as *const u16;
+    virtio::dma::invalidate_from_device(used as u64, 2 * core::mem::size_of::<u16>());
+    // SAFETY: `device_pa` is this queue's used frame (checked non-zero) via
+    // HHDM; `used.add(1)` is the aligned u16 `used.idx` at byte 2, the first
+    // four bytes of the frame. `invalidate_from_device` above dropped any
+    // stale cache line so this reads what the device left after reset.
+    unsafe { core::ptr::read_volatile(used.add(1)) }
+}
+
+/// Read back a queue's `avail.flags`. # C: O(1)
+#[cfg(feature = "debug-boot")]
+fn read_avail_flags(hhdm: u64, res: &virtio::VirtQueueResource) -> u16 {
+    if hhdm == 0 || res.driver_pa == 0 { return 0; }
+    let avail = hhdm.wrapping_add(res.driver_pa + virtio::VRING_AVAIL_FLAGS_OFF) as *const u16;
+    // SAFETY: `driver_pa` is this queue's own avail frame via HHDM, checked
+    // non-zero above; `flags` is its first, u16-aligned field (Virtio 1.2
+    // §2.7.6).
+    unsafe { core::ptr::read_volatile(avail) }
+}
+
+/// Build the interrupt-free polling queue when the device gave one to spare.
+///
+/// Setting `VRING_AVAIL_F_NO_INTERRUPT` here, before any buffer is made
+/// available on the queue, is what makes a polled completion cost no
+/// interrupt: the transport bound no MSI-X vector to this queue, and the
+/// device is now told not to signal on it either.
+fn build_poll_queue(
+    resources: virtio::VirtioResources, drv_features: u64, num_queues: u16, h: u64,
+) -> Option<BlkQueue> {
+    let index = poll_queue_index(drv_features, num_queues, DEFAULT_POLL_QUEUES)?;
+    let res = resources.require_queue_at_least(index, MAX_REQUEST_DESCRIPTORS)?;
+    suppress_queue_interrupts(h, &res);
+    Some(BlkQueue::new(res, seed_used_index(h, &res), true))
 }
 
 #[cfg(test)]
@@ -56,7 +107,7 @@ pub fn init_blk(init: BlkInit) -> u32 {
     if !block::completion::register(run_completion_bottom_half) {
         return 0;
     }
-    let Some(requestq) = init.resources.require_queue_at_least(0, 3) else {
+    let Some(requestq) = init.resources.require_queue_at_least(0, MAX_REQUEST_DESCRIPTORS) else {
         return 0;
     };
     if !init.resources.common_cfg_valid() {
@@ -84,22 +135,12 @@ pub fn init_blk(init: BlkInit) -> u32 {
         }
     }
     let blk_size = blk::validate_blk_size(device_cfg.blk_size);
-    let seed = if h != 0 && requestq.device_pa != 0 {
-        let used = h.wrapping_add(requestq.device_pa) as *const u16;
-        virtio::dma::invalidate_from_device(
-            used as u64,
-            2 * core::mem::size_of::<u16>(),
-        );
-        // SAFETY: `device_pa` is this queue's used frame (checked non-zero) via
-        // HHDM; `used.add(1)` is the aligned u16 `used.idx` at byte 2, the first
-        // four bytes of the frame. `invalidate_from_device` above dropped any
-        // stale cache line so this reads what the device left after reset.
-        unsafe { core::ptr::read_volatile(used.add(1)) }
-    } else { 0 };
+    let seed = seed_used_index(h, &requestq);
 
     let mut state = BlkState {
         cfg_va: init.resources.cfg_va,
-        requestq,
+        requestq: BlkQueue::new(requestq, seed, false),
+        pollq: build_poll_queue(init.resources, init.drv_features, device_cfg.num_queues, h),
         capacity: device_cfg.capacity,
         blk_size,
         serial: [0u8; blk::BLK_SERIAL_LEN],
@@ -107,10 +148,6 @@ pub fn init_blk(init: BlkInit) -> u32 {
         // The reference derives the queue's write-cache mode straight from
         // the negotiated `F_FLUSH` bit: that bit IS the cache mode.
         write_cache: virtio::cache_mode_writeback(init.drv_features),
-        inflight: Spinlock::new(RingShadow {
-            avail_idx: seed, used_seen: seed, busy: false,
-            free_heads: request_heads(requestq.size), pending: Vec::new(), deferred: Vec::new(),
-        }),
         poisoned: core::sync::atomic::AtomicBool::new(false),
     };
 
@@ -149,6 +186,25 @@ pub fn init_blk(init: BlkInit) -> u32 {
         state.remove();
         return 0;
     }
+    // Evidence, read back from the DEVICE and the driver area rather than
+    // assumed, that this disk's polled ring really is interrupt-free: the
+    // vector the device would raise for the poll queue, and the suppression
+    // bit it was told to honour. `msix=ffff` is the no-vector sentinel.
+    #[cfg(feature = "debug-boot")]
+    {
+        if let Some(poll) = state.pollq.as_ref() {
+            klog::write_raw(b"[INFO]  virtio-blk poll queue idx=");
+            klog::write_dec_u64(poll.res.index as u64);
+            klog::write_raw(b" of ");
+            klog::write_dec_u64(device_cfg.num_queues as u64);
+            klog::write_raw(b" msix=");
+            klog::write_hex_u64(
+                virtio::read_queue_msix_vector(init.resources.cfg_va, poll.res.index) as u64);
+            klog::write_raw(b" avail_flags=");
+            klog::write_hex_u64(read_avail_flags(h, &poll.res) as u64);
+            klog::write_raw(b"\n");
+        }
+    }
     #[cfg(feature = "debug-boot")]
     {
         klog::write_raw(b"[INFO]  virtio-blk-modern key=");
@@ -159,6 +215,10 @@ pub fn init_blk(init: BlkInit) -> u32 {
         klog::write_dec_u64(blk_size as u64);
         klog::write_raw(b" idx=");
         klog::write_dec_u64(idx as u64);
+        klog::write_raw(b" queues=");
+        klog::write_dec_u64(device_cfg.num_queues as u64);
+        klog::write_raw(b" pollq=");
+        klog::write_dec_u64(state.pollq.as_ref().map(|q| q.res.index as u64 + 1).unwrap_or(0));
         klog::write_raw(b"\n");
     }
     idx
@@ -194,27 +254,7 @@ pub(crate) fn test_publish_record(bus: u8, device: u8, function: u8, name: &str)
     if DEVICES.lock_bh::<sched::bh::SchedBh>().iter().any(|d| same_device(d, device_key)) {
         return 0;
     }
-    let state = Arc::new(BlkState {
-        cfg_va: 0,
-        requestq: virtio::VirtQueueResource {
-            index: 0,
-            size: 0,
-            desc_pa: 0,
-            driver_pa: 0,
-            device_pa: 0,
-            notify_va: 0,
-            notify_off: 0,
-        },
-        capacity: 8,
-        blk_size: 512,
-        serial: [0u8; blk::BLK_SERIAL_LEN],
-        bounce_pa: 0,
-        write_cache: true,
-        inflight: Spinlock::new(RingShadow {
-            avail_idx: 0, used_seen: 0, busy: false, free_heads: Vec::new(), pending: Vec::new(), deferred: Vec::new(),
-        }),
-        poisoned: core::sync::atomic::AtomicBool::new(false),
-    });
+    let state = Arc::new(BlkState::for_test_cfg(0));
     let idx = block::registry::register_with_driver(
         block::registry::BlockDriver::fixed("virtblk", block::uapi::VIRTIO_BLK_MAJOR), name, None, state.clone());
     if idx != 0 {
