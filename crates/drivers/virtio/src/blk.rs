@@ -27,6 +27,9 @@ pub const VIRTIO_BLK_F_SIZE_MAX: u64 = 1 << 1;
 pub const VIRTIO_BLK_F_SEG_MAX:  u64 = 1 << 2;
 pub const VIRTIO_BLK_F_BLK_SIZE: u64 = 1 << 6;
 pub const VIRTIO_BLK_F_FLUSH:    u64 = 1 << 9;
+/// Multiqueue: negotiating it is what makes `num_queues` in the device config
+/// meaningful and licenses the driver to use any virtqueue past index 0.
+pub const VIRTIO_BLK_F_MQ:       u64 = 1 << 12;
 
 /// Default logical sector size when `VIRTIO_BLK_F_BLK_SIZE` is not
 /// negotiated. virtio-blk sectors are always 512 on the wire for
@@ -48,6 +51,9 @@ pub const BOUNCE_DATA_SECTORS: u64 =
 /// `virtio_blk_config` device-cfg offsets (spec §5.2.4).
 pub const BLK_CFG_OFF_CAPACITY: u64 = 0;   // le64 sectors (512B units)
 pub const BLK_CFG_OFF_BLK_SIZE: u64 = 20;  // le32, valid iff F_BLK_SIZE
+/// le16 request-queue count, valid iff `VIRTIO_BLK_F_MQ`. Follows the
+/// topology block (24..32) and the `writeback`/`unused0` bytes (32, 33).
+pub const BLK_CFG_OFF_NUM_QUEUES: u64 = 34;
 /// Length of the serial string returned by a `VIRTIO_BLK_T_GET_ID`
 /// request (spec §5.2.6 — the device fills a 20-byte device-writable
 /// data buffer with the configured serial). NOT a device-cfg offset:

@@ -27,6 +27,12 @@ pub struct BlockRequest {
     /// effective priority when it is still unset, and read by the queue when
     /// it has to choose which of several waiting requests to start next.
     pub ioprio:       i32,
+    /// This request's completion will be REAPED BY A POLLER, so a driver with
+    /// a separate interrupt-free queue must issue it there. Set by the direct
+    /// submission path a polled ring drives, and by nothing else: a request
+    /// nobody will poll for must stay on a queue whose completions are
+    /// signalled, or it never completes at all.
+    pub polled:       bool,
 }
 
 impl Default for BlockRequest {
@@ -35,7 +41,7 @@ impl Default for BlockRequest {
     /// the request grows.
     /// # C: O(1)
     fn default() -> Self {
-        Self { op: BlockOp::Read, start_block: 0, len_blocks: 0, buffer: Vec::new(), ioprio: sched::ioprio::DEFAULT }
+        Self { op: BlockOp::Read, start_block: 0, len_blocks: 0, buffer: Vec::new(), ioprio: sched::ioprio::DEFAULT, polled: false }
     }
 }
 

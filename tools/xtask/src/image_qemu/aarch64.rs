@@ -188,9 +188,9 @@ pub(super) fn qemu_run_aarch64_grub(
         "-boot", "d",
         "-semihosting-config", "enable=on,target=native",
         "-drive", root_drive.as_str(),
-        "-device", "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root,disable-legacy=on",
+        "-device", "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root,disable-legacy=on,num-queues=2",
         "-drive", home_drive.as_str(),
-        "-device", "virtio-blk-pci,drive=home,bus=pcie.0,serial=oxide-home,disable-legacy=on",
+        "-device", "virtio-blk-pci,drive=home,bus=pcie.0,serial=oxide-home,disable-legacy=on,num-queues=2",
         "-netdev", netdev.as_str(),
         "-device", "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
         // virtio-gpu scanout + keyboard for the graphical console (fbcon
@@ -247,7 +247,7 @@ pub(super) fn qemu_run_aarch64_grub(
         let drive = format!("if=none,id=blkscratch,format=raw,file={}", scratch.display());
         c.args([
             "-drive", drive.as_str(),
-            "-device", "virtio-blk-pci,drive=blkscratch,bus=pcie.0,serial=oxide-scratch,disable-legacy=on",
+            "-device", "virtio-blk-pci,drive=blkscratch,bus=pcie.0,serial=oxide-scratch,disable-legacy=on,num-queues=2",
         ]);
     }
     if std::env::var_os("OXIDE_VIRTIO_SND_MULTIDEV_SMOKE").is_some() {

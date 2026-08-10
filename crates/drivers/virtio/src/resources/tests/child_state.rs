@@ -141,3 +141,75 @@ fn owned_probe_frames_publish_only_transfers_vring_frames() {
     assert_eq!(owned.take_all(), alloc::vec![0x9000, 0xa000]);
     assert!(owned.is_empty());
 }
+
+const VALID_POLL_Q1: VirtQueueResource = VirtQueueResource {
+    index: POLL_QUEUE_INDEX,
+    size: 8,
+    desc_pa: 0x5000,
+    driver_pa: 0x6000,
+    device_pa: 0x7000,
+    notify_va: 0x8000,
+    notify_off: 3,
+};
+
+/// A device that programmed the optional poll queue hands it to the child; a
+/// device that did not still probes, without it. Both halves matter: the
+/// first is what makes an interrupt-free queue reachable at all, and the
+/// second is what keeps a single-queue device (QEMU's `num-queues=1` default)
+/// bootable instead of failing its probe.
+#[test]
+fn an_optional_queue_is_handed_over_when_present_and_withheld_when_absent() {
+    let requirements =
+        VirtioChildRequirements::q0_device_cfg().with_optional_queue(POLL_QUEUE_INDEX as usize);
+
+    let mut with_poll =
+        VirtioChildResourceState::new(crate::VIRTIO_STATUS_DRIVER_OK, 0x10, 0x20)
+            .with_device_cfg_va(0x30);
+    with_poll.set_queue(VALID_Q0);
+    with_poll.set_queue(VALID_POLL_Q1);
+    let resources = with_poll.resources_for_child(requirements).unwrap();
+    assert_eq!(resources.require_queue(POLL_QUEUE_INDEX), Some(VALID_POLL_Q1));
+
+    let mut without_poll =
+        VirtioChildResourceState::new(crate::VIRTIO_STATUS_DRIVER_OK, 0x10, 0x20)
+            .with_device_cfg_va(0x30);
+    without_poll.set_queue(VALID_Q0);
+    let resources = without_poll
+        .resources_for_child(requirements)
+        .expect("a missing OPTIONAL queue must not fail the probe");
+    assert_eq!(resources.require_queue(POLL_QUEUE_INDEX), None);
+}
+
+/// An optional queue the transport left unprogrammed is reported as absent
+/// rather than handed over as a zero-sized ring a driver would then use.
+#[test]
+fn an_optional_queue_that_was_never_programmed_is_not_handed_over() {
+    let requirements =
+        VirtioChildRequirements::q0_device_cfg().with_optional_queue(POLL_QUEUE_INDEX as usize);
+    let mut state = VirtioChildResourceState::new(crate::VIRTIO_STATUS_DRIVER_OK, 0x10, 0x20)
+        .with_device_cfg_va(0x30);
+    state.set_queue(VALID_Q0);
+    state.set_queue(VirtQueueResource::new(POLL_QUEUE_INDEX, 0, 0, 0, 0, 0, 0));
+
+    let resources = state.resources_for_child(requirements).unwrap();
+
+    assert_eq!(resources.require_queue(POLL_QUEUE_INDEX), None);
+}
+
+/// The whole point of the poll queue: the transport must have NO interrupt
+/// handler to bind for it, which is what leaves its `queue_msix_vector` at the
+/// no-vector sentinel and the device with nothing to raise.
+#[test]
+fn the_block_poll_profile_registers_no_interrupt_handler_for_its_poll_queue() {
+    fn handler() {}
+    let profile = VirtioTransportProfile::q0_device_cfg_poll_q1(0, Some(handler as fn()));
+
+    let plan = profile.queue_plans[POLL_QUEUE_INDEX as usize].expect("poll queue is planned");
+    assert_eq!(plan.index, POLL_QUEUE_INDEX);
+    assert!(plan.msix_handler.is_none(), "a poll queue registers no completion callback");
+    assert_eq!(plan.msix_vec, VIRTIO_MSI_NO_VECTOR);
+    assert!(plan.map_notify, "a poller still has to kick the queue");
+    assert!(profile.msix0_handler.is_some(), "the default queue keeps its interrupt");
+    assert!(!profile.child_requirements.required_queues[POLL_QUEUE_INDEX as usize]);
+    assert!(profile.child_requirements.optional_queues[POLL_QUEUE_INDEX as usize]);
+}

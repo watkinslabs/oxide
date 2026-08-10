@@ -32,6 +32,7 @@ pub use resources::{
     VirtioRuntimeHandoffInput, VirtioTransportLocation, VirtioTransportProbeResult,
     VirtioTransportProfile, VirtQueueResource, MAX_RESOURCE_QUEUES, VIRTIO_CHILD_BUS,
     VIRTIO_CHILD_CLASS, VIRTIO_MSI_NO_VECTOR, VIRTIO_NET_RX_BOOT_POOL, VIRTIO_VENDOR_ID,
+    POLL_QUEUE_INDEX,
     build_queue_resources, build_runtime_handoff, push_unique_frame, virtio_child_addr,
     virtio_child_has_parent, resolve_planned_notify_mappings, run_child_probe, run_child_remove,
     run_child_shutdown,
@@ -44,6 +45,7 @@ pub use common_cfg::{
 };
 
 pub mod queue_cfg;
+pub use queue_cfg::read_queue_msix_vector;
 pub use queue_cfg::{
     program_queue, program_queue_set, ProgrammedQueues, QueueRing, VirtioQueueAllocator,
 };
@@ -54,6 +56,7 @@ pub mod queue;
 pub use queue::{
     Desc, AvailRing, UsedElem, UsedRing, VirtQueue,
     VRING_DESC_F_NEXT, VRING_DESC_F_WRITE, VRING_DESC_F_INDIRECT,
+    VRING_AVAIL_F_NO_INTERRUPT, VRING_AVAIL_FLAGS_OFF,
 };
 
 pub mod net;
@@ -67,8 +70,9 @@ pub use blk::{
     DescSpec, build_chain, encode_header, decode_status, cache_mode_writeback, pack_desc,
     VIRTIO_BLK_T_IN, VIRTIO_BLK_T_OUT, VIRTIO_BLK_T_FLUSH, VIRTIO_BLK_T_GET_ID,
     VIRTIO_BLK_S_OK, VIRTIO_BLK_S_IOERR, VIRTIO_BLK_S_UNSUPP,
-    VIRTIO_BLK_F_BLK_SIZE, VIRTIO_BLK_F_FLUSH,
+    VIRTIO_BLK_F_BLK_SIZE, VIRTIO_BLK_F_FLUSH, VIRTIO_BLK_F_MQ,
     VIRTIO_BLK_SECTOR_BYTES, BLK_CFG_OFF_CAPACITY, BLK_CFG_OFF_BLK_SIZE,
+    BLK_CFG_OFF_NUM_QUEUES,
     BLK_SERIAL_LEN, validate_blk_size, capacity_blocks, trim_serial, vd_name,
     sector_plan,
 };

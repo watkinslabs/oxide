@@ -193,20 +193,37 @@ fn kernel_wait_path_parks_without_driver_owned_polling() {
     assert!(wait.contains("park_blk_checked(&BLK_TURN, 0"));
 }
 
+/// Queue state is reached from the block softirq as well as from process
+/// context, so every acquisition must exclude softirqs for the whole critical
+/// section. There is exactly ONE acquisition site — `BlkQueue::lock` — and it
+/// is bottom-half safe; no other module may reach `inflight` directly, because
+/// a second site is how one of the two contexts ends up with the wrong
+/// discipline.
 #[test]
 fn softirq_shared_queue_state_is_bottom_half_safe() {
-    let sources = [
-        include_str!("../modern/state.rs"),
-        include_str!("../modern/init.rs"),
-        include_str!("../modern/engine.rs"),
-        include_str!("../modern/wait.rs"),
-    ];
-    let joined = sources.join("\n");
-    assert!(!joined.contains("inflight.lock()"),
+    let queues = include_str!("../modern/queues.rs");
+    assert!(queues.contains("self.inflight.lock_bh::<sched::bh::SchedBh>()"),
+        "the one queue-state acquisition site must exclude softirqs");
+    assert!(!queues.contains("self.inflight.lock()"),
         "plain queue-state lock can deadlock when block softirq interrupts it");
+
+    let sources = [
+        ("state.rs", include_str!("../modern/state.rs")),
+        ("init.rs", include_str!("../modern/init.rs")),
+        ("engine.rs", include_str!("../modern/engine.rs")),
+        ("post.rs", include_str!("../modern/post.rs")),
+        ("drain.rs", include_str!("../modern/drain.rs")),
+        ("teardown.rs", include_str!("../modern/teardown.rs")),
+        ("wait.rs", include_str!("../modern/wait.rs")),
+    ];
+    for (name, source) in sources {
+        assert!(!source.contains(".inflight."),
+            "{name} must take queue state through BlkQueue::lock, not its own acquisition");
+    }
+    let joined: std::string::String =
+        sources.iter().map(|(_, source)| *source).collect::<std::vec::Vec<_>>().join("\n");
     assert!(!joined.contains("DEVICES.lock()"),
         "plain device registry lock can deadlock against block softirq");
-    assert!(joined.contains("inflight.lock_bh::<sched::bh::SchedBh>()"));
     assert!(joined.contains("DEVICES.lock_bh::<sched::bh::SchedBh>()"));
 }
 
@@ -220,7 +237,7 @@ fn synchronous_turn_release_dispatches_deferred_before_waking_next_owner() {
     let release = source.split("pub(super) fn release_turn").nth(1)
         .expect("release_turn implementation");
     let free = release.find("busy = false").expect("turn release");
-    let dispatch = release.find("self.start_deferred_requests()")
+    let dispatch = release.find("self.start_deferred_requests(&self.requestq)")
         .expect("release must kick queued async I/O");
     let wake = release.find("BLK_TURN.wake_one()")
         .expect("release must wake a synchronous waiter");

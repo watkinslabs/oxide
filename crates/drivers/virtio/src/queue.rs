@@ -11,6 +11,14 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
+/// `avail.flags` bit telling the device not to raise an interrupt when it
+/// consumes buffers from this queue (Virtio 1.2 §2.7.6). Set once, at queue
+/// setup, on a queue whose completions a poller reaps — precisely the queues
+/// registered with no completion callback.
+pub const VRING_AVAIL_F_NO_INTERRUPT: u16 = 1;
+/// `avail.flags` offset inside the driver-area frame: the field is first.
+pub const VRING_AVAIL_FLAGS_OFF: u64 = 0;
+
 pub const VRING_DESC_F_NEXT:     u16 = 1;
 pub const VRING_DESC_F_WRITE:    u16 = 2;
 pub const VRING_DESC_F_INDIRECT: u16 = 4;

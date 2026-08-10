@@ -31,9 +31,18 @@ pub use state::{
 pub use state::wake_completions;
 use state::*;
 
+mod drain;
 mod engine;
+mod post;
+mod queues;
 mod request;
+mod teardown;
 mod wait;
+pub use queues::BlkQueue;
+#[cfg(test)]
+pub use queues::suppress_queue_interrupts_for_tests;
+use queues::*;
+use engine::block_error_for_status;
 
 mod init;
 pub use init::{disk_name, init_blk, remove_blk, shutdown_blk};

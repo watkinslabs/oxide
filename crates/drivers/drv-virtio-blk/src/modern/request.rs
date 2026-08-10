@@ -8,7 +8,7 @@ impl BlkState {
             return Err(BlockError::Eio);
         }
         let h = hhdm();
-        if h == 0 || !self.requestq.is_runtime_valid() || self.bounce_pa == 0 {
+        if h == 0 || !self.requestq.res.is_runtime_valid() || self.bounce_pa == 0 {
             #[cfg(feature = "debug-boot")]
             log_submit_failure(b"invalid-runtime", type_, sector, data.len() as u32, BlockError::Eio);
             return Err(BlockError::Eio);

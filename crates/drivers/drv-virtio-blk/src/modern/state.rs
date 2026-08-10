@@ -49,7 +49,13 @@ pub(super) fn run_completion_bottom_half() {
     let devices: Vec<Arc<BlkState>> = DEVICES.lock_bh::<sched::bh::SchedBh>()
         .iter().map(|record| record.state.clone()).collect();
     for device in devices {
-        let _reaped = device.drain_owned_completions();
+        // ONLY the interrupt-driven queue. Nothing raises this softirq for the
+        // poll queue — the device has no vector for it and its `avail.flags`
+        // suppress the notification — and draining it here would take
+        // completions out from under the poller that owns them.
+        for q in device.queues().filter(|q| softirq_drains(q)) {
+            let _reaped = device.drain_owned_completions(q);
+        }
     }
     // Wake the in-flight turn-holder (≤1 waiter, no herd), then hand a chance to
     // ONE turn-waiter in case the drain freed the engine turn for an async
@@ -181,8 +187,14 @@ pub(super) fn log_submit_failure(
 /// the reference's requested feature set for exactly that reason.
 /// Without it negotiated the device may answer every barrier `S_UNSUPP`, so a
 /// journal commit that believes it fenced its writes has not.
+///
+/// `VIRTIO_BLK_F_MQ` is what makes `num_queues` in the device config meaningful
+/// and licenses use of any virtqueue past index 0 (Virtio 1.2 §5.2.3/§5.2.4).
+/// Without it the driver has exactly one request queue and no queue to poll
+/// without an interrupt.
 const WANTED_FEATURES: u64 =
-    virtio::VIRTIO_F_VERSION_1 | virtio::VIRTIO_BLK_F_BLK_SIZE | virtio::VIRTIO_BLK_F_FLUSH;
+    virtio::VIRTIO_F_VERSION_1 | virtio::VIRTIO_BLK_F_BLK_SIZE | virtio::VIRTIO_BLK_F_FLUSH
+    | virtio::VIRTIO_BLK_F_MQ;
 
 pub const fn wanted_features() -> u64 {
     WANTED_FEATURES
@@ -193,7 +205,7 @@ pub const fn transport_profile() -> virtio::VirtioTransportProfile {
     let completion_irq = Some(wake_completions as fn());
     #[cfg(not(target_os = "oxide-kernel"))]
     let completion_irq = None;
-    virtio::VirtioTransportProfile::q0_device_cfg(wanted_features(), completion_irq)
+    virtio::VirtioTransportProfile::q0_device_cfg_poll_q1(wanted_features(), completion_irq)
 }
 
 /// `virtio_blk_req` is a type/reserved/sector tuple (Virtio 1.2 §5.2.6).
@@ -258,7 +270,14 @@ pub(super) fn same_device(rec: &BlkRecord, device_key: virtio::VirtioChildDevice
 
 pub struct BlkState {
     pub(super) cfg_va: u64,
-    pub(super) requestq: virtio::VirtQueueResource,
+    /// The interrupt-driven request queue. Its completions raise the device
+    /// interrupt, which raises the block softirq, which drains it.
+    pub(super) requestq: BlkQueue,
+    /// The interrupt-free request queue, when the device offered one to spare.
+    /// No MSI-X vector is bound to it and its `avail.flags` carry
+    /// `VRING_AVAIL_F_NO_INTERRUPT`, so its completions reach the driver only
+    /// through a poll — that is the whole cost saving of a polled ring.
+    pub(super) pollq: Option<BlkQueue>,
     pub(super) capacity: u64,
     pub(super) blk_size: u32,
     pub(super) serial: [u8; blk::BLK_SERIAL_LEN],
@@ -267,42 +286,54 @@ pub struct BlkState {
     /// `blk_queue_write_cache`). `false` = write-through: no volatile cache to
     /// fence, and `VIRTIO_BLK_T_FLUSH` must NOT go on the wire.
     pub(super) write_cache: bool,
-    pub(super) inflight: Spinlock<RingShadow, DriverLockClass>,
     pub(super) poisoned: core::sync::atomic::AtomicBool,
 }
 
 #[cfg(test)]
 impl BlkState {
     pub(crate) fn for_test_cfg(cfg_va: u64) -> Self {
+        Self::for_test_cfg_with_poll_queue(cfg_va, false)
+    }
+
+    /// `with_poll_queue` builds the device the way a multiqueue device probes:
+    /// a second, interrupt-free request queue beside the default one.
+    pub(crate) fn for_test_cfg_with_poll_queue(cfg_va: u64, with_poll_queue: bool) -> Self {
         Self {
             cfg_va,
-            requestq: virtio::VirtQueueResource {
-                index: 0,
-                size: 0,
-                desc_pa: 0,
-                driver_pa: 0,
-                device_pa: 0,
-                notify_va: 0,
-                notify_off: 0,
+            requestq: BlkQueue::new(unprogrammed_queue(0), 0, false),
+            pollq: if with_poll_queue {
+                Some(BlkQueue::new(unprogrammed_queue(virtio::POLL_QUEUE_INDEX), 0, true))
+            } else {
+                None
             },
             capacity: 8,
             blk_size: blk::VIRTIO_BLK_SECTOR_BYTES,
             serial: [0u8; blk::BLK_SERIAL_LEN],
             bounce_pa: 0,
             write_cache: true,
-            inflight: Spinlock::new(RingShadow {
-                avail_idx: 0, used_seen: 0, busy: false, free_heads: Vec::new(), pending: Vec::new(), deferred: Vec::new(),
-            }),
             poisoned: core::sync::atomic::AtomicBool::new(false),
         }
     }
 
+    /// Take the synchronous engine turn on every queue this device has.
     pub(crate) fn hold_inflight_for_tests(&self) {
-        self.inflight.lock_bh::<sched::bh::SchedBh>().busy = true;
+        for q in self.queues() { q.lock().busy = true; }
     }
 
     pub(crate) fn release_inflight_for_tests(&self) {
-        self.inflight.lock_bh::<sched::bh::SchedBh>().busy = false;
+        for q in self.queues() { q.lock().busy = false; }
+    }
+
+    /// Whether the queue a request with this `polled` flag would be issued on
+    /// is the interrupt-free one.
+    pub(crate) fn queue_is_polled_for_tests(&self, polled: bool) -> bool {
+        self.queue_for(polled).polled
+    }
+
+    pub(crate) fn queue_count_for_tests(&self) -> usize { self.queues().count() }
+
+    pub(crate) fn poll_queue_index_for_tests(&self) -> Option<u16> {
+        self.pollq.as_ref().map(|q| q.res.index)
     }
 
     pub(crate) fn frozen_for_tests(&self) -> bool {
@@ -362,4 +393,7 @@ pub struct BlkInit {
 pub(super) struct BlkDeviceConfig {
     pub(super) capacity: u64,
     pub(super) blk_size: u32,
+    /// Request queues the device advertises. Meaningful only under a
+    /// negotiated `VIRTIO_BLK_F_MQ`; one otherwise.
+    pub(super) num_queues: u16,
 }
