@@ -54,6 +54,11 @@ trap cleanup EXIT
 
 echo "kexec-crash-smoke: arch=$ARCH crashkernel=$CRASH_SIZE logs=$RUN_DIR"
 
+# The image has to carry the loader and a SECOND kernel to relocate into, and
+# only one composed profile does. Booting the default profile gets `kexec:
+# command not found` and an empty `/lib/modules`, which reads like the syscall
+# refusing when nothing was ever asked of it.
+OXIDE_QUICKBOOT_PROFILE="${OXIDE_QUICKBOOT_PROFILE:-lite}" \
 OXIDE_CMDLINE_EXTRA="crashkernel=$CRASH_SIZE ${OXIDE_CMDLINE_EXTRA:-}" \
 OXIDE_QEMU_HEADLESS=1 OXIDE_QEMU_UART_SOCK="$UART" \
 OXIDE_QEMU_KVM="${OXIDE_QEMU_KVM:-1}" \
