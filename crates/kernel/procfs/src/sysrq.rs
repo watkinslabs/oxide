@@ -13,7 +13,7 @@
 
 use alloc::sync::Arc;
 
-use vfs::{default_inode_ops, mk_mode, FileOps, FileType, Inode, InodeBuilder, InodeRef, KResult, VfsError};
+use vfs::{mk_mode, FileOps, FileType, Inode, InodeBuilder, InodeOps, InodeRef, KResult, VfsError};
 
 /// Write-only, owner-only: the file's mode IS its permission check, exactly as
 /// the reference leaves it. A readable trigger would be a file whose contents
@@ -60,11 +60,22 @@ fn run(key: u8) { sched::diag::sysrq_trigger(key); }
 #[cfg(not(target_os = "oxide-kernel"))]
 fn run(_key: u8) {}
 
+/// `i_op` for the trigger. Overrides only `truncate`, which must succeed as a
+/// no-op: the default answers EROFS, and a shell redirection opens with
+/// `O_TRUNC`, so `echo c > /proc/sysrq-trigger` — the way every operator and
+/// every script uses this file — reported "Read-only file system" and did
+/// nothing at all. Observed on a boot with a crash image staged.
+struct SysrqTriggerInodeOps;
+impl InodeOps for SysrqTriggerInodeOps {
+    /// # C: O(1)
+    fn truncate(&self, _inode: &Inode, _len: u64) -> KResult<()> { Ok(()) }
+}
+
 /// `/proc/sysrq-trigger` inode. # C: O(1)
 pub fn make_proc_sysrq_trigger() -> InodeRef {
     InodeBuilder::new(crate::ids::SYSRQ_TRIGGER as vfs::Ino,
                       mk_mode(FileType::Regular, MODE),
-                      default_inode_ops(), Arc::new(SysrqTriggerOps)).build()
+                      Arc::new(SysrqTriggerInodeOps), Arc::new(SysrqTriggerOps)).build()
 }
 
 /// Default `kernel.sysrq`. `1` is "every command", which is what the sysrq
@@ -105,6 +116,15 @@ mod tests {
     #[test]
     fn the_trigger_is_write_only_and_owner_only() {
         assert_eq!(MODE, 0o200);
+    }
+
+    /// A shell redirection opens with `O_TRUNC`, and the default answer to a
+    /// truncate on a procfs leaf is EROFS. That made the one spelling everyone
+    /// uses — `echo c > /proc/sysrq-trigger` — fail before the write ever ran.
+    #[test]
+    fn truncating_the_trigger_succeeds_so_a_shell_redirection_reaches_the_write() {
+        let ino = make_proc_sysrq_trigger();
+        assert!(SysrqTriggerInodeOps.truncate(&ino, 0).is_ok());
     }
 
     /// A shell writes `c\n`. Consuming one byte makes the shell re-issue the
