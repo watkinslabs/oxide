@@ -3,8 +3,7 @@
 // `cur: &Task` directly (no `crate::live::current()` dependency), so they
 // hosted-test without a live runqueue. User-pointer args are real local
 // buffer addresses — always `< hal::USER_VA_END` on a hosted stack — so
-// the actual `read_volatile`/`write_volatile` paths run for real, not a
-// mock.
+// the real `uaccess` copies run, not a mock.
 
 use super::common::registry_test_lock;
 use crate::prctl::{sys_get_name, sys_set_dumpable, sys_set_name};

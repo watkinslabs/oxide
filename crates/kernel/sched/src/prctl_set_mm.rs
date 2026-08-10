@@ -15,7 +15,6 @@
 
 #![cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 
-use hal::USER_VA_END;
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use vmm::{
@@ -31,18 +30,13 @@ const AUXV_MAX: usize = 4096;
 fn einval() -> i64 { -(Errno::Einval.as_i32() as i64) }
 fn efault() -> i64 { -(Errno::Efault.as_i32() as i64) }
 
-/// Copy `dst.len()` bytes from the calling task's active address space
-/// at `addr` (the current AS is live during this syscall, so direct
-/// CPL=0 volatile reads resolve through it). Returns false on a range
-/// that leaves the user half.
+/// Copy `dst.len()` bytes out of the calling task's active address space at
+/// `addr`. Goes through `uaccess`, whose copy carries the exception-table
+/// fixups: a range check alone leaves an unmapped user page faulting the
+/// kernel instead of answering EFAULT. False on any address the copy refused.
+/// # C: O(len)
 fn read_user_bytes(addr: u64, dst: &mut [u8]) -> bool {
-    if addr == 0 || addr >= USER_VA_END { return false; }
-    if addr.checked_add(dst.len() as u64).map_or(true, |e| e > USER_VA_END) { return false; }
-    for (i, b) in dst.iter_mut().enumerate() {
-        // SAFETY: addr..addr+len validated < USER_VA_END; CPL=0 byte read through the caller's live AS at a prctl-ABI supplied pointer.
-        *b = unsafe { core::ptr::read_volatile((addr + i as u64) as *const u8) };
-    }
-    true
+    uaccess::copy_from_user(dst, addr).is_ok()
 }
 
 /// `prctl(PR_SET_MM, ...)` dispatch. `args.a1` = subcommand `opt`,
@@ -94,9 +88,8 @@ pub fn sys_set_mm(cur: &Task, args: &SyscallArgs) -> i64 {
 
         // PR_SET_MM_MAP_SIZE: write sizeof(struct prctl_mm_map) to *addr (u32).
         PR_SET_MM_MAP_SIZE => {
-            if addr == 0 || addr.checked_add(4).map_or(true, |e| e > USER_VA_END) { return efault(); }
-            // SAFETY: addr..addr+4 validated < USER_VA_END; CPL=0 u32 write through the caller's live AS per the PR_SET_MM_MAP_SIZE ABI.
-            unsafe { core::ptr::write_volatile(addr as *mut u32, PrctlMmMap::SIZE as u32); }
+            let size = (PrctlMmMap::SIZE as u32).to_ne_bytes();
+            if uaccess::copy_to_user(addr, &size).is_err() { return efault(); }
             0
         }
 
@@ -117,4 +110,27 @@ fn set_exe_from_fd(cur: &Task, mm: &vmm::AddressSpace, fd: i32) -> i64 {
     mm.set_exe_path(s.clone());
     cur.set_exe_path(Some(s));
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_user_bytes;
+
+    /// The blob copy answers a refusal rather than dereferencing an address
+    /// the range check only happened to admit.
+    #[test]
+    fn the_blob_copy_refuses_a_pointer_outside_the_user_half() {
+        let mut buf = [0u8; 8];
+        assert!(!read_user_bytes(0, &mut buf));
+        assert!(!read_user_bytes(hal::USER_VA_END, &mut buf));
+        assert!(!read_user_bytes(hal::USER_VA_END - 4, &mut buf), "the tail leaves the user half");
+    }
+
+    #[test]
+    fn the_blob_copy_takes_exactly_the_requested_length() {
+        let src = *b"auxvblob!!";
+        let mut buf = [0u8; 4];
+        assert!(read_user_bytes(src.as_ptr() as u64, &mut buf));
+        assert_eq!(&buf, b"auxv");
+    }
 }

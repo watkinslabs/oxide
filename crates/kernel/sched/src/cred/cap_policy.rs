@@ -54,22 +54,30 @@ pub fn cap_data_blocks(ver: u32) -> Option<usize> {
 /// it returns before `cap_get_target_pid`, so the pid in the header is never
 /// resolved. Returning EINVAL to a probe, or ESRCH because the probe named a
 /// pid that no longer exists, both break the caller at its first call.
+///
+/// The probe forgiveness is keyed on the errno, not on "the magic was bad":
+/// `cap_validate_magic` also answers EFAULT — when the header could not be
+/// read, or when the version write-back itself faulted — and that one is
+/// reported to a NULL-`dataptr` caller too.
 #[derive(Debug, PartialEq, Eq)]
 pub enum CapgetEarly {
-    /// Magic was bad: write V3 back to the header, then return this.
-    RewriteVersion(i64),
-    /// Magic was good and `dataptr` is NULL: succeed without touching the target.
+    /// Report this negated errno without touching the target.
+    Fail(i64),
+    /// `dataptr` is NULL: succeed without touching the target.
     Ok,
     /// Magic was good and `dataptr` is set: proceed with `n` data blocks.
     Proceed(usize),
 }
 
+/// `magic` is `cap_validate_magic`'s outcome: the block count, or the errno it
+/// answered after having already performed its version write-back.
 /// # C: O(1)
-pub fn capget_early(ver: u32, datap: u64) -> CapgetEarly {
-    match cap_data_blocks(ver) {
-        None => CapgetEarly::RewriteVersion(if datap == 0 { 0 } else { -(Errno::Einval.as_i32() as i64) }),
-        Some(_) if datap == 0 => CapgetEarly::Ok,
-        Some(n) => CapgetEarly::Proceed(n),
+pub fn capget_early(magic: Result<usize, Errno>, datap: u64) -> CapgetEarly {
+    match magic {
+        Err(e) if datap == 0 && e == Errno::Einval => CapgetEarly::Ok,
+        Err(e) => CapgetEarly::Fail(-(e.as_i32() as i64)),
+        Ok(_) if datap == 0 => CapgetEarly::Ok,
+        Ok(n) => CapgetEarly::Proceed(n),
     }
 }
 

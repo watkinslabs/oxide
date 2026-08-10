@@ -43,7 +43,6 @@ pub(super) fn dispatch_route_c(nr: u64, args: &SyscallArgs) -> Option<i64> {
         syscall::nrs::NR_MOUNT => crate::s165_mount::sys_mount(args),
         syscall::nrs::NR_UMOUNT2 => crate::s166_umount2::sys_umount2(args),
         syscall::nrs::NR_PIVOT_ROOT => crate::s155_pivot_root::sys_pivot_root(args),
-        syscall::nrs::NR_GET_MEMPOLICY => syscall::numa::sys_get_mempolicy(args),
         syscall::nrs::NR_VHANGUP => crate::s153_vhangup::sys_vhangup(args),
         syscall::nrs::NR_FUTIMESAT => crate::s261_futimesat::sys_futimesat(args),
         syscall::nrs::NR_UTIMENSAT => crate::s280_utimensat::sys_utimensat(args),
