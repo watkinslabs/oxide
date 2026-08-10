@@ -190,6 +190,13 @@ pub mod func_id {
     pub const SET_RETVAL:             u32 = 187;
     pub const SKB_LOAD_BYTES:         u32 = 26;
     pub const SK_SELECT_REUSEPORT:    u32 = 82;
+    /// The two stack-walking helpers. Neither has a runner here, so no
+    /// program that calls one loads; they are named because a hook's attach
+    /// decision turns on whether a program calls either
+    /// (`bpf_prog::call_get_stack`), which is a property of the bytecode and
+    /// not of the runner.
+    pub const GET_STACKID:            u32 = 27;
+    pub const GET_STACK:              u32 = 67;
 }
 
 /// `enum bpf_attach_type` values used by the implemented dispatch paths.
@@ -258,6 +265,13 @@ pub mod map_flags {
         NO_PREALLOC | NO_COMMON_LRU | NUMA_NODE | ACCESS_MASK | ZERO_SEED;
     pub const ARRAY_CREATE_MASK: u32 = NUMA_NODE | ACCESS_MASK | MMAPABLE;
     pub const LPM_CREATE_MASK: u32 = NO_PREALLOC | NUMA_NODE | ACCESS_MASK;
+}
+
+/// Instruction encodings a caller outside the interpreter reads.
+pub mod insn {
+    /// `BPF_JMP | BPF_CALL`: `imm` names the helper, `src_reg == 0`
+    /// distinguishing it from a pseudo call to another program.
+    pub const CALL: u8 = 0x85;
 }
 
 /// `src_reg` tags on `BPF_LD_IMM64` map relocations.

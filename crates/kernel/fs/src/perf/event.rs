@@ -62,6 +62,13 @@ pub struct EventState {
     pub buffer: Option<Arc<PerfBuffer>>,
     /// `event->lost_samples` — what `PERF_FORMAT_LOST` reports.
     pub lost_samples: u64,
+    /// `event->prog` — the loaded bpf program this event runs on overflow,
+    /// attached by `PERF_EVENT_IOC_SET_BPF`. The `Arc` IS the program's
+    /// reference: dropping this state is `perf_event_free_bpf_prog`, so the
+    /// program outlives its own descriptor for exactly as long as an event
+    /// holds it. Never inherited — a fork-cloned child event starts with no
+    /// program, as `inherit_event` attaches none.
+    pub prog: Option<vfs::InodeRef>,
     /// Live mappings taken through THIS event's own fd. Distinct from the
     /// buffer's mapping count: an event that borrowed another event's ring has
     /// a buffer and no mappings of its own, and the two facts decide different
@@ -189,7 +196,7 @@ impl PerfEvent {
                 child_count: 0, child_time_enabled: 0, child_time_running: 0,
                 hw: HwPeriod::new(attr.sample_period),
                 interrupts: super::throttle::Interrupts::default(),
-                buffer: None, lost_samples: 0, mmap_count: 0,
+                buffer: None, lost_samples: 0, mmap_count: 0, prog: None,
             }),
         });
         // Sample the source once the event exists so the first read reports the

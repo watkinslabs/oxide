@@ -695,6 +695,7 @@ dependencies = [
  "pmm",
  "procfs",
  "sched",
+ "security",
  "sync",
  "syscall",
  "timekeeper",

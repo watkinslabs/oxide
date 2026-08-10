@@ -10,7 +10,9 @@ use alloc::vec::Vec;
 use syscall::errno::Errno;
 
 use super::*;
-use super::super::super::super::{make_bpf_prog_inode, make_bpf_iter_link_inode, IterTarget};
+use super::super::super::super::{
+    make_bpf_prog_inode, make_bpf_iter_link_inode, prog_facts, IterTarget, PerfHooks,
+};
 use super::super::super::super::uapi::{fd_type, off::task_fd_query as o};
 
 const TP_NAME: &[u8] = b"sys_enter";
@@ -37,6 +39,15 @@ fn u64_at(bytes: &[u8], off: usize) -> u64 {
     u64::from_ne_bytes(bytes[off..off + 8].try_into().unwrap())
 }
 
+/// Hooks answering "every inode is a perf event" / "none is", with no
+/// attached program; the arms that need one build their own.
+fn hooks(is_perf: bool) -> PerfHooks {
+    fn yes(_: &vfs::InodeRef) -> bool { true }
+    fn no(_: &vfs::InodeRef) -> bool { false }
+    fn no_prog(_: &vfs::InodeRef) -> Option<vfs::InodeRef> { None }
+    PerfHooks { is_perf: if is_perf { yes } else { no }, attached_prog: no_prog }
+}
+
 fn copy_tracepoint(a: &Attr, out: &mut [u8]) -> Result<i64, Errno> {
     copy_out(a, out.as_mut_ptr() as u64, TEST_PROG_ID, fd_type::TRACEPOINT,
              TP_NAME, TEST_PROBE_OFFSET, TEST_PROBE_ADDR)
@@ -56,33 +67,48 @@ fn the_fd_type_numbers_are_the_uapi_enum_order() {
 /// offered to perf; a program fd is neither and falls through to `Other`.
 #[test]
 fn a_link_is_classified_before_the_perf_predicate_is_consulted() {
-    fn always_perf(_: &vfs::InodeRef) -> bool { true }
-    fn never_perf(_: &vfs::InodeRef) -> bool { false }
     let prog = make_bpf_prog_inode(super::super::super::super::uapi::prog_type::TRACING, Vec::new());
     let link = make_bpf_iter_link_inode(IterTarget::BpfProg, prog.clone());
-    assert_eq!(classify(&link, always_perf), QueriedFd::OtherLink);
-    assert_eq!(classify(&prog, always_perf), QueriedFd::PerfEvent);
-    assert_eq!(classify(&prog, never_perf), QueriedFd::Other);
+    assert_eq!(classify(&link, hooks(true)), QueriedFd::OtherLink);
+    assert_eq!(classify(&prog, hooks(true)), QueriedFd::PerfEvent);
+    assert_eq!(classify(&prog, hooks(false)), QueriedFd::Other);
 }
 
 /// Neither describable kind: `-ENOTSUPP` (524), not `-EOPNOTSUPP` (95).
 #[test]
 fn a_link_of_another_kind_and_a_plain_descriptor_are_enotsupp() {
     let a = Attr::zeroed();
-    assert_eq!(describe(&a, 0, QueriedFd::OtherLink), Err(Errno::Enotsupp));
-    assert_eq!(describe(&a, 0, QueriedFd::Other), Err(Errno::Enotsupp));
+    assert_eq!(describe(&a, 0, QueriedFd::OtherLink, None), Err(Errno::Enotsupp));
+    assert_eq!(describe(&a, 0, QueriedFd::Other, None), Err(Errno::Enotsupp));
     assert_eq!(Errno::Enotsupp.as_i32(), 524);
 }
 
 /// `bpf_get_perf_event_info()` reads the description off the program attached
-/// to the event. No event in this kernel carries one, so every perf fd is
-/// `-ENOENT` — and nothing is written back, since the copy runs only on the
-/// success path.
+/// to the event. Without one the answer is `-ENOENT` — and nothing is written
+/// back, since the copy runs only on the success path.
 #[test]
 fn a_perf_event_with_no_attached_program_is_enoent_and_writes_nothing() {
     let mut out = uattr();
     let a = attr_with(0, 0);
-    assert_eq!(describe(&a, out.as_mut_ptr() as u64, QueriedFd::PerfEvent), Err(Errno::Enoent));
+    assert_eq!(describe(&a, out.as_mut_ptr() as u64, QueriedFd::PerfEvent, None),
+               Err(Errno::Enoent));
+    assert!(out.iter().all(|b| *b == 0));
+}
+
+/// An event carrying a perf-event program is a different answer from one
+/// carrying none: `-EOPNOTSUPP` (95), not `-ENOENT` and not the `-ENOTSUPP`
+/// (524) an undescribable descriptor gets. Still nothing is written back.
+#[test]
+fn a_perf_event_program_is_eopnotsupp_not_enoent() {
+    let prog = make_bpf_prog_inode(
+        super::super::super::super::uapi::prog_type::PERF_EVENT, Vec::new());
+    let facts = prog_facts(&prog).unwrap();
+    let mut out = uattr();
+    let a = attr_with(0, 0);
+    assert_eq!(describe(&a, out.as_mut_ptr() as u64, QueriedFd::PerfEvent, Some(facts)),
+               Err(Errno::Eopnotsupp));
+    assert_eq!(Errno::Eopnotsupp.as_i32(), 95);
+    assert_ne!(Errno::Eopnotsupp.as_i32(), Errno::Enotsupp.as_i32());
     assert!(out.iter().all(|b| *b == 0));
 }
 
