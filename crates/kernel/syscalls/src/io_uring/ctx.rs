@@ -171,7 +171,7 @@ impl IoUringInode {
 
     /// Record the running task as this ring's submitter. Runs at setup, and
     /// again at `IORING_REGISTER_ENABLE_RINGS` for a ring that was created
-    /// disabled — the two points the reference decides ownership at.
+    /// disabled — the two points at which a ring's ownership is decided.
     /// # C: O(1)
     pub fn claim_issuer_now(&self) {
         use core::sync::atomic::Ordering;
