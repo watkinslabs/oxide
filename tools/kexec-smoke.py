@@ -40,6 +40,17 @@ def marker(tag):
     return re.compile(tag.encode() + rb"-OK")
 
 
+# A probe with NO quotes in it. The quoted spelling exists only to stop the
+# tty's ECHO of the command from matching the marker, but a quote is state: a
+# line typed at a shell that is still starting arrives half-eaten, and the
+# surviving quote puts the shell in a continuation prompt where every later
+# probe is swallowed as more of the same string. Arithmetic expansion has the
+# same property — the echo shows the expression, only the OUTPUT shows the
+# value — and nothing it leaves behind can change how the next line parses.
+NEW_SHELL_CMD = "echo NEWSH-$((6*7))"
+NEW_SHELL_OK = re.compile(rb"NEWSH-42")
+
+
 class Console:
     def __init__(self, path, log=None):
         self.s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -215,9 +226,12 @@ def main():
     # and "the image works".
     deadline = time.time() + a.timeout
     while True:
-        c.send('echo NEWSH""-OK')
+        # A bare newline first: it terminates whatever half-typed line the tty
+        # may already hold, so the probe is parsed as a line of its own.
+        c.send("")
+        c.send(NEW_SHELL_CMD)
         try:
-            c.wait(marker("NEWSH"), 10, "the relocated kernel's userspace to answer")
+            c.wait(NEW_SHELL_OK, 10, "the relocated kernel's userspace to answer")
             break
         except SystemExit:
             if time.time() > deadline:
