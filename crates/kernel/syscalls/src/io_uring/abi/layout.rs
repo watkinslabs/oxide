@@ -152,12 +152,22 @@ pub const SUPPORTED_SETUP_FLAGS: u32 =
 ///   REG_REG_RING   — `io_uring_register` accepts a registered-ring index in
 ///                    place of a descriptor
 ///                    (`IORING_REGISTER_USE_REGISTERED_RING`).
+///   MIN_TIMEOUT    — a wait accepts `min_wait_usec` as a batching floor
+///                    alongside its timeout.
+///   NO_IOWAIT      — a wait can be asked not to be accounted as iowait;
+///                    vacuously, because no wait here is ever accounted that
+///                    way, so the flag's guarantee already holds.
+///
+/// Not claimed, because not implemented: `RECVSEND_BUNDLE` (send and receive
+/// consume one provided buffer per operation) and `RW_ATTR` (a read or write
+/// entry carries no attribute vector).
 pub const REPORTED_FEATURES: u32 =
     IORING_FEAT_SINGLE_MMAP | IORING_FEAT_NODROP | IORING_FEAT_SUBMIT_STABLE
     | IORING_FEAT_RW_CUR_POS | IORING_FEAT_CUR_PERSONALITY | IORING_FEAT_EXT_ARG
     | IORING_FEAT_RSRC_TAGS | IORING_FEAT_CQE_SKIP | IORING_FEAT_LINKED_FILE
     | IORING_FEAT_FAST_POLL | IORING_FEAT_NATIVE_WORKERS | IORING_FEAT_POLL_32BITS
-    | IORING_FEAT_SQPOLL_NONFIXED | IORING_FEAT_REG_REG_RING;
+    | IORING_FEAT_SQPOLL_NONFIXED | IORING_FEAT_REG_REG_RING
+    | IORING_FEAT_MIN_TIMEOUT | IORING_FEAT_NO_IOWAIT;
 
 /// Region geometry derived from an admitted `struct io_uring_params`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

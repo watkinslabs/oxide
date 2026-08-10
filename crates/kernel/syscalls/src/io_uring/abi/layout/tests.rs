@@ -261,8 +261,20 @@ fn features_claim_only_what_the_ring_actually_does() {
     for f in [IORING_FEAT_SQPOLL_NONFIXED, IORING_FEAT_REG_REG_RING] {
         assert_ne!(REPORTED_FEATURES & f, 0, "feature {f:#x}");
     }
+    // A wait takes a batching floor, and no wait here is ever accounted as
+    // iowait — so the second guarantee holds vacuously, which is still the
+    // guarantee.
+    for f in [IORING_FEAT_MIN_TIMEOUT, IORING_FEAT_NO_IOWAIT] {
+        assert_ne!(REPORTED_FEATURES & f, 0, "feature {f:#x}");
+    }
+    // NOT claimed, because not implemented: send and receive consume one
+    // provided buffer per operation, and a read or write entry carries no
+    // attribute vector. Claiming either is a lie a caller acts on.
+    for f in [IORING_FEAT_RECVSEND_BUNDLE, IORING_FEAT_RW_ATTR] {
+        assert_eq!(REPORTED_FEATURES & f, 0, "feature {f:#x} must not be claimed");
+    }
     // No feature bit outside the UAPI's own set.
-    assert_eq!(REPORTED_FEATURES & !((1u32 << 14) - 1), 0);
+    assert_eq!(REPORTED_FEATURES & !((1u32 << 18) - 1), 0);
 }
 
 /// Every `IORING_SETUP_*` bit, in exactly one of two states: implemented, or

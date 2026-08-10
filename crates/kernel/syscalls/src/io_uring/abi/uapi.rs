@@ -88,6 +88,18 @@ pub const IORING_FEAT_CQE_SKIP:        u32 = 1 << 11;
 pub const IORING_FEAT_LINKED_FILE:     u32 = 1 << 12;
 /// `IORING_FEAT_REG_REG_RING` — registered rings may register rings.
 pub const IORING_FEAT_REG_REG_RING:    u32 = 1 << 13;
+/// `IORING_FEAT_RECVSEND_BUNDLE` — send and receive may consume several
+/// provided buffers in one operation.
+pub const IORING_FEAT_RECVSEND_BUNDLE: u32 = 1 << 14;
+/// `IORING_FEAT_MIN_TIMEOUT` — a wait accepts a batching floor alongside its
+/// timeout (`min_wait_usec`).
+pub const IORING_FEAT_MIN_TIMEOUT:     u32 = 1 << 15;
+/// `IORING_FEAT_RW_ATTR` — a read or write entry may carry an attribute
+/// vector.
+pub const IORING_FEAT_RW_ATTR:         u32 = 1 << 16;
+/// `IORING_FEAT_NO_IOWAIT` — a wait can be asked not to be accounted as
+/// iowait.
+pub const IORING_FEAT_NO_IOWAIT:       u32 = 1 << 17;
 
 /// mmap magic offsets (`IORING_OFF_*`).
 pub const IORING_OFF_SQ_RING:   u64 = 0;
