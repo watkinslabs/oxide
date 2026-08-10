@@ -80,3 +80,28 @@ fn a_reservation_at_an_edge_trims_and_one_outside_the_map_changes_nothing() {
     assert_eq!(subtract(&[(0x1000, 0x5000)], &[(0x5000, 0x1000)]), alloc::vec![(0x1000, 0x5000)]);
     assert_eq!(subtract(&[(0x1000, 0x5000)], &[(0x0, 0x1000)]), alloc::vec![(0x1000, 0x5000)]);
 }
+
+/// A kernel that ADOPTS the tables asks whether `[base, base + granule)` lies
+/// inside a single reserved range, and allocates its own — noisily — when it
+/// does not. What this loader carries has to satisfy that question exactly:
+/// one entry, granule-aligned, a whole granule long, never split into two
+/// abutting halves that each fail a containment test.
+#[test]
+fn a_carried_table_contains_the_extent_an_adopting_kernel_assumes() {
+    const GRANULE: u64 = 0x1_0000;
+    for base in [0x4000_0000u64, 0xbf33_8000, 0xbf31_0000] {
+        let out = normalize(&[(base, GRANULE)]);
+        assert_eq!(out, alloc::vec![(base, GRANULE)], "carried whole, not split or trimmed");
+        let (start, end) = (out[0].0, out[0].0 + out[0].1);
+        assert!(base >= start && base + GRANULE - 1 <= end - 1,
+                "the adopted extent is contained by one entry");
+    }
+    // Two tables that happen to abut merge into one entry, which still
+    // contains each of them — the case a containment test would fail if the
+    // merge had instead dropped one.
+    let merged = normalize(&[(0x4001_0000, GRANULE), (0x4000_0000, GRANULE)]);
+    assert_eq!(merged, alloc::vec![(0x4000_0000, 2 * GRANULE)]);
+    for base in [0x4000_0000u64, 0x4001_0000] {
+        assert!(base >= merged[0].0 && base + GRANULE <= merged[0].0 + merged[0].1);
+    }
+}
