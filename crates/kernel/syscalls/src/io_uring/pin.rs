@@ -10,13 +10,50 @@
 //
 // The pages are reached through the kernel's direct map for the I/O itself, so
 // no user mapping has to exist at the moment the transfer runs.
+//
+// Pinning is charged: the pages are held down for the range's whole life, so
+// the range carries the tokens for both accounts it books
+// (`crate::io_uring_abi::acct`) and gives them back when it dies.
 
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use syscall::errno::Errno;
 
+use crate::io_uring_abi::acct::{Charge, Ledgers, RingAcct};
+
 /// Bytes per pinned page.
 const PAGE: u64 = hal::PAGE_SIZE_BYTES;
+
+/// The mm half of a pin: pages the CALLER's address space now has held down by
+/// the kernel, reported as its pinned total. Separate from the per-user charge
+/// because only the two paths that pin the caller's own memory for I/O — a
+/// registered buffer and a receive area — book it.
+struct MmPin {
+    mm: Option<Arc<vmm::AddressSpace>>,
+    pages: u64,
+}
+
+impl MmPin {
+    /// Book `pages` against the running task's address space, for the ledgers
+    /// this path answers to. # C: O(1)
+    fn take(ledgers: Ledgers, pages: u64) -> Self {
+        if ledgers != Ledgers::UserAndMm || pages == 0 { return Self { mm: None, pages: 0 }; }
+        let mm = sched::live::current().and_then(|cur| {
+            // SAFETY: running task on this CPU; single-mutator mm slot; the handle is cloned before this call returns.
+            unsafe { cur.mm_ref() }.cloned()
+        });
+        if let Some(m) = mm.as_ref() { m.charge_pinned(pages); }
+        Self { mm, pages }
+    }
+}
+
+impl Drop for MmPin {
+    /// # C: O(1)
+    fn drop(&mut self) {
+        if let Some(m) = self.mm.as_ref() { m.release_pinned(self.pages); }
+    }
+}
 
 /// A registered buffer: the caller's range, and one physical frame per page of
 /// it, each holding an object reference for the buffer's whole lifetime.
@@ -26,6 +63,18 @@ pub struct PinnedRange {
     pub len: u64,
     /// Frames covering `[base & !(PAGE-1), base + len)`, in order.
     pages: Vec<u64>,
+    /// The per-user memory-lock charge these pages cost, given back with them.
+    _charge: Charge,
+    /// The mm's pinned-page charge, for the paths that book it.
+    _mm: MmPin,
+}
+
+/// Pages `[base, base+len)` covers, which is one more than the length implies
+/// whenever the range starts part-way into a page. # C: O(1)
+fn page_count(base: u64, len: u64) -> u64 {
+    let first = base & !(PAGE - 1);
+    let last  = (base + len - 1) & !(PAGE - 1);
+    (last - first) / PAGE + 1
 }
 
 /// Fault a user range in and take a reference on each of its frames.
@@ -34,7 +83,7 @@ fn pin_pages(base: u64, len: u64) -> Result<Vec<u64>, Errno> {
     use vmm::vma::VmaProt;
     let first = base & !(PAGE - 1);
     let last  = (base + len - 1) & !(PAGE - 1);
-    let count = ((last - first) / PAGE + 1) as usize;
+    let count = page_count(base, len) as usize;
     let mut pages: Vec<u64> = Vec::new();
     if pages.try_reserve_exact(count).is_err() { return Err(Errno::Enomem); }
 
@@ -87,13 +136,22 @@ fn translate(root: u64, va: u64, hhdm: u64) -> Option<u64> {
 
 impl PinnedRange {
     /// Pin one registered buffer. A zero-length entry with a null base is the
-    /// legal empty slot and pins nothing. # C: O(len / PAGE)
-    pub fn pin(base: u64, len: u64) -> Result<Self, Errno> {
-        if base == 0 && len == 0 { return Ok(Self { base: 0, len: 0, pages: Vec::new() }); }
+    /// legal empty slot and pins nothing.
+    ///
+    /// The charge is booked BEFORE the frames are taken, so a range that would
+    /// put the user past their memory-lock ceiling is refused without ever
+    /// holding the memory down; both tokens are dropped by `?` if the pinning
+    /// itself then fails. # C: O(len / PAGE)
+    pub fn pin(base: u64, len: u64, acct: RingAcct, ledgers: Ledgers) -> Result<Self, Errno> {
+        let empty = |c: Charge| Self { base: 0, len: 0, pages: Vec::new(), _charge: c, _mm: MmPin::take(ledgers, 0) };
+        if base == 0 && len == 0 { return Ok(empty(Charge::none())); }
         if len == 0 { return Err(Errno::Efault); }
         base.checked_add(len).ok_or(Errno::Efault)?;
+        let n = page_count(base, len);
+        let charge = super::acct::charge_pages(acct, n)?;
+        let mm = MmPin::take(ledgers, n);
         let pages = pin_pages(base, len)?;
-        Ok(Self { base, len, pages })
+        Ok(Self { base, len, pages, _charge: charge, _mm: mm })
     }
 
     /// Whether this is the empty slot. # C: O(1)

@@ -24,6 +24,7 @@
 
 use syscall::errno::Errno;
 
+use crate::io_uring_abi::acct::{Charge, Ledgers, RingAcct};
 use crate::io_uring_abi::layout::region_plan;
 
 use super::pin::PinnedRange;
@@ -43,13 +44,26 @@ pub struct Region {
     /// The caller's pages, for a region this kernel did not allocate. Holding
     /// them here is what keeps them pinned for the ring's whole life.
     user: Option<PinnedRange>,
+    /// The per-user memory-lock charge an allocated run cost, given back when
+    /// the run is. A caller-supplied region books its charge through the
+    /// pinned range instead, so this is the empty token there — one region,
+    /// one charge, whichever arm it took.
+    _charge: Charge,
 }
 
 impl Region {
-    /// Allocate and zero a region big enough for `bytes`. # C: O(2^order)
-    pub fn alloc(bytes: u32) -> Option<Self> {
+    /// Allocate and zero a region big enough for `bytes`, charging its pages
+    /// to the ring's account. `None` covers both a refused charge and a
+    /// refused allocation: every caller answers ENOMEM to either.
+    ///
+    /// The charge is the region's MAPPABLE size, not the buddy run the order
+    /// rounding produced: the rounding is dead space this kernel never exposes
+    /// (`scratch/known_issues.md`), and charging a user for it would make the
+    /// ceiling depend on an allocator detail. # C: O(2^order)
+    pub fn alloc(bytes: u32, acct: RingAcct) -> Option<Self> {
         let page = hal::PAGE_SIZE_BYTES;
         let plan = region_plan(bytes, page).ok()?;
+        let charge = super::acct::charge_bytes(acct, plan.map_bytes).ok()?;
         let base_pa = pmm::setup::alloc_contig_object(pmm::Order(plan.order))?;
         let kva = base_pa + pmm::user_as::hhdm_offset();
         for i in 0..(1u64 << plan.order) {
@@ -58,7 +72,7 @@ impl Region {
             // SAFETY: HHDM alias of a run this call just allocated, not yet published to another CPU or to userspace.
             unsafe { core::ptr::write_bytes(va as *mut u8, 0, page as usize); }
         }
-        Some(Self { base_pa, kva, order: plan.order, map_bytes: plan.map_bytes, user: None })
+        Some(Self { base_pa, kva, order: plan.order, map_bytes: plan.map_bytes, user: None, _charge: charge })
     }
 
     /// Adopt `bytes` of the caller's memory at `base` as this region, pinning
@@ -67,15 +81,18 @@ impl Region {
     /// The pages are zeroed here, exactly as an allocated region is: a ring
     /// whose header words started as whatever the caller left in the memory
     /// would report a tail it never posted to. # C: O(bytes / PAGE)
-    pub fn pin(base: u64, bytes: u32) -> Result<Self, Errno> {
+    pub fn pin(base: u64, bytes: u32, acct: RingAcct) -> Result<Self, Errno> {
         let page = hal::PAGE_SIZE_BYTES;
         let plan = region_plan(bytes, page).map_err(|_| Errno::Einval)?;
         crate::io_uring_abi::user_ring::admit_addr(base, plan.map_bytes, page)?;
-        let user = PinnedRange::pin(base, plan.map_bytes)?;
+        // A region is the ring's memory even when the caller supplied the
+        // pages, so it books the user account alone — the mm's pinned total is
+        // for memory the kernel holds down for I/O, not for the ring itself.
+        let user = PinnedRange::pin(base, plan.map_bytes, acct, Ledgers::User)?;
         let zero = alloc::vec![0u8; page as usize];
         let mut off = 0;
         while off < plan.map_bytes { user.write_at(off, &zero)?; off += page; }
-        Ok(Self { base_pa: 0, kva: 0, order: 0, map_bytes: plan.map_bytes, user: Some(user) })
+        Ok(Self { base_pa: 0, kva: 0, order: 0, map_bytes: plan.map_bytes, user: Some(user), _charge: Charge::none() })
     }
 
     /// Direct-map address of `off` bytes into the region. Callers bound `off`

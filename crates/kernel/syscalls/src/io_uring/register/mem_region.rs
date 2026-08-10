@@ -20,6 +20,7 @@ use crate::io_uring::ctx::{state, IoUringInode};
 use crate::io_uring::mem_region::MemRegion;
 use crate::io_uring::pin::PinnedRange;
 use crate::io_uring::region::Region;
+use crate::io_uring_abi::acct::{Ledgers, RingAcct};
 use crate::io_uring_abi::mem_region::*;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
@@ -27,14 +28,14 @@ fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 /// Build the region a descriptor asks for. The kernel-allocated arm learns the
 /// caller the offset it may map at; the pinned arm reports none, because a
 /// caller-provided region is never mappable from the ring fd. # C: O(N_pages)
-fn build(rd: &mut RegionDesc) -> Result<MemRegion, Errno> {
+fn build(rd: &mut RegionDesc, acct: RingAcct) -> Result<MemRegion, Errno> {
     if rd.user_provided() {
-        return Ok(MemRegion::User(PinnedRange::pin(rd.user_addr, rd.size)?));
+        return Ok(MemRegion::User(PinnedRange::pin(rd.user_addr, rd.size, acct, Ledgers::User)?));
     }
     // The contiguous-run allocator is sized in `u32` bytes and bounded well
     // below 4 GiB; a descriptor past that is memory this kernel cannot supply.
     let bytes = u32::try_from(rd.size).map_err(|_| Errno::Enomem)?;
-    let r = Region::alloc(bytes).ok_or(Errno::Enomem)?;
+    let r = Region::alloc(bytes, acct).ok_or(Errno::Enomem)?;
     rd.mmap_offset = IORING_MAP_OFF_PARAM_REGION;
     Ok(MemRegion::Kernel(r))
 }
@@ -59,7 +60,7 @@ pub fn register(inode: &Arc<IoUringInode>, arg: u64) -> i64 {
     if let Err(e) = admit_mem_region_reg(&reg, disabled) { return err(e); }
     if let Err(e) = admit_region_desc(&rd, hal::PAGE_SIZE_BYTES) { return err(e); }
 
-    let region = match build(&mut rd) { Ok(r) => r, Err(e) => return err(e) };
+    let region = match build(&mut rd, inode.acct) { Ok(r) => r, Err(e) => return err(e) };
 
     // Report where the region lives BEFORE the ring adopts it: a caller that
     // cannot be told cannot map it, so the region is dropped and the ring is

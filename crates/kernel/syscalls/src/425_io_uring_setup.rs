@@ -62,16 +62,21 @@ pub fn sys_io_uring_setup(args: &syscall::SyscallArgs) -> i64 {
     // pins the caller's own memory and uses it in place. The addresses are
     // the only fields of `sq_off`/`cq_off` the caller states, and admission
     // leaves them alone for exactly this.
+    // Whose memory-lock account this ring's pinned pages land in, decided
+    // here from the creator's credentials and kept for the ring's whole life.
+    // A creator holding CAP_IPC_LOCK gets a ring with no account: nothing it
+    // pins is charged, and nothing it pins can be refused for the ceiling.
+    let acct = crate::io_uring::acct::of_current();
     let inode = if crate::io_uring_abi::user_ring::caller_supplied(geom.flags) {
-        let rings = match Region::pin(p.cq_off.user_addr, geom.rings_bytes) {
+        let rings = match Region::pin(p.cq_off.user_addr, geom.rings_bytes, acct) {
             Ok(r) => r, Err(e) => return err(e),
         };
-        let sqes = match Region::pin(p.sq_off.user_addr, geom.sqes_bytes) {
+        let sqes = match Region::pin(p.sq_off.user_addr, geom.sqes_bytes, acct) {
             Ok(r) => r, Err(e) => return err(e),
         };
-        IoUringInode::over(&geom, crate::io_uring::ring::IoUring::build(&geom, rings, sqes))
+        IoUringInode::over(&geom, crate::io_uring::ring::IoUring::build(&geom, rings, sqes), acct)
     } else {
-        IoUringInode::new(&geom)
+        IoUringInode::new(&geom, acct)
     };
     let inode = match inode { Some(i) => i, None => return err(Errno::Enomem) };
 

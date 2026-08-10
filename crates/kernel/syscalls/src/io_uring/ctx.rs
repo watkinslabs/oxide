@@ -19,6 +19,7 @@ use alloc::sync::Arc;
 
 use sync::{Spinlock, TaskList as RingLockClass};
 
+use crate::io_uring_abi::acct::RingAcct;
 use crate::io_uring_abi::layout::Geometry;
 
 use super::cqe::Cqe;
@@ -36,6 +37,11 @@ pub struct IoUringInode {
     pub cq_wait: sched::live::WaitList,
     /// The setup flags this ring was built with.
     pub flags: u32,
+    /// Whose memory-lock account every page this ring pins is booked against,
+    /// decided once from the creator's credentials. Every later registration
+    /// charges THIS account, not the account of whoever happens to register:
+    /// the ring holds the memory, so the ring's creator answers for it.
+    pub acct: crate::io_uring_abi::acct::RingAcct,
     /// State bits — see `state`.
     pub state: core::sync::atomic::AtomicU32,
     /// For an `IORING_SETUP_SINGLE_ISSUER` ring: the one task allowed to
@@ -107,11 +113,13 @@ pub mod state {
 impl IoUringInode {
     /// Build a ring from an admitted geometry, allocating its regions.
     /// # C: O(N_pages)
-    pub fn new(g: &Geometry) -> Option<Arc<Self>> { Self::over(g, IoUring::new(g)?) }
+    pub fn new(g: &Geometry, acct: RingAcct) -> Option<Arc<Self>> {
+        Self::over(g, IoUring::new(g, acct)?, acct)
+    }
 
     /// Build a ring over regions that already exist — how a ring whose memory
     /// the CALLER supplied is made. # C: O(1)
-    pub fn over(g: &Geometry, ring: IoUring) -> Option<Arc<Self>> {
+    pub fn over(g: &Geometry, ring: IoUring, acct: RingAcct) -> Option<Arc<Self>> {
         use crate::io_uring_abi::uapi::IORING_SETUP_R_DISABLED;
         let init = if g.flags & IORING_SETUP_R_DISABLED != 0 { state::DISABLED } else { 0 };
         Some(Arc::new(Self {
@@ -127,6 +135,7 @@ impl IoUringInode {
             submit: sched::live::Mutex::new(()),
             cq_wait: sched::live::WaitList::new(),
             flags: g.flags,
+            acct,
             state: core::sync::atomic::AtomicU32::new(init),
             submitter: core::sync::atomic::AtomicU32::new(0),
             inflight: Spinlock::new(super::req::InFlight::default()),

@@ -18,6 +18,7 @@ use crate::io_uring::region::Region;
 use crate::io_uring::zcrx::area::ZcrxArea;
 use crate::io_uring::zcrx::ifq::{provider_of, Binding, ZcrxIfq};
 use crate::io_uring::zcrx::rq::ZcrxRq;
+use crate::io_uring_abi::acct::{Ledgers, RingAcct};
 use crate::io_uring_abi::mem_region::{admit_region_desc, RegionDesc, REGION_DESC_BYTES};
 use crate::io_uring_abi::zcrx::*;
 
@@ -33,7 +34,7 @@ fn read_region_desc(ptr: u64) -> Result<RegionDesc, Errno> {
 }
 
 /// Build the refill-queue region and the queue over it. # C: O(N_pages)
-fn build_rq(reg: &IfqReg, rd: &mut RegionDesc, notif: &NotifDesc, id: u32)
+fn build_rq(reg: &IfqReg, rd: &mut RegionDesc, notif: &NotifDesc, id: u32, acct: RingAcct)
     -> Result<ZcrxRq, Errno>
 {
     admit_region_desc(rd, hal::PAGE_SIZE_BYTES)?;
@@ -47,14 +48,16 @@ fn build_rq(reg: &IfqReg, rd: &mut RegionDesc, notif: &NotifDesc, id: u32)
     } else { None };
 
     let bytes = u32::try_from(rd.size).map_err(|_| Errno::Enomem)?;
-    let region = Region::alloc(bytes).ok_or(Errno::Enomem)?;
+    let region = Region::alloc(bytes, acct).ok_or(Errno::Enomem)?;
     rd.mmap_offset = zcrx_mmap_offset(id);
     Ok(ZcrxRq::new(region, reg.rq_entries, stats_off))
 }
 
 /// Pin the caller's area and split it into buffers. # C: O(N_pages)
-fn build_area(area: &mut AreaReg, buf_shift: u32) -> Result<ZcrxArea, Errno> {
-    let mem = PinnedRange::pin(area.addr, area.len)?;
+fn build_area(area: &mut AreaReg, buf_shift: u32, acct: RingAcct) -> Result<ZcrxArea, Errno> {
+    // The receive area is the CALLER's own memory held down by the kernel for
+    // transfers into it, so it books the mm's pinned total as well.
+    let mem = PinnedRange::pin(area.addr, area.len, acct, Ledgers::UserAndMm)?;
     let a = ZcrxArea::new(mem, buf_shift)?;
     area.rq_area_token = (a.area_id as u64) << IORING_ZCRX_AREA_SHIFT;
     Ok(a)
@@ -181,10 +184,10 @@ pub fn register(inode: &Arc<IoUringInode>, arg: u64) -> i64 {
     let id = match inode.zcrx_claim_id() { Ok(i) => i, Err(e) => return err(e) };
 
     reg.offsets = ZcrxOffsets::fill();
-    let rq = match build_rq(&reg, &mut rd, &notif, id) {
+    let rq = match build_rq(&reg, &mut rd, &notif, id, inode.acct) {
         Ok(q) => q, Err(e) => { inode.zcrx_release_id(id); return err(e); }
     };
-    let area = match build_area(&mut area_reg, buf_shift) {
+    let area = match build_area(&mut area_reg, buf_shift, inode.acct) {
         Ok(a) => a, Err(e) => { inode.zcrx_release_id(id); return err(e); }
     };
 
