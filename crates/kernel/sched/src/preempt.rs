@@ -410,7 +410,7 @@ pub fn preempt_enable_no_check() {
 pub unsafe fn preempt_enable() {
     let prev = preempt_count_sub_local(1);
     debug_assert!(prev != 0, "preempt_enable underflow");
-    if prev == 1 && take_need_resched() {
+    if preemptible(prev - 1, irqs_disabled()) && take_need_resched() {
         let raw = SCHEDULE_HOOK.load(Ordering::Acquire);
         if !raw.is_null() {
             // SAFETY: raw came from a `unsafe fn()` cast in
@@ -433,7 +433,7 @@ pub unsafe fn preempt_enable() {
 /// scheduler needs held).
 /// # C: O(1) + O(log N) iff schedule fires
 pub unsafe fn preempt_check_resched() {
-    if preempt_count() == 0 && take_need_resched() {
+    if preemptible(preempt_count(), irqs_disabled()) && take_need_resched() {
         let raw = SCHEDULE_HOOK.load(Ordering::Acquire);
         if !raw.is_null() {
             // SAFETY: raw came from a `unsafe fn()` cast in set_schedule_hook (install-once-at-boot); caller promised a safe schedule point.
@@ -443,6 +443,22 @@ pub unsafe fn preempt_check_resched() {
         }
     }
 }
+
+/// Whether this CPU may be preempted right now (Linux `preemptible()`):
+/// zero preempt count AND interrupts unmasked.
+///
+/// The interrupt term is not belt-and-braces. A context switch taken with
+/// interrupts masked leaves the outgoing task off-CPU still holding every
+/// IRQ-off spinlock it took — the guard's release runs on the resumed task,
+/// not at the switch — so any later acquirer spins for a lock whose owner is
+/// not running. With more than one CPU that resolves as soon as a peer picks
+/// the owner up, which is why the shape survives an SMP boot and hangs a
+/// uniprocessor one; the condition is the same in both.
+///
+/// Pure so the decision is testable without a CPU: the callers supply the
+/// count and the measured interrupt state.
+/// # C: O(1)
+pub fn preemptible(count: u32, irqs_off: bool) -> bool { count == 0 && !irqs_off }
 
 /// RAII pair for `preempt_disable`/`preempt_enable`. Drop fires the
 /// resched check.

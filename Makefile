@@ -46,6 +46,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         qemu-x86 qemu-arm qemu-x86-debug qemu-arm-debug qemu-mcp \
         boot-debug-x86 boot-debug-arm smoke-debug smoke-debug-x86 smoke-debug-arm \
         qemu-x86-grub qemu-x86-uefi smoke-uefi-x86 \
+        smoke-up smoke-up-x86 smoke-up-arm \
         smoke-cmdline-x86 smoke-cmdline-arm smoke-cmdline \
         smoke-devpts-x86 smoke-devpts-arm smoke-devpts \
         smoke-af-packet-diff-x86 smoke-af-packet-diff-arm smoke-af-packet-diff \
@@ -337,6 +338,32 @@ smoke: x86 arm
 	@rc=0; \
 	./tools/boot-smoke.sh x86 $(SMOKE_TIMEOUT) & p1=$$!; \
 	./tools/boot-smoke.sh arm $(SMOKE_TIMEOUT) & p2=$$!; \
+	wait $$p1 || rc=1; \
+	wait $$p2 || rc=1; \
+	exit $$rc
+
+# UNIPROCESSOR boot gate. `smoke` above runs both arches at OXIDE_SMP=2, which
+# is what every other gate in this tree does too — so a defect whose only
+# symptom is "this CPU waits for work no other CPU will do" is invisible to all
+# of them. A kernel that hangs on one CPU is a broken kernel; Linux boots on
+# one CPU. These targets boot the same image with a single vCPU so that class
+# fails here instead of on somebody's single-core board.
+#
+# Same-arch boots CANNOT overlap: both use the default build namespace and
+# would fight over root-<arch>.img (an image lock, which produces a log with no
+# kernel output at all and reads exactly like a boot failure). So this is a
+# separate target from `smoke`, and the two arches inside it — which share
+# nothing — are the only things that run concurrently.
+smoke-up-x86: x86
+	OXIDE_SMP=1 ./tools/boot-smoke.sh x86 $(SMOKE_TIMEOUT)
+
+smoke-up-arm: arm
+	OXIDE_SMP=1 ./tools/boot-smoke.sh arm $(SMOKE_TIMEOUT)
+
+smoke-up: x86 arm
+	@rc=0; \
+	OXIDE_SMP=1 ./tools/boot-smoke.sh x86 $(SMOKE_TIMEOUT) & p1=$$!; \
+	OXIDE_SMP=1 ./tools/boot-smoke.sh arm $(SMOKE_TIMEOUT) & p2=$$!; \
 	wait $$p1 || rc=1; \
 	wait $$p2 || rc=1; \
 	exit $$rc
