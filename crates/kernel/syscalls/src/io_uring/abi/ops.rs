@@ -101,6 +101,10 @@ pub const IORING_FSYNC_DATASYNC: u32 = 1 << 0;
 pub const IORING_CQE_F_BUFFER: u32 = 1 << 0;
 /// `IORING_CQE_F_MORE` — more completions will follow for this SQE.
 pub const IORING_CQE_F_MORE: u32 = 1 << 1;
+/// `IORING_CQE_F_BUF_MORE` — the buffer id this completion reports is not
+/// finished with: the operation consumed part of it and the same id will be
+/// handed out again. Only an incrementally-consumed group can say this.
+pub const IORING_CQE_F_BUF_MORE: u32 = 1 << 4;
 /// Bit position of the buffer id inside `cqe->flags`.
 pub const IORING_CQE_BUFFER_SHIFT: u32 = 16;
 /// `IORING_CQE_F_32` — this completion is a 32-byte posting. A ring built
@@ -141,10 +145,13 @@ pub fn op_supported(op: u8) -> bool {
         | IORING_OP_NOP128)
 }
 
-/// Whether the opcode reads its data through a provided-buffer group when the
-/// SQE carries `IOSQE_BUFFER_SELECT`. # C: O(1)
+/// Whether the opcode takes its buffer from a provided-buffer group when the
+/// SQE carries `IOSQE_BUFFER_SELECT`. A send draws from a group too — the
+/// group is the caller's outbound queue there, and the completion hands the
+/// buffer back the same way a receive does. # C: O(1)
 pub fn op_buffer_select(op: u8) -> bool {
-    matches!(op, IORING_OP_READ | IORING_OP_READV | IORING_OP_RECV | IORING_OP_RECVMSG)
+    matches!(op, IORING_OP_READ | IORING_OP_READV | IORING_OP_RECV | IORING_OP_RECVMSG
+                 | IORING_OP_SEND)
 }
 
 #[cfg(test)]

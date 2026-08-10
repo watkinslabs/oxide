@@ -86,13 +86,18 @@ fn sqe_flag_mask_covers_every_defined_bit_and_nothing_else() {
 }
 
 #[test]
-fn buffer_select_is_offered_only_by_the_receiving_opcodes() {
-    for op in [IORING_OP_READ, IORING_OP_READV, IORING_OP_RECV, IORING_OP_RECVMSG] {
+fn buffer_select_is_offered_only_by_the_transfer_opcodes_that_take_a_group() {
+    // A receive fills a buffer drawn from the group; a send DRAINS one the
+    // caller already filled and published there, and hands it back through the
+    // completion the same way. Both are the group's purpose.
+    for op in [IORING_OP_READ, IORING_OP_READV, IORING_OP_RECV, IORING_OP_RECVMSG,
+               IORING_OP_SEND] {
         assert!(op_buffer_select(op), "op {op}");
     }
-    // Selecting a buffer for a write would hand the kernel a buffer to send
-    // that the caller never filled.
-    for op in [IORING_OP_WRITE, IORING_OP_SEND, IORING_OP_NOP, IORING_OP_OPENAT] {
+    // A positional write names its own buffer: there is no group side to it,
+    // and an operation that creates or configures something has no buffer at
+    // all.
+    for op in [IORING_OP_WRITE, IORING_OP_WRITEV, IORING_OP_NOP, IORING_OP_OPENAT] {
         assert!(!op_buffer_select(op), "op {op}");
     }
 }

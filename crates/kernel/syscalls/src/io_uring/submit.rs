@@ -105,6 +105,7 @@ fn admit(inode: &Arc<IoUringInode>, sqe: &Sqe) -> Result<(), Errno> {
     if sqe.flags & IOSQE_BUFFER_SELECT != 0 && !op_buffer_select(sqe.opcode) {
         return Err(Errno::Eopnotsupp);
     }
+    crate::io_uring_abi::bundle::admit(sqe.opcode, sqe.ioprio)?;
     // A ring that has seen a silent-success entry can no longer order by
     // drain: the barrier counts completions, and skipped ones never arrive.
     if disables_drain(sqe.flags) { inode.set_state(state::DRAIN_DISABLED); }

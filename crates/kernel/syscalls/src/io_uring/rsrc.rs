@@ -13,6 +13,7 @@ use alloc::vec::Vec;
 use syscall::errno::Errno;
 use vfs::File;
 
+use crate::io_uring_abi::bundle::BufEntry;
 use crate::io_uring_abi::restriction::Restrictions;
 
 use super::personality::CredSnapshot;
@@ -43,6 +44,11 @@ pub struct BufRing {
     pub head: u32,
     /// Buffers are consumed incrementally rather than whole.
     pub incremental: bool,
+    /// One less than the smallest remainder worth handing back on an
+    /// incremental group: a buffer left with no more than this retires whole
+    /// rather than returning to the caller nearly empty. Zero keeps every
+    /// remainder down to a single byte.
+    pub min_left_sub_one: u32,
 }
 
 /// A provided-buffer group: either buffers handed over one operation at a
@@ -53,6 +59,14 @@ pub struct BufGroup {
     pub gid: u16,
     pub bufs: alloc::collections::VecDeque<ProvidedBuf>,
     pub ring: Option<BufRing>,
+}
+
+/// The run one operation may draw from a provided-buffer group, and how the
+/// group consumes it.
+pub struct GroupPeek {
+    pub entries: Vec<crate::io_uring_abi::bundle::BufEntry>,
+    pub incremental: bool,
+    pub min_left_sub_one: u32,
 }
 
 /// One registered-file slot; `file` is `None` for the sparse empty slot.
@@ -172,26 +186,51 @@ impl IoUringReg {
         Ok(done)
     }
 
-    /// Take the next buffer from group `gid`, from its ring if it has one.
-    /// # C: O(N_groups)
-    pub fn select_buf(&mut self, gid: u16) -> Result<ProvidedBuf, Errno> {
+    /// The run a transfer may draw from group `gid`, without consuming any of
+    /// it. Nothing moves here: which buffers the operation consumed is decided
+    /// afterwards, from how far into the run the transfer actually reached.
+    ///
+    /// A group registered one buffer at a time yields exactly one, whatever
+    /// the caller asked for — the run a bundle needs is a property of the
+    /// shared array, and there is no array to walk.
+    /// # C: O(want + N_groups)
+    pub fn peek_group(&mut self, gid: u16, want: usize) -> Result<GroupPeek, Errno> {
         let g = self.bufs_groups.iter_mut().find(|g| g.gid == gid).ok_or(Errno::Enobufs)?;
-        match g.ring.as_mut() {
-            Some(r) => r.next(),
-            None => g.bufs.pop_front().ok_or(Errno::Enobufs),
+        let mut entries = Vec::new();
+        let (incremental, min_left_sub_one) = match g.ring.as_ref() {
+            Some(r) => (r.incremental, r.min_left_sub_one),
+            None => (false, 0),
+        };
+        match g.ring.as_ref() {
+            Some(r) => r.peek(want, &mut entries)?,
+            None => if let Some(b) = g.bufs.front() {
+                entries.try_reserve(1).map_err(|_| Errno::Enomem)?;
+                entries.push(BufEntry { addr: b.addr, len: b.len, bid: b.bid });
+            },
         }
+        if entries.is_empty() { return Err(Errno::Enobufs); }
+        Ok(GroupPeek { entries, incremental, min_left_sub_one })
     }
 
-    /// Put a selected buffer back — used when the operation that selected it
-    /// never consumed it, so a failed op does not leak the caller's buffer.
-    /// A ring group rewinds its head instead, since the entry is still there.
-    /// # C: O(N_groups)
-    pub fn unselect_buf(&mut self, gid: u16, b: ProvidedBuf) {
-        if let Some(g) = self.bufs_groups.iter_mut().find(|g| g.gid == gid) {
-            match g.ring.as_mut() {
-                Some(r) => r.head = r.head.wrapping_sub(1),
-                None => g.bufs.push_front(b),
+    /// Retire the part of a peeked run the transfer consumed: `nbufs` entries
+    /// covering `bytes` bytes. Returns whether the last buffer is left
+    /// part-used and will therefore be handed out again under the same id.
+    /// # C: O(nbufs + N_groups)
+    pub fn commit_group(&mut self, gid: u16, entries: &[BufEntry], nbufs: usize, bytes: u64)
+        -> bool
+    {
+        let Some(g) = self.bufs_groups.iter_mut().find(|g| g.gid == gid) else { return false };
+        match g.ring.as_mut() {
+            Some(r) if r.incremental => {
+                let c = crate::io_uring_abi::bundle::inc_commit(entries, bytes, r.min_left_sub_one);
+                let more = c.buf_more();
+                // A write into the caller's own ring cannot fail the operation
+                // that already moved the bytes; the head still advances.
+                let _ = r.commit_inc(c);
+                more
             }
+            Some(r) => { r.commit_whole(nbufs); false }
+            None => { for _ in 0..nbufs { g.bufs.pop_front(); } false }
         }
     }
 

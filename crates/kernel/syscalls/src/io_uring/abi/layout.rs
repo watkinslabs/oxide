@@ -157,17 +157,23 @@ pub const SUPPORTED_SETUP_FLAGS: u32 =
 ///   NO_IOWAIT      — a wait can be asked not to be accounted as iowait;
 ///                    vacuously, because no wait here is ever accounted that
 ///                    way, so the flag's guarantee already holds.
+///   RECVSEND_BUNDLE — a send or receive draws a RUN of provided buffers from
+///                    its group and reports the run as one completion, whose
+///                    flag half carries the FIRST buffer's id.
+///   RW_ATTR        — a read or write entry may point at a typed attribute
+///                    record, which is decoded and checked against what the
+///                    description can carry rather than ignored.
 ///
-/// Not claimed, because not implemented: `RECVSEND_BUNDLE` (send and receive
-/// consume one provided buffer per operation) and `RW_ATTR` (a read or write
-/// entry carries no attribute vector).
+/// Every feature bit the UAPI defines is claimed; nothing here is reported
+/// without the behaviour behind it.
 pub const REPORTED_FEATURES: u32 =
     IORING_FEAT_SINGLE_MMAP | IORING_FEAT_NODROP | IORING_FEAT_SUBMIT_STABLE
     | IORING_FEAT_RW_CUR_POS | IORING_FEAT_CUR_PERSONALITY | IORING_FEAT_EXT_ARG
     | IORING_FEAT_RSRC_TAGS | IORING_FEAT_CQE_SKIP | IORING_FEAT_LINKED_FILE
     | IORING_FEAT_FAST_POLL | IORING_FEAT_NATIVE_WORKERS | IORING_FEAT_POLL_32BITS
     | IORING_FEAT_SQPOLL_NONFIXED | IORING_FEAT_REG_REG_RING
-    | IORING_FEAT_MIN_TIMEOUT | IORING_FEAT_NO_IOWAIT;
+    | IORING_FEAT_MIN_TIMEOUT | IORING_FEAT_NO_IOWAIT
+    | IORING_FEAT_RECVSEND_BUNDLE | IORING_FEAT_RW_ATTR;
 
 /// Region geometry derived from an admitted `struct io_uring_params`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

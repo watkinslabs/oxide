@@ -19,6 +19,7 @@ use vfs::File;
 
 use crate::io_uring::ctx::IoUringInode;
 use crate::io_uring::rsrc::{alloc_window, ProvidedBuf, RegFile};
+use crate::io_uring_abi::bundle::BufEntry;
 use crate::io_uring_abi::ops::IOSQE_FIXED_FILE;
 use crate::io_uring_sqe::Sqe;
 
@@ -116,29 +117,29 @@ pub fn place_result(inode: &IoUringInode, sqe: &Sqe, rv: i64) -> i64 {
     }
 }
 
-/// A buffer taken from a provided-buffer group, put back if the operation
-/// never used it.
+/// The head buffer of a provided-buffer group, looked at but not yet taken.
+/// Nothing moves in the group until the operation says how much of the buffer
+/// it used, so an operation that failed leaves the buffer where it was.
 pub struct SelectedBuf<'a> {
     pub buf: ProvidedBuf,
     inode: &'a IoUringInode,
     gid: u16,
-    consumed: bool,
+    entry: [BufEntry; 1],
 }
 
 impl SelectedBuf<'_> {
-    /// The operation used the buffer: keep it out of the group. # C: O(1)
-    pub fn consume(&mut self) { self.consumed = true; }
-}
-
-impl Drop for SelectedBuf<'_> {
-    /// # C: O(N_groups)
-    fn drop(&mut self) {
-        if !self.consumed { self.inode.reg.lock().unselect_buf(self.gid, self.buf); }
+    /// The operation moved `bytes` bytes through the buffer. Returns whether
+    /// the buffer is left part-used and will be handed out again under the
+    /// same id. # C: O(N_groups)
+    pub fn consume(&mut self, bytes: u64) -> bool {
+        self.inode.reg.lock().commit_group(self.gid, &self.entry, 1, bytes)
     }
 }
 
-/// Take the next buffer from the group the SQE names. # C: O(N_groups)
+/// Look at the head buffer of the group the SQE names. # C: O(N_groups)
 pub fn select_buf<'a>(inode: &'a IoUringInode, gid: u16) -> Result<SelectedBuf<'a>, i64> {
-    let buf = inode.reg.lock().select_buf(gid).map_err(err)?;
-    Ok(SelectedBuf { buf, inode, gid, consumed: false })
+    let peek = inode.reg.lock().peek_group(gid, 1).map_err(err)?;
+    let e = peek.entries[0];
+    Ok(SelectedBuf { buf: ProvidedBuf { addr: e.addr, len: e.len, bid: e.bid },
+                     inode, gid, entry: [e] })
 }

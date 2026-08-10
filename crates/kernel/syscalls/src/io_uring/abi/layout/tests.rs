@@ -267,14 +267,17 @@ fn features_claim_only_what_the_ring_actually_does() {
     for f in [IORING_FEAT_MIN_TIMEOUT, IORING_FEAT_NO_IOWAIT] {
         assert_ne!(REPORTED_FEATURES & f, 0, "feature {f:#x}");
     }
-    // NOT claimed, because not implemented: send and receive consume one
-    // provided buffer per operation, and a read or write entry carries no
-    // attribute vector. Claiming either is a lie a caller acts on.
+    // A send or receive draws a RUN of provided buffers and reports it as one
+    // completion carrying the first id; a read or write entry's attribute
+    // vector is decoded and checked rather than ignored.
     for f in [IORING_FEAT_RECVSEND_BUNDLE, IORING_FEAT_RW_ATTR] {
-        assert_eq!(REPORTED_FEATURES & f, 0, "feature {f:#x} must not be claimed");
+        assert_ne!(REPORTED_FEATURES & f, 0, "feature {f:#x}");
     }
-    // No feature bit outside the UAPI's own set.
-    assert_eq!(REPORTED_FEATURES & !((1u32 << 18) - 1), 0);
+    // No feature bit outside the UAPI's own set — and none of them left
+    // unclaimed either: every defined bit has its behaviour, so the reported
+    // set IS the defined set. A bit added to the UAPI without an
+    // implementation fails here rather than being quietly reported.
+    assert_eq!(REPORTED_FEATURES, (1u32 << 18) - 1);
 }
 
 /// Every `IORING_SETUP_*` bit, in exactly one of two states: implemented, or
