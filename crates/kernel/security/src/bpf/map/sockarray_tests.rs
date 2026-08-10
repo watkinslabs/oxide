@@ -17,7 +17,11 @@ use alloc::vec::Vec;
 struct Hashed(u32);
 
 fn handle(object: &Arc<Hashed>, cookie: u64) -> SockHandle {
-    SockHandle { hashed: Arc::downgrade(object) as HashedSock, cookie }
+    SockHandle {
+        hashed: Arc::downgrade(object) as HashedSock,
+        cell: Arc::downgrade(object) as HashedSock,
+        cookie, protocol: 6, family: 2,
+    }
 }
 
 fn key(index: u32) -> Vec<u8> { index.to_ne_bytes().to_vec() }

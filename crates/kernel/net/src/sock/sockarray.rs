@@ -19,9 +19,6 @@ use core::any::Any;
 use security::bpf::map::sockarray::{SockHandle, SockState, StoredShape};
 
 use crate::sock::{InetSocket, SockKind};
-use crate::stack::TcpListenEntry;
-use crate::stack::UdpRxQueue;
-use crate::stack_ipv6::Udp6RxQueue;
 
 /// The bind-table object a packet for this socket is steered to, if the socket
 /// occupies a transport hash at all. # C: O(1)
@@ -46,43 +43,48 @@ pub fn stored_shape(sock: &InetSocket) -> StoredShape {
     }
 }
 
-/// Group, protocol and family of a stored socket, read now rather than
-/// remembered: a socket may leave or join a group after being stored.
-/// # C: O(1)
+/// Which group a stored socket is in right now, with the two facts that
+/// cannot change riding the handle.
+///
+/// This deliberately does NOT take a reference to the socket. A selection runs
+/// in softirq at the tail of a receive path, and being the last owner of a
+/// closing socket there would run the socket's entire teardown — file, mount,
+/// superblock writeback — from inside a program run. Reaching the group
+/// through the socket's own reuseport cell keeps the only teardown reachable
+/// from here a group and its member list. # C: O(1)
 pub fn state_of(handle: &SockHandle) -> Option<SockState> {
-    let object = handle.upgrade()?;
-    let udp = crate::addr::IpProto::Udp as u8;
-    let tcp = crate::addr::IpProto::Tcp as u8;
-    let v4 = crate::socket_args::AF_INET as u16;
-    let v6 = crate::socket_args::AF_INET6 as u16;
-    let (slot, protocol, family) =
-        match object.clone().downcast::<TcpListenEntry>() {
-            Ok(listener) => {
-                let family = match listener.local.ip {
-                    crate::addr::IpAddr::V6(_) => v6, crate::addr::IpAddr::V4(_) => v4,
-                };
-                (listener.reuseport_group.clone(), tcp, family)
-            }
-            Err(_) => match object.clone().downcast::<UdpRxQueue>() {
-                Ok(queue) => (queue.reuseport_group.clone(), udp, v4),
-                Err(_) => match object.downcast::<Udp6RxQueue>() {
-                    Ok(queue) => (queue.reuseport_group.clone(), udp, v6),
-                    Err(_) => return None,
-                },
-            },
-        };
-    let group = crate::reuseport::slot::group(&slot)?;
-    Some(SockState { group_id: group.id(), protocol, family })
+    let cell = handle.cell.upgrade()?
+        .downcast::<crate::reuseport::slot::SlotCell>().ok()?;
+    let group = crate::reuseport::slot::group(&cell)?;
+    Some(SockState { group_id: group.id(), protocol: handle.protocol, family: handle.family })
+}
+
+/// The transport protocol and address family a stored socket keeps for life.
+/// # C: O(1)
+fn fixed_shape(sock: &InetSocket) -> (u8, u16) {
+    let personality = crate::sock_opts::describe(sock);
+    let protocol = if personality.udp { crate::addr::IpProto::Udp as u8 }
+                   else { crate::addr::IpProto::Tcp as u8 };
+    let family = if personality.family == crate::sock::AF_INET6 {
+        crate::socket_args::AF_INET6 as u16
+    } else {
+        crate::socket_args::AF_INET as u16
+    };
+    (protocol, family)
 }
 
 /// Build the handle a map slot holds for this socket, once the socket has
 /// been admitted. # C: O(1)
 pub fn handle_of(sock: &InetSocket) -> Option<SockHandle> {
     let hashed = hashed_object(sock)?;
+    let cell: Arc<dyn Any + Send + Sync> = sock.reuseport_group.clone();
+    let (protocol, family) = fixed_shape(sock);
     Some(SockHandle {
         hashed: Arc::downgrade(&hashed),
+        cell: Arc::downgrade(&cell),
         cookie: sock.opts.base.generic
             .cookie(crate::sock_opts::sol_socket::next_cookie) as u64,
+        protocol, family,
     })
 }
 

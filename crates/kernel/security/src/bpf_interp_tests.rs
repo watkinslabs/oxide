@@ -158,7 +158,7 @@ fn helper_state_is_shared_with_the_caller() {
         raw(0x85, 0, 0, 0, 3),
         raw(0x95, 0, 0, 0, 0),
     ]);
-    let mut state = HelperState { retval: 12, ..Default::default() };
+    let mut state = HelperState { retval: 12 };
     assert_eq!(run_with_helpers_and_state(&p, &[], &helpers, &mut state), Some(12));
     assert_eq!(state.retval, 77);
 }

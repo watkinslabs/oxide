@@ -76,13 +76,13 @@ pub struct Run<'a> {
 /// nothing. # C: O(instructions)
 pub fn run(program: Run<'_>, ctx: SkReuseportContext<'_>) -> Verdict {
     let context = build(&ctx);
-    let mut state = crate::bpf_interp::HelperState {
-        reuseport_runner: Some(program.runner), ..Default::default()
+    let mut selection = crate::bpf_interp::ReuseportSelection {
+        runner: program.runner, selected: None,
     };
-    let action = crate::bpf_interp::run_reuseport(
-        program.insns, &context, ctx.packet, program.maps, &mut state);
+    let action = crate::bpf_interp::run_socket_filter(
+        program.insns, &context, ctx.packet, program.maps, Some(&mut selection));
     match action {
-        Some(action) => Verdict { action: action as u32, selected: state.selected_sock },
+        Some(action) => Verdict { action: action as u32, selected: selection.selected },
         None => Verdict { action: SK_DROP, selected: None },
     }
 }

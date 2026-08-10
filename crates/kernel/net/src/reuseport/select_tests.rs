@@ -56,7 +56,12 @@ fn join(stack: &NetStack, listener: &Arc<TcpListenEntry>) -> ReuseportSlot {
 
 fn names(listener: &Arc<TcpListenEntry>) {
     let object: Arc<dyn Any + Send + Sync> = listener.clone();
-    *NAMED.lock() = Some(SockHandle { hashed: Arc::downgrade(&object), cookie: 1 });
+    let cell: Arc<dyn Any + Send + Sync> = listener.reuseport_group.clone();
+    *NAMED.lock() = Some(SockHandle {
+        hashed: Arc::downgrade(&object), cell: Arc::downgrade(&cell),
+        cookie: 1, protocol: crate::addr::IpProto::Tcp as u8,
+        family: crate::socket_args::AF_INET as u16,
+    });
 }
 
 fn chosen(bucket: &[Arc<TcpListenEntry>]) -> Option<usize> {
@@ -148,3 +153,58 @@ fn a_refused_segment_reaches_nobody_even_when_a_member_was_named() {
     assert_eq!(chosen(&bucket), None, "the action outranks the selection");
 }
 
+
+/// A selection runs in softirq at the tail of a receive path. Reading which
+/// group a stored socket is in must therefore not take a reference to the
+/// socket: being its last owner there would run the socket's whole teardown —
+/// file, mount, superblock writeback — from inside a program run. The group is
+/// reached through the socket's own reuseport cell instead, and this pins that
+/// by answering for a socket whose object is already gone.
+mod reading_the_group {
+    use super::*;
+    use crate::sock::sockarray;
+
+    #[test]
+    fn the_group_is_readable_without_any_reference_to_the_socket() {
+        let _domain = crate::hosted_fixture::init_net_domain();
+        let stack = NetStack::new();
+        let listener = listen(&stack, 49_733);
+        let cell = join(&stack, &listener);
+        let group = slot::group(&cell).expect("the key allocated a group");
+
+        // A handle whose socket object is already unreachable, but whose
+        // reuseport cell is not.
+        let gone: Arc<dyn Any + Send + Sync> = Arc::new(0u8);
+        let named: Arc<dyn Any + Send + Sync> = cell.clone();
+        let handle = SockHandle {
+            hashed: Arc::downgrade(&gone),
+            cell: Arc::downgrade(&named),
+            cookie: 5,
+            protocol: crate::addr::IpProto::Tcp as u8,
+            family: crate::socket_args::AF_INET as u16,
+        };
+        drop(gone);
+        assert!(handle.upgrade().is_none(), "nothing here holds the socket");
+
+        let state = sockarray::state_of(&handle).expect("the group still answers");
+        assert_eq!(state.group_id, group.id());
+        assert_eq!(state.protocol, crate::addr::IpProto::Tcp as u8);
+        assert_eq!(state.family, crate::socket_args::AF_INET as u16);
+    }
+
+    #[test]
+    fn a_socket_that_left_every_group_answers_for_none() {
+        let _domain = crate::hosted_fixture::init_net_domain();
+        let stack = NetStack::new();
+        let listener = listen(&stack, 49_734);
+        let cell = join(&stack, &listener);
+        slot::leave(&cell);
+        let named: Arc<dyn Any + Send + Sync> = cell.clone();
+        let handle = SockHandle {
+            hashed: Arc::downgrade(&named), cell: Arc::downgrade(&named),
+            cookie: 5, protocol: crate::addr::IpProto::Tcp as u8,
+            family: crate::socket_args::AF_INET as u16,
+        };
+        assert!(sockarray::state_of(&handle).is_none());
+    }
+}

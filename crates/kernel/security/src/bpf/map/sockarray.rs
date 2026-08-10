@@ -36,9 +36,19 @@ pub struct SockHandle {
     /// Weakly held, so a slot stops answering for a socket the moment the
     /// bind table lets go of it.
     pub hashed: HashedSock,
-    /// The socket cookie a syscall-side lookup reports; the only thing about
-    /// a socket stable enough to cache here.
+    /// The socket's reuseport cell, held the same way and separately. Reading
+    /// which group a socket is in must NOT take a reference to the socket
+    /// itself: a selection runs in softirq, and being the last owner of a
+    /// closing socket there would run its whole teardown from inside a program
+    /// run. This cell's own teardown is a group and nothing else.
+    pub cell: HashedSock,
+    /// The socket cookie a syscall-side lookup reports.
     pub cookie: u64,
+    /// `sk_protocol`. Fixed for the socket's whole life, so caching it costs
+    /// no accuracy and saves touching the socket during a selection.
+    pub protocol: u8,
+    /// `sk_family`. Fixed for the socket's whole life, likewise.
+    pub family: u16,
 }
 
 impl SockHandle {
@@ -50,7 +60,8 @@ impl SockHandle {
 }
 
 /// What a stored socket is right now, in the three terms the selection checks
-/// are written in.
+/// are written in. Only the group can change while a socket is stored; the
+/// other two ride the handle.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct SockState {
     /// Identity of the SO_REUSEPORT group the socket currently belongs to.

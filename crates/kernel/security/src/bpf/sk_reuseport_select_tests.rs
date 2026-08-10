@@ -75,7 +75,11 @@ fn array_of(inode: &vfs::InodeRef) -> &SockArray {
 }
 
 fn store(inode: &vfs::InodeRef, object: &Arc<Hashed>, cookie: u64) {
-    let handle = SockHandle { hashed: Arc::downgrade(object) as HashedSock, cookie };
+    let handle = SockHandle {
+        hashed: Arc::downgrade(object) as HashedSock,
+        cell: Arc::downgrade(object) as HashedSock,
+        cookie, protocol: 6, family: 2,
+    };
     array_of(inode).update(&0u32.to_ne_bytes(), 1, handle, 0).expect("stored");
 }
 

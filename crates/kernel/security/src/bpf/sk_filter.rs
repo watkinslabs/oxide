@@ -46,7 +46,7 @@ pub fn build(ctx: &SkFilterContext<'_>) -> [u8; SK_FILTER_CONTEXT_BYTES] {
 /// # C: O(instructions)
 pub fn run(insns: &[u8], ctx: SkFilterContext<'_>) -> u32 {
     let context = build(&ctx);
-    crate::bpf_interp::run_socket_filter(insns, &context, ctx.packet)
+    crate::bpf_interp::run_socket_filter(insns, &context, ctx.packet, &[], None)
         .map_or(0, |verdict| verdict as u32)
 }
 

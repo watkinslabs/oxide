@@ -39,6 +39,8 @@ pub(super) struct RunMemory<'a> {
     packet: &'a [u8],
     maps: &'a [InodeRef],
     values: Vec<ValueRef>,
+    /// Present only for a reuseport selection run.
+    reuseport: Option<&'a mut super::ReuseportSelection>,
 }
 
 impl<'a> RunMemory<'a> {
@@ -49,7 +51,13 @@ impl<'a> RunMemory<'a> {
         packet: &'a [u8],
         maps: &'a [InodeRef],
     ) -> Self {
-        Self { context, packet, maps, values: Vec::new() }
+        Self { context, packet, maps, values: Vec::new(), reuseport: None }
+    }
+
+    /// Give this run the group it is selecting within, and the cell its
+    /// choice is recorded in. # C: O(1)
+    pub(super) fn attach_reuseport(&mut self, selection: &'a mut super::ReuseportSelection) {
+        self.reuseport = Some(selection);
     }
 
     /// Resolve a relocated map or map-value pseudo instruction.
@@ -182,7 +190,6 @@ impl<'a> RunMemory<'a> {
     /// errno that says why. # C: O(1)
     pub(super) fn sk_select_reuseport(
         &mut self,
-        state: &mut super::HelperState,
         map_addr: i64,
         key_addr: i64,
         flags: i64,
@@ -205,13 +212,13 @@ impl<'a> RunMemory<'a> {
             Ok(None) => return err(Errno::Enoent),
             Err(e) => return err(e),
         };
-        let Some(runner) = state.reuseport_runner else { return err(Errno::Einval) };
+        let Some(selection) = self.reuseport.as_deref_mut() else { return err(Errno::Einval) };
         if let Err(e) = crate::bpf::map::sockarray::select_check(
-            runner, crate::bpf::map::sockarray::sock_state(&handle))
+            selection.runner, crate::bpf::map::sockarray::sock_state(&handle))
         {
             return err(e);
         }
-        state.selected_sock = Some(handle);
+        selection.selected = Some(handle);
         0
     }
 
