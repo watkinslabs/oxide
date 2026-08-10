@@ -25,12 +25,28 @@ struct RwFileDisk { f: Mutex<File>, cap: u64 }
 struct TempImage { path: std::path::PathBuf }
 
 impl TempImage {
+    /// Scratch copies land in the crate's target scratch directory, not the
+    /// system temporary directory. The images copied here are multi-gigabyte
+    /// and the system temporary directory on this box is a RAM filesystem, so
+    /// several concurrent copies exhausted it and the copy failed with no
+    /// space -- a harness limit that reads exactly like a test failure.
     fn new(tag: &str) -> Self {
         static SEQ: AtomicU32 = AtomicU32::new(0);
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(std::format!("oxide-ext4-{tag}-{}-{seq}.img", std::process::id()));
+        let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join(std::format!("oxide-ext4-{tag}-{}-{seq}.img", std::process::id()));
         Self { path }
     }
+}
+
+/// One multi-gigabyte scratch copy at a time. Four cases in this binary each
+/// duplicate a whole root filesystem; held together they need more scratch
+/// space than the box has to spare, and the copy that loses reports a failure
+/// that has nothing to do with what it asserts.
+fn one_large_copy() -> std::sync::MutexGuard<'static, ()> {
+    static LARGE: Mutex<()> = Mutex::new(());
+    LARGE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 impl AsRef<std::path::Path> for TempImage {
@@ -81,6 +97,7 @@ fn e2fsck_clean(path: impl AsRef<std::path::Path>) -> (bool, String) {
 }
 
 fn copy_checked(src: &str, tag: &str) -> Option<TempImage> {
+    let _large = one_large_copy();
     if File::open(src).is_err() { eprintln!("SKIP: no image at {src}"); return None; }
     if Command::new("e2fsck").arg("-V").output().is_err() { eprintln!("SKIP: no e2fsck"); return None; }
     let tmp = TempImage::new(tag);
@@ -104,6 +121,7 @@ fn boot_like_balloc_into_uninit_group_keeps_fsck_clean() {
     if Command::new("e2fsck").arg("-V").output().is_err() { eprintln!("SKIP: no e2fsck"); return; }
 
     // Work on a private copy so we never touch the pristine image.
+    let _large = one_large_copy();
     let tmp = TempImage::new("balloc-uninit");
     std::fs::copy(CLEAN, &tmp).expect("copy image");
 
@@ -162,6 +180,7 @@ fn boot_like_balloc_into_uninit_group_keeps_fsck_clean() {
 fn concurrent_churn_keeps_fsck_clean() {
     if File::open(CLEAN).is_err() { eprintln!("SKIP: no clean image"); return; }
     if Command::new("e2fsck").arg("-V").output().is_err() { eprintln!("SKIP: no e2fsck"); return; }
+    let _large = one_large_copy();
     let tmp = TempImage::new("balloc-concurrent");
     std::fs::copy(CLEAN, &tmp).expect("copy image");
     let (ok0, log0) = e2fsck_clean(&tmp);
