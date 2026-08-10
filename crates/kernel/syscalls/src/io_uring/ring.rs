@@ -17,7 +17,7 @@ use crate::io_uring_abi::layout::{
     RING_SQ_RING_ENTRIES, RING_SQ_RING_MASK,
 };
 use super::region::Region;
-use crate::io_uring_abi::uapi::SQE_SIZE;
+use crate::io_uring_abi::sqe_slot::sqe_offset;
 
 use super::ctx::IoUringInode;
 
@@ -38,6 +38,8 @@ pub struct IoUring {
     pub flags: u32,
     /// Bytes one CQE occupies — see `layout::cqe_size`.
     pub cqe_size: u32,
+    /// Bytes one SQE occupies — see `layout::sqe_size`.
+    pub sqe_size: u32,
 }
 
 impl IoUring {
@@ -48,7 +50,8 @@ impl IoUring {
         let r = Self {
             rings, sqes,
             sq_entries: g.sq_entries, cq_entries: g.cq_entries,
-            sq_array_off: g.sq_array_off, flags: g.flags, cqe_size: g.cqe_size,
+            sq_array_off: g.sq_array_off, flags: g.flags,
+            cqe_size: g.cqe_size, sqe_size: g.sqe_size,
         };
         r.seed_constants();
         Some(r)
@@ -89,9 +92,11 @@ impl IoUring {
         self.rings.kva + RING_CQES as u64 + (idx & (self.cq_entries - 1)) as u64 * self.cqe_size as u64
     }
 
-    /// Address of SQE `idx & (sq_entries - 1)` in the SQEs region. # C: O(1)
+    /// Address of SQE `idx & (sq_entries - 1)` in the SQEs region. The stride
+    /// is the ring's own, so a 128-byte ring's second entry starts 128 bytes
+    /// in and not 64. # C: O(1)
     pub fn sqe_at(&self, idx: u32) -> u64 {
-        self.sqes.kva + (idx & (self.sq_entries - 1)) as u64 * SQE_SIZE as u64
+        self.sqes.kva + sqe_offset(self.sqe_size, idx & (self.sq_entries - 1))
     }
 
     /// SQE index for SQ ring slot `head`: through the SQ index array, or the

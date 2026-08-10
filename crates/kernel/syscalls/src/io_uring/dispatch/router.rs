@@ -56,6 +56,9 @@ pub fn dispatch_op(inode: &Arc<IoUringInode>, sqe: &Sqe) -> OpOutcome {
     }
 
     let op = Op { inode, sqe, fd, addr: sqe.addr, len: sqe.len };
+    // The nop is the one operation whose completion WIDTH the entry chooses,
+    // so it reports an outcome rather than a bare result.
+    if sqe.opcode == IORING_OP_NOP || sqe.opcode == IORING_OP_NOP128 { return ring_ops::nop(&op); }
     OpOutcome::res(run(&op))
 }
 
@@ -66,7 +69,9 @@ pub fn dispatch_op(inode: &Arc<IoUringInode>, sqe: &Sqe) -> OpOutcome {
 #[inline(always)]
 fn run(op: &Op) -> i64 {
     match op.sqe.opcode {
-        IORING_OP_NOP             => 0,
+        // Handled by `dispatch_op`, which is the only caller that can report
+        // the 32-byte completion a nop may ask for.
+        IORING_OP_NOP | IORING_OP_NOP128 => 0,
         IORING_OP_READ            => rw::read(op),
         IORING_OP_WRITE           => rw::write(op),
         IORING_OP_READV           => rw::readv(op),

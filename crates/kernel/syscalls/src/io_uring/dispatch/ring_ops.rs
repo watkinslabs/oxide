@@ -8,6 +8,7 @@ use crate::io_uring::cqe::Cqe;
 use crate::io_uring::ctx::IoUringInode;
 
 use super::fdres::{fixed_file, install_scratch};
+use super::outcome::OpOutcome;
 use super::router::Op;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
@@ -126,4 +127,51 @@ fn set_cloexec(fd: i32) {
         // SAFETY: running task on this CPU; preempt-off; sole reader of the fd_table slot.
         if let Some(t) = unsafe { cur.fd_table_ref() } { let _ = t.clone().set_cloexec(fd, true); }
     }
+}
+
+/// `IORING_OP_NOP` / `IORING_OP_NOP128`: do nothing, in the shape the entry
+/// asked for.
+///
+/// Every resolution the entry requests is performed for real — a descriptor
+/// that names nothing is EBADF and a buffer index that names no registered
+/// buffer is EFAULT — because the whole point of the operation is to tell a
+/// caller whether those resolutions work on this ring. A nop that reported
+/// success without looking would answer the one question it is asked.
+/// # C: O(1)
+pub fn nop(op: &Op) -> OpOutcome {
+    use crate::io_uring_abi::cqe_slot::posts_32;
+    let s = op.sqe;
+    let n = match crate::io_uring_abi::nop::prep(
+        s.op_flags, s.len, s.fd, s.off, s.addr, posts_32(op.inode.flags))
+    {
+        Ok(n) => n,
+        Err(e) => return OpOutcome::res(err(e)),
+    };
+    let mut res = n.result as i64;
+    if n.check_file && res >= 0 {
+        let ok = if n.fixed_file { fixed_file(op.inode, s.fd as u32).is_ok() } else { file_exists(s.fd) };
+        if !ok { res = err(Errno::Ebadf); }
+    }
+    if n.check_buffer && res >= 0 && !registered_buffer(op.inode, s.buf_index) {
+        res = err(Errno::Efault);
+    }
+    if n.cqe32 { OpOutcome::wide(res, n.extra) } else { OpOutcome::res(res) }
+}
+
+/// Whether a descriptor of the running task names an open description.
+/// # C: O(1)
+fn file_exists(fd: i32) -> bool {
+    let Some(cur) = sched::live::current() else { return false };
+    // SAFETY: running task on this CPU; preempt-off; sole reader of the fd_table slot.
+    let Some(fdt) = (unsafe { cur.fd_table_ref() }) else { return false };
+    fdt.clone().get(fd).is_ok()
+}
+
+/// Whether the ring has a registered buffer at `idx` with memory behind it.
+/// # C: O(1)
+fn registered_buffer(inode: &IoUringInode, idx: u16) -> bool {
+    let g = inode.reg.lock();
+    g.buffers.as_ref()
+        .and_then(|b| b.get(idx as usize))
+        .is_some_and(|b| !b.buf.is_empty())
 }

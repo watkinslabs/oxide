@@ -109,6 +109,10 @@ pub const IORING_SQ_TASKRUN:      u32 = 1 << 2;
 
 /// `sizeof(struct io_uring_sqe)`.
 pub const SQE_SIZE: usize = 64;
+/// `sizeof(struct io_uring_sqe)` for an `IORING_SETUP_SQE128` ring: the same
+/// 64 bytes followed by 64 more an operation with a longer command than an
+/// SQE can hold puts its tail in.
+pub const SQE128_SIZE: usize = 128;
 /// `sizeof(struct io_uring_cqe)`.
 pub const CQE_SIZE: usize = 16;
 /// `sizeof(struct io_uring_cqe)` for an `IORING_SETUP_CQE32` ring: the same

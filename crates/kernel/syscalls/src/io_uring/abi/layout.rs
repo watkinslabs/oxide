@@ -101,7 +101,7 @@ pub const NO_SQ_ARRAY: u32 = u32::MAX;
 /// | `SUBMIT_ALL` | implemented | `submit::submit_sqes`. |
 /// | `COOP_TASKRUN` | implemented | vacuously: an entry finishes inside the submission that issued it or on a worker that posts its own completion, so no task work is ever queued back at the submitter and no signal is ever needed to run it. |
 /// | `TASKRUN_FLAG` | implemented | same reason — `IORING_SQ_TASKRUN` is correctly never raised, because there is never task work pending. |
-/// | `SQE128` | refused | the SQE array is sized and indexed at 64 bytes. |
+/// | `SQE128` | implemented | `sqe_size` sizes and strides the SQE array at 128 bytes, and `IORING_OP_NOP128` is the operation that needs it. |
 /// | `CQE32` | implemented | `cqe_size` sizes and indexes the CQE array at 32 bytes; `Cqe::big` carries the second half. It is the flag zero-copy receive registration requires, because a receive completion reports a buffer offset alongside its length. |
 /// | `SINGLE_ISSUER` | implemented | [`super::issuer`]: the creating task (or, for an `R_DISABLED` ring, the enabling one) is recorded as the submitter, and every other task is EEXIST. |
 /// | `DEFER_TASKRUN` | implemented | vacuously, per `COOP_TASKRUN`; also the gate `RESIZE_RINGS` requires. |
@@ -109,8 +109,8 @@ pub const NO_SQ_ARRAY: u32 = u32::MAX;
 /// | `REGISTERED_FD_ONLY` | refused | it is only reachable with `NO_MMAP`, which is refused. |
 /// | `NO_SQARRAY` | implemented | `rings_size` + `IoUring::sq_index`. |
 /// | `HYBRID_IOPOLL` | implemented | [`super::iopoll::hybrid_sleep_ns`] + the ring's running service-time estimate: a polled transfer is stamped when it is issued, each poll pass folds the observed service time into the ring's minimum, and the next transfer sleeps for half of it before it starts spinning. |
-/// | `CQE_MIXED` | refused | it varies CQE size per completion; the CQE array is fixed at 16 bytes. |
-/// | `SQE_MIXED` | refused | it varies SQE size per entry; the SQE array is fixed at 64 bytes. |
+/// | `CQE_MIXED` | implemented | the array stays 16 bytes and a 32-byte completion takes TWO slots, carrying `IORING_CQE_F_32` ([`super::cqe_slot`]); a 32-byte completion that would straddle the wrap is preceded by a skipped filler. |
+/// | `SQE_MIXED` | implemented | the array stays 64 bytes and a 128-byte operation takes TWO contiguous entries ([`super::sqe_slot`]). |
 /// | `SQ_REWIND` | refused | it lets userspace move the SQ tail backwards over entries the kernel may already have read. |
 pub const SUPPORTED_SETUP_FLAGS: u32 =
     IORING_SETUP_CQSIZE | IORING_SETUP_CLAMP | IORING_SETUP_NO_SQARRAY
@@ -119,7 +119,8 @@ pub const SUPPORTED_SETUP_FLAGS: u32 =
     | IORING_SETUP_TASKRUN_FLAG | IORING_SETUP_DEFER_TASKRUN
     | IORING_SETUP_SQPOLL | IORING_SETUP_SQ_AFF | IORING_SETUP_IOPOLL
     | IORING_SETUP_HYBRID_IOPOLL
-    | IORING_SETUP_CQE32;
+    | IORING_SETUP_CQE32 | IORING_SETUP_SQE128
+    | IORING_SETUP_CQE_MIXED | IORING_SETUP_SQE_MIXED;
 
 /// `p->features` oxide reports. Claiming a bit we do not implement is a lie
 /// liburing acts on, so the set is deliberately small:
@@ -170,15 +171,28 @@ pub struct Geometry {
     pub sqes_bytes: u32,
     pub flags: u32,
     /// Bytes one CQE occupies: 32 for an `IORING_SETUP_CQE32` ring, 16
-    /// otherwise. It is carried rather than re-derived so the ring, the
-    /// completion writer and the region sizing cannot disagree about the
-    /// stride.
+    /// otherwise — an `IORING_SETUP_CQE_MIXED` ring included, where the array
+    /// stays 16 bytes and a 32-byte completion spans two slots. It is carried
+    /// rather than re-derived so the ring, the completion writer and the
+    /// region sizing cannot disagree about the stride.
     pub cqe_size: u32,
+    /// Bytes one SQE occupies: 128 for an `IORING_SETUP_SQE128` ring, 64
+    /// otherwise — an `IORING_SETUP_SQE_MIXED` ring included, where the array
+    /// stays 64 bytes and a 128-byte entry spans two slots.
+    pub sqe_size: u32,
 }
 
-/// Bytes one CQE occupies on a ring built with `flags`. # C: O(1)
+/// Bytes one CQE occupies on a ring built with `flags`. A mixed ring's array
+/// is the plain 16-byte one: mixed means a 32-byte completion consumes two of
+/// those slots, not that the stride changes. # C: O(1)
 pub fn cqe_size(flags: u32) -> u32 {
     if flags & IORING_SETUP_CQE32 != 0 { CQE32_SIZE as u32 } else { CQE_SIZE as u32 }
+}
+
+/// Bytes one SQE occupies on a ring built with `flags` — the mirror of
+/// [`cqe_size`], and mixed means the same thing on this side. # C: O(1)
+pub fn sqe_size(flags: u32) -> u32 {
+    if flags & IORING_SETUP_SQE128 != 0 { SQE128_SIZE as u32 } else { SQE_SIZE as u32 }
 }
 
 /// Round up to a power of two, saturating (Linux `roundup_pow_of_two`).
@@ -256,6 +270,11 @@ fn fill_entries(p: &mut Params) -> Result<(), Errno> {
 /// turned into allocations by `region_plan`; nothing here is capped at one
 /// page. # C: O(1)
 fn rings_size(flags: u32, sq_entries: u32, cq_entries: u32) -> Result<(u32, u32, u32), Errno> {
+    // A mixed ring must be able to hold ONE of the wide entries it exists to
+    // carry: a wide entry spans two slots, so a one-slot ring could never
+    // place one and every attempt would be refused for want of room.
+    if flags & IORING_SETUP_CQE_MIXED != 0 && cq_entries < 2 { return Err(Errno::Eoverflow); }
+    if flags & IORING_SETUP_SQE_MIXED != 0 && sq_entries < 2 { return Err(Errno::Eoverflow); }
     let cqes_bytes = cq_entries.checked_mul(cqe_size(flags)).ok_or(Errno::Eoverflow)?;
     let mut off = RING_CQES.checked_add(cqes_bytes).ok_or(Errno::Eoverflow)?;
     // The SQ index array starts on its own cacheline.
@@ -267,7 +286,7 @@ fn rings_size(flags: u32, sq_entries: u32, cq_entries: u32) -> Result<(u32, u32,
     } else {
         NO_SQ_ARRAY
     };
-    let sqes_bytes = sq_entries.checked_mul(SQE_SIZE as u32).ok_or(Errno::Eoverflow)?;
+    let sqes_bytes = sq_entries.checked_mul(sqe_size(flags)).ok_or(Errno::Eoverflow)?;
     Ok((sq_array_off, off, sqes_bytes))
 }
 
@@ -330,7 +349,7 @@ fn prepare_config(p: &mut Params) -> Result<Geometry, Errno> {
     Ok(Geometry {
         sq_entries: p.sq_entries, cq_entries: p.cq_entries,
         sq_array_off, rings_bytes, sqes_bytes, flags: p.flags,
-        cqe_size: cqe_size(p.flags),
+        cqe_size: cqe_size(p.flags), sqe_size: sqe_size(p.flags),
     })
 }
 

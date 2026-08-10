@@ -15,7 +15,12 @@
 //   sqpoll      — `IORING_SETUP_SQPOLL`/`SQ_AFF`: the idle window, the pin-CPU
 //                 ladder, the poll loop's transitions and the
 //                 `IORING_SQ_NEED_WAKEUP` handshake.
+//   cqe_slot    — where one completion lands in the CQ array and how many
+//                 slots it costs (`CQE32` / `CQE_MIXED`).
+//   sqe_slot    — the same for the SQ array (`SQE128` / `SQE_MIXED`).
 //   ops         — `IORING_OP_*` / `IOSQE_*` and which opcodes dispatch runs.
+//   nop         — `IORING_OP_NOP`/`NOP128`: the nop flag decode, including the
+//                 32-byte-completion request.
 //   link        — link chains, drain barriers and silent success.
 //   restriction — the per-ring register/SQE allow-lists.
 //   iopoll      — the polled-ring admission ladders and the poll-wait loop.
@@ -44,7 +49,10 @@ pub mod issuer;
 pub mod layout;
 pub mod enter;
 pub mod sqpoll;
+pub mod cqe_slot;
+pub mod sqe_slot;
 pub mod ops;
+pub mod nop;
 pub mod link;
 pub mod bpf_filter;
 pub mod mem_region;

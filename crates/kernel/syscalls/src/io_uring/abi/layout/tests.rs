@@ -285,7 +285,7 @@ fn every_setup_flag_is_either_implemented_or_refused() {
         (IORING_SETUP_SUBMIT_ALL,         true,  "submit::submit_sqes"),
         (IORING_SETUP_COOP_TASKRUN,       true,  "no task work is ever queued at the submitter"),
         (IORING_SETUP_TASKRUN_FLAG,       true,  "IORING_SQ_TASKRUN correctly never raised"),
-        (IORING_SETUP_SQE128,             false, "the SQE array is sized and indexed at 64 bytes"),
+        (IORING_SETUP_SQE128,             true,  "sqe_size sizes and strides the SQE array at 128 bytes"),
         (IORING_SETUP_CQE32,              true,  "cqe_size sizes and indexes the CQE array at 32 bytes"),
         (IORING_SETUP_SINGLE_ISSUER,      true,  "abi::issuer records the submitter at setup"),
         (IORING_SETUP_DEFER_TASKRUN,      true,  "vacuous, and the RESIZE_RINGS gate"),
@@ -293,8 +293,8 @@ fn every_setup_flag_is_either_implemented_or_refused() {
         (IORING_SETUP_REGISTERED_FD_ONLY, false, "only reachable with NO_MMAP"),
         (IORING_SETUP_NO_SQARRAY,         true,  "rings_size + IoUring::sq_index"),
         (IORING_SETUP_HYBRID_IOPOLL,      true,  "abi::iopoll::hybrid_sleep_ns + the ring's service-time estimate"),
-        (IORING_SETUP_CQE_MIXED,          false, "CQE size is fixed at 16 bytes"),
-        (IORING_SETUP_SQE_MIXED,          false, "SQE size is fixed at 64 bytes"),
+        (IORING_SETUP_CQE_MIXED,          true,  "abi::cqe_slot: a 32-byte completion takes two 16-byte slots"),
+        (IORING_SETUP_SQE_MIXED,          true,  "abi::sqe_slot: a 128-byte entry takes two 64-byte slots"),
         (IORING_SETUP_SQ_REWIND,          false, "userspace could rewind over entries already read"),
     ];
 
@@ -315,9 +315,8 @@ fn every_setup_flag_is_either_implemented_or_refused() {
 /// `SUPPORTED_SETUP_FLAGS` and still be admitted by an earlier rule.
 #[test]
 fn every_unimplemented_setup_flag_is_refused_by_setup_itself() {
-    for bit in [IORING_SETUP_ATTACH_WQ, IORING_SETUP_SQE128,
+    for bit in [IORING_SETUP_ATTACH_WQ,
                 IORING_SETUP_NO_MMAP, IORING_SETUP_REGISTERED_FD_ONLY,
-                IORING_SETUP_CQE_MIXED, IORING_SETUP_SQE_MIXED,
                 IORING_SETUP_SQ_REWIND] {
         assert_eq!(prepare(&mut req(bit), 8), Err(Errno::Einval), "flag {bit:#x} must be refused");
     }
@@ -337,6 +336,10 @@ fn every_implemented_setup_flag_is_admitted_and_reported_back() {
                   IORING_SETUP_SINGLE_ISSUER,
                   IORING_SETUP_DEFER_TASKRUN | IORING_SETUP_SINGLE_ISSUER,
                   IORING_SETUP_NO_SQARRAY, IORING_SETUP_IOPOLL,
+                  IORING_SETUP_SQE128, IORING_SETUP_CQE32,
+                  IORING_SETUP_CQE_MIXED, IORING_SETUP_SQE_MIXED,
+                  IORING_SETUP_SQE128 | IORING_SETUP_CQE32,
+                  IORING_SETUP_SQE_MIXED | IORING_SETUP_CQE_MIXED,
                   IORING_SETUP_HYBRID_IOPOLL | IORING_SETUP_IOPOLL] {
         let mut p = req(extra);
         if extra & IORING_SETUP_CQSIZE != 0 { p.cq_entries = 8; }
@@ -375,9 +378,66 @@ fn cqe32_doubles_the_completion_stride_and_the_array_it_sizes() {
     assert_eq!(big.rings_bytes - plain.rings_bytes, 16 * big.cq_entries);
 }
 
-/// `CQE32` and `CQE_MIXED` together stay refused: mixed varies the size per
-/// completion, which a fixed stride cannot express.
+/// `CQE32` and `CQE_MIXED` together are refused, and so are `SQE128` and
+/// `SQE_MIXED`: a ring that fixes every entry at the wide size cannot also
+/// carry narrow ones, so asking for both states two contradictory shapes.
 #[test]
-fn cqe32_with_mixed_is_still_refused() {
+fn a_fixed_wide_ring_and_a_mixed_one_are_contradictory() {
     assert_eq!(prepare(&mut req(IORING_SETUP_CQE32 | IORING_SETUP_CQE_MIXED), 8), Err(Errno::Einval));
+    assert_eq!(prepare(&mut req(IORING_SETUP_SQE128 | IORING_SETUP_SQE_MIXED), 8), Err(Errno::Einval));
+}
+
+/// A 128-byte ring sizes and strides its SQE array at 128 bytes; the rings
+/// region is untouched, because the SQEs live in a region of their own.
+#[test]
+fn sqe128_doubles_the_submission_stride_and_the_array_it_sizes() {
+    let plain = prepare(&mut req(0), 8).unwrap();
+    let big = prepare(&mut req(IORING_SETUP_SQE128), 8).unwrap();
+    assert_eq!(plain.sqe_size, 64);
+    assert_eq!(big.sqe_size, 128);
+    assert_eq!(plain.sq_entries, big.sq_entries);
+    assert_eq!(big.sqes_bytes, 2 * plain.sqes_bytes);
+    assert_eq!(big.rings_bytes, plain.rings_bytes);
+}
+
+/// A mixed ring keeps the narrow stride on BOTH sides: mixed means a wide
+/// entry spans two slots, not that the array grows. A region sized for a
+/// doubled stride would waste half of itself; one strided at 32 while sized at
+/// 16 would run its last entries past the region.
+#[test]
+fn a_mixed_ring_keeps_the_narrow_stride_and_the_narrow_size() {
+    let plain = prepare(&mut req(0), 8).unwrap();
+    let mixed = prepare(&mut req(IORING_SETUP_SQE_MIXED | IORING_SETUP_CQE_MIXED), 8).unwrap();
+    assert_eq!((mixed.sqe_size, mixed.cqe_size), (64, 16));
+    assert_eq!(mixed.sqes_bytes, plain.sqes_bytes);
+    assert_eq!(mixed.rings_bytes, plain.rings_bytes);
+}
+
+/// A mixed ring must be able to hold ONE of the wide entries it exists to
+/// carry. A single-slot ring never could, so it is refused at sizing rather
+/// than admitted as a ring on which every wide entry fails.
+#[test]
+fn a_mixed_ring_shallower_than_one_wide_entry_is_refused() {
+    assert_eq!(prepare(&mut req(IORING_SETUP_SQE_MIXED), 1), Err(Errno::Eoverflow));
+    // Two entries is the shallowest that works.
+    assert!(prepare(&mut req(IORING_SETUP_SQE_MIXED), 2).is_ok());
+    // The CQ ring is overcommitted 2:1, so it reaches two first; state the
+    // rule against a caller-sized CQ ring, where one entry is reachable.
+    let mut p = req(IORING_SETUP_CQE_MIXED | IORING_SETUP_CQSIZE);
+    p.cq_entries = 1;
+    assert_eq!(prepare(&mut p, 1), Err(Errno::Eoverflow));
+    let mut p = req(IORING_SETUP_CQE_MIXED | IORING_SETUP_CQSIZE);
+    p.cq_entries = 2;
+    assert!(prepare(&mut p, 1).is_ok());
+}
+
+/// The deepest ring of every shape still fits a region, so no admitted
+/// geometry can be built and then fail to allocate for a reason the ladder
+/// should have caught.
+#[test]
+fn the_deepest_wide_ring_still_fits_a_region() {
+    let g = prepare(&mut req(IORING_SETUP_SQE128 | IORING_SETUP_CLAMP), u32::MAX).unwrap();
+    assert_eq!(g.sq_entries, MAX_ENTRIES);
+    region_plan(g.sqes_bytes, 4096).expect("the deepest 128-byte SQE array fits a region");
+    region_plan(g.rings_bytes, 4096).expect("and so does its rings region");
 }
