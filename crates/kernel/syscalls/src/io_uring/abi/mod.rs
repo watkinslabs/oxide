@@ -20,6 +20,8 @@
 //   sqe_slot    — the same for the SQ array (`SQE128` / `SQE_MIXED`).
 //   sq_cursor   — where a submission pass starts and stops, and whether it
 //                 publishes the head it reached (`SQ_REWIND`).
+//   user_ring   — `NO_MMAP`/`REGISTERED_FD_ONLY`: caller-supplied ring
+//                 memory and the no-descriptor install.
 //   ops         — `IORING_OP_*` / `IOSQE_*` and which opcodes dispatch runs.
 //   nop         — `IORING_OP_NOP`/`NOP128`: the nop flag decode, including the
 //                 32-byte-completion request.
@@ -54,6 +56,7 @@ pub mod sqpoll;
 pub mod cqe_slot;
 pub mod sqe_slot;
 pub mod sq_cursor;
+pub mod user_ring;
 pub mod ops;
 pub mod nop;
 pub mod link;

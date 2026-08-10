@@ -105,8 +105,8 @@ pub const NO_SQ_ARRAY: u32 = u32::MAX;
 /// | `CQE32` | implemented | `cqe_size` sizes and indexes the CQE array at 32 bytes; `Cqe::big` carries the second half. It is the flag zero-copy receive registration requires, because a receive completion reports a buffer offset alongside its length. |
 /// | `SINGLE_ISSUER` | implemented | [`super::issuer`]: the creating task (or, for an `R_DISABLED` ring, the enabling one) is recorded as the submitter, and every other task is EEXIST. |
 /// | `DEFER_TASKRUN` | implemented | vacuously, per `COOP_TASKRUN`; also the gate `RESIZE_RINGS` requires. |
-/// | `NO_MMAP` | refused | ring memory is kernel-allocated; there is no path that adopts a caller's pages as the ring. |
-/// | `REGISTERED_FD_ONLY` | refused | it is only reachable with `NO_MMAP`, which is refused. |
+/// | `NO_MMAP` | implemented | [`super::user_ring`] + `io_uring::region::Region::pin`: the caller's pages at `p->cq_off.user_addr`/`p->sq_off.user_addr` are pinned for the ring's whole life and used in place, and the ring is correspondingly not mappable from its descriptor. |
+/// | `REGISTERED_FD_ONLY` | implemented | the ring is installed into the calling task's registered-ring array and `io_uring_setup` returns that index, so no descriptor number is spent. |
 /// | `NO_SQARRAY` | implemented | `rings_size` + `IoUring::sq_index`. |
 /// | `HYBRID_IOPOLL` | implemented | [`super::iopoll::hybrid_sleep_ns`] + the ring's running service-time estimate: a polled transfer is stamped when it is issued, each poll pass folds the observed service time into the ring's minimum, and the next transfer sleeps for half of it before it starts spinning. |
 /// | `CQE_MIXED` | implemented | the array stays 16 bytes and a 32-byte completion takes TWO slots, carrying `IORING_CQE_F_32` ([`super::cqe_slot`]); a 32-byte completion that would straddle the wrap is preceded by a skipped filler. |
@@ -121,7 +121,8 @@ pub const SUPPORTED_SETUP_FLAGS: u32 =
     | IORING_SETUP_HYBRID_IOPOLL
     | IORING_SETUP_CQE32 | IORING_SETUP_SQE128
     | IORING_SETUP_CQE_MIXED | IORING_SETUP_SQE_MIXED
-    | IORING_SETUP_SQ_REWIND | IORING_SETUP_ATTACH_WQ;
+    | IORING_SETUP_SQ_REWIND | IORING_SETUP_ATTACH_WQ
+    | IORING_SETUP_NO_MMAP | IORING_SETUP_REGISTERED_FD_ONLY;
 
 /// `p->features` oxide reports. Claiming a bit we do not implement is a lie
 /// liburing acts on, so the set is deliberately small:
@@ -334,18 +335,22 @@ fn prepare_config(p: &mut Params) -> Result<Geometry, Errno> {
     fill_entries(p)?;
     let (sq_array_off, rings_bytes, sqes_bytes) = rings_size(p.flags, p.sq_entries, p.cq_entries)?;
 
+    // `user_addr` is the caller's INPUT on a ring that supplies its own
+    // memory, and the only place it is stated; every other ring has the field
+    // cleared on the way out.
+    let keep = super::user_ring::caller_supplied(p.flags);
     p.sq_off = SqringOffsets {
         head: RING_SQ_HEAD, tail: RING_SQ_TAIL,
         ring_mask: RING_SQ_RING_MASK, ring_entries: RING_SQ_RING_ENTRIES,
         flags: RING_SQ_FLAGS, dropped: RING_SQ_DROPPED,
         array: if sq_array_off == NO_SQ_ARRAY { 0 } else { sq_array_off },
-        resv1: 0, user_addr: 0,
+        resv1: 0, user_addr: if keep { p.sq_off.user_addr } else { 0 },
     };
     p.cq_off = CqringOffsets {
         head: RING_CQ_HEAD, tail: RING_CQ_TAIL,
         ring_mask: RING_CQ_RING_MASK, ring_entries: RING_CQ_RING_ENTRIES,
         overflow: RING_CQ_OVERFLOW, cqes: RING_CQES, flags: RING_CQ_FLAGS,
-        resv1: 0, user_addr: 0,
+        resv1: 0, user_addr: if keep { p.cq_off.user_addr } else { 0 },
     };
     Ok(Geometry {
         sq_entries: p.sq_entries, cq_entries: p.cq_entries,

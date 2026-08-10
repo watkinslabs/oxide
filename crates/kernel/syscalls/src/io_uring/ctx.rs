@@ -105,10 +105,14 @@ pub mod state {
 }
 
 impl IoUringInode {
-    /// Build a ring from an admitted geometry. # C: O(1)
-    pub fn new(g: &Geometry) -> Option<Arc<Self>> {
+    /// Build a ring from an admitted geometry, allocating its regions.
+    /// # C: O(N_pages)
+    pub fn new(g: &Geometry) -> Option<Arc<Self>> { Self::over(g, IoUring::new(g)?) }
+
+    /// Build a ring over regions that already exist — how a ring whose memory
+    /// the CALLER supplied is made. # C: O(1)
+    pub fn over(g: &Geometry, ring: IoUring) -> Option<Arc<Self>> {
         use crate::io_uring_abi::uapi::IORING_SETUP_R_DISABLED;
-        let ring = IoUring::new(g)?;
         let init = if g.flags & IORING_SETUP_R_DISABLED != 0 { state::DISABLED } else { 0 };
         Some(Arc::new(Self {
             ring: Spinlock::new(ring),

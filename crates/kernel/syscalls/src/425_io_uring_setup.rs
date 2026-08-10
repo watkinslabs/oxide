@@ -10,6 +10,7 @@
 
 use syscall::errno::Errno;
 
+use crate::io_uring::region::Region;
 use crate::io_uring::{make_io_uring_inode, IoUringInode};
 use crate::io_uring_abi::allowed::allowed;
 use crate::io_uring_abi::layout::{prepare, REPORTED_FEATURES};
@@ -57,7 +58,22 @@ pub fn sys_io_uring_setup(args: &syscall::SyscallArgs) -> i64 {
     // sizing, sq_off/cq_off writeback.
     let geom = match prepare(&mut p, entries) { Ok(g) => g, Err(e) => return err(e) };
 
-    let inode = match IoUringInode::new(&geom) { Some(i) => i, None => return err(Errno::Enomem) };
+    // A ring built IORING_SETUP_NO_MMAP does not allocate its regions: it
+    // pins the caller's own memory and uses it in place. The addresses are
+    // the only fields of `sq_off`/`cq_off` the caller states, and admission
+    // leaves them alone for exactly this.
+    let inode = if crate::io_uring_abi::user_ring::caller_supplied(geom.flags) {
+        let rings = match Region::pin(p.cq_off.user_addr, geom.rings_bytes) {
+            Ok(r) => r, Err(e) => return err(e),
+        };
+        let sqes = match Region::pin(p.sq_off.user_addr, geom.sqes_bytes) {
+            Ok(r) => r, Err(e) => return err(e),
+        };
+        IoUringInode::over(&geom, crate::io_uring::ring::IoUring::build(&geom, rings, sqes))
+    } else {
+        IoUringInode::new(&geom)
+    };
+    let inode = match inode { Some(i) => i, None => return err(Errno::Enomem) };
 
     // Linux io_uring_create(): the submission-poll thread is built once the
     // regions exist and BEFORE the params copy-back and the fd install, so a
@@ -92,10 +108,22 @@ pub fn sys_io_uring_setup(args: &syscall::SyscallArgs) -> i64 {
     let inode_ref: vfs::InodeRef = make_io_uring_inode(inode);
     let dentry = vfs::dcache::d_alloc_pseudo("[io_uring]", inode_ref.clone(), &crate::anon_dname::ANON_INODE_OPS);
     let file = File::new(inode_ref, dentry, OpenFlags::O_RDWR);
-    match fdt.alloc_limit(file, cur.nofile_soft()) {
-        Ok(fd) => fd as i64,
-        // No descriptor was installed, so the ring's own close path will never
-        // run: end its poll thread here instead of leaving it to notice.
-        Err(e) => { crate::io_uring::sqpoll::finish(&inode_for_teardown); -(e as i64) }
+    // IORING_SETUP_REGISTERED_FD_ONLY: the ring goes into the calling task's
+    // registered-ring array and the syscall returns that INDEX. No descriptor
+    // number is spent, which is what the flag is for — the ring is not
+    // mappable, so a descriptor would only ever be passed straight back to
+    // io_uring_enter, which takes an index.
+    let installed = if crate::io_uring_abi::user_ring::registered_only(geom.flags) {
+        use sched::task::io_uring::IO_RINGFD_ALLOC_ANY;
+        cur.io_uring_ring_install(IO_RINGFD_ALLOC_ANY, file)
+            .map(|slot| slot as i64).map_err(|e| e.as_i32() as i64)
+    } else {
+        fdt.alloc_limit(file, cur.nofile_soft()).map(|fd| fd as i64).map_err(|e| e as i64)
+    };
+    match installed {
+        Ok(v) => v,
+        // Nothing was installed, so the ring's own close path will never run:
+        // end its poll thread here instead of leaving it to notice.
+        Err(e) => { crate::io_uring::sqpoll::finish(&inode_for_teardown); -e }
     }
 }

@@ -292,8 +292,8 @@ fn every_setup_flag_is_either_implemented_or_refused() {
         (IORING_SETUP_CQE32,              true,  "cqe_size sizes and indexes the CQE array at 32 bytes"),
         (IORING_SETUP_SINGLE_ISSUER,      true,  "abi::issuer records the submitter at setup"),
         (IORING_SETUP_DEFER_TASKRUN,      true,  "vacuous, and the RESIZE_RINGS gate"),
-        (IORING_SETUP_NO_MMAP,            false, "no path adopts caller pages as the ring"),
-        (IORING_SETUP_REGISTERED_FD_ONLY, false, "only reachable with NO_MMAP"),
+        (IORING_SETUP_NO_MMAP,            true,  "abi::user_ring + Region::pin: the caller's pages are the ring"),
+        (IORING_SETUP_REGISTERED_FD_ONLY, true,  "setup returns a registered-ring index instead of a descriptor"),
         (IORING_SETUP_NO_SQARRAY,         true,  "rings_size + IoUring::sq_index"),
         (IORING_SETUP_HYBRID_IOPOLL,      true,  "abi::iopoll::hybrid_sleep_ns + the ring's service-time estimate"),
         (IORING_SETUP_CQE_MIXED,          true,  "abi::cqe_slot: a 32-byte completion takes two 16-byte slots"),
@@ -313,16 +313,16 @@ fn every_setup_flag_is_either_implemented_or_refused() {
     assert_eq!(seen, IORING_SETUP_FLAGS, "the table must name every bit exactly once");
 }
 
-/// The refused half of the table, exercised through the real admission ladder
-/// rather than against the mask — a bit could be absent from
-/// `SUPPORTED_SETUP_FLAGS` and still be admitted by an earlier rule.
+/// Every setup flag is implemented, so the refused half of the table is empty
+/// and what is left to pin is the boundary: a bit outside the UAPI's own set
+/// is refused, whatever the mask happens to hold.
 #[test]
-fn every_unimplemented_setup_flag_is_refused_by_setup_itself() {
-    for bit in [IORING_SETUP_NO_MMAP, IORING_SETUP_REGISTERED_FD_ONLY] {
+fn a_setup_flag_outside_the_uapi_is_refused_by_setup_itself() {
+    assert_eq!(SUPPORTED_SETUP_FLAGS, IORING_SETUP_FLAGS,
+               "every defined setup flag is implemented; a new one needs a verdict");
+    for bit in [1u32 << 21, 1 << 22, 1 << 31] {
         assert_eq!(prepare(&mut req(bit), 8), Err(Errno::Einval), "flag {bit:#x} must be refused");
     }
-    // And a bit outside the UAPI's own set, which no kernel accepts.
-    assert_eq!(prepare(&mut req(1 << 21), 8), Err(Errno::Einval));
 }
 
 /// The implemented half: setup admits it and reports it back, so a caller can
@@ -342,7 +342,8 @@ fn every_implemented_setup_flag_is_admitted_and_reported_back() {
                   IORING_SETUP_SQE128 | IORING_SETUP_CQE32,
                   IORING_SETUP_SQE_MIXED | IORING_SETUP_CQE_MIXED,
                   IORING_SETUP_SQ_REWIND | IORING_SETUP_NO_SQARRAY,
-                  IORING_SETUP_ATTACH_WQ,
+                  IORING_SETUP_ATTACH_WQ, IORING_SETUP_NO_MMAP,
+                  IORING_SETUP_NO_MMAP | IORING_SETUP_REGISTERED_FD_ONLY,
                   IORING_SETUP_HYBRID_IOPOLL | IORING_SETUP_IOPOLL] {
         let mut p = req(extra);
         if extra & IORING_SETUP_CQSIZE != 0 { p.cq_entries = 8; }
@@ -365,6 +366,25 @@ fn sqpoll_refuses_the_flags_that_contradict_it() {
     // for its own reason too, so neither ordering can admit the pair.
     assert_eq!(prepare(&mut req(IORING_SETUP_SQPOLL | IORING_SETUP_SQ_REWIND
                                 | IORING_SETUP_NO_SQARRAY), 8), Err(Errno::Einval));
+}
+
+/// A ring that supplies its own memory carries the two addresses through
+/// admission untouched — they are the caller's INPUT, and the only fields of
+/// the offset structs that are. Every other ring has them cleared, so a caller
+/// cannot mistake a stale value for a region the kernel published.
+#[test]
+fn caller_supplied_addresses_survive_admission_and_others_are_cleared() {
+    let mut p = req(IORING_SETUP_NO_MMAP);
+    p.sq_off.user_addr = 0x4000_0000;
+    p.cq_off.user_addr = 0x5000_0000;
+    prepare(&mut p, 8).unwrap();
+    assert_eq!((p.sq_off.user_addr, p.cq_off.user_addr), (0x4000_0000, 0x5000_0000));
+
+    let mut p = req(0);
+    p.sq_off.user_addr = 0x4000_0000;
+    p.cq_off.user_addr = 0x5000_0000;
+    prepare(&mut p, 8).unwrap();
+    assert_eq!((p.sq_off.user_addr, p.cq_off.user_addr), (0, 0));
 }
 
 /// A 32-byte ring sizes and strides its CQE array at 32 bytes, and a plain

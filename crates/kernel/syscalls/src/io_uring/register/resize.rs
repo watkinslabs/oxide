@@ -24,7 +24,7 @@ use crate::io_uring_abi::layout::{
     RING_SQ_DROPPED, RING_SQ_FLAGS, RING_SQ_HEAD, RING_SQ_TAIL,
 };
 use crate::io_uring_abi::resize::{admit_pending, cq_move, sq_move, SqMove};
-use crate::io_uring_abi::uapi::{Params, CQE_SIZE, PARAMS_SIZE, SQE_SIZE};
+use crate::io_uring_abi::uapi::{Params, PARAMS_SIZE};
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
@@ -51,7 +51,7 @@ fn store32(at: u64, v: u32) {
 /// a ring whose head/tail index the SQE array directly. # C: O(1)
 fn sq_array_at(r: &IoUring, slot: u32) -> Option<u64> {
     if r.sq_array_off == NO_SQ_ARRAY { return None; }
-    Some(r.rings.kva + r.sq_array_off as u64 + slot as u64 * 4)
+    Some(r.rings.at(r.sq_array_off as u64 + slot as u64 * 4))
 }
 
 /// Carry the SQ entries the old ring still holds into the new one.
@@ -65,8 +65,12 @@ fn move_sq(new: &IoUring, old: &IoUring, head: u32, tail: u32) {
                 if let Some(at) = sq_array_at(new, dst) { store32(at, NO_SQ_ARRAY); }
             }
             SqMove::Copy { dst, src, array } => {
-                copy(new.sqes.kva + dst as u64 * SQE_SIZE as u64,
-                     old.sqes.kva + src as u64 * SQE_SIZE as u64, SQE_SIZE);
+                // The stride is the ring's own: a resize inherits the layout
+                // flags, so a 128-byte ring's entries are 128 bytes apart in
+                // BOTH regions and a 64-byte copy would interleave them.
+                copy(new.sqes.at(dst as u64 * new.sqe_size as u64),
+                     old.sqes.at(src as u64 * old.sqe_size as u64),
+                     old.sqe_size as usize);
                 if let (Some(at), Some(v)) = (sq_array_at(new, dst), array) { store32(at, v); }
             }
         }
@@ -82,9 +86,10 @@ fn move_cq(new: &IoUring, old: &IoUring, head: u32, tail: u32) {
     let mut i = head;
     while i != tail {
         let (dst, src) = cq_move(i, new.cq_entries, old.cq_entries);
-        copy(new.rings.kva + crate::io_uring_abi::layout::RING_CQES as u64 + dst as u64 * CQE_SIZE as u64,
-             old.rings.kva + crate::io_uring_abi::layout::RING_CQES as u64 + src as u64 * CQE_SIZE as u64,
-             CQE_SIZE);
+        // The ring's own stride, for the same reason the SQE copy uses it: a
+        // resize inherits the layout flags, so a 32-byte ring's completions
+        // are 32 bytes apart in both regions.
+        copy(new.cqe_at(dst), old.cqe_at(src), old.cqe_size as usize);
         i = i.wrapping_add(1);
     }
     new.hdr_store(RING_CQ_HEAD, head);
