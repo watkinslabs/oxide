@@ -159,6 +159,7 @@ pub(crate) mod tests {
     /// dropped sees it alive. Any case that builds, arms, fires or enumerates
     /// an event takes this, including the throttle cases, which arm through
     /// the release path rather than by calling `start` themselves.
+    /// # C: O(wait)
     pub(crate) fn wheel() -> std::sync::MutexGuard<'static, ()> {
         WHEEL.lock().unwrap_or_else(|e| e.into_inner())
     }

@@ -178,6 +178,7 @@ pub fn arm() {}
 /// Every case that drives the walk takes this, and so does every case whose
 /// own mount must not be walked underneath it. Registration is NOT serialised:
 /// other files hold live mounts throughout and that is harmless.
+/// # C: O(wait)
 #[cfg(test)]
 pub(crate) fn test_walk_claim() -> std::sync::MutexGuard<'static, ()> {
     static WALK: std::sync::Mutex<()> = std::sync::Mutex::new(());

@@ -27,6 +27,11 @@ const ELF_SHNUM: usize = 60;
 /// The kernel-owned signal restorer an AArch64 image exports.
 pub(crate) const VDSO_SIGRETURN_SYMBOL: &[u8] = b"__kernel_rt_sigreturn";
 
+/// Resolve a defined dynamic-symbol address from a vDSO image. The value is
+/// an image virtual address, to be added to the mapped base. Every offset the
+/// walk follows is read out of the image, so each read is bounded against the
+/// image's own length and a corrupt one answers nothing rather than faulting.
+/// # C: O(N_dynsym)
 pub(crate) fn dynsym_vaddr(b: &[u8], name: &[u8]) -> Option<u64> {
     if b.len() < ELF_SHNUM + 2 { return None; }
     let shoff = u64::from_le_bytes(b[ELF_SHOFF..ELF_SHOFF + 8].try_into().ok()?) as usize;
