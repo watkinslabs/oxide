@@ -156,6 +156,7 @@ static LINE_START: core::sync::atomic::AtomicBool
 /// Put the console back at the start of a line. Test-fixture use only: the
 /// flag is otherwise driven entirely by the bytes that pass through
 /// `flush_line`.
+/// # C: O(1)
 #[cfg(test)]
 pub(crate) fn reset_line_start() {
     LINE_START.store(true, core::sync::atomic::Ordering::Release);
