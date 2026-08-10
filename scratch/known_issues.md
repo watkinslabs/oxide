@@ -46,9 +46,9 @@ reclassified.
 |---|---:|---:|---:|---:|---:|
 | `DEFECT` | 0 | 6 | 27 | 44 | 77 |
 | `MISSING` | 1 | 7 | 67 | 47 | 122 |
-| `COVERAGE` | 0 | 3 | 40 | 40 | 83 |
+| `COVERAGE` | 0 | 3 | 41 | 40 | 84 |
 | `INFRA` | 0 | 1 | 21 | 29 | 51 |
-| **Total** | **1** | **17** | **155** | **160** | **333** |
+| **Total** | **1** | **17** | **156** | **160** | **334** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -83,6 +83,7 @@ row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
+| OPEN | COVERAGE | med | **UNATTRIBUTED FLAKE, 1 observation, not reproduced: `fs::keyring::tests::payload::big_key_accepts_payloads_past_the_user_ceiling`** fails its first assertion (`add_key_core` refused a `big_key` that must be accepted). Seen once in a 40-run workspace loop under heavy box load; **did NOT reproduce in 450 standalone runs of the `fs` lib binary** (250 default, 200 at `--test-threads=32`), so no rate can be quoted. Ruled out: it is not the payload bounds themselves, which are pure functions with their own cases. Candidates, both process-global and neither confirmed: (a) the case shares quota uid 0 with `user_payloads_are_bounded_and_never_empty`, the only other uid-0 case, and the two mint keys against one accounting entry; (b) `report::tests::the_quota_knobs_are_what_the_allocator_consumes` writes all four global quota knobs, including the two root ceilings, and restores them -- a peer minting inside that window sees a moved ceiling. Distinguishing them needs the failing `add_key_core` return value, which the assertion prints but the run did not capture. | B2041. `crates/kernel/fs/src/keyring/tests/payload.rs:55`; `crates/kernel/fs/src/keyring/report/tests.rs:131`. | fs / keyring lane |
 | OPEN | DEFECT | med | Not yet attributed: the combined x86 boot exercising `swapfile_probe` + `request_key_probe` hit `[CPU-STALL] cpu=0 no heartbeat for 10s (seen by cpu=1) last: tid=4181 syscall=fsync ... now: tid=4181 syscall=madvise` on attempt 1. That is the swapfile probe's `MADV_PAGEOUT` ladder. The C probe issued the same `MADV_PAGEOUT`, so it is most likely pre-existing rather than caused by the port — but the A/B that would prove it has NOT been run, and this row must not be read as either a new regression or a cleared one. | `target/smoke-x86.out`, boot attempt 1; `[NMI-BT] rip=ffffffff8043d104` | unowned |
 | OPEN | DEFECT | low | `NT_FILE` carries no device or inode number — the format has room only for start, end and page offset per mapping, then the path. A debugger matching a dumped library to an on-disk build therefore relies on the path alone; a file replaced between the crash and the analysis is indistinguishable. This matches the reference format and is not a defect in the builder, recorded so a later lane does not "fix" it by inventing fields. | `files()` in `crates/kernel/fs/src/coredump/elf/notes.rs`; layout asserted in `tests/files.rs`. | — |
 | OPEN | DEFECT | low | `../images/build.sh` was uncommitted-broken in the shared checkout: a comment added to the `unshare ... bash -c '...'` block contained an apostrophe, which closed the single-quoted script early — every `./build.sh rootfs ...` died with `line 113: unexpected EOF while looking for matching '`. Reworded in place (not committed; the images checkout carries a large amount of another party's uncommitted work). | B1672, reproduced with `bash -n build.sh`. | — |
