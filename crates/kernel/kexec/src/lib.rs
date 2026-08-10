@@ -9,6 +9,7 @@
 // - `uapi`:     flag bits, arch tags, segment record, relocation-entry encoding.
 // - `validate`: every refusal decision, in the reference's order — host-tested.
 // - `limit`:    the two per-image-type load-limit rules.
+// - `crashk`:   the reserved crash-kernel region and the `crashkernel=` grammar.
 // - `frames`:   the page supply (trait + the buddy-backed running-kernel impl).
 // - `image`:    the staged image: relocation list, control pages, segment copy.
 // - `stage`:    `kimage_alloc_init` + the per-segment load, global-state free.
@@ -31,6 +32,7 @@ extern crate std;
 pub mod uapi;
 pub mod validate;
 pub mod limit;
+pub mod crashk;
 pub mod frames;
 pub mod image;
 pub mod stage;
@@ -51,6 +53,7 @@ pub use frames::{Frames, PmmFrames};
 pub use image::{KImage, SegmentSource};
 pub use stage::{stage_image, KernelSource, Limits, UserSource};
 pub use limit::{limit_take, limit_write_ok, UNLIMITED};
+pub use crashk::{crash_base, crash_range, crash_size};
 pub use store::{disable_load, do_kexec_load, drop_image, install_staged, kernel_kexec,
     kexec_crash_loaded, kexec_loaded, load_disabled, load_limit, load_permitted, set_load_limit,
     with_kexec_lock};
