@@ -57,7 +57,7 @@ echo "kexec-crash-smoke: arch=$ARCH crashkernel=$CRASH_SIZE logs=$RUN_DIR"
 OXIDE_CMDLINE_EXTRA="crashkernel=$CRASH_SIZE ${OXIDE_CMDLINE_EXTRA:-}" \
 OXIDE_QEMU_HEADLESS=1 OXIDE_QEMU_UART_SOCK="$UART" \
 OXIDE_QEMU_KVM="${OXIDE_QEMU_KVM:-1}" \
-    setsid bash -c "exec make '$MT' > '$BOOT_LOG' 2>&1 < /dev/null" &
+    setsid bash -c "exec make SMP='${OXIDE_SMP:-2}' '$MT' > '$BOOT_LOG' 2>&1 < /dev/null" &
 echo $! > "$PIDFILE"
 
 for _ in $(seq 1 $((TIMEOUT * 10))); do

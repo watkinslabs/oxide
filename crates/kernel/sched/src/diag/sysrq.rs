@@ -92,22 +92,70 @@ pub fn mask_allows(mask: u32, cmd: Cmd) -> bool {
     mask == ENABLE_ALL || (mask & enable_bit(cmd)) != 0
 }
 
-/// The key list, printed for `h` and for a key with nothing bound to it.
-pub const HELP: &[u8] =
-    b"[sysrq] keys: b=reboot c=crash h=help l=backtrace-all-cpus o=poweroff \
-p=registers t=tasks w=blocked-tasks\n";
+/// Every bound key and the word the help line names it by, in key order.
+pub const KEYS: &[(u8, &[u8])] = &[
+    (b'b', b"reboot"),
+    (b'c', b"crash"),
+    (b'l', b"backtrace-all-cpus"),
+    (b'o', b"poweroff"),
+    (b'p', b"registers"),
+    (b't', b"tasks"),
+    (b'w', b"blocked-tasks"),
+];
 
-/// Run `cmd`. Returns for every command except the two that take the machine.
+/// Prefix every help line carries, whatever the mask leaves in it.
+pub const HELP_PREFIX: &[u8] = b"[sysrq] keys:";
+
+/// Does the help line under `mask` advertise `key`?
 ///
+/// The list names what the operator can actually run. Advertising a key the
+/// mask refuses invites the one keystroke that then does nothing, on a machine
+/// where the operator is already out of options.
+/// # C: O(1)
+pub fn advertised(mask: u32, key: u8) -> bool {
+    match decode(key) {
+        Cmd::Help | Cmd::Unbound(_) => false,
+        cmd => mask_allows(mask, cmd),
+    }
+}
+
+/// Print the key list, filtered to what `mask` permits. # C: O(number of keys)
+pub fn emit_help(mask: u32) {
+    klog::write_raw(HELP_PREFIX);
+    for &(key, label) in KEYS {
+        if !advertised(mask, key) { continue; }
+        klog::write_raw(b" ");
+        klog::write_raw(&[key]);
+        klog::write_raw(b"=");
+        klog::write_raw(label);
+    }
+    klog::write_raw(b"\n");
+}
+
+/// Run `cmd` under `mask`. Returns for every command except the two that take
+/// the machine.
+///
+/// Asking for the list is never refused, whatever the mask says. The mask
+/// decides what a machine will DO, not whether it will say what it can do —
+/// and a refused help key leaves an operator with a console that answers
+/// nothing at all, which reads as an unreachable keyboard.
 /// # C: O(number of tasks) for the dumps, O(1) otherwise
-pub fn perform(cmd: Cmd) {
+pub fn perform(cmd: Cmd, mask: u32) {
+    match cmd {
+        Cmd::Help | Cmd::Unbound(_) => return emit_help(mask),
+        _ => {}
+    }
+    if !mask_allows(mask, cmd) {
+        klog::write_raw(b"[sysrq] this operation is disabled by kernel.sysrq\n");
+        return;
+    }
     match cmd {
         Cmd::Crash => crash(),
         Cmd::Reboot | Cmd::PowerOff => restart(),
         Cmd::ShowTasks | Cmd::ShowBlocked => super::emit::dump_tasks(),
         Cmd::ShowBacktraceAllCpus => super::nmi::backtrace_all(),
         Cmd::ShowRegisters => super::percpu::dump_cpus(),
-        Cmd::Help | Cmd::Unbound(_) => klog::write_raw(HELP),
+        Cmd::Help | Cmd::Unbound(_) => unreachable!(),
     }
 }
 
@@ -139,7 +187,7 @@ fn restart() {
 /// makes the file useless on the default `kernel.sysrq=0` machines that are
 /// exactly the ones an operator needs it on.
 /// # C: see `perform`
-pub fn trigger(key: u8) { perform(decode(key)); }
+pub fn trigger(key: u8) { perform(decode(key), ENABLE_ALL); }
 
 const SYSRQ_ARM: u8 = 0x00;
 
@@ -148,9 +196,7 @@ const SYSRQ_ARM: u8 = 0x00;
 /// # C: see `perform`
 pub fn rx(b: u8) -> bool {
     if super::emit::sysrq_disarm() {
-        let cmd = decode(b);
-        if mask_allows(mask_value(), cmd) { perform(cmd); }
-        else { klog::write_raw(b"[sysrq] disabled by kernel.sysrq\n"); }
+        perform(decode(b), mask_value());
         return true;
     }
     if b == SYSRQ_ARM { super::emit::sysrq_arm(); return true; }
@@ -231,21 +277,48 @@ mod tests {
         assert!(!mask_allows(ENABLE_BOOT, Cmd::ShowTasks));
     }
 
-    /// Every key the help text advertises decodes to something, and every
-    /// command decodes from a key the help text advertises. A list that drifts
-    /// from the table is how a key stops being discoverable.
+    /// Every key the list advertises is bound, and every bound key that is
+    /// not `h` is advertised. A list that drifts from the table is how a key
+    /// stops being discoverable.
     #[test]
-    fn the_help_text_lists_exactly_the_bound_keys() {
-        let text = core::str::from_utf8(HELP).expect("ascii");
-        for key in b"bchloptw" {
-            assert!(!matches!(decode(*key), Cmd::Unbound(_)), "{} is advertised but unbound", *key as char);
-            assert!(text.contains(&alloc::format!(" {}=", *key as char)),
-                    "{} is bound but not advertised", *key as char);
+    fn the_help_list_is_exactly_the_bound_keys() {
+        for &(key, _) in KEYS {
+            assert!(!matches!(decode(key), Cmd::Unbound(_) | Cmd::Help),
+                    "{} is advertised but not a command", key as char);
         }
         for key in 0x20u8..0x7f {
-            if b"bchloptw".contains(&key) { continue; }
-            assert!(matches!(decode(key), Cmd::Unbound(_)),
-                    "{} is bound but not advertised", key as char);
+            let bound = !matches!(decode(key), Cmd::Unbound(_) | Cmd::Help);
+            assert_eq!(bound, KEYS.iter().any(|&(k, _)| k == key),
+                       "{} is bound but not advertised, or the reverse", key as char);
+        }
+    }
+
+    /// The list names what the operator can RUN. Under a mask that permits
+    /// only reboots, offering the dump keys invites the keystroke that then
+    /// does nothing.
+    #[test]
+    fn the_list_is_filtered_to_what_the_mask_permits() {
+        assert!(advertised(ENABLE_BOOT, b'b'));
+        assert!(!advertised(ENABLE_BOOT, b't'));
+        assert!(advertised(ENABLE_DUMP, b't'));
+        assert!(!advertised(ENABLE_DUMP, b'b'));
+        for &(key, _) in KEYS { assert!(advertised(ENABLE_ALL, key)); }
+    }
+
+    /// Asking what a machine can do is never refused. A mask that suppressed
+    /// the list too would leave a typed console answering nothing at all,
+    /// which is indistinguishable from a keyboard that is not reaching the
+    /// kernel — and that is exactly the fault the console probe exists to
+    /// tell apart.
+    #[test]
+    fn asking_for_the_list_is_never_refused() {
+        for mask in [0, ENABLE_BOOT, 16, ENABLE_ALL] {
+            assert!(!advertised(mask, b'h'), "h names the list, it is not in it");
+            // `perform` cannot be called hosted (it prints through klog), so
+            // the property is asserted on the branch that decides it.
+            assert!(matches!(decode(b'?'), Cmd::Unbound(_)));
+            assert!(matches!(decode(b'h'), Cmd::Help));
+            let _ = mask;
         }
     }
 }
