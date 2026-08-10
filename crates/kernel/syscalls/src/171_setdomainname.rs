@@ -202,9 +202,8 @@ pub fn write_uts_name(args: &syscall::SyscallArgs, field: UtsField) -> i64 {
         if let Err(rv) = crate::userbuf::validate_user_buf(ptr, len as u64, 1) { return rv; }
     }
     let mut buf = [0u8; HOST_NAME_MAX];
-    // SAFETY: nonzero source range was validated readable; Linux copyin accepts byte-granular storage.
-    unsafe {
-        for i in 0..len { buf[i] = core::ptr::read_unaligned((ptr + i as u64) as *const u8); }
+    if len != 0 && crate::user_mem::get_into(ptr, &mut buf[..len]).is_err() {
+        return -(Errno::Efault.as_i32() as i64);
     }
     // Stored verbatim: Linux `memcpy(u->nodename, tmp, len)` filters nothing.
     let stored = match field {

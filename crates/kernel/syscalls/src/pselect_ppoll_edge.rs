@@ -12,6 +12,7 @@ use crate::pselect_ppoll::{TIMESPEC_BYTES, TIMESPEC_NSEC_OFF, TimeoutWriteback, 
                            remaining_timespec, restores_saved_sigmask, timeout_writeback_plan,
                            user_sigmask_wanted};
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
+use crate::user_mem as um;
 
 /// Linux `get_timespec64` + `poll_select_set_timeout`. A NULL `tsp` waits
 /// indefinitely (`to = NULL`); otherwise the pair is read (EFAULT), validated
@@ -25,10 +26,9 @@ use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 pub(crate) fn poll_select_set_timeout(tsp: u64) -> Result<(i64, i64, Option<u64>), i64> {
     if tsp == 0 { return Ok((0, 0, None)); }
     validate_user_buf(tsp, TIMESPEC_BYTES, 1)?;
-    // SAFETY: tsp validated readable for the whole 16-byte user timespec.
-    let (sec, nsec) = unsafe {
-        (core::ptr::read_unaligned(tsp as *const i64),
-         core::ptr::read_unaligned((tsp + TIMESPEC_NSEC_OFF) as *const i64))
+    let (sec, nsec) = match (um::get_i64(tsp), um::get_i64(tsp + TIMESPEC_NSEC_OFF)) {
+        (Ok(s), Ok(n)) => (s, n),
+        _ => return Err(um::EFAULT),
     };
     // `ktime_set`-clamped decode: a huge-but-valid tv_sec clamps to
     // KTIME_MAX_NS instead of an unbounded relative timeout.
@@ -57,8 +57,7 @@ pub(crate) fn set_user_sigmask(cur: Option<&sched::Task>, ss_ptr: u64, ss_len: u
         Err(e)    => return Err(-(e.as_i32() as i64)),
     }
     validate_user_buf(ss_ptr, syscall::sigset::SIGSET_BYTES, 1)?;
-    // SAFETY: ss_ptr validated readable for the 8-byte user sigset_t.
-    let new = unsafe { core::ptr::read_unaligned(ss_ptr as *const u64) };
+    let new = match um::get_u64(ss_ptr) { Ok(v) => v, Err(_) => return Err(um::EFAULT) };
     if let Some(c) = cur { c.arm_saved_sigmask(new); }
     Ok(())
 }
@@ -89,12 +88,8 @@ pub(crate) fn poll_select_finish(cur: Option<&sched::Task>, rv: i64, tsp: u64,
     if plan != TimeoutWriteback::Wrote { return finish_return(rv, plan); }
     let Some(deadline) = deadline_ns else { return finish_return(rv, TimeoutWriteback::Skipped) };
     let (sec, nsec) = remaining_timespec(deadline, monotonic_ns());
-    let done = if validate_user_buf_writable(tsp, TIMESPEC_BYTES, 1).is_ok() {
-        // SAFETY: tsp validated writable for the whole 16-byte user timespec.
-        unsafe {
-            core::ptr::write_unaligned(tsp as *mut i64, sec);
-            core::ptr::write_unaligned((tsp + TIMESPEC_NSEC_OFF) as *mut i64, nsec);
-        }
+    let done = if validate_user_buf_writable(tsp, TIMESPEC_BYTES, 1).is_ok()
+        && um::put_i64(tsp, sec).is_ok() && um::put_i64(tsp + TIMESPEC_NSEC_OFF, nsec).is_ok() {
         TimeoutWriteback::Wrote
     } else {
         TimeoutWriteback::Faulted

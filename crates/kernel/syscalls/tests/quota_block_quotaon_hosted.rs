@@ -243,3 +243,9 @@ fn block_quotaoff_system_file_on_a_readonly_target_still_reaches_the_disable_hoo
     assert_eq!(ops.quota_ons.load(Ordering::SeqCst), 0);
     clear_paths();
 }
+
+// The spliced slot files reach their caller-memory accessors through
+// `crate::user_mem`; supplying the real module here keeps this harness on the
+// same fault-recoverable usercopy the kernel build uses.
+#[path = "../src/user_mem/mod.rs"]
+mod user_mem;

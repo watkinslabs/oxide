@@ -31,10 +31,8 @@ pub fn sys_getrlimit(args: &SyscallArgs) -> i64 {
         Err(e) => return -(crate::rlimit_policy::errno_of(e).as_i32() as i64),
     };
     if let Err(rv) = validate_user_buf_writable(rlim, RLIMIT_BYTES, 1) { return rv; }
-    // SAFETY: rlim validated writable for the 16-byte `struct rlimit` result.
-    unsafe {
-        core::ptr::write_unaligned( rlim                as *mut u64, rcur);
-        core::ptr::write_unaligned((rlim + OFF_RLIM_MAX) as *mut u64, rmax);
+    if crate::user_mem::put_u64(rlim, rcur).is_err() || crate::user_mem::put_u64(rlim + OFF_RLIM_MAX, rmax).is_err() {
+        return crate::user_mem::EFAULT;
     }
     0
 }

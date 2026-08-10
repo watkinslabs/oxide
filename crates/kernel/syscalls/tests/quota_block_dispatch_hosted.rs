@@ -484,3 +484,9 @@ fn sys_quotactl_block_xfs_qstatv_success_reaches_dispatch_hosted() {
     assert_eq!((out.qs_bwarnlimit, out.qs_iwarnlimit, out.qs_rtbwarnlimit), (23, 29, 31));
     clear_paths();
 }
+
+// The spliced slot files reach their caller-memory accessors through
+// `crate::user_mem`; supplying the real module here keeps this harness on the
+// same fault-recoverable usercopy the kernel build uses.
+#[path = "../src/user_mem/mod.rs"]
+mod user_mem;

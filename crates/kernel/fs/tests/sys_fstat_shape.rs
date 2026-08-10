@@ -176,3 +176,9 @@ fn sys_fstat_writes_struct_stat_for_opath_fd() {
     assert_eq!(le_i64(&buf, 64), TEST_BLOCKS as i64);
     reset();
 }
+
+// The spliced slot files reach their caller-memory accessors through
+// `crate::user_mem`; supplying the real module here keeps this harness on the
+// same fault-recoverable usercopy the kernel build uses.
+#[path = "../../syscalls/src/user_mem/mod.rs"]
+mod user_mem;

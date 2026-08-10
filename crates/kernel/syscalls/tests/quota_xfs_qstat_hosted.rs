@@ -238,3 +238,9 @@ fn xfs_qstatv_maps_all_filesystem_state_slots_hosted() {
     assert_eq!((out.qs_btimelimit, out.qs_itimelimit, out.qs_rtbtimelimit), (11, 22, 33));
     assert_eq!((out.qs_bwarnlimit, out.qs_iwarnlimit, out.qs_rtbwarnlimit), (44, 55, 66));
 }
+
+// The spliced slot files reach their caller-memory accessors through
+// `crate::user_mem`; supplying the real module here keeps this harness on the
+// same fault-recoverable usercopy the kernel build uses.
+#[path = "../src/user_mem/mod.rs"]
+mod user_mem;

@@ -3,6 +3,7 @@
 
 use syscall::SyscallArgs;
 use crate::userbuf::validate_user_buf_writable;
+use crate::user_mem as um;
 
 /// `sys_rt_sigpending(set, sigsetsize)` — slot 127.
 ///
@@ -26,10 +27,7 @@ pub fn sys_rt_sigpending(args: &SyscallArgs) -> i64 {
     let pending = sched::live::sigpend::all_pending(&cur);
     let reported = pending & cur.sigmask.load(Ordering::Acquire);
     let bytes = reported.to_ne_bytes();
-    for i in 0..sz as usize {
-        // SAFETY: `set..set+sz` validated writable above and `sz <= SIGSET_BYTES`,
-        // so every index is inside both the user buffer and `bytes`.
-        unsafe { core::ptr::write_unaligned((set as *mut u8).add(i), bytes[i]); }
-    }
+    // `sz <= SIGSET_BYTES` (checked above), so `bytes[..sz]` is in range.
+    if um::put_bytes(set, &bytes[..sz as usize]).is_err() { return um::EFAULT; }
     0
 }

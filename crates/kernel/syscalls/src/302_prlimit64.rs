@@ -28,10 +28,9 @@ pub fn sys_prlimit64(args: &SyscallArgs) -> i64 {
     // over ESRCH/EPERM); `resource` is validated inside `do_prlimit`.
     let new = if new_ptr != 0 {
         if let Err(rv) = validate_user_buf(new_ptr, 16, 1) { return rv; }
-        // SAFETY: new_ptr validated readable for the 16-byte struct rlimit64 input.
-        let (c, m) = unsafe {
-            (core::ptr::read_unaligned( new_ptr      as *const u64),
-             core::ptr::read_unaligned((new_ptr + 8) as *const u64))
+        let (c, m) = match (crate::user_mem::get_u64(new_ptr), crate::user_mem::get_u64(new_ptr + 8)) {
+            (Ok(c), Ok(m)) => (c, m),
+            _ => return crate::user_mem::EFAULT,
         };
         Some((c, m))
     } else { None };
@@ -63,10 +62,8 @@ pub fn sys_prlimit64(args: &SyscallArgs) -> i64 {
     // rejected call leaves `old_rlim` untouched.
     if old_ptr != 0 {
         if let Err(rv) = validate_user_buf_writable(old_ptr, 16, 1) { return rv; }
-        // SAFETY: old_ptr validated writable for the 16-byte rlimit result.
-        unsafe {
-            core::ptr::write_unaligned( old_ptr       as *mut u64, old.0);
-            core::ptr::write_unaligned((old_ptr + 8)  as *mut u64, old.1);
+        if crate::user_mem::put_u64(old_ptr, old.0).is_err() || crate::user_mem::put_u64(old_ptr + 8, old.1).is_err() {
+            return crate::user_mem::EFAULT;
         }
     }
     0

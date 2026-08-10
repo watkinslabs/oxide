@@ -11,6 +11,7 @@ use syscall::errno::Errno;
 
 use crate::fcntl_deleg;
 use crate::userbuf::validate_user_buf;
+use crate::user_mem as um;
 
 /// `f_modown`'s `fown->uid` — the REAL uid, not the fsuid the VFS `Cred`
 /// carries for DAC. # C: O(1)
@@ -34,26 +35,16 @@ pub(crate) fn read_delegation(arg: u64) -> Result<fcntl_deleg::Delegation, i64> 
         return Err(rv);
     }
     let mut b = [0u8; DELEGATION_BYTES];
-    // SAFETY: arg validated for DELEGATION_BYTES below USER_VA_END; CPL=0 reads through caller's AS.
-    unsafe {
-        for (i, slot) in b.iter_mut().enumerate() {
-            *slot = core::ptr::read_volatile((arg + i as u64) as *const u8);
-        }
-    }
+    if um::get_into(arg, &mut b).is_err() { return Err(um::EFAULT); }
     fcntl_deleg::decode_delegation(&b).map_err(|e| -(e.as_i32() as i64))
 }
 
 /// Write the answer to a get-delegation query back into the caller's
-/// `struct delegation`. # C: O(1)
-pub(crate) fn write_delegation(arg: u64, d_type: i32) {
+/// `struct delegation`. `arg` was already validated for `DELEGATION_BYTES` by
+/// `read_delegation` on this same call. # C: O(1)
+pub(crate) fn write_delegation(arg: u64, d_type: i32) -> Result<(), i64> {
     let out = fcntl_deleg::encode_delegation(d_type);
-    // SAFETY: arg was validated for DELEGATION_BYTES below USER_VA_END by
-    // `read_delegation` on this same call; CPL=0 writes through the caller's AS.
-    unsafe {
-        for (i, b) in out.iter().enumerate() {
-            core::ptr::write_volatile((arg + i as u64) as *mut u8, *b);
-        }
-    }
+    um::put_bytes(arg, &out).map_err(|_| um::EFAULT)
 }
 
 /// `F_SETLEASE` / `F_SETDELEG` — one implementation, because a lease and a

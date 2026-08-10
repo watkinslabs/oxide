@@ -57,8 +57,7 @@ fn write_siginfo(dst: u64, rec: &sched::SigInfo) -> Result<(), Errno> {
     if crate::userbuf::validate_user_buf_writable(dst, uapi::SIGINFO_BYTES, 1).is_err() {
         return Err(Errno::Efault);
     }
-    crate::signal_common::write_user_siginfo(dst, rec.signo, Some(*rec));
-    Ok(())
+    crate::signal_common::write_user_siginfo(dst, rec.signo, Some(*rec))
 }
 
 /// The op the tracee's CURRENT stop presents to `PTRACE_GET_SYSCALL_INFO`.

@@ -10,6 +10,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::sched_policy;
 use crate::userbuf::validate_user_buf_writable;
+use crate::user_mem as um;
 
 /// `struct __kernel_timespec { i64 tv_sec; i64 tv_nsec; }`.
 const TIMESPEC_SIZE: u64 = 16;
@@ -35,10 +36,8 @@ pub fn sys_sched_rr_get_interval(args: &SyscallArgs) -> i64 {
     let ns = sched_policy::rr_interval_ns(sched_policy::task_policy(&t), rq_loaded);
     if tp == 0 { return -(Errno::Efault.as_i32() as i64); }
     if let Err(rv) = validate_user_buf_writable(tp, TIMESPEC_SIZE, 1) { return rv; }
-    // SAFETY: tp validated writable for struct timespec { i64 sec; i64 nsec }; CPL=0.
-    unsafe {
-        core::ptr::write_unaligned( tp      as *mut i64, (ns / NSEC_PER_SEC) as i64);
-        core::ptr::write_unaligned((tp + 8) as *mut i64, (ns % NSEC_PER_SEC) as i64);
-    }
+    let ok = um::put_i64(tp, (ns / NSEC_PER_SEC) as i64).is_ok()
+        && um::put_i64(tp + 8, (ns % NSEC_PER_SEC) as i64).is_ok();
+    if !ok { return um::EFAULT; }
     0
 }

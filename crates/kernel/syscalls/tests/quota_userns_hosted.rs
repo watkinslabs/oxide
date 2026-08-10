@@ -393,3 +393,9 @@ fn the_classic_record_path_reads_the_limits_of_the_translated_account_hosted() {
         HOST_UID as u64, &mut raw as *mut TestIfDqblk as u64), eno(Errno::Einval),
         "the internal number is not nameable inside the namespace");
 }
+
+// The spliced slot files reach their caller-memory accessors through
+// `crate::user_mem`; supplying the real module here keeps this harness on the
+// same fault-recoverable usercopy the kernel build uses.
+#[path = "../src/user_mem/mod.rs"]
+mod user_mem;

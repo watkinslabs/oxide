@@ -106,8 +106,6 @@ pub fn sys_statmount(args: &SyscallArgs) -> i64 {
         Ok(out) => out, Err(e) => return neg(e),
     };
     if let Err(rv) = crate::statmount_target::user_writable(ubuf, out.len() as u64) { return rv; }
-    // SAFETY: `ubuf` validated writable for `out.len()` bytes, which the encoder
-    // capped against `bufsize`; a byte copy is alignment-independent.
-    unsafe { core::ptr::copy_nonoverlapping(out.as_ptr(), ubuf as *mut u8, out.len()); }
+    if crate::user_mem::put_bytes(ubuf, &out).is_err() { return crate::user_mem::EFAULT; }
     0
 }

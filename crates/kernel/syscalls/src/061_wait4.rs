@@ -168,8 +168,7 @@ pub(crate) fn write_rusage_bytes(ptr: u64, r: Rusage) -> Result<(), i64> {
     if ptr == 0 { return Ok(()); }
     let bytes = r.encode();
     crate::userbuf::validate_user_buf_writable(ptr, bytes.len() as u64, 1)?;
-    // SAFETY: full rusage byte range validated writable in the caller's AS; a byte copy needs no alignment, as Linux copy_to_user permits.
-    unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr as *mut u8, bytes.len()); }
+    crate::user_mem::put_bytes(ptr, &bytes).map_err(|_| crate::user_mem::EFAULT)?;
     Ok(())
 }
 
@@ -177,7 +176,6 @@ pub(crate) fn write_rusage_bytes(ptr: u64, r: Rusage) -> Result<(), i64> {
 fn write_wstatus(ptr: u64, val: i32) -> Result<(), i64> {
     if ptr == 0 { return Ok(()); }
     crate::userbuf::validate_user_buf_writable(ptr, 4, 1)?;
-    // SAFETY: exact writable user byte range validated; Linux copyout accepts unaligned int storage.
-    unsafe { core::ptr::write_unaligned(ptr as *mut i32, val); }
+    crate::user_mem::put_i32(ptr, val).map_err(|_| crate::user_mem::EFAULT)?;
     Ok(())
 }

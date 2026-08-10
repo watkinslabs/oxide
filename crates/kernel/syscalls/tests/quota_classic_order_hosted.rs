@@ -170,3 +170,9 @@ fn targeted_classic_getnextquota_iterates_and_loads_dquot_before_null_copyout_ho
     assert_eq!(ops.next_hits.load(Ordering::SeqCst), 1);
     assert_eq!(ops.acquires.load(Ordering::SeqCst), 1);
 }
+
+// The spliced slot files reach their caller-memory accessors through
+// `crate::user_mem`; supplying the real module here keeps this harness on the
+// same fault-recoverable usercopy the kernel build uses.
+#[path = "../src/user_mem/mod.rs"]
+mod user_mem;

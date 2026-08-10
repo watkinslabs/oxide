@@ -3,6 +3,7 @@
 
 use syscall::SyscallArgs;
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
+use crate::user_mem as um;
 
 const KERNEL_SIGSET_SIZE: u64 = 8;
 const USER_SIGSET_ALIGN: u64 = 1;
@@ -21,8 +22,7 @@ pub fn sys_rt_sigprocmask(args: &SyscallArgs) -> i64 {
     };
     let new_set = if set != 0 {
         if let Err(rv) = validate_user_buf(set, KERNEL_SIGSET_SIZE, USER_SIGSET_ALIGN) { return rv; }
-        // SAFETY: set validated as a readable 8-byte user sigset_t byte range; Linux copyin accepts unaligned storage.
-        Some(unsafe { core::ptr::read_unaligned(set as *const u64) })
+        Some(match um::get_u64(set) { Ok(v) => v, Err(_) => return um::EFAULT })
     } else { None };
     let prior = match cur.rt_sigprocmask(how, new_set) {
         Ok(mask) => mask,
@@ -30,8 +30,7 @@ pub fn sys_rt_sigprocmask(args: &SyscallArgs) -> i64 {
     };
     if oldset != 0 {
         if let Err(rv) = validate_user_buf_writable(oldset, KERNEL_SIGSET_SIZE, USER_SIGSET_ALIGN) { return rv; }
-        // SAFETY: oldset validated as writable 8-byte user sigset_t byte range; Linux copyout accepts unaligned storage.
-        unsafe { core::ptr::write_unaligned(oldset as *mut u64, prior); }
+        if um::put_u64(oldset, prior).is_err() { return um::EFAULT; }
     }
     debug_ssh! {
         let applied = cur.sigmask.load(core::sync::atomic::Ordering::Acquire);

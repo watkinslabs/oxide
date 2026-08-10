@@ -128,10 +128,9 @@ pub fn sys_open_by_handle_at(args: &SyscallArgs) -> i64 {
     // 1. Handle header — the EINVAL ladder, before any fd lookup or capability
     //    check.
     if let Err(rv) = validate_user_buf(handle_ptr, HANDLE_HDR, 1) { return rv; }
-    // SAFETY: handle_ptr validated readable for the 8-byte header in the caller's AS by validate_user_buf; unaligned reads of handle_bytes(u32) then handle_type(i32).
-    let (bytes, raw_htype) = unsafe {
-        (core::ptr::read_unaligned(handle_ptr as *const u32),
-         core::ptr::read_unaligned((handle_ptr + 4) as *const i32))
+    let (bytes, raw_htype) = match (crate::user_mem::get_u32(handle_ptr), crate::user_mem::get_i32(handle_ptr + 4)) {
+        (Ok(b), Ok(t)) => (b, t),
+        _ => return crate::user_mem::EFAULT,
     };
     if let Err(e) = handle_header_check(bytes, raw_htype) { return err(e); }
 
@@ -176,9 +175,8 @@ pub fn sys_open_by_handle_at(args: &SyscallArgs) -> i64 {
     }
     if let Err(rv) = validate_user_buf(handle_ptr + HANDLE_HDR, bytes as u64, 1) { return rv; }
     let mut fid_bytes = vec![0u8; bytes as usize];
-    for (i, b) in fid_bytes.iter_mut().enumerate() {
-        // SAFETY: f_handle region validated readable for `bytes` in the caller's AS above; byte-wise unaligned reads of the little-endian FID payload.
-        *b = unsafe { core::ptr::read_unaligned((handle_ptr + HANDLE_HDR + i as u64) as *const u8) };
+    if crate::user_mem::get_into(handle_ptr + HANDLE_HDR, &mut fid_bytes).is_err() {
+        return crate::user_mem::EFAULT;
     }
     let fid = match sb.s_op.export_decode_fh(&fid_bytes, strip_user_flags(raw_htype)) {
         Ok(f) => f, Err(e) => return err(e),

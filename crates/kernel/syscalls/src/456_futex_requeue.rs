@@ -14,6 +14,7 @@
 
 use syscall::{errno::Errno, SyscallArgs};
 use ipc::futex2_flags::{validate_futex2_flags, validate_futex2_input};
+use crate::user_mem as um;
 
 /// `sizeof(struct futex_waitv)`; `val@0`, `uaddr@8`, `flags@16`, `__reserved@20`.
 const WAITV_SZ: u64 = 24;
@@ -26,14 +27,11 @@ struct Parsed { uaddr: u64, val: u64, flags: u32, private: bool }
 /// Read and validate one `struct futex_waitv` from an already-validated span.
 fn parse(base: u64) -> Result<Parsed, i64> {
     let einval = -(Errno::Einval.as_i32() as i64);
-    // SAFETY: `base` lies inside a span validated as readable by the caller; scalar loads permit unaligned user storage.
-    let val = unsafe { core::ptr::read_unaligned(base as *const u64) };
-    // SAFETY: uaddr lies within the same validated 24-byte entry.
-    let uaddr = unsafe { core::ptr::read_unaligned((base + OFF_UADDR) as *const u64) };
-    // SAFETY: flags lies within the same validated 24-byte entry.
-    let flags = unsafe { core::ptr::read_unaligned((base + OFF_FLAGS) as *const u32) };
-    // SAFETY: __reserved lies within the same validated 24-byte entry.
-    let rsvd = unsafe { core::ptr::read_unaligned((base + OFF_RESERVED) as *const u32) };
+    let (val, uaddr, flags, rsvd) = match (um::get_u64(base), um::get_u64(base + OFF_UADDR),
+        um::get_u32(base + OFF_FLAGS), um::get_u32(base + OFF_RESERVED)) {
+        (Ok(val), Ok(uaddr), Ok(flags), Ok(rsvd)) => (val, uaddr, flags, rsvd),
+        _ => return Err(um::EFAULT),
+    };
     if rsvd != 0 { return Err(einval); }
     let f = validate_futex2_flags(flags).map_err(|_| einval)?;
     if !validate_futex2_input(f.size_bytes, val) { return Err(einval); }

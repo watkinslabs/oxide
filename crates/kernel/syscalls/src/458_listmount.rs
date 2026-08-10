@@ -54,9 +54,7 @@ pub fn sys_listmount(args: &SyscallArgs) -> i64 {
     let ids = vfs::mount::listmount_ids(ns, orig, skip_orig, r.param,
                                         flags & LISTMOUNT_REVERSE != 0, nr);
     for (i, id) in ids.iter().enumerate() {
-        // SAFETY: `uids` validated writable for `nr` u64 entries above and
-        // `ids.len() <= nr`; the copy-out target need not be aligned.
-        unsafe { core::ptr::write_unaligned((uids + i as u64 * U64) as *mut u64, *id); }
+        if crate::user_mem::put_u64(uids + i as u64 * U64, *id).is_err() { return crate::user_mem::EFAULT; }
     }
     ids.len() as i64
 }

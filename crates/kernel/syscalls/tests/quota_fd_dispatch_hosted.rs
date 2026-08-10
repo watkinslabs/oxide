@@ -490,3 +490,9 @@ fn sys_quotactl_fd_setquota_root_reaches_usercopy_hosted() {
 
     assert_eq!(qfd_sys::sys_quotactl_fd(&args), eno(Errno::Efault));
 }
+
+// The spliced slot files reach their caller-memory accessors through
+// `crate::user_mem`; supplying the real module here keeps this harness on the
+// same fault-recoverable usercopy the kernel build uses.
+#[path = "../src/user_mem/mod.rs"]
+mod user_mem;

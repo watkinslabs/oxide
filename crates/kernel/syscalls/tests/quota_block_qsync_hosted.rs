@@ -206,3 +206,9 @@ fn sys_quotactl_null_special_rejects_xfs_non_qsync_before_path_lookup_hosted() {
     assert_eq!(sys::sys_quotactl(&null_special_args(cmd::Q_XSETQLIM)), eno(Errno::Enodev));
     assert!(READ_USER_PATH_CALLS.lock().unwrap().is_empty());
 }
+
+// The spliced slot files reach their caller-memory accessors through
+// `crate::user_mem`; supplying the real module here keeps this harness on the
+// same fault-recoverable usercopy the kernel build uses.
+#[path = "../src/user_mem/mod.rs"]
+mod user_mem;

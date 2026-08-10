@@ -8,6 +8,7 @@ use syscall::errno::Errno;
 use crate::fcntl_deleg;
 use crate::fcntl_lease::{fowner_euid, fowner_uid, read_delegation, set_lease, write_delegation};
 use crate::userbuf::validate_user_buf;
+use crate::user_mem as um;
 
 /// `sys_fcntl(fd, cmd, arg)` — slot 72. F_DUPFD / F_DUPFD_CLOEXEC /
 /// F_GETFD / F_SETFD / F_GETFL / F_SETFL / F_GETPIPE_SZ /
@@ -179,11 +180,7 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
         F_GETOWNER_UIDS => {
             if let Err(rv) = validate_user_buf(arg, 8, 4) { return rv; }
             let (uid, euid) = file.f_owner_creds();
-            // SAFETY: arg validated for 8 B below USER_VA_END; CPL=0 writes through caller's AS.
-            unsafe {
-                core::ptr::write_unaligned(arg as *mut u32, uid);
-                core::ptr::write_unaligned((arg + 4) as *mut u32, euid);
-            }
+            if um::put_u32(arg, uid).is_err() || um::put_u32(arg + 4, euid).is_err() { return um::EFAULT; }
             0
         }
         // F_GETSIG/F_SETSIG (Linux f_owner.signum): the signal delivered on
@@ -202,21 +199,16 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
             if let Err(rv) = validate_user_buf(arg, 8, 4) { return rv; }
             let ty = file.f_owner_type();
             let pid = file.owner.load(core::sync::atomic::Ordering::Acquire);
-            // SAFETY: arg validated for 8 B below USER_VA_END; CPL=0 writes through caller's AS.
-            unsafe {
-                core::ptr::write_unaligned(arg as *mut i32, ty);
-                core::ptr::write_unaligned((arg + 4) as *mut i32, pid);
-            }
+            if um::put_i32(arg, ty).is_err() || um::put_i32(arg + 4, pid).is_err() { return um::EFAULT; }
             0
         }
         // F_SETOWN_EX: read f_owner_ex; store pid (PGRP → negative). TID is
         // treated as PID (no per-thread fasync routing yet) (D36).
         F_SETOWN_EX => {
             if let Err(rv) = validate_user_buf(arg, 8, 4) { return rv; }
-            // SAFETY: arg validated for 8 B below USER_VA_END; CPL=0 reads through caller's AS.
-            let (ty, pid) = unsafe {
-                (core::ptr::read_unaligned(arg as *const i32),
-                 core::ptr::read_unaligned((arg + 4) as *const i32))
+            let (ty, pid) = match (um::get_i32(arg), um::get_i32(arg + 4)) {
+                (Ok(t), Ok(p)) => (t, p),
+                _ => return um::EFAULT,
             };
             if !matches!(ty, F_OWNER_TID | F_OWNER_PID | F_OWNER_PGRP) {
                 return -(Errno::Einval.as_i32() as i64);
@@ -248,7 +240,7 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
             // a caller passing a reserved field it invented is told EINVAL, not
             // handed a delegation type it never asked for.
             if let Err(rv) = read_delegation(arg) { return rv; }
-            write_delegation(arg, file.lease_of(vfs::file::FL_DELEG));
+            if let Err(rv) = write_delegation(arg, file.lease_of(vfs::file::FL_DELEG)) { return rv; }
             0
         }
         // F_SETDELEG: take/drop a delegation. Same storage, same registry and
@@ -293,16 +285,14 @@ pub fn sys_fcntl(args: &SyscallArgs) -> i64 {
         // stored RWH_WRITE_LIFE_* hint to the u64 the caller points `arg` at.
         F_GET_RW_HINT => {
             if let Err(rv) = validate_user_buf(arg, 8, 8) { return rv; }
-            // SAFETY: arg validated for 8 B below USER_VA_END; CPL=0 writes through caller's AS.
-            unsafe { core::ptr::write_unaligned(arg as *mut u64, file.rw_hint()); }
+            if um::put_u64(arg, file.rw_hint()).is_err() { return um::EFAULT; }
             0
         }
         // F_SET_RW_HINT / F_SET_FILE_RW_HINT: read the u64 hint, reject any value
         // above RWH_WRITE_LIFE_EXTREME (Linux `rw_hint_valid`), then store it.
         F_SET_RW_HINT => {
             if let Err(rv) = validate_user_buf(arg, 8, 8) { return rv; }
-            // SAFETY: arg validated for 8 B below USER_VA_END; CPL=0 reads through caller's AS.
-            let hint = unsafe { core::ptr::read_unaligned(arg as *const u64) };
+            let hint = match um::get_u64(arg) { Ok(h) => h, Err(_) => return um::EFAULT };
             if hint > RWH_WRITE_LIFE_EXTREME { return -(Errno::Einval.as_i32() as i64); }
             file.set_rw_hint(hint);
             0
@@ -345,12 +335,7 @@ fn handle_record_lock(
     use crate::fcntl_cmds::{F_GETLK, F_OFD_GETLK, F_OFD_SETLK, F_OFD_SETLKW, F_SETLK, F_SETLKW};
     if let Err(rv) = validate_user_buf(arg, FLOCK_BYTES as u64, 8) { return rv; }
     let mut bytes = [0u8; FLOCK_BYTES];
-    // SAFETY: arg validated FLOCK_BYTES below USER_VA_END; CPL=0 reads through caller's AS.
-    unsafe {
-        for i in 0..FLOCK_BYTES {
-            bytes[i] = core::ptr::read_volatile((arg + i as u64) as *const u8);
-        }
-    }
+    if um::get_into(arg, &mut bytes).is_err() { return um::EFAULT; }
     let req = match decode_flock(&bytes, file.pos(), file.inode().size()) {
         Ok(r) => r, Err(_) => return -(Errno::Einval.as_i32() as i64),
     };
@@ -373,12 +358,7 @@ fn handle_record_lock(
                 // the caller's struct as it was.
                 None => out[0..2].copy_from_slice(&F_UNLCK.to_le_bytes()),
             }
-            // SAFETY: arg validated FLOCK_BYTES below USER_VA_END; CPL=0 writes through caller's AS.
-            unsafe {
-                for i in 0..FLOCK_BYTES {
-                    core::ptr::write_volatile((arg + i as u64) as *mut u8, out[i]);
-                }
-            }
+            if um::put_bytes(arg, &out).is_err() { return um::EFAULT; }
             0
         }
         F_SETLK | F_OFD_SETLK | F_SETLKW | F_OFD_SETLKW => {

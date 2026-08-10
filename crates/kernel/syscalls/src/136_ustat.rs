@@ -21,6 +21,7 @@ use syscall::errno::Errno;
 
 use crate::userbuf::validate_user_buf_writable;
 use crate::ustat_abi::{USTAT_BYTES, encode_ustat};
+use crate::user_mem as um;
 
 /// `sys_ustat(dev, ubuf)` — slot 136.
 /// Errors: EINVAL (no live superblock for `dev`, Linux `vfs_ustat`'s
@@ -48,11 +49,6 @@ pub fn sys_ustat(args: &SyscallArgs) -> i64 {
 
     let img = encode_ustat(st.f_bfree, st.f_ffree);
     if let Err(rv) = validate_user_buf_writable(ubuf, USTAT_BYTES as u64, 1) { return rv; }
-    // SAFETY: `ubuf` validated writable for the full USTAT_BYTES span in the caller's AS by validate_user_buf_writable; byte writes need no alignment.
-    unsafe {
-        for (i, b) in img.iter().enumerate() {
-            core::ptr::write_unaligned((ubuf + i as u64) as *mut u8, *b);
-        }
-    }
+    if um::put_bytes(ubuf, &img).is_err() { return um::EFAULT; }
     0
 }

@@ -5,6 +5,7 @@
 
 use syscall::{errno::Errno, SyscallArgs};
 use ipc::futex2_flags::{FUTEX2_PRIVATE, validate_futex2_flags, validate_futex2_input};
+use crate::user_mem as um;
 
 const FUTEX_WAIT: u32 = 0;
 
@@ -16,10 +17,10 @@ fn absolute_deadline_ns(timeout: u64, clockid: u64) -> Result<u64, i64> {
         return Err(-(Errno::Einval.as_i32() as i64));
     }
     crate::userbuf::validate_user_buf(timeout, 16, 1)?;
-    // SAFETY: timeout was validated as a readable 16-byte timespec; scalar loads permit unaligned user storage.
-    let secs = unsafe { core::ptr::read_unaligned(timeout as *const i64) };
-    // SAFETY: timeout+8 is inside the validated timespec and unaligned loads match user ABI copyin.
-    let nsec = unsafe { core::ptr::read_unaligned((timeout + 8) as *const i64) };
+    let (secs, nsec) = match (um::get_i64(timeout), um::get_i64(timeout + 8)) {
+        (Ok(s), Ok(n)) => (s, n),
+        _ => return Err(um::EFAULT),
+    };
     // `ktime_set`-clamped decode: a huge-but-valid tv_sec clamps to
     // KTIME_MAX_NS instead of an unbounded absolute deadline.
     let abs = ::syscall::time::timespec_to_ns(secs, nsec)

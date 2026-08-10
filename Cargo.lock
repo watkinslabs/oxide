@@ -2130,6 +2130,7 @@ dependencies = [
  "sync",
  "syscall",
  "timekeeper",
+ "uaccess",
  "user-namespace",
  "utf8",
  "vmm",

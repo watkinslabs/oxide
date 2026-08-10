@@ -21,6 +21,7 @@ use syscall::errno::Errno;
 use crate::sysfs_query::{SYSFS_GET_FS_INDEX, SYSFS_GET_FS_MAXINDEX, SYSFS_GET_FS_NAME,
     fs_index, fs_maxindex, fs_name_at, option_known};
 use crate::userbuf::validate_user_buf_writable;
+use crate::user_mem as um;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
@@ -63,13 +64,8 @@ pub fn sys_sysfs(args: &SyscallArgs) -> i64 {
             let buf = args.a2;
             let n = name.len() as u64 + 1; // Linux copies strlen(name) + 1
             if let Err(rv) = validate_user_buf_writable(buf, n, 1) { return rv; }
-            // SAFETY: `buf` validated writable for name.len()+1 bytes in the caller's AS by validate_user_buf_writable; byte writes need no alignment.
-            unsafe {
-                for (i, b) in name.as_bytes().iter().enumerate() {
-                    core::ptr::write_unaligned((buf + i as u64) as *mut u8, *b);
-                }
-                core::ptr::write_unaligned((buf + name.len() as u64) as *mut u8, 0u8);
-            }
+            if um::put_bytes(buf, name.as_bytes()).is_err() { return um::EFAULT; }
+            if um::put_u8(buf + name.len() as u64, 0).is_err() { return um::EFAULT; }
             0
         }
         SYSFS_GET_FS_MAXINDEX => fs_maxindex(&names),

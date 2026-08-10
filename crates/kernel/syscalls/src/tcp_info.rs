@@ -78,8 +78,7 @@ fn copy_tcp_info<E>(info: &TcpInfo, requested: usize,
 pub fn write_tcp_info(sock: &InetSocket, optval: u64, optlen_p: u64) -> i64 {
     let len_bytes = core::mem::size_of::<u32>() as u64;
     if let Err(rv) = crate::userbuf::validate_user_buf(optlen_p, len_bytes, 1) { return rv; }
-    // SAFETY: optlen_p was validated as a readable u32 user span before this unaligned scalar load.
-    let requested = unsafe { core::ptr::read_unaligned(optlen_p as *const u32) } as usize;
+    let requested = match crate::user_mem::get_u32(optlen_p) { Ok(v) => v, Err(_) => return crate::user_mem::EFAULT } as usize;
     let written = core::cmp::min(requested, TCP_INFO_LEN);
     if written > 0 {
         if let Err(rv) = crate::userbuf::validate_user_buf_writable(optval, written as u64, 1) { return rv; }

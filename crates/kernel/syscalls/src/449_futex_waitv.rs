@@ -6,6 +6,7 @@ use ::syscall::SyscallArgs;
 use ::syscall::errno::Errno;
 use ::ipc::futex2_flags::{validate_futex2_flags, validate_futex2_input};
 use ::ipc::live::futex::WaitvEntry;
+use crate::user_mem as um;
 
 /// `struct futex_waitv { __u64 val; __u64 uaddr; __u32 flags; __u32 __reserved; }`
 /// — 24 bytes, identical on x86_64 and aarch64.
@@ -32,10 +33,10 @@ fn absolute_deadline_ns(timeout: u64, clockid: u64) -> Result<u64, i64> {
         return Err(-(Errno::Einval.as_i32() as i64));
     }
     crate::userbuf::validate_user_buf(timeout, 16, 1)?;
-    // SAFETY: timeout was validated as a readable 16-byte timespec; scalar loads permit unaligned user storage.
-    let secs = unsafe { core::ptr::read_unaligned(timeout as *const i64) };
-    // SAFETY: timeout+8 is inside the validated timespec and unaligned loads match user ABI copyin.
-    let nsec = unsafe { core::ptr::read_unaligned((timeout + 8) as *const i64) };
+    let (secs, nsec) = match (um::get_i64(timeout), um::get_i64(timeout + 8)) {
+        (Ok(s), Ok(n)) => (s, n),
+        _ => return Err(um::EFAULT),
+    };
     // `ktime_set`-clamped decode: a huge-but-valid tv_sec clamps to
     // KTIME_MAX_NS instead of an unbounded absolute deadline.
     let abs = ::syscall::time::timespec_to_ns(secs, nsec)
@@ -70,14 +71,11 @@ pub fn sys_futex_waitv(args: &SyscallArgs) -> i64 {
     let mut entries: ::alloc::vec::Vec<WaitvEntry> = ::alloc::vec::Vec::with_capacity(n as usize);
     for i in 0..n {
         let base = ptr + i * ENTRY_BYTES;
-        // SAFETY: the full wait-vector byte span was validated; scalar loads permit unaligned user storage.
-        let val   = unsafe { core::ptr::read_unaligned(base as *const u64) };
-        // SAFETY: uaddr lies within the validated wait-vector entry.
-        let uaddr = unsafe { core::ptr::read_unaligned((base + OFF_UADDR) as *const u64) };
-        // SAFETY: flags lies within the validated wait-vector entry.
-        let flags = unsafe { core::ptr::read_unaligned((base + OFF_FLAGS) as *const u32) };
-        // SAFETY: __reserved lies within the validated wait-vector entry.
-        let rsvd  = unsafe { core::ptr::read_unaligned((base + OFF_RESERVED) as *const u32) };
+        let (val, uaddr, flags, rsvd) = match (um::get_u64(base), um::get_u64(base + OFF_UADDR),
+            um::get_u32(base + OFF_FLAGS), um::get_u32(base + OFF_RESERVED)) {
+            (Ok(val), Ok(uaddr), Ok(flags), Ok(rsvd)) => (val, uaddr, flags, rsvd),
+            _ => return um::EFAULT,
+        };
         // A non-zero `__reserved` is EINVAL: it is the extension point, and
         // accepting garbage there would make a future meaning unusable.
         if rsvd != 0 { return -(Errno::Einval.as_i32() as i64); }

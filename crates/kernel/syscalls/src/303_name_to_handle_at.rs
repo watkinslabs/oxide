@@ -42,8 +42,7 @@ fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 /// # C: O(1)
 fn overflow(handle_ptr: u64, needed: u32) -> i64 {
     if let Err(rv) = validate_user_buf_writable(handle_ptr, 4, 1) { return rv; }
-    // SAFETY: handle_ptr validated writable for 4 bytes in the caller's AS; single unaligned u32 write of the required handle_bytes.
-    unsafe { core::ptr::write_unaligned(handle_ptr as *mut u32, needed); }
+    if crate::user_mem::put_u32(handle_ptr, needed).is_err() { return crate::user_mem::EFAULT; }
     err(Errno::Eoverflow)
 }
 
@@ -102,8 +101,7 @@ pub fn sys_name_to_handle_at(args: &SyscallArgs) -> i64 {
     // handle->handle_bytes is the caller-supplied capacity; the header is read
     // then written back, so the struct must be readable here and writable below.
     if let Err(rv) = validate_user_buf(handle_ptr, HANDLE_HDR, 1) { return rv; }
-    // SAFETY: handle_ptr validated readable for HANDLE_HDR bytes in the caller's AS by validate_user_buf; unaligned u32 read of the handle_bytes field.
-    let cap = unsafe { core::ptr::read_unaligned(handle_ptr as *const u32) };
+    let cap = match crate::user_mem::get_u32(handle_ptr) { Ok(v) => v, Err(_) => return crate::user_mem::EFAULT };
     // The WIDTH is the filesystem's, not the VFS's: a kernfs-backed pseudo-fs
     // mints an 8-byte node-id handle, and a caller that sizes its buffer to
     // that width without running the grow-and-retry protocol would otherwise
@@ -149,13 +147,11 @@ pub fn sys_name_to_handle_at(args: &SyscallArgs) -> i64 {
     if let Err(rv) = validate_user_buf_writable(handle_ptr, HANDLE_HDR + fid_len as u64, 1) {
         return rv;
     }
-    // SAFETY: handle_ptr validated writable for header+FID bytes in the caller's AS; unaligned field writes of handle_bytes, handle_type, then the FID payload.
-    unsafe {
-        core::ptr::write_unaligned(handle_ptr as *mut u32, fid_len);
-        core::ptr::write_unaligned((handle_ptr + 4) as *mut i32, htype);
-        for (i, b) in fid_buf[..fid_len as usize].iter().enumerate() {
-            core::ptr::write_unaligned((handle_ptr + HANDLE_HDR + i as u64) as *mut u8, *b);
-        }
+    if crate::user_mem::put_u32(handle_ptr, fid_len).is_err()
+        || crate::user_mem::put_i32(handle_ptr + 4, htype).is_err()
+        || crate::user_mem::put_bytes(handle_ptr + HANDLE_HDR, &fid_buf[..fid_len as usize]).is_err()
+    {
+        return crate::user_mem::EFAULT;
     }
 
     // Linux returns the mount table id here, not st_dev/fsid, and systemd
@@ -165,11 +161,9 @@ pub fn sys_name_to_handle_at(args: &SyscallArgs) -> i64 {
     // contracts, so only the WIDTH of the store differs.
     let n = if opts.unique_mnt_id { 8u64 } else { 4 };
     if let Err(rv) = validate_user_buf_writable(mnt_id_ptr, n, 1) { return rv; }
-    // SAFETY: mnt_id_ptr validated writable for `n` bytes in the caller's AS; one unaligned store of the width the flags selected.
-    unsafe {
-        if opts.unique_mnt_id { core::ptr::write_unaligned(mnt_id_ptr as *mut u64, mount_id); }
-        else { core::ptr::write_unaligned(mnt_id_ptr as *mut i32, mount_id as i32); }
-    }
+    let stored = if opts.unique_mnt_id { crate::user_mem::put_u64(mnt_id_ptr, mount_id) }
+                 else { crate::user_mem::put_i32(mnt_id_ptr, mount_id as i32) };
+    if stored.is_err() { return crate::user_mem::EFAULT; }
     #[cfg(feature = "debug-mount")]
     log_runtime_handle("name_to_handle", dirfd, path_ptr, 0);
     0

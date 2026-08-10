@@ -18,6 +18,7 @@ use syscall::errno::Errno;
 
 use crate::rwf::{iov_import_seg, IovSeg, UIO_MAXIOV};
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
+use crate::user_mem as um;
 
 /// Bytes per `struct iovec` (`void *iov_base; size_t iov_len;`) on both
 /// 64-bit targets, and the alignment the ABI guarantees.
@@ -45,11 +46,8 @@ pub fn import_iovec(iov: u64, iovcnt: u64, dir: IovDir) -> Result<Vec<(u64, usiz
     let mut total: u64 = 0;
     for i in 0..iovcnt {
         let iov_i = iov + i * IOVEC_SIZE;
-        // SAFETY: `validate_user_buf` proved the whole iovec array readable in
-        // the active address space; `iov_i` is inside it and 8-byte aligned.
-        let base = unsafe { core::ptr::read_volatile(iov_i as *const u64) };
-        // SAFETY: same validated array; `iov_len` sits at +8 within the entry.
-        let len  = unsafe { core::ptr::read_volatile((iov_i + IOVEC_LEN_OFF) as *const u64) };
+        let base = um::get_u64(iov_i).map_err(|_| -(Errno::Efault.as_i32() as i64))?;
+        let len  = um::get_u64(iov_i + IOVEC_LEN_OFF).map_err(|_| -(Errno::Efault.as_i32() as i64))?;
         let take = match iov_import_seg(len, total) {
             Ok(IovSeg::Skip)    => continue,
             Ok(IovSeg::Stop)    => break,

@@ -295,3 +295,9 @@ fn quotaoff_uses_the_generic_quota_file_path_by_default_hosted() {
     assert_ne!(dispatch::quotactl_dispatch_sb(&sb, cmd::qcmd(cmd::Q_QUOTAOFF, cmd::USRQUOTA), 0, 0),
         eno(Errno::Enosys));
 }
+
+// The spliced slot files reach their caller-memory accessors through
+// `crate::user_mem`; supplying the real module here keeps this harness on the
+// same fault-recoverable usercopy the kernel build uses.
+#[path = "../src/user_mem/mod.rs"]
+mod user_mem;

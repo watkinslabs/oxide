@@ -207,3 +207,9 @@ fn sys_quotactl_fd_quotaon_permission_denied_before_hooks_hosted() {
     assert_eq!(ops.enables.load(Ordering::SeqCst), 0);
     assert_eq!(ops.quota_ons.load(Ordering::SeqCst), 0);
 }
+
+// The spliced slot files reach their caller-memory accessors through
+// `crate::user_mem`; supplying the real module here keeps this harness on the
+// same fault-recoverable usercopy the kernel build uses.
+#[path = "../src/user_mem/mod.rs"]
+mod user_mem;

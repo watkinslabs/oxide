@@ -11,6 +11,7 @@ use crate::pidfd_signal_policy::{
     classify_target, scope_for, siginfo_forgery_rejected, validate_flags, Scope, Target,
 };
 use crate::signal_common::{read_user_siginfo, KERNEL_SIGINFO_BYTES, SI_SIGNO};
+use crate::user_mem as um;
 
 /// `sys_pidfd_send_signal(pidfd, sig, info, flags)` — slot 424.
 ///
@@ -101,10 +102,9 @@ fn build_source(cur: &sched::Task, sig: i32, info: u64, targets_self: bool, scop
         });
     }
     crate::userbuf::validate_user_buf(info, KERNEL_SIGINFO_BYTES, 1)?;
-    // SAFETY: info validated readable for KERNEL_SIGINFO_BYTES; si_signo is the leading i32.
-    let signo = unsafe { core::ptr::read_unaligned((info + SI_SIGNO) as *const i32) };
+    let signo = match um::get_i32(info + SI_SIGNO) { Ok(v) => v, Err(_) => return Err(um::EFAULT) };
     if signo != sig { return Err(-(Errno::Einval.as_i32() as i64)); }
-    let rec = read_user_siginfo(info, sig as u32);
+    let rec = match read_user_siginfo(info, sig as u32) { Ok(r) => r, Err(_) => return Err(um::EFAULT) };
     if siginfo_forgery_rejected(rec.code, targets_self, scope) {
         return Err(-(Errno::Eperm.as_i32() as i64));
     }

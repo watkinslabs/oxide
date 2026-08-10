@@ -10,6 +10,7 @@ use syscall::errno::Errno;
 
 use crate::rwf::UIO_MAXIOV;
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
+use crate::user_mem as um;
 
 fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
@@ -26,18 +27,13 @@ fn fd_file(fd: i32) -> Result<alloc::sync::Arc<vfs::File>, i64> {
 fn get_loff(ptr: u64) -> Result<Option<u64>, i64> {
     if ptr == 0 { return Ok(None); }
     validate_user_buf(ptr, 8, 8)?;
-    // SAFETY: `validate_user_buf` proved 8 readable, 8-aligned bytes at `ptr`
-    // below USER_VA_END in the caller's active address space.
-    Ok(Some(unsafe { core::ptr::read_volatile(ptr as *const u64) }))
+    Ok(Some(um::get_u64(ptr).map_err(|_| um::EFAULT)?))
 }
 
 /// Write a `loff_t __user *` back. # C: O(1)
 fn put_loff(ptr: u64, v: u64) -> Result<(), i64> {
     validate_user_buf_writable(ptr, 8, 8)?;
-    // SAFETY: `validate_user_buf_writable` proved 8 writable, 8-aligned bytes
-    // at `ptr` below USER_VA_END in the caller's active address space.
-    unsafe { core::ptr::write_volatile(ptr as *mut u64, v); }
-    Ok(())
+    um::put_u64(ptr, v).map_err(|_| um::EFAULT)
 }
 
 /// `sys_splice(fd_in, off_in, fd_out, off_out, len, flags)` — slot 275.
@@ -128,11 +124,8 @@ fn import_iov(iov: u64, nr: u64, writable: bool) -> Result<Vec<(u64, usize)>, i6
     let mut total: u64 = 0;
     for i in 0..nr {
         let e = iov + i * 16;
-        // SAFETY: the whole iovec array was validated readable above; `e` is
-        // inside it and 8-byte aligned per the Linux `struct iovec` ABI.
-        let base = unsafe { core::ptr::read_volatile(e as *const u64) };
-        // SAFETY: same validated array; `iov_len` sits at +8 within the entry.
-        let len  = unsafe { core::ptr::read_volatile((e + 8) as *const u64) };
+        let base = um::get_u64(e).map_err(|_| um::EFAULT)?;
+        let len  = um::get_u64(e + 8).map_err(|_| um::EFAULT)?;
         if (len as i64) < 0 { return Err(errno(Errno::Einval)); }
         if len == 0 { continue; }
         if writable { validate_user_buf_writable(base, len, 1)?; } else { validate_user_buf(base, len, 1)?; }

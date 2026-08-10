@@ -19,8 +19,9 @@ fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 /// # C: O(1)
 fn err_size(uattr: u64) -> i64 {
     if validate_user_buf_writable(uattr, 4, 1).is_ok() {
-        // SAFETY: uattr just validated writable for its leading u32 `size` field, which Linux's err_size path overwrites with the kernel's own sched_attr size.
-        unsafe { core::ptr::write_unaligned(uattr as *mut u32, sa::KSIZE); }
+        // Linux ignores this put_user's own failure — the E2BIG below is
+        // returned either way, so a fault on the size write is silent here too.
+        let _ = crate::user_mem::put_u32(uattr, sa::KSIZE);
     }
     err(Errno::E2big)
 }
@@ -31,8 +32,7 @@ fn err_size(uattr: u64) -> i64 {
 /// # C: O(N_tail)
 fn copy_attr_in(uattr: u64) -> Result<SchedAttr, i64> {
     validate_user_buf_readable(uattr, 4, 1)?;
-    // SAFETY: uattr validated readable for the leading u32 `size` field of struct sched_attr, which is what Linux's get_user(size, &uattr->size) reads first.
-    let raw = unsafe { core::ptr::read_unaligned(uattr as *const u32) };
+    let raw = crate::user_mem::get_u32(uattr).map_err(|_| err(Errno::Efault))?;
     let plan = match sa::copy_in_size(raw) { Ok(p) => p, Err(()) => return Err(err_size(uattr)) };
     validate_user_buf_readable(uattr, plan.size as u64, 1)?;
     let mut buf = [0u8; sa::KSIZE as usize];

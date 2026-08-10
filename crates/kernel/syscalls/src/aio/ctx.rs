@@ -331,8 +331,7 @@ pub fn lookup(ctx_id: u64) -> Option<Arc<AioContext>> {
     // proven to lie in a readable mapping — a range check alone would let a
     // garbage `aio_context_t` fault the kernel instead of returning EINVAL.
     if crate::userbuf::validate_user_buf_readable(ctx_id, 4, 4).is_err() { return None; }
-    // SAFETY: ctx_id validated readable and 4-byte aligned below USER_VA_END; CPL=0 reads the ring's id word through the caller's active address space.
-    let id = unsafe { core::ptr::read_volatile(ctx_id as *const u32) };
+    let id = match crate::user_mem::get_u32(ctx_id) { Ok(v) => v, Err(_) => return None };
     let ctx = { TABLE.lock().get(id as usize).and_then(|s| s.clone()) }?;
     if ctx.mem.user_base != ctx_id { return None; }
     let mm = ctx.mm.upgrade()?;

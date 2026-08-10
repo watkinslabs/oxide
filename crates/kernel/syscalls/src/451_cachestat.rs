@@ -35,12 +35,9 @@ pub fn sys_cachestat(args: &SyscallArgs) -> i64 {
     let file = match fdt.get(fd) { Ok(f) => f, Err(_) => return errno(Errno::Ebadf) };
 
     if let Err(rv) = validate_user_buf(range, CSTAT_RANGE_SIZE, 1) { return rv; }
-    // SAFETY: range was validated as a 16-byte user buffer below USER_VA_END; unaligned loads match copy_from_user semantics.
-    let (off, len) = unsafe {
-        (
-            core::ptr::read_unaligned(range as *const u64),
-            core::ptr::read_unaligned((range + 8) as *const u64),
-        )
+    let (off, len) = match (crate::user_mem::get_u64(range), crate::user_mem::get_u64(range + 8)) {
+        (Ok(off), Ok(len)) => (off, len),
+        _ => return crate::user_mem::EFAULT,
     };
 
     let inode = file.inode();
@@ -66,11 +63,8 @@ pub fn sys_cachestat(args: &SyscallArgs) -> i64 {
     };
 
     if let Err(rv) = validate_user_buf_writable(out, CSTAT_SIZE, 1) { return rv; }
-    // SAFETY: out was validated as a 40-byte writable user buffer below USER_VA_END; unaligned stores match copy_to_user semantics.
-    unsafe {
-        for (i, v) in counts.as_uapi().iter().enumerate() {
-            core::ptr::write_unaligned((out + i as u64 * 8) as *mut u64, *v);
-        }
+    for (i, v) in counts.as_uapi().iter().enumerate() {
+        if crate::user_mem::put_u64(out + i as u64 * 8, *v).is_err() { return crate::user_mem::EFAULT; }
     }
     0
 }

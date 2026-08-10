@@ -10,6 +10,7 @@ use crate::statx_abi::{cp_statx, statx_entry, statx_validate, StatxEntry, StatxP
     AT_EMPTY_PATH, AT_NO_AUTOMOUNT, AT_STATX_SYNC_TYPE, AT_SYMLINK_NOFOLLOW, STATX_SIZE};
 use crate::stat_common::{stat_gid, stat_uid};
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
+use crate::user_mem as um;
 
 /// Does the pathname argument mean "no path" for entry selection? Linux's
 /// `getname_maybe_null` answers yes for a NULL
@@ -20,9 +21,7 @@ fn path_is_empty(path_ptr: u64, flags: u32) -> bool {
     if path_ptr == 0 { return true; }
     if flags & AT_EMPTY_PATH == 0 { return false; }
     if validate_user_buf(path_ptr, 1, 1).is_err() { return false; }
-    // SAFETY: `validate_user_buf` proved one readable byte at `path_ptr` below
-    // USER_VA_END in the active address space; a single u8 load cannot fault.
-    unsafe { core::ptr::read_volatile(path_ptr as *const u8) == 0 }
+    um::get_u8(path_ptr).map(|b| b == 0).unwrap_or(false)
 }
 
 /// `sys_statx(dirfd, path, flags, mask, statxbuf)` — slot 332.
@@ -89,10 +88,6 @@ pub fn sys_statx(args: &SyscallArgs) -> i64 {
 
     // Linux `cp_statx` faults the output buffer LAST, after the whole lookup.
     if let Err(rv) = validate_user_buf_writable(buf, STATX_SIZE as u64, 1) { return rv; }
-    // SAFETY: `validate_user_buf_writable` proved a 256-byte writable range at
-    // `buf` below USER_VA_END; `copy_nonoverlapping` from a kernel-stack array
-    // matches Linux `copy_to_user(buffer, &tmp, sizeof(tmp))` and needs no
-    // alignment (the ABI struct is 8-aligned but userspace may pass any address).
-    unsafe { core::ptr::copy_nonoverlapping(out.as_ptr(), buf as *mut u8, STATX_SIZE); }
+    if um::put_bytes(buf, &out).is_err() { return um::EFAULT; }
     0
 }

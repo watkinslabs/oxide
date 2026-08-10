@@ -7,6 +7,7 @@ use vfs::OpenFlags;
 
 use crate::open_common::{enforce_open_perm, break_lease_for_open, normalize_open_flags, O_CREAT, O_EXCL, O_TRUNC,
     O_DIRECTORY, O_EMPTYPATH, O_NOFOLLOW, OPENAT2_REGULAR, O_TMPFILE, O_PATH};
+use crate::user_mem as um;
 
 const OPEN_HOW_SIZE_VER0: u64 = 24;
 const PAGE_SIZE: u64 = 4096;
@@ -67,17 +68,13 @@ fn copy_open_how(ptr: u64, size: u64) -> Result<OpenHow, i64> {
     if size < OPEN_HOW_SIZE_VER0 { return Err(-(Errno::Einval.as_i32() as i64)); }
     if size > PAGE_SIZE { return Err(-(Errno::E2big.as_i32() as i64)); }
     validate_user_readable(ptr, size)?;
-    // SAFETY: openat2 how span was validated readable for at least 24 bytes; unaligned loads match copy_from_user.
-    let flags = unsafe { core::ptr::read_unaligned(ptr as *const u64) };
-    // SAFETY: openat2 how span was validated readable for at least 24 bytes; unaligned loads match copy_from_user.
-    let mode = unsafe { core::ptr::read_unaligned((ptr + 8) as *const u64) };
-    // SAFETY: openat2 how span was validated readable for at least 24 bytes; unaligned loads match copy_from_user.
-    let resolve = unsafe { core::ptr::read_unaligned((ptr + 16) as *const u64) };
+    let flags = um::get_u64(ptr).map_err(|_| um::EFAULT)?;
+    let mode = um::get_u64(ptr + 8).map_err(|_| um::EFAULT)?;
+    let resolve = um::get_u64(ptr + 16).map_err(|_| um::EFAULT)?;
     if size > OPEN_HOW_SIZE_VER0 {
         let mut p = ptr + OPEN_HOW_SIZE_VER0;
         while p < ptr + size {
-            // SAFETY: extension tail byte lies inside the validated readable open_how span.
-            if unsafe { core::ptr::read_volatile(p as *const u8) } != 0 {
+            if um::get_u8(p).map_err(|_| um::EFAULT)? != 0 {
                 return Err(-(Errno::E2big.as_i32() as i64));
             }
             p += 1;

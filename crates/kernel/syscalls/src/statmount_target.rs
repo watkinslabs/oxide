@@ -31,24 +31,17 @@ fn neg(e: Errno) -> i64 { -(e.as_i32() as i64) }
 /// the struct, then its argument admission. # C: O(1)
 pub(crate) fn read_req(req: u64, by_fd: bool) -> Result<MntIdReq, i64> {
     user_readable(req, 4)?;
-    // SAFETY: `req` validated readable for the `struct mnt_id_req` size prefix.
-    let size = unsafe { core::ptr::read_unaligned(req as *const u32) };
+    let size = crate::user_mem::get_u32(req).map_err(|_| crate::user_mem::EFAULT)?;
     req_size_check(size).map_err(neg)?;
     user_readable(req, size as u64)?;
     let (known, tail) = req_copy_plan(size);
     let mut head = [0u8; MNT_ID_REQ_SIZE_VER1 as usize];
-    // SAFETY: `req` validated readable for `size` bytes and `known <= size`; a
-    // byte copy into a local array needs no alignment.
-    unsafe { core::ptr::copy_nonoverlapping(req as *const u8, head.as_mut_ptr(), known); }
+    crate::user_mem::get_into(req, &mut head[..known]).map_err(|_| crate::user_mem::EFAULT)?;
     let mut tail_nonzero = false;
     if tail != 0 {
         let mut rest = alloc::vec![0u8; tail];
-        // SAFETY: `req` validated readable for `size` bytes; this reads the
-        // remainder past the struct this kernel knows, inside that range.
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                (req + MNT_ID_REQ_SIZE_VER1 as u64) as *const u8, rest.as_mut_ptr(), tail);
-        }
+        crate::user_mem::get_into(req + MNT_ID_REQ_SIZE_VER1 as u64, &mut rest)
+            .map_err(|_| crate::user_mem::EFAULT)?;
         tail_nonzero = rest.iter().any(|b| *b != 0);
     }
     decode_mnt_id_req(&head, tail_nonzero, by_fd).map_err(neg)

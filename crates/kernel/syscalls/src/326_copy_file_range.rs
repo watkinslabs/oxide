@@ -8,6 +8,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
+use crate::user_mem as um;
 
 fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
@@ -56,16 +57,11 @@ pub fn sys_copy_file_range(args: &SyscallArgs) -> i64 {
 fn load_pos(ptr: u64, file: &vfs::File) -> Result<u64, i64> {
     if ptr == 0 { return Ok(file.pos()); }
     validate_user_buf(ptr, 8, 8)?;
-    // SAFETY: `validate_user_buf` proved 8 readable, 8-aligned bytes at `ptr`
-    // below USER_VA_END in the caller's active address space.
-    Ok(unsafe { core::ptr::read_volatile(ptr as *const u64) })
+    um::get_u64(ptr).map_err(|_| um::EFAULT)
 }
 
 /// # C: O(1)
 fn store_pos(ptr: u64, v: u64) -> Result<(), i64> {
     validate_user_buf_writable(ptr, 8, 8)?;
-    // SAFETY: `validate_user_buf_writable` proved 8 writable, 8-aligned bytes
-    // at `ptr` below USER_VA_END in the caller's active address space.
-    unsafe { core::ptr::write_volatile(ptr as *mut u64, v); }
-    Ok(())
+    um::put_u64(ptr, v).map_err(|_| um::EFAULT)
 }

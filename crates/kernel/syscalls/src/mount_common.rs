@@ -87,9 +87,7 @@ pub(crate) fn read_user_cstr_owned(p: u64, max: usize) -> Result<String, i64> {
             }
             checked_page = page;
         }
-        // SAFETY: addr is below USER_VA_END and its containing VMA permits read.
-        // Not-present pages are demand-faulted by the active user address space.
-        let b = unsafe { core::ptr::read_volatile(addr as *const u8) };
+        let b = crate::user_mem::get_u8(addr).map_err(|_| efault())?;
         if b == 0 { break; }
         out.push(b);
     }
@@ -139,9 +137,7 @@ fn read_user_cstr_bytes(p: u64, max: usize) -> Result<Vec<u8>, i64> {
             }
             checked_page = page;
         }
-        // SAFETY: addr is below USER_VA_END and its containing VMA permits read.
-        // Not-present pages are demand-faulted by the active user address space.
-        let b = unsafe { core::ptr::read_volatile(addr as *const u8) };
+        let b = crate::user_mem::get_u8(addr).map_err(|_| efault())?;
         if b == 0 { return Ok(out); }
         out.push(b);
     }

@@ -4,6 +4,7 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::userbuf::validate_user_buf_writable;
+use crate::user_mem as um;
 
 const ITIMER_REAL:    u64 = 0;
 const ITIMER_VIRTUAL: u64 = 1;
@@ -48,12 +49,8 @@ pub fn sys_getitimer(args: &SyscallArgs) -> i64 {
     };
     let (i_s, i_us) = sched::clock::ns_to_timeval(interval);
     let (r_s, r_us) = sched::clock::ns_to_timeval(rem);
-    // SAFETY: curr validated writable; CPL=0 writes through caller's AS.
-    unsafe {
-        core::ptr::write_unaligned( curr       as *mut u64, i_s);
-        core::ptr::write_unaligned((curr +  8) as *mut u64, i_us);
-        core::ptr::write_unaligned((curr + 16) as *mut u64, r_s);
-        core::ptr::write_unaligned((curr + 24) as *mut u64, r_us);
-    }
+    let ok = um::put_u64(curr, i_s).is_ok() && um::put_u64(curr + 8, i_us).is_ok()
+        && um::put_u64(curr + 16, r_s).is_ok() && um::put_u64(curr + 24, r_us).is_ok();
+    if !ok { return um::EFAULT; }
     0
 }

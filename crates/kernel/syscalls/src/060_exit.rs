@@ -179,9 +179,10 @@ pub fn do_exit(status: i32) -> i64 {
             // (crashed every threaded app on exit). Validate the writable VMA
             // first; skip silently if gone (Linux's put_user fault is ignored).
             if ctid != 0 && crate::userbuf::validate_user_buf_writable(ctid, 4, 4).is_ok() {
-                // SAFETY: validated as a mapped, writable 4-byte user slot;
-                // demand-paging resolves a not-present page on this CPL=0 write.
-                unsafe { core::ptr::write_volatile(ctid as *mut i32, 0); }
+                // Best-effort like Linux's put_user(0, tidptr): a fault here
+                // (page unmapped/swapped between the check above and now) is
+                // silently ignored, same as the range-checked path used to be.
+                let _ = crate::user_mem::put_i32(ctid, 0);
                 // FUTEX_WAKE | PRIVATE: clear_child_tid / pthread_join is
                 // process-private, so it must key on (mm,va) to match the
                 // joining thread's private FUTEX_WAIT.

@@ -5,6 +5,7 @@
 use alloc::sync::Arc;
 use hal::USER_VA_END;
 use syscall::errno::Errno;
+use crate::user_mem as um;
 
 // SOL_SOCKET is answered before family dispatch, never by the family table.
 pub mod sol_socket;
@@ -347,11 +348,7 @@ fn user_sockaddr_nl(dest_p: u64, dest_len: u64) -> Option<[u8; ::netlink::SOCKAD
     let end = dest_p.checked_add(address_bytes)?;
     if dest_p == 0 || dest_len < address_bytes || end > USER_VA_END { return None; }
     let mut name = [0u8; ::netlink::SOCKADDR_NL_SIZE];
-    for (index, byte) in name.iter_mut().enumerate() {
-        // SAFETY: the complete sockaddr_nl range was bounds-checked against
-        // USER_VA_END above, so every byte of this read is user-address-valid.
-        *byte = unsafe { core::ptr::read_volatile((dest_p + index as u64) as *const u8) };
-    }
+    if um::get_into(dest_p, &mut name).is_err() { return None; }
     Some(name)
 }
 

@@ -46,8 +46,7 @@ pub fn getsiginfo(target: &Task, data: u64) -> Result<(), Errno> {
     if crate::userbuf::validate_user_buf_writable(data, SIGINFO_BYTES, 1).is_err() {
         return Err(Errno::Efault);
     }
-    crate::signal_common::write_user_siginfo(data, snap.signo, Some(snap));
-    Ok(())
+    crate::signal_common::write_user_siginfo(data, snap.signo, Some(snap))
 }
 
 /// PTRACE_SETSIGINFO — same EINVAL-when-not-signal-stopped rule.
@@ -73,7 +72,8 @@ pub fn setsiginfo(target: &Task, data: u64) -> Result<(), Errno> {
     // than silently truncating the tracer's record.
     crate::s101_ptrace_decide::siginfo_expansion_check(
         signo, code, &rec[user::SIGINFO_KERNEL_PREFIX..])?;
-    *target.ptrace_siginfo.lock() = Some(crate::signal_common::read_user_siginfo(data, signo));
+    let rec = crate::signal_common::read_user_siginfo(data, signo)?;
+    *target.ptrace_siginfo.lock() = Some(rec);
     Ok(())
 }
 

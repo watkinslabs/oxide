@@ -48,8 +48,7 @@ pub fn sys_waitid(args: &SyscallArgs) -> i64 {
             kind: local_kind, wstat: local_wstat, pid: rv as i32, uid: local_uid,
         });
         let bytes = siginfo_bytes(sched::signum::Signum::Sigchld.as_u8() as i32, report);
-        // SAFETY: full siginfo byte range validated writable in the caller's AS; a byte copy needs no alignment, as Linux copy_to_user permits.
-        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), infop as *mut u8, bytes.len()); }
+        if crate::user_mem::put_bytes(infop, &bytes).is_err() { return crate::user_mem::EFAULT; }
     }
     waitid_result(rv, forced_nonblock)
 }

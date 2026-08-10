@@ -8,6 +8,7 @@ use crate::socket;
 
 use crate::userbuf::validate_user_buf;
 use crate::userbuf::validate_user_buf_readable;
+use crate::user_mem as um;
 
 #[cfg(target_os = "oxide-kernel")]
 fn current_task() -> Option<&'static sched::Task> { sched::live::current() }
@@ -175,10 +176,10 @@ pub fn sys_writev(args: &SyscallArgs) -> i64 {
     let mut imported_total = 0usize;
     for i in 0..iovcnt {
         let iov_i = iov + i * 16;
-        // SAFETY: iov array validated above; iov_i lies inside; 8-byte aligned per Linux ABI.
-        let base = unsafe { core::ptr::read_volatile(iov_i as *const u64) };
-        // SAFETY: same range as the read above; iov_len at +8 is 8-byte aligned.
-        let len  = unsafe { core::ptr::read_volatile((iov_i + 8) as *const u64) };
+        let (base, len) = match (um::get_u64(iov_i), um::get_u64(iov_i + 8)) {
+            (Ok(b), Ok(l)) => (b, l),
+            _ => { cur.account_write_result(um::EFAULT); return um::EFAULT; }
+        };
         if len == 0 { continue; }
         if let Err(rv) = validate_user_buf_readable(base, len, 1) {
             cur.account_write_result(rv);

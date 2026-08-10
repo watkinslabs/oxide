@@ -179,15 +179,13 @@ fn trace_mutter_syscall(phase: &'static [u8], nr: u64, a0: u64, a1: u64, a2: u64
         klog::write_raw(b" nfds=");
         klog::write_dec_u64(a1);
         if phase == b"enter" && a2 != 0 && crate::userbuf::validate_user_buf_readable(a2, 16, 1).is_ok() {
-            // SAFETY: the debug trace just validated the complete user timespec.
-            let (sec, nsec) = unsafe {
-                (core::ptr::read_unaligned(a2 as *const i64),
-                 core::ptr::read_unaligned((a2 + 8) as *const i64))
-            };
-            klog::write_raw(b" sec=");
-            klog::write_dec_u64(sec as u64);
-            klog::write_raw(b" nsec=");
-            klog::write_dec_u64(nsec as u64);
+            // Debug trace only: a fault on the fetch just skips this field pair.
+            if let (Ok(sec), Ok(nsec)) = (crate::user_mem::get_i64(a2), crate::user_mem::get_i64(a2 + 8)) {
+                klog::write_raw(b" sec=");
+                klog::write_dec_u64(sec as u64);
+                klog::write_raw(b" nsec=");
+                klog::write_dec_u64(nsec as u64);
+            }
         }
         if let Some(rv) = rv {
             klog::write_raw(b" rv=");
@@ -200,12 +198,10 @@ fn trace_mutter_syscall(phase: &'static [u8], nr: u64, a0: u64, a1: u64, a2: u64
                     let mut index = 0u64;
                     while index < n {
                         let pfd = a0 + index * 8;
-                        // SAFETY: the trace validated all returned pollfd records.
-                        let (fd, events, revents) = unsafe {
-                            (core::ptr::read_unaligned(pfd as *const i32),
-                             core::ptr::read_unaligned((pfd + 4) as *const i16),
-                             core::ptr::read_unaligned((pfd + 6) as *const i16))
-                        };
+                        // Debug trace only: a fault on the fetch just skips this record.
+                        let Ok(fd) = crate::user_mem::get_i32(pfd) else { index += 1; continue; };
+                        let Ok(events) = crate::user_mem::get_i16(pfd + 4) else { index += 1; continue; };
+                        let Ok(revents) = crate::user_mem::get_i16(pfd + 6) else { index += 1; continue; };
                         klog::write_raw(b" fd="); klog::write_dec_u64(fd as u32 as u64);
                         klog::write_raw(b" ev="); klog::write_hex_u64(events as u16 as u64);
                         klog::write_raw(b" re="); klog::write_hex_u64(revents as u16 as u64);
@@ -240,8 +236,8 @@ fn trace_mutter_syscall(phase: &'static [u8], nr: u64, a0: u64, a1: u64, a2: u64
             let mut i = 0u64;
             while i < a1 {
                 let pfd = a0 + i * 8;
-                // SAFETY: validated complete pollfd array above.
-                let fd = unsafe { core::ptr::read_unaligned(pfd as *const i32) };
+                // Debug trace only: a fault on the fetch just skips this record.
+                let Ok(fd) = crate::user_mem::get_i32(pfd) else { i += 1; continue; };
                 if (fd == frame_a || fd == frame_b)
                     && MUTTER_FRAME_TIMERFD_POLL_TRACE_REMAINING.fetch_update(
                         Ordering::Relaxed, Ordering::Relaxed,
@@ -327,11 +323,9 @@ fn trace_mutter_syscall(phase: &'static [u8], nr: u64, a0: u64, a1: u64, a2: u64
                     |remaining| remaining.checked_sub(1)).is_err()
                 { break; }
                 let event = a1 + (index as u64) * 12;
-                // SAFETY: the kernel just copied this epoll_event to `event`; the
-                // readable user range remains validated for this debug-only ledger.
-                let (mask, data) = unsafe {
-                    (core::ptr::read_unaligned(event as *const u32),
-                     core::ptr::read_unaligned((event + 4) as *const u64))
+                // Debug trace only: a fault on the fetch just skips this record.
+                let (Ok(mask), Ok(data)) = (crate::user_mem::get_u32(event), crate::user_mem::get_u64(event + 4)) else {
+                    index += 1; continue;
                 };
                 klog::write_raw(b"[MUTTEREPOLL tid=");
                 klog::write_dec_u64(sched::live::current().map(|c| c.tid as u64).unwrap_or(0));

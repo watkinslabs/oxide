@@ -11,6 +11,7 @@ use crate::poll::poll_common::{monotonic_ns, PollWaiter};
 #[cfg(test)]
 use super::poll::poll_common::{monotonic_ns, PollWaiter};
 use crate::pselect_ppoll::wait_verdict;
+use crate::user_mem as um;
 
 /// `poll(2)`'s `int timeout` is milliseconds; Linux `do_sys_poll`'s caller
 /// folds it into `end_time` through `poll_select_set_timeout(…, ms / MSEC_PER_SEC,
@@ -94,10 +95,8 @@ fn copy_pollfds_from_user(fds_ptr: u64, nfds: u64) -> Result<Vec<PollFd>, i64> {
     let mut i = 0;
     while i < nfds {
         let p = fds_ptr + i * 8;
-        // SAFETY: pollfd[i].fd/events lie inside the readable validated nfds*8-byte range.
-        let fd = unsafe { core::ptr::read_unaligned(p as *const i32) };
-        // SAFETY: pollfd[i].events lie inside the readable validated nfds*8-byte range.
-        let events = unsafe { core::ptr::read_unaligned((p + 4) as *const i16) };
+        let fd = um::get_i32(p).map_err(|_| um::EFAULT)?;
+        let events = um::get_i16(p + 4).map_err(|_| um::EFAULT)?;
         out.push(PollFd { fd, events, revents: 0 });
         i += 1;
     }
@@ -112,8 +111,7 @@ fn copy_pollfds_revents_to_user(fds_ptr: u64, fds: &[PollFd]) -> Result<(), i64>
     if let Err(rv) = super::userbuf::validate_user_buf_writable(fds_ptr, bytes, 1) { return Err(rv); }
     for (i, pfd) in fds.iter().enumerate() {
         let p = fds_ptr + (i as u64) * 8 + 6;
-        // SAFETY: pollfd[i].revents lies inside the writable validated nfds*8-byte range.
-        unsafe { core::ptr::write_unaligned(p as *mut i16, pfd.revents); }
+        um::put_i16(p, pfd.revents).map_err(|_| um::EFAULT)?;
     }
     Ok(())
 }

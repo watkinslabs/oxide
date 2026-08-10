@@ -249,6 +249,7 @@ pub(crate) mod ioctl_owner;
 // a caller address has no exception-table fixup, so every one of them belongs
 // on the fault-recovering usercopy this module wraps.
 pub(crate) mod ioctl_user;
+pub(crate) mod user_mem;
 // tkill(2)/tgkill(2) share one `do_tkill`; the pid/tgid admission rules are the
 // only user-visible part of a rejected call, so they compile hosted.
 #[cfg(any(target_os = "oxide-kernel", test))]

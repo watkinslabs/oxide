@@ -65,7 +65,6 @@ pub fn sys_newfstatat(args: &SyscallArgs) -> i64 {
     // Linux vfs_fstatat and cp_new_stat conversion run before the output buffer fault.
     if let Err(rv) = validate_user_buf_writable(buf, STAT_BYTES, 1) { return rv; }
 
-    // SAFETY: buf validated STAT_BYTES writable below USER_VA_END.
-    unsafe { write_new_stat_user(buf, &out); }
+    if let Err(rv) = write_new_stat_user(buf, &out) { return rv; }
     0
 }

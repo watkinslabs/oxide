@@ -397,3 +397,9 @@ fn a_negative_nfds_is_einval_and_a_closed_fd_in_a_set_is_ebadf() {
     set = 0;
     assert_eq!(set, 0);
 }
+
+// The spliced slot files reach their caller-memory accessors through
+// `crate::user_mem`; supplying the real module here keeps this harness on the
+// same fault-recoverable usercopy the kernel build uses.
+#[path = "../src/user_mem/mod.rs"]
+mod user_mem;

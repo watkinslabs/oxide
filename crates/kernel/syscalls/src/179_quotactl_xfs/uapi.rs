@@ -116,3 +116,10 @@ pub(super) struct FsQuotaStatv {
 const _: [(); 112] = [(); core::mem::size_of::<FsDiskQuota>()];
 const _: [(); 80] = [(); core::mem::size_of::<FsQuotaStat>()];
 const _: [(); 160] = [(); core::mem::size_of::<FsQuotaStatv>()];
+
+// SAFETY: repr(C), every field an integer or a byte array, no padding-sensitive invariant — any byte pattern is a valid value.
+unsafe impl crate::user_mem::UserPod for FsDiskQuota {}
+// SAFETY: repr(C), every field an integer, no padding-sensitive invariant — any byte pattern is a valid value.
+unsafe impl crate::user_mem::UserPod for FsQuotaStat {}
+// SAFETY: repr(C), every field an integer, no padding-sensitive invariant — any byte pattern is a valid value.
+unsafe impl crate::user_mem::UserPod for FsQuotaStatv {}

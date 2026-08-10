@@ -9,6 +9,7 @@ use syscall::errno::Errno;
 use crate::userbuf::validate_user_buf;
 use crate::time_common::{NSEC_PER_USEC, NS_PER_SEC, TIMEVAL_SIZE, TIMEZONE_SIZE,
     TZ_DSTTIME, TZ_MINUTESWEST, TZ_MINUTESWEST_LIMIT, USEC_PER_SEC};
+use crate::user_mem as um;
 
 /// `sys_settimeofday(tv, tz)` — slot 164. Updates wall clock/timezone state.
 /// # C: O(1)
@@ -19,11 +20,9 @@ pub fn kernel_settimeofday(args: &SyscallArgs) -> i64 {
     let tz = args.a1;
     let tv_pair = if tv != 0 {
         if let Err(rv) = validate_user_buf(tv, TIMEVAL_SIZE, 1) { return rv; }
-        // SAFETY: tv validated readable for one timeval; unaligned loads match Linux copy_from_user layout.
-        let (sec, usec) = unsafe {
-            let s = core::ptr::read_unaligned(tv as *const i64);
-            let u = core::ptr::read_unaligned((tv + 8) as *const i64);
-            (s, u)
+        let (sec, usec) = match (um::get_i64(tv), um::get_i64(tv + 8)) {
+            (Ok(s), Ok(u)) => (s, u),
+            _ => return um::EFAULT,
         };
         if sec < 0 || usec < 0 || usec >= USEC_PER_SEC as i64 {
             return -(Errno::Einval.as_i32() as i64);
@@ -34,11 +33,9 @@ pub fn kernel_settimeofday(args: &SyscallArgs) -> i64 {
     };
     let tz_pair = if tz != 0 {
         if let Err(rv) = validate_user_buf(tz, TIMEZONE_SIZE, 1) { return rv; }
-        // SAFETY: tz validated readable for one timezone; unaligned loads match Linux copy_from_user layout.
-        let (minutes, dst) = unsafe {
-            let m = core::ptr::read_unaligned(tz as *const i32);
-            let d = core::ptr::read_unaligned((tz + 4) as *const i32);
-            (m, d)
+        let (minutes, dst) = match (um::get_i32(tz), um::get_i32(tz + 4)) {
+            (Ok(m), Ok(d)) => (m, d),
+            _ => return um::EFAULT,
         };
         if !(-TZ_MINUTESWEST_LIMIT..=TZ_MINUTESWEST_LIMIT).contains(&minutes) {
             return -(Errno::Einval.as_i32() as i64);

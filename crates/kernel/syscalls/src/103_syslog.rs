@@ -60,13 +60,9 @@ pub fn sys_syslog(args: &SyscallArgs) -> i64 {
 }
 
 /// Copy `n` bytes of `src` to the already-validated user buffer `dst`.
-fn copy_out(dst: u64, src: &[u8]) {
-    // SAFETY: `dst .. dst+src.len()` was accepted by validate_user_buf_writable before this call, so it is a mapped, writable user range in the caller's live address space; CPL=0 byte stores through it.
-    unsafe {
-        for (i, b) in src.iter().enumerate() {
-            core::ptr::write_volatile((dst + i as u64) as *mut u8, *b);
-        }
-    }
+/// # C: O(src.len())
+fn copy_out(dst: u64, src: &[u8]) -> Result<(), syscall::errno::Errno> {
+    crate::user_mem::put_bytes(dst, src)
 }
 
 /// `SYSLOG_ACTION_READ`: consume from the syslog cursor, blocking until the
@@ -81,7 +77,9 @@ fn read_blocking(buf: u64, len: i32) -> i64 {
     let mut tmp = alloc::vec![0u8; n];
     loop {
         let got = klog::syslog::read_into(&mut tmp[..]);
-        if got != 0 { copy_out(buf, &tmp[..got]); return got as i64; }
+        if got != 0 {
+            return if copy_out(buf, &tmp[..got]).is_ok() { got as i64 } else { -(Errno::Efault.as_i32() as i64) };
+        }
         // Linux `syslog_print` waits with
         // `wait_event_interruptible`, so an interrupted read is -ERESTARTSYS,
         // not EINTR. The doc line above already said `wait_event_interruptible`
@@ -117,6 +115,5 @@ fn read_all(buf: u64, len: i32, clear_after: bool) -> i64 {
     if let Err(rv) = crate::userbuf::validate_user_buf_writable(buf, n as u64, 1) { return rv; }
     let mut tmp = alloc::vec![0u8; n];
     let got = klog::syslog::read_all_into(&mut tmp[..], clear_after);
-    copy_out(buf, &tmp[..got]);
-    got as i64
+    if copy_out(buf, &tmp[..got]).is_ok() { got as i64 } else { -(Errno::Efault.as_i32() as i64) }
 }

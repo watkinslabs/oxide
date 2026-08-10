@@ -313,3 +313,9 @@ fn an_interrupted_poll_arms_do_restart_poll_with_the_absolute_end_time() {
     assert!(a[3] > 0, "an absolute end_time, not a relative duration");
     reset();
 }
+
+// The spliced slot files reach their caller-memory accessors through
+// `crate::user_mem`; supplying the real module here keeps this harness on the
+// same fault-recoverable usercopy the kernel build uses.
+#[path = "../../syscalls/src/user_mem/mod.rs"]
+mod user_mem;

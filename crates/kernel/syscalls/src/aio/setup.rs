@@ -13,6 +13,7 @@ use syscall::errno::Errno;
 use crate::aio_abi::geometry::plan_ring;
 use crate::aio::ctx::{self, AioContext, RingMem};
 use crate::userbuf::{validate_user_buf_readable, validate_user_buf_writable};
+use crate::user_mem as um;
 
 /// `PROT_READ | PROT_WRITE` for the ring mapping: userspace advances
 /// `aio_ring.head` itself when it reaps without a syscall.
@@ -33,8 +34,7 @@ fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 /// # C: O(nr_pages)
 pub fn sys_io_setup(nr_events: u32, ctxp: u64) -> i64 {
     if validate_user_buf_readable(ctxp, CTX_ID_BYTES, CTX_ID_BYTES).is_err() { return err(Errno::Efault); }
-    // SAFETY: ctxp validated readable and 8-byte aligned below USER_VA_END; CPL=0 reads the caller's aio_context_t through its active address space.
-    let prev = unsafe { core::ptr::read_volatile(ctxp as *const u64) };
+    let prev = match um::get_u64(ctxp) { Ok(v) => v, Err(_) => return err(Errno::Efault) };
     if prev != 0 || nr_events == 0 { return err(Errno::Einval); }
 
     let page = hal::PAGE_SIZE_BYTES;
@@ -86,12 +86,10 @@ pub fn sys_io_setup(nr_events: u32, ctxp: u64) -> i64 {
 
     // The context is reachable only through this address, so a write-back
     // failure must not leave it stranded in the table.
-    if validate_user_buf_writable(ctxp, CTX_ID_BYTES, CTX_ID_BYTES).is_err() {
+    if validate_user_buf_writable(ctxp, CTX_ID_BYTES, CTX_ID_BYTES).is_err() || um::put_u64(ctxp, user_base).is_err() {
         teardown(&c);
         return err(Errno::Efault);
     }
-    // SAFETY: ctxp validated writable and 8-byte aligned below USER_VA_END; CPL=0 publishes the ring's user address as the caller's aio_context_t.
-    unsafe { core::ptr::write_volatile(ctxp as *mut u64, user_base); }
     0
 }
 
