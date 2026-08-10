@@ -122,10 +122,49 @@ impl PerfEvent {
     pub fn new_inherited(parent: &Arc<PerfEvent>, child_tid: u32,
                          leader: Option<&Arc<PerfEvent>>) -> Arc<PerfEvent>
     {
-        let ev = Self::new_inner(parent.attr, parent.source, Some(child_tid), parent.cpu,
-            leader.map(Arc::downgrade), Some(Arc::downgrade(parent)));
+        // FLATTENED, not chained: an inherited event links back to the ROOT of
+        // the tree — the one event that has an fd, and therefore the one whose
+        // holder is doing the reading. Chaining a grandchild onto the thread
+        // in the middle loses its whole count the moment that thread exits
+        // first, which is the ordinary shape of a fork/exec/exit pipeline.
+        let root = match parent.parent.as_ref().and_then(Weak::upgrade) {
+            Some(r) => r,
+            None    => Arc::clone(parent),
+        };
+        let ev = Self::new_inner(root.attr, root.source, Some(child_tid), root.cpu,
+            leader.map(Arc::downgrade), Some(Arc::downgrade(&root)));
+        // The child's counter follows the state the parent event is ACTUALLY
+        // in, not the `attr.disabled` bit it was opened with: an event enabled
+        // through its fd after being opened disabled must have its children
+        // counting, and one disabled again must not.
+        let live = parent.state.lock().counter.enabled;
+        let (src, now) = (ev.sample(), now_ns());
+        let mut g = ev.state.lock();
+        if live { g.counter.enable(src, now); } else { g.counter.disable(src, now); }
+        drop(g);
         if let Some(l) = leader { l.state.lock().siblings.push(Arc::downgrade(&ev)); }
         ev
+    }
+
+    /// Bring the stored counter up to date against the task this event counts,
+    /// and republish the mapped control page from it — the snapshot a consumer
+    /// reads without entering the kernel. Called at each context switch for an
+    /// `attr.inherit_stat` event, which is what makes a per-task count visible
+    /// while the task is still running instead of only once it exits.
+    /// # C: O(1)
+    pub fn sync_now(&self) {
+        let src = self.sample();
+        let now = now_ns();
+        let (count, enabled, running, rb) = {
+            let mut g = self.state.lock();
+            g.counter.update(src, now);
+            let t = g.counter.time_enabled(now);
+            (g.counter.count(src).wrapping_add(g.child_count),
+             t.saturating_add(g.child_time_enabled),
+             t.saturating_add(g.child_time_running),
+             g.buffer.clone())
+        };
+        if let Some(rb) = rb { rb.update_userpage(count, enabled, running); }
     }
 
     /// This event's group siblings, when it is a leader. # C: O(siblings)

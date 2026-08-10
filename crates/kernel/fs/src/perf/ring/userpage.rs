@@ -52,6 +52,14 @@ pub fn update(page: &mut [u8], count: u64, time_enabled: u64, time_running: u64)
     put_u32(page, off::OFF_LOCK, seq.wrapping_add(2));
 }
 
+/// The published counter snapshot: `(offset, time_enabled, time_running)`.
+/// # C: O(1)
+pub fn snapshot(page: &[u8]) -> (u64, u64, u64) {
+    (get_u64(page, off::OFF_OFFSET),
+     get_u64(page, off::OFF_TIME_ENABLED),
+     get_u64(page, off::OFF_TIME_RUNNING))
+}
+
 /// Publish the producer head. The caller issues the write barrier (B, pairing
 /// with userspace's read barrier C) BEFORE this store, so the record bytes are
 /// visible before the head that advertises them. # C: O(1)

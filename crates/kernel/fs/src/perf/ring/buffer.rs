@@ -165,6 +165,14 @@ impl PerfBuffer {
         });
     }
 
+    /// The counter snapshot as it stands in the control page — what a consumer
+    /// mapping this ring reads without entering the kernel.
+    /// `(offset, time_enabled, time_running)`. # C: O(1)
+    #[cfg(test)]
+    pub fn peek_userpage(&self) -> (u64, u64, u64) {
+        self.with_user_page(|p| userpage::snapshot(p)).unwrap_or((0, 0, 0))
+    }
+
     /// Read `len` bytes of the data area back, for tests that must inspect the
     /// exact record a producer wrote. # C: O(len)
     #[cfg(test)]
