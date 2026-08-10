@@ -8,6 +8,7 @@ use alloc::sync::Arc;
 use sched::Task;
 use syscall::errno::Errno;
 use crate::s101_ptrace_uapi as uapi;
+use crate::s101_ptrace_user as user;
 
 const SIGINFO_BYTES: u64 = 128;
 const SIGSET_BYTES: u64 = 8;
@@ -61,22 +62,17 @@ pub fn setsiginfo(target: &Task, data: u64) -> Result<(), Errno> {
     if crate::userbuf::validate_user_buf(data, SIGINFO_BYTES, 1).is_err() {
         return Err(Errno::Efault);
     }
-    // SAFETY: `data..data+128` validated readable in the caller's AS; only si_signo is read directly here, at offset 0, and the rest is decoded by the shared reader from the same proven range.
-    let signo = unsafe { core::ptr::read_unaligned(data as *const i32) } as u32;
+    // One fault-recovering copy of the whole record replaces the three raw
+    // derefs this used to do: a range check is not fault recovery, and a tracer
+    // that unmapped the page between check and read faulted the kernel.
+    let mut rec = [0u8; user::SIGINFO_BYTES];
+    uaccess::copy_from_user(&mut rec, data)?;
+    let (signo, code) = user::siginfo_prefix(&rec);
     // A future/unknown layout can use bytes past the 48-byte kernel prefix.
     // This kernel cannot retain that expansion, so reject nonzero bytes rather
     // than silently truncating the tracer's record.
-    // SAFETY: setsiginfo validated this full 128-byte user record readable, so
-    // the aligned-independent read at the ABI code offset is in that range.
-    let code = unsafe { core::ptr::read_unaligned((data + 8) as *const i32) };
-    // SAFETY: the full 128-byte record was validated above; bytes 48..128
-    // are within that proven readable range and are copied before testing.
-    let mut expansion = [0u8; 80];
-    // SAFETY: setsiginfo validated data through byte 128; this copies only its
-    // trailing 80 bytes into the equally sized local expansion buffer.
-    unsafe { core::ptr::copy_nonoverlapping((data + 48) as *const u8,
-                                             expansion.as_mut_ptr(), expansion.len()); }
-    crate::s101_ptrace_decide::siginfo_expansion_check(signo, code, &expansion)?;
+    crate::s101_ptrace_decide::siginfo_expansion_check(
+        signo, code, &rec[user::SIGINFO_KERNEL_PREFIX..])?;
     *target.ptrace_siginfo.lock() = Some(crate::signal_common::read_user_siginfo(data, signo));
     Ok(())
 }
@@ -96,8 +92,9 @@ pub fn setsigmask(target: &Task, addr: u64, data: u64) -> Result<(), Errno> {
     if crate::userbuf::validate_user_buf(data, SIGSET_BYTES, 1).is_err() {
         return Err(Errno::Efault);
     }
-    // SAFETY: `data..data+8` validated readable in the caller's AS; sigset_t is a bare u64 on both supported arches.
-    let new = unsafe { core::ptr::read_unaligned(data as *const u64) };
+    let mut buf = [0u8; SIGSET_BYTES as usize];
+    uaccess::copy_from_user(&mut buf, data)?;
+    let new = u64::from_ne_bytes(buf);
     let undeniable = sched::Signum::Sigkill.bit() | sched::Signum::Sigstop.bit();
     target.sigmask.store(new & !undeniable, Ordering::Release);
     Ok(())
@@ -156,7 +153,5 @@ fn put_u64(data: u64, v: u64) -> Result<(), Errno> {
     if crate::userbuf::validate_user_buf_writable(data, 8, 1).is_err() {
         return Err(Errno::Efault);
     }
-    // SAFETY: `data..data+8` validated as a mapped writable range in the caller's AS; unaligned store, as Linux `put_user` permits.
-    unsafe { core::ptr::write_unaligned(data as *mut u64, v); }
-    Ok(())
+    uaccess::copy_to_user(data, &v.to_ne_bytes())
 }

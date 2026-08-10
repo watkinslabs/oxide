@@ -368,6 +368,10 @@ pub mod setns_flags;
 #[path = "101_ptrace/sysinfo.rs"] pub mod s101_ptrace_sysinfo;
 #[cfg(any(target_os = "oxide-kernel", test))]
 #[path = "101_ptrace/sigstop.rs"] pub mod s101_ptrace_sigstop;
+/// User-buffer layouts and chunking for ptrace's copy paths. Ungated so the
+/// rules stay reachable from `cargo test`; the four call sites are whole-file
+/// kernel-gated (`docs/53`).
+#[path = "101_ptrace/user.rs"] pub mod s101_ptrace_user;
 #[cfg(target_os = "oxide-kernel")]
 #[path = "103_syslog.rs"] pub mod s103_syslog;
 
