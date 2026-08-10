@@ -56,6 +56,10 @@ class Console:
         # What the LAST completed `wait` consumed, so a caller can read the
         # value it just asked the guest to print.
         self.seen = b""
+        # How long a blocked write is given before it is called a dead guest.
+        # Set from the run's own timeout: a fixed cap turns a slow start into
+        # a reported failure of the guest.
+        self.patience = 120
         self.log = open(log, "ab") if log else None
 
     def pump(self):
@@ -95,7 +99,7 @@ class Console:
         output, from a guest that never came up. Retry across the whole
         run's patience instead."""
         data = line.encode() + b"\r"
-        deadline = time.time() + 60
+        deadline = time.time() + self.patience
         while True:
             try:
                 self.s.sendall(data)
@@ -119,6 +123,12 @@ def main():
     a = ap.parse_args()
 
     c = Console(a.sock, a.log)
+    c.patience = a.timeout
+    # Nothing may be typed until the guest is producing output. The socket
+    # exists before the machine does, and bytes written into it pile up in the
+    # emulator's buffer until the write blocks — which then reads as a guest
+    # that never accepted input, about a guest that had not started yet.
+    c.wait(re.compile(rb"^\[[0-9]", re.M), a.timeout, "the kernel to start printing")
     # Poll for the shell rather than waiting for the line that announces it.
     # The announcement is printed once, early; a run that attaches to a guest
     # already past that point would wait forever for a line that has already
