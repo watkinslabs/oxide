@@ -100,8 +100,15 @@ class Console:
                 return True
         raise SystemExit(f"kexec-smoke: timed out after {timeout}s waiting for {name}")
 
-    def send(self, line):
+    def send(self, line, per_char=False):
         """Type a line at the guest.
+
+        `per_char` types one byte at a time with a pause between. The serial
+        port on one of these machines loses input bytes when a whole line
+        arrives at once — observed directly in the guest's own echo, which
+        showed doubled and dropped characters in the middle of a command — and
+        a line that arrives mangled makes a shell that is answering look like a
+        shell that is not there.
 
         A write to the console socket can block: early in a boot nothing is
         draining the guest's receive side, and the half-second read timeout
@@ -110,15 +117,20 @@ class Console:
         output, from a guest that never came up. Retry across the whole
         run's patience instead."""
         data = line.encode() + b"\r"
+        chunks = [data[i:i + 1] for i in range(len(data))] if per_char else [data]
         deadline = time.time() + self.patience
-        while True:
-            try:
-                self.s.sendall(data)
-                break
-            except socket.timeout:
+        for chunk in chunks:
+            while True:
+                try:
+                    self.s.sendall(chunk)
+                    break
+                except socket.timeout:
+                    self.pump()
+                    if time.time() > deadline:
+                        raise SystemExit("kexec-smoke: the guest console never accepted input")
+            if per_char:
+                time.sleep(0.02)
                 self.pump()
-                if time.time() > deadline:
-                    raise SystemExit("kexec-smoke: the guest console never accepted input")
         time.sleep(0.3)
 
 
@@ -166,6 +178,21 @@ def main():
            "K=/lib/modules/$KV/vmlinuz; I=/boot/initramfs-$KV.img; "
            "ls -l $K $I; echo KEXEC-PATHS\"\"-OK")
     c.wait(marker("KEXEC-PATHS"), 60, "the second kernel's paths")
+
+    if a.file_load:
+        # A vendor arm64 kernel ships as a self-decompressing container, not as
+        # the raw image the KERNEL-side loader recognises — and the reference's
+        # loader recognises only the raw image, so handing the container
+        # to the file syscall is refused on both sides. The container names
+        # where its payload is and how it is compressed; unpack it here and
+        # load THAT, so what the syscall is asked to lay out is a kernel image
+        # rather than a wrapper neither side claims to read.
+        c.send("if [ x$(dd if=$K bs=4 skip=1 count=1 2>/dev/null) = xzimg ]; then "
+               "O=$(od -An -tu4 -j8 -N4 $K | tr -d ' '); "
+               "S=$(od -An -tu4 -j12 -N4 $K | tr -d ' '); "
+               "tail -c +$((O+1)) $K | head -c $S | zstd -qdc > /tmp/Image && K=/tmp/Image; "
+               "fi; ls -l $K; echo UNWRAP\"\"-OK")
+        c.wait(marker("UNWRAP"), 120, "the kernel image the file loader is given")
 
     # What the tree hands the next kernel. On a machine that describes itself
     # in firmware tables this is the whole machine description, and a run that
@@ -247,8 +274,8 @@ def main():
     while True:
         # A bare newline first: it terminates whatever half-typed line the tty
         # may already hold, so the probe is parsed as a line of its own.
-        c.send("")
-        c.send(NEW_SHELL_CMD)
+        c.send("", per_char=True)
+        c.send(NEW_SHELL_CMD, per_char=True)
         try:
             c.wait(NEW_SHELL_OK, 10, "the relocated kernel's userspace to answer")
             break
