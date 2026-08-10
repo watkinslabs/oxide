@@ -11,13 +11,22 @@ pub fn sys_bpf(args: &SyscallArgs) -> i64 {
     match security::bpf::object_path_command(args) {
         Some(security::bpf::uapi::cmd::OBJ_PIN) => obj_pin(args),
         Some(security::bpf::uapi::cmd::OBJ_GET) => obj_get(args),
-        _ => security::bpf::sys_bpf(args, is_perf_event_fd),
+        _ => security::bpf::sys_bpf(args, PERF_HOOKS),
     }
 }
 
-/// `perf_get_event()` for `BPF_TASK_FD_QUERY`: the perf subsystem owns the
-/// answer and sits above `security`, so the test crosses here. # C: O(1)
+/// `perf_get_event()` and `event->prog` for `BPF_TASK_FD_QUERY`: the perf
+/// subsystem owns both answers and sits above `security`, so they cross here.
+const PERF_HOOKS: security::bpf::PerfHooks = security::bpf::PerfHooks {
+    is_perf: is_perf_event_fd,
+    attached_prog: perf_event_prog,
+};
+
 fn is_perf_event_fd(inode: &vfs::InodeRef) -> bool { ::fs::perf::is_perf_inode(inode) }
+
+fn perf_event_prog(inode: &vfs::InodeRef) -> Option<vfs::InodeRef> {
+    ::fs::perf::attached_prog(inode)
+}
 
 fn obj_pin(args: &SyscallArgs) -> i64 {
     let ptr = match security::bpf::obj_pin_path(args) {

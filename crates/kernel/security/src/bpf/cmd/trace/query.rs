@@ -8,9 +8,12 @@
 //
 // A perf-event fd is described from the program attached to the event.
 // An event with no attached program is `-ENOENT` and nothing is written
-// back, which is what every perf fd in this kernel answers today: no path
-// attaches a program to an event. See the perf-SET_BPF and
-// tracepoint-registry rows in `scratch/known_issues.md`.
+// back. A program of the perf-event type is deliberately not described:
+// the reference reports `-EOPNOTSUPP` (95) for one, because the description
+// it would produce names a trace attach point and a perf-event program has
+// none. Every other attached program implies a tracing event, whose
+// description is read off the trace-event record — blocked on the
+// tracepoint-registry row in `scratch/known_issues.md`.
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -22,7 +25,7 @@ use super::super::super::attr::Attr;
 use super::super::super::uapi;
 use super::super::super::user;
 use super::super::objfd;
-use super::super::super::PerfFdPredicate;
+use super::super::super::{PerfHooks, ProgFacts, BPF_PROG_TYPE_PERF_EVENT};
 
 /// The three descriptor classes the query distinguishes. The
 /// raw-tracepoint link is absent because no link of that kind can exist
@@ -40,19 +43,25 @@ pub(crate) enum QueriedFd {
 
 /// `file->f_op == &bpf_link_fops` first, `perf_get_event()` second.
 /// # C: O(1)
-pub(crate) fn classify(inode: &InodeRef, is_perf: PerfFdPredicate) -> QueriedFd {
+pub(crate) fn classify(inode: &InodeRef, perf: PerfHooks) -> QueriedFd {
     if objfd::link_kind(inode).is_some() { return QueriedFd::OtherLink; }
-    if is_perf(inode) { return QueriedFd::PerfEvent; }
+    if (perf.is_perf)(inode) { return QueriedFd::PerfEvent; }
     QueriedFd::Other
 }
 
 /// `bpf_get_perf_event_info()`. The description is read off the program
-/// attached to the event; without one there is nothing to describe and
-/// the query stops before writing any field. No `perf_event_open` fd in
-/// this kernel carries an attached program, so this is every perf fd's
-/// answer. # C: O(1)
-fn perf_event_info() -> Result<(u32, u32, Vec<u8>, u64, u64), Errno> {
-    Err(Errno::Enoent)
+/// attached to the event; without one there is nothing to describe and the
+/// query stops before writing any field.
+///
+/// A perf-event program is refused outright. Anything else attached to a
+/// perf fd is a tracing event's program, whose attach-point name, type and
+/// probe address come from the trace-event record this kernel has no
+/// registry for — the same `-EOPNOTSUPP` the reference gives for a probe
+/// kind its configuration left out. # C: O(1)
+fn perf_event_info(prog: Option<ProgFacts>) -> Result<(u32, u32, Vec<u8>, u64, u64), Errno> {
+    let prog = prog.ok_or(Errno::Enoent)?;
+    if prog.prog_type == BPF_PROG_TYPE_PERF_EVENT { return Err(Errno::Eopnotsupp); }
+    Err(Errno::Eopnotsupp)
 }
 
 /// `bpf_copy_to_user()`: the name plus its terminator when the caller's
@@ -116,11 +125,15 @@ pub(crate) fn copy_out(
     short.map(|()| 0)
 }
 
-/// Describe one classified descriptor and report it. # C: O(name length)
-pub(crate) fn describe(a: &Attr, uattr: u64, fd: QueriedFd) -> Result<i64, Errno> {
+/// Describe one classified descriptor and report it. `prog` is the perf
+/// event's attached program, already resolved by the caller — only the perf
+/// arm has one. # C: O(name length)
+pub(crate) fn describe(a: &Attr, uattr: u64, fd: QueriedFd, prog: Option<ProgFacts>)
+    -> Result<i64, Errno>
+{
     match fd {
         QueriedFd::PerfEvent => {
-            let (prog_id, fd_type, name, probe_offset, probe_addr) = perf_event_info()?;
+            let (prog_id, fd_type, name, probe_offset, probe_addr) = perf_event_info(prog)?;
             copy_out(a, uattr, prog_id, fd_type, &name, probe_offset, probe_addr)
         }
         QueriedFd::OtherLink | QueriedFd::Other => Err(Errno::Enotsupp),

@@ -103,14 +103,21 @@ pub(in super::super) fn task_fd_query(
     a: &Attr,
     uattr: u64,
     caps: Caps,
-    is_perf: super::super::PerfFdPredicate,
+    perf: super::super::PerfHooks,
 ) -> Result<i64, Errno> {
     use uapi::off::task_fd_query as o;
     attr::check_attr(a, o::LAST_END)?;
     if !caps.sys_admin { return Err(Errno::Eperm); }
     if a.u32_at(o::FLAGS) != 0 { return Err(Errno::Einval); }
     let inode = task_fd(a.u32_at(o::PID), a.u32_at(o::FD))?;
-    query::describe(a, uattr, query::classify(&inode, is_perf))
+    let kind = query::classify(&inode, perf);
+    // `event->prog` is read only once the descriptor is known to be a perf
+    // event; no other kind has one.
+    let prog = (kind == query::QueriedFd::PerfEvent)
+        .then(|| (perf.attached_prog)(&inode))
+        .flatten()
+        .and_then(|p| super::super::prog_facts(&p));
+    query::describe(a, uattr, kind, prog)
 }
 
 #[cfg(test)]
@@ -119,9 +126,13 @@ mod tests {
 
     fn admin() -> Caps { Caps { bpf: false, sys_admin: true, net_admin: false, perfmon: false } }
 
-    /// No test here reaches the descriptor lookup, so the predicate is
-    /// never consulted; `query.rs` covers the classification itself.
-    fn never_perf(_: &vfs::InodeRef) -> bool { false }
+    /// No test here reaches the descriptor lookup, so the hooks are never
+    /// consulted; `query.rs` covers the classification itself.
+    fn no_perf() -> super::super::super::PerfHooks {
+        fn never(_: &vfs::InodeRef) -> bool { false }
+        fn no_prog(_: &vfs::InodeRef) -> Option<vfs::InodeRef> { None }
+        super::super::super::PerfHooks { is_perf: never, attached_prog: no_prog }
+    }
 
     #[test]
     fn check_attr_boundaries_are_the_uapi_offsetofends() {
@@ -180,8 +191,8 @@ mod tests {
         let mut a = Attr::zeroed();
         let f = uapi::off::task_fd_query::FLAGS;
         a.bytes[f..f + 4].copy_from_slice(&1u32.to_ne_bytes());
-        assert_eq!(task_fd_query(&a, 0, Caps::default(), never_perf), Err(Errno::Eperm));
-        assert_eq!(task_fd_query(&a, 0, admin(), never_perf), Err(Errno::Einval));
+        assert_eq!(task_fd_query(&a, 0, Caps::default(), no_perf()), Err(Errno::Eperm));
+        assert_eq!(task_fd_query(&a, 0, admin(), no_perf()), Err(Errno::Einval));
     }
 
     /// The zero-tail check precedes even the capability.
@@ -189,7 +200,7 @@ mod tests {
     fn task_fd_query_checks_the_attr_tail_before_the_capability() {
         let mut a = Attr::zeroed();
         a.bytes[uapi::off::task_fd_query::LAST_END] = 1;
-        assert_eq!(task_fd_query(&a, 0, Caps::default(), never_perf), Err(Errno::Einval));
+        assert_eq!(task_fd_query(&a, 0, Caps::default(), no_perf()), Err(Errno::Einval));
     }
 
     /// A descriptor of neither describable kind is `-ENOTSUPP` (524), which
@@ -200,9 +211,9 @@ mod tests {
     #[test]
     fn an_undescribable_descriptor_is_enotsupp_not_eopnotsupp() {
         let a = Attr::zeroed();
-        assert_eq!(query::describe(&a, 0, query::QueriedFd::Other), Err(Errno::Enotsupp));
-        assert_eq!(query::describe(&a, 0, query::QueriedFd::OtherLink), Err(Errno::Enotsupp));
-        assert_eq!(query::describe(&a, 0, query::QueriedFd::PerfEvent), Err(Errno::Enoent));
+        assert_eq!(query::describe(&a, 0, query::QueriedFd::Other, None), Err(Errno::Enotsupp));
+        assert_eq!(query::describe(&a, 0, query::QueriedFd::OtherLink, None), Err(Errno::Enotsupp));
+        assert_eq!(query::describe(&a, 0, query::QueriedFd::PerfEvent, None), Err(Errno::Enoent));
         assert_eq!(Errno::Enotsupp.as_i32(), 524);
         assert_eq!(Errno::Eopnotsupp.as_i32(), 95);
     }

@@ -29,6 +29,45 @@ pub struct BpfProgInode {
     pub maps: Spinlock<Vec<InodeRef>, TaskListClass>,
 }
 
+/// What an attach site decides on, read off a loaded program. Every field
+/// is derived from the program object itself, so no hook keeps a second copy
+/// of a program's identity or contract.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProgFacts {
+    /// `bpf_prog_aux::id`.
+    pub id: u32,
+    /// `bpf_prog::type`.
+    pub prog_type: u32,
+    /// `bpf_prog::call_get_stack` — whether the bytecode calls either
+    /// stack-walking helper. A hook that cannot supply a full callchain
+    /// refuses such a program.
+    pub call_get_stack: bool,
+}
+
+/// The facts of the program one inode holds, or `None` when the inode holds
+/// something else. # C: O(insn count)
+pub fn prog_facts(inode: &InodeRef) -> Option<ProgFacts> {
+    let prog = inode.private::<BpfProgInode>()?;
+    Some(ProgFacts {
+        id: prog.id,
+        prog_type: prog.prog_type,
+        call_get_stack: calls_get_stack(&prog.insns),
+    })
+}
+
+/// Whether the bytecode calls `bpf_get_stackid()` or `bpf_get_stack()`.
+/// # C: O(insn count)
+fn calls_get_stack(insns: &[u8]) -> bool {
+    use super::super::uapi::{func_id, insn, INSN_SIZE};
+    insns.chunks_exact(INSN_SIZE as usize).any(|i| {
+        // `src_reg` is the high nibble of the register byte; a nonzero one
+        // is a pseudo call to another program, not a helper call.
+        i[0] == insn::CALL && i[1] >> 4 == 0
+            && matches!(u32::from_le_bytes([i[4], i[5], i[6], i[7]]),
+                func_id::GET_STACKID | func_id::GET_STACK)
+    })
+}
+
 static NEXT_PROG_ID: AtomicU32 = AtomicU32::new(1);
 static PROGRAMS_BY_ID: Spinlock<BTreeMap<u32, Weak<vfs::Inode>>, TaskListClass> =
     Spinlock::new(BTreeMap::new());
