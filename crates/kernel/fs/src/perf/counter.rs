@@ -66,8 +66,20 @@ pub fn format_group(read_format: u64, members: &[MemberRead], enabled: u64, runn
 fn push(out: &mut Vec<u8>, v: u64) { out.extend_from_slice(&v.to_le_bytes()); }
 
 /// Accumulator shared by every software event: `count` advances by the delta of
-/// an externally-sampled monotonic source while the event is enabled, exactly
-/// as Linux's `cpu_clock_event_update()`/`task_clock_event_update()` do.
+/// an externally-sampled monotonic source while the event is COUNTING, and a
+/// counting event is one that is both enabled and scheduled in.
+///
+/// The two conditions are separate facts and neither implies the other. An
+/// event is enabled from the moment its fd is opened (or its `ENABLE` ioctl
+/// runs) until it is disabled; it is scheduled in only while the context it
+/// belongs to is on a CPU. A CPU context is on a CPU by definition, so for a
+/// `pid == -1` event the two coincide and the second condition costs nothing.
+/// A TASK context is on a CPU only while its thread is, and there the
+/// difference is the whole point: a thread that opens a clock event and then
+/// blocks for a second must be charged the microseconds it ran, not the second
+/// it waited. Both the count and the enabled/running clocks are measured over
+/// the same windows, which is why a profile of a mostly-blocked thread reports
+/// its CPU time rather than its lifetime.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SwCounter {
     /// Accumulated count over all completed enabled windows.
@@ -79,15 +91,24 @@ pub struct SwCounter {
     /// Monotonic ns when the current enabled window opened.
     pub time_base:    u64,
     pub enabled:      bool,
+    /// Whether the context this counter belongs to is currently scheduled in.
+    /// Always true for a CPU context, which is never scheduled out.
+    pub active:       bool,
     /// `PERF_EVENT_IOC_REFRESH` budget; `0` means "no refresh limit in force".
     pub refresh_left: i64,
 }
 
 impl SwCounter {
-    /// # C: O(1)
+    /// A new counter is scheduled in: the caller stops it immediately when the
+    /// context it joined is not on a CPU. # C: O(1)
     pub fn new(src: u64, now: u64, enabled: bool) -> Self {
-        SwCounter { acc: 0, base: src, time_acc: 0, time_base: now, enabled, refresh_left: 0 }
+        SwCounter { acc: 0, base: src, time_acc: 0, time_base: now, enabled,
+                    active: true, refresh_left: 0 }
     }
+
+    /// Counting: advancing the count and both clocks. # C: O(1)
+    pub fn counting(&self) -> bool { self.enabled && self.active }
+
     /// # C: O(1)
     pub fn enable(&mut self, src: u64, now: u64) {
         if self.enabled { return; }
@@ -98,9 +119,36 @@ impl SwCounter {
     /// # C: O(1)
     pub fn disable(&mut self, src: u64, now: u64) {
         if !self.enabled { return; }
+        // Only a counting window has anything to fold: an event disabled while
+        // its thread is off a CPU closed its window at the switch, and folding
+        // again here would charge it the whole interval it spent blocked.
+        if self.active { self.fold(src, now); }
+        self.enabled = false;
+    }
+
+    /// `event_sched_in` — the context this counter belongs to came on a CPU.
+    /// Opens the counting window from `src`/`now` so nothing that happened
+    /// while the context was off-CPU is charged to it. # C: O(1)
+    pub fn start(&mut self, src: u64, now: u64) {
+        if self.active { return; }
+        self.active    = true;
+        self.base      = src;
+        self.time_base = now;
+    }
+
+    /// `event_sched_out` — the context went off a CPU. Folds the window that
+    /// was open, so the interval that follows is charged to nobody.
+    /// # C: O(1)
+    pub fn stop(&mut self, src: u64, now: u64) {
+        if !self.active { return; }
+        if self.enabled { self.fold(src, now); }
+        self.active = false;
+    }
+
+    /// Close the open window into the totals, without reopening one.
+    fn fold(&mut self, src: u64, now: u64) {
         self.acc      = self.acc.wrapping_add(src.saturating_sub(self.base));
         self.time_acc = self.time_acc.saturating_add(now.saturating_sub(self.time_base));
-        self.enabled  = false;
     }
     /// Fold everything counted so far into the accumulated total and reopen the
     /// window from here, without ending it. Idempotent by construction — the
@@ -109,10 +157,9 @@ impl SwCounter {
     /// current, which is what a consumer reading the mapped control page (and
     /// never calling into the kernel at all) sees. # C: O(1)
     pub fn update(&mut self, src: u64, now: u64) {
-        if !self.enabled { return; }
-        self.acc       = self.acc.wrapping_add(src.saturating_sub(self.base));
+        if !self.counting() { return; }
+        self.fold(src, now);
         self.base      = src;
-        self.time_acc  = self.time_acc.saturating_add(now.saturating_sub(self.time_base));
         self.time_base = now;
     }
     /// `_perf_event_reset()` — zero the count, keep enabled/time state.
@@ -120,13 +167,18 @@ impl SwCounter {
     pub fn reset(&mut self, src: u64) { self.acc = 0; self.base = src; }
     /// Current count. # C: O(1)
     pub fn count(&self, src: u64) -> u64 {
-        if self.enabled { self.acc.wrapping_add(src.saturating_sub(self.base)) } else { self.acc }
+        if self.counting() { self.acc.wrapping_add(src.saturating_sub(self.base)) }
+        else                { self.acc }
     }
-    /// `total_time_enabled`. Software events are always scheduled when enabled,
-    /// so `total_time_running` is identical. # C: O(1)
+    /// `total_time_enabled`, measured over the same windows as the count.
+    /// A software event is never multiplexed off a scheduled-in context, so
+    /// `total_time_running` is identical and both freeze while the context is
+    /// off a CPU — which is what makes the ratio a task profile reports 1
+    /// rather than the fraction of its life the thread happened to run.
+    /// # C: O(1)
     pub fn time_enabled(&self, now: u64) -> u64 {
-        if self.enabled { self.time_acc.saturating_add(now.saturating_sub(self.time_base)) }
-        else            { self.time_acc }
+        if self.counting() { self.time_acc.saturating_add(now.saturating_sub(self.time_base)) }
+        else               { self.time_acc }
     }
 }
 

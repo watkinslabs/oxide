@@ -51,7 +51,8 @@ pub fn read(kind: CpuSw, cpu: usize) -> u64 {
 use core::sync::atomic::AtomicPtr;
 
 mod deferred;
-pub use deferred::SwitchNote;
+mod notes;
+pub use notes::SwitchNote;
 mod sysctl;
 
 /// One counter site's `perf_sw_event(event_id, nr, regs, addr)` call, carrying
@@ -92,21 +93,28 @@ pub type SampleFn = fn(&SwSite);
 /// from [`SampleFn`] because a `PERF_RECORD_SWITCH` is a side-band record, not
 /// a counter overflow: it is emitted for `attr.context_switch` events whether
 /// or not anything is sampling.
-pub type SwitchFn = fn(usize, deferred::SwitchNote);
+pub type SwitchFn = fn(usize, notes::SwitchNote);
 
 static SWITCH_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
 /// Install the `PERF_RECORD_SWITCH` emitter. # C: O(1)
 pub fn set_switch_hook(f: SwitchFn) { SWITCH_HOOK.store(f as *mut (), Ordering::Release); }
 
-/// Park this switch's two identities for the tail to emit. Called from inside
-/// the runqueue-locked region, which is the only place both sides are known.
+/// Park this switch's two identities and the instant it happened, for the tail
+/// to act on. Called from inside the runqueue-locked region, which is the only
+/// place both sides are known.
+///
+/// `ts` is the switch's own monotonic timestamp — the scheduler has it in hand
+/// already, having just charged the outgoing task's slice with it. It travels
+/// with the note because the tail closes the outgoing thread's counting window
+/// and opens the incoming thread's, and both must be stamped at the switch
+/// rather than at the drain.
 /// # C: O(1)
 pub fn note_switch(cpu: usize, prev_pid: u32, prev_tid: u32, next_pid: u32,
-                   next_tid: u32, preempt: bool)
+                   next_tid: u32, preempt: bool, ts: u64)
 {
-    deferred::note_switch(cpu, deferred::SwitchNote {
-        prev_pid, prev_tid, next_pid, next_tid, preempt });
+    notes::park(cpu, notes::SwitchNote {
+        prev_pid, prev_tid, next_pid, next_tid, preempt, ts });
     softirq::raise(softirq::Slot::PerfDeferred);
 }
 
@@ -187,15 +195,17 @@ pub fn drain_deferred(cpu: usize) {
         sample_only(&SwSite { kind: c.kind, cpu, nr: c.nr, ip: 0, addr: 0, user: false,
                               charged: Some(Charged { pid: c.pid, tid: c.tid }) });
     });
-    if let Some(note) = deferred::take_switch(cpu) {
-        let p = SWITCH_HOOK.load(Ordering::Acquire);
-        if p.is_null() { return; }
-        // SAFETY: installed via `set_switch_hook` with the `SwitchFn`
-        // signature; the Acquire load pairs with that setter's Release store
-        // and the pointer is a `'static` fn address.
-        let f: SwitchFn = unsafe { core::mem::transmute::<*mut (), SwitchFn>(p) };
-        f(cpu, note);
-    }
+    let p = SWITCH_HOOK.load(Ordering::Acquire);
+    if p.is_null() { return; }
+    // SAFETY: installed via `set_switch_hook` with the `SwitchFn` signature;
+    // the Acquire load pairs with that setter's Release store and the pointer
+    // is a `'static` fn address.
+    let f: SwitchFn = unsafe { core::mem::transmute::<*mut (), SwitchFn>(p) };
+    // EVERY parked note, oldest first. Each one closes one thread's counting
+    // window and opens another's, so a drain that took only the newest would
+    // leave every skipped switch's outgoing thread counting an interval it did
+    // not run.
+    while let Some(note) = notes::take(cpu) { f(cpu, note); }
 }
 
 // The perf sysctl cells (`kernel.perf_event_*`) live in `perf_sw/sysctl.rs`.
