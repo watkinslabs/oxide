@@ -274,6 +274,62 @@ pub fn attach_admit(flags: u32, peer: &Peer) -> Result<Attach, Errno> {
     Ok(Attach::Join)
 }
 
+/// One ring, as a sweep sees it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct RingView {
+    pub sq_ready: u32,
+    pub disabled: bool,
+}
+
+/// What one pass of the poll loop does.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Pass {
+    /// Leave the loop.
+    Stop,
+    /// Stand down until unparked.
+    Park,
+    /// Take this many entries from each ring, index-parallel with the views
+    /// the sweep was given. At least one is non-zero.
+    Take(alloc::vec::Vec<u32>),
+    /// Nothing to take, but the idle window has not closed: stay hot.
+    Spin,
+    /// The idle window closed with nothing to take: publish the doorbells,
+    /// re-read the tails, and sleep if they are still empty.
+    Idle,
+}
+
+/// One pass over every ring a poll thread serves.
+///
+/// The whole loop's decision, in one place and with no ring, no thread and no
+/// memory behind it: a thread that submitted to the wrong ring, starved one of
+/// several, or slept with entries waiting would be wrong HERE, and this is
+/// callable without any of the machinery that would otherwise be needed to ask.
+///
+/// A pass sweeps every ring rather than draining one: each contributes a
+/// bounded share once more than one ring is attached, so a ring with a full SQ
+/// cannot hold the thread while its neighbours wait. Only when the sweep finds
+/// nothing anywhere does the idle window decide between spinning and sleeping.
+/// # C: O(N_rings)
+pub fn sweep(st: &PollState, rings: &[RingView], stop: bool, park: bool, now_ns: u64) -> Pass {
+    if stop { return Pass::Stop; }
+    if park { return Pass::Park; }
+    let n = rings.len() as u32;
+    let mut take: alloc::vec::Vec<u32> = alloc::vec::Vec::new();
+    if take.try_reserve(rings.len()).is_err() { return Pass::Spin; }
+    let mut any = false;
+    for v in rings {
+        let t = ring_take(v.sq_ready, v.disabled, n);
+        any |= t > 0;
+        take.push(t);
+    }
+    if any { return Pass::Take(take); }
+    // Nothing anywhere: the idle window is the only thing left to consult.
+    match step(st, &Observed { stop, park, disabled: false, sq_ready: 0, shared: shares(n), now_ns }) {
+        Step::Idle => Pass::Idle,
+        _ => Pass::Spin,
+    }
+}
+
 #[cfg(test)]
 #[path = "sqpoll/tests.rs"]
 mod tests;

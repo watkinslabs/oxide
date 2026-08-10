@@ -157,18 +157,14 @@ fn gather(sink: &Sink, len: usize) -> Result<Vec<u8>, Errno> {
 /// # C: O(n)
 fn scatter(sink: &Sink, root_pa: u64, src: &[u8]) -> usize {
     match sink {
-        Sink::User(segs) => {
-            let mut at = 0usize;
-            for &(va, n) in segs {
-                let n = core::cmp::min(n, src.len() - at);
-                if n == 0 { break; }
-                // SAFETY: the request holds the submitter's AddressSpace Arc for its whole life, so `root_pa` names live page tables; write_foreign_user refuses non-writable leaves and stops at the first unmapped one.
-                let put = unsafe { pmm::user_as::write_foreign_user(root_pa, va, &src[at..at + n]) };
-                at += put;
-                if put < n { break; }
-            }
-            at
-        }
+        // The walk itself — segment order, the short-write stop, the bytes
+        // reported — is in `abi::iopoll::scatter_segments`, away from the
+        // address space it writes into, so it is hosted tested. All that is
+        // left here is the write.
+        Sink::User(segs) => crate::io_uring_abi::iopoll::scatter_segments(segs, src.len(), |va, at, n| {
+            // SAFETY: the request holds the submitter's AddressSpace Arc for its whole life, so `root_pa` names live page tables; write_foreign_user refuses non-writable leaves and stops at the first unmapped one.
+            unsafe { pmm::user_as::write_foreign_user(root_pa, va, &src[at..at + n]) }
+        }),
         Sink::Fixed { buf, off } => {
             let mut at = 0usize;
             buf.for_each_chunk(*off, src.len() as u64, |chunk| {
@@ -298,9 +294,14 @@ pub fn reap(inode: &Arc<super::super::ctx::IoUringInode>) -> usize {
     let mut posted = 0usize;
     for req in inode.queued_reqs() {
         let q = { let g = req.inner.lock(); g.iopoll_io.clone() };
+        // Claim LAST: the compare-exchange is what decides ownership, and a
+        // pass that asked it before the backend had finished would take a
+        // request whose result is not in yet.
+        if crate::io_uring_abi::iopoll::reap_step(
+            q.is_some(), q.as_ref().is_some_and(|q| q.is_ready()),
+            q.as_ref().is_some_and(|q| q.is_ready()) && req.claim())
+            != crate::io_uring_abi::iopoll::ReapStep::Take { continue; }
         let Some(q) = q else { continue };
-        if !q.is_ready() { continue; }
-        if !req.claim() { continue; }
         let taken = q.slot.lock().take();
         let res = match taken {
             None => -(Errno::Eio.as_i32() as i64),

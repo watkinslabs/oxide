@@ -330,3 +330,76 @@ fn attaching_to_a_dead_thread_is_enxio() {
     assert_eq!(attach_admit(f, &Peer { dead: true, ..peer_ok() }), Err(Errno::Enxio));
     assert_eq!(attach_admit(f, &peer_ok()), Ok(Attach::Join));
 }
+
+fn hot(idle_ns: u64, now: u64) -> PollState {
+    let mut st = PollState::new(idle_ns);
+    st.touch(now);
+    st
+}
+
+fn v(ready: u32) -> RingView { RingView { sq_ready: ready, disabled: false } }
+
+/// A stop or a park outranks every ring: the thread must not start work it is
+/// about to be stood down from.
+#[test]
+fn a_sweep_stops_and_parks_before_it_looks_at_any_ring() {
+    let st = hot(1_000, 0);
+    assert_eq!(sweep(&st, &[v(9)], true, false, 0), Pass::Stop);
+    assert_eq!(sweep(&st, &[v(9)], false, true, 0), Pass::Park);
+    assert_eq!(sweep(&st, &[v(9)], true, true, 0), Pass::Stop, "stop outranks park");
+}
+
+#[test]
+fn a_lone_ring_hands_over_everything_it_has() {
+    let st = hot(1_000, 0);
+    assert_eq!(sweep(&st, &[v(5)], false, false, 0), Pass::Take(alloc::vec![5]));
+}
+
+/// The fairness property the whole multi-ring shape exists for: a ring with a
+/// full queue does not hold the thread while its neighbours wait.
+#[test]
+fn a_busy_ring_cannot_starve_its_neighbours() {
+    let st = hot(1_000, 0);
+    let rings = [v(10_000), v(1), v(3)];
+    let Pass::Take(take) = sweep(&st, &rings, false, false, 0) else { panic!("work is waiting") };
+    assert_eq!(take, alloc::vec![SQPOLL_CAP_ENTRIES, 1, 3]);
+}
+
+/// A ring with nothing waiting, and a ring that is not yet enabled, contribute
+/// nothing — and do not stop the others contributing.
+#[test]
+fn an_empty_or_disabled_ring_contributes_nothing_to_the_pass() {
+    let st = hot(1_000, 0);
+    let rings = [v(0), RingView { sq_ready: 50, disabled: true }, v(2)];
+    let Pass::Take(take) = sweep(&st, &rings, false, false, 0) else { panic!("ring 2 has work") };
+    assert_eq!(take, alloc::vec![0, 0, 2]);
+}
+
+/// Nothing anywhere: the idle window is the only thing left to consult, and it
+/// is what separates staying hot from publishing the doorbell and sleeping.
+#[test]
+fn a_sweep_that_finds_nothing_spins_until_the_idle_window_closes() {
+    let st = hot(1_000, 0);
+    assert_eq!(sweep(&st, &[v(0), v(0)], false, false, 500), Pass::Spin);
+    assert_eq!(sweep(&st, &[v(0), v(0)], false, false, 1_000), Pass::Spin,
+               "the deadline instant itself is still inside the window");
+    assert_eq!(sweep(&st, &[v(0), v(0)], false, false, 1_001), Pass::Idle);
+}
+
+/// A ring that is disabled the whole time never keeps the thread hot: its
+/// entries are not the thread's to consume, so the window closes over it.
+#[test]
+fn a_disabled_ring_does_not_keep_the_thread_awake() {
+    let st = hot(1_000, 0);
+    let rings = [RingView { sq_ready: 50, disabled: true }];
+    assert_eq!(sweep(&st, &rings, false, false, 2_000), Pass::Idle);
+}
+
+/// A thread serving no rings at all has nothing to take and nothing to wait
+/// for; the loop treats that as the end, and the sweep must not claim work.
+#[test]
+fn a_sweep_over_no_rings_takes_nothing() {
+    let st = hot(1_000, 0);
+    assert_eq!(sweep(&st, &[], false, false, 0), Pass::Spin);
+    assert_eq!(sweep(&st, &[], false, false, 2_000), Pass::Idle);
+}

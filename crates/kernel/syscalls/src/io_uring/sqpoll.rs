@@ -35,9 +35,9 @@ use sync::{Spinlock, TaskList as SqLockClass};
 
 use crate::io_uring_abi::layout::{RING_SQ_FLAGS, RING_SQ_HEAD, RING_SQ_TAIL};
 use crate::io_uring_abi::sqpoll::{
-    arm_need_wakeup, attach_admit, disarm_need_wakeup, ring_take, shares,
-    sleeps_after_arm, sq_cpu, sq_full, sq_ready, sq_thread_idle_ns, step,
-    Attach, Observed, Peer, PollState, Step,
+    arm_need_wakeup, attach_admit, disarm_need_wakeup, shares, sleeps_after_arm,
+    sq_cpu, sq_full, sq_ready, sq_thread_idle_ns, sweep, Attach, Observed, Pass,
+    Peer, PollState, RingView,
 };
 use crate::io_uring_abi::uapi::Params;
 
@@ -188,21 +188,13 @@ pub fn has_sq_room(ring: &IoUringInode) -> bool {
     !sq_full(r.hdr_load(RING_SQ_TAIL), r.hdr_load(RING_SQ_HEAD), r.sq_entries)
 }
 
-/// What the loop sees right now, for one ring of the `n_rings` this thread
-/// serves. # C: O(1)
-fn observe(sqd: &SqData, ring: &Arc<IoUringInode>, n_rings: u32) -> Observed {
-    Observed {
-        stop: sqd.stop.load(Ordering::Acquire),
-        park: sqd.park_pending.load(Ordering::Acquire) != 0,
-        disabled: ring.test_state(state::DISABLED),
-        sq_ready: ready(ring),
-        shared: shares(n_rings),
-        now_ns: super::iowq::worker::now_ns(),
-    }
+/// What one ring looks like to a sweep. # C: O(1)
+fn view(ring: &Arc<IoUringInode>) -> RingView {
+    RingView { sq_ready: ready(ring), disabled: ring.test_state(state::DISABLED) }
 }
 
-/// The same, with no ring in particular: what decides stop / park / spin /
-/// sleep once a whole sweep has found nothing to do. # C: O(1)
+/// What decides stop / park / spin / sleep once a sweep has found nothing to
+/// do. # C: O(1)
 fn observe_idle(sqd: &SqData, sq_ready: u32, n_rings: u32) -> Observed {
     Observed {
         stop: sqd.stop.load(Ordering::Acquire),
@@ -287,35 +279,32 @@ fn run(sqd: &SqData) {
 
         // One sweep: each ring gets a bounded share of the pass, so a ring
         // with a full SQ cannot hold the thread while its neighbours wait.
-        let mut worked = false;
-        for ring in &rings {
-            let o = observe(sqd, ring, n);
-            match step(&st, &o) {
-                Step::Stop => return,
-                Step::Park => { do_park(sqd); worked = true; break; }
-                Step::Submit(_) => {
-                    let take = ring_take(o.sq_ready, o.disabled, n);
-                    if take == 0 { continue; }
-                    super::submit::submit_sqes(ring, take);
+        let mut views: Vec<RingView> = Vec::new();
+        if views.try_reserve(rings.len()).is_err() { return; }
+        for r in &rings { views.push(view(r)); }
+
+        match sweep(&st, &views,
+                    sqd.stop.load(Ordering::Acquire),
+                    sqd.park_pending.load(Ordering::Acquire) != 0,
+                    super::iowq::worker::now_ns()) {
+            Pass::Stop => return,
+            Pass::Park => do_park(sqd),
+            Pass::Take(take) => {
+                for (ring, n) in rings.iter().zip(take) {
+                    if n == 0 { continue; }
+                    super::submit::submit_sqes(ring, n);
                     // Room was made and completions may have been posted.
                     sqd.sq_wait.wake_all();
-                    worked = true;
                 }
-                Step::Spin | Step::Idle => {}
+                st.touch(super::iowq::worker::now_ns());
             }
-        }
-        if worked { st.touch(super::iowq::worker::now_ns()); continue; }
-
-        match step(&st, &observe_idle(sqd, 0, n)) {
-            Step::Stop => return,
-            Step::Park => do_park(sqd),
-            Step::Idle => { idle(sqd, &rings); st.touch(super::iowq::worker::now_ns()); }
-            // Nothing to take anywhere, and the idle window has not closed.
-            Step::Spin | Step::Submit(_) => {
+            Pass::Idle => { idle(sqd, &rings); st.touch(super::iowq::worker::now_ns()); }
+            Pass::Spin => {
                 // SAFETY: running poll thread in process context on its own CPU holding no lock; schedule re-enqueues this still-runnable task.
                 unsafe { sched::live::schedule(); }
             }
         }
+        let _ = n;
     }
 }
 
