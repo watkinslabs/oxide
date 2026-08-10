@@ -41,6 +41,11 @@
 //   timeout     — `IORING_OP_TIMEOUT`/`LINK_TIMEOUT`/`TIMEOUT_REMOVE` decode.
 //   cancel      — cancellation keys and the match rule.
 //   poll        — `IORING_OP_POLL_ADD`/`POLL_REMOVE` decode + mask arithmetic.
+//   reqstate    — one request's lifetime states and the single claim gate that
+//                 makes a completion post exactly once, re-arming included.
+//   recvsend    — the send/receive family's own flag word: which bits each
+//                 opcode defines, and the two behaviours (arm-before-attempt,
+//                 multishot receive) that change when and how often it runs.
 //   bundle      — `IORING_RECVSEND_BUNDLE`: mapping a RUN of provided buffers
 //                 into one send or receive, and what the completion says about
 //                 which of them the transfer consumed.
@@ -76,6 +81,8 @@ pub mod iopoll;
 pub mod timeout;
 pub mod cancel;
 pub mod poll;
+pub mod reqstate;
+pub mod recvsend;
 pub mod bundle;
 pub mod rw_attr;
 pub mod zcrx;

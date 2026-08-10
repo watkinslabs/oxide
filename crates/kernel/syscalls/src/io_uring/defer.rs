@@ -1,9 +1,12 @@
 // Which entries cannot finish inside the submission that issued them, and what
 // preparing one costs the submitter.
 //
-// Two kinds of entry are deferred. Some can never run inline — a timeout has
-// nothing to do but wait, and a poll's whole job is to wait — and some are
-// deferred because the submitter said so with `IOSQE_ASYNC`. Everything else
+// Three kinds of entry are deferred. Some can never run inline — a timeout has
+// nothing to do but wait, and a poll's whole job is to wait — some are
+// deferred because the submitter said so with `IOSQE_ASYNC`, and some because
+// the behaviour they asked for outlives the submission: an entry that wants
+// to be armed BEFORE it is attempted, and one that stays armed posting a
+// completion per delivery. Everything else
 // still runs inline first and only defers if the description it names would
 // have made it block.
 //
@@ -41,7 +44,10 @@ pub fn always_async(op: u8) -> bool {
 pub fn forced_async(flags: u8) -> bool { flags & IOSQE_ASYNC != 0 }
 
 /// Whether this entry is deferred before it is ever attempted. # C: O(1)
-pub fn defers(sqe: &Sqe) -> bool { always_async(sqe.opcode) || forced_async(sqe.flags) }
+pub fn defers(sqe: &Sqe) -> bool {
+    always_async(sqe.opcode) || forced_async(sqe.flags)
+        || crate::io_uring_abi::recvsend::defers_before_issue(sqe.opcode, sqe.flags, sqe.ioprio)
+}
 
 /// The same question for one ring: a transfer on a POLLED ring is deferred
 /// too, because that is what makes it pollable. It is issued to the backend
