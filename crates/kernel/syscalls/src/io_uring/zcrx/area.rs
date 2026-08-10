@@ -89,6 +89,22 @@ impl ZcrxArea {
     /// # C: O(1)
     pub fn refill(&self, idx: u32) -> Refill { refill(&self.nia, &self.urefs, idx) }
 
+    /// Take back every buffer the caller was still holding, so no buffer is
+    /// left charged to a caller that can no longer return it.
+    ///
+    /// It spends the caller's references through the same one ordering a
+    /// refill entry does, rather than resetting the counts: a buffer the stack
+    /// still holds must stay out of the freelist even here, or the next
+    /// allocation would hand out memory that is being written into.
+    /// # C: O(N_buffers × refs)
+    pub fn scrub(&self) {
+        for idx in 0..self.num_niovs() {
+            while self.user_refs(idx) != 0 {
+                if self.refill(idx) == Refill::Freed { self.put_free(idx); }
+            }
+        }
+    }
+
     /// Copy `src` into buffer `idx` at `off` bytes in. # C: O(src.len())
     pub fn write_buf(&self, idx: u32, off: u64, src: &[u8]) -> Result<(), Errno> {
         if off + src.len() as u64 > self.buf_len() { return Err(Errno::Einval); }

@@ -75,6 +75,73 @@ fn bind_device(ifq: &Arc<ZcrxIfq>, if_idx: u32, if_rxq: u32, rx_page_size: u32)
     Ok(())
 }
 
+/// Adopt an instance another ring exported — `ZCRX_REG_IMPORT`.
+///
+/// The adopting ring gets its OWN id for the instance and its own table slot;
+/// everything the instance is made of stays where the registering ring put it.
+/// Becoming a user is the first thing that happens after the descriptor
+/// resolves, so an instance every ring has already let go cannot be adopted
+/// back into service. # C: O(N_ifqs)
+fn import(ring: &Arc<IoUringInode>, reg: &mut IfqReg, arg: u64) -> i64 {
+    if let Err(e) = admit_ifq_import(reg) { return err(e); }
+    let Some(cur) = sched::live::current() else { return err(Errno::Ebadf) };
+    // SAFETY: running task on this CPU; preempt-off; sole reader of the fd_table slot.
+    let Some(fdt) = (unsafe { cur.fd_table_ref() }) else { return err(Errno::Ebadf) };
+    let file = match fdt.clone().get(reg.if_idx as i32) { Ok(f) => f, Err(_) => return err(Errno::Ebadf) };
+    // A descriptor that carries no instance is not an exported one, whatever
+    // else it is — the same answer a descriptor that names nothing gets.
+    let Some(ifq) = crate::io_uring::zcrx::box_fd::ifq_of(&file) else { return err(Errno::Ebadf) };
+    if !ifq.get_user() { return err(Errno::Ebadf); }
+
+    let id = match ring.zcrx_claim_id() { Ok(i) => i, Err(e) => { ifq.put_user(); return err(e); } };
+    reg.zcrx_id = id;
+    reg.offsets = ZcrxOffsets::fill();
+    if uaccess::copy_to_user(arg, &reg.to_bytes()).is_err() {
+        ring.zcrx_release_id(id);
+        ifq.put_user();
+        return err(Errno::Efault);
+    }
+    ring.zcrx_publish(id, ifq);
+    0
+}
+
+/// Hand out a descriptor naming this instance — `ZCRX_CTRL_EXPORT`.
+///
+/// The descriptor is itself a user of the instance, so the queue stays bound
+/// for as long as it is open even if the ring that registered the instance
+/// goes away first. The user reference is taken BEFORE the description exists
+/// and is released by the description's own close path, so every failure below
+/// is balanced by dropping the description rather than by unwinding by hand.
+/// # C: O(1)
+fn export(ifq: &Arc<ZcrxIfq>, mut c: Ctrl, arg: u64) -> i64 {
+    use vfs::{File, OpenFlags};
+    let Some(cur) = sched::live::current() else { return err(Errno::Ebadf) };
+    // SAFETY: running task on this CPU; preempt-off; sole reader of the fd_table slot.
+    let Some(fdt) = (unsafe { cur.fd_table_ref() }) else { return err(Errno::Ebadf) };
+    let fdt = fdt.clone();
+    if !ifq.get_user() { return err(Errno::Enxio); }
+
+    crate::io_uring::ring::install_release_hook();
+    let inode = crate::io_uring::zcrx::box_fd::make_box_inode(Arc::clone(ifq));
+    let dentry = vfs::dcache::d_alloc_pseudo("[zcrx]", inode.clone(),
+                                             &crate::anon_dname::ANON_INODE_OPS);
+    let file = File::new(inode, dentry, OpenFlags::O_RDWR | OpenFlags::O_CLOEXEC);
+
+    // The caller is told the descriptor BEFORE it is published, so a caller
+    // that could not be told never has one it does not know about.
+    let r = fdt.scm_install_fd(file, OpenFlags::O_CLOEXEC, cur.nofile_soft(), |fd| {
+        c.set_export_fd(fd as u32);
+        if uaccess::copy_to_user(arg, &c.to_bytes()).is_err() { return Err(vfs::VfsError::Efault); }
+        Ok(())
+    });
+    match r {
+        Ok(_) => 0,
+        // The description was dropped rather than installed; its close path
+        // released the user reference taken above.
+        Err(e) => -(e as i32 as i64),
+    }
+}
+
 /// `IORING_REGISTER_ZCRX_IFQ`. # C: O(N_pages)
 pub fn register(inode: &Arc<IoUringInode>, arg: u64) -> i64 {
     // The queue can observe data destined for other tasks' sockets, and it
@@ -88,12 +155,7 @@ pub fn register(inode: &Arc<IoUringInode>, arg: u64) -> i64 {
     let mut reg = IfqReg::from_bytes(&rb);
 
     let kind = match admit_ifq_reg(&mut reg, inode.flags) { Ok(k) => k, Err(e) => return err(e) };
-    if kind == RegKind::Import {
-        // Adopting another ring's instance needs a handle to that ring's
-        // instance table, which only the exporting control operation hands
-        // out; nothing has exported one.
-        return err(Errno::Enxio);
-    }
+    if kind == RegKind::Import { return import(inode, &mut reg, arg); }
 
     let mut rd = match read_region_desc(reg.region_ptr) { Ok(r) => r, Err(e) => return err(e) };
     let mut ab = [0u8; AREA_REG_BYTES as usize];
@@ -165,9 +227,7 @@ pub fn ctrl(inode: &Arc<IoUringInode>, arg: u64, nr_args: u32) -> i64 {
             let (ty, _) = c.arm_notif();
             match ifq.arm_notif(ty) { Ok(()) => 0, Err(e) => err(e) }
         }
-        // Exporting an instance to another ring hands a second ring a
-        // description of memory this one pinned; there is no descriptor kind
-        // that carries it.
+        ZCRX_CTRL_EXPORT => export(&ifq, c, arg),
         _ => err(Errno::Eopnotsupp),
     }
 }

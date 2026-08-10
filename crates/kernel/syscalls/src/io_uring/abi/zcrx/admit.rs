@@ -73,6 +73,27 @@ pub fn admit_ifq_reg(reg: &mut IfqReg, ring_flags: u32) -> Result<RegKind, Errno
     Ok(if nodev { RegKind::NoDev } else { RegKind::Device { if_idx: reg.if_idx, if_rxq: reg.if_rxq } })
 }
 
+/// `ZCRX_REG_IMPORT`'s own ladder, up to the descriptor lookup.
+///
+/// An adoption states ONLY where to find the instance: everything else about
+/// it — the refill queue, the area, the notification descriptor, the device
+/// queue — was settled by the ring that registered it, and a second ring
+/// stating any of them would be describing memory it does not own.
+///
+/// | rung | errno |
+/// |---|---|
+/// | a receive queue, a refill depth, an area, a region or a notification descriptor named | `EINVAL` |
+///
+/// `if_idx` is NOT checked here: for an adoption it carries the descriptor the
+/// export handed out, and whether it names an instance is the lookup's answer
+/// (`EBADF`), not this ladder's. # C: O(1)
+pub fn admit_ifq_import(reg: &IfqReg) -> Result<(), Errno> {
+    if reg.if_rxq != 0 || reg.rq_entries != 0 { return Err(Errno::Einval); }
+    if reg.area_ptr != 0 || reg.region_ptr != 0 { return Err(Errno::Einval); }
+    if reg.notif_desc != 0 { return Err(Errno::Einval); }
+    Ok(())
+}
+
 /// Round up to a power of two, saturating. # C: O(1)
 fn roundup_pow2(v: u32) -> u32 {
     if v == 0 { return 1; }
@@ -223,7 +244,10 @@ pub fn admit_ctrl_op(c: &Ctrl) -> Result<u32, Errno> {
             if !resv_clear { return Err(Errno::Einval); }
             Ok(ZCRX_CTRL_ARM_NOTIFICATION)
         }
-        ZCRX_CTRL_EXPORT => Ok(ZCRX_CTRL_EXPORT),
+        ZCRX_CTRL_EXPORT => {
+            if !c.export_resv_clear() { return Err(Errno::Einval); }
+            Ok(ZCRX_CTRL_EXPORT)
+        }
         _ => Err(Errno::Eopnotsupp),
     }
 }

@@ -13,8 +13,10 @@
 //           gets when several rungs would fail
 
 #[path = "zcrx/admit.rs"] mod admit;
+#[path = "zcrx/hold.rs"]  mod hold;
 #[path = "zcrx/refs.rs"]  mod refs;
 pub use admit::*;
+pub use hold::UserHold;
 pub use refs::{refill, Refill, UserRefs};
 
 /// `sizeof(struct io_uring_zcrx_ifq_reg)`.
@@ -270,6 +272,24 @@ impl Ctrl {
     /// The union body read as `struct zcrx_ctrl_flush_rq` — six reserved
     /// words; true when they are all zero. # C: O(1)
     pub fn flush_resv_clear(&self) -> bool { self.body.iter().all(|&x| x == 0) }
+
+    /// The union body read as `struct zcrx_ctrl_export`. The descriptor the
+    /// operation produces occupies the body's first word, so the caller states
+    /// nothing: a body that is not entirely zero is a caller writing into a
+    /// field the kernel fills. # C: O(1)
+    pub fn export_resv_clear(&self) -> bool { self.body.iter().all(|&x| x == 0) }
+
+    /// Record the descriptor an export produced. # C: O(1)
+    pub fn set_export_fd(&mut self, fd: u32) { p32(&mut self.body, 0, fd); }
+
+    /// # C: O(1)
+    pub fn to_bytes(&self) -> [u8; CTRL_BYTES as usize] {
+        let mut b = [0u8; CTRL_BYTES as usize];
+        p32(&mut b, 0, self.zcrx_id); p32(&mut b, 4, self.op);
+        p64(&mut b, 8, self.resv[0]); p64(&mut b, 16, self.resv[1]);
+        b[24..72].copy_from_slice(&self.body);
+        b
+    }
 }
 
 /// One refill-queue entry — `struct io_uring_zcrx_rqe`.

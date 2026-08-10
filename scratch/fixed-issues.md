@@ -1,5 +1,11 @@
 # Fixed issues
 
+### F852-zcrx-export-import
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED F852 | MISSING | low | **`ZCRX_REG_IMPORT` and `ZCRX_CTRL_EXPORT` reported `ENXIO`/`EOPNOTSUPP`.** Both are implemented. Exporting hands out a descriptor that names one instance; adopting resolves that descriptor, takes its own table slot and its own instance id, and states nothing else — an adoption naming a receive queue, a refill depth, an area, a region or a notification descriptor is `EINVAL`, and a descriptor that carries no instance is `EBADF`. The lifetime is TWO counts, not one: the owning handle keeps the instance allocated, while a separate user count decides when the device queue is closed and the caller's buffers reclaimed. The exported descriptor is itself a user, so an adopted instance survives its exporter going away, and an instance every ring has let go cannot be adopted back into service. Buffer reclaim spends the caller's reference through the same one ordering a refill entry does, so a buffer the stack still holds stays out of the freelist even during teardown. | F852. `cargo test -p syscalls --lib zcrx` 44 -> 52. New: `io_uring_abi::zcrx::hold::tests` (5), `an_export_states_nothing_and_reports_its_descriptor_in_the_body`, `an_adoption_states_only_the_descriptor`, `an_adoption_is_recognised_before_the_device_mode_ladder`. Positive controls, each RED then GREEN restored: collapsing the user count so every release reports 'close now' fails `an_adopted_instance_outlives_its_exporter` + `a_doubled_release_never_closes_twice`; letting a zeroed count be revived fails `a_closed_instance_cannot_be_adopted`; dropping the adoption field checks fails `an_adoption_states_only_the_descriptor`; making the export body check vacuous, and separately dropping the body from the record's serialisation, each fail `an_export_states_nothing_and_reports_its_descriptor_in_the_body`. | io_uring lane |
+
 ### B2031-tty-audit-producer
 
 | Status | Class | Sev | Issue | Evidence | Owner |
