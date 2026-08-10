@@ -31,86 +31,36 @@ mod multicast_ioctl;
 mod wan_ioctl;
 
 use alloc::vec::Vec;
-use hal::USER_VA_END;
+use crate::siocgif_decide as decide;
+pub(crate) use decide::SiocAccess;
+use decide::{user_range, IFCONF_SIZE, IFNAMSIZ, IFREQ_SIZE,
+    SIOCADDRT, SIOCDELRT, SIOCDIFADDR, SIOCDRARP, SIOCGIFADDR, SIOCGIFBRDADDR, SIOCGIFCONF,
+    SIOCGIFCOUNT, SIOCGIFDSTADDR, SIOCGIFENCAP, SIOCGIFFLAGS, SIOCGIFHWADDR, SIOCGIFINDEX,
+    SIOCGIFMAP, SIOCGIFMEM, SIOCGIFMETRIC, SIOCGIFMTU, SIOCGIFNAME, SIOCGIFNETMASK,
+    SIOCGIFPFLAGS, SIOCGIFSLAVE, SIOCGIFTXQLEN, SIOCGRARP, SIOCSIFADDR, SIOCSIFBRDADDR,
+    SIOCSIFDSTADDR, SIOCSIFENCAP, SIOCSIFFLAGS, SIOCSIFHWADDR, SIOCSIFHWBROADCAST, SIOCSIFLINK,
+    SIOCSIFMAP, SIOCSIFMEM, SIOCSIFMETRIC, SIOCSIFMTU, SIOCSIFNAME, SIOCSIFNETMASK,
+    SIOCSIFPFLAGS, SIOCSIFSLAVE, SIOCSIFTXQLEN, SIOCSRARP, SIOCWANDEV};
 use syscall::errno::Errno;
 
-const SIOCGIFNAME:     u64 = 0x8910;
-const SIOCSIFLINK:     u64 = 0x8911;
-const SIOCGIFCONF:     u64 = 0x8912;
-const SIOCGIFFLAGS:    u64 = 0x8913;
-const SIOCSIFFLAGS:    u64 = 0x8914;
-const SIOCGIFADDR:     u64 = 0x8915;
-const SIOCSIFADDR:     u64 = 0x8916;
-const SIOCGIFDSTADDR:  u64 = 0x8917;
-const SIOCSIFDSTADDR:  u64 = 0x8918;
-const SIOCGIFBRDADDR:  u64 = 0x8919;
-const SIOCSIFBRDADDR:  u64 = 0x891a;
-const SIOCGIFNETMASK:  u64 = 0x891b;
-const SIOCSIFNETMASK:  u64 = 0x891c;
-const SIOCGIFMETRIC:   u64 = 0x891d;
-const SIOCSIFMETRIC:   u64 = 0x891e;
-const SIOCGIFMEM:      u64 = 0x891f;
-const SIOCSIFMEM:      u64 = 0x8920;
-const SIOCGIFMTU:      u64 = 0x8921;
-const SIOCSIFMTU:      u64 = 0x8922;
-const SIOCSIFNAME:     u64 = 0x8923;
-const SIOCGIFHWADDR:   u64 = 0x8927;
-const SIOCGIFENCAP:    u64 = 0x8925;
-const SIOCSIFENCAP:    u64 = 0x8926;
-const SIOCGIFSLAVE:    u64 = 0x8929;
-const SIOCSIFSLAVE:    u64 = 0x8930;
-const SIOCGIFMAP:      u64 = 0x8970;
-const SIOCSIFMAP:      u64 = 0x8971;
-const SIOCSIFHWADDR:   u64 = 0x8924;
-const SIOCGIFINDEX:    u64 = 0x8933;
-const SIOCSIFPFLAGS:    u64 = 0x8934;
-const SIOCGIFPFLAGS:    u64 = 0x8935;
-const SIOCGIFCOUNT:     u64 = 0x8938;
-const SIOCSIFHWBROADCAST: u64 = 0x8937;
-const SIOCDIFADDR:      u64 = 0x8936;
-const SIOCGIFTXQLEN:   u64 = 0x8942;
-const SIOCSIFTXQLEN:   u64 = 0x8943;
-const SIOCWANDEV:      u64 = 0x894a;
-const SIOCADDRT:       u64 = 0x890B;
-const SIOCDELRT:       u64 = 0x890C;
-const SIOCDRARP:       u64 = 0x8960;
-const SIOCGRARP:       u64 = 0x8961;
-const SIOCSRARP:       u64 = 0x8962;
 
-const IFNAMSIZ: usize = 16;
 // Linux x86_64/aarch64 `struct ifreq`: 16-byte name plus a 24-byte union.
 // The union is 24 bytes because `ifr_data` is a native pointer; fixed-field
 // members still begin at offset 16.
-const IFREQ_SIZE: usize = 40;
-const IFCONF_SIZE: usize = 16;
 const AF_INET: u16 = 2;
 const ARPHRD_ETHER: u16 = 1;
 const ARPHRD_LOOPBACK: u16 = 772;
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub(crate) enum SiocAccess { Get, Mutate }
 
-/// Classify supported network ioctls for socket-fd authorization. # C: O(1)
+/// Classify supported network ioctls for socket-fd authorization.
+///
+/// The bridge shim first: its commands are told apart by the vector the caller
+/// passed in user memory, which no ungated table can read. Everything else is
+/// decided by the command number alone, in `decide::classify`.
+/// # C: O(1)
 pub(crate) fn sioc_access(req: u64, arg: u64) -> Result<Option<SiocAccess>, i64> {
     if let Some(access) = bridge::access(req, arg)? { return Ok(Some(access)); }
-    Ok(match req {
-        SIOCGIFNAME | SIOCGIFCONF | SIOCGIFFLAGS | SIOCGIFADDR
-        | SIOCGIFBRDADDR | SIOCGIFDSTADDR | SIOCGIFNETMASK | SIOCGIFMETRIC | SIOCGIFMTU | SIOCGIFHWADDR
-        | SIOCGIFMAP
-        | SIOCGIFINDEX | SIOCGIFTXQLEN | SIOCGIFPFLAGS | SIOCGIFCOUNT | SIOCGIFSLAVE
-        | SIOCSIFLINK | SIOCGIFMEM | SIOCSIFMEM | SIOCGIFENCAP | SIOCSIFENCAP
-        | SIOCDRARP | SIOCGRARP | SIOCSRARP | net::uapi::SIOCRTMSG => Some(SiocAccess::Get),
-        SIOCWANDEV => Some(SiocAccess::Get),
-        ethtool::SIOCETHTOOL => Some(SiocAccess::Get),
-        SIOCSIFFLAGS | SIOCSIFADDR | SIOCSIFBRDADDR | SIOCSIFDSTADDR | SIOCSIFNETMASK
-        | SIOCSIFMTU | SIOCSIFHWADDR | SIOCSIFTXQLEN | SIOCADDRT
-        | SIOCDELRT | SIOCSIFPFLAGS | SIOCSIFMETRIC | SIOCSIFNAME
-        | SIOCDIFADDR | SIOCSIFSLAVE | SIOCSIFMAP | SIOCSIFHWBROADCAST
-        | net::arp::uapi::SIOCSARP | net::arp::uapi::SIOCDARP
-        | net::uapi::SIOCADDMULTI | net::uapi::SIOCDELMULTI => Some(SiocAccess::Mutate),
-        net::arp::uapi::SIOCGARP => Some(SiocAccess::Get),
-        _ => None,
-    })
+    Ok(decide::classify(req))
 }
 
 fn get_ifaddr(id: net::NetIfaceId) -> (u32, u32) {
@@ -210,9 +160,6 @@ pub fn handle_sioc_in(net_ns: u64, req: u64, arg: u64) -> Option<i64> {
     }
 }
 
-fn user_range(addr: u64, len: usize) -> bool {
-    addr != 0 && addr.checked_add(len as u64).is_some_and(|end| end <= USER_VA_END)
-}
 
 fn read_ifname(arg: u64) -> Option<alloc::string::String> {
     let req = read_ifreq(arg)?;
