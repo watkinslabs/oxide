@@ -82,15 +82,25 @@ fn consume_continuation(inode: &IoUringInode, cursor: &mut u32) {
 /// here is an init failure: it still consumes the entry and still posts a
 /// completion, but it stops the batch unless the ring asked for
 /// `IORING_SETUP_SUBMIT_ALL`. # C: O(1)
-fn admit(inode: &Arc<IoUringInode>, sqe: &Sqe, idx: u32, sq_entries: u32, left: u32)
+/// How many SLOTS this entry costs beyond the one already taken, and whether
+/// the ring can carry it at all.
+///
+/// Asked first, and separately, for two reasons. An entry whose second half is
+/// not in the ring has no meaningful flags either, so the width question
+/// outranks every other check. And the slots it costs must be stepped over
+/// whatever happens to the entry afterwards — a refusal for some later reason,
+/// or a cancellation behind a broken link, still leaves a continuation slot
+/// that must not be read as an entry of its own. # C: O(1)
+fn admit_width(inode: &Arc<IoUringInode>, sqe: &Sqe, idx: u32, sq_entries: u32, left: u32)
     -> Result<u32, Errno>
 {
     if sqe.opcode >= OP_LAST { return Err(Errno::Einval); }
-    // Whether this ring can carry a 128-byte entry, and what that costs it.
-    // Decided before any flag is looked at: an entry whose second half is not
-    // in the ring has no meaningful flags either.
-    let extra = crate::io_uring_abi::sqe_slot::extra_slots(
-        inode.flags, sqe.opcode, idx, sq_entries, left)?;
+    crate::io_uring_abi::sqe_slot::extra_slots(inode.flags, sqe.opcode, idx, sq_entries, left)
+}
+
+/// The checks an entry passes once its width is settled. # C: O(1)
+fn admit(inode: &Arc<IoUringInode>, sqe: &Sqe) -> Result<(), Errno> {
+    if sqe.opcode >= OP_LAST { return Err(Errno::Einval); }
     if sqe.flags & !SQE_VALID_FLAGS != 0 { return Err(Errno::Einval); }
     if sqe.flags & IOSQE_BUFFER_SELECT != 0 && !op_buffer_select(sqe.opcode) {
         return Err(Errno::Eopnotsupp);
@@ -111,7 +121,7 @@ fn admit(inode: &Arc<IoUringInode>, sqe: &Sqe, idx: u32, sq_entries: u32, left: 
     // A polled ring takes only the entries a backend poll could complete;
     // anything else would sit outstanding with nothing ever looking for it.
     crate::io_uring_abi::iopoll::admit_opcode(super::iopoll::polled(inode), sqe.opcode)?;
-    Ok(extra)
+    Ok(())
 }
 
 /// Run one admitted entry, under the personality it names.
@@ -196,16 +206,17 @@ pub fn submit_sqes(inode: &Arc<IoUringInode>, to_submit: u32) -> i64 {
         // slot after it too. Stepping over that slot HERE, before anything
         // looks at the entry, is what keeps the continuation from being run as
         // an entry of its own on every later path.
-        let mut extra_taken = |n: u32| {
-            for _ in 0..n { consume_continuation(inode, &mut cursor); consumed += 1; }
-        };
+        let width = admit_width(inode, &sqe, idx, sq_entries, left);
+        // Stepped over HERE, before anything else looks at the entry: a later
+        // refusal, and a cancellation behind a broken link, must not leave the
+        // continuation to be read as an entry of its own.
+        for _ in 0..width.unwrap_or(0) { consume_continuation(inode, &mut cursor); consumed += 1; }
 
         if let Some((head, tail)) = pending.take() {
             let cont = sqe.flags & SQE_LINK_FLAGS != 0;
-            match admit(inode, &sqe, idx, sq_entries, left) {
+            match width.and_then(|_| admit(inode, &sqe)) {
                 Err(e) => { refuse(inode, &sqe, e); start_chain(&head); if !submit_all { break; } }
-                Ok(extra) => {
-                    extra_taken(extra);
+                Ok(()) => {
                     let req = build(inode, &sqe);
                     if let Err(e) = crate::io_uring::defer::prepare(&req) {
                         refuse(inode, &sqe, e);
@@ -228,10 +239,9 @@ pub fn submit_sqes(inode: &Arc<IoUringInode>, to_submit: u32) -> i64 {
         let (out, init_failed) = match chain.action(sqe.flags) {
             // Everything behind a broken link is cancelled, not executed.
             Action::Cancel => (OpOutcome::res(err(Errno::Ecanceled)), false),
-            Action::Run => match admit(inode, &sqe, idx, sq_entries, left) {
+            Action::Run => match width.and_then(|_| admit(inode, &sqe)) {
                 Err(e) => (OpOutcome::res(err(e)), true),
-                Ok(extra) if deferred => {
-                    extra_taken(extra);
+                Ok(()) if deferred => {
                     // A link timeout with nothing ahead of it guards nothing.
                     if sqe.opcode == IORING_OP_LINK_TIMEOUT {
                         (OpOutcome::res(err(Errno::Einval)), true)
@@ -251,7 +261,7 @@ pub fn submit_sqes(inode: &Arc<IoUringInode>, to_submit: u32) -> i64 {
                         }
                     }
                 }
-                Ok(extra) => { extra_taken(extra); (issue(inode, &sqe), false) }
+                Ok(()) => (issue(inode, &sqe), false),
             },
         };
 

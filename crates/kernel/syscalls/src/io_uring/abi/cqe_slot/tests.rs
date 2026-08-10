@@ -107,11 +107,11 @@ fn a_32_byte_ring_places_a_wide_completion_in_one_slot_anywhere() {
 #[test]
 fn a_lap_of_alternating_widths_never_overlaps_or_leaves_a_hole() {
     let entries = 8u32;
-    let (mut tail, mut head) = (0u32, 0u32);
+    let mut tail = 0u32;
     let mut wide = true;
     for _ in 0..40 {
         // Reap everything before each post so the ring is never the limit.
-        head = tail;
+        let head = tail;
         let p = place(MIXED, tail, head, entries, wide).expect("empty ring has room");
         if let Some(f) = p.filler_at {
             assert_eq!(f, tail & (entries - 1), "the filler goes at the tail itself");
