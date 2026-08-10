@@ -83,13 +83,19 @@ pub fn drop_image<F: Frames>(f: &mut F, crash: bool) {
 /// # C: O(total memsz); # Lk: SLOTS
 pub fn install_staged<F: Frames, S: SegmentSource>(
     f: &mut F, entry: u64, segments: Vec<KexecSegment>, flags: u64, limits: Limits, src: &S,
+    boot_arg: u64,
 ) -> KResult<()> {
     let crash = flags & KEXEC_ON_CRASH != 0;
     // A crash image is staged into the reserved region the CURRENT crash image
     // occupies, so the old one is freed BEFORE the new one is written — after
     // would corrupt the image just built.
     if crash { drop_image(f, true); }
-    let image = stage_image(f, entry, segments, flags, limits, src)?;
+    let mut image = stage_image(f, entry, segments, flags, limits, src)?;
+    // Set after staging rather than threaded through it: the boot argument is
+    // a value the arch trampoline reads at jump time and nothing in the
+    // staging algorithm consults, so making every staging test state one would
+    // add a parameter that cannot affect what those tests check.
+    image.boot_arg = boot_arg;
     let mut old = {
         let mut s = SLOTS.lock();
         if crash { s.crash.replace(image) } else { s.normal.replace(image) }
@@ -117,7 +123,8 @@ pub fn do_kexec_load<F: Frames, S: SegmentSource>(
             drop_image(f, flags & KEXEC_ON_CRASH != 0);
             return Ok(());
         }
-        install_staged(f, entry, segments, flags, limits, src)
+        // `kexec_load(2)` carries no boot argument: see `KImage::boot_arg`.
+        install_staged(f, entry, segments, flags, limits, src, 0)
     })
 }
 

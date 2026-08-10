@@ -325,5 +325,18 @@ pub unsafe fn map_device_4k<F: FnMut() -> Option<u64>>(
         .map_err(MapErr::from)
 }
 
+/// Whether a valid descriptor permits instruction fetch at EL1.
+///
+/// `PXN` is the only control that answers this: `UXN` governs EL0 and is set
+/// on every kernel leaf regardless. Testing `UXN` instead — or testing both —
+/// would call every kernel page non-executable, including the ones the kernel
+/// runs out of.
+///
+/// See [`leaf_is_kernel_exec`](crate::vmm::leaf_is_kernel_exec)'s x86 twin for
+/// why a kernel that is about to jump to a page must assert this rather than
+/// inherit it from how the boot tables happened to be built.
+/// # C: O(1)
+pub fn leaf_is_kernel_exec(entry: u64) -> bool { entry & PXN == 0 }
+
 #[cfg(test)]
 mod tests;

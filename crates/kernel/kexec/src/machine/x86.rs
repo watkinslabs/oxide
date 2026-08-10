@@ -242,11 +242,40 @@ pub fn prepare<F: Frames>(image: &mut KImage, f: &mut F) -> KResult<()> {
     // bytes and `code.len()` was checked against the page's usable half above.
     unsafe { core::ptr::copy_nonoverlapping(code.as_ptr(), dst, code.len()) };
 
+    // The trampoline is CALLED at this page's kernel address, so that mapping
+    // has to permit instruction fetch. Narrow it explicitly and then ASSERT the
+    // result, rather than inheriting executability from how the boot tables
+    // happened to build the direct map — the reference narrows the same page
+    // for the same reason, and a kernel that only works because nothing set a
+    // no-execute control has no check that would notice that changing.
+    //
+    // Read-only as well as executable: the copy above is the last write this
+    // page takes through its kernel address. The trampoline's own stack writes
+    // go through the IDENTITY map, which is installed writable, and they happen
+    // only after it has switched to those tables.
+    let code_va = hhdm.wrapping_add(image.control_code_page);
+    pmm::setup::set_memory_rox(code_va, 1).map_err(|_| Error::Nomem)?;
+    if !pmm::setup::kernel_range_is_executable(code_va, 1) { return Err(Error::Nomem); }
+
     image.arch_pgt = root;
     image.arch_entry_off = ident_off;
     #[cfg(feature = "debug-kexec")]
     { klog::write_raw(b"kexec: relocation tables built\n"); }
     Ok(())
+}
+
+/// `machine_kexec_cleanup`: return the control page's kernel mapping to the
+/// linear map's default before the page is released.
+///
+/// Silent about failure on purpose — this runs on teardown paths that have no
+/// caller left to report to, and the alternative to restoring what it can is
+/// restoring nothing.
+/// # C: O(1)
+pub fn cleanup(image: &KImage) {
+    if image.control_code_page == 0 { return; }
+    let hhdm = pmm::user_as::hhdm_offset();
+    if hhdm == 0 { return; }
+    let _ = pmm::setup::set_memory_rw_nx(hhdm.wrapping_add(image.control_code_page), 1);
 }
 
 /// Mask every interrupt source the new kernel has not taken ownership of yet.

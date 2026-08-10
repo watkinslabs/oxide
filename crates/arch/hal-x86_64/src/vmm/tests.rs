@@ -289,3 +289,41 @@ fn the_write_protect_step_covers_every_leaf_encoding() {
     }
 }
 
+
+// --- kernel-execute decode -------------------------------------------------
+//
+// The pack side already exists; what did not is a way to ASK a live leaf
+// whether the kernel may fetch instructions from it. A kernel that copies a
+// trampoline into the linear map and calls it is relying on the answer, and
+// until this decode existed nothing anywhere checked it — the boot tables
+// simply happened to omit `NX` from their large leaves.
+
+use crate::vmm::leaf_is_kernel_exec;
+
+#[test]
+fn a_leaf_packed_without_exec_is_decoded_as_non_executable() {
+    let pa = 0x1234_5000u64;
+    let x = PtWalkerX86::pack_4k_leaf(pa, hal::PageFlags::READ | hal::PageFlags::EXEC);
+    let nx = PtWalkerX86::pack_4k_leaf(pa, hal::PageFlags::READ | hal::PageFlags::WRITE);
+    assert!(leaf_is_kernel_exec(x), "an EXEC leaf must decode as executable");
+    assert!(!leaf_is_kernel_exec(nx), "a leaf without EXEC must decode as non-executable");
+    // The two differ in exactly the no-execute control and nothing else, which
+    // is what makes the decode a decode rather than a restatement of the pack.
+    assert_eq!(x ^ nx, NX_BIT | (1 << 1));
+}
+
+#[test]
+fn the_decode_reads_the_same_control_in_a_block_leaf() {
+    // The linear map is built out of block leaves, so a check that only
+    // understood bottom-level ones would answer nothing about the map the
+    // trampoline is actually called through.
+    let pa = 0x4000_0000u64;
+    let f = hal::PageFlags::READ | hal::PageFlags::WRITE;
+    assert!(!leaf_is_kernel_exec(PtWalkerX86::pack_block_leaf(pa, f)));
+    assert!(leaf_is_kernel_exec(PtWalkerX86::pack_block_leaf(pa, f | hal::PageFlags::EXEC)));
+}
+
+#[test]
+fn a_device_leaf_is_never_executable() {
+    assert!(!leaf_is_kernel_exec(PtWalkerX86::pack_device_leaf(0xfee0_0000)));
+}
