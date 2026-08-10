@@ -42,6 +42,7 @@ pub fn load(ctx: &LoadCtx) -> KResult<Loaded> {
         old_fdt_pa: ctx.fdt_pa,
         old_fdt_len: ctx.fdt.len() as u64,
         seeds: seeds.clone(),
+        reserve: ctx.reserve,
     };
 
     let sizing_addr = if initrd_len > 0 { SIZING_INITRD_ADDR } else { 0 };

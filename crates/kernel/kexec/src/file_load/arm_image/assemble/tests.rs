@@ -50,7 +50,7 @@ fn a_load_produces_a_kernel_an_initramfs_and_a_tree_and_nothing_else() {
     // fourth segment here would be a stage nothing starts.
     let i = img(vec![0x5au8; 1024 * 1024], b"console=ttyAMA0");
     let tree = base_tree();
-    let ctx = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &tree, fdt_pa: 0 };
+    let ctx = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &tree, fdt_pa: 0, reserve: &[] };
     let l = load(&ctx).expect("a 2 GiB machine fits everything");
     assert_eq!(l.segments.len(), 3);
     assert_eq!(l.entry % MIN_KIMG_ALIGN, 0);
@@ -66,7 +66,7 @@ fn every_segments_bytes_are_the_bytes_it_names_at_the_offset_it_names() {
     let initrd = vec![0x5au8; 4096 * 3 + 7];
     let i = img(initrd.clone(), b"quiet");
     let tree = base_tree();
-    let ctx = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &tree, fdt_pa: 0 };
+    let ctx = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &tree, fdt_pa: 0, reserve: &[] };
     let l = load(&ctx).expect("fits");
     let cut = |n: usize| -> &[u8] {
         let s = &l.segments[n];
@@ -87,7 +87,7 @@ fn the_tree_names_the_address_the_initramfs_was_actually_placed_at() {
     // address 1 TiB up, which is not memory.
     let i = img(vec![0x11u8; 64 * 1024], b"quiet");
     let tree = base_tree();
-    let ctx = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &tree, fdt_pa: 0 };
+    let ctx = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &tree, fdt_pa: 0, reserve: &[] };
     let l = load(&ctx).expect("fits");
     let s = &l.segments[2];
     let t = parse(&l.blob[s.buf as usize..s.buf as usize + s.bufsz as usize]).expect("a tree");
@@ -104,7 +104,7 @@ fn the_tree_names_the_address_the_initramfs_was_actually_placed_at() {
 fn a_load_with_no_initramfs_has_two_segments_and_a_tree_that_says_so() {
     let i = img(Vec::new(), b"quiet");
     let tree = base_tree();
-    let ctx = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &tree, fdt_pa: 0 };
+    let ctx = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &tree, fdt_pa: 0, reserve: &[] };
     let l = load(&ctx).expect("fits");
     assert_eq!(l.segments.len(), 2);
     assert_eq!(l.boot_arg, l.segments[1].mem);
@@ -119,7 +119,7 @@ fn a_machine_with_no_device_tree_refuses_rather_than_inventing_one() {
     // DTB, so `running_fdt` is empty and the load cannot proceed. Refusing is
     // the reference's own answer when it cannot build a tree.
     let i = img(Vec::new(), b"quiet");
-    let ctx = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &[], fdt_pa: 0 };
+    let ctx = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &[], fdt_pa: 0, reserve: &[] };
     assert_eq!(load(&ctx).err(), Some(Error::Inval));
 }
 
@@ -128,7 +128,7 @@ fn a_file_that_is_not_an_image_is_refused_before_anything_is_placed() {
     let mut i = img(Vec::new(), b"quiet");
     i.kernel[header::OFF_MAGIC] ^= 0xff;
     let tree = base_tree();
-    let ctx = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &tree, fdt_pa: 0 };
+    let ctx = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &tree, fdt_pa: 0, reserve: &[] };
     assert_eq!(load(&ctx).err(), Some(Error::Inval));
 }
 
@@ -137,7 +137,7 @@ fn a_machine_too_small_for_the_image_reports_no_address() {
     let i = img(Vec::new(), b"quiet");
     let tree = base_tree();
     let small = [(MIB, 4 * MIB)];
-    let ctx = LoadCtx { img: &i, place: &small, system: &small, fdt: &tree, fdt_pa: 0 };
+    let ctx = LoadCtx { img: &i, place: &small, system: &small, fdt: &tree, fdt_pa: 0, reserve: &[] };
     assert_eq!(load(&ctx).err(), Some(Error::AddrNotAvail));
 }
 
@@ -166,11 +166,52 @@ fn the_running_trees_address_reaches_the_tree_the_new_kernel_is_handed() {
     // Stated: the entry naming it goes. The length is the blob's own, which is
     // what the reservation covers.
     let stated = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &tree,
-                           fdt_pa: OLD_PA };
+                           fdt_pa: OLD_PA, reserve: &[] };
     let l = load(&stated).expect("fits");
     assert!(!rsv_of(&l).iter().any(|&(a, _)| a == OLD_PA), "the old blob's entry is dropped");
     // Not stated: left alone rather than guessed at.
-    let unstated = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &tree, fdt_pa: 0 };
+    let unstated = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &tree, fdt_pa: 0, reserve: &[] };
     let l = load(&unstated).expect("fits");
     assert!(rsv_of(&l).iter().any(|&(a, _)| a == OLD_PA), "no address, no deletion");
+}
+
+/// A load never places a segment on memory hardware still owns, and tells the
+/// new kernel about that memory.
+///
+/// The two halves are one contract and are checked together on purpose. A
+/// reservation the new kernel honours is worthless if this loader has already
+/// put the kernel image there, and a placement that avoids the range is
+/// worthless if the new kernel is free to allocate over it. Either half alone
+/// leaves a failure that depends on where an allocator happened to land — a
+/// driver dying on a poisoned pointer long after the memory was handed out.
+#[test]
+fn no_segment_lands_on_memory_hardware_still_owns_and_the_tree_says_so() {
+    use crate::file_load::reserved;
+
+    // Reservations placed where the segments want to go: the search runs
+    // bottom-up from the base of RAM, so a range just above it is one the
+    // placement must step over rather than one it would have missed anyway.
+    let tables: [(u64, u64); 2] = [(9 * MIB, 0x1_0000), (5 * MIB, 0x1_0000)];
+    let keep_clear = reserved::normalize(&tables);
+    let place = reserved::subtract(&RAM, &keep_clear);
+
+    let i = img(vec![0x5au8; 1024 * 1024], b"console=ttyAMA0");
+    let tree = base_tree();
+    let ctx = LoadCtx { img: &i, place: &place, system: &RAM, fdt: &tree, fdt_pa: 0,
+                        reserve: &keep_clear };
+    let l = load(&ctx).expect("a 2 GiB machine fits everything with two pages held back");
+
+    assert_eq!(l.segments.len(), 3, "still a kernel, an initramfs and a tree");
+    for s in &l.segments {
+        let (ss, se) = (s.mem, s.mem + s.memsz);
+        for (pa, len) in tables {
+            assert!(se <= pa || ss >= pa + len,
+                    "segment [{ss:#x},{se:#x}) overlaps the range at {pa:#x}");
+        }
+    }
+
+    let dtb = l.segments[2];
+    let rsv = parse(&l.blob[dtb.buf as usize..dtb.buf as usize + dtb.bufsz as usize])
+        .expect("a tree").rsv;
+    for t in tables { assert!(rsv.contains(&t), "{t:x?} is reserved for the new kernel"); }
 }
