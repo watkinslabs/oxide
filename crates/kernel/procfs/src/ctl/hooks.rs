@@ -35,7 +35,13 @@ pub(super) fn get_suid_dumpable() -> i64 { sched::cred::suid_dumpable() as i64 }
 pub(super) fn get_perf_paranoid() -> i64 { sched::perf_sw::paranoid() as i64 }
 pub(super) fn set_perf_paranoid(v: i64) { sched::perf_sw::set_paranoid(v as i32); }
 pub(super) fn get_perf_sample_rate() -> i64 { sched::perf_sw::sample_rate() as i64 }
-pub(super) fn set_perf_sample_rate(v: i64) { sched::perf_sw::set_sample_rate(v as i32); }
+pub(super) fn set_perf_sample_rate(v: i64) -> Result<(), ()> {
+    sched::perf_sw::set_sample_rate_checked(v as i32)
+}
+pub(super) fn get_perf_cpu_time_max_percent() -> i64 { sched::perf_sw::cpu_time_max_percent() as i64 }
+pub(super) fn set_perf_cpu_time_max_percent(v: i64) { sched::perf_sw::set_cpu_time_max_percent(v as i32); }
+pub(super) fn get_perf_mlock_kb() -> i64 { sched::perf_sw::mlock_kb() as i64 }
+pub(super) fn set_perf_mlock_kb(v: i64) { sched::perf_sw::set_mlock_kb(v as i32); }
 pub(super) fn get_dmesg_restrict() -> i64 { klog::syslog::dmesg_restrict() as i64 }
 
 /// `kernel.unprivileged_bpf_disabled`, bound to the cell `bpf(2)` reads.

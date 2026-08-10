@@ -9,7 +9,7 @@
 
 use alloc::sync::Arc;
 
-use fs::perf::ring::sizing::{MlockCtx, MLOCK_KB_DEFAULT, PAGE_BYTES};
+use fs::perf::ring::sizing::{MlockCtx, PAGE_BYTES};
 use fs::perf::mmap::MmapCtx;
 use fs::perf::PerfBuffer;
 use fs::perf::PerfEvent;
@@ -24,6 +24,12 @@ struct PerfRingBacking {
     /// the buffer from it, and looking the event up again through the inode
     /// would be a second path to the same object.
     ev:   Arc<PerfEvent>,
+    /// The address space this mapping belongs to, captured at `mmap(2)` time.
+    /// The pinned-page charge is booked against THIS mm and given back to it,
+    /// whichever context runs the final unmap — a teardown that ran against
+    /// whatever mm happened to be current would leak the charge on one mm and
+    /// under-run it on another.
+    mm:   Option<Arc<vmm::AddressSpace>>,
 }
 
 impl vmm::FileBacking for PerfRingBacking {
@@ -38,14 +44,21 @@ impl vmm::FileBacking for PerfRingBacking {
     }
     fn direct_frame(&self, off: u64) -> Option<u64> { self.rb.frame(off / PAGE_BYTES) }
 
-    /// `perf_mmap_open`. Every VMA birth on this ring — the establishing
-    /// `mmap`, a fork copy — is counted, and the first one books the per-user
-    /// locked pages the admission ladder charged for.
-    fn vma_open(&self) { fs::perf::mmap::vma_opened(&self.rb); }
+    /// Every VMA birth on this ring — the establishing mapping, a split
+    /// fragment — is counted, and an open with a charge pending books both the
+    /// per-user pages and the pages pinned against this mm.
+    fn vma_open(&self) {
+        let pinned = fs::perf::mmap::vma_opened(&self.ev, &self.rb);
+        if pinned != 0 { if let Some(mm) = self.mm.as_ref() { mm.charge_pinned(pinned); } }
+    }
 
-    /// `perf_mmap_close`. The last mapping gives the pages back, so a process
-    /// that cycles perf mappings does not walk its own allowance to zero.
-    fn vma_close(&self) { fs::perf::mmap::vma_closed(&self.ev, &self.rb); }
+    /// The last mapping gives both halves back, so a process that cycles perf
+    /// mappings does not walk its own allowance — or its mm's memory-lock
+    /// headroom — to zero.
+    fn vma_close(&self) {
+        let pinned = fs::perf::mmap::vma_closed(&self.ev, &self.rb);
+        if pinned != 0 { if let Some(mm) = self.mm.as_ref() { mm.release_pinned(pinned); } }
+    }
 
     /// `perf_mmap_may_split`: the reference forbids splitting a perf mapping
     /// outright, because the fragments carry sizes and offsets the ring's
@@ -73,7 +86,7 @@ pub(crate) fn backing(file: &Arc<vfs::File>, off: u64, len: u64, prot: u64, flag
         mlock:    mlock_ctx(vma_pages),
     };
     match fs::perf::mmap::attach(&ev, &ctx, wakeup_watermark(&ev)) {
-        Ok(rb)     => Some(Ok(Arc::new(PerfRingBacking { rb, file: file.clone(), ev }))),
+        Ok(rb)     => Some(Ok(Arc::new(PerfRingBacking { rb, file: file.clone(), ev, mm: current_mm() }))),
         Err(errno) => Some(Err(-(errno.as_i32() as i64))),
     }
 }
@@ -93,14 +106,26 @@ fn current_uid() -> u32 {
 /// `perf_mmap_calc_limits`' live inputs. `user->locked_vm` is filled in by
 /// `fs::perf::mmap::attach` from the live per-user ledger — the one place that
 /// total exists.
+/// The address space the calling task is mapping into.
+fn current_mm() -> Option<Arc<vmm::AddressSpace>> {
+    let cur = sched::live::current()?;
+    // SAFETY: reads the CURRENT task's own mm slot, which only that task
+    // replaces, from inside its own mmap(2); the Arc is cloned out before the
+    // borrow ends (single-mutator mm slot, `13§5`).
+    unsafe { cur.mm_ref() }.cloned()
+}
+
 fn mlock_ctx(vma_pages: u64) -> MlockCtx {
     let cur = sched::live::current();
     MlockCtx {
         vma_pages,
         user_locked:    0,  // attach() supplies the live total
-        mlock_kb:       MLOCK_KB_DEFAULT,
+        mlock_kb:       sched::perf_sw::mlock_kb(),
         nr_online_cpus: cpu::count().max(1) as u64,
-        pinned_vm:      0,
+        // The mm's running pinned total. A zero placeholder here made the
+        // memory-lock half of the ladder compare every mapping against nothing,
+        // so several large mappings in one mm were all admitted.
+        pinned_vm:      current_mm().map_or(0, |m| m.pinned_pages()),
         rlimit_pages:   cur.as_ref()
             .map_or(0, |c| c.rlimit(sched::rlimit::rlim::MEMLOCK).0 / PAGE_BYTES),
         paranoid:       sched::perf_sw::paranoid() > -1,

@@ -45,7 +45,7 @@ pub struct MmapPlan {
 /// second `mmap` of the same fd may only alias at the identical size.
 /// # C: O(1)
 pub fn plan(attr_inherit: bool, cpu: i32, has_buffer: bool, buffer_pages: u64,
-            watermark_bit: bool, wakeup_watermark: u32, c: &MmapCtx)
+            own_mapped: bool, watermark_bit: bool, wakeup_watermark: u32, c: &MmapCtx)
     -> Result<MmapPlan, Errno>
 {
     // "Don't allow mmap() of inherited per-task counters": every child would
@@ -67,13 +67,19 @@ pub fn plan(attr_inherit: bool, cpu: i32, has_buffer: bool, buffer_pages: u64,
     let nr = sizing::data_pages(c.vma_pages)?;
     if has_buffer {
         if buffer_pages != nr { return Err(Errno::Einval); }
-        // Aliasing an existing ring allocates nothing and pins nothing further:
-        // the pages are already charged to the user who first mapped them, and
-        // that one charge is released when the last mapping of the buffer goes
-        // away. The admission ladder is not re-run, so a caller whose earlier
-        // mapping already reached the allowance can still map it again.
+        // A ring this event did not map itself is somebody ELSE's, borrowed by
+        // a records redirect. Mapping it through this fd would put two events'
+        // consumers on one control page, each overwriting the other's read
+        // position, so it is refused as busy rather than admitted.
+        if !own_mapped { return Err(Errno::Ebusy); }
+        // Aliasing an existing ring allocates nothing, but it is still a
+        // mapping and still costs the user its pages: the admission ladder is
+        // NOT re-run (so an alias never fails on the allowance itself), yet the
+        // whole mapping is charged, which is what makes an alias loop climb the
+        // per-user total until the next non-alias mapping is refused. Nothing
+        // further is pinned against the mm — the pages are already pinned.
         return Ok(MmapPlan { nr_data_pages: nr, overwrite: !c.writable,
-                             charge: sizing::MlockCharge::default() });
+                             charge: sizing::MlockCharge { user_extra: c.vma_pages, extra: 0 } });
     }
     let charge = sizing::calc_limits(&c.mlock)?;
     let _ = (watermark_bit, wakeup_watermark);
@@ -87,17 +93,17 @@ pub fn attach(ev: &Arc<PerfEvent>, c: &MmapCtx, wakeup_watermark: u32)
 {
     let existing = ev.buffer();
     let c = &live_mlock(c);
+    let own_mapped = ev.state.lock().mmap_count != 0;
     let p = plan(ev.attr.bit(attr_bit::INHERIT), ev.cpu, existing.is_some(),
-                 existing.as_ref().map_or(0, |b| b.nr_data_pages()),
+                 existing.as_ref().map_or(0, |b| b.nr_data_pages()), own_mapped,
                  ev.attr.bit(attr_bit::WATERMARK), wakeup_watermark, c)?;
     if let Some(rb) = existing { return Ok(rb); }
     let ds = sizing::data_size(p.nr_data_pages);
     let wm = sizing::watermark(ds, wakeup_watermark, ev.attr.bit(attr_bit::WATERMARK));
     let rb = PerfBuffer::alloc(p.nr_data_pages, wm, p.overwrite).ok_or(Errno::Enomem)?;
-    // `rb->mmap_user = user; rb->mmap_locked = extra`. The pages are booked
-    // when the first VMA opens and given back when the last one closes
-    // (`ring::mapping`), so a ring that never gets mapped costs nothing.
-    rb.acct().record(c.uid, p.charge.user_extra);
+    // The pages are booked when the VMA opens and given back when the last one
+    // closes (`ring::mapping`), so a ring that never gets mapped costs nothing.
+    rb.acct().record(c.uid, p.charge.user_extra, p.charge.extra);
     // `perf_event_update_userpage` right after the attach, so a consumer that
     // maps and immediately reads the control page sees a live snapshot.
     let (count, enabled, running) = ev.read_value();
@@ -118,18 +124,26 @@ pub fn live_mlock(c: &MmapCtx) -> MmapCtx {
     c
 }
 
-/// Linux `perf_mmap_open`: one more VMA maps `rb`. # C: O(N_users)
-pub fn vma_opened(rb: &Arc<PerfBuffer>) { rb.acct().opened(); }
+/// One more VMA maps `rb`. Returns the pages the caller must pin against the
+/// mapping mm — nonzero only when this open applied a pending pinned charge.
+/// # C: O(N_users)
+pub fn vma_opened(ev: &Arc<PerfEvent>, rb: &Arc<PerfBuffer>) -> u64 {
+    ev.state.lock().mmap_count += 1;
+    rb.acct().opened()
+}
 
-/// Linux `perf_mmap_close`: one VMA mapping `rb` is gone. The last one gives
-/// the per-user pages back and detaches the buffer from its event
-/// (`ring_buffer_attach(event, NULL)`), so the next `mmap` of the fd allocates
+/// One VMA mapping `rb` is gone. The last one gives the per-user pages back and
+/// detaches the buffer from its event, so the next mapping of the fd allocates
 /// a fresh ring and is admitted against a ledger that no longer counts this
-/// one. # C: O(N_users)
-pub fn vma_closed(ev: &Arc<PerfEvent>, rb: &Arc<PerfBuffer>) {
-    if !rb.acct().closed() { return; }
+/// one. Returns the pinned pages the caller must give back to the mapping mm.
+/// # C: O(N_users)
+pub fn vma_closed(ev: &Arc<PerfEvent>, rb: &Arc<PerfBuffer>) -> u64 {
+    { let mut g = ev.state.lock(); g.mmap_count = g.mmap_count.saturating_sub(1); }
+    let (last, pinned) = rb.acct().closed();
+    if !last { return 0; }
     let mut st = ev.state.lock();
     if st.buffer.as_ref().is_some_and(|b| Arc::ptr_eq(b, rb)) { st.buffer = None; }
+    pinned
 }
 
 #[cfg(test)]
@@ -146,7 +160,7 @@ mod tests {
         }
     }
 
-    fn ok(c: &MmapCtx) -> Result<MmapPlan, Errno> { plan(false, 0, false, 0, false, 0, c) }
+    fn ok(c: &MmapCtx) -> Result<MmapPlan, Errno> { plan(false, 0, false, 0, false, false, 0, c) }
 
     #[test]
     fn accepts_one_control_page_plus_a_power_of_two() {
@@ -186,7 +200,7 @@ mod tests {
             for (has_buffer, buffer_pages) in [(false, 0u64), (true, 4), (true, 8)] {
                 let mut c = ctx(pages);
                 c.pgoff = pages;
-                assert_eq!(plan(false, 0, has_buffer, buffer_pages, false, 0, &c),
+                assert_eq!(plan(false, 0, has_buffer, buffer_pages, true, false, 0, &c),
                            Err(Errno::Einval), "pages {pages} buffered {has_buffer}");
             }
         }
@@ -194,24 +208,34 @@ mod tests {
         // fail on, so the errno cannot depend on which gate ran first.
         let mut c = ctx(5);
         c.pgoff = 1;
-        assert_eq!(plan(false, 0, true, 4, false, 0, &c), Err(Errno::Einval));
+        assert_eq!(plan(false, 0, true, 4, true, false, 0, &c), Err(Errno::Einval));
     }
 
     #[test]
     fn an_inherited_per_task_event_cannot_be_mapped() {
         let c = ctx(5);
-        assert_eq!(plan(true, -1, false, 0, false, 0, &c), Err(Errno::Einval));
+        assert_eq!(plan(true, -1, false, 0, false, false, 0, &c), Err(Errno::Einval));
         // A CPU-bound event with `inherit` set is fine — there is no child to
         // share the ring with.
-        assert!(plan(true, 0, false, 0, false, 0, &c).is_ok());
-        assert!(plan(false, -1, false, 0, false, 0, &c).is_ok());
+        assert!(plan(true, 0, false, 0, false, false, 0, &c).is_ok());
+        assert!(plan(false, -1, false, 0, false, false, 0, &c).is_ok());
+    }
+
+    /// A ring borrowed through a records redirect — one this event never
+    /// mapped itself — cannot be mapped through this fd.
+    #[test]
+    fn mapping_a_borrowed_ring_is_busy() {
+        let c = ctx(5);
+        assert_eq!(plan(false, 0, true, 4, false, false, 0, &c), Err(Errno::Ebusy));
+        // Once this event has a mapping of its own, a second one is fine.
+        assert!(plan(false, 0, true, 4, true, false, 0, &c).is_ok());
     }
 
     #[test]
     fn remapping_an_attached_ring_must_match_its_size() {
         let c = ctx(5);
-        assert!(plan(false, 0, true, 4, false, 0, &c).is_ok());
-        assert_eq!(plan(false, 0, true, 8, false, 0, &c), Err(Errno::Einval));
+        assert!(plan(false, 0, true, 4, true, false, 0, &c).is_ok());
+        assert_eq!(plan(false, 0, true, 8, true, false, 0, &c), Err(Errno::Einval));
     }
 
     /// The admission ladder must see the user's REAL running total. A zero
@@ -231,19 +255,22 @@ mod tests {
         c.vma_pages = limit;
         c.mlock.vma_pages = limit;
         c.mlock.cap_ipc_lock = true;
-        let p = plan(false, 0, false, 0, false, 0, &live_mlock(&c)).unwrap();
+        let p = plan(false, 0, false, 0, false, false, 0, &live_mlock(&c)).unwrap();
         assert_eq!(p.charge.user_extra, limit - 40, "40 pages are already the user's");
         assert_eq!(p.charge.extra, 40, "the rest spills into the pinned half");
         locked_vm::release(u, 40);
     }
 
-    /// Re-mapping an already-attached ring pins nothing further, so it does
-    /// not re-run the per-user ladder and takes no second charge.
+    /// Re-mapping an already-attached ring does not re-run the per-user ladder,
+    /// so the alias itself can never be refused on the allowance.
+    /// An alias of an attached ring is charged the whole mapping against the
+    /// per-user allowance and pins nothing further. Charging it nothing would
+    /// make an unbounded alias loop free, which is the hole this pins shut.
     #[test]
-    fn aliasing_an_attached_ring_takes_no_further_charge() {
+    fn aliasing_an_attached_ring_is_charged_but_pins_nothing_further() {
         let c = ctx(5);
-        let p = plan(false, 0, true, 4, false, 0, &c).unwrap();
-        assert_eq!(p.charge, sizing::MlockCharge::default());
+        let p = plan(false, 0, true, 4, true, false, 0, &c).unwrap();
+        assert_eq!(p.charge, sizing::MlockCharge { user_extra: 5, extra: 0 });
     }
 
     #[test]

@@ -39,8 +39,19 @@ pub const KERNEL_SYSCTLS: &[Node] = &[
         // not a procfs-local cell — a dead cell here would let userspace loosen
         // a gate the syscall never reads.
         File("perf_event_paranoid",   IntHook(get_perf_paranoid, set_perf_paranoid, Some((-1, 4)))),
+        // The rate write is refused outright while dynamic throttling is
+        // switched off (`perf_cpu_time_max_percent` at either end of its
+        // range): a rate nothing enforces would be a knob that reports a limit
+        // the sampler never applies.
         File("perf_event_max_sample_rate",
-            IntHook(get_perf_sample_rate, set_perf_sample_rate, Some((1, INT_MAX)))),
+            CheckedIntHook(get_perf_sample_rate, set_perf_sample_rate, Some((1, INT_MAX)))),
+        File("perf_cpu_time_max_percent",
+            IntHook(get_perf_cpu_time_max_percent, set_perf_cpu_time_max_percent,
+                    Some(sched::perf_sw::CPU_TIME_MAX_PERCENT_BOUNDS))),
+        // The per-user ring allowance every `mmap(2)` of a perf fd is admitted
+        // against, bound to the live cell that admission reads.
+        File("perf_event_mlock_kb",
+            IntHook(get_perf_mlock_kb, set_perf_mlock_kb, None)),
         // Bound to the live cell `bpf(2)` consults before it lets an
         // unprivileged caller create a map or load a program, not a
         // procfs-local copy: a dead cell here would report the interface as

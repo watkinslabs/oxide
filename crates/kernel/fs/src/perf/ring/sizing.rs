@@ -11,8 +11,11 @@ pub const PAGE_BYTES: u64 = hal::PAGE_SIZE_BYTES;
 /// `PAGE_SHIFT`.
 pub const PAGE_SHIFT: u32 = PAGE_BYTES.trailing_zeros();
 
-/// `sysctl_perf_event_mlock` initialiser — `512 + (PAGE_SIZE / 1024)` KiB.
-pub const MLOCK_KB_DEFAULT: i32 = 512 + (PAGE_BYTES as i32 / 1024);
+/// Default per-user ring allowance in KiB. The LIVE value is one cell in
+/// `sched::perf_sw` — the one `/proc/sys/kernel/perf_event_mlock_kb` reads and
+/// writes — so this is only its initialiser, re-exported here because the
+/// sizing arithmetic is what gives it meaning.
+pub use sched::perf_sw::MLOCK_KB_DEFAULT;
 
 /// `perf_mmap`'s ceiling on the mapped page count (`nr_pages > INT_MAX`).
 pub const NR_PAGES_MAX: u64 = i32::MAX as u64;

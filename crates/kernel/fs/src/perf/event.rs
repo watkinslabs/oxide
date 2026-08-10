@@ -53,12 +53,21 @@ pub struct EventState {
     pub child_time_running: u64,
     /// Sampling-period budget (`hw_perf_event`'s `sample_period`/`period_left`).
     pub hw: HwPeriod,
+    /// `hw_perf_event`'s `interrupts`/`interrupts_seq` — the per-tick sampling
+    /// budget `super::throttle` enforces.
+    pub interrupts: super::throttle::Interrupts,
     /// The `mmap`ed ring this event's samples go to — Linux `event->rb`.
     /// `None` until userspace maps the fd, which is why a counting-only
     /// `perf_event_open` allocates nothing.
     pub buffer: Option<Arc<PerfBuffer>>,
     /// `event->lost_samples` — what `PERF_FORMAT_LOST` reports.
     pub lost_samples: u64,
+    /// Live mappings taken through THIS event's own fd. Distinct from the
+    /// buffer's mapping count: an event that borrowed another event's ring has
+    /// a buffer and no mappings of its own, and the two facts decide different
+    /// things (whether the ring may be freed, versus whether this event may be
+    /// redirected or re-mapped).
+    pub mmap_count: u64,
 }
 
 /// A live perf event — one open file description.
@@ -99,20 +108,29 @@ impl PerfEvent {
         Self::new_inner(attr, source, tid, cpu, leader, None)
     }
 
-    /// Fork-inherited child event — Linux `inherit_event`. Same `attr`/
-    /// `source`/`cpu` as `parent`, targets `child_tid`, and opens its own
-    /// counter window from this instant (the child's count starts at 0, like
-    /// a freshly opened event — Linux likewise gives the child its own
-    /// `hw`/`count` state rather than sharing the parent's). `parent` is
-    /// remembered so the child's exit can fold its final count back
-    /// (`fold_into_parent`). Never joins a group: Linux inherits groups
-    /// leader-first via `inherit_group`, but oxide's group support is
-    /// single-open-time only, so an inherited event is always its own leader
-    /// — matching `is_orphaned_event()`'s "individual events" fallback.
+    /// Fork-inherited child event. Same `attr`/`source`/`cpu` as `parent`,
+    /// targets `child_tid`, and opens its own counter window from this instant
+    /// (the child's count starts at 0, like a freshly opened event, rather than
+    /// sharing the parent's). `parent` is remembered so the child's exit can
+    /// fold its final count back ([`PerfEvent::fold_into_parent`]).
+    ///
+    /// `leader` is the CHILD-side group leader an inherited sibling joins, so a
+    /// group survives a fork as a group: a grouped read on the child's tree
+    /// must return the same member list the parent's does, and members that
+    /// each became their own leader would report a group of one apiece.
     /// # C: O(1)
-    pub fn new_inherited(parent: &Arc<PerfEvent>, child_tid: u32) -> Arc<PerfEvent> {
-        Self::new_inner(parent.attr, parent.source, Some(child_tid), parent.cpu,
-            None, Some(Arc::downgrade(parent)))
+    pub fn new_inherited(parent: &Arc<PerfEvent>, child_tid: u32,
+                         leader: Option<&Arc<PerfEvent>>) -> Arc<PerfEvent>
+    {
+        let ev = Self::new_inner(parent.attr, parent.source, Some(child_tid), parent.cpu,
+            leader.map(Arc::downgrade), Some(Arc::downgrade(parent)));
+        if let Some(l) = leader { l.state.lock().siblings.push(Arc::downgrade(&ev)); }
+        ev
+    }
+
+    /// This event's group siblings, when it is a leader. # C: O(siblings)
+    pub fn siblings(&self) -> Vec<Arc<PerfEvent>> {
+        self.state.lock().siblings.iter().filter_map(Weak::upgrade).collect()
     }
 
     fn new_inner(attr: PerfAttr, source: SwSource, tid: Option<u32>, cpu: i32,
@@ -129,7 +147,9 @@ impl PerfEvent {
                 counter: SwCounter::new(0, now, enabled),
                 refresh: 0, period: attr.sample_period, siblings: Vec::new(),
                 child_count: 0, child_time_enabled: 0, child_time_running: 0,
-                hw: HwPeriod::new(attr.sample_period), buffer: None, lost_samples: 0,
+                hw: HwPeriod::new(attr.sample_period),
+                interrupts: super::throttle::Interrupts::default(),
+                buffer: None, lost_samples: 0, mmap_count: 0,
             }),
         });
         // Sample the source once the event exists so the first read reports the

@@ -48,6 +48,19 @@ impl AddressSpace {
     /// # C: O(1)
     pub fn accounting_snapshot(&self) -> super::VmAccountingSnapshot { self.accounting.snapshot() }
 
+    /// Book `n` pages this mm pins for a kernel object it shares refcounted RAM
+    /// with. Paired with [`AddressSpace::release_pinned`] at the last unmap of
+    /// that object; an unpaired charge walks this mm's `RLIMIT_MEMLOCK`
+    /// headroom to zero and refuses every later such mapping. # C: O(1)
+    pub fn charge_pinned(&self, n: u64) { self.accounting.charge_pinned(n); }
+
+    /// Give `n` pinned pages back. # C: O(1)
+    pub fn release_pinned(&self, n: u64) { self.accounting.release_pinned(n); }
+
+    /// Pages this mm currently pins — the running total the admission ladder
+    /// compares against `RLIMIT_MEMLOCK`. # C: O(1)
+    pub fn pinned_pages(&self) -> u64 { self.accounting.pinned_pages() }
+
     /// PMM invokes this before clearing a present leaf while the VMA still
     /// exists. Leaf mutation is PMM/HAL-owned; backing classification is VMM-owned.
     /// # C: O(log N)
