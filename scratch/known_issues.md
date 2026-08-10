@@ -44,11 +44,11 @@ reclassified.
 
 | Class \ Sev | blocker | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|
-| `DEFECT` | 0 | 6 | 27 | 43 | 76 |
+| `DEFECT` | 0 | 6 | 27 | 44 | 77 |
 | `MISSING` | 1 | 7 | 67 | 47 | 122 |
 | `COVERAGE` | 0 | 3 | 40 | 40 | 83 |
-| `INFRA` | 0 | 1 | 20 | 29 | 50 |
-| **Total** | **1** | **17** | **154** | **159** | **331** |
+| `INFRA` | 0 | 1 | 21 | 29 | 51 |
+| **Total** | **1** | **17** | **155** | **160** | **333** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -245,6 +245,8 @@ row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
 
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
+| OPEN | INFRA | med | **The ext4 image tests copy `target/builds/default/root-aarch64.img` from the MAIN tree, which other lanes boot from.** Two cases duplicate that file and fsck the copy; a lane booting while the copy runs yields a copy of a filesystem mid-write, which fscks dirty and reports as a test failure with no defect behind it. The x86 side reads a pristine build artifact and is safe; only the aarch64 path reads a live boot image. Closing it means pointing the case at an artifact nothing boots, or taking the same lock the boot harness takes. | B2041. `crates/kernel/ext4/tests/balloc_uninit_e2fsck.rs` `ARM_ROOT`. | ext4 lane |
+| OPEN | DEFECT | low | **Resolving a default serial-log path removes and recreates the arch's stable `latest` link, so two boots of the same arch race it.** The window is between `remove_file` and `symlink`; a reader in it finds no link at all and a reader just after it may follow the other boot's log. Hosted tests hit it and are now serialised, but two real concurrent boots of one arch have the same window. An atomic republish (symlink to a temporary name, then rename over) closes it. | B2041. `tools/xtask/src/image_qemu/serial_log.rs` `logfile_for`; reproduced as `latest_points_at_the_newest_log` failing 2/2500 before the harness fix. | tooling lane |
 | OPEN | COVERAGE | med | **Four files carrying `#![cfg(target_os = "oxide-kernel")]` declare `#[cfg(test)]` blocks that have never compiled or run.** `syscalls/src/siocgif.rs` pulls in `siocgif/tests.rs` (12 test functions), `syscalls/src/userbuf.rs` (1), `syscalls/src/vdso.rs` (1), and `syscalls/src/016_ioctl/core.rs` declares a `#[cfg(test)]` `current_cred` helper that nothing hosted can reach. `cargo test -p syscalls` reports 1680 passing and none of them are these. Confirmed by running the suite and grepping its output for the module names, not by reading the attribute. Closing it means moving each decision into an ungated module and leaving the gated file a shim; that is the syscalls lane's work. | B2041. `cargo test -p syscalls` output has no `siocgif::`, `userbuf::` or `vdso::` test lines. | syscalls lane |
 | OPEN | INFRA | med | **`tools/hosted-global-audit.py` recognises a claim only for the LOCK, never for the payload statics the lock protects.** B2041 gave klog a real claim (`klog/src/test_claim.rs`: per-thread depth, reset on both edges, `assert_claimed` at the two entry points every emit crosses) and the tool correctly stopped reporting the fixture-lock -- it asked for that backlog row to be deleted, and it was. But the five fixture-state rows beside it still read as unguarded, because the rule is per-static and those statics carry no assertion of their own even though every path to them now crosses one. Deleting them raises the tool's problem count from 32 to 37, so the backlog cannot record what is actually true. A crate can therefore be fixed and still read as a flake waiting to happen. | B2041. `python3 tools/hosted-global-audit.py`: 45 problems on `5666fcd33`, 32 on this branch; deleting the five klog rows returns 37. | tooling lane |
 | OPEN | INFRA | med | Duplicate lane: C246 independently widened `make feature-gate` from `debug-all` (14 of 87 `debug-*` features) to the full derived list, and fixed the five feature-gated blocks that had rotted behind the hole — `hal::zerotrap`'s missing `PAGE_SIZE_BYTES` import, seven `Task::name` reads left over from when it was a plain array, `smoke::memtest::run`'s pre-IrqGate signature, and an aarch64-unguarded import of x86-only statics in `mm-pmm`. B1671 landed the identical fixes first; C246's commit was dropped in full at rebase. Wasted lane. | Root cause: the claim-work greps in CLAUDE.md were run for the grep-assertion ledger row this lane owns, but NOT re-run when the work grew a second front (the build gate) mid-lane. A lane that changes shape needs a fresh claim check for the new area, not just the one it started with. | — |
