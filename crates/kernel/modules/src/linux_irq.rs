@@ -267,11 +267,16 @@ fn wake_irq_thread(slot: usize) {
 extern "C" fn irq_thread_entry(_arg: usize) -> ! {
     loop {
         drain_irq_threads();
-        // SAFETY: irqthread is the running task and yields immediately after parking.
-        unsafe { IRQ_THREAD_WAIT.park(); }
-        // SAFETY: irqthread just parked itself and must schedule away.
-        unsafe { sched::live::park_yield(); }
+        // SAFETY: irqthread owns no IRQ-record lock here; producers publish a
+        // pending count before waking, and the generic loop closes the edge.
+        let _ = unsafe { sched::live::wait_event_uninterruptible(&IRQ_THREAD_WAIT,
+            has_pending_thread) };
     }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn has_pending_thread() -> bool {
+    IRQ_RECORDS.lock().iter().flatten().any(|rec| rec.pending != 0 && rec.thread_fn != 0)
 }
 
 fn drain_irq_threads() {

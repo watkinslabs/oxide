@@ -42,6 +42,8 @@ use core::cell::UnsafeCell;
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicBool, Ordering};
+#[cfg(feature = "debug-smp")]
+use core::sync::atomic::AtomicU64;
 
 // ---------------------------------------------------------------------------
 // Lock-class taxonomy per `06§3.6`. Variants are zero-sized marker types so
@@ -319,26 +321,45 @@ mod spin_probe {
     /// Large enough that only a genuine stall (not normal contention) trips it.
     pub const SPIN_WARN_ITERS: u64 = 200_000_000;
 
-    /// Installed probe sink: `(lock_class_rank, spin_iters)`.
-    pub type SpinWarnFn = fn(u16, u64);
+    /// Installed probe sink: `(class rank, lock address, owner tid, spin iters)`.
+    pub type SpinWarnFn = fn(u16, usize, u64, u64);
+    /// Task identity provider. The sync crate cannot depend on the scheduler,
+    /// so the scheduler installs this after its first runqueue is live.
+    pub type SpinOwnerFn = fn() -> u64;
     static HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+    static OWNER_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
     /// Install the spin-stall reporter (consumer wires it to klog). # C: O(1)
     pub fn set_spin_warn_hook(f: SpinWarnFn) { HOOK.store(f as *mut (), Ordering::Release); }
 
+    /// Install the current-task identity provider. # C: O(1)
+    pub fn set_spin_owner_hook(f: SpinOwnerFn) { OWNER_HOOK.store(f as *mut (), Ordering::Release); }
+
+    /// Current lock owner, or zero before the scheduler has installed its hook.
+    /// # C: O(1)
+    #[inline]
+    pub fn current_owner() -> u64 {
+        let p = OWNER_HOOK.load(Ordering::Acquire);
+        if p.is_null() { return 0; }
+        // SAFETY: OWNER_HOOK is installed only through set_spin_owner_hook
+        // with the documented SpinOwnerFn signature and never freed.
+        let f: SpinOwnerFn = unsafe { core::mem::transmute(p) };
+        f()
+    }
+
     /// Fire the reporter if installed. # C: O(1)
     #[inline]
-    pub fn warn(rank: u16, iters: u64) {
+    pub fn warn(rank: u16, lock: usize, owner: u64, iters: u64) {
         let p = HOOK.load(Ordering::Acquire);
         if p.is_null() { return; }
         // SAFETY: HOOK is only ever set via set_spin_warn_hook with the
         // documented SpinWarnFn signature; non-null implies a live fn pointer.
         let f: SpinWarnFn = unsafe { core::mem::transmute(p) };
-        f(rank, iters);
+        f(rank, lock, owner, iters);
     }
 }
 #[cfg(feature = "debug-smp")]
-pub use spin_probe::{set_spin_warn_hook, SpinWarnFn};
+pub use spin_probe::{set_spin_owner_hook, set_spin_warn_hook, SpinOwnerFn, SpinWarnFn};
 
 // ---------------------------------------------------------------------------
 // Spinlock<T, C> — `06§3.1`.
@@ -346,6 +367,8 @@ pub use spin_probe::{set_spin_warn_hook, SpinWarnFn};
 
 pub struct Spinlock<T, C: LockClass> {
     locked: AtomicBool,
+    #[cfg(feature = "debug-smp")]
+    owner: AtomicU64,
     cell: UnsafeCell<T>,
     _class: PhantomData<C>,
 }
@@ -360,6 +383,8 @@ impl<T, C: LockClass> Spinlock<T, C> {
     pub const fn new(val: T) -> Self {
         Self {
             locked: AtomicBool::new(false),
+            #[cfg(feature = "debug-smp")]
+            owner: AtomicU64::new(0),
             cell: UnsafeCell::new(val),
             _class: PhantomData,
         }
@@ -394,9 +419,14 @@ impl<T, C: LockClass> Spinlock<T, C> {
             #[cfg(feature = "debug-smp")]
             {
                 iters += 1;
-                if iters == spin_probe::SPIN_WARN_ITERS { spin_probe::warn(C::rank(), iters); }
+                if iters == spin_probe::SPIN_WARN_ITERS {
+                    spin_probe::warn(C::rank(), self as *const _ as usize,
+                        self.owner.load(Ordering::Relaxed), iters);
+                }
             }
         }
+        #[cfg(feature = "debug-smp")]
+        self.owner.store(spin_probe::current_owner(), Ordering::Relaxed);
         Guard { lock: self, preempt }
     }
 
@@ -414,7 +444,11 @@ impl<T, C: LockClass> Spinlock<T, C> {
             .locked
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         {
-            Ok(_) => Some(Guard { lock: self, preempt }),
+            Ok(_) => {
+                #[cfg(feature = "debug-smp")]
+                self.owner.store(spin_probe::current_owner(), Ordering::Relaxed);
+                Some(Guard { lock: self, preempt })
+            }
             Err(_) => { crate::preempt_gate::release(preempt); None }
         }
     }
@@ -432,6 +466,8 @@ impl<T, C: LockClass> Spinlock<T, C> {
     /// # C: O(1)
     /// # Lk: this lock released
     pub unsafe fn raw_unlock(&self) {
+        #[cfg(feature = "debug-smp")]
+        self.owner.store(0, Ordering::Relaxed);
         self.locked.store(false, Ordering::Release);
         // The forgotten guard's preempt level is owed by whoever performs the
         // release — here, the incoming task. Every task in a switch takes the
@@ -466,6 +502,8 @@ impl<T, C: LockClass> Spinlock<T, C> {
         {
             crate::spin_relax::relax();
         }
+        #[cfg(feature = "debug-smp")]
+        self.owner.store(spin_probe::current_owner(), Ordering::Relaxed);
         IrqGuard { lock: self, flags, preempt, _g: PhantomData }
     }
 
@@ -495,6 +533,8 @@ impl<T, C: LockClass> Spinlock<T, C> {
         {
             crate::spin_relax::relax();
         }
+        #[cfg(feature = "debug-smp")]
+        self.owner.store(spin_probe::current_owner(), Ordering::Relaxed);
         LockBhGuard { lock: self, _g: PhantomData }
     }
 }
@@ -527,6 +567,8 @@ impl<T, C: LockClass> Drop for Guard<'_, T, C> {
     fn drop(&mut self) {
         // Release, THEN re-enable preemption: a reschedule taken at the next
         // natural point must never find this lock still held.
+        #[cfg(feature = "debug-smp")]
+        self.lock.owner.store(0, Ordering::Relaxed);
         self.lock.locked.store(false, Ordering::Release);
         crate::preempt_gate::release(self.preempt);
     }
@@ -558,6 +600,8 @@ impl<T, C: LockClass, I: IrqGate> DerefMut for IrqGuard<'_, T, C, I> {
 
 impl<T, C: LockClass, I: IrqGate> Drop for IrqGuard<'_, T, C, I> {
     fn drop(&mut self) {
+        #[cfg(feature = "debug-smp")]
+        self.lock.owner.store(0, Ordering::Relaxed);
         self.lock.locked.store(false, Ordering::Release);
         // SAFETY: paired with the save_disable in lock_irqsave; same flags.
         unsafe { I::restore(self.flags) };
@@ -594,6 +638,8 @@ impl<T, C: LockClass, B: BhGate> Drop for LockBhGuard<'_, T, C, B> {
         // softirqs inline, and a handler in that drain is entitled to take this
         // very lock — that is the whole point of holding it `_bh`. Re-enabling
         // first would deadlock against our own still-held lock.
+        #[cfg(feature = "debug-smp")]
+        self.lock.owner.store(0, Ordering::Relaxed);
         self.lock.locked.store(false, Ordering::Release);
         // SAFETY: pairs the B::disable in lock_bh; the lock is released, so a drain here may take it.
         unsafe { B::enable(); }
