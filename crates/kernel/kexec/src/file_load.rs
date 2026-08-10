@@ -142,15 +142,18 @@ where R: FnOnce() -> KResult<FileImage> {
         for i in 0..f.ram_range_count() {
             if let Some(r) = f.ram_range(i) { ram.push(r); }
         }
+        let limits = crate::stage::Limits::current();
+        let crash = flags & KEXEC_FILE_ON_CRASH != 0;
+        let ram = kbuf::placement_ranges(crash, &ram, limits.crash.map(|r| (r.start, r.end)))?;
         let fdt = machine_fdt();
         let ctx = LoadCtx { img: &img, ram: &ram, fdt: &fdt };
         let loaded = loader.load(&ctx)?;
         // The file-mode flag word spells the crash bit differently; translate
         // it into the shared one so ONE store decides which slot is written.
-        let store_flags = if flags & KEXEC_FILE_ON_CRASH != 0 { KEXEC_ON_CRASH } else { 0 };
+        let store_flags = if crash { KEXEC_ON_CRASH } else { 0 };
         let src = crate::stage::KernelSource { bytes: &loaded.blob };
         crate::store::install_staged(f, loaded.entry, loaded.segments, store_flags,
-                                     crate::stage::Limits::current(), &src, loaded.boot_arg)
+                                     limits, &src, loaded.boot_arg)
     })
 }
 
