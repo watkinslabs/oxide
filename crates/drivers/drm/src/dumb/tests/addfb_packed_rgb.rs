@@ -7,6 +7,7 @@ fn einval() -> i64 {
 
 #[test]
 fn addfb2_rejects_unused_plane_offset_for_packed_rgb() {
+    let _tables = super::global_tables_claim();
     reset_global_tables();
     insert_global_buf(4096);
 
@@ -27,6 +28,7 @@ fn addfb2_rejects_unused_plane_offset_for_packed_rgb() {
 
 #[test]
 fn legacy_addfb_rejects_framebuffer_larger_than_backing_buffer() {
+    let _tables = super::global_tables_claim();
     reset_global_tables();
     insert_global_buf(4096);
 

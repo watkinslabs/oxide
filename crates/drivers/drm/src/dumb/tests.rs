@@ -198,13 +198,13 @@ fn addfb2_rejects_modifier_surface_without_modifier_support() {
 /// empties both tables, so each case starts from no buffers and no
 /// framebuffers. Poison is recovered rather than propagated, so one failing
 /// case reports as one failure.
-fn global_tables_claim() -> GlobalTablesClaim {
+pub(super) fn global_tables_claim() -> GlobalTablesClaim {
     let g = crate::TEST_LOCK.lock();
     reset_global_tables();
     GlobalTablesClaim(g)
 }
 
-struct GlobalTablesClaim(#[allow(dead_code)] sync::Guard<'static, (), sync::TaskList>);
+pub(super) struct GlobalTablesClaim(#[allow(dead_code)] sync::Guard<'static, (), sync::TaskList>);
 
 impl Drop for GlobalTablesClaim {
     fn drop(&mut self) { reset_global_tables(); }
