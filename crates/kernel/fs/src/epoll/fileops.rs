@@ -100,10 +100,6 @@ impl<'a> core::fmt::Write for VecFmt<'a> {
     }
 }
 
-const BUDGET_OFF: u64 = 4;
-const PREFER_OFF: u64 = 6;
-const PAD_OFF: u64 = 7;
-
 /// `ep_eventpoll_ioctl` on an epoll file. `None` when `file` is not an epoll
 /// file, so the caller keeps walking its own dispatch; every command reaching
 /// an epoll file that is not one of the two busy-poll parameter commands is
@@ -118,13 +114,11 @@ pub fn handle_epoll_ioctl(file: &Arc<File>, req: u64, arg: u64) -> Option<i64> {
     match epoll_ioctl(req) {
         EpollIoctl::SetParams => {
             if let Err(rv) = crate::userbuf::validate_user_buf(arg, EPOLL_PARAMS_BYTES, 1) { return Some(rv); }
-            // SAFETY: arg validated readable for one struct epoll_params.
-            let (usecs, budget, prefer, pad) = unsafe {
-                (core::ptr::read_unaligned(arg as *const u32),
-                 core::ptr::read_unaligned((arg + BUDGET_OFF) as *const u16),
-                 core::ptr::read_unaligned((arg + PREFER_OFF) as *const u8),
-                 core::ptr::read_unaligned((arg + PAD_OFF) as *const u8))
-            };
+            let mut raw = [0u8; EPOLL_PARAMS_BYTES as usize];
+            if uaccess::copy_from_user(&mut raw, arg).is_err() {
+                return Some(-(Errno::Efault.as_i32() as i64));
+            }
+            let (usecs, budget, prefer, pad) = super::policy::decode_epoll_params(&raw);
             let cap = sched::current().map(|c| c.has_cap(sched::cap::NET_ADMIN)).unwrap_or(false);
             if let Err(e) = validate_epoll_params(usecs, budget, prefer, pad, cap) {
                 return Some(-(e.as_i32() as i64));
@@ -136,12 +130,12 @@ pub fn handle_epoll_ioctl(file: &Arc<File>, req: u64, arg: u64) -> Option<i64> {
         }
         EpollIoctl::GetParams => {
             if let Err(rv) = crate::userbuf::validate_user_buf_writable(arg, EPOLL_PARAMS_BYTES, 1) { return Some(rv); }
-            // SAFETY: arg validated writable for one struct epoll_params.
-            unsafe {
-                core::ptr::write_unaligned(arg as *mut u32, ep.busy_poll_usecs.load(Ordering::Relaxed));
-                core::ptr::write_unaligned((arg + BUDGET_OFF) as *mut u16, ep.busy_poll_budget.load(Ordering::Relaxed) as u16);
-                core::ptr::write_unaligned((arg + PREFER_OFF) as *mut u8, ep.prefer_busy_poll.load(Ordering::Relaxed) as u8);
-                core::ptr::write_unaligned((arg + PAD_OFF) as *mut u8, 0u8);
+            let raw = super::policy::encode_epoll_params(
+                ep.busy_poll_usecs.load(Ordering::Relaxed),
+                ep.busy_poll_budget.load(Ordering::Relaxed) as u16,
+                ep.prefer_busy_poll.load(Ordering::Relaxed) as u8);
+            if uaccess::copy_to_user(arg, &raw).is_err() {
+                return Some(-(Errno::Efault.as_i32() as i64));
             }
             Some(0)
         }

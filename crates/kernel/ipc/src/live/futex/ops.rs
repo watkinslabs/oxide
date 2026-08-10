@@ -49,8 +49,9 @@ pub fn cmp_requeue(src_uaddr: u64, dst_uaddr: u64, nr_wake: i64, nr_requeue: i64
     if src_uaddr == 0 || src_uaddr >= hal::USER_VA_END || (src_uaddr & 0x3) != 0 {
         return -(Errno::Einval.as_i32() as i64);
     }
-    // SAFETY: bounded user VA validated; CR3 is current's.
-    let cur = unsafe { load_user_u32(src_uaddr) };
+    // `get_futex_value_locked`: the compare word is fetched through the
+    // exception table, so an in-range address with nothing mapped is EFAULT.
+    let Ok(cur) = load_user_u32(src_uaddr) else { return -(Errno::Efault.as_i32() as i64) };
     if cur != cmpval { return -(Errno::Eagain.as_i32() as i64); }
     requeue(src_uaddr, dst_uaddr, nr_wake, nr_requeue, private)
 }
@@ -81,9 +82,10 @@ pub fn wake_op(uaddr1: u64, uaddr2: u64, nr_wake: i64, nr_wake2: i64, encoded: u
     let mut oparg = sign_extend12(encoded >> 12);
     let cmparg = sign_extend12(encoded);
     if oparg_shift { oparg = 1i32 << (oparg & 0x1f); }
-    // SAFETY: bounded user VA validated; CR3 is current's; preempt-off makes the
-    // read-modify-write atomic vs other tasks on this UP CPU.
-    let oldval = unsafe { load_user_u32(uaddr2) } as i32;
+    // `futex_atomic_op_inuser` answers -EFAULT when the word cannot be read;
+    // preempt-off makes the read-modify-write atomic vs other tasks on this CPU.
+    let Ok(oldval) = load_user_u32(uaddr2) else { return -(Errno::Efault.as_i32() as i64) };
+    let oldval = oldval as i32;
     // An unknown OP or CMP is -ENOSYS, not -EINVAL: Linux's arch helper falls
     // off its switch to `ret = -ENOSYS`, and `futex_atomic_op_inuser` returns
     // -ENOSYS for an unknown comparison. Reporting EINVAL here would have made
@@ -96,8 +98,9 @@ pub fn wake_op(uaddr1: u64, uaddr2: u64, nr_wake: i64, nr_wake2: i64, encoded: u
         4 => oldval ^ oparg,
         _ => return -(Errno::Enosys.as_i32() as i64),
     };
-    // SAFETY: same validated user word; CPL=0 store through the active CR3.
-    unsafe { store_user_u32(uaddr2, newval as u32); }
+    // Same word, same recovery: a store that cannot land is -EFAULT, and the
+    // wakes below must not run on a modification that never happened.
+    if store_user_u32(uaddr2, newval as u32).is_err() { return -(Errno::Efault.as_i32() as i64); }
     let k1 = match current_key(uaddr1, private) { Some(k) => k, None => return -(Errno::Einval.as_i32() as i64) };
     let mut woken = wake_key(k1, nr_wake, FUTEX_BITSET_MATCH_ANY);
     let do_wake2 = match cmp {

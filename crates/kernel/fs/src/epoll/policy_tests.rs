@@ -149,3 +149,30 @@ fn epoll_params_validation_matches_the_ioctl_contract() {
     // Pad is checked before the privileged budget.
     assert_eq!(validate_epoll_params(0, NAPI_POLL_WEIGHT + 1, 0, 1, false), Err(Errno::Einval));
 }
+
+/// `struct epoll_params` is `__u32 busy_poll_usecs; __u16 busy_poll_budget;
+/// __u8 prefer_busy_poll; __u8 __pad`. The offsets are literals here on
+/// purpose: a fixture built from the module's own constants moves with them
+/// and cannot fail when one is wrong.
+#[test]
+fn epoll_params_fields_sit_at_0_4_6_and_7() {
+    let raw = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x01, 0x07];
+    assert_eq!(decode_epoll_params(&raw), (0x4433_2211, 0x6655, 0x01, 0x07));
+}
+
+#[test]
+fn a_reported_params_object_carries_a_zero_pad_byte() {
+    let out = encode_epoll_params(0x4433_2211, 0x6655, 1);
+    assert_eq!(out, [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x01, 0x00]);
+    assert_eq!(decode_epoll_params(&out), (0x4433_2211, 0x6655, 1, 0));
+}
+
+/// A pad byte the caller set is REPORTED, not silently dropped — the EINVAL it
+/// earns depends on `decode` carrying it out of the copied bytes.
+#[test]
+fn a_non_zero_pad_survives_the_decode_and_is_rejected() {
+    let raw = [0, 0, 0, 0, 0, 0, 0, 0x99];
+    let (usecs, budget, prefer, pad) = decode_epoll_params(&raw);
+    assert_eq!(pad, 0x99);
+    assert_eq!(validate_epoll_params(usecs, budget, prefer, pad, true), Err(Errno::Einval));
+}

@@ -846,6 +846,7 @@ dependencies = [
  "sync",
  "syscall",
  "timekeeper",
+ "uaccess",
  "vfs",
  "vmm",
 ]

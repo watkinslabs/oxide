@@ -81,17 +81,21 @@ fn fetch_robust_entry(at: u64) -> Option<RobustPtr> {
     read_user_u64(at).map(RobustPtr::decode)
 }
 
-/// Fault-safe user u64 read: a failed fetch returns -EFAULT and aborts the
-/// walk rather than faulting the kernel; a crashing task's list memory may be
-/// unmapped, so verify presence under the active AS first.
+/// Fault-safe user u64 read, Linux `fetch_robust_entry`'s `get_user`: a failed
+/// fetch aborts the walk rather than faulting the kernel.
+///
+/// This was a page-table PRESENCE probe followed by a raw load, which was
+/// weaker in both directions. It aborted the whole walk for a page that was
+/// merely not resident yet — an entry the reference would have demand-faulted
+/// in — stranding every robust mutex after it; and the probe did not close the
+/// window it existed for, because the dying thread's PEERS are still running
+/// and can unmap between the probe and the load. Going through the exception
+/// table demand-faults a resolvable page and recovers from one that is
+/// genuinely gone, which still ends the walk.
 /// # C: O(1)
 fn read_user_u64(va: u64) -> Option<u64> {
-    if va == 0 || va >= hal::USER_VA_END || (va & 0x7) != 0 { return None; }
-    if !user_addr_accessible(va, false) { return None; }
-    // SAFETY: page verified present under the active CR3/TTBR0 by
-    // user_addr_accessible; bounded, 8-aligned user VA in the dying task's live
-    // address space.
-    Some(unsafe { core::ptr::read_volatile(va as *const u64) })
+    if va == 0 || (va & 0x7) != 0 { return None; }
+    crate::useraccess::read_u64(va).ok()
 }
 
 /// Recover one robust mutex owned by a dying thread. `Err` aborts the
@@ -106,10 +110,10 @@ fn handle_futex_death(futex_uaddr: u64, owner_tid: u32, pi: bool, site: DeathSit
     }
     let mut tries = 0usize;
     loop {
-        if !user_addr_accessible(futex_uaddr, false) { return Err(()); }
-        // SAFETY: page verified present by user_addr_accessible; bounded,
-        // 4-aligned user word in the dying task's live address space.
-        let uval = unsafe { load_user_u32(futex_uaddr) };
+        // `handle_futex_death`'s `get_user`: the read recovers through the
+        // exception table, so a word that cannot be resolved aborts this entry
+        // instead of faulting the kernel on the exit path.
+        let Ok(uval) = load_user_u32(futex_uaddr) else { return Err(()) };
         match death_verdict(uval & FUTEX_TID_MASK, owner_tid, pi, site) {
             // A REGULAR futex reached via list_op_pending whose owner field is
             // already zero. Wake a potential waiter WITHOUT touching the word

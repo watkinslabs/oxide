@@ -38,8 +38,7 @@ pub fn dispatch_waitv_timed(entries: &[WaitvEntry], deadline_ns: u64) -> i64 {
         if ent.uaddr == 0 || ent.uaddr >= hal::USER_VA_END || (ent.uaddr & 0x3) != 0 {
             return -(Errno::Einval.as_i32() as i64);
         }
-        // SAFETY: bounded user VA validated; CR3 is current's.
-        let cur_val = unsafe { load_user_u32(ent.uaddr) };
+        let Ok(cur_val) = load_user_u32(ent.uaddr) else { return -(Errno::Efault.as_i32() as i64) };
         if cur_val != ent.val { return -(Errno::Eagain.as_i32() as i64); }
         let key = match current_key(ent.uaddr, ent.private) {
             Some(k) => k, None => return -(Errno::Einval.as_i32() as i64),
@@ -61,9 +60,10 @@ pub fn dispatch_waitv_timed(entries: &[WaitvEntry], deadline_ns: u64) -> i64 {
         {
             let mut groups = WAITV_GROUPS.lock();
             for ent in entries {
-                // SAFETY: bounded user VA validated above; CR3 is the caller's.
-                if unsafe { load_user_u32(ent.uaddr) } != ent.val {
-                    return -(Errno::Eagain.as_i32() as i64);
+                match load_user_u32(ent.uaddr) {
+                    Ok(v) if v == ent.val => {}
+                    Ok(_) => return -(Errno::Eagain.as_i32() as i64),
+                    Err(_) => return -(Errno::Efault.as_i32() as i64),
                 }
             }
             arc.set_state(sched::TaskState::Sleeping);

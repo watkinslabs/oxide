@@ -146,10 +146,7 @@ fn read_user_bytes(p: u64, len: usize) -> Result<Vec<u8>, i64> {
     if len == 0 { return Ok(Vec::new()); }
     validate_user_buf(p, len as u64, 1)?;
     let mut out = alloc::vec![0u8; len];
-    // SAFETY: exact user byte range validated by validate_user_buf; destination is a kernel-owned Vec.
-    unsafe {
-        for i in 0..len { out[i] = core::ptr::read_unaligned((p + i as u64) as *const u8); }
-    }
+    uaccess::copy_from_user(&mut out, p).map_err(|e| -(e.as_i32() as i64))?;
     Ok(out)
 }
 
@@ -157,9 +154,5 @@ fn read_user_bytes(p: u64, len: usize) -> Result<Vec<u8>, i64> {
 fn write_user_bytes(p: u64, src: &[u8]) -> Result<(), i64> {
     if src.is_empty() { return Ok(()); }
     validate_user_buf_writable(p, src.len() as u64, 1)?;
-    // SAFETY: exact writable user byte range validated; source is a kernel-owned slice.
-    unsafe {
-        for i in 0..src.len() { core::ptr::write_unaligned((p + i as u64) as *mut u8, src[i]); }
-    }
-    Ok(())
+    uaccess::copy_to_user(p, src).map_err(|e| -(e.as_i32() as i64))
 }

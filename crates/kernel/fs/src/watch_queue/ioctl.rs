@@ -71,8 +71,7 @@ fn set_filter(file: &File, arg: u64) -> i64 {
 fn read_user(p: u64, len: usize) -> Result<Vec<u8>, i64> {
     crate::userbuf::validate_user_buf(p, len as u64, 1)?;
     let mut out = alloc::vec![0u8; len];
-    // SAFETY: the exact user byte range was validated readable just above; the destination is a kernel-owned Vec.
-    unsafe { for i in 0..len { out[i] = core::ptr::read_unaligned((p + i as u64) as *const u8); } }
+    uaccess::copy_from_user(&mut out, p).map_err(|e| -(e.as_i32() as i64))?;
     Ok(out)
 }
 

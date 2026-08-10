@@ -88,21 +88,26 @@ fn validate_user_buf(ptr: u64, len: usize, write: bool) -> Result<(), i64> {
 
 fn write_user_bytes(ptr: u64, src: &[u8]) -> Result<(), i64> {
     validate_user_buf(ptr, src.len(), true)?;
-    // SAFETY: ptr validated writable for src.len() bytes; byte stores accept unaligned user buffers.
-    unsafe { for (i, b) in src.iter().enumerate() { core::ptr::write_unaligned((ptr + i as u64) as *mut u8, *b); } }
-    Ok(())
+    // The VMA scan is the permission check; the copy is what recovers when the
+    // page goes away under the syscall. Linux `copy_to_user`.
+    uaccess::copy_to_user(ptr, src).map_err(err)
 }
 
 fn read_user_shmctl_set(ptr: u64) -> Result<ShmctlSet, i64> {
     validate_user_buf(ptr, SHMID64_DS_BYTES, false)?;
-    // SAFETY: ptr validated readable for a Linux shmid64_ds; unaligned scalar reads match copy_from_user.
-    unsafe {
-        Ok(ShmctlSet {
-            uid: core::ptr::read_unaligned((ptr + IPC64_PERM_UID_OFF as u64) as *const u32),
-            gid: core::ptr::read_unaligned((ptr + IPC64_PERM_GID_OFF as u64) as *const u32),
-            mode: core::ptr::read_unaligned((ptr + IPC64_PERM_MODE_OFF as u64) as *const u32),
-        })
-    }
+    // `copy_shmid_from_user` reads the WHOLE object through the exception
+    // table and picks the three settable fields out of the kernel copy.
+    let mut ds = [0u8; SHMID64_DS_BYTES];
+    uaccess::copy_from_user(&mut ds, ptr).map_err(err)?;
+    Ok(ShmctlSet {
+        uid: get_u32(&ds, IPC64_PERM_UID_OFF),
+        gid: get_u32(&ds, IPC64_PERM_GID_OFF),
+        mode: get_u32(&ds, IPC64_PERM_MODE_OFF),
+    })
+}
+
+fn get_u32(src: &[u8], off: usize) -> u32 {
+    u32::from_le_bytes(src[off..off + 4].try_into().expect("4 in shmid64_ds"))
 }
 
 fn put_u32(out: &mut [u8], off: usize, v: u32) { out[off..off + 4].copy_from_slice(&v.to_le_bytes()); }

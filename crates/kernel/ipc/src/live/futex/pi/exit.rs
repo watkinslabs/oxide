@@ -87,10 +87,10 @@ pub fn exit_pi_state_list(owner_tid: u32) {
 /// # C: O(page-table depth)
 fn read_word_for_exit(uaddr: u64) -> Option<u32> {
     if uaddr == 0 || uaddr >= hal::USER_VA_END || (uaddr & 0x3) != 0 { return None; }
+    // The probe gates the raw `cmpxchg_user_u32` that follows this read; the
+    // read itself recovers through the exception table.
     if !user_addr_accessible(uaddr, true) { return None; }
-    // SAFETY: page verified present and writable under the dying task's still
-    // active address space; bounded, 4-aligned user word.
-    Some(unsafe { load_user_u32(uaddr) })
+    load_user_u32(uaddr).ok()
 }
 
 /// Release a state whose owner died with no waiter to hand it to.

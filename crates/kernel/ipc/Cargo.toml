@@ -14,6 +14,9 @@ sync    = { path = "../../shared/sync" }
 sched   = { path = "../../kernel/sched" }
 namespace-identity = { path = "../../kernel/namespace-identity" }
 syscall = { path = "../../kernel/syscall" }
+# User-memory access goes through the exception-table copy routines: a range
+# check proves the address is small enough, not that a page is there.
+uaccess = { path = "../../kernel/uaccess" }
 vmm     = { path = "../../kernel/mm-vmm" }
 # `shmget(SHM_HUGETLB)` resolves its size selector against the huge-page pool's
 # own granule table instead of a second copy of the encoding here.

@@ -90,11 +90,9 @@ pub fn read_user(ptr: u64, usize_bytes: usize) -> Result<FileAttr, i64> {
     check_struct_size(usize_bytes)?;
     validate_user_buf(ptr, usize_bytes as u64, 1)?;
     let mut buf: Vec<u8> = alloc::vec![0u8; usize_bytes];
-    // SAFETY: `validate_user_buf` proved the exact byte range is a user address; the
-    // destination is a kernel-owned Vec of the same length, and reads are unaligned-safe.
-    unsafe {
-        for i in 0..usize_bytes { buf[i] = core::ptr::read_unaligned((ptr + i as u64) as *const u8); }
-    }
+    // `copy_struct_from_user`: the range check proves the address is inside the
+    // user half, not that a page is under it, so the copy carries the fixup.
+    uaccess::copy_from_user(&mut buf, ptr).map_err(err)?;
     decode(&buf)
 }
 
@@ -103,12 +101,15 @@ pub fn read_user(ptr: u64, usize_bytes: usize) -> Result<FileAttr, i64> {
 pub fn write_user(ptr: u64, usize_bytes: usize, fa: &FileAttr) -> i64 {
     if let Err(rv) = check_struct_size(usize_bytes) { return rv; }
     if let Err(rv) = validate_user_buf_writable(ptr, usize_bytes as u64, 1) { return rv; }
-    let body = encode(fa);
-    // SAFETY: `validate_user_buf_writable` proved [ptr, ptr+usize_bytes) is writable user
-    // memory; writes are byte-wise so no alignment requirement applies.
-    unsafe {
-        for i in 0..FILE_ATTR_SIZE_VER0 { core::ptr::write_unaligned((ptr + i as u64) as *mut u8, body[i]); }
-        for i in FILE_ATTR_SIZE_VER0..usize_bytes { core::ptr::write_unaligned((ptr + i as u64) as *mut u8, 0u8); }
-    }
+    let mut out: Vec<u8> = alloc::vec![0u8; usize_bytes];
+    out[..FILE_ATTR_SIZE_VER0].copy_from_slice(&encode(fa));
+    // One copy for the body and the zero tail together: the tail is already
+    // zero in the kernel buffer, so a newer userspace still never reads stack
+    // garbage, and the whole object goes out through the exception table.
+    if let Err(e) = uaccess::copy_to_user(ptr, &out) { return err(e); }
     0
 }
+
+#[cfg(test)]
+#[path = "fileattr_uaccess_tests.rs"]
+mod uaccess_tests;

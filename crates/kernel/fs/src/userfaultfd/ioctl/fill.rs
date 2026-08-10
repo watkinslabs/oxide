@@ -20,8 +20,7 @@ use super::structs::{err, read_req, write_reply, UffdioCopy, UffdioRangeOp};
 pub fn ioc_copy(ufd: &UfData, arg: u64) -> i64 {
     if let Err(rv) = validate_user_buf_writable(arg, UFFDIO_COPY_SIZE, 1) { return rv; }
     if let Some(rv) = refuse_if_changing(ufd, arg + UFFDIO_COPY_COPY_OFF) { return rv; }
-    // SAFETY: arg validated writable for the full uffdio_copy object.
-    let c: UffdioCopy = unsafe { read_req(arg) };
+    let Ok(c) = read_req::<UffdioCopy>(arg) else { return err(Errno::Efault) };
     // The SOURCE is validated before the destination, and the mode word after
     // both — an ordering a monitor can observe through which errno it gets.
     if let Err(e) = policy::validate_unaligned_range(c.src, c.len) { return err(e); }
@@ -89,7 +88,9 @@ pub fn ioc_poison(ufd: &UfData, arg: u64) -> i64 {
 /// # C: O(1)
 fn refuse_if_changing(ufd: &UfData, reply_slot: u64) -> Option<i64> {
     let e = policy::check_mmap_changing(ufd.changes_in_flight()).err()?;
-    write_reply(reply_slot, err(e));
+    // A reply word that cannot be written overrides the errno with EFAULT, the
+    // same way `put_user`'s failure does on the success path.
+    if write_reply(reply_slot, err(e)).is_err() { return Some(err(Errno::Efault)); }
     Some(err(e))
 }
 
@@ -98,8 +99,7 @@ fn refuse_if_changing(ufd: &UfData, reply_slot: u64) -> Option<i64> {
 /// # C: O(1)
 fn range_op(arg: u64, size: u64) -> Option<UffdioRangeOp> {
     if validate_user_buf_writable(arg, size, 1).is_err() { return None; }
-    // SAFETY: arg validated writable for the full request object, which is larger than UffdioRangeOp only in name.
-    Some(unsafe { read_req(arg) })
+    read_req::<UffdioRangeOp>(arg).ok()
 }
 
 /// The shared tail: resolve the target address space, prove the destination is
@@ -136,7 +136,11 @@ fn fill(ufd: &UfData, req: &work::FillReq, mode: u64, count_slot: u64) -> i64 {
         }
     };
     let (rv, count) = policy::fill_retval(done, req.len, fail);
-    write_reply(count_slot, count);
+    // `if (unlikely(put_user(ret, &user_uffdio_copy->copy))) return -EFAULT;`
+    // The reply word carries the PARTIAL byte count on a short fill (with
+    // -EAGAIN as the return) and the negative errno when nothing landed, so a
+    // monitor that never receives it cannot tell the two apart.
+    if write_reply(count_slot, count).is_err() { return err(Errno::Efault); }
     if policy::should_wake(mode, done) { ufd.wake_faulters(); }
     rv
 }

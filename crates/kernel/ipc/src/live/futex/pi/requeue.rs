@@ -39,8 +39,11 @@ pub fn wait_requeue_pi(uaddr: u64, val: u32, bitset: u32, uaddr2: u64, private: 
     let grant = Arc::new(AtomicU32::new(Grant::Pending as u32));
     {
         let mut tbl = PI_TABLE.lock();
-        // SAFETY: bounded, 4-aligned user word; the caller's CR3 is active.
-        if unsafe { load_user_u32(uaddr) } != val { return e(Errno::Eagain); }
+        match load_user_u32(uaddr) {
+            Ok(v) if v == val => {}
+            Ok(_) => return e(Errno::Eagain),
+            Err(_) => return e(Errno::Efault),
+        }
         let i = match find(&tbl, key1) {
             Some(i) => i,
             None => {
