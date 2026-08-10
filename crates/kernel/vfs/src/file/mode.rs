@@ -1,16 +1,5 @@
 use crate::types::OpenFlags;
 
-/// Lock class for `File::f_pos_lock` (`06§3.6`). Ranked below `Inode`
-/// (40): the pos lock is acquired in `read`/`write` BEFORE the inode I/O
-/// that takes the inode lock, mirroring Linux `__fdget_pos` preceding
-/// `vfs_read`/`vfs_write`. Defined locally (not in the shared `sync`
-/// taxonomy) so this change stays self-contained.
-pub(crate) struct FilePos;
-impl sync::LockClass for FilePos {
-    /// # C: O(1)
-    fn rank() -> u16 { 35 }
-}
-
 bitflags::bitflags! {
     /// `file->f_mode` access bits (`FMODE_*`).
     /// Derived once from the open access mode at `File` construction so

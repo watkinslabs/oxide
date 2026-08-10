@@ -13,6 +13,11 @@ extern crate std;
 #[cfg(feature = "debug-lockdep")]
 pub mod lockdep;
 mod percpu;
+/// The preempt-count gate every spinning lock here takes, so a lock owner
+/// cannot be descheduled inside its critical section (Linux `spin_lock` =
+/// `preempt_disable` + acquire).
+pub mod preempt_gate;
+pub use preempt_gate::{set_preempt_ops, PreemptOps};
 /// The single relax step every spin loop here takes — and the hook that lets a
 /// spinning CPU keep servicing cross-CPU work it owes.
 pub mod spin_relax;
@@ -371,6 +376,12 @@ impl<T, C: LockClass> Spinlock<T, C> {
         crate::lockdep::note_acquire(C::rank(), C::name(), false, self as *const _ as usize);
         #[cfg(feature = "debug-smp")]
         let mut iters: u64 = 0;
+        // Linux `spin_lock` = `preempt_disable()` then the acquire: the owner
+        // of a spinning lock must not be descheduled inside its critical
+        // section. Raised BEFORE the spin, as the reference does, so a waiter
+        // is not itself preempted into a position where it holds the count
+        // without the lock.
+        let preempt = crate::preempt_gate::acquire(C::rank());
         while self
             .locked
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -386,18 +397,25 @@ impl<T, C: LockClass> Spinlock<T, C> {
                 if iters == spin_probe::SPIN_WARN_ITERS { spin_probe::warn(C::rank(), iters); }
             }
         }
-        Guard { lock: self }
+        Guard { lock: self, preempt }
     }
 
     /// # C: O(1)
     /// # Lk: this lock acquired on Some
     pub fn try_lock(&self) -> Option<Guard<'_, T, C>> {
+        // Preemption goes off before the attempt and back on if it failed —
+        // Linux `spin_trylock` (`preempt_disable(); if (!try) preempt_enable();`).
+        // Raising it first is what makes the acquire and the count one step:
+        // between a successful CAS and a later disable the owner is preemptible
+        // while already holding the lock, which is the defect this gate exists
+        // to close.
+        let preempt = crate::preempt_gate::acquire(C::rank());
         match self
             .locked
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         {
-            Ok(_) => Some(Guard { lock: self }),
-            Err(_) => None,
+            Ok(_) => Some(Guard { lock: self, preempt }),
+            Err(_) => { crate::preempt_gate::release(preempt); None }
         }
     }
 
@@ -415,6 +433,12 @@ impl<T, C: LockClass> Spinlock<T, C> {
     /// # Lk: this lock released
     pub unsafe fn raw_unlock(&self) {
         self.locked.store(false, Ordering::Release);
+        // The forgotten guard's preempt level is owed by whoever performs the
+        // release — here, the incoming task. Every task in a switch takes the
+        // rq lock once and performs exactly one `raw_unlock`, so the per-task
+        // count balances; omitting this leaks one level per context switch and
+        // the CPU stops rescheduling entirely.
+        crate::preempt_gate::release(crate::preempt_gate::installed_release());
     }
 
     /// IRQ-safe lock per `06§3.1`. Disables IRQs via `IrqGate`, then
@@ -429,6 +453,12 @@ impl<T, C: LockClass> Spinlock<T, C> {
         // SAFETY: caller pairs disable with restore via IrqGuard::Drop;
         // the matching restore happens in IrqGuard::drop with same flags.
         let flags = unsafe { I::save_disable() };
+        // Linux `spin_lock_irqsave` = `local_irq_save` + `preempt_disable` +
+        // acquire. Masking interrupts already stops a tick-driven preemption,
+        // but not a VOLUNTARY reschedule reached from inside the section, and
+        // the guard's `Drop` restores flags before the count comes back — so
+        // the count is what covers the window where interrupts are on again.
+        let preempt = crate::preempt_gate::acquire(C::rank());
         while self
             .locked
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -436,7 +466,7 @@ impl<T, C: LockClass> Spinlock<T, C> {
         {
             crate::spin_relax::relax();
         }
-        IrqGuard { lock: self, flags, _g: PhantomData }
+        IrqGuard { lock: self, flags, preempt, _g: PhantomData }
     }
 
     /// BH-safe lock per `06§3.1` (Linux `spin_lock_bh`). Disables this CPU's
@@ -471,6 +501,9 @@ impl<T, C: LockClass> Spinlock<T, C> {
 
 pub struct Guard<'a, T, C: LockClass> {
     lock: &'a Spinlock<T, C>,
+    /// The release half of the gate this acquisition used, so an installation
+    /// that lands mid-section can never produce an unmatched decrement.
+    preempt: Option<fn()>,
 }
 
 impl<T, C: LockClass> Deref for Guard<'_, T, C> {
@@ -492,13 +525,17 @@ impl<T, C: LockClass> DerefMut for Guard<'_, T, C> {
 
 impl<T, C: LockClass> Drop for Guard<'_, T, C> {
     fn drop(&mut self) {
+        // Release, THEN re-enable preemption: a reschedule taken at the next
+        // natural point must never find this lock still held.
         self.lock.locked.store(false, Ordering::Release);
+        crate::preempt_gate::release(self.preempt);
     }
 }
 
 pub struct IrqGuard<'a, T, C: LockClass, I: IrqGate> {
     lock: &'a Spinlock<T, C>,
     flags: u64,
+    preempt: Option<fn()>,
     _g: PhantomData<I>,
 }
 
@@ -524,6 +561,9 @@ impl<T, C: LockClass, I: IrqGate> Drop for IrqGuard<'_, T, C, I> {
         self.lock.locked.store(false, Ordering::Release);
         // SAFETY: paired with the save_disable in lock_irqsave; same flags.
         unsafe { I::restore(self.flags) };
+        // After the flag restore, exactly as the reference orders
+        // `spin_unlock_irqrestore`.
+        crate::preempt_gate::release(self.preempt);
     }
 }
 

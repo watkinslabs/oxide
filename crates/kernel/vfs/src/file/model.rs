@@ -115,7 +115,7 @@ impl File {
             f_revoke_gen: AtomicU64::new(0),
             opened_device: Spinlock::new(None),
             pos:   AtomicU64::new(0),
-            f_pos_lock: Spinlock::new(()),
+            f_pos_lock: super::pos_lock::FilePosLock::new(),
             f_ra: Spinlock::new(FileRaState { ra_pages: DEFAULT_RA_PAGES, ..FileRaState::default() }),
             flags: AtomicU32::new(flags.bits()),
             // `filemap_sample_wb_err` / `file_sample_sb_err` at open

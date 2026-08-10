@@ -76,12 +76,29 @@ fn hosted_preempt<R>(f: impl FnOnce(&core::cell::Cell<u32>) -> R) -> R {
     HOSTED_PREEMPT_COUNT.with(f)
 }
 
-/// Count a task carries while parked, and that a never-run task starts with.
-/// `schedule()` enters with `preempt_disable()`, so every switch happens at
-/// exactly one level of preempt-off; the resumer pays the matching enable in
-/// `finish_task_switch`. Linux's `init_task` uses `PREEMPT_DISABLED` for the
-/// same reason.
+/// Level `schedule()` runs its own body at: one `preempt_disable`, taken on
+/// entry and paid back by the resumer in `finish_task_switch`. Linux's
+/// `PREEMPT_DISABLED`.
 pub const PREEMPT_DISABLED: u32 = 1;
+
+/// The count every task carries THROUGH a context switch, and therefore the
+/// count a never-run task must start with — Linux `FORK_PREEMPT_COUNT`, and
+/// the invariant `finish_task_switch` asserts (`preempt_count() ==
+/// 2*PREEMPT_DISABLE_OFFSET`). TWO levels, because a switching task is inside
+/// both:
+///
+/// ```text
+///   schedule()
+///     preempt_disable()          // 1
+///     rq.inner.lock()            // 2  (spin_lock disables preemption)
+/// ```
+///
+/// The incoming task pays both back: `raw_unlock` of the forgotten rq guard
+/// drops one, and the switcher's own enable drops the other. A first-run task
+/// reaches that same tail without having taken either, so starting it at one
+/// level makes its very first switch underflow the count — which pins
+/// `preemptible()` false forever and stops that CPU rescheduling.
+pub const FORK_PREEMPT_COUNT: u32 = 2 * PREEMPT_DISABLED;
 
 /// `CONFIG_DEBUG_PREEMPT` subset — the two count-leak detectors.
 #[cfg(feature = "debug-preempt")]
@@ -291,6 +308,26 @@ pub fn irqs_disabled() -> bool {
     #[cfg(not(target_os = "oxide-kernel"))]
     { false }
 }
+
+/// The preempt pair every spinning lock in `sync` takes, so a lock owner
+/// cannot be descheduled inside its critical section (Linux `spin_lock` =
+/// `preempt_disable` + acquire, `spin_unlock` = release + `preempt_enable`).
+///
+/// The release half is the NO-CHECK enable: a spin-lock release is not a
+/// schedule point in this kernel, and firing `schedule()` out of an arbitrary
+/// guard `Drop` would put a switch in every unlock site in the tree. The
+/// request survives (`take_need_resched` is only consulted by the checking
+/// forms) and is taken at the next natural point — return-to-user,
+/// `local_bh_enable`, or a real `preempt_enable`.
+static SPINLOCK_PREEMPT: sync::PreemptOps = sync::PreemptOps {
+    disable: preempt_disable,
+    enable: preempt_enable_no_check,
+};
+
+/// Install that gate. Boot path, once, after per-CPU is up and before the
+/// scheduler takes its first reschedule.
+/// # C: O(1)
+pub fn install_spinlock_gate() { sync::set_preempt_ops(&SPINLOCK_PREEMPT); }
 
 /// Install the lockdep context reporter. Boot path, before secondary CPUs.
 /// # C: O(1)
