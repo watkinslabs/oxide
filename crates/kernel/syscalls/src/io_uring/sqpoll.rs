@@ -13,12 +13,19 @@
 // `crate::io_uring_abi::sqpoll`, which is NOT target-gated, so it is unit
 // tested. This file is the machinery those decisions drive.
 //
-// Lifetime: the thread dies with the ring. Its handle on the ring is weak, so
-// it never keeps a closed ring alive; the ring's last descriptor closing sets
-// the stop request and wakes it, and it exits on its own thread rather than
-// making `close(2)` wait for it.
+// Lifetime: the thread dies with the LAST ring it serves. Its handles on the
+// rings are weak, so it never keeps a closed ring alive; a ring's last
+// descriptor closing drops it from the thread's set, and the set going empty
+// sets the stop request. The thread exits on its own rather than making
+// `close(2)` wait for it.
+//
+// `IORING_SETUP_ATTACH_WQ` is why the set is a set: a ring may join the poll
+// thread of a ring in its own thread group instead of starting a second one.
+// The thread then sweeps every ring it serves per pass, capped per ring so a
+// busy one cannot starve the others.
 
 use alloc::sync::{Arc, Weak};
+use alloc::vec::Vec;
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -28,24 +35,22 @@ use sync::{Spinlock, TaskList as SqLockClass};
 
 use crate::io_uring_abi::layout::{RING_SQ_FLAGS, RING_SQ_HEAD, RING_SQ_TAIL};
 use crate::io_uring_abi::sqpoll::{
-    arm_need_wakeup, disarm_need_wakeup, sleeps_after_arm, sq_cpu, sq_full, sq_ready,
-    sq_thread_idle_ns, step, Observed, PollState, Step,
+    arm_need_wakeup, attach_admit, disarm_need_wakeup, ring_take, shares,
+    sleeps_after_arm, sq_cpu, sq_full, sq_ready, sq_thread_idle_ns, step,
+    Attach, Observed, Peer, PollState, Step,
 };
-use crate::io_uring_abi::uapi::{Params, IORING_SETUP_SQPOLL};
+use crate::io_uring_abi::uapi::Params;
 
 use super::ctx::{state, IoUringInode};
 use super::iowq::owner::{Borrow, Owner};
 
-/// One ring's poll thread and the state both sides of the handshake read.
-///
-/// Linux keeps this in `struct io_sq_data`, shared by every ring attached to
-/// one thread. Nothing here shares a thread — `IORING_SETUP_ATTACH_WQ` is
-/// refused — so it is one per ring, and `shared` is correspondingly always
-/// false in the loop's `Observed`.
+/// One poll thread and the state both sides of the handshake read. Shared by
+/// every ring attached to it.
 pub struct SqData {
-    /// The ring this thread serves. Weak: a closed ring must not be held alive
-    /// by the thread that was draining it.
-    ring: Weak<IoUringInode>,
+    /// The rings this thread serves. Weak: a closed ring must not be held
+    /// alive by the thread that was draining it. More than one only through
+    /// `IORING_SETUP_ATTACH_WQ`.
+    rings: Spinlock<Vec<Weak<IoUringInode>>, SqLockClass>,
     /// The thread sleeps here; `io_uring_enter(IORING_ENTER_SQ_WAKEUP)` and
     /// every state change wake it.
     wait: sched::live::WaitList,
@@ -65,7 +70,9 @@ pub struct SqData {
     /// The thread has left its loop.
     exited: AtomicBool,
     idle_ns: u64,
-    /// What the thread borrows to run this ring's entries.
+    /// The thread group whose rings may attach to this thread.
+    tgid: u32,
+    /// What the thread borrows to run its rings' entries.
     owner: Arc<Owner>,
 }
 
@@ -121,6 +128,37 @@ impl SqData {
         self.wait.wake_all();
     }
 
+    /// Add a ring to this thread's set. # C: O(N_rings)
+    fn join(&self, ring: &Arc<IoUringInode>) -> Result<(), Errno> {
+        let mut g = self.rings.lock();
+        if g.try_reserve(1).is_err() { return Err(Errno::Enomem); }
+        g.push(Arc::downgrade(ring));
+        Ok(())
+    }
+
+    /// Drop a ring from this thread's set, and report whether the set is now
+    /// empty — which is the thread's cue to exit. # C: O(N_rings)
+    fn leave(&self, ring: &IoUringInode) -> bool {
+        let mut g = self.rings.lock();
+        g.retain(|w| match w.upgrade() {
+            Some(r) => !core::ptr::eq(Arc::as_ptr(&r), ring as *const _),
+            None => false,
+        });
+        g.is_empty()
+    }
+
+    /// The rings still alive, as owning handles. Prunes the ones that are
+    /// gone, so a thread whose last ring was dropped without a close notices.
+    /// # C: O(N_rings)
+    fn live(&self) -> Vec<Arc<IoUringInode>> {
+        let mut g = self.rings.lock();
+        g.retain(|w| w.strong_count() > 0);
+        let mut out = Vec::new();
+        if out.try_reserve(g.len()).is_err() { return out; }
+        for w in g.iter() { if let Some(r) = w.upgrade() { out.push(r); } }
+        out
+    }
+
     /// Pin the thread to `mask`, or release it to every processor when `mask`
     /// is zero. # C: O(1)
     pub fn set_cpus_allowed(&self, mask: u64) {
@@ -150,16 +188,37 @@ pub fn has_sq_room(ring: &IoUringInode) -> bool {
     !sq_full(r.hdr_load(RING_SQ_TAIL), r.hdr_load(RING_SQ_HEAD), r.sq_entries)
 }
 
-/// What the loop sees right now. # C: O(1)
-fn observe(sqd: &SqData, ring: &Arc<IoUringInode>) -> Observed {
+/// What the loop sees right now, for one ring of the `n_rings` this thread
+/// serves. # C: O(1)
+fn observe(sqd: &SqData, ring: &Arc<IoUringInode>, n_rings: u32) -> Observed {
     Observed {
         stop: sqd.stop.load(Ordering::Acquire),
         park: sqd.park_pending.load(Ordering::Acquire) != 0,
         disabled: ring.test_state(state::DISABLED),
         sq_ready: ready(ring),
-        shared: false,
+        shared: shares(n_rings),
         now_ns: super::iowq::worker::now_ns(),
     }
+}
+
+/// The same, with no ring in particular: what decides stop / park / spin /
+/// sleep once a whole sweep has found nothing to do. # C: O(1)
+fn observe_idle(sqd: &SqData, sq_ready: u32, n_rings: u32) -> Observed {
+    Observed {
+        stop: sqd.stop.load(Ordering::Acquire),
+        park: sqd.park_pending.load(Ordering::Acquire) != 0,
+        disabled: false,
+        sq_ready,
+        shared: shares(n_rings),
+        now_ns: super::iowq::worker::now_ns(),
+    }
+}
+
+/// Entries published across every ring this thread serves. # C: O(N_rings)
+fn total_ready(rings: &[Arc<IoUringInode>]) -> u32 {
+    let mut n: u32 = 0;
+    for r in rings { if !r.test_state(state::DISABLED) { n = n.saturating_add(ready(r)); } }
+    n
 }
 
 /// Stand down until every park request is released. # C: O(N_parks)
@@ -189,20 +248,23 @@ fn do_park(sqd: &SqData) {
 /// list and be dropped, which is the same hang from the other direction.
 /// # C: O(1)
 /// # Sleeps: until woken
-fn idle(sqd: &SqData, ring: &Arc<IoUringInode>) {
+fn idle(sqd: &SqData, rings: &[Arc<IoUringInode>]) {
     // SAFETY: running poll thread in process context on its own CPU holding no lock; every waker (`wake`, `stop`, `unpark`) wakes this list, and the matching schedule yields immediately per the WaitList contract.
     unsafe { sqd.wait.park(); }
-    update_sq_flags(ring, arm_need_wakeup);
-    // Separates the doorbell store from the tail load below. The submitter's
+    // Every ring the thread serves raises its own doorbell: a submitter reads
+    // the word of the ring it is publishing to and nothing else.
+    for r in rings { update_sq_flags(r, arm_need_wakeup); }
+    // Separates the doorbell stores from the tail loads below. The submitter's
     // side of this pair is its own store-tail / load-flags barrier.
     core::sync::atomic::fence(Ordering::SeqCst);
-    if sleeps_after_arm(&observe(sqd, ring)) {
+    let o = observe_idle(sqd, total_ready(rings), rings.len() as u32);
+    if sleeps_after_arm(&o) {
         // SAFETY: registered on `wait` above, holding no lock, in process context on this thread's own CPU.
         unsafe { sched::live::schedule(); }
     } else {
         sqd.wait.cancel_current_park();
     }
-    update_sq_flags(ring, disarm_need_wakeup);
+    for r in rings { update_sq_flags(r, disarm_need_wakeup); }
 }
 
 /// The poll loop. Returns once the ring is gone or a stop was requested.
@@ -217,24 +279,41 @@ fn run(sqd: &SqData) {
 
     let mut st = PollState::new(sqd.idle_ns);
     loop {
-        let Some(ring) = sqd.ring.upgrade() else { return };
-        let o = observe(sqd, &ring);
-        match step(&st, &o) {
+        let rings = sqd.live();
+        // Every ring gone is the same as a stop: there is nothing left to
+        // drain and nobody left to report to.
+        if rings.is_empty() { return; }
+        let n = rings.len() as u32;
+
+        // One sweep: each ring gets a bounded share of the pass, so a ring
+        // with a full SQ cannot hold the thread while its neighbours wait.
+        let mut worked = false;
+        for ring in &rings {
+            let o = observe(sqd, ring, n);
+            match step(&st, &o) {
+                Step::Stop => return,
+                Step::Park => { do_park(sqd); worked = true; break; }
+                Step::Submit(_) => {
+                    let take = ring_take(o.sq_ready, o.disabled, n);
+                    if take == 0 { continue; }
+                    super::submit::submit_sqes(ring, take);
+                    // Room was made and completions may have been posted.
+                    sqd.sq_wait.wake_all();
+                    worked = true;
+                }
+                Step::Spin | Step::Idle => {}
+            }
+        }
+        if worked { st.touch(super::iowq::worker::now_ns()); continue; }
+
+        match step(&st, &observe_idle(sqd, 0, n)) {
             Step::Stop => return,
             Step::Park => do_park(sqd),
-            Step::Submit(n) => {
-                super::submit::submit_sqes(&ring, n);
-                // Room was made and completions may have been posted.
-                sqd.sq_wait.wake_all();
-                st.touch(super::iowq::worker::now_ns());
-            }
-            Step::Spin => {
+            Step::Idle => { idle(sqd, &rings); st.touch(super::iowq::worker::now_ns()); }
+            // Nothing to take anywhere, and the idle window has not closed.
+            Step::Spin | Step::Submit(_) => {
                 // SAFETY: running poll thread in process context on its own CPU holding no lock; schedule re-enqueues this still-runnable task.
                 unsafe { sched::live::schedule(); }
-            }
-            Step::Idle => {
-                idle(sqd, &ring);
-                st.touch(super::iowq::worker::now_ns());
             }
         }
     }
@@ -249,8 +328,8 @@ extern "C" fn sq_thread(arg: usize) -> ! {
     run(&sqd);
     sqd.exited.store(true, Ordering::Release);
     // A submitter parked on an empty ring must not wait on a thread that is
-    // gone: leave the doorbell up so its next submission enters the kernel.
-    if let Some(ring) = sqd.ring.upgrade() { update_sq_flags(&ring, arm_need_wakeup); }
+    // gone: leave every doorbell up so its next submission enters the kernel.
+    for ring in sqd.live() { update_sq_flags(&ring, arm_need_wakeup); }
     sqd.sq_wait.wake_all();
     sqd.park_wait.wake_all();
     drop(sqd);
@@ -276,10 +355,17 @@ fn creator_cpus() -> u64 {
 /// # C: O(stack_size)
 pub fn offload_create(ring: &Arc<IoUringInode>, p: &Params) -> Result<(), Errno> {
     let cpu = sq_cpu(p.flags, p.sq_thread_cpu, creator_cpus())?;
-    if p.flags & IORING_SETUP_SQPOLL == 0 { return Ok(()); }
+    // The descriptor `IORING_SETUP_ATTACH_WQ` names is validated whether or
+    // not this ring has a poll thread to place.
+    let peer = peer_of(p.wq_fd);
+    match attach_admit(p.flags, &peer)? {
+        Attach::Validate => return Ok(()),
+        Attach::Join => return join_peer(ring, p.wq_fd),
+        Attach::Own => {}
+    }
 
     let sqd = Arc::new(SqData {
-        ring: Arc::downgrade(ring),
+        rings: Spinlock::new(alloc::vec![Arc::downgrade(ring)]),
         wait: sched::live::WaitList::new(),
         sq_wait: sched::live::WaitList::new(),
         park_wait: sched::live::WaitList::new(),
@@ -289,6 +375,10 @@ pub fn offload_create(ring: &Arc<IoUringInode>, p: &Params) -> Result<(), Errno>
         stop: AtomicBool::new(false),
         exited: AtomicBool::new(false),
         idle_ns: sq_thread_idle_ns(p.sq_thread_idle),
+        // The thread group a later `IORING_SETUP_ATTACH_WQ` must match: the
+        // thread borrows this task's address space and descriptor table, so a
+        // ring from another process would not mean on it what it means here.
+        tgid: sched::live::current().map(|c| c.tgid.load(Ordering::Acquire)).unwrap_or(0),
         // Captured HERE, in the creating task, which is the whole point: the
         // thread must run entries as the task that published them.
         owner: ring.owner_ctx(),
@@ -314,11 +404,58 @@ pub fn offload_create(ring: &Arc<IoUringInode>, p: &Params) -> Result<(), Errno>
 /// The ring's poll thread, if it has one. # C: O(1)
 pub fn of(ring: &IoUringInode) -> Option<Arc<SqData>> { ring.sq.lock().clone() }
 
-/// Linux `io_sq_thread_finish`: end the poll thread when the ring's last
-/// descriptor goes away. # C: O(1)
+/// What the creator can tell about the descriptor `IORING_SETUP_ATTACH_WQ`
+/// names. Every field is answered independently, so the admission ladder — not
+/// this lookup — decides which one matters first. # C: O(1)
+fn peer_of(wq_fd: u32) -> Peer {
+    let Some(cur) = sched::live::current() else { return Peer::default() };
+    // SAFETY: running task on this CPU; preempt-off; sole reader of the fd_table slot.
+    let Some(fdt) = (unsafe { cur.fd_table_ref() }) else { return Peer::default() };
+    let Ok(file) = fdt.clone().get(wq_fd as i32) else { return Peer::default() };
+    let present = true;
+    let Ok(inode) = super::ring::ring_of(&file) else { return Peer { present, ..Peer::default() } };
+    let is_ring = true;
+    let Some(peer) = super::ring::ring_ctx(&inode) else {
+        return Peer { present, is_ring, ..Peer::default() };
+    };
+    let sqd = peer.sq.lock().clone();
+    match sqd {
+        None => Peer { present, is_ring, ..Peer::default() },
+        Some(sqd) => Peer {
+            present, is_ring, has_thread: true,
+            same_group: sqd.tgid == cur.tgid.load(Ordering::Acquire),
+            dead: sqd.dead(),
+        },
+    }
+}
+
+/// Join the poll thread of the ring `wq_fd` names. The thread's set is what
+/// keeps it alive, so the ring is added to it before the ring adopts the
+/// thread: a thread that observed an empty set in between would exit under a
+/// ring that had already taken it. # C: O(N_rings)
+fn join_peer(ring: &Arc<IoUringInode>, wq_fd: u32) -> Result<(), Errno> {
+    let Some(cur) = sched::live::current() else { return Err(Errno::Enxio) };
+    // SAFETY: running task on this CPU; preempt-off; sole reader of the fd_table slot.
+    let Some(fdt) = (unsafe { cur.fd_table_ref() }) else { return Err(Errno::Enxio) };
+    let file = fdt.clone().get(wq_fd as i32).map_err(|_| Errno::Enxio)?;
+    let inode = super::ring::ring_of(&file)?;
+    let peer = super::ring::ring_ctx(&inode).ok_or(Errno::Einval)?;
+    let sqd = peer.sq.lock().clone().ok_or(Errno::Einval)?;
+    if sqd.dead() { return Err(Errno::Enxio); }
+    sqd.join(ring)?;
+    *ring.sq.lock() = Some(Arc::clone(&sqd));
+    // The new ring may already have entries published.
+    sqd.wake();
+    Ok(())
+}
+
+/// End this ring's relationship with its poll thread when its last descriptor
+/// goes away. The thread stops only when it has no rings left: another ring
+/// may have attached to it and still need it. # C: O(N_rings)
 pub fn finish(ring: &IoUringInode) {
     let sqd = ring.sq.lock().take();
-    if let Some(sqd) = sqd { sqd.stop(); }
+    let Some(sqd) = sqd else { return };
+    if sqd.leave(ring) { sqd.stop(); } else { sqd.wake(); }
 }
 
 /// Linux `io_sqpoll_wait_sq`: block until the poll thread has consumed enough

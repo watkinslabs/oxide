@@ -255,3 +255,78 @@ fn the_wake_is_unconditional_not_re_decided_against_the_doorbell() {
     // the submitter paid a syscall for.
     assert!(enter_action(IORING_ENTER_SQ_WAKEUP).wake);
 }
+
+/// One thread, several rings: each ring's pass is capped so a busy ring cannot
+/// starve its neighbours, and a ring serving alone is not capped at all.
+#[test]
+fn a_shared_thread_caps_each_rings_pass_and_a_lone_one_does_not() {
+    assert!(!shares(1));
+    assert!(shares(2));
+    assert_eq!(ring_take(1000, false, 1), 1000, "a lone ring takes everything it has");
+    assert_eq!(ring_take(1000, false, 3), SQPOLL_CAP_ENTRIES);
+    assert_eq!(ring_take(3, false, 3), 3, "the cap is a ceiling, not a quota");
+}
+
+/// A disabled ring contributes nothing to a shared thread's pass, and does not
+/// stop the others contributing.
+#[test]
+fn a_disabled_ring_contributes_nothing_to_a_shared_pass() {
+    assert_eq!(ring_take(50, true, 1), 0);
+    assert_eq!(ring_take(50, true, 4), 0);
+}
+
+fn peer_ok() -> Peer { Peer { present: true, is_ring: true, has_thread: true, same_group: true, dead: false } }
+
+#[test]
+fn a_ring_that_does_not_ask_to_attach_gets_its_own_thread_or_none() {
+    assert_eq!(attach_admit(IORING_SETUP_SQPOLL, &Peer::default()), Ok(Attach::Own));
+    assert_eq!(attach_admit(0, &Peer::default()), Ok(Attach::Validate));
+}
+
+#[test]
+fn attaching_names_a_descriptor_that_must_be_a_live_ring() {
+    let f = IORING_SETUP_ATTACH_WQ | IORING_SETUP_SQPOLL;
+    assert_eq!(attach_admit(f, &Peer::default()), Err(Errno::Enxio),
+               "a descriptor naming nothing is ENXIO");
+    let p = Peer { present: true, ..Peer::default() };
+    assert_eq!(attach_admit(f, &p), Err(Errno::Einval), "a descriptor naming a non-ring is EINVAL");
+}
+
+/// The descriptor is validated even when this ring has no poll thread to
+/// place: the request named something, and naming it wrongly is still an
+/// error.
+#[test]
+fn attaching_without_a_poll_thread_still_validates_the_descriptor() {
+    let f = IORING_SETUP_ATTACH_WQ;
+    assert_eq!(attach_admit(f, &Peer::default()), Err(Errno::Enxio));
+    assert_eq!(attach_admit(f, &Peer { present: true, ..Peer::default() }), Err(Errno::Einval));
+    assert_eq!(attach_admit(f, &peer_ok()), Ok(Attach::Validate),
+               "nothing to join to, and nothing to build");
+}
+
+#[test]
+fn attaching_to_a_ring_without_a_thread_is_einval() {
+    let f = IORING_SETUP_ATTACH_WQ | IORING_SETUP_SQPOLL;
+    let p = Peer { has_thread: false, ..peer_ok() };
+    assert_eq!(attach_admit(f, &p), Err(Errno::Einval));
+}
+
+/// A thread belonging to another thread group borrows another process's
+/// address space and descriptor table, so this ring's entries would not mean
+/// on it what they mean here. The sharing is refused; the request for a thread
+/// is not.
+#[test]
+fn attaching_across_thread_groups_yields_a_thread_of_ones_own() {
+    let f = IORING_SETUP_ATTACH_WQ | IORING_SETUP_SQPOLL;
+    assert_eq!(attach_admit(f, &Peer { same_group: false, ..peer_ok() }), Ok(Attach::Own));
+}
+
+/// Joining a thread that has already left its loop would leave the ring with a
+/// submitter that never runs, and a caller waiting for completions that never
+/// come.
+#[test]
+fn attaching_to_a_dead_thread_is_enxio() {
+    let f = IORING_SETUP_ATTACH_WQ | IORING_SETUP_SQPOLL;
+    assert_eq!(attach_admit(f, &Peer { dead: true, ..peer_ok() }), Err(Errno::Enxio));
+    assert_eq!(attach_admit(f, &peer_ok()), Ok(Attach::Join));
+}

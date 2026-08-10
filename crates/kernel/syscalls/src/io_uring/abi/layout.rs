@@ -96,7 +96,7 @@ pub const NO_SQ_ARRAY: u32 = u32::MAX;
 /// | `SQ_AFF` | implemented | the poll thread is pinned to `p->sq_thread_cpu`. |
 /// | `CQSIZE` | implemented | `fill_entries`. |
 /// | `CLAMP` | implemented | `fill_entries`. |
-/// | `ATTACH_WQ` | refused | one poll thread and one worker pool per ring; there is no second ring's work queue to join. |
+/// | `ATTACH_WQ` | implemented | [`super::sqpoll::attach_admit`] + `io_uring/sqpoll.rs`: a ring joins the poll thread of a ring in its own thread group, and the thread sweeps every ring it serves per pass, capped per ring. |
 /// | `R_DISABLED` | implemented | `ctx::state::DISABLED`. |
 /// | `SUBMIT_ALL` | implemented | `submit::submit_sqes`. |
 /// | `COOP_TASKRUN` | implemented | vacuously: an entry finishes inside the submission that issued it or on a worker that posts its own completion, so no task work is ever queued back at the submitter and no signal is ever needed to run it. |
@@ -121,7 +121,7 @@ pub const SUPPORTED_SETUP_FLAGS: u32 =
     | IORING_SETUP_HYBRID_IOPOLL
     | IORING_SETUP_CQE32 | IORING_SETUP_SQE128
     | IORING_SETUP_CQE_MIXED | IORING_SETUP_SQE_MIXED
-    | IORING_SETUP_SQ_REWIND;
+    | IORING_SETUP_SQ_REWIND | IORING_SETUP_ATTACH_WQ;
 
 /// `p->features` oxide reports. Claiming a bit we do not implement is a lie
 /// liburing acts on, so the set is deliberately small:
