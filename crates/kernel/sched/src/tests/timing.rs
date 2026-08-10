@@ -308,8 +308,10 @@ fn preempt_count_travels_with_the_task_across_a_switch() {
     parked.preempt_count.store(live, Ordering::Release);
     assert_eq!(parked.preempt_count.load(Ordering::Acquire), mid_drain,
         "the parked task must carry its own softirq field away with it");
-    assert_eq!(preempt_count(), crate::preempt::PREEMPT_DISABLED,
+    assert_eq!(preempt_count(), crate::preempt::FORK_PREEMPT_COUNT,
         "the incoming task must NOT inherit the previous task's softirq field");
+    assert_eq!(preempt_count() & SOFTIRQ_OFFSET, 0,
+        "a never-run task carries only the switch tail's two preempt levels");
 
     // Restore whatever the harness was at so sibling tests are unaffected.
     preempt_count_swap(outgoing);

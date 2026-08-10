@@ -52,6 +52,11 @@ fn report(count: u32, shared_stack: bool) {
         klog::write_raw(if shared_stack { b" irq_stack=1" } else { b" irq_stack=0" });
         klog::write_raw(b" sp=0x");
         klog::write_hex_u64(current_sp());
+        // The innermost lock class the CPU still holds. The schedule site is
+        // the victim — this names the lock the outgoing task is about to carry
+        // off-CPU, which is the cause.
+        klog::write_raw(b" held_lock_rank=");
+        klog::write_dec_u64(sync::preempt_gate::held_rank() as u64);
         let caller = core::panic::Location::caller();
         klog::write_raw(b" caller=");
         klog::write_raw(caller.file().as_bytes());

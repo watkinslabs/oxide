@@ -44,6 +44,7 @@ mod lock_wait;
 mod lifetime;
 mod model;
 mod mode;
+mod pos_lock;
 mod kernel_open;
 mod open;
 pub(crate) mod readahead;
@@ -71,7 +72,7 @@ pub use fsync::{iocb_sync_mode, fsync_slot_present, SyncMode, SYNC_TO_EOF};
 pub(super) use async_notify::SIGIO_HOOK;
 pub(super) use hooks::{fire_open_hook, fire_read_hook, fire_write_hook};
 pub(super) use lease::F_UNLCK;
-pub(super) use mode::{fmode_from_flags, FilePos, O_ASYNC, SETFL_MASK};
+pub(super) use mode::{fmode_from_flags, O_ASYNC, SETFL_MASK};
 pub(super) use readahead::{FileRa, DEFAULT_RA_PAGES, PAGE_SIZE};
 
 /// Backing handle for an open file. Stored as `Arc<File>` so dup / fork
@@ -136,7 +137,14 @@ pub struct File {
     /// file description cannot interleave the cursor. Guards the separate
     /// `pos` atomic — payload is `()`. Only taken for seekable files
     /// (regular/directory); non-seekable I/O may park and ignores `pos`.
-    f_pos_lock: Spinlock<(), FilePos>,
+    ///
+    /// A SLEEPING mutex, as in the reference, and not for tidiness: the region
+    /// it covers submits block I/O and waits for the device, so its owner
+    /// parks off-CPU inside the critical section. A spinning lock there hands
+    /// the CPU away while still held, and every later reader of the same
+    /// description then spins for a lock whose owner is not running — a wedge
+    /// nothing on a single-CPU machine can break.
+    f_pos_lock: pos_lock::FilePosLock,
     /// `f_ra` readahead window (Linux `struct file.f_ra`). Spinlock-guarded so
     /// the on-demand advance is atomic against a dup'd / shared description.
     f_ra: Spinlock<FileRaState, FileRa>,

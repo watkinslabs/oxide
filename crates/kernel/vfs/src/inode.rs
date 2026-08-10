@@ -16,7 +16,7 @@ mod locking;
 mod metadata;
 mod model;
 mod ops;
-mod rwsem;
+pub(crate) mod rwsem;
 
 pub use builder::InodeBuilder;
 pub use fileattr_shmem::{shmem_fileattr_get, shmem_fileattr_set};
