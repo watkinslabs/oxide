@@ -233,7 +233,7 @@ impl TcpListenEntry {
             fastopen,
             fastopen_no_cookie: ::core::sync::atomic::AtomicBool::new(false),
             save_syn: ::core::sync::atomic::AtomicU8::new(0),
-            synq_overflow_ns: ::core::sync::atomic::AtomicU64::new(crate::syncookies::NEVER),
+            synq_overflow_ns: crate::syncookies::overflow::new_cell(),
             closed: ::core::sync::atomic::AtomicBool::new(false),
             #[cfg(target_os = "oxide-kernel")]
             accept_waiters: sched::live::WaitList::new(),
@@ -261,23 +261,23 @@ impl TcpListenEntry {
         reserved
     }
 
-    /// Record that this listener answered a request with a cookie because its
-    /// SYN queue could not hold one. Rewritten at most once a second: a flood
-    /// is the one moment where dirtying a shared line per SYN costs most.
-    /// # C: O(1)
+    /// Record that a request was answered with a cookie because the SYN queue
+    /// could not hold it. A listener that joined a SO_REUSEPORT key stamps the
+    /// KEY's cell, so every member of it believes the cookie. # C: O(1)
     pub fn note_synq_overflow(&self, now_ns: u64) {
-        use ::core::sync::atomic::Ordering;
-        let last = self.synq_overflow_ns.load(Ordering::Relaxed);
-        if crate::syncookies::restamp_overflow(last, now_ns) {
-            self.synq_overflow_ns.store(now_ns, Ordering::Relaxed);
+        match crate::reuseport::slot::group(&self.reuseport_group) {
+            Some(group) => group.note_synq_overflow(now_ns),
+            None => crate::syncookies::overflow::note(&self.synq_overflow_ns, now_ns),
         }
     }
 
-    /// Whether this listener has NOT overflowed recently enough to believe a
-    /// cookie. # C: O(1)
+    /// Whether this listener — or, when it joined one, its whole SO_REUSEPORT
+    /// key — has NOT overflowed recently enough to believe a cookie. # C: O(1)
     pub fn no_recent_synq_overflow(&self, now_ns: u64) -> bool {
-        crate::syncookies::no_recent_overflow(
-            self.synq_overflow_ns.load(::core::sync::atomic::Ordering::Relaxed), now_ns)
+        match crate::reuseport::slot::group(&self.reuseport_group) {
+            Some(group) => group.no_recent_synq_overflow(now_ns),
+            None => crate::syncookies::overflow::no_recent(&self.synq_overflow_ns, now_ns),
+        }
     }
 
     /// Reserve one completed accept backlog slot. # C: O(1)

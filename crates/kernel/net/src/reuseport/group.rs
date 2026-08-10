@@ -3,7 +3,7 @@
 
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use sync::{Socket as SockLockClass, Spinlock};
 use syscall::errno::Errno;
 
@@ -20,6 +20,14 @@ pub struct ReuseportGroup {
     closed_socks: AtomicUsize,
     /// Linux `sock_reuseport.bind_inany`, published to a selection program.
     bind_inany: AtomicBool,
+    /// When this bind key's SYN queue last overflowed, as a monotonic
+    /// nanosecond reading, or [`crate::syncookies::NEVER`].
+    ///
+    /// One stamp for the whole key, not one per member: a cookie minted by
+    /// the member an arriving SYN hashed to comes back as an acknowledgement
+    /// that may reach a different member, and only a shared stamp lets that
+    /// member believe it.
+    synq_overflow_ns: AtomicU64,
 }
 
 /// One arriving packet, as a reuseport group's selection sees it.
@@ -91,6 +99,7 @@ impl ReuseportGroup {
             has_conns: AtomicBool::new(false),
             closed_socks: AtomicUsize::new(0),
             bind_inany: AtomicBool::new(false),
+            synq_overflow_ns: crate::syncookies::overflow::new_cell(),
         })
     }
 
@@ -192,6 +201,18 @@ impl ReuseportGroup {
     pub fn release_closed_sock(&self) {
         let _ = self.closed_socks.fetch_update(Ordering::AcqRel, Ordering::Acquire,
             |used| used.checked_sub(1));
+    }
+
+    /// Record that a member of this key answered a request with a cookie
+    /// because the key's SYN queue could not hold one. # C: O(1)
+    pub fn note_synq_overflow(&self, now_ns: u64) {
+        crate::syncookies::overflow::note(&self.synq_overflow_ns, now_ns);
+    }
+
+    /// Whether this key has NOT overflowed recently enough for any of its
+    /// members to believe a cookie. # C: O(1)
+    pub fn no_recent_synq_overflow(&self, now_ns: u64) -> bool {
+        crate::syncookies::overflow::no_recent(&self.synq_overflow_ns, now_ns)
     }
 
     /// Whether any member has taken a connected peer. # C: O(1)

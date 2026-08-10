@@ -4,6 +4,7 @@
 //   `cookie` — the keyed construction and the MSS table. Pure.
 //   `tsopt`  — the options smuggled through the timestamp echo. Pure.
 //   `decide` — the three-state sysctl decision and the overflow window. Pure.
+//   `overflow` — the overflow stamp cell shared by a reuseport bind key. Pure.
 //   this file — the boot secret, the clock, and the namespace's sysctl.
 //
 // What this closes: a listener whose SYN queue was full dropped the SYN on the
@@ -31,12 +32,13 @@ use crate::net_ns::NetSysctlKey;
 
 pub mod cookie;
 pub mod decide;
+pub mod overflow;
 pub mod request;
 pub mod tsopt;
 
 pub use cookie::{Secret, MAX_SYNCOOKIE_AGE, MSSTAB_V4, MSSTAB_V6};
 pub use decide::{admit, cookie_time, no_recent_overflow, restamp_overflow, Admit, ALWAYS, NEVER,
-    OFF, WHEN_FULL};
+    OFF, SYNCOOKIE_VALID_NS, WHEN_FULL};
 pub use request::{Rebuild, Request};
 pub use tsopt::{Decoded, Permitted};
 
