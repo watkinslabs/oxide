@@ -15,18 +15,23 @@
 //   1. A never-killable process (the protected init task, a kernel thread) is
 //      skipped outright. It cannot be chosen and it cannot abort the scan —
 //      init being marked a victim must not stop the machine choosing one.
-//   2. A process already marked a victim by an earlier event ABORTS the scan.
+//   2. A process whose mm the reaper has written off is TRANSPARENT: it can
+//      neither be chosen nor abort the scan. This is the escape hatch rule 3
+//      would otherwise lack — a victim wedged in an uninterruptible sleep is
+//      never going to release anything, and once the reaper says so the scan
+//      must be able to move past it and pick somebody who can.
+//   3. A process already marked a victim by an earlier event ABORTS the scan.
 //      It has been sent its fatal signal and has not finished exiting; the
 //      memory it is about to release is the memory this pass would look for.
 //      Choosing a second victim here is how one pressure spike turns into
 //      every process on the box being killed.
-//   3. Only then is the score consulted. A process with no user memory to
+//   4. Only then is the score consulted. A process with no user memory to
 //      release, or one pinned by the minimum score adjustment, is skipped.
-//   4. Highest score wins. Equal scores resolve to the later candidate, which
+//   5. Highest score wins. Equal scores resolve to the later candidate, which
 //      keeps the scan a single forward pass with no tie-break policy of its
 //      own.
 //
-// Rule 2 outranking rule 3 is deliberate: a task pinned at the minimum
+// Rule 3 outranking rule 4 is deliberate: a task pinned at the minimum
 // adjustment that is nevertheless already a victim (it was killed by scope
 // that ignores the pin, or by something other than this path) still aborts the
 // scan, because the thing that matters is that memory is on its way back.
@@ -39,6 +44,11 @@ pub struct Candidate {
     pub unkillable: bool,
     /// Marked by an earlier out-of-memory event and not yet gone.
     pub already_victim: bool,
+    /// The reaper has finished with this process's mm — it was drained, or it
+    /// resisted every attempt and was written off. Either way no further
+    /// memory is coming back from it, so the scan neither waits on it nor
+    /// picks it.
+    pub reap_skipped: bool,
     /// Badness in PSS fixed-point units, or `None` for a process that cannot
     /// be scored at all — no user mm left, or pinned at the minimum score
     /// adjustment.
@@ -62,6 +72,7 @@ pub fn select_victim<I: IntoIterator<Item = Candidate>>(candidates: I) -> Select
     let mut chosen: Option<(usize, i128)> = None;
     for (index, candidate) in candidates.into_iter().enumerate() {
         if candidate.unkillable { continue; }
+        if candidate.reap_skipped { continue; }
         if candidate.already_victim { return Selection::InProgress; }
         let Some(points) = candidate.badness else { continue; };
         if chosen.is_some_and(|(_, best)| points < best) { continue; }
@@ -78,6 +89,9 @@ mod tests {
     fn unscorable() -> Candidate { Candidate::default() }
     fn protected(points: i128) -> Candidate { Candidate { unkillable: true, badness: Some(points), ..Candidate::default() } }
     fn victim(points: i128) -> Candidate { Candidate { already_victim: true, badness: Some(points), ..Candidate::default() } }
+    fn skipped_victim(points: i128) -> Candidate {
+        Candidate { already_victim: true, reap_skipped: true, badness: Some(points), ..Candidate::default() }
+    }
 
     #[test]
     fn the_highest_score_is_the_one_chosen() {
@@ -104,9 +118,9 @@ mod tests {
 
     #[test]
     fn a_protected_process_that_is_already_a_victim_does_not_abort_the_scan() {
-        // Rule 1 before rule 2: init carrying the mark must not stop the
+        // Rule 1 before rule 3: init carrying the mark must not stop the
         // machine from choosing someone it may actually kill.
-        let init = Candidate { unkillable: true, already_victim: true, badness: Some(i128::MAX) };
+        let init = Candidate { unkillable: true, already_victim: true, badness: Some(i128::MAX), ..Candidate::default() };
         assert_eq!(select_victim([init, scored(5)]), Selection::Victim(1));
     }
 
@@ -122,7 +136,7 @@ mod tests {
     fn an_unscorable_victim_still_aborts_the_scan() {
         // The mark is checked before the score, so a process that has already
         // dropped its mm on the way out still buys the machine time.
-        let dying = Candidate { unkillable: false, already_victim: true, badness: None };
+        let dying = Candidate { already_victim: true, ..Candidate::default() };
         assert_eq!(select_victim([dying, scored(900)]), Selection::InProgress);
     }
 
@@ -147,6 +161,54 @@ mod tests {
     #[test]
     fn equal_scores_resolve_without_rescanning() {
         assert_eq!(select_victim([scored(7), scored(7)]), Selection::Victim(1));
+    }
+
+    #[test]
+    fn a_victim_the_reaper_wrote_off_stops_blocking_the_scan() {
+        // The escape hatch. Rule 3 alone waits on a victim for as long as it
+        // is alive, and a victim wedged in an uninterruptible sleep is alive
+        // forever — so every later exhaustion would pick nobody and the fault
+        // leg would re-take indefinitely. Once the reaper has written the mm
+        // off, the scan must move past it and choose someone who can free.
+        assert_eq!(select_victim([skipped_victim(900), scored(10)]), Selection::Victim(1));
+        assert_eq!(select_victim([scored(10), skipped_victim(900)]), Selection::Victim(0));
+    }
+
+    #[test]
+    fn a_written_off_victim_is_not_chosen_a_second_time_either() {
+        // Transparent means transparent in both directions: it is the largest
+        // thing in the scope and it is still not the answer, because killing
+        // it again releases nothing.
+        assert_eq!(select_victim([skipped_victim(i128::MAX)]), Selection::None);
+    }
+
+    #[test]
+    fn a_written_off_mm_is_skipped_even_without_the_victim_mark() {
+        // A drained mm has nothing left to give whether or not the process
+        // that owns it was this scope's victim.
+        let drained = Candidate { reap_skipped: true, badness: Some(i128::MAX), ..Candidate::default() };
+        assert_eq!(select_victim([drained, scored(1)]), Selection::Victim(1));
+    }
+
+    #[test]
+    fn a_live_victim_still_blocks_while_the_reaper_has_not_finished() {
+        // The hatch opens only when the reaper says so. Until then the
+        // wait-for-the-victim rule is exactly what stops one pressure spike
+        // killing every process on the box.
+        assert_eq!(select_victim([victim(1), scored(900)]), Selection::InProgress);
+    }
+
+    #[test]
+    fn a_wedged_victim_stops_blocking_only_once_it_is_written_off() {
+        // The row's whole shape, in one sequence: a victim is chosen, it never
+        // dies, every pass waits — and the pass after the reaper gives up
+        // picks the next process instead of reporting in-progress forever.
+        let mut scope = [scored(900), scored(10)];
+        let Selection::Victim(index) = select_victim(scope) else { panic!("first pass must choose") };
+        scope[index].already_victim = true;
+        for _ in 0..64 { assert_eq!(select_victim(scope), Selection::InProgress); }
+        scope[index].reap_skipped = true;
+        assert_eq!(select_victim(scope), Selection::Victim(1 - index));
     }
 
     #[test]

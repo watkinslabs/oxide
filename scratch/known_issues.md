@@ -54,10 +54,10 @@ exactly the rows a lane would have picked up first. D551 regenerated it.
 | Class \ Sev | blocker | high | med | low | Total |
 |---|---:|---:|---:|---:|---:|
 | `DEFECT` | 0 | 10 | 41 | 53 | 104 |
-| `MISSING` | 1 | 8 | 77 | 68 | 154 |
+| `MISSING` | 1 | 9 | 77 | 68 | 155 |
 | `COVERAGE` | 0 | 5 | 51 | 50 | 106 |
 | `INFRA` | 0 | 1 | 24 | 31 | 56 |
-| **Total** | **1** | **24** | **193** | **202** | **420** |
+| **Total** | **1** | **25** | **193** | **202** | **421** |
 
 Never delete a row to make the list look shorter. A row with no owner is still a
 row. Retired rows and folded duplicates live in `scratch/fixed-issues.md`.
@@ -709,6 +709,7 @@ here now.
 |---|---|---|---|---|---|
 | OPEN | MISSING | med | The allocation slowpath bounds the number of out-of-memory selector invocations one allocation may make (`mm-pmm::oom_entry::MAX_OOM_ATTEMPTS`, 16) and then reports `NoMem`. The reference has no such bound — it retries for as long as the killer reports progress — which is safe there only because a reaper frees the victim's memory asynchronously, so "progress" becomes free pages within a bounded time. Without a reaper an unbounded loop here would spin against a victim that will not die, so the bound is a stand-in for the reaper and must be removed once one exists. | `mm-pmm/src/oom_entry.rs::after_oom`; `oom_entry::tests::kill_invocations_are_bounded_per_allocation` pins the current behaviour so its removal is visible | unassigned |
 | OPEN | MISSING | HIGH | No OOM reaper and no give-up on a victim that will not die. The "a victim is already exiting, kill nothing more" rule has no escape hatch: a victim wedged in an uninterruptible sleep leaves the scan reporting in-progress forever, so a later exhaustion can never select anyone and the fault leg retakes indefinitely. The reference reaps the victim's mm asynchronously and, when that fails, marks the mm skippable so selection resumes. | `oom::select::select_victim` returns `InProgress` for as long as `Task::oom_victim` is set and the task is alive; `oom::tests::the_scope_resumes_selecting_once_the_victim_has_gone` shows selection only resumes when the victim actually reaches zombie | unassigned |
+| OPEN | MISSING | HIGH | No allocation-context out-of-memory entry. The reference invokes the killer from the page allocator, so ANY allocation that cannot be satisfied selects a victim; here only the user-fault fill leg does. A kernel allocation failure, or a fill path that reports something other than `NoMem`, still returns failure with no victim chosen and no memory recovered. | `sched::oom::out_of_memory` has exactly one non-cgroup caller (`mm-pmm/src/user_as/signal.rs`); nothing in `mm-pmm`'s frame allocator calls it | unassigned |
 | OPEN | MISSING | MED | No coredump-in-progress state on the thread group, so the "already dying" shortcut cannot exclude a process that is dumping core. The reference refuses to treat a coredumping process as one that will promptly free memory, because the dump can sleep for a long time; here such a process short-circuits the whole selection to `SelfWillFree` and nothing is killed. | `sched::oom::kill::will_free_mem` checks group-exit latch + pending SIGKILL only; no `core_state` equivalent exists anywhere in `crates/kernel/sched/src` | unassigned |
 | OPEN | DEFECT | LOW | An OOM kill is not reported on a production console. The reference prints the victim unconditionally; `04§4.0` is frozen on every `klog` call site being `cfg`-elidable, so the report sits behind `debug-sched`. The kill is still counted (`/proc/vmstat` `oom_kill`, victim cgroup `memory.events` `oom_kill`), so it is observable — but a service that vanished under pressure leaves no console record. | `sched/src/oom/kill.rs::report` under `#[cfg(all(target_os = "oxide-kernel", feature = "debug-sched"))]`; the ungated form regresses the `crates/kernel/sched [code/klog-ungated]` ratchet key 163 → 168 | unassigned |
 

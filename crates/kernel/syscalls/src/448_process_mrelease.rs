@@ -47,12 +47,17 @@ fn find_task_mm(target: &Arc<Task>) -> Option<(Arc<Task>, Arc<vmm::AddressSpace>
 /// safety: a live target, or one whose mm another live process still shares,
 /// is refused.
 ///
+/// Private file-backed mappings are released alongside anonymous ones — the
+/// same set the kernel's own reaper takes — because a private mapping's pages
+/// are either copies the dying process owns outright or clean cache pages that
+/// come back from the backing store. Shared mappings are left alone: they
+/// belong to more than the process that is dying.
+///
 /// The mm is NOT detached. Detaching it would leave the dying task with a null
 /// page-table root, which the context switch reads as a kernel thread and so
 /// keeps the previous root — a user task could then return to user mode
 /// against another process's address space. Reaping in place avoids that
-/// entirely, and file-backed pages are left alone because they are
-/// reclaimable from their backing store.
+/// entirely.
 /// # C: O(N_threads_in_group + N_mm_sharers + target_mm anon pages)
 pub fn sys_process_mrelease(args: &SyscallArgs) -> i64 {
     let pidfd = args.a0 as i32;
@@ -99,13 +104,15 @@ pub fn sys_process_mrelease(args: &SyscallArgs) -> i64 {
     // The target has been killed but has NOT necessarily left its CPU, and its
     // siblings may still be running, so the foreign-root evictor invalidates
     // every CPU in the mm's cpumask before releasing a frame.
+    // Which mappings may be torn down is the OOM reaper's rule, and there is
+    // one copy of it: the reference reaches the same reaping function from
+    // this syscall and from the kthread.
     let guard = mm.vmas_for_test();
     for vma in guard.iter() {
-        if matches!(vma.backing, vmm::VmaBacking::Anonymous) {
-            let start = vma.start.as_u64();
-            let len = vma.end.as_u64().saturating_sub(start);
-            if len != 0 { pmm::user_as::evict_foreign_pages_in_range(&mm, start, len); }
-        }
+        if !sched::oom::reapable_vma(vma) { continue; }
+        let start = vma.start.as_u64();
+        let len = vma.end.as_u64().saturating_sub(start);
+        if len != 0 { pmm::user_as::evict_foreign_pages_in_range(&mm, start, len); }
     }
     drop(guard);
     mm.set_oom_skip();

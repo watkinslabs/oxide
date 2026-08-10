@@ -88,6 +88,16 @@ fn spawn_kthreads() {
         klog::kerror!("fatal: kswapd spawn failed");
         sched::halt_forever();
     }
+    // The OOM reaper drains a victim's own private memory on its behalf, and
+    // marks the mm skippable when it cannot — which is what lets selection
+    // move past a victim wedged in an uninterruptible sleep. Leaf teardown
+    // stays on PMM's side of the boundary, installed here as the sole zapper,
+    // exactly as the badness observer keeps physical accounting there.
+    sched::oom::install_oom_zapper(pmm::user_as::evict_foreign_pages_in_range);
+    if step("sched::oom::spawn_oom_reaper", || sched::oom::spawn_oom_reaper()).is_err() {
+        klog::kerror!("fatal: oom reaper spawn failed");
+        sched::halt_forever();
+    }
     let netns_reaper = step("net::net_ns::spawn_namespace_reaper", net::net_ns::spawn_namespace_reaper);
     if netns_reaper.is_err() {
         klog::kerror!("fatal: netns reaper spawn failed");
