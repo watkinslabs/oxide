@@ -251,6 +251,7 @@ impl DiskQuiesce {
         // Copy the function pointer while locked, then invoke it unlocked: a
         // removal hook can traverse sysfs and must not serialize all registry
         // lifecycle work behind this small policy slot.
+        // SAFETY: removal executes in process context after lifecycle exclusion.
         let hook = *unsafe { DISK_REMOVE_HOOK.lock() };
         if let Some(f) = hook { f(&name); }
         self.active = false;
