@@ -49,7 +49,7 @@ pub fn load(ctx: &LoadCtx) -> KResult<Loaded> {
     let sizing_addr = if initrd_len > 0 { SIZING_INITRD_ADDR } else { 0 };
     let sizing = handover::setup_fdt(ctx.fdt, &ho(sizing_addr))?;
 
-    let p = place::place(ctx.ram, h.image_size, h.text_offset,
+    let p = place::place(ctx.place, h.image_size, h.text_offset,
                          ctx.img.kernel.len() as u64, initrd_len, sizing.len() as u64)?;
 
     let dtb = handover::setup_fdt(ctx.fdt, &ho(p.initrd_mem))?;

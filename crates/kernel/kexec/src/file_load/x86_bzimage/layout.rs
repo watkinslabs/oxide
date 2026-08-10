@@ -52,8 +52,15 @@ fn buf(bufsz: u64, memsz: u64, align: u64, min: u64) -> KexecBuf {
 /// last, once every other segment's destination is known.
 /// # C: O(kernel + initrd)
 pub fn plan(
-    kernel: &[u8], initrd: &[u8], cmdline: &[u8], ram: &[(u64, u64)], purg: &[u8],
+    kernel: &[u8], initrd: &[u8], cmdline: &[u8], place: &[(u64, u64)], system: &[(u64, u64)],
+    purg: &[u8],
 ) -> KResult<Loaded> {
+    // Two maps, deliberately. `place` is memory a buffer may LAND in; a crash
+    // image may use only the reservation. `system` is what the new kernel is
+    // TOLD it has, which for a crash image is that window plus the low-memory
+    // one its boot path needs. One map serving both contracts is how a crash
+    // kernel comes to be entered and then die before it can say so.
+    let ram = place;
     let h = SetupHeader::parse(kernel)?;
     let kern16 = h.kern16_size();
     if (kernel.len() as u64) < kern16 { return Err(Error::NoExec); }
@@ -84,7 +91,7 @@ pub fn plan(
     }
 
     let at = Addrs { bootparam: bp_at, initrd: initrd_at, initrd_len: initrd.len() as u64 };
-    let params = bootparams::build(kernel, &h, cmdline, &at, ram)?;
+    let params = bootparams::build(kernel, &h, cmdline, &at, system)?;
 
     // The blob is accumulated in segment order, so a reader of either list sees
     // the same sequence; the `buf` fields are the offsets it hands back.
@@ -155,7 +162,7 @@ mod tests {
     fn purg() -> Vec<u8> { vec![0u8; purgatory::BLOB_LEN] }
 
     fn planned() -> Loaded {
-        plan(&kernel_file(0x40000), &vec![0x77u8; 0x8000], b"quiet", &RAM, &purg())
+        plan(&kernel_file(0x40000), &vec![0x77u8; 0x8000], b"quiet", &RAM, &RAM, &purg())
             .expect("a well formed image over ample RAM")
     }
 
@@ -210,7 +217,7 @@ mod tests {
         // Carrying the stub shifts every byte and the 64-bit entry at +0x200
         // lands inside 16-bit code.
         let k = kernel_file(0x40000);
-        let l = plan(&k, &[], b"", &RAM, &purg()).expect("wf");
+        let l = plan(&k, &[], b"", &RAM, &RAM, &purg()).expect("wf");
         let seg = l.segments[2];
         assert_eq!(seg.bufsz, k.len() as u64 - 5 * 512);
         assert_eq!(&l.blob[seg.buf as usize..seg.buf as usize + 8], &k[5 * 512..5 * 512 + 8]);
@@ -275,10 +282,10 @@ mod tests {
     #[test]
     fn changing_one_byte_of_the_kernel_changes_the_digest() {
         // A digest that did not cover the kernel would still be a digest.
-        let a = plan(&kernel_file(0x40000), &[], b"", &RAM, &purg()).expect("wf");
+        let a = plan(&kernel_file(0x40000), &[], b"", &RAM, &RAM, &purg()).expect("wf");
         let mut k = kernel_file(0x40000);
         k[0x30000] ^= 0xFF;
-        let b = plan(&k, &[], b"", &RAM, &purg()).expect("wf");
+        let b = plan(&k, &[], b"", &RAM, &RAM, &purg()).expect("wf");
         let ao = a.segments[PURGATORY_SEG].buf as usize + OFF_DIGEST;
         let bo = b.segments[PURGATORY_SEG].buf as usize + OFF_DIGEST;
         assert_ne!(&a.blob[ao..ao + 32], &b.blob[bo..bo + 32]);
@@ -286,23 +293,23 @@ mod tests {
 
     #[test]
     fn an_image_with_no_initramfs_places_three_segments() {
-        let l = plan(&kernel_file(0x20000), &[], b"", &RAM, &purg()).expect("wf");
+        let l = plan(&kernel_file(0x20000), &[], b"", &RAM, &RAM, &purg()).expect("wf");
         assert_eq!(l.segments.len(), 3);
     }
 
     #[test]
     fn a_machine_with_no_room_reports_eaddrnotavail_rather_than_a_bad_address() {
         let tiny = [(0x100000u64, 0x120000u64)];
-        assert_eq!(plan(&kernel_file(0x40000), &[], b"", &tiny, &purg()).err(),
+        assert_eq!(plan(&kernel_file(0x40000), &[], b"", &tiny, &tiny, &purg()).err(),
                    Some(Error::AddrNotAvail));
     }
 
     #[test]
     fn a_truncated_bzimage_is_enoexec_and_an_over_long_command_line_is_einval() {
         let short = kernel_file(0x800);
-        assert_eq!(plan(&short, &[], b"", &RAM, &purg()).err(), Some(Error::NoExec));
+        assert_eq!(plan(&short, &[], b"", &RAM, &RAM, &purg()).err(), Some(Error::NoExec));
         let long = vec![b'x'; 0x800];
-        assert_eq!(plan(&kernel_file(0x40000), &[], &long, &RAM, &purg()).err(),
+        assert_eq!(plan(&kernel_file(0x40000), &[], &long, &RAM, &RAM, &purg()).err(),
                    Some(Error::Inval));
     }
 
@@ -312,9 +319,9 @@ mod tests {
         // for. A shorter one would be patched partly out of bounds; a LONGER
         // one would be patched successfully and staged with a tail nothing
         // accounts for, which is the case a bounds check alone would miss.
-        assert_eq!(plan(&kernel_file(0x20000), &[], b"", &RAM, &vec![0u8; 0x1000]).err(),
+        assert_eq!(plan(&kernel_file(0x20000), &[], b"", &RAM, &RAM, &vec![0u8; 0x1000]).err(),
                    Some(Error::Inval));
-        assert_eq!(plan(&kernel_file(0x20000), &[], b"", &RAM,
+        assert_eq!(plan(&kernel_file(0x20000), &[], b"", &RAM, &RAM,
                         &vec![0u8; purgatory::BLOB_LEN + 0x1000]).err(),
                    Some(Error::Inval));
     }
@@ -336,7 +343,7 @@ mod tests {
             return;
         };
         let initrd = vec![0xABu8; 0x100000];
-        let l = plan(&k, &initrd, b"root=/dev/vda1 ro", &RAM, &purg())
+        let l = plan(&k, &initrd, b"root=/dev/vda1 ro", &RAM, &RAM, &purg())
             .expect("a shipping Fedora kernel lays out");
         assert_eq!(l.segments.len(), 4);
         let h = SetupHeader::parse(&k).expect("wf");

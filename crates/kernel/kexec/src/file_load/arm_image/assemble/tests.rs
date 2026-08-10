@@ -50,7 +50,7 @@ fn a_load_produces_a_kernel_an_initramfs_and_a_tree_and_nothing_else() {
     // fourth segment here would be a stage nothing starts.
     let i = img(vec![0x5au8; 1024 * 1024], b"console=ttyAMA0");
     let tree = base_tree();
-    let ctx = LoadCtx { img: &i, ram: &RAM, fdt: &tree };
+    let ctx = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &tree };
     let l = load(&ctx).expect("a 2 GiB machine fits everything");
     assert_eq!(l.segments.len(), 3);
     assert_eq!(l.entry % MIN_KIMG_ALIGN, 0);
@@ -66,7 +66,7 @@ fn every_segments_bytes_are_the_bytes_it_names_at_the_offset_it_names() {
     let initrd = vec![0x5au8; 4096 * 3 + 7];
     let i = img(initrd.clone(), b"quiet");
     let tree = base_tree();
-    let ctx = LoadCtx { img: &i, ram: &RAM, fdt: &tree };
+    let ctx = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &tree };
     let l = load(&ctx).expect("fits");
     let cut = |n: usize| -> &[u8] {
         let s = &l.segments[n];
@@ -87,7 +87,7 @@ fn the_tree_names_the_address_the_initramfs_was_actually_placed_at() {
     // address 1 TiB up, which is not memory.
     let i = img(vec![0x11u8; 64 * 1024], b"quiet");
     let tree = base_tree();
-    let ctx = LoadCtx { img: &i, ram: &RAM, fdt: &tree };
+    let ctx = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &tree };
     let l = load(&ctx).expect("fits");
     let s = &l.segments[2];
     let t = parse(&l.blob[s.buf as usize..s.buf as usize + s.bufsz as usize]).expect("a tree");
@@ -104,7 +104,7 @@ fn the_tree_names_the_address_the_initramfs_was_actually_placed_at() {
 fn a_load_with_no_initramfs_has_two_segments_and_a_tree_that_says_so() {
     let i = img(Vec::new(), b"quiet");
     let tree = base_tree();
-    let ctx = LoadCtx { img: &i, ram: &RAM, fdt: &tree };
+    let ctx = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &tree };
     let l = load(&ctx).expect("fits");
     assert_eq!(l.segments.len(), 2);
     assert_eq!(l.boot_arg, l.segments[1].mem);
@@ -119,7 +119,7 @@ fn a_machine_with_no_device_tree_refuses_rather_than_inventing_one() {
     // DTB, so `running_fdt` is empty and the load cannot proceed. Refusing is
     // the reference's own answer when it cannot build a tree.
     let i = img(Vec::new(), b"quiet");
-    let ctx = LoadCtx { img: &i, ram: &RAM, fdt: &[] };
+    let ctx = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &[] };
     assert_eq!(load(&ctx).err(), Some(Error::Inval));
 }
 
@@ -128,7 +128,7 @@ fn a_file_that_is_not_an_image_is_refused_before_anything_is_placed() {
     let mut i = img(Vec::new(), b"quiet");
     i.kernel[header::OFF_MAGIC] ^= 0xff;
     let tree = base_tree();
-    let ctx = LoadCtx { img: &i, ram: &RAM, fdt: &tree };
+    let ctx = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &tree };
     assert_eq!(load(&ctx).err(), Some(Error::Inval));
 }
 
@@ -137,6 +137,6 @@ fn a_machine_too_small_for_the_image_reports_no_address() {
     let i = img(Vec::new(), b"quiet");
     let tree = base_tree();
     let small = [(MIB, 4 * MIB)];
-    let ctx = LoadCtx { img: &i, ram: &small, fdt: &tree };
+    let ctx = LoadCtx { img: &i, place: &small, system: &small, fdt: &tree };
     assert_eq!(load(&ctx).err(), Some(Error::AddrNotAvail));
 }
