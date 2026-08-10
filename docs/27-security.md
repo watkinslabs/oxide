@@ -106,8 +106,25 @@ Signature trailer: PKCS#7 / detached RSA-PSS-SHA256.
 Trust root: one or more X.509 certs embedded in kernel image at build (env var `OXIDE_TRUSTED_KEYS`).
 Verification: `sig.verify(rest_of_file, trust_root)`.
 
+### 7.1 Modules
+
 If `module.sig_enforce=1` (default): unsigned module → ENOEXEC.
 If `module.sig_enforce=0`: load + set `T_UNSIGNED` taint.
+
+### 7.2 kexec
+
+Module signing and kexec signing are SEPARATE contracts with separate switches, and the module rule above does not govern `kexec_file_load(2)`. Reading one heading as covering both is how a kernel ends up claiming a check it never makes.
+
+| State | `kexec_file_load(2)` behaviour |
+|---|---|
+| Checking unconfigured | No signature check at all. An unsigned image loads; nothing is verified and nothing is claimed. |
+| Checking on, signature valid or absent-and-not-forced | Loads. An image carrying a signature that CAN be checked must check out. |
+| Checking on, verification fails, not forced | Loads, unless lockdown refuses it and no appraisal vouched for the image — then `EPERM`. |
+| Checking on and forced | Verification failure is fatal; a loader with no verify hook yields `EKEYREJECTED`. |
+
+Only `kexec_file_load(2)` is in scope: `kexec_load(2)` hands over segments the caller already assembled, so there is no file for the kernel to verify and no signature contract to state.
+
+This port has no kernel keyring and no platform keyring to verify against, so it takes the unconfigured row — no check, no refusal. Rejecting every image instead would be a refusal Linux never makes; pretending to verify would be worse. The row lives in `scratch/known_issues.md` until a keyring exists.
 
 ## 8 Taint flags (32-bit bitmap)
 
