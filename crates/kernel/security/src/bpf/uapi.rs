@@ -93,9 +93,14 @@ pub mod test_flags {
     pub const SKB_MASK: u32 = SKB_CHECKSUM_COMPLETE;
 }
 
-/// `enum bpf_task_fd_type`.
+/// `enum bpf_task_fd_type` — what a queried descriptor was attached to.
 pub mod fd_type {
     pub const RAW_TRACEPOINT: u32 = 0;
+    pub const TRACEPOINT:     u32 = 1;
+    pub const KPROBE:         u32 = 2;
+    pub const KRETPROBE:      u32 = 3;
+    pub const UPROBE:         u32 = 4;
+    pub const URETPROBE:      u32 = 5;
 }
 
 /// `BPF_OBJ_GET_NEXT_ID` refuses a starting id at or above `INT_MAX`

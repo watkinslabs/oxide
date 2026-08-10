@@ -3,12 +3,9 @@
 // Both commands reach for a tracepoint: the first attaches a program to
 // one by name, the second reports which tracepoint or perf event a
 // descriptor in another task stands for. This kernel has no tracepoint
-// registry and no perf-event descriptors, so the name lookup finds
-// nothing (`-ENOENT`) and the descriptor is never one of the two kinds
-// the query can describe (`-ENOTSUPP`). Both are the reference's own
-// answers for those inputs; the rungs above them are real. See the
-// missing-tracepoint-registry and missing-perf-events rows in
-// `scratch/known_issues.md`.
+// registry, so the attach's name lookup finds nothing (`-ENOENT`). The
+// query's descriptor classification and write-back live in `query.rs`.
+// See the missing-tracepoint-registry row in `scratch/known_issues.md`.
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -20,6 +17,9 @@ use super::super::uapi;
 use super::super::user;
 use super::super::BpfProgInode;
 use super::objfd;
+
+#[path = "trace/query.rs"]
+pub(in super::super) mod query;
 
 /// `char buf[128]` — the tracepoint name buffer the attach path copies
 /// the user string into.
@@ -88,14 +88,6 @@ pub(in super::super) fn raw_tracepoint_open(a: &Attr) -> Result<i64, Errno> {
     Err(Errno::Enoent)
 }
 
-/// The description of one queried descriptor. The command can describe
-/// exactly two kinds — a link holding a raw-tracepoint attachment, and a
-/// perf-event fd — and this kernel mints neither, so every descriptor
-/// that survives the lookup is `-ENOTSUPP` (524). That is not
-/// `-EOPNOTSUPP` (95), which neighbouring link commands return for their
-/// own shape of refusal. # C: O(1)
-fn describe_verdict() -> Result<i64, Errno> { Err(Errno::Enotsupp) }
-
 /// Resolve one descriptor of another task. `-ENOENT` when the pid names
 /// no task, `-EBADF` when that task has no such descriptor. # C: O(1)
 fn task_fd(pid: u32, fd: u32) -> Result<vfs::InodeRef, Errno> {
@@ -106,14 +98,19 @@ fn task_fd(pid: u32, fd: u32) -> Result<vfs::InodeRef, Errno> {
     Ok(alloc::sync::Arc::clone(file.inode()))
 }
 
-/// `bpf_task_fd_query()`. # C: O(1)
-pub(in super::super) fn task_fd_query(a: &Attr, caps: Caps) -> Result<i64, Errno> {
+/// `bpf_task_fd_query()`. # C: O(name length)
+pub(in super::super) fn task_fd_query(
+    a: &Attr,
+    uattr: u64,
+    caps: Caps,
+    is_perf: super::super::PerfFdPredicate,
+) -> Result<i64, Errno> {
     use uapi::off::task_fd_query as o;
     attr::check_attr(a, o::LAST_END)?;
     if !caps.sys_admin { return Err(Errno::Eperm); }
     if a.u32_at(o::FLAGS) != 0 { return Err(Errno::Einval); }
-    let _inode = task_fd(a.u32_at(o::PID), a.u32_at(o::FD))?;
-    describe_verdict()
+    let inode = task_fd(a.u32_at(o::PID), a.u32_at(o::FD))?;
+    query::describe(a, uattr, query::classify(&inode, is_perf))
 }
 
 #[cfg(test)]
@@ -121,6 +118,10 @@ mod tests {
     use super::*;
 
     fn admin() -> Caps { Caps { bpf: false, sys_admin: true, net_admin: false, perfmon: false } }
+
+    /// No test here reaches the descriptor lookup, so the predicate is
+    /// never consulted; `query.rs` covers the classification itself.
+    fn never_perf(_: &vfs::InodeRef) -> bool { false }
 
     #[test]
     fn check_attr_boundaries_are_the_uapi_offsetofends() {
@@ -179,8 +180,8 @@ mod tests {
         let mut a = Attr::zeroed();
         let f = uapi::off::task_fd_query::FLAGS;
         a.bytes[f..f + 4].copy_from_slice(&1u32.to_ne_bytes());
-        assert_eq!(task_fd_query(&a, Caps::default()), Err(Errno::Eperm));
-        assert_eq!(task_fd_query(&a, admin()), Err(Errno::Einval));
+        assert_eq!(task_fd_query(&a, 0, Caps::default(), never_perf), Err(Errno::Eperm));
+        assert_eq!(task_fd_query(&a, 0, admin(), never_perf), Err(Errno::Einval));
     }
 
     /// The zero-tail check precedes even the capability.
@@ -188,14 +189,20 @@ mod tests {
     fn task_fd_query_checks_the_attr_tail_before_the_capability() {
         let mut a = Attr::zeroed();
         a.bytes[uapi::off::task_fd_query::LAST_END] = 1;
-        assert_eq!(task_fd_query(&a, Caps::default()), Err(Errno::Einval));
+        assert_eq!(task_fd_query(&a, 0, Caps::default(), never_perf), Err(Errno::Einval));
     }
 
-    /// `ENOTSUPP` is 524 and distinct from `EOPNOTSUPP` (95) — the two
-    /// appear on neighbouring commands and are not interchangeable.
+    /// A descriptor of neither describable kind is `-ENOTSUPP` (524), which
+    /// is not `-EOPNOTSUPP` (95) — the two appear on neighbouring commands
+    /// and are not interchangeable. A perf-event fd leaves that arm: it is
+    /// described from the program attached to the event, and an event with
+    /// none is `-ENOENT`.
     #[test]
     fn an_undescribable_descriptor_is_enotsupp_not_eopnotsupp() {
-        assert_eq!(describe_verdict(), Err(Errno::Enotsupp));
+        let a = Attr::zeroed();
+        assert_eq!(query::describe(&a, 0, query::QueriedFd::Other), Err(Errno::Enotsupp));
+        assert_eq!(query::describe(&a, 0, query::QueriedFd::OtherLink), Err(Errno::Enotsupp));
+        assert_eq!(query::describe(&a, 0, query::QueriedFd::PerfEvent), Err(Errno::Enoent));
         assert_eq!(Errno::Enotsupp.as_i32(), 524);
         assert_eq!(Errno::Eopnotsupp.as_i32(), 95);
     }
