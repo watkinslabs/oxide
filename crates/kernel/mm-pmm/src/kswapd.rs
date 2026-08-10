@@ -16,11 +16,16 @@ static WAIT: WaitList = WaitList::new();
 static DIRECT_RECLAIM: AtomicBool = AtomicBool::new(false);
 
 /// Run one direct reclaim transaction without recursive entry from pageout's
-/// own zram/swap allocations. # C: O(one LRU transaction)
-pub(crate) fn direct_reclaim_once() {
-    if DIRECT_RECLAIM.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() { return; }
-    let _ = crate::user_as::pageout::reclaim_one_anon_page();
+/// own zram/swap allocations. Answers whether the transaction freed a page —
+/// the allocation slowpath reads it to decide whether retrying is still worth
+/// anything. A recursive entry answers `false`: the outer transaction owns the
+/// progress, and this caller must not treat its own recursion as progress.
+/// # C: O(one LRU transaction)
+pub(crate) fn direct_reclaim_once() -> bool {
+    if DIRECT_RECLAIM.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() { return false; }
+    let progress = crate::user_as::pageout::reclaim_one_anon_page();
     DIRECT_RECLAIM.store(false, Ordering::Release);
+    progress
 }
 
 /// Publish background work before waking the waiter. `REQUEST` serializes the
