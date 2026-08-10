@@ -77,12 +77,23 @@ mod tests {
     static FIRED: AtomicU64 = AtomicU64::new(0);
     fn record(cookie: u64) { FIRED.fetch_add(cookie, Ordering::Relaxed); pin_remove(cookie); }
 
+    /// The pin registry and `FIRED` are process-global, and a real unmount
+    /// anywhere in this binary fires pins through the same table. Every case
+    /// below takes this first; taking it empties the table and the counter, so
+    /// neither a sibling's pins nor a sibling's fire count is visible here.
+    fn claim() -> std::sync::MutexGuard<'static, ()> {
+        static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        PINS.lock().clear();
+        FIRED.store(0, Ordering::Relaxed);
+        g
+    }
+
     /// A pin fires for its own superblock only, and deregisters itself from
     /// inside the callback — the shape every owner uses.
     #[test]
     fn a_pin_fires_once_for_its_own_superblock() {
-        PINS.lock().clear();
-        FIRED.store(0, Ordering::Relaxed);
+        let _claim = claim();
         pin_insert(0x1000, 7, record);
         pin_insert(0x2000, 9, record);
         assert_eq!(kill_sb_pins(0x3000), 0, "an unrelated superblock fires nothing");
@@ -94,7 +105,6 @@ mod tests {
         // cannot double-close the owner's file.
         assert_eq!(kill_sb_pins(0x1000), 0);
         assert_eq!(FIRED.load(Ordering::Relaxed), 7);
-        PINS.lock().clear();
     }
 
     /// Re-registering a cookie MOVES the pin: the old superblock no longer
@@ -102,13 +112,11 @@ mod tests {
     /// the file that has since moved elsewhere.
     #[test]
     fn re_registering_a_cookie_moves_the_pin() {
-        PINS.lock().clear();
-        FIRED.store(0, Ordering::Relaxed);
+        let _claim = claim();
         pin_insert(0x1000, 5, record);
         pin_insert(0x2000, 5, record);
         assert_eq!(kill_sb_pins(0x1000), 0);
         assert_eq!(kill_sb_pins(0x2000), 1);
         assert_eq!(FIRED.load(Ordering::Relaxed), 5);
-        PINS.lock().clear();
     }
 }

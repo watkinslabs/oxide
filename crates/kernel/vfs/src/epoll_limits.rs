@@ -103,10 +103,28 @@ pub fn watches(uid: u32) -> i64 {
 mod tests {
     use super::*;
 
-    // Distinct uids per test: the counter table is process-global and the
-    // hosted harness runs tests concurrently.
+    // Distinct uids per test keeps the COUNTER table private, but the ceiling
+    // is a single process-global knob every case below writes, so distinct
+    // uids alone are not enough: one case setting 3 while another expects 1
+    // makes the second admit a charge it asserts is refused. Every case that
+    // writes the ceiling takes this claim, which restores the boot value on
+    // release.
+    fn ceiling_claim() -> CeilingClaim {
+        static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        set_max_user_watches(EPOLL_DEFAULT_MAX_USER_WATCHES);
+        CeilingClaim(g)
+    }
+
+    struct CeilingClaim(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+    impl Drop for CeilingClaim {
+        fn drop(&mut self) { set_max_user_watches(EPOLL_DEFAULT_MAX_USER_WATCHES); }
+    }
+
     #[test]
     fn the_ceiling_admits_exactly_the_limit() {
+        let _claim = ceiling_claim();
         let uid = 91_001;
         set_max_user_watches(3);
         for i in 0..3 { assert!(charge_watch(uid), "interest {i} must fit"); }
@@ -115,20 +133,20 @@ mod tests {
         release_watches(uid, 1);
         assert!(charge_watch(uid), "a removed interest frees exactly one slot");
         release_watches(uid, 3);
-        set_max_user_watches(EPOLL_DEFAULT_MAX_USER_WATCHES);
     }
 
     #[test]
     fn a_zero_ceiling_admits_nothing() {
+        let _claim = ceiling_claim();
         let uid = 91_002;
         set_max_user_watches(0);
         assert!(!charge_watch(uid));
         assert_eq!(watches(uid), 0);
-        set_max_user_watches(EPOLL_DEFAULT_MAX_USER_WATCHES);
     }
 
     #[test]
     fn charges_are_per_user() {
+        let _claim = ceiling_claim();
         let (a, b) = (91_003, 91_004);
         set_max_user_watches(1);
         assert!(charge_watch(a));
@@ -136,7 +154,6 @@ mod tests {
         assert!(charge_watch(b), "b's budget is its own");
         release_watches(a, 1);
         release_watches(b, 1);
-        set_max_user_watches(EPOLL_DEFAULT_MAX_USER_WATCHES);
     }
 
     #[test]
