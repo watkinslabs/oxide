@@ -12,7 +12,7 @@
 # Usage: kexec-crash-smoke.sh <x86|arm> [timeout_seconds]
 set -euo pipefail
 
-usage() { echo "usage: $0 <x86|arm> [timeout_seconds] [crash|reboot]" >&2; exit 2; }
+usage() { echo "usage: $0 <x86|arm> [timeout_seconds] [crash|reboot|fileload]" >&2; exit 2; }
 
 ARCH="${1:-}"
 TIMEOUT="${2:-${SMOKE_TIMEOUT:-900}}"
@@ -27,8 +27,15 @@ case "$TIMEOUT" in ''|*[!0-9]*) usage ;; esac
 # the machine stop onward, so a crash boot that stops producing output while an
 # ordinary one does not is a fact about the PANIC context and not about the
 # relocation.
+# `fileload` drives the same ordinary relocation through `kexec_file_load(2)`
+# instead of `kexec_load(2)`: the kernel, not the caller, lays the segments out.
 MODE="${3:-crash}"
-case "$MODE" in crash) SMOKE_FLAG=--crash ;; reboot) SMOKE_FLAG= ;; *) usage ;; esac
+case "$MODE" in
+    crash) SMOKE_FLAG=--crash ;;
+    reboot) SMOKE_FLAG= ;;
+    fileload) SMOKE_FLAG=--file-load ;;
+    *) usage ;;
+esac
 
 ROOT="$(git rev-parse --show-toplevel)"
 . "$ROOT/tools/vendor-preflight.sh"

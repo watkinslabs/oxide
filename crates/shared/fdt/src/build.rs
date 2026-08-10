@@ -203,23 +203,49 @@ impl<'a> Builder<'a> {
     }
 }
 
+/// The firmware handoff a kernel needs to take the EFI path.
+///
+/// ALL FIVE OR NONE. A tree advertising the system table alone makes the next
+/// kernel take the firmware path and then demand the memory map that goes with
+/// it; measured, that combination panicked a relocated kernel in early
+/// page-table setup with no memory at all. [`UefiHandoff::firmware`] is an
+/// `Option` of the whole set for that reason — there is no way to spell half
+/// of it.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct EfiFirmware {
+    /// Physical address of the EFI system table, which is where the next
+    /// kernel finds the configuration tables and, through them, ACPI.
+    pub systab_pa: u64,
+    /// Physical address of a retained copy of the EFI memory map.
+    pub mmap_pa: u64,
+    /// Bytes of map at `mmap_pa`.
+    pub mmap_size: u32,
+    /// Bytes per descriptor, as the firmware reported it.
+    pub desc_size: u32,
+    /// Descriptor layout version, as the firmware reported it.
+    pub desc_ver: u32,
+}
+
 /// What an arm64 UEFI boot knows about itself once the firmware has published
 /// no device tree of its own.
-///
-/// Deliberately carries no firmware-handoff table pointer: a tree advertising
-/// one makes the next kernel take the firmware path and then demand the memory
-/// map that goes with it, and this stub keeps no copy of that map. Measured — a
-/// relocated kernel handed the half version reported the missing property and
-/// panicked in early page-table setup with no memory at all. Claiming half a
-/// handoff is worse than claiming none.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct UefiHandoff<'a> {
     /// Kernel command line, without a trailing NUL.
     pub bootargs: &'a [u8],
-    /// Usable RAM as `(base, size)` pairs. This is what makes the tree a
-    /// description of the machine rather than a container for the command
-    /// line, and it is the property the next kernel cannot boot without.
+    /// Usable RAM as `(base, size)` pairs. A kernel that takes the firmware
+    /// path discards this and uses the EFI map instead; one that does not has
+    /// nothing else to learn where RAM is from.
     pub memory: &'a [(u64, u64)],
+    /// The firmware handoff, when this boot retained one.
+    ///
+    /// WITHOUT IT THE TREE DESCRIBES NO MACHINE. It carries `/memory` and a
+    /// command line and nothing else — no CPUs, no interrupt controller, no
+    /// timer — because on this firmware every one of those is described in
+    /// ACPI, which is reachable only through the system table. A kernel handed
+    /// the tree alone finds no CPU node, leaves its boot CPU assigned to no
+    /// memory node, and dereferences that non-node building its zone lists,
+    /// long before it can print why.
+    pub firmware: Option<EfiFirmware>,
 }
 
 /// Longest `/memory` unit name this writes: `memory@` plus 16 hex digits.
@@ -227,19 +253,35 @@ const MEMORY_NODE_NAME_MAX: usize = 7 + 16;
 
 /// Build the tree an arm64 UEFI boot gets when its firmware supplies none: a
 /// root with the standard cell counts, a `/memory` node describing usable RAM,
-/// and `/chosen` carrying the command line. Returns the blob's length in `buf`.
+/// and `/chosen` carrying the command line and the firmware handoff. Returns
+/// the blob's length in `buf`.
 ///
-/// The `/memory` node is the point. Everything downstream — this kernel's own
-/// PMM on the device-tree path, and any kernel `kexec` hands this tree to —
-/// learns where RAM is from it, and a tree without one describes a machine
-/// with no memory.
+/// The handoff is the point. On a machine that describes itself in ACPI the
+/// tree is a courier, not a description: it names where the system table is,
+/// and everything a kernel needs to run — processors, interrupt controller,
+/// timer, console — is read from there. `/memory` is written anyway for a
+/// reader that takes no firmware path, and discarded by one that does.
 /// # C: O(bootargs.len() + memory.len())
 pub fn uefi_stub_tree(buf: &mut [u8], h: &UefiHandoff) -> Option<usize> {
     let mut b = Builder::new(buf);
     b.begin_node(b"");
     b.prop_u32(b"#address-cells", 2);
     b.prop_u32(b"#size-cells", 2);
-    if let Some((first, _)) = h.memory.first() {
+    // A STUB TREE WHEN THE FIRMWARE HANDOFF IS PUBLISHED — no `/memory`, no
+    // node of any kind beside `/chosen`.
+    //
+    // This is not economy. A kernel decides between the tree and the firmware
+    // tables by asking whether the tree is a stub, and ANY node beside
+    // `/chosen` makes it prefer the tree. Writing both then produces the worst
+    // of the two: the firmware tables are ignored, and the tree that beat them
+    // describes RAM and nothing else — no processors, no interrupt controller,
+    // no timer. Measured exactly that way: the handoff was found and reported,
+    // and the kernel still died with no processor to assign memory to.
+    //
+    // A kernel taking the firmware path loses nothing by it: it discards the
+    // tree's memory and uses the firmware map, which is the fuller answer.
+    let describe_memory = h.firmware.is_none();
+    if let Some((first, _)) = h.memory.first().filter(|_| describe_memory) {
         let mut name = [0u8; MEMORY_NODE_NAME_MAX];
         let n = memory_node_name(&mut name, *first);
         b.begin_node(&name[..n]);
@@ -252,8 +294,18 @@ pub fn uefi_stub_tree(buf: &mut [u8], h: &UefiHandoff) -> Option<usize> {
         b.end_prop();
         b.end_node();
     }
-    b.begin_node(b"chosen");
+    b.begin_node(crate::uapi::OF_CHOSEN_PATH);
     if !h.bootargs.is_empty() { b.prop_str(b"bootargs", h.bootargs); }
+    // Address-shaped values two cells wide, sizes one — the widths a reader of
+    // these properties expects. A size written two cells wide is read as its
+    // own high half and comes out zero.
+    if let Some(f) = &h.firmware {
+        b.prop_u64(crate::uapi::OF_EFI_SYSTAB, f.systab_pa);
+        b.prop_u64(crate::uapi::OF_EFI_MMAP_START, f.mmap_pa);
+        b.prop_u32(crate::uapi::OF_EFI_MMAP_SIZE, f.mmap_size);
+        b.prop_u32(crate::uapi::OF_EFI_MMAP_DESC_SIZE, f.desc_size);
+        b.prop_u32(crate::uapi::OF_EFI_MMAP_DESC_VER, f.desc_ver);
+    }
     b.end_node();
     b.end_node();
     b.finish()

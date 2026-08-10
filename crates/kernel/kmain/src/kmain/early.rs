@@ -142,7 +142,7 @@ unsafe fn retain_device_tree(info: &BootInfo) {
     let va = info.hhdm_offset.wrapping_add(info.dtb_pa);
     // SAFETY: `va` is the direct-map mirror of a memmap-reserved physical
     // extent of `dtb_len` bytes, which stays mapped for the life of the kernel.
-    unsafe { firmware::fdt::retain(va, info.dtb_len, info.dtb_crc32); }
+    unsafe { firmware::fdt::retain(va, info.dtb_pa, info.dtb_len, info.dtb_crc32); }
 }
 
 #[cfg(target_os = "oxide-kernel")]

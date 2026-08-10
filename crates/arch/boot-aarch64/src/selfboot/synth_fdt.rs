@@ -43,15 +43,22 @@ static ARGS: ArgsBuf = ArgsBuf(UnsafeCell::new([0; EFI_CMDLINE_MAX]));
 /// Build the fallback device tree and return its physical address, or 0 if it
 /// could not be built.
 ///
-/// The tree describes RAM, because that is what a device tree is for and what
-/// a kernel handed this one cannot boot without: the EFI conventional-memory
-/// blocks captured moments earlier become the `/memory` node, so the
-/// device-tree answer and the EFI-map answer are the same answer written twice
-/// rather than two answers that can disagree.
+/// The tree describes RAM only when it has no firmware handoff to offer: the
+/// EFI conventional-memory blocks captured moments earlier become the
+/// `/memory` node. With a handoff it carries `/chosen` and nothing else, and
+/// the firmware map is the memory description — one answer rather than two
+/// that can disagree, and the only shape a kernel will read the firmware
+/// tables from.
 ///
-/// It advertises no firmware handoff table. Doing so makes the next kernel
-/// take the firmware path and demand a memory map this stub keeps no copy of —
-/// measured, and it panicked a relocated kernel in early page-table setup.
+/// It also carries the firmware handoff — the system table's address and the
+/// retained EFI memory map — which is what makes the tree a description of a
+/// machine rather than of its RAM alone. This firmware puts processors, the
+/// interrupt controller, the timer and the console in ACPI, reachable only
+/// through the system table; a kernel handed the tree without it finds no
+/// processor node, leaves its boot CPU assigned to no memory node, and faults
+/// dereferencing that non-node while building its zone lists. The handoff is
+/// written only when BOTH halves are known, since naming the table without the
+/// map sends the next kernel down the firmware path with nothing to walk.
 ///
 /// # SAFETY: called once from `efi_stub_setup` on the boot CPU while the
 /// firmware's flat map is live, so the returned address is physical and the
@@ -77,7 +84,16 @@ pub unsafe fn build() -> u64 {
         ram[k] = (base, size);
         k += 1;
     }
-    let handoff = fdt::UefiHandoff { bootargs: &args[..n], memory: &ram[..k] };
+    // The firmware handoff, all of it or none of it. A tree naming the system
+    // table without the memory map that goes with it makes the next kernel
+    // take the firmware path and then find nothing to describe memory with.
+    let systab = super::EFI_SYSTAB_PA.load(core::sync::atomic::Ordering::Acquire);
+    let firmware = match (systab, super::efi_memmap::retained()) {
+        (0, _) | (_, None) => None,
+        (systab_pa, Some((mmap_pa, mmap_size, desc_size, desc_ver))) =>
+            Some(fdt::EfiFirmware { systab_pa, mmap_pa, mmap_size, desc_size, desc_ver }),
+    };
+    let handoff = fdt::UefiHandoff { bootargs: &args[..n], memory: &ram[..k], firmware };
     match fdt::uefi_stub_tree(out, &handoff) {
         Some(_) => out.as_ptr() as u64,
         None => 0,

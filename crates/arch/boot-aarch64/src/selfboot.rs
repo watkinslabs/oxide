@@ -56,6 +56,17 @@ pub static SB_LOAD_BASE: AtomicU64 = AtomicU64::new(0);
 #[no_mangle]
 pub static EFI_RSDP_PA: AtomicU64 = AtomicU64::new(0);
 
+/// Physical address of the EFI system table, recorded by `efi_stub_setup`, or
+/// 0 on a boot that entered no EFI stub.
+///
+/// Published to the next kernel through the synthesized device tree. On
+/// firmware that describes itself with ACPI this pointer IS the machine
+/// description: processors, interrupt controller, timer and console are all
+/// reachable only through the configuration tables it heads, and a kernel
+/// handed a tree without it finds no processor at all.
+#[no_mangle]
+pub static EFI_SYSTAB_PA: AtomicU64 = AtomicU64::new(0);
+
 /// Max command-line bytes captured from the EFI loaded-image protocol's
 /// `LoadOptions`. Sized to the kernel's cmdline storage bound.
 pub const EFI_CMDLINE_MAX: usize = 2048;
@@ -104,6 +115,7 @@ pub fn is_selfboot() -> bool { SB_SELFBOOT_FLAG.load(Ordering::Acquire) != 0 }
 
 mod asm;
 mod efi;
+mod efi_memmap;
 mod synth_fdt;
 
 pub use efi::efi_stub_setup;

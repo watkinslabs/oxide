@@ -73,6 +73,11 @@ pub struct LoadCtx<'a> {
     /// The running kernel's own device tree, when this machine boots from one.
     /// The new kernel's tree is derived from it.
     pub fdt: &'a [u8],
+    /// Physical address of that tree, or 0 when it is not known. The derived
+    /// tree must DROP the reservation covering it: the new kernel gets a
+    /// different blob at a different address, so carrying the old one forward
+    /// sets aside memory nothing occupies.
+    pub fdt_pa: u64,
 }
 
 /// A laid-out image, ready for `stage_image`.
@@ -153,7 +158,8 @@ where R: FnOnce() -> KResult<FileImage> {
         let place = kbuf::placement_ranges(crash, &ram, reserved)?;
         let system = kbuf::system_ranges(crash, &ram, reserved)?;
         let fdt = machine_fdt();
-        let ctx = LoadCtx { img: &img, place: &place, system: &system, fdt: &fdt };
+        let (fdt_pa, _) = machine_fdt_phys();
+        let ctx = LoadCtx { img: &img, place: &place, system: &system, fdt: &fdt, fdt_pa };
         let loaded = loader.load(&ctx)?;
         // The file-mode flag word spells the crash bit differently; translate
         // it into the shared one so ONE store decides which slot is written.
@@ -171,6 +177,13 @@ fn machine_fdt() -> Vec<u8> { arm_image::running_fdt() }
 /// # C: O(1)
 #[cfg(not(all(target_os = "oxide-kernel", target_arch = "aarch64")))]
 fn machine_fdt() -> Vec<u8> { Vec::new() }
+
+/// Physical extent of that tree, as `(pa, len)`. # C: O(1)
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+fn machine_fdt_phys() -> (u64, u64) { arm_image::running_fdt_phys() }
+/// # C: O(1)
+#[cfg(not(all(target_os = "oxide-kernel", target_arch = "aarch64")))]
+fn machine_fdt_phys() -> (u64, u64) { (0, 0) }
 
 #[cfg(test)]
 mod tests {

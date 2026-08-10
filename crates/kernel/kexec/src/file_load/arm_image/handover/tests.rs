@@ -195,3 +195,58 @@ fn a_base_that_is_not_a_device_tree_is_refused() {
     assert_eq!(setup_fdt(b"not a tree at all, not even close....", &ho(0, 0, b"")).err(),
                Some(Error::Inval));
 }
+
+/// THE FIRMWARE HANDOFF SURVIVES INTO THE DERIVED TREE.
+///
+/// On a machine that describes itself in firmware tables rather than in the
+/// tree, `/chosen` naming the system table and the retained memory map is the
+/// entire machine description — processors, interrupt controller, timer and
+/// console are all behind it. A derivation that dropped these five properties
+/// would hand the new kernel a tree with RAM and a command line and nothing
+/// else; measured, such a kernel finds no processor node, leaves its boot CPU
+/// assigned to no memory node, and faults dereferencing that non-node while
+/// building its zone lists — before it can print anything about why.
+#[test]
+fn the_efi_handoff_properties_reach_the_new_kernel_unchanged() {
+    let names: [&[u8]; 5] = [b"linux,uefi-system-table", b"linux,uefi-mmap-start",
+                             b"linux,uefi-mmap-size", b"linux,uefi-mmap-desc-size",
+                             b"linux,uefi-mmap-desc-ver"];
+    let vals: [alloc::vec::Vec<u8>; 5] = [
+        0xbfbf_9018u64.to_be_bytes().to_vec(),
+        0x4021_a000u64.to_be_bytes().to_vec(),
+        0x1518u32.to_be_bytes().to_vec(),
+        48u32.to_be_bytes().to_vec(),
+        1u32.to_be_bytes().to_vec(),
+    ];
+    let mut t = booted_tree();
+    {
+        let c = t.root.children.iter_mut().find(|n| n.name == b"chosen").expect("/chosen");
+        for (n, v) in names.iter().zip(vals.iter()) {
+            c.props.push(Prop { name: n.to_vec(), val: v.clone() });
+        }
+    }
+    let out = setup_fdt(&t.to_blob(), &ho(0x9000_0000, 0x1000, b"quiet")).expect("built");
+    let c = chosen_of(&out);
+    for (n, v) in names.iter().zip(vals.iter()) {
+        assert_eq!(c.prop(n), Some(&v[..]), "{}", core::str::from_utf8(n).unwrap());
+    }
+}
+
+/// The running tree's own reservation goes, and only it. The new kernel is
+/// handed a different blob at a different address; keeping the entry sets
+/// aside memory nothing occupies, and on a small machine that is memory the
+/// new kernel needed.
+#[test]
+fn the_running_trees_own_reservation_is_dropped_and_this_boots_initramfs_with_it() {
+    let h = Handover { initrd_mem: 0x9000_0000, initrd_len: 0x1000, cmdline: b"quiet",
+                       old_fdt_pa: 0x4000_0000, old_fdt_len: 0x2000, seeds: None };
+    let out = setup_fdt(&base(), &h).expect("built");
+    let rsv = parse(&out).expect("parses").rsv;
+    assert!(!rsv.iter().any(|&(a, _)| a == 0x4000_0000), "the running tree's own entry is gone");
+    assert!(!rsv.iter().any(|&(a, _)| a == 0x4800_0000), "and this boot's initramfs with it");
+    assert!(rsv.contains(&(0x9000_0000, 0x1000)), "the new initramfs is reserved");
+    // A load that does not know the address leaves the entry alone rather than
+    // guessing which one it is.
+    let kept = setup_fdt(&base(), &ho(0x9000_0000, 0x1000, b"quiet")).expect("built");
+    assert!(parse(&kept).expect("parses").rsv.contains(&(0x4000_0000, 0x2000)));
+}

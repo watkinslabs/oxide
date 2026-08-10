@@ -100,8 +100,15 @@ class Console:
                 return True
         raise SystemExit(f"kexec-smoke: timed out after {timeout}s waiting for {name}")
 
-    def send(self, line):
+    def send(self, line, per_char=False):
         """Type a line at the guest.
+
+        `per_char` types one byte at a time with a pause between. The serial
+        port on one of these machines loses input bytes when a whole line
+        arrives at once — observed directly in the guest's own echo, which
+        showed doubled and dropped characters in the middle of a command — and
+        a line that arrives mangled makes a shell that is answering look like a
+        shell that is not there.
 
         A write to the console socket can block: early in a boot nothing is
         draining the guest's receive side, and the half-second read timeout
@@ -110,15 +117,20 @@ class Console:
         output, from a guest that never came up. Retry across the whole
         run's patience instead."""
         data = line.encode() + b"\r"
+        chunks = [data[i:i + 1] for i in range(len(data))] if per_char else [data]
         deadline = time.time() + self.patience
-        while True:
-            try:
-                self.s.sendall(data)
-                break
-            except socket.timeout:
+        for chunk in chunks:
+            while True:
+                try:
+                    self.s.sendall(chunk)
+                    break
+                except socket.timeout:
+                    self.pump()
+                    if time.time() > deadline:
+                        raise SystemExit("kexec-smoke: the guest console never accepted input")
+            if per_char:
+                time.sleep(0.02)
                 self.pump()
-                if time.time() > deadline:
-                    raise SystemExit("kexec-smoke: the guest console never accepted input")
         time.sleep(0.3)
 
 
@@ -167,6 +179,27 @@ def main():
            "ls -l $K $I; echo KEXEC-PATHS\"\"-OK")
     c.wait(marker("KEXEC-PATHS"), 60, "the second kernel's paths")
 
+    if a.file_load:
+        # A vendor arm64 kernel ships as a self-decompressing container, not as
+        # the raw image the KERNEL-side loader recognises — and the reference's
+        # loader recognises only the raw image, so handing the container
+        # to the file syscall is refused on both sides. The container names
+        # where its payload is and how it is compressed; unpack it here and
+        # load THAT, so what the syscall is asked to lay out is a kernel image
+        # rather than a wrapper neither side claims to read.
+        c.send("if [ x$(dd if=$K bs=4 skip=1 count=1 2>/dev/null) = xzimg ]; then "
+               "O=$(od -An -tu4 -j8 -N4 $K | tr -d ' '); "
+               "S=$(od -An -tu4 -j12 -N4 $K | tr -d ' '); "
+               "tail -c +$((O+1)) $K | head -c $S | zstd -qdc > /tmp/Image && K=/tmp/Image; "
+               "fi; ls -l $K; echo UNWRAP\"\"-OK")
+        c.wait(marker("UNWRAP"), 120, "the kernel image the file loader is given")
+
+    # What the tree hands the next kernel. On a machine that describes itself
+    # in firmware tables this is the whole machine description, and a run that
+    # ends in a silent new kernel needs to be able to say whether it was there.
+    c.send("ls /proc/device-tree/chosen 2>&1 | tr '\n' ' '; echo; echo CHOSEN\"\"-OK")
+    c.wait(marker("CHOSEN"), 30, "the handover properties in the running tree")
+
     if a.crash:
         # The reservation has to exist before anything can be staged into it,
         # and it is the boot line that decides — a guest launched without
@@ -188,6 +221,19 @@ def main():
     # relocation that did not land, and is the false negative most likely to be
     # believed. Linux accepts several `console=` and prints on all of them.
     consoles = "console=ttyS0,115200 console=ttyAMA0,115200"
+    # An EARLY console too, so a kernel that dies before its real console is up
+    # still says why. Without one, "the jump did not land" and "the new kernel
+    # faulted in early memory setup" are both silence, and the first reading is
+    # the one that gets believed.
+    #
+    # Spelled out per port rather than bare `earlycon`: the bare form takes its
+    # device from a console description in the firmware tables, which the
+    # machine this runs on need not publish — and when it does not, the option
+    # is accepted and silently does nothing.
+    c.send("uname -m; echo ARCH\"\"-OK")
+    c.wait(marker("ARCH"), 30, "the guest's architecture")
+    early = "earlycon=pl011,0x9000000" if b"aarch64" in c.seen else "earlycon=uart8250,io,0x3f8"
+    consoles = early + " " + consoles
     c.send(f'kexec {verb} $K --initrd=$I --command-line="{consoles} '
            f'panic=10 rdinit=/bin/sh"; echo KEXEC-LOAD\"\"-RC=$?')
     c.wait(re.compile(rb"KEXEC-LOAD-RC=0\b"), 120,
@@ -228,8 +274,8 @@ def main():
     while True:
         # A bare newline first: it terminates whatever half-typed line the tty
         # may already hold, so the probe is parsed as a line of its own.
-        c.send("")
-        c.send(NEW_SHELL_CMD)
+        c.send("", per_char=True)
+        c.send(NEW_SHELL_CMD, per_char=True)
         try:
             c.wait(NEW_SHELL_OK, 10, "the relocated kernel's userspace to answer")
             break

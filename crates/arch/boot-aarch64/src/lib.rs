@@ -33,6 +33,7 @@ extern crate std;
 // this crate keeps the name it has always used at its call sites.
 pub use ::fdt as dtb;
 pub mod efi_cmdline;
+pub mod efi_memmap_edit;
 pub mod linear_map;
 pub mod pl011;
 #[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]

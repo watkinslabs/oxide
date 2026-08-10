@@ -18,6 +18,11 @@ use core::sync::atomic::{AtomicU64, Ordering};
 static FDT_VA: AtomicU64 = AtomicU64::new(0);
 /// Byte length of the retained blob; 0 = none retained.
 static FDT_LEN: AtomicU64 = AtomicU64::new(0);
+/// Physical address of the retained blob; 0 = none retained, or a handoff that
+/// did not name one. Kept alongside the direct-map address because a consumer
+/// deriving a NEW tree from this one has to drop this blob's own reservation,
+/// and a reservation is stated in physical addresses.
+static FDT_PA: AtomicU64 = AtomicU64::new(0);
 
 /// Publish the boot-retained device tree at direct-map address `va`, length
 /// `len`, checksummed `crc` when the boot stub scanned it.
@@ -41,7 +46,7 @@ static FDT_LEN: AtomicU64 = AtomicU64::new(0);
 /// bytes that stays mapped for the life of the kernel — the boot memmap marks
 /// the device tree's pages reserved, which is what makes that true.
 /// # C: O(1)
-pub unsafe fn retain(va: u64, len: u64, crc: u32) -> bool {
+pub unsafe fn retain(va: u64, pa: u64, len: u64, crc: u32) -> bool {
     if va == 0 || len < ::fdt::FDT_HEADER_LEN as u64 || len > ::fdt::FDT_MAX_TOTALSIZE as u64 {
         return false;
     }
@@ -51,6 +56,7 @@ pub unsafe fn retain(va: u64, len: u64, crc: u32) -> bool {
     if h.totalsize as u64 != len { return false; }
     if crc != 0 && ::crc::crc32_be_update(!0u32, blob) != crc { return false; }
     FDT_LEN.store(len, Ordering::Release);
+    FDT_PA.store(pa, Ordering::Release);
     FDT_VA.store(va, Ordering::Release);
     true
 }
@@ -66,6 +72,20 @@ pub fn blob() -> Option<&'static [u8]> {
     // SAFETY: `retain` only stores a `va`/`len` pair it has validated against a
     // mapping the boot memmap keeps reserved for the life of the kernel.
     Some(unsafe { core::slice::from_raw_parts(va as *const u8, len as usize) })
+}
+
+/// Physical extent of the retained tree as `(pa, len)`, or `None` when none
+/// was retained or the handoff named no physical address.
+///
+/// A tree derived from this one must drop the reservation covering THIS blob:
+/// the new kernel is handed a different blob at a different address, so
+/// carrying it forward reserves memory nothing occupies.
+/// # C: O(1)
+pub fn phys_extent() -> Option<(u64, u64)> {
+    let pa = FDT_PA.load(Ordering::Acquire);
+    let len = FDT_LEN.load(Ordering::Acquire);
+    if pa == 0 || len == 0 || FDT_VA.load(Ordering::Acquire) == 0 { return None; }
+    Some((pa, len))
 }
 
 /// Whether a device tree was retained. # C: O(1)
@@ -106,15 +126,19 @@ mod tests {
     /// retain unable to disturb what is already published.
     #[test]
     fn retain_publishes_only_a_blob_it_can_validate() {
+        /// Physical address the handoff named for the blob under test.
+        const PA: u64 = 0x4000_0000;
+
         assert!(blob().is_none() && !present(), "nothing published before retain");
+        assert_eq!(phys_extent(), None, "…and no physical extent either");
 
         // SAFETY: each of these is rejected on its arguments before any slice
         // is formed, so no invalid address is ever dereferenced.
         unsafe {
-            assert!(!retain(0, 4096, 0), "null va");
-            assert!(!retain(0x1000, 0, 0), "zero length");
-            assert!(!retain(0x1000, 8, 0), "shorter than a header");
-            assert!(!retain(0x1000, ::fdt::FDT_MAX_TOTALSIZE as u64 + 1, 0), "past the ceiling");
+            assert!(!retain(0, 0x1000, 4096, 0), "null va");
+            assert!(!retain(0x1000, 0x1000, 0, 0), "zero length");
+            assert!(!retain(0x1000, 0x1000, 8, 0), "shorter than a header");
+            assert!(!retain(0x1000, 0x1000, ::fdt::FDT_MAX_TOTALSIZE as u64 + 1, 0), "past the ceiling");
         }
         assert!(blob().is_none(), "a rejected retain publishes nothing");
 
@@ -129,26 +153,28 @@ mod tests {
         let leaked: &'static [u8] = Box::leak(padded.into_boxed_slice());
         let va = leaked.as_ptr() as u64;
         // SAFETY: `leaked` maps `leaked.len()` readable bytes for 'static.
-        assert!(!unsafe { retain(va, leaked.len() as u64, 0) }, "longer than totalsize");
+        assert!(!unsafe { retain(va, PA, leaked.len() as u64, 0) }, "longer than totalsize");
         assert!(blob().is_none());
         // SAFETY: `leaked` is a live 'static allocation; `exact` is shorter.
-        assert!(!unsafe { retain(va, exact - 4, 0) }, "shorter than totalsize");
+        assert!(!unsafe { retain(va, PA, exact - 4, 0) }, "shorter than totalsize");
         assert!(blob().is_none());
 
         // A blob that no longer checksums to what the boot stub scanned is not
         // published, however well it parses (`36§4.1`).
         let good = ::crc::crc32_be_update(!0u32, &leaked[..exact as usize]);
         // SAFETY: `leaked` covers `exact` readable 'static bytes.
-        assert!(!unsafe { retain(va, exact, good ^ 1) }, "checksum disagrees with the scan");
+        assert!(!unsafe { retain(va, PA, exact, good ^ 1) }, "checksum disagrees with the scan");
         assert!(blob().is_none());
 
         // SAFETY: `leaked` is a live 'static allocation covering `exact` bytes.
-        assert!(unsafe { retain(va, exact, good) });
+        assert!(unsafe { retain(va, PA, exact, good) });
         assert!(present());
+        assert_eq!(phys_extent(), Some((PA, exact)),
+                   "the physical extent a derived tree must un-reserve");
         assert_eq!(blob(), Some(&leaked[..exact as usize]), "the published slice is the blob, whole and exact");
 
         // SAFETY: rejected on its arguments; no dereference.
-        assert!(!unsafe { retain(0, 0, 0) });
+        assert!(!unsafe { retain(0, 0, 0, 0) });
         assert_eq!(blob(), Some(&leaked[..exact as usize]), "a failed retain leaves the published tree alone");
     }
 }
