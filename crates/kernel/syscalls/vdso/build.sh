@@ -5,18 +5,25 @@
 #
 # Per-arch toolchain:
 #   x86_64  — system gcc (host).
-#   aarch64 — clang + LLD targeting aarch64-unknown-linux-gnu (`07§3`).
+#   aarch64 — either clang + LLD targeting aarch64-unknown-linux-gnu (`07§3`)
+#             or the system GNU cross compiler (aarch64-linux-gnu-gcc). Both
+#             produce an image that passes `validate` below; whichever is
+#             installed is used, and AARCH64_CC/AARCH64_STRIP override the
+#             choice. A box with neither is an error, never a skip — the
+#             aarch64 image is a build input, not an optional extra.
+#
+# Output directory: $VDSO_OUT if set, else the script's own directory. The
+# crate's build.rs stages into a scratch directory and moves the results in,
+# so a partially written blob is never visible to a concurrent compile.
 
 set -eu
 export LC_ALL=C
 
 here="$(cd "$(dirname "$0")" && pwd)"
-out="$here"
+out="${VDSO_OUT:-$here}"
 mkdir -p "$out"
 xcc="${CC:-gcc}"
 xstrip="${STRIP:-strip}"
-acc="${AARCH64_CC:-clang}"
-astrip="${AARCH64_STRIP:-llvm-strip}"
 arch="${1:-all}"
 
 common="-nostdlib -shared -fPIC -fno-stack-protector
@@ -29,11 +36,48 @@ common="-nostdlib -shared -fPIC -fno-stack-protector
         -Wl,-z,common-page-size=0x1000
         -Wl,-T,$here/vdso.lds"
 
+have() { command -v "$1" >/dev/null 2>&1; }
+
 need() {
-    if ! command -v "$1" >/dev/null 2>&1; then
+    if ! have "$1"; then
         echo "vdso: required tool not found: $1" >&2
         exit 1
     fi
+}
+
+# Select the aarch64 compiler/strip pair and the flags that pair needs. An
+# explicit AARCH64_CC wins; clang is tried before the GNU cross compiler
+# because it is what the CI image carries.
+pick_arm() {
+    aflags=""
+    if [ -n "${AARCH64_CC:-}" ]; then
+        acc="$AARCH64_CC"
+        case "$acc" in *clang*) aflags="--target=aarch64-unknown-linux-gnu -fuse-ld=lld" ;; esac
+        astrip="${AARCH64_STRIP:-llvm-strip}"
+        return
+    fi
+    if have clang && have ld.lld && have llvm-strip; then
+        acc=clang; astrip=llvm-strip
+        aflags="--target=aarch64-unknown-linux-gnu -fuse-ld=lld"
+        return
+    fi
+    if have aarch64-linux-gnu-gcc && have aarch64-linux-gnu-strip; then
+        acc=aarch64-linux-gnu-gcc; astrip=aarch64-linux-gnu-strip
+        return
+    fi
+    cat >&2 <<'EOF'
+vdso: no aarch64 toolchain — cannot build vdso-aarch64.so.
+
+The image is compiled into the kernel and into `cargo test -p syscalls`, where
+it is the only executing check of the aarch64 signal-restorer contract, so it
+is a build input and this is a build failure, not a skipped step.
+
+Install either:
+  clang + lld + llvm-strip                 (Fedora: dnf install clang lld llvm)
+  aarch64-linux-gnu-gcc + -strip           (Fedora: dnf install gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu)
+Or point AARCH64_CC / AARCH64_STRIP at a cross compiler of your own.
+EOF
+    exit 1
 }
 
 validate() {
@@ -65,9 +109,10 @@ build_x86() {
 }
 
 build_arm() {
-    need "$acc"; need ld.lld; need "$astrip"; need readelf
-    echo "vdso: building vdso-aarch64.so (aarch64-unknown-linux-gnu)"
-    "$acc" --target=aarch64-unknown-linux-gnu -fuse-ld=lld $common \
+    pick_arm
+    need "$acc"; need "$astrip"; need readelf
+    echo "vdso: building vdso-aarch64.so (aarch64-unknown-linux-gnu, $acc)"
+    "$acc" $aflags $common \
         -Wl,--version-script="$here/vdso-aarch64.map" \
         -Wl,-soname,linux-vdso.so.1 -Wl,--build-id=none \
         -o "$out/vdso-aarch64.so" "$here/vdso-aarch64.S"
