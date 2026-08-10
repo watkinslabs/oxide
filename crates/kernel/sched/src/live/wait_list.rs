@@ -58,6 +58,27 @@ pub struct WaitList {
 }
 
 impl WaitList {
+    /// Publish the current task as an uninterruptible prepared waiter. The
+    /// caller owns the resource-gate contract: it tests the condition, calls
+    /// this while that gate still excludes the waker, drops the gate, then
+    /// schedules and rechecks. Ordinary predicate waits use `wait_event`.
+    /// # SAFETY: process context with a live runqueue; caller must schedule
+    /// after dropping the resource gate and must finish/cancel on every exit.
+    /// # C: O(1)
+    pub unsafe fn prepare_to_wait(&self) {
+        // SAFETY: this is the named prepared-wait form of `park` and forwards
+        // the caller's publication/schedule contract unchanged.
+        unsafe { self.park(); }
+    }
+
+    /// Interruptible [`prepare_to_wait`]. # SAFETY: see that method.
+    /// # C: O(1)
+    pub unsafe fn prepare_to_wait_interruptible(&self) {
+        // SAFETY: forwards the prepared-wait contract while adding the
+        // signal-after-publication check required for an interruptible wait.
+        unsafe { self.park_interruptible_with_deadline(0); }
+    }
+
     /// # C: O(1)
     pub const fn new() -> Self {
         Self { waiters: Spinlock::new(Vec::new()) }
@@ -113,17 +134,10 @@ impl WaitList {
         unsafe { Arc::increment_strong_count(raw); }
         // SAFETY: matching Arc::from_raw consumes the bumped ref.
         let arc = unsafe { Arc::from_raw(raw) };
-        arc.set_state(TaskState::Sleeping);
-        // Publish Sleeping before arming. If the timer fires between these two
-        // it wakes a task that is already Sleeping and the wake lands; arming
-        // first lets the expiry be consumed while `claim_wake` still sees
-        // Runnable, after which this task sleeps with no armed wake.
-        //
-        // Armed BEFORE the wait-list push, not after: `Hrtimeout` ranks below
-        // `TaskList`, so this is the ascending order. A wake that lands in the
-        // gap finds the task Runnable and the post-park `schedule()` simply
-        // keeps running it — the same race the deadline stamp always had.
-        crate::hrtimeout::arm(&arc, deadline_ns, slack_ns);
+        // Keep one reference for the timeout arm after this function publishes
+        // the other one to the wait list. The wait-list lock must not nest the
+        // hrtimer lock: Hrtimeout ranks below TaskList.
+        let timer_arc = Arc::clone(&arc);
         #[cfg(feature = "debug-desktop")]
         if deadline_ns != 0 && arc.with_exe_path(|p| p.map(|p| {
             p.contains("gnome-shell") || p.contains("mutter")
@@ -141,6 +155,11 @@ impl WaitList {
             klog::write_raw(b"]\n");
         }
         let mut g = waiters_lock!(self);
+        // Linux prepare_to_wait order: add the waiter, then publish Sleeping,
+        // while holding the wait-queue lock. A waker can consequently observe
+        // either the prior Runnable state or a visible Sleeping waiter; it can
+        // never observe Sleeping while the queue is empty and lose the event.
+        //
         // Dedup: drop any prior entry for this task before re-pushing.
         // A signal wake / deadline scanner rouses a parked task WITHOUT
         // popping it from the list; if the task then re-parks (its
@@ -151,6 +170,16 @@ impl WaitList {
         let cur = raw as *const Task;
         g.retain(|a| Arc::as_ptr(a) != cur);
         g.push(arc);
+        timer_arc.set_state(TaskState::Sleeping);
+        drop(g);
+        // Timer setup follows publication because its lock ranks below the
+        // wait-list lock. A wake can win in this small interval, before an
+        // expiry exists to cancel. Arm first, then retire it if that happened;
+        // a wake after this check clears the same deadline in ttwu.
+        crate::hrtimeout::arm(&timer_arc, deadline_ns, slack_ns);
+        if timer_arc.state() != TaskState::Sleeping {
+            crate::hrtimeout::disarm(&timer_arc);
+        }
     }
 
     /// Park with a deadline while closing the signal-before-sleep race.
@@ -233,6 +262,10 @@ impl WaitList {
         let Some(cur) = super::schedule::current() else { return };
         let ptr = cur as *const Task;
         waiters_lock!(self).retain(|task| Arc::as_ptr(task) != ptr);
+        // A wake may win after wait-list publication but before the timeout is
+        // armed. Retire that now-stale arm before this task can begin another
+        // wait, just as finish_wait cancels a pending timeout on every exit.
+        crate::hrtimeout::disarm(cur);
     }
 
     /// Cancel the current task's published park before it calls `schedule`.

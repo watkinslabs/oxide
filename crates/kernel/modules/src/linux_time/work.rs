@@ -206,8 +206,10 @@ pub(super) extern "C" fn async_schedule_node_domain(
 extern "C" fn worker_entry(_arg: usize) -> ! {
     loop {
         while drain_work_once() {}
-        // SAFETY: kworker has no locks held and immediately yields after parking.
-        unsafe { WORK_WAIT.park(); sched::live::schedule(); }
+        // SAFETY: worker has no locks held; queue mutation precedes wake and
+        // the canonical loop makes the check/publication edge race-free.
+        let _ = unsafe { sched::live::wait_event_uninterruptible(&WORK_WAIT,
+            || !WORK_QUEUE.lock().is_empty()) };
     }
 }
 

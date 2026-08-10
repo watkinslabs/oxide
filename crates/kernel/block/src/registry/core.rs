@@ -7,6 +7,19 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use sync::{Spinlock, Devices as DevicesClass};
 
+// The running kernel uses the scheduler's sleepable mutex for lifecycle work.
+// Host dependency builds have no runqueue, so retain a same-shaped local guard
+// there; it exists only to keep model tests from manufacturing a scheduler.
+#[cfg(any(target_os = "oxide-kernel", feature = "hosted"))]
+use sched::live::Mutex as LifecycleMutex;
+#[cfg(not(any(target_os = "oxide-kernel", feature = "hosted")))]
+struct LifecycleMutex<T> { inner: Spinlock<T, DevicesClass> }
+#[cfg(not(any(target_os = "oxide-kernel", feature = "hosted")))]
+impl<T> LifecycleMutex<T> {
+    const fn new(value: T) -> Self { Self { inner: Spinlock::new(value) } }
+    unsafe fn lock(&self) -> sync::Guard<'_, T, DevicesClass> { self.inner.lock() }
+}
+
 use crate::blockdev::{BlockCompletion, BlockDevice, BlockRequest};
 use crate::queue_limits::QueueLimits;
 use crate::types::{BlockError, KResult};
@@ -51,13 +64,18 @@ pub struct Disk {
     /// first, so a mounted filesystem and a raw open cannot disagree.
     pub mapping: Arc<crate::bdev::BdevMapping>,
     pub stats: Arc<crate::stats::DiskStats>,
-    state: Arc<Spinlock<DiskState, DevicesClass>>,
+    life: LifecycleMutex<DiskLifecycle>,
+    io: Arc<Spinlock<DiskIo, DevicesClass>>,
 }
 
 impl Disk {
     /// VFS open file descriptions currently holding this disk (Linux
     /// `bd_openers`). # C: O(1)
-    pub fn opener_count(&self) -> u32 { self.state.lock_bh::<crate::bh_gate::BlockBh>().openers }
+    pub fn opener_count(&self) -> u32 {
+        // SAFETY: VFS file release is process context and disk lifecycle is a
+        // sleepable operation; this lock is never acquired from completion.
+        unsafe { self.life.lock() }.openers
+    }
 }
 
 /// The generic block-device lifetime state. Holders are kernel consumers such
@@ -69,18 +87,19 @@ impl Disk {
 /// failing a bio against a dead gendisk. `quiesced` is the RECOVERABLE
 /// admission hold (suspend / pre-removal drain), which owes `Ebusy`. Keeping
 /// them distinct is what lets a caller tell "try later" from "never again".
-struct DiskState { holders: u32, openers: u32, in_flight: u32, quiesced: bool, detached: bool, max_discard_sectors: u32 }
+struct DiskLifecycle { holders: u32, openers: u32, quiesced: bool, detached: bool }
+struct DiskIo { in_flight: u32, closed: bool, detached: bool, max_discard_sectors: u32 }
 
 /// One request admitted by the canonical registry-owned queue gate.  The
 /// token remains live through an asynchronous completion, so quiesce cannot
 /// race a driver request that was accepted before reset/remove began.
-struct SubmissionToken { state: Arc<Spinlock<DiskState, DevicesClass>> }
+struct SubmissionToken { io: Arc<Spinlock<DiskIo, DevicesClass>> }
 
 impl Drop for SubmissionToken {
     fn drop(&mut self) {
-        let mut state = self.state.lock_bh::<crate::bh_gate::BlockBh>();
-        hal::kassert!(state.in_flight != 0, "block submission underflow");
-        state.in_flight -= 1;
+        let mut io = self.io.lock_bh::<crate::bh_gate::BlockBh>();
+        hal::kassert!(io.in_flight != 0, "block submission underflow");
+        io.in_flight -= 1;
     }
 }
 
@@ -89,17 +108,17 @@ impl Drop for SubmissionToken {
 /// and queued block I/O issued through a registered disk.
 struct AdmissionDev {
     inner: Arc<dyn BlockDevice>,
-    state: Arc<Spinlock<DiskState, DevicesClass>>,
+    io: Arc<Spinlock<DiskIo, DevicesClass>>,
 }
 
 impl AdmissionDev {
     fn admit(&self) -> KResult<SubmissionToken> {
-        let mut state = self.state.lock_bh::<crate::bh_gate::BlockBh>();
-        if state.detached { return Err(BlockError::Eio); }
-        if state.quiesced { return Err(BlockError::Ebusy); }
-        let Some(next) = state.in_flight.checked_add(1) else { return Err(BlockError::Ebusy); };
-        state.in_flight = next;
-        Ok(SubmissionToken { state: Arc::clone(&self.state) })
+        let mut io = self.io.lock_bh::<crate::bh_gate::BlockBh>();
+        if io.detached { return Err(BlockError::Eio); }
+        if io.closed { return Err(BlockError::Ebusy); }
+        let Some(next) = io.in_flight.checked_add(1) else { return Err(BlockError::Ebusy); };
+        io.in_flight = next;
+        Ok(SubmissionToken { io: Arc::clone(&self.io) })
     }
 
     /// Split one discard at the effective canonical queue maximum. Linux's
@@ -133,7 +152,7 @@ impl BlockDevice for AdmissionDev {
     fn block_size(&self) -> u32 { self.inner.block_size() }
     fn queue_limits(&self) -> KResult<QueueLimits> {
         let limits = self.inner.queue_limits()?;
-        limits.with_discard(limits.max_hw_discard_sectors(), self.state.lock_bh::<crate::bh_gate::BlockBh>().max_discard_sectors,
+        limits.with_discard(limits.max_hw_discard_sectors(), self.io.lock_bh::<crate::bh_gate::BlockBh>().max_discard_sectors,
             limits.discard_granularity())
     }
     fn supports_discard(&self) -> bool { self.inner.supports_discard() }
@@ -204,7 +223,9 @@ impl DiskQuiesce {
         let disk = self.disk.clone();
         let name = disk.name.clone();
         let removed = {
-            let mut table = TABLE.lock();
+            // SAFETY: destructive disk lifecycle runs in process context; no
+            // completion path takes the publication registry mutex.
+            let mut table = unsafe { TABLE.lock() };
             let Some(pos) = table.iter().position(|d| Arc::ptr_eq(d, &disk)) else { return false; };
             table.remove(pos);
             true
@@ -214,15 +235,24 @@ impl DiskQuiesce {
         // admission gate closed (`try_quiesce`); drop what is left of it, so
         // no page survives into a re-registration of the same device number
         // to serve the OLD medium's bytes.
+        // The disk is detached, so reopening its admission gate is meaningless —
+        // and I/O arriving on a stale handle from here on is a dead-device error,
+        // not a retryable hold.
+        {
+            let mut io = disk.io.lock_bh::<crate::bh_gate::BlockBh>();
+            io.detached = true;
+        }
+        // SAFETY: DiskQuiesce owns the lifecycle exclusion, in process context.
+        unsafe { disk.life.lock() }.detached = true;
         disk.mapping.invalidate_clean();
         crate::devbridge::unpublish(disk.number);
         release_number(disk.driver, disk.number);
         if let Some(dev) = drv::devices().into_iter().find(|d| d.bus == "block" && d.addr == name) { drv::device_del(&dev); }
-        if let Some(f) = *DISK_REMOVE_HOOK.lock() { f(&name); }
-        // The disk is detached, so reopening its admission gate is meaningless —
-        // and I/O arriving on a stale handle from here on is a dead-device error,
-        // not a retryable hold.
-        disk.state.lock_bh::<crate::bh_gate::BlockBh>().detached = true;
+        // Copy the function pointer while locked, then invoke it unlocked: a
+        // removal hook can traverse sysfs and must not serialize all registry
+        // lifecycle work behind this small policy slot.
+        let hook = *unsafe { DISK_REMOVE_HOOK.lock() };
+        if let Some(f) = hook { f(&name); }
         self.active = false;
         true
     }
@@ -230,59 +260,85 @@ impl DiskQuiesce {
 
 impl Drop for DiskQuiesce {
     fn drop(&mut self) {
-        if self.active { self.disk.state.lock_bh::<crate::bh_gate::BlockBh>().quiesced = false; }
+        if !self.active { return; }
+        self.disk.io.lock_bh::<crate::bh_gate::BlockBh>().closed = false;
+        // SAFETY: dropping the lifecycle token is process context and reopens
+        // waitable open/holder admission only after I/O admission is open.
+        unsafe { self.disk.life.lock() }.quiesced = false;
     }
 }
 
 struct DriverState { driver: BlockDriver, major: u32, next_minor: u32 }
-static TABLE: Spinlock<Vec<Arc<Disk>>, DevicesClass> = Spinlock::new(Vec::new());
-static DRIVERS: Spinlock<Vec<DriverState>, DevicesClass> = Spinlock::new(Vec::new());
+static TABLE: LifecycleMutex<Vec<Arc<Disk>>> = LifecycleMutex::new(Vec::new());
+static DRIVERS: LifecycleMutex<Vec<DriverState>> = LifecycleMutex::new(Vec::new());
 type DiskRemoveHook = fn(&str);
-static DISK_REMOVE_HOOK: Spinlock<Option<DiskRemoveHook>, DevicesClass> = Spinlock::new(None);
+static DISK_REMOVE_HOOK: LifecycleMutex<Option<DiskRemoveHook>> = LifecycleMutex::new(None);
 
 /// Default owner for in-kernel tests and legacy module adapters. It is dynamic
 /// and therefore cannot collide with physical-driver majors.
 pub const GENERIC_BLOCK_DRIVER: BlockDriver = BlockDriver::dynamic("oxide-block");
 
 /// Install the disk remove hook used by sysfs to drop stale block dentries. # C: O(1)
-pub fn set_remove_hook(f: DiskRemoveHook) { *DISK_REMOVE_HOOK.lock() = Some(f); }
+pub fn set_remove_hook(f: DiskRemoveHook) {
+    // SAFETY: registration runs in process context; this is lifecycle policy.
+    *unsafe { DISK_REMOVE_HOOK.lock() } = Some(f);
+}
 
 /// Register an explicitly-owned block device. # C: O(N_disks + N_drivers)
 pub fn register_with_driver(driver: BlockDriver, name: &str, serial: Option<&str>, dev: Arc<dyn BlockDevice>) -> u32 {
-    let (index, number, bridge_disk) = {
-        let mut t = TABLE.lock();
-        if let Some(d) = t.iter().find(|d| d.name == name) { return d.index; }
-        let number = match allocate_number(driver) { Some(n) => n, None => return 0 };
-        let index = (t.len() as u32).saturating_add(1);
-        if index == 0 { return 0; }
-        let max_discard_sectors = match dev.queue_limits() { Ok(limits) => limits.max_discard_sectors(), Err(_) => return 0 };
-        let state = Arc::new(Spinlock::new(DiskState {
-            holders: 0, openers: 0, in_flight: 0, quiesced: false, detached: false, max_discard_sectors,
-        }));
-        let admitted: Arc<dyn BlockDevice> = Arc::new(AdmissionDev {
-            inner: dev, state: Arc::clone(&state),
-        });
-        let (accounted, stats) = crate::stats::StatsDev::wrap(admitted);
-        // The cache submits through the ACCOUNTED handle and every other
-        // submitter through the coherence decorator wrapped around it: cache
-        // writeback is counted like any other request, and cannot recursively
-        // invalidate the pages it is writing back.
-        let mapping = crate::bdev::BdevMapping::new(Arc::clone(&accounted));
-        let dev = crate::bdev::CoherentDev::wrap(accounted, Arc::downgrade(&mapping));
-        let disk = Arc::new(Disk {
-            name: name.to_string(), index, driver, number,
-            serial: serial.filter(|s| !s.is_empty()).map(ToString::to_string), dev, mapping, stats,
-            state,
-        });
-        t.push(disk.clone());
-        (index, number, disk)
+    if let Some(disk) = by_name(name) { return disk.index; }
+    let number = match allocate_number(driver) { Some(n) => n, None => return 0 };
+    let max_discard_sectors = match dev.queue_limits() {
+        Ok(limits) => limits.max_discard_sectors(),
+        Err(_) => { release_number(driver, number); return 0; }
+    };
+    let io = Arc::new(Spinlock::new(DiskIo {
+        in_flight: 0, closed: false, detached: false, max_discard_sectors,
+    }));
+    let admitted: Arc<dyn BlockDevice> = Arc::new(AdmissionDev {
+        inner: dev, io: Arc::clone(&io),
+    });
+    let (accounted, stats) = crate::stats::StatsDev::wrap(admitted);
+    // The cache submits through the ACCOUNTED handle and every other
+    // submitter through the coherence decorator wrapped around it: cache
+    // writeback is counted like any other request, and cannot recursively
+    // invalidate the pages it is writing back.
+    let mapping = crate::bdev::BdevMapping::new(Arc::clone(&accounted));
+    let dev = crate::bdev::CoherentDev::wrap(accounted, Arc::downgrade(&mapping));
+    let publication = {
+        // SAFETY: publish only after all potentially slow device preparation;
+        // the registry lock protects just duplicate resolution and insertion.
+        let mut t = unsafe { TABLE.lock() };
+        if let Some(existing) = t.iter().find(|d| d.name == name) {
+            Err(existing.index)
+        } else {
+            let index = (t.len() as u32).saturating_add(1);
+            if index == 0 { Err(0) } else {
+                let disk = Arc::new(Disk {
+                    name: name.to_string(), index, driver, number,
+                    serial: serial.filter(|s| !s.is_empty()).map(ToString::to_string), dev, mapping, stats,
+            life: LifecycleMutex::new(DiskLifecycle { holders: 0, openers: 0, quiesced: false, detached: false }),
+                    io,
+                });
+                t.push(disk.clone());
+                Ok((index, disk))
+            }
+        }
+    };
+    let (index, bridge_disk) = match publication {
+        Ok(published) => published,
+        Err(existing_index) => {
+            release_number(driver, number);
+            return existing_index;
+        }
     };
     match drv::try_device_add(Arc::new(
         drv::Device::new("block", name.to_string(), 0, 0, 0)
             .with_devnode("block", name.to_string(), Some((number.major, number.minor))))) {
         Ok(_) => { crate::devbridge::publish(number, bridge_disk); index }
         Err(_) => {
-            let mut t = TABLE.lock();
+            // SAFETY: registration rollback is process-context lifecycle work.
+            let mut t = unsafe { TABLE.lock() };
             if let Some(pos) = t.iter().position(|d| d.name == name && d.index == index) { t.remove(pos); }
             release_number(driver, number);
             0
@@ -301,7 +357,8 @@ pub fn register_with_serial(name: &str, serial: Option<&str>, dev: Arc<dyn Block
 }
 
 pub(crate) fn allocate_number(driver: BlockDriver) -> Option<DevNum> {
-    let mut ds = DRIVERS.lock();
+    // SAFETY: driver-number allocation is process-context publication work.
+    let mut ds = unsafe { DRIVERS.lock() };
     if let Some(d) = ds.iter_mut().find(|d| d.driver.name == driver.name) {
         if d.driver.major != driver.major { return None; }
         let minor = d.next_minor;
@@ -321,7 +378,8 @@ pub(crate) fn allocate_number(driver: BlockDriver) -> Option<DevNum> {
 }
 
 pub(crate) fn release_number(driver: BlockDriver, number: DevNum) {
-    let mut ds = DRIVERS.lock();
+    // SAFETY: driver-number release is process-context lifecycle work.
+    let mut ds = unsafe { DRIVERS.lock() };
     if let Some(pos) = ds.iter().position(|d| d.driver == driver && d.major == number.major && d.next_minor == number.minor.saturating_add(1)) {
         ds[pos].next_minor = number.minor;
         if number.minor == 0 { ds.remove(pos); }
@@ -334,51 +392,54 @@ pub fn unregister(name: &str) -> bool {
 }
 
 /// Look up a registered disk by name. # C: O(N_disks)
-pub fn by_name(name: &str) -> Option<Arc<Disk>> { TABLE.lock().iter().find(|d| d.name == name).cloned() }
+pub fn by_name(name: &str) -> Option<Arc<Disk>> {
+    // SAFETY: lookup holds the registry only long enough to clone its stable Arc.
+    unsafe { TABLE.lock() }.iter().find(|d| d.name == name).cloned()
+}
 /// Acquire one canonical consumer reference. A claimed disk cannot disappear
 /// or be reset by its control ABI until the consumer calls [`release`]. # C: O(N_disks)
 pub fn claim(name: &str) -> bool {
-    let table = TABLE.lock();
-    let Some(disk) = table.iter().find(|disk| disk.name == name) else { return false; };
-    let mut state = disk.state.lock_bh::<crate::bh_gate::BlockBh>();
-    if state.quiesced { return false; }
-    let Some(next) = state.holders.checked_add(1) else { return false; };
-    state.holders = next;
+    let Some(disk) = by_name(name) else { return false; };
+    // SAFETY: holder lifecycle admission is process context and may wait behind
+    // an open/remove operation; no registry lock is held while it does.
+    let mut life = unsafe { disk.life.lock() };
+    if life.quiesced || life.detached { return false; }
+    let Some(next) = life.holders.checked_add(1) else { return false; };
+    life.holders = next;
     true
 }
 /// Release one canonical consumer reference. # C: O(N_disks)
 pub fn release(name: &str) -> bool {
-    let table = TABLE.lock();
-    let Some(disk) = table.iter().find(|disk| disk.name == name) else { return false; };
-    let mut state = disk.state.lock_bh::<crate::bh_gate::BlockBh>();
-    if state.holders == 0 { return false; }
-    state.holders -= 1;
+    let Some(disk) = by_name(name) else { return false; };
+    // SAFETY: holder lifecycle release is process context.
+    let mut life = unsafe { disk.life.lock() };
+    if life.holders == 0 { return false; }
+    life.holders -= 1;
     true
 }
 
-/// Open one registered block device by its packed `dev_t`. The table lock
-/// serializes this increment against `unregister`, so a VFS open cannot race
-/// a zram reset/remove into a detached but still-operable block device.
+/// Open one registered block device by its packed `dev_t`. The per-disk
+/// lifecycle mutex serializes this increment against `unregister`, while the
+/// table lock is held only long enough to acquire the disk's stable `Arc`.
 /// # C: O(N_disks)
 pub fn open_by_dev(dev_t: u32) -> bool {
-    let (major, minor) = decode_dev(dev_t);
-    let table = TABLE.lock();
-    let Some(disk) = table.iter().find(|disk| disk.number == DevNum { major, minor }) else { return false; };
-    let mut state = disk.state.lock_bh::<crate::bh_gate::BlockBh>();
-    if state.quiesced { return false; }
-    let Some(next) = state.openers.checked_add(1) else { return false; };
-    state.openers = next;
+    let Some(disk) = by_dev(dev_t) else { return false; };
+    // SAFETY: VFS open is process context; a contended disk lifecycle must
+    // sleep, never spin with the device registry or interrupts held.
+    let mut life = unsafe { disk.life.lock() };
+    if life.quiesced || life.detached { return false; }
+    let Some(next) = life.openers.checked_add(1) else { return false; };
+    life.openers = next;
     true
 }
 
 /// Release the opener acquired by [`open_by_dev`]. # C: O(N_disks)
 pub fn close_by_dev(dev_t: u32) -> bool {
-    let (major, minor) = decode_dev(dev_t);
-    let table = TABLE.lock();
-    let Some(disk) = table.iter().find(|disk| disk.number == DevNum { major, minor }) else { return false; };
-    let mut state = disk.state.lock_bh::<crate::bh_gate::BlockBh>();
-    if state.openers == 0 { return false; }
-    state.openers -= 1;
+    let Some(disk) = by_dev(dev_t) else { return false; };
+    // SAFETY: VFS close is process context; it may wait for a concurrent open.
+    let mut life = unsafe { disk.life.lock() };
+    if life.openers == 0 { return false; }
+    life.openers -= 1;
     true
 }
 /// Acquire the exclusive gate only if the disk has no holders, open file
@@ -391,29 +452,48 @@ pub fn try_quiesce(name: &str) -> Option<DiskQuiesce> {
     // gate is shut every request is refused and the dirty pages would have
     // nowhere to go. No registry lock is held across the I/O.
     if let Some(disk) = by_name(name) { let _ = disk.mapping.write_and_wait(); }
-    let table = TABLE.lock();
-    let disk = table.iter().find(|disk| disk.name == name)?.clone();
-    let mut state = disk.state.lock_bh::<crate::bh_gate::BlockBh>();
-    if state.quiesced || state.holders != 0 || state.openers != 0 || state.in_flight != 0 { return None; }
-    state.quiesced = true;
-    drop(state);
+    let disk = by_name(name)?;
+    // SAFETY: quiesce is process-context lifecycle serialization; a stable Arc
+    // was acquired before this potentially blocking lock.
+    let mut life = unsafe { disk.life.lock() };
+    if life.quiesced || life.detached || life.holders != 0 || life.openers != 0 { return None; }
+    life.quiesced = true;
+    drop(life);
+    let mut io = disk.io.lock_bh::<crate::bh_gate::BlockBh>();
+    if io.in_flight != 0 {
+        drop(io);
+        // SAFETY: no new open/holder can pass while `quiesced` is true; only
+        // this failed quiesce attempt may clear it.
+        unsafe { disk.life.lock() }.quiesced = false;
+        return None;
+    }
+    io.closed = true;
+    drop(io);
     Some(DiskQuiesce { disk, active: true })
 }
 
 /// True when any holder or VFS opener keeps the disk busy. # C: O(N_disks)
 pub fn is_claimed(name: &str) -> bool {
     by_name(name).is_some_and(|disk| {
-        let state = disk.state.lock_bh::<crate::bh_gate::BlockBh>();
-        state.holders != 0 || state.openers != 0
+        // SAFETY: status reads run in process context and must not spin behind
+        // an in-progress disk lifecycle transaction.
+        let life = unsafe { disk.life.lock() };
+        life.holders != 0 || life.openers != 0
     })
 }
 /// Number of in-kernel block holders currently admitted. # C: O(N_disks)
 pub fn holder_count(name: &str) -> Option<u32> {
-    by_name(name).map(|disk| disk.state.lock_bh::<crate::bh_gate::BlockBh>().holders)
+    by_name(name).map(|disk| {
+        // SAFETY: process-context lifecycle status query.
+        unsafe { disk.life.lock() }.holders
+    })
 }
 /// Number of VFS open file descriptions currently admitted. # C: O(N_disks)
 pub fn opener_count(name: &str) -> Option<u32> {
-    by_name(name).map(|disk| disk.state.lock_bh::<crate::bh_gate::BlockBh>().openers)
+    by_name(name).map(|disk| {
+        // SAFETY: process-context lifecycle status query.
+        unsafe { disk.life.lock() }.openers
+    })
 }
 /// Return canonical limits, including the Linux-writable discard user cap. # C: O(N_disks)
 pub fn queue_limits(name: &str) -> KResult<QueueLimits> { by_name(name).ok_or(BlockError::Enxio)?.dev.queue_limits() }
@@ -426,14 +506,18 @@ pub fn set_discard_max_bytes(name: &str, bytes: u64) -> KResult<()> {
     if granularity == 0 || bytes % granularity != 0
         || bytes / u64::from(crate::LINUX_SECTOR_BYTES) > u64::from(limits.max_hw_discard_sectors()) { return Err(BlockError::Einval); }
     let sectors = u32::try_from(bytes / u64::from(crate::LINUX_SECTOR_BYTES)).map_err(|_| BlockError::Einval)?;
-    disk.state.lock_bh::<crate::bh_gate::BlockBh>().max_discard_sectors = sectors;
+    disk.io.lock_bh::<crate::bh_gate::BlockBh>().max_discard_sectors = sectors;
     Ok(())
 }
 /// Look up a registered disk by publication index. # C: O(N_disks)
-pub fn by_index(index: u32) -> Option<Arc<Disk>> { TABLE.lock().iter().find(|d| d.index == index).cloned() }
+pub fn by_index(index: u32) -> Option<Arc<Disk>> {
+    // SAFETY: lookup holds the registry only long enough to clone its stable Arc.
+    unsafe { TABLE.lock() }.iter().find(|d| d.index == index).cloned()
+}
 /// Look up a registered disk by serial. # C: O(N_disks)
 pub fn disk_by_serial(serial: &str) -> Option<Arc<Disk>> {
-    TABLE.lock().iter().find(|d| d.serial.as_deref() == Some(serial)).cloned()
+    // SAFETY: lookup holds the registry only long enough to clone its stable Arc.
+    unsafe { TABLE.lock() }.iter().find(|d| d.serial.as_deref() == Some(serial)).cloned()
 }
 /// Look up a registered block backend by serial. # C: O(N_disks)
 pub fn by_serial(serial: &str) -> Option<Arc<dyn BlockDevice>> {
@@ -442,16 +526,23 @@ pub fn by_serial(serial: &str) -> Option<Arc<dyn BlockDevice>> {
 /// Resolve the packed Linux `dev_t` to its disk. # C: O(N_disks)
 pub fn by_dev(dev_t: u32) -> Option<Arc<Disk>> {
     let (major, minor) = decode_dev(dev_t);
-    TABLE.lock().iter().find(|d| d.number == DevNum { major, minor }).cloned()
+    // SAFETY: lookup holds the registry only long enough to clone its stable Arc.
+    unsafe { TABLE.lock() }.iter().find(|d| d.number == DevNum { major, minor }).cloned()
 }
 
 fn decode_dev(dev_t: u32) -> (u32, u32) {
     ((dev_t & 0x000f_ff00) >> 8, (dev_t & 0xff) | ((dev_t >> 12) & 0x000f_ff00))
 }
 /// First published disk, boot fallback only. # C: O(1)
-pub fn first_device() -> Option<Arc<dyn BlockDevice>> { TABLE.lock().first().map(|d| d.dev.clone()) }
+pub fn first_device() -> Option<Arc<dyn BlockDevice>> {
+    // SAFETY: lookup holds the registry only long enough to clone the handle.
+    unsafe { TABLE.lock() }.first().map(|d| d.dev.clone())
+}
 /// Snapshot live disks. # C: O(N_disks)
-pub fn snapshot() -> Vec<Arc<Disk>> { TABLE.lock().clone() }
+pub fn snapshot() -> Vec<Arc<Disk>> {
+    // SAFETY: snapshot is process-context inspection over the publication table.
+    unsafe { TABLE.lock() }.clone()
+}
 /// Capacity in Linux 512-byte sectors. # C: O(1)
 pub fn size_512_sectors(capacity_blocks: u64, block_size: u32) -> u64 { capacity_blocks.saturating_mul((block_size as u64) / 512) }
 /// Pack Linux `new_encode_dev`. # C: O(1)

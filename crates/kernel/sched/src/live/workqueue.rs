@@ -30,6 +30,8 @@ use cpu::MAX_CPUS;
 use sync::{Spinlock, Workqueue as WorkClass};
 
 use super::WaitList;
+#[cfg(target_os = "oxide-kernel")]
+use super::wait_event_interruptible;
 
 /// A queued item. A bare `fn(usize)` rather than a boxed closure: `07§5`
 /// forbids `dyn` on these paths, and an embedded arg matches Linux's
@@ -178,18 +180,6 @@ unsafe fn drain(cpu: usize) {
     }
 }
 
-/// Missed-wakeup backstop, same idiom as `ksoftirqd`/`ktimers`: a `queue_work`
-/// landing between the emptiness check and the park would otherwise wait for
-/// the next producer.
-const BACKSTOP_NS: u64 = 100_000_000;
-
-#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-fn now_ns() -> u64 { use hal::TimerOps; hal_x86_64::X86TimerOps::monotonic_ns().0 }
-#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
-fn now_ns() -> u64 { use hal::TimerOps; hal_aarch64::ArmTimerOps::monotonic_ns().0 }
-#[cfg(not(target_os = "oxide-kernel"))]
-fn now_ns() -> u64 { 0 }
-
 /// Linux `worker_thread`: run queued items, yielding between batches so a
 /// flood stays preemptible, then park until `queue_work` wakes us.
 /// # C: O(queued work) per wake
@@ -207,12 +197,12 @@ extern "C" fn kworker(arg: usize) -> ! {
             unsafe { super::schedule(); }
             continue;
         }
-        // SAFETY: running kthread on this CPU, no lock held across the park;
-        // schedule() yields immediately per the WaitList contract.
-        unsafe {
-            WAIT[my_cpu].park_with_deadline(now_ns() + BACKSTOP_NS);
-            super::schedule();
-        }
+        // Publish before testing the per-CPU queue predicate. `queue_work`
+        // mutates the queue before waking, so the generic loop closes either
+        // arrival ordering without a periodic missed-wake backstop.
+        // SAFETY: running kthread in process context, with no queue lock held;
+        // the generic loop owns publication, scheduling and cancellation.
+        let _ = unsafe { wait_event_interruptible(&WAIT[my_cpu], || pending_on(my_cpu) != 0) };
     }
 }
 

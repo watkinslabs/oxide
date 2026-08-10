@@ -26,7 +26,7 @@ bitflags = { version = "2", default-features = false }
 
 [features]
 default = []
-hosted  = []
+hosted  = ["sched/hosted"]
 
 [lints]
 workspace = true
