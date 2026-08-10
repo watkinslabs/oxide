@@ -54,15 +54,42 @@ pub const SK_DROP: u32 = 0;
 /// distribution.
 pub const SK_PASS: u32 = 1;
 
-/// Run one verified selection program and return its `SK_DROP` / `SK_PASS`
-/// action. A program the runner cannot complete drops the packet rather than
-/// letting an unfinished run choose. # C: O(instructions)
-pub fn run(insns: &[u8], ctx: SkReuseportContext<'_>) -> u32 {
+/// What one selection run produced.
+pub struct Verdict {
+    /// `SK_PASS` or `SK_DROP`.
+    pub action: u32,
+    /// The member the program named, if it named one. A program that names
+    /// none leaves its group on the group's own distribution.
+    pub selected: Option<crate::bpf::map::sockarray::SockHandle>,
+}
+
+/// The group a selection program runs for, and the map set its relocated
+/// instructions index into.
+pub struct Run<'a> {
+    pub insns: &'a [u8],
+    pub maps: &'a [vfs::InodeRef],
+    pub runner: crate::bpf::map::sockarray::RunnerState,
+}
+
+/// Run one verified selection program. A program the runner cannot complete
+/// drops the packet rather than letting an unfinished run choose, and names
+/// nothing. # C: O(instructions)
+pub fn run(program: Run<'_>, ctx: SkReuseportContext<'_>) -> Verdict {
     let context = build(&ctx);
-    crate::bpf_interp::run_socket_filter(insns, &context, ctx.packet)
-        .map_or(SK_DROP, |action| action as u32)
+    let mut selection = crate::bpf_interp::ReuseportSelection {
+        runner: program.runner, selected: None,
+    };
+    let action = crate::bpf_interp::run_socket_filter(
+        program.insns, &context, ctx.packet, program.maps, Some(&mut selection));
+    match action {
+        Some(action) => Verdict { action: action as u32, selected: selection.selected },
+        None => Verdict { action: SK_DROP, selected: None },
+    }
 }
 
 #[cfg(test)]
 #[path = "sk_reuseport_tests.rs"]
 mod tests;
+#[cfg(test)]
+#[path = "sk_reuseport_select_tests.rs"]
+mod select_tests;

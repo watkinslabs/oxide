@@ -87,6 +87,8 @@ mod lifecycle;
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
 mod raw_bind;
 mod bind_admission;
+#[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]
+pub mod sockarray;
 pub mod nonlocal;
 mod connect_security;
 mod admission;

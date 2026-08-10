@@ -52,6 +52,19 @@ pub struct HelperState {
     pub retval: i32,
 }
 
+/// The group a selection program runs for, and the member it named.
+///
+/// Deliberately NOT part of [`HelperState`]: that state is carried by every
+/// program type, including the cgroup filters that run at the tail of a
+/// receive path an interrupt can nest on, and growing it there moved a
+/// thousand bytes onto the interrupt stack. This rides the per-run memory
+/// instead, which only a selection run builds.
+pub struct ReuseportSelection {
+    pub runner: crate::bpf::map::sockarray::RunnerState,
+    /// A run that ends without one leaves the group on its own distribution.
+    pub selected: Option<crate::bpf::map::sockarray::SockHandle>,
+}
+
 /// Helper-call descriptor: a (helper-id, fn) pair. The interpreter hands
 /// R1..R5 and the cgroup run state to `f`, then stores its return in R0.
 pub type HelperFn = fn(&mut HelperState, i64, i64, i64, i64, i64) -> i64;
@@ -268,11 +281,24 @@ pub fn run_with_helpers(insns: &[u8], pkt: &[u8], helpers: &[Helper]) -> Option<
     run_with_helpers_and_state(insns, pkt, helpers, &mut HelperState::default())
 }
 
-/// Run a socket filter: a read-only `__sk_buff` in R1 and the frame itself
+/// Run a socket filter: a read-only program context in R1 and the frame itself
 /// reachable only through the packet-load helper.
+///
+/// `maps` and `selection` are what a reuseport selection program needs and no
+/// other filter has — the map set its relocated instructions index into, and
+/// the cell the member it names is recorded in. Every other caller passes an
+/// empty set and no cell, and this stays the ONE entry point for a filter run
+/// over a read-only context.
 /// # C: O(insn count × step budget)
-pub fn run_socket_filter(insns: &[u8], context: &[u8], packet: &[u8]) -> Option<i64> {
-    let memory = RunMemory::new(Context::ReadOnly(context), packet, &[]);
+pub fn run_socket_filter(
+    insns: &[u8],
+    context: &[u8],
+    packet: &[u8],
+    maps: &[vfs::InodeRef],
+    selection: Option<&mut ReuseportSelection>,
+) -> Option<i64> {
+    let mut memory = RunMemory::new(Context::ReadOnly(context), packet, maps);
+    if let Some(selection) = selection { memory.attach_reuseport(selection); }
     run_inner(insns, &[], &mut HelperState::default(), memory)
 }
 
@@ -352,6 +378,9 @@ fn run_inner(
                 }
                 crate::bpf::uapi::func_id::SKB_LOAD_BYTES => {
                     memory.skb_load_bytes(regs[2], regs[3], regs[4], &mut stack)
+                }
+                crate::bpf::uapi::func_id::SK_SELECT_REUSEPORT => {
+                    memory.sk_select_reuseport(regs[2], regs[3], regs[4], &stack)
                 }
                 crate::bpf::uapi::func_id::KTIME_GET_COARSE_NS => coarse_monotonic_ns(),
                 _ => {

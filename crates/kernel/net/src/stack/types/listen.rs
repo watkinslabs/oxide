@@ -60,7 +60,10 @@ pub struct TcpListenEntry {
     /// the SYN nobody will read.
     pub save_syn: ::core::sync::atomic::AtomicU8,
     /// When this listener's SYN queue last overflowed, as a monotonic
-    /// nanosecond reading, or [`crate::syncookies::NEVER`].
+    /// nanosecond reading, or [`crate::syncookies::NEVER`]. Used only while
+    /// the listener belongs to no SO_REUSEPORT key; a member of one stamps the
+    /// key's shared cell instead, because a cookie minted by one member comes
+    /// back to whichever member the acknowledgement steers to.
     ///
     /// A listener believes a SYN cookie only while this is recent. Without
     /// that bound every listener would spend a keyed hash on every stray

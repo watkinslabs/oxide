@@ -224,7 +224,8 @@ fn filter_errno(error: socket::FilterError) -> Errno {
 /// errors. `flavour` classifies what was found; the caller decides which
 /// types it accepts. # C: O(1)
 fn loaded_prog(fd: i32)
-    -> Result<(net::reuseport::ProgFlavour, alloc::vec::Vec<u8>), Errno>
+    -> Result<(net::reuseport::ProgFlavour, alloc::vec::Vec<u8>,
+               alloc::vec::Vec<vfs::InodeRef>), Errno>
 {
     let cur = sched::live::current().ok_or(Errno::Ebadf)?;
     // SAFETY: running task on this CPU; sole reader of the fd-table slot.
@@ -236,12 +237,13 @@ fn loaded_prog(fd: i32)
         security::bpf::BPF_PROG_TYPE_SK_REUSEPORT => net::reuseport::ProgFlavour::SkReuseport,
         _ => net::reuseport::ProgFlavour::Other,
     };
-    Ok((flavour, prog.insns.clone()))
+    let maps = { let held = prog.maps.lock(); held.clone() };
+    Ok((flavour, prog.insns.clone(), maps))
 }
 
 /// Resolve a SOCKET_FILTER BPF fd, preserving bad-fd versus wrong-object errors. # C: O(1)
 pub(super) fn bpf_prog(fd: i32) -> Result<net::bpf_filter::FilterProgram, Errno> {
-    let (flavour, insns) = loaded_prog(fd)?;
+    let (flavour, insns, _maps) = loaded_prog(fd)?;
     if flavour != net::reuseport::ProgFlavour::SocketFilter { return Err(Errno::Einval); }
     Ok(net::bpf_filter::FilterProgram { kind: net::bpf_filter::FilterKind::Ebpf, insns })
 }
@@ -250,12 +252,17 @@ pub(super) fn bpf_prog(fd: i32) -> Result<net::bpf_filter::FilterProgram, Errno>
 /// reference tries, screened against the socket a selection program would
 /// have to steer. # C: O(1)
 pub(super) fn bpf_reuseport_prog(sock: &net::sock::InetSocket, fd: i32)
-    -> Result<net::bpf_filter::FilterProgram, Errno>
+    -> Result<net::reuseport::GroupProgram, Errno>
 {
-    let (flavour, insns) = loaded_prog(fd)?;
+    let (flavour, insns, maps) = loaded_prog(fd)?;
     let shape = net::reuseport::SockShape::of(&net::sock_opts::describe(sock));
     let kind = net::reuseport::admit_reuseport_prog(flavour, shape)?;
-    Ok(net::bpf_filter::FilterProgram { kind, insns })
+    // The map set travels with the program: a selection program names its
+    // member through one, and instructions without their relocated maps could
+    // name nothing at all.
+    Ok(net::reuseport::GroupProgram {
+        program: net::bpf_filter::FilterProgram { kind, insns }, maps,
+    })
 }
 
 /// Copy native `struct sock_fprog` for SO_ATTACH_FILTER. # C: O(1)

@@ -291,3 +291,51 @@ mod ipv6 {
         assert_eq!(conn.rcv_wscale, 7);
     }
 }
+
+/// The overflow stamp belongs to the SO_REUSEPORT bind key, not to each of its
+/// listeners. A cookie is minted by whichever member the arriving SYN hashed
+/// to, and the acknowledgement carrying it back may reach any member of the
+/// key: the four-tuple hash, the member count and an attached selection
+/// program can all put the two halves of one handshake on different sockets.
+/// A per-listener stamp therefore makes a group refuse its own cookies.
+mod reuseport_key {
+    use super::*;
+    use crate::reuseport::slot;
+
+    fn member(stack: &NetStack, port: u16) -> Arc<TcpListenEntry> {
+        let listener = stack
+            .tcp_listen_ip_with(IpAddr::V4(SERVER), port, false, true)
+            .expect("reuseport listeners share the key");
+        let cell = slot::new_slot();
+        stack.join_tcp_reuseport(&listener, &cell);
+        listener
+    }
+
+    #[test]
+    fn one_members_overflow_lets_every_member_of_the_key_believe_a_cookie() {
+        let _domain = crate::hosted_fixture::init_net_domain();
+        let stack = NetStack::new();
+        let first = member(&stack, 7_461);
+        let second = member(&stack, 7_461);
+        assert!(slot::group(&first.reuseport_group).is_some(), "the key allocated a group");
+
+        let now = crate::tcp_conn::ka_now_ns();
+        assert!(second.no_recent_synq_overflow(now), "no member has overflowed yet");
+        first.note_synq_overflow(now);
+        assert!(!second.no_recent_synq_overflow(now),
+            "the key's other member believes the cookie its sibling minted");
+    }
+
+    #[test]
+    fn a_listener_outside_any_key_keeps_its_own_stamp() {
+        let _domain = crate::hosted_fixture::init_net_domain();
+        let stack = NetStack::new();
+        let alone = stack.tcp_listen(SERVER, 7_462, true).expect("listen");
+        let elsewhere = stack.tcp_listen(SERVER, 7_463, true).expect("listen");
+        let now = crate::tcp_conn::ka_now_ns();
+        alone.note_synq_overflow(now);
+        assert!(!alone.no_recent_synq_overflow(now));
+        assert!(elsewhere.no_recent_synq_overflow(now),
+            "an unrelated listener does not inherit an overflow");
+    }
+}

@@ -360,7 +360,9 @@ impl NetStack {
         let hash = src.as_u32().rotate_left(7) ^ dst.as_u32().rotate_left(19)
             ^ u32::from(sport).rotate_left(11) ^ u32::from(dport);
         let Some(index) = crate::reuseport::select_udp(&winner.reuseport_group, hash,
-            matched.len(), datagram, crate::addr::eth_p::IPV4) else { return Vec::new(); };
+            matched.len(), datagram, crate::addr::eth_p::IPV4,
+            |handle| crate::reuseport::prog::member_index(handle, &matched))
+            else { return Vec::new(); };
         let selected = matched.swap_remove(index);
         alloc::vec![selected]
     }

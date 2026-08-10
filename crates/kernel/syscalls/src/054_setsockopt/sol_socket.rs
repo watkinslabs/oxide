@@ -124,7 +124,7 @@ fn reuseport(sock: &Arc<InetSocket>, optname: u64, ufd: i32, optval: u64, optlen
                 let header = super::main::classic_filter_header(optval, optlen)?;
                 filter_mutable(sock)?;
                 let program = super::main::classic_filter_program(header)?;
-                net::reuseport::attach_prog(sock, program)
+                net::reuseport::attach_prog(sock, net::reuseport::GroupProgram::bare(program))
             }
             sol::SO_ATTACH_REUSEPORT_EBPF => {
                 if optlen != core::mem::size_of::<i32>() as u32 { return Err(Errno::Einval); }

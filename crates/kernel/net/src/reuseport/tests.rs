@@ -48,17 +48,17 @@ fn udp_socket() -> Arc<InetSocket> { Arc::new(InetSocket::new_udp()) }
 fn attach_on_an_unhashed_socket_needs_so_reuseport_then_builds_one_member_group() {
     let _domain = crate::hosted_fixture::init_net_domain();
     let sock = udp_socket();
-    assert_eq!(super::attach_prog(&sock, prog(0)), Err(Errno::Einval));
+    assert_eq!(super::attach_prog(&sock, super::GroupProgram::bare(prog(0))), Err(Errno::Einval));
     assert!(super::group_of(&sock).is_none());
 
     sock.opts.base.reuseport.store(1, Ordering::Release);
-    assert_eq!(super::attach_prog(&sock, prog(0)), Ok(()));
+    assert_eq!(super::attach_prog(&sock, super::GroupProgram::bare(prog(0))), Ok(()));
     let group = super::group_of(&sock).expect("attach allocated the group");
     assert!(group.has_prog());
     assert_eq!(group.num_socks(), 1);
 
     // A second attach replaces the program inside the same group.
-    assert_eq!(super::attach_prog(&sock, prog(1)), Ok(()));
+    assert_eq!(super::attach_prog(&sock, super::GroupProgram::bare(prog(1))), Ok(()));
     assert!(Arc::ptr_eq(&super::group_of(&sock).unwrap(), &group));
     assert_eq!(group.num_socks(), 1);
 }
@@ -72,10 +72,10 @@ fn attach_on_a_hashed_socket_bound_without_so_reuseport_is_einval() {
     *sock.udp4.lock() = Some(endpoint);
     assert!(super::is_hashed(&sock));
 
-    assert_eq!(super::attach_prog(&sock, prog(0)), Err(Errno::Einval));
+    assert_eq!(super::attach_prog(&sock, super::GroupProgram::bare(prog(0))), Err(Errno::Einval));
     // Setting the option after the bind does not retroactively create a group.
     sock.opts.base.reuseport.store(1, Ordering::Release);
-    assert_eq!(super::attach_prog(&sock, prog(0)), Err(Errno::Einval));
+    assert_eq!(super::attach_prog(&sock, super::GroupProgram::bare(prog(0))), Err(Errno::Einval));
     assert!(super::group_of(&sock).is_none());
 }
 
@@ -92,7 +92,7 @@ fn detach_reports_einval_without_so_reuseport_and_enoent_once_it_is_set() {
     // A group carrying no program is still ENOENT, not success.
     assert_eq!(super::detach_prog(&sock), Err(Errno::Enoent));
 
-    super::attach_prog(&sock, prog(0)).unwrap();
+    super::attach_prog(&sock, super::GroupProgram::bare(prog(0))).unwrap();
     assert_eq!(super::detach_prog(&sock), Ok(()));
     assert_eq!(super::detach_prog(&sock), Err(Errno::Enoent));
     assert!(!super::group_of(&sock).unwrap().has_prog());
@@ -104,7 +104,7 @@ fn an_unhashed_socket_cannot_detach_from_a_group_holding_shutdown_members() {
     let sock = udp_socket();
     sock.opts.base.reuseport.store(1, Ordering::Release);
     let group = super::alloc_for_unhashed(&sock).unwrap();
-    super::attach_prog(&sock, prog(0)).unwrap();
+    super::attach_prog(&sock, super::GroupProgram::bare(prog(0))).unwrap();
 
     group.note_closed_sock();
     assert_eq!(super::detach_prog(&sock), Err(Errno::Enoent));
@@ -121,7 +121,7 @@ fn a_prebind_group_survives_a_bind_that_finds_no_key_mate() {
     let sock = udp_socket();
     sock.opts.base.reuseport.store(1, Ordering::Release);
     let group = super::alloc_for_unhashed(&sock).unwrap();
-    super::attach_prog(&sock, prog(2)).unwrap();
+    super::attach_prog(&sock, super::GroupProgram::bare(prog(2))).unwrap();
 
     let endpoint = bind4(&stack, PORT, true);
     stack.join_udp4_reuseport(&endpoint, &sock.reuseport_group);
@@ -202,15 +202,15 @@ fn an_attached_program_names_the_member_and_a_bad_result_falls_back_to_the_hash(
 
     // Every member index the program can name is honoured, hash regardless.
     for index in 0..endpoints.len() {
-        group.attach_prog(prog(index as u32));
+        group.attach_prog(super::GroupProgram::bare(prog(index as u32)));
         let selected = demux_one(&stack, iface, SOURCE_PORT, b"body");
         assert!(Arc::ptr_eq(&selected, &endpoints[index]), "program selected index {index}");
     }
 
     // A result at or past the member count selects nothing, so the hash stands.
-    group.attach_prog(prog(endpoints.len() as u32));
+    group.attach_prog(super::GroupProgram::bare(prog(endpoints.len() as u32)));
     assert!(Arc::ptr_eq(&demux_one(&stack, iface, SOURCE_PORT, b"body"), &hashed));
-    group.attach_prog(prog(u32::MAX));
+    group.attach_prog(super::GroupProgram::bare(prog(u32::MAX)));
     assert!(Arc::ptr_eq(&demux_one(&stack, iface, SOURCE_PORT, b"body"), &hashed));
 
     // Detaching restores the hash distribution for every flow.
@@ -224,7 +224,8 @@ fn an_attached_program_names_the_member_and_a_bad_result_falls_back_to_the_hash(
 /// A packet whose first `hdr_len` bytes are the transport header.
 fn input(members_len: usize, transport: &[u8], hdr_len: usize) -> SelectInput<'_> {
     SelectInput { hash: 7, members_len, transport, hdr_len,
-        eth_protocol: crate::addr::eth_p::IPV4, ip_protocol: crate::addr::IpProto::Udp as u8 }
+        eth_protocol: crate::addr::eth_p::IPV4, ip_protocol: crate::addr::IpProto::Udp as u8,
+        family: crate::socket_args::AF_INET as u16 }
 }
 
 #[test]
@@ -233,15 +234,15 @@ fn a_classic_program_names_the_member_and_a_bad_index_leaves_the_hash() {
     // The runner echoes its program body, so both call shapes must reach it.
     install_bpf_filter_runner(index_runner);
     let group = super::ReuseportGroup::new();
-    assert_eq!(group.select(input(4, b"body", 0)), Select::Hash, "no program selects nothing");
+    assert_eq!(group.select(input(4, b"body", 0), |_| None), Select::Hash, "no program selects nothing");
 
-    group.attach_prog(prog(3));
-    assert_eq!(group.select(input(4, b"body", 0)), Select::Member(3));
-    assert_eq!(group.select(input(4, &[], 0)), Select::Member(3),
+    group.attach_prog(super::GroupProgram::bare(prog(3)));
+    assert_eq!(group.select(input(4, b"body", 0), |_| None), Select::Member(3));
+    assert_eq!(group.select(input(4, &[], 0), |_| None), Select::Member(3),
         "a caller holding no bytes still runs the program");
-    assert_eq!(group.select(input(3, b"body", 0)), Select::Hash,
+    assert_eq!(group.select(input(3, b"body", 0), |_| None), Select::Hash,
         "index at the member count is refused");
-    assert_eq!(group.select(input(0, b"body", 0)), Select::Hash,
+    assert_eq!(group.select(input(0, b"body", 0), |_| None), Select::Hash,
         "an empty member set selects nothing");
 }
 
@@ -255,15 +256,17 @@ fn the_classic_flavour_sees_the_packet_past_its_transport_header() {
     }
     install_bpf_filter_runner(first_byte);
     let group = super::ReuseportGroup::new();
-    group.attach_prog(FilterProgram { kind: FilterKind::Classic, insns: alloc::vec![0] });
+    group.attach_prog(super::GroupProgram::bare(FilterProgram {
+        kind: FilterKind::Classic, insns: alloc::vec![0],
+    }));
     let datagram = [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11, 0x02, 0x03];
-    assert_eq!(group.select(input(4, &datagram, crate::udp::UDP_HDR_LEN)), Select::Member(2),
+    assert_eq!(group.select(input(4, &datagram, crate::udp::UDP_HDR_LEN), |_| None), Select::Member(2),
         "the classic flavour reads from the payload, not the header");
-    assert_eq!(group.select(input(4, &datagram, 0)), Select::Hash,
+    assert_eq!(group.select(input(4, &datagram, 0), |_| None), Select::Hash,
         "reading from the header would have produced an out-of-range index");
     // A header longer than the packet leaves nothing to read rather than
     // reading past the end.
-    assert_eq!(group.select(input(4, &datagram, 64)), Select::Hash);
+    assert_eq!(group.select(input(4, &datagram, 64), |_| None), Select::Hash);
 }
 
 #[test]
@@ -271,20 +274,24 @@ fn the_reuseport_flavour_reads_the_metadata_and_can_refuse_the_packet() {
     let _domain = crate::hosted_fixture::init_net_domain();
     static SEEN: Spinlock<Option<(usize, u16, u8, bool, u32)>, StackLockClass> =
         Spinlock::new(None);
-    fn record(insns: &[u8], ctx: crate::bpf_filter::ReuseportContext<'_>) -> u32 {
+    fn record(insns: &[u8], _maps: &[vfs::InodeRef],
+              _runner: security::bpf::map::sockarray::RunnerState,
+              ctx: crate::bpf_filter::ReuseportContext<'_>)
+        -> crate::bpf_filter::ReuseportVerdict
+    {
         *SEEN.lock() = Some((ctx.packet.len(), ctx.eth_protocol, ctx.ip_protocol,
             ctx.bind_inany, ctx.hash));
-        u32::from(insns[0])
+        crate::bpf_filter::ReuseportVerdict { action: u32::from(insns[0]), selected: None }
     }
     crate::bpf_filter::install_bpf_reuseport_runner(record);
     let group = super::ReuseportGroup::new();
-    group.attach_prog(FilterProgram {
+    group.attach_prog(super::GroupProgram::bare(FilterProgram {
         kind: FilterKind::SkReuseport, insns: alloc::vec![crate::bpf_filter::SK_PASS as u8],
-    });
+    }));
     let datagram = [1u8, 2, 3, 4, 5, 6, 7, 8, 9];
 
     // A passing program that named no member leaves the hash distribution.
-    assert_eq!(group.select(input(4, &datagram, crate::udp::UDP_HDR_LEN)), Select::Hash);
+    assert_eq!(group.select(input(4, &datagram, crate::udp::UDP_HDR_LEN), |_| None), Select::Hash);
     // The context begins AT the transport header, unlike the classic flavour.
     assert_eq!(*SEEN.lock(), Some((datagram.len(), crate::addr::eth_p::IPV4,
         crate::addr::IpProto::Udp as u8, false, 7)));
@@ -292,13 +299,13 @@ fn the_reuseport_flavour_reads_the_metadata_and_can_refuse_the_packet() {
     group.note_bind_inany(false);
     assert!(!group.bind_inany());
     group.note_bind_inany(true);
-    let _ = group.select(input(4, &datagram, crate::udp::UDP_HDR_LEN));
+    let _ = group.select(input(4, &datagram, crate::udp::UDP_HDR_LEN), |_| None);
     assert_eq!(SEEN.lock().map(|seen| seen.3), Some(true));
 
-    group.attach_prog(FilterProgram {
+    group.attach_prog(super::GroupProgram::bare(FilterProgram {
         kind: FilterKind::SkReuseport, insns: alloc::vec![crate::bpf_filter::SK_DROP as u8],
-    });
-    assert_eq!(group.select(input(4, &datagram, crate::udp::UDP_HDR_LEN)), Select::Drop);
+    }));
+    assert_eq!(group.select(input(4, &datagram, crate::udp::UDP_HDR_LEN), |_| None), Select::Drop);
 }
 
 #[test]

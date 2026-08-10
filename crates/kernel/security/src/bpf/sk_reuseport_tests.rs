@@ -27,6 +27,17 @@ fn refused(insns: &[u8]) {
     assert!(verify_program(uapi::prog_type::SK_REUSEPORT, 0, insns, &[]).is_err());
 }
 
+/// A run with no maps, for the programs that only ever answer with an action.
+fn bare(insns: &[u8]) -> Run<'_> {
+    Run { insns, maps: &[], runner: crate::bpf::map::sockarray::RunnerState {
+        group_id: 1, protocol: 6, family: 2,
+    } }
+}
+
+/// The action a program answered with, for the tests that assert nothing
+/// about which member it named.
+fn action(insns: &[u8], ctx: SkReuseportContext<'_>) -> u32 { run(bare(insns), ctx).action }
+
 fn ctx<'a>(packet: &'a [u8]) -> SkReuseportContext<'a> {
     SkReuseportContext { packet, eth_protocol: 0, ip_protocol: 0, bind_inany: false, hash: 0 }
 }
@@ -59,9 +70,9 @@ fn reads_field(opcode: u8, offset: usize) -> alloc::vec::Vec<u8> {
 fn the_length_field_measures_from_the_transport_header() {
     let packet = [0xffu8; 9];
     let p = field_equals(md::LEN, packet.len() as u32);
-    assert_eq!(run(verified(&p), ctx(&packet)), SK_PASS);
+    assert_eq!(action(verified(&p), ctx(&packet)), SK_PASS);
     let shorter = [0xffu8; 8];
-    assert_eq!(run(&p, ctx(&shorter)), SK_DROP);
+    assert_eq!(action(&p, ctx(&shorter)), SK_DROP);
 }
 
 #[test]
@@ -70,7 +81,7 @@ fn eth_protocol_is_published_in_network_order() {
     let packet = [0u8; 4];
     let network_order = field_equals(md::ETH_PROTOCOL, u32::from(IPV6.to_be()));
     let host_order = field_equals(md::ETH_PROTOCOL, u32::from(IPV6));
-    let with = |p: &[u8]| run(verified(p), SkReuseportContext {
+    let with = |p: &[u8]| action(verified(p), SkReuseportContext {
         packet: &packet, eth_protocol: IPV6, ip_protocol: 0, bind_inany: false, hash: 0,
     });
     assert_eq!(with(&network_order), SK_PASS);
@@ -82,7 +93,7 @@ fn ip_protocol_and_bind_inany_and_hash_all_reach_the_program() {
     const TCP: u8 = 6;
     const HASH: u32 = 0x0ead_beef;
     let packet = [0u8; 1];
-    let with = |p: &[u8], inany: bool| run(verified(p), SkReuseportContext {
+    let with = |p: &[u8], inany: bool| action(verified(p), SkReuseportContext {
         packet: &packet, eth_protocol: 0, ip_protocol: TCP, bind_inany: inany, hash: HASH,
     });
     assert_eq!(with(&field_equals(md::IP_PROTOCOL, u32::from(TCP)), false), SK_PASS);
@@ -111,8 +122,8 @@ fn packet_bytes_are_reachable_only_through_the_load_helper() {
         raw(0xb7, 0, 0, 0, SK_PASS as i32),
         raw(0x95, 0, 0, 0, 0),
     ]);
-    assert_eq!(run(verified(&p), ctx(&[1, 2, 3, 4, 5])), SK_PASS);
-    assert_eq!(run(&p, ctx(&[9, 2, 3, 4, 5])), SK_DROP);
+    assert_eq!(action(verified(&p), ctx(&[1, 2, 3, 4, 5])), SK_PASS);
+    assert_eq!(action(&p, ctx(&[9, 2, 3, 4, 5])), SK_DROP);
 }
 
 #[test]
@@ -179,5 +190,5 @@ fn the_context_buffer_covers_the_whole_uapi_structure() {
 #[test]
 fn a_program_the_runner_cannot_finish_drops_the_packet() {
     let packet = [0u8; 1];
-    assert_eq!(run(&[], ctx(&packet)), SK_DROP);
+    assert_eq!(action(&[], ctx(&packet)), SK_DROP);
 }

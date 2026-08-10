@@ -125,6 +125,8 @@ pub mod map_type {
     pub const HASH:     u32 = 1;
     pub const ARRAY:    u32 = 2;
     pub const LPM_TRIE: u32 = 11;
+    /// Socket array a reuseport selection program names a member through.
+    pub const REUSEPORT_SOCKARRAY: u32 = 24;
     /// `__MAX_BPF_MAP_TYPE` in v7.2.0-rc4.
     pub const MAX:    u32 = 46;
 }
@@ -182,6 +184,7 @@ pub mod func_id {
     pub const GET_RETVAL:             u32 = 186;
     pub const SET_RETVAL:             u32 = 187;
     pub const SKB_LOAD_BYTES:         u32 = 26;
+    pub const SK_SELECT_REUSEPORT:    u32 = 82;
 }
 
 /// `enum bpf_attach_type` values used by the implemented dispatch paths.

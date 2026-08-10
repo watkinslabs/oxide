@@ -12,6 +12,7 @@ use crate::bpf::{BpfMapInode, uapi};
 
 #[path = "mmap.rs"]
 mod mmap;
+use super::sockarray::SockArray;
 pub(crate) use mmap::BpfMapValue;
 use mmap::MmapArray;
 
@@ -38,6 +39,9 @@ enum Kind {
     Array(Vec<Arc<BpfMapValue>>),
     MmapArray { values: Vec<Arc<BpfMapValue>>, mapping: Arc<MmapArray> },
     LpmTrie(LockedTable),
+    /// Socket slots, which hold no bytes at all: a value here is a socket the
+    /// bind table owns, so the byte-oriented paths never see this kind.
+    SockArray(SockArray),
 }
 
 pub(crate) struct MapStorage {
@@ -152,9 +156,18 @@ impl MapStorage {
                 for _ in 0..max { values.push(value(value_size as usize)?); }
                 Kind::Array(values)
             }
+            uapi::map_type::REUSEPORT_SOCKARRAY => {
+                Kind::SockArray(SockArray::allocate(max_entries)?)
+            }
             _ => return Err(Errno::Einval),
         };
         Ok(Self { kind, state: AtomicU64::new(0) })
+    }
+
+    /// The socket slots behind a `BPF_MAP_TYPE_REUSEPORT_SOCKARRAY`. Every
+    /// other map kind holds bytes and answers `None`. # C: O(1)
+    pub(crate) fn sock_array(&self) -> Option<&SockArray> {
+        match &self.kind { Kind::SockArray(array) => Some(array), _ => None }
     }
 
     /// Admit a syscall writer unless freeze already won the state transition.
@@ -197,6 +210,7 @@ impl MapStorage {
             Kind::Hash(table) => table.lock().entries.iter()
                 .find(|entry| entry.occupied && entry.key == key)
                 .map(|entry| Arc::clone(&entry.value)),
+            Kind::SockArray(_) => None,
             Kind::LpmTrie(table) => table.lock().entries.iter()
                 .filter(|entry| entry.occupied && lpm_matches(&entry.key, key))
                 .max_by_key(|entry| prefix(&entry.key).unwrap_or(0))
@@ -237,6 +251,7 @@ impl MapStorage {
         }
         let table = match &self.kind {
             Kind::Hash(table) | Kind::LpmTrie(table) => table,
+            Kind::SockArray(_) => return Err(Errno::Einval),
             Kind::Array(_) | Kind::MmapArray { .. } => unreachable!(),
         };
         let mut table = table.lock();
@@ -288,6 +303,7 @@ impl MapStorage {
         if map_type == uapi::map_type::LPM_TRIE { canonical_lpm(&mut canonical)?; }
         let table = match &self.kind {
             Kind::Hash(table) | Kind::LpmTrie(table) => table,
+            Kind::SockArray(_) => return Err(Errno::Einval),
             Kind::Array(_) | Kind::MmapArray { .. } => return Ok(None),
         };
         let mut table = table.lock();
@@ -327,6 +343,7 @@ impl MapStorage {
         }
         let table = match &self.kind {
             Kind::Hash(table) | Kind::LpmTrie(table) => table,
+            Kind::SockArray(_) => return Err(Errno::Einval),
             Kind::Array(_) | Kind::MmapArray { .. } => unreachable!(),
         };
         let canonical = match (&self.kind, key) {

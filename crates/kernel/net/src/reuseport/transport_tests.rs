@@ -93,10 +93,10 @@ fn an_ipv6_program_names_the_member_and_an_out_of_range_result_keeps_the_hash() 
 
     let hashed = select(b"body");
     for index in 0..endpoints.len() {
-        group.attach_prog(prog(index as u32));
+        group.attach_prog(crate::reuseport::GroupProgram::bare(prog(index as u32)));
         assert!(Arc::ptr_eq(&select(b"body"), &endpoints[index]), "program index {index}");
     }
-    group.attach_prog(prog(endpoints.len() as u32));
+    group.attach_prog(crate::reuseport::GroupProgram::bare(prog(endpoints.len() as u32)));
     assert!(Arc::ptr_eq(&select(b"body"), &hashed));
     group.detach_prog().unwrap();
     assert!(Arc::ptr_eq(&select(b"body"), &hashed));
@@ -117,11 +117,11 @@ fn tcp_listeners_on_one_key_share_a_group_whose_program_picks_the_listener() {
     let src = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7));
     let hashed = tcp_listener::select_listener_index(&bucket, src, SOURCE_PORT, PORT, b"seg", 0);
     for index in 0..bucket.len() {
-        group.attach_prog(prog(index as u32));
+        group.attach_prog(crate::reuseport::GroupProgram::bare(prog(index as u32)));
         assert_eq!(tcp_listener::select_listener_index(&bucket, src, SOURCE_PORT, PORT, b"seg", 0),
             Some(index));
     }
-    group.attach_prog(prog(bucket.len() as u32));
+    group.attach_prog(crate::reuseport::GroupProgram::bare(prog(bucket.len() as u32)));
     assert_eq!(tcp_listener::select_listener_index(&bucket, src, SOURCE_PORT, PORT, b"seg", 0),
         hashed);
     group.detach_prog().unwrap();

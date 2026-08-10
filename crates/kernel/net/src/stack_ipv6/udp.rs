@@ -313,7 +313,9 @@ impl NetStack {
         let mut hash = u32::from(sport) ^ u32::from(dport);
         for byte in src.0.iter().chain(dst.0.iter()) { hash = hash.rotate_left(5) ^ u32::from(*byte); }
         let Some(index) = crate::reuseport::select_udp(&winner.reuseport_group, hash, matched.len(),
-            datagram, crate::addr::eth_p::IPV6) else { return Vec::new(); };
+            datagram, crate::addr::eth_p::IPV6,
+            |handle| crate::reuseport::prog::member_index(handle, &matched))
+            else { return Vec::new(); };
         let selected = matched.swap_remove(index);
         alloc::vec![selected]
     }
@@ -365,7 +367,9 @@ impl NetStack {
         // A dual-stack socket taking IPv4 traffic sees the link-layer
         // protocol the frame actually carried, not its own family.
         let Some(index) = crate::reuseport::select_udp(&winner.reuseport_group, hash, matched.len(),
-            datagram, crate::addr::eth_p::IPV4) else { return Vec::new(); };
+            datagram, crate::addr::eth_p::IPV4,
+            |handle| crate::reuseport::prog::member_index(handle, &matched))
+            else { return Vec::new(); };
         let selected = matched.swap_remove(index);
         alloc::vec![selected]
     }

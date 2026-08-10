@@ -3,16 +3,21 @@
 
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use sync::{Socket as SockLockClass, Spinlock};
 use syscall::errno::Errno;
 
+use super::prog::GroupProgram;
 use super::slot::SlotCell;
-use crate::bpf_filter::FilterProgram;
+use security::bpf::map::sockarray::{RunnerState, SockHandle};
 
 /// One SO_REUSEPORT bind key's shared selection state.
 pub struct ReuseportGroup {
-    prog: Spinlock<Option<Arc<FilterProgram>>, SockLockClass>,
+    /// Identity that outlives any one member: a program may name a socket, and
+    /// the packet only reaches that socket if it is in the SAME group as the
+    /// one whose program ran.
+    id: u64,
+    prog: Spinlock<Option<Arc<GroupProgram>>, SockLockClass>,
     /// Members are held weakly through their own `sk_reuseport_cb` cells, so a
     /// closed socket leaves the group when its cell is dropped.
     members: Spinlock<Vec<Weak<SlotCell>>, SockLockClass>,
@@ -20,6 +25,14 @@ pub struct ReuseportGroup {
     closed_socks: AtomicUsize,
     /// Linux `sock_reuseport.bind_inany`, published to a selection program.
     bind_inany: AtomicBool,
+    /// When this bind key's SYN queue last overflowed, as a monotonic
+    /// nanosecond reading, or [`crate::syncookies::NEVER`].
+    ///
+    /// One stamp for the whole key, not one per member: a cookie minted by
+    /// the member an arriving SYN hashed to comes back as an acknowledgement
+    /// that may reach a different member, and only a shared stamp lets that
+    /// member believe it.
+    synq_overflow_ns: AtomicU64,
 }
 
 /// One arriving packet, as a reuseport group's selection sees it.
@@ -37,6 +50,8 @@ pub struct SelectInput<'a> {
     pub eth_protocol: u16,
     /// Transport protocol, e.g. `IPPROTO_TCP`.
     pub ip_protocol: u8,
+    /// Address family of the members being chosen between, e.g. `AF_INET`.
+    pub family: u16,
 }
 
 /// What a group's selection produced for one packet.
@@ -55,15 +70,18 @@ pub enum Select {
 /// selection program refused, which reaches no endpoint. Shared by both
 /// families: only the link-layer protocol differs between them.
 /// # C: O(program)
-pub fn select_udp(slot: &super::slot::ReuseportSlot, hash: u32, members_len: usize,
-                  datagram: &[u8], eth_protocol: u16) -> Option<usize> {
+pub fn select_udp<F>(slot: &super::slot::ReuseportSlot, hash: u32, members_len: usize,
+                     datagram: &[u8], eth_protocol: u16, member_index: F) -> Option<usize>
+    where F: Fn(&SockHandle) -> Option<usize>
+{
     super::slot::group(slot)
         .map_or(Select::Hash, |group| {
             group.select(SelectInput {
                 hash, members_len, transport: datagram,
                 hdr_len: crate::udp::UDP_HDR_LEN, eth_protocol,
                 ip_protocol: crate::addr::IpProto::Udp as u8,
-            })
+                family: family_of(eth_protocol),
+            }, member_index)
         })
         .index(hash, members_len)
 }
@@ -86,16 +104,21 @@ impl ReuseportGroup {
     /// Build an empty group with no program and no members. # C: O(1)
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
+            id: next_group_id(),
             prog: Spinlock::new(None),
             members: Spinlock::new(Vec::new()),
             has_conns: AtomicBool::new(false),
             closed_socks: AtomicUsize::new(0),
             bind_inany: AtomicBool::new(false),
+            synq_overflow_ns: crate::syncookies::overflow::new_cell(),
         })
     }
 
+    /// This group's identity. # C: O(1)
+    pub fn id(&self) -> u64 { self.id }
+
     /// Replace the selection program; a previous program is released. # C: O(1)
-    pub fn attach_prog(&self, prog: FilterProgram) {
+    pub fn attach_prog(&self, prog: GroupProgram) {
         *self.prog.lock() = Some(Arc::new(prog));
     }
 
@@ -128,12 +151,20 @@ impl ReuseportGroup {
     /// An index at or past the member count, an empty member set, and an
     /// absent program all leave the caller on the hash distribution.
     /// # C: O(program)
-    pub fn select(&self, input: SelectInput<'_>) -> Select {
+    pub fn select<F>(&self, input: SelectInput<'_>, member_index: F) -> Select
+        where F: Fn(&SockHandle) -> Option<usize>
+    {
         if input.members_len == 0 { return Select::Hash; }
         let Some(prog) = self.prog.lock().clone() else { return Select::Hash; };
-        match prog.kind {
+        match prog.program.kind {
             crate::bpf_filter::FilterKind::SkReuseport => {
-                let action = crate::bpf_filter::run_reuseport_program(&prog.insns,
+                let verdict = crate::bpf_filter::run_reuseport_program(
+                    &prog.program.insns, &prog.maps,
+                    RunnerState {
+                        group_id: self.id,
+                        protocol: input.ip_protocol,
+                        family: input.family,
+                    },
                     crate::bpf_filter::ReuseportContext {
                         packet: input.transport,
                         eth_protocol: input.eth_protocol,
@@ -141,11 +172,18 @@ impl ReuseportGroup {
                         bind_inany: self.bind_inany(),
                         hash: input.hash,
                     });
-                if action == crate::bpf_filter::SK_DROP { Select::Drop } else { Select::Hash }
+                if verdict.action == crate::bpf_filter::SK_DROP { return Select::Drop; }
+                // A named member the caller cannot place among its own
+                // candidates is left to the distribution rather than dropped:
+                // the packet still belongs to this key.
+                match verdict.selected.as_ref().and_then(&member_index) {
+                    Some(index) if index < input.members_len => Select::Member(index),
+                    _ => Select::Hash,
+                }
             }
             _ => {
                 let payload = input.transport.get(input.hdr_len..).unwrap_or(&[]);
-                let index = crate::bpf_filter::run_program(&prog, payload) as usize;
+                let index = crate::bpf_filter::run_program(&prog.program, payload) as usize;
                 if index < input.members_len { Select::Member(index) } else { Select::Hash }
             }
         }
@@ -194,9 +232,34 @@ impl ReuseportGroup {
             |used| used.checked_sub(1));
     }
 
+    /// Record that a member of this key answered a request with a cookie
+    /// because the key's SYN queue could not hold one. # C: O(1)
+    pub fn note_synq_overflow(&self, now_ns: u64) {
+        crate::syncookies::overflow::note(&self.synq_overflow_ns, now_ns);
+    }
+
+    /// Whether this key has NOT overflowed recently enough for any of its
+    /// members to believe a cookie. # C: O(1)
+    pub fn no_recent_synq_overflow(&self, now_ns: u64) -> bool {
+        crate::syncookies::overflow::no_recent(&self.synq_overflow_ns, now_ns)
+    }
+
     /// Whether any member has taken a connected peer. # C: O(1)
     pub fn has_conns(&self) -> bool { self.has_conns.load(Ordering::Acquire) }
 
     /// Latch that a member connected, which pins established flows. # C: O(1)
     pub fn set_has_conns(&self) { self.has_conns.store(true, Ordering::Release); }
 }
+
+/// Address family the members of a key carrying this link-layer protocol
+/// have. # C: O(1)
+pub fn family_of(eth_protocol: u16) -> u16 {
+    if eth_protocol == crate::addr::eth_p::IPV6 { crate::socket_args::AF_INET6 as u16 }
+    else { crate::socket_args::AF_INET as u16 }
+}
+
+/// Group identities are drawn once and never reused, so a group that has been
+/// freed cannot be mistaken for a live one by a stale handle.
+static NEXT_GROUP_ID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+
+fn next_group_id() -> u64 { NEXT_GROUP_ID.fetch_add(1, Ordering::Relaxed) }

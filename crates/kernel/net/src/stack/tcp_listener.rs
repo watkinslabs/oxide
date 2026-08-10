@@ -19,7 +19,7 @@ pub(super) fn reuseport_flow_hash(src_ip: IpAddr, src_port: u16, dst_port: u16) 
 /// the named form of the flow distribution `Select::Hash` applies, so a test
 /// can pin it without going through a group. # C: O(address bytes)
 #[cfg_attr(not(test), allow(dead_code))]
-pub(super) fn select_reuseport_listener(src_ip: IpAddr, src_port: u16,
+pub(crate) fn select_reuseport_listener(src_ip: IpAddr, src_port: u16,
                                          dst_port: u16, bucket_len: usize) -> usize {
     if bucket_len <= 1 { return 0; }
     reuseport_flow_hash(src_ip, src_port, dst_port) as usize % bucket_len
@@ -45,7 +45,8 @@ pub(crate) fn select_listener_index(bucket: &[Arc<TcpListenEntry>], src_ip: IpAd
             group.select(crate::reuseport::SelectInput {
                 hash, members_len: bucket.len(), transport: seg, hdr_len, eth_protocol,
                 ip_protocol: crate::addr::IpProto::Tcp as u8,
-            })
+                family: crate::reuseport::family_of(eth_protocol),
+            }, |handle| crate::reuseport::prog::member_index(handle, bucket))
         })
         .index(hash, bucket.len())
 }
@@ -233,7 +234,7 @@ impl TcpListenEntry {
             fastopen,
             fastopen_no_cookie: ::core::sync::atomic::AtomicBool::new(false),
             save_syn: ::core::sync::atomic::AtomicU8::new(0),
-            synq_overflow_ns: ::core::sync::atomic::AtomicU64::new(crate::syncookies::NEVER),
+            synq_overflow_ns: crate::syncookies::overflow::new_cell(),
             closed: ::core::sync::atomic::AtomicBool::new(false),
             #[cfg(target_os = "oxide-kernel")]
             accept_waiters: sched::live::WaitList::new(),
@@ -261,23 +262,23 @@ impl TcpListenEntry {
         reserved
     }
 
-    /// Record that this listener answered a request with a cookie because its
-    /// SYN queue could not hold one. Rewritten at most once a second: a flood
-    /// is the one moment where dirtying a shared line per SYN costs most.
-    /// # C: O(1)
+    /// Record that a request was answered with a cookie because the SYN queue
+    /// could not hold it. A listener that joined a SO_REUSEPORT key stamps the
+    /// KEY's cell, so every member of it believes the cookie. # C: O(1)
     pub fn note_synq_overflow(&self, now_ns: u64) {
-        use ::core::sync::atomic::Ordering;
-        let last = self.synq_overflow_ns.load(Ordering::Relaxed);
-        if crate::syncookies::restamp_overflow(last, now_ns) {
-            self.synq_overflow_ns.store(now_ns, Ordering::Relaxed);
+        match crate::reuseport::slot::group(&self.reuseport_group) {
+            Some(group) => group.note_synq_overflow(now_ns),
+            None => crate::syncookies::overflow::note(&self.synq_overflow_ns, now_ns),
         }
     }
 
-    /// Whether this listener has NOT overflowed recently enough to believe a
-    /// cookie. # C: O(1)
+    /// Whether this listener — or, when it joined one, its whole SO_REUSEPORT
+    /// key — has NOT overflowed recently enough to believe a cookie. # C: O(1)
     pub fn no_recent_synq_overflow(&self, now_ns: u64) -> bool {
-        crate::syncookies::no_recent_overflow(
-            self.synq_overflow_ns.load(::core::sync::atomic::Ordering::Relaxed), now_ns)
+        match crate::reuseport::slot::group(&self.reuseport_group) {
+            Some(group) => group.no_recent_synq_overflow(now_ns),
+            None => crate::syncookies::overflow::no_recent(&self.synq_overflow_ns, now_ns),
+        }
     }
 
     /// Reserve one completed accept backlog slot. # C: O(1)
