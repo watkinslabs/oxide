@@ -63,8 +63,13 @@ impl FileImage {
 pub struct LoadCtx<'a> {
     /// The files and the command line.
     pub img: &'a FileImage,
-    /// Usable RAM, `[start, end)` physical, in address order.
-    pub ram: &'a [(u64, u64)],
+    /// Where a buffer may be PLACED, `[start, end)` physical, in address
+    /// order. For a crash image this is the reservation and nothing else.
+    pub place: &'a [(u64, u64)],
+    /// What the NEW kernel is TOLD it has. A crash image is placed inside the
+    /// reservation but must be told about the low-memory window as well, or it
+    /// dies before it reaches a console.
+    pub system: &'a [(u64, u64)],
     /// The running kernel's own device tree, when this machine boots from one.
     /// The new kernel's tree is derived from it.
     pub fdt: &'a [u8],
@@ -144,9 +149,11 @@ where R: FnOnce() -> KResult<FileImage> {
         }
         let limits = crate::stage::Limits::current();
         let crash = flags & KEXEC_FILE_ON_CRASH != 0;
-        let ram = kbuf::placement_ranges(crash, &ram, limits.crash.map(|r| (r.start, r.end)))?;
+        let reserved = limits.crash.map(|r| (r.start, r.end));
+        let place = kbuf::placement_ranges(crash, &ram, reserved)?;
+        let system = kbuf::system_ranges(crash, &ram, reserved)?;
         let fdt = machine_fdt();
-        let ctx = LoadCtx { img: &img, ram: &ram, fdt: &fdt };
+        let ctx = LoadCtx { img: &img, place: &place, system: &system, fdt: &fdt };
         let loaded = loader.load(&ctx)?;
         // The file-mode flag word spells the crash bit differently; translate
         // it into the shared one so ONE store decides which slot is written.

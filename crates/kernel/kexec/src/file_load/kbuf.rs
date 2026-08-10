@@ -117,6 +117,54 @@ pub fn placement_ranges(
     Ok(alloc::vec![(start, end + 1)])
 }
 
+/// End of the low-memory window a crash kernel is given IN ADDITION to the
+/// reserved region.
+///
+/// The x86 boot path needs memory below the first megabyte — the real-mode
+/// trampoline lands there — and a kernel handed a map whose lowest byte is a
+/// reserved window two gigabytes up dies before it reaches a console. The
+/// reference gives its crash kernel exactly this window on top of the
+/// reservation, for exactly this reason.
+pub const LOW_MEMORY_END: u64 = 640 * 1024;
+
+/// The memory map the NEW kernel is told it has.
+///
+/// NOT the same question as [`placement_ranges`], and conflating the two is
+/// what makes a crash kernel enter and then die silently. Where a buffer may
+/// be PLACED is the reservation and nothing else, because that is the only
+/// memory this kernel promised not to touch. What the new kernel may USE is
+/// that window PLUS the low-memory one its boot path requires — memory the
+/// running kernel is still using, which is exactly why the reference copies it
+/// aside before handing it over.
+///
+/// An ordinary image is told about the whole machine, which is what it is
+/// replacing.
+/// # C: O(N_ranges)
+pub fn system_ranges(
+    crash: bool, ram: &[(u64, u64)], reserved: Option<(u64, u64)>,
+) -> KResult<Vec<(u64, u64)>> {
+    if !crash { return Ok(ram.to_vec()); }
+    let (start, end) = reserved.ok_or(Error::AddrNotAvail)?;
+    if end < start { return Err(Error::AddrNotAvail); }
+    let mut out: Vec<(u64, u64)> = Vec::with_capacity(2);
+    // Clipped to memory that exists: a machine whose map does not reach the
+    // low window must not be told it has one.
+    if let Some(low) = low_window(ram) { out.push(low); }
+    out.push((start, end + 1));
+    Ok(out)
+}
+
+/// The usable part of `[0, LOW_MEMORY_END)` on this machine, if any.
+/// # C: O(N_ranges)
+fn low_window(ram: &[(u64, u64)]) -> Option<(u64, u64)> {
+    let mut end = 0;
+    for &(s, e) in ram {
+        if s >= LOW_MEMORY_END { continue; }
+        end = end.max(e.min(LOW_MEMORY_END));
+    }
+    if end == 0 { None } else { Some((0, end)) }
+}
+
 /// True when `[at, at + len)` overlaps a destination already claimed.
 /// # C: O(N_placed)
 pub fn collides(at: u64, len: u64, placed: &[KexecSegment]) -> bool {
@@ -330,5 +378,56 @@ mod tests {
     #[test]
     fn a_crash_image_with_nothing_reserved_is_refused() {
         assert_eq!(placement_ranges(true, &[(0, 0x8000_0000)], None).err(), Some(Error::AddrNotAvail));
+    }
+
+    /// The map the new kernel is TOLD it has is not the map its buffers may be
+    /// placed in. A crash kernel placed correctly inside the reservation and
+    /// told the machine's only memory IS that reservation has no memory below
+    /// the first megabyte, and the x86 boot path needs some: it was entered
+    /// and died before it reached a console.
+    #[test]
+    fn a_crash_kernel_is_told_about_low_memory_as_well_as_the_reservation() {
+        let ram = [(0u64, 0x9_f000u64), (0x10_0000, 0x8000_0000)];
+        let reserved = Some((0x6000_0000u64, 0x7fff_ffffu64));
+        assert_eq!(placement_ranges(true, &ram, reserved).expect("a window"),
+                   alloc::vec![(0x6000_0000, 0x8000_0000)]);
+        // The real machine's low RAM stops just short of the ceiling, and the
+        // map says what is there rather than what the ceiling allows.
+        assert!(0x9_f000 < LOW_MEMORY_END);
+        assert_eq!(system_ranges(true, &ram, reserved).expect("a map"),
+                   alloc::vec![(0, 0x9_f000), (0x6000_0000, 0x8000_0000)]);
+    }
+
+    /// The low window is what the machine actually has below the ceiling, not
+    /// the ceiling itself: telling a kernel about memory that is not there is
+    /// how it faults on its own trampoline.
+    #[test]
+    fn the_low_window_is_clipped_to_memory_that_exists() {
+        let reserved = Some((0x6000_0000u64, 0x7fff_ffffu64));
+        assert_eq!(system_ranges(true, &[(0, 0x8000), (0x10_0000, 0x8000_0000)], reserved).expect("a map"),
+                   alloc::vec![(0, 0x8000), (0x6000_0000, 0x8000_0000)]);
+        // A machine with nothing below the ceiling is told about nothing.
+        assert_eq!(system_ranges(true, &[(0x10_0000, 0x8000_0000)], reserved).expect("a map"),
+                   alloc::vec![(0x6000_0000, 0x8000_0000)]);
+    }
+
+    /// An ordinary image replaces the whole machine and is told so; both maps
+    /// are the machine, and neither gains a window.
+    #[test]
+    fn an_ordinary_image_is_told_about_the_whole_machine() {
+        let ram = [(0u64, 0x9_f000u64), (0x10_0000, 0x8000_0000)];
+        assert_eq!(system_ranges(false, &ram, None).expect("a map"), ram.to_vec());
+        assert_eq!(system_ranges(false, &ram, Some((0x6000_0000, 0x7fff_ffff))).expect("a map"),
+                   ram.to_vec());
+        assert_eq!(placement_ranges(false, &ram, None).expect("a map"), ram.to_vec());
+    }
+
+    /// Nothing reserved refuses both questions with the same errno, so a crash
+    /// load cannot get half an answer.
+    #[test]
+    fn nothing_reserved_refuses_both_maps() {
+        let ram = [(0u64, 0x8000_0000u64)];
+        assert_eq!(system_ranges(true, &ram, None).err(), Some(Error::AddrNotAvail));
+        assert_eq!(placement_ranges(true, &ram, None).err(), Some(Error::AddrNotAvail));
     }
 }

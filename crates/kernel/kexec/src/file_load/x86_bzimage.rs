@@ -32,6 +32,6 @@ impl FileLoader for BzImage64 {
     /// # C: O(kernel + initrd)
     fn load(&self, ctx: &LoadCtx) -> KResult<Loaded> {
         layout::plan(&ctx.img.kernel, &ctx.img.initrd, ctx.img.cmdline_str(),
-                     ctx.ram, purgatory::image()?)
+                     ctx.place, ctx.system, purgatory::image()?)
     }
 }
