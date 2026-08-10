@@ -1,0 +1,575 @@
+BdsDxe: failed to load Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x1,0x0): Not Found
+BdsDxe: failed to load Boot0003 "UEFI Misc Device 2" from PciRoot(0x0)/Pci(0x2,0x0): Not Found
+BdsDxe: failed to load Boot0004 "UEFI QEMU NVMe Ctrl oxnvme 1" from PciRoot(0x0)/Pci(0xB,0x0)/NVMe(0x1,00-00-00-00-00-00-00-00): Not Found
+BdsDxe: loading Boot0005 "UEFI Misc Device 3" from PciRoot(0x0)/Pci(0xD,0x0)
+BdsDxe: starting Boot0005 "UEFI Misc Device 3" from PciRoot(0x0)/Pci(0xD,0x0)
+  Booting `oxide (EFI-stub)'
+
+A1BCDEGH[1.416] [INFO]  midr_el1=00000000410fd083
+[INFO]  mmu sctlr_el1=0000000030d0198d tcr_el1=00000025b5103510 mair_el1=000000000044ff04
+[INFO]  mmu ttbr0_el1=00000000b7c6f000 ttbr1_el1=00000000b7c72000
+[1.418] [INFO]  efi-mem type1 = 111 MiB
+[1.419] [INFO]  efi-mem type2 = 0 MiB
+[1.419] [INFO]  efi-mem type3 = 3 MiB
+[1.419] [INFO]  efi-mem type4 = 23 MiB
+[1.419] [INFO]  efi-mem type5 = 3 MiB
+[1.419] [INFO]  efi-mem type6 = 3 MiB
+[1.419] [INFO]  efi-mem type7 = 1901 MiB
+[1.420] [INFO]  efi-mem type9 = 0 MiB
+[1.420] [INFO]  efi-mem type11 = 64 MiB
+[1.420] [INFO]  dtb pa=00000000b83b7000 len=536
+[1.421] [INFO]  init started
+[1.421] [INFO]  hhdm: present
+[1.422] [INFO]  bootfb: absent
+[1.422] [INFO]  memmap: present
+[2.254] [INFO]  pmm: ready
+[2.254] [KSTACK] guard-paged stacks armed va=fffffb0000000000 thread_size=16384
+[2.259] [INFO]  pl011: switched klog sink to real UART
+[2.260] [INFO]  kalloc-smoke: VmaTree insert ok
+[2.261] Kernel command line: BOOT_IMAGE=/boot/oxide-aarch64.Image root=/dev/oxide0 rw earlycon printk.time=1 console=ttyAMA0,115200 console=tty0 systemd.mask=firewalld.service systemd.mask=chronyd.service systemd.mask=ModemManager.service systemd.mask=plymouth-start.service systemd.mask=NetworkManager-wait-online.service systemd.debug_shell=ttyS0 oxide.bootargs=grub
+[2.279] [INFO]  dev-misc-smoke: ok
+[2.284] [INFO]  procfs-smoke: ok
+[2.285] [INFO]  pipe-evt-smoke: ok
+[2.287] [INFO]  tmpfs-smoke: ok
+[2.292] [INFO]  pty-sigint-chain: ok
+[2.293] [INFO]  pty-termios-winsize: ok
+[2.295] [INFO]  devpts-fs: ok
+[2.296] [INFO]  pty-smoke: ok
+[2.296] [INFO]  syscall: ~200 slots wired (real impls + compat stubs)
+[2.299] [INFO]  smp: aps_started=0
+[2.300] [INFO]  boot: kernel ready, halting
+[2.305] [INFO]  pci: devices=14
+[2.305] [INFO]  pci 0:0.0 vendor=0000000000001b36 device=0000000000000008 class=0000000000000006
+[2.306] [INFO]  pci 0:1.0 vendor=0000000000001af4 device=0000000000001042 class=0000000000000001
+[2.307] [INFO]  pci-bar 0:1.0 b1 mem32=000000001004b000
+[2.307] [INFO]  pci-bar 0:1.0 b4 mem64=0000008000000000 pf
+[2.307] [INFO]  pci-cap 0:1.0 id=0000000000000011 off=0000000000000098
+[2.308] [INFO]  msix 0:1.0 enable=0 fn_mask=0 n=2 tbl_bir=1 tbl_off=0000000000000000 pba_bir=1 pba_off=0000000000000800
+[2.309] [INFO]  msix-tbl 0:1.0 v=0 ctl=0000000000000001 masked=1
+[2.309] [INFO]  msix-tbl 0:1.0 v=1 ctl=0000000000000001 masked=1
+[2.309] [INFO]  pci-cap 0:1.0 id=0000000000000009 off=0000000000000084
+[2.309] [INFO]  pci-cap 0:1.0 id=0000000000000009 off=0000000000000070
+[2.310] [INFO]  pci-cap 0:1.0 id=0000000000000009 off=0000000000000060
+[2.310] [INFO]  pci-cap 0:1.0 id=0000000000000009 off=0000000000000050
+[2.310] [INFO]  pci-cap 0:1.0 id=0000000000000009 off=0000000000000040
+[2.311] [INFO]  virtio-cap 0:1.0 type=5 bar=0 off=0000000000000000 len=0000000000000000
+[2.311] [INFO]  virtio-cap 0:1.0 type=2 bar=4 off=0000000000003000 len=0000000000001000 notify_mult=0000000000000004
+[2.312] [INFO]  virtio-cap 0:1.0 type=4 bar=4 off=0000000000002000 len=0000000000001000
+[2.312] [INFO]  virtio-cap 0:1.0 type=3 bar=4 off=0000000000001000 len=0000000000001000
+[2.312] [INFO]  virtio-cap 0:1.0 type=1 bar=4 off=0000000000000000 len=0000000000001000
+[2.317] [INFO]  msix-bind 0:1.0 vec=0 msg_addr=0000000008090040 msg_data=0000000000000000 rd_addr=0000000008090040 rd_data=0000000000000000 ctrl=0000000000000000
+[2.321] [INFO]  pci-cmd 0:1.0 was=0000000000000006 now=0000000000000006
+[2.321] [INFO]  virtio-cfg 0:1.0 common-va=fffffd0000001000 feat=0000010130006e54 drv_feat=0000000100000240 status=000000000000000b features_ok=1 num_queues=0 msix_cfg=000000000000ffff
+[2.322] [INFO]  virtio-q 0:1.0 idx=0 size=256
+[2.322] [INFO]  virtio-q 0:1.0 idx=1 size=0
+[2.322] [INFO]  virtio-qres 0:1.0 q=0 size=256 desc_pa=00000000bee52000 driver_pa=00000000bed2b000 device_pa=00000000bed2a000 notify_off=0000000000000000 notify_va=fffffd0000004000 post_status=000000000000000f final_status=000000000000000f
+[2.323] [INFO]  virtio-msix 0:1.0 q0_msix_vec=0000000000000000 msi_fires=1
+[2.326] [INFO]  virtio-blk-modern key=0000000000000001 cap_sec=6311936 blk_size=512 idx=2
+[2.327] [INFO]  pci 0:2.0 vendor=0000000000001af4 device=0000000000001042 class=0000000000000001
+[2.327] [INFO]  pci-bar 0:2.0 b1 mem32=000000001004a000
+[2.328] [INFO]  pci-bar 0:2.0 b4 mem64=0000008000004000 pf
+[2.328] [INFO]  pci-cap 0:2.0 id=0000000000000011 off=0000000000000098
+[2.328] [INFO]  msix 0:2.0 enable=0 fn_mask=0 n=2 tbl_bir=1 tbl_off=0000000000000000 pba_bir=1 pba_off=0000000000000800
+[2.329] [INFO]  msix-tbl 0:2.0 v=0 ctl=0000000000000001 masked=1
+[2.329] [INFO]  msix-tbl 0:2.0 v=1 ctl=0000000000000001 masked=1
+[2.330] [INFO]  pci-cap 0:2.0 id=0000000000000009 off=0000000000000084
+[2.330] [INFO]  pci-cap 0:2.0 id=0000000000000009 off=0000000000000070
+[2.330] [INFO]  pci-cap 0:2.0 id=0000000000000009 off=0000000000000060
+[2.330] [INFO]  pci-cap 0:2.0 id=0000000000000009 off=0000000000000050
+[2.331] [INFO]  pci-cap 0:2.0 id=0000000000000009 off=0000000000000040
+[2.331] [INFO]  virtio-cap 0:2.0 type=5 bar=0 off=0000000000000000 len=0000000000000000
+[2.332] [INFO]  virtio-cap 0:2.0 type=2 bar=4 off=0000000000003000 len=0000000000001000 notify_mult=0000000000000004
+[2.332] [INFO]  virtio-cap 0:2.0 type=4 bar=4 off=0000000000002000 len=0000000000001000
+[2.332] [INFO]  virtio-cap 0:2.0 type=3 bar=4 off=0000000000001000 len=0000000000001000
+[2.333] [INFO]  virtio-cap 0:2.0 type=1 bar=4 off=0000000000000000 len=0000000000001000
+[2.334] [INFO]  msix-bind 0:2.0 vec=0 msg_addr=0000000008090040 msg_data=0000000000000000 rd_addr=0000000008090040 rd_data=0000000000000000 ctrl=0000000000000000
+[2.336] [INFO]  pci-cmd 0:2.0 was=0000000000000006 now=0000000000000006
+[2.336] [INFO]  virtio-cfg 0:2.0 common-va=fffffd0000006000 feat=0000010130006e54 drv_feat=0000000100000240 status=000000000000000b features_ok=1 num_queues=0 msix_cfg=000000000000ffff
+[2.337] [INFO]  virtio-q 0:2.0 idx=0 size=256
+[2.338] [INFO]  virtio-q 0:2.0 idx=1 size=0
+[2.338] [INFO]  virtio-qres 0:2.0 q=0 size=256 desc_pa=00000000bed1f000 driver_pa=00000000bed1e000 device_pa=00000000bed05000 notify_off=0000000000000000 notify_va=fffffd0000009000 post_status=000000000000000f final_status=000000000000000f
+[2.339] [INFO]  virtio-msix 0:2.0 q0_msix_vec=0000000000000000 msi_fires=1
+[2.340] [INFO]  virtio-blk-modern key=0000000000000002 cap_sec=131072 blk_size=512 idx=3
+[2.340] [INFO]  pci 0:3.0 vendor=0000000000001af4 device=0000000000001041 class=0000000000000002
+[2.341] [INFO]  pci-bar 0:3.0 b1 mem32=0000000010049000
+[2.341] [INFO]  pci-bar 0:3.0 b4 mem64=0000008000008000 pf
+[2.341] [INFO]  pci-cap 0:3.0 id=0000000000000011 off=0000000000000098
+[2.342] [INFO]  msix 0:3.0 enable=0 fn_mask=0 n=4 tbl_bir=1 tbl_off=0000000000000000 pba_bir=1 pba_off=0000000000000800
+[2.342] [INFO]  msix-tbl 0:3.0 v=0 ctl=0000000000000001 masked=1
+[2.343] [INFO]  msix-tbl 0:3.0 v=1 ctl=0000000000000001 masked=1
+[2.343] [INFO]  msix-tbl 0:3.0 v=2 ctl=0000000000000001 masked=1
+[2.343] [INFO]  msix-tbl 0:3.0 v=3 ctl=0000000000000001 masked=1
+[2.344] [INFO]  pci-cap 0:3.0 id=0000000000000009 off=0000000000000084
+[2.344] [INFO]  pci-cap 0:3.0 id=0000000000000009 off=0000000000000070
+[2.344] [INFO]  pci-cap 0:3.0 id=0000000000000009 off=0000000000000060
+[2.344] [INFO]  pci-cap 0:3.0 id=0000000000000009 off=0000000000000050
+[2.345] [INFO]  pci-cap 0:3.0 id=0000000000000009 off=0000000000000040
+[2.345] [INFO]  virtio-cap 0:3.0 type=5 bar=0 off=0000000000000000 len=0000000000000000
+[2.345] [INFO]  virtio-cap 0:3.0 type=2 bar=4 off=0000000000003000 len=0000000000001000 notify_mult=0000000000000004
+[2.346] [INFO]  virtio-cap 0:3.0 type=4 bar=4 off=0000000000002000 len=0000000000001000
+[2.346] [INFO]  virtio-cap 0:3.0 type=3 bar=4 off=0000000000001000 len=0000000000001000
+[2.347] [INFO]  virtio-cap 0:3.0 type=1 bar=4 off=0000000000000000 len=0000000000001000
+[2.348] [INFO]  msix-bind 0:3.0 vec=0 msg_addr=0000000008090040 msg_data=0000000000000000 rd_addr=0000000008090040 rd_data=0000000000000000 ctrl=0000000000000000
+[2.351] [INFO]  pci-cmd 0:3.0 was=0000000000000006 now=0000000000000006
+[2.352] [INFO]  virtio-cfg 0:3.0 common-va=fffffd000000b000 feat=0000010130bf8024 drv_feat=0000000100010020 status=000000000000000b features_ok=1 num_queues=0 msix_cfg=000000000000ffff
+[2.352] [INFO]  virtio-q 0:3.0 idx=0 size=256
+[2.353] [INFO]  virtio-q 0:3.0 idx=1 size=256
+[2.353] [INFO]  virtio-q 0:3.0 idx=2 size=64
+[2.353] [INFO]  virtio-q 0:3.0 idx=3 size=0
+[2.353] [INFO]  virtio-rx-post 0:3.0 avail_idx=8 used_idx=0 isr=0000000000000000
+[2.354] [INFO]  virtio-qres 0:3.0 q=0 size=256 desc_pa=00000000bed01000 driver_pa=00000000bed00000 device_pa=00000000becd3000 notify_off=0000000000000000 notify_va=fffffd000000e000 post_status=000000000000000f final_status=000000000000000f
+[2.355] [INFO]  virtio-qres 0:3.0 q=1 size=256 desc_pa=00000000becd2000 driver_pa=00000000beca3000 device_pa=00000000beca2000 notify_off=0000000000000001 notify_va=fffffd000000e004 post_status=000000000000000f final_status=000000000000000f
+[2.356] [INFO]  virtio-qres 0:3.0 q=2 size=64 desc_pa=0000000000000000 driver_pa=0000000000000000 device_pa=0000000000000000 notify_off=0000000000000000 notify_va=0000000000000000 post_status=000000000000000f final_status=000000000000000f
+[2.357] [INFO]  virtio-msix 0:3.0 q0_msix_vec=0000000000000000 msi_fires=1
+[2.361] [INFO]  virtio-net-modern key=0000000000000003 cfg_va=fffffd000000b000 rxq_size=256 txq_size=256 rxq_notify_va=fffffd000000e000 txq_notify_va=fffffd000000e004 mac=0000000000000052:0000000000000054:0000000000000000:0000000000000012:0000000000000034:0000000000000056
+[2.362] [INFO]  virtio-net probe_child ok=1 rx_bufs=8 tx_buf_pa=00000000be6f2000
+[2.363] [INFO]  pci 0:4.0 vendor=0000000000001af4 device=0000000000001050 class=0000000000000003
+[2.363] [INFO]  pci-bar 0:4.0 b1 mem32=0000000010048000
+[2.364] [INFO]  pci-bar 0:4.0 b4 mem64=000000800000c000 pf
+[2.364] [INFO]  pci-cap 0:4.0 id=0000000000000011 off=0000000000000098
+[2.364] [INFO]  msix 0:4.0 enable=0 fn_mask=0 n=3 tbl_bir=1 tbl_off=0000000000000000 pba_bir=1 pba_off=0000000000000800
+[2.365] [INFO]  msix-tbl 0:4.0 v=0 ctl=0000000000000001 masked=1
+[2.365] [INFO]  msix-tbl 0:4.0 v=1 ctl=0000000000000001 masked=1
+[2.365] [INFO]  msix-tbl 0:4.0 v=2 ctl=0000000000000001 masked=1
+[2.366] [INFO]  pci-cap 0:4.0 id=0000000000000009 off=0000000000000084
+[2.366] [INFO]  pci-cap 0:4.0 id=0000000000000009 off=0000000000000070
+[2.366] [INFO]  pci-cap 0:4.0 id=0000000000000009 off=0000000000000060
+[2.367] [INFO]  pci-cap 0:4.0 id=0000000000000009 off=0000000000000050
+[2.367] [INFO]  pci-cap 0:4.0 id=0000000000000009 off=0000000000000040
+[2.367] [INFO]  virtio-cap 0:4.0 type=5 bar=0 off=0000000000000000 len=0000000000000000
+[2.368] [INFO]  virtio-cap 0:4.0 type=2 bar=4 off=0000000000003000 len=0000000000001000 notify_mult=0000000000000004
+[2.368] [INFO]  virtio-cap 0:4.0 type=4 bar=4 off=0000000000002000 len=0000000000001000
+[2.368] [INFO]  virtio-cap 0:4.0 type=3 bar=4 off=0000000000001000 len=0000000000001000
+[2.369] [INFO]  virtio-cap 0:4.0 type=1 bar=4 off=0000000000000000 len=0000000000001000
+[2.373] [INFO]  pci-cmd 0:4.0 was=0000000000000006 now=0000000000000006
+[2.373] [INFO]  virtio-cfg 0:4.0 common-va=fffffd0000011000 feat=0000010130000002 drv_feat=0000010100000002 status=000000000000000b features_ok=1 num_queues=0 msix_cfg=000000000000ffff
+[2.374] [INFO]  virtio-q 0:4.0 idx=0 size=64
+[2.374] [INFO]  virtio-q 0:4.0 idx=1 size=16
+[2.375] [INFO]  virtio-q 0:4.0 idx=2 size=0
+[2.375] [INFO]  virtio-qres 0:4.0 q=0 size=64 desc_pa=00000000bf28e000 driver_pa=00000000bf28f000 device_pa=00000000bf28a000 notify_off=0000000000000000 notify_va=fffffd0000013000 post_status=000000000000000f final_status=000000000000000f
+[2.376] [INFO]  virtio-qres 0:4.0 q=1 size=16 desc_pa=00000000bf28b000 driver_pa=00000000bef36000 device_pa=00000000bef37000 notify_off=0000000000000001 notify_va=fffffd0000013004 post_status=000000000000000f final_status=000000000000000f
+[2.377] [INFO]  virtio-msix 0:4.0 q0_msix_vec=0000000000000000 msi_fires=1
+[2.378] [INFO]  virtio-gpu edid: 1024 bytes
+[2.378] [INFO]  virtio-gpu display: enabled=1 mode0=1280x800
+[2.403] [INFO]  virtio-gpu resp create=0000000000001100
+[2.403] [INFO]  virtio-gpu resp attach=0000000000001100
+[2.404] [INFO]  virtio-gpu resp setscanout=0000000000001100
+[2.406] [INFO]  virtio-gpu resp transfer=0000000000001100
+[2.407] [INFO]  virtio-gpu resp flush=0000000000001100
+[2.407] [INFO]  virtio-gpu scanout: 1280x800 pages=1000 painted
+[2.424] [INFO]  virtio-gpu installed feat=0000010100000002
+[2.426] [INFO]  pci 0:5.0 vendor=0000000000001af4 device=0000000000001052 class=0000000000000009
+[2.426] [INFO]  pci-bar 0:5.0 b1 mem32=0000000010047000
+[2.427] [INFO]  pci-bar 0:5.0 b4 mem64=0000008000010000 pf
+[2.428] [INFO]  pci-cap 0:5.0 id=0000000000000011 off=0000000000000098
+[2.429] [INFO]  msix 0:5.0 enable=0 fn_mask=0 n=2 tbl_bir=1 tbl_off=0000000000000000 pba_bir=1 pba_off=0000000000000800
+[2.430] [INFO]  msix-tbl 0:5.0 v=0 ctl=0000000000000001 masked=1
+[2.431] [INFO]  msix-tbl 0:5.0 v=1 ctl=0000000000000001 masked=1
+[2.432] [INFO]  pci-cap 0:5.0 id=0000000000000009 off=0000000000000084
+[2.432] [INFO]  pci-cap 0:5.0 id=0000000000000009 off=0000000000000070
+[2.433] [INFO]  pci-cap 0:5.0 id=0000000000000009 off=0000000000000060
+[2.434] [INFO]  pci-cap 0:5.0 id=0000000000000009 off=0000000000000050
+[2.435] [INFO]  pci-cap 0:5.0 id=0000000000000009 off=0000000000000040
+[2.436] [INFO]  virtio-cap 0:5.0 type=5 bar=0 off=0000000000000000 len=0000000000000000
+[2.437] [INFO]  virtio-cap 0:5.0 type=2 bar=4 off=0000000000003000 len=0000000000001000 notify_mult=0000000000000004
+[2.438] [INFO]  virtio-cap 0:5.0 type=4 bar=4 off=0000000000002000 len=0000000000001000
+[2.439] [INFO]  virtio-cap 0:5.0 type=3 bar=4 off=0000000000001000 len=0000000000001000
+[2.440] [INFO]  virtio-cap 0:5.0 type=1 bar=4 off=0000000000000000 len=0000000000001000
+[2.442] [INFO]  msix-bind 0:5.0 vec=0 msg_addr=0000000008090040 msg_data=0000000000000000 rd_addr=0000000008090040 rd_data=0000000000000000 ctrl=0000000000000000
+[2.444] [INFO]  msix-bind 0:5.0 vec=1 msg_addr=0000000008090040 msg_data=0000000000000001 rd_addr=0000000008090040 rd_data=0000000000000001 ctrl=0000000000000000
+[2.447] [INFO]  pci-cmd 0:5.0 was=0000000000000006 now=0000000000000006
+[2.448] [INFO]  virtio-cfg 0:5.0 common-va=fffffd0000015000 feat=0000010130000000 drv_feat=0000000100000000 status=000000000000000b features_ok=1 num_queues=0 msix_cfg=000000000000ffff
+[2.449] [INFO]  virtio-q 0:5.0 idx=0 size=64
+[2.450] [INFO]  virtio-q 0:5.0 idx=1 size=64
+[2.450] [INFO]  virtio-q 0:5.0 idx=2 size=0
+[2.451] [INFO]  virtio-qres 0:5.0 q=0 size=64 desc_pa=00000000beeee000 driver_pa=00000000beeef000 device_pa=00000000bee60000 notify_off=0000000000000000 notify_va=fffffd0000018000 post_status=000000000000000f final_status=000000000000000f
+[2.453] [INFO]  virtio-qres 0:5.0 q=1 size=64 desc_pa=00000000bee61000 driver_pa=00000000bee5e000 device_pa=00000000bee5f000 notify_off=0000000000000001 notify_va=fffffd0000018004 post_status=000000000000000f final_status=000000000000000f
+[2.454] [INFO]  virtio-msix 0:5.0 q0_msix_vec=0000000000000000 msi_fires=1
+[2.459] [INFO]  virtio-input installed evdev_id=0 keyboard
+[2.460] [INFO]  pci 0:6.0 vendor=0000000000001af4 device=0000000000001052 class=0000000000000009
+[2.461] [INFO]  pci-bar 0:6.0 b1 mem32=0000000010046000
+[2.461] [INFO]  pci-bar 0:6.0 b4 mem64=0000008000014000 pf
+[2.462] [INFO]  pci-cap 0:6.0 id=0000000000000011 off=0000000000000098
+[2.463] [INFO]  msix 0:6.0 enable=0 fn_mask=0 n=2 tbl_bir=1 tbl_off=0000000000000000 pba_bir=1 pba_off=0000000000000800
+[2.464] [INFO]  msix-tbl 0:6.0 v=0 ctl=0000000000000001 masked=1
+[2.464] [INFO]  msix-tbl 0:6.0 v=1 ctl=0000000000000001 masked=1
+[2.465] [INFO]  pci-cap 0:6.0 id=0000000000000009 off=0000000000000084
+[2.466] [INFO]  pci-cap 0:6.0 id=0000000000000009 off=0000000000000070
+[2.467] [INFO]  pci-cap 0:6.0 id=0000000000000009 off=0000000000000060
+[2.468] [INFO]  pci-cap 0:6.0 id=0000000000000009 off=0000000000000050
+[2.468] [INFO]  pci-cap 0:6.0 id=0000000000000009 off=0000000000000040
+[2.470] [INFO]  virtio-cap 0:6.0 type=5 bar=0 off=0000000000000000 len=0000000000000000
+[2.470] [INFO]  virtio-cap 0:6.0 type=2 bar=4 off=0000000000003000 len=0000000000001000 notify_mult=0000000000000004
+[2.471] [INFO]  virtio-cap 0:6.0 type=4 bar=4 off=0000000000002000 len=0000000000001000
+[2.472] [INFO]  virtio-cap 0:6.0 type=3 bar=4 off=0000000000001000 len=0000000000001000
+[2.484] [INFO]  virtio-cap 0:6.0 type=1 bar=4 off=0000000000000000 len=0000000000001000
+[2.496] [INFO]  msix-bind 0:6.0 vec=0 msg_addr=0000000008090040 msg_data=0000000000000000 rd_addr=0000000008090040 rd_data=0000000000000000 ctrl=0000000000000000
+[2.508] [INFO]  msix-bind 0:6.0 vec=1 msg_addr=0000000008090040 msg_data=0000000000000001 rd_addr=0000000008090040 rd_data=0000000000000001 ctrl=0000000000000000
+[2.521] [INFO]  pci-cmd 0:6.0 was=0000000000000006 now=0000000000000006
+[2.534] [INFO]  virtio-cfg 0:6.0 common-va=fffffd000001a000 feat=0000010130000000 drv_feat=0000000100000000 status=000000000000000b features_ok=1 num_queues=0 msix_cfg=000000000000ffff
+[2.545] [INFO]  virtio-q 0:6.0 idx=0 size=64
+[2.556] [INFO]  virtio-q 0:6.0 idx=1 size=64
+[2.568] [INFO]  virtio-q 0:6.0 idx=2 size=0
+[2.579] [INFO]  virtio-qres 0:6.0 q=0 size=64 desc_pa=00000000bee57000 driver_pa=00000000bee50000 device_pa=00000000bee51000 notify_off=0000000000000000 notify_va=fffffd000001d000 post_status=000000000000000f final_status=000000000000000f
+[2.591] [INFO]  virtio-qres 0:6.0 q=1 size=64 desc_pa=00000000bed1c000 driver_pa=00000000bed1d000 device_pa=00000000bed0a000 notify_off=0000000000000001 notify_va=fffffd000001d004 post_status=000000000000000f final_status=000000000000000f
+[2.604] [INFO]  virtio-msix 0:6.0 q0_msix_vec=0000000000000000 msi_fires=1
+[2.616] [INFO]  virtio-input installed evdev_id=1 pointer
+[2.628] [INFO]  pci 0:7.0 vendor=0000000000001af4 device=0000000000001052 class=0000000000000009
+[2.639] [INFO]  pci-bar 0:7.0 b1 mem32=0000000010045000
+[2.650] [INFO]  pci-bar 0:7.0 b4 mem64=0000008000018000 pf
+[2.661] [INFO]  pci-cap 0:7.0 id=0000000000000011 off=0000000000000098
+[2.672] [INFO]  msix 0:7.0 enable=0 fn_mask=0 n=2 tbl_bir=1 tbl_off=0000000000000000 pba_bir=1 pba_off=0000000000000800
+[2.684] [INFO]  msix-tbl 0:7.0 v=0 ctl=0000000000000001 masked=1
+[2.695] [INFO]  msix-tbl 0:7.0 v=1 ctl=0000000000000001 masked=1
+[2.706] [INFO]  pci-cap 0:7.0 id=0000000000000009 off=0000000000000084
+[2.717] [INFO]  pci-cap 0:7.0 id=0000000000000009 off=0000000000000070
+[2.729] [INFO]  pci-cap 0:7.0 id=0000000000000009 off=0000000000000060
+[2.740] [INFO]  pci-cap 0:7.0 id=0000000000000009 off=0000000000000050
+[2.752] [INFO]  pci-cap 0:7.0 id=0000000000000009 off=0000000000000040
+[2.763] [INFO]  virtio-cap 0:7.0 type=5 bar=0 off=0000000000000000 len=0000000000000000
+[2.774] [INFO]  virtio-cap 0:7.0 type=2 bar=4 off=0000000000003000 len=0000000000001000 notify_mult=0000000000000004
+[2.785] [INFO]  virtio-cap 0:7.0 type=4 bar=4 off=0000000000002000 len=0000000000001000
+[2.797] [INFO]  virtio-cap 0:7.0 type=3 bar=4 off=0000000000001000 len=0000000000001000
+[2.808] [INFO]  virtio-cap 0:7.0 type=1 bar=4 off=0000000000000000 len=0000000000001000
+[2.821] [INFO]  msix-bind 0:7.0 vec=0 msg_addr=0000000008090040 msg_data=0000000000000000 rd_addr=0000000008090040 rd_data=0000000000000000 ctrl=0000000000000000
+[2.832] [INFO]  msix-bind 0:7.0 vec=1 msg_addr=0000000008090040 msg_data=0000000000000001 rd_addr=0000000008090040 rd_data=0000000000000001 ctrl=0000000000000000
+[2.846] [INFO]  pci-cmd 0:7.0 was=0000000000000006 now=0000000000000006
+[2.857] [INFO]  virtio-cfg 0:7.0 common-va=fffffd000001f000 feat=0000010130000000 drv_feat=0000000100000000 status=000000000000000b features_ok=1 num_queues=0 msix_cfg=000000000000ffff
+[2.869] [INFO]  virtio-q 0:7.0 idx=0 size=64
+[2.880] [INFO]  virtio-q 0:7.0 idx=1 size=64
+[2.892] [INFO]  virtio-q 0:7.0 idx=2 size=0
+[2.903] [INFO]  virtio-qres 0:7.0 q=0 size=64 desc_pa=00000000bed06000 driver_pa=00000000bed07000 device_pa=00000000bed02000 notify_off=0000000000000000 notify_va=fffffd0000022000 post_status=000000000000000f final_status=000000000000000f
+[2.916] [INFO]  virtio-qres 0:7.0 q=1 size=64 desc_pa=00000000bed03000 driver_pa=00000000becd0000 device_pa=00000000becd1000 notify_off=0000000000000001 notify_va=fffffd0000022004 post_status=000000000000000f final_status=000000000000000f
+[2.928] [INFO]  virtio-msix 0:7.0 q0_msix_vec=0000000000000000 msi_fires=1
+[2.941] [INFO]  virtio-input installed evdev_id=2 pointer
+[2.952] [INFO]  pci 0:8.0 vendor=0000000000001af4 device=0000000000001044 class=0000000000000000
+[2.964] [INFO]  pci-bar 0:8.0 b1 mem32=0000000010044000
+[2.975] [INFO]  pci-bar 0:8.0 b4 mem64=000000800001c000 pf
+[2.986] [INFO]  pci-cap 0:8.0 id=0000000000000011 off=0000000000000098
+[2.997] [INFO]  msix 0:8.0 enable=0 fn_mask=0 n=2 tbl_bir=1 tbl_off=0000000000000000 pba_bir=1 pba_off=0000000000000800
+[3.008] [INFO]  msix-tbl 0:8.0 v=0 ctl=0000000000000001 masked=1
+[3.019] [INFO]  msix-tbl 0:8.0 v=1 ctl=0000000000000001 masked=1
+[3.031] [INFO]  pci-cap 0:8.0 id=0000000000000009 off=0000000000000084
+[3.042] [INFO]  pci-cap 0:8.0 id=0000000000000009 off=0000000000000070
+[3.053] [INFO]  pci-cap 0:8.0 id=0000000000000009 off=0000000000000060
+[3.065] [INFO]  pci-cap 0:8.0 id=0000000000000009 off=0000000000000050
+[3.077] [INFO]  pci-cap 0:8.0 id=0000000000000009 off=0000000000000040
+[3.088] [INFO]  virtio-cap 0:8.0 type=5 bar=0 off=0000000000000000 len=0000000000000000
+[3.103] [INFO]  virtio-cap 0:8.0 type=2 bar=4 off=0000000000003000 len=0000000000001000 notify_mult=0000000000000004
+[3.115] [INFO]  virtio-cap 0:8.0 type=4 bar=4 off=0000000000002000 len=0000000000001000
+[3.126] [INFO]  virtio-cap 0:8.0 type=3 bar=4 off=0000000000001000 len=0000000000001000
+[3.137] [INFO]  virtio-cap 0:8.0 type=1 bar=4 off=0000000000000000 len=0000000000001000
+[3.151] [INFO]  pci-cmd 0:8.0 was=0000000000000006 now=0000000000000006
+[3.163] [INFO]  virtio-cfg 0:8.0 common-va=fffffd0000024000 feat=0000010130000000 drv_feat=0000000100000000 status=000000000000000b features_ok=1 num_queues=0 msix_cfg=000000000000ffff
+[3.174] [INFO]  virtio-q 0:8.0 idx=0 size=8
+[3.185] [INFO]  virtio-q 0:8.0 idx=1 size=0
+[3.196] [INFO]  virtio-qres 0:8.0 q=0 size=8 desc_pa=00000000beca0000 driver_pa=00000000beca1000 device_pa=00000000bec3c000 notify_off=0000000000000000 notify_va=fffffd0000026000 post_status=000000000000000f final_status=000000000000000f
+[3.208] [INFO]  virtio-msix 0:8.0 q0_msix_vec=0000000000000000 msi_fires=1
+[3.220] [INFO]  virtio-rng installed seeded=32 bytes
+[3.231] [INFO]  pci 0:9.0 vendor=0000000000001af4 device=0000000000001053 class=0000000000000007
+[3.243] [INFO]  pci-bar 0:9.0 b1 mem32=0000000010043000
+[3.254] [INFO]  pci-bar 0:9.0 b4 mem64=0000008000020000 pf
+[3.265] [INFO]  pci-cap 0:9.0 id=0000000000000011 off=0000000000000098
+[3.276] [INFO]  msix 0:9.0 enable=0 fn_mask=0 n=3 tbl_bir=1 tbl_off=0000000000000000 pba_bir=1 pba_off=0000000000000800
+[3.288] [INFO]  msix-tbl 0:9.0 v=0 ctl=0000000000000001 masked=1
+[3.299] [INFO]  msix-tbl 0:9.0 v=1 ctl=0000000000000001 masked=1
+[3.311] [INFO]  msix-tbl 0:9.0 v=2 ctl=0000000000000001 masked=1
+[3.323] [INFO]  pci-cap 0:9.0 id=0000000000000009 off=0000000000000084
+[3.336] [INFO]  pci-cap 0:9.0 id=0000000000000009 off=0000000000000070
+[3.348] [INFO]  pci-cap 0:9.0 id=0000000000000009 off=0000000000000060
+[3.359] [INFO]  pci-cap 0:9.0 id=0000000000000009 off=0000000000000050
+[3.370] [INFO]  pci-cap 0:9.0 id=0000000000000009 off=0000000000000040
+[3.381] [INFO]  virtio-cap 0:9.0 type=5 bar=0 off=0000000000000000 len=0000000000000000
+[3.393] [INFO]  virtio-cap 0:9.0 type=2 bar=4 off=0000000000003000 len=0000000000001000 notify_mult=0000000000000004
+[3.404] [INFO]  virtio-cap 0:9.0 type=4 bar=4 off=0000000000002000 len=0000000000001000
+[3.416] [INFO]  virtio-cap 0:9.0 type=3 bar=4 off=0000000000001000 len=0000000000001000
+[3.428] [INFO]  virtio-cap 0:9.0 type=1 bar=4 off=0000000000000000 len=0000000000001000
+[3.440] [INFO]  msix-bind 0:9.0 vec=0 msg_addr=0000000008090040 msg_data=0000000000000000 rd_addr=0000000008090040 rd_data=0000000000000000 ctrl=0000000000000000
+[3.454] [INFO]  pci-cmd 0:9.0 was=0000000000000006 now=0000000000000006
+[3.465] [INFO]  virtio-cfg 0:9.0 common-va=fffffd0000028000 feat=0000000130000002 drv_feat=0000000100000002 status=000000000000000b features_ok=1 num_queues=0 msix_cfg=000000000000ffff
+[3.477] [INFO]  virtio-q 0:9.0 idx=0 size=128
+[3.488] [INFO]  virtio-q 0:9.0 idx=1 size=128
+[3.499] [INFO]  virtio-q 0:9.0 idx=2 size=128
+[3.510] [INFO]  virtio-q 0:9.0 idx=3 size=0
+[3.522] [INFO]  virtio-qres 0:9.0 q=0 size=128 desc_pa=00000000beb5f000 driver_pa=00000000beb5c000 device_pa=00000000beb5d000 notify_off=0000000000000000 notify_va=fffffd000002b000 post_status=000000000000000f final_status=000000000000000f
+[3.534] [INFO]  virtio-qres 0:9.0 q=1 size=128 desc_pa=00000000beb54000 driver_pa=00000000beb55000 device_pa=00000000beb42000 notify_off=0000000000000001 notify_va=fffffd000002b004 post_status=000000000000000f final_status=000000000000000f
+[3.546] [INFO]  virtio-qres 0:9.0 q=2 size=128 desc_pa=0000000000000000 driver_pa=0000000000000000 device_pa=0000000000000000 notify_off=0000000000000000 notify_va=0000000000000000 post_status=000000000000000f final_status=000000000000000f
+[3.559] [INFO]  virtio-msix 0:9.0 q0_msix_vec=0000000000000000 msi_fires=1
+[3.571] [INFO]  virtio-vsock installed cid=1740034
+[3.582] [INFO]  pci 0:10.0 vendor=0000000000001af4 device=0000000000001059 class=0000000000000004
+[3.593] [INFO]  pci-bar 0:10.0 b1 mem32=0000000010042000
+[3.604] [INFO]  pci-bar 0:10.0 b4 mem64=0000008000024000 pf
+[3.616] [INFO]  pci-cap 0:10.0 id=0000000000000011 off=0000000000000098
+[3.627] [INFO]  msix 0:10.0 enable=0 fn_mask=0 n=2 tbl_bir=1 tbl_off=0000000000000000 pba_bir=1 pba_off=0000000000000800
+[3.638] [INFO]  msix-tbl 0:10.0 v=0 ctl=0000000000000001 masked=1
+[3.649] [INFO]  msix-tbl 0:10.0 v=1 ctl=0000000000000001 masked=1
+[3.660] [INFO]  pci-cap 0:10.0 id=0000000000000009 off=0000000000000084
+[3.671] [INFO]  pci-cap 0:10.0 id=0000000000000009 off=0000000000000070
+[3.682] [INFO]  pci-cap 0:10.0 id=0000000000000009 off=0000000000000060
+[3.693] [INFO]  pci-cap 0:10.0 id=0000000000000009 off=0000000000000050
+[3.704] [INFO]  pci-cap 0:10.0 id=0000000000000009 off=0000000000000040
+[3.715] [INFO]  virtio-cap 0:10.0 type=5 bar=0 off=0000000000000000 len=0000000000000000
+[3.726] [INFO]  virtio-cap 0:10.0 type=2 bar=4 off=0000000000003000 len=0000000000001000 notify_mult=0000000000000004
+[3.737] [INFO]  virtio-cap 0:10.0 type=4 bar=4 off=0000000000002000 len=0000000000001000
+[3.749] [INFO]  virtio-cap 0:10.0 type=3 bar=4 off=0000000000001000 len=0000000000001000
+[3.760] [INFO]  virtio-cap 0:10.0 type=1 bar=4 off=0000000000000000 len=0000000000001000
+[3.772] [INFO]  msix-bind 0:10.0 vec=1 msg_addr=0000000008090040 msg_data=0000000000000001 rd_addr=0000000008090040 rd_data=0000000000000001 ctrl=0000000000000000
+[3.786] [INFO]  pci-cmd 0:10.0 was=0000000000000006 now=0000000000000006
+[3.798] [INFO]  virtio-cfg 0:10.0 common-va=fffffd000002d000 feat=0000010179000000 drv_feat=0000000100000000 status=000000000000000b features_ok=1 num_queues=0 msix_cfg=000000000000ffff
+[3.810] [INFO]  virtio-q 0:10.0 idx=0 size=64
+[3.822] [INFO]  virtio-q 0:10.0 idx=1 size=64
+[3.832] [INFO]  virtio-q 0:10.0 idx=2 size=64
+[3.844] [INFO]  virtio-q 0:10.0 idx=3 size=64
+[3.855] [INFO]  virtio-q 0:10.0 idx=4 size=0
+[3.867] [INFO]  virtio-qres 0:10.0 q=0 size=64 desc_pa=00000000be70d000 driver_pa=00000000be6f0000 device_pa=00000000be6f1000 notify_off=0000000000000000 notify_va=fffffd0000030000 post_status=000000000000000f final_status=000000000000000f
+[3.879] [INFO]  virtio-qres 0:10.0 q=1 size=64 desc_pa=00000000be6e2000 driver_pa=00000000be6e3000 device_pa=00000000be6c2000 notify_off=0000000000000001 notify_va=fffffd0000030004 post_status=000000000000000f final_status=000000000000000f
+[3.891] [INFO]  virtio-qres 0:10.0 q=2 size=64 desc_pa=00000000be6c3000 driver_pa=00000000be6c0000 device_pa=00000000be6c1000 notify_off=0000000000000002 notify_va=fffffd0000030008 post_status=000000000000000f final_status=000000000000000f
+[3.903] [INFO]  virtio-qres 0:10.0 q=3 size=64 desc_pa=000000004781e000 driver_pa=000000004781f000 device_pa=000000004781c000 notify_off=0000000000000003 notify_va=fffffd000003000c post_status=000000000000000f final_status=000000000000000f
+[3.915] [INFO]  virtio-msix 0:10.0 q0_msix_vec=0000000000000000 msi_fires=1
+[3.931] [INFO]  virtio-snd: key=000000000000000a card=C0 streams=2 out=1 in=1
+[4.093] [INFO]  virtio-snd: boot-tone diag=0
+[4.104] [INFO]  pci 0:11.0 vendor=0000000000001b36 device=0000000000000010 class=0000000000000001
+[4.116] [INFO]  pci-bar 0:11.0 b0 mem64=000000800002c000
+[4.127] [INFO]  pci-cap 0:11.0 id=0000000000000011 off=0000000000000040
+[4.138] [INFO]  msix 0:11.0 enable=0 fn_mask=0 n=65 tbl_bir=0 tbl_off=0000000000002000 pba_bir=0 pba_off=0000000000003000
+[4.150] [INFO]  msix-tbl 0:11.0 v=0 ctl=0000000000000001 masked=1
+[4.161] [INFO]  msix-tbl 0:11.0 v=1 ctl=0000000000000001 masked=1
+[4.173] [INFO]  msix-tbl 0:11.0 v=2 ctl=0000000000000001 masked=1
+[4.185] [INFO]  msix-tbl 0:11.0 v=3 ctl=0000000000000001 masked=1
+[4.196] [INFO]  pci-cap 0:11.0 id=0000000000000010 off=0000000000000080
+[4.208] [INFO]  pci-cap 0:11.0 id=0000000000000001 off=0000000000000060
+[4.221] [INFO]  nvme: ctrl ready ns blocks=32768 bsz=512
+[4.233] [INFO]  nvme: lba0 read selftest=1
+[4.244] [INFO]  nvme 0:11.0 block dev registered idx=4
+[4.255] [INFO]  pci 0:12.0 vendor=0000000000008086 device=0000000000002922 class=0000000000000001
+[4.267] [INFO]  pci-bar 0:12.0 b4 io=0000000000000080
+[4.278] [INFO]  pci-bar 0:12.0 b5 mem32=0000000010041000
+[4.290] [INFO]  pci-cap 0:12.0 id=0000000000000005 off=0000000000000080
+[4.302] [INFO]  pci-cap 0:12.0 id=0000000000000012 off=00000000000000a8
+[4.318] [INFO]  ahci: port0 ready sectors=32768 bsz=512
+[4.335] [INFO]  ahci: lba0 read selftest=1 irq_completions=1
+[4.346] [INFO]  ahci 0:12.0 block dev registered idx=5
+[4.357] [INFO]  pci 0:13.0 vendor=0000000000001af4 device=0000000000001001 class=0000000000000001
+[4.368] [INFO]  pci-bar 0:13.0 b0 io=0000000000000000
+[4.379] [INFO]  pci-bar 0:13.0 b1 mem32=0000000010040000
+[4.390] [INFO]  pci-bar 0:13.0 b4 mem64=0000008000028000 pf
+[4.401] [INFO]  pci-cap 0:13.0 id=0000000000000011 off=0000000000000098
+[4.412] [INFO]  msix 0:13.0 enable=0 fn_mask=0 n=2 tbl_bir=1 tbl_off=0000000000000000 pba_bir=1 pba_off=0000000000000800
+[4.424] [INFO]  msix-tbl 0:13.0 v=0 ctl=00000000ffffffff masked=1
+[4.435] [INFO]  msix-tbl 0:13.0 v=1 ctl=00000000ffffffff masked=1
+[4.447] [INFO]  pci-cap 0:13.0 id=0000000000000009 off=0000000000000084
+[4.459] [INFO]  pci-cap 0:13.0 id=0000000000000009 off=0000000000000070
+[4.470] [INFO]  pci-cap 0:13.0 id=0000000000000009 off=0000000000000060
+[4.481] [INFO]  pci-cap 0:13.0 id=0000000000000009 off=0000000000000050
+[4.492] [INFO]  pci-cap 0:13.0 id=0000000000000009 off=0000000000000040
+[4.508] [INFO]  msi-fires-post-enum=4
+[4.522] [INFO]  gicd-ispendr2=0000000000000000 spi81_bit=0 spi82_bit=0
+[4.828] [INFO]  uart-irq-fires before=0 after=0 delta=0
+[4.881] [BOOT-MOUNT-OK] type=devtmpfs path=/dev
+[4.895] [BOOT-MOUNT-OK] type=proc path=/proc
+[4.909] [BOOT-MOUNT-OK] type=sysfs path=/sys
+[4.927] [BOOT-MOUNT-OK] type=ext4 path=/home
+[4.939] [BOOT-DEV-NULL] type=8192 fs=devtmpfs
+[4.951] [INFO]  ext4: mounted=1
+[4.974] [INFO]  ext4 /etc/issue = \S
+[4.986] Kernel \r on \m (\l)
+[4.997] 
+[5.031] [INFO]  ext4 /bin/sh size=1479016 cache after pass1: hits=0 misses=363
+[5.045] [INFO]  ext4 /bin/sh cache after pass2: hits=362 misses=363
+[5.528] systemd[1]: System time advanced to built-in epoch: Fri 2026-03-13 00:00:00 UTC
+[5.603] [EINVAL nr=431 tid=3235774466 a0=0000000000000004 a1=0000000000000005 a2=00007fffbde26b00 a3=0000000000000000 a4=0000000000000004 a5=00007fffbe1e2740 fdpath=anon_inode:[fscontext] comm=systemd]
+[5.659] systemd[1]: systemd 257.13-1.fc42 running in system mode (+PAM +AUDIT +SELINUX -APPARMOR +IMA +IPE +SMACK +SECCOMP -GCRYPT +GNUTLS +OPENSSL +ACL +BLKID +CURL +ELFUTILS +FIDO2 +IDN2 -IDN -IPTC +KMOD +LIBCRYPTSETUP +LIBCRYPTSETUP_PLUGINS +LIBFDISK +PCRE2 +PWQUALITY +P11KIT +QRENCODE +TPM2 +BZIP2 +LZ4 +XZ +ZLIB +ZSTD +BPF_FRAMEWORK +BTF +XKBCOMMON +UTMP +SYSVINIT +LIBARCHIVE)
+[5.672] systemd[1]: Detected architecture arm64.
+[5.769] [EINVAL nr=257 tid=3235774466 a0=ffffffffffffff9c a1=000055558dba87b0 a2=0000000000484001 a3=00000000000001a0 a4=0000000000000000 a5=0000000000000000 comm=systemd]
+[5.844] [EINVAL nr=321 tid=3235774466 a0=0000000000000012 a1=00007fffca8ac670 a2=0000000000000028 a3=0000000000000000 a4=0000000000000000 a5=0000000000000000 comm=systemd]
+[5.857] [EINVAL nr=321 tid=3235774466 a0=0000000000000012 a1=00007fffca8ac6a0 a2=0000000000000028 a3=0000000000000000 a4=0000000000000000 a5=0000000000000000 comm=systemd]
+[5.869] [EINVAL nr=321 tid=3235774466 a0=0000000000000012 a1=00007fffca8ac6c0 a2=0000000000000028 a3=0000000000000000 a4=0000000000000000 a5=0000000000000000 comm=systemd]
+[5.885] [EINVAL nr=321 tid=3235774466 a0=0000000000000000 a1=00007fffca8ac560 a2=0000000000000050 a3=0000000000000000 a4=00007fffbce500e0 a5=0000000000000038 fdpath=/null comm=systemd]
+[5.912] [EINVAL nr=321 tid=3235774466 a0=0000000000000000 a1=00007fffca8ac6d0 a2=0000000000000050 a3=0000000000000000 a4=00007fffbce500e0 a5=0000000000000038 fdpath=/null comm=systemd]
+[5.927] [EINVAL nr=321 tid=3235774466 a0=0000000000000012 a1=00007fffca8ac620 a2=0000000000000028 a3=0000000000000000 a4=0000000000000000 a5=0000000000000000 comm=systemd]
+[5.941] [EINVAL nr=321 tid=3235774466 a0=0000000000000012 a1=00007fffca8ac650 a2=0000000000000028 a3=0000000000000000 a4=0000000000000000 a5=0000000000000000 comm=systemd]
+[5.955] [EINVAL nr=321 tid=3235774466 a0=0000000000000012 a1=00007fffca8ac670 a2=0000000000000028 a3=0000000000000000 a4=0000000000000000 a5=0000000000000000 comm=systemd]
+[5.969] [EINVAL nr=321 tid=3235774466 a0=0000000000000000 a1=00007fffca8ac510 a2=0000000000000050 a3=0000000000000000 a4=00007fffbce500e0 a5=0000000000000038 fdpath=/null comm=systemd]
+[5.992] systemd[1]: bpf-restrict-fs: BPF LSM hook not enabled in the kernel, BPF LSM not supported.
+echo SHELL""-OK
+[10.333] systemd[1]: Queued start job for default target graphical.target.
+[10.373] [wait4 ECHILD] parent=3235774466 reqpid=00000000ffffffff
+[10.407] systemd[1]: Created slice system-getty.slice - Slice /system/getty.
+[10.451] systemd[1]: Created slice system-modprobe.slice - Slice /system/modprobe.
+[10.484] systemd[1]: Created slice system-sshd\x2dkeygen.slice - Slice /system/sshd-keygen.
+[10.515] systemd[1]: Created slice system-systemd\x2dzram\x2dsetup.slice - Slice /system/systemd-zram-setup.
+[10.547] systemd[1]: Created slice user.slice - User and Session Slice.
+[10.578] systemd[1]: Started systemd-ask-password-console.path - Dispatch Password Requests to Console Directory Watch.
+[10.606] systemd[1]: Started systemd-ask-password-wall.path - Forward Password Requests to Wall Directory Watch.
+[10.641] systemd[1]: Set up automount proc-sys-fs-binfmt_misc.automount - Arbitrary Executable File Formats File System Automount Point.
+[10.668] systemd[1]: Expecting device dev-zram0.device - /dev/zram0...
+[10.693] systemd[1]: Reached target cryptsetup.target - Local Encrypted Volumes.
+[10.720] systemd[1]: Reached target integritysetup.target - Local Integrity Protected Volumes.
+[10.747] systemd[1]: Reached target paths.target - Path Units.
+[10.776] systemd[1]: Reached target remote-fs.target - Remote File Systems.
+[10.805] systemd[1]: Reached target slices.target - Slice Units.
+[10.832] systemd[1]: Reached target veritysetup.target - Local Verity Protected Volumes.
+[10.881] systemd[1]: Listening on systemd-coredump.socket - Process Core Dump Socket.
+[10.929] systemd[1]: Listening on systemd-creds.socket - Credential Encryption/Decryption.
+[10.957] systemd[1]: Listening on systemd-initctl.socket - initctl Compatibility Named Pipe.
+[10.989] systemd[1]: Listening on systemd-journald-audit.socket - Journal Audit Socket.
+[11.017] systemd[1]: Listening on systemd-journald-dev-log.socket - Journal Socket (/dev/log).
+[11.045] systemd[1]: Listening on systemd-journald.socket - Journal Sockets.
+[11.072] systemd[1]: systemd-pcrextend.socket - TPM PCR Measurements skipped, unmet condition check ConditionSecurity=measured-uki
+[11.085] systemd[1]: systemd-pcrlock.socket - Make TPM PCR Policy skipped, unmet condition check ConditionSecurity=measured-uki
+[11.100] systemd[1]: Listening on systemd-udevd-control.socket - udev Control Socket.
+[11.127] systemd[1]: Listening on systemd-udevd-kernel.socket - udev Kernel Socket.
+[11.155] systemd[1]: Listening on systemd-userdbd.socket - User Database Manager Socket.
+[11.218] systemd[1]: Mounting dev-hugepages.mount - Huge Pages File System...
+[11.287] systemd[1]: Mounting dev-mqueue.mount - POSIX Message Queue File System...
+[11.415] [EINVAL nr=442 tid=4126 a0=00000000ffffffff a1=0000000000000000 a2=0000000000000000 a3=0000000000000000 a4=0000000000000000 a5=00007fffb5424870 comm=mount]
+[11.431] systemd[1]: sys-kernel-debug.mount: Directory /sys/kernel/debug to mount over is not empty, mounting anyway.
+[11.497] systemd[1]: Mounting sys-kernel-debug.mount - Kernel Debug File System...
+[11.539] [EINVAL nr=442 tid=4127 a0=00000000ffffffff a1=0000000000000000 a2=0000000000000000 a3=0000000000000000 a4=0000000000000000 a5=00007fffa6d98870 comm=mount]
+[11.606] systemd[1]: sys-kernel-tracing.mount: Directory /sys/kernel/tracing to mount over is not empty, mounting anyway.
+[11.661] systemd[1]: Mounting sys-kernel-tracing.mount - Kernel Trace File System...
+[11.712] [EINVAL nr=442 tid=4128 a0=00000000ffffffff a1=0000000000000000 a2=0000000000000000 a3=0000000000000000 a4=0000000000000000 a5=00007fff828fd870 comm=mount]
+[11.771] systemd[1]: Started debug-shell.service - Early root shell on /dev/ttyS0 FOR DEBUGGING ONLY.
+[11.835] systemd[1]: fips-crypto-policy-overlay.service - Bind-mount FIPS crypto-policy in FIPS mode skipped, unmet condition check ConditionKernelCommandLine=fips=1
+echo SHELL""-OK
+[11.887] [EINVAL nr=442 tid=4129 a0=00000000ffffffff a1=0000000000000000 a2=0000000000000000 a3=0000000000000000 a4=0000000000000000 a5=00007fffb1a33870 comm=mount]
+[12.158] systemd[1]: kmod-static-nodes.service - Create List of Static Device Nodes skipped, unmet condition check ConditionFileNotEmpty=/lib/modules/6.19.0-oxide/modules.devname
+[12.198] systemd[1]: Starting modprobe@configfs.service - Load Kernel Module configfs...
+[12.225] [pty ENOTTY] fd=3 req=0000000000004b3a ino=29950 comm=(sh)
+[12.242] [pty ENOTTY] fd=3 req=0000000000004b45 ino=29950 comm=(sh)
+[!p]104[?7h[6n[32766;32766H[6n[12.359] systemd[1]: Starting modprobe@dm_mod.service - Load Kernel Module dm_mod...
+[12.507] systemd[1]: Starting modprobe@drm.service - Load Kernel Module drm...
+[12.597] [pty ENOTTY] fd=3 req=0000000000005437 ino=29950 comm=(sh)
+[12.616] [pty ENOTTY] fd=1 req=0000000000004b45 ino=29950 comm=(sh)
+[!p]104[?7h[6n[32766;32766H[6n[12.659] systemd[1]: Starting modprobe@fuse.service - Load Kernel Module fuse...
+[12.760] systemd[1]: Starting modprobe@loop.service - Load Kernel Module loop...
+[12.857] systemd[1]: systemd-hibernate-clear.service - Clear Stale Hibernate Storage Info skipped, unmet condition check ConditionPathExists=/sys/firmware/efi/efivars/HibernateLocation-8cf2644b-4b0b-428f-9387-6d876050dc67
+[12.918] systemd[1]: Starting systemd-journald.service - Journal Service...
+[?2004hsh-5.2# [13.060] [EINVAL nr=442 tid=4136 a0=00000000fffffff7 a1=0000000000000000 a2=0000000000000000 a3=0000000000000000 a4=0000000000000000 a5=0000000000000000 comm=(journald)]
+[13.106] systemd[1]: Starting systemd-modules-load.service - Load Kernel Modules...
+[13.122] [wait4 ECHILD] parent=4138 reqpid=00000000ffffffff exe=/proc/self/fd/9
+[13.176] systemd[1]: systemd-pcrmachine.service - TPM PCR Machine ID Measurement skipped, unmet condition check ConditionSecurity=measured-uki
+[13.198] [EINVAL nr=431 tid=4139 a0=0000000000000003 a1=0000000000000005 a2=0000555586e6f008 a3=0000000000000000 a4=0000000000000003 a5=0000000000000000 fdpath=anon_inode:[fscontext] comm=(sd-mkdcreds)]
+[13.227] systemd[1]: Starting systemd-remount-fs.service - Remount Root and Kernel File Systems...
+[13.341] [EINVAL nr=317 tid=4136 a0=0000000000000000 a1=0000000000000001 a2=0000000000000000 a3=0000000000000007 a4=000000000000009d a5=0000000000000001 fdpath=/null comm=(journald)]
+[13.367] systemd[1]: Starting systemd-tmpfiles-setup-dev-early.service - Create Static Device Nodes in /dev gracefully...
+[13.494] systemd[1]: systemd-tpm2-setup-early.service - Early TPM SRK Setup skipped, unmet condition check ConditionSecurity=measured-uki
+[13.615] systemd[1]: Starting systemd-udev-load-credentials.service - Load udev Rules from Credentials...
+[13.628] [EINVAL nr=431 tid=4143 a0=0000000000000003 a1=0000000000000005 a2=0000555593d5f008 a3=0000000000000000 a4=0000000000000003 a5=0000000000000000 fdpath=anon_inode:[fscontext] comm=(sd-mkdcreds)]
+[13.661] systemd-journald[33]: Collecting audit messages is enabled.
+[13.682] [EINVAL nr=442 tid=4143 a0=00000000fffffff7 a1=0000000000000000 a2=0000000000000000 a3=0000000000000000 a4=0000000000000000 a5=00005555d189879c comm=(sd-mkdcreds)]
+[13.737] systemd[1]: Starting systemd-udev-trigger.service - Coldplug All udev Devices...
+[13.774] [EINVAL nr=431 tid=4145 a0=0000000000000003 a1=0000000000000005 a2=000055556265f008 a3=0000000000000000 a4=0000000000000003 a5=0000000000000000 fdpath=anon_inode:[fscontext] comm=(sd-mkdcreds)]
+[13.809] [EINVAL nr=442 tid=4145 a0=00000000fffffff7 a1=0000000000000000 a2=0000000000000000 a3=0000000000000000 a4=0000000000000000 a5=0000555564f7379c comm=(sd-mkdcreds)]
+[13.893] [EINVAL nr=255 tid=3235774466 a0=000000000000000f a1=0000000000000001 a2=0000000000000000 a3=00007fffbda16760 a4=000055558dd06180 a5=00007fffbe1e2740 fdpath=anon_inode:inotify comm=systemd]
+[13.914] [EINVAL nr=255 tid=3235774466 a0=000000000000000f a1=0000000000000001 a2=0000000000000000 a3=00007fffbda16760 a4=000055558dd06180 a5=00007fffbe1e2740 fdpath=anon_inode:inotify comm=systemd]
+[13.936] [EINVAL nr=255 tid=3235774466 a0=000000000000000f a1=0000000000000001 a2=0000000000000000 a3=00007fffbda16760 a4=000055558dd06180 a5=00007fffbe1e2740 fdpath=anon_inode:inotify comm=systemd]
+[13.954] [EINVAL nr=255 tid=3235774466 a0=000000000000000f a1=0000000000000001 a2=0000000000000000 a3=00007fffbda16760 a4=000055558dd06180 a5=00007fffbe1e2740 fdpath=anon_inode:inotify comm=systemd]
+[14.115] systemd[1]: Started systemd-journald.service - Journal Service.
+[15.270] [ZRAM-SYSFS] uevent=add
+[15.307] [EINVAL nr=442 tid=4158 a0=00000000ffffffff a1=0000000000000000 a2=0000000000000000 a3=0000000000000000 a4=0000000000000000 a5=00007fff81f96870 comm=mount]
+[15.640] systemd-journald[33]: Received client request to flush runtime journal.
+[15.737] [EINVAL nr=431 tid=4163 a0=0000000000000003 a1=0000000000000005 a2=000055558391f008 a3=0000000000000000 a4=0000000000000003 a5=0000000000000000 fdpath=anon_inode:[fscontext] comm=(sd-mkdcreds)]
+[15.868] [EINVAL nr=442 tid=4163 a0=00000000fffffff7 a1=0000000000000000 a2=0000000000000000 a3=0000000000000000 a4=0000000000000000 a5=0000555589adaa5c comm=(sd-mkdcreds)]
+[16.278] [EINVAL nr=431 tid=4162 a0=0000000000000004 a1=0000000000000005 a2=000055555da3f008 a3=0000000000000000 a4=0000000000000004 a5=00007fffa1ef4740 fdpath=anon_inode:[fscontext] comm=(-userdbd)]
+[16.623] [EINVAL nr=165 tid=4162 a0=0000000000000000 a1=00007ffffccc2288 a2=0000000000000000 a3=0000000000001021 a4=0000000000000000 a5=00007ffffccc2297 fdpath=/null comm=(-userdbd)]
+[16.845] [EINVAL nr=442 tid=4162 a0=00000000ffffff9c a1=00005555684812a0 a2=0000000000008100 a3=00007ffffccc2380 a4=0000000000000020 a5=00007fffa1ef4740 comm=(-userdbd)]
+[16.878] [EINVAL nr=165 tid=4162 a0=0000000000000000 a1=00007ffffccc22a8 a2=0000000000000000 a3=0000000000001022 a4=0000000000000000 a5=00007ffffccc22b7 fdpath=/null comm=(-userdbd)]
+[16.930] [MNTCREATE] syscall=chroot flags=0x0 recursive=false source=<none> target=.
+[16.968] [EINVAL nr=317 tid=4162 a0=0000000000000000 a1=0000000000000001 a2=0000000000000000 a3=0000000000000007 a4=000000000000009d a5=0000000000000001 fdpath=/null comm=(-userdbd)]
+echo SHELL""-OK
+[?2004lSHELL-OK
+[?2004hsh-5.2# set -x; KV=$(ls /lib/modules | head -1); K=/lib/modules/$KV/vmlinuz; I=/bboot/initramfs-$KV.img; ls -l $K $I; echo KEXEC-PATHS""-OK
+[?2004l++ ls /lib/modules
+++ head -1
+[17.898] [wait4 ECHILD] parent=4130 reqpid=00000000ffffffff exe=/bin/sh
++ KV=6.19.14-108.fc42.aarch64
++ K=/lib/modules/6.19.14-108.fc42.aarch64/vmlinuz
++ I=/boot/initramfs-6.19.14-108.fc42.aarch64.img
++ ls -l /lib/modules/6.19.14-108.fc42.aarch64/vmlinuz /boot/initramfs-6.19.14-108.fc42.aarch64.img
+-rw------- 1 root root 38335185 Aug  9  2026 /boot/initramfs-6.19.14-108.fc42.aarch64.img
+-rwxr-xr-x 1 root root 16636264 May 21  2026 /lib/modules/6.19.14-108.fc42.aarch64/vmlinuz
++ echo KEXEC-PATHS-OK
+set -x; ls -l /sys/firmware/fdt; head -c 4 /sys/firmware/fdt | od -An -tx1; ls /proc/device-tree/ | head -20; cat /proc/device-tree/model; echo; stat -c "%N" /proc/devKEXEC-PATHS-OK
+[?2004hsh-5.2# set -x; ls -l /sys/firmware/fdt; head -c 4 /sys/firmware/fdt | od -An -txx1; ls /proc/device-tree/ | head -20; cat /proc/device-tree/model; echo; stat -c  "%N" /proc/device-tree; echo DT""-OK
+[?2004l+ set -x
++ ls -l /sys/firmware/fdt
+-r-------- 1 root root 536 Jan  1  1970 /sys/firmware/fdt
++ od -An -tx1
++ head -c 4 /sys/firmware/fdt
+[18.678] [EINVAL nr=431 tid=4182 a0=0000000000000003 a1=0000000000000005 a2=000055557dbff008 a3=0000000000000000 a4=0000000000000003 a5=0000000000000000 fdpath=anon_inode:[fscontext] comm=(sd-mkdcreds)]
+[18.691] [EINVAL nr=442 tid=4182 a0=00000000fffffff7 a1=0000000000000000 a2=0000000000000000 a3=0000000000000000 a4=0000000000000000 a5=000055559306c79c comm=(sd-mkdcreds)]
+ d0 0d fe ed
++ head -20
++ ls /proc/device-tree/
+#address-cells
+#size-cells
+chosen
++ cat /proc/device-tree/model
+cat: /proc/device-tree/model: No such file or directory
++ echo
+
++ stat -c %N /proc/device-tree
+'/proc/device-tree' -> '/sys/firmware/devicetree/base'
++ echo DT-OK
+DT-OK
+kexec -l $K --initrd=$I --command-line="console=ttyS0,115200 console=ttyAMA0,115200 panic=10 rdinit=/bin/sh"; echo KEXEC-LOAD""-RC=$?
+[?2004hsh-5.2# kexec -l $K --initrd=$I --command-line="console=ttyS0,115200 console=ttyAAMA0,115200 panic=10 rdinit=/bin/sh"; echo KEXEC-LOAD""-RC=$?
+[?2004l+ kexec -l /lib/modules/6.19.14-108.fc42.aarch64/vmlinuz --initrd=/boot/initramfs-6.19.14-108.fc42.aarch64.img '--command-line=console=ttyS0,115200 console=ttyAMA0,115200 panic=10 rdinit=/bin/sh'
+[21.601] [EINVAL nr=431 tid=4194 a0=0000000000000003 a1=0000000000000005 a2=000055555ae8f008 a3=0000000000000000 a4=0000000000000003 a5=0000000000000000 fdpath=anon_inode:[fscontext] comm=(sd-mkdcreds)]
+[21.686] [EINVAL nr=442 tid=4194 a0=00000000fffffff7 a1=0000000000000000 a2=0000000000000000 a3=0000000000000000 a4=0000000000000000 a5=000055557600f90c comm=(sd-mkdcreds)]
+[21.892] [EINVAL nr=165 tid=4193 a0=0000000000000000 a1=00007ffff9cd5668 a2=0000000000000000 a3=0000000000001021 a4=0000000000000000 a5=00007ffff9cd5677 fdpath=/null comm=(md-udevd)]
+[21.946] [MNTCREATE] syscall=chroot flags=0x0 recursive=false source=<none> target=.
+[21.986] [EINVAL nr=317 tid=4193 a0=0000000000000000 a1=0000000000000001 a2=0000000000000000 a3=0000000000000007 a4=000000000000009d a5=0000000000000001 fdpath=/null comm=(md-udevd)]
+Can't open (/proc/kcore).
+Can't get the symbol of _text to calculate page_offset.
+Cannot open /proc/iomem
++ echo KEXEC-LOAD-RC=1
+KEXEC-LOAD-RC=1
+[?2004hsh-5.2# [25.832] [EINVAL nr=16 tid=4208 a0=0000000000000019 a1=0000000080184540 a2=00007ffffdbc6df8 a3=0000000000000000 a4=0000000000000000 a5=0000000000000000 fdpath=/input/event0 comm=(udev-worker)]
+[26.047] [EINVAL nr=16 tid=4213 a0=000000000000001c a1=0000000080184540 a2=00007ffffdbc6df8 a3=0000000000000000 a4=0000000000000000 a5=0000000000000000 fdpath=/input/event1 comm=(udev-worker)]
+[27.127] [ZRAM-SYSFS] mem_limit=0
+[27.144] [ZRAM-SYSFS] disksize=1975517184
+[27.457] [ZRAM-SYSFS] uevent=change
+[27.756] [SWAPON] request flags=0000000000018064
+[27.768] [SWAPON] activate zram0
+[27.818] [SWAPON] activate returned
+[27.984] [EINVAL nr=317 tid=4224 a0=0000000000000000 a1=0000000000000001 a2=0000000000000000 a3=0000000000000007 a4=000000000000009d a5=0000000000000001 fdpath=/null comm=(auditd)]
+[28.209] [EINVAL nr=442 tid=4225 a0=00000000fffffff7 a1=0000000000000000 a2=0000000000000000 a3=0000000000000000 a4=0000000000000000 a5=0000000000000000 comm=(resolved)]
+[28.227] [EINVAL nr=13 tid=4224 a0=0000000000000009 a1=00007fffc9321f78 a2=0000000000000000 a3=0000000000000008 a4=0000000000000000 a5=0000000000000000 comm=auditd]
+[28.249] [wait4 ECHILD] parent=4227 reqpid=00000000ffffffff exe=/proc/self/fd/9
+[28.262] [EINVAL nr=13 tid=4224 a0=0000000000000013 a1=00007fffc9321f78 a2=0000000000000000 a3=0000000000000008 a4=0000000000000000 a5=0000000000000000 comm=auditd]
+[28.285] [EINVAL nr=431 tid=4228 a0=0000000000000003 a1=0000000000000005 a2=000055557219f008 a3=0000000000000000 a4=0000000000000003 a5=0000000000000000 fdpath=anon_inode:[fscontext] comm=(sd-mkdcreds)]
+[28.468] [cred mount] fstype=tmpfs ns=23 path=/run/systemd/mount-rootfs/run/credentials
+[28.621] [wait4 ECHILD] parent=4232 reqpid=00000000ffffffff exe=/usr/bin/sh
+[28.696] [MNTCREATE] syscall=chroot flags=0x0 recursive=false source=<none> target=.
+[28.808] [EINVAL nr=317 tid=4225 a0=0000000000000000 a1=0000000000000001 a2=0000000000000000 a3=0000000000000007 a4=000000000000009d a5=0000000000000001 fdpath=/null comm=(resolved)]
+[28.868] [wait4 ECHILD] parent=4235 reqpid=00000000ffffffff exe=/usr/bin/sh
+[29.520] [wait4 ECHILD] parent=4232 reqpid=00000000ffffffff exe=/usr/bin/sh
+[30.095] [MNTCREATE] syscall=chroot flags=0x0 recursive=false source=<none> target=.
+[30.117] [EINVAL nr=317 tid=4249 a0=0000000000000000 a1=0000000000000001 a2=0000000000000000 a3=0000000000000007 a4=000000000000009d a5=0000000000000001 fdpath=/null comm=(r-launch)]
+[30.695] [MNTCREATE] syscall=chroot flags=0x0 recursive=false source=<none> target=.
+[32.734] [wait4 ECHILD] parent=4253 reqpid=00000000ffffffff exe=/usr/bin/bash
+[32.915] [EINVAL nr=442 tid=4260 a0=00000000fffffff7 a1=0000000000000000 a2=0000000000000000 a3=0000000000000000 a4=0000000000000000 a5=0000000000000000 comm=(d-logind)]
+[32.968] [wait4 ECHILD] parent=4263 reqpid=00000000ffffffff exe=/proc/self/fd/9
+[33.175] [wait4 ECHILD] parent=4258 reqpid=00000000ffffffff exe=/usr/bin/bash
+[33.576] [wait4 ECHILD] parent=4281 reqpid=00000000ffffffff exe=/proc/self/fd/9
+[33.756] [wait4 ECHILD] parent=4254 reqpid=00000000ffffffff exe=/usr/bin/bash
+[34.056] [EINVAL nr=165 tid=4260 a0=0000000000000000 a1=00007fffd48c39c8 a2=0000000000000000 a3=0000000000001021 a4=0000000000000000 a5=00007fffd48c39d7 fdpath=/null comm=(d-logind)]
+[34.089] [EINVAL nr=165 tid=4260 a0=0000000000000000 a1=00007fffd48c39c8 a2=0000000000000000 a3=0000000000001021 a4=0000000000000000 a5=00007fffd48c39d7 fdpath=/null comm=(d-logind)]
+[34.154] [EINVAL nr=442 tid=4260 a0=00000000ffffff9c a1=00005555c2dc6630 a2=0000000000008100 a3=00007fffd48c3ac0 a4=0000000000000020 a5=00007fffad917740 comm=(d-logind)]
+[34.174] [EINVAL nr=165 tid=4260 a0=0000000000000000 a1=00007fffd48c39e8 a2=0000000000000000 a3=0000000000001022 a4=0000000000000000 a5=00007fffd48c39f7 fdpath=/null comm=(d-logind)]
+[34.199] [EINVAL nr=442 tid=4260 a0=00000000ffffff9c a1=00005555c2dc65e0 a2=0000000000008100 a3=00007fffd48c3ac0 a4=0000000000000020 a5=00007fffad917740 comm=(d-logind)]
+[34.214] [EINVAL nr=165 tid=4260 a0=0000000000000000 a1=00007fffd48c39e8 a2=0000000000000000 a3=0000000000001022 a4=0000000000000000 a5=00007fffd48c39f7 fdpath=/null comm=(d-logind)]
+[34.287] [MNTCREATE] syscall=chroot flags=0x0 recursive=false source=<none> target=.
+[34.313] [EINVAL nr=317 tid=4260 a0=0000000000000000 a1=0000000000000001 a2=0000000000000000 a3=0000000000000007 a4=000000000000009d a5=0000000000000001 fdpath=/null comm=(d-logind)]
+[34.850] [EINVAL nr=431 tid=4288 a0=0000000000000004 a1=0000000000000005 a2=000055557816f008 a3=0000000000000000 a4=0000000000000004 a5=00007fff9d6e7740 fdpath=anon_inode:[fscontext] comm=(ostnamed)]
+[35.266] [MNTCREATE] syscall=chroot flags=0x0 recursive=false source=<none> target=.
+[35.287] [EINVAL nr=317 tid=4288 a0=0000000000000000 a1=0000000000000001 a2=0000000000000000 a3=0000000000000007 a4=000000000000009d a5=0000000000000001 fdpath=/null comm=(ostnamed)]
+[44.896] [pty ENOTTY] fd=10 req=0000000000005437 ino=29697 comm=systemd
+[50.406] [pty ENOTTY] fd=10 req=0000000000005437 ino=29697 comm=systemd
+[55.896] [pty ENOTTY] fd=10 req=0000000000005437 ino=29697 comm=systemd
+[61.392] [pty ENOTTY] fd=10 req=0000000000005437 ino=29697 comm=systemd
+[66.965] [pty ENOTTY] fd=10 req=0000000000005437 ino=29697 comm=systemd
+[72.456] [pty ENOTTY] fd=10 req=0000000000005437 ino=29697 comm=systemd
+[78.016] [pty ENOTTY] fd=10 req=0000000000005437 ino=29697 comm=systemd

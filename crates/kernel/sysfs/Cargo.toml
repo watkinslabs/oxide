@@ -21,6 +21,7 @@ drm   = { path = "../../drivers/drm" }
 input = { path = "../input" }
 modules = { path = "../modules" }
 firmware = { path = "../firmware" }
+fdt = { path = "../../shared/fdt", features = ["alloc"] }
 klog = { path = "../../shared/klog" }
 kalloc = { path = "../../shared/kalloc" }
 hal  = { path = "../../arch/hal" }
@@ -30,6 +31,7 @@ sched = { path = "../sched" }
 cmdline = { path = "../cmdline" }
 
 [dev-dependencies]
+fdt = { path = "../../shared/fdt", features = ["alloc", "fixture"] }
 drv-zram = { path = "../../drivers/drv-zram", features = ["hosted"] }
 
 [features]

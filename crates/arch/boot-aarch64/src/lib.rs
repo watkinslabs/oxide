@@ -29,7 +29,9 @@ extern crate alloc;
 #[cfg(any(test, feature = "hosted"))]
 extern crate std;
 
-pub mod dtb;
+// The FDT reader is shared with the kernel-side `/sys/firmware` exporter;
+// this crate keeps the name it has always used at its call sites.
+pub use ::fdt as dtb;
 pub mod efi_cmdline;
 pub mod linear_map;
 pub mod pl011;

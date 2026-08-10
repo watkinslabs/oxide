@@ -43,11 +43,28 @@ pub struct BootInfo {
     /// Firmware/bootloader-owned linear framebuffer, or [`BootFramebuffer::EMPTY`]
     /// when the handoff did not provide a usable RGB mode.
     pub framebuffer: BootFramebuffer,
+    /// Physical address of the flattened device tree the firmware handed the
+    /// boot stub, or 0 when this platform provides none (x86_64, or an
+    /// ACPI-only arm64 firmware). The blob is left where the firmware put it
+    /// and carved out of the memmap as reserved, so it stays readable through
+    /// the direct map for the life of the kernel — that is what lets the
+    /// kernel publish the raw blob and the unflattened tree to userspace.
+    pub dtb_pa: u64,
+    /// Byte length of the retained device tree (`totalsize` from its header),
+    /// 0 when `dtb_pa` is 0.
+    pub dtb_len: u64,
+    /// CRC32 (big-endian variant, seed `!0`) of the whole retained blob, taken
+    /// by the boot stub at the moment it scanned the tree. The kernel re-takes
+    /// it before publishing anything to userspace, so retention is verified
+    /// rather than assumed (`36§4.1`): a tree that no longer matches what was
+    /// scanned is not published at all.
+    pub dtb_crc32: u32,
     /// Boot CPU's APIC id (x86_64) / MPIDR (aarch64). Neither live
     /// handoff carries a CPU table, so AP topology comes from the ACPI
     /// MADT / device tree and AP startup is the kernel's own (`13§11`).
     pub bsp_lapic_id: u32,
-    /// Padding so the C-layout end is 8-byte-aligned across both arches.
+    /// Explicit tail padding, kept so the trailing `u32` group is spelled out
+    /// rather than left to the compiler across both arches.
     pub _pad: u32,
 }
 

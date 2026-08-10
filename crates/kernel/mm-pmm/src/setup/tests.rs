@@ -16,7 +16,7 @@ use super::*;
             rsdp_pa: 0,
             hhdm_offset: 0xFFFF_8000_0000_0000,
             framebuffer: boot_info::BootFramebuffer::EMPTY,
-            bsp_lapic_id: 0,
+            dtb_pa: 0, dtb_len: 0, dtb_crc32: 0, bsp_lapic_id: 0,
             _pad: 0,
         };
         // SAFETY: hosted test; memmap_count is 0 so memmap_ptr is
@@ -35,7 +35,7 @@ use super::*;
             rsdp_pa: 0,
             hhdm_offset: 0,
             framebuffer: boot_info::BootFramebuffer::EMPTY,
-            bsp_lapic_id: 0,
+            dtb_pa: 0, dtb_len: 0, dtb_crc32: 0, bsp_lapic_id: 0,
             _pad: 0,
         };
         // SAFETY: hosted test; r outlives the call.

@@ -200,6 +200,13 @@ pub unsafe extern "C" fn efi_stub_setup(handle: u64, systab: *const u8) -> u64 {
             tries += 1;
             if tries > 8 { break; }
         }
+        // Firmware that describes itself with ACPI installs no FDT table, and
+        // arm64 userspace still expects a device tree to exist — the kexec
+        // loader reads the raw blob and refuses an image without one. Build the
+        // minimal tree in that case.
+        // SAFETY: boot CPU, firmware flat map still live, single writer of the
+        // BSS blocks; runs at most once per boot.
+        if dtb == 0 { dtb = super::synth_fdt::build(); }
         dtb
     }
 }

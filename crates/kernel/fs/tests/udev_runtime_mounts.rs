@@ -46,7 +46,7 @@ fn boot_hosted_pmm() {
             rsdp_pa: 0,
             hhdm_offset: buf,
             framebuffer: boot_info::BootFramebuffer::EMPTY,
-            bsp_lapic_id: 0,
+            dtb_pa: 0, dtb_len: 0, dtb_crc32: 0, bsp_lapic_id: 0,
             _pad: 0,
         };
         // SAFETY: BootInfo points at a live region slice for this call; HHDM maps to leaked host memory.

@@ -1,0 +1,20 @@
+[package]
+name = "fdt"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+# `of_tree` builds owned path strings, so it needs an allocator. The boot stub
+# parses the blob before the heap exists and leaves this off; the kernel-side
+# `/sys/firmware/devicetree` exporter turns it on.
+alloc = []
+# Wire-image builder for tests in this crate and in its consumers.
+fixture = ["alloc"]
+
+[lints]
+workspace = true

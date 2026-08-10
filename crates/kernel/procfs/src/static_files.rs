@@ -53,6 +53,11 @@ pub fn build_proc_root() -> alloc::collections::BTreeMap<alloc::string::String, 
     c.insert("execdomains".to_string(), StaticFileInode::new(b"0-0\tLinux           \t[kernel]\n") as InodeRef);
     c.insert("cgroups".to_string(),     StaticFileInode::new(b"#subsys_name\thierarchy\tnum_cgroups\tenabled\ncpuset\t0\t1\t1\ncpu\t0\t1\t1\nio\t0\t1\t1\nmemory\t0\t1\t1\nhugetlb\t0\t1\t1\npids\t0\t1\t1\n") as InodeRef);
     c.insert("mounts".to_string(),      crate::mounts::make_proc_mounts(None));
+    // `/proc/device-tree` → the sysfs tree, on a machine that retained one.
+    if let Some(t) = crate::devicetree::devicetree_link_target(firmware::fdt::present()) {
+        c.insert(crate::devicetree::PROC_DEVICE_TREE.to_string(),
+                 crate::proc_links::make_fixed_link(crate::ids::PROC_DEVICE_TREE_LINK, t));
+    }
     let reg = crate::reg::proc_reg();
     reg.ensure_dir_path("sys");
     reg.ensure_dir_path("net");

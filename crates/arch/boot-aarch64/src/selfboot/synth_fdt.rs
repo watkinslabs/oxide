@@ -1,0 +1,85 @@
+// Synthesizing a device tree when the firmware published none.
+//
+// An arm64 UEFI machine that describes itself with ACPI installs no FDT
+// configuration table (measured on this firmware: the config-table walk finds
+// the ACPI 2.0 RSDP and no device-tree entry). An arm64 kernel is still
+// expected to have a device tree, and userspace depends on it: the kexec
+// loader reads the raw blob and refuses an image without one.
+//
+// The blob lands in a page-aligned BSS block inside the kernel image, so it is
+// covered by the image's own memmap carve-out and needs no separate
+// reservation. The stub runs on the firmware's flat map, which is why taking
+// the buffer's address there yields the physical address the rest of boot
+// expects.
+
+use core::cell::UnsafeCell;
+
+use super::{EFI_CMDLINE, EFI_CMDLINE_LEN, EFI_CMDLINE_MAX,
+            EFI_RAM_BASE, EFI_RAM_COUNT, EFI_RAM_MAX, EFI_RAM_PAGES};
+
+/// Bytes reserved for the synthesized blob. The tree is a root, a `/memory`
+/// node holding one 16-byte entry per RAM block, and `/chosen` with the command
+/// line — two pages cover the largest map this stub records, and the alignment
+/// is what makes the extent describable in whole pages.
+const SYNTH_FDT_LEN: usize = 8192;
+
+/// Page size the EFI memory map counts in.
+const EFI_PAGE_BYTES: u64 = 4096;
+
+#[repr(C, align(4096))]
+struct SynthFdt(UnsafeCell<[u8; SYNTH_FDT_LEN]>);
+// SAFETY: written once by the boot CPU inside `efi_stub_setup`, before any
+// other context exists; every later access is a read of a finished blob.
+unsafe impl Sync for SynthFdt {}
+static SYNTH_FDT: SynthFdt = SynthFdt(UnsafeCell::new([0; SYNTH_FDT_LEN]));
+
+/// Staging for the command line, so building the tree costs no boot stack.
+#[repr(C, align(8))]
+struct ArgsBuf(UnsafeCell<[u8; EFI_CMDLINE_MAX]>);
+// SAFETY: same single-writer boot-path discipline as `SYNTH_FDT`.
+unsafe impl Sync for ArgsBuf {}
+static ARGS: ArgsBuf = ArgsBuf(UnsafeCell::new([0; EFI_CMDLINE_MAX]));
+
+/// Build the fallback device tree and return its physical address, or 0 if it
+/// could not be built.
+///
+/// The tree describes RAM, because that is what a device tree is for and what
+/// a kernel handed this one cannot boot without: the EFI conventional-memory
+/// blocks captured moments earlier become the `/memory` node, so the
+/// device-tree answer and the EFI-map answer are the same answer written twice
+/// rather than two answers that can disagree.
+///
+/// It advertises no firmware handoff table. Doing so makes the next kernel
+/// take the firmware path and demand a memory map this stub keeps no copy of —
+/// measured, and it panicked a relocated kernel in early page-table setup.
+///
+/// # SAFETY: called once from `efi_stub_setup` on the boot CPU while the
+/// firmware's flat map is live, so the returned address is physical and the
+/// BSS blocks have no other observer.
+/// # C: O(cmdline_len + n_ram_regions)
+pub unsafe fn build() -> u64 {
+    // SAFETY: boot-path single writer; no other context can observe these yet.
+    let out = unsafe { &mut *SYNTH_FDT.0.get() };
+    // SAFETY: boot-path single writer of the ARGS staging block; no other
+    // context exists yet to observe or race it.
+    let args = unsafe { &mut *ARGS.0.get() };
+    let n = (EFI_CMDLINE_LEN.load(core::sync::atomic::Ordering::Acquire) as usize)
+        .min(EFI_CMDLINE_MAX);
+    for i in 0..n { args[i] = EFI_CMDLINE[i].load(core::sync::atomic::Ordering::Acquire); }
+    let mut ram = [(0u64, 0u64); EFI_RAM_MAX];
+    let nr = (EFI_RAM_COUNT.load(core::sync::atomic::Ordering::Acquire) as usize).min(EFI_RAM_MAX);
+    let mut k = 0usize;
+    for i in 0..nr {
+        let base = EFI_RAM_BASE[i].load(core::sync::atomic::Ordering::Acquire);
+        let pages = EFI_RAM_PAGES[i].load(core::sync::atomic::Ordering::Acquire);
+        let size = pages.saturating_mul(EFI_PAGE_BYTES);
+        if size == 0 { continue; }
+        ram[k] = (base, size);
+        k += 1;
+    }
+    let handoff = fdt::UefiHandoff { bootargs: &args[..n], memory: &ram[..k] };
+    match fdt::uefi_stub_tree(out, &handoff) {
+        Some(_) => out.as_ptr() as u64,
+        None => 0,
+    }
+}

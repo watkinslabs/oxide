@@ -104,5 +104,6 @@ pub fn is_selfboot() -> bool { SB_SELFBOOT_FLAG.load(Ordering::Acquire) != 0 }
 
 mod asm;
 mod efi;
+mod synth_fdt;
 
 pub use efi::efi_stub_setup;

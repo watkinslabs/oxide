@@ -108,6 +108,8 @@ dependencies = [
  "boot-info",
  "bootparam",
  "cmdline",
+ "crc",
+ "fdt",
  "hal",
  "hal-aarch64",
  "klog",
@@ -636,6 +638,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "fdt"
+version = "0.1.0"
+
+[[package]]
 name = "find-msvc-tools"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -645,6 +651,8 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 name = "firmware"
 version = "0.1.0"
 dependencies = [
+ "crc",
+ "fdt",
  "hal",
  "klog",
  "sync",
@@ -1369,6 +1377,8 @@ dependencies = [
  "crng",
  "devfs",
  "drv",
+ "fdt",
+ "firmware",
  "hal",
  "hal-aarch64",
  "hal-x86_64",
@@ -1868,6 +1878,7 @@ dependencies = [
  "drm",
  "drv",
  "drv-zram",
+ "fdt",
  "firmware",
  "hal",
  "input",
