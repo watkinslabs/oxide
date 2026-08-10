@@ -1,4 +1,4 @@
-use super::{EFI_BS_BASE, EFI_BS_COUNT, EFI_BS_PAGES, EFI_CMDLINE, EFI_CMDLINE_LEN, EFI_CMDLINE_MAX, EFI_RAM_BASE, EFI_RAM_COUNT, EFI_RAM_MAX, EFI_RAM_PAGES, EFI_RSDP_PA, EFI_TYPE_PAGES};
+use super::{EFI_BS_BASE, EFI_BS_COUNT, EFI_BS_PAGES, EFI_CMDLINE, EFI_CMDLINE_LEN, EFI_CMDLINE_MAX, EFI_RAM_BASE, EFI_RAM_COUNT, EFI_RAM_MAX, EFI_RAM_PAGES, EFI_RSDP_PA, EFI_SYSTAB_PA, EFI_TYPE_PAGES};
 
 /// EFI device-tree config-table GUID (gFdtTableGuid,
 /// b1b621d5-f19c-41a5-830b-d9152c69aae0) in EFI mixed-endian byte order:
@@ -124,6 +124,11 @@ pub unsafe extern "C" fn efi_stub_setup(handle: u64, systab: *const u8) -> u64 {
         }
         // Publish the RSDP for build_boot_info (FDT goes back in x0).
         EFI_RSDP_PA.store(rsdp, core::sync::atomic::Ordering::Release);
+        // …and the system table itself, which is what a LATER kernel needs:
+        // it reaches ACPI through the configuration tables this heads, and on
+        // this firmware ACPI is the only description of processors, interrupt
+        // controller, timer and console there is.
+        EFI_SYSTAB_PA.store(systab as u64, core::sync::atomic::Ordering::Release);
 
         // Command line, while boot services still answer protocol lookups.
         // SAFETY: same firmware contract as this fn's caller; boot services
@@ -192,6 +197,19 @@ pub unsafe extern "C" fn efi_stub_setup(handle: u64, systab: *const u8) -> u64 {
                 }
                 EFI_RAM_COUNT.store(n as u64, core::sync::atomic::Ordering::Release);
                 EFI_BS_COUNT.store(nb as u64, core::sync::atomic::Ordering::Release);
+                // Keep the map itself, not just the tallies drawn from it. The
+                // firmware's buffer is boot-services memory that stops being
+                // promised the moment ExitBootServices returns, and the next
+                // kernel this one starts has nowhere else to learn where
+                // memory is.
+                // A map the firmware could not fit reports the size it
+                // WANTED, not the size it wrote; copying that many bytes would
+                // read past the buffer.
+                if map_size <= buf.len() as u64 {
+                    // SAFETY: `buf` holds `map_size` bytes the firmware just
+                    // wrote; boot CPU, single writer of the retained block.
+                    super::efi_memmap::retain(buf.as_ptr(), map_size, desc_size, desc_ver);
+                }
             }
             // ExitBootServices must immediately follow GetMemoryMap with
             // the fresh key; on EFI_INVALID_PARAMETER the map changed —

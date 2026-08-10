@@ -42,20 +42,32 @@ impl FileLoader for Arm64Image {
     fn load(&self, ctx: &LoadCtx) -> KResult<Loaded> { assemble::load(ctx) }
 }
 
-/// The running kernel's flattened device tree.
+/// The running kernel's flattened device tree, or empty on a machine that
+/// retained none — where `load` then refuses with EINVAL, exactly where the
+/// reference refuses when it cannot build a tree.
 ///
-/// EMPTY, AND THAT IS A REPORTED GAP RATHER THAN A DESIGN. The boot DTB's
-/// physical address does arrive on this port — the aarch64 entry point takes
-/// it in `x0` and stores it — but it is stored in a private static inside the
-/// boot crate, which sits ABOVE this one in the dependency graph (the boot
-/// crate depends on the kernel main crate, which reaches this one). Neither
-/// `BootInfo` nor any shared crate carries the address or the length, so there
-/// is no path from here to the blob.
-///
-/// The consequence is honest and visible rather than silent: with no tree to
-/// derive from, `load` refuses with EINVAL exactly where the reference refuses
-/// when it cannot build one. Closing it means publishing the boot DTB's
-/// address and length through the shared boot-info handoff, which is the boot
-/// crate's decision to make, not this module's.
+/// The blob is the one the boot handoff published and the one
+/// `/sys/firmware/fdt` serves, so the tree a caller inspects before loading
+/// and the tree the load derives from are the same bytes rather than two
+/// answers that can disagree.
+/// # C: O(fdt size)
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+pub fn running_fdt() -> Vec<u8> {
+    match firmware::fdt::blob() { Some(b) => b.to_vec(), None => Vec::new() }
+}
 /// # C: O(1)
+#[cfg(not(all(target_os = "oxide-kernel", target_arch = "aarch64")))]
 pub fn running_fdt() -> Vec<u8> { Vec::new() }
+
+/// Physical extent of the tree the load derives from, as `(pa, len)`, or
+/// `(0, 0)` when this boot retained none.
+///
+/// Its reservation names memory the RUNNING kernel's blob occupies; the new
+/// kernel is handed a different blob elsewhere, so carrying the reservation
+/// forward would set aside memory nothing is in.
+/// # C: O(1)
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+pub fn running_fdt_phys() -> (u64, u64) { firmware::fdt::phys_extent().unwrap_or((0, 0)) }
+/// # C: O(1)
+#[cfg(not(all(target_os = "oxide-kernel", target_arch = "aarch64")))]
+pub fn running_fdt_phys() -> (u64, u64) { (0, 0) }

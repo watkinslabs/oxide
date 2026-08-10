@@ -26,6 +26,9 @@ arch-irq = { path = "../arch-irq" }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 hal-aarch64 = { path = "../../arch/hal-aarch64" }
+# The device tree the new kernel's own is derived from is the retained boot
+# blob, read through the one crate that owns it — not a second copy here.
+firmware = { path = "../firmware" }
 
 [features]
 default = []

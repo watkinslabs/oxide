@@ -47,7 +47,7 @@ pub use header::{
 pub use props::{
     bootargs_via_prefix, chosen_bootargs, memory_regions, contains_string, enum_cpus, first_memory_region, machine_model, pl011_clock_hz,
 };
-pub use build::{uefi_stub_tree, Builder, UefiHandoff};
+pub use build::{uefi_stub_tree, Builder, EfiFirmware, UefiHandoff};
 pub use uapi::{
     OF_PROC_NAME, OF_PROP_MODE, OF_RAW_MODE, OF_ROOT_DIR, OF_SECURE_PREFIX, OF_SECURE_PROP_MODE,
     OF_SYSFS_BASE, OF_SYSFS_KSET, OF_SYSFS_RAW,

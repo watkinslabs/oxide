@@ -899,6 +899,7 @@ dependencies = [
  "cpu",
  "crng",
  "crypt",
+ "firmware",
  "hal",
  "hal-aarch64",
  "hal-x86_64",

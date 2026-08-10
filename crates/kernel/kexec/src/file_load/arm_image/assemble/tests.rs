@@ -50,7 +50,7 @@ fn a_load_produces_a_kernel_an_initramfs_and_a_tree_and_nothing_else() {
     // fourth segment here would be a stage nothing starts.
     let i = img(vec![0x5au8; 1024 * 1024], b"console=ttyAMA0");
     let tree = base_tree();
-    let ctx = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &tree };
+    let ctx = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &tree, fdt_pa: 0 };
     let l = load(&ctx).expect("a 2 GiB machine fits everything");
     assert_eq!(l.segments.len(), 3);
     assert_eq!(l.entry % MIN_KIMG_ALIGN, 0);
@@ -66,7 +66,7 @@ fn every_segments_bytes_are_the_bytes_it_names_at_the_offset_it_names() {
     let initrd = vec![0x5au8; 4096 * 3 + 7];
     let i = img(initrd.clone(), b"quiet");
     let tree = base_tree();
-    let ctx = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &tree };
+    let ctx = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &tree, fdt_pa: 0 };
     let l = load(&ctx).expect("fits");
     let cut = |n: usize| -> &[u8] {
         let s = &l.segments[n];
@@ -87,7 +87,7 @@ fn the_tree_names_the_address_the_initramfs_was_actually_placed_at() {
     // address 1 TiB up, which is not memory.
     let i = img(vec![0x11u8; 64 * 1024], b"quiet");
     let tree = base_tree();
-    let ctx = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &tree };
+    let ctx = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &tree, fdt_pa: 0 };
     let l = load(&ctx).expect("fits");
     let s = &l.segments[2];
     let t = parse(&l.blob[s.buf as usize..s.buf as usize + s.bufsz as usize]).expect("a tree");
@@ -104,7 +104,7 @@ fn the_tree_names_the_address_the_initramfs_was_actually_placed_at() {
 fn a_load_with_no_initramfs_has_two_segments_and_a_tree_that_says_so() {
     let i = img(Vec::new(), b"quiet");
     let tree = base_tree();
-    let ctx = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &tree };
+    let ctx = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &tree, fdt_pa: 0 };
     let l = load(&ctx).expect("fits");
     assert_eq!(l.segments.len(), 2);
     assert_eq!(l.boot_arg, l.segments[1].mem);
@@ -119,7 +119,7 @@ fn a_machine_with_no_device_tree_refuses_rather_than_inventing_one() {
     // DTB, so `running_fdt` is empty and the load cannot proceed. Refusing is
     // the reference's own answer when it cannot build a tree.
     let i = img(Vec::new(), b"quiet");
-    let ctx = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &[] };
+    let ctx = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &[], fdt_pa: 0 };
     assert_eq!(load(&ctx).err(), Some(Error::Inval));
 }
 
@@ -128,7 +128,7 @@ fn a_file_that_is_not_an_image_is_refused_before_anything_is_placed() {
     let mut i = img(Vec::new(), b"quiet");
     i.kernel[header::OFF_MAGIC] ^= 0xff;
     let tree = base_tree();
-    let ctx = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &tree };
+    let ctx = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &tree, fdt_pa: 0 };
     assert_eq!(load(&ctx).err(), Some(Error::Inval));
 }
 
@@ -137,6 +137,40 @@ fn a_machine_too_small_for_the_image_reports_no_address() {
     let i = img(Vec::new(), b"quiet");
     let tree = base_tree();
     let small = [(MIB, 4 * MIB)];
-    let ctx = LoadCtx { img: &i, place: &small, system: &small, fdt: &tree };
+    let ctx = LoadCtx { img: &i, place: &small, system: &small, fdt: &tree, fdt_pa: 0 };
     assert_eq!(load(&ctx).err(), Some(Error::AddrNotAvail));
+}
+
+/// The address the caller states for the running tree REACHES the derivation.
+///
+/// A load that dropped it on the floor would build a correct tree by every
+/// other measure and still hand the new kernel a reservation covering the OLD
+/// blob — memory nothing is in, and nothing red anywhere.
+#[test]
+fn the_running_trees_address_reaches_the_tree_the_new_kernel_is_handed() {
+    const OLD_PA: u64 = 0x4000_0000;
+    // The entry covers the blob's own length, which is what a firmware
+    // reservation of a device tree covers. Sizing it takes one build: the
+    // entry is present either way, so its VALUE does not move the length.
+    let build = |len: u64| {
+        let mut root = Node::new(b"");
+        root.children.push(Node::new(b"chosen"));
+        Fdt { boot_cpuid_phys: 0, rsv: vec![(OLD_PA, len)], root }.to_blob()
+    };
+    let tree = build(build(0).len() as u64);
+    let rsv_of = |l: &Loaded| {
+        let s = l.segments[l.segments.len() - 1];
+        parse(&l.blob[s.buf as usize..s.buf as usize + s.bufsz as usize]).expect("a tree").rsv
+    };
+    let i = img(Vec::new(), b"quiet");
+    // Stated: the entry naming it goes. The length is the blob's own, which is
+    // what the reservation covers.
+    let stated = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &tree,
+                           fdt_pa: OLD_PA };
+    let l = load(&stated).expect("fits");
+    assert!(!rsv_of(&l).iter().any(|&(a, _)| a == OLD_PA), "the old blob's entry is dropped");
+    // Not stated: left alone rather than guessed at.
+    let unstated = LoadCtx { img: &i, place: &RAM, system: &RAM, fdt: &tree, fdt_pa: 0 };
+    let l = load(&unstated).expect("fits");
+    assert!(rsv_of(&l).iter().any(|&(a, _)| a == OLD_PA), "no address, no deletion");
 }

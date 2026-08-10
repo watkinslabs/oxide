@@ -39,10 +39,8 @@ pub fn load(ctx: &LoadCtx) -> KResult<Loaded> {
         initrd_mem,
         initrd_len,
         cmdline: ctx.img.cmdline_str(),
-        // The running tree's own reservation cannot be dropped without its
-        // address, and this port does not publish one — see `running_fdt`.
-        old_fdt_pa: 0,
-        old_fdt_len: 0,
+        old_fdt_pa: ctx.fdt_pa,
+        old_fdt_len: ctx.fdt.len() as u64,
         seeds: seeds.clone(),
     };
 

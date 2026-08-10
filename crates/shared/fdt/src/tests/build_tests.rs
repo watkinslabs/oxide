@@ -1,7 +1,9 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::build::{uefi_stub_tree, Builder, UefiHandoff};
+use crate::build::{uefi_stub_tree, Builder, EfiFirmware, UefiHandoff};
+use crate::uapi::{OF_EFI_MMAP_DESC_SIZE, OF_EFI_MMAP_DESC_VER, OF_EFI_MMAP_SIZE,
+                  OF_EFI_MMAP_START, OF_EFI_SYSTAB};
 use crate::props::chosen_bootargs;
 use crate::walk::{find_prop, walk, Event, Flow};
 
@@ -13,11 +15,21 @@ const RAM: [(u64, u64); 3] = [
     (0x1_0000_0000, 0x2000_0000),
 ];
 
+/// The firmware handoff this boot retained, as the stub records it.
+const FW: EfiFirmware = EfiFirmware {
+    systab_pa: 0x0000_0000_bfbf_9018,
+    mmap_pa: 0x0000_0000_4021_a000,
+    mmap_size: 0x1518,
+    desc_size: 48,
+    desc_ver: 1,
+};
+
 /// The tree the arm64 UEFI stub synthesizes when firmware publishes none.
 fn stub_tree(buf: &mut [u8]) -> usize {
     uefi_stub_tree(buf, &UefiHandoff {
         bootargs: b"console=ttyAMA0 root=/dev/oxide0",
         memory: &RAM,
+        firmware: Some(FW),
     }).expect("build")
 }
 
@@ -77,27 +89,54 @@ fn the_memory_node_is_named_and_typed_the_way_a_reader_expects() {
     assert_eq!(find_prop(blob, mem, b"device_type"), Some(&b"memory\0"[..]));
 }
 
-/// A tree that advertises an EFI system table makes the next kernel take the
-/// EFI path and then demand a memory map this stub cannot honestly supply.
-/// Measured: that combination panicked a relocated kernel in early page-table
-/// setup.
+/// The firmware handoff, at the widths a reader of these properties expects:
+/// addresses two cells, sizes one. Without them the tree describes no
+/// processors, no interrupt controller and no timer — everything this machine
+/// puts in ACPI — and a kernel handed it dies building its zone lists.
 #[test]
-fn no_partial_efi_handoff_is_advertised() {
+fn the_firmware_handoff_reaches_chosen_at_the_widths_a_reader_expects() {
     let mut buf = [0u8; 4096];
     let n = stub_tree(&mut buf);
     let blob = &buf[..n];
     let chosen = |name: &[u8], d: u32| d == 1 && name == b"chosen";
-    for p in [&b"linux,uefi-system-table"[..], b"linux,uefi-mmap-start",
-              b"linux,uefi-mmap-size", b"linux,uefi-mmap-desc-size",
-              b"linux,uefi-mmap-desc-ver"] {
+    assert_eq!(find_prop(blob, chosen, OF_EFI_SYSTAB), Some(&FW.systab_pa.to_be_bytes()[..]));
+    assert_eq!(find_prop(blob, chosen, OF_EFI_MMAP_START), Some(&FW.mmap_pa.to_be_bytes()[..]));
+    assert_eq!(find_prop(blob, chosen, OF_EFI_MMAP_SIZE), Some(&FW.mmap_size.to_be_bytes()[..]));
+    assert_eq!(find_prop(blob, chosen, OF_EFI_MMAP_DESC_SIZE),
+               Some(&FW.desc_size.to_be_bytes()[..]));
+    assert_eq!(find_prop(blob, chosen, OF_EFI_MMAP_DESC_VER),
+               Some(&FW.desc_ver.to_be_bytes()[..]));
+    // Widths, stated as such: a size written two cells wide reads back as its
+    // own high half, which is zero.
+    assert_eq!(find_prop(blob, chosen, OF_EFI_SYSTAB).map(<[u8]>::len), Some(8));
+    assert_eq!(find_prop(blob, chosen, OF_EFI_MMAP_SIZE).map(<[u8]>::len), Some(4));
+}
+
+/// ALL FIVE OR NONE. A tree advertising the system table without the map makes
+/// the next kernel take the firmware path and then demand a map that is not
+/// there; measured, it panicked in early page-table setup. A boot that
+/// retained nothing writes none of the five rather than the ones it happens to
+/// know.
+#[test]
+fn a_boot_that_retained_no_handoff_advertises_none_of_it() {
+    let mut buf = [0u8; 4096];
+    let n = uefi_stub_tree(&mut buf, &UefiHandoff {
+        bootargs: b"console=ttyAMA0", memory: &RAM, firmware: None,
+    }).expect("build");
+    let blob = &buf[..n];
+    let chosen = |name: &[u8], d: u32| d == 1 && name == b"chosen";
+    for p in [OF_EFI_SYSTAB, OF_EFI_MMAP_START, OF_EFI_MMAP_SIZE,
+              OF_EFI_MMAP_DESC_SIZE, OF_EFI_MMAP_DESC_VER] {
         assert_eq!(find_prop(blob, chosen, p), None, "{}", String::from_utf8_lossy(p));
     }
+    // …and the tree is still a tree, with the command line it was given.
+    assert_eq!(chosen_bootargs(blob), Some(&b"console=ttyAMA0"[..]));
 }
 
 #[test]
 fn a_machine_with_no_reported_ram_gets_no_memory_node() {
     let mut buf = [0u8; 4096];
-    let n = uefi_stub_tree(&mut buf, &UefiHandoff { bootargs: b"x", memory: &[] })
+    let n = uefi_stub_tree(&mut buf, &UefiHandoff { bootargs: b"x", memory: &[], firmware: None })
         .expect("build");
     assert_eq!(crate::first_memory_region(&buf[..n]), None);
 }
@@ -107,7 +146,7 @@ fn a_buffer_too_small_yields_nothing_rather_than_a_partial_blob() {
     for size in [0usize, 8, 40, 48, 64] {
         let mut buf = alloc::vec![0u8; size];
         assert!(uefi_stub_tree(&mut buf, &UefiHandoff {
-            bootargs: b"console=ttyAMA0", memory: &RAM,
+            bootargs: b"console=ttyAMA0", memory: &RAM, firmware: Some(FW),
         }).is_none(), "size {size}");
     }
 }
