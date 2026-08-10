@@ -67,6 +67,10 @@ pub struct Handover<'a> {
     /// which case both seed properties are OMITTED rather than filled with
     /// something that merely looks random.
     pub seeds: Option<Seeds>,
+    /// Physical ranges `[pa, len)` hardware goes on using after this kernel
+    /// stops, already normalized. Each becomes a reservation the new kernel
+    /// honours before it allocates anything.
+    pub reserve: &'a [(u64, u64)],
 }
 
 /// Derive the new kernel's tree from `base`.
@@ -130,6 +134,13 @@ pub fn setup_fdt(base: &[u8], h: &Handover) -> KResult<Vec<u8>> {
         }
     }
     if h.initrd_mem != 0 { t.add_mem_rsv(h.initrd_mem, h.initrd_len); }
+
+    // Last, and unconditionally: these describe hardware still running, not
+    // anything this load placed, so no branch above may skip them. A kernel
+    // that adopts the interrupt controller's tables — which it does whenever
+    // it finds LPIs already enabled — and was not told they are taken will
+    // allocate over them and be scribbled on from underneath.
+    for &(pa, len) in h.reserve { t.add_mem_rsv(pa, len); }
 
     Ok(t.to_blob())
 }

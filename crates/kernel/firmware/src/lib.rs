@@ -20,6 +20,7 @@ extern crate alloc;
 
 pub mod acpi;
 pub mod fdt;
+pub mod memreserve;
 pub mod smbios;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

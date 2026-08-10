@@ -25,6 +25,7 @@ use alloc::vec::Vec;
 
 pub mod kbuf;
 pub mod purgatory;
+pub mod reserved;
 pub mod x86_bzimage;
 pub mod arm_image;
 
@@ -78,6 +79,11 @@ pub struct LoadCtx<'a> {
     /// different blob at a different address, so carrying the old one forward
     /// sets aside memory nothing occupies.
     pub fdt_pa: u64,
+    /// Physical ranges `[pa, len)` that hardware goes on using after this
+    /// kernel stops, already cut out of `place`. The new kernel's tree must
+    /// carry a reservation for each, or its allocator hands the memory out
+    /// from under the device still writing it.
+    pub reserve: &'a [(u64, u64)],
 }
 
 /// A laid-out image, ready for `stage_image`.
@@ -155,11 +161,17 @@ where R: FnOnce() -> KResult<FileImage> {
         let limits = crate::stage::Limits::current();
         let crash = flags & KEXEC_FILE_ON_CRASH != 0;
         let reserved = limits.crash.map(|r| (r.start, r.end));
-        let place = kbuf::placement_ranges(crash, &ram, reserved)?;
+        // Cut before the search rather than filtered after it: a destination
+        // rejected afterwards is a load that fails on a machine with room,
+        // where a narrowed map makes every address the search can return
+        // legal by construction.
+        let keep_clear = reserved::normalize(&machine_reserved());
+        let place = reserved::subtract(&kbuf::placement_ranges(crash, &ram, reserved)?, &keep_clear);
         let system = kbuf::system_ranges(crash, &ram, reserved)?;
         let fdt = machine_fdt();
         let (fdt_pa, _) = machine_fdt_phys();
-        let ctx = LoadCtx { img: &img, place: &place, system: &system, fdt: &fdt, fdt_pa };
+        let ctx = LoadCtx { img: &img, place: &place, system: &system, fdt: &fdt, fdt_pa,
+                            reserve: &keep_clear };
         let loaded = loader.load(&ctx)?;
         // The file-mode flag word spells the crash bit differently; translate
         // it into the shared one so ONE store decides which slot is written.
@@ -184,6 +196,19 @@ fn machine_fdt_phys() -> (u64, u64) { arm_image::running_fdt_phys() }
 /// # C: O(1)
 #[cfg(not(all(target_os = "oxide-kernel", target_arch = "aarch64")))]
 fn machine_fdt_phys() -> (u64, u64) { (0, 0) }
+
+/// Memory this boot handed to hardware that keeps using it after this kernel
+/// stops, as `(pa, len)`.
+///
+/// Read from the one registry the owning drivers record into, so the ranges
+/// the loader avoids and the ranges the new kernel is told about are the same
+/// answer rather than two that can drift apart.
+/// # C: O(N_ranges)
+#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
+fn machine_reserved() -> Vec<(u64, u64)> { firmware::memreserve::ranges() }
+/// # C: O(1)
+#[cfg(not(all(target_os = "oxide-kernel", target_arch = "aarch64")))]
+fn machine_reserved() -> Vec<(u64, u64)> { Vec::new() }
 
 #[cfg(test)]
 mod tests {

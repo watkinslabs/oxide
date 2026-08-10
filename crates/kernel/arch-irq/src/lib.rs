@@ -20,6 +20,8 @@ pub mod cache;
 #[cfg(any(test, all(target_os = "oxide-kernel", target_arch = "aarch64")))]
 mod gic_group;
 #[cfg(any(test, all(target_os = "oxide-kernel", target_arch = "aarch64")))]
+mod gic_lpi_layout;
+#[cfg(any(test, all(target_os = "oxide-kernel", target_arch = "aarch64")))]
 mod gic_trigger;
 mod line;
 mod msi;

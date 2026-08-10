@@ -31,7 +31,7 @@ fn booted_tree() -> Fdt {
 fn base() -> alloc::vec::Vec<u8> { booted_tree().to_blob() }
 
 fn ho<'a>(initrd_mem: u64, initrd_len: u64, cmdline: &'a [u8]) -> Handover<'a> {
-    Handover { initrd_mem, initrd_len, cmdline, old_fdt_pa: 0, old_fdt_len: 0, seeds: None }
+    Handover { initrd_mem, initrd_len, cmdline, old_fdt_pa: 0, old_fdt_len: 0, seeds: None, reserve: &[] }
 }
 
 fn chosen_of(blob: &[u8]) -> Node {
@@ -239,7 +239,7 @@ fn the_efi_handoff_properties_reach_the_new_kernel_unchanged() {
 #[test]
 fn the_running_trees_own_reservation_is_dropped_and_this_boots_initramfs_with_it() {
     let h = Handover { initrd_mem: 0x9000_0000, initrd_len: 0x1000, cmdline: b"quiet",
-                       old_fdt_pa: 0x4000_0000, old_fdt_len: 0x2000, seeds: None };
+                       old_fdt_pa: 0x4000_0000, old_fdt_len: 0x2000, seeds: None, reserve: &[] };
     let out = setup_fdt(&base(), &h).expect("built");
     let rsv = parse(&out).expect("parses").rsv;
     assert!(!rsv.iter().any(|&(a, _)| a == 0x4000_0000), "the running tree's own entry is gone");
@@ -249,4 +249,40 @@ fn the_running_trees_own_reservation_is_dropped_and_this_boots_initramfs_with_it
     // guessing which one it is.
     let kept = setup_fdt(&base(), &ho(0x9000_0000, 0x1000, b"quiet")).expect("built");
     assert!(parse(&kept).expect("parses").rsv.contains(&(0x4000_0000, 0x2000)));
+}
+
+/// The interrupt controller's tables on the machine in the evidence: the
+/// configuration table, and the pending table below it.
+const LPI_TABLES: [(u64, u64); 2] = [(0xbf33_8000, 0x1_0000), (0xbf31_0000, 0x1_0000)];
+
+/// Memory the controller keeps writing after this kernel stops has to reach
+/// the new kernel as a reservation.
+///
+/// A kernel that finds LPIs already enabled adopts the tables the registers
+/// point at and rewrites the configuration table whole. If its allocator was
+/// never told those pages are taken it will have handed them out first, and
+/// the rewrite lands on whatever it put there — which is why this is not
+/// cosmetic and why it may not depend on there being an initramfs.
+#[test]
+fn ranges_hardware_still_owns_are_reserved_in_the_new_kernels_tree() {
+    for initrd_mem in [0u64, 0x9000_0000] {
+        let h = Handover { initrd_mem, initrd_len: 0x1000, cmdline: b"quiet",
+                           old_fdt_pa: 0, old_fdt_len: 0, seeds: None, reserve: &LPI_TABLES };
+        let rsv = parse(&setup_fdt(&base(), &h).expect("built")).expect("parses").rsv;
+        for t in LPI_TABLES {
+            assert!(rsv.contains(&t), "{t:x?} is reserved whether or not there is an initramfs");
+        }
+    }
+}
+
+/// With nothing to carry, the tree gains nothing — the reservations come from
+/// what the machine reports, never from this module's own idea of a default.
+#[test]
+fn a_machine_that_reports_no_such_range_gains_no_reservation() {
+    let with = parse(&setup_fdt(&base(), &Handover {
+        initrd_mem: 0, initrd_len: 0, cmdline: b"quiet", old_fdt_pa: 0, old_fdt_len: 0,
+        seeds: None, reserve: &LPI_TABLES }).expect("built")).expect("parses").rsv;
+    let without = parse(&setup_fdt(&base(), &ho(0, 0, b"quiet")).expect("built")).expect("parses").rsv;
+    assert_eq!(with.len(), without.len() + LPI_TABLES.len());
+    for t in LPI_TABLES { assert!(!without.contains(&t)); }
 }
