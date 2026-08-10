@@ -38,13 +38,17 @@ fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 /// Consume one SQ slot. Returns the entry's wire image, or `None` when the
 /// ring is empty. An SQ index array entry naming no real SQE is counted in
 /// `sq_dropped` and skipped, never executed. # C: O(1) per skipped index
-fn next_sqe(inode: &IoUringInode) -> Option<(Sqe, u32, u32)> {
+fn next_sqe(inode: &IoUringInode, cursor: &mut u32) -> Option<(Sqe, u32, u32)> {
+    let publish = crate::io_uring_abi::sq_cursor::publishes_head(inode.flags);
     loop {
         let r = inode.ring.lock();
-        let head = r.hdr_load(RING_SQ_HEAD);
-        if head == r.hdr_load(RING_SQ_TAIL) { return None; }
+        let head = *cursor;
+        // A rewinding ring is bounded by its batch length, computed once
+        // before the pass; every other ring stops where userspace stopped.
+        if publish && head == r.hdr_load(RING_SQ_TAIL) { return None; }
         let idx = r.sq_index(head);
-        r.hdr_store(RING_SQ_HEAD, head.wrapping_add(1));
+        *cursor = head.wrapping_add(1);
+        if publish { r.hdr_store(RING_SQ_HEAD, *cursor); }
         if !sq_index_valid(idx, r.sq_entries) {
             r.hdr_store(RING_SQ_DROPPED, r.hdr_load(RING_SQ_DROPPED).wrapping_add(1));
             continue;
@@ -66,9 +70,12 @@ fn next_sqe(inode: &IoUringInode) -> Option<(Sqe, u32, u32)> {
 /// at 64. The slot's contents are the entry's own continuation, so it is
 /// stepped over rather than read as an entry of its own — reading it would run
 /// whatever byte happened to sit at its opcode offset. # C: O(1)
-fn consume_continuation(inode: &IoUringInode) {
-    let r = inode.ring.lock();
-    r.hdr_store(RING_SQ_HEAD, r.hdr_load(RING_SQ_HEAD).wrapping_add(1));
+fn consume_continuation(inode: &IoUringInode, cursor: &mut u32) {
+    *cursor = cursor.wrapping_add(1);
+    if crate::io_uring_abi::sq_cursor::publishes_head(inode.flags) {
+        let r = inode.ring.lock();
+        r.hdr_store(RING_SQ_HEAD, *cursor);
+    }
 }
 
 /// The checks an entry passes before it is allowed to run at all. A failure
@@ -170,20 +177,27 @@ pub fn submit_sqes(inode: &Arc<IoUringInode>, to_submit: u32) -> i64 {
     // SAFETY: process context in the syscall path, holding no spinlock; the guard is dropped before any wait.
     let _batch = unsafe { inode.submit.lock() };
     let submit_all = inode.flags & IORING_SETUP_SUBMIT_ALL != 0;
+    let (to_submit, mut cursor) = {
+        use crate::io_uring_abi::sq_cursor::{batch_len, batch_start};
+        let r = inode.ring.lock();
+        let (tail, head) = (r.hdr_load(RING_SQ_TAIL), r.hdr_load(RING_SQ_HEAD));
+        (batch_len(inode.flags, to_submit, tail, head, r.sq_entries),
+         batch_start(inode.flags, head))
+    };
     let mut consumed: u32 = 0;
     let mut chain = Chain::default();
     let mut pending: Option<(Arc<IoReq>, Arc<IoReq>)> = None;
 
     while consumed < to_submit {
         let left = to_submit - consumed;
-        let Some((sqe, idx, sq_entries)) = next_sqe(inode) else { break };
+        let Some((sqe, idx, sq_entries)) = next_sqe(inode, &mut cursor) else { break };
         consumed += 1;
         // A 128-byte entry on a ring whose array strides at 64 occupies the
         // slot after it too. Stepping over that slot HERE, before anything
         // looks at the entry, is what keeps the continuation from being run as
         // an entry of its own on every later path.
         let mut extra_taken = |n: u32| {
-            for _ in 0..n { consume_continuation(inode); consumed += 1; }
+            for _ in 0..n { consume_continuation(inode, &mut cursor); consumed += 1; }
         };
 
         if let Some((head, tail)) = pending.take() {

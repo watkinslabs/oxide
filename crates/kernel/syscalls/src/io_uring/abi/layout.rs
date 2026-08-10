@@ -111,7 +111,7 @@ pub const NO_SQ_ARRAY: u32 = u32::MAX;
 /// | `HYBRID_IOPOLL` | implemented | [`super::iopoll::hybrid_sleep_ns`] + the ring's running service-time estimate: a polled transfer is stamped when it is issued, each poll pass folds the observed service time into the ring's minimum, and the next transfer sleeps for half of it before it starts spinning. |
 /// | `CQE_MIXED` | implemented | the array stays 16 bytes and a 32-byte completion takes TWO slots, carrying `IORING_CQE_F_32` ([`super::cqe_slot`]); a 32-byte completion that would straddle the wrap is preceded by a skipped filler. |
 /// | `SQE_MIXED` | implemented | the array stays 64 bytes and a 128-byte operation takes TWO contiguous entries ([`super::sqe_slot`]). |
-/// | `SQ_REWIND` | refused | it lets userspace move the SQ tail backwards over entries the kernel may already have read. |
+/// | `SQ_REWIND` | implemented | [`super::sq_cursor`]: every pass starts at slot zero, is bounded by the array rather than by the tail, and does not publish the head it reached. |
 pub const SUPPORTED_SETUP_FLAGS: u32 =
     IORING_SETUP_CQSIZE | IORING_SETUP_CLAMP | IORING_SETUP_NO_SQARRAY
     | IORING_SETUP_SUBMIT_ALL | IORING_SETUP_R_DISABLED
@@ -120,7 +120,8 @@ pub const SUPPORTED_SETUP_FLAGS: u32 =
     | IORING_SETUP_SQPOLL | IORING_SETUP_SQ_AFF | IORING_SETUP_IOPOLL
     | IORING_SETUP_HYBRID_IOPOLL
     | IORING_SETUP_CQE32 | IORING_SETUP_SQE128
-    | IORING_SETUP_CQE_MIXED | IORING_SETUP_SQE_MIXED;
+    | IORING_SETUP_CQE_MIXED | IORING_SETUP_SQE_MIXED
+    | IORING_SETUP_SQ_REWIND;
 
 /// `p->features` oxide reports. Claiming a bit we do not implement is a lie
 /// liburing acts on, so the set is deliberately small:

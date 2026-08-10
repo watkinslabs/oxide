@@ -95,7 +95,10 @@ fn linux_flag_combination_rules_hold() {
     // drive. Alone it is EINVAL; with IOPOLL it is admitted.
     assert_eq!(prepare(&mut req(IORING_SETUP_HYBRID_IOPOLL), 4), Err(Errno::Einval));
     assert!(prepare(&mut req(IORING_SETUP_HYBRID_IOPOLL | IORING_SETUP_IOPOLL), 4).is_ok());
+    // SQ_REWIND is implemented, so what this pins is its PAIRING rule: "start
+    // at slot zero" is only unambiguous when the slot IS the entry index.
     assert_eq!(prepare(&mut req(IORING_SETUP_SQ_REWIND), 4), Err(Errno::Einval));
+    assert!(prepare(&mut req(IORING_SETUP_SQ_REWIND | IORING_SETUP_NO_SQARRAY), 4).is_ok());
 }
 
 #[test]
@@ -295,7 +298,7 @@ fn every_setup_flag_is_either_implemented_or_refused() {
         (IORING_SETUP_HYBRID_IOPOLL,      true,  "abi::iopoll::hybrid_sleep_ns + the ring's service-time estimate"),
         (IORING_SETUP_CQE_MIXED,          true,  "abi::cqe_slot: a 32-byte completion takes two 16-byte slots"),
         (IORING_SETUP_SQE_MIXED,          true,  "abi::sqe_slot: a 128-byte entry takes two 64-byte slots"),
-        (IORING_SETUP_SQ_REWIND,          false, "userspace could rewind over entries already read"),
+        (IORING_SETUP_SQ_REWIND,          true,  "abi::sq_cursor: every pass restarts at slot zero"),
     ];
 
     assert_eq!(IORING_SETUP_FLAGS, (1u32 << TABLE.len()) - 1,
@@ -316,8 +319,7 @@ fn every_setup_flag_is_either_implemented_or_refused() {
 #[test]
 fn every_unimplemented_setup_flag_is_refused_by_setup_itself() {
     for bit in [IORING_SETUP_ATTACH_WQ,
-                IORING_SETUP_NO_MMAP, IORING_SETUP_REGISTERED_FD_ONLY,
-                IORING_SETUP_SQ_REWIND] {
+                IORING_SETUP_NO_MMAP, IORING_SETUP_REGISTERED_FD_ONLY] {
         assert_eq!(prepare(&mut req(bit), 8), Err(Errno::Einval), "flag {bit:#x} must be refused");
     }
     // And a bit outside the UAPI's own set, which no kernel accepts.
@@ -340,6 +342,7 @@ fn every_implemented_setup_flag_is_admitted_and_reported_back() {
                   IORING_SETUP_CQE_MIXED, IORING_SETUP_SQE_MIXED,
                   IORING_SETUP_SQE128 | IORING_SETUP_CQE32,
                   IORING_SETUP_SQE_MIXED | IORING_SETUP_CQE_MIXED,
+                  IORING_SETUP_SQ_REWIND | IORING_SETUP_NO_SQARRAY,
                   IORING_SETUP_HYBRID_IOPOLL | IORING_SETUP_IOPOLL] {
         let mut p = req(extra);
         if extra & IORING_SETUP_CQSIZE != 0 { p.cq_entries = 8; }
