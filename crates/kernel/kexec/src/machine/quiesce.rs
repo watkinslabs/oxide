@@ -100,6 +100,11 @@ pub fn stop_other_cpus() {
     let targets = stop_targets(online, me);
     if targets == 0 { return; }
     hal::smp_call::call_function_many(targets, hal::smp_call::CallKind::Stop, 0, false);
+    // Between the request and the convergence wait, because those are two
+    // different ways for this to stop making progress and the log has to tell
+    // them apart: the request itself can block on a queue another CPU is not
+    // draining, and the wait can simply not converge.
+    klog::announce_emergency("kexec: stop requested");
     let mut spun = 0u64;
     while spun < STOP_SPIN_BUDGET {
         if converged(hal::smp_call::stopped_mask(), targets) { return; }

@@ -197,7 +197,11 @@ def main():
     # From here the running kernel is on its way out. Two things must happen,
     # in this order: it announces the transition, and then a kernel that is
     # not it says hello.
-    c.wait(HANDOFF, 60, "the relocation to announce itself")
+    # Generous: the stop that precedes the relocation waits for every other CPU
+    # on a spin budget, with no clock left to bound it by, and a guest sharing a
+    # host with other work spins slowly. A tight bound here reports a hang about
+    # a machine that was still counting.
+    c.wait(HANDOFF, 240, "the relocation to announce itself")
     c.wait(SECOND_KERNEL_PATTERNS[0], 120,
            "the SECOND kernel's version banner (silence here means the jump "
            "did not land)")
