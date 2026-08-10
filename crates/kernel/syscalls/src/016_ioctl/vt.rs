@@ -1,5 +1,7 @@
 #![cfg(target_os = "oxide-kernel")]
 
+use crate::ioctl_user as user;
+
 use super::font::handle_font_ioctl;
 use super::tioclinux::handle_tioclinux;
 
@@ -64,11 +66,7 @@ pub(super) fn handle_vt_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Opti
     match req {
         vt::KDGETMODE => {
             let v = vt::slot(vt_target).map(|s| s.kd_mode).unwrap_or(vt::KD_TEXT);
-            if arg != 0 && arg < hal::USER_VA_END {
-                // SAFETY: arg validated < USER_VA_END; aligned u32 store of mode value into caller's AS.
-                unsafe { core::ptr::write_volatile(arg as *mut u32, v); }
-            }
-            Some(0)
+            Some(user::put_u32(arg, v).map_or_else(|rv| rv, |()| 0))
         }
         vt::KDSETMODE => {
             let mode = arg as u32;
@@ -79,11 +77,7 @@ pub(super) fn handle_vt_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Opti
         }
         vt::KDGKBMODE => {
             let v = vt::slot(vt_target).map(|s| s.kb_mode).unwrap_or(vt::K_XLATE);
-            if arg != 0 && arg < hal::USER_VA_END {
-                // SAFETY: arg validated < USER_VA_END; aligned u32 store.
-                unsafe { core::ptr::write_volatile(arg as *mut u32, v); }
-            }
-            Some(0)
+            Some(user::put_u32(arg, v).map_or_else(|rv| rv, |()| 0))
         }
         vt::KDSKBMODE => {
             let mode = arg as u32;
@@ -93,12 +87,8 @@ pub(super) fn handle_vt_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Opti
             }
         }
         vt::KDGKBTYPE => {
-            // KB_101 = 2; arg is u8 user pointer.
-            if arg != 0 && arg < hal::USER_VA_END {
-                // SAFETY: arg validated < USER_VA_END; single-byte store.
-                unsafe { core::ptr::write_volatile(arg as *mut u8, 2u8); }
-            }
-            Some(0)
+            // KB_101; arg is a one-byte caller buffer.
+            Some(user::put_u8(arg, vt::KB_101 as u8).map_or_else(|rv| rv, |()| 0))
         }
         vt::KDSIGACCEPT => {
             // systemd (manager.c) asks the kernel to deliver a signal on the
@@ -112,11 +102,7 @@ pub(super) fn handle_vt_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Opti
             if vt_is_ui_caller() {
                 klog::write_raw(b"[VTIO OPENQRY->"); klog::write_dec_u64(id as u64); klog::write_raw(b"]\n");
             }
-            if arg != 0 && arg < hal::USER_VA_END {
-                // SAFETY: arg validated < USER_VA_END; aligned u32 store.
-                unsafe { core::ptr::write_volatile(arg as *mut u32, id); }
-            }
-            Some(0)
+            Some(user::put_u32(arg, id).map_or_else(|rv| rv, |()| 0))
         }
         vt::VT_GETSTATE => {
             let st = vt::get_state();
@@ -124,14 +110,12 @@ pub(super) fn handle_vt_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Opti
             if vt_is_ui_caller() {
                 klog::write_raw(b"[VTIO GETSTATE active="); klog::write_dec_u64(st.v_active as u64); klog::write_raw(b"]\n");
             }
-            if arg == 0 || arg + 6 >= hal::USER_VA_END { return Some(errno(Errno::Efault)); }
-            // SAFETY: arg validated < USER_VA_END - 6; struct vt_stat is 6 bytes.
-            unsafe {
-                core::ptr::write_volatile(arg as *mut u16, st.v_active);
-                core::ptr::write_volatile((arg + 2) as *mut u16, st.v_signal);
-                core::ptr::write_volatile((arg + 4) as *mut u16, st.v_state);
-            }
-            Some(0)
+            // struct vt_stat { u16 v_active, v_signal, v_state; }.
+            let mut out = [0u8; 6];
+            out[0..2].copy_from_slice(&st.v_active.to_ne_bytes());
+            out[2..4].copy_from_slice(&st.v_signal.to_ne_bytes());
+            out[4..6].copy_from_slice(&st.v_state.to_ne_bytes());
+            Some(user::put_bytes(arg, &out).map_or_else(|rv| rv, |()| 0))
         }
         vt::VT_ACTIVATE => {
             let n = arg as u8;
@@ -193,29 +177,24 @@ pub(super) fn handle_vt_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Opti
             }
         }
         vt::VT_GETMODE => {
+            // struct vt_mode { u8 mode, waitv; u16 relsig, acqsig, frsig; }.
             let m = vt::slot(vt_target).map(|s| s.vt_mode).unwrap_or_default();
-            if arg == 0 || arg + 8 >= hal::USER_VA_END { return Some(errno(Errno::Efault)); }
-            // SAFETY: arg validated < USER_VA_END - 8; struct vt_mode is 8 bytes (u8,u8,u16,u16,u16) written field-by-field into the caller's AS.
-            unsafe {
-                core::ptr::write_volatile(arg as *mut u8, m.mode);
-                core::ptr::write_volatile((arg + 1) as *mut u8, m.waitv);
-                core::ptr::write_volatile((arg + 2) as *mut u16, m.relsig);
-                core::ptr::write_volatile((arg + 4) as *mut u16, m.acqsig);
-                core::ptr::write_volatile((arg + 6) as *mut u16, m.frsig);
-            }
-            Some(0)
+            let mut out = [0u8; 8];
+            out[0] = m.mode;
+            out[1] = m.waitv;
+            out[2..4].copy_from_slice(&m.relsig.to_ne_bytes());
+            out[4..6].copy_from_slice(&m.acqsig.to_ne_bytes());
+            out[6..8].copy_from_slice(&m.frsig.to_ne_bytes());
+            Some(user::put_bytes(arg, &out).map_or_else(|rv| rv, |()| 0))
         }
         vt::VT_SETMODE => {
-            if arg == 0 || arg + 8 >= hal::USER_VA_END { return Some(errno(Errno::Efault)); }
-            // SAFETY: arg validated < USER_VA_END - 8; reading the 8-byte struct vt_mode from the caller's AS field-by-field.
-            let m = unsafe {
-                vt::VtMode {
-                    mode:   core::ptr::read_volatile(arg as *const u8),
-                    waitv:  core::ptr::read_volatile((arg + 1) as *const u8),
-                    relsig: core::ptr::read_volatile((arg + 2) as *const u16),
-                    acqsig: core::ptr::read_volatile((arg + 4) as *const u16),
-                    frsig:  core::ptr::read_volatile((arg + 6) as *const u16),
-                }
+            let b = match user::get_bytes::<8>(arg) { Ok(b) => b, Err(rv) => return Some(rv) };
+            let m = vt::VtMode {
+                mode:   b[0],
+                waitv:  b[1],
+                relsig: u16::from_ne_bytes([b[2], b[3]]),
+                acqsig: u16::from_ne_bytes([b[4], b[5]]),
+                frsig:  u16::from_ne_bytes([b[6], b[7]]),
             };
             // Record the calling process as the VT's controlling owner (Linux
             // vc->vt_pid): BOTH its namespace vpid (to signal) and its internal
@@ -246,11 +225,7 @@ pub(super) fn handle_vt_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Opti
         }
         vt::KDGETLED | vt::KDGKBLED => {
             let leds = vt::slot(vt_target).map(|s| s.leds).unwrap_or(0) as u8;
-            if arg != 0 && arg < hal::USER_VA_END {
-                // SAFETY: arg validated < USER_VA_END; single-byte LED state store into caller's AS.
-                unsafe { core::ptr::write_volatile(arg as *mut u8, leds); }
-            }
-            Some(0)
+            Some(user::put_u8(arg, leds).map_or_else(|rv| rv, |()| 0))
         }
         vt::KDSETLED | vt::KDSKBLED => {
             // arg = LED bitmask by value (Scroll=1,Num=2,Caps=4); 0xff means
@@ -265,12 +240,8 @@ pub(super) fn handle_vt_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Opti
         vt::VT_RESIZE | vt::VT_RESIZEX => {
             // vt_sizes { u16 v_rows, v_cols, ... } / vt_consize { u16 v_rows,
             // v_cols, ... } — both lead with rows then cols.
-            if arg == 0 || arg + 4 >= hal::USER_VA_END { return Some(errno(Errno::Efault)); }
-            // SAFETY: arg validated < USER_VA_END - 4; reading the leading 2×u16 (rows, cols) of the resize struct from the caller's AS.
-            let (rows, cols) = unsafe {
-                (core::ptr::read_volatile(arg as *const u16),
-                 core::ptr::read_volatile((arg + 2) as *const u16))
-            };
+            let b = match user::get_bytes::<4>(arg) { Ok(b) => b, Err(rv) => return Some(rv) };
+            let (rows, cols) = (u16::from_ne_bytes([b[0], b[1]]), u16::from_ne_bytes([b[2], b[3]]));
             match vt::resize(vt_target, rows, cols) {
                 Ok(()) => { vt_apply_winsize(rows, cols); Some(0) }
                 Err(_) => Some(errno(Errno::Einval)),

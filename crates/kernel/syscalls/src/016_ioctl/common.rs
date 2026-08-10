@@ -1,5 +1,6 @@
 use syscall::errno::Errno;
 
+use crate::ioctl_user as user;
 use crate::userbuf::{validate_user_buf_readable, validate_user_buf_writable};
 
 use super::remap::{remap_verify_area, vfs_clone_file_range, vfs_dedupe_file_range_one};
@@ -72,9 +73,7 @@ pub(super) fn handle_nonchar_queue_ioctl(file: &vfs::File, req: u64, arg: u64) -
         Err(e) => return Some(-(e as i64)),
     };
     if let Err(rv) = validate_user_buf_writable(arg, INT_BYTES, 1) { return Some(rv); }
-    // SAFETY: arg validated writable for one Linux int out-param.
-    unsafe { core::ptr::write_volatile(arg as *mut u32, n); }
-    Some(0)
+    match user::put_u32(arg, n) { Ok(()) => Some(0), Err(rv) => Some(rv) }
 }
 
 /// Linux `sock_ioctl` f_owner commands. `FIOSETOWN`/`SIOCSPGRP` import one
@@ -85,8 +84,7 @@ pub(super) fn handle_socket_owner_ioctl(file: &vfs::File, req: u64, arg: u64) ->
     match req {
         FIOSETOWN | SIOCSPGRP => {
             if let Err(rv) = validate_user_buf_readable(arg, INT_BYTES, 1) { return Some(rv); }
-            // SAFETY: arg was validated readable for Linux's one-int owner input.
-            let owner = unsafe { core::ptr::read_volatile(arg as *const i32) };
+            let owner = match user::get_i32(arg) { Ok(v) => v, Err(rv) => return Some(rv) };
             install_sigio_hook();
             let (uid, euid) = socket_owner_creds();
             // Linux `sock_ioctl` routes these through `f_setown(.., who, ..)`,
@@ -99,9 +97,7 @@ pub(super) fn handle_socket_owner_ioctl(file: &vfs::File, req: u64, arg: u64) ->
         }
         FIOGETOWN | SIOCGPGRP => {
             if let Err(rv) = validate_user_buf_writable(arg, INT_BYTES, 1) { return Some(rv); }
-            // SAFETY: arg was validated writable for Linux's one-int owner output.
-            unsafe { core::ptr::write_volatile(arg as *mut i32, file.f_getown()); }
-            Some(0)
+            match user::put_i32(arg, file.f_getown()) { Ok(()) => Some(0), Err(rv) => Some(rv) }
         }
         _ => None,
     }
@@ -110,8 +106,7 @@ pub(super) fn handle_socket_owner_ioctl(file: &vfs::File, req: u64, arg: u64) ->
 /// Linux `ioctl_fionbio`: read caller int and toggle `O_NONBLOCK`. # C: O(1)
 fn ioctl_fionbio(file: &vfs::File, arg: u64) -> i64 {
     if let Err(rv) = validate_user_buf_readable(arg, INT_BYTES, 1) { return rv; }
-    // SAFETY: arg validated readable for one Linux int input.
-    let on = unsafe { core::ptr::read_volatile(arg as *const i32) } != 0;
+    let on = match user::get_i32(arg) { Ok(v) => v != 0, Err(rv) => return rv };
     let mut fl = file.flags();
     if on { fl |= vfs::OpenFlags::O_NONBLOCK; } else { fl &= !vfs::OpenFlags::O_NONBLOCK; }
     // FIONBIO only ever toggles O_NONBLOCK, never O_DIRECT, so `set_fl`'s
@@ -123,8 +118,7 @@ fn ioctl_fionbio(file: &vfs::File, arg: u64) -> i64 {
 /// Linux `ioctl_fioasync`: read caller int and toggle `FASYNC`. # C: O(1)
 fn ioctl_fioasync(file: &alloc::sync::Arc<vfs::File>, fd: i32, arg: u64) -> i64 {
     if let Err(rv) = validate_user_buf_readable(arg, INT_BYTES, 1) { return rv; }
-    // SAFETY: arg validated readable for one Linux int input.
-    let on = unsafe { core::ptr::read_volatile(arg as *const i32) } != 0;
+    let on = match user::get_i32(arg) { Ok(v) => v != 0, Err(rv) => return rv };
     if file.is_async() == on { return 0; }
     match file.fasync(fd, on) {
         Ok(()) => {
@@ -173,9 +167,7 @@ fn ioctl_fioqsize(file: &vfs::File, arg: u64) -> i64 {
     }
     if let Err(rv) = validate_user_buf_writable(arg, LOFF_BYTES, 1) { return rv; }
     let bytes = file.inode().blocks() * INODE_BLOCK_BYTES;
-    // SAFETY: arg validated writable for one Linux loff_t out-param.
-    unsafe { core::ptr::write_volatile(arg as *mut i64, bytes as i64); }
-    0
+    match user::put_i64(arg, bytes as i64) { Ok(()) => 0, Err(rv) => rv }
 }
 
 /// Linux `FIGETBSZ`: copy superblock `s_blocksize`, or `EINVAL` if absent.
@@ -186,19 +178,16 @@ fn ioctl_figetbsz(file: &vfs::File, arg: u64) -> i64 {
         _ => return -(Errno::Einval.as_i32() as i64),
     };
     if let Err(rv) = validate_user_buf_writable(arg, INT_BYTES, 1) { return rv; }
-    // SAFETY: arg validated writable for one Linux int out-param.
-    unsafe { core::ptr::write_volatile(arg as *mut i32, bs as i32); }
-    0
+    match user::put_i32(arg, bs as i32) { Ok(()) => 0, Err(rv) => rv }
 }
 
 /// Linux `FICLONERANGE`: copy `struct file_clone_range`, then clone. # C: FS-dependent
 fn ioctl_file_clone_range(file: &alloc::sync::Arc<vfs::File>, fdt: &vfs::FdTable, arg: u64) -> i64 {
     if let Err(rv) = validate_user_buf_readable(arg, FILE_CLONE_RANGE_BYTES, 1) { return rv; }
-    let src_fd = read_i64(arg);
-    let src_off = read_u64(arg + 8);
-    let src_len = read_u64(arg + 16);
-    let dst_off = read_u64(arg + 24);
-    ioctl_file_clone(file, fdt, src_fd, src_off, src_len, dst_off)
+    let r = match user::get_bytes::<{ FILE_CLONE_RANGE_BYTES as usize }>(arg) {
+        Ok(b) => b, Err(rv) => return rv,
+    };
+    ioctl_file_clone(file, fdt, ld_i64(&r, 0), ld_u64(&r, 8), ld_u64(&r, 16), ld_u64(&r, 24))
 }
 
 /// Linux `ioctl_file_clone`: fd lookup plus `vfs_clone_file_range`. # C: FS-dependent
@@ -218,17 +207,21 @@ fn ioctl_file_clone(file: &alloc::sync::Arc<vfs::File>, fdt: &vfs::FdTable, src_
     }
 }
 
-/// Linux `FIDEDUPERANGE`: variable-length input with per-destination status. # C: FS-dependent
+/// Linux `FIDEDUPERANGE`: variable-length input with per-destination status.
+/// The reference reads `dest_count`, bounds the payload at one page, copies the
+/// WHOLE `struct file_dedupe_range` into kernel memory, runs the dedupe against
+/// that copy, and writes it back once — so a caller cannot race a page away
+/// mid-walk, and an error leaves the caller's buffer untouched.
+/// # C: FS-dependent
 fn ioctl_file_dedupe_range(cur: &sched::Task, file: &vfs::File, fdt: &vfs::FdTable, arg: u64) -> i64 {
-    if let Err(rv) = validate_user_buf_readable(arg, DEDUPE_RANGE_BYTES, 1) { return rv; }
-    let count = read_u16(arg + DEDUPE_DEST_COUNT) as usize;
-    let size = DEDUPE_RANGE_BYTES + count as u64 * DEDUPE_INFO_BYTES;
-    if size > PAGE_BYTES { return -(Errno::Enomem.as_i32() as i64); }
-    if let Err(rv) = validate_user_buf_readable(arg, size, 1) { return rv; }
-    let src_off = read_u64(arg + DEDUPE_SRC_OFFSET);
-    let src_len_in = read_u64(arg + DEDUPE_SRC_LENGTH);
+    let count = match user::get_u16(arg + DEDUPE_DEST_COUNT) { Ok(v) => v, Err(rv) => return rv };
+    let size = match user::dedupe_payload_bytes(count) { Ok(v) => v, Err(rv) => return rv };
+    let mut same = alloc::vec![0u8; size as usize];
+    if let Err(rv) = user::get_into(arg, &mut same) { return rv; }
+    let src_off = ld_u64(&same, DEDUPE_SRC_OFFSET);
+    let src_len_in = ld_u64(&same, DEDUPE_SRC_LENGTH);
     if !file.f_mode().contains(vfs::Fmode::READ) { return -(Errno::Einval.as_i32() as i64); }
-    if read_u16(arg + DEDUPE_RESERVED1) != 0 || read_u32(arg + DEDUPE_RESERVED2) != 0 {
+    if ld_u16(&same, DEDUPE_RESERVED1) != 0 || ld_u32(&same, DEDUPE_RESERVED2) != 0 {
         return -(Errno::Einval.as_i32() as i64);
     }
     match file.inode().file_type() {
@@ -241,48 +234,46 @@ fn ioctl_file_dedupe_range(cur: &sched::Task, file: &vfs::File, fdt: &vfs::FdTab
     if src_off.checked_add(src_len_in).is_none_or(|end| end > file.inode().size()) {
         return -(Errno::Einval.as_i32() as i64);
     }
-    let len = core::cmp::min(src_len_in, 1 << 30);
-    if let Err(rv) = validate_user_buf_writable(arg, size, 1) { return rv; }
-    for i in 0..count {
-        let base = arg + DEDUPE_RANGE_BYTES + i as u64 * DEDUPE_INFO_BYTES;
-        write_u64(base + DEDUPE_INFO_BYTES_DEDUPED, 0);
-        write_i32(base + DEDUPE_INFO_STATUS, FILE_DEDUPE_RANGE_SAME);
+    let len = core::cmp::min(src_len_in, user::DEDUPE_MAX_LEN);
+    for i in 0..count as u64 {
+        let base = DEDUPE_RANGE_BYTES + i * DEDUPE_INFO_BYTES;
+        st_u64(&mut same, base + DEDUPE_INFO_BYTES_DEDUPED, 0);
+        st_i32(&mut same, base + DEDUPE_INFO_STATUS, FILE_DEDUPE_RANGE_SAME);
     }
-    for i in 0..count {
-        let base = arg + DEDUPE_RANGE_BYTES + i as u64 * DEDUPE_INFO_BYTES;
-        let dst_fd = read_i64(base + DEDUPE_INFO_DEST_FD);
+    for i in 0..count as u64 {
+        let base = DEDUPE_RANGE_BYTES + i * DEDUPE_INFO_BYTES;
+        let dst_fd = ld_i64(&same, base + DEDUPE_INFO_DEST_FD);
+        let dst_off = ld_u64(&same, base + DEDUPE_INFO_DEST_OFFSET);
+        let reserved = ld_u32(&same, base + DEDUPE_INFO_RESERVED);
         let status = match i32::try_from(dst_fd).ok().and_then(|fd| fdt.get(fd).ok()) {
             None => -(Errno::Ebadf.as_i32()),
-            Some(_) if read_u32(base + DEDUPE_INFO_RESERVED) != 0 => -(Errno::Einval.as_i32()),
-            Some(dst) => match vfs_dedupe_file_range_one(cur, file, src_off, &dst, read_u64(base + DEDUPE_INFO_DEST_OFFSET), len) {
+            Some(_) if reserved != 0 => -(Errno::Einval.as_i32()),
+            Some(dst) => match vfs_dedupe_file_range_one(cur, file, src_off, &dst, dst_off, len) {
                 Ok(()) => {
-                    write_u64(base + DEDUPE_INFO_BYTES_DEDUPED, len);
+                    st_u64(&mut same, base + DEDUPE_INFO_BYTES_DEDUPED, len);
                     FILE_DEDUPE_RANGE_SAME
                 }
                 Err(vfs::VfsError::Ebade) => FILE_DEDUPE_RANGE_DIFFERS,
                 Err(e) => -(e as i32),
             },
         };
-        write_i32(base + DEDUPE_INFO_STATUS, status);
+        st_i32(&mut same, base + DEDUPE_INFO_STATUS, status);
     }
-    0
+    match user::put_bytes(arg, &same) { Ok(()) => 0, Err(rv) => rv }
 }
 
 /// Linux regular-file `FIONREAD`: `i_size - f_pos` copied as an int. # C: O(1)
 fn ioctl_regular_fionread(file: &vfs::File, arg: u64) -> i64 {
     if let Err(rv) = validate_user_buf_writable(arg, INT_BYTES, 1) { return rv; }
     let n = (file.inode().size() as i64).wrapping_sub(file.pos() as i64) as i32;
-    // SAFETY: arg validated writable for one Linux int out-param.
-    unsafe { core::ptr::write_volatile(arg as *mut i32, n); }
-    0
+    match user::put_i32(arg, n) { Ok(()) => 0, Err(rv) => rv }
 }
 
 /// Linux `FIBMAP`: capability-gated logical block to disk block query. # C: FS-dependent
 fn ioctl_fibmap(cur: &sched::Task, file: &vfs::File, arg: u64) -> i64 {
     if !cur.has_cap(sched::cap::SYS_RAWIO) { return -(Errno::Eperm.as_i32() as i64); }
     if let Err(rv) = validate_user_buf_readable(arg, INT_BYTES, 1) { return rv; }
-    // SAFETY: arg validated readable for one Linux int in/out-param.
-    let logical = unsafe { core::ptr::read_volatile(arg as *const i32) };
+    let logical = match user::get_i32(arg) { Ok(v) => v, Err(rv) => return rv };
     if logical < 0 { return -(Errno::Einval.as_i32() as i64); }
     let mapped = file.inode().bmap(logical as u64);
     let (out, rv) = match mapped {
@@ -291,8 +282,7 @@ fn ioctl_fibmap(cur: &sched::Task, file: &vfs::File, arg: u64) -> i64 {
         Err(e) => (0, -(e as i64)),
     };
     if let Err(fault) = validate_user_buf_writable(arg, INT_BYTES, 1) { return fault; }
-    // SAFETY: arg validated writable for one Linux int in/out-param.
-    unsafe { core::ptr::write_volatile(arg as *mut i32, out); }
+    if let Err(fault) = user::put_i32(arg, out) { return fault; }
     rv
 }
 
@@ -304,12 +294,12 @@ fn ioctl_fibmap(cur: &sched::Task, file: &vfs::File, arg: u64) -> i64 {
 /// move the file's end. # C: FS-dependent
 fn ioctl_preallocate(cur: &sched::Task, file: &vfs::File, mode: u32, arg: u64) -> i64 {
     if let Err(rv) = validate_user_buf_readable(arg, SPACE_RESV_BYTES, 1) { return rv; }
-    // SAFETY: copy_from_user-equivalent after validating the whole `space_resv` payload.
-    let whence = unsafe { core::ptr::read_unaligned((arg + SPACE_RESV_L_WHENCE) as *const i16) };
-    // SAFETY: copy_from_user-equivalent after validating the whole `space_resv` payload.
-    let mut start = unsafe { core::ptr::read_unaligned((arg + SPACE_RESV_L_START) as *const i64) };
-    // SAFETY: copy_from_user-equivalent after validating the whole `space_resv` payload.
-    let len = unsafe { core::ptr::read_unaligned((arg + SPACE_RESV_L_LEN) as *const i64) };
+    let resv = match user::get_bytes::<{ SPACE_RESV_BYTES as usize }>(arg) {
+        Ok(b) => b, Err(rv) => return rv,
+    };
+    let whence = ld_u16(&resv, SPACE_RESV_L_WHENCE) as i16;
+    let mut start = ld_i64(&resv, SPACE_RESV_L_START);
+    let len = ld_i64(&resv, SPACE_RESV_L_LEN);
     match whence {
         SEEK_SET => {}
         SEEK_CUR => start = match start.checked_add(file.pos() as i64) {
@@ -333,12 +323,10 @@ fn ioctl_getfsuuid(file: &vfs::File, arg: u64) -> i64 {
     if len == 0 { return -(Errno::Enotty.as_i32() as i64); }
     let uuid = sb.s_uuid();
     if let Err(rv) = validate_user_buf_writable(arg, FSUUID2_BYTES, 1) { return rv; }
-    // SAFETY: arg validated writable for fixed-size Linux `struct fsuuid2`.
-    unsafe {
-        core::ptr::write_volatile(arg as *mut u8, len);
-        core::ptr::copy_nonoverlapping(uuid.as_ptr(), (arg + 1) as *mut u8, 16);
-    }
-    0
+    let mut out = [0u8; FSUUID2_BYTES as usize];
+    out[0] = len;
+    out[1..].copy_from_slice(&uuid[..16]);
+    match user::put_bytes(arg, &out) { Ok(()) => 0, Err(rv) => rv }
 }
 
 /// Linux `FS_IOC_GETFSSYSFSPATH`: expose `fstype/s_sysfs_name`. # C: O(len name)
@@ -359,40 +347,40 @@ fn ioctl_getfssysfspath(file: &vfs::File, arg: u64) -> i64 {
         out[n] = *b;
         n += 1;
     }
-    // SAFETY: arg validated writable for fixed-size Linux `struct fs_sysfs_path`.
-    unsafe {
-        core::ptr::write_volatile(arg as *mut u8, n as u8);
-        core::ptr::copy_nonoverlapping(out.as_ptr(), (arg + 1) as *mut u8, FS_SYSFS_PATH_NAME_BYTES);
-    }
-    0
+    let mut buf = [0u8; FS_SYSFS_PATH_BYTES as usize];
+    buf[0] = n as u8;
+    buf[1..].copy_from_slice(&out);
+    match user::put_bytes(arg, &buf) { Ok(()) => 0, Err(rv) => rv }
 }
 
-fn read_u32(addr: u64) -> u32 {
-    // SAFETY: caller validated the surrounding user payload before reading this field.
-    unsafe { core::ptr::read_unaligned(addr as *const u32) }
+// Field accessors on a KERNEL copy of a caller payload. The copy in and the
+// copy out are the only caller-memory touches; every field read/write between
+// them is ordinary kernel memory and cannot fault.
+
+fn ld_u16(b: &[u8], off: u64) -> u16 {
+    u16::from_ne_bytes([b[off as usize], b[off as usize + 1]])
 }
 
-fn read_u16(addr: u64) -> u16 {
-    // SAFETY: caller validated the surrounding user payload before reading this field.
-    unsafe { core::ptr::read_unaligned(addr as *const u16) }
+fn ld_u32(b: &[u8], off: u64) -> u32 {
+    let o = off as usize;
+    u32::from_ne_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
 }
 
-fn read_i64(addr: u64) -> i64 {
-    // SAFETY: caller validated the surrounding user payload before reading this field.
-    unsafe { core::ptr::read_unaligned(addr as *const i64) }
+fn ld_u64(b: &[u8], off: u64) -> u64 {
+    let o = off as usize;
+    let mut v = [0u8; 8];
+    v.copy_from_slice(&b[o..o + 8]);
+    u64::from_ne_bytes(v)
 }
 
-fn read_u64(addr: u64) -> u64 {
-    // SAFETY: caller validated the surrounding user payload before reading this field.
-    unsafe { core::ptr::read_unaligned(addr as *const u64) }
+fn ld_i64(b: &[u8], off: u64) -> i64 { ld_u64(b, off) as i64 }
+
+fn st_u64(b: &mut [u8], off: u64, val: u64) {
+    let o = off as usize;
+    b[o..o + 8].copy_from_slice(&val.to_ne_bytes());
 }
 
-fn write_u64(addr: u64, val: u64) {
-    // SAFETY: caller validated the surrounding user payload before writing this field.
-    unsafe { core::ptr::write_unaligned(addr as *mut u64, val); }
-}
-
-fn write_i32(addr: u64, val: i32) {
-    // SAFETY: caller validated the surrounding user payload before writing this field.
-    unsafe { core::ptr::write_unaligned(addr as *mut i32, val); }
+fn st_i32(b: &mut [u8], off: u64, val: i32) {
+    let o = off as usize;
+    b[o..o + 4].copy_from_slice(&val.to_ne_bytes());
 }

@@ -92,8 +92,7 @@ fn gsid(
         }
     };
     if sid == 0 { return enotty(); }
-    // SAFETY: arg validated 4-byte aligned; CPL=0 write through caller's AS.
-    unsafe { core::ptr::write_volatile(arg as *mut u32, sid); }
+    if let Err(rv) = crate::ioctl_user::put_u32(arg, sid) { return rv; }
     0
 }
 
@@ -124,8 +123,7 @@ fn mget(
         Some(console::TtyTarget::Serial) => console::static_console::modem_get(),
         Some(console::TtyTarget::Vt(_)) | None => return enotty(),
     };
-    // SAFETY: arg validated 4-byte aligned; CPL=0 write through caller's AS.
-    unsafe { core::ptr::write_volatile(arg as *mut u32, bits); }
+    if let Err(rv) = crate::ioctl_user::put_u32(arg, bits) { return rv; }
     0
 }
 
@@ -140,8 +138,7 @@ fn mset(
     if pty_pair.is_some() { return enotty(); }
     match con {
         Some(console::TtyTarget::Serial) => {
-            // SAFETY: arg validated 4-byte aligned; CPL=0 read through caller's AS.
-            let v = unsafe { core::ptr::read_volatile(arg as *const u32) };
+            let v = match crate::ioctl_user::get_u32(arg) { Ok(v) => v, Err(rv) => return rv };
             match req {
                 TIOCMSET => console::static_console::modem_set(v),
                 TIOCMBIS => console::static_console::modem_bis(v),

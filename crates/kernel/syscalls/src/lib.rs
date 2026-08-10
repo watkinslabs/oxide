@@ -244,6 +244,11 @@ pub mod pselect_ppoll;
 // so its decision logic has to live where tests can reach it.
 pub(crate) mod ioctl_uapi;
 pub(crate) mod ioctl_owner;
+// The ioctl stage's caller-memory accessors and the ABI offsets/bounds they
+// use. Same reason for being ungated, plus one of its own: a raw dereference of
+// a caller address has no exception-table fixup, so every one of them belongs
+// on the fault-recovering usercopy this module wraps.
+pub(crate) mod ioctl_user;
 // tkill(2)/tgkill(2) share one `do_tkill`; the pid/tgid admission rules are the
 // only user-visible part of a rejected call, so they compile hosted.
 #[cfg(any(target_os = "oxide-kernel", test))]

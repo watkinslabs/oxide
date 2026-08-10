@@ -2,6 +2,7 @@
 
 use syscall::errno::Errno;
 
+use crate::ioctl_user as user;
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
 use tty::ioctl::req as tty_req;
 
@@ -111,23 +112,15 @@ pub(super) fn handle_tty_ioctl(
                 },
             };
             let bytes = ws.to_le_bytes();
-            // SAFETY: arg validated 8-byte aligned; CPL=0 writes through caller's AS.
-            unsafe {
-                for i in 0..8 {
-                    core::ptr::write_volatile((arg + i as u64) as *mut u8, bytes[i]);
-                }
+            if let Err(rv) = user::put_bytes(arg, &bytes) { return rv; }
+            {
             }
             0
         }
         TIOCSWINSZ => {
             if let Err(rv) = validate_user_buf(arg, 8, 2) { return rv; }
             let mut buf = [0u8; 8];
-            // SAFETY: arg validated 8-byte buffer; CPL=0 reads through caller's AS.
-            unsafe {
-                for i in 0..8 {
-                    buf[i] = core::ptr::read_volatile((arg + i as u64) as *const u8);
-                }
-            }
+            if let Err(rv) = user::get_into(arg, &mut buf) { return rv; }
             let ws = tty::pty::Winsize::from_le_bytes(&buf);
             let (changed, fg) = match &pty_pair {
                 Some(pair) => pair.with_pair(|p| {
@@ -169,26 +162,16 @@ pub(super) fn handle_tty_ioctl(
                     console::TtyTarget::Vt(vt) => console::vt_tty::vt_tty(vt).termios(),
                 },
             };
-            // SAFETY: arg validated kernel-termios-sized and aligned; CPL=0
-            // writes through caller's AS. glibc converts this 36-byte kernel
-            // UAPI image to its public 60-byte struct termios in userspace.
-            unsafe {
-                for i in 0..KERNEL_TERMIOS_BYTES {
-                    core::ptr::write_volatile((arg + i as u64) as *mut u8, snap[i]);
-                }
-            }
+            // glibc converts this 36-byte kernel UAPI image to its public
+            // 60-byte struct termios in userspace.
+            if let Err(rv) = user::put_bytes(arg, &snap[..KERNEL_TERMIOS_BYTES]) { return rv; }
             0
         }
         TCSETS | TCSETSW | TCSETSF => {
             if let Err(rv) = validate_user_buf(arg, KERNEL_TERMIOS_BYTES as u64, 4) { return rv; }
+            // Preserve the internal speed/padding tail.
             let mut buf = [0u8; tty::pty::TERMIOS_BYTES];
-            // SAFETY: arg validated kernel-termios-sized; CPL=0 reads through
-            // caller's AS. Preserve the internal speed/padding tail.
-            unsafe {
-                for i in 0..KERNEL_TERMIOS_BYTES {
-                    buf[i] = core::ptr::read_volatile((arg + i as u64) as *const u8);
-                }
-            }
+            if let Err(rv) = user::get_into(arg, &mut buf[..KERNEL_TERMIOS_BYTES]) { return rv; }
             if let Some(pair) = &pty_pair {
                 pair.with_pair(|p| p.set_termios(buf));
                 // TCSETSF also discards unread input (Linux `tcsetattr`
@@ -249,8 +232,7 @@ pub(super) fn handle_tty_ioctl(
                     console::TtyTarget::Vt(vt) => console::vt_tty::vt_tty(vt).exclusive(),
                 }
             };
-            // SAFETY: arg validated 4-byte aligned; CPL=0 writes through caller's AS.
-            unsafe { core::ptr::write_volatile(arg as *mut i32, excl as i32); }
+            if let Err(rv) = user::put_i32(arg, excl as i32) { return rv; }
             0
         }
         TCXONC => {
@@ -284,16 +266,14 @@ pub(super) fn handle_tty_ioctl(
         TIOCGPTN => {
             if !pty_master { return -(Errno::Enotty.as_i32() as i64); }
             if let Err(rv) = validate_user_buf_writable(arg, tty_req::INT_BYTES, tty_req::INT_BYTES) { return rv; }
-            // SAFETY: arg validated 4-byte aligned; CPL=0 writes through caller's AS.
-            unsafe { core::ptr::write_volatile(arg as *mut u32, pty_pair.as_ref().map(|p| p.pts_num()).unwrap_or_default()); }
-            0
+            let n = pty_pair.as_ref().map(|p| p.pts_num()).unwrap_or_default();
+            match user::put_u32(arg, n) { Ok(()) => 0, Err(rv) => rv }
         }
         TIOCSPTLCK => {
             // Master-side pts lock toggle (glibc/musl unlockpt = arg 0).
             if !pty_master { return -(Errno::Enotty.as_i32() as i64); }
             if let Err(rv) = validate_user_buf(arg, tty_req::INT_BYTES, tty_req::INT_BYTES) { return rv; }
-            // SAFETY: arg validated 4-byte aligned; CPL=0 read through caller's AS.
-            let v = unsafe { core::ptr::read_volatile(arg as *const i32) };
+            let v = match user::get_i32(arg) { Ok(v) => v, Err(rv) => return rv };
             match &pty_pair {
                 Some(pair) => { pair.set_locked(v != 0); 0 }
                 None => -(Errno::Enotty.as_i32() as i64),
@@ -306,8 +286,7 @@ pub(super) fn handle_tty_ioctl(
                 Some(pair) => pair.is_locked(),
                 None => return -(Errno::Enotty.as_i32() as i64),
             };
-            // SAFETY: arg validated 4-byte aligned; CPL=0 write through caller's AS.
-            unsafe { core::ptr::write_volatile(arg as *mut i32, locked as i32); }
+            if let Err(rv) = user::put_i32(arg, locked as i32) { return rv; }
             0
         }
         TIOCPKT => {
@@ -316,8 +295,7 @@ pub(super) fn handle_tty_ioctl(
             // terminal bytes share one race-free read stream.
             if !pty_master { return -(Errno::Enotty.as_i32() as i64); }
             if let Err(rv) = validate_user_buf(arg, tty_req::INT_BYTES, tty_req::INT_BYTES) { return rv; }
-            // SAFETY: arg validated readable for one Linux int input.
-            let enabled = unsafe { core::ptr::read_volatile(arg as *const i32) } != 0;
+            let enabled = match user::get_i32(arg) { Ok(v) => v != 0, Err(rv) => return rv };
             match &pty_pair {
                 Some(pair) => { pair.with_pair(|p| p.set_master_packet(enabled)); 0 }
                 None => -(Errno::Eio.as_i32() as i64),
@@ -330,8 +308,7 @@ pub(super) fn handle_tty_ioctl(
                 Some(pair) => pair.with_pair(|p| p.master_packet_enabled()),
                 None => return -(Errno::Eio.as_i32() as i64),
             };
-            // SAFETY: arg is a validated writable Linux int buffer.
-            unsafe { core::ptr::write_volatile(arg as *mut i32, enabled as i32); }
+            if let Err(rv) = user::put_i32(arg, enabled as i32) { return rv; }
             0
         }
         TIOCSIG => {
@@ -362,20 +339,15 @@ pub(super) fn handle_tty_ioctl(
                 Some(pair) => pair.with_pair(|p| p.output_bytes(pty_master)),
                 None => return -(Errno::Enotty.as_i32() as i64),
             };
-            // SAFETY: arg is a validated writable Linux int buffer.
-            unsafe { core::ptr::write_volatile(arg as *mut i32, count as i32); }
-            0
+            match user::put_i32(arg, count as i32) { Ok(()) => 0, Err(rv) => rv }
         }
         TIOCGETD => {
             if let Err(rv) = validate_user_buf_writable(arg, tty_req::INT_BYTES, tty_req::INT_BYTES) { return rv; }
-            // SAFETY: arg is a validated writable Linux int buffer.
-            unsafe { core::ptr::write_volatile(arg as *mut u32, tty_req::N_TTY); }
-            0
+            match user::put_u32(arg, tty_req::N_TTY) { Ok(()) => 0, Err(rv) => rv }
         }
         TIOCSETD => {
             if let Err(rv) = validate_user_buf(arg, tty_req::INT_BYTES, tty_req::INT_BYTES) { return rv; }
-            // SAFETY: arg is a validated readable Linux int buffer.
-            let ldisc = unsafe { core::ptr::read_volatile(arg as *const u32) };
+            let ldisc = match user::get_u32(arg) { Ok(v) => v, Err(rv) => return rv };
             if ldisc != tty_req::N_TTY { return -(Errno::Einval.as_i32() as i64); }
             0
         }
@@ -421,11 +393,9 @@ pub(super) fn handle_tty_ioctl(
             if let Some(pair) = &pty_pair {
                 if req == TIOCGPGRP {
                     let pgid = pair.with_pair(|p| p.foreground_pgid);
-                    // SAFETY: arg validated 4-byte aligned; CPL=0 writes.
-                    unsafe { core::ptr::write_volatile(arg as *mut u32, pgid); }
+                    if let Err(rv) = user::put_u32(arg, pgid) { return rv; }
                 } else {
-                    // SAFETY: arg validated 4-byte aligned; CPL=0 reads.
-                    let pgid = unsafe { core::ptr::read_volatile(arg as *const u32) };
+                    let pgid = match user::get_u32(arg) { Ok(v) => v, Err(rv) => return rv };
                     pair.with_pair(|p| p.foreground_pgid = pgid);
                 }
             } else {
@@ -435,11 +405,9 @@ pub(super) fn handle_tty_ioctl(
                         console::TtyTarget::Serial => console::static_console::foreground_pgid(),
                         console::TtyTarget::Vt(vt) => console::vt_tty::vt_tty(vt).fg_pgrp(),
                     };
-                    // SAFETY: arg validated 4-byte aligned; CPL=0 writes.
-                    unsafe { core::ptr::write_volatile(arg as *mut u32, pgid); }
+                    if let Err(rv) = user::put_u32(arg, pgid) { return rv; }
                 } else {
-                    // SAFETY: arg validated 4-byte aligned; CPL=0 reads.
-                    let pgid = unsafe { core::ptr::read_volatile(arg as *const u32) };
+                    let pgid = match user::get_u32(arg) { Ok(v) => v, Err(rv) => return rv };
                     // Set the fg pgrp on the TtyStruct (+ driver shadow) so
                     // ISIG (^C) targets the live fg.
                     match tgt {

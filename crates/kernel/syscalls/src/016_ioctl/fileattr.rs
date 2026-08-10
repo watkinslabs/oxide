@@ -1,5 +1,6 @@
 use syscall::errno::Errno;
 
+use crate::ioctl_user as user;
 use crate::userbuf::{validate_user_buf_readable, validate_user_buf_writable};
 
 use super::uapi::*;
@@ -11,13 +12,13 @@ pub(super) fn ioctl_fsgetxattr(file: &vfs::File, arg: u64) -> i64 {
         Err(e) => return -(e as i64),
     };
     if let Err(rv) = validate_user_buf_writable(arg, FSXATTR_BYTES, 1) { return rv; }
-    write_u32(arg, fa.fsx_xflags & FS_XFLAGS_MASK);
-    write_u32(arg + 4, fa.fsx_extsize);
-    write_u32(arg + 8, fa.fsx_nextents);
-    write_u32(arg + 12, fa.fsx_projid);
-    write_u32(arg + 16, fa.fsx_cowextsize);
-    write_u64(arg + 20, 0);
-    0
+    let mut out = [0u8; FSXATTR_BYTES as usize];
+    out[0..4].copy_from_slice(&(fa.fsx_xflags & FS_XFLAGS_MASK).to_ne_bytes());
+    out[4..8].copy_from_slice(&fa.fsx_extsize.to_ne_bytes());
+    out[8..12].copy_from_slice(&fa.fsx_nextents.to_ne_bytes());
+    out[12..16].copy_from_slice(&fa.fsx_projid.to_ne_bytes());
+    out[16..20].copy_from_slice(&fa.fsx_cowextsize.to_ne_bytes());
+    match user::put_bytes(arg, &out) { Ok(()) => 0, Err(rv) => rv }
 }
 
 /// Linux `FS_IOC_GETFLAGS`: copy the legacy `FS_*_FL` flag word. # C: O(1)
@@ -27,14 +28,13 @@ pub(super) fn ioctl_getflags(file: &vfs::File, arg: u64) -> i64 {
         Err(e) => return -(e as i64),
     };
     if let Err(rv) = validate_user_buf_writable(arg, INT_BYTES, 1) { return rv; }
-    write_u32(arg, fa.flags);
-    0
+    match user::put_u32(arg, fa.flags) { Ok(()) => 0, Err(rv) => rv }
 }
 
 /// Linux `FS_IOC_SETFLAGS`: set the legacy `FS_*_FL` flag word. # C: FS-dependent
 pub(super) fn ioctl_setflags(cur: &sched::Task, file: &vfs::File, arg: u64) -> i64 {
     if let Err(rv) = validate_user_buf_readable(arg, INT_BYTES, 1) { return rv; }
-    let flags = read_u32(arg);
+    let flags = match user::get_u32(arg) { Ok(v) => v, Err(rv) => return rv };
     let want = fattr_fill_flags(vfs::FileAttr { flags, ..Default::default() });
     vfs_fileattr_set(cur, file, want, vfs::FileAttrSource::Flags)
 }
@@ -42,12 +42,14 @@ pub(super) fn ioctl_setflags(cur: &sched::Task, file: &vfs::File, arg: u64) -> i
 /// Linux `FS_IOC_FSSETXATTR`: copy fsxattr, validate xflags, set fileattr. # C: FS-dependent
 pub(super) fn ioctl_fssetxattr(cur: &sched::Task, file: &vfs::File, arg: u64) -> i64 {
     if let Err(rv) = validate_user_buf_readable(arg, FSXATTR_BYTES, 1) { return rv; }
-    let xflags = read_u32(arg);
+    let fsx = match user::get_bytes::<{ FSXATTR_BYTES as usize }>(arg) { Ok(b) => b, Err(rv) => return rv };
+    let fld = |off: usize| u32::from_ne_bytes([fsx[off], fsx[off + 1], fsx[off + 2], fsx[off + 3]]);
+    let xflags = fld(0);
     if xflags & !FS_XFLAGS_MASK != 0 { return -(Errno::Eopnotsupp.as_i32() as i64); }
-    let extsize = read_u32(arg + 4);
-    let nextents = read_u32(arg + 8);
-    let projid = read_u32(arg + 12);
-    let cowextsize = read_u32(arg + 16);
+    let extsize = fld(4);
+    let nextents = fld(8);
+    let projid = fld(12);
+    let cowextsize = fld(16);
     let want = fattr_fill_xflags(vfs::FileAttr {
         flags: 0,
         fsx_xflags: xflags & !FS_XFLAG_RDONLY_MASK,
@@ -122,21 +124,6 @@ fn fattr_fill_flags(mut fa: vfs::FileAttr) -> vfs::FileAttr {
     if fa.flags & FS_VERITY_FL    != 0 { fa.fsx_xflags |= FS_XFLAG_VERITY; }
     if fa.flags & FS_CASEFOLD_FL  != 0 { fa.fsx_xflags |= FS_XFLAG_CASEFOLD; }
     fa
-}
-
-fn read_u32(addr: u64) -> u32 {
-    // SAFETY: caller validated the surrounding user payload before reading this field.
-    unsafe { core::ptr::read_unaligned(addr as *const u32) }
-}
-
-fn write_u32(addr: u64, val: u32) {
-    // SAFETY: caller validated the surrounding user payload before writing this field.
-    unsafe { core::ptr::write_unaligned(addr as *mut u32, val); }
-}
-
-fn write_u64(addr: u64, val: u64) {
-    // SAFETY: caller validated the surrounding user payload before writing this field.
-    unsafe { core::ptr::write_unaligned(addr as *mut u64, val); }
 }
 
 #[cfg(not(test))]

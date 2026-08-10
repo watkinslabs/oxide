@@ -2,121 +2,145 @@
 
 extern crate alloc;
 
+use syscall::errno::Errno;
+
+use crate::ioctl_user as user;
+
+// `struct console_font_op { u32 op, flags, width, height, charcount; u8 *data; }`
+// — `data` is 8-byte aligned, so four bytes of padding follow `charcount` and
+// the struct is 32 bytes.
+const OP_OP:        u64 = 0;
+const OP_WIDTH:     u64 = 8;
+const OP_HEIGHT:    u64 = 12;
+const OP_CHARCOUNT: u64 = 16;
+const OP_DATA:      u64 = 24;
+const OP_BYTES:     usize = 32;
+
+// `struct unimapdesc { u16 entry_ct; struct unipair *entries; }` — the pointer
+// is 8-byte aligned, so the struct is 16 bytes.
+const UD_ENTRY_CT: u64 = 0;
+const UD_ENTRIES:  u64 = 8;
+const UD_BYTES:    usize = 16;
+
+fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
+
+fn ld_u32(b: &[u8], off: u64) -> u32 {
+    let o = off as usize;
+    u32::from_ne_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
+}
+
+fn ld_u64(b: &[u8], off: u64) -> u64 {
+    let o = off as usize;
+    let mut v = [0u8; 8];
+    v.copy_from_slice(&b[o..o + 8]);
+    u64::from_ne_bytes(v)
+}
+
+fn st_u32(b: &mut [u8], off: u64, v: u32) {
+    let o = off as usize;
+    b[o..o + 4].copy_from_slice(&v.to_ne_bytes());
+}
+
 /// KDFONTOP + PIO/GIO_UNIMAP — the `setfont` font + unicode-map path
 /// (Linux `con_font_op` / `con_set_unimap`). KDFONTOP loads/reads the glyph
 /// bitmaps (32 bytes/glyph buffer); the unicode map is set separately by
 /// PIO_UNIMAP (codepoint→glyph-index), so `conv_uni_to_pc` follows a custom
-/// font. # C: O(charcount*height) on a font load.
+/// font. Every caller access copies through the fault-recovering usercopy: the
+/// glyph buffer and the unipair array are caller memory and can be unmapped
+/// under the call. # C: O(charcount*height) on a font load.
 pub(super) fn handle_font_ioctl(req: u64, arg: u64) -> Option<i64> {
-    use syscall::errno::Errno;
-    let errno = |e: Errno| -(e.as_i32() as i64);
-    const STRIDE: usize = 32;       // KDFONTOP: 32 bytes per glyph
-    const MAX_GLYPHS: u32 = 512;
-    const MAX_UNI: usize = 8192;    // unimap entry cap (sanity bound)
     match req {
-        vt::KDFONTOP => {
-            // struct console_font_op { u32 op,flags,width,height,charcount;
-            // u8 *data; } — `data` is 8-byte aligned → offset 24 (4 bytes pad
-            // after charcount@16); struct size 32.
-            if arg == 0 || arg + 32 >= hal::USER_VA_END { return Some(errno(Errno::Efault)); }
-            // SAFETY: arg validated < USER_VA_END - 32; read the console_font_op fields from the caller's AS at their padded offsets.
-            let (op, width, height, charcount, data_ptr) = unsafe {(
-                core::ptr::read_volatile(arg as *const u32),
-                core::ptr::read_volatile((arg + 8) as *const u32),
-                core::ptr::read_volatile((arg + 12) as *const u32),
-                core::ptr::read_volatile((arg + 16) as *const u32),
-                core::ptr::read_volatile((arg + 24) as *const u64),
-            )};
-            match op {
-                vt::KD_FONT_OP_SET => {
-                    if charcount == 0 || charcount > MAX_GLYPHS { return Some(errno(Errno::Einval)); }
-                    let bytes = charcount as usize * STRIDE;
-                    if data_ptr == 0 || data_ptr + bytes as u64 >= hal::USER_VA_END { return Some(errno(Errno::Efault)); }
-                    let mut buf = alloc::vec![0u8; bytes];
-                    // SAFETY: data_ptr validated for `bytes`; copy the glyph bitmaps from the caller's AS.
-                    unsafe { for i in 0..bytes { buf[i] = core::ptr::read_volatile((data_ptr + i as u64) as *const u8); } }
-                    match fbcon::font::set_font(width, height, charcount, STRIDE, &buf) {
-                        Ok(()) => Some(0),
-                        Err(()) => Some(errno(Errno::Einval)),
-                    }
-                }
-                vt::KD_FONT_OP_GET => {
-                    let (w, h, c, data) = fbcon::font::get_font(STRIDE);
-                    // The caller's charcount is its buffer capacity (in glyphs).
-                    if charcount < c {
-                        // SAFETY: arg validated above; report the needed count.
-                        unsafe { core::ptr::write_volatile((arg + 16) as *mut u32, c); }
-                        return Some(errno(Errno::Enospc));
-                    }
-                    // SAFETY: arg validated; write back the real width/height/charcount.
-                    unsafe {
-                        core::ptr::write_volatile((arg + 8) as *mut u32, w);
-                        core::ptr::write_volatile((arg + 12) as *mut u32, h);
-                        core::ptr::write_volatile((arg + 16) as *mut u32, c);
-                    }
-                    let bytes = c as usize * STRIDE;
-                    if data_ptr == 0 || data_ptr + bytes as u64 >= hal::USER_VA_END { return Some(errno(Errno::Efault)); }
-                    // SAFETY: data_ptr validated for `bytes`; copy glyph bitmaps out to the caller's AS.
-                    unsafe { for i in 0..bytes.min(data.len()) { core::ptr::write_volatile((data_ptr + i as u64) as *mut u8, data[i]); } }
-                    Some(0)
-                }
-                vt::KD_FONT_OP_SET_DEFAULT => { fbcon::font::set_default(); Some(0) }
-                _ => Some(errno(Errno::Einval)), // KD_FONT_OP_COPY unsupported
-            }
-        }
-        vt::PIO_UNIMAP => {
-            // struct unimapdesc { u16 entry_ct; struct unipair *entries; } —
-            // entries at offset 8 (64-bit alignment). unipair = {u16 unicode, u16 fontpos}.
-            if arg == 0 || arg + 16 >= hal::USER_VA_END { return Some(errno(Errno::Efault)); }
-            // SAFETY: arg validated < USER_VA_END - 16; read entry_ct (u16) + entries ptr (u64) from the caller's AS.
-            let (ct, entries) = unsafe {(
-                core::ptr::read_volatile(arg as *const u16) as usize,
-                core::ptr::read_volatile((arg + 8) as *const u64),
-            )};
-            if ct > MAX_UNI { return Some(errno(Errno::Einval)); }
-            let span = ct as u64 * 4;
-            if ct > 0 && (entries == 0 || entries + span >= hal::USER_VA_END) { return Some(errno(Errno::Efault)); }
-            let mut pairs = alloc::vec::Vec::with_capacity(ct);
-            for i in 0..ct {
-                let p = entries + (i as u64) * 4;
-                // SAFETY: entries validated for `span`; read each 4-byte unipair (unicode, fontpos) from the caller's AS.
-                let (uni, pos) = unsafe {(
-                    core::ptr::read_volatile(p as *const u16) as u32,
-                    core::ptr::read_volatile((p + 2) as *const u16),
-                )};
-                pairs.push((uni, pos));
-            }
-            fbcon::font::set_unimap(&pairs);
-            Some(0)
-        }
-        vt::GIO_UNIMAP => {
-            if arg == 0 || arg + 16 >= hal::USER_VA_END { return Some(errno(Errno::Efault)); }
-            // SAFETY: arg validated < USER_VA_END - 16; read the caller's buffer capacity (entry_ct) + dest ptr.
-            let (cap, entries) = unsafe {(
-                core::ptr::read_volatile(arg as *const u16) as usize,
-                core::ptr::read_volatile((arg + 8) as *const u64),
-            )};
-            let map = fbcon::font::unimap();
-            if cap < map.len() {
-                // SAFETY: arg validated; report the needed entry count.
-                unsafe { core::ptr::write_volatile(arg as *mut u16, map.len() as u16); }
-                return Some(errno(Errno::Enomem));
-            }
-            let span = map.len() as u64 * 4;
-            if !map.is_empty() && (entries == 0 || entries + span >= hal::USER_VA_END) { return Some(errno(Errno::Efault)); }
-            for (i, &(uni, pos)) in map.iter().enumerate() {
-                let p = entries + (i as u64) * 4;
-                // SAFETY: entries validated for `span`; write each 4-byte unipair out to the caller's AS.
-                unsafe {
-                    core::ptr::write_volatile(p as *mut u16, uni as u16);
-                    core::ptr::write_volatile((p + 2) as *mut u16, pos);
-                }
-            }
-            // SAFETY: arg validated; write back the actual entry count.
-            unsafe { core::ptr::write_volatile(arg as *mut u16, map.len() as u16); }
-            Some(0)
-        }
+        vt::KDFONTOP => Some(font_op(arg)),
+        vt::PIO_UNIMAP => Some(set_unimap(arg)),
+        vt::GIO_UNIMAP => Some(get_unimap(arg)),
         vt::PIO_UNIMAPCLR => { fbcon::font::clear_unimap(); Some(0) }
         _ => None,
     }
+}
+
+/// The reference copies the whole `console_font_op` in, runs the operation, and
+/// copies it back only on success — an error leaves the caller's struct as it
+/// was. # C: O(charcount*32)
+fn font_op(arg: u64) -> i64 {
+    let mut op = match user::get_bytes::<OP_BYTES>(arg) { Ok(b) => b, Err(rv) => return rv };
+    let data_ptr = ld_u64(&op, OP_DATA);
+    match ld_u32(&op, OP_OP) {
+        vt::KD_FONT_OP_SET => {
+            // The reference refuses a null glyph buffer with EINVAL, BEFORE it
+            // looks at the character count.
+            if data_ptr == 0 { return errno(Errno::Einval); }
+            let bytes = match user::font_glyph_bytes(ld_u32(&op, OP_CHARCOUNT)) {
+                Ok(n) => n, Err(rv) => return rv,
+            };
+            let mut buf = alloc::vec![0u8; bytes];
+            if let Err(rv) = user::get_into(data_ptr, &mut buf) { return rv; }
+            match fbcon::font::set_font(ld_u32(&op, OP_WIDTH), ld_u32(&op, OP_HEIGHT),
+                                        ld_u32(&op, OP_CHARCOUNT), user::FONT_GLYPH_STRIDE, &buf) {
+                Ok(()) => {}
+                Err(()) => return errno(Errno::Einval),
+            }
+        }
+        vt::KD_FONT_OP_GET => {
+            let (w, h, c, data) = fbcon::font::get_font(user::FONT_GLYPH_STRIDE);
+            // The caller's charcount is its buffer capacity (in glyphs). Too
+            // small is ENOSPC with the caller's struct untouched — the
+            // reference reports the shortfall by refusing, not by writing back.
+            if data_ptr != 0 && c > ld_u32(&op, OP_CHARCOUNT) { return errno(Errno::Enospc); }
+            if data_ptr != 0 {
+                let bytes = c as usize * user::FONT_GLYPH_STRIDE;
+                let n = bytes.min(data.len());
+                if let Err(rv) = user::put_bytes(data_ptr, &data[..n]) { return rv; }
+            }
+            st_u32(&mut op, OP_WIDTH, w);
+            st_u32(&mut op, OP_HEIGHT, h);
+            st_u32(&mut op, OP_CHARCOUNT, c);
+        }
+        vt::KD_FONT_OP_SET_DEFAULT => fbcon::font::set_default(),
+        _ => return errno(Errno::Einval), // KD_FONT_OP_COPY unsupported
+    }
+    match user::put_bytes(arg, &op) { Ok(()) => 0, Err(rv) => rv }
+}
+
+/// PIO_UNIMAP: replace the codepoint→glyph map from the caller's array.
+/// # C: O(entry_ct)
+fn set_unimap(arg: u64) -> i64 {
+    let desc = match user::get_bytes::<UD_BYTES>(arg) { Ok(b) => b, Err(rv) => return rv };
+    let ct = u16::from_ne_bytes([desc[UD_ENTRY_CT as usize], desc[UD_ENTRY_CT as usize + 1]]) as usize;
+    let entries = ld_u64(&desc, UD_ENTRIES);
+    let span = match user::unimap_span(ct) { Ok(n) => n, Err(rv) => return rv };
+    let mut raw = alloc::vec![0u8; span as usize];
+    if span != 0 {
+        if let Err(rv) = user::get_into(entries, &mut raw) { return rv; }
+    }
+    let mut pairs = alloc::vec::Vec::with_capacity(ct);
+    for i in 0..ct {
+        let o = i * user::UNIMAP_PAIR_BYTES as usize;
+        pairs.push((u16::from_ne_bytes([raw[o], raw[o + 1]]) as u32,
+                    u16::from_ne_bytes([raw[o + 2], raw[o + 3]])));
+    }
+    fbcon::font::set_unimap(&pairs);
+    0
+}
+
+/// GIO_UNIMAP: export the map. The reference writes as many pairs as fit AND
+/// the true entry count, then reports `ENOMEM` when the caller's array was too
+/// small — a short buffer still learns the count it needs. # C: O(entries)
+fn get_unimap(arg: u64) -> i64 {
+    let desc = match user::get_bytes::<UD_BYTES>(arg) { Ok(b) => b, Err(rv) => return rv };
+    let cap = u16::from_ne_bytes([desc[UD_ENTRY_CT as usize], desc[UD_ENTRY_CT as usize + 1]]) as usize;
+    let entries = ld_u64(&desc, UD_ENTRIES);
+    let map = fbcon::font::unimap();
+    let n = map.len().min(cap);
+    if n != 0 {
+        let mut raw = alloc::vec![0u8; n * user::UNIMAP_PAIR_BYTES as usize];
+        for (i, &(uni, pos)) in map.iter().take(n).enumerate() {
+            let o = i * user::UNIMAP_PAIR_BYTES as usize;
+            raw[o..o + 2].copy_from_slice(&(uni as u16).to_ne_bytes());
+            raw[o + 2..o + 4].copy_from_slice(&pos.to_ne_bytes());
+        }
+        if let Err(rv) = user::put_bytes(entries, &raw) { return rv; }
+    }
+    if let Err(rv) = user::put_u16(arg + UD_ENTRY_CT, map.len() as u16) { return rv; }
+    if map.len() > cap { return errno(Errno::Enomem); }
+    0
 }
