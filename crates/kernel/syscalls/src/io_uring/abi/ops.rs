@@ -101,6 +101,19 @@ pub const IORING_FSYNC_DATASYNC: u32 = 1 << 0;
 pub const IORING_CQE_F_BUFFER: u32 = 1 << 0;
 /// `IORING_CQE_F_MORE` — more completions will follow for this SQE.
 pub const IORING_CQE_F_MORE: u32 = 1 << 1;
+/// `IORING_CQE_F_SOCK_NONEMPTY` — the receive that posted this completion
+/// left more data already queued on the socket. A caller that sees it can go
+/// straight back for another receive instead of waiting for readiness, which
+/// is what makes a receive loop cost one syscall per burst rather than two.
+pub const IORING_CQE_F_SOCK_NONEMPTY: u32 = 1 << 2;
+/// `IORING_CQE_F_NOTIF` — this completion is a zero-copy send's NOTIFICATION:
+/// the payload memory the submission named is the caller's again. It is what
+/// separates the notification from the send's own result, which may share the
+/// same `user_data`.
+pub const IORING_CQE_F_NOTIF: u32 = 1 << 3;
+/// `IORING_NOTIF_USAGE_ZC_COPIED` — in a notification's result, the payload
+/// was copied rather than handed over by reference.
+pub const IORING_NOTIF_USAGE_ZC_COPIED: u32 = 1 << 31;
 /// `IORING_CQE_F_BUF_MORE` — the buffer id this completion reports is not
 /// finished with: the operation consumed part of it and the same id will be
 /// handed out again. Only an incrementally-consumed group can say this.
@@ -119,6 +132,15 @@ pub const IORING_RECVSEND_POLL_FIRST: u32 = 1 << 0;
 /// `IORING_RECV_MULTISHOT` — keep receiving, posting one auxiliary completion
 /// per delivery, until the description says stop.
 pub const IORING_RECV_MULTISHOT: u32 = 1 << 1;
+/// `IORING_RECVSEND_FIXED_BUF` — the transfer runs through the registered
+/// buffer named by `buf_index` rather than through the entry's address.
+pub const IORING_RECVSEND_FIXED_BUF: u32 = 1 << 2;
+/// `IORING_SEND_ZC_REPORT_USAGE` — the notification completion of a zero-copy
+/// send reports whether the payload was copied after all.
+pub const IORING_SEND_ZC_REPORT_USAGE: u32 = 1 << 3;
+/// `IORING_SEND_VECTORIZED` — `addr` points at a segment vector of `len`
+/// entries rather than at the payload itself.
+pub const IORING_SEND_VECTORIZED: u32 = 1 << 5;
 
 /// Whether the submission engine executes this opcode. # C: O(1)
 pub fn op_supported(op: u8) -> bool {
@@ -142,7 +164,7 @@ pub fn op_supported(op: u8) -> bool {
         | IORING_OP_FIXED_FD_INSTALL
         | IORING_OP_TIMEOUT | IORING_OP_TIMEOUT_REMOVE | IORING_OP_LINK_TIMEOUT
         | IORING_OP_ASYNC_CANCEL | IORING_OP_POLL_ADD | IORING_OP_POLL_REMOVE
-        | IORING_OP_NOP128)
+        | IORING_OP_NOP128 | IORING_OP_SEND_ZC | IORING_OP_SENDMSG_ZC)
 }
 
 /// Whether the opcode takes its buffer from a provided-buffer group when the

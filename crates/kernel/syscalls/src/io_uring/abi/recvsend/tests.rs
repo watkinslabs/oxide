@@ -18,10 +18,10 @@ fn every_defined_per_operation_flag_is_either_performed_or_refused() {
     const TABLE: &[(u16, bool, bool)] = &[
         (POLL_FIRST,            true,  true),
         (MULTISHOT,             false, true),
-        (FIXED_BUF,             false, false),
+        (FIXED_BUF,             true,  true),
         (SEND_ZC_REPORT_USAGE,  false, false),
         (IORING_RECVSEND_BUNDLE, true, true),
-        (SEND_VECTORIZED,       false, false),
+        (SEND_VECTORIZED,       true,  false),
     ];
     for &(bit, send_ok, recv_ok) in TABLE {
         assert_eq!(SEND_FLAGS & bit != 0, send_ok, "send bit {bit:#x}");
@@ -38,14 +38,33 @@ fn every_defined_per_operation_flag_is_either_performed_or_refused() {
     assert_eq!((SEND_FLAGS | RECV_FLAGS) & !((1u16 << 6) - 1), 0);
 }
 
+/// The zero-copy usage report names a NOTIFICATION completion — the second
+/// completion a zero-copy send posts once the payload has left the caller's
+/// memory. A plain send posts no such completion, so the bit describes an
+/// answer this entry can never give and is refused on all four opcodes rather
+/// than accepted and dropped.
 #[test]
-fn a_flag_the_kernel_does_not_perform_is_refused_rather_than_ignored() {
+fn the_zero_copy_usage_report_is_not_a_plain_send_flag() {
     for op in [IORING_OP_SEND, IORING_OP_SENDMSG, IORING_OP_RECV, IORING_OP_RECVMSG] {
-        for bit in [FIXED_BUF, SEND_ZC_REPORT_USAGE, SEND_VECTORIZED] {
-            assert_eq!(admit(op, IOSQE_BUFFER_SELECT, bit, 0), Err(Errno::Einval),
-                       "op {op} bit {bit:#x}");
-        }
+        assert_eq!(admit(op, 0, SEND_ZC_REPORT_USAGE, 0), Err(Errno::Einval), "op {op}");
+        assert_eq!(admit(op, IOSQE_BUFFER_SELECT, SEND_ZC_REPORT_USAGE, 0), Err(Errno::Einval),
+                   "op {op} with a group");
     }
+}
+
+/// A segment vector is the send family's shape: a receive never reads `addr`
+/// as one, so the bit is not merely inert there but malformed.
+#[test]
+fn the_vectorized_bit_is_not_a_receive_flag() {
+    for op in [IORING_OP_RECV, IORING_OP_RECVMSG] {
+        assert_eq!(admit(op, 0, SEND_VECTORIZED, 0), Err(Errno::Einval), "op {op}");
+    }
+    assert_eq!(admit(IORING_OP_SEND, 0, SEND_VECTORIZED, 0), Ok(()));
+    assert!(vectorized_send(IORING_OP_SEND, SEND_VECTORIZED));
+    // A message-carrying send already describes a vector, so the bit names no
+    // second behaviour there.
+    assert!(!vectorized_send(IORING_OP_SENDMSG, SEND_VECTORIZED));
+    assert!(!vectorized_send(IORING_OP_SEND, 0));
 }
 
 #[test]
@@ -85,12 +104,16 @@ fn a_bundle_is_refused_on_the_message_carrying_opcodes() {
     assert_eq!(admit(IORING_OP_RECV, IOSQE_BUFFER_SELECT, IORING_RECVSEND_BUNDLE, 0), Ok(()));
 }
 
-/// A receive that reports each delivery as it lands cannot also describe one
-/// per message: the message header names the buffer the whole delivery goes
-/// into, and there is one of it.
+/// A message-carrying receive stays armed the same way the plain one does.
+/// It cannot write a header back per delivery — the caller has moved on by
+/// then — so each delivery frames its own header inside the buffer it landed
+/// in, and the entry's `msghdr` supplies only the two capacities.
 #[test]
-fn multishot_is_refused_on_the_message_carrying_receive() {
-    assert_eq!(admit(IORING_OP_RECVMSG, IOSQE_BUFFER_SELECT, MULTISHOT, 0), Err(Errno::Einval));
+fn multishot_is_performed_on_the_message_carrying_receive() {
+    assert_eq!(admit(IORING_OP_RECVMSG, IOSQE_BUFFER_SELECT, MULTISHOT, 0), Ok(()));
+    assert!(multishot(IORING_OP_RECVMSG, IOSQE_BUFFER_SELECT, MULTISHOT));
+    assert!(!multishot(IORING_OP_RECVMSG, 0, MULTISHOT));
+    assert!(defers_before_issue(IORING_OP_RECVMSG, IOSQE_BUFFER_SELECT, MULTISHOT));
 }
 
 #[test]
@@ -128,14 +151,39 @@ fn both_behaviours_keep_the_entry_out_of_the_submitting_task() {
 }
 
 #[test]
-fn a_delivery_reports_more_and_keeps_the_request_armed() {
-    assert_eq!(step(64, 0), Step::More);
-    assert_eq!(step(1, 5), Step::More);
+fn a_delivery_that_left_data_queued_keeps_the_request_running() {
+    assert_eq!(step(64, 0, true), Step::More);
+    assert_eq!(step(1, 5, true), Step::More);
+}
+
+/// A delivery that drained the socket reports itself and then waits. Taking
+/// another pass would draw a buffer out of the caller's group, find nothing,
+/// and hand it straight back — which is the cost the queue-length report
+/// exists to avoid.
+#[test]
+fn a_delivery_that_drained_the_socket_posts_and_then_waits() {
+    assert_eq!(step(64, 0, false), Step::PostThenWait);
+    assert_eq!(step(1, MULTISHOT_MAX_RETRY - 1, false), Step::PostThenWait);
 }
 
 #[test]
 fn nothing_to_deliver_arms_the_description_and_posts_nothing() {
-    assert_eq!(step(-(Errno::Eagain.as_i32() as i64), 0), Step::Wait);
+    assert_eq!(step(-(Errno::Eagain.as_i32() as i64), 0, true), Step::Wait);
+    assert_eq!(step(-(Errno::Eagain.as_i32() as i64), 0, false), Step::Wait);
+}
+
+/// The queue-length report is a RECEIVE completion's flag: a send never
+/// carries it, and a receive that left nothing queued does not either.
+#[test]
+fn the_queue_report_rides_only_a_receive_that_left_data_behind() {
+    use crate::io_uring_abi::ops::IORING_CQE_F_SOCK_NONEMPTY;
+    for op in [IORING_OP_RECV, IORING_OP_RECVMSG] {
+        assert_eq!(sock_nonempty(op, 1), IORING_CQE_F_SOCK_NONEMPTY, "op {op}");
+        assert_eq!(sock_nonempty(op, 0), 0, "op {op}");
+    }
+    for op in [IORING_OP_SEND, IORING_OP_SENDMSG, IORING_OP_READ] {
+        assert_eq!(sock_nonempty(op, 4096), 0, "op {op}");
+    }
 }
 
 /// The three ways a multishot receive ends, each reporting WHY in the
@@ -143,10 +191,10 @@ fn nothing_to_deliver_arms_the_description_and_posts_nothing() {
 /// description failed.
 #[test]
 fn every_ending_is_a_terminal_completion_carrying_its_reason() {
-    assert_eq!(step(0, 3), Step::Done(0));
+    assert_eq!(step(0, 3, true), Step::Done(0));
     for e in [Errno::Enobufs, Errno::Econnreset, Errno::Ebadf, Errno::Enotsock] {
         let r = -(e.as_i32() as i64);
-        assert_eq!(step(r, 0), Step::Done(r), "errno {e:?}");
+        assert_eq!(step(r, 0, true), Step::Done(r), "errno {e:?}");
     }
 }
 
@@ -154,11 +202,11 @@ fn every_ending_is_a_terminal_completion_carrying_its_reason() {
 /// bounded, and the request goes back on the queue still armed.
 #[test]
 fn a_bounded_run_of_passes_yields_the_worker() {
-    assert_eq!(step(64, MULTISHOT_MAX_RETRY - 2), Step::More);
-    assert_eq!(step(64, MULTISHOT_MAX_RETRY - 1), Step::Yield);
-    assert_eq!(step(64, MULTISHOT_MAX_RETRY), Step::Yield);
+    assert_eq!(step(64, MULTISHOT_MAX_RETRY - 2, true), Step::More);
+    assert_eq!(step(64, MULTISHOT_MAX_RETRY - 1, true), Step::Yield);
+    assert_eq!(step(64, MULTISHOT_MAX_RETRY, true), Step::Yield);
     // A yield still reports the bytes it moved; only `Wait` posts nothing.
-    assert_ne!(step(64, MULTISHOT_MAX_RETRY), Step::Wait);
+    assert_ne!(step(64, MULTISHOT_MAX_RETRY, true), Step::Wait);
 }
 
 /// Every pass runs without sleeping: the pass that finds nothing arms the

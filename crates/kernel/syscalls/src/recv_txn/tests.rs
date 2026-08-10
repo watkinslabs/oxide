@@ -22,7 +22,7 @@ fn user(msgp: u64, name: u64, namelen: u32, control: u64, controllen: usize,
     iov: Vec<IoVec>) -> RecvUser
 {
     let capacity = iov.iter().map(|v| v.len).sum();
-    RecvUser { msgp, name, namelen, name_len_ptr: 0, control, controllen, iov, capacity,
+    RecvUser { sink: crate::recv_user::Sink::User, msgp, name, namelen, name_len_ptr: 0, control, controllen, iov, capacity,
         layout: MsgLayout::Native }
 }
 

@@ -135,21 +135,18 @@ fn fixed(op: &Op, write: bool) -> i64 {
     if let Err(e) = attr_admission(op) { return e; }
     if let Err(e) = polled_admission(op, false) { return e; }
     let file = match file_of(op.fd) { Ok(f) => f, Err(e) => return e };
-    // Take an owning handle on the pinned buffer and drop the lock: the
-    // transfer below sleeps, and no spinlock may be held across it.
-    let buf = {
-        let g = op.inode.reg.lock();
-        let Some(bufs) = g.buffers.as_ref() else { return err(Errno::Efault) };
-        let Some(slot) = bufs.get(op.sqe.buf_index as usize) else { return err(Errno::Efault) };
-        Arc::clone(&slot.buf)
+    let buf = match super::fdres::reg_buf(op.inode, op.sqe.buf_index as u32) {
+        Ok(b) => b, Err(e) => return e,
     };
-    if buf.is_empty() { return err(Errno::Efault); }
     // The SQE address names a window inside the registered buffer.
-    let Some(off_in_buf) = op.addr.checked_sub(buf.base) else { return err(Errno::Efault) };
+    let w = match crate::io_uring_abi::recvsend::fixed::window(buf.base, buf.len, op.addr, op.len) {
+        Ok(w) => w, Err(e) => return err(e),
+    };
+    let off_in_buf = w.off;
     let mut pos = op.sqe.off as i64;
     if pos < 0 && op.sqe.off != CUR_POS { return err(Errno::Einval); }
     let mut failed: i64 = 0;
-    let walked = buf.for_each_chunk(off_in_buf, op.len as u64, |chunk| {
+    let walked = buf.for_each_chunk(off_in_buf, w.len, |chunk| {
         let r = if write { file.pwrite(chunk, pos) } else { file.pread(chunk, pos) };
         match r {
             Ok(0) => None,

@@ -152,7 +152,11 @@ impl InetSocket {
         }
     }
 
-    fn inq_len(&self) -> usize {
+    /// Bytes a reader could take from this socket right now — the one report
+    /// the queue-length ioctl, the ancillary queue-length record and the
+    /// completion flag saying "there is more" all answer from, so no two of
+    /// them can disagree. # C: O(queue)
+    pub fn inq_len(&self) -> usize {
         match &*self.kind.lock() {
             SockKind::Raw4(endpoint) => endpoint.next_len(),
             SockKind::Raw6(endpoint) => endpoint.first_len(),

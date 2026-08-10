@@ -23,6 +23,7 @@
 
 use alloc::sync::Arc;
 
+use crate::io_uring_abi::ops::IORING_CQE_F_SOCK_NONEMPTY;
 use crate::io_uring_abi::recvsend::{pass_msg_flags, step, Step};
 
 use super::iowq::run;
@@ -44,7 +45,8 @@ pub fn run_multishot(req: &Arc<IoReq>) {
         // work an ordinary buffer-selecting receive does, which is why it is
         // called rather than repeated here.
         let out = super::dispatch::dispatch_op(&req.ring, &sqe);
-        match step(out.res, passes) {
+        let nonempty = out.cqe_flags & IORING_CQE_F_SOCK_NONEMPTY != 0;
+        match step(out.res, passes, nonempty) {
             Step::Wait => {
                 // Nothing to deliver. The poll layer owns the request from
                 // here; if the description cannot be polled there is no
@@ -56,6 +58,14 @@ pub fn run_multishot(req: &Arc<IoReq>) {
             // no buffer id — only the reason the subscription ended.
             Step::Done(res) => return run::complete(req, res, 0),
             Step::More => { run::post_more(req, out.res, out.cqe_flags); passes += 1; }
+            // The socket handed over everything it had. Report this delivery
+            // and go back to waiting: another pass would draw a buffer out of
+            // the caller's group only to hand it straight back.
+            Step::PostThenWait => {
+                run::post_more(req, out.res, out.cqe_flags);
+                if super::poll::retry(req) { return; }
+                return run::complete(req, out.res, 0);
+            }
             Step::Yield => {
                 run::post_more(req, out.res, out.cqe_flags);
                 // Still armed, just not still running: another request may be

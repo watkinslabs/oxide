@@ -63,7 +63,7 @@ fn imports_all_iovecs_before_payload_copy() {
 fn copies_waitall_suffix_across_iovec_boundary() {
     let mut a = [0u8; 3];
     let mut b = [0u8; 3];
-    let imported = RecvUser { msgp: 0, name: 0, namelen: 0, name_len_ptr: 0, control: 0,
+    let imported = RecvUser { sink: crate::recv_user::Sink::User, msgp: 0, name: 0, namelen: 0, name_len_ptr: 0, control: 0,
         controllen: 0, iov: vec![IoVec { base: a.as_mut_ptr() as u64, len: 3 },
             IoVec { base: b.as_mut_ptr() as u64, len: 3 }], capacity: 6, layout: MsgLayout::Native };
     assert_eq!(imported.copy_payload_at(0, b"ab"), Ok(2));
@@ -75,14 +75,14 @@ fn copies_waitall_suffix_across_iovec_boundary() {
 #[test]
 fn record_copy_rejects_a_landed_prefix_while_stream_copy_returns_it() {
     let mut stream = [0u8; 1];
-    let stream_user = RecvUser { msgp: 0, name: 0, namelen: 0, name_len_ptr: 0,
+    let stream_user = RecvUser { sink: crate::recv_user::Sink::User, msgp: 0, name: 0, namelen: 0, name_len_ptr: 0,
         control: 0, controllen: 0,
         iov: vec![IoVec { base: stream.as_mut_ptr() as u64, len: 1 }], capacity: 2, layout: MsgLayout::Native };
     assert_eq!(stream_user.copy_payload(b"ab"), Ok(1));
     assert_eq!(stream, *b"a");
 
     let mut record = [0u8; 1];
-    let record_user = RecvUser { msgp: 0, name: 0, namelen: 0, name_len_ptr: 0,
+    let record_user = RecvUser { sink: crate::recv_user::Sink::User, msgp: 0, name: 0, namelen: 0, name_len_ptr: 0,
         control: 0, controllen: 0,
         iov: vec![IoVec { base: record.as_mut_ptr() as u64, len: 1 }], capacity: 2, layout: MsgLayout::Native };
     assert_eq!(record_user.copy_payload_record(b"ab"), Err(errno(Errno::Efault)));
@@ -149,7 +149,7 @@ fn recvfrom_nonnull_source_requires_length_pointer_late() {
 fn null_name_leaves_namelen_untouched() {
     let mut h = [0u8; MSGHDR_MAX];
     h[8..12].copy_from_slice(&77u32.to_ne_bytes());
-    let user = RecvUser { msgp: h.as_mut_ptr() as u64, name: 0, namelen: 77, name_len_ptr: 0,
+    let user = RecvUser { sink: crate::recv_user::Sink::User, msgp: h.as_mut_ptr() as u64, name: 0, namelen: 77, name_len_ptr: 0,
         control: 0, controllen: 0, iov: Vec::new(), capacity: 0, layout: MsgLayout::Native };
     assert_eq!(user.copy_name(b"ignored"), Ok(()));
     assert_eq!(MsgLayout::Native.u32_at(&h, 8), 77);
@@ -195,7 +195,7 @@ fn a_compat_controllen_is_read_from_its_own_offset() {
 #[test]
 fn a_compat_receive_publishes_its_lengths_and_flags_in_32_bit_fields() {
     let mut hdr = [0xa5u8; 28];
-    let user = RecvUser { msgp: hdr.as_mut_ptr() as u64, name: 0, namelen: 0, name_len_ptr: 0,
+    let user = RecvUser { sink: crate::recv_user::Sink::User, msgp: hdr.as_mut_ptr() as u64, name: 0, namelen: 0, name_len_ptr: 0,
         control: 0, controllen: 0, iov: Vec::new(), capacity: 0, layout: MsgLayout::Compat };
     user.finish(24, net::uapi::MSG_CTRUNC as u32).unwrap();
     assert_eq!(u32::from_ne_bytes(hdr[20..24].try_into().unwrap()), 24, "controllen at 20");
@@ -208,7 +208,7 @@ fn a_compat_receive_publishes_its_lengths_and_flags_in_32_bit_fields() {
 fn a_compat_source_length_lands_at_offset_four_not_eight() {
     let mut hdr = [0u8; 28];
     let mut addr = [0u8; 8];
-    let user = RecvUser { msgp: hdr.as_mut_ptr() as u64, name: addr.as_mut_ptr() as u64,
+    let user = RecvUser { sink: crate::recv_user::Sink::User, msgp: hdr.as_mut_ptr() as u64, name: addr.as_mut_ptr() as u64,
         namelen: addr.len() as u32, name_len_ptr: 0, control: 0, controllen: 0,
         iov: Vec::new(), capacity: 0, layout: MsgLayout::Compat };
     user.copy_name(b"abcd").unwrap();
@@ -223,7 +223,7 @@ fn a_compat_source_length_lands_at_offset_four_not_eight() {
 fn the_compat_marker_is_stripped_from_published_msg_flags() {
     for (layout, at) in [(MsgLayout::Native, 48usize), (MsgLayout::Compat, 24)] {
         let mut hdr = [0u8; MSGHDR_MAX];
-        let user = RecvUser { msgp: hdr.as_mut_ptr() as u64, name: 0, namelen: 0,
+        let user = RecvUser { sink: crate::recv_user::Sink::User, msgp: hdr.as_mut_ptr() as u64, name: 0, namelen: 0,
             name_len_ptr: 0, control: 0, controllen: 0, iov: Vec::new(), capacity: 0, layout };
         user.finish(0, net::uapi::MSG_CMSG_COMPAT as u32 | net::uapi::MSG_TRUNC as u32).unwrap();
         assert_eq!(u32::from_ne_bytes(hdr[at..at + 4].try_into().unwrap()),
@@ -239,12 +239,12 @@ fn the_compat_marker_is_stripped_from_published_msg_flags() {
 #[test]
 fn a_stream_fragment_is_all_or_nothing_only_when_the_destination_faults() {
     let mut room = [0u8; 4];
-    let dest = RecvUser { msgp: 0, name: 0, namelen: 0, name_len_ptr: 0, control: 0,
+    let dest = RecvUser { sink: crate::recv_user::Sink::User, msgp: 0, name: 0, namelen: 0, name_len_ptr: 0, control: 0,
         controllen: 0, iov: vec![IoVec { base: room.as_mut_ptr() as u64, len: 4 }],
         capacity: 4, layout: MsgLayout::Native };
     assert_eq!(dest.copy_payload_fragment(0, b"abcdefgh"), Ok(4), "buffer ran out, no fault");
 
-    let faulting = RecvUser { msgp: 0, name: 0, namelen: 0, name_len_ptr: 0, control: 0,
+    let faulting = RecvUser { sink: crate::recv_user::Sink::User, msgp: 0, name: 0, namelen: 0, name_len_ptr: 0, control: 0,
         controllen: 0, iov: vec![IoVec { base: room.as_mut_ptr() as u64, len: 4 },
             IoVec { base: u64::MAX - 63, len: 4 }], capacity: 8, layout: MsgLayout::Native };
     assert_eq!(faulting.copy_payload_fragment(0, b"abcdefgh"), Err(errno(Errno::Efault)));
