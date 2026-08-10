@@ -28,8 +28,17 @@ fn accepted_inet() -> Arc<InetSocket> {
         crate::IpAddr::V4(crate::Ipv4Addr::LOOPBACK),
         crate::IpAddr::V4(crate::Ipv4Addr::LOOPBACK), listener.local.port,
         Arc::new(crate::SocketError::new())).expect("start TCP handshake");
-    drain_loopback();
-    let child = stack.tcp_accept(&listener).expect("accept passive TCP child");
+    // The ingress queue and its drain budget are process-global, so a
+    // concurrent test's packets can consume the passes this handshake needs.
+    // Drain until the child is queued rather than assuming one pass delivers
+    // all three segments.
+    let mut accepted_child = None;
+    crate::hosted_fixture::spin_until("the passive TCP child reaches the accept queue", || {
+        drain_loopback();
+        accepted_child = stack.tcp_accept(&listener);
+        accepted_child.is_some()
+    });
+    let child = accepted_child.expect("accept passive TCP child");
     let listener_sock = InetSocket::new_tcp_in(namespace);
     let accepted = InetSocket::from_accepted_tcp(&listener_sock, child);
     stack.tcp_unlisten_entry(&listener);

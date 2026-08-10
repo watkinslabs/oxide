@@ -183,17 +183,21 @@ impl BlockDevOps for RejectBlk {
 
 #[test]
 fn failed_or_opath_block_open_never_runs_release() {
+    // A major of its own: the block-major registry is process-global, so
+    // sharing 206 with the fsync case let one test's registration displace the
+    // other's and one test's final fput run the other's release hook.
+    const MAJOR: u32 = 211;
     let rejected = Arc::new(RejectBlk { releases: AtomicU32::new(0) });
-    vfs::register_blkdev(206, rejected.clone());
+    vfs::register_blkdev(MAJOR, rejected.clone());
     let s = sb(4);
-    let node = make_device_node_inode(9, FileType::BlockDev, Devt::new(206, 0), 0o660, Arc::downgrade(&s));
+    let node = make_device_node_inode(9, FileType::BlockDev, Devt::new(MAJOR, 0), 0o660, Arc::downgrade(&s));
     let failed = File::new(node.clone(), vfs::dcache::d_obtain_alias(node.clone()), OpenFlags::empty());
     assert_eq!(failed.open_hook(), Err(VfsError::Ebusy));
     drop(failed);
     let path = File::new(node.clone(), vfs::dcache::d_obtain_alias(node), OpenFlags::O_PATH);
     drop(path);
     assert_eq!(rejected.releases.load(Ordering::Acquire), 0);
-    vfs::unregister_blkdev(206);
+    vfs::unregister_blkdev(MAJOR);
 }
 
 struct TrackingChar {

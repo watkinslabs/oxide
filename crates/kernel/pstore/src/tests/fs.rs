@@ -15,18 +15,27 @@ const REGION: usize = 32 * 1024;
 const RECORD: usize = 8 * 1024;
 const CONSOLE: usize = 4096;
 
-struct Ram(Vec<u8>);
+/// Backing store for a backend under test.
+struct Ram;
 
 impl Ram {
-    fn new() -> Ram { Ram(vec![0u8; REGION]) }
-    fn attach(&mut self) -> Arc<RamBackend> {
-        let base = self.0.as_mut_ptr() as usize;
-        let len = self.0.len();
-        // SAFETY: `self` is mutably borrowed for the call and the span is a
-        // live allocation of exactly `len` bytes owned by this test.
+    /// A region for a backend that will be handed to the process-global
+    /// registry. That registry has no unregister and refuses a second
+    /// installation, so whatever is registered first outlives every test in
+    /// the binary -- and every later `mount` parses records THROUGH it. A
+    /// region owned by a test is freed when the test returns, after which the
+    /// global holds a pointer into memory the allocator has handed to someone
+    /// else: the binary aborted 6 times in 400 runs with `corrupted size vs.
+    /// prev_size` and friends. Leaked, so the span outlives the pointer.
+    fn leaked() -> Arc<RamBackend> {
+        let region: &'static mut [u8] = alloc::vec![0u8; REGION].leak();
+        let (base, len) = (region.as_mut_ptr() as usize, region.len());
+        // SAFETY: the allocation is leaked, so the span is live for the whole
+        // process and this backend is its only holder.
         let region = unsafe { RamRegion::new(base, len) };
         RamBackend::attach(region, RECORD, CONSOLE).0
     }
+
 }
 
 /// A mount built directly over `records`, bypassing the process-global
@@ -140,8 +149,7 @@ fn the_directory_enumerates_every_record() {
 
 #[test]
 fn unlinking_a_record_file_erases_the_record_from_the_region() {
-    let mut ram = Ram::new();
-    let backend = ram.attach();
+    let backend = Ram::leaked();
     backend.write_dmesg(1700, 0, b"to be erased");
     assert!(psinfo::register(Arc::clone(&backend)) || psinfo::backend().is_some());
     // Only meaningful when THIS backend is the registered one; another test

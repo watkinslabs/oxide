@@ -14,6 +14,7 @@
 
     #[test]
     fn macro_expands_and_links() {
+        let _g = lock_sink();
         kerror!("error path");
         kinfo!("hello");
         kdebug!("dbg");
@@ -46,7 +47,7 @@
         out
     }
 
-    fn lock_sink() -> std::sync::MutexGuard<'static, ()> { crate::console::test_lock() }
+    fn lock_sink() -> crate::test_claim::ConsoleClaim { crate::test_claim::claim_console() }
 
     #[test]
     fn no_sink_emit_is_noop() {
@@ -146,6 +147,7 @@
         std::thread::scope(|s| {
             for t in 0..THREADS {
                 s.spawn(move || {
+                    let _w = crate::test_claim::worker();
                     let c = b'A' + t as u8;
                     let chunk = [c; CHUNK];
                     for _ in 0..LINES {
@@ -205,6 +207,7 @@
         std::thread::scope(|s| {
             for t in 0..THREADS {
                 s.spawn(move || {
+                    let _w = crate::test_claim::worker();
                     // Uppercase, and a fixed width: the byte sink is
                     // process-global and other tests emit lowercase prose
                     // concurrently, so the marker space must not overlap.
@@ -239,7 +242,8 @@
             let stamps = line.iter().filter(|b| **b == b']').count();
             assert_eq!(
                 stamps, 1,
-                "line has {stamps} timestamps, expected exactly 1 — emitters raced LINE_START"
+                "line has {stamps} timestamps, expected exactly 1 — emitters raced LINE_START; line={:?}",
+                std::string::String::from_utf8_lossy(line)
             );
         }
         assert!(lines >= THREADS, "expected every emitter's output present");

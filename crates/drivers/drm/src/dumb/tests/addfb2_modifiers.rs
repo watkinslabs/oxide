@@ -2,6 +2,7 @@ use super::*;
 
 #[test]
 fn addfb2_rejects_nonzero_modifier_even_without_modifier_flag() {
+    let _tables = super::global_tables_claim();
     use syscall::errno::Errno;
 
     let mut req = DrmModeFbCmd2 {

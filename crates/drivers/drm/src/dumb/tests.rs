@@ -192,6 +192,24 @@ fn addfb2_rejects_modifier_surface_without_modifier_support() {
     );
 }
 
+/// The dumb-buffer and framebuffer tables are process-global -- a machine has
+/// one set -- so no test can own a private copy. This claim is their single
+/// owner for the duration of a test: taking it excludes every sibling and
+/// empties both tables, so each case starts from no buffers and no
+/// framebuffers. Poison is recovered rather than propagated, so one failing
+/// case reports as one failure.
+pub(super) fn global_tables_claim() -> GlobalTablesClaim {
+    let g = crate::TEST_LOCK.lock();
+    reset_global_tables();
+    GlobalTablesClaim(g)
+}
+
+pub(super) struct GlobalTablesClaim(#[allow(dead_code)] sync::Guard<'static, (), sync::TaskList>);
+
+impl Drop for GlobalTablesClaim {
+    fn drop(&mut self) { reset_global_tables(); }
+}
+
 fn reset_global_tables() {
     let mut t = TABLES.lock();
     t.bufs.clear();
@@ -218,6 +236,7 @@ fn insert_global_buf(size: u64) {
 
 #[test]
 fn addfb2_validates_single_plane_bounds() {
+    let _tables = global_tables_claim();
     use syscall::errno::Errno;
 
     reset_global_tables();
@@ -278,6 +297,7 @@ fn addfb2_validates_single_plane_bounds() {
 
 #[test]
 fn addfb2_rejects_unused_plane_metadata_for_packed_rgb() {
+    let _tables = global_tables_claim();
     use syscall::errno::Errno;
 
     reset_global_tables();
@@ -317,6 +337,7 @@ fn addfb2_rejects_unused_plane_metadata_for_packed_rgb() {
 
 #[test]
 fn legacy_addfb_validates_pitch_and_bounds() {
+    let _tables = global_tables_claim();
     use syscall::errno::Errno;
 
     reset_global_tables();

@@ -119,6 +119,7 @@ mod tests {
 
     #[test]
     fn tracing_is_off_until_the_boot_line_asks() {
+        let _g = crate::test_claim::claim_console();
         set_enabled(false);
         assert!(!enabled());
         assert_eq!(start("noisy"), 0, "a disabled tracer takes no timestamp");
@@ -130,7 +131,7 @@ mod tests {
     /// the name after the call would make a hang anonymous again.
     #[test]
     fn the_entry_line_is_emitted_before_the_step_runs() {
-        let _g = crate::console::test_lock();
+        let _g = crate::test_claim::claim_console();
         SEEN.lock().unwrap_or_else(|e| e.into_inner()).clear();
         crate::set_byte_sink_no_replay(capture);
         set_enabled(true);
@@ -149,6 +150,7 @@ mod tests {
 
     #[test]
     fn run_returns_the_step_value_with_tracing_either_way() {
+        let _g = crate::test_claim::claim_console();
         set_enabled(false);
         assert_eq!(run("step", || 7), 7);
         set_enabled(true);

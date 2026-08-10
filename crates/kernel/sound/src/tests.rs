@@ -15,7 +15,11 @@ static ADDED: Spinlock<Vec<(String, Option<(u32, u32)>, bool)>, SoundLockClass> 
 static REMOVED: Spinlock<Vec<String>, SoundLockClass> = Spinlock::new(Vec::new());
 static ROUTED: Spinlock<Vec<crate::SoundOwnerKey>, SoundLockClass> = Spinlock::new(Vec::new());
 
-struct TestGuard;
+/// Exclusive ownership of the card registry, the operations table and the
+/// process-global devtmpfs hooks. Everything a sound test touches is one
+/// kernel-wide set, so a case that registers or clears operations while
+/// another is counting published nodes changes what that one sees.
+pub(crate) struct TestGuard;
 
 impl Drop for TestGuard {
     fn drop(&mut self) {
@@ -23,7 +27,7 @@ impl Drop for TestGuard {
     }
 }
 
-fn test_guard() -> TestGuard {
+pub(crate) fn test_guard() -> TestGuard {
     while TEST_LOCK.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire).is_err() {
         core::hint::spin_loop();
     }

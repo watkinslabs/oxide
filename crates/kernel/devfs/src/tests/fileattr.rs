@@ -22,7 +22,7 @@ const DIR_PATH: &str = "/dev/b1976attr/inner";
 
 #[test]
 fn dev_directories_report_a_chattr_word() {
-    let _g = TEST_SERIAL.lock().unwrap();
+    let _g = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     crate::register_dir(DIR_PATH);
     for p in ["/dev", "/dev/b1976attr", DIR_PATH] {
         let i = crate::lookup(p).expect("dev dir");
@@ -34,7 +34,7 @@ fn dev_directories_report_a_chattr_word() {
 
 #[test]
 fn dev_directory_accepts_immutable_and_rejects_the_rest() {
-    let _g = TEST_SERIAL.lock().unwrap();
+    let _g = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
     crate::register_dir(DIR_PATH);
     let i = crate::lookup(DIR_PATH).expect("dev dir");
     i.fileattr_set(&FileAttr { flags: FS_IMMUTABLE_FL, ..Default::default() }).expect("set +i");
@@ -49,8 +49,13 @@ fn dev_directory_accepts_immutable_and_rejects_the_rest() {
 /// turns the no-vector errno into `EOPNOTSUPP`.
 #[test]
 fn dev_device_nodes_have_no_fileattr_vector() {
-    let _g = TEST_SERIAL.lock().unwrap();
-    let _ = crate::boot::try_populate_defaults();
+    let _g = TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    // The devtmpfs hook is what turns a device-model registration into a
+    // `/dev` node, and it is process-global: without installing it here this
+    // case passed only when a sibling that installs it happened to run first,
+    // and failed 50/50 when run alone.
+    drv::set_devtmpfs_hook(crate::add_device_node);
+    crate::boot::try_populate_defaults().expect("populate the default /dev nodes");
     for p in ["/dev/null", "/dev/zero", "/dev/full"] {
         let i = crate::lookup(p).expect("dev node");
         assert_eq!(i.fileattr_get().err(), Some(VfsError::Enotty), "get {p}");

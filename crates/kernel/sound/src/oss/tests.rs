@@ -38,6 +38,7 @@ fn key(raw: u32) -> crate::SoundOwnerKey { crate::SoundOwnerKey::from_raw(raw).u
 
 #[test]
 fn parameter_change_does_not_clear_running_state_when_reset_fails() {
+    let _guard = crate::tests::test_guard();
     let owner = key(0x7100);
     unregister_card(owner);
     let _ = crate::ops::clear(owner);
@@ -88,6 +89,7 @@ fn parameter_change_does_not_clear_running_state_when_reset_fails() {
 
 #[test]
 fn fragment_ioctl_sets_backend_period_and_space_geometry() {
+    let _guard = crate::tests::test_guard();
     let owner = key(0x7101);
     unregister_card(owner);
     let _ = crate::ops::clear(owner);
@@ -130,6 +132,7 @@ fn fragment_ioctl_sets_backend_period_and_space_geometry() {
 
 #[test]
 fn subdivide_ioctl_updates_fragment_size_once() {
+    let _guard = crate::tests::test_guard();
     let owner = key(0x7102);
     unregister_card(owner);
     let _ = crate::ops::clear(owner);
@@ -171,6 +174,7 @@ fn subdivide_ioctl_updates_fragment_size_once() {
 
 #[test]
 fn missing_ops_do_not_report_fake_fragment_size() {
+    let _guard = crate::tests::test_guard();
     let owner = key(0x7103);
     unregister_card(owner);
     let _ = crate::ops::clear(owner);

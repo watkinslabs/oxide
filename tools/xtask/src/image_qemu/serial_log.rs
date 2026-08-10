@@ -100,11 +100,17 @@ mod tests {
     /// whatever backend the caller chose rather than replacing it.
     #[test]
     fn the_option_is_appended_to_the_callers_chardev() {
-        let (out, path) = with_logfile("stdio,id=ser0,signal=off".to_string(), "x86_64");
-        let p = path.expect("a log is wanted by default");
-        assert!(out.starts_with("stdio,id=ser0,signal=off,"), "backend must survive: {out}");
-        assert!(out.contains(&format!("logfile={}", p.display())), "{out}");
-        assert!(out.ends_with("logappend=off"), "a reused path holds this boot only: {out}");
+        // Under the same claim as every other case: resolving a default log
+        // path republishes the arch's stable `latest` link, so two cases doing
+        // it at once leave one of them reading a link the other has just
+        // removed.
+        temp_env("OXIDE_SERIAL_LOG", None, || {
+            let (out, path) = with_logfile("stdio,id=ser0,signal=off".to_string(), "x86_64");
+            let p = path.expect("a log is wanted by default");
+            assert!(out.starts_with("stdio,id=ser0,signal=off,"), "backend must survive: {out}");
+            assert!(out.contains(&format!("logfile={}", p.display())), "{out}");
+            assert!(out.ends_with("logappend=off"), "a reused path holds this boot only: {out}");
+        });
     }
 
     /// An explicit path is honoured verbatim — a caller that already has a

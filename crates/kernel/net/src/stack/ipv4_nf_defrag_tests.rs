@@ -1,6 +1,12 @@
 use super::*;
 use ::core::sync::atomic::{AtomicUsize, Ordering};
 
+/// Identification this case stamps on its own fragments. The netfilter hook
+/// is process-global while it is installed, and every other test in this
+/// binary that delivers a packet passes through it, so the observer counts
+/// only the datagram this case built.
+const FRAG_ID: u16 = 91;
+
 static PRE_ROUTING_CALLS: AtomicUsize = AtomicUsize::new(0);
 static PRE_ROUTING_LEN: AtomicUsize = AtomicUsize::new(0);
 static PRE_ROUTING_FLAGS: AtomicUsize = AtomicUsize::new(usize::MAX);
@@ -8,7 +14,8 @@ static PRE_ROUTING_FLAGS: AtomicUsize = AtomicUsize::new(usize::MAX);
 fn observe_pre_routing(_namespace: u64, hook: u32, packet: &[u8], _family: u8)
     -> crate::netfilter_hook::NfHookResult
 {
-    if hook == NF_INET_PRE_ROUTING {
+    let own = packet.len() >= 8 && u16::from_be_bytes([packet[4], packet[5]]) == FRAG_ID;
+    if hook == NF_INET_PRE_ROUTING && own {
         PRE_ROUTING_CALLS.fetch_add(1, Ordering::AcqRel);
         PRE_ROUTING_LEN.store(packet.len(), Ordering::Release);
         PRE_ROUTING_FLAGS.store(u16::from_be_bytes([packet[6], packet[7]]) as usize,
@@ -41,8 +48,8 @@ fn prerouting_receives_one_reassembled_ipv4_datagram() {
     let mut udp = [0u8; 16];
     crate::udp::UdpHdr::build_into(1000, 1001, Ipv4Addr::LOOPBACK, Ipv4Addr::LOOPBACK,
         b"abcdefgh", &mut udp);
-    let first = fragment(91, crate::ipv4::IPV4_FLAG_MORE_FRAGMENTS, &udp[..8]);
-    let last = fragment(91, 1, &udp[8..]);
+    let first = fragment(FRAG_ID, crate::ipv4::IPV4_FLAG_MORE_FRAGMENTS, &udp[..8]);
+    let last = fragment(FRAG_ID, 1, &udp[8..]);
 
     stack.deliver_rx(iface, &first).unwrap();
     assert_eq!(PRE_ROUTING_CALLS.load(Ordering::Acquire), 0);

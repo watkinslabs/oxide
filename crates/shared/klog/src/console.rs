@@ -211,24 +211,13 @@ fn emit_slot(idx: usize, bytes: &[u8]) {
     f(bytes);
 }
 
-/// The console registry, the byte sinks and every printk policy knob are
-/// process-global. Every test in this crate that touches any of them takes
-/// THIS lock — a per-module lock does not serialise against another module's,
-/// and a capture sink that sees a different module's output fails for a reason
-/// that has nothing to do with what it asserts.
-/// # C: O(1) uncontended; blocks for the holder otherwise
-#[cfg(test)]
-pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
-    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    SERIAL.lock().unwrap_or_else(|e| e.into_inner())
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use core::sync::atomic::AtomicUsize;
 
-    use super::test_lock as serial_lock;
+    use crate::test_claim::claim_console as serial_lock;
 
     fn reset_all() {
         let mut i = 0usize;

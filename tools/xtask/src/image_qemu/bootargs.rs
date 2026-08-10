@@ -123,6 +123,15 @@ mod tests {
     // The composer reads process environment; these tests mutate it.
     static ENV: Mutex<()> = Mutex::new(());
 
+    /// Ownership of the process environment for a case that only READS the
+    /// composed line. The composer reads the environment on every call, so a
+    /// sibling that sets a variable mid-call changes what this case sees --
+    /// which is how a case asserting the two arches compose identically saw a
+    /// debug preset on one of them.
+    fn env_held() -> std::sync::MutexGuard<'static, ()> {
+        ENV.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn with_env(vars: &[(&str, Option<&str>)], f: impl FnOnce()) {
         let _g = ENV.lock().unwrap_or_else(|e| e.into_inner());
         for (k, v) in vars {
@@ -138,6 +147,7 @@ mod tests {
     /// nor any `systemd.*` parameter).
     #[test]
     fn arches_carry_the_same_parameters() {
+        let _env = env_held();
         let x = kernel_cmdline("x86_64", "/boot/oxide-x86_64");
         let a = kernel_cmdline("aarch64", "/boot/oxide-aarch64.Image");
         let x_rest = x.strip_prefix("BOOT_IMAGE=/boot/oxide-x86_64 ").unwrap();
@@ -149,6 +159,7 @@ mod tests {
     /// arm debug shell died with `No such file or directory` on `ttyAMA0`.
     #[test]
     fn path_valued_parameters_use_the_published_devnode() {
+        let _env = env_held();
         for arch in ["x86_64", "aarch64"] {
             let line = kernel_cmdline(arch, "/img");
             assert!(line.contains("systemd.debug_shell=ttyS0"), "{arch}: {line}");
@@ -161,6 +172,7 @@ mod tests {
     /// `linux` command prepends it, the `multiboot2` command does not.
     #[test]
     fn boot_image_is_never_duplicated() {
+        let _env = env_held();
         assert_eq!(kernel_cmdline("x86_64", "/i").matches("BOOT_IMAGE=").count(), 1);
         assert_eq!(kernel_cmdline("aarch64", "/i").matches("BOOT_IMAGE=").count(), 0,
                    "the arm bootloader adds this itself");
@@ -168,6 +180,7 @@ mod tests {
 
     #[test]
     fn serial_console_names_match_the_uart_each_arch_programs() {
+        let _env = env_held();
         assert_eq!(serial_console("x86_64"), "ttyS0");
         assert_eq!(serial_console("aarch64"), "ttyAMA0");
     }
@@ -176,6 +189,7 @@ mod tests {
     /// both arches so the preferred console matches across the lockstep gate.
     #[test]
     fn vt_console_token_is_last_on_both_arches() {
+        let _env = env_held();
         for arch in ["x86_64", "aarch64"] {
             let line = kernel_cmdline(arch, "/img");
             let last = line.rmatch_indices("console=").next().unwrap().0;
@@ -187,6 +201,7 @@ mod tests {
     /// The marker the cmdline-propagation gate greps for in `/proc/cmdline`.
     #[test]
     fn carries_the_propagation_marker() {
+        let _env = env_held();
         for arch in ["x86_64", "aarch64"] {
             assert!(kernel_cmdline(arch, "/img").contains("oxide.bootargs=grub"));
         }

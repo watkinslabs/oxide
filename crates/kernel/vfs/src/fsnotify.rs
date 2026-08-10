@@ -172,10 +172,36 @@ pub fn ucount(uid: u32, kind: Ucount) -> i64 {
 mod tests {
     use super::*;
 
-    // Distinct uids per test: the counter table is process-global and the
-    // hosted harness runs tests concurrently.
+    // Distinct uids per test keeps the COUNTER table private, but the two
+    // ceilings are single process-global knobs every case below writes, so
+    // distinct uids alone are not enough: one case setting the watch ceiling
+    // to 1 while another has set it to 0 makes the second admit a charge it
+    // asserts is refused. Every case that writes a ceiling takes this claim,
+    // which restores the boot values on release.
+    fn ceiling_claim() -> CeilingClaim {
+        static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let c = CeilingClaim(g);
+        c.restore();
+        c
+    }
+
+    struct CeilingClaim(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+    impl CeilingClaim {
+        fn restore(&self) {
+            set_max_user_instances(INOTIFY_DEFAULT_MAX_USER_INSTANCES);
+            set_max_user_watches(INOTIFY_MIN_MAX_USER_WATCHES as i64);
+        }
+    }
+
+    impl Drop for CeilingClaim {
+        fn drop(&mut self) { self.restore(); }
+    }
+
     #[test]
     fn instance_ceiling_admits_exactly_the_limit() {
+        let _claim = ceiling_claim();
         let uid = 90_001;
         set_max_user_instances(3);
         for i in 0..3 { assert!(inc_ucount(uid, Ucount::InotifyInstances), "charge {i} must fit"); }
@@ -184,20 +210,20 @@ mod tests {
         dec_ucount(uid, Ucount::InotifyInstances, 1);
         assert!(inc_ucount(uid, Ucount::InotifyInstances), "a release frees exactly one slot");
         dec_ucount(uid, Ucount::InotifyInstances, 3);
-        set_max_user_instances(INOTIFY_DEFAULT_MAX_USER_INSTANCES);
     }
 
     #[test]
     fn a_zero_ceiling_admits_nothing() {
+        let _claim = ceiling_claim();
         let uid = 90_002;
         set_max_user_watches(0);
         assert!(!inc_ucount(uid, Ucount::InotifyWatches));
         assert_eq!(ucount(uid, Ucount::InotifyWatches), 0);
-        set_max_user_watches(INOTIFY_MIN_MAX_USER_WATCHES as i64);
     }
 
     #[test]
     fn charges_are_per_user() {
+        let _claim = ceiling_claim();
         let (a, b) = (90_003, 90_004);
         set_max_user_watches(1);
         assert!(inc_ucount(a, Ucount::InotifyWatches));
@@ -205,7 +231,6 @@ mod tests {
         assert!(inc_ucount(b, Ucount::InotifyWatches), "b's budget is its own");
         dec_ucount(a, Ucount::InotifyWatches, 1);
         dec_ucount(b, Ucount::InotifyWatches, 1);
-        set_max_user_watches(INOTIFY_MIN_MAX_USER_WATCHES as i64);
     }
 
     #[test]

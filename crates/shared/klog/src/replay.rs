@@ -61,7 +61,7 @@ mod tests {
     #[test]
     fn replay_moves_the_whole_range_and_stops() {
         use core::sync::atomic::{AtomicUsize, Ordering};
-        let _g = crate::console::test_lock();
+        let _g = crate::test_claim::claim_console();
         static SEEN: AtomicUsize = AtomicUsize::new(0);
         fn sink(b: &[u8]) { SEEN.fetch_add(b.len(), Ordering::Relaxed); }
 

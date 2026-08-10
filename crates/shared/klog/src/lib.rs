@@ -153,6 +153,15 @@ static CLOCK_FN: core::sync::atomic::AtomicPtr<()>
 static LINE_START: core::sync::atomic::AtomicBool
     = core::sync::atomic::AtomicBool::new(true);
 
+/// Put the console back at the start of a line. Test-fixture use only: the
+/// flag is otherwise driven entirely by the bytes that pass through
+/// `flush_line`.
+/// # C: O(1)
+#[cfg(test)]
+pub(crate) fn reset_line_start() {
+    LINE_START.store(true, core::sync::atomic::Ordering::Release);
+}
+
 /// Install a `now_ns` callback. Subsequent klog records get a
 /// `[<sec>.<ms>] ` prefix before the level marker.
 /// # C: O(1)
@@ -293,6 +302,8 @@ pub fn write_raw_at(bytes: &[u8], lvl: u32) { emit_bytes_at(bytes, lvl) }
 
 fn emit_bytes_at(bytes: &[u8], lvl: u32) {
     if bytes.is_empty() { return; }
+    #[cfg(test)]
+    test_claim::assert_claimed();
     // The lock serialises THIS call; `cont` serialises the LINE. Every trace
     // site in the tree builds one line from many calls, so per-call locking
     // alone let two emitters splice mid-token (`cont.rs` header, B1474).
@@ -411,6 +422,8 @@ pub fn write_raw(bytes: &[u8]) {
 /// leaf allocator lock must use this rather than `write_raw`.
 /// # C: O(bytes.len())
 pub fn write_primary_raw(bytes: &[u8]) {
+    #[cfg(test)]
+    test_claim::assert_claimed();
     // Serialised too: an emergency diagnostic spliced by another CPU's normal
     // output is exactly the message we can least afford to lose. Safe from a
     // leaf-lock holder because acquisition is bounded and same-CPU reentrant.
@@ -573,6 +586,9 @@ macro_rules! kinfo  { ($msg:literal $(,)?) => { $crate::klog!(Info,  $msg) }; }
 macro_rules! kdebug { ($msg:literal $(,)?) => { $crate::klog!(Debug, $msg) }; }
 #[macro_export]
 macro_rules! ktrace { ($msg:literal $(,)?) => { $crate::klog!(Trace, $msg) }; }
+
+#[cfg(test)]
+pub(crate) mod test_claim;
 
 #[cfg(test)]
 mod tests;
