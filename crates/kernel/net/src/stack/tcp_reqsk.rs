@@ -20,7 +20,7 @@
 
 use super::*;
 use super::tcp_tx::TcpTxPolicy;
-use crate::tcp_conn::reqsk;
+use crate::tcp_conn::{reqsk, synrecv};
 
 /// Whether this segment leaves the request half-open instead of completing it.
 /// A deferring listener drops the bare acknowledgement and records that the
@@ -197,24 +197,49 @@ impl NetStack {
             drop_request(tables, &key, req);
             return Ok(());
         };
-        // A reset ends the request. Nothing is answered and no error is
-        // recorded: no socket exists yet to record one against.
-        if (hdr.flags & tcp_flags::RST) != 0 {
-            crate::mib::bump(net_ns, crate::mib::Mib::TcpAttemptFails);
-            drop_request(tables, &key, req);
-            return Ok(());
+        let payload_len = seg.len().saturating_sub(hdr.payload_offset());
+        let verdict = synrecv::request_segment(hdr.flags, hdr.seq, hdr.ack, payload_len,
+            req.isn(), req.peer_isn(), req.rcv_wnd as u32);
+        match verdict {
+            // A peer that lost the SYN-ACK retransmits its SYN. The request is
+            // kept and the same SYN-ACK goes out again; creating a second
+            // request would take another backlog slot for one connection.
+            synrecv::ReqVerdict::ResendSynack => {
+                let segment = req.synack();
+                self.send_tcp_segment_in(net_ns, dst_ip, src_ip, &segment, 0,
+                    req.bound_iface(), TcpTxPolicy::Listener(&listener))
+            }
+            // The segment acknowledged something this side never sent. The
+            // request is left exactly as it was — a segment that failed this
+            // test says nothing about the connection whose 4-tuple it wore.
+            synrecv::ReqVerdict::Reset => {
+                let end = synrecv::end_seq(hdr.seq, payload_len, hdr.flags);
+                let segment = req.open_conn().build_rst_reply(hdr.flags, hdr.ack, end);
+                self.send_tcp_segment_in(net_ns, dst_ip, src_ip, &segment, 0,
+                    req.bound_iface(), TcpTxPolicy::Listener(&listener))
+            }
+            synrecv::ReqVerdict::AckAndDrop => {
+                let segment = req.open_conn().build_segment(tcp_flags::ACK, &[]);
+                self.send_tcp_segment_in(net_ns, dst_ip, src_ip, &segment, 0,
+                    req.bound_iface(), TcpTxPolicy::Listener(&listener))
+            }
+            synrecv::ReqVerdict::Drop => Ok(()),
+            // Nothing is recorded against a socket, because no socket exists
+            // yet to record it against.
+            synrecv::ReqVerdict::EndRequest { reset } => {
+                crate::mib::bump(net_ns, crate::mib::Mib::TcpAttemptFails);
+                drop_request(tables, &key, req);
+                if !reset { return Ok(()); }
+                let end = synrecv::end_seq(hdr.seq, payload_len, hdr.flags);
+                let segment = req.open_conn().build_rst_reply(hdr.flags, hdr.ack, end);
+                self.send_tcp_segment_in(net_ns, dst_ip, src_ip, &segment, 0,
+                    req.bound_iface(), TcpTxPolicy::Listener(&listener))
+            }
+            synrecv::ReqVerdict::Complete => {
+                if defers_segment(req, &listener, hdr, seg) { return Ok(()); }
+                self.promote_request(net_ns, src_ip, dst_ip, seg, key, tables, req, &listener)
+            }
         }
-        // A peer that lost the SYN-ACK retransmits its SYN. The request is
-        // kept and the same SYN-ACK goes out again; creating a second request
-        // would take another backlog slot for one connection.
-        if (hdr.flags & tcp_flags::SYN) != 0 && (hdr.flags & tcp_flags::ACK) == 0 {
-            let segment = req.synack();
-            return self.send_tcp_segment_in(net_ns, dst_ip, src_ip, &segment, 0,
-                req.bound_iface(), TcpTxPolicy::Listener(&listener));
-        }
-        if (hdr.flags & tcp_flags::ACK) == 0 { return Ok(()); }
-        if defers_segment(req, &listener, hdr, seg) { return Ok(()); }
-        self.promote_request(net_ns, src_ip, dst_ip, seg, key, tables, req, &listener)
     }
 
     /// Turn a request into the connection `accept` hands over. The child is

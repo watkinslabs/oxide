@@ -313,6 +313,20 @@ impl TcpConn {
                 Ok(Some(synack))
             }
             TcpState::SynRecv if (hdr.flags & flags::ACK) != 0 => {
+                // An acknowledgement is checked for acceptability BEFORE the
+                // state arm runs: older than what is already acknowledged, or
+                // naming a sequence never sent, and a connection that has not
+                // finished its handshake answers with one reset and no
+                // challenge acknowledgement. Without this a segment that
+                // guessed the 4-tuple establishes a connection it never
+                // acknowledged (B2050).
+                if !crate::tcp_conn::synrecv::socket_ack_acceptable(
+                    hdr.ack, self.snd_una, self.snd_nxt)
+                {
+                    let payload_len = seg.len().saturating_sub(hdr.payload_offset());
+                    let end = crate::tcp_conn::synrecv::end_seq(hdr.seq, payload_len, hdr.flags);
+                    return Ok(Some(self.build_rst_reply(hdr.flags, hdr.ack, end)));
+                }
                 // Linux `tcp_rcv_state_process`
                 // runs `tcp_ack` — and therefore `tcp_clean_rtx_queue` — BEFORE
                 // the `case TCP_SYN_RECV:` arm, then that arm installs
@@ -472,3 +486,7 @@ impl TcpConn {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "synrecv_socket_tests.rs"]
+mod synrecv_socket_tests;

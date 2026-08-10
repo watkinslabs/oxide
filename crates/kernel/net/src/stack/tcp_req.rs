@@ -48,6 +48,10 @@ pub(crate) struct TcpReq {
     /// The negotiation the SYN produced. The SYN-ACK is rebuilt from this and
     /// the child connection is opened from it; nothing else re-derives it.
     pub(crate) negotiated: Rebuild,
+    /// The receive window this side's SYN-ACK announced, unscaled. A segment
+    /// arriving for the request is judged against THIS, not against a window
+    /// re-derived later from a connection that does not exist yet.
+    pub(crate) rcv_wnd: u16,
     /// The maximum segment size this side announces, and the path MTU the
     /// route said, both as the SYN-ACK carried them.
     pub(crate) own_mss: u16,
@@ -108,6 +112,7 @@ impl TcpReq {
                 ts_off: conn.ts_off,
                 window,
             },
+            rcv_wnd: conn.current_rcv_window(),
             own_mss: conn.own_mss,
             path_mtu: AtomicU32::new(conn.path_mtu),
             metrics,
@@ -145,6 +150,10 @@ impl TcpReq {
     /// One past the SYN-ACK, which is what the completing acknowledgement
     /// must name. # C: O(1)
     pub(crate) fn snd_nxt(&self) -> u32 { self.negotiated.isn.wrapping_add(1) }
+
+    /// The peer's initial sequence, from which this request's receive window
+    /// starts one further on. # C: O(1)
+    pub(crate) fn peer_isn(&self) -> u32 { self.negotiated.peer_isn }
 
     /// The connection this request negotiated, materialised in the state the
     /// SYN-ACK left. Both the retransmit and the child are built from it, so
