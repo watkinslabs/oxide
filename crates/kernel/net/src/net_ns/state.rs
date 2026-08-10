@@ -236,11 +236,29 @@ impl NetSysctlKey {
     }
 }
 
-pub struct NetSysctls { values: [AtomicI64; NetSysctlKey::COUNT] }
+/// One namespace's sysctl values.
+///
+/// The value array is a separate heap allocation reached by pointer, not an
+/// inline member, for the same reason the destination metrics cache keeps its
+/// bucket array out of line: this struct is built inside `NsNet`, which is
+/// itself assembled as a temporary before it is moved into its `Arc`, so
+/// every inline byte here is a byte on the stack of the namespace-state
+/// lookup — a path reachable from the socket destructor cascade, which is
+/// already the deepest chain in the kernel. `NetSysctlKey::COUNT` is over a
+/// hundred slots, so inline it was the largest single contributor to that
+/// frame, and it grew every time a knob was added.
+pub struct NetSysctls { values: alloc::boxed::Box<[AtomicI64]> }
 
 impl NetSysctls {
+    /// Values are pushed one at a time into a heap vector, never built as an
+    /// array temporary — the temporary is what put the whole array on the
+    /// stack. # C: O(COUNT)
     fn new() -> Self {
-        Self { values: core::array::from_fn(|index| AtomicI64::new(NetSysctlKey::default_at(index))) }
+        let mut values = alloc::vec::Vec::with_capacity(NetSysctlKey::COUNT);
+        for index in 0..NetSysctlKey::COUNT {
+            values.push(AtomicI64::new(NetSysctlKey::default_at(index)));
+        }
+        Self { values: values.into_boxed_slice() }
     }
 
     pub(crate) fn get(&self, key: NetSysctlKey) -> i64 {
