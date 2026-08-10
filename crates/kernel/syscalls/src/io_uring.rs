@@ -27,6 +27,7 @@
 //   sqpoll      — the submission-polling thread of an IORING_SETUP_SQPOLL ring
 //   timeout     — armed timeouts, completion-count gates and link timeouts
 //   poll        — armed polls and the poll-armed retry
+//   mshot       — a receive that stays armed, one completion per delivery
 //   cancel      — the in-flight search and how a waiting request is ended
 //   iopoll      — driving a backend's completion poll for an IORING_SETUP_IOPOLL ring
 //   zcrx        — zero-copy receive: the interface queue, its area and its refill queue
@@ -59,6 +60,7 @@ pub mod iowq;
 pub mod sqpoll;
 pub mod timeout;
 pub mod poll;
+pub mod mshot;
 pub mod cancel;
 pub mod iopoll;
 

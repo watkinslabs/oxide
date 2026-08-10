@@ -132,6 +132,15 @@ pub fn issue(req: &Arc<IoReq>) {
     if !req.claim() { return; }
     // SAFETY: the caller is a worker thread in process context on its own CPU with no address space, no descriptor table and no lock held.
     let _borrow = unsafe { super::owner::Borrow::install(&req.owner) };
+    // An entry that asked to be armed BEFORE any attempt is armed here, on
+    // its first pass only: once its readiness has fired, the attempt it was
+    // waiting to make is the whole point of the wake.
+    if crate::io_uring::poll::arm_first(req) { return; }
+    // A multishot receive is not one transfer: it stays armed and reports
+    // each delivery, so it owns its own completions from here.
+    if crate::io_uring_abi::recvsend::multishot(req.opcode(), req.sqe.flags, req.sqe.ioprio) {
+        return crate::io_uring::mshot::run_multishot(req);
+    }
     let out = crate::io_uring::dispatch::dispatch_op(&req.ring, &req.sqe);
     // A pollable description that is not ready yet is not a failure: the
     // request goes back to waiting on that description instead of reporting an

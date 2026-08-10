@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2044-recv-poll-first-and-multishot
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2044 | DEFECT | med | **A plain `IORING_OP_SEND`/`IORING_OP_RECV` read only the bundle bit out of its `ioprio` word; `IORING_RECVSEND_POLL_FIRST` and `IORING_RECV_MULTISHOT` were neither honoured nor refused**, so an entry asking for either got an ordinary one-shot transfer and no indication it had been downgraded — a caller that asked not to make a blocking attempt made one, and a caller that asked for a subscription got a single completion. Re-verified against the code before implementing: the claim held exactly as recorded, and the whole family (`SENDMSG`/`RECVMSG` too) dropped the word. Both are now built. Poll-first arms the description BEFORE any attempt and transfers only once the readiness fires; multishot receive stays armed and posts one completion per delivery carrying its provided buffer and `IORING_CQE_F_MORE`, ending with a terminal completion that carries no `F_MORE` and reports why it stopped (0 = peer finished, `ENOBUFS` = group dry, otherwise the description's error). Both keep the entry out of the submitting task, because a behaviour that outlives its submission needs the request object only a deferred entry gets. Every remaining bit of the word now has an explicit verdict. | B2044. `io_uring_abi::recvsend` (15 hosted tests) + `io_uring_abi::reqstate` (6), which is the request lifetime gate moved out of the kernel-gated `io_uring/req.rs` so the claim / re-arm / claim / finish sequence a re-armed request lives in can be driven hosted. `cargo test -p syscalls --lib` 1795 -> 1816. Positive controls, each RED then restored GREEN: reinstating the defect (the mask check removed and both predicates forced false) fails 8 of 15 recvsend tests; replacing the claim compare-exchange with a plain store fails 5 of 6 reqstate tests, including the one that drives a whole multishot run; reporting a would-block pass as a terminal completion instead of arming, and dropping the bounded run of passes, fails 4 across both modules. `make stack-gate` PASS both arches (`io_uring::iowq::run::issue` 11360 B against the 13000 B ceiling). | Chris Watkins |
+
+
 ### B2043-ext4-commit-timer-flake
 
 | Status | Class | Sev | Issue | Evidence | Owner |

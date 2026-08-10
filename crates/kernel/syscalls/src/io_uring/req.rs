@@ -13,14 +13,13 @@
 // outstanding — and the ring's in-flight table holds only weak references, so
 // the table can never be the thing that keeps a finished request alive.
 //
-// Exactly-once completion is the invariant the whole file exists to keep. A
-// request can be reached at the same instant by its worker, by a cancellation
-// and by its own deadline; `claim` is the single compare-exchange all three go
-// through, so precisely one of them posts the completion.
+// Exactly-once completion is the invariant this object exists to keep. The
+// gate itself is `io_uring_abi::reqstate`, ungated so the claim/re-arm/finish
+// sequence a re-armed request lives in can be driven by a hosted test.
 
 use alloc::sync::{Arc, Weak};
 
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use sync::{Spinlock, TaskList as ReqLockClass};
 
@@ -29,15 +28,7 @@ use crate::io_uring_sqe::Sqe;
 use super::ctx::IoUringInode;
 use super::personality::CredSnapshot;
 
-/// Request lifetime states.
-pub mod st {
-    /// Waiting: queued for a worker, armed on a clock, or armed on a poll.
-    pub const ARMED: u32 = 0;
-    /// A worker or a callback owns it and will report its result.
-    pub const RUNNING: u32 = 1;
-    /// Its completion has been posted; nothing else may post another.
-    pub const DONE: u32 = 2;
-}
+pub use crate::io_uring_abi::reqstate::st;
 
 /// Why a request stopped waiting.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -120,7 +111,7 @@ pub struct IoReq {
     /// The address space, descriptor table and credentials a worker borrows to
     /// run this request as the task that submitted it.
     pub owner: Arc<super::iowq::Owner>,
-    state: AtomicU32,
+    st: crate::io_uring_abi::reqstate::ReqState,
     pub inner: Spinlock<ReqInner, ReqLockClass>,
 }
 
@@ -132,7 +123,7 @@ impl IoReq {
         Arc::new(Self {
             ring: Arc::clone(ring), sqe: *sqe, creds, owner,
             user_data: AtomicU64::new(sqe.user_data),
-            state: AtomicU32::new(st::ARMED),
+            st: crate::io_uring_abi::reqstate::ReqState::new(),
             inner: Spinlock::new(ReqInner::default()),
         })
     }
@@ -147,26 +138,29 @@ impl IoReq {
     pub fn opcode(&self) -> u8 { self.sqe.opcode }
 
     /// # C: O(1)
-    pub fn state(&self) -> u32 { self.state.load(Ordering::Acquire) }
+    pub fn state(&self) -> u32 { self.st.state() }
 
     /// Take ownership of a waiting request. Exactly one caller wins; every
     /// later one sees it already claimed. This is what makes "a completion is
     /// posted once" true in the face of a worker, a cancellation and a
     /// deadline arriving together. # C: O(1)
-    pub fn claim(&self) -> bool {
-        self.state.compare_exchange(st::ARMED, st::RUNNING, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-    }
+    pub fn claim(&self) -> bool { self.st.claim() }
 
     /// Put a claimed request back into the waiting state — a repeating timeout
     /// or a re-armed multishot poll is not finished. # C: O(1)
-    pub fn rearm(&self) { self.state.store(st::ARMED, Ordering::Release); }
+    pub fn rearm(&self) { self.st.rearm() }
 
     /// Mark a claimed request finished. # C: O(1)
-    pub fn finish(&self) { self.state.store(st::DONE, Ordering::Release); }
+    pub fn finish(&self) { self.st.finish() }
 
     /// # C: O(1)
-    pub fn is_done(&self) -> bool { self.state() == st::DONE }
+    pub fn is_done(&self) -> bool { self.st.is_done() }
+
+    /// # C: O(1)
+    pub fn polled(&self) -> bool { self.st.polled() }
+
+    /// # C: O(1)
+    pub fn set_polled(&self) { self.st.set_polled() }
 }
 
 /// Every request one ring still owes a completion for.

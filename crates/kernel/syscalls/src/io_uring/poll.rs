@@ -1,7 +1,10 @@
 // Armed polls, and the retry that keeps a worker out of a wait it does not
 // need to be in.
 //
-// Two things arm a poll. `IORING_OP_POLL_ADD` is a poll and nothing else. And
+// Three things arm a poll. `IORING_OP_POLL_ADD` is a poll and nothing else.
+// A send or receive carrying the poll-first flag is armed BEFORE it is
+// attempted, because the caller has already decided the attempt would block
+// and asked not to make it. And
 // any operation that reported EAGAIN against a description that can be polled
 // did not fail — it said "not yet" — so instead of reporting that to the
 // submitter, the request goes back to waiting on the readiness it needs and is
@@ -168,8 +171,20 @@ pub fn retry(req: &Arc<IoReq>) -> bool {
         g.poll_waker = Some(waker);
     }
     req.ring.track(req);
+    req.set_polled();
     req.rearm();
     true
+}
+
+/// Arm an entry that asked to be put on its description BEFORE any transfer
+/// is attempted, rather than attempted first and armed on the "not yet" the
+/// attempt would have returned. Returns whether it is now waiting; a
+/// description that cannot be polled has no readiness to wait for, so the
+/// entry runs as an ordinary transfer. # C: O(N_subs)
+pub fn arm_first(req: &Arc<IoReq>) -> bool {
+    use crate::io_uring_abi::recvsend::poll_first;
+    if req.polled() || !poll_first(req.opcode(), req.sqe.ioprio) { return false; }
+    retry(req)
 }
 
 /// Cancel or re-arm an armed `IORING_OP_POLL_ADD` by `user_data`.

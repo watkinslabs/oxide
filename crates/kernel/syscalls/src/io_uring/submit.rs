@@ -105,7 +105,10 @@ fn admit(inode: &Arc<IoUringInode>, sqe: &Sqe) -> Result<(), Errno> {
     if sqe.flags & IOSQE_BUFFER_SELECT != 0 && !op_buffer_select(sqe.opcode) {
         return Err(Errno::Eopnotsupp);
     }
-    crate::io_uring_abi::bundle::admit(sqe.opcode, sqe.ioprio)?;
+    // The send/receive family reads `ioprio` as its own flag word — the
+    // bundle rule included. A bit it does not perform is refused here rather
+    // than dropped, so no caller is downgraded without being told.
+    crate::io_uring_abi::recvsend::admit(sqe.opcode, sqe.flags, sqe.ioprio, sqe.op_flags)?;
     // A ring that has seen a silent-success entry can no longer order by
     // drain: the barrier counts completions, and skipped ones never arrive.
     if disables_drain(sqe.flags) { inode.set_state(state::DRAIN_DISABLED); }
