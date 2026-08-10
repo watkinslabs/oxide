@@ -148,10 +148,25 @@ mod tests {
     use super::super::counter::{SwSource, TaskCount};
     use super::super::ring::PerfBuffer;
 
-    fn event(bits: u64) -> Arc<PerfEvent> {
+    /// A task id no other case will use.
+    ///
+    /// An event registers itself against a task in a process-global list, and
+    /// every sideband record for that task fans out to EVERY event watching
+    /// it. All the cases here used one hard-coded id, so a record one case
+    /// emitted landed in a sibling's ring — measured as `unread()` being
+    /// non-zero where a case asserts nothing arrived, and as the first record
+    /// in a ring belonging to a different case. Distinct ids make each
+    /// registration private, which no lock is needed for.
+    fn fresh_tid() -> u32 {
+        use core::sync::atomic::{AtomicU32, Ordering};
+        static NEXT: AtomicU32 = AtomicU32::new(424_200);
+        NEXT.fetch_add(2, Ordering::Relaxed)
+    }
+
+    fn event(bits: u64, tid: u32) -> Arc<PerfEvent> {
         let attr = PerfAttr { bits, sample_type: TRAILER_BITS, ..PerfAttr::default() };
         let ev = PerfEvent::new(attr, SwSource::TaskCount(TaskCount::PageFaultsMin),
-                                Some(4242), -1, None);
+                                Some(tid), -1, None);
         ev.state.lock().buffer = Some(PerfBuffer::hosted(4, 0, false));
         ev
     }
@@ -169,9 +184,10 @@ mod tests {
     /// `attr.mmap` event and lands in its ring as a `PERF_RECORD_MMAP`.
     #[test]
     fn a_code_mapping_reaches_an_attr_mmap_event() {
-        let ev = event(1 << attr_bit::MMAP);
+        let tid = fresh_tid();
+        let ev = event(1 << attr_bit::MMAP, tid);
         let rb = ev.buffer().unwrap();
-        mmap(4242, 0, &info(b"/lib/libc.so", true));
+        mmap(tid, 0, &info(b"/lib/libc.so", true));
         assert_eq!(ty_of(&rb), rec::MMAP);
         assert!(rb.unread() > 0);
     }
@@ -179,9 +195,10 @@ mod tests {
     /// `attr.mmap2` selects the augmented record from the same call.
     #[test]
     fn an_attr_mmap2_event_gets_the_augmented_record() {
-        let ev = event(1 << attr_bit::MMAP2);
+        let tid = fresh_tid();
+        let ev = event(1 << attr_bit::MMAP2, tid);
         let rb = ev.buffer().unwrap();
-        mmap(4242, 0, &info(b"/lib/libc.so", true));
+        mmap(tid, 0, &info(b"/lib/libc.so", true));
         assert_eq!(ty_of(&rb), rec::MMAP2);
     }
 
@@ -190,16 +207,17 @@ mod tests {
     /// `attr.mmap_data`-only one.
     #[test]
     fn the_mapping_kind_selects_which_events_are_told() {
-        let code_only = event(1 << attr_bit::MMAP);
+        let tid = fresh_tid();
+        let code_only = event(1 << attr_bit::MMAP, tid);
         let rb = code_only.buffer().unwrap();
-        mmap(4242, 0, &info(b"/tmp/heap", false));
+        mmap(tid, 0, &info(b"/tmp/heap", false));
         assert_eq!(rb.unread(), 0, "a data mapping is not an attr.mmap record");
 
-        let data_only = event(1 << attr_bit::MMAP_DATA);
+        let data_only = event(1 << attr_bit::MMAP_DATA, tid);
         let rb = data_only.buffer().unwrap();
-        mmap(4242, 0, &info(b"/lib/libc.so", true));
+        mmap(tid, 0, &info(b"/lib/libc.so", true));
         assert_eq!(rb.unread(), 0, "a code mapping is not an attr.mmap_data record");
-        mmap(4242, 0, &info(b"/tmp/heap", false));
+        mmap(tid, 0, &info(b"/tmp/heap", false));
         assert!(rb.unread() > 0);
     }
 
@@ -207,31 +225,33 @@ mod tests {
     /// are gated on the attr bits, not emitted to every ring.
     #[test]
     fn an_event_that_asked_for_nothing_receives_nothing() {
-        let ev = event(0);
+        let tid = fresh_tid();
+        let ev = event(0, tid);
         let rb = ev.buffer().unwrap();
-        mmap(4242, 0, &info(b"/lib/libc.so", true));
-        comm(4242, 0, b"sh", true);
-        fork(4242, 4242, 1, 1, 0);
-        exit(4242, 4242, 1, 1, 0);
-        switch(4242, 0, true, false, 1, 1);
+        mmap(tid, 0, &info(b"/lib/libc.so", true));
+        comm(tid, 0, b"sh", true);
+        fork(tid, tid, 1, 1, 0);
+        exit(tid, tid, 1, 1, 0);
+        switch(tid, 0, true, false, 1, 1);
         assert_eq!(rb.unread(), 0);
     }
 
     #[test]
     fn comm_fork_exit_and_switch_each_reach_their_own_attr_bit() {
+        let tid = fresh_tid();
         for (bits, call, want) in [
             (1u64 << attr_bit::COMM, 0, rec::COMM),
             (1 << attr_bit::TASK,    1, rec::FORK),
             (1 << attr_bit::TASK,    2, rec::EXIT),
             (1 << attr_bit::CONTEXT_SWITCH, 3, rec::SWITCH),
         ] {
-            let ev = event(bits);
+            let ev = event(bits, tid);
             let rb = ev.buffer().unwrap();
             match call {
-                0 => comm(4242, 0, b"sh", true),
-                1 => fork(4242, 4242, 1, 1, 0),
-                2 => exit(4242, 4242, 1, 1, 0),
-                _ => switch(4242, 0, true, false, 1, 1),
+                0 => comm(tid, 0, b"sh", true),
+                1 => fork(tid, tid, 1, 1, 0),
+                2 => exit(tid, tid, 1, 1, 0),
+                _ => switch(tid, 0, true, false, 1, 1),
             }
             assert_eq!(ty_of(&rb), want, "bits {bits:#x}");
         }
@@ -240,11 +260,12 @@ mod tests {
     /// A record about ANOTHER task must not land in this task's ring.
     #[test]
     fn a_record_about_a_different_task_does_not_reach_this_events_ring() {
-        let ev = event(1 << attr_bit::COMM);
+        let tid = fresh_tid();
+        let ev = event(1 << attr_bit::COMM, tid);
         let rb = ev.buffer().unwrap();
-        comm(4243, 0, b"other", true);
+        comm(tid + 1, 0, b"other", true);
         assert_eq!(rb.unread(), 0);
-        comm(4242, 0, b"mine", true);
+        comm(tid, 0, b"mine", true);
         assert!(rb.unread() > 0);
     }
 }

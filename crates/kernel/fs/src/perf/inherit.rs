@@ -158,6 +158,7 @@ mod tests {
 
     #[test]
     fn inheriting_event_propagates_to_child() {
+    let _perf = crate::perf::hrtimer::tests::wheel();
         let parent_tid = fresh_tid();
         let child_tid = fresh_tid();
         let ev = PerfEvent::new(attr(true), SwSource::Zero, Some(parent_tid), -1, None);
@@ -171,6 +172,7 @@ mod tests {
 
     #[test]
     fn non_inheriting_event_does_not_propagate() {
+    let _perf = crate::perf::hrtimer::tests::wheel();
         let parent_tid = fresh_tid();
         let child_tid = fresh_tid();
         let ev = PerfEvent::new(attr(false), SwSource::Zero, Some(parent_tid), -1, None);
@@ -182,6 +184,7 @@ mod tests {
 
     #[test]
     fn cpu_scoped_event_is_not_inherited() {
+    let _perf = crate::perf::hrtimer::tests::wheel();
         // `tid == None` == a CPU-wide event (`pid == -1` at open): it is
         // never registered against any tid, so a fork of ANY task — even the
         // opening one — must not clone it.
@@ -199,6 +202,7 @@ mod tests {
     /// thread-follow gate.
     #[test]
     fn clone_thread_does_not_inherit_without_inherit_thread() {
+    let _perf = crate::perf::hrtimer::tests::wheel();
         let parent_tid = fresh_tid();
         let child_tid = fresh_tid();
         let ev = PerfEvent::new(attr(true), SwSource::Zero, Some(parent_tid), -1, None);
@@ -213,6 +217,7 @@ mod tests {
     /// itself counted.
     #[test]
     fn child_exit_folds_count_into_parent() {
+    let _perf = crate::perf::hrtimer::tests::wheel();
         let parent_tid = fresh_tid();
         let child_tid = fresh_tid();
         let parent = PerfEvent::new(attr(true), SwSource::Zero, Some(parent_tid), -1, None);
@@ -237,6 +242,7 @@ mod tests {
     /// silently lost — proves the test above can actually fail.
     #[test]
     fn positive_control_without_exit_fold_parent_stays_stale() {
+    let _perf = crate::perf::hrtimer::tests::wheel();
         let parent_tid = fresh_tid();
         let child_tid = fresh_tid();
         let parent = PerfEvent::new(attr(true), SwSource::Zero, Some(parent_tid), -1, None);
@@ -258,6 +264,7 @@ mod tests {
     /// last two assertions.
     #[test]
     fn a_group_is_inherited_as_a_group() {
+    let _perf = crate::perf::hrtimer::tests::wheel();
         let parent_tid = fresh_tid();
         let child_tid = fresh_tid();
         let leader = PerfEvent::new(attr(true), SwSource::Zero, Some(parent_tid), -1, None);
@@ -286,6 +293,7 @@ mod tests {
     /// inherited exactly once, through its leader.
     #[test]
     fn a_sibling_is_not_inherited_twice() {
+    let _perf = crate::perf::hrtimer::tests::wheel();
         let parent_tid = fresh_tid();
         let child_tid = fresh_tid();
         let leader = PerfEvent::new(attr(true), SwSource::Zero, Some(parent_tid), -1, None);
@@ -301,6 +309,7 @@ mod tests {
     /// its siblings are configured: the leader's setting decides for the group.
     #[test]
     fn a_non_inheriting_leader_takes_its_whole_group_with_it() {
+    let _perf = crate::perf::hrtimer::tests::wheel();
         let parent_tid = fresh_tid();
         let child_tid = fresh_tid();
         let leader = PerfEvent::new(attr(false), SwSource::Zero, Some(parent_tid), -1, None);
@@ -320,6 +329,7 @@ mod tests {
     /// such record, which proves this one is measuring the flag.
     #[test]
     fn inherit_stat_publishes_the_childs_final_read_at_exit() {
+    let _perf = crate::perf::hrtimer::tests::wheel();
         use crate::perf::ring::PerfBuffer;
         use crate::perf::uapi::record as rec;
         let parent_tid = fresh_tid();
@@ -348,6 +358,7 @@ mod tests {
 
     #[test]
     fn positive_control_without_inherit_stat_no_record_is_published() {
+    let _perf = crate::perf::hrtimer::tests::wheel();
         use crate::perf::ring::PerfBuffer;
         let parent_tid = fresh_tid();
         let child_tid = fresh_tid();
@@ -364,6 +375,7 @@ mod tests {
 
     #[test]
     fn multiple_children_each_fold_into_the_same_parent() {
+    let _perf = crate::perf::hrtimer::tests::wheel();
         let parent_tid = fresh_tid();
         let c1 = fresh_tid();
         let c2 = fresh_tid();

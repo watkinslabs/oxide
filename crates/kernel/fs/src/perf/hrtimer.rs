@@ -143,14 +143,23 @@ fn release(arg: usize) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     extern crate std;
 
     /// ONE timer wheel per process: `timer::run_due` fires every registration,
     /// so a test that arms one must not overlap a test that drains.
     static WHEEL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    fn wheel() -> std::sync::MutexGuard<'static, ()> {
+    /// Ownership of the process-global event machinery: the timer wheel an
+    /// event arms itself into, and the registry a live event is listed in.
+    ///
+    /// Both are walked, and a walk UPGRADES the weak reference it holds for
+    /// every entry — so a case walking the registry transiently resurrects
+    /// another case's event, and a case asserting its own event died when it
+    /// dropped sees it alive. Any case that builds, arms, fires or enumerates
+    /// an event takes this, including the throttle cases, which arm through
+    /// the release path rather than by calling `start` themselves.
+    pub(crate) fn wheel() -> std::sync::MutexGuard<'static, ()> {
         WHEEL.lock().unwrap_or_else(|e| e.into_inner())
     }
     use super::super::counter::TaskCount;

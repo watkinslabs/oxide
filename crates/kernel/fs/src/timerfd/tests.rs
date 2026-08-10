@@ -7,6 +7,10 @@ use syscall::errno::Errno;
 
 use super::*;
 
+/// The clock-was-set notification is delivered to a process-global list of
+/// armed timers, so a case that steps the clock reaches every other case's
+/// timer too — including one asserting its own state was left untouched.
+/// Every case that steps the clock or drives a descriptor takes this.
 static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static CURRENT: AtomicPtr<sched::Task> = AtomicPtr::new(ptr::null_mut());
 
@@ -280,6 +284,7 @@ fn realtime_absolute_state_reprojects_and_counts_wall_step_expirations() {
 
 #[test]
 fn crossed_realtime_expiration_survives_a_backward_clock_step() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let mut state = TimerfdState::new(0);
     let (_, canceled) = state.install(20, 80, 100, 0, false, true, 0);
     assert!(!canceled);
@@ -297,6 +302,7 @@ fn crossed_realtime_expiration_survives_a_backward_clock_step() {
 
 #[test]
 fn clock_step_serializes_before_or_after_settime_state_lock() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let mut hook_first = TimerfdState {
         cancel_enabled: true,
         ..TimerfdState::new(0)
@@ -345,6 +351,7 @@ fn settime_replacement_reports_forwarded_old_periodic_value() {
 
 #[test]
 fn cancellation_supports_generation_zero_and_repeats_after_acknowledgement() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let mut state = TimerfdState {
         ticks: 4,
         cancel_enabled: true,
@@ -364,6 +371,7 @@ fn cancellation_supports_generation_zero_and_repeats_after_acknowledgement() {
 
 #[test]
 fn clock_step_notifier_wakes_disarmed_cancel_timer_poll_source() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let inode = make_timerfd_inode(CLOCK_REALTIME);
     let timerfd = inode.private::<TimerfdData>().unwrap();
     let generation = sched::clock::realtime_change_generation();
