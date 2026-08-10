@@ -22,11 +22,13 @@ impl OpOutcome {
         Self { res, cqe_flags: 0, cqe32: true, big }
     }
 
-    /// A result that consumed provided buffer `bid`. # C: O(1)
-    pub fn with_buffer(res: i64, bid: u16) -> Self {
-        use crate::io_uring_abi::ops::{IORING_CQE_BUFFER_SHIFT, IORING_CQE_F_BUFFER};
+    /// A result that consumed provided buffers starting at `bid`. For a run of
+    /// them the caller walks forward from that id by its own buffer sizes;
+    /// `buf_more` says the last one is only part-used and the same id will
+    /// serve the next operation. # C: O(1)
+    pub fn with_buffer(res: i64, bid: u16, buf_more: bool) -> Self {
         Self {
-            res, cqe_flags: IORING_CQE_F_BUFFER | ((bid as u32) << IORING_CQE_BUFFER_SHIFT),
+            res, cqe_flags: crate::io_uring_abi::bundle::cqe_flags(bid, buf_more),
             cqe32: false, big: [0; 2],
         }
     }

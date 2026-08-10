@@ -41,6 +41,12 @@
 //   timeout     — `IORING_OP_TIMEOUT`/`LINK_TIMEOUT`/`TIMEOUT_REMOVE` decode.
 //   cancel      — cancellation keys and the match rule.
 //   poll        — `IORING_OP_POLL_ADD`/`POLL_REMOVE` decode + mask arithmetic.
+//   bundle      — `IORING_RECVSEND_BUNDLE`: mapping a RUN of provided buffers
+//                 into one send or receive, and what the completion says about
+//                 which of them the transfer consumed.
+//   rw_attr     — the attribute vector a read or write entry may point at:
+//                 the record's wire form, its mask ladder, and the targets
+//                 that can carry it.
 //
 // Deliberately NOT kernel-gated: the three slot files are
 // `#![cfg(target_os = "oxide-kernel")]`, so any decision left in them is
@@ -70,4 +76,6 @@ pub mod iopoll;
 pub mod timeout;
 pub mod cancel;
 pub mod poll;
+pub mod bundle;
+pub mod rw_attr;
 pub mod zcrx;

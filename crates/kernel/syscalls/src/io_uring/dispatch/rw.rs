@@ -49,6 +49,36 @@ fn polled_admission(op: &Op, hipri: bool) -> Result<(), i64> {
     admit_rw(&t).map_err(err)
 }
 
+/// Whether the description carries integrity metadata beside its data.
+///
+/// No storage target registered here exposes an integrity profile, so no
+/// description can serve an attribute vector yet. The answer is asked of the
+/// description rather than assumed, so the admission ladder below is the one
+/// that runs the moment a target does. # C: O(1)
+fn has_metadata(_f: &Arc<File>) -> bool { false }
+
+/// The attribute vector the entry points at, if any: decoded, validated, and
+/// checked against what the description can carry.
+///
+/// Refused BEFORE the transfer, because an attribute the target cannot honour
+/// must not be answered by a transfer that silently dropped it — that is the
+/// difference the feature bit announces. # C: O(1)
+fn attr_admission(op: &Op) -> Result<(), i64> {
+    use crate::io_uring_abi::rw_attr::{admit_target, op_takes_attr, parse_pi, wants_attr,
+                                       ATTR_PI_BYTES};
+    if !op_takes_attr(op.sqe.opcode) { return Ok(()); }
+    if !wants_attr(op.sqe.pad2).map_err(err)? { return Ok(()); }
+    let mut b = [0u8; ATTR_PI_BYTES];
+    if uaccess::copy_from_user(&mut b, op.sqe.addr3).is_err() { return Err(err(Errno::Efault)); }
+    let pi = parse_pi(&b).map_err(err)?;
+    if pi.len != 0 && !uaccess::access_ok(pi.addr, pi.len as usize) {
+        return Err(err(Errno::Efault));
+    }
+    let file = file_of(op.fd)?;
+    admit_target(has_metadata(&file), file.flags().contains(vfs::OpenFlags::O_DIRECT))
+        .map_err(err)
+}
+
 /// `RWF_HIPRI` out of the vectored forms' `rw_flags` word. # C: O(1)
 fn hipri_of(op: &Op) -> bool {
     op.sqe.op_flags as u64 & crate::rwf::RWF_HIPRI != 0
@@ -57,6 +87,7 @@ fn hipri_of(op: &Op) -> bool {
 /// # C: O(len)
 #[inline(always)]
 pub fn read(op: &Op) -> i64 {
+    if let Err(e) = attr_admission(op) { return e; }
     if let Err(e) = polled_admission(op, false) { return e; }
     if op.sqe.off == CUR_POS {
         call(crate::s000_read::sys_read, [op.fd as u64, op.addr, op.len as u64, 0, 0, 0])
@@ -68,6 +99,7 @@ pub fn read(op: &Op) -> i64 {
 /// # C: O(len)
 #[inline(always)]
 pub fn write(op: &Op) -> i64 {
+    if let Err(e) = attr_admission(op) { return e; }
     if let Err(e) = polled_admission(op, false) { return e; }
     if op.sqe.off == CUR_POS {
         call(crate::s001_write::sys_write, [op.fd as u64, op.addr, op.len as u64, 0, 0, 0])
@@ -80,6 +112,7 @@ pub fn write(op: &Op) -> i64 {
 /// vectored syscall already treats `-1` as "current position". # C: O(len)
 #[inline(always)]
 pub fn readv(op: &Op) -> i64 {
+    if let Err(e) = attr_admission(op) { return e; }
     if let Err(e) = polled_admission(op, hipri_of(op)) { return e; }
     call(crate::s295_preadv::sys_preadv2,
          [op.fd as u64, op.addr, op.len as u64, op.sqe.off, 0, op.sqe.op_flags as u64])
@@ -88,6 +121,7 @@ pub fn readv(op: &Op) -> i64 {
 /// # C: O(len)
 #[inline(always)]
 pub fn writev(op: &Op) -> i64 {
+    if let Err(e) = attr_admission(op) { return e; }
     if let Err(e) = polled_admission(op, hipri_of(op)) { return e; }
     call(crate::s296_pwritev::sys_pwritev2,
          [op.fd as u64, op.addr, op.len as u64, op.sqe.off, 0, op.sqe.op_flags as u64])
@@ -98,6 +132,7 @@ pub fn writev(op: &Op) -> i64 {
 /// mapping, so the transfer is unaffected by anything the process does to its
 /// address space in between. # C: O(len)
 fn fixed(op: &Op, write: bool) -> i64 {
+    if let Err(e) = attr_admission(op) { return e; }
     if let Err(e) = polled_admission(op, false) { return e; }
     let file = match file_of(op.fd) { Ok(f) => f, Err(e) => return e };
     // Take an owning handle on the pinned buffer and drop the lock: the

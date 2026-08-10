@@ -45,14 +45,20 @@ pub fn dispatch_op(inode: &Arc<IoUringInode>, sqe: &Sqe) -> OpOutcome {
     };
 
     if sqe.flags & IOSQE_BUFFER_SELECT != 0 {
+        // A bundle spans a RUN of the group's buffers and runs the transfer
+        // itself, because one message across several buffers is not the same
+        // work as one message into one.
+        if crate::io_uring_abi::bundle::effective(sqe.opcode, sqe.flags, sqe.ioprio) {
+            return super::bundle_io::run(inode, sqe, fd);
+        }
         let mut sel = match select_buf(inode, sqe.buf_index) { Ok(s) => s, Err(e) => return OpOutcome::res(e) };
         let len = if sqe.len == 0 || sqe.len > sel.buf.len { sel.buf.len } else { sqe.len };
         let op = Op { inode, sqe, fd, addr: sel.buf.addr, len };
         let res = run(&op);
         if res < 0 { return OpOutcome::res(res); }
         let bid = sel.buf.bid;
-        sel.consume();
-        return OpOutcome::with_buffer(res, bid);
+        let more = sel.consume(res as u64);
+        return OpOutcome::with_buffer(res, bid, more);
     }
 
     let op = Op { inode, sqe, fd, addr: sqe.addr, len: sqe.len };

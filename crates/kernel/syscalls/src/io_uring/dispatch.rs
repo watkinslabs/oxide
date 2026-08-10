@@ -11,6 +11,7 @@
 //   rw       — read/write family, fixed buffers, sync and size ops
 //   fs_ops   — path, descriptor and extended-attribute operations
 //   net_ops  — socket operations
+//   bundle_io — a send or receive spanning a RUN of provided buffers
 //   ring_ops — operations on ring state itself
 //   async_ops — operations on the ring's own in-flight work
 
@@ -20,6 +21,7 @@
 #[path = "dispatch/rw.rs"]       pub mod rw;
 #[path = "dispatch/fs_ops.rs"]   pub mod fs_ops;
 #[path = "dispatch/net_ops.rs"]  pub mod net_ops;
+#[path = "dispatch/bundle_io.rs"] pub mod bundle_io;
 #[path = "dispatch/ring_ops.rs"] pub mod ring_ops;
 #[path = "dispatch/async_ops.rs"] pub mod async_ops;
 
