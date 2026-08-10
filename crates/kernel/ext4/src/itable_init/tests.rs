@@ -28,6 +28,16 @@ fn fresh_dev() -> Arc<dyn BlockDevice> {
     inner
 }
 
+/// The periodic commit walk touches every registered mount, and a mount
+/// registers itself the moment it is opened — so a commit-timer case ticking
+/// beside these ones initialises the very table they are about to make an
+/// assertion about. Measured: `an_impossible_unused_count_refuses_rather_than_zeroing`
+/// answered `Ok(false)` (the group was already flagged zeroed) and
+/// `an_already_initialised_table_is_left_alone` failed the same way, together
+/// 4 in 400 runs of the binary. Every case here holds the walk claim for as
+/// long as its mount is alive.
+use crate::commit_timer::test_walk_claim as no_walk;
+
 fn mount(data: &str) -> Arc<crate::Mount> {
     Ext4Mount::open_with_data(fresh_dev(), None, data).expect("mounts").state().mount.clone()
 }
@@ -71,6 +81,7 @@ fn read_back(m: &Arc<crate::Mount>, off: u64, len: usize) -> Vec<u8> {
 /// records that it did so where a later mount (and a filesystem check) reads it.
 #[test]
 fn an_uninitialised_table_is_zeroed_and_flagged() {
+    let _no_walk = no_walk();
     let m = mount("");
     let (off, len) = dirty_the_table(&m, FIRST_GROUP);
     assert!(read_back(&m, off, len).iter().any(|b| *b == GARBAGE),
@@ -87,6 +98,7 @@ fn an_uninitialised_table_is_zeroed_and_flagged() {
 /// every table on every tick forever.
 #[test]
 fn an_already_initialised_table_is_left_alone() {
+    let _no_walk = no_walk();
     let m = mount("");
     let (off, len) = dirty_the_table(&m, FIRST_GROUP);
     assert_eq!(m.init_inode_table(FIRST_GROUP), Ok(true));
@@ -101,6 +113,7 @@ fn an_already_initialised_table_is_left_alone() {
 /// is done — which is what lets the timer stop looking at this mount.
 #[test]
 fn the_walk_reports_the_group_it_did_and_then_stops() {
+    let _no_walk = no_walk();
     let m = mount("");
     dirty_the_table(&m, FIRST_GROUP);
     assert_eq!(m.init_next_inode_table(FIRST_GROUP), Ok(Some(FIRST_GROUP)));
@@ -111,6 +124,7 @@ fn the_walk_reports_the_group_it_did_and_then_stops() {
 /// refused: zeroing on that count would destroy live inodes.
 #[test]
 fn an_impossible_unused_count_refuses_rather_than_zeroing() {
+    let _no_walk = no_walk();
     let m = mount("");
     dirty_the_table(&m, FIRST_GROUP);
     {
@@ -135,6 +149,7 @@ fn an_impossible_unused_count_refuses_rather_than_zeroing() {
 /// decides whether the timer ever asks.
 #[test]
 fn the_option_decides_whether_the_job_runs_at_all() {
+    let _no_walk = no_walk();
     assert_eq!(mount("noinit_itable").behaviour().li_wait_mult, None);
     assert_eq!(mount("init_itable=20").behaviour().li_wait_mult, Some(20));
 }

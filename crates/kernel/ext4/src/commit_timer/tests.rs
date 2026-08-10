@@ -24,29 +24,44 @@ fn fresh_dev() -> Arc<dyn BlockDevice> {
     inner
 }
 
+/// A tick timestamp nobody else will reuse, and that always moves forward.
+/// The registry is global and these tests run in parallel, so a shared,
+/// monotonically increasing clock is what keeps one test's tick from looking
+/// like a backwards jump to another's mount.
+fn tick_now() -> u64 {
+    use core::sync::atomic::{AtomicU64, Ordering};
+    static CLOCK: AtomicU64 = AtomicU64::new(1_000_000_000_000);
+    CLOCK.fetch_add(due::NS_PER_SEC, Ordering::AcqRel)
+}
+
+use crate::commit_timer::test_walk_claim as drives_the_walk;
+
 /// Mounting registers the mount, and the FIRST tick only starts its clock —
 /// the age of a transaction nobody has timed yet is not "infinite".
 #[test]
 fn the_first_tick_starts_the_interval_rather_than_committing() {
+    let _walk = drives_the_walk();
     let m = Ext4Mount::open_with_data(fresh_dev(), None, "commit=5").expect("mounts");
     let mount = m.state().mount.clone();
-    tick(0);
+    let now = tick_now();
+    tick(now);
     let seen = MOUNTS.lock().iter()
         .find(|r| Weak::as_ptr(&r.mount) == Arc::as_ptr(&mount))
         .map(|r| r.last_ns);
-    assert_eq!(seen, Some(Some(0)), "the mount is registered and its clock started");
+    assert_eq!(seen, Some(Some(now)), "the mount is registered and its clock started");
 }
 
 /// The interval a mount NAMED is the interval it gets: a tick one second in
 /// leaves a `commit=30` mount alone and a `commit=1` mount due.
 #[test]
 fn the_named_interval_decides_when_a_mount_is_due() {
+    let _walk = drives_the_walk();
     let slow = Ext4Mount::open_with_data(fresh_dev(), None, "commit=30").expect("mounts");
     let fast = Ext4Mount::open_with_data(fresh_dev(), None, "commit=1").expect("mounts");
     assert_eq!(slow.state().opts().behaviour.commit_secs, 30);
     assert_eq!(fast.state().opts().behaviour.commit_secs, 1);
 
-    let base = 1_000_000_000_000u64;
+    let base = tick_now();
     tick(base);
     tick(base + due::NS_PER_SEC);
 
@@ -64,29 +79,22 @@ fn the_named_interval_decides_when_a_mount_is_due() {
 /// reference, and the walk that finds a dead one prunes it.
 #[test]
 fn an_unmounted_filesystem_leaves_no_registration_behind() {
+    let _walk = drives_the_walk();
     let mount = {
         let m = Ext4Mount::open_with_data(fresh_dev(), None, "commit=5").expect("mounts");
         Arc::downgrade(&m.state().mount)
     };
-    tick(0);
+    tick(tick_now());
     assert!(!MOUNTS.lock().iter().any(|r| Weak::as_ptr(&r.mount) == Weak::as_ptr(&mount)),
         "the registration went with the mount");
 }
 
-/// A tick timestamp nobody else will reuse, and that always moves forward.
-/// The registry is global and these tests run in parallel, so a shared,
-/// monotonically increasing clock is what keeps one test's tick from looking
-/// like a backwards jump to another's mount.
-fn tick_now() -> u64 {
-    use core::sync::atomic::{AtomicU64, Ordering};
-    static CLOCK: AtomicU64 = AtomicU64::new(1_000_000_000_000);
-    CLOCK.fetch_add(due::NS_PER_SEC, Ordering::AcqRel)
-}
 
 /// The periodic walk is what DRIVES lazy inode-table initialisation: a mount
 /// that named the option gets a group done without anybody asking.
 #[test]
 fn the_periodic_walk_initialises_an_inode_table() {
+    let _walk = drives_the_walk();
     let m = Ext4Mount::open_with_data(fresh_dev(), None, "init_itable=10").expect("mounts");
     let mount = m.state().mount.clone();
     let (off, len) = crate::itable_init::tests::dirty_the_table(&mount, 0);
@@ -100,6 +108,7 @@ fn the_periodic_walk_initialises_an_inode_table() {
 /// under the same tick is left exactly as it was.
 #[test]
 fn the_periodic_walk_leaves_a_mount_that_refused_the_job_alone() {
+    let _walk = drives_the_walk();
     let m = Ext4Mount::open_with_data(fresh_dev(), None, "noinit_itable").expect("mounts");
     let mount = m.state().mount.clone();
     let (off, len) = crate::itable_init::tests::dirty_the_table(&mount, 0);
@@ -114,6 +123,7 @@ fn the_periodic_walk_leaves_a_mount_that_refused_the_job_alone() {
 /// observes the group finished, which is why two ticks are needed to see it.
 #[test]
 fn a_mount_waits_out_the_pause_its_option_earned() {
+    let _walk = drives_the_walk();
     const MULT: u64 = 10;
     let m = Ext4Mount::open_with_data(fresh_dev(), None, "init_itable=10").expect("mounts");
     let mount = m.state().mount.clone();
