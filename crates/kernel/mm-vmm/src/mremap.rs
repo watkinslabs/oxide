@@ -11,6 +11,48 @@ use crate::uffd::{UffdContext, UffdEvent, UffdEventKind};
 use crate::vma::{VmaBacking, VmaFlags, VmaProt};
 use crate::{Error, KResult};
 
+// Module manifest: `relocate` owns the chunked, fault-recovering user→user
+// byte transfer and its accounting; this file owns the mremap decision.
+pub mod relocate;
+
+/// The exception-table copy pair, which absorbs a user fault instead of
+/// delivering it. Only compiled for a real address space — a hosted build
+/// has no user mappings to transfer, and `relocate`'s own tests drive the
+/// loop through a fake pair.
+#[cfg(not(test))]
+struct Uaccess;
+
+#[cfg(not(test))]
+impl relocate::UserXfer for Uaccess {
+    fn read(&mut self, src: u64, buf: &mut [u8]) -> usize {
+        // SAFETY: raw_copy_from_user range-checks `src` and recovers a user fault via the exception table; `buf` is a live kernel slice writable for its whole length.
+        unsafe { uaccess::raw_copy_from_user(buf.as_mut_ptr(), src, buf.len()) }
+    }
+    fn write(&mut self, dst: u64, buf: &[u8]) -> usize {
+        // SAFETY: raw_copy_to_user range-checks `dst` and recovers a user fault via the exception table; `buf` is a live kernel slice readable for its whole length.
+        unsafe { uaccess::raw_copy_to_user(dst, buf.as_ptr(), buf.len()) }
+    }
+}
+
+/// Move `len` bytes between two user ranges of this address space.
+///
+/// The reference relocates page-table entries under the mm write lock and
+/// so has no user access to lose. Oxide's VMA layer copies instead, without
+/// holding a lock across the operation, so a sibling thread unmapping
+/// either range mid-transfer is reachable — recovered here as `EFAULT`
+/// rather than a kernel fault. See `scratch/known_issues.md` for the
+/// page-table-move and whole-operation-lock rows this leaves open.
+/// # C: O(len)
+fn relocate_user(src: u64, dst: u64, len: usize) -> KResult<()> {
+    #[cfg(not(test))]
+    {
+        if relocate::relocate(src, dst, len, &mut Uaccess).is_err() { return Err(Error::Fault); }
+    }
+    #[cfg(test)]
+    let _ = (src, dst, len);
+    Ok(())
+}
+
 /// A userfaultfd registration that must FOLLOW the mapping it covers, charged
 /// for the duration of the move.
 ///
@@ -137,16 +179,13 @@ impl AddressSpace {
                 Ok(v) => v,
                 Err(e) => { remap_failed(watch); return Err(e); }
             };
-            #[cfg(not(test))]
-            {
-                let dst = new_va.as_u64();
-                // SAFETY: caller's AS is active; both ranges live within it. Old pages fault-in on the read, new pages fault-in on the write; size validated by mmap above.
-                unsafe {
-                    for i in 0..old_size {
-                        let v = core::ptr::read_volatile((old.as_u64() + i as u64) as *const u8);
-                        core::ptr::write_volatile((dst + i as u64) as *mut u8, v);
-                    }
-                }
+            if let Err(e) = relocate_user(old.as_u64(), new_va.as_u64(), old_size) {
+                // The source is still whole — only the destination this call
+                // created is abandoned, mirroring the reference's revert-then-
+                // unmap-the-new-area error path.
+                let _ = self.munmap(new_va, new_size);
+                remap_failed(watch);
+                return Err(e);
             }
             // Source VMA stays. PTE eviction so future reads refault
             // as zero is performed by the syscall-layer caller (it
@@ -208,17 +247,13 @@ impl AddressSpace {
         // mapping cannot hold private dirty data; writing the dest would
         // fault a read-only PTE at CPL=0).
         if src_vma.prot.contains(VmaProt::WRITE) {
-            #[cfg(not(test))]
-            {
-                let copy_len = core::cmp::min(old_size, new_size);
-                let dst = new_va.as_u64();
-                // SAFETY: both regions live in the caller's AS, validated by mmap/munmap above; CPL=0 reads/writes through the caller's active PT.
-                unsafe {
-                    for i in 0..copy_len {
-                        let v = core::ptr::read_volatile((old.as_u64() + i as u64) as *const u8);
-                        core::ptr::write_volatile((dst + i as u64) as *mut u8, v);
-                    }
-                }
+            let copy_len = core::cmp::min(old_size, new_size);
+            if let Err(e) = relocate_user(old.as_u64(), new_va.as_u64(), copy_len) {
+                // The source has not been unmapped yet, so abandoning the
+                // destination leaves the caller's mapping exactly as it was.
+                let _ = self.munmap(new_va, new_size);
+                remap_failed(watch);
+                return Err(e);
             }
         }
         let _ = self.munmap(old, old_size);

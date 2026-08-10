@@ -2153,6 +2153,7 @@ dependencies = [
  "hal-x86_64",
  "klog",
  "sync",
+ "uaccess",
 ]
 
 [[package]]
