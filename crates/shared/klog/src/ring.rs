@@ -269,7 +269,18 @@ mod tests {
     #[test]
     fn mpsc_concurrent_producers_no_loss_under_capacity() {
         // 4 producers × 64 records into Ring<512>: capacity comfortably
-        // exceeds total, so all 256 records must land (drop counter = 0).
+        // exceeds total, so no record is lost to FULLNESS and all 256 land.
+        //
+        // `push` also refuses after `PUSH_MAX_RETRIES` lost claims, which is
+        // not fullness: the producer is sized for contenders that nest on one
+        // CPU (process / IRQ / soft-IRQ / NMI), where a loser has by
+        // construction been interrupted at most three deep, and it drops
+        // rather than spin because a console producer must never block. Four
+        // OS threads on four cores are a different contention model — they can
+        // lose the claim arbitrarily often — so a caller in that position
+        // retries, and the property under test is that every retried record
+        // finds a slot. Exhausting the budget without retrying is the subject
+        // of `fills_to_capacity_then_drops`, which drives it deterministically.
         let r: Arc<Ring<512>> = Arc::new(Ring::new());
         let total_seen = Arc::new(TAtomicU32::new(0));
         let mut handles = Vec::new();
@@ -277,7 +288,13 @@ mod tests {
             let r = Arc::clone(&r);
             handles.push(thread::spawn(move || {
                 for i in 0..64u32 {
-                    r.push(rec(tid * 1000 + i)).unwrap();
+                    let mut attempts = 0u32;
+                    while r.push(rec(tid * 1000 + i)).is_err() {
+                        attempts += 1;
+                        assert!(attempts < 10_000,
+                            "a ring with 512 slots refused 256 records: it is full, not contended");
+                        std::thread::yield_now();
+                    }
                 }
             }));
         }
@@ -286,8 +303,8 @@ mod tests {
         while r.pop().is_some() {
             total_seen.fetch_add(1, Ordering::Relaxed);
         }
-        assert_eq!(total_seen.load(Ordering::Relaxed), 4 * 64);
-        assert_eq!(r.dropped(), 0);
+        assert_eq!(total_seen.load(Ordering::Relaxed), 4 * 64,
+            "every record a producer committed is drained exactly once");
     }
 
     #[test]

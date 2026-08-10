@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn boot_console_receives_records_before_any_real_console() {
-        let _g = crate::console::test_lock();
+        let _g = crate::test_claim::claim_console();
         reset();
         set_boot_console(boot_sink);
         assert!(boot_console_registered());
@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn handover_drops_the_boot_console() {
-        let _g = crate::console::test_lock();
+        let _g = crate::test_claim::claim_console();
         reset();
         set_boot_console(boot_sink);
         crate::set_byte_sink(real_sink);
@@ -203,7 +203,7 @@ mod tests {
 
     #[test]
     fn keep_bootcon_survives_the_handover() {
-        let _g = crate::console::test_lock();
+        let _g = crate::test_claim::claim_console();
         reset();
         set_keep_bootcon(true);
         set_boot_console(boot_sink);
@@ -217,7 +217,7 @@ mod tests {
 
     #[test]
     fn emergency_route_reaches_the_boot_console() {
-        let _g = crate::console::test_lock();
+        let _g = crate::test_claim::claim_console();
         reset();
         set_boot_console(boot_sink);
         console::primary_only(b"fault");
@@ -227,7 +227,7 @@ mod tests {
 
     #[test]
     fn ignore_loglevel_defeats_the_console_gate() {
-        let _g = crate::console::test_lock();
+        let _g = crate::test_claim::claim_console();
         reset();
         crate::syslog::set_console_level(crate::syslog::MINIMUM_CONSOLE_LOGLEVEL);
         assert!(crate::syslog::suppress_console(crate::syslog::LOGLEVEL_INFO), "gated by default");
@@ -241,7 +241,7 @@ mod tests {
 
     #[test]
     fn devkmsg_off_discards_writes() {
-        let _g = crate::console::test_lock();
+        let _g = crate::test_claim::claim_console();
         reset();
         crate::set_byte_sink(real_sink);
         set_devkmsg_mode(DEVKMSG_OFF);
@@ -259,7 +259,7 @@ mod tests {
     /// a boot that hangs after the pre-console window prints nothing about it.
     #[test]
     fn a_late_console_is_shown_what_it_missed() {
-        let _g = crate::console::test_lock();
+        let _g = crate::test_claim::claim_console();
         reset();
         // Records emitted with no console anywhere — the pre-init window.
         crate::write_raw(b"before any console\n");
@@ -273,7 +273,7 @@ mod tests {
 
     #[test]
     fn a_first_ever_console_gets_the_whole_ring() {
-        let _g = crate::console::test_lock();
+        let _g = crate::test_claim::claim_console();
         reset();
         reset_shown_through();
         let owed = crate::ring_total() - crate::ring_oldest();
@@ -290,7 +290,7 @@ mod tests {
     /// log, which is how the reference's sequence handover behaves.
     #[test]
     fn handover_from_a_boot_console_replays_nothing() {
-        let _g = crate::console::test_lock();
+        let _g = crate::test_claim::claim_console();
         reset();
         set_boot_console(boot_sink);
         crate::write_raw(b"seen by the boot console\n");
@@ -305,7 +305,7 @@ mod tests {
 
     #[test]
     fn the_boot_console_replays_what_preceded_it() {
-        let _g = crate::console::test_lock();
+        let _g = crate::test_claim::claim_console();
         reset();
         crate::write_raw(b"before earlycon\n");
         set_boot_console(boot_sink);
@@ -320,7 +320,7 @@ mod tests {
     /// away and the next arriving is replayed, and only that gap.
     #[test]
     fn only_the_gap_is_replayed_when_a_console_is_replaced() {
-        let _g = crate::console::test_lock();
+        let _g = crate::test_claim::claim_console();
         reset();
         crate::set_byte_sink(real_sink);
         crate::write_raw(b"while live\n");

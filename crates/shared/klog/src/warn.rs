@@ -100,8 +100,8 @@ mod tests {
     static SEEN: Mutex<String> = Mutex::new(String::new());
     fn capture(b: &[u8]) { SEEN.lock().unwrap_or_else(|e| e.into_inner()).push_str(&String::from_utf8_lossy(b)); }
 
-    fn start() -> std::sync::MutexGuard<'static, ()> {
-        let g = crate::console::test_lock();
+    fn start() -> crate::test_claim::ConsoleClaim {
+        let g = crate::test_claim::claim_console();
         SEEN.lock().unwrap_or_else(|e| e.into_inner()).clear();
         crate::set_byte_sink_no_replay(capture);
         g

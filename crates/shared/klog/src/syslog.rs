@@ -157,10 +157,13 @@ fn floor(pos: usize) -> usize {
 mod tests {
     use super::*;
 
-    // Console-level state is process-global; the assertions below only
-    // touch the level knobs, which no other test in this crate reads.
+    // Console-level state is process-global, and `suppress_console` reads it
+    // on every emit: a test that turns the console off decides whether a
+    // concurrent emitter's bytes reach a sink at all. The console claim is
+    // that state's owner and restores the boot level on both edges.
     #[test]
     fn console_off_then_on_round_trips() {
+        let _g = crate::test_claim::claim_console();
         set_console_level(7);
         assert_eq!(console_level(), 7);
         console_off();
@@ -174,6 +177,7 @@ mod tests {
 
     #[test]
     fn repeated_off_keeps_first_save() {
+        let _g = crate::test_claim::claim_console();
         set_console_level(6);
         console_off();
         console_off();
@@ -184,6 +188,7 @@ mod tests {
 
     #[test]
     fn console_level_clamps_to_minimum() {
+        let _g = crate::test_claim::claim_console();
         set_console_level(0);
         assert_eq!(console_level(), MINIMUM_CONSOLE_LOGLEVEL);
         set_console_level(CONSOLE_LOGLEVEL_DEBUG);
@@ -191,6 +196,7 @@ mod tests {
 
     #[test]
     fn console_on_without_save_is_noop() {
+        let _g = crate::test_claim::claim_console();
         set_console_level(5);
         console_on();
         assert_eq!(console_level(), 5);
@@ -199,6 +205,7 @@ mod tests {
 
     #[test]
     fn dmesg_restrict_round_trips() {
+        let _g = crate::test_claim::claim_console();
         set_dmesg_restrict(true);
         assert!(dmesg_restrict());
         set_dmesg_restrict(false);
