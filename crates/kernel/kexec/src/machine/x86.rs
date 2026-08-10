@@ -350,6 +350,10 @@ pub fn cleanup(image: &KImage) {
 ///
 /// # SAFETY: irreversible; the caller is committed to leaving this kernel.
 unsafe fn machine_shutdown() {
+    // The console FIRST, before any interrupt source is silenced: from here on
+    // its own output is the only account of what the machine did, and a queue
+    // drained by an interrupt that will not come publishes none of it.
+    klog::to_polled_mode();
     // SAFETY: the I/O APIC window was mapped at boot; clearing every
     // redirection entry stops device lines from asserting during the copy and
     // retires any level assertion still in service.

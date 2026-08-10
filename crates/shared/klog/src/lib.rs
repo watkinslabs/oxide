@@ -15,7 +15,8 @@ pub use ring::{Full, Record, Ring, MAIN_RING_CAP, NMI_RING_CAP};
 
 pub mod console;
 pub use console::{
-    register_console, unregister_console, ConsoleSink, CON_ENABLED, MAX_CONSOLES,
+    register_console, set_polled_hook, to_polled_mode, unregister_console, ConsoleSink,
+    CON_ENABLED, MAX_CONSOLES,
 };
 
 pub mod lock;

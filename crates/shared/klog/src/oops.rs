@@ -138,6 +138,11 @@ pub fn report(info: &core::panic::PanicInfo) {
 /// returns: either the restart callback takes the machine, or this CPU stops.
 /// # C: O(infinity) — by definition
 pub fn panic_and_stop(info: &core::panic::PanicInfo) -> ! {
+    // Before a single byte of the report. Everything this function prints is
+    // the only account of why the machine stopped, and a console whose queue is
+    // drained by an interrupt publishes none of it once the panic path silences
+    // its interrupt sources — which the crash boot below does.
+    crate::to_polled_mode();
     report(info);
     // Snapshot the log for whatever is registered to keep it across the
     // restart. After the report, so the panic text is inside the snapshot,

@@ -126,6 +126,14 @@ mod imp {
         }
     }
 
+    /// Nothing to switch: this console's writes are already synchronous —
+    /// every byte is polled out against the FIFO-full flag with no queue and no
+    /// interrupt in the path. Present so the caller does not have to know which
+    /// architecture it is on.
+    /// # SAFETY: no side effects.
+    /// # C: O(1)
+    pub unsafe fn console_to_polled() {}
+
     /// Reprogram the line baud (TCSETS `c_ospeed`) — Linux `pl011_set_termios`
     /// → `pl011_setup_baud`. Sequence per the PL011 TRM: disable the UART, wait
     /// for the in-flight char to drain (FR.BUSY clear), program IBRD/FBRD, re-
@@ -253,6 +261,10 @@ mod imp {
     /// No PL011 on non-arm arches; TX no-op.
     /// # C: O(1)
     pub fn emit(_bytes: &[u8]) {}
+    /// No PL011 on non-arm arches.
+    /// # SAFETY: shell; no side effects.
+    /// # C: O(1)
+    pub unsafe fn console_to_polled() {}
     /// No PL011 on non-arm arches; baud no-op.
     /// # C: O(1)
     pub fn set_baud(_baud: u32) {}
@@ -273,7 +285,7 @@ mod imp {
     pub(super) unsafe fn shutdown() {}
 }
 
-pub use imp::{emit, rx_isr, set_baud};
+pub use imp::{console_to_polled, emit, rx_isr, set_baud};
 
 // ------------------------------------------------ drv model
 /// The PL011 console as a drv model driver. Probe performs detection; a

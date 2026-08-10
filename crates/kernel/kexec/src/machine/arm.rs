@@ -231,6 +231,12 @@ pub fn prepare<F: Frames>(image: &mut KImage, f: &mut F) -> KResult<()> {
 /// # C: O(image size)
 pub fn kexec(image: &KImage) -> KResult<()> {
     if image.arch_pgt == 0 || image.control_code_page == 0 { return Err(Error::Inval); }
+    // The console FIRST, on the same grounds as its x86 twin: from here on its
+    // own output is the only account of what the machine did. This console is
+    // already synchronous, so the switch is a no-op — stated in one place so
+    // the two arches do not drift on which of them needs it.
+    klog::to_polled_mode();
+    klog::announce_emergency("kexec: stopping the machine");
     quiesce::stop_other_cpus();
     klog::announce_emergency("kexec: starting new kernel");
     // SAFETY: the machine is committed. DAIF is masked so nothing can be

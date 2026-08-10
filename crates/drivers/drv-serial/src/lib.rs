@@ -67,6 +67,19 @@ pub fn present() -> bool { uart::present() }
 /// # C: O(len(bytes))
 pub fn emit(bytes: &[u8]) { uart::emit(bytes); }
 
+/// Take the console off any interrupt-driven transmit queue and put it on the
+/// synchronous one, flushing what the queue already holds.
+///
+/// For callers about to silence every interrupt source — a panic, the stop
+/// before a relocation. Their output is the only thing left, and a queue
+/// drained by an interrupt that will not come publishes none of it.
+/// # C: O(queued bytes)
+pub fn console_to_polled() {
+    // SAFETY: writes the console UART's own registers at CPL 0; idempotent, and
+    // every write after it is synchronous, so it is safe with interrupts masked.
+    unsafe { uart::console_to_polled() }
+}
+
 /// Reprogram the console UART baud (TCSETS `c_ospeed`). Dispatches to the
 /// arch UART (16550 divisor latch on x86; firmware-fixed on PL011). # C: O(1)
 pub fn set_baud(baud: u32) { uart::set_baud(baud); }
