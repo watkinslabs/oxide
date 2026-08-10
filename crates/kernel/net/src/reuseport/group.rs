@@ -50,6 +50,24 @@ pub enum Select {
     Drop,
 }
 
+/// One UDP endpoint group's selection over a received datagram, with the
+/// group's own flow-hash distribution folded in. `None` is a datagram the
+/// selection program refused, which reaches no endpoint. Shared by both
+/// families: only the link-layer protocol differs between them.
+/// # C: O(program)
+pub fn select_udp(slot: &super::slot::ReuseportSlot, hash: u32, members_len: usize,
+                  datagram: &[u8], eth_protocol: u16) -> Option<usize> {
+    super::slot::group(slot)
+        .map_or(Select::Hash, |group| {
+            group.select(SelectInput {
+                hash, members_len, transport: datagram,
+                hdr_len: crate::udp::UDP_HDR_LEN, eth_protocol,
+                ip_protocol: crate::addr::IpProto::Udp as u8,
+            })
+        })
+        .index(hash, members_len)
+}
+
 impl Select {
     /// The member a caller takes, with the group's own flow-hash
     /// distribution folded in as the answer for every packet no program

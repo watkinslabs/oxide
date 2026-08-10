@@ -359,20 +359,8 @@ impl NetStack {
         });
         let hash = src.as_u32().rotate_left(7) ^ dst.as_u32().rotate_left(19)
             ^ u32::from(sport).rotate_left(11) ^ u32::from(dport);
-        let index = match crate::reuseport::slot::group(&winner.reuseport_group)
-            .map_or(crate::reuseport::Select::Hash, |group| {
-                group.select(crate::reuseport::SelectInput {
-                    hash, members_len: matched.len(), transport: datagram,
-                    hdr_len: crate::udp::UDP_HDR_LEN,
-                    eth_protocol: crate::addr::eth_p::IPV4,
-                    ip_protocol: crate::addr::IpProto::Udp as u8,
-                })
-            })
-        {
-            crate::reuseport::Select::Member(index) => index,
-            crate::reuseport::Select::Hash => hash as usize % matched.len(),
-            crate::reuseport::Select::Drop => return Vec::new(),
-        };
+        let Some(index) = crate::reuseport::select_udp(&winner.reuseport_group, hash,
+            matched.len(), datagram, crate::addr::eth_p::IPV4) else { return Vec::new(); };
         let selected = matched.swap_remove(index);
         alloc::vec![selected]
     }

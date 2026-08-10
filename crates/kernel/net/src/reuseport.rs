@@ -18,7 +18,7 @@ pub mod slot;
 mod api;
 
 pub use attach::{admit_reuseport_prog, ProgFlavour, SockShape};
-pub use group::{ReuseportGroup, Select, SelectInput};
+pub use group::{select_udp, ReuseportGroup, Select, SelectInput};
 pub use slot::{ReuseportSlot, new_slot};
 
 #[cfg(any(target_os = "oxide-kernel", test, feature = "hosted"))]

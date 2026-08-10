@@ -10,20 +10,6 @@ use crate::stack::NetStack;
 
 use super::{Ipv6AddrOrigin, Ipv6AddrState, Ipv6IfaceAddr, Udp6RxQueue};
 
-/// One UDP endpoint group's reuseport selection, with the flow-hash fallback
-/// folded in. `None` is a packet the selection program refused. # C: O(program)
-fn reuseport_select(slot: &crate::reuseport::ReuseportSlot, hash: u32, members_len: usize,
-                    datagram: &[u8], eth_protocol: u16) -> Option<usize> {
-    crate::reuseport::slot::group(slot)
-        .map_or(crate::reuseport::Select::Hash, |group| {
-            group.select(crate::reuseport::SelectInput {
-                hash, members_len, transport: datagram, hdr_len: crate::udp::UDP_HDR_LEN,
-                eth_protocol, ip_protocol: IpProto::Udp as u8,
-            })
-        })
-        .index(hash, members_len)
-}
-
 impl NetStack {
     pub fn add_v6_addr(&self, iface: NetIfaceId, ip: Ipv6Addr) {
         self.add_v6_addr_meta(iface, ip, 128, u32::MAX, u32::MAX);
@@ -326,7 +312,7 @@ impl NetStack {
         });
         let mut hash = u32::from(sport) ^ u32::from(dport);
         for byte in src.0.iter().chain(dst.0.iter()) { hash = hash.rotate_left(5) ^ u32::from(*byte); }
-        let Some(index) = reuseport_select(&winner.reuseport_group, hash, matched.len(),
+        let Some(index) = crate::reuseport::select_udp(&winner.reuseport_group, hash, matched.len(),
             datagram, crate::addr::eth_p::IPV6) else { return Vec::new(); };
         let selected = matched.swap_remove(index);
         alloc::vec![selected]
@@ -378,7 +364,7 @@ impl NetStack {
         hash ^= u32::from(sport).rotate_left(11) ^ u32::from(dport);
         // A dual-stack socket taking IPv4 traffic sees the link-layer
         // protocol the frame actually carried, not its own family.
-        let Some(index) = reuseport_select(&winner.reuseport_group, hash, matched.len(),
+        let Some(index) = crate::reuseport::select_udp(&winner.reuseport_group, hash, matched.len(),
             datagram, crate::addr::eth_p::IPV4) else { return Vec::new(); };
         let selected = matched.swap_remove(index);
         alloc::vec![selected]
