@@ -894,6 +894,8 @@ dependencies = [
 name = "kexec"
 version = "0.1.0"
 dependencies = [
+ "arch-irq",
+ "cmdline",
  "cpu",
  "crng",
  "crypt",
@@ -954,6 +956,7 @@ dependencies = [
  "hal-x86_64",
  "ipc",
  "kalloc",
+ "kexec",
  "klog",
  "kmacros",
  "modules",
@@ -1384,6 +1387,7 @@ dependencies = [
  "hal-x86_64",
  "ipc",
  "kernfs",
+ "kexec",
  "klog",
  "kmacros",
  "modules",
@@ -1884,6 +1888,7 @@ dependencies = [
  "input",
  "kalloc",
  "kernfs",
+ "kexec",
  "klog",
  "modules",
  "namespace-identity",

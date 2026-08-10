@@ -284,6 +284,9 @@ pub unsafe fn init_from_boot_info(
     }
 
     REGION_COUNT.store(n_regions, Ordering::Release);
+    // Retain the firmware-owned ranges too. Done here because this is the one
+    // place the boot memory map is still readable.
+    super::fwmap::publish(regions);
     let backing = HhdmBacking { hhdm: info.hhdm_offset, bitmaps };
     // SAFETY: same single-CPU init invariant; we read what we just wrote.
     let regs: &[UsableRegion] = unsafe {

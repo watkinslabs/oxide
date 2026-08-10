@@ -183,12 +183,21 @@ pub fn prepare<F: Frames>(image: &mut KImage, f: &mut F) -> KResult<()> {
     for i in 0..f.ram_range_count() {
         if let Some(r) = f.ram_range(i) { ram.push(r); }
     }
-    let ranges = plan::ranges_for(&ram, &image.segments);
+    let mut fw: Vec<(u64, u64)> = Vec::new();
+    for i in 0..f.firmware_range_count() {
+        if let Some(r) = f.firmware_range(i) { fw.push(r); }
+    }
+    let ranges = plan::ranges_for(&ram, &image.segments, &fw);
     if ranges.is_empty() { return Err(Error::Inval); }
-    // The kernel's `TCR_EL1.T0SZ` fixes how much address space `TTBR0` can
-    // describe. A plan reaching past it has no identity map, and saying so
-    // here is the difference between an errno and a machine that stops.
-    if plan::max_address(&ranges) > plan::ARM_MAX_IDMAP_PA { return Err(Error::Inval); }
+    // How much address space the low regime can describe is read from the
+    // LIVE translation control, not assumed: a kernel configured for a
+    // narrower output size would otherwise get a map built for addresses its
+    // hardware truncates, with no check able to see it. A plan reaching past
+    // the derived limit has no identity map, and saying so here is the
+    // difference between an errno and a machine that stops.
+    if plan::max_address(&ranges) > plan::arm_idmap_limit(hal_aarch64::read_tcr_el1()) {
+        return Err(Error::Inval);
+    }
 
     let mut pool: Vec<u64> = Vec::new();
     // No transition mapping on this architecture — the trampoline is entered
@@ -232,13 +241,27 @@ pub fn kexec(image: &KImage) -> KResult<()> {
     // that map describes. Does not return.
     unsafe {
         core::arch::asm!("msr daifset, #0xf", options(nomem, nostack, preserves_flags));
+        // Break before make. The size field of the translation control is
+        // programmed for THIS map rather than inherited, and changing it while
+        // a table of a different reach is installed leaves the hardware free
+        // to have speculatively walked either one. So the regime is emptied
+        // and invalidated first, the size field written, and only then the
+        // identity root installed.
         core::arch::asm!(
-            "msr ttbr0_el1, {0}",
+            "msr ttbr0_el1, xzr",
             "isb",
             "tlbi vmalle1",
             "dsb nsh",
             "isb",
-            in(reg) image.arch_pgt,
+            "msr tcr_el1, {tcr}",
+            "isb",
+            "msr ttbr0_el1, {root}",
+            "isb",
+            "tlbi vmalle1",
+            "dsb nsh",
+            "isb",
+            tcr = in(reg) plan::tcr_with_idmap_t0sz(hal_aarch64::read_tcr_el1()),
+            root = in(reg) image.arch_pgt,
             options(nostack, preserves_flags),
         );
         let f: RelocateFn = core::mem::transmute(image.control_code_page as usize);

@@ -39,22 +39,30 @@ pub const TRANSITION_TABLE_PAGES: u64 = 3;
 // --- range plan ----------------------------------------------------------
 
 /// Physical ranges the identity map must cover, block-aligned, sorted and
-/// merged: every usable RAM range (the reference's `pfn_mapped`) plus every
-/// segment's destination range.
+/// merged. THREE sources, and dropping any one of them faults the trampoline
+/// or the image at a point where nothing is left able to report it:
 ///
-/// Segments are included SEPARATELY from RAM because a destination is not
-/// required to be inside RAM the running kernel manages — a second kernel
-/// loaded below the first one's usable window is the reference's stated
-/// reason for the same loop, and a map built from RAM alone would fault the
-/// trampoline on its first copy into such a segment.
+/// - every usable RAM range, because the relocation reads its source pages
+///   out of exactly that memory;
+/// - every segment's destination range, because a destination is not required
+///   to lie inside RAM the running kernel manages — an image loaded below the
+///   running kernel's usable window is the ordinary case on a machine whose
+///   firmware claims the bottom of memory, and a map built from RAM alone
+///   faults on the first copy into such a segment;
+/// - every firmware-owned range, because the description tables a replacement
+///   kernel reads before it has built any mapping of its own live there, and
+///   they are outside usable RAM by construction.
 /// # C: O(N log N) over ranges
-pub fn ranges_for(ram: &[(u64, u64)], segs: &[KexecSegment]) -> Vec<(u64, u64)> {
+pub fn ranges_for(
+    ram: &[(u64, u64)], segs: &[KexecSegment], firmware: &[(u64, u64)],
+) -> Vec<(u64, u64)> {
     let mut raw: Vec<(u64, u64)> = Vec::new();
     for &(s, e) in ram { raw.push((s, e)); }
     for s in segs {
         if s.memsz == 0 { continue; }
         raw.push((s.mem, s.mem.saturating_add(s.memsz)));
     }
+    for &(s, e) in firmware { raw.push((s, e)); }
     normalize(&raw)
 }
 
@@ -161,6 +169,30 @@ pub const CR0_CLEAR: u64 = (1 << 18) | (1 << 16) | (1 << 3) | (1 << 2);
 /// `CR0` bits it sets: `PG` (31) and `PE` (0).
 pub const CR0_SET: u64 = (1 << 31) | 1;
 
+// --- x86_64 descriptor table left at entry -------------------------------
+//
+// The trampoline invalidates the running kernel's descriptor table on its way
+// out, because that table lives in memory the relocation is about to
+// overwrite. It cannot simply leave nothing behind: an image whose first act
+// is to reload a segment register — a purgatory, a second-stage loader, any
+// code that does not build its own table first — would take a fault with no
+// table to describe the handler. So a flat table of its own travels inside the
+// trampoline blob and is installed once the identity map is live.
+
+/// Null descriptor. Selector 0 is not a usable segment on this architecture.
+pub const GDT_ENTRY_NULL: u64 = 0;
+/// Flat 32-bit code: base 0, limit 4 GiB, present, ring 0, execute/read.
+pub const GDT_ENTRY_CODE32: u64 = 0x00cf_9a00_0000_ffff;
+/// Flat 64-bit code: as above with the long-mode bit set and the default
+/// operand-size bit clear, which is the only legal combination in long mode.
+pub const GDT_ENTRY_CODE64: u64 = 0x00af_9a00_0000_ffff;
+/// Flat data: base 0, limit 4 GiB, present, ring 0, read/write.
+pub const GDT_ENTRY_DATA: u64 = 0x00cf_9200_0000_ffff;
+/// Entries in that table, the null descriptor included.
+pub const GDT_ENTRIES: u64 = 4;
+/// Limit field of the pseudo-descriptor: the table's size in bytes, less one.
+pub const GDT_LIMIT: u64 = GDT_ENTRIES * 8 - 1;
+
 // --- aarch64 entry state -------------------------------------------------
 
 /// `SCTLR_EL1` with the MMU, caches and stack alignment checking off, and
@@ -178,12 +210,57 @@ pub const SCTLR_EL1_MMU_OFF: u64 =
 /// each destination page to it before the branch (`docs/36 §4`).
 pub const ARM_CLEAN_TO_POC: bool = true;
 
-/// Highest physical address the aarch64 identity map can describe under the
-/// kernel's `TCR_EL1.T0SZ` of 16 (48-bit `TTBR0` virtual addresses). A plan
-/// reaching past it cannot be identity mapped at all, and the reference
-/// answers the same question by recomputing `T0SZ`; refusing at LOAD time is
-/// the half of that this port implements, so the failure is an errno.
-pub const ARM_MAX_IDMAP_PA: u64 = 1 << 48;
+// --- aarch64 translation control -----------------------------------------
+//
+// The identity map goes into the low-address translation regime, whose reach
+// is set by a size field in the live translation-control register. Deriving
+// the reach from that register — rather than assuming the value this kernel
+// happens to boot with — is what makes the refusal below honest: a kernel
+// configured for a smaller address space would otherwise have an identity map
+// built for an address space its hardware does not walk, and no check would
+// notice. The size field is also PROGRAMMED for the image rather than
+// inherited, so the map that is installed is the map that was planned.
+
+/// `T0SZ` field of the translation-control register — bits 5:0. The regime
+/// describes `64 - T0SZ` address bits.
+pub const TCR_T0SZ_MASK: u64 = 0x3f;
+/// Shift of the intermediate-physical-address-size field, bits 34:32.
+pub const TCR_IPS_SHIFT: u32 = 32;
+/// Width of that field.
+pub const TCR_IPS_MASK: u64 = 0x7;
+
+/// Address bits an intermediate-physical-address-size encoding permits.
+/// # C: O(1)
+pub fn ips_bits(ips: u64) -> u32 {
+    match ips & TCR_IPS_MASK { 0 => 32, 1 => 36, 2 => 40, 3 => 42, 4 => 44, 5 => 48, 6 => 52, _ => 56 }
+}
+
+/// Address bits the identity map's table format describes: four levels of
+/// 4 KiB tables, nine index bits each, over a twelve-bit page offset.
+pub const ARM_IDMAP_VA_BITS: u32 = 4 * 9 + 12;
+
+/// `T0SZ` the identity map is installed under.
+/// # C: O(1)
+pub const ARM_IDMAP_T0SZ: u64 = 64 - ARM_IDMAP_VA_BITS as u64;
+
+/// Highest physical address, exclusive, that can be both produced by this
+/// translation regime and described by the identity map's table format.
+///
+/// The smaller of the two limits, because either one alone is a map that
+/// cannot be walked: a plan past the output-size field produces addresses the
+/// hardware truncates, and a plan past the table format's reach has no index
+/// bits left to name it.
+/// # C: O(1)
+pub fn arm_idmap_limit(tcr: u64) -> u64 {
+    let out = ips_bits(tcr >> TCR_IPS_SHIFT);
+    let bits = if out < ARM_IDMAP_VA_BITS { out } else { ARM_IDMAP_VA_BITS };
+    1u64 << bits
+}
+
+/// The translation-control value the identity map is installed under: the
+/// live one with the size field replaced by the map's own.
+/// # C: O(1)
+pub fn tcr_with_idmap_t0sz(tcr: u64) -> u64 { (tcr & !TCR_T0SZ_MASK) | ARM_IDMAP_T0SZ }
 
 /// Pages a byte range spans at the identity map's leaf size.
 /// # C: O(1)
@@ -230,14 +307,39 @@ mod tests {
         // does not manage. Dropping it leaves the trampoline faulting on its
         // first copy, with nothing left able to report it.
         let ram = [(0x1000_0000u64, 0x2000_0000u64)];
-        let out = ranges_for(&ram, &[seg(0x8000_0000, BLOCK_SIZE)]);
+        let out = ranges_for(&ram, &[seg(0x8000_0000, BLOCK_SIZE)], &[]);
         assert_eq!(out.len(), 2);
         assert!(out.contains(&(0x8000_0000, 0x8000_0000 + BLOCK_SIZE)));
     }
 
     #[test]
+    fn firmware_ranges_outside_ram_are_mapped_too() {
+        // The description tables a replacement kernel reads before it has any
+        // mapping of its own are outside usable RAM by construction, so a plan
+        // built from RAM and segments alone leaves them untranslated.
+        let ram = [(0u64, BLOCK_SIZE)];
+        let fw = [(0x7f00_0000u64, 0x7f01_0000u64)];
+        let out = ranges_for(&ram, &[], &fw);
+        assert_eq!(out.len(), 2);
+        assert!(out.contains(&(0x7f00_0000, 0x7f00_0000 + BLOCK_SIZE)),
+                "a firmware range must be covered by the block that contains it");
+        // And dropping them is exactly the defect: same inputs, no firmware.
+        assert_eq!(ranges_for(&ram, &[], &[]).len(), 1);
+    }
+
+    #[test]
+    fn a_firmware_range_inside_ram_costs_no_extra_block() {
+        // Merging matters here: firmware ranges routinely abut or fall inside
+        // the RAM the map already covers, and a duplicate claim on one block
+        // is refused by the table builder as already mapped.
+        let ram = [(0u64, 4 * BLOCK_SIZE)];
+        let out = ranges_for(&ram, &[], &[(BLOCK_SIZE, BLOCK_SIZE + 4096)]);
+        assert_eq!(out, [(0, 4 * BLOCK_SIZE)]);
+    }
+
+    #[test]
     fn a_zero_length_segment_claims_nothing() {
-        let out = ranges_for(&[], &[seg(0x8000_0000, 0)]);
+        let out = ranges_for(&[], &[seg(0x8000_0000, 0)], &[]);
         assert!(out.is_empty());
     }
 
@@ -297,10 +399,98 @@ mod tests {
     }
 
     #[test]
+    fn the_descriptor_table_left_behind_describes_flat_ring_zero_segments() {
+        // Each field is separately load-bearing, and a wrong one faults an
+        // image at its first segment load with no handler left to take it.
+        for e in [GDT_ENTRY_CODE32, GDT_ENTRY_CODE64, GDT_ENTRY_DATA] {
+            // Base is zero across all three base fields (bits 39:16, 63:56).
+            assert_eq!((e >> 16) & 0xff_ffff, 0, "segment base must be flat");
+            assert_eq!((e >> 56) & 0xff, 0, "segment base must be flat");
+            // Limit 0xfffff with granularity set (bit 55) spans 4 GiB.
+            assert_eq!(e & 0xffff, 0xffff);
+            assert_eq!((e >> 48) & 0xf, 0xf);
+            assert_ne!(e & (1 << 55), 0, "granularity must scale the limit");
+            // Present (47), ring 0 (46:45), code/data rather than system (44).
+            assert_ne!(e & (1 << 47), 0, "descriptor must be present");
+            assert_eq!((e >> 45) & 3, 0, "descriptor must be ring 0");
+            assert_ne!(e & (1 << 44), 0);
+        }
+        // Executable (43) separates the code entries from the data one.
+        assert_ne!(GDT_ENTRY_CODE32 & (1 << 43), 0);
+        assert_ne!(GDT_ENTRY_CODE64 & (1 << 43), 0);
+        assert_eq!(GDT_ENTRY_DATA & (1 << 43), 0);
+        // Data must be writable (41), or every stack push faults.
+        assert_ne!(GDT_ENTRY_DATA & (1 << 41), 0);
+        // Long mode (53) and default-operand-size (54) are mutually exclusive:
+        // setting both is an illegal descriptor the processor rejects.
+        assert_ne!(GDT_ENTRY_CODE64 & (1 << 53), 0, "the 64-bit entry must set L");
+        assert_eq!(GDT_ENTRY_CODE64 & (1 << 54), 0, "L and D cannot both be set");
+        assert_eq!(GDT_ENTRY_CODE32 & (1 << 53), 0);
+        assert_ne!(GDT_ENTRY_CODE32 & (1 << 54), 0);
+        assert_eq!(GDT_ENTRY_NULL, 0);
+    }
+
+    #[test]
+    fn the_descriptor_table_limit_covers_exactly_its_entries() {
+        // A limit one entry short leaves the last selector unloadable; one
+        // entry long lets a selector index past the table into whatever
+        // follows it in the control page.
+        assert_eq!(GDT_LIMIT, GDT_ENTRIES * 8 - 1);
+        assert_eq!(GDT_LIMIT, 31);
+        // Every selector the trampoline can name has to fit under the limit.
+        for sel in [8u64, 16, 24] { assert!(sel + 7 <= GDT_LIMIT); }
+    }
+
+    #[test]
     fn arm_mmu_off_keeps_every_res1_field() {
         assert_eq!(SCTLR_EL1_MMU_OFF, 0x3050_0800);
         // The MMU, cache and instruction-cache enables are the point.
         for bit in [0u32, 2, 12] { assert_eq!(SCTLR_EL1_MMU_OFF & (1 << bit), 0); }
+    }
+
+    #[test]
+    fn the_identity_maps_reach_is_derived_and_not_assumed() {
+        // A translation regime configured for a smaller output size must
+        // shrink the plan's reach with it. Assuming the widest case builds a
+        // map whose high half the hardware cannot produce addresses for.
+        let forty_bits = 2u64 << TCR_IPS_SHIFT;
+        assert_eq!(arm_idmap_limit(forty_bits), 1 << 40);
+        let forty_eight = 5u64 << TCR_IPS_SHIFT;
+        assert_eq!(arm_idmap_limit(forty_eight), 1 << ARM_IDMAP_VA_BITS);
+        // And a regime that can produce MORE than the table format describes
+        // is still capped by the table format.
+        let fifty_two = 6u64 << TCR_IPS_SHIFT;
+        assert_eq!(arm_idmap_limit(fifty_two), 1 << ARM_IDMAP_VA_BITS);
+        // Bits outside the field must not reach the answer.
+        assert_eq!(arm_idmap_limit(u64::MAX & !(TCR_IPS_MASK << TCR_IPS_SHIFT)), 1 << 32);
+    }
+
+    #[test]
+    fn every_output_size_encoding_is_named() {
+        // An unnamed encoding read as a wider one is a map built past what the
+        // hardware produces; read as a narrower one it refuses a legal plan.
+        for (enc, bits) in [(0u64, 32u32), (1, 36), (2, 40), (3, 42),
+                            (4, 44), (5, 48), (6, 52), (7, 56)] {
+            assert_eq!(ips_bits(enc), bits);
+        }
+    }
+
+    #[test]
+    fn the_installed_size_field_matches_the_table_format() {
+        // The size field and the number of table levels are one decision. A
+        // field that describes more bits than the four-level format indexes
+        // makes the hardware start its walk at a level the map does not have.
+        assert_eq!(ARM_IDMAP_VA_BITS, 48);
+        assert_eq!(ARM_IDMAP_T0SZ, 16);
+        assert_eq!(64 - ARM_IDMAP_T0SZ, ARM_IDMAP_VA_BITS as u64);
+        // Programming it replaces only that field.
+        let live = 0x0000_0005_B510_3520u64;
+        let out = tcr_with_idmap_t0sz(live);
+        assert_eq!(out & TCR_T0SZ_MASK, ARM_IDMAP_T0SZ);
+        assert_eq!(out & !TCR_T0SZ_MASK, live & !TCR_T0SZ_MASK);
+        // A regime already at the right size is left bit-identical.
+        let already = (live & !TCR_T0SZ_MASK) | ARM_IDMAP_T0SZ;
+        assert_eq!(tcr_with_idmap_t0sz(already), already);
     }
 
     #[test]
