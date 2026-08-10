@@ -78,6 +78,12 @@ pub fn sys_io_uring_setup(args: &syscall::SyscallArgs) -> i64 {
         return err(Errno::Efault);
     }
 
+    // The creating task becomes the ring's submitter here: after the params
+    // copy-back and before the descriptor exists, so a single-issuer ring is
+    // owned from the moment anyone can reach it rather than by whichever task
+    // happens to enter it first.
+    if crate::io_uring_abi::issuer::claims_at_setup(geom.flags) { inode.claim_issuer_now(); }
+
     let cur = match sched::live::current() { Some(c) => c, None => return err(Errno::Ebadf) };
     // SAFETY: running task on this CPU; preempt-off; sole reader of fd_table slot.
     let fdt = match unsafe { cur.fd_table_ref() } { Some(t) => t.clone(), None => return err(Errno::Ebadf) };

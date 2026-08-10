@@ -168,7 +168,7 @@ pub fn sys_io_uring_register(args: &syscall::SyscallArgs) -> i64 {
     let inode = match if req.registered_ring { registered_ring_for(fd) } else { ring_for(fd) } {
         Ok(i) => i, Err(e) => return e,
     };
-    if let Err(e) = inode.claim_issuer() { return err(e); }
+    if let Err(e) = inode.admit_register() { return err(e); }
     // A ring's own register allow-list, once it is enabled.
     if inode.flags & IORING_SETUP_R_DISABLED == 0 || !inode.test_state(crate::io_uring::ctx::state::DISABLED) {
         if !inode.reg.lock().restrictions.allows_register(req.opcode) { return err(Errno::Eacces); }

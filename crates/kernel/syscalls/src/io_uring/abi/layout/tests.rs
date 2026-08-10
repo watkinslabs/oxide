@@ -287,7 +287,7 @@ fn every_setup_flag_is_either_implemented_or_refused() {
         (IORING_SETUP_TASKRUN_FLAG,       true,  "IORING_SQ_TASKRUN correctly never raised"),
         (IORING_SETUP_SQE128,             false, "the SQE array is sized and indexed at 64 bytes"),
         (IORING_SETUP_CQE32,              true,  "cqe_size sizes and indexes the CQE array at 32 bytes"),
-        (IORING_SETUP_SINGLE_ISSUER,      true,  "ctx::claim_issuer refuses a second submitter"),
+        (IORING_SETUP_SINGLE_ISSUER,      true,  "abi::issuer records the submitter at setup"),
         (IORING_SETUP_DEFER_TASKRUN,      true,  "vacuous, and the RESIZE_RINGS gate"),
         (IORING_SETUP_NO_MMAP,            false, "no path adopts caller pages as the ring"),
         (IORING_SETUP_REGISTERED_FD_ONLY, false, "only reachable with NO_MMAP"),

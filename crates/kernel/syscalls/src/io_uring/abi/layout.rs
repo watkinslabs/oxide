@@ -103,7 +103,7 @@ pub const NO_SQ_ARRAY: u32 = u32::MAX;
 /// | `TASKRUN_FLAG` | implemented | same reason — `IORING_SQ_TASKRUN` is correctly never raised, because there is never task work pending. |
 /// | `SQE128` | refused | the SQE array is sized and indexed at 64 bytes. |
 /// | `CQE32` | implemented | `cqe_size` sizes and indexes the CQE array at 32 bytes; `Cqe::big` carries the second half. It is the flag zero-copy receive registration requires, because a receive completion reports a buffer offset alongside its length. |
-/// | `SINGLE_ISSUER` | implemented | `ctx::claim_issuer` refuses a second submitter. |
+/// | `SINGLE_ISSUER` | implemented | [`super::issuer`]: the creating task (or, for an `R_DISABLED` ring, the enabling one) is recorded as the submitter, and every other task is EEXIST. |
 /// | `DEFER_TASKRUN` | implemented | vacuously, per `COOP_TASKRUN`; also the gate `RESIZE_RINGS` requires. |
 /// | `NO_MMAP` | refused | ring memory is kernel-allocated; there is no path that adopts a caller's pages as the ring. |
 /// | `REGISTERED_FD_ONLY` | refused | it is only reachable with `NO_MMAP`, which is refused. |

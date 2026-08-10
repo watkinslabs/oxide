@@ -6,6 +6,8 @@
 //   layout      — oxide's SQ/CQ/SQE region geometry + the `io_uring_setup`
 //                 admission ladder (`io_uring_sanitise_params`,
 //                 `io_uring_fill_params`, `rings_size`).
+//   issuer      — `IORING_SETUP_SINGLE_ISSUER`: when the ring's submitter is
+//                 recorded and who may submit to / register against it.
 //   allowed     — who may create a ring at all (`kernel.io_uring_disabled`,
 //                 `kernel.io_uring_group`, CAP_SYS_ADMIN) → EPERM.
 //   enter       — `io_uring_enter` flag/argument decode, CQ-occupancy and
@@ -38,6 +40,7 @@
 
 pub mod uapi;
 pub mod allowed;
+pub mod issuer;
 pub mod layout;
 pub mod enter;
 pub mod sqpoll;
