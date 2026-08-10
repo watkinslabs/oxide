@@ -8,7 +8,13 @@ use syscall::errno::Errno;
 use crate::io_uring::ctx::IoUringInode;
 use crate::io_uring::pin::PinnedRange;
 use crate::io_uring::rsrc::RegBuf;
+use crate::io_uring_abi::acct::{Ledgers, RingAcct};
 use crate::io_uring_abi::register_op::*;
+
+/// A registered buffer is the CALLER's own memory held down by the kernel for
+/// transfers into and out of it, so it books the mm's pinned total as well as
+/// the ring owner's memory-lock account.
+const BUF_LEDGERS: Ledgers = Ledgers::UserAndMm;
 
 use super::tags;
 
@@ -17,25 +23,26 @@ fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 /// Read one `struct iovec` and pin the range it names. A null base with a
 /// zero length is the legal empty slot; a null base with a length is EFAULT.
 /// # C: O(len / PAGE)
-fn pin_iovec(p: u64) -> Result<PinnedRange, i64> {
+fn pin_iovec(p: u64, acct: RingAcct) -> Result<PinnedRange, i64> {
     let mut b = [0u8; IOVEC_BYTES as usize];
     if uaccess::copy_from_user(&mut b, p).is_err() { return Err(err(Errno::Efault)); }
     let base = u64::from_ne_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]);
     let len  = u64::from_ne_bytes([b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]]);
     if base == 0 {
-        return if len == 0 { PinnedRange::pin(0, 0).map_err(err) } else { Err(err(Errno::Efault)) };
+        return if len == 0 { PinnedRange::pin(0, 0, acct, BUF_LEDGERS).map_err(err) }
+               else { Err(err(Errno::Efault)) };
     }
     if len > uaccess::MAX_RW_COUNT as u64 { return Err(err(Errno::Einval)); }
     if !uaccess::access_ok(base, len as usize) { return Err(err(Errno::Efault)); }
-    PinnedRange::pin(base, len).map_err(err)
+    PinnedRange::pin(base, len, acct, BUF_LEDGERS).map_err(err)
 }
 
 /// Pin `nr` buffers from a user iovec array, with optional tags. # C: O(bytes)
-fn pin_table(arg: u64, nr: u32, tags_ptr: u64) -> Result<Vec<RegBuf>, i64> {
+fn pin_table(arg: u64, nr: u32, tags_ptr: u64, acct: RingAcct) -> Result<Vec<RegBuf>, i64> {
     let mut v: Vec<RegBuf> = Vec::new();
     if v.try_reserve_exact(nr as usize).is_err() { return Err(err(Errno::Enomem)); }
     for i in 0..nr as u64 {
-        let buf = pin_iovec(arg + i * IOVEC_BYTES)?;
+        let buf = pin_iovec(arg + i * IOVEC_BYTES, acct)?;
         let tag = if tags_ptr == 0 { 0 } else { read_tag(tags_ptr + i * 8)? };
         v.push(RegBuf { buf: Arc::new(buf), tag });
     }
@@ -58,7 +65,7 @@ pub fn register(inode: &IoUringInode, arg: u64, nr: u32) -> i64 {
 pub fn register_tagged(inode: &IoUringInode, arg: u64, nr: u32, tags_ptr: u64) -> i64 {
     let already = inode.reg.lock().buffers.is_some();
     if let Err(e) = buffers_admission(already, nr) { return err(e); }
-    let table = match pin_table(arg, nr, tags_ptr) { Ok(t) => t, Err(e) => return e };
+    let table = match pin_table(arg, nr, tags_ptr, inode.acct) { Ok(t) => t, Err(e) => return e };
     inode.reg.lock().buffers = Some(table);
     0
 }
@@ -78,7 +85,7 @@ pub fn unregister(inode: &IoUringInode) -> i64 {
 pub fn update(inode: &IoUringInode, offset: u32, data: u64, tags_ptr: u64, nr: u32) -> i64 {
     let len = inode.reg.lock().buffers_len();
     if let Err(e) = files_update_admission(len, offset, nr) { return err(e); }
-    let fresh = match pin_table(data, nr, tags_ptr) { Ok(t) => t, Err(e) => return e };
+    let fresh = match pin_table(data, nr, tags_ptr, inode.acct) { Ok(t) => t, Err(e) => return e };
     let mut released: Vec<u64> = Vec::new();
     if released.try_reserve_exact(nr as usize).is_err() { return err(Errno::Enomem); }
     {

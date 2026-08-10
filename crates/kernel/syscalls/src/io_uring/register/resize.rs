@@ -107,8 +107,11 @@ pub fn resize_rings(inode: &Arc<IoUringInode>, arg: u64) -> i64 {
     let g = match prepare_resize(&mut p, inode.flags) { Ok(g) => g, Err(e) => return err(e) };
 
     // Both regions first: a half-built replacement must never be reachable.
-    let Some(rings) = Region::alloc(g.rings_bytes) else { return err(Errno::Enomem) };
-    let Some(sqes) = Region::alloc(g.sqes_bytes) else { return err(Errno::Enomem) };
+    // The replacement rings are charged like any other: a resize that would
+    // put the user past their ceiling is refused, and the OLD regions give
+    // their charge back with themselves when they are retired below.
+    let Some(rings) = Region::alloc(g.rings_bytes, inode.acct) else { return err(Errno::Enomem) };
+    let Some(sqes) = Region::alloc(g.sqes_bytes, inode.acct) else { return err(Errno::Enomem) };
     let new = IoUring {
         rings, sqes,
         sq_entries: g.sq_entries, cq_entries: g.cq_entries,

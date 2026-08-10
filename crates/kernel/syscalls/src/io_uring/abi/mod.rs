@@ -8,6 +8,9 @@
 //                 `io_uring_fill_params`, `rings_size`).
 //   issuer      — `IORING_SETUP_SINGLE_ISSUER`: when the ring's submitter is
 //                 recorded and who may submit to / register against it.
+//   acct        — the per-user memory-lock charge a ring books for the pages
+//                 it pins, its RLIMIT_MEMLOCK ceiling and the CAP_IPC_LOCK
+//                 escape.
 //   allowed     — who may create a ring at all (`kernel.io_uring_disabled`,
 //                 `kernel.io_uring_group`, CAP_SYS_ADMIN) → EPERM.
 //   enter       — `io_uring_enter` flag/argument decode, CQ-occupancy and
@@ -59,6 +62,7 @@
 // call one of these, and encode (docs/53).
 
 pub mod uapi;
+pub mod acct;
 pub mod allowed;
 pub mod issuer;
 pub mod layout;

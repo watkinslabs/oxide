@@ -7,6 +7,8 @@
 // posts completions.
 //
 // Module manifest:
+//   acct        — the running task's side of the memory-lock charge: whose
+//                 account a ring uses and what its ceiling is
 //   region      — one shared region's physical run, its lifetime and refcounting
 //   mem_region  — a registered `IORING_REGISTER_MEM_REGION` region: kernel-
 //                 allocated (mappable) or caller-provided (pinned)
@@ -40,6 +42,7 @@
 #![cfg(target_os = "oxide-kernel")]
 #![allow(dead_code)]
 
+pub mod acct;
 pub mod region;
 pub mod zcrx;
 pub mod mem_region;

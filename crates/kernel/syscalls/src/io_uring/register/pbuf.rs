@@ -18,6 +18,7 @@ use syscall::errno::Errno;
 use crate::io_uring::ctx::IoUringInode;
 use crate::io_uring::pin::PinnedRange;
 use crate::io_uring::rsrc::{BufGroup, BufRing, ProvidedBuf};
+use crate::io_uring_abi::acct::Ledgers;
 use crate::io_uring_abi::bundle::{BufEntry, IncCommit};
 use crate::io_uring_abi::register_op::BUF_REG_BYTES;
 
@@ -56,7 +57,11 @@ pub fn register(inode: &IoUringInode, arg: u64) -> i64 {
     let bytes = match (entries as u64).checked_mul(BUF_BYTES) {
         Some(v) => v, None => return err(Errno::Eoverflow),
     };
-    let pinned = match PinnedRange::pin(ring_addr, bytes) { Ok(p) => p, Err(e) => return err(e) };
+    // A provided-buffer ring is the RING's memory, whoever supplied the pages:
+    // the user account alone, like every other region.
+    let pinned = match PinnedRange::pin(ring_addr, bytes, inode.acct, Ledgers::User) {
+        Ok(p) => p, Err(e) => return err(e),
+    };
 
     let mut g = inode.reg.lock();
     if g.bufs_groups.iter().any(|x| x.gid == bgid) { return err(Errno::Eexist); }

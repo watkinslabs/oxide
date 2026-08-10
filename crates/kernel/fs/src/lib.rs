@@ -49,6 +49,11 @@ pub mod keyring;
 /// Boot binding of the keyring's `/proc/keys`, `/proc/key-users` and
 /// `/proc/sys/kernel/keys/*` accessors into procfs.
 pub mod perf;
+/// The per-uid pinned-page account, shared by every kernel object that holds
+/// memory down on a user's behalf. Named here rather than under one of its
+/// users because a second such account beside it would be a second allowance,
+/// and therefore no ceiling.
+pub use perf::ring::locked_vm;
 /// Identity vs numbering for this crate's anon-inode families.
 pub mod pseudo_ino_identity;
 /// Secret memory: pages removed from the kernel's linear map while owned.

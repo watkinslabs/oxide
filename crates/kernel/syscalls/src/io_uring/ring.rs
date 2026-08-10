@@ -17,6 +17,7 @@ use crate::io_uring_abi::layout::{
     RING_SQ_RING_ENTRIES, RING_SQ_RING_MASK,
 };
 use super::region::Region;
+use crate::io_uring_abi::acct::RingAcct;
 use crate::io_uring_abi::sqe_slot::sqe_offset;
 
 use super::ctx::IoUringInode;
@@ -43,9 +44,10 @@ pub struct IoUring {
 }
 
 impl IoUring {
-    /// Allocate and seed both regions for an admitted geometry. # C: O(N_pages)
-    pub fn new(g: &Geometry) -> Option<Self> {
-        Self::build(g, Region::alloc(g.rings_bytes)?, Region::alloc(g.sqes_bytes)?).into()
+    /// Allocate and seed both regions for an admitted geometry, charging their
+    /// pages to `acct`. # C: O(N_pages)
+    pub fn new(g: &Geometry, acct: RingAcct) -> Option<Self> {
+        Self::build(g, Region::alloc(g.rings_bytes, acct)?, Region::alloc(g.sqes_bytes, acct)?).into()
     }
 
     /// The same, over regions already built — which is how a caller-supplied
