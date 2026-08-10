@@ -52,20 +52,35 @@ pub fn dispatch_op(inode: &Arc<IoUringInode>, sqe: &Sqe) -> OpOutcome {
             return super::bundle_io::run(inode, sqe, fd);
         }
         let mut sel = match select_buf(inode, sqe.buf_index) { Ok(s) => s, Err(e) => return OpOutcome::res(e) };
-        let len = if sqe.len == 0 || sqe.len > sel.buf.len { sel.buf.len } else { sqe.len };
+        // A message-carrying receive caps the drawn buffer from its header,
+        // not from the entry, so the entry's length is not a second answer.
+        let len = if !crate::io_uring_abi::recvsend::dest::entry_caps_drawn_buffer(sqe.opcode) {
+            sel.buf.len
+        } else if sqe.len == 0 || sqe.len > sel.buf.len { sel.buf.len } else { sqe.len };
         let op = Op { inode, sqe, fd, addr: sel.buf.addr, len };
         let res = run(&op);
         if res < 0 { return OpOutcome::res(res); }
         let bid = sel.buf.bid;
+        let queued = net_ops::queue_report(sqe.opcode, fd);
         let more = sel.consume(res as u64);
-        return OpOutcome::with_buffer(res, bid, more);
+        let mut out = OpOutcome::with_buffer(res, bid, more);
+        out.cqe_flags |= queued;
+        return out;
     }
 
     let op = Op { inode, sqe, fd, addr: sqe.addr, len: sqe.len };
     // The nop is the one operation whose completion WIDTH the entry chooses,
     // so it reports an outcome rather than a bare result.
     if sqe.opcode == IORING_OP_NOP || sqe.opcode == IORING_OP_NOP128 { return ring_ops::nop(&op); }
-    OpOutcome::res(run(&op))
+    let res = run(&op);
+    // A receive reports whether the socket still holds data, which is what
+    // lets a caller go straight back for another rather than wait for a
+    // readiness it has already been given. A zero-copy send owes a second
+    // completion, and says so in the first.
+    let mut out = OpOutcome::res(res);
+    out.cqe_flags = net_ops::queue_report(sqe.opcode, fd);
+    net_ops::attach_notif(sqe, &mut out);
+    out
 }
 
 /// Folded into its two callers on purpose: a separate frame here would be
@@ -109,6 +124,8 @@ fn run(op: &Op) -> i64 {
         IORING_OP_EPOLL_CTL       => fs_ops::epoll_ctl(op),
 
         IORING_OP_SEND            => net_ops::send(op),
+        IORING_OP_SEND_ZC         => net_ops::send_zc(op),
+        IORING_OP_SENDMSG_ZC      => net_ops::sendmsg_zc(op),
         IORING_OP_RECV            => net_ops::recv(op),
         IORING_OP_RECV_ZC         => net_ops::recv_zc(op),
         IORING_OP_SENDMSG         => net_ops::sendmsg(op),

@@ -69,12 +69,20 @@ fn a_multishot_run_posts_more_on_every_completion_but_the_last() {
     assert!(r.claim());
     claimed += 1;
     for res in results {
-        match step(res, passes) {
+        match step(res, passes, true) {
             Step::More => { posted.push((res, true)); passes += 1; }
             Step::Yield => {
                 posted.push((res, true));
                 r.rearm();
                 assert!(r.claim(), "a yielded request is picked up again");
+                claimed += 1;
+                passes = 0;
+            }
+            Step::PostThenWait => {
+                posted.push((res, true));
+                r.set_polled();
+                r.rearm();
+                assert!(r.claim());
                 claimed += 1;
                 passes = 0;
             }
@@ -106,7 +114,7 @@ fn a_run_of_uninterrupted_deliveries_goes_back_on_the_queue_rather_than_holding_
     let mut passes = 0u32;
     let mut yields = 0u32;
     for _ in 0..(MULTISHOT_MAX_RETRY * 3) {
-        match step(8, passes) {
+        match step(8, passes, true) {
             Step::More => passes += 1,
             Step::Yield => { yields += 1; passes = 0; r.rearm(); assert!(r.claim()); }
             s => panic!("unexpected {s:?}"),

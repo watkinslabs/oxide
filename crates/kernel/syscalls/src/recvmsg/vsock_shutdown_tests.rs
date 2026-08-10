@@ -24,7 +24,7 @@ fn connected_recvmsg_clears_source_length_without_synthesizing_a_peer_address() 
     let mut name = [0xa5u8; 16];
     let mut header = [0u8; 56];
     header[8..12].copy_from_slice(&(name.len() as u32).to_ne_bytes());
-    let user = RecvUser {
+    let user = RecvUser { sink: crate::recv_user::Sink::User,
         msgp: header.as_mut_ptr() as u64,
         name: name.as_mut_ptr() as u64,
         namelen: name.len() as u32,
@@ -54,7 +54,7 @@ fn zerocopy_completion_uses_the_vsock_error_queue_abi() {
     let mut control = [0u8; 32];
     let mut header = [0u8; 56];
     header[8..12].copy_from_slice(&(name.len() as u32).to_ne_bytes());
-    let user = RecvUser {
+    let user = RecvUser { sink: crate::recv_user::Sink::User,
         msgp: header.as_mut_ptr() as u64,
         name: name.as_mut_ptr() as u64,
         namelen: name.len() as u32,

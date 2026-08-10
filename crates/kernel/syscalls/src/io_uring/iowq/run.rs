@@ -22,7 +22,7 @@ fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 /// Post one completion for `req` and release the chain behind it.
 /// # C: O(N_chain)
 pub fn complete(req: &Arc<IoReq>, res: i64, cqe_flags: u32) {
-    complete_out(req, crate::io_uring::dispatch::OpOutcome { res, cqe_flags, cqe32: false, big: [0; 2] })
+    complete_out(req, crate::io_uring::dispatch::OpOutcome { res, cqe_flags, cqe32: false, big: [0; 2], notif: None })
 }
 
 /// The same, for an operation that chose its completion's WIDTH — the nop is
@@ -38,6 +38,14 @@ pub fn complete_out(req: &Arc<IoReq>, out: crate::io_uring::dispatch::OpOutcome)
             user_data: req.user_data(), res: r32, flags: cqe_flags,
             big: out.big, cqe32: out.cqe32,
         });
+    }
+    // The notification a zero-copy send owes, straight after its result: the
+    // two completions are one submission's answer whether the entry ran
+    // inline or on a worker.
+    if let Some((user_data, res)) = out.notif {
+        req.ring.post_cqe(Cqe { user_data, res,
+            flags: crate::io_uring_abi::ops::IORING_CQE_F_NOTIF,
+            big: [0; 2], cqe32: false });
     }
     disarm_link_timeout(req);
     // A barrier entry waits for this ring to have nothing outstanding, and a
