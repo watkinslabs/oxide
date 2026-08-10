@@ -6,12 +6,18 @@
 // operation is multishot-only. The operation's completion appears once, at the
 // end, and says why the receive stopped.
 //
-// A payload that is already sitting in a buffer this instance owns is handed
-// over by reference. A payload anywhere else is COPIED into a buffer taken
-// from the freelist — the reference's own fallback, and the whole of what a
-// registration with no device does. The copy is reported as such, so a caller
-// watching the copy notification can tell a zero-copy delivery from one that
-// cost it a memcpy.
+// Delivery is by reference exactly when the received payload ALREADY sits in a
+// buffer of this instance's own area, because the completion reports an offset
+// INTO THAT AREA and nothing outside it can be named that way. Only a device
+// that writes payload straight into the bound queue's buffers puts it there, so
+// by-reference delivery is a property of the device, not of this path.
+//
+// Everything else is COPIED into a buffer taken from the freelist — the
+// reference's own fallback, and the whole of what a registration with no device
+// does. The copy is reported as such, so a caller watching the copy
+// notification can tell a zero-copy delivery from one that cost it a memcpy.
+// The copy counter counts fallbacks, one per receive, not the buffers a
+// fallback happened to need.
 
 use alloc::sync::Arc;
 
@@ -21,7 +27,7 @@ use crate::io_uring::cqe::Cqe;
 use crate::io_uring::ctx::IoUringInode;
 use crate::io_uring_abi::ops::{IORING_CQE_F_32, IORING_CQE_F_MORE};
 use crate::io_uring_abi::uapi::IORING_SETUP_CQE_MIXED;
-use crate::io_uring_abi::zcrx::{zcrx_cqe, ZCRX_NOTIF_COPY, ZCRX_NOTIF_NO_BUFFERS};
+use crate::io_uring_abi::zcrx::{copy_run, zcrx_cqe};
 
 use super::ifq::ZcrxIfq;
 
@@ -43,31 +49,33 @@ fn queue_cqe(ring: &Arc<IoUringInode>, ifq: &ZcrxIfq, user_data: u64, idx: u32, 
 }
 
 /// Copy one run of received bytes into buffers taken from the freelist,
-/// posting one completion per buffer. Returns how many bytes were placed;
-/// a short return is a caller that has not handed enough buffers back.
-/// # C: O(bytes.len())
-fn copy_chunk(ring: &Arc<IoUringInode>, ifq: &ZcrxIfq, user_data: u64, bytes: &[u8]) -> usize {
+/// posting one completion per buffer and ONE notification for the run.
+///
+/// The accounting and the short-run rule live in `io_uring_abi::zcrx::copy_run`,
+/// which is ungated so both are tested; everything here is the buffer handling
+/// that needs the instance. # C: O(bytes.len())
+fn copy_chunk(ring: &Arc<IoUringInode>, ifq: &ZcrxIfq, user_data: u64, bytes: &[u8]) -> Result<usize, i64> {
     let buf_len = ifq.area.buf_len() as usize;
-    let mut done = 0usize;
-    while done < bytes.len() {
-        let Some(idx) = ifq.alloc_fallback() else {
-            ifq.send_notif(ZCRX_NOTIF_NO_BUFFERS);
-            break;
-        };
-        let take = core::cmp::min(buf_len, bytes.len() - done);
-        if ifq.area.write_buf(idx, 0, &bytes[done..done + take]).is_err() {
+    let r = copy_run(bytes.len(), buf_len, |off, take| {
+        let Some(idx) = ifq.alloc_fallback() else { return false };
+        if ifq.area.write_buf(idx, 0, &bytes[off..off + take]).is_err() {
             // The buffer was never handed to the caller, so it goes straight
             // back rather than waiting for a refill entry that will never come.
             ifq.area.put_free(idx);
-            break;
+            return false;
         }
         queue_cqe(ring, ifq, user_data, idx, 0, take as u32);
-        ifq.rq.stat_add(STAT_COPY_COUNT, 1);
-        ifq.rq.stat_add(STAT_COPY_BYTES, take as u64);
-        ifq.send_notif(ZCRX_NOTIF_COPY);
-        done += take;
+        true
+    });
+    match r {
+        Ok(rep) => {
+            ifq.rq.stat_add(STAT_COPY_COUNT, rep.copy_count);
+            ifq.rq.stat_add(STAT_COPY_BYTES, rep.copy_bytes);
+            if let Some(ty) = rep.notif { ifq.send_notif(ty); }
+            Ok(rep.copied)
+        }
+        Err(e) => Err(-(e.as_i32() as i64)),
     }
-    done
 }
 
 /// One non-blocking pass over a stream socket's receive queue — Linux
@@ -102,7 +110,7 @@ pub fn recv_once(ring: &Arc<IoUringInode>, ifq: &ZcrxIfq, file: &Arc<vfs::File>,
         if room == 0 { break; }
         let r = net::sock::stack().tcp_recv_with_offset_oob(
             &entry, room, false, 0, false,
-            |bytes| { let n = copy_chunk(ring, ifq, user_data, bytes); Ok::<_, i64>((n, n)) });
+            |bytes| copy_chunk(ring, ifq, user_data, bytes).map(|n| (n, n)));
         match r {
             Ok(Some(0)) | Ok(None) => break,
             Ok(Some(n)) => { total += n; if n < room { break; } }

@@ -163,9 +163,9 @@ pub fn admit_notif_stats(stats_off: u64, rq_entries: u32, region_bytes: u64)
 /// | an area past 1 TiB | `EINVAL` |
 /// | an area whose end wraps | `EOVERFLOW` |
 /// | an address or length that is not page-aligned | `EINVAL` |
+/// | `IORING_ZCRX_AREA_DMABUF` | `EINVAL` |
 /// | a buffer-sharing descriptor named on a plain area | `EINVAL` |
 /// | a plain area at address zero | `EFAULT` |
-/// | `IORING_ZCRX_AREA_DMABUF` | `EOPNOTSUPP` |
 /// # C: O(1)
 pub fn admit_area_reg(a: &AreaReg, page: u64) -> Result<(), Errno> {
     if a.flags & !IO_ZCRX_AREA_SUPPORTED_FLAGS != 0 { return Err(Errno::Einval); }
@@ -179,10 +179,21 @@ pub fn admit_area_reg(a: &AreaReg, page: u64) -> Result<(), Errno> {
     if a.addr & (page - 1) != 0 || a.len & (page - 1) != 0 { return Err(Errno::Einval); }
 
     if a.flags & IORING_ZCRX_AREA_DMABUF != 0 {
-        // Recognised, and refused for the whole mechanism rather than per
-        // field: there is no buffer-sharing framework to import from, so an
-        // accepted descriptor would name memory this kernel cannot reach.
-        return Err(Errno::Eopnotsupp);
+        // A shared-buffer area is refused, and the errno is `EINVAL` rather
+        // than "unsupported" for reasons that are the reference's, not a
+        // shortcut. Every rung a shared-buffer area meets here answers
+        // `EINVAL`: an area described this way with no device bound, an area
+        // described this way carrying an offset, and an area described this way
+        // on a kernel built without a buffer-sharing framework. This kernel is
+        // the last of those, and no registration that reaches this ladder has a
+        // device, so it is also the first. Answering "unsupported" would tell a
+        // caller its kernel might grow the feature; `EINVAL` tells it the
+        // description is not one this kernel can act on, which is the true
+        // statement. It is refused HERE, before any device is bound, which is
+        // also where the reference decides it — so a shared-buffer area named
+        // against a device that could not have been bound anyway still reports
+        // the area, not the device.
+        return Err(Errno::Einval);
     }
     if a.dmabuf_fd != 0 { return Err(Errno::Einval); }
     if a.addr == 0 { return Err(Errno::Efault); }
