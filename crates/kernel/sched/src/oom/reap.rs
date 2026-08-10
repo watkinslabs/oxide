@@ -159,7 +159,7 @@ pub fn next_due_ns() -> Option<u64> { QUEUE.lock().iter().map(|entry| entry.due_
 pub fn queued_len() -> usize { QUEUE.lock().len() }
 
 /// Drop every queued victim. Test fixture only — a live queue is drained by
-/// the kthread.
+/// the kthread. # C: O(N_queued); # Lk: Reclaim
 #[cfg(any(test, feature = "hosted"))]
 pub fn clear_queue_for_tests() { QUEUE.lock().clear(); }
 

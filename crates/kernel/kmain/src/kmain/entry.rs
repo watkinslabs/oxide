@@ -84,18 +84,21 @@ fn spawn_kthreads() {
     // Periodic lazytime sweep: bounds how long a `lazytime` mount may hold a
     // timestamp in memory. Needs the workqueue, so it arms right after it.
     step("fs::sync::start_dirtytime_writeback", fs::sync::start_dirtytime_writeback);
-    if step("spawn_kswapd", || pmm::spawn_kswapd()).is_err() {
-        klog::kerror!("fatal: kswapd spawn failed");
-        sched::halt_forever();
-    }
-    // The OOM reaper drains a victim's own private memory on its behalf, and
-    // marks the mm skippable when it cannot — which is what lets selection
-    // move past a victim wedged in an uninterruptible sleep. Leaf teardown
-    // stays on PMM's side of the boundary, installed here as the sole zapper,
-    // exactly as the badness observer keeps physical accounting there.
+    // The two reclaim kthreads. kswapd reclaims under pressure; the OOM reaper
+    // drains a chosen victim's own private memory on its behalf and marks the
+    // mm skippable when it cannot, which is what lets selection move past a
+    // victim wedged in an uninterruptible sleep. Leaf teardown stays on PMM's
+    // side of the boundary, installed here as the sole zapper, exactly as the
+    // badness observer keeps physical accounting there.
+    //
+    // One failure report for both: the initcall trace already names whichever
+    // step failed, and `04§4.0` is frozen on a default build emitting no log
+    // bytes, so a second unconditional message buys nothing.
     sched::oom::install_oom_zapper(pmm::user_as::evict_foreign_pages_in_range);
-    if step("sched::oom::spawn_oom_reaper", || sched::oom::spawn_oom_reaper()).is_err() {
-        klog::kerror!("fatal: oom reaper spawn failed");
+    let reclaim_failed = step("spawn_kswapd", || pmm::spawn_kswapd()).is_err()
+        || step("sched::oom::spawn_oom_reaper", || sched::oom::spawn_oom_reaper()).is_err();
+    if reclaim_failed {
+        klog::kerror!("fatal: reclaim kthread spawn failed");
         sched::halt_forever();
     }
     let netns_reaper = step("net::net_ns::spawn_namespace_reaper", net::net_ns::spawn_namespace_reaper);
