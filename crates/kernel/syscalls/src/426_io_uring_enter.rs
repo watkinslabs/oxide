@@ -99,7 +99,7 @@ pub fn sys_io_uring_enter(args: &syscall::SyscallArgs) -> i64 {
     };
     // A ring created disabled submits nothing until it is enabled.
     if inode.test_state(state::DISABLED) { return err(Errno::Ebadfd); }
-    if let Err(e) = inode.claim_issuer() { return err(e); }
+    if let Err(e) = inode.admit_submit() { return err(e); }
 
     // A ring with a submission-poll thread submits nothing here: the thread
     // owns the SQ ring. All this call does is ring the doorbell the submitter

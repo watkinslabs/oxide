@@ -63,6 +63,12 @@ pub fn restrictions(inode: &IoUringInode, arg: u64, nr: u32) -> i64 {
 /// # C: O(1)
 pub fn enable_rings(inode: &IoUringInode) -> i64 {
     if inode.flags & IORING_SETUP_R_DISABLED == 0 { return err(Errno::Ebadfd); }
+    if !inode.test_state(state::DISABLED) { return err(Errno::Ebadfd); }
+    // The submitter is recorded BEFORE the ring starts accepting submissions:
+    // a single-issuer ring created disabled belongs to whoever enables it, not
+    // to whoever created it, and the store must not be visible after the ring
+    // has started admitting entries.
+    if crate::io_uring_abi::issuer::claims_at_enable(inode.flags) { inode.claim_issuer_now(); }
     if !inode.clear_state(state::DISABLED) { return err(Errno::Ebadfd); }
     // A submission-poll thread sleeps on a disabled ring however full its SQ
     // is — the entries are not its to consume — so enabling the ring is the

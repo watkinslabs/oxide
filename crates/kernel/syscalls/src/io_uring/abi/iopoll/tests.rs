@@ -319,3 +319,81 @@ fn a_read_that_landed_nothing_is_efault_not_end_of_file() {
     assert_eq!(completed_res(false, 4096, 0), -(Errno::Efault.as_i32() as i64));
     assert_eq!(completed_res(false, 0, 0), 0, "a transfer that delivered nothing IS end-of-file");
 }
+
+/// The claim-once discipline, stated as the three questions a poll pass asks
+/// and the order it asks them in. Exactly one path may complete a request; the
+/// others must leave it alone.
+#[test]
+fn a_poll_pass_takes_only_a_finished_request_it_claimed_itself() {
+    assert_eq!(reap_step(true, true, true), ReapStep::Take);
+    // No queued transfer: the entry completed inline and there is nothing here.
+    assert_eq!(reap_step(false, true, true), ReapStep::Skip);
+    // The backend has not finished: taking it now would lose the result.
+    assert_eq!(reap_step(true, false, true), ReapStep::Skip);
+    // Somebody else claimed it — a cancellation or a deadline got there first.
+    assert_eq!(reap_step(true, true, false), ReapStep::Skip);
+}
+
+/// Two passes over one request: the first claims it, the second cannot, so no
+/// completion is ever posted twice however many passes run.
+#[test]
+fn a_second_pass_over_the_same_request_takes_nothing() {
+    let mut claimed = false;
+    let mut takes = 0;
+    for _ in 0..5 {
+        let win = !claimed;
+        if reap_step(true, true, win) == ReapStep::Take { takes += 1; claimed = true; }
+    }
+    assert_eq!(takes, 1, "exactly one pass may complete a request");
+}
+
+#[test]
+fn a_scatter_fills_the_segments_in_order_until_the_bytes_run_out() {
+    let segs = [(0x1000u64, 4usize), (0x2000, 4), (0x3000, 4)];
+    let mut seen: alloc::vec::Vec<(u64, usize)> = alloc::vec::Vec::new();
+    let landed = scatter_segments(&segs, 10, |va, _at, n| { seen.push((va, n)); n });
+    assert_eq!(landed, 10);
+    assert_eq!(seen, alloc::vec![(0x1000, 4), (0x2000, 4), (0x3000, 2)],
+               "the last segment takes only the bytes that are left");
+}
+
+/// More bytes than the caller has room for: the walk stops at the segments,
+/// not at the source.
+#[test]
+fn a_scatter_never_writes_past_the_segments_it_was_given() {
+    let segs = [(0x1000u64, 4usize)];
+    let landed = scatter_segments(&segs, 100, |_, _, n| n);
+    assert_eq!(landed, 4);
+}
+
+/// A segment the caller cannot actually take ends the walk: the ones behind it
+/// are no more reachable, and reporting the whole length would tell the caller
+/// it read bytes that are not in its buffer.
+#[test]
+fn a_short_write_ends_the_scatter_and_is_what_gets_reported() {
+    let segs = [(0x1000u64, 4usize), (0x2000, 4), (0x3000, 4)];
+    let mut calls = 0;
+    let landed = scatter_segments(&segs, 12, |_, _, n| { calls += 1; if calls == 2 { 1 } else { n } });
+    assert_eq!(landed, 5, "4 from the first segment, 1 from the second, nothing after");
+    assert_eq!(calls, 2, "the third segment is never attempted");
+}
+
+#[test]
+fn a_scatter_of_nothing_lands_nothing_and_touches_no_segment() {
+    let segs = [(0x1000u64, 4usize)];
+    let mut calls = 0;
+    assert_eq!(scatter_segments(&segs, 0, |_, _, n| { calls += 1; n }), 0);
+    assert_eq!(calls, 0);
+    // And a walk with no segments at all.
+    assert_eq!(scatter_segments(&[], 16, |_, _, n| n), 0);
+}
+
+/// A zero-length segment in the middle ends the walk rather than being skipped
+/// over: it is indistinguishable from having run out of bytes, and treating it
+/// as a hole would put later bytes at the wrong offset.
+#[test]
+fn a_zero_length_segment_ends_the_scatter() {
+    let segs = [(0x1000u64, 4usize), (0x2000, 0), (0x3000, 4)];
+    let landed = scatter_segments(&segs, 12, |_, _, n| n);
+    assert_eq!(landed, 4);
+}

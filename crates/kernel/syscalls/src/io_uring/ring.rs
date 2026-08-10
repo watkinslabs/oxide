@@ -17,7 +17,7 @@ use crate::io_uring_abi::layout::{
     RING_SQ_RING_ENTRIES, RING_SQ_RING_MASK,
 };
 use super::region::Region;
-use crate::io_uring_abi::uapi::SQE_SIZE;
+use crate::io_uring_abi::sqe_slot::sqe_offset;
 
 use super::ctx::IoUringInode;
 
@@ -38,20 +38,28 @@ pub struct IoUring {
     pub flags: u32,
     /// Bytes one CQE occupies — see `layout::cqe_size`.
     pub cqe_size: u32,
+    /// Bytes one SQE occupies — see `layout::sqe_size`.
+    pub sqe_size: u32,
 }
 
 impl IoUring {
     /// Allocate and seed both regions for an admitted geometry. # C: O(N_pages)
     pub fn new(g: &Geometry) -> Option<Self> {
-        let rings = Region::alloc(g.rings_bytes)?;
-        let sqes = Region::alloc(g.sqes_bytes)?;
+        Self::build(g, Region::alloc(g.rings_bytes)?, Region::alloc(g.sqes_bytes)?).into()
+    }
+
+    /// The same, over regions already built — which is how a caller-supplied
+    /// ring is made, since its memory is pinned rather than allocated.
+    /// # C: O(1)
+    pub fn build(g: &Geometry, rings: Region, sqes: Region) -> Self {
         let r = Self {
             rings, sqes,
             sq_entries: g.sq_entries, cq_entries: g.cq_entries,
-            sq_array_off: g.sq_array_off, flags: g.flags, cqe_size: g.cqe_size,
+            sq_array_off: g.sq_array_off, flags: g.flags,
+            cqe_size: g.cqe_size, sqe_size: g.sqe_size,
         };
         r.seed_constants();
-        Some(r)
+        r
     }
 
     /// Publish the constant ring_mask / ring_entries words. Runs before the
@@ -65,12 +73,12 @@ impl IoUring {
     }
 
     /// Direct-map address of the rings region. # C: O(1)
-    pub fn rings_va(&self) -> u64 { self.rings.kva }
+    pub fn rings_va(&self) -> u64 { self.rings.at(0) }
     /// Direct-map address of the SQEs region. # C: O(1)
-    pub fn sqes_va(&self) -> u64 { self.sqes.kva }
+    pub fn sqes_va(&self) -> u64 { self.sqes.at(0) }
 
     /// Address of a rings-region header word. # C: O(1)
-    pub fn hdr_ptr(&self, off: u32) -> *mut u32 { (self.rings.kva + off as u64) as *mut u32 }
+    pub fn hdr_ptr(&self, off: u32) -> *mut u32 { self.rings.at(off as u64) as *mut u32 }
 
     /// Read a rings-region header word. # C: O(1)
     pub fn hdr_load(&self, off: u32) -> u32 {
@@ -86,12 +94,15 @@ impl IoUring {
 
     /// Address of CQE `idx & (cq_entries - 1)`. # C: O(1)
     pub fn cqe_at(&self, idx: u32) -> u64 {
-        self.rings.kva + RING_CQES as u64 + (idx & (self.cq_entries - 1)) as u64 * self.cqe_size as u64
+        self.rings.at(RING_CQES as u64
+                      + (idx & (self.cq_entries - 1)) as u64 * self.cqe_size as u64)
     }
 
-    /// Address of SQE `idx & (sq_entries - 1)` in the SQEs region. # C: O(1)
+    /// Address of SQE `idx & (sq_entries - 1)` in the SQEs region. The stride
+    /// is the ring's own, so a 128-byte ring's second entry starts 128 bytes
+    /// in and not 64. # C: O(1)
     pub fn sqe_at(&self, idx: u32) -> u64 {
-        self.sqes.kva + (idx & (self.sq_entries - 1)) as u64 * SQE_SIZE as u64
+        self.sqes.at(sqe_offset(self.sqe_size, idx & (self.sq_entries - 1)))
     }
 
     /// SQE index for SQ ring slot `head`: through the SQ index array, or the
@@ -99,7 +110,7 @@ impl IoUring {
     pub fn sq_index(&self, head: u32) -> u32 {
         let slot = head & (self.sq_entries - 1);
         if self.sq_array_off == NO_SQ_ARRAY { return slot; }
-        let p = (self.rings.kva + self.sq_array_off as u64 + slot as u64 * 4) as *const u32;
+        let p = self.rings.at(self.sq_array_off as u64 + slot as u64 * 4) as *const u32;
         // SAFETY: sq_array_off + sq_entries*4 was bounded by the geometry to the rings frame; slot is masked into range.
         unsafe { core::ptr::read_volatile(p) }
     }
@@ -108,8 +119,10 @@ impl IoUring {
     /// `None` for an offset that selects no region. # C: O(1)
     pub fn region(&self, offset: u64) -> Option<(u64, u64)> {
         match mmap_region(offset) {
-            MmapRegion::Rings   => Some((self.rings.base_pa, self.rings.map_bytes)),
-            MmapRegion::Sqes    => Some((self.sqes.base_pa, self.sqes.map_bytes)),
+            // A caller-supplied region reports nothing: those pages are
+            // already in the caller's address space.
+            MmapRegion::Rings   => self.rings.mmap_backing(),
+            MmapRegion::Sqes    => self.sqes.mmap_backing(),
             // Owned by the inode, not by this struct — routed in `mmap_backing`.
             MmapRegion::Param   => None,
             // Owned by the inode's instance table, not by this struct.
@@ -144,7 +157,7 @@ pub fn mmap_backing(inode: &vfs::InodeRef, offset: u64) -> Option<(u64, u64)> {
         _ => {}
     }
     let g = iu.ring.lock();
-    Some(g.region(offset).unwrap_or((g.rings.base_pa, 0)))
+    Some(g.region(offset).unwrap_or((0, 0)))
 }
 
 /// `file_operations` for an io_uring fd: the ring is consumed via

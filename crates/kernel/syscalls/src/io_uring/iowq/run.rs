@@ -22,10 +22,22 @@ fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 /// Post one completion for `req` and release the chain behind it.
 /// # C: O(N_chain)
 pub fn complete(req: &Arc<IoReq>, res: i64, cqe_flags: u32) {
+    complete_out(req, crate::io_uring::dispatch::OpOutcome { res, cqe_flags, cqe32: false, big: [0; 2] })
+}
+
+/// The same, for an operation that chose its completion's WIDTH — the nop is
+/// the one that can. A deferred entry must post the record its inline twin
+/// would have, or the same submission means two different things depending on
+/// whether a worker happened to take it. # C: O(N_chain)
+pub fn complete_out(req: &Arc<IoReq>, out: crate::io_uring::dispatch::OpOutcome) {
+    let (res, cqe_flags) = (out.res, out.cqe_flags);
     req.finish();
     if posts_cqe(req.sqe.flags, res) {
         let r32 = if res > i32::MAX as i64 { i32::MAX } else { res as i32 };
-        req.ring.post_cqe(Cqe { user_data: req.user_data(), res: r32, flags: cqe_flags, big: [0; 2] });
+        req.ring.post_cqe(Cqe {
+            user_data: req.user_data(), res: r32, flags: cqe_flags,
+            big: out.big, cqe32: out.cqe32,
+        });
     }
     disarm_link_timeout(req);
     // A barrier entry waits for this ring to have nothing outstanding, and a
@@ -48,7 +60,7 @@ pub fn complete(req: &Arc<IoReq>, res: i64, cqe_flags: u32) {
 pub fn post_more(req: &Arc<IoReq>, res: i64, cqe_flags: u32) {
     let r32 = if res > i32::MAX as i64 { i32::MAX } else { res as i32 };
     req.ring.post_cqe(Cqe {
-        user_data: req.user_data(), res: r32, flags: cqe_flags | IORING_CQE_F_MORE, big: [0; 2],
+        user_data: req.user_data(), res: r32, flags: cqe_flags | IORING_CQE_F_MORE, big: [0; 2], cqe32: false,
     });
 }
 
@@ -70,7 +82,7 @@ pub fn cancel_chain(head: &Arc<IoReq>) {
                 req.ring.post_cqe(Cqe {
                     user_data: req.user_data(),
                     res: -(Errno::Ecanceled.as_i32()),
-                    flags: 0, big: [0; 2],
+                    flags: 0, big: [0; 2], cqe32: false,
                 });
             }
             disarm_link_timeout(&req);
@@ -105,7 +117,7 @@ fn disarm_link_timeout(req: &Arc<IoReq>) {
     if !lt.claim() { return; }
     lt.finish();
     lt.ring.post_cqe(Cqe {
-        user_data: lt.user_data(), res: -(Errno::Ecanceled.as_i32()), flags: 0, big: [0; 2],
+        user_data: lt.user_data(), res: -(Errno::Ecanceled.as_i32()), flags: 0, big: [0; 2], cqe32: false,
     });
 }
 
@@ -125,7 +137,7 @@ pub fn issue(req: &Arc<IoReq>) {
     // request goes back to waiting on that description instead of reporting an
     // error the submitter never asked to see.
     if out.res == err(Errno::Eagain) && crate::io_uring::poll::retry(req) { return; }
-    complete(req, out.res, out.cqe_flags);
+    complete_out(req, out);
 }
 
 /// A request whose deadline passed. # C: O(N_chain)

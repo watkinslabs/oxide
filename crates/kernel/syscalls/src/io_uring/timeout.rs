@@ -122,7 +122,7 @@ fn expire_link(req: &Arc<IoReq>) {
     let guarded = req.inner.lock().guarded.take().and_then(|w| w.upgrade());
     req.finish();
     req.ring.post_cqe(super::cqe::Cqe {
-        user_data: req.user_data(), res: -(Errno::Etime.as_i32()), flags: 0, big: [0; 2],
+        user_data: req.user_data(), res: -(Errno::Etime.as_i32()), flags: 0, big: [0; 2], cqe32: false,
     });
     if let Some(g) = guarded {
         // The guarded request must not then ALSO report the timeout's

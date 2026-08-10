@@ -6,6 +6,8 @@
 //   layout      — oxide's SQ/CQ/SQE region geometry + the `io_uring_setup`
 //                 admission ladder (`io_uring_sanitise_params`,
 //                 `io_uring_fill_params`, `rings_size`).
+//   issuer      — `IORING_SETUP_SINGLE_ISSUER`: when the ring's submitter is
+//                 recorded and who may submit to / register against it.
 //   allowed     — who may create a ring at all (`kernel.io_uring_disabled`,
 //                 `kernel.io_uring_group`, CAP_SYS_ADMIN) → EPERM.
 //   enter       — `io_uring_enter` flag/argument decode, CQ-occupancy and
@@ -13,7 +15,16 @@
 //   sqpoll      — `IORING_SETUP_SQPOLL`/`SQ_AFF`: the idle window, the pin-CPU
 //                 ladder, the poll loop's transitions and the
 //                 `IORING_SQ_NEED_WAKEUP` handshake.
+//   cqe_slot    — where one completion lands in the CQ array and how many
+//                 slots it costs (`CQE32` / `CQE_MIXED`).
+//   sqe_slot    — the same for the SQ array (`SQE128` / `SQE_MIXED`).
+//   sq_cursor   — where a submission pass starts and stops, and whether it
+//                 publishes the head it reached (`SQ_REWIND`).
+//   user_ring   — `NO_MMAP`/`REGISTERED_FD_ONLY`: caller-supplied ring
+//                 memory and the no-descriptor install.
 //   ops         — `IORING_OP_*` / `IOSQE_*` and which opcodes dispatch runs.
+//   nop         — `IORING_OP_NOP`/`NOP128`: the nop flag decode, including the
+//                 32-byte-completion request.
 //   link        — link chains, drain barriers and silent success.
 //   restriction — the per-ring register/SQE allow-lists.
 //   iopoll      — the polled-ring admission ladders and the poll-wait loop.
@@ -38,10 +49,16 @@
 
 pub mod uapi;
 pub mod allowed;
+pub mod issuer;
 pub mod layout;
 pub mod enter;
 pub mod sqpoll;
+pub mod cqe_slot;
+pub mod sqe_slot;
+pub mod sq_cursor;
+pub mod user_ring;
 pub mod ops;
+pub mod nop;
 pub mod link;
 pub mod bpf_filter;
 pub mod mem_region;

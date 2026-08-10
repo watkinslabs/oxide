@@ -105,10 +105,14 @@ pub mod state {
 }
 
 impl IoUringInode {
-    /// Build a ring from an admitted geometry. # C: O(1)
-    pub fn new(g: &Geometry) -> Option<Arc<Self>> {
+    /// Build a ring from an admitted geometry, allocating its regions.
+    /// # C: O(N_pages)
+    pub fn new(g: &Geometry) -> Option<Arc<Self>> { Self::over(g, IoUring::new(g)?) }
+
+    /// Build a ring over regions that already exist — how a ring whose memory
+    /// the CALLER supplied is made. # C: O(1)
+    pub fn over(g: &Geometry, ring: IoUring) -> Option<Arc<Self>> {
         use crate::io_uring_abi::uapi::IORING_SETUP_R_DISABLED;
-        let ring = IoUring::new(g)?;
         let init = if g.flags & IORING_SETUP_R_DISABLED != 0 { state::DISABLED } else { 0 };
         Some(Arc::new(Self {
             ring: Spinlock::new(ring),
@@ -165,20 +169,33 @@ impl IoUringInode {
         self.state.fetch_and(!bit, Ordering::AcqRel) & bit != 0
     }
 
-    /// Claim, or check, the single-issuer right. A ring without
-    /// `IORING_SETUP_SINGLE_ISSUER` admits every task; one with it admits the
-    /// first task to arrive and reports EEXIST to any other, which is what
-    /// makes the flag a guarantee rather than a hint. # C: O(1)
-    pub fn claim_issuer(&self) -> Result<(), syscall::errno::Errno> {
+    /// Record the running task as this ring's submitter. Runs at setup, and
+    /// again at `IORING_REGISTER_ENABLE_RINGS` for a ring that was created
+    /// disabled — the two points at which a ring's ownership is decided.
+    /// # C: O(1)
+    pub fn claim_issuer_now(&self) {
         use core::sync::atomic::Ordering;
-        use crate::io_uring_abi::uapi::IORING_SETUP_SINGLE_ISSUER;
-        if self.flags & IORING_SETUP_SINGLE_ISSUER == 0 { return Ok(()); }
+        let Some(cur) = sched::live::current() else { return };
+        self.submitter.store(cur.tid, Ordering::Release);
+    }
+
+    /// The recorded submitter, or [`issuer::UNCLAIMED`]. # C: O(1)
+    ///
+    /// [`issuer::UNCLAIMED`]: crate::io_uring_abi::issuer::UNCLAIMED
+    pub fn submitter_tid(&self) -> u32 {
+        self.submitter.load(core::sync::atomic::Ordering::Acquire)
+    }
+
+    /// `io_uring_enter`'s single-issuer admission. # C: O(1)
+    pub fn admit_submit(&self) -> Result<(), syscall::errno::Errno> {
         let Some(cur) = sched::live::current() else { return Ok(()) };
-        match self.submitter.compare_exchange(0, cur.tid, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_) => Ok(()),
-            Err(owner) if owner == cur.tid => Ok(()),
-            Err(_) => Err(syscall::errno::Errno::Eexist),
-        }
+        crate::io_uring_abi::issuer::admit_submit(self.flags, self.submitter_tid(), cur.tid)
+    }
+
+    /// `io_uring_register`'s single-issuer admission. # C: O(1)
+    pub fn admit_register(&self) -> Result<(), syscall::errno::Errno> {
+        let Some(cur) = sched::live::current() else { return Ok(()) };
+        crate::io_uring_abi::issuer::admit_register(self.submitter_tid(), cur.tid)
     }
 
     /// Read one `struct io_uring_reg_wait` out of the registered wait area at

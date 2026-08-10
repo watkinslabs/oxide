@@ -27,7 +27,8 @@
 use syscall::errno::Errno;
 
 use super::uapi::{
-    IORING_SETUP_SQ_AFF, IORING_SETUP_SQPOLL, IORING_SQ_NEED_WAKEUP,
+    IORING_SETUP_ATTACH_WQ, IORING_SETUP_SQ_AFF, IORING_SETUP_SQPOLL,
+    IORING_SQ_NEED_WAKEUP,
 };
 
 /// The idle window a poll thread keeps spinning for after its last unit of
@@ -200,6 +201,134 @@ pub fn enter_action(enter_flags: u32) -> EnterSqpoll {
 /// The submit half's return value on such a ring: the entries the caller says
 /// it published, none of which this call consumed. # C: O(1)
 pub fn enter_submitted(to_submit: u32) -> i64 { to_submit as i64 }
+
+/// Whether a poll thread serving `n_rings` rings has to share its passes
+/// between them. # C: O(1)
+pub fn shares(n_rings: u32) -> bool { n_rings > 1 }
+
+/// Entries one ring contributes to one pass of a thread serving `n_rings`.
+///
+/// A disabled ring contributes nothing — its entries are not the thread's to
+/// consume until it is enabled — and a ring sharing a thread is capped, so a
+/// busy ring cannot starve the others by handing the thread an unbounded pass.
+/// # C: O(1)
+pub fn ring_take(sq_ready: u32, disabled: bool, n_rings: u32) -> u32 {
+    if disabled { return 0; }
+    cap_submit(sq_ready, shares(n_rings))
+}
+
+/// What `IORING_SETUP_ATTACH_WQ` does with the descriptor it names.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Attach {
+    /// Build this ring its own poll thread.
+    Own,
+    /// Join the poll thread of the ring the descriptor names.
+    Join,
+    /// The ring asked to attach but has no poll thread of its own to place, so
+    /// the descriptor is validated and nothing else happens.
+    Validate,
+}
+
+/// What the poll thread's creator knows about the descriptor `ATTACH_WQ`
+/// names.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Peer {
+    /// The descriptor resolves to an open description.
+    pub present: bool,
+    /// That description is an io_uring ring.
+    pub is_ring: bool,
+    /// That ring has a poll thread to join.
+    pub has_thread: bool,
+    /// That thread's creator shares this task's thread group.
+    pub same_group: bool,
+    /// That thread has already left its loop.
+    pub dead: bool,
+}
+
+/// The `IORING_SETUP_ATTACH_WQ` admission ladder.
+///
+/// A ring that names a descriptor which is not an open description is ENXIO
+/// and one that names something other than a ring is EINVAL, whether or not
+/// this ring wants a poll thread at all — the descriptor was still wrong.
+///
+/// A ring that names a ring with no poll thread is EINVAL: there is nothing to
+/// join. One that names a thread belonging to ANOTHER thread group does not
+/// fail; it gets a thread of its own, because the request was for a thread and
+/// the only thing refused is the sharing. One that names a thread which has
+/// already exited is ENXIO — joining it would leave the ring with a submitter
+/// that never runs.
+/// # C: O(1)
+pub fn attach_admit(flags: u32, peer: &Peer) -> Result<Attach, Errno> {
+    if flags & IORING_SETUP_ATTACH_WQ == 0 {
+        return Ok(if flags & IORING_SETUP_SQPOLL != 0 { Attach::Own } else { Attach::Validate });
+    }
+    if !peer.present { return Err(Errno::Enxio); }
+    if !peer.is_ring { return Err(Errno::Einval); }
+    if flags & IORING_SETUP_SQPOLL == 0 { return Ok(Attach::Validate); }
+    if !peer.has_thread { return Err(Errno::Einval); }
+    // Another thread group's thread borrows another process's address space
+    // and descriptor table; this ring's entries would mean something else on
+    // it. The ring gets its own thread rather than the request being refused.
+    if !peer.same_group { return Ok(Attach::Own); }
+    if peer.dead { return Err(Errno::Enxio); }
+    Ok(Attach::Join)
+}
+
+/// One ring, as a sweep sees it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct RingView {
+    pub sq_ready: u32,
+    pub disabled: bool,
+}
+
+/// What one pass of the poll loop does.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Pass {
+    /// Leave the loop.
+    Stop,
+    /// Stand down until unparked.
+    Park,
+    /// Take this many entries from each ring, index-parallel with the views
+    /// the sweep was given. At least one is non-zero.
+    Take(alloc::vec::Vec<u32>),
+    /// Nothing to take, but the idle window has not closed: stay hot.
+    Spin,
+    /// The idle window closed with nothing to take: publish the doorbells,
+    /// re-read the tails, and sleep if they are still empty.
+    Idle,
+}
+
+/// One pass over every ring a poll thread serves.
+///
+/// The whole loop's decision, in one place and with no ring, no thread and no
+/// memory behind it: a thread that submitted to the wrong ring, starved one of
+/// several, or slept with entries waiting would be wrong HERE, and this is
+/// callable without any of the machinery that would otherwise be needed to ask.
+///
+/// A pass sweeps every ring rather than draining one: each contributes a
+/// bounded share once more than one ring is attached, so a ring with a full SQ
+/// cannot hold the thread while its neighbours wait. Only when the sweep finds
+/// nothing anywhere does the idle window decide between spinning and sleeping.
+/// # C: O(N_rings)
+pub fn sweep(st: &PollState, rings: &[RingView], stop: bool, park: bool, now_ns: u64) -> Pass {
+    if stop { return Pass::Stop; }
+    if park { return Pass::Park; }
+    let n = rings.len() as u32;
+    let mut take: alloc::vec::Vec<u32> = alloc::vec::Vec::new();
+    if take.try_reserve(rings.len()).is_err() { return Pass::Spin; }
+    let mut any = false;
+    for v in rings {
+        let t = ring_take(v.sq_ready, v.disabled, n);
+        any |= t > 0;
+        take.push(t);
+    }
+    if any { return Pass::Take(take); }
+    // Nothing anywhere: the idle window is the only thing left to consult.
+    match step(st, &Observed { stop, park, disabled: false, sq_ready: 0, shared: shares(n), now_ns }) {
+        Step::Idle => Pass::Idle,
+        _ => Pass::Spin,
+    }
+}
 
 #[cfg(test)]
 #[path = "sqpoll/tests.rs"]

@@ -99,6 +99,23 @@ impl PinnedRange {
     /// Whether this is the empty slot. # C: O(1)
     pub fn is_empty(&self) -> bool { self.len == 0 }
 
+    /// Direct-map address of the byte `off` bytes into the range.
+    ///
+    /// The pages are whatever backed the caller's mappings, so this address is
+    /// good for `[off, page boundary)` and no further: a caller that reads or
+    /// writes across the boundary walks into an unrelated frame. Every caller
+    /// that uses it does so for an object the geometry places inside one page
+    /// ([`crate::io_uring_abi::user_ring::spans_one_page`]); anything larger
+    /// goes through [`Self::read_at`] / [`Self::write_at`], which walk.
+    /// # C: O(1)
+    pub fn kva_at(&self, off: u64) -> Option<u64> {
+        if off >= self.len { return None; }
+        let addr = self.base + off;
+        let page_ix = ((addr & !(PAGE - 1)) - (self.base & !(PAGE - 1))) / PAGE;
+        let pa = *self.pages.get(page_ix as usize)?;
+        Some(pa + pmm::user_as::hhdm_offset() + (addr & (PAGE - 1)))
+    }
+
     /// Run `f` over each direct-map chunk of `[off, off+n)` inside the buffer,
     /// in order. `f` returns how many bytes it consumed; a short chunk ends the
     /// walk, which is what makes a short read stop copying. # C: O(n / PAGE)

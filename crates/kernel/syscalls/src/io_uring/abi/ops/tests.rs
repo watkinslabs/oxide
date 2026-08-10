@@ -8,9 +8,18 @@ fn probe_never_claims_an_opcode_dispatch_would_reject() {
                IORING_OP_SENDMSG_ZC, IORING_OP_READ_MULTISHOT, IORING_OP_WAITID,
                IORING_OP_FUTEX_WAIT, IORING_OP_FUTEX_WAKE, IORING_OP_FUTEX_WAITV,
                IORING_OP_EPOLL_WAIT, IORING_OP_READV_FIXED,
-               IORING_OP_WRITEV_FIXED, IORING_OP_NOP128, IORING_OP_URING_CMD128] {
+               IORING_OP_WRITEV_FIXED, IORING_OP_URING_CMD128] {
         assert!(!op_supported(op), "op {op}");
     }
+}
+
+/// The 128-byte nop IS dispatched, and the probe must say so: it is the
+/// operation a caller uses to find out whether a ring carries 128-byte
+/// entries at all, so hiding it would hide the answer.
+#[test]
+fn probe_claims_the_128_byte_nop() {
+    assert!(op_supported(IORING_OP_NOP128));
+    assert!(crate::io_uring_abi::sqe_slot::op_is_128(IORING_OP_NOP128));
 }
 
 /// Zero-copy receive is dispatched, so the probe must claim it: a caller that

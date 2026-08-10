@@ -255,3 +255,151 @@ fn the_wake_is_unconditional_not_re_decided_against_the_doorbell() {
     // the submitter paid a syscall for.
     assert!(enter_action(IORING_ENTER_SQ_WAKEUP).wake);
 }
+
+/// One thread, several rings: each ring's pass is capped so a busy ring cannot
+/// starve its neighbours, and a ring serving alone is not capped at all.
+#[test]
+fn a_shared_thread_caps_each_rings_pass_and_a_lone_one_does_not() {
+    assert!(!shares(1));
+    assert!(shares(2));
+    assert_eq!(ring_take(1000, false, 1), 1000, "a lone ring takes everything it has");
+    assert_eq!(ring_take(1000, false, 3), SQPOLL_CAP_ENTRIES);
+    assert_eq!(ring_take(3, false, 3), 3, "the cap is a ceiling, not a quota");
+}
+
+/// A disabled ring contributes nothing to a shared thread's pass, and does not
+/// stop the others contributing.
+#[test]
+fn a_disabled_ring_contributes_nothing_to_a_shared_pass() {
+    assert_eq!(ring_take(50, true, 1), 0);
+    assert_eq!(ring_take(50, true, 4), 0);
+}
+
+fn peer_ok() -> Peer { Peer { present: true, is_ring: true, has_thread: true, same_group: true, dead: false } }
+
+#[test]
+fn a_ring_that_does_not_ask_to_attach_gets_its_own_thread_or_none() {
+    assert_eq!(attach_admit(IORING_SETUP_SQPOLL, &Peer::default()), Ok(Attach::Own));
+    assert_eq!(attach_admit(0, &Peer::default()), Ok(Attach::Validate));
+}
+
+#[test]
+fn attaching_names_a_descriptor_that_must_be_a_live_ring() {
+    let f = IORING_SETUP_ATTACH_WQ | IORING_SETUP_SQPOLL;
+    assert_eq!(attach_admit(f, &Peer::default()), Err(Errno::Enxio),
+               "a descriptor naming nothing is ENXIO");
+    let p = Peer { present: true, ..Peer::default() };
+    assert_eq!(attach_admit(f, &p), Err(Errno::Einval), "a descriptor naming a non-ring is EINVAL");
+}
+
+/// The descriptor is validated even when this ring has no poll thread to
+/// place: the request named something, and naming it wrongly is still an
+/// error.
+#[test]
+fn attaching_without_a_poll_thread_still_validates_the_descriptor() {
+    let f = IORING_SETUP_ATTACH_WQ;
+    assert_eq!(attach_admit(f, &Peer::default()), Err(Errno::Enxio));
+    assert_eq!(attach_admit(f, &Peer { present: true, ..Peer::default() }), Err(Errno::Einval));
+    assert_eq!(attach_admit(f, &peer_ok()), Ok(Attach::Validate),
+               "nothing to join to, and nothing to build");
+}
+
+#[test]
+fn attaching_to_a_ring_without_a_thread_is_einval() {
+    let f = IORING_SETUP_ATTACH_WQ | IORING_SETUP_SQPOLL;
+    let p = Peer { has_thread: false, ..peer_ok() };
+    assert_eq!(attach_admit(f, &p), Err(Errno::Einval));
+}
+
+/// A thread belonging to another thread group borrows another process's
+/// address space and descriptor table, so this ring's entries would not mean
+/// on it what they mean here. The sharing is refused; the request for a thread
+/// is not.
+#[test]
+fn attaching_across_thread_groups_yields_a_thread_of_ones_own() {
+    let f = IORING_SETUP_ATTACH_WQ | IORING_SETUP_SQPOLL;
+    assert_eq!(attach_admit(f, &Peer { same_group: false, ..peer_ok() }), Ok(Attach::Own));
+}
+
+/// Joining a thread that has already left its loop would leave the ring with a
+/// submitter that never runs, and a caller waiting for completions that never
+/// come.
+#[test]
+fn attaching_to_a_dead_thread_is_enxio() {
+    let f = IORING_SETUP_ATTACH_WQ | IORING_SETUP_SQPOLL;
+    assert_eq!(attach_admit(f, &Peer { dead: true, ..peer_ok() }), Err(Errno::Enxio));
+    assert_eq!(attach_admit(f, &peer_ok()), Ok(Attach::Join));
+}
+
+fn hot(idle_ns: u64, now: u64) -> PollState {
+    let mut st = PollState::new(idle_ns);
+    st.touch(now);
+    st
+}
+
+fn v(ready: u32) -> RingView { RingView { sq_ready: ready, disabled: false } }
+
+/// A stop or a park outranks every ring: the thread must not start work it is
+/// about to be stood down from.
+#[test]
+fn a_sweep_stops_and_parks_before_it_looks_at_any_ring() {
+    let st = hot(1_000, 0);
+    assert_eq!(sweep(&st, &[v(9)], true, false, 0), Pass::Stop);
+    assert_eq!(sweep(&st, &[v(9)], false, true, 0), Pass::Park);
+    assert_eq!(sweep(&st, &[v(9)], true, true, 0), Pass::Stop, "stop outranks park");
+}
+
+#[test]
+fn a_lone_ring_hands_over_everything_it_has() {
+    let st = hot(1_000, 0);
+    assert_eq!(sweep(&st, &[v(5)], false, false, 0), Pass::Take(alloc::vec![5]));
+}
+
+/// The fairness property the whole multi-ring shape exists for: a ring with a
+/// full queue does not hold the thread while its neighbours wait.
+#[test]
+fn a_busy_ring_cannot_starve_its_neighbours() {
+    let st = hot(1_000, 0);
+    let rings = [v(10_000), v(1), v(3)];
+    let Pass::Take(take) = sweep(&st, &rings, false, false, 0) else { panic!("work is waiting") };
+    assert_eq!(take, alloc::vec![SQPOLL_CAP_ENTRIES, 1, 3]);
+}
+
+/// A ring with nothing waiting, and a ring that is not yet enabled, contribute
+/// nothing — and do not stop the others contributing.
+#[test]
+fn an_empty_or_disabled_ring_contributes_nothing_to_the_pass() {
+    let st = hot(1_000, 0);
+    let rings = [v(0), RingView { sq_ready: 50, disabled: true }, v(2)];
+    let Pass::Take(take) = sweep(&st, &rings, false, false, 0) else { panic!("ring 2 has work") };
+    assert_eq!(take, alloc::vec![0, 0, 2]);
+}
+
+/// Nothing anywhere: the idle window is the only thing left to consult, and it
+/// is what separates staying hot from publishing the doorbell and sleeping.
+#[test]
+fn a_sweep_that_finds_nothing_spins_until_the_idle_window_closes() {
+    let st = hot(1_000, 0);
+    assert_eq!(sweep(&st, &[v(0), v(0)], false, false, 500), Pass::Spin);
+    assert_eq!(sweep(&st, &[v(0), v(0)], false, false, 1_000), Pass::Spin,
+               "the deadline instant itself is still inside the window");
+    assert_eq!(sweep(&st, &[v(0), v(0)], false, false, 1_001), Pass::Idle);
+}
+
+/// A ring that is disabled the whole time never keeps the thread hot: its
+/// entries are not the thread's to consume, so the window closes over it.
+#[test]
+fn a_disabled_ring_does_not_keep_the_thread_awake() {
+    let st = hot(1_000, 0);
+    let rings = [RingView { sq_ready: 50, disabled: true }];
+    assert_eq!(sweep(&st, &rings, false, false, 2_000), Pass::Idle);
+}
+
+/// A thread serving no rings at all has nothing to take and nothing to wait
+/// for; the loop treats that as the end, and the sweep must not claim work.
+#[test]
+fn a_sweep_over_no_rings_takes_nothing() {
+    let st = hot(1_000, 0);
+    assert_eq!(sweep(&st, &[], false, false, 0), Pass::Spin);
+    assert_eq!(sweep(&st, &[], false, false, 2_000), Pass::Idle);
+}

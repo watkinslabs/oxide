@@ -307,6 +307,56 @@ pub fn submit_errno(e: vfs::VfsError) -> Errno {
     }
 }
 
+/// What a poll pass does with one request it finds in the polled set.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ReapStep {
+    /// Leave it alone: it has no queued transfer, its backend has not
+    /// finished, or somebody else has already taken it.
+    Skip,
+    /// Take it: this pass owns its completion, and no other path may post one.
+    Take,
+}
+
+/// Whether this pass completes the request.
+///
+/// `claimed` is the result of the one compare-exchange that decides ownership,
+/// so it is asked LAST — a pass that asked it first would take a request whose
+/// backend has not finished, and the transfer's result would be lost. A
+/// request a cancellation already claimed is skipped here and its backend's
+/// later completion fills a slot nobody reads, which is what makes exactly one
+/// completion per request true whichever path gets there first. # C: O(1)
+pub fn reap_step(has_queued: bool, backend_done: bool, claimed: bool) -> ReapStep {
+    if !has_queued || !backend_done || !claimed { return ReapStep::Skip; }
+    ReapStep::Take
+}
+
+/// Walk a completed read's bytes across the caller's segments, in order, and
+/// report how many landed.
+///
+/// `put` is handed a segment address, the offset into the transfer's bytes
+/// that run starts at, and its length; it writes the run and returns how many
+/// bytes of it actually reached the caller. A short write ends the walk: the segments past a page the caller
+/// does not have mapped are not reachable either, and reporting the whole
+/// length would tell the caller it read bytes that are not in its buffer.
+///
+/// The walk is stated here, away from the address space it writes into,
+/// because the arithmetic is what can be wrong: a segment longer than the
+/// bytes left, a zero-length segment in the middle, a caller whose segments
+/// total more than the transfer returned. # C: O(N_segs)
+pub fn scatter_segments(
+    segs: &[(u64, usize)], src_len: usize, mut put: impl FnMut(u64, usize, usize) -> usize,
+) -> usize {
+    let mut at = 0usize;
+    for &(va, n) in segs {
+        let n = core::cmp::min(n, src_len - at);
+        if n == 0 { break; }
+        let done = put(va, at, n);
+        at += done;
+        if done < n { break; }
+    }
+    at
+}
+
 #[cfg(test)]
 #[path = "iopoll/tests.rs"]
 mod tests;

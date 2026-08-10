@@ -38,13 +38,17 @@ fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 /// Consume one SQ slot. Returns the entry's wire image, or `None` when the
 /// ring is empty. An SQ index array entry naming no real SQE is counted in
 /// `sq_dropped` and skipped, never executed. # C: O(1) per skipped index
-fn next_sqe(inode: &IoUringInode) -> Option<Sqe> {
+fn next_sqe(inode: &IoUringInode, cursor: &mut u32) -> Option<(Sqe, u32, u32)> {
+    let publish = crate::io_uring_abi::sq_cursor::publishes_head(inode.flags);
     loop {
         let r = inode.ring.lock();
-        let head = r.hdr_load(RING_SQ_HEAD);
-        if head == r.hdr_load(RING_SQ_TAIL) { return None; }
+        let head = *cursor;
+        // A rewinding ring is bounded by its batch length, computed once
+        // before the pass; every other ring stops where userspace stopped.
+        if publish && head == r.hdr_load(RING_SQ_TAIL) { return None; }
         let idx = r.sq_index(head);
-        r.hdr_store(RING_SQ_HEAD, head.wrapping_add(1));
+        *cursor = head.wrapping_add(1);
+        if publish { r.hdr_store(RING_SQ_HEAD, *cursor); }
         if !sq_index_valid(idx, r.sq_entries) {
             r.hdr_store(RING_SQ_DROPPED, r.hdr_load(RING_SQ_DROPPED).wrapping_add(1));
             continue;
@@ -54,8 +58,23 @@ fn next_sqe(inode: &IoUringInode) -> Option<Sqe> {
         // SAFETY: sqe_at masks the index into the SQE region, which is HHDM-mapped for the ring's lifetime; the ring lock serialises kernel readers.
         unsafe { core::ptr::copy_nonoverlapping(at as *const u8, b.as_mut_ptr(), SQE_BYTES); }
         // Decoded here rather than in the caller so the 64-byte wire image
-        // does not sit in the frame that every operation runs beneath.
-        return Some(Sqe::from_bytes(&b));
+        // does not sit in the frame that every operation runs beneath. Only
+        // the first 64 bytes are decoded on any ring: no operation reads the
+        // second half of a 128-byte entry yet, and the entries ladder is what
+        // decides whether that half exists at all.
+        return Some((Sqe::from_bytes(&b), idx, r.sq_entries));
+    }
+}
+
+/// Consume the SECOND slot of a 128-byte entry on a ring whose array strides
+/// at 64. The slot's contents are the entry's own continuation, so it is
+/// stepped over rather than read as an entry of its own — reading it would run
+/// whatever byte happened to sit at its opcode offset. # C: O(1)
+fn consume_continuation(inode: &IoUringInode, cursor: &mut u32) {
+    *cursor = cursor.wrapping_add(1);
+    if crate::io_uring_abi::sq_cursor::publishes_head(inode.flags) {
+        let r = inode.ring.lock();
+        r.hdr_store(RING_SQ_HEAD, *cursor);
     }
 }
 
@@ -63,6 +82,23 @@ fn next_sqe(inode: &IoUringInode) -> Option<Sqe> {
 /// here is an init failure: it still consumes the entry and still posts a
 /// completion, but it stops the batch unless the ring asked for
 /// `IORING_SETUP_SUBMIT_ALL`. # C: O(1)
+/// How many SLOTS this entry costs beyond the one already taken, and whether
+/// the ring can carry it at all.
+///
+/// Asked first, and separately, for two reasons. An entry whose second half is
+/// not in the ring has no meaningful flags either, so the width question
+/// outranks every other check. And the slots it costs must be stepped over
+/// whatever happens to the entry afterwards — a refusal for some later reason,
+/// or a cancellation behind a broken link, still leaves a continuation slot
+/// that must not be read as an entry of its own. # C: O(1)
+fn admit_width(inode: &Arc<IoUringInode>, sqe: &Sqe, idx: u32, sq_entries: u32, left: u32)
+    -> Result<u32, Errno>
+{
+    if sqe.opcode >= OP_LAST { return Err(Errno::Einval); }
+    crate::io_uring_abi::sqe_slot::extra_slots(inode.flags, sqe.opcode, idx, sq_entries, left)
+}
+
+/// The checks an entry passes once its width is settled. # C: O(1)
 fn admit(inode: &Arc<IoUringInode>, sqe: &Sqe) -> Result<(), Errno> {
     if sqe.opcode >= OP_LAST { return Err(Errno::Einval); }
     if sqe.flags & !SQE_VALID_FLAGS != 0 { return Err(Errno::Einval); }
@@ -133,7 +169,7 @@ fn attach(tail: &Arc<IoReq>, req: &Arc<IoReq>) {
 /// # C: O(N_chain)
 fn refuse(inode: &Arc<IoUringInode>, sqe: &Sqe, e: Errno) {
     if posts_cqe(sqe.flags, err(e)) {
-        inode.post_cqe(Cqe { user_data: sqe.user_data, res: -(e.as_i32()), flags: 0, big: [0; 2] });
+        inode.post_cqe(Cqe { user_data: sqe.user_data, res: -(e.as_i32()), flags: 0, big: [0; 2], cqe32: false });
     }
 }
 
@@ -151,17 +187,34 @@ pub fn submit_sqes(inode: &Arc<IoUringInode>, to_submit: u32) -> i64 {
     // SAFETY: process context in the syscall path, holding no spinlock; the guard is dropped before any wait.
     let _batch = unsafe { inode.submit.lock() };
     let submit_all = inode.flags & IORING_SETUP_SUBMIT_ALL != 0;
+    let (to_submit, mut cursor) = {
+        use crate::io_uring_abi::sq_cursor::{batch_len, batch_start};
+        let r = inode.ring.lock();
+        let (tail, head) = (r.hdr_load(RING_SQ_TAIL), r.hdr_load(RING_SQ_HEAD));
+        (batch_len(inode.flags, to_submit, tail, head, r.sq_entries),
+         batch_start(inode.flags, head))
+    };
     let mut consumed: u32 = 0;
     let mut chain = Chain::default();
     let mut pending: Option<(Arc<IoReq>, Arc<IoReq>)> = None;
 
     while consumed < to_submit {
-        let Some(sqe) = next_sqe(inode) else { break };
+        let left = to_submit - consumed;
+        let Some((sqe, idx, sq_entries)) = next_sqe(inode, &mut cursor) else { break };
         consumed += 1;
+        // A 128-byte entry on a ring whose array strides at 64 occupies the
+        // slot after it too. Stepping over that slot HERE, before anything
+        // looks at the entry, is what keeps the continuation from being run as
+        // an entry of its own on every later path.
+        let width = admit_width(inode, &sqe, idx, sq_entries, left);
+        // Stepped over HERE, before anything else looks at the entry: a later
+        // refusal, and a cancellation behind a broken link, must not leave the
+        // continuation to be read as an entry of its own.
+        for _ in 0..width.unwrap_or(0) { consume_continuation(inode, &mut cursor); consumed += 1; }
 
         if let Some((head, tail)) = pending.take() {
             let cont = sqe.flags & SQE_LINK_FLAGS != 0;
-            match admit(inode, &sqe) {
+            match width.and_then(|_| admit(inode, &sqe)) {
                 Err(e) => { refuse(inode, &sqe, e); start_chain(&head); if !submit_all { break; } }
                 Ok(()) => {
                     let req = build(inode, &sqe);
@@ -186,7 +239,7 @@ pub fn submit_sqes(inode: &Arc<IoUringInode>, to_submit: u32) -> i64 {
         let (out, init_failed) = match chain.action(sqe.flags) {
             // Everything behind a broken link is cancelled, not executed.
             Action::Cancel => (OpOutcome::res(err(Errno::Ecanceled)), false),
-            Action::Run => match admit(inode, &sqe) {
+            Action::Run => match width.and_then(|_| admit(inode, &sqe)) {
                 Err(e) => (OpOutcome::res(err(e)), true),
                 Ok(()) if deferred => {
                     // A link timeout with nothing ahead of it guards nothing.
@@ -214,7 +267,10 @@ pub fn submit_sqes(inode: &Arc<IoUringInode>, to_submit: u32) -> i64 {
 
         if posts_cqe(sqe.flags, out.res) {
             let res32 = if out.res > i32::MAX as i64 { i32::MAX } else { out.res as i32 };
-            inode.post_cqe(Cqe { user_data: sqe.user_data, res: res32, flags: out.cqe_flags, big: [0; 2] });
+            inode.post_cqe(Cqe {
+                user_data: sqe.user_data, res: res32, flags: out.cqe_flags,
+                big: out.big, cqe32: out.cqe32,
+            });
         }
         chain.advance(sqe.flags, out.res);
 
