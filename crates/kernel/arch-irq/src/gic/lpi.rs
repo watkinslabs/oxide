@@ -7,11 +7,24 @@ use super::regs::{GICR_CTLR, GICR_PENDBASER, GICR_PROPBASER, GICR_VA};
 /// Number of LPI ID bits we configure. The minimum legal value is
 /// 14 on QEMU (LPIs 8192..(1<<14)-1=16383); going lower than the
 /// hardware-reported support floor causes GICR_PROPBASER.IDbits to
-/// be RAZ/WI. 14 → 16 KiB config table, 2 KiB pending bitmap (but
-/// allocation is rounded up to the 64 KiB minimum the architecture
-/// mandates for the pending region).
+/// be RAZ/WI. 14 → 16 KiB of configuration bytes, 2 KiB of pending
+/// bits; both regions are allocated at the 64 KiB granule below.
 #[cfg(target_arch = "aarch64")]
 const LPI_ID_BITS: u32 = 14;
+
+/// Bytes each LPI table occupies, and the buddy order that supplies them.
+/// Both decided in `gic_lpi_layout`, which says why the configuration table is
+/// not merely `1 << IDbits` bytes.
+#[cfg(target_arch = "aarch64")]
+const LPI_TABLE_GRANULE: u64 = crate::gic_lpi_layout::table_bytes(LPI_ID_BITS);
+
+/// Page size the order below is expressed in.
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+const LPI_TABLE_PAGE: u64 = 0x1000;
+
+/// # C: O(1)
+#[cfg(all(target_arch = "aarch64", target_os = "oxide-kernel"))]
+const LPI_TABLE_ORDER: u8 = crate::gic_lpi_layout::table_order(LPI_TABLE_PAGE);
 
 /// PROPBASER bit composition (ARM IHI 0069 §11.4.10):
 ///   [47:12] PA — alignment ≥ 4 KiB
@@ -73,10 +86,11 @@ pub const LPI_BASE: u32 = 8192;
 #[cfg(target_arch = "aarch64")]
 pub const LPI_PROP_DEFAULT: u8 = 0xA0 | 0x02 | 0x01;
 
-/// Bring up LPIs on the boot CPU's redistributor: allocate +
-/// zero the global LPI configuration table (16 KiB) and the per-RD
-/// pending table (64 KiB; the architecture-required minimum), program
-/// `GICR_PROPBASER` + `GICR_PENDBASER`, then set `GICR_CTLR.EnableLPI`.
+/// Bring up LPIs on the boot CPU's redistributor: allocate + zero the global
+/// LPI configuration table and the per-RD pending table, both at the granule
+/// `gic_lpi_layout` fixes, program `GICR_PROPBASER` + `GICR_PENDBASER`, then
+/// set `GICR_CTLR.EnableLPI` and record both extents as memory that outlives
+/// this kernel.
 ///
 /// LPI configuration writes after this point require an INV/INVALL
 /// command via the ITS to take effect (handled in F56-06+).
@@ -95,31 +109,30 @@ pub unsafe fn lpis_enable(hhdm: u64) -> LpisStatus {
     if gicr == 0 {
         return LpisStatus::AllocFailed;
     }
-    // LPI configuration table size = (1 << ID_BITS) bytes, one
-    // priority+enable byte per LPI. ID_BITS=14 → 16 KiB → Order 2.
-    // Pending table architecturally requires ≥ 64 KiB → Order 4.
-    let prop_pa = match pmm::setup::alloc_contig(pmm::Order(2)) {
+    // Both tables at the same granule: one byte per LPI for the
+    // configuration table and one bit for the pending table both fit inside
+    // it at this ID width, and the granule is what an adopting kernel assumes
+    // of the configuration table it inherits.
+    let prop_pa = match pmm::setup::alloc_contig(pmm::Order(LPI_TABLE_ORDER)) {
         Some(p) => p,
         None    => return LpisStatus::AllocFailed,
     };
-    let pend_pa = match pmm::setup::alloc_contig(pmm::Order(4)) {
+    let pend_pa = match pmm::setup::alloc_contig(pmm::Order(LPI_TABLE_ORDER)) {
         Some(p) => p,
         None    => return LpisStatus::AllocFailed,
     };
     if hhdm != 0 {
-        // SAFETY: HHDM-mapped contig PMM regions; aligned u64 stores within the region bounds.
+        // SAFETY: HHDM-mapped contig PMM regions of LPI_TABLE_GRANULE bytes each; aligned u64 stores within the region bounds.
         unsafe {
             let prop_va = hhdm.wrapping_add(prop_pa) as *mut u64;
-            for i in 0..(0x4000 / 8) {
-                core::ptr::write_volatile(prop_va.add(i), 0);
-            }
             let pend_va = hhdm.wrapping_add(pend_pa) as *mut u64;
-            for i in 0..(0x10000 / 8) {
+            for i in 0..(LPI_TABLE_GRANULE as usize / 8) {
+                core::ptr::write_volatile(prop_va.add(i), 0);
                 core::ptr::write_volatile(pend_va.add(i), 0);
             }
         }
-        crate::cache::clean_to_poc(hhdm.wrapping_add(prop_pa), 0x4000);
-        crate::cache::clean_to_poc(hhdm.wrapping_add(pend_pa), 0x10000);
+        crate::cache::clean_to_poc(hhdm.wrapping_add(prop_pa), LPI_TABLE_GRANULE as usize);
+        crate::cache::clean_to_poc(hhdm.wrapping_add(pend_pa), LPI_TABLE_GRANULE as usize);
     }
     let propbaser = PROPBASER_IC_NC
                   | PROPBASER_INNER_SH
@@ -141,6 +154,14 @@ pub unsafe fn lpis_enable(hhdm: u64) -> LpisStatus {
         (p_rd, e_rd, post)
     };
     LPI_PROP_PA.store(prop_pa, Ordering::Release);
+    // EnableLPI is latched: from here the redistributor reads the
+    // configuration table and writes the pending table for as long as the
+    // machine runs, INCLUDING across a relocation into another kernel. Both
+    // extents are recorded so the kernel that starts next is told the memory
+    // is taken; without that it allocates over a table the controller is
+    // still writing.
+    firmware::memreserve::add(prop_pa, LPI_TABLE_GRANULE);
+    firmware::memreserve::add(pend_pa, LPI_TABLE_GRANULE);
     LPIS_ENABLED.store(true, O::Release);
     LpisStatus::Ready { prop_pa, pend_pa, propbaser_rd, pendbaser_rd, ctlr_post }
 }
