@@ -14,8 +14,9 @@ use syscall::errno::Errno;
 use super::{frame, mem};
 use crate::s101_ptrace_decide as decide;
 use crate::s101_ptrace_uapi as uapi;
+use crate::s101_ptrace_user as user;
 
-const IOVEC_BYTES: u64 = 16;
+const IOVEC_BYTES: u64 = user::IOVEC_BYTES as u64;
 
 /// PTRACE_GETREGS — x86_64's `struct user_regs_struct` copy-out. arm64 has
 /// no such request; its `arch_ptrace` falls through to `ptrace_request`,
@@ -27,7 +28,7 @@ pub fn getregs(target: &Task, data: u64) -> Result<(), Errno> {
     #[cfg(target_arch = "x86_64")]
     {
         let u = frame::user_regs(target).ok_or(Errno::Esrch)?;
-        copy_regs_out(data, &u[..])
+        copy_regs_out(data, &u[..], frame::REGS_N * user::WORD)
     }
 }
 
@@ -39,7 +40,7 @@ pub fn setregs(target: &Task, data: u64) -> Result<(), Errno> {
     #[cfg(target_arch = "x86_64")]
     {
         let mut u = [0u64; frame::REGS_N];
-        copy_regs_in(data, &mut u[..])?;
+        copy_regs_in(data, &mut u[..], frame::REGS_N * user::WORD)?;
         frame::set_user_regs(target, &u)
     }
 }
@@ -51,11 +52,9 @@ pub fn regset(target: &Task, nt: u64, data: u64, write: bool) -> Result<(), Errn
     if crate::userbuf::validate_user_buf_writable(data, IOVEC_BYTES, 1).is_err() {
         return Err(Errno::Efault);
     }
-    // SAFETY: `data..data+16` validated as a mapped writable range in the caller's AS; Linux `__get_user` on `struct iovec` is likewise unaligned-tolerant.
-    let (iov_base, iov_len) = unsafe {
-        (core::ptr::read_unaligned(data as *const u64),
-         core::ptr::read_unaligned((data + 8) as *const u64))
-    };
+    let mut iov = [0u8; user::IOVEC_BYTES];
+    uaccess::copy_from_user(&mut iov, data)?;
+    let (iov_base, iov_len) = user::parse_iovec(&iov);
     let n = decide::regset_len(nt, frame::ARCH, iov_len as usize)?;
     match nt {
         uapi::NT_PRSTATUS => prstatus(target, iov_base, n, write)?,
@@ -72,9 +71,10 @@ pub fn regset(target: &Task, nt: u64, data: u64, write: bool) -> Result<(), Errn
         // `decide::regset_len` already rejected every other note type.
         _ => return Err(Errno::Einval),
     }
-    // SAFETY: `data+8..data+16` is inside the 16-byte iovec validated writable above; Linux writes the achieved length back the same way.
-    unsafe { core::ptr::write_unaligned((data + 8) as *mut u64, n as u64); }
-    Ok(())
+    // The clamped length goes back to `uiov->iov_len`, and ONLY when the
+    // transfer itself succeeded — the reference guards the write-back with
+    // `if (!ret)`, so a failed regset must not rewrite the tracer's iovec.
+    uaccess::copy_to_user(data + 8, &(n as u64).to_ne_bytes())
 }
 
 /// NT_PRSTATUS transfer of the first `n` bytes of the ABI register struct.
@@ -83,42 +83,35 @@ fn prstatus(target: &Task, base: u64, n: usize, write: bool) -> Result<(), Errno
         // A short iovec leaves the tail at its current value, matching
         // `copy_regset_from_user`'s partial-write semantics.
         let mut u = frame::user_regs(target).ok_or(Errno::Esrch)?;
-        copy_regs_in(base, &mut u[..n / 8])?;
+        copy_regs_in(base, &mut u[..], n)?;
         frame::set_user_regs(target, &u)
     } else {
         let u = frame::user_regs(target).ok_or(Errno::Esrch)?;
-        copy_regs_out(base, &u[..n / 8])
+        copy_regs_out(base, &u[..], n)
     }
 }
 
-fn copy_regs_out(dst: u64, regs: &[u64]) -> Result<(), Errno> {
-    let bytes = (regs.len() * 8) as u64;
-    if bytes == 0 { return Ok(()); }
-    if crate::userbuf::validate_user_buf_writable(dst, bytes, 1).is_err() {
+/// Copy the first `n` BYTES of `regs` out. Byte- rather than word-granular:
+/// `copy_regset_to_user` transfers whatever `iov_len` asked for, so an
+/// `iov_len` of 12 must move 12 bytes, not one word and a dropped remainder.
+/// The chunking plan is the ungated `user::regs_out`; this closure is only the
+/// fault-recovering store.
+fn copy_regs_out(dst: u64, regs: &[u64], n: usize) -> Result<(), Errno> {
+    if n == 0 { return Ok(()); }
+    if crate::userbuf::validate_user_buf_writable(dst, n as u64, 1).is_err() {
         return Err(Errno::Efault);
     }
-    // SAFETY: `dst..dst+bytes` validated as a mapped writable range in the caller's AS; unaligned quadword stores, as Linux `copy_to_user` permits.
-    unsafe {
-        for (i, v) in regs.iter().enumerate() {
-            core::ptr::write_unaligned((dst + (i as u64) * 8) as *mut u64, *v);
-        }
-    }
-    Ok(())
+    user::regs_out(regs, n, |off, b| uaccess::copy_to_user(dst + off as u64, b))
 }
 
-fn copy_regs_in(src: u64, regs: &mut [u64]) -> Result<(), Errno> {
-    let bytes = (regs.len() * 8) as u64;
-    if bytes == 0 { return Ok(()); }
-    if crate::userbuf::validate_user_buf(src, bytes, 1).is_err() {
+/// Copy the first `n` bytes IN over `regs`, leaving the untransferred tail —
+/// including the tail of a trailing partial word — at its current value.
+fn copy_regs_in(src: u64, regs: &mut [u64], n: usize) -> Result<(), Errno> {
+    if n == 0 { return Ok(()); }
+    if crate::userbuf::validate_user_buf(src, n as u64, 1).is_err() {
         return Err(Errno::Efault);
     }
-    // SAFETY: `src..src+bytes` validated as a mapped readable range in the caller's AS; unaligned quadword loads, as Linux `copy_from_user` permits.
-    unsafe {
-        for (i, v) in regs.iter_mut().enumerate() {
-            *v = core::ptr::read_unaligned((src + (i as u64) * 8) as *const u64);
-        }
-    }
-    Ok(())
+    user::regs_in(regs, n, |off, b| uaccess::copy_from_user(b, src + off as u64))
 }
 
 /// `NT_ARM_HW_BREAK` / `NT_ARM_HW_WATCH` — arm64's hardware breakpoint and
@@ -154,8 +147,8 @@ fn hwdebug(target: &Task, base: u64, n: usize, write: bool,
             // A short iovec leaves the remaining slots at their current value,
             // matching `copy_regset_from_user`'s partial-write semantics.
             if layout::slot_ctrl_off(idx) + 4 > n { break; }
-            let addr = read_u64(base, layout::slot_addr_off(idx));
-            let ctrl = read_u32(base, layout::slot_ctrl_off(idx));
+            let addr = read_u64(base, layout::slot_addr_off(idx))?;
+            let ctrl = read_u32(base, layout::slot_ctrl_off(idx))?;
             st.set_addr(file, idx, addr).map_err(|_| Errno::Einval)?;
             st.set_ctrl(file, idx, ctrl).map_err(|_| Errno::Einval)?;
         }
@@ -164,40 +157,42 @@ fn hwdebug(target: &Task, base: u64, n: usize, write: bool,
     }
     let st = sched::debugreg::arm::snapshot(target);
     if layout::DBG_INFO_OFF + 4 <= n {
-        write_u32(base, layout::DBG_INFO_OFF, sched::debugreg::arm::dbg_info(file));
+        write_u32(base, layout::DBG_INFO_OFF, sched::debugreg::arm::dbg_info(file))?;
     }
-    if layout::HDR_PAD_OFF + 4 <= n { write_u32(base, layout::HDR_PAD_OFF, 0); }
+    if layout::HDR_PAD_OFF + 4 <= n { write_u32(base, layout::HDR_PAD_OFF, 0)?; }
     for idx in 0..layout::REGSET_SLOTS {
         let (addr, ctrl) = st.get(file, idx).unwrap_or((0, 0));
-        if layout::slot_addr_off(idx) + 8 <= n { write_u64(base, layout::slot_addr_off(idx), addr); }
-        if layout::slot_ctrl_off(idx) + 4 <= n { write_u32(base, layout::slot_ctrl_off(idx), ctrl); }
-        if layout::slot_pad_off(idx)  + 4 <= n { write_u32(base, layout::slot_pad_off(idx), 0); }
+        if layout::slot_addr_off(idx) + 8 <= n { write_u64(base, layout::slot_addr_off(idx), addr)?; }
+        if layout::slot_ctrl_off(idx) + 4 <= n { write_u32(base, layout::slot_ctrl_off(idx), ctrl)?; }
+        if layout::slot_pad_off(idx)  + 4 <= n { write_u32(base, layout::slot_pad_off(idx), 0)?; }
     }
     Ok(())
 }
 
-/// Unaligned user reads/writes at an offset inside a range the caller already
-/// validated. Kept tiny and separate so the transfer above needs no buffer.
+/// Single-field user reads/writes at an offset inside a range the caller
+/// already validated. Kept tiny and separate so the transfer above needs no
+/// buffer; each goes through `uaccess`, so a page unmapped under the transfer
+/// is EFAULT rather than a kernel fault.
 #[cfg(target_arch = "aarch64")]
-fn read_u64(base: u64, off: usize) -> u64 {
-    // SAFETY: `base..base+n` was validated readable in the caller's AS and `off+8 <= n` is checked at every call site; unaligned load, as Linux `copy_from_user` permits.
-    unsafe { core::ptr::read_unaligned((base + off as u64) as *const u64) }
+fn read_u64(base: u64, off: usize) -> Result<u64, Errno> {
+    let mut b = [0u8; 8];
+    uaccess::copy_from_user(&mut b, base + off as u64)?;
+    Ok(u64::from_ne_bytes(b))
 }
 
 #[cfg(target_arch = "aarch64")]
-fn read_u32(base: u64, off: usize) -> u32 {
-    // SAFETY: `base..base+n` was validated readable in the caller's AS and `off+4 <= n` is checked at every call site; unaligned load.
-    unsafe { core::ptr::read_unaligned((base + off as u64) as *const u32) }
+fn read_u32(base: u64, off: usize) -> Result<u32, Errno> {
+    let mut b = [0u8; 4];
+    uaccess::copy_from_user(&mut b, base + off as u64)?;
+    Ok(u32::from_ne_bytes(b))
 }
 
 #[cfg(target_arch = "aarch64")]
-fn write_u64(base: u64, off: usize, v: u64) {
-    // SAFETY: `base..base+n` was validated writable in the caller's AS and `off+8 <= n` is checked at the call site; unaligned store, as Linux `copy_to_user` permits.
-    unsafe { core::ptr::write_unaligned((base + off as u64) as *mut u64, v); }
+fn write_u64(base: u64, off: usize, v: u64) -> Result<(), Errno> {
+    uaccess::copy_to_user(base + off as u64, &v.to_ne_bytes())
 }
 
 #[cfg(target_arch = "aarch64")]
-fn write_u32(base: u64, off: usize, v: u32) {
-    // SAFETY: `base..base+n` was validated writable in the caller's AS and `off+4 <= n` is checked at the call site; unaligned store.
-    unsafe { core::ptr::write_unaligned((base + off as u64) as *mut u32, v); }
+fn write_u32(base: u64, off: usize, v: u32) -> Result<(), Errno> {
+    uaccess::copy_to_user(base + off as u64, &v.to_ne_bytes())
 }

@@ -127,13 +127,16 @@ fn set_debugreg(target: &Task, n: usize, data: u64) -> Result<(), Errno> {
 fn set_debugreg(_target: &Task, _n: usize, _data: u64) -> Result<(), Errno> { Err(Errno::Eio) }
 
 /// `put_user(word, data)` into the tracer's own address space.
+///
+/// The range check is not fault recovery: a tracer that unmaps the page
+/// between the check and the store would fault the KERNEL. The store goes
+/// through `uaccess`, whose hand-written asm is the only access carrying an
+/// `__ex_table` fixup, so the race reports EFAULT instead.
 fn put_word(data: u64, word: u64) -> Result<(), Errno> {
     if crate::userbuf::validate_user_buf_writable(data, WORD as u64, 1).is_err() {
         return Err(Errno::Efault);
     }
-    // SAFETY: `data..data+8` was accepted by validate_user_buf_writable, so it is a mapped writable range in the *caller's* live address space; CPL=0 unaligned store (Linux put_user accepts unaligned too).
-    unsafe { core::ptr::write_unaligned(data as *mut u64, word); }
-    Ok(())
+    uaccess::copy_to_user(data, &word.to_ne_bytes())
 }
 
 /// FPU snapshot copy-out for PTRACE_GETFPREGS / GETREGSET(NT_PRFPREG).
@@ -142,13 +145,12 @@ pub fn fpregs_out(target: &Task, data: u64, n: usize) -> Result<(), Errno> {
     if crate::userbuf::validate_user_buf_writable(data, n as u64, 1).is_err() {
         return Err(Errno::Efault);
     }
-    // SAFETY: the tracee is ptrace-stopped, so its fpu_state cannot be torn by a concurrent ctxsw fpu_save; the destination range was validated writable in the caller's AS; both sides are byte copies of `n` bytes inside their allocations.
-    unsafe {
+    // SAFETY: the tracee is ptrace-stopped, so its fpu_state cannot be torn by a concurrent ctxsw fpu_save; `n` is the regset size and is inside that allocation; the copy itself recovers a user fault through the exception table.
+    let left = unsafe {
         let src = (*target.fpu_state.get()).as_ptr();
-        for i in 0..n {
-            core::ptr::write_volatile((data + i as u64) as *mut u8, core::ptr::read(src.add(i)));
-        }
-    }
+        uaccess::raw_copy_to_user(data, src, n)
+    };
+    if left != 0 { return Err(Errno::Efault); }
     Ok(())
 }
 
@@ -158,13 +160,15 @@ pub fn fpregs_in(target: &Task, data: u64, n: usize) -> Result<(), Errno> {
     if crate::userbuf::validate_user_buf(data, n as u64, 1).is_err() {
         return Err(Errno::Efault);
     }
-    // SAFETY: the tracee is ptrace-stopped, so the picker cannot re-enter it and the fpu_state single-mutator rule (`13§5`) holds; the source range was validated readable in the caller's AS.
-    unsafe {
+    // SAFETY: the tracee is ptrace-stopped, so the picker cannot re-enter it and the fpu_state single-mutator rule (`13§5`) holds; `n` is the regset size and is inside that allocation; the copy recovers a user fault through the exception table.
+    // The raw form is deliberate: `copy_from_user` zero-fills the tail it could
+    // not read, which here is the TRACEE's live FPU state. A fault leaves the
+    // prefix it did manage, as `user_regset_copyin` does, and reports EFAULT.
+    let left = unsafe {
         let dst = (*target.fpu_state.get()).as_mut_ptr();
-        for i in 0..n {
-            core::ptr::write(dst.add(i), core::ptr::read_volatile((data + i as u64) as *const u8));
-        }
-    }
+        uaccess::raw_copy_from_user(dst, data, n)
+    };
     target.ptrace_fpu_dirty.store(true, Ordering::Release);
+    if left != 0 { return Err(Errno::Efault); }
     Ok(())
 }

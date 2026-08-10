@@ -15,6 +15,7 @@ use syscall::errno::Errno;
 use crate::s101_ptrace_decide as decide;
 use crate::s101_ptrace_sysinfo as sysinfo;
 use crate::s101_ptrace_uapi as uapi;
+use crate::s101_ptrace_user as user;
 
 /// PTRACE_PEEKSIGINFO. `addr` points at a `struct ptrace_peeksiginfo_args`;
 /// `data` at an array of `siginfo_t`. Returns the NUMBER of records copied —
@@ -26,12 +27,9 @@ pub fn peeksiginfo(target: &Task, addr: u64, data: u64) -> Result<i64, Errno> {
     if crate::userbuf::validate_user_buf(addr, uapi::PEEKSIGINFO_ARGS_BYTES, 1).is_err() {
         return Err(Errno::Efault);
     }
-    // SAFETY: `addr..addr+16` validated readable in the caller's AS; the three fields are read at the `struct ptrace_peeksiginfo_args` offsets (off@0, flags@8, nr@12).
-    let (off, flags, nr) = unsafe {
-        (core::ptr::read_unaligned(addr as *const u64),
-         core::ptr::read_unaligned((addr + 8) as *const u32),
-         core::ptr::read_unaligned((addr + 12) as *const i32))
-    };
+    let mut args_rec = [0u8; uapi::PEEKSIGINFO_ARGS_BYTES as usize];
+    uaccess::copy_from_user(&mut args_rec, addr)?;
+    let (off, flags, nr) = user::parse_peeksiginfo_args(&args_rec);
     let args = decide::peeksiginfo_args(off, flags, nr)?;
     let queue: Vec<sched::SigInfo> = if args.shared {
         target.thread_group.shared_sigq_snapshot()
@@ -80,13 +78,12 @@ pub fn get_syscall_info(target: &Task, user_size: u64, data: u64) -> Result<i64,
     let ret_data = target.ptrace_eventmsg.load(Ordering::Acquire) as u32;
     let (bytes, actual) = sysinfo::encode(op, security::seccomp::native_audit_arch(),
                                           &regs, ret_data);
-    let write = core::cmp::min(actual as u64, user_size);
+    let write = user::copy_len(actual as usize, user_size);
     if write > 0 {
-        if crate::userbuf::validate_user_buf_writable(data, write, 1).is_err() {
+        if crate::userbuf::validate_user_buf_writable(data, write as u64, 1).is_err() {
             return Err(Errno::Efault);
         }
-        // SAFETY: `data..data+write` validated as a mapped writable range in the caller's AS; `write <= actual <= bytes.len()`, so the source range is in bounds.
-        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), data as *mut u8, write as usize); }
+        uaccess::copy_to_user(data, &bytes[..write])?;
     }
     Ok(actual as i64)
 }
@@ -103,8 +100,7 @@ pub fn set_syscall_info(target: &Task, user_size: u64, data: u64) -> Result<i64,
         return Err(Errno::Efault);
     }
     let mut rec = [0u8; sysinfo::SIZEOF];
-    // SAFETY: `data..data+88` validated readable in the caller's AS; the destination is a local array of exactly that length.
-    unsafe { core::ptr::copy_nonoverlapping(data as *const u8, rec.as_mut_ptr(), rec.len()); }
+    uaccess::copy_from_user(&mut rec, data)?;
     match sysinfo::decode_set(op, user_size as usize, &rec)? {
         sysinfo::SetRequest::Entry { nr, args, set_args } =>
             super::frame::set_syscall_entry(target, nr, &args, set_args),
@@ -135,13 +131,7 @@ pub fn seccomp_get_filter(cur: &Task, target: &Task, addr: u64, data: u64)
     for (i, insn) in prog.iter().enumerate() {
         let f = security::seccomp::SockFilter::decode(*insn);
         let p = data + (i * uapi::SOCK_FILTER_BYTES) as u64;
-        // SAFETY: `data..data+len*8` validated as a mapped writable range in the caller's AS; each store stays inside that proven range at the `struct sock_filter` field offsets (code@0, jt@2, jf@3, k@4).
-        unsafe {
-            core::ptr::write_unaligned(p as *mut u16, f.code);
-            core::ptr::write_unaligned((p + 2) as *mut u8, f.jt);
-            core::ptr::write_unaligned((p + 3) as *mut u8, f.jf);
-            core::ptr::write_unaligned((p + 4) as *mut u32, f.k);
-        }
+        uaccess::copy_to_user(p, &user::sock_filter_bytes(f.code, f.jt, f.jf, f.k))?;
     }
     Ok(prog.len() as i64)
 }
@@ -154,22 +144,21 @@ pub fn seccomp_get_metadata(cur: &Task, target: &Task, size: u64, data: u64)
     -> Result<i64, Errno>
 {
     security::seccomp::filter_read_allowed(cur.has_cap(sched::cap::SYS_ADMIN))?;
-    let size = core::cmp::min(size as usize, uapi::SECCOMP_METADATA_BYTES);
-    // `if (size < sizeof(kmd.filter_off)) return -EINVAL;` — the offset field
-    // must at least be readable back.
-    if size < 8 { return Err(Errno::Einval); }
-    if crate::userbuf::validate_user_buf(data, 8, 1).is_err() { return Err(Errno::Efault); }
-    // SAFETY: `data..data+8` validated readable in the caller's AS; `filter_off` is the first member of `struct seccomp_metadata`.
-    let filter_off = unsafe { core::ptr::read_unaligned(data as *const u64) };
+    // The record clamps to its own size, and a buffer too small to carry
+    // `filter_off` back is EINVAL rather than a short write.
+    let size = user::metadata_size(size)?;
+    if crate::userbuf::validate_user_buf(data, user::FILTER_OFF_BYTES as u64, 1).is_err() {
+        return Err(Errno::Efault);
+    }
+    let mut off_rec = [0u8; user::FILTER_OFF_BYTES];
+    uaccess::copy_from_user(&mut off_rec, data)?;
+    let filter_off = u64::from_ne_bytes(off_rec);
     let flags = security::seccomp::nth_filter_flags(target, filter_off)?;
     if crate::userbuf::validate_user_buf_writable(data, size as u64, 1).is_err() {
         return Err(Errno::Efault);
     }
-    let mut rec = [0u8; uapi::SECCOMP_METADATA_BYTES];
-    rec[0..8].copy_from_slice(&filter_off.to_ne_bytes());
-    rec[8..16].copy_from_slice(&flags.to_ne_bytes());
-    // SAFETY: `data..data+size` validated as a mapped writable range in the caller's AS; `size <= 16 == rec.len()`, so the source range is in bounds.
-    unsafe { core::ptr::copy_nonoverlapping(rec.as_ptr(), data as *mut u8, size); }
+    let rec = user::metadata_rec(filter_off, flags);
+    uaccess::copy_to_user(data, &rec[..size])?;
     Ok(size as i64)
 }
 
@@ -192,8 +181,7 @@ pub fn get_sud_config(target: &Task, size: u64, data: u64) -> Result<i64, Errno>
     if crate::userbuf::validate_user_buf_writable(data, sysinfo::SUD_SIZEOF as u64, 1).is_err() {
         return Err(Errno::Efault);
     }
-    // SAFETY: `data..data+32` validated as a mapped writable range in the caller's AS; the source is a local array of exactly that length.
-    unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), data as *mut u8, bytes.len()); }
+    uaccess::copy_to_user(data, &bytes)?;
     Ok(0)
 }
 
@@ -207,8 +195,7 @@ pub fn set_sud_config(target: &Task, size: u64, data: u64) -> Result<i64, Errno>
         return Err(Errno::Efault);
     }
     let mut buf = [0u8; sysinfo::SUD_SIZEOF];
-    // SAFETY: `data..data+32` validated readable in the caller's AS; the destination is a local array of exactly that length.
-    unsafe { core::ptr::copy_nonoverlapping(data as *const u8, buf.as_mut_ptr(), buf.len()); }
+    uaccess::copy_from_user(&mut buf, data)?;
     let rec = sysinfo::sud_decode(&buf);
     let cfg = sched::prctl::sud::classify_set(rec.mode, rec.offset, rec.len, rec.selector)?;
     target.syscall_dispatch.install(&cfg);
@@ -221,17 +208,15 @@ pub fn set_sud_config(target: &Task, size: u64, data: u64) -> Result<i64, Errno>
 /// of how much was copied.
 /// # C: O(1)
 pub fn get_rseq_configuration(target: &Task, size: u64, data: u64) -> Result<i64, Errno> {
-    let mut rec = [0u8; uapi::RSEQ_CONFIGURATION_BYTES];
-    rec[0..8].copy_from_slice(&target.rseq_ptr.load(Ordering::Acquire).to_ne_bytes());
-    rec[8..12].copy_from_slice(&target.rseq_len.load(Ordering::Acquire).to_ne_bytes());
-    rec[12..16].copy_from_slice(&target.rseq_sig.load(Ordering::Acquire).to_ne_bytes());
-    let write = core::cmp::min(size as usize, rec.len());
+    let rec = user::rseq_rec(target.rseq_ptr.load(Ordering::Acquire),
+                             target.rseq_len.load(Ordering::Acquire),
+                             target.rseq_sig.load(Ordering::Acquire));
+    let write = user::copy_len(rec.len(), size);
     if write > 0 {
         if crate::userbuf::validate_user_buf_writable(data, write as u64, 1).is_err() {
             return Err(Errno::Efault);
         }
-        // SAFETY: `data..data+write` validated as a mapped writable range in the caller's AS; `write <= rec.len()`, so the source range is in bounds.
-        unsafe { core::ptr::copy_nonoverlapping(rec.as_ptr(), data as *mut u8, write); }
+        uaccess::copy_to_user(data, &rec[..write])?;
     }
     Ok(rec.len() as i64)
 }
