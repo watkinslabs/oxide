@@ -81,7 +81,7 @@ pub(crate) fn before_allocation(free_pages: u64, requested_pages: u64) {
                 // reclaim is legal only for a blockable allocation context.
                 // PF_MEMALLOC_NOIO similarly excludes the swap/block descent.
                 if direct_reclaim_allowed(sched::preempt::in_atomic(), current_is_io_flusher()) {
-                    crate::kswapd::direct_reclaim_once();
+                    let _ = crate::kswapd::direct_reclaim_once();
                 }
             }
         }

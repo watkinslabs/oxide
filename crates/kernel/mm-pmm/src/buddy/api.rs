@@ -157,10 +157,30 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
         if order.0 <= MAX_ORDER {
             crate::watermark::before_allocation(self.free_pages(), 1u64 << order.0);
         }
-        let r = self.alloc_inner(order);
+        let mut r = self.alloc_inner(order);
+        // Exhaustion is not the answer until reclaim and the out-of-memory
+        // selector have both been given their turn: any allocation that
+        // cannot be satisfied enters the slowpath, not only a user fault.
+        if matches!(r, Err(Error::NoMem)) { r = self.alloc_slowpath(order); }
         if r.is_ok() { crate::watermark::after_allocation(self.free_pages()); }
         if let Ok(pfn) = r { hal::zerotrap::trap_buddy(pfn.0 * hal::PAGE_SIZE_BYTES, b"ALLOC"); }
         r
+    }
+
+    /// Reclaim/kill retry loop taken when the fast path found no block.
+    /// Policy lives in `crate::oom_entry`; this only supplies the three
+    /// actions it drives.
+    /// # C: bounded retries; # Ctx: blockable only; # Sleeps: yes
+    fn alloc_slowpath(&self, order: Order) -> KResult<Pfn> {
+        let allowed = crate::oom_entry::context_allows_slowpath();
+        match crate::oom_entry::run_slowpath(order.0, allowed,
+            || self.alloc_inner(order).ok(),
+            crate::oom_entry::reclaim_once,
+            crate::oom_entry::invoke_oom)
+        {
+            Some(pfn) => Ok(pfn),
+            None => Err(Error::NoMem),
+        }
     }
 
     fn alloc_inner(&self, order: Order) -> KResult<Pfn> {
