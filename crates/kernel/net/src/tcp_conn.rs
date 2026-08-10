@@ -15,6 +15,8 @@
 // - route_policy.rs: selected IPv4 route metrics applied to a new TCB.
 // - active_fastopen.rs: the client half of fast open — a SYN carrying data,
 //                   and what its answer teaches.
+// - synrecv.rs    : which acknowledgement may complete, or end, a half-open
+//                   passive connection — the request rule and the socket rule.
 // - reqsk.rs      : the half-open request sock (SYN-RECV minisock) a listener holds,
 //                   its SYN-ACK timer accounting and the TCP_DEFER_ACCEPT rules.
 // - tests.rs      : unit tests split out from in-module block.
@@ -37,6 +39,7 @@ pub mod delivery;
 pub mod chrono;
 pub mod route_policy;
 pub mod reqsk;
+pub mod synrecv;
 pub mod syncookie;
 
 pub use types::passive_rcv_header;

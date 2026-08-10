@@ -27,6 +27,14 @@ fn reserved_child(listener: &Arc<TcpListenEntry>, remote_port: u16,
     let mut conn = TcpConn::new_listener(listener.local);
     conn.remote = remote;
     conn.state = state;
+    if state == crate::tcp_state::TcpState::SynRecv {
+        // A child in SYN-RECEIVED has put exactly its SYN-ACK on the wire, so
+        // the only acknowledgement that finishes it names one past that. The
+        // fixture has to say so, because the completing acknowledgement is
+        // checked against this send state rather than accepted on sight.
+        conn.snd_una = 0;
+        conn.snd_nxt = 1;
+    }
     let key = TcpKey {
         local_ip: listener.local.ip,
         local_port: listener.local.port,

@@ -15,6 +15,36 @@ impl TcpConn {
         self.build_segment_at(s.seq, s.flags, &s.payload, urg_ptr)
     }
 
+    /// The reset that answers a segment this connection may not act on. It is
+    /// built from the OFFENDING segment, not from this side's send state: a
+    /// segment carrying an acknowledgement is reset at the sequence it
+    /// claimed, and one carrying none is reset at zero with the sequence it
+    /// occupied acknowledged. That is what lets a peer holding real state
+    /// accept the reset while a blind segment learns nothing from it. No
+    /// options, and no window: nothing follows a reset.
+    /// # C: O(1)
+    pub(crate) fn build_rst_reply(&self, in_flags: u8, in_ack: u32, in_end_seq: u32) -> Vec<u8> {
+        let (seq, ack, flag_bits) = if (in_flags & flags::ACK) != 0 {
+            (in_ack, 0, flags::RST)
+        } else {
+            (0, in_end_seq, flags::RST | flags::ACK)
+        };
+        let mut buf = alloc::vec![0u8; TCP_HDR_MIN_LEN];
+        let mut h = TcpHdr {
+            src_port: self.local.port,
+            dst_port: self.remote.port,
+            seq,
+            ack,
+            data_offset: (TCP_HDR_MIN_LEN as u8) / 4,
+            flags: flag_bits,
+            window: 0,
+            checksum: 0,
+            urg_ptr: 0,
+        };
+        h.build_into_ip(self.local.ip, self.remote.ip, &mut buf);
+        buf
+    }
+
     pub fn build_segment(&mut self, mut flag_bits: u8, payload: &[u8]) -> Vec<u8> {
         if self.ecn_enabled {
             if self.send_cwr && !payload.is_empty() {

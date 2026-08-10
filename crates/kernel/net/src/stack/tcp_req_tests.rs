@@ -152,3 +152,96 @@ fn a_half_open_request_is_reported_by_the_diagnostic_table() {
     assert_eq!(row.state, crate::stack_diag::tcp_diag_state(TcpState::SynRecv),
         "a request is reported in the state it is in");
 }
+
+#[test]
+fn an_acknowledgement_naming_a_sequence_never_sent_cannot_complete_the_handshake() {
+    // The half-open is completed by the acknowledgement of THIS side's
+    // SYN-ACK and by nothing else. An off-path segment that guessed the
+    // 4-tuple and the receive window but not the sequence this side chose
+    // must not turn a request into a connection (B2050).
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let stack = NetStack::new();
+    let (iface, lo, listener) = fixture(&stack, 7_607);
+    deliver(&stack, iface, 7_607, 40_007, flags::SYN, CLIENT_SEQ, 0, syn_options());
+    let synack = head(&sent(&lo).expect("the SYN was answered"));
+    drain(&lo);
+
+    let forged = synack.seq.wrapping_add(4_096);
+    deliver(&stack, iface, 7_607, 40_007, flags::ACK, CLIENT_SEQ.wrapping_add(1),
+        forged, Default::default());
+
+    assert!(child(&stack, 7_607, 40_007).is_none(),
+        "a guessed acknowledgement completed a handshake it never acknowledged");
+    assert!(request(&stack, 7_607, 40_007).is_some(),
+        "the request the segment failed against is left as it was");
+    assert_eq!(listener.syn_backlog_used.load(::core::sync::atomic::Ordering::Acquire), 1);
+    let answer = head(&sent(&lo).expect("an unacceptable acknowledgement is answered"));
+    assert_eq!(answer.flags & (flags::RST | flags::ACK), flags::RST,
+        "the answer is a reset, not silence and not an acknowledgement");
+    assert_eq!(answer.seq, forged,
+        "the reset is built at the sequence the segment claimed to acknowledge");
+}
+
+#[test]
+fn the_neighbours_of_the_completing_acknowledgement_are_refused_too() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let stack = NetStack::new();
+    let (iface, lo, _listener) = fixture(&stack, 7_608);
+    deliver(&stack, iface, 7_608, 40_008, flags::SYN, CLIENT_SEQ, 0, syn_options());
+    let synack = head(&sent(&lo).expect("the SYN was answered"));
+    drain(&lo);
+
+    for wrong in [synack.seq, synack.seq.wrapping_add(2)] {
+        deliver(&stack, iface, 7_608, 40_008, flags::ACK, CLIENT_SEQ.wrapping_add(1),
+            wrong, Default::default());
+        assert!(child(&stack, 7_608, 40_008).is_none(),
+            "an off-by-one acknowledgement completed the handshake");
+        drain(&lo);
+    }
+    // The right one still works, so the check refuses the wrong answer rather
+    // than every answer.
+    deliver(&stack, iface, 7_608, 40_008, flags::ACK, CLIENT_SEQ.wrapping_add(1),
+        synack.seq.wrapping_add(1), Default::default());
+    assert!(child(&stack, 7_608, 40_008).is_some(), "the honest acknowledgement completes");
+}
+
+#[test]
+fn a_reset_that_acknowledges_something_never_sent_leaves_the_request_alone() {
+    // The acknowledgement number is judged before the reset bit, so a blind
+    // reset cannot tear down a half-open without also naming the sequence
+    // this side sent.
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let stack = NetStack::new();
+    let (iface, lo, listener) = fixture(&stack, 7_609);
+    deliver(&stack, iface, 7_609, 40_009, flags::SYN, CLIENT_SEQ, 0, syn_options());
+    let synack = head(&sent(&lo).expect("the SYN was answered"));
+    drain(&lo);
+
+    deliver(&stack, iface, 7_609, 40_009, flags::RST | flags::ACK,
+        CLIENT_SEQ.wrapping_add(1), synack.seq.wrapping_add(7), Default::default());
+
+    assert!(request(&stack, 7_609, 40_009).is_some(),
+        "a blind reset ended a half-open it could not acknowledge");
+    assert_eq!(listener.syn_backlog_used.load(::core::sync::atomic::Ordering::Acquire), 1);
+}
+
+#[test]
+fn a_segment_outside_the_request_window_is_answered_with_an_acknowledgement() {
+    let _domain = crate::hosted_fixture::init_net_domain();
+    let stack = NetStack::new();
+    let (iface, lo, _listener) = fixture(&stack, 7_610);
+    deliver(&stack, iface, 7_610, 40_010, flags::SYN, CLIENT_SEQ, 0, syn_options());
+    let synack = head(&sent(&lo).expect("the SYN was answered"));
+    drain(&lo);
+
+    // The acknowledgement is the right one; only the sequence is nowhere near
+    // the window this side announced.
+    deliver(&stack, iface, 7_610, 40_010, flags::ACK, CLIENT_SEQ.wrapping_add(1 << 20),
+        synack.seq.wrapping_add(1), Default::default());
+
+    assert!(child(&stack, 7_610, 40_010).is_none(), "an out-of-window segment completed");
+    let answer = head(&sent(&lo).expect("an out-of-window segment is answered"));
+    assert_eq!(answer.flags & (flags::RST | flags::ACK), flags::ACK,
+        "the peer is told where the window is, not reset");
+    assert_eq!(answer.ack, CLIENT_SEQ.wrapping_add(1));
+}
