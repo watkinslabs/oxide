@@ -56,6 +56,7 @@ pub mod iomem;
 // tighten-only budgets are checkable without the kernel target.
 pub mod ctl_kexec;
 pub mod kcore;
+pub mod sysrq;
 #[cfg(target_os = "oxide-kernel")] pub mod pressure;
 #[cfg(any(target_os = "oxide-kernel", test))] pub mod limits_render;
 #[cfg(any(target_os = "oxide-kernel", test))] pub mod keys;

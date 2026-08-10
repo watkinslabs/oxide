@@ -1,0 +1,251 @@
+// The magic-SysRq command table: ONE decoding of a key, consulted by both
+// entries into it.
+//
+// There are two ways a command arrives — the serial line's break-then-key
+// sequence, and a write to `/proc/sysrq-trigger` — and they must agree on what
+// a key means. They did not: the serial path had its own `match` in which `c`
+// dumped per-CPU heartbeats and `b` printed backtraces, so a key that halts a
+// machine everywhere else printed a table here, and the key that CRASHES a
+// machine everywhere else was bound to a harmless dump. An operator carries
+// those letters in muscle memory; a second private table is how they get a
+// machine that does not do what they asked.
+//
+// Decoding and the enable mask are decided here, with no global state, so both
+// are checkable without a machine to press a key on. The side effects live in
+// `perform`, which is the only part that needs a kernel.
+
+use core::sync::atomic::Ordering;
+
+/// A decoded magic-SysRq command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cmd {
+    /// `c` — crash the machine deliberately. The point of the key: it produces
+    /// a panic at a moment of the operator's choosing, which is what a staged
+    /// crash kernel is waiting for.
+    Crash,
+    /// `b` — restart immediately, without syncing or unmounting.
+    Reboot,
+    /// `o` — power the machine off.
+    PowerOff,
+    /// `t` — every task's state.
+    ShowTasks,
+    /// `w` — the tasks in uninterruptible sleep.
+    ShowBlocked,
+    /// `l` — a backtrace from every active CPU.
+    ShowBacktraceAllCpus,
+    /// `p` — this CPU's registers. Rendered here as its heartbeat, which is
+    /// the per-CPU state this kernel actually retains.
+    ShowRegisters,
+    /// `h` — the key list.
+    Help,
+    /// A key with no command bound to it. Carried rather than collapsed into
+    /// `Help` so a caller can tell "not a command" from "asked for the list".
+    Unbound(u8),
+}
+
+/// Bits of the enable mask (`kernel.sysrq`), as the reference numbers them.
+/// A mask of exactly `1` enables everything; otherwise a command runs only
+/// when its own bit is set.
+pub const ENABLE_ALL: u32 = 1;
+/// Loglevel changes.
+pub const ENABLE_LOG: u32 = 0x0002;
+/// Debugging dumps.
+pub const ENABLE_DUMP: u32 = 0x0004;
+/// Reboot and power off.
+pub const ENABLE_BOOT: u32 = 0x0080;
+
+/// Decode one key. Case is significant and every command is lower-case, so an
+/// upper-case letter is unbound rather than quietly the same command.
+/// # C: O(1)
+pub fn decode(key: u8) -> Cmd {
+    match key {
+        b'c' => Cmd::Crash,
+        b'b' => Cmd::Reboot,
+        b'o' => Cmd::PowerOff,
+        b't' => Cmd::ShowTasks,
+        b'w' => Cmd::ShowBlocked,
+        b'l' => Cmd::ShowBacktraceAllCpus,
+        b'p' => Cmd::ShowRegisters,
+        b'h' => Cmd::Help,
+        other => Cmd::Unbound(other),
+    }
+}
+
+/// Which mask bit `cmd` is gated by.
+/// # C: O(1)
+pub fn enable_bit(cmd: Cmd) -> u32 {
+    match cmd {
+        Cmd::Crash | Cmd::ShowTasks | Cmd::ShowBlocked
+        | Cmd::ShowBacktraceAllCpus | Cmd::ShowRegisters => ENABLE_DUMP,
+        Cmd::Reboot | Cmd::PowerOff => ENABLE_BOOT,
+        Cmd::Help | Cmd::Unbound(_) => ENABLE_LOG,
+    }
+}
+
+/// May `cmd` run under `mask`?
+///
+/// `1` is not a bit pattern — it is the spelling of "all of them", and a mask
+/// read bit-wise would enable nothing but the loglevel keys on the setting
+/// almost every machine uses.
+/// # C: O(1)
+pub fn mask_allows(mask: u32, cmd: Cmd) -> bool {
+    mask == ENABLE_ALL || (mask & enable_bit(cmd)) != 0
+}
+
+/// The key list, printed for `h` and for a key with nothing bound to it.
+pub const HELP: &[u8] =
+    b"[sysrq] keys: b=reboot c=crash h=help l=backtrace-all-cpus o=poweroff \
+p=registers t=tasks w=blocked-tasks\n";
+
+/// Run `cmd`. Returns for every command except the two that take the machine.
+///
+/// # C: O(number of tasks) for the dumps, O(1) otherwise
+pub fn perform(cmd: Cmd) {
+    match cmd {
+        Cmd::Crash => crash(),
+        Cmd::Reboot | Cmd::PowerOff => restart(),
+        Cmd::ShowTasks | Cmd::ShowBlocked => super::emit::dump_tasks(),
+        Cmd::ShowBacktraceAllCpus => super::nmi::backtrace_all(),
+        Cmd::ShowRegisters => super::percpu::dump_cpus(),
+        Cmd::Help | Cmd::Unbound(_) => klog::write_raw(HELP),
+    }
+}
+
+/// Panic on purpose. Announced first on the raw console, because everything
+/// after this point is the panic path and an operator watching a serial line
+/// needs to know the crash was asked for rather than found.
+/// # C: O(1)
+fn crash() -> ! {
+    klog::write_raw(b"[sysrq] crash requested\n");
+    panic!("sysrq: crash requested from userspace");
+}
+
+/// Take the machine down through the installed restart callback. Falls through
+/// when none is installed — an operator gets the refusal on the console rather
+/// than a key that appears to do nothing.
+/// # C: O(1)
+fn restart() {
+    match klog::oops::restart_hook() {
+        Some(f) => { klog::write_raw(b"[sysrq] restarting\n"); f(); }
+        None => klog::write_raw(b"[sysrq] no restart method is installed\n"),
+    }
+}
+
+/// The `/proc/sysrq-trigger` entry: run `key` REGARDLESS of the enable mask.
+///
+/// Writing the file is already privileged by its mode, and the reference
+/// deliberately skips the mask check here — the mask exists to stop a key
+/// press on an unattended console, not to stop root. Gating this on the mask
+/// makes the file useless on the default `kernel.sysrq=0` machines that are
+/// exactly the ones an operator needs it on.
+/// # C: see `perform`
+pub fn trigger(key: u8) { perform(decode(key)); }
+
+const SYSRQ_ARM: u8 = 0x00;
+
+/// The serial line's byte sink: a break arms, the next byte is the command.
+/// Returns true when the byte was consumed by sysrq rather than the tty.
+/// # C: see `perform`
+pub fn rx(b: u8) -> bool {
+    if super::emit::sysrq_disarm() {
+        let cmd = decode(b);
+        if mask_allows(mask_value(), cmd) { perform(cmd); }
+        else { klog::write_raw(b"[sysrq] disabled by kernel.sysrq\n"); }
+        return true;
+    }
+    if b == SYSRQ_ARM { super::emit::sysrq_arm(); return true; }
+    false
+}
+
+/// The live `kernel.sysrq` setting.
+/// # C: O(1)
+pub fn mask_value() -> u32 { MASK.load(Ordering::Relaxed) }
+
+static MASK: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(ENABLE_ALL);
+
+/// Publish a new `kernel.sysrq` value. # C: O(1)
+pub fn set_mask(v: u32) { MASK.store(v, Ordering::Relaxed); }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The letters an operator already knows. `c` crashes and `b` reboots on
+    /// every other machine they will ever touch; this kernel bound `c` to a
+    /// per-CPU dump and `b` to a backtrace, so both of the keys that take a
+    /// machine down printed a table instead.
+    #[test]
+    fn the_keys_that_take_a_machine_down_are_the_reference_letters() {
+        assert_eq!(decode(b'c'), Cmd::Crash);
+        assert_eq!(decode(b'b'), Cmd::Reboot);
+        assert_eq!(decode(b'o'), Cmd::PowerOff);
+    }
+
+    #[test]
+    fn the_dump_keys_are_the_reference_letters() {
+        assert_eq!(decode(b't'), Cmd::ShowTasks);
+        assert_eq!(decode(b'w'), Cmd::ShowBlocked);
+        assert_eq!(decode(b'l'), Cmd::ShowBacktraceAllCpus);
+        assert_eq!(decode(b'p'), Cmd::ShowRegisters);
+    }
+
+    /// An upper-case letter is not the same command in a different case: the
+    /// shift key is how a key press arrives already, and folding it would let
+    /// a shifted keystroke crash a machine.
+    #[test]
+    fn case_is_significant() {
+        assert_eq!(decode(b'C'), Cmd::Unbound(b'C'));
+        assert_eq!(decode(b'B'), Cmd::Unbound(b'B'));
+    }
+
+    #[test]
+    fn an_unbound_key_is_distinguishable_from_asking_for_help() {
+        assert_eq!(decode(b'h'), Cmd::Help);
+        assert_eq!(decode(b'z'), Cmd::Unbound(b'z'));
+    }
+
+    /// `1` means all of them. Read as a bit pattern it enables the loglevel
+    /// group and nothing else, which is the setting nearly every machine runs.
+    #[test]
+    fn a_mask_of_one_enables_every_command() {
+        for cmd in [Cmd::Crash, Cmd::Reboot, Cmd::PowerOff, Cmd::ShowTasks,
+                    Cmd::ShowBlocked, Cmd::ShowBacktraceAllCpus, Cmd::ShowRegisters] {
+            assert!(mask_allows(ENABLE_ALL, cmd), "{cmd:?} refused under the enable-all mask");
+        }
+    }
+
+    #[test]
+    fn a_zero_mask_refuses_every_command() {
+        for cmd in [Cmd::Crash, Cmd::Reboot, Cmd::ShowTasks, Cmd::Help] {
+            assert!(!mask_allows(0, cmd), "{cmd:?} ran under a zero mask");
+        }
+    }
+
+    /// The groups are independent: a machine that allows dumps must not
+    /// thereby allow a reboot.
+    #[test]
+    fn the_enable_groups_do_not_leak_into_each_other() {
+        assert!(mask_allows(ENABLE_DUMP, Cmd::Crash));
+        assert!(!mask_allows(ENABLE_DUMP, Cmd::Reboot));
+        assert!(mask_allows(ENABLE_BOOT, Cmd::Reboot));
+        assert!(!mask_allows(ENABLE_BOOT, Cmd::ShowTasks));
+    }
+
+    /// Every key the help text advertises decodes to something, and every
+    /// command decodes from a key the help text advertises. A list that drifts
+    /// from the table is how a key stops being discoverable.
+    #[test]
+    fn the_help_text_lists_exactly_the_bound_keys() {
+        let text = core::str::from_utf8(HELP).expect("ascii");
+        for key in b"bchloptw" {
+            assert!(!matches!(decode(*key), Cmd::Unbound(_)), "{} is advertised but unbound", *key as char);
+            assert!(text.contains(&alloc::format!(" {}=", *key as char)),
+                    "{} is bound but not advertised", *key as char);
+        }
+        for key in 0x20u8..0x7f {
+            if b"bchloptw".contains(&key) { continue; }
+            assert!(matches!(decode(key), Cmd::Unbound(_)),
+                    "{} is bound but not advertised", key as char);
+        }
+    }
+}

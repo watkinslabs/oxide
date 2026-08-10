@@ -10,7 +10,6 @@ use super::format::{col_dec, col_str, col_syscall, emit_syscall};
 #[cfg(feature = "debug-watchdog")]
 use super::ring::{dump_exit_recent, switches};
 
-const SYSRQ_ARM: u8 = 0x00;
 static SYSRQ_ARMED: AtomicBool = AtomicBool::new(false);
 
 #[cfg(feature = "debug-watchdog")]
@@ -135,38 +134,15 @@ pub fn note_init_exit(code: i32) {
     let _ = code;
 }
 
-pub fn sysrq_rx(b: u8) -> bool {
-    if SYSRQ_ARMED.swap(false, Ordering::Relaxed) {
-        #[cfg(feature = "debug-watchdog")]
-        sysrq_cmd(b);
-        return true;
-    }
-    if b == SYSRQ_ARM {
-        SYSRQ_ARMED.store(true, Ordering::Relaxed);
-        return true;
-    }
-    false
-}
+/// Take the armed flag, if it is set. # C: O(1)
+pub(super) fn sysrq_disarm() -> bool { SYSRQ_ARMED.swap(false, Ordering::Relaxed) }
 
-#[cfg(feature = "debug-watchdog")]
-fn sysrq_cmd(b: u8) {
-    match b {
-        b't' => dump_tasks(),
-        b'w' => {
-            klog::write_raw(b"[sysrq] switches=");
-            klog::write_dec_u64(switches());
-            if let Some(t) = current_task() {
-                klog::write_raw(b" current=tid:");
-                klog::write_dec_u64(t.tid as u64);
-                klog::write_raw(b" state=");
-                klog::write_raw(&[t.state().linux_char()]);
-                klog::write_raw(b" last_syscall=");
-                emit_syscall(t.last_syscall_nr.load(Ordering::Relaxed));
-            }
-            klog::write_raw(b"\n");
-        }
-        b'c' => super::percpu::dump_cpus(),
-        b'b' => super::nmi::backtrace_all(),
-        _ => klog::write_raw(b"[sysrq] keys: t=tasks w=watchdog c=per-cpu b=backtrace-all\n"),
-    }
-}
+/// Arm on the next byte. # C: O(1)
+pub(super) fn sysrq_arm() { SYSRQ_ARMED.store(true, Ordering::Relaxed); }
+
+/// The serial line's byte sink. Decoding lives in `super::sysrq`, which the
+/// `/proc/sysrq-trigger` write path shares — a second private key table here
+/// is how `c` came to print a table on a machine an operator meant to crash.
+/// # C: see `sysrq::perform`
+pub fn sysrq_rx(b: u8) -> bool { super::sysrq::rx(b) }
+
