@@ -328,6 +328,7 @@ fn deadlines(entry: &TcpEntry, now_ns: u64)
 impl NetStack {
     /// Hosted compatibility driver for tests written against the former sweep.
     /// Production has no caller or registration for this table walk.
+    /// # C: O(N connections)
     #[cfg(test)]
     pub(crate) fn tcp_retx_tick(&self, now_ns: u64) {
         for (_, _tables, _key, entry) in self.tcp_tick_entries() {

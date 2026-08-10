@@ -586,8 +586,19 @@ pub fn announce(msg: &'static str) {
 /// crash boot, and the console then went silent, which reads as a jump that
 /// landed somewhere quiet rather than as a message that never finished.
 /// # C: O(msg.len())
-pub fn announce_emergency(msg: &'static str) {
-    write_primary_raw(msg.as_bytes());
+pub fn announce_emergency(msg: &'static str) { announce_bytes(msg.as_bytes()); }
+
+/// Announce a line that has to be BUILT — a key list filtered by a live
+/// setting, a value an operator asked for — on the same unconditional
+/// emergency route.
+///
+/// Bytes rather than a static string, because such a line is assembled at the
+/// moment it is printed. It is still an announcement and not a trace: it is
+/// the machine's answer to something a person asked it, so it is not gated
+/// behind a debug feature.
+/// # C: O(bytes.len())
+pub fn announce_bytes(bytes: &[u8]) {
+    write_primary_raw(bytes);
     write_primary_raw(b"\n");
 }
 

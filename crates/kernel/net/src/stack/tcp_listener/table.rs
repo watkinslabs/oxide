@@ -8,6 +8,10 @@
 
 use super::super::*;
 
+/// Remove `key` only while it still names THIS socket, then cancel its
+/// timers. The identity check is the point: a stale removal for a 4-tuple that
+/// has since been re-published would delete its replacement.
+/// # C: O(log N)
 pub(crate) fn remove_tcp_entry_exact(tables: &super::inet_tables::InetTables,
                                      key: &TcpKey, entry: &Arc<TcpEntry>) -> bool {
     let mut conns = tables.tcp_conns.lock();
@@ -62,6 +66,8 @@ pub(crate) fn publish_request(tables: &super::inet_tables::InetTables,
     true
 }
 
+/// Insert a completed passive child under `key`, unless the listener is
+/// closing or the 4-tuple is already taken. # C: O(log N)
 pub(crate) fn publish_passive_child(tables: &super::inet_tables::InetTables,
                                     listener: &TcpListenEntry, key: TcpKey,
                                     entry: &Arc<TcpEntry>) -> bool {

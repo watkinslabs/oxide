@@ -106,6 +106,11 @@ pub const KEYS: &[(u8, &[u8])] = &[
 /// Prefix every help line carries, whatever the mask leaves in it.
 pub const HELP_PREFIX: &[u8] = b"[sysrq] keys:";
 
+/// Room for the prefix plus every key and its label. Sized from the table so a
+/// key added without room shows up as a compile-time constant that is too
+/// small, rather than as a silently clipped line.
+pub const HELP_MAX: usize = 128;
+
 /// Does the help line under `mask` advertise `key`?
 ///
 /// The list names what the operator can actually run. Advertising a key the
@@ -119,17 +124,33 @@ pub fn advertised(mask: u32, key: u8) -> bool {
     }
 }
 
-/// Print the key list, filtered to what `mask` permits. # C: O(number of keys)
-pub fn emit_help(mask: u32) {
-    klog::write_raw(HELP_PREFIX);
+/// Render the key list permitted by `mask` into `out`, returning its length.
+///
+/// Built into a caller-supplied buffer and emitted as ONE line, because the
+/// line is printed from the console's emergency route and a line assembled by
+/// several writes can be spliced by another CPU's output in between.
+/// # C: O(number of keys)
+pub fn render_help(mask: u32, out: &mut [u8; HELP_MAX]) -> usize {
+    let mut n = 0;
+    let mut put = |bytes: &[u8], n: &mut usize| {
+        for &b in bytes { if *n < HELP_MAX { out[*n] = b; *n += 1; } }
+    };
+    put(HELP_PREFIX, &mut n);
     for &(key, label) in KEYS {
         if !advertised(mask, key) { continue; }
-        klog::write_raw(b" ");
-        klog::write_raw(&[key]);
-        klog::write_raw(b"=");
-        klog::write_raw(label);
+        put(b" ", &mut n);
+        put(&[key], &mut n);
+        put(b"=", &mut n);
+        put(label, &mut n);
     }
-    klog::write_raw(b"\n");
+    n
+}
+
+/// Print the key list, filtered to what `mask` permits. # C: O(number of keys)
+pub fn emit_help(mask: u32) {
+    let mut buf = [0u8; HELP_MAX];
+    let n = render_help(mask, &mut buf);
+    klog::announce_bytes(&buf[..n]);
 }
 
 /// Run `cmd` under `mask`. Returns for every command except the two that take
@@ -146,7 +167,7 @@ pub fn perform(cmd: Cmd, mask: u32) {
         _ => {}
     }
     if !mask_allows(mask, cmd) {
-        klog::write_raw(b"[sysrq] this operation is disabled by kernel.sysrq\n");
+        klog::announce("[sysrq] this operation is disabled by kernel.sysrq");
         return;
     }
     match cmd {
@@ -164,7 +185,7 @@ pub fn perform(cmd: Cmd, mask: u32) {
 /// needs to know the crash was asked for rather than found.
 /// # C: O(1)
 fn crash() -> ! {
-    klog::write_raw(b"[sysrq] crash requested\n");
+    klog::announce("[sysrq] crash requested");
     panic!("sysrq: crash requested from userspace");
 }
 
@@ -174,8 +195,8 @@ fn crash() -> ! {
 /// # C: O(1)
 fn restart() {
     match klog::oops::restart_hook() {
-        Some(f) => { klog::write_raw(b"[sysrq] restarting\n"); f(); }
-        None => klog::write_raw(b"[sysrq] no restart method is installed\n"),
+        Some(f) => { klog::announce("[sysrq] restarting"); f(); }
+        None => klog::announce("[sysrq] no restart method is installed"),
     }
 }
 
@@ -303,6 +324,38 @@ mod tests {
         assert!(advertised(ENABLE_DUMP, b't'));
         assert!(!advertised(ENABLE_DUMP, b'b'));
         for &(key, _) in KEYS { assert!(advertised(ENABLE_ALL, key)); }
+    }
+
+    /// The line is BUILT, so its shape is pinned: one line, the prefix, then
+    /// each permitted key. It is emitted as a single write because a line
+    /// assembled by several writes can be spliced by another CPU's output.
+    #[test]
+    fn the_rendered_list_is_one_line_naming_the_permitted_keys() {
+        let mut buf = [0u8; HELP_MAX];
+        let n = render_help(ENABLE_ALL, &mut buf);
+        let text = core::str::from_utf8(&buf[..n]).expect("ascii");
+        assert_eq!(text,
+            "[sysrq] keys: b=reboot c=crash l=backtrace-all-cpus o=poweroff \
+p=registers t=tasks w=blocked-tasks");
+        assert!(!text.contains('\n'), "the newline belongs to the emitter: {text}");
+
+        let n = render_help(ENABLE_BOOT, &mut buf);
+        let text = core::str::from_utf8(&buf[..n]).expect("ascii");
+        assert_eq!(text, "[sysrq] keys: b=reboot o=poweroff");
+
+        // A mask that permits nothing still says who is speaking, so a typed
+        // console answers rather than staying silent.
+        let n = render_help(0, &mut buf);
+        assert_eq!(&buf[..n], HELP_PREFIX);
+    }
+
+    /// The buffer must hold the whole list. A key added without room would
+    /// clip the line rather than fail anywhere visible.
+    #[test]
+    fn the_render_buffer_holds_every_key() {
+        let mut buf = [0u8; HELP_MAX];
+        let n = render_help(ENABLE_ALL, &mut buf);
+        assert!(n < HELP_MAX, "the list fills the buffer ({n} of {HELP_MAX}); it is being clipped");
     }
 
     /// Asking what a machine can do is never refused. A mask that suppressed

@@ -57,6 +57,7 @@ fn family(ip: IpAddr) -> u8 {
     }
 }
 
+/// The state code `/proc/net/tcp` and the diagnostic socket report. # C: O(1)
 pub(crate) fn tcp_diag_state(state: TcpState) -> u8 {
     match state {
         TcpState::Closed => TCP_CLOSE,
