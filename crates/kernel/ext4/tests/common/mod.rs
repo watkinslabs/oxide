@@ -41,7 +41,7 @@ pub fn boot_hosted_pmm() {
             rsdp_pa: 0,
             hhdm_offset: buf,           // page_ptr(pfn) = buf + pfn*4096
             framebuffer: boot_info::BootFramebuffer::EMPTY,
-            bsp_lapic_id: 0,
+            dtb_pa: 0, dtb_len: 0, dtb_crc32: 0, bsp_lapic_id: 0,
             _pad: 0,
         };
         // SAFETY: regions slice outlives the call; hhdm_offset is the live base

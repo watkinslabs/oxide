@@ -81,6 +81,7 @@ pub(crate) const PRESSURE_MEMORY: u64 = 0x3000_1A01;
 pub(crate) const PRESSURE_IO: u64 = 0x3000_1A02;
 pub(crate) const PROC_ROOT: u64 = 0x3000_0001;
 /// `/proc/self` magic symlink. # C: O(1)
+pub(crate) const PROC_DEVICE_TREE_LINK: u64 = 0x3000_0090;
 pub(crate) const PROC_SELF_LINK: u64 = 0x3000_0002;
 /// `/proc/thread-self` magic symlink. # C: O(1)
 pub(crate) const PROC_THREAD_SELF_LINK: u64 = 0x3000_0003;

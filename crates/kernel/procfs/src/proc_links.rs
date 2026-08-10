@@ -113,6 +113,14 @@ fn thread_self_target() -> Vec<u8> {
     alloc::format!("{vtgid}/task/{vtid}").into_bytes()
 }
 
+/// A symlink with a fixed target path (Linux `proc_symlink`). # C: O(1)
+pub fn make_fixed_link(ino: Ino, target: &str) -> InodeRef {
+    let target = target.as_bytes().to_vec();
+    make_proc_link(ino, target.len() as u64, ProcLinkData {
+        special: None, target, jump_fd: None,
+    })
+}
+
 /// `/proc/self` — a symlink to the caller's own pid directory. # C: O(1)
 pub fn make_proc_self_link() -> InodeRef {
     make_proc_link(crate::ids::PROC_SELF_LINK, 0, ProcLinkData {

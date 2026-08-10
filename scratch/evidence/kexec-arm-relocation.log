@@ -1,0 +1,1206 @@
+BdsDxe: failed to load Boot0002 "UEFI Misc Device" from PciRoot(0x0)/Pci(0x1,0x0): Not Found
+BdsDxe: failed to load Boot0003 "UEFI Misc Device 2" from PciRoot(0x0)/Pci(0x2,0x0): Not Found
+BdsDxe: failed to load Boot0004 "UEFI QEMU NVMe Ctrl oxnvme 1" from PciRoot(0x0)/Pci(0xB,0x0)/NVMe(0x1,00-00-00-00-00-00-00-00): Not Found
+BdsDxe: loading Boot0005 "UEFI Misc Device 3" from PciRoot(0x0)/Pci(0xD,0x0)
+BdsDxe: starting Boot0005 "UEFI Misc Device 3" from PciRoot(0x0)/Pci(0xD,0x0)
+  Booting `oxide (EFI-stub)'
+
+A1BCDEGH[1.581] [INFO]  midr_el1=00000000410fd083
+[INFO]  mmu sctlr_el1=0000000030d0198d tcr_el1=00000025b5103510 mair_el1=000000000044ff04
+[INFO]  mmu ttbr0_el1=00000000b7c6e000 ttbr1_el1=00000000b7c71000
+[1.584] [INFO]  efi-mem type1 = 111 MiB
+[1.584] [INFO]  efi-mem type2 = 0 MiB
+[1.584] [INFO]  efi-mem type3 = 3 MiB
+[1.584] [INFO]  efi-mem type4 = 23 MiB
+[1.585] [INFO]  efi-mem type5 = 3 MiB
+[1.585] [INFO]  efi-mem type6 = 3 MiB
+[1.585] [INFO]  efi-mem type7 = 1901 MiB
+[1.585] [INFO]  efi-mem type9 = 0 MiB
+[1.586] [INFO]  efi-mem type11 = 64 MiB
+[1.586] [INFO]  dtb pa=00000000b83b6000 len=676
+[1.587] [INFO]  init started
+[1.587] [INFO]  hhdm: present
+[1.588] [INFO]  bootfb: absent
+[1.588] [INFO]  memmap: present
+[2.475] [INFO]  pmm: ready
+[2.476] [KSTACK] guard-paged stacks armed va=fffffb0000000000 thread_size=16384
+[2.484] [INFO]  pl011: switched klog sink to real UART
+[2.485] [INFO]  kalloc-smoke: VmaTree insert ok
+[2.487] Kernel command line: BOOT_IMAGE=/boot/oxide-aarch64.Image root=/dev/oxide0 rw earlycon printk.time=1 console=ttyAMA0,115200 console=tty0 systemd.mask=firewalld.service systemd.mask=chronyd.service systemd.mask=ModemManager.service systemd.mask=plymouth-start.service systemd.mask=NetworkManager-wait-online.service systemd.debug_shell=ttyS0 oxide.bootargs=grub
+[2.505] [INFO]  dev-misc-smoke: ok
+[2.510] [INFO]  procfs-smoke: ok
+[2.511] [INFO]  pipe-evt-smoke: ok
+[2.513] [INFO]  tmpfs-smoke: ok
+[2.519] [INFO]  pty-sigint-chain: ok
+[2.520] [INFO]  pty-termios-winsize: ok
+[2.522] [INFO]  devpts-fs: ok
+[2.523] [INFO]  pty-smoke: ok
+[2.523] [INFO]  syscall: ~200 slots wired (real impls + compat stubs)
+[2.526] [INFO]  smp: aps_started=0
+[2.527] [INFO]  boot: kernel ready, halting
+[2.532] [INFO]  pci: devices=14
+[2.532] [INFO]  pci 0:0.0 vendor=0000000000001b36 device=0000000000000008 class=0000000000000006
+[2.533] [INFO]  pci 0:1.0 vendor=0000000000001af4 device=0000000000001042 class=0000000000000001
+[2.534] [INFO]  pci-bar 0:1.0 b1 mem32=000000001004b000
+[2.534] [INFO]  pci-bar 0:1.0 b4 mem64=0000008000000000 pf
+[2.535] [INFO]  pci-cap 0:1.0 id=0000000000000011 off=0000000000000098
+[2.535] [INFO]  msix 0:1.0 enable=0 fn_mask=0 n=2 tbl_bir=1 tbl_off=0000000000000000 pba_bir=1 pba_off=0000000000000800
+[2.536] [INFO]  msix-tbl 0:1.0 v=0 ctl=0000000000000001 masked=1
+[2.536] [INFO]  msix-tbl 0:1.0 v=1 ctl=0000000000000001 masked=1
+[2.537] [INFO]  pci-cap 0:1.0 id=0000000000000009 off=0000000000000084
+[2.537] [INFO]  pci-cap 0:1.0 id=0000000000000009 off=0000000000000070
+[2.537] [INFO]  pci-cap 0:1.0 id=0000000000000009 off=0000000000000060
+[2.537] [INFO]  pci-cap 0:1.0 id=0000000000000009 off=0000000000000050
+[2.538] [INFO]  pci-cap 0:1.0 id=0000000000000009 off=0000000000000040
+[2.538] [INFO]  virtio-cap 0:1.0 type=5 bar=0 off=0000000000000000 len=0000000000000000
+[2.539] [INFO]  virtio-cap 0:1.0 type=2 bar=4 off=0000000000003000 len=0000000000001000 notify_mult=0000000000000004
+[2.539] [INFO]  virtio-cap 0:1.0 type=4 bar=4 off=0000000000002000 len=0000000000001000
+[2.540] [INFO]  virtio-cap 0:1.0 type=3 bar=4 off=0000000000001000 len=0000000000001000
+[2.540] [INFO]  virtio-cap 0:1.0 type=1 bar=4 off=0000000000000000 len=0000000000001000
+[2.545] [INFO]  msix-bind 0:1.0 vec=0 msg_addr=0000000008090040 msg_data=0000000000000000 rd_addr=0000000008090040 rd_data=0000000000000000 ctrl=0000000000000000
+[2.548] [INFO]  pci-cmd 0:1.0 was=0000000000000006 now=0000000000000006
+[2.549] [INFO]  virtio-cfg 0:1.0 common-va=fffffd0000001000 feat=0000010130006e54 drv_feat=0000000100000240 status=000000000000000b features_ok=1 num_queues=0 msix_cfg=000000000000ffff
+[2.550] [INFO]  virtio-q 0:1.0 idx=0 size=256
+[2.550] [INFO]  virtio-q 0:1.0 idx=1 size=0
+[2.550] [INFO]  virtio-qres 0:1.0 q=0 size=256 desc_pa=00000000bed2b000 driver_pa=00000000bed2a000 device_pa=00000000bed28000 notify_off=0000000000000000 notify_va=fffffd0000004000 post_status=000000000000000f final_status=000000000000000f
+[2.551] [INFO]  virtio-msix 0:1.0 q0_msix_vec=0000000000000000 msi_fires=1
+[2.555] [INFO]  virtio-blk-modern key=0000000000000001 cap_sec=6311936 blk_size=512 idx=2
+[2.555] [INFO]  pci 0:2.0 vendor=0000000000001af4 device=0000000000001042 class=0000000000000001
+[2.556] [INFO]  pci-bar 0:2.0 b1 mem32=000000001004a000
+[2.556] [INFO]  pci-bar 0:2.0 b4 mem64=0000008000004000 pf
+[2.556] [INFO]  pci-cap 0:2.0 id=0000000000000011 off=0000000000000098
+[2.557] [INFO]  msix 0:2.0 enable=0 fn_mask=0 n=2 tbl_bir=1 tbl_off=0000000000000000 pba_bir=1 pba_off=0000000000000800
+[2.557] [INFO]  msix-tbl 0:2.0 v=0 ctl=0000000000000001 masked=1
+[2.557] [INFO]  msix-tbl 0:2.0 v=1 ctl=0000000000000001 masked=1
+[2.558] [INFO]  pci-cap 0:2.0 id=0000000000000009 off=0000000000000084
+[2.558] [INFO]  pci-cap 0:2.0 id=0000000000000009 off=0000000000000070
+[2.559] [INFO]  pci-cap 0:2.0 id=0000000000000009 off=0000000000000060
+[2.559] [INFO]  pci-cap 0:2.0 id=0000000000000009 off=0000000000000050
+[2.559] [INFO]  pci-cap 0:2.0 id=0000000000000009 off=0000000000000040
+[2.560] [INFO]  virtio-cap 0:2.0 type=5 bar=0 off=0000000000000000 len=0000000000000000
+[2.560] [INFO]  virtio-cap 0:2.0 type=2 bar=4 off=0000000000003000 len=0000000000001000 notify_mult=0000000000000004
+[2.561] [INFO]  virtio-cap 0:2.0 type=4 bar=4 off=0000000000002000 len=0000000000001000
+[2.561] [INFO]  virtio-cap 0:2.0 type=3 bar=4 off=0000000000001000 len=0000000000001000
+[2.561] [INFO]  virtio-cap 0:2.0 type=1 bar=4 off=0000000000000000 len=0000000000001000
+[2.562] [INFO]  msix-bind 0:2.0 vec=0 msg_addr=0000000008090040 msg_data=0000000000000000 rd_addr=0000000008090040 rd_data=0000000000000000 ctrl=0000000000000000
+[2.565] [INFO]  pci-cmd 0:2.0 was=0000000000000006 now=0000000000000006
+[2.565] [INFO]  virtio-cfg 0:2.0 common-va=fffffd0000006000 feat=0000010130006e54 drv_feat=0000000100000240 status=000000000000000b features_ok=1 num_queues=0 msix_cfg=000000000000ffff
+[2.566] [INFO]  virtio-q 0:2.0 idx=0 size=256
+[2.566] [INFO]  virtio-q 0:2.0 idx=1 size=0
+[2.566] [INFO]  virtio-qres 0:2.0 q=0 size=256 desc_pa=00000000bed1e000 driver_pa=00000000bed05000 device_pa=00000000bed04000 notify_off=0000000000000000 notify_va=fffffd0000009000 post_status=000000000000000f final_status=000000000000000f
+[2.567] [INFO]  virtio-msix 0:2.0 q0_msix_vec=0000000000000000 msi_fires=1
+[2.569] [INFO]  virtio-blk-modern key=0000000000000002 cap_sec=131072 blk_size=512 idx=3
+[2.569] [INFO]  pci 0:3.0 vendor=0000000000001af4 device=0000000000001041 class=0000000000000002
+[2.570] [INFO]  pci-bar 0:3.0 b1 mem32=0000000010049000
+[2.570] [INFO]  pci-bar 0:3.0 b4 mem64=0000008000008000 pf
+[2.570] [INFO]  pci-cap 0:3.0 id=0000000000000011 off=0000000000000098
+[2.571] [INFO]  msix 0:3.0 enable=0 fn_mask=0 n=4 tbl_bir=1 tbl_off=0000000000000000 pba_bir=1 pba_off=0000000000000800
+[2.571] [INFO]  msix-tbl 0:3.0 v=0 ctl=0000000000000001 masked=1
+[2.571] [INFO]  msix-tbl 0:3.0 v=1 ctl=0000000000000001 masked=1
+[2.572] [INFO]  msix-tbl 0:3.0 v=2 ctl=0000000000000001 masked=1
+[2.572] [INFO]  msix-tbl 0:3.0 v=3 ctl=0000000000000001 masked=1
+[2.572] [INFO]  pci-cap 0:3.0 id=0000000000000009 off=0000000000000084
+[2.573] [INFO]  pci-cap 0:3.0 id=0000000000000009 off=0000000000000070
+[2.573] [INFO]  pci-cap 0:3.0 id=0000000000000009 off=0000000000000060
+[2.573] [INFO]  pci-cap 0:3.0 id=0000000000000009 off=0000000000000050
+[2.574] [INFO]  pci-cap 0:3.0 id=0000000000000009 off=0000000000000040
+[2.574] [INFO]  virtio-cap 0:3.0 type=5 bar=0 off=0000000000000000 len=0000000000000000
+[2.574] [INFO]  virtio-cap 0:3.0 type=2 bar=4 off=0000000000003000 len=0000000000001000 notify_mult=0000000000000004
+[2.575] [INFO]  virtio-cap 0:3.0 type=4 bar=4 off=0000000000002000 len=0000000000001000
+[2.575] [INFO]  virtio-cap 0:3.0 type=3 bar=4 off=0000000000001000 len=0000000000001000
+[2.576] [INFO]  virtio-cap 0:3.0 type=1 bar=4 off=0000000000000000 len=0000000000001000
+[2.577] [INFO]  msix-bind 0:3.0 vec=0 msg_addr=0000000008090040 msg_data=0000000000000000 rd_addr=0000000008090040 rd_data=0000000000000000 ctrl=0000000000000000
+[2.580] [INFO]  pci-cmd 0:3.0 was=0000000000000006 now=0000000000000006
+[2.581] [INFO]  virtio-cfg 0:3.0 common-va=fffffd000000b000 feat=0000010130bf8024 drv_feat=0000000100010020 status=000000000000000b features_ok=1 num_queues=0 msix_cfg=000000000000ffff
+[2.581] [INFO]  virtio-q 0:3.0 idx=0 size=256
+[2.582] [INFO]  virtio-q 0:3.0 idx=1 size=256
+[2.582] [INFO]  virtio-q 0:3.0 idx=2 size=64
+[2.582] [INFO]  virtio-q 0:3.0 idx=3 size=0
+[2.583] [INFO]  virtio-rx-post 0:3.0 avail_idx=8 used_idx=0 isr=0000000000000000
+[2.583] [INFO]  virtio-qres 0:3.0 q=0 size=256 desc_pa=00000000bed00000 driver_pa=00000000becd3000 device_pa=00000000becd2000 notify_off=0000000000000000 notify_va=fffffd000000e000 post_status=000000000000000f final_status=000000000000000f
+[2.584] [INFO]  virtio-qres 0:3.0 q=1 size=256 desc_pa=00000000beca3000 driver_pa=00000000beca2000 device_pa=00000000bec3f000 notify_off=0000000000000001 notify_va=fffffd000000e004 post_status=000000000000000f final_status=000000000000000f
+[2.585] [INFO]  virtio-qres 0:3.0 q=2 size=64 desc_pa=0000000000000000 driver_pa=0000000000000000 device_pa=0000000000000000 notify_off=0000000000000000 notify_va=0000000000000000 post_status=000000000000000f final_status=000000000000000f
+[2.586] [INFO]  virtio-msix 0:3.0 q0_msix_vec=0000000000000000 msi_fires=1
+[2.591] [INFO]  virtio-net-modern key=0000000000000003 cfg_va=fffffd000000b000 rxq_size=256 txq_size=256 rxq_notify_va=fffffd000000e000 txq_notify_va=fffffd000000e004 mac=0000000000000052:0000000000000054:0000000000000000:0000000000000012:0000000000000034:0000000000000056
+[2.592] [INFO]  virtio-net probe_child ok=1 rx_bufs=8 tx_buf_pa=00000000be6e1000
+[2.593] [INFO]  pci 0:4.0 vendor=0000000000001af4 device=0000000000001050 class=0000000000000003
+[2.593] [INFO]  pci-bar 0:4.0 b1 mem32=0000000010048000
+[2.593] [INFO]  pci-bar 0:4.0 b4 mem64=000000800000c000 pf
+[2.594] [INFO]  pci-cap 0:4.0 id=0000000000000011 off=0000000000000098
+[2.594] [INFO]  msix 0:4.0 enable=0 fn_mask=0 n=3 tbl_bir=1 tbl_off=0000000000000000 pba_bir=1 pba_off=0000000000000800
+[2.595] [INFO]  msix-tbl 0:4.0 v=0 ctl=0000000000000001 masked=1
+[2.595] [INFO]  msix-tbl 0:4.0 v=1 ctl=0000000000000001 masked=1
+[2.595] [INFO]  msix-tbl 0:4.0 v=2 ctl=0000000000000001 masked=1
+[2.595] [INFO]  pci-cap 0:4.0 id=0000000000000009 off=0000000000000084
+[2.596] [INFO]  pci-cap 0:4.0 id=0000000000000009 off=0000000000000070
+[2.596] [INFO]  pci-cap 0:4.0 id=0000000000000009 off=0000000000000060
+[2.596] [INFO]  pci-cap 0:4.0 id=0000000000000009 off=0000000000000050
+[2.597] [INFO]  pci-cap 0:4.0 id=0000000000000009 off=0000000000000040
+[2.597] [INFO]  virtio-cap 0:4.0 type=5 bar=0 off=0000000000000000 len=0000000000000000
+[2.597] [INFO]  virtio-cap 0:4.0 type=2 bar=4 off=0000000000003000 len=0000000000001000 notify_mult=0000000000000004
+[2.598] [INFO]  virtio-cap 0:4.0 type=4 bar=4 off=0000000000002000 len=0000000000001000
+[2.598] [INFO]  virtio-cap 0:4.0 type=3 bar=4 off=0000000000001000 len=0000000000001000
+[2.599] [INFO]  virtio-cap 0:4.0 type=1 bar=4 off=0000000000000000 len=0000000000001000
+[2.603] [INFO]  pci-cmd 0:4.0 was=0000000000000006 now=0000000000000006
+[2.604] [INFO]  virtio-cfg 0:4.0 common-va=fffffd0000011000 feat=0000010130000002 drv_feat=0000010100000002 status=000000000000000b features_ok=1 num_queues=0 msix_cfg=000000000000ffff
+[2.604] [INFO]  virtio-q 0:4.0 idx=0 size=64
+[2.605] [INFO]  virtio-q 0:4.0 idx=1 size=16
+[2.605] [INFO]  virtio-q 0:4.0 idx=2 size=0
+[2.605] [INFO]  virtio-qres 0:4.0 q=0 size=64 desc_pa=00000000bf28f000 driver_pa=00000000bf28a000 device_pa=00000000bf28b000 notify_off=0000000000000000 notify_va=fffffd0000013000 post_status=000000000000000f final_status=000000000000000f
+[2.606] [INFO]  virtio-qres 0:4.0 q=1 size=16 desc_pa=00000000bef36000 driver_pa=00000000bef37000 device_pa=00000000bef06000 notify_off=0000000000000001 notify_va=fffffd0000013004 post_status=000000000000000f final_status=000000000000000f
+[2.607] [INFO]  virtio-msix 0:4.0 q0_msix_vec=0000000000000000 msi_fires=1
+[2.608] [INFO]  virtio-gpu edid: 1024 bytes
+[2.608] [INFO]  virtio-gpu display: enabled=1 mode0=1280x800
+[2.634] [INFO]  virtio-gpu resp create=0000000000001100
+[2.635] [INFO]  virtio-gpu resp attach=0000000000001100
+[2.635] [INFO]  virtio-gpu resp setscanout=0000000000001100
+[2.638] [INFO]  virtio-gpu resp transfer=0000000000001100
+[2.638] [INFO]  virtio-gpu resp flush=0000000000001100
+[2.638] [INFO]  virtio-gpu scanout: 1280x800 pages=1000 painted
+[2.663] [INFO]  virtio-gpu installed feat=0000010100000002
+[2.664] [INFO]  pci 0:5.0 vendor=0000000000001af4 device=0000000000001052 class=0000000000000009
+[2.665] [INFO]  pci-bar 0:5.0 b1 mem32=0000000010047000
+[2.666] [INFO]  pci-bar 0:5.0 b4 mem64=0000008000010000 pf
+[2.667] [INFO]  pci-cap 0:5.0 id=0000000000000011 off=0000000000000098
+[2.668] [INFO]  msix 0:5.0 enable=0 fn_mask=0 n=2 tbl_bir=1 tbl_off=0000000000000000 pba_bir=1 pba_off=0000000000000800
+[2.669] [INFO]  msix-tbl 0:5.0 v=0 ctl=0000000000000001 masked=1
+[2.669] [INFO]  msix-tbl 0:5.0 v=1 ctl=0000000000000001 masked=1
+[2.670] [INFO]  pci-cap 0:5.0 id=0000000000000009 off=0000000000000084
+[2.671] [INFO]  pci-cap 0:5.0 id=0000000000000009 off=0000000000000070
+[2.672] [INFO]  pci-cap 0:5.0 id=0000000000000009 off=0000000000000060
+[2.673] [INFO]  pci-cap 0:5.0 id=0000000000000009 off=0000000000000050
+[2.673] [INFO]  pci-cap 0:5.0 id=0000000000000009 off=0000000000000040
+[2.674] [INFO]  virtio-cap 0:5.0 type=5 bar=0 off=0000000000000000 len=0000000000000000
+[2.675] [INFO]  virtio-cap 0:5.0 type=2 bar=4 off=0000000000003000 len=0000000000001000 notify_mult=0000000000000004
+[2.676] [INFO]  virtio-cap 0:5.0 type=4 bar=4 off=0000000000002000 len=0000000000001000
+[2.677] [INFO]  virtio-cap 0:5.0 type=3 bar=4 off=0000000000001000 len=0000000000001000
+[2.678] [INFO]  virtio-cap 0:5.0 type=1 bar=4 off=0000000000000000 len=0000000000001000
+[2.679] [INFO]  msix-bind 0:5.0 vec=0 msg_addr=0000000008090040 msg_data=0000000000000000 rd_addr=0000000008090040 rd_data=0000000000000000 ctrl=0000000000000000
+[2.681] [INFO]  msix-bind 0:5.0 vec=1 msg_addr=0000000008090040 msg_data=0000000000000001 rd_addr=0000000008090040 rd_data=0000000000000001 ctrl=0000000000000000
+[2.684] [INFO]  pci-cmd 0:5.0 was=0000000000000006 now=0000000000000006
+[2.685] [INFO]  virtio-cfg 0:5.0 common-va=fffffd0000015000 feat=0000010130000000 drv_feat=0000000100000000 status=000000000000000b features_ok=1 num_queues=0 msix_cfg=000000000000ffff
+[2.686] [INFO]  virtio-q 0:5.0 idx=0 size=64
+[2.687] [INFO]  virtio-q 0:5.0 idx=1 size=64
+[2.688] [INFO]  virtio-q 0:5.0 idx=2 size=0
+[2.688] [INFO]  virtio-qres 0:5.0 q=0 size=64 desc_pa=00000000beeef000 driver_pa=00000000bee5e000 device_pa=00000000bee5f000 notify_off=0000000000000000 notify_va=fffffd0000018000 post_status=000000000000000f final_status=000000000000000f
+[2.690] [INFO]  virtio-qres 0:5.0 q=1 size=64 desc_pa=00000000bee5c000 driver_pa=00000000bee5d000 device_pa=00000000bee56000 notify_off=0000000000000001 notify_va=fffffd0000018004 post_status=000000000000000f final_status=000000000000000f
+[2.692] [INFO]  virtio-msix 0:5.0 q0_msix_vec=0000000000000000 msi_fires=1
+[2.696] [INFO]  virtio-input installed evdev_id=0 keyboard
+[2.697] [INFO]  pci 0:6.0 vendor=0000000000001af4 device=0000000000001052 class=0000000000000009
+[2.698] [INFO]  pci-bar 0:6.0 b1 mem32=0000000010046000
+[2.699] [INFO]  pci-bar 0:6.0 b4 mem64=0000008000014000 pf
+[2.700] [INFO]  pci-cap 0:6.0 id=0000000000000011 off=0000000000000098
+[2.700] [INFO]  msix 0:6.0 enable=0 fn_mask=0 n=2 tbl_bir=1 tbl_off=0000000000000000 pba_bir=1 pba_off=0000000000000800
+[2.701] [INFO]  msix-tbl 0:6.0 v=0 ctl=0000000000000001 masked=1
+[2.702] [INFO]  msix-tbl 0:6.0 v=1 ctl=0000000000000001 masked=1
+[2.703] [INFO]  pci-cap 0:6.0 id=0000000000000009 off=0000000000000084
+[2.704] [INFO]  pci-cap 0:6.0 id=0000000000000009 off=0000000000000070
+[2.704] [INFO]  pci-cap 0:6.0 id=0000000000000009 off=0000000000000060
+[2.705] [INFO]  pci-cap 0:6.0 id=0000000000000009 off=0000000000000050
+[2.706] [INFO]  pci-cap 0:6.0 id=0000000000000009 off=0000000000000040
+[2.707] [INFO]  virtio-cap 0:6.0 type=5 bar=0 off=0000000000000000 len=0000000000000000
+[2.707] [INFO]  virtio-cap 0:6.0 type=2 bar=4 off=0000000000003000 len=0000000000001000 notify_mult=0000000000000004
+[2.708] [INFO]  virtio-cap 0:6.0 type=4 bar=4 off=0000000000002000 len=0000000000001000
+[2.709] [INFO]  virtio-cap 0:6.0 type=3 bar=4 off=0000000000001000 len=0000000000001000
+[2.721] [INFO]  virtio-cap 0:6.0 type=1 bar=4 off=0000000000000000 len=0000000000001000
+[2.734] [INFO]  msix-bind 0:6.0 vec=0 msg_addr=0000000008090040 msg_data=0000000000000000 rd_addr=0000000008090040 rd_data=0000000000000000 ctrl=0000000000000000
+[2.746] [INFO]  msix-bind 0:6.0 vec=1 msg_addr=0000000008090040 msg_data=0000000000000001 rd_addr=0000000008090040 rd_data=0000000000000001 ctrl=0000000000000000
+[2.761] [INFO]  pci-cmd 0:6.0 was=0000000000000006 now=0000000000000006
+[2.773] [INFO]  virtio-cfg 0:6.0 common-va=fffffd000001a000 feat=0000010130000000 drv_feat=0000000100000000 status=000000000000000b features_ok=1 num_queues=0 msix_cfg=000000000000ffff
+[2.786] [INFO]  virtio-q 0:6.0 idx=0 size=64
+[2.798] [INFO]  virtio-q 0:6.0 idx=1 size=64
+[2.809] [INFO]  virtio-q 0:6.0 idx=2 size=0
+[2.823] [INFO]  virtio-qres 0:6.0 q=0 size=64 desc_pa=00000000bed1c000 driver_pa=00000000bed1d000 device_pa=00000000bed0a000 notify_off=0000000000000000 notify_va=fffffd000001d000 post_status=000000000000000f final_status=000000000000000f
+[2.836] [INFO]  virtio-qres 0:6.0 q=1 size=64 desc_pa=00000000bed0b000 driver_pa=00000000bed08000 device_pa=00000000bed09000 notify_off=0000000000000001 notify_va=fffffd000001d004 post_status=000000000000000f final_status=000000000000000f
+[2.848] [INFO]  virtio-msix 0:6.0 q0_msix_vec=0000000000000000 msi_fires=1
+[2.860] [INFO]  virtio-input installed evdev_id=1 pointer
+[2.872] [INFO]  pci 0:7.0 vendor=0000000000001af4 device=0000000000001052 class=0000000000000009
+[2.883] [INFO]  pci-bar 0:7.0 b1 mem32=0000000010045000
+[2.894] [INFO]  pci-bar 0:7.0 b4 mem64=0000008000018000 pf
+[2.905] [INFO]  pci-cap 0:7.0 id=0000000000000011 off=0000000000000098
+[2.917] [INFO]  msix 0:7.0 enable=0 fn_mask=0 n=2 tbl_bir=1 tbl_off=0000000000000000 pba_bir=1 pba_off=0000000000000800
+[2.929] [INFO]  msix-tbl 0:7.0 v=0 ctl=0000000000000001 masked=1
+[2.941] [INFO]  msix-tbl 0:7.0 v=1 ctl=0000000000000001 masked=1
+[2.953] [INFO]  pci-cap 0:7.0 id=0000000000000009 off=0000000000000084
+[2.964] [INFO]  pci-cap 0:7.0 id=0000000000000009 off=0000000000000070
+[2.976] [INFO]  pci-cap 0:7.0 id=0000000000000009 off=0000000000000060
+[2.988] [INFO]  pci-cap 0:7.0 id=0000000000000009 off=0000000000000050
+[2.999] [INFO]  pci-cap 0:7.0 id=0000000000000009 off=0000000000000040
+[3.010] [INFO]  virtio-cap 0:7.0 type=5 bar=0 off=0000000000000000 len=0000000000000000
+[3.022] [INFO]  virtio-cap 0:7.0 type=2 bar=4 off=0000000000003000 len=0000000000001000 notify_mult=0000000000000004
+[3.034] [INFO]  virtio-cap 0:7.0 type=4 bar=4 off=0000000000002000 len=0000000000001000
+[3.046] [INFO]  virtio-cap 0:7.0 type=3 bar=4 off=0000000000001000 len=0000000000001000
+[3.058] [INFO]  virtio-cap 0:7.0 type=1 bar=4 off=0000000000000000 len=0000000000001000
+[3.071] [INFO]  msix-bind 0:7.0 vec=0 msg_addr=0000000008090040 msg_data=0000000000000000 rd_addr=0000000008090040 rd_data=0000000000000000 ctrl=0000000000000000
+[3.083] [INFO]  msix-bind 0:7.0 vec=1 msg_addr=0000000008090040 msg_data=0000000000000001 rd_addr=0000000008090040 rd_data=0000000000000001 ctrl=0000000000000000
+[3.097] [INFO]  pci-cmd 0:7.0 was=0000000000000006 now=0000000000000006
+[3.108] [INFO]  virtio-cfg 0:7.0 common-va=fffffd000001f000 feat=0000010130000000 drv_feat=0000000100000000 status=000000000000000b features_ok=1 num_queues=0 msix_cfg=000000000000ffff
+[3.120] [INFO]  virtio-q 0:7.0 idx=0 size=64
+[3.131] [INFO]  virtio-q 0:7.0 idx=1 size=64
+[3.143] [INFO]  virtio-q 0:7.0 idx=2 size=0
+[3.154] [INFO]  virtio-qres 0:7.0 q=0 size=64 desc_pa=00000000bed03000 driver_pa=00000000becd0000 device_pa=00000000becd1000 notify_off=0000000000000000 notify_va=fffffd0000022000 post_status=000000000000000f final_status=000000000000000f
+[3.166] [INFO]  virtio-qres 0:7.0 q=1 size=64 desc_pa=00000000becc8000 driver_pa=00000000becc9000 device_pa=00000000beca0000 notify_off=0000000000000001 notify_va=fffffd0000022004 post_status=000000000000000f final_status=000000000000000f
+[3.178] [INFO]  virtio-msix 0:7.0 q0_msix_vec=0000000000000000 msi_fires=1
+[3.191] [INFO]  virtio-input installed evdev_id=2 pointer
+[3.202] [INFO]  pci 0:8.0 vendor=0000000000001af4 device=0000000000001044 class=0000000000000000
+[3.213] [INFO]  pci-bar 0:8.0 b1 mem32=0000000010044000
+[3.225] [INFO]  pci-bar 0:8.0 b4 mem64=000000800001c000 pf
+[3.236] [INFO]  pci-cap 0:8.0 id=0000000000000011 off=0000000000000098
+[3.248] [INFO]  msix 0:8.0 enable=0 fn_mask=0 n=2 tbl_bir=1 tbl_off=0000000000000000 pba_bir=1 pba_off=0000000000000800
+[3.259] [INFO]  msix-tbl 0:8.0 v=0 ctl=0000000000000001 masked=1
+[3.271] [INFO]  msix-tbl 0:8.0 v=1 ctl=0000000000000001 masked=1
+[3.283] [INFO]  pci-cap 0:8.0 id=0000000000000009 off=0000000000000084
+[3.295] [INFO]  pci-cap 0:8.0 id=0000000000000009 off=0000000000000070
+[3.306] [INFO]  pci-cap 0:8.0 id=0000000000000009 off=0000000000000060
+[3.318] [INFO]  pci-cap 0:8.0 id=0000000000000009 off=0000000000000050
+[3.330] [INFO]  pci-cap 0:8.0 id=0000000000000009 off=0000000000000040
+[3.342] [INFO]  virtio-cap 0:8.0 type=5 bar=0 off=0000000000000000 len=0000000000000000
+[3.354] [INFO]  virtio-cap 0:8.0 type=2 bar=4 off=0000000000003000 len=0000000000001000 notify_mult=0000000000000004
+[3.365] [INFO]  virtio-cap 0:8.0 type=4 bar=4 off=0000000000002000 len=0000000000001000
+[3.376] [INFO]  virtio-cap 0:8.0 type=3 bar=4 off=0000000000001000 len=0000000000001000
+[3.388] [INFO]  virtio-cap 0:8.0 type=1 bar=4 off=0000000000000000 len=0000000000001000
+[3.401] [INFO]  pci-cmd 0:8.0 was=0000000000000006 now=0000000000000006
+[3.413] [INFO]  virtio-cfg 0:8.0 common-va=fffffd0000024000 feat=0000010130000000 drv_feat=0000000100000000 status=000000000000000b features_ok=1 num_queues=0 msix_cfg=000000000000ffff
+[3.425] [INFO]  virtio-q 0:8.0 idx=0 size=8
+[3.436] [INFO]  virtio-q 0:8.0 idx=1 size=0
+[3.448] [INFO]  virtio-qres 0:8.0 q=0 size=8 desc_pa=00000000bec3d000 driver_pa=00000000beb5e000 device_pa=00000000beb5f000 notify_off=0000000000000000 notify_va=fffffd0000026000 post_status=000000000000000f final_status=000000000000000f
+[3.460] [INFO]  virtio-msix 0:8.0 q0_msix_vec=0000000000000000 msi_fires=1
+[3.472] [INFO]  virtio-rng installed seeded=32 bytes
+[3.483] [INFO]  pci 0:9.0 vendor=0000000000001af4 device=0000000000001053 class=0000000000000007
+[3.494] [INFO]  pci-bar 0:9.0 b1 mem32=0000000010043000
+[3.506] [INFO]  pci-bar 0:9.0 b4 mem64=0000008000020000 pf
+[3.517] [INFO]  pci-cap 0:9.0 id=0000000000000011 off=0000000000000098
+[3.529] [INFO]  msix 0:9.0 enable=0 fn_mask=0 n=3 tbl_bir=1 tbl_off=0000000000000000 pba_bir=1 pba_off=0000000000000800
+[3.540] [INFO]  msix-tbl 0:9.0 v=0 ctl=0000000000000001 masked=1
+[3.552] [INFO]  msix-tbl 0:9.0 v=1 ctl=0000000000000001 masked=1
+[3.562] [INFO]  msix-tbl 0:9.0 v=2 ctl=0000000000000001 masked=1
+[3.574] [INFO]  pci-cap 0:9.0 id=0000000000000009 off=0000000000000084
+[3.585] [INFO]  pci-cap 0:9.0 id=0000000000000009 off=0000000000000070
+[3.596] [INFO]  pci-cap 0:9.0 id=0000000000000009 off=0000000000000060
+[3.607] [INFO]  pci-cap 0:9.0 id=0000000000000009 off=0000000000000050
+[3.618] [INFO]  pci-cap 0:9.0 id=0000000000000009 off=0000000000000040
+[3.629] [INFO]  virtio-cap 0:9.0 type=5 bar=0 off=0000000000000000 len=0000000000000000
+[3.640] [INFO]  virtio-cap 0:9.0 type=2 bar=4 off=0000000000003000 len=0000000000001000 notify_mult=0000000000000004
+[3.652] [INFO]  virtio-cap 0:9.0 type=4 bar=4 off=0000000000002000 len=0000000000001000
+[3.663] [INFO]  virtio-cap 0:9.0 type=3 bar=4 off=0000000000001000 len=0000000000001000
+[3.674] [INFO]  virtio-cap 0:9.0 type=1 bar=4 off=0000000000000000 len=0000000000001000
+[3.687] [INFO]  msix-bind 0:9.0 vec=0 msg_addr=0000000008090040 msg_data=0000000000000000 rd_addr=0000000008090040 rd_data=0000000000000000 ctrl=0000000000000000
+[3.702] [INFO]  pci-cmd 0:9.0 was=0000000000000006 now=0000000000000006
+[3.713] [INFO]  virtio-cfg 0:9.0 common-va=fffffd0000028000 feat=0000000130000002 drv_feat=0000000100000002 status=000000000000000b features_ok=1 num_queues=0 msix_cfg=000000000000ffff
+[3.725] [INFO]  virtio-q 0:9.0 idx=0 size=128
+[3.736] [INFO]  virtio-q 0:9.0 idx=1 size=128
+[3.748] [INFO]  virtio-q 0:9.0 idx=2 size=128
+[3.759] [INFO]  virtio-q 0:9.0 idx=3 size=0
+[3.770] [INFO]  virtio-qres 0:9.0 q=0 size=128 desc_pa=00000000beb54000 driver_pa=00000000beb55000 device_pa=00000000beb42000 notify_off=0000000000000000 notify_va=fffffd000002b000 post_status=000000000000000f final_status=000000000000000f
+[3.783] [INFO]  virtio-qres 0:9.0 q=1 size=128 desc_pa=00000000beb43000 driver_pa=00000000beb36000 device_pa=00000000beb37000 notify_off=0000000000000001 notify_va=fffffd000002b004 post_status=000000000000000f final_status=000000000000000f
+[3.794] [INFO]  virtio-qres 0:9.0 q=2 size=128 desc_pa=0000000000000000 driver_pa=0000000000000000 device_pa=0000000000000000 notify_off=0000000000000000 notify_va=0000000000000000 post_status=000000000000000f final_status=000000000000000f
+[3.807] [INFO]  virtio-msix 0:9.0 q0_msix_vec=0000000000000000 msi_fires=1
+[3.819] [INFO]  virtio-vsock installed cid=658880
+[3.830] [INFO]  pci 0:10.0 vendor=0000000000001af4 device=0000000000001059 class=0000000000000004
+[3.842] [INFO]  pci-bar 0:10.0 b1 mem32=0000000010042000
+[3.853] [INFO]  pci-bar 0:10.0 b4 mem64=0000008000024000 pf
+[3.864] [INFO]  pci-cap 0:10.0 id=0000000000000011 off=0000000000000098
+[3.876] [INFO]  msix 0:10.0 enable=0 fn_mask=0 n=2 tbl_bir=1 tbl_off=0000000000000000 pba_bir=1 pba_off=0000000000000800
+[3.888] [INFO]  msix-tbl 0:10.0 v=0 ctl=0000000000000001 masked=1
+[3.899] [INFO]  msix-tbl 0:10.0 v=1 ctl=0000000000000001 masked=1
+[3.910] [INFO]  pci-cap 0:10.0 id=0000000000000009 off=0000000000000084
+[3.921] [INFO]  pci-cap 0:10.0 id=0000000000000009 off=0000000000000070
+[3.932] [INFO]  pci-cap 0:10.0 id=0000000000000009 off=0000000000000060
+[3.944] [INFO]  pci-cap 0:10.0 id=0000000000000009 off=0000000000000050
+[3.955] [INFO]  pci-cap 0:10.0 id=0000000000000009 off=0000000000000040
+[3.966] [INFO]  virtio-cap 0:10.0 type=5 bar=0 off=0000000000000000 len=0000000000000000
+[3.978] [INFO]  virtio-cap 0:10.0 type=2 bar=4 off=0000000000003000 len=0000000000001000 notify_mult=0000000000000004
+[3.989] [INFO]  virtio-cap 0:10.0 type=4 bar=4 off=0000000000002000 len=0000000000001000
+[4.000] [INFO]  virtio-cap 0:10.0 type=3 bar=4 off=0000000000001000 len=0000000000001000
+[4.012] [INFO]  virtio-cap 0:10.0 type=1 bar=4 off=0000000000000000 len=0000000000001000
+[4.025] [INFO]  msix-bind 0:10.0 vec=1 msg_addr=0000000008090040 msg_data=0000000000000001 rd_addr=0000000008090040 rd_data=0000000000000001 ctrl=0000000000000000
+[4.040] [INFO]  pci-cmd 0:10.0 was=0000000000000006 now=0000000000000006
+[4.051] [INFO]  virtio-cfg 0:10.0 common-va=fffffd000002d000 feat=0000010179000000 drv_feat=0000000100000000 status=000000000000000b features_ok=1 num_queues=0 msix_cfg=000000000000ffff
+[4.063] [INFO]  virtio-q 0:10.0 idx=0 size=64
+[4.074] [INFO]  virtio-q 0:10.0 idx=1 size=64
+[4.085] [INFO]  virtio-q 0:10.0 idx=2 size=64
+[4.096] [INFO]  virtio-q 0:10.0 idx=3 size=64
+[4.107] [INFO]  virtio-q 0:10.0 idx=4 size=0
+[4.118] [INFO]  virtio-qres 0:10.0 q=0 size=64 desc_pa=00000000be6e2000 driver_pa=00000000be6e3000 device_pa=00000000be6c2000 notify_off=0000000000000000 notify_va=fffffd0000030000 post_status=000000000000000f final_status=000000000000000f
+[4.130] [INFO]  virtio-qres 0:10.0 q=1 size=64 desc_pa=00000000be6c3000 driver_pa=00000000be6c0000 device_pa=00000000be6c1000 notify_off=0000000000000001 notify_va=fffffd0000030004 post_status=000000000000000f final_status=000000000000000f
+[4.142] [INFO]  virtio-qres 0:10.0 q=2 size=64 desc_pa=000000004781e000 driver_pa=000000004781f000 device_pa=000000004781c000 notify_off=0000000000000002 notify_va=fffffd0000030008 post_status=000000000000000f final_status=000000000000000f
+[4.154] [INFO]  virtio-qres 0:10.0 q=3 size=64 desc_pa=000000004781d000 driver_pa=00000000477e6000 device_pa=00000000477e7000 notify_off=0000000000000003 notify_va=fffffd000003000c post_status=000000000000000f final_status=000000000000000f
+[4.166] [INFO]  virtio-msix 0:10.0 q0_msix_vec=0000000000000000 msi_fires=1
+[4.180] [INFO]  virtio-snd: key=000000000000000a card=C0 streams=2 out=1 in=1
+[4.343] [INFO]  virtio-snd: boot-tone diag=0
+[4.355] [INFO]  pci 0:11.0 vendor=0000000000001b36 device=0000000000000010 class=0000000000000001
+[4.367] [INFO]  pci-bar 0:11.0 b0 mem64=000000800002c000
+[4.378] [INFO]  pci-cap 0:11.0 id=0000000000000011 off=0000000000000040
+[4.389] [INFO]  msix 0:11.0 enable=0 fn_mask=0 n=65 tbl_bir=0 tbl_off=0000000000002000 pba_bir=0 pba_off=0000000000003000
+[4.401] [INFO]  msix-tbl 0:11.0 v=0 ctl=0000000000000001 masked=1
+[4.412] [INFO]  msix-tbl 0:11.0 v=1 ctl=0000000000000001 masked=1
+[4.423] [INFO]  msix-tbl 0:11.0 v=2 ctl=0000000000000001 masked=1
+[4.434] [INFO]  msix-tbl 0:11.0 v=3 ctl=0000000000000001 masked=1
+[4.446] [INFO]  pci-cap 0:11.0 id=0000000000000010 off=0000000000000080
+[4.457] [INFO]  pci-cap 0:11.0 id=0000000000000001 off=0000000000000060
+[4.471] [INFO]  nvme: ctrl ready ns blocks=32768 bsz=512
+[4.483] [INFO]  nvme: lba0 read selftest=1
+[4.494] [INFO]  nvme 0:11.0 block dev registered idx=4
+[4.506] [INFO]  pci 0:12.0 vendor=0000000000008086 device=0000000000002922 class=0000000000000001
+[4.518] [INFO]  pci-bar 0:12.0 b4 io=0000000000000080
+[4.529] [INFO]  pci-bar 0:12.0 b5 mem32=0000000010041000
+[4.540] [INFO]  pci-cap 0:12.0 id=0000000000000005 off=0000000000000080
+[4.551] [INFO]  pci-cap 0:12.0 id=0000000000000012 off=00000000000000a8
+[4.567] [INFO]  ahci: port0 ready sectors=32768 bsz=512
+[4.585] [INFO]  ahci: lba0 read selftest=1 irq_completions=1
+[4.596] [INFO]  ahci 0:12.0 block dev registered idx=5
+[4.607] [INFO]  pci 0:13.0 vendor=0000000000001af4 device=0000000000001001 class=0000000000000001
+[4.618] [INFO]  pci-bar 0:13.0 b0 io=0000000000000000
+[4.629] [INFO]  pci-bar 0:13.0 b1 mem32=0000000010040000
+[4.641] [INFO]  pci-bar 0:13.0 b4 mem64=0000008000028000 pf
+[4.652] [INFO]  pci-cap 0:13.0 id=0000000000000011 off=0000000000000098
+[4.664] [INFO]  msix 0:13.0 enable=0 fn_mask=0 n=2 tbl_bir=1 tbl_off=0000000000000000 pba_bir=1 pba_off=0000000000000800
+[4.676] [INFO]  msix-tbl 0:13.0 v=0 ctl=00000000ffffffff masked=1
+[4.688] [INFO]  msix-tbl 0:13.0 v=1 ctl=00000000ffffffff masked=1
+[4.701] [INFO]  pci-cap 0:13.0 id=0000000000000009 off=0000000000000084
+[4.714] [INFO]  pci-cap 0:13.0 id=0000000000000009 off=0000000000000070
+[4.726] [INFO]  pci-cap 0:13.0 id=0000000000000009 off=0000000000000060
+[4.738] [INFO]  pci-cap 0:13.0 id=0000000000000009 off=0000000000000050
+[4.750] [INFO]  pci-cap 0:13.0 id=0000000000000009 off=0000000000000040
+[4.767] [INFO]  msi-fires-post-enum=4
+[4.781] [INFO]  gicd-ispendr2=0000000000000000 spi81_bit=0 spi82_bit=0
+[5.089] [INFO]  uart-irq-fires before=0 after=0 delta=0
+[5.136] [BOOT-MOUNT-OK] type=devtmpfs path=/dev
+[5.151] [BOOT-MOUNT-OK] type=proc path=/proc
+[5.165] [BOOT-MOUNT-OK] type=sysfs path=/sys
+[5.183] [BOOT-MOUNT-OK] type=ext4 path=/home
+[5.197] [BOOT-DEV-NULL] type=8192 fs=devtmpfs
+[5.210] [INFO]  ext4: mounted=1
+[5.225] [INFO]  ext4 /etc/issue = \S
+[5.237] Kernel \r on \m (\l)
+[5.249] 
+[5.284] [INFO]  ext4 /bin/sh size=1479016 cache after pass1: hits=0 misses=363
+[5.299] [INFO]  ext4 /bin/sh cache after pass2: hits=362 misses=363
+[5.811] systemd[1]: System time advanced to built-in epoch: Fri 2026-03-13 00:00:00 UTC
+[5.916] [EINVAL nr=431 tid=3235774466 a0=0000000000000004 a1=0000000000000005 a2=00007fff91ef6b00 a3=0000000000000000 a4=0000000000000004 a5=00007fff922b2740 fdpath=anon_inode:[fscontext] comm=systemd]
+[5.979] systemd[1]: systemd 257.13-1.fc42 running in system mode (+PAM +AUDIT +SELINUX -APPARMOR +IMA +IPE +SMACK +SECCOMP -GCRYPT +GNUTLS +OPENSSL +ACL +BLKID +CURL +ELFUTILS +FIDO2 +IDN2 -IDN -IPTC +KMOD +LIBCRYPTSETUP +LIBCRYPTSETUP_PLUGINS +LIBFDISK +PCRE2 +PWQUALITY +P11KIT +QRENCODE +TPM2 +BZIP2 +LZ4 +XZ +ZLIB +ZSTD +BPF_FRAMEWORK +BTF +XKBCOMMON +UTMP +SYSVINIT +LIBARCHIVE)
+[5.994] systemd[1]: Detected architecture arm64.
+[6.087] [EINVAL nr=257 tid=3235774466 a0=ffffffffffffff9c a1=00005555ad7e57b0 a2=0000000000484001 a3=00000000000001a0 a4=0000000000000000 a5=0000000000000000 comm=systemd]
+[6.200] [EINVAL nr=321 tid=3235774466 a0=0000000000000012 a1=00007ffff23af7a0 a2=0000000000000028 a3=0000000000000000 a4=0000000000000000 a5=0000000000000000 comm=systemd]
+[6.212] [EINVAL nr=321 tid=3235774466 a0=0000000000000012 a1=00007ffff23af7d0 a2=0000000000000028 a3=0000000000000000 a4=0000000000000000 a5=0000000000000000 comm=systemd]
+[6.226] [EINVAL nr=321 tid=3235774466 a0=0000000000000012 a1=00007ffff23af7f0 a2=0000000000000028 a3=0000000000000000 a4=0000000000000000 a5=0000000000000000 comm=systemd]
+echo SHELL""-OK
+[6.245] [EINVAL nr=321 tid=3235774466 a0=0000000000000000 a1=00007ffff23af690 a2=0000000000000050 a3=0000000000000000 a4=00007fff90f200e0 a5=0000000000000038 fdpath=/null comm=systemd]
+[6.547] [EINVAL nr=321 tid=3235774466 a0=0000000000000000 a1=00007ffff23af800 a2=0000000000000050 a3=0000000000000000 a4=00007fff90f200e0 a5=0000000000000038 fdpath=/null comm=systemd]
+[6.560] [EINVAL nr=321 tid=3235774466 a0=0000000000000012 a1=00007ffff23af750 a2=0000000000000028 a3=0000000000000000 a4=0000000000000000 a5=0000000000000000 comm=systemd]
+[6.573] [EINVAL nr=321 tid=3235774466 a0=0000000000000012 a1=00007ffff23af780 a2=0000000000000028 a3=0000000000000000 a4=0000000000000000 a5=0000000000000000 comm=systemd]
+[6.585] [EINVAL nr=321 tid=3235774466 a0=0000000000000012 a1=00007ffff23af7a0 a2=0000000000000028 a3=0000000000000000 a4=0000000000000000 a5=0000000000000000 comm=systemd]
+[6.598] [EINVAL nr=321 tid=3235774466 a0=0000000000000000 a1=00007ffff23af640 a2=0000000000000050 a3=0000000000000000 a4=00007fff90f200e0 a5=0000000000000038 fdpath=/null comm=systemd]
+[6.622] systemd[1]: bpf-restrict-fs: BPF LSM hook not enabled in the kernel, BPF LSM not supported.
+[11.226] systemd[1]: Queued start job for default target graphical.target.
+[11.265] [wait4 ECHILD] parent=3235774466 reqpid=00000000ffffffff
+[11.291] systemd[1]: Created slice system-getty.slice - Slice /system/getty.
+[11.339] systemd[1]: Created slice system-modprobe.slice - Slice /system/modprobe.
+[11.376] systemd[1]: Created slice system-sshd\x2dkeygen.slice - Slice /system/sshd-keygen.
+[11.409] systemd[1]: Created slice system-systemd\x2dzram\x2dsetup.slice - Slice /system/systemd-zram-setup.
+[11.440] systemd[1]: Created slice user.slice - User and Session Slice.
+[11.476] systemd[1]: Started systemd-ask-password-console.path - Dispatch Password Requests to Console Directory Watch.
+[11.511] systemd[1]: Started systemd-ask-password-wall.path - Forward Password Requests to Wall Directory Watch.
+[11.549] systemd[1]: Set up automount proc-sys-fs-binfmt_misc.automount - Arbitrary Executable File Formats File System Automount Point.
+echo SHELL""-OK
+[11.587] systemd[1]: Expecting device dev-zram0.device - /dev/zram0...
+[11.621] systemd[1]: Reached target cryptsetup.target - Local Encrypted Volumes.
+[11.882] systemd[1]: Reached target integritysetup.target - Local Integrity Protected Volumes.
+[11.932] systemd[1]: Reached target paths.target - Path Units.
+[11.969] systemd[1]: Reached target remote-fs.target - Remote File Systems.
+[12.018] systemd[1]: Reached target slices.target - Slice Units.
+[12.062] systemd[1]: Reached target veritysetup.target - Local Verity Protected Volumes.
+[12.119] systemd[1]: Listening on systemd-coredump.socket - Process Core Dump Socket.
+[12.156] systemd[1]: Listening on systemd-creds.socket - Credential Encryption/Decryption.
+[12.186] systemd[1]: Listening on systemd-initctl.socket - initctl Compatibility Named Pipe.
+[12.217] systemd[1]: Listening on systemd-journald-audit.socket - Journal Audit Socket.
+[12.262] systemd[1]: Listening on systemd-journald-dev-log.socket - Journal Socket (/dev/log).
+[12.307] systemd[1]: Listening on systemd-journald.socket - Journal Sockets.
+[12.343] systemd[1]: systemd-pcrextend.socket - TPM PCR Measurements skipped, unmet condition check ConditionSecurity=measured-uki
+[12.360] systemd[1]: systemd-pcrlock.socket - Make TPM PCR Policy skipped, unmet condition check ConditionSecurity=measured-uki
+[12.378] systemd[1]: Listening on systemd-udevd-control.socket - udev Control Socket.
+[12.410] systemd[1]: Listening on systemd-udevd-kernel.socket - udev Kernel Socket.
+[12.442] systemd[1]: Listening on systemd-userdbd.socket - User Database Manager Socket.
+[12.504] systemd[1]: Mounting dev-hugepages.mount - Huge Pages File System...
+[12.601] systemd[1]: Mounting dev-mqueue.mount - POSIX Message Queue File System...
+[12.677] systemd[1]: sys-kernel-debug.mount: Directory /sys/kernel/debug to mount over is not empty, mounting anyway.
+[12.793] systemd[1]: Mounting sys-kernel-debug.mount - Kernel Debug File System...
+[12.848] [EINVAL nr=442 tid=4126 a0=00000000ffffffff a1=0000000000000000 a2=0000000000000000 a3=0000000000000000 a4=0000000000000000 a5=00007fff9f766870 comm=mount]
+[12.881] [EINVAL nr=442 tid=4127 a0=00000000ffffffff a1=0000000000000000 a2=0000000000000000 a3=0000000000000000 a4=0000000000000000 a5=00007fffb6ca1870 comm=mount]
+[12.932] systemd[1]: sys-kernel-tracing.mount: Directory /sys/kernel/tracing to mount over is not empty, mounting anyway.
+[12.972] systemd[1]: Mounting sys-kernel-tracing.mount - Kernel Trace File System...
+[13.018] [EINVAL nr=442 tid=4128 a0=00000000ffffffff a1=0000000000000000 a2=0000000000000000 a3=0000000000000000 a4=0000000000000000 a5=00007fff8a38f870 comm=mount]
+[13.087] systemd[1]: Started debug-shell.service - Early root shell on /dev/ttyS0 FOR DEBUGGING ONLY.
+[13.164] systemd[1]: fips-crypto-policy-overlay.service - Bind-mount FIPS crypto-policy in FIPS mode skipped, unmet condition check ConditionKernelCommandLine=fips=1
+[13.193] [EINVAL nr=442 tid=4129 a0=00000000ffffffff a1=0000000000000000 a2=0000000000000000 a3=0000000000000000 a4=0000000000000000 a5=00007fffbe990870 comm=mount]
+[13.216] [pty ENOTTY] fd=3 req=0000000000004b3a ino=29950 comm=(sh)
+[13.238] systemd[1]: kmod-static-nodes.service - Create List of Static Device Nodes skipped, unmet condition check ConditionFileNotEmpty=/lib/modules/6.19.0-oxide/modules.devname
+[13.251] [pty ENOTTY] fd=3 req=0000000000004b45 ino=29950 comm=(sh)
+[!p]104[?7h[6n[32766;32766H[6n[13.287] systemd[1]: Starting modprobe@configfs.service - Load Kernel Module configfs...
+[13.342] systemd[1]: Starting modprobe@dm_mod.service - Load Kernel Module dm_mod...
+[13.492] systemd[1]: Starting modprobe@drm.service - Load Kernel Module drm...
+[13.614] [pty ENOTTY] fd=3 req=0000000000005437 ino=29950 comm=(sh)
+[13.632] [pty ENOTTY] fd=1 req=0000000000004b45 ino=29950 comm=(sh)
+[!p]104[?7h[6n[32766;32766H[6n[13.682] systemd[1]: Starting modprobe@fuse.service - Load Kernel Module fuse...
+[13.790] systemd[1]: Starting modprobe@loop.service - Load Kernel Module loop...
+[13.852] systemd[1]: systemd-hibernate-clear.service - Clear Stale Hibernate Storage Info skipped, unmet condition check ConditionPathExists=/sys/firmware/efi/efivars/HibernateLocation-8cf2644b-4b0b-428f-9387-6d876050dc67
+[13.983] systemd[1]: Starting systemd-journald.service - Journal Service...
+[14.143] systemd[1]: Starting systemd-modules-load.service - Load Kernel Modules...
+[?2004hsh-5.2# [14.185] [EINVAL nr=442 tid=4136 a0=00000000fffffff7 a1=0000000000000000 a2=0000000000000000 a3=0000000000000000 a4=0000000000000000 a5=0000000000000000 comm=(journald)]
+[14.233] [wait4 ECHILD] parent=4138 reqpid=00000000ffffffff exe=/proc/self/fd/9
+[14.247] systemd[1]: systemd-pcrmachine.service - TPM PCR Machine ID Measurement skipped, unmet condition check ConditionSecurity=measured-uki
+[14.289] [EINVAL nr=431 tid=4139 a0=0000000000000003 a1=0000000000000005 a2=000055557ea4f008 a3=0000000000000000 a4=0000000000000003 a5=0000000000000000 fdpath=anon_inode:[fscontext] comm=(sd-mkdcreds)]
+[14.334] systemd[1]: Starting systemd-remount-fs.service - Remount Root and Kernel File Systems...
+[14.412] systemd[1]: Starting systemd-tmpfiles-setup-dev-early.service - Create Static Device Nodes in /dev gracefully...
+[14.464] systemd[1]: systemd-tpm2-setup-early.service - Early TPM SRK Setup skipped, unmet condition check ConditionSecurity=measured-uki
+[14.508] [EINVAL nr=317 tid=4136 a0=0000000000000000 a1=0000000000000001 a2=0000000000000000 a3=0000000000000007 a4=000000000000009d a5=0000000000000001 fdpath=/null comm=(journald)]
+[14.702] systemd[1]: Starting systemd-udev-load-credentials.service - Load udev Rules from Credentials...
+[14.716] [EINVAL nr=431 tid=4143 a0=0000000000000003 a1=0000000000000005 a2=000055558096f008 a3=0000000000000000 a4=0000000000000003 a5=0000000000000000 fdpath=anon_inode:[fscontext] comm=(sd-mkdcreds)]
+[14.775] [EINVAL nr=442 tid=4143 a0=00000000fffffff7 a1=0000000000000000 a2=0000000000000000 a3=0000000000000000 a4=0000000000000000 a5=00005555a435e79c comm=(sd-mkdcreds)]
+[14.849] systemd-journald[33]: Collecting audit messages is enabled.
+[14.923] [EINVAL nr=431 tid=4145 a0=0000000000000003 a1=0000000000000005 a2=000055556050f008 a3=0000000000000000 a4=0000000000000003 a5=0000000000000000 fdpath=anon_inode:[fscontext] comm=(sd-mkdcreds)]
+[14.943] [EINVAL nr=442 tid=4145 a0=00000000fffffff7 a1=0000000000000000 a2=0000000000000000 a3=0000000000000000 a4=0000000000000000 a5=000055556cd5a79c comm=(sd-mkdcreds)]
+[14.981] systemd[1]: Starting systemd-udev-trigger.service - Coldplug All udev Devices...
+[15.175] [EINVAL nr=255 tid=3235774466 a0=000000000000000f a1=0000000000000001 a2=0000000000000000 a3=00007fff91ae6760 a4=00005555ad9481a0 a5=00007fff922b2740 fdpath=anon_inode:inotify comm=systemd]
+[15.213] [EINVAL nr=255 tid=3235774466 a0=000000000000000f a1=0000000000000001 a2=0000000000000000 a3=00007fff91ae6760 a4=00005555ad9481a0 a5=00007fff922b2740 fdpath=anon_inode:inotify comm=systemd]
+[15.252] [EINVAL nr=255 tid=3235774466 a0=000000000000000f a1=0000000000000001 a2=0000000000000000 a3=00007fff91ae6760 a4=00005555ad9481a0 a5=00007fff922b2740 fdpath=anon_inode:inotify comm=systemd]
+[15.324] [EINVAL nr=255 tid=3235774466 a0=000000000000000f a1=0000000000000001 a2=0000000000000000 a3=00007fff91ae6760 a4=00005555ad9481a0 a5=00007fff922b2740 fdpath=anon_inode:inotify comm=systemd]
+[15.450] systemd[1]: Started systemd-journald.service - Journal Service.
+[16.469] [EINVAL nr=442 tid=4158 a0=00000000ffffffff a1=0000000000000000 a2=0000000000000000 a3=0000000000000000 a4=0000000000000000 a5=00007fffb4f85870 comm=mount]
+[16.575] [ZRAM-SYSFS] uevent=add
+[16.703] systemd-journald[33]: Received client request to flush runtime journal.
+[16.980] [EINVAL nr=431 tid=4163 a0=0000000000000003 a1=0000000000000005 a2=000055557f07f008 a3=0000000000000000 a4=0000000000000003 a5=0000000000000000 fdpath=anon_inode:[fscontext] comm=(sd-mkdcreds)]
+echo SHELL""-OK
+[?2004lSHELL-OK
+[?2004hsh-5.2# [17.056] [EINVAL nr=442 tid=4163 a0=00000000fffffff7 a1=0000000000000000 a2=0000000000000000 a3=0000000000000000 a4=0000000000000000 a5=000055558f811a5c comm=(sd-mkdcreds)]
+set -x; KV=$(ls /lib/modules | head -1); K=/lib/modules/$KV/vmlinuz; I=/bboot/initramfs-$KV.img; ls -l $K $I; echo KEXEC-PATHS""-OK
+[?2004l++ ls /lib/modules
+++ head -1
+[19.101] [EINVAL nr=431 tid=4162 a0=0000000000000004 a1=0000000000000005 a2=000055556677f008 a3=0000000000000000 a4=0000000000000004 a5=00007fffad9eb740 fdpath=anon_inode:[fscontext] comm=(-userdbd)]
+[19.323] [EINVAL nr=165 tid=4162 a0=0000000000000000 a1=00007fffe079bd18 a2=0000000000000000 a3=0000000000001021 a4=0000000000000000 a5=00007fffe079bd27 fdpath=/null comm=(-userdbd)]
+[19.660] [EINVAL nr=442 tid=4162 a0=00000000ffffff9c a1=000055559a8a02a0 a2=0000000000008100 a3=00007fffe079be10 a4=0000000000000020 a5=00007fffad9eb740 comm=(-userdbd)]
+[19.772] [EINVAL nr=165 tid=4162 a0=0000000000000000 a1=00007fffe079bd38 a2=0000000000000000 a3=0000000000001022 a4=0000000000000000 a5=00007fffe079bd47 fdpath=/null comm=(-userdbd)]
+[19.864] [MNTCREATE] syscall=chroot flags=0x0 recursive=false source=<none> target=.
+[19.924] [EINVAL nr=317 tid=4162 a0=0000000000000000 a1=0000000000000001 a2=0000000000000000 a3=0000000000000007 a4=000000000000009d a5=0000000000000001 fdpath=/null comm=(-userdbd)]
+[20.562] [wait4 ECHILD] parent=4130 reqpid=00000000ffffffff exe=/bin/sh
++ KV=6.19.14-108.fc42.aarch64
++ K=/lib/modules/6.19.14-108.fc42.aarch64/vmlinuz
++ I=/boot/initramfs-6.19.14-108.fc42.aarch64.img
++ ls -l /lib/modules/6.19.14-108.fc42.aarch64/vmlinuz /boot/initramfs-6.19.14-108.fc42.aarch64.img
+-rw------- 1 root root 38335185 Aug  9  2026 /boot/initramfs-6.19.14-108.fc42.aarch64.img
+-rwxr-xr-x 1 root root 16636264 May 21  2026 /lib/modules/6.19.14-108.fc42.aarch64/vmlinuz
++ echo KEXEC-PATHS-OK
+set -x; ls -l /sys/firmware/fdt; head -c 4 /sys/firmware/fdt | od -An -tx1; ls /proc/device-tree/ | head -20; cat /proc/device-tree/model; echo; stat -c "%N" /proc/device-tree; wc -c /sys/firmware/fdt; od -An -tx1 -v /sys/firmware/fdt; echo DT""-OK
+KEXEC-PATHS-OK
+[?2004hsh-5.2# set -x; ls -l /sys/firmware/fdt; head -c 4 /sys/firmware/fdt | od -An -txx1; ls /proc/device-tree/ | head -20; cat /proc/device-tree/model; echo; stat -c  "%N" /proc/device-tree; wc -c /sys/firmware/fdt; od -An -tx1 -v /sys/firmware/fddt; echo DT""-OK
+[?2004l+ set -x
++ ls -l /sys/firmware/fdt
+-r-------- 1 root root 676 Jan  1  1970 /sys/firmware/fdt
++ od -An -tx1
++ head -c 4 /sys/firmware/fdt
+ d0 0d fe ed
++ head -20
++ ls /proc/device-tree/
+#address-cells
+#size-cells
+chosen
+memory@40000000
++ cat /proc/device-tree/model
+cat: /proc/device-tree/model: No such file or directory
++ echo
+
++ stat -c %N /proc/device-tree
+'/proc/device-tree' -> '/sys/firmware/devicetree/base'
++ wc -c /sys/firmware/fdt
+676 /sys/firmware/fdt
++ od -An -tx1 -v /sys/firmware/fdt
+ d0 0d fe ed 00 00 02 a4 00 00 00 38 00 00 02 70
+ 00 00 00 28 00 00 00 11 00 00 00 10 00 00 00 00
+ 00 00 00 34 00 00 02 38 00 00 00 00 00 00 00 00
+ 00 00 00 00 00 00 00 00 00 00 00 01 00 00 00 00
+ 00 00 00 03 00 00 00 04 00 00 00 00 00 00 00 02
+ 00 00 00 03 00 00 00 04 00 00 00 0f 00 00 00 02
+ 00 00 00 01 6d 65 6d 6f 72 79 40 34 30 30 30 30
+ 30 30 30 00 00 00 00 03 00 00 00 07 00 00 00 1b
+ 6d 65 6d 6f 72 79 00 00 00 00 00 03 00 00 00 60
+ 00 00 00 27 00 00 00 00 40 00 00 00 00 00 00 00
+ 04 00 00 00 00 00 00 00 44 02 00 00 00 00 00 00
+ 03 7a 40 00 00 00 00 00 47 ee 40 00 00 00 00 00
+ 00 01 00 00 00 00 00 00 48 00 00 00 00 00 00 00
+ 6f 54 d0 00 00 00 00 00 be 53 20 00 00 00 00 00
+ 00 05 50 00 00 00 00 00 bf ff 00 00 00 00 00 00
+ 00 00 f0 00 00 00 00 02 00 00 00 01 63 68 6f 73
+ 65 6e 00 00 00 00 00 03 00 00 01 54 00 00 00 2b
+ 42 4f 4f 54 5f 49 4d 41 47 45 3d 2f 62 6f 6f 74
+ 2f 6f 78 69 64 65 2d 61 61 72 63 68 36 34 2e 49
+ 6d 61 67 65 20 72 6f 6f 74 3d 2f 64 65 76 2f 6f
+ 78 69 64 65 30 20 72 77 20 65 61 72 6c 79 63 6f
+ 6e 20 70 72 69 6e 74 6b 2e 74 69 6d 65 3d 31 20
+ 63 6f 6e 73 6f 6c 65 3d 74 74 79 41 4d 41 30 2c
+ 31 31 35 32 30 30 20 63 6f 6e 73 6f 6c 65 3d 74
+ 74 79 30 20 73 79 73 74 65 6d 64 2e 6d 61 73 6b
+ 3d 66 69 72 65 77 61 6c 6c 64 2e 73 65 72 76 69
+ 63 65 20 73 79 73 74 65 6d 64 2e 6d 61 73 6b 3d
+ 63 68 72 6f 6e 79 64 2e 73 65 72 76 69 63 65 20
+ 73 79 73 74 65 6d 64 2e 6d 61 73 6b 3d 4d 6f 64
+ 65 6d 4d 61 6e 61 67 65 72 2e 73 65 72 76 69 63
+ 65 20 73 79 73 74 65 6d 64 2e 6d 61 73 6b 3d 70
+ 6c 79 6d 6f 75 74 68 2d 73 74 61 72 74 2e 73 65
+ 72 76 69 63 65 20 73 79 73 74 65 6d 64 2e 6d 61
+ 73 6b 3d 4e 65 74 77 6f 72 6b 4d 61 6e 61 67 65
+ 72 2d 77 61 69 74 2d 6f 6e 6c 69 6e 65 2e 73 65
+ 72 76 69 63 65 20 73 79 73 74 65 6d 64 2e 64 65
+ 62 75 67 5f 73 68 65 6c 6c 3d 74 74 79 53 30 20
+ 6f 78 69 64 65 2e 62 6f 6f 74 61 72 67 73 3d 67
+ 72 75 62 00 00 00 00 02 00 00 00 02 00 00 00 09
+ 23 61 64 64 72 65 73 73 2d 63 65 6c 6c 73 00 23
+ 73 69 7a 65 2d 63 65 6c 6c 73 00 64 65 76 69 63
+ 65 5f 74 79 70 65 00 72 65 67 00 62 6f 6f 74 61
+ 72 67 73 00
++ echo DT-OK
+DT-OK
+kexec -d -l $K --initrd=$I --command-line="earlycon=pl011,0x9000000 earlyprintk=serial,ttyS0,115200 console=ttyS0,115200 console=ttyAMA0,115200 keep_bootcon panic=10 rdinit=/bin/sh"; echo KEXEC-DEBUG""-RC=$?
+[?2004hsh-5.2# kexec -d -l $K --initrd=$I --command-line="earlycon=pl011,0x9000000 earlyyprintk=serial,ttyS0,115200 console=ttyS0,115200 console=ttyAMA0,115200 keep_boottcon panic=10 rdinit=/bin/sh"; echo KEXEC-DEBUG""-RC=$?
+[?2004l+ kexec -d -l /lib/modules/6.19.14-108.fc42.aarch64/vmlinuz --initrd=/boot/initramfs-6.19.14-108.fc42.aarch64.img '--command-line=earlycon=pl011,0x9000000 earlyprintk=serial,ttyS0,115200 console=ttyS0,115200 console=ttyAMA0,115200 keep_bootcon panic=10 rdinit=/bin/sh'
+arch_process_options:179: command_line: earlycon=pl011,0x9000000 earlyprintk=serial,ttyS0,115200 console=ttyS0,115200 console=ttyAMA0,115200 keep_bootcon panic=10 rdinit=/bin/sh
+arch_process_options:181: initrd: /boot/initramfs-6.19.14-108.fc42.aarch64.img
+arch_process_options:183: dtb: (null)
+arch_process_options:186: console: (null)
+Try gzip decompression.
+Try zstd decompression.
+Not zstd compressed
+Try LZMA decompression.
+elf_arm64_probe: Not an ELF executable.
+image_arm64_probe: Bad arm64 image header.
+pez_arm64_probe: PROBE.
+Try gzip decompression.
+Try zstd decompression.
+original zstd size unknown!
+[24.132] [EINVAL nr=431 tid=4189 a0=0000000000000003 a1=0000000000000005 a2=00005555794cf008 a3=0000000000000000 a4=0000000000000003 a5=0000000000000000 fdpath=anon_inode:[fscontext] comm=(sd-mkdcreds)]
+[24.151] [EINVAL nr=442 tid=4189 a0=00000000fffffff7 a1=0000000000000000 a2=0000000000000000 a3=0000000000000000 a4=0000000000000000 a5=000055558e6df79c comm=(sd-mkdcreds)]
+zstd decompressed input=16519866 to output=75628544
+pez_prepare: decompressed size 75628544
+pez_prepare: done
+[28.172] [EINVAL nr=431 tid=4196 a0=0000000000000003 a1=0000000000000005 a2=000055555937f008 a3=0000000000000000 a4=0000000000000003 a5=0000000000000000 fdpath=anon_inode:[fscontext] comm=(sd-mkdcreds)]
+[28.231] [EINVAL nr=442 tid=4196 a0=00000000fffffff7 a1=0000000000000000 a2=0000000000000000 a3=0000000000000000 a4=0000000000000000 a5=00005555881f490c comm=(sd-mkdcreds)]
+[28.363] [EINVAL nr=165 tid=4195 a0=0000000000000000 a1=00007fffff133e78 a2=0000000000000000 a3=0000000000001021 a4=0000000000000000 a5=00007fffff133e87 fdpath=/null comm=(md-udevd)]
+[28.423] [MNTCREATE] syscall=chroot flags=0x0 recursive=false source=<none> target=.
+[28.447] [EINVAL nr=317 tid=4195 a0=0000000000000000 a1=0000000000000001 a2=0000000000000000 a3=0000000000000007 a4=000000000000009d a5=0000000000000001 fdpath=/null comm=(md-udevd)]
+[28.669] [EINVAL nr=320 tid=4186 a0=0000000000000005 a1=0000000000000004 a2=000000000000008a a3=0000555568c682a0 a4=0000000000000008 a5=716f786b7160641f fdpath=/ImageeM5kMV comm=kexec]
+Try gzip decompression.
+Try zstd decompression.
+Not zstd compressed
+Try LZMA decompression.
+kernel: 0x7fff8f1c7010 kernel_size: 0xfdd968
+Can't open (/proc/kcore).
+Cannot get kernel _text symbol address
+Can't get the symbol of _text to calculate page_offset.
+get_memory_ranges:+[0] 0000000042431000 - 0000000043ffffff
+get_memory_ranges:+[1] 0000000044020000 - 00000000477c3fff
+get_memory_ranges:+[2] 0000000047ee4000 - 0000000047ef3fff
+get_memory_ranges:+[3] 0000000048000000 - 00000000b754cfff
+get_memory_ranges:+[4] 00000000be532000 - 00000000be586fff
+get_memory_ranges:+[5] 00000000bfff0000 - 00000000bfffefff
+get_memory_ranges:+[6] 0000000044000000 - 000000004401ffff
+get_memory_ranges:+[7] 00000000477c4000 - 00000000477e4fff
+get_memory_ranges:+[8] 00000000477e5000 - 000000004781dfff
+get_memory_ranges:+[9] 000000004781e000 - 0000000047ee3fff
+get_memory_ranges:+[10] 0000000047ef4000 - 0000000047ef7fff
+get_memory_ranges:+[11] 0000000047ef8000 - 0000000047ffffff
+get_memory_ranges:+[12] 00000000be588000 - 00000000be6c1fff
+get_memory_ranges:+[13] 00000000be6c2000 - 00000000be6e0fff
+get_memory_ranges:+[14] 00000000be6e1000 - 00000000be6f2fff
+get_memory_ranges:+[15] 00000000be6f3000 - 00000000be70efff
+get_memory_ranges:+[16] 00000000be70f000 - 00000000be717fff
+get_memory_ranges:+[17] 00000000be718000 - 00000000be721fff
+get_memory_ranges:+[18] 00000000be722000 - 00000000beb2bfff
+get_memory_ranges:+[19] 00000000beb2c000 - 00000000beb35fff
+get_memory_ranges:+[20] 00000000beb36000 - 00000000beb40fff
+get_memory_ranges:+[21] 00000000beb41000 - 00000000beb55fff
+get_memory_ranges:+[22] 00000000beb56000 - 00000000beb56fff
+get_memory_ranges:+[23] 00000000beb57000 - 00000000beb5dfff
+get_memory_ranges:+[24] 00000000beb5e000 - 00000000bec3dfff
+get_memory_ranges:+[25] 00000000bec3f000 - 00000000beca2fff
+get_memory_ranges:+[26] 00000000beca3000 - 00000000becc7fff
+get_memory_ranges:+[27] 00000000becc8000 - 00000000becc9fff
+get_memory_ranges:+[28] 00000000beccc000 - 00000000becd2fff
+get_memory_ranges:+[29] 00000000becd3000 - 00000000becfbfff
+get_memory_ranges:+[30] 00000000becfc000 - 00000000bed00fff
+get_memory_ranges:+[31] 00000000bed01000 - 00000000bed04fff
+get_memory_ranges:+[32] 00000000bed05000 - 00000000bed09fff
+get_memory_ranges:+[33] 00000000bed0a000 - 00000000bed1efff
+get_memory_ranges:+[34] 00000000bed1f000 - 00000000bed1ffff
+get_memory_ranges:+[35] 00000000bed20000 - 00000000bed23fff
+get_memory_ranges:+[36] 00000000bed24000 - 00000000bed28fff
+get_memory_ranges:+[37] 00000000bed2a000 - 00000000bed2afff
+get_memory_ranges:+[38] 00000000bed2b000 - 00000000bed4ffff
+get_memory_ranges:+[39] 00000000bed90000 - 00000000bee52fff
+get_memory_ranges:+[40] 00000000bee53000 - 00000000bee54fff
+get_memory_ranges:+[41] 00000000bee55000 - 00000000bee5bfff
+get_memory_ranges:+[42] 00000000bee5c000 - 00000000bee5dfff
+get_memory_ranges:+[43] 00000000bee5e000 - 00000000bee62fff
+get_memory_ranges:+[44] 00000000bee63000 - 00000000bee63fff
+get_memory_ranges:+[45] 00000000bee64000 - 00000000bee8ffff
+get_memory_ranges:+[46] 00000000beed0000 - 00000000beeecfff
+get_memory_ranges:+[47] 00000000beeed000 - 00000000beef7fff
+get_memory_ranges:+[48] 00000000beef8000 - 00000000bef04fff
+get_memory_ranges:+[49] 00000000bef05000 - 00000000bef0ffff
+get_memory_ranges:+[50] 00000000bef30000 - 00000000bef34fff
+get_memory_ranges:+[51] 00000000bef35000 - 00000000bef4ffff
+get_memory_ranges:+[52] 00000000bf190000 - 00000000bf27ffff
+get_memory_ranges:+[53] 00000000bf280000 - 00000000bf288fff
+get_memory_ranges:+[54] 00000000bf289000 - 00000000bf28cfff
+get_memory_ranges:+[55] 00000000bf28d000 - 00000000bf2cdfff
+get_memory_ranges:+[56] 00000000bf2ce000 - 00000000bf2d4fff
+get_memory_ranges:+[57] 00000000bf2d5000 - 00000000bf2dcfff
+get_memory_ranges:+[58] 00000000bf2dd000 - 00000000bf2fdfff
+get_memory_ranges:+[59] 00000000bf2fe000 - 00000000bf305fff
+get_memory_ranges:+[60] 00000000bf306000 - 00000000bf32afff
+get_memory_ranges:+[61] 00000000bf32b000 - 00000000bf332fff
+get_memory_ranges:+[62] 00000000bf333000 - 00000000bf336fff
+get_memory_ranges:+[63] 00000000bf337000 - 00000000bf33dfff
+set_phys_offset: phys_offset : 0000000042431000 (method : iomem)
+System RAM ranges;
+0000000042431000-0000000043ffffff (0)
+0000000044020000-00000000477c3fff (0)
+0000000047ee4000-0000000047ef3fff (0)
+0000000048000000-00000000b754cfff (0)
+00000000be532000-00000000be586fff (0)
+00000000bfff0000-00000000bfffefff (0)
+0000000044000000-000000004401ffff (0)
+00000000477c4000-00000000477e4fff (0)
+00000000477e5000-000000004781dfff (0)
+000000004781e000-0000000047ee3fff (0)
+0000000047ef4000-0000000047ef7fff (0)
+0000000047ef8000-0000000047ffffff (0)
+00000000be588000-00000000be6c1fff (0)
+00000000be6c2000-00000000be6e0fff (0)
+00000000be6e1000-00000000be6f2fff (0)
+00000000be6f3000-00000000be70efff (0)
+00000000be70f000-00000000be717fff (0)
+00000000be718000-00000000be721fff (0)
+00000000be722000-00000000beb2bfff (0)
+00000000beb2c000-00000000beb35fff (0)
+00000000beb36000-00000000beb40fff (0)
+00000000beb41000-00000000beb55fff (0)
+00000000beb56000-00000000beb56fff (0)
+00000000beb57000-00000000beb5dfff (0)
+00000000beb5e000-00000000bec3dfff (0)
+00000000bec3f000-00000000beca2fff (0)
+00000000beca3000-00000000becc7fff (0)
+00000000becc8000-00000000becc9fff (0)
+00000000beccc000-00000000becd2fff (0)
+00000000becd3000-00000000becfbfff (0)
+00000000becfc000-00000000bed00fff (0)
+00000000bed01000-00000000bed04fff (0)
+00000000bed05000-00000000bed09fff (0)
+00000000bed0a000-00000000bed1efff (0)
+00000000bed1f000-00000000bed1ffff (0)
+00000000bed20000-00000000bed23fff (0)
+00000000bed24000-00000000bed28fff (0)
+00000000bed2a000-00000000bed2afff (0)
+00000000bed2b000-00000000bed4ffff (0)
+00000000bed90000-00000000bee52fff (0)
+00000000bee53000-00000000bee54fff (0)
+00000000bee55000-00000000bee5bfff (0)
+00000000bee5c000-00000000bee5dfff (0)
+00000000bee5e000-00000000bee62fff (0)
+00000000bee63000-00000000bee63fff (0)
+00000000bee64000-00000000bee8ffff (0)
+00000000beed0000-00000000beeecfff (0)
+00000000beeed000-00000000beef7fff (0)
+00000000beef8000-00000000bef04fff (0)
+00000000bef05000-00000000bef0ffff (0)
+00000000bef30000-00000000bef34fff (0)
+00000000bef35000-00000000bef4ffff (0)
+00000000bf190000-00000000bf27ffff (0)
+00000000bf280000-00000000bf288fff (0)
+00000000bf289000-00000000bf28cfff (0)
+00000000bf28d000-00000000bf2cdfff (0)
+00000000bf2ce000-00000000bf2d4fff (0)
+00000000bf2d5000-00000000bf2dcfff (0)
+00000000bf2dd000-00000000bf2fdfff (0)
+00000000bf2fe000-00000000bf305fff (0)
+00000000bf306000-00000000bf32afff (0)
+00000000bf32b000-00000000bf332fff (0)
+00000000bf333000-00000000bf336fff (0)
+00000000bf337000-00000000bf33dfff (0)
+elf_arm64_probe: Not an ELF executable.
+image_arm64_probe: Bad arm64 image header.
+pez_arm64_probe: PROBE.
+Try gzip decompression.
+Try zstd decompression.
+original zstd size unknown!
+zstd decompressed input=16519866 to output=75628544
+pez_prepare: decompressed size 75628544
+pez_prepare: done
+image_arm64_load: kernel_segment: 0000000048000000
+image_arm64_load: text_offset:    0000000000000000
+image_arm64_load: image_size:     0000000004820000
+image_arm64_load: phys_offset:    0000000042431000
+image_arm64_load: vp_offset:      ffffffffffffffff
+image_arm64_load: PE format:      yes
+arm64_load_other_segments:742: purgatory sink: 0x0
+read_1st_dtb: found /sys/firmware/fdt
+get_cells_size: #address-cells:2 #size-cells:2
+cells_size_fitted: 0-0
+setup_2nd_dtb: no kaslr-seed found
+[32.963] [EINVAL nr=16 tid=4203 a0=0000000000000014 a1=0000000080184540 a2=00007ffffd2fb828 a3=0000000000000000 a4=0000000000000000 a5=0000000000000000 fdpath=/input/event0 comm=(udev-worker)]
+[33.180] [EINVAL nr=16 tid=4202 a0=0000000000000013 a1=0000000080184540 a2=00007ffffd2fb828 a3=0000000000000000 a4=0000000000000000 a5=0000000000000000 fdpath=/input/event1 comm=(udev-worker)]
+initrd: base 4c820000, size 248f2d1h (38335185)
+dtb_set_initrd: start 1283588096, end 1321923281, size 38335185 (37436 KiB)
+dtb:    base 4ecb0000, size 228h (552)
+sym: sha256_starts info: 12 other: 00 shndx: 1 value: f40 size: 50
+sym: sha256_starts value: 4ecb1f40 addr: 4ecb1014
+machine_apply_elf_rel: CALL26 9000000094000000->90000000940003cb
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb10f0 addr: 4ecb1018
+machine_apply_elf_rel: ADR_PREL_PG_HI21 f940001390000000->f940001390000000
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb10f0 addr: 4ecb101c
+machine_apply_elf_rel: LDST64_ABS_LO12_NC aa1303f5f9400013->aa1303f5f9407813
+sym: sha256_update info: 12 other: 00 shndx: 1 value: 2e80 size: c
+sym: sha256_update value: 4ecb3e80 addr: 4ecb1030
+machine_apply_elf_rel: CALL26 eb14027f94000000->eb14027f94000b94
+sym: sha256_finish info: 12 other: 00 shndx: 1 value: 2e8c size: 198
+sym: sha256_finish value: 4ecb3e8c addr: 4ecb1048
+machine_apply_elf_rel: CALL26 aa1303e194000000->aa1303e194000b91
+sym:     memcmp info: 12 other: 00 shndx: 1 value: 624 size: 34
+sym: memcmp value: 4ecb1624 addr: 4ecb1058
+machine_apply_elf_rel: CALL26 3400042094000000->3400042094000173
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb10f8 addr: 4ecb1060
+machine_apply_elf_rel: ADR_PREL_PG_HI21 9000001490000000->9000001490000000
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1108 addr: 4ecb1064
+machine_apply_elf_rel: ADR_PREL_PG_HI21 9100029490000014->9100029490000014
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1108 addr: 4ecb1068
+machine_apply_elf_rel: ADD_ABS_LO12_NC d280001391000294->d280001391042294
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb10f8 addr: 4ecb1070
+machine_apply_elf_rel: LDST64_ABS_LO12_NC 94000000f9400000->94000000f9407c00
+sym:     printf info: 12 other: 00 shndx: 1 value: 554 size: 70
+sym: printf value: 4ecb1554 addr: 4ecb1074
+machine_apply_elf_rel: CALL26 9000000094000000->9000000094000138
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1100 addr: 4ecb1078
+machine_apply_elf_rel: ADR_PREL_PG_HI21 f940000090000000->f940000090000000
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1100 addr: 4ecb107c
+machine_apply_elf_rel: LDST64_ABS_LO12_NC 94000000f9400000->94000000f9408000
+sym:     printf info: 12 other: 00 shndx: 1 value: 554 size: 70
+sym: printf value: 4ecb1554 addr: 4ecb1080
+machine_apply_elf_rel: CALL26 f940028094000000->f940028094000135
+sym:     printf info: 12 other: 00 shndx: 1 value: 554 size: 70
+sym: printf value: 4ecb1554 addr: 4ecb1090
+machine_apply_elf_rel: CALL26 f100827f94000000->f100827f94000131
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1110 addr: 4ecb109c
+machine_apply_elf_rel: ADR_PREL_PG_HI21 910402b590000016->910402b590000016
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1110 addr: 4ecb10a8
+machine_apply_elf_rel: LDST64_ABS_LO12_NC 94000000f94002c0->94000000f9408ac0
+sym:     printf info: 12 other: 00 shndx: 1 value: 554 size: 70
+sym: printf value: 4ecb1554 addr: 4ecb10ac
+machine_apply_elf_rel: CALL26 9000000094000000->900000009400012a
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1118 addr: 4ecb10b0
+machine_apply_elf_rel: ADR_PREL_PG_HI21 f940000090000000->f940000090000000
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1118 addr: 4ecb10b4
+machine_apply_elf_rel: LDST64_ABS_LO12_NC 94000000f9400000->94000000f9408c00
+sym:     printf info: 12 other: 00 shndx: 1 value: 554 size: 70
+sym: printf value: 4ecb1554 addr: 4ecb10b8
+machine_apply_elf_rel: CALL26 f940028094000000->f940028094000127
+sym:     printf info: 12 other: 00 shndx: 1 value: 554 size: 70
+sym: printf value: 4ecb1554 addr: 4ecb10c8
+machine_apply_elf_rel: CALL26 f100827f94000000->f100827f94000123
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1110 addr: 4ecb10d4
+machine_apply_elf_rel: LDST64_ABS_LO12_NC 94000000f94002c0->94000000f9408ac0
+sym:     printf info: 12 other: 00 shndx: 1 value: 554 size: 70
+sym: printf value: 4ecb1554 addr: 4ecb10d8
+machine_apply_elf_rel: CALL26 5280002094000000->528000209400011f
+sym:      .data info: 03 other: 00 shndx: 7 value: 0 size: 0
+sym: .data value: 4ecb4390 addr: 4ecb10f0
+machine_apply_elf_rel: ABS64 0000000000000000->000000004ecb4390
+sym: .rodata.str1.1 info: 03 other: 00 shndx: 3 value: 0 size: 0
+sym: .rodata.str1.1 value: 4ecb4030 addr: 4ecb10f8
+machine_apply_elf_rel: ABS64 0000000000000000->000000004ecb4030
+sym: .rodata.str1.1 info: 03 other: 00 shndx: 3 value: 0 size: 0
+sym: .rodata.str1.1 value: 4ecb4050 addr: 4ecb1100
+machine_apply_elf_rel: ABS64 0000000000000000->000000004ecb4050
+sym: .rodata.str1.1 info: 03 other: 00 shndx: 3 value: 0 size: 0
+sym: .rodata.str1.1 value: 4ecb4060 addr: 4ecb1108
+machine_apply_elf_rel: ABS64 0000000000000000->000000004ecb4060
+sym: .rodata.str1.1 info: 03 other: 00 shndx: 3 value: 0 size: 0
+sym: .rodata.str1.1 value: 4ecb4066 addr: 4ecb1110
+machine_apply_elf_rel: ABS64 0000000000000000->000000004ecb4066
+sym: .rodata.str1.1 info: 03 other: 00 shndx: 3 value: 0 size: 0
+sym: .rodata.str1.1 value: 4ecb4068 addr: 4ecb1118
+machine_apply_elf_rel: ABS64 0000000000000000->000000004ecb4068
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1160 addr: 4ecb1124
+machine_apply_elf_rel: ADR_PREL_PG_HI21 910003fd90000000->910003fd90000000
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1160 addr: 4ecb112c
+machine_apply_elf_rel: LDST64_ABS_LO12_NC 94000000f9400000->94000000f940b000
+sym:     printf info: 12 other: 00 shndx: 1 value: 554 size: 70
+sym: printf value: 4ecb1554 addr: 4ecb1130
+machine_apply_elf_rel: CALL26 9400000094000000->9400000094000109
+sym: setup_arch info: 12 other: 00 shndx: 1 value: ee0 size: 3c
+sym: setup_arch value: 4ecb1ee0 addr: 4ecb1134
+machine_apply_elf_rel: CALL26 9000000094000000->900000009400036b
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1168 addr: 4ecb1138
+machine_apply_elf_rel: ADR_PREL_PG_HI21 f940000090000000->f940000090000000
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1168 addr: 4ecb113c
+machine_apply_elf_rel: LDST64_ABS_LO12_NC b9412000f9400000->b9412000f940b400
+sym: verify_sha256_digest info: 12 other: 00 shndx: 1 value: 0 size: f0
+sym: verify_sha256_digest value: 4ecb1000 addr: 4ecb1148
+machine_apply_elf_rel: CALL26 3400004094000000->3400004097ffffae
+sym: post_verification_setup_arch info: 12 other: 00 shndx: 1 value: ec8 size: c
+sym: post_verification_setup_arch value: 4ecb1ec8 addr: 4ecb1158
+machine_apply_elf_rel: JUMP26 d503201f14000000->d503201f1400035c
+sym: .rodata.str1.1 info: 03 other: 00 shndx: 3 value: 0 size: 0
+sym: .rodata.str1.1 value: 4ecb4078 addr: 4ecb1160
+machine_apply_elf_rel: ABS64 0000000000000000->000000004ecb4078
+sym:      .data info: 03 other: 00 shndx: 7 value: 0 size: 0
+sym: .data value: 4ecb4390 addr: 4ecb1168
+machine_apply_elf_rel: ABS64 0000000000000000->000000004ecb4390
+sym:    putchar info: 12 other: 00 shndx: 1 value: e90 size: 2c
+sym: putchar value: 4ecb1e90 addr: 4ecb11e0
+machine_apply_elf_rel: CALL26 17fffffb94000000->17fffffb9400032c
+sym:    putchar info: 12 other: 00 shndx: 1 value: e90 size: 2c
+sym: putchar value: 4ecb1e90 addr: 4ecb124c
+machine_apply_elf_rel: CALL26 17fffffd94000000->17fffffd94000311
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb14e8 addr: 4ecb12a4
+machine_apply_elf_rel: ADR_PREL_PG_HI21 f94000e690000007->f94000e690000007
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb14e8 addr: 4ecb12a8
+machine_apply_elf_rel: LDST64_ABS_LO12_NC 9ac224a3f94000e6->9ac224a3f94274e6
+sym:    putchar info: 12 other: 00 shndx: 1 value: e90 size: 2c
+sym: putchar value: 4ecb1e90 addr: 4ecb14e0
+machine_apply_elf_rel: CALL26 17fffffd94000000->17fffffd9400026c
+sym: .rodata.str1.1 info: 03 other: 00 shndx: 3 value: 0 size: 0
+sym: .rodata.str1.1 value: 4ecb408a addr: 4ecb14e8
+machine_apply_elf_rel: ABS64 0000000000000000->000000004ecb408a
+sym:   vsprintf info: 12 other: 00 shndx: 1 value: 170 size: 378
+sym: vsprintf value: 4ecb1170 addr: 4ecb1548
+machine_apply_elf_rel: CALL26 a8d07bfd94000000->a8d07bfd97ffff0a
+sym:   vsprintf info: 12 other: 00 shndx: 1 value: 170 size: 378
+sym: vsprintf value: 4ecb1170 addr: 4ecb15b8
+machine_apply_elf_rel: CALL26 a8d17bfd94000000->a8d17bfd97fffeee
+sym:  purgatory info: 12 other: 00 shndx: 1 value: 120 size: 3c
+sym: purgatory value: 4ecb1120 addr: 4ecb1668
+machine_apply_elf_rel: CALL26 5800001194000000->5800001197fffeae
+sym: arm64_kernel_entry info: 10 other: 00 shndx: 7 value: 128 size: 8
+sym: arm64_kernel_entry value: 4ecb44b8 addr: 4ecb166c
+machine_apply_elf_rel: LD_PREL_LO19 5800000058000011->5800000058017271
+sym: arm64_dtb_addr info: 10 other: 00 shndx: 7 value: 130 size: 8
+sym: arm64_dtb_addr value: 4ecb44c0 addr: 4ecb1670
+machine_apply_elf_rel: LD_PREL_LO19 aa1f03e158000000->aa1f03e158017280
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1ec0 addr: 4ecb1e90
+machine_apply_elf_rel: ADR_PREL_PG_HI21 f940002190000001->f940002190000001
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1ec0 addr: 4ecb1e94
+machine_apply_elf_rel: LDST64_ABS_LO12_NC f9400022f9400021->f9400022f9476021
+sym:       data info: 03 other: 00 shndx: 8 value: 0 size: 0
+sym: data value: 4ecb4508 addr: 4ecb1ec0
+machine_apply_elf_rel: ABS64 0000000000000000->000000004ecb4508
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1ed8 addr: 4ecb1ec8
+machine_apply_elf_rel: ADR_PREL_PG_HI21 f940000090000000->f940000090000000
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1ed8 addr: 4ecb1ecc
+machine_apply_elf_rel: LDST64_ABS_LO12_NC 14000000f9400000->14000000f9476c00
+sym:     printf info: 12 other: 00 shndx: 1 value: 554 size: 70
+sym: printf value: 4ecb1554 addr: 4ecb1ed0
+machine_apply_elf_rel: JUMP26 d503201f14000000->d503201f17fffda1
+sym: .rodata.str1.1 info: 03 other: 00 shndx: 3 value: 0 size: 0
+sym: .rodata.str1.1 value: 4ecb409b addr: 4ecb1ed8
+machine_apply_elf_rel: ABS64 0000000000000000->000000004ecb409b
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1f20 addr: 4ecb1ee4
+machine_apply_elf_rel: ADR_PREL_PG_HI21 910003fd90000000->910003fd90000000
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1f20 addr: 4ecb1eec
+machine_apply_elf_rel: LDST64_ABS_LO12_NC f9400001f9400000->f9400001f9479000
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1f28 addr: 4ecb1ef4
+machine_apply_elf_rel: ADR_PREL_PG_HI21 f940000090000000->f940000090000000
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1f28 addr: 4ecb1ef8
+machine_apply_elf_rel: LDST64_ABS_LO12_NC 94000000f9400000->94000000f9479400
+sym:     printf info: 12 other: 00 shndx: 1 value: 554 size: 70
+sym: printf value: 4ecb1554 addr: 4ecb1efc
+machine_apply_elf_rel: CALL26 9000000094000000->9000000097fffd96
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1f30 addr: 4ecb1f00
+machine_apply_elf_rel: ADR_PREL_PG_HI21 a8c17bfd90000000->a8c17bfd90000000
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1f30 addr: 4ecb1f08
+machine_apply_elf_rel: LDST64_ABS_LO12_NC f9400001f9400000->f9400001f9479800
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1f38 addr: 4ecb1f10
+machine_apply_elf_rel: ADR_PREL_PG_HI21 f940000090000000->f940000090000000
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1f38 addr: 4ecb1f14
+machine_apply_elf_rel: LDST64_ABS_LO12_NC 14000000f9400000->14000000f9479c00
+sym:     printf info: 12 other: 00 shndx: 1 value: 554 size: 70
+sym: printf value: 4ecb1554 addr: 4ecb1f18
+machine_apply_elf_rel: JUMP26 d503201f14000000->d503201f17fffd8f
+sym: arm64_kernel_entry info: 10 other: 00 shndx: 7 value: 128 size: 8
+sym: arm64_kernel_entry value: 4ecb44b8 addr: 4ecb1f20
+machine_apply_elf_rel: ABS64 0000000000000000->000000004ecb44b8
+sym: .rodata.str1.1 info: 03 other: 00 shndx: 3 value: 0 size: 0
+sym: .rodata.str1.1 value: 4ecb40ba addr: 4ecb1f28
+machine_apply_elf_rel: ABS64 0000000000000000->000000004ecb40ba
+sym: arm64_dtb_addr info: 10 other: 00 shndx: 7 value: 130 size: 8
+sym: arm64_dtb_addr value: 4ecb44c0 addr: 4ecb1f30
+machine_apply_elf_rel: ABS64 0000000000000000->000000004ecb44c0
+sym: .rodata.str1.1 info: 03 other: 00 shndx: 3 value: 0 size: 0
+sym: .rodata.str1.1 value: 4ecb40d0 addr: 4ecb1f38
+machine_apply_elf_rel: ABS64 0000000000000000->000000004ecb40d0
+sym:     memcpy info: 12 other: 00 shndx: 1 value: 604 size: 20
+sym: memcpy value: 4ecb1604 addr: 4ecb3de0
+machine_apply_elf_rel: JUMP26 f100031f14000000->f100031f17fff609
+sym: sha256_process info: 12 other: 00 shndx: 1 value: f90 size: 1dc8
+sym: sha256_process value: 4ecb1f90 addr: 4ecb3e18
+machine_apply_elf_rel: CALL26 eb16027f94000000->eb16027f97fff85e
+sym:     memcpy info: 12 other: 00 shndx: 1 value: 604 size: 20
+sym: memcpy value: 4ecb1604 addr: 4ecb3e60
+machine_apply_elf_rel: CALL26 aa1603e194000000->aa1603e197fff5e9
+sym: sha256_process info: 12 other: 00 shndx: 1 value: f90 size: 1dc8
+sym: sha256_process value: 4ecb1f90 addr: 4ecb3e78
+machine_apply_elf_rel: CALL26 17ffffdd94000000->17ffffdd97fff846
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb4028 addr: 4ecb3ed8
+machine_apply_elf_rel: ADR_PREL_PG_HI21 1a83804290000001->1a838042b0000001
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb4028 addr: 4ecb3ee0
+machine_apply_elf_rel: LDST64_ABS_LO12_NC 97ffff9ff9400021->97ffff9ff9401421
+sym:      .data info: 03 other: 00 shndx: 7 value: 0 size: 0
+sym: .data value: 4ecb44c8 addr: 4ecb4028
+machine_apply_elf_rel: ABS64 0000000000000000->000000004ecb44c8
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1000 addr: 4ecb4104
+machine_apply_elf_rel: PREL32 000000f000000000->000000f0ffffcefc
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1120 addr: 4ecb4130
+machine_apply_elf_rel: PREL32 0000003c00000000->0000003cffffcff0
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1170 addr: 4ecb4164
+machine_apply_elf_rel: PREL32 0000037800000000->00000378ffffd00c
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb14f0 addr: 4ecb419c
+machine_apply_elf_rel: PREL32 0000006400000000->00000064ffffd354
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1554 addr: 4ecb41bc
+machine_apply_elf_rel: PREL32 0000007000000000->00000070ffffd398
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb15c4 addr: 4ecb41f4
+machine_apply_elf_rel: PREL32 0000002400000000->00000024ffffd3d0
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb15e8 addr: 4ecb4208
+machine_apply_elf_rel: PREL32 0000001c00000000->0000001cffffd3e0
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1604 addr: 4ecb421c
+machine_apply_elf_rel: PREL32 0000002000000000->00000020ffffd3e8
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1624 addr: 4ecb4230
+machine_apply_elf_rel: PREL32 0000003400000000->00000034ffffd3f4
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1e90 addr: 4ecb425c
+machine_apply_elf_rel: PREL32 0000002c00000000->0000002cffffdc34
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1ec8 addr: 4ecb4270
+machine_apply_elf_rel: PREL32 0000000c00000000->0000000cffffdc58
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1ee0 addr: 4ecb4284
+machine_apply_elf_rel: PREL32 0000003c00000000->0000003cffffdc5c
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1f40 addr: 4ecb42bc
+machine_apply_elf_rel: PREL32 0000005000000000->00000050ffffdc84
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb1f90 addr: 4ecb42d0
+machine_apply_elf_rel: PREL32 00001dc800000000->00001dc8ffffdcc0
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb3d60 addr: 4ecb4310
+machine_apply_elf_rel: PREL32 0000012000000000->00000120fffffa50
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb3e80 addr: 4ecb4358
+machine_apply_elf_rel: PREL32 0000000c00000000->0000000cfffffb28
+sym:      .text info: 03 other: 00 shndx: 1 value: 0 size: 0
+sym: .text value: 4ecb3e8c addr: 4ecb436c
+machine_apply_elf_rel: PREL32 0000019800000000->00000198fffffb20
+kexec_load: entry = 0x4ecb1660 flags = 0xb70000
+nr_segments = 4
+segment[0].buf   = 0x7fff82b9c010
+segment[0].bufsz = 0x4820000
+segment[0].mem   = 0x48000000
+segment[0].memsz = 0x4820000
+segment[1].buf   = 0x7fff8070c010
+segment[1].bufsz = 0x248f2d1
+segment[1].mem   = 0x4c820000
+segment[1].memsz = 0x2490000
+segment[2].buf   = 0x555568c69300
+segment[2].bufsz = 0x228
+segment[2].mem   = 0x4ecb0000
+segment[2].memsz = 0x1000
+segment[3].buf   = 0x555568c69d20
+segment[3].bufsz = 0x3510
+segment[3].mem   = 0x4ecb1000
+segment[3].memsz = 0x4000
++ echo KEXEC-DEBUG-RC=0
+KEXEC-DEBUG-RC=0
+kexec -l $K --initrd=$I --command-line="earlycon=pl011,0x9000000 earlyprintk=serial,ttyS0,115200 console=ttyS0,115200 console=ttyAMA0,115200 keep_bootcon panic=10 rdinit=/bin/sh"; echo KEXEC-LOAD""-RC=$?
+[?2004hsh-5.2# [35.662] [ZRAM-SYSFS] mem_limit=0
+kexec -l $K --initrd=$I --command-line="earlycon=pl011,0x9000000 earlypriintk=serial,ttyS0,115200 console=ttyS0,115200 console=ttyAMA0,115200 keep_bootconn panic=10 rdinit=/bin/sh"; echo KEXEC-LOAD""-RC=$?[35.981] [ZRAM-SYSFS] disksize=1975517184
+
+[?2004l+ kexec -l /lib/modules/6.19.14-108.fc42.aarch64/vmlinuz --initrd=/boot/initramfs-6.19.14-108.fc42.aarch64.img '--command-line=earlycon=pl011,0x9000000 earlyprintk=serial,ttyS0,115200 console=ttyS0,115200 console=ttyAMA0,115200 keep_bootcon panic=10 rdinit=/bin/sh'
+[36.976] [ZRAM-SYSFS] uevent=change
+[38.474] [SWAPON] request flags=0000000000018064
+[38.486] [SWAPON] activate zram0
+[38.522] [EINVAL nr=317 tid=4226 a0=0000000000000000 a1=0000000000000001 a2=0000000000000000 a3=0000000000000007 a4=000000000000009d a5=0000000000000001 fdpath=/null comm=(auditd)]
+[38.592] [SWAPON] activate returned
+[39.821] [EINVAL nr=320 tid=4220 a0=0000000000000005 a1=0000000000000004 a2=000000000000008a a3=00005555c80b52a0 a4=0000000000000000 a5=716f786b7160641f fdpath=/ImageQFxpRA comm=kexec]
+Can't open (/proc/kcore).
+Can't get the symbol of _text to calculate page_offset.
+[40.115] [EINVAL nr=13 tid=4226 a0=0000000000000009 a1=00007fffc508d908 a2=0000000000000000 a3=0000000000000008 a4=0000000000000000 a5=0000000000000000 comm=auditd]
+[40.143] [EINVAL nr=13 tid=4226 a0=0000000000000013 a1=00007fffc508d908 a2=0000000000000000 a3=0000000000000008 a4=0000000000000000 a5=0000000000000000 comm=auditd]
+[40.666] [EINVAL nr=442 tid=4228 a0=00000000fffffff7 a1=0000000000000000 a2=0000000000000000 a3=0000000000000000 a4=0000000000000000 a5=0000000000000000 comm=(resolved)]
+[40.726] [wait4 ECHILD] parent=4233 reqpid=00000000ffffffff exe=/proc/self/fd/9
+[40.788] [EINVAL nr=431 tid=4235 a0=0000000000000003 a1=0000000000000005 a2=00005555783ef008 a3=0000000000000000 a4=0000000000000003 a5=0000000000000000 fdpath=anon_inode:[fscontext] comm=(sd-mkdcreds)]
+[41.294] [cred mount] fstype=tmpfs ns=23 path=/run/systemd/mount-rootfs/run/credentials
+[41.525] [wait4 ECHILD] parent=4234 reqpid=00000000ffffffff exe=/usr/bin/sh
+[41.842] [MNTCREATE] syscall=chroot flags=0x0 recursive=false source=<none> target=.
+[42.684] [EINVAL nr=317 tid=4228 a0=0000000000000000 a1=0000000000000001 a2=0000000000000000 a3=0000000000000007 a4=000000000000009d a5=0000000000000001 fdpath=/null comm=(resolved)]
++ echo KEXEC-LOAD-RC=0
+kexec -e
+KEXEC-LOAD-RC=0
+[?2004hsh-5.2# kexec -e
+[?2004l+ kexec -e
+[45.926] [wait4 ECHILD] parent=4238 reqpid=00000000ffffffff exe=/usr/bin/sh
+[46.407] driver_shutdown bus=pci addr=0000:00:0c.0 driver=ahci
+[46.458] driver_shutdown bus=pci addr=0000:00:0b.0 driver=nvme
+[46.478] driver_shutdown bus=virtio addr=virtio9 driver=virtio-snd
+[46.522] driver_shutdown bus=pci addr=0000:00:0a.0 driver=virtio-pci
+[46.538] driver_shutdown bus=virtio addr=virtio8 driver=virtio-vsock
+[46.592] driver_shutdown bus=pci addr=0000:00:09.0 driver=virtio-pci
+[46.607] driver_shutdown bus=virtio addr=virtio7 driver=virtio-rng
+[46.620] driver_shutdown bus=pci addr=0000:00:08.0 driver=virtio-pci
+[46.633] driver_shutdown bus=virtio addr=virtio6 driver=virtio-input
+[46.671] driver_shutdown bus=pci addr=0000:00:07.0 driver=virtio-pci
+[46.684] driver_shutdown bus=virtio addr=virtio5 driver=virtio-input
+[46.701] driver_shutdown bus=pci addr=0000:00:06.0 driver=virtio-pci
+[46.714] driver_shutdown bus=virtio addr=virtio4 driver=virtio-input
+[46.742] driver_shutdown bus=pci addr=0000:00:05.0 driver=virtio-pci
+[46.754] driver_shutdown bus=virtio addr=virtio3 driver=virtio-gpu
+[46.800] driver_shutdown bus=pci addr=0000:00:04.0 driver=virtio-pci
+[46.813] driver_shutdown bus=virtio addr=virtio2 driver=virtio-net
+[46.842] driver_shutdown bus=pci addr=0000:00:03.0 driver=virtio-pci
+[46.854] driver_shutdown bus=virtio addr=virtio1 driver=virtio-blk
+[46.891] driver_shutdown bus=pci addr=0000:00:02.0 driver=virtio-pci
+[46.904] driver_shutdown bus=virtio addr=virtio0 driver=virtio-blk
+[46.921] [VBLK-FAIL] stage=poisoned-turn type=0000000000000000 sector=0000000000300270 bytes=0000000000001000 error=5
+[46.934] driver_shutdown bus=pci addr=0000:00:01.0 driver=virtio-pci
+[46.946] driver_shutdown bus=platform addr=serial0 driver=pl011-serial
+[46.959] kexec: starting new kernel
+[    0.000000] Booting Linux on physical CPU 0x0000000000 [0x410fd083]
+[    0.000000] Linux version 6.19.14-108.fc42.aarch64 (mockbuild@0ba9caaa812946ada17603e1890a23ef) (gcc (GCC) 15.2.1 20260123 (Red Hat 15.2.1-7), GNU ld version 2.44-12.fc42) #1 SMP PREEMPT_DYNAMIC Thu May 21 18:09:29 UTC 2026
+[    0.000000] KASLR disabled due to lack of seed
+[    0.000000] earlycon: pl11 at MMIO 0x0000000009000000 (options '')
+[    0.000000] printk: legacy bootconsole [pl11] enabled
+[    0.000000] printk: debug: skip boot console de-registration.
+[    0.000000] efi: UEFI not found.
+[    0.000000] OF: reserved mem: Reserved memory: No reserved-memory node in the DT
+[    0.000000] NUMA: Faking a node at [mem 0x0000000040000000-0x00000000bfffefff]
+[    0.000000] NODE_DATA(0) allocated [mem 0xb6ff0b40-0xb70078bf]
+[    0.000000] Zone ranges:
+[    0.000000]   DMA      [mem 0x0000000040000000-0x00000000bfffefff]
+[    0.000000]   DMA32    empty
+[    0.000000]   Normal   empty
+[    0.000000]   Device   empty
+[    0.000000] Movable zone start for each node
+[    0.000000] Early memory node ranges
+[    0.000000]   node   0: [mem 0x0000000040000000-0x0000000043ffffff]
+[    0.000000]   node   0: [mem 0x0000000044020000-0x00000000477c3fff]
+[    0.000000]   node   0: [mem 0x0000000047ee4000-0x0000000047ef3fff]
+[    0.000000]   node   0: [mem 0x0000000048000000-0x00000000b754cfff]
+[    0.000000]   node   0: [mem 0x00000000be532000-0x00000000be586fff]
+[    0.000000]   node   0: [mem 0x00000000bfff0000-0x00000000bfffefff]
+[    0.000000] Initmem setup node 0 [mem 0x0000000040000000-0x00000000bfffefff]
+[    0.000000] On node 0, zone DMA: 32 pages in unavailable ranges
+[    0.000000] On node 0, zone DMA: 1824 pages in unavailable ranges
+[    0.000000] On node 0, zone DMA: 268 pages in unavailable ranges
+[    0.000000] On node 0, zone DMA: 28645 pages in unavailable ranges
+[    0.000000] On node 0, zone DMA: 6761 pages in unavailable ranges
+[    0.000000] On node 0, zone DMA: 1 pages in unavailable ranges
+[    0.000000] cma: Reserved 64 MiB at 0x00000000b0e00000
+[    0.000000] Failed to find device node for boot cpu
+[    0.000000] missing boot CPU MPIDR, not enabling secondaries
+[    0.000000] percpu: cpu 0 has no node -1 or node-local memory
+[    0.000000] percpu: Embedded 57 pages/cpu s107608 r8192 d117672 u233472
+[    0.000000] Detected PIPT I-cache on CPU0
+[    0.000000] CPU features: detected: GICv3 CPU interface
+[    0.000000] CPU features: detected: Spectre-v2
+[    0.000000] CPU features: detected: Spectre-v3a
+[    0.000000] CPU features: detected: Spectre-v4
+[    0.000000] CPU features: detected: Spectre-BHB
+[    0.000000] CPU features: detected: ARM erratum 1742098
+[    0.000000] CPU features: detected: ARM errata 1165522, 1319367, or 1530923
+[    0.000000] alternatives: applying boot alternatives
+[    0.000000] Kernel command line: earlycon=pl011,0x9000000 earlyprintk=serial,ttyS0,115200 console=ttyS0,115200 console=ttyAMA0,115200 keep_bootcon panic=10 rdinit=/bin/sh
+[    0.000000] Unknown kernel command line parameters "earlyprintk=serial,ttyS0,115200", will be passed to user space.
+[    0.000000] printk: log buffer data + meta data: 262144 + 917504 = 1179648 bytes
+[    0.000000] Dentry cache hash table entries: 262144 (order: 9, 2097152 bytes, linear)
+[    0.000000] Inode-cache hash table entries: 131072 (order: 8, 1048576 bytes, linear)
+[    0.000000] software IO TLB: SWIOTLB bounce buffer size adjusted to 1MB
+[    0.000000] software IO TLB: area num 1.
+[    0.000000] software IO TLB: mapped [mem 0x00000000b0a00000-0x00000000b0c00000] (2MB)
+[    0.000000] Fallback order for Node 0: 0 
+[    0.000000] Unable to handle kernel read from unreadable memory at virtual address 00000000000021c8
+[    0.000000] Mem abort info:
+[    0.000000]   ESR = 0x0000000096000004
+[    0.000000]   EC = 0x25: DABT (current EL), IL = 32 bits
+[    0.000000]   SET = 0, FnV = 0
+[    0.000000]   EA = 0, S1PTW = 0
+[    0.000000]   FSC = 0x04: level 0 translation fault
+[    0.000000] Data abort info:
+[    0.000000]   ISV = 0, ISS = 0x00000004, ISS2 = 0x00000000
+[    0.000000]   CM = 0, WnR = 0, TnD = 0, TagAccess = 0
+[    0.000000]   GCS = 0, Overlay = 0, DirtyBit = 0, Xs = 0
+[    0.000000] [00000000000021c8] user address but active_mm is swapper
+[    0.000000] Internal error: Oops: 0000000096000004 [#1]  SMP
+[    0.000000] Modules linked in:
+[    0.000000] CPU: 0 UID: 0 PID: 0 Comm: swapper Not tainted 6.19.14-108.fc42.aarch64 #1 PREEMPT(undef) 
+[    0.000000] pstate: 004000c5 (nzcv daIF +PAN -UAO -TCO -DIT -SSBS BTYPE=--)
+[    0.000000] pc : nr_free_zone_pages+0x3c/0xe8
+[    0.000000] lr : build_all_zonelists+0x2c/0xe0
+[    0.000000] sp : ffff800083813dd0
+[    0.000000] x29: ffff800083813dd0 x28: 000000004ecb1660 x27: 000000000000008e
+[    0.000000] x26: ffff800083827000 x25: 00000000ffffffff x24: ffff800082c70480
+[    0.000000] x23: ffff80008214e208 x22: ffff800082c70480 x21: ffff80008381fb40
+[    0.000000] x20: 0000000000000000 x19: ffff800083e05000 x18: 00000000fffffffc
+[    0.000000] x17: 3030306330623030 x16: 3030303030307830 x15: 000000000000000a
+[    0.000000] x14: 0000000000000001 x13: 0000000000000001 x12: 0000000000000000
+[    0.000000] x11: 0000000000000001 x10: 0000000000000001 x9 : 0000000000000000
+[    0.000000] x8 : ffff800083836368 x7 : ffffffffffffffff x6 : 000000000000003f
+[    0.000000] x5 : 00000000000021c0 x4 : 0000000000000008 x3 : 0000000000000030
+[    0.000000] x2 : 00000000000021c0 x1 : 0000000000000003 x0 : 0000000000000000
+[    0.000000] Call trace:
+[    0.000000]  nr_free_zone_pages+0x3c/0xe8 (P)
+[    0.000000]  build_all_zonelists+0x2c/0xe0
+[    0.000000]  mm_core_init+0x30/0x1a0
+[    0.000000]  start_kernel+0x210/0x4c8
+[    0.000000]  __primary_switched+0x88/0x98
+[    0.000000] Code: 911f4000 f8627800 d2843802 8b020005 (b961c800) 
+[    0.000000] ---[ end trace 0000000000000000 ]---
+[    0.000000] Kernel panic - not syncing: Attempted to kill the idle task!
+[    0.000000] Rebooting in 10 seconds..
+[    0.000000] Reboot failed -- System halted

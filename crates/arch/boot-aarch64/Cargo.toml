@@ -9,6 +9,8 @@ path = "src/lib.rs"
 
 [dependencies]
 boot-info = { path = "../../shared/boot-info" }
+fdt = { path = "../../shared/fdt" }
+crc = { path = "../../shared/crc" }
 cmdline = { path = "../../kernel/cmdline" }
 bootparam = { path = "../../shared/bootparam" }
 kmain = { path = "../../kernel/kmain" }

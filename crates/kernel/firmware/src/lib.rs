@@ -19,6 +19,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 extern crate alloc;
 
 pub mod acpi;
+pub mod fdt;
 pub mod smbios;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

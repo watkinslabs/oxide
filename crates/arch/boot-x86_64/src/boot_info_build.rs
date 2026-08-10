@@ -25,7 +25,7 @@ pub unsafe fn stub_boot_info() -> BootInfo {
         hhdm_offset: 0,
         rsdp_pa: 0,
         framebuffer: boot_info::BootFramebuffer::EMPTY,
-        bsp_lapic_id: 0,
+        dtb_pa: 0, dtb_len: 0, dtb_crc32: 0, bsp_lapic_id: 0,
         _pad: 0,
     }
 }
@@ -85,7 +85,7 @@ static BOOT_INFO_STORAGE: BootInfoStorage = BootInfoStorage(UnsafeCell::new(Boot
     hhdm_offset: 0,
     rsdp_pa: 0,
     framebuffer: boot_info::BootFramebuffer::EMPTY,
-    bsp_lapic_id: 0,
+    dtb_pa: 0, dtb_len: 0, dtb_crc32: 0, bsp_lapic_id: 0,
     _pad: 0,
 }));
 
@@ -173,7 +173,7 @@ pub(crate) unsafe fn build_boot_info() -> &'static BootInfo {
         framebuffer,
         // The handoff has no CPU identity. Read the architectural initial
         // APIC id before the LAPIC mapping exists; ACPI supplies the rest.
-        bsp_lapic_id: hal_x86_64::initial_apic_id(),
+        dtb_pa: 0, dtb_len: 0, dtb_crc32: 0, bsp_lapic_id: hal_x86_64::initial_apic_id(),
         _pad: 0,
     }); }
     // SAFETY: the write above fully initialized the static slot, whose lifetime

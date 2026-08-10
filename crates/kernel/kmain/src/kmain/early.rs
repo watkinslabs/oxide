@@ -85,6 +85,14 @@ pub unsafe fn init(info: &BootInfo) {
 
     // SAFETY: PMM up; HHDM offset known; single-CPU pre-init.
     unsafe { pmm::user_as::init(info.hhdm_offset); }
+    // Take ownership of the firmware's device tree. Its pages are already
+    // carved out of usable RAM by the boot memmap, so reaching it through the
+    // direct map stays valid for the life of the kernel; this is what lets
+    // `/sys/firmware/fdt` and `/sys/firmware/devicetree` exist later in init.
+    // SAFETY: after the direct map is known; `dtb_pa`/`dtb_len` name a
+    // reserved-in-the-memmap physical extent, and `retain` re-validates the
+    // header before publishing anything.
+    unsafe { retain_device_tree(info); }
     // Attach the persistent store to the region reserved above: enumerate
     // whatever the previous boot left there, then start recording. After the
     // direct map, because that is how the region is reached.
@@ -120,6 +128,21 @@ pub unsafe fn init(info: &BootInfo) {
     drv_virtio_input::procfs::init();
     fbdev::devfs::init(); devpts::init();
     debug_boot_smokes();
+}
+
+/// Publish the boot-retained device tree at its direct-map address. No-op when
+/// the handoff carries none (x86_64, and any arm64 firmware describing itself
+/// with ACPI only) or when the direct map is not established.
+/// # SAFETY: caller runs on the boot path after `hhdm_offset` is live; the
+/// extent named by `dtb_pa`/`dtb_len` is reserved in the boot memmap.
+/// # C: O(1)
+#[cfg(target_os = "oxide-kernel")]
+unsafe fn retain_device_tree(info: &BootInfo) {
+    if info.dtb_pa == 0 || info.dtb_len == 0 || info.hhdm_offset == 0 { return; }
+    let va = info.hhdm_offset.wrapping_add(info.dtb_pa);
+    // SAFETY: `va` is the direct-map mirror of a memmap-reserved physical
+    // extent of `dtb_len` bytes, which stays mapped for the life of the kernel.
+    unsafe { firmware::fdt::retain(va, info.dtb_len, info.dtb_crc32); }
 }
 
 #[cfg(target_os = "oxide-kernel")]

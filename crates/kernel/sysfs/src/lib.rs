@@ -28,6 +28,7 @@ use vfs::{default_file_ops, mk_mode, FileOps, FileType, Ino, Inode,
 pub mod block;
 pub mod bus;
 pub mod char_class;
+pub mod devicetree;
 pub mod dmi;
 pub mod drm;
 pub mod input;
@@ -132,8 +133,15 @@ impl FileOps for BodyFileOps {
 /// Build a read-only attribute inode serving `body`. Body is built at lookup
 /// time so it reflects current state; read() serves windowed slices. # C: O(1)
 pub fn make_body_inode(body: Vec<u8>, ino: Ino) -> InodeRef {
+    make_body_inode_perm(body, ino, RO_PERM)
+}
+
+/// `make_body_inode` with an explicit permission. Not every sysfs attribute is
+/// world-readable: the raw device tree and `security-` properties are
+/// root-only, and that distinction is part of the ABI, not a detail. # C: O(1)
+pub fn make_body_inode_perm(body: Vec<u8>, ino: Ino, perm: u16) -> InodeRef {
     let size = body.len() as u64;
-    InodeBuilder::new(ino, mk_mode(FileType::Regular, RO_PERM),
+    InodeBuilder::new(ino, mk_mode(FileType::Regular, perm),
         crate::kobject::attr_inode_ops(), Arc::new(BodyFileOps))
         .size(size)
         .private(Arc::new(BodyData { body }))
@@ -182,6 +190,8 @@ pub fn init() {
     drm::init();
     input::init();
     dmi::init();
+    // Device tree, when the firmware provided one (arm64 DT boots).
+    devicetree::init();
     // Published last: the unified view enumerates whatever the class and
     // bus roots hold, so every registration above is already visible in it.
     register("/sys/subsystem", subsystem::make_sys_subsystem_inode());
