@@ -43,11 +43,12 @@ static ARGS: ArgsBuf = ArgsBuf(UnsafeCell::new([0; EFI_CMDLINE_MAX]));
 /// Build the fallback device tree and return its physical address, or 0 if it
 /// could not be built.
 ///
-/// The tree describes RAM, because that is what a device tree is for and what
-/// a kernel handed this one cannot boot without: the EFI conventional-memory
-/// blocks captured moments earlier become the `/memory` node, so the
-/// device-tree answer and the EFI-map answer are the same answer written twice
-/// rather than two answers that can disagree.
+/// The tree describes RAM only when it has no firmware handoff to offer: the
+/// EFI conventional-memory blocks captured moments earlier become the
+/// `/memory` node. With a handoff it carries `/chosen` and nothing else, and
+/// the firmware map is the memory description — one answer rather than two
+/// that can disagree, and the only shape a kernel will read the firmware
+/// tables from.
 ///
 /// It also carries the firmware handoff — the system table's address and the
 /// retained EFI memory map — which is what makes the tree a description of a

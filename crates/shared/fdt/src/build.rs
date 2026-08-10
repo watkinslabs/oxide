@@ -267,7 +267,21 @@ pub fn uefi_stub_tree(buf: &mut [u8], h: &UefiHandoff) -> Option<usize> {
     b.begin_node(b"");
     b.prop_u32(b"#address-cells", 2);
     b.prop_u32(b"#size-cells", 2);
-    if let Some((first, _)) = h.memory.first() {
+    // A STUB TREE WHEN THE FIRMWARE HANDOFF IS PUBLISHED — no `/memory`, no
+    // node of any kind beside `/chosen`.
+    //
+    // This is not economy. A kernel decides between the tree and the firmware
+    // tables by asking whether the tree is a stub, and ANY node beside
+    // `/chosen` makes it prefer the tree. Writing both then produces the worst
+    // of the two: the firmware tables are ignored, and the tree that beat them
+    // describes RAM and nothing else — no processors, no interrupt controller,
+    // no timer. Measured exactly that way: the handoff was found and reported,
+    // and the kernel still died with no processor to assign memory to.
+    //
+    // A kernel taking the firmware path loses nothing by it: it discards the
+    // tree's memory and uses the firmware map, which is the fuller answer.
+    let describe_memory = h.firmware.is_none();
+    if let Some((first, _)) = h.memory.first().filter(|_| describe_memory) {
         let mut name = [0u8; MEMORY_NODE_NAME_MAX];
         let n = memory_node_name(&mut name, *first);
         b.begin_node(&name[..n]);

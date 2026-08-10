@@ -167,6 +167,12 @@ def main():
            "ls -l $K $I; echo KEXEC-PATHS\"\"-OK")
     c.wait(marker("KEXEC-PATHS"), 60, "the second kernel's paths")
 
+    # What the tree hands the next kernel. On a machine that describes itself
+    # in firmware tables this is the whole machine description, and a run that
+    # ends in a silent new kernel needs to be able to say whether it was there.
+    c.send("ls /proc/device-tree/chosen 2>&1 | tr '\n' ' '; echo; echo CHOSEN\"\"-OK")
+    c.wait(marker("CHOSEN"), 30, "the handover properties in the running tree")
+
     if a.crash:
         # The reservation has to exist before anything can be staged into it,
         # and it is the boot line that decides — a guest launched without
@@ -188,6 +194,19 @@ def main():
     # relocation that did not land, and is the false negative most likely to be
     # believed. Linux accepts several `console=` and prints on all of them.
     consoles = "console=ttyS0,115200 console=ttyAMA0,115200"
+    # An EARLY console too, so a kernel that dies before its real console is up
+    # still says why. Without one, "the jump did not land" and "the new kernel
+    # faulted in early memory setup" are both silence, and the first reading is
+    # the one that gets believed.
+    #
+    # Spelled out per port rather than bare `earlycon`: the bare form takes its
+    # device from a console description in the firmware tables, which the
+    # machine this runs on need not publish — and when it does not, the option
+    # is accepted and silently does nothing.
+    c.send("uname -m; echo ARCH\"\"-OK")
+    c.wait(marker("ARCH"), 30, "the guest's architecture")
+    early = "earlycon=pl011,0x9000000" if b"aarch64" in c.seen else "earlycon=uart8250,io,0x3f8"
+    consoles = early + " " + consoles
     c.send(f'kexec {verb} $K --initrd=$I --command-line="{consoles} '
            f'panic=10 rdinit=/bin/sh"; echo KEXEC-LOAD\"\"-RC=$?')
     c.wait(re.compile(rb"KEXEC-LOAD-RC=0\b"), 120,

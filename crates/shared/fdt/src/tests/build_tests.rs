@@ -24,6 +24,16 @@ const FW: EfiFirmware = EfiFirmware {
     desc_ver: 1,
 };
 
+/// The tree a boot that retained NO handoff synthesizes: RAM is all it has to
+/// say, so it says it.
+fn no_handoff_tree(buf: &mut [u8]) -> usize {
+    uefi_stub_tree(buf, &UefiHandoff {
+        bootargs: b"console=ttyAMA0 root=/dev/oxide0",
+        memory: &RAM,
+        firmware: None,
+    }).expect("build")
+}
+
 /// The tree the arm64 UEFI stub synthesizes when firmware publishes none.
 fn stub_tree(buf: &mut [u8]) -> usize {
     uefi_stub_tree(buf, &UefiHandoff {
@@ -56,14 +66,14 @@ fn the_root_carries_the_standard_cell_counts() {
     assert_eq!(find_prop(blob, root, b"#size-cells"), Some(&2u32.to_be_bytes()[..]));
 }
 
-/// The tree must describe RAM. A kernel handed one without `/memory` — and
-/// without the EFI handoff that would substitute for it — panics in
-/// early page-table setup, before it can say why — which is what a relocated
-/// kernel did when this node was left out.
+/// A tree with no handoff to offer must describe RAM. A kernel handed one
+/// without `/memory` — and without the EFI handoff that would substitute for
+/// it — panics in early page-table setup before it can say why, which is what
+/// a relocated kernel did when this node was left out.
 #[test]
 fn every_memory_region_reaches_the_memory_node() {
     let mut buf = [0u8; 4096];
-    let n = stub_tree(&mut buf);
+    let n = no_handoff_tree(&mut buf);
     let blob = &buf[..n];
     let mut out = [(0u64, 0u64); 8];
     assert_eq!(crate::memory_regions(blob, &mut out), RAM.len());
@@ -72,10 +82,35 @@ fn every_memory_region_reaches_the_memory_node() {
     assert_eq!(crate::first_memory_region(blob), Some(RAM[0]));
 }
 
+/// A TREE CARRYING THE HANDOFF CARRIES NOTHING ELSE.
+///
+/// A kernel chooses between the tree and the firmware tables by asking whether
+/// the tree is a stub, and any node beside `/chosen` decides it for the tree.
+/// A tree holding both therefore gets the worst of the two: the firmware
+/// tables ignored, and a winner that describes RAM and nothing else — no
+/// processors, no interrupt controller, no timer. Measured: a relocated kernel
+/// found and reported the handoff and still died with no processor to assign
+/// memory to.
+#[test]
+fn a_tree_carrying_the_firmware_handoff_has_no_node_beside_chosen() {
+    let mut buf = [0u8; 4096];
+    let n = stub_tree(&mut buf);
+    let mut depth1: Vec<Vec<u8>> = Vec::new();
+    crate::walk(&buf[..n], |ev| {
+        if let Event::BeginNode { name, depth } = ev {
+            if depth == 1 { depth1.push(Vec::from(name)); }
+        }
+        Flow::Continue
+    }).expect("walk");
+    assert_eq!(depth1, alloc::vec![b"chosen".to_vec()]);
+    assert_eq!(crate::first_memory_region(&buf[..n]), None,
+               "the firmware map is the memory description, not this");
+}
+
 #[test]
 fn the_memory_node_is_named_and_typed_the_way_a_reader_expects() {
     let mut buf = [0u8; 4096];
-    let n = stub_tree(&mut buf);
+    let n = no_handoff_tree(&mut buf);
     let blob = &buf[..n];
     let mut name: Vec<u8> = Vec::new();
     crate::walk(blob, |ev| {
@@ -146,7 +181,7 @@ fn a_buffer_too_small_yields_nothing_rather_than_a_partial_blob() {
     for size in [0usize, 8, 40, 48, 64] {
         let mut buf = alloc::vec![0u8; size];
         assert!(uefi_stub_tree(&mut buf, &UefiHandoff {
-            bootargs: b"console=ttyAMA0", memory: &RAM, firmware: Some(FW),
+            bootargs: b"console=ttyAMA0", memory: &RAM, firmware: None,
         }).is_none(), "size {size}");
     }
 }
