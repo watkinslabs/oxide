@@ -29,6 +29,9 @@ pmm  = { path = "../mm-pmm" }
 drv-zram = { path = "../../drivers/drv-zram" }
 sched = { path = "../sched" }
 cmdline = { path = "../cmdline" }
+# `/sys/kernel/kexec_*` report the two image slots and the reserved crash region
+# the load and panic paths themselves use.
+kexec = { path = "../kexec" }
 
 [dev-dependencies]
 fdt = { path = "../../shared/fdt", features = ["alloc", "fixture"] }

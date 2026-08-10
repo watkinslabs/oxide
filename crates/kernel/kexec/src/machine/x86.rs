@@ -7,9 +7,9 @@
 //   rcx = physical address of the identity page-table root
 //   r8  = physical address of this code's own `identity` label
 // It is CALLED at the control page's kernel (direct-map) address and never
-// returns. The reference passes the first four in the same registers; it
-// computes the fifth from a label difference in the assembler, which this port
-// computes in Rust instead — same value, arrived at where a test can see it.
+// returns. The fifth argument is a label difference an assembler could
+// compute; it is computed in Rust instead — same value, arrived at where a
+// test can see it.
 //
 // WHY IT RUNS FROM THE CONTROL PAGE. See `machine.rs`: the pages it copies
 // include the ones the running kernel occupies. It first switches to the
@@ -47,6 +47,22 @@ core::arch::global_asm!(
     "oxide_kexec_relocate_start:",
     // rdi = head, rsi = pa_control, rdx = start, rcx = pa_pgt, r8 = pa_identity.
     "    cli",
+    // Force every data segment register to the kernel data selector while the
+    // table that describes it is still live. Loading a selector is the ONLY
+    // thing that refreshes the hidden descriptor a segment register carries,
+    // so doing it here means those descriptors hold known-good flat ring-0
+    // segments across the window in which no descriptor table exists at all.
+    // Without it this code is correct only because it happens never to touch a
+    // segment register in that window — a property nothing would check.
+    //
+    // Nothing after this instruction may reference per-CPU state: loading GS
+    // with a selector replaces its base with the descriptor's, which is zero.
+    "    mov  eax, {kernel_ds}",
+    "    mov  ds, eax",
+    "    mov  es, eax",
+    "    mov  ss, eax",
+    "    mov  fs, eax",
+    "    mov  gs, eax",
     // Invalidate the IDT and the GDT with a zero-limit descriptor built on the
     // kernel stack — the last kernel-stack access this code makes. Both point
     // into an address space that is about to stop existing; leaving them live
@@ -78,6 +94,19 @@ core::arch::global_asm!(
     ".globl oxide_kexec_identity",
     "oxide_kexec_identity:",
     // rdi = head, rdx = start, r9 = pgt, r13 = cr4.
+    // Install the flat descriptor table that travelled here inside this blob.
+    // The entry sequence above invalidated the running kernel's, and leaving
+    // nothing behind means the first segment load anything does from here on —
+    // in this code, in a purgatory, or in the image itself before it builds
+    // its own table — faults with no table to describe a handler. Legal only
+    // at this point: the table's address is the one the identity map
+    // describes, which is the map now in force.
+    "    lea  rax, [rip + oxide_kexec_gdt]",
+    "    sub  rsp, 16",
+    "    mov  word ptr [rsp + 6], {gdt_limit}",
+    "    mov  [rsp + 8], rax",
+    "    lgdt [rsp + 6]",
+    "    add  rsp, 16",
     "    push 0",                        // jump-back entry the purgatory reads
     "    push rdx",                      // new kernel entry, consumed by the final ret
     // CR4 first, so CET is off before CR0.WP is cleared.
@@ -147,6 +176,17 @@ core::arch::global_asm!(
     "    jmp  2b",
     "7:",
     "    ret",
+
+    // The table itself, travelling inside the blob so it lands in the control
+    // page alongside the code that installs it — the one page guaranteed to
+    // sit outside every destination the relocation writes.
+    ".balign 16",
+    ".globl oxide_kexec_gdt",
+    "oxide_kexec_gdt:",
+    "    .quad {gdt_null}",
+    "    .quad {gdt_code32}",             // selector 0x08
+    "    .quad {gdt_code64}",             // selector 0x10
+    "    .quad {gdt_data}",               // selector 0x18
     ".size oxide_kexec_relocate_start, . - oxide_kexec_relocate_start",
     cr4_no_pge = const !(plan::CR4_PGE as i64),
     cr4_keep = const plan::CR4_KEEP as u32,
@@ -159,14 +199,19 @@ core::arch::global_asm!(
     ind_done = const crate::uapi::IND_DONE as u32,
     ind_source = const crate::uapi::IND_SOURCE as u32,
     qwords_per_page = const (PAGE_SIZE / 8) as u32,
+    kernel_ds = const hal_x86_64::KERNEL_DS as u32,
+    gdt_limit = const plan::GDT_LIMIT as u16,
+    gdt_null = const plan::GDT_ENTRY_NULL as i64,
+    gdt_code32 = const plan::GDT_ENTRY_CODE32 as i64,
+    gdt_code64 = const plan::GDT_ENTRY_CODE64 as i64,
+    gdt_data = const plan::GDT_ENTRY_DATA as i64,
 );
 
-// The blob's bounds come from the LINKER, exactly as the reference takes
-// `__relocate_kernel_start` / `__relocate_kernel_end` from `vmlinux.lds.S`,
-// and for the same two reasons: nothing else can be placed between them, and
-// the "does it fit in a control page" check is a link failure rather than a
-// runtime one. The linker script also asserts the section STARTS with the
-// entry point, which is what lets the copy go to offset 0 of the page.
+// The blob's bounds come from the LINKER, for two reasons: nothing else can
+// be placed between them, and the "does it fit in a control page" check is a
+// link failure rather than a runtime one. The linker script also asserts the
+// section STARTS with the entry point, which is what lets the copy go to
+// offset 0 of the page.
 extern "C" {
     static __relocate_kernel_start: u8;
     static __relocate_kernel_end: u8;
@@ -216,7 +261,11 @@ pub fn prepare<F: Frames>(image: &mut KImage, f: &mut F) -> KResult<()> {
     for i in 0..f.ram_range_count() {
         if let Some(r) = f.ram_range(i) { ram.push(r); }
     }
-    let ranges = plan::ranges_for(&ram, &image.segments);
+    let mut fw: Vec<(u64, u64)> = Vec::new();
+    for i in 0..f.firmware_range_count() {
+        if let Some(r) = f.firmware_range(i) { fw.push(r); }
+    }
+    let ranges = plan::ranges_for(&ram, &image.segments, &fw);
     if ranges.is_empty() { return Err(Error::Inval); }
 
     let mut pool: Vec<u64> = Vec::new();
@@ -245,9 +294,9 @@ pub fn prepare<F: Frames>(image: &mut KImage, f: &mut F) -> KResult<()> {
     // The trampoline is CALLED at this page's kernel address, so that mapping
     // has to permit instruction fetch. Narrow it explicitly and then ASSERT the
     // result, rather than inheriting executability from how the boot tables
-    // happened to build the direct map — the reference narrows the same page
-    // for the same reason, and a kernel that only works because nothing set a
-    // no-execute control has no check that would notice that changing.
+    // happened to build the direct map — a kernel that only works because
+    // nothing set a no-execute control has no check that would notice that
+    // changing.
     //
     // Read-only as well as executable: the copy above is the last write this
     // page takes through its kernel address. The trampoline's own stack writes
@@ -278,18 +327,43 @@ pub fn cleanup(image: &KImage) {
     let _ = pmm::setup::set_memory_rw_nx(hhdm.wrapping_add(image.control_code_page), 1);
 }
 
-/// Mask every interrupt source the new kernel has not taken ownership of yet.
+/// Stop the machine: every other CPU halted, every interrupt source silent,
+/// and the interrupt hardware handed back in the state firmware left it in.
 ///
-/// The reference's `machine_shutdown` does the same in the same order: local
-/// interrupts off, then the I/O APIC's redirection entries masked.
+/// THE ORDER IS THE CONTRACT, and each step is where it is for a reason a
+/// different order would break:
+///
+/// 1. The I/O APIC's redirection entries are cleared FIRST, while every local
+///    APIC is still able to accept and retire what is already in flight. Some
+///    implementations wedge if an interrupt is delivered to a local APIC that
+///    is midway through being disabled, so the source is stopped before the
+///    sink.
+/// 2. Local interrupts off on this CPU, then every other CPU halted. This CPU
+///    performs the relocation, so it is the one that must survive.
+/// 3. The local APIC taken down — every local-vector entry masked, the APIC
+///    software-disabled.
+/// 4. The boot interrupt mode restored: the APIC re-enabled on the spurious
+///    vector with the legacy pin delivering ExtINT and the NMI pin delivering
+///    NMI. Whatever runs next did not program this hardware and is entitled to
+///    find it the way a machine powers on — a kernel handed a fully masked
+///    APIC gets no legacy delivery at all before it builds its own routing.
+///
 /// # SAFETY: irreversible; the caller is committed to leaving this kernel.
-unsafe fn mask_interrupts() {
+unsafe fn machine_shutdown() {
+    // SAFETY: the I/O APIC window was mapped at boot; clearing every
+    // redirection entry stops device lines from asserting during the copy and
+    // retires any level assertion still in service.
+    unsafe { hal_x86_64::ioapic::clear_all() };
     // SAFETY: CPL 0; disabling interrupts is always legal and nothing after
     // this point re-enables them.
     unsafe { core::arch::asm!("cli", options(nomem, nostack)) };
-    // SAFETY: the I/O APIC window was mapped at boot; masking every
-    // redirection entry stops device lines from asserting during the copy.
-    unsafe { hal_x86_64::ioapic::mask_all() };
+    quiesce::stop_other_cpus();
+    // SAFETY: this CPU has interrupts masked and is the only one still
+    // running, so no delivery can be in flight while the entries are masked.
+    unsafe { arch_irq::lapic::shutdown() };
+    // SAFETY: same — the local APIC has just been taken down and this CPU is
+    // its only writer.
+    unsafe { arch_irq::lapic::restore_boot_irq_mode() };
 }
 
 /// `machine_kexec`. Allocates nothing: everything it needs was built by
@@ -297,10 +371,9 @@ unsafe fn mask_interrupts() {
 /// # C: O(image size)
 pub fn kexec(image: &KImage) -> KResult<()> {
     if image.arch_pgt == 0 || image.control_code_page == 0 { return Err(Error::Inval); }
-    quiesce::stop_other_cpus();
-    // SAFETY: the machine is committed; every other CPU has been asked to
-    // halt and this CPU performs the relocation with nothing left to preempt it.
-    unsafe { mask_interrupts() };
+    // SAFETY: the machine is committed; this stops every other CPU and silences
+    // every interrupt source, and nothing after it can be undone.
+    unsafe { machine_shutdown() };
     klog::announce("kexec: starting new kernel");
     let entry = pmm::user_as::hhdm_offset().wrapping_add(image.control_code_page);
     let ident = image.control_code_page + image.arch_entry_off;

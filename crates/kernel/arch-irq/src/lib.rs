@@ -381,6 +381,9 @@ pub fn alloc_arm_lpi() -> Option<u32> {
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))] pub mod gic;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))] pub mod its;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))] pub mod lapic;
+// Ungated: the local-APIC teardown encoding is decided here so it is checkable
+// without a machine. Its `apply` child carries the target gate.
+pub mod lapic_shutdown;
 mod deadline;
 pub mod tick;
 pub use deadline::install as install_timer_deadline_hook;

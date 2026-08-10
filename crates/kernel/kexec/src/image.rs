@@ -41,10 +41,10 @@ pub struct KImage {
     /// Address handed to the new kernel as its boot argument — the device tree
     /// on aarch64, where the boot protocol puts it in `x0`.
     ///
-    /// Zero for a `kexec_load(2)` image on every architecture: the reference
-    /// sets its equivalent only in the file-load path, because the caller of
-    /// `kexec_load` supplies whatever the new kernel needs inside its own
-    /// segments and its purgatory is what installs it.
+    /// Zero for a `kexec_load(2)` image on every architecture: only the
+    /// file-load path sets it, because the caller of `kexec_load` supplies
+    /// whatever the new kernel needs inside its own segments and its purgatory
+    /// is what installs it.
     pub boot_arg: u64,
     /// Default (reboot) or crash image.
     pub ty: ImageType,
@@ -66,6 +66,18 @@ pub struct KImage {
     /// `KEXEC_PRESERVE_CONTEXT` was requested.
     pub preserve_context: bool,
     cursor: Loc,
+    /// Next byte a CRASH image's control page is taken from, and one past the
+    /// last byte it may use. Both zero on a default image, which draws its
+    /// control pages from the allocator instead.
+    ///
+    /// A crash image cannot use the allocator for these. Its control pages
+    /// hold the identity tables and the trampoline that will still be
+    /// executing after this kernel has stopped, and a page from the allocator
+    /// is a page this kernel is still using — it would be overwritten, by the
+    /// running kernel before the panic and by nothing at all afterwards, and
+    /// the relocation would walk tables that had become someone's heap.
+    control_cursor: u64,
+    control_region_end: u64,
     control_pages: Vec<u64>,
     dest_pages: Vec<u64>,
     unusable_pages: Vec<u64>,
@@ -82,10 +94,28 @@ impl KImage {
             start, ty, head: 0, boot_arg: 0, control_code_page: 0, swap_page: 0,
             arch_pgt: 0, arch_entry_off: 0, segments,
             preserve_context: false, cursor: Loc::Head,
+            control_cursor: 0, control_region_end: 0,
             control_pages: Vec::new(), dest_pages: Vec::new(),
             unusable_pages: Vec::new(), source_pages: Vec::new(), ind_pages: Vec::new(),
         }
     }
+
+    /// Bind this image's control pages to `[start, end]` inclusive.
+    ///
+    /// Called for a crash image before the first control page is taken. The
+    /// range is the reserved region, which is exactly the memory this kernel
+    /// has promised not to use.
+    /// # C: O(1)
+    pub fn use_control_region(&mut self, start: u64, end: u64) {
+        self.control_cursor = start;
+        self.control_region_end = end.saturating_add(1);
+    }
+
+    /// Are this image's control pages drawn from a reserved region rather than
+    /// from the allocator? Decides whether freeing them means giving them
+    /// back to anyone.
+    /// # C: O(1)
+    pub fn control_pages_are_reserved(&self) -> bool { self.control_region_end != 0 }
 
     /// Pages this image currently holds, over every list. Staging correctness
     /// is a page-accounting property, so the count is part of the surface the
@@ -104,6 +134,16 @@ impl KImage {
         // mapping was narrowed for the trampoline must be back at the linear
         // map's default before the allocator can hand it to anyone else.
         crate::machine::cleanup(self);
+        // Control pages taken from a reserved region were never the
+        // allocator's, so they are dropped rather than freed. Handing one back
+        // would put a page of memory this kernel has promised not to use into
+        // the buddy, where the next caller writes over the region a crash
+        // kernel is supposed to boot from.
+        if self.control_pages_are_reserved() {
+            self.control_pages.clear();
+            self.control_cursor = 0;
+            self.control_region_end = 0;
+        }
         for list in [&mut self.control_pages, &mut self.dest_pages, &mut self.unusable_pages,
                      &mut self.source_pages, &mut self.ind_pages] {
             for pa in list.drain(..) {
@@ -310,6 +350,7 @@ impl KImage {
     /// segment over its own instruction stream.
     /// # C: O(N_attempts * nr_segments)
     pub fn alloc_control_page<F: Frames>(&mut self, f: &mut F) -> KResult<u64> {
+        if self.control_pages_are_reserved() { return self.alloc_control_page_in_region(f); }
         let mut extra: Vec<u64> = Vec::new();
         let mut got = None;
         while got.is_none() {
@@ -330,6 +371,27 @@ impl KImage {
         self.control_pages.push(page);
         Ok(page)
     }
+
+    /// A control page from the reserved region: the next page that is not
+    /// itself a destination.
+    ///
+    /// A bump walk rather than an allocator, because the region has no
+    /// allocator and needs none — the image is built once and the whole region
+    /// is released together. Cleared on the way out, because the region is
+    /// reused by every crash image this boot stages and the previous one's
+    /// bytes are still in it.
+    /// # C: O(pages skipped * nr_segments)
+    fn alloc_control_page_in_region<F: Frames>(&mut self, f: &mut F) -> KResult<u64> {
+        while self.control_cursor + PAGE_SIZE <= self.control_region_end {
+            let page = self.control_cursor;
+            self.control_cursor += PAGE_SIZE;
+            if self.is_destination_range(page, page + PAGE_SIZE - 1) { continue; }
+            clear_page(f, page);
+            self.control_pages.push(page);
+            return Ok(page);
+        }
+        Err(Error::Nomem)
+    }
 }
 
 /// Where a segment's bytes come from: user memory for `kexec_load`, a kernel
@@ -343,6 +405,43 @@ pub trait SegmentSource {
     /// single base would fill every segment after the first from the wrong
     /// address, and the result is an image that boots into the wrong bytes.
     fn read_at(&self, buf: u64, off: u64, dst: &mut [u8]) -> KResult<()>;
+}
+
+/// Load one segment of a CRASH image: copy straight to the destination.
+///
+/// No source page and no relocation entry, because there is nothing to
+/// relocate. A crash image's destinations lie inside the reserved region,
+/// which this kernel has promised not to use, so the bytes can be put where
+/// they will run at LOAD time — while a syscall can still report a failure —
+/// instead of being staged elsewhere and copied by a trampoline running on a
+/// machine that has just panicked.
+///
+/// The whole destination is cleared first, so the tail beyond `bufsz` arrives
+/// zeroed and a shorter image staged after a longer one does not inherit the
+/// longer one's bytes.
+/// # C: O(memsz)
+pub fn load_segment_in_place<F: Frames, S: SegmentSource>(
+    image: &mut KImage, f: &mut F, idx: usize, src: &S,
+) -> KResult<()> {
+    let seg = image.segments[idx];
+    let (mut maddr, mut mbytes, mut ubytes, mut uoff) = (seg.mem, seg.memsz, seg.bufsz, 0u64);
+    while mbytes != 0 {
+        clear_page(f, maddr);
+        let mchunk = core::cmp::min(mbytes, PAGE_SIZE);
+        let uchunk = core::cmp::min(ubytes, mchunk);
+        if uchunk != 0 {
+            let p = f.ptr(maddr).ok_or(Error::Nomem)?;
+            // SAFETY: `maddr` is a page inside the reserved crash region, which
+            // no other subsystem may allocate from, and `uchunk <= PAGE_SIZE`.
+            let dst = unsafe { core::slice::from_raw_parts_mut(p, uchunk as usize) };
+            src.read_at(seg.buf, uoff, dst)?;
+            ubytes -= uchunk;
+            uoff += uchunk;
+        }
+        maddr += mchunk;
+        mbytes -= mchunk;
+    }
+    Ok(())
 }
 
 /// `kimage_load_segment` for a default-type image.

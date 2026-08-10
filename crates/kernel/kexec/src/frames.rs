@@ -29,12 +29,19 @@ pub trait Frames {
     /// Highest physical address a CONTROL page may sit at
     /// (`KEXEC_CONTROL_MEMORY_LIMIT`).
     fn control_limit(&self) -> u64 { u64::MAX }
-    /// Usable-RAM ranges, the reference's `pfn_mapped`. The identity tables
+    /// Usable-RAM ranges. The identity tables
     /// the trampoline runs under have to cover every one of them, because the
     /// relocation reads its source pages out of exactly this memory.
     fn ram_range_count(&self) -> usize { 0 }
     /// Range `i` as `[start, end)` physical bytes.
     fn ram_range(&self, i: usize) -> Option<(u64, u64)> { let _ = i; None }
+    /// Firmware-owned physical ranges: the description tables a replacement
+    /// kernel reads before it has built any mapping of its own. Outside usable
+    /// RAM by construction, so the identity map has to be told about them
+    /// separately or the first table read faults.
+    fn firmware_range_count(&self) -> usize { 0 }
+    /// Firmware range `i` as `[start, end)` physical bytes.
+    fn firmware_range(&self, i: usize) -> Option<(u64, u64)> { let _ = i; None }
 }
 
 /// Fill `pa` with zeroes.
@@ -86,5 +93,12 @@ impl Frames for PmmFrames {
         let r = pmm::setup::usable_regions().get(i)?;
         let start = r.start.0 * PAGE_SIZE;
         Some((start, start + r.len_pfn * PAGE_SIZE))
+    }
+    /// # C: O(1)
+    fn firmware_range_count(&self) -> usize { pmm::setup::firmware_regions().len() }
+    /// # C: O(1)
+    fn firmware_range(&self, i: usize) -> Option<(u64, u64)> {
+        let r = pmm::setup::firmware_regions().get(i)?;
+        Some((r.start, r.end))
     }
 }

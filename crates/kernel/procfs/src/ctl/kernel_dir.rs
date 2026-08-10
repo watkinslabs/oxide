@@ -63,6 +63,22 @@ pub const KERNEL_SYSCTLS: &[Node] = &[
                                                   set_unpriv_bpf_disabled,
                                                   Some(security::bpf::attr::UNPRIV_BPF_BOUNDS))),
         File("dmesg_restrict",        IntHook(get_dmesg_restrict, set_dmesg_restrict, Some((0, 1)))),
+        // The three kexec control leaves. Each binds to the value the load
+        // admission itself reads, so a knob written here and the refusal a
+        // later load collects can never disagree. Every decision they carry
+        // lives in `crate::ctl_kexec`, which is host-tested — the window and
+        // the setters below are that module's, not re-stated here.
+        File("kexec_load_disabled",   IntHook(crate::ctl_kexec::load_disabled,
+                                              crate::ctl_kexec::set_load_disabled,
+                                              Some(crate::ctl_kexec::LOAD_DISABLED_BOUNDS))),
+        File("kexec_load_limit_panic",
+                                      CheckedIntHook(crate::ctl_kexec::load_limit_panic,
+                                              crate::ctl_kexec::set_load_limit_panic,
+                                              crate::ctl_kexec::LOAD_LIMIT_BOUNDS)),
+        File("kexec_load_limit_reboot",
+                                      CheckedIntHook(crate::ctl_kexec::load_limit_reboot,
+                                              crate::ctl_kexec::set_load_limit_reboot,
+                                              crate::ctl_kexec::LOAD_LIMIT_BOUNDS)),
         File("kptr_restrict",         Int(0, Some((0, 2)))),
         File("modules_disabled",      IntHook(get_modules_disabled, set_modules_disabled, Some((1, 1)))),
         // Bound to the live cells ring creation consults, not a procfs-local
@@ -85,7 +101,7 @@ pub const KERNEL_SYSCTLS: &[Node] = &[
                                               Some((0, INT_MAX)))),
         File("core_uses_pid",         Int(1, Some((0, 1)))),
         File("sysrq",                 Int(16, Some((0, 511)))),
-        // Linux's keys sysctl table registers the four per-uid key ceilings against
+        // The keys sysctl table registers the four per-uid key ceilings against
         // the LIVE `key_quota_*` variables `key_alloc` tests, each a
         // `proc_dointvec_minmax` over [1, INT_MAX], plus the persistent-keyring
         // window over [0, INT_MAX]. Bound to the key store's own accessors: a

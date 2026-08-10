@@ -88,3 +88,9 @@ pub(crate) const HUGEPAGES_ATTR: u64 = 0x5109_0000;
 pub(crate) const ZRAM_CONTROL_ROOT: u64 = 0x5108_0001;
 pub(crate) const ZRAM_CONTROL_HOT_ADD: u64 = 0x5108_2001;
 pub(crate) const ZRAM_CONTROL_HOT_REMOVE: u64 = 0x5108_2002;
+/// `/sys/kernel/kexec_loaded`, `/sys/kernel/kexec_crash_loaded` and
+/// `/sys/kernel/kexec_crash_size` — three distinct inode identities so a
+/// consumer watching one attribute is not handed another.
+pub(crate) const KEXEC_LOADED: u64 = 0x510A_0001;
+pub(crate) const KEXEC_CRASH_LOADED: u64 = 0x510A_0002;
+pub(crate) const KEXEC_CRASH_SIZE: u64 = 0x510A_0003;

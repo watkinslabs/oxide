@@ -1,6 +1,7 @@
 // PMM setup module manifest.
 //
 // `boot_init` owns BootInfo memmap ingestion, HHDM backing, static PMM storage.
+// `fwmap` retains the firmware-owned ranges the boot map described.
 // `frame_alloc` owns single-frame allocation entry points and alloc-time checks.
 // `refs` owns PageMeta refcount/mapcount transitions.
 // `metadata` owns PageMeta installation, reclaim metadata, debug attribution.
@@ -19,6 +20,7 @@ use crate::{Error as PmmError, PageBacking, Pmm, UsableRegion, ORDERS};
 
 use boot_info::{BootInfo, BootMemKind, BootMemRegion};
 
+mod fwmap;
 mod boot_init;
 mod frame_alloc;
 mod refs;
@@ -35,6 +37,7 @@ mod alloc_integrity;
 mod tests;
 
 pub use boot_init::{HhdmBacking, MAX_REGIONS, SetupError, init_from_boot_info, pmm_static, usable_regions};
+pub use fwmap::{firmware_regions, FirmwareRegion, MAX_FIRMWARE_REGIONS};
 pub use frame_alloc::{alloc_one_frame, alloc_object_frame, alloc_movable_object_frame, alloc_raw_frame, frame_ptr, migrate_movable_object_frame, release_movable_object_frame, release_object_frame};
 pub use refs::{can_reuse_anon_exclusive, dec_and_maybe_free_frame, dec_object_ref_and_maybe_free_frame, dec_ref_no_free, frame_refcount, inc_object_ref, inc_ref};
 pub use metadata::{admit_anon_lru, admit_file_lru, admit_shmem_lru, classify_file_page, classify_shmem_page, clear_anon_exclusive, frame_mapcount, init_page_meta, init_page_meta_from_storage, isolate_anon_lru_pfn, isolate_inactive_anon_lru, isolate_inactive_anon_lru_memcg, isolate_inactive_file_lru, mark_lru_referenced, memcg_for_pa, page_index_for_pa, pfn_max_from_boot_info, putback_isolated_lru, reclaim_snapshot, release_isolated_lru, rmap_aware_dec_and_maybe_free, set_lru_unevictable, set_memcg_for_pa, try_lock_page, unlink_lru_for_final_free, unlock_page};

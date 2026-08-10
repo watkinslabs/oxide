@@ -96,6 +96,15 @@ pub(super) fn select_eoi_path() {
     }
 }
 
+/// True when this CPU's local APIC is addressed through MSRs rather than the
+/// memory-mapped window. Firmware may leave a CPU in that mode; this kernel
+/// never selects it. Every path that touches a local-APIC register has to ask,
+/// because the memory-mapped window is DISABLED in that mode and a write
+/// through it is silently lost.
+/// # C: O(1)
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn x2apic_active() -> bool { X2APIC_EOI.load(Ordering::Acquire) }
+
 /// Mapped kernel VA after `enable` runs. `0` until then.
 #[cfg(target_arch = "x86_64")]
 pub static LAPIC_BASE_VA: AtomicU64 = AtomicU64::new(0);
@@ -120,7 +129,7 @@ pub unsafe fn eoi() {
 }
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-pub(super) unsafe fn rdmsr(idx: u32) -> u64 {
+pub(crate) unsafe fn rdmsr(idx: u32) -> u64 {
     let lo: u32; let hi: u32;
     // SAFETY: rdmsr at CPL=0 with valid MSR index; no memory effect.
     unsafe {
@@ -136,7 +145,7 @@ pub(super) unsafe fn rdmsr(idx: u32) -> u64 {
 }
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
-pub(super) unsafe fn wrmsr(idx: u32, val: u64) {
+pub(crate) unsafe fn wrmsr(idx: u32, val: u64) {
     let lo = val as u32;
     let hi = (val >> 32) as u32;
     // SAFETY: wrmsr at CPL=0 with valid MSR index + caller-validated value; no memory effect.

@@ -7,7 +7,7 @@
 mod bringup;
 mod dispatch;
 mod ipi;
-mod regs;
+pub(crate) mod regs;
 mod timer;
 
 pub use bringup::{
@@ -16,6 +16,7 @@ pub use bringup::{
 pub use dispatch::{IRQ_LAST_VEC, IRQ_SEQ, RESCHED_IPI_COUNT, TICK_COUNT};
 pub use ipi::{build_icr_lo, icr_lo_init_assert, icr_lo_sipi, wait_icr_idle, write_icr};
 pub use regs::{busy_wait_us, eoi, local_apic_id, LAPIC_BASE_VA};
+pub use crate::lapic_shutdown::apply::{restore_boot_irq_mode, shutdown};
 pub use timer::{timer_deadline_mode, timer_disarm, timer_periodic, timer_smoke};
 
 #[cfg(test)]

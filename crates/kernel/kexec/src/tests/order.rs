@@ -35,11 +35,23 @@ fn the_flag_mask_excludes_the_architecture_field_rather_than_permitting_it() {
 }
 
 #[test]
-fn preserve_context_is_refused_because_nothing_here_can_come_back() {
-    // A jump-less kernel refuses the bit; accepting and ignoring it would turn
-    // "resume this kernel afterwards" into "never resume", silently.
+fn preserve_context_is_refused_until_this_kernel_can_be_resumed() {
+    // Refusing is OUR choice, not the ABI's: the bit is accepted on the
+    // platform class this kernel targets. It stands only while there is no
+    // path that could bring this kernel back after the loaded image runs —
+    // accepting and ignoring it would turn "resume afterwards" into "never
+    // resume", silently, which is worse than an errno.
+    //
+    // When the return path is built this test is what has to change, and the
+    // change is deliberate: the bit joins the legal set and the refusal goes.
     assert_eq!(KEXEC_FLAGS & KEXEC_PRESERVE_CONTEXT, 0);
     assert_eq!(kexec_load_check(true, 1, KEXEC_PRESERVE_CONTEXT), Err(Error::Inval));
+    // The bit is still a DEFINED one, not an unknown: a caller passing it gets
+    // EINVAL from the flag test, and the value must not collide with a flag
+    // this kernel does honour.
+    assert_eq!(KEXEC_PRESERVE_CONTEXT, 0x2);
+    assert_eq!(KEXEC_PRESERVE_CONTEXT & KEXEC_FLAGS, 0);
+    assert_eq!(KEXEC_PRESERVE_CONTEXT & KEXEC_ARCH_MASK, 0);
 }
 
 #[test]
@@ -198,8 +210,9 @@ fn a_command_line_must_be_nul_terminated_and_an_empty_one_is_legal() {
 #[test]
 fn no_signature_check_is_claimed_that_this_kernel_cannot_perform() {
     // Read, not assumed: with signature verification unconfigured the
-    // reference runs no check at all and loads unsigned images. Refusing every
-    // image instead would be a refusal the reference never makes.
+    // kernel with no keyring runs no check at all and loads unsigned images.
+    // Refusing every image instead would be a refusal the ABI does not
+    // describe.
     assert!(!signature_check_required());
 }
 
@@ -239,4 +252,21 @@ fn an_empty_segment_list_passes_every_check_because_it_is_the_unload() {
     let none: Vec<KexecSegment> = Vec::new();
     assert_eq!(sanity_check_segment_list(&none, ImageType::Default, RAM, u64::MAX, None), Ok(()));
     assert_eq!(kexec_load_check(true, 0, 0), Ok(()));
+}
+
+#[test]
+fn the_two_syscalls_spell_a_crash_image_with_different_bits() {
+    // The bit that means "crash image" is 0 in `kexec_load` and 1 in
+    // `kexec_file_load`, and bit 1 in a `kexec_load` flag word means something
+    // else entirely. Reading a file-mode flag word with the kexec_load
+    // decoder charges every load to the WRONG per-type limit, which no test
+    // that only ever passes one flavour of flag word could see.
+    assert_eq!(image_type(KEXEC_ON_CRASH), ImageType::Crash);
+    assert_eq!(image_type(0), ImageType::Default);
+    assert_eq!(file_image_type(KEXEC_FILE_ON_CRASH), ImageType::Crash);
+    assert_eq!(file_image_type(0), ImageType::Default);
+    // Each decoder must ignore the OTHER syscall's bit.
+    assert_eq!(image_type(KEXEC_FILE_ON_CRASH), ImageType::Default);
+    assert_eq!(file_image_type(KEXEC_ON_CRASH), ImageType::Default);
+    assert_ne!(KEXEC_ON_CRASH, KEXEC_FILE_ON_CRASH);
 }

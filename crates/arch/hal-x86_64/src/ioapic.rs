@@ -17,6 +17,24 @@ const IOREGSEL: u64 = 0x00;
 const IOWIN: u64 = 0x10;
 /// Version register; bits 23:16 hold the highest redirection-entry index.
 const IOAPIC_VER: u32 = 0x01;
+/// Directly-addressed EOI register. Present from version 0x20 onwards; a
+/// write of a vector retires that vector's level assertion on this device.
+const IOWIN_EOI: u64 = 0x40;
+/// Lowest version that implements [`IOWIN_EOI`].
+const VER_WITH_EOI: u32 = 0x20;
+
+/// Redirection-entry low-word bits.
+const RTE_MASK: u32 = 1 << 16;
+const RTE_LEVEL: u32 = 1 << 15;
+/// Remote IRR — set while a level assertion is in service, cleared by an EOI.
+const RTE_REMOTE_IRR: u32 = 1 << 14;
+/// Delivery-mode field, bits 10:8.
+const RTE_DELIVERY_MASK: u32 = 0x700;
+/// Delivery mode 010 — system management interrupt. Such an entry belongs to
+/// firmware and must be left exactly as found.
+const RTE_DELIVERY_SMI: u32 = 2 << 8;
+/// Vector field of a redirection entry.
+const RTE_VECTOR_MASK: u32 = 0xFF;
 
 /// Publish the I/O APIC MMIO kernel VA. # C: O(1)
 pub fn set_base_va(va: u64) { IOAPIC_VA.store(va, Ordering::Release); }
@@ -103,21 +121,60 @@ pub unsafe fn mask(pin: u32) {
     }
 }
 
-/// Mask every redirection entry this I/O APIC implements.
+/// Retire an in-service level assertion on `pin`.
 ///
-/// The count comes from the version register's maximum-redirection-entry
-/// field rather than a constant, because a constant would be right for one
-/// platform and silently leave lines asserting on another. A no-op when no
-/// I/O APIC has been mapped.
-/// # SAFETY: as `program_redirect`. # C: O(pins)
-pub unsafe fn mask_all() {
+/// Two ways to do it, because only the newer device has the direct register:
+/// write the pin's vector to the EOI register, or — where that does not exist
+/// — briefly present the entry as edge triggered, which is what makes the
+/// device drop the assertion it is holding.
+/// # SAFETY: as `program_redirect`, and the entry is already masked.
+unsafe fn eoi_pin(pin: u32, lo: u32) {
+    let lo_idx = 0x10 + 2 * pin;
+    // SAFETY: per fn contract — the window is mapped and `pin` is an implemented entry.
+    unsafe {
+        let ver = read_reg(IOAPIC_VER) & RTE_VECTOR_MASK;
+        if ver >= VER_WITH_EOI {
+            let va = IOAPIC_VA.load(Ordering::Acquire);
+            core::ptr::write_volatile((va + IOWIN_EOI) as *mut u32, lo & RTE_VECTOR_MASK);
+            return;
+        }
+        write_reg(lo_idx, lo & !RTE_LEVEL);
+        write_reg(lo_idx, lo);
+    }
+}
+
+/// Put every redirection entry back to the state a device that has never been
+/// programmed presents: masked, no vector, no trigger mode, no destination.
+///
+/// Masking alone is not enough. A level-triggered line whose assertion is
+/// still in service keeps its remote-IRR bit set, and the next kernel to
+/// program that entry finds a line it can never receive — the device is
+/// waiting for an acknowledgement from a driver that no longer exists. So each
+/// entry is masked, its in-service assertion retired, and only then flattened.
+///
+/// Entries delivering system-management interrupts are left untouched: they
+/// are firmware's, not this kernel's.
+/// # SAFETY: as `program_redirect`; irreversible for this boot.
+/// # C: O(pins)
+pub unsafe fn clear_all() {
     if IOAPIC_VA.load(Ordering::Acquire) == 0 { return; }
-    // SAFETY: per fn contract — the window is mapped; register 0x01 is the
-    // architected version register.
+    // SAFETY: the window is mapped; register 0x01 is the version register.
     let maxred = unsafe { (read_reg(IOAPIC_VER) >> 16) & 0xff };
     for pin in 0..=maxred {
+        let lo_idx = 0x10 + 2 * pin;
+        let hi_idx = 0x11 + 2 * pin;
         // SAFETY: `pin` is within the entry count the device just reported.
-        unsafe { mask(pin) };
+        unsafe {
+            let mut lo = read_reg(lo_idx);
+            if lo & RTE_DELIVERY_MASK == RTE_DELIVERY_SMI { continue; }
+            if lo & RTE_MASK == 0 {
+                write_reg(lo_idx, lo | RTE_MASK);
+                lo = read_reg(lo_idx);
+            }
+            if lo & RTE_REMOTE_IRR != 0 { eoi_pin(pin, lo | RTE_LEVEL); }
+            write_reg(hi_idx, 0);
+            write_reg(lo_idx, RTE_MASK);
+        }
     }
 }
 

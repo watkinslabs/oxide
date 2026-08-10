@@ -15,10 +15,14 @@ hal   = { path = "../../arch/hal" }
 cpu   = { path = "../cpu" }
 power = { path = "../power" }
 crng  = { path = "../crng" }
+cmdline = { path = "../cmdline" }
 crypt = { path = "../../shared/crypt" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../../arch/hal-x86_64" }
+# The local APIC lives in the interrupt-controller crate, so the machine stop
+# reaches it there rather than keeping a second copy of its register map.
+arch-irq = { path = "../arch-irq" }
 
 [target.'cfg(target_arch = "aarch64")'.dependencies]
 hal-aarch64 = { path = "../../arch/hal-aarch64" }

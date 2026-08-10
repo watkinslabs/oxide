@@ -10,6 +10,7 @@ use super::gate::exclusive_store;
 use crate::file_load::{kexec_file_load, probe, FileImage};
 use crate::stage::Limits;
 use crate::store;
+use crate::limit::UNLIMITED;
 use crate::uapi::*;
 use crate::validate::Error;
 
@@ -19,7 +20,7 @@ fn img(cmdline: &[u8]) -> FileImage {
 
 #[test]
 fn no_loader_recognises_a_kernel_file_yet_and_that_answer_is_enoexec() {
-    // The reference returns ENOEXEC when no registered loader probes a file
+    // ENOEXEC is the answer when no registered loader probes a file
     // successfully. With the loader list empty that is every file — the errno
     // is right today and stays right when the first loader lands.
     assert_eq!(probe(b"\x7fELF").err(), Some(Error::NoExec));
@@ -30,7 +31,7 @@ fn no_loader_recognises_a_kernel_file_yet_and_that_answer_is_enoexec() {
 #[test]
 fn the_unload_flag_short_circuits_before_a_descriptor_is_read() {
     // KEXEC_FILE_UNLOAD ignores both fds. Reading them first would make an
-    // unload fail on a closed descriptor that the reference never looks at.
+    // unload fail on a closed descriptor that is never looked at.
     let read_ran = Cell::new(false);
     let mut f = FakeFrames::new(0x80_0000);
     // This case UNLOADS the global slot, so without the gate it can free an
@@ -56,7 +57,7 @@ fn a_descriptor_error_is_reported_before_the_command_line_is_judged() {
 #[test]
 fn a_command_line_without_its_nul_is_refused_before_the_loader_probe() {
     // EINVAL, not ENOEXEC: the caller's mistake is the command line, and it is
-    // decided first — the reference checks the last byte right after the copy.
+    // decided first: the last byte is checked right after the copy.
     let mut f = FakeFrames::new(0x80_0000);
     let _g = exclusive_store(&mut f);
     assert_eq!(kexec_file_load(&mut f, 0, || Ok(img(b"ro quiet"))), Err(Error::Inval));
@@ -118,8 +119,73 @@ fn the_slots_the_lock_and_the_reboot_entry_behave_as_one_state_machine() {
     assert_eq!(store::kernel_kexec(), Err(Error::Inval));
 
     // The load-disable latch is one-way and is what `load_permitted` consults.
-    assert!(store::load_permitted(true));
-    assert!(!store::load_permitted(false));
+    assert!(store::load_permitted(true, ImageType::Default));
+    assert!(!store::load_permitted(false, ImageType::Default));
+
+    // The two load limits are per image type and are spent independently: a
+    // reboot image must not be able to exhaust the panic budget or vice versa.
+    // Both are unlimited to begin with, so neither has moved above.
+    assert_eq!(store::load_limit(ImageType::Default), UNLIMITED);
+    assert_eq!(store::load_limit(ImageType::Crash), UNLIMITED);
+    assert!(store::set_load_limit(ImageType::Default, 1));
+    assert!(!store::set_load_limit(ImageType::Default, 2), "a limit may only tighten");
+    assert!(store::load_permitted(true, ImageType::Default));
+    assert_eq!(store::load_limit(ImageType::Default), 0);
+    assert!(!store::load_permitted(true, ImageType::Default), "the budget is spent");
+    // The crash counter was untouched by every one of those.
+    assert_eq!(store::load_limit(ImageType::Crash), UNLIMITED);
+    assert!(store::load_permitted(true, ImageType::Crash));
+
     store::disable_load();
-    assert!(!store::load_permitted(true), "no capability survives kexec_load_disabled");
+    assert!(!store::load_permitted(true, ImageType::Crash),
+            "no capability and no remaining budget survives kexec_load_disabled");
+}
+
+#[test]
+fn the_panic_paths_crash_boot_never_waits_and_never_leaves_the_lock_held() {
+    // Everything here is about what happens on a machine that has ALREADY
+    // failed. The panicking CPU may hold either lock — it may have panicked
+    // while holding one — so a step that cannot be taken has to be skipped,
+    // not waited on: a crash boot that blocked would turn a reported panic
+    // into a silent hang, which is worse than no crash boot at all.
+    let mut f = FakeFrames::new(0x80_0000);
+    let _gate = exclusive_store(&mut f);
+
+    // Nothing staged: falls straight through, and says so.
+    assert!(!store::crash_kexec_now());
+    // ... having released the lock, or the panic after this one is refused
+    // for a reason nothing could report.
+    assert_eq!(store::with_kexec_lock(|| Ok(())), Ok(()));
+
+    // A crash image staged, and the machine step refuses on a host with no
+    // machine to replace. It must still come back, and still not hold the lock.
+    let region = crate::validate::CrashRange { start: 0x100_0000, end: 0x103_ffff };
+    let limits = Limits { dest_limit: u64::MAX, crash: Some(region) };
+    let mut cf = FakeFrames::new(0x80_0000);
+    cf.reserve_region(region.start, region.end - region.start + 1);
+    let src = PatternSource::new(PAGE_SIZE as usize);
+    let seg = KexecSegment { buf: 0, bufsz: PAGE_SIZE, mem: region.start, memsz: PAGE_SIZE };
+    assert_eq!(store::do_kexec_load(&mut cf, region.start, vec![seg], KEXEC_ON_CRASH,
+                                    limits, &src), Ok(()));
+    assert!(store::kexec_crash_loaded());
+    assert!(!store::crash_kexec_now(), "no machine here can be replaced");
+    assert_eq!(store::with_kexec_lock(|| Ok(())), Ok(()));
+
+    // The whole point of the try: with the lock already held, the attempt
+    // reports failure IMMEDIATELY rather than waiting for a holder that, on a
+    // panicking machine, may be this very CPU.
+    let inner = store::with_kexec_lock(|| {
+        assert!(!store::crash_kexec_now(), "a contended lock must not be waited on");
+        // It must not have TAKEN the lock either — a refused attempt that
+        // released the holder's lock on its way out would hand the slots to
+        // whoever asked next, in the middle of the load that holder is doing.
+        // Nesting is what proves the lock is still held.
+        assert_eq!(store::with_kexec_lock(|| Ok(())), Err(Error::Busy));
+        Ok(())
+    });
+    assert_eq!(inner, Ok(()));
+    // And it is released again once the holder is done.
+    assert_eq!(store::with_kexec_lock(|| Ok(())), Ok(()));
+
+    store::drop_image(&mut cf, true);
 }

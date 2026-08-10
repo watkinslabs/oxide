@@ -87,7 +87,7 @@ pub struct Loaded {
 /// An arch kernel-image loader: probe a file, then lay out its segments.
 ///
 /// Registered by the arch rather than discovered, so the probe ORDER is
-/// explicit — the reference walks `kexec_file_loaders[]` in declaration order
+/// explicit — the loaders are probed in declaration order
 /// and takes the first loader that accepts the file.
 pub trait FileLoader {
     /// `Ok(())` when this loader recognises `kernel`.
@@ -120,12 +120,12 @@ pub fn probe(kernel: &[u8]) -> KResult<&'static dyn FileLoader> {
 /// `SYSCALL_DEFINE5(kexec_file_load)`'s body below the permission and flag
 /// checks, which the shim has already made.
 ///
-/// Order, unchanged from the reference: the kexec lock (EBUSY), the unload
+/// Order: the kexec lock (EBUSY), the unload
 /// short-circuit, the descriptor reads (EBADF / EIO), the command-line rule
 /// (EFAULT then EINVAL), the loader probe (ENOEXEC), the segment staging.
 ///
 /// `read` is a closure so the descriptor reads happen INSIDE the lock, where
-/// the reference performs them. Reading first and locking after would let a
+/// they must happen. Reading first and locking after would let a
 /// caller that is about to be told EBUSY spend a whole file read finding out.
 /// # C: O(file size); # Lk: KEXEC_LOCK, SLOTS
 pub fn kexec_file_load<F: Frames, R>(f: &mut F, flags: u64, read: R) -> KResult<()>
@@ -150,7 +150,7 @@ where R: FnOnce() -> KResult<FileImage> {
         let store_flags = if flags & KEXEC_FILE_ON_CRASH != 0 { KEXEC_ON_CRASH } else { 0 };
         let src = crate::stage::KernelSource { bytes: &loaded.blob };
         crate::store::install_staged(f, loaded.entry, loaded.segments, store_flags,
-                                     crate::stage::Limits::default(), &src, loaded.boot_arg)
+                                     crate::stage::Limits::current(), &src, loaded.boot_arg)
     })
 }
 
