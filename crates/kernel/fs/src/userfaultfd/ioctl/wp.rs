@@ -19,8 +19,7 @@ pub fn ioc_writeprotect(ufd: &UfData, arg: u64) -> i64 {
     // other range op has to write its reply word, which puts EFAULT first.
     if let Err(e) = policy::check_mmap_changing(ufd.changes_in_flight()) { return err(e); }
     if let Err(rv) = validate_user_buf_writable(arg, UFFDIO_WRITEPROTECT_SIZE, 1) { return rv; }
-    // SAFETY: arg validated for the full uffdio_writeprotect object.
-    let w: UffdioWriteprotect = unsafe { read_req(arg) };
+    let Ok(w) = read_req::<UffdioWriteprotect>(arg) else { return err(Errno::Efault) };
     if let Err(e) = policy::validate_range(w.range.start, w.range.len) { return err(e); }
     let mode = match policy::check_wp_mode(w.mode) { Ok(m) => m, Err(e) => return err(e) };
     let Some(mm) = ufd.mm() else { return err(Errno::Esrch) };

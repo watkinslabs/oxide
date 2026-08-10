@@ -30,68 +30,11 @@ pub fn current_tgid() -> Option<u32> {
     sched::live::current().map(|c| c.tgid.load(Ordering::Acquire))
 }
 
-/// # C: O(1)
-pub fn read_user_i64(uptr: u64) -> Result<i64, Errno> {
-    if uptr >= hal::USER_VA_END
-        || uptr.checked_add(8).map(|e| e > hal::USER_VA_END).unwrap_or(true) {
-        return Err(Errno::Efault);
-    }
-    // SAFETY: [uptr, uptr+8) validated below USER_VA_END; an 8-byte read through the caller's active address space at CPL=0.
-    Ok(unsafe { core::ptr::read_unaligned(uptr as *const i64) })
-}
-
-/// # C: O(1)
-pub fn write_user_i64(uptr: u64, v: i64) -> Result<(), Errno> {
-    if uptr >= hal::USER_VA_END
-        || uptr.checked_add(8).map(|e| e > hal::USER_VA_END).unwrap_or(true) {
-        return Err(Errno::Efault);
-    }
-    // SAFETY: [uptr, uptr+8) validated below USER_VA_END; an 8-byte write through the caller's active address space at CPL=0.
-    unsafe { core::ptr::write_unaligned(uptr as *mut i64, v) };
-    Ok(())
-}
-
-/// # C: O(1)
-pub fn read_user_i32(uptr: u64) -> Result<i32, Errno> {
-    if uptr >= hal::USER_VA_END
-        || uptr.checked_add(4).map(|e| e > hal::USER_VA_END).unwrap_or(true) {
-        return Err(Errno::Efault);
-    }
-    // SAFETY: [uptr, uptr+4) validated below USER_VA_END; a 4-byte read through the caller's active address space at CPL=0.
-    Ok(unsafe { core::ptr::read_unaligned(uptr as *const i32) })
-}
-
-/// # C: O(len)
-pub fn read_user_bytes(uptr: u64, out: &mut [u8]) -> Result<(), Errno> {
-    if out.is_empty() { return Ok(()); }
-    if uptr == 0 || uptr >= hal::USER_VA_END
-        || uptr.checked_add(out.len() as u64).map(|e| e > hal::USER_VA_END).unwrap_or(true) {
-        return Err(Errno::Efault);
-    }
-    // SAFETY: [uptr, uptr+out.len()) validated below USER_VA_END; a byte copy out of the caller's active address space at CPL=0.
-    unsafe { core::ptr::copy_nonoverlapping(uptr as *const u8, out.as_mut_ptr(), out.len()) };
-    Ok(())
-}
-
-/// # C: O(len)
-pub fn write_user_bytes(uptr: u64, src: &[u8]) -> Result<(), Errno> {
-    if src.is_empty() { return Ok(()); }
-    if uptr == 0 || uptr >= hal::USER_VA_END
-        || uptr.checked_add(src.len() as u64).map(|e| e > hal::USER_VA_END).unwrap_or(true) {
-        return Err(Errno::Efault);
-    }
-    // SAFETY: [uptr, uptr+src.len()) validated below USER_VA_END; a byte copy into the caller's active address space at CPL=0.
-    unsafe { core::ptr::copy_nonoverlapping(src.as_ptr(), uptr as *mut u8, src.len()) };
-    Ok(())
-}
-
-/// # C: O(1)
-pub fn write_user_u32(uptr: u64, v: u32) -> Result<(), Errno> {
-    if uptr >= hal::USER_VA_END
-        || uptr.checked_add(4).map(|e| e > hal::USER_VA_END).unwrap_or(true) {
-        return Err(Errno::Efault);
-    }
-    // SAFETY: [uptr, uptr+4) validated below USER_VA_END; a 4-byte write through the caller's active address space at CPL=0.
-    unsafe { core::ptr::write_unaligned(uptr as *mut u32, v) };
-    Ok(())
-}
+// User memory is reached through `crate::useraccess`, the crate's one
+// non-gated owner of the exception-table copies. These helpers used to
+// range-check an address and then dereference it, which proves the number is
+// inside the user half and nothing about a page being under it.
+pub use crate::useraccess::{
+    read_i32 as read_user_i32, read_i64 as read_user_i64, read_bytes as read_user_bytes,
+    write_bytes as write_user_bytes, write_i64 as write_user_i64, write_u32 as write_user_u32,
+};

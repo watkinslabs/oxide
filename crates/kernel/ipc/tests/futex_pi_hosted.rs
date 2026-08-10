@@ -18,6 +18,13 @@ extern crate self as hal;
 extern crate self as hal_x86_64;
 extern crate self as sched;
 
+// The production source reaches user memory through `crate::useraccess`, the
+// crate's non-gated owner of the exception-table copies. Under this harness
+// `crate` is the test binary, so the real module is re-exported into that name
+// — the harness's "user" addresses are host buffers and the hosted `uaccess`
+// copy is a plain memcpy, which is exactly what the tests want to drive.
+pub mod useraccess { pub use ipc::useraccess::*; }
+
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc;

@@ -36,8 +36,9 @@ fn signalfd_common(args: &syscall::SyscallArgs, flags: u64) -> i64 {
     if mask_size != SIGSET_BYTES { return error(Errno::Einval); }
     if let Err(rv) = validate_user_buf(mask_ptr, SIGSET_BYTES, 1) { return rv; }
     if flags & !(SFD_NONBLOCK | SFD_CLOEXEC) != 0 { return error(Errno::Einval); }
-    // SAFETY: mask_ptr validated readable for one sigset_t word.
-    let requested = unsafe { core::ptr::read_unaligned(mask_ptr as *const u64) };
+    let mut raw_mask = [0u8; SIGSET_BYTES as usize];
+    if uaccess::copy_from_user(&mut raw_mask, mask_ptr).is_err() { return error(Errno::Efault); }
+    let requested = u64::from_ne_bytes(raw_mask);
     // SIGKILL/SIGSTOP are dropped from the accepted set SILENTLY, never
     // rejected: a signalfd that swallowed them would make the task unkillable.
     let mask = requested & !(sched::signum::Signum::Sigkill.bit()

@@ -37,12 +37,16 @@ fn classify_owner(tid: u32) -> (OwnerLookup, Option<Arc<Task>>) {
 }
 
 /// Read the futex word without faulting the kernel on an unmapped page.
+///
+/// The writability probe stays: every caller follows this read with the raw
+/// `cmpxchg_user_u32` RMW, which has no exception-table fixup of its own, so a
+/// read-only or absent page must be refused before the word is touched. The
+/// read itself goes through the exception table, so it recovers even when the
+/// mapping disappears between the probe and the load.
 /// # C: O(page-table depth)
 pub(super) fn read_word(uaddr: u64) -> Result<u32, Errno> {
     if !user_addr_accessible(uaddr, true) { return Err(Errno::Efault); }
-    // SAFETY: page verified present and writable under the active CR3/TTBR0;
-    // bounded, 4-aligned user word validated by the caller.
-    Ok(unsafe { load_user_u32(uaddr) })
+    load_user_u32(uaddr)
 }
 
 /// Bound on the retry loop. Linux retries `futex_lock_pi` without a bound; each

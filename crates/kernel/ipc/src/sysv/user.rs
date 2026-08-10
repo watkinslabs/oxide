@@ -46,18 +46,57 @@ pub fn validate(ptr: u64, len: usize, write: bool) -> Result<(), Errno> {
 /// # C: O(len)
 pub fn read_bytes(ptr: u64, dst: &mut [u8]) -> Result<(), Errno> {
     validate(ptr, dst.len(), false)?;
-    // SAFETY: `validate` proved the whole range readable in the caller's address space (or, hosted, that the test buffer is non-NULL); byte-granular unaligned loads impose no alignment requirement on the user pointer.
-    unsafe { for (i, b) in dst.iter_mut().enumerate() { *b = core::ptr::read_unaligned((ptr + i as u64) as *const u8); } }
-    Ok(())
+    // The VMA scan above proves the range is mapped readable at this instant;
+    // the copy still goes through the exception table, because the mapping can
+    // be torn down between the scan and the access. Linux `copy_from_user`.
+    uaccess::copy_from_user(dst, ptr)
 }
 
 /// # C: O(len)
 pub fn write_bytes(ptr: u64, src: &[u8]) -> Result<(), Errno> {
     validate(ptr, src.len(), true)?;
-    // SAFETY: `validate` proved the whole range writable in the caller's address space (or, hosted, that the test buffer is non-NULL); byte-granular unaligned stores impose no alignment requirement on the user pointer.
-    unsafe { for (i, b) in src.iter().enumerate() { core::ptr::write_unaligned((ptr + i as u64) as *mut u8, *b); } }
-    Ok(())
+    // Same reason as `read_bytes`: the scan is a permission check, the copy is
+    // what recovers from a page that went away. Linux `copy_to_user`.
+    uaccess::copy_to_user(ptr, src)
 }
 
 /// # C: O(1)
 pub fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The lowest address in the kernel half. On the kernel target the VMA scan
+    /// refuses it; hosted, the copy's own range check does — either way the
+    /// converted helper answers EFAULT instead of dereferencing it.
+    const KERNEL_SIDE: u64 = hal::USER_VA_END;
+
+    #[test]
+    fn a_buffer_round_trips_through_the_copy() {
+        let mut dst = [0u8; 4];
+        write_bytes(dst.as_mut_ptr() as u64, &[9, 8, 7, 6]).expect("out");
+        assert_eq!(dst, [9, 8, 7, 6]);
+        let mut back = [0u8; 4];
+        read_bytes(dst.as_ptr() as u64, &mut back).expect("in");
+        assert_eq!(back, [9, 8, 7, 6]);
+    }
+
+    #[test]
+    fn an_address_the_copy_cannot_reach_is_efault() {
+        let mut one = [0u8; 1];
+        assert_eq!(read_bytes(KERNEL_SIDE, &mut one), Err(Errno::Efault));
+        assert_eq!(write_bytes(KERNEL_SIDE, &[0u8]), Err(Errno::Efault));
+        assert_eq!(read_bytes(0, &mut one), Err(Errno::Efault));
+        assert_eq!(write_bytes(0, &[0u8]), Err(Errno::Efault));
+    }
+
+    /// A failed copy-in leaves the destination zeroed rather than holding
+    /// whatever the kernel buffer carried before.
+    #[test]
+    fn a_failed_copy_in_zeroes_the_destination() {
+        let mut dst = [0xccu8; 4];
+        assert_eq!(read_bytes(KERNEL_SIDE, &mut dst), Err(Errno::Efault));
+        assert_eq!(dst, [0u8; 4]);
+    }
+}

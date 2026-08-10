@@ -3,6 +3,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicI32, Ordering};
 
 use sched::Task;
+use syscall::errno::Errno;
 use sync::{Spinlock, Tty as TtyClass};
 
 pub(super) const FUTEX_WAIT: u32 = 0;
@@ -194,21 +195,22 @@ pub(super) fn now_monotonic_ns() -> u64 {
     now
 }
 
-/// Read u32 at user VA `uaddr`. Caller is the syscall path with
-/// current's CR3 active, so a direct kernel-mode load through
-/// the user mapping resolves via the user PT (demand-faulted by
-/// `user_as_fault_handler` if not yet present).
-pub(super) unsafe fn load_user_u32(uaddr: u64) -> u32 {
-    // SAFETY: caller validated uaddr < USER_VA_END; current's mm is the active CR3 because we are on its syscall stack.
-    unsafe { core::ptr::read_volatile(uaddr as *const u32) }
+/// Read the u32 at user VA `uaddr`, Linux `futex_get_value_locked` →
+/// `__get_user`. Caller is the syscall path with current's CR3 active, so a
+/// not-yet-present page is demand-faulted by `user_as_fault_handler`; a page
+/// that cannot be resolved at all takes the `__ex_table` fixup and answers
+/// EFAULT instead of faulting the kernel. Four bytes on the stack, so the
+/// hot FUTEX_WAIT path allocates nothing.
+/// # C: O(1)
+pub(super) fn load_user_u32(uaddr: u64) -> Result<u32, Errno> {
+    crate::useraccess::read_u32(uaddr)
 }
 
-/// Write u32 at user VA `uaddr`. Same active-CR3 contract as `load_user_u32`;
-/// used by `FUTEX_WAKE_OP`'s atomic RMW on the second futex word.
-/// # SAFETY: caller validated `uaddr` is a 4-aligned mapped user word.
-pub(super) unsafe fn store_user_u32(uaddr: u64, val: u32) {
-    // SAFETY: caller validated uaddr < USER_VA_END + 4-aligned; current's mm is the active CR3.
-    unsafe { core::ptr::write_volatile(uaddr as *mut u32, val); }
+/// Write the u32 at user VA `uaddr`, Linux `put_user`. Same recovery contract
+/// as `load_user_u32`; used by `FUTEX_WAKE_OP`'s RMW on the second futex word.
+/// # C: O(1)
+pub(super) fn store_user_u32(uaddr: u64, val: u32) -> Result<(), Errno> {
+    crate::useraccess::write_u32(uaddr, val)
 }
 
 /// Atomically swap `new` into the user word if it still holds `old`,

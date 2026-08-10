@@ -20,11 +20,12 @@ use super::structs::{ctx_is, err, read_req, write_reply, UffdioMove};
 pub fn ioc_move(ufd: &Arc<UfData>, arg: u64) -> i64 {
     if let Err(rv) = validate_user_buf_writable(arg, UFFDIO_MOVE_SIZE, 1) { return rv; }
     if let Err(e) = policy::check_mmap_changing(ufd.changes_in_flight()) {
-        write_reply(arg + UFFDIO_MOVE_MOVE_OFF, err(e));
+        // `put_user` on the reply word overrides the reported errno when it
+        // fails: a monitor that never received the word learned nothing.
+        if write_reply(arg + UFFDIO_MOVE_MOVE_OFF, err(e)).is_err() { return err(Errno::Efault); }
         return err(e);
     }
-    // SAFETY: arg validated writable for the full uffdio_move object.
-    let m: UffdioMove = unsafe { read_req(arg) };
+    let Ok(m) = read_req::<UffdioMove>(arg) else { return err(Errno::Efault) };
     let Some(mm) = ufd.mm() else { return err(Errno::Esrch) };
     if !caller_owns(&mm) { return err(Errno::Einval); }
     if let Err(e) = policy::validate_range(m.dst, m.len) { return err(e); }
@@ -40,7 +41,9 @@ pub fn ioc_move(ufd: &Arc<UfData>, arg: u64) -> i64 {
     let (moved, fail) = work::move_pages(&mm, m.dst, m.src, m.len, mode.allow_src_holes,
                                          &dst_vma, &src_vma);
     let (rv, count) = policy::fill_retval(moved, m.len, fail);
-    write_reply(arg + UFFDIO_MOVE_MOVE_OFF, count);
+    // `if (unlikely(put_user(ret, &user_uffdio_move->move))) return -EFAULT;`
+    // — the byte count is part of the result, so losing it is a failed call.
+    if write_reply(arg + UFFDIO_MOVE_MOVE_OFF, count).is_err() { return err(Errno::Efault); }
     if moved != 0 && !mode.dontwake { ufd.wake_faulters(); }
     rv
 }

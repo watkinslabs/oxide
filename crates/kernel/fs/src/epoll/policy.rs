@@ -149,6 +149,34 @@ pub fn validate_epoll_params(busy_poll_usecs: u32, busy_poll_budget: u16,
     Ok(())
 }
 
+/// Field offsets inside `struct epoll_params`: `__u32 busy_poll_usecs` at 0,
+/// `__u16 busy_poll_budget` at 4, `__u8 prefer_busy_poll` at 6, `__u8 __pad`
+/// at 7.
+const BUDGET_OFF: usize = 4;
+const PREFER_OFF: usize = 6;
+const PAD_OFF: usize = 7;
+
+/// Split a copied-in `struct epoll_params` into its four fields. # C: O(1)
+pub fn decode_epoll_params(raw: &[u8; EPOLL_PARAMS_BYTES as usize]) -> (u32, u16, u8, u8) {
+    (u32::from_le_bytes(raw[..BUDGET_OFF].try_into().expect("4 of 8")),
+     u16::from_le_bytes(raw[BUDGET_OFF..PREFER_OFF].try_into().expect("2 of 8")),
+     raw[PREFER_OFF],
+     raw[PAD_OFF])
+}
+
+/// `EPIOCGPARAMS`'s reply object. The pad byte is written as zero — the reply
+/// is a whole struct, so a stale byte there would leak kernel stack. # C: O(1)
+pub fn encode_epoll_params(busy_poll_usecs: u32, busy_poll_budget: u16, prefer_busy_poll: u8)
+    -> [u8; EPOLL_PARAMS_BYTES as usize]
+{
+    let mut out = [0u8; EPOLL_PARAMS_BYTES as usize];
+    out[..BUDGET_OFF].copy_from_slice(&busy_poll_usecs.to_le_bytes());
+    out[BUDGET_OFF..PREFER_OFF].copy_from_slice(&busy_poll_budget.to_le_bytes());
+    out[PREFER_OFF] = prefer_busy_poll;
+    out[PAD_OFF] = 0;
+    out
+}
+
 #[cfg(test)]
 #[path = "policy_tests.rs"]
 mod tests;
