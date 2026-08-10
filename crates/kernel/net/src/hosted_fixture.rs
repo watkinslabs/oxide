@@ -122,6 +122,7 @@ impl Drop for InitNetDomain {
         for iface in created { let _ = stack.unregister_iface(iface); }
         stack.routes.restore_records_in(0, core::mem::take(&mut self.global_routes));
         crate::iface_addr::restore_ns(0, core::mem::take(&mut self.ipv4_rows));
+        crate::tcp_metrics::forget_all_in(0);
         let _ = crate::netfilter_hook::swap_nf_hook(self.nf_hook);
         let _ = crate::control_event::swap_notifier(self.notifier);
     }
@@ -138,6 +139,13 @@ pub fn init_net_domain() -> InitNetDomain {
     };
     #[cfg(test)]
     DOMAIN_DEPTH.with(|depth| depth.set(depth.get() + 1));
+    // The per-destination metrics cache is namespace-0 state no test can own
+    // privately, and every loopback connection in the suite closes onto the
+    // same destination key, so a peer another test proved reachable is
+    // indistinguishable from one this test proved. Cleared on both edges: a
+    // test that reads it starts from a cold cache, and a test that fills it
+    // hands the next one a cold cache too.
+    crate::tcp_metrics::forget_all_in(0);
     InitNetDomain {
         _guard: guard,
         ipv4_rows: crate::iface_addr::snapshot_ns(0),

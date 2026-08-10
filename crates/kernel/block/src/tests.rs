@@ -302,8 +302,11 @@ impl BlockDevice for PrioSpy {
 #[test]
 fn an_explicit_request_priority_survives_the_registry_submit_path() {
     let spy = Arc::new(PrioSpy { inner: Disk::new(512, 64), seen: Spinlock::new(Vec::new()) });
-    let idx = crate::registry::register("prio-explicit", spy.clone());
-    let disk = crate::registry::by_index(idx).expect("registered disk");
+    // By NAME, not by index: an index is derived from the table length and is
+    // reused once a disk is unregistered, so a by-index lookup can hand back a
+    // sibling test's disk and this test then asserts on a spy nothing reached.
+    crate::registry::register("prio-explicit", spy.clone());
+    let disk = crate::registry::by_name("prio-explicit").expect("registered disk");
     let want = sched::ioprio::prio_value(sched::ioprio::CLASS_RT, 2);
     let mut req = BlockRequest { op: BlockOp::Read, start_block: 0, len_blocks: 1,
         buffer: vec![0u8; 512], ioprio: want, polled: false };
@@ -315,8 +318,8 @@ fn an_explicit_request_priority_survives_the_registry_submit_path() {
 #[test]
 fn an_unset_request_is_stamped_at_submission() {
     let spy = Arc::new(PrioSpy { inner: Disk::new(512, 64), seen: Spinlock::new(Vec::new()) });
-    let idx = crate::registry::register("prio-unset", spy.clone());
-    let disk = crate::registry::by_index(idx).expect("registered disk");
+    crate::registry::register("prio-unset", spy.clone());
+    let disk = crate::registry::by_name("prio-unset").expect("registered disk");
     let mut req = BlockRequest::new_read(0, 1, 512);
     assert_eq!(req.ioprio, sched::ioprio::DEFAULT);
     disk.dev.submit_sync(&mut req).unwrap();

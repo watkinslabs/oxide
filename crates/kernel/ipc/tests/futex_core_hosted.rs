@@ -724,8 +724,14 @@ fn the_fake_clock_guard_excludes_and_resets() {
     // A second acquirer must not get in while the first holds it.
     let entered = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let flag = entered.clone();
+    // Read the clock INSIDE the second acquirer's guard. Reading it here after
+    // the join would read it with no guard held at all, so whichever test
+    // acquired next is what the assertion would see.
+    let at_acquire = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX));
+    let observed = at_acquire.clone();
     let waiter = std::thread::spawn(move || {
         let _g = fake_clock();
+        observed.store(FAKE_NOW_NS.load(Ordering::SeqCst), Ordering::SeqCst);
         flag.store(true, Ordering::SeqCst);
     });
     std::thread::sleep(std::time::Duration::from_millis(50));
@@ -736,5 +742,5 @@ fn the_fake_clock_guard_excludes_and_resets() {
     drop(guard);
     waiter.join().expect("the second acquirer proceeds once released");
     assert!(entered.load(Ordering::SeqCst));
-    assert_eq!(FAKE_NOW_NS.load(Ordering::SeqCst), 0, "and it reset on its acquire too");
+    assert_eq!(at_acquire.load(Ordering::SeqCst), 0, "and it reset on its acquire too");
 }
