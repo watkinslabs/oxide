@@ -235,3 +235,17 @@ for arch in x86 arm; do
     fi
 done
 echo "pre-push: boot-smoke PASS on both arches"
+
+# Same boot, one vCPU. Every other gate here runs multi-CPU, so a hang that
+# needs a second CPU to resolve — a wait for work nothing else on this CPU will
+# do — passes all of them and hangs the single-core case. One UP boot per arch
+# is what makes that class fail at push time instead of on a user's board.
+for arch in x86 arm; do
+    if ! SMOKE_KEEP_LOG_DIR="$smoke_log_dir" make "smoke-up-$arch" SMOKE_TIMEOUT="${SMOKE_TIMEOUT:-180}"; then
+        echo "pre-push: FAIL — make smoke-up-$arch did not reach login on ONE vCPU" >&2
+        [ -n "$smoke_log_dir" ] && echo "         preserved smoke logs: $smoke_log_dir" >&2
+        echo "         a kernel that needs two CPUs to boot is a boot regression" >&2
+        exit 1
+    fi
+done
+echo "pre-push: uniprocessor boot-smoke PASS on both arches"
