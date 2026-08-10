@@ -64,6 +64,11 @@ pub unsafe fn retain(src: *const u8, len: u64, desc_size: u64, desc_ver: u32) {
         dst[i] = unsafe { *src.add(i) };
         i += 1;
     }
+    // Say, in the map itself, that this boot installed no virtual translation
+    // for the runtime regions. The field is meaningful only after one has been
+    // installed; left as the firmware wrote it, a later kernel reads a
+    // leftover as an address and builds page tables for it.
+    crate::efi_memmap_edit::mark_no_virtual_mapping(&mut dst[..len as usize], desc_size as usize);
     MMAP_SIZE.store(len as u32, Ordering::Release);
     DESC_SIZE.store(desc_size as u32, Ordering::Release);
     DESC_VER.store(desc_ver, Ordering::Release);
