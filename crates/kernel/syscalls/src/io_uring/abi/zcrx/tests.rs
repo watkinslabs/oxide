@@ -233,10 +233,16 @@ fn an_unaligned_area_is_refused() {
     assert_eq!(admit_area_reg(&a, PAGE), Err(Errno::Einval));
 }
 
+/// A shared-buffer area is refused BEFORE the descriptor or the address is
+/// looked at: those rungs describe a plain memory area, and this description
+/// is not one. See `tests_copy.rs` for why the answer is `EINVAL`.
 #[test]
-fn a_buffer_sharing_area_is_recognised_and_refused_as_unsupported() {
+fn a_buffer_sharing_area_is_refused_ahead_of_the_plain_area_rungs() {
     let mut a = area(); a.flags = IORING_ZCRX_AREA_DMABUF; a.dmabuf_fd = 5;
-    assert_eq!(admit_area_reg(&a, PAGE), Err(Errno::Eopnotsupp));
+    assert_eq!(admit_area_reg(&a, PAGE), Err(Errno::Einval));
+    // Address zero would fault a plain area; it does not change this answer.
+    a.addr = 0;
+    assert_eq!(admit_area_reg(&a, PAGE), Err(Errno::Einval));
 }
 
 /// A descriptor named on a PLAIN area is a caller mistake, not an unsupported

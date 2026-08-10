@@ -8,14 +8,17 @@
 //
 // Module manifest:
 //   admit — the registration, control and receive admission ladders
+//   copy  — the copy fallback's per-operation accounting and short-run rule
 //   refs  — the two per-buffer counts and the one order they may be spent in
 //   tests — the ladder's order, which is what decides WHICH errno a caller
 //           gets when several rungs would fail
 
 #[path = "zcrx/admit.rs"] mod admit;
+#[path = "zcrx/copy.rs"]  mod copy;
 #[path = "zcrx/hold.rs"]  mod hold;
 #[path = "zcrx/refs.rs"]  mod refs;
 pub use admit::*;
+pub use copy::{copy_run, CopyReport};
 pub use hold::UserHold;
 pub use refs::{refill, Refill, UserRefs};
 
@@ -53,9 +56,11 @@ pub const ZCRX_SUPPORTED_REG_FLAGS: u32 = ZCRX_REG_IMPORT | ZCRX_REG_NODEV;
 
 /// `enum io_uring_zcrx_area_flags`.
 pub const IORING_ZCRX_AREA_DMABUF: u32 = 1;
-/// Area flags this kernel accepts. `DMABUF` is not among them: there is no
-/// buffer-sharing framework to import from, and the reference's own
-/// non-dmabuf path is the one a plain memory area takes.
+/// Area flags this ABI RECOGNISES. `DMABUF` is recognised so that naming it
+/// reports what is wrong with the description rather than looking like an
+/// unknown bit; `admit_area_reg` then refuses it. Recognising it is what makes
+/// the difference between "this kernel does not know that flag" and "this
+/// kernel cannot import an area described that way" visible to a caller.
 pub const IO_ZCRX_AREA_SUPPORTED_FLAGS: u32 = IORING_ZCRX_AREA_DMABUF;
 
 /// `enum zcrx_features`.
@@ -322,3 +327,7 @@ pub fn zcrx_cqe(area_id: u16, byte_off: u64) -> [u64; 2] {
 #[cfg(test)]
 #[path = "zcrx/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "zcrx/tests_copy.rs"]
+mod tests_copy;
