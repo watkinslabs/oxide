@@ -135,7 +135,7 @@ impl VirtioTransportProfile {
     /// index 1. The poll queue registers no completion handler, so the
     /// transport binds it `VIRTIO_MSI_NO_VECTOR` and the device is left with
     /// no vector to raise for it. Its notify doorbell is still mapped: a
-    /// poller must be able to kick.
+    /// poller must be able to kick. # C: O(1)
     pub const fn q0_device_cfg_poll_q1(drv_features: u64, msix0_handler: Option<fn()>) -> Self {
         Self::new(
             drv_features,

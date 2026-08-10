@@ -296,7 +296,7 @@ impl BlkState {
     }
 
     /// `with_poll_queue` builds the device the way a multiqueue device probes:
-    /// a second, interrupt-free request queue beside the default one.
+    /// a second, interrupt-free request queue beside the default one. # C: O(1)
     pub(crate) fn for_test_cfg_with_poll_queue(cfg_va: u64, with_poll_queue: bool) -> Self {
         Self {
             cfg_va,
@@ -316,6 +316,7 @@ impl BlkState {
     }
 
     /// Take the synchronous engine turn on every queue this device has.
+    /// # C: O(queues)
     pub(crate) fn hold_inflight_for_tests(&self) {
         for q in self.queues() { q.lock().busy = true; }
     }
@@ -325,13 +326,15 @@ impl BlkState {
     }
 
     /// Whether the queue a request with this `polled` flag would be issued on
-    /// is the interrupt-free one.
+    /// is the interrupt-free one. # C: O(1)
     pub(crate) fn queue_is_polled_for_tests(&self, polled: bool) -> bool {
         self.queue_for(polled).polled
     }
 
+    /// # C: O(queues)
     pub(crate) fn queue_count_for_tests(&self) -> usize { self.queues().count() }
 
+    /// # C: O(1)
     pub(crate) fn poll_queue_index_for_tests(&self) -> Option<u16> {
         self.pollq.as_ref().map(|q| q.res.index)
     }

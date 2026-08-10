@@ -63,6 +63,7 @@ fn seed_used_index(h: u64, res: &virtio::VirtQueueResource) -> u16 {
 }
 
 /// Read back a queue's `avail.flags`. # C: O(1)
+#[cfg(feature = "debug-boot")]
 fn read_avail_flags(hhdm: u64, res: &virtio::VirtQueueResource) -> u16 {
     if hhdm == 0 || res.driver_pa == 0 { return 0; }
     let avail = hhdm.wrapping_add(res.driver_pa + virtio::VRING_AVAIL_FLAGS_OFF) as *const u16;
@@ -189,16 +190,20 @@ pub fn init_blk(init: BlkInit) -> u32 {
     // assumed, that this disk's polled ring really is interrupt-free: the
     // vector the device would raise for the poll queue, and the suppression
     // bit it was told to honour. `msix=ffff` is the no-vector sentinel.
-    if let Some(poll) = state.pollq.as_ref() {
-        klog::write_raw(b"[INFO]  virtio-blk poll queue idx=");
-        klog::write_dec_u64(poll.res.index as u64);
-        klog::write_raw(b" of ");
-        klog::write_dec_u64(device_cfg.num_queues as u64);
-        klog::write_raw(b" msix=");
-        klog::write_hex_u64(virtio::read_queue_msix_vector(init.resources.cfg_va, poll.res.index) as u64);
-        klog::write_raw(b" avail_flags=");
-        klog::write_hex_u64(read_avail_flags(h, &poll.res) as u64);
-        klog::write_raw(b"\n");
+    #[cfg(feature = "debug-boot")]
+    {
+        if let Some(poll) = state.pollq.as_ref() {
+            klog::write_raw(b"[INFO]  virtio-blk poll queue idx=");
+            klog::write_dec_u64(poll.res.index as u64);
+            klog::write_raw(b" of ");
+            klog::write_dec_u64(device_cfg.num_queues as u64);
+            klog::write_raw(b" msix=");
+            klog::write_hex_u64(
+                virtio::read_queue_msix_vector(init.resources.cfg_va, poll.res.index) as u64);
+            klog::write_raw(b" avail_flags=");
+            klog::write_hex_u64(read_avail_flags(h, &poll.res) as u64);
+            klog::write_raw(b"\n");
+        }
     }
     #[cfg(feature = "debug-boot")]
     {

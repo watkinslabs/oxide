@@ -182,6 +182,7 @@ mod tests {
     }
 }
 
+/// # C: O(1)
 #[cfg(test)]
 pub fn suppress_queue_interrupts_for_tests(hhdm: u64, res: &virtio::VirtQueueResource) {
     suppress_queue_interrupts(hhdm, res);
