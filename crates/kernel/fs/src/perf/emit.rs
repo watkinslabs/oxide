@@ -45,6 +45,10 @@ fn on_switch(cpu: usize, n: sched::perf_sw::SwitchNote) {
     let c = cpu as i32;
     super::sideband::switch(n.prev_tid, c, true, n.preempt, n.next_pid, n.next_tid);
     super::sideband::switch(n.next_tid, c, false, false, n.prev_pid, n.prev_tid);
+    // The context half of the same call: two threads carrying clones of one
+    // context bring their per-task counters up to date against each other, so
+    // the counts are readable while both are still alive.
+    super::context::sched_out(n.prev_tid, n.next_tid);
 }
 
 /// `perf_event_comm(task, exec)` — the task was renamed. `exec` is the

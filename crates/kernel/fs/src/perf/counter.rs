@@ -102,6 +102,19 @@ impl SwCounter {
         self.time_acc = self.time_acc.saturating_add(now.saturating_sub(self.time_base));
         self.enabled  = false;
     }
+    /// Fold everything counted so far into the accumulated total and reopen the
+    /// window from here, without ending it. Idempotent by construction — the
+    /// reported count is `acc + (src - base)` either way — so a caller may do
+    /// it as often as it likes; what it buys is that the STORED value is
+    /// current, which is what a consumer reading the mapped control page (and
+    /// never calling into the kernel at all) sees. # C: O(1)
+    pub fn update(&mut self, src: u64, now: u64) {
+        if !self.enabled { return; }
+        self.acc       = self.acc.wrapping_add(src.saturating_sub(self.base));
+        self.base      = src;
+        self.time_acc  = self.time_acc.saturating_add(now.saturating_sub(self.time_base));
+        self.time_base = now;
+    }
     /// `_perf_event_reset()` — zero the count, keep enabled/time state.
     /// # C: O(1)
     pub fn reset(&mut self, src: u64) { self.acc = 0; self.base = src; }

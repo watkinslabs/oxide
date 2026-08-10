@@ -12,6 +12,7 @@
 //   event    live `struct perf_event` and its counter sources
 //   file     the anon inode and its `f_op`
 //   ioctl    `_perf_ioctl` classification and per-command rules (pure)
+//   context  the per-task event context: lineage, generation, mid-life sync
 //   registry the one table of live events, keyed by task/CPU context
 //   inherit  fork propagation + exit fold-back of `attr.inherit` events
 //   ring     the mmapped ring buffer and its control page
@@ -37,6 +38,7 @@ pub mod counter;
 pub mod event;
 pub mod file;
 pub mod ioctl;
+pub mod context;
 pub mod inherit;
 pub mod registry;
 pub mod ring;
