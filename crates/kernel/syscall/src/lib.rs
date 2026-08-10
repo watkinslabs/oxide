@@ -89,7 +89,6 @@ mod stub_tests {
 }
 
 
-#[cfg(target_os = "oxide-kernel")] pub mod numa;
 
 
 #[cfg(any(target_os = "oxide-kernel", test))] pub mod arm_abi;
