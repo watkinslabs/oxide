@@ -40,6 +40,7 @@ use vfs::File;
 use sync::{Spinlock, TaskList as QueuedLockClass};
 
 use crate::io_uring_abi::iopoll::{admit_rw, is_write, RwTarget};
+use crate::io_uring_abi::iopoll::seq::{reap_pass, ReapSet, Taken};
 
 use super::super::req::IoReq;
 
@@ -284,6 +285,88 @@ pub fn issue(req: &Arc<IoReq>) -> Result<bool, Errno> {
     }
 }
 
+/// One ring's polled set, bound to the live ring.
+///
+/// The SEQUENCE — claim last, release before post, which errno a lost slot
+/// carries — is [`crate::io_uring_abi::iopoll::seq::reap_pass`], away from the
+/// ring so it can be driven by a test. What is left here is the part that needs
+/// a live one: the lock, the slot, and the address space the bytes land in.
+struct LiveSet<'a> {
+    inode: &'a Arc<super::super::ctx::IoUringInode>,
+    /// The bytes of the transfer being completed, between `take` and
+    /// `scatter`. Held across the two because the driver asks for the count
+    /// first and the landing second.
+    buf: Vec<u8>,
+}
+
+impl<'a> ReapSet for LiveSet<'a> {
+    type Req = Arc<IoReq>;
+
+    /// # C: O(N_queued)
+    fn queued(&mut self) -> Vec<Arc<IoReq>> { self.inode.queued_reqs() }
+
+    /// # C: O(1)
+    fn has_queued(&mut self, r: &Arc<IoReq>) -> bool { r.inner.lock().iopoll_io.is_some() }
+
+    /// # C: O(1)
+    fn backend_done(&mut self, r: &Arc<IoReq>) -> bool {
+        let q = { let g = r.inner.lock(); g.iopoll_io.clone() };
+        q.is_some_and(|q| q.is_ready())
+    }
+
+    /// # C: O(1)
+    fn claim(&mut self, r: &Arc<IoReq>) -> bool { r.claim() }
+
+    /// # C: O(1)
+    fn is_write(&mut self, r: &Arc<IoReq>) -> bool { is_write(r.sqe.opcode) }
+
+    /// # C: O(1)
+    fn take(&mut self, r: &Arc<IoReq>) -> Taken {
+        let q = { let g = r.inner.lock(); g.iopoll_io.clone() };
+        let Some(q) = q else { return Taken::Lost };
+        let slot = q.slot.lock().take();
+        match slot {
+            None => Taken::Lost,
+            Some((buf, Err(e))) => {
+                drop(buf);
+                Taken::Failed(-(crate::io_uring_abi::iopoll::submit_errno(e).as_i32() as i64))
+            }
+            Some((buf, Ok(n))) => {
+                let n = core::cmp::min(n, buf.len());
+                self.buf = buf;
+                Taken::Bytes(n)
+            }
+        }
+    }
+
+    /// # C: O(n)
+    fn scatter(&mut self, r: &Arc<IoReq>, delivered: usize) -> usize {
+        let q = { let g = r.inner.lock(); g.iopoll_io.clone() };
+        let Some(q) = q else { return 0 };
+        let src = &self.buf[..core::cmp::min(delivered, self.buf.len())];
+        let root = r.owner.mm.as_ref().map(|m| m.root_pa());
+        match (&q.sink, root) {
+            (Sink::Fixed { .. }, _) => scatter(&q.sink, 0, src),
+            (Sink::User(_), Some(root)) => scatter(&q.sink, root, src),
+            // No address space to write into: the submitter is gone, so the
+            // bytes have nowhere to land.
+            (Sink::User(_), None) => 0,
+        }
+    }
+
+    /// # C: O(N_queued)
+    fn release(&mut self, r: &Arc<IoReq>) {
+        r.inner.lock().iopoll_io = None;
+        self.inode.untrack_queued(r);
+        self.buf = Vec::new();
+    }
+
+    /// # C: O(1)
+    fn post(&mut self, r: &Arc<IoReq>, res: i64) {
+        super::super::iowq::run::complete(r, res, 0);
+    }
+}
+
 /// Complete every transfer whose backend has finished, and report how many
 /// completions were posted.
 ///
@@ -291,46 +374,5 @@ pub fn issue(req: &Arc<IoReq>) -> Result<bool, Errno> {
 /// cancellation already took is not claimed here, and its backend's completion
 /// then fills a slot nobody reads. # C: O(N_inflight)
 pub fn reap(inode: &Arc<super::super::ctx::IoUringInode>) -> usize {
-    let mut posted = 0usize;
-    for req in inode.queued_reqs() {
-        let q = { let g = req.inner.lock(); g.iopoll_io.clone() };
-        // Claim LAST: the compare-exchange is what decides ownership, and a
-        // pass that asked it before the backend had finished would take a
-        // request whose result is not in yet.
-        if crate::io_uring_abi::iopoll::reap_step(
-            q.is_some(), q.as_ref().is_some_and(|q| q.is_ready()),
-            q.as_ref().is_some_and(|q| q.is_ready()) && req.claim())
-            != crate::io_uring_abi::iopoll::ReapStep::Take { continue; }
-        let Some(q) = q else { continue };
-        let taken = q.slot.lock().take();
-        let res = match taken {
-            None => -(Errno::Eio.as_i32() as i64),
-            Some((buf, Err(e))) => {
-                drop(buf);
-                -(crate::io_uring_abi::iopoll::submit_errno(e).as_i32() as i64)
-            }
-            Some((buf, Ok(n))) => {
-                let write = is_write(req.sqe.opcode);
-                let n = core::cmp::min(n, buf.len());
-                let landed = if write { n } else {
-                    let root = req.owner.mm.as_ref().map(|m| m.root_pa());
-                    match (&q.sink, root) {
-                        (Sink::Fixed { .. }, _) => scatter(&q.sink, 0, &buf[..n]),
-                        (Sink::User(_), Some(root)) => scatter(&q.sink, root, &buf[..n]),
-                        // No address space to write into: the submitter is gone,
-                        // so the bytes have nowhere to land.
-                        (Sink::User(_), None) => 0,
-                    }
-                };
-                crate::io_uring_abi::iopoll::completed_res(write, n, landed)
-            }
-        };
-        // The request leaves the polled set before its completion is posted, so
-        // a poll pass that races this one finds nothing left to reap for it.
-        req.inner.lock().iopoll_io = None;
-        inode.untrack_queued(&req);
-        super::super::iowq::run::complete(&req, res, 0);
-        posted += 1;
-    }
-    posted
+    reap_pass(&mut LiveSet { inode, buf: Vec::new() })
 }

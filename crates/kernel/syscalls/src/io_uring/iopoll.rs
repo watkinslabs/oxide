@@ -17,19 +17,14 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use syscall::errno::Errno;
-
 use vfs::File;
 
-use crate::io_uring_abi::iopoll::{after_poll, before_poll, hybrid_runtime, hybrid_sleep_ns,
-                                  observe_runtime, precheck, Step};
+use crate::io_uring_abi::iopoll::{hybrid_runtime, hybrid_sleep_ns, observe_runtime};
 use crate::io_uring_abi::uapi::{IORING_SETUP_HYBRID_IOPOLL, IORING_SETUP_IOPOLL};
 
 pub mod queued;
 
 use super::ctx::{state, IoUringInode};
-
-fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
 /// Whether this ring finds its completions by polling. # C: O(1)
 pub fn polled(inode: &IoUringInode) -> bool { inode.flags & IORING_SETUP_IOPOLL != 0 }
@@ -135,6 +130,78 @@ fn hybrid_observe(inode: &Arc<IoUringInode>, slept: u64, issued_at: u64) {
         |cur| { let n = observe_runtime(cur, runtime); if n == cur { None } else { Some(n) } });
 }
 
+/// Drive every outstanding backend once and turn what they finished into
+/// completions, reporting how many were posted.
+///
+/// Both callers of the polled path go through this: the task spinning in
+/// `io_uring_enter(IORING_ENTER_GETEVENTS)`, and the submission-polling thread
+/// of a ring that is BOTH `IORING_SETUP_SQPOLL` and `IORING_SETUP_IOPOLL`,
+/// whose submitter may never enter the kernel at all. # C: O(N_targets)
+pub fn drive(inode: &Arc<IoUringInode>) -> usize {
+    let files = targets(inode);
+    if files.is_empty() { return 0; }
+    poll_once(&files);
+    queued::reap(inode)
+}
+
+/// Whether this ring has transfers a backend still owes a result for — the
+/// reference's non-empty `ctx->iopoll_list`. What makes a polled ring work for
+/// its poll thread even with an empty submission queue. # C: O(N_queued)
+pub fn has_outstanding(inode: &Arc<IoUringInode>) -> bool {
+    polled(inode) && inode.has_queued()
+}
+
+/// One ring's polled wait, bound to the live ring.
+struct LiveWait<'a> { inode: &'a Arc<IoUringInode>, min: u32 }
+
+impl<'a> crate::io_uring_abi::iopoll::seq::PollWait for LiveWait<'a> {
+    /// # C: O(1)
+    fn min_events(&self) -> u32 { self.min }
+    /// # C: O(N_backlog)
+    fn flush_overflow(&mut self) { self.inode.flush_overflow(); }
+    /// # C: O(1)
+    fn dropped(&self) -> bool { self.inode.test_state(state::CQE_DROPPED) }
+    /// # C: O(1)
+    fn clear_dropped(&mut self) -> bool { self.inode.clear_state(state::CQE_DROPPED) }
+    /// # C: O(1)
+    fn cq_ready(&mut self) -> u32 { self.inode.cq_ready() }
+    /// # C: O(N_queued)
+    fn targets(&mut self) -> u32 { targets(self.inode).len() as u32 }
+    /// # C: O(1)
+    fn hybrid_sleep(&mut self) -> Option<(u64, u64)> {
+        if hybrid(self.inode) { hybrid_sleep(self.inode) } else { None }
+    }
+    /// `oneshot` needs no argument here: no backend in this kernel spins
+    /// inside its own poll, so the forbidding is satisfied by construction and
+    /// there is nothing to pass on. # C: O(N_targets)
+    fn poll_targets(&mut self, _oneshot: bool) { poll_once(&targets(self.inode)); }
+    /// # C: O(N_queued)
+    fn reap(&mut self) -> usize { queued::reap(self.inode) }
+    /// # C: O(1)
+    fn hybrid_observe(&mut self, slept: u64, issued_at: u64) {
+        hybrid_observe(self.inode, slept, issued_at);
+    }
+    /// A spinning caller must still let whatever the poll made runnable
+    /// actually run — the worker that owns a request is the thing that posts
+    /// its completion, and it cannot do that while this task holds the
+    /// processor. # C: O(1)
+    fn yield_cpu(&mut self) {
+        if sched::live::global().is_some() {
+            // SAFETY: process context in the syscall path on the running task's own CPU, holding no spinlock and no submission lock; the task stays runnable across the yield.
+            unsafe { sched::live::sched_yield(); }
+        }
+    }
+    /// The same predicate the sleeping wait uses to break out, so a polled ring
+    /// and an ordinary one agree about what a signal is. # C: O(1)
+    fn signal_pending(&mut self) -> bool {
+        sched::live::current().is_some_and(|t| {
+            sched::signal_pending_state(&t, sched::WaitState::Interruptible)
+        })
+    }
+    /// # C: O(1)
+    fn need_resched(&mut self) -> bool { sched::live::preempt::need_resched() }
+}
+
 /// The `IORING_ENTER_GETEVENTS` wait for a polled ring.
 ///
 /// Returns 0, or `-EINTR`, or `-EBADR` for a completion this ring lost. It may
@@ -143,57 +210,13 @@ fn hybrid_observe(inode: &Arc<IoUringInode>, slept: u64, issued_at: u64) {
 /// reached a backend yet cannot be polled for, and a caller of a polled ring
 /// is expected to come back. A loop that instead span until the count was met
 /// would never exit for such a request.
+///
+/// The loop itself — its two early exits and the order it asks its questions
+/// in — is [`crate::io_uring_abi::iopoll::seq::poll_wait`].
 /// # C: O(spin until min_complete or a break condition)
 pub fn cq_poll(inode: &Arc<IoUringInode>, min_complete: u32) -> i64 {
     use crate::io_uring_abi::enter::wait_min_events;
-
     let cq_entries = { let r = inode.ring.lock(); r.cq_entries };
     let min = wait_min_events(min_complete, cq_entries);
-    inode.flush_overflow();
-
-    if let Some(r) = precheck(inode.test_state(state::CQE_DROPPED), inode.cq_ready()) {
-        return match r { Ok(()) => 0, Err(e) => { inode.clear_state(state::CQE_DROPPED); err(e) } };
-    }
-
-    loop {
-        let files = targets(inode);
-        let multi = files.len() > 1;
-        match before_poll(files.len() as u32, min, multi) {
-            Step::Stop => break,
-            Step::Interrupted => return err(Errno::Eintr),
-            Step::Poll { oneshot: _ } => {
-                let timed = if hybrid(inode) { hybrid_sleep(inode) } else { None };
-                poll_once(&files);
-                // The backends have run their completions; turn the ones that
-                // finished into CQEs. This is the reference's `io_do_iopoll`
-                // second pass, and it is what a polled transfer's completion
-                // comes from at all — nothing else looks at it.
-                queued::reap(inode);
-                if let Some((slept, issued_at)) = timed { hybrid_observe(inode, slept, issued_at); }
-                inode.flush_overflow();
-                // A spinning caller must still let whatever the poll made
-                // runnable actually run — the worker that owns the request is
-                // the thing that posts its completion, and it cannot do that
-                // while this task holds the processor.
-                if sched::live::global().is_some() {
-                    // SAFETY: process context in the syscall path on the running task's own CPU, holding no spinlock and no submission lock; the task stays runnable across the yield.
-                    unsafe { sched::live::sched_yield(); }
-                }
-                // The same predicate the sleeping wait uses to break out, so a
-                // polled ring and an ordinary one agree about what a signal is.
-                let sig = sched::live::current().is_some_and(|t| {
-                    sched::signal_pending_state(&t, sched::WaitState::Interruptible)
-                });
-                match after_poll(inode.cq_ready(), min, sig, sched::live::preempt::need_resched()) {
-                    Step::Interrupted => return err(Errno::Eintr),
-                    Step::Stop => break,
-                    Step::Poll { .. } => continue,
-                }
-            }
-        }
-    }
-
-    inode.flush_overflow();
-    if inode.clear_state(state::CQE_DROPPED) { return err(Errno::Ebadr); }
-    0
+    crate::io_uring_abi::iopoll::seq::poll_wait(&mut LiveWait { inode, min })
 }

@@ -36,8 +36,8 @@ use sync::{Spinlock, TaskList as SqLockClass};
 use crate::io_uring_abi::layout::{RING_SQ_FLAGS, RING_SQ_HEAD, RING_SQ_TAIL};
 use crate::io_uring_abi::sqpoll::{
     arm_need_wakeup, attach_admit, disarm_need_wakeup, shares, sleeps_after_arm,
-    sq_cpu, sq_full, sq_ready, sq_thread_idle_ns, sweep, Attach, Observed, Pass,
-    Peer, PollState, RingView,
+    sq_cpu, sq_full, sq_ready, sq_thread_idle_ns, Attach, Observed,
+    Peer, RingView,
 };
 use crate::io_uring_abi::uapi::Params;
 
@@ -188,20 +188,32 @@ pub fn has_sq_room(ring: &IoUringInode) -> bool {
     !sq_full(r.hdr_load(RING_SQ_TAIL), r.hdr_load(RING_SQ_HEAD), r.sq_entries)
 }
 
-/// What one ring looks like to a sweep. # C: O(1)
+/// What one ring looks like to a sweep. # C: O(N_queued)
 fn view(ring: &Arc<IoUringInode>) -> RingView {
-    RingView { sq_ready: ready(ring), disabled: ring.test_state(state::DISABLED) }
+    RingView {
+        sq_ready: ready(ring),
+        disabled: ring.test_state(state::DISABLED),
+        // A polled ring's completions are found by asking its backends and by
+        // nothing else, and on such a ring the submitter may never enter the
+        // kernel at all — so outstanding transfers are this thread's work,
+        // with or without a single published entry.
+        iopoll_outstanding: super::iopoll::has_outstanding(ring),
+    }
 }
 
 /// What decides stop / park / spin / sleep once a sweep has found nothing to
 /// do. # C: O(1)
-fn observe_idle(sqd: &SqData, sq_ready: u32, n_rings: u32) -> Observed {
+fn observe_idle(sqd: &SqData, sq_ready: u32, rings: &[Arc<IoUringInode>]) -> Observed {
     Observed {
         stop: sqd.stop.load(Ordering::Acquire),
         park: sqd.park_pending.load(Ordering::Acquire) != 0,
         disabled: false,
         sq_ready,
-        shared: shares(n_rings),
+        shared: shares(rings.len() as u32),
+        // Re-read across the same barrier as the tails: a transfer queued in
+        // the window between the doorbell going up and this load is one only
+        // this thread will ever reap, so it must not sleep on it.
+        iopoll_outstanding: rings.iter().any(super::iopoll::has_outstanding),
         now_ns: super::iowq::worker::now_ns(),
     }
 }
@@ -249,7 +261,7 @@ fn idle(sqd: &SqData, rings: &[Arc<IoUringInode>]) {
     // Separates the doorbell stores from the tail loads below. The submitter's
     // side of this pair is its own store-tail / load-flags barrier.
     core::sync::atomic::fence(Ordering::SeqCst);
-    let o = observe_idle(sqd, total_ready(rings), rings.len() as u32);
+    let o = observe_idle(sqd, total_ready(rings), rings);
     if sleeps_after_arm(&o) {
         // SAFETY: registered on `wait` above, holding no lock, in process context on this thread's own CPU.
         unsafe { sched::live::schedule(); }
@@ -259,53 +271,55 @@ fn idle(sqd: &SqData, rings: &[Arc<IoUringInode>]) {
     for r in rings { update_sq_flags(r, disarm_need_wakeup); }
 }
 
+/// The live thread's side of [`crate::io_uring_abi::sqpoll::thread::SqEnv`].
+///
+/// The ring set is re-read per pass and cached here for that pass alone: the
+/// driver indexes rings by position, and a set that changed underneath between
+/// the sweep and the work would submit to the wrong one.
+struct LiveEnv<'a> { sqd: &'a SqData, rings: Vec<Arc<IoUringInode>> }
+
+impl<'a> crate::io_uring_abi::sqpoll::thread::SqEnv for LiveEnv<'a> {
+    /// # C: O(N_rings)
+    fn live_rings(&mut self) -> usize { self.rings = self.sqd.live(); self.rings.len() }
+    /// # C: O(N_queued)
+    fn view(&mut self, i: usize) -> RingView { view(&self.rings[i]) }
+    /// # C: O(1)
+    fn stop(&self) -> bool { self.sqd.stop.load(Ordering::Acquire) }
+    /// # C: O(1)
+    fn park_requested(&self) -> bool { self.sqd.park_pending.load(Ordering::Acquire) != 0 }
+    /// # C: O(1)
+    fn now_ns(&mut self) -> u64 { super::iowq::worker::now_ns() }
+    /// # C: O(N_parks)
+    fn do_park(&mut self) { do_park(self.sqd); }
+    /// # C: O(N_queued)
+    fn reap(&mut self, i: usize) { super::iopoll::drive(&self.rings[i]); }
+    /// # C: O(n)
+    fn submit(&mut self, i: usize, n: u32) { super::submit::submit_sqes(&self.rings[i], n); }
+    /// # C: O(N_waiters)
+    fn wake_sq_waiters(&mut self, _i: usize) { self.sqd.sq_wait.wake_all(); }
+    /// # C: O(N_rings)
+    fn idle(&mut self, _views: &[RingView]) { idle(self.sqd, &self.rings); }
+    /// # C: O(1)
+    fn spin(&mut self) {
+        // SAFETY: running poll thread in process context on its own CPU holding no lock; schedule re-enqueues this still-runnable task.
+        unsafe { sched::live::schedule(); }
+    }
+}
+
 /// The poll loop. Returns once the ring is gone or a stop was requested.
+///
+/// The loop is [`crate::io_uring_abi::sqpoll::thread::poll_loop`]; what is here
+/// is the borrow it runs under and the live environment it drives.
 /// # C: unbounded — runs for the ring's life
-/// # Sleeps: whenever the ring is idle
+/// # Sleeps: whenever the rings it serves are idle
 fn run(sqd: &SqData) {
     // Borrowed once and held: this thread has no address space, no descriptor
     // table and no credentials of its own, and every entry it runs belongs to
     // the task that created the ring.
     // SAFETY: the running task is a freshly spawned kernel thread in process context on its own CPU with no address space, no descriptor table and no lock held.
     let _borrow = unsafe { Borrow::install(&sqd.owner) };
-
-    let mut st = PollState::new(sqd.idle_ns);
-    loop {
-        let rings = sqd.live();
-        // Every ring gone is the same as a stop: there is nothing left to
-        // drain and nobody left to report to.
-        if rings.is_empty() { return; }
-        let n = rings.len() as u32;
-
-        // One sweep: each ring gets a bounded share of the pass, so a ring
-        // with a full SQ cannot hold the thread while its neighbours wait.
-        let mut views: Vec<RingView> = Vec::new();
-        if views.try_reserve(rings.len()).is_err() { return; }
-        for r in &rings { views.push(view(r)); }
-
-        match sweep(&st, &views,
-                    sqd.stop.load(Ordering::Acquire),
-                    sqd.park_pending.load(Ordering::Acquire) != 0,
-                    super::iowq::worker::now_ns()) {
-            Pass::Stop => return,
-            Pass::Park => do_park(sqd),
-            Pass::Take(take) => {
-                for (ring, n) in rings.iter().zip(take) {
-                    if n == 0 { continue; }
-                    super::submit::submit_sqes(ring, n);
-                    // Room was made and completions may have been posted.
-                    sqd.sq_wait.wake_all();
-                }
-                st.touch(super::iowq::worker::now_ns());
-            }
-            Pass::Idle => { idle(sqd, &rings); st.touch(super::iowq::worker::now_ns()); }
-            Pass::Spin => {
-                // SAFETY: running poll thread in process context on its own CPU holding no lock; schedule re-enqueues this still-runnable task.
-                unsafe { sched::live::schedule(); }
-            }
-        }
-        let _ = n;
-    }
+    crate::io_uring_abi::sqpoll::thread::poll_loop(
+        &mut LiveEnv { sqd, rings: Vec::new() }, sqd.idle_ns);
 }
 
 /// The thread. `arg` is the `Arc<SqData>` its creator leaked for exactly this
