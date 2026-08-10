@@ -29,7 +29,7 @@ fn read_user(dst: &mut [u8], addr: u64) -> Result<(), ()> {
 pub fn sys_kexec_load(args: &SyscallArgs) -> i64 {
     let (entry, nr_segments, seg_ptr, flags) = (args.a0, args.a1, args.a2, args.a3);
     let cur = match sched::live::current() { Some(c) => c, None => return errno_for(kexec::Error::Perm) };
-    let permitted = kexec::load_permitted(cur.has_cap(sched::cap::SYS_BOOT));
+    let permitted = kexec::load_permitted(cur.has_cap(sched::cap::SYS_BOOT), kexec::image_type(flags));
     if let Err(e) = kexec::kexec_load_check(permitted, nr_segments, flags) { return errno_for(e); }
     if let Err(e) = kexec::arch_ok(flags) { return errno_for(e); }
     if segment_array_bytes(nr_segments).is_none() { return -(Errno::Einval.as_i32() as i64); }

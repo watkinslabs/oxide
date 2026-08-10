@@ -8,6 +8,7 @@
 // Module manifest:
 // - `uapi`:     flag bits, arch tags, segment record, relocation-entry encoding.
 // - `validate`: every refusal decision, in the reference's order — host-tested.
+// - `limit`:    the two per-image-type load-limit rules.
 // - `frames`:   the page supply (trait + the buddy-backed running-kernel impl).
 // - `image`:    the staged image: relocation list, control pages, segment copy.
 // - `stage`:    `kimage_alloc_init` + the per-segment load, global-state free.
@@ -29,6 +30,7 @@ extern crate std;
 
 pub mod uapi;
 pub mod validate;
+pub mod limit;
 pub mod frames;
 pub mod image;
 pub mod stage;
@@ -42,12 +44,14 @@ mod tests;
 pub use uapi::{ImageType, KexecSegment, KEXEC_FILE_FLAGS, KEXEC_FILE_ON_CRASH,
     KEXEC_FILE_NO_INITRAMFS, KEXEC_FILE_SIZE_MAX, KEXEC_FILE_UNLOAD, KEXEC_FLAGS,
     KEXEC_ON_CRASH, KEXEC_SEGMENT_MAX, KEXEC_SEGMENT_SIZE};
-pub use validate::{arch_ok, cmdline_ok, crash_entry_ok, image_type, kexec_file_load_check,
+pub use validate::{arch_ok, cmdline_ok, crash_entry_ok, file_image_type, image_type, kexec_file_load_check,
     kexec_load_check, sanity_check_segment_list, signature_check_required, CrashRange, Error,
     KResult};
 pub use frames::{Frames, PmmFrames};
 pub use image::{KImage, SegmentSource};
 pub use stage::{stage_image, KernelSource, Limits, UserSource};
+pub use limit::{limit_take, limit_write_ok, UNLIMITED};
 pub use store::{disable_load, do_kexec_load, drop_image, install_staged, kernel_kexec,
-    kexec_crash_loaded, kexec_loaded, load_disabled, load_permitted, with_kexec_lock};
+    kexec_crash_loaded, kexec_loaded, load_disabled, load_limit, load_permitted, set_load_limit,
+    with_kexec_lock};
 pub use file_load::{kexec_file_load, FileImage, FileLoader};

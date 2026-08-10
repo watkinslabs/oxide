@@ -34,10 +34,22 @@ pub enum Error {
 /// Result alias for the kexec decision surface.
 pub type KResult<T> = Result<T, Error>;
 
-/// Image type a `flags` word selects.
+/// Image type a `kexec_load(2)` `flags` word selects.
 /// # C: O(1)
 pub fn image_type(flags: u64) -> ImageType {
     if flags & KEXEC_ON_CRASH != 0 { ImageType::Crash } else { ImageType::Default }
+}
+
+/// Image type a `kexec_file_load(2)` `flags` word selects.
+///
+/// A SEPARATE function because the two syscalls spell the same choice with
+/// different bits — `KEXEC_ON_CRASH` is bit 0 and `KEXEC_FILE_ON_CRASH` is
+/// bit 1 — and bit 1 in a `kexec_load` flag word is `KEXEC_PRESERVE_CONTEXT`.
+/// Feeding a file-mode flag word to [`image_type`] would charge every ordinary
+/// file load to the crash load limit and every crash one to the reboot limit.
+/// # C: O(1)
+pub fn file_image_type(flags: u64) -> ImageType {
+    if flags & KEXEC_FILE_ON_CRASH != 0 { ImageType::Crash } else { ImageType::Default }
 }
 
 /// `kexec_load_check`: permission, then flag legality, then the segment cap.

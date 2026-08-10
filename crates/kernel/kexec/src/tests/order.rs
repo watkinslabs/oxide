@@ -240,3 +240,20 @@ fn an_empty_segment_list_passes_every_check_because_it_is_the_unload() {
     assert_eq!(sanity_check_segment_list(&none, ImageType::Default, RAM, u64::MAX, None), Ok(()));
     assert_eq!(kexec_load_check(true, 0, 0), Ok(()));
 }
+
+#[test]
+fn the_two_syscalls_spell_a_crash_image_with_different_bits() {
+    // The bit that means "crash image" is 0 in `kexec_load` and 1 in
+    // `kexec_file_load`, and bit 1 in a `kexec_load` flag word means something
+    // else entirely. Reading a file-mode flag word with the kexec_load
+    // decoder charges every load to the WRONG per-type limit, which no test
+    // that only ever passes one flavour of flag word could see.
+    assert_eq!(image_type(KEXEC_ON_CRASH), ImageType::Crash);
+    assert_eq!(image_type(0), ImageType::Default);
+    assert_eq!(file_image_type(KEXEC_FILE_ON_CRASH), ImageType::Crash);
+    assert_eq!(file_image_type(0), ImageType::Default);
+    // Each decoder must ignore the OTHER syscall's bit.
+    assert_eq!(image_type(KEXEC_FILE_ON_CRASH), ImageType::Default);
+    assert_eq!(file_image_type(KEXEC_ON_CRASH), ImageType::Default);
+    assert_ne!(KEXEC_ON_CRASH, KEXEC_FILE_ON_CRASH);
+}

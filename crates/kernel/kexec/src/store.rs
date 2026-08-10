@@ -8,7 +8,7 @@
 
 extern crate alloc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
 use sync::{Spinlock, TaskList as KexecLockClass};
 
@@ -45,10 +45,55 @@ pub fn load_disabled() -> bool { LOAD_DISABLED.load(Ordering::Relaxed) }
 /// # C: O(1)
 pub fn disable_load() { LOAD_DISABLED.store(true, Ordering::Relaxed); }
 
-/// `kexec_load_permitted`: `CAP_SYS_BOOT` AND the load-disable latch. Callers
-/// pass the capability decision because credentials live in `sched`.
+/// `kexec_load_limit_panic` / `kexec_load_limit_reboot`: how many more loads
+/// of each image type this boot will permit. `-1` (the initial value) is no
+/// limit; the files under `/proc/sys/kernel/` may only ever tighten them.
+static LIMIT_CRASH: AtomicI64 = AtomicI64::new(crate::limit::UNLIMITED);
+static LIMIT_NORMAL: AtomicI64 = AtomicI64::new(crate::limit::UNLIMITED);
+
+fn limit_cell(ty: ImageType) -> &'static AtomicI64 {
+    match ty { ImageType::Crash => &LIMIT_CRASH, ImageType::Default => &LIMIT_NORMAL }
+}
+
+/// Current value of one load limit, for `/proc/sys/kernel/kexec_load_limit_*`.
 /// # C: O(1)
-pub fn load_permitted(has_cap_sys_boot: bool) -> bool { has_cap_sys_boot && !load_disabled() }
+pub fn load_limit(ty: ImageType) -> i64 { limit_cell(ty).load(Ordering::Relaxed) }
+
+/// Tighten one load limit. Refused — `false` — when the write would raise it,
+/// leave it unchanged, or restore the unlimited sentinel.
+/// # C: O(1)
+pub fn set_load_limit(ty: ImageType, new: i64) -> bool {
+    let cell = limit_cell(ty);
+    let mut cur = cell.load(Ordering::Relaxed);
+    loop {
+        if !crate::limit::limit_write_ok(cur, new) { return false; }
+        match cell.compare_exchange_weak(cur, new, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return true,
+            Err(seen) => cur = seen,
+        }
+    }
+}
+
+/// `kexec_load_permitted`: `CAP_SYS_BOOT`, the load-disable latch, and then
+/// one unit of the per-type load limit. Callers pass the capability decision
+/// because credentials live in `sched`.
+///
+/// The limit is spent on every PERMITTED load, not on every SUCCESSFUL one:
+/// what is being rationed is the attempt, so an image that goes on to fail
+/// validation still costs its caller one of them.
+/// # C: O(1)
+pub fn load_permitted(has_cap_sys_boot: bool, ty: ImageType) -> bool {
+    if !has_cap_sys_boot || load_disabled() { return false; }
+    let cell = limit_cell(ty);
+    let mut cur = cell.load(Ordering::Relaxed);
+    loop {
+        let next = match crate::limit::limit_take(cur) { Some(v) => v, None => return false };
+        match cell.compare_exchange_weak(cur, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return true,
+            Err(seen) => cur = seen,
+        }
+    }
+}
 
 /// Run `op` under the kexec lock, or report EBUSY without running it.
 /// # C: O(op); # Lk: KEXEC_LOCK
@@ -175,4 +220,6 @@ pub fn clear_for_tests<F: Frames>(f: &mut F) {
     if let Some(img) = old.1.as_mut() { img.free(f); }
     KEXEC_LOCK.store(false, Ordering::Release);
     LOAD_DISABLED.store(false, Ordering::Relaxed);
+    LIMIT_CRASH.store(crate::limit::UNLIMITED, Ordering::Relaxed);
+    LIMIT_NORMAL.store(crate::limit::UNLIMITED, Ordering::Relaxed);
 }

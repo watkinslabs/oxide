@@ -10,6 +10,7 @@ use super::gate::exclusive_store;
 use crate::file_load::{kexec_file_load, probe, FileImage};
 use crate::stage::Limits;
 use crate::store;
+use crate::limit::UNLIMITED;
 use crate::uapi::*;
 use crate::validate::Error;
 
@@ -118,8 +119,24 @@ fn the_slots_the_lock_and_the_reboot_entry_behave_as_one_state_machine() {
     assert_eq!(store::kernel_kexec(), Err(Error::Inval));
 
     // The load-disable latch is one-way and is what `load_permitted` consults.
-    assert!(store::load_permitted(true));
-    assert!(!store::load_permitted(false));
+    assert!(store::load_permitted(true, ImageType::Default));
+    assert!(!store::load_permitted(false, ImageType::Default));
+
+    // The two load limits are per image type and are spent independently: a
+    // reboot image must not be able to exhaust the panic budget or vice versa.
+    // Both are unlimited to begin with, so neither has moved above.
+    assert_eq!(store::load_limit(ImageType::Default), UNLIMITED);
+    assert_eq!(store::load_limit(ImageType::Crash), UNLIMITED);
+    assert!(store::set_load_limit(ImageType::Default, 1));
+    assert!(!store::set_load_limit(ImageType::Default, 2), "a limit may only tighten");
+    assert!(store::load_permitted(true, ImageType::Default));
+    assert_eq!(store::load_limit(ImageType::Default), 0);
+    assert!(!store::load_permitted(true, ImageType::Default), "the budget is spent");
+    // The crash counter was untouched by every one of those.
+    assert_eq!(store::load_limit(ImageType::Crash), UNLIMITED);
+    assert!(store::load_permitted(true, ImageType::Crash));
+
     store::disable_load();
-    assert!(!store::load_permitted(true), "no capability survives kexec_load_disabled");
+    assert!(!store::load_permitted(true, ImageType::Crash),
+            "no capability and no remaining budget survives kexec_load_disabled");
 }

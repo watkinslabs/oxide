@@ -53,7 +53,7 @@ pub fn sys_kexec_file_load(args: &SyscallArgs) -> i64 {
     let (kernel_fd, initrd_fd) = (args.a0 as i32, args.a1 as i32);
     let (cmdline_len, cmdline_ptr, flags) = (args.a2, args.a3, args.a4);
     let cur = match sched::live::current() { Some(c) => c, None => return errno_for(kexec::Error::Perm) };
-    let permitted = kexec::load_permitted(cur.has_cap(sched::cap::SYS_BOOT));
+    let permitted = kexec::load_permitted(cur.has_cap(sched::cap::SYS_BOOT), kexec::file_image_type(flags));
     if let Err(e) = kexec::kexec_file_load_check(permitted, flags) { return errno_for(e); }
     if cmdline_len > kexec::KEXEC_FILE_SIZE_MAX { return -(Errno::Einval.as_i32() as i64); }
 
