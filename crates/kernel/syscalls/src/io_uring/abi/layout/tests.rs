@@ -286,7 +286,7 @@ fn every_setup_flag_is_either_implemented_or_refused() {
         (IORING_SETUP_COOP_TASKRUN,       true,  "no task work is ever queued at the submitter"),
         (IORING_SETUP_TASKRUN_FLAG,       true,  "IORING_SQ_TASKRUN correctly never raised"),
         (IORING_SETUP_SQE128,             false, "the SQE array is sized and indexed at 64 bytes"),
-        (IORING_SETUP_CQE32,              false, "the CQE array is sized and indexed at 16 bytes"),
+        (IORING_SETUP_CQE32,              true,  "cqe_size sizes and indexes the CQE array at 32 bytes"),
         (IORING_SETUP_SINGLE_ISSUER,      true,  "ctx::claim_issuer refuses a second submitter"),
         (IORING_SETUP_DEFER_TASKRUN,      true,  "vacuous, and the RESIZE_RINGS gate"),
         (IORING_SETUP_NO_MMAP,            false, "no path adopts caller pages as the ring"),
@@ -316,7 +316,7 @@ fn every_setup_flag_is_either_implemented_or_refused() {
 #[test]
 fn every_unimplemented_setup_flag_is_refused_by_setup_itself() {
     for bit in [IORING_SETUP_ATTACH_WQ, IORING_SETUP_SQE128,
-                IORING_SETUP_CQE32, IORING_SETUP_NO_MMAP, IORING_SETUP_REGISTERED_FD_ONLY,
+                IORING_SETUP_NO_MMAP, IORING_SETUP_REGISTERED_FD_ONLY,
                 IORING_SETUP_CQE_MIXED, IORING_SETUP_SQE_MIXED,
                 IORING_SETUP_SQ_REWIND] {
         assert_eq!(prepare(&mut req(bit), 8), Err(Errno::Einval), "flag {bit:#x} must be refused");
@@ -359,4 +359,25 @@ fn sqpoll_refuses_the_flags_that_contradict_it() {
     // for its own reason too, so neither ordering can admit the pair.
     assert_eq!(prepare(&mut req(IORING_SETUP_SQPOLL | IORING_SETUP_SQ_REWIND
                                 | IORING_SETUP_NO_SQARRAY), 8), Err(Errno::Einval));
+}
+
+/// A 32-byte ring sizes and strides its CQE array at 32 bytes, and a plain
+/// ring is untouched. The rings region has to GROW by exactly the extra 16
+/// bytes per entry: a stride that outran the sizing would have the last CQEs
+/// land past the region.
+#[test]
+fn cqe32_doubles_the_completion_stride_and_the_array_it_sizes() {
+    let plain = prepare(&mut req(0), 8).unwrap();
+    let big = prepare(&mut req(IORING_SETUP_CQE32), 8).unwrap();
+    assert_eq!(plain.cqe_size, 16);
+    assert_eq!(big.cqe_size, 32);
+    assert_eq!(plain.cq_entries, big.cq_entries);
+    assert_eq!(big.rings_bytes - plain.rings_bytes, 16 * big.cq_entries);
+}
+
+/// `CQE32` and `CQE_MIXED` together stay refused: mixed varies the size per
+/// completion, which a fixed stride cannot express.
+#[test]
+fn cqe32_with_mixed_is_still_refused() {
+    assert_eq!(prepare(&mut req(IORING_SETUP_CQE32 | IORING_SETUP_CQE_MIXED), 8), Err(Errno::Einval));
 }

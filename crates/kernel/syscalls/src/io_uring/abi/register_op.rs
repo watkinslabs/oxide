@@ -135,6 +135,13 @@ pub enum RegisterOp {
     /// `IORING_REGISTER_MEM_REGION` — `arg` is a
     /// `struct io_uring_mem_region_reg` naming a `struct io_uring_region_desc`.
     MemRegion { arg: u64 },
+    /// `IORING_REGISTER_ZCRX_IFQ` — `arg` is a
+    /// `struct io_uring_zcrx_ifq_reg` carrying the request in and the built
+    /// geometry out.
+    ZcrxIfq { arg: u64 },
+    /// `IORING_REGISTER_ZCRX_CTRL` — `arg` is a `struct zcrx_ctrl`; `nr`
+    /// travels because the control call decides it before anything else.
+    ZcrxCtrl { arg: u64, nr: u32 },
     /// `IORING_REGISTER_NAPI` — `arg` is a `struct io_uring_napi`.
     Napi { arg: u64 },
     /// `IORING_UNREGISTER_NAPI` — `arg` may be null, which means "do not
@@ -268,6 +275,14 @@ fn ring_op(opcode: u32, arg: u64, nr_args: u32) -> Result<RegisterOp, Errno> {
             if nr_args == 0 || nr_args > IO_RINGFD_REG_MAX { return Err(Errno::Einval); }
             Ok(RegisterOp::UnregisterRingFds { arg, nr: nr_args })
         }
+        // The registration reads one record and reports back through it; the
+        // reference screens neither the pointer nor the count here, leaving
+        // both to the copy and to the registration's own ladder.
+        IORING_REGISTER_ZCRX_IFQ => Ok(RegisterOp::ZcrxIfq { arg }),
+        // The count IS screened, by the control call itself, which is where
+        // it belongs: a non-zero count there is an argument error and not an
+        // unknown opcode.
+        IORING_REGISTER_ZCRX_CTRL => Ok(RegisterOp::ZcrxCtrl { arg, nr: nr_args }),
         _ => Err(unsupported(opcode)),
     }
 }

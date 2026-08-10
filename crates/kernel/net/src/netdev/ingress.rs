@@ -448,7 +448,7 @@ impl IfaceRegistry {
     pub(crate) fn finish_destroy(&self, teardown: &IfaceTeardown)
         -> Option<(Arc<dyn NetDev>, Option<Arc<drv::Device>>)>
     {
-        let dev = {
+        let (dev, rxq) = {
             let mut g = self.inner.lock();
             let pos = g.entries.iter().position(|entry| entry.id == teardown.iface
                 && entry.ns == teardown.net_ns
@@ -456,8 +456,10 @@ impl IfaceRegistry {
                 && Arc::ptr_eq(&entry.ingress, &teardown.gate)
                 && teardown.gate.drained())?;
             let entry = g.entries.remove(pos);
-            (entry.dev, entry.parent)
+            ((entry.dev, entry.parent), entry.rx_queues)
         };
+        // Off the registry lock, per `IfaceRegistry::unregister`.
+        super::rx_queue::uninstall_all(&rxq);
         Some(dev)
     }
 

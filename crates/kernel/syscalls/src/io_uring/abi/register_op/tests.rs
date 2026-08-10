@@ -147,14 +147,28 @@ fn probe_clamps_instead_of_failing() {
     assert_eq!(probe_ops(0, 28), 0);
 }
 
+/// Both zero-copy receive opcodes decode; neither screens its argument count
+/// here. The registration reports its geometry back through the record it was
+/// given, and the control call decides the count itself — screening either
+/// here would answer EINVAL where the reference answers something the caller
+/// can act on.
 #[test]
-fn opcodes_needing_an_absent_mechanism_report_eopnotsupp_not_success() {
-    // Each of these needs a whole mechanism this kernel does not have — a
-    // zero-copy receive queue with a device memory provider behind it.
-    // Returning 0 for any of them would tell the caller a registration
-    // happened that did not (`scratch/known_issues.md`).
+fn the_zero_copy_receive_opcodes_decode_and_carry_their_arguments() {
+    assert_eq!(decode(IORING_REGISTER_ZCRX_IFQ, RING_FD, 0x1000, 1).unwrap().op,
+               RegisterOp::ZcrxIfq { arg: 0x1000 });
+    assert_eq!(decode(IORING_REGISTER_ZCRX_IFQ, RING_FD, 0x1000, 0).unwrap().op,
+               RegisterOp::ZcrxIfq { arg: 0x1000 });
+    assert_eq!(decode(IORING_REGISTER_ZCRX_CTRL, RING_FD, 0x1000, 0).unwrap().op,
+               RegisterOp::ZcrxCtrl { arg: 0x1000, nr: 0 });
+    assert_eq!(decode(IORING_REGISTER_ZCRX_CTRL, RING_FD, 0x1000, 3).unwrap().op,
+               RegisterOp::ZcrxCtrl { arg: 0x1000, nr: 3 });
+}
+
+/// Neither is a blind form: both act on a ring's own instance table.
+#[test]
+fn the_zero_copy_receive_opcodes_need_a_ring() {
     for op in [IORING_REGISTER_ZCRX_IFQ, IORING_REGISTER_ZCRX_CTRL] {
-        assert_eq!(decode(op, RING_FD, 0x1000, 1), Err(Errno::Eopnotsupp), "op {op}");
+        assert_eq!(decode(op, -1, 0x1000, 0), Err(Errno::Einval), "op {op}");
     }
 }
 

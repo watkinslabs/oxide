@@ -111,6 +111,10 @@ pub const IORING_SQ_TASKRUN:      u32 = 1 << 2;
 pub const SQE_SIZE: usize = 64;
 /// `sizeof(struct io_uring_cqe)`.
 pub const CQE_SIZE: usize = 16;
+/// `sizeof(struct io_uring_cqe)` for an `IORING_SETUP_CQE32` ring: the same
+/// 16 bytes followed by `big_cqe[2]`, which is where an operation that has
+/// more to report than a result and a flag word puts it.
+pub const CQE32_SIZE: usize = 32;
 /// `sizeof(struct io_uring_params)`.
 pub const PARAMS_SIZE: usize = 120;
 /// `offsetof(struct io_uring_params, sq_off)`.

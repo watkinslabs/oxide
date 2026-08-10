@@ -101,4 +101,35 @@ pub trait NetDev: Send + Sync {
     fn ipv4_addr_changed(&self, _addr: Option<crate::Ipv4Addr>) {}
     /// Snapshot the per-iface running counters. # C: O(1)
     fn stats(&self) -> NetStats { NetStats::default() }
+
+    /// Receive queues this device really has — Linux `real_num_rx_queues`.
+    /// # C: O(1)
+    fn rx_queue_count(&self) -> u32 { 1 }
+
+    /// Whether the device can stop, re-provision and restart ONE receive
+    /// queue while the rest keep running — Linux `queue_mgmt_ops`. Without it
+    /// a queue's buffer source cannot be changed under a live device, which is
+    /// why binding a memory provider to such a device is refused rather than
+    /// half-applied. # C: O(1)
+    fn rx_queue_mgmt(&self) -> bool { false }
+
+    /// Header/data split state. Payload must land in its own buffer before a
+    /// memory provider can own that buffer. # C: O(1)
+    fn hds_config(&self) -> super::rx_queue::HdsConfig { super::rx_queue::HdsConfig::Unknown }
+
+    /// Split threshold: payload below it stays with the headers, which would
+    /// put protocol bytes in a provider's buffer. # C: O(1)
+    fn hds_thresh(&self) -> u32 { 0 }
+
+    /// Programs attached to the device's receive hook. One of them may retain
+    /// or rewrite a buffer, so a provider cannot own the buffers underneath.
+    /// # C: O(1)
+    fn rx_hook_prog_count(&self) -> u32 { 0 }
+
+    /// Whether the device accepts a caller-chosen receive buffer size. # C: O(1)
+    fn rx_page_size_supported(&self) -> bool { false }
+
+    /// Stop, re-provision and restart receive queue `idx` so it draws from
+    /// whatever the queue's buffer source now is. # C: driver-dependent
+    fn rx_queue_restart(&self, _idx: u32) -> NetResult<()> { Err(NetError::Eopnotsupp) }
 }

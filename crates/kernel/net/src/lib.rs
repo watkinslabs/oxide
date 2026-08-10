@@ -29,6 +29,7 @@ pub mod ordered;
 pub mod pkt;
 pub mod tcp_state;
 pub mod netdev;
+pub mod page_pool;
 pub mod sysctl;
 pub mod uapi;
 pub mod send_control;

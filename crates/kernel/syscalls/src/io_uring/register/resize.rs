@@ -107,7 +107,7 @@ pub fn resize_rings(inode: &Arc<IoUringInode>, arg: u64) -> i64 {
     let new = IoUring {
         rings, sqes,
         sq_entries: g.sq_entries, cq_entries: g.cq_entries,
-        sq_array_off: g.sq_array_off, flags: inode.flags,
+        sq_array_off: g.sq_array_off, flags: inode.flags, cqe_size: g.cqe_size,
     };
     new.seed_constants();
 

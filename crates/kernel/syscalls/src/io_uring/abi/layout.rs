@@ -102,7 +102,7 @@ pub const NO_SQ_ARRAY: u32 = u32::MAX;
 /// | `COOP_TASKRUN` | implemented | vacuously: an entry finishes inside the submission that issued it or on a worker that posts its own completion, so no task work is ever queued back at the submitter and no signal is ever needed to run it. |
 /// | `TASKRUN_FLAG` | implemented | same reason — `IORING_SQ_TASKRUN` is correctly never raised, because there is never task work pending. |
 /// | `SQE128` | refused | the SQE array is sized and indexed at 64 bytes. |
-/// | `CQE32` | refused | the CQE array is sized and indexed at 16 bytes. |
+/// | `CQE32` | implemented | `cqe_size` sizes and indexes the CQE array at 32 bytes; `Cqe::big` carries the second half. It is the flag zero-copy receive registration requires, because a receive completion reports a buffer offset alongside its length. |
 /// | `SINGLE_ISSUER` | implemented | `ctx::claim_issuer` refuses a second submitter. |
 /// | `DEFER_TASKRUN` | implemented | vacuously, per `COOP_TASKRUN`; also the gate `RESIZE_RINGS` requires. |
 /// | `NO_MMAP` | refused | ring memory is kernel-allocated; there is no path that adopts a caller's pages as the ring. |
@@ -118,7 +118,8 @@ pub const SUPPORTED_SETUP_FLAGS: u32 =
     | IORING_SETUP_SINGLE_ISSUER | IORING_SETUP_COOP_TASKRUN
     | IORING_SETUP_TASKRUN_FLAG | IORING_SETUP_DEFER_TASKRUN
     | IORING_SETUP_SQPOLL | IORING_SETUP_SQ_AFF | IORING_SETUP_IOPOLL
-    | IORING_SETUP_HYBRID_IOPOLL;
+    | IORING_SETUP_HYBRID_IOPOLL
+    | IORING_SETUP_CQE32;
 
 /// `p->features` oxide reports. Claiming a bit we do not implement is a lie
 /// liburing acts on, so the set is deliberately small:
@@ -168,6 +169,16 @@ pub struct Geometry {
     /// Bytes actually used in the SQEs region.
     pub sqes_bytes: u32,
     pub flags: u32,
+    /// Bytes one CQE occupies: 32 for an `IORING_SETUP_CQE32` ring, 16
+    /// otherwise. It is carried rather than re-derived so the ring, the
+    /// completion writer and the region sizing cannot disagree about the
+    /// stride.
+    pub cqe_size: u32,
+}
+
+/// Bytes one CQE occupies on a ring built with `flags`. # C: O(1)
+pub fn cqe_size(flags: u32) -> u32 {
+    if flags & IORING_SETUP_CQE32 != 0 { CQE32_SIZE as u32 } else { CQE_SIZE as u32 }
 }
 
 /// Round up to a power of two, saturating (Linux `roundup_pow_of_two`).
@@ -245,7 +256,7 @@ fn fill_entries(p: &mut Params) -> Result<(), Errno> {
 /// turned into allocations by `region_plan`; nothing here is capped at one
 /// page. # C: O(1)
 fn rings_size(flags: u32, sq_entries: u32, cq_entries: u32) -> Result<(u32, u32, u32), Errno> {
-    let cqes_bytes = cq_entries.checked_mul(CQE_SIZE as u32).ok_or(Errno::Eoverflow)?;
+    let cqes_bytes = cq_entries.checked_mul(cqe_size(flags)).ok_or(Errno::Eoverflow)?;
     let mut off = RING_CQES.checked_add(cqes_bytes).ok_or(Errno::Eoverflow)?;
     // The SQ index array starts on its own cacheline.
     off = off.checked_add(SMP_CACHE_BYTES - 1).ok_or(Errno::Eoverflow)? & !(SMP_CACHE_BYTES - 1);
@@ -319,18 +330,30 @@ fn prepare_config(p: &mut Params) -> Result<Geometry, Errno> {
     Ok(Geometry {
         sq_entries: p.sq_entries, cq_entries: p.cq_entries,
         sq_array_off, rings_bytes, sqes_bytes, flags: p.flags,
+        cqe_size: cqe_size(p.flags),
     })
 }
 
 /// Which region an `mmap(2)` offset on the ring fd selects (Linux
 /// `io_uring_mmap` switches on `offset & IORING_OFF_MMAP_MASK`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum MmapRegion { Rings, Sqes, Param, Invalid }
+pub enum MmapRegion {
+    Rings,
+    Sqes,
+    Param,
+    /// The refill queue of one zero-copy receive instance. The id is carried
+    /// because the offset is the only thing that names it — a ring may have
+    /// many instances, each with its own region.
+    Zcrx(u32),
+    Invalid,
+}
 
 /// Classify an mmap offset. `IORING_OFF_CQ_RING` selects the SAME region as
 /// `IORING_OFF_SQ_RING` because oxide reports `IORING_FEAT_SINGLE_MMAP`.
 /// `Param` selects a kernel-allocated `IORING_REGISTER_MEM_REGION` region; a
 /// caller-provided one is never mappable here (`io_uring_abi::mem_region`).
+/// `Zcrx` selects one zero-copy receive instance's refill queue, named by the
+/// id the offset carries below the region selector.
 /// # C: O(1)
 pub fn mmap_region(offset: u64) -> MmapRegion {
     match offset & IORING_OFF_MMAP_MASK {
@@ -338,6 +361,7 @@ pub fn mmap_region(offset: u64) -> MmapRegion {
         IORING_OFF_CQ_RING => MmapRegion::Rings,
         IORING_OFF_SQES    => MmapRegion::Sqes,
         super::mem_region::IORING_MAP_OFF_PARAM_REGION => MmapRegion::Param,
+        super::zcrx::IORING_MAP_OFF_ZCRX_REGION => MmapRegion::Zcrx(super::zcrx::zcrx_mmap_id(offset)),
         _                  => MmapRegion::Invalid,
     }
 }

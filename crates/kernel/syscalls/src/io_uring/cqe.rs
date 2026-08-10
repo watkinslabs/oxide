@@ -22,14 +22,27 @@ pub struct Cqe {
     pub user_data: u64,
     pub res: i32,
     pub flags: u32,
+    /// `big_cqe[2]`. Written only on an `IORING_SETUP_CQE32` ring, where every
+    /// CQE carries the two extra words whether or not an operation filled
+    /// them; a 16-byte ring never has room and never writes them.
+    pub big: [u64; 2],
 }
 
 impl Cqe {
     /// # C: O(1)
-    pub fn new(user_data: u64, res: i32) -> Self { Self { user_data, res, flags: 0 } }
+    pub fn new(user_data: u64, res: i32) -> Self {
+        Self { user_data, res, flags: 0, big: [0; 2] }
+    }
+
+    /// A completion carrying the 32-byte half. # C: O(1)
+    pub fn big32(user_data: u64, res: i32, flags: u32, big: [u64; 2]) -> Self {
+        Self { user_data, res, flags, big }
+    }
 }
 
-/// Write one CQE into the ring at `tail` and publish the new tail.
+/// Write one CQE into the ring at `tail` and publish the new tail. On a
+/// 32-byte ring the second half goes out too, before the tail: a reader that
+/// saw the tail move must see the whole record.
 /// # C: O(1)
 fn write_cqe(r: &IoUring, tail: u32, c: Cqe) {
     let at = r.cqe_at(tail);
@@ -38,6 +51,10 @@ fn write_cqe(r: &IoUring, tail: u32, c: Cqe) {
         core::ptr::write_volatile((at + 0) as *mut u64, c.user_data);
         core::ptr::write_volatile((at + 8) as *mut i32, c.res);
         core::ptr::write_volatile((at + 12) as *mut u32, c.flags);
+        if r.cqe_size as usize == crate::io_uring_abi::uapi::CQE32_SIZE {
+            core::ptr::write_volatile((at + 16) as *mut u64, c.big[0]);
+            core::ptr::write_volatile((at + 24) as *mut u64, c.big[1]);
+        }
     }
     r.hdr_store(RING_CQ_TAIL, tail.wrapping_add(1));
 }

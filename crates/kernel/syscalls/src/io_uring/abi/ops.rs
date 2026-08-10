@@ -103,6 +103,18 @@ pub const IORING_CQE_F_BUFFER: u32 = 1 << 0;
 pub const IORING_CQE_F_MORE: u32 = 1 << 1;
 /// Bit position of the buffer id inside `cqe->flags`.
 pub const IORING_CQE_BUFFER_SHIFT: u32 = 16;
+/// `IORING_CQE_F_32` — this completion is a 32-byte posting. A ring built
+/// with `IORING_SETUP_CQE32` alone does not need it, because every one of its
+/// completions is 32 bytes; it is what distinguishes the two sizes on a mixed
+/// ring.
+pub const IORING_CQE_F_32: u32 = 1 << 15;
+
+/// `IORING_RECVSEND_POLL_FIRST` — do not attempt the transfer until the
+/// description says it would not block.
+pub const IORING_RECVSEND_POLL_FIRST: u32 = 1 << 0;
+/// `IORING_RECV_MULTISHOT` — keep receiving, posting one auxiliary completion
+/// per delivery, until the description says stop.
+pub const IORING_RECV_MULTISHOT: u32 = 1 << 1;
 
 /// Whether the submission engine executes this opcode. # C: O(1)
 pub fn op_supported(op: u8) -> bool {
@@ -111,6 +123,7 @@ pub fn op_supported(op: u8) -> bool {
         | IORING_OP_READ_FIXED | IORING_OP_WRITE_FIXED | IORING_OP_ACCEPT
         | IORING_OP_CONNECT | IORING_OP_OPENAT | IORING_OP_CLOSE
         | IORING_OP_READ | IORING_OP_WRITE | IORING_OP_SEND | IORING_OP_RECV
+        | IORING_OP_RECV_ZC
         | IORING_OP_SENDMSG | IORING_OP_RECVMSG | IORING_OP_SYNC_FILE_RANGE
         | IORING_OP_FALLOCATE | IORING_OP_STATX | IORING_OP_FADVISE
         | IORING_OP_MADVISE | IORING_OP_OPENAT2 | IORING_OP_EPOLL_CTL

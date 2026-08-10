@@ -23,6 +23,31 @@ pub fn recv(op: &Op) -> i64 {
          [op.fd as u64, op.addr, op.len as u64, op.sqe.op_flags as u64, 0, 0])
 }
 
+/// `IORING_OP_RECV_ZC` — receive into a registered zero-copy area.
+///
+/// The bytes are reported by auxiliary completions this posts itself; the
+/// value returned here is the operation's OWN result and says only why the
+/// pass stopped. `EAGAIN` sends it back to waiting on the description, which
+/// is what makes it multishot; zero means the peer is finished.
+/// # C: O(bytes delivered)
+pub fn recv_zc(op: &Op) -> i64 {
+    use syscall::errno::Errno;
+    let ifq_idx = op.sqe.zcrx_ifq_idx;
+    let known = op.inode.zcrx_lookup(ifq_idx);
+    if let Err(e) = crate::io_uring_abi::zcrx::admit_recvzc_prep(
+        op.sqe.addr, op.sqe.off, op.sqe.addr3, known.is_some(),
+        op.sqe.op_flags, op.sqe.ioprio)
+    {
+        return -(e.as_i32() as i64);
+    }
+    let ifq = known.expect("admission refuses an unknown instance");
+    let Some(cur) = sched::live::current() else { return -(Errno::Ebadf.as_i32() as i64) };
+    // SAFETY: running task on this CPU; preempt-off; sole reader of the fd_table slot.
+    let Some(fdt) = (unsafe { cur.fd_table_ref() }) else { return -(Errno::Ebadf.as_i32() as i64) };
+    let Ok(file) = fdt.clone().get(op.fd) else { return -(Errno::Ebadf.as_i32() as i64) };
+    crate::io_uring::zcrx::recv::recv_once(op.inode, &ifq, &file, op.sqe.user_data, op.sqe.len)
+}
+
 /// # C: O(len)
 #[inline(always)]
 pub fn sendmsg(op: &Op) -> i64 {
