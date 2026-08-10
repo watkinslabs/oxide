@@ -48,5 +48,5 @@ pub fn sys_kexec_load(args: &SyscallArgs) -> i64 {
     let src = kexec::UserSource { read: read_user };
     let mut frames = kexec::PmmFrames;
     encode(kexec::do_kexec_load(&mut frames, entry, segments, flags,
-                                kexec::Limits::default(), &src))
+                                kexec::Limits::current(), &src))
 }

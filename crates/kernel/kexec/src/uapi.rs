@@ -6,7 +6,7 @@
 /// crash region and started from the panic path rather than from `reboot(2)`.
 pub const KEXEC_ON_CRASH: u64 = 0x0000_0001;
 /// `KEXEC_PRESERVE_CONTEXT`: return to THIS kernel after the loaded image runs
-/// (`kexec jump`). Legal only where `CONFIG_KEXEC_JUMP` is built.
+/// (`kexec jump`). Legal only where a resume path back into this kernel exists.
 pub const KEXEC_PRESERVE_CONTEXT: u64 = 0x0000_0002;
 /// `KEXEC_UPDATE_ELFCOREHDR`.
 pub const KEXEC_UPDATE_ELFCOREHDR: u64 = 0x0000_0004;
@@ -38,12 +38,17 @@ pub const KEXEC_ARCH: u64 = KEXEC_ARCH_X86_64;
 
 /// Legal `kexec_load` flag set outside the architecture field.
 ///
-/// `KEXEC_PRESERVE_CONTEXT` is NOT a member. It is gated on `CONFIG_KEXEC_JUMP`
-/// upstream — an option that exists on x86 only and is unset in the
-/// configuration this port targets, and whose contract (suspend devices, run
-/// the loaded image, resume THIS kernel) has no implementation here. Accepting
-/// the bit and ignoring it would turn "come back afterwards" into "never come
-/// back", which is worse than the EINVAL a jump-less kernel already returns.
+/// `KEXEC_PRESERVE_CONTEXT` is NOT a member, and that is THIS kernel's
+/// refusal, not a property of the ABI: the bit is live on the platform class
+/// this kernel targets, where a load carrying it is accepted and the loaded
+/// image returns control to the kernel that started it.
+///
+/// It is refused here because nothing in this kernel can bring it back. That
+/// contract needs the whole return path — user processes frozen, devices
+/// suspended, the core system state saved on the way out and restored on the
+/// way in — and none of it exists yet. Accepting the bit and ignoring it would
+/// turn "resume afterwards" into "never resume", silently, which is strictly
+/// worse than an errno; so EINVAL stands until the return path is built.
 pub const KEXEC_FLAGS: u64 =
     KEXEC_ON_CRASH | KEXEC_UPDATE_ELFCOREHDR | KEXEC_CRASH_HOTPLUG_SUPPORT;
 

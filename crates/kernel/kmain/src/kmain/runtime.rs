@@ -173,6 +173,16 @@ fn init_runtime_subsystems() {
         // `restart`'s "no concurrent user of the reset path" precondition.
         unsafe { power::machine::restart() }
     });
+    // Same shape, same reason: the panic handler cannot reach the image
+    // loader, so the crash boot is a callback installed from here. Without it
+    // a machine that reserved a region and staged an image for the panic
+    // would still only halt, and the reservation would be memory spent for
+    // nothing.
+    // The image slots live behind a lock the panic path may not wait on, so the
+    // entry point that consults them is installed here too. Without it the
+    // panic hook above is reached and finds nothing to call.
+    kexec::crashk::panic::set_crash_boot_hook(kexec::crash_kexec_now);
+    klog::oops::set_crash_kexec_hook(kexec::crashk::panic::crash_kexec);
     // SAFETY: same boot-path, single-CPU, called-once window as `power::init`.
     let _ = step("firmware::init", || unsafe { firmware::init() });
     ::sched::set_current_hook(|| sched::live::current());

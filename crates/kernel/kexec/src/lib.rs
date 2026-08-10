@@ -7,7 +7,7 @@
 //
 // Module manifest:
 // - `uapi`:     flag bits, arch tags, segment record, relocation-entry encoding.
-// - `validate`: every refusal decision, in the reference's order — host-tested.
+// - `validate`: every refusal decision, in ABI order — host-tested.
 // - `limit`:    the two per-image-type load-limit rules.
 // - `crashk`:   the reserved crash-kernel region and the `crashkernel=` grammar.
 // - `frames`:   the page supply (trait + the buddy-backed running-kernel impl).
@@ -53,8 +53,9 @@ pub use frames::{Frames, PmmFrames};
 pub use image::{KImage, SegmentSource};
 pub use stage::{stage_image, KernelSource, Limits, UserSource};
 pub use limit::{limit_take, limit_write_ok, UNLIMITED};
-pub use crashk::{crash_base, crash_range, crash_size};
-pub use store::{disable_load, do_kexec_load, drop_image, install_staged, kernel_kexec,
+pub use crashk::{crash_base, crash_range, crash_size, shrink, ShrinkError};
+pub use store::{crash_kexec_now, disable_load, do_kexec_load, drop_image, install_staged,
+    kernel_kexec,
     kexec_crash_loaded, kexec_loaded, load_disabled, load_limit, load_permitted, set_load_limit,
     with_kexec_lock};
 pub use file_load::{kexec_file_load, FileImage, FileLoader};

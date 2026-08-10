@@ -244,3 +244,113 @@ fn the_machine_step_refuses_rather_than_reporting_a_jump_it_did_not_make() {
     assert_eq!(crate::machine::prepare(&mut img, &mut f), Ok(()));
     assert_eq!(crate::machine::kexec(&img), Err(Error::NoSys));
 }
+
+// --- crash images -----------------------------------------------------------
+//
+// A crash image is staged into memory this kernel has promised not to use, and
+// the promise is the whole point: everything it needs at panic time — its
+// control pages, its identity tables, its own bytes — has to be somewhere the
+// running kernel will not have overwritten by then. A crash image that touches
+// the allocator at all is one that boots from whatever happened to land in
+// those pages, and no boot would report it.
+
+/// A reserved region and a supply that owns none of it.
+fn crash_fixture(start: u64, len: u64) -> (FakeFrames, Limits) {
+    let mut f = FakeFrames::new(0x8000_0000);
+    f.reserve_region(start, len);
+    let limits = Limits {
+        dest_limit: u64::MAX,
+        crash: Some(crate::validate::CrashRange { start, end: start + len - 1 }),
+    };
+    (f, limits)
+}
+
+#[test]
+fn a_crash_image_takes_every_control_page_from_the_reserved_region() {
+    let (start, len) = (0x100_0000u64, 0x40_0000u64);
+    let (mut f, limits) = crash_fixture(start, len);
+    let dest = start + 0x10_0000;
+    let src = PatternSource::new(PAGE_SIZE as usize);
+    let segs = vec![seg(dest, PAGE_SIZE, PAGE_SIZE)];
+    let img = stage_image(&mut f, dest, segs, KEXEC_ON_CRASH, limits, &src)
+        .expect("a crash image stages inside its region");
+    assert!(img.control_pages_are_reserved());
+    // Nothing came from the allocator. This is the assertion that fails if a
+    // crash image ever reaches for a page the running kernel is still using.
+    assert_eq!(f.live_count(), 0, "a crash image must not allocate");
+    assert_ne!(img.control_code_page, 0);
+    assert!(img.control_code_page >= start && img.control_code_page < start + len);
+}
+
+#[test]
+fn a_crash_images_control_page_is_never_one_of_its_destinations() {
+    // The first page of the region IS the destination here, so the bump walk
+    // has to step over it. A control page on a destination is overwritten by
+    // the image being written on top of it.
+    let (start, len) = (0x100_0000u64, 0x40_0000u64);
+    let (mut f, limits) = crash_fixture(start, len);
+    let src = PatternSource::new(2 * PAGE_SIZE as usize);
+    let segs = vec![seg(start, 2 * PAGE_SIZE, 2 * PAGE_SIZE)];
+    let img = stage_image(&mut f, start, segs, KEXEC_ON_CRASH, limits, &src).expect("stages");
+    assert!(img.control_code_page >= start + 2 * PAGE_SIZE,
+            "the control page stepped onto a destination");
+}
+
+#[test]
+fn a_crash_images_segments_are_written_to_their_destinations_at_load_time() {
+    // There is no relocation for a crash image: the bytes go where they will
+    // run, while a syscall can still report a failure. Staging them elsewhere
+    // would leave a machine that has just panicked to do the copy.
+    let (start, len) = (0x100_0000u64, 0x40_0000u64);
+    let (mut f, limits) = crash_fixture(start, len);
+    let dest = start + 0x20_0000;
+    // Dirty the destination first. A region page is reused by every crash
+    // image this boot stages, so "arrives zeroed" is only a real claim if
+    // there was something there to clear.
+    f.dirty_region(dest, 0xA5);
+    f.dirty_region(dest + PAGE_SIZE, 0xA5);
+    let src = PatternSource::new(PAGE_SIZE as usize + 16);
+    let segs = vec![seg(dest, 2 * PAGE_SIZE, PAGE_SIZE + 16)];
+    let img = stage_image(&mut f, dest, segs, KEXEC_ON_CRASH, limits, &src).expect("stages");
+    let first = f.page(dest);
+    assert_eq!(first[0], src.bytes[0]);
+    assert_eq!(first[PAGE_SIZE as usize - 1], src.bytes[PAGE_SIZE as usize - 1]);
+    // The tail past the source length arrives zeroed, or the new kernel's
+    // uninitialised data is whatever the previous image left in the region.
+    let second = f.page(dest + PAGE_SIZE);
+    assert_eq!(second[16], 0, "the tail past the source kept the previous image's bytes");
+    assert!(second[16..].iter().all(|&b| b == 0));
+    assert_eq!(&second[..16], &src.bytes[PAGE_SIZE as usize..]);
+    // And the relocation list carries no work at all — only its terminator.
+    assert!(img.relocation_entries(&f).is_empty());
+}
+
+#[test]
+fn freeing_a_crash_image_gives_nothing_back_to_the_allocator() {
+    // A reserved page returned to the allocator is worse than a leak: the next
+    // caller writes over the region a crash kernel is supposed to boot from.
+    let (start, len) = (0x100_0000u64, 0x40_0000u64);
+    let (mut f, limits) = crash_fixture(start, len);
+    let dest = start + 0x10_0000;
+    let src = PatternSource::new(PAGE_SIZE as usize);
+    let segs = vec![seg(dest, PAGE_SIZE, PAGE_SIZE)];
+    let mut img = stage_image(&mut f, dest, segs, KEXEC_ON_CRASH, limits, &src).expect("stages");
+    img.free(&mut f);
+    assert!(f.freed.is_empty(), "reserved pages were handed to the allocator");
+    assert_eq!(f.live_count(), 0);
+    assert!(!img.control_pages_are_reserved());
+}
+
+#[test]
+fn a_crash_image_that_outgrows_its_region_is_refused_rather_than_spilling() {
+    // Spilling into the allocator is the failure this refuses: it would
+    // succeed at load time and boot from overwritten memory.
+    let (start, len) = (0x100_0000u64, PAGE_SIZE);
+    let (mut f, limits) = crash_fixture(start, len);
+    let src = PatternSource::new(PAGE_SIZE as usize);
+    let segs = vec![seg(start, PAGE_SIZE, PAGE_SIZE)];
+    let r = stage_image(&mut f, start, segs, KEXEC_ON_CRASH, limits, &src);
+    assert_eq!(r.err(), Some(Error::Nomem));
+    assert_eq!(f.live_count(), 0);
+    assert!(f.freed.is_empty());
+}

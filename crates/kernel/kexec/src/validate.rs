@@ -1,4 +1,4 @@
-// Every kexec refusal decision, in the order the reference makes it.
+// Every kexec refusal decision, in the order the ABI makes it.
 //
 // Ungated on purpose (`docs/53`, CLAUDE.md phantom-test rule): the slot files
 // are `#[cfg(target_os = "oxide-kernel")]`, so a `#[cfg(test)]` block there
@@ -94,8 +94,9 @@ pub fn kexec_file_load_check(permitted: bool, flags: u64) -> KResult<()> {
 pub struct CrashRange {
     /// First byte of the reserved region.
     pub start: u64,
-    /// LAST byte of the reserved region, inclusive — the reference stores
-    /// `crashk_res.end` inclusively and compares `mend > end`.
+    /// LAST byte of the reserved region, inclusive. The comparison a segment
+    /// is checked with is `end of segment > end of region`, so an exclusive
+    /// bound here would admit one byte past the region.
     pub end: u64,
 }
 
@@ -106,16 +107,15 @@ pub struct CrashRange {
 pub fn crash_entry_ok(entry: u64, crash: Option<CrashRange>) -> KResult<()> {
     match crash {
         // No reservation: nothing to contain the image, so a crash load has
-        // nowhere legal to go. The reference reaches the same refusal through
-        // an empty `crashk_res` (start == end == 0), which no valid entry
-        // point can satisfy.
+        // nowhere legal to go. An empty region reaches the same refusal, since
+        // no valid entry point lies inside a region of zero bytes.
         None => Err(Error::AddrNotAvail),
         Some(r) if entry < r.start || entry > r.end => Err(Error::AddrNotAvail),
         Some(_) => Ok(()),
     }
 }
 
-/// `sanity_check_segment_list`, in the reference's order:
+/// The segment-list sanity ladder, in ABI order:
 ///
 /// 1. every destination range is well formed, page aligned and below the
 ///    architecture's destination limit — `EADDRNOTAVAIL`;
@@ -132,8 +132,8 @@ pub fn crash_entry_ok(entry: u64, crash: Option<CrashRange>) -> KResult<()> {
 /// exactly the case step 1 exists to make impossible.
 ///
 /// Whether the destination is backed by usable RAM is NOT checked, and that is
-/// deliberate: the reference states the caller owns that choice, because the
-/// destination is not touched during staging at all. Pages are copied there by
+/// deliberate — the caller owns that choice, because the destination is not
+/// touched during staging at all. Pages are copied there by
 /// the relocation trampoline, after the running kernel has stopped using them.
 /// # C: O(N^2) in nr_segments, bounded by `KEXEC_SEGMENT_MAX`
 pub fn sanity_check_segment_list(
@@ -190,15 +190,12 @@ pub fn cmdline_ok(cmdline: &[u8]) -> KResult<()> {
 
 /// Signature-verification policy for `kexec_file_load`.
 ///
-/// Read rather than assumed: with `CONFIG_KEXEC_SIG` unset the reference runs
-/// NO signature check at all — `kimage_validate_signature` is compiled out and
-/// the load proceeds on an unsigned image. With it set but no keyring able to
-/// verify, the loader's missing `verify_sig` hook yields `EKEYREJECTED`, and a
-/// failure is fatal only when `kexec_sig_force` (or lockdown) says so.
+/// A kernel with no keyring to verify against runs NO signature check and
+/// loads the image; one that has a keyring but cannot verify answers
+/// EKEYREJECTED, and that failure is fatal only where policy says so.
 ///
-/// This port has no kernel keyring and no platform keyring to verify against,
-/// so it takes the unset-`CONFIG_KEXEC_SIG` behaviour: no check, no refusal.
-/// Rejecting every image instead would be a refusal the reference never makes;
-/// pretending to verify would be worse.
+/// This kernel has no keyring of either kind, so it takes the first behaviour:
+/// no check, no refusal. Rejecting every image instead would be a refusal the
+/// ABI does not describe; pretending to verify would be worse.
 /// # C: O(1)
 pub fn signature_check_required() -> bool { false }

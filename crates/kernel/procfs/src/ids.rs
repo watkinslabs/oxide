@@ -48,6 +48,8 @@ pub(crate) const DEVICES: u64 = 0x3000_1026;
 pub(crate) const FILESYSTEMS: u64 = 0x3000_1028;
 pub(crate) const BUDDYINFO: u64 = 0x3000_1027;
 pub(crate) const IOMEM: u64 = 0x3000_1029;
+/// `/proc/kcore` — the synthetic core file of the running kernel.
+pub(crate) const KCORE: u64 = 0x3000_102A;
 pub(crate) const MOUNTS: u64 = 0x3000_0D01;
 pub(crate) const MOUNTINFO: u64 = 0x3000_0D02;
 pub(crate) const FDINFO_ROOT: u64 = 0x3000_1800;

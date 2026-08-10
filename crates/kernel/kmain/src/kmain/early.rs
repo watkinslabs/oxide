@@ -21,7 +21,7 @@ fn klog_cpu_id() -> u32 {
 /// # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
 fn klog_caller_id() -> u32 {
-    /// Linux's `CALLER_ID_MASK`: high bit set marks a non-task caller, so an
+    /// Caller-identity mask: high bit set marks a non-task caller, so an
     /// interrupt identity can never collide with a tid.
     const CALLER_ID_MASK: u32 = 0x8000_0000;
     if sched::preempt::in_interrupt() { return CALLER_ID_MASK | klog_cpu_id(); }
@@ -262,6 +262,13 @@ fn init_pmm_and_arch(info: &BootInfo) {
     // place after the reboot its contents have to survive.
     // SAFETY: PMM just initialised, single-CPU, before any allocation from it.
     if pmm.is_ok() { unsafe { pstore::boot::reserve(info); } }
+    // The crash-kernel region, reserved for the same reason and at the same
+    // point: `reserve_early` silently skips a page already handed out, so a
+    // region taken after the first allocation would overlap live kernel
+    // memory — and the overlap would only be discovered by the crash kernel
+    // relocating over it, during the one boot that had to work.
+    // SAFETY: PMM just initialised, single-CPU, before any allocation from it.
+    if pmm.is_ok() { unsafe { kexec::crashk::boot::reserve(); } }
     if pmm.is_ok() {
         // `init_from_boot_info` has already reserved and published the PMM's
         // canonical struct-page array directly from the boot map. Only now
@@ -379,7 +386,7 @@ fn init_pmm_and_arch(info: &BootInfo) {
         // early small objects get fenced and the arena's kernel-half PT entries
         // land in the master every later AS copies. No-op unless debug-efence.
         efence::init();
-        // C213: arm guard-paged kernel stacks (Linux CONFIG_VMAP_STACK) before
+        // C213: arm guard-paged kernel stacks before
         // ANY task spawn. sched can't depend on pmm (pmm depends on sched), so
         // it takes the physical frames via this hook; page mapping uses the HAL
         // MmuOps sched already has. An overflow now #PFs on the guard page

@@ -7,9 +7,9 @@
 //   rcx = physical address of the identity page-table root
 //   r8  = physical address of this code's own `identity` label
 // It is CALLED at the control page's kernel (direct-map) address and never
-// returns. The reference passes the first four in the same registers; it
-// computes the fifth from a label difference in the assembler, which this port
-// computes in Rust instead — same value, arrived at where a test can see it.
+// returns. The fifth argument is a label difference an assembler could
+// compute; it is computed in Rust instead — same value, arrived at where a
+// test can see it.
 //
 // WHY IT RUNS FROM THE CONTROL PAGE. See `machine.rs`: the pages it copies
 // include the ones the running kernel occupies. It first switches to the
@@ -207,12 +207,11 @@ core::arch::global_asm!(
     gdt_data = const plan::GDT_ENTRY_DATA as i64,
 );
 
-// The blob's bounds come from the LINKER, exactly as the reference takes
-// `__relocate_kernel_start` / `__relocate_kernel_end` from `vmlinux.lds.S`,
-// and for the same two reasons: nothing else can be placed between them, and
-// the "does it fit in a control page" check is a link failure rather than a
-// runtime one. The linker script also asserts the section STARTS with the
-// entry point, which is what lets the copy go to offset 0 of the page.
+// The blob's bounds come from the LINKER, for two reasons: nothing else can
+// be placed between them, and the "does it fit in a control page" check is a
+// link failure rather than a runtime one. The linker script also asserts the
+// section STARTS with the entry point, which is what lets the copy go to
+// offset 0 of the page.
 extern "C" {
     static __relocate_kernel_start: u8;
     static __relocate_kernel_end: u8;
@@ -295,9 +294,9 @@ pub fn prepare<F: Frames>(image: &mut KImage, f: &mut F) -> KResult<()> {
     // The trampoline is CALLED at this page's kernel address, so that mapping
     // has to permit instruction fetch. Narrow it explicitly and then ASSERT the
     // result, rather than inheriting executability from how the boot tables
-    // happened to build the direct map — the reference narrows the same page
-    // for the same reason, and a kernel that only works because nothing set a
-    // no-execute control has no check that would notice that changing.
+    // happened to build the direct map — a kernel that only works because
+    // nothing set a no-execute control has no check that would notice that
+    // changing.
     //
     // Read-only as well as executable: the copy above is the last write this
     // page takes through its kernel address. The trampoline's own stack writes

@@ -28,6 +28,7 @@ klog    = { path = "../../shared/klog" }
 console   = { path = "../console" }
 cmdline   = { path = "../cmdline" }
 smoke     = { path = "../smoke" }
+kexec     = { path = "../kexec" }
 timer     = { path = "../timer" }
 timekeeper = { path = "../timekeeper" }
 sysfs     = { path = "../sysfs" }

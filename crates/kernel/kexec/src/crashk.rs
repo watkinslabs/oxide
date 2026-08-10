@@ -2,7 +2,11 @@
 // physical range it claims at boot, and the queries the file surfaces answer.
 //
 // Module manifest:
-// - `parse`: ungated — the `crashkernel=` grammar and the placement rules.
+// - `parse`:  ungated — the `crashkernel=` grammar.
+// - `place`:  ungated — which physical window the parsed request lands in.
+// - `shrink`: ungated — what a shrink request does to the reserved size.
+// - `panic`:  the panic path's crash-boot attempt and its installed hook.
+// - `boot`:   the one side effect — take the range out of the page allocator.
 // - this file: the one live reservation, published once at boot and read by
 //   every later consumer (a crash load's destination bound, the size the
 //   `/sys/kernel` attribute reports, and the shrink that attribute performs).
@@ -13,6 +17,12 @@
 // answers to disagree at the moment a machine is panicking.
 
 pub mod parse;
+pub mod place;
+pub mod shrink;
+pub mod panic;
+pub mod boot;
+
+pub use shrink::{shrink, shrink_target, ShrinkError};
 
 use core::sync::atomic::{AtomicU64, Ordering};
 

@@ -5,19 +5,18 @@
 //   x1 = image->start, the new kernel's entry point
 //   x2 = the device-tree address to hand the new kernel
 // It is CALLED at its OWN PHYSICAL address, after the identity tables have
-// been installed in `TTBR0_EL1`, and never returns. The reference does exactly
-// that — its `kern_reloc` is the physical address of the copied code and it is
-// entered after `cpu_install_ttbr0`.
+// been installed in `TTBR0_EL1`, and never returns: the branch target is the
+// physical address of the copied code, entered once that table is in force.
 //
 // WHAT DIFFERS FROM x86_64 AND WHY.
 //
 // 1. There is no transition mapping and no page-table switch inside the
 //    trampoline. The identity map is installed in `TTBR0_EL1` BEFORE the
 //    branch, so the code is already running at an address the tables describe.
-//    The reference reaches the same place by copying the linear map into a
-//    fresh `TTBR1`; a `TTBR0` identity map needs no copy because the walk
-//    never consults a kernel address, and it cannot be invalidated by the
-//    relocation because the tables live in control pages.
+//    Copying the linear map into a fresh `TTBR1` would reach the same place;
+//    a `TTBR0` identity map needs no copy because the walk never consults a
+//    kernel address, and it cannot be invalidated by the relocation because
+//    the tables live in control pages.
 // 2. The relocation is followed by cache maintenance the other architecture
 //    does not need. The new kernel starts with the MMU and caches OFF, so
 //    every byte it will fetch has to be visible at the point of coherency:
@@ -31,8 +30,8 @@
 // The entry state is the arm64 boot protocol (`docs/36 §4`): x0 = DTB
 // physical address, x1..x3 zero, EL1 with all of DAIF masked, MMU off, caches
 // off. The address comes from `KImage::boot_arg`, which the file-load path's
-// `Image` loader sets to the tree it built — the reference sets its
-// `arch.dtb_mem` in exactly that path and nowhere else. A `kexec_load(2)`
+// `Image` loader sets to the tree it built, and which nothing else sets. A
+// `kexec_load(2)`
 // image leaves it zero, because there the caller supplies whatever the new
 // kernel needs inside its own segments and its purgatory installs it.
 
@@ -123,10 +122,9 @@ core::arch::global_asm!(
     sctlr_hi = const (plan::SCTLR_EL1_MMU_OFF >> 16) as u32,
 );
 
-// Bounds from the LINKER, as the reference takes `__relocate_new_kernel_start`
-// / `_end` from `vmlinux.lds.S` — including its assertion that the section
-// begins with the entry point, since the blob is copied to offset 0 of the
-// control page and branched to there.
+// Bounds from the LINKER, including its assertion that the section begins
+// with the entry point, since the blob is copied to offset 0 of the control
+// page and branched to there.
 extern "C" {
     static __relocate_kernel_start: u8;
     static __relocate_kernel_end: u8;

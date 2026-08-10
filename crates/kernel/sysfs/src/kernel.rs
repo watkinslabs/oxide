@@ -6,6 +6,10 @@ use vfs::{mk_mode, FileOps, FileType, Ino, Inode, InodeBuilder, KResult, VfsErro
 
 use crate::{read_window, register, RO_PERM};
 
+// The kexec control attributes live in their own child module; this file is
+// the `/sys/kernel` manifest plus the uevent sequence leaf.
+pub mod kexec;
+
 const INO_UEVENT_SEQNUM: Ino = crate::ids::UEVENT_SEQNUM;
 
 struct UeventSeqnumOps;
@@ -28,6 +32,7 @@ fn make_uevent_seqnum_inode() -> vfs::InodeRef {
 /// Register dynamic `/sys/kernel` sysfs leaves. # C: O(1)
 pub fn init() {
     register("/sys/kernel/uevent_seqnum", make_uevent_seqnum_inode());
+    kexec::init();
 }
 
 #[cfg(test)]
@@ -45,7 +50,7 @@ mod tests {
         let n = inode.read(0, &mut buf).expect("read uevent_seqnum");
         let observed = core::str::from_utf8(&buf[..n]).expect("utf8").trim()
             .parse::<u64>().expect("decimal uevent sequence");
-        // Linux's global sequence is monotonic and shared with concurrent
+        // The global sequence is monotonic and shared with concurrent
         // emitters; unrelated tests may advance it after our emission.
         assert!(observed >= expected as u64, "uevent_seqnum must not move backwards");
     }

@@ -29,7 +29,7 @@ pub trait Frames {
     /// Highest physical address a CONTROL page may sit at
     /// (`KEXEC_CONTROL_MEMORY_LIMIT`).
     fn control_limit(&self) -> u64 { u64::MAX }
-    /// Usable-RAM ranges, the reference's `pfn_mapped`. The identity tables
+    /// Usable-RAM ranges. The identity tables
     /// the trampoline runs under have to cover every one of them, because the
     /// relocation reads its source pages out of exactly this memory.
     fn ram_range_count(&self) -> usize { 0 }

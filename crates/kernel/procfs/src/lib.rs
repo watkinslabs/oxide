@@ -52,6 +52,10 @@ pub mod iomem;
 #[cfg(target_os = "oxide-kernel")] pub mod fdinfo;
 #[cfg(target_os = "oxide-kernel")] pub mod sysctl;
 #[cfg(target_os = "oxide-kernel")] pub mod ctl;
+// The `/proc/sys/kernel/kexec_*` bindings: ungated so the latch and the
+// tighten-only budgets are checkable without the kernel target.
+pub mod ctl_kexec;
+pub mod kcore;
 #[cfg(target_os = "oxide-kernel")] pub mod pressure;
 #[cfg(any(target_os = "oxide-kernel", test))] pub mod limits_render;
 #[cfg(any(target_os = "oxide-kernel", test))] pub mod keys;

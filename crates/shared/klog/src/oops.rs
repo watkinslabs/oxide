@@ -16,6 +16,7 @@ static PANIC_TIMEOUT: AtomicI32 = AtomicI32::new(PANIC_TIMEOUT_WAIT_FOREVER);
 static PANIC_ON_OOPS: AtomicBool = AtomicBool::new(false);
 static PANIC_ON_WARN: AtomicBool = AtomicBool::new(false);
 static RESTART_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+static CRASH_KEXEC_HOOK: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
 /// Machine-restart callback, installed by the boot path once the power
 /// subsystem is up. `panic=` cannot restart without it.
@@ -67,6 +68,36 @@ pub fn restart_hook() -> Option<RestartFn> {
     Some(unsafe { core::mem::transmute::<*mut (), RestartFn>(raw) })
 }
 
+/// Boot a kernel staged for exactly this moment, if one is loaded. Returns
+/// when it could not — no image, no reserved region, or a lock the panicking
+/// CPU may itself be holding — so the panic carries on with its own handling.
+pub type CrashKexecFn = fn();
+
+/// Install the crash-boot callback, from the boot path.
+///
+/// A hook rather than a direct call because the crate that stages the image
+/// sits far above this one; a dependency the other way would put the whole
+/// image loader underneath every fault printer.
+/// # C: O(1)
+pub fn set_crash_kexec_hook(f: CrashKexecFn) { CRASH_KEXEC_HOOK.store(f as *mut (), Ordering::Release); }
+
+/// The installed crash-boot callback, if any. # C: O(1)
+pub fn crash_kexec_hook() -> Option<CrashKexecFn> {
+    let raw = CRASH_KEXEC_HOOK.load(Ordering::Acquire);
+    if raw.is_null() { return None; }
+    // SAFETY: CRASH_KEXEC_HOOK is populated only by set_crash_kexec_hook, which casts a valid CrashKexecFn pointer into the slot; the reverse cast restores the identical signature and CrashKexecFn carries no unsafe contract.
+    Some(unsafe { core::mem::transmute::<*mut (), CrashKexecFn>(raw) })
+}
+
+/// Does the panic path try a crash boot at all?
+///
+/// Global-free so the branch is decided in a hosted test. The attempt is made
+/// whenever a callback exists: whether an image is actually staged is a
+/// question only the callback can answer without taking a lock this CPU may
+/// already hold.
+/// # C: O(1)
+pub fn should_try_crash_boot(hook_installed: bool) -> bool { hook_installed }
+
 /// What a panic should do once it has finished reporting.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AfterPanic {
@@ -113,6 +144,14 @@ pub fn panic_and_stop(info: &core::panic::PanicInfo) -> ! {
     // and here rather than in each arch's handler: when it lived per-arch,
     // one arch had it and the other had a bare spin loop.
     crate::kmsg_dump(crate::kmsg_dump::REASON_PANIC);
+    // Before the halt-or-restart branch, and after the snapshot: a kernel
+    // staged for this moment is the only thing that can capture memory the
+    // snapshot cannot reach, and both of the branches below destroy it — the
+    // restart by rebooting, the halt by leaving the machine for an operator
+    // who will. Returns when nothing is staged.
+    if should_try_crash_boot(crash_kexec_hook().is_some()) {
+        if let Some(f) = crash_kexec_hook() { f(); }
+    }
     match after_panic(panic_timeout(), restart_hook().is_some()) {
         AfterPanic::Halt => {
             crate::write_primary_raw(b"[PANIC] halted\n");
@@ -236,6 +275,23 @@ mod tests {
         let mut s = StaticSink { buf: &mut buf, len: 0 };
         for _ in 0..40 { let _ = core::write!(&mut s, "0123456789"); }
         assert_eq!(s.len, MESSAGE_BUF_LEN, "the panic path must never allocate to say what happened");
+    }
+
+    #[test]
+    fn the_crash_boot_is_attempted_exactly_when_one_is_installed() {
+        assert!(should_try_crash_boot(true));
+        // Without a callback the panic must carry on printing, snapshotting
+        // and honouring `panic=`, not stop where the crash boot would have.
+        assert!(!should_try_crash_boot(false));
+    }
+
+    #[test]
+    fn the_crash_boot_hook_round_trips() {
+        static CALLED: AtomicBool = AtomicBool::new(false);
+        fn boot() { CALLED.store(true, Ordering::Release); }
+        set_crash_kexec_hook(boot);
+        crash_kexec_hook().expect("installed")();
+        assert!(CALLED.load(Ordering::Acquire), "the installed callback is the one that runs");
     }
 
     #[test]

@@ -10,7 +10,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use crate::frames::Frames;
-use crate::image::{load_segment, KImage, SegmentSource};
+use crate::image::{load_segment, load_segment_in_place, KImage, SegmentSource};
 use crate::uapi::*;
 use crate::validate::{crash_entry_ok, sanity_check_segment_list, CrashRange, Error, KResult};
 
@@ -25,17 +25,35 @@ pub struct Limits {
 }
 
 impl Default for Limits {
-    /// Both arches this port builds place no destination limit, and no
-    /// crashkernel region is reserved at boot — so a `KEXEC_ON_CRASH` load has
-    /// nowhere legal to land and is refused with EADDRNOTAVAIL, exactly as a
-    /// reference kernel booted without `crashkernel=` refuses it.
+    /// Both arches this port builds place no destination limit, and the
+    /// default carries NO crash region — so a `KEXEC_ON_CRASH` load staged
+    /// against it has nowhere legal to land and is refused with
+    /// EADDRNOTAVAIL, which is what a machine booted without `crashkernel=`
+    /// must answer.
+    ///
+    /// A syscall never uses this. It is the value a test states its own facts
+    /// on top of; the live one is [`Limits::current`].
     /// # C: O(1)
     fn default() -> Self { Self { dest_limit: u64::MAX, crash: None } }
 }
 
+impl Limits {
+    /// The limits THIS machine is running under: the destination ceiling plus
+    /// whatever the boot line actually reserved.
+    ///
+    /// The syscall entry points use this and nothing else. Reading the crash
+    /// region from the one published reservation is what makes a
+    /// `KEXEC_ON_CRASH` load succeed on a machine booted with `crashkernel=`
+    /// and fail on one that was not — a second recording of "where the crash
+    /// kernel lives" could disagree with the pages actually removed from the
+    /// allocator, and the disagreement would only surface mid-panic.
+    /// # C: O(1)
+    pub fn current() -> Self { Self { dest_limit: u64::MAX, crash: crate::crashk::crash_range() } }
+}
+
 /// `kimage_alloc_init` + `kimage_load_segment` over the whole list.
 ///
-/// Refusal order, unchanged from the reference: the crash entry point, then
+/// Refusal order: the crash entry point, then
 /// the segment list, then the control pages, then the per-segment copy. A
 /// caller whose entry point is outside the crash region learns that before a
 /// single page is allocated.
@@ -54,6 +72,15 @@ pub fn stage_image<F: Frames, S: SegmentSource>(
         &segments, ty, f.total_ram_pages(), limits.dest_limit, limits.crash)?;
 
     let mut image = KImage::new(entry, ty, segments);
+    // A crash image lives entirely inside the reserved region: its control
+    // pages come from there and its segments are written straight to their
+    // destinations. Both because the region is the only memory this kernel has
+    // promised not to touch, and the alternative — pages from the allocator —
+    // is memory the running kernel overwrites long before the panic.
+    if ty == ImageType::Crash {
+        let r = limits.crash.ok_or(Error::AddrNotAvail)?;
+        image.use_control_region(r.start, r.end);
+    }
     let build = |image: &mut KImage, f: &mut F| -> KResult<()> {
         image.control_code_page = image.alloc_control_page(f)?;
         // The swap page is what lets the trampoline exchange a page with its
@@ -61,9 +88,12 @@ pub fn stage_image<F: Frames, S: SegmentSource>(
         // returns to this kernel, so it needs none — and its control pages come
         // from the reserved region, where a spare page is not free.
         if ty == ImageType::Default { image.swap_page = image.alloc_control_page(f)?; }
-        for i in 0..image.segments.len() { load_segment(image, f, i, src)?; }
+        for i in 0..image.segments.len() {
+            if ty == ImageType::Crash { load_segment_in_place(image, f, i, src)?; }
+            else { load_segment(image, f, i, src)?; }
+        }
         image.terminate(f);
-        // `machine_kexec_prepare`, in the reference's position: after the
+        // The machine-specific preparation, in its one correct position: after the
         // relocation list is complete, while a failure is still an errno the
         // caller of `kexec_load(2)` sees. Deferring it to the jump would move
         // every one of its failure modes past the point of no return.

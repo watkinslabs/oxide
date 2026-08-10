@@ -35,11 +35,23 @@ fn the_flag_mask_excludes_the_architecture_field_rather_than_permitting_it() {
 }
 
 #[test]
-fn preserve_context_is_refused_because_nothing_here_can_come_back() {
-    // A jump-less kernel refuses the bit; accepting and ignoring it would turn
-    // "resume this kernel afterwards" into "never resume", silently.
+fn preserve_context_is_refused_until_this_kernel_can_be_resumed() {
+    // Refusing is OUR choice, not the ABI's: the bit is accepted on the
+    // platform class this kernel targets. It stands only while there is no
+    // path that could bring this kernel back after the loaded image runs —
+    // accepting and ignoring it would turn "resume afterwards" into "never
+    // resume", silently, which is worse than an errno.
+    //
+    // When the return path is built this test is what has to change, and the
+    // change is deliberate: the bit joins the legal set and the refusal goes.
     assert_eq!(KEXEC_FLAGS & KEXEC_PRESERVE_CONTEXT, 0);
     assert_eq!(kexec_load_check(true, 1, KEXEC_PRESERVE_CONTEXT), Err(Error::Inval));
+    // The bit is still a DEFINED one, not an unknown: a caller passing it gets
+    // EINVAL from the flag test, and the value must not collide with a flag
+    // this kernel does honour.
+    assert_eq!(KEXEC_PRESERVE_CONTEXT, 0x2);
+    assert_eq!(KEXEC_PRESERVE_CONTEXT & KEXEC_FLAGS, 0);
+    assert_eq!(KEXEC_PRESERVE_CONTEXT & KEXEC_ARCH_MASK, 0);
 }
 
 #[test]
@@ -198,8 +210,9 @@ fn a_command_line_must_be_nul_terminated_and_an_empty_one_is_legal() {
 #[test]
 fn no_signature_check_is_claimed_that_this_kernel_cannot_perform() {
     // Read, not assumed: with signature verification unconfigured the
-    // reference runs no check at all and loads unsigned images. Refusing every
-    // image instead would be a refusal the reference never makes.
+    // kernel with no keyring runs no check at all and loads unsigned images.
+    // Refusing every image instead would be a refusal the ABI does not
+    // describe.
     assert!(!signature_check_required());
 }
 

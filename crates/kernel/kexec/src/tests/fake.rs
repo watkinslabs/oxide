@@ -23,6 +23,11 @@ pub struct FakeFrames {
     pub fail_after: usize,
     handed: usize,
     live: BTreeMap<u64, Box<[u8; PAGE_SIZE as usize]>>,
+    /// Pages that exist but were never handed out by the allocator — memory
+    /// this kernel has promised not to use. A crash image is built entirely
+    /// out of these, so a supply that could not model them could not tell a
+    /// crash image that touched the allocator from one that did not.
+    region: BTreeMap<u64, Box<[u8; PAGE_SIZE as usize]>>,
     pub freed: Vec<u64>,
 }
 
@@ -30,7 +35,8 @@ impl FakeFrames {
     /// Supply that hands out `next_free`, `next_free + 4096`, … forever.
     pub fn new(next_free: u64) -> Self {
         Self { queue: Vec::new(), next_free, total_ram_pages: 1 << 20,
-               fail_after: usize::MAX, handed: 0, live: BTreeMap::new(), freed: Vec::new() }
+               fail_after: usize::MAX, handed: 0, live: BTreeMap::new(),
+               region: BTreeMap::new(), freed: Vec::new() }
     }
     /// Supply that hands out `queue` first, in order.
     pub fn with_queue(queue: &[u64], next_free: u64) -> Self {
@@ -40,8 +46,24 @@ impl FakeFrames {
     }
     /// Pages allocated and not yet freed.
     pub fn live_count(&self) -> usize { self.live.len() }
+    /// Make `[start, start + len)` exist without the allocator ever owning it.
+    pub fn reserve_region(&mut self, start: u64, len: u64) {
+        let mut pa = start;
+        while pa < start + len {
+            self.region.insert(pa, Box::new([0u8; PAGE_SIZE as usize]));
+            pa += PAGE_SIZE;
+        }
+    }
+    /// Fill a reserved page with `byte`, so a later stage into it has
+    /// something to overwrite. Without this a region page is already zero and
+    /// a missing clear looks exactly like a clear that happened.
+    pub fn dirty_region(&mut self, pa: u64, byte: u8) {
+        self.region.get_mut(&pa).expect("page is in the region").fill(byte);
+    }
     /// Read a staged page back, to assert what the copy actually wrote.
-    pub fn page(&self, pa: u64) -> &[u8] { &self.live[&pa][..] }
+    pub fn page(&self, pa: u64) -> &[u8] {
+        &self.live.get(&pa).or_else(|| self.region.get(&pa)).expect("page exists")[..]
+    }
 }
 
 impl Frames for FakeFrames {
@@ -60,7 +82,7 @@ impl Frames for FakeFrames {
     }
     unsafe fn free(&mut self, pa: u64) { self.live.remove(&pa); self.freed.push(pa); }
     fn ptr(&self, pa: u64) -> Option<*mut u8> {
-        self.live.get(&pa).map(|b| b.as_ptr() as *mut u8)
+        self.live.get(&pa).or_else(|| self.region.get(&pa)).map(|b| b.as_ptr() as *mut u8)
     }
     fn total_ram_pages(&self) -> u64 { self.total_ram_pages }
 }

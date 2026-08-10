@@ -6,10 +6,10 @@
 // cover, how many pages that costs, and the control-register state the entry
 // contract fixes. The trampoline then only executes what was already decided.
 //
-// The reference builds its identity tables in `machine_kexec_prepare`, i.e. at
-// LOAD time, and that ordering is the whole reason this file exists at load
-// time too: a table that cannot be built must surface as an errno from
-// `kexec_load(2)`, not as a machine that stopped halfway through relocating.
+// The identity tables are built at LOAD time, and that ordering is the whole
+// reason this file exists at load time too: a table that cannot be built must
+// surface as an errno from `kexec_load(2)`, not as a machine that stopped
+// halfway through relocating.
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -18,9 +18,9 @@ use crate::uapi::{KexecSegment, PAGE_SIZE};
 
 /// Leaf level of the identity map: a 2 MiB block (L2 on both walkers).
 ///
-/// The reference's default too — 1 GiB leaves ride on a CPU feature it tests
-/// for separately, and a table that needs no feature test cannot be built
-/// wrong on a machine that lacks it.
+/// 1 GiB leaves would ride on a CPU feature that has to be tested for
+/// separately, and a table that needs no feature test cannot be built wrong on
+/// a machine that lacks it.
 pub const BLOCK_LEVEL: u8 = 2;
 /// Bytes one identity-map leaf spans.
 pub const BLOCK_SIZE: u64 = 2 * 1024 * 1024;
@@ -160,8 +160,7 @@ pub const CR4_PGE: u64 = 1 << 7;
 /// it is running on.
 ///
 /// Everything else goes, which is what clears `CET` before `CR0.WP` is
-/// cleared — the reference does that in two steps for the same reason and in
-/// the same order.
+/// cleared — two steps, in that order, for that reason.
 pub const CR4_KEEP: u64 = (1 << 5) | (1 << 12);
 
 /// `CR0` bits the trampoline clears: `AM` (18), `WP` (16), `TS` (3), `EM` (2).
@@ -269,7 +268,7 @@ pub fn blocks_in(start: u64, end: u64) -> u64 {
 }
 
 /// Bytes of trampoline that fit in one control page, leaving the tail for the
-/// stack the trampoline runs on. The reference uses the same page for both.
+/// stack the trampoline runs on: one page serves as both.
 /// # C: O(1)
 pub const fn max_trampoline_bytes() -> u64 { PAGE_SIZE - 256 }
 
@@ -303,9 +302,9 @@ mod tests {
 
     #[test]
     fn a_segment_outside_ram_is_still_mapped() {
-        // The case the reference calls out: a destination the running kernel
-        // does not manage. Dropping it leaves the trampoline faulting on its
-        // first copy, with nothing left able to report it.
+        // A destination the running kernel does not manage. Dropping it
+        // leaves the trampoline faulting on its first copy, with nothing left
+        // able to report it.
         let ram = [(0x1000_0000u64, 0x2000_0000u64)];
         let out = ranges_for(&ram, &[seg(0x8000_0000, BLOCK_SIZE)], &[]);
         assert_eq!(out.len(), 2);

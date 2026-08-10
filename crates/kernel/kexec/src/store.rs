@@ -26,7 +26,7 @@ struct Slots {
 
 static SLOTS: Spinlock<Slots, KexecLockClass> = Spinlock::new(Slots { normal: None, crash: None });
 
-/// Linux's `__kexec_lock`: a plain try-lock, never a blocking one. A caller
+/// A plain try-lock, never a blocking one. A caller
 /// that would have to wait gets EBUSY instead, because the holder may be a
 /// kexec reboot already in progress — blocking behind it means blocking
 /// forever, inside a syscall, with the machine on its way down.
@@ -41,7 +41,7 @@ static LOAD_DISABLED: AtomicBool = AtomicBool::new(false);
 pub fn load_disabled() -> bool { LOAD_DISABLED.load(Ordering::Relaxed) }
 
 /// Latch `kexec_load_disabled`. Clearing it is not offered, because the
-/// reference's sysctl accepts 1 and refuses 0.
+/// file that sets it accepts 1 and refuses 0.
 /// # C: O(1)
 pub fn disable_load() { LOAD_DISABLED.store(true, Ordering::Relaxed); }
 
@@ -183,7 +183,7 @@ pub fn kernel_kexec() -> KResult<()> {
     with_kexec_lock(|| {
         let s = SLOTS.lock();
         match s.normal.as_ref() {
-            // Nothing staged: the reference's `-EINVAL`, and the reason
+            // Nothing staged: EINVAL, and the reason
             // `systemctl kexec` falls back to a normal reboot.
             None => Err(Error::Inval),
             // `kernel_restart_prepare("kexec reboot")`: every driver's
@@ -201,6 +201,41 @@ pub fn kernel_kexec() -> KResult<()> {
             }
         }
     })
+}
+
+/// Boot the staged crash image. Returns only on failure.
+///
+/// Reached from the panic path, which is why every step is a TRY: the
+/// panicking CPU may already hold the kexec lock or the slot lock — it may
+/// have panicked while holding one — and waiting on either turns a reported
+/// panic into a silent hang. A contended lock, an empty slot or a machine step
+/// that refuses all mean the same thing here: return, and let the panic carry
+/// on being reported.
+///
+/// The image is entered with the other CPUs stopped and interrupts masked;
+/// that is the machine step's own contract, which is why nothing needs to be
+/// arranged here first. No device shutdown runs, unlike the reboot path:
+/// drivers cannot be trusted to run on a machine that has just panicked, and
+/// the crash image is loaded in memory no device was ever told about.
+/// # C: O(image size); # Lk: KEXEC_LOCK, SLOTS — both try-only
+pub fn crash_kexec_now() -> bool {
+    if KEXEC_LOCK.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        return false;
+    }
+    let jumped = match SLOTS.try_lock() {
+        None => false,
+        Some(slots) => match slots.crash.as_ref() {
+            None => false,
+            // Returns only if the machine step refused, which on a built
+            // architecture means the image was never prepared.
+            Some(img) => crate::machine::kexec(img).is_ok(),
+        },
+    };
+    // Only reached when nothing was booted. Releasing matters: a latch left
+    // set here would refuse a later panic's attempt, and a debugger-driven
+    // reboot after this one, for a reason nothing could report.
+    KEXEC_LOCK.store(false, Ordering::Release);
+    jumped
 }
 
 /// Reset every piece of process-global kexec state: both image slots (freeing
