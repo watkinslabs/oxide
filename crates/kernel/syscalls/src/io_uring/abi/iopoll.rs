@@ -357,6 +357,11 @@ pub fn scatter_segments(
     at
 }
 
+/// The ORDER the decisions above are asked in — the reaper's pass and the
+/// wait loop it is driven from, both as drivers over a trait so they run with
+/// no ring behind them.
+#[path = "iopoll/seq.rs"] pub mod seq;
+
 #[cfg(test)]
 #[path = "iopoll/tests.rs"]
 mod tests;

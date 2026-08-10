@@ -205,6 +205,27 @@ fn a_thread_asked_to_stop_or_park_does_not_sleep_on_the_doorbell() {
     assert!(!sleeps_after_arm(&Observed { park: true, ..Default::default() }));
 }
 
+/// A POLLED ring with transfers outstanding forbids the sleep even though its
+/// submission queue is empty. Their completions are found by asking the
+/// backend and by nothing else, so a thread that slept here would be waiting
+/// for a wakeup only the entry it is not going to reap could send.
+#[test]
+fn a_polled_ring_owing_results_forbids_the_sleep() {
+    let idle = Observed { sq_ready: 0, ..Default::default() };
+    assert!(sleeps_after_arm(&idle), "an empty ring with nothing outstanding does sleep");
+    assert!(!sleeps_after_arm(&Observed { iopoll_outstanding: true, ..idle }));
+}
+
+/// And it keeps the idle window from closing: the thread is the only reaper
+/// those transfers have, so outstanding polled work IS work.
+#[test]
+fn outstanding_polled_work_keeps_the_thread_hot() {
+    let st = hot(1_000, 0);
+    let stale = Observed { sq_ready: 0, now_ns: 9_999, ..Default::default() };
+    assert_eq!(step(&st, &stale), Step::Idle, "an idle thread past its window sleeps");
+    assert_eq!(step(&st, &Observed { iopoll_outstanding: true, ..stale }), Step::Spin);
+}
+
 // ------------------------------------------------------------------- SQ_AFF
 
 const SQPOLL: u32 = IORING_SETUP_SQPOLL;
@@ -337,7 +358,13 @@ fn hot(idle_ns: u64, now: u64) -> PollState {
     st
 }
 
-fn v(ready: u32) -> RingView { RingView { sq_ready: ready, disabled: false } }
+fn v(ready: u32) -> RingView { RingView { sq_ready: ready, disabled: false, iopoll_outstanding: false } }
+
+/// One ring's contribution to a pass, as a submission-only sweep states it.
+fn w(submit: u32) -> RingWork { RingWork { reap: false, submit } }
+
+/// A ring not yet enabled, with `sq_ready` entries it may not consume.
+fn off(ready: u32) -> RingView { RingView { sq_ready: ready, disabled: true, iopoll_outstanding: false } }
 
 /// A stop or a park outranks every ring: the thread must not start work it is
 /// about to be stood down from.
@@ -352,7 +379,7 @@ fn a_sweep_stops_and_parks_before_it_looks_at_any_ring() {
 #[test]
 fn a_lone_ring_hands_over_everything_it_has() {
     let st = hot(1_000, 0);
-    assert_eq!(sweep(&st, &[v(5)], false, false, 0), Pass::Take(alloc::vec![5]));
+    assert_eq!(sweep(&st, &[v(5)], false, false, 0), Pass::Take(alloc::vec![w(5)]));
 }
 
 /// The fairness property the whole multi-ring shape exists for: a ring with a
@@ -362,7 +389,7 @@ fn a_busy_ring_cannot_starve_its_neighbours() {
     let st = hot(1_000, 0);
     let rings = [v(10_000), v(1), v(3)];
     let Pass::Take(take) = sweep(&st, &rings, false, false, 0) else { panic!("work is waiting") };
-    assert_eq!(take, alloc::vec![SQPOLL_CAP_ENTRIES, 1, 3]);
+    assert_eq!(take, alloc::vec![w(SQPOLL_CAP_ENTRIES), w(1), w(3)]);
 }
 
 /// A ring with nothing waiting, and a ring that is not yet enabled, contribute
@@ -370,9 +397,9 @@ fn a_busy_ring_cannot_starve_its_neighbours() {
 #[test]
 fn an_empty_or_disabled_ring_contributes_nothing_to_the_pass() {
     let st = hot(1_000, 0);
-    let rings = [v(0), RingView { sq_ready: 50, disabled: true }, v(2)];
+    let rings = [v(0), off(50), v(2)];
     let Pass::Take(take) = sweep(&st, &rings, false, false, 0) else { panic!("ring 2 has work") };
-    assert_eq!(take, alloc::vec![0, 0, 2]);
+    assert_eq!(take, alloc::vec![w(0), w(0), w(2)]);
 }
 
 /// Nothing anywhere: the idle window is the only thing left to consult, and it
@@ -391,7 +418,7 @@ fn a_sweep_that_finds_nothing_spins_until_the_idle_window_closes() {
 #[test]
 fn a_disabled_ring_does_not_keep_the_thread_awake() {
     let st = hot(1_000, 0);
-    let rings = [RingView { sq_ready: 50, disabled: true }];
+    let rings = [off(50)];
     assert_eq!(sweep(&st, &rings, false, false, 2_000), Pass::Idle);
 }
 

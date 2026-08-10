@@ -113,6 +113,11 @@ pub struct Observed {
     pub sq_ready: u32,
     /// This poll thread serves more than one ring.
     pub shared: bool,
+    /// A POLLED ring this thread serves has transfers a backend still owes a
+    /// result for. Nothing will announce them — that is what the mode means —
+    /// so the thread is the only thing that can find them, and a thread asleep
+    /// is a completion that never arrives.
+    pub iopoll_outstanding: bool,
     pub now_ns: u64,
 }
 
@@ -159,6 +164,9 @@ pub fn step(st: &PollState, o: &Observed) -> Step {
     if o.stop { return Step::Stop; }
     if o.park { return Step::Park; }
     if o.sq_ready > 0 && !o.disabled { return Step::Submit(cap_submit(o.sq_ready, o.shared)); }
+    // Outstanding polled work is work: the thread stays hot rather than
+    // letting the idle window close under transfers only it will find.
+    if o.iopoll_outstanding { return Step::Spin; }
     // Linux spins while `!time_after(jiffies, timeout)` — the deadline instant
     // itself is still inside the window.
     if o.now_ns <= st.deadline_ns { return Step::Spin; }
@@ -172,6 +180,11 @@ pub fn step(st: &PollState, o: &Observed) -> Step {
 /// before the doorbell went up, so it is not coming back to ring it.
 /// # C: O(1)
 pub fn sleeps_after_arm(o: &Observed) -> bool {
+    // A polled ring with transfers outstanding is the one case where an EMPTY
+    // submission ring still forbids sleeping. Their completions are found by
+    // asking the backend and by nothing else, so a thread that slept here would
+    // wait for a wakeup that only the entry it is not going to reap could send.
+    if o.iopoll_outstanding { return false; }
     !o.stop && !o.park && (o.sq_ready == 0 || o.disabled)
 }
 
@@ -279,6 +292,28 @@ pub fn attach_admit(flags: u32, peer: &Peer) -> Result<Attach, Errno> {
 pub struct RingView {
     pub sq_ready: u32,
     pub disabled: bool,
+    /// This ring is polled and has transfers a backend still owes a result
+    /// for. Work for the thread whether or not a single entry is published:
+    /// on a polled ring the thread is the completion path, not just the
+    /// submission path.
+    pub iopoll_outstanding: bool,
+}
+
+/// What one pass does to one ring.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct RingWork {
+    /// Drive this ring's backends and turn what they finished into
+    /// completions. Ordered BEFORE the submission below, so a pass cannot
+    /// hand a backend more work and then poll for it in the same breath —
+    /// what it reaps is what was already outstanding when the pass began.
+    pub reap: bool,
+    /// Entries to drain from this ring's submission queue.
+    pub submit: u32,
+}
+
+impl RingWork {
+    /// Whether this ring contributes anything to the pass. # C: O(1)
+    pub fn any(&self) -> bool { self.reap || self.submit > 0 }
 }
 
 /// What one pass of the poll loop does.
@@ -288,12 +323,12 @@ pub enum Pass {
     Stop,
     /// Stand down until unparked.
     Park,
-    /// Take this many entries from each ring, index-parallel with the views
-    /// the sweep was given. At least one is non-zero.
-    Take(alloc::vec::Vec<u32>),
-    /// Nothing to take, but the idle window has not closed: stay hot.
+    /// What each ring contributes, index-parallel with the views the sweep was
+    /// given. At least one of them is non-empty.
+    Take(alloc::vec::Vec<RingWork>),
+    /// Nothing to do, but the idle window has not closed: stay hot.
     Spin,
-    /// The idle window closed with nothing to take: publish the doorbells,
+    /// The idle window closed with nothing to do: publish the doorbells,
     /// re-read the tails, and sleep if they are still empty.
     Idle,
 }
@@ -314,21 +349,27 @@ pub fn sweep(st: &PollState, rings: &[RingView], stop: bool, park: bool, now_ns:
     if stop { return Pass::Stop; }
     if park { return Pass::Park; }
     let n = rings.len() as u32;
-    let mut take: alloc::vec::Vec<u32> = alloc::vec::Vec::new();
+    let mut take: alloc::vec::Vec<RingWork> = alloc::vec::Vec::new();
     if take.try_reserve(rings.len()).is_err() { return Pass::Spin; }
     let mut any = false;
     for v in rings {
-        let t = ring_take(v.sq_ready, v.disabled, n);
-        any |= t > 0;
-        take.push(t);
+        // A disabled ring's ENTRIES are not the thread's to consume, but a
+        // transfer it published before it was disabled is still outstanding
+        // and still has nobody else to reap it.
+        let w = RingWork { reap: v.iopoll_outstanding, submit: ring_take(v.sq_ready, v.disabled, n) };
+        any |= w.any();
+        take.push(w);
     }
     if any { return Pass::Take(take); }
     // Nothing anywhere: the idle window is the only thing left to consult.
-    match step(st, &Observed { stop, park, disabled: false, sq_ready: 0, shared: shares(n), now_ns }) {
+    match step(st, &Observed { stop, park, disabled: false, sq_ready: 0, shared: shares(n),
+                               iopoll_outstanding: false, now_ns }) {
         Step::Idle => Pass::Idle,
         _ => Pass::Spin,
     }
 }
+
+#[path = "sqpoll/thread.rs"] pub mod thread;
 
 #[cfg(test)]
 #[path = "sqpoll/tests.rs"]

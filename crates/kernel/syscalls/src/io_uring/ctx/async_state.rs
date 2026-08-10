@@ -55,6 +55,14 @@ impl IoUringInode {
         g.clone()
     }
 
+    /// Whether any transfer is still outstanding, without building the list —
+    /// the reference's `!list_empty(&ctx->iopoll_list)`. Asked once per pass by
+    /// the poll thread, so it must not clone the set to answer.
+    /// # C: O(N_queued)
+    pub fn has_queued(&self) -> bool {
+        self.iopoll_list.lock().iter().any(|r| !r.is_done())
+    }
+
     /// Release a transfer the ring no longer owns. # C: O(N_queued)
     pub fn untrack_queued(&self, req: &Arc<IoReq>) {
         self.iopoll_list.lock().retain(|r| !Arc::ptr_eq(r, req));
