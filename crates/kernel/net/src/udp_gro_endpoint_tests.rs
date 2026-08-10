@@ -34,6 +34,7 @@ fn deliver_from(q: &UdpRxQueue, src: Ipv4Addr, sport: u16, dev: NetIfaceId, ttl:
 
 #[test]
 fn coalescing_off_delivers_every_datagram_separately() {
+    let _batch = crate::udp_gro::rx_batch_held();
     let q = queue(false);
     for i in 0..3 { assert!(deliver(&q, 100, i)); }
     assert_eq!(q.queued_len(), 3);
@@ -47,6 +48,7 @@ fn coalescing_off_delivers_every_datagram_separately() {
 
 #[test]
 fn one_flow_of_equal_datagrams_becomes_one_receive() {
+    let _batch = crate::udp_gro::rx_batch_held();
     let q = queue(true);
     for i in 0..4 { assert!(deliver(&q, 100, i)); }
     assert_eq!(q.queued_len(), 1, "four datagrams, one receive");
@@ -60,6 +62,7 @@ fn one_flow_of_equal_datagrams_becomes_one_receive() {
 
 #[test]
 fn a_short_final_datagram_joins_and_ends_the_receive() {
+    let _batch = crate::udp_gro::rx_batch_held();
     let q = queue(true);
     assert!(deliver(&q, 100, 1));
     assert!(deliver(&q, 100, 2));
@@ -77,6 +80,7 @@ fn a_short_final_datagram_joins_and_ends_the_receive() {
 
 #[test]
 fn a_longer_datagram_ends_the_run_instead_of_joining_it() {
+    let _batch = crate::udp_gro::rx_batch_held();
     let q = queue(true);
     assert!(deliver(&q, 100, 1));
     assert!(deliver(&q, 200, 2));
@@ -92,6 +96,7 @@ fn a_longer_datagram_ends_the_run_instead_of_joining_it() {
 
 #[test]
 fn a_run_never_spans_two_flows() {
+    let _batch = crate::udp_gro::rx_batch_held();
     let other_src = Ipv4Addr::new(203, 0, 113, 9);
     for (label, src, sport, dev, ttl) in [
         ("source address", other_src, SPORT, iface(1), TTL),
@@ -120,6 +125,7 @@ fn plain4(fill: u8) -> UdpDatagram {
 /// a coalesced receive publishes describe every datagram merged into it.
 #[test]
 fn a_run_never_spans_two_compared_header_values() {
+    let _batch = crate::udp_gro::rx_batch_held();
     let variants: [(&str, fn(UdpDatagram) -> UdpDatagram); 4] = [
         ("type of service", |mut d| { d.tos = 0x28; d }),
         ("destination port", |mut d| { d.dport = DPORT + 1; d }),
@@ -144,6 +150,7 @@ fn a_run_never_spans_two_compared_header_values() {
 /// one by one.
 #[test]
 fn an_optioned_datagram_is_delivered_alone_even_against_an_identical_one() {
+    let _batch = crate::udp_gro::rx_batch_held();
     let optioned = |fill: u8| {
         let mut d = plain4(fill);
         d.options = crate::ipv4_options::build(&[1, 1, 1, 1], false).expect("no-ops parse");
@@ -165,6 +172,7 @@ fn an_optioned_datagram_is_delivered_alone_even_against_an_identical_one() {
 /// refusal happens before the transport ever sees it.
 #[test]
 fn a_reassembled_datagram_is_delivered_alone() {
+    let _batch = crate::udp_gro::rx_batch_held();
     let q = queue(true);
     let mut fragmented = UdpDatagram::plain(SRC, SPORT, DST, iface(1), TTL, alloc::vec![1; 100]);
     fragmented.frag_max = 576;
@@ -176,6 +184,7 @@ fn a_reassembled_datagram_is_delivered_alone() {
 
 #[test]
 fn a_run_stops_at_the_segment_cap_and_the_next_datagram_starts_another() {
+    let _batch = crate::udp_gro::rx_batch_held();
     let q = queue(true);
     for _ in 0..crate::udp_gro::UDP_GRO_CNT_MAX { assert!(deliver(&q, 10, 1)); }
     assert_eq!(q.queued_len(), 1);
@@ -188,6 +197,7 @@ fn a_run_stops_at_the_segment_cap_and_the_next_datagram_starts_another() {
 
 #[test]
 fn a_suppressed_checksum_datagram_is_delivered_alone() {
+    let _batch = crate::udp_gro::rx_batch_held();
     let q = queue(true);
     assert!(deliver(&q, 100, 1));
     // Neither joins the run...
@@ -201,6 +211,7 @@ fn a_suppressed_checksum_datagram_is_delivered_alone() {
 
 #[test]
 fn an_empty_datagram_is_delivered_alone_and_breaks_the_run() {
+    let _batch = crate::udp_gro::rx_batch_held();
     let q = queue(true);
     assert!(deliver(&q, 100, 1));
     assert!(deliver(&q, 0, 0));
@@ -210,6 +221,7 @@ fn an_empty_datagram_is_delivered_alone_and_breaks_the_run() {
 
 #[test]
 fn peeking_a_coalesced_receive_reports_the_same_segment_size() {
+    let _batch = crate::udp_gro::rx_batch_held();
     let q = queue(true);
     assert!(deliver(&q, 100, 1));
     assert!(deliver(&q, 100, 2));
@@ -222,6 +234,7 @@ fn peeking_a_coalesced_receive_reports_the_same_segment_size() {
 
 #[test]
 fn coalescing_charges_the_receive_queue_the_full_byte_count() {
+    let _batch = crate::udp_gro::rx_batch_held();
     let q = queue(true);
     for i in 0..3 { assert!(deliver(&q, 100, i)); }
     assert_eq!(q.queued_bytes(), 300, "merged bytes are still charged");
@@ -229,6 +242,7 @@ fn coalescing_charges_the_receive_queue_the_full_byte_count() {
 
 #[test]
 fn a_datagram_after_a_drained_run_starts_a_fresh_one() {
+    let _batch = crate::udp_gro::rx_batch_held();
     let q = queue(true);
     assert!(deliver(&q, 100, 1));
     assert!(deliver(&q, 100, 2));
@@ -241,6 +255,7 @@ fn a_datagram_after_a_drained_run_starts_a_fresh_one() {
 
 #[test]
 fn an_interface_that_does_not_offer_coalescing_delivers_datagrams_separately() {
+    let _batch = crate::udp_gro::rx_batch_held();
     let q = queue(true);
     for i in 0..3 {
         assert!(q.enqueue_gro(
@@ -252,6 +267,7 @@ fn an_interface_that_does_not_offer_coalescing_delivers_datagrams_separately() {
 
 #[test]
 fn the_ipv6_endpoint_coalesces_by_the_same_rule() {
+    let _batch = crate::udp_gro::rx_batch_held();
     let q = Udp6RxQueue::new(Ipv6Addr::LOOPBACK, DPORT);
     q.gro.store(1, Ordering::Release);
     let deliver6 = |len: usize, fill: u8, class: u8| {
@@ -272,6 +288,7 @@ fn the_ipv6_endpoint_coalesces_by_the_same_rule() {
 /// and the extension-header chain, which is compared byte for byte.
 #[test]
 fn the_ipv6_run_never_spans_two_compared_header_values() {
+    let _batch = crate::udp_gro::rx_batch_held();
     let base = |fill: u8| Udp6Datagram {
         src: Ipv6Addr::LOOPBACK, sport: SPORT, dst: Ipv6Addr::LOOPBACK, dport: DPORT,
         iface: iface(1), hop_limit: 64, traffic_class: 0, flowinfo: 0,

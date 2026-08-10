@@ -17,6 +17,30 @@ pub const UDP_GRO_CNT_MAX: usize = 64;
 /// does.
 static RX_BATCH: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
+/// Hosted ownership of the receive-batch counter.
+///
+/// A run under construction can only be extended while the counter holds
+/// still, and the counter is process-global. Cases that BUILD a run share
+/// ownership, because none of them advance it; the one case that advances it
+/// takes it exclusively. Without this, a batch ending between two deliveries
+/// splits a run the test asserts is whole.
+#[cfg(test)]
+static RX_BATCH_OWNER: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+/// Shared claim for a case that builds a run. # C: O(wait)
+#[cfg(test)]
+#[must_use = "the claim must span every delivery the run is built from"]
+pub(crate) fn rx_batch_held() -> std::sync::RwLockReadGuard<'static, ()> {
+    RX_BATCH_OWNER.read().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Exclusive claim for a case that advances the counter. # C: O(wait)
+#[cfg(test)]
+#[must_use = "the claim must span the advance"]
+pub(crate) fn rx_batch_advance() -> std::sync::RwLockWriteGuard<'static, ()> {
+    RX_BATCH_OWNER.write().unwrap_or_else(|e| e.into_inner())
+}
+
 /// The batch a datagram arriving now belongs to. # C: O(1)
 pub fn current_batch() -> u64 { RX_BATCH.load(core::sync::atomic::Ordering::Acquire) }
 
@@ -157,6 +181,7 @@ mod tests {
 
     #[test]
     fn ending_a_batch_moves_the_counter_forward() {
+        let _own = rx_batch_advance();
         let before = current_batch();
         end_rx_batch();
         assert_ne!(current_batch(), before);
