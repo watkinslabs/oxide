@@ -3,6 +3,8 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
+use crate::ioctl_user as user;
+
 use super::autofs::handle_autofs_dev_ioctl;
 use super::blk::handle_blk_ioctl;
 use super::common::{handle_common_ioctl, handle_nonchar_queue_ioctl, handle_socket_owner_ioctl};
@@ -292,12 +294,10 @@ fn socket_receive_timestamp_ioctl(file: &vfs::File, req: u64, arg: u64) -> i64 {
         (timestamp_ns / super::uapi::NSEC_PER_SECOND,
             timestamp_ns % super::uapi::NSEC_PER_SECOND)
     };
-    // SAFETY: `arg` was validated for the selected native 64-bit Linux time ABI.
-    unsafe {
-        core::ptr::write_unaligned(arg as *mut i64, seconds as i64);
-        core::ptr::write_unaligned((arg + core::mem::size_of::<i64>() as u64) as *mut i64,
-            subsecond as i64);
-    }
+    let mut out = [0u8; 2 * core::mem::size_of::<i64>()];
+    out[..8].copy_from_slice(&(seconds as i64).to_ne_bytes());
+    out[8..].copy_from_slice(&(subsecond as i64).to_ne_bytes());
+    if let Err(rv) = user::put_bytes(arg, &out) { return rv; }
     0
 }
 
@@ -325,9 +325,7 @@ fn ioctl_getversion(file: &vfs::File, arg: u64) -> i64 {
     if let Err(rv) = crate::userbuf::validate_user_buf_writable(arg, super::uapi::INT_BYTES, 1) {
         return rv;
     }
-    // SAFETY: arg validated writable for the Linux int payload.
-    unsafe { core::ptr::write_unaligned(arg as *mut u32, gen); }
-    0
+    match user::put_u32(arg, gen) { Ok(()) => 0, Err(rv) => rv }
 }
 
 fn ioctl_setversion(file: &vfs::File, arg: u64) -> i64 {
@@ -348,8 +346,10 @@ fn ioctl_setversion(file: &vfs::File, arg: u64) -> i64 {
         if let Some(ref mnt) = m { vfs::mount::mnt_drop_write(mnt); }
         return rv;
     }
-    // SAFETY: arg validated readable for the Linux int payload.
-    let gen = unsafe { core::ptr::read_unaligned(arg as *const u32) };
+    let gen = match user::get_u32(arg) {
+        Ok(v) => v,
+        Err(rv) => { if let Some(ref mnt) = m { vfs::mount::mnt_drop_write(mnt); } return rv; }
+    };
     let rv = match file.unlocked_ioctl(&idmap, &cred, vfs::FileIoctlCmd::SetVersion(gen)) {
         Ok(_) => 0,
         Err(e) => -(e as i64),
@@ -369,9 +369,7 @@ fn ioctl_getfslabel(file: &vfs::File, arg: u64) -> i64 {
     if let Err(rv) = crate::userbuf::validate_user_buf_writable(arg, super::uapi::EXT4_LABEL_BYTES, 1) {
         return rv;
     }
-    // SAFETY: arg validated writable for the Linux ext4 label payload.
-    unsafe { core::ptr::copy_nonoverlapping(label.as_ptr(), arg as *mut u8, label.len()); }
-    0
+    match user::put_bytes(arg, &label) { Ok(()) => 0, Err(rv) => rv }
 }
 
 fn ioctl_setfslabel(cur: &sched::Task, file: &vfs::File, arg: u64) -> i64 {
@@ -384,15 +382,14 @@ fn ioctl_setfslabel(cur: &sched::Task, file: &vfs::File, arg: u64) -> i64 {
     if let Err(rv) = crate::userbuf::validate_user_buf_readable(arg, super::uapi::EXT4_LABEL_BYTES, 1) {
         return rv;
     }
-    let mut user = [0u8; super::uapi::EXT4_LABEL_MAX + 1];
-    // SAFETY: arg validated readable for the Linux ext4 label payload.
-    unsafe { core::ptr::copy_nonoverlapping(arg as *const u8, user.as_mut_ptr(), user.len()); }
-    let len = match user.iter().position(|&b| b == 0) {
+    let mut buf = [0u8; super::uapi::EXT4_LABEL_MAX + 1];
+    if let Err(rv) = user::get_into(arg, &mut buf) { return rv; }
+    let len = match buf.iter().position(|&b| b == 0) {
         Some(n) => n,
         None => return -(Errno::Einval.as_i32() as i64),
     };
     let mut label = [0u8; super::uapi::EXT4_LABEL_MAX];
-    label[..len].copy_from_slice(&user[..len]);
+    label[..len].copy_from_slice(&buf[..len]);
     let m = file.vfsmount();
     if let Some(ref mnt) = m {
         if let Err(e) = vfs::mount::mnt_want_write(mnt) { return -(e as i64); }
@@ -422,22 +419,20 @@ fn ioctl_fitrim(cur: &sched::Task, file: &vfs::File, arg: u64) -> i64 {
     if let Err(rv) = crate::userbuf::validate_user_buf_writable(arg, super::uapi::FSTRIM_RANGE_BYTES, 1) {
         return rv;
     }
-    // SAFETY: arg validated readable for the Linux fstrim_range payload.
-    let start = unsafe { core::ptr::read_unaligned(arg as *const u64) };
-    // SAFETY: arg+8 validated readable inside the Linux fstrim_range payload.
-    let len = unsafe { core::ptr::read_unaligned((arg + 8) as *const u64) };
-    // SAFETY: arg+16 validated readable inside the Linux fstrim_range payload.
-    let minlen = unsafe { core::ptr::read_unaligned((arg + 16) as *const u64) };
+    let range = match user::get_bytes::<{ super::uapi::FSTRIM_RANGE_BYTES as usize }>(arg) {
+        Ok(b) => b, Err(rv) => return rv,
+    };
+    let fld = |o: usize| { let mut v = [0u8; 8]; v.copy_from_slice(&range[o..o + 8]); u64::from_ne_bytes(v) };
+    let (start, len, minlen) = (fld(0), fld(8), fld(16));
     let rv = match file.unlocked_ioctl(&idmap, &cred, vfs::FileIoctlCmd::FitTrim { start, len, minlen }) {
         Ok(_) => 0,
         Err(e) => return -(e as i64),
     };
-    // SAFETY: arg validated writable for the Linux fstrim_range payload.
-    unsafe {
-        core::ptr::write_unaligned(arg as *mut u64, start);
-        core::ptr::write_unaligned((arg + 8) as *mut u64, len);
-        core::ptr::write_unaligned((arg + 16) as *mut u64, minlen);
-    }
+    let mut out = [0u8; super::uapi::FSTRIM_RANGE_BYTES as usize];
+    out[..8].copy_from_slice(&start.to_ne_bytes());
+    out[8..16].copy_from_slice(&len.to_ne_bytes());
+    out[16..24].copy_from_slice(&minlen.to_ne_bytes());
+    if let Err(fault) = user::put_bytes(arg, &out) { return fault; }
     rv
 }
 

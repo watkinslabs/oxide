@@ -9,6 +9,7 @@
 use syscall::errno::Errno;
 use vfs::{File, Fmode, InodeRef};
 
+use crate::ioctl_user as user;
 use crate::userbuf::{validate_user_buf_readable, validate_user_buf_writable};
 
 /// Sectors are 512 bytes in the `BLKGETSIZE` ABI regardless of logical block
@@ -125,11 +126,9 @@ fn validate_discard_range(devt: u32, start: u64, len: u64) -> i64 {
 
 fn read_range(arg: u64) -> Result<(u64, u64), i64> {
     if let Err(rv) = validate_user_buf_readable(arg, 16, 1) { return Err(rv); }
-    // SAFETY: arg validated readable for two adjacent u64 fields.
-    let start = unsafe { core::ptr::read_volatile(arg as *const u64) };
-    // SAFETY: arg+8 remains inside the validated 16-byte range.
-    let len = unsafe { core::ptr::read_volatile((arg + 8) as *const u64) };
-    Ok((start, len))
+    let r = user::get_bytes::<16>(arg)?;
+    let ld = |o: usize| { let mut v = [0u8; 8]; v.copy_from_slice(&r[o..o + 8]); u64::from_ne_bytes(v) };
+    Ok((ld(0), ld(8)))
 }
 
 fn block_errno(e: block::types::BlockError) -> i64 {
@@ -151,17 +150,11 @@ fn errno(e: Errno) -> i64 { e.as_i32() as i64 }
 /// the FIONREAD path in `core.rs`. Returns `0` (ioctl success). # C: O(1)
 fn write_u64(arg: u64, v: u64) -> i64 {
     if let Err(rv) = validate_user_buf_writable(arg, 8, 1) { return rv; }
-    // SAFETY: arg validated writable; 8-byte out-param matching the
-    // BLKGETSIZE64 / BLKGETSIZE `u64`/`unsigned long *` ABI.
-    unsafe { core::ptr::write_volatile(arg as *mut u64, v); }
-    0
+    match user::put_u64(arg, v) { Ok(()) => 0, Err(rv) => rv }
 }
 
 /// Store an `int`/`u32` out-param at the user pointer `arg`. # C: O(1)
 fn write_u32(arg: u64, v: u32) -> i64 {
     if let Err(rv) = validate_user_buf_writable(arg, 4, 1) { return rv; }
-    // SAFETY: arg validated writable; 4-byte out-param matching the BLKSSZGET
-    // / BLKBSZGET `int *` ABI.
-    unsafe { core::ptr::write_volatile(arg as *mut u32, v); }
-    0
+    match user::put_u32(arg, v) { Ok(()) => 0, Err(rv) => rv }
 }
