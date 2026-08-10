@@ -206,6 +206,24 @@ def main():
            "the SECOND kernel's version banner (silence here means the jump "
            "did not land)")
     print("\n=== SECOND KERNEL IS RUNNING ===\n", flush=True)
+
+    # A banner is not userspace. The relocated kernel was asked for
+    # `rdinit=/bin/sh`, so it ends at a shell on this same line; ask that shell
+    # a question and match its answer. Nothing the OLD kernel could have
+    # printed answers it, and a new kernel that panics or hangs on the way to
+    # init cannot either — which is the difference between "the jump landed"
+    # and "the image works".
+    deadline = time.time() + a.timeout
+    while True:
+        c.send('echo NEWSH""-OK')
+        try:
+            c.wait(marker("NEWSH"), 10, "the relocated kernel's userspace to answer")
+            break
+        except SystemExit:
+            if time.time() > deadline:
+                raise SystemExit("kexec-smoke: the second kernel booted but never "
+                                 "reached a shell")
+    print("\n=== SECOND KERNEL REACHED USERSPACE ===\n", flush=True)
     return 0
 
 
