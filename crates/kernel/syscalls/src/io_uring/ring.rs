@@ -199,6 +199,11 @@ fn release_hook(inode: &InodeRef, _writable: bool, _dentry: &Arc<vfs::Dentry>) {
     // Cheap first: only inode numbers out of io_uring's own range can be
     // rings, and this hook is on every description's close path.
     if !INO_REGION.contains(inode.ino()) { return; }
+    // An exported zero-copy receive instance travels on its own descriptor out
+    // of the same number range. Closing it stops the descriptor keeping the
+    // instance reachable; whether that closes a device queue is the instance's
+    // own user count to decide, not this one descriptor's.
+    if let Some(ifq) = super::zcrx::box_fd::ifq_of_inode(inode) { ifq.put_user(); return; }
     let Some(iu) = ring_ctx(inode) else { return };
     // Before the cancellations: a poll thread still draining the ring would
     // otherwise start work the cancel sweep has already walked past.

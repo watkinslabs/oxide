@@ -311,6 +311,73 @@ fn every_control_operation_checks_its_own_body() {
     assert_eq!(admit_ctrl_op(&c), Err(Errno::Eopnotsupp));
 }
 
+/// The descriptor an export produces lands in the body's first word, so the
+/// caller states nothing there; a body it filled in is a caller writing over
+/// the answer.
+#[test]
+fn an_export_states_nothing_and_reports_its_descriptor_in_the_body() {
+    let mut c = Ctrl::default();
+    c.op = ZCRX_CTRL_EXPORT;
+    assert_eq!(admit_ctrl_op(&c), Ok(ZCRX_CTRL_EXPORT));
+    c.body[0] = 7;
+    assert_eq!(admit_ctrl_op(&c), Err(Errno::Einval));
+    let mut c = Ctrl::default();
+    c.op = ZCRX_CTRL_EXPORT;
+    c.body[47] = 1;
+    assert_eq!(admit_ctrl_op(&c), Err(Errno::Einval));
+
+    let mut c = Ctrl::default();
+    c.op = ZCRX_CTRL_EXPORT;
+    c.zcrx_id = 3;
+    c.set_export_fd(9);
+    // The whole record travels back, not just the descriptor: a caller reads
+    // its own id out of the copy it gets.
+    let back = Ctrl::from_bytes(&c.to_bytes());
+    assert_eq!(back, c);
+    assert_eq!(back.body[0], 9);
+    assert_eq!(back.zcrx_id, 3);
+    assert_eq!(back.op, ZCRX_CTRL_EXPORT);
+}
+
+// ---- adopting another ring's instance -----------------------------------
+
+/// An adoption states only where to find the instance. Everything else was
+/// settled by the ring that registered it.
+#[test]
+fn an_adoption_states_only_the_descriptor() {
+    let mut r = IfqReg::default();
+    r.flags = ZCRX_REG_IMPORT;
+    r.if_idx = 5;
+    assert_eq!(admit_ifq_import(&r), Ok(()));
+    for spoil in [1usize, 2, 3, 4, 5] {
+        let mut r = IfqReg::default();
+        r.flags = ZCRX_REG_IMPORT;
+        r.if_idx = 5;
+        match spoil {
+            1 => r.if_rxq = 1,
+            2 => r.rq_entries = 1,
+            3 => r.area_ptr = 0x1000,
+            4 => r.region_ptr = 0x2000,
+            _ => r.notif_desc = 0x3000,
+        }
+        assert_eq!(admit_ifq_import(&r), Err(Errno::Einval));
+    }
+}
+
+/// The import flag is answered before any of the device-mode geometry, so an
+/// adoption never has to state a receive queue it does not have.
+#[test]
+fn an_adoption_is_recognised_before_the_device_mode_ladder() {
+    let mut r = IfqReg::default();
+    r.flags = ZCRX_REG_IMPORT;
+    // Every device-mode rung below would refuse this: no queue, no entries.
+    assert_eq!(admit_ifq_reg(&mut r, OK_RING), Ok(RegKind::Import));
+    // …and an unknown flag alongside it is still refused first.
+    let mut r = IfqReg::default();
+    r.flags = ZCRX_REG_IMPORT | 0x8000_0000;
+    assert_eq!(admit_ifq_reg(&mut r, OK_RING), Err(Errno::Einval));
+}
+
 // ---- receive preparation ----------------------------------------------
 
 #[test]

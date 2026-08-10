@@ -25,12 +25,14 @@
 //
 // Module manifest:
 //   area     — the pinned area, its buffer descriptors and its freelist
+//   box_fd   — the descriptor an exported instance travels on
 //   rq       — the refill queue over its region
 //   ifq      — one instance: area + refill queue + device binding + notifications
 //   provider — the memory-provider contract a bound device queue draws through
 //   recv     — `IORING_OP_RECV_ZC`
 
 #[path = "zcrx/area.rs"]     pub mod area;
+#[path = "zcrx/box_fd.rs"]   pub mod box_fd;
 #[path = "zcrx/rq.rs"]       pub mod rq;
 #[path = "zcrx/ifq.rs"]      pub mod ifq;
 #[path = "zcrx/provider.rs"] pub mod provider;

@@ -45,6 +45,11 @@ pub struct ZcrxIfq {
     pub if_rxq: u32,
     pub binding: Spinlock<Option<Binding>, RingLockClass>,
     pub notif: Spinlock<NotifState, RingLockClass>,
+    /// Rings still receiving through this instance. Distinct from the handle
+    /// count that keeps the object allocated: an exported instance can be
+    /// reachable through an open descriptor after every ring has let go, and
+    /// closing its device queue then is what must NOT happen twice.
+    pub users: UserHold,
     /// The ring notifications are posted to. Weak so the ring's own reference
     /// to this instance is the only strong one.
     pub ring: Weak<IoUringInode>,
@@ -57,8 +62,25 @@ impl ZcrxIfq {
             id, area, rq, if_rxq: u32::MAX,
             binding: Spinlock::new(None),
             notif: Spinlock::new(NotifState::default()),
+            users: UserHold::new(),
             ring: Arc::downgrade(ring),
         }
+    }
+
+    /// Record one more ring using this instance. False when the instance has
+    /// already been let go by everyone — its queue is closed and its buffers
+    /// reclaimed, so adopting it would hand a ring something that can never
+    /// deliver a packet. # C: O(1)
+    pub fn get_user(&self) -> bool { self.users.get() }
+
+    /// One ring is finished with this instance. The LAST one closes the device
+    /// queue and takes back every buffer the caller was still holding; the
+    /// others change nothing, so an instance a second ring adopted survives its
+    /// exporter going away. # C: O(1) plus the scrub on the last release
+    pub fn put_user(&self) {
+        if !self.users.put() { return; }
+        self.close_queue();
+        self.area.scrub();
     }
 
     /// Bytes one buffer spans. # C: O(1)

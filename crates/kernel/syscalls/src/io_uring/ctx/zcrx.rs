@@ -65,16 +65,19 @@ impl IoUringInode {
         Some((ifq.rq.region.base_pa, ifq.rq.region.map_bytes))
     }
 
-    /// Unbind and drop every instance — Linux `io_unregister_zcrx`.
+    /// Let go of every instance this ring registered or adopted.
     ///
     /// It runs from the ring's teardown rather than from a `Drop`: a bound
     /// device queue holds the instance, and the instance holds the queue
-    /// array, so nothing is dropped until the binding is broken here.
+    /// array, so nothing is dropped until the ring stops being a user here.
+    ///
+    /// Letting go is not the same as closing: an instance a SECOND ring
+    /// adopted keeps its queue bound, because that ring is still a user of it.
     /// # C: O(N_ifqs)
     pub fn zcrx_teardown(&self) {
         let taken: Vec<Slot> = core::mem::take(&mut *self.zcrx.lock());
         for s in taken {
-            if let Slot::Live(ifq) = s { ifq.close_queue(); }
+            if let Slot::Live(ifq) = s { ifq.put_user(); }
         }
     }
 }
