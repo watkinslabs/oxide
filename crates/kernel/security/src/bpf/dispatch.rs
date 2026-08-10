@@ -32,8 +32,14 @@ pub(super) fn object_attr(args: &SyscallArgs) -> Result<attr::Attr, Errno> {
 }
 
 /// The command is declared `int`, so the upper half of the register is not
-/// part of it. # C: per command
-pub(super) fn dispatch(args: &SyscallArgs) -> Result<i64, Errno> {
+/// part of it. `is_perf` answers `perf_get_event()` for TASK_FD_QUERY: the
+/// perf subsystem sits above this crate, so its descriptor test arrives from
+/// the syscall shim rather than from a second copy of perf's state here.
+/// # C: per command
+pub(super) fn dispatch(
+    args: &SyscallArgs,
+    is_perf: super::PerfFdPredicate,
+) -> Result<i64, Errno> {
     let mut c = args.a0 as u32;
     let a = user::fetch_attr(args.a1, args.a2 as u32)?;
     let common = if c & cmd::COMMON_ATTRS != 0 {
@@ -79,7 +85,7 @@ pub(super) fn dispatch(args: &SyscallArgs) -> Result<i64, Errno> {
         cmd::MAP_UPDATE_BATCH           => batch(&a, args.a1, BatchOp::Update),
         cmd::MAP_DELETE_BATCH           => batch(&a, args.a1, BatchOp::Delete),
         cmd::RAW_TRACEPOINT_OPEN        => command::trace::raw_tracepoint_open(&a),
-        cmd::TASK_FD_QUERY              => command::trace::task_fd_query(&a, caps),
+        cmd::TASK_FD_QUERY              => command::trace::task_fd_query(&a, args.a1, caps, is_perf),
         cmd::PROG_STREAM_READ_BY_FD     => command::stream::read(&a),
         cmd::PROG_ASSOC_STRUCT_OPS      => command::struct_ops::assoc(&a),
         // The command table's own `default`, reached only after the attr

@@ -13,6 +13,7 @@
 //   test_run.rs   PROG_TEST_RUN dispatch and the skb-context runner
 //   skb_ctx.rs    the `__sk_buff` in/out conversion PROG_TEST_RUN performs
 //   trace.rs      RAW_TRACEPOINT_OPEN and TASK_FD_QUERY
+//   trace/query.rs  TASK_FD_QUERY descriptor classification + write-back
 //   stream.rs     PROG_STREAM_READ_BY_FD
 //   struct_ops.rs PROG_ASSOC_STRUCT_OPS
 

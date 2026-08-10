@@ -51,6 +51,12 @@ use uapi::cmd;
 
 pub(super) const BPF_FD_MODE: u16 = 0o600;
 
+/// `perf_get_event()`: whether an inode is a perf-event fd. Only
+/// `BPF_TASK_FD_QUERY` asks, and only the perf subsystem — which sits above
+/// this crate — can answer, so the syscall shim supplies the test rather
+/// than this crate keeping a second copy of perf's state.
+pub type PerfFdPredicate = fn(&InodeRef) -> bool;
+
 pub use prog::inode::{
     BpfProgInode, make_bpf_prog_inode, make_bpf_prog_inode_with_meta,
     make_bpf_prog_inode_with_contract, make_bpf_prog_inode_with_attach_target,
@@ -116,9 +122,11 @@ pub fn make_bpf_token_inode(token: BpfTokenInode) -> InodeRef {
 }
 
 /// `sys_bpf(cmd, attr, size, attr_common, size_common)` — slot 321.
+/// `is_perf` is `perf_get_event()`: whether an inode is a perf-event fd,
+/// which only `BPF_TASK_FD_QUERY` asks and only the perf subsystem knows.
 /// # C: O(1) admit; O(log N) for map ops; O(insn_cnt) for PROG_LOAD
-pub fn sys_bpf(args: &SyscallArgs) -> i64 {
-    match dispatch::dispatch(args) { Ok(v) => v, Err(e) => -(e.as_i32() as i64) }
+pub fn sys_bpf(args: &SyscallArgs, is_perf: PerfFdPredicate) -> i64 {
+    match dispatch::dispatch(args, is_perf) { Ok(v) => v, Err(e) => -(e.as_i32() as i64) }
 }
 
 /// Decode the `BPF_OBJ_PIN` pathname after the common attribute protocol.
