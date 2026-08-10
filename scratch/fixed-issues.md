@@ -1,5 +1,12 @@
 # Fixed issues
 
+### B2053-mremap-copy-fault-recovery
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED B2053 | DEFECT | high | **`mremap` copied between two user ranges with a raw byte loop guarded only by the up-front VMA checks, so a sibling thread unmapping either side mid-copy faulted the kernel.** Both the `MREMAP_DONTUNMAP` arm and the move-with-copy arm of `mremap_full` did `read_volatile`/`write_volatile` on user addresses after the mapping checks were already done — no exception-table fixup, nothing revalidated per page, nothing recovered. A multithreaded process racing `MADV_DONTNEED`/`munmap` against its own `mremap` took the machine down. Both loops now transfer through `uaccess::{raw_copy_from_user, raw_copy_to_user}`, whose hand-written asm is the only thing carrying an `__ex_table` fixup, in bounce-buffer chunks; an absorbed fault unwinds the destination this call created, releases the userfaultfd change charge and reports `EFAULT`, leaving the caller's source mapping exactly as it was — the shape of the reference's revert-then-unmap-the-new-area error path. **This is a mitigation, not the reference's shape:** the reference does not copy bytes for a move at all, and does not drop its lock. Both residues are filed as their own OPEN rows in `known_issues.md` (PTE relocation instead of a byte copy; the mm write lock held across the whole operation). | B2053. The transfer loop, its chunking and its bytes-relocated accounting moved to the ungated `vmm::mremap::relocate` so they can be driven hosted — `mremap.rs` itself is compiled for the kernel but its copy arms were `#[cfg(not(test))]`, so nothing beside them could ever run. 7 new tests; `cargo test -p vmm` 452 -> 459, 0 failed. Positive control: reinstating the defect (both transfer results discarded, as the volatile loop structurally did) turns `a_source_that_vanishes_mid_transfer_is_reported_at_the_last_whole_chunk`, `a_destination_that_vanishes_mid_transfer_credits_the_prefix_that_landed` and `a_range_already_gone_relocates_nothing` RED — 4 passed / 3 failed — restored GREEN at 459/0. Both arch kernel builds green. | Chris Watkins |
+
+
 ### B2044-recv-poll-first-and-multishot
 
 | Status | Class | Sev | Issue | Evidence | Owner |
