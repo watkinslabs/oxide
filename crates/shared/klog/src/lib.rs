@@ -575,6 +575,21 @@ pub fn announce(msg: &'static str) {
     write_raw_at(b"\n", syslog::LOGLEVEL_WARNING);
 }
 
+/// Announce a machine transition that must be legible even when the ordinary
+/// console route cannot run.
+///
+/// The ordinary route fans out to auxiliary console sinks, and those may
+/// allocate and take locks. A caller announcing the last thing a machine will
+/// do — a panic's crash boot, the stop before a relocation — is exactly the
+/// caller that cannot afford either: the line came out TRUNCATED mid-word on a
+/// crash boot, and the console then went silent, which reads as a jump that
+/// landed somewhere quiet rather than as a message that never finished.
+/// # C: O(msg.len())
+pub fn announce_emergency(msg: &'static str) {
+    write_primary_raw(msg.as_bytes());
+    write_primary_raw(b"\n");
+}
+
 /// Convenience wrappers per `04` log surface.
 #[macro_export]
 macro_rules! kerror { ($msg:literal $(,)?) => { $crate::klog!(Error, $msg) }; }

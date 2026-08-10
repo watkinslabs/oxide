@@ -52,11 +52,11 @@ pub fn crash_boot_wanted(hook_installed: bool, region_reserved: bool) -> bool {
 pub fn crash_kexec() {
     let hook = crash_boot_hook();
     if !crash_boot_wanted(hook.is_some(), crate::crashk::crash_size() != 0) { return; }
-    klog::announce("kexec: crash boot");
+    klog::announce_emergency("kexec: crash boot");
     if let Some(f) = hook { if f() { return; } }
     // Reached only when nothing was staged, the slot lock was contended, or the
     // machine step refused. Saying so matters: the alternative is a panic that
     // reports normally on a machine an operator believes was going to produce a
     // dump, and nothing anywhere records that it did not.
-    klog::announce("kexec: no crash kernel was entered");
+    klog::announce_emergency("kexec: no crash kernel was entered");
 }

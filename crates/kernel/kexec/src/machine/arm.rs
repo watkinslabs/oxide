@@ -232,7 +232,7 @@ pub fn prepare<F: Frames>(image: &mut KImage, f: &mut F) -> KResult<()> {
 pub fn kexec(image: &KImage) -> KResult<()> {
     if image.arch_pgt == 0 || image.control_code_page == 0 { return Err(Error::Inval); }
     quiesce::stop_other_cpus();
-    klog::announce("kexec: starting new kernel");
+    klog::announce_emergency("kexec: starting new kernel");
     // SAFETY: the machine is committed. DAIF is masked so nothing can be
     // delivered once the vector table's translation stops being valid; the
     // identity map goes into TTBR0 and the branch target is a physical address

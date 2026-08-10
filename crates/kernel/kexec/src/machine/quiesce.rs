@@ -106,5 +106,5 @@ pub fn stop_other_cpus() {
         core::hint::spin_loop();
         spun += 1;
     }
-    klog::announce("kexec: some CPUs did not stop; relocating anyway");
+    klog::announce_emergency("kexec: some CPUs did not stop; relocating anyway");
 }
