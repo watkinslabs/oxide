@@ -18,6 +18,7 @@ const DMAR_SCOPE_LEN: usize = 6;
 const MAX_TABLE_LEN: usize = 64 * 1024;
 pub const MAX_IOMMU_UNITS: usize = 32;
 pub const MAX_AMD_IVHD_SCOPES: usize = 256;
+pub const MAX_AMD_IVHD_ALIASES: usize = 256;
 pub const MAX_DMAR_SCOPES: usize = 256;
 pub const MAX_DMAR_PATH_BYTES: usize = 16;
 const IVHD_TYPE_10: u8 = 0x10;
@@ -59,6 +60,15 @@ pub struct AmdIvhdScope {
     pub last_requester: u16,
 }
 
+/// One IVHD requester-id interval that shares one canonical requester ID.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct AmdIvhdAlias {
+    pub unit_index: u8,
+    pub first_requester: u16,
+    pub last_requester: u16,
+    pub canonical_requester: u16,
+}
+
 /// One Intel DRHD device scope and its firmware PCI route chain.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct DmarScope {
@@ -90,6 +100,8 @@ pub struct IommuInventory {
     pub unit_count: usize,
     pub amd_scopes: [AmdIvhdScope; MAX_AMD_IVHD_SCOPES],
     pub amd_scope_count: usize,
+    pub amd_aliases: [AmdIvhdAlias; MAX_AMD_IVHD_ALIASES],
+    pub amd_alias_count: usize,
     pub dmar_scopes: [DmarScope; MAX_DMAR_SCOPES],
     pub dmar_scope_count: usize,
 }
@@ -102,6 +114,10 @@ static IOMMU_FLAGS: [AtomicU32; MAX_IOMMU_UNITS] = [const { AtomicU32::new(0) };
 static AMD_SCOPE_UNIT: [AtomicU32; MAX_AMD_IVHD_SCOPES] = [const { AtomicU32::new(0) }; MAX_AMD_IVHD_SCOPES];
 static AMD_SCOPE_RANGE: [AtomicU32; MAX_AMD_IVHD_SCOPES] = [const { AtomicU32::new(0) }; MAX_AMD_IVHD_SCOPES];
 static AMD_SCOPE_COUNT: AtomicU32 = AtomicU32::new(0);
+static AMD_ALIAS_UNIT: [AtomicU32; MAX_AMD_IVHD_ALIASES] = [const { AtomicU32::new(0) }; MAX_AMD_IVHD_ALIASES];
+static AMD_ALIAS_RANGE: [AtomicU32; MAX_AMD_IVHD_ALIASES] = [const { AtomicU32::new(0) }; MAX_AMD_IVHD_ALIASES];
+static AMD_ALIAS_TARGET: [AtomicU32; MAX_AMD_IVHD_ALIASES] = [const { AtomicU32::new(0) }; MAX_AMD_IVHD_ALIASES];
+static AMD_ALIAS_COUNT: AtomicU32 = AtomicU32::new(0);
 static DMAR_SCOPE_META: [AtomicU64; MAX_DMAR_SCOPES] = [const { AtomicU64::new(0) }; MAX_DMAR_SCOPES];
 static DMAR_SCOPE_PATH_LO: [AtomicU64; MAX_DMAR_SCOPES] = [const { AtomicU64::new(0) }; MAX_DMAR_SCOPES];
 static DMAR_SCOPE_PATH_HI: [AtomicU64; MAX_DMAR_SCOPES] = [const { AtomicU64::new(0) }; MAX_DMAR_SCOPES];
@@ -143,6 +159,13 @@ fn push_amd_scope(inv: &mut IommuInventory, unit_index: usize, first_requester: 
     Ok(())
 }
 
+fn push_amd_alias(inv: &mut IommuInventory, unit_index: usize, first_requester: u16, last_requester: u16, canonical_requester: u16) -> Result<(), IommuError> {
+    if first_requester > last_requester || inv.amd_alias_count == MAX_AMD_IVHD_ALIASES { return Err(IommuError::TooManyScopes); }
+    inv.amd_aliases[inv.amd_alias_count] = AmdIvhdAlias { unit_index: unit_index as u8, first_requester, last_requester, canonical_requester };
+    inv.amd_alias_count += 1;
+    Ok(())
+}
+
 fn push_dmar_scope(inv: &mut IommuInventory, unit_index: usize, t: &[u8], off: usize, len: usize) -> Result<(), IommuError> {
     let path_len = len - DMAR_SCOPE_LEN;
     if path_len > MAX_DMAR_PATH_BYTES { return Err(IommuError::ScopePathTooLong); }
@@ -158,6 +181,7 @@ fn push_dmar_scope(inv: &mut IommuInventory, unit_index: usize, t: &[u8], off: u
 fn parse_ivhd_entries(t: &[u8], start: usize, end: usize, unit_index: usize, inv: &mut IommuInventory) -> Result<(), IommuError> {
     let mut off = start;
     let mut range_start = None;
+    let mut range_alias_target = None;
     while off < end {
         let ty = t[off];
         let len = if ty < 0x80 {
@@ -172,19 +196,29 @@ fn parse_ivhd_entries(t: &[u8], start: usize, end: usize, unit_index: usize, inv
         let requester = if len >= 4 { le16(t, off + 2) } else { 0 };
         match ty {
             IVHD_DEV_ALL => push_amd_scope(inv, unit_index, 0, u16::MAX)?,
-            IVHD_DEV_SELECT | IVHD_DEV_ALIAS | IVHD_DEV_EXT_SELECT => push_amd_scope(inv, unit_index, requester, requester)?,
-            IVHD_DEV_SELECT_RANGE_START | IVHD_DEV_ALIAS_RANGE | IVHD_DEV_EXT_SELECT_RANGE => {
+            IVHD_DEV_SELECT | IVHD_DEV_EXT_SELECT => push_amd_scope(inv, unit_index, requester, requester)?,
+            IVHD_DEV_ALIAS => {
+                push_amd_scope(inv, unit_index, requester, requester)?;
+                push_amd_alias(inv, unit_index, requester, requester, le16(t, off + 6))?;
+            }
+            IVHD_DEV_SELECT_RANGE_START | IVHD_DEV_EXT_SELECT_RANGE => {
                 if range_start.replace(requester).is_some() { return Err(IommuError::BadRecord); }
+                range_alias_target = None;
+            }
+            IVHD_DEV_ALIAS_RANGE => {
+                if range_start.replace(requester).is_some() { return Err(IommuError::BadRecord); }
+                range_alias_target = Some(le16(t, off + 6));
             }
             IVHD_DEV_RANGE_END => {
                 let first = range_start.take().ok_or(IommuError::BadRecord)?;
                 push_amd_scope(inv, unit_index, first, requester)?;
+                if let Some(target) = range_alias_target.take() { push_amd_alias(inv, unit_index, first, requester, target)?; }
             }
             _ => {}
         }
         off += len;
     }
-    if off == end && range_start.is_none() { Ok(()) } else { Err(IommuError::BadRecord) }
+    if off == end && range_start.is_none() && range_alias_target.is_none() { Ok(()) } else { Err(IommuError::BadRecord) }
 }
 
 /// Parse a complete AMD IVRS table without touching hardware.
@@ -193,9 +227,11 @@ pub fn parse_ivrs(t: &[u8]) -> Result<IommuInventory, IommuError> {
     let t = checked_table(t, b"IVRS")?;
     let empty = IommuUnit { kind: IommuKind::AmdVi, segment: 0, register_base: 0, include_all: false };
     let empty_scope = AmdIvhdScope { unit_index: 0, first_requester: 0, last_requester: 0 };
+    let empty_alias = AmdIvhdAlias { unit_index: 0, first_requester: 0, last_requester: 0, canonical_requester: 0 };
     let empty_dmar_scope = DmarScope { unit_index: 0, scope_type: 0, enumeration_id: 0, start_bus: 0, path_len: 0, path: [0; MAX_DMAR_PATH_BYTES] };
     let mut inv = IommuInventory { kind: IommuKind::AmdVi, units: [empty; MAX_IOMMU_UNITS], unit_count: 0,
         amd_scopes: [empty_scope; MAX_AMD_IVHD_SCOPES], amd_scope_count: 0,
+        amd_aliases: [empty_alias; MAX_AMD_IVHD_ALIASES], amd_alias_count: 0,
         dmar_scopes: [empty_dmar_scope; MAX_DMAR_SCOPES], dmar_scope_count: 0 };
     let mut off = IOMMU_TABLE_HEADER_LEN;
     while off < t.len() {
@@ -239,9 +275,11 @@ pub fn parse_dmar(t: &[u8]) -> Result<IommuInventory, IommuError> {
     if t[ACPI_HEADER_LEN] < DMAR_MIN_HOST_ADDRESS_WIDTH { return Err(IommuError::BadRecord); }
     let empty = IommuUnit { kind: IommuKind::IntelVtd, segment: 0, register_base: 0, include_all: false };
     let empty_scope = AmdIvhdScope { unit_index: 0, first_requester: 0, last_requester: 0 };
+    let empty_alias = AmdIvhdAlias { unit_index: 0, first_requester: 0, last_requester: 0, canonical_requester: 0 };
     let empty_dmar_scope = DmarScope { unit_index: 0, scope_type: 0, enumeration_id: 0, start_bus: 0, path_len: 0, path: [0; MAX_DMAR_PATH_BYTES] };
     let mut inv = IommuInventory { kind: IommuKind::IntelVtd, units: [empty; MAX_IOMMU_UNITS], unit_count: 0,
         amd_scopes: [empty_scope; MAX_AMD_IVHD_SCOPES], amd_scope_count: 0,
+        amd_aliases: [empty_alias; MAX_AMD_IVHD_ALIASES], amd_alias_count: 0,
         dmar_scopes: [empty_dmar_scope; MAX_DMAR_SCOPES], dmar_scope_count: 0 };
     let mut off = IOMMU_TABLE_HEADER_LEN;
     while off < t.len() {
@@ -275,6 +313,12 @@ fn publish(inv: IommuInventory) {
         AMD_SCOPE_UNIT[i].store(scope.unit_index as u32, Ordering::Relaxed);
         AMD_SCOPE_RANGE[i].store((scope.first_requester as u32) | ((scope.last_requester as u32) << 16), Ordering::Relaxed);
     }
+    for i in 0..inv.amd_alias_count {
+        let alias = inv.amd_aliases[i];
+        AMD_ALIAS_UNIT[i].store(alias.unit_index as u32, Ordering::Relaxed);
+        AMD_ALIAS_RANGE[i].store((alias.first_requester as u32) | ((alias.last_requester as u32) << 16), Ordering::Relaxed);
+        AMD_ALIAS_TARGET[i].store(alias.canonical_requester as u32, Ordering::Relaxed);
+    }
     for i in 0..inv.dmar_scope_count {
         let scope = inv.dmar_scopes[i];
         DMAR_SCOPE_META[i].store((scope.unit_index as u64) | ((scope.scope_type as u64) << 8) | ((scope.enumeration_id as u64) << 16) | ((scope.start_bus as u64) << 24) | ((scope.path_len as u64) << 32), Ordering::Relaxed);
@@ -288,6 +332,7 @@ fn publish(inv: IommuInventory) {
     let kind = match inv.kind { IommuKind::AmdVi => IOMMU_KIND_AMD_VI, IommuKind::IntelVtd => IOMMU_KIND_INTEL_VTD };
     if IOMMU_KIND.compare_exchange(IOMMU_KIND_NONE, kind, Ordering::Release, Ordering::Acquire).is_ok() {
         AMD_SCOPE_COUNT.store(inv.amd_scope_count as u32, Ordering::Release);
+        AMD_ALIAS_COUNT.store(inv.amd_alias_count as u32, Ordering::Release);
         DMAR_SCOPE_COUNT.store(inv.dmar_scope_count as u32, Ordering::Release);
         IOMMU_COUNT.store(inv.unit_count as u32, Ordering::Release);
     }
@@ -331,6 +376,15 @@ pub fn iommu_unit_for_segment(segment: u16) -> Option<IommuUnit> {
 /// # C: O(N)
 pub fn amd_vi_unit_for_requester(segment: u16, requester: u16) -> Option<IommuUnit> {
     if iommu_unit_count() == 0 || IOMMU_KIND.load(Ordering::Relaxed) != IOMMU_KIND_AMD_VI { return None; }
+    let mut alias_unit = None;
+    for index in 0..AMD_ALIAS_COUNT.load(Ordering::Acquire) as usize {
+        let range = AMD_ALIAS_RANGE[index].load(Ordering::Relaxed);
+        if requester < range as u16 || requester > (range >> 16) as u16 { continue; }
+        let unit = iommu_unit(AMD_ALIAS_UNIT[index].load(Ordering::Relaxed) as usize)?;
+        if unit.segment != segment || alias_unit.is_some_and(|old: IommuUnit| old != unit) { return None; }
+        alias_unit = Some(unit);
+    }
+    if alias_unit.is_some() { return alias_unit; }
     let mut found = None;
     for index in 0..AMD_SCOPE_COUNT.load(Ordering::Acquire) as usize {
         let range = AMD_SCOPE_RANGE[index].load(Ordering::Relaxed);
@@ -341,6 +395,23 @@ pub fn amd_vi_unit_for_requester(segment: u16, requester: u16) -> Option<IommuUn
         found = Some(unit);
     }
     found
+}
+
+/// Return the canonical requester ID for an IVHD alias, if this ID is aliased.
+/// # C: O(N)
+pub fn amd_vi_alias_for_requester(segment: u16, requester: u16) -> Option<u16> {
+    if IOMMU_KIND.load(Ordering::Relaxed) != IOMMU_KIND_AMD_VI { return None; }
+    let mut target = None;
+    for index in 0..AMD_ALIAS_COUNT.load(Ordering::Acquire) as usize {
+        let range = AMD_ALIAS_RANGE[index].load(Ordering::Relaxed);
+        if requester < range as u16 || requester > (range >> 16) as u16 { continue; }
+        let unit = iommu_unit(AMD_ALIAS_UNIT[index].load(Ordering::Relaxed) as usize)?;
+        if unit.segment != segment { continue; }
+        let value = AMD_ALIAS_TARGET[index].load(Ordering::Relaxed) as u16;
+        if target.is_some_and(|old| old != value) { return None; }
+        target = Some(value);
+    }
+    target
 }
 
 /// Count published Intel DRHD device scopes. # C: O(1)

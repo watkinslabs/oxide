@@ -73,6 +73,21 @@ fn scoped_ivrs() -> Vec<u8> {
     t
 }
 
+fn aliased_ivrs() -> Vec<u8> {
+    let mut t = vec![0u8; 80];
+    t[..4].copy_from_slice(b"IVRS");
+    le32(&mut t, 4, 80);
+    t[48] = 0x10;
+    le16(&mut t, 50, 32);
+    le64(&mut t, 56, 0xfed8_0000);
+    le16(&mut t, 64, 3);
+    t[72] = 0x42;
+    le16(&mut t, 74, 0x1234);
+    le16(&mut t, 78, 0x4321);
+    finish(&mut t);
+    t
+}
+
 #[test]
 fn dmar_drhd_preserves_the_linux_device_ownership_keys() {
     let inv = parse_dmar(&dmar()).expect("valid DRHD");
@@ -106,6 +121,17 @@ fn ivrs_ivhd_preserves_requester_ownership_ranges() {
     assert_eq!(inv.amd_scopes[0].last_requester, 0x1234);
     assert_eq!(inv.amd_scopes[1].first_requester, 0x2000);
     assert_eq!(inv.amd_scopes[1].last_requester, 0x20ff);
+}
+
+#[test]
+fn ivrs_ivhd_preserves_canonical_requester_aliases() {
+    let inv = parse_ivrs(&aliased_ivrs()).expect("valid IVHD alias");
+    assert_eq!(inv.amd_scope_count, 1);
+    assert_eq!(inv.amd_alias_count, 1);
+    assert_eq!(inv.amd_aliases[0].unit_index, 0);
+    assert_eq!(inv.amd_aliases[0].first_requester, 0x1234);
+    assert_eq!(inv.amd_aliases[0].last_requester, 0x1234);
+    assert_eq!(inv.amd_aliases[0].canonical_requester, 0x4321);
 }
 
 #[test]

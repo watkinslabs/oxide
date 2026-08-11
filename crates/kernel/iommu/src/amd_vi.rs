@@ -210,10 +210,15 @@ impl AmdViUnit {
     pub fn mapped(&mut self) -> bool { self.advance(AmdViState::Discovered, AmdViState::Mapped) }
     /// Install one DTE while translation remains disabled. # C: O(1)
     pub unsafe fn install_initial_dte(&self, regs: &AmdViRegisters, tables: &AmdViTables, hhdm_offset: u64, bdf: pci::Bdf, dte: AmdViDte) -> bool {
-        if self.state != AmdViState::Mapped || bdf.segment != self.segment || hhdm_offset == 0 { return false; }
+        if bdf.segment != self.segment { return false; }
+        // SAFETY: this keeps the segment-checked BDF API over the raw requester write.
+        unsafe { self.install_initial_requester(regs, tables, hhdm_offset, bdf.raw(), dte) }
+    }
+    unsafe fn install_initial_requester(&self, regs: &AmdViRegisters, tables: &AmdViTables, hhdm_offset: u64, requester: u16, dte: AmdViDte) -> bool {
+        if self.state != AmdViState::Mapped || hhdm_offset == 0 { return false; }
         if regs.read64(CONTROL).is_none_or(|control| control & CONTROL_IOMMU_ENABLE != 0) { return false; }
         // SAFETY: the state and register guard above prove this unit cannot consume its table yet.
-        unsafe { tables.write_initial_dte(hhdm_offset, bdf.raw(), dte); }
+        unsafe { tables.write_initial_dte(hhdm_offset, requester, dte); }
         true
     }
     /// Attach one AMD-Vi domain by installing its paging DTE for its sole requester. # C: O(1)
@@ -221,7 +226,10 @@ impl AmdViUnit {
         let bdf = domain.requester();
         let Some(dte) = domain.dte(domain_id) else { return false; };
         // SAFETY: forwarded to the checked initial-DTE operation for this domain's exact requester.
-        unsafe { self.install_initial_dte(regs, tables, hhdm_offset, bdf, dte) }
+        if !unsafe { self.install_initial_dte(regs, tables, hhdm_offset, bdf, dte) } { return false; }
+        let Some(alias) = firmware::acpi::amd_vi_alias_for_requester(bdf.segment, bdf.raw()) else { return true; };
+        // SAFETY: the same disabled-unit guard applies to the alias requester in this IVHD unit.
+        unsafe { self.install_initial_requester(regs, tables, hhdm_offset, alias, dte) }
     }
     /// Program DMA-visible table bases and enable their command and event rings. # C: O(1)
     pub fn program_tables(&mut self, regs: &AmdViRegisters, tables: &AmdViTables) -> bool {
