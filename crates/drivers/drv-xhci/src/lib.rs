@@ -14,6 +14,8 @@ pub mod controller;
 #[cfg(target_os = "oxide-kernel")]
 pub mod platform;
 #[cfg(target_os = "oxide-kernel")]
+mod irq;
+#[cfg(target_os = "oxide-kernel")]
 mod probe;
 #[cfg(target_os = "oxide-kernel")]
 pub use probe::XHCI_DRIVER;
