@@ -532,10 +532,14 @@ dependencies = [
 name = "drv-xhci"
 version = "0.1.0"
 dependencies = [
+ "drv",
  "hal-aarch64",
  "hal-x86_64",
  "mmio-map",
+ "pci",
  "pmm",
+ "sched",
+ "sync",
 ]
 
 [[package]]
@@ -1318,6 +1322,7 @@ dependencies = [
  "drv-virtio-rng",
  "drv-virtio-snd",
  "drv-virtio-vsock",
+ "drv-xhci",
  "firmware",
  "hal",
  "hal-aarch64",

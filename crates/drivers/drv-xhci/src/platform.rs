@@ -3,6 +3,7 @@
 use core::ptr::{read_volatile, write_volatile};
 
 use crate::regs::{geometry, Geometry, CAPLENGTH, DBOFF, HCSPARAMS1, RTSOFF};
+use crate::controller::{halt_command, reset_command, reset_complete, USBCMD, USBSTS};
 
 const PAGE: u64 = 4096;
 
@@ -91,5 +92,32 @@ impl Mmio {
         // SAFETY: bounds/alignment were validated against this live owned BAR mapping.
         unsafe { write_volatile((self.mapping.base_va() + offset) as *mut u32, value); }
         true
+    }
+
+    /// Halt then reset this controller, observing both required hardware states.
+    /// # C: O(halt timeout + reset timeout)
+    pub fn halt_reset(&self) -> bool {
+        let op = self.geometry.operational;
+        let command = match self.read32(op + USBCMD) { Some(value) => value, None => return false };
+        if !self.write32(op + USBCMD, halt_command(command)) { return false; }
+        let halt_deadline = sched::deadline::clock::now_ns().saturating_add(16_000_000);
+        loop {
+            let status = match self.read32(op + USBSTS) { Some(value) => value, None => return false };
+            if status & crate::controller::STS_HALT != 0 { break; }
+            if sched::deadline::clock::now_ns() >= halt_deadline { return false; }
+            core::hint::spin_loop();
+        }
+        let command = match self.read32(op + USBCMD) { Some(value) => value, None => return false };
+        let status = match self.read32(op + USBSTS) { Some(value) => value, None => return false };
+        let Some(reset) = reset_command(command, status) else { return false; };
+        if !self.write32(op + USBCMD, reset) { return false; }
+        let reset_deadline = sched::deadline::clock::now_ns().saturating_add(10_000_000_000);
+        loop {
+            let command = match self.read32(op + USBCMD) { Some(value) => value, None => return false };
+            let status = match self.read32(op + USBSTS) { Some(value) => value, None => return false };
+            if reset_complete(command, status) { return true; }
+            if sched::deadline::clock::now_ns() >= reset_deadline { return false; }
+            core::hint::spin_loop();
+        }
     }
 }
