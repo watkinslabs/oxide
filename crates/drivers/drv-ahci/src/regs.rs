@@ -382,3 +382,25 @@ mod tests {
         assert_eq!(len, 0);
     }
 }
+/// Locate vector zero in a complete page-rounded AHCI BAR5 mapping. # C: O(1)
+pub(crate) fn msix_entry_offset(cap: pci::MsixCap, map_bytes: u64, abar_off: u64) -> Option<u64> {
+    if cap.table_bir != 5 { return None; }
+    let entry = pci::msix_table_entry_offset(cap, 0)?;
+    abar_off.checked_add(entry)?.checked_add(pci::MSIX_TABLE_ENTRY_BYTES).filter(|end| *end <= map_bytes).map(|_| entry)
+}
+
+#[cfg(test)]
+mod msix_tests {
+    use super::*;
+
+    fn cap(bir: u8, offset: u32) -> pci::MsixCap {
+        pci::MsixCap { enabled: false, function_mask: false, table_size: 1, table_bir: bir, table_offset: offset, pba_bir: 0, pba_offset: 0 }
+    }
+
+    #[test]
+    fn msix_vector_zero_must_fit_the_owned_abar() {
+        assert_eq!(msix_entry_offset(cap(5, 0x2000), 0x3010, 0x1000), Some(0x2000));
+        assert_eq!(msix_entry_offset(cap(5, 0x2000), 0x300f, 0x1000), None);
+        assert_eq!(msix_entry_offset(cap(0, 0x2000), 0x4000, 0), None);
+    }
+}
