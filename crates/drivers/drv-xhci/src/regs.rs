@@ -13,6 +13,23 @@ pub const REGISTER_ALIGN: u64 = 4;
 pub const RUNTIME_INTR0: u64 = 0x20;
 pub const DOORBELL_HOST: u8 = 0;
 
+/// One validated xHCI Supported Protocol port range. # C: O(1)
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct PortProtocol { pub major: u8, pub minor: u8, pub first: u8, pub count: u8 }
+
+/// Decode the three fixed dwords of a Linux `XHCI_EXT_CAPS_PROTOCOL` capability. # C: O(1)
+pub fn supported_protocol(header: u32, revision: u32, ports: u32, max_ports: u8) -> Option<PortProtocol> {
+    if header as u8 != 2 { return None; }
+    let major = (revision >> 24) as u8;
+    let mut minor = (revision >> 16) as u8;
+    if major == 3 && (1..16).contains(&minor) { minor <<= 4; }
+    if major > 3 { return None; }
+    let first = ports as u8;
+    let count = (ports >> 8) as u8;
+    if first == 0 || count == 0 || first.checked_add(count)?.checked_sub(1)? > max_ports { return None; }
+    Some(PortProtocol { major, minor, first, count })
+}
+
 /// Validated controller register-file locations and hardware limits.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Geometry {
@@ -84,5 +101,12 @@ mod tests {
         let g = Geometry { operational: 0x40, runtime: 0x1000, doorbells: 0x2000, max_slots: 4, max_interrupters: 1, max_ports: 1, context_bytes: 32 };
         assert_eq!(doorbell_offset(g, 1), Some(0x2004));
         assert_eq!(doorbell_offset(g, 4), Some(0x2010));
+    }
+
+    #[test]
+    fn supported_protocol_uses_linux_port_range_and_usb3_minor_fixup() {
+        assert_eq!(supported_protocol(2, 0x0301_0000, 2 | (4 << 8), 8), Some(PortProtocol { major: 3, minor: 0x10, first: 2, count: 4 }));
+        assert!(supported_protocol(2, 0x0400_0000, 1 | (1 << 8), 8).is_none());
+        assert!(supported_protocol(2, 0x0300_0000, 8 | (2 << 8), 8).is_none());
     }
 }
