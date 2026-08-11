@@ -194,6 +194,13 @@ impl AmdViUnit {
         unsafe { tables.write_initial_dte(hhdm_offset, bdf.raw(), dte); }
         true
     }
+    /// Attach one AMD-Vi domain by installing its paging DTE for its sole requester. # C: O(1)
+    pub unsafe fn install_initial_domain(&self, regs: &AmdViRegisters, tables: &AmdViTables, hhdm_offset: u64, domain: &crate::AmdViDomain, domain_id: u16) -> bool {
+        let bdf = domain.requester();
+        let Some(dte) = domain.dte(domain_id) else { return false; };
+        // SAFETY: forwarded to the checked initial-DTE operation for this domain's exact requester.
+        unsafe { self.install_initial_dte(regs, tables, hhdm_offset, bdf, dte) }
+    }
     /// Program DMA-visible table bases and enable their command and event rings. # C: O(1)
     pub fn program_tables(&mut self, regs: &AmdViRegisters, tables: &AmdViTables) -> bool {
         if self.state != AmdViState::Mapped { return false; }
