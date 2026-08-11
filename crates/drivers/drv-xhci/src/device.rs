@@ -6,7 +6,7 @@ use crate::platform::Mmio;
 use crate::ring::{CommandRing, Trb, TRB_BYTES, TRBS_PER_SEGMENT};
 
 /// Input context, output device context, and endpoint-zero transfer ring.
-pub struct AddressDeviceDma { input: DmaPage, output: DmaPage, ep0: DmaPage, descriptor: DmaPage, ep0_ring: CommandRing }
+pub struct AddressDeviceDma { input: DmaPage, output: DmaPage, ep0: DmaPage, descriptor: DmaPage, context_bytes: u8, ep0_ring: CommandRing }
 
 impl AddressDeviceDma {
     /// Allocate and construct every DMA object required by Address Device. # C: O(page bytes)
@@ -23,7 +23,7 @@ impl AddressDeviceDma {
         }
         input.clean_to_device(); output.clean_to_device(); ep0.clean_to_device();
         let ep0_ring = CommandRing::new(ep0.pa())?;
-        Some(Self { input, output, ep0, descriptor, ep0_ring })
+        Some(Self { input, output, ep0, descriptor, context_bytes, ep0_ring })
     }
 
     /// Input-context physical address for Address Device. # C: O(1)
@@ -38,6 +38,19 @@ impl AddressDeviceDma {
         let mut bytes = [0u8; crate::usb::DEVICE_DESC_BYTES];
         for (offset, byte) in bytes.iter_mut().enumerate() { *byte = self.descriptor.read8(offset as u64)?; }
         crate::usb::device_descriptor(&bytes)
+    }
+    /// Rebuild the input context from controller output for Linux's EP0 MPS update. # C: O(1)
+    pub fn prepare_evaluate_ep0(&self, max_packet: u8) -> Option<bool> {
+        let stride = self.context_bytes as u64;
+        let ep0 = 2 * stride;
+        self.output.invalidate_from_device();
+        let mut output_ep0 = [0u32; 5];
+        for (index, word) in output_ep0.iter_mut().enumerate() { *word = self.output.read32(ep0 + (index * 4) as u64)?; }
+        if ((output_ep0[1] >> 16) & 0xffff) as u8 == max_packet { return Some(false); }
+        let words = context::evaluate_ep0_words(self.context_bytes, output_ep0, max_packet)?;
+        for word in words { if !self.input.write32(word.offset as u64, word.value) { return None; } }
+        self.input.clean_to_device();
+        Some(true)
     }
     /// Publish one complete EP0 control-transfer TD and ring endpoint zero. # C: O(TRBs)
     pub fn submit_ep0(&mut self, mmio: &Mmio, slot: u8, trbs: &[Trb]) -> Option<u64> {
