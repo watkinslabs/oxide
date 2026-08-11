@@ -147,6 +147,8 @@ pub fn enumerate_and_log() {
         pmm::user_as::hhdm_offset(), pmm::setup::usable_regions()) };
     if iommu_activation == iommu::AmdViActivation::Failed { return; }
     if activate_vtd_arch(&requesters) == iommu::VtdActivation::Failed { return; }
+    iommu::admit_boot_requesters(&requesters);
+    pci::set_bus_master_admission(Some(iommu::bus_master_admitted));
     register_pci_model_drivers();
     for d in devs.iter() {
         debug_boot! {

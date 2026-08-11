@@ -2,6 +2,7 @@
 extern crate alloc;
 // Module manifest: amd_vi owns AMD-Vi registers and activation; domain owns requester domains.
 mod amd_vi;
+mod admission;
 mod amd_vi_bootstrap;
 mod amd_vi_manager;
 mod amd_vi_pt;
@@ -15,6 +16,7 @@ mod vtd_tables;
 mod vtd_manager;
 pub use amd_vi::{AmdViCommand, AmdViDte, AmdViRegisters, AmdViState, AmdViTables, AmdViUnit, COMMAND_BUFFER, COMMAND_HEAD, COMMAND_TAIL,
     CONTROL, CONTROL_COHERENT_ENABLE, CONTROL_COMMAND_ENABLE, CONTROL_COMPLETION_ENABLE, CONTROL_EVENT_ENABLE, CONTROL_IOMMU_ENABLE, DEVICE_TABLE, EVENT_HEAD, EVENT_LOG, EVENT_TAIL};
+pub use admission::{admit_boot_requesters, bus_master_admitted};
 pub use amd_vi_bootstrap::AmdViBootstrap;
 pub use amd_vi_manager::{AmdViActivation, activate_amd_vi};
 pub use amd_vi_pt::{AmdViPte, iova_indices};
