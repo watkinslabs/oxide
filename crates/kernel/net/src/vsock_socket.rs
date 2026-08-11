@@ -424,7 +424,7 @@ impl VsockSocket {
                         // SAFETY: process ctx (VsockSocket::read); runqueue
                         // installed; preempt-off owned by the read syscall stub;
                         // RX lock closes data/error publication before park.
-                        unsafe { c.waiters.park(); }
+                        unsafe { c.waiters.prepare_to_wait(); }
                         drop(rx);
                         drop(st);
                         // SAFETY: current is parked on this connection's wait list.
