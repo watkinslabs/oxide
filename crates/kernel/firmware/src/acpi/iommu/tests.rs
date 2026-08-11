@@ -95,6 +95,7 @@ fn dmar_drhd_preserves_the_linux_device_ownership_keys() {
     assert_eq!(inv.unit_count, 1);
     assert_eq!(inv.units[0].segment, 2);
     assert_eq!(inv.units[0].register_base, 0xfed9_0000);
+    assert_eq!(inv.units[0].register_pages, 1);
     assert!(inv.units[0].include_all);
     assert_eq!(inv.dmar_scope_count, 1);
     assert_eq!(inv.dmar_scopes[0].unit_index, 0);

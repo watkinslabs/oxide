@@ -58,7 +58,7 @@ fn push_unique_unit(units: &mut Vec<IommuUnit>, unit: IommuUnit) {
 #[cfg(test)] mod tests {
     use super::*;
     #[test] fn deduplicates_requesters_but_never_crosses_a_segment_boundary() {
-        let first = IommuUnit { kind: IommuKind::AmdVi, segment: 1, register_base: 0xfed8_0000, include_all: false };
+        let first = IommuUnit { kind: IommuKind::AmdVi, segment: 1, register_base: 0xfed8_0000, register_pages: 1, include_all: false };
         let other_segment = IommuUnit { segment: 2, ..first };
         let mut units = Vec::new();
         push_unique_unit(&mut units, first);

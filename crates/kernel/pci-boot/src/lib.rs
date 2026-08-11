@@ -49,6 +49,19 @@ fn register_pci_model_drivers() {
     virtio_drv::register_model_drivers();
 }
 
+/// Activate VT-d through the architecture's live ECAM reader before driver probing.
+/// # C: O(units + requesters + RAM leaves)
+fn activate_vtd_arch(_requesters: &[pci::Bdf]) -> iommu::VtdActivation {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let Some(reader) = hal_x86_64::pci::EcamPci::from_published() else { return iommu::VtdActivation::Bypass; };
+        // SAFETY: PCI enumeration has not registered a driver or admitted bus mastering yet.
+        return unsafe { iommu::activate_vtd(&reader, _requesters, pmm::user_as::hhdm_offset(), pmm::setup::usable_regions()) };
+    }
+    #[cfg(target_arch = "aarch64")]
+    { iommu::VtdActivation::Bypass }
+}
+
 fn pci_resources_arch(d: &pci::PciDevice) -> alloc::vec::Vec<drv::Resource> {
     let bars = {
         #[cfg(target_arch = "x86_64")]
@@ -114,6 +127,7 @@ pub fn enumerate_and_log() {
     let iommu_activation = unsafe { iommu::activate_amd_vi(&requesters,
         pmm::user_as::hhdm_offset(), pmm::setup::usable_regions()) };
     if iommu_activation == iommu::AmdViActivation::Failed { return; }
+    if activate_vtd_arch(&requesters) == iommu::VtdActivation::Failed { return; }
     register_pci_model_drivers();
     for d in devs.iter() {
         debug_boot! {

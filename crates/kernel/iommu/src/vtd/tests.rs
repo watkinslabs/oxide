@@ -33,7 +33,7 @@ fn reader() -> Reader {
 fn endpoint_scope_follows_each_firmware_bridge_path_hop() {
     let r = reader();
     let endpoint = Bdf { segment: 0, bus: 3, device: 2, function: 0 };
-    let unit = IommuUnit { kind: firmware::acpi::IommuKind::IntelVtd, segment: 0, register_base: 0, include_all: false };
+    let unit = IommuUnit { kind: firmware::acpi::IommuKind::IntelVtd, segment: 0, register_base: 0, register_pages: 1, include_all: false };
     assert_eq!(scope_target(&r, 0, scope(DMAR_SCOPE_ENDPOINT)), Some(endpoint));
     assert!(scope_matches(&r, endpoint, scope(DMAR_SCOPE_ENDPOINT), unit));
 }
@@ -42,6 +42,6 @@ fn endpoint_scope_follows_each_firmware_bridge_path_hop() {
 fn bridge_scope_matches_a_downstream_requester_through_its_parent() {
     let r = reader();
     let endpoint = Bdf { segment: 0, bus: 3, device: 2, function: 0 };
-    let unit = IommuUnit { kind: firmware::acpi::IommuKind::IntelVtd, segment: 0, register_base: 0, include_all: false };
+    let unit = IommuUnit { kind: firmware::acpi::IommuKind::IntelVtd, segment: 0, register_base: 0, register_pages: 1, include_all: false };
     assert!(scope_matches(&r, endpoint, bridge_scope(), unit));
 }
