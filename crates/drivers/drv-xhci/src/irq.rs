@@ -29,6 +29,8 @@ struct Endpoint {
     bar_bytes: AtomicU64,
     max_ports: AtomicU8,
     port_changes: AtomicU64,
+    command_completion_pa: AtomicU64,
+    command_completion_status: AtomicU32,
     dequeue: AtomicU32,
     cycle: AtomicBool,
 }
@@ -37,7 +39,7 @@ impl Endpoint {
         Self {
             state: AtomicU8::new(FREE), in_handler: AtomicU32::new(0),
             mmio_va: AtomicU64::new(0), status_offset: AtomicU64::new(0), erdp_offset: AtomicU64::new(0),
-            event_va: AtomicU64::new(0), event_pa: AtomicU64::new(0), bar_bytes: AtomicU64::new(0), max_ports: AtomicU8::new(0), port_changes: AtomicU64::new(0), dequeue: AtomicU32::new(0), cycle: AtomicBool::new(true),
+            event_va: AtomicU64::new(0), event_pa: AtomicU64::new(0), bar_bytes: AtomicU64::new(0), max_ports: AtomicU8::new(0), port_changes: AtomicU64::new(0), command_completion_pa: AtomicU64::new(0), command_completion_status: AtomicU32::new(0), dequeue: AtomicU32::new(0), cycle: AtomicBool::new(true),
         }
     }
 }
@@ -74,6 +76,16 @@ fn hard_handler_for(index: usize) {
                 if (control & TRB_CYCLE != 0) != cycle { break; }
                 // SAFETY: the parameter dword is in the same validated event TRB.
                 let parameter = unsafe { read_volatile((event_va + (dequeue * TRB_BYTES) as u64) as *const u32) };
+                let kind = (control >> crate::ring::TRB_TYPE_SHIFT) & 0x3f;
+                if kind == crate::ring::TRB_TYPE_COMMAND_COMPLETION {
+                    // SAFETY: both dwords belong to the same controller-owned event TRB.
+                    let parameter_hi = unsafe { read_volatile((event_va + (dequeue * TRB_BYTES + 4) as u64) as *const u32) };
+                    let status = unsafe { read_volatile((event_va + (dequeue * TRB_BYTES + 8) as u64) as *const u32) };
+                    let completion = status >> 24;
+                    let slot = control >> 24;
+                    endpoint.command_completion_status.store(completion | (slot << 8), Ordering::Relaxed);
+                    endpoint.command_completion_pa.store(parameter as u64 | ((parameter_hi as u64) << 32), Ordering::Release);
+                }
                 if let Some(port) = crate::ports::event_port_id(parameter, control, endpoint.max_ports.load(Ordering::Acquire)) {
                     let operational = status_offset - USBSTS;
                     if let Some(portsc_offset) = crate::ports::portsc_offset(operational, port, endpoint.max_ports.load(Ordering::Acquire))
@@ -158,8 +170,19 @@ impl Binding {
         endpoint.bar_bytes.store(mmio.bytes(), Ordering::Relaxed);
         endpoint.max_ports.store(mmio.geometry().max_ports, Ordering::Relaxed);
         endpoint.port_changes.store(0, Ordering::Relaxed);
+        endpoint.command_completion_pa.store(0, Ordering::Relaxed);
+        endpoint.command_completion_status.store(0, Ordering::Relaxed);
         endpoint.mmio_va.store(mmio.base_va(), Ordering::Release);
         true
+    }
+
+    /// Consume a matching Command Completion Event published by this endpoint. # C: O(1)
+    pub(crate) fn take_command_completion(self, command_pa: u64) -> Option<crate::ring::CommandCompletion> {
+        let endpoint = &ENDPOINTS[self.endpoint];
+        if endpoint.command_completion_pa.load(Ordering::Acquire) != command_pa { return None; }
+        let status = endpoint.command_completion_status.load(Ordering::Acquire);
+        if endpoint.command_completion_pa.compare_exchange(command_pa, 0, Ordering::AcqRel, Ordering::Acquire).is_err() { return None; }
+        Some(crate::ring::CommandCompletion { command_pa, completion_code: status as u8, slot: (status >> 8) as u8 })
     }
 
     /// Disable delivery, wait out hard-handler ownership, then release vector state. # C: O(handler)
@@ -188,6 +211,7 @@ impl Binding {
         endpoint.event_va.store(0, Ordering::Release);
         endpoint.event_pa.store(0, Ordering::Release);
         endpoint.port_changes.store(0, Ordering::Release);
+        endpoint.command_completion_pa.store(0, Ordering::Release);
         release(self.endpoint);
     }
 }
