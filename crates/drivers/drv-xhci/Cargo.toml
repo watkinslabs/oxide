@@ -10,6 +10,10 @@ path = "src/lib.rs"
 [dependencies]
 mmio-map = { path = "../../kernel/mmio-map" }
 pmm = { path = "../../kernel/mm-pmm" }
+drv = { path = "../drv" }
+pci = { path = "../pci" }
+sched = { path = "../../kernel/sched" }
+sync = { path = "../../shared/sync" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../../arch/hal-x86_64" }
