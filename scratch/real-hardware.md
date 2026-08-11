@@ -36,7 +36,7 @@ usable without it.
 |---|---|---|---|---|
 | DONE B1875 | Console (framebuffer) | no | Multiboot2 firmware scanout feeds the full VT/fbcon stack through a WC simple-framebuffer driver when no native fbdev binds. | B1875-physical-framebuffer-source |
 | OPEN | UEFI boot | yes | x86 boots multiboot2 (BIOS/CSM) only. Modern boards are UEFI, many without CSM. | — |
-| OPEN | Input | yes | Only PS/2 keyboard. No xHCI host controller anywhere. | — |
+| CLAIMED F878 | Input | yes | xHCI controller register contract and PCI host-driver foundation in progress; USB enumeration and HID boot protocol remain required. | F878-xhci-host-foundation |
 | DONE 2b44a8a29 | Cache attributes (WC) | no | x86 PAT and arm64 Normal-NC are wired through driver-owned raw-PFN VMA policy. | B1874-x86-write-combining |
 | DONE 18936f7b5, 667c8a2da | SMP AP bringup | no | x86 INIT/SIPI and arm64 PSCI paths bring APs into the scheduler. | F425/F428 |
 | OPEN | x2APIC + CPU count | no¹ | `MAX_CPUS = 64`, `u64` online mask, no x2APIC enablement. | — |
