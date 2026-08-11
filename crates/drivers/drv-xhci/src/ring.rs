@@ -22,6 +22,12 @@ pub const TRB_TYPE_DISABLE_SLOT: u32 = 10;
 pub const TRB_TYPE_ADDRESS_DEVICE: u32 = 11;
 /// Command Completion Event TRB type. # C: O(1)
 pub const TRB_TYPE_COMMAND_COMPLETION: u32 = 33;
+/// Control-transfer Setup Stage TRB type. # C: O(1)
+pub const TRB_TYPE_SETUP: u32 = 2;
+/// Control-transfer Data Stage TRB type. # C: O(1)
+pub const TRB_TYPE_DATA: u32 = 3;
+/// Control-transfer Status Stage TRB type. # C: O(1)
+pub const TRB_TYPE_STATUS: u32 = 4;
 /// Successful xHCI completion code. # C: O(1)
 pub const COMPLETION_SUCCESS: u8 = 1;
 
@@ -64,6 +70,27 @@ impl Trb {
             completion_code: (self.dword[2] >> 24) as u8,
             slot: (self.dword[3] >> 24) as u8,
         })
+    }
+
+    /// Build the immediate eight-byte Setup Stage for a USB control request. # C: O(1)
+    pub fn setup_stage(request_type: u8, request: u8, value: u16, index: u16, length: u16) -> Self {
+        let parameter_lo = request_type as u32 | ((request as u32) << 8) | ((value as u32) << 16);
+        let parameter_hi = index as u32 | ((length as u32) << 16);
+        let transfer_type = if length == 0 { 0 } else if request_type & 0x80 != 0 { 3 } else { 2 };
+        Self { dword: [parameter_lo, parameter_hi, 8, (TRB_TYPE_SETUP << TRB_TYPE_SHIFT) | (1 << 6) | (transfer_type << 16)] }
+    }
+
+    /// Build a non-immediate control Data Stage. # C: O(1)
+    pub fn data_stage(buffer_pa: u64, length: u32, direction_in: bool) -> Option<Self> {
+        if length > 0x1ffff { return None; }
+        let control = (TRB_TYPE_DATA << TRB_TYPE_SHIFT) | if direction_in { 1 << 16 } else { 0 };
+        Some(Self { dword: [buffer_pa as u32, (buffer_pa >> 32) as u32, length, control] })
+    }
+
+    /// Build the opposite-direction Status Stage and request its completion event. # C: O(1)
+    pub fn status_stage(direction_in: bool) -> Self {
+        let opposite_in = !direction_in;
+        Self { dword: [0, 0, 0, (TRB_TYPE_STATUS << TRB_TYPE_SHIFT) | (u32::from(opposite_in) << 16) | (1 << 5)] }
     }
 }
 
@@ -169,5 +196,14 @@ mod tests {
         assert!(Trb::address_device(0x48_004, 2, false).is_none());
         let completion = Trb { dword: [0x20_000, 0, (COMPLETION_SUCCESS as u32) << 24, (TRB_TYPE_COMMAND_COMPLETION << TRB_TYPE_SHIFT) | (2 << 24)] };
         assert_eq!(completion.command_completion(), Some(CommandCompletion { command_pa: 0x20_000, completion_code: COMPLETION_SUCCESS, slot: 2 }));
+    }
+
+    #[test]
+    fn control_stages_follow_linux_xhci_encoding() {
+        let setup = Trb::setup_stage(0x80, 6, 0x0100, 0, 18);
+        assert_eq!(setup.dword, [0x0100_0680, 18 << 16, 8, (TRB_TYPE_SETUP << TRB_TYPE_SHIFT) | (1 << 6) | (3 << 16)]);
+        assert_eq!(Trb::data_stage(0x90_000, 18, true).unwrap().dword[3], (TRB_TYPE_DATA << TRB_TYPE_SHIFT) | (1 << 16));
+        assert_eq!(Trb::status_stage(true).dword[3], (TRB_TYPE_STATUS << TRB_TYPE_SHIFT) | (1 << 5));
+        assert_eq!(Trb::status_stage(false).dword[3], (TRB_TYPE_STATUS << TRB_TYPE_SHIFT) | (1 << 16) | (1 << 5));
     }
 }
