@@ -1,7 +1,8 @@
-//! AHCI single-MSI binding and allocation-free hard-handler endpoints.
+//! AHCI single-vector MSI-X/MSI binding and allocation-free hard-handler endpoints.
 
 #![cfg(target_os = "oxide-kernel")]
 
+use core::ptr::{read_volatile, write_volatile};
 use core::sync::atomic::{
     AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering,
 };
@@ -49,11 +50,13 @@ static ENDPOINTS: [Endpoint; MAX_ENDPOINTS] =
     [const { Endpoint::new() }; MAX_ENDPOINTS];
 
 #[derive(Clone, Copy)]
+enum Interrupt { Msi { cap_off: u8 }, Msix { cap_off: u8, entry_va: u64 } }
+#[derive(Clone, Copy)]
 pub(crate) struct IrqBinding {
     endpoint:      usize,
     irq:           u32,
     bdf:           pci::Bdf,
-    cap_off:       u8,
+    interrupt:     Interrupt,
     intx_previous: u16,
 }
 
@@ -99,11 +102,40 @@ fn release_endpoint(idx: usize) {
     endpoint.state.store(ENDPOINT_FREE, Ordering::Release);
 }
 
-fn bind_with<R: pci::ConfigSpaceReader>(
-    r: &R,
-    bdf: pci::Bdf,
-    ctrl: &Ahci,
-) -> Option<IrqBinding> {
+fn bind_msix<R: pci::ConfigSpaceReader>(r: &R, bdf: pci::Bdf, ctrl: &Ahci) -> Option<IrqBinding> {
+    let caps = pci::capabilities(r, bdf);
+    let cap_off = caps.find(pci::CAP_ID_MSIX)?.cfg_off;
+    let entry_off = regs::msix_entry_offset(pci::decode_msix_cap(r, bdf, cap_off)?, ctrl.abar_map_bytes(), ctrl.abar_offset())?;
+    let entry_va = ctrl.abar_va().checked_add(entry_off)?;
+    let message = arch_irq::alloc_pci_msi(requester_id(bdf), 0)?;
+    let Some(endpoint) = claim_endpoint(ctrl) else { arch_irq::free_pci_msi(message.irq); return None; };
+    if !arch_irq::register_pci_msi_handler(message.irq, arch_irq::DeviceAction::Ahci, hard_handler) {
+        release_endpoint(endpoint); arch_irq::free_pci_msi(message.irq); return None;
+    }
+    let intx_previous = pci::set_intx_disabled(r, bdf, true);
+    if let Some(msi) = caps.find(pci::CAP_ID_MSI) { let _ = pci::disable_msi(r, bdf, msi.cfg_off); }
+    let cfg = cap_off & 0xfc;
+    r.write32(bdf, cfg, pci::msix_control_enable_masked(r.read32(bdf, cfg)));
+    let _ = r.read32(bdf, cfg);
+    // SAFETY: `entry_va` is a checked, aligned MSI-X entry inside the controller-owned BAR5 mapping.
+    unsafe {
+        write_volatile((entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *mut u32, pci::MSIX_VECTOR_CONTROL_MASKED);
+        let _ = read_volatile((entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *const u32);
+        write_volatile((entry_va + pci::MSIX_MESSAGE_ADDR_LOW_OFF) as *mut u32, message.address as u32);
+        write_volatile((entry_va + pci::MSIX_MESSAGE_ADDR_HIGH_OFF) as *mut u32, (message.address >> 32) as u32);
+        write_volatile((entry_va + pci::MSIX_MESSAGE_DATA_OFF) as *mut u32, message.data);
+        let _ = read_volatile((entry_va + pci::MSIX_MESSAGE_DATA_OFF) as *const u32);
+        write_volatile((entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *mut u32, 0);
+        let _ = read_volatile((entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *const u32);
+    }
+    r.write32(bdf, cfg, pci::msix_control_value(r.read32(bdf, cfg), true));
+    let _ = r.read32(bdf, cfg);
+    ENDPOINTS[endpoint].state.store(ENDPOINT_ACTIVE, Ordering::Release);
+    ctrl.enable_interrupts();
+    Some(IrqBinding { endpoint, irq: message.irq, bdf, interrupt: Interrupt::Msix { cap_off, entry_va }, intx_previous })
+}
+
+fn bind_msi<R: pci::ConfigSpaceReader>(r: &R, bdf: pci::Bdf, ctrl: &Ahci) -> Option<IrqBinding> {
     let cap_off = pci::capabilities(r, bdf).find(pci::CAP_ID_MSI)?.cfg_off;
     let message = arch_irq::alloc_pci_msi(requester_id(bdf), 0)?;
     let endpoint = match claim_endpoint(ctrl) {
@@ -133,9 +165,13 @@ fn bind_with<R: pci::ConfigSpaceReader>(
         endpoint,
         irq: message.irq,
         bdf,
-        cap_off,
+        interrupt: Interrupt::Msi { cap_off },
         intx_previous,
     })
+}
+
+fn bind_with<R: pci::ConfigSpaceReader>(r: &R, bdf: pci::Bdf, ctrl: &Ahci) -> Option<IrqBinding> {
+    bind_msix(r, bdf, ctrl).or_else(|| bind_msi(r, bdf, ctrl))
 }
 
 /// Bind one single-vector PCI MSI to this AHCI controller. # C: O(N_caps)
@@ -152,16 +188,28 @@ pub(crate) fn bind(bdf: pci::Bdf, ctrl: &Ahci) -> Option<IrqBinding> {
     }
 }
 
+fn disable_config_with<R: pci::ConfigSpaceReader>(r: &R, binding: IrqBinding) {
+    match binding.interrupt {
+        Interrupt::Msi { cap_off } => { let _ = pci::disable_msi(r, binding.bdf, cap_off); }
+        Interrupt::Msix { cap_off, entry_va } => {
+            // SAFETY: entry VA remains in the controller-owned BAR5 mapping until AHCI teardown finishes.
+            unsafe { write_volatile((entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *mut u32, pci::MSIX_VECTOR_CONTROL_MASKED); let _ = read_volatile((entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *const u32); }
+            let cfg = cap_off & 0xfc;
+            r.write32(binding.bdf, cfg, pci::msix_control_value(r.read32(binding.bdf, cfg), false));
+            let _ = r.read32(binding.bdf, cfg);
+        }
+    }
+    let _ = pci::restore_intx_disabled(r, binding.bdf, binding.intx_previous);
+}
+
 fn disable_config(binding: IrqBinding) {
     #[cfg(target_arch = "x86_64")]
     if let Some(r) = hal_x86_64::pci::EcamPci::from_published() {
-        let _ = pci::disable_msi(&r, binding.bdf, binding.cap_off);
-        let _ = pci::restore_intx_disabled(&r, binding.bdf, binding.intx_previous);
+        disable_config_with(&r, binding);
     }
     #[cfg(target_arch = "aarch64")]
     if let Some(r) = hal_aarch64::pci::EcamPci::from_published() {
-        let _ = pci::disable_msi(&r, binding.bdf, binding.cap_off);
-        let _ = pci::restore_intx_disabled(&r, binding.bdf, binding.intx_previous);
+        disable_config_with(&r, binding);
     }
 }
 

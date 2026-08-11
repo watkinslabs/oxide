@@ -105,6 +105,7 @@ fn reset_hba(abar_va: u64) -> bool {
 pub struct Ahci {
     mmio:      Mapping,
     abar_va: u64,
+    abar_off: u64,
     port:    u32,
     pub(crate) clb_pa:  u64,  // command list (1 KiB, 1 KiB-aligned)
     fb_pa:   u64,  // received FIS (256 B, 256 B-aligned)
@@ -213,6 +214,12 @@ impl Ahci {
 
     /// Device-mapped ABAR VA retained for hard-handler publication. # C: O(1)
     pub(crate) fn abar_va(&self) -> u64 { self.abar_va }
+
+    /// Complete page-rounded BAR5 aperture retained by this controller. # C: O(1)
+    pub(crate) fn abar_map_bytes(&self) -> u64 { self.mmio.bytes() }
+
+    /// Offset from the owned mapping base to BAR5. # C: O(1)
+    pub(crate) fn abar_offset(&self) -> u64 { self.abar_off }
 
     /// Selected SATA port index. # C: O(1)
     pub(crate) fn port_index(&self) -> u32 { self.port }
@@ -339,7 +346,7 @@ impl Ahci {
         for page in 0..(DATA_BYTES / PAGE) { Self::zero_frame(data_pa + page * PAGE); }
 
         let mut a = Ahci {
-            mmio, abar_va, port,
+            mmio, abar_va, abar_off, port,
             clb_pa: clb, fb_pa: fb, ctba_pa: ct, data_pa,
             sectors: 0, blk_size: 512, serial: None,
         };
