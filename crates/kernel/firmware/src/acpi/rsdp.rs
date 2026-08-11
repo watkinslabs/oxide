@@ -1,6 +1,7 @@
 use crate::acpi::log::{alog_dec, alog_hex, alog_raw};
 use crate::acpi::read::{read_u32_le, read_u64_le};
 use crate::acpi::fadt::decode_fadt;
+use crate::acpi::iommu::{decode_dmar, decode_ivrs};
 use crate::acpi::tables::{decode_gtdt, decode_hpet, decode_madt, decode_mcfg, decode_spcr};
 #[cfg(target_os = "oxide-kernel")]
 use crate::acpi::iort::decode_iort;
@@ -91,6 +92,8 @@ pub unsafe fn try_log_xsdt(xsdt_pa: u64, hhdm_offset: u64) {
                 b"HPET" => decode_hpet(entry_pa, hhdm_offset),
                 b"SPCR" => decode_spcr(entry_pa, hhdm_offset),
                 b"MCFG" => decode_mcfg(entry_pa, hhdm_offset),
+                b"DMAR" => decode_dmar(entry_pa, hhdm_offset),
+                b"IVRS" => decode_ivrs(entry_pa, hhdm_offset),
                 b"GTDT" => decode_gtdt(entry_pa, hhdm_offset),
                 #[cfg(target_os = "oxide-kernel")]
                 b"IORT" => decode_iort(entry_pa, hhdm_offset),
