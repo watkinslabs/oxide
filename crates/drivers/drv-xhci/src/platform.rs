@@ -209,4 +209,23 @@ impl Mmio {
         // Readback flushes the posted MMIO write before the caller observes state.
         self.read32(offset).is_some()
     }
+
+    /// Reset a connected USB2 root-hub port and acknowledge its reset change. # C: O(reset timeout)
+    pub fn reset_usb2_port(&self, port: u8) -> bool {
+        let Some(offset) = crate::ports::portsc_offset(self.geometry.operational, port, self.geometry.max_ports)
+            .filter(|offset| offset.checked_add(4).is_some_and(|end| end <= self.bytes)) else { return false; };
+        let Some(portsc) = self.read32(offset) else { return false; };
+        let Some(request) = crate::ports::reset_request(portsc) else { return false; };
+        if !self.write32(offset, request) { return false; }
+        let deadline = sched::deadline::clock::now_ns().saturating_add(100_000_000);
+        loop {
+            let Some(portsc) = self.read32(offset) else { return false; };
+            if portsc == u32::MAX { return false; }
+            if crate::ports::reset_completed(portsc) {
+                return self.write32(offset, crate::ports::PORT_RESET_CHANGE);
+            }
+            if sched::deadline::clock::now_ns() >= deadline { return false; }
+            core::hint::spin_loop();
+        }
+    }
 }
