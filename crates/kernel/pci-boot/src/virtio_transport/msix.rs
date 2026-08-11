@@ -182,11 +182,14 @@ pub(crate) fn release_failed_probe_frames(bdf: pci::Bdf, frames: &virtio::Virtio
         }
     }
     for frame in frames.payload_frames.iter().copied() {
-        debug_assert!(frame != 0);
-        // SAFETY: payload frames are not mapped by this transport path and
-        // have not been retained by a child runtime after failed probe.
+        if !iommu::unmap_dma(bdf, frame.dma, VIRTIO_PCI_PAGE_SIZE as usize) {
+            continue;
+        }
+        debug_assert!(frame.pa != 0);
+        // SAFETY: failed-probe payload mappings have been retired and are not
+        // retained by any child runtime.
         unsafe {
-            pmm::setup::free_one_frame(frame);
+            pmm::setup::free_one_frame(frame.pa);
         }
     }
 }

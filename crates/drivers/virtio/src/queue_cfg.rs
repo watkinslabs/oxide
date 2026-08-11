@@ -49,7 +49,7 @@ pub trait VirtioQueueAllocator {
 /// One transport-owned page with its CPU physical and device DMA addresses.
 /// The physical address is for HHDM access; the DMA address is the only value
 /// permitted in a device-visible ring or register.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct VirtioDmaFrame {
     pub pa: u64,
     pub dma: u64,

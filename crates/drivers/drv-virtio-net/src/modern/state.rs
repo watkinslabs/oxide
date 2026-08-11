@@ -14,16 +14,21 @@ const TX_RING_DEPTH: usize = 32;
 /// real TX ring. Short pools (allocation pressure) still work — a 1-entry pool
 /// degrades to the old single-buffer behavior rather than failing.
 /// # C: O(depth)
-fn build_tx_pool(tx0: u64, txq_size: u16) -> alloc::vec::Vec<u64> {
+fn build_tx_pool(bdf: pci::Bdf, tx0: virtio::VirtioDmaFrame, txq_size: u16) -> alloc::vec::Vec<virtio::VirtioDmaFrame> {
+    #[cfg(test)]
+    let _ = bdf;
     let depth = (txq_size as usize).min(TX_RING_DEPTH).max(1);
     let mut bufs = alloc::vec::Vec::with_capacity(depth);
     bufs.push(tx0);
     #[cfg(not(test))]
     for _ in 1..depth {
-        match pmm::setup::alloc_raw_frame() {
-            Some(pa) if pa != 0 => bufs.push(pa),
-            _ => break,
-        }
+        let Some(pa) = pmm::setup::alloc_raw_frame() else { break };
+        let Some(dma) = iommu::map_dma(bdf, pa, hal::PAGE_SIZE_BYTES as usize) else {
+            // SAFETY: a mapping was never installed for this PMM frame.
+            unsafe { pmm::setup::free_one_frame(pa); }
+            break;
+        };
+        bufs.push(virtio::VirtioDmaFrame { pa, dma });
     }
     bufs
 }
@@ -103,10 +108,11 @@ fn read_device_mac(resources: virtio::VirtioResources) -> Option<[u8; NET_CFG_MA
 /// # C: O(1)
 pub fn init_modern(
     device_key: DeviceKey,
+    bdf: pci::Bdf,
     resources: virtio::VirtioResources,
     rx0_buf_pa: u64,
     rx0_buf_len: u16,
-    tx0_buf_pa: u64,
+    tx0_buf: virtio::VirtioDmaFrame,
     drv_features: u64,
 ) -> bool {
     let mut rx_bufs = alloc::vec::Vec::new();
@@ -114,14 +120,16 @@ pub fn init_modern(
         rx_bufs.push(virtio::VirtioNetRxBuffer {
             desc_id: 0,
             pa: rx0_buf_pa,
+            dma: rx0_buf_pa,
             len: rx0_buf_len,
         });
     }
     init_modern_with_rx_pool(
         device_key,
+        bdf,
         resources,
         rx_bufs,
-        tx0_buf_pa,
+        tx0_buf,
         drv_features,
     )
 }
@@ -131,9 +139,10 @@ pub fn init_modern(
 /// # C: O(N_rx_bufs^2)
 pub fn init_modern_with_rx_pool(
     device_key: DeviceKey,
+    bdf: pci::Bdf,
     resources: virtio::VirtioResources,
     rx_bufs: alloc::vec::Vec<virtio::VirtioNetRxBuffer>,
-    tx0_buf_pa: u64,
+    tx0_buf: virtio::VirtioDmaFrame,
     drv_features: u64,
 ) -> bool {
     super::ensure_config_refresh_retry();
@@ -148,13 +157,13 @@ pub fn init_modern_with_rx_pool(
     };
     if !resources.common_cfg_valid()
         || rx_bufs.is_empty()
-        || tx0_buf_pa == 0
+        || tx0_buf.pa == 0 || tx0_buf.dma == 0
     {
         return false;
     }
     if rx_bufs
         .iter()
-        .any(|buf| buf.pa == 0 || buf.len == 0 || buf.desc_id >= rxq.size)
+        .any(|buf| buf.pa == 0 || buf.dma == 0 || buf.len == 0 || buf.desc_id >= rxq.size)
     {
         return false;
     }
@@ -167,7 +176,7 @@ pub fn init_modern_with_rx_pool(
         }
     }
     let rx_next_avail = rx_bufs.len() as u16;
-    let tx_bufs = build_tx_pool(tx0_buf_pa, txq.size);
+    let tx_bufs = build_tx_pool(bdf, tx0_buf, txq.size);
     // Snapshot loggable scalars before `state` is moved into MODERN_DEVS, so the
     // debug-boot success log below does not borrow the moved value.
     #[cfg(feature = "debug-boot")]
@@ -175,6 +184,7 @@ pub fn init_modern_with_rx_pool(
                rxq.notify_va, txq.notify_va, mac);
     let state = super::ModernNetState {
         device_key,
+        bdf,
         cfg_va: resources.cfg_va,
         device_cfg_va: resources.device_cfg_va,
         hhdm: resources.hhdm,
@@ -310,12 +320,14 @@ pub fn uninstall_modern(device_key: DeviceKey) -> bool {
     if last_device {
         super::rx::release_rx_shared_runtime_if_last(rx_runtime_empty_after.unwrap_or_else(super::rx::rx_runtime_empty));
     }
-    reset_transport(state.cfg_va);
-    for rx_buf in state.rx_bufs {
-        free_frame(rx_buf.pa);
+    if !reset_transport(state.cfg_va) {
+        return false;
     }
-    for tx_pa in state.tx_bufs {
-        free_frame(tx_pa);
+    for rx_buf in state.rx_bufs {
+        free_frame(state.bdf, virtio::VirtioDmaFrame { pa: rx_buf.pa, dma: rx_buf.dma });
+    }
+    for tx_buf in state.tx_bufs {
+        free_frame(state.bdf, tx_buf);
     }
     true
 }
@@ -349,42 +361,45 @@ pub fn shutdown_modern(device_key: DeviceKey) -> bool {
     if last_device {
         super::rx::release_rx_shared_runtime_if_last(rx_runtime_empty_after.unwrap_or_else(super::rx::rx_runtime_empty));
     }
-    reset_transport(state.cfg_va);
-    for rx_buf in state.rx_bufs {
-        free_frame(rx_buf.pa);
+    if !reset_transport(state.cfg_va) {
+        return false;
     }
-    for tx_pa in state.tx_bufs {
-        free_frame(tx_pa);
+    for rx_buf in state.rx_bufs {
+        free_frame(state.bdf, virtio::VirtioDmaFrame { pa: rx_buf.pa, dma: rx_buf.dma });
+    }
+    for tx_buf in state.tx_bufs {
+        free_frame(state.bdf, tx_buf);
     }
     true
 }
 
-fn free_frame(pa: u64) {
-    if pa != 0 {
+fn free_frame(bdf: pci::Bdf, frame: virtio::VirtioDmaFrame) {
+    if frame.pa != 0 && frame.dma != 0 {
         #[cfg(test)]
         {
+            let _ = bdf;
             TEST_RELEASED_FRAMES.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
             return;
         }
         #[cfg(not(test))]
         {
-        // SAFETY: non-zero PAs passed here are pages allocated by the PMM for
-        // this driver's payload buffers and are no longer reachable after
-        // reset. Vring frames are transport-owned after successful probe and
-        // are released when the transport is unpublished.
-        unsafe { pmm::setup::free_one_frame(pa); }
+        if !iommu::unmap_dma(bdf, frame.dma, hal::PAGE_SIZE_BYTES as usize) { return; }
+        // SAFETY: the exact requester DMA mapping is retired after device
+        // reset, so PMM may reuse this payload page.
+        unsafe { pmm::setup::free_one_frame(frame.pa); }
         }
     }
 }
 
 #[cfg(test)]
-fn reset_transport(_cfg_va: u64) {
+fn reset_transport(_cfg_va: u64) -> bool {
     TEST_RESETS.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
+    true
 }
 
 #[cfg(not(test))]
-fn reset_transport(cfg_va: u64) {
-    let _ = virtio::reset_device(cfg_va);
+fn reset_transport(cfg_va: u64) -> bool {
+    virtio::reset_device(cfg_va)
 }
 
 /// Remember the net stack ifindex registered for this transport.

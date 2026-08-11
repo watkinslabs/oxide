@@ -205,12 +205,15 @@ impl VirtioTransportProbeResult {
     }
 
     /// # C: O(VIRTIO_NET_RX_BOOT_POOL)
-    pub fn net_payload_frames(&self) -> Vec<u64> {
+    pub fn net_payload_frames(&self) -> Vec<VirtioDmaFrame> {
         let mut frames = Vec::new();
         for i in 0..self.net_boot_payloads.rx_bufs_len.min(VIRTIO_NET_RX_BOOT_POOL) {
-            push_unique_frame(&mut frames, self.net_boot_payloads.rx_bufs[i].pa);
+            push_unique_dma_frame(&mut frames, VirtioDmaFrame {
+                pa: self.net_boot_payloads.rx_bufs[i].pa,
+                dma: self.net_boot_payloads.rx_bufs[i].dma,
+            });
         }
-        push_unique_frame(&mut frames, self.net_boot_payloads.tx_buf_pa);
+        push_unique_dma_frame(&mut frames, self.net_boot_payloads.tx_buf);
         frames
     }
 }
@@ -224,23 +227,7 @@ impl VirtioTransportProbeResult {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct VirtioProbeOwnedFrames {
     vring_frames: Vec<VirtioDmaFrame>,
-    payload_frames: Vec<u64>,
-}
-
-/// Every frame retained by a failed transport probe. Ring pages retain both
-/// address domains so the transport can retire the device mapping before PMM
-/// is allowed to reuse the physical page.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct VirtioProbeFrameSet {
-    pub vring_frames: Vec<VirtioDmaFrame>,
-    pub payload_frames: Vec<u64>,
-}
-
-impl VirtioProbeFrameSet {
-    /// # C: O(1)
-    pub fn is_empty(&self) -> bool {
-        self.vring_frames.is_empty() && self.payload_frames.is_empty()
-    }
+    payload_frames: Vec<VirtioDmaFrame>,
 }
 
 impl VirtioProbeOwnedFrames {
@@ -264,7 +251,7 @@ impl VirtioProbeOwnedFrames {
     pub fn take_all(&mut self) -> VirtioProbeFrameSet {
         let vring_frames = core::mem::take(&mut self.vring_frames);
         let mut payload_frames = core::mem::take(&mut self.payload_frames);
-        payload_frames.retain(|pa| !vring_frames.iter().any(|frame| frame.pa == *pa));
+        payload_frames.retain(|payload| !vring_frames.iter().any(|frame| frame.pa == payload.pa));
         VirtioProbeFrameSet { vring_frames, payload_frames }
     }
 
@@ -277,7 +264,7 @@ impl VirtioProbeOwnedFrames {
     }
 
     /// # C: O(N_payload)
-    pub fn payload_frames(&self) -> &[u64] {
+    pub fn payload_frames(&self) -> &[VirtioDmaFrame] {
         &self.payload_frames
     }
 
@@ -293,6 +280,7 @@ pub fn push_unique_frame(frames: &mut Vec<u64>, frame: u64) {
         frames.push(frame);
     }
 }
+
 
 /// One-shot ownership marker for transport state prepared during child probe.
 /// The holder must either publish the prepared transport state or release it;

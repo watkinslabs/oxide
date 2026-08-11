@@ -123,8 +123,8 @@ pub fn tx_frame_for(device_key: DeviceKey, body: &[u8]) -> Result<TxOutcome, TxE
     // Slot = next descriptor to (re)use. Its buffer is free by the ring-full
     // guard above (in-order completion).
     let desc_id  = (s.tx_next_avail as usize) % ring_depth;
-    let buf_pa   = s.tx_bufs[desc_id];
-    let buf_va   = hhdm.wrapping_add(buf_pa);
+    let buf      = s.tx_bufs[desc_id];
+    let buf_va   = hhdm.wrapping_add(buf.pa);
     let desc_va  = desc_base + (desc_id as u64) * VIRTQ_DESC_BYTES as u64;
     let total_len = (VIRTIO_NET_HDR_LEN + body.len()) as u32;
 
@@ -142,10 +142,10 @@ pub fn tx_frame_for(device_key: DeviceKey, body: &[u8]) -> Result<TxOutcome, TxE
         }
     }
 
-    // Descriptor `desc_id`: { addr=buf_pa; len=total_len; flags=0; next=0 }.
+    // Descriptor `desc_id`: { addr=buf.dma; len=total_len; flags=0; next=0 }.
     // SAFETY: HHDM-mapped queue-1 descriptor table owned by driver under the virtio-net device-table lock; aligned u64+u32+u16 stores within the desc-`desc_id` slot.
     unsafe {
-        core::ptr::write_volatile(desc_va as *mut u64, buf_pa);
+        core::ptr::write_volatile(desc_va as *mut u64, buf.dma);
         core::ptr::write_volatile((desc_va + 8)  as *mut u32, total_len);
         core::ptr::write_volatile((desc_va + 12) as *mut u16, 0u16); // flags
         core::ptr::write_volatile((desc_va + 14) as *mut u16, 0u16); // next

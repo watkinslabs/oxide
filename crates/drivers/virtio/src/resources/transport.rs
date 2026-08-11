@@ -84,6 +84,7 @@ impl VirtioTransportLocation {
 pub struct VirtioNetRxBuffer {
     pub desc_id: u16,
     pub pa: u64,
+    pub dma: u64,
     pub len: u16,
 }
 
@@ -93,37 +94,38 @@ pub const VIRTIO_NET_RX_BOOT_POOL: usize = 8;
 pub struct VirtioNetBootPayloads {
     pub rx_bufs: [VirtioNetRxBuffer; VIRTIO_NET_RX_BOOT_POOL],
     pub rx_bufs_len: usize,
-    pub tx_buf_pa: u64,
+    pub tx_buf: VirtioDmaFrame,
 }
 
 impl VirtioNetBootPayloads {
     pub const fn new(rx_buf_pa: u64, rx_buf_len: u16, tx_buf_pa: u64) -> Self {
-        let mut rx_bufs = [VirtioNetRxBuffer { desc_id: 0, pa: 0, len: 0 }; VIRTIO_NET_RX_BOOT_POOL];
+        let mut rx_bufs = [VirtioNetRxBuffer { desc_id: 0, pa: 0, dma: 0, len: 0 }; VIRTIO_NET_RX_BOOT_POOL];
         let rx_bufs_len = if rx_buf_pa != 0 && rx_buf_len != 0 {
-            rx_bufs[0] = VirtioNetRxBuffer { desc_id: 0, pa: rx_buf_pa, len: rx_buf_len };
+            rx_bufs[0] = VirtioNetRxBuffer { desc_id: 0, pa: rx_buf_pa, dma: rx_buf_pa, len: rx_buf_len };
             1
         } else {
             0
         };
-        Self { rx_bufs, rx_bufs_len, tx_buf_pa }
+        Self { rx_bufs, rx_bufs_len, tx_buf: VirtioDmaFrame { pa: tx_buf_pa, dma: tx_buf_pa } }
     }
 
     pub const fn from_rx_pool(
         rx_bufs: [VirtioNetRxBuffer; VIRTIO_NET_RX_BOOT_POOL],
         rx_bufs_len: usize,
-        tx_buf_pa: u64,
+        tx_buf: VirtioDmaFrame,
     ) -> Self {
-        Self { rx_bufs, rx_bufs_len, tx_buf_pa }
+        Self { rx_bufs, rx_bufs_len, tx_buf }
     }
 
     pub const fn is_present(&self) -> bool {
-        self.rx_bufs_len != 0 && self.rx_bufs_valid() && self.tx_buf_pa != 0
+        self.rx_bufs_len != 0 && self.rx_bufs_valid() && self.tx_buf.pa != 0 && self.tx_buf.dma != 0
     }
 
     pub const fn rx_bufs_valid(&self) -> bool {
         let mut i = 0;
         while i < self.rx_bufs_len {
-            if i >= VIRTIO_NET_RX_BOOT_POOL || self.rx_bufs[i].pa == 0 || self.rx_bufs[i].len == 0 {
+            if i >= VIRTIO_NET_RX_BOOT_POOL || self.rx_bufs[i].pa == 0
+                || self.rx_bufs[i].dma == 0 || self.rx_bufs[i].len == 0 {
                 return false;
             }
             i += 1;
