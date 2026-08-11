@@ -48,11 +48,7 @@ impl Endpoint {
 static ENDPOINTS: [Endpoint; MAX_ENDPOINTS] = [const { Endpoint::new() }; MAX_ENDPOINTS];
 
 #[derive(Clone, Copy)]
-enum Interrupt { Msi { cap_off: u8 }, Msix { cap_off: u8, entry_va: u64 } }
-#[derive(Clone, Copy)]
-pub(crate) struct Binding { endpoint: usize, irq: u32, bdf: pci::Bdf, interrupt: Interrupt, intx_previous: u16 }
-
-fn requester_id(bdf: pci::Bdf) -> u32 { ((bdf.bus as u32) << 8) | ((bdf.device as u32) << 3) | bdf.function as u32 }
+pub(crate) struct Binding { endpoint: usize, binding: pci_irq::Binding }
 
 fn hard_handler_for(index: usize) {
     let endpoint = &ENDPOINTS[index];
@@ -146,96 +142,16 @@ fn claim() -> Option<usize> {
 }
 fn release(index: usize) { ENDPOINTS[index].state.store(FREE, Ordering::Release); }
 
-fn msix_entry_offset(cap: pci::MsixCap, bar_bytes: u64) -> Option<u64> {
-    if cap.table_bir != 0 { return None; }
-    let off = pci::msix_table_entry_offset(cap, 0)?;
-    off.checked_add(pci::MSIX_TABLE_ENTRY_BYTES).filter(|end| *end <= bar_bytes).map(|_| off)
-}
-
-fn bind_msix<R: pci::ConfigSpaceReader>(reader: &R, bdf: pci::Bdf, mmio: &Mmio) -> Option<Binding> {
-    let caps = pci::capabilities(reader, bdf);
-    let cap_off = caps.find(pci::CAP_ID_MSIX)?.cfg_off;
-    let entry_off = msix_entry_offset(pci::decode_msix_cap(reader, bdf, cap_off)?, mmio.bytes())?;
-    let entry_va = mmio.base_va().checked_add(entry_off)?;
-    let message = arch_irq::alloc_pci_msi(requester_id(bdf), 0)?;
-    let Some(endpoint) = claim() else { arch_irq::free_pci_msi(message.irq); return None; };
-    if !arch_irq::register_pci_msi_handler(message.irq, arch_irq::DeviceAction::Xhci, HANDLERS[endpoint]) {
-        release(endpoint); arch_irq::free_pci_msi(message.irq); return None;
-    }
-    let intx_previous = pci::set_intx_disabled(reader, bdf, true);
-    if let Some(msi) = caps.find(pci::CAP_ID_MSI) { let _ = pci::disable_msi(reader, bdf, msi.cfg_off); }
-    let cfg = cap_off & 0xfc;
-    let header = reader.read32(bdf, cfg);
-    reader.write32(bdf, cfg, pci::msix_control_enable_masked(header));
-    let _ = reader.read32(bdf, cfg);
-    let programmed = mmio.write32(entry_off + pci::MSIX_VECTOR_CONTROL_OFF, pci::MSIX_VECTOR_CONTROL_MASKED)
-        && mmio.read32(entry_off + pci::MSIX_VECTOR_CONTROL_OFF).is_some()
-        && mmio.write32(entry_off + pci::MSIX_MESSAGE_ADDR_LOW_OFF, message.address as u32)
-        && mmio.write32(entry_off + pci::MSIX_MESSAGE_ADDR_HIGH_OFF, (message.address >> 32) as u32)
-        && mmio.write32(entry_off + pci::MSIX_MESSAGE_DATA_OFF, message.data)
-        && mmio.read32(entry_off + pci::MSIX_MESSAGE_DATA_OFF).is_some()
-        && mmio.write32(entry_off + pci::MSIX_VECTOR_CONTROL_OFF, 0);
-    if !programmed {
-        reader.write32(bdf, cfg, pci::msix_control_value(reader.read32(bdf, cfg), false));
-        let _ = reader.read32(bdf, cfg);
-        let _ = pci::restore_intx_disabled(reader, bdf, intx_previous);
-        arch_irq::free_pci_msi(message.irq); release(endpoint); return None;
-    }
-    if mmio.read32(entry_off + pci::MSIX_VECTOR_CONTROL_OFF).is_none() {
-        reader.write32(bdf, cfg, pci::msix_control_value(reader.read32(bdf, cfg), false));
-        let _ = reader.read32(bdf, cfg);
-        let _ = pci::restore_intx_disabled(reader, bdf, intx_previous);
-        arch_irq::free_pci_msi(message.irq); release(endpoint); return None;
-    }
-    reader.write32(bdf, cfg, pci::msix_control_value(reader.read32(bdf, cfg), true));
-    let _ = reader.read32(bdf, cfg);
-    ENDPOINTS[endpoint].state.store(ACTIVE, Ordering::Release);
-    Some(Binding { endpoint, irq: message.irq, bdf, interrupt: Interrupt::Msix { cap_off, entry_va }, intx_previous })
-}
-
-fn bind_msi<R: pci::ConfigSpaceReader>(reader: &R, bdf: pci::Bdf) -> Option<Binding> {
-    let cap_off = pci::capabilities(reader, bdf).find(pci::CAP_ID_MSI)?.cfg_off;
-    let message = arch_irq::alloc_pci_msi(requester_id(bdf), 0)?;
-    let Some(endpoint) = claim() else { arch_irq::free_pci_msi(message.irq); return None; };
-    if !arch_irq::register_pci_msi_handler(message.irq, arch_irq::DeviceAction::Xhci, HANDLERS[endpoint]) {
-        release(endpoint); arch_irq::free_pci_msi(message.irq); return None;
-    }
-    let intx_previous = pci::set_intx_disabled(reader, bdf, true);
-    if !pci::program_msi_single(reader, bdf, cap_off, message.address, message.data) {
-        let _ = pci::restore_intx_disabled(reader, bdf, intx_previous);
-        arch_irq::free_pci_msi(message.irq); release(endpoint); return None;
-    }
-    ENDPOINTS[endpoint].state.store(ACTIVE, Ordering::Release);
-    Some(Binding { endpoint, irq: message.irq, bdf, interrupt: Interrupt::Msi { cap_off }, intx_previous })
-}
-
-fn bind_with<R: pci::ConfigSpaceReader>(reader: &R, bdf: pci::Bdf, mmio: &Mmio) -> Option<Binding> {
-    bind_msix(reader, bdf, mmio).or_else(|| bind_msi(reader, bdf))
-}
-
 /// Reserve an MSI-X or MSI vector before controller event DMA becomes live. # C: O(N_caps + N_vectors)
 pub(crate) fn bind(bdf: pci::Bdf, mmio: &Mmio) -> Option<Binding> {
-    #[cfg(target_arch = "x86_64")]
-    { bind_with(&hal_x86_64::pci::EcamPci::from_published()?, bdf, mmio) }
-    #[cfg(target_arch = "aarch64")]
-    { bind_with(&hal_aarch64::pci::EcamPci::from_published()?, bdf, mmio) }
-}
-
-fn disable_interrupt<R: pci::ConfigSpaceReader>(reader: &R, binding: Binding) {
-    match binding.interrupt {
-        Interrupt::Msi { cap_off } => { let _ = pci::disable_msi(reader, binding.bdf, cap_off); }
-        Interrupt::Msix { cap_off, entry_va } => {
-            // SAFETY: `entry_va` is retained from the owned BAR0 mapping until teardown completes.
-            unsafe {
-                write_volatile((entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *mut u32, pci::MSIX_VECTOR_CONTROL_MASKED);
-                let _ = read_volatile((entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *const u32);
-            }
-            let cfg = cap_off & 0xfc;
-            reader.write32(binding.bdf, cfg, pci::msix_control_value(reader.read32(binding.bdf, cfg), false));
-            let _ = reader.read32(binding.bdf, cfg);
-        }
-    }
-    let _ = pci::restore_intx_disabled(reader, binding.bdf, binding.intx_previous);
+    let endpoint = claim()?;
+    let table = pci_irq::BarMapping { bar: 0, base_va: mmio.base_va(), bytes: mmio.bytes(), offset: 0 };
+    let Some(binding) = pci_irq::request(bdf, table, arch_irq::DeviceAction::Xhci, HANDLERS[endpoint]) else {
+        release(endpoint);
+        return None;
+    };
+    ENDPOINTS[endpoint].state.store(ACTIVE, Ordering::Release);
+    Some(Binding { endpoint, binding })
 }
 
 impl Binding {
@@ -309,33 +225,13 @@ impl Binding {
                 Err(_) => break,
             }
         }
-        #[cfg(target_arch = "x86_64")]
-        if let Some(reader) = hal_x86_64::pci::EcamPci::from_published() {
-            disable_interrupt(&reader, self);
-        }
-        #[cfg(target_arch = "aarch64")]
-        if let Some(reader) = hal_aarch64::pci::EcamPci::from_published() {
-            disable_interrupt(&reader, self);
-        }
-        arch_irq::free_pci_msi(self.irq);
         while endpoint.in_handler.load(Ordering::Acquire) != 0 { core::hint::spin_loop(); }
+        self.binding.release();
         endpoint.mmio_va.store(0, Ordering::Release);
         endpoint.event_va.store(0, Ordering::Release);
         endpoint.event_pa.store(0, Ordering::Release);
         endpoint.port_changes.store(0, Ordering::Release);
         endpoint.command_completion_pa.store(0, Ordering::Release);
         release(self.endpoint);
-    }
-}
-
-#[cfg(test)] mod tests {
-    use super::*;
-    fn cap(bir: u8, size: u16, offset: u32) -> pci::MsixCap {
-        pci::MsixCap { enabled: false, function_mask: false, table_size: size, table_bir: bir, table_offset: offset, pba_bir: 0, pba_offset: 0 }
-    }
-    #[test] fn msix_vector_zero_must_fit_the_owned_controller_bar() {
-        assert_eq!(msix_entry_offset(cap(0, 1, 0x100), 0x110), Some(0x100));
-        assert_eq!(msix_entry_offset(cap(0, 1, 0x100), 0x10f), None);
-        assert_eq!(msix_entry_offset(cap(1, 1, 0x100), 0x1000), None);
     }
 }
