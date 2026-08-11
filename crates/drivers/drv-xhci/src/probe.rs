@@ -22,7 +22,6 @@ struct Record {
     _dcbaa: DmaPage,
     _device: Option<AddressDeviceDma>,
     slot: u8,
-    reports: Vec<Vec<u8>>,
     protocol: Option<u8>,
     evdev: Option<u32>,
     input_platform: Option<u32>,
@@ -65,9 +64,7 @@ fn input_bottom_half() {
             device.take_hid_report(completion)
         };
         if let Some(report) = report {
-            if record.reports.len() == 64 { record.reports.remove(0); }
-            record.reports.push(report);
-            if let Some(report) = record.reports.last().cloned() { publish_report(record, &report); }
+            publish_report(record, &report);
             if let Some(device) = record._device.as_mut() { let _ = device.submit_hid_report(&record.mmio, record.slot); }
         }
     }
@@ -247,7 +244,7 @@ impl drv::Driver for XhciDriver {
         let protocol = device.as_ref().and_then(AddressDeviceDma::hid_protocol);
         let evdev = install_hid_input(bdf, protocol);
         let input_platform = evdev.map(|_| platform_id(bdf));
-        CONTROLLERS.lock().push(Record { bdf, command_orig, mmio, irq, _command: command, _dcbaa: dcbaa, _device: device, slot, reports: Vec::new(), protocol, evdev, input_platform, keyboard: [0; 8], mouse_buttons: 0, _erst: erst, _event: event });
+        CONTROLLERS.lock().push(Record { bdf, command_orig, mmio, irq, _command: command, _dcbaa: dcbaa, _device: device, slot, protocol, evdev, input_platform, keyboard: [0; 8], mouse_buttons: 0, _erst: erst, _event: event });
         Ok(())
     }
     fn remove(&self, dev: &drv::Device) { if let Some(bdf) = pci::parse_bdf_addr(&dev.addr) { remove(bdf); } }
