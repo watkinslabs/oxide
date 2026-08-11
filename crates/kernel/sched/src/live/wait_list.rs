@@ -79,6 +79,14 @@ impl WaitList {
         unsafe { self.park_interruptible_with_deadline(0); }
     }
 
+    /// Timed interruptible [`prepare_to_wait`]. # SAFETY: see that method.
+    /// # C: O(1)
+    pub unsafe fn prepare_to_wait_interruptible_with_deadline(&self, deadline_ns: u64) {
+        // SAFETY: forwards the prepared-wait contract with the caller's
+        // absolute deadline retained for the scheduler's deadline scanner.
+        unsafe { self.park_interruptible_with_deadline(deadline_ns); }
+    }
+
     /// # C: O(1)
     pub const fn new() -> Self {
         Self { waiters: Spinlock::new(Vec::new()) }
