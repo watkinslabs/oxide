@@ -95,7 +95,9 @@ resource caller. `TEST` means hosted test-only code, not a kernel path.
 ## Closure rule
 
 The current source scan has no resource or driver use of the raw `WaitList`
-publication methods. Its only matches are the `WaitList`/generic-helper
-implementations and named rwsem/SQPOLL owner methods. Any new production caller
-must use either a generic predicate helper or a named prepared/owner API and
-add a row here before it can be considered audited.
+publication methods. Those methods are scheduler-crate internal; external
+subsystems can only use a generic predicate helper or a named prepared/owner
+API. The only remaining textual matches are the `WaitList`/generic-helper
+implementations and named rwsem/SQPOLL owner methods. A new production wait
+must use one of those contracts and add a row here before it can be considered
+audited.

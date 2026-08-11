@@ -1,14 +1,13 @@
 // Generic FIFO wait list — companion to the per-subsystem WAITERS
 // pattern in `zombies.rs`. Subsystems that need blocking semantics
 // (SysV sem/msg, POSIX MQ, futex) instantiate one `WaitList` per
-// resource and call `park()` to sleep, `wake_one()` / `wake_all()`
-// from the corresponding wake site.
+// resource and use a named prepared-wait or predicate helper to sleep,
+// with `wake_one()` / `wake_all()` from the corresponding wake site.
 //
 // Lock-ordering contract:
-//   - Caller holds the resource lock (e.g. SemSet.vals) when
-//     calling park(); park() acquires the wait list's internal
-//     lock briefly to push, then returns. Caller drops resource
-//     lock then calls schedule().
+//   - A prepared-wait caller holds the resource lock (e.g. SemSet.vals)
+//     while publishing. The wait list briefly acquires its internal lock to
+//     push; the caller drops the resource lock and then schedules.
 //   - Wakers (commit path) drop the resource lock BEFORE calling
 //     wake_one/wake_all so the wait list lock is never nested
 //     under the resource lock from the publisher side.
@@ -81,6 +80,17 @@ impl WaitList {
         unsafe { self.park_with_deadline(deadline_ns); }
     }
 
+    /// Timed [`prepare_to_wait`] with an explicit coalescing window.
+    /// # SAFETY: the caller holds the condition gate while publishing, drops
+    /// it before scheduling, and finishes/cancels the prepared wait on every
+    /// return path. The timer may fire in `[deadline_ns, deadline_ns + slack_ns]`.
+    /// # C: O(N armed)
+    pub unsafe fn prepare_to_wait_with_deadline_range(&self, deadline_ns: u64, slack_ns: u64) {
+        // SAFETY: forwards the named prepared-wait contract while preserving
+        // the caller-selected timer coalescing range.
+        unsafe { self.park_with_deadline_range(deadline_ns, slack_ns); }
+    }
+
     /// Interruptible [`prepare_to_wait`]. # SAFETY: see that method.
     /// # C: O(1)
     pub unsafe fn prepare_to_wait_interruptible(&self) {
@@ -131,7 +141,7 @@ impl WaitList {
     /// stays balanced across park/wake.
     /// # C: O(1)
     /// # Lk: WaitList.waiters (TaskList class)
-    pub unsafe fn park(&self) {
+    pub(crate) unsafe fn park(&self) {
         // SAFETY: same contract as park_with_deadline; 0 deadline disables the timer-wake path.
         unsafe { self.park_with_deadline(0); }
     }
@@ -150,7 +160,7 @@ impl WaitList {
     /// # SAFETY: see `park`. Caller still owns the post-park
     /// `schedule()` call.
     /// # C: O(N armed)
-    pub unsafe fn park_with_deadline(&self, deadline_ns: u64) {
+    pub(crate) unsafe fn park_with_deadline(&self, deadline_ns: u64) {
         let slack = super::schedule::current()
             .map(crate::hrtimeout::task_slack_ns).unwrap_or(0);
         // SAFETY: forwards the caller's contract unchanged; this wrapper only supplies the default slack.
@@ -162,7 +172,7 @@ impl WaitList {
     /// time in `[deadline_ns, deadline_ns + slack_ns]`, never before.
     /// # SAFETY: see `park`.
     /// # C: O(N armed)
-    pub unsafe fn park_with_deadline_range(&self, deadline_ns: u64, slack_ns: u64) {
+    pub(crate) unsafe fn park_with_deadline_range(&self, deadline_ns: u64, slack_ns: u64) {
         let rq = match super::runqueue::global() { Some(r) => r, None => return };
         let raw = rq.current.load(Ordering::Acquire);
         if raw.is_null() { return; }
@@ -220,19 +230,10 @@ impl WaitList {
 
     /// Park with a deadline while closing the signal-before-sleep race.
     /// # C: O(1)
-    pub unsafe fn park_interruptible_with_deadline(&self, deadline_ns: u64) {
+    pub(crate) unsafe fn park_interruptible_with_deadline(&self, deadline_ns: u64) {
         // SAFETY: caller provides the same process-context contract required by
         // park_with_deadline; this wrapper only performs the post-publish check.
         unsafe { self.park_with_deadline(deadline_ns); }
-        self.check_pending_after_park();
-    }
-
-    /// [`park_interruptible_with_deadline`] with an explicit coalescing window.
-    /// # SAFETY: see `park`.
-    /// # C: O(N armed)
-    pub unsafe fn park_interruptible_with_deadline_range(&self, deadline_ns: u64, slack_ns: u64) {
-        // SAFETY: same contract as `park_interruptible_with_deadline`; only the slack differs.
-        unsafe { self.park_with_deadline_range(deadline_ns, slack_ns); }
         self.check_pending_after_park();
     }
 
