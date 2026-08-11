@@ -95,6 +95,18 @@ fn fetch_first_configuration(mmio: &Mmio, irq: Binding, device: &mut AddressDevi
     true
 }
 
+fn configure_hid_endpoint(mmio: &Mmio, command: &mut CommandTransport, irq: Binding, device: &mut AddressDeviceDma, slot: u8) -> bool {
+    match device.prepare_hid_endpoint() {
+        Some(false) => true,
+        Some(true) => {
+            let Some(configure) = Trb::configure_endpoint(device.input_pa(), slot) else { return false; };
+            let Some(configure_pa) = command.submit(mmio, configure) else { return false; };
+            irq.wait_command_completion(configure_pa, 1_000_000_000).is_some_and(|completion| completion.completion_code == crate::ring::COMPLETION_SUCCESS && completion.slot == slot)
+        }
+        None => false,
+    }
+}
+
 fn address_first_usb2(mmio: &Mmio, command: &mut CommandTransport, dcbaa: &DmaPage, irq: Binding) -> Option<AddressDeviceDma> {
     for port in 1..=mmio.geometry().max_ports {
         let Some(status) = mmio.port_status(port) else { continue; };
@@ -116,11 +128,11 @@ fn address_first_usb2(mmio: &Mmio, command: &mut CommandTransport, dcbaa: &DmaPa
             if control_complete(irq, status_pa, enable.slot) {
                 if let Some(descriptor) = device.device_descriptor() {
                     match device.prepare_evaluate_ep0(descriptor.max_packet0) {
-                        Some(false) => if fetch_first_configuration(mmio, irq, &mut device, enable.slot) { return Some(device); },
+                        Some(false) => if fetch_first_configuration(mmio, irq, &mut device, enable.slot) && configure_hid_endpoint(mmio, command, irq, &mut device, enable.slot) { return Some(device); },
                         Some(true) => {
                             if let Some(evaluate) = Trb::evaluate_context(device.input_pa(), enable.slot) {
                                 if let Some(evaluate_pa) = command.submit(mmio, evaluate) {
-                                    if irq.wait_command_completion(evaluate_pa, 1_000_000_000).is_some_and(|completion| completion.completion_code == crate::ring::COMPLETION_SUCCESS && completion.slot == enable.slot) && fetch_first_configuration(mmio, irq, &mut device, enable.slot) { return Some(device); }
+                                    if irq.wait_command_completion(evaluate_pa, 1_000_000_000).is_some_and(|completion| completion.completion_code == crate::ring::COMPLETION_SUCCESS && completion.slot == enable.slot) && fetch_first_configuration(mmio, irq, &mut device, enable.slot) && configure_hid_endpoint(mmio, command, irq, &mut device, enable.slot) { return Some(device); }
                                 }
                             }
                         }

@@ -14,6 +14,9 @@ const EP0_AVERAGE_TRB: u32 = 8;
 const EP0_FLAG: u32 = 1 << 1;
 const EP_STATE_MASK: u32 = 0x7;
 const MAX_PACKET_MASK: u32 = 0xffff << 16;
+const SLOT_CONTEXT_ENTRIES_MASK: u32 = 0x1f << 27;
+const EP_ERROR_COUNT: u32 = 3 << 1;
+const EP_TYPE_INTERRUPT_IN: u32 = 7 << 3;
 
 /// One dword in a controller input-context DMA region. # C: O(1)
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -68,6 +71,39 @@ pub fn evaluate_ep0_words(context_bytes: u8, output_ep0: [u32; 5], max_packet: u
     Some(words)
 }
 
+/// Linux-shaped Configure Endpoint context for one HID interrupt-IN endpoint. # C: O(1)
+pub fn configure_hid_words(context_bytes: u8, output_slot: [u32; 8], speed: u8, hid: crate::usb::HidBootInterface, ring_pa: u64) -> Option<[ContextWord; 15]> {
+    let stride = context_bytes as usize;
+    let number = hid.endpoint & 0x0f;
+    if !matches!(stride, 32 | 64) || number == 0 || hid.endpoint & 0x80 == 0 || ring_pa & 0xf != 0 { return None; }
+    let endpoint_id = number.checked_mul(2)?.checked_add(1)?;
+    let interval = match speed {
+        1 | 2 => {
+            let frames = u16::from(hid.interval).checked_mul(8)?;
+            let exponent = 15 - frames.leading_zeros() as u8;
+            exponent.clamp(3, 10)
+        }
+        3 => hid.interval.checked_sub(1)?,
+        _ => return None,
+    };
+    let slot = SLOT_CONTEXT * stride;
+    let endpoint = endpoint_id as usize * stride;
+    let mut slot0 = output_slot[0] & !SLOT_CONTEXT_ENTRIES_MASK;
+    slot0 |= u32::from(endpoint_id) << 27;
+    Some([
+        ContextWord { offset: 0, value: 0 },
+        ContextWord { offset: 4, value: 1 | (1 << endpoint_id) },
+        ContextWord { offset: slot, value: slot0 }, ContextWord { offset: slot + 4, value: output_slot[1] },
+        ContextWord { offset: slot + 8, value: output_slot[2] }, ContextWord { offset: slot + 12, value: output_slot[3] },
+        ContextWord { offset: slot + 16, value: output_slot[4] }, ContextWord { offset: slot + 20, value: output_slot[5] },
+        ContextWord { offset: slot + 24, value: output_slot[6] }, ContextWord { offset: slot + 28, value: output_slot[7] },
+        ContextWord { offset: endpoint, value: u32::from(interval) << 16 },
+        ContextWord { offset: endpoint + 4, value: EP_ERROR_COUNT | EP_TYPE_INTERRUPT_IN | (u32::from(hid.max_packet) << 16) },
+        ContextWord { offset: endpoint + 8, value: ring_pa as u32 | 1 }, ContextWord { offset: endpoint + 12, value: (ring_pa >> 32) as u32 },
+        ContextWord { offset: endpoint + 16, value: u32::from(hid.max_packet) | (u32::from(hid.max_packet) << 16) },
+    ])
+}
+
 fn put32(bytes: &mut [u8], offset: usize, value: u32) { bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes()); }
 
 #[cfg(test)]
@@ -104,5 +140,14 @@ mod tests {
         assert_eq!(words[3], ContextWord { offset: 132, value: 0x0008_0026 });
         assert_eq!(words[4], ContextWord { offset: 136, value: 0x8001 });
         assert!(evaluate_ep0_words(32, [0; 5], 7).is_none());
+    }
+    #[test]
+    fn hid_context_uses_xhci_endpoint_id_and_linux_interval_encoding() {
+        let hid = crate::usb::HidBootInterface { configuration: 1, interface: 0, protocol: 1, endpoint: 0x81, max_packet: 8, interval: 10 };
+        let words = configure_hid_words(64, [3, 4, 5, 6, 7, 8, 9, 10], 1, hid, 0x90_000).unwrap();
+        assert_eq!(words[1], ContextWord { offset: 4, value: 1 | (1 << 3) });
+        assert_eq!(words[2], ContextWord { offset: 64, value: (3 << 27) | 3 });
+        assert_eq!(words[10], ContextWord { offset: 192, value: 6 << 16 });
+        assert_eq!(words[11], ContextWord { offset: 196, value: EP_ERROR_COUNT | EP_TYPE_INTERRUPT_IN | (8 << 16) });
     }
 }
