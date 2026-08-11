@@ -1,4 +1,4 @@
-use crate::{AmdViDomain, AmdViRegisters, AmdViTables, AmdViUnit};
+use crate::{AmdViDomain, AmdViRegisters, AmdViTables, AmdViUnit, Mapping};
 use pci::Bdf;
 
 /// Boot-owned AMD-Vi unit state; domains are attached before translation may enable.
@@ -36,6 +36,13 @@ impl AmdViBootstrap {
         (unsafe { self.unit.wait_for_invalidations(&self.regs, &self.tables, self.hhdm_offset) })
             && self.unit.domains_attached_after_drain()
             && self.unit.enable_translation(&self.regs)
+    }
+    /// Invalidate one changed DMA interval and wait until the command engine consumed it. # C: O(poll limit)
+    pub fn invalidate_mapping(&mut self, map: Mapping, domain_id: u16) -> bool {
+        let Some(last) = map.iova.end().checked_sub(pci::IOVA_PAGE_SIZE) else { return false; };
+        // SAFETY: this enabled unit owns the serialized command ring and the supplied mapping belongs to its domain.
+        (unsafe { self.unit.invalidate_iova_pages(&self.regs, &self.tables, self.hhdm_offset, domain_id, map.iova.start, last, true) })
+            && unsafe { self.unit.wait_for_invalidations(&self.regs, &self.tables, self.hhdm_offset) }
     }
     /// Segment this unit owns. # C: O(1)
     pub const fn segment(&self) -> u16 { self.unit.segment }

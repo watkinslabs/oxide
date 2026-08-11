@@ -294,7 +294,7 @@ impl AmdViUnit {
     }
     /// Wait for every queued invalidation to reach the command-ring head. # C: O(poll limit)
     pub unsafe fn wait_for_invalidations(&self, regs: &AmdViRegisters, tables: &AmdViTables, hhdm_offset: u64) -> bool {
-        if self.state != AmdViState::TablesProgrammed { return false; }
+        if self.state != AmdViState::TablesProgrammed && self.state != AmdViState::Enabled { return false; }
         // SAFETY: caller owns this disabled unit and its permanent completion record.
         unsafe { tables.wait_for_completion(regs, hhdm_offset) }
     }

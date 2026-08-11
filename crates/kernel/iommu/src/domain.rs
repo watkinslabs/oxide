@@ -78,13 +78,20 @@ impl AmdViDomain {
         }
         true
     }
-    /// Retire a mapped IOVA only after its hardware invalidation completed. # C: O(pages * levels)
+    /// Remove leaf PTEs while retaining IOVA ownership until hardware invalidation completes. # C: O(pages * levels)
+    pub fn remove_for_invalidate(&mut self, map: Mapping) -> bool {
+        if !self.maps.iter().any(|candidate| *candidate == map) { return false; }
+        self.page_table.unmap(map.iova.start, map.iova.len)
+    }
+    /// Return an invalidated mapping interval to the domain allocator. # C: O(N)
     pub fn release_after_invalidate(&mut self, map: Mapping) -> bool {
         let Some(index) = self.maps.iter().position(|candidate| *candidate == map) else { return false; };
-        if !self.page_table.unmap(map.iova.start, map.iova.len) || !self.space.free(map.iova) { return false; }
+        if !self.space.free(map.iova) { return false; }
         self.maps.swap_remove(index);
         true
     }
+    /// Find a live mapping by its page-aligned device address. # C: O(live mappings)
+    pub fn mapping(&self, iova: u64) -> Option<Mapping> { self.maps.iter().copied().find(|candidate| candidate.iova.start == iova) }
 }
 
 /// Return the AMD-Vi translation unit that firmware assigned this PCI requester.

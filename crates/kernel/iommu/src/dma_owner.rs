@@ -3,12 +3,7 @@ use alloc::vec::Vec;
 use pci::Bdf;
 use sync::{Devices, Spinlock};
 
-/// One live DMA mapping through the boot identity domain.
-///
-/// The address is intentionally retained as an IOVA rather than treated as a
-/// bare physical address.  The initial domains are identity mapped, but this
-/// ownership record is the common ABI boundary for a later non-identity IOVA
-/// allocator and prevents one PCI requester from unmapping another's DMA.
+/// One live DMA mapping owned by the requester and selected IOMMU backend.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 struct Mapping { requester: Bdf, iova: u64, pa: u64, len: usize }
 
@@ -24,7 +19,8 @@ static MAPPINGS: Spinlock<Vec<Mapping>, Devices> = Spinlock::new(Vec::new());
 pub fn map_dma(requester: Bdf, pa: u64, len: usize) -> Option<u64> {
     if len == 0 || !super::bus_master_admitted(requester) { return None; }
     let _ = pa.checked_add(len as u64 - 1)?;
-    let mapping = Mapping { requester, iova: pa, pa, len };
+    let iova = if super::amd_vi_manager::owns(requester) { super::amd_vi_manager::map_dma(requester, pa, len)? } else { pa };
+    let mapping = Mapping { requester, iova, pa, len };
     MAPPINGS.lock().push(mapping);
     Some(mapping.iova)
 }
@@ -33,9 +29,14 @@ pub fn map_dma(requester: Bdf, pa: u64, len: usize) -> Option<u64> {
 /// # C: O(live mappings)
 pub fn unmap_dma(requester: Bdf, iova: u64, len: usize) -> bool {
     if len == 0 { return false; }
+    let mapping = {
+        let mappings = MAPPINGS.lock();
+        mappings.iter().copied().find(|mapping| mapping.requester == requester && mapping.iova == iova && mapping.len == len)
+    };
+    let Some(mapping) = mapping else { return false; };
+    if super::amd_vi_manager::owns(requester) && !super::amd_vi_manager::unmap_dma(requester, iova, len) { return false; }
     let mut mappings = MAPPINGS.lock();
-    let Some(index) = mappings.iter().position(|mapping|
-        mapping.requester == requester && mapping.iova == iova && mapping.len == len) else { return false; };
+    let Some(index) = mappings.iter().position(|candidate| *candidate == mapping) else { return false; };
     mappings.swap_remove(index);
     true
 }
