@@ -74,6 +74,7 @@ impl WaitList {
     ///
     /// This is for a caller that owns the completion rule itself (for example,
     /// a private deadline sleep) and therefore publishes before it schedules.
+    /// # C: O(N armed)
     pub unsafe fn prepare_to_wait_with_deadline(&self, deadline_ns: u64) {
         // SAFETY: forwards the prepared-wait contract with the absolute
         // deadline retained for the scheduler deadline scanner.
