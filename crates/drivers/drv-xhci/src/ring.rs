@@ -20,6 +20,7 @@ pub const TRB_TYPE_ENABLE_SLOT: u32 = 9;
 pub const TRB_TYPE_DISABLE_SLOT: u32 = 10;
 /// Address Device Command TRB type. # C: O(1)
 pub const TRB_TYPE_ADDRESS_DEVICE: u32 = 11;
+pub const TRB_TYPE_CONFIGURE_ENDPOINT: u32 = 12;
 pub const TRB_TYPE_EVALUATE_CONTEXT: u32 = 13;
 /// Command Completion Event TRB type. # C: O(1)
 pub const TRB_TYPE_COMMAND_COMPLETION: u32 = 33;
@@ -68,6 +69,11 @@ impl Trb {
     pub fn evaluate_context(input_context_pa: u64, slot: u8) -> Option<Self> {
         if input_context_pa & 0xf != 0 || slot == 0 { return None; }
         Some(Self { dword: [input_context_pa as u32, (input_context_pa >> 32) as u32, 0, (TRB_TYPE_EVALUATE_CONTEXT << TRB_TYPE_SHIFT) | ((slot as u32) << 24)] })
+    }
+    /// Build a Configure Endpoint command for one enabled slot. # C: O(1)
+    pub fn configure_endpoint(input_context_pa: u64, slot: u8) -> Option<Self> {
+        if input_context_pa & 0xf != 0 || slot == 0 { return None; }
+        Some(Self { dword: [input_context_pa as u32, (input_context_pa >> 32) as u32, 0, (TRB_TYPE_CONFIGURE_ENDPOINT << TRB_TYPE_SHIFT) | ((slot as u32) << 24)] })
     }
 
     /// Decode a command-completion event, preserving the command TRB address. # C: O(1)
@@ -218,6 +224,7 @@ mod tests {
         assert_eq!(address.dword, [0x48_000, 0, 0, (TRB_TYPE_ADDRESS_DEVICE << TRB_TYPE_SHIFT) | (2 << 24)]);
         assert!(Trb::address_device(0x48_004, 2, false).is_none());
         assert_eq!(Trb::evaluate_context(0x48_000, 2).unwrap().dword[3], (TRB_TYPE_EVALUATE_CONTEXT << TRB_TYPE_SHIFT) | (2 << 24));
+        assert_eq!(Trb::configure_endpoint(0x48_000, 2).unwrap().dword[3], (TRB_TYPE_CONFIGURE_ENDPOINT << TRB_TYPE_SHIFT) | (2 << 24));
         let completion = Trb { dword: [0x20_000, 0, (COMPLETION_SUCCESS as u32) << 24, (TRB_TYPE_COMMAND_COMPLETION << TRB_TYPE_SHIFT) | (2 << 24)] };
         assert_eq!(completion.command_completion(), Some(CommandCompletion { command_pa: 0x20_000, completion_code: COMPLETION_SUCCESS, slot: 2 }));
     }

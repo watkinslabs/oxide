@@ -10,7 +10,7 @@ use crate::platform::Mmio;
 use crate::ring::{CommandRing, Trb, TRB_BYTES, TRBS_PER_SEGMENT};
 
 /// Input context, output device context, and endpoint-zero transfer ring.
-pub struct AddressDeviceDma { input: DmaPage, output: DmaPage, ep0: DmaPage, descriptor: DmaPage, context_bytes: u8, _hid: Option<crate::usb::HidBootInterface>, ep0_ring: CommandRing }
+pub struct AddressDeviceDma { input: DmaPage, output: DmaPage, ep0: DmaPage, descriptor: DmaPage, context_bytes: u8, speed: u8, _hid: Option<crate::usb::HidBootInterface>, hid_ring: Option<DmaPage>, ep0_ring: CommandRing }
 
 impl AddressDeviceDma {
     /// Allocate and construct every DMA object required by Address Device. # C: O(page bytes)
@@ -19,6 +19,7 @@ impl AddressDeviceDma {
         let output = DmaPage::allocate()?;
         let ep0 = DmaPage::allocate()?;
         let descriptor = DmaPage::allocate()?;
+        let speed = ((portsc & crate::ports::PORT_SPEED_MASK) >> 10) as u8;
         let words = context::address_device_words(context_bytes, port, portsc, ep0.pa())?;
         for word in words { if !input.write32(word.offset as u64, word.value) { return None; } }
         let link = Trb::link(ep0.pa(), true)?;
@@ -27,7 +28,7 @@ impl AddressDeviceDma {
         }
         input.clean_to_device(); output.clean_to_device(); ep0.clean_to_device();
         let ep0_ring = CommandRing::new(ep0.pa())?;
-        Some(Self { input, output, ep0, descriptor, context_bytes, _hid: None, ep0_ring })
+        Some(Self { input, output, ep0, descriptor, context_bytes, speed, _hid: None, hid_ring: None, ep0_ring })
     }
 
     /// Input-context physical address for Address Device. # C: O(1)
@@ -59,6 +60,24 @@ impl AddressDeviceDma {
         let hid = crate::usb::hid_boot_interface(&bytes)?;
         self._hid = Some(hid);
         Some(hid)
+    }
+    /// Build a retained interrupt-IN ring and Configure Endpoint input context. # C: O(page bytes)
+    pub fn prepare_hid_endpoint(&mut self) -> Option<bool> {
+        let Some(hid) = self._hid else { return Some(false); };
+        let ring = DmaPage::allocate()?;
+        let link = Trb::link(ring.pa(), true)?;
+        for (word, value) in link.dword.iter().enumerate() {
+            if !ring.write32(((TRBS_PER_SEGMENT - 1) * TRB_BYTES + word * 4) as u64, *value) { return None; }
+        }
+        self.output.invalidate_from_device();
+        let stride = self.context_bytes as u64;
+        let mut output_slot = [0u32; 8];
+        for (index, word) in output_slot.iter_mut().enumerate() { *word = self.output.read32(stride + (index * 4) as u64)?; }
+        let words = context::configure_hid_words(self.context_bytes, output_slot, self.speed, hid, ring.pa())?;
+        for word in words { if !self.input.write32(word.offset as u64, word.value) { return None; } }
+        ring.clean_to_device(); self.input.clean_to_device();
+        self.hid_ring = Some(ring);
+        Some(true)
     }
     /// Rebuild the input context from controller output for Linux's EP0 MPS update. # C: O(1)
     pub fn prepare_evaluate_ep0(&self, max_packet: u8) -> Option<bool> {
