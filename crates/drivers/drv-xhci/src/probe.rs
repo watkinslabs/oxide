@@ -168,13 +168,13 @@ fn arm_hid_interrupt_in(mmio: &Mmio, device: &mut AddressDeviceDma, slot: u8) ->
     device.hid_configuration().is_none() || device.submit_hid_report(mmio, slot).is_some()
 }
 
-fn address_first_usb2(mmio: &Mmio, command: &mut CommandTransport, dcbaa: &DmaPage, irq: Binding) -> Option<AddressDeviceDma> {
+fn address_first_device(mmio: &Mmio, command: &mut CommandTransport, dcbaa: &DmaPage, irq: Binding) -> Option<AddressDeviceDma> {
     for port in 1..=mmio.geometry().max_ports {
         let Some(protocol) = mmio.protocol_for_port(port) else { continue; };
         let Some(status) = mmio.port_status(port) else { continue; };
-        // SuperSpeed ports require the separate warm-reset sequence.
-        if !protocol.is_usb2() || status & crate::ports::PORT_CONNECT == 0 { continue; }
-        if !mmio.reset_usb2_port(port) { continue; }
+        if status & crate::ports::PORT_CONNECT == 0 { continue; }
+        if protocol.is_usb2() { if !mmio.reset_usb2_port(port) { continue; } }
+        else if !mmio.reset_usb3_port(port) { continue; }
         let Some(portsc) = mmio.port_status(port) else { continue; };
         let enable_pa = command.submit(mmio, Trb::enable_slot())?;
         let enable = irq.wait_command_completion(enable_pa, 1_000_000_000)?;
@@ -235,7 +235,7 @@ impl drv::Driver for XhciDriver {
             restore_bus_master(bdf, command_orig);
             return Err(drv::Error::ProbeFailed);
         }
-        let device = address_first_usb2(&mmio, &mut command, &dcbaa, irq);
+        let device = address_first_device(&mmio, &mut command, &dcbaa, irq);
         let slot = device.as_ref().map_or(0, AddressDeviceDma::slot);
         let protocol = device.as_ref().and_then(AddressDeviceDma::hid_protocol);
         let evdev = install_hid_input(bdf, protocol);

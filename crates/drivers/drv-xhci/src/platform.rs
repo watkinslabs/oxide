@@ -260,6 +260,24 @@ impl Mmio {
         }
     }
 
+    /// Warm-reset a connected USB3 root-hub port and acknowledge completion. # C: O(reset timeout)
+    pub fn reset_usb3_port(&self, port: u8) -> bool {
+        let Some(offset) = crate::ports::portsc_offset(self.geometry.operational, port, self.geometry.max_ports)
+            .filter(|offset| offset.checked_add(4).is_some_and(|end| end <= self.bytes)) else { return false; };
+        let Some(portsc) = self.read32(offset) else { return false; };
+        if portsc & crate::ports::PORT_CONNECT == 0 || !self.write32(offset, crate::ports::warm_reset_request(portsc)) { return false; }
+        let deadline = sched::deadline::clock::now_ns().saturating_add(100_000_000);
+        loop {
+            let Some(portsc) = self.read32(offset) else { return false; };
+            if portsc == u32::MAX { return false; }
+            if crate::ports::warm_reset_completed(portsc) {
+                return self.write32(offset, crate::ports::PORT_WARM_RESET_CHANGE);
+            }
+            if sched::deadline::clock::now_ns() >= deadline { return false; }
+            core::hint::spin_loop();
+        }
+    }
+
     /// Read one validated root-hub PORTSC register. # C: O(1)
     pub fn port_status(&self, port: u8) -> Option<u32> {
         let offset = crate::ports::portsc_offset(self.geometry.operational, port, self.geometry.max_ports)?;
