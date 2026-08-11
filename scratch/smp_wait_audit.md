@@ -1,5 +1,10 @@
 # B2059 SMP wait audit
 
+The per-publication review record is
+[`smp_wait_publication_ledger.md`](smp_wait_publication_ledger.md). It records
+the reproducible baseline and the final contract for every source publication;
+this file is only the closure summary.
+
 | Class | Contract | Current audit result |
 |---|---|---|
 | Generic predicate | enqueue, recheck predicate, sleep, recheck, finish | FIFO open rendezvous, FUSE replies/daemon queue, autofs completion, userfault queues, pipe core-dump reader wait, splice input/output, netlink receive/retry, SQPOLL park request, IO-wq worker work/deadline, AHCI/virtio-blk/IRQ-thread/vfork completion, kswapd requests, namespace/socket reapers, CRNG readiness, syslog reader and VT activation wait are converted in B2059. Vfork uses a child-keyed completion queue, so one child departure does not wake unrelated parents. |
