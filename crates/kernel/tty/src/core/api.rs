@@ -150,7 +150,23 @@ pub trait TtyDriver {
     /// without `&mut self` — a global UART — can offer one; `None` (the default)
     /// keeps inline behaviour, which is what VT and test drivers want.
     /// # C: O(1)
-    fn detached_sink() -> Option<fn(&[u8])> { None }
+    fn detached_sink() -> Option<DetachedSink> { None }
+}
+
+/// A device endpoint that can emit buffered TTY output after the port lock is
+/// released. `context` keeps the endpoint instance-specific without retaining
+/// a borrow of the driver state across the IRQ-safe critical section.
+#[derive(Clone, Copy)]
+pub struct DetachedSink {
+    context: u8,
+    emit: fn(u8, &[u8]),
+}
+
+impl DetachedSink {
+    /// Build one post-port-lock output endpoint. # C: O(1)
+    pub const fn new(context: u8, emit: fn(u8, &[u8])) -> Self { Self { context, emit } }
+    /// Emit bytes after the port lock has been released. # C: O(N) bytes
+    pub fn emit(self, bytes: &[u8]) { (self.emit)(self.context, bytes); }
 }
 
 /// `TtyDriverHooks` (the ldisc's view of the device) for any `TtyDriver`.

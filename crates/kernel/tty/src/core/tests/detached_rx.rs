@@ -3,12 +3,14 @@ use std::sync::Mutex;
 use std::vec::Vec;
 
 use super::{TtyDriver, TtyStruct};
+use crate::core::DetachedSink;
 use crate::ldisc::Sig;
 use crate::wait::TtyWait;
 
 static DOMAIN: Mutex<()> = Mutex::new(());
 static IRQ_DEPTH: AtomicUsize = AtomicUsize::new(0);
 static INLINE_CALLS: AtomicUsize = AtomicUsize::new(0);
+static CONTEXT: AtomicUsize = AtomicUsize::new(0);
 static OUTPUT: Mutex<(usize, Vec<u8>)> = Mutex::new((0, Vec::new()));
 
 struct ProbeIrq;
@@ -31,8 +33,9 @@ impl TtyWait for ProbeWait {
 
 struct ProbeDriver;
 
-fn detached(bytes: &[u8]) {
+fn detached(context: u8, bytes: &[u8]) {
     assert_eq!(IRQ_DEPTH.load(Ordering::SeqCst), 0, "detached RX sink ran with IRQs masked");
+    CONTEXT.store(context as usize, Ordering::SeqCst);
     let mut out = OUTPUT.lock().unwrap();
     out.0 += 1;
     out.1.extend_from_slice(bytes);
@@ -43,7 +46,7 @@ impl TtyDriver for ProbeDriver {
         INLINE_CALLS.fetch_add(1, Ordering::SeqCst);
     }
     fn signal_fg_pgrp(&mut self, _sig: Sig) {}
-    fn detached_sink() -> Option<fn(&[u8])> { Some(detached) }
+    fn detached_sink() -> Option<DetachedSink> { Some(DetachedSink::new(0, detached)) }
 }
 
 #[test]
@@ -51,6 +54,7 @@ fn rx_echo_uses_one_detached_emit_after_irq_restore() {
     let _domain = DOMAIN.lock().unwrap();
     IRQ_DEPTH.store(0, Ordering::SeqCst);
     INLINE_CALLS.store(0, Ordering::SeqCst);
+    CONTEXT.store(0, Ordering::SeqCst);
     *OUTPUT.lock().unwrap() = (0, Vec::new());
 
     let tty = TtyStruct::new(ProbeDriver, ProbeWait);
@@ -60,5 +64,24 @@ fn rx_echo_uses_one_detached_emit_after_irq_restore() {
     assert_eq!(INLINE_CALLS.load(Ordering::SeqCst), 0);
     assert_eq!(out.0, 1);
     assert_eq!(&out.1, b"hi\r\n");
+    assert_eq!(IRQ_DEPTH.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn detached_write_keeps_the_device_context_after_irq_restore() {
+    let _domain = DOMAIN.lock().unwrap();
+    IRQ_DEPTH.store(0, Ordering::SeqCst);
+    INLINE_CALLS.store(0, Ordering::SeqCst);
+    CONTEXT.store(0, Ordering::SeqCst);
+    *OUTPUT.lock().unwrap() = (0, Vec::new());
+
+    let tty = TtyStruct::new_with_sink(ProbeDriver, ProbeWait,
+        Some(DetachedSink::new(7, detached)));
+    assert_eq!(tty.write(b"vt\n"), 3);
+
+    let out = OUTPUT.lock().unwrap();
+    assert_eq!(INLINE_CALLS.load(Ordering::SeqCst), 0);
+    assert_eq!(CONTEXT.load(Ordering::SeqCst), 7);
+    assert_eq!(&out.1, b"vt\r\n");
     assert_eq!(IRQ_DEPTH.load(Ordering::SeqCst), 0);
 }
