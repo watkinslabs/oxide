@@ -35,8 +35,8 @@ impl Ahci {
                 regs::cmd_header_dw0(CFL_DWORDS, write, prdtl),
             );
             core::ptr::write_volatile(clb_va.add(1), 0);
-            core::ptr::write_volatile(clb_va.add(2), self.ctba_pa as u32);
-            core::ptr::write_volatile(clb_va.add(3), (self.ctba_pa >> 32) as u32);
+            core::ptr::write_volatile(clb_va.add(2), self.ctba_dma as u32);
+            core::ptr::write_volatile(clb_va.add(3), (self.ctba_dma >> 32) as u32);
             for i in 4..8 { core::ptr::write_volatile(clb_va.add(i), 0); }
         }
 
@@ -50,8 +50,8 @@ impl Ahci {
             }
             if prdtl != 0 {
                 let prdt = ct_va.add(CT_PRDT_OFF) as *mut u32;
-                core::ptr::write_volatile(prdt.add(0), self.data_pa as u32);
-                core::ptr::write_volatile(prdt.add(1), (self.data_pa >> 32) as u32);
+                core::ptr::write_volatile(prdt.add(0), self.data_dma as u32);
+                core::ptr::write_volatile(prdt.add(1), (self.data_dma >> 32) as u32);
                 core::ptr::write_volatile(prdt.add(2), 0);
                 let ioc = if interrupt { PRDT_INTERRUPT_ON_COMPLETION } else { 0 };
                 core::ptr::write_volatile(
