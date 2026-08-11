@@ -1,24 +1,7 @@
-extern crate alloc;
-use alloc::collections::BTreeMap;
-use alloc::sync::Arc;
+use super::{schedule, KeyedWaitQueues};
 
-use sync::{Spinlock, TaskList as WaitClass};
-
-use super::{schedule, WaitList};
-
-struct Waiters {
-    readers: Arc<WaitList>,
-    writers: Arc<WaitList>,
-}
-
-static WAITERS: Spinlock<BTreeMap<usize, Arc<Waiters>>, WaitClass> = Spinlock::new(BTreeMap::new());
-
-fn waiters_for(key: usize) -> Arc<Waiters> {
-    let mut waiters = WAITERS.lock();
-    waiters.entry(key).or_insert_with(|| Arc::new(Waiters {
-        readers: Arc::new(WaitList::new()), writers: Arc::new(WaitList::new()),
-    })).clone()
-}
+/// `false` is the reader FIFO, `true` the writer FIFO.
+static WAITERS: KeyedWaitQueues<(usize, bool)> = KeyedWaitQueues::new();
 
 /// Register current while VFS holds the rwsem registration gate. # C: O(log N)
 pub fn park(key: usize) {
@@ -27,18 +10,12 @@ pub fn park(key: usize) {
 
 /// Register a rwsem reader while its registration gate is held. # C: O(log N)
 pub fn park_reader(key: usize) {
-    let wait = waiters_for(key);
-    // SAFETY: VFS immediately drops its registration gate and calls schedule_after_park.
-    // The interruptible form closes signal-before-sleep: a pending unmasked
-    // signal changes Sleeping back to Runnable before schedule can switch away.
-    unsafe { wait.readers.prepare_to_wait_interruptible(); }
+    WAITERS.prepare_interruptible((key, false));
 }
 
 /// Register a rwsem writer while its registration gate is held. # C: O(log N)
 pub fn park_writer(key: usize) {
-    let wait = waiters_for(key);
-    // SAFETY: rwsem immediately drops its registration gate and schedules.
-    unsafe { wait.writers.prepare_to_wait_interruptible(); }
+    WAITERS.prepare_interruptible((key, true));
 }
 
 /// Register a rwsem waiter in its reader or writer FIFO. # C: O(log N)
@@ -54,37 +31,16 @@ pub fn schedule_after_park() {
 
 /// Wake all tasks waiting for this inode state transition. # C: O(N_waiters)
 pub fn wake(key: usize) {
-    let waiters = { WAITERS.lock().get(&key).cloned() };
-    let Some(waiters) = waiters else { return };
-    waiters.readers.wake_all();
-    waiters.writers.wake_all();
-    prune(key, &waiters);
+    WAITERS.wake_all((key, false));
+    WAITERS.wake_all((key, true));
 }
 
 /// Wake a rwsem's next writer, or its blocked reader batch when no writer
 /// remains. The rwsem holds its registration gate across this choice.
 /// # C: O(N_readers) in a reader phase, O(1) in a writer phase
 pub fn wake_rwsem(key: usize, writers_waiting: bool) {
-    let waiters = { WAITERS.lock().get(&key).cloned() };
-    let Some(waiters) = waiters else { return };
-    if writers_waiting { waiters.writers.wake_one(); } else { waiters.readers.wake_all(); }
-    prune(key, &waiters);
-}
-
-fn prune(key: usize, wait: &Arc<Waiters>) {
-
-    // Do not retain an unbounded map of one-shot inode identities. Holding the
-    // map lock prevents a new registrar from selecting a replacement list
-    // while this entry is evaluated. A registrar that already holds `wait`
-    // keeps its Arc count above map+this local reference until it has either
-    // published itself or finished, so removing cannot lose its wakeup.
-    let mut waiters = WAITERS.lock();
-    let mapped = waiters.get(&key).is_some_and(|mapped| Arc::ptr_eq(mapped, wait));
-    if mapped && !wait.readers.has_waiters() && !wait.writers.has_waiters()
-        && Arc::strong_count(wait) == 2
-    {
-        waiters.remove(&key);
-    }
+    if writers_waiting { WAITERS.wake_one((key, true)); }
+    else { WAITERS.wake_all((key, false)); }
 }
 
 #[cfg(test)]
@@ -95,10 +51,9 @@ mod tests {
 
     #[test]
     fn wake_prunes_an_empty_keyed_wait_list() {
-        WAITERS.lock().insert(EMPTY_KEY, Arc::new(Waiters {
-            readers: Arc::new(WaitList::new()), writers: Arc::new(WaitList::new()),
-        }));
+        let before = WAITERS.queue_count();
+        WAITERS.prepare((EMPTY_KEY, false));
         wake(EMPTY_KEY);
-        assert!(!WAITERS.lock().contains_key(&EMPTY_KEY));
+        assert_eq!(WAITERS.queue_count(), before);
     }
 }

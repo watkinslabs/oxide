@@ -5,27 +5,14 @@
 //! replacement PTE first and wakes by token; every woken path restarts and
 //! revalidates the PTE instead of interpreting a migration marker as swap.
 
-extern crate alloc;
+use super::{schedule, KeyedWaitQueues};
 
-use alloc::collections::BTreeMap;
-use alloc::sync::Arc;
-use sync::{Spinlock, TaskList as WaitClass};
-
-use super::{schedule, WaitList};
-
-static WAITERS: Spinlock<BTreeMap<u64, Arc<WaitList>>, WaitClass> = Spinlock::new(BTreeMap::new());
-
-fn wait_list(token: u64) -> Arc<WaitList> {
-    let mut waiters = WAITERS.lock();
-    waiters.entry(token).or_insert_with(|| Arc::new(WaitList::new())).clone()
-}
+static WAITERS: KeyedWaitQueues<u64> = KeyedWaitQueues::new();
 
 /// Register current on `token`. Caller holds the VMM token lock, which closes
 /// the completion-before-park race; no VM or page-table lock may be held.
 pub fn park(token: u64) {
-    let wait = wait_list(token);
-    // SAFETY: fault/fork caller schedules immediately after registration.
-    unsafe { wait.prepare_to_wait(); }
+    WAITERS.prepare(token);
 }
 
 /// Sleep after [`park`], then revalidate and restart the operation. # C: sleeps
@@ -41,12 +28,11 @@ pub fn wake(token: u64) {
     // registration after it flips pending=false.  Remove this strong map
     // owner before waking; WaitList itself retains each parked task until it
     // is consumed, so no waiter can be lost and completed tokens cannot leak.
-    let wait = { WAITERS.lock().remove(&token) };
-    if let Some(wait) = wait { wait.wake_all(); }
+    WAITERS.take_and_wake_all(token);
 }
 
 #[cfg(test)]
-pub(crate) fn queue_count() -> usize { WAITERS.lock().len() }
+pub(crate) fn queue_count() -> usize { WAITERS.queue_count() }
 
 #[cfg(test)]
 mod tests {

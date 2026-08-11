@@ -32,10 +32,17 @@ mod exit;
 pub use exit::{exit, has_exited, note_kthread_exited, result, stop_and_join};
 
 use crate::Task;
-use super::WaitList;
+use super::{WaitList, wait_event_uninterruptible};
 
 /// Parked kthreads wait here; `unpark` wakes them.
 static PARK_WAIT: WaitList = WaitList::new();
+
+/// Completion-style rendezvous for callers of [`park`].  Linux
+/// `kthread_park()` does not merely publish `KTHREAD_SHOULD_PARK`: it wakes
+/// the target and waits until the target has entered `TASK_PARKED`.  Keep that
+/// acknowledgement separate from the target's sleep queue so the requester's
+/// wait cannot consume the unpark wake.
+static PARKED_WAIT: WaitList = WaitList::new();
 
 /// Gate serializing `park_if_requested`'s check-then-enqueue against
 /// `unpark`/`stop`'s clear-then-wake (B1427). Without it: the kthread reads
@@ -56,13 +63,11 @@ static PARK_GATE: Spinlock<(), ParkGateClass> = Spinlock::new(());
 /// # C: O(1)
 pub fn should_stop(me: &Task) -> bool { me.kthread_stop.load(Ordering::Acquire) }
 
-/// Linux `kthread_stop`: ask `task` to exit and wake it so it notices.
-///
-/// Returns immediately — this is a request, not a join. A caller that needs to
-/// know the thread is gone waits on the thread's own completion signal, exactly
-/// as Linux callers do when `kthread_stop`'s return value is not enough.
+/// Publish the stop half of Linux `kthread_stop`: ask `task` to exit and wake
+/// it so it notices.  Kept internal because the public Linux operation also
+/// joins and returns the thread's result.
 /// # C: O(1)
-pub fn stop(task: &Arc<Task>) {
+fn request_stop(task: &Arc<Task>) {
     task.kthread_stop.store(true, Ordering::Release);
     // Also clear any park request: a thread asked to stop must not sit parked
     // waiting for an unpark that will never come.
@@ -76,13 +81,45 @@ pub fn stop(task: &Arc<Task>) {
     unsafe { let _ = super::try_to_wake_up(Arc::clone(task)); }
 }
 
+/// Linux `kthread_stop`: request exit, wait for the target's post-switch
+/// completion, and return its exit result.
+///
+/// # SAFETY: process or kthread context; the caller is not `task` and holds
+/// no lock the target needs while it reaches its stop point.
+/// # C: O(1) + completion wait
+/// # Sleeps: until the target exits
+pub unsafe fn stop(task: &Arc<Task>) -> i32 {
+    // SAFETY: forwarded public contract.
+    unsafe { stop_and_join(task) }
+}
+
 /// Linux `kthread_park`: ask `task` to stand down at its next check.
 ///
 /// Used by CPU hotplug — a per-CPU kthread must leave its CPU without exiting,
 /// so it can resume when the CPU comes back.
-/// # C: O(1)
+/// # C: O(1) + completion wait
+/// # Sleeps: until the target reaches its safe parked point
 pub fn park(task: &Arc<Task>) {
     task.kthread_park.store(true, Ordering::Release);
+    // A running target must be kicked so it can observe the request at its
+    // next safe point; Linux's `kthread_park()` does the same `wake_up_process`
+    // before waiting on the `parked` completion.
+    unsafe { let _ = super::try_to_wake_up(Arc::clone(task)); }
+    // Hosted lifecycle tests have no installed runqueue and intentionally use
+    // this API only to inspect the request state.  A live kernel caller gets
+    // Linux's synchronous park contract below.
+    if super::runqueue::global().is_none()
+        || super::schedule::current().is_some_and(|cur| core::ptr::eq(cur, Arc::as_ptr(task)))
+    {
+        return;
+    }
+    // SAFETY: callers of kthread_park are process-context control paths and
+    // cannot be the target kthread; the target publishes `kthread_parked`
+    // before waking this completion list.
+    unsafe {
+        let _ = wait_event_uninterruptible(&PARKED_WAIT,
+            || task.kthread_parked.load(Ordering::Acquire) || has_exited(task));
+    }
 }
 
 /// Linux `kthread_unpark`: release a parked thread.
@@ -124,6 +161,10 @@ pub unsafe fn park_if_requested(me: &Task) {
         // the WaitList contract.
         unsafe { PARK_WAIT.prepare_to_wait(); }
         drop(gate);
+        // Completion is published only after the target is registered as a
+        // sleeper.  A caller which sees this acknowledgement can safely make
+        // the CPU/offline transition without racing a still-running target.
+        PARKED_WAIT.wake_all();
         // SAFETY: this kthread is parked on PARK_WAIT holding no lock, which
         // is `schedule`'s sleepable-context contract.
         unsafe { super::schedule(); }
@@ -150,7 +191,7 @@ mod tests {
     #[test]
     fn stop_is_observable_by_the_thread() {
         let t = kthread(7002);
-        stop(&t);
+        request_stop(&t);
         assert!(should_stop(&t), "the thread's own loop must see the request");
     }
 
@@ -161,7 +202,7 @@ mod tests {
         let t = kthread(7003);
         park(&t);
         assert!(t.kthread_park.load(Ordering::Acquire));
-        stop(&t);
+        request_stop(&t);
         assert!(!t.kthread_park.load(Ordering::Acquire), "stop must clear the park request");
         assert!(should_stop(&t));
     }

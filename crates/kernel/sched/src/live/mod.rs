@@ -51,6 +51,7 @@ pub mod sigpend;
 pub mod sb_freeze;
 pub mod quota_wait;
 pub mod inode_wait;
+pub mod keyed_wait;
 pub mod migration_wait;
 pub mod cpu_rlimit;
 pub mod tick_deadline;
@@ -63,7 +64,8 @@ pub mod keyring_hooks;
 pub mod wakelat;
 
 pub use chroot_refs::chroot_fs_refs;
-pub use ttwu::{try_to_wake_up, ttwu_deferred, select_task_rq, resched_curr, relocate_for_affinity};
+pub use ttwu::{try_to_wake_up, ttwu_deferred, select_task_rq, resched_curr, relocate_for_affinity,
+    update_affinity};
 
 pub use runqueue::{global, Runqueue};
 pub use schedule::{
@@ -82,8 +84,10 @@ pub use ksoftirqd::spawn_ksoftirqd;
 pub use wait_list::WaitList;
 pub use wait_event::{wait_event, wait_event_interruptible, wait_event_interruptible_until,
                      wait_event_killable, wait_event_uninterruptible,
+                     wait_event_uninterruptible_prepare,
                      wait_event_uninterruptible_until};
 pub use mutex::{Mutex, MutexGuard};
+pub use keyed_wait::KeyedWaitQueues;
 pub use kthread::{kthread_unuse_mm, kthread_use_mm, should_stop as kthread_should_stop,
     stop as kthread_stop_request, stop_and_join as kthread_stop, exit as kthread_exit};
 pub use workqueue::{queue_work, queue_work_on, WorkFn};

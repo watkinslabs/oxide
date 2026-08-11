@@ -161,6 +161,12 @@ fn open_core(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) -> i64 
 }
 
 fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) -> i64 {
+    // The generic `debug-startlat` record says which syscall was slow.  Keep
+    // the open-specific phase split here, beside the Linux-shaped
+    // `getname`/lookup/do_open equivalents, so a performance regression can
+    // be attributed without enabling per-open serial logging.
+    #[cfg(feature = "debug-startlat")]
+    let mut __openlat = crate::startlat::OpenAtSpan::start();
     let path_ptr = args.a1;
     let (flags, mode) = match normalize_open_flags(args.a2, args.a3, openat2) {
         Ok(x) => x, Err(rv) => return rv,
@@ -180,6 +186,8 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
         Err(rv) => return rv,
     };
     let s: &str = path.as_str();
+    #[cfg(feature = "debug-startlat")]
+    __openlat.copied();
     #[cfg(feature = "debug-zram-lifecycle")]
     crate::signal_trace::zram_lifecycle_openat(s, flags);
     #[cfg(feature = "debug-atexit")]
@@ -254,6 +262,8 @@ fn open_core_impl(args: &SyscallArgs, extra: vfs::LookupFlags, openat2: bool) ->
         }
     };
     let mut pty_allocation: Option<devpts::PtyAllocation> = None;
+    #[cfg(feature = "debug-startlat")]
+    __openlat.resolved();
     // O_TMPFILE short-circuits to anonymous inode creation. Each branch also
     // yields the mount identity the file was opened through.
     let (inode, mnt_id, dentry, created, _path_display) = if (flags & O_TMPFILE) != 0 {

@@ -29,6 +29,48 @@ fn now_ns() -> u64 {
     #[cfg(target_arch = "aarch64")] { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
 }
 
+/// A scoped breakdown of openat(2)'s three material phases.  The generic
+/// syscall record establishes that a call was expensive; this pinpoints
+/// whether copying the path, resolving it, or opening the resolved object was
+/// responsible.  It is deliberately compiled only with `debug-startlat`.
+pub struct OpenAtSpan {
+    start: u64,
+    copied: u64,
+    resolved: u64,
+}
+
+impl OpenAtSpan {
+    #[inline]
+    pub fn start() -> Self {
+        let start = now_ns();
+        Self { start, copied: start, resolved: start }
+    }
+
+    #[inline]
+    pub fn copied(&mut self) { self.copied = now_ns(); }
+
+    #[inline]
+    pub fn resolved(&mut self) { self.resolved = now_ns(); }
+}
+
+impl Drop for OpenAtSpan {
+    fn drop(&mut self) {
+        let end = now_ns();
+        let total = end.saturating_sub(self.start);
+        if total < SLOW_NS { return; }
+        if RECORDS.fetch_add(1, Ordering::Relaxed) >= MAX_RECORDS { return; }
+        klog::write_raw(b"[OPENLAT total_ms=");
+        klog::write_dec_u64(total / NS_PER_MS);
+        klog::write_raw(b" copy_ms=");
+        klog::write_dec_u64(self.copied.saturating_sub(self.start) / NS_PER_MS);
+        klog::write_raw(b" lookup_ms=");
+        klog::write_dec_u64(self.resolved.saturating_sub(self.copied) / NS_PER_MS);
+        klog::write_raw(b" tail_ms=");
+        klog::write_dec_u64(end.saturating_sub(self.resolved) / NS_PER_MS);
+        klog::write_raw(b"]\n");
+    }
+}
+
 /// Pre-dispatch `(wall_ns, task on-CPU ns)`. The second half is the
 /// discriminator: `sum_exec_runtime_ns` advances only while the task is on a
 /// CPU, so a long call whose on-CPU delta matches its wall time is real kernel

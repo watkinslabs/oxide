@@ -42,9 +42,10 @@ pub const MAX_CPUS: u32 = 64;
 fn apply_to_poll_thread(inode: &IoUringInode, mask: u64) {
     let Some(sqd) = crate::io_uring::sqpoll::of(inode) else { return };
     // SAFETY: process context in the register syscall path on the caller's own CPU, holding no lock the poll thread takes; the caller is a user task, never the poll thread itself.
-    unsafe { sqd.park(); }
-    sqd.set_cpus_allowed(mask);
-    sqd.unpark();
+    let parked = unsafe { sqd.park() };
+    parked.set_cpus_allowed(mask);
+    // `SqParkGuard::drop` is Linux `io_sq_thread_unpark` and releases the
+    // SQPOLL control mutex after the affinity update.
 }
 
 /// `IORING_REGISTER_IOWQ_AFF`, and its unregistering form when `len == 0`:

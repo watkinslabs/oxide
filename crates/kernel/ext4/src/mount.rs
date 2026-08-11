@@ -110,6 +110,13 @@ pub struct MountState {
     /// subsequent ops within the same scope. Drained at scope
     /// close + committed as one JBD2 transaction.
     pub(crate) shadow: Option<alloc::collections::BTreeMap<u64, Vec<u8>>>,
+    /// Clean metadata buffers keyed by filesystem LBA.  The VFS dcache avoids
+    /// repeating name walks, but a cold dentry miss still needs the ext4 inode
+    /// table and directory blocks.  Linux serves those from the buffer/page
+    /// cache (`sb_bread`); bypassing it made every component issue synchronous
+    /// device I/O again.  `shadow` remains authoritative for an open journal
+    /// transaction, so this cache contains only clean on-disk bytes.
+    pub(crate) metadata_cache: alloc::collections::BTreeMap<u64, Vec<u8>>,
     /// Cross-operation batching (Linux jbd2 running-transaction model). When
     /// set, the `shadow` PERSISTS across `run_journaled` scopes: each op joins
     /// the running transaction instead of committing its own, and the batch is

@@ -44,7 +44,7 @@ resource caller. `TEST` means hosted test-only code, not a kernel path.
 | 2 | ipc/live/posix_mq/sendrecv | prepared message-queue waits | DONE |
 | 1 | ipc/sysv/block | prepared SysV IPC wait | DONE |
 | 1 | mm-pmm/kswapd | generic work-request predicate | DONE |
-| 2 | mm-vmm/address_space/rwsem | keyed reader/writer prepared wait | DONE |
+| 2 | mm-vmm/address_space/rwsem | shared scheduler keyed reader/writer prepared wait | DONE |
 | 1 | modules/linux_sync_wait | generic predicate wait | DONE |
 | 1 | net/net_ns/teardown | generic reaper-work predicate | DONE |
 | 1 | net/raw4/types | prepared socket receive wait | DONE |
@@ -69,13 +69,13 @@ resource caller. `TEST` means hosted test-only code, not a kernel path.
 | 2 | net/vsock_socket{,/io} | prepared VSOCK socket waits | DONE |
 | 1 | netlink/ports | prepared netlink-space wait | DONE |
 | 1 | netlink/receive | generic receive predicate | DONE |
-| 1 | sched/live/inode_wait | keyed rwsem owner API | OWNER |
-| 3 | sched/live/kthread | kthread state-transition owner | OWNER |
-| 1 | sched/live/migration_wait | migration state-transition owner | OWNER |
+| 1 | sched/live/inode_wait | scheduler keyed wait-queue owner; separate reader/writer FIFOs | OWNER |
+| 3 | sched/live/kthread | Linux-shaped state-transition owner; `park()` waits for parked acknowledgement and public `stop()` joins for exit result | OWNER |
+| 1 | sched/live/migration_wait | shared keyed wait-queue owner; terminal migration completion | OWNER |
 | 1 | sched/live/mutex | prepared mutex wait | DONE |
-| 1 | sched/live/quota_wait | quota state-transition owner | OWNER |
-| 1 | sched/live/sb_freeze | superblock-freeze state-transition owner | OWNER |
-| 1 | sched/live/timer_driver | timer deadline-transition owner | OWNER |
+| 1 | sched/live/quota_wait | shared keyed wait-queue owner; prune-safe quota state wait | OWNER |
+| 1 | sched/live/sb_freeze | shared keyed wait-queue owner; prune-safe superblock-freeze wait | OWNER |
+| 1 | sched/live/timer_driver | generic deadline predicate (`armed → recheck → sleep`) | DONE |
 | 2 | sched/live/wait_event | generic helper implementation | OWNER |
 | 4 | sched/live/wait_list | raw primitive implementation | OWNER |
 | 2 | sched/rwsem/sleep | prepared rwsem wait | DONE |
@@ -83,14 +83,14 @@ resource caller. `TEST` means hosted test-only code, not a kernel path.
 | 1 | syscalls/035_nanosleep | prepared deadline wait | DONE |
 | 1 | syscalls/103_syslog | generic log-reader predicate | DONE |
 | 1 | syscalls/128_rt_sigtimedwait | prepared signal wait | DONE |
-| 1 | syscalls/130_rt_sigsuspend | signal-state wait | OWNER |
+| 1 | syscalls/130_rt_sigsuspend | generic deliverable-signal predicate (`TASK_INTERRUPTIBLE → schedule`) | DONE |
 | 1 | syscalls/318_getrandom | generic CRNG-ready predicate | DONE |
 | 1 | syscalls/io_uring/iowq/worker | generic worker-work predicate | DONE |
 | 1 | syscalls/io_uring/register/iowq | SQPOLL state owner API | OWNER |
-| 2 | syscalls/io_uring/sqpoll | generic SQPOLL park predicate | DONE |
+| 2 | syscalls/io_uring/sqpoll | generic SQPOLL predicate + publication-before-doorbell helper; control park holds Linux-shaped guard | DONE |
 | 2 | tty/wait | prepared TTY wait/deadline API | DONE |
 | 1 | umh/spawn/queue | generic worker-idle predicate | DONE |
-| 2 | vfs/inode/rwsem | keyed reader/writer prepared wait | DONE |
+| 2 | vfs/inode/rwsem | shared scheduler keyed reader/writer prepared wait | DONE |
 
 ## Closure rule
 
@@ -98,6 +98,24 @@ The current source scan has no resource or driver use of the raw `WaitList`
 publication methods. Those methods are scheduler-crate internal; external
 subsystems can only use a generic predicate helper or a named prepared/owner
 API. The only remaining textual matches are the `WaitList`/generic-helper
-implementations and named rwsem/SQPOLL owner methods. A new production wait
-must use one of those contracts and add a row here before it can be considered
-audited.
+implementations and named keyed-wait, rwsem, and SQPOLL owner methods. A new
+production wait must use one of those contracts and add a row here before it
+can be considered audited.
+
+## Shared wake-side audit
+
+The publication-side closure is not sufficient on SMP: every successful wake
+also needs one serialized path from `Sleeping` through CPU selection to an
+eligible runqueue. The scheduler now has a per-task wake/affinity lock with a
+defined `TaskWake -> Runqueue` order. `try_to_wake_up`, affinity updates, and
+the pinned kthread setup paths use it. The lock closes the former window where
+an affinity writer could change `cpus_allowed` after a waker claimed the task
+but before it selected and enqueued a CPU from the old mask. IRQ-context wakes
+retain the lock-free deferred wake list; they do not take a runqueue lock.
+
+| Shared protocol | Contract | Status |
+|---|---|---|
+| Task wake claim + CPU selection | task wake lock held from `Sleeping → Runnable` claim through local enqueue or deferred-list publication | DONE |
+| Runtime affinity update | same task wake lock held through source-mask update, effective-mask publication, and relocation | DONE |
+| Deferred remote/IRQ wake | lock-free list carries a claimed Runnable task; target drain rechecks ownership and effective affinity before activation, rerouting if the mask changed | DONE |
+| Per-CPU kworker/ksoftirqd binding | uses the shared runtime-affinity path; no live direct effective-mask store remains | DONE |

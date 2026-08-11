@@ -18,6 +18,17 @@ use core::sync::atomic::{AtomicU32, Ordering};
 /// because we have no realistic test box that exceeds 32. The
 /// constant is the only place this changes.
 pub const MAX_CPUS: usize = 64;
+/// Offset in every architecture per-CPU page used by Linux module code.
+pub const LINUX_MODULE_PERCPU_OFFSET: usize = 16;
+/// Module per-CPU allocations reserve one page per logical CPU.
+pub const LINUX_MODULE_PERCPU_STRIDE: usize = 4096;
+/// Native driver NUMA-node slot in each architecture per-CPU page.
+pub const LINUX_NUMA_NODE_OFFSET: usize = 64;
+/// Native network softnet-data ABI view in each architecture per-CPU page.
+pub const LINUX_SOFTNET_DATA_OFFSET: usize = 128;
+/// Bytes reserved for one native softnet-data ABI view.
+pub const LINUX_SOFTNET_DATA_BYTES: usize = 1088;
+const _: () = assert!(LINUX_SOFTNET_DATA_OFFSET + LINUX_SOFTNET_DATA_BYTES <= LINUX_MODULE_PERCPU_STRIDE);
 
 // Parallel atomic arrays — keeps the table `Sync` without a
 // Spinlock wrapper. `IDS[i] == u32::MAX` ⇒ slot empty.

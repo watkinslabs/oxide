@@ -18,7 +18,7 @@
 use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use alloc::sync::Arc;
 use crate::Task;
-use super::WaitList;
+use super::{WaitList, wait_event_uninterruptible_until};
 
 static WAIT: WaitList = WaitList::new();
 const TICK_NS: u64 = 100_000_000;
@@ -60,10 +60,20 @@ extern "C" fn driver(_arg: usize) -> ! {
         // Arm the tick-waker BEFORE parking so a tick between this store and the
         // park still observes the (future) deadline; a spurious early wake is
         // harmless (run_due is idempotent and re-arms).
-        DEADLINE.store(now + TICK_NS, Ordering::Release);
-        // SAFETY: running kthread on this CPU; preempt-off; no lock held
-        // across the named deadline publication; schedule yields immediately.
-        unsafe { WAIT.prepare_to_wait_with_deadline(now + TICK_NS); super::schedule(); }
+        let deadline = now + TICK_NS;
+        DEADLINE.store(deadline, Ordering::Release);
+        // Shared `wait_event` owns publish → predicate recheck → schedule →
+        // finish.  In particular, a tick may clear DEADLINE immediately after
+        // the store above but before publication; making that cleared arm part
+        // of the predicate means the post-publication recheck observes it
+        // rather than sleeping through a lost early wake.
+        // SAFETY: running kthread in sleepable process context with no lock
+        // held; the tick publishes DEADLINE=0 before its deferred wake.
+        unsafe {
+            let _ = wait_event_uninterruptible_until(&WAIT, deadline, now_ns,
+                || DEADLINE.load(Ordering::Acquire) == 0 || now_ns() >= deadline);
+        }
+        DEADLINE.store(0, Ordering::Release);
     }
 }
 

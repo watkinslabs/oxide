@@ -149,30 +149,43 @@ pub fn sched_ttwu_pending(cpu: u32, current: *mut Task, rq: &Runqueue) -> bool {
     let drained = wake_list_drain(cpu);
     if drained.is_empty() { return false; }
     let mut deferred: Vec<Arc<Task>> = Vec::new();
+    let mut reroute: Vec<Arc<Task>> = Vec::new();
     let mut placed = false;
     let mut preempt = false;
-    // SAFETY: `current` is this CPU's running task, kept alive by the runqueue's
-    // strong reference for the duration of this drain.
-    let curr = if current.is_null() { None } else { Some(cand_of(unsafe { &*current })) };
-    {
+    for task in drained {
+        // A task can sit on the remote wake list while an affinity writer
+        // narrows its mask. Take the same task lock as ttwu and test the
+        // target before acquiring this rq, preserving TaskWake -> Runqueue.
+        let _wake = task.task_wake_lock.lock_irqsave::<RqIrq>();
+        let allowed = task.cpus_allowed.load(Ordering::Acquire);
+        if cpu < 64 && allowed & (1u64 << cpu) == 0 {
+            reroute.push(Arc::clone(&task));
+            continue;
+        }
         let mut inner = rq.inner.lock_irqsave::<RqIrq>();
-        for task in drained {
-            match task.pending_wake(current) {
-                PendingWake::Drop  => {}
-                PendingWake::Defer => deferred.push(task),
-                PendingWake::Ready => {
-                    // Sleeper credit on wake (F211).
-                    task.set_vruntime_to_floor(inner.cfs.min_vruntime());
-                    // Decided AFTER the vruntime lift and BEFORE the enqueue
-                    // hands the Arc away, so the fair comparison sees the
-                    // position the task was actually queued at.
-                    preempt |= curr.is_none_or(|c| wakeup_preempt(cand_of(&task), c));
-                    inner.enqueue(task);
-                    placed = true;
-                }
+        match task.pending_wake(current) {
+            PendingWake::Drop  => {}
+            PendingWake::Defer => deferred.push(Arc::clone(&task)),
+            PendingWake::Ready => {
+                // SAFETY: `current` is this CPU's running task, kept alive by
+                // the runqueue's strong reference for this locked decision.
+                let raw = rq.current.load(Ordering::Acquire);
+                let curr = if raw.is_null() { None } else { Some(cand_of(unsafe { &*raw })) };
+                task.set_vruntime_to_floor(inner.cfs.min_vruntime());
+                preempt |= curr.is_none_or(|c| wakeup_preempt(cand_of(&task), c));
+                inner.enqueue(Arc::clone(&task));
+                placed = true;
             }
         }
         rq.publish_nr_running(inner.nr_running());
+    }
+    // This wake was claimed while its old target was eligible, but an affinity
+    // change won before activation. It remains Runnable and unqueued, so the
+    // normal task-locked placement path may select its new eligible CPU.
+    for task in reroute {
+        // SAFETY: the task remains the sole claimed wake and is neither queued
+        // nor executing; the held task wake lock serializes CPU selection.
+        unsafe { place_runnable(Arc::clone(&task), false); }
     }
     // Re-queue still-executing tasks to their owner CPU, outside the rq lock so
     // no reschedule IPI is ever sent from under it.
@@ -281,6 +294,34 @@ pub fn resched_curr(cpu: u32) {
 /// (`live::schedule::migrate`). UP / single CPU: no-op (allowed == local).
 /// # C: O(N_cpus · log N)
 pub fn relocate_for_affinity(task: &Arc<Task>, allowed: u64) {
+    // Affinity and ttwu share the task wake lock. Hold it through removing
+    // queued work and selecting its replacement CPU, so a concurrent wake
+    // sees either the old placement or this completed new one, never a mix.
+    let _wake = task.task_wake_lock.lock_irqsave::<RqIrq>();
+    relocate_for_affinity_live(task, allowed)
+}
+
+/// Publish one source of a task affinity mask and complete its relocation
+/// while holding the same task-side lock ttwu uses for CPU selection.
+/// # C: O(N_cpus · log N)
+pub fn update_affinity(task: &Arc<Task>, user: Option<u64>, cpuset: Option<u64>) {
+    let _wake = task.task_wake_lock.lock_irqsave::<RqIrq>();
+    if let Some(mask) = user { task.user_cpus_allowed.store(mask, Ordering::Release); }
+    if let Some(mask) = cpuset { task.cpuset_cpus_allowed.store(mask, Ordering::Release); }
+    let source = if user.is_some() {
+        crate::affinity::MaskChange::UserRequest
+    } else {
+        crate::affinity::MaskChange::CpusetUpdate
+    };
+    let allowed = crate::affinity::compose(
+        task.cpuset_cpus_allowed.load(Ordering::Acquire),
+        task.user_cpus_allowed.load(Ordering::Acquire), source,
+    );
+    task.cpus_allowed.store(allowed, Ordering::Release);
+    relocate_for_affinity_live(task, allowed);
+}
+
+fn relocate_for_affinity_live(task: &Arc<Task>, allowed: u64) {
     // SAFETY: `global_for` is sound for any index and yields `None` for a CPU
     // that has not completed `install_global`, which the walk skips.
     relocate_for_affinity_with(&|c| unsafe { global_for(c) }, task, allowed)
@@ -360,6 +401,11 @@ where F: Fn(u32) -> Option<&'a Runqueue> {
 /// alive; preempt discipline per the wake path.
 /// # C: O(N_cpus + log N)
 unsafe fn ttwu_inner(task: Arc<Task>, force_defer: bool) -> bool {
+    // Serialize wake state, affinity, and CPU selection with the task-side
+    // lock. An affinity writer cannot land between this claim and the enqueue
+    // selected from the mask. IRQ-save prevents a same-task hardirq wake from
+    // spinning on interrupted process context holding this lock.
+    let _wake = task.task_wake_lock.lock_irqsave::<RqIrq>();
     if !task.claim_wake() {
         // The Sleeping -> Runnable transition is the exclusive placement
         // claim. A winner may not have reached `on_rq` yet, so treating
@@ -390,7 +436,7 @@ unsafe fn ttwu_inner(task: Arc<Task>, force_defer: bool) -> bool {
     }
     // SAFETY: ttwu_inner owns an Arc for this wake placement and has just
     // established the task is Runnable but not already executing or queued.
-    unsafe { place_runnable(task, force_defer); }
+    unsafe { place_runnable(Arc::clone(&task), force_defer); }
     true
 }
 
