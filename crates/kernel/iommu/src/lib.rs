@@ -1,7 +1,7 @@
 #![no_std]
 extern crate alloc;
 mod amd_vi;
-pub use amd_vi::{AmdViState, AmdViUnit, COMMAND_BUFFER, COMMAND_HEAD, COMMAND_TAIL,
+pub use amd_vi::{AmdViRegisters, AmdViState, AmdViUnit, COMMAND_BUFFER, COMMAND_HEAD, COMMAND_TAIL,
     CONTROL, CONTROL_COMMAND_ENABLE, CONTROL_IOMMU_ENABLE, DEVICE_TABLE, EVENT_LOG};
 use alloc::vec::Vec;
 use pci::{Bdf, IovaRange, IovaSpace};

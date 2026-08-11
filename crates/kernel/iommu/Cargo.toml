@@ -9,6 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 pci = { path = "../../drivers/pci" }
+mmio-map = { path = "../mmio-map" }
 
 [lints]
 workspace = true
