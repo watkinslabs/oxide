@@ -78,13 +78,7 @@ pub(crate) fn park_checked(list: &WaitList, mut done: impl FnMut() -> bool) {
         core::hint::spin_loop();
         return;
     }
-    // SAFETY: process context, no driver spinlock held; immediate recheck
-    // below cancels the registration when the condition already became true.
-    unsafe { list.park(); }
-    if done() {
-        list.cancel_current_park();
-        return;
-    }
-    // SAFETY: current is registered Sleeping on list and holds no plain lock.
-    unsafe { sched::live::schedule::schedule(); }
+    // SAFETY: process context, no driver spinlock held; the shared predicate
+    // loop owns publication, recheck and schedule.
+    let _ = unsafe { sched::live::wait_event_uninterruptible(list, done) };
 }

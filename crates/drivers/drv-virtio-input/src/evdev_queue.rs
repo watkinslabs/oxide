@@ -30,6 +30,7 @@ impl WaitList {
     pub(crate) fn wake_one(&self) {}
     pub(crate) fn wake_all(&self) {}
     pub(crate) unsafe fn park(&self) {}
+    pub(crate) unsafe fn prepare_to_wait_interruptible(&self) {}
     pub(crate) fn cancel_current_park(&self) {}
 }
 
