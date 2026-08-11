@@ -4,6 +4,7 @@ use core::ptr::{read_volatile, write_volatile};
 
 use crate::regs::{geometry, Geometry, CAPLENGTH, DBOFF, HCSPARAMS1, RTSOFF};
 use crate::controller::{halt_command, reset_command, reset_complete, USBCMD, USBSTS};
+use crate::controller::{RunPlan, CONFIG, CRCR, DCBAAP, ERDP, ERSTBA, ERSTSZ, IMAN};
 
 const PAGE: u64 = 4096;
 
@@ -38,6 +39,24 @@ impl DmaPage {
 
     /// Physical address suitable for 64-byte-aligned xHCI pointers. # C: O(1)
     pub fn pa(&self) -> u64 { self.pa }
+
+    /// Write one controller-visible dword within this DMA page. # C: O(1)
+    pub fn write32(&self, offset: u64, value: u32) -> bool {
+        if offset & 3 != 0 || offset.checked_add(4).is_none_or(|end| end > PAGE) { return false; }
+        let Some(va) = hhdm().checked_add(self.pa).and_then(|base| base.checked_add(offset)) else { return false; };
+        // SAFETY: this DmaPage owns the direct-map memory and bounds/alignment
+        // are checked before the controller has been given a pointer to it.
+        unsafe { write_volatile(va as *mut u32, value); }
+        true
+    }
+
+    /// Make the completed DMA page visible before its physical address is published.
+    /// # C: O(page bytes on non-coherent architectures)
+    pub fn clean_to_device(&self) {
+        if let Some(va) = hhdm().checked_add(self.pa) {
+            pmm::dma::clean_to_device(va, PAGE as usize);
+        }
+    }
 }
 
 impl Drop for DmaPage {
@@ -119,5 +138,23 @@ impl Mmio {
             if sched::deadline::clock::now_ns() >= reset_deadline { return false; }
             core::hint::spin_loop();
         }
+    }
+
+    /// Program all controller DMA pointers while execution remains halted.
+    /// # C: O(1)
+    pub fn program_halted(&self, plan: RunPlan) -> bool {
+        let op = self.geometry.operational;
+        let intr = match self.geometry.runtime.checked_add(crate::regs::RUNTIME_INTR0) { Some(value) => value, None => return false };
+        self.write64(op + CRCR, plan.crcr)
+            && self.write64(op + DCBAAP, plan.dcbaap)
+            && self.write32(op + CONFIG, plan.config)
+            && self.write32(intr + IMAN, plan.iman)
+            && self.write32(intr + ERSTSZ, plan.erstsz)
+            && self.write64(intr + ERSTBA, plan.erstba)
+            && self.write64(intr + ERDP, plan.erdp)
+    }
+
+    fn write64(&self, offset: u64, value: u64) -> bool {
+        self.write32(offset, value as u32) && self.write32(offset + 4, (value >> 32) as u32)
     }
 }
