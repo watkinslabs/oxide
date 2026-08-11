@@ -88,7 +88,7 @@ pub fn run_command(command: u32) -> u32 { command | CMD_RUN | CMD_EIE | CMD_HSEI
 mod tests {
     use super::*;
 
-    fn geometry() -> Geometry { Geometry { operational: 0x40, runtime: 0x1000, doorbells: 0x2000, max_slots: 32, max_interrupters: 1, max_ports: 8, context_bytes: 32 } }
+    fn geometry() -> Geometry { Geometry { operational: 0x40, runtime: 0x1000, doorbells: 0x2000, max_slots: 32, max_interrupters: 1, max_ports: 8, context_bytes: 32, extended_capabilities: 0 } }
 
     #[test]
     fn reset_requires_halted_addressable_controller() {
