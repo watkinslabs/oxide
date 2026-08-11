@@ -9,7 +9,7 @@ mod amd_vi_pt_tree;
 mod domain;
 mod vtd;
 pub use amd_vi::{AmdViCommand, AmdViDte, AmdViRegisters, AmdViState, AmdViTables, AmdViUnit, COMMAND_BUFFER, COMMAND_HEAD, COMMAND_TAIL,
-    CONTROL, CONTROL_COMMAND_ENABLE, CONTROL_EVENT_ENABLE, CONTROL_IOMMU_ENABLE, DEVICE_TABLE, EVENT_HEAD, EVENT_LOG, EVENT_TAIL};
+    CONTROL, CONTROL_COHERENT_ENABLE, CONTROL_COMMAND_ENABLE, CONTROL_COMPLETION_ENABLE, CONTROL_EVENT_ENABLE, CONTROL_IOMMU_ENABLE, DEVICE_TABLE, EVENT_HEAD, EVENT_LOG, EVENT_TAIL};
 pub use amd_vi_bootstrap::AmdViBootstrap;
 pub use amd_vi_manager::{AmdViActivation, activate_amd_vi};
 pub use amd_vi_pt::{AmdViPte, iova_indices};

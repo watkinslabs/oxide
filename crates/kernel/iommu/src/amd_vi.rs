@@ -9,6 +9,8 @@ pub const EVENT_HEAD: u64 = 0x2010;
 pub const EVENT_TAIL: u64 = 0x2018;
 pub const CONTROL_IOMMU_ENABLE: u64 = 1 << 0;
 pub const CONTROL_EVENT_ENABLE: u64 = 1 << 2;
+pub const CONTROL_COMPLETION_ENABLE: u64 = 1 << 4;
+pub const CONTROL_COHERENT_ENABLE: u64 = 1 << 10;
 pub const CONTROL_COMMAND_ENABLE: u64 = 1 << 12;
 const MMIO_BYTES: u64 = 0x80000;
 const PAGE_BYTES: u64 = 4096;
@@ -272,7 +274,7 @@ impl AmdViUnit {
         if control & CONTROL_IOMMU_ENABLE != 0 { return false; }
         if !regs.write64(DEVICE_TABLE, tables.device_table_register()) || !regs.write64(COMMAND_BUFFER, tables.command_buffer_register()) || !regs.write64(EVENT_LOG, tables.event_log_register()) { return false; }
         if !regs.write64(COMMAND_HEAD, 0) || !regs.write64(COMMAND_TAIL, 0) || !regs.write64(EVENT_HEAD, 0) || !regs.write64(EVENT_TAIL, 0) { return false; }
-        regs.write64(CONTROL, control | CONTROL_COMMAND_ENABLE | CONTROL_EVENT_ENABLE)
+        regs.write64(CONTROL, control | CONTROL_COMMAND_ENABLE | CONTROL_EVENT_ENABLE | CONTROL_COMPLETION_ENABLE | CONTROL_COHERENT_ENABLE)
             && self.advance(AmdViState::Mapped, AmdViState::TablesProgrammed)
     }
     /// Queue a requester-DTE invalidation after its initial entry was written. # C: O(1)
@@ -305,7 +307,8 @@ impl AmdViUnit {
     pub fn enable_translation(&mut self, regs: &AmdViRegisters) -> bool {
         if self.state != AmdViState::DomainsAttached { return false; }
         let Some(control) = regs.read64(CONTROL) else { return false; };
-        if control & (CONTROL_COMMAND_ENABLE | CONTROL_EVENT_ENABLE) != (CONTROL_COMMAND_ENABLE | CONTROL_EVENT_ENABLE) { return false; }
+        let required = CONTROL_COMMAND_ENABLE | CONTROL_EVENT_ENABLE | CONTROL_COMPLETION_ENABLE | CONTROL_COHERENT_ENABLE;
+        if control & required != required { return false; }
         regs.write64(CONTROL, control | CONTROL_IOMMU_ENABLE)
             && self.advance(AmdViState::DomainsAttached, AmdViState::Enabled)
     }
@@ -340,6 +343,11 @@ impl AmdViUnit {
         assert_eq!(t.device_table_register(), 0x4000_01ff);
         assert_eq!(t.command_buffer_register(), 0x0900_0000_5000_0000);
         assert!(AmdViTables::from_physical(0x4000_1000, 0x5000_0000, 0x5000_2000).is_none());
+    }
+    #[test] fn translation_requires_coherent_completion_engine() {
+        let required = CONTROL_COMMAND_ENABLE | CONTROL_EVENT_ENABLE | CONTROL_COMPLETION_ENABLE | CONTROL_COHERENT_ENABLE;
+        assert_eq!(required & CONTROL_COMPLETION_ENABLE, CONTROL_COMPLETION_ENABLE);
+        assert_eq!(required & CONTROL_COHERENT_ENABLE, CONTROL_COHERENT_ENABLE);
     }
     #[test] fn device_table_entries_preserve_the_32_byte_hardware_layout() {
         assert_eq!(core::mem::size_of::<AmdViDte>(), 32);
