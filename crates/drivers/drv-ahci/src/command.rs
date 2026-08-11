@@ -22,6 +22,7 @@ impl Ahci {
         bytes: u32,
         interrupt: bool,
     ) -> bool {
+        if bytes != 0 && !regs::prdt_entry_fits(u64::from(bytes)) { return false; }
         let h = hhdm();
         if h == 0 { return false; }
         let prdtl: u32 = if bytes == 0 { 0 } else { 1 };
@@ -41,7 +42,7 @@ impl Ahci {
 
         let ct_va = h.wrapping_add(self.ctba_pa) as *mut u8;
         // SAFETY: HHDM maps the owned command-table frame; the CFIS plus one
-        // PRDT entry fit within it and the bounce PA remains controller-owned.
+        // PRDT entry fit within it and the contiguous data PA remains controller-owned.
         unsafe {
             for i in 0..CT_PRDT_OFF { core::ptr::write_volatile(ct_va.add(i), 0); }
             for (i, b) in fis.iter().enumerate() {
@@ -49,8 +50,8 @@ impl Ahci {
             }
             if prdtl != 0 {
                 let prdt = ct_va.add(CT_PRDT_OFF) as *mut u32;
-                core::ptr::write_volatile(prdt.add(0), self.bounce_pa as u32);
-                core::ptr::write_volatile(prdt.add(1), (self.bounce_pa >> 32) as u32);
+                core::ptr::write_volatile(prdt.add(0), self.data_pa as u32);
+                core::ptr::write_volatile(prdt.add(1), (self.data_pa >> 32) as u32);
                 core::ptr::write_volatile(prdt.add(2), 0);
                 let ioc = if interrupt { PRDT_INTERRUPT_ON_COMPLETION } else { 0 };
                 core::ptr::write_volatile(
@@ -82,10 +83,10 @@ impl Ahci {
     pub(crate) fn identify(&mut self) -> bool {
         let fis = regs::h2d_fis(regs::ATA_IDENTIFY, 0, 0, 0);
         if !self.issue_poll(&fis, false, 512) { return false; }
-        let p = hhdm().wrapping_add(self.bounce_pa) as *const u16;
+        let p = hhdm().wrapping_add(self.data_pa) as *const u16;
         let mut words = [0u16; 256];
-        // SAFETY: the device filled the owned bounce frame with 512 bytes;
-        // these aligned volatile reads remain within that frame.
+        // SAFETY: the device filled the first 512 bytes of the owned DMA run;
+        // these aligned volatile reads remain within its contiguous allocation.
         unsafe {
             for i in 0..words.len() {
                 words[i] = core::ptr::read_volatile(p.add(i));
@@ -132,8 +133,8 @@ impl Ahci {
             && self.pr(regs::P_TFD) & regs::TFD_ERR == 0
     }
 
-    /// HHDM VA of this controller's exclusive bounce frame. # C: O(1)
-    pub(crate) fn bounce_va(&self) -> u64 {
-        hhdm().wrapping_add(self.bounce_pa)
+    /// HHDM VA of this controller's exclusive contiguous DMA run. # C: O(1)
+    pub(crate) fn data_va(&self) -> u64 {
+        hhdm().wrapping_add(self.data_pa)
     }
 }

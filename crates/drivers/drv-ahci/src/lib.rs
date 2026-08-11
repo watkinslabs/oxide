@@ -1,7 +1,7 @@
 // AHCI/SATA block driver (drivers-plan D3.6). A real HBA bring-up: GHC.AE →
 // scan Ports Implemented → first port with a SATA disk (DET==3, SIG==0x101)
 // → stop/program/start the port → ATA IDENTIFY → READ/WRITE DMA EXT via a
-// PRDT bounce frame, exposed as a `block::BlockDevice` under Linux-style SCSI
+// contiguous PRDT DMA run, exposed as a `block::BlockDevice` under Linux-style SCSI
 // disk names `sda`, `sdb`, ... . The model driver's `probe` matches PCI class
 // 0x010601 (QEMU ich9-ahci vendor 0x8086 device 0x2922), maps BAR5 (ABAR),
 // and calls `init`.

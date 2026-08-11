@@ -135,17 +135,17 @@ impl AhciBlk {
             if self.unavailable() {
                 false
             } else {
-                let bounce = ctrl.bounce_va() as *mut u8;
-                if bounce.is_null() {
+                let data = ctrl.data_va() as *mut u8;
+                if data.is_null() {
                     false
                 } else {
                     if write {
                         // SAFETY: the turn exclusively owns the controller's
-                        // one-page bounce frame and len is chunk-bounded.
+                        // contiguous DMA run and len is chunk-bounded.
                         unsafe {
                             for i in 0..len {
                                 core::ptr::write_volatile(
-                                    bounce.add(i),
+                                    data.add(i),
                                     req.buffer[off + i],
                                 );
                             }
@@ -161,13 +161,13 @@ impl AhciBlk {
             if self.unavailable() || !ctrl.command_finished_ok() {
                 ok = false;
             } else if !write {
-                let bounce = ctrl.bounce_va() as *const u8;
+                let data = ctrl.data_va() as *const u8;
                 // SAFETY: terminal IRQ plus command_finished_ok establish DMA
-                // completion; the turn retains exclusive bounce ownership.
+                // completion; the turn retains exclusive DMA-run ownership.
                 unsafe {
                     for i in 0..len {
                         req.buffer[off + i] =
-                            core::ptr::read_volatile(bounce.add(i));
+                            core::ptr::read_volatile(data.add(i));
                     }
                 }
             }

@@ -15,7 +15,7 @@ use alloc::string::String;
 use crate::regs;
 use mmio_map::Mapping;
 
-/// HHDM base for the running arch (PA→VA for HBA DMA structures + bounce).
+/// HHDM base for the running arch (PA→VA for HBA DMA structures + data run).
 /// # C: O(1)
 #[inline]
 pub(crate) fn hhdm() -> u64 {
@@ -42,6 +42,8 @@ pub(crate) fn now_ns() -> u64 {
 
 /// 4 KiB host page size; one PMM frame.
 const PAGE: u64 = 0x1000;
+const DATA_ORDER: pmm::Order = pmm::Order(9);
+const DATA_BYTES: u64 = PAGE << DATA_ORDER.0;
 
 /// Worst-case wait for a command completion or a port stop. 5 s is generous
 /// for QEMU's emulated AHCI; bounds a genuinely-lost completion to EIO.
@@ -99,7 +101,7 @@ fn reset_hba(abar_va: u64) -> bool {
 
 /// The AHCI controller bring-up state for one SATA-disk port. Holds the ABAR
 /// register-file VA, the port index, the DMA-structure PAs (command list,
-/// received-FIS, command table, bounce frame), and the negotiated geometry.
+/// received-FIS, command table, DMA data run), and the negotiated geometry.
 pub struct Ahci {
     mmio:      Mapping,
     abar_va: u64,
@@ -107,8 +109,8 @@ pub struct Ahci {
     pub(crate) clb_pa:  u64,  // command list (1 KiB, 1 KiB-aligned)
     fb_pa:   u64,  // received FIS (256 B, 256 B-aligned)
     pub(crate) ctba_pa: u64,  // command table for slot 0 (128 B header + PRDT)
-    /// Bounce frame (one 4 KiB page) — the data buffer for one I/O.
-    pub(crate) bounce_pa: u64,
+    /// Contiguous DMA data run used by one I/O command.
+    pub(crate) data_pa: u64,
     /// Disk geometry harvested at IDENTIFY.
     pub sectors:   u64,
     pub blk_size:  u32,
@@ -129,15 +131,14 @@ impl Ahci {
             return;
         }
         // SAFETY: the caller has stopped/quiesced the port. These frames are
-        // the single-page AHCI command/FIS/table/bounce allocations returned
-        // by alloc_one_frame during bring-up.
+        // command/FIS/table frames returned by alloc_one_frame during bring-up.
         unsafe { pmm::setup::free_one_frame(*pa); }
         *pa = 0;
     }
 
-    fn alloc_frames() -> Result<[u64; 4], &'static str> {
-        let mut frames = [0u64; 4];
-        let names = ["alloc clb", "alloc fb", "alloc ct", "alloc bounce"];
+    fn alloc_frames() -> Result<([u64; 3], u64), &'static str> {
+        let mut frames = [0u64; 3];
+        let names = ["alloc clb", "alloc fb", "alloc ct"];
         let mut i = 0usize;
         while i < frames.len() {
             match pmm::setup::alloc_one_frame() {
@@ -151,13 +152,17 @@ impl Ahci {
             }
             i += 1;
         }
-        Ok(frames)
+        let Some(data_pa) = pmm::setup::alloc_contig(DATA_ORDER) else {
+            for pa in frames.iter_mut() { Self::free_frame(pa); }
+            return Err("alloc data run");
+        };
+        Ok((frames, data_pa))
     }
 
-    /// Stop the active port and return command/FIS/table/bounce frames to PMM.
+    /// Stop the active port and return command/FIS/table/data DMA memory to PMM.
     /// Publication must already be removed, or the system must be in terminal
     /// shutdown, and callers quiesced.
-    /// # C: O(port stop wait + 4 frees)
+    /// # C: O(port stop wait + DMA data run frees)
     pub fn shutdown_and_free(&mut self) {
         if self.abar_va != 0 {
             self.disable_interrupts();
@@ -170,13 +175,18 @@ impl Ahci {
         Self::free_frame(&mut self.clb_pa);
         Self::free_frame(&mut self.fb_pa);
         Self::free_frame(&mut self.ctba_pa);
-        Self::free_frame(&mut self.bounce_pa);
+        if self.data_pa != 0 {
+            // SAFETY: port stop above prevents DMA and `data_pa` belongs to
+            // this controller's `alloc_contig(DATA_ORDER)` allocation.
+            unsafe { pmm::setup::free_contig(self.data_pa, DATA_ORDER); }
+            self.data_pa = 0;
+        }
         self.abar_va = 0;
         self.mmio.unmap();
     }
 
-    /// Bytes one transfer carries (one bounce frame = one page). # C: O(1)
-    pub const MAX_XFER: u64 = PAGE;
+    /// Bytes one transfer carries in the contiguous PRDT data run. # C: O(1)
+    pub const MAX_XFER: u64 = DATA_BYTES;
 
     /// Read a 32-bit HBA/port register at ABAR + `off`. # C: O(1)
     #[inline]
@@ -313,19 +323,24 @@ impl Ahci {
         }
         let port = chosen.ok_or("no SATA disk")?;
 
-        // Allocate the per-port DMA structures + a bounce frame (each its own
-        // PMM frame — over-aligned for the 1 KiB / 256 B requirements).
-        let mut frames = Self::alloc_frames()?;
-        if !frames.iter().all(|pa| regs::dma_range_fits(cap, *pa, PAGE)) {
+        // Allocate per-port command/FIS structures plus a contiguous data
+        // run. The single PRDT entry can describe this whole 2 MiB run.
+        let (mut frames, data_pa) = Self::alloc_frames()?;
+        if !frames.iter().all(|pa| regs::dma_range_fits(cap, *pa, PAGE))
+            || !regs::dma_range_fits(cap, data_pa, DATA_BYTES) {
             for pa in &mut frames { Self::free_frame(pa); }
+            // SAFETY: this failed before port start, so no hardware can see
+            // the just-allocated data run.
+            unsafe { pmm::setup::free_contig(data_pa, DATA_ORDER); }
             return Err("DMA address exceeds HBA mask");
         }
-        let [clb, fb, ct, bnc] = frames;
-        for f in [clb, fb, ct, bnc] { Self::zero_frame(f); }
+        let [clb, fb, ct] = frames;
+        for f in [clb, fb, ct] { Self::zero_frame(f); }
+        for page in 0..(DATA_BYTES / PAGE) { Self::zero_frame(data_pa + page * PAGE); }
 
         let mut a = Ahci {
             mmio, abar_va, port,
-            clb_pa: clb, fb_pa: fb, ctba_pa: ct, bounce_pa: bnc,
+            clb_pa: clb, fb_pa: fb, ctba_pa: ct, data_pa,
             sectors: 0, blk_size: 512, serial: None,
         };
 
