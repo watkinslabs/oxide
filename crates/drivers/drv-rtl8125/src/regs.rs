@@ -38,6 +38,11 @@ pub const RING_COUNT: usize = 256;
 pub const BUFFER_BYTES: usize = 2048;
 pub const ETH_MAX_FRAME: usize = 1518;
 
+/// Linux r8169's masked extended chip identifier for a `TxConfig` value. # C: O(1)
+pub const fn chip_xid(tx_config: u32) -> u32 { (tx_config >> 20) & 0x0fcf }
+/// Whether a decoded PCI function belongs to this native RTL8125 driver. # C: O(1)
+pub const fn is_rtl8125(vendor: u16, device: u16) -> bool { vendor == VENDOR_REALTEK && device == DEVICE_RTL8125 }
+
 #[repr(C)]
 #[derive(Copy, Clone, Default)]
 pub struct TxDesc { pub opts1: u32, pub opts2: u32, pub addr: u64 }
@@ -66,5 +71,8 @@ mod tests {
         assert_eq!(core::mem::size_of::<RxDesc>(), 16);
         assert_eq!(rx_descriptor(0x2000, true).opts1, DESC_OWN | DESC_RING_END | BUFFER_BYTES as u32);
         assert!(rx_complete(64)); assert!(!rx_complete(DESC_OWN | 64)); assert!(!rx_complete(RX_ERROR | 64));
+        assert_eq!(chip_xid(0x6410_0000), 0x641);
+        assert!(is_rtl8125(VENDOR_REALTEK, DEVICE_RTL8125));
+        assert!(!is_rtl8125(VENDOR_REALTEK, 0x8168));
     }
 }
