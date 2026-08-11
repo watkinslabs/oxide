@@ -76,7 +76,7 @@ unsafe extern "C" fn ethtool_sprintf(data: *mut *mut u8, fmt: *const c_char, mut
 unsafe extern "C" fn eth_validate_addr(dev: *mut LinuxNetDevice) -> i32 {
     if dev.is_null() { return -LINUX_EINVAL; }
     // SAFETY: dev points to a valid net_device.
-    let addr = unsafe { (*dev).dev_addr };
+    let addr = unsafe { core::slice::from_raw_parts((*dev).dev_addr, ETH_ALEN) };
     if valid_unicast_mac(&addr) { LINUX_OK } else { -LINUX_EINVAL }
 }
 
@@ -93,7 +93,10 @@ unsafe extern "C" fn eth_prepare_mac_addr_change(dev: *mut LinuxNetDevice, p: *m
     let sa = unsafe { &*(p as *const LinuxSockAddr) };
     if !valid_unicast_mac(&sa.sa_data[..ETH_ALEN]) { return -LINUX_EINVAL; }
     // SAFETY: dev points to a valid net_device.
-    unsafe { copy_nonoverlapping(sa.sa_data.as_ptr(), (*dev).dev_addr.as_mut_ptr(), ETH_ALEN); }
+    unsafe {
+        copy_nonoverlapping(sa.sa_data.as_ptr(), (*dev).perm_addr.as_mut_ptr(), ETH_ALEN);
+        (*dev).dev_addr = (*dev).perm_addr.as_ptr();
+    }
     LINUX_OK
 }
 

@@ -1,3 +1,5 @@
+#![allow(dangerous_implicit_autorefs)]
+
 use super::*;
 use crate::resolve;
 use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
@@ -12,6 +14,94 @@ static RX_MODE_FLAGS: AtomicU32 = AtomicU32::new(0);
 static RX_MODE_MC_COUNT: AtomicU32 = AtomicU32::new(0);
 static RX_MODE_UC_COUNT: AtomicU32 = AtomicU32::new(0);
 static RX_MODE_MC_ADDRESS: AtomicU64 = AtomicU64::new(0);
+
+#[test]
+fn skb_kpi_layout_matches_host_profile() {
+    assert_eq!(core::mem::size_of::<LinuxSkBuff>(), 232);
+    assert_eq!(core::mem::align_of::<LinuxSkBuff>(), 8);
+    assert_eq!(core::mem::offset_of!(LinuxSkBuff, raw.next), 0);
+    assert_eq!(core::mem::offset_of!(LinuxSkBuff, raw.sk), 24);
+    assert_eq!(core::mem::offset_of!(LinuxSkBuff, raw.cb), 40);
+    assert_eq!(core::mem::offset_of!(LinuxSkBuff, raw.len), 112);
+    assert_eq!(core::mem::offset_of!(LinuxSkBuff, raw.queue_mapping), 124);
+    assert_eq!(core::mem::offset_of!(LinuxSkBuff, raw.tail), 188);
+    assert_eq!(core::mem::offset_of!(LinuxSkBuff, raw.head), 200);
+    assert_eq!(core::mem::offset_of!(LinuxSkBuff, raw.data), 208);
+    assert_eq!(core::mem::offset_of!(LinuxSkBuff, raw.extensions), 224);
+}
+
+#[test]
+fn netdev_kpi_layout_matches_host_profile() {
+    assert_eq!(core::mem::size_of::<LinuxNetDevice>(), 2688);
+    assert_eq!(core::mem::offset_of!(LinuxNetDevice, netdev_ops), 8);
+    assert_eq!(core::mem::offset_of!(LinuxNetDevice, state), 168);
+    assert_eq!(core::mem::offset_of!(LinuxNetDevice, tstats), 160);
+    assert_eq!(core::mem::offset_of!(LinuxNetDevice, ifindex), 224);
+    assert_eq!(core::mem::offset_of!(LinuxNetDevice, name), 288);
+    assert_eq!(core::mem::offset_of!(LinuxNetDevice, dev), 1464);
+    assert_eq!(core::mem::offset_of!(LinuxNetDevice, phydev), 2368);
+    assert_eq!(core::mem::size_of::<LinuxDql>(), 128);
+    assert_eq!(core::mem::offset_of!(LinuxDql, limit), 64);
+    assert_eq!(core::mem::size_of::<LinuxNetdevQueue>(), 320);
+    assert_eq!(core::mem::align_of::<LinuxNetdevQueue>(), 64);
+    assert_eq!(core::mem::offset_of!(LinuxNetdevQueue, dql), 128);
+    assert_eq!(core::mem::offset_of!(LinuxNetdevQueue, state), 272);
+    assert_eq!(core::mem::size_of::<LinuxNetDevHwAddr>(), 104);
+    assert_eq!(core::mem::offset_of!(LinuxNetDevHwAddr, addr), 40);
+    assert_eq!(core::mem::size_of::<LinuxNetDevHwAddrList>(), 32);
+    assert_eq!(core::mem::offset_of!(LinuxNetDevHwAddrList, tree), 24);
+}
+
+#[test]
+fn byte_reverse_table_has_all_bit_positions_reversed() {
+    assert_eq!(super::super::misc::byte_rev_table[0x00], 0x00);
+    assert_eq!(super::super::misc::byte_rev_table[0x01], 0x80);
+    assert_eq!(super::super::misc::byte_rev_table[0x16], 0x68);
+    assert_eq!(super::super::misc::byte_rev_table[0x80], 0x01);
+    assert_eq!(super::super::misc::byte_rev_table[0xff], 0xff);
+}
+
+#[test]
+fn netdev_allocates_initialized_host_tx_queues() {
+    let _modules = crate::test_serial::claim();
+    // SAFETY: test owns this allocation until the matching free_netdev.
+    let dev = unsafe { netalloc::alloc_etherdev_mqs(0, 3, 1) };
+    assert!(!dev.is_null());
+    // SAFETY: alloc_etherdev_mqs initialized exactly three contiguous queue objects.
+    unsafe {
+        assert_eq!((*dev).num_tx_queues, 3);
+        assert_eq!((*dev).real_num_tx_queues, 3);
+        assert!(!(*dev)._tx.is_null());
+        for index in 0..3 {
+            let q = &*(*dev)._tx.add(index);
+            assert_eq!(q.dev, dev);
+            assert_eq!(q.dql.max_limit, u32::MAX / 2 - u32::MAX / 16);
+            assert_eq!(q.dql.slack_hold_time, crate::linux_time::HZ);
+        }
+        netif_stop_queue(dev);
+        assert_ne!((*(*dev)._tx).state & QUEUE_STATE_DRV_XOFF, 0);
+        netif_tx_wake_queue((*dev)._tx);
+        assert_eq!((*(*dev)._tx).state & QUEUE_STATE_DRV_XOFF, 0);
+        netalloc::free_netdev(dev);
+    }
+}
+
+#[test]
+fn netdev_allocates_one_module_stats_slot_per_cpu() {
+    let _modules = crate::test_serial::claim();
+    // SAFETY: this test owns the allocation until free_netdev returns it.
+    let dev = unsafe { netalloc::alloc_etherdev(0) };
+    assert!(!dev.is_null());
+    // SAFETY: tstats is initialized by netdev_alloc and reserves fixed CPU strides.
+    unsafe {
+        assert!(!(*dev).tstats.is_null());
+        let first = (*dev).tstats as usize;
+        assert_eq!(first % core::mem::align_of::<LinuxPcpuSwNetStats>(), 0);
+        let last = first + (cpu::MAX_CPUS - 1) * cpu::LINUX_MODULE_PERCPU_STRIDE;
+        assert_eq!(last - first, (cpu::MAX_CPUS - 1) * cpu::LINUX_MODULE_PERCPU_STRIDE);
+        netalloc::free_netdev(dev);
+    }
+}
 
 unsafe extern "C" fn sample_xmit(skb: *mut LinuxSkBuff, _dev: *mut LinuxNetDevice) -> i32 {
     if !skb.is_null() {
@@ -31,10 +121,11 @@ unsafe extern "C" fn sample_set_rx_mode(dev: *mut LinuxNetDevice) {
     // SAFETY: lists and nodes remain stable through the synchronous callback.
     unsafe {
         RX_MODE_FLAGS.store((*dev).flags, Ordering::Release);
-        RX_MODE_MC_COUNT.store((*dev).mc.count, Ordering::Release);
-        RX_MODE_UC_COUNT.store((*dev).uc.count, Ordering::Release);
-        if (*dev).mc.head != 0 {
-            let row = &*((*dev).mc.head as *const LinuxNetDevHwAddr);
+        RX_MODE_MC_COUNT.store((*dev).mc.count as u32, Ordering::Release);
+        RX_MODE_UC_COUNT.store((*dev).uc.count as u32, Ordering::Release);
+        let head = &(*dev).mc.list as *const _ as usize;
+        if (*dev).mc.list.next != head {
+            let row = &*((*dev).mc.list.next as *const LinuxNetDevHwAddr);
             let mut packed = [0u8; 8];
             packed[..6].copy_from_slice(&row.addr[..6]);
             RX_MODE_MC_ADDRESS.store(u64::from_ne_bytes(packed), Ordering::Release);
@@ -50,7 +141,7 @@ static OPS: LinuxNetDeviceOps = LinuxNetDeviceOps {
     ndo_set_rx_mode: None,
     ndo_change_mtu: None,
     ndo_set_mac_address: None,
-    ndo_set_config: None,
+    ndo_set_config: None, ..LinuxNetDeviceOps::new()
 };
 
 static RX_MODE_OPS: LinuxNetDeviceOps = LinuxNetDeviceOps {
@@ -60,8 +151,9 @@ static RX_MODE_OPS: LinuxNetDeviceOps = LinuxNetDeviceOps {
     ndo_set_rx_mode: Some(sample_set_rx_mode),
     ndo_change_mtu: None,
     ndo_set_mac_address: None,
-    ndo_set_config: None,
+    ndo_set_config: None, ..LinuxNetDeviceOps::new()
 };
+
 
 #[test]
 fn export_symbols_registers_netdev_surface() {

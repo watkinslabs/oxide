@@ -8,7 +8,7 @@ use core::ptr::null_mut;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 const NETDEV_MAGIC: u64 = 0x4f58_4b50_494e_4554;
-const FIELD_CLEAR: u32 = 0;
+const FIELD_CLEAR: u64 = 0;
 const DEFAULT_TXQS: u32 = 1;
 const DEFAULT_RXQS: u32 = 1;
 const DEFAULT_TSO_MAX_SIZE: u32 = 65_536;
@@ -25,6 +25,9 @@ struct NetdevHeader {
     total: usize,
     align: usize,
     netdev_off: usize,
+    tstats: *mut LinuxPcpuSwNetStats,
+    txq: *mut LinuxNetdevQueue,
+    txq_count: u32,
 }
 
 /// # C: O(sizeof(struct net_device)+sizeof_priv)
@@ -37,7 +40,8 @@ pub(super) unsafe extern "C" fn alloc_netdev_mqs(
     rxqs: u32,
 ) -> *mut LinuxNetDevice {
     if sizeof_priv < 0 { return null_mut(); }
-    let dev = netdev_alloc(sizeof_priv as usize);
+    let txqs = txqs.max(1);
+    let dev = netdev_alloc(sizeof_priv as usize, txqs);
     if dev.is_null() { return null_mut(); }
     // SAFETY: dev points to a zeroed LinuxNetDevice allocation.
     unsafe {
@@ -45,8 +49,8 @@ pub(super) unsafe extern "C" fn alloc_netdev_mqs(
         (*dev).tx_queue_len = 1000;
         (*dev).addr_len = ETH_ALEN as u8;
         (*dev).flags = IFF_BROADCAST | IFF_MULTICAST;
-        (*dev).num_tx_queues = txqs.max(1);
-        (*dev).real_num_tx_queues = txqs.max(1);
+        (*dev).num_tx_queues = txqs;
+        (*dev).real_num_tx_queues = txqs;
         (*dev).real_num_rx_queues = rxqs.max(1);
         (*dev).tso_max_size = DEFAULT_TSO_MAX_SIZE;
         (*dev).tso_max_segs = DEFAULT_TSO_MAX_SEGS;
@@ -96,14 +100,23 @@ pub(super) unsafe extern "C" fn free_netdev(dev: *mut LinuxNetDevice) {
         Err(_) => return,
     };
     // SAFETY: base/layout are reconstructed from the allocation header.
-    unsafe { dealloc((dev as *mut u8).sub(h.netdev_off), layout); }
+    unsafe {
+        if !h.tstats.is_null() {
+            if let Ok(l) = Layout::from_size_align(cpu::MAX_CPUS * cpu::LINUX_MODULE_PERCPU_STRIDE,
+                align_of::<LinuxPcpuSwNetStats>()) { dealloc(h.tstats.cast(), l); }
+        }
+        if !h.txq.is_null() {
+            if let Ok(l) = Layout::array::<LinuxNetdevQueue>(h.txq_count as usize) { dealloc(h.txq.cast(), l); }
+        }
+        dealloc((dev as *mut u8).sub(h.netdev_off), layout);
+    }
 }
 
 /// # C: O(1)
 pub(super) unsafe extern "C" fn netdev_priv(dev: *const LinuxNetDevice) -> *mut c_void {
     if dev.is_null() { return null_mut(); }
-    // SAFETY: dev is a valid LinuxNetDevice.
-    unsafe { (*dev).priv_data }
+    // SAFETY: private bytes immediately follow the allocated net_device ABI object.
+    unsafe { (dev as *mut u8).add(size_of::<LinuxNetDevice>()) as *mut c_void }
 }
 
 /// # C: O(1)
@@ -114,6 +127,7 @@ pub(super) unsafe extern "C" fn ether_setup(dev: *mut LinuxNetDevice) {
         (*dev).mtu = ETH_DATA_LEN;
         (*dev).addr_len = ETH_ALEN as u8;
         (&mut (*dev).broadcast)[..ETH_ALEN].fill(u8::MAX);
+        (*dev).dev_addr = (*dev).perm_addr.as_ptr();
         (*dev).flags = IFF_BROADCAST | IFF_MULTICAST;
         (*dev).tso_max_size = DEFAULT_TSO_MAX_SIZE;
         (*dev).tso_max_segs = DEFAULT_TSO_MAX_SEGS;
@@ -125,7 +139,23 @@ pub(super) unsafe extern "C" fn ether_setup(dev: *mut LinuxNetDevice) {
 pub(super) unsafe extern "C" fn eth_hw_addr_set(dev: *mut LinuxNetDevice, addr: *const u8) {
     if dev.is_null() || addr.is_null() { return; }
     // SAFETY: addr points to ETH_ALEN readable bytes per Linux API.
-    unsafe { core::ptr::copy_nonoverlapping(addr, (*dev).dev_addr.as_mut_ptr(), ETH_ALEN); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(addr, (*dev).perm_addr.as_mut_ptr(), ETH_ALEN);
+        (*dev).dev_addr = (*dev).perm_addr.as_ptr();
+    }
+}
+
+/// # C: O(len)
+pub(super) unsafe extern "C" fn dev_addr_mod(dev: *mut LinuxNetDevice, offset: u32,
+    addr: *const c_void, len: usize) {
+    if dev.is_null() || addr.is_null() { return; }
+    let offset = offset as usize;
+    // SAFETY: the range is checked against the fixed link address before copying.
+    unsafe {
+        if offset.checked_add(len).is_none_or(|end| end > (*dev).addr_len as usize) { return; }
+        core::ptr::copy_nonoverlapping(addr as *const u8, (*dev).perm_addr.as_mut_ptr().add(offset), len);
+        (*dev).dev_addr = (*dev).perm_addr.as_ptr();
+    }
 }
 
 // Precondition: dev is NULL or a net_device the caller still owns and has not yet published, so this is the only writer of dev->name.
@@ -140,7 +170,7 @@ pub(super) unsafe fn ensure_registered_name(dev: *mut LinuxNetDevice) {
     }
 }
 
-fn netdev_alloc(sizeof_priv: usize) -> *mut LinuxNetDevice {
+fn netdev_alloc(sizeof_priv: usize, txq_count: u32) -> *mut LinuxNetDevice {
     let dev_align = align_of::<LinuxNetDevice>();
     let priv_align = align_of::<usize>();
     let netdev_off = align_up(size_of::<NetdevHeader>(), dev_align);
@@ -153,13 +183,43 @@ fn netdev_alloc(sizeof_priv: usize) -> *mut LinuxNetDevice {
     // SAFETY: layout was validated above and zero init matches C allocation expectations.
     let base = unsafe { alloc_zeroed(layout) };
     if base.is_null() { return null_mut(); }
+    let tstats_layout = match Layout::from_size_align(cpu::MAX_CPUS * cpu::LINUX_MODULE_PERCPU_STRIDE,
+        align_of::<LinuxPcpuSwNetStats>()) { Ok(v) => v, Err(_) => { unsafe { dealloc(base, layout); } return null_mut(); } };
+    let tstats = unsafe { alloc_zeroed(tstats_layout) as *mut LinuxPcpuSwNetStats };
+    if tstats.is_null() {
+        unsafe { dealloc(base, layout); }
+        return null_mut();
+    }
+    let txq_layout = match Layout::array::<LinuxNetdevQueue>(txq_count as usize) {
+        Ok(v) => v,
+        Err(_) => { unsafe { dealloc(tstats.cast(), tstats_layout); dealloc(base, layout); } return null_mut(); }
+    };
+    // SAFETY: txq_layout describes the requested nonzero queue array.
+    let txq = unsafe { alloc_zeroed(txq_layout) as *mut LinuxNetdevQueue };
+    if txq.is_null() {
+        unsafe { dealloc(tstats.cast(), tstats_layout); dealloc(base, layout); }
+        return null_mut();
+    }
     // SAFETY: netdev_off is align_up(size_of::<NetdevHeader>(), dev_align) and total >= netdev_off + size_of::<LinuxNetDevice>(), so this offset is inside the layout just allocated and correctly aligned for LinuxNetDevice.
     let dev = unsafe { base.add(netdev_off) as *mut LinuxNetDevice };
-    let hdr = NetdevHeader { magic: NETDEV_MAGIC, total, align: layout.align(), netdev_off };
+    let hdr = NetdevHeader { magic: NETDEV_MAGIC, total, align: layout.align(), netdev_off, tstats, txq, txq_count };
     // SAFETY: header slot and optional private area are inside the allocation.
     unsafe {
         (base.add(netdev_off - size_of::<NetdevHeader>()) as *mut NetdevHeader).write(hdr);
-        (*dev).priv_data = if sizeof_priv == 0 { null_mut() } else { base.add(priv_off) as *mut c_void };
+        (*dev).tstats = tstats;
+        (*dev)._tx = txq;
+        (*dev).dev_addr = (*dev).perm_addr.as_ptr();
+        let uc_head = &mut (*dev).uc.list as *mut _ as usize;
+        (*dev).uc.list.next = uc_head;
+        (*dev).uc.list.prev = uc_head;
+        let mc_head = &mut (*dev).mc.list as *mut _ as usize;
+        (*dev).mc.list.next = mc_head;
+        (*dev).mc.list.prev = mc_head;
+        for i in 0..txq_count as usize {
+            let q = &mut *txq.add(i);
+            q.dev = dev;
+            super::dql::init(&mut q.dql, crate::linux_time::HZ);
+        }
     }
     dev
 }

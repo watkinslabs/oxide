@@ -2,6 +2,7 @@
 #define OXIDE_LINUX_PHY_H
 
 #include <linux/ethtool.h>
+#include <linux/device.h>
 #include <linux/netdevice.h>
 #include <linux/types.h>
 
@@ -15,20 +16,71 @@
 
 struct ifreq;
 
+#define PHY_MAX_ADDR 32
+#define MII_BUS_ID_SIZE 20
+struct mii_bus;
+struct mdio_bus_stats { u8 _opaque[32]; };
+
+struct mdio_device {
+    struct device dev;
+    struct mii_bus *bus;
+    char modalias[32];
+    void *bus_match;
+    void *device_free;
+    void *device_remove;
+    int addr;
+    u32 flags;
+    u32 reset_state;
+    void *reset_gpio;
+    void *reset_ctrl;
+    u32 reset_assert_delay;
+    u32 reset_deassert_delay;
+};
+
 struct phy_device {
-    struct net_device *attached_dev;
+    struct mdio_device mdio;
+    u8 _to_flags[160];
+    u8 _flags[4];
+    u8 _to_interface[12];
+    u32 interface;
+    u8 _to_speed[12];
     int speed;
     int duplex;
-    u8 link;
-    u8 autoneg;
-    u8 pause;
-    u8 asym_pause;
-    u32 interface;
+    u8 _to_irq[192];
     int irq;
-    int page;
-    u16 regs[32];
-    u16 mmd_regs[8][32];
+    u8 _to_attached_dev[188];
+    struct net_device *attached_dev;
+    u8 _to_phy_link_change[32];
     void (*phy_link_change)(struct net_device *dev);
+    u8 _tail[32];
+};
+
+struct mii_bus {
+    void *owner;
+    const char *name;
+    char id[MII_BUS_ID_SIZE];
+    u8 _id_pad[44];
+    void *priv;
+    int (*read)(struct mii_bus *bus, int addr, int regnum);
+    int (*write)(struct mii_bus *bus, int addr, int regnum, u16 val);
+    int (*read_c45)(struct mii_bus *bus, int addr, int devnum, int regnum);
+    int (*write_c45)(struct mii_bus *bus, int addr, int devnum, int regnum, u16 val);
+    int (*reset)(struct mii_bus *bus);
+    struct mdio_bus_stats stats[PHY_MAX_ADDR];
+    u8 _mdio_lock[32];
+    struct device *parent;
+    u32 state;
+    u8 _state_pad[4];
+    struct device dev;
+    struct phy_device *mdio_map[PHY_MAX_ADDR];
+    u32 phy_mask;
+    u32 phy_ignore_ta_mask;
+    int irq[PHY_MAX_ADDR];
+    int reset_delay_us;
+    int reset_post_delay_us;
+    void *reset_gpiod;
+    u8 _shared_lock[32];
+    void *shared[PHY_MAX_ADDR];
 };
 
 int phy_connect_direct(struct net_device *dev, struct phy_device *phydev,
@@ -67,8 +119,11 @@ int phy_modify_paged(struct phy_device *phydev, int page, u32 regnum, u16 mask, 
 int phy_write_mmd(struct phy_device *phydev, int devad, u32 regnum, u16 val);
 int __phy_write_mmd(struct phy_device *phydev, int devad, u32 regnum, u16 val);
 int __phy_modify_mmd(struct phy_device *phydev, int devad, u32 regnum, u16 mask, u16 set);
-struct phy_device *mdiobus_get_phy(void *bus, int addr);
-int mdiobus_read(void *bus, int addr, u32 regnum);
-int mdiobus_write(void *bus, int addr, u32 regnum, u16 val);
+struct phy_device *mdiobus_get_phy(struct mii_bus *bus, int addr);
+int mdiobus_read(struct mii_bus *bus, int addr, u32 regnum);
+int mdiobus_write(struct mii_bus *bus, int addr, u32 regnum, u16 val);
+int __mdiobus_write(struct mii_bus *bus, int addr, u32 regnum, u16 val);
+struct mii_bus *devm_mdiobus_alloc_size(struct device *dev, int sizeof_priv);
+int __devm_mdiobus_register(struct device *dev, struct mii_bus *bus, void *owner);
 
 #endif

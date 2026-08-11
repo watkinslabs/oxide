@@ -13,6 +13,8 @@ use core::ffi::c_void;
 use core::sync::atomic::Ordering;
 use net::{MacAddr, NetDev, NetError, NetIfaceId, NetStats, Pkt};
 use sync::{Modules as ModulesLockClass, Spinlock};
+#[path = "core/adapter.rs"]
+mod adapter;
 #[cfg(any(target_os = "oxide-kernel", feature = "hosted", test))]
 #[path = "rx_helpers.rs"]
 mod rx_helpers;
@@ -21,9 +23,9 @@ use rx_helpers::{l2_frame, resolved_protocol};
 #[cfg(test)]
 use rx_helpers::l3_payload;
 
-const NETDEV_STATE_QUEUE_STOPPED: u32 = 1 << 0;
-const NETDEV_STATE_CARRIER_OFF: u32 = 1 << 1;
-const NETDEV_STATE_TX_LOCKED: u32 = 1 << 2;
+const NETDEV_STATE_CARRIER_OFF: u64 = 1 << 1;
+const NETDEV_STATE_TX_LOCKED: u64 = 1 << 2;
+const QUEUE_STATE_DRV_XOFF: usize = 1 << 0;
 const NAME_FALLBACK: &str = "net";
 const ETHERTYPE_OFFSET: usize = ETH_HLEN - 2;
 
@@ -42,6 +44,7 @@ pub(super) fn export_symbols() {
     export("netdev_priv",       netalloc::netdev_priv       as *const () as usize, false);
     export("ether_setup",       netalloc::ether_setup       as *const () as usize, false);
     export("eth_hw_addr_set",   netalloc::eth_hw_addr_set   as *const () as usize, false);
+    export("dev_addr_mod",      netalloc::dev_addr_mod      as *const () as usize, false);
     export("register_netdev",   register_netdev             as *const () as usize, false);
     export("register_netdevice", register_netdevice          as *const () as usize, false);
     export("unregister_netdev", unregister_netdev           as *const () as usize, false);
@@ -174,27 +177,29 @@ pub(super) unsafe fn netif_rx_for_napi(skbp: *mut LinuxSkBuff) -> i32 {
 /// # C: O(1)
 unsafe extern "C" fn netif_start_queue(dev: *mut LinuxNetDevice) {
     // SAFETY: C caller supplies a net_device pointer or NULL.
-    unsafe { clear_state(dev, NETDEV_STATE_QUEUE_STOPPED); }
+    unsafe { tx_start(first_txq(dev)); }
 }
 /// # C: O(1)
 unsafe extern "C" fn netif_stop_queue(dev: *mut LinuxNetDevice) {
     // SAFETY: C caller supplies a net_device pointer or NULL.
-    unsafe { set_state(dev, NETDEV_STATE_QUEUE_STOPPED); }
+    unsafe { tx_stop(first_txq(dev)); }
 }
 /// # C: O(1)
 unsafe extern "C" fn netif_wake_queue(dev: *mut LinuxNetDevice) {
     // SAFETY: C caller supplies a net_device pointer or NULL.
-    unsafe { clear_state(dev, NETDEV_STATE_QUEUE_STOPPED); }
+    unsafe { tx_start(first_txq(dev)); }
 }
 /// # C: O(1)
-unsafe extern "C" fn netif_tx_wake_queue(dev: *mut LinuxNetDevice) {
-    // SAFETY: C caller supplies a net_device pointer or NULL.
-    unsafe { clear_state(dev, NETDEV_STATE_QUEUE_STOPPED); }
+unsafe extern "C" fn netif_tx_wake_queue(txq: *mut LinuxNetdevQueue) {
+    // SAFETY: C caller supplies a netdev_queue pointer or NULL.
+    unsafe { tx_start(txq); }
 }
 /// # C: O(1)
 unsafe extern "C" fn netif_tx_stop_all_queues(dev: *mut LinuxNetDevice) {
     // SAFETY: C caller supplies a net_device pointer or NULL.
-    unsafe { set_state(dev, NETDEV_STATE_QUEUE_STOPPED); }
+    if dev.is_null() { return; }
+    // SAFETY: dev owns num_tx_queues contiguous queue objects from alloc_netdev*.
+    unsafe { for i in 0..(*dev).num_tx_queues as usize { tx_stop((*dev)._tx.add(i)); } }
 }
 /// # C: O(1)
 unsafe extern "C" fn netif_tx_lock(dev: *mut LinuxNetDevice) {
@@ -221,7 +226,10 @@ unsafe extern "C" fn netif_carrier_off(dev: *mut LinuxNetDevice) {
 unsafe extern "C" fn netif_set_real_num_tx_queues(dev: *mut LinuxNetDevice, n: u32) -> i32 {
     if dev.is_null() || n == 0 { return -LINUX_EINVAL; }
     // SAFETY: dev points to a valid net_device.
-    unsafe { (*dev).real_num_tx_queues = n; }
+    unsafe {
+        if n > (*dev).num_tx_queues { return -LINUX_EINVAL; }
+        (*dev).real_num_tx_queues = n;
+    }
     LINUX_OK
 }
 
@@ -231,6 +239,24 @@ unsafe extern "C" fn netif_set_real_num_rx_queues(dev: *mut LinuxNetDevice, n: u
     // SAFETY: dev points to a valid net_device.
     unsafe { (*dev).real_num_rx_queues = n; }
     LINUX_OK
+}
+
+unsafe fn first_txq(dev: *mut LinuxNetDevice) -> *mut LinuxNetdevQueue {
+    if dev.is_null() { return core::ptr::null_mut(); }
+    // SAFETY: dev is non-null and alloc_netdev* initializes _tx.
+    unsafe { (*dev)._tx }
+}
+
+unsafe fn tx_start(txq: *mut LinuxNetdevQueue) {
+    if txq.is_null() { return; }
+    // SAFETY: state is native-width, naturally aligned storage for queue flags.
+    unsafe { (&*((&(*txq).state) as *const usize as *const core::sync::atomic::AtomicUsize)).fetch_and(!QUEUE_STATE_DRV_XOFF, Ordering::Release); }
+}
+
+unsafe fn tx_stop(txq: *mut LinuxNetdevQueue) {
+    if txq.is_null() { return; }
+    // SAFETY: state is native-width, naturally aligned storage for queue flags.
+    unsafe { (&*((&(*txq).state) as *const usize as *const core::sync::atomic::AtomicUsize)).fetch_or(QUEUE_STATE_DRV_XOFF, Ordering::AcqRel); }
 }
 
 /// # C: O(1)
@@ -275,8 +301,8 @@ impl Drop for LinuxNetAdapter {
         if dev.is_null() { return; }
         // SAFETY: final adapter drop precedes caller-owned net_device release.
         unsafe {
-            (*dev).mc = LinuxNetDevHwAddrList::default();
-            (*dev).uc = LinuxNetDevHwAddrList::default();
+            init_hw_addr_list(&mut (*dev).mc);
+            init_hw_addr_list(&mut (*dev).uc);
         }
     }
 }
@@ -293,16 +319,22 @@ impl LinuxRxAddressStorage {
         -> LinuxNetDevHwAddrList {
         rows.clear();
         rows.extend(addresses.iter().map(|address| Box::new(LinuxNetDevHwAddr {
-            next: 0, addr: address.bytes,
+            list: LinuxListHead::default(), node: [0; 3], addr: address.bytes,
+            addr_type: 0, global_use: 0, _to_sync_cnt: [0; 2], sync_cnt: 0,
+            refcount: 1, synced: 0, callback_head: [0; 2],
         })));
-        let pointers = rows.iter_mut().map(|row| row.as_mut() as *mut _ as usize)
-            .collect::<Vec<_>>();
+        let pointers = rows.iter_mut().map(|row| &mut row.list as *mut _ as usize).collect::<Vec<_>>();
         for index in 0..rows.len() {
-            rows[index].next = pointers.get(index + 1).copied().unwrap_or(0);
+            rows[index].list.next = pointers.get(index + 1).copied().unwrap_or(0);
+            rows[index].list.prev = if index == 0 { 0 } else { pointers[index - 1] };
         }
-        LinuxNetDevHwAddrList {
-            head: pointers.first().copied().unwrap_or(0), count: rows.len() as u32,
+        let mut list = LinuxNetDevHwAddrList::empty();
+        if let Some(&first) = pointers.first() {
+            list.list.next = first;
+            list.list.prev = *pointers.last().unwrap();
         }
+        list.count = rows.len() as i32;
+        list
     }
 
     fn update(&mut self, mode: &net::PacketRxMode)
@@ -313,214 +345,22 @@ impl LinuxRxAddressStorage {
     }
 }
 
-impl NetDev for LinuxNetAdapter {
-    fn name(&self) -> &str { &self.name }
+fn init_hw_addr_list(list: &mut LinuxNetDevHwAddrList) {
+    *list = LinuxNetDevHwAddrList::empty();
+    let head = &mut list.list as *mut _ as usize;
+    list.list.next = head;
+    list.list.prev = head;
+}
 
-    fn mac(&self) -> MacAddr {
-        let dev = self.dev as *const LinuxNetDevice;
-        if dev.is_null() { return MacAddr::ZERO; }
-        // SAFETY: adapter outlives registered net_device.
-        unsafe { MacAddr((*dev).dev_addr) }
-    }
-
-    fn mtu(&self) -> u32 {
-        let dev = self.dev as *const LinuxNetDevice;
-        if dev.is_null() { return ETH_DATA_LEN; }
-        // SAFETY: adapter outlives registered net_device.
-        unsafe { (*dev).mtu }
-    }
-
-    fn hardware_broadcast(&self) -> net::PacketLinkAddress {
-        let dev = self.dev as *const LinuxNetDevice;
-        if dev.is_null() { return net::PacketLinkAddress { len: 0, bytes: [0; net::PACKET_LINK_ADDRESS_MAX] }; }
-        // SAFETY: adapter outlives registered net_device.
-        unsafe {
-            let length = ((*dev).addr_len as usize).min(net::PACKET_LINK_ADDRESS_MAX);
-            let mut bytes = [0; net::PACKET_LINK_ADDRESS_MAX];
-            bytes[..length].copy_from_slice(&(&(*dev).broadcast)[..length]);
-            net::PacketLinkAddress { len: length as u8, bytes }
-        }
-    }
-
-    fn set_hardware_broadcast(&self, address: net::PacketLinkAddress) -> Result<(), NetError> {
-        let dev = self.dev as *mut LinuxNetDevice;
-        if dev.is_null() { return Err(NetError::Enodev); }
-        // SAFETY: adapter outlives registered net_device and the owner validates address width.
-        unsafe {
-            let length = ((*dev).addr_len as usize).min(net::PACKET_LINK_ADDRESS_MAX);
-            if address.len as usize != length { return Err(NetError::Einval); }
-            (&mut (*dev).broadcast)[..length].copy_from_slice(&address.bytes[..length]);
-        }
-        Ok(())
-    }
-
-    fn set_mtu(&self, mtu: u32) -> Result<(), NetError> {
-        let dev = self.dev as *mut LinuxNetDevice;
-        if dev.is_null() { return Err(NetError::Enodev); }
-        // SAFETY: self.dev is the net_device register_netdev recorded; the stack holds this adapter until unregister_netdev, which the driver must call before free_netdev, and the null check above ran.
-        let ops = unsafe { (*dev).netdev_ops };
-        if ops.is_null() { return Err(NetError::Enodev); }
-        // SAFETY: ops is the driver's own net_device_ops table, alive as long as the module owning dev, and non-null per the check above.
-        let change = unsafe { (*ops).ndo_change_mtu }.ok_or(NetError::Eopnotsupp)?;
-        // SAFETY: ndo_change_mtu's KPI contract takes the owning net_device and the new MTU; dev is exactly the pointer the driver registered.
-        let result = unsafe { change(dev, mtu) };
-        match result {
-            LINUX_OK => Ok(()),
-            LINUX_EINVAL => Err(NetError::Einval),
-            LINUX_ENODEV => Err(NetError::Enodev),
-            _ => Err(NetError::Eio),
-        }
-    }
-
-    fn set_mac(&self, mac: MacAddr) -> Result<(), NetError> {
-        let dev = self.dev as *mut LinuxNetDevice;
-        if dev.is_null() { return Err(NetError::Enodev); }
-        // SAFETY: self.dev is the net_device register_netdev recorded and the stack drops this adapter only in unregister_netdev, before the driver may free_netdev; non-null per the check above.
-        let ops = unsafe { (*dev).netdev_ops };
-        if ops.is_null() { return Err(NetError::Enodev); }
-        // SAFETY: ops is the driver's static net_device_ops table reached through the live dev, non-null per the check above.
-        let change = unsafe { (*ops).ndo_set_mac_address }.ok_or(NetError::Eopnotsupp)?;
-        let mut addr = LinuxSockAddr { family: net::uapi::ARPHRD_ETHER, data: [0; 14] };
-        addr.data[..6].copy_from_slice(&mac.0);
-        // SAFETY: ndo_set_mac_address reads a sockaddr; addr is a local LinuxSockAddr with the 14-byte sa_data Linux expects, borrowed only for the duration of this synchronous call.
-        let result = unsafe { change(dev, &mut addr as *mut _ as *mut c_void) };
-        match result {
-            LINUX_OK => Ok(()),
-            LINUX_EINVAL => Err(NetError::Einval),
-            LINUX_ENODEV => Err(NetError::Enodev),
-            95 => Err(NetError::Eopnotsupp),
-            _ => Err(NetError::Eio),
-        }
-    }
-
-    fn set_ifmap(&self, map: net::IfaceMap) -> Result<(), NetError> {
-        let dev = self.dev as *mut LinuxNetDevice;
-        if dev.is_null() { return Err(NetError::Enodev); }
-        // SAFETY: self.dev is the net_device register_netdev recorded; the adapter is dropped in unregister_netdev before the driver frees it, and dev is non-null per the check above.
-        let ops = unsafe { (*dev).netdev_ops };
-        if ops.is_null() { return Err(NetError::Enodev); }
-        // SAFETY: ops is the driver-owned net_device_ops table read from the live dev, non-null per the check above.
-        let change = unsafe { (*ops).ndo_set_config }.ok_or(NetError::Eopnotsupp)?;
-        let mut request = LinuxIfMap { mem_start: map.mem_start, mem_end: map.mem_end,
-            base_addr: map.base_addr, irq: map.irq, dma: map.dma, port: map.port };
-        // SAFETY: ndo_set_config takes a struct ifmap; request is a local LinuxIfMap matching that layout and outlives this synchronous call.
-        match unsafe { change(dev, &mut request) } {
-            LINUX_OK => Ok(()),
-            LINUX_EINVAL => Err(NetError::Einval),
-            LINUX_ENODEV => Err(NetError::Enodev),
-            95 => Err(NetError::Eopnotsupp),
-            _ => Err(NetError::Eio),
-        }
-    }
-
-    fn tx_queue_len(&self) -> u32 {
-        let dev = self.dev as *const LinuxNetDevice;
-        if dev.is_null() { return 0; }
-        // SAFETY: self.dev is the net_device register_netdev recorded and stays live until unregister_netdev drops this adapter; tx_queue_len is a plain u32 field of that allocation.
-        unsafe { (*dev).tx_queue_len }
-    }
-
-    fn set_tx_queue_len(&self, len: u32) -> Result<(), NetError> {
-        let dev = self.dev as *mut LinuxNetDevice;
-        if dev.is_null() { return Err(NetError::Enodev); }
-        // SAFETY: self.dev is the registered net_device, live until unregister_netdev drops this adapter; writing the tx_queue_len field mirrors what Linux does under RTNL for the same device.
-        unsafe { (*dev).tx_queue_len = len; }
-        Ok(())
-    }
-
-    fn address_len(&self) -> u8 {
-        let dev = self.dev as *const LinuxNetDevice;
-        if dev.is_null() { return 0; }
-        // SAFETY: adapter outlives registered net_device.
-        unsafe { core::cmp::min((*dev).addr_len, MAX_ADDR_LEN as u8) }
-    }
-
-    fn retire_namespace(&self) {}
-
-    fn namespace_drop_action(&self) -> net::NamespaceDropAction {
-        net::NamespaceDropAction::MoveToInitial
-    }
-
-    fn packet_rx_mode_changed(&self, mode: &net::PacketRxMode) {
-        let dev = self.dev as *mut LinuxNetDevice;
-        if dev.is_null() { return; }
-        let mut addresses = self.rx_addresses.lock();
-        let (mc, uc) = addresses.update(mode);
-        // SAFETY: adapter retains the registered net_device through this callback.
-        unsafe {
-            if mode.promiscuous { (*dev).flags |= IFF_PROMISC; }
-            else { (*dev).flags &= !IFF_PROMISC; }
-            if mode.all_multicast { (*dev).flags |= IFF_ALLMULTI; }
-            else { (*dev).flags &= !IFF_ALLMULTI; }
-            (*dev).mc = mc;
-            (*dev).uc = uc;
-            let ops = (*dev).netdev_ops;
-            if !ops.is_null() {
-                if let Some(set_rx_mode) = (*ops).ndo_set_rx_mode { set_rx_mode(dev); }
-            }
-        }
-    }
-
-    fn supports_packet_rx_mode(&self) -> bool {
-        let dev = self.dev as *const LinuxNetDevice;
-        if dev.is_null() { return false; }
-        // SAFETY: adapter retains the registered net_device through this query.
-        unsafe { !(*dev).netdev_ops.is_null() && (*(*dev).netdev_ops).ndo_set_rx_mode.is_some() }
-    }
-
-    fn xmit(&self, pkt: Pkt) -> Result<(), NetError> {
-        self.xmit_observed(pkt, &mut |_, _, _| {})
-    }
-
-    fn xmit_observed(&self, pkt: Pkt,
-                     observe: &mut dyn FnMut(&[u8], u16, usize)) -> Result<(), NetError> {
-        self.xmit_l2_observed(pkt, MacAddr::BROADCAST, observe)
-    }
-
-    fn xmit_l2_observed(&self, pkt: Pkt, dst: MacAddr,
-                        observe: &mut dyn FnMut(&[u8], u16, usize)) -> Result<(), NetError> {
-        let protocol = pkt.proto;
-        let mut frame = alloc::vec![0; ETH_HLEN + pkt.len()];
-        net::ethernet::EthHdr::write_to(dst, self.mac(), protocol,
-            &mut frame[..ETH_HLEN]);
-        frame[ETH_HLEN..].copy_from_slice(pkt.data());
-        observe(&frame, protocol, ETH_HLEN);
-        self.xmit_raw(&frame)
-    }
-
-    fn xmit_raw(&self, frame: &[u8]) -> Result<(), NetError> {
-        let dev = self.dev as *mut LinuxNetDevice;
-        if dev.is_null() { return Err(NetError::Enodev); }
-        // SAFETY: dev is valid while registered.
-        let ops = unsafe { (*dev).netdev_ops };
-        if ops.is_null() { return Err(NetError::Enodev); }
-        // SAFETY: ops is a Linux net_device_ops pointer installed by driver.
-        let start = unsafe { (*ops).ndo_start_xmit };
-        let start = match start { Some(f) => f, None => return Err(NetError::Enodev) };
-        let skb = skb::skb_from_frame(frame, dev, frame_protocol(frame));
-        if skb.is_null() { return Err(NetError::Enomem); }
-        // SAFETY: ndo_start_xmit follows Linux ownership rules for skb.
-        let r = unsafe { start(skb, dev) };
-        match r {
-            NETDEV_TX_OK => Ok(()),
-            NETDEV_TX_BUSY => {
-                // SAFETY: NETDEV_TX_BUSY means the driver did not consume the skb.
-                unsafe { skb::kfree_skb(skb); }
-                Err(NetError::Eagain)
-            }
-            _ => Err(NetError::Eio),
-        }
-    }
-
-    fn stats(&self) -> NetStats {
-        let dev = self.dev as *const LinuxNetDevice;
-        if dev.is_null() { return NetStats::default(); }
-        // SAFETY: adapter outlives registered net_device.
-        let s = unsafe { (*dev).stats };
-        NetStats {
-            rx_packets: s.rx_packets, rx_bytes: s.rx_bytes, rx_errors: s.rx_errors, rx_dropped: s.rx_dropped,
-            tx_packets: s.tx_packets, tx_bytes: s.tx_bytes, tx_errors: s.tx_errors, tx_dropped: s.tx_dropped,
-        }
+fn link_hw_addr_list(list: &mut LinuxNetDevHwAddrList, rows: &mut [Box<LinuxNetDevHwAddr>]) {
+    let head = &mut list.list as *mut _ as usize;
+    if rows.is_empty() { list.list.next = head; list.list.prev = head; return; }
+    let pointers = rows.iter_mut().map(|row| &mut row.list as *mut _ as usize).collect::<Vec<_>>();
+    list.list.next = pointers[0];
+    list.list.prev = *pointers.last().unwrap();
+    for index in 0..rows.len() {
+        rows[index].list.prev = if index == 0 { head } else { pointers[index - 1] };
+        rows[index].list.next = if index + 1 == rows.len() { head } else { pointers[index + 1] };
     }
 }
 
@@ -543,13 +383,13 @@ fn frame_protocol(frame: &[u8]) -> u16 {
 }
 
 
-unsafe fn set_state(dev: *mut LinuxNetDevice, bit: u32) {
+unsafe fn set_state(dev: *mut LinuxNetDevice, bit: u64) {
     if dev.is_null() { return; }
     // SAFETY: dev points to a valid net_device state word.
     unsafe { (*dev).state.fetch_or(bit, Ordering::AcqRel); }
 }
 
-unsafe fn clear_state(dev: *mut LinuxNetDevice, bit: u32) {
+unsafe fn clear_state(dev: *mut LinuxNetDevice, bit: u64) {
     if dev.is_null() { return; }
     // SAFETY: dev points to a valid net_device state word.
     unsafe { (*dev).state.fetch_and(!bit, Ordering::AcqRel); }

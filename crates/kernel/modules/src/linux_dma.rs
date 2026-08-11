@@ -1,5 +1,7 @@
 // Linux DMA mapping KPI exports for loadable drivers.
 
+mod pool;
+
 use alloc::alloc::{alloc_zeroed, dealloc, Layout};
 use core::cmp::min;
 use core::ffi::c_void;
@@ -113,6 +115,10 @@ pub fn export_symbols() {
         ("sg_miter_stop",             sg_miter_stop             as *const () as usize),
         ("sgl_alloc_order",           crate::linux_dma_sgl::sgl_alloc_order as *const () as usize),
         ("sgl_free_n_order",          crate::linux_dma_sgl::sgl_free_n_order as *const () as usize),
+        ("dma_pool_create_node",       pool::dma_pool_create_node as *const () as usize),
+        ("dma_pool_destroy",           pool::dma_pool_destroy as *const () as usize),
+        ("dma_pool_alloc",             pool::dma_pool_alloc as *const () as usize),
+        ("dma_pool_free",              pool::dma_pool_free as *const () as usize),
     ] { export(name, addr, false); }
 }
 

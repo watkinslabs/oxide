@@ -1,3 +1,5 @@
+#![allow(dangerous_implicit_autorefs)]
+
 extern crate alloc;
 
 use super::types::*;
@@ -11,10 +13,13 @@ const SKB_HEADROOM: usize = 64;
 const SKB_MIN_CAPACITY: usize = 256;
 const SKB_PROTOCOL_OFFSET: usize = 12;
 
+#[repr(C)]
 struct SkbOwner {
     skb: LinuxSkBuff,
     buf: Vec<u8>,
     mac_header: Option<usize>,
+    hwtstamp_ns: Option<u64>,
+    nr_frags: u8,
     ingress_iface: u32,
     ingress_generation: u64,
 }
@@ -70,8 +75,8 @@ pub(super) extern "C" fn dev_alloc_skb(length: u32) -> *mut LinuxSkBuff {
 /// # C: O(1)
 pub(super) unsafe extern "C" fn kfree_skb(skb: *mut LinuxSkBuff) {
     if skb.is_null() { return; }
-    // SAFETY: skb owner was installed by skb_alloc/from_frame.
-    let owner = unsafe { (*skb).owner as *mut SkbOwner };
+    // SAFETY: LinuxSkBuff is the first member of the allocation owned by SkbOwner.
+    let owner = skb as *mut SkbOwner;
     if owner.is_null() { return; }
     // SAFETY: owner is uniquely reclaimed by the Linux skb free path.
     unsafe { drop(Box::from_raw(owner)); }
@@ -95,9 +100,9 @@ pub(super) unsafe extern "C" fn skb_put(skb: *mut LinuxSkBuff, len: u32) -> *mut
     let len = len as usize;
     // SAFETY: skb points to an owned LinuxSkBuff.
     unsafe {
-        if (*skb).tail.add(len) > (*skb).end { return null_mut(); }
-        let p = (*skb).tail;
-        (*skb).tail = (*skb).tail.add(len);
+        if skb_tail_ptr(skb).add(len) > skb_end_ptr(skb) { return null_mut(); }
+        let p = skb_tail_ptr(skb);
+        skb_set_tail_ptr(skb, p.add(len));
         (*skb).len = (*skb).len.saturating_add(len as u32);
         p
     }
@@ -135,10 +140,10 @@ pub(super) unsafe extern "C" fn skb_reserve(skb: *mut LinuxSkBuff, len: u32) {
     let len = len as usize;
     // SAFETY: skb points to an owned LinuxSkBuff.
     unsafe {
-        let room = ptr_distance((*skb).data, (*skb).end);
+        let room = ptr_distance((*skb).data, skb_end_ptr(skb));
         let n = min(len, room);
         (*skb).data = (*skb).data.add(n);
-        (*skb).tail = (*skb).data;
+        skb_set_tail_ptr(skb, (*skb).data);
         (*skb).len = 0;
     }
 }
@@ -147,7 +152,7 @@ pub(super) unsafe extern "C" fn skb_reserve(skb: *mut LinuxSkBuff, len: u32) {
 pub(super) unsafe extern "C" fn skb_tail_pointer(skb: *const LinuxSkBuff) -> *mut u8 {
     if skb.is_null() { return null_mut(); }
     // SAFETY: skb was null-checked above; tail is a plain pointer field of the LinuxSkBuff embedded at offset 0 of its live SkbOwner allocation.
-    unsafe { (*skb).tail }
+    unsafe { skb_tail_ptr(skb as *mut LinuxSkBuff) }
 }
 
 /// # C: O(1)
@@ -157,7 +162,7 @@ pub(super) unsafe extern "C" fn skb_trim(skb: *mut LinuxSkBuff, len: u32) {
     unsafe {
         if len <= (*skb).len {
             (*skb).len = len;
-            (*skb).tail = (*skb).data.add(len as usize);
+            skb_set_tail_ptr(skb, (*skb).data.add(len as usize));
         }
     }
 }
@@ -223,7 +228,7 @@ pub(super) unsafe extern "C" fn skb_partial_csum_set(skb: *mut LinuxSkBuff, star
     if skb.is_null() { return false; }
     // SAFETY: skb points to an owned LinuxSkBuff.
     unsafe {
-        (*skb).ip_summed = CHECKSUM_PARTIAL;
+        skb_set_ip_summed(skb, CHECKSUM_PARTIAL);
         (*skb).csum_start = start;
         (*skb).csum_offset = off;
     }
@@ -250,7 +255,8 @@ pub(super) unsafe extern "C" fn skb_add_rx_frag_netmem(skb: *mut LinuxSkBuff, _i
         if ensure_room(skb, 0, size as usize) {
             let p = skb_put(skb, size as u32);
             if !p.is_null() { core::ptr::write_bytes(p, 0, size as usize); }
-            (*skb).nr_frags = (*skb).nr_frags.saturating_add(1);
+            let owner = skb as *mut SkbOwner;
+            if !owner.is_null() { (*owner).nr_frags = (*owner).nr_frags.saturating_add(1); }
         }
     }
 }
@@ -301,7 +307,7 @@ pub(super) unsafe extern "C" fn eth_type_trans(skb: *mut LinuxSkBuff, dev: *mut 
         if (*skb).len < ETH_HLEN as u32 { return 0; }
         let p = (*skb).data.add(SKB_PROTOCOL_OFFSET);
         let proto = ((*p as u16) << u8::BITS) | (*p.add(1) as u16);
-        let owner = (*skb).owner as *mut SkbOwner;
+        let owner = skb as *mut SkbOwner;
         if !owner.is_null() {
             (*owner).mac_header = Some((*skb).data.offset_from((*owner).buf.as_ptr()) as usize);
         }
@@ -340,14 +346,20 @@ pub(super) fn skb_from_frame(frame: &[u8], dev: *mut LinuxNetDevice, protocol: u
 fn skb_alloc(size: usize, reserve: usize) -> *mut LinuxSkBuff {
     let cap = size.max(SKB_MIN_CAPACITY);
     let mut owner = Box::new(SkbOwner {
-        skb: LinuxSkBuff {
-            head: null_mut(), data: null_mut(), tail: null_mut(), end: null_mut(),
-            len: 0, protocol: 0, dev: null_mut(), ip_summed: CHECKSUM_NONE,
-            csum_start: 0, csum_offset: 0, queue_mapping: 0, nr_frags: 0,
-            tstamp: 0, hwtstamp: 0, cb: [0; SKB_CB_LEN], owner: null_mut(),
-        },
+        skb: LinuxSkBuff { raw: LinuxSkBuffRaw {
+            head: null_mut(), data: null_mut(), tail: 0, end: 0,
+            len: 0, dev: null_mut(), queue_mapping: 0,
+            next: null_mut(), prev: null_mut(), sk: null_mut(), tstamp: 0, cb: [0; SKB_CB_LEN],
+            refdst: 0, destructor: null_mut(), nfct: 0, data_len: 0, mac_len: 0, hdr_len: 0,
+            flags: 0, active_extensions: 0, _headers_prefix: [0; 8], csum_start: 0,
+            csum_offset: 0, _headers_middle: [0; 36], protocol: 0,
+            _headers_suffix: [0; 10], _tail_pad: [0; 4], truesize: 0,
+            users: 0, extensions: null_mut(),
+        } },
         buf: alloc::vec![0u8; cap],
         mac_header: None,
+        hwtstamp_ns: None,
+        nr_frags: 0,
         ingress_iface: 0,
         ingress_generation: 0,
     });
@@ -357,11 +369,10 @@ fn skb_alloc(size: usize, reserve: usize) -> *mut LinuxSkBuff {
     // SAFETY: base is valid for cap bytes, n <= cap.
     unsafe {
         owner.skb.data = base.add(n);
-        owner.skb.tail = owner.skb.data;
-        owner.skb.end = base.add(cap);
+        owner.skb.tail = n as u32;
+        owner.skb.end = cap as u32;
     }
     let ptr = &mut owner.skb as *mut LinuxSkBuff;
-    owner.skb.owner = (&mut *owner) as *mut SkbOwner as *mut core::ffi::c_void;
     let _ = Box::into_raw(owner);
     ptr
 }
@@ -369,14 +380,14 @@ fn skb_alloc(size: usize, reserve: usize) -> *mut LinuxSkBuff {
 unsafe fn ensure_room(skb: *mut LinuxSkBuff, add_head: usize, add_tail: usize) -> bool {
     if skb.is_null() { return false; }
     // SAFETY: skb owner was installed by skb_alloc/from_frame.
-    let owner = unsafe { (*skb).owner as *mut SkbOwner };
+    let owner = skb as *mut SkbOwner;
     if owner.is_null() { return false; }
     // SAFETY: owner uniquely owns the backing Vec for this skb.
     unsafe {
         let o = &mut *owner;
         let head_off = (*skb).head.offset_from(o.buf.as_ptr()) as usize;
         let data_off = (*skb).data.offset_from(o.buf.as_ptr()) as usize;
-        let tail_off = (*skb).tail.offset_from(o.buf.as_ptr()) as usize;
+        let tail_off = (*skb).tail as usize;
         let new_data_off = data_off + add_head;
         let new_tail_off = tail_off + add_head;
         let need = new_tail_off.saturating_add(add_tail);
@@ -388,8 +399,8 @@ unsafe fn ensure_room(skb: *mut LinuxSkBuff, add_head: usize, add_tail: usize) -
         let base = o.buf.as_mut_ptr();
         (*skb).head = base.add(head_off);
         (*skb).data = base.add(new_data_off);
-        (*skb).tail = base.add(new_tail_off);
-        (*skb).end = base.add(o.buf.len());
+        (*skb).tail = new_tail_off as u32;
+        (*skb).end = o.buf.len() as u32;
     }
     true
 }
@@ -404,24 +415,23 @@ pub(super) unsafe fn skb_copy_to_vec_and_free(skb: *mut LinuxSkBuff)
     let (link, proto, fallback_iface, ingress_iface, ingress_generation, metadata) = unsafe {
         let dev = (*skb).dev;
         let fallback_iface = if dev.is_null() { 0 } else { (*dev).ifindex };
+        let owner = skb as *const SkbOwner;
         let metadata = net::PacketRxMetadata {
-            checksum: match (*skb).ip_summed {
+            checksum: match skb_ip_summed(skb) {
                 CHECKSUM_PARTIAL => net::PacketChecksum::Partial,
                 CHECKSUM_UNNECESSARY => net::PacketChecksum::Valid,
                 _ => net::PacketChecksum::None,
             },
             queue: (*skb).queue_mapping,
             software_timestamp_ns: u64::try_from((*skb).tstamp).ok().filter(|value| *value != 0),
-            raw_hardware_timestamp_ns: u64::try_from((*skb).hwtstamp).ok()
-                .filter(|value| *value != 0),
+            raw_hardware_timestamp_ns: (*owner).hwtstamp_ns,
             ..net::PacketRxMetadata::default()
         };
-        let owner = (*skb).owner as *const SkbOwner;
         if owner.is_null() {
             (None, (*skb).protocol, fallback_iface, 0, 0, metadata)
         } else {
             let link = (*owner).mac_header.and_then(|start| {
-                let tail = (*skb).tail.offset_from((*owner).buf.as_ptr()) as usize;
+                let tail = (*skb).tail as usize;
                 (start <= tail).then(|| (&(*owner).buf)[start..tail].to_vec())
             });
             (link, (*skb).protocol, fallback_iface,
@@ -435,11 +445,19 @@ pub(super) unsafe fn skb_copy_to_vec_and_free(skb: *mut LinuxSkBuff)
     Some((data, link, proto, iface, exact_generation, metadata))
 }
 
+/// Store the receive hardware timestamp in the skb's shared allocation state.
+/// # C: O(1)
+pub(super) unsafe fn skb_set_hwtstamp(skb: *mut LinuxSkBuff, ns: u64) {
+    if skb.is_null() { return; }
+    // SAFETY: every facade skb is the first field of its live SkbOwner allocation.
+    unsafe { (*((skb as *mut SkbOwner))).hwtstamp_ns = Some(ns); }
+}
+
 #[cfg(any(target_os = "oxide-kernel", feature = "hosted"))]
 unsafe fn stamp_ingress(skb: *mut LinuxSkBuff, dev: *mut LinuxNetDevice) {
     if skb.is_null() || dev.is_null() { return; }
     // SAFETY: caller holds live skb and net_device objects during RX classification.
-    let (owner, iface) = unsafe { ((*skb).owner as *mut SkbOwner, (*dev).ifindex) };
+    let (owner, iface) = unsafe { (skb as *mut SkbOwner, (*dev).ifindex) };
     if owner.is_null() || iface == 0 { return; }
     let id = net::NetIfaceId::from_raw(iface);
     let generation = net::sock::stack().ifaces.acquire_ingress(id)
@@ -453,6 +471,21 @@ unsafe fn stamp_ingress(skb: *mut LinuxSkBuff, dev: *mut LinuxNetDevice) {
 
 #[cfg(all(not(target_os = "oxide-kernel"), not(feature = "hosted")))]
 unsafe fn stamp_ingress(_skb: *mut LinuxSkBuff, _dev: *mut LinuxNetDevice) {}
+
+unsafe fn skb_tail_ptr(skb: *mut LinuxSkBuff) -> *mut u8 {
+    // SAFETY: caller supplies a live skb with head and tail established by skb_alloc.
+    unsafe { (*skb).head.add((*skb).tail as usize) }
+}
+
+unsafe fn skb_end_ptr(skb: *mut LinuxSkBuff) -> *mut u8 {
+    // SAFETY: caller supplies a live skb with head and end established by skb_alloc.
+    unsafe { (*skb).head.add((*skb).end as usize) }
+}
+
+unsafe fn skb_set_tail_ptr(skb: *mut LinuxSkBuff, tail: *mut u8) {
+    // SAFETY: caller supplies a tail pointer within the live skb head allocation.
+    unsafe { (*skb).tail = tail.offset_from((*skb).head) as u32; }
+}
 
 fn ptr_distance(start: *const u8, end: *const u8) -> usize {
     (end as usize).saturating_sub(start as usize)

@@ -1,3 +1,5 @@
+#![allow(dangerous_implicit_autorefs)]
+
 use super::*;
 
 struct RxDev;
@@ -74,10 +76,10 @@ fn eth_type_trans_retains_exact_link_frame_after_pull() {
     unsafe {
         (*dev).ifindex = iface.raw();
         let skb = rx_skb(dev);
-        (*skb).ip_summed = CHECKSUM_UNNECESSARY;
+        skb_set_ip_summed(skb, CHECKSUM_UNNECESSARY);
         (*skb).queue_mapping = 7;
         (*skb).tstamp = 11;
-        (*skb).hwtstamp = 22;
+        skb::skb_set_hwtstamp(skb, 22);
         let (l3, link, proto, stamped_iface, generation, metadata) =
             skb::skb_copy_to_vec_and_free(skb).expect("valid skb");
         let link = link.expect("eth_type_trans MAC header");
