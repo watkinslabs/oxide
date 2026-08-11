@@ -7,6 +7,41 @@ use super::common::{ensure_ahci_extra_img, ensure_ahci_img, ensure_nvme_extra_im
 const X86_OVMF_CODE: &str = "/usr/share/OVMF/OVMF_CODE.fd";
 const X86_OVMF_VARS: &str = "/usr/share/OVMF/OVMF_VARS.fd";
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum HardwareProfile { Default, NativePci }
+
+impl HardwareProfile {
+    fn from_env() -> Result<Self, u8> {
+        match std::env::var("OXIDE_QEMU_PROFILE").as_deref() {
+            Err(_) | Ok("default") => Ok(Self::Default),
+            Ok("native-pci") => Ok(Self::NativePci),
+            Ok(value) => {
+                eprintln!("xtask grub: unknown OXIDE_QEMU_PROFILE={value}; expected default or native-pci");
+                Err(2)
+            }
+        }
+    }
+
+    fn nic_device(self) -> &'static str {
+        match self {
+            Self::Default if matches!(std::env::var("OXIDE_QEMU_NIC").as_deref(), Ok("e1000")) =>
+                "e1000,netdev=net0,bus=pcie.0",
+            Self::Default => "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
+            Self::NativePci => "e1000,netdev=net0,bus=pcie.0",
+        }
+    }
+}
+
+fn validate_nic_selector() -> Result<(), u8> {
+    match std::env::var("OXIDE_QEMU_NIC").as_deref() {
+        Err(_) | Ok("virtio") | Ok("e1000") => Ok(()),
+        Ok(value) => {
+            eprintln!("xtask grub: unknown OXIDE_QEMU_NIC={value}; expected virtio or e1000");
+            Err(2)
+        }
+    }
+}
+
 fn x86_uefi_vars(blobs: &std::path::Path) -> Result<std::path::PathBuf, u8> {
     let code = std::path::Path::new(X86_OVMF_CODE);
     let seed = std::path::Path::new(X86_OVMF_VARS);
@@ -51,13 +86,15 @@ pub(super) fn build_grub_iso(
 
 /// Boot the GRUB ISO under QEMU. `OXIDE_QEMU_UEFI=1` selects OVMF; the
 /// default is SeaBIOS. Both firmware paths enter the same GRUB multiboot2
-/// handoff. Attaches the ext4 rootfs as virtio-blk and serial→stdio.
+/// handoff. `native-pci` boots the ext4 rootfs from AHCI and uses e1000.
 pub(super) fn qemu_run_grub_x86_64(
     repo: &std::path::Path,
     id: Option<&str>,
     iso: &std::path::Path,
     smp: u32,
 ) -> Result<(), u8> {
+    let profile = HardwareProfile::from_env()?;
+    validate_nic_selector()?;
     let blobs = crate::buildns::blobs_dir(repo, id);
     let uefi = std::env::var_os("OXIDE_QEMU_UEFI").is_some();
     let ovmf_vars = if uefi { Some(x86_uefi_vars(&blobs)?) } else { None };
@@ -86,7 +123,7 @@ pub(super) fn qemu_run_grub_x86_64(
     // Local physical-framebuffer proof: make std-VGA the firmware display and
     // omit virtio-gpu so the kernel must consume GRUB's framebuffer handoff.
     // Ordinary desktop/smoke launches keep their unchanged virtio-gpu path.
-    let simplefb_only = std::env::var_os("OXIDE_QEMU_SIMPLEFB").is_some();
+    let simplefb_only = profile == HardwareProfile::NativePci || std::env::var_os("OXIDE_QEMU_SIMPLEFB").is_some();
     let legacy_vga = if simplefb_only { "std" } else { "none" };
     let uart_chardev = match std::env::var("OXIDE_QEMU_UART_SOCK") {
         Ok(p) if !p.is_empty() => {
@@ -106,10 +143,7 @@ pub(super) fn qemu_run_grub_x86_64(
     let (uart_chardev, serial_log) = super::serial_log::with_logfile(uart_chardev, "x86_64");
     if let Some(p) = &serial_log { println!("xtask: serial log -> {}", p.display()); }
     let netdev = ssh_fwd_netdev();
-    let nic_device = match std::env::var("OXIDE_QEMU_NIC").as_deref() {
-        Ok("e1000") => "e1000,netdev=net0,bus=pcie.0",
-        _ => "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
-    };
+    let nic_device = profile.nic_device();
     let pcap_args = super::common::pcap_filter_args();
     // vhost-vsock guest CID is a HOST-GLOBAL kernel resource: only one qemu on
     // the whole machine may own a given CID. Hardcoding 3 made concurrent boots
@@ -177,12 +211,6 @@ pub(super) fn qemu_run_grub_x86_64(
         "-m", "4G",
         "-cdrom", iso.to_str().unwrap(),
         "-boot", "d",
-        // Stage-2: ROOT + HOME disks. The kernel identifies each by the
-        // virtio-blk serial (oxide-root / oxide-home) via GET_ID.
-        "-drive", &format!("if=none,id=root,format=raw,file={}", root_img.display()),
-        "-device", "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root,disable-legacy=on,num-queues=2",
-        "-drive", &format!("if=none,id=home,format=raw,file={}", home_img.display()),
-        "-device", "virtio-blk-pci,drive=home,bus=pcie.0,serial=oxide-home,disable-legacy=on,num-queues=2",
         "-netdev", netdev.as_str(),
         "-device", nic_device,
         // -vga none: q35 otherwise adds a default std-VGA that becomes the
@@ -191,31 +219,6 @@ pub(super) fn qemu_run_grub_x86_64(
         // it makes virtio-gpu THE display, so fbcon's rendered console is what
         // the window shows. (Verified: virtio-gpu fb carries the glyphs.)
         "-vga", legacy_vga,
-        // virtio-gpu scanout + virtio-keyboard for the visual console so
-        // fbcon renders + the GTK window takes keyboard input.
-        "-device", "virtio-keyboard-pci,bus=pcie.0",
-        // F458: virtio-mouse (relative pointer) → /dev/input/event1. Relative
-        // (not absolute/tablet) so QMP input-send-event works headless.
-        "-device", "virtio-mouse-pci,id=ptr0,bus=pcie.0",
-        // B1646: virtio-tablet (absolute pointer) → /dev/input/event2. Without
-        // an absolute pointer the host UI has no way to place the guest cursor:
-        // it must grab and feed relative deltas, so the guest cursor and the
-        // host cursor drift apart and clicks land where the guest cursor is,
-        // not where the user is pointing. Declared AFTER the relative mouse so
-        // event0/event1 keep their keyboard/mouse identities.
-        "-device", "virtio-tablet-pci,id=tablet0,bus=pcie.0",
-        // D3.1: virtio-rng entropy source. The kernel seeds its RNG from
-        // this at boot and backs /dev/hwrng with it.
-        "-device", "virtio-rng-pci,bus=pcie.0,disable-legacy=on",
-        // D3.3: virtio-vsock (modern id 0x1053). guest-cid is per-launch
-        // (host-global — see buildns::qemu_vsock_cid); host peer is CID 2.
-        // Needs /dev/vhost-vsock on the host.
-        "-device", vsock_dev.as_str(),
-        // F454: virtio-snd (modern id 0x1059). Null audio backend is enough
-        // for the CONTROLQ probe (config harvest + PCM_INFO); PR-C swaps to
-        // a wav backend to capture real PCM output.
-        "-audiodev", "none,id=snd0",
-        "-device", "virtio-sound-pci,audiodev=snd0,disable-legacy=on,bus=pcie.0",
         // D3.5: NVMe controller + its scratch backing disk (drv-nvme brings
         // it up, registers nvme0n1, self-tests an LBA-0 read).
         "-drive", nvme_drive.as_str(),
@@ -233,6 +236,28 @@ pub(super) fn qemu_run_grub_x86_64(
         "-display", if headless { "none" } else { "gtk" },
         "-no-reboot",
     ]);
+    match profile {
+        HardwareProfile::Default => c.args([
+            "-drive", &format!("if=none,id=root,format=raw,file={}", root_img.display()),
+            "-device", "virtio-blk-pci,drive=root,bus=pcie.0,serial=oxide-root,disable-legacy=on,num-queues=2",
+            "-drive", &format!("if=none,id=home,format=raw,file={}", home_img.display()),
+            "-device", "virtio-blk-pci,drive=home,bus=pcie.0,serial=oxide-home,disable-legacy=on,num-queues=2",
+            "-device", "virtio-keyboard-pci,bus=pcie.0",
+            "-device", "virtio-mouse-pci,id=ptr0,bus=pcie.0",
+            "-device", "virtio-tablet-pci,id=tablet0,bus=pcie.0",
+            "-device", "virtio-rng-pci,bus=pcie.0,disable-legacy=on",
+            "-device", vsock_dev.as_str(),
+            "-audiodev", "none,id=snd0",
+            "-device", "virtio-sound-pci,audiodev=snd0,disable-legacy=on,bus=pcie.0",
+        ]),
+        HardwareProfile::NativePci => c.args([
+            "-device", "ich9-ahci,id=boot-ahci,bus=pcie.0",
+            "-drive", &format!("if=none,id=root,format=raw,file={}", root_img.display()),
+            "-device", "ide-hd,drive=root,bus=boot-ahci.0,serial=oxide-root",
+            "-drive", &format!("if=none,id=home,format=raw,file={}", home_img.display()),
+            "-device", "ide-hd,drive=home,bus=boot-ahci.1,serial=oxide-home",
+        ]),
+    };
     if !simplefb_only {
         c.args(["-device", gpu_dev.as_str()]);
     }
@@ -286,6 +311,17 @@ pub(super) fn qemu_run_grub_x86_64(
         ]);
     }
     let firmware = if uefi { "OVMF" } else { "SeaBIOS" };
-    eprintln!("xtask grub: launching qemu ({firmware}→GRUB→multiboot2), smp={smp}, accel={accel}, headless={headless}");
+    let profile_name = match profile { HardwareProfile::Default => "default", HardwareProfile::NativePci => "native-pci" };
+    eprintln!("xtask grub: launching qemu ({firmware}→GRUB→multiboot2), profile={profile_name}, smp={smp}, accel={accel}, headless={headless}");
     run(c)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HardwareProfile;
+
+    #[test]
+    fn native_profile_selects_the_native_pci_e1000() {
+        assert_eq!(HardwareProfile::NativePci.nic_device(), "e1000,netdev=net0,bus=pcie.0");
+    }
 }

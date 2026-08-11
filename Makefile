@@ -43,7 +43,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
 .PHONY: all build x86 arm kpi-layout \
         build-debug x86-debug arm-debug \
         test lint lint-ratchet lint-ratchet-update audit-counts profile-policy warnings-control stats ci \
-        qemu-x86 qemu-arm qemu-x86-debug qemu-arm-debug qemu-mcp \
+        qemu-x86 qemu-arm qemu-x86-debug qemu-arm-debug qemu-mcp smoke-native-pci-x86 \
         hardware-audit-image-x86 \
         boot-debug-x86 boot-debug-arm smoke-debug smoke-debug-x86 smoke-debug-arm \
         qemu-x86-grub qemu-x86-uefi smoke-uefi-x86 \
@@ -321,6 +321,11 @@ smoke-debug: x86 arm
 # higher default. Override via `make smoke-x86 SMOKE_TIMEOUT=900`.
 smoke-x86: x86
 	./tools/boot-smoke.sh x86 $(SMOKE_TIMEOUT)
+
+# Q35 with a legacy Intel e1000 plus AHCI-root disks, NVMe and a physical
+# framebuffer handoff. This contains no virtio device on the boot path.
+smoke-native-pci-x86: x86
+	OXIDE_QEMU_PROFILE=native-pci ./tools/boot-smoke.sh x86 $(SMOKE_TIMEOUT)
 
 smoke-arm: arm
 	./tools/boot-smoke.sh arm $(SMOKE_TIMEOUT)
