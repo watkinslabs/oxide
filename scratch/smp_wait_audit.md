@@ -6,4 +6,6 @@
 | Prepared resource wait | hold resource gate, enqueue, recheck, unlock, sleep, finish | Pipe ring, eventfd, timerfd, POSIX MQ, all socket receive/send/connect/accept families, TTY, scheduler rwsem, SysV IPC, nanosleep and sigtimedwait now use named prepared APIs. mmap/inode rwsems use keyed reader/writer FIFOs: wake one writer while writers wait, otherwise wake the reader phase. |
 | Scheduler-owned transition | scheduler owns task state and wakeup ordering | kthread parking, migration, quota, inode freeze and worker internals. Retain only after owner-specific review. |
 
-The remaining raw-publication inventory has 12 Rust files, including scheduler internals, wait-wrapper implementations and hosted tests. It is not a count of independent defects. Every production call site must be classified before the raw API is restricted.
+The raw scheduler publication is now confined to `WaitList` and the shared
+predicate helper. The remaining six textual `park` hits are rwsem/SQPOLL
+owner methods and scheduler documentation, not direct `WaitList` calls.
