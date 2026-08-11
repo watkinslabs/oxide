@@ -536,10 +536,12 @@ dependencies = [
  "drv",
  "hal-aarch64",
  "hal-x86_64",
+ "input",
  "mmio-map",
  "pci",
  "pmm",
  "sched",
+ "softirq",
  "sync",
 ]
 

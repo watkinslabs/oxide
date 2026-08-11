@@ -2,7 +2,7 @@
 
 use core::ptr::{read_volatile, write_volatile};
 
-use crate::regs::{geometry, Geometry, CAPLENGTH, DBOFF, HCCPARAMS1, HCSPARAMS1, RTSOFF};
+use crate::regs::{geometry, protocol_for_port, Geometry, PortProtocol, CAPLENGTH, DBOFF, HCCPARAMS1, HCSPARAMS1, RTSOFF};
 use crate::controller::{halt_command, reset_command, reset_complete, USBCMD, USBSTS};
 use crate::controller::{RunPlan, CONFIG, CRCR, DCBAAP, ERDP, ERSTBA, ERSTSZ, IMAN};
 
@@ -130,6 +130,11 @@ impl Mmio {
     pub fn base_va(&self) -> u64 { self.mapping.base_va() }
     /// Bytes in this owned BAR mapping. # C: O(1)
     pub fn bytes(&self) -> u64 { self.bytes }
+
+    /// Protocol declaration governing one root-hub port, if firmware supplied one. # C: O(BAR dwords)
+    pub fn protocol_for_port(&self, port: u8) -> Option<PortProtocol> {
+        protocol_for_port(|offset| self.read32(offset), self.bytes, self.geometry.extended_capabilities, self.geometry.max_ports, port)
+    }
 
     /// Read one aligned dword that geometry has proven lies in BAR0. # C: O(1)
     pub fn read32(&self, offset: u64) -> Option<u32> {
