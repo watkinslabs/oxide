@@ -36,22 +36,7 @@ fn empty_device(name: *const c_char, res: &mut [LinuxResource]) -> PlatformDevic
     PlatformDevice {
         name,
         id: PLATFORM_DEVID_NONE,
-        dev: crate::linux_device::types::LinuxDevice {
-            dma_mask: null_mut(),
-            coherent_dma_mask: u64::MAX,
-            driver_data: null_mut(),
-            parent: null_mut(),
-            bus: null_mut(),
-            class: null_mut(),
-            driver: null_mut(),
-            init_name: name,
-            name: [0; crate::linux_device::types::DEVICE_NAME_LEN],
-            kobj: crate::linux_device::types::LinuxKobject::new(),
-            release: None,
-            of_node: null_mut(),
-            acpi_node: null_mut(),
-            power: crate::linux_pm::types::LinuxDevPmInfo::new(),
-        },
+        dev: crate::linux_device::types::LinuxDevice { init_name: name, coherent_dma_mask: u64::MAX, ..crate::linux_device::types::LinuxDevice::new() },
         num_resources: res.len() as u32,
         resource: res.as_mut_ptr(),
         driver_data: null_mut(),
@@ -75,6 +60,7 @@ fn driver(ids: *const PlatformDeviceId) -> PlatformDriver {
             of_match_table: null(),
             acpi_match_table: null(),
             pm: null(),
+            ..crate::linux_device::types::LinuxDeviceDriver::new()
         },
         id_table: ids,
     }
@@ -117,8 +103,8 @@ fn resources_irqs_and_iomap_translate_linux_resources() {
     let _modules = crate::test_serial::claim();
     reset();
     let mut resources = [
-        LinuxResource { start: TEST_MMIO_START, end: TEST_MMIO_END, name: c"regs".as_ptr(), flags: IORESOURCE_MEM },
-        LinuxResource { start: TEST_IRQ, end: TEST_IRQ, name: c"irq".as_ptr(), flags: IORESOURCE_IRQ },
+        LinuxResource { start: TEST_MMIO_START, end: TEST_MMIO_END, name: c"regs".as_ptr(), flags: IORESOURCE_MEM, desc: 0, parent: core::ptr::null_mut(), sibling: core::ptr::null_mut(), child: core::ptr::null_mut() },
+        LinuxResource { start: TEST_IRQ, end: TEST_IRQ, name: c"irq".as_ptr(), flags: IORESOURCE_IRQ, desc: 0, parent: core::ptr::null_mut(), sibling: core::ptr::null_mut(), child: core::ptr::null_mut() },
     ];
     let mut dev = empty_device(c"resdev".as_ptr(), &mut resources);
     assert_eq!(platform_get_resource(&mut dev, IORESOURCE_MEM as u32, 0), &mut resources[0] as *mut LinuxResource);
@@ -155,7 +141,7 @@ fn firmware_match_tables_return_driver_data() {
     drv.driver.of_match_table = of_ids.as_ptr() as *const c_void;
     drv.driver.acpi_match_table = acpi_ids.as_ptr() as *const c_void;
     dev.dev.of_node = &node as *const DeviceNode as *mut c_void;
-    dev.dev.acpi_node = &acpi as *const AcpiDevice as *mut c_void;
+    dev.dev.fwnode = &acpi as *const AcpiDevice as *mut c_void;
     dev.dev.driver = &mut drv.driver;
 
     assert_eq!(of_match_device(of_ids.as_ptr(), &dev.dev), of_ids.as_ptr());

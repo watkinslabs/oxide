@@ -31,28 +31,23 @@ extern "C" fn kobject_init(kobj: *mut LinuxKobject, ktype: *const LinuxKobjType)
         (*kobj).parent = core::ptr::null_mut();
         (*kobj).kset = core::ptr::null_mut();
         (*kobj).ktype = ktype;
-        (*kobj).private = core::ptr::null_mut();
-        (*kobj).refcount = 1;
-        (*kobj).name_buf = [0; DEVICE_NAME_LEN];
+        (*kobj).entry = [core::ptr::null_mut(); 2];
+        (*kobj).sd = core::ptr::null_mut();
+        (*kobj).kref = 1;
+        (*kobj).state = 1;
     }
     registry::initialize_kobject(kobj as usize);
 }
 
 extern "C" fn kobject_get(kobj: *mut LinuxKobject) -> *mut LinuxKobject {
     if kobj.is_null() { return core::ptr::null_mut(); }
-    // SAFETY: kobj points at initialized Linux kobject storage.
-    unsafe { (*kobj).refcount = (*kobj).refcount.saturating_add(1); }
     registry::get_kobject(kobj as usize);
     kobj
 }
 
 extern "C" fn kobject_put(kobj: *mut LinuxKobject) {
     if kobj.is_null() { return; }
-    // SAFETY: kobj points at initialized Linux kobject storage.
-    let final_put = unsafe {
-        (*kobj).refcount = (*kobj).refcount.saturating_sub(1);
-        (*kobj).refcount == 0
-    };
+    let final_put = registry::put_kobject(kobj as usize);
     if !final_put { return; }
     registry::remove_kobject(kobj as usize);
     // SAFETY: release is the Linux kobject type callback installed by caller.
@@ -74,8 +69,9 @@ unsafe extern "C" fn kobject_set_name(kobj: *mut LinuxKobject, fmt: *const c_cha
     if kobj.is_null() || fmt.is_null() { return -LINUX_EINVAL; }
     // SAFETY: fmt and ap follow Linux printf-style varargs contract.
     unsafe {
-        format_into((*kobj).name_buf.as_mut_ptr(), DEVICE_NAME_LEN, fmt, &mut ap);
-        (*kobj).name = (*kobj).name_buf.as_ptr();
+        let mut name = [0; DEVICE_NAME_LEN];
+        format_into(name.as_mut_ptr(), DEVICE_NAME_LEN, fmt, &mut ap);
+        (*kobj).name = registry::replace_kobject_name(kobj as usize, name);
     }
     LINUX_OK
 }
@@ -126,7 +122,7 @@ mod tests {
         kobject_init(&mut kobj, &ktype);
         // SAFETY: kobject_set_name's varargs contract is satisfied here — the literal format string carries exactly one integer conversion and exactly one int-sized argument is passed for it.
         assert_eq!(unsafe { kobject_set_name(&mut kobj, c"kobj%d".as_ptr(), 7u32) }, LINUX_OK);
-        // SAFETY: the set_name above returned LINUX_OK, so name points into kobj.name_buf (64 bytes) holding "kobj7\0"; offset 4 is the last digit, well inside that buffer.
+        // SAFETY: the set_name above installed a live registry-owned NUL-terminated name buffer.
         assert_eq!(unsafe { *kobject_name(&kobj).add(4) as u8 }, b'7');
         assert_eq!(sysfs_create_file(&mut kobj, &attr), LINUX_OK);
         assert_eq!(attr_count(&mut kobj), 1);

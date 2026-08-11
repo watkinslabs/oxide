@@ -28,10 +28,10 @@ pub(super) fn clear_bit(bits: &mut [usize], bit: u16) {
     }
 }
 
-pub(super) unsafe fn input_to_model(dev: *const LinuxInputDev) -> alloc::boxed::Box<VirtioInputDev> {
+pub(super) unsafe fn input_to_model(dev: *const LinuxInputDev, oxide_key: u32) -> alloc::boxed::Box<VirtioInputDev> {
     // SAFETY: caller validates dev points at a live LinuxInputDev.
     let d = unsafe { &*dev };
-    let mut model = VirtioInputDev::empty_boxed(VirtioChildDeviceKey::from_raw(d.oxide_key));
+    let mut model = VirtioInputDev::empty_boxed(VirtioChildDeviceKey::from_raw(oxide_key));
     model.is_pointer = test_bit(&d.evbit, EV_REL) || test_bit(&d.evbit, EV_ABS);
     model.name_present = !d.name.is_null();
     model.phys_present = !d.phys.is_null();
@@ -72,7 +72,9 @@ pub(super) unsafe fn input_to_model(dev: *const LinuxInputDev) -> alloc::boxed::
     let _ = model.seed_state_bits(EV_SW, &switch_state);
     for axis in 0..ABS_CNT {
         if test_bit(&d.absbit, axis as u16) {
-            let a = d.absinfo[axis];
+            let a = if d.absinfo.is_null() { LinuxInputAbsInfo::default() }
+                // SAFETY: non-null absinfo points to the ABS_CNT element allocation input_set_abs_params installed.
+                else { unsafe { *d.absinfo.add(axis) } };
             model.abs_info[axis] = Some(VirtioInputAbsInfo {
                 min: a.minimum as u32,
                 max: a.maximum as u32,

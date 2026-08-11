@@ -23,6 +23,10 @@ pub(super) struct LinuxResource {
     pub(super) end: u64,
     pub(super) name: *const c_char,
     pub(super) flags: u64,
+    pub(super) desc: u64,
+    pub(super) parent: *mut LinuxResource,
+    pub(super) sibling: *mut LinuxResource,
+    pub(super) child: *mut LinuxResource,
 }
 
 #[repr(C)]

@@ -7,23 +7,15 @@ pub(super) fn alloc_irq_vectors(dev: *mut LinuxPciDev, min_vecs: i32, max_vecs: 
     if (flags & (PCI_IRQ_LEGACY | PCI_IRQ_MSI | PCI_IRQ_MSIX)) == 0 { return -LINUX_EINVAL; }
     if (flags & (PCI_IRQ_MSI | PCI_IRQ_MSIX)) != 0 {
         if let Some((base, count)) = alloc_arch_vectors(min_vecs, max_vecs) {
-            // SAFETY: dev points at a caller-owned Linux struct pci_dev.
-            unsafe {
-                (*dev).irq_vector_base = base;
-                (*dev).irq_vectors = count;
-                (*dev).irq_vector_flags = flags & (PCI_IRQ_MSI | PCI_IRQ_MSIX);
-            }
+            if !super::registry::set_irq_vectors(dev, base, count, flags & (PCI_IRQ_MSI | PCI_IRQ_MSIX)) { return -LINUX_EINVAL; }
             return count;
         }
     }
     if (flags & PCI_IRQ_LEGACY) == 0 || min_vecs > 1 { return -LINUX_ENOSPC; }
     // SAFETY: dev points at a caller-owned Linux struct pci_dev.
-    unsafe {
-        if (*dev).irq == 0 { return -LINUX_ENOSPC; }
-        (*dev).irq_vector_base = (*dev).irq;
-        (*dev).irq_vectors = 1;
-        (*dev).irq_vector_flags = PCI_IRQ_LEGACY;
-    }
+    let irq = unsafe { (*dev).irq };
+    if irq == 0 { return -LINUX_ENOSPC; }
+    if !super::registry::set_irq_vectors(dev, irq, 1, PCI_IRQ_LEGACY) { return -LINUX_EINVAL; }
     1
 }
 
@@ -31,15 +23,9 @@ pub(super) fn alloc_irq_vectors(dev: *mut LinuxPciDev, min_vecs: i32, max_vecs: 
 /// # C: O(N_vec)
 pub(super) fn free_irq_vectors(dev: *mut LinuxPciDev) {
     if dev.is_null() { return; }
-    // SAFETY: dev points at a caller-owned Linux struct pci_dev.
-    unsafe {
-        if ((*dev).irq_vector_flags & (PCI_IRQ_MSI | PCI_IRQ_MSIX)) != 0 {
-            free_arch_vectors((*dev).irq_vector_base, (*dev).irq_vectors);
-        }
-        (*dev).irq_vector_base = 0;
-        (*dev).irq_vectors = 0;
-        (*dev).irq_vector_flags = 0;
-    }
+    let Some((base, count, flags)) = super::registry::irq_vectors(dev) else { return; };
+    if (flags & (PCI_IRQ_MSI | PCI_IRQ_MSIX)) != 0 { free_arch_vectors(base, count); }
+    let _ = super::registry::set_irq_vectors(dev, 0, 0, 0);
 }
 
 fn alloc_arch_vectors(min_vecs: i32, max_vecs: i32) -> Option<(u32, i32)> {

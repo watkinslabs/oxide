@@ -1,5 +1,5 @@
 use super::*;
-use crate::linux_device::types::{LinuxAttribute, LinuxKobject, LINUX_EBUSY};
+use crate::linux_device::types::{LinuxAttribute, LINUX_EBUSY};
 use core::ffi::{c_char, c_void};
 use core::mem::size_of;
 use core::ptr::null_mut;
@@ -7,6 +7,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 static RELEASES: AtomicUsize = AtomicUsize::new(0);
 static ACTIONS: AtomicUsize = AtomicUsize::new(0);
+static ACTION_ORDER: AtomicUsize = AtomicUsize::new(0);
 static PROBES: AtomicUsize = AtomicUsize::new(0);
 static REMOVES: AtomicUsize = AtomicUsize::new(0);
 
@@ -17,6 +18,9 @@ unsafe extern "C" fn release(_dev: *mut LinuxDevice) {
 unsafe extern "C" fn action(_data: *mut c_void) {
     ACTIONS.fetch_add(1, Ordering::Relaxed);
 }
+
+unsafe extern "C" fn release_early_action(_data: *mut c_void) { assert_eq!(ACTION_ORDER.fetch_add(1, Ordering::AcqRel), 1); }
+unsafe extern "C" fn release_late_action(_data: *mut c_void) { assert_eq!(ACTION_ORDER.fetch_add(1, Ordering::AcqRel), 0); }
 
 unsafe extern "C" fn probe(dev: *mut LinuxDevice) -> i32 {
     assert!(!dev.is_null());
@@ -44,12 +48,7 @@ fn cstr_eq(ptr: *const c_char, want: &[u8]) -> bool {
 fn register_drvdata_name_and_release() {
     let _modules = crate::test_serial::claim();
     RELEASES.store(0, Ordering::Relaxed);
-    let mut dev = LinuxDevice {
-        dma_mask: null_mut(), coherent_dma_mask: 0, driver_data: null_mut(),
-        parent: null_mut(), bus: null_mut(), class: null_mut(), driver: null_mut(),
-        init_name: c"sample".as_ptr(), name: [0; DEVICE_NAME_LEN], kobj: LinuxKobject::new(), release: Some(release),
-        of_node: null_mut(), acpi_node: null_mut(), power: crate::linux_pm::types::LinuxDevPmInfo::new(),
-    };
+    let mut dev = LinuxDevice { init_name: c"sample".as_ptr(), release: Some(release), ..LinuxDevice::new() };
     let data = &mut dev as *mut _ as *mut c_void;
     assert_eq!(device_add(&mut dev), LINUX_OK);
     let snap = registry::snapshot(&mut dev as *mut _ as usize).unwrap();
@@ -76,15 +75,11 @@ fn class_bus_driver_and_devres_round_trip() {
     let mut driver = LinuxDeviceDriver {
         name: c"sample-driver".as_ptr(), bus: &mut bus, owner: null_mut(), probe: None, remove: None,
         of_match_table: core::ptr::null(), acpi_match_table: core::ptr::null(), pm: core::ptr::null(),
+        ..LinuxDeviceDriver::new()
     };
     assert_eq!(bus_register(&mut bus), LINUX_OK);
     assert_eq!(driver_register(&mut driver), LINUX_OK);
-    let mut dev = LinuxDevice {
-        dma_mask: null_mut(), coherent_dma_mask: 0, driver_data: null_mut(),
-        parent: null_mut(), bus: &mut bus, class, driver: &mut driver,
-        init_name: c"sample-dev".as_ptr(), name: [0; DEVICE_NAME_LEN], kobj: LinuxKobject::new(), release: None,
-        of_node: null_mut(), acpi_node: null_mut(), power: crate::linux_pm::types::LinuxDevPmInfo::new(),
-    };
+    let mut dev = LinuxDevice { bus: &mut bus, class, driver: &mut driver, init_name: c"sample-dev".as_ptr(), ..LinuxDevice::new() };
     assert_eq!(device_add(&mut dev), LINUX_OK);
     let p = devm_kzalloc(&mut dev, size_of::<usize>(), 0);
     assert!(!p.is_null());
@@ -96,6 +91,19 @@ fn class_bus_driver_and_devres_round_trip() {
     driver_unregister(&mut driver);
     bus_unregister(&mut bus);
     class_destroy(class);
+}
+
+#[test]
+fn devres_releases_actions_in_reverse_acquisition_order() {
+    let _modules = crate::test_serial::claim();
+    ACTION_ORDER.store(0, Ordering::Release);
+    let mut dev = LinuxDevice { init_name: c"devres-order".as_ptr(), ..LinuxDevice::new() };
+    assert_eq!(device_add(&mut dev), LINUX_OK);
+    assert_eq!(devm_add_action_or_reset(&mut dev, Some(release_early_action), null_mut()), LINUX_OK);
+    assert_eq!(devm_add_action_or_reset(&mut dev, Some(release_late_action), null_mut()), LINUX_OK);
+    device_del(&mut dev);
+    put_device(&mut dev);
+    assert_eq!(ACTION_ORDER.load(Ordering::Acquire), 2);
 }
 
 #[test]
@@ -118,15 +126,11 @@ fn driver_register_binds_and_unbinds_bus_devices() {
     PROBES.store(0, Ordering::Relaxed);
     REMOVES.store(0, Ordering::Relaxed);
     let mut bus = LinuxBusType { name: c"bind-bus".as_ptr(), private: null_mut() };
-    let mut dev = LinuxDevice {
-        dma_mask: null_mut(), coherent_dma_mask: 0, driver_data: null_mut(),
-        parent: null_mut(), bus: &mut bus, class: null_mut(), driver: null_mut(),
-        init_name: c"bind-dev".as_ptr(), name: [0; DEVICE_NAME_LEN], kobj: LinuxKobject::new(), release: None,
-        of_node: null_mut(), acpi_node: null_mut(), power: crate::linux_pm::types::LinuxDevPmInfo::new(),
-    };
+    let mut dev = LinuxDevice { bus: &mut bus, init_name: c"bind-dev".as_ptr(), ..LinuxDevice::new() };
     let mut driver = LinuxDeviceDriver {
         name: c"bind-driver".as_ptr(), bus: &mut bus, owner: null_mut(), probe: Some(probe), remove: Some(remove),
         of_match_table: core::ptr::null(), acpi_match_table: core::ptr::null(), pm: core::ptr::null(),
+        ..LinuxDeviceDriver::new()
     };
     assert_eq!(bus_register(&mut bus), LINUX_OK);
     assert_eq!(device_add(&mut dev), LINUX_OK);

@@ -1,6 +1,8 @@
 use super::types::{
     LinuxDevice, LinuxDeviceDriver, LINUX_EBUSY, LINUX_EINVAL, LINUX_ENOMEM, LINUX_OK,
 };
+use alloc::boxed::Box;
+use core::ffi::c_char;
 use sync::{Modules as ModulesLockClass, Spinlock};
 
 const MAX_DEVICE_RECORDS: usize = 64;
@@ -43,6 +45,7 @@ struct DeviceRecord {
 struct KobjectRecord {
     ptr: usize,
     refs: usize,
+    name: usize,
     attrs: [usize; MAX_DEVICE_ATTRS],
     attr_count: usize,
     uevent_seq: u64,
@@ -211,9 +214,32 @@ pub(super) fn get_kobject(ptr: usize) {
     }
 }
 
+pub(super) fn put_kobject(ptr: usize) -> bool {
+    let mut g = KOBJECT_STATE.lock();
+    let Some(slot) = g.iter_mut().find(|r| r.is_some_and(|v| v.ptr == ptr)) else { return false; };
+    let Some(rec) = slot.as_mut() else { return false; };
+    rec.refs = rec.refs.saturating_sub(1);
+    if rec.refs != 0 { return false; }
+    free_kobject_name(rec.name);
+    *slot = None;
+    true
+}
+
 pub(super) fn remove_kobject(ptr: usize) {
     let mut g = KOBJECT_STATE.lock();
-    if let Some(slot) = g.iter_mut().find(|r| r.is_some_and(|v| v.ptr == ptr)) { *slot = None; }
+    if let Some(slot) = g.iter_mut().find(|r| r.is_some_and(|v| v.ptr == ptr)) {
+        if let Some(rec) = slot { free_kobject_name(rec.name); }
+        *slot = None;
+    }
+}
+
+pub(super) fn replace_kobject_name(ptr: usize, name: [c_char; crate::linux_device::types::DEVICE_NAME_LEN]) -> *const c_char {
+    let mut g = KOBJECT_STATE.lock();
+    let Some(rec) = g.iter_mut().flatten().find(|r| r.ptr == ptr) else { return core::ptr::null(); };
+    free_kobject_name(rec.name);
+    let name = Box::into_raw(Box::new(name));
+    rec.name = name as usize;
+    name.cast_const().cast()
 }
 
 pub(super) fn add_kobject_attr(kobj: usize, attr: usize) -> i32 {
@@ -279,8 +305,14 @@ impl DeviceRecord {
 
 impl KobjectRecord {
     fn new(ptr: usize) -> Self {
-        Self { ptr, refs: 1, attrs: [0; MAX_DEVICE_ATTRS], attr_count: 0, uevent_seq: 0 }
+        Self { ptr, refs: 1, name: 0, attrs: [0; MAX_DEVICE_ATTRS], attr_count: 0, uevent_seq: 0 }
     }
+}
+
+fn free_kobject_name(name: usize) {
+    if name == 0 { return; }
+    // SAFETY: `name` was created by Box::into_raw in replace_kobject_name and this owner removes it once.
+    unsafe { drop(Box::from_raw(name as *mut [c_char; crate::linux_device::types::DEVICE_NAME_LEN])); }
 }
 
 fn bind_driver(driver: usize) -> i32 {

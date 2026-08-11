@@ -85,7 +85,9 @@ pub(crate) fn release_device(dev: *mut LinuxDevice) {
             }
         }
     }
-    for rec in records.iter().take(n).flatten() {
+    // Devres is a resource stack: release in reverse acquisition order so a
+    // later dependent action never observes an earlier resource already gone.
+    for rec in records[..n].iter().rev().flatten() {
         if rec.ptr != 0 { free_devres(rec.ptr as *mut c_void); }
         if rec.action != 0 {
             // SAFETY: action was installed by devm_add_action_or_reset with DevresAction ABI.

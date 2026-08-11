@@ -122,21 +122,20 @@ extern "C" fn pci_clear_master(dev: *mut LinuxPciDev) {
 extern "C" fn pci_set_drvdata(dev: *mut LinuxPciDev, data: *mut c_void) {
     if dev.is_null() { return; }
     // SAFETY: dev points at a caller-owned Linux struct pci_dev.
-    unsafe { (*dev).driver_data = data; }
+    unsafe { (*dev).dev.driver_data = data; }
 }
 
 extern "C" fn pci_get_drvdata(dev: *const LinuxPciDev) -> *mut c_void {
     if dev.is_null() { null_mut() } else {
         // SAFETY: dev points at a caller-owned Linux struct pci_dev.
-        unsafe { (*dev).driver_data }
+        unsafe { (*dev).dev.driver_data }
     }
 }
 
 extern "C" fn pci_name(dev: *const LinuxPciDev) -> *const c_char {
     if dev.is_null() { return core::ptr::null(); }
-    populate_name(dev as *mut LinuxPciDev);
     // SAFETY: dev points at a caller-owned Linux struct pci_dev.
-    unsafe { (*dev).name.as_ptr() }
+    unsafe { (*dev).dev.kobj.name }
 }
 
 extern "C" fn pci_resource_start(dev: *const LinuxPciDev, bar: i32) -> u64 {
@@ -255,13 +254,7 @@ extern "C" fn pci_enable_msi(dev: *mut LinuxPciDev) -> i32 {
 
 extern "C" fn pci_disable_msi(dev: *mut LinuxPciDev) {
     if dev.is_null() { return; }
-    // SAFETY: pci_disable_msi's KPI contract is that dev is the struct pci_dev the probe callback
-    // was handed, which registry::bind_model_device keeps Box-alive in BINDINGS until unbind; dev
-    // was checked non-null above, and only the irq_vector_flags word set by alloc_irq_vectors is
-    // read here.
-    let flags = unsafe {
-        (*dev).irq_vector_flags
-    };
+    let flags = super::registry::irq_vectors(dev).map(|(_, _, flags)| flags).unwrap_or(0);
     if flags & PCI_IRQ_MSI != 0 { pci_free_irq_vectors(dev); }
 }
 
@@ -277,11 +270,9 @@ extern "C" fn pci_free_irq_vectors(dev: *mut LinuxPciDev) {
 
 extern "C" fn pci_irq_vector(dev: *mut LinuxPciDev, nr: u32) -> i32 {
     if dev.is_null() { return -LINUX_EINVAL; }
-    // SAFETY: dev points at a caller-owned Linux struct pci_dev.
-    unsafe {
-        if (*dev).irq_vectors <= 0 || nr >= (*dev).irq_vectors as u32 { return -LINUX_EINVAL; }
-        (*dev).irq_vector_base.wrapping_add(nr) as i32
-    }
+    let Some((base, count, _)) = super::registry::irq_vectors(dev) else { return -LINUX_EINVAL; };
+    if count <= 0 || nr >= count as u32 { return -LINUX_EINVAL; }
+    base.wrapping_add(nr) as i32
 }
 
 const PCI_COMMAND_STATUS_OFF: u8 = 0x04;
@@ -341,33 +332,6 @@ pub(super) fn resource_len(r: LinuxResource) -> u64 {
 fn bounded_resource_len(r: LinuxResource, maxlen: usize) -> u64 {
     let len = resource_len(r);
     if maxlen == 0 { len } else { len.min(maxlen as u64) }
-}
-
-fn populate_name(dev: *mut LinuxPciDev) {
-    if dev.is_null() { return; }
-    let addr = bdf(dev);
-    // SAFETY: dev points at a caller-owned Linux struct pci_dev.
-    unsafe {
-        if (*dev).name[0] != 0 { return; }
-        (*dev).name = [0; PCI_NAME_LEN];
-        put_hex(&mut (*dev).name, PCI_DOMAIN_HEX0, (addr.segment >> 12) as u8);
-        put_hex(&mut (*dev).name, PCI_DOMAIN_HEX1, (addr.segment >> 8) as u8);
-        put_hex(&mut (*dev).name, PCI_DOMAIN_HEX2, (addr.segment >> 4) as u8);
-        put_hex(&mut (*dev).name, PCI_DOMAIN_HEX3, addr.segment as u8);
-        (*dev).name[PCI_DOMAIN_BUS_SEP] = b':' as c_char;
-        put_hex(&mut (*dev).name, PCI_BUS_HEX0, addr.bus >> HEX_NIBBLE_SHIFT);
-        put_hex(&mut (*dev).name, PCI_BUS_HEX1, addr.bus);
-        (*dev).name[PCI_SLOT_SEP] = b':' as c_char;
-        put_hex(&mut (*dev).name, PCI_SLOT_HEX0, addr.device >> HEX_NIBBLE_SHIFT);
-        put_hex(&mut (*dev).name, PCI_SLOT_HEX1, addr.device);
-        (*dev).name[PCI_FUNC_SEP] = b'.' as c_char;
-        put_hex(&mut (*dev).name, PCI_FUNC_HEX, addr.function);
-    }
-}
-
-fn put_hex(buf: &mut [c_char; PCI_NAME_LEN], idx: usize, v: u8) {
-    let n = v & HEX_LOW_NIBBLE_MASK;
-    buf[idx] = if n < HEX_DECIMAL_DIGITS { (b'0' + n) as c_char } else { (b'a' + (n - HEX_DECIMAL_DIGITS)) as c_char };
 }
 
 #[cfg(test)]

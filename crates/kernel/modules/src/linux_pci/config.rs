@@ -17,9 +17,9 @@ pub(super) fn bdf(dev: *const LinuxPciDev) -> Bdf {
     unsafe {
         Bdf {
             segment: 0,
-            bus: (*dev).bus,
-            device: ((*dev).devfn >> PCI_DEVFN_DEV_SHIFT) & PCI_SLOT_MASK,
-            function: (*dev).devfn & PCI_FUNC_MASK,
+            bus: 0,
+            device: (((*dev).devfn >> PCI_DEVFN_DEV_SHIFT) as u8) & PCI_SLOT_MASK,
+            function: ((*dev).devfn as u8) & PCI_FUNC_MASK,
         }
     }
 }
@@ -82,8 +82,7 @@ pub(super) fn read16(dev: *mut LinuxPciDev, off: u8) -> u16 {
 pub(super) fn read32(dev: *mut LinuxPciDev, off: u8) -> u32 {
     if dev.is_null() { return u32::MAX; }
     if let Some(v) = hw_read32(bdf(dev), off) { return v; }
-    // SAFETY: dev points at a caller-owned Linux struct pci_dev.
-    unsafe { (*dev).config_space[(off / PCI_CONFIG_ALIGN) as usize] }
+    registry::config_read(dev, (off / PCI_CONFIG_ALIGN) as usize).unwrap_or(u32::MAX)
 }
 
 pub(super) fn write8(dev: *mut LinuxPciDev, off: u8, val: u8) {
@@ -116,8 +115,7 @@ pub(super) fn clear16_w1c(dev: *mut LinuxPciDev, off: u8, mask: u16) {
 pub(super) fn write32(dev: *mut LinuxPciDev, off: u8, val: u32) {
     if dev.is_null() { return; }
     hw_write32(bdf(dev), off, val);
-    // SAFETY: dev points at a caller-owned Linux struct pci_dev.
-    unsafe { (*dev).config_space[(off / PCI_CONFIG_ALIGN) as usize] = val; }
+    let _ = registry::config_write(dev, (off / PCI_CONFIG_ALIGN) as usize, val);
 }
 
 fn config_pos_valid(pos: i32, width: u8) -> bool {

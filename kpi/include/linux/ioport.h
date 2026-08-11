@@ -18,6 +18,8 @@ struct resource {
     resource_size_t end;
     const char *name;
     unsigned long flags;
+    unsigned long desc;
+    struct resource *parent, *sibling, *child;
 };
 
 static inline resource_size_t resource_size(const struct resource *res)

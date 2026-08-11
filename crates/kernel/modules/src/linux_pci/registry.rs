@@ -5,7 +5,7 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use crate::linux_device::types::{LinuxDevice, LinuxKobject, DEVICE_NAME_LEN};
+use crate::linux_device::types::LinuxDevice;
 use core::ffi::c_char;
 use core::mem::MaybeUninit;
 use core::ptr::null_mut;
@@ -39,12 +39,33 @@ struct BindingRecord {
     /// It lives outside `struct pci_dev`: the C KPI does not advertise a
     /// private PCI-only field here, so adding one would shift driver fields.
     _dma_mask: Box<u64>,
+    _name: Box<[c_char; PCI_NAME_LEN]>,
+    runtime: PciRuntime,
     #[allow(dead_code)]
     id: usize,
 }
 
+struct PciRuntime {
+    config: [u32; PCI_CONFIG_DWORDS],
+    saved_config: [u32; PCI_CONFIG_DWORDS],
+    irq_vector_base: u32,
+    irq_vectors: i32,
+    irq_vector_flags: u32,
+    wake_enabled: bool,
+}
+
+impl PciRuntime {
+    const fn new() -> Self {
+        Self { config: [0; PCI_CONFIG_DWORDS], saved_config: [0; PCI_CONFIG_DWORDS],
+               irq_vector_base: 0, irq_vectors: 0, irq_vector_flags: 0, wake_enabled: false }
+    }
+}
+
 static DRIVERS: Spinlock<Vec<DriverRecord>, ModulesLockClass> = Spinlock::new(Vec::new());
 static BINDINGS: Spinlock<Vec<BindingRecord>, ModulesLockClass> = Spinlock::new(Vec::new());
+
+#[cfg(test)]
+static TEST_RUNTIMES: Spinlock<Vec<(usize, PciRuntime)>, ModulesLockClass> = Spinlock::new(Vec::new());
 
 impl Driver for PciModelDriver {
     fn bus(&self) -> &'static str { "pci" }
@@ -101,7 +122,10 @@ fn bind_model_device(slot: usize, model: &Arc<Device>) -> drv::KResult<()> {
     let mut dma_mask = Box::new(model.dma_mask());
     dev.dev.dma_mask = &mut *dma_mask;
     let bdf = pci::parse_bdf_addr(&model.addr).unwrap_or(Bdf { segment: 0, bus: 0, device: 0, function: 0 });
-    if insert_binding(driver as usize, model, dev_ptr as usize, bdf, dma_mask, id as usize).is_err() {
+    let name = pci_bdf_name(&model.addr);
+    // SAFETY: name is binding-owned storage retained until this embedded device is unbound.
+    dev.dev.kobj.name = name.as_ptr();
+    if insert_binding(driver as usize, model, dev_ptr as usize, bdf, dma_mask, name, id as usize).is_err() {
         return Err(drv::Error::Busy);
     }
     // SAFETY: driver came from driver_ptr(slot), i.e. a DriverRecord register_driver installed and
@@ -131,7 +155,8 @@ fn unbind_model_device(slot: usize, model: &Device) {
     unsafe {
         if let Some(remove) = (*(driver as *mut LinuxPciDriver)).remove { remove(dev); }
         (*dev).dev.driver = null_mut();
-        (*dev).driver_data = null_mut();
+        (*dev).dev.driver_data = null_mut();
+        crate::linux_device::core::release_embedded(&mut (*dev).dev);
         drop(Box::from_raw(dev));
     }
 }
@@ -146,44 +171,31 @@ fn make_pci_dev(driver: *mut LinuxPciDriver, model: &Device) -> LinuxPciDev {
         MaybeUninit::zeroed().assume_init()
     };
     dev.dev = LinuxDevice {
-        dma_mask: null_mut(),
         coherent_dma_mask: model.coherent_dma_mask(),
-        driver_data: null_mut(),
-        parent: null_mut(),
-        bus: null_mut(),
-        class: null_mut(),
-        // SAFETY: driver is the pci_driver from driver_ptr(slot) (register_driver installed it and
-        // unregister_driver has not run), so its embedded struct device_driver is live for at
-        // least as long as this pci_dev; the borrow is immediately coerced to the *mut stored in
-        // dev.driver and never kept as a reference.
-        driver: unsafe {
-            &mut (*driver).driver
-        },
-        init_name: core::ptr::null(),
-        name: [0; DEVICE_NAME_LEN],
-        kobj: LinuxKobject::new(),
-        release: None,
-        of_node: null_mut(),
-        acpi_node: null_mut(),
-        power: crate::linux_pm::types::LinuxDevPmInfo::new(),
+        // SAFETY: driver remains registered for the lifetime of this binding record.
+        driver: unsafe { &mut (*driver).driver },
+        ..LinuxDevice::new()
     };
     dev.vendor = model.vendor_id;
     dev.device = model.device_id;
     dev.subsystem_vendor = 0;
     dev.subsystem_device = 0;
     dev.class = model.class;
-    dev.bus = bdf.bus;
-    dev.devfn = ((bdf.device & PCI_SLOT_MASK) << PCI_SLOT_SHIFT) | (bdf.function & PCI_FUNC_MASK);
+    dev.devfn = (((bdf.device & PCI_SLOT_MASK) << PCI_SLOT_SHIFT) | (bdf.function & PCI_FUNC_MASK)) as u32;
     dev.irq = 0;
     for r in model.resources.iter() {
         let idx = r.bar as usize;
         if idx < PCI_STD_NUM_BARS {
-            dev.resource[idx] = LinuxResource { start: r.start, end: r.end, name: core::ptr::null(), flags: r.flags };
+            dev.resource[idx] = LinuxResource {
+                start: r.start, end: r.end, name: core::ptr::null(), flags: r.flags,
+                desc: 0, parent: null_mut(), sibling: null_mut(), child: null_mut(),
+            };
         }
     }
     dev.current_state = PCI_D0;
-    dev.driver_data = null_mut();
-    fill_device_name(&mut dev, &model.addr);
+    crate::linux_device::core::initialize_embedded(&mut dev.dev);
+    // SAFETY: driver remains registered for the lifetime of this binding record.
+    dev.dev.driver = unsafe { &mut (*driver).driver };
     dev
 }
 
@@ -233,11 +245,12 @@ fn id_is_sentinel(id: &LinuxPciDeviceId) -> bool {
 }
 
 fn insert_binding(
-    driver: usize, model: &Arc<Device>, dev: usize, bdf: Bdf, dma_mask: Box<u64>, id: usize,
+    driver: usize, model: &Arc<Device>, dev: usize, bdf: Bdf, dma_mask: Box<u64>, name: Box<[c_char; PCI_NAME_LEN]>, id: usize,
 ) -> Result<(), ()> {
     let mut g = BINDINGS.lock();
     if g.iter().any(|r| r.driver == driver && Arc::ptr_eq(&r.model, model)) { return Err(()); }
-    g.push(BindingRecord { driver, model: Arc::clone(model), dev, bdf, _dma_mask: dma_mask, id });
+    g.push(BindingRecord { driver, model: Arc::clone(model), dev, bdf, _dma_mask: dma_mask, _name: name,
+                           runtime: PciRuntime::new(), id });
     Ok(())
 }
 
@@ -245,6 +258,99 @@ fn insert_binding(
 pub(super) fn bdf_for(dev: *const LinuxPciDev) -> Option<Bdf> {
     if dev.is_null() { return None; }
     BINDINGS.lock().iter().find(|r| r.dev == dev as usize).map(|r| r.bdf)
+}
+
+pub(super) fn config_read(dev: *const LinuxPciDev, word: usize) -> Option<u32> {
+    if let Some(value) = BINDINGS.lock().iter().find(|r| r.dev == dev as usize).map(|r| r.runtime.config[word]) { return Some(value); }
+    #[cfg(test)] { return TEST_RUNTIMES.lock().iter().find(|r| r.0 == dev as usize).map(|r| r.1.config[word]); }
+    #[cfg(not(test))] { None }
+}
+
+pub(super) fn config_write(dev: *mut LinuxPciDev, word: usize, value: u32) -> bool {
+    let mut g = BINDINGS.lock();
+    if let Some(rec) = g.iter_mut().find(|r| r.dev == dev as usize) { rec.runtime.config[word] = value; return true; }
+    drop(g);
+    #[cfg(test)] {
+        let mut tests = TEST_RUNTIMES.lock();
+        if let Some((_, rec)) = tests.iter_mut().find(|r| r.0 == dev as usize) { rec.config[word] = value; return true; }
+        let mut rec = PciRuntime::new();
+        rec.config[word] = value;
+        tests.push((dev as usize, rec));
+        return true;
+    }
+    #[cfg(not(test))] { false }
+}
+
+pub(super) fn save_config(dev: *mut LinuxPciDev) -> bool {
+    let mut g = BINDINGS.lock();
+    if let Some(rec) = g.iter_mut().find(|r| r.dev == dev as usize) { rec.runtime.saved_config = rec.runtime.config; return true; }
+    drop(g);
+    #[cfg(test)] {
+        if let Some((_, rec)) = TEST_RUNTIMES.lock().iter_mut().find(|r| r.0 == dev as usize) { rec.saved_config = rec.config; return true; }
+        return false;
+    }
+    #[cfg(not(test))] { false }
+}
+
+pub(super) fn restore_config(dev: *mut LinuxPciDev) -> bool {
+    let mut g = BINDINGS.lock();
+    if let Some(rec) = g.iter_mut().find(|r| r.dev == dev as usize) { rec.runtime.config = rec.runtime.saved_config; return true; }
+    drop(g);
+    #[cfg(test)] {
+        if let Some((_, rec)) = TEST_RUNTIMES.lock().iter_mut().find(|r| r.0 == dev as usize) { rec.config = rec.saved_config; return true; }
+        return false;
+    }
+    #[cfg(not(test))] { false }
+}
+
+pub(super) fn irq_vectors(dev: *const LinuxPciDev) -> Option<(u32, i32, u32)> {
+    if let Some(value) = BINDINGS.lock().iter().find(|r| r.dev == dev as usize)
+        .map(|r| (r.runtime.irq_vector_base, r.runtime.irq_vectors, r.runtime.irq_vector_flags)) { return Some(value); }
+    #[cfg(test)] { return TEST_RUNTIMES.lock().iter().find(|r| r.0 == dev as usize)
+        .map(|r| (r.1.irq_vector_base, r.1.irq_vectors, r.1.irq_vector_flags)); }
+    #[cfg(not(test))] { None }
+}
+
+pub(super) fn set_irq_vectors(dev: *mut LinuxPciDev, base: u32, count: i32, flags: u32) -> bool {
+    let mut g = BINDINGS.lock();
+    if let Some(rec) = g.iter_mut().find(|r| r.dev == dev as usize) {
+        rec.runtime.irq_vector_base = base; rec.runtime.irq_vectors = count; rec.runtime.irq_vector_flags = flags; return true;
+    }
+    drop(g);
+    #[cfg(test)] {
+        let mut tests = TEST_RUNTIMES.lock();
+        if let Some((_, rec)) = tests.iter_mut().find(|r| r.0 == dev as usize) {
+            rec.irq_vector_base = base; rec.irq_vectors = count; rec.irq_vector_flags = flags; return true;
+        }
+        let mut rec = PciRuntime::new();
+        rec.irq_vector_base = base; rec.irq_vectors = count; rec.irq_vector_flags = flags;
+        tests.push((dev as usize, rec));
+        return true;
+    }
+    #[cfg(not(test))] { false }
+}
+
+pub(super) fn set_wake_enabled(dev: *mut LinuxPciDev, enabled: bool) -> bool {
+    let mut g = BINDINGS.lock();
+    if let Some(rec) = g.iter_mut().find(|r| r.dev == dev as usize) { rec.runtime.wake_enabled = enabled; return true; }
+    drop(g);
+    #[cfg(test)] {
+        if let Some((_, rec)) = TEST_RUNTIMES.lock().iter_mut().find(|r| r.0 == dev as usize) { rec.wake_enabled = enabled; return true; }
+        return false;
+    }
+    #[cfg(not(test))] { false }
+}
+
+#[cfg(test)]
+pub(super) fn test_register_runtime(dev: *mut LinuxPciDev) {
+    let mut g = TEST_RUNTIMES.lock();
+    g.retain(|r| r.0 != dev as usize);
+    g.push((dev as usize, PciRuntime::new()));
+}
+
+#[cfg(test)]
+pub(super) fn test_wake_enabled(dev: *const LinuxPciDev) -> bool {
+    TEST_RUNTIMES.lock().iter().find(|r| r.0 == dev as usize).is_some_and(|r| r.1.wake_enabled)
 }
 
 fn remove_binding(model: &Arc<Device>, driver: usize) {
@@ -267,7 +373,7 @@ fn remove_binding_by_model(model: &Device, driver: usize) -> Option<BindingRecor
 /// # C: O(N_bindings)
 pub(crate) fn sync_dma_masks(dev: *mut crate::linux_dma::LinuxDevice, streaming: Option<u64>, coherent: Option<u64>) {
     let model = BINDINGS.lock().iter()
-        .find(|rec| rec.dev == dev as usize)
+        .find(|rec| rec.dev + core::mem::offset_of!(LinuxPciDev, dev) == dev as usize)
         .map(|rec| Arc::clone(&rec.model));
     let Some(model) = model else { return; };
     if let Some(mask) = streaming { model.set_dma_mask(mask); }
@@ -318,9 +424,10 @@ unsafe fn copy_driver_name(ptr: *const c_char) -> String {
     s
 }
 
-fn fill_device_name(dev: &mut LinuxPciDev, name: &str) {
-    fill_cstr(&mut dev.name, name);
-    fill_cstr(&mut dev.dev.name, name);
+fn pci_bdf_name(name: &str) -> Box<[c_char; PCI_NAME_LEN]> {
+    let mut out = Box::new([0; PCI_NAME_LEN]);
+    fill_cstr(&mut *out, name);
+    out
 }
 
 fn fill_cstr<const N: usize>(dst: &mut [c_char; N], src: &str) {

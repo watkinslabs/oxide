@@ -4,6 +4,12 @@
 #include <linux/types.h>
 
 struct device;
+struct wakeup_source;
+struct wake_irq;
+struct pm_subsys_data;
+struct dev_pm_qos;
+struct list_head;
+typedef struct { int counter; } atomic_t;
 
 #define PM_EVENT_ON 0x0000
 #define PM_EVENT_FREEZE 0x0001
@@ -31,15 +37,55 @@ typedef struct pm_message {
 #define RPM_SUSPENDING 3
 
 struct dev_pm_info {
+    pm_message_t power_state;
+    bool can_wakeup:1;
+    bool async_suspend:1;
+    bool in_dpm_list:1;
+    bool is_prepared:1;
+    bool is_suspended:1;
+    bool is_noirq_suspended:1;
+    bool is_late_suspended:1;
+    bool no_pm:1;
+    bool early_init:1;
+    bool direct_complete:1;
+    unsigned char __power_flags_pad[2];
+    u32 driver_flags;
+    u32 lock;
+    struct list_head *entry_words[2];
+    unsigned char completion[32];
+    struct wakeup_source *wakeup;
+    bool work_in_progress;
+    unsigned char __runtime_prefix[143];
+    atomic_t usage_count;
+    atomic_t child_count;
+    unsigned char disable_depth:3;
+    bool idle_notification:1;
+    bool request_pending:1;
+    bool deferred_resume:1;
+    bool needs_force_resume:1;
+    bool runtime_auto:1;
+    bool ignore_children:1;
+    bool no_callbacks:1;
+    bool irq_safe:1;
+    bool use_autosuspend:1;
+    bool timer_autosuspends:1;
+    bool memalloc_noio:1;
+    u32 links_count;
+    int request;
     int runtime_status;
-    int disable_depth;
-    int usage_count;
+    int last_status;
     int runtime_error;
     int autosuspend_delay;
-    unsigned long last_busy;
-    bool use_autosuspend;
-    bool can_wakeup;
-    bool wakeup_enabled;
+    u32 __runtime_pad;
+    u64 last_busy;
+    u64 active_time;
+    u64 suspended_time;
+    u64 accounting_timestamp;
+    struct pm_subsys_data *subsys_data;
+    void (*set_latency_tolerance)(struct device *, s32);
+    struct dev_pm_qos *qos;
+    bool detach_power_off:1;
+    unsigned char __tail[7];
 };
 
 struct dev_pm_ops {

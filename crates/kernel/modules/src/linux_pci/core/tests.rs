@@ -70,29 +70,28 @@ fn pci_kpi_structures_match_the_c_header_abi() {
     use crate::linux_device::types::{LinuxDevice, LinuxDeviceDriver, LinuxKobject};
     use crate::linux_pm::types::LinuxDevPmInfo;
 
-    assert_eq!((size_of::<LinuxKobject>(), align_of::<LinuxKobject>()), (112, 8));
-    assert_eq!((size_of::<LinuxDevPmInfo>(), align_of::<LinuxDevPmInfo>()), (40, 8));
-    assert_eq!((size_of::<LinuxDevice>(), align_of::<LinuxDevice>()), (304, 8));
-    assert_eq!(offset_of!(LinuxDevice, dma_mask), 0);
-    assert_eq!(offset_of!(LinuxDevice, kobj), 128);
-    assert_eq!(offset_of!(LinuxDevice, power), 264);
-    assert_eq!((size_of::<LinuxDeviceDriver>(), align_of::<LinuxDeviceDriver>()), (64, 8));
-    assert_eq!((size_of::<LinuxResource>(), align_of::<LinuxResource>()), (32, 8));
-    assert_eq!((size_of::<LinuxPciDev>(), align_of::<LinuxPciDev>()), (1080, 8));
-    assert_eq!(offset_of!(LinuxPciDev, vendor), 304);
-    assert_eq!(offset_of!(LinuxPciDev, resource), 328);
-    assert_eq!(offset_of!(LinuxPciDev, config_space), 528);
-    assert_eq!(offset_of!(LinuxPciDev, saved_config_space), 812);
-    assert_eq!(offset_of!(LinuxPciDev, current_state), 1068);
-    assert_eq!((size_of::<LinuxPciDriver>(), align_of::<LinuxPciDriver>()), (96, 8));
-    assert_eq!(offset_of!(LinuxPciDriver, driver), 32);
+    assert_eq!((size_of::<LinuxKobject>(), align_of::<LinuxKobject>()), (64, 8));
+    assert_eq!((size_of::<LinuxDevPmInfo>(), align_of::<LinuxDevPmInfo>()), (320, 8));
+    assert_eq!((size_of::<LinuxDevice>(), align_of::<LinuxDevice>()), (776, 8));
+    assert_eq!(offset_of!(LinuxDevice, kobj), 0);
+    assert_eq!(offset_of!(LinuxDevice, dma_mask), 600);
+    assert_eq!(offset_of!(LinuxDevice, power), 232);
+    assert_eq!((size_of::<LinuxDeviceDriver>(), align_of::<LinuxDeviceDriver>()), (152, 8));
+    assert_eq!((size_of::<LinuxResource>(), align_of::<LinuxResource>()), (64, 8));
+    assert_eq!((size_of::<LinuxPciDev>(), align_of::<LinuxPciDev>()), (2736, 8));
+    assert_eq!(offset_of!(LinuxPciDev, vendor), 60);
+    assert_eq!(offset_of!(LinuxPciDev, current_state), 160);
+    assert_eq!(offset_of!(LinuxPciDev, dev), 200);
+    assert_eq!(offset_of!(LinuxPciDev, resource), 984);
+    assert_eq!(offset_of!(LinuxPciDev, saved_config_space), 2152);
+    assert_eq!((size_of::<LinuxPciDriver>(), align_of::<LinuxPciDriver>()), (288, 8));
+    assert_eq!(offset_of!(LinuxPciDriver, driver), 104);
 }
 
 fn test_dev() -> LinuxPciDev {
     // SAFETY: repr(C) KPI structs are plain data and zero is a valid empty state for tests.
     let mut dev: LinuxPciDev = unsafe { MaybeUninit::zeroed().assume_init() };
-    dev.bus = TEST_BUS;
-    dev.devfn = TEST_DEVFN;
+    dev.devfn = TEST_DEVFN as u32;
     dev.irq = TEST_IRQ;
     dev.vendor = TEST_VENDOR;
     dev.device = TEST_DEVICE;
@@ -101,8 +100,22 @@ fn test_dev() -> LinuxPciDev {
         end: TEST_MMIO_END,
         name: c"bar0".as_ptr(),
         flags: pci::IORESOURCE_MEM,
+        desc: 0,
+        parent: core::ptr::null_mut(),
+        sibling: core::ptr::null_mut(),
+        child: core::ptr::null_mut(),
     };
     dev
+}
+
+fn cfg_set(dev: &mut LinuxPciDev, word: usize, value: u32) {
+    assert_eq!(pci_write_config_dword(dev, (word * 4) as i32, value), LINUX_OK);
+}
+
+fn cfg_get(dev: &mut LinuxPciDev, word: usize) -> u32 {
+    let mut value = 0;
+    assert_eq!(pci_read_config_dword(dev, (word * 4) as i32, &mut value), LINUX_OK);
+    value
 }
 
 fn cstr_eq(ptr: *const c_char, want: &[u8]) -> bool {
@@ -125,12 +138,12 @@ unsafe extern "C" fn model_probe(dev: *mut LinuxPciDev, id: *const LinuxPciDevic
         assert_eq!((*dev).class, TEST_MODEL_CLASS);
         assert_eq!((*dev).resource[TEST_BAR_IDX].start, TEST_MMIO_START);
         assert!(pci_get_drvdata(dev).is_null());
-        assert!(cstr_eq((*dev).name.as_ptr(), b"0000:02:03.1"));
-        assert!(cstr_eq((*dev).dev.name.as_ptr(), b"0000:02:03.1"));
+        assert!(cstr_eq((*dev).dev.kobj.name, b"0000:02:03.1"));
+        assert!(cstr_eq((*dev).dev.kobj.name, b"0000:02:03.1"));
         assert!((*dev).dev.init_name.is_null());
         assert_eq!((*id).driver_data, TEST_MODEL_DRIVER_DATA);
-        assert_eq!(crate::linux_dma::dma_set_mask(dev.cast(), TEST_STREAMING_DMA_MASK), LINUX_OK);
-        assert_eq!(crate::linux_dma::dma_set_coherent_mask(dev.cast(), TEST_COHERENT_DMA_MASK), LINUX_OK);
+        assert_eq!(crate::linux_dma::dma_set_mask(&mut (*dev).dev, TEST_STREAMING_DMA_MASK), LINUX_OK);
+        assert_eq!(crate::linux_dma::dma_set_coherent_mask(&mut (*dev).dev, TEST_COHERENT_DMA_MASK), LINUX_OK);
     }
     MODEL_PROBES.fetch_add(1, Ordering::SeqCst);
     pci_set_drvdata(dev, TEST_MODEL_DRIVER_DATA as *mut c_void);
@@ -155,7 +168,6 @@ fn register_resources_iomap_and_irq_vectors() {
     pci_iounmap(&mut dev, ptr);
     assert_eq!(pci_alloc_irq_vectors(&mut dev, TEST_VECTOR_COUNT, TEST_VECTOR_COUNT, PCI_IRQ_LEGACY), TEST_VECTOR_COUNT);
     assert_eq!(pci_irq_vector(&mut dev, TEST_VECTOR_NR), TEST_IRQ as i32);
-    assert_eq!(dev.irq_vector_flags, PCI_IRQ_LEGACY);
     pci_free_irq_vectors(&mut dev);
     pci_release_region(&mut dev, TEST_BAR);
 }
@@ -198,7 +210,6 @@ fn msi_irq_vectors_allocate_and_free_arch_vectors() {
     let base = pci_irq_vector(&mut dev, TEST_VECTOR_NR);
     assert!(base > 0);
     assert_eq!(pci_irq_vector(&mut dev, TEST_VECTOR_NR_ONE), base + 1);
-    assert_eq!(dev.irq_vector_flags, PCI_IRQ_MSI);
     pci_free_irq_vectors(&mut dev);
     assert_eq!(pci_irq_vector(&mut dev, TEST_VECTOR_NR), -LINUX_EINVAL);
     assert_eq!(
@@ -223,24 +234,25 @@ fn config_helpers_update_fallback_config_space() {
     assert_eq!(pci_write_config_byte(&mut dev, TEST_CFG_BYTE_OFF, TEST_CFG_PATCH_BYTE), LINUX_OK);
     assert_eq!(pci_read_config_dword(&mut dev, TEST_CFG_DWORD_OFF, &mut d), LINUX_OK);
     assert_eq!(d, TEST_CFG_PATCHED_DWORD);
-    assert!(cstr_eq(pci_name(&dev), b"0000:02:03.1"));
+    assert!(pci_name(&dev).is_null());
 }
 
 #[test]
 fn pci_status_returns_and_clears_only_error_bits() {
     let _modules = crate::test_serial::claim();
     let mut dev = test_dev();
-    dev.config_space[1] = (TEST_PCI_STATUS_ERRORS as u32) << 16 | TEST_PCI_STATUS_CAP_LIST;
+    cfg_set(&mut dev, 1, (TEST_PCI_STATUS_ERRORS as u32) << 16 | TEST_PCI_STATUS_CAP_LIST);
     assert_eq!(super::super::status::pci_status_get_and_clear_errors(&mut dev), TEST_PCI_STATUS_ERRORS as i32);
-    assert_eq!(dev.config_space[1] >> 16, TEST_PCI_STATUS_CAP_LIST >> 16);
+    assert_eq!(cfg_get(&mut dev, 1) >> 16, TEST_PCI_STATUS_CAP_LIST >> 16);
 }
 
 #[test]
 fn pci_presence_rejects_the_no_device_vendor_id() {
     let _modules = crate::test_serial::claim();
     let mut dev = test_dev();
+    cfg_set(&mut dev, 0, u32::from(TEST_DEVICE) << 16 | u32::from(TEST_VENDOR));
     assert!(super::super::config::pci_device_is_present(&mut dev));
-    dev.config_space[0] = u32::MAX;
+    cfg_set(&mut dev, 0, u32::MAX);
     assert!(!super::super::config::pci_device_is_present(&mut dev));
     assert!(!super::super::config::pci_device_is_present(core::ptr::null_mut()));
 }
@@ -249,14 +261,14 @@ fn pci_presence_rejects_the_no_device_vendor_id() {
 fn pcie_readrq_updates_only_the_express_device_control_field() {
     let _modules = crate::test_serial::claim();
     let mut dev = test_dev();
-    dev.config_space[1] = TEST_PCI_STATUS_CAP_LIST;
-    dev.config_space[TEST_PCIE_CAP_POINTER] = 0x40;
-    dev.config_space[TEST_PCIE_CAP] = 0x10;
-    dev.config_space[TEST_PCIE_DEVCTL] = 0x05aa;
+    cfg_set(&mut dev, 1, TEST_PCI_STATUS_CAP_LIST);
+    cfg_set(&mut dev, TEST_PCIE_CAP_POINTER, 0x40);
+    cfg_set(&mut dev, TEST_PCIE_CAP, 0x10);
+    cfg_set(&mut dev, TEST_PCIE_DEVCTL, 0x05aa);
     assert_eq!(super::super::pcie::pcie_set_readrq(&mut dev, 512), LINUX_OK);
-    assert_eq!(dev.config_space[TEST_PCIE_DEVCTL], 0x05aa | TEST_PCIE_READRQ_512 as u32);
+    assert_eq!(cfg_get(&mut dev, TEST_PCIE_DEVCTL), 0x05aa | TEST_PCIE_READRQ_512 as u32);
     assert_eq!(super::super::pcie::pcie_set_readrq(&mut dev, 192), -LINUX_EINVAL);
-    assert_eq!(dev.config_space[TEST_PCIE_DEVCTL], 0x05aa | TEST_PCIE_READRQ_512 as u32);
+    assert_eq!(cfg_get(&mut dev, TEST_PCIE_DEVCTL), 0x05aa | TEST_PCIE_READRQ_512 as u32);
 }
 
 #[test]

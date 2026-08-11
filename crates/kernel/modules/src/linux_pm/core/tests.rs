@@ -1,5 +1,5 @@
 use super::*;
-use crate::linux_device::types::{DEVICE_NAME_LEN, LinuxBusType, LinuxDeviceDriver};
+use crate::linux_device::types::{LinuxBusType, LinuxDeviceDriver};
 use core::ptr::null_mut;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -30,18 +30,14 @@ unsafe extern "C" fn system_resume(_dev: *mut LinuxDevice) -> i32 {
 
 fn test_dev(ops: &LinuxDevPmOps, driver: &mut LinuxDeviceDriver) -> LinuxDevice {
     driver.pm = ops;
-    LinuxDevice {
-        dma_mask: null_mut(), coherent_dma_mask: 0, driver_data: null_mut(),
-        parent: null_mut(), bus: null_mut::<LinuxBusType>(), class: null_mut(), driver,
-        init_name: c"pm-dev".as_ptr(), name: [0; DEVICE_NAME_LEN], kobj: crate::linux_device::types::LinuxKobject::new(), release: None,
-        of_node: null_mut(), acpi_node: null_mut(), power: LinuxDevPmInfo::new(),
-    }
+    LinuxDevice { bus: null_mut::<LinuxBusType>(), driver, init_name: c"pm-dev".as_ptr(), ..LinuxDevice::new() }
 }
 
 fn test_driver() -> LinuxDeviceDriver {
     LinuxDeviceDriver {
         name: c"pm-driver".as_ptr(), bus: null_mut(), owner: null_mut(), probe: None, remove: None,
         of_match_table: core::ptr::null(), acpi_match_table: core::ptr::null(), pm: core::ptr::null(),
+        ..LinuxDeviceDriver::new()
     }
 }
 
