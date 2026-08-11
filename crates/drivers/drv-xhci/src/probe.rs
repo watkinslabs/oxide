@@ -90,7 +90,9 @@ fn fetch_first_configuration(mmio: &Mmio, irq: Binding, device: &mut AddressDevi
     let Some(header) = device.configuration_header() else { return false; };
     let Some(full_td) = crate::usb::get_configuration_descriptor_trbs(device.descriptor_pa(), 0, header.total_length) else { return false; };
     let Some(full_status) = device.submit_ep0(mmio, slot, &full_td) else { return false; };
-    control_complete(irq, full_status, slot) && device.configuration_header() == Some(header)
+    if !control_complete(irq, full_status, slot) || device.configuration_header() != Some(header) { return false; }
+    let _ = device.discover_hid_boot();
+    true
 }
 
 fn address_first_usb2(mmio: &Mmio, command: &mut CommandTransport, dcbaa: &DmaPage, irq: Binding) -> Option<AddressDeviceDma> {

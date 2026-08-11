@@ -1,12 +1,16 @@
 //! Retained controller DMA ownership for one Address Device operation.
 
+extern crate alloc;
+
+use alloc::vec::Vec;
+
 use crate::context;
 use crate::platform::DmaPage;
 use crate::platform::Mmio;
 use crate::ring::{CommandRing, Trb, TRB_BYTES, TRBS_PER_SEGMENT};
 
 /// Input context, output device context, and endpoint-zero transfer ring.
-pub struct AddressDeviceDma { input: DmaPage, output: DmaPage, ep0: DmaPage, descriptor: DmaPage, context_bytes: u8, ep0_ring: CommandRing }
+pub struct AddressDeviceDma { input: DmaPage, output: DmaPage, ep0: DmaPage, descriptor: DmaPage, context_bytes: u8, _hid: Option<crate::usb::HidBootInterface>, ep0_ring: CommandRing }
 
 impl AddressDeviceDma {
     /// Allocate and construct every DMA object required by Address Device. # C: O(page bytes)
@@ -23,7 +27,7 @@ impl AddressDeviceDma {
         }
         input.clean_to_device(); output.clean_to_device(); ep0.clean_to_device();
         let ep0_ring = CommandRing::new(ep0.pa())?;
-        Some(Self { input, output, ep0, descriptor, context_bytes, ep0_ring })
+        Some(Self { input, output, ep0, descriptor, context_bytes, _hid: None, ep0_ring })
     }
 
     /// Input-context physical address for Address Device. # C: O(1)
@@ -45,6 +49,16 @@ impl AddressDeviceDma {
         let mut bytes = [0u8; crate::usb::CONFIG_DESC_HEADER_BYTES];
         for (offset, byte) in bytes.iter_mut().enumerate() { *byte = self.descriptor.read8(offset as u64)?; }
         crate::usb::configuration_header(&bytes)
+    }
+    /// Parse and retain an eligible HID boot interface from the fetched configuration. # C: O(descriptor bytes)
+    pub fn discover_hid_boot(&mut self) -> Option<crate::usb::HidBootInterface> {
+        let header = self.configuration_header()?;
+        let mut bytes = Vec::with_capacity(header.total_length);
+        self.descriptor.invalidate_from_device();
+        for offset in 0..header.total_length { bytes.push(self.descriptor.read8(offset as u64)?); }
+        let hid = crate::usb::hid_boot_interface(&bytes)?;
+        self._hid = Some(hid);
+        Some(hid)
     }
     /// Rebuild the input context from controller output for Linux's EP0 MPS update. # C: O(1)
     pub fn prepare_evaluate_ep0(&self, max_packet: u8) -> Option<bool> {
