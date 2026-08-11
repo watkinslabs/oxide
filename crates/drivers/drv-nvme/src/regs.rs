@@ -40,6 +40,25 @@ pub const IO_FLUSH: u8 = 0x00;
 pub const IO_WRITE: u8 = 0x01;
 pub const IO_READ:  u8 = 0x02;
 
+/// Host page size selected by CC.MPS=0 for queue and PRP addressing.
+pub const NVME_PAGE_BYTES: u64 = 4096;
+/// A one-page PRP list describes all pages after PRP1 in this data run.
+pub const MAX_PRP_DATA_PAGES: u64 = 512;
+
+/// Encoding selected for PRP2 after the first data page.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum PrpSecond { None, DirectPage, List { entries: usize } }
+
+/// Select the legal PRP2 form for a page-aligned contiguous transfer. # C: O(1)
+#[inline]
+pub fn prp_second(bytes: u64) -> Option<PrpSecond> {
+    if bytes == 0 || bytes > NVME_PAGE_BYTES * MAX_PRP_DATA_PAGES { return None; }
+    let pages = bytes.saturating_add(NVME_PAGE_BYTES - 1) / NVME_PAGE_BYTES;
+    if pages == 1 { Some(PrpSecond::None) }
+    else if pages == 2 { Some(PrpSecond::DirectPage) }
+    else { Some(PrpSecond::List { entries: (pages - 1) as usize }) }
+}
+
 /// Identify CNS values (§5.15.1).
 pub const CNS_NAMESPACE:  u32 = 0x00;
 pub const CNS_CONTROLLER: u32 = 0x01;
@@ -207,5 +226,14 @@ mod tests {
         assert_ne!(flags & CREATE_CQ_PHYS_CONTIG, 0);
         assert_ne!(flags & CREATE_CQ_IRQ_ENABLED, 0);
         assert_eq!(flags >> CREATE_CQ_VECTOR_SHIFT, 7);
+    }
+
+    #[test]
+    fn prp_second_field_uses_direct_then_list_forms() {
+        assert_eq!(prp_second(NVME_PAGE_BYTES), Some(PrpSecond::None));
+        assert_eq!(prp_second(NVME_PAGE_BYTES + 1), Some(PrpSecond::DirectPage));
+        assert_eq!(prp_second(3 * NVME_PAGE_BYTES), Some(PrpSecond::List { entries: 2 }));
+        assert_eq!(prp_second(MAX_PRP_DATA_PAGES * NVME_PAGE_BYTES), Some(PrpSecond::List { entries: 511 }));
+        assert_eq!(prp_second(MAX_PRP_DATA_PAGES * NVME_PAGE_BYTES + 1), None);
     }
 }

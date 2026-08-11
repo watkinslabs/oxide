@@ -80,27 +80,29 @@ fn read_blocking(buf: u64, len: i32) -> i64 {
         if got != 0 {
             return if copy_out(buf, &tmp[..got]).is_ok() { got as i64 } else { -(Errno::Efault.as_i32() as i64) };
         }
-        // Linux `syslog_print` waits with
-        // `wait_event_interruptible`, so an interrupted read is -ERESTARTSYS,
-        // not EINTR. The doc line above already said `wait_event_interruptible`
-        // while the code returned EINTR.
-        if sched::live::sigpend::deliverable_signals_self() != 0 {
-            return syscall::restart::restart_sys();
-        }
         #[cfg(target_arch = "x86_64")]
         let now = { use hal::TimerOps; hal_x86_64::X86TimerOps::monotonic_ns().0 };
         #[cfg(target_arch = "aarch64")]
         let now = { use hal::TimerOps; hal_aarch64::ArmTimerOps::monotonic_ns().0 };
-        // SAFETY: process context in the syscall shim; publication as Sleeping is immediately followed by the recheck + park_yield below, so a record pushed in the window cannot be missed.
-        unsafe { SYSLOG_READERS.park_with_deadline(now.saturating_add(READ_POLL_NS)); }
-        if klog::syslog::unread_bytes() != 0
-            || sched::live::sigpend::deliverable_signals_self() != 0
-        {
-            SYSLOG_READERS.cancel_current_park();
-            continue;
+        // SAFETY: syscall process context holds no syslog producer lock. The
+        // shared loop publishes before testing unread bytes and reports Linux
+        // interruptible-wait restart semantics.
+        let out = unsafe {
+            sched::live::wait_event_interruptible_until(
+                &SYSLOG_READERS,
+                now.saturating_add(READ_POLL_NS),
+                || {
+                    #[cfg(target_arch = "x86_64")]
+                    { use hal::TimerOps; hal_x86_64::X86TimerOps::monotonic_ns().0 }
+                    #[cfg(target_arch = "aarch64")]
+                    { use hal::TimerOps; hal_aarch64::ArmTimerOps::monotonic_ns().0 }
+                },
+                || klog::syslog::unread_bytes() != 0,
+            )
+        };
+        if matches!(out, sched::WaitOutcome::Interrupted) {
+            return syscall::restart::restart_sys();
         }
-        // SAFETY: the task is Sleeping on the published wait list; the deadline scanner or signal delivery transitions it back to Runnable.
-        unsafe { sched::live::park_yield(); }
     }
 }
 
