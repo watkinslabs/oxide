@@ -84,7 +84,6 @@ impl VtdRegisters {
     /// Complete the global context and IOTLB invalidations required after root installation. # C: O(poll limit)
     pub fn invalidate_initial_tables(&self) -> bool {
         let Some(ecap) = self.read64(ECAP) else { return false; };
-        if ecap >> 63 & 1 != 0 { return true; }
         if !self.write64(CCMD, CCMD_INVALIDATE | CCMD_GLOBAL) || !self.wait64_clear(CCMD, CCMD_INVALIDATE) { return false; }
         let iotlb = (ecap >> 8 & 0x3ff) * 16;
         if iotlb.checked_add(16).is_none_or(|end| end > self.bytes) { return false; }
