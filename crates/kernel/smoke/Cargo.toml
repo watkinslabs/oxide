@@ -19,6 +19,7 @@ pmm     = { path = "../mm-pmm" }
 vmm     = { path = "../mm-vmm" }
 vfs     = { path = "../vfs" }
 firmware = { path = "../firmware" }
+pci      = { path = "../../drivers/pci" }
 console  = { path = "../console" }
 elf-load = { path = "../exec" }
 arch-irq = { path = "../arch-irq" }
