@@ -2,6 +2,8 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ptr::{read_volatile, write_volatile};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
+#[cfg(target_arch = "x86_64")]
+use pci::ConfigSpaceReader;
 use sync::{Spinlock, TaskList as DriverLockClass};
 
 use crate::regs;
