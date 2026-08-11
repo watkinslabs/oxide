@@ -73,10 +73,11 @@ pub fn export_symbols() {
     for (name, addr) in [
         ("dma_alloc_coherent",        dma_alloc_coherent        as *const () as usize),
         ("dma_alloc_attrs",           dma_alloc_attrs           as *const () as usize),
-        ("dmam_alloc_coherent",       dma_alloc_coherent        as *const () as usize),
+        ("dmam_alloc_coherent",       crate::linux_dma_managed::dmam_alloc_coherent as *const () as usize),
+        ("dmam_alloc_attrs",          crate::linux_dma_managed::dmam_alloc_attrs as *const () as usize),
         ("dma_free_coherent",         dma_free_coherent         as *const () as usize),
         ("dma_free_attrs",            dma_free_attrs            as *const () as usize),
-        ("dmam_free_coherent",        dma_free_coherent         as *const () as usize),
+        ("dmam_free_coherent",        crate::linux_dma_managed::dmam_free_coherent as *const () as usize),
         ("dma_map_single",            dma_map_single            as *const () as usize),
         ("dma_unmap_single",          dma_unmap_single          as *const () as usize),
         ("dma_map_page",              dma_map_page              as *const () as usize),

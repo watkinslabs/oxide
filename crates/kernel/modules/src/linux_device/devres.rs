@@ -61,7 +61,7 @@ pub(crate) fn add_action_or_reset(
     }
 }
 
-pub(super) fn remove_action(dev: *mut LinuxDevice, action: Option<DevresAction>, data: *mut c_void) {
+pub(crate) fn remove_action(dev: *mut LinuxDevice, action: Option<DevresAction>, data: *mut c_void) {
     let action = match action { Some(v) => v, None => return };
     if dev.is_null() { return; }
     let mut g = DEVRES.lock();

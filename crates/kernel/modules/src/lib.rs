@@ -66,6 +66,7 @@ pub mod linux_block;
 pub mod linux_chrdev;
 pub mod linux_device;
 pub mod linux_dma;
+mod linux_dma_managed;
 mod linux_dma_sgl;
 #[cfg(test)]
 mod linux_dma_tests;

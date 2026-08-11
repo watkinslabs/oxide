@@ -1351,6 +1351,8 @@ static int __init sample_init(void)
     platform_driver_unregister(&pldrv);
     (void)dma_set_mask_and_coherent(&dev, DMA_BIT_MASK(DMA_ULL_BITS));
     coherent = dma_alloc_coherent(&dev, SAMPLE_DMA_SIZE, &dma, GFP_KERNEL);
+    coherent = dmam_alloc_coherent(&dev, SAMPLE_DMA_SIZE, &dma, GFP_KERNEL);
+    (void)dmam_alloc_attrs(&dev, SAMPLE_DMA_SIZE, &dma, GFP_KERNEL, 0);
     (void)dma_mapping_error(&dev, dma);
     dma_sync_single_for_device(&dev, dma, SAMPLE_DMA_SIZE, DMA_TO_DEVICE);
     dma_sync_single_for_cpu(&dev, dma, SAMPLE_DMA_SIZE, DMA_FROM_DEVICE);
