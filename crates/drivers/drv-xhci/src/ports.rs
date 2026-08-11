@@ -10,12 +10,23 @@ pub const PORT_CONNECT: u32 = 1;
 pub const PORT_ENABLED: u32 = 1 << 1;
 /// PORTSC initiate USB 2.0 reset bit. # C: O(1)
 pub const PORT_RESET: u32 = 1 << 4;
+/// PORTSC link-state field. # C: O(1)
+pub const PORT_LINK_STATE_MASK: u32 = 0xf << 5;
+/// PORTSC port-power control. # C: O(1)
+pub const PORT_POWER: u32 = 1 << 9;
 /// PORTSC device-speed field. # C: O(1)
 pub const PORT_SPEED_MASK: u32 = 0xf << 10;
+const PORT_INDICATOR_MASK: u32 = 3 << 14;
+const PORT_WAKE_MASK: u32 = 7 << 25;
+const PORT_DEVICE_REMOVABLE: u32 = 1 << 30;
+/// PORTSC initiates a USB3 warm port reset. # C: O(1)
+pub const PORT_WARM_RESET: u32 = 1 << 31;
 /// PORTSC write-one-to-clear change bits, matching Linux `PORT_CHANGE_MASK`. # C: O(1)
 pub const PORT_CHANGE_MASK: u32 = (1 << 17) | (1 << 18) | (1 << 19) | (1 << 20) | (1 << 21) | (1 << 22) | (1 << 23);
 /// PORTSC reset-complete change bit. # C: O(1)
 pub const PORT_RESET_CHANGE: u32 = 1 << 21;
+/// PORTSC warm-reset-complete change bit. # C: O(1)
+pub const PORT_WARM_RESET_CHANGE: u32 = 1 << 19;
 /// Port Status Change Event TRB type. # C: O(1)
 pub const TRB_PORT_STATUS: u32 = 34;
 
@@ -34,6 +45,18 @@ pub fn portsc_offset(operational: u64, port: u8, max_ports: u8) -> Option<u64> {
 
 /// Isolate the only PORTSC bits software may acknowledge with ones. # C: O(1)
 pub fn acknowledge_changes(portsc: u32) -> u32 { portsc & PORT_CHANGE_MASK }
+
+/// Retain only PORTSC fields that can be safely written back unchanged. # C: O(1)
+pub fn neutral_portsc(portsc: u32) -> u32 {
+    portsc & (PORT_CONNECT | (1 << 3) | PORT_SPEED_MASK | PORT_DEVICE_REMOVABLE)
+        | portsc & (PORT_LINK_STATE_MASK | PORT_POWER | PORT_INDICATOR_MASK | PORT_WAKE_MASK)
+}
+
+/// Build a USB3 warm-reset write without replaying change or write-one bits. # C: O(1)
+pub fn warm_reset_request(portsc: u32) -> u32 { neutral_portsc(portsc) | PORT_WARM_RESET }
+
+/// A USB3 warm reset completes when its dedicated change bit becomes visible. # C: O(1)
+pub fn warm_reset_completed(portsc: u32) -> bool { portsc & PORT_WARM_RESET_CHANGE != 0 }
 
 /// Build Linux's PORTSC reset write for a connected root-hub port. # C: O(1)
 pub fn reset_request(portsc: u32) -> Option<u32> {
@@ -75,5 +98,14 @@ mod tests {
         assert!(reset_completed(PORT_CONNECT | PORT_RESET_CHANGE));
         assert!(!reset_completed(PORT_CONNECT));
         assert!(!reset_completed(PORT_CONNECT | PORT_RESET | PORT_RESET_CHANGE));
+    }
+
+    #[test]
+    fn warm_reset_neutralizes_portsc_before_asserting_warm_reset() {
+        let portsc = PORT_CONNECT | PORT_ENABLED | (5 << 5) | PORT_POWER | PORT_SPEED_MASK | (3 << 14) | PORT_CHANGE_MASK | PORT_WAKE_MASK | PORT_DEVICE_REMOVABLE | PORT_WARM_RESET;
+        assert_eq!(neutral_portsc(portsc), PORT_CONNECT | (5 << 5) | PORT_POWER | PORT_SPEED_MASK | (3 << 14) | PORT_WAKE_MASK | PORT_DEVICE_REMOVABLE);
+        assert_eq!(warm_reset_request(portsc), neutral_portsc(portsc) | PORT_WARM_RESET);
+        assert!(warm_reset_completed(PORT_WARM_RESET_CHANGE));
+        assert!(!warm_reset_completed(PORT_RESET_CHANGE));
     }
 }
