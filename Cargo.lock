@@ -349,6 +349,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "drv-rtl8125"
+version = "0.1.0"
+
+[[package]]
 name = "drv-serial"
 version = "0.1.0"
 dependencies = [
@@ -1166,6 +1170,7 @@ dependencies = [
  "hal-aarch64",
  "hal-x86_64",
  "input",
+ "iommu",
  "kernfs",
  "klog",
  "mmio-map",
