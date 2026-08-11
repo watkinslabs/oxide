@@ -7,6 +7,10 @@ const CPU_MASK_WORDS: usize = 1;
 const TRACE_EVENT_ENABLED: i32 = 0;
 const TRACE_EVENT_IGNORED: i32 = 0;
 
+#[repr(C, align(64))]
+struct NativeSoftnetData([u8; cpu::LINUX_SOFTNET_DATA_BYTES]);
+const _: () = assert!(core::mem::size_of::<NativeSoftnetData>() == cpu::LINUX_SOFTNET_DATA_BYTES);
+
 #[repr(C, align(8))]
 struct CpuMask {
     bits: [usize; CPU_MASK_WORDS],
@@ -23,9 +27,7 @@ static __cpu_online_mask: CpuMask = CpuMask { bits: [1] };
 #[unsafe(no_mangle)]
 static __cpu_possible_mask: CpuMask = CpuMask { bits: [1] };
 #[unsafe(no_mangle)]
-static __per_cpu_offset: [usize; 1] = [0];
-#[unsafe(no_mangle)]
-static this_cpu_off: usize = 0;
+static __per_cpu_offset: [usize; cpu::MAX_CPUS] = [0; cpu::MAX_CPUS];
 #[unsafe(no_mangle)]
 static cpu_number: u32 = 0;
 #[unsafe(no_mangle)]
@@ -43,6 +45,7 @@ pub fn export_symbols() {
         ("__SCT__cond_resched", cond_resched as *const () as usize),
         ("__SCT__might_resched", might_resched as *const () as usize),
         ("__SCT__preempt_schedule", preempt_schedule as *const () as usize),
+        ("__SCT__WARN_trap", warn_trap as *const () as usize),
         ("__list_add_valid_or_report", list_valid_or_report as *const () as usize),
         ("__list_del_entry_valid_or_report", list_valid_or_report as *const () as usize),
         ("___ratelimit", ratelimit as *const () as usize),
@@ -72,7 +75,9 @@ pub fn export_symbols() {
     export("__cpu_online_mask", &__cpu_online_mask as *const _ as usize, false);
     export("__cpu_possible_mask", &__cpu_possible_mask as *const _ as usize, false);
     export("__per_cpu_offset", __per_cpu_offset.as_ptr() as usize, false);
-    export("this_cpu_off", &this_cpu_off as *const _ as usize, false);
+    export("this_cpu_off", cpu::LINUX_MODULE_PERCPU_OFFSET, false);
+    export("numa_node", cpu::LINUX_NUMA_NODE_OFFSET, false);
+    export("softnet_data", cpu::LINUX_SOFTNET_DATA_OFFSET, false);
     export("cpu_number", &cpu_number as *const _ as usize, false);
     export("system_state", &system_state as *const _ as usize, false);
     export_arch_symbols();
@@ -102,6 +107,7 @@ extern "C" fn ubsan_handle() {}
 extern "C" fn cond_resched() -> i32 { 0 }
 extern "C" fn might_resched() {}
 extern "C" fn preempt_schedule() {}
+extern "C" fn warn_trap() { klog::write_raw(b"[native-driver warning]\n"); }
 extern "C" fn dump_stack() {}
 
 extern "C" fn list_valid_or_report(_a: *const c_void, _b: *const c_void, _c: *const c_void) -> bool {
@@ -140,6 +146,7 @@ mod tests {
         for name in [
             "__ubsan_handle_out_of_bounds", "__ubsan_handle_shift_out_of_bounds",
             "__SCT__cond_resched", "__SCT__might_resched", "__SCT__preempt_schedule",
+            "__SCT__WARN_trap",
             "__preempt_count", "__cpu_online_mask", "__cpu_possible_mask", "nr_cpu_ids",
             "__list_add_valid_or_report", "__list_del_entry_valid_or_report", "___ratelimit",
             "trace_seq_printf", "trace_seq_putc", "trace_event_buffer_reserve",
@@ -147,6 +154,12 @@ mod tests {
         ] {
             assert!(crate::symtab::is_exported(name), "{name}");
         }
+        assert_eq!(crate::symtab::resolve("this_cpu_off", true).unwrap().addr,
+            cpu::LINUX_MODULE_PERCPU_OFFSET);
+        assert_eq!(crate::symtab::resolve("numa_node", true).unwrap().addr,
+            cpu::LINUX_NUMA_NODE_OFFSET);
+        assert_eq!(crate::symtab::resolve("softnet_data", true).unwrap().addr,
+            cpu::LINUX_SOFTNET_DATA_OFFSET);
     }
 
     #[test]

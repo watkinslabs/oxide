@@ -38,6 +38,9 @@ fn completion_refcount_kref_and_seq_work() {
     assert_eq!(try_wait_for_completion(&mut c), 0);
     complete(&mut c);
     assert_eq!(try_wait_for_completion(&mut c), 1);
+    complete(&mut c);
+    assert_eq!(wait_for_completion_timeout(&mut c, 7), 7);
+    assert_eq!(wait_for_completion_io_timeout(&mut c, 7), 0);
     let mut seq = LinuxSeqLock { seq: 0, lock: 0 };
     seqlock_init(&mut seq);
     let start = read_seqbegin(&mut seq);
@@ -61,7 +64,8 @@ fn export_symbols_registers_sync_surface() {
     export_symbols();
     for name in ["spin_lock", "raw_spin_lock", "mutex_lock", "read_lock",
         "down_read", "seqlock_init", "complete", "wake_up", "atomic_inc",
-        "refcount_inc", "kref_put", "lockdep_set_class", "down_interruptible"] {
+        "refcount_inc", "kref_put", "lockdep_set_class", "down_interruptible",
+        "wait_for_completion_io_timeout"] {
         assert!(symtab::resolve(name, true).is_ok(), "{name}");
     }
 }

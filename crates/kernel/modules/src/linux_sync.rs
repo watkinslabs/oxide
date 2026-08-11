@@ -90,6 +90,7 @@ pub fn export_symbols() {
         ("_raw_spin_unlock_irq", raw_spin_unlock_irq as *const () as usize),
         ("_raw_spin_unlock_irqrestore", raw_spin_unlock_irqrestore as *const () as usize),
         ("mutex_init", mutex_init as *const () as usize),
+        ("mutex_init_generic", mutex_init_generic as *const () as usize),
         ("__mutex_init", __mutex_init as *const () as usize),
         ("mutex_lock", mutex_lock as *const () as usize),
         ("mutex_lock_interruptible", mutex_lock_interruptible as *const () as usize),
@@ -127,6 +128,7 @@ pub fn export_symbols() {
         ("wait_for_completion", wait_for_completion as *const () as usize),
         ("wait_for_completion_interruptible", wait_for_completion_interruptible as *const () as usize),
         ("wait_for_completion_timeout", wait_for_completion_timeout as *const () as usize),
+        ("wait_for_completion_io_timeout", wait_for_completion_io_timeout as *const () as usize),
         ("try_wait_for_completion", try_wait_for_completion as *const () as usize),
         ("completion_done", completion_done as *const () as usize),
         ("init_waitqueue_head", init_waitqueue_head as *const () as usize),
@@ -239,6 +241,7 @@ extern "C" fn mutex_init(m: *mut LinuxMutex) {
     // SAFETY: non-null pointer names caller-owned mutex storage.
     unsafe { (*m).state = 0; }
 }
+extern "C" fn mutex_init_generic(m: *mut LinuxMutex) { mutex_init(m); }
 extern "C" fn __mutex_init(m: *mut LinuxMutex, _name: *const u8, _key: *mut c_void) { mutex_init(m); }
 extern "C" fn mutex_lock(m: *mut LinuxMutex) { let _ = mutex_lock_common(m, false); }
 extern "C" fn mutex_lock_interruptible(m: *mut LinuxMutex) -> i32 { mutex_lock_common(m, true) }
@@ -377,8 +380,10 @@ extern "C" fn complete_all(c: *mut LinuxCompletion) {
 pub(crate) extern "C" fn wait_for_completion(c: *mut LinuxCompletion) { let _ = completion_wait_common(c, false); }
 extern "C" fn wait_for_completion_interruptible(c: *mut LinuxCompletion) -> i32 { completion_wait_common(c, true) }
 extern "C" fn wait_for_completion_timeout(c: *mut LinuxCompletion, timeout: usize) -> usize {
-    if timeout == 0 { return try_wait_for_completion(c) as usize; }
-    if try_wait_for_completion(c) != 0 { timeout.max(1) } else { 0 }
+    completion_wait_timeout(c, timeout)
+}
+extern "C" fn wait_for_completion_io_timeout(c: *mut LinuxCompletion, timeout: usize) -> usize {
+    completion_wait_timeout(c, timeout)
 }
 extern "C" fn try_wait_for_completion(c: *mut LinuxCompletion) -> i32 { completion_take(c) as i32 }
 fn completion_take(c: *mut LinuxCompletion) -> bool {
@@ -406,6 +411,34 @@ fn completion_wait_common(c: *mut LinuxCompletion, interruptible: bool) -> i32 {
         cell.park_locked();
         drop(gate);
         cell.yield_parked();
+    }
+}
+
+fn completion_wait_timeout(c: *mut LinuxCompletion, timeout: usize) -> usize {
+    if c.is_null() || timeout == 0 { return try_wait_for_completion(c) as usize; }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    {
+        return if try_wait_for_completion(c) != 0 { timeout.max(1) } else { 0 };
+    }
+    #[cfg(target_os = "oxide-kernel")]
+    {
+    let deadline = crate::linux_time::deadline_after_jiffies(timeout as u64);
+    loop {
+        let cell = wait_cell(c as usize, WAIT_COMPLETION);
+        let gate = cell.gate.lock();
+        if completion_take(c) {
+            drop(gate);
+            let now = crate::linux_time::deadline_after_jiffies(0);
+            return deadline.saturating_sub(now).max(1) as usize;
+        }
+        if crate::linux_time::deadline_after_jiffies(0) >= deadline { drop(gate); return 0; }
+        cell.park_locked_until(deadline);
+        drop(gate);
+        cell.yield_parked();
+        if crate::linux_time::deadline_after_jiffies(0) >= deadline {
+            return completion_take(c) as usize;
+        }
+    }
     }
 }
 

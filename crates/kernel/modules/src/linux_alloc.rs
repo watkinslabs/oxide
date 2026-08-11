@@ -3,7 +3,7 @@
 extern crate alloc;
 
 #[path = "linux_alloc_cache.rs"]
-mod cache;
+pub(crate) mod cache;
 #[path = "linux_alloc_vmap.rs"]
 mod vmap;
 #[path = "linux_alloc_vmalloc.rs"]
@@ -17,7 +17,9 @@ use alloc::vec::Vec;
 use core::ffi::{c_void, VaList};
 use core::mem::{align_of, size_of};
 use core::ptr::{copy_nonoverlapping, null_mut, write_bytes};
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+#[cfg(target_os = "oxide-kernel")]
+use sync::{Modules as ModulesLockClass, Spinlock};
 
 const ALLOC_MAGIC: u64 = 0x4f58_4b50_4941_4c4c;
 const PAGE_MAGIC: u64 = 0x4f58_4b50_4950_4147;
@@ -37,6 +39,22 @@ pub struct LinuxKmemCache {
 
 static KMALLOC_CACHES: [usize; KMALLOC_CACHE_SLOTS] = [0; KMALLOC_CACHE_SLOTS];
 static RANDOM_KMALLOC_SEED: usize = 0;
+// Native modules use these relocation targets for page<->PFN and PFN<->HHDM
+// arithmetic. They are published from PMM, never synthesized from heap state.
+static PAGE_OFFSET_BASE: AtomicUsize = AtomicUsize::new(0);
+static VMEMMAP_BASE: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(target_os = "oxide-kernel")]
+#[derive(Copy, Clone)]
+struct NativePageRun {
+    pa: u64,
+    order: u32,
+}
+
+// Native `struct page` has no spare stable field for allocator-private run
+// ownership. Keep that ownership out-of-line so the host ABI remains exact.
+#[cfg(target_os = "oxide-kernel")]
+static NATIVE_PAGE_RUNS: Spinlock<Vec<NativePageRun>, ModulesLockClass> = Spinlock::new(Vec::new());
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -60,6 +78,11 @@ pub struct LinuxPage {
 /// # C: O(1)
 pub fn export_symbols() {
     use crate::symtab::export;
+    #[cfg(target_os = "oxide-kernel")]
+    {
+        PAGE_OFFSET_BASE.store(pmm::setup::direct_map_base() as usize, Ordering::Release);
+        VMEMMAP_BASE.store(pmm::setup::native_page_base() as usize, Ordering::Release);
+    }
     export("kmalloc",          kmalloc          as *const () as usize, false);
     export("kzalloc",          kzalloc          as *const () as usize, false);
     export("kcalloc",          kcalloc          as *const () as usize, false);
@@ -67,6 +90,7 @@ pub fn export_symbols() {
     export("kvfree",           kvfree           as *const () as usize, false);
     export("kvfree_call_rcu",   kvfree_call_rcu  as *const () as usize, true);
     export("vmalloc",          vmalloc          as *const () as usize, false);
+    export("is_vmalloc_addr",  is_vmalloc_addr  as *const () as usize, false);
     export("vfree",            vfree            as *const () as usize, false);
     export("vmap",             vmap::vmap       as *const () as usize, false);
     export("vunmap",           vmap::vunmap     as *const () as usize, false);
@@ -84,6 +108,7 @@ pub fn export_symbols() {
     export("kasprintf",        kasprintf        as *const () as usize, false);
     export("kmemdup_noprof",   kmemdup_noprof   as *const () as usize, false);
     export("__kmalloc_noprof", __kmalloc_noprof as *const () as usize, false);
+    export("__kmalloc_node_noprof", __kmalloc_node_noprof as *const () as usize, false);
     export("__kmalloc_cache_noprof", __kmalloc_cache_noprof as *const () as usize, false);
     export("__kmalloc_cache_node_noprof", __kmalloc_cache_node_noprof as *const () as usize, false);
     export("__kvmalloc_node_noprof", __kvmalloc_node_noprof as *const () as usize, false);
@@ -92,15 +117,26 @@ pub fn export_symbols() {
     export("kmem_cache_free", cache::kmem_cache_free as *const () as usize, false);
     export("kmem_cache_destroy", cache::kmem_cache_destroy as *const () as usize, false);
     export("vzalloc_noprof",   vzalloc_noprof   as *const () as usize, false);
+    export("__vmalloc_noprof", __vmalloc_noprof as *const () as usize, false);
+    export("kfree_sensitive",  kfree_sensitive  as *const () as usize, false);
     export("kmalloc_caches",   KMALLOC_CACHES.as_ptr() as usize, false);
     export("random_kmalloc_seed", &RANDOM_KMALLOC_SEED as *const usize as usize, false);
+    export("page_offset_base", &PAGE_OFFSET_BASE as *const AtomicUsize as usize, false);
+    export("vmemmap_base", &VMEMMAP_BASE as *const AtomicUsize as usize, false);
 }
+
+/// # C: O(1)
+extern "C" fn is_vmalloc_addr(ptr: *const u8) -> bool { vmalloc::is_addr(ptr) }
 
 extern "C" fn kmalloc(size: usize, flags: u32) -> *mut u8 {
     alloc_bytes(size, MIN_ALIGN, flags & GFP_ZERO != 0)
 }
 
 extern "C" fn __kmalloc_noprof(size: usize, flags: u32) -> *mut u8 {
+    kmalloc(size, flags)
+}
+
+extern "C" fn __kmalloc_node_noprof(size: usize, _bucket: usize, flags: u32, _node: i32) -> *mut u8 {
     kmalloc(size, flags)
 }
 
@@ -159,6 +195,22 @@ extern "C" fn vzalloc_noprof(size: usize) -> *mut u8 {
     vmalloc::alloc(size, true)
 }
 
+extern "C" fn __vmalloc_noprof(size: usize, flags: u32) -> *mut u8 {
+    vmalloc::alloc(size, flags & GFP_ZERO != 0)
+}
+
+extern "C" fn kfree_sensitive(ptr: *const u8) {
+    if ptr.is_null() { return; }
+    // SAFETY: kfree_sensitive receives a live allocation from this allocator, whose header records its full size.
+    unsafe {
+        let header = ptr.sub(size_of::<Header>()) as *const Header;
+        if (*header).magic == ALLOC_MAGIC {
+            write_bytes(ptr as *mut u8, 0, (*header).total.saturating_sub((*header).off));
+        }
+        free_bytes(ptr as *mut u8);
+    }
+}
+
 extern "C" fn vfree(ptr: *mut u8) {
     let _ = vmalloc::free(ptr);
 }
@@ -166,6 +218,27 @@ extern "C" fn vfree(ptr: *mut u8) {
 /// Allocate a Linux `struct page` descriptor plus owned contiguous pages.
 /// # C: O(order)
 pub(crate) extern "C" fn alloc_pages(flags: u32, order: u32) -> *mut LinuxPage {
+    #[cfg(target_os = "oxide-kernel")]
+    {
+        let (pa, _) = match page_run_alloc(order, flags & GFP_ZERO != 0) {
+            Some(v) => v,
+            None => return null_mut(),
+        };
+        let page = pmm::setup::native_page_for_pa(pa);
+        if page.is_null() {
+            page_run_free_pa(pa, order);
+            return null_mut();
+        }
+        if !native_page_run_insert(pa, order) {
+            page_run_free_pa(pa, order);
+            return null_mut();
+        }
+        // SAFETY: PMM returned this physical run exclusively, and its native descriptor is permanent per-PFN storage.
+        unsafe { (*page).refcount.store(1, Ordering::Release); }
+        return page.cast();
+    }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    {
     let (pa, va) = match page_run_alloc(order, flags & GFP_ZERO != 0) {
         Some(v) => v,
         None => return null_mut(),
@@ -182,6 +255,7 @@ pub(crate) extern "C" fn alloc_pages(flags: u32, order: u32) -> *mut LinuxPage {
         return null_mut();
     }
     page
+    }
 }
 
 extern "C" fn alloc_pages_noprof(flags: u32, order: u32) -> *mut LinuxPage {
@@ -201,6 +275,17 @@ extern "C" fn __alloc_pages_noprof(
 /// # C: O(order)
 pub(crate) extern "C" fn __free_pages(page: *mut LinuxPage, order: u32) {
     if page.is_null() { return; }
+    #[cfg(target_os = "oxide-kernel")]
+    {
+        let Some(pa) = (unsafe { linux_page_phys(page) }) else { return; };
+        if !native_page_run_take(pa, order) { return; }
+        // SAFETY: this allocation's caller supplied the matching order and transfers its final ownership.
+        unsafe { (page as *mut pmm::NativePage).as_mut().unwrap().refcount.store(0, Ordering::Release); }
+        page_run_free_pa(pa, order);
+        return;
+    }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    {
     // SAFETY: __free_pages' KPI contract is that page came from alloc_pages, so it is a live
     // page_desc_alloc block; valid_page then rejects anything whose magic is not PAGE_MAGIC.
     if !unsafe { valid_page(page) } { return; }
@@ -209,6 +294,7 @@ pub(crate) extern "C" fn __free_pages(page: *mut LinuxPage, order: u32) {
     let pa = unsafe { (*page).pa };
     page_run_free_pa(pa, order);
     page_desc_free(page);
+    }
 }
 
 extern "C" fn __get_free_pages(flags: u32, order: u32) -> usize {
@@ -225,15 +311,27 @@ extern "C" fn free_pages(addr: usize, order: u32) {
 }
 
 pub(crate) extern "C" fn page_address(page: *mut LinuxPage) -> *mut u8 {
+    #[cfg(target_os = "oxide-kernel")]
+    { return unsafe { linux_page_phys(page) }.and_then(pmm::setup::frame_ptr).unwrap_or(null_mut()); }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    {
     // SAFETY: page_address' KPI contract is that page is a descriptor from alloc_pages (or NULL,
     // which valid_page rejects); on a PAGE_MAGIC match the va field is the direct-map pointer
     // page_run_alloc returned for the same run, still owned by this descriptor.
     if unsafe { valid_page(page) } { unsafe { (*page).va } } else { null_mut() }
+    }
 }
 
 /// Bytes the page descriptor's run covers, i.e. `PAGE_SIZE << order`, or None for a foreign pointer.
 /// # C: O(1)
 pub(crate) fn page_run_len(page: *mut LinuxPage) -> Option<usize> {
+    #[cfg(target_os = "oxide-kernel")]
+    {
+        let (_, order) = native_page_run(page)?;
+        return PAGE_SIZE.checked_shl(order);
+    }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    {
     // SAFETY: page_run_len's precondition matches page_address' — page is NULL or a descriptor from
     // alloc_pages that __free_pages has not released — so valid_page may read its magic word, and a
     // PAGE_MAGIC match means `order` is the allocation order alloc_pages recorded for the same run.
@@ -241,11 +339,20 @@ pub(crate) fn page_run_len(page: *mut LinuxPage) -> Option<usize> {
     // SAFETY: valid_page returned true above, so page is a live page_desc_alloc descriptor whose
     // order field was written by alloc_pages; the shift is the same one page_run_alloc sized with.
     PAGE_SIZE.checked_shl(unsafe { (*page).order })
+    }
 }
 
 /// Return the number of owners of a live Linux page descriptor.
 /// # C: O(1)
 pub(crate) fn page_ref_count(page: *mut LinuxPage) -> Option<u32> {
+    #[cfg(target_os = "oxide-kernel")]
+    {
+        if !unsafe { valid_page(page) } { return None; }
+        // SAFETY: valid_page proved this is a PMM native descriptor with an initialized refcount.
+        return Some(unsafe { (*page.cast::<pmm::NativePage>()).refcount.load(Ordering::Acquire).max(0) as u32 });
+    }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    {
     // SAFETY: the caller supplies a descriptor returned by alloc_pages which remains live while
     // this count is inspected; valid_page verifies that descriptor before reading its refcount.
     if unsafe { valid_page(page) } {
@@ -254,6 +361,7 @@ pub(crate) fn page_ref_count(page: *mut LinuxPage) -> Option<u32> {
         Some(unsafe { (*page).refs.load(Ordering::Acquire) })
     } else {
         None
+    }
     }
 }
 
@@ -273,6 +381,17 @@ pub(crate) fn page_get(page: *mut LinuxPage) -> bool {
 /// Release one owner of a live Linux page descriptor, freeing it on the final release.
 /// # C: O(order)
 pub(crate) fn page_put(page: *mut LinuxPage) {
+    #[cfg(target_os = "oxide-kernel")]
+    {
+        let Some((_, order)) = native_page_run(page) else { return; };
+        // SAFETY: valid_page proved this permanent descriptor belongs to an allocated PMM frame.
+        if unsafe { (*page.cast::<pmm::NativePage>()).refcount.fetch_sub(1, Ordering::AcqRel) } == 1 {
+            __free_pages(page, order);
+        }
+        return;
+    }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    {
     // SAFETY: the caller transfers one outstanding allocation ownership reference; valid_page
     // rejects NULL and non-allocator descriptors before touching the reference count.
     if !unsafe { valid_page(page) } { return; }
@@ -280,6 +399,7 @@ pub(crate) fn page_put(page: *mut LinuxPage) {
     if unsafe { (*page).refs.fetch_sub(1, Ordering::AcqRel) } == 1 {
         // SAFETY: this was the final reference, so releasing the backing run exactly once is valid.
         unsafe { __free_pages(page, (*page).order); }
+    }
     }
 }
 
@@ -289,8 +409,13 @@ extern "C" fn page_to_phys(page: *mut LinuxPage) -> u64 {
 }
 
 pub(crate) unsafe fn linux_page_phys(page: *const LinuxPage) -> Option<u64> {
+    #[cfg(target_os = "oxide-kernel")]
+    { return native_page_run(page as *mut LinuxPage).map(|(pa, _)| pa); }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    {
     // SAFETY: caller supplies a readable live page descriptor, so valid_page may read its magic.
     if unsafe { valid_page(page as *mut LinuxPage) } { Some(unsafe { (*page).pa }) } else { None }
+    }
 }
 
 unsafe extern "C" fn kstrdup(s: *const u8, flags: u32) -> *mut u8 {
@@ -365,7 +490,7 @@ pub(crate) fn alloc_bytes(size: usize, align: usize, zero: bool) -> *mut u8 {
     user
 }
 
-unsafe fn free_bytes(ptr: *mut u8) {
+pub(crate) unsafe fn free_bytes(ptr: *mut u8) {
     if ptr.is_null() { return; }
     // SAFETY: caller supplies the live result of alloc_bytes, so its immediately preceding Header is readable.
     let hp = unsafe { ptr.sub(size_of::<Header>()) as *mut Header };
@@ -380,14 +505,43 @@ unsafe fn free_bytes(ptr: *mut u8) {
     unsafe { dealloc(ptr.sub(h.off), layout); }
 }
 
+#[cfg(target_os = "oxide-kernel")]
+fn native_page_run_insert(pa: u64, order: u32) -> bool {
+    let mut runs = NATIVE_PAGE_RUNS.lock();
+    if runs.iter().any(|run| run.pa == pa) { return false; }
+    runs.push(NativePageRun { pa, order });
+    true
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn native_page_run(page: *mut LinuxPage) -> Option<(u64, u32)> {
+    let pa = pmm::setup::native_page_pa(page.cast())?;
+    NATIVE_PAGE_RUNS.lock().iter()
+        .find(|run| run.pa == pa)
+        .map(|run| (run.pa, run.order))
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn native_page_run_take(pa: u64, order: u32) -> bool {
+    let mut runs = NATIVE_PAGE_RUNS.lock();
+    let Some(index) = runs.iter().position(|run| run.pa == pa && run.order == order) else { return false; };
+    runs.swap_remove(index);
+    true
+}
+
 // Precondition: page is NULL or points to a readable, size_of::<LinuxPage>()-sized allocation —
 // i.e. a descriptor from page_desc_alloc that page_desc_free has not yet released. Only the magic
 // word is read, so a live-but-foreign block is rejected rather than trusted.
 unsafe fn valid_page(page: *mut LinuxPage) -> bool {
+    #[cfg(target_os = "oxide-kernel")]
+    { return native_page_run(page).is_some(); }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    {
     if page.is_null() { return false; }
     // SAFETY: the caller's precondition makes page a live page_desc_alloc block, so the magic
     // field written by alloc_pages is readable here.
     unsafe { (*page).magic == PAGE_MAGIC }
+    }
 }
 
 fn page_desc_alloc(page: LinuxPage) -> *mut LinuxPage {
