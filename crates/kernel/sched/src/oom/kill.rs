@@ -152,17 +152,30 @@ fn kill_process(task: &Arc<Task>) -> bool {
                                 MemoryEvent::OomKill);
     report(task);
     sigkill_group(task);
-    if let Some(mm) = task.clone_mm_for_oom() {
-        for sharer in crate::registry::mm_sharers(&mm) {
-            if sharer.tgid.load(Ordering::Acquire) == task.tgid.load(Ordering::Acquire) { continue; }
-            // A sharer that may not be killed pins the mm; the kill still
-            // stands, the memory just comes back later.
-            if sharer.oom_unkillable() || !sharer.oom_alive() { continue; }
-            sigkill_group(&sharer);
-        }
+    let Some(mm) = task.clone_mm_for_oom() else { return true; };
+    // A process the machine may not kill keeps the mm alive for as long as it
+    // runs, so nothing may tear its leaves down. The mm is written off instead:
+    // the kill still stands, the memory comes back when that process lets go,
+    // and meanwhile the selector is not left waiting on a victim it cannot
+    // help.
+    let mut pinned = false;
+    for sharer in crate::registry::mm_sharers(&mm) {
+        if sharer.tgid.load(Ordering::Acquire) == task.tgid.load(Ordering::Acquire) { continue; }
+        // A kernel thread borrowing the mm reads no userspace through it, so
+        // it neither pins the memory nor needs the signal.
+        if sharer.kernel_thread.load(Ordering::Acquire) { continue; }
+        if sharer.oom_unkillable() { mm.set_oom_skip(); pinned = true; continue; }
+        if !sharer.oom_alive() { continue; }
+        sigkill_group(&sharer);
     }
+    if !pinned { super::reap::queue_oom_reaper(task, &mm, now_ns()); }
     true
 }
+
+/// Monotonic now, or zero before the timekeeper is running — a victim queued
+/// at zero is simply due immediately, which is the right answer when there is
+/// no clock to grant it a grace period against.
+fn now_ns() -> u64 { timekeeper::monotonic_ns() }
 
 /// The whole process dies, not the one thread the scan happened to name.
 fn sigkill_group(task: &Arc<Task>) {
@@ -251,7 +264,12 @@ fn candidate(threads: Vec<Arc<Task>>) -> (Candidate, Arc<Task>) {
     let already_victim = threads.iter().any(|task| task.oom_marked());
     let holder = threads.iter().find(|task| task.clone_mm_for_oom().is_some());
     let named = holder.unwrap_or(&threads[0]).clone();
-    let candidate = Candidate { unkillable, already_victim, badness: holder.and_then(|task| score(task)) };
+    // The reaper's verdict lives on the mm, not the task, so every thread of a
+    // written-off process reads the same answer and a sharing process outside
+    // the group does too.
+    let reap_skipped = holder.and_then(|task| task.clone_mm_for_oom()).is_some_and(|mm| mm.oom_skip());
+    let candidate = Candidate { unkillable, already_victim, reap_skipped,
+                                badness: holder.and_then(|task| score(task)) };
     (candidate, named)
 }
 

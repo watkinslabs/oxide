@@ -65,8 +65,13 @@ fn fixture() -> std::sync::MutexGuard<'static, ()> {
     table().lock().unwrap_or_else(|e| e.into_inner()).clear();
     install_managed_pages(TOTAL_PAGES);
     install_memory_observer(observe);
+    super::reap::clear_queue_for_tests();
     guard
 }
+
+/// This process's address space, for the tests that speak to the reaper's
+/// verdict directly.
+fn mm_of(task: &Arc<Task>) -> Arc<vmm::AddressSpace> { task.clone_mm_for_oom().expect("test process holds an mm") }
 
 #[test]
 fn the_largest_process_is_the_one_killed() {
@@ -235,4 +240,97 @@ fn all_threads_of_the_chosen_process_are_scored_through_the_one_holding_the_mm()
     assert_eq!(out_of_memory(Scope::Global), Outcome::Killed);
     assert!(killed(&sibling), "the process must be scored through the thread that holds its mm");
     assert!(!killed(&other));
+}
+
+#[test]
+fn a_victim_that_will_not_die_stops_blocking_selection_once_the_reaper_writes_it_off() {
+    let _guard = fixture();
+    // The wedged victim: chosen, sent SIGKILL, and never reaching its exit —
+    // a task parked uninterruptibly does not observe the signal until it wakes
+    // on its own, and it may never wake. Before the reaper existed, this state
+    // made every later exhaustion report a kill in progress forever, so the
+    // faulting leg re-took its instruction with nothing able to change the
+    // answer.
+    let wedged = process(5101, 900_000);
+    let other = process(5102, 500_000);
+
+    assert_eq!(out_of_memory(Scope::Global), Outcome::Killed);
+    assert!(killed(&wedged));
+    // It stays alive and marked. Every pass waits, correctly, while the reaper
+    // still has attempts left.
+    for _ in 0..16 { assert_eq!(out_of_memory(Scope::Global), Outcome::InProgress); }
+    assert!(!killed(&other));
+    assert!(wedged.oom_alive(), "the wedged victim must not have exited");
+
+    // The reaper spends its attempts and writes the mm off. That verdict — not
+    // the victim's death — is what releases selection.
+    mm_of(&wedged).set_oom_skip();
+    assert_eq!(out_of_memory(Scope::Global), Outcome::Killed);
+    assert!(killed(&other), "a later exhaustion must be able to pick somebody else");
+    assert!(wedged.oom_alive(), "and it must do so with the wedged victim still alive");
+}
+
+#[test]
+fn a_written_off_process_is_not_selected_again_however_large_it_is() {
+    let _guard = fixture();
+    // Nothing more is coming back from a drained mm, so killing its owner a
+    // second time buys nothing. It is transparent, not a last resort.
+    let drained = process(5201, 900_000);
+    mm_of(&drained).set_oom_skip();
+
+    assert_eq!(out_of_memory(Scope::Global), Outcome::NoKillable);
+    assert!(!killed(&drained));
+}
+
+#[test]
+fn a_kill_queues_the_victim_for_the_reaper() {
+    let _guard = fixture();
+    let victim = process(5301, 900_000);
+    assert_eq!(super::reap::queued_len(), 0);
+
+    assert_eq!(out_of_memory(Scope::Global), Outcome::Killed);
+    assert_eq!(super::reap::queued_len(), 1, "the victim's mm must be handed to the reaper");
+    // And a second event over the same scope neither kills again nor queues a
+    // duplicate.
+    assert_eq!(out_of_memory(Scope::Global), Outcome::InProgress);
+    assert_eq!(super::reap::queued_len(), 1);
+    let _ = victim;
+}
+
+#[test]
+fn a_victim_becomes_due_only_after_the_grace_period() {
+    let _guard = fixture();
+    // The delay exists so the victim's own exit path can run first — a robust
+    // futex list lives in the very memory the reaper would take.
+    let victim = process(5401, 900_000);
+    let mm = mm_of(&victim);
+    assert!(super::reap::queue_oom_reaper(&victim, &mm, 1_000));
+    assert!(super::reap::take_due(1_000).is_none());
+    assert!(super::reap::take_due(1_000 + super::reap::REAP_DELAY_NS - 1).is_none());
+    assert_eq!(super::reap::next_due_ns(), Some(1_000 + super::reap::REAP_DELAY_NS));
+    let due = super::reap::take_due(1_000 + super::reap::REAP_DELAY_NS).expect("due after the grace period");
+    assert!(Arc::ptr_eq(&due.mm, &mm));
+    assert_eq!(super::reap::queued_len(), 0);
+}
+
+#[test]
+fn an_mm_already_written_off_is_never_queued() {
+    let _guard = fixture();
+    // The victim got there on its own — its exit released everything. Queuing
+    // it would spend attempts walking an empty address space.
+    let victim = process(5501, 900_000);
+    let mm = mm_of(&victim);
+    mm.set_oom_skip();
+    assert!(!super::reap::queue_oom_reaper(&victim, &mm, 0));
+    assert_eq!(super::reap::queued_len(), 0);
+}
+
+#[test]
+fn one_mm_is_queued_once_however_many_times_it_is_offered() {
+    let _guard = fixture();
+    let victim = process(5601, 900_000);
+    let mm = mm_of(&victim);
+    assert!(super::reap::queue_oom_reaper(&victim, &mm, 0));
+    assert!(!super::reap::queue_oom_reaper(&victim, &mm, 0));
+    assert_eq!(super::reap::queued_len(), 1);
 }
