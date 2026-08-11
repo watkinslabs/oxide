@@ -20,6 +20,14 @@ pub const GHC_AE: u32 = 1 << 31; // AHCI Enable
 /// CAP bits (AHCI §3.1.1).
 pub const CAP_S64A: u32 = 1 << 31; // Supports 64-bit Addressing
 
+/// AHCI PRDT byte-count field is 22 bits plus one, so one entry can describe
+/// up to 4 MiB of a contiguous physical data run.
+pub const PRDT_MAX_BYTES: u64 = 1 << 22;
+
+/// Whether one DMA byte count fits one AHCI PRDT entry. # C: O(1)
+#[inline]
+pub fn prdt_entry_fits(bytes: u64) -> bool { bytes != 0 && bytes <= PRDT_MAX_BYTES }
+
 /// Per-port register block base + stride (AHCI §3.3): port N regs live at
 /// ABAR + 0x100 + N*0x80.
 pub const PORT_BASE:   u64 = 0x100;
@@ -253,6 +261,14 @@ mod tests {
         assert!(!dma_range_fits(0, 0xFFFF_F001, 4096));
         assert!(!dma_range_fits(0, 1 << 32, 1));
         assert!(!dma_range_fits(0, 0, 0));
+    }
+
+    #[test]
+    fn one_prdt_entry_covers_the_contiguous_two_mib_data_run() {
+        assert!(prdt_entry_fits(2 * 1024 * 1024));
+        assert!(prdt_entry_fits(PRDT_MAX_BYTES));
+        assert!(!prdt_entry_fits(0));
+        assert!(!prdt_entry_fits(PRDT_MAX_BYTES + 1));
     }
 
     #[test]
