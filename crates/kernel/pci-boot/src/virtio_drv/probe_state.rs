@@ -57,7 +57,7 @@ impl VirtioProbeState {
     fn bind_msix_queue(
         &mut self,
         d: &pci::PciDevice,
-        caps: &pci::heapless_caps::CapVec,
+        _caps: &pci::heapless_caps::CapVec,
         bars: &[pci::Bar; 6],
         queue_vector: u16,
         handler: Option<fn()>,
@@ -72,9 +72,7 @@ impl VirtioProbeState {
         {
             return Some(binding.queue_vector);
         }
-        if let Some(binding) = bind_msix_vector(d, caps, bars, &mut self.mappings, queue_vector, handler) {
-            let queue_vector = binding.queue_vector;
-            self.msix.push(binding);
+        if let Some(queue_vector) = bind_msix_vector(d, bars, &mut self.mappings, &mut self.msix, queue_vector, handler) {
             return Some(queue_vector);
         }
         None
@@ -123,7 +121,7 @@ impl VirtioProbeState {
             runtime.program_queue_set(self.cfg_va, q0_msix_vec, &queue_plans)
         });
         if (bringup.final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0 {
-            unmask_msix_bindings(d.bdf, &self.msix);
+            unmask_msix_bindings(&self.msix);
         }
         bringup
     }
