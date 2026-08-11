@@ -46,8 +46,13 @@ pub(super) fn export_symbols() {
         ("schedule", schedule as *const () as usize),
         ("schedule_timeout", schedule_timeout as *const () as usize),
         ("__SCT__preempt_schedule_notrace", preempt_schedule_notrace as *const () as usize),
+        ("clk_prepare", clk_ok as *const () as usize), ("clk_enable", clk_ok as *const () as usize),
+        ("clk_unprepare", clk_void as *const () as usize), ("clk_disable", clk_void as *const () as usize),
     ] { export(name, addr, false); }
 }
+
+extern "C" fn clk_ok(_clk: *mut core::ffi::c_void) -> i32 { 0 }
+extern "C" fn clk_void(_clk: *mut core::ffi::c_void) {}
 
 pub(super) fn set_now_hook(f: NowHook) {
     NOW_HOOK.store(f as *mut (), Ordering::Release);

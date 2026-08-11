@@ -13,15 +13,27 @@ use super::types::*;
 
 const WORK_QUEUED: usize = 1;
 const WORK_DISABLED: usize = 1 << 1;
+// Execution retains WORK_QUEUED until completion.  Cancellation clears QUEUED
+// to suppress a not-yet-started callback and waits for this ownership bit.
+const WORK_RUNNING: usize = 1 << 2;
 
 static WORK_QUEUE: Spinlock<Vec<usize>, ModulesLockClass> = Spinlock::new(Vec::new());
 static WORKER_STARTED: AtomicBool = AtomicBool::new(false);
+// The built-in queue has process lifetime.  Drivers use this exported object for
+// schedule_work-family paths, so it must not be represented by a null sentinel.
+pub(super) static SYSTEM_PERCPU_WQ: LinuxWorkqueueStruct = LinuxWorkqueueStruct {
+    flags: 1 << 5,
+    max_active: 0,
+    destroyed: AtomicBool::new(false),
+    name: [0; 32],
+};
 
 #[cfg(target_os = "oxide-kernel")]
 static WORK_WAIT: sched::live::WaitList = sched::live::WaitList::new();
 
 pub(super) fn export_symbols() {
     use crate::symtab::export;
+    export("system_percpu_wq", &SYSTEM_PERCPU_WQ as *const _ as usize, false);
     for (name, addr) in [
         ("alloc_workqueue", alloc_workqueue as *const () as usize),
         ("destroy_workqueue", destroy_workqueue as *const () as usize),
@@ -50,11 +62,7 @@ pub(super) fn export_symbols() {
 pub(super) fn init_runtime() {
     if WORKER_STARTED.swap(true, Ordering::AcqRel) { return; }
     #[cfg(target_os = "oxide-kernel")]
-    {
-        let tid = sched::live::next_tid();
-        // SAFETY: module exports initialise after the live runqueue exists; worker entry is static.
-        let _ = unsafe { sched::live::spawn_kernel_thread(tid, "kworker", worker_entry, 0) };
-    }
+    { /* sched::live::workqueue owns one pinned kworker per online CPU. */ }
 }
 
 pub(super) extern "C" fn alloc_workqueue(name: *const u8, flags: u32, max_active: i32) -> *mut LinuxWorkqueueStruct {
@@ -89,20 +97,30 @@ pub(super) extern "C" fn schedule_work(w: *mut LinuxWorkStruct) -> i32 {
     queue_work_on(-1, null_mut(), w)
 }
 
-pub(super) extern "C" fn queue_work_on(_cpu: i32, wq: *mut LinuxWorkqueueStruct, w: *mut LinuxWorkStruct) -> i32 {
+pub(super) extern "C" fn queue_work_on(cpu: i32, wq: *mut LinuxWorkqueueStruct, w: *mut LinuxWorkStruct) -> i32 {
     if w.is_null() || wq_destroyed(wq) { return 0; }
-    enqueue_work(w) as i32
+    enqueue_work_on(cpu, w) as i32
 }
 
 pub(super) extern "C" fn flush_scheduled_work() { flush_workqueue(null_mut()); }
 
 pub(super) extern "C" fn flush_work(w: *mut LinuxWorkStruct) -> i32 {
     if w.is_null() { return 0; }
-    let mut ran = 0;
-    while work_queued(w) {
-        ran |= drain_work_once() as i32;
+    #[cfg(target_os = "oxide-kernel")]
+    {
+        let was_busy = work_busy(w);
+        if was_busy {
+            // SAFETY: caller is in process context; completion publishes state before waking this list.
+            let _ = unsafe { sched::live::wait_event_uninterruptible(&WORK_WAIT, || !work_busy(w)) };
+        }
+        return was_busy as i32;
     }
-    ran
+    #[cfg(not(target_os = "oxide-kernel"))]
+    {
+        let mut ran = 0;
+        while work_busy(w) { ran |= drain_work_once() as i32; }
+        ran
+    }
 }
 
 pub(super) extern "C" fn cancel_work_sync(w: *mut LinuxWorkStruct) -> i32 {
@@ -110,9 +128,16 @@ pub(super) extern "C" fn cancel_work_sync(w: *mut LinuxWorkStruct) -> i32 {
     let mut g = WORK_QUEUE.lock();
     let before = g.len();
     g.retain(|p| *p != w as usize);
+    let removed = g.len() != before;
     // SAFETY: non-null pointer names caller-owned work_struct storage.
-    unsafe { (*w).data.fetch_and(!WORK_QUEUED, Ordering::AcqRel); }
-    (g.len() != before) as i32
+    let old = unsafe { (*w).data.fetch_and(!WORK_QUEUED, Ordering::AcqRel) };
+    drop(g);
+    #[cfg(target_os = "oxide-kernel")]
+    if old & WORK_RUNNING != 0 {
+        // SAFETY: cancel_work_sync is process-context only and completion wakes this list after releasing RUNNING.
+        let _ = unsafe { sched::live::wait_event_uninterruptible(&WORK_WAIT, || !work_running(w)) };
+    }
+    ((old & WORK_QUEUED != 0) || removed) as i32
 }
 
 pub(super) extern "C" fn disable_work(w: *mut LinuxWorkStruct) -> i32 {
@@ -155,7 +180,7 @@ pub(super) extern "C" fn queue_delayed_work_on(cpu: i32, wq: *mut LinuxWorkqueue
     unsafe { (*dw).wq = wq; (*dw).cpu = cpu; }
     if delay == 0 {
         // SAFETY: non-null pointer names caller-owned delayed_work storage.
-        return unsafe { enqueue_work(&mut (*dw).work) as i32 };
+        return unsafe { enqueue_work_on(cpu, &mut (*dw).work) as i32 };
     }
     let expires = super::clock::nsecs_to_jiffies(super::clock::now_ns().saturating_add(jiffies_to_ns(delay)));
     // SAFETY: non-null pointer names caller-owned delayed_work storage.
@@ -202,46 +227,78 @@ pub(super) extern "C" fn async_schedule_node_domain(
     data
 }
 
-#[cfg(target_os = "oxide-kernel")]
-extern "C" fn worker_entry(_arg: usize) -> ! {
+fn enqueue_work_on(cpu: i32, w: *mut LinuxWorkStruct) -> bool {
+    // SAFETY: non-null pointer names caller-owned work_struct storage.
+    let mut old = unsafe { (*w).data.load(Ordering::Acquire) };
     loop {
-        while drain_work_once() {}
-        // SAFETY: worker has no locks held; queue mutation precedes wake and
-        // the canonical loop makes the check/publication edge race-free.
-        let _ = unsafe { sched::live::wait_event_uninterruptible(&WORK_WAIT,
-            || !WORK_QUEUE.lock().is_empty()) };
+        if old & (WORK_QUEUED | WORK_DISABLED) != 0 { return false; }
+        // SAFETY: this compare-and-exchange only publishes this work item's pending state.
+        match unsafe { (*w).data.compare_exchange_weak(old, old | WORK_QUEUED, Ordering::AcqRel, Ordering::Acquire) } {
+            Ok(_) => break,
+            Err(next) => old = next,
+        }
     }
+    #[cfg(target_os = "oxide-kernel")]
+    {
+        let queued = if cpu < 0 {
+            sched::live::workqueue::queue_work(run_c_work, w as usize)
+        } else {
+            sched::live::workqueue::queue_work_on(cpu as usize, run_c_work, w as usize)
+        };
+        if !queued {
+            // SAFETY: this path won the queued bit but scheduler admission failed, so undo exactly that publication.
+            unsafe { (*w).data.fetch_and(!WORK_QUEUED, Ordering::AcqRel); }
+        }
+        queued
+    }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { let _ = cpu; WORK_QUEUE.lock().push(w as usize); let _ = drain_work_once(); true }
 }
 
-fn enqueue_work(w: *mut LinuxWorkStruct) -> bool {
-    // SAFETY: non-null pointer names caller-owned work_struct storage.
-    let old = unsafe { (*w).data.fetch_or(WORK_QUEUED, Ordering::AcqRel) };
-    if old & (WORK_QUEUED | WORK_DISABLED) != 0 { return false; }
-    WORK_QUEUE.lock().push(w as usize);
-    #[cfg(target_os = "oxide-kernel")]
-    WORK_WAIT.wake_one();
-    #[cfg(not(target_os = "oxide-kernel"))]
-    { let _ = drain_work_once(); }
-    true
+#[cfg(target_os = "oxide-kernel")]
+fn run_c_work(raw: usize) {
+    let w = raw as *mut LinuxWorkStruct;
+    run_work_callback(w);
+    WORK_WAIT.wake_all();
 }
 
 fn drain_work_once() -> bool {
     let w = WORK_QUEUE.lock().pop();
     let Some(raw) = w else { return false; };
     let w = raw as *mut LinuxWorkStruct;
-    // SAFETY: queued work pointer came from queue_work and remains caller-owned until cancelled/flushed.
-    unsafe {
-        if (*w).data.load(Ordering::Acquire) & WORK_DISABLED == 0 {
-            if let Some(f) = (*w).func { f(w); }
-        }
-        (*w).data.fetch_and(!WORK_QUEUED, Ordering::AcqRel);
-    }
+    run_work_callback(w);
     true
 }
 
-fn work_queued(w: *mut LinuxWorkStruct) -> bool {
+fn run_work_callback(w: *mut LinuxWorkStruct) {
+    // SAFETY: queued work pointer came from queue_work and stays valid until cancellation or completion synchronizes it.
+    let mut old = unsafe { (*w).data.load(Ordering::Acquire) };
+    loop {
+        if old & (WORK_QUEUED | WORK_DISABLED | WORK_RUNNING) != WORK_QUEUED {
+            // SAFETY: only pending ownership is discarded when cancellation or disable won the race.
+            unsafe { (*w).data.fetch_and(!WORK_QUEUED, Ordering::AcqRel); }
+            return;
+        }
+        // SAFETY: the worker atomically claims the already-published pending work item.
+        match unsafe { (*w).data.compare_exchange_weak(old, old | WORK_RUNNING, Ordering::AcqRel, Ordering::Acquire) } {
+            Ok(_) => break,
+            Err(next) => old = next,
+        }
+    }
+    // SAFETY: this worker owns execution until it clears WORK_RUNNING below.
+    unsafe { if let Some(f) = (*w).func { f(w); } }
+    // SAFETY: callback completion releases both pending and execution ownership before any waiter proceeds.
+    unsafe { (*w).data.fetch_and(!(WORK_QUEUED | WORK_RUNNING), Ordering::AcqRel); }
+}
+
+fn work_busy(w: *mut LinuxWorkStruct) -> bool {
     // SAFETY: non-null pointer names caller-owned work_struct storage.
-    unsafe { (*w).data.load(Ordering::Acquire) & WORK_QUEUED != 0 }
+    unsafe { (*w).data.load(Ordering::Acquire) & (WORK_QUEUED | WORK_RUNNING) != 0 }
+}
+
+fn work_running(w: *mut LinuxWorkStruct) -> bool {
+    // SAFETY: non-null pointer names caller-owned work_struct storage.
+    unsafe { (*w).data.load(Ordering::Acquire) & WORK_RUNNING != 0 }
 }
 
 fn wq_destroyed(wq: *mut LinuxWorkqueueStruct) -> bool {
