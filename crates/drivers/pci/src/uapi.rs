@@ -26,6 +26,9 @@ pub const HEADER_TYPE_MASK: u8 = 0x7f;
 pub const HEADER_TYPE_NORMAL: u8 = 0x00;
 /// Header type 1: PCI-to-PCI bridge.
 pub const HEADER_TYPE_BRIDGE: u8 = 0x01;
+pub const BRIDGE_BUS_NUMBERS: u8 = 0x18;
+pub const CLASS_BRIDGE: u8 = 0x06;
+pub const SUBCLASS_PCI_TO_PCI: u8 = 0x04;
 /// Header type 2: CardBus bridge.
 pub const HEADER_TYPE_CARDBUS: u8 = 0x02;
 

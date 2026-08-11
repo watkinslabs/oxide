@@ -16,7 +16,7 @@ mod rsdp;
 mod tables;
 
 pub use fadt::{Fadt, Gas, ResetAction, decode_fadt, parse_fadt, reset_action};
-pub use iommu::{AmdIvhdScope, DmarScope, IommuError, IommuKind, IommuUnit, amd_vi_unit_for_requester, decode_dmar, decode_ivrs, dmar_scope, dmar_scope_count, iommu_unit, iommu_unit_count, iommu_unit_for_segment, parse_dmar, parse_ivrs};
+pub use iommu::{AmdIvhdScope, DmarScope, IommuError, IommuKind, IommuUnit, MAX_DMAR_PATH_BYTES, amd_vi_unit_for_requester, decode_dmar, decode_ivrs, dmar_scope, dmar_scope_count, iommu_unit, iommu_unit_count, iommu_unit_for_segment, parse_dmar, parse_ivrs};
 pub use rsdp::{RsdpStatus, try_log_acpi, try_log_rsdp, try_log_xsdt};
 pub use tables::{ECAM_BASE_PA, ECAM_BUS_END, ECAM_BUS_START, ECAM_SEGMENT, EcamWindow, GIC_MSI_FRAME_PA, GIC_ITS_PA, decode_gtdt, decode_hpet, decode_madt, decode_mcfg, decode_spcr, ecam_bus_cap, ecam_window, ecam_window_count};
 pub use pci::MAX_ECAM_WINDOWS;

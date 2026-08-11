@@ -37,7 +37,7 @@ pub use iova::{IovaRange, IovaSpace, IOVA_PAGE_SIZE};
 pub use types::{
     disable_mem_bus_master, enable_mem_bus_master, intx_command_value, parse_bdf_addr,
     read_command, restore_intx_disabled, restore_mem_bus_master, set_intx_disabled,
-    write_command, Bdf, ConfigSpaceReader, Error, KResult, PciDevice, COMMAND_BUS_MASTER,
+    write_command, Bdf, BridgeBuses, ConfigSpaceReader, Error, KResult, PciDevice, bridge_buses, COMMAND_BUS_MASTER,
     COMMAND_INTX_DISABLE, COMMAND_IO, COMMAND_MEMORY, MAX_ECAM_WINDOWS,
 };
 

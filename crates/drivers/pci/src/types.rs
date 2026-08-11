@@ -1,3 +1,5 @@
+use crate::uapi;
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Error {
     NotImplemented,
@@ -196,6 +198,10 @@ pub struct PciDevice {
     pub header_type: u8,
 }
 
+/// Bus window decoded from a PCI-to-PCI bridge configuration header.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct BridgeBuses { pub primary: u8, pub secondary: u8, pub subordinate: u8 }
+
 impl PciDevice {
     /// # C: O(1)
     pub fn from_config<R: ConfigSpaceReader>(r: &R, bdf: Bdf) -> Option<Self> {
@@ -222,6 +228,18 @@ impl PciDevice {
             header_type,
         })
     }
+}
+
+/// Return the bus window of a live PCI-to-PCI bridge. # C: O(1)
+pub fn bridge_buses<R: ConfigSpaceReader>(r: &R, bdf: Bdf) -> Option<BridgeBuses> {
+    let d = PciDevice::from_config(r, bdf)?;
+    if d.header_type & uapi::HEADER_TYPE_MASK != uapi::HEADER_TYPE_BRIDGE || d.class_code != uapi::CLASS_BRIDGE || d.subclass != uapi::SUBCLASS_PCI_TO_PCI { return None; }
+    let buses = r.read32(bdf, uapi::BRIDGE_BUS_NUMBERS);
+    let primary = buses as u8;
+    let secondary = (buses >> 8) as u8;
+    let subordinate = (buses >> 16) as u8;
+    if secondary == 0 || secondary <= primary || subordinate < secondary { return None; }
+    Some(BridgeBuses { primary, secondary, subordinate })
 }
 
 #[cfg(test)]

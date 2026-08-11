@@ -81,6 +81,17 @@ fn enumerate_finds_one_device() {
 }
 
 #[test]
+fn bridge_bus_window_requires_a_live_pci_to_pci_bridge() {
+    let r = MapReader { m: Mutex::new(HashMap::new()) };
+    let bdf = Bdf { segment: 3, bus: 4, device: 5, function: 0 };
+    r.write32(bdf, 0x00, 0x1001_1234);
+    r.write32(bdf, 0x08, 0x0604_0000);
+    r.write32(bdf, 0x0C, 0x0001_0000);
+    r.write32(bdf, 0x18, 0x0008_0704);
+    assert_eq!(bridge_buses(&r, bdf), Some(BridgeBuses { primary: 4, secondary: 7, subordinate: 8 }));
+}
+
+#[test]
 fn enumerate_segment_uses_the_mcfg_segment_and_start_bus() {
     let r = MapReader { m: Mutex::new(HashMap::new()) };
     let bdf = Bdf { segment: 3, bus: 0x40, device: 5, function: 0 };
