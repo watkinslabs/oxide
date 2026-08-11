@@ -20,6 +20,11 @@ fn bridge_scope() -> DmarScope {
     DmarScope { unit_index: 0, scope_type: DMAR_SCOPE_BRIDGE, enumeration_id: 0, start_bus: 0, path_len: 2, path }
 }
 
+fn rmrr(segment: u16, scope: DmarScope) -> firmware::acpi::DmarRmrr {
+    firmware::acpi::DmarRmrr { segment, base: 0x7f00_0000, end: 0x7f00_0fff,
+        scopes: [scope; firmware::acpi::MAX_DMAR_RMRR_SCOPES], scope_count: 1 }
+}
+
 fn reader() -> Reader {
     let bridge = Bdf { segment: 0, bus: 0, device: 1, function: 0 };
     let endpoint = Bdf { segment: 0, bus: 3, device: 2, function: 0 };
@@ -33,15 +38,21 @@ fn reader() -> Reader {
 fn endpoint_scope_follows_each_firmware_bridge_path_hop() {
     let r = reader();
     let endpoint = Bdf { segment: 0, bus: 3, device: 2, function: 0 };
-    let unit = IommuUnit { kind: firmware::acpi::IommuKind::IntelVtd, segment: 0, register_base: 0, register_pages: 1, include_all: false };
     assert_eq!(scope_target(&r, 0, scope(DMAR_SCOPE_ENDPOINT)), Some(endpoint));
-    assert!(scope_matches(&r, endpoint, scope(DMAR_SCOPE_ENDPOINT), unit));
+    assert!(scope_matches(&r, endpoint, scope(DMAR_SCOPE_ENDPOINT), 0));
 }
 
 #[test]
 fn bridge_scope_matches_a_downstream_requester_through_its_parent() {
     let r = reader();
     let endpoint = Bdf { segment: 0, bus: 3, device: 2, function: 0 };
-    let unit = IommuUnit { kind: firmware::acpi::IommuKind::IntelVtd, segment: 0, register_base: 0, register_pages: 1, include_all: false };
-    assert!(scope_matches(&r, endpoint, bridge_scope(), unit));
+    assert!(scope_matches(&r, endpoint, bridge_scope(), 0));
+}
+
+#[test]
+fn reserved_range_follows_its_own_scope_and_segment() {
+    let r = reader();
+    let endpoint = Bdf { segment: 0, bus: 3, device: 2, function: 0 };
+    assert!(rmrr_matches(&r, endpoint, rmrr(0, scope(DMAR_SCOPE_ENDPOINT))));
+    assert!(!rmrr_matches(&r, endpoint, rmrr(1, scope(DMAR_SCOPE_ENDPOINT))));
 }

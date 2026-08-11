@@ -1,6 +1,6 @@
 use alloc::{boxed::Box, vec::Vec};
 
-use crate::{VtdRegisters, VtdTables, intel_vtd_unit_for_bdf};
+use crate::{VtdRegisters, VtdTables, intel_vtd_rmrr_count, intel_vtd_rmrr_for_bdf, intel_vtd_unit_for_bdf};
 use firmware::acpi::{IommuKind, IommuUnit};
 use pci::{Bdf, ConfigSpaceReader};
 
@@ -35,6 +35,13 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
             || !tables.map_identity_regions(regions) { return VtdActivation::Failed; }
         manager.push(VtdBootUnit { unit, regs, tables });
     }
+    for entry in manager.iter_mut() {
+        for index in 0..intel_vtd_rmrr_count() {
+            let Some(rmrr) = rmrr_for_unit(reader, requesters, index, entry.unit) else { continue; };
+            let Some(len) = rmrr.end.checked_sub(rmrr.base).and_then(|bytes| bytes.checked_add(1)) else { return VtdActivation::Failed; };
+            if !entry.tables.map_identity_range(rmrr.base, len) { return VtdActivation::Failed; }
+        }
+    }
     for bdf in requesters {
         let Some(unit) = intel_vtd_unit_for_bdf(reader, *bdf) else { continue; };
         let Some(entry) = manager.iter_mut().find(|entry| entry.unit == unit) else { return VtdActivation::Failed; };
@@ -50,6 +57,13 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
 
 fn push_unique_unit(units: &mut Vec<IommuUnit>, unit: IommuUnit) {
     if !units.iter().any(|current| *current == unit) { units.push(unit); }
+}
+
+fn rmrr_for_unit<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf], index: usize, unit: IommuUnit) -> Option<firmware::acpi::DmarRmrr> {
+    requesters.iter().find_map(|bdf| {
+        let rmrr = intel_vtd_rmrr_for_bdf(reader, *bdf, index)?;
+        (intel_vtd_unit_for_bdf(reader, *bdf) == Some(unit)).then_some(rmrr)
+    })
 }
 
 #[cfg(test)] mod tests {

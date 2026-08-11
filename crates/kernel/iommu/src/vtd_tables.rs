@@ -32,6 +32,8 @@ impl VtdTables {
         }
         true
     }
+    /// Map one validated firmware-reserved DMA interval before requester attachment. # C: O(leaves * levels)
+    pub fn map_identity_range(&mut self, pa: u64, len: u64) -> bool { self.page_table.map(pa, pa, len) }
     /// Publish one requester context after its page-table hierarchy is fully initialized. # C: O(context buses)
     pub fn attach(&mut self, bdf: Bdf, domain_id: u16) -> bool {
         let Some(context_pa) = self.context_for_bus(bdf.bus) else { return false; };
