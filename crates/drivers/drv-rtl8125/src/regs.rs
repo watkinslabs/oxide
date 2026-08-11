@@ -42,6 +42,14 @@ pub const ETH_MAX_FRAME: usize = 1518;
 pub const fn chip_xid(tx_config: u32) -> u32 { (tx_config >> 20) & 0x0fcf }
 /// Whether a decoded PCI function belongs to this native RTL8125 driver. # C: O(1)
 pub const fn is_rtl8125(vendor: u16, device: u16) -> bool { vendor == VENDOR_REALTEK && device == DEVICE_RTL8125 }
+/// Split an aligned descriptor-ring DMA address for the RTL8125 registers. # C: O(1)
+pub const fn descriptor_base(pa: u64) -> Option<(u32, u32)> {
+    if pa & 0xff != 0 { None } else { Some((pa as u32, (pa >> 32) as u32)) }
+}
+/// Linux r8169's initial RTL8125 receive configuration. # C: O(1)
+pub const fn initial_rx_config() -> u32 { RX_FETCH_8125 | RX_DMA_BURST | RX_ACCEPT_MY_PHYS | RX_ACCEPT_BROADCAST }
+/// Command value that enables both RTL8125 data engines after descriptor publication. # C: O(1)
+pub const fn start_command() -> u8 { CMD_RX_ENABLE | CMD_TX_ENABLE }
 
 #[repr(C)]
 #[derive(Copy, Clone, Default)]
@@ -74,5 +82,9 @@ mod tests {
         assert_eq!(chip_xid(0x6410_0000), 0x641);
         assert!(is_rtl8125(VENDOR_REALTEK, DEVICE_RTL8125));
         assert!(!is_rtl8125(VENDOR_REALTEK, 0x8168));
+        assert_eq!(descriptor_base(0x1234_5600), Some((0x1234_5600, 0)));
+        assert_eq!(descriptor_base(0x1234_5601), None);
+        assert_eq!(initial_rx_config(), 0x4000_070a);
+        assert_eq!(start_command(), 0x0c);
     }
 }
