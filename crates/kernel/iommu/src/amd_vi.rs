@@ -26,6 +26,8 @@ const DTE_ROOT_MASK: u64 = 0x000f_ffff_ffff_f000;
 const DTE_READ: u64 = 1 << 61;
 const DTE_WRITE: u64 = 1 << 62;
 const DTE_DOMAIN_MASK: u64 = 0xffff;
+const COMMAND_TYPE_SHIFT: u32 = 28;
+const COMMAND_INVALIDATE_DTE: u32 = 0x02;
 
 /// Hardware-format AMD-Vi device-table entry.
 #[repr(C, align(16))]
@@ -46,6 +48,19 @@ impl AmdViDte {
     }
     /// Return the four little-endian hardware words. # C: O(1)
     pub const fn words(&self) -> [u64; 4] { self.words }
+}
+
+/// Hardware-format 16-byte AMD-Vi command-ring element.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct AmdViCommand { words: [u32; 4] }
+impl AmdViCommand {
+    /// Build the requester-specific device-table invalidation command. # C: O(1)
+    pub const fn invalidate_dte(requester: u16) -> Self {
+        Self { words: [requester as u32, COMMAND_INVALIDATE_DTE << COMMAND_TYPE_SHIFT, 0, 0] }
+    }
+    /// Return the four little-endian command words. # C: O(1)
+    pub const fn words(&self) -> [u32; 4] { self.words }
 }
 
 /// Permanent DMA-visible AMD-Vi tables. They remain allocated until the
@@ -198,5 +213,10 @@ impl AmdViUnit {
         assert_eq!(dte.words()[1], 9);
         assert!(AmdViDte::paging(0x1234_5001, 4, 9).is_none());
         assert_eq!(AmdViTables::dte_byte_offset(0x1234), 0x1234 * 32);
+    }
+    #[test] fn invalidate_command_preserves_the_16_byte_ring_layout() {
+        let command = AmdViCommand::invalidate_dte(0x1234);
+        assert_eq!(core::mem::size_of::<AmdViCommand>(), 16);
+        assert_eq!(command.words(), [0x1234, 0x2000_0000, 0, 0]);
     }
 }
