@@ -39,6 +39,13 @@ impl AddressDeviceDma {
         for (offset, byte) in bytes.iter_mut().enumerate() { *byte = self.descriptor.read8(offset as u64)?; }
         crate::usb::device_descriptor(&bytes)
     }
+    /// Read the first configuration header after the completed header transfer. # C: O(9)
+    pub fn configuration_header(&self) -> Option<crate::usb::ConfigurationHeader> {
+        self.descriptor.invalidate_from_device();
+        let mut bytes = [0u8; crate::usb::CONFIG_DESC_HEADER_BYTES];
+        for (offset, byte) in bytes.iter_mut().enumerate() { *byte = self.descriptor.read8(offset as u64)?; }
+        crate::usb::configuration_header(&bytes)
+    }
     /// Rebuild the input context from controller output for Linux's EP0 MPS update. # C: O(1)
     pub fn prepare_evaluate_ep0(&self, max_packet: u8) -> Option<bool> {
         let stride = self.context_bytes as u64;
