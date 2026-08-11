@@ -26,7 +26,9 @@ pub const Q_ENTRIES: u32 = 32;
 /// identifier; `cq_phase` is the expected phase bit (toggles each wrap).
 struct Queue {
     sq_pa:   u64,
+    sq_dma:  u64,
     cq_pa:   u64,
+    cq_dma:  u64,
     entries: u32,
     sq_tail: u32,
     cq_head: u32,
@@ -45,14 +47,17 @@ pub struct IoPending { cid: u16 }
 /// admin + single I/O queue, and the negotiated geometry (namespace block
 /// size + capacity). One PRP bounce frame bounds a request to one transfer.
 pub struct Nvme {
+    bdf:     pci::Bdf,
     mmio:    Mapping,
     bar0_va: u64,
     admin:   Queue,
     io:      Queue,
     /// Contiguous data run for one serialized I/O request.
     data_pa: u64,
+    data_dma: u64,
     /// One PRP-list page used once the transfer needs more than two pages.
     prp_list_pa: u64,
+    prp_list_dma: u64,
     /// Namespace 1 geometry harvested at IDENTIFY.
     pub ns_blocks: u64,
     pub blk_size:  u32,
@@ -71,8 +76,8 @@ const DATA_ORDER: pmm::Order = pmm::Order(9);
 const DATA_PAGES: u64 = regs::MAX_PRP_DATA_PAGES;
 
 impl Nvme {
-    fn free_frame(pa: &mut u64) {
-        if *pa == 0 {
+    fn free_frame(bdf: pci::Bdf, pa: &mut u64, dma: &mut u64) {
+        if *pa == 0 || !iommu::unmap_dma(bdf, *dma, PAGE as usize) {
             return;
         }
         // SAFETY: the caller owns controller teardown/quiesce. These frames
@@ -80,17 +85,18 @@ impl Nvme {
         // during bring-up and are no longer reachable by live DMA.
         unsafe { pmm::setup::free_one_frame(*pa); }
         *pa = 0;
+        *dma = 0;
     }
 
-    fn alloc_frames() -> Option<([u64; 5], u64)> {
-        let mut frames = [0u64; 5];
+    fn alloc_frames(bdf: pci::Bdf) -> Option<([u64; 5], [u64; 5], u64, u64)> {
+        let mut frames = [0u64; 5]; let mut dmas = [0u64; 5];
         let mut i = 0usize;
         while i < frames.len() {
             match pmm::setup::alloc_one_frame() {
-                Some(pa) => frames[i] = pa,
+                Some(pa) => match iommu::map_dma(bdf, pa, PAGE as usize) { Some(dma) => { frames[i] = pa; dmas[i] = dma; }, None => { unsafe { pmm::setup::free_one_frame(pa); } for (pa, dma) in frames.iter_mut().zip(dmas.iter_mut()) { Self::free_frame(bdf, pa, dma); } return None; } },
                 None => {
-                    for pa in frames.iter_mut() {
-                        Self::free_frame(pa);
+                    for (pa, dma) in frames.iter_mut().zip(dmas.iter_mut()) {
+                        Self::free_frame(bdf, pa, dma);
                     }
                     return None;
                 }
@@ -98,10 +104,12 @@ impl Nvme {
             i += 1;
         }
         let Some(data_pa) = pmm::setup::alloc_contig(DATA_ORDER) else {
-            for pa in frames.iter_mut() { Self::free_frame(pa); }
+            for (pa, dma) in frames.iter_mut().zip(dmas.iter_mut()) { Self::free_frame(bdf, pa, dma); }
             return None;
         };
-        Some((frames, data_pa))
+        let bytes = (DATA_PAGES * PAGE) as usize;
+        let Some(data_dma) = iommu::map_dma(bdf, data_pa, bytes) else { unsafe { pmm::setup::free_contig(data_pa, DATA_ORDER); } for (pa, dma) in frames.iter_mut().zip(dmas.iter_mut()) { Self::free_frame(bdf, pa, dma); } return None; };
+        Some((frames, dmas, data_pa, data_dma))
     }
 
     /// Disable the controller and return all queue/PRP frames to PMM.
@@ -112,15 +120,16 @@ impl Nvme {
             self.w32(regs::REG_CC, 0);
             let _ = self.wait_rdy(false, 2_000);
         }
-        Self::free_frame(&mut self.admin.sq_pa);
-        Self::free_frame(&mut self.admin.cq_pa);
-        Self::free_frame(&mut self.io.sq_pa);
-        Self::free_frame(&mut self.io.cq_pa);
-        Self::free_frame(&mut self.prp_list_pa);
-        if self.data_pa != 0 {
+        Self::free_frame(self.bdf, &mut self.admin.sq_pa, &mut self.admin.sq_dma);
+        Self::free_frame(self.bdf, &mut self.admin.cq_pa, &mut self.admin.cq_dma);
+        Self::free_frame(self.bdf, &mut self.io.sq_pa, &mut self.io.sq_dma);
+        Self::free_frame(self.bdf, &mut self.io.cq_pa, &mut self.io.cq_dma);
+        Self::free_frame(self.bdf, &mut self.prp_list_pa, &mut self.prp_list_dma);
+        if self.data_pa != 0 && iommu::unmap_dma(self.bdf, self.data_dma, (DATA_PAGES * PAGE) as usize) {
             // SAFETY: controller disable completed and this private data run has no live DMA owner.
             unsafe { pmm::setup::free_contig(self.data_pa, DATA_ORDER); }
             self.data_pa = 0;
+            self.data_dma = 0;
         }
         self.bar0_va = 0;
         self.mmio.unmap();
@@ -164,9 +173,9 @@ impl Nvme {
     /// create the I/O queue pair. Returns None on any timeout/alloc failure.
     /// `bar0_va` is the HHDM-independent register-file VA from map_mmio_pages.
     /// # C: O(reset + 2 admin cmds + 2 create-queue cmds)
-    pub fn bring_up(mmio: Mapping, bar0_off: u64, io_vector: u16) -> Option<Nvme> {
+    pub fn bring_up(bdf: pci::Bdf, mmio: Mapping, bar0_off: u64, io_vector: u16) -> Option<Nvme> {
         // Allocate queue frames, one PRP-list page, and the serialized I/O data run.
-        let ([asq, acq, isq, icq, prp_list], data_pa) = Self::alloc_frames()?;
+        let ([asq, acq, isq, icq, prp_list], [asq_dma, acq_dma, isq_dma, icq_dma, prp_list_dma], data_pa, data_dma) = Self::alloc_frames(bdf)?;
         for f in [asq, acq, isq, icq, prp_list] { Self::zero_frame(f); }
         for page in 0..DATA_PAGES { Self::zero_frame(data_pa + page * PAGE); }
         let bar0_va = mmio.base_va() + bar0_off;
@@ -183,14 +192,14 @@ impl Nvme {
         let io_entries = regs::io_queue_entries(cap, Q_ENTRIES);
 
         let admin = Queue {
-            sq_pa: asq, cq_pa: acq, entries: Q_ENTRIES,
+            sq_pa: asq, sq_dma: asq_dma, cq_pa: acq, cq_dma: acq_dma, entries: Q_ENTRIES,
             sq_tail: 0, cq_head: 0, cq_phase: true,
             sq_db_va: bar0_va + regs::doorbell_off(0, false, dstrd),
             cq_db_va: bar0_va + regs::doorbell_off(0, true,  dstrd),
             cid: 0,
         };
         let io = Queue {
-            sq_pa: isq, cq_pa: icq, entries: io_entries,
+            sq_pa: isq, sq_dma: isq_dma, cq_pa: icq, cq_dma: icq_dma, entries: io_entries,
             sq_tail: 0, cq_head: 0, cq_phase: true,
             sq_db_va: bar0_va + regs::doorbell_off(1, false, dstrd),
             cq_db_va: bar0_va + regs::doorbell_off(1, true,  dstrd),
@@ -198,7 +207,7 @@ impl Nvme {
         };
 
         let mut nv = Nvme {
-            mmio, bar0_va, admin, io, data_pa, prp_list_pa: prp_list,
+            bdf, mmio, bar0_va, admin, io, data_pa, data_dma, prp_list_pa: prp_list, prp_list_dma,
             ns_blocks: 0, blk_size: 512,
         };
         let to_ms = regs::cap_to_ms(cap).max(2_000);
@@ -212,8 +221,8 @@ impl Nvme {
 
         // 2. Program admin queue attributes + base addresses.
         nv.w32(regs::REG_AQA, regs::aqa(nv.admin.entries));
-        nv.w64(regs::REG_ASQ, nv.admin.sq_pa);
-        nv.w64(regs::REG_ACQ, nv.admin.cq_pa);
+        nv.w64(regs::REG_ASQ, nv.admin.sq_dma);
+        nv.w64(regs::REG_ACQ, nv.admin.cq_dma);
 
         // 3. Enable: CC with IOSQES/IOCQES + EN, wait CSTS.RDY==1.
         nv.w32(regs::REG_CC, regs::cc_enable());
@@ -357,8 +366,8 @@ impl Nvme {
         let mut cmd = [0u32; 16];
         cmd[0] = regs::ADMIN_IDENTIFY as u32;     // opcode (CID stamped in submit)
         cmd[1] = nsid;                            // NSID
-        cmd[6] = (self.data_pa & 0xFFFF_FFFF) as u32; // PRP1 low
-        cmd[7] = (self.data_pa >> 32) as u32;         // PRP1 high
+        cmd[6] = (self.data_dma & 0xFFFF_FFFF) as u32; // PRP1 low
+        cmd[7] = (self.data_dma >> 32) as u32;         // PRP1 high
         cmd[10] = cns;                            // CDW10: CNS
         let status = self.submit(false, cmd)?;
         if status != 0 { return None; }
@@ -394,8 +403,8 @@ impl Nvme {
     fn create_io_cq(&mut self, vector: u16) -> bool {
         let mut cmd = [0u32; 16];
         cmd[0] = regs::ADMIN_CREATE_IO_CQ as u32;
-        cmd[6] = (self.io.cq_pa & 0xFFFF_FFFF) as u32;
-        cmd[7] = (self.io.cq_pa >> 32) as u32;
+        cmd[6] = (self.io.cq_dma & 0xFFFF_FFFF) as u32;
+        cmd[7] = (self.io.cq_dma >> 32) as u32;
         cmd[10] = ((self.io.entries - 1) << 16) | 1; // QSIZE (0-based) | QID=1
         cmd[11] = regs::create_io_cq_flags(vector);
         self.submit(false, cmd) == Some(0)
@@ -407,8 +416,8 @@ impl Nvme {
     fn create_io_sq(&mut self) -> bool {
         let mut cmd = [0u32; 16];
         cmd[0] = regs::ADMIN_CREATE_IO_SQ as u32;
-        cmd[6] = (self.io.sq_pa & 0xFFFF_FFFF) as u32;
-        cmd[7] = (self.io.sq_pa >> 32) as u32;
+        cmd[6] = (self.io.sq_dma & 0xFFFF_FFFF) as u32;
+        cmd[7] = (self.io.sq_dma >> 32) as u32;
         cmd[10] = ((self.io.entries - 1) << 16) | 1; // QSIZE (0-based) | QID=1
         cmd[11] = (1u32 << 16) | 0x1;            // CQID=1 | PC=1
         self.submit(false, cmd) == Some(0)
@@ -478,12 +487,12 @@ impl Nvme {
         let mut cmd = [0u32; 16];
         cmd[0] = if write { regs::IO_WRITE } else { regs::IO_READ } as u32;
         cmd[1] = 1;                               // NSID = 1
-        cmd[6] = (self.data_pa & 0xFFFF_FFFF) as u32; // PRP1 low
-        cmd[7] = (self.data_pa >> 32) as u32;         // PRP1 high
+        cmd[6] = (self.data_dma & 0xFFFF_FFFF) as u32; // PRP1 low
+        cmd[7] = (self.data_dma >> 32) as u32;         // PRP1 high
         match second {
             regs::PrpSecond::None => {}
             regs::PrpSecond::DirectPage => {
-                let prp2 = self.data_pa + PAGE;
+                let prp2 = self.data_dma + PAGE;
                 cmd[8] = prp2 as u32;
                 cmd[9] = (prp2 >> 32) as u32;
             }
@@ -492,10 +501,10 @@ impl Nvme {
                 if h == 0 || self.prp_list_pa == 0 { return None; }
                 let list = h.wrapping_add(self.prp_list_pa) as *mut u64;
                 // SAFETY: this controller owns the 512-entry PRP-list page and entries never exceeds 511.
-                unsafe { for index in 0..entries { core::ptr::write_volatile(list.add(index), self.data_pa + (index as u64 + 1) * PAGE); } }
+                unsafe { for index in 0..entries { core::ptr::write_volatile(list.add(index), self.data_dma + (index as u64 + 1) * PAGE); } }
                 core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
-                cmd[8] = self.prp_list_pa as u32;
-                cmd[9] = (self.prp_list_pa >> 32) as u32;
+                cmd[8] = self.prp_list_dma as u32;
+                cmd[9] = (self.prp_list_dma >> 32) as u32;
             }
         }
         cmd[10] = (slba & 0xFFFF_FFFF) as u32;    // CDW10 SLBA low
