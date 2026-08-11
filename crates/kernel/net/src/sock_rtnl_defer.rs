@@ -104,16 +104,6 @@ pub(crate) fn drain_all(stack: &NetStack) -> usize {
 /// # C: O(1)
 pub(crate) fn pending_len() -> usize { PENDING.lock_irqsave::<DeferIrq>().len() }
 
-/// Missed-wakeup backstop, same idiom as `ksoftirqd`/`kworker`: a `defer`
-/// landing between the emptiness check and the park would otherwise wait
-/// for the next producer.
-const BACKSTOP_NS: u64 = 100_000_000;
-
-#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-fn now_ns() -> u64 { use hal::TimerOps; hal_x86_64::X86TimerOps::monotonic_ns().0 }
-#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
-fn now_ns() -> u64 { use hal::TimerOps; hal_aarch64::ArmTimerOps::monotonic_ns().0 }
-
 /// Linux `sk_free`'s process-context finisher, run from a dedicated kthread
 /// rather than an RCU callback (this kernel has no RCU-callback execution
 /// context yet): drain queued releases, yield between bursts, park until
@@ -129,12 +119,11 @@ extern "C" fn sock_rtnl_reaper(_arg: usize) -> ! {
             unsafe { sched::live::schedule(); }
             continue;
         }
-        // SAFETY: running kthread on this CPU, no lock held across the
-        // park; schedule() yields immediately per the WaitList contract.
-        unsafe {
-            WAIT.park_with_deadline(now_ns() + BACKSTOP_NS);
-            sched::live::schedule();
-        }
+        // SAFETY: running kthread with no producer-held gate owned by this
+        // task; the shared wait loop publishes, rechecks, and schedules.
+        let _ = unsafe {
+            sched::live::wait_event_uninterruptible(&WAIT, || pending_len() != 0)
+        };
     }
 }
 
