@@ -102,6 +102,7 @@ int pcim_request_all_regions(struct pci_dev *dev, const char *name);
 void pcim_release_all_regions(struct pci_dev *dev);
 void __iomem *pci_iomap(struct pci_dev *dev, int bar, unsigned long maxlen);
 void __iomem *pcim_iomap(struct pci_dev *dev, int bar, unsigned long maxlen);
+void __iomem *pcim_iomap_region(struct pci_dev *pdev, int bar, const char *name);
 void pcim_iounmap(struct pci_dev *dev, void __iomem *addr);
 void __iomem *pci_ioremap_bar(struct pci_dev *dev, int bar);
 void __iomem *pci_ioremap_wc_bar(struct pci_dev *dev, int bar);

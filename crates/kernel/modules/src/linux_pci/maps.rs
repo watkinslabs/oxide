@@ -15,17 +15,51 @@ pub(super) struct PciIomap {
     pub(super) base_va: u64,
     pub(super) n_pages: u64,
     pub(super) mem: bool,
+    pub(super) dev: usize,
+    pub(super) bar: i32,
+    pub(super) release_region: bool,
 }
 
 static IOMAPS: Spinlock<[Option<PciIomap>; MAX_IOMAPS], ModulesLockClass> =
     Spinlock::new([None; MAX_IOMAPS]);
 
 pub(super) fn iomap_resource(res: LinuxResource, len: u64) -> Option<*mut c_void> {
-    if (res.flags & IORESOURCE_IO) != 0 { return Some(res.start as usize as *mut c_void); }
+    iomap_for(res, len, 0, -1, false)
+}
+
+pub(super) fn iomap_managed(dev: *mut super::types::LinuxPciDev, bar: i32, res: LinuxResource, len: u64, release_region: bool) -> Option<*mut c_void> {
+    iomap_for(res, len, dev as usize, bar, release_region)
+}
+
+pub(super) fn release_managed_for(dev: *mut super::types::LinuxPciDev) {
+    if dev.is_null() { return; }
+    let mut removed = [None; MAX_IOMAPS];
+    let mut n = 0usize;
+    {
+        let mut g = IOMAPS.lock();
+        for slot in g.iter_mut() {
+            if slot.is_some_and(|r| r.dev == dev as usize) {
+                removed[n] = slot.take();
+                n += 1;
+            }
+        }
+    }
+    for rec in removed.iter().take(n).flatten() {
+        if rec.mem { unmap_resource(rec.base_va, rec.n_pages); }
+        if rec.release_region { super::regions::release_region(dev, rec.bar as usize); }
+    }
+}
+
+fn iomap_for(res: LinuxResource, len: u64, dev: usize, bar: i32, release_region: bool) -> Option<*mut c_void> {
+    if (res.flags & IORESOURCE_IO) != 0 {
+        let ptr = res.start as usize as *mut c_void;
+        if insert_iomap(PciIomap { ptr: ptr as usize, base_va: 0, n_pages: 0, mem: false, dev, bar, release_region }).is_err() { return None; }
+        return Some(ptr);
+    }
     if (res.flags & IORESOURCE_MEM) == 0 { return None; }
     let (ptr, base_va, n_pages) = map_resource(res.start, len);
     if ptr.is_null() { return None; }
-    if insert_iomap(PciIomap { ptr: ptr as usize, base_va, n_pages, mem: true }).is_err() {
+    if insert_iomap(PciIomap { ptr: ptr as usize, base_va, n_pages, mem: true, dev, bar, release_region }).is_err() {
         unmap_resource(base_va, n_pages);
         return None;
     }

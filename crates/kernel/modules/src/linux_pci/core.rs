@@ -1,6 +1,7 @@
 use super::types::*;
 use super::config::{bdf, read32 as read_config32, write32 as write_config32};
 use super::regions;
+use crate::linux_device::devres;
 use core::ffi::{c_char, c_void};
 use core::ptr::null_mut;
 use pci::{
@@ -42,6 +43,7 @@ pub(super) fn export_symbols() {
         ("pcim_release_all_regions",  pcim_release_all_regions  as *const () as usize),
         ("pci_iomap",                 pci_iomap                 as *const () as usize),
         ("pcim_iomap",                pcim_iomap                as *const () as usize),
+        ("pcim_iomap_region",         pcim_iomap_region         as *const () as usize),
         ("pcim_iounmap",              pcim_iounmap              as *const () as usize),
         ("pci_ioremap_bar",           pci_ioremap_bar           as *const () as usize),
         ("pci_ioremap_wc_bar",        pci_ioremap_wc_bar        as *const () as usize),
@@ -200,7 +202,18 @@ extern "C" fn pci_iomap(dev: *mut LinuxPciDev, bar: i32, maxlen: usize) -> *mut 
     super::maps::iomap_resource(res, len).unwrap_or(null_mut())
 }
 
-extern "C" fn pcim_iomap(dev: *mut LinuxPciDev, bar: i32, maxlen: usize) -> *mut c_void { pci_iomap(dev, bar, maxlen) }
+extern "C" fn pcim_iomap(dev: *mut LinuxPciDev, bar: i32, maxlen: usize) -> *mut c_void {
+    pcim_map(dev, bar, maxlen, false)
+}
+
+extern "C" fn pcim_iomap_region(dev: *mut LinuxPciDev, bar: i32, name: *const c_char) -> *mut c_void {
+    if dev.is_null() { return null_mut(); }
+    let idx = match valid_bar(bar) { Some(v) => v, None => return null_mut() };
+    if pci_request_region(dev, bar, name) != LINUX_OK { return null_mut(); }
+    let ptr = pcim_map(dev, bar, 0, true);
+    if ptr.is_null() { regions::release_region(dev, idx); }
+    ptr
+}
 
 extern "C" fn pcim_iounmap(dev: *mut LinuxPciDev, addr: *mut c_void) { pci_iounmap(dev, addr); }
 
@@ -214,6 +227,22 @@ extern "C" fn pci_ioremap_wc_bar(dev: *mut LinuxPciDev, bar: i32) -> *mut c_void
 
 extern "C" fn pci_iounmap(_dev: *mut LinuxPciDev, addr: *mut c_void) {
     super::maps::iounmap(addr);
+}
+
+fn pcim_map(dev: *mut LinuxPciDev, bar: i32, maxlen: usize, release_region: bool) -> *mut c_void {
+    if dev.is_null() { return null_mut(); }
+    let res = match resource(dev, bar) { Some(v) => v, None => return null_mut() };
+    let len = bounded_resource_len(res, maxlen);
+    if len == 0 { return null_mut(); }
+    let ptr = match super::maps::iomap_managed(dev, bar, res, len, release_region) { Some(v) => v, None => return null_mut() };
+    // SAFETY: LinuxPciDev embeds LinuxDevice as its first repr(C) field.
+    let base = unsafe { core::ptr::addr_of_mut!((*dev).dev) };
+    if devres::add_action_or_reset(base, Some(pcim_release), dev.cast()) != LINUX_OK { return null_mut(); }
+    ptr
+}
+
+unsafe extern "C" fn pcim_release(data: *mut c_void) {
+    super::maps::release_managed_for(data.cast());
 }
 
 extern "C" fn pci_enable_msi(dev: *mut LinuxPciDev) -> i32 {

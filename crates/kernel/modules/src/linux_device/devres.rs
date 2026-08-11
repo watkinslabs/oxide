@@ -46,7 +46,7 @@ pub(super) fn free_devres_for(dev: *mut LinuxDevice, ptr: *mut c_void) {
     if remove_ptr(dev as usize, ptr as usize).is_some() { free_devres(ptr); }
 }
 
-pub(super) fn add_action_or_reset(
+pub(crate) fn add_action_or_reset(
     dev: *mut LinuxDevice,
     action: Option<DevresAction>,
     data: *mut c_void,
@@ -70,7 +70,7 @@ pub(super) fn remove_action(dev: *mut LinuxDevice, action: Option<DevresAction>,
     }) { *slot = None; }
 }
 
-pub(super) fn release_device(dev: *mut LinuxDevice) {
+pub(crate) fn release_device(dev: *mut LinuxDevice) {
     let mut records = [None; MAX_DEVRES_RECORDS];
     let mut n = 0usize;
     {

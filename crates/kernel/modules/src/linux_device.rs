@@ -6,7 +6,7 @@ extern crate alloc;
 
 mod allocs;
 mod core;
-mod devres;
+pub(crate) mod devres;
 mod format;
 mod kobject;
 mod registry;

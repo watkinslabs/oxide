@@ -161,6 +161,19 @@ fn register_resources_iomap_and_irq_vectors() {
 }
 
 #[test]
+fn pcim_iomap_region_releases_mapping_and_claim_with_devres() {
+    let _modules = crate::test_serial::claim();
+    let mut dev = test_dev();
+    let mut contender = test_dev();
+    let ptr = pcim_iomap_region(&mut dev, TEST_BAR, c"test".as_ptr());
+    assert!(!ptr.is_null());
+    assert_eq!(pci_request_region(&mut contender, TEST_BAR, c"test".as_ptr()), -LINUX_EBUSY);
+    crate::linux_device::devres::release_device(&mut dev.dev);
+    assert_eq!(pci_request_region(&mut contender, TEST_BAR, c"test".as_ptr()), LINUX_OK);
+    pci_release_region(&mut contender, TEST_BAR);
+}
+
+#[test]
 fn selected_regions_use_the_linux_bar_mask_and_roll_back_on_conflict() {
     let _modules = crate::test_serial::claim();
     let mut first = test_dev();
@@ -292,7 +305,7 @@ fn export_symbols_registers_pci_surface() {
     super::super::export_symbols();
     for name in [
         "__pci_register_driver", "pci_register_driver", "pci_enable_device", "pci_resource_start",
-        "pci_request_region", "pci_iomap", "pci_alloc_irq_vectors",
+        "pci_request_region", "pci_iomap", "pcim_iomap_region", "pci_alloc_irq_vectors",
         "pci_read_config_dword", "pci_write_config_dword",
         "pci_status_get_and_clear_errors",
     ] {
