@@ -1,11 +1,12 @@
 use super::super::*;
 use super::support::{key, test_device, TEST_LOCK};
 use alloc::{format, string::String, sync::Arc};
+use pci::Bdf;
 
 const MODEL_PARENT_VENDOR_ID: u16 = 0x1af4;
 const MODEL_PARENT_DEVICE_ID: u16 = 16;
 const MODEL_PARENT_KEY: u32 = 3;
-const MODEL_PARENT_BDF: u32 = 0x0030_0000;
+const MODEL_PARENT_BDF: Bdf = Bdf { segment: 0, bus: 0x30, device: 0, function: 0 };
 
 #[test]
 fn install_with_drm_records_model_parent() {

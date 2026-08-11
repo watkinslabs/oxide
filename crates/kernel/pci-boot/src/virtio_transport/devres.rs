@@ -8,7 +8,6 @@ use super::{
 
 pub(crate) struct VirtioProbeDevres {
     bdf: pci::Bdf,
-    bdf_word: u32,
     command_orig: u16,
     cfg_va: u64,
     mappings: TransportMappings,
@@ -20,7 +19,6 @@ pub(crate) struct VirtioProbeDevres {
 impl VirtioProbeDevres {
     pub(crate) fn new(
         bdf: pci::Bdf,
-        bdf_word: u32,
         command_orig: u16,
         cfg_va: u64,
         mappings: TransportMappings,
@@ -29,7 +27,6 @@ impl VirtioProbeDevres {
     ) -> Self {
         Self {
             bdf,
-            bdf_word,
             command_orig,
             cfg_va,
             mappings,
@@ -60,7 +57,7 @@ impl VirtioProbeDevres {
         }
         publish_transport_record(
             device_key,
-            self.bdf_word,
+            self.bdf,
             self.command_orig,
             core::mem::take(&mut self.mappings),
             self.frames.take_vring_frames(),

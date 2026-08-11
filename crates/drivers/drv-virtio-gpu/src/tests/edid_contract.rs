@@ -3,6 +3,7 @@
 use super::super::*;
 use alloc::vec::Vec;
 use drm::DrmDriver;
+use pci::Bdf;
 
 const SCANOUT_WIDTH: u32 = 1024;
 const SCANOUT_HEIGHT: u32 = 768;
@@ -73,8 +74,8 @@ fn driver_with(edid: Option<Vec<u8>>) -> VirtioGpuDrm {
     VirtioGpuDrm {
         display: DisplayInfo { modes, count_enabled: 2 },
         features_negotiated: 1u64 << VIRTIO_GPU_F_EDID,
-        bdf: 0,
-        unique: drm_unique_from_bdf(0),
+        bdf: Bdf { segment: 0, bus: 0, device: 0, function: 0 },
+        unique: drm_unique_from_bdf(Bdf { segment: 0, bus: 0, device: 0, function: 0 }),
         edid,
     }
 }

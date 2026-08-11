@@ -1,6 +1,7 @@
 use super::super::*;
 use crate::device::DeviceKey;
 use core::sync::atomic::{AtomicU32, AtomicU64};
+use pci::Bdf;
 use sync::{Spinlock, TaskList as DriverLockClass};
 
 pub(super) static TEST_LOCK: Spinlock<(), DriverLockClass> = Spinlock::new(());
@@ -21,7 +22,7 @@ pub(super) fn test_ctrlq() -> virtio::VirtQueueResource {
     }
 }
 
-pub(super) fn test_device(device_key: DeviceKey, bdf: u32) -> VirtioGpuDev {
+pub(super) fn test_device(device_key: DeviceKey, bdf: Bdf) -> VirtioGpuDev {
     VirtioGpuDev {
         device_key,
         bdf,

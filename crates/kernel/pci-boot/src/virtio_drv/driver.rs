@@ -1,4 +1,4 @@
-use super::address::{bdf_word, parse_pci_addr, pci_device_from_pci_model};
+use super::address::{parse_pci_addr, pci_device_from_pci_model};
 use super::probe::{
     publish_transport_mmio, unpublish_transport_mmio, unpublish_transport_mmio_bdf, VirtioProbe,
 };
@@ -44,10 +44,10 @@ impl drv::Driver for VirtioPciDrv {
             .into_iter()
             .filter(|child| virtio::virtio_child_has_parent(&child.bus, child.parent(), "pci", &dev.addr))
             .collect();
-        let mut bdfs: Vec<u32> = Vec::new();
+        let mut bdfs: Vec<pci::Bdf> = Vec::new();
         let mut keys: Vec<virtio::VirtioChildDeviceKey> = Vec::new();
         if let Some(parent_bdf) = parse_pci_addr(&dev.addr) {
-            bdfs.push(bdf_word(parent_bdf));
+            bdfs.push(parent_bdf);
         }
         for child in children {
             if let Some(device_key) = virtio::VirtioChildDeviceKey::from_child_addr(&child.addr) {
@@ -55,7 +55,7 @@ impl drv::Driver for VirtioPciDrv {
             }
             if let Some((_, parent_addr)) = child.parent() {
                 if let Some(parent_bdf) = parse_pci_addr(&parent_addr) {
-                    bdfs.push(bdf_word(parent_bdf));
+                    bdfs.push(parent_bdf);
                 }
             }
             drv::device_del(&child);
@@ -68,8 +68,8 @@ impl drv::Driver for VirtioPciDrv {
         }
         bdfs.sort_unstable();
         bdfs.dedup();
-        for bdf_word in bdfs {
-            unpublish_transport_mmio_bdf(bdf_word);
+        for bdf in bdfs {
+            unpublish_transport_mmio_bdf(bdf);
         }
     }
 

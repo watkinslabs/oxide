@@ -1,6 +1,7 @@
 use super::super::*;
 use super::support::{key, test_device};
 use drm::DrmDriver;
+use pci::Bdf;
 
 const FIRST_MODE_WIDTH: u32 = 800;
 const FIRST_MODE_HEIGHT: u32 = 600;
@@ -10,10 +11,10 @@ const ENABLED_SCANOUT_COUNT: u32 = 2;
 const TEST_XRGB8888_FOURCC: u32 = 0x3432_5258;
 const TEST_ARGB8888_FOURCC: u32 = 0x3432_5241;
 const UNSUPPORTED_FOURCC: u32 = 0xdead_beef;
-const FIRST_TEST_BDF: u32 = 0x0010_0000;
-const SECOND_TEST_BDF: u32 = 0x0001_0203;
+const FIRST_TEST_BDF: Bdf = Bdf { segment: 0, bus: 0x10, device: 0, function: 0 };
+const SECOND_TEST_BDF: Bdf = Bdf { segment: 7, bus: 1, device: 2, function: 3 };
 const FIRST_TEST_UNIQUE: &str = "pci:0000:10:00.0";
-const SECOND_TEST_UNIQUE: &str = "pci:0000:01:02.3";
+const SECOND_TEST_UNIQUE: &str = "pci:0007:01:02.3";
 
 #[test]
 fn drm_accessors_skip_disabled_scanouts() {
@@ -44,8 +45,8 @@ fn drm_accessors_skip_disabled_scanouts() {
             count_enabled: ENABLED_SCANOUT_COUNT,
         },
         features_negotiated: 0,
-        bdf: 0,
-        unique: drm_unique_from_bdf(0),
+        bdf: Bdf { segment: 0, bus: 0, device: 0, function: 0 },
+        unique: drm_unique_from_bdf(Bdf { segment: 0, bus: 0, device: 0, function: 0 }),
         edid: None,
     };
     assert_eq!(
@@ -141,7 +142,7 @@ fn drm_unique_uses_pci_bdf_bus_id() {
 
 #[test]
 fn resource_id_increments() {
-    let device = test_device(key(0), 0);
+    let device = test_device(key(0), Bdf { segment: 0, bus: 0, device: 0, function: 0 });
     let first = device.next_resource_id();
     let second = device.next_resource_id();
     assert_ne!(first, second);

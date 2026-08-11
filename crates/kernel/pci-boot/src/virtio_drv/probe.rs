@@ -191,6 +191,6 @@ pub(super) fn unpublish_transport_mmio(device_key: virtio::VirtioChildDeviceKey)
     unpublish_transport_record(device_key);
 }
 
-pub(super) fn unpublish_transport_mmio_bdf(bdf: u32) {
+pub(super) fn unpublish_transport_mmio_bdf(bdf: pci::Bdf) {
     unpublish_transport_record_by_bdf(bdf);
 }

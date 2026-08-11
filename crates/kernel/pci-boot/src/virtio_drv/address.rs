@@ -1,16 +1,3 @@
-pub(super) fn bdf_word(bdf: pci::Bdf) -> u32 {
-    (bdf.bus as u32) << 16 | (bdf.device as u32) << 8 | (bdf.function as u32)
-}
-
-pub(super) fn bdf_from_word(word: u32) -> pci::Bdf {
-    pci::Bdf {
-        segment: 0,
-        bus: ((word >> 16) & 0xFF) as u8,
-        device: ((word >> 8) & 0xFF) as u8,
-        function: (word & 0xFF) as u8,
-    }
-}
-
 fn hex_nibble(b: u8) -> Option<u8> {
     match b {
         b'0'..=b'9' => Some(b - b'0'),

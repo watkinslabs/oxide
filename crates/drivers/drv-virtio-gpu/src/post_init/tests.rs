@@ -45,7 +45,7 @@ fn unretired_runtime_submission_quiesces_its_context() {
     assert!(ctx.quiesced);
 }
 
-fn test_gpu_dev(device_key: virtio::VirtioChildDeviceKey, bdf: u32) -> crate::VirtioGpuDev {
+fn test_gpu_dev(device_key: virtio::VirtioChildDeviceKey, bdf: pci::Bdf) -> crate::VirtioGpuDev {
     crate::VirtioGpuDev {
         device_key,
         bdf,
@@ -162,7 +162,9 @@ fn hot_remove_attempts_device_and_scanout_cleanup() {
     let _guard = TEST_LOCK.lock();
     CTX.lock().clear();
     crate::device::DEVICES.lock().clear();
-    crate::install(test_gpu_dev(key(0x0010_0000), 0x0010_0000)).unwrap();
+    crate::install(test_gpu_dev(key(0x0010_0000), pci::Bdf {
+        segment: 0, bus: 0x10, device: 0, function: 0,
+    })).unwrap();
     CTX.lock().push(test_scanout_ctx(key(0x0010_0000)));
 
     let result = crate::hot_remove(key(0x0010_0000));

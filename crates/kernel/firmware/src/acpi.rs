@@ -18,7 +18,7 @@ mod tables;
 pub use fadt::{Fadt, Gas, ResetAction, decode_fadt, parse_fadt, reset_action};
 pub use iommu::{IommuError, IommuKind, IommuUnit, decode_dmar, decode_ivrs, iommu_unit, iommu_unit_count, parse_dmar, parse_ivrs};
 pub use rsdp::{RsdpStatus, try_log_acpi, try_log_rsdp, try_log_xsdt};
-pub use tables::{ECAM_BASE_PA, ECAM_BUS_END, ECAM_BUS_START, ECAM_SEGMENT, GIC_MSI_FRAME_PA, GIC_ITS_PA, decode_gtdt, decode_hpet, decode_madt, decode_mcfg, decode_spcr, ecam_bus_cap};
+pub use tables::{ECAM_BASE_PA, ECAM_BUS_END, ECAM_BUS_START, ECAM_SEGMENT, EcamWindow, GIC_MSI_FRAME_PA, GIC_ITS_PA, MAX_ECAM_WINDOWS, decode_gtdt, decode_hpet, decode_madt, decode_mcfg, decode_spcr, ecam_bus_cap, ecam_window, ecam_window_count};
 #[cfg(target_os = "oxide-kernel")]
 pub use iort::{decode_iort, iort_msi_device_id};
 

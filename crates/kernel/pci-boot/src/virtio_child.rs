@@ -42,9 +42,7 @@ impl virtio::VirtioChildDriverOps<VirtioChildSession> for VirtioGpuOps {
         };
         let ok = drv_virtio_gpu::post_init::get_display_info(
             device_key,
-            pci_bdf.bus,
-            pci_bdf.device,
-            pci_bdf.function,
+            pci_bdf,
             parent,
             session.drv_features(),
             resources,
