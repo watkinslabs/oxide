@@ -245,7 +245,7 @@ impl drv::Driver for XhciDriver {
         if !mmio.halt_reset() { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); }
         let Some((command, dcbaa, erst, event)) = prepare_dma(&mmio) else { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); };
         let Some(mut command) = CommandTransport::new(command) else { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); };
-        let Some(irq) = crate::irq::bind(bdf) else { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); };
+        let Some(irq) = crate::irq::bind(bdf, &mmio) else { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); };
         if !irq.arm(&mmio, &event) || !mmio.run() {
             irq.disable_and_free();
             restore_bus_master(bdf, command_orig);
