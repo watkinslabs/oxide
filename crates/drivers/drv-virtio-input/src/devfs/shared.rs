@@ -17,7 +17,7 @@ pub(crate) const EVDEV_INO_BASE: Ino = vfs::pseudo_ino::EVDEV.start();
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) struct EvdevIdentity {
-    pub device_key: input::VirtioChildDeviceKey,
+    pub device_key: input::InputDeviceKey,
     pub input_id: u32,
     pub evdev_id: u32,
     pub generation: u64,
@@ -65,7 +65,7 @@ pub(crate) static EVDEV_DEVICES: Spinlock<[Option<Arc<drv::Device>>; MAX_EVDEV],
 impl EvdevEndpoint {
     /// # C: O(1)
     pub(crate) fn new(
-        device_key: input::VirtioChildDeviceKey,
+        device_key: input::InputDeviceKey,
         input_id: u32,
         evdev_id: u32,
     ) -> Arc<Self> {
@@ -310,7 +310,9 @@ const TEST_DEVICE_KEY_BASE_RAW: u32 = 0x7e00_0000;
 #[cfg(test)]
 pub(crate) fn test_endpoint(id: u32, input_id: u32) -> Arc<EvdevEndpoint> {
     EvdevEndpoint::new(
-        input::VirtioChildDeviceKey::from_raw(TEST_DEVICE_KEY_BASE_RAW + id),
+        input::InputDeviceKey::Virtio(input::VirtioChildDeviceKey::from_raw(
+            TEST_DEVICE_KEY_BASE_RAW + id,
+        )),
         input_id,
         id,
     )

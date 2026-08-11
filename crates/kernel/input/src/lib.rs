@@ -30,7 +30,7 @@ pub use registry::{
     is_pointer, name_of, publish_evdev, push_evdev_event, remove_device,
     repeat_by_identity, set_evdev_hooks, set_inhibited_by_identity, set_output_hook,
     set_repeat_by_identity, unpublish_evdev, AbsSnapshot, CapBitmap, EvdevHooks,
-    VirtioInputDev,
+    InputDeviceKey, VirtioInputDev,
 };
 pub use packet::InputValue;
 pub use state::with_state_bits_by_identity;
@@ -38,11 +38,12 @@ pub use state::{OutputBatch, OutputEvent};
 pub use types::{InputEvent, VirtioInputAbsInfo, VirtioInputDevIds, VirtioInputEvent};
 pub use uapi::{
     ABS_CNT, ABS_MAX, ABS_MT_FIRST, ABS_MT_LAST, ABS_MT_SLOT, ABS_MT_TRACKING_ID, ABS_X, ABS_Y,
+    BTN_LEFT, BTN_MIDDLE, BTN_RIGHT,
     EVENT_MINOR_BASE, EV_ABS, EV_CNT, EV_FF, EV_KEY, EV_LED, EV_MAX, EV_MSC, EV_PWR,
     EV_REL, EV_REP, EV_SND,
     EV_SW, EV_SYN, FF_CNT, FF_MAX, INPUT_PROP_CNT, INPUT_PROP_MAX, KEY_CNT, KEY_MAX,
     INPUT_MAJOR, INPUT_NAME_BYTES, KEY_RESERVED, LED_CNT, LED_MAX, MSC_CNT, MSC_MAX,
-    REL_CNT, REL_MAX, REP_CNT, REP_DELAY,
+    REL_CNT, REL_MAX, REL_X, REL_Y, REP_CNT, REP_DELAY,
     REP_PERIOD, SND_CNT, SND_MAX, SW_CNT, SW_MAX, SYN_CONFIG, SYN_MT_REPORT,
     SYN_REPORT,
 };

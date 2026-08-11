@@ -106,6 +106,10 @@ pub(super) fn qemu_run_grub_x86_64(
     let (uart_chardev, serial_log) = super::serial_log::with_logfile(uart_chardev, "x86_64");
     if let Some(p) = &serial_log { println!("xtask: serial log -> {}", p.display()); }
     let netdev = ssh_fwd_netdev();
+    let nic_device = match std::env::var("OXIDE_QEMU_NIC").as_deref() {
+        Ok("e1000") => "e1000,netdev=net0,bus=pcie.0",
+        _ => "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
+    };
     let pcap_args = super::common::pcap_filter_args();
     // vhost-vsock guest CID is a HOST-GLOBAL kernel resource: only one qemu on
     // the whole machine may own a given CID. Hardcoding 3 made concurrent boots
@@ -180,7 +184,7 @@ pub(super) fn qemu_run_grub_x86_64(
         "-drive", &format!("if=none,id=home,format=raw,file={}", home_img.display()),
         "-device", "virtio-blk-pci,drive=home,bus=pcie.0,serial=oxide-home,disable-legacy=on,num-queues=2",
         "-netdev", netdev.as_str(),
-        "-device", "virtio-net-pci,netdev=net0,bus=pcie.0,disable-legacy=on",
+        "-device", nic_device,
         // -vga none: q35 otherwise adds a default std-VGA that becomes the
         // PRIMARY display, so the GTK window shows that (blank — we never
         // drive it) and the virtio-gpu console is a hidden secondary. Removing

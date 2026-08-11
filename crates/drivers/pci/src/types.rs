@@ -179,6 +179,19 @@ pub fn enable_mem_bus_master<R: ConfigSpaceReader>(r: &R, bdf: Bdf) -> u16 {
     old
 }
 
+/// Clear Bus Master while preserving I/O and Memory Space decoding.
+///
+/// Boot uses this to quiesce firmware-configured requesters before an IOMMU
+/// domain is installed; the eventual owning driver enables bus mastering.
+/// Returns the previous command value.
+/// # C: O(1)
+pub fn clear_bus_master<R: ConfigSpaceReader>(r: &R, bdf: Bdf) -> u16 {
+    let old = read_command(r, bdf);
+    let new = old & !COMMAND_BUS_MASTER;
+    if new != old { write_command(r, bdf, new); }
+    old
+}
+
 /// Disable Memory Space and Bus Master for a function.
 ///
 /// Returns the previous command value so callers can restore it if desired.

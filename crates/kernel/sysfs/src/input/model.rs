@@ -28,7 +28,7 @@ pub(super) struct InputDevInfo {
 pub(super) struct InputIdentity {
     device: Arc<drv::Device>,
     addr: String,
-    device_key: input::VirtioChildDeviceKey,
+    device_key: input::InputDeviceKey,
     input_id: u32,
     evdev_id: u32,
 }

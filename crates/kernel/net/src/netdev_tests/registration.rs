@@ -3,12 +3,43 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 static CARRIER_NEWLINKS: AtomicUsize = AtomicUsize::new(0);
 
+struct LifecycleDev { edges: AtomicUsize }
+impl NetDev for LifecycleDev {
+    fn name(&self) -> &str { "lifecycle0" }
+    fn mac(&self) -> MacAddr { MacAddr::ZERO }
+    fn mtu(&self) -> u32 { 1500 }
+    fn admin_up_changed(&self, up: bool) {
+        self.edges.fetch_add(if up { 1 } else { 10 }, Ordering::AcqRel);
+    }
+    fn retire_namespace(&self) {}
+    fn namespace_drop_action(&self) -> NamespaceDropAction { NamespaceDropAction::Destroy }
+    fn xmit(&self, _pkt: Pkt) -> NetResult<()> { Ok(()) }
+}
+
 #[test]
 fn iface_registry_lock_excludes_network_bottom_halves() {
     let source = include_str!("../netdev.rs");
     assert!(source.contains("pub(crate) inner: IfaceRegistryLock"));
     assert!(source.contains("self.0.lock_bh::<sched::bh::SchedBh>()"),
         "the RX-softirq-shared interface registry must use spin_lock_bh");
+}
+
+#[test]
+fn administrative_up_edges_invoke_the_driver_lifecycle_once() {
+    let stack = crate::NetStack::new();
+    let owner = owner();
+    let dev = Arc::new(LifecycleDev { edges: AtomicUsize::new(0) });
+    let reg = stack.prepare_iface(dev.clone(), &owner).unwrap();
+    let id = reg.id();
+    assert!(stack.publish_iface(reg));
+    let rtnl = stack.rtnl_lock();
+    assert!(stack.ifaces.set_iface_flags_in_ns(&rtnl, id, owner.id().as_u64(),
+        crate::netdev::iff::IFF_UP, crate::netdev::iff::IFF_UP).is_some());
+    assert!(stack.ifaces.set_iface_flags_in_ns(&rtnl, id, owner.id().as_u64(),
+        crate::netdev::iff::IFF_UP, crate::netdev::iff::IFF_UP).is_some());
+    assert!(stack.ifaces.set_iface_flags_in_ns(&rtnl, id, owner.id().as_u64(),
+        0, crate::netdev::iff::IFF_UP).is_some());
+    assert_eq!(dev.edges.load(Ordering::Acquire), 11);
 }
 
 fn record_carrier_newlink(event: &crate::control_event::ControlEvent) {
