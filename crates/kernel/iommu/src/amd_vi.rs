@@ -18,6 +18,35 @@ const EVENT_LOG_BYTES: u64 = 8192;
 const DEVICE_TABLE_ORDER: u8 = 9;
 const BUFFER_ORDER: u8 = 1;
 const BUFFER_SIZE_ENCODING: u64 = 0x9 << 56;
+const DTE_VALID: u64 = 1 << 0;
+const DTE_TRANSLATION_VALID: u64 = 1 << 1;
+const DTE_PAGE_MODE_SHIFT: u64 = 9;
+const DTE_PAGE_MODE_MASK: u64 = 0x7 << DTE_PAGE_MODE_SHIFT;
+const DTE_ROOT_MASK: u64 = 0x000f_ffff_ffff_f000;
+const DTE_READ: u64 = 1 << 61;
+const DTE_WRITE: u64 = 1 << 62;
+const DTE_DOMAIN_MASK: u64 = 0xffff;
+
+/// Hardware-format AMD-Vi device-table entry.
+#[repr(C, align(16))]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct AmdViDte { words: [u64; 4] }
+impl AmdViDte {
+    /// Construct a translation-disabled entry that rejects DMA. # C: O(1)
+    pub const fn blocked() -> Self { Self { words: [0; 4] } }
+    /// Construct an identity-domain entry for a requester that must bypass paging. # C: O(1)
+    pub const fn passthrough(domain_id: u16) -> Self {
+        Self { words: [DTE_VALID | DTE_TRANSLATION_VALID | DTE_READ | DTE_WRITE, domain_id as u64, 0, 0] }
+    }
+    /// Construct a paging-domain entry with a 4K-aligned top-level page table. # C: O(1)
+    pub const fn paging(root_pa: u64, page_mode: u8, domain_id: u16) -> Option<Self> {
+        if root_pa & (PAGE_BYTES - 1) != 0 || root_pa & !DTE_ROOT_MASK != 0 || page_mode == 0 || page_mode > 7 { return None; }
+        Some(Self { words: [DTE_VALID | DTE_TRANSLATION_VALID | ((page_mode as u64) << DTE_PAGE_MODE_SHIFT & DTE_PAGE_MODE_MASK)
+            | (root_pa & DTE_ROOT_MASK) | DTE_READ | DTE_WRITE, domain_id as u64 & DTE_DOMAIN_MASK, 0, 0] })
+    }
+    /// Return the four little-endian hardware words. # C: O(1)
+    pub const fn words(&self) -> [u64; 4] { self.words }
+}
 
 /// Permanent DMA-visible AMD-Vi tables. They remain allocated until the
 /// owning unit is disabled and no requester can issue DMA through it.
@@ -132,5 +161,14 @@ impl AmdViUnit {
         assert_eq!(t.device_table_register(), 0x4000_01ff);
         assert_eq!(t.command_buffer_register(), 0x0900_0000_5000_0000);
         assert!(AmdViTables::from_physical(0x4000_1000, 0x5000_0000, 0x5000_2000).is_none());
+    }
+    #[test] fn device_table_entries_preserve_the_32_byte_hardware_layout() {
+        assert_eq!(core::mem::size_of::<AmdViDte>(), 32);
+        assert_eq!(AmdViDte::blocked().words(), [0; 4]);
+        assert_eq!(AmdViDte::passthrough(7).words()[1], 7);
+        let dte = AmdViDte::paging(0x1234_5000, 4, 9).unwrap();
+        assert_eq!(dte.words()[0] & DTE_ROOT_MASK, 0x1234_5000);
+        assert_eq!(dte.words()[1], 9);
+        assert!(AmdViDte::paging(0x1234_5001, 4, 9).is_none());
     }
 }
