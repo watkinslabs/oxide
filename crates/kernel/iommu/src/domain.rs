@@ -1,5 +1,6 @@
 use alloc::vec::Vec;
 
+use crate::{AmdViDte, AmdViPageTable};
 use pci::{Bdf, IovaRange, IovaSpace};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -28,6 +29,31 @@ impl Domain {
     }
     /// Return installed mapping state for a backend PTE walk. # C: O(N)
     pub fn mapping(&self, iova: u64) -> Option<Mapping> { self.maps.iter().copied().find(|m| m.iova.start == iova) }
+}
+
+/// AMD-Vi requester domain with one hardware IOVA page-table tree.
+pub struct AmdViDomain { requester: Bdf, space: IovaSpace, maps: Vec<Mapping>, page_table: AmdViPageTable }
+impl AmdViDomain {
+    /// Allocate one AMD-Vi domain and its empty four-level IOVA page table. # C: O(1)
+    pub fn new(requester: Bdf, start: u64, len: u64, hhdm_offset: u64) -> Option<Self> {
+        Some(Self { requester, space: IovaSpace::new(start, len)?, maps: Vec::new(), page_table: AmdViPageTable::new(hhdm_offset)? })
+    }
+    /// Requester that alone may attach this hardware domain. # C: O(1)
+    pub const fn requester(&self) -> Bdf { self.requester }
+    /// DTE encoding that attaches this domain's IOVA tree to its requester. # C: O(1)
+    pub fn dte(&self, domain_id: u16) -> Option<AmdViDte> { AmdViDte::paging(self.page_table.root_pa(), self.page_table.page_mode(), domain_id) }
+    /// Allocate IOVA space and install matching AMD-Vi leaf PTEs. # C: O(pages * levels)
+    pub fn map(&mut self, pa: u64, len: u64, align: u64) -> Option<Mapping> {
+        if pa & (pci::IOVA_PAGE_SIZE - 1) != 0 { return None; }
+        let iova = self.space.alloc(len, align)?;
+        if !self.page_table.map(iova.start, pa, iova.len) {
+            let _ = self.space.free(iova);
+            return None;
+        }
+        let map = Mapping { iova, pa };
+        self.maps.push(map);
+        Some(map)
+    }
 }
 
 /// Return the AMD-Vi translation unit that firmware assigned this PCI requester.
