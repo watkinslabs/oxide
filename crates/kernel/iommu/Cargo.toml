@@ -12,6 +12,7 @@ pci = { path = "../../drivers/pci" }
 mmio-map = { path = "../mmio-map" }
 firmware = { path = "../firmware" }
 pmm = { path = "../mm-pmm" }
+sync = { path = "../../shared/sync" }
 
 [lints]
 workspace = true

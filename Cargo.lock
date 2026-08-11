@@ -843,6 +843,7 @@ dependencies = [
  "mmio-map",
  "pci",
  "pmm",
+ "sync",
 ]
 
 [[package]]

@@ -65,7 +65,12 @@ impl AmdViCommand {
 
 /// Permanent DMA-visible AMD-Vi tables. They remain allocated until the
 /// owning unit is disabled and no requester can issue DMA through it.
-pub struct AmdViTables { device_table_pa: u64, command_buffer_pa: u64, event_log_pa: u64 }
+pub struct AmdViTables {
+    device_table_pa: u64,
+    command_buffer_pa: u64,
+    event_log_pa: u64,
+    command_tail: sync::Spinlock<u32, sync::Devices>,
+}
 impl AmdViTables {
     /// Allocate and clear one full requester table plus command and event rings. # C: O(table bytes)
     pub fn allocate(hhdm_offset: u64) -> Option<Self> {
@@ -90,12 +95,12 @@ impl AmdViTables {
             core::ptr::write_bytes(hhdm_offset.wrapping_add(command_buffer_pa) as *mut u8, 0, COMMAND_BUFFER_BYTES as usize);
             core::ptr::write_bytes(hhdm_offset.wrapping_add(event_log_pa) as *mut u8, 0, EVENT_LOG_BYTES as usize);
         }
-        Some(Self { device_table_pa, command_buffer_pa, event_log_pa })
+        Some(Self { device_table_pa, command_buffer_pa, event_log_pa, command_tail: sync::Spinlock::new(0) })
     }
     /// Construct table bases after validating permanent physical allocations. # C: O(1)
     pub const fn from_physical(device_table_pa: u64, command_buffer_pa: u64, event_log_pa: u64) -> Option<Self> {
         if device_table_pa & (DEVICE_TABLE_BYTES - 1) != 0 || command_buffer_pa & (PAGE_BYTES - 1) != 0 || event_log_pa & (PAGE_BYTES - 1) != 0 { return None; }
-        Some(Self { device_table_pa, command_buffer_pa, event_log_pa })
+        Some(Self { device_table_pa, command_buffer_pa, event_log_pa, command_tail: sync::Spinlock::new(0) })
     }
     /// Device-table base register value. # C: O(1)
     pub const fn device_table_register(&self) -> u64 { self.device_table_pa | ((DEVICE_TABLE_BYTES / PAGE_BYTES) - 1) }
@@ -115,6 +120,25 @@ impl AmdViTables {
             core::ptr::write_volatile((base + 24) as *mut u64, words[3]);
         }
         core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+    }
+    unsafe fn queue_command(&self, regs: &AmdViRegisters, hhdm_offset: u64, command: AmdViCommand) -> bool {
+        let mut tail = self.command_tail.lock();
+        let Some(head) = regs.read64(COMMAND_HEAD) else { return false; };
+        let next = (*tail + core::mem::size_of::<AmdViCommand>() as u32) & (COMMAND_BUFFER_BYTES as u32 - 1);
+        if next == ((head as u32) & (COMMAND_BUFFER_BYTES as u32 - 1)) { return false; }
+        let base = hhdm_offset.wrapping_add(self.command_buffer_pa).wrapping_add(*tail as u64);
+        let words = command.words();
+        // SAFETY: caller holds the command-ring ownership and `tail` reserves this 16-byte entry.
+        unsafe {
+            core::ptr::write_volatile(base as *mut u32, words[0]);
+            core::ptr::write_volatile((base + 4) as *mut u32, words[1]);
+            core::ptr::write_volatile((base + 8) as *mut u32, words[2]);
+            core::ptr::write_volatile((base + 12) as *mut u32, words[3]);
+        }
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+        if !regs.write64(COMMAND_TAIL, next as u64) { return false; }
+        *tail = next;
+        true
     }
 }
 
@@ -174,6 +198,13 @@ impl AmdViUnit {
         if !regs.write64(COMMAND_HEAD, 0) || !regs.write64(COMMAND_TAIL, 0) || !regs.write64(EVENT_HEAD, 0) || !regs.write64(EVENT_TAIL, 0) { return false; }
         regs.write64(CONTROL, control | CONTROL_COMMAND_ENABLE | CONTROL_EVENT_ENABLE)
             && self.advance(AmdViState::Mapped, AmdViState::TablesProgrammed)
+    }
+    /// Queue a requester-DTE invalidation after its initial entry was written. # C: O(1)
+    pub unsafe fn invalidate_initial_dte(&self, regs: &AmdViRegisters, tables: &AmdViTables, hhdm_offset: u64, bdf: pci::Bdf) -> bool {
+        if self.state != AmdViState::TablesProgrammed || bdf.segment != self.segment || hhdm_offset == 0 { return false; }
+        if regs.read64(CONTROL).is_none_or(|control| control & CONTROL_COMMAND_ENABLE == 0) { return false; }
+        // SAFETY: tables owns the serialized command ring and the checked state has enabled it.
+        unsafe { tables.queue_command(regs, hhdm_offset, AmdViCommand::invalidate_dte(bdf.raw())) }
     }
     /// Advance after every enabled requester has a domain DTE and invalidate completed. # C: O(1)
     pub fn domains_attached(&mut self) -> bool { self.advance(AmdViState::TablesProgrammed, AmdViState::DomainsAttached) }
