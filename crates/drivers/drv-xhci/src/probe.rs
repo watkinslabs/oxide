@@ -170,9 +170,10 @@ fn arm_hid_interrupt_in(mmio: &Mmio, device: &mut AddressDeviceDma, slot: u8) ->
 
 fn address_first_usb2(mmio: &Mmio, command: &mut CommandTransport, dcbaa: &DmaPage, irq: Binding) -> Option<AddressDeviceDma> {
     for port in 1..=mmio.geometry().max_ports {
+        let Some(protocol) = mmio.protocol_for_port(port) else { continue; };
         let Some(status) = mmio.port_status(port) else { continue; };
-        // USB3 requires protocol-capability mapping and warm-reset handling.
-        if status & crate::ports::PORT_CONNECT == 0 || ((status & crate::ports::PORT_SPEED_MASK) >> 10) >= 4 { continue; }
+        // SuperSpeed ports require the separate warm-reset sequence.
+        if !protocol.is_usb2() || status & crate::ports::PORT_CONNECT == 0 { continue; }
         if !mmio.reset_usb2_port(port) { continue; }
         let Some(portsc) = mmio.port_status(port) else { continue; };
         let enable_pa = command.submit(mmio, Trb::enable_slot())?;
