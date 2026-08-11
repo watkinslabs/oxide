@@ -14,6 +14,14 @@ pub const LINK_TOGGLE: u32 = 1 << 1;
 pub const TRB_TYPE_SHIFT: u32 = 10;
 /// Link TRB type. # C: O(1)
 pub const TRB_TYPE_LINK: u32 = 6;
+/// Enable Slot Command TRB type. # C: O(1)
+pub const TRB_TYPE_ENABLE_SLOT: u32 = 9;
+/// Address Device Command TRB type. # C: O(1)
+pub const TRB_TYPE_ADDRESS_DEVICE: u32 = 11;
+/// Command Completion Event TRB type. # C: O(1)
+pub const TRB_TYPE_COMMAND_COMPLETION: u32 = 33;
+/// Successful xHCI completion code. # C: O(1)
+pub const COMPLETION_SUCCESS: u8 = 1;
 
 /// Controller-visible xHCI TRB, little-endian dwords on supported machines.
 #[repr(C)]
@@ -30,7 +38,31 @@ impl Trb {
 
     /// Cycle bit as observed by the ring owner. # C: O(1)
     pub fn cycle(self) -> bool { self.dword[3] & TRB_CYCLE != 0 }
+
+    /// Build an Enable Slot Command for the command ring. # C: O(1)
+    pub fn enable_slot() -> Self { Self { dword: [0, 0, 0, TRB_TYPE_ENABLE_SLOT << TRB_TYPE_SHIFT] } }
+
+    /// Build an Address Device Command naming a 64-byte-aligned input context. # C: O(1)
+    pub fn address_device(input_context_pa: u64, slot: u8, block_set_address: bool) -> Option<Self> {
+        if input_context_pa & 0x3f != 0 || slot == 0 { return None; }
+        let control = (TRB_TYPE_ADDRESS_DEVICE << TRB_TYPE_SHIFT) | ((slot as u32) << 24) | ((block_set_address as u32) << 9);
+        Some(Self { dword: [input_context_pa as u32, (input_context_pa >> 32) as u32, 0, control] })
+    }
+
+    /// Decode a command-completion event, preserving the command TRB address. # C: O(1)
+    pub fn command_completion(self) -> Option<CommandCompletion> {
+        if (self.dword[3] >> TRB_TYPE_SHIFT) & 0x3f != TRB_TYPE_COMMAND_COMPLETION { return None; }
+        Some(CommandCompletion {
+            command_pa: self.dword[0] as u64 | ((self.dword[1] as u64) << 32),
+            completion_code: (self.dword[2] >> 24) as u8,
+            slot: (self.dword[3] >> 24) as u8,
+        })
+    }
 }
+
+/// One decoded Command Completion Event. # C: O(1)
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct CommandCompletion { pub command_pa: u64, pub completion_code: u8, pub slot: u8 }
 
 /// One-page command ring. Software is producer; the controller is consumer.
 pub struct CommandRing {
@@ -120,5 +152,15 @@ mod tests {
         assert!(CommandRing::new(0x20_001).is_none());
         assert!(EventRing::new(0x30_001).is_none());
         assert!(Trb::link(0x20_004, true).is_none());
+    }
+
+    #[test]
+    fn enumeration_command_trbs_follow_xhci_layout() {
+        assert_eq!(Trb::enable_slot().dword[3], TRB_TYPE_ENABLE_SLOT << TRB_TYPE_SHIFT);
+        let address = Trb::address_device(0x48_000, 2, false).unwrap();
+        assert_eq!(address.dword, [0x48_000, 0, 0, (TRB_TYPE_ADDRESS_DEVICE << TRB_TYPE_SHIFT) | (2 << 24)]);
+        assert!(Trb::address_device(0x48_004, 2, false).is_none());
+        let completion = Trb { dword: [0x20_000, 0, (COMPLETION_SUCCESS as u32) << 24, (TRB_TYPE_COMMAND_COMPLETION << TRB_TYPE_SHIFT) | (2 << 24)] };
+        assert_eq!(completion.command_completion(), Some(CommandCompletion { command_pa: 0x20_000, completion_code: COMPLETION_SUCCESS, slot: 2 }));
     }
 }
