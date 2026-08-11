@@ -51,6 +51,27 @@ pub fn alloc_contig(order: crate::Order) -> Option<u64> {
     None
 }
 
+/// Allocate a contiguous physical run whose whole span is below `max_pa`.
+/// This is the PMM-side DMA-mask contract for legacy bus masters. # C: O(retries * 2^order)
+pub fn alloc_contig_below(order: crate::Order, max_pa: u64) -> Option<u64> {
+    let p = pmm_static()?;
+    let max_pfn = max_pa / PAGE_BYTES;
+    for _ in 0..CONTIG_INTEGRITY_RETRY_COUNT {
+        let pa = p.alloc_below(order, hal::Pfn(max_pfn)).ok().map(|pfn| pfn.0 * PAGE_BYTES)?;
+        if let Some(meta) = page_meta() {
+            let frames = 1u64 << order.0;
+            if (0..frames).any(|i| meta.get(hal::Pfn((pa / PAGE_BYTES) + i))
+                .is_some_and(|m| m.refcount.load(Ordering::Acquire) != 0)) {
+                // SAFETY: this unpublished candidate came directly from alloc_below and is unreachable.
+                unsafe { free_contig(pa, order); }
+                continue;
+            }
+        }
+        return Some(pa);
+    }
+    None
+}
+
 /// Allocate a contiguous physical run owned by a kernel object. Each page in
 /// the run starts with one non-PTE object reference and zero mapcount, so user
 /// mappings can safely call `inc_ref` per installed PTE and object teardown can

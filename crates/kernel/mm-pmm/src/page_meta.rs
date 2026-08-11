@@ -13,7 +13,7 @@
 // safe; no outer lock is needed for the array itself. Higher-level
 // lock-ordering is the caller's concern (`06§3.6`).
 
-use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
 use hal::Pfn;
 
@@ -113,6 +113,31 @@ pub struct PageMeta {
     pub lru_next:   AtomicU64,
 }
 
+/// Native-driver `struct page` ABI view.  PMM owns the canonical allocator
+/// state in `PageMeta`; this stable per-PFN view exists so driver arithmetic
+/// maps a page descriptor back to the same physical PFN.
+#[repr(C)]
+pub struct NativePage {
+    pub flags: AtomicU64,
+    pub mapping_union: [u8; 44],
+    pub refcount: AtomicI32,
+    pub memcg_data: AtomicU64,
+}
+
+impl NativePage {
+    /// # C: O(1)
+    pub const fn new() -> Self {
+        Self { flags: AtomicU64::new(0), mapping_union: [0; 44], refcount: AtomicI32::new(0), memcg_data: AtomicU64::new(0) }
+    }
+}
+
+const _: () = {
+    assert!(core::mem::size_of::<NativePage>() == 64);
+    assert!(core::mem::offset_of!(NativePage, flags) == 0);
+    assert!(core::mem::offset_of!(NativePage, refcount) == 52);
+    assert!(core::mem::offset_of!(NativePage, memcg_data) == 56);
+};
+
 impl PageMeta {
     /// # C: O(1)
     pub const fn new() -> Self {
@@ -139,12 +164,18 @@ impl Default for PageMeta {
 pub struct PageMetaArr {
     base_pfn: u64,
     table:    &'static [PageMeta],
+    native:   &'static [NativePage],
 }
 
 impl PageMetaArr {
     /// # C: O(1)
     pub const fn new(base_pfn: u64, table: &'static [PageMeta]) -> Self {
-        Self { base_pfn, table }
+        Self { base_pfn, table, native: &[] }
+    }
+
+    /// # C: O(1)
+    pub const fn new_with_native(base_pfn: u64, table: &'static [PageMeta], native: &'static [NativePage]) -> Self {
+        Self { base_pfn, table, native }
     }
 
     /// # C: O(1)
@@ -162,6 +193,17 @@ impl PageMetaArr {
         let idx = pfn.0.checked_sub(self.base_pfn)? as usize;
         self.table.get(idx)
     }
+
+    /// Native-driver page descriptor for this physical PFN.
+    /// # C: O(1)
+    pub fn native_page(&self, pfn: Pfn) -> Option<&NativePage> {
+        let idx = pfn.0.checked_sub(self.base_pfn)? as usize;
+        self.native.get(idx)
+    }
+
+    /// First native-driver page descriptor, when the PMM published one.
+    /// # C: O(1)
+    pub fn native_base(&self) -> *const NativePage { self.native.as_ptr() }
 
     /// Atomic refcount increment. Returns the old value, or `None` if
     /// `pfn` is out of range.

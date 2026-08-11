@@ -36,6 +36,7 @@ extern crate alloc;
 extern crate std;
 
 mod buddy;
+pub mod dma;
 #[cfg(any(test, all(target_os = "oxide-kernel", target_arch = "aarch64", feature = "debug-arm-mprotect")))]
 mod arm_mprotect_trace;
 mod page_meta;
@@ -51,7 +52,7 @@ mod kswapd;
 mod memcg;
 
 pub use buddy::{Pmm, PmmSnapshot};
-pub use page_meta::{reclaim_state, PageFlags, PageMeta, PageMetaArr, ReclaimPageState};
+pub use page_meta::{reclaim_state, NativePage, PageFlags, PageMeta, PageMetaArr, ReclaimPageState};
 #[cfg(target_os = "oxide-kernel")]
 pub use kswapd::spawn_kswapd;
 #[cfg(target_os = "oxide-kernel")]

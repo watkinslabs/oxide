@@ -40,6 +40,16 @@ pub fn init_page_meta(pfn_max: u64) {
 /// exclusively reserved from usable RAM, and remains mapped for kernel life.
 /// Called once before secondary CPUs or PMM consumers are released.
 pub unsafe fn init_page_meta_from_storage(storage: *mut crate::PageMeta, len: usize) {
+    // SAFETY: this compatibility entry point has no reserved native ABI view.
+    unsafe { init_page_meta_with_native_storage(storage, core::ptr::null_mut(), len); }
+}
+
+/// Publish canonical PMM metadata and the stable native-driver per-PFN view.
+///
+/// # SAFETY
+/// Both ranges must be writable, non-overlapping, aligned, cover `len`
+/// elements, and remain mapped for the kernel lifetime.
+pub unsafe fn init_page_meta_with_native_storage(storage: *mut crate::PageMeta, native: *mut crate::NativePage, len: usize) {
     use core::sync::atomic::Ordering;
     if storage.is_null() || len == 0 || !PAGE_META_PTR.load(Ordering::Acquire).is_null() { return; }
     for index in 0..len {
@@ -49,7 +59,15 @@ pub unsafe fn init_page_meta_from_storage(storage: *mut crate::PageMeta, len: us
     // SAFETY: every element was initialized immediately above and the boot
     // reservation outlives all PMM users.
     let table = unsafe { core::slice::from_raw_parts(storage, len) };
-    let arr = crate::PageMetaArr::new(0, table);
+    let native_table = if native.is_null() { &[][..] } else {
+        for index in 0..len {
+            // SAFETY: caller guarantees the full reserved NativePage range.
+            unsafe { native.add(index).write(crate::NativePage::new()); }
+        }
+        // SAFETY: every native descriptor was initialized immediately above.
+        unsafe { core::slice::from_raw_parts(native, len) }
+    };
+    let arr = crate::PageMetaArr::new_with_native(0, table, native_table);
     // SAFETY: one-shot boot publication; pointer remains stable forever.
     let raw = unsafe {
         let slot = &mut *PAGE_META_STORAGE.0.get();
@@ -466,4 +484,32 @@ pub(crate) fn page_meta() -> Option<&'static crate::PageMetaArr> {
     // SAFETY: PAGE_META_PTR is set exactly once via Box::leak in
     // init_page_meta; the pointee has 'static lifetime; never freed.
     Some(unsafe { &*p })
+}
+
+/// Native-driver descriptor for a physical page, if PMM has published the ABI view.
+/// # C: O(1)
+pub fn native_page_for_pa(pa: u64) -> *mut crate::NativePage {
+    page_meta()
+        .and_then(|meta| meta.native_page(hal::Pfn(pa / hal::PAGE_SIZE_BYTES)))
+        .map_or(core::ptr::null_mut(), |page| page as *const _ as *mut _)
+}
+
+/// Base of the native-driver PFN descriptor array, or null before PMM setup.
+/// # C: O(1)
+pub fn native_page_base() -> *mut crate::NativePage {
+    page_meta().map_or(core::ptr::null_mut(), |meta| meta.native_base() as *mut _)
+}
+
+/// Resolve a native-driver page descriptor back to its physical address.
+/// # C: O(1)
+pub fn native_page_pa(page: *const crate::NativePage) -> Option<u64> {
+    let meta = page_meta()?;
+    let base = meta.native_base() as usize;
+    let addr = page as usize;
+    let stride = core::mem::size_of::<crate::NativePage>();
+    let bytes = meta.len().checked_mul(stride)?;
+    if base == 0 || addr < base || addr.checked_sub(base)? >= bytes { return None; }
+    let delta = addr - base;
+    if delta % stride != 0 { return None; }
+    Some((meta.base_pfn().0 + (delta / stride) as u64) * hal::PAGE_SIZE_BYTES)
 }
