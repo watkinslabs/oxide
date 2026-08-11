@@ -162,8 +162,14 @@ impl AmdViUnit {
     }
     /// Advance after every enabled requester has a domain DTE and invalidate completed. # C: O(1)
     pub fn domains_attached(&mut self) -> bool { self.advance(AmdViState::TablesProgrammed, AmdViState::DomainsAttached) }
-    /// Advance only after translation hardware is enabled. # C: O(1)
-    pub fn enabled(&mut self) -> bool { self.advance(AmdViState::DomainsAttached, AmdViState::Enabled) }
+    /// Enable hardware translation after every active requester has an invalidated DTE. # C: O(1)
+    pub fn enable_translation(&mut self, regs: &AmdViRegisters) -> bool {
+        if self.state != AmdViState::DomainsAttached { return false; }
+        let Some(control) = regs.read64(CONTROL) else { return false; };
+        if control & (CONTROL_COMMAND_ENABLE | CONTROL_EVENT_ENABLE) != (CONTROL_COMMAND_ENABLE | CONTROL_EVENT_ENABLE) { return false; }
+        regs.write64(CONTROL, control | CONTROL_IOMMU_ENABLE)
+            && self.advance(AmdViState::DomainsAttached, AmdViState::Enabled)
+    }
     fn advance(&mut self, from: AmdViState, to: AmdViState) -> bool {
         if self.state != from { return false; }
         self.state = to; true
@@ -174,8 +180,8 @@ impl AmdViUnit {
     use super::*;
     #[test] fn translation_requires_programmed_and_attached_domains() {
         let mut u = AmdViUnit::new(0xfed8_0000, 3);
-        assert!(!u.enabled()); assert!(u.mapped());
-        assert!(!u.enabled()); assert!(!u.domains_attached());
+        assert_eq!(u.state(), AmdViState::Discovered); assert!(u.mapped());
+        assert!(!u.domains_attached()); assert_eq!(u.state(), AmdViState::Mapped);
     }
     #[test] fn table_registers_require_aligned_permanent_memory() {
         let t = AmdViTables::from_physical(0x4000_0000, 0x5000_0000, 0x5000_2000).unwrap();
