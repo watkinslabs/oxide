@@ -328,6 +328,7 @@ dependencies = [
  "klog",
  "mmio-map",
  "pci",
+ "pci-irq",
  "pmm",
  "sched",
  "sync",
