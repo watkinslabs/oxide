@@ -100,7 +100,7 @@ impl<T> Mutex<T> {
             // dropped immediately below, before `schedule`, so no lock is held
             // across the sleep. Interruptible so a pending unmasked signal
             // returns us to Runnable rather than sleeping through it.
-            unsafe { self.wait.park_interruptible_with_deadline(0); }
+            unsafe { self.wait.prepare_to_wait_interruptible(); }
             drop(g);
             // SAFETY: parked on this mutex's wait list holding no lock.
             unsafe { super::schedule(); }
