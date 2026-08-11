@@ -52,6 +52,14 @@ impl SockWaitQueue {
         PARKED.with(|p| *p.borrow_mut() = Some((key, flag, deadline_ns)));
     }
 
+    /// Named lock-coupled interruptible publication with an absolute deadline.
+    /// # SAFETY: see [`Self::park_interruptible_with_deadline`].
+    /// # C: O(1)
+    pub unsafe fn prepare_to_wait_interruptible_with_deadline(&self, deadline_ns: u64) {
+        // SAFETY: preserves the hosted queue's publish-before-unlock ordering.
+        unsafe { self.park_interruptible_with_deadline(deadline_ns); }
+    }
+
     /// Yield until this thread's flag is set or its expiry passes.
     /// # SAFETY: signature parity with the kernel realisation; the caller must
     /// hold no lock a waker needs, exactly as on the kernel target.

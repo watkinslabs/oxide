@@ -24,6 +24,15 @@ impl SockWaitQueue {
         unsafe { self.inner.park_interruptible_with_deadline(deadline_ns); }
     }
 
+    /// Named lock-coupled interruptible publication with an absolute deadline.
+    /// # SAFETY: see [`Self::park_interruptible_with_deadline`].
+    /// # C: O(N armed)
+    pub unsafe fn prepare_to_wait_interruptible_with_deadline(&self, deadline_ns: u64) {
+        // SAFETY: preserves the socket queue's prepared-wait contract while
+        // forwarding the deadline to the scheduler-owned wait list.
+        unsafe { self.inner.prepare_to_wait_interruptible_with_deadline(deadline_ns); }
+    }
+
     /// Yield until a wake lands or the published expiry fires — the reference
     /// stack's `schedule_timeout` step.
     /// # SAFETY: caller is at a safe schedule point: no lock held that a waker

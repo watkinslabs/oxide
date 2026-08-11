@@ -282,7 +282,7 @@ impl UnixListener {
         if !st.accept_q.is_empty() || st.closed || st.receive_shutdown { return false; }
         // SAFETY: syscall context owns preemption; holding accept_q makes the
         // waiter visible before connect can push and wake this listener.
-        unsafe { self.accept_waiters.park_interruptible_with_deadline(deadline_ns); }
+        unsafe { self.accept_waiters.prepare_to_wait_interruptible_with_deadline(deadline_ns); }
         drop(st);
         true
     }
@@ -300,7 +300,7 @@ impl UnixListener {
         st.connect_sockets.push(Arc::downgrade(sock));
         // SAFETY: listener state then socket state is the same order used by
         // connect_socket; capacity changes wake the registered socket queue.
-        unsafe { sock.connect_waiters.park_interruptible_with_deadline(deadline_ns); }
+        unsafe { sock.connect_waiters.prepare_to_wait_interruptible_with_deadline(deadline_ns); }
         drop(kind);
         drop(st);
         true
