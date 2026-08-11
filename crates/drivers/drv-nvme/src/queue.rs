@@ -49,8 +49,10 @@ pub struct Nvme {
     bar0_va: u64,
     admin:   Queue,
     io:      Queue,
-    /// PRP bounce frame (one 4 KiB page) — the data buffer for one I/O.
-    prp_pa:  u64,
+    /// Contiguous data run for one serialized I/O request.
+    data_pa: u64,
+    /// One PRP-list page used once the transfer needs more than two pages.
+    prp_list_pa: u64,
     /// Namespace 1 geometry harvested at IDENTIFY.
     pub ns_blocks: u64,
     pub blk_size:  u32,
@@ -64,7 +66,9 @@ unsafe impl Send for Nvme {}
 unsafe impl Sync for Nvme {}
 
 /// 4 KiB host/PRP page size (CC.MPS=0). One PRP entry covers one page.
-const PAGE: u64 = 0x1000;
+const PAGE: u64 = regs::NVME_PAGE_BYTES;
+const DATA_ORDER: pmm::Order = pmm::Order(9);
+const DATA_PAGES: u64 = regs::MAX_PRP_DATA_PAGES;
 
 impl Nvme {
     fn free_frame(pa: &mut u64) {
@@ -78,7 +82,7 @@ impl Nvme {
         *pa = 0;
     }
 
-    fn alloc_frames() -> Option<[u64; 5]> {
+    fn alloc_frames() -> Option<([u64; 5], u64)> {
         let mut frames = [0u64; 5];
         let mut i = 0usize;
         while i < frames.len() {
@@ -93,7 +97,11 @@ impl Nvme {
             }
             i += 1;
         }
-        Some(frames)
+        let Some(data_pa) = pmm::setup::alloc_contig(DATA_ORDER) else {
+            for pa in frames.iter_mut() { Self::free_frame(pa); }
+            return None;
+        };
+        Some((frames, data_pa))
     }
 
     /// Disable the controller and return all queue/PRP frames to PMM.
@@ -108,7 +116,12 @@ impl Nvme {
         Self::free_frame(&mut self.admin.cq_pa);
         Self::free_frame(&mut self.io.sq_pa);
         Self::free_frame(&mut self.io.cq_pa);
-        Self::free_frame(&mut self.prp_pa);
+        Self::free_frame(&mut self.prp_list_pa);
+        if self.data_pa != 0 {
+            // SAFETY: controller disable completed and this private data run has no live DMA owner.
+            unsafe { pmm::setup::free_contig(self.data_pa, DATA_ORDER); }
+            self.data_pa = 0;
+        }
         self.bar0_va = 0;
         self.mmio.unmap();
     }
@@ -152,9 +165,10 @@ impl Nvme {
     /// `bar0_va` is the HHDM-independent register-file VA from map_mmio_pages.
     /// # C: O(reset + 2 admin cmds + 2 create-queue cmds)
     pub fn bring_up(mmio: Mapping, bar0_off: u64, io_vector: u16) -> Option<Nvme> {
-        // Allocate admin SQ + CQ, I/O SQ + CQ, and the PRP bounce frame.
-        let [asq, acq, isq, icq, prp] = Self::alloc_frames()?;
-        for f in [asq, acq, isq, icq, prp] { Self::zero_frame(f); }
+        // Allocate queue frames, one PRP-list page, and the serialized I/O data run.
+        let ([asq, acq, isq, icq, prp_list], data_pa) = Self::alloc_frames()?;
+        for f in [asq, acq, isq, icq, prp_list] { Self::zero_frame(f); }
+        for page in 0..DATA_PAGES { Self::zero_frame(data_pa + page * PAGE); }
         let bar0_va = mmio.base_va() + bar0_off;
 
         // Pre-read DSTRD from CAP off `bar0_va` directly: the doorbell VAs it
@@ -184,7 +198,7 @@ impl Nvme {
         };
 
         let mut nv = Nvme {
-            mmio, bar0_va, admin, io, prp_pa: prp,
+            mmio, bar0_va, admin, io, data_pa, prp_list_pa: prp_list,
             ns_blocks: 0, blk_size: 512,
         };
         let to_ms = regs::cap_to_ms(cap).max(2_000);
@@ -343,12 +357,12 @@ impl Nvme {
         let mut cmd = [0u32; 16];
         cmd[0] = regs::ADMIN_IDENTIFY as u32;     // opcode (CID stamped in submit)
         cmd[1] = nsid;                            // NSID
-        cmd[6] = (self.prp_pa & 0xFFFF_FFFF) as u32; // PRP1 low
-        cmd[7] = (self.prp_pa >> 32) as u32;         // PRP1 high
+        cmd[6] = (self.data_pa & 0xFFFF_FFFF) as u32; // PRP1 low
+        cmd[7] = (self.data_pa >> 32) as u32;         // PRP1 high
         cmd[10] = cns;                            // CDW10: CNS
         let status = self.submit(false, cmd)?;
         if status != 0 { return None; }
-        Some(hhdm().wrapping_add(self.prp_pa))
+        Some(hhdm().wrapping_add(self.data_pa))
     }
 
     /// IDENTIFY namespace 1 and harvest NSZE (capacity in blocks) + the
@@ -400,12 +414,8 @@ impl Nvme {
         self.submit(false, cmd) == Some(0)
     }
 
-    /// Max bytes one `rw` call transfers: two PRP entries (PRP1 + PRP2) each
-    /// one page, all backed by the single bounce frame's first/second halves
-    /// is NOT how PRP works (PRP2 must be a distinct page). We bound to ONE
-    /// page (PRP1 only) so a request never needs a PRP list. The BlockDevice
-    /// layer in lib.rs loops per-chunk. # C: O(1)
-    pub const MAX_XFER: u64 = PAGE;
+    /// Max bytes one serialized request can map through its PRP data run. # C: O(1)
+    pub const MAX_XFER: u64 = DATA_PAGES * PAGE;
 
     fn submit_io(&mut self, mut cmd: [u32; 16]) -> Option<IoPending> {
         let q = &mut self.io;
@@ -459,15 +469,35 @@ impl Nvme {
 
     /// Submit one READ (0x02) or WRITE (0x01) on the I/O queue for namespace 1.
     /// `slba` = starting LBA, `nlb_minus_1` = (block count − 1), data moves
-    /// through the PRP bounce frame (≤ one page). The caller stages writes
-    /// into / copies reads out of the bounce frame around this call.
+    /// through the contiguous PRP data run. The caller stages writes into /
+    /// copies reads out of the run around this call.
     /// # C: O(one I/O cmd)
     pub fn rw_submit(&mut self, write: bool, slba: u64, nlb_minus_1: u16) -> Option<IoPending> {
+        let bytes = u64::from(nlb_minus_1).saturating_add(1).saturating_mul(u64::from(self.blk_size));
+        let second = regs::prp_second(bytes)?;
         let mut cmd = [0u32; 16];
         cmd[0] = if write { regs::IO_WRITE } else { regs::IO_READ } as u32;
         cmd[1] = 1;                               // NSID = 1
-        cmd[6] = (self.prp_pa & 0xFFFF_FFFF) as u32; // PRP1 low
-        cmd[7] = (self.prp_pa >> 32) as u32;         // PRP1 high
+        cmd[6] = (self.data_pa & 0xFFFF_FFFF) as u32; // PRP1 low
+        cmd[7] = (self.data_pa >> 32) as u32;         // PRP1 high
+        match second {
+            regs::PrpSecond::None => {}
+            regs::PrpSecond::DirectPage => {
+                let prp2 = self.data_pa + PAGE;
+                cmd[8] = prp2 as u32;
+                cmd[9] = (prp2 >> 32) as u32;
+            }
+            regs::PrpSecond::List { entries } => {
+                let h = hhdm();
+                if h == 0 || self.prp_list_pa == 0 { return None; }
+                let list = h.wrapping_add(self.prp_list_pa) as *mut u64;
+                // SAFETY: this controller owns the 512-entry PRP-list page and entries never exceeds 511.
+                unsafe { for index in 0..entries { core::ptr::write_volatile(list.add(index), self.data_pa + (index as u64 + 1) * PAGE); } }
+                core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+                cmd[8] = self.prp_list_pa as u32;
+                cmd[9] = (self.prp_list_pa >> 32) as u32;
+            }
+        }
         cmd[10] = (slba & 0xFFFF_FFFF) as u32;    // CDW10 SLBA low
         cmd[11] = (slba >> 32) as u32;            // CDW11 SLBA high
         cmd[12] = nlb_minus_1 as u32;             // CDW12 NLB (0-based)
@@ -482,7 +512,7 @@ impl Nvme {
         self.submit_io(cmd)
     }
 
-    /// HHDM VA of the PRP bounce frame, for staging/copying I/O payloads.
+    /// HHDM VA of the serialized PRP data run, for staging/copying I/O payloads.
     /// # C: O(1)
-    pub fn prp_va(&self) -> u64 { hhdm().wrapping_add(self.prp_pa) }
+    pub fn prp_va(&self) -> u64 { hhdm().wrapping_add(self.data_pa) }
 }
