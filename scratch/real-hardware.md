@@ -8,6 +8,23 @@ Scope: what stops the kernel booting and being usable on physical hardware. The
 per-syscall overhead findings from the same session are a separate axis and are
 not folded in here; only the SMP row overlaps.
 
+## Run-time hardware audit
+
+This ledger is a historical implementation assessment, not evidence that a
+particular board has the required devices or bindings. Build an audit image
+with `make hardware-audit-image-x86`; after Oxide has booted that root image on
+the target machine, run `/usr/local/bin/oxide-hardware-audit` and capture its
+serial output. Every record begins `OXIDE_HARDWARE_AUDIT|v1`; it inventories
+firmware/ACPI, online CPUs, PCI IDs and bindings, storage, input, network, and
+IOMMU groups. Its `driver-assessment` records identify native NVMe/AHCI
+candidates, missing xHCI support, and physical NICs that need a Linux-module
+compatibility-closure check.
+
+The current x86 root mount selects only a virtio-blk disk with serial
+`oxide-root`; the GRUB ISO is therefore not itself a turnkey bare-metal
+installer. The audit command is deliberately manual and reports available
+kernel state rather than claiming a successful physical install.
+
 Status values: `OPEN` (no lane) | `CLAIMED <branch>` | `DONE <sha>`.
 
 ## 1 Summary table

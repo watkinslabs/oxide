@@ -27,6 +27,8 @@ mod input_delivery;
 mod mutter_debug;
 // - sockopt_diff: opt-in SOL_NETLINK / SOL_SOCKET-on-netlink-fd differential probe.
 mod sockopt_diff;
+// - hardware_audit: manual physical-machine inventory injected on demand.
+mod hardware_audit;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -130,6 +132,9 @@ fn build_root(
     }
     if std::env::var_os("OXIDE_SOCKOPT_DIFF_SMOKE").is_some() {
         sockopt_diff::inject(&root_img, arch)?;
+    }
+    if std::env::var_os("OXIDE_HARDWARE_AUDIT").is_some() {
+        hardware_audit::inject(&root_img)?;
     }
     if std::env::var_os("OXIDE_REQUEST_KEY_SMOKE").is_some() {
         request_key::inject(&root_img, arch)?;

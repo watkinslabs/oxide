@@ -44,6 +44,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         build-debug x86-debug arm-debug \
         test lint lint-ratchet lint-ratchet-update audit-counts profile-policy warnings-control stats ci \
         qemu-x86 qemu-arm qemu-x86-debug qemu-arm-debug qemu-mcp \
+        hardware-audit-image-x86 \
         boot-debug-x86 boot-debug-arm smoke-debug smoke-debug-x86 smoke-debug-arm \
         qemu-x86-grub qemu-x86-uefi smoke-uefi-x86 \
         smoke-up smoke-up-x86 smoke-up-arm \
@@ -721,6 +722,13 @@ smoke-virtio-input-rebind: smoke-virtio-input-rebind-x86 smoke-virtio-input-rebi
 # the new bytes on the next kernel build.
 rootfs:
 	$(XTASK) rootfs
+
+# Produce the x86_64 GRUB ISO and companion root image with the manual
+# physical-hardware auditor at /usr/local/bin/oxide-hardware-audit.  The
+# current physical boot path still needs a root-device handoff; this target
+# makes the diagnostic available as soon as that image has booted.
+hardware-audit-image-x86:
+	OXIDE_HARDWARE_AUDIT=1 $(XTASK) image --arch x86_64
 
 artifacts:
 	$(XTASK) artifacts
