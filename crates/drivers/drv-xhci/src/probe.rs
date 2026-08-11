@@ -106,25 +106,25 @@ fn remove(bdf: pci::Bdf) {
     if CONTROLLERS.lock().is_empty() { let _ = softirq::clear_handler(softirq::Slot::UsbInput); }
 }
 
-fn prepare_dma(mmio: &Mmio) -> Option<(DmaPage, DmaPage, DmaPage, DmaPage)> {
-    let command = DmaPage::allocate()?;
-    let dcbaa = DmaPage::allocate()?;
-    let erst = DmaPage::allocate()?;
-    let event = DmaPage::allocate()?;
-    let link = Trb::link(command.pa(), true)?;
+fn prepare_dma(bdf: pci::Bdf, mmio: &Mmio) -> Option<(DmaPage, DmaPage, DmaPage, DmaPage)> {
+    let command = DmaPage::allocate(bdf)?;
+    let dcbaa = DmaPage::allocate(bdf)?;
+    let erst = DmaPage::allocate(bdf)?;
+    let event = DmaPage::allocate(bdf)?;
+    let link = Trb::link(command.dma(), true)?;
     for (index, word) in link.dword.iter().enumerate() {
         if !command.write32(((TRBS_PER_SEGMENT - 1) * 16 + index * 4) as u64, *word) { return None; }
     }
     // ERST entry zero: event-ring segment base then its 256 TRBs.
-    if !erst.write32(0, event.pa() as u32)
-        || !erst.write32(4, (event.pa() >> 32) as u32)
+    if !erst.write32(0, event.dma() as u32)
+        || !erst.write32(4, (event.dma() >> 32) as u32)
         || !erst.write32(8, TRBS_PER_SEGMENT as u32)
     { return None; }
     command.clean_to_device();
     dcbaa.clean_to_device();
     erst.clean_to_device();
     event.clean_to_device();
-    let plan = controller::run_plan(mmio.geometry(), command.pa(), dcbaa.pa(), erst.pa(), event.pa())?;
+    let plan = controller::run_plan(mmio.geometry(), command.dma(), dcbaa.dma(), erst.dma(), event.dma())?;
     if !mmio.program_halted(plan) { return None; }
     Some((command, dcbaa, erst, event))
 }
@@ -185,7 +185,7 @@ fn disable_slot(mmio: &Mmio, command: &mut CommandTransport, irq: Binding, slot:
     }
 }
 
-fn address_port_device(mmio: &Mmio, command: &mut CommandTransport, dcbaa: &DmaPage, irq: Binding, port: u8) -> Option<AddressDeviceDma> {
+fn address_port_device(bdf: pci::Bdf, mmio: &Mmio, command: &mut CommandTransport, dcbaa: &DmaPage, irq: Binding, port: u8) -> Option<AddressDeviceDma> {
     let Some(protocol) = mmio.protocol_for_port(port) else { return None; };
     let Some(status) = mmio.port_status(port) else { return None; };
     if status & crate::ports::PORT_CONNECT == 0 { return None; }
@@ -198,7 +198,7 @@ fn address_port_device(mmio: &Mmio, command: &mut CommandTransport, dcbaa: &DmaP
         if enable.slot != 0 { disable_slot(mmio, command, irq, enable.slot); }
         return None;
     }
-    let Some(mut device) = AddressDeviceDma::allocate(mmio.geometry().context_bytes, port, portsc) else { disable_slot(mmio, command, irq, enable.slot); return None; };
+    let Some(mut device) = AddressDeviceDma::allocate(bdf, mmio.geometry().context_bytes, port, portsc) else { disable_slot(mmio, command, irq, enable.slot); return None; };
     if !device.publish_dcbaa(dcbaa, enable.slot) { disable_slot(mmio, command, irq, enable.slot); return None; }
     let Some(address) = Trb::address_device(device.input_pa(), enable.slot, false) else { disable_slot(mmio, command, irq, enable.slot); return None; };
     let Some(address_pa) = command.submit(mmio, address) else { disable_slot(mmio, command, irq, enable.slot); return None; };
@@ -243,7 +243,7 @@ impl drv::Driver for XhciDriver {
         // probe owns it until the symmetric remove path releases its Mapping.
         let Some(mmio) = (unsafe { Mmio::map(resource.start, bytes) }) else { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); };
         if !mmio.halt_reset() { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); }
-        let Some((command, dcbaa, erst, event)) = prepare_dma(&mmio) else { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); };
+        let Some((command, dcbaa, erst, event)) = prepare_dma(bdf, &mmio) else { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); };
         let Some(mut command) = CommandTransport::new(command) else { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); };
         let Some(irq) = crate::irq::bind(bdf, &mmio) else { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); };
         if !irq.arm(&mmio, &event) || !mmio.run() {
@@ -253,7 +253,7 @@ impl drv::Driver for XhciDriver {
         }
         let mut devices = Vec::new();
         for port in 1..=mmio.geometry().max_ports {
-            let Some(device) = address_port_device(&mmio, &mut command, &dcbaa, irq, port) else { continue; };
+            let Some(device) = address_port_device(bdf, &mmio, &mut command, &dcbaa, irq, port) else { continue; };
             let slot = device.slot();
             let protocol = device.hid_protocol();
             let evdev = install_hid_input(bdf, slot, protocol);

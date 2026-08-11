@@ -12,33 +12,33 @@ use crate::ring::{CommandRing, Trb, TRB_BYTES, TRBS_PER_SEGMENT};
 struct HidDma { ring: DmaPage, report: DmaPage, producer: CommandRing, pending: u64 }
 
 /// Input context, output device context, and endpoint-zero transfer ring.
-pub struct AddressDeviceDma { input: DmaPage, output: DmaPage, ep0: DmaPage, descriptor: DmaPage, context_bytes: u8, speed: u8, slot: u8, _hid: Option<crate::usb::HidBootInterface>, hid_ring: Option<HidDma>, ep0_ring: CommandRing }
+pub struct AddressDeviceDma { bdf: pci::Bdf, input: DmaPage, output: DmaPage, ep0: DmaPage, descriptor: DmaPage, context_bytes: u8, speed: u8, slot: u8, _hid: Option<crate::usb::HidBootInterface>, hid_ring: Option<HidDma>, ep0_ring: CommandRing }
 
 impl AddressDeviceDma {
     /// Allocate and construct every DMA object required by Address Device. # C: O(page bytes)
-    pub fn allocate(context_bytes: u8, port: u8, portsc: u32) -> Option<Self> {
-        let input = DmaPage::allocate()?;
-        let output = DmaPage::allocate()?;
-        let ep0 = DmaPage::allocate()?;
-        let descriptor = DmaPage::allocate()?;
+    pub fn allocate(bdf: pci::Bdf, context_bytes: u8, port: u8, portsc: u32) -> Option<Self> {
+        let input = DmaPage::allocate(bdf)?;
+        let output = DmaPage::allocate(bdf)?;
+        let ep0 = DmaPage::allocate(bdf)?;
+        let descriptor = DmaPage::allocate(bdf)?;
         let speed = ((portsc & crate::ports::PORT_SPEED_MASK) >> 10) as u8;
-        let words = context::address_device_words(context_bytes, port, portsc, ep0.pa())?;
+        let words = context::address_device_words(context_bytes, port, portsc, ep0.dma())?;
         for word in words { if !input.write32(word.offset as u64, word.value) { return None; } }
-        let link = Trb::link(ep0.pa(), true)?;
+        let link = Trb::link(ep0.dma(), true)?;
         for (word, value) in link.dword.iter().enumerate() {
             if !ep0.write32(((TRBS_PER_SEGMENT - 1) * 16 + word * 4) as u64, *value) { return None; }
         }
         input.clean_to_device(); output.clean_to_device(); ep0.clean_to_device();
-        let ep0_ring = CommandRing::new(ep0.pa())?;
-        Some(Self { input, output, ep0, descriptor, context_bytes, speed, slot: 0, _hid: None, hid_ring: None, ep0_ring })
+        let ep0_ring = CommandRing::new(ep0.dma())?;
+        Some(Self { bdf, input, output, ep0, descriptor, context_bytes, speed, slot: 0, _hid: None, hid_ring: None, ep0_ring })
     }
 
-    /// Input-context physical address for Address Device. # C: O(1)
-    pub fn input_pa(&self) -> u64 { self.input.pa() }
-    /// Endpoint-zero transfer-ring physical address. # C: O(1)
-    pub fn ep0_pa(&self) -> u64 { self.ep0.pa() }
+    /// Input-context device DMA address for Address Device. # C: O(1)
+    pub fn input_pa(&self) -> u64 { self.input.dma() }
+    /// Endpoint-zero transfer-ring device DMA address. # C: O(1)
+    pub fn ep0_pa(&self) -> u64 { self.ep0.dma() }
     /// DMA address reserved for a standard device descriptor. # C: O(1)
-    pub fn descriptor_pa(&self) -> u64 { self.descriptor.pa() }
+    pub fn descriptor_pa(&self) -> u64 { self.descriptor.dma() }
     /// Read and validate the device descriptor after its completed IN transfer. # C: O(18)
     pub fn device_descriptor(&self) -> Option<crate::usb::DeviceDescriptor> {
         self.descriptor.invalidate_from_device();
@@ -66,8 +66,8 @@ impl AddressDeviceDma {
     /// Build a retained interrupt-IN ring and Configure Endpoint input context. # C: O(page bytes)
     pub fn prepare_hid_endpoint(&mut self) -> Option<bool> {
         let Some(hid) = self._hid else { return Some(false); };
-        let ring = DmaPage::allocate()?;
-        let link = Trb::link(ring.pa(), true)?;
+        let ring = DmaPage::allocate(self.bdf)?;
+        let link = Trb::link(ring.dma(), true)?;
         for (word, value) in link.dword.iter().enumerate() {
             if !ring.write32(((TRBS_PER_SEGMENT - 1) * TRB_BYTES + word * 4) as u64, *value) { return None; }
         }
@@ -75,10 +75,10 @@ impl AddressDeviceDma {
         let stride = self.context_bytes as u64;
         let mut output_slot = [0u32; 8];
         for (index, word) in output_slot.iter_mut().enumerate() { *word = self.output.read32(stride + (index * 4) as u64)?; }
-        let words = context::configure_hid_words(self.context_bytes, output_slot, self.speed, hid, ring.pa())?;
+        let words = context::configure_hid_words(self.context_bytes, output_slot, self.speed, hid, ring.dma())?;
         for word in words { if !self.input.write32(word.offset as u64, word.value) { return None; } }
         ring.clean_to_device(); self.input.clean_to_device();
-        self.hid_ring = Some(HidDma { producer: CommandRing::new(ring.pa())?, ring, report: DmaPage::allocate()?, pending: 0 });
+        self.hid_ring = Some(HidDma { producer: CommandRing::new(ring.dma())?, ring, report: DmaPage::allocate(self.bdf)?, pending: 0 });
         Some(true)
     }
     /// Configuration value selected by the discovered HID interface. # C: O(1)
@@ -95,9 +95,9 @@ impl AddressDeviceDma {
         let endpoint_id = (hid.endpoint & 0x0f).checked_mul(2)?.checked_add(1)?;
         let dma = self.hid_ring.as_mut()?;
         if dma.pending != 0 { return None; }
-        let trb = Trb::normal(dma.report.pa(), u32::from(hid.max_packet))?;
+        let trb = Trb::normal(dma.report.dma(), u32::from(hid.max_packet))?;
         let (pa, _) = dma.producer.push(trb);
-        let index = pa.checked_sub(dma.ring.pa())?.checked_div(TRB_BYTES as u64)? as usize;
+        let index = pa.checked_sub(dma.ring.dma())?.checked_div(TRB_BYTES as u64)? as usize;
         let written = dma.producer.trb(index)?;
         for (word, value) in written.dword.iter().enumerate() { if !dma.ring.write32((index * TRB_BYTES + word * 4) as u64, *value) { return None; } }
         dma.ring.clean_to_device();
@@ -137,7 +137,7 @@ impl AddressDeviceDma {
         let mut completion = 0;
         for trb in trbs {
             let (pa, _) = self.ep0_ring.push(*trb);
-            let index = pa.checked_sub(self.ep0.pa())?.checked_div(TRB_BYTES as u64)? as usize;
+            let index = pa.checked_sub(self.ep0.dma())?.checked_div(TRB_BYTES as u64)? as usize;
             let written = self.ep0_ring.trb(index)?;
             for (word, value) in written.dword.iter().enumerate() {
                 if !self.ep0.write32((index * TRB_BYTES + word * 4) as u64, *value) { return None; }
@@ -151,7 +151,7 @@ impl AddressDeviceDma {
     pub fn publish_dcbaa(&mut self, dcbaa: &DmaPage, slot: u8) -> bool {
         if slot == 0 || (slot as usize) * 8 + 8 > 4096 { return false; }
         let offset = slot as u64 * 8;
-        if !dcbaa.write32(offset, self.output.pa() as u32) || !dcbaa.write32(offset + 4, (self.output.pa() >> 32) as u32) { return false; }
+        if !dcbaa.write32(offset, self.output.dma() as u32) || !dcbaa.write32(offset + 4, (self.output.dma() >> 32) as u32) { return false; }
         dcbaa.clean_to_device();
         self.slot = slot;
         true

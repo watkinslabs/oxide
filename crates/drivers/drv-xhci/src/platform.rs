@@ -18,12 +18,12 @@ fn hhdm() -> u64 {
 }
 
 /// One page of controller-owned, physically contiguous DMA memory.
-pub struct DmaPage { pa: u64 }
+pub struct DmaPage { bdf: pci::Bdf, pa: u64, dma: u64 }
 
 impl DmaPage {
     /// Allocate and clear a page before it can be named in a controller register.
     /// # C: O(page bytes)
-    pub fn allocate() -> Option<Self> {
+    pub fn allocate(bdf: pci::Bdf) -> Option<Self> {
         let pa = pmm::setup::alloc_contig(pmm::Order(0))?;
         let va = hhdm().checked_add(pa)?;
         if va == 0 {
@@ -34,11 +34,16 @@ impl DmaPage {
         // SAFETY: `pa` is this page's fresh PMM allocation and no controller can
         // access it before the caller publishes its physical address later.
         unsafe { for byte in 0..PAGE { write_volatile((va + byte) as *mut u8, 0); } }
-        Some(Self { pa })
+        let Some(dma) = iommu::map_dma(bdf, pa, PAGE as usize) else {
+            // SAFETY: no device mapping was published for this fresh PMM allocation.
+            unsafe { pmm::setup::free_contig(pa, pmm::Order(0)); }
+            return None;
+        };
+        Some(Self { bdf, pa, dma })
     }
 
-    /// Physical address suitable for 64-byte-aligned xHCI pointers. # C: O(1)
-    pub fn pa(&self) -> u64 { self.pa }
+    /// IOMMU-owned device address suitable for 64-byte-aligned xHCI pointers. # C: O(1)
+    pub fn dma(&self) -> u64 { self.dma }
 
     /// Direct-map address for the exclusive controller DMA page. # C: O(1)
     pub fn va(&self) -> Option<u64> { hhdm().checked_add(self.pa) }
@@ -88,10 +93,12 @@ impl DmaPage {
 impl Drop for DmaPage {
     fn drop(&mut self) {
         if self.pa != 0 {
+            if !iommu::unmap_dma(self.bdf, self.dma, PAGE as usize) { return; }
             // SAFETY: DmaPage ownership requires its holder to quiesce the
             // controller before drop; this page is no longer DMA-reachable.
             unsafe { pmm::setup::free_contig(self.pa, pmm::Order(0)); }
             self.pa = 0;
+            self.dma = 0;
         }
     }
 }

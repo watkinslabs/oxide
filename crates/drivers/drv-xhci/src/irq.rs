@@ -164,7 +164,7 @@ impl Binding {
         endpoint.cycle.store(true, Ordering::Relaxed);
         endpoint.status_offset.store(mmio.geometry().operational + USBSTS, Ordering::Relaxed);
         endpoint.erdp_offset.store(intr + ERDP, Ordering::Relaxed);
-        endpoint.event_pa.store(event.pa(), Ordering::Relaxed);
+        endpoint.event_pa.store(event.dma(), Ordering::Relaxed);
         endpoint.event_va.store(event_va, Ordering::Relaxed);
         endpoint.bar_bytes.store(mmio.bytes(), Ordering::Relaxed);
         endpoint.max_ports.store(mmio.geometry().max_ports, Ordering::Relaxed);
