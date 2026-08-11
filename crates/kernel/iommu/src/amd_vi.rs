@@ -28,6 +28,10 @@ const DTE_WRITE: u64 = 1 << 62;
 const DTE_DOMAIN_MASK: u64 = 0xffff;
 const COMMAND_TYPE_SHIFT: u32 = 28;
 const COMMAND_INVALIDATE_DTE: u32 = 0x02;
+const COMMAND_INVALIDATE_IOMMU_PAGES: u32 = 0x03;
+const COMMAND_INVALIDATE_PAGES_SIZE: u64 = 1 << 0;
+const COMMAND_INVALIDATE_PAGES_PDE: u64 = 1 << 1;
+const COMMAND_INVALIDATE_ALL_PAGES_ADDRESS: u64 = 0x7fff_ffff_ffff_f000;
 
 /// Hardware-format AMD-Vi device-table entry.
 #[repr(C, align(16))]
@@ -59,8 +63,26 @@ impl AmdViCommand {
     pub const fn invalidate_dte(requester: u16) -> Self {
         Self { words: [requester as u32, COMMAND_INVALIDATE_DTE << COMMAND_TYPE_SHIFT, 0, 0] }
     }
+    /// Build a domain IOTLB invalidation for one aligned page range. # C: O(1)
+    pub const fn invalidate_iova_pages(domain_id: u16, address: u64, last: u64, page_tables: bool) -> Option<Self> {
+        if address & (PAGE_BYTES - 1) != 0 || last & (PAGE_BYTES - 1) != 0 || last < address { return None; }
+        let encoded = invalidate_address(address, last);
+        let flags = if page_tables { COMMAND_INVALIDATE_PAGES_PDE } else { 0 };
+        Some(Self { words: [0, (domain_id as u32) | (COMMAND_INVALIDATE_IOMMU_PAGES << COMMAND_TYPE_SHIFT),
+            (encoded as u32) | flags as u32, (encoded >> 32) as u32] })
+    }
     /// Return the four little-endian command words. # C: O(1)
     pub const fn words(&self) -> [u32; 4] { self.words }
+}
+
+const fn invalidate_address(address: u64, last: u64) -> u64 {
+    let address = address & !(PAGE_BYTES - 1);
+    let differing = address ^ last;
+    if differing == 0 { return address; }
+    let size_log2 = 64 - differing.leading_zeros() as u64;
+    if size_log2 > 52 { return COMMAND_INVALIDATE_ALL_PAGES_ADDRESS | COMMAND_INVALIDATE_PAGES_SIZE; }
+    let rounded = if size_log2 > 13 { address | ((1u64 << (size_log2 - 1)) - PAGE_BYTES) } else { address };
+    rounded | COMMAND_INVALIDATE_PAGES_SIZE
 }
 
 /// Permanent DMA-visible AMD-Vi tables. They remain allocated until the
@@ -218,6 +240,16 @@ impl AmdViUnit {
         // SAFETY: tables owns the serialized command ring and the checked state has enabled it.
         unsafe { tables.queue_command(regs, hhdm_offset, AmdViCommand::invalidate_dte(bdf.raw())) }
     }
+    /// Queue a domain-page invalidation after changing its IOVA PTEs. # C: O(1)
+    pub unsafe fn invalidate_iova_pages(&self, regs: &AmdViRegisters, tables: &AmdViTables, hhdm_offset: u64, domain_id: u16, address: u64, last: u64, page_tables: bool) -> bool {
+        if self.state != AmdViState::TablesProgrammed && self.state != AmdViState::DomainsAttached && self.state != AmdViState::Enabled { return false; }
+        if hhdm_offset == 0 || regs.read64(CONTROL).is_none_or(|control| control & CONTROL_COMMAND_ENABLE == 0) { return false; }
+        let Some(command) = AmdViCommand::invalidate_iova_pages(domain_id, address, last, page_tables) else { return false; };
+        // SAFETY: tables owns the serialized command ring and its command engine is enabled.
+        unsafe { tables.queue_command(regs, hhdm_offset, command) }
+    }
+    /// Report whether all previously queued invalidations have reached hardware completion. # C: O(1)
+    pub fn invalidations_drained(&self, regs: &AmdViRegisters, tables: &AmdViTables) -> bool { tables.command_drained(regs) }
     /// Advance only after hardware consumed every queued initial invalidation. # C: O(1)
     pub fn domains_attached_after_drain(&mut self, regs: &AmdViRegisters, tables: &AmdViTables) -> bool {
         if self.state != AmdViState::TablesProgrammed || !tables.command_drained(regs) { return false; }
@@ -264,5 +296,14 @@ impl AmdViUnit {
         let command = AmdViCommand::invalidate_dte(0x1234);
         assert_eq!(core::mem::size_of::<AmdViCommand>(), 16);
         assert_eq!(command.words(), [0x1234, 0x2000_0000, 0, 0]);
+    }
+    #[test] fn page_invalidation_matches_domain_command_layout() {
+        let one = AmdViCommand::invalidate_iova_pages(0x1234, 0x2000, 0x2000, false).unwrap();
+        assert_eq!(one.words(), [0, 0x3000_1234, 0x2000, 0]);
+        let range = AmdViCommand::invalidate_iova_pages(7, 0x4000, 0x9000, true).unwrap();
+        assert_eq!(range.words(), [0, 0x3000_0007, 0x7003, 0]);
+        let all = AmdViCommand::invalidate_iova_pages(7, 0, u64::MAX & !0xfff, true).unwrap();
+        assert_eq!(all.words(), [0, 0x3000_0007, 0xffff_f003, 0x7fff_ffff]);
+        assert!(AmdViCommand::invalidate_iova_pages(1, 1, 0x1000, false).is_none());
     }
 }
