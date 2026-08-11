@@ -31,6 +31,8 @@ pub const KERNEL_DEVICE_BASE: u64 = 0xffff_ff00_0000_0000;
 #[cfg(target_os = "oxide-kernel")]
 pub const ECAM_BASE_VA: u64 = 0xffff_fe00_0000_0000;
 #[cfg(target_os = "oxide-kernel")]
+pub const ECAM_WINDOW_BYTES: u64 = 0x1000_0000;
+#[cfg(target_os = "oxide-kernel")]
 const ECAM_BUS_BYTES: u64 = 0x10_0000;
 #[cfg(target_os = "oxide-kernel")]
 const ECAM_PAGE_BYTES: u64 = 0x1000;
@@ -59,26 +61,26 @@ fn device_flags() -> PageFlags {
 }
 
 #[cfg(target_os = "oxide-kernel")]
-unsafe fn map_ecam_window<M: MmuOps>(base_pa: u64, bus_cap: u16) {
+unsafe fn map_ecam_window<M: MmuOps>(base_va: u64, base_pa: u64, bus_cap: u16) {
     let mut off = 0u64;
     let total = (bus_cap as u64) * ECAM_BUS_BYTES;
     while off < total {
         let left = total - off;
         if ((base_pa + off) & (ECAM_BLOCK_BYTES - 1)) == 0
-            && ((ECAM_BASE_VA + off) & (ECAM_BLOCK_BYTES - 1)) == 0
+            && ((base_va + off) & (ECAM_BLOCK_BYTES - 1)) == 0
             && left >= ECAM_BLOCK_BYTES
         {
             // SAFETY: caller selected boot-only ECAM publication; PA/VA are
             // block-aligned and the whole block lies inside the MCFG window.
             unsafe {
-                M::map(Va(ECAM_BASE_VA + off), Pa(base_pa + off), device_flags(), PageSize::P2M);
+                M::map(Va(base_va + off), Pa(base_pa + off), device_flags(), PageSize::P2M);
             }
             off += ECAM_BLOCK_BYTES;
         } else {
             // SAFETY: caller selected boot-only ECAM publication; this page is
             // inside the MCFG window and is mapped with device attributes.
             unsafe {
-                M::map(Va(ECAM_BASE_VA + off), Pa(base_pa + off), device_flags(), PageSize::P4K);
+                M::map(Va(base_va + off), Pa(base_pa + off), device_flags(), PageSize::P4K);
             }
             off += ECAM_PAGE_BYTES;
         }

@@ -1,11 +1,10 @@
 use crate::acpi::log::{alog_dec, alog_hex, alog_raw};
 use crate::acpi::read::{read_u32_le, read_u64_le};
+use pci::MAX_ECAM_WINDOWS;
 
 /// Bounded early-boot MCFG inventory. A complete window set is published or
 /// none is: partial PCI host-bridge visibility would make ownership depend on
 /// table order.
-pub const MAX_ECAM_WINDOWS: usize = 8;
-
 /// One ACPI MCFG allocation, keyed by PCI segment and bus window.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct EcamWindow {
@@ -374,7 +373,8 @@ pub unsafe fn decode_mcfg(pa: u64, hhdm_offset: u64) {
             let segment    = read_u32_le(p.add(off + 8)) as u16;
             let start_bus  = core::ptr::read_volatile(p.add(off + 10));
             let end_bus    = core::ptr::read_volatile(p.add(off + 11));
-            if base == 0 || start_bus > end_bus {
+            if base == 0 || start_bus > end_bus
+                || base.checked_add(u64::from(end_bus) << 20).is_none() {
                 alog_raw(b"[ERROR]    mcfg: invalid allocation\n");
                 return;
             }

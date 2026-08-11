@@ -1,4 +1,4 @@
-use super::{device_flags, map_ecam_window, ECAM_BASE_VA, KERNEL_DEVICE_BASE};
+use super::{device_flags, map_ecam_window, ECAM_BASE_VA, ECAM_WINDOW_BYTES, KERNEL_DEVICE_BASE};
 use hal::{MmuOps, Pa, PageSize, Va};
 
 /// HPET phys base on QEMU q35 (matches MADT log).
@@ -96,26 +96,21 @@ pub fn smoke_device_map_x86(_hhdm: u64) {
         }
     }
 
-    let ecam_pa = firmware::acpi::ECAM_BASE_PA
-        .load(core::sync::atomic::Ordering::Acquire);
-    let ecam_bus_cap = firmware::acpi::ecam_bus_cap();
-    if ecam_pa != 0 && ecam_bus_cap != 0 {
-        // SAFETY: ACPI MCFG provided the ECAM physical aperture; this boot-only
-        // mapping publishes Device-attr config-space MMIO before PCI enum.
-        unsafe { map_ecam_window::<X86Mmu>(ecam_pa, ecam_bus_cap); }
-        hal_x86_64::pci::ECAM_SEGMENT.store(
-            firmware::acpi::ECAM_SEGMENT.load(core::sync::atomic::Ordering::Acquire),
-            core::sync::atomic::Ordering::Relaxed,
-        );
-        hal_x86_64::pci::ECAM_BUS_START.store(
-            firmware::acpi::ECAM_BUS_START.load(core::sync::atomic::Ordering::Acquire),
-            core::sync::atomic::Ordering::Relaxed,
-        );
-        hal_x86_64::pci::ECAM_BUS_END.store(
-            firmware::acpi::ECAM_BUS_END.load(core::sync::atomic::Ordering::Acquire),
-            core::sync::atomic::Ordering::Relaxed,
-        );
-        hal_x86_64::pci::ECAM_BASE_VA
-            .store(ECAM_BASE_VA, core::sync::atomic::Ordering::Release);
+    let mut windows = [hal_x86_64::pci::EcamWindow {
+        base_va: 0, segment: 0, bus_start: 0, bus_end: 0,
+    }; pci::MAX_ECAM_WINDOWS];
+    let count = firmware::acpi::ecam_window_count();
+    for i in 0..count {
+        let Some(w) = firmware::acpi::ecam_window(i) else { return };
+        let bus_cap = u16::from(w.bus_end) - u16::from(w.bus_start) + 1;
+        let base_va = ECAM_BASE_VA + (i as u64) * ECAM_WINDOW_BYTES;
+        // SAFETY: ACPI MCFG provided this exact ECAM aperture; the bounded VA
+        // slot is disjoint from every other aperture and maps it before PCI enum.
+        let map_pa = w.base_pa + (u64::from(w.bus_start) << 20);
+        unsafe { map_ecam_window::<X86Mmu>(base_va, map_pa, bus_cap); }
+        windows[i] = hal_x86_64::pci::EcamWindow {
+            base_va, segment: w.segment, bus_start: w.bus_start, bus_end: w.bus_end,
+        };
     }
+    if count != 0 { hal_x86_64::pci::publish_windows(&windows[..count]); }
 }

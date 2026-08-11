@@ -302,14 +302,18 @@ fn scan_devices() -> alloc::vec::Vec<pci::PciDevice> {
     #[cfg(target_arch = "x86_64")]
     {
         match hal_x86_64::pci::EcamPci::from_published() {
-            Some(r) => pci::enumerate_segment_buses(&r, r.segment, r.bus_start, firmware::acpi::ecam_bus_cap()),
+            Some(r) => r.windows().iter().flat_map(|w| pci::enumerate_segment_buses(
+                &r, w.segment, w.bus_start, u16::from(w.bus_end) - u16::from(w.bus_start) + 1,
+            )).collect(),
             None => alloc::vec::Vec::new(),
         }
     }
     #[cfg(target_arch = "aarch64")]
     {
         match hal_aarch64::pci::EcamPci::from_published() {
-            Some(r) => pci::enumerate_segment_buses(&r, r.segment, r.bus_start, firmware::acpi::ecam_bus_cap()),
+            Some(r) => r.windows().iter().flat_map(|w| pci::enumerate_segment_buses(
+                &r, w.segment, w.bus_start, u16::from(w.bus_end) - u16::from(w.bus_start) + 1,
+            )).collect(),
             None    => alloc::vec::Vec::new(),
         }
     }

@@ -1,4 +1,4 @@
-use super::{device_flags, map_ecam_window, ECAM_BASE_VA, KERNEL_DEVICE_BASE};
+use super::{device_flags, map_ecam_window, ECAM_BASE_VA, ECAM_WINDOW_BYTES, KERNEL_DEVICE_BASE};
 use hal::{MmuOps, Pa, PageSize, Va};
 
 #[path = "its.rs"]
@@ -225,28 +225,23 @@ pub fn smoke_device_map_arm(_hhdm: u64) {
     // the segment-0 base PA and bus range, map the advertised first
     // segment window at a dedicated kernel VA so all reachable bridge
     // buses can be probed through `hal_aarch64::pci::EcamPci`.
-    let ecam_pa = firmware::acpi::ECAM_BASE_PA
-        .load(core::sync::atomic::Ordering::Acquire);
-    let ecam_bus_cap = firmware::acpi::ecam_bus_cap();
-    if ecam_pa != 0 && ecam_bus_cap != 0 {
+    let mut windows = [hal_aarch64::pci::EcamWindow {
+        base_va: 0, segment: 0, bus_start: 0, bus_end: 0,
+    }; pci::MAX_ECAM_WINDOWS];
+    let count = firmware::acpi::ecam_window_count();
+    for i in 0..count {
+        let Some(w) = firmware::acpi::ecam_window(i) else { return };
+        let bus_cap = u16::from(w.bus_end) - u16::from(w.bus_start) + 1;
+        let base_va = ECAM_BASE_VA + (i as u64) * ECAM_WINDOW_BYTES;
         // SAFETY: same contract as the GICD/PL011 maps above — single-CPU
         // pre-init, MmuOps state initialised, and ECAM_PA came from ACPI MCFG.
-        unsafe { map_ecam_window::<ArmMmu>(ecam_pa, ecam_bus_cap); }
-        hal_aarch64::pci::ECAM_SEGMENT.store(
-            firmware::acpi::ECAM_SEGMENT.load(core::sync::atomic::Ordering::Acquire),
-            core::sync::atomic::Ordering::Relaxed,
-        );
-        hal_aarch64::pci::ECAM_BUS_START.store(
-            firmware::acpi::ECAM_BUS_START.load(core::sync::atomic::Ordering::Acquire),
-            core::sync::atomic::Ordering::Relaxed,
-        );
-        hal_aarch64::pci::ECAM_BUS_END.store(
-            firmware::acpi::ECAM_BUS_END.load(core::sync::atomic::Ordering::Acquire),
-            core::sync::atomic::Ordering::Relaxed,
-        );
-        hal_aarch64::pci::ECAM_BASE_VA
-            .store(ECAM_BASE_VA, core::sync::atomic::Ordering::Release);
+        let map_pa = w.base_pa + (u64::from(w.bus_start) << 20);
+        unsafe { map_ecam_window::<ArmMmu>(base_va, map_pa, bus_cap); }
+        windows[i] = hal_aarch64::pci::EcamWindow {
+            base_va, segment: w.segment, bus_start: w.bus_start, bus_end: w.bus_end,
+        };
     }
+    if count != 0 { hal_aarch64::pci::publish_windows(&windows[..count]); }
 
     // F36: GICv2m MSI frame device-map (1 page) + read MSI_TYPER at +0x008.
     // Bits[25:16] = first SPI; bits[9:0] = SPI count. Together with the

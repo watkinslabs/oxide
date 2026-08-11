@@ -1,124 +1,105 @@
-// PCIe ECAM config-space accessor for x86_64. docs/34 requires ECAM-only
-// config cycles, so the boot device-map publishes a kernel VA for the ACPI
-// MCFG segment before PCI enumeration runs.
+// PCIe ECAM config-space routing. Every published MCFG allocation owns one
+// exact `(segment, bus range)` window; config transactions select it by BDF.
 
-#[cfg(target_arch = "x86_64")]
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-#[cfg(target_arch = "x86_64")]
-pub static ECAM_BASE_VA: AtomicU64 = AtomicU64::new(0);
-#[cfg(target_arch = "x86_64")]
-pub static ECAM_SEGMENT: AtomicU32 = AtomicU32::new(0);
-#[cfg(target_arch = "x86_64")]
-pub static ECAM_BUS_START: AtomicU32 = AtomicU32::new(0);
-#[cfg(target_arch = "x86_64")]
-pub static ECAM_BUS_END: AtomicU32 = AtomicU32::new(0);
+static ECAM_WINDOW_COUNT: AtomicU32 = AtomicU32::new(0);
+static ECAM_WINDOW_BASE: [AtomicU64; pci::MAX_ECAM_WINDOWS]
+    = [const { AtomicU64::new(0) }; pci::MAX_ECAM_WINDOWS];
+static ECAM_WINDOW_SEGMENT: [AtomicU32; pci::MAX_ECAM_WINDOWS]
+    = [const { AtomicU32::new(0) }; pci::MAX_ECAM_WINDOWS];
+static ECAM_WINDOW_BUS_START: [AtomicU32; pci::MAX_ECAM_WINDOWS]
+    = [const { AtomicU32::new(0) }; pci::MAX_ECAM_WINDOWS];
+static ECAM_WINDOW_BUS_END: [AtomicU32; pci::MAX_ECAM_WINDOWS]
+    = [const { AtomicU32::new(0) }; pci::MAX_ECAM_WINDOWS];
 
-#[cfg(target_arch = "x86_64")]
-pub struct EcamPci {
+#[derive(Copy, Clone)]
+pub struct EcamWindow {
     pub base_va: u64,
     pub segment: u16,
     pub bus_start: u8,
     pub bus_end: u8,
 }
 
-#[cfg(target_arch = "x86_64")]
+const EMPTY_WINDOW: EcamWindow = EcamWindow { base_va: 0, segment: 0, bus_start: 0, bus_end: 0 };
+
+/// Publish every boot-mapped MCFG window before PCI enumeration. # C: O(N)
+pub fn publish_windows(windows: &[EcamWindow]) {
+    if windows.is_empty() || windows.len() > pci::MAX_ECAM_WINDOWS { return; }
+    if ECAM_WINDOW_COUNT.load(Ordering::Acquire) != 0 { return; }
+    for (i, w) in windows.iter().enumerate() {
+        if w.base_va == 0 || w.bus_start > w.bus_end { return; }
+        ECAM_WINDOW_BASE[i].store(w.base_va, Ordering::Relaxed);
+        ECAM_WINDOW_SEGMENT[i].store(w.segment as u32, Ordering::Relaxed);
+        ECAM_WINDOW_BUS_START[i].store(w.bus_start as u32, Ordering::Relaxed);
+        ECAM_WINDOW_BUS_END[i].store(w.bus_end as u32, Ordering::Relaxed);
+    }
+    ECAM_WINDOW_COUNT.store(windows.len() as u32, Ordering::Release);
+}
+
+pub struct EcamPci { windows: [EcamWindow; pci::MAX_ECAM_WINDOWS], count: usize }
+
 impl EcamPci {
-    /// Build from the boot-published ECAM VA. # C: O(1)
+    /// Build the router from the atomically published MCFG window set. # C: O(N)
     pub fn from_published() -> Option<Self> {
-        let v = ECAM_BASE_VA.load(Ordering::Acquire);
-        if v == 0 { return None; }
-        Some(Self {
-            base_va: v,
-            segment: ECAM_SEGMENT.load(Ordering::Acquire) as u16,
-            bus_start: ECAM_BUS_START.load(Ordering::Acquire) as u8,
-            bus_end: ECAM_BUS_END.load(Ordering::Acquire) as u8,
-        })
-    }
-
-    #[inline]
-    fn ecam_addr(&self, bus: u8, dev: u8, func: u8, reg: u16) -> Option<u64> {
-        if bus < self.bus_start || bus > self.bus_end { return None; }
-        Some(self.base_va
-            + (u64::from(bus - self.bus_start) << 20)
-            + ((dev  as u64) << 15)
-            + ((func as u64) << 12)
-            + ((reg  as u64) & 0xFFC))
-    }
-
-    /// Read a 4-byte aligned dword from PCIe ECAM config space.
-    /// # C: O(1)
-    pub fn read32(bus: u8, dev: u8, func: u8, reg: u8) -> u32 {
-        Self::from_published().map(|r| r.read32_at(bus, dev, func, u16::from(reg))).unwrap_or(u32::MAX)
-    }
-
-    /// Write a 4-byte aligned dword to PCIe ECAM config space.
-    /// # C: O(1)
-    pub fn write32(bus: u8, dev: u8, func: u8, reg: u8, val: u32) {
-        if let Some(r) = Self::from_published() {
-            r.write32_at(bus, dev, func, u16::from(reg), val);
+        let count = ECAM_WINDOW_COUNT.load(Ordering::Acquire) as usize;
+        if count == 0 || count > pci::MAX_ECAM_WINDOWS { return None; }
+        let mut windows = [EMPTY_WINDOW; pci::MAX_ECAM_WINDOWS];
+        for i in 0..count {
+            windows[i] = EcamWindow {
+                base_va: ECAM_WINDOW_BASE[i].load(Ordering::Relaxed),
+                segment: ECAM_WINDOW_SEGMENT[i].load(Ordering::Relaxed) as u16,
+                bus_start: ECAM_WINDOW_BUS_START[i].load(Ordering::Relaxed) as u8,
+                bus_end: ECAM_WINDOW_BUS_END[i].load(Ordering::Relaxed) as u8,
+            };
+            if windows[i].base_va == 0 || windows[i].bus_start > windows[i].bus_end { return None; }
         }
+        Some(Self { windows, count })
     }
-
-    fn read32_at(&self, bus: u8, dev: u8, func: u8, reg: u16) -> u32 {
-        let p = match self.ecam_addr(bus, dev, func, reg) { Some(a) => a as *const u32, None => return u32::MAX };
-        // SAFETY: ECAM_BASE_VA is published only after the MCFG aperture is
-        // mapped Device-uncacheable; aligned volatile load hits config space.
-        unsafe { core::ptr::read_volatile(p) }
+    /// Exact host-bridge windows owned by this reader. # C: O(1)
+    pub fn windows(&self) -> &[EcamWindow] { &self.windows[..self.count] }
+    fn ecam_addr(&self, bdf: pci::Bdf, reg: u16) -> Option<u64> {
+        let w = self.windows().iter().find(|w| w.segment == bdf.segment
+            && bdf.bus >= w.bus_start && bdf.bus <= w.bus_end)?;
+        Some(w.base_va + (u64::from(bdf.bus - w.bus_start) << 20)
+            + (u64::from(bdf.device) << 15) + (u64::from(bdf.function) << 12)
+            + (u64::from(reg) & 0xffc))
     }
-
-    fn write32_at(&self, bus: u8, dev: u8, func: u8, reg: u16, val: u32) {
-        let p = match self.ecam_addr(bus, dev, func, reg) { Some(a) => a as *mut u32, None => return };
-        // SAFETY: same mapping contract as read32_at; aligned volatile store
-        // writes the requested device config dword.
-        unsafe { core::ptr::write_volatile(p, val); }
+    fn read32_at(&self, bdf: pci::Bdf, reg: u16) -> u32 {
+        let Some(a) = self.ecam_addr(bdf, reg) else { return u32::MAX };
+        // SAFETY: selected ECAM window was mapped Device-uncacheable before publication.
+        unsafe { core::ptr::read_volatile(a as *const u32) }
+    }
+    fn write32_at(&self, bdf: pci::Bdf, reg: u16, val: u32) {
+        let Some(a) = self.ecam_addr(bdf, reg) else { return };
+        // SAFETY: selected ECAM window was mapped Device-uncacheable before publication.
+        unsafe { core::ptr::write_volatile(a as *mut u32, val) }
     }
 }
 
-#[cfg(target_arch = "x86_64")]
 impl pci::ConfigSpaceReader for EcamPci {
-    fn read32(&self, bdf: pci::Bdf, offset: u8) -> u32 {
-        if bdf.segment != self.segment { return u32::MAX; }
-        self.read32_at(bdf.bus, bdf.device, bdf.function, u16::from(offset))
-    }
-    fn write32(&self, bdf: pci::Bdf, offset: u8, val: u32) {
-        if bdf.segment != self.segment { return; }
-        self.write32_at(bdf.bus, bdf.device, bdf.function, u16::from(offset), val);
-    }
-    fn read32_ext(&self, bdf: pci::Bdf, offset: u16) -> u32 {
-        if bdf.segment != self.segment { return u32::MAX; }
-        let p = match self.ecam_addr(bdf.bus, bdf.device, bdf.function, offset) { Some(a) => a as *const u32, None => return u32::MAX };
-        // SAFETY: ECAM is mapped Device-uncacheable and the aligned dword is inside one function's 4 KiB page.
-        unsafe { core::ptr::read_volatile(p) }
-    }
-    fn write32_ext(&self, bdf: pci::Bdf, offset: u16, val: u32) {
-        if bdf.segment != self.segment { return; }
-        let p = match self.ecam_addr(bdf.bus, bdf.device, bdf.function, offset) { Some(a) => a as *mut u32, None => return };
-        // SAFETY: ECAM is mapped Device-uncacheable and the aligned dword is inside one function's 4 KiB page.
-        unsafe { core::ptr::write_volatile(p, val) }
-    }
+    fn read32(&self, bdf: pci::Bdf, offset: u8) -> u32 { self.read32_at(bdf, u16::from(offset)) }
+    fn write32(&self, bdf: pci::Bdf, offset: u8, val: u32) { self.write32_at(bdf, u16::from(offset), val) }
+    fn read32_ext(&self, bdf: pci::Bdf, offset: u16) -> u32 { self.read32_at(bdf, offset) }
+    fn write32_ext(&self, bdf: pci::Bdf, offset: u16, val: u32) { self.write32_at(bdf, offset, val) }
     fn read8_ext(&self, bdf: pci::Bdf, offset: u16) -> u8 {
-        if bdf.segment != self.segment { return u8::MAX; }
-        let p = match self.ecam_addr(bdf.bus, bdf.device, bdf.function, offset) { Some(a) => (a + u64::from(offset & 3)) as *const u8, None => return u8::MAX };
-        // SAFETY: ECAM is mapped Device-uncacheable and this byte is inside one function's 4 KiB page.
-        unsafe { core::ptr::read_volatile(p) }
+        let Some(a) = self.ecam_addr(bdf, offset) else { return u8::MAX };
+        // SAFETY: selected ECAM function page is Device-uncacheable and byte-addressable.
+        unsafe { core::ptr::read_volatile((a + u64::from(offset & 3)) as *const u8) }
     }
     fn read16_ext(&self, bdf: pci::Bdf, offset: u16) -> u16 {
-        if bdf.segment != self.segment { return u16::MAX; }
-        let p = match self.ecam_addr(bdf.bus, bdf.device, bdf.function, offset) { Some(a) => (a + u64::from(offset & 3)) as *const u16, None => return u16::MAX };
-        // SAFETY: ECAM is mapped Device-uncacheable and the aligned word is inside one function's 4 KiB page.
-        unsafe { core::ptr::read_volatile(p) }
+        let Some(a) = self.ecam_addr(bdf, offset) else { return u16::MAX };
+        // SAFETY: selected ECAM function page is Device-uncacheable and word-aligned.
+        unsafe { core::ptr::read_volatile((a + u64::from(offset & 3)) as *const u16) }
     }
     fn write8_ext(&self, bdf: pci::Bdf, offset: u16, val: u8) {
-        if bdf.segment != self.segment { return; }
-        let p = match self.ecam_addr(bdf.bus, bdf.device, bdf.function, offset) { Some(a) => (a + u64::from(offset & 3)) as *mut u8, None => return };
-        // SAFETY: ECAM is mapped Device-uncacheable and this byte is inside one function's 4 KiB page.
-        unsafe { core::ptr::write_volatile(p, val) }
+        let Some(a) = self.ecam_addr(bdf, offset) else { return };
+        // SAFETY: selected ECAM function page is Device-uncacheable and byte-addressable.
+        unsafe { core::ptr::write_volatile((a + u64::from(offset & 3)) as *mut u8, val) }
     }
     fn write16_ext(&self, bdf: pci::Bdf, offset: u16, val: u16) {
-        if bdf.segment != self.segment { return; }
-        let p = match self.ecam_addr(bdf.bus, bdf.device, bdf.function, offset) { Some(a) => (a + u64::from(offset & 3)) as *mut u16, None => return };
-        // SAFETY: ECAM is mapped Device-uncacheable and the aligned word is inside one function's 4 KiB page.
-        unsafe { core::ptr::write_volatile(p, val) }
+        let Some(a) = self.ecam_addr(bdf, offset) else { return };
+        // SAFETY: selected ECAM function page is Device-uncacheable and word-aligned.
+        unsafe { core::ptr::write_volatile((a + u64::from(offset & 3)) as *mut u16, val) }
     }
 }

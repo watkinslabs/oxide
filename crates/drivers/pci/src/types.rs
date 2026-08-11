@@ -9,6 +9,9 @@ pub enum Error {
 
 pub type KResult<T> = core::result::Result<T, Error>;
 
+/// Maximum ECAM windows early boot can retain and route without allocation.
+pub const MAX_ECAM_WINDOWS: usize = 8;
+
 /// PCI segment plus its (bus, device, function) requester identifier.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Bdf {
