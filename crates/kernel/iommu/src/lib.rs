@@ -3,6 +3,7 @@ extern crate alloc;
 // Module manifest: amd_vi owns AMD-Vi registers and activation; domain owns requester domains.
 mod amd_vi;
 mod admission;
+mod dma_span;
 mod dma_owner;
 mod amd_vi_bootstrap;
 mod amd_vi_manager;

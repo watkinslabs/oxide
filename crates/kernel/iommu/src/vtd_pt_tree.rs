@@ -36,6 +36,19 @@ impl VtdPageTable {
         }
         true
     }
+    /// Remove an exact mapped IOVA interval while retaining table allocations. # C: O(leaves * levels)
+    pub fn unmap(&mut self, iova: u64, len: u64) -> bool {
+        if iova & (PAGE_BYTES - 1) != 0 || len == 0 || len & (PAGE_BYTES - 1) != 0 { return false; }
+        let Some(end) = iova.checked_add(len) else { return false; };
+        let mut current = iova;
+        while current != end {
+            let Some((leaf_pa, bytes)) = self.leaf_entry(current) else { return false; };
+            if bytes > end - current || current & (bytes - 1) != 0 { return false; }
+            write_entry(self.hhdm_offset, leaf_pa, 0);
+            current += bytes;
+        }
+        true
+    }
     fn map_leaf(&mut self, iova: u64, pa: u64, bytes: u64) -> bool {
         let depth = leaf_depth(bytes);
         let indices = indices(iova);
@@ -80,6 +93,19 @@ impl VtdPageTable {
         write_entry(self.hhdm_offset, parent_pa, table.word());
         self.pages.push(child_pa);
         Some(child_pa)
+    }
+    fn leaf_entry(&self, iova: u64) -> Option<(u64, u64)> {
+        let indices = indices(iova);
+        let mut table_pa = self.root_pa;
+        for level in 0..3 {
+            let current = entry_pa(table_pa, indices[level]);
+            let entry = read_entry(self.hhdm_offset, current);
+            if entry & PTE_PRESENT == 0 { return None; }
+            if level != 0 && entry & PTE_LARGE_PAGE != 0 { return Some((current, level_page_bytes(level))); }
+            table_pa = entry & PTE_ADDRESS_MASK;
+        }
+        let leaf_pa = entry_pa(table_pa, indices[3]);
+        (read_entry(self.hhdm_offset, leaf_pa) & PTE_PRESENT != 0).then_some((leaf_pa, PAGE_BYTES))
     }
 }
 
