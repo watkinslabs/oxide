@@ -54,6 +54,13 @@ impl AmdViDomain {
         self.maps.push(map);
         Some(map)
     }
+    /// Retire a mapped IOVA only after its hardware invalidation completed. # C: O(pages * levels)
+    pub fn release_after_invalidate(&mut self, map: Mapping) -> bool {
+        let Some(index) = self.maps.iter().position(|candidate| *candidate == map) else { return false; };
+        if !self.page_table.unmap(map.iova.start, map.iova.len) || !self.space.free(map.iova) { return false; }
+        self.maps.swap_remove(index);
+        true
+    }
 }
 
 /// Return the AMD-Vi translation unit that firmware assigned this PCI requester.

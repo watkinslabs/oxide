@@ -26,9 +26,25 @@ impl AmdViPageTable {
         let mut cur_iova = iova;
         let mut cur_pa = pa;
         while cur_iova != end {
-            if !self.map_page(cur_iova, cur_pa) { return false; }
+            if !self.map_page(cur_iova, cur_pa) {
+                let _ = self.unmap(iova, cur_iova - iova);
+                return false;
+            }
             cur_iova += PAGE_BYTES;
             cur_pa += PAGE_BYTES;
+        }
+        true
+    }
+    /// Remove leaf PTEs after the IOMMU has invalidated their translations. # C: O(pages * levels)
+    pub fn unmap(&mut self, iova: u64, len: u64) -> bool {
+        if iova & (PAGE_BYTES - 1) != 0 || len == 0 || len & (PAGE_BYTES - 1) != 0 { return false; }
+        let Some(end) = iova.checked_add(len) else { return false; };
+        let mut cur = iova;
+        while cur != end {
+            let Some(leaf_pa) = self.leaf_entry_pa(cur) else { return false; };
+            if read_entry(self.hhdm_offset, leaf_pa) & PTE_PRESENT == 0 { return false; }
+            write_entry(self.hhdm_offset, leaf_pa, 0);
+            cur += PAGE_BYTES;
         }
         true
     }
@@ -53,6 +69,17 @@ impl AmdViPageTable {
         let Some(leaf) = AmdViPte::leaf(pa) else { return false; };
         write_entry(self.hhdm_offset, leaf_pa, leaf.word());
         true
+    }
+    fn leaf_entry_pa(&self, iova: u64) -> Option<u64> {
+        let indices = iova_indices(iova);
+        let mut table_pa = self.root_pa;
+        for level in 0..3 {
+            let entry_pa = table_pa + indices[level] as u64 * core::mem::size_of::<u64>() as u64;
+            let entry = read_entry(self.hhdm_offset, entry_pa);
+            if entry & PTE_PRESENT == 0 { return None; }
+            table_pa = entry & 0x000f_ffff_ffff_f000;
+        }
+        Some(table_pa + indices[3] as u64 * core::mem::size_of::<u64>() as u64)
     }
 }
 
