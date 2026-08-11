@@ -4,9 +4,12 @@
 //! - `regs`: xHCI capability decoding and validated register-file geometry.
 //! - `ring`: command and event TRB ownership/cycle mechanics.
 //! - `controller`: reset/run register sequencing and DMA register plan.
+//! - `platform`: owned MMIO and coherent controller-page storage.
 
 #![no_std]
 
 pub mod regs;
 pub mod ring;
 pub mod controller;
+#[cfg(target_os = "oxide-kernel")]
+pub mod platform;

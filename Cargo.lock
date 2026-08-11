@@ -531,6 +531,12 @@ dependencies = [
 [[package]]
 name = "drv-xhci"
 version = "0.1.0"
+dependencies = [
+ "hal-aarch64",
+ "hal-x86_64",
+ "mmio-map",
+ "pmm",
+]
 
 [[package]]
 name = "drv-zram"
