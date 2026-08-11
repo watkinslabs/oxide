@@ -25,6 +25,7 @@ struct Record {
     reports: Vec<Vec<u8>>,
     protocol: Option<u8>,
     evdev: Option<u32>,
+    input_platform: Option<u32>,
     keyboard: [u8; 8],
     mouse_buttons: u8,
     _erst: DmaPage,
@@ -35,9 +36,10 @@ static CONTROLLERS: Spinlock<Vec<Record>, DriverLockClass> = Spinlock::new(Vec::
 type XhciBh = sched::bh::SchedBh;
 
 fn advertise(bits: &mut [u8], code: u16) { bits[code as usize / 8] |= 1 << (code % 8); }
+fn platform_id(bdf: pci::Bdf) -> u32 { ((bdf.bus as u32) << 8) | ((bdf.device as u32) << 3) | bdf.function as u32 }
 fn install_hid_input(bdf: pci::Bdf, protocol: Option<u8>) -> Option<u32> {
     let protocol = protocol?;
-    let mut dev = input::VirtioInputDev::empty_platform_boxed(((bdf.bus as u32) << 8) | ((bdf.device as u32) << 3) | bdf.function as u32);
+    let mut dev = input::VirtioInputDev::empty_platform_boxed(platform_id(bdf));
     advertise(&mut dev.ev_bits, input::EV_KEY);
     if protocol == 1 { for code in 1..=255 { advertise(&mut dev.key_bits.bits, code); } }
     if protocol == 2 { dev.is_pointer = true; for code in [input::BTN_LEFT, input::BTN_MIDDLE, input::BTN_RIGHT] { advertise(&mut dev.key_bits.bits, code); } advertise(&mut dev.ev_bits, input::EV_REL); advertise(&mut dev.rel_bits.bits, input::REL_X); advertise(&mut dev.rel_bits.bits, input::REL_Y); }
@@ -93,8 +95,11 @@ fn remove(bdf: pci::Bdf) {
     if let Some(record) = record {
         let _ = record.mmio.halt();
         record.irq.disable_and_free();
+        if let Some(evdev) = record.evdev { let _ = input::unpublish_evdev(evdev); }
+        if record.input_platform.is_some() { let _ = input::remove_device(input::InputDeviceKey::platform(platform_id(record.bdf))); }
         restore_bus_master(record.bdf, record.command_orig);
     }
+    if CONTROLLERS.lock().is_empty() { let _ = softirq::clear_handler(softirq::Slot::UsbInput); }
 }
 
 fn prepare_dma(mmio: &Mmio) -> Option<(DmaPage, DmaPage, DmaPage, DmaPage)> {
@@ -233,7 +238,8 @@ impl drv::Driver for XhciDriver {
         let slot = device.as_ref().map_or(0, AddressDeviceDma::slot);
         let protocol = device.as_ref().and_then(AddressDeviceDma::hid_protocol);
         let evdev = install_hid_input(bdf, protocol);
-        CONTROLLERS.lock().push(Record { bdf, command_orig, mmio, irq, _command: command, _dcbaa: dcbaa, _device: device, slot, reports: Vec::new(), protocol, evdev, keyboard: [0; 8], mouse_buttons: 0, _erst: erst, _event: event });
+        let input_platform = evdev.map(|_| platform_id(bdf));
+        CONTROLLERS.lock().push(Record { bdf, command_orig, mmio, irq, _command: command, _dcbaa: dcbaa, _device: device, slot, reports: Vec::new(), protocol, evdev, input_platform, keyboard: [0; 8], mouse_buttons: 0, _erst: erst, _event: event });
         Ok(())
     }
     fn remove(&self, dev: &drv::Device) { if let Some(bdf) = pci::parse_bdf_addr(&dev.addr) { remove(bdf); } }
