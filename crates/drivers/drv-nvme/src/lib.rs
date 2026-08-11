@@ -199,7 +199,7 @@ mod imp {
             unregister_completion_if_idle();
             return 0;
         };
-        let nv = match Nvme::bring_up(mmio, bar0_off, irq.vector()) { Some(n) => n, None => {
+        let nv = match Nvme::bring_up(device_key, mmio, bar0_off, irq.vector()) { Some(n) => n, None => {
             irq.begin_release();
             irq.synchronize_and_release();
             unregister_completion_if_idle();
