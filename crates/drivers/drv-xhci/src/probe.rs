@@ -75,6 +75,24 @@ fn prepare_dma(mmio: &Mmio) -> Option<(DmaPage, DmaPage, DmaPage, DmaPage)> {
     Some((command, dcbaa, erst, event))
 }
 
+fn control_complete(irq: Binding, status_pa: u64, slot: u8) -> bool {
+    irq.wait_transfer_completion(status_pa, 1_000_000_000).is_some_and(|completion| {
+        completion.completion_code == crate::ring::COMPLETION_SUCCESS
+            && completion.residual == 0 && completion.endpoint_id == 1 && completion.slot == slot
+    })
+}
+
+/// Linux's two-stage GET_DESCRIPTOR(Configuration) sequence for configuration zero.
+fn fetch_first_configuration(mmio: &Mmio, irq: Binding, device: &mut AddressDeviceDma, slot: u8) -> bool {
+    let Some(header_td) = crate::usb::get_configuration_descriptor_trbs(device.descriptor_pa(), 0, crate::usb::CONFIG_DESC_HEADER_BYTES) else { return false; };
+    let Some(header_status) = device.submit_ep0(mmio, slot, &header_td) else { return false; };
+    if !control_complete(irq, header_status, slot) { return false; }
+    let Some(header) = device.configuration_header() else { return false; };
+    let Some(full_td) = crate::usb::get_configuration_descriptor_trbs(device.descriptor_pa(), 0, header.total_length) else { return false; };
+    let Some(full_status) = device.submit_ep0(mmio, slot, &full_td) else { return false; };
+    control_complete(irq, full_status, slot) && device.configuration_header() == Some(header)
+}
+
 fn address_first_usb2(mmio: &Mmio, command: &mut CommandTransport, dcbaa: &DmaPage, irq: Binding) -> Option<AddressDeviceDma> {
     for port in 1..=mmio.geometry().max_ports {
         let Some(status) = mmio.port_status(port) else { continue; };
@@ -93,20 +111,14 @@ fn address_first_usb2(mmio: &Mmio, command: &mut CommandTransport, dcbaa: &DmaPa
         if addressed.is_some_and(|completion| completion.completion_code == crate::ring::COMPLETION_SUCCESS && completion.slot == enable.slot) {
             let Some(td) = crate::usb::get_device_descriptor_trbs(device.descriptor_pa()) else { return None; };
             let Some(status_pa) = device.submit_ep0(mmio, enable.slot, &td) else { return None; };
-            let completed = irq.wait_transfer_completion(status_pa, 1_000_000_000);
-            if completed.is_some_and(|completion| {
-                completion.completion_code == crate::ring::COMPLETION_SUCCESS
-                    && completion.residual == 0
-                    && completion.endpoint_id == 1
-                    && completion.slot == enable.slot
-            }) {
+            if control_complete(irq, status_pa, enable.slot) {
                 if let Some(descriptor) = device.device_descriptor() {
                     match device.prepare_evaluate_ep0(descriptor.max_packet0) {
-                        Some(false) => return Some(device),
+                        Some(false) => if fetch_first_configuration(mmio, irq, &mut device, enable.slot) { return Some(device); },
                         Some(true) => {
                             if let Some(evaluate) = Trb::evaluate_context(device.input_pa(), enable.slot) {
                                 if let Some(evaluate_pa) = command.submit(mmio, evaluate) {
-                                    if irq.wait_command_completion(evaluate_pa, 1_000_000_000).is_some_and(|completion| completion.completion_code == crate::ring::COMPLETION_SUCCESS && completion.slot == enable.slot) { return Some(device); }
+                                    if irq.wait_command_completion(evaluate_pa, 1_000_000_000).is_some_and(|completion| completion.completion_code == crate::ring::COMPLETION_SUCCESS && completion.slot == enable.slot) && fetch_first_configuration(mmio, irq, &mut device, enable.slot) { return Some(device); }
                                 }
                             }
                         }
