@@ -216,6 +216,16 @@ impl Binding {
         Some(crate::ring::TransferCompletion { trb_pa, residual: meta as u32 & 0x00ff_ffff, completion_code: (meta >> 24) as u8, endpoint_id: (meta >> 32) as u8 & 0x1f, slot: (meta >> 40) as u8 })
     }
 
+    /// Wait for one exact Transfer Event without consuming another endpoint's TD. # C: O(timeout)
+    pub(crate) fn wait_transfer_completion(self, trb_pa: u64, timeout_ns: u64) -> Option<crate::ring::TransferCompletion> {
+        let deadline = sched::deadline::clock::now_ns().saturating_add(timeout_ns);
+        loop {
+            if let Some(completion) = self.take_transfer_completion(trb_pa) { return Some(completion); }
+            if sched::deadline::clock::now_ns() >= deadline { return None; }
+            core::hint::spin_loop();
+        }
+    }
+
     /// Disable delivery, wait out hard-handler ownership, then release vector state. # C: O(handler)
     pub(crate) fn disable_and_free(self) {
         let endpoint = &ENDPOINTS[self.endpoint];
