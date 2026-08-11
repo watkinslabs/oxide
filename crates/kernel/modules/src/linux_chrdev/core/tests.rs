@@ -129,7 +129,7 @@ fn cdev_add_routes_vfs_calls() {
     let dev = mkdev(TEST_MAJOR_A, TEST_MINOR_BASE);
     assert_eq!(register_chrdev_region(dev, TEST_MINOR_COUNT, core::ptr::null()), LINUX_OK);
     assert_eq!(cdev_add(&mut cdev, dev, TEST_MINOR_COUNT), LINUX_OK);
-    assert_eq!(cdev.kobj.refcount, 1);
+    assert_eq!(cdev.kobj.kref, 1);
     let ops = vfs::lookup_chrdev(Devt::from_kdev(mkdev(TEST_MAJOR_A, TEST_MINOR_BASE + 1))).expect("registered cdev region");
     assert_eq!(ops.open(Devt::from_kdev(dev)), Ok(()));
     let mut buf = [0u8; TEST_BUFFER_LEN];
@@ -138,7 +138,7 @@ fn cdev_add_routes_vfs_calls() {
     assert_eq!(ops.write(Devt::from_kdev(dev), 0, &buf), Ok(TEST_BUFFER_LEN));
     assert_eq!(ops.ioctl(Devt::from_kdev(dev), TEST_IOCTL_CMD, TEST_IOCTL_ARG), Ok(TEST_IOCTL_RET as usize));
     cdev_del(&mut cdev);
-    assert_eq!(cdev.kobj.refcount, 0);
+    assert_eq!(cdev.kobj.kref, 0);
     unregister_chrdev_region(dev, TEST_MINOR_COUNT);
     assert!(vfs::lookup_chrdev(Devt::from_kdev(dev)).is_none());
 }

@@ -86,22 +86,7 @@ extern "C" fn platform_device_alloc(name: *const c_char, id: i32) -> *mut Platfo
     let p = Box::into_raw(Box::new(PlatformDevice {
         name,
         id,
-        dev: crate::linux_device::types::LinuxDevice {
-            dma_mask: null_mut(),
-            coherent_dma_mask: u64::MAX,
-            driver_data: null_mut(),
-            parent: null_mut(),
-            bus: null_mut(),
-            class: null_mut(),
-            driver: null_mut(),
-            init_name: name,
-            name: [0; crate::linux_device::types::DEVICE_NAME_LEN],
-            kobj: crate::linux_device::types::LinuxKobject::new(),
-            release: None,
-            of_node: null_mut(),
-            acpi_node: null_mut(),
-            power: crate::linux_pm::types::LinuxDevPmInfo::new(),
-        },
+        dev: crate::linux_device::types::LinuxDevice { init_name: name, coherent_dma_mask: u64::MAX, ..crate::linux_device::types::LinuxDevice::new() },
         num_resources: 0,
         resource: null_mut(),
         driver_data: null_mut(),
@@ -227,8 +212,8 @@ extern "C" fn devm_platform_get_and_ioremap_resource(
 
 extern "C" fn acpi_match_device(ids: *const AcpiDeviceId, dev: *const crate::linux_device::types::LinuxDevice) -> *const AcpiDeviceId {
     if ids.is_null() || dev.is_null() { return null(); }
-    // SAFETY: dev points at a Linux device; acpi_node is either null or an acpi_device.
-    let acpi = unsafe { (*dev).acpi_node as *const AcpiDevice };
+    // SAFETY: dev points at a Linux device; fwnode carries its ACPI companion when present.
+    let acpi = unsafe { (*dev).fwnode as *const AcpiDevice };
     if acpi.is_null() { return null(); }
     let mut cur = ids;
     loop {
@@ -247,7 +232,7 @@ extern "C" fn acpi_dev_get_first_match_dev(hid: *const c_char, uid: *const c_cha
     let devices = DEVICES.lock().clone();
     for p in devices {
         // SAFETY: stored platform devices remain valid while registered.
-        let acpi = unsafe { (*(p as *mut PlatformDevice)).dev.acpi_node as *mut AcpiDevice };
+        let acpi = unsafe { (*(p as *mut PlatformDevice)).dev.fwnode as *mut AcpiDevice };
         if acpi.is_null() { continue; }
         // SAFETY: acpi points at a Linux ACPI companion installed by the caller.
         let hid_match = fixed_len_cstr_eq(unsafe { (*acpi).hid.as_ptr() }, ACPI_ID_LEN, hid);

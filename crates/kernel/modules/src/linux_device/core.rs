@@ -10,6 +10,7 @@ use core::ffi::{c_char, c_void, VaList};
 use core::ptr::null_mut;
 
 const SYSFS_PAGE_SIZE: usize = crate::linux_alloc::PAGE_SIZE;
+static EMPTY_DEVICE_DRIVER_NAME: [u8; 1] = [0];
 
 /// Register Linux device-core KPI symbols.
 /// # C: O(1)
@@ -27,6 +28,8 @@ pub(super) fn export_symbols() {
         ("dev_set_drvdata",         dev_set_drvdata         as *const () as usize),
         ("dev_get_drvdata",         dev_get_drvdata         as *const () as usize),
         ("dev_name",                dev_name                as *const () as usize),
+        ("dev_driver_string",       dev_driver_string       as *const () as usize),
+        ("dev_err_probe",           dev_err_probe           as *const () as usize),
         ("device_get_match_data",   device_get_match_data   as *const () as usize),
         ("dev_set_name",            dev_set_name            as *const () as usize),
         ("root_device_register",    root_device_register    as *const () as usize),
@@ -48,6 +51,7 @@ pub(super) fn export_symbols() {
         ("devm_kmalloc",            devm_kmalloc            as *const () as usize),
         ("devm_kzalloc",            devm_kzalloc            as *const () as usize),
         ("devm_kfree",              devm_kfree              as *const () as usize),
+        ("devm_clk_get_optional_enabled", devm_clk_get_optional_enabled as *const () as usize),
         ("devm_add_action_or_reset", devm_add_action_or_reset as *const () as usize),
         ("devm_remove_action",      devm_remove_action      as *const () as usize),
         ("_dev_err",                _dev_err                as *const () as usize),
@@ -58,20 +62,37 @@ pub(super) fn export_symbols() {
     ] { export(name, addr, false); }
 }
 
+/// # C: O(1)
+extern "C" fn devm_clk_get_optional_enabled(_dev: *mut LinuxDevice, _id: *const c_char) -> *mut c_void { null_mut() }
+
 extern "C" fn device_initialize(dev: *mut LinuxDevice) {
     if dev.is_null() { return; }
     // SAFETY: dev points at a caller-owned Linux struct device.
     unsafe {
         (*dev).driver_data = null_mut();
-        (*dev).name = [0; DEVICE_NAME_LEN];
         (*dev).kobj = super::types::LinuxKobject::new();
+        (*dev).kobj.kref = 1;
+        (*dev).kobj.state = 1;
         (*dev).driver = null_mut();
     }
+    registry::initialize_kobject(unsafe { &mut (*dev).kobj as *mut _ as usize });
     registry::initialize_device(dev as usize);
+}
+
+/// # C: O(1)
+pub(crate) fn initialize_embedded(dev: *mut LinuxDevice) { device_initialize(dev); }
+
+/// # C: O(1)
+pub(crate) fn release_embedded(dev: *mut LinuxDevice) {
+    if dev.is_null() { return; }
+    // SAFETY: dev is an embedded device whose owner is tearing down its containing allocation.
+    unsafe { registry::remove_kobject(&mut (*dev).kobj as *mut _ as usize); }
 }
 
 extern "C" fn device_add(dev: *mut LinuxDevice) -> i32 {
     if dev.is_null() { return -LINUX_EINVAL; }
+    // SAFETY: dev points at caller-owned storage; a zero kref means it has not entered device core.
+    if unsafe { (*dev).kobj.kref == 0 } { device_initialize(dev); }
     populate_device_name(dev);
     // SAFETY: dev points at a caller-owned Linux struct device.
     let class = unsafe { (*dev).class as usize };
@@ -126,10 +147,7 @@ extern "C" fn dev_get_drvdata(dev: *const LinuxDevice) -> *mut c_void {
 extern "C" fn dev_name(dev: *const LinuxDevice) -> *const c_char {
     if dev.is_null() { return core::ptr::null(); }
     // SAFETY: dev points at a Linux struct device.
-    unsafe {
-        if (*dev).name[0] != 0 { (*dev).name.as_ptr() }
-        else { (*dev).init_name }
-    }
+    unsafe { if !(*dev).kobj.name.is_null() { (*dev).kobj.name } else { (*dev).init_name } }
 }
 
 extern "C" fn device_get_match_data(dev: *const LinuxDevice) -> *const c_void {
@@ -139,13 +157,14 @@ extern "C" fn device_get_match_data(dev: *const LinuxDevice) -> *const c_void {
 unsafe extern "C" fn dev_set_name(dev: *mut LinuxDevice, fmt: *const c_char, mut ap: ...) -> i32 {
     if dev.is_null() || fmt.is_null() { return -LINUX_EINVAL; }
     // SAFETY: fmt and ap follow Linux printf-style varargs contract.
-    unsafe { format_into((*dev).name.as_mut_ptr(), DEVICE_NAME_LEN, fmt, &mut ap); }
+    unsafe { set_formatted_name(dev, fmt, &mut ap); }
     LINUX_OK
 }
 
 extern "C" fn root_device_register(name: *const c_char) -> *mut LinuxDevice {
     let dev = allocs::alloc_device();
     if dev.is_null() { return null_mut(); }
+    device_initialize(dev);
     // SAFETY: dev was allocated with LinuxDevice layout.
     unsafe { (*dev).init_name = name; }
     if device_add(dev) != LINUX_OK {
@@ -155,6 +174,25 @@ extern "C" fn root_device_register(name: *const c_char) -> *mut LinuxDevice {
     registry::mark_owned(dev as usize);
     dev
 }
+
+/// Register a device-core child owned by a compatibility subsystem.
+/// # C: O(1)
+pub(crate) fn register_child(parent: *mut LinuxDevice, name: *const c_char) -> *mut LinuxDevice {
+    let dev = allocs::alloc_device();
+    if dev.is_null() { return null_mut(); }
+    // SAFETY: alloc_device returned uniquely-owned LinuxDevice storage before publication.
+    unsafe { (*dev).parent = parent; (*dev).init_name = name; }
+    if device_register(dev) != LINUX_OK {
+        allocs::free_device(dev);
+        return null_mut();
+    }
+    registry::mark_owned(dev as usize);
+    dev
+}
+
+/// Withdraw a compatibility child created by register_child.
+/// # C: O(1)
+pub(crate) fn unregister_child(dev: *mut LinuxDevice) { device_unregister(dev); }
 
 extern "C" fn root_device_unregister(dev: *mut LinuxDevice) {
     device_unregister(dev);
@@ -223,12 +261,13 @@ unsafe extern "C" fn device_create(
     if class.is_null() || fmt.is_null() { return null_mut(); }
     let dev = allocs::alloc_device();
     if dev.is_null() { return null_mut(); }
+    device_initialize(dev);
     // SAFETY: dev was allocated with LinuxDevice layout and fmt/ap follow Linux varargs.
     unsafe {
         (*dev).class = class;
         (*dev).parent = parent;
         (*dev).driver_data = drvdata;
-        format_into((*dev).name.as_mut_ptr(), DEVICE_NAME_LEN, fmt, &mut ap);
+        set_formatted_name(dev, fmt, &mut ap);
     }
     if registry::add_device(dev as usize, class as usize, devt, true) != LINUX_OK {
         allocs::free_device(dev);
@@ -290,6 +329,25 @@ unsafe extern "C" fn _dev_err(dev: *const LinuxDevice, fmt: *const c_char, mut a
     unsafe { dev_log(b"err", dev, fmt, &mut ap); }
 }
 
+/// # C: O(1)
+unsafe extern "C" fn dev_driver_string(dev: *const LinuxDevice) -> *const c_char {
+    if dev.is_null() { return EMPTY_DEVICE_DRIVER_NAME.as_ptr() as *const c_char; }
+    // SAFETY: dev is non-NULL and driver/bus fields are stable for this diagnostic lookup.
+    unsafe {
+        if !(*dev).driver.is_null() && !(*(*dev).driver).name.is_null() { return (*(*dev).driver).name; }
+        if !(*dev).bus.is_null() && !(*(*dev).bus).name.is_null() { return (*(*dev).bus).name; }
+    }
+    EMPTY_DEVICE_DRIVER_NAME.as_ptr() as *const c_char
+}
+
+/// # C: O(formatted diagnostic)
+unsafe extern "C" fn dev_err_probe(dev: *const LinuxDevice, err: i32, fmt: *const c_char,
+    mut ap: ...) -> i32 {
+    // SAFETY: caller supplies the printf-compatible varargs promised by the KPI.
+    unsafe { dev_log(b"err", dev, fmt, &mut ap); }
+    err
+}
+
 unsafe extern "C" fn _dev_warn(dev: *const LinuxDevice, fmt: *const c_char, mut ap: ...) {
     // SAFETY: dev diagnostics accept Linux printf-compatible varargs.
     unsafe { dev_log(b"warn", dev, fmt, &mut ap); }
@@ -314,10 +372,28 @@ unsafe extern "C" fn dynamic_dev_dbg(desc: *mut c_void, dev: *const LinuxDevice,
 fn populate_device_name(dev: *mut LinuxDevice) {
     // SAFETY: dev points at a Linux struct device.
     unsafe {
-        if (*dev).name[0] == 0 && !(*dev).init_name.is_null() {
-            copy_cstr((*dev).name.as_mut_ptr(), DEVICE_NAME_LEN, (*dev).init_name);
+        if (*dev).kobj.name.is_null() && !(*dev).init_name.is_null() {
+            set_name_from_cstr(dev, (*dev).init_name);
         }
     }
+}
+
+/// # C: O(n), n is the bounded C-string length.
+pub(crate) unsafe fn set_name_from_cstr(dev: *mut LinuxDevice, name: *const c_char) {
+    if dev.is_null() || name.is_null() { return; }
+    let mut buf = [0; DEVICE_NAME_LEN];
+    // SAFETY: name is a caller-provided C string and buf bounds the copy.
+    unsafe { copy_cstr(buf.as_mut_ptr(), buf.len(), name); }
+    // SAFETY: device_initialize establishes the kobject registry entry before naming.
+    unsafe { (*dev).kobj.name = registry::replace_kobject_name(&mut (*dev).kobj as *mut _ as usize, buf); }
+}
+
+unsafe fn set_formatted_name(dev: *mut LinuxDevice, fmt: *const c_char, ap: &mut VaList) {
+    let mut buf = [0; DEVICE_NAME_LEN];
+    // SAFETY: caller validated the Linux printf varargs contract.
+    unsafe { format_into(buf.as_mut_ptr(), buf.len(), fmt, ap); }
+    // SAFETY: device name storage belongs to the embedded initialized kobject.
+    unsafe { (*dev).kobj.name = registry::replace_kobject_name(&mut (*dev).kobj as *mut _ as usize, buf); }
 }
 
 unsafe fn dev_log(level: &[u8], dev: *const LinuxDevice, fmt: *const c_char, ap: &mut VaList) {

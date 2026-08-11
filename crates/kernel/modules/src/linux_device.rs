@@ -5,7 +5,7 @@
 extern crate alloc;
 
 mod allocs;
-mod core;
+pub(crate) mod core;
 pub(crate) mod devres;
 mod format;
 mod kobject;

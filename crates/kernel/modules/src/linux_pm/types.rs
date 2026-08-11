@@ -29,31 +29,63 @@ pub(crate) type PmCompleteCb = unsafe extern "C" fn(*mut LinuxDevice);
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub(crate) struct LinuxDevPmInfo {
-    pub(crate) runtime_status: i32,
-    pub(crate) disable_depth: i32,
+    pub(crate) power_state: LinuxPmMessage,
+    pub(crate) sleep_flags: u8,
+    pub(crate) _to_wakeup: [u8; 59],
+    pub(crate) wakeup: *mut core::ffi::c_void,
+    pub(crate) _pre_runtime: [u8; 144],
     pub(crate) usage_count: i32,
+    pub(crate) child_count: i32,
+    pub(crate) runtime_flags0: u8,
+    pub(crate) runtime_flags1: u8,
+    pub(crate) _runtime_flags2: [u8; 2],
+    pub(crate) links_count: u32,
+    pub(crate) request: i32,
+    pub(crate) runtime_status: i32,
+    pub(crate) last_status: i32,
     pub(crate) runtime_error: i32,
     pub(crate) autosuspend_delay: i32,
-    pub(crate) last_busy: usize,
-    pub(crate) use_autosuspend: bool,
-    pub(crate) can_wakeup: bool,
-    pub(crate) wakeup_enabled: bool,
+    pub(crate) _pad0: u32,
+    pub(crate) last_busy: u64,
+    pub(crate) active_time: u64,
+    pub(crate) suspended_time: u64,
+    pub(crate) accounting_timestamp: u64,
+    pub(crate) subsys_data: *mut core::ffi::c_void,
+    pub(crate) set_latency_tolerance: *mut core::ffi::c_void,
+    pub(crate) qos: *mut core::ffi::c_void,
+    pub(crate) detach_power_off: u8,
+    pub(crate) _tail: [u8; 7],
 }
 
 impl LinuxDevPmInfo {
     pub(crate) const fn new() -> Self {
         Self {
-            runtime_status: RPM_ACTIVE,
-            disable_depth: RPM_INITIAL_DISABLE_DEPTH,
+            power_state: LinuxPmMessage { event: PM_EVENT_ON }, sleep_flags: 0, _to_wakeup: [0; 59],
+            wakeup: core::ptr::null_mut(), _pre_runtime: [0; 144],
             usage_count: 0,
+            child_count: 0, runtime_flags0: RPM_INITIAL_DISABLE_DEPTH as u8, runtime_flags1: 0,
+            _runtime_flags2: [0; 2], links_count: 0, request: 0, runtime_status: RPM_ACTIVE,
+            last_status: RPM_ACTIVE,
             runtime_error: LINUX_OK,
             autosuspend_delay: 0,
-            last_busy: 0,
-            use_autosuspend: false,
-            can_wakeup: false,
-            wakeup_enabled: false,
+            _pad0: 0, last_busy: 0, active_time: 0, suspended_time: 0, accounting_timestamp: 0,
+            subsys_data: core::ptr::null_mut(), set_latency_tolerance: core::ptr::null_mut(),
+            qos: core::ptr::null_mut(), detach_power_off: 0, _tail: [0; 7],
         }
     }
+
+    pub(crate) fn disable_depth(&self) -> i32 { (self.runtime_flags0 & 0x07) as i32 }
+    pub(crate) fn set_disable_depth(&mut self, depth: i32) {
+        self.runtime_flags0 = (self.runtime_flags0 & !0x07) | (depth.clamp(0, 7) as u8);
+    }
+    pub(crate) fn can_wakeup(&self) -> bool { self.sleep_flags & 0x01 != 0 }
+    pub(crate) fn use_autosuspend(&self) -> bool { self.runtime_flags1 & 0x08 != 0 }
+    pub(crate) fn set_use_autosuspend(&mut self, enabled: bool) { if enabled { self.runtime_flags1 |= 0x08; } else { self.runtime_flags1 &= !0x08; } }
+    pub(crate) fn set_can_wakeup(&mut self, capable: bool) {
+        if capable { self.sleep_flags |= 0x01; } else { self.sleep_flags &= !0x01; self.wakeup = core::ptr::null_mut(); }
+    }
+    pub(crate) fn wakeup_enabled(&self) -> bool { !self.wakeup.is_null() }
+    pub(crate) fn set_wakeup_enabled(&mut self, enabled: bool) { self.wakeup = if enabled { core::ptr::dangling_mut() } else { core::ptr::null_mut() }; }
 }
 
 #[repr(C)]

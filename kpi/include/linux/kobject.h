@@ -2,12 +2,15 @@
 #define OXIDE_LINUX_KOBJECT_H
 
 #include <linux/types.h>
+#include <linux/list.h>
+#include <linux/kref.h>
 
 #define OXIDE_KOBJECT_NAME_LEN 64
 
 struct attribute;
 struct kset;
 struct kobject;
+struct kernfs_node;
 
 struct kobj_type {
     void (*release)(struct kobject *kobj);
@@ -15,12 +18,17 @@ struct kobj_type {
 
 struct kobject {
     const char *name;
+    struct list_head entry;
     struct kobject *parent;
     struct kset *kset;
     const struct kobj_type *ktype;
-    void *private;
-    unsigned int refcount;
-    char name_buf[OXIDE_KOBJECT_NAME_LEN];
+    struct kernfs_node *sd;
+    struct kref kref;
+    unsigned int state_initialized:1;
+    unsigned int state_in_sysfs:1;
+    unsigned int state_add_uevent_sent:1;
+    unsigned int state_remove_uevent_sent:1;
+    unsigned int uevent_suppress:1;
 };
 
 struct kset {

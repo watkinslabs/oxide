@@ -102,7 +102,7 @@ pub(super) extern "C" fn cdev_add(cdev: *mut LinuxCdev, dev: u32, count: u32) ->
         (*cdev).dev = dev;
         (*cdev).count = count;
         (*cdev).added = LINUX_FIELD_SET;
-        (*cdev).kobj.refcount = 1;
+        (*cdev).kobj.kref = 1;
     }
     LINUX_OK
 }
@@ -115,7 +115,7 @@ pub(super) extern "C" fn cdev_del(cdev: *mut LinuxCdev) {
     // SAFETY: cdev is caller-owned and checked non-null.
     unsafe {
         (*cdev).added = LINUX_FIELD_CLEAR;
-        (*cdev).kobj.refcount = 0;
+        (*cdev).kobj.kref = 0;
     }
 }
 
