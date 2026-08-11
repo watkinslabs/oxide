@@ -32,8 +32,9 @@ impl AmdViBootstrap {
     }
     /// Enable translation only after every attached requester invalidation drained. # C: O(poll limit)
     pub fn enable(&mut self) -> bool {
-        self.unit.wait_for_invalidations(&self.regs, &self.tables)
-            && self.unit.domains_attached_after_drain(&self.regs, &self.tables)
+        // SAFETY: bootstrap owns this disabled unit and its permanent completion record.
+        (unsafe { self.unit.wait_for_invalidations(&self.regs, &self.tables, self.hhdm_offset) })
+            && self.unit.domains_attached_after_drain()
             && self.unit.enable_translation(&self.regs)
     }
     /// Segment this unit owns. # C: O(1)

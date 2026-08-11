@@ -101,7 +101,9 @@ pub struct AmdViTables {
     device_table_pa: u64,
     command_buffer_pa: u64,
     event_log_pa: u64,
+    completion_pa: u64,
     command_tail: sync::Spinlock<u32, sync::Devices>,
+    completion_sequence: sync::Spinlock<u64, sync::Devices>,
 }
 impl AmdViTables {
     /// Allocate and clear one full requester table plus command and event rings. # C: O(table bytes)
@@ -121,18 +123,28 @@ impl AmdViTables {
             }
             return None;
         };
+        let Some(completion_pa) = pmm::setup::alloc_contig(pmm::Order(0)) else {
+            // SAFETY: these allocations remain private because table publication has not begun.
+            unsafe {
+                pmm::setup::free_contig(event_log_pa, pmm::Order(BUFFER_ORDER));
+                pmm::setup::free_contig(command_buffer_pa, pmm::Order(BUFFER_ORDER));
+                pmm::setup::free_contig(device_table_pa, pmm::Order(DEVICE_TABLE_ORDER));
+            }
+            return None;
+        };
         // SAFETY: each direct-map span is a newly allocated exclusive PMM run.
         unsafe {
             core::ptr::write_bytes(hhdm_offset.wrapping_add(device_table_pa) as *mut u8, 0, DEVICE_TABLE_BYTES as usize);
             core::ptr::write_bytes(hhdm_offset.wrapping_add(command_buffer_pa) as *mut u8, 0, COMMAND_BUFFER_BYTES as usize);
             core::ptr::write_bytes(hhdm_offset.wrapping_add(event_log_pa) as *mut u8, 0, EVENT_LOG_BYTES as usize);
+            core::ptr::write_bytes(hhdm_offset.wrapping_add(completion_pa) as *mut u8, 0, PAGE_BYTES as usize);
         }
-        Some(Self { device_table_pa, command_buffer_pa, event_log_pa, command_tail: sync::Spinlock::new(0) })
+        Some(Self { device_table_pa, command_buffer_pa, event_log_pa, completion_pa, command_tail: sync::Spinlock::new(0), completion_sequence: sync::Spinlock::new(0) })
     }
     /// Construct table bases after validating permanent physical allocations. # C: O(1)
     pub const fn from_physical(device_table_pa: u64, command_buffer_pa: u64, event_log_pa: u64) -> Option<Self> {
         if device_table_pa & (DEVICE_TABLE_BYTES - 1) != 0 || command_buffer_pa & (PAGE_BYTES - 1) != 0 || event_log_pa & (PAGE_BYTES - 1) != 0 { return None; }
-        Some(Self { device_table_pa, command_buffer_pa, event_log_pa, command_tail: sync::Spinlock::new(0) })
+        Some(Self { device_table_pa, command_buffer_pa, event_log_pa, completion_pa: 0, command_tail: sync::Spinlock::new(0), completion_sequence: sync::Spinlock::new(0) })
     }
     /// Device-table base register value. # C: O(1)
     pub const fn device_table_register(&self) -> u64 { self.device_table_pa | ((DEVICE_TABLE_BYTES / PAGE_BYTES) - 1) }
@@ -173,10 +185,22 @@ impl AmdViTables {
         *tail = next;
         true
     }
-    fn command_drained(&self, regs: &AmdViRegisters) -> bool {
-        let tail = self.command_tail.lock();
-        let Some(head) = regs.read64(COMMAND_HEAD) else { return false; };
-        *tail == ((head as u32) & (COMMAND_BUFFER_BYTES as u32 - 1))
+    unsafe fn wait_for_completion(&self, regs: &AmdViRegisters, hhdm_offset: u64) -> bool {
+        if self.completion_pa == 0 || hhdm_offset == 0 { return false; }
+        let mut sequence = self.completion_sequence.lock();
+        let Some(next) = sequence.checked_add(1) else { return false; };
+        let Some(command) = AmdViCommand::completion_wait(self.completion_pa, next) else { return false; };
+        // SAFETY: this table owns both the serialized ring and its completion record.
+        if !unsafe { self.queue_command(regs, hhdm_offset, command) } { return false; }
+        *sequence = next;
+        let completion_va = hhdm_offset.wrapping_add(self.completion_pa) as *const u64;
+        for _ in 0..COMMAND_DRAIN_POLL_LIMIT {
+            // SAFETY: completion_va names this table's permanent aligned completion record.
+            let completed = unsafe { core::ptr::read_volatile(completion_va) };
+            if (completed.wrapping_sub(next) as i64) >= 0 { return true; }
+            core::hint::spin_loop();
+        }
+        false
     }
 }
 
@@ -267,16 +291,14 @@ impl AmdViUnit {
         unsafe { tables.queue_command(regs, hhdm_offset, command) }
     }
     /// Wait for every queued invalidation to reach the command-ring head. # C: O(poll limit)
-    pub fn wait_for_invalidations(&self, regs: &AmdViRegisters, tables: &AmdViTables) -> bool {
-        for _ in 0..COMMAND_DRAIN_POLL_LIMIT {
-            if tables.command_drained(regs) { return true; }
-            core::hint::spin_loop();
-        }
-        false
+    pub unsafe fn wait_for_invalidations(&self, regs: &AmdViRegisters, tables: &AmdViTables, hhdm_offset: u64) -> bool {
+        if self.state != AmdViState::TablesProgrammed { return false; }
+        // SAFETY: caller owns this disabled unit and its permanent completion record.
+        unsafe { tables.wait_for_completion(regs, hhdm_offset) }
     }
     /// Advance only after hardware consumed every queued initial invalidation. # C: O(1)
-    pub fn domains_attached_after_drain(&mut self, regs: &AmdViRegisters, tables: &AmdViTables) -> bool {
-        if self.state != AmdViState::TablesProgrammed || !tables.command_drained(regs) { return false; }
+    pub fn domains_attached_after_drain(&mut self) -> bool {
+        if self.state != AmdViState::TablesProgrammed { return false; }
         self.advance(AmdViState::TablesProgrammed, AmdViState::DomainsAttached)
     }
     /// Enable hardware translation after every active requester has an invalidated DTE. # C: O(1)
