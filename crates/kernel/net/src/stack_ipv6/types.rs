@@ -369,7 +369,7 @@ impl Udp6RxQueue {
         if !state.datagrams.is_empty() || self.error.has()
             || read_shut.load(core::sync::atomic::Ordering::Acquire) { return false; }
         // SAFETY: process context; endpoint state closes the delivery/wait race.
-        unsafe { self.waiters.park_interruptible_with_deadline(deadline_ns); }
+        unsafe { self.waiters.prepare_to_wait_interruptible_with_deadline(deadline_ns); }
         drop(state);
         true
     }

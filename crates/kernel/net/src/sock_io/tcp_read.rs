@@ -91,7 +91,7 @@ pub(crate) fn arm_tcp_read_after_mode(sock: &InetSocket, entry: &alloc::sync::Ar
     }
     // SAFETY: process context; TCP receive and shutdown mutate under conn
     // before waking rx_waiters, so publication cannot miss either transition.
-    unsafe { entry.rx_waiters.park_interruptible_with_deadline(deadline_ns); }
+    unsafe { entry.rx_waiters.prepare_to_wait_interruptible_with_deadline(deadline_ns); }
     drop(c);
     true
 }
