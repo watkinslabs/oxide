@@ -12,28 +12,41 @@ const EP0_ERROR_COUNT: u32 = 3 << 1;
 const EP0_DEQUEUE_CYCLE: u64 = 1;
 const EP0_AVERAGE_TRB: u32 = 8;
 
+/// One dword in a controller input-context DMA region. # C: O(1)
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct ContextWord { pub offset: usize, pub value: u32 }
+
+/// Exact dword writes for a Linux-shaped Address Device input context. # C: O(1)
+pub fn address_device_words(context_bytes: u8, port: u8, portsc: u32, ep0_ring_pa: u64) -> Option<[ContextWord; 7]> {
+    let stride = context_bytes as usize;
+    if !matches!(stride, 32 | 64) || port == 0 || ep0_ring_pa & 0xf != 0 { return None; }
+    let speed = (portsc & crate::ports::PORT_SPEED_MASK) >> 10;
+    let max_packet = match speed { 1 => 64, 2 => 8, 3 => 64, 4 | 5 => 512, _ => return None };
+    let slot = SLOT_CONTEXT * stride;
+    let ep0 = EP0_CONTEXT * stride;
+    Some([
+        ContextWord { offset: INPUT_CONTROL_CONTEXT * stride + 4, value: ADD_SLOT_AND_EP0 },
+        ContextWord { offset: slot, value: SLOT_LAST_CONTEXT_EP0 | (speed << SLOT_SPEED_SHIFT) },
+        ContextWord { offset: slot + 4, value: (port as u32) << SLOT_ROOT_HUB_PORT_SHIFT },
+        ContextWord { offset: ep0 + 4, value: EP0_TYPE_CONTROL | EP0_ERROR_COUNT | (max_packet << 16) },
+        ContextWord { offset: ep0 + 8, value: ep0_ring_pa as u32 | EP0_DEQUEUE_CYCLE as u32 },
+        ContextWord { offset: ep0 + 12, value: (ep0_ring_pa >> 32) as u32 },
+        ContextWord { offset: ep0 + 16, value: EP0_AVERAGE_TRB },
+    ])
+}
+
 /// Build the Input Control, Slot, and endpoint-zero contexts for Address Device.
 /// `bytes` must be a controller-owned, zeroed input-context region. # C: O(1)
 pub fn address_device(bytes: &mut [u8], context_bytes: u8, port: u8, portsc: u32, ep0_ring_pa: u64) -> bool {
     let stride = context_bytes as usize;
-    if !matches!(stride, 32 | 64) || port == 0 || ep0_ring_pa & 0xf != 0 || bytes.len() < (EP0_CONTEXT + 1) * stride { return false; }
-    let speed = (portsc & crate::ports::PORT_SPEED_MASK) >> 10;
-    let max_packet = match speed { 1 => 64, 2 => 8, 3 => 64, 4 | 5 => 512, _ => return false };
-    let icc = INPUT_CONTROL_CONTEXT * stride;
-    let slot = SLOT_CONTEXT * stride;
-    let ep0 = EP0_CONTEXT * stride;
+    if bytes.len() < (EP0_CONTEXT + 1) * stride { return false; }
+    let Some(words) = address_device_words(context_bytes, port, portsc, ep0_ring_pa) else { return false; };
     // xHCI context fields are little-endian; supported controller targets are LE.
-    put32(bytes, icc + 4, ADD_SLOT_AND_EP0);
-    put32(bytes, slot, SLOT_LAST_CONTEXT_EP0 | (speed << SLOT_SPEED_SHIFT));
-    put32(bytes, slot + 4, (port as u32) << SLOT_ROOT_HUB_PORT_SHIFT);
-    put32(bytes, ep0 + 4, EP0_TYPE_CONTROL | EP0_ERROR_COUNT | (max_packet << 16));
-    put64(bytes, ep0 + 8, ep0_ring_pa | EP0_DEQUEUE_CYCLE);
-    put32(bytes, ep0 + 16, EP0_AVERAGE_TRB);
+    for word in words { put32(bytes, word.offset, word.value); }
     true
 }
 
 fn put32(bytes: &mut [u8], offset: usize, value: u32) { bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes()); }
-fn put64(bytes: &mut [u8], offset: usize, value: u64) { bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes()); }
 
 #[cfg(test)]
 mod tests {
