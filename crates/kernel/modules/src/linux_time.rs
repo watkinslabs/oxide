@@ -12,6 +12,8 @@ mod timer;
 mod types;
 mod work;
 
+pub(crate) const HZ: u32 = types::KPI_HZ as u32;
+
 /// Register Linux timer/workqueue KPI symbols.
 /// # C: O(1)
 pub fn export_symbols() {
@@ -30,6 +32,18 @@ pub fn export_symbols() {
 /// # C: O(1)
 pub fn set_now_hook(f: clock::NowHook) {
     clock::set_now_hook(f);
+}
+
+/// Current jiffies with time-source publication applied. # C: O(1)
+pub(crate) fn jiffies_now() -> u64 {
+    clock::now_ns();
+    clock::jiffies.load(core::sync::atomic::Ordering::Acquire)
+}
+
+/// Absolute monotonic deadline for a relative Linux jiffy timeout.
+/// # C: O(1)
+pub(crate) fn deadline_after_jiffies(timeout: u64) -> u64 {
+    clock::now_ns().saturating_add(clock::jiffies_to_ns(timeout))
 }
 
 #[cfg(test)]

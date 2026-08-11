@@ -27,60 +27,166 @@ struct rtnl_link_stats64 {
     u64 tx_dropped;
 };
 
+struct pcpu_sw_netstats {
+    u64 rx_packets, rx_bytes, tx_packets, tx_bytes;
+    unsigned char syncp[32];
+} __attribute__((aligned(32)));
+
+struct dql {
+    unsigned int num_queued;
+    unsigned int adj_limit;
+    unsigned int last_obj_cnt;
+    unsigned short stall_thrs;
+    unsigned char __to_history_head[2];
+    unsigned long history_head;
+    unsigned long history[4];
+    unsigned char __to_limit[8];
+    unsigned int limit;
+    unsigned int num_completed;
+    unsigned int prev_ovlimit;
+    unsigned int prev_num_queued;
+    unsigned int prev_last_obj_cnt;
+    unsigned int lowest_slack;
+    unsigned long slack_start_time;
+    unsigned int max_limit;
+    unsigned int min_limit;
+    unsigned int slack_hold_time;
+    unsigned short stall_max;
+    unsigned char __to_last_reap[2];
+    unsigned long last_reap;
+    unsigned long stall_cnt;
+} __attribute__((aligned(64)));
+
+struct netdev_queue {
+    struct net_device *dev;
+    void *qdisc;
+    void *qdisc_sleeping;
+    unsigned char kobj[64];
+    const void * const *groups;
+    unsigned long tx_maxrate;
+    long trans_timeout;
+    struct net_device *sb_dev;
+    void *pool;
+    struct dql dql;
+    unsigned int _xmit_lock;
+    int xmit_lock_owner;
+    unsigned long trans_start;
+    unsigned long state;
+    struct napi_struct *napi;
+    int numa_node;
+    unsigned char __tail[28];
+} __attribute__((aligned(64)));
+
 struct netdev_hw_addr {
-    struct netdev_hw_addr *next;
+    struct { void *next; void *prev; } list;
+    unsigned long node[3];
     unsigned char addr[MAX_ADDR_LEN];
+    unsigned char type;
+    _Bool global_use;
+    unsigned char __to_sync_cnt[2];
+    int sync_cnt;
+    int refcount;
+    int synced;
+    unsigned long callback_head[2];
 };
 
 struct netdev_hw_addr_list {
-    struct netdev_hw_addr *head;
-    unsigned int count;
+    struct { void *next; void *prev; } list;
+    int count;
+    unsigned char __to_tree[4];
+    void *tree;
 };
 
 struct net_device_ops {
+    int (*ndo_init)(struct net_device *dev);
+    void (*ndo_uninit)(struct net_device *dev);
     int (*ndo_open)(struct net_device *dev);
     int (*ndo_stop)(struct net_device *dev);
     netdev_tx_t (*ndo_start_xmit)(struct sk_buff *skb, struct net_device *dev);
+    void *ndo_features_check;
+    void *ndo_select_queue;
+    void *ndo_change_rx_flags;
     void (*ndo_set_rx_mode)(struct net_device *dev);
-    int (*ndo_change_mtu)(struct net_device *dev, unsigned int mtu);
     int (*ndo_set_mac_address)(struct net_device *dev, void *addr);
+    void *ndo_validate_addr;
+    void *ndo_do_ioctl;
+    void *ndo_eth_ioctl;
+    void *ndo_siocbond;
+    void *ndo_siocwandev;
+    void *ndo_siocdevprivate;
     int (*ndo_set_config)(struct net_device *dev, struct ifmap *map);
+    int (*ndo_change_mtu)(struct net_device *dev, unsigned int mtu);
+    unsigned char __tail[600];
 };
 
 struct napi_struct {
-    struct net_device *dev;
-    int (*poll)(struct napi_struct *napi, int budget);
+    unsigned long state;
+    unsigned char __to_weight[16];
     int weight;
-    unsigned int state;
-    unsigned int rxq;
-    unsigned int txq;
-    unsigned int scheduled;
-    u64 oxide_ingress_generation;
+    unsigned char __to_poll[4];
+    int (*poll)(struct napi_struct *napi, int budget);
+    unsigned char __to_dev[8];
+    struct net_device *dev;
+    unsigned char __to_irq[360];
+    int irq;
+    unsigned char __tail[76];
 };
 
 struct net_device {
-    struct device dev;
-    char name[IFNAMSIZ];
+    unsigned char __to_netdev_ops[8];
     const struct net_device_ops *netdev_ops;
-    unsigned int mtu;
-    unsigned int tx_queue_len;
-    unsigned int flags;
-    void *priv;
-    unsigned char dev_addr[ETH_ALEN];
-    unsigned char broadcast[MAX_ADDR_LEN];
-    unsigned char addr_len;
-    unsigned int ifindex;
-    unsigned int state;
-    struct rtnl_link_stats64 stats;
-    const struct ethtool_ops *ethtool_ops;
-    struct phy_device *phydev;
-    unsigned int num_tx_queues;
+    unsigned char __to_tx[8];
+    struct netdev_queue *_tx;
+    unsigned char __to_real_num_tx_queues[8];
     unsigned int real_num_tx_queues;
+    unsigned char __to_mtu[12];
+    unsigned int mtu;
+    unsigned char __to_tstats[100];
+    struct pcpu_sw_netstats *tstats;
+    unsigned long state;
+    unsigned int flags;
+    unsigned char __to_features[4];
+    u64 features;
+    unsigned char __to_ifindex[32];
+    int ifindex;
     unsigned int real_num_rx_queues;
-    unsigned int tso_max_size;
-    unsigned short tso_max_segs;
+    unsigned char __to_name[56];
+    char name[IFNAMSIZ];
+    unsigned char __to_stats[248];
+    struct net_device_stats {
+        unsigned long rx_packets, tx_packets, rx_bytes, tx_bytes;
+        unsigned long rx_errors, tx_errors, rx_dropped, tx_dropped;
+        unsigned long multicast, collisions, rx_length_errors, rx_over_errors;
+        unsigned long rx_crc_errors, rx_frame_errors, rx_fifo_errors, rx_missed_errors;
+        unsigned long tx_aborted_errors, tx_carrier_errors, tx_fifo_errors;
+        unsigned long tx_heartbeat_errors, tx_window_errors, rx_compressed, tx_compressed;
+    } stats;
+    unsigned char __to_ethtool_ops[16];
+    const struct ethtool_ops *ethtool_ops;
+    unsigned char __to_perm_addr[39];
+    unsigned char perm_addr[MAX_ADDR_LEN];
+    unsigned char __to_addr_len[1];
+    unsigned char addr_len;
+    unsigned char __to_uc[23];
     struct netdev_hw_addr_list uc;
     struct netdev_hw_addr_list mc;
+    unsigned char __to_dev_addr[152];
+    const unsigned char *dev_addr;
+    unsigned int num_rx_queues;
+    unsigned char __to_broadcast[20];
+    unsigned char broadcast[MAX_ADDR_LEN];
+    unsigned char __to_num_tx_queues[24];
+    unsigned int num_tx_queues;
+    unsigned char __to_tx_queue_len[12];
+    unsigned int tx_queue_len;
+    unsigned char __to_dev[284];
+    struct device dev;
+    unsigned char __to_tso_max_size[72];
+    unsigned int tso_max_size;
+    unsigned short tso_max_segs;
+    unsigned char __to_phydev[48];
+    struct phy_device *phydev;
+    unsigned char __tail[312];
 };
 
 struct net_device *alloc_netdev_mqs(int sizeof_priv, const char *name,
@@ -94,6 +200,12 @@ struct net_device *alloc_etherdev_mqs(int sizeof_priv, unsigned int txqs, unsign
 struct net_device *alloc_etherdev(int sizeof_priv);
 void free_netdev(struct net_device *dev);
 void *netdev_priv(const struct net_device *dev);
+void dev_addr_mod(struct net_device *dev, unsigned int offset, const void *addr, size_t len);
+void dev_kfree_skb_any_reason(struct sk_buff *skb, int reason);
+void dev_fetch_sw_netstats(struct rtnl_link_stats64 *stats,
+                           const struct pcpu_sw_netstats *tstats);
+void dql_completed(struct dql *dql, unsigned int count);
+void dql_reset(struct dql *dql);
 int register_netdev(struct net_device *dev);
 int register_netdevice(struct net_device *dev);
 void unregister_netdev(struct net_device *dev);
@@ -102,7 +214,7 @@ int netif_rx(struct sk_buff *skb);
 void netif_start_queue(struct net_device *dev);
 void netif_stop_queue(struct net_device *dev);
 void netif_wake_queue(struct net_device *dev);
-void netif_tx_wake_queue(struct net_device *dev);
+void netif_tx_wake_queue(struct netdev_queue *txq);
 void netif_tx_stop_all_queues(struct net_device *dev);
 void netif_tx_lock(struct net_device *dev);
 void netif_tx_unlock(struct net_device *dev);
@@ -111,6 +223,7 @@ void netif_carrier_off(struct net_device *dev);
 void netif_device_attach(struct net_device *dev);
 void netif_device_detach(struct net_device *dev);
 void netif_schedule_queue(void *txq);
+void synchronize_net(void);
 void netdev_notify_peers(struct net_device *dev);
 void netdev_update_features(struct net_device *dev);
 void netdev_sw_irq_coalesce_default_on(struct net_device *dev);
@@ -160,8 +273,10 @@ void rtnl_unlock(void);
 #define netdev_mc_count(dev) ((dev)->mc.count)
 #define netdev_uc_count(dev) ((dev)->uc.count)
 #define netdev_for_each_mc_addr(ha, dev) \
-    for ((ha) = (dev)->mc.head; (ha) != NULL; (ha) = (ha)->next)
+    for ((ha) = (struct netdev_hw_addr *)(dev)->mc.list.next; \
+         &(ha)->list != &(dev)->mc.list; (ha) = (struct netdev_hw_addr *)(ha)->list.next)
 #define netdev_for_each_uc_addr(ha, dev) \
-    for ((ha) = (dev)->uc.head; (ha) != NULL; (ha) = (ha)->next)
+    for ((ha) = (struct netdev_hw_addr *)(dev)->uc.list.next; \
+         &(ha)->list != &(dev)->uc.list; (ha) = (struct netdev_hw_addr *)(ha)->list.next)
 
 #endif

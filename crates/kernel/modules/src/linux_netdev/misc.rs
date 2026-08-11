@@ -2,9 +2,32 @@ use super::types::*;
 use core::ffi::{c_char, c_void};
 use core::sync::atomic::{AtomicU32, Ordering};
 
-const NETDEV_STATE_PRESENT: u32 = 1 << 3;
+const NETDEV_STATE_PRESENT: u64 = 1 << 3;
 const RSS_KEY_BYTES: usize = 40;
 static RTNL_DEPTH: AtomicU32 = AtomicU32::new(0);
+const fn reverse_byte(mut value: u8) -> u8 {
+    let mut out = 0;
+    let mut bit = 0;
+    while bit < u8::BITS {
+        out = (out << 1) | (value & 1);
+        value >>= 1;
+        bit += 1;
+    }
+    out
+}
+
+const fn byte_reverse_table() -> [u8; 256] {
+    let mut table = [0; 256];
+    let mut index = 0;
+    while index < table.len() {
+        table[index] = reverse_byte(index as u8);
+        index += 1;
+    }
+    table
+}
+
+#[no_mangle]
+pub static byte_rev_table: [u8; 256] = byte_reverse_table();
 #[no_mangle]
 pub static phys_base: u64 = 0;
 #[no_mangle]
@@ -20,6 +43,7 @@ pub(super) fn export_symbols() {
     export("netif_device_attach", netif_device_attach as *const () as usize, false);
     export("netif_device_detach", netif_device_detach as *const () as usize, false);
     export("netif_schedule_queue", netif_schedule_queue as *const () as usize, false);
+    export("synchronize_net", synchronize_net as *const () as usize, false);
     export("netdev_notify_peers", netdev_notify_peers as *const () as usize, false);
     export("netdev_update_features", netdev_update_features as *const () as usize, false);
     export("netdev_stats_to_stats64", netdev_stats_to_stats64 as *const () as usize, false);
@@ -32,6 +56,9 @@ pub(super) fn export_symbols() {
     export("netdev_notice", netdev_notice as *const () as usize, false);
     export("netdev_info", netdev_info as *const () as usize, false);
     export("netdev_sw_irq_coalesce_default_on", netdev_sw_irq_coalesce_default_on as *const () as usize, false);
+    export("dev_kfree_skb_any_reason", dev_kfree_skb_any_reason as *const () as usize, false);
+    export("dev_fetch_sw_netstats", dev_fetch_sw_netstats as *const () as usize, false);
+    export("csum_ipv6_magic", csum_ipv6_magic as *const () as usize, false);
     export("xdp_convert_zc_to_xdp_frame", xdp_null as *const () as usize, false);
     export("xdp_do_flush", xdp_do_flush as *const () as usize, false);
     export("xdp_do_redirect", xdp_drop as *const () as usize, false);
@@ -52,6 +79,7 @@ pub(super) fn export_symbols() {
     export("__SCT__tp_func_xdp_exception", trace_xdp_exception as *const () as usize, false);
     export("__tracepoint_xdp_exception", (&__tracepoint_xdp_exception as *const u64) as usize, false);
     export("phys_base", (&phys_base as *const u64) as usize, false);
+    export("byte_rev_table", byte_rev_table.as_ptr() as usize, false);
 }
 
 /// # C: O(1)
@@ -83,6 +111,20 @@ unsafe extern "C" fn netif_device_detach(dev: *mut LinuxNetDevice) {
 
 /// # C: O(1)
 unsafe extern "C" fn netif_schedule_queue(_txq: *mut c_void) {}
+/// # C: O(grace period)
+unsafe extern "C" fn synchronize_net() { sync::synchronize_rcu(); }
+
+/// # C: O(1)
+unsafe extern "C" fn csum_ipv6_magic(src: *const u8, dst: *const u8, len: u32, proto: u8, sum: u32) -> u16 {
+    if src.is_null() || dst.is_null() { return 0; }
+    // SAFETY: Linux ABI supplies two readable 16-byte IPv6 addresses.
+    let (src, dst) = unsafe { (core::slice::from_raw_parts(src, 16), core::slice::from_raw_parts(dst, 16)) };
+    let mut acc = sum as u64;
+    for pair in src.chunks_exact(2).chain(dst.chunks_exact(2)) { acc += u16::from_ne_bytes([pair[0], pair[1]]) as u64; }
+    acc += len.to_be() as u64 + (proto as u32).to_be() as u64;
+    while acc >> 16 != 0 { acc = (acc & 0xffff) + (acc >> 16); }
+    !(acc as u16)
+}
 /// # C: O(1)
 unsafe extern "C" fn netdev_notify_peers(_dev: *mut LinuxNetDevice) {}
 /// # C: O(1)
@@ -91,10 +133,29 @@ unsafe extern "C" fn netdev_update_features(_dev: *mut LinuxNetDevice) {}
 unsafe extern "C" fn netdev_sw_irq_coalesce_default_on(_dev: *mut LinuxNetDevice) {}
 
 /// # C: O(1)
+unsafe extern "C" fn dev_kfree_skb_any_reason(skb: *mut LinuxSkBuff, _reason: i32) {
+    // SAFETY: this KPI consumes the skb on every caller context, matching the common free path.
+    unsafe { super::skb::kfree_skb(skb); }
+}
+
+/// # C: O(online CPUs)
+unsafe extern "C" fn dev_fetch_sw_netstats(dst: *mut LinuxRtnlLinkStats64,
+    tstats: *const LinuxPcpuSwNetStats) {
+    if dst.is_null() || tstats.is_null() { return; }
+    // SAFETY: the current Linux module runtime supplies a single CPU stats slot.
+    unsafe {
+        (*dst).rx_packets = (*dst).rx_packets.wrapping_add((*tstats).rx_packets);
+        (*dst).rx_bytes = (*dst).rx_bytes.wrapping_add((*tstats).rx_bytes);
+        (*dst).tx_packets = (*dst).tx_packets.wrapping_add((*tstats).tx_packets);
+        (*dst).tx_bytes = (*dst).tx_bytes.wrapping_add((*tstats).tx_bytes);
+    }
+}
+
+/// # C: O(1)
 unsafe extern "C" fn netdev_stats_to_stats64(dst: *mut LinuxRtnlLinkStats64, dev: *const LinuxNetDevice) {
     if dst.is_null() || dev.is_null() { return; }
     // SAFETY: pointers are checked and both structs share the same C layout.
-    unsafe { *dst = (*dev).stats; }
+    unsafe { *dst = (*dev).stats.compat; }
 }
 
 /// # C: O(1)

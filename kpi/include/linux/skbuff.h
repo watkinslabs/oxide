@@ -10,21 +10,54 @@
 #define OXIDE_SKB_CB_LEN 48
 
 struct net_device;
+struct sock;
 
 struct sk_buff {
+    struct sk_buff *next;
+    struct sk_buff *prev;
+    struct net_device *dev;
+    struct sock *sk;
+    s64 tstamp;
+    unsigned char cb[OXIDE_SKB_CB_LEN];
+    unsigned long _skb_refdst;
+    void (*destructor)(struct sk_buff *skb);
+    unsigned long _nfct;
+    u32 len;
+    u32 data_len;
+    u16 mac_len;
+    u16 hdr_len;
+    u16 queue_mapping;
+    u8 cloned:1;
+    u8 nohdr:1;
+    u8 fclone:2;
+    u8 peeked:1;
+    u8 head_frag:1;
+    u8 pfmemalloc:1;
+    u8 pp_recycle:1;
+    u8 active_extensions;
+    union {
+    struct { u8 bytes[60]; } headers;
+    struct {
+        u8 pkt_type:3;
+        u8 ignore_df:1;
+        u8 dst_pending_confirm:1;
+        u8 ip_summed:2;
+        u8 ooo_okay:1;
+        u8 _headers_to_csum[7];
+        u16 csum_start;
+        u16 csum_offset;
+        u8 _headers_after_csum[36];
+        u16 protocol;
+        u8 _headers_after_protocol[10];
+    } __attribute__((packed));
+    };
+    u32 tail;
+    u32 end;
     unsigned char *head;
     unsigned char *data;
-    unsigned char *tail;
-    unsigned char *end;
-    u32 len;
-    u16 protocol;
-    struct net_device *dev;
-    u8 ip_summed;
-    u16 csum_start;
-    u16 csum_offset;
-    u8 nr_frags;
-    unsigned char cb[OXIDE_SKB_CB_LEN];
-    void *owner;
+    u32 truesize;
+    u32 users;
+    void *extensions;
 };
 
 struct sk_buff *alloc_skb(unsigned int size, gfp_t priority);

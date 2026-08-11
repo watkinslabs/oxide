@@ -34,6 +34,11 @@ fn work_delayed_work_tasklet_and_kthread_paths() {
     };
     init_work(&mut w, Some(work_cb));
     assert_eq!(schedule_work(&mut w), 1);
+    let mut per_cpu = LinuxWorkStruct {
+        data: AtomicUsize::new(0), entry: LinuxListHead { next: null_mut(), prev: null_mut() }, func: None,
+    };
+    init_work(&mut per_cpu, Some(work_cb));
+    assert_eq!(queue_work_on(0, &SYSTEM_PERCPU_WQ as *const _ as *mut _, &mut per_cpu), 1);
     let mut dw = LinuxDelayedWork {
         work: LinuxWorkStruct {
             data: AtomicUsize::new(0),
@@ -52,7 +57,7 @@ fn work_delayed_work_tasklet_and_kthread_paths() {
     init_delayed_work(&mut dw, Some(work_cb));
     assert_eq!(schedule_delayed_work(&mut dw, 0), 1);
     ::timer::run_due(now_ns());
-    assert_eq!(WORK_COUNT.load(Ordering::Acquire), 2);
+    assert_eq!(WORK_COUNT.load(Ordering::Acquire), 3);
     let mut t = LinuxTaskletStruct { next: null_mut(), state: 0, count: AtomicUsize::new(0), func: None, data: 0 };
     tasklet_init(&mut t, Some(tasklet_cb), 42);
     tasklet_schedule(&mut t);
@@ -69,7 +74,7 @@ fn export_symbols_registers_time_surface() {
     let _modules = crate::test_serial::claim();
     super::export_symbols();
     for name in ["jiffies", "jiffies_64", "msecs_to_jiffies", "ktime_get_ns",
-        "msleep", "init_timer", "hrtimer_start", "schedule_work",
+        "msleep", "init_timer", "hrtimer_start", "schedule_work", "system_percpu_wq",
         "schedule_delayed_work", "kthread_create", "tasklet_schedule"] {
         assert!(symtab::resolve(name, true).is_ok(), "{name}");
     }

@@ -25,14 +25,16 @@ unsafe extern "C" fn count_poll(_napi: *mut LinuxNapiStruct, _budget: i32) -> i3
 
 fn napi(dev: *mut LinuxNetDevice) -> LinuxNapiStruct {
     LinuxNapiStruct {
-        dev,
-        poll: Some(count_poll),
+        state: core::sync::atomic::AtomicU64::new(0),
+        _to_weight: [0; 16],
         weight: DEFAULT_NAPI_WEIGHT,
-        state: core::sync::atomic::AtomicU32::new(0),
-        rxq: 0,
-        txq: 0,
-        scheduled: core::sync::atomic::AtomicU32::new(0),
-        ingress_generation: core::sync::atomic::AtomicU64::new(0),
+        _to_poll: [0; 4],
+        poll: Some(count_poll),
+        _to_dev: [0; 8],
+        dev,
+        _to_irq: [0; 360],
+        irq: 0,
+        _tail: [0; 76],
     }
 }
 
@@ -88,19 +90,17 @@ fn retired_generation_rejects_prepared_poll() {
 }
 
 #[test]
-fn losing_prepare_preserves_scheduled_generation() {
+fn losing_prepare_preserves_scheduled_state() {
     let _modules = crate::test_serial::claim();
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let (iface, dev) = fixture();
     let mut napi = napi(dev);
-    let scheduled_generation = u64::MAX;
     napi.state.store(NAPI_STATE_SCHEDULED, Ordering::Release);
-    napi.ingress_generation.store(scheduled_generation, Ordering::Release);
 
     // SAFETY: test-owned NAPI and net_device storage remain live through the call.
     unsafe {
         assert!(!napi_schedule_prep(&mut napi));
-        assert_eq!(napi.ingress_generation.load(Ordering::Acquire), scheduled_generation);
+        assert_eq!(napi.state.load(Ordering::Acquire), NAPI_STATE_SCHEDULED);
         cleanup(iface, dev);
     }
 }
@@ -119,7 +119,6 @@ fn disable_cancels_prepared_generation() {
         napi_disable(&mut napi);
         __napi_schedule(&mut napi);
         assert_eq!(napi.state.load(Ordering::Acquire), NAPI_STATE_DISABLED);
-        assert_eq!(napi.ingress_generation.load(Ordering::Acquire), 0);
         cleanup(iface, dev);
     }
     assert_eq!(POLLS.load(Ordering::Acquire), 0);

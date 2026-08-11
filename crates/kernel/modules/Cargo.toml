@@ -19,6 +19,7 @@ crypt = { path = "../../shared/crypt" }
 ext4 = { path = "../ext4" }
 pmm  = { path = "../mm-pmm" }
 cgroup = { path = "../cgroup" }
+cpu = { path = "../cpu" }
 sched = { path = "../sched" }
 vmm = { path = "../mm-vmm" }
 uaccess = { path = "../uaccess" }

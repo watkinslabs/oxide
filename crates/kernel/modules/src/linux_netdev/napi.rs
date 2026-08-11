@@ -1,3 +1,5 @@
+#![allow(dangerous_implicit_autorefs)]
+
 extern crate alloc;
 
 use super::skb;
@@ -7,8 +9,8 @@ use crate::linux_alloc::{self, LinuxPage, PAGE_SIZE};
 use core::ffi::c_void;
 use core::sync::atomic::Ordering;
 
-const NAPI_STATE_DISABLED: u32 = 1 << 0;
-const NAPI_STATE_SCHEDULED: u32 = 1 << 1;
+const NAPI_STATE_SCHEDULED: u64 = 1 << 0;
+const NAPI_STATE_DISABLED: u64 = 1 << 2;
 const DEFAULT_NAPI_WEIGHT: i32 = 64;
 const FRAG_ALIGN: usize = 64;
 
@@ -52,10 +54,6 @@ unsafe extern "C" fn netif_napi_add_weight_locked(dev: *mut LinuxNetDevice, napi
         (*napi).dev = dev;
         (*napi).poll = poll;
         (*napi).weight = if weight > 0 { weight } else { DEFAULT_NAPI_WEIGHT };
-        (*napi).rxq = 0;
-        (*napi).txq = 0;
-        (*napi).scheduled.store(0, Ordering::Release);
-        (*napi).ingress_generation.store(0, Ordering::Release);
         (*napi).state.store(NAPI_STATE_DISABLED, Ordering::Release);
     }
 }
@@ -67,7 +65,6 @@ unsafe extern "C" fn __netif_napi_del_locked(napi: *mut LinuxNapiStruct) {
     unsafe {
         (*napi).poll = None;
         (*napi).dev = core::ptr::null_mut();
-        (*napi).ingress_generation.store(0, Ordering::Release);
         (*napi).state.store(NAPI_STATE_DISABLED, Ordering::Release);
     }
 }
@@ -85,7 +82,6 @@ unsafe extern "C" fn napi_disable(napi: *mut LinuxNapiStruct) {
     // SAFETY: napi points to initialized driver-owned storage.
     unsafe {
         (*napi).state.fetch_or(NAPI_STATE_DISABLED, Ordering::AcqRel);
-        (*napi).ingress_generation.store(0, Ordering::Release);
     }
 }
 
@@ -98,34 +94,28 @@ unsafe extern "C" fn __napi_schedule(napi: *mut LinuxNapiStruct) {
         if state & NAPI_STATE_SCHEDULED == 0 { return; }
         if state & NAPI_STATE_DISABLED != 0 {
             (*napi).state.fetch_and(!NAPI_STATE_SCHEDULED, Ordering::AcqRel);
-            (*napi).ingress_generation.store(0, Ordering::Release);
             return;
         }
-        let generation = (*napi).ingress_generation.load(Ordering::Acquire);
         let dev = (*napi).dev;
-        if dev.is_null() || generation == 0 {
+        if dev.is_null() {
             (*napi).state.fetch_and(!NAPI_STATE_SCHEDULED, Ordering::AcqRel);
-            (*napi).ingress_generation.store(0, Ordering::Release);
             return;
         }
         #[cfg(any(target_os = "oxide-kernel", feature = "hosted"))]
         let _lease = {
         let iface = net::NetIfaceId::from_raw((*dev).ifindex);
         let Some(lease) = net::sock::stack().ifaces
-            .acquire_ingress_generation(iface, generation) else {
+            .acquire_ingress(iface) else {
             (*napi).state.fetch_and(!NAPI_STATE_SCHEDULED, Ordering::AcqRel);
-            (*napi).ingress_generation.store(0, Ordering::Release);
             return;
         };
             lease
         };
-        (*napi).scheduled.fetch_add(1, Ordering::AcqRel);
         if let Some(poll) = (*napi).poll {
             let budget = if (*napi).weight > 0 { (*napi).weight } else { DEFAULT_NAPI_WEIGHT };
             let _ = poll(napi, budget);
         }
         (*napi).state.fetch_and(!NAPI_STATE_SCHEDULED, Ordering::AcqRel);
-        (*napi).ingress_generation.store(0, Ordering::Release);
     }
 }
 
@@ -142,26 +132,9 @@ unsafe extern "C" fn napi_schedule_prep(napi: *mut LinuxNapiStruct) -> bool {
     unsafe {
         let dev = (*napi).dev;
         if dev.is_null() || (*dev).ifindex == 0 { return false; }
-        #[cfg(any(target_os = "oxide-kernel", feature = "hosted"))]
-        let generation = {
-        let iface = net::NetIfaceId::from_raw((*dev).ifindex);
-        let Some(lease) = net::sock::stack().ifaces.acquire_ingress(iface) else {
-            return false;
-        };
-            lease.generation()
-        };
-        #[cfg(all(not(target_os = "oxide-kernel"), not(feature = "hosted")))]
-        let generation = 1;
-        if (*napi).ingress_generation.compare_exchange(0, generation,
-            Ordering::AcqRel, Ordering::Acquire).is_err()
-        {
-            return false;
-        }
         let mut state = (*napi).state.load(Ordering::Acquire);
         loop {
             if state & (NAPI_STATE_DISABLED | NAPI_STATE_SCHEDULED) != 0 {
-                let _ = (*napi).ingress_generation.compare_exchange(generation, 0,
-                    Ordering::AcqRel, Ordering::Acquire);
                 return false;
             }
             match (*napi).state.compare_exchange_weak(state, state | NAPI_STATE_SCHEDULED,
@@ -181,7 +154,6 @@ unsafe extern "C" fn napi_complete_done(napi: *mut LinuxNapiStruct, _work_done: 
     // SAFETY: napi points to initialized driver-owned storage.
     unsafe {
         (*napi).state.fetch_and(!NAPI_STATE_SCHEDULED, Ordering::AcqRel);
-        (*napi).ingress_generation.store(0, Ordering::Release);
     }
     true
 }
@@ -220,7 +192,7 @@ unsafe extern "C" fn napi_gro_frags(napi: *mut LinuxNapiStruct) -> i32 {
 unsafe extern "C" fn gro_receive_skb(napi: *mut LinuxNapiStruct, skbp: *mut LinuxSkBuff) -> i32 {
     if !napi.is_null() && !skbp.is_null() {
         // SAFETY: caller supplies live NAPI and skb objects for this receive operation.
-        unsafe { (*skbp).queue_mapping = (*napi).rxq.min(u16::MAX as u32) as u16; }
+        unsafe { (*skbp).queue_mapping = 0; }
     }
     // SAFETY: GRO compatibility feeds the skb through the normal RX path.
     unsafe { super::core::netif_rx_for_napi(skbp) }
@@ -262,18 +234,14 @@ unsafe extern "C" fn skb_page_frag_refill(sz: u32, page_frag: *mut c_void, gfp: 
 /// # C: O(1)
 unsafe extern "C" fn netif_queue_set_napi(_dev: *mut LinuxNetDevice, q: u16, napi: *mut LinuxNapiStruct) {
     if napi.is_null() { return; }
-    // SAFETY: napi points to initialized driver-owned storage.
-    unsafe {
-        (*napi).rxq = q as u32;
-        (*napi).txq = q as u32;
-    }
+    let _ = q;
 }
 
 /// # C: O(1)
 unsafe extern "C" fn netif_napi_set_irq_locked(napi: *mut LinuxNapiStruct, irq: i32) {
     if napi.is_null() { return; }
-    // SAFETY: napi points to initialized driver-owned storage; store irq in txq as compatibility metadata.
-    unsafe { (*napi).txq = irq.max(0) as u32; }
+    // SAFETY: napi points to initialized driver-owned storage and exposes irq at its ABI offset.
+    unsafe { (*napi).irq = irq; }
 }
 
 #[cfg(all(test, feature = "hosted"))]
