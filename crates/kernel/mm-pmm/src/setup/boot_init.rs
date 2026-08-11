@@ -1,4 +1,5 @@
 use super::*;
+use core::sync::atomic::AtomicU64;
 
 /// Reasons `init_from_boot_info` can refuse PMM bring-up.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -84,6 +85,7 @@ unsafe impl Sync for PmmCell {}
 
 static PMM_STORAGE: PmmCell = PmmCell(UnsafeCell::new(MaybeUninit::uninit()));
 static PMM_READY: AtomicBool = AtomicBool::new(false);
+static DIRECT_MAP_BASE: AtomicU64 = AtomicU64::new(0);
 struct RegionBuf(UnsafeCell<[UsableRegion; MAX_REGIONS]>);
 // SAFETY: Written exactly once during single-CPU init; read once
 // (passed into `Pmm::init` by reference); never mutated afterwards.
@@ -110,6 +112,10 @@ pub fn usable_regions() -> &'static [UsableRegion] {
     unsafe { core::slice::from_raw_parts(REGION_BUF.0.get() as *const UsableRegion, n) }
 }
 
+/// Kernel direct-map base published by boot memory setup, or zero before PMM setup.
+/// # C: O(1)
+pub fn direct_map_base() -> u64 { DIRECT_MAP_BASE.load(Ordering::Acquire) }
+
 /// Bring PMM up from a `BootInfo`. Single-call.
 ///
 /// # SAFETY: caller is `kernel_main` before any other path touches
@@ -131,6 +137,7 @@ pub unsafe fn init_from_boot_info(
     if info.hhdm_offset == 0 {
         return Err(SetupError::NoHhdm);
     }
+    DIRECT_MAP_BASE.store(info.hhdm_offset, Ordering::Release);
 
     // SAFETY: caller-asserted memmap_ptr/memmap_count contract.
     let regions: &[BootMemRegion] = unsafe {
@@ -186,8 +193,19 @@ pub unsafe fn init_from_boot_info(
     let page_meta_pool_bytes = page_meta_pages
         .checked_mul(PAGE_SIZE_BYTES)
         .ok_or(SetupError::NoSpaceForPageMeta)?;
+    let native_page_bytes = pfn_max
+        .checked_mul(core::mem::size_of::<crate::NativePage>() as u64)
+        .ok_or(SetupError::NoSpaceForPageMeta)?;
+    let native_page_pages = native_page_bytes
+        .checked_add(PAGE_SIZE_BYTES - 1)
+        .map(|bytes| bytes / PAGE_SIZE_BYTES)
+        .ok_or(SetupError::NoSpaceForPageMeta)?;
+    let native_page_pool_bytes = native_page_pages
+        .checked_mul(PAGE_SIZE_BYTES)
+        .ok_or(SetupError::NoSpaceForPageMeta)?;
     let pool_bytes = bitmap_pool_bytes
         .checked_add(page_meta_pool_bytes)
+        .and_then(|bytes| bytes.checked_add(native_page_pool_bytes))
         .ok_or(SetupError::NoSpaceForPageMeta)?;
 
     // Pick the first Usable region with `len >= pool_bytes + slack`.
@@ -239,6 +257,8 @@ pub unsafe fn init_from_boot_info(
     // this offset lands strictly inside the single HHDM allocation `pool_va`
     // names — the one-past-the-end rule `ptr::add` requires.
     let page_meta_ptr = unsafe { pool_va.add(bitmap_pool_bytes as usize) } as *mut crate::PageMeta;
+    // SAFETY: native descriptor storage follows the rounded PageMeta slab within the same reservation.
+    let native_page_ptr = unsafe { (page_meta_ptr as *mut u8).add(page_meta_pool_bytes as usize) } as *mut crate::NativePage;
 
     // Build the UsableRegion list, shrinking the chosen region.
     let mut n_regions = 0usize;
@@ -305,7 +325,7 @@ pub unsafe fn init_from_boot_info(
     // SAFETY: `page_meta_ptr` names the page-aligned boot reservation carved
     // out above; it has room for exactly `pfn_max` PageMeta values and is not
     // present in any PMM usable region.
-    unsafe { super::metadata::init_page_meta_from_storage(page_meta_ptr, pfn_max as usize); }
+    unsafe { super::metadata::init_page_meta_with_native_storage(page_meta_ptr, native_page_ptr, pfn_max as usize); }
     // Stamp MANAGED on exactly the PFNs just seeded into the buddy (`regs`,
     // the same list `Pmm::init` consumed above) so a bare `page_meta().get
     // (pfn)` hit can tell "buddy-managed, currently free" apart from a

@@ -167,6 +167,71 @@ impl<B: PageBacking, I: IrqGate> Pmm<B, I> {
         r
     }
 
+    /// Allocate one buddy block wholly below `max_exclusive`.
+    ///
+    /// DMA masks are allocator constraints, not a driver's post-allocation
+    /// rejection loop: selecting a suitable free block under the buddy lock
+    /// preserves the ordinary ownership/accounting path without churning high
+    /// memory. # C: O(free blocks + MAX_ORDER), bounded by managed memory
+    /// # Ctx: any; brief IRQ-off
+    /// # Lk: Buddy
+    pub fn alloc_below(&self, order: Order, max_exclusive: Pfn) -> KResult<Pfn> {
+        if order.0 > MAX_ORDER { return Err(Error::InvalidOrder); }
+        let limit = max_exclusive.0;
+        let span = 1u64 << order.0;
+        if limit < span { return Err(Error::NoMem); }
+        crate::watermark::before_allocation(self.free_pages(), span);
+        let pfn = {
+            let mut g = self.inner.lock_irqsave::<I>();
+            let upper = core::cmp::min(limit, g.pfn_max);
+            let mut found = None;
+            for k in order.0..=MAX_ORDER {
+                let mut candidate = g.free_heads[k as usize];
+                while candidate != PFN_NULL {
+                    if candidate.checked_add(span).is_some_and(|end| end <= upper) {
+                        found = Some((candidate, k));
+                        break;
+                    }
+                    // SAFETY: candidate is on this live free list, so its intrusive next field is readable.
+                    let ptr = unsafe { self.backing.page_ptr(Pfn(candidate)) };
+                    let next = unsafe { read_u64(ptr, OFF_NEXT) };
+                    if next == PFN_NULL || next >= g.pfn_max { break; }
+                    candidate = next;
+                }
+                if found.is_some() { break; }
+            }
+            let Some((pfn, mut k)) = found else { return Err(Error::NoMem); };
+            // SAFETY: `pfn` was found on free_list[k] while holding the buddy lock.
+            unsafe { g.unlink_free(&self.backing, pfn, k) };
+            g.bitmap_clear(k, pfn >> k);
+            g.free_count[k as usize] -= 1;
+            while k > order.0 {
+                k -= 1;
+                let buddy = pfn + (1u64 << k);
+                // SAFETY: splitting the selected lower half creates one free, aligned upper buddy.
+                unsafe { g.push_free(&self.backing, buddy, k) };
+                g.bitmap_set(k, buddy >> k);
+                g.free_count[k as usize] += 1;
+            }
+            // SAFETY: the selected block is no longer on a free list and is exclusively PMM-owned.
+            unsafe { g.verify_poison(&self.backing, pfn, order.0) };
+            g.allocated += span;
+            g.alloc_events += 1;
+            g.alloc_event_pages += span;
+            pfn
+        };
+        for k in 0..span {
+            // SAFETY: this allocation exclusively owns every page in its selected buddy block.
+            let p = unsafe { self.backing.page_ptr(Pfn(pfn + k)) };
+            hal::zerotrap::trap(p as *const u8, PAGE_SIZE_BYTES as usize);
+            // SAFETY: `p` spans one just-allocated PMM page and cannot alias another owner.
+            unsafe { core::ptr::write_bytes(p, 0, PAGE_SIZE_BYTES as usize) };
+        }
+        crate::watermark::after_allocation(self.free_pages());
+        hal::zerotrap::trap_buddy(pfn * hal::PAGE_SIZE_BYTES, b"ALLOC");
+        Ok(Pfn(pfn))
+    }
+
     /// Reclaim/kill retry loop taken when the fast path found no block.
     /// Policy lives in `crate::oom_entry`; this only supplies the three
     /// actions it drives.

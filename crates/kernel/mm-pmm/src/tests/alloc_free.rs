@@ -46,6 +46,23 @@ fn alloc_oom_returns_nomem() {
 }
 
 #[test]
+fn alloc_below_selects_and_frees_a_low_buddy_block() {
+    let pmm = build(4096);
+    let p = pmm.alloc_below(Order(3), Pfn(128)).unwrap();
+    assert!(p.0 + (1 << 3) <= 128);
+    // SAFETY: `p` is the order-3 allocation returned immediately above.
+    unsafe { pmm.free(p, Order(3)); }
+    // SAFETY: the allocation/free transition above completed synchronously.
+    unsafe { pmm.audit(); }
+}
+
+#[test]
+fn alloc_below_refuses_an_aperture_smaller_than_the_request() {
+    let pmm = build(64);
+    assert_eq!(pmm.alloc_below(Order(3), Pfn(7)), Err(Error::NoMem));
+}
+
+#[test]
 fn alloc_each_order_then_free_audits_clean() {
     let pmm = build(4096);
     let mut held: Vec<(Pfn, Order)> = Vec::new();
