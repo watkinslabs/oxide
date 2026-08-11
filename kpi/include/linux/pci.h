@@ -80,6 +80,9 @@ int pcim_enable_device(struct pci_dev *dev);
 int pcim_pin_device(struct pci_dev *dev);
 void pci_set_master(struct pci_dev *dev);
 void pci_clear_master(struct pci_dev *dev);
+int pcie_capability_clear_and_set_word_locked(struct pci_dev *dev, int pos,
+                                               u16 clear, u16 set);
+int pcie_set_readrq(struct pci_dev *dev, int rq);
 void pci_set_drvdata(struct pci_dev *dev, void *data);
 void *pci_get_drvdata(struct pci_dev *dev);
 const char *pci_name(const struct pci_dev *dev);

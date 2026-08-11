@@ -392,14 +392,14 @@ fn write_config_masked(dev: *mut LinuxPciDev, pos: i32, width: u8, mask: u32, va
     LINUX_OK
 }
 
-fn read_config32(dev: *mut LinuxPciDev, off: u8) -> u32 {
+pub(super) fn read_config32(dev: *mut LinuxPciDev, off: u8) -> u32 {
     if dev.is_null() { return u32::MAX; }
     if let Some(v) = hw_read32(bdf(dev), off) { return v; }
     // SAFETY: dev points at a caller-owned Linux struct pci_dev.
     unsafe { (*dev).config_space[(off / PCI_CONFIG_ALIGN) as usize] }
 }
 
-fn write_config32(dev: *mut LinuxPciDev, off: u8, val: u32) {
+pub(super) fn write_config32(dev: *mut LinuxPciDev, off: u8, val: u32) {
     if dev.is_null() { return; }
     hw_write32(bdf(dev), off, val);
     // SAFETY: dev points at a caller-owned Linux struct pci_dev.

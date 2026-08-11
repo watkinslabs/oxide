@@ -34,6 +34,11 @@ const TEST_MODEL_CLASS: u32 = 0x010802;
 const TEST_MODEL_DRIVER_DATA: usize = 0xfeed_beef;
 const TEST_STREAMING_DMA_MASK: u64 = (1u64 << 48) - 1;
 const TEST_COHERENT_DMA_MASK: u64 = (1u64 << 40) - 1;
+const TEST_PCI_STATUS_CAP_LIST: u32 = 1 << 20;
+const TEST_PCIE_CAP: usize = 0x40 / 4;
+const TEST_PCIE_CAP_POINTER: usize = 0x34 / 4;
+const TEST_PCIE_DEVCTL: usize = 0x48 / 4;
+const TEST_PCIE_READRQ_512: u16 = 0x2000;
 
 static MODEL_PROBES: AtomicUsize = AtomicUsize::new(0);
 static MODEL_REMOVES: AtomicUsize = AtomicUsize::new(0);
@@ -204,6 +209,20 @@ fn config_helpers_update_fallback_config_space() {
     assert_eq!(pci_read_config_dword(&mut dev, TEST_CFG_DWORD_OFF, &mut d), LINUX_OK);
     assert_eq!(d, TEST_CFG_PATCHED_DWORD);
     assert!(cstr_eq(pci_name(&dev), b"0000:02:03.1"));
+}
+
+#[test]
+fn pcie_readrq_updates_only_the_express_device_control_field() {
+    let _modules = crate::test_serial::claim();
+    let mut dev = test_dev();
+    dev.config_space[1] = TEST_PCI_STATUS_CAP_LIST;
+    dev.config_space[TEST_PCIE_CAP_POINTER] = 0x40;
+    dev.config_space[TEST_PCIE_CAP] = 0x10;
+    dev.config_space[TEST_PCIE_DEVCTL] = 0x05aa;
+    assert_eq!(super::super::pcie::pcie_set_readrq(&mut dev, 512), LINUX_OK);
+    assert_eq!(dev.config_space[TEST_PCIE_DEVCTL], 0x05aa | TEST_PCIE_READRQ_512 as u32);
+    assert_eq!(super::super::pcie::pcie_set_readrq(&mut dev, 192), -LINUX_EINVAL);
+    assert_eq!(dev.config_space[TEST_PCIE_DEVCTL], 0x05aa | TEST_PCIE_READRQ_512 as u32);
 }
 
 #[test]

@@ -1269,6 +1269,8 @@ static int __init sample_init(void)
     (void)pci_select_bars(&pdev, IORESOURCE_MEM);
     (void)pci_request_selected_regions(&pdev, 1 << SAMPLE_PCI_BAR, "sample");
     pci_release_selected_regions(&pdev, 1 << SAMPLE_PCI_BAR);
+    (void)pcie_capability_clear_and_set_word_locked(&pdev, 0x08, 0x7000, 0x1000);
+    (void)pcie_set_readrq(&pdev, 512);
     regs = pci_iomap(&pdev, SAMPLE_PCI_BAR, SAMPLE_MMIO_SIZE);
     pci_iounmap(&pdev, regs);
     pci_release_region(&pdev, SAMPLE_PCI_BAR);
