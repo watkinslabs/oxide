@@ -26,11 +26,11 @@ use vmm::AddressSpace;
 /// `schedule()` is the sole exception: it disables IRQs explicitly and holds
 /// the plain guard across the context switch for `finish_lock_switch()`.
 #[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-pub(super) type RqIrq = hal_x86_64::X86IrqGate;
+pub(crate) type RqIrq = hal_x86_64::X86IrqGate;
 #[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
-pub(super) type RqIrq = hal_aarch64::ArmIrqGate;
+pub(crate) type RqIrq = hal_aarch64::ArmIrqGate;
 #[cfg(not(target_os = "oxide-kernel"))]
-pub(super) type RqIrq = sync::NoopIrq;
+pub(crate) type RqIrq = sync::NoopIrq;
 
 /// Per-CPU runqueue. One instance per CPU once SMP lands; v1 is
 /// single-CPU so a single static instance suffices.

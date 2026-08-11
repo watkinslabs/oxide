@@ -64,12 +64,10 @@ pub fn sys_sched_setaffinity(args: &SyscallArgs) -> i64 {
 
     // Linux parks the raw request in `user_cpus_ptr` so a later cpuset change
     // re-applies it instead of erasing it.
-    t.user_cpus_allowed.store(want, Ordering::Release);
-    t.cpus_allowed.store(eff, Ordering::Release);
     // Honor the new mask now: relocate the task off any disallowed CPU. A
     // queued task moves immediately; a RUNNING one is nudged to reschedule and
     // the switch itself re-queues it on an allowed CPU rather than back on the
     // forbidden one, so a CPU-bound thread leaves without having to block.
-    sched::live::relocate_for_affinity(&t, eff);
+    sched::live::update_affinity(&t, Some(want), None);
     0
 }

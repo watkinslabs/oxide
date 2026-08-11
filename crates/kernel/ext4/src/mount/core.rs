@@ -144,6 +144,7 @@ impl Mount {
             sb_free_blocks: sb.free_blocks_count,
             sb_free_inodes: sb.free_inodes_count,
             shadow: None,
+            metadata_cache: alloc::collections::BTreeMap::new(),
             batch: false,
             undo: Vec::new(),
         };
@@ -202,6 +203,14 @@ impl Mount {
         let last_blk_excl = (last_byte + bs - 1) / bs;
         let n_blocks = (last_blk_excl - first_blk) as u32;
         let inner_off = (byte_off - first_blk * bs) as usize;
+        // A write must never leave an old clean buffer visible after its
+        // journal shadow is drained.  Reads inside the transaction select the
+        // shadow first; once committed, the next read refills the clean cache
+        // from the new on-disk block.
+        {
+            let mut s = self.state.lock();
+            for i in 0..n_blocks as u64 { s.metadata_cache.remove(&(first_blk + i)); }
+        }
         let mut full_buf: Vec<u8> = Vec::with_capacity((n_blocks as usize) * bs as usize);
         for i in 0..n_blocks as u64 {
             let lba = first_blk + i;
@@ -248,18 +257,28 @@ impl Mount {
         Ok(())
     }
 
-    /// Read one fs-block from either the shadow buffer (if a
-    /// scope holds a copy) or the underlying device.
-    /// # C: O(1) shadow lookup or O(1) device I/O
+    /// Read one fs-block from the transaction shadow, then the clean metadata
+    /// buffer cache, then the underlying device.  This is the ext4 equivalent
+    /// of Linux's buffer-cache lookup before `sb_bread` submits I/O.
+    /// # C: O(log N) cache lookup or O(1) device I/O on a cold block
     pub(crate) fn read_metadata_block(&self, lba: u64) -> Result<Vec<u8>, MountError> {
         if let Some(buf) = {
             let s = self.state.lock();
             s.shadow.as_ref().and_then(|m| m.get(&lba).cloned())
+                .or_else(|| s.metadata_cache.get(&lba).cloned())
         } {
             return Ok(buf);
         }
         let bs = self.sb.block_size as u64;
-        read_byte_range(&*self.dev, lba * bs, self.sb.block_size as usize)
+        let buf = read_byte_range(&*self.dev, lba * bs, self.sb.block_size as usize)?;
+        // Metadata is bounded by the mount image in the normal boot path.  A
+        // cap prevents a streaming metadata workload from pinning unlimited
+        // memory; clear only clean entries, never a live journal shadow.
+        const META_CACHE_MAX_BLOCKS: usize = 8192;
+        let mut s = self.state.lock();
+        if s.metadata_cache.len() >= META_CACHE_MAX_BLOCKS { s.metadata_cache.clear(); }
+        s.metadata_cache.insert(lba, buf.clone());
+        Ok(buf)
     }
 
     /// Open a shadow scope: every `metadata_write` inside `f`

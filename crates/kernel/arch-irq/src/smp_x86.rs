@@ -147,6 +147,8 @@ unsafe fn ap_main_x86(percpu_base: u64, logical_cpu_id: u32) -> ! {
     unsafe {
         let pc = ctx.percpu_base as *mut u32;
         core::ptr::write_volatile(pc, logical_cpu_id);
+        core::ptr::write_volatile((ctx.percpu_base as *mut u8).add(cpu::LINUX_MODULE_PERCPU_OFFSET) as *mut usize,
+            logical_cpu_id as usize * cpu::LINUX_MODULE_PERCPU_STRIDE);
         use hal::CpuOps;
         hal_x86_64::X86CpuOps::set_percpu_base(ctx.percpu_base as *mut u8);
     }

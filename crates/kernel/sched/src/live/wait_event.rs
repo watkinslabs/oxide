@@ -109,6 +109,36 @@ pub unsafe fn wait_event_uninterruptible(wq: &WaitList, mut cond: impl FnMut() -
     WaitOutcome::Ready
 }
 
+/// Uninterruptible predicate wait with a caller-owned action between waiter
+/// publication and the condition recheck.
+///
+/// This is Linux's `prepare_to_wait()` shape for protocols whose wake-enable
+/// flag must be published only after the task is visible on the wait queue
+/// (SQPOLL's `IORING_SQ_NEED_WAKEUP` handshake is one).  `prepare` must be
+/// idempotent: it can run again after a spurious wake before the predicate
+/// becomes true.  It must not take a lock that a waker holds.
+///
+/// # SAFETY: process context on the running task's CPU with a live runqueue;
+/// `prepare` and the predicate together must provide the condition's normal
+/// publication/recheck contract.
+/// # C: O(N_wakeups) condition evaluations
+pub unsafe fn wait_event_uninterruptible_prepare(wq: &WaitList,
+                                                 mut prepare: impl FnMut(),
+                                                 mut cond: impl FnMut() -> bool) -> WaitOutcome {
+    loop {
+        // SAFETY: forwarded function contract; publish before enabling the
+        // producer's wake doorbell, exactly as Linux's prepare_to_wait loop.
+        unsafe { wq.park(); }
+        prepare();
+        if cond() { break; }
+        // SAFETY: publication above makes the schedule race-free.
+        unsafe { super::park_yield(); }
+        if cond() { break; }
+    }
+    wq.cancel_current_park();
+    WaitOutcome::Ready
+}
+
 /// Timed uninterruptible predicate wait. `deadline_ns == 0` disables timeout.
 /// # SAFETY: see [`wait_event_uninterruptible`].
 /// # C: O(N_wakeups)
@@ -152,4 +182,31 @@ pub unsafe fn wait_event_interruptible_until(wq: &WaitList, deadline_ns: u64,
 pub unsafe fn wait_event_killable(wq: &WaitList, cond: impl FnMut() -> bool) -> WaitOutcome {
     // SAFETY: forwarded contract; untimed, so the clock is never consulted.
     unsafe { wait_event(wq, WaitState::Killable, 0, || 0, cond) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+    #[test]
+    fn prepared_predicate_arms_before_its_first_recheck() {
+        let wait = WaitList::new();
+        let armed = AtomicBool::new(false);
+        let prepares = AtomicU32::new(0);
+        // Hosted tests have no installed runqueue, but the helper still runs
+        // its publication/prepare/recheck sequencing synchronously.
+        let out = unsafe {
+            wait_event_uninterruptible_prepare(
+                &wait,
+                || {
+                    prepares.fetch_add(1, Ordering::Relaxed);
+                    armed.store(true, Ordering::Release);
+                },
+                || armed.load(Ordering::Acquire),
+            )
+        };
+        assert_eq!(out, WaitOutcome::Ready);
+        assert_eq!(prepares.load(Ordering::Relaxed), 1);
+    }
 }

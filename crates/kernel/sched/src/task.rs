@@ -27,7 +27,7 @@ use core::sync::atomic::{AtomicBool, AtomicI8, AtomicI32, AtomicPtr, AtomicU16, 
 #[cfg(feature = "debug-task-fpu-provenance")]
 use core::sync::atomic::AtomicUsize;
 
-use sync::{Namespace, Spinlock, TaskList as TaskListClass};
+use sync::{Namespace, Spinlock, TaskList as TaskListClass, TaskWake as TaskWakeClass};
 use vfs::FdTable;
 use vmm::AddressSpace;
 use network_namespace::NetworkNamespaceRef;
@@ -93,6 +93,10 @@ pub struct Task {
     pub name: Spinlock<[u8; TASK_COMM_LEN], TaskListClass>,
 
     pub state:    AtomicU8,
+    /// Serializes the Sleeping→Runnable claim with affinity changes through
+    /// the subsequent CPU-selection/enqueue decision. This is the task wake
+    /// serialization boundary; it is acquired before a runqueue lock.
+    pub task_wake_lock: Spinlock<(), TaskWakeClass>,
     pub on_rq:    AtomicBool,
     /// SMP `on_cpu` (Linux): true while executing on a CPU; set on switch-to,
     /// cleared in finish_task_switch after register save; remote ttwu spins on it.

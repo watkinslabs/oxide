@@ -85,7 +85,7 @@ pub unsafe fn exit(result: i32) -> ! {
 /// # Ctx: process|kthread
 /// # Sleeps: until the thread exits
 pub unsafe fn stop_and_join(task: &Arc<Task>) -> i32 {
-    super::stop(task);
+    super::request_stop(task);
     // The reference joins with an UNINTERRUPTIBLE completion wait: a
     // half-stopped kernel thread has no valid state to leave behind, so the
     // joiner must not abandon the wait. The loop re-enters on every non-Ready

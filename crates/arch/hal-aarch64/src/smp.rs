@@ -50,6 +50,9 @@ pub struct ApContext {
     /// Boxed so the address survives drop of the ApContext box
     /// (which lives forever once published anyway).
     pub online_signal: u64,
+    /// Dense logical CPU index for scheduler and Linux module per-CPU state.
+    pub logical_cpu_id: u32,
+    pub _pad: u32,
 }
 
 /// Kernel-image base: turns a linked code VA into its load-time physical
@@ -302,7 +305,9 @@ pub unsafe extern "C" fn ap_main(ctx: *const ApContext) -> ! {
         let mpidr: u64;
         core::arch::asm!("mrs {x}, MPIDR_EL1", x = out(reg) mpidr, options(nomem, nostack));
         aff0 = (mpidr & 0xff) as u32;
-        core::ptr::write_volatile(pc, aff0);
+        core::ptr::write_volatile(pc, c.logical_cpu_id);
+        core::ptr::write_volatile((c.percpu_base as *mut u8).add(cpu::LINUX_MODULE_PERCPU_OFFSET) as *mut usize,
+            c.logical_cpu_id as usize * cpu::LINUX_MODULE_PERCPU_STRIDE);
         crate::ArmCpuOps::set_percpu_base(c.percpu_base as *mut u8);
     }
     #[cfg(feature = "debug-irq")]
@@ -452,7 +457,10 @@ pub unsafe fn bring_up_aps_psci() -> usize {
         if AP_PERCPU_BYTES != hal::PAGE_SIZE_BYTES as usize { continue; }
         let Some(percpu) = alloc_percpu_page() else { continue; };
         let percpu_base = percpu as u64;
-        let ctx = Box::leak(Box::new(ApContext { stack_top, percpu_base, online_signal: 0 }));
+        let logical_cpu_id = cpu::logical_id_for_hardware((mpidr & MPIDR_AFF_MASK) as u32)
+            .unwrap_or((started + 1) as u32);
+        let ctx = Box::leak(Box::new(ApContext { stack_top, percpu_base, online_signal: 0,
+            logical_cpu_id, _pad: 0 }));
         let bb = Box::leak(Box::new(ApBootBlock {
             ttbr0_identity_pa: p.ap_l0_pa,
             ttbr1_pa:          p.ttbr1_pa,

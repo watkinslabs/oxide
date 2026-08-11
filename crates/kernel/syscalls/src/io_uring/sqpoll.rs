@@ -59,6 +59,11 @@ pub struct SqData {
     sq_wait: sched::live::WaitList,
     /// Threads waiting for the poll thread to observe a park request.
     park_wait: sched::live::WaitList,
+    /// Linux `io_sq_data::lock`: serializes a control operation from its
+    /// request to the corresponding release.  This is deliberately a
+    /// sleeping mutex: park callers wait for the poll thread, so a spinlock
+    /// here would turn a slow poller into an SMP-wide busy wait.
+    park_gate: sched::live::Mutex<()>,
     /// The thread itself, once it exists.
     task: Spinlock<Option<Arc<sched::Task>>, SqLockClass>,
     /// Outstanding park requests. Nested, so two parkers cannot release each
@@ -95,37 +100,31 @@ impl SqData {
         self.wait.wake_all();
     }
 
-    /// Linux `io_sq_thread_park`: stand the thread down and wait until it has
-    /// actually stood down, so the caller may touch ring state the thread also
-    /// touches.
+    /// Linux `io_sq_thread_park`: stand the thread down and return an owner
+    /// guard.  The guard keeps the control gate locked until its drop invokes
+    /// the matching `io_sq_thread_unpark`, so two control operations cannot
+    /// interleave their parked-state changes.
     ///
     /// # SAFETY: process context on the caller's own CPU, holding no lock the
     /// poll thread takes, and the caller must not be the poll thread itself.
     /// # C: O(1) + the wait
     /// # Sleeps: until the thread parks
-    pub unsafe fn park(&self) {
+    pub unsafe fn park(&self) -> SqParkGuard<'_> {
+        // SAFETY: inherited from this function's process-context contract.
+        // Like Linux's `mutex_lock(&sqd->lock)`, the gate remains held across
+        // the caller's state change and is released by `SqParkGuard::drop`.
+        let gate = unsafe { self.park_gate.lock() };
         self.park_pending.fetch_add(1, Ordering::AcqRel);
         self.wait.wake_all();
-        while !self.parked.load(Ordering::Acquire) && !self.dead() {
-            // SAFETY: per this fn's contract — process context, runqueue installed; the poll thread's park publication is this list's only waker and takes no lock the caller holds.
-            let out = unsafe {
-                sched::live::wait_event(
-                    &self.park_wait, sched::task::WaitState::Killable, 0,
-                    || 0, || self.parked.load(Ordering::Acquire) || self.dead(),
-                )
-            };
-            if matches!(out, sched::task::WaitOutcome::Ready) { break; }
+        // SAFETY: per this function's contract.  The generic wait helper
+        // performs Linux's condition -> publish -> recheck -> schedule loop;
+        // a fatal signal cannot let this control operation resume while the
+        // poll thread is still touching the state it is about to change.
+        unsafe {
+            sched::live::wait_event_uninterruptible(&self.park_wait,
+                || self.parked.load(Ordering::Acquire) || self.dead());
         }
-    }
-
-    /// Linux `io_sq_thread_unpark`: release one park request. # C: O(1)
-    pub fn unpark(&self) {
-        if self.park_pending.fetch_update(Ordering::AcqRel, Ordering::Acquire,
-                                          |n| if n == 0 { None } else { Some(n - 1) }).is_err() {
-            return;
-        }
-        self.park_wait.wake_all();
-        self.wait.wake_all();
+        SqParkGuard { sqd: self, gate: Some(gate) }
     }
 
     /// Add a ring to this thread's set. # C: O(N_rings)
@@ -160,11 +159,44 @@ impl SqData {
     }
 
     /// Pin the thread to `mask`, or release it to every processor when `mask`
-    /// is zero. # C: O(1)
-    pub fn set_cpus_allowed(&self, mask: u64) {
+    /// is zero.  Only `SqParkGuard` exposes this, matching Linux's rule that
+    /// the SQPOLL control lock must be held. # C: O(1)
+    fn set_cpus_allowed_parked(&self, mask: u64) {
         let t = self.task.lock().clone();
         let Some(t) = t else { return };
         t.cpus_allowed.store(if mask == 0 { u64::MAX } else { mask }, Ordering::Release);
+    }
+}
+
+/// Held result of [`SqData::park`], equivalent to Linux holding
+/// `sqd->lock` between `io_sq_thread_park()` and `io_sq_thread_unpark()`.
+/// Dropping this guard always releases exactly the request it acquired.
+pub struct SqParkGuard<'a> {
+    sqd: &'a SqData,
+    gate: Option<sched::live::MutexGuard<'a, ()>>,
+}
+
+impl SqParkGuard<'_> {
+    /// Change the poll thread's allowed processors while it is parked.
+    /// # C: O(1)
+    pub fn set_cpus_allowed(&self, mask: u64) {
+        self.sqd.set_cpus_allowed_parked(mask);
+    }
+}
+
+impl Drop for SqParkGuard<'_> {
+    fn drop(&mut self) {
+        // Linux clears the park bit, decrements `park_pending`, drops its
+        // mutex, then wakes the poll thread.  This guard is the sole holder
+        // of the matching request, so an underflow is an internal bug rather
+        // than a recoverable condition.
+        let was_one = self.sqd.park_pending.fetch_sub(1, Ordering::AcqRel) == 1;
+        debug_assert!(was_one);
+        // Release the control gate before waking either a next controller or
+        // the poll thread, exactly as Linux releases `sqd->lock` first.
+        drop(self.gate.take());
+        self.sqd.park_wait.wake_all();
+        self.sqd.wait.wake_all();
     }
 }
 
@@ -249,20 +281,21 @@ fn do_park(sqd: &SqData) {
 /// # Sleeps: until woken
 fn idle(sqd: &SqData, rings: &[Arc<IoUringInode>]) {
     // SAFETY: running poll thread in process context on its own CPU holding no
-    // lock; this named publication is paired with the doorbell recheck below.
-    unsafe { sqd.wait.prepare_to_wait(); }
-    // Every ring the thread serves raises its own doorbell: a submitter reads
-    // the word of the ring it is publishing to and nothing else.
-    for r in rings { update_sq_flags(r, arm_need_wakeup); }
-    // Separates the doorbell stores from the tail loads below. The submitter's
-    // side of this pair is its own store-tail / load-flags barrier.
-    core::sync::atomic::fence(Ordering::SeqCst);
-    let o = observe_idle(sqd, total_ready(rings), rings);
-    if sleeps_after_arm(&o) {
-        // SAFETY: registered on `wait` above, holding no lock, in process context on this thread's own CPU.
-        unsafe { sched::live::schedule(); }
-    } else {
-        sqd.wait.cancel_current_park();
+    // lock.  The generic helper publishes the waiter before this closure arms
+    // `NEED_WAKEUP`, then rechecks the observed ring state before sleeping.
+    unsafe {
+        sched::live::wait_event_uninterruptible_prepare(
+            &sqd.wait,
+            || {
+                // Every ring the thread serves raises its own doorbell: a
+                // submitter reads the word of the ring it is publishing to
+                // and nothing else.
+                for r in rings { update_sq_flags(r, arm_need_wakeup); }
+                // Pairs with submitters' store-tail/load-flags barrier.
+                core::sync::atomic::fence(Ordering::SeqCst);
+            },
+            || !sleeps_after_arm(&observe_idle(sqd, total_ready(rings), rings)),
+        );
     }
     for r in rings { update_sq_flags(r, disarm_need_wakeup); }
 }
@@ -368,6 +401,7 @@ pub fn offload_create(ring: &Arc<IoUringInode>, p: &Params) -> Result<(), Errno>
         wait: sched::live::WaitList::new(),
         sq_wait: sched::live::WaitList::new(),
         park_wait: sched::live::WaitList::new(),
+        park_gate: sched::live::Mutex::new(()),
         task: Spinlock::new(None),
         park_pending: AtomicU32::new(0),
         parked: AtomicBool::new(false),

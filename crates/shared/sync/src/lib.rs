@@ -185,6 +185,10 @@ decl_lock_class! {
     // sits immediately above TaskList; readers release it before pinning a
     // candidate task's mm.
     MmTaskIndex  = 101,
+    // Linux task_struct::pi_lock equivalent. It serializes a task's wake
+    // state and affinity selection before the selected runqueue is acquired,
+    // so it must rank below Runqueue (the ttwu lock order is task -> rq).
+    TaskWake     = 105,
     Runqueue     = 110,
     // Throttled `SCHED_DEADLINE` entities awaiting replenishment
     // (`sched::deadline::replenish`). Taken irqsave: the hard timer IRQ sweeps
