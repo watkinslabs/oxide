@@ -1,4 +1,5 @@
 use super::types::*;
+use super::registry;
 use core::ffi::{c_char, c_void};
 use core::ptr::null_mut;
 use pci::{
@@ -330,6 +331,7 @@ const PCI_FUNC_SEP: usize = 10;
 const PCI_FUNC_HEX: usize = 11;
 
 fn bdf(dev: *const LinuxPciDev) -> Bdf {
+    if let Some(bdf) = registry::bdf_for(dev) { return bdf; }
     // SAFETY: callers validate dev before deriving the BDF.
     unsafe {
         Bdf {
