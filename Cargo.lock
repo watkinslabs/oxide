@@ -842,6 +842,7 @@ dependencies = [
  "firmware",
  "mmio-map",
  "pci",
+ "pmm",
 ]
 
 [[package]]

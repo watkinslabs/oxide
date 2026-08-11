@@ -11,6 +11,7 @@ path = "src/lib.rs"
 pci = { path = "../../drivers/pci" }
 mmio-map = { path = "../mmio-map" }
 firmware = { path = "../firmware" }
+pmm = { path = "../mm-pmm" }
 
 [lints]
 workspace = true

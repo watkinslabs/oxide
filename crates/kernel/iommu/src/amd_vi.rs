@@ -5,10 +5,61 @@ pub const EVENT_LOG: u64 = 0x0010;
 pub const CONTROL: u64 = 0x0018;
 pub const COMMAND_HEAD: u64 = 0x2000;
 pub const COMMAND_TAIL: u64 = 0x2008;
+pub const EVENT_HEAD: u64 = 0x2010;
+pub const EVENT_TAIL: u64 = 0x2018;
 pub const CONTROL_IOMMU_ENABLE: u64 = 1 << 0;
+pub const CONTROL_EVENT_ENABLE: u64 = 1 << 2;
 pub const CONTROL_COMMAND_ENABLE: u64 = 1 << 12;
 const MMIO_BYTES: u64 = 0x80000;
 const PAGE_BYTES: u64 = 4096;
+const DEVICE_TABLE_BYTES: u64 = 2 * 1024 * 1024;
+const COMMAND_BUFFER_BYTES: u64 = 8192;
+const EVENT_LOG_BYTES: u64 = 8192;
+const DEVICE_TABLE_ORDER: u8 = 9;
+const BUFFER_ORDER: u8 = 1;
+const BUFFER_SIZE_ENCODING: u64 = 0x9 << 56;
+
+/// Permanent DMA-visible AMD-Vi tables. They remain allocated until the
+/// owning unit is disabled and no requester can issue DMA through it.
+pub struct AmdViTables { device_table_pa: u64, command_buffer_pa: u64, event_log_pa: u64 }
+impl AmdViTables {
+    /// Allocate and clear one full requester table plus command and event rings. # C: O(table bytes)
+    pub fn allocate(hhdm_offset: u64) -> Option<Self> {
+        if hhdm_offset == 0 { return None; }
+        let device_table_pa = pmm::setup::alloc_contig(pmm::Order(DEVICE_TABLE_ORDER))?;
+        let Some(command_buffer_pa) = pmm::setup::alloc_contig(pmm::Order(BUFFER_ORDER)) else {
+            // SAFETY: allocation was not published to hardware or any other owner.
+            unsafe { pmm::setup::free_contig(device_table_pa, pmm::Order(DEVICE_TABLE_ORDER)); }
+            return None;
+        };
+        let Some(event_log_pa) = pmm::setup::alloc_contig(pmm::Order(BUFFER_ORDER)) else {
+            // SAFETY: neither allocation was published to hardware or any other owner.
+            unsafe {
+                pmm::setup::free_contig(command_buffer_pa, pmm::Order(BUFFER_ORDER));
+                pmm::setup::free_contig(device_table_pa, pmm::Order(DEVICE_TABLE_ORDER));
+            }
+            return None;
+        };
+        // SAFETY: each direct-map span is a newly allocated exclusive PMM run.
+        unsafe {
+            core::ptr::write_bytes(hhdm_offset.wrapping_add(device_table_pa) as *mut u8, 0, DEVICE_TABLE_BYTES as usize);
+            core::ptr::write_bytes(hhdm_offset.wrapping_add(command_buffer_pa) as *mut u8, 0, COMMAND_BUFFER_BYTES as usize);
+            core::ptr::write_bytes(hhdm_offset.wrapping_add(event_log_pa) as *mut u8, 0, EVENT_LOG_BYTES as usize);
+        }
+        Some(Self { device_table_pa, command_buffer_pa, event_log_pa })
+    }
+    /// Construct table bases after validating permanent physical allocations. # C: O(1)
+    pub const fn from_physical(device_table_pa: u64, command_buffer_pa: u64, event_log_pa: u64) -> Option<Self> {
+        if device_table_pa & (DEVICE_TABLE_BYTES - 1) != 0 || command_buffer_pa & (PAGE_BYTES - 1) != 0 || event_log_pa & (PAGE_BYTES - 1) != 0 { return None; }
+        Some(Self { device_table_pa, command_buffer_pa, event_log_pa })
+    }
+    /// Device-table base register value. # C: O(1)
+    pub const fn device_table_register(&self) -> u64 { self.device_table_pa | ((DEVICE_TABLE_BYTES / PAGE_BYTES) - 1) }
+    /// Command-ring base register value. # C: O(1)
+    pub const fn command_buffer_register(&self) -> u64 { self.command_buffer_pa | BUFFER_SIZE_ENCODING }
+    /// Event-log base register value. # C: O(1)
+    pub const fn event_log_register(&self) -> u64 { self.event_log_pa | BUFFER_SIZE_ENCODING }
+}
 
 /// Owned AMD-Vi register aperture. It is mapped as device memory and may only
 /// be enabled after its device and command tables are programmed.
@@ -49,8 +100,16 @@ impl AmdViUnit {
     pub const fn state(&self) -> AmdViState { self.state }
     /// Advance after owned device MMIO mapping exists. # C: O(1)
     pub fn mapped(&mut self) -> bool { self.advance(AmdViState::Discovered, AmdViState::Mapped) }
-    /// Advance after device/event/command table bases are programmed. # C: O(1)
-    pub fn tables_programmed(&mut self) -> bool { self.advance(AmdViState::Mapped, AmdViState::TablesProgrammed) }
+    /// Program DMA-visible table bases and enable their command and event rings. # C: O(1)
+    pub fn program_tables(&mut self, regs: &AmdViRegisters, tables: &AmdViTables) -> bool {
+        if self.state != AmdViState::Mapped { return false; }
+        let Some(control) = regs.read64(CONTROL) else { return false; };
+        if control & CONTROL_IOMMU_ENABLE != 0 { return false; }
+        if !regs.write64(DEVICE_TABLE, tables.device_table_register()) || !regs.write64(COMMAND_BUFFER, tables.command_buffer_register()) || !regs.write64(EVENT_LOG, tables.event_log_register()) { return false; }
+        if !regs.write64(COMMAND_HEAD, 0) || !regs.write64(COMMAND_TAIL, 0) || !regs.write64(EVENT_HEAD, 0) || !regs.write64(EVENT_TAIL, 0) { return false; }
+        regs.write64(CONTROL, control | CONTROL_COMMAND_ENABLE | CONTROL_EVENT_ENABLE)
+            && self.advance(AmdViState::Mapped, AmdViState::TablesProgrammed)
+    }
     /// Advance after every enabled requester has a domain DTE and invalidate completed. # C: O(1)
     pub fn domains_attached(&mut self) -> bool { self.advance(AmdViState::TablesProgrammed, AmdViState::DomainsAttached) }
     /// Advance only after translation hardware is enabled. # C: O(1)
@@ -65,7 +124,13 @@ impl AmdViUnit {
     use super::*;
     #[test] fn translation_requires_programmed_and_attached_domains() {
         let mut u = AmdViUnit::new(0xfed8_0000, 3);
-        assert!(!u.enabled()); assert!(u.mapped()); assert!(u.tables_programmed());
-        assert!(!u.enabled()); assert!(u.domains_attached()); assert!(u.enabled());
+        assert!(!u.enabled()); assert!(u.mapped());
+        assert!(!u.enabled()); assert!(!u.domains_attached());
+    }
+    #[test] fn table_registers_require_aligned_permanent_memory() {
+        let t = AmdViTables::from_physical(0x4000_0000, 0x5000_0000, 0x5000_2000).unwrap();
+        assert_eq!(t.device_table_register(), 0x4000_01ff);
+        assert_eq!(t.command_buffer_register(), 0x0900_0000_5000_0000);
+        assert!(AmdViTables::from_physical(0x4000_1000, 0x5000_0000, 0x5000_2000).is_none());
     }
 }
