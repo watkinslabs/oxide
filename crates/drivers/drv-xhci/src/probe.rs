@@ -85,12 +85,22 @@ fn address_first_usb2(mmio: &Mmio, command: &mut CommandTransport, dcbaa: &DmaPa
         let enable_pa = command.submit(mmio, Trb::enable_slot())?;
         let enable = irq.wait_command_completion(enable_pa, 1_000_000_000)?;
         if enable.completion_code != crate::ring::COMPLETION_SUCCESS || enable.slot == 0 { continue; }
-        let Some(device) = AddressDeviceDma::allocate(mmio.geometry().context_bytes, port, portsc) else { return None; };
+        let Some(mut device) = AddressDeviceDma::allocate(mmio.geometry().context_bytes, port, portsc) else { return None; };
         if !device.publish_dcbaa(dcbaa, enable.slot) { return None; }
         let Some(address) = Trb::address_device(device.input_pa(), enable.slot, false) else { return None; };
         let Some(address_pa) = command.submit(mmio, address) else { return None; };
         let addressed = irq.wait_command_completion(address_pa, 1_000_000_000);
-        if addressed.is_some_and(|completion| completion.completion_code == crate::ring::COMPLETION_SUCCESS && completion.slot == enable.slot) { return Some(device); }
+        if addressed.is_some_and(|completion| completion.completion_code == crate::ring::COMPLETION_SUCCESS && completion.slot == enable.slot) {
+            let Some(td) = crate::usb::get_device_descriptor_trbs(device.descriptor_pa()) else { return None; };
+            let Some(status_pa) = device.submit_ep0(mmio, enable.slot, &td) else { return None; };
+            let completed = irq.wait_transfer_completion(status_pa, 1_000_000_000);
+            if completed.is_some_and(|completion| {
+                completion.completion_code == crate::ring::COMPLETION_SUCCESS
+                    && completion.residual == 0
+                    && completion.endpoint_id == 1
+                    && completion.slot == enable.slot
+            }) && device.device_descriptor().is_some() { return Some(device); }
+        }
         if let Some(disable) = Trb::disable_slot(enable.slot) {
             if let Some(disable_pa) = command.submit(mmio, disable) { let _ = irq.wait_command_completion(disable_pa, 1_000_000_000); }
         }

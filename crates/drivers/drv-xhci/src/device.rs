@@ -6,7 +6,7 @@ use crate::platform::Mmio;
 use crate::ring::{CommandRing, Trb, TRB_BYTES, TRBS_PER_SEGMENT};
 
 /// Input context, output device context, and endpoint-zero transfer ring.
-pub struct AddressDeviceDma { input: DmaPage, output: DmaPage, ep0: DmaPage, ep0_ring: CommandRing }
+pub struct AddressDeviceDma { input: DmaPage, output: DmaPage, ep0: DmaPage, descriptor: DmaPage, ep0_ring: CommandRing }
 
 impl AddressDeviceDma {
     /// Allocate and construct every DMA object required by Address Device. # C: O(page bytes)
@@ -14,6 +14,7 @@ impl AddressDeviceDma {
         let input = DmaPage::allocate()?;
         let output = DmaPage::allocate()?;
         let ep0 = DmaPage::allocate()?;
+        let descriptor = DmaPage::allocate()?;
         let words = context::address_device_words(context_bytes, port, portsc, ep0.pa())?;
         for word in words { if !input.write32(word.offset as u64, word.value) { return None; } }
         let link = Trb::link(ep0.pa(), true)?;
@@ -22,13 +23,22 @@ impl AddressDeviceDma {
         }
         input.clean_to_device(); output.clean_to_device(); ep0.clean_to_device();
         let ep0_ring = CommandRing::new(ep0.pa())?;
-        Some(Self { input, output, ep0, ep0_ring })
+        Some(Self { input, output, ep0, descriptor, ep0_ring })
     }
 
     /// Input-context physical address for Address Device. # C: O(1)
     pub fn input_pa(&self) -> u64 { self.input.pa() }
     /// Endpoint-zero transfer-ring physical address. # C: O(1)
     pub fn ep0_pa(&self) -> u64 { self.ep0.pa() }
+    /// DMA address reserved for a standard device descriptor. # C: O(1)
+    pub fn descriptor_pa(&self) -> u64 { self.descriptor.pa() }
+    /// Read and validate the device descriptor after its completed IN transfer. # C: O(18)
+    pub fn device_descriptor(&self) -> Option<crate::usb::DeviceDescriptor> {
+        self.descriptor.invalidate_from_device();
+        let mut bytes = [0u8; crate::usb::DEVICE_DESC_BYTES];
+        for (offset, byte) in bytes.iter_mut().enumerate() { *byte = self.descriptor.read8(offset as u64)?; }
+        crate::usb::device_descriptor(&bytes)
+    }
     /// Publish one complete EP0 control-transfer TD and ring endpoint zero. # C: O(TRBs)
     pub fn submit_ep0(&mut self, mmio: &Mmio, slot: u8, trbs: &[Trb]) -> Option<u64> {
         if !(2..=3).contains(&trbs.len()) { return None; }
