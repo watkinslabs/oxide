@@ -100,6 +100,8 @@ pub struct Mapping {
 impl Mapping {
     /// Base VA of the mapped MMIO window. # C: O(1)
     pub fn base_va(&self) -> u64 { self.base_va }
+    /// Bytes covered by this page-rounded MMIO window. # C: O(1)
+    pub const fn bytes(&self) -> u64 { self.n_pages * PAGE_BYTES }
 
     /// Tear down this MMIO window. Idempotent so probe-failure and remove
     /// paths can call it during reverse-order cleanup.

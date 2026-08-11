@@ -25,7 +25,7 @@ extern crate alloc;
 mod regs;
 #[cfg(any(target_os = "oxide-kernel", test))]
 mod lifecycle;
-#[cfg(target_os = "oxide-kernel")]
+#[cfg(any(target_os = "oxide-kernel", test))]
 mod irq;
 #[cfg(target_os = "oxide-kernel")]
 mod platform;
@@ -195,7 +195,7 @@ mod imp {
             return 0;
         }
         if !block::completion::register(run_completion_bottom_half) { return 0; }
-        let Some(irq) = crate::irq::bind(device_key) else {
+        let Some(irq) = crate::irq::bind(device_key, &mmio, bar0_off) else {
             unregister_completion_if_idle();
             return 0;
         };
@@ -332,22 +332,6 @@ mod imp {
 #[cfg(target_os = "oxide-kernel")]
 pub use imp::{command_orig_for, device_key_from_bdf, init, remove, shutdown, NvmeBlk, NVME_CLASS24};
 
-#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-fn decode_bars(bdf: pci::Bdf) -> [pci::Bar; 6] {
-    match hal_x86_64::pci::EcamPci::from_published() {
-        Some(r) => pci::decode_bars(&r, bdf),
-        None => [pci::Bar::None; 6],
-    }
-}
-
-#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
-fn decode_bars(bdf: pci::Bdf) -> [pci::Bar; 6] {
-    match hal_aarch64::pci::EcamPci::from_published() {
-        Some(r) => pci::decode_bars(&r, bdf),
-        None => [pci::Bar::None; 6],
-    }
-}
-
 #[cfg(target_os = "oxide-kernel")]
 fn restore_pci_bus_master(dev: &drv::Device, command_orig: u16) {
     let Some(bdf) = pci::parse_bdf_addr(&dev.addr) else { return; };
@@ -402,15 +386,16 @@ impl drv::Driver for NvmeDriver {
                 return Err(drv::Error::ProbeFailed);
             }
         };
-        let bars = decode_bars(bdf);
-        let bar0_pa = bars[0].mem_base().unwrap_or(0);
-        if bar0_pa == 0 {
+        let Some(resource) = dev.resources.iter().find(|resource| resource.bar == 0 && resource.flags & drv::IORESOURCE_MEM != 0) else {
             restore_pci_bus_master(dev, command_orig);
             return Err(drv::Error::ProbeFailed);
-        }
-        // SAFETY: BAR0 PA came from this PCI function's config space; two
-        // pages cover the controller register file and QEMU doorbells.
-        let mmio = unsafe { mmio_map::map_owned(bar0_pa & BAR_PAGE_BASE_MASK, 2) };
+        };
+        let bar0_pa = resource.start;
+        let bar_bytes = resource.end.checked_sub(resource.start).and_then(|bytes| bytes.checked_add(1)).ok_or(drv::Error::ProbeFailed)?;
+        let map_bytes = (bar0_pa & BAR_PAGE_OFFSET_MASK).checked_add(bar_bytes).ok_or(drv::Error::ProbeFailed)?;
+        let pages = map_bytes.checked_add(BAR_PAGE_OFFSET_MASK).and_then(|bytes| bytes.checked_div(BAR_PAGE_SIZE)).ok_or(drv::Error::ProbeFailed)?;
+        // SAFETY: BAR0 was enumerated for this NVMe function; this mapping owns its complete page-rounded aperture.
+        let mmio = unsafe { mmio_map::map_owned(bar0_pa & BAR_PAGE_BASE_MASK, pages) };
         let device_key = imp::device_key_from_bdf(bdf);
         if imp::init(device_key, command_orig, mmio, bar0_pa & BAR_PAGE_OFFSET_MASK) == 0 {
             lifecycle::run_probe_failure_cleanup(|| restore_pci_bus_master(dev, command_orig));
