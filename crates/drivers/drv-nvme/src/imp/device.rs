@@ -46,13 +46,11 @@ impl NvmeBlk {
             if self.irq.completed() { return true; }
             if wait::now_ns() >= deadline {
                 self.poisoned.store(true, Ordering::Release);
-                klog::write_raw(b"[NVME-TIMEOUT] interrupt completion missing\n");
                 return false;
             }
             if wait::poll_enabled(|| self.unavailable() || self.irq.completed(), deadline) { continue; }
             if wait::now_ns() >= deadline {
                 self.poisoned.store(true, Ordering::Release);
-                klog::write_raw(b"[NVME-TIMEOUT] interrupt completion missing\n");
                 return false;
             }
             wait::park_checked(&self.completion, deadline, || self.unavailable() || self.irq.completed());
