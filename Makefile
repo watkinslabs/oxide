@@ -40,7 +40,7 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
 # `make artifacts`       — export stable packaging artifacts to target/artifacts.
 # `make clean`           — `cargo clean`.
 
-.PHONY: all build x86 arm \
+.PHONY: all build x86 arm kpi-layout \
         build-debug x86-debug arm-debug \
         test lint lint-ratchet lint-ratchet-update audit-counts profile-policy warnings-control stats ci \
         qemu-x86 qemu-arm qemu-x86-debug qemu-arm-debug qemu-mcp \
@@ -63,6 +63,11 @@ TRIM_ROOTFS_CACHE  = $(XTASK) gc --keep 1000000 --cache-keep $(ROOTFS_CACHE_KEEP
         clean clean-builds help
 
 all: build
+
+# Compile the C module ABI assertions which pair with the Rust mirror tests.
+kpi-layout:
+	$(CC) -std=c11 -Wall -Werror -I kpi/include tools/kpi-layout-smoke.c -o /tmp/oxide-kpi-layout-smoke
+	/tmp/oxide-kpi-layout-smoke
 
 # ---- builds ---------------------------------------------------------------
 
