@@ -212,6 +212,19 @@ pub fn iommu_unit(index: usize) -> Option<IommuUnit> {
     })
 }
 
+/// Return the sole translation unit for a PCI segment, refusing ambiguity.
+/// Domain attachment must not select an IOMMU by requester ID alone. # C: O(N)
+pub fn iommu_unit_for_segment(segment: u16) -> Option<IommuUnit> {
+    let mut found = None;
+    for index in 0..iommu_unit_count() {
+        let unit = iommu_unit(index)?;
+        if unit.segment != segment { continue; }
+        if found.is_some() { return None; }
+        found = Some(unit);
+    }
+    found
+}
+
 unsafe fn decode(pa: u64, hhdm_offset: u64, parse: fn(&[u8]) -> Result<IommuInventory, IommuError>, tag: &'static [u8]) {
     let p = (hhdm_offset.wrapping_add(pa)) as *const u8;
     // SAFETY: caller provides an HHDM-mapped standard ACPI header; offset 4 is within it.
