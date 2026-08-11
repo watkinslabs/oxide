@@ -210,6 +210,14 @@ impl Mmio {
         self.read32(offset).is_some()
     }
 
+    /// Publish ready endpoint TRBs by ringing a slot's endpoint doorbell. # C: O(1)
+    pub fn ring_endpoint_doorbell(&self, slot: u8, endpoint_id: u8) -> bool {
+        if slot == 0 || slot > self.geometry.max_slots || endpoint_id == 0 || endpoint_id > 31 { return false; }
+        let Some(offset) = crate::regs::doorbell_offset(self.geometry, slot) else { return false; };
+        if !self.write32(offset, endpoint_id as u32) { return false; }
+        self.read32(offset).is_some()
+    }
+
     /// Reset a connected USB2 root-hub port and acknowledge its reset change. # C: O(reset timeout)
     pub fn reset_usb2_port(&self, port: u8) -> bool {
         let Some(offset) = crate::ports::portsc_offset(self.geometry.operational, port, self.geometry.max_ports)

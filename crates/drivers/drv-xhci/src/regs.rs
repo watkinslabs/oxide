@@ -78,4 +78,11 @@ mod tests {
         assert!(geometry(0x1000, 0x20, hcs, 0, 0x1000, 0x400).is_none());
         assert!(geometry(0x1000, 0x20, 0, 0, 0x200, 0x400).is_none());
     }
+
+    #[test]
+    fn device_doorbells_follow_the_valid_slot_range() {
+        let g = Geometry { operational: 0x40, runtime: 0x1000, doorbells: 0x2000, max_slots: 4, max_interrupters: 1, max_ports: 1, context_bytes: 32 };
+        assert_eq!(doorbell_offset(g, 1), Some(0x2004));
+        assert_eq!(doorbell_offset(g, 4), Some(0x2010));
+    }
 }
