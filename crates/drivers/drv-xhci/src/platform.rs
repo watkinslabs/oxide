@@ -67,6 +67,15 @@ impl DmaPage {
         Some(unsafe { read_volatile(va as *const u8) })
     }
 
+    /// Read one controller-written dword from this exclusive DMA page. # C: O(1)
+    pub fn read32(&self, offset: u64) -> Option<u32> {
+        if offset & 3 != 0 || offset.checked_add(4)? > PAGE { return None; }
+        let va = hhdm().checked_add(self.pa)?.checked_add(offset)?;
+        // SAFETY: this DmaPage exclusively owns the direct-map memory and the
+        // offset was checked for dword alignment and page bounds.
+        Some(unsafe { read_volatile(va as *const u32) })
+    }
+
     /// Make the completed DMA page visible before its physical address is published.
     /// # C: O(page bytes on non-coherent architectures)
     pub fn clean_to_device(&self) {

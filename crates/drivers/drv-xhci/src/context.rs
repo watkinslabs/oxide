@@ -11,6 +11,9 @@ const EP0_TYPE_CONTROL: u32 = 4 << 3;
 const EP0_ERROR_COUNT: u32 = 3 << 1;
 const EP0_DEQUEUE_CYCLE: u64 = 1;
 const EP0_AVERAGE_TRB: u32 = 8;
+const EP0_FLAG: u32 = 1 << 1;
+const EP_STATE_MASK: u32 = 0x7;
+const MAX_PACKET_MASK: u32 = 0xffff << 16;
 
 /// One dword in a controller input-context DMA region. # C: O(1)
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -46,6 +49,25 @@ pub fn address_device(bytes: &mut [u8], context_bytes: u8, port: u8, portsc: u32
     true
 }
 
+/// Exact writes for Linux's post-descriptor EP0 Evaluate Context update. # C: O(1)
+pub fn evaluate_ep0_words(context_bytes: u8, output_ep0: [u32; 5], max_packet: u8) -> Option<[ContextWord; 7]> {
+    let stride = context_bytes as usize;
+    if !matches!(stride, 32 | 64) || !matches!(max_packet, 8 | 16 | 32 | 64) { return None; }
+    let ep0 = EP0_CONTEXT * stride;
+    let words = [
+        ContextWord { offset: 0, value: 0 },
+        ContextWord { offset: 4, value: EP0_FLAG },
+        ContextWord { offset: ep0, value: output_ep0[0] & !EP_STATE_MASK },
+        ContextWord { offset: ep0 + 4, value: output_ep0[1] & !MAX_PACKET_MASK | (u32::from(max_packet) << 16) },
+        ContextWord { offset: ep0 + 8, value: output_ep0[2] },
+        ContextWord { offset: ep0 + 12, value: output_ep0[3] },
+        ContextWord { offset: ep0 + 16, value: output_ep0[4] },
+    ];
+    // Preserve an explicit array return while ensuring controller offsets fit a page.
+    if words.iter().any(|word| word.offset + 4 > 4096) { return None; }
+    Some(words)
+}
+
 fn put32(bytes: &mut [u8], offset: usize, value: u32) { bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes()); }
 
 #[cfg(test)]
@@ -71,5 +93,16 @@ mod tests {
         assert!(!address_device(&mut bytes, 32, 1, 0, 0x80_000));
         assert!(!address_device(&mut bytes, 32, 1, 3 << 10, 0x80_004));
         assert!(!address_device(&mut bytes, 48, 1, 3 << 10, 0x80_000));
+    }
+
+    #[test]
+    fn evaluate_context_copies_output_ep0_and_changes_only_packet_size() {
+        let words = evaluate_ep0_words(64, [3, 0x0040_0026, 0x8001, 0, 8], 8).unwrap();
+        assert_eq!(words[0], ContextWord { offset: 0, value: 0 });
+        assert_eq!(words[1], ContextWord { offset: 4, value: EP0_FLAG });
+        assert_eq!(words[2], ContextWord { offset: 128, value: 0 });
+        assert_eq!(words[3], ContextWord { offset: 132, value: 0x0008_0026 });
+        assert_eq!(words[4], ContextWord { offset: 136, value: 0x8001 });
+        assert!(evaluate_ep0_words(32, [0; 5], 7).is_none());
     }
 }
