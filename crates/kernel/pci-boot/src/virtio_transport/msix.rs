@@ -3,19 +3,9 @@ use sync::{Spinlock, TaskList as VirtioTransportLockClass};
 
 use super::{TransportMappings, VIRTIO_PCI_PAGE_BASE_MASK};
 
-mod arch;
-mod log;
-
-const MSI_MESSAGE_ADDRESS_LOW_MASK: u64 = 0xFFFF_FFFF;
-const MSI_MESSAGE_ADDRESS_HIGH_SHIFT: u32 = 32;
-const MSIX_VECTOR_CONTROL_UNMASKED: u32 = 0;
-
-#[derive(Clone, Copy)]
 pub(crate) struct MsixBinding {
-    id: u32,
-    entry_va: u64,
-    cap_off: u8,
     pub(crate) queue_vector: u16,
+    group: Option<pci_irq::MsixGroup>,
 }
 
 struct TransportRecord {
@@ -43,118 +33,56 @@ fn msi_admitted(bdf: pci::Bdf) -> bool {
 
 pub(crate) fn bind_msix_vector(
     d: &pci::PciDevice,
-    caps: &pci::heapless_caps::CapVec,
     bars: &[pci::Bar; 6],
     mappings: &mut TransportMappings,
+    bindings: &mut Vec<MsixBinding>,
     queue_vector: u16,
     handler: fn(),
-) -> Option<MsixBinding> {
+) -> Option<u16> {
     if !msi_admitted(d.bdf) { return None; }
-    let c = caps.find(pci::CAP_ID_MSIX)?;
-    let m = arch::decode_cap(d.bdf, c.cfg_off)?;
-    let entry_off = pci::msix_table_entry_offset(m, queue_vector)?;
-    let tbar_pa = bars.get(m.table_bir as usize).and_then(|b| b.mem_base())?;
-    let entry_pa = tbar_pa.checked_add(entry_off)?;
+    let new_group = bindings.is_empty();
+    let mut group = if new_group { pci_irq::begin_msix(d.bdf)? } else {
+        bindings.first_mut()?.group.take()?
+    };
+    let (bar, entry_off) = match group.entry_offset(queue_vector) {
+        Some(entry) => entry,
+        None => { if new_group { group.release(); } else { bindings.first_mut()?.group = Some(group); } return None; }
+    };
+    let tbar_pa = match bars.get(bar as usize).and_then(|bar| bar.mem_base()) {
+        Some(pa) => pa,
+        None => { if new_group { group.release(); } else { bindings.first_mut()?.group = Some(group); } return None; }
+    };
+    let entry_pa = match tbar_pa.checked_add(entry_off) {
+        Some(pa) => pa,
+        None => { if new_group { group.release(); } else { bindings.first_mut()?.group = Some(group); } return None; }
+    };
     let page_pa = entry_pa & VIRTIO_PCI_PAGE_BASE_MASK;
     let page_off = entry_pa - page_pa;
-
-    let message = arch_irq::alloc_pci_msi(pci_requester_id(d.bdf), queue_vector as u32)?;
-    if !arch_irq::register_pci_msi_handler(message.irq, arch_irq::DeviceAction::VirtioPci, handler) {
-        arch_irq::free_pci_msi(message.irq);
+    let base_va = mappings.map_page(page_pa);
+    let entry_va = match base_va.checked_add(page_off) {
+        Some(va) => va,
+        None => { if new_group { group.release(); } else { bindings.first_mut()?.group = Some(group); } return None; }
+    };
+    if group.bind(pci_irq::MsixEntry { bar, vector: queue_vector, entry_va },
+        arch_irq::DeviceAction::VirtioPci, handler).is_none() {
+        if new_group { group.release(); } else { bindings.first_mut()?.group = Some(group); }
         return None;
     }
-    let base_va = mappings.map_page(page_pa);
-    let entry_va = base_va + page_off;
-
-    arch::set_enabled_masked(d.bdf, c.cfg_off);
-    write_msix_entry(entry_va, message.address, message.data);
-    log::binding(d.bdf, queue_vector, entry_va, message.address, message.data);
-    Some(MsixBinding {
-        id: message.irq,
-        entry_va,
-        cap_off: c.cfg_off,
-        queue_vector,
-    })
+    if new_group { bindings.push(MsixBinding { queue_vector, group: Some(group) }); }
+    else {
+        bindings.first_mut()?.group = Some(group);
+        bindings.push(MsixBinding { queue_vector, group: None });
+    }
+    Some(queue_vector)
 }
 
-fn write_msix_entry(entry_va: u64, msg_addr: u64, msg_data: u32) {
-    // SAFETY: entry_va addresses the requested 16-byte MSI-X table entry. The
-    // caller validated the entry index against the decoded table size.
-    unsafe {
-        core::ptr::write_volatile(
-            (entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *mut u32,
-            pci::MSIX_VECTOR_CONTROL_MASKED,
-        );
-        let _ = core::ptr::read_volatile((entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *const u32);
-        core::ptr::write_volatile(
-            (entry_va + pci::MSIX_MESSAGE_ADDR_LOW_OFF) as *mut u32,
-            (msg_addr & MSI_MESSAGE_ADDRESS_LOW_MASK) as u32,
-        );
-        core::ptr::write_volatile(
-            (entry_va + pci::MSIX_MESSAGE_ADDR_HIGH_OFF) as *mut u32,
-            (msg_addr >> MSI_MESSAGE_ADDRESS_HIGH_SHIFT) as u32,
-        );
-        core::ptr::write_volatile((entry_va + pci::MSIX_MESSAGE_DATA_OFF) as *mut u32, msg_data);
-        let _ = core::ptr::read_volatile((entry_va + pci::MSIX_MESSAGE_DATA_OFF) as *const u32);
-        core::ptr::write_volatile(
-            (entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *mut u32,
-            MSIX_VECTOR_CONTROL_UNMASKED,
-        );
-        let _ = core::ptr::read_volatile((entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *const u32);
-    }
-    arch::mmio_flush();
+pub(crate) fn unmask_msix_bindings(bindings: &[MsixBinding]) {
+    if let Some(group) = bindings.first().and_then(|binding| binding.group.as_ref()) { group.unmask(); }
 }
 
-fn mask_msix_binding(binding: MsixBinding) {
-    // SAFETY: entry_va was recorded from the MSI-X table mapping while the
-    // transport was bound and is still mapped until the caller releases the
-    // transport MMIO mappings.
-    unsafe {
-        core::ptr::write_volatile(
-            (binding.entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *mut u32,
-            pci::MSIX_VECTOR_CONTROL_MASKED,
-        );
-        let _ = core::ptr::read_volatile(
-            (binding.entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *const u32,
-        );
-    }
-    arch::mmio_flush();
-}
-
-fn disable_bound_msix_caps(bdf: pci::Bdf, bindings: &[MsixBinding]) {
-    let mut cap_offs = Vec::new();
-    for binding in bindings {
-        if !cap_offs.iter().any(|cap_off| *cap_off == binding.cap_off) {
-            cap_offs.push(binding.cap_off);
-        }
-    }
-    for cap_off in cap_offs {
-        arch::set_enabled(bdf, cap_off, false);
-    }
-}
-
-pub(crate) fn unmask_msix_bindings(bdf: pci::Bdf, bindings: &[MsixBinding]) {
-    let mut cap_offs = Vec::new();
-    for binding in bindings {
-        if !cap_offs.iter().any(|cap_off| *cap_off == binding.cap_off) {
-            cap_offs.push(binding.cap_off);
-        }
-    }
-    for cap_off in cap_offs {
-        arch::clear_function_mask(bdf, cap_off);
-    }
-}
-
-pub(crate) fn release_msix_bindings(bdf: pci::Bdf, bindings: &mut Vec<MsixBinding>) {
-    let bindings = core::mem::take(bindings);
-    pci::emit_msix_teardown_steps(bindings.len(), |step| match step {
-        pci::MsixTeardownStep::MaskEntry(idx) => mask_msix_binding(bindings[idx]),
-        pci::MsixTeardownStep::DisableFunction => disable_bound_msix_caps(bdf, &bindings),
-        pci::MsixTeardownStep::DisableMemBusMaster => {}
-    });
-    for binding in bindings {
-        arch_irq::free_pci_msi(binding.id);
-    }
+pub(crate) fn release_msix_bindings(bindings: &mut Vec<MsixBinding>) {
+    let mut bindings = core::mem::take(bindings);
+    if let Some(group) = bindings.first_mut().and_then(|binding| binding.group.take()) { group.release(); }
 }
 
 pub(crate) fn publish_transport_record(
@@ -217,7 +145,7 @@ fn release_transport_record(rec: TransportRecord) {
         ..
     } = rec;
     let mut msix = msix;
-    release_msix_bindings(bdf, &mut msix);
+    release_msix_bindings(&mut msix);
     restore_pci_command(bdf, command_orig);
     mappings.unmap_all();
     for frame in vring_frames.iter().copied() {
@@ -277,8 +205,4 @@ pub(crate) fn disable_pci_command(bdf: pci::Bdf) {
             let _ = pci::disable_mem_bus_master(&r, bdf);
         }
     }
-}
-
-fn pci_requester_id(bdf: pci::Bdf) -> u32 {
-    bdf.raw() as u32
 }

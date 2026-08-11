@@ -42,7 +42,7 @@ impl VirtioProbeDevres {
         }
         let frames = self.frames.take_all();
         let quiesced = reset_failed_probe(self.cfg_va);
-        release_msix_bindings(self.bdf, &mut self.msix);
+        release_msix_bindings(&mut self.msix);
         restore_pci_command(self.bdf, self.command_orig);
         self.mappings.unmap_all();
         // Unconfirmed reset ⇒ the device may still hold these frames in a

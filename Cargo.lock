@@ -1344,6 +1344,7 @@ dependencies = [
  "net",
  "netlink",
  "pci",
+ "pci-irq",
  "pmm",
  "softirq",
  "sync",
