@@ -12,6 +12,11 @@ pub struct IfaceRegistration<'a> {
 impl IfaceRegistration<'_> {
     /// Assigned interface index. # C: O(1)
     pub fn id(&self) -> NetIfaceId { self.id }
+    /// Ingress generation reserved for this exact interface publication. # C: O(1)
+    ///
+    /// A hardware receive path must carry this token with every completed
+    /// descriptor so an old device generation cannot feed a replacement.
+    pub fn generation(&self) -> u64 { self.gate.generation }
     /// Owning namespace id. # C: O(1)
     pub fn net_ns(&self) -> u64 { self.owner.id().as_u64() }
     /// Retained concrete namespace owner. # C: O(1)

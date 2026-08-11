@@ -435,12 +435,15 @@ impl IfaceRegistry {
         // carrier the instant anyone administered it.
         let change = change & !iff::IFF_VOLATILE;
         let rx_change = change & (iff::IFF_PROMISC | iff::IFF_ALLMULTI);
-        let (notify, next) = {
+        let (notify, admin_transition, next) = {
             let g = self.inner.lock();
             let e = g.entries.iter().find(|e| e.id == id && e.ns == ns
                 && e.ingress.live() && e.ingress.ready())?;
             let cur = e.flags.load(Ordering::Acquire);
             let mut next = (cur & !change) | (new & change);
+            let admin_transition = (change & iff::IFF_UP != 0
+                && (cur ^ next) & iff::IFF_UP != 0)
+                .then(|| (e.dev.clone(), next & iff::IFF_UP != 0));
             let notify = if rx_change != 0 {
                 let mode = e.packet_filter.update_admin(new, rx_change);
                 if mode.promiscuous { next |= iff::IFF_PROMISC; }
@@ -450,8 +453,12 @@ impl IfaceRegistry {
                 Some((e.dev.clone(), mode))
             } else { None };
             e.flags.store(next, Ordering::Release);
-            (notify, next)
+            (notify, admin_transition, next)
         };
+        // Match Linux `dev_change_flags`: run the ndo_open/ndo_stop edge
+        // under RTNL but outside the interface registry lock. Driver startup
+        // can take DMA/IRQ locks and must never nest beneath this index.
+        if let Some((dev, up)) = admin_transition { dev.admin_up_changed(up); }
         if let Some((dev, mode)) = notify { dev.packet_rx_mode_changed(&mode); }
         Some(next)
     }

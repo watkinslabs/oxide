@@ -250,12 +250,13 @@ fn append_output_state(
 /// Run one state operation while the exact input object's canonical lock is held.
 /// # C: O(N_devices + callback)
 pub fn with_state_bits_by_identity<R>(
-    device_key: virtio::VirtioChildDeviceKey,
+    device_key: impl Into<crate::registry::InputDeviceKey>,
     input_id: u32,
     evdev_id: u32,
     ev_type: u16,
     callback: impl FnOnce(&[u8]) -> R,
 ) -> Option<R> {
+    let device_key = device_key.into();
     let devices = crate::registry::DEVICES.lock();
     let dev = devices.iter().find(|dev| {
         dev.device_key == device_key && dev.input_id == input_id && dev.evdev_id == evdev_id

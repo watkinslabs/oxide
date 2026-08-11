@@ -63,6 +63,11 @@ pub trait NetDev: Send + Sync {
     fn wan_settings(&self, _settings: WanSettings) -> NetResult<()> { Err(NetError::Eopnotsupp) }
     /// Apply the canonical packet receive filter snapshot. # C: driver-dependent
     fn packet_rx_mode_changed(&self, _mode: &PacketRxMode) {}
+    /// Linux `ndo_open` / `ndo_stop` lifecycle edge selected by `IFF_UP`.
+    /// The interface registry invokes this under RTNL after committing an
+    /// administrative transition; drivers must make device DMA and interrupt
+    /// delivery agree with the requested state before returning. # C: driver-dependent
+    fn admin_up_changed(&self, _up: bool) {}
     /// Whether this device has a Linux `ndo_set_rx_mode` equivalent. # C: O(1)
     fn supports_packet_rx_mode(&self) -> bool { false }
     /// Hand a packet to the device for transmit. # C: O(packet)

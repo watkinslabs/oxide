@@ -295,6 +295,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "drv-e1000"
+version = "0.1.0"
+dependencies = [
+ "arch-irq",
+ "drv",
+ "firmware",
+ "hal",
+ "hal-aarch64",
+ "hal-x86_64",
+ "klog",
+ "mmio-map",
+ "net",
+ "pci",
+ "pmm",
+ "sched",
+ "softirq",
+ "sync",
+]
+
+[[package]]
 name = "drv-nvme"
 version = "0.1.0"
 dependencies = [
@@ -322,8 +342,10 @@ dependencies = [
  "firmware",
  "hal",
  "hal-x86_64",
+ "input",
  "klog",
  "kmacros",
+ "sync",
 ]
 
 [[package]]
@@ -1116,6 +1138,7 @@ dependencies = [
  "arch-irq",
  "block",
  "cgroup",
+ "cpu",
  "crc",
  "crypt",
  "devfs",
@@ -1276,6 +1299,7 @@ dependencies = [
  "devfs",
  "drv",
  "drv-ahci",
+ "drv-e1000",
  "drv-nvme",
  "drv-virtio-blk",
  "drv-virtio-gpu",

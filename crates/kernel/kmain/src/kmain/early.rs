@@ -155,8 +155,13 @@ fn init_boot_percpu() {
         PerCpuBootPage(core::cell::UnsafeCell::new([0u8; 4096]));
 
     let p = BOOT_PERCPU.0.get() as *mut u8;
-    // SAFETY: BSS-resident page; this is the boot path's single writer; cpu_id=0 stamped at offset 0 matches `current_cpu`'s gs:0 (x86) / TPIDR_EL1 (arm) read.
-    unsafe { core::ptr::write_volatile(p as *mut u32, 0u32); }
+    // SAFETY: BSS-resident page; this is the boot path's single writer.  The
+    // module slot is read through gs/TPIDR by loaded driver per-CPU code.
+    unsafe {
+        core::ptr::write_volatile(p as *mut u32, 0u32);
+        core::ptr::write_volatile(p.add(cpu::LINUX_MODULE_PERCPU_OFFSET) as *mut usize, 0usize);
+        core::ptr::write_volatile(p.add(cpu::LINUX_NUMA_NODE_OFFSET) as *mut i32, 0i32);
+    }
     // SAFETY: `p` is the BSS-resident per-CPU page above, and this runs on the
     // boot CPU before any AP or IRQ can observe the per-CPU base, so these
     // privileged CR4/MSR writes have no concurrent reader.

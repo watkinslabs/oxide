@@ -7,6 +7,7 @@ const REPEAT_DEVICE_KEY: u32 = 0x0050_0000;
 const FIRST_DEVICE_KEY: u32 = 0x0070_0000;
 const SECOND_DEVICE_KEY: u32 = 0x0070_0001;
 const CONCURRENT_DEVICE_KEY_BASE: u32 = 0x0090_0000;
+const PLATFORM_POINTER_ID: u32 = 0x0000_8042;
 const UPDATED_REPEAT: crate::RepeatSettings = [400, 20];
 
 #[test]
@@ -20,6 +21,18 @@ fn install_snapshot_remove_round_trips_device() {
     assert_eq!(device(evdev_id).expect("installed model").name_len, TEST_NAME.len());
     assert_eq!(remove_device(device_key), Some(evdev_id));
     assert_eq!(evdev_id_for_device(device_key), None);
+}
+
+#[test]
+fn platform_owned_input_uses_the_same_canonical_identity_lifecycle() {
+    let _serial = TEST_MUTEX.lock().unwrap_or_else(|err| err.into_inner());
+    crate::registry::clear_devices_for_tests();
+    let key = crate::InputDeviceKey::platform(PLATFORM_POINTER_ID);
+    let (_, evdev_id) = install(VirtioInputDev::empty_platform_boxed(PLATFORM_POINTER_ID))
+        .expect("install platform input model");
+    assert_eq!(evdev_id_for_device(key), Some(evdev_id));
+    assert!(remove_device(key).is_some());
+    assert_eq!(evdev_id_for_device(key), None);
 }
 
 #[test]

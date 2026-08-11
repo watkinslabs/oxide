@@ -241,6 +241,18 @@ fn disable_mem_bus_master_preserves_status_bits() {
 }
 
 #[test]
+fn clear_bus_master_preserves_io_memory_and_status_bits() {
+    let r = MapReader { m: Mutex::new(HashMap::new()) };
+    let bdf = Bdf { segment: 0, bus: 0, device: 1, function: 0 };
+    r.write32(bdf, 0x04, 0x1234_0007);
+
+    let old = clear_bus_master(&r, bdf);
+
+    assert_eq!(old, COMMAND_MEMORY | COMMAND_BUS_MASTER | COMMAND_IO);
+    assert_eq!(r.read32(bdf, 0x04), 0x1234_0003);
+}
+
+#[test]
 fn restore_mem_bus_master_restores_only_owned_bits() {
     let r = MapReader {
         m: Mutex::new(HashMap::new()),

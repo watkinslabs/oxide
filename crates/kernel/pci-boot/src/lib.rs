@@ -46,6 +46,7 @@ fn virtio_seq() -> u32 { VIRTIO_SEQ.fetch_add(1, core::sync::atomic::Ordering::R
 fn register_pci_model_drivers() {
     drv::register_driver(&drv_nvme::NVME_DRIVER);
     drv::register_driver(&drv_ahci::AHCI_DRIVER);
+    drv::register_driver(&drv_e1000::E1000_DRIVER);
     virtio_drv::register_model_drivers();
 }
 
@@ -60,6 +61,22 @@ fn activate_vtd_arch(_requesters: &[pci::Bdf]) -> iommu::VtdActivation {
     }
     #[cfg(target_arch = "aarch64")]
     { iommu::VtdActivation::Bypass }
+}
+
+/// Stop firmware-owned DMA before IOMMU tables are published.
+///
+/// Memory decoding remains available for later BAR discovery; only the bus
+/// master command bit is removed. Driver probe restores it after admission.
+/// # C: O(requesters)
+fn quiesce_bus_masters(requesters: &[pci::Bdf]) {
+    #[cfg(target_arch = "x86_64")]
+    if let Some(reader) = hal_x86_64::pci::EcamPci::from_published() {
+        for &bdf in requesters { let _ = pci::clear_bus_master(&reader, bdf); }
+    }
+    #[cfg(target_arch = "aarch64")]
+    if let Some(reader) = hal_aarch64::pci::EcamPci::from_published() {
+        for &bdf in requesters { let _ = pci::clear_bus_master(&reader, bdf); }
+    }
 }
 
 fn pci_resources_arch(d: &pci::PciDevice) -> alloc::vec::Vec<drv::Resource> {
@@ -123,7 +140,8 @@ pub fn enumerate_and_log() {
         klog::write_raw(b"\n");
     }
     let requesters = devs.iter().map(|d| d.bdf).collect::<alloc::vec::Vec<_>>();
-    // SAFETY: PCI probing is still before driver registration and bus mastering.
+    quiesce_bus_masters(&requesters);
+    // SAFETY: all discovered PCI requesters have been quiesced and no driver is registered yet.
     let iommu_activation = unsafe { iommu::activate_amd_vi(&requesters,
         pmm::user_as::hhdm_offset(), pmm::setup::usable_regions()) };
     if iommu_activation == iommu::AmdViActivation::Failed { return; }

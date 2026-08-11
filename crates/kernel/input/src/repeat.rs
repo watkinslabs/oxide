@@ -23,15 +23,11 @@ fn now_ns() -> u64 {
 }
 
 fn repeat_arg(dev: &VirtioInputDev) -> usize {
-    ((dev.input_id as u64) << 32 | u64::from(dev.device_key.raw())) as usize
+    dev.input_id as usize
 }
 
-fn repeat_identity(arg: usize) -> (virtio::VirtioChildDeviceKey, u32) {
-    let raw = arg as u64;
-    (
-        virtio::VirtioChildDeviceKey::from_raw(raw as u32),
-        (raw >> 32) as u32,
-    )
+fn repeat_identity(arg: usize) -> u32 {
+    arg as u32
 }
 
 fn state_bit(bits: &[u8], code: u16) -> bool {
@@ -80,12 +76,10 @@ pub(crate) fn cancel(dev: &mut VirtioInputDev) {
 }
 
 fn repeat_fire(arg: usize) {
-    let (device_key, input_id) = repeat_identity(arg);
+    let input_id = repeat_identity(arg);
     let dispatch = {
         let mut devices = crate::registry::DEVICES.lock();
-        let Some(dev) = devices.iter_mut().find(|dev| {
-            dev.device_key == device_key && dev.input_id == input_id
-        }) else {
+        let Some(dev) = devices.iter_mut().find(|dev| dev.input_id == input_id) else {
             return;
         };
         dev.repeat_timer = None;

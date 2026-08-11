@@ -23,6 +23,29 @@ pub type UnregisterEvdevFn = fn(u32) -> bool;
 pub type PushEvdevPacketFn = fn(u32, bool, &[InputValue]);
 pub type PushOutputFn = fn(virtio::VirtioChildDeviceKey, &OutputBatch);
 
+/// Stable owner identity for one input device. Input devices are not all
+/// virtio children: platform controllers and transport devices share the same
+/// canonical input registry while keeping their driver-model provenance.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum InputDeviceKey {
+    Virtio(virtio::VirtioChildDeviceKey),
+    Platform(u32),
+}
+
+impl From<virtio::VirtioChildDeviceKey> for InputDeviceKey {
+    fn from(key: virtio::VirtioChildDeviceKey) -> Self { Self::Virtio(key) }
+}
+
+impl InputDeviceKey {
+    /// Construct an identity for a platform-owned input endpoint.
+    pub const fn platform(id: u32) -> Self { Self::Platform(id) }
+
+    /// Return the transport key only when this input endpoint is virtio-backed.
+    pub const fn virtio(self) -> Option<virtio::VirtioChildDeviceKey> {
+        match self { Self::Virtio(key) => Some(key), Self::Platform(_) => None }
+    }
+}
+
 #[derive(Copy, Clone)]
 pub struct EvdevHooks {
     pub register: Option<RegisterEvdevFn>,
@@ -55,7 +78,7 @@ impl Default for CapBitmap {
 
 #[derive(Clone)]
 pub struct VirtioInputDev {
-    pub device_key: virtio::VirtioChildDeviceKey,
+    pub device_key: InputDeviceKey,
     pub input_id: u32,
     pub evdev_id: u32,
     pub is_pointer: bool,
@@ -100,13 +123,23 @@ impl VirtioInputDev {
     /// it on the stack overflows the kernel stack.
     /// # C: O(KEY_CNT + ABS_CNT)
     pub fn empty_boxed(device_key: virtio::VirtioChildDeviceKey) -> Box<Self> {
+        Self::empty_boxed_with_key(device_key.into())
+    }
+
+    /// Build a platform-owned input device in its heap home.
+    /// # C: O(KEY_CNT + ABS_CNT)
+    pub fn empty_platform_boxed(platform_id: u32) -> Box<Self> {
+        Self::empty_boxed_with_key(InputDeviceKey::platform(platform_id))
+    }
+
+    fn empty_boxed_with_key(device_key: InputDeviceKey) -> Box<Self> {
         Box::new(Self::empty_inline(device_key))
     }
 
     /// Private: the only caller is `empty_boxed`, which moves the result
     /// straight to the heap. Nothing else may put a record on a stack.
     /// # C: O(KEY_CNT + ABS_CNT)
-    fn empty_inline(device_key: virtio::VirtioChildDeviceKey) -> Self {
+    fn empty_inline(device_key: InputDeviceKey) -> Self {
         Self {
             device_key,
             input_id: UNASSIGNED_ID,
@@ -275,7 +308,8 @@ pub fn devices_snapshot() -> Vec<Box<VirtioInputDev>> {
 /// release report reaches readers and sysfs teardown can still project the
 /// object. Idempotent.
 /// # C: O(N_devices + KEY_CNT + pending packet)
-pub fn disconnect_device(device_key: virtio::VirtioChildDeviceKey) -> Option<u32> {
+pub fn disconnect_device(device_key: impl Into<InputDeviceKey>) -> Option<u32> {
+    let device_key = device_key.into();
     let (evdev_id, is_pointer, packet) = {
         let mut devices = DEVICES.lock();
         let dev = devices.iter_mut().find(|dev| dev.device_key == device_key)?;
@@ -293,7 +327,8 @@ pub fn disconnect_device(device_key: virtio::VirtioChildDeviceKey) -> Option<u32
 /// path invalidation all read this record, so removing it first silently skips
 /// them and leaves stale `inputN` paths behind.
 /// # C: O(N_devices + KEY_CNT + pending packet)
-pub fn remove_device(device_key: virtio::VirtioChildDeviceKey) -> Option<u32> {
+pub fn remove_device(device_key: impl Into<InputDeviceKey>) -> Option<u32> {
+    let device_key = device_key.into();
     let evdev_id = disconnect_device(device_key)?;
     let mut devices = DEVICES.lock();
     let idx = devices.iter().position(|dev| dev.device_key == device_key)?;
@@ -302,7 +337,8 @@ pub fn remove_device(device_key: virtio::VirtioChildDeviceKey) -> Option<u32> {
 }
 
 /// # C: O(N_devices)
-pub fn evdev_id_for_device(device_key: virtio::VirtioChildDeviceKey) -> Option<u32> {
+pub fn evdev_id_for_device(device_key: impl Into<InputDeviceKey>) -> Option<u32> {
+    let device_key = device_key.into();
     DEVICES
         .lock()
         .iter()
@@ -322,7 +358,7 @@ pub fn device(evdev_id: u32) -> Option<Box<VirtioInputDev>> {
 
 fn matches_identity(
     dev: &VirtioInputDev,
-    device_key: virtio::VirtioChildDeviceKey,
+    device_key: InputDeviceKey,
     input_id: u32,
     evdev_id: u32,
 ) -> bool {
@@ -332,10 +368,11 @@ fn matches_identity(
 /// Read inhibited state only for the exact installed Linux input object.
 /// # C: O(N_devices)
 pub fn inhibited_by_identity(
-    device_key: virtio::VirtioChildDeviceKey,
+    device_key: impl Into<InputDeviceKey>,
     input_id: u32,
     evdev_id: u32,
 ) -> Option<bool> {
+    let device_key = device_key.into();
     DEVICES.lock().iter()
         .find(|dev| matches_identity(dev, device_key, input_id, evdev_id))
         .map(|dev| dev.inhibited)
@@ -344,10 +381,11 @@ pub fn inhibited_by_identity(
 /// Read repeat parameters for the exact installed Linux input object.
 /// # C: O(N_devices)
 pub fn repeat_by_identity(
-    device_key: virtio::VirtioChildDeviceKey,
+    device_key: impl Into<InputDeviceKey>,
     input_id: u32,
     evdev_id: u32,
 ) -> Option<RepeatSettings> {
+    let device_key = device_key.into();
     DEVICES.lock().iter()
         .find(|dev| matches_identity(dev, device_key, input_id, evdev_id))
         .map(|dev| dev.repeat)
@@ -356,11 +394,12 @@ pub fn repeat_by_identity(
 /// Replace repeat parameters for the exact installed Linux input object.
 /// # C: O(N_devices)
 pub fn set_repeat_by_identity(
-    device_key: virtio::VirtioChildDeviceKey,
+    device_key: impl Into<InputDeviceKey>,
     input_id: u32,
     evdev_id: u32,
     repeat: RepeatSettings,
 ) -> bool {
+    let device_key = device_key.into();
     let mut devices = DEVICES.lock();
     let Some(dev) = devices.iter_mut()
         .find(|dev| matches_identity(dev, device_key, input_id, evdev_id))
@@ -375,11 +414,12 @@ pub fn set_repeat_by_identity(
 /// Value and parameters are read in one canonical-state transaction.
 /// # C: O(N_devices)
 pub fn abs_snapshot_by_identity(
-    device_key: virtio::VirtioChildDeviceKey,
+    device_key: impl Into<InputDeviceKey>,
     input_id: u32,
     evdev_id: u32,
     axis: u16,
 ) -> Option<AbsSnapshot> {
+    let device_key = device_key.into();
     let devices = DEVICES.lock();
     let dev = devices.iter()
         .find(|dev| matches_identity(dev, device_key, input_id, evdev_id))?;
@@ -391,11 +431,12 @@ pub fn abs_snapshot_by_identity(
 /// submit exactly the accepted output batch after releasing the device lock.
 /// # C: O(N_devices + output events)
 pub fn apply_output_by_identity(
-    device_key: virtio::VirtioChildDeviceKey,
+    device_key: impl Into<InputDeviceKey>,
     input_id: u32,
     evdev_id: u32,
     requested: &OutputBatch,
 ) -> Option<OutputBatch> {
+    let device_key = device_key.into();
     let hook = (*OUTPUT_HOOK.lock())?;
     let accepted = {
         let mut devices = DEVICES.lock();
@@ -408,7 +449,9 @@ pub fn apply_output_by_identity(
         }
     };
     if !accepted.events.is_empty() {
-        hook(device_key, &accepted);
+        if let Some(key) = device_key.virtio() {
+            hook(key, &accepted);
+        }
     }
     Some(accepted)
 }
@@ -418,11 +461,12 @@ pub fn apply_output_by_identity(
 /// filtering subsequent events; virtio-input has no open/close callback.
 /// # C: O(N_devices + KEY_CNT)
 pub fn set_inhibited_by_identity(
-    device_key: virtio::VirtioChildDeviceKey,
+    device_key: impl Into<InputDeviceKey>,
     input_id: u32,
     evdev_id: u32,
     inhibited: bool,
 ) -> Option<OutputBatch> {
+    let device_key = device_key.into();
     let (packet, is_pointer, output) = {
         let mut devs = DEVICES.lock();
         let Some(dev) = devs.iter_mut()
@@ -447,7 +491,7 @@ pub fn set_inhibited_by_identity(
         dispatch_values(evdev_id, is_pointer, &values);
     }
     let hook = *OUTPUT_HOOK.lock();
-    if let Some(hook) = hook { hook(device_key, &output); }
+    if let (Some(hook), Some(key)) = (hook, device_key.virtio()) { hook(key, &output); }
     Some(output)
 }
 

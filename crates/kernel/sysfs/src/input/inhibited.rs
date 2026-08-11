@@ -25,7 +25,7 @@ fn parse_kstrtobool(buf: &[u8]) -> Option<bool> {
 struct InhibitedOps { identity: InputIdentity }
 
 impl InhibitedOps {
-    fn live_identity(&self) -> KResult<(input::VirtioChildDeviceKey, u32, u32)> {
+    fn live_identity(&self) -> KResult<(input::InputDeviceKey, u32, u32)> {
         let info = input_by_identity(&self.identity).ok_or(VfsError::Enoent)?;
         Ok((info.model.device_key, info.model.input_id, info.model.evdev_id))
     }
