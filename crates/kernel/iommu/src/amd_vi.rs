@@ -216,7 +216,7 @@ impl AmdViUnit {
         unsafe { self.install_initial_requester(regs, tables, hhdm_offset, bdf.raw(), dte) }
     }
     unsafe fn install_initial_requester(&self, regs: &AmdViRegisters, tables: &AmdViTables, hhdm_offset: u64, requester: u16, dte: AmdViDte) -> bool {
-        if self.state != AmdViState::Mapped || hhdm_offset == 0 { return false; }
+        if !self.accepts_initial_dte() || hhdm_offset == 0 { return false; }
         if regs.read64(CONTROL).is_none_or(|control| control & CONTROL_IOMMU_ENABLE != 0) { return false; }
         // SAFETY: the state and register guard above prove this unit cannot consume its table yet.
         unsafe { tables.write_initial_dte(hhdm_offset, requester, dte); }
@@ -276,6 +276,9 @@ impl AmdViUnit {
         if self.state != from { return false; }
         self.state = to; true
     }
+    fn accepts_initial_dte(&self) -> bool {
+        self.state == AmdViState::Mapped || self.state == AmdViState::TablesProgrammed
+    }
 }
 
 #[cfg(test)] mod tests {
@@ -284,6 +287,16 @@ impl AmdViUnit {
         let mut u = AmdViUnit::new(0xfed8_0000, 3);
         assert_eq!(u.state(), AmdViState::Discovered); assert!(u.mapped());
         assert_eq!(u.state(), AmdViState::Mapped);
+    }
+    #[test] fn initial_dtes_remain_admissible_after_table_programming() {
+        let mut u = AmdViUnit::new(0xfed8_0000, 3);
+        assert!(!u.accepts_initial_dte());
+        assert!(u.mapped());
+        assert!(u.accepts_initial_dte());
+        u.state = AmdViState::TablesProgrammed;
+        assert!(u.accepts_initial_dte());
+        u.state = AmdViState::DomainsAttached;
+        assert!(!u.accepts_initial_dte());
     }
     #[test] fn table_registers_require_aligned_permanent_memory() {
         let t = AmdViTables::from_physical(0x4000_0000, 0x5000_0000, 0x5000_2000).unwrap();
