@@ -529,6 +529,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "drv-xhci"
+version = "0.1.0"
+
+[[package]]
 name = "drv-zram"
 version = "0.1.0"
 dependencies = [
