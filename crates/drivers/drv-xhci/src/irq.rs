@@ -31,6 +31,8 @@ struct Endpoint {
     port_changes: AtomicU64,
     command_completion_pa: AtomicU64,
     command_completion_status: AtomicU32,
+    transfer_completion_pa: AtomicU64,
+    transfer_completion_meta: AtomicU64,
     dequeue: AtomicU32,
     cycle: AtomicBool,
 }
@@ -39,7 +41,7 @@ impl Endpoint {
         Self {
             state: AtomicU8::new(FREE), in_handler: AtomicU32::new(0),
             mmio_va: AtomicU64::new(0), status_offset: AtomicU64::new(0), erdp_offset: AtomicU64::new(0),
-            event_va: AtomicU64::new(0), event_pa: AtomicU64::new(0), bar_bytes: AtomicU64::new(0), max_ports: AtomicU8::new(0), port_changes: AtomicU64::new(0), command_completion_pa: AtomicU64::new(0), command_completion_status: AtomicU32::new(0), dequeue: AtomicU32::new(0), cycle: AtomicBool::new(true),
+            event_va: AtomicU64::new(0), event_pa: AtomicU64::new(0), bar_bytes: AtomicU64::new(0), max_ports: AtomicU8::new(0), port_changes: AtomicU64::new(0), command_completion_pa: AtomicU64::new(0), command_completion_status: AtomicU32::new(0), transfer_completion_pa: AtomicU64::new(0), transfer_completion_meta: AtomicU64::new(0), dequeue: AtomicU32::new(0), cycle: AtomicBool::new(true),
         }
     }
 }
@@ -85,6 +87,14 @@ fn hard_handler_for(index: usize) {
                     let slot = control >> 24;
                     endpoint.command_completion_status.store(completion | (slot << 8), Ordering::Relaxed);
                     endpoint.command_completion_pa.store(parameter as u64 | ((parameter_hi as u64) << 32), Ordering::Release);
+                }
+                if kind == crate::ring::TRB_TYPE_TRANSFER_EVENT {
+                    let parameter_hi = unsafe { read_volatile((event_va + (dequeue * TRB_BYTES + 4) as u64) as *const u32) };
+                    let status = unsafe { read_volatile((event_va + (dequeue * TRB_BYTES + 8) as u64) as *const u32) };
+                    let meta = (status & 0x00ff_ffff) as u64 | (((status >> 24) as u64) << 24)
+                        | ((((control >> 16) & 0x1f) as u64) << 32) | (((control >> 24) as u64) << 40);
+                    endpoint.transfer_completion_meta.store(meta, Ordering::Relaxed);
+                    endpoint.transfer_completion_pa.store(parameter as u64 | ((parameter_hi as u64) << 32), Ordering::Release);
                 }
                 if let Some(port) = crate::ports::event_port_id(parameter, control, endpoint.max_ports.load(Ordering::Acquire)) {
                     let operational = status_offset - USBSTS;
@@ -172,6 +182,8 @@ impl Binding {
         endpoint.port_changes.store(0, Ordering::Relaxed);
         endpoint.command_completion_pa.store(0, Ordering::Relaxed);
         endpoint.command_completion_status.store(0, Ordering::Relaxed);
+        endpoint.transfer_completion_pa.store(0, Ordering::Relaxed);
+        endpoint.transfer_completion_meta.store(0, Ordering::Relaxed);
         endpoint.mmio_va.store(mmio.base_va(), Ordering::Release);
         true
     }
@@ -193,6 +205,15 @@ impl Binding {
             if sched::deadline::clock::now_ns() >= deadline { return None; }
             core::hint::spin_loop();
         }
+    }
+
+    /// Consume a matching Transfer Event without losing endpoint or slot identity. # C: O(1)
+    pub(crate) fn take_transfer_completion(self, trb_pa: u64) -> Option<crate::ring::TransferCompletion> {
+        let endpoint = &ENDPOINTS[self.endpoint];
+        if endpoint.transfer_completion_pa.load(Ordering::Acquire) != trb_pa { return None; }
+        let meta = endpoint.transfer_completion_meta.load(Ordering::Acquire);
+        if endpoint.transfer_completion_pa.compare_exchange(trb_pa, 0, Ordering::AcqRel, Ordering::Acquire).is_err() { return None; }
+        Some(crate::ring::TransferCompletion { trb_pa, residual: meta as u32 & 0x00ff_ffff, completion_code: (meta >> 24) as u8, endpoint_id: (meta >> 32) as u8 & 0x1f, slot: (meta >> 40) as u8 })
     }
 
     /// Disable delivery, wait out hard-handler ownership, then release vector state. # C: O(handler)
