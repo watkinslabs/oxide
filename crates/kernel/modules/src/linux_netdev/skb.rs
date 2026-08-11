@@ -446,6 +446,7 @@ pub(super) unsafe fn skb_copy_to_vec_and_free(skb: *mut LinuxSkBuff)
 }
 
 /// Store the receive hardware timestamp in the skb's shared allocation state.
+#[cfg(any(test, feature = "hosted"))]
 /// # C: O(1)
 pub(super) unsafe fn skb_set_hwtstamp(skb: *mut LinuxSkBuff, ns: u64) {
     if skb.is_null() { return; }

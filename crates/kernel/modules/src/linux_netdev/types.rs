@@ -36,6 +36,7 @@ pub(super) const IFF_RUNNING: u32 = 0x0040;
 pub(super) const IFF_PROMISC: u32 = 0x0100;
 pub(super) const IFF_ALLMULTI: u32 = 0x0200;
 pub(super) const IFF_MULTICAST: u32 = 0x1000;
+#[cfg(any(test, feature = "hosted"))]
 pub(super) const CHECKSUM_NONE: u8 = 0;
 pub(super) const CHECKSUM_UNNECESSARY: u8 = 1;
 pub(super) const CHECKSUM_PARTIAL: u8 = 3;
@@ -68,6 +69,7 @@ pub(super) struct LinuxNetDeviceOps {
 }
 
 impl LinuxNetDeviceOps {
+    #[cfg(any(test, feature = "hosted"))]
     /// # C: O(1)
     pub(super) const fn new() -> Self {
         Self { ndo_init: None, ndo_uninit: None, ndo_open: None, ndo_stop: None, ndo_start_xmit: None,

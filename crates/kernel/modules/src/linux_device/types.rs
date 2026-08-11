@@ -137,6 +137,7 @@ pub struct LinuxDeviceDriver {
 }
 
 impl LinuxDeviceDriver {
+    #[cfg(any(test, feature = "hosted"))]
     /// # C: O(1)
     pub(crate) const fn new() -> Self {
         Self {
