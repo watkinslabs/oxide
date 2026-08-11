@@ -122,6 +122,7 @@ extern "C" fn pcim_pin_device(_dev: *mut LinuxPciDev) -> i32 { LINUX_OK }
 
 extern "C" fn pci_set_master(dev: *mut LinuxPciDev) {
     if dev.is_null() { return; }
+    if !pci::bus_master_admitted(bdf(dev)) { return; }
     update_command(dev, COMMAND_BUS_MASTER, true);
 }
 

@@ -1,4 +1,5 @@
 use crate::uapi;
+use core::sync::atomic::{AtomicPtr, Ordering};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -13,6 +14,10 @@ pub type KResult<T> = core::result::Result<T, Error>;
 
 /// Maximum ECAM windows early boot can retain and route without allocation.
 pub const MAX_ECAM_WINDOWS: usize = 8;
+
+/// Policy invoked immediately before PCI bus mastering becomes live. # type
+pub type BusMasterAdmissionFn = fn(Bdf) -> bool;
+static BUS_MASTER_ADMISSION: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
 /// PCI segment plus its (bus, device, function) requester identifier.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -99,6 +104,20 @@ pub trait ConfigSpaceReader: Send + Sync {
     }
 }
 
+/// Install or clear the sole PCI bus-master admission policy. # C: O(1)
+pub fn set_bus_master_admission(f: Option<BusMasterAdmissionFn>) {
+    BUS_MASTER_ADMISSION.store(f.map(|f| f as *mut ()).unwrap_or(core::ptr::null_mut()), Ordering::Release);
+}
+
+/// Decide whether one requester may acquire the Bus Master command bit. # C: O(1)
+pub fn bus_master_admitted(bdf: Bdf) -> bool {
+    let raw = BUS_MASTER_ADMISSION.load(Ordering::Acquire);
+    if raw.is_null() { return true; }
+    // SAFETY: raw originates only from set_bus_master_admission with this exact function signature.
+    let f: BusMasterAdmissionFn = unsafe { core::mem::transmute(raw) };
+    f(bdf)
+}
+
 /// PCI command register bit: I/O Space Enable.
 pub const COMMAND_IO: u16 = 1 << 0;
 /// PCI command register bit: Memory Space Enable.
@@ -152,6 +171,7 @@ pub fn write_command<R: ConfigSpaceReader>(r: &R, bdf: Bdf, command: u16) {
 /// # C: O(1)
 pub fn enable_mem_bus_master<R: ConfigSpaceReader>(r: &R, bdf: Bdf) -> u16 {
     let old = read_command(r, bdf);
+    if !bus_master_admitted(bdf) { return old; }
     let new = old | COMMAND_MEMORY | COMMAND_BUS_MASTER;
     if new != old {
         write_command(r, bdf, new);
