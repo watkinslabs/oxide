@@ -48,7 +48,7 @@ impl VirtioProbeDevres {
         // Unconfirmed reset ⇒ the device may still hold these frames in a
         // descriptor; leak rather than hand them back to the buddy (the
         // documented contract on `virtio::reset_device`).
-        if quiesced { release_failed_probe_frames(&frames); }
+        if quiesced { release_failed_probe_frames(self.bdf, &frames); }
     }
 
     pub(crate) fn publish(&mut self, device_key: virtio::VirtioChildDeviceKey) {

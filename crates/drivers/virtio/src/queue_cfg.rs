@@ -6,6 +6,8 @@
 
 use crate::{VirtioQueuePlan, MAX_RESOURCE_QUEUES};
 
+mod dma_frames;
+
 // common-cfg field offsets, Virtio 1.2 §4.1.4.3. u16-precise stores are
 // required for queue_select / queue_msix_vector / queue_enable.
 pub const CFG_QUEUE_SELECT: u64 = 0x16;
@@ -35,13 +37,22 @@ const QUEUE_ADDR_HIGH_SHIFT: u32 = 32;
 pub trait VirtioQueueAllocator {
     /// Allocate one zeroable 4 KiB frame usable by the device for a split
     /// virtqueue ring page.
-    fn alloc_frame(&mut self) -> Option<u64>;
+    fn alloc_frame(&mut self) -> Option<VirtioDmaFrame>;
 
     /// Release a frame allocated by `alloc_frame`.
-    fn free_frame(&mut self, pa: u64);
+    fn free_frame(&mut self, frame: VirtioDmaFrame);
 
     /// Zero a freshly allocated frame before the device can observe it.
     fn zero_frame(&mut self, pa: u64);
+}
+
+/// One transport-owned page with its CPU physical and device DMA addresses.
+/// The physical address is for HHDM access; the DMA address is the only value
+/// permitted in a device-visible ring or register.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VirtioDmaFrame {
+    pub pa: u64,
+    pub dma: u64,
 }
 
 /// Programmed virtqueue: the three ring PAs handed to the device, the
@@ -49,8 +60,11 @@ pub trait VirtioQueueAllocator {
 #[derive(Clone, Copy)]
 pub struct QueueRing {
     pub desc_pa: u64,
+    pub desc_dma: u64,
     pub driver_pa: u64,
+    pub driver_dma: u64,
     pub device_pa: u64,
+    pub device_dma: u64,
     pub notify_off: u16,
     pub size: u16,
 }
@@ -91,6 +105,7 @@ impl ProgrammedQueues {
             None
         }
     }
+
 }
 
 /// Program mandatory queue 0 and every requested extra queue through the same
@@ -119,7 +134,7 @@ pub fn program_queue_set<A: VirtioQueueAllocator>(
 /// Program virtqueue `qi` on the modern common-cfg window at `cfg_va`.
 ///
 /// This selects the queue, reads its `queue_size`, allocates and zeroes three
-/// ring frames, writes ring PAs, binds `msix_vec`, enables the queue, and
+/// ring frames, writes their DMA addresses, binds `msix_vec`, enables the queue, and
 /// restores `queue_select` to 0.
 /// # SAFETY: caller mapped `cfg_va` as a Device-attr virtio common-cfg window.
 /// # C: O(1) - 3 frame allocs + a fixed number of MMIO stores
@@ -168,39 +183,42 @@ pub fn program_queue<A: VirtioQueueAllocator>(
         }
     }
 
-    let desc_pa = allocator.alloc_frame()?;
-    let Some(driver_pa) = allocator.alloc_frame() else {
-        allocator.free_frame(desc_pa);
+    let desc = allocator.alloc_frame()?;
+    let Some(driver) = allocator.alloc_frame() else {
+        allocator.free_frame(desc);
         return None;
     };
-    let Some(device_pa) = allocator.alloc_frame() else {
-        allocator.free_frame(driver_pa);
-        allocator.free_frame(desc_pa);
+    let Some(device) = allocator.alloc_frame() else {
+        allocator.free_frame(driver);
+        allocator.free_frame(desc);
         return None;
     };
 
-    allocator.zero_frame(desc_pa);
-    allocator.zero_frame(driver_pa);
-    allocator.zero_frame(device_pa);
+    allocator.zero_frame(desc.pa);
+    allocator.zero_frame(driver.pa);
+    allocator.zero_frame(device.pa);
 
     w16(CFG_QUEUE_SELECT, qi);
     let notify_off = r16(CFG_QUEUE_NOTIFY);
     w16(CFG_QUEUE_MSIX, msix_vec);
     let _ = r16(CFG_QUEUE_MSIX);
-    w32(CFG_QUEUE_DESC, queue_addr_low(desc_pa));
-    w32(CFG_QUEUE_DESC + QUEUE_ADDR_HIGH_OFF, queue_addr_high(desc_pa));
-    w32(CFG_QUEUE_DRIVER, queue_addr_low(driver_pa));
-    w32(CFG_QUEUE_DRIVER + QUEUE_ADDR_HIGH_OFF, queue_addr_high(driver_pa));
-    w32(CFG_QUEUE_DEVICE, queue_addr_low(device_pa));
-    w32(CFG_QUEUE_DEVICE + QUEUE_ADDR_HIGH_OFF, queue_addr_high(device_pa));
+    w32(CFG_QUEUE_DESC, queue_addr_low(desc.dma));
+    w32(CFG_QUEUE_DESC + QUEUE_ADDR_HIGH_OFF, queue_addr_high(desc.dma));
+    w32(CFG_QUEUE_DRIVER, queue_addr_low(driver.dma));
+    w32(CFG_QUEUE_DRIVER + QUEUE_ADDR_HIGH_OFF, queue_addr_high(driver.dma));
+    w32(CFG_QUEUE_DEVICE, queue_addr_low(device.dma));
+    w32(CFG_QUEUE_DEVICE + QUEUE_ADDR_HIGH_OFF, queue_addr_high(device.dma));
     w16(CFG_QUEUE_ENABLE, QUEUE_ENABLE_READY);
     let _ = r16(CFG_QUEUE_ENABLE);
     w16(CFG_QUEUE_SELECT, QUEUE_ZERO);
 
     Some(QueueRing {
-        desc_pa,
-        driver_pa,
-        device_pa,
+        desc_pa: desc.pa,
+        desc_dma: desc.dma,
+        driver_pa: driver.pa,
+        driver_dma: driver.dma,
+        device_pa: device.pa,
+        device_dma: device.dma,
         notify_off,
         size,
     })
@@ -239,6 +257,7 @@ mod tests {
 
     struct TestAllocator {
         next: u64,
+        dma_offset: u64,
         remaining: usize,
         allocated: Vec<u64>,
         freed: Vec<u64>,
@@ -249,16 +268,23 @@ mod tests {
         fn new(remaining: usize) -> Self {
             Self {
                 next: 0x1000,
+                dma_offset: 0,
                 remaining,
                 allocated: Vec::new(),
                 freed: Vec::new(),
                 zeroed: Vec::new(),
             }
         }
+
+        fn with_dma_offset(remaining: usize, dma_offset: u64) -> Self {
+            let mut allocator = Self::new(remaining);
+            allocator.dma_offset = dma_offset;
+            allocator
+        }
     }
 
     impl VirtioQueueAllocator for TestAllocator {
-        fn alloc_frame(&mut self) -> Option<u64> {
+        fn alloc_frame(&mut self) -> Option<VirtioDmaFrame> {
             if self.remaining == 0 {
                 return None;
             }
@@ -266,11 +292,11 @@ mod tests {
             let pa = self.next;
             self.next += 0x1000;
             self.allocated.push(pa);
-            Some(pa)
+            Some(VirtioDmaFrame { pa, dma: pa + self.dma_offset })
         }
 
-        fn free_frame(&mut self, pa: u64) {
-            self.freed.push(pa);
+        fn free_frame(&mut self, frame: VirtioDmaFrame) {
+            self.freed.push(frame.pa);
         }
 
         fn zero_frame(&mut self, pa: u64) {
@@ -338,6 +364,29 @@ mod tests {
         assert!(queues.is_some());
         assert_eq!(programmed_msix, TEST_Q0_MSIX_VECTOR);
         assert_eq!(selected_queue, QUEUE_ZERO);
+    }
+
+    #[test]
+    fn queue_registers_receive_dma_addresses_not_cpu_physical_addresses() {
+        const TEST_DMA_OFFSET: u64 = 0x10_0000;
+        let mut cfg = [0u64; 8];
+        let base = cfg.as_mut_ptr() as u64;
+        // SAFETY: this local fake common-cfg contains the aligned queue-size
+        // field and is writable for the duration of this test.
+        unsafe { core::ptr::write_volatile((base + CFG_QUEUE_SIZE) as *mut u16, 8); }
+        let mut allocator = TestAllocator::with_dma_offset(3, TEST_DMA_OFFSET);
+
+        let ring = program_queue(base, 0, 0, &mut allocator).expect("queue programmed");
+        let desc_dma = unsafe {
+            // SAFETY: `program_queue` wrote the aligned le64 register as two
+            // u32 words in this test-owned fake common-cfg block.
+            core::ptr::read_volatile((base + CFG_QUEUE_DESC) as *const u64)
+        };
+
+        assert_eq!(ring.desc_pa, 0x1000);
+        assert_eq!(ring.desc_dma, 0x1000 + TEST_DMA_OFFSET);
+        assert_eq!(desc_dma, ring.desc_dma);
+        assert_ne!(desc_dma, ring.desc_pa);
     }
 
     #[test]
@@ -419,8 +468,11 @@ mod tests {
     fn programmed_queues_are_indexed_by_virtqueue() {
         let ring = |index: u16| QueueRing {
             desc_pa: 0x1000 + index as u64,
+            desc_dma: 0x1000 + index as u64,
             driver_pa: 0x2000 + index as u64,
+            driver_dma: 0x2000 + index as u64,
             device_pa: 0x3000 + index as u64,
+            device_dma: 0x3000 + index as u64,
             notify_off: index,
             size: 128,
         };

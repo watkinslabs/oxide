@@ -223,34 +223,56 @@ impl VirtioTransportProbeResult {
 /// probe owns releasing it.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct VirtioProbeOwnedFrames {
-    vring_frames: Vec<u64>,
+    vring_frames: Vec<VirtioDmaFrame>,
     payload_frames: Vec<u64>,
+}
+
+/// Every frame retained by a failed transport probe. Ring pages retain both
+/// address domains so the transport can retire the device mapping before PMM
+/// is allowed to reuse the physical page.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct VirtioProbeFrameSet {
+    pub vring_frames: Vec<VirtioDmaFrame>,
+    pub payload_frames: Vec<u64>,
+}
+
+impl VirtioProbeFrameSet {
+    /// # C: O(1)
+    pub fn is_empty(&self) -> bool {
+        self.vring_frames.is_empty() && self.payload_frames.is_empty()
+    }
 }
 
 impl VirtioProbeOwnedFrames {
     /// # C: O(MAX_RESOURCE_QUEUES)
-    pub fn from_probe_result(result: &VirtioTransportProbeResult) -> Self {
+    pub fn from_probe_result(
+        result: &VirtioTransportProbeResult,
+        programmed_queues: Option<&ProgrammedQueues>,
+    ) -> Self {
         Self {
-            vring_frames: result.vring_frames(),
+            vring_frames: programmed_queues.map(ProgrammedQueues::dma_frames).unwrap_or_else(|| {
+                result.vring_frames().into_iter()
+                    .map(|pa| VirtioDmaFrame { pa, dma: pa })
+                    .collect()
+            }),
             payload_frames: result.net_payload_frames(),
         }
     }
 
     /// Drain every frame still owned by the failed transport probe.
     /// # C: O(N_frames)
-    pub fn take_all(&mut self) -> Vec<u64> {
-        let mut frames = core::mem::take(&mut self.vring_frames);
-        for frame in core::mem::take(&mut self.payload_frames) {
-            push_unique_frame(&mut frames, frame);
-        }
-        frames
+    pub fn take_all(&mut self) -> VirtioProbeFrameSet {
+        let vring_frames = core::mem::take(&mut self.vring_frames);
+        let mut payload_frames = core::mem::take(&mut self.payload_frames);
+        payload_frames.retain(|pa| !vring_frames.iter().any(|frame| frame.pa == *pa));
+        VirtioProbeFrameSet { vring_frames, payload_frames }
     }
 
     /// Drain only the vring frames for publication into the live transport
     /// record. Payload buffers are handed to the child driver runtime through
     /// child probe facts and must not be transport-owned after publish.
     /// # C: O(1)
-    pub fn take_vring_frames(&mut self) -> Vec<u64> {
+    pub fn take_vring_frames(&mut self) -> Vec<VirtioDmaFrame> {
         core::mem::take(&mut self.vring_frames)
     }
 

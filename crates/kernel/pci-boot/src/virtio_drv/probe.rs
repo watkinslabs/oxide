@@ -53,7 +53,7 @@ impl VirtioPciAcquisition {
     ) -> Option<VirtioProbe> {
         let bdf = d.bdf;
         let mut state = VirtioProbeState::from_caps(bdf, &self.vcaps, &self.bars, self.cmd_orig)?;
-        let runtime = VirtioPciRuntime::current();
+        let runtime = VirtioPciRuntime::current(bdf);
 
         let bringup = state.negotiate_and_program(d, &self.caps, &self.bars, profile, runtime);
         #[cfg(feature = "debug-boot")]
@@ -114,7 +114,11 @@ impl VirtioPciAcquisition {
         };
 
         let child_facts = transport_result.child_facts();
-        let devres = state.finish_devres(&transport_result, self.cmd_orig);
+        let devres = state.finish_devres(
+            &transport_result,
+            bringup.programmed_queues.as_ref(),
+            self.cmd_orig,
+        );
         Some(VirtioProbe {
             child_facts,
             #[cfg(feature = "debug-boot")]

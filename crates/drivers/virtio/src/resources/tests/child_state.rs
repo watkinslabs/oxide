@@ -114,9 +114,17 @@ fn owned_probe_frames_drain_all_failed_probe_resources_once() {
         queues,
         VirtioNetBootPayloads::new(0x6000, 64, 0x8000),
     );
-    let mut owned = VirtioProbeOwnedFrames::from_probe_result(&result);
+    let mut owned = VirtioProbeOwnedFrames::from_probe_result(&result, None);
 
-    assert_eq!(owned.take_all(), alloc::vec![0x1000, 0x2000, 0x3000, 0x5000, 0x6000, 0x8000]);
+    let all = owned.take_all();
+    assert_eq!(all.vring_frames, alloc::vec![
+        VirtioDmaFrame { pa: 0x1000, dma: 0x1000 },
+        VirtioDmaFrame { pa: 0x2000, dma: 0x2000 },
+        VirtioDmaFrame { pa: 0x3000, dma: 0x3000 },
+        VirtioDmaFrame { pa: 0x5000, dma: 0x5000 },
+        VirtioDmaFrame { pa: 0x6000, dma: 0x6000 },
+    ]);
+    assert_eq!(all.payload_frames, alloc::vec![0x8000]);
     assert!(owned.is_empty());
     assert!(owned.take_all().is_empty());
 }
@@ -134,11 +142,15 @@ fn owned_probe_frames_publish_only_transfers_vring_frames() {
         queues,
         VirtioNetBootPayloads::new(0x9000, 64, 0xa000),
     );
-    let mut owned = VirtioProbeOwnedFrames::from_probe_result(&result);
+    let mut owned = VirtioProbeOwnedFrames::from_probe_result(&result, None);
 
-    assert_eq!(owned.take_vring_frames(), alloc::vec![0x1000, 0x2000, 0x3000]);
+    assert_eq!(owned.take_vring_frames(), alloc::vec![
+        VirtioDmaFrame { pa: 0x1000, dma: 0x1000 },
+        VirtioDmaFrame { pa: 0x2000, dma: 0x2000 },
+        VirtioDmaFrame { pa: 0x3000, dma: 0x3000 },
+    ]);
     assert_eq!(owned.payload_frames(), &[0x9000, 0xa000]);
-    assert_eq!(owned.take_all(), alloc::vec![0x9000, 0xa000]);
+    assert_eq!(owned.take_all().payload_frames, alloc::vec![0x9000, 0xa000]);
     assert!(owned.is_empty());
 }
 

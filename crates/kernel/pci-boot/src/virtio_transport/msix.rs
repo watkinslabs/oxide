@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 use sync::{Spinlock, TaskList as VirtioTransportLockClass};
 
-use super::{TransportMappings, VIRTIO_PCI_PAGE_BASE_MASK};
+use super::{TransportMappings, VIRTIO_PCI_PAGE_BASE_MASK, VIRTIO_PCI_PAGE_SIZE};
 
 pub(crate) struct MsixBinding {
     pub(crate) queue_vector: u16,
@@ -13,7 +13,7 @@ struct TransportRecord {
     bdf: pci::Bdf,
     command_orig: u16,
     mappings: TransportMappings,
-    vring_frames: Vec<u64>,
+    vring_frames: Vec<virtio::VirtioDmaFrame>,
     msix: Vec<MsixBinding>,
 }
 
@@ -90,7 +90,7 @@ pub(crate) fn publish_transport_record(
     bdf: pci::Bdf,
     command_orig: u16,
     mappings: TransportMappings,
-    vring_frames: Vec<u64>,
+    vring_frames: Vec<virtio::VirtioDmaFrame>,
     msix: Vec<MsixBinding>,
 ) {
     let rec = TransportRecord {
@@ -149,12 +149,15 @@ fn release_transport_record(rec: TransportRecord) {
     restore_pci_command(bdf, command_orig);
     mappings.unmap_all();
     for frame in vring_frames.iter().copied() {
-        debug_assert!(frame != 0);
+        if !iommu::unmap_dma(bdf, frame.dma, VIRTIO_PCI_PAGE_SIZE as usize) {
+            continue;
+        }
+        debug_assert!(frame.pa != 0);
         // SAFETY: these frames were allocated and programmed by the virtio-pci
         // transport for the child device. Child remove resets/quiesces the
         // device before unpublishing this transport record.
         unsafe {
-            pmm::setup::free_one_frame(frame);
+            pmm::setup::free_one_frame(frame.pa);
         }
     }
 }
@@ -166,11 +169,22 @@ pub(crate) fn reset_failed_probe(cfg_va: u64) -> bool {
     virtio::reset_device(cfg_va)
 }
 
-pub(crate) fn release_failed_probe_frames(frames: &[u64]) {
-    for frame in frames.iter().copied() {
-        debug_assert!(frame != 0);
+pub(crate) fn release_failed_probe_frames(bdf: pci::Bdf, frames: &virtio::VirtioProbeFrameSet) {
+    for frame in frames.vring_frames.iter().copied() {
+        if !iommu::unmap_dma(bdf, frame.dma, VIRTIO_PCI_PAGE_SIZE as usize) {
+            continue;
+        }
+        debug_assert!(frame.pa != 0);
         // SAFETY: frames passed here were allocated by the failed virtio probe
         // and have not been retained by runtime driver state.
+        unsafe {
+            pmm::setup::free_one_frame(frame.pa);
+        }
+    }
+    for frame in frames.payload_frames.iter().copied() {
+        debug_assert!(frame != 0);
+        // SAFETY: payload frames are not mapped by this transport path and
+        // have not been retained by a child runtime after failed probe.
         unsafe {
             pmm::setup::free_one_frame(frame);
         }
