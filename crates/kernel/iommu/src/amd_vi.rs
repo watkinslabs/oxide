@@ -88,6 +88,19 @@ impl AmdViTables {
     pub const fn command_buffer_register(&self) -> u64 { self.command_buffer_pa | BUFFER_SIZE_ENCODING }
     /// Event-log base register value. # C: O(1)
     pub const fn event_log_register(&self) -> u64 { self.event_log_pa | BUFFER_SIZE_ENCODING }
+    const fn dte_byte_offset(requester: u16) -> u64 { requester as u64 * core::mem::size_of::<AmdViDte>() as u64 }
+    unsafe fn write_initial_dte(&self, hhdm_offset: u64, requester: u16, dte: AmdViDte) {
+        let base = hhdm_offset.wrapping_add(self.device_table_pa).wrapping_add(Self::dte_byte_offset(requester));
+        let words = dte.words();
+        // SAFETY: caller holds the disabled unit's exclusive device table before hardware can consume this DTE.
+        unsafe {
+            core::ptr::write_volatile(base as *mut u64, words[0]);
+            core::ptr::write_volatile((base + 8) as *mut u64, words[1]);
+            core::ptr::write_volatile((base + 16) as *mut u64, words[2]);
+            core::ptr::write_volatile((base + 24) as *mut u64, words[3]);
+        }
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+    }
 }
 
 /// Owned AMD-Vi register aperture. It is mapped as device memory and may only
@@ -129,6 +142,14 @@ impl AmdViUnit {
     pub const fn state(&self) -> AmdViState { self.state }
     /// Advance after owned device MMIO mapping exists. # C: O(1)
     pub fn mapped(&mut self) -> bool { self.advance(AmdViState::Discovered, AmdViState::Mapped) }
+    /// Install one DTE while translation remains disabled. # C: O(1)
+    pub unsafe fn install_initial_dte(&self, regs: &AmdViRegisters, tables: &AmdViTables, hhdm_offset: u64, bdf: pci::Bdf, dte: AmdViDte) -> bool {
+        if self.state != AmdViState::Mapped || bdf.segment != self.segment || hhdm_offset == 0 { return false; }
+        if regs.read64(CONTROL).is_none_or(|control| control & CONTROL_IOMMU_ENABLE != 0) { return false; }
+        // SAFETY: the state and register guard above prove this unit cannot consume its table yet.
+        unsafe { tables.write_initial_dte(hhdm_offset, bdf.raw(), dte); }
+        true
+    }
     /// Program DMA-visible table bases and enable their command and event rings. # C: O(1)
     pub fn program_tables(&mut self, regs: &AmdViRegisters, tables: &AmdViTables) -> bool {
         if self.state != AmdViState::Mapped { return false; }
@@ -170,5 +191,6 @@ impl AmdViUnit {
         assert_eq!(dte.words()[0] & DTE_ROOT_MASK, 0x1234_5000);
         assert_eq!(dte.words()[1], 9);
         assert!(AmdViDte::paging(0x1234_5001, 4, 9).is_none());
+        assert_eq!(AmdViTables::dte_byte_offset(0x1234), 0x1234 * 32);
     }
 }
