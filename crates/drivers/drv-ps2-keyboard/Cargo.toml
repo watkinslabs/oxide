@@ -14,6 +14,8 @@ klog             = { path = "../../shared/klog" }
 kmacros          = { path = "../../shared/kmacros" }
 drv              = { path = "../drv" }
 drv-virtio-input = { path = "../drv-virtio-input" }
+input            = { path = "../../kernel/input" }
+sync             = { path = "../../shared/sync" }
 arch-irq         = { path = "../../kernel/arch-irq" }
 firmware         = { path = "../../kernel/firmware" }
 hal              = { path = "../../arch/hal" }

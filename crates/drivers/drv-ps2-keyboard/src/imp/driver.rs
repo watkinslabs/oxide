@@ -6,8 +6,9 @@ use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 
 use super::bringup::{bringdown, bringup, shutdown_hw};
-use super::irq::install_irq;
-use super::state::{PRESENT, present};
+use super::irq::{install_aux_irq, install_irq};
+use super::mouse::install_device as install_mouse_device;
+use super::state::{AUX_PRESENT, PRESENT, present};
 
 struct Ps2KbdDriver;
 
@@ -38,6 +39,13 @@ impl drv::Driver for Ps2KbdDriver {
                 // `IRQ_ENABLED` was never set on the failure path.
                 unsafe { bringdown(); }
                 return Err(drv::Error::ProbeFailed);
+            }
+            if AUX_PRESENT.load(Ordering::Acquire) && install_mouse_device() {
+                // SAFETY: the input sink exists before IRQ12 is installed;
+                // controller delivery remains masked until this call succeeds.
+                if !unsafe { install_aux_irq() } {
+                    super::mouse::remove_device();
+                }
             }
             debug_boot! { klog::write_raw(b"[INFO]  i8042 keyboard detected\n"); }
             Ok(())

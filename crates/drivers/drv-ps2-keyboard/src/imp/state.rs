@@ -6,10 +6,16 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 pub(super) static PRESENT: AtomicBool = AtomicBool::new(false);
 pub(super) static IRQ_ENABLED: AtomicBool = AtomicBool::new(false);
+pub(super) static AUX_PRESENT: AtomicBool = AtomicBool::new(false);
+pub(super) static AUX_IRQ_ENABLED: AtomicBool = AtomicBool::new(false);
 pub(super) static BSP_APIC_ID: AtomicU64 = AtomicU64::new(0);
 pub(super) static DEVICE_WINDOW_BASE: AtomicU64 = AtomicU64::new(0);
 pub(super) static IRQ_VEC: AtomicU64 = AtomicU64::new(0);
 pub(super) static IRQ_PIN: AtomicU64 = AtomicU64::new(u64::MAX);
+/// IRQ12 ownership is published independently from IRQ1 because both lines
+/// route into the same controller but have distinct I/O-APIC redirections.
+pub(super) static AUX_IRQ_VEC: AtomicU64 = AtomicU64::new(0);
+pub(super) static AUX_IRQ_PIN: AtomicU64 = AtomicU64::new(u64::MAX);
 
 /// Sentinel meaning "no I/O APIC pin is owned by this driver".
 pub(super) const NO_IRQ_PIN: u64 = u64::MAX;

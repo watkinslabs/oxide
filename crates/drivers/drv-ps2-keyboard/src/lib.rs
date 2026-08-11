@@ -38,6 +38,8 @@
 // The pure Scancode-Set-1 decoder is host-testable (x86_64 host or kernel).
 #[cfg(target_arch = "x86_64")]
 mod scancode;
+#[cfg(target_arch = "x86_64")]
+mod ps2_mouse;
 
 #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
 #[path = "noop.rs"]

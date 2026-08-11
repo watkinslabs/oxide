@@ -9,13 +9,19 @@ pub(super) const CMD: u16 = 0x64;
 // Status register bits.
 pub(super) const STS_OUTPUT_FULL: u8 = 1 << 0; // bit0: output buffer has a byte
 pub(super) const STS_INPUT_FULL: u8 = 1 << 1; // bit1: input buffer busy
+/// Output-buffer byte originated from the auxiliary (PS/2 mouse) port.
+pub(super) const STS_AUX_DATA: u8 = 1 << 5;
 
 // Controller commands (written to 0x64).
 pub(super) const CMD_READ_CONFIG: u8 = 0x20;
 pub(super) const CMD_WRITE_CONFIG: u8 = 0x60;
 pub(super) const CMD_DISABLE_PORT2: u8 = 0xA7;
+pub(super) const CMD_ENABLE_PORT2: u8 = 0xA8;
+pub(super) const CMD_TEST_PORT2: u8 = 0xA9;
 pub(super) const CMD_DISABLE_PORT1: u8 = 0xAD;
 pub(super) const CMD_ENABLE_PORT1: u8 = 0xAE;
+/// Prefix the following data write for the auxiliary PS/2 device.
+pub(super) const CMD_WRITE_PORT2: u8 = 0xD4;
 pub(super) const CMD_SELF_TEST: u8 = 0xAA; // → 0x55 on pass
 pub(super) const SELF_TEST_PASS: u8 = 0x55;
 pub(super) const CMD_TEST_PORT1: u8 = 0xAB; // → 0x00 on pass
@@ -29,8 +35,15 @@ pub(super) const KBD_DISABLE_SCAN: u8 = 0xF5;
 pub(super) const KBD_ACK: u8 = 0xFA;
 pub(super) const KBD_BAT_OK: u8 = 0xAA;
 
+// Auxiliary-device commands and replies.
+pub(super) const AUX_RESET: u8 = 0xFF;
+pub(super) const AUX_ENABLE_STREAM: u8 = 0xF4;
+pub(super) const AUX_DISABLE_STREAM: u8 = 0xF5;
+pub(super) const AUX_ACK: u8 = 0xFA;
+
 // Config byte bits (controller "command byte").
 pub(super) const CFG_PORT1_IRQ: u8 = 1 << 0; // first-port interrupt (IRQ1) enable
+pub(super) const CFG_PORT2_IRQ: u8 = 1 << 1; // auxiliary-port interrupt (IRQ12) enable
 pub(super) const CFG_PORT1_TRANSLATE: u8 = 1 << 6; // scancode-set-1 translation
 
 /// Spin budget for "input buffer clear" before a controller/device write.
@@ -44,8 +57,12 @@ pub(super) const DRAIN_MAX_BYTES: u32 = 64;
 
 /// Legacy ISA IRQ line owned by the keyboard.
 pub(super) const KBD_ISA_IRQ: u8 = 1;
+/// Legacy ISA IRQ line delivered for auxiliary-port bytes.
+pub(super) const AUX_ISA_IRQ: u8 = 12;
 /// Fallback GSI when the MADT declares no override for IRQ1 (identity-mapped).
 pub(super) const KBD_ISA_IRQ_GSI: u32 = 1;
+/// Fallback GSI when firmware declares no override for IRQ12.
+pub(super) const AUX_ISA_IRQ_GSI: u32 = 12;
 /// ACPI MADT interrupt-override polarity/trigger field width and the
 /// active-low / level-triggered encodings within it.
 pub(super) const MADT_FLAG_MASK: u32 = 0x3;
