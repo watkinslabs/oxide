@@ -39,25 +39,15 @@ impl SockWaitQueue {
 
     fn key(&self) -> usize { self as *const Self as usize }
 
-    /// Publish the calling thread on this queue with an optional expiry.
-    /// `0` disables the expiry.
-    /// # SAFETY: signature parity with the kernel realisation, whose park
-    /// requires process context and a held resource lock; nothing here relies
-    /// on that beyond the same publish-before-unlock ordering.
+    /// Named lock-coupled interruptible publication with an absolute deadline.
+    /// # SAFETY: signature parity with the kernel realisation; the caller
+    /// publishes under the resource lock before dropping it to schedule.
     /// # C: O(1)
-    pub unsafe fn park_interruptible_with_deadline(&self, deadline_ns: u64) {
+    pub unsafe fn prepare_to_wait_interruptible_with_deadline(&self, deadline_ns: u64) {
         let flag: WakeFlag = Arc::new(AtomicBool::new(false));
         self.lock().push(flag.clone());
         let key = self.key();
         PARKED.with(|p| *p.borrow_mut() = Some((key, flag, deadline_ns)));
-    }
-
-    /// Named lock-coupled interruptible publication with an absolute deadline.
-    /// # SAFETY: see [`Self::park_interruptible_with_deadline`].
-    /// # C: O(1)
-    pub unsafe fn prepare_to_wait_interruptible_with_deadline(&self, deadline_ns: u64) {
-        // SAFETY: preserves the hosted queue's publish-before-unlock ordering.
-        unsafe { self.park_interruptible_with_deadline(deadline_ns); }
     }
 
     /// Yield until this thread's flag is set or its expiry passes.

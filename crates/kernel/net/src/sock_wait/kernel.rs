@@ -11,21 +11,9 @@ impl SockWaitQueue {
     /// # C: O(1)
     pub const fn new() -> Self { Self { inner: sched::live::WaitList::new() } }
 
-    /// Publish the running task on this queue with an optional expiry, closing
-    /// the signal-before-sleep race. `0` disables the expiry.
-    /// # SAFETY: caller is the running task in process context and holds the
-    /// resource lock that the matching waker must take, so the registration is
-    /// visible before any wake can be issued. Caller MUST call `wait()` after
-    /// dropping that lock.
-    /// # C: O(N armed)
-    pub unsafe fn park_interruptible_with_deadline(&self, deadline_ns: u64) {
-        // SAFETY: forwards the caller's process-context park contract to the
-        // scheduler wait list unchanged; no extra state is introduced here.
-        unsafe { self.inner.park_interruptible_with_deadline(deadline_ns); }
-    }
-
     /// Named lock-coupled interruptible publication with an absolute deadline.
-    /// # SAFETY: see [`Self::park_interruptible_with_deadline`].
+    /// # SAFETY: caller holds the resource lock shared with its waker and
+    /// schedules immediately after dropping that lock.
     /// # C: O(N armed)
     pub unsafe fn prepare_to_wait_interruptible_with_deadline(&self, deadline_ns: u64) {
         // SAFETY: preserves the socket queue's prepared-wait contract while
