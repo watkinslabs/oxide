@@ -49,7 +49,10 @@ pub unsafe fn install_default_runqueue() {
     // SAFETY: install_default_runqueue is the per-CPU bring-up path; preempt_enable hook is read at every decrement-to-zero with appropriate barriers via the count atomic.
     unsafe { crate::preempt::set_schedule_hook(schedule_hook_trampoline); }
     #[cfg(feature = "debug-smp")]
-    sync::set_spin_warn_hook(smp_spin_warn);
+    {
+        sync::set_spin_owner_hook(smp_spin_owner);
+        sync::set_spin_warn_hook(smp_spin_warn);
+    }
     // `register_timers`'s body wires kernel-only tick owners (cgroup bandwidth,
     // orphan reap, RCU drain, mount expiry), so it exists only on the kernel
     // target; a hosted runqueue install has no timer subsystem to register with.
@@ -58,13 +61,24 @@ pub unsafe fn install_default_runqueue() {
 }
 
 /// `debug-smp` spin-stall reporter installed into `sync`: emit a [SMP-STALL]
-/// banner naming the contended lock CLASS rank, the spin count, and this CPU -
-/// so a -smp boot that still wedges names the vertex the conservative wake-path
-/// fix missed. # C: O(1)
+/// banner naming the lock class and instance, its recorded owner, the waiter,
+/// spin count, and CPU. # C: O(1)
 #[cfg(feature = "debug-smp")]
-fn smp_spin_warn(rank: u16, iters: u64) {
+fn smp_spin_owner() -> u64 { current().map_or(0, |t| t.tid as u64) }
+
+/// Report a spinlock whose owner has prevented forward progress. The address
+/// identifies a dynamic lock instance, while both tids correlate the report
+/// with the watchdog's task dump. # C: O(1)
+#[cfg(feature = "debug-smp")]
+fn smp_spin_warn(rank: u16, lock: usize, owner: u64, iters: u64) {
     klog::write_raw(b"[SMP-STALL] lock_class_rank=");
     klog::write_dec_u64(rank as u64);
+    klog::write_raw(b" lock=");
+    klog::write_hex_u64(lock as u64);
+    klog::write_raw(b" owner_tid=");
+    klog::write_dec_u64(owner);
+    klog::write_raw(b" waiter_tid=");
+    klog::write_dec_u64(smp_spin_owner());
     klog::write_raw(b" spin_iters=");
     klog::write_dec_u64(iters);
     klog::write_raw(b" cpu=");

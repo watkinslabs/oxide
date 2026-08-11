@@ -20,6 +20,8 @@ use vmm::{UffdEvent, UffdEventKind};
 
 use super::policy;
 use super::{PendingEvent, UfData};
+#[cfg(target_os = "oxide-kernel")]
+use sched::WaitOutcome;
 
 impl UfData {
     /// Whether this monitor negotiated the feature reporting `kind`.
@@ -75,14 +77,13 @@ impl UfData {
     /// # C: O(1) + block
     #[cfg(target_os = "oxide-kernel")]
     fn wait_for_reader(&self, consumed: &Arc<AtomicBool>, charge: &Arc<AtomicBool>) {
-        loop {
-            if consumed.load(Ordering::Acquire) { return; }
-            if sched::live::deliverable_signals_self() != 0 { break; }
-            // SAFETY: running task; preempt-off; park marks Sleeping + bumps the Arc before schedule, and the reader wakes change_waiters once it has taken the message.
-            unsafe { self.change_waiters.park(); }
-            // SAFETY: process ctx; runqueue installed; preempt-off; current Sleeping so schedule won't re-enqueue until the reader's wake fires.
-            unsafe { sched::live::schedule::schedule(); }
-        }
+        // SAFETY: consumption is a pure atomic predicate and the reader wakes
+        // change_waiters after storing it; no event-state lock crosses sleep.
+        let outcome = unsafe {
+            sched::live::wait_event_interruptible(&self.change_waiters,
+                || consumed.load(Ordering::Acquire))
+        };
+        if outcome == WaitOutcome::Ready { return; }
         self.state.lock().events.retain(|e| !Arc::ptr_eq(&e.consumed, consumed));
         self.release_once(charge);
     }

@@ -22,7 +22,7 @@ use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
-use sched::live::WaitList;
+use sched::live::{WaitList, wait_event_killable, wait_event_uninterruptible};
 use sync::Spinlock;
 use syscall::errno::Errno;
 
@@ -67,10 +67,6 @@ const GROWN_SERVICER: usize = 0;
 static PENDING: Spinlock<VecDeque<usize>, UmhQueue> = Spinlock::new(VecDeque::new());
 static PENDING_WAIT: WaitList = WaitList::new();
 static POOL: Pool = Pool::new(MAX_SERVICERS);
-
-/// Missed-wakeup backstop for both the helper thread's idle park and a caller's
-/// completion wait.
-const BACKSTOP_NS: u64 = 100_000_000;
 
 /// One in-flight request, shared between the submitting task and the helper
 /// thread.
@@ -138,20 +134,13 @@ pub fn submit(info: Box<SubprocessInfo>) -> HelperRun {
 /// a wait that a pending signal aborts would never deliver its core dump at
 /// all. `UMH_KILLABLE` is how a caller opts into the other behaviour.
 fn await_completion(req: &Req, killable: bool) {
-    while !req.done.load(Ordering::Acquire) {
-        if killable && fatal_signal_pending() { return; }
-        // SAFETY: process context on the submitting task with the runqueue installed and no lock held; the deadline bounds the park so a wake that lands before it cannot be lost for long.
-        unsafe {
-            req.wq.park_with_deadline(arch::now_ns() + BACKSTOP_NS);
-            sched::live::schedule();
-        }
-    }
-}
-
-fn fatal_signal_pending() -> bool {
-    let Some(cur) = sched::live::current() else { return false };
-    let forced = sched::Signum::Sigkill.bit() | sched::Signum::Sigstop.bit();
-    cur.pending_signals() & forced != 0
+    // SAFETY: submitter is in process context with no request or queue lock
+    // held; publication, predicate recheck and cancellation belong together.
+    let outcome = unsafe {
+        if killable { wait_event_killable(&req.wq, || req.done.load(Ordering::Acquire)) }
+        else { wait_event_uninterruptible(&req.wq, || req.done.load(Ordering::Acquire)) }
+    };
+    if outcome.interrupted() { return; }
 }
 
 fn enqueue(arg: usize) -> bool {
@@ -196,11 +185,12 @@ extern "C" fn khelper(arg: usize) -> ! {
                 run_one(req);
                 POOL.released();
             }
-            // SAFETY: running kthread with no lock held; the deadline bounds the park so a submission landing between the check and the park is not lost.
-            None => unsafe {
-                PENDING_WAIT.park_with_deadline(arch::now_ns() + BACKSTOP_NS);
-                sched::live::schedule();
-            },
+            // SAFETY: running kthread with no queue lock held; the generic
+            // loop rechecks publication after its waiter is visible.
+            None => { let _ = unsafe {
+                wait_event_uninterruptible(&PENDING_WAIT,
+                    || !PENDING.lock_irqsave::<UmhIrq>().is_empty())
+            }; },
         }
     }
 }
@@ -275,7 +265,7 @@ pub fn yield_one_ms() {
     static IDLE: WaitList = WaitList::new();
     // SAFETY: process context with the runqueue installed and no lock held; the park is deadline-bounded so no waker is required.
     unsafe {
-        IDLE.park_with_deadline(arch::now_ns() + ONE_MS_NS);
+        IDLE.prepare_to_wait_with_deadline(arch::now_ns() + ONE_MS_NS);
         sched::live::schedule();
     }
 }

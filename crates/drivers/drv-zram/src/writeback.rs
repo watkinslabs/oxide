@@ -183,7 +183,7 @@ pub(super) fn ensure_resident(zram: &Zram, index: usize) -> KResult<()> {
                     {
                         // SAFETY: the zram state lock serializes this park
                         // with the reload owner's final-state publication.
-                        unsafe { zram.loading_waiters.park(); }
+                        unsafe { zram.loading_waiters.prepare_to_wait(); }
                     }
                     None
                 }

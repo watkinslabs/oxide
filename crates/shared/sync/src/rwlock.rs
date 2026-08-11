@@ -50,6 +50,10 @@ impl<T, C: LockClass> RwLock<T, C> {
     /// # C: O(contention)
     /// # Lk: this lock acquired (read)
     pub fn read(&self) -> RwReadGuard<'_, T, C> {
+        // Linux `read_lock` = `preempt_disable()` + the acquire: a reader
+        // descheduled inside its section holds off every writer while not
+        // running, which on one CPU is a wedge nothing can break.
+        let preempt = crate::preempt_gate::acquire(C::rank());
         loop {
             let s = self.state.load(Ordering::Relaxed);
             if s & WRITER_BIT != 0 || (s & READER_MASK) == READER_MAX {
@@ -60,7 +64,7 @@ impl<T, C: LockClass> RwLock<T, C> {
                 .compare_exchange_weak(s, s + 1, Ordering::Acquire, Ordering::Relaxed)
                 .is_ok()
             {
-                return RwReadGuard { lock: self };
+                return RwReadGuard { lock: self, preempt };
             }
         }
     }
@@ -71,6 +75,8 @@ impl<T, C: LockClass> RwLock<T, C> {
     /// # C: O(contention)
     /// # Lk: this lock acquired (write)
     pub fn write(&self) -> RwWriteGuard<'_, T, C> {
+        // Linux `write_lock` — same contract as `read`.
+        let preempt = crate::preempt_gate::acquire(C::rank());
         loop {
             let s = self.state.load(Ordering::Relaxed);
             if s != 0 {
@@ -81,7 +87,7 @@ impl<T, C: LockClass> RwLock<T, C> {
                 .compare_exchange_weak(0, WRITER_BIT, Ordering::Acquire, Ordering::Relaxed)
                 .is_ok()
             {
-                return RwWriteGuard { lock: self };
+                return RwWriteGuard { lock: self, preempt };
             }
         }
     }
@@ -97,6 +103,7 @@ impl<T, C: LockClass> RwLock<T, C> {
 
 pub struct RwReadGuard<'a, T, C: LockClass> {
     lock: &'a RwLock<T, C>,
+    preempt: Option<fn()>,
 }
 
 impl<T, C: LockClass> Deref for RwReadGuard<'_, T, C> {
@@ -112,11 +119,13 @@ impl<T, C: LockClass> Deref for RwReadGuard<'_, T, C> {
 impl<T, C: LockClass> Drop for RwReadGuard<'_, T, C> {
     fn drop(&mut self) {
         self.lock.state.fetch_sub(1, Ordering::Release);
+        crate::preempt_gate::release(self.preempt);
     }
 }
 
 pub struct RwWriteGuard<'a, T, C: LockClass> {
     lock: &'a RwLock<T, C>,
+    preempt: Option<fn()>,
 }
 
 impl<T, C: LockClass> Deref for RwWriteGuard<'_, T, C> {
@@ -140,6 +149,7 @@ impl<T, C: LockClass> DerefMut for RwWriteGuard<'_, T, C> {
 impl<T, C: LockClass> Drop for RwWriteGuard<'_, T, C> {
     fn drop(&mut self) {
         self.lock.state.store(0, Ordering::Release);
+        crate::preempt_gate::release(self.preempt);
     }
 }
 

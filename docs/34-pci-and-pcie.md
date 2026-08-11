@@ -11,7 +11,7 @@ Enumerate PCIe devices via ECAM. Allocate BARs (or read pre-assigned). Configure
 1. Only ECAM access (PCIe). Per `03§7`.
 2. Prefer MSI-X when independent vectors improve the driver; use MSI for single-vector devices or when MSI-X is absent; use INTx only when neither message-signalled mode is usable.
 3. BARs respected at boot if firmware (UEFI) assigned them; never reassigned.
-4. IOMMU: pass-through (no protection). Intel VT-d / arm SMMU isolation tracked as later phase.
+4. Firmware IOMMU units are discovered before PCI binding. A malformed table leaves every device in direct-DMA mode; discovery never enables translation.
 
 ## 3 Public ifc
 
@@ -65,8 +65,9 @@ MSI capability carries its message address/data in config space. Program it disa
 
 ## 8 IOMMU
 
-Now: identity-map all DMA (passthrough). DMA targets must be physical addresses our PMM allocated.
-Later phase: enable Intel VT-d / SMMU. Per-device DMA domains. `dma_map_*` API.
+Direct mode: DMA targets are physical addresses PMM allocated. Validated DMAR/IVRS units are retained for the IOMMU owner; discovery does not alter a device's DMA address or enable translation.
+
+Translation mode: each bus-master owns exactly one IOMMU domain; attach precedes bus-master enable, map/unmap is the sole DMA-address authority, and invalidation completes before physical memory is reused. The IOMMU owner selects Intel VT-d, AMD-Vi, or arm SMMU from firmware; PCI never builds a parallel translation registry.
 
 ## 9 Concurrency
 

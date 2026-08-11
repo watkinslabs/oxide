@@ -43,9 +43,9 @@ fn take_request_or_park() -> bool {
         request.pending = false;
         return true;
     }
-    // SAFETY: kswapd runs in schedulable process context and holds only the
-    // Reclaim request lock, which is strictly below WaitList's TaskList rank.
-    unsafe { WAIT.park(); }
+    // SAFETY: request is the condition gate; publish while holding it so a
+    // waker cannot set pending and miss this task before the outer schedule.
+    unsafe { WAIT.prepare_to_wait(); }
     false
 }
 

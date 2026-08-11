@@ -246,7 +246,7 @@ impl Zram {
             // SAFETY: reset publishes itself before dropping zram state;
             // writeback completion takes that lock, resolves its slot, wakes,
             // and only then permits this reset to release the backing claim.
-            unsafe { self.writeback_waiters.park(); }
+            unsafe { self.writeback_waiters.prepare_to_wait(); }
             drop(state);
             // SAFETY: reset has no state lock held and immediately yields.
             unsafe { sched::live::schedule::schedule(); }

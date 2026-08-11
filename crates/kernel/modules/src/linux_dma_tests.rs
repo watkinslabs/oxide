@@ -1,6 +1,7 @@
 use crate::linux_dma::*;
 use crate::linux_alloc;
 use core::ffi::c_void;
+use core::mem::MaybeUninit;
 use core::ptr::null_mut;
 
 const TEST_DMA_BUF_SIZE: usize = 32;
@@ -23,7 +24,11 @@ fn streaming_map_checks_masks_and_directions() {
     let _modules = crate::test_serial::claim();
     let mut buf = [0u8; TEST_DMA_BUF_SIZE];
     let mut mask = DEFAULT_DMA_MASK;
-    let mut dev = LinuxDevice { dma_mask: &mut mask, coherent_dma_mask: DEFAULT_DMA_MASK, driver_data: null_mut() };
+    // SAFETY: every all-zero LinuxDevice field is an inhabited null/zero state; only the
+    // DMA fields this test exercises are then initialized to meaningful values.
+    let mut dev: LinuxDevice = unsafe { MaybeUninit::zeroed().assume_init() };
+    dev.dma_mask = &mut mask;
+    dev.coherent_dma_mask = DEFAULT_DMA_MASK;
     let dma = dma_map_single(&mut dev, buf.as_mut_ptr() as *mut c_void, buf.len(), DMA_TO_DEVICE);
     assert_eq!(dma_mapping_error(&mut dev, dma), 0);
     dma_unmap_single(&mut dev, dma, buf.len(), DMA_TO_DEVICE);
@@ -31,6 +36,11 @@ fn streaming_map_checks_masks_and_directions() {
     assert_eq!(mask, dma - 1);
     assert_eq!(dma_map_single(&mut dev, buf.as_mut_ptr() as *mut c_void, buf.len(), DMA_TO_DEVICE), DMA_MAPPING_ERROR);
     assert_eq!(dma_map_single(&mut dev, buf.as_mut_ptr() as *mut c_void, buf.len(), LINUX_EINVAL), DMA_MAPPING_ERROR);
+}
+
+#[test]
+fn mapping_error_returns_linux_enomem() {
+    assert_eq!(dma_mapping_error(null_mut(), DMA_MAPPING_ERROR), -12);
 }
 
 #[test]
@@ -98,8 +108,8 @@ fn export_symbols_registers_dma_surface() {
     let _modules = crate::test_serial::claim();
     export_symbols();
     for name in [
-        "dma_alloc_coherent", "dma_free_coherent", "dma_map_single",
-        "dma_unmap_single", "dma_map_page", "dma_map_sg", "dma_unmap_sg",
+        "dma_alloc_coherent", "dma_alloc_attrs", "dma_free_coherent", "dma_free_attrs", "dma_map_single",
+        "dma_unmap_single", "dma_map_page", "dma_map_page_attrs", "dma_unmap_page_attrs", "dma_map_sg", "dma_map_sg_attrs", "dma_unmap_sg", "dma_unmap_sg_attrs",
         "dma_mapping_error", "dma_set_mask", "dma_set_coherent_mask",
         "dma_set_mask_and_coherent", "sg_init_table", "sg_set_buf", "sg_set_page",
         "sg_alloc_table", "sg_free_table", "sg_copy_to_buffer", "sg_miter_start",

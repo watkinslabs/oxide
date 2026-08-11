@@ -188,9 +188,9 @@ fn init_runtime_subsystems() {
     let _ = step("firmware::init", || unsafe { firmware::init() });
     ::sched::set_current_hook(|| sched::live::current());
     vmm::set_mmap_rwsem_wait_hooks(
-        sched::live::inode_wait::park,
+        sched::live::inode_wait::park_rwsem,
         sched::live::inode_wait::schedule_after_park,
-        sched::live::inode_wait::wake,
+        sched::live::inode_wait::wake_rwsem,
     );
     // RCU CPU-topology hooks. WITHOUT these, `sync::rcu` runs its documented
     // effectively-UP defaults — `online()` returns 1 (boot CPU only) and

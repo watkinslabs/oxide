@@ -199,7 +199,7 @@ pub fn connect_wait(c: &Arc<VsockConn>) -> Result<(), crate::NetError> {
             let st = c.st.lock();
             if *st != VsockState::Connecting { continue; }
             // SAFETY: process context; state lock serializes completion with park publication.
-            unsafe { c.waiters.park_interruptible_with_deadline(deadline); }
+            unsafe { c.waiters.prepare_to_wait_interruptible_with_deadline(deadline); }
             drop(st);
             // SAFETY: current task was parked on this connection wait list by the call above.
             unsafe { sched::live::schedule::schedule(); }
@@ -335,7 +335,7 @@ pub fn arm_seqpacket_recv_wait(c: &VsockConn, sock: &crate::vsock_socket::VsockS
         || sock.read_shut.load(core::sync::atomic::Ordering::Acquire)
     { return false; }
     // SAFETY: state and complete-record locks serialize data/error publication with park.
-    unsafe { c.waiters.park_interruptible_with_deadline(deadline_ns); }
+    unsafe { c.waiters.prepare_to_wait_interruptible_with_deadline(deadline_ns); }
     true
 }
 

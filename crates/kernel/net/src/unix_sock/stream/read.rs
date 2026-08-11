@@ -126,7 +126,7 @@ impl UnixPair {
         // SAFETY: running task on this CPU; preempt-off owned by the syscall
         // stub; park_with_deadline marks Sleeping + enqueues on the WaitList;
         // the ring lock is dropped below and the caller owns the schedule().
-        unsafe { self.reader_waiters(end).park_interruptible_with_deadline(deadline_ns); }
+        unsafe { self.reader_waiters(end).prepare_to_wait_interruptible_with_deadline(deadline_ns); }
         drop(g);
         ReadOutcome::Parked
     }

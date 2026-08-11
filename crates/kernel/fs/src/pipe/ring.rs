@@ -205,6 +205,13 @@ impl PipeData {
     /// across another writer's bytes. # C: O(bytes)
     fn try_fill_iter(&self, bufs: &[&[u8]], total: usize, packetized: bool) -> usize {
         let mut g = self.buf.lock();
+        Self::fill_iter_locked(&mut g, bufs, total, packetized)
+    }
+
+    /// [`try_fill_iter`] with the ring gate already held. Keeping this split
+    /// lets the blocking writer test "full" and publish its prepared wait
+    /// under one gate, so a reader cannot drain and wake an empty list.
+    fn fill_iter_locked(g: &mut PipeBuf, bufs: &[&[u8]], total: usize, packetized: bool) -> usize {
         let cap = g.cap;
         if g.len >= cap { return 0; }
         if total <= PIPE_BUF && total <= cap && cap - g.len < total { return 0; }
@@ -252,7 +259,17 @@ impl PipeData {
                 // Sleeping while we still hold the ring lock, so a racing
                 // write's push+wake_all cannot land between this recheck and
                 // our enqueue.
-                unsafe { self.read_waiters.park(); }
+                unsafe { self.read_waiters.prepare_to_wait_interruptible(); }
+                if self.writers.load(Ordering::Acquire) == 0 {
+                    self.read_waiters.cancel_current_park();
+                    drop(g);
+                    return Ok(0);
+                }
+                if sched::live::deliverable_signals_self() != 0 {
+                    self.read_waiters.cancel_current_park();
+                    drop(g);
+                    return Err(VfsError::Erestartsys);
+                }
             }
             drop(g);
             // SAFETY: process ctx; runqueue installed; preempt-off; current is
@@ -285,8 +302,10 @@ impl PipeData {
         if total == 0 { return Ok(0); }
         loop {
             if self.readers.load(Ordering::Acquire) == 0 { return Err(VfsError::Epipe); }
-            let n = self.try_fill_iter(bufs, total, packetized);
+            let mut g = self.buf.lock();
+            let n = Self::fill_iter_locked(&mut g, bufs, total, packetized);
             if n > 0 {
+                drop(g);
                 self.read_waiters.wake_all();
                 if let Some(s) = subs { s.notify(); }
                 return Ok(n);
@@ -298,9 +317,17 @@ impl PipeData {
                                   sched::live::fatal_kill_pending_self(), sched::live::frozen_self()) {
                 return Err(VfsError::Erestartsys);
             }
-            // SAFETY: running task; preempt-off; park bumps the Arc + marks Sleeping before scheduling.
+            // SAFETY: the ring gate is still held from the full recheck above,
+            // so a reader's drain+wake cannot pass between it and publication.
             #[cfg(target_os = "oxide-kernel")]
-            unsafe { self.write_waiters.park(); }
+            unsafe { self.write_waiters.prepare_to_wait_interruptible(); }
+            #[cfg(target_os = "oxide-kernel")]
+            if self.readers.load(Ordering::Acquire) == 0 {
+                self.write_waiters.cancel_current_park();
+                drop(g);
+                return Err(VfsError::Epipe);
+            }
+            drop(g);
             // SAFETY: process ctx; runqueue installed; current is Sleeping until a read-side wake fires.
             #[cfg(target_os = "oxide-kernel")]
             unsafe { sched::live::schedule::schedule(); }
@@ -364,7 +391,7 @@ impl PipeData {
     #[cfg(target_os = "oxide-kernel")]
     pub unsafe fn arm_read_wait(&self) {
         // SAFETY: forwarded from this function's own contract — process context, preempt-off, caller schedules next.
-        unsafe { self.read_waiters.park(); }
+        unsafe { self.read_waiters.prepare_to_wait(); }
     }
 
     /// Bytes currently queued for `FIONREAD`. # C: O(1)
@@ -384,12 +411,17 @@ impl PipeData {
     #[cfg(target_os = "oxide-kernel")]
     pub fn wait_for_readers_gone(&self) {
         while self.readers.load(Ordering::Acquire) != 0 {
-            if sched::live::fatal_kill_pending_self() { return; }
-            // SAFETY: running task; preempt-off; park bumps the Arc and marks the task Sleeping before the recheck below.
-            unsafe { self.write_waiters.park(); }
-            if self.readers.load(Ordering::Acquire) == 0 { self.write_waiters.cancel_current_park(); }
-            // SAFETY: process ctx; runqueue installed; current is Sleeping until the last reader's close wakes the write side.
-            unsafe { sched::live::schedule::schedule(); }
+            // Linux's `wait_event_killable()` shape is sufficient here: the
+            // predicate is a standalone atomic reader count, so no resource
+            // gate needs to span observation and waiter publication.
+            // SAFETY: process context with a live runqueue; the helper owns
+            // enqueue, recheck, cancellation, and schedule.
+            if unsafe {
+                sched::live::wait_event_killable(&self.write_waiters,
+                    || self.readers.load(Ordering::Acquire) == 0)
+            } == sched::task::WaitOutcome::Interrupted {
+                return;
+            }
         }
     }
 }

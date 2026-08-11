@@ -7,7 +7,7 @@
 //! (lapic/gic) still runs on every CPU each tick; ksoftirqd is the
 //! schedulable, preemptible drainer the gate hands the remainder to, so a
 //! flood can't monopolise a CPU.
-use super::WaitList;
+use super::{WaitList, wait_event_interruptible};
 use core::sync::atomic::Ordering;
 use cpu::MAX_CPUS;
 
@@ -15,18 +15,6 @@ use cpu::MAX_CPUS;
 /// (the softirq `wakeup_softirqd` hook) rouses the CURRENT CPU's thread, so a
 /// deferral on CPU n wakes ksoftirqd/n, which (pinned to n) drains n's mask.
 static WAIT: [WaitList; MAX_CPUS] = [const { WaitList::new() }; MAX_CPUS];
-/// Missed-wakeup safety net. The wake site can fire in the window between a
-/// thread's `pending()` check and `park()`, and `try_to_wake_up` can't
-/// self-wake a still-running task (it spins on `on_cpu`). A deadline re-check
-/// closes that race — same idiom as `ktimers`. The per-CPU IRQ-tail drainer
-/// keeps each mask moving meanwhile, so this is a backstop, not the latency path.
-const BACKSTOP_NS: u64 = 100_000_000;
-
-#[cfg(target_arch = "x86_64")]
-fn now_ns() -> u64 { use hal::TimerOps; hal_x86_64::X86TimerOps::monotonic_ns().0 }
-#[cfg(target_arch = "aarch64")]
-fn now_ns() -> u64 { use hal::TimerOps; hal_aarch64::ArmTimerOps::monotonic_ns().0 }
-
 /// This CPU's index (host build → 0).
 #[inline]
 fn this_cpu() -> usize {
@@ -68,10 +56,12 @@ extern "C" fn ksoftirqd(arg: usize) -> ! {
             unsafe { super::schedule(); }
             continue;
         }
-        // Idle — park on this CPU's list until `wake()` (or the deadline) rouses us.
-        // SAFETY: running kthread on this CPU; preempt-off; no lock held across
-        // the park; schedule() yields immediately per the WaitList contract.
-        unsafe { WAIT[my_cpu].park_with_deadline(now_ns() + BACKSTOP_NS); super::schedule(); }
+        // Publish before testing `pending()`: a producer that wins either side
+        // of this edge is observed by the canonical loop, so no periodic
+        // fallback is needed to repair a missed wake.
+        // SAFETY: running kthread in process context with no resource lock;
+        // the predicate is lock-free and the generic loop owns the schedule.
+        let _ = unsafe { wait_event_interruptible(&WAIT[my_cpu], softirq::pending) };
     }
 }
 

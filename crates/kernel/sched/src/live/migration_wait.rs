@@ -25,7 +25,7 @@ fn wait_list(token: u64) -> Arc<WaitList> {
 pub fn park(token: u64) {
     let wait = wait_list(token);
     // SAFETY: fault/fork caller schedules immediately after registration.
-    unsafe { wait.park(); }
+    unsafe { wait.prepare_to_wait(); }
 }
 
 /// Sleep after [`park`], then revalidate and restart the operation. # C: sleeps

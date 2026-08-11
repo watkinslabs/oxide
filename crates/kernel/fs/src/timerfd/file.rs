@@ -71,8 +71,10 @@ impl FileOps for TimerfdFileOps {
                     return Err(VfsError::Erestartsys);
                 }
                 let deadline = state.projected_expiry(now_mono, now_real);
-                // SAFETY: process context; this timerfd's deadline scanner wakes the parked reader.
-                unsafe { d.read_waiters.park_interruptible_with_deadline(deadline); }
+                // SAFETY: Linux `wait_event_interruptible_locked_irq` shape:
+                // the timer state gate remains held through publication, then
+                // drops before the matching schedule below.
+                unsafe { d.read_waiters.prepare_to_wait_interruptible_with_deadline(deadline); }
                 drop(state);
                 // SAFETY: reader published Sleeping through its wait list and holds no locks.
                 unsafe { sched::live::schedule::schedule(); }

@@ -230,16 +230,11 @@ fn total_ready(rings: &[Arc<IoUringInode>]) -> u32 {
 fn do_park(sqd: &SqData) {
     sqd.parked.store(true, Ordering::Release);
     sqd.park_wait.wake_all();
-    while sqd.park_pending.load(Ordering::Acquire) != 0 && !sqd.stop.load(Ordering::Acquire) {
-        // SAFETY: running poll thread in process context on its own CPU holding no lock; `unpark`/`stop` wake this list after clearing the request, and the matching schedule yields immediately per the WaitList contract.
-        unsafe {
-            sqd.wait.park();
-            if sqd.park_pending.load(Ordering::Acquire) == 0 || sqd.stop.load(Ordering::Acquire) {
-                sqd.wait.cancel_current_park();
-                break;
-            }
-            sched::live::schedule();
-        }
+    // SAFETY: park-pending and stop are pure atomics; unpark/stop publish the
+    // new state before waking this list, and the poll thread holds no lock.
+    unsafe {
+        sched::live::wait_event_uninterruptible(&sqd.wait,
+            || sqd.park_pending.load(Ordering::Acquire) == 0 || sqd.stop.load(Ordering::Acquire));
     }
     sqd.parked.store(false, Ordering::Release);
 }
@@ -253,8 +248,9 @@ fn do_park(sqd: &SqData) {
 /// # C: O(1)
 /// # Sleeps: until woken
 fn idle(sqd: &SqData, rings: &[Arc<IoUringInode>]) {
-    // SAFETY: running poll thread in process context on its own CPU holding no lock; every waker (`wake`, `stop`, `unpark`) wakes this list, and the matching schedule yields immediately per the WaitList contract.
-    unsafe { sqd.wait.park(); }
+    // SAFETY: running poll thread in process context on its own CPU holding no
+    // lock; this named publication is paired with the doorbell recheck below.
+    unsafe { sqd.wait.prepare_to_wait(); }
     // Every ring the thread serves raises its own doorbell: a submitter reads
     // the word of the ring it is publishing to and nothing else.
     for r in rings { update_sq_flags(r, arm_need_wakeup); }

@@ -245,15 +245,14 @@ pub mod kernel {
             // (balanced by wake_all's from_raw), marks it Sleeping, and
             // enqueues it; the matching park_commit issues schedule().
             // SAFETY: invoked by TtyStruct::read on the running task of this CPU under the tty port lock; preempt accounted by the schedule path.
-            unsafe { self.wl.park() }
+            unsafe { self.wl.prepare_to_wait() }
         }
 
         fn park_abort(&self) {
             // The reader found input after enqueuing and will not sleep;
-            // wake the just-parked self so it returns Runnable and is not
-            // left dangling on the wait list. wake_all is the cheap
-            // correct undo (it only re-enqueues genuinely-Sleeping tasks).
-            self.wl.wake_all();
+            // finish_wait equivalent: remove only this reader and restore it
+            // Runnable, without spuriously waking unrelated TTY readers.
+            self.wl.cancel_current_park();
         }
 
         fn park_commit(&self) {
@@ -273,9 +272,11 @@ pub mod kernel {
             // expires without an RX wake — the same timed-park primitive
             // poll/pselect6's SO_*TIMEO use. deadline_ns==0 disables the
             // timer (degenerate to a bare park).
-            // SAFETY: invoked by TtyStruct::read on the running task of this CPU with no lock held; current task was marked Sleeping by park_prepare; schedule yields and the deadline scanner or an RX wake_all rouses it.
+            // SAFETY: current task was prepared by park_prepare; this only
+            // arms its deadline and does not re-publish a waiter a wake may
+            // already have made Runnable.
             unsafe {
-                self.wl.park_with_deadline(deadline_ns);
+                self.wl.arm_current_prepared_deadline(deadline_ns);
                 sched::live::schedule();
             }
         }

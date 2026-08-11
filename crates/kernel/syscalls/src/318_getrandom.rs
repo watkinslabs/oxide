@@ -1,7 +1,7 @@
 // 318 getrandom — one syscall, one file (docs/53 §0).
 
 use syscall::errno::Errno;
-use syscall::getrandom::{cold_pool_action, validate_grnd_flags, wait_step, ColdPool,
+use syscall::getrandom::{cold_pool_action, validate_grnd_flags, ColdPool,
     WaitOutcome, CRNG_WAIT_POLL_NS, GETRANDOM_COUNT_MAX};
 use syscall::SyscallArgs;
 
@@ -21,18 +21,25 @@ fn current_task() -> Option<&'static sched::Task> { sched::live::current() }
 /// no RDRAND/RNDR and no virtio-rng really does park here — which is the Linux
 /// behaviour userspace expects when it asks for secure bytes.
 /// # C: O(schedules until seeded or signal)
-fn wait_for_random_bytes(cur: &sched::Task) -> WaitOutcome {
+fn wait_for_random_bytes(_cur: &sched::Task) -> WaitOutcome {
     loop {
-        let pending = cur.sleep_wake().interrupted();
-        if let Some(out) = wait_step(crng::is_initialized(), pending) { return out; }
+        if crng::is_initialized() { return WaitOutcome::Ready; }
         // Linux calls `try_to_generate_entropy()` each pass; our equivalent is
         // re-polling every source, which also folds fresh cycle-counter jitter.
         if crng::reseed() { return WaitOutcome::Ready; }
-        // SAFETY: process context; the current task is enqueued on a scheduler
-        // wait list with an absolute wake deadline, then immediately scheduled.
-        unsafe {
-            CRNG_WAIT.park_with_deadline(monotonic_ns().saturating_add(CRNG_WAIT_POLL_NS));
-            sched::live::park_yield();
+        // SAFETY: process context on the caller's task; this is the shared
+        // timed interruptible predicate loop, matching crng_init_wait.
+        match unsafe {
+            sched::live::wait_event_interruptible_until(
+                &CRNG_WAIT,
+                monotonic_ns().saturating_add(CRNG_WAIT_POLL_NS),
+                monotonic_ns,
+                crng::is_initialized,
+            )
+        } {
+            sched::WaitOutcome::Ready => return WaitOutcome::Ready,
+            sched::WaitOutcome::Interrupted => return WaitOutcome::Restart,
+            sched::WaitOutcome::TimedOut => {}
         }
     }
 }

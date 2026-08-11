@@ -159,7 +159,7 @@ fn wait_packet(sock: &InetSocket, deadline_ns: u64) {
     let q = rx.lock();
     if !q.is_empty() { return; }
     // SAFETY: kind+RX locks serialize packet delivery before its wake.
-    unsafe { sock.recv_waiters.park_interruptible_with_deadline(deadline_ns); }
+    unsafe { sock.recv_waiters.prepare_to_wait_interruptible_with_deadline(deadline_ns); }
     drop(q);
     drop(kind);
     // SAFETY: current task is parked on the packet receive wait list.
@@ -197,7 +197,7 @@ fn wait_udp(sock: &InetSocket, deadline_ns: u64) {
         if sock.has_pending_recv_error()
             || sock.read_shut.load(core::sync::atomic::Ordering::Acquire) { return; }
         // SAFETY: process ctx; kind lock serializes unbound shutdown publication.
-        unsafe { sock.recv_waiters.park_interruptible_with_deadline(deadline_ns); }
+        unsafe { sock.recv_waiters.prepare_to_wait_interruptible_with_deadline(deadline_ns); }
         drop(kind);
         // SAFETY: current task is parked on the fallback receive wait list.
         unsafe { sched::live::schedule::schedule(); }
