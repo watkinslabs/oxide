@@ -11,6 +11,7 @@ mod caps;
 mod config_space;
 mod scan;
 mod layout;
+mod iova;
 mod types;
 pub mod uapi;
 
@@ -32,6 +33,7 @@ pub use caps::{
     MSIX_VECTOR_CONTROL_OFF,
 };
 pub use scan::{enumerate, enumerate_buses, enumerate_segment_buses};
+pub use iova::{IovaRange, IovaSpace, IOVA_PAGE_SIZE};
 pub use types::{
     disable_mem_bus_master, enable_mem_bus_master, intx_command_value, parse_bdf_addr,
     read_command, restore_intx_disabled, restore_mem_bus_master, set_intx_disabled,
