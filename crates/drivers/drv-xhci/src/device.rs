@@ -79,6 +79,8 @@ impl AddressDeviceDma {
         self.hid_ring = Some(ring);
         Some(true)
     }
+    /// Configuration value selected by the discovered HID interface. # C: O(1)
+    pub fn hid_configuration(&self) -> Option<u8> { self._hid.map(|hid| hid.configuration) }
     /// Rebuild the input context from controller output for Linux's EP0 MPS update. # C: O(1)
     pub fn prepare_evaluate_ep0(&self, max_packet: u8) -> Option<bool> {
         let stride = self.context_bytes as u64;
