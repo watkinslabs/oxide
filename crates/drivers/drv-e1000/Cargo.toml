@@ -17,6 +17,7 @@ sync = { path = "../../shared/sync" }
 softirq = { path = "../../kernel/softirq" }
 arch-irq = { path = "../../kernel/arch-irq" }
 pci-irq = { path = "../../kernel/pci-irq" }
+iommu = { path = "../../kernel/iommu" }
 sched = { path = "../../kernel/sched" }
 klog = { path = "../../shared/klog" }
 firmware = { path = "../../kernel/firmware" }

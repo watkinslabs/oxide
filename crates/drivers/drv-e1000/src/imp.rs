@@ -26,6 +26,8 @@ static ENDPOINTS: [Endpoint; MAX_DEVICES] = [const { Endpoint::new() }; MAX_DEVI
 struct Controller {
     mmio: mmio_map::Mapping,
     rx_desc_pa: u64, tx_desc_pa: u64, rx_data_pa: u64, tx_data_pa: u64,
+    rx_desc_dma: u64, tx_desc_dma: u64, rx_data_dma: u64, tx_data_dma: u64,
+    bdf: pci::Bdf,
     rx_next: usize, tx_next: usize,
 }
 
@@ -53,6 +55,7 @@ impl Controller {
     fn free(&mut self) {
         self.stop();
         self.mmio.unmap();
+        unmap_rings(self.bdf, [self.rx_desc_dma, self.tx_desc_dma, self.rx_data_dma, self.tx_data_dma]);
         // SAFETY: stop disabled DMA before each owned PMM allocation is returned.
         unsafe {
             pmm::setup::free_contig(self.rx_desc_pa, pmm::Order(0));
@@ -74,7 +77,7 @@ impl Controller {
         // SAFETY: `frame` was bounded by one per-descriptor DMA buffer and the TX lock owns its slot.
         // SAFETY: frame length was bounded to this controller-owned DMA slot above.
         unsafe { core::ptr::copy_nonoverlapping(frame.as_ptr(), va as *mut u8, frame.len()); }
-        desc.addr = self.tx_data_pa + (idx * regs::BUFFER_BYTES) as u64;
+        desc.addr = self.tx_data_dma + (idx * regs::BUFFER_BYTES) as u64;
         desc.length = frame.len() as u16;
         desc.cmd = regs::TX_CMD_EOP | regs::TX_CMD_IFCS | regs::TX_CMD_RS;
         desc.status = 0;
@@ -192,6 +195,27 @@ fn wait_for_reset_auto_read() {
     }
 }
 
+fn dma_bytes(order: pmm::Order) -> usize { (1usize << order.0) * PAGE as usize }
+
+fn unmap_rings(bdf: pci::Bdf, dma: [u64; 4]) {
+    let _ = iommu::unmap_dma(bdf, dma[0], PAGE as usize);
+    let _ = iommu::unmap_dma(bdf, dma[1], PAGE as usize);
+    let _ = iommu::unmap_dma(bdf, dma[2], dma_bytes(RX_ORDER));
+    let _ = iommu::unmap_dma(bdf, dma[3], dma_bytes(TX_ORDER));
+}
+fn map_rings(bdf: pci::Bdf, pa: [u64; 4]) -> Option<[u64; 4]> {
+    let rx_desc = iommu::map_dma(bdf, pa[0], PAGE as usize)?;
+    let Some(tx_desc) = iommu::map_dma(bdf, pa[1], PAGE as usize) else { let _ = iommu::unmap_dma(bdf, rx_desc, PAGE as usize); return None; };
+    let Some(rx_data) = iommu::map_dma(bdf, pa[2], dma_bytes(RX_ORDER)) else {
+        let _ = iommu::unmap_dma(bdf, rx_desc, PAGE as usize); let _ = iommu::unmap_dma(bdf, tx_desc, PAGE as usize); return None;
+    };
+    let Some(tx_data) = iommu::map_dma(bdf, pa[3], dma_bytes(TX_ORDER)) else {
+        let _ = iommu::unmap_dma(bdf, rx_desc, PAGE as usize); let _ = iommu::unmap_dma(bdf, tx_desc, PAGE as usize);
+        let _ = iommu::unmap_dma(bdf, rx_data, dma_bytes(RX_ORDER)); return None;
+    };
+    Some([rx_desc, tx_desc, rx_data, tx_data])
+}
+
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 fn io_write32(port: u16, value: u32) {
     // SAFETY: the matched 82540 function owns this BAR1 register window during probe.
@@ -219,7 +243,7 @@ fn reset(c: &Controller, io_base: Option<u16>) {
     let _ = c.read(regs::ICR);
 }
 
-fn configure_rings(mmio: mmio_map::Mapping, io_base: Option<u16>) -> Option<(Controller, net::MacAddr)> {
+fn configure_rings(mmio: mmio_map::Mapping, io_base: Option<u16>, bdf: pci::Bdf) -> Option<(Controller, net::MacAddr)> {
     let rx_desc_pa = match pmm::setup::alloc_contig_below(pmm::Order(0), DMA32_LIMIT) { Some(pa) => pa, None => { trace("[INFO]  e1000: no rx desc\n"); return None; } };
     let tx_desc_pa = match pmm::setup::alloc_contig_below(pmm::Order(0), DMA32_LIMIT) { Some(pa) => pa, None => {
         trace("[INFO]  e1000: no tx desc\n");
@@ -236,17 +260,22 @@ fn configure_rings(mmio: mmio_map::Mapping, io_base: Option<u16>) -> Option<(Con
         // SAFETY: all prior allocations are fresh, unpublished DMA storage on this failure path.
         unsafe { pmm::setup::free_contig(rx_desc_pa, pmm::Order(0)); pmm::setup::free_contig(tx_desc_pa, pmm::Order(0)); pmm::setup::free_contig(rx_data_pa, RX_ORDER); } return None;
     } };
-    if !regs::dma32_range_fits(rx_desc_pa, PAGE as usize)
-        || !regs::dma32_range_fits(tx_desc_pa, PAGE as usize)
-        || !regs::dma32_range_fits(rx_data_pa, (1usize << RX_ORDER.0) * PAGE as usize)
-        || !regs::dma32_range_fits(tx_data_pa, (1usize << TX_ORDER.0) * PAGE as usize)
+    let Some([rx_desc_dma, tx_desc_dma, rx_data_dma, tx_data_dma]) = map_rings(bdf, [rx_desc_pa, tx_desc_pa, rx_data_pa, tx_data_pa]) else {
+        // SAFETY: no allocation was published to the device before this mapping failure.
+        unsafe { pmm::setup::free_contig(rx_desc_pa, pmm::Order(0)); pmm::setup::free_contig(tx_desc_pa, pmm::Order(0)); pmm::setup::free_contig(rx_data_pa, RX_ORDER); pmm::setup::free_contig(tx_data_pa, TX_ORDER); }
+        return None;
+    };
+    if !regs::dma32_range_fits(rx_desc_dma, PAGE as usize)
+        || !regs::dma32_range_fits(tx_desc_dma, PAGE as usize)
+        || !regs::dma32_range_fits(rx_data_dma, dma_bytes(RX_ORDER))
+        || !regs::dma32_range_fits(tx_data_dma, dma_bytes(TX_ORDER))
     {
-        trace("[INFO]  e1000: dma outside 32bit\n");
-        // SAFETY: these allocations never reached device or registry publication on this rejection path.
+        unmap_rings(bdf, [rx_desc_dma, tx_desc_dma, rx_data_dma, tx_data_dma]);
+        // SAFETY: no allocation was published to the device on this DMA-mask rejection path.
         unsafe { pmm::setup::free_contig(rx_desc_pa, pmm::Order(0)); pmm::setup::free_contig(tx_desc_pa, pmm::Order(0)); pmm::setup::free_contig(rx_data_pa, RX_ORDER); pmm::setup::free_contig(tx_data_pa, TX_ORDER); }
         return None;
     }
-    let mut c = Controller { mmio, rx_desc_pa, tx_desc_pa, rx_data_pa, tx_data_pa, rx_next: 0, tx_next: 0 };
+    let mut c = Controller { mmio, rx_desc_pa, tx_desc_pa, rx_data_pa, tx_data_pa, rx_desc_dma, tx_desc_dma, rx_data_dma, tx_data_dma, bdf, rx_next: 0, tx_next: 0 };
     trace("[INFO]  e1000: dma allocated\n");
     reset(&c, io_base);
     trace("[INFO]  e1000: reset done\n");
@@ -254,16 +283,16 @@ fn configure_rings(mmio: mmio_map::Mapping, io_base: Option<u16>) -> Option<(Con
     for i in 0..regs::RING_COUNT {
         // SAFETY: every index is inside its freshly allocated ring before device DMA is enabled.
         unsafe {
-            *c.rx_desc(i) = regs::RxDesc { addr: rx_data_pa + (i * regs::BUFFER_BYTES) as u64, ..regs::RxDesc::default() };
-            *c.tx_desc(i) = regs::TxDesc { addr: tx_data_pa + (i * regs::BUFFER_BYTES) as u64, status: regs::TX_STATUS_DD, ..regs::TxDesc::default() };
+            *c.rx_desc(i) = regs::RxDesc { addr: rx_data_dma + (i * regs::BUFFER_BYTES) as u64, ..regs::RxDesc::default() };
+            *c.tx_desc(i) = regs::TxDesc { addr: tx_data_dma + (i * regs::BUFFER_BYTES) as u64, status: regs::TX_STATUS_DD, ..regs::TxDesc::default() };
         }
     }
     pmm::dma::clean_to_device(Controller::va(rx_desc_pa), regs::ring_bytes::<regs::RxDesc>() as usize);
     pmm::dma::clean_to_device(Controller::va(tx_desc_pa), regs::ring_bytes::<regs::TxDesc>() as usize);
     pmm::dma::invalidate_from_device(Controller::va(rx_data_pa), regs::RING_COUNT * regs::BUFFER_BYTES);
     core::sync::atomic::fence(Ordering::Release);
-    let (lo, hi) = regs::split_dma(rx_desc_pa); c.write(regs::RDBAL, lo); c.write(regs::RDBAH, hi); c.write(regs::RDLEN, regs::ring_bytes::<regs::RxDesc>()); c.write(regs::RDH, 0); c.write(regs::RDT, (regs::RING_COUNT - 1) as u32);
-    let (lo, hi) = regs::split_dma(tx_desc_pa); c.write(regs::TDBAL, lo); c.write(regs::TDBAH, hi); c.write(regs::TDLEN, regs::ring_bytes::<regs::TxDesc>()); c.write(regs::TDH, 0); c.write(regs::TDT, 0);
+    let (lo, hi) = regs::split_dma(rx_desc_dma); c.write(regs::RDBAL, lo); c.write(regs::RDBAH, hi); c.write(regs::RDLEN, regs::ring_bytes::<regs::RxDesc>()); c.write(regs::RDH, 0); c.write(regs::RDT, (regs::RING_COUNT - 1) as u32);
+    let (lo, hi) = regs::split_dma(tx_desc_dma); c.write(regs::TDBAL, lo); c.write(regs::TDBAH, hi); c.write(regs::TDLEN, regs::ring_bytes::<regs::TxDesc>()); c.write(regs::TDH, 0); c.write(regs::TDT, 0);
     Some((c, mac))
 }
 
@@ -442,7 +471,7 @@ impl drv::Driver for E1000Driver {
         let bytes = resource.end.checked_sub(resource.start).and_then(|bytes| bytes.checked_add(1)).ok_or(drv::Error::ProbeFailed)?;
         let pages = (bar & (PAGE - 1)).checked_add(bytes).and_then(|bytes| bytes.checked_add(PAGE - 1)).and_then(|bytes| bytes.checked_div(PAGE)).ok_or(drv::Error::ProbeFailed)?;
         let mmio = unsafe { mmio_map::map_owned(bar & !(PAGE - 1), pages) };
-        let (controller, mac) = match configure_rings(mmio, io_base) { Some(value) => value, None => { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); } };
+        let (controller, mac) = match configure_rings(mmio, io_base, bdf) { Some(value) => value, None => { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); } };
         trace("[INFO]  e1000: rings ready\n");
         let endpoint = match endpoint_claim(controller.mmio.base_va()) { Some(endpoint) => endpoint, None => { let mut controller = controller; controller.free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); } };
         let line = parent.pci.map(|p| p.interrupt_line).filter(|line| *line != 0);
