@@ -248,8 +248,9 @@ fn do_park(sqd: &SqData) {
 /// # C: O(1)
 /// # Sleeps: until woken
 fn idle(sqd: &SqData, rings: &[Arc<IoUringInode>]) {
-    // SAFETY: running poll thread in process context on its own CPU holding no lock; every waker (`wake`, `stop`, `unpark`) wakes this list, and the matching schedule yields immediately per the WaitList contract.
-    unsafe { sqd.wait.park(); }
+    // SAFETY: running poll thread in process context on its own CPU holding no
+    // lock; this named publication is paired with the doorbell recheck below.
+    unsafe { sqd.wait.prepare_to_wait(); }
     // Every ring the thread serves raises its own doorbell: a submitter reads
     // the word of the ring it is publishing to and nothing else.
     for r in rings { update_sq_flags(r, arm_need_wakeup); }

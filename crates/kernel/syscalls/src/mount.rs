@@ -50,9 +50,9 @@ pub fn install_vfs_hooks() {
         sched::live::quota_wait::wake,
     );
     vfs::inode::set_inode_rwsem_wait_hooks(
-        sched::live::inode_wait::park,
+        sched::live::inode_wait::park_rwsem,
         sched::live::inode_wait::schedule_after_park,
-        sched::live::inode_wait::wake,
+        sched::live::inode_wait::wake_rwsem,
     );
     // Sleeping half of a delegation break: every VFS mutation path (mknod,
     // unlink, rmdir, rename, link, setattr) waits here for a delegation holder
