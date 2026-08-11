@@ -1256,6 +1256,7 @@ static int __init sample_init(void)
     (void)misc_deregister(&misc);
     (void)pci_register_driver(&pdrv);
     (void)pci_enable_device(&pdev);
+    (void)pci_status_get_and_clear_errors(&pdev);
     pci_set_master(&pdev);
     pci_clear_master(&pdev);
     pci_set_drvdata(&pdev, &s);

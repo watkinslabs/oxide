@@ -1,4 +1,4 @@
-use super::core::{read_config32, write_config32};
+use super::config::{read8, read16, read32, write16};
 use super::types::*;
 use sync::{Modules as ModulesLockClass, Spinlock};
 
@@ -55,7 +55,7 @@ fn pcie_capability(dev: *mut LinuxPciDev) -> Option<u8> {
     let mut pos = read_byte(dev, PCI_CAPABILITY_LIST) & !3;
     for _ in 0..MAX_CAPABILITIES {
         if !(PCI_CONFIG_CAP_MIN..=PCI_CONFIG_CAP_MAX).contains(&pos) { return None; }
-        let header = read_config32(dev, pos);
+        let header = read32(dev, pos);
         if header as u8 == PCI_CAP_ID_EXP { return Some(pos); }
         let next = ((header >> 8) & u8::MAX as u32) as u8 & !3;
         if next == pos { return None; }
@@ -69,16 +69,13 @@ fn valid_readrq(rq: i32) -> bool {
 }
 
 fn read_byte(dev: *mut LinuxPciDev, offset: u8) -> u8 {
-    (read_config32(dev, offset & !3) >> ((offset & 3) * u8::BITS as u8)) as u8
+    read8(dev, offset)
 }
 
 fn read_word(dev: *mut LinuxPciDev, offset: u8) -> u16 {
-    (read_config32(dev, offset & !3) >> ((offset & 3) * u8::BITS as u8)) as u16
+    read16(dev, offset)
 }
 
 fn write_word(dev: *mut LinuxPciDev, offset: u8, value: u16) {
-    let aligned = offset & !3;
-    let shift = (offset & 3) * u8::BITS as u8;
-    let old = read_config32(dev, aligned);
-    write_config32(dev, aligned, (old & !((u16::MAX as u32) << shift)) | (value as u32) << shift);
+    write16(dev, offset, value);
 }

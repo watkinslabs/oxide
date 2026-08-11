@@ -1,4 +1,5 @@
 use super::*;
+use super::super::config::{pci_read_config_byte, pci_read_config_dword, pci_read_config_word, pci_write_config_byte, pci_write_config_dword};
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
@@ -29,6 +30,7 @@ const TEST_CFG_LOW_BYTE: u8 = 0x78;
 const TEST_CFG_HIGH_WORD: u16 = 0x1234;
 const TEST_CFG_PATCH_BYTE: u8 = 0xab;
 const TEST_CFG_PATCHED_DWORD: u32 = 0x1234_ab78;
+const TEST_PCI_STATUS_ERRORS: u16 = 0xf900;
 const TEST_DEVFN: u8 = (TEST_SLOT << PCI_DEVFN_DEV_SHIFT) | TEST_FUNC;
 const TEST_MODEL_CLASS: u32 = 0x010802;
 const TEST_MODEL_DRIVER_DATA: usize = 0xfeed_beef;
@@ -212,6 +214,15 @@ fn config_helpers_update_fallback_config_space() {
 }
 
 #[test]
+fn pci_status_returns_and_clears_only_error_bits() {
+    let _modules = crate::test_serial::claim();
+    let mut dev = test_dev();
+    dev.config_space[1] = (TEST_PCI_STATUS_ERRORS as u32) << 16 | TEST_PCI_STATUS_CAP_LIST;
+    assert_eq!(super::super::status::pci_status_get_and_clear_errors(&mut dev), TEST_PCI_STATUS_ERRORS as i32);
+    assert_eq!(dev.config_space[1] >> 16, TEST_PCI_STATUS_CAP_LIST >> 16);
+}
+
+#[test]
 fn pcie_readrq_updates_only_the_express_device_control_field() {
     let _modules = crate::test_serial::claim();
     let mut dev = test_dev();
@@ -278,11 +289,12 @@ fn pci_driver_registration_binds_existing_model_device() {
 #[test]
 fn export_symbols_registers_pci_surface() {
     let _modules = crate::test_serial::claim();
-    export_symbols();
+    super::super::export_symbols();
     for name in [
         "__pci_register_driver", "pci_register_driver", "pci_enable_device", "pci_resource_start",
         "pci_request_region", "pci_iomap", "pci_alloc_irq_vectors",
         "pci_read_config_dword", "pci_write_config_dword",
+        "pci_status_get_and_clear_errors",
     ] {
         assert!(crate::symtab::is_exported(name));
     }

@@ -1,16 +1,11 @@
 use super::types::*;
-use super::registry;
+use super::config::{bdf, read32 as read_config32, write32 as write_config32};
 use super::regions;
 use core::ffi::{c_char, c_void};
 use core::ptr::null_mut;
 use pci::{
-    Bdf, COMMAND_BUS_MASTER, COMMAND_IO, COMMAND_MEMORY, IORESOURCE_IO, IORESOURCE_MEM,
+    COMMAND_BUS_MASTER, COMMAND_IO, COMMAND_MEMORY, IORESOURCE_IO, IORESOURCE_MEM,
 };
-const PCI_DEVFN_DEV_SHIFT: u8 = 3;
-const PCI_CONFIG_ALIGN: u8 = 4;
-const PCI_CONFIG_BYTE_MASK: u32 = 0xff;
-const PCI_CONFIG_WORD_MASK: u32 = 0xffff;
-const PCI_CONFIG_SPACE_BYTES: u16 = 256;
 const PCI_RESOURCE_EMPTY: u64 = 0;
 const INVALID_RESOURCE: usize = usize::MAX;
 
@@ -57,12 +52,12 @@ pub(super) fn export_symbols() {
         ("pci_alloc_irq_vectors",     pci_alloc_irq_vectors     as *const () as usize),
         ("pci_free_irq_vectors",      pci_free_irq_vectors      as *const () as usize),
         ("pci_irq_vector",            pci_irq_vector            as *const () as usize),
-        ("pci_read_config_byte",      pci_read_config_byte      as *const () as usize),
-        ("pci_read_config_word",      pci_read_config_word      as *const () as usize),
-        ("pci_read_config_dword",     pci_read_config_dword     as *const () as usize),
-        ("pci_write_config_byte",     pci_write_config_byte     as *const () as usize),
-        ("pci_write_config_word",     pci_write_config_word     as *const () as usize),
-        ("pci_write_config_dword",    pci_write_config_dword    as *const () as usize),
+        ("pci_read_config_byte",      super::config::pci_read_config_byte      as *const () as usize),
+        ("pci_read_config_word",      super::config::pci_read_config_word      as *const () as usize),
+        ("pci_read_config_dword",     super::config::pci_read_config_dword     as *const () as usize),
+        ("pci_write_config_byte",     super::config::pci_write_config_byte     as *const () as usize),
+        ("pci_write_config_word",     super::config::pci_write_config_word     as *const () as usize),
+        ("pci_write_config_dword",    super::config::pci_write_config_dword    as *const () as usize),
     ] { export(name, addr, false); }
 }
 
@@ -259,52 +254,11 @@ extern "C" fn pci_irq_vector(dev: *mut LinuxPciDev, nr: u32) -> i32 {
     }
 }
 
-extern "C" fn pci_read_config_byte(dev: *mut LinuxPciDev, pos: i32, val: *mut u8) -> i32 {
-    if val.is_null() { return -LINUX_EINVAL; }
-    let (dword, shift) = match config_access(dev, pos, PCI_CONFIG_BYTE_BYTES) { Some(v) => v, None => return -LINUX_EINVAL };
-    // SAFETY: val is caller-provided writable storage for one byte.
-    unsafe { *val = ((dword >> shift) & PCI_CONFIG_BYTE_MASK) as u8; }
-    LINUX_OK
-}
-
-extern "C" fn pci_read_config_word(dev: *mut LinuxPciDev, pos: i32, val: *mut u16) -> i32 {
-    if val.is_null() || (pos as u8 & WORD_ALIGN_MASK) != 0 { return -LINUX_EINVAL; }
-    let (dword, shift) = match config_access(dev, pos, PCI_CONFIG_WORD_BYTES) { Some(v) => v, None => return -LINUX_EINVAL };
-    // SAFETY: val is caller-provided writable storage for one word.
-    unsafe { *val = ((dword >> shift) & PCI_CONFIG_WORD_MASK) as u16; }
-    LINUX_OK
-}
-
-extern "C" fn pci_read_config_dword(dev: *mut LinuxPciDev, pos: i32, val: *mut u32) -> i32 {
-    if val.is_null() || !config_pos_valid(pos, PCI_CONFIG_ALIGN) { return -LINUX_EINVAL; }
-    // SAFETY: val is caller-provided writable storage for one dword.
-    unsafe { *val = read_config32(dev, pos as u8); }
-    LINUX_OK
-}
-
-extern "C" fn pci_write_config_byte(dev: *mut LinuxPciDev, pos: i32, val: u8) -> i32 {
-    write_config_masked(dev, pos, PCI_CONFIG_BYTE_BYTES, PCI_CONFIG_BYTE_MASK, val as u32)
-}
-
-extern "C" fn pci_write_config_word(dev: *mut LinuxPciDev, pos: i32, val: u16) -> i32 {
-    if (pos as u8 & WORD_ALIGN_MASK) != 0 { return -LINUX_EINVAL; }
-    write_config_masked(dev, pos, PCI_CONFIG_WORD_BYTES, PCI_CONFIG_WORD_MASK, val as u32)
-}
-
-extern "C" fn pci_write_config_dword(dev: *mut LinuxPciDev, pos: i32, val: u32) -> i32 {
-    if !config_pos_valid(pos, PCI_CONFIG_ALIGN) { return -LINUX_EINVAL; }
-    write_config32(dev, pos as u8, val);
-    LINUX_OK
-}
-
 const PCI_COMMAND_STATUS_OFF: u8 = 0x04;
 const PCI_COMMAND_MASK: u32 = 0x0000_ffff;
 const PCI_STATUS_MASK: u32 = 0xffff_0000;
-const PCI_CONFIG_BYTE_BYTES: u8 = 1;
-const PCI_CONFIG_WORD_BYTES: u8 = 2;
-const WORD_ALIGN_MASK: u8 = 1;
-const PCI_SLOT_MASK: u8 = 0x1f;
-const PCI_FUNC_MASK: u8 = 0x07;
+#[cfg(test)]
+const PCI_DEVFN_DEV_SHIFT: u8 = 3;
 const HEX_LOW_NIBBLE_MASK: u8 = 0x0f;
 const HEX_DECIMAL_DIGITS: u8 = 10;
 const HEX_NIBBLE_SHIFT: u32 = 4;
@@ -320,19 +274,6 @@ const PCI_SLOT_HEX0: usize = 8;
 const PCI_SLOT_HEX1: usize = 9;
 const PCI_FUNC_SEP: usize = 10;
 const PCI_FUNC_HEX: usize = 11;
-
-fn bdf(dev: *const LinuxPciDev) -> Bdf {
-    if let Some(bdf) = registry::bdf_for(dev) { return bdf; }
-    // SAFETY: callers validate dev before deriving the BDF.
-    unsafe {
-        Bdf {
-            segment: 0,
-            bus: (*dev).bus,
-            device: ((*dev).devfn >> PCI_DEVFN_DEV_SHIFT) & PCI_SLOT_MASK,
-            function: (*dev).devfn & PCI_FUNC_MASK,
-        }
-    }
-}
 
 fn update_command(dev: *mut LinuxPciDev, bit: u16, set: bool) {
     let old = read_config32(dev, PCI_COMMAND_STATUS_OFF);
@@ -372,61 +313,25 @@ fn bounded_resource_len(r: LinuxResource, maxlen: usize) -> u64 {
     if maxlen == 0 { len } else { len.min(maxlen as u64) }
 }
 
-fn config_access(dev: *mut LinuxPciDev, pos: i32, width: u8) -> Option<(u32, u32)> {
-    if !config_pos_valid(pos, width) { return None; }
-    let off = (pos as u8) & !(PCI_CONFIG_ALIGN - 1);
-    let shift = ((pos as u8 - off) as u32) * u8::BITS;
-    Some((read_config32(dev, off), shift))
-}
-
-fn config_pos_valid(pos: i32, width: u8) -> bool {
-    pos >= 0 && (pos as u16).saturating_add(width as u16) <= PCI_CONFIG_SPACE_BYTES
-}
-
-fn write_config_masked(dev: *mut LinuxPciDev, pos: i32, width: u8, mask: u32, val: u32) -> i32 {
-    if !config_pos_valid(pos, width) { return -LINUX_EINVAL; }
-    let off = (pos as u8) & !(PCI_CONFIG_ALIGN - 1);
-    let shift = ((pos as u8 - off) as u32) * u8::BITS;
-    let old = read_config32(dev, off);
-    write_config32(dev, off, (old & !(mask << shift)) | ((val & mask) << shift));
-    LINUX_OK
-}
-
-pub(super) fn read_config32(dev: *mut LinuxPciDev, off: u8) -> u32 {
-    if dev.is_null() { return u32::MAX; }
-    if let Some(v) = hw_read32(bdf(dev), off) { return v; }
-    // SAFETY: dev points at a caller-owned Linux struct pci_dev.
-    unsafe { (*dev).config_space[(off / PCI_CONFIG_ALIGN) as usize] }
-}
-
-pub(super) fn write_config32(dev: *mut LinuxPciDev, off: u8, val: u32) {
-    if dev.is_null() { return; }
-    hw_write32(bdf(dev), off, val);
-    // SAFETY: dev points at a caller-owned Linux struct pci_dev.
-    unsafe { (*dev).config_space[(off / PCI_CONFIG_ALIGN) as usize] = val; }
-}
-
 fn populate_name(dev: *mut LinuxPciDev) {
     if dev.is_null() { return; }
+    let addr = bdf(dev);
     // SAFETY: dev points at a caller-owned Linux struct pci_dev.
     unsafe {
         if (*dev).name[0] != 0 { return; }
-        let b = (*dev).bus;
-        let slot = ((*dev).devfn >> PCI_DEVFN_DEV_SHIFT) & PCI_SLOT_MASK;
-        let func = (*dev).devfn & PCI_FUNC_MASK;
         (*dev).name = [0; PCI_NAME_LEN];
-        put_hex(&mut (*dev).name, PCI_DOMAIN_HEX0, 0);
-        put_hex(&mut (*dev).name, PCI_DOMAIN_HEX1, 0);
-        (*dev).name[PCI_DOMAIN_HEX2] = b'0' as c_char;
-        (*dev).name[PCI_DOMAIN_HEX3] = b'0' as c_char;
+        put_hex(&mut (*dev).name, PCI_DOMAIN_HEX0, (addr.segment >> 12) as u8);
+        put_hex(&mut (*dev).name, PCI_DOMAIN_HEX1, (addr.segment >> 8) as u8);
+        put_hex(&mut (*dev).name, PCI_DOMAIN_HEX2, (addr.segment >> 4) as u8);
+        put_hex(&mut (*dev).name, PCI_DOMAIN_HEX3, addr.segment as u8);
         (*dev).name[PCI_DOMAIN_BUS_SEP] = b':' as c_char;
-        put_hex(&mut (*dev).name, PCI_BUS_HEX0, b >> HEX_NIBBLE_SHIFT);
-        put_hex(&mut (*dev).name, PCI_BUS_HEX1, b);
+        put_hex(&mut (*dev).name, PCI_BUS_HEX0, addr.bus >> HEX_NIBBLE_SHIFT);
+        put_hex(&mut (*dev).name, PCI_BUS_HEX1, addr.bus);
         (*dev).name[PCI_SLOT_SEP] = b':' as c_char;
-        put_hex(&mut (*dev).name, PCI_SLOT_HEX0, slot >> HEX_NIBBLE_SHIFT);
-        put_hex(&mut (*dev).name, PCI_SLOT_HEX1, slot);
+        put_hex(&mut (*dev).name, PCI_SLOT_HEX0, addr.device >> HEX_NIBBLE_SHIFT);
+        put_hex(&mut (*dev).name, PCI_SLOT_HEX1, addr.device);
         (*dev).name[PCI_FUNC_SEP] = b'.' as c_char;
-        put_hex(&mut (*dev).name, PCI_FUNC_HEX, func);
+        put_hex(&mut (*dev).name, PCI_FUNC_HEX, addr.function);
     }
 }
 
@@ -434,36 +339,6 @@ fn put_hex(buf: &mut [c_char; PCI_NAME_LEN], idx: usize, v: u8) {
     let n = v & HEX_LOW_NIBBLE_MASK;
     buf[idx] = if n < HEX_DECIMAL_DIGITS { (b'0' + n) as c_char } else { (b'a' + (n - HEX_DECIMAL_DIGITS)) as c_char };
 }
-
-#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-fn hw_read32(bdf: Bdf, off: u8) -> Option<u32> {
-    hal_x86_64::pci::EcamPci::from_published().map(|r| pci::ConfigSpaceReader::read32(&r, bdf, off))
-}
-
-#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
-fn hw_read32(bdf: Bdf, off: u8) -> Option<u32> {
-    hal_aarch64::pci::EcamPci::from_published().map(|r| pci::ConfigSpaceReader::read32(&r, bdf, off))
-}
-
-#[cfg(not(all(target_os = "oxide-kernel", any(target_arch = "x86_64", target_arch = "aarch64"))))]
-fn hw_read32(_bdf: Bdf, _off: u8) -> Option<u32> { None }
-
-#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-fn hw_write32(bdf: Bdf, off: u8, val: u32) {
-    if let Some(r) = hal_x86_64::pci::EcamPci::from_published() {
-        pci::ConfigSpaceReader::write32(&r, bdf, off, val);
-    }
-}
-
-#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
-fn hw_write32(bdf: Bdf, off: u8, val: u32) {
-    if let Some(r) = hal_aarch64::pci::EcamPci::from_published() {
-        pci::ConfigSpaceReader::write32(&r, bdf, off, val);
-    }
-}
-
-#[cfg(not(all(target_os = "oxide-kernel", any(target_arch = "x86_64", target_arch = "aarch64"))))]
-fn hw_write32(_bdf: Bdf, _off: u8, _val: u32) {}
 
 #[cfg(test)]
 mod tests;

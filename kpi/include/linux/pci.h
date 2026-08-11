@@ -93,6 +93,7 @@ resource_size_t pci_resource_len(const struct pci_dev *dev, int bar);
 int pci_request_region(struct pci_dev *dev, int bar, const char *name);
 void pci_release_region(struct pci_dev *dev, int bar);
 int pci_select_bars(struct pci_dev *dev, unsigned long flags);
+int pci_status_get_and_clear_errors(struct pci_dev *pdev);
 int pci_request_selected_regions(struct pci_dev *dev, int bars, const char *name);
 void pci_release_selected_regions(struct pci_dev *dev, int bars);
 int pci_request_regions(struct pci_dev *dev, const char *name);
