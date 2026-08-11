@@ -59,8 +59,10 @@ pub fn signal_pending() -> bool { false }
 /// # Ctx: process
 #[cfg(target_os = "oxide-kernel")]
 pub unsafe fn publish_park(wl: &sched::live::WaitList, deadline_ns: u64) {
-    // SAFETY: the documented caller contract for `publish_park` is exactly `WaitList::park_interruptible_with_deadline`'s: running task, preempt-off, runqueue installed, yield immediately after the object lock is dropped.
-    unsafe { wl.park_interruptible_with_deadline(deadline_ns); }
+    // SAFETY: the documented caller contract is the scheduler's named
+    // lock-coupled prepared wait: publication occurs under the object lock
+    // and `yield_and_classify` schedules immediately after it is dropped.
+    unsafe { wl.prepare_to_wait_interruptible_with_deadline(deadline_ns); }
 }
 
 /// # SAFETY: hosted stub; no scheduler exists, so nothing is parked.

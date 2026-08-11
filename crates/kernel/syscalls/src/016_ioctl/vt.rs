@@ -147,18 +147,22 @@ pub(super) fn handle_vt_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> Opti
                 let pending = cur.pending_signals();
                 let mask    = cur.sigmask.load(Ordering::Acquire);
                 if pending & !mask != 0 { return Some(-(Errno::Eintr.as_i32() as i64)); }
-                // park WITH a re-check deadline (not a bare park): the
-                // active() check and the park are NOT under a shared lock, so a
-                // do_switch completing in that window would wake an empty list
-                // and the park would then miss it. The deadline bounds a missed
-                // wake to RESCAN_NS of latency (the re-loop re-reads active())
-                // instead of a hang — the same safety net poll/select use.
+                // The timed shared predicate loop publishes before it checks
+                // `active()`, so a completed switch cannot be missed. The
+                // deadline remains a recovery poll for paths that cannot wake
+                // this list directly.
                 const RESCAN_NS: u64 = 20_000_000; // 20ms
                 let dl = crate::poll::poll_common::monotonic_ns().saturating_add(RESCAN_NS);
-                // SAFETY: process ctx; preempt-off across the syscall; park_with_deadline marks the running task Sleeping on VT_SWITCH_WAIT + stamps the wake deadline; schedule yields; the re-loop re-reads active() on wake — woken by vt_switch_wake (do_switch) or the deadline scanner.
-                unsafe {
-                    VT_SWITCH_WAIT.park_with_deadline(dl);
-                    sched::live::schedule();
+                // SAFETY: process context with no VT lock held; the shared
+                // interruptible event loop owns publication, recheck and park.
+                if matches!(unsafe {
+                    sched::live::wait_event_interruptible_until(
+                        &VT_SWITCH_WAIT, dl,
+                        crate::poll::poll_common::monotonic_ns,
+                        || vt::active() == n,
+                    )
+                }, sched::WaitOutcome::Interrupted) {
+                    return Some(errno(Errno::Eintr));
                 }
             }
         }

@@ -265,7 +265,7 @@ pub fn yield_one_ms() {
     static IDLE: WaitList = WaitList::new();
     // SAFETY: process context with the runqueue installed and no lock held; the park is deadline-bounded so no waker is required.
     unsafe {
-        IDLE.park_with_deadline(arch::now_ns() + ONE_MS_NS);
+        IDLE.prepare_to_wait_with_deadline(arch::now_ns() + ONE_MS_NS);
         sched::live::schedule();
     }
 }

@@ -71,6 +71,16 @@ impl WaitList {
         unsafe { self.park(); }
     }
 
+    /// Timed uninterruptible [`prepare_to_wait`]. # SAFETY: see that method.
+    ///
+    /// This is for a caller that owns the completion rule itself (for example,
+    /// a private deadline sleep) and therefore publishes before it schedules.
+    pub unsafe fn prepare_to_wait_with_deadline(&self, deadline_ns: u64) {
+        // SAFETY: forwards the prepared-wait contract with the absolute
+        // deadline retained for the scheduler deadline scanner.
+        unsafe { self.park_with_deadline(deadline_ns); }
+    }
+
     /// Interruptible [`prepare_to_wait`]. # SAFETY: see that method.
     /// # C: O(1)
     pub unsafe fn prepare_to_wait_interruptible(&self) {

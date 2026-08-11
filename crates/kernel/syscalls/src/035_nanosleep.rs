@@ -145,7 +145,7 @@ pub(crate) fn sleep_until_deadline(cur: &sched::Task, deadline: u64, rem: u64, i
         // SAFETY: process context; the current task is enqueued on a scheduler
         // wait list with an absolute wake deadline, then immediately scheduled.
         unsafe {
-            NANOSLEEP_WAIT.park_with_deadline(deadline);
+            NANOSLEEP_WAIT.prepare_to_wait_interruptible_with_deadline(deadline);
             sched::live::park_yield();
         }
     }
