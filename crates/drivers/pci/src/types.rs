@@ -9,16 +9,17 @@ pub enum Error {
 
 pub type KResult<T> = core::result::Result<T, Error>;
 
-/// (bus, device, function) tuple.
+/// PCI segment plus its (bus, device, function) requester identifier.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Bdf {
+    pub segment: u16,
     pub bus: u8,
     pub device: u8,
     pub function: u8,
 }
 
 impl Bdf {
-    /// 16-bit packed encoding for indexing.
+/// 16-bit requester identifier. Segment remains a separate ownership key.
     /// # C: O(1)
     pub const fn raw(self) -> u16 {
         ((self.bus as u16) << 8) | ((self.device as u16) << 3) | (self.function as u16)
@@ -38,6 +39,11 @@ fn hex_byte(s: &[u8]) -> Option<u8> {
     Some((hex_nibble(*s.first()?)? << 4) | hex_nibble(*s.get(1)?)?)
 }
 
+fn hex_word(s: &[u8]) -> Option<u16> {
+    Some(((hex_nibble(*s.first()?)? as u16) << 12) | ((hex_nibble(*s.get(1)?)? as u16) << 8)
+        | ((hex_nibble(*s.get(2)?)? as u16) << 4) | hex_nibble(*s.get(3)?)? as u16)
+}
+
 /// Parse a PCI model address in the kernel's canonical `0000:bb:dd.f` form.
 /// # C: O(1)
 pub fn parse_bdf_addr(addr: &str) -> Option<Bdf> {
@@ -46,6 +52,7 @@ pub fn parse_bdf_addr(addr: &str) -> Option<Bdf> {
         return None;
     }
     Some(Bdf {
+        segment: hex_word(&b[..4])?,
         bus: hex_byte(&b[5..7])?,
         device: hex_byte(&b[8..10])?,
         function: hex_nibble(b[11])?,

@@ -333,6 +333,7 @@ fn bdf(dev: *const LinuxPciDev) -> Bdf {
     // SAFETY: callers validate dev before deriving the BDF.
     unsafe {
         Bdf {
+            segment: 0,
             bus: (*dev).bus,
             device: ((*dev).devfn >> PCI_DEVFN_DEV_SHIFT) & PCI_SLOT_MASK,
             function: (*dev).devfn & PCI_FUNC_MASK,

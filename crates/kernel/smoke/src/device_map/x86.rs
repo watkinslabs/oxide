@@ -103,6 +103,18 @@ pub fn smoke_device_map_x86(_hhdm: u64) {
         // SAFETY: ACPI MCFG provided the ECAM physical aperture; this boot-only
         // mapping publishes Device-attr config-space MMIO before PCI enum.
         unsafe { map_ecam_window::<X86Mmu>(ecam_pa, ecam_bus_cap); }
+        hal_x86_64::pci::ECAM_SEGMENT.store(
+            firmware::acpi::ECAM_SEGMENT.load(core::sync::atomic::Ordering::Acquire),
+            core::sync::atomic::Ordering::Relaxed,
+        );
+        hal_x86_64::pci::ECAM_BUS_START.store(
+            firmware::acpi::ECAM_BUS_START.load(core::sync::atomic::Ordering::Acquire),
+            core::sync::atomic::Ordering::Relaxed,
+        );
+        hal_x86_64::pci::ECAM_BUS_END.store(
+            firmware::acpi::ECAM_BUS_END.load(core::sync::atomic::Ordering::Acquire),
+            core::sync::atomic::Ordering::Relaxed,
+        );
         hal_x86_64::pci::ECAM_BASE_VA
             .store(ECAM_BASE_VA, core::sync::atomic::Ordering::Release);
     }

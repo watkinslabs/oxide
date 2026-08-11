@@ -199,7 +199,7 @@ mod tests {
     #[test]
     fn decode_common_cfg_cap() {
         let r = MapR { m: Mutex::new(HashMap::new()) };
-        let bdf = Bdf { bus: 0, device: 1, function: 0 };
+        let bdf = Bdf { segment: 0, bus: 0, device: 1, function: 0 };
         // {cap_vndr=09, cap_next=00, cap_len=10, cfg_type=01}
         r.write32(bdf, 0x40, 0x0110_0009);
         // bar=4, padding=0

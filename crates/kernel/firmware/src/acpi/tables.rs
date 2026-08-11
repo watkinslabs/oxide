@@ -1,26 +1,29 @@
 use crate::acpi::log::{alog_dec, alog_hex, alog_raw};
 use crate::acpi::read::{read_u32_le, read_u64_le};
 
-/// First-segment ECAM base PA published by `decode_mcfg`. Zero if
-/// MCFG was absent / empty. The aarch64 PCI bring-up reads this to
-/// know what to device-map.
+/// ECAM base PA selected from the first MCFG allocation. Zero if MCFG was
+/// absent / empty. The matching segment and bus window are published with it.
 pub static ECAM_BASE_PA: core::sync::atomic::AtomicU64
     = core::sync::atomic::AtomicU64::new(0);
-/// First-segment MCFG start bus. Valid only when `ECAM_BASE_PA != 0`.
+/// PCI segment of the published MCFG allocation. Valid when `ECAM_BASE_PA != 0`.
+pub static ECAM_SEGMENT: core::sync::atomic::AtomicU32
+    = core::sync::atomic::AtomicU32::new(0);
+/// Start bus of the published MCFG allocation. Valid when `ECAM_BASE_PA != 0`.
 pub static ECAM_BUS_START: core::sync::atomic::AtomicU32
     = core::sync::atomic::AtomicU32::new(0);
-/// First-segment MCFG end bus. Valid only when `ECAM_BASE_PA != 0`.
+/// End bus of the published MCFG allocation. Valid when `ECAM_BASE_PA != 0`.
 pub static ECAM_BUS_END: core::sync::atomic::AtomicU32
     = core::sync::atomic::AtomicU32::new(0);
 
-/// Number of bus numbers addressable from the published first ECAM segment.
+/// Number of bus numbers addressable from the published ECAM allocation.
 /// # C: O(1)
 pub fn ecam_bus_cap() -> u16 {
     if ECAM_BASE_PA.load(core::sync::atomic::Ordering::Acquire) == 0 {
         return 0;
     }
+    let start = ECAM_BUS_START.load(core::sync::atomic::Ordering::Relaxed).min(255);
     let end = ECAM_BUS_END.load(core::sync::atomic::Ordering::Acquire).min(255);
-    (end + 1) as u16
+    if end < start { 0 } else { (end - start + 1) as u16 }
 }
 
 /// Physical base of the first GICv2m MSI frame discovered via MADT
@@ -310,9 +313,12 @@ pub unsafe fn decode_mcfg(pa: u64, hhdm_offset: u64) {
             let start_bus  = core::ptr::read_volatile(p.add(off + 10));
             let end_bus    = core::ptr::read_volatile(p.add(off + 11));
             if i == 0 {
-                ECAM_BASE_PA.store(base, core::sync::atomic::Ordering::Release);
+                // Publish the identity/window before the base release-store.
+                // Consumers use a non-zero base as the ready indicator.
+                ECAM_SEGMENT.store(segment as u32, core::sync::atomic::Ordering::Relaxed);
                 ECAM_BUS_START.store(start_bus as u32, core::sync::atomic::Ordering::Release);
-                ECAM_BUS_END.store(end_bus as u32, core::sync::atomic::Ordering::Release);
+                ECAM_BUS_END.store(end_bus as u32, core::sync::atomic::Ordering::Relaxed);
+                ECAM_BASE_PA.store(base, core::sync::atomic::Ordering::Release);
             }
             alog_raw(b"[INFO]    mcfg ecam pa=");
             alog_hex(base);

@@ -284,6 +284,7 @@ pub(crate) fn disable_pci_command(bdf: pci::Bdf) {
 
 fn bdf_from_word(word: u32) -> pci::Bdf {
     pci::Bdf {
+        segment: 0,
         bus: ((word >> 16) & 0xFF) as u8,
         device: ((word >> 8) & 0xFF) as u8,
         function: (word & 0xFF) as u8,

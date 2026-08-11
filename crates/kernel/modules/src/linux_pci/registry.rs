@@ -131,7 +131,7 @@ fn unbind_model_device(slot: usize, model: &Device) {
 }
 
 fn make_pci_dev(driver: *mut LinuxPciDriver, model: &Device) -> LinuxPciDev {
-    let bdf = pci::parse_bdf_addr(&model.addr).unwrap_or(Bdf { bus: 0, device: 0, function: 0 });
+    let bdf = pci::parse_bdf_addr(&model.addr).unwrap_or(Bdf { segment: 0, bus: 0, device: 0, function: 0 });
     // SAFETY: every field of LinuxPciDev is valid all-zero — raw pointers (null), integers, bools
     // (false), c_char/u32 arrays, and the Option<extern fn> hooks in its nested LinuxDevice /
     // LinuxKobject / LinuxDevPmInfo (None) — so the zeroed pattern is an inhabited value, not

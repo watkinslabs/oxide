@@ -4,6 +4,7 @@ pub(super) fn bdf_word(bdf: pci::Bdf) -> u32 {
 
 pub(super) fn bdf_from_word(word: u32) -> pci::Bdf {
     pci::Bdf {
+        segment: 0,
         bus: ((word >> 16) & 0xFF) as u8,
         device: ((word >> 8) & 0xFF) as u8,
         function: (word & 0xFF) as u8,
@@ -23,12 +24,18 @@ fn hex_byte(s: &[u8]) -> Option<u8> {
     Some((hex_nibble(*s.first()?)? << 4) | hex_nibble(*s.get(1)?)?)
 }
 
+fn hex_word(s: &[u8]) -> Option<u16> {
+    Some(((hex_nibble(*s.first()?)? as u16) << 12) | ((hex_nibble(*s.get(1)?)? as u16) << 8)
+        | ((hex_nibble(*s.get(2)?)? as u16) << 4) | hex_nibble(*s.get(3)?)? as u16)
+}
+
 pub(super) fn parse_pci_addr(addr: &str) -> Option<pci::Bdf> {
     let b = addr.as_bytes();
     if b.len() != 12 || b[4] != b':' || b[7] != b':' || b[10] != b'.' {
         return None;
     }
     Some(pci::Bdf {
+        segment: hex_word(&b[..4])?,
         bus: hex_byte(&b[5..7])?,
         device: hex_byte(&b[8..10])?,
         function: hex_nibble(b[11])?,

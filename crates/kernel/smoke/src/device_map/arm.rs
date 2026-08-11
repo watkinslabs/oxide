@@ -232,6 +232,18 @@ pub fn smoke_device_map_arm(_hhdm: u64) {
         // SAFETY: same contract as the GICD/PL011 maps above — single-CPU
         // pre-init, MmuOps state initialised, and ECAM_PA came from ACPI MCFG.
         unsafe { map_ecam_window::<ArmMmu>(ecam_pa, ecam_bus_cap); }
+        hal_aarch64::pci::ECAM_SEGMENT.store(
+            firmware::acpi::ECAM_SEGMENT.load(core::sync::atomic::Ordering::Acquire),
+            core::sync::atomic::Ordering::Relaxed,
+        );
+        hal_aarch64::pci::ECAM_BUS_START.store(
+            firmware::acpi::ECAM_BUS_START.load(core::sync::atomic::Ordering::Acquire),
+            core::sync::atomic::Ordering::Relaxed,
+        );
+        hal_aarch64::pci::ECAM_BUS_END.store(
+            firmware::acpi::ECAM_BUS_END.load(core::sync::atomic::Ordering::Acquire),
+            core::sync::atomic::Ordering::Relaxed,
+        );
         hal_aarch64::pci::ECAM_BASE_VA
             .store(ECAM_BASE_VA, core::sync::atomic::Ordering::Release);
     }

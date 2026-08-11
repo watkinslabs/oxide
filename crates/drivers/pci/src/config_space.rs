@@ -131,7 +131,7 @@ mod tests {
         }
     }
 
-    const BDF: Bdf = Bdf { bus: 0, device: 3, function: 0 };
+    const BDF: Bdf = Bdf { segment: 0, bus: 0, device: 3, function: 0 };
 
     fn fake() -> Fake {
         let mut m = HashMap::new();
