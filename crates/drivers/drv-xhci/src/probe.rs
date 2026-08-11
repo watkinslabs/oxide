@@ -9,11 +9,13 @@ use sync::{Spinlock, TaskList as DriverLockClass};
 use crate::platform::Mmio;
 use crate::regs::XHCI_CLASS24;
 use crate::{controller, platform::DmaPage, ring::{Trb, TRBS_PER_SEGMENT}};
+use crate::irq::Binding;
 
 struct Record {
     bdf: pci::Bdf,
     command_orig: u16,
     mmio: Mmio,
+    irq: Binding,
     _command: DmaPage,
     _dcbaa: DmaPage,
     _erst: DmaPage,
@@ -42,6 +44,7 @@ fn remove(bdf: pci::Bdf) {
     };
     if let Some(record) = record {
         let _ = record.mmio.write32(record.mmio.geometry().operational + crate::controller::USBCMD, 0);
+        record.irq.disable_and_free();
         restore_bus_master(record.bdf, record.command_orig);
     }
 }
@@ -86,7 +89,8 @@ impl drv::Driver for XhciDriver {
         let Some(mmio) = (unsafe { Mmio::map(resource.start, bytes) }) else { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); };
         if !mmio.halt_reset() { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); }
         let Some((command, dcbaa, erst, event)) = prepare_dma(&mmio) else { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); };
-        CONTROLLERS.lock().push(Record { bdf, command_orig, mmio, _command: command, _dcbaa: dcbaa, _erst: erst, _event: event });
+        let Some(irq) = crate::irq::bind(bdf) else { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); };
+        CONTROLLERS.lock().push(Record { bdf, command_orig, mmio, irq, _command: command, _dcbaa: dcbaa, _erst: erst, _event: event });
         Ok(())
     }
     fn remove(&self, dev: &drv::Device) { if let Some(bdf) = pci::parse_bdf_addr(&dev.addr) { remove(bdf); } }
