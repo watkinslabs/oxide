@@ -55,6 +55,21 @@ pub enum SockKind {
 /// Process-global AF_UNIX path registry.
 pub static UNIX_REGISTRY: crate::UnixRegistry = crate::UnixRegistry::new();
 
+/// Socket state shared by NET_RX and process context. Disabling local network
+/// bottom halves prevents receive processing from interrupting a holder and
+/// spinning on the same CPU. # C: O(contention)
+pub struct SockBhLock<T>(Spinlock<T, SockLockClass>);
+
+impl<T> SockBhLock<T> {
+    /// Build one bottom-half-safe socket-state lock. # C: O(1)
+    pub const fn new(value: T) -> Self { Self(Spinlock::new(value)) }
+
+    /// Exclude NET_RX while shared socket state is held. # C: O(contention)
+    pub fn lock(&self) -> sync::LockBhGuard<'_, T, SockLockClass, sched::bh::SchedBh> {
+        self.0.lock_bh::<sched::bh::SchedBh>()
+    }
+}
+
 /// A `connect` that committed its destination without sending a SYN.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct DeferredConnect {
@@ -86,9 +101,9 @@ pub struct InetSocket {
     pub anycast: Arc<crate::sock_anycast::SocketAnycast>,
     pub(crate) packet_memberships: crate::sock::PacketMemberships,
     pub(crate) packet_fanout: Spinlock<Option<Arc<PacketFanoutMember>>, SockLockClass>,
-    pub(crate) packet_rings: Spinlock<PacketRings, SockLockClass>,
+    pub(crate) packet_rings: SockBhLock<PacketRings>,
     pub(crate) packet_tx: PacketTxGate,
-    pub kind:       Spinlock<SockKind, SockLockClass>,
+    pub kind:       SockBhLock<SockKind>,
     pub opts: SockOpts,
     /// Canonical Linux `sk_err`, shared with the active transport owner.
     pub error: Arc<crate::SocketError>,

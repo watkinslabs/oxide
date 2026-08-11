@@ -3,7 +3,7 @@ use alloc::sync::Arc;
 use network_namespace::NetworkNamespaceRef;
 use sync::Spinlock;
 
-use super::{InetSocket, PacketRings, PacketRxQueue, PacketTxGate, SockKind, SockOpts,
+use super::{InetSocket, PacketRings, PacketRxQueue, PacketTxGate, SockBhLock, SockKind, SockOpts,
             AF_INET, AF_INET6, AF_PACKET, AF_UNIX};
 use crate::Ipv4Addr;
 
@@ -44,11 +44,11 @@ impl InetSocket {
             local_ip: Spinlock::new(Ipv4Addr::ANY), peer: Arc::new(Spinlock::new(None)),
             udp4: Spinlock::new(None), udp6: Spinlock::new(None), tcp_bind: Spinlock::new(None),
             bpf_filter, reuseport_group: crate::reuseport::new_slot(),
-            mcast: Arc::new(crate::mcast_filter::SocketMcast::new()), kind: Spinlock::new(kind),
+            mcast: Arc::new(crate::mcast_filter::SocketMcast::new()), kind: SockBhLock::new(kind),
             anycast: Arc::new(crate::sock_anycast::SocketAnycast::new()),
             packet_memberships: crate::sock::PacketMemberships::new(),
             packet_fanout: Spinlock::new(None),
-            packet_rings: Spinlock::new(PacketRings::default()),
+            packet_rings: SockBhLock::new(PacketRings::default()),
             packet_tx: PacketTxGate::new(),
             opts: SockOpts::default(), error,
             read_shut: core::sync::atomic::AtomicBool::new(false),

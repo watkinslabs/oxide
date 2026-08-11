@@ -140,6 +140,8 @@ mod packet_policy_tx_tests;
 mod packet_receive_effects_tests;
 #[cfg(test)]
 mod shutdown_tests;
+#[cfg(test)]
+mod types_tests;
 
 pub use globals::*;
 pub use types::*;
