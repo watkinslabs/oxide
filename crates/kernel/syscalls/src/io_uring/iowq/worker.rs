@@ -41,12 +41,13 @@ extern "C" fn worker(arg: usize) -> ! {
         }
 
         let deadline = WQ.park_deadline(now_ns());
-        // SAFETY: running worker thread on its own CPU in process context, holding no lock across the park; the matching schedule yields immediately per the WaitList contract.
-        unsafe {
-            WQ.acct[class].wait.park_with_deadline(deadline);
-            if has_work(class) { WQ.acct[class].wait.cancel_current_park(); continue; }
-            sched::live::schedule();
-        }
+        // SAFETY: running worker thread in process context with no queue gate
+        // held; the shared loop publishes, rechecks work, and schedules until
+        // either work arrives or the pool deadline expires.
+        let _ = unsafe {
+            sched::live::wait_event_uninterruptible_until(&WQ.acct[class].wait,
+                deadline, now_ns, || has_work(class))
+        };
     }
 }
 
