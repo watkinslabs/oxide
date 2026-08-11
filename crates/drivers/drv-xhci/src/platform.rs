@@ -108,6 +108,8 @@ impl Mmio {
 
     /// Virtual base of this owned BAR mapping for the registered hard handler. # C: O(1)
     pub fn base_va(&self) -> u64 { self.mapping.base_va() }
+    /// Bytes in this owned BAR mapping. # C: O(1)
+    pub fn bytes(&self) -> u64 { self.bytes }
 
     /// Read one aligned dword that geometry has proven lies in BAR0. # C: O(1)
     pub fn read32(&self, offset: u64) -> Option<u32> {
