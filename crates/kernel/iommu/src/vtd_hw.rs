@@ -9,6 +9,41 @@ const GSTS_ROOT_TABLE_PRESENT: u32 = 1 << 30;
 const GSTS_TRANSLATION_ENABLED: u32 = 1 << 31;
 const POLL_LIMIT: usize = 1_000_000;
 const ROOT_TABLE_MASK: u64 = 0x000f_ffff_ffff_f000;
+const ROOT_PRESENT: u64 = 1;
+const CONTEXT_PRESENT: u64 = 1;
+const CONTEXT_TRANSLATION_MULTI_LEVEL: u64 = 0;
+const CONTEXT_ADDRESS_WIDTH_MASK: u64 = 0x7;
+const CONTEXT_DOMAIN_ID_SHIFT: u64 = 8;
+
+/// Hardware-format 16-byte VT-d root-table entry.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct VtdRootEntry { words: [u64; 2] }
+impl VtdRootEntry {
+    /// Construct a present root entry for one page-aligned context table. # C: O(1)
+    pub const fn context_table(context_pa: u64) -> Option<Self> {
+        if context_pa & (PAGE_BYTES - 1) != 0 || context_pa & !ROOT_TABLE_MASK != 0 { return None; }
+        Some(Self { words: [context_pa | ROOT_PRESENT, 0] })
+    }
+    /// Return the little-endian hardware words. # C: O(1)
+    pub const fn words(self) -> [u64; 2] { self.words }
+}
+
+/// Hardware-format 16-byte VT-d legacy context-table entry.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct VtdContextEntry { words: [u64; 2] }
+impl VtdContextEntry {
+    /// Construct a present multi-level translation context for one domain. # C: O(1)
+    pub const fn translated(root_pa: u64, address_width: u8, domain_id: u16) -> Option<Self> {
+        if root_pa & (PAGE_BYTES - 1) != 0 || root_pa & !ROOT_TABLE_MASK != 0 || address_width > CONTEXT_ADDRESS_WIDTH_MASK as u8 { return None; }
+        let lo = CONTEXT_PRESENT | (CONTEXT_TRANSLATION_MULTI_LEVEL << 2) | root_pa;
+        let hi = (address_width as u64 & CONTEXT_ADDRESS_WIDTH_MASK) | ((domain_id as u64) << CONTEXT_DOMAIN_ID_SHIFT);
+        Some(Self { words: [lo, hi] })
+    }
+    /// Return the little-endian hardware words. # C: O(1)
+    pub const fn words(self) -> [u64; 2] { self.words }
+}
 
 /// Owned VT-d register aperture used by the initial root-table transition.
 pub struct VtdRegisters { map: mmio_map::Mapping }
@@ -69,5 +104,14 @@ impl VtdRegisters {
         assert_eq!(ROOT_TABLE_MASK & (PAGE_BYTES - 1), 0);
         assert_eq!(GCMD_SET_ROOT_TABLE, 1 << 30);
         assert_eq!(GCMD_TRANSLATION_ENABLE, 1 << 31);
+    }
+    #[test] fn root_and_context_entries_preserve_hardware_layout() {
+        let root = VtdRootEntry::context_table(0x1234_5000).unwrap();
+        let context = VtdContextEntry::translated(0x2345_6000, 2, 7).unwrap();
+        assert_eq!(core::mem::size_of::<VtdRootEntry>(), 16);
+        assert_eq!(core::mem::size_of::<VtdContextEntry>(), 16);
+        assert_eq!(root.words(), [0x1234_5001, 0]);
+        assert_eq!(context.words(), [0x2345_6001, 0x702]);
+        assert!(VtdContextEntry::translated(0x2345_6001, 2, 7).is_none());
     }
 }

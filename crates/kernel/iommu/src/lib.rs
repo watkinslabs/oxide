@@ -17,6 +17,6 @@ pub use amd_vi_pt::{AmdViPte, iova_indices};
 pub use amd_vi_pt_tree::AmdViPageTable;
 pub use domain::{AmdViDomain, Domain, Mapping, amd_vi_unit_for_bdf};
 pub use vtd::intel_vtd_unit_for_bdf;
-pub use vtd_hw::VtdRegisters;
+pub use vtd_hw::{VtdContextEntry, VtdRegisters, VtdRootEntry};
 
 #[cfg(test)] extern crate std;
