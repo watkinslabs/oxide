@@ -4,7 +4,13 @@
 //! consumption and the Run transition are deliberately a later atomic slice:
 //! an enabled controller may not outlive this binding or its DMA pages.
 
-use core::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+use core::ptr::{read_volatile, write_volatile};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
+
+use crate::controller::{ERDP, ERDP_EHB, STS_EINT, USBSTS};
+use crate::platform::{DmaPage, Mmio};
+use crate::regs::interrupter_offset;
+use crate::ring::{TRB_BYTES, TRB_CYCLE, TRBS_PER_SEGMENT};
 
 const MAX_ENDPOINTS: usize = 8;
 const FREE: u8 = 0;
@@ -12,9 +18,25 @@ const SETUP: u8 = 1;
 const ACTIVE: u8 = 2;
 const HANDLING: u8 = 3;
 
-struct Endpoint { state: AtomicU8, in_handler: AtomicU32 }
+struct Endpoint {
+    state: AtomicU8,
+    in_handler: AtomicU32,
+    mmio_va: AtomicU64,
+    status_offset: AtomicU64,
+    erdp_offset: AtomicU64,
+    event_va: AtomicU64,
+    event_pa: AtomicU64,
+    dequeue: AtomicU32,
+    cycle: AtomicBool,
+}
 impl Endpoint {
-    const fn new() -> Self { Self { state: AtomicU8::new(FREE), in_handler: AtomicU32::new(0) } }
+    const fn new() -> Self {
+        Self {
+            state: AtomicU8::new(FREE), in_handler: AtomicU32::new(0),
+            mmio_va: AtomicU64::new(0), status_offset: AtomicU64::new(0), erdp_offset: AtomicU64::new(0),
+            event_va: AtomicU64::new(0), event_pa: AtomicU64::new(0), dequeue: AtomicU32::new(0), cycle: AtomicBool::new(true),
+        }
+    }
 }
 static ENDPOINTS: [Endpoint; MAX_ENDPOINTS] = [const { Endpoint::new() }; MAX_ENDPOINTS];
 
@@ -27,9 +49,41 @@ fn hard_handler_for(index: usize) {
     let endpoint = &ENDPOINTS[index];
     if endpoint.state.compare_exchange(ACTIVE, HANDLING, Ordering::AcqRel, Ordering::Acquire).is_err() { return; }
     endpoint.in_handler.fetch_add(1, Ordering::AcqRel);
-    // The controller remains halted in this revision, so no xHCI event can be
-    // consumed here.  This handler exists solely to establish vector lifetime
-    // before the later event-ring dispatcher enables Run.
+    let base = endpoint.mmio_va.load(Ordering::Acquire);
+    let event_va = endpoint.event_va.load(Ordering::Acquire);
+    let event_pa = endpoint.event_pa.load(Ordering::Acquire);
+    if base != 0 && event_va != 0 && event_pa != 0 {
+        let status_offset = endpoint.status_offset.load(Ordering::Acquire);
+        // SAFETY: binding arms only validated offsets in the owned BAR mapping.
+        let status = unsafe { read_volatile((base + status_offset) as *const u32) };
+        if status != u32::MAX && status & STS_EINT != 0 {
+            // SAFETY: USBSTS event is write-one-to-clear and this offset was validated above.
+            unsafe { write_volatile((base + status_offset) as *mut u32, STS_EINT); }
+            // SAFETY: event_va is a retained DmaPage direct-map address.  DMA
+            // coherency must precede every observation of controller-owned TRBs.
+            pmm::dma::invalidate_from_device(event_va, TRBS_PER_SEGMENT * TRB_BYTES);
+            let mut dequeue = endpoint.dequeue.load(Ordering::Relaxed) as usize;
+            let mut cycle = endpoint.cycle.load(Ordering::Relaxed);
+            let mut consumed = 0;
+            while consumed < TRBS_PER_SEGMENT {
+                // SAFETY: each control dword is in the retained 4KiB event page.
+                let control = unsafe { read_volatile((event_va + (dequeue * TRB_BYTES + 12) as u64) as *const u32) };
+                if (control & TRB_CYCLE != 0) != cycle { break; }
+                dequeue += 1;
+                consumed += 1;
+                if dequeue == TRBS_PER_SEGMENT { dequeue = 0; cycle = !cycle; }
+            }
+            endpoint.dequeue.store(dequeue as u32, Ordering::Release);
+            endpoint.cycle.store(cycle, Ordering::Release);
+            let erdp = event_pa + (dequeue * TRB_BYTES) as u64 | ERDP_EHB;
+            let erdp_offset = endpoint.erdp_offset.load(Ordering::Acquire);
+            // SAFETY: ERDP is an aligned, validated runtime interrupter register.
+            unsafe {
+                write_volatile((base + erdp_offset) as *mut u32, erdp as u32);
+                write_volatile((base + erdp_offset + 4) as *mut u32, (erdp >> 32) as u32);
+            }
+        }
+    }
     endpoint.in_handler.fetch_sub(1, Ordering::Release);
     endpoint.state.store(ACTIVE, Ordering::Release);
 }
@@ -70,6 +124,21 @@ pub(crate) fn bind(bdf: pci::Bdf) -> Option<Binding> {
 }
 
 impl Binding {
+    /// Publish the retained event page to this vector before controller Run. # C: O(1)
+    pub(crate) fn arm(self, mmio: &Mmio, event: &DmaPage) -> bool {
+        let Some(intr) = interrupter_offset(mmio.geometry(), 0) else { return false; };
+        let Some(event_va) = event.va() else { return false; };
+        let endpoint = &ENDPOINTS[self.endpoint];
+        endpoint.dequeue.store(0, Ordering::Relaxed);
+        endpoint.cycle.store(true, Ordering::Relaxed);
+        endpoint.status_offset.store(mmio.geometry().operational + USBSTS, Ordering::Relaxed);
+        endpoint.erdp_offset.store(intr + ERDP, Ordering::Relaxed);
+        endpoint.event_pa.store(event.pa(), Ordering::Relaxed);
+        endpoint.event_va.store(event_va, Ordering::Relaxed);
+        endpoint.mmio_va.store(mmio.base_va(), Ordering::Release);
+        true
+    }
+
     /// Disable delivery, wait out hard-handler ownership, then release vector state. # C: O(handler)
     pub(crate) fn disable_and_free(self) {
         let endpoint = &ENDPOINTS[self.endpoint];
@@ -92,6 +161,9 @@ impl Binding {
         }
         arch_irq::free_pci_msi(self.irq);
         while endpoint.in_handler.load(Ordering::Acquire) != 0 { core::hint::spin_loop(); }
+        endpoint.mmio_va.store(0, Ordering::Release);
+        endpoint.event_va.store(0, Ordering::Release);
+        endpoint.event_pa.store(0, Ordering::Release);
         release(self.endpoint);
     }
 }

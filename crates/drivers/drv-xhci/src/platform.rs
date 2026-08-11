@@ -40,6 +40,14 @@ impl DmaPage {
     /// Physical address suitable for 64-byte-aligned xHCI pointers. # C: O(1)
     pub fn pa(&self) -> u64 { self.pa }
 
+    /// Direct-map address for the exclusive controller DMA page. # C: O(1)
+    pub fn va(&self) -> Option<u64> { hhdm().checked_add(self.pa) }
+
+    /// Observe controller writes before reading event TRBs. # C: O(page bytes on non-coherent architectures)
+    pub fn invalidate_from_device(&self) {
+        if let Some(va) = self.va() { pmm::dma::invalidate_from_device(va, PAGE as usize); }
+    }
+
     /// Write one controller-visible dword within this DMA page. # C: O(1)
     pub fn write32(&self, offset: u64, value: u32) -> bool {
         if offset & 3 != 0 || offset.checked_add(4).is_none_or(|end| end > PAGE) { return false; }
@@ -98,6 +106,9 @@ impl Mmio {
     /// Controller geometry decoded from the live capability registers. # C: O(1)
     pub fn geometry(&self) -> Geometry { self.geometry }
 
+    /// Virtual base of this owned BAR mapping for the registered hard handler. # C: O(1)
+    pub fn base_va(&self) -> u64 { self.mapping.base_va() }
+
     /// Read one aligned dword that geometry has proven lies in BAR0. # C: O(1)
     pub fn read32(&self, offset: u64) -> Option<u32> {
         if offset & 3 != 0 || offset.checked_add(4)? > self.bytes { return None; }
@@ -136,6 +147,34 @@ impl Mmio {
             let status = match self.read32(op + USBSTS) { Some(value) => value, None => return false };
             if reset_complete(command, status) { return true; }
             if sched::deadline::clock::now_ns() >= reset_deadline { return false; }
+            core::hint::spin_loop();
+        }
+    }
+
+    /// Stop execution and wait until controller DMA has halted. # C: O(halt timeout)
+    pub fn halt(&self) -> bool {
+        let op = self.geometry.operational;
+        let Some(command) = self.read32(op + USBCMD) else { return false; };
+        if !self.write32(op + USBCMD, halt_command(command)) { return false; }
+        let deadline = sched::deadline::clock::now_ns().saturating_add(16_000_000);
+        loop {
+            let Some(status) = self.read32(op + USBSTS) else { return false; };
+            if status & crate::controller::STS_HALT != 0 { return true; }
+            if sched::deadline::clock::now_ns() >= deadline { return false; }
+            core::hint::spin_loop();
+        }
+    }
+
+    /// Start a fully owned controller only after its IRQ/event owner is armed. # C: O(run timeout)
+    pub fn run(&self) -> bool {
+        let op = self.geometry.operational;
+        let Some(command) = self.read32(op + USBCMD) else { return false; };
+        if !self.write32(op + USBCMD, crate::controller::run_command(command)) { return false; }
+        let deadline = sched::deadline::clock::now_ns().saturating_add(16_000_000);
+        loop {
+            let Some(status) = self.read32(op + USBSTS) else { return false; };
+            if status & crate::controller::STS_HALT == 0 { return status != u32::MAX; }
+            if sched::deadline::clock::now_ns() >= deadline { return false; }
             core::hint::spin_loop();
         }
     }

@@ -43,7 +43,7 @@ fn remove(bdf: pci::Bdf) {
         controllers.iter().position(|record| record.bdf == bdf).map(|index| controllers.remove(index))
     };
     if let Some(record) = record {
-        let _ = record.mmio.write32(record.mmio.geometry().operational + crate::controller::USBCMD, 0);
+        let _ = record.mmio.halt();
         record.irq.disable_and_free();
         restore_bus_master(record.bdf, record.command_orig);
     }
@@ -90,6 +90,11 @@ impl drv::Driver for XhciDriver {
         if !mmio.halt_reset() { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); }
         let Some((command, dcbaa, erst, event)) = prepare_dma(&mmio) else { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); };
         let Some(irq) = crate::irq::bind(bdf) else { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); };
+        if !irq.arm(&mmio, &event) || !mmio.run() {
+            irq.disable_and_free();
+            restore_bus_master(bdf, command_orig);
+            return Err(drv::Error::ProbeFailed);
+        }
         CONTROLLERS.lock().push(Record { bdf, command_orig, mmio, irq, _command: command, _dcbaa: dcbaa, _erst: erst, _event: event });
         Ok(())
     }
