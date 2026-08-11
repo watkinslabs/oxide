@@ -260,6 +260,13 @@ pub(super) fn bdf_for(dev: *const LinuxPciDev) -> Option<Bdf> {
     BINDINGS.lock().iter().find(|r| r.dev == dev as usize).map(|r| r.bdf)
 }
 
+/// Exact PCI address retained for one embedded Linux `struct device`. # C: O(N)
+pub(crate) fn bdf_for_device(dev: *const LinuxDevice) -> Option<Bdf> {
+    if dev.is_null() { return None; }
+    BINDINGS.lock().iter().find(|record|
+        record.dev + core::mem::offset_of!(LinuxPciDev, dev) == dev as usize).map(|record| record.bdf)
+}
+
 pub(super) fn config_read(dev: *const LinuxPciDev, word: usize) -> Option<u32> {
     if let Some(value) = BINDINGS.lock().iter().find(|r| r.dev == dev as usize).map(|r| r.runtime.config[word]) { return Some(value); }
     #[cfg(test)] { return TEST_RUNTIMES.lock().iter().find(|r| r.0 == dev as usize).map(|r| r.1.config[word]); }

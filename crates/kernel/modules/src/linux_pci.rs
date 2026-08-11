@@ -16,6 +16,11 @@ pub(crate) fn sync_dma_masks(dev: *mut crate::linux_dma::LinuxDevice, streaming:
     registry::sync_dma_masks(dev, streaming, coherent);
 }
 
+/// Resolve a Linux device facade to its exact PCI requester identity. # C: O(N_bindings)
+pub(crate) fn bdf_for_device(dev: *const crate::linux_dma::LinuxDevice) -> Option<pci::Bdf> {
+    registry::bdf_for_device(dev)
+}
+
 /// Register Linux PCI KPI symbols.
 /// # C: O(1)
 pub fn export_symbols() {

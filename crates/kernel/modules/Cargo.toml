@@ -33,6 +33,7 @@ vfs = { path = "../vfs" }
 net = { path = "../net" }
 block = { path = "../block" }
 input = { path = "../input" }
+iommu = { path = "../iommu" }
 tracefs = { path = "../tracefs" }
 kernfs = { path = "../kernfs" }
 syscall = { path = "../syscall" }
