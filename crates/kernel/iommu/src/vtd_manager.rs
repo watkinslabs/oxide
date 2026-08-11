@@ -1,8 +1,9 @@
-use alloc::{boxed::Box, vec::Vec};
+use alloc::vec::Vec;
 
 use crate::{VtdRegisters, VtdTables, intel_vtd_rmrr_count, intel_vtd_rmrr_for_bdf, intel_vtd_unit_for_bdf};
 use firmware::acpi::{IommuKind, IommuUnit};
 use pci::{Bdf, ConfigSpaceReader};
+use sync::{Devices, Spinlock};
 
 const INITIAL_DOMAIN_ID: u16 = 1;
 
@@ -10,7 +11,8 @@ const INITIAL_DOMAIN_ID: u16 = 1;
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum VtdActivation { Bypass, Enabled, Failed }
 
-struct VtdBootUnit { unit: IommuUnit, regs: VtdRegisters, tables: VtdTables }
+struct VtdBootUnit { unit: IommuUnit, regs: VtdRegisters, requesters: Vec<Bdf>, tables: VtdTables }
+static MANAGER: Spinlock<Vec<VtdBootUnit>, Devices> = Spinlock::new(Vec::new());
 
 /// Build, publish, invalidate, and enable one VT-d identity domain per hardware unit.
 ///
@@ -33,7 +35,7 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
         let Some(mut tables) = VtdTables::new(hhdm_offset) else { return VtdActivation::Failed; };
         if !regs.cache_coherent() || !regs.supports_address_width(tables.address_width())
             || !tables.map_identity_regions(regions) { return VtdActivation::Failed; }
-        manager.push(VtdBootUnit { unit, regs, tables });
+        manager.push(VtdBootUnit { unit, regs, requesters: Vec::new(), tables });
     }
     for entry in manager.iter_mut() {
         for index in 0..intel_vtd_rmrr_count() {
@@ -46,13 +48,42 @@ pub unsafe fn activate_vtd<R: ConfigSpaceReader>(reader: &R, requesters: &[Bdf],
         let Some(unit) = intel_vtd_unit_for_bdf(reader, *bdf) else { continue; };
         let Some(entry) = manager.iter_mut().find(|entry| entry.unit == unit) else { return VtdActivation::Failed; };
         if !entry.tables.attach(*bdf, INITIAL_DOMAIN_ID) { return VtdActivation::Failed; }
+        entry.requesters.push(*bdf);
     }
     for entry in manager.iter_mut() {
         if !entry.regs.set_root_table(entry.tables.root_pa()) || !entry.regs.invalidate_initial_tables()
             || !entry.regs.enable_translation() { return VtdActivation::Failed; }
     }
-    let _ = Box::leak(Box::new(manager));
+    *MANAGER.lock() = manager;
     VtdActivation::Enabled
+}
+
+/// Return whether this VT-d manager owns the exact PCI requester identity. # C: O(units * requesters)
+pub fn owns(requester: Bdf) -> bool {
+    MANAGER.lock().iter().any(|entry| entry.requesters.iter().any(|candidate| *candidate == requester))
+}
+
+/// Install one live VT-d mapping and wait until the IOTLB has consumed it. # C: O(pages * levels + poll limit)
+pub fn map_dma(requester: Bdf, pa: u64, len: usize) -> Option<u64> {
+    let (base, bytes, offset) = crate::dma_span::normalize_dma_span(pa, len)?;
+    let mut manager = MANAGER.lock();
+    let entry = manager.iter_mut().find(|entry| entry.requesters.iter().any(|candidate| *candidate == requester))?;
+    let map = entry.tables.map_dma(base, bytes, pci::IOVA_PAGE_SIZE)?;
+    if !entry.regs.invalidate_live_mapping() { return None; }
+    map.iova.start.checked_add(offset)
+}
+
+/// Remove one exact VT-d mapping only after the IOTLB has consumed its removal. # C: O(pages * levels + poll limit)
+pub fn unmap_dma(requester: Bdf, iova: u64, len: usize) -> bool {
+    let page = pci::IOVA_PAGE_SIZE;
+    let base = iova & !(page - 1);
+    let offset = iova - base;
+    let Some(bytes) = offset.checked_add(len as u64).and_then(|n| n.checked_add(page - 1)).map(|n| n & !(page - 1)) else { return false; };
+    let mut manager = MANAGER.lock();
+    let Some(entry) = manager.iter_mut().find(|entry| entry.requesters.iter().any(|candidate| *candidate == requester)) else { return false; };
+    let Some(map) = entry.tables.mapping(base) else { return false; };
+    if map.iova.len != bytes || !entry.tables.remove_for_invalidate(map) { return false; }
+    entry.regs.invalidate_live_mapping() && entry.tables.release_after_invalidate(map)
 }
 
 fn push_unique_unit(units: &mut Vec<IommuUnit>, unit: IommuUnit) {

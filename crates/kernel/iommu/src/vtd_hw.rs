@@ -92,6 +92,8 @@ impl VtdRegisters {
         if !self.write64(iotlb + 8, command) || !self.wait64_clear(iotlb + 8, IOTLB_INVALIDATE) { return false; }
         self.read64(iotlb + 8).is_some_and(|value| (value >> 57 & 0x3) == 1)
     }
+    /// Complete global context and IOTLB invalidation after a live page-table change. # C: O(poll limit)
+    pub fn invalidate_live_mapping(&self) -> bool { self.invalidate_initial_tables() }
     /// Enable DMA translation after a root/context tree has been acknowledged. # C: O(poll limit)
     pub fn enable_translation(&self) -> bool {
         if self.read32(GSTS).is_none_or(|status| status & GSTS_ROOT_TABLE_PRESENT == 0) { return false; }

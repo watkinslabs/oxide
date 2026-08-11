@@ -11,15 +11,17 @@ static MAPPINGS: Spinlock<Vec<Mapping>, Devices> = Spinlock::new(Vec::new());
 
 /// Install a DMA mapping for a PCI requester in its established IOMMU domain.
 ///
-/// Boot domains deliberately map PMM RAM at equal IOVA and physical addresses,
-/// so the address returned now is `pa`.  It is nevertheless recorded under the
-/// full requester identity; callers must use `unmap_dma` before memory is
-/// reused.
+/// The selected IOMMU owner assigns device-visible IOVA space. It is recorded
+/// under the full requester identity; callers must unmap before memory reuse.
 /// # C: O(live mappings)
 pub fn map_dma(requester: Bdf, pa: u64, len: usize) -> Option<u64> {
     if len == 0 || !super::bus_master_admitted(requester) { return None; }
     let _ = pa.checked_add(len as u64 - 1)?;
-    let iova = if super::amd_vi_manager::owns(requester) { super::amd_vi_manager::map_dma(requester, pa, len)? } else { pa };
+    let iova = if super::amd_vi_manager::owns(requester) {
+        super::amd_vi_manager::map_dma(requester, pa, len)?
+    } else if super::vtd_manager::owns(requester) {
+        super::vtd_manager::map_dma(requester, pa, len)?
+    } else { pa };
     let mapping = Mapping { requester, iova, pa, len };
     MAPPINGS.lock().push(mapping);
     Some(mapping.iova)
@@ -35,6 +37,7 @@ pub fn unmap_dma(requester: Bdf, iova: u64, len: usize) -> bool {
     };
     let Some(mapping) = mapping else { return false; };
     if super::amd_vi_manager::owns(requester) && !super::amd_vi_manager::unmap_dma(requester, iova, len) { return false; }
+    if super::vtd_manager::owns(requester) && !super::vtd_manager::unmap_dma(requester, iova, len) { return false; }
     let mut mappings = MAPPINGS.lock();
     let Some(index) = mappings.iter().position(|candidate| *candidate == mapping) else { return false; };
     mappings.swap_remove(index);

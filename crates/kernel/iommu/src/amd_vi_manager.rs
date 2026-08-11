@@ -53,16 +53,6 @@ pub unsafe fn activate_amd_vi(requesters: &[Bdf], hhdm_offset: u64, regions: &[p
     AmdViActivation::Enabled
 }
 
-fn dma_span(pa: u64, len: usize) -> Option<(u64, u64, u64)> {
-    if len == 0 { return None; }
-    let page = pci::IOVA_PAGE_SIZE;
-    let base = pa & !(page - 1);
-    let offset = pa - base;
-    let bytes = offset.checked_add(len as u64)?.checked_add(page - 1)? & !(page - 1);
-    base.checked_add(bytes)?;
-    Some((base, bytes, offset))
-}
-
 /// Return whether this manager owns the full PCI requester identity. # C: O(units)
 pub fn owns(requester: Bdf) -> bool {
     let Some(unit) = crate::amd_vi_unit_for_bdf(requester) else { return false; };
@@ -72,7 +62,7 @@ pub fn owns(requester: Bdf) -> bool {
 /// Install one live AMD-Vi mapping and complete its IOTLB invalidation. # C: O(pages * levels + poll limit)
 pub fn map_dma(requester: Bdf, pa: u64, len: usize) -> Option<u64> {
     let unit = crate::amd_vi_unit_for_bdf(requester)?;
-    let (base, bytes, offset) = dma_span(pa, len)?;
+    let (base, bytes, offset) = crate::dma_span::normalize_dma_span(pa, len)?;
     let mut manager = MANAGER.lock();
     let entry = manager.iter_mut().find(|entry| entry.unit == unit)?;
     let map = entry.domain.map(base, bytes, pci::IOVA_PAGE_SIZE)?;
@@ -106,10 +96,5 @@ fn push_unique_unit(units: &mut Vec<IommuUnit>, unit: IommuUnit) {
         push_unique_unit(&mut units, first);
         push_unique_unit(&mut units, other_segment);
         assert_eq!(units, alloc::vec![first, other_segment]);
-    }
-    #[test] fn live_dma_span_preserves_offset_and_rounds_the_iommu_interval() {
-        assert_eq!(dma_span(0x1234, 0x2345), Some((0x1000, 0x3000, 0x234)));
-        assert_eq!(dma_span(0x1000, 0), None);
-        assert_eq!(dma_span(u64::MAX, 2), None);
     }
 }
