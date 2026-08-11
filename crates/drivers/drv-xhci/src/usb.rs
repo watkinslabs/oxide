@@ -95,6 +95,14 @@ pub fn set_configuration_trbs(value: u8) -> Option<[crate::ring::Trb; 2]> {
     ])
 }
 
+/// Build HID class OUT SET_PROTOCOL(Boot) for one selected interface. # C: O(1)
+pub fn set_hid_boot_protocol_trbs(interface: u8) -> [crate::ring::Trb; 2] {
+    [
+        crate::ring::Trb::setup_stage(0x21, 0x0b, 0, u16::from(interface), 0),
+        crate::ring::Trb::status_stage(false),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,5 +142,11 @@ mod tests {
         assert_eq!(td[0].dword, [0x0001_0900, 0, 8, (crate::ring::TRB_TYPE_SETUP << crate::ring::TRB_TYPE_SHIFT) | (1 << 6)]);
         assert_eq!(td[1].dword[3], (crate::ring::TRB_TYPE_STATUS << crate::ring::TRB_TYPE_SHIFT) | (1 << 16) | (1 << 5));
         assert!(set_configuration_trbs(0).is_none());
+    }
+    #[test]
+    fn hid_boot_protocol_is_a_class_interface_no_data_request() {
+        let td = set_hid_boot_protocol_trbs(3);
+        assert_eq!(td[0].dword, [0x0000_0b21, 3, 8, (crate::ring::TRB_TYPE_SETUP << crate::ring::TRB_TYPE_SHIFT) | (1 << 6)]);
+        assert_eq!(td[1].dword[3], (crate::ring::TRB_TYPE_STATUS << crate::ring::TRB_TYPE_SHIFT) | (1 << 16) | (1 << 5));
     }
 }
