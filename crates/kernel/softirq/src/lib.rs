@@ -76,6 +76,8 @@ pub enum Slot {
     /// it may not run under `rq->lock` — and it may not run in the switch tail
     /// either, since that charges every blocking path with the sampler's stack.
     PerfDeferred = 9,
+    /// xHCI USB keyboard and mouse report completions.
+    UsbInput = 10,
 }
 
 const N_SLOTS: usize = 32;

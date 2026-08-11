@@ -21,10 +21,28 @@ struct Record {
     _command: CommandTransport,
     _dcbaa: DmaPage,
     _device: Option<AddressDeviceDma>,
+    slot: u8,
+    reports: Vec<Vec<u8>>,
     _erst: DmaPage,
     _event: DmaPage,
 }
 static CONTROLLERS: Spinlock<Vec<Record>, DriverLockClass> = Spinlock::new(Vec::new());
+#[cfg(target_os = "oxide-kernel")]
+type XhciBh = sched::bh::SchedBh;
+
+fn input_bottom_half() {
+    let mut controllers = CONTROLLERS.lock_bh::<XhciBh>();
+    for record in controllers.iter_mut() {
+        let Some(device) = record._device.as_mut() else { continue; };
+        let Some(pending) = device.hid_pending() else { continue; };
+        let Some(completion) = record.irq.take_transfer_completion(pending) else { continue; };
+        if let Some(report) = device.take_hid_report(completion) {
+            if record.reports.len() == 64 { record.reports.remove(0); }
+            record.reports.push(report);
+            let _ = device.submit_hid_report(&record.mmio, record.slot);
+        }
+    }
+}
 
 fn enable_bus_master(bdf: pci::Bdf) -> Option<u16> {
     #[cfg(target_arch = "x86_64")]
@@ -167,6 +185,7 @@ impl drv::Driver for XhciDriver {
     fn name(&self) -> &'static str { "xhci" }
     fn matches(&self, dev: &drv::Device) -> bool { dev.bus == "pci" && dev.class == XHCI_CLASS24 }
     fn probe(&self, dev: &Arc<drv::Device>) -> drv::KResult<()> {
+        let _ = softirq::set_handler(softirq::Slot::UsbInput, input_bottom_half);
         let bdf = pci::parse_bdf_addr(&dev.addr).ok_or(drv::Error::ProbeFailed)?;
         let resource = dev.resources.iter().find(|resource| resource.bar == 0 && resource.flags & drv::IORESOURCE_MEM != 0).ok_or(drv::Error::ProbeFailed)?;
         let bytes = resource.end.checked_sub(resource.start).and_then(|length| length.checked_add(1)).ok_or(drv::Error::ProbeFailed)?;
@@ -184,7 +203,8 @@ impl drv::Driver for XhciDriver {
             return Err(drv::Error::ProbeFailed);
         }
         let device = address_first_usb2(&mmio, &mut command, &dcbaa, irq);
-        CONTROLLERS.lock().push(Record { bdf, command_orig, mmio, irq, _command: command, _dcbaa: dcbaa, _device: device, _erst: erst, _event: event });
+        let slot = device.as_ref().map_or(0, AddressDeviceDma::slot);
+        CONTROLLERS.lock().push(Record { bdf, command_orig, mmio, irq, _command: command, _dcbaa: dcbaa, _device: device, slot, reports: Vec::new(), _erst: erst, _event: event });
         Ok(())
     }
     fn remove(&self, dev: &drv::Device) { if let Some(bdf) = pci::parse_bdf_addr(&dev.addr) { remove(bdf); } }
