@@ -83,7 +83,7 @@ pub fn configure_hid_words(context_bytes: u8, output_slot: [u32; 8], speed: u8, 
             let exponent = 15 - frames.leading_zeros() as u8;
             exponent.clamp(3, 10)
         }
-        3 => hid.interval.checked_sub(1)?,
+        3 | 4 | 5 => hid.interval.checked_sub(1)?,
         _ => return None,
     };
     let slot = SLOT_CONTEXT * stride;
