@@ -87,6 +87,24 @@ impl WaitList {
         unsafe { self.park_interruptible_with_deadline(deadline_ns); }
     }
 
+    /// Arm a deadline for the running task's existing prepared wait without
+    /// re-publishing it. # SAFETY: the caller prepared this task on this list,
+    /// still has not scheduled, and will drop its resource gate before doing so.
+    /// # C: O(N armed)
+    pub unsafe fn arm_current_prepared_deadline(&self, deadline_ns: u64) {
+        if deadline_ns == 0 { return; }
+        let Some(cur) = super::schedule::current() else { return };
+        let Some(task) = crate::registry::lookup(cur.tid) else { return };
+        // A wake that won before this timed commit made the task Runnable.
+        // Never turn that wake back into Sleeping by re-publishing it.
+        if task.state() != TaskState::Sleeping { return; }
+        let slack = crate::hrtimeout::task_slack_ns(&task);
+        crate::hrtimeout::arm(&task, deadline_ns, slack);
+        if task.state() != TaskState::Sleeping {
+            crate::hrtimeout::disarm(&task);
+        }
+    }
+
     /// # C: O(1)
     pub const fn new() -> Self {
         Self { waiters: Spinlock::new(Vec::new()) }
