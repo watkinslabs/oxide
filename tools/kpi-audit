@@ -504,6 +504,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--nm-output", action="store_true", help="treat all inputs as captured nm -u text")
     ap.add_argument("--exports", action="append", type=Path, default=[], help="extra newline-delimited exported symbols")
     ap.add_argument("--fail-on-missing", action="store_true", help="exit 1 when strong missing symbols remain")
+    ap.add_argument("--host-btf", type=Path, help="running-kernel BTF to compare with the pinned Oxide KPI profile")
+    ap.add_argument("--fail-on-abi-mismatch", action="store_true", help="exit 1 when --host-btf differs from the supported KPI profile")
     args = ap.parse_args(argv)
 
     root = args.root or repo_root(Path.cwd())
@@ -526,7 +528,15 @@ def main(argv: list[str]) -> int:
     rows = findings(undefs, exports)
     print_summary(rows, exports)
     print_markdown(rows)
+    abi_ok = True
+    if args.host_btf:
+        try:
+            abi_ok = print_abi(args.host_btf)
+        except (OSError, ValueError) as exc:
+            raise SystemExit(f"{args.host_btf}: BTF parse failed: {exc}")
     if args.fail_on_missing and any(r.status == "MISSING" for r in rows):
+        return 1
+    if args.fail_on_abi_mismatch and not abi_ok:
         return 1
     return 0
 
