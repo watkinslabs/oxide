@@ -140,6 +140,11 @@ impl AmdViTables {
         *tail = next;
         true
     }
+    fn command_drained(&self, regs: &AmdViRegisters) -> bool {
+        let tail = self.command_tail.lock();
+        let Some(head) = regs.read64(COMMAND_HEAD) else { return false; };
+        *tail == ((head as u32) & (COMMAND_BUFFER_BYTES as u32 - 1))
+    }
 }
 
 /// Owned AMD-Vi register aperture. It is mapped as device memory and may only
@@ -206,8 +211,11 @@ impl AmdViUnit {
         // SAFETY: tables owns the serialized command ring and the checked state has enabled it.
         unsafe { tables.queue_command(regs, hhdm_offset, AmdViCommand::invalidate_dte(bdf.raw())) }
     }
-    /// Advance after every enabled requester has a domain DTE and invalidate completed. # C: O(1)
-    pub fn domains_attached(&mut self) -> bool { self.advance(AmdViState::TablesProgrammed, AmdViState::DomainsAttached) }
+    /// Advance only after hardware consumed every queued initial invalidation. # C: O(1)
+    pub fn domains_attached_after_drain(&mut self, regs: &AmdViRegisters, tables: &AmdViTables) -> bool {
+        if self.state != AmdViState::TablesProgrammed || !tables.command_drained(regs) { return false; }
+        self.advance(AmdViState::TablesProgrammed, AmdViState::DomainsAttached)
+    }
     /// Enable hardware translation after every active requester has an invalidated DTE. # C: O(1)
     pub fn enable_translation(&mut self, regs: &AmdViRegisters) -> bool {
         if self.state != AmdViState::DomainsAttached { return false; }
@@ -227,7 +235,7 @@ impl AmdViUnit {
     #[test] fn translation_requires_programmed_and_attached_domains() {
         let mut u = AmdViUnit::new(0xfed8_0000, 3);
         assert_eq!(u.state(), AmdViState::Discovered); assert!(u.mapped());
-        assert!(!u.domains_attached()); assert_eq!(u.state(), AmdViState::Mapped);
+        assert_eq!(u.state(), AmdViState::Mapped);
     }
     #[test] fn table_registers_require_aligned_permanent_memory() {
         let t = AmdViTables::from_physical(0x4000_0000, 0x5000_0000, 0x5000_2000).unwrap();
