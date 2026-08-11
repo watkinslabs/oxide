@@ -121,7 +121,7 @@ impl FileOps for EventfdFileOps {
                 // marks Sleeping while we still hold the counter lock, so a
                 // racing write's bump+wake_all cannot land between this
                 // recheck and our enqueue.
-                unsafe { d.read_waiters.park(); }
+                unsafe { d.read_waiters.prepare_to_wait_interruptible(); }
                 drop(g);
                 // SAFETY: process ctx; runqueue installed; preempt-off;
                 // Sleeping so schedule won't re-enqueue until a write wakes
@@ -162,7 +162,7 @@ impl FileOps for EventfdFileOps {
                 // SAFETY: running task; preempt-off; the park publishes
                 // Sleeping while the counter lock is still held, so a racing
                 // read's drain+wake cannot land in the gap.
-                unsafe { d.write_waiters.park(); }
+                unsafe { d.write_waiters.prepare_to_wait_interruptible(); }
                 drop(g);
                 // SAFETY: process ctx; runqueue installed; Sleeping until a
                 // read frees capacity. Counter lock dropped before schedule.
