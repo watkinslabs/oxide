@@ -247,7 +247,7 @@ pub fn signal_wake_up(task: &alloc::sync::Arc<crate::Task>) {
 pub fn vfork_done(child: &crate::Task) {
     use core::sync::atomic::Ordering;
     if child.vfork_pending.swap(false, Ordering::AcqRel) {
-        super::vfork_wait::wake();
+        super::vfork_wait::wake(child);
     }
 }
 
