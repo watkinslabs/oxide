@@ -1,9 +1,10 @@
-// Module manifest: types owns Linux C layout, maps owns iomap state, registry bridges Linux PCI drivers to the Rust driver model, core owns exported PCI facade, vectors owns IRQ vector allocation, pm owns PCI power management.
+// Module manifest: types owns Linux C layout, maps owns iomap state, registry bridges Linux PCI drivers to the Rust driver model, core owns exported PCI facade, regions owns BAR ownership, vectors owns IRQ vector allocation, pm owns PCI power management.
 
 mod core;
 mod maps;
 mod pm;
 mod registry;
+mod regions;
 mod types;
 mod vectors;
 

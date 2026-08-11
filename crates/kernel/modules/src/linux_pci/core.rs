@@ -1,13 +1,11 @@
 use super::types::*;
 use super::registry;
+use super::regions;
 use core::ffi::{c_char, c_void};
 use core::ptr::null_mut;
 use pci::{
     Bdf, COMMAND_BUS_MASTER, COMMAND_IO, COMMAND_MEMORY, IORESOURCE_IO, IORESOURCE_MEM,
 };
-use sync::{Modules as ModulesLockClass, Spinlock};
-
-const MAX_REGION_CLAIMS: usize = 64;
 const PCI_DEVFN_DEV_SHIFT: u8 = 3;
 const PCI_CONFIG_ALIGN: u8 = 4;
 const PCI_CONFIG_BYTE_MASK: u32 = 0xff;
@@ -15,17 +13,6 @@ const PCI_CONFIG_WORD_MASK: u32 = 0xffff;
 const PCI_CONFIG_SPACE_BYTES: u16 = 256;
 const PCI_RESOURCE_EMPTY: u64 = 0;
 const INVALID_RESOURCE: usize = usize::MAX;
-
-#[derive(Copy, Clone)]
-struct RegionClaim {
-    dev: usize,
-    bar: usize,
-    start: u64,
-    end: u64,
-}
-
-static REGIONS: Spinlock<[Option<RegionClaim>; MAX_REGION_CLAIMS], ModulesLockClass> =
-    Spinlock::new([None; MAX_REGION_CLAIMS]);
 
 /// Register Linux PCI KPI symbols.
 /// # C: O(1)
@@ -53,6 +40,9 @@ pub(super) fn export_symbols() {
         ("pci_release_region",        pci_release_region        as *const () as usize),
         ("pci_request_regions",       pci_request_regions       as *const () as usize),
         ("pci_release_regions",       pci_release_regions       as *const () as usize),
+        ("pci_select_bars",            regions::pci_select_bars as *const () as usize),
+        ("pci_request_selected_regions", regions::pci_request_selected_regions as *const () as usize),
+        ("pci_release_selected_regions", regions::pci_release_selected_regions as *const () as usize),
         ("pcim_request_all_regions",  pcim_request_all_regions  as *const () as usize),
         ("pcim_release_all_regions",  pcim_release_all_regions  as *const () as usize),
         ("pci_iomap",                 pci_iomap                 as *const () as usize),
@@ -174,12 +164,12 @@ extern "C" fn pci_request_region(dev: *mut LinuxPciDev, bar: i32, _name: *const 
         Some(v) if resource_len(v) != 0 => v,
         _ => return -LINUX_ENODEV,
     };
-    claim_region(dev, idx, res)
+    regions::claim_region(dev, idx, res)
 }
 
 extern "C" fn pci_release_region(dev: *mut LinuxPciDev, bar: i32) {
     if dev.is_null() { return; }
-    if let Some(idx) = valid_bar(bar) { release_region(dev, idx); }
+    if let Some(idx) = valid_bar(bar) { regions::release_region(dev, idx); }
 }
 
 extern "C" fn pci_request_regions(dev: *mut LinuxPciDev, name: *const c_char) -> i32 {
@@ -190,7 +180,7 @@ extern "C" fn pci_request_regions(dev: *mut LinuxPciDev, name: *const c_char) ->
         if pci_resource_len(dev, bar as i32) == 0 { continue; }
         let rc = pci_request_region(dev, bar as i32, name);
         if rc != LINUX_OK {
-            for old in claimed.iter().take(n) { release_region(dev, *old); }
+            for old in claimed.iter().take(n) { regions::release_region(dev, *old); }
             return rc;
         }
         claimed[n] = bar;
@@ -201,7 +191,7 @@ extern "C" fn pci_request_regions(dev: *mut LinuxPciDev, name: *const c_char) ->
 
 extern "C" fn pci_release_regions(dev: *mut LinuxPciDev) {
     if dev.is_null() { return; }
-    for bar in 0..PCI_STD_NUM_BARS { release_region(dev, bar); }
+    for bar in 0..PCI_STD_NUM_BARS { regions::release_region(dev, bar); }
 }
 
 extern "C" fn pcim_request_all_regions(dev: *mut LinuxPciDev, name: *const c_char) -> i32 { pci_request_regions(dev, name) }
@@ -360,18 +350,18 @@ fn has_resource(dev: *const LinuxPciDev, flag: u64) -> bool {
     false
 }
 
-fn resource(dev: *const LinuxPciDev, bar: i32) -> Option<LinuxResource> {
+pub(super) fn resource(dev: *const LinuxPciDev, bar: i32) -> Option<LinuxResource> {
     let idx = valid_bar(bar)?;
     if dev.is_null() { return None; }
     // SAFETY: dev points at a caller-owned Linux struct pci_dev.
     Some(unsafe { (*dev).resource[idx] })
 }
 
-fn valid_bar(bar: i32) -> Option<usize> {
+pub(super) fn valid_bar(bar: i32) -> Option<usize> {
     if bar < 0 || bar as usize >= PCI_STD_NUM_BARS { None } else { Some(bar as usize) }
 }
 
-fn resource_len(r: LinuxResource) -> u64 {
+pub(super) fn resource_len(r: LinuxResource) -> u64 {
     if r.start == 0 && r.end == 0 { 0 }
     else if r.end < r.start { 0 }
     else { r.end.saturating_sub(r.start).saturating_add(1) }
@@ -380,28 +370,6 @@ fn resource_len(r: LinuxResource) -> u64 {
 fn bounded_resource_len(r: LinuxResource, maxlen: usize) -> u64 {
     let len = resource_len(r);
     if maxlen == 0 { len } else { len.min(maxlen as u64) }
-}
-
-fn claim_region(dev: *mut LinuxPciDev, bar: usize, res: LinuxResource) -> i32 {
-    let mut g = REGIONS.lock();
-    if g.iter().flatten().any(|r| overlaps(r.start, r.end, res.start, res.end)) {
-        return -LINUX_EBUSY;
-    }
-    if let Some(slot) = g.iter_mut().find(|r| r.is_none()) {
-        *slot = Some(RegionClaim { dev: dev as usize, bar, start: res.start, end: res.end });
-        LINUX_OK
-    } else { -LINUX_ENOMEM }
-}
-
-fn release_region(dev: *mut LinuxPciDev, bar: usize) {
-    let mut g = REGIONS.lock();
-    if let Some(slot) = g.iter_mut().find(|r| r.is_some_and(|v| v.dev == dev as usize && v.bar == bar)) {
-        *slot = None;
-    }
-}
-
-fn overlaps(a_start: u64, a_end: u64, b_start: u64, b_end: u64) -> bool {
-    a_start <= b_end && b_start <= a_end
 }
 
 fn config_access(dev: *mut LinuxPciDev, pos: i32, width: u8) -> Option<(u32, u32)> {

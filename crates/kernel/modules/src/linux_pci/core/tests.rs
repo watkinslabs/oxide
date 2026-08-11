@@ -154,6 +154,20 @@ fn register_resources_iomap_and_irq_vectors() {
 }
 
 #[test]
+fn selected_regions_use_the_linux_bar_mask_and_roll_back_on_conflict() {
+    let _modules = crate::test_serial::claim();
+    let mut first = test_dev();
+    let mut second = test_dev();
+    let mask = super::regions::pci_select_bars(&mut first, pci::IORESOURCE_MEM);
+    assert_eq!(mask, 1 << TEST_BAR_IDX);
+    assert_eq!(super::regions::pci_request_selected_regions(&mut first, mask, c"first".as_ptr()), LINUX_OK);
+    assert_eq!(super::regions::pci_request_selected_regions(&mut second, mask, c"second".as_ptr()), -LINUX_EBUSY);
+    super::regions::pci_release_selected_regions(&mut first, mask);
+    assert_eq!(super::regions::pci_request_selected_regions(&mut second, mask, c"second".as_ptr()), LINUX_OK);
+    super::regions::pci_release_selected_regions(&mut second, mask);
+}
+
+#[test]
 fn msi_irq_vectors_allocate_and_free_arch_vectors() {
     let _modules = crate::test_serial::claim();
     let mut dev = test_dev();
