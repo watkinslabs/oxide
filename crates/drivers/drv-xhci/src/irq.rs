@@ -185,6 +185,16 @@ impl Binding {
         Some(crate::ring::CommandCompletion { command_pa, completion_code: status as u8, slot: (status >> 8) as u8 })
     }
 
+    /// Wait for one exact command completion without consuming a different command. # C: O(timeout)
+    pub(crate) fn wait_command_completion(self, command_pa: u64, timeout_ns: u64) -> Option<crate::ring::CommandCompletion> {
+        let deadline = sched::deadline::clock::now_ns().saturating_add(timeout_ns);
+        loop {
+            if let Some(completion) = self.take_command_completion(command_pa) { return Some(completion); }
+            if sched::deadline::clock::now_ns() >= deadline { return None; }
+            core::hint::spin_loop();
+        }
+    }
+
     /// Disable delivery, wait out hard-handler ownership, then release vector state. # C: O(handler)
     pub(crate) fn disable_and_free(self) {
         let endpoint = &ENDPOINTS[self.endpoint];

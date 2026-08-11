@@ -11,6 +11,7 @@ use crate::regs::XHCI_CLASS24;
 use crate::{controller, platform::DmaPage, ring::{Trb, TRBS_PER_SEGMENT}};
 use crate::irq::Binding;
 use crate::command::CommandTransport;
+use crate::device::AddressDeviceDma;
 
 struct Record {
     bdf: pci::Bdf,
@@ -19,6 +20,7 @@ struct Record {
     irq: Binding,
     _command: CommandTransport,
     _dcbaa: DmaPage,
+    _device: Option<AddressDeviceDma>,
     _erst: DmaPage,
     _event: DmaPage,
 }
@@ -73,6 +75,29 @@ fn prepare_dma(mmio: &Mmio) -> Option<(DmaPage, DmaPage, DmaPage, DmaPage)> {
     Some((command, dcbaa, erst, event))
 }
 
+fn address_first_usb2(mmio: &Mmio, command: &mut CommandTransport, dcbaa: &DmaPage, irq: Binding) -> Option<AddressDeviceDma> {
+    for port in 1..=mmio.geometry().max_ports {
+        let Some(status) = mmio.port_status(port) else { continue; };
+        // USB3 requires protocol-capability mapping and warm-reset handling.
+        if status & crate::ports::PORT_CONNECT == 0 || ((status & crate::ports::PORT_SPEED_MASK) >> 10) >= 4 { continue; }
+        if !mmio.reset_usb2_port(port) { continue; }
+        let Some(portsc) = mmio.port_status(port) else { continue; };
+        let enable_pa = command.submit(mmio, Trb::enable_slot())?;
+        let enable = irq.wait_command_completion(enable_pa, 1_000_000_000)?;
+        if enable.completion_code != crate::ring::COMPLETION_SUCCESS || enable.slot == 0 { continue; }
+        let Some(device) = AddressDeviceDma::allocate(mmio.geometry().context_bytes, port, portsc) else { return None; };
+        if !device.publish_dcbaa(dcbaa, enable.slot) { return None; }
+        let Some(address) = Trb::address_device(device.input_pa(), enable.slot, false) else { return None; };
+        let Some(address_pa) = command.submit(mmio, address) else { return None; };
+        let addressed = irq.wait_command_completion(address_pa, 1_000_000_000);
+        if addressed.is_some_and(|completion| completion.completion_code == crate::ring::COMPLETION_SUCCESS && completion.slot == enable.slot) { return Some(device); }
+        if let Some(disable) = Trb::disable_slot(enable.slot) {
+            if let Some(disable_pa) = command.submit(mmio, disable) { let _ = irq.wait_command_completion(disable_pa, 1_000_000_000); }
+        }
+    }
+    None
+}
+
 /// Native xHCI PCI controller driver. Controller publication follows reset;
 /// command/event-ring activation is added only with its complete DMA/IRQ path.
 pub struct XhciDriver;
@@ -90,14 +115,15 @@ impl drv::Driver for XhciDriver {
         let Some(mmio) = (unsafe { Mmio::map(resource.start, bytes) }) else { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); };
         if !mmio.halt_reset() { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); }
         let Some((command, dcbaa, erst, event)) = prepare_dma(&mmio) else { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); };
-        let Some(command) = CommandTransport::new(command) else { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); };
+        let Some(mut command) = CommandTransport::new(command) else { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); };
         let Some(irq) = crate::irq::bind(bdf) else { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); };
         if !irq.arm(&mmio, &event) || !mmio.run() {
             irq.disable_and_free();
             restore_bus_master(bdf, command_orig);
             return Err(drv::Error::ProbeFailed);
         }
-        CONTROLLERS.lock().push(Record { bdf, command_orig, mmio, irq, _command: command, _dcbaa: dcbaa, _erst: erst, _event: event });
+        let device = address_first_usb2(&mmio, &mut command, &dcbaa, irq);
+        CONTROLLERS.lock().push(Record { bdf, command_orig, mmio, irq, _command: command, _dcbaa: dcbaa, _device: device, _erst: erst, _event: event });
         Ok(())
     }
     fn remove(&self, dev: &drv::Device) { if let Some(bdf) = pci::parse_bdf_addr(&dev.addr) { remove(bdf); } }

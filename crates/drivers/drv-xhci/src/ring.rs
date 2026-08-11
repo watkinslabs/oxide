@@ -16,6 +16,8 @@ pub const TRB_TYPE_SHIFT: u32 = 10;
 pub const TRB_TYPE_LINK: u32 = 6;
 /// Enable Slot Command TRB type. # C: O(1)
 pub const TRB_TYPE_ENABLE_SLOT: u32 = 9;
+/// Disable Slot Command TRB type. # C: O(1)
+pub const TRB_TYPE_DISABLE_SLOT: u32 = 10;
 /// Address Device Command TRB type. # C: O(1)
 pub const TRB_TYPE_ADDRESS_DEVICE: u32 = 11;
 /// Command Completion Event TRB type. # C: O(1)
@@ -41,6 +43,11 @@ impl Trb {
 
     /// Build an Enable Slot Command for the command ring. # C: O(1)
     pub fn enable_slot() -> Self { Self { dword: [0, 0, 0, TRB_TYPE_ENABLE_SLOT << TRB_TYPE_SHIFT] } }
+
+    /// Build a Disable Slot Command for rollback after failed addressing. # C: O(1)
+    pub fn disable_slot(slot: u8) -> Option<Self> {
+        (slot != 0).then_some(Self { dword: [0, 0, 0, (TRB_TYPE_DISABLE_SLOT << TRB_TYPE_SHIFT) | ((slot as u32) << 24)] })
+    }
 
     /// Build an Address Device Command naming a 64-byte-aligned input context. # C: O(1)
     pub fn address_device(input_context_pa: u64, slot: u8, block_set_address: bool) -> Option<Self> {
