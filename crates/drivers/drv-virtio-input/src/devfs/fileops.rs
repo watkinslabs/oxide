@@ -69,7 +69,7 @@ impl FileOps for EvdevFileOps {
             if let Some(len) = opened.try_pop_bytes(buf) { return Ok(len); }
             if signal_pending() { return Err(VfsError::Eintr); }
             // SAFETY: process-context evdev read publishes the current task before scheduling.
-            unsafe { opened.queue().waiters.park(); }
+            unsafe { opened.queue().waiters.prepare_to_wait_interruptible(); }
             if !opened.is_live() || opened.has_pending() || signal_pending() {
                 opened.queue().waiters.cancel_current_park();
                 continue;

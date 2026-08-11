@@ -7,9 +7,9 @@ use sync::{AddressSpace as AddressSpaceClass, Spinlock};
 const WRITER: u32 = 1 << 31;
 const READERS: u32 = !WRITER;
 
-type ParkHook = fn(usize);
+type ParkHook = fn(usize, bool);
 type ScheduleHook = fn();
-type WakeHook = fn(usize);
+type WakeHook = fn(usize, bool);
 
 static PARK_HOOK: AtomicU64 = AtomicU64::new(0);
 static SCHEDULE_HOOK: AtomicU64 = AtomicU64::new(0);
@@ -65,12 +65,12 @@ impl<T> MmapRwsem<T> {
 
     fn key(&self) -> usize { self as *const Self as usize }
 
-    fn park(&self, gate: sync::Guard<'_, (), AddressSpaceClass>) {
+    fn park(&self, gate: sync::Guard<'_, (), AddressSpaceClass>, writer: bool) {
         let park = load_hook::<ParkHook>(&PARK_HOOK);
         let schedule = load_hook::<ScheduleHook>(&SCHEDULE_HOOK);
         match (park, schedule) {
             (Some(park), Some(schedule)) => {
-                park(self.key());
+                park(self.key(), writer);
                 drop(gate);
                 schedule();
             }
@@ -96,7 +96,7 @@ impl<T> MmapRwsem<T> {
                 drop(gate);
                 return MmapReadGuard { lock: self };
             }
-            self.park(gate);
+            self.park(gate, false);
         }
     }
 
@@ -117,12 +117,14 @@ impl<T> MmapRwsem<T> {
                 drop(gate);
                 return MmapWriteGuard { lock: self };
             }
-            self.park(gate);
+            self.park(gate, true);
         }
     }
 
     fn wake(&self) {
-        if let Some(wake) = load_hook::<WakeHook>(&WAKE_HOOK) { wake(self.key()); }
+        if let Some(wake) = load_hook::<WakeHook>(&WAKE_HOOK) {
+            wake(self.key(), self.writers_waiting.load(Ordering::Relaxed) != 0);
+        }
     }
 
     fn read_unlock(&self) {
@@ -204,12 +206,13 @@ mod tests {
         SERIAL.get_or_init(|| Mutex::new(()))
     }
 
-    fn park(_key: usize) {
+    fn park_reader(_key: usize, _writer: bool) {
         let (lock, cv) = state();
         let mut state = lock.lock().unwrap();
         state.parked += 1;
         cv.notify_all();
     }
+
 
     fn schedule() {
         let (lock, cv) = state();
@@ -217,7 +220,7 @@ mod tests {
         while !state.wake { state = cv.wait(state).unwrap(); }
     }
 
-    fn wake(_key: usize) {
+    fn wake(_key: usize, _writers_waiting: bool) {
         let (lock, cv) = state();
         let mut state = lock.lock().unwrap();
         state.wake = true;
@@ -227,7 +230,7 @@ mod tests {
     fn reset() {
         let (lock, _) = state();
         *lock.lock().unwrap() = WaitState { parked: 0, wake: false };
-        set_mmap_rwsem_wait_hooks(park, schedule, wake);
+        set_mmap_rwsem_wait_hooks(park_reader, schedule, wake);
     }
 
     #[test]

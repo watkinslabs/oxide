@@ -138,7 +138,7 @@ impl TcpEntry {
     pub fn arm_connect_wait(&self, deadline_ns: u64) -> TcpConnectWait {
         self.arm_connect_wait_with(|| {
             // SAFETY: the connection lock serializes state publication with wait registration.
-            unsafe { self.rx_waiters.park_interruptible_with_deadline(deadline_ns); }
+            unsafe { self.rx_waiters.prepare_to_wait_interruptible_with_deadline(deadline_ns); }
         })
     }
 
@@ -158,7 +158,7 @@ impl TcpEntry {
         sndbuf_cap: usize, deadline_ns: u64) -> bool {
         self.arm_transmit_wait_with(write_shut, sndbuf_cap, || {
             // SAFETY: process context; connection lock serializes ACK and close publication.
-            unsafe { self.rx_waiters.park_interruptible_with_deadline(deadline_ns); }
+            unsafe { self.rx_waiters.prepare_to_wait_interruptible_with_deadline(deadline_ns); }
         })
     }
 

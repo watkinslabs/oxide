@@ -37,7 +37,7 @@ impl WaitCell {
         // SAFETY: WaitList::park needs the running task on a live runqueue, which the above gives;
         // the waiters bump precedes it so a racing wake_one still sees this waiter.
         unsafe {
-            self.wait.park();
+            self.wait.prepare_to_wait();
         }
     }
 

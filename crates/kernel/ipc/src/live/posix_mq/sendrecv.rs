@@ -84,8 +84,9 @@ pub fn sys_mq_timedsend(args: &syscall::SyscallArgs) -> i64 {
         }
         if nonblock { drop(g); return errno(Errno::Eagain); }
         if let Some(rv) = mq_wait_verdict(deadline) { drop(g); return rv; }
-        // SAFETY: process ctx; runqueue installed; preempt-off; we yield via schedule() immediately after parking.
-        unsafe { q.wait_send.park_interruptible_with_deadline(deadline.unwrap_or(0)); }
+        // SAFETY: the queue gate spans the full/not-full recheck and waiter
+        // publication, matching Linux's locked message-queue wait contract.
+        unsafe { q.wait_send.prepare_to_wait_interruptible_with_deadline(deadline.unwrap_or(0)); }
         drop(g);
         // SAFETY: process ctx; runqueue installed; preempt-off.
         unsafe { sched::live::schedule(); }
@@ -131,8 +132,9 @@ pub fn sys_mq_timedreceive(args: &syscall::SyscallArgs) -> i64 {
         }
         if nonblock { drop(g); return errno(Errno::Eagain); }
         if let Some(rv) = mq_wait_verdict(deadline) { drop(g); return rv; }
-        // SAFETY: process ctx; runqueue installed; preempt-off; we yield via schedule() immediately after parking.
-        unsafe { q.wait_recv.park_interruptible_with_deadline(deadline.unwrap_or(0)); }
+        // SAFETY: the queue gate spans the empty/not-empty recheck and waiter
+        // publication, matching Linux's locked message-queue wait contract.
+        unsafe { q.wait_recv.prepare_to_wait_interruptible_with_deadline(deadline.unwrap_or(0)); }
         drop(g);
         // SAFETY: process ctx; runqueue installed; preempt-off.
         unsafe { sched::live::schedule(); }

@@ -146,15 +146,12 @@ fn wake_namespace_reaper() { REAPER_WAIT.wake_all(); }
 extern "C" fn namespace_reaper(_arg: usize) -> ! {
     loop {
         let _ = drain_final_drops_into(crate::global_stack());
-        // SAFETY: this dedicated kthread holds no subsystem lock while parking;
-        // the post-arm pending check closes publication before sleep.
-        unsafe { REAPER_WAIT.park(); }
-        if FINAL_DROP_PENDING.published_after_arm() {
-            REAPER_WAIT.cancel_current_park();
-            continue;
+        // SAFETY: final-drop publication is a pure predicate and its producer
+        // wakes REAPER_WAIT; this worker holds no subsystem lock while asleep.
+        unsafe {
+            sched::live::wait_event_uninterruptible(&REAPER_WAIT,
+                || FINAL_DROP_PENDING.published_after_arm());
         }
-        // SAFETY: the current reaper task was armed above and holds no lock.
-        unsafe { sched::live::schedule(); }
     }
 }
 

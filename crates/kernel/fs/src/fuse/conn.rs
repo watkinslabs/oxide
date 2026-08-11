@@ -50,6 +50,8 @@ fn copy_iov(bufs: &[&[u8]], mut skip: usize, mut out: &mut [u8]) -> bool {
 
 #[cfg(target_os = "oxide-kernel")]
 use sched::live::wait_list::WaitList;
+#[cfg(target_os = "oxide-kernel")]
+use sched::WaitOutcome;
 
 /// Hosted-test stand-in: the live `WaitList` only exists under the scheduler.
 /// Hosted unit tests exercise the codec + queue/slot state machine and NEVER the
@@ -400,37 +402,30 @@ impl FuseConn {
             if self.is_aborted() { return Err(vfs::VfsError::Enotconn); }
             #[cfg(target_os = "oxide-kernel")]
             {
-                if sched::live::deliverable_signals_self() != 0 {
+                // SAFETY: reply completion and abort use atomic predicates and
+                // wake this list; no resource lock is held across the sleep.
+                let outcome = unsafe {
+                    sched::live::wait_event_interruptible(&self.reply_wait,
+                        || slot.done.load(Ordering::Acquire) || self.is_aborted())
+                };
+                if outcome == WaitOutcome::Interrupted {
                     // Drop the slot so a late reply is ignored (Linux interrupt).
                     self.slots.lock().remove(&slot.unique);
-                    // The interruptible phase returns ERESTARTSYS.
-                    //
-                    // GAP: the contract then runs a second, killable phase
-                    // after setting FR_INTERRUPTED and queueing a FUSE
-                    // INTERRUPT request, so a non-fatal signal does not
-                    // abandon the request outright. This kernel aborts on the
-                    // first phase. Tracked in the plan; the return code is
-                    // correct either way.
                     return Err(vfs::VfsError::Erestartsys);
                 }
-                // SAFETY: running task; preempt-off; park marks Sleeping + bumps the Arc before schedule; a reply/abort wake will resume us.
-                unsafe { self.reply_wait.park(); }
-                // SAFETY: process ctx; runqueue installed; preempt-off; Sleeping so schedule won't re-enqueue until a reply/abort wake fires.
-                unsafe { sched::live::schedule::schedule(); }
             }
             #[cfg(not(target_os = "oxide-kernel"))]
             return Err(vfs::VfsError::Eagain);
         }
     }
 
-    /// Park the daemon's `read(/dev/fuse)` when no request is queued (live only).
-    /// # C: O(1) + park
+    /// Wait for the daemon's next request or channel abort (live only).
+    /// # C: O(N_wakeups)
     #[cfg(target_os = "oxide-kernel")]
-    pub fn park_daemon(&self) {
-        // SAFETY: running task; preempt-off; park marks Sleeping + bumps the Arc before schedule; an enqueue/abort wake will resume us.
-        unsafe { self.daemon_wait.park(); }
-        // SAFETY: process ctx; runqueue installed; preempt-off; Sleeping so schedule won't re-enqueue until an enqueue/abort wake fires.
-        unsafe { sched::live::schedule::schedule(); }
+    pub fn wait_daemon(&self) -> WaitOutcome {
+        // SAFETY: pending/abort is a pure predicate and both transitions wake
+        // daemon_wait; no lock that an enqueuer needs is held here.
+        unsafe { sched::live::wait_event_interruptible(&self.daemon_wait, || self.has_pending()) }
     }
 }
 

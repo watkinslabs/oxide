@@ -50,7 +50,7 @@ impl Batch {
                 // SAFETY: the completion path needs this state lock before it
                 // can wake us; publishing first and dropping it before
                 // schedule closes the completion-before-sleep race.
-                unsafe { self.waiters.park(); }
+                unsafe { self.waiters.prepare_to_wait(); }
                 drop(state);
                 // SAFETY: the wait list publishes this task before the state lock drops,
                 // and scheduling transfers execution until that published waiter wakes.

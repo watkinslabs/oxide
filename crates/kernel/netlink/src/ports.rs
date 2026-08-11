@@ -121,7 +121,7 @@ pub(crate) fn unicast_port(sender: &NetlinkSocket, destination_port_id: u32, byt
             settled => return settled,
         }
         if nonblock { return Unicast::Again; }
-        match wait_for_space(&target, deadline) {
+        match wait_for_space(&target, bytes.len(), deadline) {
             Some(verdict) => return verdict,
             None => continue,
         }
@@ -131,11 +131,19 @@ pub(crate) fn unicast_port(sender: &NetlinkSocket, destination_port_id: u32, byt
 /// Block until the destination drains, its send timeout expires, or a signal
 /// arrives. `None` means "try again". # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
-fn wait_for_space(target: &NetlinkSocket, deadline: u64) -> Option<Unicast> {
+fn wait_for_space(target: &NetlinkSocket, len: usize, deadline: u64) -> Option<Unicast> {
     if sched::live::deliverable_signals_self() != 0 { return Some(Unicast::Interrupted); }
-    // SAFETY: this syscall process parks itself on the destination socket's
-    // sender wait list and is removed from it before returning.
-    unsafe { target.space_waiters.park_interruptible_with_deadline(deadline); }
+    let queue = target.rx_queue.lock();
+    if crate::admission::attach_verdict(queue.bytes, len, target.base.rcvbuf_bytes(),
+        target.rx_congested.load(Ordering::Acquire))
+    {
+        return None;
+    }
+    // SAFETY: the destination queue gate spans admission recheck and waiter
+    // publication; drain updates that predicate under this same gate before
+    // waking blocked senders.
+    unsafe { target.space_waiters.prepare_to_wait_interruptible_with_deadline(deadline); }
+    drop(queue);
     // SAFETY: the running task is parked on that wait list.
     unsafe { sched::live::schedule::schedule(); }
     target.space_waiters.remove_current();
@@ -147,7 +155,7 @@ fn wait_for_space(target: &NetlinkSocket, deadline: u64) -> Option<Unicast> {
 /// A hosted build has no task to park, so a refused message reports the
 /// non-blocking answer. # C: O(1)
 #[cfg(not(target_os = "oxide-kernel"))]
-fn wait_for_space(_target: &NetlinkSocket, _deadline: u64) -> Option<Unicast> {
+fn wait_for_space(_target: &NetlinkSocket, _len: usize, _deadline: u64) -> Option<Unicast> {
     Some(Unicast::Again)
 }
 

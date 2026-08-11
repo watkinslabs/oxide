@@ -126,7 +126,7 @@ impl VsockSocket {
                         } else { tx.credit.peer_credit() > 0 };
                         if ready { continue; }
                         // SAFETY: process context owns this connection's wait registration.
-                        unsafe { c.waiters.park(); }
+                        unsafe { c.waiters.prepare_to_wait(); }
                         drop(tx);
                         // SAFETY: current task was parked on this connection's wait list.
                         unsafe { sched::live::schedule::schedule(); }

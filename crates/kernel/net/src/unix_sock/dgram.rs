@@ -415,7 +415,7 @@ impl UnixDgramQueue {
         if self.shutdown_generation() != generation { return ArmDgramRead::Shutdown; }
         // SAFETY: registration occurs under the message lock held by enqueue,
         // shutdown, and release before their wake publication.
-        unsafe { self.waiters.park_interruptible_with_deadline(deadline_ns); }
+        unsafe { self.waiters.prepare_to_wait_interruptible_with_deadline(deadline_ns); }
         drop(q);
         ArmDgramRead::Parked
     }
@@ -434,7 +434,7 @@ impl UnixDgramQueue {
         }
         // SAFETY: registration under the message lock the write-space wake takes
         // before publishing, so a concurrent release cannot miss this waiter.
-        unsafe { self.writers.park_interruptible_with_deadline(deadline_ns); }
+        unsafe { self.writers.prepare_to_wait_interruptible_with_deadline(deadline_ns); }
         ArmDgramWrite::Parked
     }
 
@@ -449,7 +449,7 @@ impl UnixDgramQueue {
         if self.queued_bytes().saturating_add(charge) <= cap { return ArmDgramWrite::Retry; }
         // SAFETY: registration occurs under the message lock held by receive
         // and terminal transitions before their writer wake publication.
-        unsafe { self.writers.park_interruptible_with_deadline(deadline_ns); }
+        unsafe { self.writers.prepare_to_wait_interruptible_with_deadline(deadline_ns); }
         ArmDgramWrite::Parked
     }
 

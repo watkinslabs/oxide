@@ -24,6 +24,8 @@ use vfs::{DirContext, FileOps, InodeBuilder, default_file_ops, default_inode_ops
 
 #[cfg(target_os = "oxide-kernel")]
 use sched::live::WaitList;
+#[cfg(target_os = "oxide-kernel")]
+use sched::WaitOutcome;
 
 #[cfg(not(target_os = "oxide-kernel"))]
 struct WaitList;
@@ -32,20 +34,7 @@ struct WaitList;
 impl WaitList {
     const fn new() -> Self { Self }
     fn wake_all(&self) {}
-    unsafe fn park(&self) { unreachable!("autofs wait under hosted"); }
 }
-
-#[cfg(target_os = "oxide-kernel")]
-fn deliverable_signals_self() -> u64 { sched::live::deliverable_signals_self() }
-
-#[cfg(not(target_os = "oxide-kernel"))]
-fn deliverable_signals_self() -> u64 { 0 }
-
-#[cfg(target_os = "oxide-kernel")]
-unsafe fn schedule_now() { unsafe { sched::live::schedule::schedule(); } }
-
-#[cfg(not(target_os = "oxide-kernel"))]
-unsafe fn schedule_now() { unreachable!("autofs schedule under hosted"); }
 
 pub const AUTOFS_SUPER_MAGIC: u64 = 0x0187;
 const AUTOFS_PROTO_VERSION: u32 = 5;
@@ -226,17 +215,23 @@ impl AutofsState {
                     return Err(VfsError::Enoent);
                 }
             }
-            if deliverable_signals_self() != 0 {
-                self.cancel_pending(token);
-                return Err(VfsError::Eintr);
+            #[cfg(target_os = "oxide-kernel")]
+            {
+                // SAFETY: completion is a predicate over the pending slot and
+                // the daemon wake targets this list; no slot lock is held here.
+                let outcome = unsafe {
+                    sched::live::wait_event_killable(&self.waiters, || {
+                        let p = self.pending.lock();
+                        p.as_ref().map(|v| v.token != token || v.done).unwrap_or(true)
+                    })
+                };
+                if outcome == WaitOutcome::Interrupted {
+                    self.cancel_pending(token);
+                    return Err(VfsError::Erestartsys);
+                }
             }
-            // SAFETY: process context holding no lock — the pipe and pending
-            // maps were released above — which is `park`'s contract; the token is
-            // already registered, so a wake cannot be missed between the two.
-            unsafe { self.waiters.park(); }
-            // SAFETY: parked on `self.waiters` holding no lock, which is
-            // `schedule`'s sleepable-context contract.
-            unsafe { schedule_now(); }
+            #[cfg(not(target_os = "oxide-kernel"))]
+            return Err(VfsError::Eagain);
         }
     }
 

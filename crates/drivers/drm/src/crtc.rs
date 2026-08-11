@@ -275,7 +275,7 @@ pub fn drain_events_blocking(card_id: u32, token: u64, buf: &mut [u8], nonblock:
             // Sleeping while the EVENTS lock is still held, so a racing
             // queue_flip_event's push+wake cannot land between the emptiness
             // check above and this enqueue.
-            unsafe { event_waiters(card_id).park(); }
+            unsafe { event_waiters(card_id).prepare_to_wait_interruptible(); }
         }
         drop(events);
         #[cfg(target_os = "oxide-kernel")]

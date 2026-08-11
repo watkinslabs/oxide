@@ -620,7 +620,7 @@ pub struct Task {
     pub restart_block: restart::RestartBlock,
 
     /// CLONE_VFORK rendezvous flag (mirrors Linux mm_struct::
-    /// vfork_done): parent busy-yields until child clears via
+    /// vfork_done): parent blocks until child clears it via
     /// execve/exit. Without this, parent + child race on the
     /// shared CLONE_VM address space.
     /// 0 = not vfork-tracked or already-cleared (default);

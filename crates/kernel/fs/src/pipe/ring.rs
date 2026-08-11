@@ -391,7 +391,7 @@ impl PipeData {
     #[cfg(target_os = "oxide-kernel")]
     pub unsafe fn arm_read_wait(&self) {
         // SAFETY: forwarded from this function's own contract — process context, preempt-off, caller schedules next.
-        unsafe { self.read_waiters.park(); }
+        unsafe { self.read_waiters.prepare_to_wait(); }
     }
 
     /// Bytes currently queued for `FIONREAD`. # C: O(1)
@@ -411,12 +411,17 @@ impl PipeData {
     #[cfg(target_os = "oxide-kernel")]
     pub fn wait_for_readers_gone(&self) {
         while self.readers.load(Ordering::Acquire) != 0 {
-            if sched::live::fatal_kill_pending_self() { return; }
-            // SAFETY: running task; preempt-off; park bumps the Arc and marks the task Sleeping before the recheck below.
-            unsafe { self.write_waiters.park(); }
-            if self.readers.load(Ordering::Acquire) == 0 { self.write_waiters.cancel_current_park(); }
-            // SAFETY: process ctx; runqueue installed; current is Sleeping until the last reader's close wakes the write side.
-            unsafe { sched::live::schedule::schedule(); }
+            // Linux's `wait_event_killable()` shape is sufficient here: the
+            // predicate is a standalone atomic reader count, so no resource
+            // gate needs to span observation and waiter publication.
+            // SAFETY: process context with a live runqueue; the helper owns
+            // enqueue, recheck, cancellation, and schedule.
+            if unsafe {
+                sched::live::wait_event_killable(&self.write_waiters,
+                    || self.readers.load(Ordering::Acquire) == 0)
+            } == sched::task::WaitOutcome::Interrupted {
+                return;
+            }
         }
     }
 }

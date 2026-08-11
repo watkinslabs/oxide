@@ -135,28 +135,32 @@ pub fn fill(p: &PipeData, src: &[u8]) -> usize {
 
 /// `ipipe_prep()` — make the INPUT pipe ready.
 ///
-/// Order matters and differs from the output side: a pending signal is checked
-/// FIRST (`-ERESTARTSYS`), then "all writers gone" is EOF (`Ok(false)`, which
+/// Order matters and differs from the output side: Linux checks an already
+/// pending signal before the first readiness probe, then "all writers gone" is EOF (`Ok(false)`, which
 /// the caller turns into a 0 return REGARDLESS of `SPLICE_F_NONBLOCK`), and
 /// only then does `SPLICE_F_NONBLOCK` produce `-EAGAIN`. Getting that order
 /// wrong turns a closed pipe into a spurious EAGAIN. `Ok(true)` = data queued.
 /// # C: O(1) + park
 pub fn ipipe_prep(p: &PipeData, nonblock: bool) -> KResult<bool> {
+    #[cfg(target_os = "oxide-kernel")]
+    if sched::live::deliverable_signals_self() != 0 { return Err(VfsError::Erestartsys); }
     loop {
         if queued(p) != 0 { return Ok(true); }
-        #[cfg(target_os = "oxide-kernel")]
-        if sched::live::deliverable_signals_self() != 0 { return Err(VfsError::Erestartsys); }
         if p.writers.load(Ordering::Acquire) == 0 { return Ok(false); } // EOF
         if nonblock { return Err(VfsError::Eagain); }
         #[cfg(target_os = "oxide-kernel")]
         {
-            // SAFETY: running task on this CPU; preempt-off; park bumps the Arc
-            // and marks the task Sleeping before schedule, and a writer's
-            // push+wake_all targets this same read_waiters list.
-            unsafe { p.read_waiters.park(); }
-            // SAFETY: process ctx; runqueue installed; current is Sleeping until
-            // a writer (or the last writer's close) wakes the read side.
-            unsafe { sched::live::schedule::schedule(); }
+            // Linux `wait_event_interruptible_exclusive(pipe->rd_wait,
+            // pipe_readable(pipe))`: neither atomically observable predicate
+            // needs the ring gate held across publication.
+            // SAFETY: process context with a live runqueue; the helper owns
+            // enqueue, recheck, cancellation, and schedule.
+            if unsafe {
+                sched::live::wait_event_interruptible(&p.read_waiters,
+                    || queued(p) != 0 || p.writers.load(Ordering::Acquire) == 0)
+            } == sched::task::WaitOutcome::Interrupted {
+                return Err(VfsError::Erestartsys);
+            }
         }
         #[cfg(not(target_os = "oxide-kernel"))]
         return Err(VfsError::Eagain);
@@ -181,12 +185,17 @@ pub fn opipe_prep(p: &PipeData, nonblock: bool) -> KResult<()> {
         if sched::live::deliverable_signals_self() != 0 { return Err(VfsError::Erestartsys); }
         #[cfg(target_os = "oxide-kernel")]
         {
-            // SAFETY: running task on this CPU; preempt-off; park enqueues on
-            // write_waiters before schedule, and a reader's drain wakes it.
-            unsafe { p.write_waiters.park(); }
-            // SAFETY: process ctx; runqueue installed; current Sleeping until a
-            // reader drains the ring or the last reader closes.
-            unsafe { sched::live::schedule::schedule(); }
+            // Linux `wait_event_interruptible_exclusive(pipe->wr_wait,
+            // pipe_writable(pipe))`: capacity and last-reader state are
+            // rechecked by the shared wait loop after waiter publication.
+            // SAFETY: process context with a live runqueue; the helper owns
+            // enqueue, recheck, cancellation, and schedule.
+            if unsafe {
+                sched::live::wait_event_interruptible(&p.write_waiters,
+                    || space(p) != 0 || p.readers.load(Ordering::Acquire) == 0)
+            } == sched::task::WaitOutcome::Interrupted {
+                return Err(VfsError::Erestartsys);
+            }
         }
         #[cfg(not(target_os = "oxide-kernel"))]
         return Err(VfsError::Eagain);

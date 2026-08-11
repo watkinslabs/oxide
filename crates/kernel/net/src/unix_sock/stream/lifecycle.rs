@@ -28,7 +28,7 @@ impl UnixPair {
         if g.buf.len() < cap { return ArmStreamWrite::Retry; }
         // SAFETY: writer registration occurs under the outgoing-ring lock also
         // held by receive-side capacity publication before waking writers.
-        unsafe { self.writer_waiters(end).park_interruptible_with_deadline(deadline_ns); }
+        unsafe { self.writer_waiters(end).prepare_to_wait_interruptible_with_deadline(deadline_ns); }
         drop(g);
         ArmStreamWrite::Parked
     }
@@ -58,7 +58,7 @@ impl UnixPair {
         if g.closed_writer || g.reader_shutdown { return ArmStreamRead::Eof; }
         // SAFETY: caller is a running syscall task; registration occurs under
         // the read-ring lock also taken by writers before their wake operation.
-        unsafe { self.reader_waiters(end).park_interruptible_with_deadline(deadline_ns); }
+        unsafe { self.reader_waiters(end).prepare_to_wait_interruptible_with_deadline(deadline_ns); }
         drop(g);
         ArmStreamRead::Parked
     }

@@ -79,15 +79,18 @@ impl FileOps for UffdFileOps {
             if let Some(r) = take_next(d, buf) { return r; }
             #[cfg(target_os = "oxide-kernel")]
             {
-                // A pending signal ends the wait so the read restarts rather
-                // than swallowing the signal.
-                if sched::live::deliverable_signals_self() != 0 {
+                // SAFETY: queue non-emptiness is a pure predicate under the
+                // state lock, which is released before this generic wait sleeps.
+                let outcome = unsafe {
+                    sched::live::wait_event_interruptible(&d.read_waiters, || {
+                        let g = d.state.lock();
+                        policy::next_message(!g.faults.is_empty(), !g.events.is_empty())
+                            != policy::NextMessage::None
+                    })
+                };
+                if outcome == sched::WaitOutcome::Interrupted {
                     return Err(vfs::VfsError::Erestartsys);
                 }
-                // SAFETY: running task; preempt-off; park marks Sleeping + bumps the Arc before we schedule, and a fault enqueue will wake read_waiters.
-                unsafe { d.read_waiters.park(); }
-                // SAFETY: process ctx; runqueue installed; preempt-off; current Sleeping so schedule won't re-enqueue until a fault wake fires.
-                unsafe { sched::live::schedule::schedule(); }
             }
             #[cfg(not(target_os = "oxide-kernel"))]
             return Err(vfs::VfsError::Eagain);
@@ -250,15 +253,13 @@ impl vmm::UffdContext for UfData {
         self.read_waiters.wake_all();
         self.poll.notify();
         #[cfg(target_os = "oxide-kernel")]
-        loop {
-            if self.wake_gen.load(Ordering::Acquire) != start_gen { break; }
-            // A deliverable (e.g. fatal) signal breaks the wait — return so the
-            // fault path retries and the signal is delivered to userspace.
-            if sched::live::deliverable_signals_self() != 0 { break; }
-            // SAFETY: running (faulting) task; preempt-off; park marks Sleeping + bumps the Arc before schedule, and a resolve will wake fault_waiters.
-            unsafe { self.fault_waiters.park(); }
-            // SAFETY: fault ctx entered from user mode with a saved frame; runqueue installed; preempt-off; current Sleeping so schedule won't re-enqueue until a resolve wake fires.
-            unsafe { sched::live::schedule::schedule(); }
+        {
+            // SAFETY: wake generation is a pure atomic predicate and resolve
+            // wakes fault_waiters; no userfault state lock crosses the sleep.
+            let _ = unsafe {
+                sched::live::wait_event_interruptible(&self.fault_waiters,
+                    || self.wake_gen.load(Ordering::Acquire) != start_gen)
+            };
         }
         // Silence unused-var warning on hosted (no loop reads start_gen).
         let _ = start_gen;

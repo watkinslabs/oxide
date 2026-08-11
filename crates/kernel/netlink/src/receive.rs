@@ -291,7 +291,7 @@ impl NetlinkSocket {
             trace_rx(b"wait-arm", 0);
             // SAFETY: syscall process context owns the running task; RX lock
             // prevents queue/error publication between recheck and registration.
-            unsafe { self.waiters.park_interruptible_with_deadline(0); }
+            unsafe { self.waiters.prepare_to_wait_interruptible(); }
         })
     }
 

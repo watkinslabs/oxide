@@ -352,7 +352,7 @@ impl TcpListenEntry {
         self.arm_accept_wait_with(|| {
             // SAFETY: queue lock serializes child and close publication with
             // wait registration; both publishers wake after dropping it.
-            unsafe { self.accept_waiters.park_interruptible_with_deadline(deadline_ns); }
+            unsafe { self.accept_waiters.prepare_to_wait_interruptible_with_deadline(deadline_ns); }
         })
     }
 

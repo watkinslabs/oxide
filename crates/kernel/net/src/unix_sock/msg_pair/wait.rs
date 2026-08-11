@@ -56,7 +56,7 @@ impl UnixMsgPair {
         }
         // SAFETY: registration occurs under the queue lock also acquired by
         // send, shutdown, and release before their wake publication.
-        unsafe { self.reader_waiters(end).park_interruptible_with_deadline(deadline_ns); }
+        unsafe { self.reader_waiters(end).prepare_to_wait_interruptible_with_deadline(deadline_ns); }
         drop(g);
         ArmMsgReadAfter::Parked
     }
@@ -73,7 +73,7 @@ impl UnixMsgPair {
         let reader_shutdown = g.reader_shutdown;
         // SAFETY: registration occurs under the queue lock also acquired by
         // send, shutdown, and release before their wake publication.
-        unsafe { self.reader_waiters(end).park_interruptible_with_deadline(deadline_ns); }
+        unsafe { self.reader_waiters(end).prepare_to_wait_interruptible_with_deadline(deadline_ns); }
         drop(g);
         ArmMsgRead::Parked { reader_shutdown }
     }
@@ -90,7 +90,7 @@ impl UnixMsgPair {
         if g.bytes.saturating_add(charge) <= cap { return ArmMsgWrite::Retry; }
         // SAFETY: registration occurs under the queue lock also acquired by
         // receive, shutdown, and release before writer wake publication.
-        unsafe { self.writer_waiters(end).park_interruptible_with_deadline(deadline_ns); }
+        unsafe { self.writer_waiters(end).prepare_to_wait_interruptible_with_deadline(deadline_ns); }
         drop(g);
         ArmMsgWrite::Parked
     }
