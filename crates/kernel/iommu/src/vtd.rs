@@ -1,4 +1,4 @@
-use firmware::acpi::{DmarScope, IommuUnit, dmar_scope, dmar_scope_count, iommu_unit, iommu_unit_count};
+use firmware::acpi::{DMAR_RMRR_SCOPE_UNIT, DmarScope, IommuUnit, dmar_scope, dmar_scope_count, iommu_unit, iommu_unit_count};
 use pci::{Bdf, ConfigSpaceReader, PciDevice, bridge_buses};
 
 const DMAR_SCOPE_ENDPOINT: u8 = 1;
@@ -60,6 +60,7 @@ pub fn intel_vtd_unit_for_bdf<R: ConfigSpaceReader>(r: &R, bdf: Bdf) -> Option<I
     let mut found = None;
     for index in 0..dmar_scope_count() {
         let scope = dmar_scope(index)?;
+        if scope.unit_index == DMAR_RMRR_SCOPE_UNIT { continue; }
         let unit = iommu_unit(scope.unit_index as usize)?;
         if !scope_matches(r, bdf, scope, unit) { continue; }
         if found.is_some_and(|old: IommuUnit| old != unit) { return None; }
