@@ -97,6 +97,21 @@ impl AddressDeviceDma {
         dma.ring.clean_to_device();
         mmio.ring_endpoint_doorbell(slot, endpoint_id).then_some(pa).inspect(|pending| dma.pending = *pending)
     }
+    /// The exact TRB currently owned by the controller for HID input. # C: O(1)
+    pub fn hid_pending(&self) -> Option<u64> { self.hid_ring.as_ref().and_then(|dma| (dma.pending != 0).then_some(dma.pending)) }
+    /// Consume exactly one successful HID report after its matching Transfer Event. # C: O(report bytes)
+    pub fn take_hid_report(&mut self, completion: crate::ring::TransferCompletion) -> Option<Vec<u8>> {
+        let hid = self._hid?;
+        let endpoint_id = (hid.endpoint & 0x0f).checked_mul(2)?.checked_add(1)?;
+        let dma = self.hid_ring.as_mut()?;
+        if completion.trb_pa != dma.pending || completion.completion_code != crate::ring::COMPLETION_SUCCESS || completion.endpoint_id != endpoint_id || completion.residual > u32::from(hid.max_packet) { return None; }
+        dma.pending = 0;
+        dma.report.invalidate_from_device();
+        let length = usize::from(hid.max_packet) - completion.residual as usize;
+        let mut report = Vec::with_capacity(length);
+        for offset in 0..length { report.push(dma.report.read8(offset as u64)?); }
+        Some(report)
+    }
     /// Rebuild the input context from controller output for Linux's EP0 MPS update. # C: O(1)
     pub fn prepare_evaluate_ep0(&self, max_packet: u8) -> Option<bool> {
         let stride = self.context_bytes as u64;
