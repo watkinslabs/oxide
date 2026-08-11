@@ -136,10 +136,11 @@ impl AmdViTables {
         let words = dte.words();
         // SAFETY: caller holds the disabled unit's exclusive device table before hardware can consume this DTE.
         unsafe {
-            core::ptr::write_volatile(base as *mut u64, words[0]);
-            core::ptr::write_volatile((base + 8) as *mut u64, words[1]);
             core::ptr::write_volatile((base + 16) as *mut u64, words[2]);
             core::ptr::write_volatile((base + 24) as *mut u64, words[3]);
+            core::ptr::write_volatile((base + 8) as *mut u64, words[1]);
+            core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+            core::ptr::write_volatile(base as *mut u64, words[0]);
         }
         core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
     }
