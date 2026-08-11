@@ -308,6 +308,7 @@ dependencies = [
  "mmio-map",
  "net",
  "pci",
+ "pci-irq",
  "pmm",
  "sched",
  "softirq",
@@ -1346,6 +1347,16 @@ dependencies = [
  "softirq",
  "sync",
  "virtio",
+]
+
+[[package]]
+name = "pci-irq"
+version = "0.1.0"
+dependencies = [
+ "arch-irq",
+ "hal-aarch64",
+ "hal-x86_64",
+ "pci",
 ]
 
 [[package]]

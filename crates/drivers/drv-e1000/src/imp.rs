@@ -1,9 +1,6 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::ptr::{read_volatile, write_volatile};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
-#[cfg(target_arch = "x86_64")]
-use pci::ConfigSpaceReader;
 use sync::{Spinlock, TaskList as DriverLockClass};
 
 use crate::regs;
@@ -19,10 +16,6 @@ const ENDPOINT_SETUP: u8 = 1;
 const ENDPOINT_ACTIVE: u8 = 2;
 #[cfg_attr(target_arch = "aarch64", allow(dead_code))]
 const ENDPOINT_HANDLING: u8 = 3;
-#[cfg(target_arch = "x86_64")]
-const PCI_RID_BUS_SHIFT: u32 = 8;
-#[cfg(target_arch = "x86_64")]
-const PCI_RID_DEVICE_SHIFT: u32 = 3;
 
 struct Endpoint { state: AtomicU8, mmio: AtomicU64, in_handler: AtomicU32 }
 impl Endpoint {
@@ -303,74 +296,15 @@ fn bind_intx(line: u32, endpoint: usize) -> Option<(u32, u32)> {
     Some((vector as u32, pin))
 }
 
-#[cfg(target_arch = "x86_64")]
-fn requester_id(bdf: pci::Bdf) -> u32 {
-    ((bdf.bus as u32) << PCI_RID_BUS_SHIFT)
-        | ((bdf.device as u32) << PCI_RID_DEVICE_SHIFT)
-        | bdf.function as u32
-}
-
-#[cfg(target_arch = "x86_64")]
 fn hard_msi() { let _ = hard_irq(); }
 
-#[cfg(target_arch = "x86_64")]
-fn bind_msi(bdf: pci::Bdf, endpoint: usize) -> Option<(u32, u8, u16)> {
-    let r = hal_x86_64::pci::EcamPci::from_published()?;
-    let cap_off = pci::capabilities(&r, bdf).find(pci::CAP_ID_MSI)?.cfg_off;
-    let message = arch_irq::alloc_pci_msi(requester_id(bdf), 0)?;
-    if !arch_irq::register_pci_msi_handler(message.irq, arch_irq::DeviceAction::E1000, hard_msi) {
-        arch_irq::free_pci_msi(message.irq);
-        return None;
-    }
-    let intx_previous = pci::set_intx_disabled(&r, bdf, true);
-    if !pci::program_msi_single(&r, bdf, cap_off, message.address, message.data) {
-        let _ = pci::restore_intx_disabled(&r, bdf, intx_previous);
-        arch_irq::free_pci_msi(message.irq);
-        return None;
-    }
+fn bind_pci_message(bdf: pci::Bdf, endpoint: usize, ctrl: &Controller) -> Option<pci_irq::Binding> {
+    let binding = pci_irq::request(bdf, pci_irq::BarMapping {
+        bar: 0, base_va: ctrl.mmio.base_va(), bytes: ctrl.mmio.bytes(), offset: 0,
+    }, arch_irq::DeviceAction::E1000, hard_msi)?;
     ENDPOINTS[endpoint].state.store(ENDPOINT_ACTIVE, Ordering::Release);
-    Some((message.irq, cap_off, intx_previous))
+    Some(binding)
 }
-
-#[cfg(target_arch = "x86_64")]
-fn bind_msix(bdf: pci::Bdf, endpoint: usize, ctrl: &Controller) -> Option<(u32, u8, u64, u16)> {
-    let r = hal_x86_64::pci::EcamPci::from_published()?;
-    let caps = pci::capabilities(&r, bdf);
-    let cap_off = caps.find(pci::CAP_ID_MSIX)?.cfg_off;
-    let cap = pci::decode_msix_cap(&r, bdf, cap_off)?;
-    if cap.table_bir != 0 { return None; }
-    let entry = pci::msix_table_entry_offset(cap, 0)?;
-    if entry.checked_add(pci::MSIX_TABLE_ENTRY_BYTES)? > ctrl.mmio.bytes() { return None; }
-    let entry_va = ctrl.mmio.base_va().checked_add(entry)?;
-    let message = arch_irq::alloc_pci_msi(requester_id(bdf), 0)?;
-    if !arch_irq::register_pci_msi_handler(message.irq, arch_irq::DeviceAction::E1000, hard_msi) { arch_irq::free_pci_msi(message.irq); return None; }
-    let intx_previous = pci::set_intx_disabled(&r, bdf, true);
-    if let Some(msi) = caps.find(pci::CAP_ID_MSI) { let _ = pci::disable_msi(&r, bdf, msi.cfg_off); }
-    let cfg = cap_off & 0xfc;
-    r.write32(bdf, cfg, pci::msix_control_enable_masked(r.read32(bdf, cfg)));
-    let _ = r.read32(bdf, cfg);
-    // SAFETY: entry VA is a checked vector-zero MSI-X entry inside the controller-owned complete BAR0 mapping.
-    unsafe {
-        write_volatile((entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *mut u32, pci::MSIX_VECTOR_CONTROL_MASKED);
-        let _ = read_volatile((entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *const u32);
-        write_volatile((entry_va + pci::MSIX_MESSAGE_ADDR_LOW_OFF) as *mut u32, message.address as u32);
-        write_volatile((entry_va + pci::MSIX_MESSAGE_ADDR_HIGH_OFF) as *mut u32, (message.address >> 32) as u32);
-        write_volatile((entry_va + pci::MSIX_MESSAGE_DATA_OFF) as *mut u32, message.data);
-        let _ = read_volatile((entry_va + pci::MSIX_MESSAGE_DATA_OFF) as *const u32);
-        write_volatile((entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *mut u32, 0);
-        let _ = read_volatile((entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *const u32);
-    }
-    r.write32(bdf, cfg, pci::msix_control_value(r.read32(bdf, cfg), true));
-    let _ = r.read32(bdf, cfg);
-    ENDPOINTS[endpoint].state.store(ENDPOINT_ACTIVE, Ordering::Release);
-    Some((message.irq, cap_off, entry_va, intx_previous))
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-fn bind_msix(_bdf: pci::Bdf, _endpoint: usize, _ctrl: &Controller) -> Option<(u32, u8, u64, u16)> { None }
-
-#[cfg(not(target_arch = "x86_64"))]
-fn bind_msi(_bdf: pci::Bdf, _endpoint: usize) -> Option<(u32, u8, u16)> { None }
 
 #[cfg(not(all(target_arch = "x86_64", target_os = "oxide-kernel")))]
 fn bind_intx(_line: u32, _endpoint: usize) -> Option<(u32, u32)> { None }
@@ -390,8 +324,7 @@ fn disable_intx(vector: u32, pin: u32, endpoint: usize) {
 
 enum IrqBinding {
     Intx { vector: u32, pin: u32 },
-    Msi { irq: u32, cap_off: u8, intx_previous: u16 },
-    Msix { irq: u32, cap_off: u8, entry_va: u64, intx_previous: u16 },
+    Pci(pci_irq::Binding),
 }
 struct Record { bdf: pci::Bdf, command_orig: u16, endpoint: usize, irq: IrqBinding, dev: Arc<E1000NetDev> }
 static DEVICES: Spinlock<Vec<Record>, DriverLockClass> = Spinlock::new(Vec::new());
@@ -434,37 +367,13 @@ fn hard_intx(_line: u32) -> arch_irq::IrqReport {
     else { arch_irq::IrqReport::hard(arch_irq::IrqRet::NotMine) }
 }
 
-fn disable_msi(bdf: pci::Bdf, cap_off: u8, intx_previous: u16) {
-    #[cfg(target_arch = "x86_64")]
-    if let Some(r) = hal_x86_64::pci::EcamPci::from_published() {
-        let _ = pci::disable_msi(&r, bdf, cap_off);
-        let _ = pci::restore_intx_disabled(&r, bdf, intx_previous);
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    let _ = (bdf, cap_off, intx_previous);
-}
-
-fn release_irq(bdf: pci::Bdf, irq: IrqBinding, endpoint: usize) {
+fn release_irq(irq: IrqBinding, endpoint: usize) {
     match irq {
         IrqBinding::Intx { vector, pin } => disable_intx(vector, pin, endpoint),
-        IrqBinding::Msi { irq, cap_off, intx_previous } => {
-            disable_msi(bdf, cap_off, intx_previous);
+        IrqBinding::Pci(binding) => {
             while ENDPOINTS[endpoint].in_handler.load(Ordering::Acquire) != 0 { core::hint::spin_loop(); }
             endpoint_release(endpoint);
-            arch_irq::free_pci_msi(irq);
-        }
-        IrqBinding::Msix { irq, cap_off, entry_va, intx_previous } => {
-            #[cfg(target_arch = "x86_64")]
-            if let Some(r) = hal_x86_64::pci::EcamPci::from_published() {
-                // SAFETY: the controller mapping remains owned through IRQ teardown.
-                unsafe { write_volatile((entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *mut u32, pci::MSIX_VECTOR_CONTROL_MASKED); let _ = read_volatile((entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *const u32); }
-                let cfg = cap_off & 0xfc;
-                r.write32(bdf, cfg, pci::msix_control_value(r.read32(bdf, cfg), false));
-                let _ = pci::restore_intx_disabled(&r, bdf, intx_previous);
-            }
-            while ENDPOINTS[endpoint].in_handler.load(Ordering::Acquire) != 0 { core::hint::spin_loop(); }
-            endpoint_release(endpoint);
-            arch_irq::free_pci_msi(irq);
+            binding.release();
         }
     }
 }
@@ -507,7 +416,7 @@ fn remove_bdf(bdf: pci::Bdf) {
     let iface = record.dev.iface.swap(0, Ordering::AcqRel);
     if iface != 0 { let _ = net::sock::stack().unregister_iface_current(net::NetIfaceId::from_raw(iface as u32)); }
     record.dev.ctrl.lock_bh::<sched::bh::SchedBh>().stop();
-    release_irq(record.bdf, record.irq, record.endpoint);
+    release_irq(record.irq, record.endpoint);
     record.dev.ctrl.lock_bh::<sched::bh::SchedBh>().free();
     restore_bus_master(record.bdf, record.command_orig);
     if DEVICES.lock_bh::<sched::bh::SchedBh>().is_empty() && POLL_INSTALLED.swap(false, Ordering::AcqRel) {
@@ -538,8 +447,7 @@ impl drv::Driver for E1000Driver {
         let endpoint = match endpoint_claim(controller.mmio.base_va()) { Some(endpoint) => endpoint, None => { let mut controller = controller; controller.free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); } };
         let line = parent.pci.map(|p| p.interrupt_line).filter(|line| *line != 0);
         let irq = if parent.msi_allowed() {
-            bind_msix(bdf, endpoint, &controller).map(|(irq, cap_off, entry_va, intx_previous)| IrqBinding::Msix { irq, cap_off, entry_va, intx_previous })
-                .or_else(|| bind_msi(bdf, endpoint).map(|(irq, cap_off, intx_previous)| IrqBinding::Msi { irq, cap_off, intx_previous }))
+            bind_pci_message(bdf, endpoint, &controller).map(IrqBinding::Pci)
         } else { None }.or_else(|| line.and_then(|line| bind_intx(line, endpoint)
             .map(|(vector, pin)| IrqBinding::Intx { vector, pin })));
         let irq = match irq { Some(irq) => irq, None => { endpoint_release(endpoint); let mut controller = controller; controller.free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); } };
@@ -553,14 +461,14 @@ impl drv::Driver for E1000Driver {
         let namespace = net::net_ns::initial_namespace();
         let owner = dev.clone() as Arc<dyn net::NetDev>;
         let Some(reg) = stack.prepare_parented_iface(owner, parent.clone(), &namespace) else {
-            release_irq(bdf, irq, endpoint); dev.ctrl.lock_bh::<sched::bh::SchedBh>().free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed);
+            release_irq(irq, endpoint); dev.ctrl.lock_bh::<sched::bh::SchedBh>().free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed);
         };
         dev.iface.store(reg.id().raw() as u64, Ordering::Release); dev.generation.store(reg.generation(), Ordering::Release);
         if !stack.publish_iface(reg) {
-            dev.iface.store(0, Ordering::Release); release_irq(bdf, irq, endpoint); dev.ctrl.lock_bh::<sched::bh::SchedBh>().free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed);
+            dev.iface.store(0, Ordering::Release); release_irq(irq, endpoint); dev.ctrl.lock_bh::<sched::bh::SchedBh>().free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed);
         }
         if !POLL_INSTALLED.swap(true, Ordering::AcqRel) && !net::backlog::register_poll(poll_rx) {
-            POLL_INSTALLED.store(false, Ordering::Release); let _ = stack.unregister_iface_current(net::NetIfaceId::from_raw(dev.iface.swap(0, Ordering::AcqRel) as u32)); release_irq(bdf, irq, endpoint); dev.ctrl.lock_bh::<sched::bh::SchedBh>().free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed);
+            POLL_INSTALLED.store(false, Ordering::Release); let _ = stack.unregister_iface_current(net::NetIfaceId::from_raw(dev.iface.swap(0, Ordering::AcqRel) as u32)); release_irq(irq, endpoint); dev.ctrl.lock_bh::<sched::bh::SchedBh>().free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed);
         }
         DEVICES.lock_bh::<sched::bh::SchedBh>().push(Record { bdf, command_orig, endpoint, irq, dev: dev.clone() });
         // `register_netdev` leaves IFF_UP clear. The NetDev lifecycle hook
