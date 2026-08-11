@@ -1,9 +1,13 @@
-// Module manifest: types owns Linux C layout, maps owns iomap state, registry bridges Linux PCI drivers to the Rust driver model, core owns exported PCI facade, vectors owns IRQ vector allocation, pm owns PCI power management.
+// Module manifest: types owns Linux C layout, maps owns iomap state, registry bridges Linux PCI drivers to the Rust driver model, core owns exported PCI facade, regions owns BAR ownership, pcie owns PCIe capability access, vectors owns IRQ vector allocation, pm owns PCI power management.
 
 mod core;
+mod config;
 mod maps;
 mod pm;
+mod pcie;
 mod registry;
+mod regions;
+mod status;
 mod types;
 mod vectors;
 
@@ -16,5 +20,7 @@ pub(crate) fn sync_dma_masks(dev: *mut crate::linux_dma::LinuxDevice, streaming:
 /// # C: O(1)
 pub fn export_symbols() {
     core::export_symbols();
+    pcie::export_symbols();
     pm::export_symbols();
+    status::export_symbols();
 }

@@ -1,4 +1,5 @@
 use super::*;
+use super::super::config::{pci_read_config_byte, pci_read_config_dword, pci_read_config_word, pci_write_config_byte, pci_write_config_dword};
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
@@ -29,11 +30,17 @@ const TEST_CFG_LOW_BYTE: u8 = 0x78;
 const TEST_CFG_HIGH_WORD: u16 = 0x1234;
 const TEST_CFG_PATCH_BYTE: u8 = 0xab;
 const TEST_CFG_PATCHED_DWORD: u32 = 0x1234_ab78;
+const TEST_PCI_STATUS_ERRORS: u16 = 0xf900;
 const TEST_DEVFN: u8 = (TEST_SLOT << PCI_DEVFN_DEV_SHIFT) | TEST_FUNC;
 const TEST_MODEL_CLASS: u32 = 0x010802;
 const TEST_MODEL_DRIVER_DATA: usize = 0xfeed_beef;
 const TEST_STREAMING_DMA_MASK: u64 = (1u64 << 48) - 1;
 const TEST_COHERENT_DMA_MASK: u64 = (1u64 << 40) - 1;
+const TEST_PCI_STATUS_CAP_LIST: u32 = 1 << 20;
+const TEST_PCIE_CAP: usize = 0x40 / 4;
+const TEST_PCIE_CAP_POINTER: usize = 0x34 / 4;
+const TEST_PCIE_DEVCTL: usize = 0x48 / 4;
+const TEST_PCIE_READRQ_512: u16 = 0x2000;
 
 static MODEL_PROBES: AtomicUsize = AtomicUsize::new(0);
 static MODEL_REMOVES: AtomicUsize = AtomicUsize::new(0);
@@ -154,6 +161,33 @@ fn register_resources_iomap_and_irq_vectors() {
 }
 
 #[test]
+fn pcim_iomap_region_releases_mapping_and_claim_with_devres() {
+    let _modules = crate::test_serial::claim();
+    let mut dev = test_dev();
+    let mut contender = test_dev();
+    let ptr = pcim_iomap_region(&mut dev, TEST_BAR, c"test".as_ptr());
+    assert!(!ptr.is_null());
+    assert_eq!(pci_request_region(&mut contender, TEST_BAR, c"test".as_ptr()), -LINUX_EBUSY);
+    crate::linux_device::devres::release_device(&mut dev.dev);
+    assert_eq!(pci_request_region(&mut contender, TEST_BAR, c"test".as_ptr()), LINUX_OK);
+    pci_release_region(&mut contender, TEST_BAR);
+}
+
+#[test]
+fn selected_regions_use_the_linux_bar_mask_and_roll_back_on_conflict() {
+    let _modules = crate::test_serial::claim();
+    let mut first = test_dev();
+    let mut second = test_dev();
+    let mask = super::regions::pci_select_bars(&mut first, pci::IORESOURCE_MEM);
+    assert_eq!(mask, 1 << TEST_BAR_IDX);
+    assert_eq!(super::regions::pci_request_selected_regions(&mut first, mask, c"first".as_ptr()), LINUX_OK);
+    assert_eq!(super::regions::pci_request_selected_regions(&mut second, mask, c"second".as_ptr()), -LINUX_EBUSY);
+    super::regions::pci_release_selected_regions(&mut first, mask);
+    assert_eq!(super::regions::pci_request_selected_regions(&mut second, mask, c"second".as_ptr()), LINUX_OK);
+    super::regions::pci_release_selected_regions(&mut second, mask);
+}
+
+#[test]
 fn msi_irq_vectors_allocate_and_free_arch_vectors() {
     let _modules = crate::test_serial::claim();
     let mut dev = test_dev();
@@ -190,6 +224,39 @@ fn config_helpers_update_fallback_config_space() {
     assert_eq!(pci_read_config_dword(&mut dev, TEST_CFG_DWORD_OFF, &mut d), LINUX_OK);
     assert_eq!(d, TEST_CFG_PATCHED_DWORD);
     assert!(cstr_eq(pci_name(&dev), b"0000:02:03.1"));
+}
+
+#[test]
+fn pci_status_returns_and_clears_only_error_bits() {
+    let _modules = crate::test_serial::claim();
+    let mut dev = test_dev();
+    dev.config_space[1] = (TEST_PCI_STATUS_ERRORS as u32) << 16 | TEST_PCI_STATUS_CAP_LIST;
+    assert_eq!(super::super::status::pci_status_get_and_clear_errors(&mut dev), TEST_PCI_STATUS_ERRORS as i32);
+    assert_eq!(dev.config_space[1] >> 16, TEST_PCI_STATUS_CAP_LIST >> 16);
+}
+
+#[test]
+fn pci_presence_rejects_the_no_device_vendor_id() {
+    let _modules = crate::test_serial::claim();
+    let mut dev = test_dev();
+    assert!(super::super::config::pci_device_is_present(&mut dev));
+    dev.config_space[0] = u32::MAX;
+    assert!(!super::super::config::pci_device_is_present(&mut dev));
+    assert!(!super::super::config::pci_device_is_present(core::ptr::null_mut()));
+}
+
+#[test]
+fn pcie_readrq_updates_only_the_express_device_control_field() {
+    let _modules = crate::test_serial::claim();
+    let mut dev = test_dev();
+    dev.config_space[1] = TEST_PCI_STATUS_CAP_LIST;
+    dev.config_space[TEST_PCIE_CAP_POINTER] = 0x40;
+    dev.config_space[TEST_PCIE_CAP] = 0x10;
+    dev.config_space[TEST_PCIE_DEVCTL] = 0x05aa;
+    assert_eq!(super::super::pcie::pcie_set_readrq(&mut dev, 512), LINUX_OK);
+    assert_eq!(dev.config_space[TEST_PCIE_DEVCTL], 0x05aa | TEST_PCIE_READRQ_512 as u32);
+    assert_eq!(super::super::pcie::pcie_set_readrq(&mut dev, 192), -LINUX_EINVAL);
+    assert_eq!(dev.config_space[TEST_PCIE_DEVCTL], 0x05aa | TEST_PCIE_READRQ_512 as u32);
 }
 
 #[test]
@@ -245,11 +312,12 @@ fn pci_driver_registration_binds_existing_model_device() {
 #[test]
 fn export_symbols_registers_pci_surface() {
     let _modules = crate::test_serial::claim();
-    export_symbols();
+    super::super::export_symbols();
     for name in [
         "__pci_register_driver", "pci_register_driver", "pci_enable_device", "pci_resource_start",
-        "pci_request_region", "pci_iomap", "pci_alloc_irq_vectors",
-        "pci_read_config_dword", "pci_write_config_dword",
+        "pci_request_region", "pci_iomap", "pcim_iomap_region", "pci_alloc_irq_vectors",
+        "pci_read_config_dword", "pci_write_config_dword", "pci_device_is_present",
+        "pci_status_get_and_clear_errors",
     ] {
         assert!(crate::symtab::is_exported(name));
     }

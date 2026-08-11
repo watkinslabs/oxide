@@ -22,6 +22,7 @@ softirq = { path = "../softirq" }
 net     = { path = "../net" }
 netlink = { path = "../netlink" }
 firmware = { path = "../firmware" }
+iommu = { path = "../iommu" }
 drv-virtio-net   = { path = "../../drivers/drv-virtio-net" }
 drv-virtio-blk   = { path = "../../drivers/drv-virtio-blk" }
 drv-virtio-gpu   = { path = "../../drivers/drv-virtio-gpu" }

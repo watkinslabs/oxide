@@ -1256,6 +1256,9 @@ static int __init sample_init(void)
     (void)misc_deregister(&misc);
     (void)pci_register_driver(&pdrv);
     (void)pci_enable_device(&pdev);
+    (void)pci_status_get_and_clear_errors(&pdev);
+    (void)pci_device_is_present(&pdev);
+    (void)pcim_iomap_region(&pdev, SAMPLE_PCI_BAR, "sample");
     pci_set_master(&pdev);
     pci_clear_master(&pdev);
     pci_set_drvdata(&pdev, &s);
@@ -1266,6 +1269,11 @@ static int __init sample_init(void)
     (void)pci_resource_flags(&pdev, SAMPLE_PCI_BAR);
     (void)pci_resource_len(&pdev, SAMPLE_PCI_BAR);
     (void)pci_request_region(&pdev, SAMPLE_PCI_BAR, "sample");
+    (void)pci_select_bars(&pdev, IORESOURCE_MEM);
+    (void)pci_request_selected_regions(&pdev, 1 << SAMPLE_PCI_BAR, "sample");
+    pci_release_selected_regions(&pdev, 1 << SAMPLE_PCI_BAR);
+    (void)pcie_capability_clear_and_set_word_locked(&pdev, 0x08, 0x7000, 0x1000);
+    (void)pcie_set_readrq(&pdev, 512);
     regs = pci_iomap(&pdev, SAMPLE_PCI_BAR, SAMPLE_MMIO_SIZE);
     pci_iounmap(&pdev, regs);
     pci_release_region(&pdev, SAMPLE_PCI_BAR);
@@ -1343,9 +1351,13 @@ static int __init sample_init(void)
     platform_driver_unregister(&pldrv);
     (void)dma_set_mask_and_coherent(&dev, DMA_BIT_MASK(DMA_ULL_BITS));
     coherent = dma_alloc_coherent(&dev, SAMPLE_DMA_SIZE, &dma, GFP_KERNEL);
+    coherent = dmam_alloc_coherent(&dev, SAMPLE_DMA_SIZE, &dma, GFP_KERNEL);
+    (void)dmam_alloc_attrs(&dev, SAMPLE_DMA_SIZE, &dma, GFP_KERNEL, 0);
     (void)dma_mapping_error(&dev, dma);
     dma_sync_single_for_device(&dev, dma, SAMPLE_DMA_SIZE, DMA_TO_DEVICE);
     dma_sync_single_for_cpu(&dev, dma, SAMPLE_DMA_SIZE, DMA_FROM_DEVICE);
+    __dma_sync_single_for_device(&dev, dma, SAMPLE_DMA_SIZE, DMA_TO_DEVICE);
+    __dma_sync_single_for_cpu(&dev, dma, SAMPLE_DMA_SIZE, DMA_FROM_DEVICE);
     dma_free_coherent(&dev, SAMPLE_DMA_SIZE, coherent, dma);
     dma = dma_map_single(&dev, dma_buf, sizeof(dma_buf), DMA_BIDIRECTIONAL);
     dma_unmap_single(&dev, dma, sizeof(dma_buf), DMA_BIDIRECTIONAL);

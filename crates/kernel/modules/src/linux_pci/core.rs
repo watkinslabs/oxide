@@ -1,31 +1,14 @@
 use super::types::*;
-use super::registry;
+use super::config::{bdf, read32 as read_config32, write32 as write_config32};
+use super::regions;
+use crate::linux_device::devres;
 use core::ffi::{c_char, c_void};
 use core::ptr::null_mut;
 use pci::{
-    Bdf, COMMAND_BUS_MASTER, COMMAND_IO, COMMAND_MEMORY, IORESOURCE_IO, IORESOURCE_MEM,
+    COMMAND_BUS_MASTER, COMMAND_IO, COMMAND_MEMORY, IORESOURCE_IO, IORESOURCE_MEM,
 };
-use sync::{Modules as ModulesLockClass, Spinlock};
-
-const MAX_REGION_CLAIMS: usize = 64;
-const PCI_DEVFN_DEV_SHIFT: u8 = 3;
-const PCI_CONFIG_ALIGN: u8 = 4;
-const PCI_CONFIG_BYTE_MASK: u32 = 0xff;
-const PCI_CONFIG_WORD_MASK: u32 = 0xffff;
-const PCI_CONFIG_SPACE_BYTES: u16 = 256;
 const PCI_RESOURCE_EMPTY: u64 = 0;
 const INVALID_RESOURCE: usize = usize::MAX;
-
-#[derive(Copy, Clone)]
-struct RegionClaim {
-    dev: usize,
-    bar: usize,
-    start: u64,
-    end: u64,
-}
-
-static REGIONS: Spinlock<[Option<RegionClaim>; MAX_REGION_CLAIMS], ModulesLockClass> =
-    Spinlock::new([None; MAX_REGION_CLAIMS]);
 
 /// Register Linux PCI KPI symbols.
 /// # C: O(1)
@@ -53,10 +36,14 @@ pub(super) fn export_symbols() {
         ("pci_release_region",        pci_release_region        as *const () as usize),
         ("pci_request_regions",       pci_request_regions       as *const () as usize),
         ("pci_release_regions",       pci_release_regions       as *const () as usize),
+        ("pci_select_bars",            regions::pci_select_bars as *const () as usize),
+        ("pci_request_selected_regions", regions::pci_request_selected_regions as *const () as usize),
+        ("pci_release_selected_regions", regions::pci_release_selected_regions as *const () as usize),
         ("pcim_request_all_regions",  pcim_request_all_regions  as *const () as usize),
         ("pcim_release_all_regions",  pcim_release_all_regions  as *const () as usize),
         ("pci_iomap",                 pci_iomap                 as *const () as usize),
         ("pcim_iomap",                pcim_iomap                as *const () as usize),
+        ("pcim_iomap_region",         pcim_iomap_region         as *const () as usize),
         ("pcim_iounmap",              pcim_iounmap              as *const () as usize),
         ("pci_ioremap_bar",           pci_ioremap_bar           as *const () as usize),
         ("pci_ioremap_wc_bar",        pci_ioremap_wc_bar        as *const () as usize),
@@ -67,12 +54,13 @@ pub(super) fn export_symbols() {
         ("pci_alloc_irq_vectors",     pci_alloc_irq_vectors     as *const () as usize),
         ("pci_free_irq_vectors",      pci_free_irq_vectors      as *const () as usize),
         ("pci_irq_vector",            pci_irq_vector            as *const () as usize),
-        ("pci_read_config_byte",      pci_read_config_byte      as *const () as usize),
-        ("pci_read_config_word",      pci_read_config_word      as *const () as usize),
-        ("pci_read_config_dword",     pci_read_config_dword     as *const () as usize),
-        ("pci_write_config_byte",     pci_write_config_byte     as *const () as usize),
-        ("pci_write_config_word",     pci_write_config_word     as *const () as usize),
-        ("pci_write_config_dword",    pci_write_config_dword    as *const () as usize),
+        ("pci_read_config_byte",      super::config::pci_read_config_byte      as *const () as usize),
+        ("pci_read_config_word",      super::config::pci_read_config_word      as *const () as usize),
+        ("pci_read_config_dword",     super::config::pci_read_config_dword     as *const () as usize),
+        ("pci_write_config_byte",     super::config::pci_write_config_byte     as *const () as usize),
+        ("pci_write_config_word",     super::config::pci_write_config_word     as *const () as usize),
+        ("pci_write_config_dword",    super::config::pci_write_config_dword    as *const () as usize),
+        ("pci_device_is_present",     super::config::pci_device_is_present     as *const () as usize),
     ] { export(name, addr, false); }
 }
 
@@ -122,6 +110,7 @@ extern "C" fn pcim_pin_device(_dev: *mut LinuxPciDev) -> i32 { LINUX_OK }
 
 extern "C" fn pci_set_master(dev: *mut LinuxPciDev) {
     if dev.is_null() { return; }
+    if !pci::bus_master_admitted(bdf(dev)) { return; }
     update_command(dev, COMMAND_BUS_MASTER, true);
 }
 
@@ -173,12 +162,12 @@ extern "C" fn pci_request_region(dev: *mut LinuxPciDev, bar: i32, _name: *const 
         Some(v) if resource_len(v) != 0 => v,
         _ => return -LINUX_ENODEV,
     };
-    claim_region(dev, idx, res)
+    regions::claim_region(dev, idx, res)
 }
 
 extern "C" fn pci_release_region(dev: *mut LinuxPciDev, bar: i32) {
     if dev.is_null() { return; }
-    if let Some(idx) = valid_bar(bar) { release_region(dev, idx); }
+    if let Some(idx) = valid_bar(bar) { regions::release_region(dev, idx); }
 }
 
 extern "C" fn pci_request_regions(dev: *mut LinuxPciDev, name: *const c_char) -> i32 {
@@ -189,7 +178,7 @@ extern "C" fn pci_request_regions(dev: *mut LinuxPciDev, name: *const c_char) ->
         if pci_resource_len(dev, bar as i32) == 0 { continue; }
         let rc = pci_request_region(dev, bar as i32, name);
         if rc != LINUX_OK {
-            for old in claimed.iter().take(n) { release_region(dev, *old); }
+            for old in claimed.iter().take(n) { regions::release_region(dev, *old); }
             return rc;
         }
         claimed[n] = bar;
@@ -200,7 +189,7 @@ extern "C" fn pci_request_regions(dev: *mut LinuxPciDev, name: *const c_char) ->
 
 extern "C" fn pci_release_regions(dev: *mut LinuxPciDev) {
     if dev.is_null() { return; }
-    for bar in 0..PCI_STD_NUM_BARS { release_region(dev, bar); }
+    for bar in 0..PCI_STD_NUM_BARS { regions::release_region(dev, bar); }
 }
 
 extern "C" fn pcim_request_all_regions(dev: *mut LinuxPciDev, name: *const c_char) -> i32 { pci_request_regions(dev, name) }
@@ -214,7 +203,18 @@ extern "C" fn pci_iomap(dev: *mut LinuxPciDev, bar: i32, maxlen: usize) -> *mut 
     super::maps::iomap_resource(res, len).unwrap_or(null_mut())
 }
 
-extern "C" fn pcim_iomap(dev: *mut LinuxPciDev, bar: i32, maxlen: usize) -> *mut c_void { pci_iomap(dev, bar, maxlen) }
+extern "C" fn pcim_iomap(dev: *mut LinuxPciDev, bar: i32, maxlen: usize) -> *mut c_void {
+    pcim_map(dev, bar, maxlen, false)
+}
+
+extern "C" fn pcim_iomap_region(dev: *mut LinuxPciDev, bar: i32, name: *const c_char) -> *mut c_void {
+    if dev.is_null() { return null_mut(); }
+    let idx = match valid_bar(bar) { Some(v) => v, None => return null_mut() };
+    if pci_request_region(dev, bar, name) != LINUX_OK { return null_mut(); }
+    let ptr = pcim_map(dev, bar, 0, true);
+    if ptr.is_null() { regions::release_region(dev, idx); }
+    ptr
+}
 
 extern "C" fn pcim_iounmap(dev: *mut LinuxPciDev, addr: *mut c_void) { pci_iounmap(dev, addr); }
 
@@ -228,6 +228,22 @@ extern "C" fn pci_ioremap_wc_bar(dev: *mut LinuxPciDev, bar: i32) -> *mut c_void
 
 extern "C" fn pci_iounmap(_dev: *mut LinuxPciDev, addr: *mut c_void) {
     super::maps::iounmap(addr);
+}
+
+fn pcim_map(dev: *mut LinuxPciDev, bar: i32, maxlen: usize, release_region: bool) -> *mut c_void {
+    if dev.is_null() { return null_mut(); }
+    let res = match resource(dev, bar) { Some(v) => v, None => return null_mut() };
+    let len = bounded_resource_len(res, maxlen);
+    if len == 0 { return null_mut(); }
+    let ptr = match super::maps::iomap_managed(dev, bar, res, len, release_region) { Some(v) => v, None => return null_mut() };
+    // SAFETY: LinuxPciDev embeds LinuxDevice as its first repr(C) field.
+    let base = unsafe { core::ptr::addr_of_mut!((*dev).dev) };
+    if devres::add_action_or_reset(base, Some(pcim_release), dev.cast()) != LINUX_OK { return null_mut(); }
+    ptr
+}
+
+unsafe extern "C" fn pcim_release(data: *mut c_void) {
+    super::maps::release_managed_for(data.cast());
 }
 
 extern "C" fn pci_enable_msi(dev: *mut LinuxPciDev) -> i32 {
@@ -268,52 +284,11 @@ extern "C" fn pci_irq_vector(dev: *mut LinuxPciDev, nr: u32) -> i32 {
     }
 }
 
-extern "C" fn pci_read_config_byte(dev: *mut LinuxPciDev, pos: i32, val: *mut u8) -> i32 {
-    if val.is_null() { return -LINUX_EINVAL; }
-    let (dword, shift) = match config_access(dev, pos, PCI_CONFIG_BYTE_BYTES) { Some(v) => v, None => return -LINUX_EINVAL };
-    // SAFETY: val is caller-provided writable storage for one byte.
-    unsafe { *val = ((dword >> shift) & PCI_CONFIG_BYTE_MASK) as u8; }
-    LINUX_OK
-}
-
-extern "C" fn pci_read_config_word(dev: *mut LinuxPciDev, pos: i32, val: *mut u16) -> i32 {
-    if val.is_null() || (pos as u8 & WORD_ALIGN_MASK) != 0 { return -LINUX_EINVAL; }
-    let (dword, shift) = match config_access(dev, pos, PCI_CONFIG_WORD_BYTES) { Some(v) => v, None => return -LINUX_EINVAL };
-    // SAFETY: val is caller-provided writable storage for one word.
-    unsafe { *val = ((dword >> shift) & PCI_CONFIG_WORD_MASK) as u16; }
-    LINUX_OK
-}
-
-extern "C" fn pci_read_config_dword(dev: *mut LinuxPciDev, pos: i32, val: *mut u32) -> i32 {
-    if val.is_null() || !config_pos_valid(pos, PCI_CONFIG_ALIGN) { return -LINUX_EINVAL; }
-    // SAFETY: val is caller-provided writable storage for one dword.
-    unsafe { *val = read_config32(dev, pos as u8); }
-    LINUX_OK
-}
-
-extern "C" fn pci_write_config_byte(dev: *mut LinuxPciDev, pos: i32, val: u8) -> i32 {
-    write_config_masked(dev, pos, PCI_CONFIG_BYTE_BYTES, PCI_CONFIG_BYTE_MASK, val as u32)
-}
-
-extern "C" fn pci_write_config_word(dev: *mut LinuxPciDev, pos: i32, val: u16) -> i32 {
-    if (pos as u8 & WORD_ALIGN_MASK) != 0 { return -LINUX_EINVAL; }
-    write_config_masked(dev, pos, PCI_CONFIG_WORD_BYTES, PCI_CONFIG_WORD_MASK, val as u32)
-}
-
-extern "C" fn pci_write_config_dword(dev: *mut LinuxPciDev, pos: i32, val: u32) -> i32 {
-    if !config_pos_valid(pos, PCI_CONFIG_ALIGN) { return -LINUX_EINVAL; }
-    write_config32(dev, pos as u8, val);
-    LINUX_OK
-}
-
 const PCI_COMMAND_STATUS_OFF: u8 = 0x04;
 const PCI_COMMAND_MASK: u32 = 0x0000_ffff;
 const PCI_STATUS_MASK: u32 = 0xffff_0000;
-const PCI_CONFIG_BYTE_BYTES: u8 = 1;
-const PCI_CONFIG_WORD_BYTES: u8 = 2;
-const WORD_ALIGN_MASK: u8 = 1;
-const PCI_SLOT_MASK: u8 = 0x1f;
-const PCI_FUNC_MASK: u8 = 0x07;
+#[cfg(test)]
+const PCI_DEVFN_DEV_SHIFT: u8 = 3;
 const HEX_LOW_NIBBLE_MASK: u8 = 0x0f;
 const HEX_DECIMAL_DIGITS: u8 = 10;
 const HEX_NIBBLE_SHIFT: u32 = 4;
@@ -329,19 +304,6 @@ const PCI_SLOT_HEX0: usize = 8;
 const PCI_SLOT_HEX1: usize = 9;
 const PCI_FUNC_SEP: usize = 10;
 const PCI_FUNC_HEX: usize = 11;
-
-fn bdf(dev: *const LinuxPciDev) -> Bdf {
-    if let Some(bdf) = registry::bdf_for(dev) { return bdf; }
-    // SAFETY: callers validate dev before deriving the BDF.
-    unsafe {
-        Bdf {
-            segment: 0,
-            bus: (*dev).bus,
-            device: ((*dev).devfn >> PCI_DEVFN_DEV_SHIFT) & PCI_SLOT_MASK,
-            function: (*dev).devfn & PCI_FUNC_MASK,
-        }
-    }
-}
 
 fn update_command(dev: *mut LinuxPciDev, bit: u16, set: bool) {
     let old = read_config32(dev, PCI_COMMAND_STATUS_OFF);
@@ -359,18 +321,18 @@ fn has_resource(dev: *const LinuxPciDev, flag: u64) -> bool {
     false
 }
 
-fn resource(dev: *const LinuxPciDev, bar: i32) -> Option<LinuxResource> {
+pub(super) fn resource(dev: *const LinuxPciDev, bar: i32) -> Option<LinuxResource> {
     let idx = valid_bar(bar)?;
     if dev.is_null() { return None; }
     // SAFETY: dev points at a caller-owned Linux struct pci_dev.
     Some(unsafe { (*dev).resource[idx] })
 }
 
-fn valid_bar(bar: i32) -> Option<usize> {
+pub(super) fn valid_bar(bar: i32) -> Option<usize> {
     if bar < 0 || bar as usize >= PCI_STD_NUM_BARS { None } else { Some(bar as usize) }
 }
 
-fn resource_len(r: LinuxResource) -> u64 {
+pub(super) fn resource_len(r: LinuxResource) -> u64 {
     if r.start == 0 && r.end == 0 { 0 }
     else if r.end < r.start { 0 }
     else { r.end.saturating_sub(r.start).saturating_add(1) }
@@ -381,83 +343,25 @@ fn bounded_resource_len(r: LinuxResource, maxlen: usize) -> u64 {
     if maxlen == 0 { len } else { len.min(maxlen as u64) }
 }
 
-fn claim_region(dev: *mut LinuxPciDev, bar: usize, res: LinuxResource) -> i32 {
-    let mut g = REGIONS.lock();
-    if g.iter().flatten().any(|r| overlaps(r.start, r.end, res.start, res.end)) {
-        return -LINUX_EBUSY;
-    }
-    if let Some(slot) = g.iter_mut().find(|r| r.is_none()) {
-        *slot = Some(RegionClaim { dev: dev as usize, bar, start: res.start, end: res.end });
-        LINUX_OK
-    } else { -LINUX_ENOMEM }
-}
-
-fn release_region(dev: *mut LinuxPciDev, bar: usize) {
-    let mut g = REGIONS.lock();
-    if let Some(slot) = g.iter_mut().find(|r| r.is_some_and(|v| v.dev == dev as usize && v.bar == bar)) {
-        *slot = None;
-    }
-}
-
-fn overlaps(a_start: u64, a_end: u64, b_start: u64, b_end: u64) -> bool {
-    a_start <= b_end && b_start <= a_end
-}
-
-fn config_access(dev: *mut LinuxPciDev, pos: i32, width: u8) -> Option<(u32, u32)> {
-    if !config_pos_valid(pos, width) { return None; }
-    let off = (pos as u8) & !(PCI_CONFIG_ALIGN - 1);
-    let shift = ((pos as u8 - off) as u32) * u8::BITS;
-    Some((read_config32(dev, off), shift))
-}
-
-fn config_pos_valid(pos: i32, width: u8) -> bool {
-    pos >= 0 && (pos as u16).saturating_add(width as u16) <= PCI_CONFIG_SPACE_BYTES
-}
-
-fn write_config_masked(dev: *mut LinuxPciDev, pos: i32, width: u8, mask: u32, val: u32) -> i32 {
-    if !config_pos_valid(pos, width) { return -LINUX_EINVAL; }
-    let off = (pos as u8) & !(PCI_CONFIG_ALIGN - 1);
-    let shift = ((pos as u8 - off) as u32) * u8::BITS;
-    let old = read_config32(dev, off);
-    write_config32(dev, off, (old & !(mask << shift)) | ((val & mask) << shift));
-    LINUX_OK
-}
-
-fn read_config32(dev: *mut LinuxPciDev, off: u8) -> u32 {
-    if dev.is_null() { return u32::MAX; }
-    if let Some(v) = hw_read32(bdf(dev), off) { return v; }
-    // SAFETY: dev points at a caller-owned Linux struct pci_dev.
-    unsafe { (*dev).config_space[(off / PCI_CONFIG_ALIGN) as usize] }
-}
-
-fn write_config32(dev: *mut LinuxPciDev, off: u8, val: u32) {
-    if dev.is_null() { return; }
-    hw_write32(bdf(dev), off, val);
-    // SAFETY: dev points at a caller-owned Linux struct pci_dev.
-    unsafe { (*dev).config_space[(off / PCI_CONFIG_ALIGN) as usize] = val; }
-}
-
 fn populate_name(dev: *mut LinuxPciDev) {
     if dev.is_null() { return; }
+    let addr = bdf(dev);
     // SAFETY: dev points at a caller-owned Linux struct pci_dev.
     unsafe {
         if (*dev).name[0] != 0 { return; }
-        let b = (*dev).bus;
-        let slot = ((*dev).devfn >> PCI_DEVFN_DEV_SHIFT) & PCI_SLOT_MASK;
-        let func = (*dev).devfn & PCI_FUNC_MASK;
         (*dev).name = [0; PCI_NAME_LEN];
-        put_hex(&mut (*dev).name, PCI_DOMAIN_HEX0, 0);
-        put_hex(&mut (*dev).name, PCI_DOMAIN_HEX1, 0);
-        (*dev).name[PCI_DOMAIN_HEX2] = b'0' as c_char;
-        (*dev).name[PCI_DOMAIN_HEX3] = b'0' as c_char;
+        put_hex(&mut (*dev).name, PCI_DOMAIN_HEX0, (addr.segment >> 12) as u8);
+        put_hex(&mut (*dev).name, PCI_DOMAIN_HEX1, (addr.segment >> 8) as u8);
+        put_hex(&mut (*dev).name, PCI_DOMAIN_HEX2, (addr.segment >> 4) as u8);
+        put_hex(&mut (*dev).name, PCI_DOMAIN_HEX3, addr.segment as u8);
         (*dev).name[PCI_DOMAIN_BUS_SEP] = b':' as c_char;
-        put_hex(&mut (*dev).name, PCI_BUS_HEX0, b >> HEX_NIBBLE_SHIFT);
-        put_hex(&mut (*dev).name, PCI_BUS_HEX1, b);
+        put_hex(&mut (*dev).name, PCI_BUS_HEX0, addr.bus >> HEX_NIBBLE_SHIFT);
+        put_hex(&mut (*dev).name, PCI_BUS_HEX1, addr.bus);
         (*dev).name[PCI_SLOT_SEP] = b':' as c_char;
-        put_hex(&mut (*dev).name, PCI_SLOT_HEX0, slot >> HEX_NIBBLE_SHIFT);
-        put_hex(&mut (*dev).name, PCI_SLOT_HEX1, slot);
+        put_hex(&mut (*dev).name, PCI_SLOT_HEX0, addr.device >> HEX_NIBBLE_SHIFT);
+        put_hex(&mut (*dev).name, PCI_SLOT_HEX1, addr.device);
         (*dev).name[PCI_FUNC_SEP] = b'.' as c_char;
-        put_hex(&mut (*dev).name, PCI_FUNC_HEX, func);
+        put_hex(&mut (*dev).name, PCI_FUNC_HEX, addr.function);
     }
 }
 
@@ -465,36 +369,6 @@ fn put_hex(buf: &mut [c_char; PCI_NAME_LEN], idx: usize, v: u8) {
     let n = v & HEX_LOW_NIBBLE_MASK;
     buf[idx] = if n < HEX_DECIMAL_DIGITS { (b'0' + n) as c_char } else { (b'a' + (n - HEX_DECIMAL_DIGITS)) as c_char };
 }
-
-#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-fn hw_read32(bdf: Bdf, off: u8) -> Option<u32> {
-    hal_x86_64::pci::EcamPci::from_published().map(|r| pci::ConfigSpaceReader::read32(&r, bdf, off))
-}
-
-#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
-fn hw_read32(bdf: Bdf, off: u8) -> Option<u32> {
-    hal_aarch64::pci::EcamPci::from_published().map(|r| pci::ConfigSpaceReader::read32(&r, bdf, off))
-}
-
-#[cfg(not(all(target_os = "oxide-kernel", any(target_arch = "x86_64", target_arch = "aarch64"))))]
-fn hw_read32(_bdf: Bdf, _off: u8) -> Option<u32> { None }
-
-#[cfg(all(target_os = "oxide-kernel", target_arch = "x86_64"))]
-fn hw_write32(bdf: Bdf, off: u8, val: u32) {
-    if let Some(r) = hal_x86_64::pci::EcamPci::from_published() {
-        pci::ConfigSpaceReader::write32(&r, bdf, off, val);
-    }
-}
-
-#[cfg(all(target_os = "oxide-kernel", target_arch = "aarch64"))]
-fn hw_write32(bdf: Bdf, off: u8, val: u32) {
-    if let Some(r) = hal_aarch64::pci::EcamPci::from_published() {
-        pci::ConfigSpaceReader::write32(&r, bdf, off, val);
-    }
-}
-
-#[cfg(not(all(target_os = "oxide-kernel", any(target_arch = "x86_64", target_arch = "aarch64"))))]
-fn hw_write32(_bdf: Bdf, _off: u8, _val: u32) {}
 
 #[cfg(test)]
 mod tests;

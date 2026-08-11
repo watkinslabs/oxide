@@ -27,8 +27,13 @@ void dma_unmap_page(struct device *dev, dma_addr_t dma_addr, size_t size, enum d
 int dma_map_sg(struct device *dev, struct scatterlist *sg, int nents, enum dma_data_direction dir);
 void dma_unmap_sg(struct device *dev, struct scatterlist *sg, int nents, enum dma_data_direction dir);
 int dma_mapping_error(struct device *dev, dma_addr_t dma_addr);
+void *dmam_alloc_attrs(struct device *dev, size_t size, dma_addr_t *dma_handle, gfp_t gfp, unsigned long attrs);
+void *dmam_alloc_coherent(struct device *dev, size_t size, dma_addr_t *dma_handle, gfp_t gfp);
+void dmam_free_coherent(struct device *dev, size_t size, void *vaddr, dma_addr_t dma_handle);
 void dma_sync_single_for_cpu(struct device *dev, dma_addr_t dma_handle, size_t size, enum dma_data_direction dir);
 void dma_sync_single_for_device(struct device *dev, dma_addr_t dma_handle, size_t size, enum dma_data_direction dir);
+void __dma_sync_single_for_cpu(struct device *dev, dma_addr_t dma_handle, size_t size, enum dma_data_direction dir);
+void __dma_sync_single_for_device(struct device *dev, dma_addr_t dma_handle, size_t size, enum dma_data_direction dir);
 void dma_sync_sg_for_cpu(struct device *dev, struct scatterlist *sg, int nelems, enum dma_data_direction dir);
 void dma_sync_sg_for_device(struct device *dev, struct scatterlist *sg, int nelems, enum dma_data_direction dir);
 int dma_set_mask(struct device *dev, u64 mask);
@@ -36,16 +41,6 @@ int dma_set_coherent_mask(struct device *dev, u64 mask);
 int dma_set_mask_and_coherent(struct device *dev, u64 mask);
 int dma_supported(struct device *dev, u64 mask);
 u64 dma_get_required_mask(struct device *dev);
-
-static inline void *dmam_alloc_coherent(struct device *dev, size_t size, dma_addr_t *dma_handle, gfp_t flag)
-{
-    return dma_alloc_coherent(dev, size, dma_handle, flag);
-}
-
-static inline void dmam_free_coherent(struct device *dev, size_t size, void *cpu_addr, dma_addr_t dma_handle)
-{
-    dma_free_coherent(dev, size, cpu_addr, dma_handle);
-}
 
 static inline void *dma_zalloc_coherent(struct device *dev, size_t size, dma_addr_t *dma_handle, gfp_t flag)
 {

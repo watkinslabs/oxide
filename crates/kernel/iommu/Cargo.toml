@@ -1,0 +1,18 @@
+[package]
+name = "iommu"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+pci = { path = "../../drivers/pci" }
+mmio-map = { path = "../mmio-map" }
+firmware = { path = "../firmware" }
+pmm = { path = "../mm-pmm" }
+sync = { path = "../../shared/sync" }
+
+[lints]
+workspace = true

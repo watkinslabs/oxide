@@ -836,6 +836,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "iommu"
+version = "0.1.0"
+dependencies = [
+ "firmware",
+ "mmio-map",
+ "pci",
+ "pmm",
+ "sync",
+]
+
+[[package]]
 name = "ipc"
 version = "0.1.0"
 dependencies = [
@@ -1277,6 +1288,7 @@ dependencies = [
  "hal",
  "hal-aarch64",
  "hal-x86_64",
+ "iommu",
  "klog",
  "kmacros",
  "mmio-map",
@@ -1722,6 +1734,7 @@ dependencies = [
  "hal-x86_64",
  "klog",
  "kmacros",
+ "pci",
  "pmm",
  "sched",
  "sync",

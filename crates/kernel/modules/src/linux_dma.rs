@@ -73,10 +73,11 @@ pub fn export_symbols() {
     for (name, addr) in [
         ("dma_alloc_coherent",        dma_alloc_coherent        as *const () as usize),
         ("dma_alloc_attrs",           dma_alloc_attrs           as *const () as usize),
-        ("dmam_alloc_coherent",       dma_alloc_coherent        as *const () as usize),
+        ("dmam_alloc_coherent",       crate::linux_dma_managed::dmam_alloc_coherent as *const () as usize),
+        ("dmam_alloc_attrs",          crate::linux_dma_managed::dmam_alloc_attrs as *const () as usize),
         ("dma_free_coherent",         dma_free_coherent         as *const () as usize),
         ("dma_free_attrs",            dma_free_attrs            as *const () as usize),
-        ("dmam_free_coherent",        dma_free_coherent         as *const () as usize),
+        ("dmam_free_coherent",        crate::linux_dma_managed::dmam_free_coherent as *const () as usize),
         ("dma_map_single",            dma_map_single            as *const () as usize),
         ("dma_unmap_single",          dma_unmap_single          as *const () as usize),
         ("dma_map_page",              dma_map_page              as *const () as usize),
@@ -90,6 +91,8 @@ pub fn export_symbols() {
         ("dma_mapping_error",         dma_mapping_error         as *const () as usize),
         ("dma_sync_single_for_cpu",    dma_sync_single_for_cpu    as *const () as usize),
         ("dma_sync_single_for_device", dma_sync_single_for_device as *const () as usize),
+        ("__dma_sync_single_for_cpu",  dma_sync_single_for_cpu    as *const () as usize),
+        ("__dma_sync_single_for_device", dma_sync_single_for_device as *const () as usize),
         ("dma_sync_sg_for_cpu",        dma_sync_sg_for_cpu        as *const () as usize),
         ("dma_sync_sg_for_device",     dma_sync_sg_for_device     as *const () as usize),
         ("dma_set_mask",              dma_set_mask              as *const () as usize),
@@ -215,11 +218,11 @@ pub(crate) extern "C" fn dma_mapping_error(_dev: *mut LinuxDevice, dma_addr: u64
     if dma_addr == DMA_MAPPING_ERROR { -LINUX_ENOMEM } else { 0 }
 }
 
-extern "C" fn dma_sync_single_for_cpu(_dev: *mut LinuxDevice, _dma_addr: u64, size: usize, dir: i32) {
+pub(crate) extern "C" fn dma_sync_single_for_cpu(_dev: *mut LinuxDevice, _dma_addr: u64, size: usize, dir: i32) {
     if size != 0 && valid_dir(dir) { sync_for_cpu(dir); }
 }
 
-extern "C" fn dma_sync_single_for_device(_dev: *mut LinuxDevice, _dma_addr: u64, size: usize, dir: i32) {
+pub(crate) extern "C" fn dma_sync_single_for_device(_dev: *mut LinuxDevice, _dma_addr: u64, size: usize, dir: i32) {
     if size != 0 && valid_dir(dir) { sync_for_device(dir); }
 }
 

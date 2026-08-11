@@ -1,0 +1,79 @@
+use firmware::acpi::{DmarScope, IommuUnit, dmar_scope, dmar_scope_count, iommu_unit, iommu_unit_count};
+use pci::{Bdf, ConfigSpaceReader, PciDevice, bridge_buses};
+
+const DMAR_SCOPE_ENDPOINT: u8 = 1;
+const DMAR_SCOPE_BRIDGE: u8 = 2;
+const PCI_DEVICES: u8 = 32;
+const PCI_FUNCTIONS: u8 = 8;
+
+fn scope_target<R: ConfigSpaceReader>(r: &R, segment: u16, scope: DmarScope) -> Option<Bdf> {
+    if scope.path_len == 0 || scope.path_len & 1 != 0 { return None; }
+    let mut bus = scope.start_bus;
+    let levels = scope.path_len as usize / 2;
+    for level in 0..levels {
+        let bdf = Bdf { segment, bus, device: scope.path[level * 2], function: scope.path[level * 2 + 1] };
+        if bdf.device >= PCI_DEVICES || bdf.function >= PCI_FUNCTIONS { return None; }
+        PciDevice::from_config(r, bdf)?;
+        if level + 1 == levels { return Some(bdf); }
+        bus = bridge_buses(r, bdf)?.secondary;
+    }
+    None
+}
+
+fn parent_bridge<R: ConfigSpaceReader>(r: &R, child: Bdf) -> Option<Bdf> {
+    let mut best = None;
+    let mut span = u16::MAX;
+    for bus in 0..=u8::MAX {
+        for device in 0..PCI_DEVICES {
+            for function in 0..PCI_FUNCTIONS {
+                let bdf = Bdf { segment: child.segment, bus, device, function };
+                let Some(window) = bridge_buses(r, bdf) else { continue; };
+                if child.bus < window.secondary || child.bus > window.subordinate { continue; }
+                let candidate_span = u16::from(window.subordinate) - u16::from(window.secondary);
+                if candidate_span < span { best = Some(bdf); span = candidate_span; }
+            }
+        }
+    }
+    best
+}
+
+fn scope_matches<R: ConfigSpaceReader>(r: &R, bdf: Bdf, scope: DmarScope, unit: IommuUnit) -> bool {
+    if unit.segment != bdf.segment { return false; }
+    let Some(target) = scope_target(r, bdf.segment, scope) else { return false; };
+    match scope.scope_type {
+        DMAR_SCOPE_ENDPOINT => target == bdf,
+        DMAR_SCOPE_BRIDGE => {
+            let mut current = Some(bdf);
+            for _ in 0..=u8::MAX {
+                let Some(node) = current else { break; };
+                if node == target { return true; }
+                current = parent_bridge(r, node);
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+/// Return the unique VT-d unit covering this PCI requester. # C: O(N_scopes * PCI_tree)
+pub fn intel_vtd_unit_for_bdf<R: ConfigSpaceReader>(r: &R, bdf: Bdf) -> Option<IommuUnit> {
+    let mut found = None;
+    for index in 0..dmar_scope_count() {
+        let scope = dmar_scope(index)?;
+        let unit = iommu_unit(scope.unit_index as usize)?;
+        if !scope_matches(r, bdf, scope, unit) { continue; }
+        if found.is_some_and(|old: IommuUnit| old != unit) { return None; }
+        found = Some(unit);
+    }
+    if found.is_some() { return found; }
+    for index in 0..iommu_unit_count() {
+        let unit = iommu_unit(index)?;
+        if unit.kind == firmware::acpi::IommuKind::IntelVtd && unit.segment == bdf.segment && unit.include_all {
+            if found.is_some_and(|old: IommuUnit| old != unit) { return None; }
+            found = Some(unit);
+        }
+    }
+    found
+}
+
+#[cfg(test)] mod tests;

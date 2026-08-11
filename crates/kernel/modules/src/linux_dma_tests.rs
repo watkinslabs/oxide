@@ -20,6 +20,19 @@ fn coherent_alloc_returns_dma_address_and_zeroed_memory() {
 }
 
 #[test]
+fn managed_coherent_alloc_releases_at_device_teardown() {
+    let _modules = crate::test_serial::claim();
+    let mut dma = DMA_MAPPING_ERROR;
+    // SAFETY: all-zero LinuxDevice is the supported empty owner state for this managed-DMA test.
+    let mut dev: LinuxDevice = unsafe { MaybeUninit::zeroed().assume_init() };
+    let p = crate::linux_dma_managed::dmam_alloc_coherent(&mut dev, linux_alloc::PAGE_SIZE, &mut dma, 0);
+    assert!(!p.is_null());
+    assert_eq!(crate::linux_dma_managed::tracked(&mut dev), 1);
+    crate::linux_device::devres::release_device(&mut dev);
+    assert_eq!(crate::linux_dma_managed::tracked(&mut dev), 0);
+}
+
+#[test]
 fn streaming_map_checks_masks_and_directions() {
     let _modules = crate::test_serial::claim();
     let mut buf = [0u8; TEST_DMA_BUF_SIZE];
@@ -108,8 +121,9 @@ fn export_symbols_registers_dma_surface() {
     let _modules = crate::test_serial::claim();
     export_symbols();
     for name in [
-        "dma_alloc_coherent", "dma_alloc_attrs", "dma_free_coherent", "dma_free_attrs", "dma_map_single",
+        "dma_alloc_coherent", "dma_alloc_attrs", "dmam_alloc_coherent", "dmam_alloc_attrs", "dma_free_coherent", "dma_free_attrs", "dmam_free_coherent", "dma_map_single",
         "dma_unmap_single", "dma_map_page", "dma_map_page_attrs", "dma_unmap_page_attrs", "dma_map_sg", "dma_map_sg_attrs", "dma_unmap_sg", "dma_unmap_sg_attrs",
+        "dma_sync_single_for_cpu", "dma_sync_single_for_device", "__dma_sync_single_for_cpu", "__dma_sync_single_for_device",
         "dma_mapping_error", "dma_set_mask", "dma_set_coherent_mask",
         "dma_set_mask_and_coherent", "sg_init_table", "sg_set_buf", "sg_set_page",
         "sg_alloc_table", "sg_free_table", "sg_copy_to_buffer", "sg_miter_start",

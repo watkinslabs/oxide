@@ -1,3 +1,6 @@
+use crate::uapi;
+use core::sync::atomic::{AtomicPtr, Ordering};
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Error {
     NotImplemented,
@@ -11,6 +14,10 @@ pub type KResult<T> = core::result::Result<T, Error>;
 
 /// Maximum ECAM windows early boot can retain and route without allocation.
 pub const MAX_ECAM_WINDOWS: usize = 8;
+
+/// Policy invoked immediately before PCI bus mastering becomes live. # type
+pub type BusMasterAdmissionFn = fn(Bdf) -> bool;
+static BUS_MASTER_ADMISSION: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
 /// PCI segment plus its (bus, device, function) requester identifier.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -97,6 +104,20 @@ pub trait ConfigSpaceReader: Send + Sync {
     }
 }
 
+/// Install or clear the sole PCI bus-master admission policy. # C: O(1)
+pub fn set_bus_master_admission(f: Option<BusMasterAdmissionFn>) {
+    BUS_MASTER_ADMISSION.store(f.map(|f| f as *mut ()).unwrap_or(core::ptr::null_mut()), Ordering::Release);
+}
+
+/// Decide whether one requester may acquire the Bus Master command bit. # C: O(1)
+pub fn bus_master_admitted(bdf: Bdf) -> bool {
+    let raw = BUS_MASTER_ADMISSION.load(Ordering::Acquire);
+    if raw.is_null() { return true; }
+    // SAFETY: raw originates only from set_bus_master_admission with this exact function signature.
+    let f: BusMasterAdmissionFn = unsafe { core::mem::transmute(raw) };
+    f(bdf)
+}
+
 /// PCI command register bit: I/O Space Enable.
 pub const COMMAND_IO: u16 = 1 << 0;
 /// PCI command register bit: Memory Space Enable.
@@ -150,6 +171,7 @@ pub fn write_command<R: ConfigSpaceReader>(r: &R, bdf: Bdf, command: u16) {
 /// # C: O(1)
 pub fn enable_mem_bus_master<R: ConfigSpaceReader>(r: &R, bdf: Bdf) -> u16 {
     let old = read_command(r, bdf);
+    if !bus_master_admitted(bdf) { return old; }
     let new = old | COMMAND_MEMORY | COMMAND_BUS_MASTER;
     if new != old {
         write_command(r, bdf, new);
@@ -196,6 +218,10 @@ pub struct PciDevice {
     pub header_type: u8,
 }
 
+/// Bus window decoded from a PCI-to-PCI bridge configuration header.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct BridgeBuses { pub primary: u8, pub secondary: u8, pub subordinate: u8 }
+
 impl PciDevice {
     /// # C: O(1)
     pub fn from_config<R: ConfigSpaceReader>(r: &R, bdf: Bdf) -> Option<Self> {
@@ -222,6 +248,18 @@ impl PciDevice {
             header_type,
         })
     }
+}
+
+/// Return the bus window of a live PCI-to-PCI bridge. # C: O(1)
+pub fn bridge_buses<R: ConfigSpaceReader>(r: &R, bdf: Bdf) -> Option<BridgeBuses> {
+    let d = PciDevice::from_config(r, bdf)?;
+    if d.header_type & uapi::HEADER_TYPE_MASK != uapi::HEADER_TYPE_BRIDGE || d.class_code != uapi::CLASS_BRIDGE || d.subclass != uapi::SUBCLASS_PCI_TO_PCI { return None; }
+    let buses = r.read32(bdf, uapi::BRIDGE_BUS_NUMBERS);
+    let primary = buses as u8;
+    let secondary = (buses >> 8) as u8;
+    let subordinate = (buses >> 16) as u8;
+    if secondary == 0 || secondary <= primary || subordinate < secondary { return None; }
+    Some(BridgeBuses { primary, secondary, subordinate })
 }
 
 #[cfg(test)]
