@@ -51,6 +51,13 @@ pub const REG_LVT1: usize = 0x360;
 /// LVT: APIC error.
 pub const REG_LVT_ERROR: usize = 0x370;
 
+/// Return the x2APIC MSR corresponding to one 16-byte LAPIC register offset.
+/// # C: O(1)
+pub const fn x2apic_msr_for_offset(offset: usize) -> Option<u32> {
+    if offset & 0xf != 0 || offset >= 4096 { return None; }
+    Some(0x800 + (offset >> 4) as u32)
+}
+
 /// LVT bit 16 — masked.
 pub const LVT_MASKED: u32 = 1 << 16;
 /// LVT bit 15 — level triggered.
@@ -271,5 +278,14 @@ mod tests {
             assert_eq!(bit & VECTOR_MASK, 0);
         }
         assert_eq!(LVT_MODE_MASK & VECTOR_MASK, 0);
+    }
+
+    #[test]
+    fn x2apic_register_offsets_select_the_paired_msr_bank() {
+        assert_eq!(x2apic_msr_for_offset(0x020), Some(0x802));
+        assert_eq!(x2apic_msr_for_offset(0x0B0), Some(0x80B));
+        assert_eq!(x2apic_msr_for_offset(0x300), Some(0x830));
+        assert_eq!(x2apic_msr_for_offset(0x001), None);
+        assert_eq!(x2apic_msr_for_offset(4096), None);
     }
 }

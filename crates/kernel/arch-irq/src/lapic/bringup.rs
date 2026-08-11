@@ -2,8 +2,8 @@ use core::sync::atomic::Ordering;
 
 use super::ipi::{build_icr_lo, wait_icr_idle, write_icr};
 use super::regs::{
-    rdmsr, select_eoi_path, wrmsr, APIC_GLOBAL_ENABLE, LAPIC_BASE_VA, MSR_IA32_APIC_BASE, REG_ID,
-    REG_SVR, REG_VERSION, SPURIOUS_VECTOR, SVR_ENABLE,
+    rdmsr, read_register, select_eoi_path, write_register, wrmsr, APIC_GLOBAL_ENABLE, LAPIC_BASE_VA,
+    MSR_IA32_APIC_BASE, REG_SVR, REG_VERSION, SPURIOUS_VECTOR, SVR_ENABLE,
 };
 
 /// Outcome reported by `enable`.
@@ -41,22 +41,13 @@ pub unsafe fn enable(va: u64) -> LapicStatus {
     // GAP-2 hardening: pick the EOI path (MSR if already in x2APIC mode).
     select_eoi_path();
     // Software-enable via SVR + park spurious-int on vector 0xFF.
-    // SAFETY: `va` is the freshly-mapped Device-attr LAPIC page per fn contract; reads/writes lie within its 4 KiB.
-    unsafe {
-        let svr_addr = (va + REG_SVR as u64) as *mut u32;
-        let cur = core::ptr::read_volatile(svr_addr);
-        let new = (cur & !0xFF) | SPURIOUS_VECTOR | SVR_ENABLE;
-        core::ptr::write_volatile(svr_addr, new);
-    }
-    // SAFETY: same contract; offset 0x20 + 0x30 within mapped page.
-    let (apic_id, version) = unsafe {
-        let id = core::ptr::read_volatile((va + REG_ID as u64) as *const u32);
-        let ver = core::ptr::read_volatile((va + REG_VERSION as u64) as *const u32);
-        // APIC ID is in bits 31:24 on the x2APIC-aware variants;
-        // pre-Pentium-4 used bits 31:24 too. Shift down for log.
-        (id >> 24, ver)
-    };
     LAPIC_BASE_VA.store(va, Ordering::Release);
+    // SAFETY: the active xAPIC/x2APIC backend reaches the enabled local APIC registers.
+    let (apic_id, version) = unsafe {
+        let cur = read_register(REG_SVR).unwrap_or(0);
+        if !write_register(REG_SVR, (cur & !0xFF) | SPURIOUS_VECTOR | SVR_ENABLE) { return LapicStatus::AlreadyOn; }
+        (super::regs::local_apic_id(), read_register(REG_VERSION).unwrap_or(0))
+    };
     LapicStatus::Enabled { apic_id, version }
 }
 
@@ -151,17 +142,10 @@ pub unsafe fn enable_for_ap() -> (u32, u32) {
     }
     // GAP-2 hardening: pick the EOI path for this AP (MSR if in x2APIC mode).
     select_eoi_path();
-    // SAFETY: `va` aliases this CPU's LAPIC page; SVR offset within.
+    // SAFETY: the active xAPIC/x2APIC backend reaches this AP's local registers.
     unsafe {
-        let svr_addr = (va + REG_SVR as u64) as *mut u32;
-        let cur = core::ptr::read_volatile(svr_addr);
-        let new = (cur & !0xFF) | SPURIOUS_VECTOR | SVR_ENABLE;
-        core::ptr::write_volatile(svr_addr, new);
-    }
-    // SAFETY: same -- read this AP's APIC id + version.
-    unsafe {
-        let id  = core::ptr::read_volatile((va + REG_ID as u64) as *const u32);
-        let ver = core::ptr::read_volatile((va + REG_VERSION as u64) as *const u32);
-        (id >> 24, ver)
+        let cur = read_register(REG_SVR).unwrap_or(0);
+        if !write_register(REG_SVR, (cur & !0xFF) | SPURIOUS_VECTOR | SVR_ENABLE) { return (u32::MAX, 0); }
+        (super::regs::local_apic_id(), read_register(REG_VERSION).unwrap_or(0))
     }
 }
