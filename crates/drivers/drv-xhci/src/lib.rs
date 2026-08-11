@@ -5,6 +5,7 @@
 //! - `ring`: command and event TRB ownership/cycle mechanics.
 //! - `controller`: reset/run register sequencing and DMA register plan.
 //! - `platform`: owned MMIO and coherent controller-page storage.
+//! - `identity`: stable input-device identity per controller slot.
 
 #![no_std]
 
@@ -15,6 +16,7 @@ pub mod context;
 pub mod usb;
 pub mod hid;
 pub mod ports;
+pub mod identity;
 #[cfg(target_os = "oxide-kernel")]
 pub mod platform;
 #[cfg(target_os = "oxide-kernel")]
