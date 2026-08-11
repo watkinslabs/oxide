@@ -1,5 +1,6 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::ptr::{read_volatile, write_volatile};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use sync::{Spinlock, TaskList as DriverLockClass};
 
@@ -329,6 +330,43 @@ fn bind_msi(bdf: pci::Bdf, endpoint: usize) -> Option<(u32, u8, u16)> {
     Some((message.irq, cap_off, intx_previous))
 }
 
+#[cfg(target_arch = "x86_64")]
+fn bind_msix(bdf: pci::Bdf, endpoint: usize, ctrl: &Controller) -> Option<(u32, u8, u64, u16)> {
+    let r = hal_x86_64::pci::EcamPci::from_published()?;
+    let caps = pci::capabilities(&r, bdf);
+    let cap_off = caps.find(pci::CAP_ID_MSIX)?.cfg_off;
+    let cap = pci::decode_msix_cap(&r, bdf, cap_off)?;
+    if cap.table_bir != 0 { return None; }
+    let entry = pci::msix_table_entry_offset(cap, 0)?;
+    if entry.checked_add(pci::MSIX_TABLE_ENTRY_BYTES)? > ctrl.mmio.bytes() { return None; }
+    let entry_va = ctrl.mmio.base_va().checked_add(entry)?;
+    let message = arch_irq::alloc_pci_msi(requester_id(bdf), 0)?;
+    if !arch_irq::register_pci_msi_handler(message.irq, arch_irq::DeviceAction::E1000, hard_msi) { arch_irq::free_pci_msi(message.irq); return None; }
+    let intx_previous = pci::set_intx_disabled(&r, bdf, true);
+    if let Some(msi) = caps.find(pci::CAP_ID_MSI) { let _ = pci::disable_msi(&r, bdf, msi.cfg_off); }
+    let cfg = cap_off & 0xfc;
+    r.write32(bdf, cfg, pci::msix_control_enable_masked(r.read32(bdf, cfg)));
+    let _ = r.read32(bdf, cfg);
+    // SAFETY: entry VA is a checked vector-zero MSI-X entry inside the controller-owned complete BAR0 mapping.
+    unsafe {
+        write_volatile((entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *mut u32, pci::MSIX_VECTOR_CONTROL_MASKED);
+        let _ = read_volatile((entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *const u32);
+        write_volatile((entry_va + pci::MSIX_MESSAGE_ADDR_LOW_OFF) as *mut u32, message.address as u32);
+        write_volatile((entry_va + pci::MSIX_MESSAGE_ADDR_HIGH_OFF) as *mut u32, (message.address >> 32) as u32);
+        write_volatile((entry_va + pci::MSIX_MESSAGE_DATA_OFF) as *mut u32, message.data);
+        let _ = read_volatile((entry_va + pci::MSIX_MESSAGE_DATA_OFF) as *const u32);
+        write_volatile((entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *mut u32, 0);
+        let _ = read_volatile((entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *const u32);
+    }
+    r.write32(bdf, cfg, pci::msix_control_value(r.read32(bdf, cfg), true));
+    let _ = r.read32(bdf, cfg);
+    ENDPOINTS[endpoint].state.store(ENDPOINT_ACTIVE, Ordering::Release);
+    Some((message.irq, cap_off, entry_va, intx_previous))
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn bind_msix(_bdf: pci::Bdf, _endpoint: usize, _ctrl: &Controller) -> Option<(u32, u8, u64, u16)> { None }
+
 #[cfg(not(target_arch = "x86_64"))]
 fn bind_msi(_bdf: pci::Bdf, _endpoint: usize) -> Option<(u32, u8, u16)> { None }
 
@@ -351,6 +389,7 @@ fn disable_intx(vector: u32, pin: u32, endpoint: usize) {
 enum IrqBinding {
     Intx { vector: u32, pin: u32 },
     Msi { irq: u32, cap_off: u8, intx_previous: u16 },
+    Msix { irq: u32, cap_off: u8, entry_va: u64, intx_previous: u16 },
 }
 struct Record { bdf: pci::Bdf, command_orig: u16, endpoint: usize, irq: IrqBinding, dev: Arc<E1000NetDev> }
 static DEVICES: Spinlock<Vec<Record>, DriverLockClass> = Spinlock::new(Vec::new());
@@ -408,6 +447,19 @@ fn release_irq(bdf: pci::Bdf, irq: IrqBinding, endpoint: usize) {
         IrqBinding::Intx { vector, pin } => disable_intx(vector, pin, endpoint),
         IrqBinding::Msi { irq, cap_off, intx_previous } => {
             disable_msi(bdf, cap_off, intx_previous);
+            while ENDPOINTS[endpoint].in_handler.load(Ordering::Acquire) != 0 { core::hint::spin_loop(); }
+            endpoint_release(endpoint);
+            arch_irq::free_pci_msi(irq);
+        }
+        IrqBinding::Msix { irq, cap_off, entry_va, intx_previous } => {
+            #[cfg(target_arch = "x86_64")]
+            if let Some(r) = hal_x86_64::pci::EcamPci::from_published() {
+                // SAFETY: the controller mapping remains owned through IRQ teardown.
+                unsafe { write_volatile((entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *mut u32, pci::MSIX_VECTOR_CONTROL_MASKED); let _ = read_volatile((entry_va + pci::MSIX_VECTOR_CONTROL_OFF) as *const u32); }
+                let cfg = cap_off & 0xfc;
+                r.write32(bdf, cfg, pci::msix_control_value(r.read32(bdf, cfg), false));
+                let _ = pci::restore_intx_disabled(&r, bdf, intx_previous);
+            }
             while ENDPOINTS[endpoint].in_handler.load(Ordering::Acquire) != 0 { core::hint::spin_loop(); }
             endpoint_release(endpoint);
             arch_irq::free_pci_msi(irq);
@@ -470,18 +522,22 @@ impl drv::Driver for E1000Driver {
         let bdf = pci::parse_bdf_addr(&parent.addr).ok_or(drv::Error::ProbeFailed)?;
         let command_orig = enable_bus_master(bdf).ok_or(drv::Error::ProbeFailed)?;
         let bars = decode_bars(bdf);
-        let bar = bars[0].mem_base().unwrap_or(0);
+        let Some(resource) = parent.resources.iter().find(|resource| resource.bar == 0 && resource.flags & drv::IORESOURCE_MEM != 0) else { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); };
+        let bar = resource.start;
         let io_base = match bars[1] { pci::Bar::Io { port } => u16::try_from(port).ok(), _ => None };
         if bar == 0 { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); }
         // SAFETY: BAR0 is owned by this successfully matched PCI function and maps its register file.
         // SAFETY: BAR0 comes from the matched PCI function and the driver takes exclusive ownership.
-        let mmio = unsafe { mmio_map::map_owned(bar & !(PAGE - 1), 16) };
+        let bytes = resource.end.checked_sub(resource.start).and_then(|bytes| bytes.checked_add(1)).ok_or(drv::Error::ProbeFailed)?;
+        let pages = (bar & (PAGE - 1)).checked_add(bytes).and_then(|bytes| bytes.checked_add(PAGE - 1)).and_then(|bytes| bytes.checked_div(PAGE)).ok_or(drv::Error::ProbeFailed)?;
+        let mmio = unsafe { mmio_map::map_owned(bar & !(PAGE - 1), pages) };
         let (controller, mac) = match configure_rings(mmio, io_base) { Some(value) => value, None => { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); } };
         trace("[INFO]  e1000: rings ready\n");
         let endpoint = match endpoint_claim(controller.mmio.base_va()) { Some(endpoint) => endpoint, None => { let mut controller = controller; controller.free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); } };
         let line = parent.pci.map(|p| p.interrupt_line).filter(|line| *line != 0);
         let irq = if parent.msi_allowed() {
-            bind_msi(bdf, endpoint).map(|(irq, cap_off, intx_previous)| IrqBinding::Msi { irq, cap_off, intx_previous })
+            bind_msix(bdf, endpoint, &controller).map(|(irq, cap_off, entry_va, intx_previous)| IrqBinding::Msix { irq, cap_off, entry_va, intx_previous })
+                .or_else(|| bind_msi(bdf, endpoint).map(|(irq, cap_off, intx_previous)| IrqBinding::Msi { irq, cap_off, intx_previous }))
         } else { None }.or_else(|| line.and_then(|line| bind_intx(line, endpoint)
             .map(|(vector, pin)| IrqBinding::Intx { vector, pin })));
         let irq = match irq { Some(irq) => irq, None => { endpoint_release(endpoint); let mut controller = controller; controller.free(); restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); } };
