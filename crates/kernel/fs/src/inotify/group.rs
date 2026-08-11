@@ -303,27 +303,18 @@ impl InotifyData {
 
     /// `wait_woken(TASK_INTERRUPTIBLE, MAX_SCHEDULE_TIMEOUT)`.
     ///
-    /// Linux calls `add_wait_queue` ONCE before the loop, so it is registered
-    /// across the condition check and cannot miss a wake. `park_*` here
-    /// publishes `Sleeping` BEFORE pushing onto the waiter list, so a
-    /// producer's `wake_all` landing in that gap finds an empty list
-    /// (`if g.is_empty() { return; }`) and wakes nobody — a PERMANENTLY lost
-    /// wakeup, since inotify passes no deadline to break it out. Re-checking
-    /// after registering restores the ordering without needing the producer's
-    /// lock.
+    /// The queue predicate has no lock-coupled publication requirement, so
+    /// use the shared Linux-shaped interruptible event loop. It publishes the
+    /// waiter before checking the queue, which closes the producer wake race.
     /// # C: O(1) + one sleep
     #[cfg(target_os = "oxide-kernel")]
     fn wait_for_event(&self) {
-        // SAFETY: read syscall context, no locks held; the re-check below cancels
-        // the park if an event or signal arrived while we were publishing.
-        unsafe { self.read_waiters.park_interruptible_with_deadline(0); }
-        if self.has_queued_events() || signals_pending() {
-            self.read_waiters.cancel_current_park();
-            return;
-        }
-        // SAFETY: this task published Sleeping through the wait list and holds no locks.
-        unsafe { sched::live::schedule::schedule(); }
-        self.read_waiters.remove_current();
+        // SAFETY: read syscall context with no producer-held gate owned by
+        // this task; the helper owns enqueue, recheck, cancellation, and sleep.
+        let _ = unsafe {
+            sched::live::wait_event_interruptible(&self.read_waiters,
+                || self.has_queued_events())
+        };
     }
 
     /// Whether the queue a reader drains is non-empty — the condition
