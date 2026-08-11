@@ -213,7 +213,7 @@ impl AhciBlk {
         for step in lifecycle::controller_cleanup_steps() {
             match step {
                 ControllerCleanupStep::MaskAndFreeIrq => {
-                    self.irq.mask_and_free(&ctrl);
+                    self.irq.begin_release(&ctrl);
                 }
                 ControllerCleanupStep::SynchronizeIrq => {
                     self.irq.synchronize_and_release();
