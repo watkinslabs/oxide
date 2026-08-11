@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import struct
 import subprocess
 import sys
 import tempfile
@@ -32,6 +33,139 @@ class Finding:
     category: str
     sources: tuple[str, ...]
     refs: int
+
+
+@dataclass(frozen=True)
+class AbiType:
+    name: str
+    size: int
+    members: tuple[tuple[str, int], ...]
+
+
+# This is the C/Rust KPI profile pinned by tools/kpi-layout-smoke.c.  It is a
+# profile identifier, not a claim that arbitrary Linux-built modules share it.
+SUPPORTED_KPI_ABI: dict[str, AbiType] = {
+    "kobject": AbiType("kobject", 64, (("name", 0), ("entry", 8), ("parent", 24),
+                                          ("kset", 32), ("ktype", 40), ("sd", 48),
+                                          ("kref", 56))),
+    "dev_pm_info": AbiType("dev_pm_info", 320, (("power_state", 0), ("can_wakeup", 4),
+                                                    ("wakeup", 64), ("usage_count", 216),
+                                                    ("child_count", 220), ("disable_depth", 224),
+                                                    ("links_count", 228), ("request", 232),
+                                                    ("runtime_status", 236), ("last_status", 240),
+                                                    ("runtime_error", 244), ("autosuspend_delay", 248),
+                                                    ("last_busy", 256), ("active_time", 264),
+                                                    ("suspended_time", 272), ("accounting_timestamp", 280),
+                                                    ("subsys_data", 288), ("qos", 304))),
+    "device": AbiType("device", 776, (("kobj", 0), ("parent", 64), ("driver_data", 120), ("power", 232), ("dma_mask", 600), ("of_node", 672), ("fwnode", 680), ("class", 720), ("release", 736))),
+    "device_driver": AbiType("device_driver", 152, (("name", 0), ("bus", 8), ("owner", 16),
+                                                        ("mod_name", 24), ("of_match_table", 40),
+                                                        ("acpi_match_table", 48), ("probe", 56),
+                                                        ("sync_state", 64), ("remove", 72),
+                                                        ("shutdown", 80), ("suspend", 88), ("resume", 96),
+                                                        ("groups", 104), ("dev_groups", 112), ("pm", 120),
+                                                        ("coredump", 128), ("p", 136), ("p_cb", 144))),
+    "pci_dev": AbiType("pci_dev", 2736, (("bus_list", 0), ("bus", 16), ("devfn", 56),
+                                      ("vendor", 60), ("device", 62), ("class", 68),
+                                      ("dma_mask", 136), ("current_state", 160), ("dev", 200),
+                                      ("cfg_size", 976), ("irq", 980), ("resource", 984),
+                                      ("driver_exclusive_resource", 2072),
+                                      ("saved_config_space", 2152))),
+    "pci_driver": AbiType("pci_driver", 288, (("name", 0), ("id_table", 8), ("probe", 16),
+                                                  ("remove", 24), ("suspend", 32), ("resume", 40),
+                                                  ("shutdown", 48), ("sriov_configure", 56),
+                                                  ("sriov_set_msix_vec_count", 64),
+                                                  ("sriov_get_vf_total_msix", 72),
+                                                  ("err_handler", 80), ("groups", 88),
+                                                  ("dev_groups", 96), ("driver", 104),
+                                                  ("dynids", 256), ("driver_managed_dma", 280))),
+    "resource": AbiType("resource", 64, (("start", 0), ("end", 8), ("name", 16),
+                                            ("flags", 24), ("desc", 32), ("parent", 40),
+                                            ("sibling", 48), ("child", 56))),
+    "net_device": AbiType("net_device", 2688, (("netdev_ops", 8), ("_tx", 24),
+        ("real_num_tx_queues", 40), ("mtu", 56), ("state", 168), ("flags", 176),
+        ("features", 184), ("ifindex", 224), ("real_num_rx_queues", 228),
+        ("name", 288), ("stats", 552), ("ethtool_ops", 752), ("addr_len", 832),
+        ("uc", 856), ("mc", 888), ("dev_addr", 1072), ("num_rx_queues", 1080),
+        ("broadcast", 1104), ("num_tx_queues", 1160), ("tx_queue_len", 1176),
+        ("dev", 1464), ("tso_max_size", 2312), ("tso_max_segs", 2316),
+        ("phydev", 2368))),
+    "dql": AbiType("dql", 128, (("num_queued", 0), ("adj_limit", 4),
+        ("last_obj_cnt", 8), ("stall_thrs", 12), ("history_head", 16),
+        ("history", 24), ("limit", 64), ("num_completed", 68),
+        ("prev_ovlimit", 72), ("prev_num_queued", 76),
+        ("prev_last_obj_cnt", 80), ("lowest_slack", 84),
+        ("slack_start_time", 88), ("max_limit", 96), ("min_limit", 100),
+        ("slack_hold_time", 104), ("stall_max", 108), ("last_reap", 112),
+        ("stall_cnt", 120))),
+    "netdev_queue": AbiType("netdev_queue", 320, (("dev", 0), ("qdisc", 8),
+        ("qdisc_sleeping", 16), ("kobj", 24), ("groups", 88), ("tx_maxrate", 96),
+        ("trans_timeout", 104), ("sb_dev", 112), ("pool", 120), ("dql", 128),
+        ("_xmit_lock", 256), ("xmit_lock_owner", 260), ("trans_start", 264),
+        ("state", 272), ("napi", 280), ("numa_node", 288))),
+    "netdev_hw_addr": AbiType("netdev_hw_addr", 104, (("list", 0), ("node", 16),
+        ("addr", 40), ("type", 72), ("global_use", 73), ("sync_cnt", 76),
+        ("refcount", 80), ("synced", 84), ("callback_head", 88))),
+    "netdev_hw_addr_list": AbiType("netdev_hw_addr_list", 32, (("list", 0),
+        ("count", 16), ("tree", 24))),
+    "napi_struct": AbiType("napi_struct", 496, (("state", 0), ("weight", 24),
+        ("poll", 32), ("dev", 48), ("irq", 416))),
+    "net_device_ops": AbiType("net_device_ops", 744, (("ndo_init", 0), ("ndo_uninit", 8),
+        ("ndo_open", 16), ("ndo_stop", 24), ("ndo_start_xmit", 32), ("ndo_set_rx_mode", 64),
+        ("ndo_set_mac_address", 72), ("ndo_set_config", 128), ("ndo_change_mtu", 136))),
+    "sk_buff": AbiType("sk_buff", 232, (("sk", 24), ("cb", 40), ("_nfct", 104),
+        ("len", 112), ("data_len", 116), ("mac_len", 120), ("hdr_len", 122),
+        ("queue_mapping", 124), ("active_extensions", 127), ("tail", 188),
+        ("end", 192), ("head", 200), ("data", 208), ("truesize", 216),
+        ("users", 220), ("extensions", 224))),
+    "mii_bus": AbiType("mii_bus", 2672, (("owner", 0), ("name", 8), ("id", 16),
+        ("priv", 80), ("read", 88), ("write", 96), ("read_c45", 104),
+        ("write_c45", 112), ("reset", 120), ("stats", 128), ("mdio_lock", 1152),
+        ("parent", 1184), ("state", 1192), ("dev", 1200), ("mdio_map", 1976),
+        ("phy_mask", 2232), ("phy_ignore_ta_mask", 2236), ("irq", 2240),
+        ("reset_delay_us", 2368), ("reset_post_delay_us", 2372),
+        ("reset_gpiod", 2376), ("shared_lock", 2384), ("shared", 2416))),
+    "mdio_device": AbiType("mdio_device", 880, (("dev", 0), ("bus", 776),
+        ("modalias", 784), ("bus_match", 816), ("device_free", 824),
+        ("device_remove", 832), ("addr", 840), ("flags", 844),
+        ("reset_state", 848), ("reset_gpio", 856), ("reset_ctrl", 864),
+        ("reset_assert_delay", 872), ("reset_deassert_delay", 876))),
+    "phy_device": AbiType("phy_device", 1544, (("mdio", 0), ("interface", 1056),
+        ("speed", 1072), ("duplex", 1076), ("irq", 1272), ("attached_dev", 1464),
+        ("phy_link_change", 1504), ("adjust_link", 1512))),
+    "input_dev": AbiType("input_dev", 1408, (("name", 0), ("phys", 8), ("uniq", 16),
+        ("id", 24), ("propbit", 32), ("evbit", 40), ("keybit", 48), ("relbit", 144),
+        ("absbit", 152), ("mscbit", 160), ("ledbit", 168), ("sndbit", 176),
+        ("ffbit", 184), ("swbit", 200), ("absinfo", 328), ("key", 336),
+        ("led", 432), ("snd", 440), ("sw", 448), ("dev", 544), ("timestamp", 1376),
+        ("inhibited", 1400))),
+}
+
+ABI_TYPES: tuple[str, ...] = (
+    "kobject", "dev_pm_info", "device", "device_driver", "pci_dev", "pci_driver", "resource",
+    "net_device", "netdev_queue", "dql", "netdev_hw_addr", "netdev_hw_addr_list",
+    "net_device_ops", "napi_struct", "sk_buff",
+    "mii_bus", "mdio_device", "phy_device",
+    "input_dev",
+)
+BTF_DETAIL_TYPES: frozenset[str] = frozenset((
+    *ABI_TYPES,
+    "kobject", "device_driver", "pci_driver", "dev_pm_info", "resource",
+    "net_device_ops", "napi_struct", "sk_buff", "mdio_device",
+    "netdev_queue", "dql",
+    "netdev_hw_addr", "netdev_hw_addr_list",
+    "input_dev",
+))
+BTF_KIND_INT = 1
+BTF_KIND_ARRAY = 3
+BTF_KIND_STRUCT = 4
+BTF_KIND_UNION = 5
+BTF_KIND_ENUM = 6
+BTF_KIND_FUNC_PROTO = 13
+BTF_KIND_VAR = 14
+BTF_KIND_DATASEC = 15
+BTF_KIND_DECL_TAG = 17
+BTF_KIND_ENUM64 = 19
 
 
 CATEGORY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -210,6 +344,117 @@ def scan_exports(root: Path, extra: list[Path]) -> set[str]:
     return exports
 
 
+def btf_types(path: Path) -> dict[str, AbiType]:
+    raw = path.read_bytes()
+    if len(raw) < 24:
+        raise ValueError("BTF header is truncated")
+    magic, version, flags, hdr_len, type_off, type_len, str_off, str_len = struct.unpack_from("<HBBIIIII", raw)
+    if magic != 0xEB9F or version != 1 or flags != 0:
+        raise ValueError("unsupported BTF header")
+    type_start = hdr_len + type_off
+    str_start = hdr_len + str_off
+    type_end = type_start + type_len
+    str_end = str_start + str_len
+    if hdr_len < 24 or type_end > len(raw) or str_end > len(raw):
+        raise ValueError("BTF section bounds are invalid")
+    types = raw[type_start:type_end]
+    strings = raw[str_start:str_end]
+
+    def string(offset: int) -> str:
+        if offset == 0:
+            return ""
+        if offset >= len(strings):
+            raise ValueError("BTF string offset is invalid")
+        end = strings.find(b"\0", offset)
+        if end < 0:
+            raise ValueError("BTF string is unterminated")
+        return strings[offset:end].decode(errors="replace")
+
+    fixed_size = {BTF_KIND_INT: 4, BTF_KIND_ARRAY: 12, BTF_KIND_VAR: 4,
+                  BTF_KIND_DECL_TAG: 4}
+    variable_size = {BTF_KIND_ENUM: 8, BTF_KIND_FUNC_PROTO: 8,
+                     BTF_KIND_DATASEC: 12, BTF_KIND_ENUM64: 12}
+    no_extra = {0, 2, 7, 8, 9, 10, 11, 12, 16, 18}
+    found: dict[str, AbiType] = {}
+    offset = 0
+    while offset < len(types):
+        if offset + 12 > len(types):
+            raise ValueError("BTF type record is truncated")
+        name_off, info, size = struct.unpack_from("<III", types, offset)
+        offset += 12
+        kind = (info >> 24) & 0x7F
+        vlen = info & 0x00FF_FFFF
+        name = string(name_off)
+        if kind in (BTF_KIND_STRUCT, BTF_KIND_UNION):
+            total = vlen * 12
+            if offset + total > len(types):
+                raise ValueError("BTF member records are truncated")
+            members: list[tuple[str, int]] = []
+            for _ in range(vlen):
+                member_name, _member_type, member_offset = struct.unpack_from("<III", types, offset)
+                offset += 12
+                members.append((string(member_name), member_offset & 0x00FF_FFFF))
+            if kind == BTF_KIND_STRUCT and name in BTF_DETAIL_TYPES:
+                found[name] = AbiType(name, size, tuple(members))
+            continue
+        if kind in fixed_size:
+            extra = fixed_size[kind]
+        elif kind in variable_size:
+            extra = vlen * variable_size[kind]
+        elif kind in no_extra:
+            extra = 0
+        else:
+            raise ValueError(f"unsupported BTF kind {kind}")
+        if offset + extra > len(types):
+            raise ValueError("BTF type payload is truncated")
+        offset += extra
+    return found
+
+
+def abi_rows(path: Path) -> list[tuple[str, str, str, str, tuple[str, ...]]]:
+    host = btf_types(path)
+    rows: list[tuple[str, str, str, str, tuple[str, ...]]] = []
+    for name in ABI_TYPES:
+        supported = SUPPORTED_KPI_ABI.get(name)
+        actual = host.get(name)
+        if supported is None:
+            rows.append((name, "not profiled", str(actual.size) if actual else "absent", "MISSING-PROFILE", ()))
+            continue
+        if actual is None:
+            rows.append((name, str(supported.size), "absent", "HOST-ABSENT", ()))
+            continue
+        expected_members = dict(supported.members)
+        host_members = dict(actual.members)
+        details = tuple(
+            f"{member}: Oxide +{offset:#x}, host "
+            f"{('+' + format(host_members[member] // 8, '#x')) if member in host_members else 'absent'}"
+            for member, offset in supported.members
+            if host_members.get(member) != offset * 8
+        )
+        members_match = not details
+        if actual.size != supported.size or not members_match:
+            status = "MISMATCH"
+        elif not expected_members:
+            status = "UNVERIFIED-FIELDS"
+        else:
+            status = "MATCH-PINNED"
+        rows.append((name, str(supported.size), str(actual.size), status, details))
+    return rows
+
+
+def print_abi(path: Path) -> bool:
+    rows = abi_rows(path)
+    print(f"host BTF: {path}")
+    print("| Type | Oxide KPI bytes | Host bytes | ABI status |")
+    print("| --- | ---: | ---: | --- |")
+    for name, supported, actual, status, details in rows:
+        print(f"| `{name}` | {supported} | {actual} | {status} |")
+        for detail in details:
+            print(f"|  |  |  | {detail} |")
+    print()
+    return all(status == "MATCH-PINNED" for _name, _supported, _actual, status, _details in rows)
+
+
 def category(sym: str) -> str:
     for name, needles in CATEGORY_RULES:
         if any(sym == n or sym.startswith(n) or n in sym for n in needles):
@@ -259,6 +504,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--nm-output", action="store_true", help="treat all inputs as captured nm -u text")
     ap.add_argument("--exports", action="append", type=Path, default=[], help="extra newline-delimited exported symbols")
     ap.add_argument("--fail-on-missing", action="store_true", help="exit 1 when strong missing symbols remain")
+    ap.add_argument("--host-btf", type=Path, help="running-kernel BTF to compare with the pinned Oxide KPI profile")
+    ap.add_argument("--fail-on-abi-mismatch", action="store_true", help="exit 1 when --host-btf differs from the supported KPI profile")
     args = ap.parse_args(argv)
 
     root = args.root or repo_root(Path.cwd())
@@ -281,7 +528,15 @@ def main(argv: list[str]) -> int:
     rows = findings(undefs, exports)
     print_summary(rows, exports)
     print_markdown(rows)
+    abi_ok = True
+    if args.host_btf:
+        try:
+            abi_ok = print_abi(args.host_btf)
+        except (OSError, ValueError) as exc:
+            raise SystemExit(f"{args.host_btf}: BTF parse failed: {exc}")
     if args.fail_on_missing and any(r.status == "MISSING" for r in rows):
+        return 1
+    if args.fail_on_abi_mismatch and not abi_ok:
         return 1
     return 0
 
