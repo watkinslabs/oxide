@@ -122,7 +122,7 @@ pub unsafe fn park_if_requested(me: &Task) {
         // SAFETY: per this fn's contract — running kthread, no lock held once
         // `gate` drops below; the matching schedule() yields immediately per
         // the WaitList contract.
-        unsafe { PARK_WAIT.park(); }
+        unsafe { PARK_WAIT.prepare_to_wait(); }
         drop(gate);
         // SAFETY: this kthread is parked on PARK_WAIT holding no lock, which
         // is `schedule`'s sleepable-context contract.

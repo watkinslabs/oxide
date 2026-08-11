@@ -399,6 +399,10 @@ fn init_pmm_and_arch(info: &BootInfo) {
         // fault dump of kstack-slot ownership + arch_ctx + the switch ring).
         #[cfg(all(target_arch = "aarch64", feature = "debug-armctx"))]
         ::sched::live::schedule::ctxprobe::install();
+        // A spinning lock's owner must not be descheduled inside its critical
+        // section. Installed here: per-CPU is up (the count needs it) and no
+        // reschedule has happened yet, so no lock can span the installation.
+        ::sched::preempt::install_spinlock_gate();
         #[cfg(feature = "debug-lockdep")]
         ::sched::preempt::install_lockdep();
         // F699: arm the BSP's per-CPU IRQ stack (guard-paged, leaked) so the

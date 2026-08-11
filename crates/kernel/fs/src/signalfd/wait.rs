@@ -14,7 +14,7 @@ static SIGNALFD_READERS: sched::live::WaitList = sched::live::WaitList::new();
 pub(super) fn park() {
     // SAFETY: process context; the caller either yields immediately or
     // cancels the park after its own recheck observes an arrival.
-    unsafe { SIGNALFD_READERS.park_with_deadline(0); }
+    unsafe { SIGNALFD_READERS.prepare_to_wait_interruptible(); }
 }
 
 /// Undo a park whose recheck found work. # C: O(1)

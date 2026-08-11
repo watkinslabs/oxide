@@ -235,8 +235,10 @@ fn init_async_worker() {
 extern "C" fn async_worker_entry(_arg: usize) -> ! {
     loop {
         while drain_async_once() {}
-        // SAFETY: worker parks with no locks held and yields immediately.
-        unsafe { ASYNC_WAIT.park(); sched::live::schedule(); }
+        // SAFETY: worker has no locks held; the async list is mutated before
+        // its wake and the generic loop closes the arrival edge.
+        let _ = unsafe { sched::live::wait_event_uninterruptible(&ASYNC_WAIT,
+            || !ASYNC.lock().is_empty()) };
     }
 }
 

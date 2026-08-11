@@ -23,6 +23,10 @@ syscall  = { path = "../syscall" }
 vfs      = { path = "../vfs" }
 devfs    = { path = "../devfs" }
 procfs   = { path = "../procfs" }
+# `PERF_EVENT_IOC_SET_BPF` resolves a loaded program by fd and reads the facts
+# the attach decision turns on; the program object lives in `security::bpf`,
+# which sits below this crate (`procfs` already depends on it).
+security = { path = "../security" }
 nscg     = { path = "../nscg" }
 umh      = { path = "../umh" }
 pidfd    = { path = "../pidfd" }

@@ -15,20 +15,14 @@ use crate::task::{Task, TASK_COMM_LEN};
 /// per-process). A bad pointer is EFAULT, never a silent no-op.
 /// # C: O(TASK_COMM_LEN)
 pub fn sys_set_name(cur: &Task, args: &SyscallArgs) -> i64 {
-    let p = args.a1;
-    let span = (TASK_COMM_LEN - 1) as u64;
-    if p == 0 || p >= hal::USER_VA_END
-        || p.checked_add(span).map_or(true, |e| e > hal::USER_VA_END) {
-        return -(Errno::Efault.as_i32() as i64);
+    // `strncpy_from_user` stops at the first NUL, so a short name at the end
+    // of a mapping is accepted; range-checking the whole span up front made
+    // that EFAULT. Its copy carries the exception-table fixups, which a raw
+    // byte read does not.
+    match uaccess::strncpy_from_user(args.a1, (TASK_COMM_LEN - 1) as u64) {
+        Ok(name) => { cur.set_comm_raw(&name); 0 }
+        Err(e) => -(e.as_i32() as i64),
     }
-    let mut buf = [0u8; TASK_COMM_LEN - 1];
-    for (i, b) in buf.iter_mut().enumerate() {
-        // SAFETY: p..p+TASK_COMM_LEN-1 validated < USER_VA_END above; CPL=0 byte read through the caller's live AS at the prctl-supplied name pointer.
-        *b = unsafe { core::ptr::read_volatile((p + i as u64) as *const u8) };
-    }
-    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-    cur.set_comm_raw(&buf[..len]);
-    0
 }
 
 /// `prctl(PR_GET_NAME, buf)` — Linux `copy_to_user(arg2, comm, TASK_COMM_LEN)`.
@@ -36,18 +30,10 @@ pub fn sys_set_name(cur: &Task, args: &SyscallArgs) -> i64 {
 /// current `comm`.
 /// # C: O(TASK_COMM_LEN)
 pub fn sys_get_name(cur: &Task, args: &SyscallArgs) -> i64 {
-    let p = args.a1;
-    if p == 0 || p.checked_add(TASK_COMM_LEN as u64).map_or(true, |e| e > hal::USER_VA_END) {
-        return -(Errno::Efault.as_i32() as i64);
+    match uaccess::copy_to_user(args.a1, &cur.comm_bytes()) {
+        Ok(()) => 0,
+        Err(e) => -(e.as_i32() as i64),
     }
-    let buf = cur.comm_bytes();
-    // SAFETY: p..p+TASK_COMM_LEN validated < USER_VA_END above; CPL=0 write through the caller's live AS at the prctl-supplied name buffer.
-    unsafe {
-        for (i, b) in buf.iter().enumerate() {
-            core::ptr::write_volatile((p + i as u64) as *mut u8, *b);
-        }
-    }
-    0
 }
 
 /// `prctl(PR_SET_DUMPABLE, v)` — the argument rule lives in
@@ -67,5 +53,61 @@ pub fn sys_set_dumpable(cur: &Task, args: &SyscallArgs) -> i64 {
         Ok(super::decide::Op::SetDumpable(v)) => set_dumpable(cur, v),
         Ok(_) => -(Errno::Einval.as_i32() as i64),
         Err(e) => -(e.as_i32() as i64),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::task::SchedClass;
+
+    fn args1(a1: u64) -> SyscallArgs { SyscallArgs { a0: 0, a1, a2: 0, a3: 0, a4: 0, a5: 0 } }
+    fn task() -> Task { Task::new(1, "name-test", SchedClass::Normal { weight: 1024 }) }
+    fn efault() -> i64 { -(Errno::Efault.as_i32() as i64) }
+
+    /// `strncpy_from_user` stops at the NUL, so only the bytes up to it are
+    /// the name — the tail of the caller's buffer is not part of it.
+    #[test]
+    fn set_name_takes_the_bytes_before_the_first_nul() {
+        let t = task();
+        let src = *b"init\0XXXXXXXXXX";
+        assert_eq!(sys_set_name(&t, &args1(src.as_ptr() as u64)), 0);
+        assert_eq!(t.comm_bytes(), *b"init\0\0\0\0\0\0\0\0\0\0\0\0");
+    }
+
+    /// A name that fills the span with no NUL keeps `TASK_COMM_LEN - 1`
+    /// bytes; Linux reserves the last byte for the terminator.
+    #[test]
+    fn set_name_truncates_at_task_comm_len_minus_one() {
+        let t = task();
+        let src = *b"0123456789abcdefghij";
+        assert_eq!(sys_set_name(&t, &args1(src.as_ptr() as u64)), 0);
+        assert_eq!(&t.comm_bytes()[..TASK_COMM_LEN - 1], b"0123456789abcde");
+        assert_eq!(t.comm_bytes()[TASK_COMM_LEN - 1], 0);
+    }
+
+    #[test]
+    fn set_name_reports_efault_for_a_pointer_the_copy_refuses() {
+        let t = task();
+        assert_eq!(sys_set_name(&t, &args1(0)), efault());
+        assert_eq!(sys_set_name(&t, &args1(hal::USER_VA_END)), efault());
+        assert_eq!(t.comm_bytes(), *b"name-test\0\0\0\0\0\0\0", "the name is left alone");
+    }
+
+    /// `PR_GET_NAME` writes the whole NUL-padded `TASK_COMM_LEN`, never a
+    /// trimmed string.
+    #[test]
+    fn get_name_writes_the_full_padded_comm() {
+        let t = task();
+        let mut out = [0xffu8; TASK_COMM_LEN];
+        assert_eq!(sys_get_name(&t, &args1(out.as_mut_ptr() as u64)), 0);
+        assert_eq!(out, *b"name-test\0\0\0\0\0\0\0");
+    }
+
+    #[test]
+    fn get_name_reports_efault_for_a_pointer_the_copy_refuses() {
+        let t = task();
+        assert_eq!(sys_get_name(&t, &args1(0)), efault());
+        assert_eq!(sys_get_name(&t, &args1(hal::USER_VA_END)), efault());
     }
 }

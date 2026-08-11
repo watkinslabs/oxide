@@ -384,7 +384,7 @@ impl Raw4Endpoint {
                          deadline_ns: u64) -> bool {
         self.arm_recv_wait_with(read_shut, || {
             // SAFETY: endpoint lock closes receive/shutdown publication before registration.
-            unsafe { self.waiters.park_interruptible_with_deadline(deadline_ns); }
+            unsafe { self.waiters.prepare_to_wait_interruptible_with_deadline(deadline_ns); }
         })
     }
 

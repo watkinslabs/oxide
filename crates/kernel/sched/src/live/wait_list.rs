@@ -1,14 +1,13 @@
 // Generic FIFO wait list — companion to the per-subsystem WAITERS
 // pattern in `zombies.rs`. Subsystems that need blocking semantics
 // (SysV sem/msg, POSIX MQ, futex) instantiate one `WaitList` per
-// resource and call `park()` to sleep, `wake_one()` / `wake_all()`
-// from the corresponding wake site.
+// resource and use a named prepared-wait or predicate helper to sleep,
+// with `wake_one()` / `wake_all()` from the corresponding wake site.
 //
 // Lock-ordering contract:
-//   - Caller holds the resource lock (e.g. SemSet.vals) when
-//     calling park(); park() acquires the wait list's internal
-//     lock briefly to push, then returns. Caller drops resource
-//     lock then calls schedule().
+//   - A prepared-wait caller holds the resource lock (e.g. SemSet.vals)
+//     while publishing. The wait list briefly acquires its internal lock to
+//     push; the caller drops the resource lock and then schedules.
 //   - Wakers (commit path) drop the resource lock BEFORE calling
 //     wake_one/wake_all so the wait list lock is never nested
 //     under the resource lock from the publisher side.
@@ -58,6 +57,75 @@ pub struct WaitList {
 }
 
 impl WaitList {
+    /// Publish the current task as an uninterruptible prepared waiter. The
+    /// caller owns the resource-gate contract: it tests the condition, calls
+    /// this while that gate still excludes the waker, drops the gate, then
+    /// schedules and rechecks. Ordinary predicate waits use `wait_event`.
+    /// # SAFETY: process context with a live runqueue; caller must schedule
+    /// after dropping the resource gate and must finish/cancel on every exit.
+    /// # C: O(1)
+    pub unsafe fn prepare_to_wait(&self) {
+        // SAFETY: this is the named prepared-wait form of `park` and forwards
+        // the caller's publication/schedule contract unchanged.
+        unsafe { self.park(); }
+    }
+
+    /// Timed uninterruptible [`prepare_to_wait`]. # SAFETY: see that method.
+    ///
+    /// This is for a caller that owns the completion rule itself (for example,
+    /// a private deadline sleep) and therefore publishes before it schedules.
+    /// # C: O(N armed)
+    pub unsafe fn prepare_to_wait_with_deadline(&self, deadline_ns: u64) {
+        // SAFETY: forwards the prepared-wait contract with the absolute
+        // deadline retained for the scheduler deadline scanner.
+        unsafe { self.park_with_deadline(deadline_ns); }
+    }
+
+    /// Timed [`prepare_to_wait`] with an explicit coalescing window.
+    /// # SAFETY: the caller holds the condition gate while publishing, drops
+    /// it before scheduling, and finishes/cancels the prepared wait on every
+    /// return path. The timer may fire in `[deadline_ns, deadline_ns + slack_ns]`.
+    /// # C: O(N armed)
+    pub unsafe fn prepare_to_wait_with_deadline_range(&self, deadline_ns: u64, slack_ns: u64) {
+        // SAFETY: forwards the named prepared-wait contract while preserving
+        // the caller-selected timer coalescing range.
+        unsafe { self.park_with_deadline_range(deadline_ns, slack_ns); }
+    }
+
+    /// Interruptible [`prepare_to_wait`]. # SAFETY: see that method.
+    /// # C: O(1)
+    pub unsafe fn prepare_to_wait_interruptible(&self) {
+        // SAFETY: forwards the prepared-wait contract while adding the
+        // signal-after-publication check required for an interruptible wait.
+        unsafe { self.park_interruptible_with_deadline(0); }
+    }
+
+    /// Timed interruptible [`prepare_to_wait`]. # SAFETY: see that method.
+    /// # C: O(1)
+    pub unsafe fn prepare_to_wait_interruptible_with_deadline(&self, deadline_ns: u64) {
+        // SAFETY: forwards the prepared-wait contract with the caller's
+        // absolute deadline retained for the scheduler's deadline scanner.
+        unsafe { self.park_interruptible_with_deadline(deadline_ns); }
+    }
+
+    /// Arm a deadline for the running task's existing prepared wait without
+    /// re-publishing it. # SAFETY: the caller prepared this task on this list,
+    /// still has not scheduled, and will drop its resource gate before doing so.
+    /// # C: O(N armed)
+    pub unsafe fn arm_current_prepared_deadline(&self, deadline_ns: u64) {
+        if deadline_ns == 0 { return; }
+        let Some(cur) = super::schedule::current() else { return };
+        let Some(task) = crate::registry::lookup(cur.tid) else { return };
+        // A wake that won before this timed commit made the task Runnable.
+        // Never turn that wake back into Sleeping by re-publishing it.
+        if task.state() != TaskState::Sleeping { return; }
+        let slack = crate::hrtimeout::task_slack_ns(&task);
+        crate::hrtimeout::arm(&task, deadline_ns, slack);
+        if task.state() != TaskState::Sleeping {
+            crate::hrtimeout::disarm(&task);
+        }
+    }
+
     /// # C: O(1)
     pub const fn new() -> Self {
         Self { waiters: Spinlock::new(Vec::new()) }
@@ -74,7 +142,7 @@ impl WaitList {
     /// stays balanced across park/wake.
     /// # C: O(1)
     /// # Lk: WaitList.waiters (TaskList class)
-    pub unsafe fn park(&self) {
+    pub(crate) unsafe fn park(&self) {
         // SAFETY: same contract as park_with_deadline; 0 deadline disables the timer-wake path.
         unsafe { self.park_with_deadline(0); }
     }
@@ -93,7 +161,7 @@ impl WaitList {
     /// # SAFETY: see `park`. Caller still owns the post-park
     /// `schedule()` call.
     /// # C: O(N armed)
-    pub unsafe fn park_with_deadline(&self, deadline_ns: u64) {
+    pub(crate) unsafe fn park_with_deadline(&self, deadline_ns: u64) {
         let slack = super::schedule::current()
             .map(crate::hrtimeout::task_slack_ns).unwrap_or(0);
         // SAFETY: forwards the caller's contract unchanged; this wrapper only supplies the default slack.
@@ -105,7 +173,7 @@ impl WaitList {
     /// time in `[deadline_ns, deadline_ns + slack_ns]`, never before.
     /// # SAFETY: see `park`.
     /// # C: O(N armed)
-    pub unsafe fn park_with_deadline_range(&self, deadline_ns: u64, slack_ns: u64) {
+    pub(crate) unsafe fn park_with_deadline_range(&self, deadline_ns: u64, slack_ns: u64) {
         let rq = match super::runqueue::global() { Some(r) => r, None => return };
         let raw = rq.current.load(Ordering::Acquire);
         if raw.is_null() { return; }
@@ -113,17 +181,10 @@ impl WaitList {
         unsafe { Arc::increment_strong_count(raw); }
         // SAFETY: matching Arc::from_raw consumes the bumped ref.
         let arc = unsafe { Arc::from_raw(raw) };
-        arc.set_state(TaskState::Sleeping);
-        // Publish Sleeping before arming. If the timer fires between these two
-        // it wakes a task that is already Sleeping and the wake lands; arming
-        // first lets the expiry be consumed while `claim_wake` still sees
-        // Runnable, after which this task sleeps with no armed wake.
-        //
-        // Armed BEFORE the wait-list push, not after: `Hrtimeout` ranks below
-        // `TaskList`, so this is the ascending order. A wake that lands in the
-        // gap finds the task Runnable and the post-park `schedule()` simply
-        // keeps running it — the same race the deadline stamp always had.
-        crate::hrtimeout::arm(&arc, deadline_ns, slack_ns);
+        // Keep one reference for the timeout arm after this function publishes
+        // the other one to the wait list. The wait-list lock must not nest the
+        // hrtimer lock: Hrtimeout ranks below TaskList.
+        let timer_arc = Arc::clone(&arc);
         #[cfg(feature = "debug-desktop")]
         if deadline_ns != 0 && arc.with_exe_path(|p| p.map(|p| {
             p.contains("gnome-shell") || p.contains("mutter")
@@ -141,6 +202,11 @@ impl WaitList {
             klog::write_raw(b"]\n");
         }
         let mut g = waiters_lock!(self);
+        // Linux prepare_to_wait order: add the waiter, then publish Sleeping,
+        // while holding the wait-queue lock. A waker can consequently observe
+        // either the prior Runnable state or a visible Sleeping waiter; it can
+        // never observe Sleeping while the queue is empty and lose the event.
+        //
         // Dedup: drop any prior entry for this task before re-pushing.
         // A signal wake / deadline scanner rouses a parked task WITHOUT
         // popping it from the list; if the task then re-parks (its
@@ -151,23 +217,24 @@ impl WaitList {
         let cur = raw as *const Task;
         g.retain(|a| Arc::as_ptr(a) != cur);
         g.push(arc);
+        timer_arc.set_state(TaskState::Sleeping);
+        drop(g);
+        // Timer setup follows publication because its lock ranks below the
+        // wait-list lock. A wake can win in this small interval, before an
+        // expiry exists to cancel. Arm first, then retire it if that happened;
+        // a wake after this check clears the same deadline in ttwu.
+        crate::hrtimeout::arm(&timer_arc, deadline_ns, slack_ns);
+        if timer_arc.state() != TaskState::Sleeping {
+            crate::hrtimeout::disarm(&timer_arc);
+        }
     }
 
     /// Park with a deadline while closing the signal-before-sleep race.
     /// # C: O(1)
-    pub unsafe fn park_interruptible_with_deadline(&self, deadline_ns: u64) {
+    pub(crate) unsafe fn park_interruptible_with_deadline(&self, deadline_ns: u64) {
         // SAFETY: caller provides the same process-context contract required by
         // park_with_deadline; this wrapper only performs the post-publish check.
         unsafe { self.park_with_deadline(deadline_ns); }
-        self.check_pending_after_park();
-    }
-
-    /// [`park_interruptible_with_deadline`] with an explicit coalescing window.
-    /// # SAFETY: see `park`.
-    /// # C: O(N armed)
-    pub unsafe fn park_interruptible_with_deadline_range(&self, deadline_ns: u64, slack_ns: u64) {
-        // SAFETY: same contract as `park_interruptible_with_deadline`; only the slack differs.
-        unsafe { self.park_with_deadline_range(deadline_ns, slack_ns); }
         self.check_pending_after_park();
     }
 
@@ -233,6 +300,10 @@ impl WaitList {
         let Some(cur) = super::schedule::current() else { return };
         let ptr = cur as *const Task;
         waiters_lock!(self).retain(|task| Arc::as_ptr(task) != ptr);
+        // A wake may win after wait-list publication but before the timeout is
+        // armed. Retire that now-stale arm before this task can begin another
+        // wait, just as finish_wait cancels a pending timeout on every exit.
+        crate::hrtimeout::disarm(cur);
     }
 
     /// Cancel the current task's published park before it calls `schedule`.

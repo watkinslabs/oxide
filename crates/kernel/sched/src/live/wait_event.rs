@@ -90,6 +90,49 @@ pub unsafe fn wait_event_interruptible(wq: &WaitList, cond: impl FnMut() -> bool
     unsafe { wait_event(wq, WaitState::Interruptible, 0, || 0, cond) }
 }
 
+/// Linux `wait_event(wq, cond)` for a wait which deliberately ignores signals.
+///
+/// # SAFETY: process context on the running task's own CPU, with the runqueue
+/// installed; the caller must hold no lock that a waker of `wq` also takes.
+/// # C: O(N_wakeups) condition evaluations
+pub unsafe fn wait_event_uninterruptible(wq: &WaitList, mut cond: impl FnMut() -> bool) -> WaitOutcome {
+    loop {
+        // SAFETY: forwarded fn-level contract; plain publication intentionally
+        // ignores signals, matching an uninterruptible worker/completion wait.
+        unsafe { wq.park(); }
+        if cond() { break; }
+        // SAFETY: publication above makes a subsequent schedule race-free.
+        unsafe { super::park_yield(); }
+        if cond() { break; }
+    }
+    wq.cancel_current_park();
+    WaitOutcome::Ready
+}
+
+/// Timed uninterruptible predicate wait. `deadline_ns == 0` disables timeout.
+/// # SAFETY: see [`wait_event_uninterruptible`].
+/// # C: O(N_wakeups)
+pub unsafe fn wait_event_uninterruptible_until(wq: &WaitList, deadline_ns: u64,
+                                               now: impl Fn() -> u64,
+                                               mut cond: impl FnMut() -> bool) -> WaitOutcome {
+    let timed = deadline_ns != 0;
+    loop {
+        // SAFETY: forwarded sleepable-context contract; this is the timed
+        // prepared publication owned by the shared predicate-wait loop.
+        unsafe { wq.park_with_deadline(deadline_ns); }
+        if cond() { break; }
+        if timed && now() >= deadline_ns {
+            wq.cancel_current_park();
+            return if cond() { WaitOutcome::Ready } else { WaitOutcome::TimedOut };
+        }
+        // SAFETY: waiter publication above makes the schedule race-free.
+        unsafe { super::park_yield(); }
+        if cond() { break; }
+    }
+    wq.cancel_current_park();
+    WaitOutcome::Ready
+}
+
 /// Linux `wait_event_interruptible_timeout(wq, cond, timeout)`, on an ABSOLUTE
 /// monotonic deadline rather than a relative jiffy count so a restarted wait
 /// resumes the REMAINDER (`13§8`).

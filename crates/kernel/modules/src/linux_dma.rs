@@ -8,29 +8,26 @@ use core::ptr::{copy_nonoverlapping, null_mut, write_bytes};
 use core::sync::atomic::{compiler_fence, fence, Ordering};
 
 use crate::linux_alloc::{self, LinuxPage};
+pub(crate) use crate::linux_device::types::LinuxDevice;
 
 pub(crate) const DMA_MAPPING_ERROR: u64 = 0;
 const LINUX_OK: i32 = 0;
 const LINUX_EIO: i32 = 5;
 pub(crate) const LINUX_EINVAL: i32 = 22;
+const LINUX_ENOMEM: i32 = 12;
 const DMA_NONE: i32 = 0;
 pub(crate) const DMA_TO_DEVICE: i32 = 1;
 const DMA_FROM_DEVICE: i32 = 2;
 pub(crate) const DMA_BIDIRECTIONAL: i32 = 3;
 pub(crate) const DEFAULT_DMA_MASK: u64 = u64::MAX;
 const DMA_ADDRESS_BITS: u32 = u64::BITS;
+const DMA_ATTR_SKIP_CPU_SYNC: u64 = 1 << 5;
+const DMA_ATTR_NO_KERNEL_MAPPING: u64 = 1 << 4;
 pub(crate) const SG_END: usize = 0x02;
 // Only `linux_dma_tests` drives `sg_miter_start`; no in-tree module maps an SG
 // list yet, so the direction flag has no production reader.
 #[cfg(test)]
 pub(crate) const SG_MITER_FROM_SG: u32 = 1 << 2;
-
-#[repr(C)]
-pub struct LinuxDevice {
-    pub(crate) dma_mask: *mut u64,
-    pub(crate) coherent_dma_mask: u64,
-    pub(crate) driver_data: *mut c_void,
-}
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -75,15 +72,21 @@ pub fn export_symbols() {
     use crate::symtab::export;
     for (name, addr) in [
         ("dma_alloc_coherent",        dma_alloc_coherent        as *const () as usize),
+        ("dma_alloc_attrs",           dma_alloc_attrs           as *const () as usize),
         ("dmam_alloc_coherent",       dma_alloc_coherent        as *const () as usize),
         ("dma_free_coherent",         dma_free_coherent         as *const () as usize),
+        ("dma_free_attrs",            dma_free_attrs            as *const () as usize),
         ("dmam_free_coherent",        dma_free_coherent         as *const () as usize),
         ("dma_map_single",            dma_map_single            as *const () as usize),
         ("dma_unmap_single",          dma_unmap_single          as *const () as usize),
         ("dma_map_page",              dma_map_page              as *const () as usize),
+        ("dma_map_page_attrs",        dma_map_page_attrs        as *const () as usize),
         ("dma_unmap_page",            dma_unmap_page            as *const () as usize),
+        ("dma_unmap_page_attrs",      dma_unmap_page_attrs      as *const () as usize),
         ("dma_map_sg",                dma_map_sg                as *const () as usize),
+        ("dma_map_sg_attrs",          dma_map_sg_attrs          as *const () as usize),
         ("dma_unmap_sg",              dma_unmap_sg              as *const () as usize),
+        ("dma_unmap_sg_attrs",        dma_unmap_sg_attrs        as *const () as usize),
         ("dma_mapping_error",         dma_mapping_error         as *const () as usize),
         ("dma_sync_single_for_cpu",    dma_sync_single_for_cpu    as *const () as usize),
         ("dma_sync_single_for_device", dma_sync_single_for_device as *const () as usize),
@@ -111,7 +114,12 @@ pub fn export_symbols() {
 }
 
 pub(crate) extern "C" fn dma_alloc_coherent(dev: *mut LinuxDevice, size: usize, dma_handle: *mut u64, flags: u64) -> *mut c_void {
+    dma_alloc_attrs(dev, size, dma_handle, flags, 0)
+}
+
+pub(crate) extern "C" fn dma_alloc_attrs(dev: *mut LinuxDevice, size: usize, dma_handle: *mut u64, flags: u64, attrs: u64) -> *mut c_void {
     let _ = flags;
+    if attrs & DMA_ATTR_NO_KERNEL_MAPPING != 0 { return null_mut(); }
     if size == 0 || dma_handle.is_null() { return null_mut(); }
     let order = match order_for_size(size) { Some(v) => v, None => return null_mut() };
     let (pa, va) = match linux_alloc::page_run_alloc(order, true) { Some(v) => v, None => return null_mut() };
@@ -125,6 +133,10 @@ pub(crate) extern "C" fn dma_alloc_coherent(dev: *mut LinuxDevice, size: usize, 
 }
 
 pub(crate) extern "C" fn dma_free_coherent(_dev: *mut LinuxDevice, size: usize, cpu_addr: *mut c_void, dma_handle: u64) {
+    dma_free_attrs(_dev, size, cpu_addr, dma_handle, 0);
+}
+
+pub(crate) extern "C" fn dma_free_attrs(_dev: *mut LinuxDevice, size: usize, cpu_addr: *mut c_void, dma_handle: u64, _attrs: u64) {
     if size == 0 || cpu_addr.is_null() || dma_handle == DMA_MAPPING_ERROR { return; }
     if let Some(order) = order_for_size(size) { linux_alloc::page_run_free_pa(dma_handle, order); }
 }
@@ -143,26 +155,39 @@ pub(crate) extern "C" fn dma_unmap_single(_dev: *mut LinuxDevice, dma_addr: u64,
 }
 
 pub(crate) extern "C" fn dma_map_page(dev: *mut LinuxDevice, page: *mut LinuxPage, offset: usize, size: usize, dir: i32) -> u64 {
+    dma_map_page_attrs(dev, page, offset, size, dir, 0)
+}
+
+pub(crate) extern "C" fn dma_map_page_attrs(dev: *mut LinuxDevice, page: *mut LinuxPage, offset: usize, size: usize, dir: i32, attrs: u64) -> u64 {
     if size == 0 || !valid_dir(dir) { return DMA_MAPPING_ERROR; }
     // SAFETY: dma_map_page's KPI requires page to be a live descriptor while the mapping is installed.
     let base = match unsafe { linux_alloc::linux_page_phys(page) } { Some(v) => v, None => return DMA_MAPPING_ERROR };
     let pa = match base.checked_add(offset as u64) { Some(v) => v, None => return DMA_MAPPING_ERROR };
     if !fits_mask(pa, size, device_dma_mask(dev, false)) { return DMA_MAPPING_ERROR; }
-    sync_for_device(dir);
+    if attrs & DMA_ATTR_SKIP_CPU_SYNC == 0 { sync_for_device(dir); }
     pa
 }
 
 extern "C" fn dma_unmap_page(dev: *mut LinuxDevice, dma_addr: u64, size: usize, dir: i32) {
-    dma_unmap_single(dev, dma_addr, size, dir);
+    dma_unmap_page_attrs(dev, dma_addr, size, dir, 0);
+}
+
+extern "C" fn dma_unmap_page_attrs(_dev: *mut LinuxDevice, dma_addr: u64, size: usize, dir: i32, attrs: u64) {
+    if dma_addr == DMA_MAPPING_ERROR || size == 0 || !valid_dir(dir) { return; }
+    if attrs & DMA_ATTR_SKIP_CPU_SYNC == 0 { sync_for_cpu(dir); }
 }
 
 pub(crate) extern "C" fn dma_map_sg(dev: *mut LinuxDevice, sg: *mut ScatterList, nents: i32, dir: i32) -> i32 {
+    dma_map_sg_attrs(dev, sg, nents, dir, 0)
+}
+
+pub(crate) extern "C" fn dma_map_sg_attrs(dev: *mut LinuxDevice, sg: *mut ScatterList, nents: i32, dir: i32, attrs: u64) -> i32 {
     if sg.is_null() || nents <= 0 || !valid_dir(dir) { return 0; }
     let mut mapped = 0i32;
     for i in 0..nents as usize {
         // SAFETY: caller supplied an array containing nents scatterlist entries.
         let ent = unsafe { &mut *sg.add(i) };
-        let dma = map_sg_entry(dev, ent, dir);
+        let dma = map_sg_entry(dev, ent, dir, attrs);
         if dma == DMA_MAPPING_ERROR { break; }
         ent.dma_address = dma;
         ent.dma_length = ent.length;
@@ -172,8 +197,12 @@ pub(crate) extern "C" fn dma_map_sg(dev: *mut LinuxDevice, sg: *mut ScatterList,
 }
 
 pub(crate) extern "C" fn dma_unmap_sg(_dev: *mut LinuxDevice, sg: *mut ScatterList, nents: i32, dir: i32) {
+    dma_unmap_sg_attrs(_dev, sg, nents, dir, 0);
+}
+
+pub(crate) extern "C" fn dma_unmap_sg_attrs(_dev: *mut LinuxDevice, sg: *mut ScatterList, nents: i32, dir: i32, attrs: u64) {
     if sg.is_null() || nents <= 0 || !valid_dir(dir) { return; }
-    sync_for_cpu(dir);
+    if attrs & DMA_ATTR_SKIP_CPU_SYNC == 0 { sync_for_cpu(dir); }
     for i in 0..nents as usize {
         // SAFETY: caller supplied an array containing nents scatterlist entries.
         let ent = unsafe { &mut *sg.add(i) };
@@ -183,7 +212,7 @@ pub(crate) extern "C" fn dma_unmap_sg(_dev: *mut LinuxDevice, sg: *mut ScatterLi
 }
 
 pub(crate) extern "C" fn dma_mapping_error(_dev: *mut LinuxDevice, dma_addr: u64) -> i32 {
-    if dma_addr == DMA_MAPPING_ERROR { 1 } else { 0 }
+    if dma_addr == DMA_MAPPING_ERROR { -LINUX_ENOMEM } else { 0 }
 }
 
 extern "C" fn dma_sync_single_for_cpu(_dev: *mut LinuxDevice, _dma_addr: u64, size: usize, dir: i32) {
@@ -372,7 +401,7 @@ pub(crate) extern "C" fn sg_miter_stop(m: *mut SgMappingIter) {
     unsafe { (*m).page = null_mut(); (*m).addr = null_mut(); (*m).length = 0; (*m).consumed = 0; }
 }
 
-fn map_sg_entry(dev: *mut LinuxDevice, ent: &ScatterList, dir: i32) -> u64 {
+fn map_sg_entry(dev: *mut LinuxDevice, ent: &ScatterList, dir: i32, attrs: u64) -> u64 {
     if ent.length == 0 { return DMA_MAPPING_ERROR; }
     let page = ent.page_link & !SG_END;
     let pa = if page != 0 {
@@ -383,7 +412,7 @@ fn map_sg_entry(dev: *mut LinuxDevice, ent: &ScatterList, dir: i32) -> u64 {
         match linux_alloc::direct_pa_for_va(ent.dma_address as *const u8) { Some(v) => v, None => return DMA_MAPPING_ERROR }
     };
     if !fits_mask(pa, ent.length as usize, device_dma_mask(dev, false)) { return DMA_MAPPING_ERROR; }
-    sync_for_device(dir);
+    if attrs & DMA_ATTR_SKIP_CPU_SYNC == 0 { sync_for_device(dir); }
     pa
 }
 

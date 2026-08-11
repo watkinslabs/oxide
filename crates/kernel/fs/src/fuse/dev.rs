@@ -101,12 +101,9 @@ impl CharDevOps for FuseDevOps {
             }
             #[cfg(target_os = "oxide-kernel")]
             {
-                // A deliverable signal interrupts the channel wait before the
-                // task parks again.
-                if sched::live::deliverable_signals_self() != 0 {
+                if conn.wait_daemon() == sched::WaitOutcome::Interrupted {
                     return Err(VfsError::Erestartsys);
                 }
-                conn.park_daemon();
             }
             #[cfg(not(target_os = "oxide-kernel"))]
             return Err(VfsError::Eagain);

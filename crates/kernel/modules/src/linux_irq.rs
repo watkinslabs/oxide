@@ -48,6 +48,8 @@ static IRQ_RECORDS: Spinlock<[Option<IrqRecord>; MAX_IRQ_RECORDS], ModulesLockCl
     Spinlock::new([None; MAX_IRQ_RECORDS]);
 #[cfg(target_os = "oxide-kernel")]
 static IRQ_THREAD_WAIT: sched::live::WaitList = sched::live::WaitList::new();
+#[cfg(target_os = "oxide-kernel")]
+static IRQ_SYNC_WAIT: sched::live::WaitList = sched::live::WaitList::new();
 static IRQ_THREAD_STARTED: AtomicBool = AtomicBool::new(false);
 
 /// Register Linux IRQ KPI symbols.
@@ -165,11 +167,10 @@ extern "C" fn disable_irq_nosync(irq: u32) {
 extern "C" fn synchronize_irq(irq: u32) {
     drain_irq_threads();
     #[cfg(target_os = "oxide-kernel")]
-    while irq_thread_busy(irq) {
-        // SAFETY: synchronize_irq is process context; yielding lets the IRQ worker drain.
-        unsafe { sched::live::park_yield(); }
-        drain_irq_threads();
-    }
+    // SAFETY: process context with no IRQ-record lock held. The threaded
+    // completion path changes `running`/`pending` before waking this queue.
+    let _ = unsafe { sched::live::wait_event_uninterruptible(&IRQ_SYNC_WAIT,
+        || !irq_thread_busy(irq)) };
     #[cfg(not(target_os = "oxide-kernel"))]
     let _ = irq;
 }
@@ -267,11 +268,16 @@ fn wake_irq_thread(slot: usize) {
 extern "C" fn irq_thread_entry(_arg: usize) -> ! {
     loop {
         drain_irq_threads();
-        // SAFETY: irqthread is the running task and yields immediately after parking.
-        unsafe { IRQ_THREAD_WAIT.park(); }
-        // SAFETY: irqthread just parked itself and must schedule away.
-        unsafe { sched::live::park_yield(); }
+        // SAFETY: irqthread owns no IRQ-record lock here; producers publish a
+        // pending count before waking, and the generic loop closes the edge.
+        let _ = unsafe { sched::live::wait_event_uninterruptible(&IRQ_THREAD_WAIT,
+            has_pending_thread) };
     }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn has_pending_thread() -> bool {
+    IRQ_RECORDS.lock().iter().flatten().any(|rec| rec.pending != 0 && rec.thread_fn != 0)
 }
 
 fn drain_irq_threads() {
@@ -308,6 +314,8 @@ fn finish_thread(slot: usize, handled: bool) {
             }
         }
     }
+    #[cfg(target_os = "oxide-kernel")]
+    IRQ_SYNC_WAIT.wake_all();
 }
 
 #[cfg(target_os = "oxide-kernel")]

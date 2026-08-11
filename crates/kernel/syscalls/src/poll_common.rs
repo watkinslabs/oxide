@@ -72,8 +72,9 @@ impl PollWaiter {
         // `schedule_hrtimeout_range(expires, slack, HRTIMER_MODE_ABS)`), which
         // is what keeps a machine full of long pollers off the interrupt path.
         let slack_ns = sched::hrtimeout::select_estimate_accuracy(deadline_ns);
-        // SAFETY: caller (sys_poll/sys_select) is the running task on this CPU in process context, preempt-off; park_with_deadline_range publishes Sleeping on this wait list before the generation recheck.
-        unsafe { self.wq.park_with_deadline_range(deadline_ns, slack_ns); }
+        // SAFETY: caller holds the poll generation gate through publication,
+        // then drops it before sleeping and always removes the prepared wait.
+        unsafe { self.wq.prepare_to_wait_with_deadline_range(deadline_ns, slack_ns); }
         if self.generation.load(Ordering::Acquire) != observed {
             self.wq.wake_all();
         }

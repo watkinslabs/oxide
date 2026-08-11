@@ -7,9 +7,6 @@
 
 use crate::mqueue_wait;
 
-/// `struct timespec` — two 64-bit words on both LP64 arches.
-const TIMESPEC_BYTES: u64 = 16;
-
 /// Timeout validation applied to the raw user
 /// pointer, plus the absolute-deadline conversion the wait loop waits on
 /// (`CLOCK_REALTIME`, absolute mode).
@@ -21,17 +18,11 @@ const TIMESPEC_BYTES: u64 = 16;
 pub(super) fn mq_abs_deadline(abstime: u64) -> Result<Option<u64>, i64> {
     use syscall::errno::Errno;
     if abstime == 0 { return Ok(None); }
-    // `get_timespec64` copies BOTH words, so the whole struct must be in user
-    // space — not merely its first byte.
-    if abstime >= hal::USER_VA_END
-        || abstime.checked_add(TIMESPEC_BYTES).map(|e| e > hal::USER_VA_END).unwrap_or(true) {
+    // `get_timespec64` copies BOTH words through the exception table, so the
+    // whole struct has to be reachable — not merely its first byte — and an
+    // in-range address with nothing mapped under it is EFAULT.
+    let Ok((sec, nsec)) = crate::useraccess::read_timespec(abstime) else {
         return Err(-(Errno::Efault.as_i32() as i64));
-    }
-    // SAFETY: abstime validated below USER_VA_END; a user timespec is 2x i64
-    // at +0/+8, read through the caller's active address space at CPL=0.
-    let (sec, nsec) = unsafe {
-        (core::ptr::read_unaligned(abstime as *const i64),
-         core::ptr::read_unaligned((abstime + 8) as *const i64))
     };
     let target = mqueue_wait::prepare_timeout(sec, nsec)
         .map_err(|e| -(e.as_i32() as i64))?;

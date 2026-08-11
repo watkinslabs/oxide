@@ -120,8 +120,9 @@ pub fn dispatch_timed(uaddr: u64, op_full: u32, val: u32, bitset: u32, deadline_
 /// only under a pathological spurious-wake storm (matches Linux).
 fn wait_loop(uaddr: u64, op_full: u32, val: u32, bitset: u32, private: bool, deadline_ns: u64) -> i64 {
     loop {
-        // SAFETY: bounded user VA validated above; CR3 is current's.
-        let cur_val = unsafe { load_user_u32(uaddr) };
+        // `futex_get_value_locked`: an in-range address with no page under it
+        // is EFAULT through the exception table, not a kernel fault.
+        let Ok(cur_val) = load_user_u32(uaddr) else { return -(Errno::Efault.as_i32() as i64) };
         if cur_val != val { return -(Errno::Eagain.as_i32() as i64); }
         #[cfg(feature = "debug-displaystack")]
         if uaddr >= 0x7fff_0000_0000 {
@@ -203,8 +204,7 @@ fn wait_loop(uaddr: u64, op_full: u32, val: u32, bitset: u32, private: bool, dea
             klog::write_raw(b" ctx=");
             let base = uaddr & !0xf;
             for i in 0..8u64 {
-                // SAFETY: same page as the validated futex word; CR3 current's.
-                let w = unsafe { load_user_u32(base.wrapping_add(i * 4)) };
+                let w = load_user_u32(base.wrapping_add(i * 4)).unwrap_or(0);
                 klog::write_hex_u64(w as u64);
                 klog::write_raw(b",");
             }
@@ -217,11 +217,12 @@ fn wait_loop(uaddr: u64, op_full: u32, val: u32, bitset: u32, private: bool, dea
         let arc = unsafe { Arc::from_raw(raw) };
         {
             let mut w = WAITERS.lock();
-            // SAFETY: bounded user VA validated above; CR3 is the caller's.
-            if unsafe { load_user_u32(uaddr) } != val {
+            let recheck = load_user_u32(uaddr);
+            if recheck != Ok(val) {
                 drop(w);
                 drop(arc);
-                return -(Errno::Eagain.as_i32() as i64);
+                return if recheck.is_err() { -(Errno::Efault.as_i32() as i64) }
+                       else { -(Errno::Eagain.as_i32() as i64) };
             }
             arc.set_state(TaskState::Sleeping);
             cur.futex_uaddr.store(uaddr, core::sync::atomic::Ordering::Relaxed);

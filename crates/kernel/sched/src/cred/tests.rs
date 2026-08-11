@@ -8,10 +8,12 @@
 // - keyring:  `key_fsuid_changed`/`key_fsgid_changed` dispatch from commit_creds.
 // - groups:   getgroups/setgroups counts, sizes, sorting, and error order.
 // - getres:   getresuid/getresgid writeback and EFAULT.
+// - caps_marshal: capget/capset header + data-block copies and their errnos.
 // - capfix:   cap_emulate_setxuid + commit_creds dumpability side effects.
 // - userns:   `make_kuid`/`from_kuid_munged` at the argument/result boundary.
 
 mod capfix;
+mod caps_marshal;
 mod fixtures;
 mod fsid;
 mod getres;

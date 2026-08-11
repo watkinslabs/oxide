@@ -35,6 +35,10 @@ pub mod mqueue_wait;
 pub mod robust_decode;
 pub mod signal;
 pub mod sysv;
+// Every user-memory transfer this crate makes, in one non-gated owner. `live`
+// is kernel-only, so a usercopy helper written beside its callers cannot be
+// tested; this one can, and it is where the exception-table recovery lives.
+pub mod useraccess;
 pub mod sysv_shm;
 pub mod waitqueue;
 pub use signal::{

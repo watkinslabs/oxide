@@ -298,6 +298,7 @@ dependencies = [
 name = "drv-nvme"
 version = "0.1.0"
 dependencies = [
+ "arch-irq",
  "block",
  "drv",
  "hal",
@@ -307,6 +308,7 @@ dependencies = [
  "mmio-map",
  "pci",
  "pmm",
+ "sched",
  "sync",
 ]
 
@@ -695,6 +697,7 @@ dependencies = [
  "pmm",
  "procfs",
  "sched",
+ "security",
  "sync",
  "syscall",
  "timekeeper",
@@ -846,6 +849,7 @@ dependencies = [
  "sync",
  "syscall",
  "timekeeper",
+ "uaccess",
  "vfs",
  "vmm",
 ]

@@ -145,7 +145,7 @@ impl VsockTable {
     pub fn arm_accept_wait_exact(&self, listener: &Arc<Listener>, deadline_ns: u64) -> AcceptWait {
         self.arm_accept_wait_exact_with(listener, || {
             // SAFETY: registry and backlog locks serialize removal/enqueue with registration.
-            unsafe { listener.accept_waiters.park_interruptible_with_deadline(deadline_ns); }
+            unsafe { listener.accept_waiters.prepare_to_wait_interruptible_with_deadline(deadline_ns); }
         })
     }
 

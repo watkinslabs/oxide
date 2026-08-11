@@ -19,6 +19,8 @@ use core::sync::atomic::Ordering;
 
 #[cfg(target_os = "oxide-kernel")]
 use sched::live::wait_list::WaitList;
+#[cfg(target_os = "oxide-kernel")]
+use sched::WaitOutcome;
 use sync::Spinlock;
 use vfs::{File, FileType, Fmode, Inode, InodeRef, KResult, VfsError};
 use vfs::FileOps;
@@ -331,21 +333,19 @@ pub fn fifo_open(inode: &InodeRef, flags: u32) -> KResult<Arc<dyn FileOps>> {
             if let Some(s) = subs { s.notify(); }
             if !nonblock && p.readers.load(Ordering::Acquire) == 0 {
                 #[cfg(target_os = "oxide-kernel")]
-                loop {
-                    if p.readers.load(Ordering::Acquire) != 0 { break; }
-                    if sched::live::deliverable_signals_self() != 0 {
+                {
+                    // SAFETY: FIFO partner admission is a pure atomic predicate;
+                    // no resource lock is held and open/close wakes this list.
+                    let outcome = unsafe {
+                        sched::live::wait_event_interruptible(&p.write_waiters,
+                            || p.readers.load(Ordering::Acquire) != 0)
+                    };
+                    if outcome == WaitOutcome::Interrupted {
                         let prev = p.writers.fetch_sub(1, Ordering::AcqRel);
                         if prev <= 1 { p.read_waiters.wake_all(); }
                         fifo_gc(inode, &p);
-                        // Partner rendezvous wait: interrupted while still no
-                        // partner is `-ERESTARTSYS`; a partner having shown up
-                        // in the meantime is success (0), not an error.
                         return Err(VfsError::Erestartsys);
                     }
-                    // SAFETY: running task; preempt-off; park bumps the Arc + marks Sleeping; a reader open (or its close) will wake write_waiters.
-                    unsafe { p.write_waiters.park(); }
-                    // SAFETY: process ctx; runqueue installed; preempt-off; current Sleeping so schedule won't re-enqueue until a reader wake fires.
-                    unsafe { sched::live::schedule::schedule(); }
                 }
             }
         }
@@ -364,21 +364,19 @@ pub fn fifo_open(inode: &InodeRef, flags: u32) -> KResult<Arc<dyn FileOps>> {
             if let Some(s) = subs { s.notify(); }
             if !nonblock && p.writers.load(Ordering::Acquire) == 0 {
                 #[cfg(target_os = "oxide-kernel")]
-                loop {
-                    if p.writers.load(Ordering::Acquire) != 0 { break; }
-                    if sched::live::deliverable_signals_self() != 0 {
+                {
+                    // SAFETY: FIFO partner admission is a pure atomic predicate;
+                    // no resource lock is held and open/close wakes this list.
+                    let outcome = unsafe {
+                        sched::live::wait_event_interruptible(&p.read_waiters,
+                            || p.writers.load(Ordering::Acquire) != 0)
+                    };
+                    if outcome == WaitOutcome::Interrupted {
                         let prev = p.readers.fetch_sub(1, Ordering::AcqRel);
                         if prev <= 1 { p.write_waiters.wake_all(); }
                         fifo_gc(inode, &p);
-                        // Partner rendezvous wait: interrupted while still no
-                        // partner is `-ERESTARTSYS`; a partner having shown up
-                        // in the meantime is success (0), not an error.
                         return Err(VfsError::Erestartsys);
                     }
-                    // SAFETY: running task; preempt-off; park bumps the Arc + marks Sleeping; a writer open (or its close) will wake read_waiters.
-                    unsafe { p.read_waiters.park(); }
-                    // SAFETY: process ctx; runqueue installed; preempt-off; current Sleeping so schedule won't re-enqueue until a writer wake fires.
-                    unsafe { sched::live::schedule::schedule(); }
                 }
             }
         }

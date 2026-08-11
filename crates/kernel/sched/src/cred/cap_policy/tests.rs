@@ -17,7 +17,7 @@ fn old(effective: u64, permitted: u64, inheritable: u64, bounding: u64) -> Capse
 /// this runs on every service spawn at the CAPABILITIES step.
 #[test]
 fn null_dataptr_probe_with_bad_magic_succeeds() {
-    assert_eq!(capget_early(0xdead_beef, 0), CapgetEarly::RewriteVersion(0));
+    assert_eq!(capget_early(Err(Errno::Einval), 0), CapgetEarly::Ok);
 }
 
 /// The same bad magic WITH a real data pointer is a genuine request and
@@ -25,9 +25,20 @@ fn null_dataptr_probe_with_bad_magic_succeeds() {
 #[test]
 fn bad_magic_with_dataptr_is_einval() {
     assert_eq!(
-        capget_early(0xdead_beef, 0x1000),
-        CapgetEarly::RewriteVersion(-(Errno::Einval.as_i32() as i64))
+        capget_early(Err(Errno::Einval), 0x1000),
+        CapgetEarly::Fail(-(Errno::Einval.as_i32() as i64))
     );
+}
+
+/// A version write-back that itself faults makes `cap_validate_magic` answer
+/// EFAULT rather than EINVAL, and Linux forgives only the EINVAL. A probe
+/// whose header cannot be written is therefore told EFAULT, not 0.
+#[test]
+fn a_probe_whose_header_write_back_faulted_is_efault_not_forgiven() {
+    assert_eq!(capget_early(Err(Errno::Efault), 0),
+               CapgetEarly::Fail(-(Errno::Efault.as_i32() as i64)));
+    assert_eq!(capget_early(Err(Errno::Efault), 0x1000),
+               CapgetEarly::Fail(-(Errno::Efault.as_i32() as i64)));
 }
 
 /// A NULL dataptr returns BEFORE `cap_get_target_pid`, so the pid in the
@@ -36,7 +47,7 @@ fn bad_magic_with_dataptr_is_einval() {
 #[test]
 fn null_dataptr_never_consults_the_target() {
     for ver in [CAPV1, CAPV2, CAPV3] {
-        assert_eq!(capget_early(ver, 0), CapgetEarly::Ok);
+        assert_eq!(capget_early(cap_data_blocks(ver).ok_or(Errno::Einval), 0), CapgetEarly::Ok);
     }
 }
 
@@ -44,9 +55,10 @@ fn null_dataptr_never_consults_the_target() {
 /// identical to v2 — Linux falls through between them).
 #[test]
 fn block_counts_match_linux_versions() {
-    assert_eq!(capget_early(CAPV1, 0x1000), CapgetEarly::Proceed(1));
-    assert_eq!(capget_early(CAPV2, 0x1000), CapgetEarly::Proceed(2));
-    assert_eq!(capget_early(CAPV3, 0x1000), CapgetEarly::Proceed(2));
+    for (ver, blocks) in [(CAPV1, 1usize), (CAPV2, 2), (CAPV3, 2)] {
+        assert_eq!(capget_early(cap_data_blocks(ver).ok_or(Errno::Einval), 0x1000),
+                   CapgetEarly::Proceed(blocks));
+    }
 }
 
 /// `CAP_LAST_CAP` is `CAP_CHECKPOINT_RESTORE`; the mask must cover exactly

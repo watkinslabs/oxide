@@ -361,7 +361,7 @@ impl EpollData {
         // letting the timer subsystem batch nearby deadlines together.
         let slack_ns = sched::hrtimeout::select_estimate_accuracy(deadline_ns);
         // SAFETY: caller is current in process context; ready lock serializes callback/global wake against park preparation.
-        unsafe { self.waiters.park_with_deadline_range(deadline_ns, slack_ns); }
+        unsafe { self.waiters.prepare_to_wait_with_deadline_range(deadline_ns, slack_ns); }
         drop(ready);
         true
     }

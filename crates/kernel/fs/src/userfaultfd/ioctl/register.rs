@@ -14,8 +14,7 @@ use super::structs::{ctx_is, err, read_req, UffdioRange, UffdioRegister};
 /// # C: O(N_vmas)
 pub fn ioc_register(ufd: &Arc<UfData>, arg: u64) -> i64 {
     if let Err(rv) = validate_user_buf_writable(arg, UFFDIO_REGISTER_SIZE, 1) { return rv; }
-    // SAFETY: arg validated writable for the full uffdio_register object.
-    let reg: UffdioRegister = unsafe { read_req(arg) };
+    let Ok(reg) = read_req::<UffdioRegister>(arg) else { return err(Errno::Efault) };
     // The mode ladder runs BEFORE range validation: a garbage mode word is
     // EINVAL whatever the range says.
     let modes = match policy::check_register_mode(reg.mode) { Ok(m) => m, Err(e) => return err(e) };
@@ -29,8 +28,12 @@ pub fn ioc_register(ufd: &Arc<UfData>, arg: u64) -> i64 {
     let ctx: Arc<dyn vmm::UffdContext> = ufd.clone();
     mm.set_uffd(start, end, ctx, modes);
     let ioctls = policy::register_ioctls(reg.mode);
-    // SAFETY: arg+24 is the `ioctls` reply slot inside the validated uffdio_register object.
-    unsafe { core::ptr::write_unaligned((arg + UFFDIO_REGISTER_IOCTLS_OFF) as *mut u64, ioctls); }
+    // `put_user(ioctls, &user_uffdio_register->ioctls)`: the registration is
+    // done, but a monitor that never learns which ops are legal on the range
+    // cannot use it, so the failed write-back is EFAULT.
+    if uaccess::copy_to_user(arg + UFFDIO_REGISTER_IOCTLS_OFF, &ioctls.to_ne_bytes()).is_err() {
+        return err(Errno::Efault);
+    }
     0
 }
 
@@ -58,8 +61,7 @@ fn scan_registerable(mm: &vmm::AddressSpace, start: u64, end: u64, ufd: &Arc<UfD
 /// # C: O(N_vmas)
 pub fn ioc_unregister(ufd: &UfData, arg: u64) -> i64 {
     if let Err(rv) = validate_user_buf(arg, UFFDIO_RANGE_SIZE, 1) { return rv; }
-    // SAFETY: arg validated readable for the full uffdio_range object.
-    let r: UffdioRange = unsafe { read_req(arg) };
+    let Ok(r) = read_req::<UffdioRange>(arg) else { return err(Errno::Efault) };
     if let Err(e) = policy::validate_range(r.start, r.len) { return err(e); }
     let end = r.start + r.len;
     let Some(mm) = ufd.mm() else { return err(Errno::Enomem) };
@@ -72,8 +74,7 @@ pub fn ioc_unregister(ufd: &UfData, arg: u64) -> i64 {
 /// # C: O(N_faulters)
 pub fn ioc_wake(ufd: &UfData, arg: u64) -> i64 {
     if let Err(rv) = validate_user_buf(arg, UFFDIO_RANGE_SIZE, 1) { return rv; }
-    // SAFETY: arg validated readable for the full uffdio_range object.
-    let r: UffdioRange = unsafe { read_req(arg) };
+    let Ok(r) = read_req::<UffdioRange>(arg) else { return err(Errno::Efault) };
     if let Err(e) = policy::validate_range(r.start, r.len) { return err(e); }
     ufd.wake_faulters();
     0

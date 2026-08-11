@@ -45,31 +45,15 @@ pub fn sys_rt_sigsuspend(args: &SyscallArgs) -> i64 {
     // mask that names them must not make the task unkillable.
     let new_mask = m & !(Signum::Sigkill.bit() | Signum::Sigstop.bit());
     cur.arm_saved_sigmask(new_mask);
-    loop {
-        // Linux `signal_pending(current)`: any signal the return path will
-        // actually act on. Default-ignored dispositions are excluded because
-        // Linux drops those at SEND time (`sig_ignored`), so they never wake a
-        // suspended task there either.
-        if sched::live::sigpend::deliverable_signals_self() != 0 {
-            SIGSUSPENDERS.remove_current();
-            // Linux `sigsuspend` ends with
-            // `set_restore_sigmask(); return -ERESTARTNOHAND;`. The doc above
-            // already said so while this returned a flat EINTR, which drops
-            // the restart Linux performs when no handler frame was built — the
-            // suspend should resume rather than report a spurious EINTR.
-            return syscall::restart::restart_nohand();
-        }
-        // Publish Sleeping BEFORE the recheck: a sender that wins the gap is
-        // caught below instead of being lost (check-then-park).
-        // SAFETY: process context; control goes to the scheduler immediately
-        // unless the post-publication recheck observes a deliverable signal.
-        unsafe { SIGSUSPENDERS.park_with_deadline(0); }
-        if sched::live::sigpend::deliverable_signals_self() != 0 {
-            SIGSUSPENDERS.cancel_current_park();
-            continue;
-        }
-        // SAFETY: the task is Sleeping on the published wait list; signal
-        // delivery (`signal_wake_up`) transitions it back to Runnable.
-        unsafe { sched::live::park_yield(); }
-    }
+    // SAFETY: process context with no signal-queue lock held. The shared
+    // interruptible event loop publishes before it tests deliverability.
+    let _ = unsafe {
+        sched::live::wait_event_interruptible(
+            &SIGSUSPENDERS,
+            || sched::live::sigpend::deliverable_signals_self() != 0,
+        )
+    };
+    // Linux `sigsuspend` ends with `-ERESTARTNOHAND`; both a condition wake
+    // and the interruptible waiter outcome take that same syscall tail.
+    syscall::restart::restart_nohand()
 }

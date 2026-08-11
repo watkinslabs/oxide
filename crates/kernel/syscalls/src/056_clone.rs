@@ -565,31 +565,15 @@ pub fn sys_clone_dispatch(req: CloneRequest<'_>) -> i64 {
         // the runqueue Arc.
         let watch = alloc::sync::Arc::clone(&child);
         drop(child);
-        // PARK (Sleeping) until the child clears vfork_pending — do NOT
-        // busy-yield. A busy-yield keeps the parent Runnable, so on UP the
-        // scheduler re-picks it forever and NO other task runs; a vfork child
-        // that blocks in a syscall (never reaching exec/exit) then deadlocks
-        // the whole system with IRQs off (dead timer, no watchdog). The
-        // child's departure sites (execve/exit/signal-death via `vfork_done`)
-        // wake us. set-Sleeping-then-recheck closes the lost-wakeup race: if
-        // the child clears+wakes between the recheck and schedule(), the wake
-        // CASes us back Runnable and schedule() just re-picks us to re-loop.
-        loop {
-            cur.set_state(sched::TaskState::Sleeping);
-            if !watch.vfork_pending.load(Ordering::Acquire) {
-                cur.set_state(sched::TaskState::Runnable);
-                break;
-            }
-            // SAFETY: process ctx; preempt-off; runqueue installed; self is
-            // Sleeping so schedule() switches away without re-enqueueing us.
-            unsafe { sched::live::schedule(); }
-        }
+        // SAFETY: process context, with `watch` keeping the child descriptor
+        // live. The completion loop publishes before it observes the flag.
+        let completed = unsafe { sched::live::wait_for_vfork_done(&watch) };
         drop(watch);
         // Linux `if (!wait_for_vfork_done(p, &vfork)) ptrace_event_pid(
         // PTRACE_EVENT_VFORK_DONE, pid)`: the parent reports a SECOND event
         // once the child released it, so a tracer can tell "vfork issued" from
         // "vfork's address-space borrow is over".
-        crate::ptrace::stop::ptrace_event(uapi_event_vfork_done(), child_event_msg);
+        if completed { crate::ptrace::stop::ptrace_event(uapi_event_vfork_done(), child_event_msg); }
     } else {
         // Drop our local Arc; runqueue's enqueue clone keeps the
         // child alive until it Zombies + parks.

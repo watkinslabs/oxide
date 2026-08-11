@@ -36,7 +36,7 @@ impl VsockConn {
                          deadline_ns: u64) -> bool {
         self.arm_recv_wait_with(sock, offset, || {
             // SAFETY: state and RX locks serialize terminal/data/error publication with registration.
-            unsafe { self.waiters.park_interruptible_with_deadline(deadline_ns); }
+            unsafe { self.waiters.prepare_to_wait_interruptible_with_deadline(deadline_ns); }
         })
     }
 

@@ -61,8 +61,9 @@ extern "C" fn driver(_arg: usize) -> ! {
         // park still observes the (future) deadline; a spurious early wake is
         // harmless (run_due is idempotent and re-arms).
         DEADLINE.store(now + TICK_NS, Ordering::Release);
-        // SAFETY: running kthread on this CPU; preempt-off; no lock held across the park; schedule() yields immediately after per the WaitList contract.
-        unsafe { WAIT.park_with_deadline(now + TICK_NS); super::schedule(); }
+        // SAFETY: running kthread on this CPU; preempt-off; no lock held
+        // across the named deadline publication; schedule yields immediately.
+        unsafe { WAIT.prepare_to_wait_with_deadline(now + TICK_NS); super::schedule(); }
     }
 }
 

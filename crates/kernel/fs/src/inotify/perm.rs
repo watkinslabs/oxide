@@ -164,18 +164,17 @@ fn wait_for_verdict(group: &Arc<InotifyData>, st: &Arc<PermState>) -> Result<(),
             audit_verdict(raw, st);
             return v.as_result();
         }
-        if fatal_signal_pending() { st.cancel(); return Err(Errno::Eintr); }
-        // SAFETY: syscall context on the accessing task, no VFS locks held; the
-        // re-check below cancels the park if the verdict landed while
-        // publishing, which is the same lost-wakeup gap the read path closes.
-        unsafe { group.access_waiters.park_interruptible_with_deadline(0); }
-        if st.answered().is_some() || fatal_signal_pending() {
-            group.access_waiters.cancel_current_park();
-            continue;
+        // Linux's permission-event waiter is killable: a normal signal does
+        // not bypass the daemon's verdict, while SIGKILL abandons the event.
+        // SAFETY: syscall context with no VFS gate held; the atomic verdict is
+        // the complete predicate and the helper owns the wait lifecycle.
+        if unsafe {
+            sched::live::wait_event_killable(&group.access_waiters,
+                || st.answered().is_some())
+        } == sched::task::WaitOutcome::Interrupted {
+            st.cancel();
+            return Err(Errno::Eintr);
         }
-        // SAFETY: this task published Sleeping through the wait list and holds no locks.
-        unsafe { sched::live::schedule::schedule(); }
-        group.access_waiters.remove_current();
     }
 }
 
@@ -214,12 +213,4 @@ fn audit_verdict(raw: u32, st: &PermState) {
         rule_number: r.rule_number, subj_trust: r.subj_trust, obj_trust: r.obj_trust,
     });
     let _ = audit::log_fanotify(resp, info);
-}
-
-/// `fatal_signal_pending(current)` — only an unblockable kill breaks the wait.
-/// # C: O(1)
-#[cfg(target_os = "oxide-kernel")]
-fn fatal_signal_pending() -> bool {
-    let bit = sched::live::sigpend::Signum::Sigkill.bit();
-    sched::live::deliverable_signals_self() & bit != 0
 }

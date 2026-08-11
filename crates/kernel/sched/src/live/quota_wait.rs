@@ -17,7 +17,7 @@ fn wait_list(key: usize) -> Arc<WaitList> {
 pub fn park(key: usize) {
     let wl = wait_list(key);
     // SAFETY: VFS calls from the running task before immediately scheduling through `schedule_after_park`.
-    unsafe { wl.park(); }
+    unsafe { wl.prepare_to_wait(); }
 }
 
 /// Yield after [`park`] has registered current and VFS dropped its lock. # C: sleeps

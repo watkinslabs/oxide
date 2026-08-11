@@ -25,6 +25,7 @@
 //   emit     software-counter sites -> `PERF_RECORD_SAMPLE`
 //   hrtimer  the clock PMUs' sampling timer (`perf_swevent_hrtimer`)
 //   sideband MMAP/COMM/FORK/EXIT/SWITCH records — what resolves a sample's IP
+//   bpf      `PERF_EVENT_IOC_SET_BPF`: the program an event runs on overflow
 //   glue     user-memory copies, fd install, ioctl dispatch
 //
 // Scope: oxide registers the *software* PMUs only. `PERF_TYPE_HARDWARE`,
@@ -52,6 +53,7 @@ pub mod output;
 pub mod emit;
 pub mod hrtimer;
 pub mod sideband;
+pub mod bpf;
 mod glue;
 #[cfg(test)]
 mod tests;
@@ -59,4 +61,5 @@ mod tests;
 pub use event::PerfEvent;
 pub use ring::PerfBuffer;
 pub use file::{event_of, is_perf_inode, make_perf_event_inode};
+pub use bpf::attached_prog;
 pub use glue::{handle_perf_ioctl, sys_perf_event_open, task_ctxt_switches};

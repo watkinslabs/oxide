@@ -169,8 +169,12 @@ pub fn handle_perf_ioctl(inode: &vfs::InodeRef, req: u64, arg: u64) -> i64 {
             if uaccess::copy_from_user(&mut probe, arg).is_err() { return err(Errno::Efault); }
             err(Errno::Einval)
         }
-        // `bpf_prog_get(arg)` on a kernel that loads no programs.
-        PerfIoctl::SetBpf   => err(Errno::Ebadf),
+        // `bpf_prog_get(arg)` then `__perf_event_set_bpf_prog`; the argument
+        // is a descriptor number, so the high half is not part of it.
+        PerfIoctl::SetBpf   => match super::bpf::set_bpf(&ev, arg as u32) {
+            Ok(())  => 0,
+            Err(e)  => err(e),
+        },
         // `perf_event_query_prog_array` on an event with no attached programs.
         PerfIoctl::QueryBpf => err(Errno::Enoent),
         PerfIoctl::PauseOutput => {

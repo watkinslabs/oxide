@@ -44,6 +44,7 @@ pub mod reclaim;
 pub mod shrinker;
 pub mod movable;
 pub mod watermark;
+pub mod oom_entry;
 #[cfg(target_os = "oxide-kernel")]
 mod kswapd;
 #[cfg(target_os = "oxide-kernel")]

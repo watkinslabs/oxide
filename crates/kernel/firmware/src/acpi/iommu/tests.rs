@@ -1,0 +1,86 @@
+use alloc::vec;
+use alloc::vec::Vec;
+
+use super::{IommuError, IommuKind, parse_dmar, parse_ivrs};
+
+fn le16(t: &mut [u8], off: usize, v: u16) {
+    t[off] = v as u8;
+    t[off + 1] = (v >> 8) as u8;
+}
+
+fn le32(t: &mut [u8], off: usize, v: u32) {
+    for i in 0..4 { t[off + i] = (v >> (i * 8)) as u8; }
+}
+
+fn le64(t: &mut [u8], off: usize, v: u64) {
+    for i in 0..8 { t[off + i] = (v >> (i * 8)) as u8; }
+}
+
+fn finish(t: &mut [u8]) {
+    let mut sum = 0u8;
+    for b in &t[..t.len() - 1] { sum = sum.wrapping_add(*b); }
+    t[t.len() - 1] = 0u8.wrapping_sub(sum);
+}
+
+fn dmar() -> Vec<u8> {
+    let mut t = vec![0u8; 72];
+    t[..4].copy_from_slice(b"DMAR");
+    le32(&mut t, 4, 72);
+    t[36] = 47;
+    le16(&mut t, 48, 0);
+    le16(&mut t, 50, 16);
+    t[52] = 1;
+    le16(&mut t, 54, 2);
+    le64(&mut t, 56, 0xfed9_0000);
+    le16(&mut t, 64, 7);
+    le16(&mut t, 66, 8);
+    finish(&mut t);
+    t
+}
+
+fn ivrs() -> Vec<u8> {
+    let mut t = vec![0u8; 72];
+    t[..4].copy_from_slice(b"IVRS");
+    le32(&mut t, 4, 72);
+    t[48] = 0x10;
+    le16(&mut t, 50, 24);
+    le64(&mut t, 56, 0xfed8_0000);
+    le16(&mut t, 64, 3);
+    finish(&mut t);
+    t
+}
+
+#[test]
+fn dmar_drhd_preserves_the_linux_device_ownership_keys() {
+    let inv = parse_dmar(&dmar()).expect("valid DRHD");
+    assert_eq!(inv.kind, IommuKind::IntelVtd);
+    assert_eq!(inv.unit_count, 1);
+    assert_eq!(inv.units[0].segment, 2);
+    assert_eq!(inv.units[0].register_base, 0xfed9_0000);
+    assert!(inv.units[0].include_all);
+}
+
+#[test]
+fn ivrs_ivhd_preserves_segment_and_register_base() {
+    let inv = parse_ivrs(&ivrs()).expect("valid IVHD");
+    assert_eq!(inv.kind, IommuKind::AmdVi);
+    assert_eq!(inv.unit_count, 1);
+    assert_eq!(inv.units[0].segment, 3);
+    assert_eq!(inv.units[0].register_base, 0xfed8_0000);
+}
+
+#[test]
+fn checksum_failure_cannot_publish_a_dmar_unit() {
+    let mut t = dmar();
+    t[56] ^= 1;
+    assert_eq!(parse_dmar(&t), Err(IommuError::BadChecksum));
+}
+
+#[test]
+fn ivhd_device_entry_cannot_run_past_its_record() {
+    let mut t = ivrs();
+    t[50] = 28;
+    t[72 - 1] = 0;
+    finish(&mut t);
+    assert_eq!(parse_ivrs(&t), Err(IommuError::BadRecord));
+}

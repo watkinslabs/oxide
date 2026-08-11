@@ -51,14 +51,19 @@ use uapi::cmd;
 
 pub(super) const BPF_FD_MODE: u16 = 0o600;
 
-/// `perf_get_event()`: whether an inode is a perf-event fd. Only
-/// `BPF_TASK_FD_QUERY` asks, and only the perf subsystem — which sits above
-/// this crate — can answer, so the syscall shim supplies the test rather
-/// than this crate keeping a second copy of perf's state.
-pub type PerfFdPredicate = fn(&InodeRef) -> bool;
+/// What `BPF_TASK_FD_QUERY` needs from the perf subsystem, which sits above
+/// this crate: `perf_get_event()` and `event->prog`. Both arrive from the
+/// syscall shim rather than this crate keeping a second copy of perf's state.
+#[derive(Clone, Copy)]
+pub struct PerfHooks {
+    /// `perf_get_event()`: whether an inode is a perf-event fd.
+    pub is_perf: fn(&InodeRef) -> bool,
+    /// `event->prog`: the program attached to that event, if any.
+    pub attached_prog: fn(&InodeRef) -> Option<InodeRef>,
+}
 
 pub use prog::inode::{
-    BpfProgInode, make_bpf_prog_inode, make_bpf_prog_inode_with_meta,
+    BpfProgInode, ProgFacts, prog_facts, make_bpf_prog_inode, make_bpf_prog_inode_with_meta,
     make_bpf_prog_inode_with_contract, make_bpf_prog_inode_with_attach_target,
     NO_ATTACH_TARGET,
 };
@@ -74,6 +79,19 @@ pub fn iter_context_bytes() -> usize { iter::targets::CONTEXT_BYTES }
 pub(crate) use link::prime_bpf_cgroup_link;
 pub(crate) use fd::{install_fd, install_fd_access};
 
+/// `bpf_prog_get(ufd)`: the program one descriptor holds, together with the
+/// facts an attach site decides on. An empty descriptor is `-EBADF`; one
+/// holding anything that is not a loaded program is `-EINVAL`. The caller
+/// holds the returned reference for as long as it keeps the attachment, which
+/// is what keeps the program alive after its own descriptor is closed.
+/// # C: O(insn count)
+pub fn prog_get(fd: u32) -> Result<(InodeRef, ProgFacts), Errno> {
+    let inode = command::objfd::prog_from_fd(fd)?;
+    let facts = prog_facts(&inode).ok_or(Errno::Einval)?;
+    Ok((inode, facts))
+}
+
+
 /// Map value storage is separately locked so a helper can pin a value
 /// without holding the map's directory lock while the interpreter runs.
 pub(crate) use map::BpfMapValue;
@@ -81,6 +99,9 @@ pub(crate) use map::BpfMapValue;
 /// Re-exported for `SO_ATTACH_BPF` in the setsockopt slot.
 pub use uapi::prog_type::SOCKET_FILTER as BPF_PROG_TYPE_SOCKET_FILTER;
 pub use uapi::prog_type::SK_REUSEPORT as BPF_PROG_TYPE_SK_REUSEPORT;
+/// Re-exported for `PERF_EVENT_IOC_SET_BPF`, whose non-tracing arm runs only
+/// this program type.
+pub use uapi::prog_type::PERF_EVENT as BPF_PROG_TYPE_PERF_EVENT;
 pub use cgroup_device::{
     DEVCG_ACC_MKNOD, DEVCG_ACC_READ, DEVCG_ACC_WRITE, DEVCG_DEV_BLOCK, DEVCG_DEV_CHAR,
     check as check_device_access,
@@ -122,11 +143,11 @@ pub fn make_bpf_token_inode(token: BpfTokenInode) -> InodeRef {
 }
 
 /// `sys_bpf(cmd, attr, size, attr_common, size_common)` — slot 321.
-/// `is_perf` is `perf_get_event()`: whether an inode is a perf-event fd,
-/// which only `BPF_TASK_FD_QUERY` asks and only the perf subsystem knows.
+/// `perf` carries the two perf-subsystem answers `BPF_TASK_FD_QUERY` needs;
+/// only that command consults them.
 /// # C: O(1) admit; O(log N) for map ops; O(insn_cnt) for PROG_LOAD
-pub fn sys_bpf(args: &SyscallArgs, is_perf: PerfFdPredicate) -> i64 {
-    match dispatch::dispatch(args, is_perf) { Ok(v) => v, Err(e) => -(e.as_i32() as i64) }
+pub fn sys_bpf(args: &SyscallArgs, perf: PerfHooks) -> i64 {
+    match dispatch::dispatch(args, perf) { Ok(v) => v, Err(e) => -(e.as_i32() as i64) }
 }
 
 /// Decode the `BPF_OBJ_PIN` pathname after the common attribute protocol.

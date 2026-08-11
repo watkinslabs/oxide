@@ -14,6 +14,25 @@ fn current_task() -> Option<&'static crate::Task> { crate::live::current() }
 #[cfg(not(target_os = "oxide-kernel"))]
 fn current_task() -> Option<&'static crate::Task> { crate::current() }
 
+/// `get_user(pos, offset)`. The copy carries the exception-table fixups; a
+/// bare range check leaves an unmapped `loff_t *` faulting the kernel.
+/// # C: O(1)
+fn load_off(offp: u64) -> Result<i64, Errno> {
+    let mut raw = [0u8; 8];
+    uaccess::copy_from_user(&mut raw, offp)?;
+    Ok(i64::from_ne_bytes(raw))
+}
+
+/// `put_user(pos, offset)`. Linux reports EFAULT from the write-back even
+/// when the transfer itself moved bytes, so the stored value replaces `ret`.
+/// # C: O(1)
+fn store_off(offp: u64, v: i64, ret: i64) -> i64 {
+    match uaccess::copy_to_user(offp, &v.to_ne_bytes()) {
+        Ok(()) => ret,
+        Err(e) => -(e.as_i32() as i64),
+    }
+}
+
 fn account_sendfile(cur: &crate::Task, ret: i64) {
     cur.account_read_result(ret);
     cur.account_write_result(ret);
@@ -50,16 +69,10 @@ pub fn sys_sendfile(args: &SyscallArgs) -> i64 {
     let positional_in = explicit_off || seekable_in;
     let mut pos = if seekable_in { in_file.pos() as i64 } else { 0 };
     if explicit_off {
-        if offp >= hal::USER_VA_END {
-            return -(Errno::Efault.as_i32() as i64);
-        }
-        // SAFETY: offset pointer is below USER_VA_END and points to caller memory in the active address space.
-        pos = unsafe { core::ptr::read_volatile(offp as *const i64) };
+        pos = match load_off(offp) { Ok(v) => v, Err(e) => return -(e.as_i32() as i64) };
         if !in_file.f_mode().contains(vfs::Fmode::PREAD) {
-            let ret = -(Errno::Espipe.as_i32() as i64);
-            // SAFETY: same validated offset pointer; Linux put_user runs after do_sendfile even on errors.
-            unsafe { core::ptr::write_volatile(offp as *mut i64, pos); }
-            return ret;
+            // Linux's put_user runs after do_sendfile even on its errors.
+            return store_off(offp, pos, -(Errno::Espipe.as_i32() as i64));
         }
     }
     let mut buf = [0u8; XFER_BUFFER_BYTES];
@@ -70,12 +83,8 @@ pub fn sys_sendfile(args: &SyscallArgs) -> i64 {
             Ok(n)                => n,
             Err(e) if total == 0 => {
                 let ret = -(e as i64);
-                if explicit_off {
-                    // SAFETY: offset pointer was validated before the transfer.
-                    unsafe { core::ptr::write_volatile(offp as *mut i64, pos); }
-                }
                 account_sendfile(cur, ret);
-                return ret;
+                return if explicit_off { store_off(offp, pos, ret) } else { ret };
             }
             Err(_)               => break,
         };
@@ -86,35 +95,21 @@ pub fn sys_sendfile(args: &SyscallArgs) -> i64 {
                 Ok(w)                => w,
                 Err(e) if total == 0 && written == 0 => {
                     let ret = -(e as i64);
-                    if explicit_off {
-                        // SAFETY: offset pointer was validated before the transfer.
-                        unsafe { core::ptr::write_volatile(offp as *mut i64, pos); }
-                    }
                     account_sendfile(cur, ret);
-                    return ret;
+                    return if explicit_off { store_off(offp, pos, ret) } else { ret };
                 }
                 Err(_)               => {
                     let ret = (total + written) as i64;
-                    if explicit_off {
-                        // SAFETY: offset pointer was validated before the transfer.
-                        unsafe { core::ptr::write_volatile(offp as *mut i64, pos + written as i64); }
-                    } else if positional_in {
-                        in_file.set_pos((pos + written as i64) as u64);
-                    }
+                    if !explicit_off && positional_in { in_file.set_pos((pos + written as i64) as u64); }
                     account_sendfile(cur, ret);
-                    return ret;
+                    return if explicit_off { store_off(offp, pos + written as i64, ret) } else { ret };
                 }
             };
             if w == 0 {
                 let ret = (total + written) as i64;
-                if explicit_off {
-                    // SAFETY: offset pointer was validated before the transfer.
-                    unsafe { core::ptr::write_volatile(offp as *mut i64, pos + written as i64); }
-                } else if positional_in {
-                    in_file.set_pos((pos + written as i64) as u64);
-                }
+                if !explicit_off && positional_in { in_file.set_pos((pos + written as i64) as u64); }
                 account_sendfile(cur, ret);
-                return ret;
+                return if explicit_off { store_off(offp, pos + written as i64, ret) } else { ret };
             }
             written += w;
         }
@@ -122,14 +117,9 @@ pub fn sys_sendfile(args: &SyscallArgs) -> i64 {
         total += n;
     }
     let ret = total as i64;
-    if explicit_off {
-        // SAFETY: offset pointer was validated before the transfer.
-        unsafe { core::ptr::write_volatile(offp as *mut i64, pos); }
-    } else if positional_in {
-        in_file.set_pos(pos as u64);
-    }
+    if !explicit_off && positional_in { in_file.set_pos(pos as u64); }
     account_sendfile(cur, ret);
-    ret
+    if explicit_off { store_off(offp, pos, ret) } else { ret }
 }
 
 // `splice`/`tee`/`vmsplice`/`copy_file_range` used to live here as a bare

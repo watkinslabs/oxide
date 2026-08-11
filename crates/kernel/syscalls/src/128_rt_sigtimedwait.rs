@@ -126,7 +126,10 @@ pub fn sys_rt_sigtimedwait(args: &SyscallArgs) -> i64 {
         // other order is the classic check-then-park lost wakeup.
         // SAFETY: process context; the loop immediately hands control to the
         // scheduler unless the post-publication recheck observes a signal.
-        unsafe { RT_SIGTIMEDWAITERS.park_with_deadline(deadline.unwrap_or(0)); }
+        unsafe {
+            RT_SIGTIMEDWAITERS
+                .prepare_to_wait_interruptible_with_deadline(deadline.unwrap_or(0));
+        }
         if sched::live::sigpend::all_pending(&cur) & wanted != 0
             || sched::live::sigpend::deliverable_signals_self() & !wanted != 0
         {

@@ -3,7 +3,7 @@ use core::sync::atomic::Ordering;
 
 use super::{
     epoll_inode_of, make_epoll_inode, EpItem, EPOLL_CTL_ADD,
-    EPOLL_CTL_DEL, EPOLL_CTL_MOD, EPOLL_DATA_OFF, EPOLL_EVENT_SIZE,
+    EPOLL_CTL_DEL, EPOLL_CTL_MOD, EPOLL_EVENT_SIZE,
     NEXT_SUB_ID,
 };
 use super::policy::{ctl_precheck, op_has_event, CtlTarget};
@@ -83,12 +83,11 @@ pub fn sys_epoll_ctl(args: &syscall::SyscallArgs) -> i64 {
         (0u32, 0u64)
     } else {
         if let Err(rv) = validate_user_buf(evp, EPOLL_EVENT_SIZE as u64, 1) { return rv; }
-        // SAFETY: evp validated readable for one epoll_event object.
-        unsafe {
-            let ev = core::ptr::read_unaligned(evp as *const u32);
-            let da = core::ptr::read_unaligned((evp + EPOLL_DATA_OFF as u64) as *const u64);
-            (ev, da)
+        let mut raw = [0u8; EPOLL_EVENT_SIZE];
+        if uaccess::copy_from_user(&mut raw, evp).is_err() {
+            return -(Errno::Efault.as_i32() as i64);
         }
+        super::scan::decode_epoll_event(&raw)
     };
     let epfile = match fdt.get(epfd) {
         Ok(f) => f,
@@ -233,13 +232,12 @@ pub fn sys_epoll_pwait2(args: &syscall::SyscallArgs) -> i64 {
         None
     } else {
         if let Err(rv) = validate_user_buf(args.a3, TIMESPEC_BYTES, 1) { return rv; }
-        // SAFETY: timeout pointer validated readable for one timespec.
-        let (sec, nsec) = unsafe {
-            (
-                core::ptr::read_unaligned(args.a3 as *const i64),
-                core::ptr::read_unaligned((args.a3 + TIMESPEC_NSEC_OFF) as *const i64),
-            )
-        };
+        let mut raw = [0u8; TIMESPEC_BYTES as usize];
+        if uaccess::copy_from_user(&mut raw, args.a3).is_err() {
+            return -(Errno::Efault.as_i32() as i64);
+        }
+        let word = |i: usize| i64::from_ne_bytes(raw[i * 8..i * 8 + 8].try_into().expect("8 of 16"));
+        let (sec, nsec) = (word(0), word(TIMESPEC_NSEC_OFF as usize / 8));
         // `ktime_set`-clamped decode: a huge-but-valid tv_sec clamps to
         // KTIME_MAX_NS instead of an unbounded relative timeout.
         match syscall::time::timespec_to_ns(sec, nsec) {
@@ -269,8 +267,11 @@ fn sys_epoll_wait_sigmask(args: &syscall::SyscallArgs, timeout_ns: Option<u64>, 
     let cur = match sched::current() {
         Some(c) => c, None => return -(Errno::Ebadf.as_i32() as i64),
     };
-    // SAFETY: sigmask_ptr validated as a readable 8-byte kernel_sigset_t.
-    let new_mask = unsafe { core::ptr::read_unaligned(sigmask_ptr as *const u64) };
+    let mut raw_mask = [0u8; syscall::sigset::SIGSET_BYTES as usize];
+    if uaccess::copy_from_user(&mut raw_mask, sigmask_ptr).is_err() {
+        return -(Errno::Efault.as_i32() as i64);
+    }
+    let new_mask = u64::from_ne_bytes(raw_mask);
     cur.arm_saved_sigmask(new_mask);
     let rv = sys_epoll_wait_timeout(args, timeout_ns);
     if rv != -(Errno::Eintr.as_i32() as i64) { cur.restore_saved_sigmask(); }
@@ -309,8 +310,10 @@ fn sys_epoll_wait_timeout(args: &syscall::SyscallArgs, timeout_ns: Option<u64>) 
         klog::write_raw(b"]\n");
     }
     ep.rescan_levels();
+    // A negative scan is the copy-out EFAULT; a zero with a zero timeout is the
+    // poll that found nothing. Either way the wait loop is not entered.
     let out = scan_once(&ep, evp, maxevents);
-    if out > 0 || timeout_ns == Some(0) { return out as i64; }
+    if out != 0 || timeout_ns == Some(0) { return out; }
     #[cfg(target_os = "oxide-kernel")]
     {
         let now = super::monotonic_ns;
@@ -325,7 +328,7 @@ fn sys_epoll_wait_timeout(args: &syscall::SyscallArgs, timeout_ns: Option<u64>) 
             ep.queue_expired_deadlines(current_ns);
             ep.rescan_levels();
             let out2 = scan_once(&ep, evp, maxevents);
-            if out2 > 0 {
+            if out2 != 0 {
                 #[cfg(feature = "debug-epoll")]
                 if super::diag_slot() {
                     klog::write_raw(b"[EPRDY ep="); klog::write_dec_u64(ep.id as u64);
@@ -336,7 +339,7 @@ fn sys_epoll_wait_timeout(args: &syscall::SyscallArgs, timeout_ns: Option<u64>) 
                 sched::live::wakelat::note_blocked(
                     wl_tid, sched::live::wakelat::KIND_EPOLL,
                     now().saturating_sub(wl_start), out2 as u64);
-                return out2 as i64;
+                return out2;
             }
             if let Some(d) = deadline_ns {
                 if current_ns >= d { return 0; }

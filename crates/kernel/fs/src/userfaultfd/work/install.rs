@@ -30,6 +30,16 @@ impl Source {
     fn pa(&self) -> u64 { match *self { Source::Fresh(pa) | Source::Backing(pa) => pa } }
 }
 
+/// Drop the prospective mapping reference on a frame no PTE was installed
+/// from. Reached when the source copy faults part-way through a fill: without
+/// it the frame this page would have carried is leaked, which the old
+/// infallible `fill_frame` hid because it could never fail.
+/// # C: O(1)
+fn release(pa: u64) {
+    // SAFETY: `pa` carries only the reference this fill took and no PTE was installed from it.
+    unsafe { pmm::setup::rmap_aware_dec_and_maybe_free(pa); }
+}
+
 /// Obtain the frame for one page, already carrying its contents.
 /// # C: O(1) + O(page) copy
 fn source_for(req: &FillReq, vma: &UffdVma, va: u64, done: u64) -> Result<Source, Errno> {
@@ -37,7 +47,7 @@ fn source_for(req: &FillReq, vma: &UffdVma, va: u64, done: u64) -> Result<Source
         // No object behind the mapping: the only source is a private frame.
         fill_source(req.kind, false, false)?;
         let pa = pmm::setup::alloc_one_frame().ok_or(Errno::Enomem)?;
-        fill_frame(pa, req, done)?;
+        fill_frame(pa, req, done).inspect_err(|_| release(pa))?;
         return Ok(Source::Fresh(pa));
     };
     let off = vma.file_off(va).ok_or(Errno::Efault)?;
@@ -61,29 +71,41 @@ fn source_for(req: &FillReq, vma: &UffdVma, va: u64, done: u64) -> Result<Source
                 Ok(None) => return Err(Errno::Einval),
                 Err(_) => return Err(Errno::Enomem),
             };
-            fill_frame(pa, req, done)?;
+            fill_frame(pa, req, done).inspect_err(|_| release(pa))?;
             Ok(Source::Backing(pa))
         }
         FillSource::Fresh => {
             let pa = pmm::setup::alloc_one_frame().ok_or(Errno::Enomem)?;
-            fill_frame(pa, req, done)?;
+            fill_frame(pa, req, done).inspect_err(|_| release(pa))?;
             Ok(Source::Fresh(pa))
         }
     }
 }
 
 /// Write one page's contents through the HHDM mirror.
+///
+/// The COPY source is monitor memory, and it is fetched ONE PAGE AT A TIME,
+/// not once for the whole request: `mfill_atomic_pte_copy` copies a single
+/// page per iteration through the exception table, so a source page that
+/// disappears part-way leaves the pages already installed installed. The
+/// caller turns that into the partial byte count `uffdio_copy.copy` reports
+/// alongside -EAGAIN. A single up-front range check over the whole source —
+/// which is all `validate_user_buf_readable` is — cannot give that, because
+/// the monitor can unmap the tail after it passes.
 /// # C: O(page)
 fn fill_frame(pa: u64, req: &FillReq, done: u64) -> Result<(), Errno> {
-    // SAFETY: `pa` is a frame this fill owns for the duration of the write and its HHDM mirror is kernel-writable for PAGE bytes; a copy source is a user VA already validated against the calling task's address space.
-    unsafe {
-        let dst = (hhdm() + pa) as *mut u8;
-        match req.src {
-            Some(s) => core::ptr::copy_nonoverlapping((s + done) as *const u8, dst, PAGE as usize),
-            None    => core::ptr::write_bytes(dst, 0, PAGE as usize),
-        }
+    // The HHDM mirror of a frame this fill owns for the duration of the write,
+    // kernel-writable for PAGE bytes.
+    let dst = (hhdm() + pa) as *mut u8;
+    match req.src {
+        // SAFETY: `dst` addresses PAGE writable kernel bytes; the source is a user VA and the copy recovers its faults through the exception table.
+        Some(s) => match unsafe { uaccess::raw_copy_from_user(dst, s + done, PAGE as usize) } {
+            0 => Ok(()),
+            _ => Err(Errno::Efault),
+        },
+        // SAFETY: same kernel-owned PAGE span, no user memory involved.
+        None => { unsafe { core::ptr::write_bytes(dst, 0, PAGE as usize); } Ok(()) }
     }
-    Ok(())
 }
 
 /// Give an anonymous page its reverse-mapping edge and admit it for reclaim,

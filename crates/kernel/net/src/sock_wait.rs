@@ -6,7 +6,7 @@
 // `schedule_timeout` → `finish_wait` sequence, e.g. the AF_UNIX stream
 // connect backlog wait):
 //
-//   1. under the resource lock: `park_interruptible_with_deadline(deadline)`
+//   1. under the resource lock: `prepare_to_wait_interruptible_with_deadline(deadline)`
 //      publishes the caller on this queue, so a waker that takes the resource
 //      lock after this point cannot miss it;
 //   2. drop the resource lock;
