@@ -19,7 +19,7 @@ pub fn park(key: usize) {
     // SAFETY: VFS immediately drops its registration gate and calls schedule_after_park.
     // The interruptible form closes signal-before-sleep: a pending unmasked
     // signal changes Sleeping back to Runnable before schedule can switch away.
-    unsafe { wait.park_interruptible_with_deadline(0); }
+    unsafe { wait.prepare_to_wait_interruptible(); }
 }
 
 /// Schedule after VFS registered current and dropped the rwsem gate. # C: sleeps
