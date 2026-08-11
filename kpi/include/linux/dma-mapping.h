@@ -29,6 +29,8 @@ void dma_unmap_sg(struct device *dev, struct scatterlist *sg, int nents, enum dm
 int dma_mapping_error(struct device *dev, dma_addr_t dma_addr);
 void dma_sync_single_for_cpu(struct device *dev, dma_addr_t dma_handle, size_t size, enum dma_data_direction dir);
 void dma_sync_single_for_device(struct device *dev, dma_addr_t dma_handle, size_t size, enum dma_data_direction dir);
+void __dma_sync_single_for_cpu(struct device *dev, dma_addr_t dma_handle, size_t size, enum dma_data_direction dir);
+void __dma_sync_single_for_device(struct device *dev, dma_addr_t dma_handle, size_t size, enum dma_data_direction dir);
 void dma_sync_sg_for_cpu(struct device *dev, struct scatterlist *sg, int nelems, enum dma_data_direction dir);
 void dma_sync_sg_for_device(struct device *dev, struct scatterlist *sg, int nelems, enum dma_data_direction dir);
 int dma_set_mask(struct device *dev, u64 mask);

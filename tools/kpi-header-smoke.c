@@ -1351,6 +1351,8 @@ static int __init sample_init(void)
     (void)dma_mapping_error(&dev, dma);
     dma_sync_single_for_device(&dev, dma, SAMPLE_DMA_SIZE, DMA_TO_DEVICE);
     dma_sync_single_for_cpu(&dev, dma, SAMPLE_DMA_SIZE, DMA_FROM_DEVICE);
+    __dma_sync_single_for_device(&dev, dma, SAMPLE_DMA_SIZE, DMA_TO_DEVICE);
+    __dma_sync_single_for_cpu(&dev, dma, SAMPLE_DMA_SIZE, DMA_FROM_DEVICE);
     dma_free_coherent(&dev, SAMPLE_DMA_SIZE, coherent, dma);
     dma = dma_map_single(&dev, dma_buf, sizeof(dma_buf), DMA_BIDIRECTIONAL);
     dma_unmap_single(&dev, dma, sizeof(dma_buf), DMA_BIDIRECTIONAL);

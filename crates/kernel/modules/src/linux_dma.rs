@@ -90,6 +90,8 @@ pub fn export_symbols() {
         ("dma_mapping_error",         dma_mapping_error         as *const () as usize),
         ("dma_sync_single_for_cpu",    dma_sync_single_for_cpu    as *const () as usize),
         ("dma_sync_single_for_device", dma_sync_single_for_device as *const () as usize),
+        ("__dma_sync_single_for_cpu",  dma_sync_single_for_cpu    as *const () as usize),
+        ("__dma_sync_single_for_device", dma_sync_single_for_device as *const () as usize),
         ("dma_sync_sg_for_cpu",        dma_sync_sg_for_cpu        as *const () as usize),
         ("dma_sync_sg_for_device",     dma_sync_sg_for_device     as *const () as usize),
         ("dma_set_mask",              dma_set_mask              as *const () as usize),
@@ -215,11 +217,11 @@ pub(crate) extern "C" fn dma_mapping_error(_dev: *mut LinuxDevice, dma_addr: u64
     if dma_addr == DMA_MAPPING_ERROR { -LINUX_ENOMEM } else { 0 }
 }
 
-extern "C" fn dma_sync_single_for_cpu(_dev: *mut LinuxDevice, _dma_addr: u64, size: usize, dir: i32) {
+pub(crate) extern "C" fn dma_sync_single_for_cpu(_dev: *mut LinuxDevice, _dma_addr: u64, size: usize, dir: i32) {
     if size != 0 && valid_dir(dir) { sync_for_cpu(dir); }
 }
 
-extern "C" fn dma_sync_single_for_device(_dev: *mut LinuxDevice, _dma_addr: u64, size: usize, dir: i32) {
+pub(crate) extern "C" fn dma_sync_single_for_device(_dev: *mut LinuxDevice, _dma_addr: u64, size: usize, dir: i32) {
     if size != 0 && valid_dir(dir) { sync_for_device(dir); }
 }
 
