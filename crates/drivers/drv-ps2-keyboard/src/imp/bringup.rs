@@ -26,6 +26,8 @@ use super::state::*;
 /// port I/O to the i8042 controller; no other path touches 0x60/0x64.
 /// # C: O(spin) bounded by the controller's response latency.
 pub(super) unsafe fn bringup() -> bool {
+    AUX_PRESENT.store(false, Ordering::Release);
+    AUX_IRQ_ENABLED.store(false, Ordering::Release);
     // SAFETY: bounded CPL=0 port I/O to the i8042 in the documented order; single-CPU boot, no concurrent accessor.
     unsafe {
         write_cmd(CMD_DISABLE_PORT1);
@@ -39,7 +41,7 @@ pub(super) unsafe fn bringup() -> bool {
             Some(c) => c,
             None => return false,
         };
-        cfg &= !CFG_PORT1_IRQ;
+        cfg &= !(CFG_PORT1_IRQ | CFG_PORT2_IRQ);
         cfg |= CFG_PORT1_TRANSLATE;
         write_cmd(CMD_WRITE_CONFIG);
         write_data(cfg);
@@ -60,6 +62,15 @@ pub(super) unsafe fn bringup() -> bool {
         let _ = read_blocking();
         flush_output();
 
+        // The auxiliary port is owned by this same controller, not by a
+        // second independent driver. Verify it before enabling mouse traffic;
+        // a missing port remains non-fatal for keyboard-only hardware.
+        write_cmd(CMD_ENABLE_PORT2);
+        write_cmd(CMD_TEST_PORT2);
+        let aux_present = matches!(read_blocking(), Some(0));
+        AUX_PRESENT.store(aux_present, Ordering::Release);
+        flush_output();
+
         // Keyboard reset + BAT (basic-assurance-test) self-check.
         if !kbd_cmd(KBD_RESET) {
             return false;
@@ -78,6 +89,12 @@ pub(super) unsafe fn bringup() -> bool {
 
         // Enable scanning so keypresses start streaming.
         let _ = kbd_cmd(KBD_ENABLE_SCAN);
+        if aux_present {
+            let _ = aux_cmd(AUX_RESET);
+            let _ = read_blocking();
+            let _ = read_blocking();
+            let _ = aux_cmd(AUX_ENABLE_STREAM);
+        }
         flush_output();
         true
     }
@@ -97,6 +114,29 @@ pub(super) unsafe fn set_controller_irq(enable: bool) -> bool {
             cfg |= CFG_PORT1_IRQ;
         } else {
             cfg &= !CFG_PORT1_IRQ;
+        }
+        cfg |= CFG_PORT1_TRANSLATE;
+        write_cmd(CMD_WRITE_CONFIG);
+        write_data(cfg);
+        true
+    }
+}
+
+/// Enable or disable the controller's auxiliary-port IRQ bit independently
+/// from keyboard delivery. The IRQ12 vector and input sink must already exist.
+/// # C: O(spin)
+pub(super) unsafe fn set_controller_aux_irq(enable: bool) -> bool {
+    // SAFETY: bounded CPL=0 i8042 command-byte read/modify/write.
+    unsafe {
+        write_cmd(CMD_READ_CONFIG);
+        let mut cfg = match read_blocking() {
+            Some(c) => c,
+            None => return false,
+        };
+        if enable {
+            cfg |= CFG_PORT2_IRQ;
+        } else {
+            cfg &= !CFG_PORT2_IRQ;
         }
         cfg |= CFG_PORT1_TRANSLATE;
         write_cmd(CMD_WRITE_CONFIG);
@@ -128,20 +168,48 @@ pub(super) fn take_and_free_vector() {
     }
 }
 
+/// Mask the auxiliary I/O-APIC line once and surrender its published pin.
+/// # C: O(1)
+pub(super) fn take_and_mask_aux_pin() {
+    let pin = AUX_IRQ_PIN.swap(NO_IRQ_PIN, Ordering::AcqRel);
+    if pin != NO_IRQ_PIN {
+        // SAFETY: a published pin follows I/O-APIC mapping and is exclusively
+        // claimed by this swap before the redirection entry is masked.
+        unsafe { hal_x86_64::ioapic::mask(pin as u32); }
+    }
+}
+
+/// Free the auxiliary vector once after its I/O-APIC line is quiesced.
+/// # C: O(1)
+pub(super) fn take_and_free_aux_vector() {
+    let vec = AUX_IRQ_VEC.swap(NO_IRQ_VEC, Ordering::AcqRel);
+    if vec != NO_IRQ_VEC {
+        let _ = arch_irq::free_x86_vector(vec as u8);
+    }
+}
+
 /// Stop the keyboard and disable the controller port owned by this driver.
 /// # SAFETY: CPL=0 i8042 port I/O; driver-core remove owns teardown.
 /// # C: O(spin) bounded by controller response latency.
 pub(super) unsafe fn bringdown() {
     IRQ_ENABLED.store(false, Ordering::Release);
+    AUX_IRQ_ENABLED.store(false, Ordering::Release);
     // SAFETY: bounded CPL=0 port I/O to the i8042; no concurrent accessor.
     unsafe {
         let _ = set_controller_irq(false);
+        let _ = set_controller_aux_irq(false);
         let _ = kbd_cmd(KBD_DISABLE_SCAN);
+        if AUX_PRESENT.load(Ordering::Acquire) { let _ = aux_cmd(AUX_DISABLE_STREAM); }
         write_cmd(CMD_DISABLE_PORT1);
+        write_cmd(CMD_DISABLE_PORT2);
         flush_output();
     }
     take_and_mask_pin();
     take_and_free_vector();
+    take_and_mask_aux_pin();
+    take_and_free_aux_vector();
+    super::mouse::remove_device();
+    AUX_PRESENT.store(false, Ordering::Release);
     PRESENT.store(false, Ordering::Release);
 }
 
@@ -151,10 +219,13 @@ pub(super) unsafe fn bringdown() {
 /// # C: O(spin) bounded by controller response latency.
 pub(super) unsafe fn shutdown_hw() {
     IRQ_ENABLED.store(false, Ordering::Release);
+    AUX_IRQ_ENABLED.store(false, Ordering::Release);
     // SAFETY: bounded CPL=0 port I/O to the i8042; no concurrent accessor.
     unsafe {
         let _ = set_controller_irq(false);
+        let _ = set_controller_aux_irq(false);
         let _ = kbd_cmd(KBD_DISABLE_SCAN);
+        if AUX_PRESENT.load(Ordering::Acquire) { let _ = aux_cmd(AUX_DISABLE_STREAM); }
         flush_output();
     }
     // Shutdown keeps the device bound, so the pin stays owned and published —
@@ -165,5 +236,11 @@ pub(super) unsafe fn shutdown_hw() {
         // APIC window was mapped and its base VA installed, so the register
         // access below targets a live mapping.
         unsafe { hal_x86_64::ioapic::mask(pin as u32); }
+    }
+    let aux_pin = AUX_IRQ_PIN.load(Ordering::Acquire);
+    if aux_pin != NO_IRQ_PIN {
+        // SAFETY: auxiliary pin publication has the same mapped-I/O-APIC
+        // ordering as IRQ1 and shutdown preserves the owned redirection.
+        unsafe { hal_x86_64::ioapic::mask(aux_pin as u32); }
     }
 }

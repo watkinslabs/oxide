@@ -89,3 +89,15 @@ pub(super) unsafe fn kbd_cmd(b: u8) -> bool {
         matches!(read_blocking(), Some(KBD_ACK))
     }
 }
+
+/// Send a command to the auxiliary PS/2 port and await its ACK.
+/// # SAFETY: as `Ps2KbdDriver::probe`; caller owns both i8042 ports.
+pub(super) unsafe fn aux_cmd(b: u8) -> bool {
+    // SAFETY: the controller command prefixes precisely one following data
+    // byte to the auxiliary port; the bounded read consumes its reply.
+    unsafe {
+        write_cmd(CMD_WRITE_PORT2);
+        write_data(b);
+        matches!(read_blocking(), Some(AUX_ACK))
+    }
+}

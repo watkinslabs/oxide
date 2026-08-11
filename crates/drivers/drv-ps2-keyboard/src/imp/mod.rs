@@ -8,7 +8,8 @@
 // * `ports` — bounded CPL=0 port-I/O primitives against 0x60/0x64.
 // * `bringup` — controller + keyboard bring-up, IRQ-bit policy, and the
 //   quiesce/teardown sequences.
-// * `irq` — IRQ1 I/O APIC programming and the IRQ-context scancode drain.
+// * `irq` — IRQ1/IRQ12 I/O APIC programming and controller-byte routing.
+// * `mouse` — standard PS/2 packet assembly and canonical input publication.
 // * `driver` — `drv::Driver` registration for the platform/i8042 device.
 
 mod regs;
@@ -16,6 +17,7 @@ mod state;
 mod ports;
 mod bringup;
 mod irq;
+mod mouse;
 mod driver;
 
 pub use driver::driver;
