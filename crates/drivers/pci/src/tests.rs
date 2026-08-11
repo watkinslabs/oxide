@@ -46,7 +46,7 @@ impl ConfigSpaceReader for ReadOnlyReader {
 #[test]
 fn bridge_windows_decode_into_their_three_distinct_resource_kinds() {
     let r = MapReader { m: Mutex::new(HashMap::new()) };
-    let bdf = Bdf { bus: 0, device: 1, function: 0 };
+    let bdf = Bdf { segment: 0, bus: 0, device: 1, function: 0 };
     r.write32(bdf, 0x1c, 0x0000_3121);
     r.write32(bdf, 0x20, 0x4ff0_4000);
     r.write32(bdf, 0x24, 0x50f1_5001);
@@ -65,6 +65,7 @@ fn enumerate_finds_one_device() {
         m: Mutex::new(HashMap::new()),
     };
     let bdf = Bdf {
+        segment: 0,
         bus: 0,
         device: 5,
         function: 0,
@@ -80,21 +81,38 @@ fn enumerate_finds_one_device() {
 }
 
 #[test]
+fn enumerate_segment_uses_the_mcfg_segment_and_start_bus() {
+    let r = MapReader { m: Mutex::new(HashMap::new()) };
+    let bdf = Bdf { segment: 3, bus: 0x40, device: 5, function: 0 };
+    r.write32(bdf, 0x00, 0x1041_1AF4);
+    r.write32(bdf, 0x08, 0x0200_0000);
+    r.write32(bdf, 0x0C, 0);
+
+    let v = enumerate_segment_buses(&r, 3, 0x40, 2);
+
+    assert_eq!(v.len(), 1);
+    assert_eq!(v[0].bdf, bdf);
+}
+
+#[test]
 fn enumerate_follows_bridge_windows_only() {
     let r = MapReader {
         m: Mutex::new(HashMap::new()),
     };
     let bridge = Bdf {
+        segment: 0,
         bus: 0,
         device: 1,
         function: 0,
     };
     let child = Bdf {
+        segment: 0,
         bus: 2,
         device: 3,
         function: 0,
     };
     let orphan = Bdf {
+        segment: 0,
         bus: 4,
         device: 3,
         function: 0,
@@ -123,11 +141,13 @@ fn enumerate_honors_bus_cap_for_bridge_windows() {
         m: Mutex::new(HashMap::new()),
     };
     let bridge = Bdf {
+        segment: 0,
         bus: 0,
         device: 1,
         function: 0,
     };
     let child = Bdf {
+        segment: 0,
         bus: 2,
         device: 3,
         function: 0,
@@ -151,14 +171,17 @@ fn parse_bdf_addr_kernel_model_form() {
     assert_eq!(
         parse_bdf_addr("0000:00:1f.2"),
         Some(Bdf {
+        segment: 0,
             bus: 0x00,
             device: 0x1f,
             function: 2,
         })
     );
+    assert_eq!(parse_bdf_addr("0003:ab:0C.7").map(|b| b.segment), Some(3));
     assert_eq!(
         parse_bdf_addr("0000:ab:0C.7"),
         Some(Bdf {
+        segment: 0,
             bus: 0xab,
             device: 0x0c,
             function: 7,
@@ -174,6 +197,7 @@ fn enable_mem_bus_master_preserves_status_bits() {
         m: Mutex::new(HashMap::new()),
     };
     let bdf = Bdf {
+        segment: 0,
         bus: 0,
         device: 6,
         function: 0,
@@ -192,6 +216,7 @@ fn disable_mem_bus_master_preserves_status_bits() {
         m: Mutex::new(HashMap::new()),
     };
     let bdf = Bdf {
+        segment: 0,
         bus: 0,
         device: 6,
         function: 0,
@@ -210,6 +235,7 @@ fn restore_mem_bus_master_restores_only_owned_bits() {
         m: Mutex::new(HashMap::new()),
     };
     let bdf = Bdf {
+        segment: 0,
         bus: 0,
         device: 6,
         function: 1,
@@ -228,6 +254,7 @@ fn decode_mem64_bar() {
         m: Mutex::new(HashMap::new()),
     };
     let bdf = Bdf {
+        segment: 0,
         bus: 0,
         device: 1,
         function: 0,
@@ -258,6 +285,7 @@ fn decode_mem32_and_io() {
         m: Mutex::new(HashMap::new()),
     };
     let bdf = Bdf {
+        segment: 0,
         bus: 0,
         device: 2,
         function: 0,
@@ -285,6 +313,7 @@ fn probe_bar_resources_restores_command_and_bars() {
         m: Mutex::new(HashMap::new()),
     };
     let bdf = Bdf {
+        segment: 0,
         bus: 0,
         device: 3,
         function: 0,
@@ -326,6 +355,7 @@ fn decode_msix_cap_basic() {
         m: Mutex::new(HashMap::new()),
     };
     let bdf = Bdf {
+        segment: 0,
         bus: 0,
         device: 1,
         function: 0,
@@ -381,6 +411,7 @@ fn msix_table_entry_offset_rejects_entries_outside_decoded_size() {
 #[test]
 fn capability_walk_and_msix_decode_do_not_write_config_space() {
     let bdf = Bdf {
+        segment: 0,
         bus: 0,
         device: 1,
         function: 0,
@@ -458,6 +489,7 @@ fn decode_msix_cap_rejects_non_msix() {
         m: Mutex::new(HashMap::new()),
     };
     let bdf = Bdf {
+        segment: 0,
         bus: 0,
         device: 1,
         function: 0,

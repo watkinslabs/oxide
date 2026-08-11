@@ -11,7 +11,7 @@ const SUBMIT_POLL_BUDGET: u32 = 1_000_000;
 /// # C: O(spin-poll bound = 1e6)
 pub fn get_display_info(
     device_key: virtio::VirtioChildDeviceKey,
-    bdf_bus: u8, bdf_dev: u8, bdf_fn: u8,
+    bdf: pci::Bdf,
     parent: &alloc::sync::Arc<drv::Device>,
     drv_features: u64,
     resources: virtio::VirtioResources,
@@ -131,9 +131,6 @@ pub fn get_display_info(
         }
     }
     use core::sync::atomic::{AtomicU32, AtomicU64};
-    let bdf_word = (bdf_bus as u32) << 16
-                 | (bdf_dev as u32) << 8
-                 | (bdf_fn as u32);
     #[cfg(feature = "debug-boot")]
     {
         klog::write_raw(b"[INFO]  virtio-gpu display: enabled=");
@@ -168,7 +165,7 @@ pub fn get_display_info(
         cmd_buf.disarm();
     }
     match crate::install_with_drm_parent(crate::VirtioGpuDev {
-        device_key, bdf: bdf_word, card_id: 0, cfg_va,
+        device_key, bdf, card_id: 0, cfg_va,
         ctrlq, cursorq,
         features_negotiated: drv_features,
         display: info,

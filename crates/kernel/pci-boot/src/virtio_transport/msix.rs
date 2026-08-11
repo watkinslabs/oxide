@@ -9,8 +9,6 @@ mod log;
 const MSI_MESSAGE_ADDRESS_LOW_MASK: u64 = 0xFFFF_FFFF;
 const MSI_MESSAGE_ADDRESS_HIGH_SHIFT: u32 = 32;
 const MSIX_VECTOR_CONTROL_UNMASKED: u32 = 0;
-const PCI_BDF_BUS_SHIFT: u32 = 8;
-const PCI_BDF_DEVICE_SHIFT: u32 = 3;
 
 #[derive(Clone, Copy)]
 pub(crate) struct MsixBinding {
@@ -22,7 +20,7 @@ pub(crate) struct MsixBinding {
 
 struct TransportRecord {
     device_key: virtio::VirtioChildDeviceKey,
-    bdf: u32,
+    bdf: pci::Bdf,
     command_orig: u16,
     mappings: TransportMappings,
     vring_frames: Vec<u64>,
@@ -37,7 +35,7 @@ static TRANSPORT_MMIO: Spinlock<Vec<TransportRecord>, VirtioTransportLockClass> 
 /// drivers that have not yet requested a vector. # C: O(N_devices)
 fn msi_admitted(bdf: pci::Bdf) -> bool {
     let addr = alloc::format!("{:04x}:{:02x}:{:02x}.{}",
-        0u16, bdf.bus, bdf.device, bdf.function);
+        bdf.segment, bdf.bus, bdf.device, bdf.function);
     drv::devices().into_iter()
         .find(|dev| dev.bus == "pci" && dev.addr == addr)
         .is_none_or(|dev| dev.msi_allowed())
@@ -161,7 +159,7 @@ pub(crate) fn release_msix_bindings(bdf: pci::Bdf, bindings: &mut Vec<MsixBindin
 
 pub(crate) fn publish_transport_record(
     device_key: virtio::VirtioChildDeviceKey,
-    bdf: u32,
+    bdf: pci::Bdf,
     command_orig: u16,
     mappings: TransportMappings,
     vring_frames: Vec<u64>,
@@ -196,7 +194,7 @@ pub(crate) fn unpublish_transport_record(device_key: virtio::VirtioChildDeviceKe
     }
 }
 
-pub(crate) fn unpublish_transport_record_by_bdf(bdf: u32) {
+pub(crate) fn unpublish_transport_record_by_bdf(bdf: pci::Bdf) {
     let rec = {
         let mut records = TRANSPORT_MMIO.lock();
         records
@@ -218,7 +216,6 @@ fn release_transport_record(rec: TransportRecord) {
         msix,
         ..
     } = rec;
-    let bdf = bdf_from_word(bdf);
     let mut msix = msix;
     release_msix_bindings(bdf, &mut msix);
     restore_pci_command(bdf, command_orig);
@@ -282,16 +279,6 @@ pub(crate) fn disable_pci_command(bdf: pci::Bdf) {
     }
 }
 
-fn bdf_from_word(word: u32) -> pci::Bdf {
-    pci::Bdf {
-        bus: ((word >> 16) & 0xFF) as u8,
-        device: ((word >> 8) & 0xFF) as u8,
-        function: (word & 0xFF) as u8,
-    }
-}
-
 fn pci_requester_id(bdf: pci::Bdf) -> u32 {
-    ((bdf.bus as u32) << PCI_BDF_BUS_SHIFT)
-        | ((bdf.device as u32) << PCI_BDF_DEVICE_SHIFT)
-        | bdf.function as u32
+    bdf.raw() as u32
 }

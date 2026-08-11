@@ -3,7 +3,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
 use core::ffi::{c_char, c_void};
-use core::mem::MaybeUninit;
+use core::mem::{align_of, offset_of, size_of, MaybeUninit};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 const TEST_MMIO_START: u64 = 0x1000_0000;
@@ -57,6 +57,29 @@ static MODEL_IDS: [LinuxPciDeviceId; 2] = [
         driver_data: 0,
     },
 ];
+
+#[test]
+fn pci_kpi_structures_match_the_c_header_abi() {
+    use crate::linux_device::types::{LinuxDevice, LinuxDeviceDriver, LinuxKobject};
+    use crate::linux_pm::types::LinuxDevPmInfo;
+
+    assert_eq!((size_of::<LinuxKobject>(), align_of::<LinuxKobject>()), (112, 8));
+    assert_eq!((size_of::<LinuxDevPmInfo>(), align_of::<LinuxDevPmInfo>()), (40, 8));
+    assert_eq!((size_of::<LinuxDevice>(), align_of::<LinuxDevice>()), (304, 8));
+    assert_eq!(offset_of!(LinuxDevice, dma_mask), 0);
+    assert_eq!(offset_of!(LinuxDevice, kobj), 128);
+    assert_eq!(offset_of!(LinuxDevice, power), 264);
+    assert_eq!((size_of::<LinuxDeviceDriver>(), align_of::<LinuxDeviceDriver>()), (64, 8));
+    assert_eq!((size_of::<LinuxResource>(), align_of::<LinuxResource>()), (32, 8));
+    assert_eq!((size_of::<LinuxPciDev>(), align_of::<LinuxPciDev>()), (1080, 8));
+    assert_eq!(offset_of!(LinuxPciDev, vendor), 304);
+    assert_eq!(offset_of!(LinuxPciDev, resource), 328);
+    assert_eq!(offset_of!(LinuxPciDev, config_space), 528);
+    assert_eq!(offset_of!(LinuxPciDev, saved_config_space), 812);
+    assert_eq!(offset_of!(LinuxPciDev, current_state), 1068);
+    assert_eq!((size_of::<LinuxPciDriver>(), align_of::<LinuxPciDriver>()), (96, 8));
+    assert_eq!(offset_of!(LinuxPciDriver, driver), 32);
+}
 
 fn test_dev() -> LinuxPciDev {
     // SAFETY: repr(C) KPI structs are plain data and zero is a valid empty state for tests.

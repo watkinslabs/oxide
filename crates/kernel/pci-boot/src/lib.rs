@@ -302,14 +302,18 @@ fn scan_devices() -> alloc::vec::Vec<pci::PciDevice> {
     #[cfg(target_arch = "x86_64")]
     {
         match hal_x86_64::pci::EcamPci::from_published() {
-            Some(r) => pci::enumerate_buses(&r, firmware::acpi::ecam_bus_cap()),
+            Some(r) => r.windows().iter().flat_map(|w| pci::enumerate_segment_buses(
+                &r, w.segment, w.bus_start, u16::from(w.bus_end) - u16::from(w.bus_start) + 1,
+            )).collect(),
             None => alloc::vec::Vec::new(),
         }
     }
     #[cfg(target_arch = "aarch64")]
     {
         match hal_aarch64::pci::EcamPci::from_published() {
-            Some(r) => pci::enumerate_buses(&r, firmware::acpi::ecam_bus_cap()),
+            Some(r) => r.windows().iter().flat_map(|w| pci::enumerate_segment_buses(
+                &r, w.segment, w.bus_start, u16::from(w.bus_end) - u16::from(w.bus_start) + 1,
+            )).collect(),
             None    => alloc::vec::Vec::new(),
         }
     }
@@ -322,7 +326,7 @@ fn publish_scanned_device(d: &pci::PciDevice) -> Option<alloc::sync::Arc<drv::De
     let class24 = ((d.class_code as u32) << 16)
         | ((d.subclass as u32) << 8) | (d.prog_if as u32);
     let addr = alloc::format!("{:04x}:{:02x}:{:02x}.{}",
-        0u16, d.bdf.bus, d.bdf.device, d.bdf.function);
+        d.bdf.segment, d.bdf.bus, d.bdf.device, d.bdf.function);
     publish_pci_model_device(d, addr, class24)
 }
 

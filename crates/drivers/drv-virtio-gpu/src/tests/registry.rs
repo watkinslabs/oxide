@@ -1,13 +1,14 @@
 use super::super::*;
 use super::support::{key, test_ctrlq, test_device, TEST_LOCK};
 use core::sync::atomic::{AtomicU32, AtomicU64};
+use pci::Bdf;
 
 const FIRST_DEVICE_KEY: u32 = 0x0010_0000;
-const FIRST_DEVICE_BDF: u32 = 0x0010_0000;
+const FIRST_DEVICE_BDF: Bdf = Bdf { segment: 0, bus: 0x10, device: 0, function: 0 };
 const SECOND_DEVICE_KEY: u32 = 0x0020_0000;
-const SECOND_DEVICE_BDF: u32 = 0x0020_0000;
-const DUPLICATE_DEVICE_BDF: u32 = 0x0020_0001;
-const MISSING_DEVICE_BDF: u32 = 0x0030_0000;
+const SECOND_DEVICE_BDF: Bdf = Bdf { segment: 1, bus: 0x10, device: 0, function: 0 };
+const DUPLICATE_DEVICE_BDF: Bdf = Bdf { segment: 1, bus: 0x10, device: 0, function: 1 };
+const MISSING_DEVICE_BDF: Bdf = Bdf { segment: 2, bus: 0x10, device: 0, function: 0 };
 const ALIASING_DEVICE_KEY: u32 = 0x00aa_0000;
 const SECOND_DISPLAY_COUNT: u32 = 2;
 

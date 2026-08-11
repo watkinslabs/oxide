@@ -396,7 +396,7 @@ mod msi_tests {
         }
     }
 
-    const BDF: Bdf = Bdf { bus: 0, device: 1, function: 0 };
+    const BDF: Bdf = Bdf { segment: 0, bus: 0, device: 1, function: 0 };
     const CAP: u8 = 0x80;
 
     #[test]

@@ -1,4 +1,3 @@
-use super::address::{bdf_from_word, bdf_word};
 use super::runtime::VirtioPciRuntime;
 use super::{
     bind_msix_vector, kick_queue_notify, restore_pci_command, unmask_msix_bindings, MsixBinding,
@@ -9,7 +8,7 @@ use super::{
 const VIRTIO_MSIX_Q0_VECTOR: u16 = 0;
 
 pub(super) struct VirtioProbeState {
-    bdf_word: u32,
+    bdf: pci::Bdf,
     mappings: TransportMappings,
     cfg_va: u64,
     device_cfg_va: u64,
@@ -19,7 +18,7 @@ pub(super) struct VirtioProbeState {
 impl VirtioProbeState {
     fn new(bdf: pci::Bdf, mappings: TransportMappings, cfg_va: u64, device_cfg_va: u64) -> Self {
         Self {
-            bdf_word: bdf_word(bdf),
+            bdf,
             mappings,
             cfg_va,
             device_cfg_va,
@@ -267,8 +266,7 @@ impl VirtioProbeState {
     ) -> VirtioProbeDevres {
         let owned_frames = virtio::VirtioProbeOwnedFrames::from_probe_result(result);
         VirtioProbeDevres::new(
-            bdf_from_word(self.bdf_word),
-            self.bdf_word,
+            self.bdf,
             command_orig,
             self.cfg_va,
             self.mappings,

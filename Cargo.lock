@@ -405,6 +405,7 @@ dependencies = [
  "hal-aarch64",
  "hal-x86_64",
  "klog",
+ "pci",
  "pmm",
  "sched",
  "sync",
@@ -657,6 +658,7 @@ dependencies = [
  "fdt",
  "hal",
  "klog",
+ "pci",
  "sync",
 ]
 

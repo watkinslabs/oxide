@@ -30,11 +30,15 @@ struct DriverRecord {
     model: &'static PciModelDriver,
 }
 
-#[derive(Clone)]
 struct BindingRecord {
     driver: usize,
     model: Arc<Device>,
     dev: usize,
+    bdf: Bdf,
+    /// Backing storage for the ABI-visible `struct device::dma_mask` pointer.
+    /// It lives outside `struct pci_dev`: the C KPI does not advertise a
+    /// private PCI-only field here, so adding one would shift driver fields.
+    _dma_mask: Box<u64>,
     #[allow(dead_code)]
     id: usize,
 }
@@ -94,8 +98,10 @@ fn bind_model_device(slot: usize, model: &Arc<Device>) -> drv::KResult<()> {
     let id = match_id(driver, model).ok_or(drv::Error::NoMatch)?;
     let mut dev = Box::new(make_pci_dev(driver, model));
     let dev_ptr = dev.as_mut() as *mut LinuxPciDev;
-    dev.dev.dma_mask = &mut dev.dma_mask;
-    if insert_binding(driver as usize, model, dev_ptr as usize, id as usize).is_err() {
+    let mut dma_mask = Box::new(model.dma_mask());
+    dev.dev.dma_mask = &mut *dma_mask;
+    let bdf = pci::parse_bdf_addr(&model.addr).unwrap_or(Bdf { segment: 0, bus: 0, device: 0, function: 0 });
+    if insert_binding(driver as usize, model, dev_ptr as usize, bdf, dma_mask, id as usize).is_err() {
         return Err(drv::Error::Busy);
     }
     // SAFETY: driver came from driver_ptr(slot), i.e. a DriverRecord register_driver installed and
@@ -131,7 +137,7 @@ fn unbind_model_device(slot: usize, model: &Device) {
 }
 
 fn make_pci_dev(driver: *mut LinuxPciDriver, model: &Device) -> LinuxPciDev {
-    let bdf = pci::parse_bdf_addr(&model.addr).unwrap_or(Bdf { bus: 0, device: 0, function: 0 });
+    let bdf = pci::parse_bdf_addr(&model.addr).unwrap_or(Bdf { segment: 0, bus: 0, device: 0, function: 0 });
     // SAFETY: every field of LinuxPciDev is valid all-zero — raw pointers (null), integers, bools
     // (false), c_char/u32 arrays, and the Option<extern fn> hooks in its nested LinuxDevice /
     // LinuxKobject / LinuxDevPmInfo (None) — so the zeroed pattern is an inhabited value, not
@@ -161,7 +167,6 @@ fn make_pci_dev(driver: *mut LinuxPciDriver, model: &Device) -> LinuxPciDev {
         acpi_node: null_mut(),
         power: crate::linux_pm::types::LinuxDevPmInfo::new(),
     };
-    dev.dma_mask = model.dma_mask();
     dev.vendor = model.vendor_id;
     dev.device = model.device_id;
     dev.subsystem_vendor = 0;
@@ -227,11 +232,19 @@ fn id_is_sentinel(id: &LinuxPciDeviceId) -> bool {
         && id.class == 0 && id.class_mask == 0 && id.driver_data == 0
 }
 
-fn insert_binding(driver: usize, model: &Arc<Device>, dev: usize, id: usize) -> Result<(), ()> {
+fn insert_binding(
+    driver: usize, model: &Arc<Device>, dev: usize, bdf: Bdf, dma_mask: Box<u64>, id: usize,
+) -> Result<(), ()> {
     let mut g = BINDINGS.lock();
     if g.iter().any(|r| r.driver == driver && Arc::ptr_eq(&r.model, model)) { return Err(()); }
-    g.push(BindingRecord { driver, model: Arc::clone(model), dev, id });
+    g.push(BindingRecord { driver, model: Arc::clone(model), dev, bdf, _dma_mask: dma_mask, id });
     Ok(())
+}
+
+/// Exact PCI address retained for the lifetime of one bound KPI device. # C: O(N)
+pub(super) fn bdf_for(dev: *const LinuxPciDev) -> Option<Bdf> {
+    if dev.is_null() { return None; }
+    BINDINGS.lock().iter().find(|r| r.dev == dev as usize).map(|r| r.bdf)
 }
 
 fn remove_binding(model: &Arc<Device>, driver: usize) {

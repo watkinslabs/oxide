@@ -1,6 +1,7 @@
 use alloc::{format, string::String, vec::Vec};
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+use pci::Bdf;
 use sync::{Spinlock, TaskList as DriverLockClass};
 
 use crate::{
@@ -21,7 +22,7 @@ pub(crate) type DeviceKey = virtio::VirtioChildDeviceKey;
 
 pub struct VirtioGpuDev {
     pub device_key:           DeviceKey,
-    pub bdf:                  u32,
+    pub bdf:                  Bdf,
     pub card_id:              u32,
     pub cfg_va:               u64,
     pub ctrlq:                virtio::VirtQueueResource,
@@ -96,7 +97,7 @@ pub fn install(dev: VirtioGpuDev) -> KResult<()> {
 
 /// Snapshot the cached display info for the named virtio-gpu device.
 /// # C: O(N)
-pub fn display_info_for_bdf(bdf: u32) -> Option<DisplayInfo> {
+pub fn display_info_for_bdf(bdf: Bdf) -> Option<DisplayInfo> {
     DEVICES
         .lock()
         .iter()
@@ -113,7 +114,7 @@ pub fn is_present() -> bool {
 
 /// Negotiated feature mask for the named virtio-gpu device.
 /// # C: O(N)
-pub fn negotiated_features_for_bdf(bdf: u32) -> Option<u64> {
+pub fn negotiated_features_for_bdf(bdf: Bdf) -> Option<u64> {
     DEVICES
         .lock()
         .iter()
@@ -126,7 +127,7 @@ pub fn negotiated_features_for_bdf(bdf: u32) -> Option<u64> {
 pub struct VirtioGpuDrm {
     pub display:             DisplayInfo,
     pub features_negotiated: u64,
-    pub bdf:                 u32,
+    pub bdf:                 Bdf,
     pub unique:              String,
     /// EDID of the primary scanout's display, as fetched at probe.
     pub edid:                Option<Vec<u8>>,
@@ -283,11 +284,9 @@ impl VirtioGpuDrm {
 
 /// Stable DRM unique string derived from PCI BDF.
 /// # C: O(1)
-pub(crate) fn drm_unique_from_bdf(bdf: u32) -> String {
-    let bus = (bdf >> 16) & 0xff;
-    let device = (bdf >> 8) & 0xff;
-    let function = bdf & 0xff;
-    format!("pci:0000:{bus:02x}:{device:02x}.{function:x}")
+pub(crate) fn drm_unique_from_bdf(bdf: Bdf) -> String {
+    format!("pci:{segment:04x}:{bus:02x}:{device:02x}.{function:x}",
+        segment = bdf.segment, bus = bdf.bus, device = bdf.device, function = bdf.function)
 }
 
 /// Install + register with the DRM core (`47`).

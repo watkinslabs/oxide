@@ -42,7 +42,7 @@ usable without it.
 | OPEN | x2APIC + CPU count | no¹ | `MAX_CPUS = 64`, `u64` online mask, no x2APIC enablement. | — |
 | OPEN | ACPI depth | no² | APIC/HPET/MCFG/SPCR parsed. No DSDT/AML, no FADT. | — |
 | OPEN | Ethernet | no | Only virtio-net. No driver for any physical NIC. | — |
-| OPEN | IOMMU | no | Absent. Acceptable while disabled in firmware. | — |
+| IN PROGRESS F864 | IOMMU | no | ACPI IVRS/DMAR discovery is validated and published; translation domains, requester attachment, map/unmap invalidation, and hardware enablement remain absent. | F864-iommu-firmware-discovery |
 | — | Storage | no | NVMe + AHCI drivers exist and match by PCI class. Needs hardware validation only. | — |
 
 ¹ Not blocking on i9-class part counts; blocking on Threadripper.
@@ -211,11 +211,16 @@ to write.
 
 ## 10 IOMMU
 
-**Finding.** Absent — no AMD-Vi, no VT-d, no DMAR/IVRS parse.
+**Finding.** AMD IVRS and Intel DMAR are checksum-validated and published as
+immutable unit inventories before PCI binding. Discovery deliberately does not
+touch IOMMU registers, so devices remain in direct-DMA mode.
 
-**Work.** None for bring-up. Devices DMA to physical addresses. Confirm
-firmware does not hand over a pre-enabled IOMMU, which would silently drop
-every DMA. Revisit when the driver set is stable.
+**Work.** Build the Linux-shaped domain path before enabling translation:
+preserve every unit's requester ownership, allocate IOVA/page-table state,
+attach each device before setting bus master, and complete hardware
+invalidation before a mapping or physical page is reused. Do not enable a
+firmware-advertised IOMMU early; an incomplete device table would fault every
+active DMA device.
 
 ## 11 Storage
 

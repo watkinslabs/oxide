@@ -31,12 +31,12 @@ pub use caps::{
     MSIX_MESSAGE_DATA_OFF, MSIX_TABLE_ENTRY_BYTES, MSIX_VECTOR_CONTROL_MASKED,
     MSIX_VECTOR_CONTROL_OFF,
 };
-pub use scan::{enumerate, enumerate_buses};
+pub use scan::{enumerate, enumerate_buses, enumerate_segment_buses};
 pub use types::{
     disable_mem_bus_master, enable_mem_bus_master, intx_command_value, parse_bdf_addr,
     read_command, restore_intx_disabled, restore_mem_bus_master, set_intx_disabled,
     write_command, Bdf, ConfigSpaceReader, Error, KResult, PciDevice, COMMAND_BUS_MASTER,
-    COMMAND_INTX_DISABLE, COMMAND_IO, COMMAND_MEMORY,
+    COMMAND_INTX_DISABLE, COMMAND_IO, COMMAND_MEMORY, MAX_ECAM_WINDOWS,
 };
 
 #[cfg(test)]

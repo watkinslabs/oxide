@@ -13,6 +13,7 @@ fdt  = { path = "../../shared/fdt" }
 crc  = { path = "../../shared/crc" }
 klog = { path = "../../shared/klog" }
 sync = { path = "../../shared/sync" }
+pci  = { path = "../../drivers/pci" }
 
 [features]
 default = []

@@ -1,26 +1,85 @@
 use crate::acpi::log::{alog_dec, alog_hex, alog_raw};
 use crate::acpi::read::{read_u32_le, read_u64_le};
+use pci::MAX_ECAM_WINDOWS;
 
-/// First-segment ECAM base PA published by `decode_mcfg`. Zero if
-/// MCFG was absent / empty. The aarch64 PCI bring-up reads this to
-/// know what to device-map.
+/// Bounded early-boot MCFG inventory. A complete window set is published or
+/// none is: partial PCI host-bridge visibility would make ownership depend on
+/// table order.
+/// One ACPI MCFG allocation, keyed by PCI segment and bus window.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct EcamWindow {
+    pub base_pa: u64,
+    pub segment: u16,
+    pub bus_start: u8,
+    pub bus_end: u8,
+}
+
+/// ECAM base PA selected from the first MCFG allocation. Zero if MCFG was
+/// absent / empty. The matching segment and bus window are published with it.
 pub static ECAM_BASE_PA: core::sync::atomic::AtomicU64
     = core::sync::atomic::AtomicU64::new(0);
-/// First-segment MCFG start bus. Valid only when `ECAM_BASE_PA != 0`.
+/// PCI segment of the published MCFG allocation. Valid when `ECAM_BASE_PA != 0`.
+pub static ECAM_SEGMENT: core::sync::atomic::AtomicU32
+    = core::sync::atomic::AtomicU32::new(0);
+/// Start bus of the published MCFG allocation. Valid when `ECAM_BASE_PA != 0`.
 pub static ECAM_BUS_START: core::sync::atomic::AtomicU32
     = core::sync::atomic::AtomicU32::new(0);
-/// First-segment MCFG end bus. Valid only when `ECAM_BASE_PA != 0`.
+/// End bus of the published MCFG allocation. Valid when `ECAM_BASE_PA != 0`.
 pub static ECAM_BUS_END: core::sync::atomic::AtomicU32
     = core::sync::atomic::AtomicU32::new(0);
+static ECAM_WINDOW_COUNT: core::sync::atomic::AtomicU32
+    = core::sync::atomic::AtomicU32::new(0);
+static ECAM_WINDOW_BASE: [core::sync::atomic::AtomicU64; MAX_ECAM_WINDOWS]
+    = [const { core::sync::atomic::AtomicU64::new(0) }; MAX_ECAM_WINDOWS];
+static ECAM_WINDOW_SEGMENT: [core::sync::atomic::AtomicU32; MAX_ECAM_WINDOWS]
+    = [const { core::sync::atomic::AtomicU32::new(0) }; MAX_ECAM_WINDOWS];
+static ECAM_WINDOW_BUS_START: [core::sync::atomic::AtomicU32; MAX_ECAM_WINDOWS]
+    = [const { core::sync::atomic::AtomicU32::new(0) }; MAX_ECAM_WINDOWS];
+static ECAM_WINDOW_BUS_END: [core::sync::atomic::AtomicU32; MAX_ECAM_WINDOWS]
+    = [const { core::sync::atomic::AtomicU32::new(0) }; MAX_ECAM_WINDOWS];
 
-/// Number of bus numbers addressable from the published first ECAM segment.
+/// Number of bus numbers addressable from the published ECAM allocation.
 /// # C: O(1)
 pub fn ecam_bus_cap() -> u16 {
     if ECAM_BASE_PA.load(core::sync::atomic::Ordering::Acquire) == 0 {
         return 0;
     }
+    let start = ECAM_BUS_START.load(core::sync::atomic::Ordering::Relaxed).min(255);
     let end = ECAM_BUS_END.load(core::sync::atomic::Ordering::Acquire).min(255);
-    (end + 1) as u16
+    if end < start { 0 } else { (end - start + 1) as u16 }
+}
+
+/// Number of complete MCFG allocations published at boot. # C: O(1)
+pub fn ecam_window_count() -> usize {
+    ECAM_WINDOW_COUNT.load(core::sync::atomic::Ordering::Acquire) as usize
+}
+
+/// Return one exact MCFG allocation by publication index. # C: O(1)
+pub fn ecam_window(index: usize) -> Option<EcamWindow> {
+    if index >= ecam_window_count() { return None; }
+    Some(EcamWindow {
+        base_pa: ECAM_WINDOW_BASE[index].load(core::sync::atomic::Ordering::Relaxed),
+        segment: ECAM_WINDOW_SEGMENT[index].load(core::sync::atomic::Ordering::Relaxed) as u16,
+        bus_start: ECAM_WINDOW_BUS_START[index].load(core::sync::atomic::Ordering::Relaxed) as u8,
+        bus_end: ECAM_WINDOW_BUS_END[index].load(core::sync::atomic::Ordering::Relaxed) as u8,
+    })
+}
+
+fn publish_ecam_windows(windows: &[EcamWindow]) {
+    if windows.is_empty() || windows.len() > MAX_ECAM_WINDOWS { return; }
+    if ECAM_WINDOW_COUNT.load(core::sync::atomic::Ordering::Acquire) != 0 { return; }
+    for (index, window) in windows.iter().enumerate() {
+        ECAM_WINDOW_BASE[index].store(window.base_pa, core::sync::atomic::Ordering::Relaxed);
+        ECAM_WINDOW_SEGMENT[index].store(window.segment as u32, core::sync::atomic::Ordering::Relaxed);
+        ECAM_WINDOW_BUS_START[index].store(window.bus_start as u32, core::sync::atomic::Ordering::Relaxed);
+        ECAM_WINDOW_BUS_END[index].store(window.bus_end as u32, core::sync::atomic::Ordering::Relaxed);
+    }
+    let first = windows[0];
+    ECAM_SEGMENT.store(first.segment as u32, core::sync::atomic::Ordering::Relaxed);
+    ECAM_BUS_START.store(first.bus_start as u32, core::sync::atomic::Ordering::Relaxed);
+    ECAM_BUS_END.store(first.bus_end as u32, core::sync::atomic::Ordering::Relaxed);
+    ECAM_BASE_PA.store(first.base_pa, core::sync::atomic::Ordering::Release);
+    ECAM_WINDOW_COUNT.store(windows.len() as u32, core::sync::atomic::Ordering::Release);
 }
 
 /// Physical base of the first GICv2m MSI frame discovered via MADT
@@ -300,6 +359,11 @@ pub unsafe fn decode_mcfg(pa: u64, hhdm_offset: u64) {
     let body_off = 44usize;
     if length <= body_off { return; }
     let entries = (length - body_off) / 16;
+    if entries == 0 || entries > MAX_ECAM_WINDOWS {
+        alog_raw(b"[ERROR]    mcfg: unsupported allocation count\n");
+        return;
+    }
+    let mut windows = [EcamWindow { base_pa: 0, segment: 0, bus_start: 0, bus_end: 0 }; MAX_ECAM_WINDOWS];
     let mut i = 0usize;
     while i < entries {
         let off = body_off + i * 16;
@@ -309,11 +373,12 @@ pub unsafe fn decode_mcfg(pa: u64, hhdm_offset: u64) {
             let segment    = read_u32_le(p.add(off + 8)) as u16;
             let start_bus  = core::ptr::read_volatile(p.add(off + 10));
             let end_bus    = core::ptr::read_volatile(p.add(off + 11));
-            if i == 0 {
-                ECAM_BASE_PA.store(base, core::sync::atomic::Ordering::Release);
-                ECAM_BUS_START.store(start_bus as u32, core::sync::atomic::Ordering::Release);
-                ECAM_BUS_END.store(end_bus as u32, core::sync::atomic::Ordering::Release);
+            if base == 0 || start_bus > end_bus
+                || base.checked_add(u64::from(end_bus) << 20).is_none() {
+                alog_raw(b"[ERROR]    mcfg: invalid allocation\n");
+                return;
             }
+            windows[i] = EcamWindow { base_pa: base, segment, bus_start: start_bus, bus_end: end_bus };
             alog_raw(b"[INFO]    mcfg ecam pa=");
             alog_hex(base);
             alog_raw(b" segment=");
@@ -326,6 +391,7 @@ pub unsafe fn decode_mcfg(pa: u64, hhdm_offset: u64) {
         }
         i += 1;
     }
+    publish_ecam_windows(&windows[..entries]);
 }
 
 /// Decode the GTDT ACPI table (Generic Timer Description Table) per
