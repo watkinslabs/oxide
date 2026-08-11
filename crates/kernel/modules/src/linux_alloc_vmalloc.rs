@@ -170,3 +170,11 @@ pub fn snapshot() -> Snapshot {
     #[cfg(not(target_os = "oxide-kernel"))]
     { Snapshot::default() }
 }
+
+/// Test whether an address belongs to the reserved vmalloc virtual range. # C: O(1)
+pub fn is_addr(ptr: *const u8) -> bool {
+    #[cfg(target_os = "oxide-kernel")]
+    { let addr = ptr as u64; addr >= VMALLOC_VA_BASE && addr < VMALLOC_VA_BASE + VMALLOC_VA_BYTES }
+    #[cfg(not(target_os = "oxide-kernel"))]
+    { let _ = ptr; false }
+}

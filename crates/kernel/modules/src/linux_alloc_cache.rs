@@ -43,7 +43,7 @@ pub(super) unsafe extern "C" fn __kmem_cache_create_args(
     }))
 }
 
-pub(super) extern "C" fn kmem_cache_alloc_noprof(cache: *mut LinuxKmemCache, flags: u32) -> *mut u8 {
+pub(crate) extern "C" fn kmem_cache_alloc_noprof(cache: *mut LinuxKmemCache, flags: u32) -> *mut u8 {
     if !valid_cache(cache) { return null_mut(); }
     // SAFETY: valid_cache accepted the metadata pointer.
     let (size, align, ctor) = unsafe { ((*cache).object_size, (*cache).align, (*cache).ctor) };
@@ -57,7 +57,7 @@ pub(super) extern "C" fn kmem_cache_alloc_noprof(cache: *mut LinuxKmemCache, fla
     p
 }
 
-pub(super) extern "C" fn kmem_cache_free(cache: *mut LinuxKmemCache, obj: *mut c_void) {
+pub(crate) extern "C" fn kmem_cache_free(cache: *mut LinuxKmemCache, obj: *mut c_void) {
     if valid_cache(cache) {
         // SAFETY: kmem_cache_free requires obj to be a live allocation from cache's allocation surface.
         unsafe { free_bytes(obj as *mut u8); }

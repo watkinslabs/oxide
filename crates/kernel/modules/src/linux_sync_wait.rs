@@ -41,6 +41,17 @@ impl WaitCell {
         }
     }
 
+    /// Publish the current waiter and arm its scheduler deadline under the caller's gate.
+    /// # C: O(N armed)
+    pub(crate) fn park_locked_until(&self, deadline_ns: u64) {
+        self.waiters.fetch_add(1, Ordering::AcqRel);
+        #[cfg(target_os = "oxide-kernel")]
+        // SAFETY: the caller holds the condition gate while publishing the live waiter and deadline.
+        unsafe { self.wait.prepare_to_wait_with_deadline(deadline_ns); }
+        #[cfg(not(target_os = "oxide-kernel"))]
+        let _ = deadline_ns;
+    }
+
     pub(crate) fn yield_parked(&self) {
         #[cfg(target_os = "oxide-kernel")]
         // SAFETY: park_yield requires the caller to be already Sleeping on a wait list — the KPI

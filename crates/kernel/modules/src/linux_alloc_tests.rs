@@ -119,6 +119,18 @@ fn modern_noprof_allocators_match_linux_entry_points() {
     assert!(!c.is_null());
     kfree(c);
 
+    let node = __kmalloc_node_noprof(16, 0, GFP_ZERO, 0);
+    assert!(!node.is_null());
+    // SAFETY: node is the 16-byte zeroed allocation asserted non-null above.
+    unsafe { assert_eq!(core::slice::from_raw_parts(node, 16), &[0; 16]); }
+    kfree_sensitive(node);
+
+    let vm = __vmalloc_noprof(32, GFP_ZERO);
+    assert!(!vm.is_null());
+    // SAFETY: vm is the 32-byte zeroed vmalloc allocation asserted non-null above.
+    unsafe { assert_eq!(core::slice::from_raw_parts(vm, 32), &[0; 32]); }
+    vfree(vm);
+
     let v = __kvmalloc_node_noprof(20, 0, -1);
     assert!(!v.is_null());
     kvfree_call_rcu(core::ptr::null_mut(), v as *mut c_void);
@@ -189,10 +201,10 @@ fn export_symbols_registers_allocator_surface() {
         "kmalloc", "kzalloc", "kcalloc", "kfree", "vmalloc", "vfree", "vmap", "vunmap",
         "alloc_pages", "__free_pages", "__get_free_pages", "get_free_pages",
         "free_pages", "page_address", "page_to_phys", "kstrdup", "kasprintf",
-        "__kmalloc_noprof", "__kmalloc_cache_noprof", "__kvmalloc_node_noprof",
+        "__kmalloc_noprof", "__kmalloc_node_noprof", "__kmalloc_cache_noprof", "__kvmalloc_node_noprof",
         "alloc_pages_noprof", "__alloc_pages_noprof", "kvfree", "kvfree_call_rcu",
         "kmemdup_noprof", "__kmem_cache_create_args", "kmem_cache_alloc_noprof",
-        "kmem_cache_free", "kmem_cache_destroy", "vzalloc_noprof",
+        "kmem_cache_free", "kmem_cache_destroy", "vzalloc_noprof", "__vmalloc_noprof", "kfree_sensitive",
         "kmalloc_caches", "random_kmalloc_seed",
     ] {
         assert!(crate::symtab::resolve(name, true).is_ok(), "{name}");
