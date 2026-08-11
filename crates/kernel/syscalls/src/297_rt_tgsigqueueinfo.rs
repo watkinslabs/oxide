@@ -21,7 +21,9 @@ pub fn sys_rt_tgsigqueueinfo(args: &SyscallArgs) -> i64 {
     let sig  = args.a2 as i32;
     let info_ptr = args.a3;
     if let Err(rv) = validate_user_buf(info_ptr, KERNEL_SIGINFO_BYTES, 1) { return rv; }
-    let info = read_user_siginfo(info_ptr, sig as u32);
+    let info = match read_user_siginfo(info_ptr, sig as u32) {
+        Ok(i) => i, Err(e) => return -(e.as_i32() as i64),
+    };
     if tid <= 0 || tgid <= 0 { return -(Errno::Einval.as_i32() as i64); }
     if crate::s129_rt_sigqueueinfo::forgery_rejected(info.code, tid) {
         return -(Errno::Eperm.as_i32() as i64);

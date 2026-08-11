@@ -7,6 +7,7 @@
 use syscall::SyscallArgs;
 
 use crate::uname_release::{build_utsname, UTSNAME_TOTAL_LEN};
+use crate::user_mem as um;
 
 /// `sys_uname(buf)` — slot 63 (Linux `newuname`). Copies the caller's UTS
 /// namespace `struct new_utsname` (6 × 65 B: sysname, nodename, release,
@@ -46,12 +47,6 @@ pub fn kernel_uname(args: &SyscallArgs) -> i64 {
     // value assembled here would be a second answer for one field.
     let version = crate::uname_release::UTS_VERSION.as_bytes();
     let img = build_utsname(host, dom, version, cur.personality.load(Ordering::Acquire));
-    // SAFETY: `tp` names one validated writable `struct new_utsname`; the image
-    // is exactly UTSNAME_TOTAL_LEN bytes and byte writes need no alignment.
-    unsafe {
-        for (i, byte) in img.iter().enumerate() {
-            core::ptr::write_unaligned((tp + i as u64) as *mut u8, *byte);
-        }
-    }
+    if um::put_bytes(tp, &img).is_err() { return -(Errno::Efault.as_i32() as i64); }
     0
 }

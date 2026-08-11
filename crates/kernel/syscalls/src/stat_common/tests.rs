@@ -76,3 +76,27 @@ fn kstat_timestamps_pass_through_unscaled() {
     assert_eq!(out.mtime, Timespec64::ZERO);
     assert_eq!(out.ctime, t);
 }
+
+/// `write_new_stat_user` round-trips through the real `um::put_*` usercopy
+/// against a live local buffer standing in for a validated caller range.
+/// # C: O(1)
+#[test]
+fn write_new_stat_user_round_trips_through_a_valid_address() {
+    let t = Timespec64 { sec: 5, nsec: 6 };
+    let mut buf = [0u8; STAT_BYTES_X86_64 as usize];
+    let addr = buf.as_mut_ptr() as u64;
+    assert_eq!(write_new_stat_user(addr, &sample(t)), Ok(()));
+    assert_eq!(rd_u64(&buf, 8), 42, "ino carried through the sink");
+}
+
+/// A copy-out sink error must propagate to the caller as `-EFAULT`, not be
+/// swallowed — the defect this sticky-error flag closes. Address `0` fails
+/// `access_ok` unconditionally, so every `um::put_*` call inside the sink
+/// fails and the whole record must report an error, not a partial write.
+/// # C: O(1)
+#[test]
+fn faulting_copy_out_propagates_efault() {
+    let t = Timespec64 { sec: 5, nsec: 6 };
+    let rv = write_new_stat_user(0, &sample(t));
+    assert_eq!(rv, Err(crate::user_mem::EFAULT));
+}

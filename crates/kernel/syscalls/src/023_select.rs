@@ -9,6 +9,7 @@ use crate::poll::poll_common::monotonic_ns;
 use crate::pselect_ppoll::{TimeoutWriteback, copies_out_fd_sets, finish_return, remaining_timespec,
                            timeout_writeback_plan, wait_verdict};
 use crate::userbuf::{validate_user_buf_readable, validate_user_buf_writable};
+use crate::user_mem as um;
 
 #[cfg(target_os = "oxide-kernel")]
 fn current_task() -> Option<&'static sched::Task> { sched::live::current() }
@@ -77,10 +78,8 @@ fn fdset_bytes(nfds: u64) -> u64 {
 
 fn timeval_from_user(p: u64) -> Result<(i64, i64), i64> {
     validate_user_buf_readable(p, TIMEVAL_BYTES, 1)?;
-    // SAFETY: p validated readable for the 16-byte timeval.
-    let s = unsafe { core::ptr::read_unaligned(p as *const i64) };
-    // SAFETY: p+TIMEVAL_USEC_OFF lies inside the validated 16-byte timeval.
-    let u = unsafe { core::ptr::read_unaligned((p + TIMEVAL_USEC_OFF) as *const i64) };
+    let s = um::get_i64(p).map_err(|_| um::EFAULT)?;
+    let u = um::get_i64(p + TIMEVAL_USEC_OFF).map_err(|_| um::EFAULT)?;
     Ok((s, u))
 }
 
@@ -88,17 +87,14 @@ fn copy_fdset_from_user(p: u64, len: u64) -> Result<alloc::vec::Vec<u8>, i64> {
     let mut out = alloc::vec![0u8; len as usize];
     if p == 0 || len == 0 { return Ok(out); }
     validate_user_buf_readable(p, len, 1)?;
-    // SAFETY: p validated readable for len bytes; out has len bytes.
-    unsafe { core::ptr::copy_nonoverlapping(p as *const u8, out.as_mut_ptr(), len as usize); }
+    um::get_into(p, &mut out).map_err(|_| um::EFAULT)?;
     Ok(out)
 }
 
 fn copy_fdset_to_user(p: u64, buf: &[u8]) -> Result<(), i64> {
     if p == 0 || buf.is_empty() { return Ok(()); }
     validate_user_buf_writable(p, buf.len() as u64, 1)?;
-    // SAFETY: p validated writable for buf.len() bytes; source is a live slice.
-    unsafe { core::ptr::copy_nonoverlapping(buf.as_ptr(), p as *mut u8, buf.len()); }
-    Ok(())
+    um::put_bytes(p, buf).map_err(|_| um::EFAULT)
 }
 
 fn bit_at(buf: &[u8], i: u64) -> bool {
@@ -161,13 +157,9 @@ pub fn sys_select(args: &SyscallArgs) -> i64 {
     if plan != TimeoutWriteback::Wrote { return finish_return(rv, plan); }
     let Some(deadline) = deadline_ns else { return finish_return(rv, TimeoutWriteback::Skipped) };
     let (sec, nsec) = remaining_timespec(deadline, monotonic_ns());
-    let done = if validate_user_buf_writable(timeout_p, TIMEVAL_BYTES, 1).is_ok() {
-        // SAFETY: timeout_p validated writable for the 16-byte timeval.
-        unsafe {
-            core::ptr::write_unaligned(timeout_p as *mut i64, sec);
-            core::ptr::write_unaligned((timeout_p + TIMEVAL_USEC_OFF) as *mut i64,
-                                       nsec / NSEC_PER_USEC);
-        }
+    let done = if validate_user_buf_writable(timeout_p, TIMEVAL_BYTES, 1).is_ok()
+        && um::put_i64(timeout_p, sec).is_ok()
+        && um::put_i64(timeout_p + TIMEVAL_USEC_OFF, nsec / NSEC_PER_USEC).is_ok() {
         TimeoutWriteback::Wrote
     } else {
         TimeoutWriteback::Faulted

@@ -1,6 +1,7 @@
 use syscall::errno::Errno;
 
 use super::{abi::{user_range, write_raw}, dispatch::quota_now_sec, eno, qidns::QuotaIdCtx};
+use crate::user_mem as um;
 #[path = "uapi.rs"] mod uapi;
 pub use super::cmd::{Q_XGETNEXTQUOTA, Q_XGETQSTAT, Q_XGETQSTATV, Q_XGETQUOTA, Q_XQUOTAOFF, Q_XQUOTAON, Q_XQUOTARM, Q_XQUOTASYNC, Q_XSETQLIM};
 use uapi::*;
@@ -114,8 +115,7 @@ fn get_qstat(sb: &vfs::SuperBlock, kind: vfs::QuotaType, addr: u64) -> i64 {
 fn get_qstatv(sb: &vfs::SuperBlock, kind: vfs::QuotaType, addr: u64) -> i64 {
     if !sb.s_op.quota_get_state_supported(sb) { return eno(Errno::Enosys); }
     if !user_range(addr, core::mem::size_of::<i8>() as u64) { return eno(Errno::Efault); }
-    // SAFETY: user range validated for the version byte; trap handling is owned by the arch usercopy path.
-    let version = unsafe { core::ptr::read_volatile(addr as *const i8) };
+    let version = match um::get_i8(addr) { Ok(v) => v, Err(_) => return eno(Errno::Efault) };
     if version != FS_QSTATV_VERSION1 { return eno(Errno::Einval); }
     let state = match quota_state(sb) { Ok(s) => s, Err(e) => return crate::namei_common::errno_from_vfs(e) };
     let flags = quota_state_flags(&state);
@@ -144,14 +144,12 @@ fn get_qstatv(sb: &vfs::SuperBlock, kind: vfs::QuotaType, addr: u64) -> i64 {
 
 fn read_quota(addr: u64) -> Result<FsDiskQuota, i64> {
     if !user_range(addr, core::mem::size_of::<FsDiskQuota>() as u64) { return Err(eno(Errno::Efault)); }
-    // SAFETY: user range validated for an fs_disk_quota-sized load; trap handling is owned by the arch usercopy path.
-    Ok(unsafe { core::ptr::read_volatile(addr as *const FsDiskQuota) })
+    um::get_pod::<FsDiskQuota>(addr).map_err(|_| eno(Errno::Efault))
 }
 
 fn read_flags(addr: u64) -> Result<u32, i64> {
     if !user_range(addr, core::mem::size_of::<u32>() as u64) { return Err(eno(Errno::Efault)); }
-    // SAFETY: user range validated for a u32-sized load; trap handling is owned by the arch usercopy path.
-    Ok(unsafe { core::ptr::read_volatile(addr as *const u32) })
+    um::get_u32(addr).map_err(|_| eno(Errno::Efault))
 }
 
 pub(super) fn quota_enable(sb: &vfs::SuperBlock, addr: u64) -> i64 {

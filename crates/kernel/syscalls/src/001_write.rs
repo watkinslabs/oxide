@@ -97,8 +97,9 @@ pub fn sys_write(args: &SyscallArgs) -> i64 {
                 let mut i = 0u64;
                 let mut found = 0u32;
                 while i < 220 && found < 20 {
-                    // SAFETY: reading this task's own user stack; range validated as a live user VA below.
-                    let a = unsafe { core::ptr::read_volatile((ursp + i * 8) as *const u64) };
+                    // Diagnostic-only walk of the caller's own stack: an unmapped
+                    // slot just ends the walk rather than reporting anything.
+                    let a = match crate::user_mem::get_u64(ursp + i * 8) { Ok(v) => v, Err(_) => break };
                     if let Some(uva) = hal::UserVirtAddr::new(a) {
                         if let Some(vma) = mm.find_vma(uva) {
                             if vma.prot.contains(vmm::VmaProt::EXEC) {

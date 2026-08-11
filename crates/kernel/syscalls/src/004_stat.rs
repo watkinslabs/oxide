@@ -42,8 +42,7 @@ pub(crate) fn stat_impl(args: &SyscallArgs, follow: bool) -> i64 {
     // Linux resolves/getattrs and converts through cp_new_stat before it faults
     // the output buffer.
     if let Err(rv) = validate_user_buf_writable(buf, STAT_BYTES, 1) { return rv; }
-    // SAFETY: buf validated STAT_BYTES writable below USER_VA_END.
-    unsafe { write_new_stat_user(buf, &out); }
+    if let Err(rv) = write_new_stat_user(buf, &out) { return rv; }
     0
 }
 

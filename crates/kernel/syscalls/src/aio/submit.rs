@@ -17,6 +17,7 @@ use crate::aio_abi::iocb::{classify, decode, validate_common, validate_fsync, va
 use crate::aio_abi::uapi::{IOCB_OFF_KEY, IOCB_SIZE, KIOCB_KEY};
 use crate::aio::ctx::{ActiveReq, AioContext, IoEvent};
 use crate::userbuf::{validate_user_buf, validate_user_buf_readable, validate_user_buf_writable};
+use crate::user_mem as um;
 
 /// Size of one entry in the `iocbpp` array of user `struct iocb *`.
 const PTR_SIZE: u64 = 8;
@@ -55,8 +56,7 @@ pub fn sys_io_submit(ctx_id: u64, nr: i64, iocbpp: u64) -> i64 {
     while i < nr {
         let slot = iocbpp + i as u64 * PTR_SIZE;
         if validate_user_buf_readable(slot, PTR_SIZE, PTR_SIZE).is_err() { rv = err(Errno::Efault); break; }
-        // SAFETY: slot validated readable and 8-byte aligned below USER_VA_END; CPL=0 reads one user iocb pointer out of the caller's array.
-        let uiocb = unsafe { core::ptr::read_volatile(slot as *const u64) };
+        let uiocb = match um::get_u64(slot) { Ok(v) => v, Err(_) => { rv = err(Errno::Efault); break; } };
         rv = submit_one(&c, uiocb);
         if rv != 0 { break; }
         i += 1;
@@ -72,10 +72,7 @@ fn submit_one(c: &Arc<AioContext>, uiocb: u64) -> i64 {
     // requirement, so a misaligned but mapped iocb is legal.
     if validate_user_buf_readable(uiocb, IOCB_SIZE, 1).is_err() { return err(Errno::Efault); }
     let mut raw = [0u8; IOCB_SIZE as usize];
-    for (n, b) in raw.iter_mut().enumerate() {
-        // SAFETY: the whole 64-byte iocb was validated readable below USER_VA_END; CPL=0 copies it byte-wise through the caller's address space.
-        *b = unsafe { core::ptr::read_volatile((uiocb + n as u64) as *const u8) };
-    }
+    if um::get_into(uiocb, &mut raw).is_err() { return err(Errno::Efault); }
     let io = decode(&raw);
     if let Err(e) = validate_common(&io) { return err(e); }
     // A ring slot is reserved before any work runs, so a completion always has
@@ -101,9 +98,9 @@ fn prepare_and_run(c: &Arc<AioContext>, uiocb: u64, io: &Iocb) -> Result<(), i64
     } else { None };
     // The kernel stamps its request tag into the caller's iocb; `io_cancel`
     // refuses any iocb that does not carry it.
-    if validate_user_buf_writable(uiocb + IOCB_OFF_KEY, 4, 1).is_err() { return Err(err(Errno::Efault)); }
-    // SAFETY: the aio_key word was validated writable below USER_VA_END; CPL=0 stamps the request tag into the caller's iocb.
-    unsafe { core::ptr::write_unaligned((uiocb + IOCB_OFF_KEY) as *mut u32, KIOCB_KEY); }
+    if validate_user_buf_writable(uiocb + IOCB_OFF_KEY, 4, 1).is_err() || um::put_u32(uiocb + IOCB_OFF_KEY, KIOCB_KEY).is_err() {
+        return Err(err(Errno::Efault));
+    }
 
     let op = classify(io.opcode).map_err(err)?;
     match op {

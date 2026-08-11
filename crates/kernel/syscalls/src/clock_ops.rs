@@ -8,6 +8,7 @@ use syscall::errno::Errno;
 use crate::clock_policy::ClockOps;
 use crate::time_common::current_ns_for_clock;
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
+use crate::user_mem as um;
 
 const TIMESPEC_SIZE: u64 = 16;
 
@@ -21,20 +22,15 @@ pub struct KernelClockOps;
 impl ClockOps for KernelClockOps {
     fn read_timespec(&mut self, ptr: u64) -> Result<(i64, i64), Errno> {
         validate_user_buf(ptr, TIMESPEC_SIZE, 1).map_err(errno_of)?;
-        // SAFETY: ptr validated as readable 16-byte timespec storage.
-        Ok(unsafe {
-            (core::ptr::read_unaligned(ptr as *const i64),
-             core::ptr::read_unaligned((ptr + 8) as *const i64))
-        })
+        match (um::get_i64(ptr), um::get_i64(ptr + 8)) {
+            (Ok(s), Ok(n)) => Ok((s, n)),
+            _ => Err(Errno::Efault),
+        }
     }
 
     fn write_timespec(&mut self, ptr: u64, sec: u64, nsec: u64) -> Result<(), Errno> {
         validate_user_buf_writable(ptr, TIMESPEC_SIZE, 1).map_err(errno_of)?;
-        // SAFETY: ptr validated writable for one 16-byte timespec result.
-        unsafe {
-            core::ptr::write_unaligned(ptr as *mut u64, sec);
-            core::ptr::write_unaligned((ptr + 8) as *mut u64, nsec);
-        }
+        if um::put_u64(ptr, sec).is_err() || um::put_u64(ptr + 8, nsec).is_err() { return Err(Errno::Efault); }
         Ok(())
     }
 

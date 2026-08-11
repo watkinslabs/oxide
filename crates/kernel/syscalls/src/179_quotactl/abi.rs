@@ -2,6 +2,7 @@ use hal::USER_VA_END;
 use syscall::errno::Errno;
 
 use super::eno;
+use crate::user_mem as um;
 
 const QIF_BLIMITS: u32 = 1 << 0;
 const QIF_SPACE:   u32 = 1 << 1;
@@ -28,6 +29,9 @@ struct IfDqblk {
     dqb_valid:      u32,
 }
 
+// SAFETY: repr(C), every field an integer, no padding-sensitive invariant — any byte pattern is a valid value.
+unsafe impl um::UserPod for IfDqblk {}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct IfNextDqblk {
@@ -43,6 +47,9 @@ struct IfNextDqblk {
     dqb_id:         u32,
 }
 
+// SAFETY: repr(C), every field an integer, no padding-sensitive invariant — any byte pattern is a valid value.
+unsafe impl um::UserPod for IfNextDqblk {}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct IfDqinfo {
@@ -52,6 +59,9 @@ struct IfDqinfo {
     dqi_valid:  u32,
 }
 
+// SAFETY: repr(C), every field an integer, no padding-sensitive invariant — any byte pattern is a valid value.
+unsafe impl um::UserPod for IfDqinfo {}
+
 const _: [(); 72] = [(); core::mem::size_of::<IfDqblk>()];
 const _: [(); 72] = [(); core::mem::size_of::<IfNextDqblk>()];
 const _: [(); 24] = [(); core::mem::size_of::<IfDqinfo>()];
@@ -60,11 +70,9 @@ pub(super) fn user_range(addr: u64, len: u64) -> bool {
     addr != 0 && addr.checked_add(len).map(|end| end <= USER_VA_END).unwrap_or(false)
 }
 
-pub(super) fn write_raw<T: Copy>(addr: u64, value: T) -> i64 {
+pub(super) fn write_raw<T: um::UserPod>(addr: u64, value: T) -> i64 {
     if !user_range(addr, core::mem::size_of::<T>() as u64) { return eno(Errno::Efault); }
-    // SAFETY: user range validated for a T-sized store; trap handling is owned by the arch usercopy path.
-    unsafe { core::ptr::write_volatile(addr as *mut T, value); }
-    0
+    match um::put_pod(addr, value) { Ok(()) => 0, Err(e) => eno(e) }
 }
 
 pub(super) fn write_u32(addr: u64, value: u32) -> i64 {
@@ -73,8 +81,7 @@ pub(super) fn write_u32(addr: u64, value: u32) -> i64 {
 
 pub(super) fn read_dqblk(addr: u64) -> Result<vfs::MemDqblk, i64> {
     if !user_range(addr, core::mem::size_of::<IfDqblk>() as u64) { return Err(eno(Errno::Efault)); }
-    // SAFETY: user range validated for an if_dqblk-sized load; trap handling is owned by the arch usercopy path.
-    let dq = unsafe { core::ptr::read_volatile(addr as *const IfDqblk) };
+    let dq = um::get_pod::<IfDqblk>(addr).map_err(|_| eno(Errno::Efault))?;
     Ok(if_to_mem_dqblk(dq))
 }
 
@@ -84,8 +91,7 @@ pub(super) fn write_dqblk(addr: u64, dqblk: vfs::MemDqblk) -> i64 {
 
 pub(super) fn read_dqinfo(addr: u64) -> Result<vfs::MemDqinfo, i64> {
     if !user_range(addr, core::mem::size_of::<IfDqinfo>() as u64) { return Err(eno(Errno::Efault)); }
-    // SAFETY: user range validated for an if_dqinfo-sized load; trap handling is owned by the arch usercopy path.
-    let info = unsafe { core::ptr::read_volatile(addr as *const IfDqinfo) };
+    let info = um::get_pod::<IfDqinfo>(addr).map_err(|_| eno(Errno::Efault))?;
     Ok(vfs::MemDqinfo {
         dqi_bgrace: info.dqi_bgrace,
         dqi_igrace: info.dqi_igrace,
@@ -123,9 +129,7 @@ pub(super) fn write_next_dqblk(addr: u64, id: u32, dqblk: vfs::MemDqblk) -> i64 
         dqb_valid:      dq.dqb_valid,
         dqb_id:         id,
     };
-    // SAFETY: user range validated for an if_nextdqblk-sized store; trap handling is owned by the arch usercopy path.
-    unsafe { core::ptr::write_volatile(addr as *mut IfNextDqblk, out); }
-    0
+    match um::put_pod(addr, out) { Ok(()) => 0, Err(e) => eno(e) }
 }
 
 fn if_to_mem_dqblk(dq: IfDqblk) -> vfs::MemDqblk {

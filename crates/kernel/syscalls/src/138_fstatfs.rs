@@ -53,6 +53,6 @@ pub fn sys_fstatfs(args: &SyscallArgs) -> i64 {
             magic => magic,
         }),
     };
-    write_statfs(buf, &st);
+    if let Err(rv) = write_statfs(buf, &st) { return rv; }
     0
 }

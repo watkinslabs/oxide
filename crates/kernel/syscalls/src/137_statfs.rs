@@ -46,7 +46,11 @@ pub fn sys_statfs(args: &SyscallArgs) -> i64 {
         return -(syscall::errno::Errno::Enoent.as_i32() as i64);
     };
     let st = statfs_for_mount(&m);
-    write_statfs(buf, &st);
+    if let Err(rv) = write_statfs(buf, &st) {
+        #[cfg(feature = "debug-mount")]
+        log_runtime_statfs(path_ptr, rv);
+        return rv;
+    }
     #[cfg(feature = "debug-mount")]
     log_runtime_statfs(path_ptr, 0);
     0

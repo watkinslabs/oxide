@@ -157,3 +157,9 @@ fn pselect6_delegates_to_corrected_select_engine() {
     let pselect = include_str!("../src/270_pselect6.rs");
     assert!(pselect.contains("sys_select_with_deadline(&inner, deadline_ns)"));
 }
+
+// The spliced slot files reach their caller-memory accessors through
+// `crate::user_mem`; supplying the real module here keeps this harness on the
+// same fault-recoverable usercopy the kernel build uses.
+#[path = "../src/user_mem/mod.rs"]
+mod user_mem;

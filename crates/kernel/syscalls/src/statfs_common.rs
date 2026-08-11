@@ -11,19 +11,15 @@
 
 use vfs::SbStatFs;
 
+use crate::user_mem as um;
+
 pub(crate) use crate::statfs_abi::STATFS_BYTES;
 
 /// Copy the encoded `struct statfs` image into the caller's validated buffer.
-/// # C: O(1)
-pub(crate) fn write_statfs(buf: u64, st: &SbStatFs) {
+/// `Err` is the caller's `-EFAULT`. # C: O(1)
+pub(crate) fn write_statfs(buf: u64, st: &SbStatFs) -> Result<(), i64> {
     let img = crate::statfs_abi::encode_statfs(st);
-    // SAFETY: caller validated the full `STATFS_BYTES` user output span writable
-    // for `sys_statfs`/`sys_fstatfs`; byte writes need no alignment.
-    unsafe {
-        for (i, byte) in img.iter().enumerate() {
-            core::ptr::write_unaligned((buf + i as u64) as *mut u8, *byte);
-        }
-    }
+    um::put_bytes(buf, &img).map_err(|_| um::EFAULT)
 }
 
 // tmpfs magic — the reported fs for an anon/pathless fd that belongs to no

@@ -163,6 +163,5 @@ fn dequeue_wanted(cur: &sched::Task, wanted: u64) -> Option<(u32, Option<sched::
 fn emit_siginfo(info: u64, sig: u32, rec: Option<sched::SigInfo>) -> Result<(), i64> {
     if info == 0 { return Ok(()); }
     validate_user_buf_writable(info, SIGINFO_BYTES, 1)?;
-    write_user_siginfo(info, sig, rec);
-    Ok(())
+    write_user_siginfo(info, sig, rec).map_err(|e| -(e.as_i32() as i64))
 }

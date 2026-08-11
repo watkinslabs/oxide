@@ -116,10 +116,7 @@ pub fn sys_mincore(args: &SyscallArgs) -> i64 {
         if rv != 0 { return rv; }
         let dst = vec + done;
         if let Err(rv) = crate::userbuf::validate_user_buf_writable(dst, chunk, 1) { return rv; }
-        for (i, b) in tmp.iter().enumerate() {
-            // SAFETY: destination chunk was validated writable; byte stores are alignment-independent.
-            unsafe { core::ptr::write_unaligned((dst + i as u64) as *mut u8, *b); }
-        }
+        if crate::user_mem::put_bytes(dst, &tmp).is_err() { return err(Errno::Efault); }
         done += chunk;
     }
     0

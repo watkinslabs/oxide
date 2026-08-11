@@ -6,6 +6,7 @@
 use syscall::SyscallArgs;
 use crate::userbuf::validate_user_buf_writable;
 use crate::sysinfo_abi::{encode_sysinfo, load_to_si, uptime_secs, SysInfo, SYSINFO_BYTES};
+use crate::user_mem as um;
 
 /// Byte-granular user buffer: the encoded image is copied byte by byte, so no
 /// alignment is required of the caller's pointer.
@@ -49,12 +50,6 @@ pub fn sys_sysinfo(args: &SyscallArgs) -> i64 {
         freehigh:  0,
     };
     let img = encode_sysinfo(&si);
-    // SAFETY: `buf` names one validated writable Linux `struct sysinfo`; the
-    // image is exactly SYSINFO_BYTES and byte writes need no alignment.
-    unsafe {
-        for (i, byte) in img.iter().enumerate() {
-            core::ptr::write_unaligned((buf + i as u64) as *mut u8, *byte);
-        }
-    }
+    if um::put_bytes(buf, &img).is_err() { return um::EFAULT; }
     0
 }

@@ -5,6 +5,8 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
+use crate::user_mem as um;
+
 /// `sys_readlink(path, buf, bufsize)` — slot 89. Resolves the
 /// procfs symlinks `/proc/self/{exe,cwd,root}` and per-pid
 /// `/proc/<tid>/{exe,cwd,root}`. All other paths return -EINVAL.
@@ -78,12 +80,7 @@ pub(crate) fn write_link_target(target: &[u8], buf_ptr: u64, bufsize: u64) -> i6
     let n = crate::path_ops_policy::readlink_copy_len(target.len(), bufsize as i32);
     if n != 0 {
         if let Err(rv) = crate::userbuf::validate_user_buf_writable(buf_ptr, n as u64, 1) { return rv; }
-    }
-    // SAFETY: caller validated the writable byte range; Linux readlink copyout accepts unaligned storage.
-    unsafe {
-        for i in 0..n {
-            core::ptr::write_unaligned((buf_ptr + i as u64) as *mut u8, target[i]);
-        }
+        if um::put_bytes(buf_ptr, &target[..n]).is_err() { return um::EFAULT; }
     }
     n as i64
 }

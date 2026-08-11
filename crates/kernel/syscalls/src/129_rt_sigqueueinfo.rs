@@ -32,7 +32,9 @@ pub fn sys_rt_sigqueueinfo(args: &SyscallArgs) -> i64 {
     let sig = args.a1 as i32;
     let info_ptr = args.a2;
     if let Err(rv) = validate_user_buf(info_ptr, KERNEL_SIGINFO_BYTES, 1) { return rv; }
-    let info = read_user_siginfo(info_ptr, sig as u32);
+    let info = match read_user_siginfo(info_ptr, sig as u32) {
+        Ok(i) => i, Err(e) => return -(e.as_i32() as i64),
+    };
     if forgery_rejected(info.code, pid) { return -(Errno::Eperm.as_i32() as i64); }
     if sig < 0 { return -(Errno::Einval.as_i32() as i64); }
     sigqueue_to(pid as u32, sig as u32, info)

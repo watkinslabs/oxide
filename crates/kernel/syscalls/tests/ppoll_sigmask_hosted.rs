@@ -431,3 +431,9 @@ fn the_real_waiter_publishes_sleeping_before_it_rechecks_the_generation() {
     let yield_at = src.find("sched::live::park_yield()").expect("yield");
     assert!(park < recheck && recheck < yield_at);
 }
+
+// The spliced slot files reach their caller-memory accessors through
+// `crate::user_mem`; supplying the real module here keeps this harness on the
+// same fault-recoverable usercopy the kernel build uses.
+#[path = "../src/user_mem/mod.rs"]
+mod user_mem;

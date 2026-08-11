@@ -4,6 +4,7 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
+use crate::user_mem as um;
 
 const ITIMER_REAL:    u64 = 0;
 const ITIMER_VIRTUAL: u64 = 1;
@@ -49,13 +50,9 @@ fn write_itimerval(ptr: u64, interval: u64, value: u64) -> Result<(), i64> {
     validate_user_buf_writable(ptr, ITIMERVAL_SIZE, 1)?;
     let (i_s, i_us) = sched::clock::ns_to_timeval(interval);
     let (v_s, v_us) = sched::clock::ns_to_timeval(value);
-    // SAFETY: ptr validated writable for one itimerval; unaligned stores match Linux copy_to_user layout.
-    unsafe {
-        core::ptr::write_unaligned( ptr       as *mut u64, i_s);
-        core::ptr::write_unaligned((ptr +  8) as *mut u64, i_us);
-        core::ptr::write_unaligned((ptr + 16) as *mut u64, v_s);
-        core::ptr::write_unaligned((ptr + 24) as *mut u64, v_us);
-    }
+    let ok = um::put_u64(ptr, i_s).is_ok() && um::put_u64(ptr + 8, i_us).is_ok()
+        && um::put_u64(ptr + 16, v_s).is_ok() && um::put_u64(ptr + 24, v_us).is_ok();
+    if !ok { return Err(um::EFAULT); }
     Ok(())
 }
 

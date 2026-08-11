@@ -12,6 +12,7 @@ use crate::aio_abi::uapi::{AIO_SIGSET_OFF_SIGMASK, AIO_SIGSET_OFF_SIGSETSIZE, AI
     IOCB_OFF_KEY, KIOCB_KEY};
 use crate::aio::{ctx, reap, setup, submit};
 use crate::userbuf::validate_user_buf_readable;
+use crate::user_mem as um;
 
 fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
@@ -48,10 +49,9 @@ pub fn sys_io_pgetevents(args: &SyscallArgs) -> i64 {
     let usig = args.a5;
     let (ss_ptr, ss_len) = if usig == 0 { (0u64, 0u64) } else {
         if validate_user_buf_readable(usig, AIO_SIGSET_SIZE, 1).is_err() { return err(Errno::Efault); }
-        // SAFETY: usig validated readable for the whole 16-byte __aio_sigset below USER_VA_END; CPL=0 reads both words through the caller's address space.
-        unsafe {
-            (core::ptr::read_unaligned((usig + AIO_SIGSET_OFF_SIGMASK) as *const u64),
-             core::ptr::read_unaligned((usig + AIO_SIGSET_OFF_SIGSETSIZE) as *const u64))
+        match (um::get_u64(usig + AIO_SIGSET_OFF_SIGMASK), um::get_u64(usig + AIO_SIGSET_OFF_SIGSETSIZE)) {
+            (Ok(m), Ok(s)) => (m, s),
+            _ => return err(Errno::Efault),
         }
     };
     let cur = sched::live::current();
@@ -84,8 +84,7 @@ pub fn sys_io_pgetevents(args: &SyscallArgs) -> i64 {
 pub fn sys_io_cancel(args: &SyscallArgs) -> i64 {
     let uiocb = args.a1;
     if validate_user_buf_readable(uiocb + IOCB_OFF_KEY, 4, 1).is_err() { return err(Errno::Efault); }
-    // SAFETY: the aio_key word was validated readable below USER_VA_END; CPL=0 reads the request tag the kernel stamped at submit.
-    let key = unsafe { core::ptr::read_unaligned((uiocb + IOCB_OFF_KEY) as *const u32) };
+    let key = match um::get_u32(uiocb + IOCB_OFF_KEY) { Ok(v) => v, Err(_) => return err(Errno::Efault) };
     if key != KIOCB_KEY { return err(Errno::Einval); }
     let c = match ctx::lookup(args.a0) { Some(c) => c, None => return err(Errno::Einval) };
     let taken = {

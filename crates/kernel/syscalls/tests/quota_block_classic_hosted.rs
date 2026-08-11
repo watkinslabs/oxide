@@ -478,3 +478,9 @@ fn sys_quotactl_block_setinfo_permission_denied_before_usercopy_hosted() {
     assert_eq!(&*READ_USER_PATH_CALLS.lock().unwrap(), &[SPECIAL_ADDR]);
     assert_eq!(ops.writes.load(Ordering::SeqCst), 0);
 }
+
+// The spliced slot files reach their caller-memory accessors through
+// `crate::user_mem`; supplying the real module here keeps this harness on the
+// same fault-recoverable usercopy the kernel build uses.
+#[path = "../src/user_mem/mod.rs"]
+mod user_mem;

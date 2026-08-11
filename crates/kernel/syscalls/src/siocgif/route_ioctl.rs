@@ -1,6 +1,7 @@
 use alloc::string::String;
 use hal::USER_VA_END;
 use syscall::errno::Errno;
+use crate::user_mem as um;
 
 const AF_INET: u16 = 2;
 const RTENTRY_LEN: u64 = 120;
@@ -32,12 +33,10 @@ struct Request {
 
 fn errno(e: Errno) -> i64 { -(e.as_i32() as i64) }
 
-fn sockaddr(arg: u64, off: u64) -> (u16, u32) {
-    // SAFETY: parse bounds-checks the complete rtentry before fixed-offset reads.
-    unsafe {
-        (core::ptr::read_volatile((arg + off) as *const u16),
-         u32::from_be(core::ptr::read_volatile((arg + off + 4) as *const u32)))
-    }
+fn sockaddr(arg: u64, off: u64) -> Result<(u16, u32), i64> {
+    let family = um::get_u16(arg + off).map_err(|_| errno(Errno::Efault))?;
+    let raw = um::get_u32(arg + off + 4).map_err(|_| errno(Errno::Efault))?;
+    Ok((family, u32::from_be(raw)))
 }
 
 fn prefix(mask: u32) -> Option<u8> {
@@ -50,9 +49,9 @@ fn parse(arg: u64) -> Result<Request, i64> {
     if arg == 0 || arg.checked_add(RTENTRY_LEN).is_none_or(|end| end > USER_VA_END) {
         return Err(errno(Errno::Efault));
     }
-    let (dst_family, dst_raw) = sockaddr(arg, OFF_DST);
-    let (gateway_family, gateway_raw) = sockaddr(arg, OFF_GATEWAY);
-    let (mask_family, mask) = sockaddr(arg, OFF_GENMASK);
+    let (dst_family, dst_raw) = sockaddr(arg, OFF_DST)?;
+    let (gateway_family, gateway_raw) = sockaddr(arg, OFF_GATEWAY)?;
+    let (mask_family, mask) = sockaddr(arg, OFF_GENMASK)?;
     if dst_family != AF_INET { return Err(errno(Errno::Eafnosupport)); }
     if gateway_family != 0 && gateway_family != AF_INET {
         return Err(errno(Errno::Eafnosupport));
@@ -60,14 +59,13 @@ fn parse(arg: u64) -> Result<Request, i64> {
     if mask_family != AF_INET && !(mask_family == 0 && mask == 0) {
         return Err(errno(Errno::Eafnosupport));
     }
-    // SAFETY: complete rtentry range was checked above and offsets match Linux x86_64/aarch64 ABI.
-    let (flags, metric, dev_ptr, mtu, window, irtt) = unsafe {
-        (core::ptr::read_volatile((arg + OFF_FLAGS) as *const u16),
-         core::ptr::read_volatile((arg + OFF_METRIC) as *const i16),
-         core::ptr::read_volatile((arg + OFF_DEV) as *const u64),
-         core::ptr::read_volatile((arg + OFF_MTU) as *const u64),
-         core::ptr::read_volatile((arg + OFF_WINDOW) as *const u64),
-         core::ptr::read_volatile((arg + OFF_IRTT) as *const u16))
+    let (flags, metric, dev_ptr, mtu, window, irtt) = match (
+        um::get_u16(arg + OFF_FLAGS), um::get_i16(arg + OFF_METRIC), um::get_u64(arg + OFF_DEV),
+        um::get_u64(arg + OFF_MTU), um::get_u64(arg + OFF_WINDOW), um::get_u16(arg + OFF_IRTT),
+    ) {
+        (Ok(flags), Ok(metric), Ok(dev_ptr), Ok(mtu), Ok(window), Ok(irtt)) =>
+            (flags, metric, dev_ptr, mtu, window, irtt),
+        _ => return Err(errno(Errno::Efault)),
     };
     if metric < 0 { return Err(errno(Errno::Einval)); }
     if mtu != 0 || window != 0 || irtt != 0

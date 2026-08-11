@@ -249,3 +249,9 @@ fn classic_futex_only_reads_a_timespec_for_the_commands_that_take_one() {
     assert_eq!(DEADLINE.load(Ordering::SeqCst), 0);
     assert_eq!(CONVERSIONS.load(Ordering::SeqCst), 0);
 }
+
+// The spliced slot files reach their caller-memory accessors through
+// `crate::user_mem`; supplying the real module here keeps this harness on the
+// same fault-recoverable usercopy the kernel build uses.
+#[path = "../src/user_mem/mod.rs"]
+mod user_mem;

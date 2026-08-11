@@ -7,6 +7,7 @@ use crate::pselect_ppoll::{SIGSET_ARGPACK_BYTES, SIGSET_ARGPACK_LEN_OFF};
 use crate::pselect_ppoll_edge::{poll_select_finish, poll_select_set_timeout, set_user_sigmask};
 use crate::select::s023_select::sys_select_with_deadline;
 use crate::userbuf::validate_user_buf;
+use crate::user_mem as um;
 
 #[cfg(target_os = "oxide-kernel")]
 fn current_task() -> Option<&'static sched::Task> { sched::live::current() }
@@ -44,10 +45,9 @@ pub fn sys_pselect6(args: &SyscallArgs) -> i64 {
     //    is also malformed.
     let (ss_ptr, ss_len) = if args.a5 == 0 { (0, 0) } else {
         if let Err(rv) = validate_user_buf(args.a5, SIGSET_ARGPACK_BYTES, 1) { return rv; }
-        // SAFETY: args.a5 validated readable for the whole 16-byte sigset_argpack.
-        unsafe {
-            (core::ptr::read_unaligned(args.a5 as *const u64),
-             core::ptr::read_unaligned((args.a5 + SIGSET_ARGPACK_LEN_OFF) as *const u64))
+        match (um::get_u64(args.a5), um::get_u64(args.a5 + SIGSET_ARGPACK_LEN_OFF)) {
+            (Ok(p), Ok(l)) => (p, l),
+            _ => return um::EFAULT,
         }
     };
     debug_ssh! {

@@ -179,3 +179,9 @@ fn sys_quotactl_block_xfs_onoff_unsupported_hooks_win_over_unknown_flags_hosted(
     assert_eq!(sys::sys_quotactl(&args), eno(Errno::Enosys));
     assert_eq!(&*READ_USER_PATH_CALLS.lock().unwrap(), &[SPECIAL_ADDR, SPECIAL_ADDR]);
 }
+
+// The spliced slot files reach their caller-memory accessors through
+// `crate::user_mem`; supplying the real module here keeps this harness on the
+// same fault-recoverable usercopy the kernel build uses.
+#[path = "../src/user_mem/mod.rs"]
+mod user_mem;

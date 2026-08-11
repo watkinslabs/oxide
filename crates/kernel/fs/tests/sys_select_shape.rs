@@ -309,3 +309,9 @@ fn negative_nfds_is_einval() {
         -(Errno::Einval.as_i32() as i64));
     reset();
 }
+
+// The spliced slot files reach their caller-memory accessors through
+// `crate::user_mem`; supplying the real module here keeps this harness on the
+// same fault-recoverable usercopy the kernel build uses.
+#[path = "../../syscalls/src/user_mem/mod.rs"]
+mod user_mem;

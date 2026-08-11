@@ -44,8 +44,7 @@ pub fn sys_times(args: &SyscallArgs) -> i64 {
         };
         if let Err(rv) = validate_user_buf_writable(buf, TMS_BYTES as u64, 1) { return rv; }
         let bytes = t.encode();
-        // SAFETY: validated writable user buf of exactly TMS_BYTES; CPL=0 write through the caller's AS.
-        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), buf as *mut u8, TMS_BYTES); }
+        if crate::user_mem::put_bytes(buf, &bytes).is_err() { return crate::user_mem::EFAULT; }
     }
     sched::clock::ns_to_clk_tck(now) as i64
 }

@@ -6,6 +6,7 @@
 use syscall::SyscallArgs;
 use syscall::errno::Errno;
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
+use crate::user_mem as um;
 use crate::time_common::{clock_nanosleep_supported,
     current_sleep_target_to_host, ns_for_clock};
 
@@ -51,11 +52,9 @@ pub fn sys_clock_nanosleep(args: &SyscallArgs) -> i64 {
         }
     }
     if let Err(rv) = validate_user_buf(req, 16, 1) { return rv; }
-    // SAFETY: req validated as readable 16-byte timespec storage.
-    let (secs, nsec) = unsafe {
-        let s = core::ptr::read_unaligned(req as *const i64);
-        let n = core::ptr::read_unaligned((req + 8) as *const i64);
-        (s, n)
+    let (secs, nsec) = match (um::get_i64(req), um::get_i64(req + 8)) {
+        (Ok(s), Ok(n)) => (s, n),
+        _ => return um::EFAULT,
     };
     // `ktime_set`-clamped decode: TIMER_ABSTIME with a huge-but-valid tv_sec
     // clamps to KTIME_MAX_NS instead of an unbounded absolute deadline.
@@ -158,11 +157,9 @@ fn cur_cpu_now(cur: &sched::Task, spec: sched::posix_clock::ClockSpec) -> u64 {
 /// # C: O(1)
 fn write_cpu_remaining(rem: u64, left: u64) -> i64 {
     if validate_user_buf_writable(rem, 16, 1).is_err() { return -1; }
-    // SAFETY: rem validated writable for a 16-byte timespec.
-    unsafe {
-        core::ptr::write_unaligned(rem as *mut i64, (left / 1_000_000_000) as i64);
-        core::ptr::write_unaligned((rem + 8) as *mut i64, (left % 1_000_000_000) as i64);
-    }
+    let ok = um::put_i64(rem, (left / 1_000_000_000) as i64).is_ok()
+        && um::put_i64(rem + 8, (left % 1_000_000_000) as i64).is_ok();
+    if !ok { return -1; }
     0
 }
 

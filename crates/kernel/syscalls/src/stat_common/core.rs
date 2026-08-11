@@ -4,6 +4,8 @@
 use syscall::errno::Errno;
 use vfs::Timespec64;
 
+use crate::user_mem as um;
+
 #[cfg(any(test, target_arch = "x86_64"))]
 pub(crate) const STAT_BYTES_X86_64: u64 = 144;
 #[cfg(any(test, target_arch = "aarch64"))]
@@ -74,31 +76,38 @@ trait StatSink {
     fn wi64(&mut self, off: u64, v: i64);
 }
 
-struct UserSink { base: u64 }
+/// Sticky-error user sink: a copy-out that faults mid-record sets `err` and
+/// every later field write becomes a no-op, so one faulting field cannot
+/// leave a half-written record while masking the failure the syscall must
+/// report. Linux `copy_to_user` failing anywhere in `cp_new_stat` answers
+/// `-EFAULT` from the syscall; this is the same contract, decision-owned here
+/// so `write_new_stat_user`'s callers get a `Result` instead of an assumed
+/// infallible copy.
+struct UserSink { base: u64, err: bool }
 
 impl StatSink for UserSink {
     fn zero(&mut self, bytes: u64) {
+        if self.err { return; }
         for off in (0..bytes).step_by(8) {
-            // SAFETY: caller validated the full user output range writable.
-            unsafe { core::ptr::write_unaligned((self.base + off) as *mut u64, 0); }
+            if um::put_u64(self.base + off, 0).is_err() { self.err = true; return; }
         }
     }
     fn w32(&mut self, off: u64, v: u32) {
-        // SAFETY: caller validated the full user output range writable.
-        unsafe { core::ptr::write_unaligned((self.base + off) as *mut u32, v); }
+        if self.err { return; }
+        if um::put_u32(self.base + off, v).is_err() { self.err = true; }
     }
     fn w64(&mut self, off: u64, v: u64) {
-        // SAFETY: caller validated the full user output range writable.
-        unsafe { core::ptr::write_unaligned((self.base + off) as *mut u64, v); }
+        if self.err { return; }
+        if um::put_u64(self.base + off, v).is_err() { self.err = true; }
     }
     #[cfg(any(test, target_arch = "aarch64"))]
     fn wi32(&mut self, off: u64, v: i32) {
-        // SAFETY: caller validated the full user output range writable.
-        unsafe { core::ptr::write_unaligned((self.base + off) as *mut i32, v); }
+        if self.err { return; }
+        if um::put_i32(self.base + off, v).is_err() { self.err = true; }
     }
     fn wi64(&mut self, off: u64, v: i64) {
-        // SAFETY: caller validated the full user output range writable.
-        unsafe { core::ptr::write_unaligned((self.base + off) as *mut i64, v); }
+        if self.err { return; }
+        if um::put_i64(self.base + off, v).is_err() { self.err = true; }
     }
 }
 
@@ -172,13 +181,15 @@ fn write_aarch64<S: StatSink>(s: &mut S, st: &NewStat) {
     write_ts(s, 104, st.ctime);
 }
 
-/// Copy Linux `struct stat` to a validated user buffer. # C: O(1)
-pub(crate) unsafe fn write_new_stat_user(buf: u64, st: &NewStat) {
-    let mut sink = UserSink { base: buf };
+/// Copy Linux `struct stat` to a validated user buffer. `Err` is the caller's
+/// `-EFAULT`: a copy-out that faulted partway through. # C: O(1)
+pub(crate) fn write_new_stat_user(buf: u64, st: &NewStat) -> Result<(), i64> {
+    let mut sink = UserSink { base: buf, err: false };
     #[cfg(target_arch = "x86_64")]
     write_x86_64(&mut sink, st);
     #[cfg(target_arch = "aarch64")]
     write_aarch64(&mut sink, st);
+    if sink.err { Err(um::EFAULT) } else { Ok(()) }
 }
 
 /// Host-test x86_64 `struct stat` encoding. # C: O(1)

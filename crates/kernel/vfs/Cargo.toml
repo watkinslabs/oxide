@@ -26,6 +26,7 @@ hal-aarch64 = { path = "../../arch/hal-aarch64" }
 
 [dev-dependencies]
 conformance = { path = "../conformance" }
+uaccess     = { path = "../uaccess" }
 libc        = "0.2"
 sched       = { path = "../sched" }
 nscg        = { path = "../nscg" }

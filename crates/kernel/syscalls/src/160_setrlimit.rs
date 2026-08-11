@@ -26,11 +26,9 @@ pub fn sys_setrlimit(args: &SyscallArgs) -> i64 {
     let resource = args.a0 as usize;
     let rlim = args.a1;
     if let Err(rv) = validate_user_buf(rlim, 16, 1) { return rv; }
-    // SAFETY: rlim validated readable for the 16-byte struct rlimit input; both u64 fields lie inside the validated range.
-    let (new_cur, new_max) = unsafe {
-        let c = core::ptr::read_unaligned( rlim       as *const u64);
-        let m = core::ptr::read_unaligned((rlim + 8)  as *const u64);
-        (c, m)
+    let (new_cur, new_max) = match (crate::user_mem::get_u64(rlim), crate::user_mem::get_u64(rlim + 8)) {
+        (Ok(c), Ok(m)) => (c, m),
+        _ => return crate::user_mem::EFAULT,
     };
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Esrch.as_i32() as i64),

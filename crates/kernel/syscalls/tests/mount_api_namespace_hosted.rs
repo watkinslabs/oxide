@@ -340,3 +340,9 @@ fn a_string_request_that_does_not_fit_is_eoverflow_not_a_truncated_reply() {
     assert_eq!(rv, eno(Errno::Eoverflow));
     assert!(buf.iter().all(|b| *b == 0), "a refused call writes nothing at all");
 }
+
+// The spliced slot files reach their caller-memory accessors through
+// `crate::user_mem`; supplying the real module here keeps this harness on the
+// same fault-recoverable usercopy the kernel build uses.
+#[path = "../src/user_mem/mod.rs"]
+mod user_mem;

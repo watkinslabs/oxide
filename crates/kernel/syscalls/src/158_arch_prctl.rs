@@ -45,8 +45,7 @@ const LAM_ENABLED: bool = false;
 #[cfg(target_arch = "x86_64")]
 fn put_user_u64(ptr: u64, v: u64) -> i64 {
     if let Err(rv) = validate_user_buf_writable(ptr, 8, 1) { return rv; }
-    // SAFETY: ptr byte range validated writable above; Linux put_user accepts unaligned storage.
-    unsafe { core::ptr::write_unaligned(ptr as *mut u64, v); }
+    if crate::user_mem::put_u64(ptr, v).is_err() { return crate::user_mem::EFAULT; }
     0
 }
 

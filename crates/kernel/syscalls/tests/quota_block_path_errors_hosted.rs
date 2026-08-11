@@ -103,3 +103,9 @@ fn sys_quotactl_quotaon_defers_quota_path_error_but_bad_special_usercopy_wins_ho
     assert_eq!(sys::sys_quotactl(&quotaon_args(BAD_SPECIAL_ADDR, QUOTAON_ADDR)), eno(Errno::Efault));
     assert_eq!(&*READ_USER_PATH_CALLS.lock().unwrap(), &[QUOTAON_ADDR, BAD_SPECIAL_ADDR]);
 }
+
+// The spliced slot files reach their caller-memory accessors through
+// `crate::user_mem`; supplying the real module here keeps this harness on the
+// same fault-recoverable usercopy the kernel build uses.
+#[path = "../src/user_mem/mod.rs"]
+mod user_mem;

@@ -161,3 +161,9 @@ fn sys_quotactl_unknown_subcmd_nonroot_returns_eperm_after_block_lookup_hosted()
     assert_eq!(sys::sys_quotactl(&args()), eno(Errno::Eperm));
     assert_eq!(&*READ_USER_PATH_CALLS.lock().unwrap(), &[SPECIAL_ADDR]);
 }
+
+// The spliced slot files reach their caller-memory accessors through
+// `crate::user_mem`; supplying the real module here keeps this harness on the
+// same fault-recoverable usercopy the kernel build uses.
+#[path = "../src/user_mem/mod.rs"]
+mod user_mem;

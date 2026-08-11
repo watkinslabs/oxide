@@ -5,6 +5,7 @@ use syscall::SyscallArgs;
 
 use crate::userbuf::validate_user_buf_writable;
 use crate::time_common::{NS_PER_SEC, realtime_ns};
+use crate::user_mem as um;
 
 /// `sys_time(tloc)` — slot 201. Returns wall-clock seconds since
 /// epoch (monotonic_ns + REALTIME_OFFSET_NS); writes *tloc.
@@ -14,8 +15,8 @@ pub fn kernel_time(args: &SyscallArgs) -> i64 {
     let tloc = args.a0;
     if tloc != 0 {
         if let Err(rv) = validate_user_buf_writable(tloc, 8, 1) { return rv; }
-        // SAFETY: tloc validated writable for one time_t.
-        unsafe { core::ptr::write_unaligned(tloc as *mut i64, sec); }
+        // Linux `sys_time`: `put_user` failure reports EFAULT in place of the seconds value.
+        if um::put_i64(tloc, sec).is_err() { return um::EFAULT; }
     }
     sec
 }

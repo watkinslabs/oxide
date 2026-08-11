@@ -31,8 +31,7 @@ pub(crate) fn do_sched_setscheduler(pid_raw: u64, policy: i32, uparam: u64) -> i
     let pid = match sched_policy::pid_arg(pid_raw) { Ok(p) => p, Err(rv) => return rv };
     // struct sched_param { int sched_priority; } — 4 bytes.
     if let Err(rv) = validate_user_buf(uparam, 4, 1) { return rv; }
-    // SAFETY: uparam validated readable for struct sched_param.sched_priority.
-    let prio = unsafe { core::ptr::read_unaligned(uparam as *const i32) };
+    let prio = match crate::user_mem::get_i32(uparam) { Ok(v) => v, Err(_) => return crate::user_mem::EFAULT };
     let task = if pid == 0 {
         sched::live::current().and_then(|c| sched::live::registry::lookup(c.tid))
     } else {

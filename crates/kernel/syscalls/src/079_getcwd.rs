@@ -7,6 +7,7 @@ use syscall::SyscallArgs;
 use syscall::errno::Errno;
 
 use crate::userbuf::validate_user_buf_writable;
+use crate::user_mem as um;
 
 /// `sys_getcwd(buf, size)` — slot 79. Returns the path length INCLUDING the
 /// trailing NUL (Linux returns `len` where `len` counts the NUL it prepended);
@@ -21,12 +22,7 @@ pub fn sys_getcwd(args: &SyscallArgs) -> i64 {
     let need = (bytes.len() + 1) as u64;
     if size < need { return -(Errno::Erange.as_i32() as i64); }
     if let Err(rv) = validate_user_buf_writable(buf, need, 1) { return rv; }
-    // SAFETY: exact writable user byte range validated; cwd bytes are kernel-owned.
-    unsafe {
-        for (i, &b) in bytes.iter().enumerate() {
-            core::ptr::write_unaligned((buf + i as u64) as *mut u8, b);
-        }
-        core::ptr::write_unaligned((buf + bytes.len() as u64) as *mut u8, 0);
-    }
+    if um::put_bytes(buf, bytes).is_err() { return um::EFAULT; }
+    if um::put_u8(buf + bytes.len() as u64, 0).is_err() { return um::EFAULT; }
     need as i64
 }

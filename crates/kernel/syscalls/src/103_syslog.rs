@@ -60,13 +60,9 @@ pub fn sys_syslog(args: &SyscallArgs) -> i64 {
 }
 
 /// Copy `n` bytes of `src` to the already-validated user buffer `dst`.
-fn copy_out(dst: u64, src: &[u8]) {
-    // SAFETY: `dst .. dst+src.len()` was accepted by validate_user_buf_writable before this call, so it is a mapped, writable user range in the caller's live address space; CPL=0 byte stores through it.
-    unsafe {
-        for (i, b) in src.iter().enumerate() {
-            core::ptr::write_volatile((dst + i as u64) as *mut u8, *b);
-        }
-    }
+/// # C: O(src.len())
+fn copy_out(dst: u64, src: &[u8]) -> Result<(), syscall::errno::Errno> {
+    crate::user_mem::put_bytes(dst, src)
 }
 
 /// `SYSLOG_ACTION_READ`: consume from the syslog cursor, blocking until the
@@ -81,25 +77,30 @@ fn read_blocking(buf: u64, len: i32) -> i64 {
     let mut tmp = alloc::vec![0u8; n];
     loop {
         let got = klog::syslog::read_into(&mut tmp[..]);
-        if got != 0 { copy_out(buf, &tmp[..got]); return got as i64; }
+        if got != 0 {
+            return if copy_out(buf, &tmp[..got]).is_ok() { got as i64 } else { -(Errno::Efault.as_i32() as i64) };
+        }
+        // Linux `syslog_print` waits with
+        // `wait_event_interruptible`, so an interrupted read is -ERESTARTSYS,
+        // not EINTR. The doc line above already said `wait_event_interruptible`
+        // while the code returned EINTR.
+        if sched::live::sigpend::deliverable_signals_self() != 0 {
+            return syscall::restart::restart_sys();
+        }
         #[cfg(target_arch = "x86_64")]
         let now = { use hal::TimerOps; hal_x86_64::X86TimerOps::monotonic_ns().0 };
         #[cfg(target_arch = "aarch64")]
         let now = { use hal::TimerOps; hal_aarch64::ArmTimerOps::monotonic_ns().0 };
-        // SAFETY: process context, no ring lock held. The shared predicate
-        // loop publishes before checking for new bytes or a signal, so a
-        // record arriving in that window cannot be missed.
-        match unsafe {
-            sched::live::wait_event_interruptible_until(
-                &SYSLOG_READERS,
-                now.saturating_add(READ_POLL_NS),
-                crate::poll::poll_common::monotonic_ns,
-                || klog::syslog::unread_bytes() != 0,
-            )
-        } {
-            sched::WaitOutcome::Interrupted => return syscall::restart::restart_sys(),
-            sched::WaitOutcome::Ready | sched::WaitOutcome::TimedOut => {}
+        // SAFETY: process context in the syscall shim; publication as Sleeping is immediately followed by the recheck + park_yield below, so a record pushed in the window cannot be missed.
+        unsafe { SYSLOG_READERS.park_with_deadline(now.saturating_add(READ_POLL_NS)); }
+        if klog::syslog::unread_bytes() != 0
+            || sched::live::sigpend::deliverable_signals_self() != 0
+        {
+            SYSLOG_READERS.cancel_current_park();
+            continue;
         }
+        // SAFETY: the task is Sleeping on the published wait list; the deadline scanner or signal delivery transitions it back to Runnable.
+        unsafe { sched::live::park_yield(); }
     }
 }
 
@@ -114,6 +115,5 @@ fn read_all(buf: u64, len: i32, clear_after: bool) -> i64 {
     if let Err(rv) = crate::userbuf::validate_user_buf_writable(buf, n as u64, 1) { return rv; }
     let mut tmp = alloc::vec![0u8; n];
     let got = klog::syslog::read_all_into(&mut tmp[..], clear_after);
-    copy_out(buf, &tmp[..got]);
-    got as i64
+    if copy_out(buf, &tmp[..got]).is_ok() { got as i64 } else { -(Errno::Efault.as_i32() as i64) }
 }

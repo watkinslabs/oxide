@@ -114,3 +114,9 @@ fn quotactl_onoff_classification_runs_hosted() {
     assert!(!cmd::quotactl_cmd_onoff(cmd::qcmd(cmd::Q_SETQUOTA, cmd::USRQUOTA)));
     assert!(!cmd::quotactl_cmd_onoff(cmd::qcmd(cmd::Q_XSETQLIM, cmd::USRQUOTA)));
 }
+
+// The spliced slot files reach their caller-memory accessors through
+// `crate::user_mem`; supplying the real module here keeps this harness on the
+// same fault-recoverable usercopy the kernel build uses.
+#[path = "../src/user_mem/mod.rs"]
+mod user_mem;

@@ -197,3 +197,9 @@ fn sys_quotactl_fd_invalid_qtype_returns_einval_after_fd_lookup_before_mount_hos
 
     assert_eq!(qfd_sys::sys_quotactl_fd(&invalid_qtype_args(fd)), eno(Errno::Einval));
 }
+
+// The spliced slot files reach their caller-memory accessors through
+// `crate::user_mem`; supplying the real module here keeps this harness on the
+// same fault-recoverable usercopy the kernel build uses.
+#[path = "../src/user_mem/mod.rs"]
+mod user_mem;

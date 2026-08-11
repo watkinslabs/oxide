@@ -187,3 +187,9 @@ fn aarch64_pre_epoch_stat_reports_signed_seconds() {
         assert!((0..1_000_000_000).contains(&i64_at(&b, off)), "tv_nsec in [0,1e9) at {off}");
     }
 }
+
+// The spliced slot files reach their caller-memory accessors through
+// `crate::user_mem`; supplying the real module here keeps this harness on the
+// same fault-recoverable usercopy the kernel build uses.
+#[path = "../../syscalls/src/user_mem/mod.rs"]
+mod user_mem;

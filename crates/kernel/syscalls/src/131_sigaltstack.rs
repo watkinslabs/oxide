@@ -4,6 +4,7 @@
 use syscall::SyscallArgs;
 use sched::sigaltstack::{self as sas, AltStack, AltStackError};
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
+use crate::user_mem as um;
 
 /// `struct stack_t { void *ss_sp; int ss_flags; size_t ss_size; }` — 24 bytes
 /// on both LP64 arches (4 bytes of tail padding after `ss_flags`).
@@ -60,7 +61,7 @@ pub fn sys_sigaltstack(args: &SyscallArgs) -> i64 {
     }
     if oss != 0 {
         if let Err(rv) = validate_user_buf_writable(oss, STACK_T_BYTES, 1) { return rv; }
-        write_stack_t(oss, old_reported);
+        if write_stack_t(oss, old_reported).is_err() { return um::EFAULT; }
     }
     0
 }
@@ -90,13 +91,10 @@ fn read_stack_t(p: u64) -> Result<AltStack, i64> {
 /// Encode a user `stack_t`, zeroing the tail padding Linux's `memset(oss, 0,
 /// sizeof(stack_t))` clears. Caller must have validated `p` writable for
 /// `STACK_T_BYTES`. # C: O(1)
-fn write_stack_t(p: u64, a: AltStack) {
-    // SAFETY: caller validated p writable for STACK_T_BYTES, which covers the
-    // zero-fill and all three field offsets.
-    unsafe {
-        core::ptr::write_bytes(p as *mut u8, 0, STACK_T_BYTES as usize);
-        core::ptr::write_unaligned(p as *mut u64, a.sp);
-        core::ptr::write_unaligned((p + SS_FLAGS_OFF) as *mut i32, a.flags);
-        core::ptr::write_unaligned((p + SS_SIZE_OFF) as *mut u64, a.size);
-    }
+fn write_stack_t(p: u64, a: AltStack) -> Result<(), syscall::errno::Errno> {
+    let mut buf = [0u8; STACK_T_BYTES as usize];
+    buf[0..8].copy_from_slice(&a.sp.to_ne_bytes());
+    buf[SS_FLAGS_OFF as usize..SS_FLAGS_OFF as usize + 4].copy_from_slice(&a.flags.to_ne_bytes());
+    buf[SS_SIZE_OFF as usize..SS_SIZE_OFF as usize + 8].copy_from_slice(&a.size.to_ne_bytes());
+    um::put_bytes(p, &buf)
 }

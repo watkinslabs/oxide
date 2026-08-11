@@ -3,6 +3,7 @@
 
 use syscall::SyscallArgs;
 use crate::userbuf::{validate_user_buf, validate_user_buf_writable};
+use crate::user_mem as um;
 
 const KERNEL_SIGSET_SIZE: u64 = 8;
 const USER_SIGACTION_SIZE: u64 = 32;
@@ -25,13 +26,11 @@ pub fn sys_rt_sigaction(args: &SyscallArgs) -> i64 {
     }
     let new_action = if act != 0 {
         if let Err(rv) = validate_user_buf(act, USER_SIGACTION_SIZE, 1) { return rv; }
-        // SAFETY: act validated readable for the 32-byte sigaction input.
-        let (h, f, r, m) = unsafe { (
-            core::ptr::read_unaligned((act + SA_HANDLER_OFF)  as *const u64),
-            core::ptr::read_unaligned((act + SA_FLAGS_OFF)    as *const u64),
-            core::ptr::read_unaligned((act + SA_RESTORER_OFF) as *const u64),
-            core::ptr::read_unaligned((act + SA_MASK_OFF)     as *const u64),
-        ) };
+        let rd = |off: u64| um::get_u64(act + off);
+        let (h, f, r, m) = match (rd(SA_HANDLER_OFF), rd(SA_FLAGS_OFF), rd(SA_RESTORER_OFF), rd(SA_MASK_OFF)) {
+            (Ok(h), Ok(f), Ok(r), Ok(m)) => (h, f, r, m),
+            _ => return um::EFAULT,
+        };
         Some(SaHandler { handler: h, flags: f, restorer: r, mask: m })
     } else {
         None
@@ -49,12 +48,10 @@ pub fn sys_rt_sigaction(args: &SyscallArgs) -> i64 {
     }
     if oldact != 0 {
         if let Err(rv) = validate_user_buf_writable(oldact, USER_SIGACTION_SIZE, 1) { return rv; }
-        // SAFETY: oldact validated writable for the 32-byte sigaction result.
-        unsafe {
-            core::ptr::write_unaligned((oldact + SA_HANDLER_OFF)  as *mut u64, prior.handler);
-            core::ptr::write_unaligned((oldact + SA_FLAGS_OFF)    as *mut u64, prior.flags);
-            core::ptr::write_unaligned((oldact + SA_RESTORER_OFF) as *mut u64, prior.restorer);
-            core::ptr::write_unaligned((oldact + SA_MASK_OFF)     as *mut u64, prior.mask);
+        let wr = |off: u64, v: u64| um::put_u64(oldact + off, v);
+        if wr(SA_HANDLER_OFF, prior.handler).is_err() || wr(SA_FLAGS_OFF, prior.flags).is_err()
+            || wr(SA_RESTORER_OFF, prior.restorer).is_err() || wr(SA_MASK_OFF, prior.mask).is_err() {
+            return um::EFAULT;
         }
     }
     0

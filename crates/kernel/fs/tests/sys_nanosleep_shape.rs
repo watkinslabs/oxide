@@ -22,6 +22,9 @@ static CURRENT: AtomicPtr<Task> = AtomicPtr::new(ptr::null_mut());
 static NEXT_TID: AtomicU64 = AtomicU64::new(0x3500);
 
 const SIG_IGN: u64 = 1;
+/// Above the file's own range-gate floor, so it reaches the copy, and above
+/// `USER_VA_END`, so the copy rejects it rather than storing.
+const UNMAPPED_REM: u64 = 0xdead_0000_0000;
 const TEST_HANDLER: u64 = 0x5555_3500;
 
 fn hooked_current() -> Option<&'static Task> {
@@ -133,6 +136,27 @@ fn nanosleep_actionable_signal_with_bad_rem_faults_at_interrupt_time() {
 
     assert_eq!(
         nanosleep_syscall::sys_nanosleep(&args(req.as_ptr() as u64, 1)),
+        -(Errno::Efault.as_i32() as i64)
+    );
+    reset();
+}
+
+/// An `rmtp` that clears the range gate but names no mapping is the race the
+/// caller can always win: `MADV_DONTNEED` the page between the check and the
+/// copy-out. The store must answer EFAULT, which only a fault-recoverable
+/// usercopy can do — a plain typed store faults the kernel (here, the test
+/// process) instead.
+#[test]
+fn nanosleep_rem_outside_the_user_window_faults_instead_of_dereferencing() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    reset();
+    let task = install_current();
+    set_action(task, Signum::Sigusr1, TEST_HANDLER);
+    raise(task, Signum::Sigusr1);
+    let req = timespec(1, 0);
+
+    assert_eq!(
+        nanosleep_syscall::sys_nanosleep(&args(req.as_ptr() as u64, UNMAPPED_REM)),
         -(Errno::Efault.as_i32() as i64)
     );
     reset();

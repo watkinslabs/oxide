@@ -17,6 +17,7 @@ use crate::aio_abi::uapi::{IOEV_SIZE, RING_OFF_HEAD, RING_OFF_TAIL};
 use crate::aio::ctx::AioContext;
 use crate::poll::poll_common::{monotonic_ns, PollWaiter};
 use crate::userbuf::{validate_user_buf_readable, validate_user_buf_writable};
+use crate::user_mem as um;
 
 /// `struct __kernel_timespec` is two 64-bit words.
 const TIMESPEC_BYTES: u64 = 16;
@@ -31,10 +32,9 @@ fn err(e: Errno) -> i64 { -(e.as_i32() as i64) }
 pub fn read_timeout(tsp: u64) -> Result<Until, i64> {
     if tsp == 0 { return Ok(Until::Forever); }
     if validate_user_buf_readable(tsp, TIMESPEC_BYTES, 1).is_err() { return Err(err(Errno::Efault)); }
-    // SAFETY: tsp validated readable for the whole 16-byte timespec below USER_VA_END; CPL=0 reads it through the caller's address space.
-    let (sec, nsec) = unsafe {
-        (core::ptr::read_unaligned(tsp as *const i64),
-         core::ptr::read_unaligned((tsp + TIMESPEC_NSEC_OFF) as *const i64))
+    let (sec, nsec) = match (um::get_i64(tsp), um::get_i64(tsp + TIMESPEC_NSEC_OFF)) {
+        (Ok(s), Ok(n)) => (s, n),
+        _ => return Err(err(Errno::Efault)),
     };
     Ok(until_from_timespec(sec, nsec))
 }
@@ -57,8 +57,9 @@ fn drain(c: &Arc<AioContext>, nr: i64, events: u64) -> i64 {
         let src = c.slot_kva(start);
         let dst = events + written * IOEV_SIZE;
         let bytes = count as usize * IOEV_SIZE as usize;
-        // SAFETY: src spans `count` slots inside the ring run (read_plan never crosses the slot count), dst was validated writable for the whole batch; the two never overlap because one is the HHDM alias of kernel-owned frames and the other is a user array.
-        unsafe { core::ptr::copy_nonoverlapping(src as *const u8, dst as *mut u8, bytes); }
+        // SAFETY: src spans `count` slots inside the ring run (read_plan never crosses the slot count) through the kernel's own always-resident HHDM alias.
+        let src_slice = unsafe { core::slice::from_raw_parts(src as *const u8, bytes) };
+        if um::put_bytes(dst, src_slice).is_err() { return err(Errno::Efault); }
         written += count as u64;
     }
     c.store_hdr(RING_OFF_HEAD, new_head);

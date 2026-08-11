@@ -24,7 +24,6 @@ pub fn sys_sched_getparam(args: &SyscallArgs) -> i64 {
     let t = match task { Some(t) => t, None => return -(Errno::Esrch.as_i32() as i64) };
     let prio = sched_policy::task_rt_priority(&t) as i32;
     if let Err(rv) = validate_user_buf_writable(p, 4, 1) { return rv; }
-    // SAFETY: p validated writable for struct sched_param.sched_priority.
-    unsafe { core::ptr::write_unaligned(p as *mut i32, prio); }
+    if crate::user_mem::put_i32(p, prio).is_err() { return crate::user_mem::EFAULT; }
     0
 }

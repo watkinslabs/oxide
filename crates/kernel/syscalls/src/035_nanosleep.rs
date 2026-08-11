@@ -59,10 +59,18 @@ pub fn set_test_now_ns(ns: u64) {
 pub(crate) fn read_timespec(ptr: u64) -> Result<u64, i64> {
     use syscall::errno::Errno;
     validate_user_buf(ptr, 16, 1)?;
-    // SAFETY: ptr validated as readable 16-byte timespec storage.
-    let secs = unsafe { core::ptr::read_unaligned(ptr as *const i64) };
-    // SAFETY: ptr+8 is inside the validated timespec storage.
-    let nsec = unsafe { core::ptr::read_unaligned((ptr + 8) as *const i64) };
+    // The range check proves the address COULD be user memory; only the
+    // fault-recovering usercopy makes the load survive the caller unmapping
+    // the page under the syscall. `uaccess` is named directly rather than
+    // through `crate::` because two hosted harnesses splice this file into
+    // their own crate root with `#[path]`.
+    let efault = -(Errno::Efault.as_i32() as i64);
+    let mut s = [0u8; 8];
+    let mut n = [0u8; 8];
+    uaccess::copy_from_user(&mut s, ptr).map_err(|_| efault)?;
+    uaccess::copy_from_user(&mut n, ptr + 8).map_err(|_| efault)?;
+    let secs = i64::from_ne_bytes(s);
+    let nsec = i64::from_ne_bytes(n);
     // `ktime_set`-clamped decode: a huge-but-valid tv_sec clamps to
     // KTIME_MAX_NS instead of an unbounded relative sleep duration.
     ::syscall::time::timespec_to_ns(secs, nsec).map_err(|_| -(Errno::Einval.as_i32() as i64))
@@ -73,11 +81,11 @@ fn write_remaining(rem: u64, left: u64) -> Result<(), i64> {
     validate_user_buf_writable(rem, 16, 1)?;
     let rsec = (left / 1_000_000_000) as i64;
     let rnsec = (left % 1_000_000_000) as i64;
-    // SAFETY: rem validated writable for a 16-byte timespec.
-    unsafe {
-        core::ptr::write_unaligned(rem as *mut i64, rsec);
-        core::ptr::write_unaligned((rem + 8) as *mut i64, rnsec);
-    }
+    // Fault-recoverable store: `rmtp` can be unmapped between the range check
+    // and the copy-out, and Linux answers EFAULT for that, not a kernel fault.
+    let efault = -(syscall::errno::Errno::Efault.as_i32() as i64);
+    uaccess::copy_to_user(rem, &rsec.to_ne_bytes()).map_err(|_| efault)?;
+    uaccess::copy_to_user(rem + 8, &rnsec.to_ne_bytes()).map_err(|_| efault)?;
     Ok(())
 }
 

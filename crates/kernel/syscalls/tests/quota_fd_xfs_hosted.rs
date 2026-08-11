@@ -442,3 +442,9 @@ fn sys_quotactl_fd_xfs_qstat_success_maps_filesystem_state_hosted() {
     assert_eq!((outv.qs_uquota.qfs_ino, outv.qs_pquota.qfs_ino, outv.qs_incoredqs), (101, 303, 12));
     assert_eq!((outv.qs_bwarnlimit, outv.qs_iwarnlimit, outv.qs_rtbwarnlimit), (43, 47, 53));
 }
+
+// The spliced slot files reach their caller-memory accessors through
+// `crate::user_mem`; supplying the real module here keeps this harness on the
+// same fault-recoverable usercopy the kernel build uses.
+#[path = "../src/user_mem/mod.rs"]
+mod user_mem;

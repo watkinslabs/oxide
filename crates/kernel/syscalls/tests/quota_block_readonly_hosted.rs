@@ -198,3 +198,9 @@ fn block_readonly_getfmt_is_not_rejected_by_write_gate_hosted() {
     assert_eq!(sys::sys_quotactl(&args(cmd::Q_GETFMT)), eno(Errno::Esrch));
     assert_eq!(&*READ_USER_PATH_CALLS.lock().unwrap(), &[SPECIAL_ADDR]);
 }
+
+// The spliced slot files reach their caller-memory accessors through
+// `crate::user_mem`; supplying the real module here keeps this harness on the
+// same fault-recoverable usercopy the kernel build uses.
+#[path = "../src/user_mem/mod.rs"]
+mod user_mem;

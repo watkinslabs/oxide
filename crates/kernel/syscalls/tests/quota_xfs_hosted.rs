@@ -362,3 +362,9 @@ fn xfs_setqlim_nonzero_warning_only_reaches_empty_limit_update_hosted() {
     assert_eq!(ops.set_fieldmask.load(Ordering::SeqCst), 0);
     assert_eq!(ops.set_valid.load(Ordering::SeqCst), FS_DQ_BWARNS as u32);
 }
+
+// The spliced slot files reach their caller-memory accessors through
+// `crate::user_mem`; supplying the real module here keeps this harness on the
+// same fault-recoverable usercopy the kernel build uses.
+#[path = "../src/user_mem/mod.rs"]
+mod user_mem;

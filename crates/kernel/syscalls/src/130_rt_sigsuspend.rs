@@ -4,6 +4,7 @@
 use syscall::SyscallArgs;
 use crate::signal_common::SIGSET_BYTES;
 use crate::userbuf::validate_user_buf;
+use crate::user_mem as um;
 
 // A suspended task is woken by `signal_wake_up` exactly like an
 // `rt_sigtimedwait` caller; this list gives it the race-free Sleeping
@@ -39,8 +40,7 @@ pub fn sys_rt_sigsuspend(args: &SyscallArgs) -> i64 {
     let cur = match sched::live::current() {
         Some(c) => c, None => return -(Errno::Eintr.as_i32() as i64),
     };
-    // SAFETY: mask validated as a readable 8-byte user sigset_t.
-    let m = unsafe { core::ptr::read_unaligned(mask as *const u64) };
+    let m = match um::get_u64(mask) { Ok(v) => v, Err(_) => return um::EFAULT };
     // signal(7): SIGKILL/SIGSTOP are never blockable, so suspending under a
     // mask that names them must not make the task unkillable.
     let new_mask = m & !(Signum::Sigkill.bit() | Signum::Sigstop.bit());
