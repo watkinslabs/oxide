@@ -73,7 +73,7 @@ pub(crate) fn poll_enabled(mut done: impl FnMut() -> bool, deadline: u64) -> boo
 
 /// Register first, then recheck to close the cross-CPU wake-before-park gap.
 /// # C: O(1)
-pub(crate) fn park_checked(list: &WaitList, mut done: impl FnMut() -> bool) {
+pub(crate) fn park_checked(list: &WaitList, done: impl FnMut() -> bool) {
     if !can_sleep() {
         core::hint::spin_loop();
         return;

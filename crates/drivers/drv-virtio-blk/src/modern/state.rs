@@ -127,7 +127,7 @@ fn can_sleep() -> bool {
 /// cannot strand the waiter past the I/O deadline. # C: O(1)
 #[cfg(target_os = "oxide-kernel")]
 #[inline]
-pub(super) fn park_blk_checked(list: &WaitList, deadline_ns: u64, mut done: impl FnMut() -> bool) {
+pub(super) fn park_blk_checked(list: &WaitList, deadline_ns: u64, done: impl FnMut() -> bool) {
     if can_sleep() {
         // SAFETY: process context (can_sleep() ruled out IRQ-stack/idle), no
         // lock held; this shared timed predicate loop owns the publication.
