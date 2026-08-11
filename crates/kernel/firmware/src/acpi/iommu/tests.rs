@@ -24,9 +24,9 @@ fn finish(t: &mut [u8]) {
 }
 
 fn dmar() -> Vec<u8> {
-    let mut t = vec![0u8; 72];
+    let mut t = vec![0u8; 104];
     t[..4].copy_from_slice(b"DMAR");
-    le32(&mut t, 4, 72);
+    le32(&mut t, 4, 104);
     t[36] = 47;
     le16(&mut t, 48, 0);
     le16(&mut t, 50, 24);
@@ -39,6 +39,17 @@ fn dmar() -> Vec<u8> {
     t[69] = 8;
     t[70] = 9;
     t[71] = 0;
+    le16(&mut t, 72, 1);
+    le16(&mut t, 74, 32);
+    le16(&mut t, 78, 2);
+    le64(&mut t, 80, 0x7f00_0000);
+    le64(&mut t, 88, 0x7f00_0fff);
+    t[96] = 1;
+    t[97] = 8;
+    t[100] = 7;
+    t[101] = 8;
+    t[102] = 9;
+    t[103] = 0;
     finish(&mut t);
     t
 }
@@ -102,6 +113,12 @@ fn dmar_drhd_preserves_the_linux_device_ownership_keys() {
     assert_eq!(inv.dmar_scopes[0].start_bus, 8);
     assert_eq!(inv.dmar_scopes[0].path_len, 2);
     assert_eq!(&inv.dmar_scopes[0].path[..2], &[9, 0]);
+    assert_eq!(inv.dmar_rmrr_count, 1);
+    assert_eq!(inv.dmar_rmrrs[0].segment, 2);
+    assert_eq!(inv.dmar_rmrrs[0].base, 0x7f00_0000);
+    assert_eq!(inv.dmar_rmrrs[0].end, 0x7f00_0fff);
+    assert_eq!(inv.dmar_rmrrs[0].scope_count, 1);
+    assert_eq!(inv.dmar_rmrrs[0].scopes[0].start_bus, 8);
 }
 
 #[test]
