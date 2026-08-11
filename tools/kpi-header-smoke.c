@@ -1257,6 +1257,7 @@ static int __init sample_init(void)
     (void)pci_register_driver(&pdrv);
     (void)pci_enable_device(&pdev);
     (void)pci_status_get_and_clear_errors(&pdev);
+    (void)pci_device_is_present(&pdev);
     (void)pcim_iomap_region(&pdev, SAMPLE_PCI_BAR, "sample");
     pci_set_master(&pdev);
     pci_clear_master(&pdev);

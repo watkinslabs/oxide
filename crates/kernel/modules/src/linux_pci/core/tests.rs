@@ -236,6 +236,16 @@ fn pci_status_returns_and_clears_only_error_bits() {
 }
 
 #[test]
+fn pci_presence_rejects_the_no_device_vendor_id() {
+    let _modules = crate::test_serial::claim();
+    let mut dev = test_dev();
+    assert!(super::super::config::pci_device_is_present(&mut dev));
+    dev.config_space[0] = u32::MAX;
+    assert!(!super::super::config::pci_device_is_present(&mut dev));
+    assert!(!super::super::config::pci_device_is_present(core::ptr::null_mut()));
+}
+
+#[test]
 fn pcie_readrq_updates_only_the_express_device_control_field() {
     let _modules = crate::test_serial::claim();
     let mut dev = test_dev();
@@ -306,7 +316,7 @@ fn export_symbols_registers_pci_surface() {
     for name in [
         "__pci_register_driver", "pci_register_driver", "pci_enable_device", "pci_resource_start",
         "pci_request_region", "pci_iomap", "pcim_iomap_region", "pci_alloc_irq_vectors",
-        "pci_read_config_dword", "pci_write_config_dword",
+        "pci_read_config_dword", "pci_write_config_dword", "pci_device_is_present",
         "pci_status_get_and_clear_errors",
     ] {
         assert!(crate::symtab::is_exported(name));

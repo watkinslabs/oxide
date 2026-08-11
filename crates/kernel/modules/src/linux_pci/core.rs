@@ -60,6 +60,7 @@ pub(super) fn export_symbols() {
         ("pci_write_config_byte",     super::config::pci_write_config_byte     as *const () as usize),
         ("pci_write_config_word",     super::config::pci_write_config_word     as *const () as usize),
         ("pci_write_config_dword",    super::config::pci_write_config_dword    as *const () as usize),
+        ("pci_device_is_present",     super::config::pci_device_is_present     as *const () as usize),
     ] { export(name, addr, false); }
 }
 

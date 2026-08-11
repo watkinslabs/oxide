@@ -8,6 +8,8 @@ const PCI_CONFIG_SPACE_BYTES: u16 = 256;
 const PCI_SLOT_MASK: u8 = 0x1f;
 const PCI_FUNC_MASK: u8 = 0x07;
 const WORD_ALIGN_MASK: u8 = 1;
+const PCI_VENDOR_ID_DWORD: u8 = 0;
+const PCI_NO_DEVICE: u16 = u16::MAX;
 
 pub(super) fn bdf(dev: *const LinuxPciDev) -> Bdf {
     if let Some(bdf) = registry::bdf_for(dev) { return bdf; }
@@ -59,6 +61,10 @@ pub(super) extern "C" fn pci_write_config_dword(dev: *mut LinuxPciDev, pos: i32,
     if !config_pos_valid(pos, PCI_CONFIG_ALIGN) { return -LINUX_EINVAL; }
     write32(dev, pos as u8, val);
     LINUX_OK
+}
+
+pub(super) extern "C" fn pci_device_is_present(dev: *mut LinuxPciDev) -> bool {
+    !dev.is_null() && read16(dev, PCI_VENDOR_ID_DWORD) != PCI_NO_DEVICE
 }
 
 pub(super) fn read8(dev: *mut LinuxPciDev, off: u8) -> u8 {
