@@ -13,6 +13,7 @@ pub mod ring;
 pub mod controller;
 pub mod context;
 pub mod usb;
+pub mod hid;
 pub mod ports;
 #[cfg(target_os = "oxide-kernel")]
 pub mod platform;
