@@ -2,7 +2,7 @@ use ::core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use sync::{Spinlock, Tty as TtyClass};
 
-use super::api::{ReadOutcome, TtyDriver, TtyFlow, TtyFlush};
+use super::api::{DetachedSink, ReadOutcome, TtyDriver, TtyFlow, TtyFlush};
 use crate::hangup::HangupKind;
 use crate::ldisc::{vmin_vtime_decision, LdiscOps, NTty, Sig, VmtDecision};
 use crate::pty::{Winsize, TERMIOS_BYTES};
@@ -49,6 +49,7 @@ pub struct TtyStruct<D: TtyDriver, W: TtyWait> {
     /// never takes it, and masking interrupts across the transmission is
     /// exactly what Step 4e removes.
     tx: Spinlock<(), sync::TtyTx>,
+    sink: Option<DetachedSink>,
     wait: W,
     /// Linux `tty_port::buf` — bytes staged by a device INTERRUPT for the line
     /// discipline to cook later, in process context. Separate from `inner`
@@ -98,9 +99,15 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
     /// Build a tty around a driver, a fresh N_TTY ldisc, and a wait queue.
     /// # C: O(1)
     pub fn new(driver: D, wait: W) -> Self {
+        Self::new_with_sink(driver, wait, D::detached_sink())
+    }
+
+    /// Build a tty with an endpoint selected by the device instance. # C: O(1)
+    pub fn new_with_sink(driver: D, wait: W, sink: Option<DetachedSink>) -> Self {
         Self {
             inner: Spinlock::new(PortInner { ldisc: NTty::new(), driver }),
             tx: Spinlock::new(()),
+            sink,
             flip: Spinlock::new(super::flip::FlipRing::new()),
             wait,
             winsize: Spinlock::new(Winsize::default_pty()),
@@ -129,6 +136,13 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
     /// # C: O(1)
     pub fn with_termios(driver: D, wait: W, t: [u8; TERMIOS_BYTES]) -> Self {
         let s = Self::new(driver, wait);
+        s.inner.lock_irqsave::<W::Irq>().ldisc = NTty::with_termios(t);
+        s
+    }
+
+    /// Build with caller-selected termios and post-lock output endpoint. # C: O(1)
+    pub fn with_termios_and_sink(driver: D, wait: W, t: [u8; TERMIOS_BYTES], sink: Option<DetachedSink>) -> Self {
+        let s = Self::new_with_sink(driver, wait, sink);
         s.inner.lock_irqsave::<W::Irq>().ldisc = NTty::with_termios(t);
         s
     }
@@ -306,7 +320,7 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
         // to the device AFTER releasing it — so device submission never runs
         // with this tty port's interrupts masked (`skizm.md` Step 4e). Drivers
         // without such a sink (VT, tests) keep the inline path, unchanged.
-        let Some(sink) = D::detached_sink() else {
+        let Some(sink) = self.sink else {
             let mut g = self.inner.lock_irqsave::<W::Irq>();
             let PortInner { ldisc, driver } = &mut *g;
             return ldisc.write(driver, buf);
@@ -322,7 +336,7 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
             (n, tx.buf)
         };
         // Guard released, interrupts restored: transmit here.
-        if !pending.is_empty() { sink(&pending); }
+        if !pending.is_empty() { sink.emit(&pending); }
         n
     }
 

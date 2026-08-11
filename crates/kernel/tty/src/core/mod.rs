@@ -10,7 +10,7 @@ pub mod flip;
 mod lifecycle;
 mod tty;
 
-pub use api::{ReadOutcome, TtyDriver, TtyFlow, TtyFlush};
+pub use api::{DetachedSink, ReadOutcome, TtyDriver, TtyFlow, TtyFlush};
 pub use flip::{FlipRing, FLIP_CAPACITY, FLUSH_CHUNK};
 pub use tty::TtyStruct;
 

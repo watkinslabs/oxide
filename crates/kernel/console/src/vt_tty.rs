@@ -25,6 +25,7 @@ use tty::ldisc::Sig;
 use tty::pty::{default_termios, TERMIOS_BYTES};
 use tty::wait::kernel::KernelWait;
 use tty::{TtyDriver, TtyStruct};
+use tty::core::DetachedSink;
 
 use crate::static_console::KernelFgSignal;
 
@@ -99,10 +100,12 @@ static VT_TTYS: [AtomicU64; N_VT] = [const { AtomicU64::new(0) }; N_VT];
 /// OPOST|ONLCR) — same as the system console default.
 /// # C: O(1)
 fn build(vt: u8) -> &'static VtTty {
-    let tty: Arc<VtTty> = Arc::new(TtyStruct::with_termios(
+    let sink = DetachedSink::new(vt, |vt, bytes| fbcon::kernel::vt_write(vt, bytes));
+    let tty: Arc<VtTty> = Arc::new(TtyStruct::with_termios_and_sink(
         VtConsoleDriver::new(vt),
         KernelWait::new(),
         default_termios(),
+        Some(sink),
     ));
     // Seed the VT winsize from the framebuffer cell grid (Linux: a VT's
     // winsize is its console geometry, not the 80×24 serial default). So

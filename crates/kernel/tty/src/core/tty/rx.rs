@@ -64,7 +64,7 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
     /// the producer half of the lost-wakeup-free protocol (module header).
     /// # C: O(N) input bytes + O(W) waiters
     pub fn receive_from_driver(&self, input: &[u8]) {
-        let Some(sink) = D::detached_sink() else {
+        let Some(sink) = self.sink else {
             let mut g = self.inner.lock_irqsave::<W::Irq>();
             let PortInner { ldisc, driver } = &mut *g;
             ldisc.receive_buf(driver, input);
@@ -84,7 +84,7 @@ impl<D: TtyDriver, W: TtyWait> TtyStruct<D, W> {
             tx.buf
         };
         // Port guard dropped and IRQ state restored before device submission.
-        if !pending.is_empty() { sink(&pending); }
+        if !pending.is_empty() { sink.emit(&pending); }
         drop(_tx);
         self.wake_rx();
     }

@@ -63,7 +63,7 @@ pub trait SerialOut {
     /// 4e. Only a globally-addressable device can offer one; `None` (default)
     /// keeps the inline path, which is what the recording test sinks need.
     /// # C: O(1)
-    fn detached_sink() -> Option<fn(&[u8])> { None }
+    fn detached_sink() -> Option<tty::core::DetachedSink> { None }
 }
 
 /// `SerialOut` that drives the real UART via `drv_serial::emit`. The
@@ -77,7 +77,9 @@ impl SerialOut for KernelUart {
     /// The console UART is a global singleton reached through `drv_serial`, so
     /// it can be driven without the port lock held.
     /// # C: O(1)
-    fn detached_sink() -> Option<fn(&[u8])> { Some(|bytes| drv_serial::emit(bytes)) }
+    fn detached_sink() -> Option<tty::core::DetachedSink> {
+        Some(tty::core::DetachedSink::new(0, |_, bytes| drv_serial::emit(bytes)))
+    }
 
     /// # C: O(N) bytes + fg-VT cell render
     fn emit(&mut self, bytes: &[u8]) {
@@ -174,7 +176,7 @@ impl<U: SerialOut, S: FgSignal> TtyDriver for SerialTtyDriver<U, S> {
     /// Forward the UART's detached sink so the tty core can transmit outside
     /// the port lock (`skizm.md` Step 4e).
     /// # C: O(1)
-    fn detached_sink() -> Option<fn(&[u8])> { U::detached_sink() }
+    fn detached_sink() -> Option<tty::core::DetachedSink> { U::detached_sink() }
 
     /// Cooked/echo output sink: the ldisc already ran OPOST/ONLCR, so
     /// push the bytes verbatim to the UART transmitter.
