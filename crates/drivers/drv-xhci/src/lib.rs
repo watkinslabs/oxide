@@ -16,6 +16,8 @@ pub mod ports;
 #[cfg(target_os = "oxide-kernel")]
 pub mod platform;
 #[cfg(target_os = "oxide-kernel")]
+pub mod command;
+#[cfg(target_os = "oxide-kernel")]
 mod irq;
 #[cfg(target_os = "oxide-kernel")]
 mod probe;

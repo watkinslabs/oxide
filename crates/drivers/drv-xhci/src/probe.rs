@@ -10,13 +10,14 @@ use crate::platform::Mmio;
 use crate::regs::XHCI_CLASS24;
 use crate::{controller, platform::DmaPage, ring::{Trb, TRBS_PER_SEGMENT}};
 use crate::irq::Binding;
+use crate::command::CommandTransport;
 
 struct Record {
     bdf: pci::Bdf,
     command_orig: u16,
     mmio: Mmio,
     irq: Binding,
-    _command: DmaPage,
+    _command: CommandTransport,
     _dcbaa: DmaPage,
     _erst: DmaPage,
     _event: DmaPage,
@@ -89,6 +90,7 @@ impl drv::Driver for XhciDriver {
         let Some(mmio) = (unsafe { Mmio::map(resource.start, bytes) }) else { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); };
         if !mmio.halt_reset() { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); }
         let Some((command, dcbaa, erst, event)) = prepare_dma(&mmio) else { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); };
+        let Some(command) = CommandTransport::new(command) else { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); };
         let Some(irq) = crate::irq::bind(bdf) else { restore_bus_master(bdf, command_orig); return Err(drv::Error::ProbeFailed); };
         if !irq.arm(&mmio, &event) || !mmio.run() {
             irq.disable_and_free();
