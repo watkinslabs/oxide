@@ -9,8 +9,10 @@ use crate::platform::DmaPage;
 use crate::platform::Mmio;
 use crate::ring::{CommandRing, Trb, TRB_BYTES, TRBS_PER_SEGMENT};
 
+struct HidDma { ring: DmaPage, report: DmaPage, producer: CommandRing, pending: u64 }
+
 /// Input context, output device context, and endpoint-zero transfer ring.
-pub struct AddressDeviceDma { input: DmaPage, output: DmaPage, ep0: DmaPage, descriptor: DmaPage, context_bytes: u8, speed: u8, _hid: Option<crate::usb::HidBootInterface>, hid_ring: Option<DmaPage>, ep0_ring: CommandRing }
+pub struct AddressDeviceDma { input: DmaPage, output: DmaPage, ep0: DmaPage, descriptor: DmaPage, context_bytes: u8, speed: u8, _hid: Option<crate::usb::HidBootInterface>, hid_ring: Option<HidDma>, ep0_ring: CommandRing }
 
 impl AddressDeviceDma {
     /// Allocate and construct every DMA object required by Address Device. # C: O(page bytes)
@@ -76,11 +78,25 @@ impl AddressDeviceDma {
         let words = context::configure_hid_words(self.context_bytes, output_slot, self.speed, hid, ring.pa())?;
         for word in words { if !self.input.write32(word.offset as u64, word.value) { return None; } }
         ring.clean_to_device(); self.input.clean_to_device();
-        self.hid_ring = Some(ring);
+        self.hid_ring = Some(HidDma { producer: CommandRing::new(ring.pa())?, ring, report: DmaPage::allocate()?, pending: 0 });
         Some(true)
     }
     /// Configuration value selected by the discovered HID interface. # C: O(1)
     pub fn hid_configuration(&self) -> Option<u8> { self._hid.map(|hid| hid.configuration) }
+    /// Publish one HID interrupt-IN report receive TRB and ring that endpoint. # C: O(1)
+    pub fn submit_hid_report(&mut self, mmio: &Mmio, slot: u8) -> Option<u64> {
+        let hid = self._hid?;
+        let endpoint_id = (hid.endpoint & 0x0f).checked_mul(2)?.checked_add(1)?;
+        let dma = self.hid_ring.as_mut()?;
+        if dma.pending != 0 { return None; }
+        let trb = Trb::normal(dma.report.pa(), u32::from(hid.max_packet))?;
+        let (pa, _) = dma.producer.push(trb);
+        let index = pa.checked_sub(dma.ring.pa())?.checked_div(TRB_BYTES as u64)? as usize;
+        let written = dma.producer.trb(index)?;
+        for (word, value) in written.dword.iter().enumerate() { if !dma.ring.write32((index * TRB_BYTES + word * 4) as u64, *value) { return None; } }
+        dma.ring.clean_to_device();
+        mmio.ring_endpoint_doorbell(slot, endpoint_id).then_some(pa).inspect(|pending| dma.pending = *pending)
+    }
     /// Rebuild the input context from controller output for Linux's EP0 MPS update. # C: O(1)
     pub fn prepare_evaluate_ep0(&self, max_packet: u8) -> Option<bool> {
         let stride = self.context_bytes as u64;
