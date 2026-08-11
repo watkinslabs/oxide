@@ -9,7 +9,7 @@ Parse static ACPI tables (x86, optionally arm) and DT (arm primary; x86 fallback
 ## 2 Invariants (frozen)
 
 1. Parsed once at boot; results cached as static tables.
-2. No AML interpreter; only static tables: MADT, FADT, MCFG, SRAT, SLIT, HMAT, PPTT, HPET (sanity), DSDT skipped.
+2. No AML interpreter; only static tables: MADT, FADT, MCFG, DMAR, IVRS, SRAT, SLIT, HMAT, PPTT, HPET (sanity), DSDT skipped.
 3. DT (FDT/DTB): walked once, converted to in-memory tree; published via `/sys/firmware/devicetree/base/`.
 4. Memory map authoritative source: UEFI memory map + ACPI E820 (x86) or DT `/memory` node (arm).
 
@@ -21,6 +21,8 @@ pub fn cpu_topology() -> &'static CpuTopology;
 pub fn pci_host_bridges() -> &'static [PciHostBridge];
 pub fn irq_controller() -> IrqController;     // Apic | GicV3
 pub fn timer_freq() -> u32;
+pub fn iommu_unit_count() -> usize;
+pub fn iommu_unit(index:usize) -> Option<IommuUnit>;
 pub fn rsdp() -> Option<PhysAddr>;
 pub fn dtb() -> Option<&'static Fdt>;
 ```
@@ -34,6 +36,8 @@ pub fn dtb() -> Option<&'static Fdt>;
 | MADT | local APIC list (CPUs), IO-APICs, ints overrides; AP startup |
 | FADT | reset register, sleep registers (we don't sleep); SCI int |
 | MCFG | PCIe ECAM regions |
+| DMAR | Intel DMA-remapping hardware units and device scopes |
+| IVRS | AMD I/O-virtualization hardware units and device entries |
 | SRAT | NUMA: cpu→node, mem→node |
 | SLIT | NUMA distance matrix |
 | HMAT | NUMA bandwidth/latency (phase 41) |
@@ -42,7 +46,7 @@ pub fn dtb() -> Option<&'static Fdt>;
 
 Skipped: DSDT, SSDT, ECDT, FACS (no S3), all _table-with-AML.
 
-Tables checksummed; failures: log warn, fall back to safe defaults.
+Tables checksummed; malformed or unchecksummed DMAR/IVRS: log warn, publish no IOMMU units, keep direct DMA.
 
 ## 5 DT (arm)
 
@@ -63,7 +67,7 @@ Read-only post-init; lock-free.
 
 - QEMU x86 `-machine q35` boots: MADT, MCFG, SRAT parsed; cpu count matches `-smp`.
 - QEMU arm `-machine virt` boots: DT parsed; cpu count, GICv3 base, timer freq match qemu params.
-- Bad table checksum: warn, continue.
+- Bad table checksum: warn, continue; malformed DMAR/IVRS publishes no unit.
 - Mem map: every PMM-init region matches firmware-claimed RAM extent.
 
 ## 8 Failure modes
