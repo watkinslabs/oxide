@@ -138,20 +138,20 @@ pub struct CommandRing {
     trbs: [Trb; TRBS_PER_SEGMENT],
     enqueue: usize,
     cycle: bool,
-    pa: u64,
+    dma: u64,
 }
 
 impl CommandRing {
     /// Initialize an empty ring with its terminal Link TRB published. # C: O(1)
-    pub fn new(pa: u64) -> Option<Self> {
-        if pa & 0xfff != 0 { return None; }
+    pub fn new(dma: u64) -> Option<Self> {
+        if dma & 0xfff != 0 { return None; }
         let mut trbs = [Trb::default(); TRBS_PER_SEGMENT];
-        trbs[COMMAND_USABLE_TRBS] = Trb::link(pa, true)?;
-        Some(Self { trbs, enqueue: 0, cycle: true, pa })
+        trbs[COMMAND_USABLE_TRBS] = Trb::link(dma, true)?;
+        Some(Self { trbs, enqueue: 0, cycle: true, dma })
     }
 
-    /// Physical command-ring base for CRCR. # C: O(1)
-    pub fn pa(&self) -> u64 { self.pa }
+    /// Device-visible command-ring base for CRCR. # C: O(1)
+    pub fn dma(&self) -> u64 { self.dma }
     /// Number of writable commands before the terminal Link TRB. # C: O(1)
     pub fn capacity(&self) -> usize { COMMAND_USABLE_TRBS }
     /// Current producer-cycle state. # C: O(1)
@@ -168,25 +168,25 @@ impl CommandRing {
         if self.enqueue == COMMAND_USABLE_TRBS {
             self.enqueue = 0;
             self.cycle = !self.cycle;
-            self.trbs[COMMAND_USABLE_TRBS] = Trb::link(self.pa, self.cycle).expect("page-aligned command ring");
+            self.trbs[COMMAND_USABLE_TRBS] = Trb::link(self.dma, self.cycle).expect("page-aligned command ring");
         }
-        (self.pa + (index * TRB_BYTES) as u64, self.cycle)
+        (self.dma + (index * TRB_BYTES) as u64, self.cycle)
     }
 }
 
 /// One-page event ring. The controller is producer; software is consumer.
-pub struct EventRing { dequeue: usize, cycle: bool, pa: u64 }
+pub struct EventRing { dequeue: usize, cycle: bool, dma: u64 }
 
 impl EventRing {
     /// Begin consuming events from a page-aligned event-ring segment. # C: O(1)
-    pub fn new(pa: u64) -> Option<Self> { (pa & 0xfff == 0).then_some(Self { dequeue: 0, cycle: true, pa }) }
+    pub fn new(dma: u64) -> Option<Self> { (dma & 0xfff == 0).then_some(Self { dequeue: 0, cycle: true, dma }) }
     /// Consume a controller-owned event TRB and return its physical position. # C: O(1)
     pub fn consume(&mut self, trb: Trb) -> Option<u64> {
         if trb.cycle() != self.cycle { return None; }
-        let pa = self.pa + (self.dequeue * TRB_BYTES) as u64;
+        let dma = self.dma + (self.dequeue * TRB_BYTES) as u64;
         self.dequeue += 1;
         if self.dequeue == TRBS_PER_SEGMENT { self.dequeue = 0; self.cycle = !self.cycle; }
-        Some(pa)
+        Some(dma)
     }
 }
 

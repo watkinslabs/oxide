@@ -545,6 +545,7 @@ dependencies = [
  "hal-aarch64",
  "hal-x86_64",
  "input",
+ "iommu",
  "mmio-map",
  "pci",
  "pci-irq",
