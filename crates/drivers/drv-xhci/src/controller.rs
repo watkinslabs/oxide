@@ -30,6 +30,8 @@ pub const CMD_EIE: u32 = 1 << 2;
 pub const CMD_HSEIE: u32 = 1 << 3;
 /// Controller is stopped. # C: O(1)
 pub const STS_HALT: u32 = 1;
+/// Event interrupt status (write one to acknowledge). # C: O(1)
+pub const STS_EINT: u32 = 1 << 3;
 /// Controller is not ready for operational accesses. # C: O(1)
 pub const STS_CNR: u32 = 1 << 11;
 /// Enable event interrupts for interrupter zero. # C: O(1)
