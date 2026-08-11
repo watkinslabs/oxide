@@ -24,6 +24,11 @@ const EXT_CAP_PROTOCOL_BYTES: u64 = 12;
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct PortProtocol { pub major: u8, pub minor: u8, pub first: u8, pub count: u8 }
 
+impl PortProtocol {
+    /// Whether this range belongs to the USB 2 root hub. # C: O(1)
+    pub fn is_usb2(self) -> bool { self.major <= 2 }
+}
+
 /// Decode the three fixed dwords of a Linux `XHCI_EXT_CAPS_PROTOCOL` capability. # C: O(1)
 pub fn supported_protocol(header: u32, revision: u32, ports: u32, max_ports: u8) -> Option<PortProtocol> {
     if header as u8 != EXT_CAP_ID_PROTOCOL { return None; }
@@ -148,6 +153,8 @@ mod tests {
         assert_eq!(supported_protocol(2, 0x0301_0000, 2 | (4 << 8), 8), Some(PortProtocol { major: 3, minor: 0x10, first: 2, count: 4 }));
         assert!(supported_protocol(2, 0x0400_0000, 1 | (1 << 8), 8).is_none());
         assert!(supported_protocol(2, 0x0300_0000, 8 | (2 << 8), 8).is_none());
+        assert!(PortProtocol { major: 2, minor: 0, first: 1, count: 1 }.is_usb2());
+        assert!(!PortProtocol { major: 3, minor: 0, first: 1, count: 1 }.is_usb2());
     }
 
     #[test]
