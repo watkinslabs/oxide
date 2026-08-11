@@ -66,6 +66,16 @@ impl AmdViDomain {
         self.maps.push(map);
         Some(map)
     }
+    /// Map exactly the PMM-owned RAM regions before this domain is attached. # C: O(regions * pages * levels)
+    pub fn map_identity_regions(&mut self, regions: &[pmm::UsableRegion]) -> bool {
+        for region in regions {
+            if region.len_pfn == 0 { continue; }
+            let Some(pa) = region.start.0.checked_shl(12) else { return false; };
+            let Some(len) = region.len_pfn.checked_shl(12) else { return false; };
+            if self.map_identity(pa, len).is_none() { return false; }
+        }
+        true
+    }
     /// Retire a mapped IOVA only after its hardware invalidation completed. # C: O(pages * levels)
     pub fn release_after_invalidate(&mut self, map: Mapping) -> bool {
         let Some(index) = self.maps.iter().position(|candidate| *candidate == map) else { return false; };
