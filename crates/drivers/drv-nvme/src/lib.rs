@@ -26,7 +26,13 @@ mod regs;
 #[cfg(any(target_os = "oxide-kernel", test))]
 mod lifecycle;
 #[cfg(target_os = "oxide-kernel")]
+mod irq;
+#[cfg(target_os = "oxide-kernel")]
+mod platform;
+#[cfg(target_os = "oxide-kernel")]
 mod queue;
+#[cfg(target_os = "oxide-kernel")]
+mod wait;
 
 #[cfg(target_os = "oxide-kernel")]
 mod imp {
@@ -36,7 +42,12 @@ mod imp {
     use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use sync::{Spinlock, TaskList as DriverLockClass};
     use block::{BlockDevice, BlockRequest, BlockError, BlockOp, KResult};
+    use sched::live::wait_list::WaitList;
+    use crate::irq::IrqBinding;
     use crate::queue::Nvme;
+    use crate::wait;
+
+    mod device;
 
     /// PCI class for an NVMe controller: base 0x01 (mass storage), subclass
     /// 0x08 (non-volatile memory), prog-if 0x02 (NVMe). # C: O(1)
@@ -47,19 +58,14 @@ mod imp {
     /// submit, mirroring drv-virtio-rng's whole-body lock).
     pub struct NvmeBlk {
         ctrl:     Spinlock<Nvme, DriverLockClass>,
+        irq:      IrqBinding,
+        completion: WaitList,
+        turn_wait:  WaitList,
+        turn_busy:  AtomicBool,
         blk_size: u32,
         capacity: u64,
         removed:  AtomicBool,
-    }
-
-    impl NvmeBlk {
-        /// Bytes the PRP bounce frame can carry per transfer (one page). # C: O(1)
-        fn chunk_bytes(&self) -> usize { Nvme::MAX_XFER as usize }
-
-        /// Blocks per chunk (PRP bounce frame size / block size). # C: O(1)
-        fn chunk_blocks(&self) -> u64 {
-            (self.chunk_bytes() as u64) / (self.blk_size as u64)
-        }
+        poisoned: AtomicBool,
     }
 
     impl BlockDevice for NvmeBlk {
@@ -67,18 +73,12 @@ mod imp {
         fn capacity_blocks(&self) -> u64 { self.capacity }
 
         fn submit_sync(&self, req: &mut BlockRequest) -> KResult<()> {
-            if self.removed.load(Ordering::Acquire) {
+            if self.unavailable() {
                 return Err(BlockError::Eio);
             }
             let bs = self.blk_size as usize;
             match req.op {
-                BlockOp::Flush => {
-                    let mut c = self.ctrl.lock();
-                    if self.removed.load(Ordering::Acquire) {
-                        return Err(BlockError::Eio);
-                    }
-                    if c.flush() { Ok(()) } else { Err(BlockError::Eio) }
-                }
+                BlockOp::Flush => if self.flush_command() { Ok(()) } else { Err(BlockError::Eio) },
                 BlockOp::Discard | BlockOp::WriteZeroes { .. } => Err(BlockError::Eopnotsupp),
                 BlockOp::Read | BlockOp::Write => {
                     let nbytes = (req.len_blocks as usize)
@@ -97,39 +97,7 @@ mod imp {
                         let off = (done as usize) * bs;
                         let len = (n as usize) * bs;
                         let slba = req.start_block + done;
-                        let mut c = self.ctrl.lock();
-                        if self.removed.load(Ordering::Acquire) {
-                            return Err(BlockError::Eio);
-                        }
-                        let pva = c.prp_va();
-                        if pva == 0 { return Err(BlockError::Eio); }
-                        let p = pva as *mut u8;
-                        if write {
-                            // Stage payload into the PRP bounce frame.
-                            // SAFETY: HHDM-mapped PRP frame the controller
-                            // owns for this in-flight cmd (held under the
-                            // ctrl lock); `len` ≤ one page (cblk bounds it);
-                            // aligned byte stores stay within the frame.
-                            unsafe {
-                                for i in 0..len {
-                                    core::ptr::write_volatile(p.add(i), req.buffer[off + i]);
-                                }
-                            }
-                        }
-                        let ok = c.rw(write, slba, (n - 1) as u16);
-                        if !ok { return Err(BlockError::Eio); }
-                        if !write {
-                            // Copy device-written data out of the bounce frame.
-                            // SAFETY: same HHDM-mapped PRP frame, now filled by
-                            // the controller; aligned byte loads within `len`
-                            // ≤ one page; still under the ctrl lock.
-                            unsafe {
-                                for i in 0..len {
-                                    req.buffer[off + i] = core::ptr::read_volatile(p.add(i));
-                                }
-                            }
-                        }
-                        drop(c);
+                        if !self.rw_chunk(req, write, slba, n as u16, off, len) { return Err(BlockError::Eio); }
                         done += n;
                     }
                     Ok(())
@@ -138,14 +106,10 @@ mod imp {
         }
 
         fn flush(&self) -> KResult<()> {
-            if self.removed.load(Ordering::Acquire) {
+            if self.unavailable() {
                 return Err(BlockError::Eio);
             }
-            let mut c = self.ctrl.lock();
-            if self.removed.load(Ordering::Acquire) {
-                return Err(BlockError::Eio);
-            }
-            if c.flush() { Ok(()) } else { Err(BlockError::Eio) }
+            if self.flush_command() { Ok(()) } else { Err(BlockError::Eio) }
         }
     }
 
@@ -154,8 +118,7 @@ mod imp {
         /// release queue/PRP frames. Existing Arc holders observe EIO.
         /// # C: O(controller shutdown + PMM frees)
         fn remove(&self) {
-            self.removed.store(true, Ordering::Release);
-            self.ctrl.lock().shutdown_and_free();
+            self.quiesce_and_free();
         }
 
         /// Quiesce for reboot/poweroff without unregistering the block device.
@@ -163,7 +126,15 @@ mod imp {
         /// intact for the terminal power transition.
         /// # C: O(controller shutdown + PMM frees)
         fn shutdown(&self) {
-            self.removed.store(true, Ordering::Release);
+            self.quiesce_and_free();
+        }
+
+        fn quiesce_and_free(&self) {
+            if self.removed.swap(true, Ordering::AcqRel) { return; }
+            self.completion.wake_all();
+            self.turn_wait.wake_all();
+            self.irq.mask_and_free();
+            self.irq.synchronize_and_release();
             self.ctrl.lock().shutdown_and_free();
         }
     }
@@ -180,6 +151,20 @@ mod imp {
     }
 
     static DEVICES: Spinlock<Vec<NvmeRecord>, DriverLockClass> = Spinlock::new(Vec::new());
+    #[cfg(target_os = "oxide-kernel")]
+    type NvmeBh = sched::bh::SchedBh;
+
+    fn run_completion_bottom_half() {
+        let devices: Vec<Arc<NvmeBlk>> = DEVICES.lock_bh::<NvmeBh>()
+            .iter().map(|record| record.dev.clone()).collect();
+        for dev in devices { dev.completion_bottom_half(); }
+    }
+
+    fn unregister_completion_if_idle() {
+        if DEVICES.lock_bh::<NvmeBh>().is_empty() {
+            let _ = block::completion::unregister(run_completion_bottom_half);
+        }
+    }
 
     #[cfg(feature = "debug-boot")]
     fn key_bus(key: pci::Bdf) -> u8 { key.bus }
@@ -206,10 +191,18 @@ mod imp {
         mmio: mmio_map::Mapping,
         bar0_off: u64,
     ) -> u32 {
-        if DEVICES.lock().iter().any(|rec| rec.device_key == device_key) {
+        if DEVICES.lock_bh::<NvmeBh>().iter().any(|rec| rec.device_key == device_key) {
             return 0;
         }
-        let nv = match Nvme::bring_up(mmio, bar0_off) { Some(n) => n, None => {
+        if !block::completion::register(run_completion_bottom_half) { return 0; }
+        let Some(irq) = crate::irq::bind(device_key) else {
+            unregister_completion_if_idle();
+            return 0;
+        };
+        let nv = match Nvme::bring_up(mmio, bar0_off, irq.vector()) { Some(n) => n, None => {
+            irq.mask_and_free();
+            irq.synchronize_and_release();
+            unregister_completion_if_idle();
             #[cfg(feature = "debug-boot")]
             { klog::write_raw(b"[WARN]  nvme: controller bring-up failed\n"); }
             return 0;
@@ -228,20 +221,14 @@ mod imp {
 
         let dev = Arc::new(NvmeBlk {
             ctrl: Spinlock::new(nv),
+            irq,
+            completion: WaitList::new(),
+            turn_wait: WaitList::new(),
+            turn_busy: AtomicBool::new(false),
             blk_size, capacity,
             removed: AtomicBool::new(false),
+            poisoned: AtomicBool::new(false),
         });
-
-        // Optional bring-up self-test: read LBA 0 (proves the I/O queue +
-        // PRP path end-to-end). Logged; a failure does not block register.
-        #[cfg(feature = "debug-boot")]
-        {
-            let mut req = BlockRequest::new_read(0, 1, blk_size);
-            let ok = dev.submit_sync(&mut req).is_ok();
-            klog::write_raw(b"[INFO]  nvme: lba0 read selftest=");
-            klog::write_dec_u64(ok as u64);
-            klog::write_raw(b"\n");
-        }
 
         let name = nvme_name(NEXT_DISK_INDEX.fetch_add(1, Ordering::Relaxed));
         let existed = block::registry::by_name(&name).is_some();
@@ -251,7 +238,7 @@ mod imp {
             dev.clone() as Arc<dyn BlockDevice>,
         );
         let published = if idx != 0 && !existed {
-            let mut devices = DEVICES.lock();
+            let mut devices = DEVICES.lock_bh::<NvmeBh>();
             if devices.iter().any(|rec| rec.device_key == device_key) {
                 false
             } else {
@@ -271,7 +258,18 @@ mod imp {
                 let _ = block::registry::unregister(&name);
             }
             dev.remove();
+            unregister_completion_if_idle();
             return 0;
+        }
+        // The completion softirq finds its waiter through DEVICES, so run the
+        // optional end-to-end read only after publication.
+        #[cfg(feature = "debug-boot")]
+        {
+            let mut req = BlockRequest::new_read(0, 1, blk_size);
+            let ok = dev.submit_sync(&mut req).is_ok();
+            klog::write_raw(b"[INFO]  nvme: lba0 read selftest=");
+            klog::write_dec_u64(ok as u64);
+            klog::write_raw(b"\n");
         }
         #[cfg(feature = "debug-boot")]
         {
@@ -292,7 +290,7 @@ mod imp {
     /// # C: O(N_nvme + N_disks + controller shutdown)
     pub fn remove(device_key: pci::Bdf) -> bool {
         let rec = {
-            let mut devices = DEVICES.lock();
+            let mut devices = DEVICES.lock_bh::<NvmeBh>();
             match devices.iter().position(|rec| rec.device_key == device_key) {
                 Some(i) => devices.remove(i),
                 None => return false,
@@ -308,7 +306,7 @@ mod imp {
     /// # C: O(N_nvme + controller shutdown)
     pub fn shutdown(device_key: pci::Bdf) -> bool {
         let dev = match DEVICES
-            .lock()
+            .lock_bh::<NvmeBh>()
             .iter()
             .find(|rec| rec.device_key == device_key)
             .map(|rec| rec.dev.clone())
@@ -324,7 +322,7 @@ mod imp {
     /// # C: O(N_nvme)
     pub fn command_orig_for(device_key: pci::Bdf) -> Option<u16> {
         DEVICES
-            .lock()
+            .lock_bh::<NvmeBh>()
             .iter()
             .find(|rec| rec.device_key == device_key)
             .map(|rec| rec.command_orig)

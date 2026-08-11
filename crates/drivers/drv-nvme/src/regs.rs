@@ -44,6 +44,18 @@ pub const IO_READ:  u8 = 0x02;
 pub const CNS_NAMESPACE:  u32 = 0x00;
 pub const CNS_CONTROLLER: u32 = 0x01;
 
+/// CREATE I/O CQ CDW11 bits: physically contiguous and interrupt enabled.
+pub const CREATE_CQ_PHYS_CONTIG: u32 = 1 << 0;
+pub const CREATE_CQ_IRQ_ENABLED: u32 = 1 << 1;
+pub const CREATE_CQ_VECTOR_SHIFT: u32 = 16;
+
+/// Pack CREATE I/O CQ CDW11 for a non-polled queue. # C: O(1)
+#[inline]
+pub fn create_io_cq_flags(vector: u16) -> u32 {
+    CREATE_CQ_PHYS_CONTIG | CREATE_CQ_IRQ_ENABLED
+        | ((vector as u32) << CREATE_CQ_VECTOR_SHIFT)
+}
+
 /// Decode CAP.DSTRD (doorbell stride, bits 35:32). Each doorbell is then
 /// `4 << DSTRD` bytes apart (NVMe §3.1.1).
 /// # C: O(1)
@@ -187,5 +199,13 @@ mod tests {
         assert!(!phase);
         assert_eq!(sc, 4);
         assert_eq!(cid, 0x42);
+    }
+
+    #[test]
+    fn io_completion_queue_enables_its_assigned_msi_vector() {
+        let flags = create_io_cq_flags(7);
+        assert_ne!(flags & CREATE_CQ_PHYS_CONTIG, 0);
+        assert_ne!(flags & CREATE_CQ_IRQ_ENABLED, 0);
+        assert_eq!(flags >> CREATE_CQ_VECTOR_SHIFT, 7);
     }
 }

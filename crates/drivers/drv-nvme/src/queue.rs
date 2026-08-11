@@ -10,32 +10,8 @@
 #![cfg(target_os = "oxide-kernel")]
 
 use crate::regs;
+use crate::platform::{hhdm, now_ns};
 use mmio_map::Mapping;
-
-/// HHDM base for the running arch (PA→VA for queue + PRP frames).
-/// # C: O(1)
-#[inline]
-fn hhdm() -> u64 {
-    #[cfg(target_arch = "x86_64")]
-    { hal_x86_64::mmu_ops::hhdm_offset() }
-    #[cfg(target_arch = "aarch64")]
-    { hal_aarch64::mmu_ops::hhdm_offset() }
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    { 0 }
-}
-
-/// Monotonic wall-clock ns (0 if unsupported) — bounds the RDY + completion
-/// polls by real time rather than a CPU-speed-dependent spin count. # C: O(1)
-#[inline]
-fn now_ns() -> u64 {
-    use hal::TimerOps;
-    #[cfg(target_arch = "x86_64")]
-    { hal_x86_64::X86TimerOps::monotonic_ns().0 }
-    #[cfg(target_arch = "aarch64")]
-    { hal_aarch64::ArmTimerOps::monotonic_ns().0 }
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    { 0 }
-}
 
 /// Worst-case wait for an admin/IO completion. CAP.TO bounds RDY transitions;
 /// this caps a genuinely-lost completion to EIO. 5 s is generous for QEMU.
@@ -60,6 +36,10 @@ struct Queue {
     cq_db_va: u64,
     cid:      u16,
 }
+
+/// One I/O command submitted to the sole live queue slot.
+#[derive(Clone, Copy)]
+pub struct IoPending { cid: u16 }
 
 /// The NVMe controller bring-up state. Holds the BAR0 register-file VA, the
 /// admin + single I/O queue, and the negotiated geometry (namespace block
@@ -171,7 +151,7 @@ impl Nvme {
     /// create the I/O queue pair. Returns None on any timeout/alloc failure.
     /// `bar0_va` is the HHDM-independent register-file VA from map_mmio_pages.
     /// # C: O(reset + 2 admin cmds + 2 create-queue cmds)
-    pub fn bring_up(mmio: Mapping, bar0_off: u64) -> Option<Nvme> {
+    pub fn bring_up(mmio: Mapping, bar0_off: u64, io_vector: u16) -> Option<Nvme> {
         // Allocate admin SQ + CQ, I/O SQ + CQ, and the PRP bounce frame.
         let [asq, acq, isq, icq, prp] = Self::alloc_frames()?;
         for f in [asq, acq, isq, icq, prp] { Self::zero_frame(f); }
@@ -241,7 +221,7 @@ impl Nvme {
         }
 
         // 6. Create the I/O completion + submission queue (qid=1).
-        if !nv.create_io_cq() {
+        if !nv.create_io_cq(io_vector) {
             nv.shutdown_and_free();
             return None;
         }
@@ -397,13 +377,13 @@ impl Nvme {
     /// CREATE I/O COMPLETION QUEUE (opcode 0x05) for qid=1: PRP1 = CQ PA,
     /// CDW10 = ((size-1)<<16)|qid, CDW11 = PC bit (physically contiguous).
     /// # C: O(one admin cmd)
-    fn create_io_cq(&mut self) -> bool {
+    fn create_io_cq(&mut self, vector: u16) -> bool {
         let mut cmd = [0u32; 16];
         cmd[0] = regs::ADMIN_CREATE_IO_CQ as u32;
         cmd[6] = (self.io.cq_pa & 0xFFFF_FFFF) as u32;
         cmd[7] = (self.io.cq_pa >> 32) as u32;
         cmd[10] = ((self.io.entries - 1) << 16) | 1; // QSIZE (0-based) | QID=1
-        cmd[11] = 0x1;                           // PC=1 (no interrupts: IEN=0)
+        cmd[11] = regs::create_io_cq_flags(vector);
         self.submit(false, cmd) == Some(0)
     }
 
@@ -427,12 +407,62 @@ impl Nvme {
     /// layer in lib.rs loops per-chunk. # C: O(1)
     pub const MAX_XFER: u64 = PAGE;
 
-    /// Issue one READ (0x02) or WRITE (0x01) on the I/O queue for namespace 1.
+    fn submit_io(&mut self, mut cmd: [u32; 16]) -> Option<IoPending> {
+        let q = &mut self.io;
+        let cid = q.cid;
+        q.cid = q.cid.wrapping_add(1);
+        cmd[0] = (cmd[0] & 0x0000_FFFF) | ((cid as u32) << 16);
+        let h = hhdm();
+        if h == 0 { return None; }
+        let sq = h.wrapping_add(q.sq_pa) as *mut u32;
+        // SAFETY: HHDM-mapped I/O SQ frame owned by this controller; tail is
+        // bounded by queue depth and the 16 dword command stays in-frame.
+        unsafe {
+            let base = (q.sq_tail as usize) * 16;
+            for (i, word) in cmd.iter().enumerate() {
+                core::ptr::write_volatile(sq.add(base + i), *word);
+            }
+        }
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+        q.sq_tail = (q.sq_tail + 1) % q.entries;
+        // SAFETY: sq_db_va is the I/O SQ tail doorbell in the owned BAR0 map;
+        // aligned 32-bit write publishes the command after the release fence.
+        unsafe { core::ptr::write_volatile(q.sq_db_va as *mut u32, q.sq_tail); }
+        Some(IoPending { cid })
+    }
+
+    /// Reap one I/O CQE after its MSI. None means no matching CQE is visible.
+    /// # C: O(1)
+    pub fn try_reap_io(&mut self, pending: IoPending) -> Option<u16> {
+        let q = &mut self.io;
+        let h = hhdm();
+        if h == 0 { return Some(0xFFFF); }
+        let cq = h.wrapping_add(q.cq_pa) as *const u32;
+        let base = (q.cq_head as usize) * 4;
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
+        // SAFETY: HHDM-mapped I/O CQ frame owned by this controller; head is
+        // bounded by queue depth and this reads the 16-byte CQE in-frame.
+        let (d2, d3) = unsafe {
+            (core::ptr::read_volatile(cq.add(base + 2)), core::ptr::read_volatile(cq.add(base + 3)))
+        };
+        let (phase, status, cid) = regs::cqe_decode(d2, d3);
+        if phase != q.cq_phase { return None; }
+        let next_head = (q.cq_head + 1) % q.entries;
+        q.cq_head = next_head;
+        if next_head == 0 { q.cq_phase = !q.cq_phase; }
+        // SAFETY: cq_db_va is the I/O CQ head doorbell in the owned BAR0 map;
+        // aligned 32-bit write releases this CQE back to the controller.
+        unsafe { core::ptr::write_volatile(q.cq_db_va as *mut u32, next_head); }
+        if cid != pending.cid { return Some(0xFFFF); }
+        Some(status)
+    }
+
+    /// Submit one READ (0x02) or WRITE (0x01) on the I/O queue for namespace 1.
     /// `slba` = starting LBA, `nlb_minus_1` = (block count − 1), data moves
     /// through the PRP bounce frame (≤ one page). The caller stages writes
     /// into / copies reads out of the bounce frame around this call.
     /// # C: O(one I/O cmd)
-    pub fn rw(&mut self, write: bool, slba: u64, nlb_minus_1: u16) -> bool {
+    pub fn rw_submit(&mut self, write: bool, slba: u64, nlb_minus_1: u16) -> Option<IoPending> {
         let mut cmd = [0u32; 16];
         cmd[0] = if write { regs::IO_WRITE } else { regs::IO_READ } as u32;
         cmd[1] = 1;                               // NSID = 1
@@ -441,15 +471,15 @@ impl Nvme {
         cmd[10] = (slba & 0xFFFF_FFFF) as u32;    // CDW10 SLBA low
         cmd[11] = (slba >> 32) as u32;            // CDW11 SLBA high
         cmd[12] = nlb_minus_1 as u32;             // CDW12 NLB (0-based)
-        self.submit(true, cmd) == Some(0)
+        self.submit_io(cmd)
     }
 
     /// FLUSH (opcode 0x00) on the I/O queue for namespace 1. # C: O(one cmd)
-    pub fn flush(&mut self) -> bool {
+    pub fn flush_submit(&mut self) -> Option<IoPending> {
         let mut cmd = [0u32; 16];
         cmd[0] = regs::IO_FLUSH as u32;
         cmd[1] = 1; // NSID = 1
-        self.submit(true, cmd) == Some(0)
+        self.submit_io(cmd)
     }
 
     /// HHDM VA of the PRP bounce frame, for staging/copying I/O payloads.
