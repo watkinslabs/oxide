@@ -250,15 +250,13 @@ impl vmm::UffdContext for UfData {
         self.read_waiters.wake_all();
         self.poll.notify();
         #[cfg(target_os = "oxide-kernel")]
-        loop {
-            if self.wake_gen.load(Ordering::Acquire) != start_gen { break; }
-            // A deliverable (e.g. fatal) signal breaks the wait — return so the
-            // fault path retries and the signal is delivered to userspace.
-            if sched::live::deliverable_signals_self() != 0 { break; }
-            // SAFETY: running (faulting) task; preempt-off; park marks Sleeping + bumps the Arc before schedule, and a resolve will wake fault_waiters.
-            unsafe { self.fault_waiters.park(); }
-            // SAFETY: fault ctx entered from user mode with a saved frame; runqueue installed; preempt-off; current Sleeping so schedule won't re-enqueue until a resolve wake fires.
-            unsafe { sched::live::schedule::schedule(); }
+        {
+            // SAFETY: wake generation is a pure atomic predicate and resolve
+            // wakes fault_waiters; no userfault state lock crosses the sleep.
+            let _ = unsafe {
+                sched::live::wait_event_interruptible(&self.fault_waiters,
+                    || self.wake_gen.load(Ordering::Acquire) != start_gen)
+            };
         }
         // Silence unused-var warning on hosted (no loop reads start_gen).
         let _ = start_gen;
