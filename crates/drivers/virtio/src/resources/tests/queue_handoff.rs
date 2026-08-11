@@ -77,13 +77,16 @@ fn build_queue_resources_uses_scanned_sizes_and_notify_mappings() {
 #[test]
 fn build_runtime_handoff_applies_final_notify_observations() {
     let programmed = ProgrammedQueues::from_test_parts(
-        QueueRing { desc_pa: 0x1000, driver_pa: 0x2000, device_pa: 0x3000, notify_off: 4, size: 8 },
+        QueueRing { desc_pa: 0x1000, desc_dma: 0x1000, driver_pa: 0x2000, driver_dma: 0x2000, device_pa: 0x3000, device_dma: 0x3000, notify_off: 4, size: 8 },
         core::array::from_fn(|index| {
             if index == 1 {
                 Some(QueueRing {
                     desc_pa: 0x4000,
+                    desc_dma: 0x4000,
                     driver_pa: 0x5000,
+                    driver_dma: 0x5000,
                     device_pa: 0x6000,
+                    device_dma: 0x6000,
                     notify_off: 8,
                     size: 16,
                 })
@@ -124,21 +127,27 @@ fn build_runtime_handoff_applies_final_notify_observations() {
 #[test]
 fn resolve_planned_notify_mappings_uses_child_queue_policy() {
     let programmed = ProgrammedQueues::from_test_parts(
-        QueueRing { desc_pa: 0x1000, driver_pa: 0x2000, device_pa: 0x3000, notify_off: 4, size: 8 },
+        QueueRing { desc_pa: 0x1000, desc_dma: 0x1000, driver_pa: 0x2000, driver_dma: 0x2000, device_pa: 0x3000, device_dma: 0x3000, notify_off: 4, size: 8 },
         core::array::from_fn(|index| {
             if index == 1 {
                 Some(QueueRing {
                     desc_pa: 0x4000,
+                    desc_dma: 0x4000,
                     driver_pa: 0x5000,
+                    driver_dma: 0x5000,
                     device_pa: 0x6000,
+                    device_dma: 0x6000,
                     notify_off: 8,
                     size: 8,
                 })
             } else if index == 2 {
                 Some(QueueRing {
                     desc_pa: 0x7000,
+                    desc_dma: 0x7000,
                     driver_pa: 0x8000,
+                    driver_dma: 0x8000,
                     device_pa: 0x9000,
+                    device_dma: 0x9000,
                     notify_off: 12,
                     size: 8,
                 })
@@ -281,20 +290,20 @@ fn snd_eventq_plan_carries_child_irq_and_notify_mapping() {
 
     let programmed = ProgrammedQueues::from_test_parts(
         QueueRing {
-            desc_pa: Q0_DESC_PA, driver_pa: Q0_DRIVER_PA, device_pa: Q0_DEVICE_PA,
+            desc_pa: Q0_DESC_PA, desc_dma: Q0_DESC_PA, driver_pa: Q0_DRIVER_PA, driver_dma: Q0_DRIVER_PA, device_pa: Q0_DEVICE_PA, device_dma: Q0_DEVICE_PA,
             notify_off: Q0_NOTIFY_OFF, size: QUEUE_SIZE,
         },
         core::array::from_fn(|index| match index as u16 {
             EVENTQ => Some(QueueRing {
-                desc_pa: EVENT_DESC_PA, driver_pa: EVENT_DRIVER_PA, device_pa: EVENT_DEVICE_PA,
+                desc_pa: EVENT_DESC_PA, desc_dma: EVENT_DESC_PA, driver_pa: EVENT_DRIVER_PA, driver_dma: EVENT_DRIVER_PA, device_pa: EVENT_DEVICE_PA, device_dma: EVENT_DEVICE_PA,
                 notify_off: EVENT_NOTIFY_OFF, size: QUEUE_SIZE,
             }),
             TXQ => Some(QueueRing {
-                desc_pa: TX_DESC_PA, driver_pa: TX_DRIVER_PA, device_pa: TX_DEVICE_PA,
+                desc_pa: TX_DESC_PA, desc_dma: TX_DESC_PA, driver_pa: TX_DRIVER_PA, driver_dma: TX_DRIVER_PA, device_pa: TX_DEVICE_PA, device_dma: TX_DEVICE_PA,
                 notify_off: TX_NOTIFY_OFF, size: QUEUE_SIZE,
             }),
             RXQ => Some(QueueRing {
-                desc_pa: RX_DESC_PA, driver_pa: RX_DRIVER_PA, device_pa: RX_DEVICE_PA,
+                desc_pa: RX_DESC_PA, desc_dma: RX_DESC_PA, driver_pa: RX_DRIVER_PA, driver_dma: RX_DRIVER_PA, device_pa: RX_DEVICE_PA, device_dma: RX_DEVICE_PA,
                 notify_off: RX_NOTIFY_OFF, size: QUEUE_SIZE,
             }),
             _ => None,

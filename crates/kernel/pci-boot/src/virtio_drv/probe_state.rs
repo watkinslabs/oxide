@@ -260,9 +260,10 @@ impl VirtioProbeState {
     pub(super) fn finish_devres(
         self,
         result: &virtio::VirtioTransportProbeResult,
+        programmed_queues: Option<&ProgrammedQueues>,
         command_orig: u16,
     ) -> VirtioProbeDevres {
-        let owned_frames = virtio::VirtioProbeOwnedFrames::from_probe_result(result);
+        let owned_frames = virtio::VirtioProbeOwnedFrames::from_probe_result(result, programmed_queues);
         VirtioProbeDevres::new(
             self.bdf,
             command_orig,

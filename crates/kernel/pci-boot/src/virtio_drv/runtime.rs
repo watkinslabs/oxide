@@ -4,10 +4,11 @@ use super::{read_queue_used_idx, NetRxBootBuffer, ProgrammedQueues, QueueRing};
 #[derive(Clone, Copy)]
 pub(super) struct VirtioPciRuntime {
     pub(super) hhdm: u64,
+    bdf: pci::Bdf,
 }
 
 impl VirtioPciRuntime {
-    pub(super) fn current() -> Self {
+    pub(super) fn current(bdf: pci::Bdf) -> Self {
         Self {
             hhdm: {
                 #[cfg(target_arch = "x86_64")]
@@ -19,6 +20,7 @@ impl VirtioPciRuntime {
                     hal_aarch64::mmu_ops::hhdm_offset()
                 }
             },
+            bdf,
         }
     }
 
@@ -28,7 +30,7 @@ impl VirtioPciRuntime {
         q0_msix_vec: u16,
         queue_plans: &[Option<virtio::VirtioQueuePlan>],
     ) -> Option<ProgrammedQueues> {
-        program_queue_set(cfg_va, self.hhdm, q0_msix_vec, queue_plans)
+        program_queue_set(cfg_va, self.hhdm, self.bdf, q0_msix_vec, queue_plans)
     }
 
     pub(super) fn post_net_rx_boot_buffer(self, q0_ring: Option<QueueRing>) -> NetRxBootBuffer {

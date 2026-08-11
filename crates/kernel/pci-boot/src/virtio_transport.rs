@@ -29,18 +29,30 @@ pub(super) use virtio::{ProgrammedQueues, QueueRing};
 
 struct BootQueueAllocator {
     hhdm: u64,
+    bdf: pci::Bdf,
 }
 
 impl virtio::VirtioQueueAllocator for BootQueueAllocator {
-    fn alloc_frame(&mut self) -> Option<u64> {
-        pmm::setup::alloc_raw_frame()
+    fn alloc_frame(&mut self) -> Option<virtio::VirtioDmaFrame> {
+        let pa = pmm::setup::alloc_raw_frame()?;
+        let Some(dma) = iommu::map_dma(self.bdf, pa, VIRTIO_FRAME_BYTES) else {
+            // SAFETY: PMM returned `pa` in this allocation attempt and no
+            // device-visible mapping was installed for it.
+            unsafe { pmm::setup::free_one_frame(pa); }
+            return None;
+        };
+        Some(virtio::VirtioDmaFrame { pa, dma })
     }
 
-    fn free_frame(&mut self, pa: u64) {
+    fn free_frame(&mut self, frame: virtio::VirtioDmaFrame) {
+        if !iommu::unmap_dma(self.bdf, frame.dma, VIRTIO_FRAME_BYTES) {
+            return;
+        }
         // SAFETY: `pa` was returned by PMM during this queue-allocation
-        // attempt and has not been published to any live queue.
+        // attempt, has no live device DMA mapping, and has not been published
+        // to any live queue.
         unsafe {
-            pmm::setup::free_one_frame(pa);
+            pmm::setup::free_one_frame(frame.pa);
         }
     }
 
@@ -69,10 +81,11 @@ impl virtio::VirtioQueueAllocator for BootQueueAllocator {
 pub(super) fn program_queue_set(
     cfg_va: u64,
     hhdm: u64,
+    bdf: pci::Bdf,
     q0_msix_vec: u16,
     extra_plans: &[Option<virtio::VirtioQueuePlan>],
 ) -> Option<ProgrammedQueues> {
-    let mut allocator = BootQueueAllocator { hhdm };
+    let mut allocator = BootQueueAllocator { hhdm, bdf };
     virtio::program_queue_set(cfg_va, &mut allocator, q0_msix_vec, extra_plans)
 }
 

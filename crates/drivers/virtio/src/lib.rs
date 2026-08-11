@@ -27,7 +27,7 @@ pub use resources::{
     VirtioChildBus, VirtioChildDeviceKey, VirtioChildDriver, VirtioChildDriverId,
     VirtioChildDriverOps, VirtioChildModelIdentity, VirtioChildProbeFacts,
     VirtioChildRequirements, VirtioChildResourceState, VirtioChildTransportSession,
-    VirtioNetBootPayloads, VirtioNetRxBuffer, VirtioProbeLease, VirtioProbeOwnedFrames,
+    VirtioNetBootPayloads, VirtioNetRxBuffer, VirtioProbeFrameSet, VirtioProbeLease, VirtioProbeOwnedFrames,
     VirtioQueueNotifyMappings, VirtioQueuePlan, VirtioResources, VirtioRuntimeHandoff,
     VirtioRuntimeHandoffInput, VirtioTransportLocation, VirtioTransportProbeResult,
     VirtioTransportProfile, VirtQueueResource, MAX_RESOURCE_QUEUES, VIRTIO_CHILD_BUS,
@@ -47,7 +47,7 @@ pub use common_cfg::{
 pub mod queue_cfg;
 pub use queue_cfg::read_queue_msix_vector;
 pub use queue_cfg::{
-    program_queue, program_queue_set, ProgrammedQueues, QueueRing, VirtioQueueAllocator,
+    program_queue, program_queue_set, ProgrammedQueues, QueueRing, VirtioDmaFrame, VirtioQueueAllocator,
 };
 
 pub mod dma;
