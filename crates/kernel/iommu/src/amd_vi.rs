@@ -27,12 +27,14 @@ const DTE_READ: u64 = 1 << 61;
 const DTE_WRITE: u64 = 1 << 62;
 const DTE_DOMAIN_MASK: u64 = 0xffff;
 const COMMAND_TYPE_SHIFT: u32 = 28;
+const COMMAND_COMPLETION_WAIT: u32 = 0x01;
 const COMMAND_INVALIDATE_DTE: u32 = 0x02;
 const COMMAND_INVALIDATE_IOMMU_PAGES: u32 = 0x03;
 const COMMAND_INVALIDATE_PAGES_SIZE: u64 = 1 << 0;
 const COMMAND_INVALIDATE_PAGES_PDE: u64 = 1 << 1;
 const COMMAND_INVALIDATE_ALL_PAGES_ADDRESS: u64 = 0x7fff_ffff_ffff_f000;
 const COMMAND_DRAIN_POLL_LIMIT: usize = 1_000_000;
+const COMMAND_COMPLETION_STORE: u32 = 1;
 
 /// Hardware-format AMD-Vi device-table entry.
 #[repr(C, align(16))]
@@ -60,6 +62,13 @@ impl AmdViDte {
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct AmdViCommand { words: [u32; 4] }
 impl AmdViCommand {
+    /// Build a completion record write after all earlier ring commands. # C: O(1)
+    pub const fn completion_wait(completion_pa: u64, sequence: u64) -> Option<Self> {
+        if completion_pa & 7 != 0 || completion_pa & !DTE_ROOT_MASK != 0 || sequence == 0 { return None; }
+        Some(Self { words: [(completion_pa as u32) | COMMAND_COMPLETION_STORE,
+            ((completion_pa >> 32) as u32) | (COMMAND_COMPLETION_WAIT << COMMAND_TYPE_SHIFT),
+            sequence as u32, (sequence >> 32) as u32] })
+    }
     /// Build the requester-specific device-table invalidation command. # C: O(1)
     pub const fn invalidate_dte(requester: u16) -> Self {
         Self { words: [requester as u32, COMMAND_INVALIDATE_DTE << COMMAND_TYPE_SHIFT, 0, 0] }
@@ -324,6 +333,12 @@ impl AmdViUnit {
         let command = AmdViCommand::invalidate_dte(0x1234);
         assert_eq!(core::mem::size_of::<AmdViCommand>(), 16);
         assert_eq!(command.words(), [0x1234, 0x2000_0000, 0, 0]);
+    }
+    #[test] fn completion_wait_command_preserves_the_16_byte_ring_layout() {
+        let command = AmdViCommand::completion_wait(0x1234_5678_9000, 7).unwrap();
+        assert_eq!(command.words(), [0x5678_9001, 0x1000_1234, 7, 0]);
+        assert!(AmdViCommand::completion_wait(0x1234_5678_9001, 7).is_none());
+        assert!(AmdViCommand::completion_wait(0x1234_5678_9000, 0).is_none());
     }
     #[test] fn page_invalidation_matches_domain_command_layout() {
         let one = AmdViCommand::invalidate_iova_pages(0x1234, 0x2000, 0x2000, false).unwrap();
