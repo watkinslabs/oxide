@@ -79,7 +79,6 @@ impl LinuxDevPmInfo {
         self.runtime_flags0 = (self.runtime_flags0 & !0x07) | (depth.clamp(0, 7) as u8);
     }
     pub(crate) fn can_wakeup(&self) -> bool { self.sleep_flags & 0x01 != 0 }
-    pub(crate) fn use_autosuspend(&self) -> bool { self.runtime_flags1 & 0x08 != 0 }
     pub(crate) fn set_use_autosuspend(&mut self, enabled: bool) { if enabled { self.runtime_flags1 |= 0x08; } else { self.runtime_flags1 &= !0x08; } }
     pub(crate) fn set_can_wakeup(&mut self, capable: bool) {
         if capable { self.sleep_flags |= 0x01; } else { self.sleep_flags &= !0x01; self.wakeup = core::ptr::null_mut(); }

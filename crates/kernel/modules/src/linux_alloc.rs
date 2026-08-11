@@ -22,6 +22,7 @@ use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use sync::{Modules as ModulesLockClass, Spinlock};
 
 const ALLOC_MAGIC: u64 = 0x4f58_4b50_4941_4c4c;
+#[cfg(not(target_os = "oxide-kernel"))]
 const PAGE_MAGIC: u64 = 0x4f58_4b50_4950_4147;
 const CACHE_MAGIC: u64 = 0x4f58_4b50_4943_4143;
 const MIN_ALIGN: usize = align_of::<usize>();
@@ -544,6 +545,7 @@ unsafe fn valid_page(page: *mut LinuxPage) -> bool {
     }
 }
 
+#[cfg(not(target_os = "oxide-kernel"))]
 fn page_desc_alloc(page: LinuxPage) -> *mut LinuxPage {
     let layout = Layout::new::<LinuxPage>();
     // SAFETY: layout is the exact LinuxPage layout.
@@ -554,6 +556,7 @@ fn page_desc_alloc(page: LinuxPage) -> *mut LinuxPage {
     p
 }
 
+#[cfg(not(target_os = "oxide-kernel"))]
 fn page_desc_free(page: *mut LinuxPage) {
     let layout = Layout::new::<LinuxPage>();
     // SAFETY: page was allocated by page_desc_alloc with this layout.

@@ -280,22 +280,6 @@ const PCI_COMMAND_MASK: u32 = 0x0000_ffff;
 const PCI_STATUS_MASK: u32 = 0xffff_0000;
 #[cfg(test)]
 const PCI_DEVFN_DEV_SHIFT: u8 = 3;
-const HEX_LOW_NIBBLE_MASK: u8 = 0x0f;
-const HEX_DECIMAL_DIGITS: u8 = 10;
-const HEX_NIBBLE_SHIFT: u32 = 4;
-const PCI_DOMAIN_HEX0: usize = 0;
-const PCI_DOMAIN_HEX1: usize = 1;
-const PCI_DOMAIN_HEX2: usize = 2;
-const PCI_DOMAIN_HEX3: usize = 3;
-const PCI_DOMAIN_BUS_SEP: usize = 4;
-const PCI_BUS_HEX0: usize = 5;
-const PCI_BUS_HEX1: usize = 6;
-const PCI_SLOT_SEP: usize = 7;
-const PCI_SLOT_HEX0: usize = 8;
-const PCI_SLOT_HEX1: usize = 9;
-const PCI_FUNC_SEP: usize = 10;
-const PCI_FUNC_HEX: usize = 11;
-
 fn update_command(dev: *mut LinuxPciDev, bit: u16, set: bool) {
     let old = read_config32(dev, PCI_COMMAND_STATUS_OFF);
     let mut cmd = old & PCI_COMMAND_MASK;
