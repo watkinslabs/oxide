@@ -17,9 +17,10 @@ fn le64(t: &mut [u8], off: usize, v: u64) {
 }
 
 fn finish(t: &mut [u8]) {
+    t[9] = 0;
     let mut sum = 0u8;
-    for b in &t[..t.len() - 1] { sum = sum.wrapping_add(*b); }
-    t[t.len() - 1] = 0u8.wrapping_sub(sum);
+    for b in t.iter() { sum = sum.wrapping_add(*b); }
+    t[9] = 0u8.wrapping_sub(sum);
 }
 
 fn dmar() -> Vec<u8> {
@@ -50,6 +51,24 @@ fn ivrs() -> Vec<u8> {
     t
 }
 
+fn scoped_ivrs() -> Vec<u8> {
+    let mut t = vec![0u8; 84];
+    t[..4].copy_from_slice(b"IVRS");
+    le32(&mut t, 4, 84);
+    t[48] = 0x10;
+    le16(&mut t, 50, 36);
+    le64(&mut t, 56, 0xfed8_0000);
+    le16(&mut t, 64, 3);
+    t[72] = 0x02;
+    le16(&mut t, 74, 0x1234);
+    t[76] = 0x03;
+    le16(&mut t, 78, 0x2000);
+    t[80] = 0x04;
+    le16(&mut t, 82, 0x20ff);
+    finish(&mut t);
+    t
+}
+
 #[test]
 fn dmar_drhd_preserves_the_linux_device_ownership_keys() {
     let inv = parse_dmar(&dmar()).expect("valid DRHD");
@@ -67,6 +86,25 @@ fn ivrs_ivhd_preserves_segment_and_register_base() {
     assert_eq!(inv.unit_count, 1);
     assert_eq!(inv.units[0].segment, 3);
     assert_eq!(inv.units[0].register_base, 0xfed8_0000);
+}
+
+#[test]
+fn ivrs_ivhd_preserves_requester_ownership_ranges() {
+    let inv = parse_ivrs(&scoped_ivrs()).expect("valid IVHD scopes");
+    assert_eq!(inv.amd_scope_count, 2);
+    assert_eq!(inv.amd_scopes[0].unit_index, 0);
+    assert_eq!(inv.amd_scopes[0].first_requester, 0x1234);
+    assert_eq!(inv.amd_scopes[0].last_requester, 0x1234);
+    assert_eq!(inv.amd_scopes[1].first_requester, 0x2000);
+    assert_eq!(inv.amd_scopes[1].last_requester, 0x20ff);
+}
+
+#[test]
+fn ivrs_range_end_without_start_is_rejected() {
+    let mut t = scoped_ivrs();
+    t[76] = 0x04;
+    finish(&mut t);
+    assert_eq!(parse_ivrs(&t), Err(IommuError::BadRecord));
 }
 
 #[test]

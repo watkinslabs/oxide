@@ -17,9 +17,18 @@ const DRHD_LEN: usize = 16;
 const DMAR_SCOPE_LEN: usize = 6;
 const MAX_TABLE_LEN: usize = 64 * 1024;
 pub const MAX_IOMMU_UNITS: usize = 32;
+pub const MAX_AMD_IVHD_SCOPES: usize = 256;
 const IVHD_TYPE_10: u8 = 0x10;
 const IVHD_TYPE_11: u8 = 0x11;
 const IVHD_TYPE_40: u8 = 0x40;
+const IVHD_DEV_ALL: u8 = 0x01;
+const IVHD_DEV_SELECT: u8 = 0x02;
+const IVHD_DEV_SELECT_RANGE_START: u8 = 0x03;
+const IVHD_DEV_RANGE_END: u8 = 0x04;
+const IVHD_DEV_ALIAS: u8 = 0x42;
+const IVHD_DEV_ALIAS_RANGE: u8 = 0x43;
+const IVHD_DEV_EXT_SELECT: u8 = 0x46;
+const IVHD_DEV_EXT_SELECT_RANGE: u8 = 0x47;
 const DMAR_TYPE_DRHD: u16 = 0;
 const DMAR_INCLUDE_ALL: u8 = 1;
 const DMAR_MIN_HOST_ADDRESS_WIDTH: u8 = 11;
@@ -40,6 +49,14 @@ pub struct IommuUnit {
     pub include_all: bool,
 }
 
+/// One AMD IVHD requester-id interval owned by a translation unit.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct AmdIvhdScope {
+    pub unit_index: u8,
+    pub first_requester: u16,
+    pub last_requester: u16,
+}
+
 /// Why a firmware IOMMU table was rejected.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum IommuError {
@@ -48,6 +65,7 @@ pub enum IommuError {
     BadChecksum,
     BadRecord,
     TooManyUnits,
+    TooManyScopes,
 }
 
 /// Parsed architecture and its translation units.
@@ -56,6 +74,8 @@ pub struct IommuInventory {
     pub kind: IommuKind,
     pub units: [IommuUnit; MAX_IOMMU_UNITS],
     pub unit_count: usize,
+    pub amd_scopes: [AmdIvhdScope; MAX_AMD_IVHD_SCOPES],
+    pub amd_scope_count: usize,
 }
 
 static IOMMU_KIND: AtomicU32 = AtomicU32::new(IOMMU_KIND_NONE);
@@ -63,6 +83,9 @@ static IOMMU_COUNT: AtomicU32 = AtomicU32::new(0);
 static IOMMU_BASE: [AtomicU64; MAX_IOMMU_UNITS] = [const { AtomicU64::new(0) }; MAX_IOMMU_UNITS];
 static IOMMU_SEGMENT: [AtomicU32; MAX_IOMMU_UNITS] = [const { AtomicU32::new(0) }; MAX_IOMMU_UNITS];
 static IOMMU_FLAGS: [AtomicU32; MAX_IOMMU_UNITS] = [const { AtomicU32::new(0) }; MAX_IOMMU_UNITS];
+static AMD_SCOPE_UNIT: [AtomicU32; MAX_AMD_IVHD_SCOPES] = [const { AtomicU32::new(0) }; MAX_AMD_IVHD_SCOPES];
+static AMD_SCOPE_RANGE: [AtomicU32; MAX_AMD_IVHD_SCOPES] = [const { AtomicU32::new(0) }; MAX_AMD_IVHD_SCOPES];
+static AMD_SCOPE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 fn le16(t: &[u8], off: usize) -> u16 {
     (t[off] as u16) | ((t[off + 1] as u16) << 8)
@@ -93,8 +116,16 @@ fn push(inv: &mut IommuInventory, unit: IommuUnit) -> Result<(), IommuError> {
     Ok(())
 }
 
-fn validate_ivhd_entries(t: &[u8], start: usize, end: usize) -> Result<(), IommuError> {
+fn push_amd_scope(inv: &mut IommuInventory, unit_index: usize, first_requester: u16, last_requester: u16) -> Result<(), IommuError> {
+    if first_requester > last_requester || inv.amd_scope_count == MAX_AMD_IVHD_SCOPES { return Err(IommuError::TooManyScopes); }
+    inv.amd_scopes[inv.amd_scope_count] = AmdIvhdScope { unit_index: unit_index as u8, first_requester, last_requester };
+    inv.amd_scope_count += 1;
+    Ok(())
+}
+
+fn parse_ivhd_entries(t: &[u8], start: usize, end: usize, unit_index: usize, inv: &mut IommuInventory) -> Result<(), IommuError> {
     let mut off = start;
+    let mut range_start = None;
     while off < end {
         let ty = t[off];
         let len = if ty < 0x80 {
@@ -106,9 +137,22 @@ fn validate_ivhd_entries(t: &[u8], start: usize, end: usize) -> Result<(), Iommu
             return Err(IommuError::BadRecord);
         };
         if len == 0 || len > end - off { return Err(IommuError::BadRecord); }
+        let requester = if len >= 4 { le16(t, off + 2) } else { 0 };
+        match ty {
+            IVHD_DEV_ALL => push_amd_scope(inv, unit_index, 0, u16::MAX)?,
+            IVHD_DEV_SELECT | IVHD_DEV_ALIAS | IVHD_DEV_EXT_SELECT => push_amd_scope(inv, unit_index, requester, requester)?,
+            IVHD_DEV_SELECT_RANGE_START | IVHD_DEV_ALIAS_RANGE | IVHD_DEV_EXT_SELECT_RANGE => {
+                if range_start.replace(requester).is_some() { return Err(IommuError::BadRecord); }
+            }
+            IVHD_DEV_RANGE_END => {
+                let first = range_start.take().ok_or(IommuError::BadRecord)?;
+                push_amd_scope(inv, unit_index, first, requester)?;
+            }
+            _ => {}
+        }
         off += len;
     }
-    if off == end { Ok(()) } else { Err(IommuError::BadRecord) }
+    if off == end && range_start.is_none() { Ok(()) } else { Err(IommuError::BadRecord) }
 }
 
 /// Parse a complete AMD IVRS table without touching hardware.
@@ -116,7 +160,9 @@ fn validate_ivhd_entries(t: &[u8], start: usize, end: usize) -> Result<(), Iommu
 pub fn parse_ivrs(t: &[u8]) -> Result<IommuInventory, IommuError> {
     let t = checked_table(t, b"IVRS")?;
     let empty = IommuUnit { kind: IommuKind::AmdVi, segment: 0, register_base: 0, include_all: false };
-    let mut inv = IommuInventory { kind: IommuKind::AmdVi, units: [empty; MAX_IOMMU_UNITS], unit_count: 0 };
+    let empty_scope = AmdIvhdScope { unit_index: 0, first_requester: 0, last_requester: 0 };
+    let mut inv = IommuInventory { kind: IommuKind::AmdVi, units: [empty; MAX_IOMMU_UNITS], unit_count: 0,
+        amd_scopes: [empty_scope; MAX_AMD_IVHD_SCOPES], amd_scope_count: 0 };
     let mut off = IOMMU_TABLE_HEADER_LEN;
     while off < t.len() {
         if t.len() - off < IVHD_HEADER_LEN { return Err(IommuError::BadRecord); }
@@ -131,7 +177,7 @@ pub fn parse_ivrs(t: &[u8]) -> Result<IommuInventory, IommuError> {
         };
         if hlen != 0 {
             if len < hlen { return Err(IommuError::BadRecord); }
-            validate_ivhd_entries(t, off + hlen, end)?;
+            parse_ivhd_entries(t, off + hlen, end, inv.unit_count, &mut inv)?;
             push(&mut inv, IommuUnit { kind: IommuKind::AmdVi, segment: le16(t, off + 16), register_base: le64(t, off + 8), include_all: false })?;
         }
         off = end;
@@ -157,7 +203,9 @@ pub fn parse_dmar(t: &[u8]) -> Result<IommuInventory, IommuError> {
     let t = checked_table(t, b"DMAR")?;
     if t[ACPI_HEADER_LEN] < DMAR_MIN_HOST_ADDRESS_WIDTH { return Err(IommuError::BadRecord); }
     let empty = IommuUnit { kind: IommuKind::IntelVtd, segment: 0, register_base: 0, include_all: false };
-    let mut inv = IommuInventory { kind: IommuKind::IntelVtd, units: [empty; MAX_IOMMU_UNITS], unit_count: 0 };
+    let empty_scope = AmdIvhdScope { unit_index: 0, first_requester: 0, last_requester: 0 };
+    let mut inv = IommuInventory { kind: IommuKind::IntelVtd, units: [empty; MAX_IOMMU_UNITS], unit_count: 0,
+        amd_scopes: [empty_scope; MAX_AMD_IVHD_SCOPES], amd_scope_count: 0 };
     let mut off = IOMMU_TABLE_HEADER_LEN;
     while off < t.len() {
         if t.len() - off < DMAR_HEADER_LEN { return Err(IommuError::BadRecord); }
@@ -185,8 +233,14 @@ fn publish(inv: IommuInventory) {
         IOMMU_SEGMENT[i].store(u.segment as u32, Ordering::Relaxed);
         IOMMU_FLAGS[i].store(u.include_all as u32, Ordering::Relaxed);
     }
+    for i in 0..inv.amd_scope_count {
+        let scope = inv.amd_scopes[i];
+        AMD_SCOPE_UNIT[i].store(scope.unit_index as u32, Ordering::Relaxed);
+        AMD_SCOPE_RANGE[i].store((scope.first_requester as u32) | ((scope.last_requester as u32) << 16), Ordering::Relaxed);
+    }
     let kind = match inv.kind { IommuKind::AmdVi => IOMMU_KIND_AMD_VI, IommuKind::IntelVtd => IOMMU_KIND_INTEL_VTD };
     if IOMMU_KIND.compare_exchange(IOMMU_KIND_NONE, kind, Ordering::Release, Ordering::Acquire).is_ok() {
+        AMD_SCOPE_COUNT.store(inv.amd_scope_count as u32, Ordering::Release);
         IOMMU_COUNT.store(inv.unit_count as u32, Ordering::Release);
     }
 }
@@ -220,6 +274,22 @@ pub fn iommu_unit_for_segment(segment: u16) -> Option<IommuUnit> {
         let unit = iommu_unit(index)?;
         if unit.segment != segment { continue; }
         if found.is_some() { return None; }
+        found = Some(unit);
+    }
+    found
+}
+
+/// Return the unique AMD-Vi unit whose IVHD entries own this requester ID.
+/// # C: O(N)
+pub fn amd_vi_unit_for_requester(segment: u16, requester: u16) -> Option<IommuUnit> {
+    if iommu_unit_count() == 0 || IOMMU_KIND.load(Ordering::Relaxed) != IOMMU_KIND_AMD_VI { return None; }
+    let mut found = None;
+    for index in 0..AMD_SCOPE_COUNT.load(Ordering::Acquire) as usize {
+        let range = AMD_SCOPE_RANGE[index].load(Ordering::Relaxed);
+        if requester < range as u16 || requester > (range >> 16) as u16 { continue; }
+        let unit = iommu_unit(AMD_SCOPE_UNIT[index].load(Ordering::Relaxed) as usize)?;
+        if unit.segment != segment { continue; }
+        if found.is_some_and(|old: IommuUnit| old != unit) { return None; }
         found = Some(unit);
     }
     found
