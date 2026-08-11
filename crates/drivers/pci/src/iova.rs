@@ -49,6 +49,26 @@ impl IovaSpace {
         None
     }
 
+    /// Reserve one caller-selected page-aligned IOVA interval. # C: O(number of free ranges)
+    pub fn reserve_at(&mut self, start: u64, len: u64) -> Option<IovaRange> {
+        if start & (IOVA_PAGE_SIZE - 1) != 0 || len == 0 || len & (IOVA_PAGE_SIZE - 1) != 0 { return None; }
+        let end = start.checked_add(len)?;
+        for i in 0..self.free.len() {
+            let r = self.free[i];
+            if start < r.start || end > r.end() { continue; }
+            let before = start - r.start;
+            let after = r.end() - end;
+            if before != 0 && after != 0 {
+                self.free[i] = IovaRange { start: r.start, len: before };
+                self.free.insert(i + 1, IovaRange { start: end, len: after });
+            } else if before != 0 { self.free[i].len = before; }
+            else if after != 0 { self.free[i] = IovaRange { start: end, len: after }; }
+            else { self.free.remove(i); }
+            return Some(IovaRange { start, len });
+        }
+        None
+    }
+
     /// Return an invalidated IOVA range and merge adjacent free intervals. # C: O(number of free ranges)
     pub fn free(&mut self, range: IovaRange) -> bool {
         if range.len == 0 || range.start & (IOVA_PAGE_SIZE - 1) != 0
@@ -83,5 +103,12 @@ mod tests {
         assert!(s.free(a));
         assert!(!s.free(a));
         assert_eq!(s.alloc(0x8000, IOVA_PAGE_SIZE), Some(IovaRange { start: 0x1000, len: 0x8000 }));
+    }
+
+    #[test]
+    fn explicit_reservation_preserves_the_requested_iova() {
+        let mut s = IovaSpace::new(0, 0x10_000).unwrap();
+        assert_eq!(s.reserve_at(0x4000, 0x2000), Some(IovaRange { start: 0x4000, len: 0x2000 }));
+        assert_eq!(s.reserve_at(0x4000, 0x1000), None);
     }
 }

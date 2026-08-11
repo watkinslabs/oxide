@@ -54,6 +54,18 @@ impl AmdViDomain {
         self.maps.push(map);
         Some(map)
     }
+    /// Install an identity mapping for one PMM-owned physical interval. # C: O(pages * levels)
+    pub fn map_identity(&mut self, pa: u64, len: u64) -> Option<Mapping> {
+        if pa & (pci::IOVA_PAGE_SIZE - 1) != 0 { return None; }
+        let iova = self.space.reserve_at(pa, len)?;
+        if !self.page_table.map(pa, pa, len) {
+            let _ = self.space.free(iova);
+            return None;
+        }
+        let map = Mapping { iova, pa };
+        self.maps.push(map);
+        Some(map)
+    }
     /// Retire a mapped IOVA only after its hardware invalidation completed. # C: O(pages * levels)
     pub fn release_after_invalidate(&mut self, map: Mapping) -> bool {
         let Some(index) = self.maps.iter().position(|candidate| *candidate == map) else { return false; };
