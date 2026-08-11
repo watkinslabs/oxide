@@ -1,15 +1,8 @@
-use core::sync::atomic::Ordering;
-
-use super::regs::LAPIC_BASE_VA;
+use super::regs::{read_icr_register, write_icr_register};
 
 // ---------------------------------------------------------------------------
 // AP startup IPI primitives per `20§7` / Intel SDM Vol 3 §10.4.
 // ---------------------------------------------------------------------------
-
-#[cfg(target_arch = "x86_64")]
-const REG_ICR_LO: usize = 0x300;
-#[cfg(target_arch = "x86_64")]
-const REG_ICR_HI: usize = 0x310;
 
 /// Build an ICR-low value. Pure helper -- hosted-testable.
 /// Layout per Intel SDM Vol 3 §10.6.1:
@@ -50,15 +43,8 @@ pub fn icr_lo_sipi(startup_page: u8) -> u32 { build_icr_lo(startup_page, 0b110, 
 /// # C: O(1)
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub unsafe fn write_icr(target_apic_id: u32, lo: u32) -> bool {
-    let va = LAPIC_BASE_VA.load(Ordering::Acquire);
-    if va == 0 { return false; }
-    // ICR-hi: target APIC ID in bits 24-31 (xAPIC physical-dest).
-    // SAFETY: per fn contract -- `va` covers a valid LAPIC page; offsets 0x300/0x310 lie within.
-    unsafe {
-        core::ptr::write_volatile((va + REG_ICR_HI as u64) as *mut u32, target_apic_id << 24);
-        core::ptr::write_volatile((va + REG_ICR_LO as u64) as *mut u32, lo);
-    }
-    true
+    // SAFETY: this forwards the caller's serialized ICR-transition contract.
+    unsafe { write_icr_register(target_apic_id, lo) }
 }
 
 /// Spin until the LAPIC ICR's delivery-status bit (bit 12 of low DW)
@@ -69,12 +55,10 @@ pub unsafe fn write_icr(target_apic_id: u32, lo: u32) -> bool {
 /// # C: O(spin) -- bounded by hardware delivery latency
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub unsafe fn wait_icr_idle() {
-    let va = LAPIC_BASE_VA.load(Ordering::Acquire);
-    if va == 0 { return; }
     loop {
-        // SAFETY: per fn contract -- LAPIC mapped; offset 0x300 within.
-        let lo = unsafe { core::ptr::read_volatile((va + REG_ICR_LO as u64) as *const u32) };
-        if (lo & (1 << 12)) == 0 { break; }
+        // SAFETY: this forwards the caller's enabled-LAPIC contract to the register backend.
+        let Some(icr) = (unsafe { read_icr_register() }) else { return; };
+        if (icr & (1 << 12)) == 0 { break; }
         // SAFETY: spin loop hint; pause has no side effect outside microarch hinting.
         unsafe { core::arch::asm!("pause", options(nomem, nostack, preserves_flags)); }
     }

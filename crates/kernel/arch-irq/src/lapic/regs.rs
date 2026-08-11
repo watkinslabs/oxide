@@ -49,6 +49,14 @@ const APIC_X2_ENABLE: u64 = 1 << 10;
 /// x2APIC EOI register MSR (Intel SDM Vol 3 Table 10-6): write 0 to signal EOI.
 #[cfg(target_arch = "x86_64")]
 const MSR_X2APIC_EOI: u32 = 0x80B;
+/// First x2APIC register MSR. Each 16-byte LAPIC register slot has one MSR.
+#[cfg(target_arch = "x86_64")]
+const MSR_X2APIC_ICR: u32 = 0x830;
+#[cfg(target_arch = "x86_64")]
+const REG_EOI: usize = 0x0B0;
+#[cfg(target_arch = "x86_64")]
+const REG_ICR_LO: usize = 0x300;
+
 
 /// True iff EOI must go through the x2APIC EOI MSR (0x80B) instead of the xAPIC
 /// MMIO register at `LAPIC_VA+0xB0`. GAP-2 hardening: an MSR EOI never
@@ -77,15 +85,10 @@ fn x2apic_supported() -> bool {
     (ecx & (1 << 21)) != 0
 }
 
-/// Decide the EOI path for this CPU. GAP-2 hardening: if the CPU is ALREADY in
-/// x2APIC mode (firmware set IA32_APIC_BASE.EXTD), route EOI through the MSR so
-/// it never page-walks. We deliberately do NOT enable x2APIC mode ourselves:
-/// this driver drives SVR / ICR (incl. AP INIT-SIPI) / timer / APIC-ID through
-/// the xAPIC MMIO window, which x2APIC disables — flipping EXTD here would
-/// require a full MSR rewrite of the whole LAPIC + AP-startup path (out of this
-/// lane's scope and boot-critical). Under the normal xAPIC boot EXTD is clear,
-/// so this leaves EOI on the safe MMIO path; the real GAP-2 fix is the
-/// scheduler `active_mm` refcount, which removes the underlying use-after-free.
+/// Select the full local-APIC register interface for this CPU. Firmware that
+/// entered x2APIC mode disables the MMIO aperture, so every register access
+/// must use the paired x2APIC MSR instead. This kernel consumes that firmware
+/// mode but does not select it itself.
 /// # C: O(1)
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub(super) fn select_eoi_path() {
@@ -109,6 +112,79 @@ pub(crate) fn x2apic_active() -> bool { X2APIC_EOI.load(Ordering::Acquire) }
 #[cfg(target_arch = "x86_64")]
 pub static LAPIC_BASE_VA: AtomicU64 = AtomicU64::new(0);
 
+/// Read one local-APIC register through the active architectural interface.
+/// # SAFETY: caller runs at CPL 0 after LAPIC access was established; `offset`
+/// is a valid 16-byte-aligned local-APIC register offset.
+/// # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub(crate) unsafe fn read_register(offset: usize) -> Option<u32> {
+    if offset & 0xf != 0 || offset >= 4096 { return None; }
+    if x2apic_active() {
+        // SAFETY: x2APIC mode is active, so this offset has the architected MSR address.
+        return Some(unsafe { rdmsr(crate::lapic_shutdown::x2apic_msr_for_offset(offset)?) } as u32);
+    }
+    let va = LAPIC_BASE_VA.load(Ordering::Acquire);
+    if va == 0 { return None; }
+    // SAFETY: the enabled xAPIC page covers the checked local-APIC register offset.
+    Some(unsafe { core::ptr::read_volatile((va + offset as u64) as *const u32) })
+}
+
+/// Write one local-APIC register through the active architectural interface.
+/// # SAFETY: caller runs at CPL 0 after LAPIC access was established, owns the
+/// target register transition, and supplies a valid 16-byte-aligned offset.
+/// # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub(crate) unsafe fn write_register(offset: usize, value: u32) -> bool {
+    if offset & 0xf != 0 || offset >= 4096 { return false; }
+    if x2apic_active() {
+        let Some(msr) = crate::lapic_shutdown::x2apic_msr_for_offset(offset) else { return false; };
+        // SAFETY: x2APIC mode is active, so this offset has the architected MSR address.
+        unsafe { wrmsr(msr, value as u64); }
+        return true;
+    }
+    let va = LAPIC_BASE_VA.load(Ordering::Acquire);
+    if va == 0 { return false; }
+    // SAFETY: the enabled xAPIC page covers the checked local-APIC register offset.
+    unsafe { core::ptr::write_volatile((va + offset as u64) as *mut u32, value); }
+    true
+}
+
+/// Write an explicit-destination interrupt-command register value.
+/// # SAFETY: caller owns ICR serialization and supplies a valid physical APIC ID.
+/// # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub(crate) unsafe fn write_icr_register(destination: u32, low: u32) -> bool {
+    if x2apic_active() {
+        let value = ((destination as u64) << 32) | low as u64;
+        // SAFETY: x2APIC ICR is MSR 0x830; caller serialized the command transition.
+        unsafe { wrmsr(MSR_X2APIC_ICR, value); }
+        return true;
+    }
+    let va = LAPIC_BASE_VA.load(Ordering::Acquire);
+    if va == 0 { return false; }
+    // SAFETY: the enabled xAPIC page covers the ICR high and low register words.
+    unsafe {
+        core::ptr::write_volatile((va + 0x310) as *mut u32, destination << 24);
+        core::ptr::write_volatile((va + REG_ICR_LO as u64) as *mut u32, low);
+    }
+    true
+}
+
+/// Read the interrupt-command register, including x2APIC's destination word.
+/// # SAFETY: caller runs at CPL 0 after LAPIC access was established.
+/// # C: O(1)
+#[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
+pub(crate) unsafe fn read_icr_register() -> Option<u64> {
+    if x2apic_active() {
+        // SAFETY: x2APIC ICR is readable through MSR 0x830 while the mode is active.
+        return Some(unsafe { rdmsr(MSR_X2APIC_ICR) });
+    }
+    let va = LAPIC_BASE_VA.load(Ordering::Acquire);
+    if va == 0 { return None; }
+    // SAFETY: the enabled xAPIC page covers the ICR low register word.
+    Some(unsafe { core::ptr::read_volatile((va + REG_ICR_LO as u64) as *const u32) } as u64)
+}
+
 /// Send EOI to the LAPIC. No-op if `enable` hasn't run.
 /// # SAFETY: pair with an in-progress IRQ; writes EOI at offset 0xB0.
 /// # C: O(1)
@@ -122,10 +198,8 @@ pub unsafe fn eoi() {
         unsafe { wrmsr(MSR_X2APIC_EOI, 0); }
         return;
     }
-    let va = LAPIC_BASE_VA.load(Ordering::Acquire);
-    if va == 0 { return; }
-    // SAFETY: per fn contract -- `va` is a Device-attr 4 KiB mapping; offset 0xB0 lies within.
-    unsafe { core::ptr::write_volatile((va + 0xB0) as *mut u32, 0); }
+    // SAFETY: IRQ dispatch owns the EOI transition after this LAPIC was enabled.
+    let _ = unsafe { write_register(REG_EOI, 0) };
 }
 
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
@@ -165,12 +239,9 @@ pub(crate) unsafe fn wrmsr(idx: u32, val: u64) {
 /// # C: O(1)
 #[cfg(all(target_arch = "x86_64", target_os = "oxide-kernel"))]
 pub fn local_apic_id() -> u32 {
-    let va = LAPIC_BASE_VA.load(Ordering::Acquire);
-    if va == 0 { return 0; }
-    // SAFETY: LAPIC page mapped Device-attr by `enable`; reg 0x20 (APIC
-    // ID) is within the page; volatile read with no side effects.
-    let v = unsafe { core::ptr::read_volatile((va + 0x20) as *const u32) };
-    v >> 24
+    // SAFETY: callers only ask after the local APIC was enabled during boot.
+    let v = unsafe { read_register(REG_ID) }.unwrap_or(0);
+    if x2apic_active() { v } else { v >> 24 }
 }
 
 /// Rough busy-wait (~`us` µs) for the INIT→SIPI→SIPI hand-off delays
