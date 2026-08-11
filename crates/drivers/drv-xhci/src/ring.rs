@@ -28,6 +28,8 @@ pub const TRB_TYPE_SETUP: u32 = 2;
 pub const TRB_TYPE_DATA: u32 = 3;
 /// Control-transfer Status Stage TRB type. # C: O(1)
 pub const TRB_TYPE_STATUS: u32 = 4;
+/// Transfer Event TRB type. # C: O(1)
+pub const TRB_TYPE_TRANSFER_EVENT: u32 = 32;
 /// Successful xHCI completion code. # C: O(1)
 pub const COMPLETION_SUCCESS: u8 = 1;
 
@@ -72,6 +74,18 @@ impl Trb {
         })
     }
 
+    /// Decode one Transfer Event for endpoint completion ownership. # C: O(1)
+    pub fn transfer_completion(self) -> Option<TransferCompletion> {
+        if (self.dword[3] >> TRB_TYPE_SHIFT) & 0x3f != TRB_TYPE_TRANSFER_EVENT { return None; }
+        Some(TransferCompletion {
+            trb_pa: self.dword[0] as u64 | ((self.dword[1] as u64) << 32),
+            residual: self.dword[2] & 0x00ff_ffff,
+            completion_code: (self.dword[2] >> 24) as u8,
+            endpoint_id: ((self.dword[3] >> 16) & 0x1f) as u8,
+            slot: (self.dword[3] >> 24) as u8,
+        })
+    }
+
     /// Build the immediate eight-byte Setup Stage for a USB control request. # C: O(1)
     pub fn setup_stage(request_type: u8, request: u8, value: u16, index: u16, length: u16) -> Self {
         let parameter_lo = request_type as u32 | ((request as u32) << 8) | ((value as u32) << 16);
@@ -97,6 +111,9 @@ impl Trb {
 /// One decoded Command Completion Event. # C: O(1)
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct CommandCompletion { pub command_pa: u64, pub completion_code: u8, pub slot: u8 }
+/// One decoded Transfer Event. # C: O(1)
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct TransferCompletion { pub trb_pa: u64, pub residual: u32, pub completion_code: u8, pub endpoint_id: u8, pub slot: u8 }
 
 /// One-page command ring. Software is producer; the controller is consumer.
 pub struct CommandRing {
@@ -205,5 +222,11 @@ mod tests {
         assert_eq!(Trb::data_stage(0x90_000, 18, true).unwrap().dword[3], (TRB_TYPE_DATA << TRB_TYPE_SHIFT) | (1 << 16));
         assert_eq!(Trb::status_stage(true).dword[3], (TRB_TYPE_STATUS << TRB_TYPE_SHIFT) | (1 << 5));
         assert_eq!(Trb::status_stage(false).dword[3], (TRB_TYPE_STATUS << TRB_TYPE_SHIFT) | (1 << 16) | (1 << 5));
+    }
+
+    #[test]
+    fn transfer_event_keeps_residual_slot_and_endpoint() {
+        let event = Trb { dword: [0x90_000, 0, (1 << 24) | 3, (TRB_TYPE_TRANSFER_EVENT << TRB_TYPE_SHIFT) | (1 << 16) | (2 << 24)] };
+        assert_eq!(event.transfer_completion(), Some(TransferCompletion { trb_pa: 0x90_000, residual: 3, completion_code: 1, endpoint_id: 1, slot: 2 }));
     }
 }
