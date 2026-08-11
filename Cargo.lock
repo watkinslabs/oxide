@@ -1288,6 +1288,7 @@ dependencies = [
  "hal",
  "hal-aarch64",
  "hal-x86_64",
+ "iommu",
  "klog",
  "kmacros",
  "mmio-map",

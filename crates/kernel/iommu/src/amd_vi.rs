@@ -32,6 +32,7 @@ const COMMAND_INVALIDATE_IOMMU_PAGES: u32 = 0x03;
 const COMMAND_INVALIDATE_PAGES_SIZE: u64 = 1 << 0;
 const COMMAND_INVALIDATE_PAGES_PDE: u64 = 1 << 1;
 const COMMAND_INVALIDATE_ALL_PAGES_ADDRESS: u64 = 0x7fff_ffff_ffff_f000;
+const COMMAND_DRAIN_POLL_LIMIT: usize = 1_000_000;
 
 /// Hardware-format AMD-Vi device-table entry.
 #[repr(C, align(16))]
@@ -222,9 +223,8 @@ impl AmdViUnit {
         unsafe { tables.write_initial_dte(hhdm_offset, requester, dte); }
         true
     }
-    /// Attach one AMD-Vi domain by installing its paging DTE for its sole requester. # C: O(1)
-    pub unsafe fn install_initial_domain(&self, regs: &AmdViRegisters, tables: &AmdViTables, hhdm_offset: u64, domain: &crate::AmdViDomain, domain_id: u16) -> bool {
-        let bdf = domain.requester();
+    /// Attach one AMD-Vi domain by installing its paging DTE for one requester. # C: O(1)
+    pub unsafe fn install_initial_domain(&self, regs: &AmdViRegisters, tables: &AmdViTables, hhdm_offset: u64, bdf: pci::Bdf, domain: &crate::AmdViDomain, domain_id: u16) -> bool {
         let Some(dte) = domain.dte(domain_id) else { return false; };
         // SAFETY: forwarded to the checked initial-DTE operation for this domain's exact requester.
         if !unsafe { self.install_initial_dte(regs, tables, hhdm_offset, bdf, dte) } { return false; }
@@ -257,8 +257,14 @@ impl AmdViUnit {
         // SAFETY: tables owns the serialized command ring and its command engine is enabled.
         unsafe { tables.queue_command(regs, hhdm_offset, command) }
     }
-    /// Report whether all previously queued invalidations have reached hardware completion. # C: O(1)
-    pub fn invalidations_drained(&self, regs: &AmdViRegisters, tables: &AmdViTables) -> bool { tables.command_drained(regs) }
+    /// Wait for every queued invalidation to reach the command-ring head. # C: O(poll limit)
+    pub fn wait_for_invalidations(&self, regs: &AmdViRegisters, tables: &AmdViTables) -> bool {
+        for _ in 0..COMMAND_DRAIN_POLL_LIMIT {
+            if tables.command_drained(regs) { return true; }
+            core::hint::spin_loop();
+        }
+        false
+    }
     /// Advance only after hardware consumed every queued initial invalidation. # C: O(1)
     pub fn domains_attached_after_drain(&mut self, regs: &AmdViRegisters, tables: &AmdViTables) -> bool {
         if self.state != AmdViState::TablesProgrammed || !tables.command_drained(regs) { return false; }

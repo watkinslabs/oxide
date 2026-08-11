@@ -31,16 +31,18 @@ impl Domain {
     pub fn mapping(&self, iova: u64) -> Option<Mapping> { self.maps.iter().copied().find(|m| m.iova.start == iova) }
 }
 
-/// AMD-Vi requester domain with one hardware IOVA page-table tree.
-pub struct AmdViDomain { requester: Bdf, space: IovaSpace, maps: Vec<Mapping>, page_table: AmdViPageTable }
+/// AMD-Vi translation domain with one hardware IOVA page-table tree.
+///
+/// A unit may attach multiple requesters to this domain. The initial boot
+/// domain deliberately covers the same identity-mapped RAM for each attached
+/// requester, instead of allocating one full page-table tree per function.
+pub struct AmdViDomain { space: IovaSpace, maps: Vec<Mapping>, page_table: AmdViPageTable }
 impl AmdViDomain {
     /// Allocate one AMD-Vi domain and its empty four-level IOVA page table. # C: O(1)
-    pub fn new(requester: Bdf, start: u64, len: u64, hhdm_offset: u64) -> Option<Self> {
-        Some(Self { requester, space: IovaSpace::new(start, len)?, maps: Vec::new(), page_table: AmdViPageTable::new(hhdm_offset)? })
+    pub fn new(start: u64, len: u64, hhdm_offset: u64) -> Option<Self> {
+        Some(Self { space: IovaSpace::new(start, len)?, maps: Vec::new(), page_table: AmdViPageTable::new(hhdm_offset)? })
     }
-    /// Requester that alone may attach this hardware domain. # C: O(1)
-    pub const fn requester(&self) -> Bdf { self.requester }
-    /// DTE encoding that attaches this domain's IOVA tree to its requester. # C: O(1)
+    /// DTE encoding that attaches this domain's IOVA tree to one requester. # C: O(1)
     pub fn dte(&self, domain_id: u16) -> Option<AmdViDte> { AmdViDte::paging(self.page_table.root_pa(), self.page_table.page_mode(), domain_id) }
     /// Allocate IOVA space and install matching AMD-Vi leaf PTEs. # C: O(pages * levels)
     pub fn map(&mut self, pa: u64, len: u64, align: u64) -> Option<Mapping> {
@@ -54,7 +56,7 @@ impl AmdViDomain {
         self.maps.push(map);
         Some(map)
     }
-    /// Install an identity mapping for one PMM-owned physical interval. # C: O(pages * levels)
+    /// Install an identity mapping for one PMM-owned physical interval. # C: O(leaves * levels)
     pub fn map_identity(&mut self, pa: u64, len: u64) -> Option<Mapping> {
         if pa & (pci::IOVA_PAGE_SIZE - 1) != 0 { return None; }
         let iova = self.space.reserve_at(pa, len)?;
@@ -66,7 +68,7 @@ impl AmdViDomain {
         self.maps.push(map);
         Some(map)
     }
-    /// Map exactly the PMM-owned RAM regions before this domain is attached. # C: O(regions * pages * levels)
+    /// Map exactly the PMM-owned RAM regions before this domain is attached. # C: O(regions * leaves * levels)
     pub fn map_identity_regions(&mut self, regions: &[pmm::UsableRegion]) -> bool {
         for region in regions {
             if region.len_pfn == 0 { continue; }

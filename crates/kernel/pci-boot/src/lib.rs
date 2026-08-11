@@ -109,6 +109,11 @@ pub fn enumerate_and_log() {
         klog::write_dec_u64(devs.len() as u64);
         klog::write_raw(b"\n");
     }
+    let requesters = devs.iter().map(|d| d.bdf).collect::<alloc::vec::Vec<_>>();
+    // SAFETY: PCI probing is still before driver registration and bus mastering.
+    let iommu_activation = unsafe { iommu::activate_amd_vi(&requesters,
+        pmm::user_as::hhdm_offset(), pmm::setup::usable_regions()) };
+    if iommu_activation == iommu::AmdViActivation::Failed { return; }
     register_pci_model_drivers();
     for d in devs.iter() {
         debug_boot! {
