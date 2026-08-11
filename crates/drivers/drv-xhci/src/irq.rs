@@ -55,6 +55,7 @@ fn requester_id(bdf: pci::Bdf) -> u32 { ((bdf.bus as u32) << 8) | ((bdf.device a
 fn hard_handler_for(index: usize) {
     let endpoint = &ENDPOINTS[index];
     if endpoint.state.compare_exchange(ACTIVE, HANDLING, Ordering::AcqRel, Ordering::Acquire).is_err() { return; }
+    let mut transfer_event = false;
     endpoint.in_handler.fetch_add(1, Ordering::AcqRel);
     let base = endpoint.mmio_va.load(Ordering::Acquire);
     let event_va = endpoint.event_va.load(Ordering::Acquire);
@@ -95,6 +96,7 @@ fn hard_handler_for(index: usize) {
                         | ((((control >> 16) & 0x1f) as u64) << 32) | (((control >> 24) as u64) << 40);
                     endpoint.transfer_completion_meta.store(meta, Ordering::Relaxed);
                     endpoint.transfer_completion_pa.store(parameter as u64 | ((parameter_hi as u64) << 32), Ordering::Release);
+                    transfer_event = true;
                 }
                 if let Some(port) = crate::ports::event_port_id(parameter, control, endpoint.max_ports.load(Ordering::Acquire)) {
                     let operational = status_offset - USBSTS;
@@ -128,6 +130,7 @@ fn hard_handler_for(index: usize) {
     }
     endpoint.in_handler.fetch_sub(1, Ordering::Release);
     endpoint.state.store(ACTIVE, Ordering::Release);
+    if transfer_event { softirq::raise(softirq::Slot::UsbInput); }
 }
 fn handler_0() { hard_handler_for(0); } fn handler_1() { hard_handler_for(1); }
 fn handler_2() { hard_handler_for(2); } fn handler_3() { hard_handler_for(3); }
