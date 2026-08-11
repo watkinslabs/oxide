@@ -228,4 +228,10 @@ impl Mmio {
             core::hint::spin_loop();
         }
     }
+
+    /// Read one validated root-hub PORTSC register. # C: O(1)
+    pub fn port_status(&self, port: u8) -> Option<u32> {
+        let offset = crate::ports::portsc_offset(self.geometry.operational, port, self.geometry.max_ports)?;
+        self.read32(offset)
+    }
 }
