@@ -11,6 +11,7 @@
 pub mod regs;
 pub mod ring;
 pub mod controller;
+pub mod ports;
 #[cfg(target_os = "oxide-kernel")]
 pub mod platform;
 #[cfg(target_os = "oxide-kernel")]

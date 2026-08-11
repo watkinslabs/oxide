@@ -26,6 +26,9 @@ struct Endpoint {
     erdp_offset: AtomicU64,
     event_va: AtomicU64,
     event_pa: AtomicU64,
+    bar_bytes: AtomicU64,
+    max_ports: AtomicU8,
+    port_changes: AtomicU64,
     dequeue: AtomicU32,
     cycle: AtomicBool,
 }
@@ -34,7 +37,7 @@ impl Endpoint {
         Self {
             state: AtomicU8::new(FREE), in_handler: AtomicU32::new(0),
             mmio_va: AtomicU64::new(0), status_offset: AtomicU64::new(0), erdp_offset: AtomicU64::new(0),
-            event_va: AtomicU64::new(0), event_pa: AtomicU64::new(0), dequeue: AtomicU32::new(0), cycle: AtomicBool::new(true),
+            event_va: AtomicU64::new(0), event_pa: AtomicU64::new(0), bar_bytes: AtomicU64::new(0), max_ports: AtomicU8::new(0), port_changes: AtomicU64::new(0), dequeue: AtomicU32::new(0), cycle: AtomicBool::new(true),
         }
     }
 }
@@ -69,6 +72,23 @@ fn hard_handler_for(index: usize) {
                 // SAFETY: each control dword is in the retained 4KiB event page.
                 let control = unsafe { read_volatile((event_va + (dequeue * TRB_BYTES + 12) as u64) as *const u32) };
                 if (control & TRB_CYCLE != 0) != cycle { break; }
+                // SAFETY: the parameter dword is in the same validated event TRB.
+                let parameter = unsafe { read_volatile((event_va + (dequeue * TRB_BYTES) as u64) as *const u32) };
+                if let Some(port) = crate::ports::event_port_id(parameter, control, endpoint.max_ports.load(Ordering::Acquire)) {
+                    let operational = status_offset - USBSTS;
+                    if let Some(portsc_offset) = crate::ports::portsc_offset(operational, port, endpoint.max_ports.load(Ordering::Acquire))
+                        .filter(|offset| offset.checked_add(4).is_some_and(|end| end <= endpoint.bar_bytes.load(Ordering::Acquire)))
+                    {
+                        // SAFETY: `portsc_offset` is a checked PORTSC dword in the owned BAR.
+                        let portsc = unsafe { read_volatile((base + portsc_offset) as *const u32) };
+                        let acknowledge = crate::ports::acknowledge_changes(portsc);
+                        if acknowledge != 0 {
+                            // SAFETY: PORTSC change bits are explicitly write-one-to-clear.
+                            unsafe { write_volatile((base + portsc_offset) as *mut u32, acknowledge); }
+                        }
+                        endpoint.port_changes.fetch_or(1u64 << (port - 1), Ordering::Release);
+                    }
+                }
                 dequeue += 1;
                 consumed += 1;
                 if dequeue == TRBS_PER_SEGMENT { dequeue = 0; cycle = !cycle; }
@@ -135,6 +155,9 @@ impl Binding {
         endpoint.erdp_offset.store(intr + ERDP, Ordering::Relaxed);
         endpoint.event_pa.store(event.pa(), Ordering::Relaxed);
         endpoint.event_va.store(event_va, Ordering::Relaxed);
+        endpoint.bar_bytes.store(mmio.bytes(), Ordering::Relaxed);
+        endpoint.max_ports.store(mmio.geometry().max_ports, Ordering::Relaxed);
+        endpoint.port_changes.store(0, Ordering::Relaxed);
         endpoint.mmio_va.store(mmio.base_va(), Ordering::Release);
         true
     }
@@ -164,6 +187,7 @@ impl Binding {
         endpoint.mmio_va.store(0, Ordering::Release);
         endpoint.event_va.store(0, Ordering::Release);
         endpoint.event_pa.store(0, Ordering::Release);
+        endpoint.port_changes.store(0, Ordering::Release);
         release(self.endpoint);
     }
 }
