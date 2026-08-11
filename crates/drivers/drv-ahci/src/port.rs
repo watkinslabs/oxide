@@ -103,15 +103,20 @@ fn reset_hba(abar_va: u64) -> bool {
 /// register-file VA, the port index, the DMA-structure PAs (command list,
 /// received-FIS, command table, DMA data run), and the negotiated geometry.
 pub struct Ahci {
+    bdf:       pci::Bdf,
     mmio:      Mapping,
     abar_va: u64,
     abar_off: u64,
     port:    u32,
     pub(crate) clb_pa:  u64,  // command list (1 KiB, 1 KiB-aligned)
+    pub(crate) clb_dma: u64,
     fb_pa:   u64,  // received FIS (256 B, 256 B-aligned)
+    fb_dma:  u64,
     pub(crate) ctba_pa: u64,  // command table for slot 0 (128 B header + PRDT)
+    pub(crate) ctba_dma: u64,
     /// Contiguous DMA data run used by one I/O command.
     pub(crate) data_pa: u64,
+    pub(crate) data_dma: u64,
     /// Disk geometry harvested at IDENTIFY.
     pub sectors:   u64,
     pub blk_size:  u32,
@@ -173,14 +178,15 @@ impl Ahci {
             self.pw(regs::P_FB, 0);
             self.pw(regs::P_FBU, 0);
         }
-        Self::free_frame(&mut self.clb_pa);
-        Self::free_frame(&mut self.fb_pa);
-        Self::free_frame(&mut self.ctba_pa);
-        if self.data_pa != 0 {
+        if iommu::unmap_dma(self.bdf, self.clb_dma, PAGE as usize) { Self::free_frame(&mut self.clb_pa); self.clb_dma = 0; }
+        if iommu::unmap_dma(self.bdf, self.fb_dma, PAGE as usize) { Self::free_frame(&mut self.fb_pa); self.fb_dma = 0; }
+        if iommu::unmap_dma(self.bdf, self.ctba_dma, PAGE as usize) { Self::free_frame(&mut self.ctba_pa); self.ctba_dma = 0; }
+        if self.data_pa != 0 && iommu::unmap_dma(self.bdf, self.data_dma, DATA_BYTES as usize) {
             // SAFETY: port stop above prevents DMA and `data_pa` belongs to
             // this controller's `alloc_contig(DATA_ORDER)` allocation.
             unsafe { pmm::setup::free_contig(self.data_pa, DATA_ORDER); }
             self.data_pa = 0;
+            self.data_dma = 0;
         }
         self.abar_va = 0;
         self.mmio.unmap();
@@ -266,7 +272,7 @@ impl Ahci {
     /// empty HBA, reason starts "no ") or a real failure (timeout/alloc).
     /// `abar_va` is the BAR5 register-file VA (≥2 pages from map_mmio_pages).
     /// # C: O(reset + port init + 1 IDENTIFY)
-    pub fn bring_up(mmio: Mapping, abar_off: u64) -> Result<Ahci, &'static str> {
+    pub fn bring_up(bdf: pci::Bdf, mmio: Mapping, abar_off: u64) -> Result<Ahci, &'static str> {
         let abar_va = mmio.base_va() + abar_off;
         // AHCI §10.4.3 / Linux ahci_reset_controller: AHCI mode is required
         // before HOST_RESET is valid. Reset all firmware-left controller/port
@@ -333,8 +339,13 @@ impl Ahci {
         // Allocate per-port command/FIS structures plus a contiguous data
         // run. The single PRDT entry can describe this whole 2 MiB run.
         let (mut frames, data_pa) = Self::alloc_frames()?;
-        if !frames.iter().all(|pa| regs::dma_range_fits(cap, *pa, PAGE))
-            || !regs::dma_range_fits(cap, data_pa, DATA_BYTES) {
+        let mut dmas = [0u64; 3];
+        for (pa, dma) in frames.iter().zip(dmas.iter_mut()) {
+            *dma = iommu::map_dma(bdf, *pa, PAGE as usize).ok_or("DMA map frame")?;
+        }
+        let data_dma = iommu::map_dma(bdf, data_pa, DATA_BYTES as usize).ok_or("DMA map data")?;
+        if !dmas.iter().all(|dma| regs::dma_range_fits(cap, *dma, PAGE))
+            || !regs::dma_range_fits(cap, data_dma, DATA_BYTES) {
             for pa in &mut frames { Self::free_frame(pa); }
             // SAFETY: this failed before port start, so no hardware can see
             // the just-allocated data run.
@@ -347,7 +358,7 @@ impl Ahci {
 
         let mut a = Ahci {
             mmio, abar_va, abar_off, port,
-            clb_pa: clb, fb_pa: fb, ctba_pa: ct, data_pa,
+            bdf, clb_pa: clb, clb_dma: dmas[0], fb_pa: fb, fb_dma: dmas[1], ctba_pa: ct, ctba_dma: dmas[2], data_pa, data_dma,
             sectors: 0, blk_size: 512, serial: None,
         };
 
@@ -356,10 +367,10 @@ impl Ahci {
             a.shutdown_and_free();
             return Err("stop_port timeout");
         }
-        a.pw(regs::P_CLB,  (a.clb_pa & 0xFFFF_FFFF) as u32);
-        a.pw(regs::P_CLBU, (a.clb_pa >> 32) as u32);
-        a.pw(regs::P_FB,   (a.fb_pa & 0xFFFF_FFFF) as u32);
-        a.pw(regs::P_FBU,  (a.fb_pa >> 32) as u32);
+        a.pw(regs::P_CLB,  (a.clb_dma & 0xFFFF_FFFF) as u32);
+        a.pw(regs::P_CLBU, (a.clb_dma >> 32) as u32);
+        a.pw(regs::P_FB,   (a.fb_dma & 0xFFFF_FFFF) as u32);
+        a.pw(regs::P_FBU,  (a.fb_dma >> 32) as u32);
         // Clear any latched SATA error + interrupt status before start.
         a.pw(regs::P_SERR, 0xFFFF_FFFF);
         a.pw(regs::P_IS,   0xFFFF_FFFF);

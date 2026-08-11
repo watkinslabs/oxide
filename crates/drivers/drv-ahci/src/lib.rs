@@ -141,7 +141,7 @@ type AhciBh = sync::NoopBh;
         if DEVICES.lock_bh::<AhciBh>().iter().any(|rec| rec.device_key == device_key) {
             return 0;
         }
-        let mut a = match Ahci::bring_up(mmio, abar_off) { Ok(a) => a, Err(reason) => {
+        let mut a = match Ahci::bring_up(device_key, mmio, abar_off) { Ok(a) => a, Err(reason) => {
             // "no ..." = an empty HBA (e.g. the ICH9 chipset SATA controller
             // with no drive attached) — benign INFO, not a failure WARN.
             #[cfg(feature = "debug-boot")]

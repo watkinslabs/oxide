@@ -19,6 +19,7 @@ block   = { path = "../../kernel/block" }
 arch-irq = { path = "../../kernel/arch-irq" }
 pci-irq = { path = "../../kernel/pci-irq" }
 sched   = { path = "../../kernel/sched" }
+iommu   = { path = "../../kernel/iommu" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64  = { path = "../../arch/hal-x86_64" }
