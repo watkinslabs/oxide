@@ -50,15 +50,36 @@ impl VtdPageTable {
                 self.pages.push(next_pa);
                 table_pa = next_pa;
             } else {
-                if entry & PTE_LARGE_PAGE != 0 { return false; }
-                table_pa = entry & PTE_ADDRESS_MASK;
+                if entry & PTE_LARGE_PAGE != 0 {
+                    let Some(next_pa) = self.split_large_leaf(level, entry_pa, entry) else { return false; };
+                    table_pa = next_pa;
+                } else {
+                    table_pa = entry & PTE_ADDRESS_MASK;
+                }
             }
         }
         let leaf_pa = entry_pa(table_pa, indices[depth]);
-        if read_entry(self.hhdm_offset, leaf_pa) & PTE_PRESENT != 0 { return false; }
+        let prior = read_entry(self.hhdm_offset, leaf_pa);
+        if prior & PTE_PRESENT != 0 { return prior & PTE_ADDRESS_MASK == pa; }
         let Some(leaf) = VtdPte::leaf(pa, bytes != PAGE_BYTES) else { return false; };
         write_entry(self.hhdm_offset, leaf_pa, leaf.word());
         true
+    }
+    fn split_large_leaf(&mut self, level: usize, parent_pa: u64, prior: u64) -> Option<u64> {
+        let parent_bytes = level_page_bytes(level);
+        let child_bytes = level_page_bytes(level + 1);
+        if parent_bytes == 0 || child_bytes == 0 || parent_bytes != child_bytes.checked_mul(512)? { return None; }
+        let child_pa = allocate_table(self.hhdm_offset)?;
+        let base = prior & PTE_ADDRESS_MASK;
+        for index in 0..512u64 {
+            let pa = base.checked_add(index.checked_mul(child_bytes)?)?;
+            let leaf = VtdPte::leaf(pa, child_bytes != PAGE_BYTES)?;
+            write_entry(self.hhdm_offset, entry_pa(child_pa, index as usize), leaf.word());
+        }
+        let table = VtdPte::table(child_pa)?;
+        write_entry(self.hhdm_offset, parent_pa, table.word());
+        self.pages.push(child_pa);
+        Some(child_pa)
     }
 }
 
@@ -69,6 +90,9 @@ const fn largest_page_size(iova: u64, pa: u64, remaining: u64) -> u64 {
 }
 const fn leaf_depth(bytes: u64) -> usize {
     if bytes == HUGE_PAGE_BYTES { 1 } else if bytes == LARGE_PAGE_BYTES { 2 } else { 3 }
+}
+const fn level_page_bytes(level: usize) -> u64 {
+    if level == 1 { HUGE_PAGE_BYTES } else if level == 2 { LARGE_PAGE_BYTES } else if level == 3 { PAGE_BYTES } else { 0 }
 }
 const fn indices(iova: u64) -> [usize; 4] {
     [((iova >> LEVEL_SHIFTS[0]) & 0x1ff) as usize, ((iova >> LEVEL_SHIFTS[1]) & 0x1ff) as usize,
@@ -99,5 +123,7 @@ fn write_entry(hhdm_offset: u64, pa: u64, value: u64) {
         assert_eq!(largest_page_size(PAGE_BYTES, PAGE_BYTES, LARGE_PAGE_BYTES), PAGE_BYTES);
         assert_eq!(leaf_depth(HUGE_PAGE_BYTES), 1);
         assert_eq!(leaf_depth(LARGE_PAGE_BYTES), 2);
+        assert_eq!(level_page_bytes(1), HUGE_PAGE_BYTES);
+        assert_eq!(level_page_bytes(2), LARGE_PAGE_BYTES);
     }
 }

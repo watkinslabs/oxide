@@ -1,4 +1,4 @@
-use firmware::acpi::{DMAR_RMRR_SCOPE_UNIT, DmarScope, IommuUnit, dmar_scope, dmar_scope_count, iommu_unit, iommu_unit_count};
+use firmware::acpi::{DMAR_RMRR_SCOPE_UNIT, DmarRmrr, DmarScope, IommuUnit, dmar_rmrr, dmar_rmrr_count, dmar_scope, dmar_scope_count, iommu_unit, iommu_unit_count};
 use pci::{Bdf, ConfigSpaceReader, PciDevice, bridge_buses};
 
 const DMAR_SCOPE_ENDPOINT: u8 = 1;
@@ -37,8 +37,8 @@ fn parent_bridge<R: ConfigSpaceReader>(r: &R, child: Bdf) -> Option<Bdf> {
     best
 }
 
-fn scope_matches<R: ConfigSpaceReader>(r: &R, bdf: Bdf, scope: DmarScope, unit: IommuUnit) -> bool {
-    if unit.segment != bdf.segment { return false; }
+fn scope_matches<R: ConfigSpaceReader>(r: &R, bdf: Bdf, scope: DmarScope, segment: u16) -> bool {
+    if segment != bdf.segment { return false; }
     let Some(target) = scope_target(r, bdf.segment, scope) else { return false; };
     match scope.scope_type {
         DMAR_SCOPE_ENDPOINT => target == bdf,
@@ -62,7 +62,7 @@ pub fn intel_vtd_unit_for_bdf<R: ConfigSpaceReader>(r: &R, bdf: Bdf) -> Option<I
         let scope = dmar_scope(index)?;
         if scope.unit_index == DMAR_RMRR_SCOPE_UNIT { continue; }
         let unit = iommu_unit(scope.unit_index as usize)?;
-        if !scope_matches(r, bdf, scope, unit) { continue; }
+        if !scope_matches(r, bdf, scope, unit.segment) { continue; }
         if found.is_some_and(|old: IommuUnit| old != unit) { return None; }
         found = Some(unit);
     }
@@ -76,5 +76,22 @@ pub fn intel_vtd_unit_for_bdf<R: ConfigSpaceReader>(r: &R, bdf: Bdf) -> Option<I
     }
     found
 }
+
+/// Return a VT-d reserved DMA range that firmware assigned to this requester. # C: O(N_scopes * PCI_tree)
+pub fn intel_vtd_rmrr_for_bdf<R: ConfigSpaceReader>(r: &R, bdf: Bdf, index: usize) -> Option<DmarRmrr> {
+    let rmrr = dmar_rmrr(index)?;
+    rmrr_matches(r, bdf, rmrr).then_some(rmrr)
+}
+
+fn rmrr_matches<R: ConfigSpaceReader>(r: &R, bdf: Bdf, rmrr: DmarRmrr) -> bool {
+    if rmrr.segment != bdf.segment { return false; }
+    for scope in rmrr.scopes[..rmrr.scope_count].iter().copied() {
+        if scope_matches(r, bdf, scope, rmrr.segment) { return true; }
+    }
+    false
+}
+
+/// Count firmware-reserved VT-d DMA ranges. # C: O(1)
+pub fn intel_vtd_rmrr_count() -> usize { dmar_rmrr_count() }
 
 #[cfg(test)] mod tests;
