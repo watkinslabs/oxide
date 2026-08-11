@@ -15,6 +15,7 @@ pci = { path = "../pci" }
 sched = { path = "../../kernel/sched" }
 sync = { path = "../../shared/sync" }
 arch-irq = { path = "../../kernel/arch-irq" }
+pci-irq = { path = "../../kernel/pci-irq" }
 softirq = { path = "../../kernel/softirq" }
 input = { path = "../../kernel/input" }
 

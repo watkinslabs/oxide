@@ -546,6 +546,7 @@ dependencies = [
  "input",
  "mmio-map",
  "pci",
+ "pci-irq",
  "pmm",
  "sched",
  "softirq",
