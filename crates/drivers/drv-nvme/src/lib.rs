@@ -133,7 +133,7 @@ mod imp {
             if self.removed.swap(true, Ordering::AcqRel) { return; }
             self.completion.wake_all();
             self.turn_wait.wake_all();
-            self.irq.mask_and_free();
+            self.irq.begin_release();
             self.irq.synchronize_and_release();
             self.ctrl.lock().shutdown_and_free();
         }
@@ -200,7 +200,7 @@ mod imp {
             return 0;
         };
         let nv = match Nvme::bring_up(mmio, bar0_off, irq.vector()) { Some(n) => n, None => {
-            irq.mask_and_free();
+            irq.begin_release();
             irq.synchronize_and_release();
             unregister_completion_if_idle();
             #[cfg(feature = "debug-boot")]
