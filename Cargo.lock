@@ -836,6 +836,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "iommu"
+version = "0.1.0"
+dependencies = [
+ "pci",
+]
+
+[[package]]
 name = "ipc"
 version = "0.1.0"
 dependencies = [
