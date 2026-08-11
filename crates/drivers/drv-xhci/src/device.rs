@@ -83,6 +83,8 @@ impl AddressDeviceDma {
     }
     /// Configuration value selected by the discovered HID interface. # C: O(1)
     pub fn hid_configuration(&self) -> Option<u8> { self._hid.map(|hid| hid.configuration) }
+    /// HID boot protocol: 1 keyboard or 2 mouse. # C: O(1)
+    pub fn hid_protocol(&self) -> Option<u8> { self._hid.map(|hid| hid.protocol) }
     /// Enabled xHCI slot retained for this device. # C: O(1)
     pub fn slot(&self) -> u8 { self.slot }
     /// Publish one HID interrupt-IN report receive TRB and ring that endpoint. # C: O(1)

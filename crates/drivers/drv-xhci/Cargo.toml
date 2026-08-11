@@ -16,6 +16,7 @@ sched = { path = "../../kernel/sched" }
 sync = { path = "../../shared/sync" }
 arch-irq = { path = "../../kernel/arch-irq" }
 softirq = { path = "../../kernel/softirq" }
+input = { path = "../../kernel/input" }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 hal-x86_64 = { path = "../../arch/hal-x86_64" }

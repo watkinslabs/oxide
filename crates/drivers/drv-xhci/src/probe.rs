@@ -23,6 +23,10 @@ struct Record {
     _device: Option<AddressDeviceDma>,
     slot: u8,
     reports: Vec<Vec<u8>>,
+    protocol: Option<u8>,
+    evdev: Option<u32>,
+    keyboard: [u8; 8],
+    mouse_buttons: u8,
     _erst: DmaPage,
     _event: DmaPage,
 }
@@ -30,16 +34,39 @@ static CONTROLLERS: Spinlock<Vec<Record>, DriverLockClass> = Spinlock::new(Vec::
 #[cfg(target_os = "oxide-kernel")]
 type XhciBh = sched::bh::SchedBh;
 
+fn advertise(bits: &mut [u8], code: u16) { bits[code as usize / 8] |= 1 << (code % 8); }
+fn install_hid_input(bdf: pci::Bdf, protocol: Option<u8>) -> Option<u32> {
+    let protocol = protocol?;
+    let mut dev = input::VirtioInputDev::empty_platform_boxed(((bdf.bus as u32) << 8) | ((bdf.device as u32) << 3) | bdf.function as u32);
+    advertise(&mut dev.ev_bits, input::EV_KEY);
+    if protocol == 1 { for code in 1..=255 { advertise(&mut dev.key_bits.bits, code); } }
+    if protocol == 2 { dev.is_pointer = true; for code in [input::BTN_LEFT, input::BTN_MIDDLE, input::BTN_RIGHT] { advertise(&mut dev.key_bits.bits, code); } advertise(&mut dev.ev_bits, input::EV_REL); advertise(&mut dev.rel_bits.bits, input::REL_X); advertise(&mut dev.rel_bits.bits, input::REL_Y); }
+    let (_, evdev) = input::install(dev)?; input::publish_evdev(evdev).then_some(evdev)
+}
+fn publish_report(record: &mut Record, report: &[u8]) {
+    let Some(evdev) = record.evdev else { return; };
+    let events = match record.protocol {
+        Some(1) => match crate::hid::keyboard(&record.keyboard, report) { Some((state, events)) => { record.keyboard = state; events }, None => return },
+        Some(2) => match crate::hid::mouse(record.mouse_buttons, report) { Some((buttons, events)) => { record.mouse_buttons = buttons; [events[0], events[1], events[2], events[3], events[4], None, None, None, None, None, None, None, None, None, None, None, None, None, None, None] }, None => return },
+        _ => return,
+    };
+    for event in events.into_iter().flatten() { match event { crate::hid::Event::Key { code, value } => { let _ = input::push_evdev_event(evdev, input::EV_KEY, code, value); }, crate::hid::Event::Relative { code, value } => { let _ = input::push_evdev_event(evdev, input::EV_REL, code, value); } } }
+}
+
 fn input_bottom_half() {
     let mut controllers = CONTROLLERS.lock_bh::<XhciBh>();
     for record in controllers.iter_mut() {
-        let Some(device) = record._device.as_mut() else { continue; };
-        let Some(pending) = device.hid_pending() else { continue; };
-        let Some(completion) = record.irq.take_transfer_completion(pending) else { continue; };
-        if let Some(report) = device.take_hid_report(completion) {
+        let report = {
+            let Some(device) = record._device.as_mut() else { continue; };
+            let Some(pending) = device.hid_pending() else { continue; };
+            let Some(completion) = record.irq.take_transfer_completion(pending) else { continue; };
+            device.take_hid_report(completion)
+        };
+        if let Some(report) = report {
             if record.reports.len() == 64 { record.reports.remove(0); }
             record.reports.push(report);
-            let _ = device.submit_hid_report(&record.mmio, record.slot);
+            if let Some(report) = record.reports.last().cloned() { publish_report(record, &report); }
+            if let Some(device) = record._device.as_mut() { let _ = device.submit_hid_report(&record.mmio, record.slot); }
         }
     }
 }
@@ -204,7 +231,9 @@ impl drv::Driver for XhciDriver {
         }
         let device = address_first_usb2(&mmio, &mut command, &dcbaa, irq);
         let slot = device.as_ref().map_or(0, AddressDeviceDma::slot);
-        CONTROLLERS.lock().push(Record { bdf, command_orig, mmio, irq, _command: command, _dcbaa: dcbaa, _device: device, slot, reports: Vec::new(), _erst: erst, _event: event });
+        let protocol = device.as_ref().and_then(AddressDeviceDma::hid_protocol);
+        let evdev = install_hid_input(bdf, protocol);
+        CONTROLLERS.lock().push(Record { bdf, command_orig, mmio, irq, _command: command, _dcbaa: dcbaa, _device: device, slot, reports: Vec::new(), protocol, evdev, keyboard: [0; 8], mouse_buttons: 0, _erst: erst, _event: event });
         Ok(())
     }
     fn remove(&self, dev: &drv::Device) { if let Some(bdf) = pci::parse_bdf_addr(&dev.addr) { remove(bdf); } }
