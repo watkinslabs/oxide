@@ -18,6 +18,8 @@ const DMAR_SCOPE_LEN: usize = 6;
 const MAX_TABLE_LEN: usize = 64 * 1024;
 pub const MAX_IOMMU_UNITS: usize = 32;
 pub const MAX_AMD_IVHD_SCOPES: usize = 256;
+pub const MAX_DMAR_SCOPES: usize = 256;
+pub const MAX_DMAR_PATH_BYTES: usize = 16;
 const IVHD_TYPE_10: u8 = 0x10;
 const IVHD_TYPE_11: u8 = 0x11;
 const IVHD_TYPE_40: u8 = 0x40;
@@ -57,6 +59,17 @@ pub struct AmdIvhdScope {
     pub last_requester: u16,
 }
 
+/// One Intel DRHD device scope and its firmware PCI route chain.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct DmarScope {
+    pub unit_index: u8,
+    pub scope_type: u8,
+    pub enumeration_id: u8,
+    pub start_bus: u8,
+    pub path_len: u8,
+    pub path: [u8; MAX_DMAR_PATH_BYTES],
+}
+
 /// Why a firmware IOMMU table was rejected.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum IommuError {
@@ -66,6 +79,7 @@ pub enum IommuError {
     BadRecord,
     TooManyUnits,
     TooManyScopes,
+    ScopePathTooLong,
 }
 
 /// Parsed architecture and its translation units.
@@ -76,6 +90,8 @@ pub struct IommuInventory {
     pub unit_count: usize,
     pub amd_scopes: [AmdIvhdScope; MAX_AMD_IVHD_SCOPES],
     pub amd_scope_count: usize,
+    pub dmar_scopes: [DmarScope; MAX_DMAR_SCOPES],
+    pub dmar_scope_count: usize,
 }
 
 static IOMMU_KIND: AtomicU32 = AtomicU32::new(IOMMU_KIND_NONE);
@@ -86,6 +102,10 @@ static IOMMU_FLAGS: [AtomicU32; MAX_IOMMU_UNITS] = [const { AtomicU32::new(0) };
 static AMD_SCOPE_UNIT: [AtomicU32; MAX_AMD_IVHD_SCOPES] = [const { AtomicU32::new(0) }; MAX_AMD_IVHD_SCOPES];
 static AMD_SCOPE_RANGE: [AtomicU32; MAX_AMD_IVHD_SCOPES] = [const { AtomicU32::new(0) }; MAX_AMD_IVHD_SCOPES];
 static AMD_SCOPE_COUNT: AtomicU32 = AtomicU32::new(0);
+static DMAR_SCOPE_META: [AtomicU64; MAX_DMAR_SCOPES] = [const { AtomicU64::new(0) }; MAX_DMAR_SCOPES];
+static DMAR_SCOPE_PATH_LO: [AtomicU64; MAX_DMAR_SCOPES] = [const { AtomicU64::new(0) }; MAX_DMAR_SCOPES];
+static DMAR_SCOPE_PATH_HI: [AtomicU64; MAX_DMAR_SCOPES] = [const { AtomicU64::new(0) }; MAX_DMAR_SCOPES];
+static DMAR_SCOPE_COUNT: AtomicU32 = AtomicU32::new(0);
 
 fn le16(t: &[u8], off: usize) -> u16 {
     (t[off] as u16) | ((t[off + 1] as u16) << 8)
@@ -120,6 +140,18 @@ fn push_amd_scope(inv: &mut IommuInventory, unit_index: usize, first_requester: 
     if first_requester > last_requester || inv.amd_scope_count == MAX_AMD_IVHD_SCOPES { return Err(IommuError::TooManyScopes); }
     inv.amd_scopes[inv.amd_scope_count] = AmdIvhdScope { unit_index: unit_index as u8, first_requester, last_requester };
     inv.amd_scope_count += 1;
+    Ok(())
+}
+
+fn push_dmar_scope(inv: &mut IommuInventory, unit_index: usize, t: &[u8], off: usize, len: usize) -> Result<(), IommuError> {
+    let path_len = len - DMAR_SCOPE_LEN;
+    if path_len > MAX_DMAR_PATH_BYTES { return Err(IommuError::ScopePathTooLong); }
+    if inv.dmar_scope_count == MAX_DMAR_SCOPES { return Err(IommuError::TooManyScopes); }
+    let mut path = [0u8; MAX_DMAR_PATH_BYTES];
+    path[..path_len].copy_from_slice(&t[off + DMAR_SCOPE_LEN..off + len]);
+    inv.dmar_scopes[inv.dmar_scope_count] = DmarScope { unit_index: unit_index as u8, scope_type: t[off],
+        enumeration_id: t[off + 4], start_bus: t[off + 5], path_len: path_len as u8, path };
+    inv.dmar_scope_count += 1;
     Ok(())
 }
 
@@ -161,8 +193,10 @@ pub fn parse_ivrs(t: &[u8]) -> Result<IommuInventory, IommuError> {
     let t = checked_table(t, b"IVRS")?;
     let empty = IommuUnit { kind: IommuKind::AmdVi, segment: 0, register_base: 0, include_all: false };
     let empty_scope = AmdIvhdScope { unit_index: 0, first_requester: 0, last_requester: 0 };
+    let empty_dmar_scope = DmarScope { unit_index: 0, scope_type: 0, enumeration_id: 0, start_bus: 0, path_len: 0, path: [0; MAX_DMAR_PATH_BYTES] };
     let mut inv = IommuInventory { kind: IommuKind::AmdVi, units: [empty; MAX_IOMMU_UNITS], unit_count: 0,
-        amd_scopes: [empty_scope; MAX_AMD_IVHD_SCOPES], amd_scope_count: 0 };
+        amd_scopes: [empty_scope; MAX_AMD_IVHD_SCOPES], amd_scope_count: 0,
+        dmar_scopes: [empty_dmar_scope; MAX_DMAR_SCOPES], dmar_scope_count: 0 };
     let mut off = IOMMU_TABLE_HEADER_LEN;
     while off < t.len() {
         if t.len() - off < IVHD_HEADER_LEN { return Err(IommuError::BadRecord); }
@@ -186,12 +220,13 @@ pub fn parse_ivrs(t: &[u8]) -> Result<IommuInventory, IommuError> {
     Ok(inv)
 }
 
-fn validate_drhd_scopes(t: &[u8], start: usize, end: usize) -> Result<(), IommuError> {
+fn parse_drhd_scopes(t: &[u8], start: usize, end: usize, unit_index: usize, inv: &mut IommuInventory) -> Result<(), IommuError> {
     let mut off = start;
     while off < end {
         if end - off < DMAR_SCOPE_LEN { return Err(IommuError::BadRecord); }
         let len = t[off + 1] as usize;
         if len < DMAR_SCOPE_LEN || len > end - off || (len - DMAR_SCOPE_LEN) % 2 != 0 { return Err(IommuError::BadRecord); }
+        push_dmar_scope(inv, unit_index, t, off, len)?;
         off += len;
     }
     if off == end { Ok(()) } else { Err(IommuError::BadRecord) }
@@ -204,8 +239,10 @@ pub fn parse_dmar(t: &[u8]) -> Result<IommuInventory, IommuError> {
     if t[ACPI_HEADER_LEN] < DMAR_MIN_HOST_ADDRESS_WIDTH { return Err(IommuError::BadRecord); }
     let empty = IommuUnit { kind: IommuKind::IntelVtd, segment: 0, register_base: 0, include_all: false };
     let empty_scope = AmdIvhdScope { unit_index: 0, first_requester: 0, last_requester: 0 };
+    let empty_dmar_scope = DmarScope { unit_index: 0, scope_type: 0, enumeration_id: 0, start_bus: 0, path_len: 0, path: [0; MAX_DMAR_PATH_BYTES] };
     let mut inv = IommuInventory { kind: IommuKind::IntelVtd, units: [empty; MAX_IOMMU_UNITS], unit_count: 0,
-        amd_scopes: [empty_scope; MAX_AMD_IVHD_SCOPES], amd_scope_count: 0 };
+        amd_scopes: [empty_scope; MAX_AMD_IVHD_SCOPES], amd_scope_count: 0,
+        dmar_scopes: [empty_dmar_scope; MAX_DMAR_SCOPES], dmar_scope_count: 0 };
     let mut off = IOMMU_TABLE_HEADER_LEN;
     while off < t.len() {
         if t.len() - off < DMAR_HEADER_LEN { return Err(IommuError::BadRecord); }
@@ -215,7 +252,7 @@ pub fn parse_dmar(t: &[u8]) -> Result<IommuInventory, IommuError> {
         let end = off + len;
         if ty == DMAR_TYPE_DRHD {
             if len < DRHD_LEN { return Err(IommuError::BadRecord); }
-            validate_drhd_scopes(t, off + DRHD_LEN, end)?;
+            parse_drhd_scopes(t, off + DRHD_LEN, end, inv.unit_count, &mut inv)?;
             push(&mut inv, IommuUnit { kind: IommuKind::IntelVtd, segment: le16(t, off + 6), register_base: le64(t, off + 8), include_all: t[off + 4] & DMAR_INCLUDE_ALL != 0 })?;
         }
         off = end;
@@ -238,9 +275,20 @@ fn publish(inv: IommuInventory) {
         AMD_SCOPE_UNIT[i].store(scope.unit_index as u32, Ordering::Relaxed);
         AMD_SCOPE_RANGE[i].store((scope.first_requester as u32) | ((scope.last_requester as u32) << 16), Ordering::Relaxed);
     }
+    for i in 0..inv.dmar_scope_count {
+        let scope = inv.dmar_scopes[i];
+        DMAR_SCOPE_META[i].store((scope.unit_index as u64) | ((scope.scope_type as u64) << 8) | ((scope.enumeration_id as u64) << 16) | ((scope.start_bus as u64) << 24) | ((scope.path_len as u64) << 32), Ordering::Relaxed);
+        let mut lo = 0u64;
+        let mut hi = 0u64;
+        for j in 0..8 { lo |= (scope.path[j] as u64) << (j * 8); }
+        for j in 0..8 { hi |= (scope.path[j + 8] as u64) << (j * 8); }
+        DMAR_SCOPE_PATH_LO[i].store(lo, Ordering::Relaxed);
+        DMAR_SCOPE_PATH_HI[i].store(hi, Ordering::Relaxed);
+    }
     let kind = match inv.kind { IommuKind::AmdVi => IOMMU_KIND_AMD_VI, IommuKind::IntelVtd => IOMMU_KIND_INTEL_VTD };
     if IOMMU_KIND.compare_exchange(IOMMU_KIND_NONE, kind, Ordering::Release, Ordering::Acquire).is_ok() {
         AMD_SCOPE_COUNT.store(inv.amd_scope_count as u32, Ordering::Release);
+        DMAR_SCOPE_COUNT.store(inv.dmar_scope_count as u32, Ordering::Release);
         IOMMU_COUNT.store(inv.unit_count as u32, Ordering::Release);
     }
 }
@@ -293,6 +341,22 @@ pub fn amd_vi_unit_for_requester(segment: u16, requester: u16) -> Option<IommuUn
         found = Some(unit);
     }
     found
+}
+
+/// Count published Intel DRHD device scopes. # C: O(1)
+pub fn dmar_scope_count() -> usize { DMAR_SCOPE_COUNT.load(Ordering::Acquire) as usize }
+
+/// Return one published Intel DRHD scope for PCI-route resolution. # C: O(1)
+pub fn dmar_scope(index: usize) -> Option<DmarScope> {
+    if index >= dmar_scope_count() || IOMMU_KIND.load(Ordering::Relaxed) != IOMMU_KIND_INTEL_VTD { return None; }
+    let meta = DMAR_SCOPE_META[index].load(Ordering::Relaxed);
+    let mut path = [0u8; MAX_DMAR_PATH_BYTES];
+    let lo = DMAR_SCOPE_PATH_LO[index].load(Ordering::Relaxed);
+    let hi = DMAR_SCOPE_PATH_HI[index].load(Ordering::Relaxed);
+    for j in 0..8 { path[j] = (lo >> (j * 8)) as u8; }
+    for j in 0..8 { path[j + 8] = (hi >> (j * 8)) as u8; }
+    Some(DmarScope { unit_index: meta as u8, scope_type: (meta >> 8) as u8, enumeration_id: (meta >> 16) as u8,
+        start_bus: (meta >> 24) as u8, path_len: (meta >> 32) as u8, path })
 }
 
 unsafe fn decode(pa: u64, hhdm_offset: u64, parse: fn(&[u8]) -> Result<IommuInventory, IommuError>, tag: &'static [u8]) {

@@ -29,12 +29,16 @@ fn dmar() -> Vec<u8> {
     le32(&mut t, 4, 72);
     t[36] = 47;
     le16(&mut t, 48, 0);
-    le16(&mut t, 50, 16);
+    le16(&mut t, 50, 24);
     t[52] = 1;
     le16(&mut t, 54, 2);
     le64(&mut t, 56, 0xfed9_0000);
-    le16(&mut t, 64, 7);
-    le16(&mut t, 66, 8);
+    t[64] = 1;
+    t[65] = 8;
+    t[68] = 7;
+    t[69] = 8;
+    t[70] = 9;
+    t[71] = 0;
     finish(&mut t);
     t
 }
@@ -77,6 +81,11 @@ fn dmar_drhd_preserves_the_linux_device_ownership_keys() {
     assert_eq!(inv.units[0].segment, 2);
     assert_eq!(inv.units[0].register_base, 0xfed9_0000);
     assert!(inv.units[0].include_all);
+    assert_eq!(inv.dmar_scope_count, 1);
+    assert_eq!(inv.dmar_scopes[0].unit_index, 0);
+    assert_eq!(inv.dmar_scopes[0].start_bus, 8);
+    assert_eq!(inv.dmar_scopes[0].path_len, 2);
+    assert_eq!(&inv.dmar_scopes[0].path[..2], &[9, 0]);
 }
 
 #[test]
