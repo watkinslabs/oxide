@@ -5,6 +5,7 @@ use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU32, Ordering};
 use sync::{Spinlock, Devices as DevicesClass};
 
 // The running kernel uses the scheduler's sleepable mutex for lifecycle work.
@@ -272,6 +273,7 @@ impl Drop for DiskQuiesce {
 struct DriverState { driver: BlockDriver, major: u32, next_minor: u32 }
 static TABLE: LifecycleMutex<Vec<Arc<Disk>>> = LifecycleMutex::new(Vec::new());
 static DRIVERS: LifecycleMutex<Vec<DriverState>> = LifecycleMutex::new(Vec::new());
+static NEXT_DISK_INDEX: AtomicU32 = AtomicU32::new(0);
 type DiskRemoveHook = fn(&str);
 static DISK_REMOVE_HOOK: LifecycleMutex<Option<DiskRemoveHook>> = LifecycleMutex::new(None);
 
@@ -312,18 +314,17 @@ pub fn register_with_driver(driver: BlockDriver, name: &str, serial: Option<&str
         let mut t = unsafe { TABLE.lock() };
         if let Some(existing) = t.iter().find(|d| d.name == name) {
             Err(existing.index)
+        } else if let Some(index) = next_disk_index() {
+            let disk = Arc::new(Disk {
+                name: name.to_string(), index, driver, number,
+                serial: serial.filter(|s| !s.is_empty()).map(ToString::to_string), dev, mapping, stats,
+        life: LifecycleMutex::new(DiskLifecycle { holders: 0, openers: 0, quiesced: false, detached: false }),
+                io,
+            });
+            t.push(disk.clone());
+            Ok((index, disk))
         } else {
-            let index = (t.len() as u32).saturating_add(1);
-            if index == 0 { Err(0) } else {
-                let disk = Arc::new(Disk {
-                    name: name.to_string(), index, driver, number,
-                    serial: serial.filter(|s| !s.is_empty()).map(ToString::to_string), dev, mapping, stats,
-            life: LifecycleMutex::new(DiskLifecycle { holders: 0, openers: 0, quiesced: false, detached: false }),
-                    io,
-                });
-                t.push(disk.clone());
-                Ok((index, disk))
-            }
+            Err(0)
         }
     };
     let (index, bridge_disk) = match publication {
@@ -343,6 +344,20 @@ pub fn register_with_driver(driver: BlockDriver, name: &str, serial: Option<&str
             if let Some(pos) = t.iter().position(|d| d.name == name && d.index == index) { t.remove(pos); }
             release_number(driver, number);
             0
+        }
+    }
+}
+
+/// Allocate a never-reused published-disk identity.  Linux assigns an
+/// increasing disk sequence for each device lifetime; table position is not
+/// an identity because removal changes it. # C: O(contention)
+fn next_disk_index() -> Option<u32> {
+    let mut current = NEXT_DISK_INDEX.load(Ordering::Relaxed);
+    loop {
+        let next = current.checked_add(1)?;
+        match NEXT_DISK_INDEX.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return Some(next),
+            Err(observed) => current = observed,
         }
     }
 }

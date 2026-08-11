@@ -82,6 +82,35 @@ fn dynamic_major_is_driver_owned_not_name_derived() {
 }
 
 #[test]
+fn published_disk_indices_do_not_reuse_a_live_disk_identity() {
+    const FIRST: &str = "registry-index-first";
+    const LIVE: &str = "registry-index-live";
+    const LATER: &str = "registry-index-later";
+    let first = register(FIRST, MemDisk::<TaskList>::new(512, 8));
+    let live = register(LIVE, MemDisk::<TaskList>::new(512, 8));
+    assert!(unregister(FIRST));
+    let later = register(LATER, MemDisk::<TaskList>::new(512, 8));
+    assert_ne!(later, live, "a new disk cannot alias a live disk's published identity");
+    assert_eq!(by_index(live).as_deref().map(|disk| disk.name.as_str()), Some(LIVE));
+    assert_eq!(by_index(later).as_deref().map(|disk| disk.name.as_str()), Some(LATER));
+    assert!(unregister(LIVE));
+    assert!(unregister(LATER));
+    assert_ne!(first, live);
+}
+
+#[test]
+fn released_minor_never_aliases_a_live_minor() {
+    let driver = BlockDriver::dynamic("registry-live-minor");
+    let first = allocate_number(driver).expect("first number");
+    let live = allocate_number(driver).expect("live number");
+    release_number(driver, first);
+    let later = allocate_number(driver).expect("later number");
+    assert_ne!(later, live, "a released tail cannot roll back over a live minor");
+    release_number(driver, later);
+    release_number(driver, live);
+}
+
+#[test]
 fn holders_openers_and_quiesce_gate_are_distinct_and_atomic() {
     const NAME: &str = "registry-lifecycle";
     let dev: Arc<dyn crate::BlockDevice> = MemDisk::<TaskList>::new(512, 8);
