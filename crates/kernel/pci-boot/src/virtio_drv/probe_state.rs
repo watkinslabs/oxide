@@ -220,12 +220,12 @@ impl VirtioProbeState {
         } else {
             0
         };
-        let tx0_buf_pa = if profile.early_payload_policy.is_net()
+        let tx0_buf = if profile.early_payload_policy.is_net()
             && (final_status & virtio::VIRTIO_STATUS_DRIVER_OK) != 0
         {
             runtime.alloc_net_tx_boot_buffer(q1_ring, q1_notify_va)
         } else {
-            0
+            virtio::VirtioDmaFrame { pa: 0, dma: 0 }
         };
 
         let isr_status = if net_rx_boot.avail_idx_posted > 0 {
@@ -252,7 +252,7 @@ impl VirtioProbeState {
             net_boot_payloads: virtio::VirtioNetBootPayloads::from_rx_pool(
                 net_rx_boot.bufs,
                 net_rx_boot.bufs_len,
-                tx0_buf_pa,
+                tx0_buf,
             ),
         })
     }

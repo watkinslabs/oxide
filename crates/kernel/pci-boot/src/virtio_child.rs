@@ -150,6 +150,7 @@ impl virtio::VirtioChildDriverOps<VirtioChildSession> for VirtioNetOps {
         session: &mut VirtioChildSession,
     ) -> drv::KResult<()> {
         let device_key = session.device_key();
+        let pci_bdf = session.pci_bdf();
         let payloads = session.net_boot_payloads();
         let Some(resources) = session.child_resources() else {
             return Err(drv::Error::ProbeFailed);
@@ -160,9 +161,10 @@ impl virtio::VirtioChildDriverOps<VirtioChildSession> for VirtioNetOps {
             .collect();
         let ok = drv_virtio_net::modern::init_modern_with_rx_pool(
             device_key,
+            pci_bdf,
             resources,
             rx_bufs,
-            payloads.tx_buf_pa,
+            payloads.tx_buf,
             session.drv_features(),
         );
         #[cfg(feature = "debug-boot")]
@@ -171,8 +173,8 @@ impl virtio::VirtioChildDriverOps<VirtioChildSession> for VirtioNetOps {
             klog::write_dec_u64(ok as u64);
             klog::write_raw(b" rx_bufs=");
             klog::write_dec_u64(payloads.rx_bufs_len as u64);
-            klog::write_raw(b" tx_buf_pa=");
-            klog::write_hex_u64(payloads.tx_buf_pa);
+            klog::write_raw(b" tx_buf_dma=");
+            klog::write_hex_u64(payloads.tx_buf.dma);
             klog::write_raw(b"\n");
         }
         if !ok {

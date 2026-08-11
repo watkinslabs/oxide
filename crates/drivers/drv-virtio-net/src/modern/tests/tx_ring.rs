@@ -11,6 +11,7 @@ const AVAIL_PA:  u64 = 0x2000;
 const USED_PA:   u64 = 0x3000;
 const NOTIFY_PA: u64 = 0x4000;         // notify_va is absolute (base + this)
 const BUF0_PA:   u64 = 0x5000;         // 4 TX buffers at 0x5000..0x8000
+const BUF0_DMA:  u64 = 0x15_000;       // Separate IOVA range for device descriptors.
 const ARENA_LEN: usize = 0x9000;
 
 struct Arena { base: u64 }
@@ -46,6 +47,7 @@ impl Arena {
 fn ring_state(arena: &Arena) -> ModernNetState {
     ModernNetState {
         device_key: key(70),
+        bdf: pci::Bdf { segment: 0, bus: 0, device: 1, function: 0 },
         cfg_va: arena.base,
         device_cfg_va: 0,
         drv_features: 0,
@@ -62,7 +64,12 @@ fn ring_state(arena: &Arena) -> ModernNetState {
         },
         rx_bufs: alloc::vec::Vec::new(),
         mac: [0x02, 0, 0, 0, 0, 70],
-        tx_bufs: alloc::vec![BUF0_PA, BUF0_PA + 0x1000, BUF0_PA + 0x2000, BUF0_PA + 0x3000],
+        tx_bufs: alloc::vec![
+            virtio::VirtioDmaFrame { pa: BUF0_PA, dma: BUF0_DMA },
+            virtio::VirtioDmaFrame { pa: BUF0_PA + 0x1000, dma: BUF0_DMA + 0x1000 },
+            virtio::VirtioDmaFrame { pa: BUF0_PA + 0x2000, dma: BUF0_DMA + 0x2000 },
+            virtio::VirtioDmaFrame { pa: BUF0_PA + 0x3000, dma: BUF0_DMA + 0x3000 },
+        ],
         tx_last_used: 0, tx_next_avail: 0,
         rx_last_used: 0, rx_next_avail: 0,
     }
@@ -80,7 +87,7 @@ fn tx_ring_posts_across_descriptors_and_cycles() {
     // idx advances, notify carries the TX queue index (1).
     for i in 0..RING {
         assert!(matches!(tx_frame_for(key(70), &body), Ok(TxOutcome::Confirmed)));
-        assert_eq!(arena.desc_addr(i), BUF0_PA + (i as u64) * 0x1000);
+        assert_eq!(arena.desc_addr(i), BUF0_DMA + (i as u64) * 0x1000);
         assert_eq!(arena.desc_len(i), (VIRTIO_NET_HDR_LEN + body.len()) as u32);
         assert_eq!(arena.avail_ring(i), i as u16);
         assert_eq!(arena.avail_idx(), (i + 1) as u16);
@@ -96,7 +103,7 @@ fn tx_ring_posts_across_descriptors_and_cycles() {
     // avail ring slot, and advances idx to 5.
     arena.set_used_idx(2);
     assert!(matches!(tx_frame_for(key(70), &body), Ok(TxOutcome::Confirmed)));
-    assert_eq!(arena.desc_addr(0), BUF0_PA);       // descriptor 0 reused
+    assert_eq!(arena.desc_addr(0), BUF0_DMA);      // descriptor 0 reused
     assert_eq!(arena.avail_ring(0), 0);            // avail slot 4 % 4 == 0
     assert_eq!(arena.avail_idx(), (RING + 1) as u16);
 

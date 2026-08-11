@@ -34,11 +34,11 @@ impl VirtioPciRuntime {
     }
 
     pub(super) fn post_net_rx_boot_buffer(self, q0_ring: Option<QueueRing>) -> NetRxBootBuffer {
-        post_net_rx_boot_buffer(self.hhdm, q0_ring)
+        post_net_rx_boot_buffer(self.hhdm, self.bdf, q0_ring)
     }
 
-    pub(super) fn alloc_net_tx_boot_buffer(self, q1_ring: Option<QueueRing>, q1_notify_va: u64) -> u64 {
-        alloc_net_tx_boot_buffer(self.hhdm, q1_ring, q1_notify_va)
+    pub(super) fn alloc_net_tx_boot_buffer(self, q1_ring: Option<QueueRing>, q1_notify_va: u64) -> virtio::VirtioDmaFrame {
+        alloc_net_tx_boot_buffer(self.hhdm, self.bdf, q1_ring, q1_notify_va)
     }
 
     pub(super) fn read_queue_used_idx(self, q0_ring: Option<QueueRing>) -> u16 {

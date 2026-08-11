@@ -32,11 +32,14 @@ pub use transport::{
     VIRTIO_NET_RX_BOOT_POOL,
 };
 
+mod dma_frame;
+pub use dma_frame::{push_unique_dma_frame, VirtioProbeFrameSet};
+
 mod child;
 pub use child::{
     push_unique_frame, run_child_probe, run_child_remove, run_child_shutdown, VirtioChildBus,
     VirtioChildDriver, VirtioChildDriverOps, VirtioChildProbeFacts, VirtioChildResourceState,
-    VirtioChildTransportSession, VirtioProbeFrameSet, VirtioProbeLease, VirtioProbeOwnedFrames,
+    VirtioChildTransportSession, VirtioProbeLease, VirtioProbeOwnedFrames,
     VirtioTransportProbeResult,
 };
 

@@ -15,9 +15,14 @@ use core::sync::atomic::Ordering;
         DeviceKey::from_raw(raw)
     }
 
+    const fn test_bdf() -> pci::Bdf {
+        pci::Bdf { segment: 0, bus: 0, device: 1, function: 0 }
+    }
+
     fn state(raw: u32) -> ModernNetState {
         ModernNetState {
             device_key: key(raw),
+            bdf: test_bdf(),
             cfg_va: 0,
             device_cfg_va: 0,
             drv_features: 0,
@@ -43,6 +48,7 @@ use core::sync::atomic::Ordering;
             rx_bufs: alloc::vec![virtio::VirtioNetRxBuffer {
                 desc_id: 0,
                 pa: 0x9000 + raw as u64,
+                dma: 0x9000 + raw as u64,
                 len: 2048,
             }],
             mac: [0x02, 0, 0, 0, 0, raw as u8],
@@ -95,20 +101,22 @@ use core::sync::atomic::Ordering;
         static MAC2: [u8; 6] = [0x02, 0, 0, 0, 0, 2];
         assert!(init_modern(
             key(1),
+            test_bdf(),
             resources_with_mac(&MAC1),
             9,
             2048,
-            10,
+            virtio::VirtioDmaFrame { pa: 10, dma: 10 },
             0,
         ));
         assert!(is_modern_present_for(key(1)));
         assert_eq!(mac_for(key(1)), Some(MAC1));
         assert!(init_modern(
             key(2),
+            test_bdf(),
             resources_with_mac(&MAC2),
             9,
             2048,
-            10,
+            virtio::VirtioDmaFrame { pa: 10, dma: 10 },
             0,
         ));
         assert_eq!(mac_for(key(2)), Some(MAC2));
@@ -116,10 +124,11 @@ use core::sync::atomic::Ordering;
         assert_eq!(modern_state_for(key(2)).unwrap().device_key, key(2));
         assert!(!init_modern(
             key(2),
+            test_bdf(),
             resources_with_mac(&MAC2),
             9,
             2048,
-            10,
+            virtio::VirtioDmaFrame { pa: 10, dma: 10 },
             0,
         ));
         MODERN_DEVS.lock().clear();
@@ -135,20 +144,23 @@ use core::sync::atomic::Ordering;
 
         assert!(init_modern_with_rx_pool(
             key(3),
+            test_bdf(),
             resources_with_mac(&MAC1),
             alloc::vec![
                 virtio::VirtioNetRxBuffer {
                     desc_id: 0,
                     pa: 0x9000,
+                    dma: 0x9000,
                     len: 2048,
                 },
                 virtio::VirtioNetRxBuffer {
                     desc_id: 1,
                     pa: 0xa000,
+                    dma: 0xa000,
                     len: 2048,
                 },
             ],
-            0xb000,
+            virtio::VirtioDmaFrame { pa: 0xb000, dma: 0xb000 },
             0,
         ));
         let state = modern_state_for(key(3)).unwrap();
@@ -160,20 +172,23 @@ use core::sync::atomic::Ordering;
 
         assert!(!init_modern_with_rx_pool(
             key(4),
+            test_bdf(),
             resources_with_mac(&MAC2),
             alloc::vec![
                 virtio::VirtioNetRxBuffer {
                     desc_id: 0,
                     pa: 0x9000,
+                    dma: 0x9000,
                     len: 2048,
                 },
                 virtio::VirtioNetRxBuffer {
                     desc_id: 0,
                     pa: 0xa000,
+                    dma: 0xa000,
                     len: 2048,
                 },
             ],
-            0xb000,
+            virtio::VirtioDmaFrame { pa: 0xb000, dma: 0xb000 },
             0,
         ));
         assert!(!is_modern_present_for(key(4)));
@@ -190,13 +205,15 @@ use core::sync::atomic::Ordering;
 
         assert!(!init_modern_with_rx_pool(
             key(5),
+            test_bdf(),
             resources_with_mac(&MAC1),
             alloc::vec![virtio::VirtioNetRxBuffer {
                 desc_id: 0,
                 pa: 0x9000,
+                dma: 0x9000,
                 len: 2048,
             }],
-            0xb000,
+            virtio::VirtioDmaFrame { pa: 0xb000, dma: 0xb000 },
             0,
         ));
         assert!(!is_modern_present_for(key(5)));

@@ -52,6 +52,7 @@ pub const fn transport_profile() -> virtio::VirtioTransportProfile {
 pub struct ModernNetState {
     /// Owning virtio child identity supplied by the transport bus.
     pub device_key: DeviceKey,
+    pub bdf:        pci::Bdf,
     pub cfg_va:   u64,
     pub device_cfg_va: u64,
     pub hhdm:     u64,
@@ -69,7 +70,7 @@ pub struct ModernNetState {
     /// backs descriptor `i`; `tx_bufs[0]` is the transport-allocated boot
     /// frame, the rest are driver-allocated to form a real ring (Linux
     /// `virtnet` posts across the whole TX ring, not one scratch buffer).
-    pub tx_bufs: alloc::vec::Vec<u64>,
+    pub tx_bufs: alloc::vec::Vec<virtio::VirtioDmaFrame>,
     /// TX queue cursor state owned by this device. `tx_next_avail` is the
     /// next avail index to publish; `tx_last_used` is the device `used.idx`
     /// reaped so far. In-flight count = `tx_next_avail - tx_last_used`.

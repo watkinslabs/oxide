@@ -16,6 +16,8 @@ hal      = { path = "../../arch/hal" }
 klog     = { path = "../../shared/klog" }
 net      = { path = "../../kernel/net" }
 pmm      = { path = "../../kernel/mm-pmm" }
+iommu    = { path = "../../kernel/iommu" }
+pci      = { path = "../pci" }
 sched    = { path = "../../kernel/sched" }
 sync     = { path = "../../shared/sync" }
 virtio   = { path = "../virtio" }

@@ -96,7 +96,7 @@ pub(super) struct NetRxBootBuffer {
     pub(super) avail_idx_posted: u16,
 }
 
-pub(super) fn post_net_rx_boot_buffer(hhdm: u64, q0: Option<QueueRing>) -> NetRxBootBuffer {
+pub(super) fn post_net_rx_boot_buffer(hhdm: u64, bdf: pci::Bdf, q0: Option<QueueRing>) -> NetRxBootBuffer {
     const RX_BUF_LEN: u16 = 2048;
     let Some(q0) = q0 else {
         return NetRxBootBuffer::default();
@@ -115,6 +115,11 @@ pub(super) fn post_net_rx_boot_buffer(hhdm: u64, q0: Option<QueueRing>) -> NetRx
         let Some(rx_pa) = pmm::setup::alloc_raw_frame() else {
             break;
         };
+        let Some(rx_dma) = iommu::map_dma(bdf, rx_pa, VIRTIO_FRAME_BYTES) else {
+            // SAFETY: the failed map never made this PMM frame device-visible.
+            unsafe { pmm::setup::free_one_frame(rx_pa); }
+            break;
+        };
         virtio::dma::invalidate_from_device(hhdm.wrapping_add(rx_pa), RX_BUF_LEN as usize);
         let desc = (hhdm.wrapping_add(q0.desc_pa)
             + (desc_id as u64) * VIRTQ_DESC_BYTES as u64) as *mut u8;
@@ -122,7 +127,7 @@ pub(super) fn post_net_rx_boot_buffer(hhdm: u64, q0: Option<QueueRing>) -> NetRx
         // descriptor table. The transport owns these descriptors until the
         // child driver takes the resource handoff.
         unsafe {
-            core::ptr::write_volatile(desc as *mut u64, rx_pa);
+            core::ptr::write_volatile(desc as *mut u64, rx_dma);
             core::ptr::write_volatile((desc.add(8)) as *mut u32, RX_BUF_LEN as u32);
             core::ptr::write_volatile((desc.add(12)) as *mut u16, virtio::VRING_DESC_F_WRITE);
             core::ptr::write_volatile((desc.add(14)) as *mut u16, 0u16);
@@ -134,6 +139,7 @@ pub(super) fn post_net_rx_boot_buffer(hhdm: u64, q0: Option<QueueRing>) -> NetRx
         bufs[bufs_len] = virtio::VirtioNetRxBuffer {
             desc_id: desc_id as u16,
             pa: rx_pa,
+            dma: rx_dma,
             len: RX_BUF_LEN,
         };
         bufs_len += 1;
@@ -171,11 +177,12 @@ pub(super) fn post_net_rx_boot_buffer(hhdm: u64, q0: Option<QueueRing>) -> NetRx
 
 pub(super) fn alloc_net_tx_boot_buffer(
     hhdm: u64,
+    bdf: pci::Bdf,
     q1: Option<QueueRing>,
     q1_notify_va: u64,
-) -> u64 {
+) -> virtio::VirtioDmaFrame {
     let Some(q1) = q1 else {
-        return 0;
+        return virtio::VirtioDmaFrame { pa: 0, dma: 0 };
     };
     if hhdm == 0
         || q1.desc_pa == 0
@@ -183,9 +190,17 @@ pub(super) fn alloc_net_tx_boot_buffer(
         || q1.device_pa == 0
         || q1_notify_va == 0
     {
-        return 0;
+        return virtio::VirtioDmaFrame { pa: 0, dma: 0 };
     }
-    pmm::setup::alloc_raw_frame().unwrap_or(0)
+    let Some(pa) = pmm::setup::alloc_raw_frame() else {
+        return virtio::VirtioDmaFrame { pa: 0, dma: 0 };
+    };
+    let Some(dma) = iommu::map_dma(bdf, pa, VIRTIO_FRAME_BYTES) else {
+        // SAFETY: the failed map never made this PMM frame device-visible.
+        unsafe { pmm::setup::free_one_frame(pa); }
+        return virtio::VirtioDmaFrame { pa: 0, dma: 0 };
+    };
+    virtio::VirtioDmaFrame { pa, dma }
 }
 
 pub(super) fn read_queue_used_idx(hhdm: u64, queue: Option<QueueRing>) -> u16 {
