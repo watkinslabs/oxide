@@ -11,7 +11,7 @@ pub const RTSOFF: u64 = 0x18;
 pub const CAP_REGS_MIN: u64 = 0x20;
 pub const REGISTER_ALIGN: u64 = 4;
 pub const RUNTIME_INTR0: u64 = 0x20;
-pub const DOORBELL_HOST: u64 = 0;
+pub const DOORBELL_HOST: u8 = 0;
 
 /// Validated controller register-file locations and hardware limits.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

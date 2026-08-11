@@ -200,4 +200,13 @@ impl Mmio {
     fn write64(&self, offset: u64, value: u64) -> bool {
         self.write32(offset, value as u32) && self.write32(offset + 4, (value >> 32) as u32)
     }
+
+    /// Publish ready command-ring TRBs by ringing xHCI doorbell zero. # C: O(1)
+    pub fn ring_command_doorbell(&self) -> bool {
+        let offset = crate::regs::doorbell_offset(self.geometry, crate::regs::DOORBELL_HOST);
+        let Some(offset) = offset else { return false; };
+        if !self.write32(offset, 0) { return false; }
+        // Readback flushes the posted MMIO write before the caller observes state.
+        self.read32(offset).is_some()
+    }
 }
