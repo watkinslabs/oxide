@@ -77,7 +77,10 @@ impl NvmeBlk {
         if let Some(pending) = pending {
             if ok {
                 let mut ctrl = self.ctrl.lock();
-                ok = !self.unavailable() && ctrl.try_reap_io(pending) == Some(0);
+                let status = ctrl.try_reap_io(pending);
+                let (cq_pa, cq_head, cq_phase) = ctrl.io_cq_cursor();
+                self.irq.configure_cq(cq_pa, cq_head, cq_phase);
+                ok = !self.unavailable() && status == Some(0);
                 if ok && !write {
                     let bounce = ctrl.prp_va() as *const u8;
                     // SAFETY: a matching completed CQE establishes DMA completion; the turn still owns the bounce frame.
@@ -101,7 +104,10 @@ impl NvmeBlk {
         if let Some(pending) = pending {
             if ok {
                 let mut ctrl = self.ctrl.lock();
-                ok = !self.unavailable() && ctrl.try_reap_io(pending) == Some(0);
+                let status = ctrl.try_reap_io(pending);
+                let (cq_pa, cq_head, cq_phase) = ctrl.io_cq_cursor();
+                self.irq.configure_cq(cq_pa, cq_head, cq_phase);
+                ok = !self.unavailable() && status == Some(0);
             }
         }
         if pending.is_some() && !ok { self.poisoned.store(true, Ordering::Release); }

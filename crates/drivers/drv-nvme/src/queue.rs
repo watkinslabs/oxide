@@ -76,6 +76,7 @@ const DATA_ORDER: pmm::Order = pmm::Order(9);
 const DATA_PAGES: u64 = regs::MAX_PRP_DATA_PAGES;
 
 impl Nvme {
+    pub(crate) fn io_cq_cursor(&self) -> (u64, u32, bool) { (self.io.cq_pa, self.io.cq_head, self.io.cq_phase) }
     fn free_frame(bdf: pci::Bdf, pa: &mut u64, dma: &mut u64) {
         if *pa == 0 || !iommu::unmap_dma(bdf, *dma, PAGE as usize) {
             return;

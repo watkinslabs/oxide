@@ -207,6 +207,8 @@ mod imp {
             { klog::write_raw(b"[WARN]  nvme: controller bring-up failed\n"); }
             return 0;
         }};
+        let (cq_pa, cq_head, cq_phase) = nv.io_cq_cursor();
+        irq.configure_cq(cq_pa, cq_head, cq_phase);
         let blk_size = nv.blk_size;
         let capacity = nv.ns_blocks;
 
