@@ -4,6 +4,7 @@ extern crate alloc;
 
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, Ordering};
 use sync::{Spinlock, TaskList as DriverLockClass};
 
 use crate::platform::Mmio;
@@ -55,6 +56,7 @@ struct ControllerState {
 }
 struct Controller { bdf: pci::Bdf, command_orig: u16, state: Spinlock<ControllerState, DriverLockClass> }
 static CONTROLLERS: Spinlock<Vec<Arc<Controller>>, DriverLockClass> = Spinlock::new(Vec::new());
+static HUB_WORK_QUEUED: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "oxide-kernel")]
 type XhciBh = sched::bh::SchedBh;
 #[cfg(not(target_os = "oxide-kernel"))]
@@ -144,12 +146,56 @@ fn input_bottom_half() {
                         if state.device.take_hub_status(completion).is_some() {
                             let slot = state.slot;
                             let _ = state.device.submit_hub_status(mmio, slot);
+                            queue_hub_work();
                         }
                     }
                 }
             });
         }
     }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn queue_hub_work() {
+    if HUB_WORK_QUEUED.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok()
+        && !sched::live::workqueue::queue_work(hub_event_work, 0)
+    { HUB_WORK_QUEUED.store(false, Ordering::Release); }
+}
+#[cfg(not(target_os = "oxide-kernel"))]
+fn queue_hub_work() {}
+
+#[cfg(target_os = "oxide-kernel")]
+fn hub_event_work(_arg: usize) {
+    let controllers = CONTROLLERS.lock();
+    for controller in controllers.iter() {
+        let devices = controller.state.lock().devices.clone();
+        for device in devices {
+            let _ = device.with_transport(|mmio, irq, _, state| {
+                let Some(events) = state.device.take_hub_events() else { return; };
+                let Some(hub) = state.device.hub_descriptor() else { return; };
+                for port in 1..=hub.ports {
+                    if crate::usb::hub_port_changed(events.bytes(), port) != Some(true) { continue; }
+                    let Some(status_pa) = state.device.submit_hub_port_status(mmio, state.slot, port) else { continue; };
+                    if !control_complete(irq, status_pa, state.slot) { continue; }
+                    let Some(status) = state.device.hub_port_status() else { continue; };
+                    if status.connection_changed() {
+                        let Some(clear_pa) = state.device.submit_hub_port_feature(mmio, state.slot, port,
+                            crate::usb::HUB_PORT_FEATURE_C_CONNECTION, false) else { continue; };
+                        let _ = control_complete(irq, clear_pa, state.slot);
+                    }
+                }
+            });
+        }
+    }
+    HUB_WORK_QUEUED.store(false, Ordering::Release);
+    if hub_events_pending() { queue_hub_work(); }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn hub_events_pending() -> bool {
+    let controllers = CONTROLLERS.lock();
+    controllers.iter().any(|controller| controller.state.lock().devices.iter()
+        .any(|device| device.state.lock().device.hub_events_pending()))
 }
 
 fn enable_bus_master(bdf: pci::Bdf) -> Option<u16> {

@@ -18,6 +18,86 @@ pub const USB_CLASS_HUB: u8 = 9;
 pub const HUB_DESC_HEADER_BYTES: usize = 7;
 /// USB hub GET_DESCRIPTOR request type: IN, class, device. # C: O(1)
 pub const HUB_GET_DESCRIPTOR_REQUEST_TYPE: u8 = 0xa0;
+/// USB hub port recipient request type: OUT, class, other. # C: O(1)
+pub const HUB_PORT_REQUEST_TYPE: u8 = 0x23;
+/// USB hub port recipient request type: IN, class, other. # C: O(1)
+pub const HUB_PORT_STATUS_REQUEST_TYPE: u8 = 0xa3;
+/// USB GET_STATUS request code. # C: O(1)
+pub const USB_REQUEST_GET_STATUS: u8 = 0;
+/// USB CLEAR_FEATURE request code. # C: O(1)
+pub const USB_REQUEST_CLEAR_FEATURE: u8 = 1;
+/// USB SET_FEATURE request code. # C: O(1)
+pub const USB_REQUEST_SET_FEATURE: u8 = 3;
+/// Hub-port status reply length. # C: O(1)
+pub const HUB_PORT_STATUS_BYTES: usize = 4;
+/// Hub-port power feature selector. # C: O(1)
+pub const HUB_PORT_FEATURE_POWER: u16 = 8;
+/// Hub-port reset feature selector. # C: O(1)
+pub const HUB_PORT_FEATURE_RESET: u16 = 4;
+/// Hub-port connection-change feature selector. # C: O(1)
+pub const HUB_PORT_FEATURE_C_CONNECTION: u16 = 16;
+/// Hub-port connection-present status bit. # C: O(1)
+pub const HUB_PORT_STATUS_CONNECTION: u16 = 1;
+/// Hub-port connection-change status bit. # C: O(1)
+pub const HUB_PORT_CHANGE_CONNECTION: u16 = 1;
+/// Largest USB2 hub change bitmap: bit zero plus 255 downstream ports. # C: O(1)
+pub const HUB_STATUS_MAX_BYTES: usize = 32;
+
+/// A validated, fixed-size hub interrupt status bitmap. # C: O(1)
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct HubStatusBitmap { bytes: [u8; HUB_STATUS_MAX_BYTES], length: u8 }
+
+impl HubStatusBitmap {
+    /// Status-byte slice, including hub bit zero. # C: O(1)
+    pub fn bytes(&self) -> &[u8] { &self.bytes[..usize::from(self.length)] }
+}
+
+/// Decoded USB2 hub-port status and change fields. # C: O(1)
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct HubPortStatus { pub status: u16, pub change: u16 }
+
+impl HubPortStatus {
+    /// Whether a downstream device is electrically connected. # C: O(1)
+    pub const fn connected(self) -> bool { self.status & HUB_PORT_STATUS_CONNECTION != 0 }
+    /// Whether the hub reports a connection-state transition. # C: O(1)
+    pub const fn connection_changed(self) -> bool { self.change & HUB_PORT_CHANGE_CONNECTION != 0 }
+}
+
+/// Test whether one downstream port is named in a hub interrupt status bitmap. # C: O(1)
+pub fn hub_port_changed(bitmap: &[u8], port: u8) -> Option<bool> {
+    if port == 0 { return None; }
+    let bit = usize::from(port);
+    let byte = bit / 8;
+    if byte >= bitmap.len() { return None; }
+    Some(bitmap[byte] & (1 << (bit % 8)) != 0)
+}
+
+/// Validate an exact hub interrupt bitmap for the descriptor's port count. # C: O(status bytes)
+pub fn hub_status_bitmap(bytes: &[u8], ports: u8) -> Option<HubStatusBitmap> {
+    let length = (usize::from(ports).checked_add(8)? / 8).max(1);
+    if length > HUB_STATUS_MAX_BYTES || bytes.len() != length { return None; }
+    let mut bitmap = HubStatusBitmap { bytes: [0; HUB_STATUS_MAX_BYTES], length: length as u8 };
+    bitmap.bytes[..length].copy_from_slice(bytes);
+    Some(bitmap)
+}
+
+/// Parse one exact little-endian hub-port status reply. # C: O(1)
+pub fn hub_port_status(bytes: &[u8]) -> Option<HubPortStatus> {
+    if bytes.len() != HUB_PORT_STATUS_BYTES { return None; }
+    Some(HubPortStatus { status: u16::from_le_bytes([bytes[0], bytes[1]]), change: u16::from_le_bytes([bytes[2], bytes[3]]) })
+}
+
+/// Build an IN class-port GET_STATUS EP0 TD. # C: O(1)
+pub fn get_hub_port_status_trbs(buffer_pa: u64, port: u8) -> Option<[crate::ring::Trb; 3]> {
+    if port == 0 { return None; }
+    Some([crate::ring::Trb::setup_stage(HUB_PORT_STATUS_REQUEST_TYPE, USB_REQUEST_GET_STATUS, 0, u16::from(port), HUB_PORT_STATUS_BYTES as u16), crate::ring::Trb::data_stage(buffer_pa, HUB_PORT_STATUS_BYTES as u32, true)?, crate::ring::Trb::status_stage(true)])
+}
+
+/// Build a class-port SET_FEATURE or CLEAR_FEATURE EP0 TD. # C: O(1)
+pub fn hub_port_feature_trbs(port: u8, feature: u16, set: bool) -> Option<[crate::ring::Trb; 2]> {
+    if port == 0 { return None; }
+    Some([crate::ring::Trb::setup_stage(HUB_PORT_REQUEST_TYPE, if set { USB_REQUEST_SET_FEATURE } else { USB_REQUEST_CLEAR_FEATURE }, feature, u16::from(port), 0), crate::ring::Trb::status_stage(false)])
+}
 
 /// Validated USB 2 hub descriptor facts used to construct child topology.
 /// # C: O(1)
@@ -277,6 +357,27 @@ mod tests {
         let td = get_hub_descriptor_trbs(0x90_000, 9).unwrap();
         assert_eq!(td[0].dword, [0x2900_06a0, 9 << 16, 8, (crate::ring::TRB_TYPE_SETUP << crate::ring::TRB_TYPE_SHIFT) | (1 << 6) | (3 << 16)]);
         assert_eq!(td[1].dword[2], 9);
+    }
+    #[test]
+    fn hub_port_control_uses_class_port_recipients_and_exact_status_bytes() {
+        assert_eq!(hub_port_status(&[1, 0, 1, 0]), Some(HubPortStatus { status: 1, change: 1 }));
+        assert!(hub_port_status(&[0; 3]).is_none());
+        let status = get_hub_port_status_trbs(0x90_000, 2).unwrap();
+        assert_eq!(status[0].dword[0], (HUB_PORT_STATUS_REQUEST_TYPE as u32) | ((USB_REQUEST_GET_STATUS as u32) << 8));
+        assert_eq!(status[0].dword[1], 2 | ((HUB_PORT_STATUS_BYTES as u32) << 16));
+        let power = hub_port_feature_trbs(2, HUB_PORT_FEATURE_POWER, true).unwrap();
+        assert_eq!(power[0].dword[0], (HUB_PORT_REQUEST_TYPE as u32) | ((USB_REQUEST_SET_FEATURE as u32) << 8) | ((HUB_PORT_FEATURE_POWER as u32) << 16));
+        assert_eq!(hub_port_changed(&[0b0000_0010], 1), Some(true));
+        assert_eq!(hub_port_changed(&[0b0000_0010], 2), Some(false));
+        assert_eq!(hub_port_changed(&[0], 8), None);
+    }
+    #[test]
+    fn hub_interrupt_bitmap_is_exact_and_covers_bit_zero_through_last_port() {
+        let bitmap = hub_status_bitmap(&[0b0000_0001, 0b0000_0010], 9).unwrap();
+        assert_eq!(bitmap.bytes(), &[0b0000_0001, 0b0000_0010]);
+        assert_eq!(hub_port_changed(bitmap.bytes(), 9), Some(true));
+        assert!(hub_status_bitmap(&[0], 9).is_none());
+        assert!(hub_status_bitmap(&[0; HUB_STATUS_MAX_BYTES + 1], u8::MAX).is_none());
     }
     #[test]
     fn hub_interface_requires_class_interrupt_in_status_endpoint() {
