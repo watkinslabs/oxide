@@ -343,8 +343,10 @@ name = "drv-igc"
 version = "0.1.0"
 dependencies = [
  "iommu",
+ "mmio-map",
  "pci",
  "pmm",
+ "sched",
 ]
 
 [[package]]
