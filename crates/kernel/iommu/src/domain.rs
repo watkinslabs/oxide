@@ -6,6 +6,24 @@ use pci::{Bdf, IovaRange, IovaSpace};
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Mapping { pub iova: IovaRange, pub pa: u64 }
 
+/// One DMA mapping's page-table retirement state.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub(crate) enum MappingState { Live, IotlbPending }
+
+/// Retains an allocated IOVA until the invalidation which makes its PTE
+/// withdrawal visible to hardware has completed.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub(crate) struct MappingRecord { pub mapping: Mapping, state: MappingState }
+impl MappingRecord {
+    pub(crate) const fn live(mapping: Mapping) -> Self { Self { mapping, state: MappingState::Live } }
+    pub(crate) const fn iotlb_pending(self) -> bool { matches!(self.state, MappingState::IotlbPending) }
+    pub(crate) fn begin_iotlb_invalidate(&mut self) -> bool {
+        if self.iotlb_pending() { return false; }
+        self.state = MappingState::IotlbPending;
+        true
+    }
+}
+
 pub struct Domain { requester: Bdf, space: IovaSpace, maps: Vec<Mapping> }
 impl Domain {
     /// Create one requester-bound DMA domain. # C: O(1)
@@ -36,7 +54,7 @@ impl Domain {
 /// A unit may attach multiple requesters to this domain. The initial boot
 /// domain deliberately covers the same identity-mapped RAM for each attached
 /// requester, instead of allocating one full page-table tree per function.
-pub struct AmdViDomain { space: IovaSpace, maps: Vec<Mapping>, page_table: AmdViPageTable }
+pub struct AmdViDomain { space: IovaSpace, maps: Vec<MappingRecord>, page_table: AmdViPageTable }
 impl AmdViDomain {
     /// Allocate one AMD-Vi domain and its empty four-level IOVA page table. # C: O(1)
     pub fn new(start: u64, len: u64, hhdm_offset: u64) -> Option<Self> {
@@ -58,7 +76,7 @@ impl AmdViDomain {
             return None;
         }
         let map = Mapping { iova, pa };
-        self.maps.push(map);
+        self.maps.push(MappingRecord::live(map));
         Some(map)
     }
     /// Install an identity mapping for one PMM-owned physical interval. # C: O(leaves * levels)
@@ -70,7 +88,7 @@ impl AmdViDomain {
             return None;
         }
         let map = Mapping { iova, pa };
-        self.maps.push(map);
+        self.maps.push(MappingRecord::live(map));
         Some(map)
     }
     /// Map exactly the PMM-owned RAM regions before this domain is attached. # C: O(regions * leaves * levels)
@@ -85,18 +103,20 @@ impl AmdViDomain {
     }
     /// Remove leaf PTEs while retaining IOVA ownership until hardware invalidation completes. # C: O(pages * levels)
     pub fn remove_for_invalidate(&mut self, map: Mapping) -> bool {
-        if !self.maps.iter().any(|candidate| *candidate == map) { return false; }
-        self.page_table.unmap(map.iova.start, map.iova.len)
+        let Some(index) = self.maps.iter().position(|candidate| candidate.mapping == map) else { return false; };
+        if self.maps[index].iotlb_pending() { return true; }
+        if !self.page_table.unmap(map.iova.start, map.iova.len) { return false; }
+        self.maps[index].begin_iotlb_invalidate()
     }
     /// Return an invalidated mapping interval to the domain allocator. # C: O(N)
     pub fn release_after_invalidate(&mut self, map: Mapping) -> bool {
-        let Some(index) = self.maps.iter().position(|candidate| *candidate == map) else { return false; };
+        let Some(index) = self.maps.iter().position(|candidate| candidate.mapping == map && candidate.iotlb_pending()) else { return false; };
         if !self.space.free(map.iova) { return false; }
         self.maps.swap_remove(index);
         true
     }
     /// Find a live mapping by its page-aligned device address. # C: O(live mappings)
-    pub fn mapping(&self, iova: u64) -> Option<Mapping> { self.maps.iter().copied().find(|candidate| candidate.iova.start == iova) }
+    pub fn mapping(&self, iova: u64) -> Option<Mapping> { self.maps.iter().find(|candidate| candidate.mapping.iova.start == iova).map(|candidate| candidate.mapping) }
 }
 
 /// Return the AMD-Vi translation unit that firmware assigned this PCI requester.
