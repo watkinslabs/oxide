@@ -10,6 +10,7 @@ pub const PCI_IDS: [u16; 16] = [I225_LM, I225_V, I225_I, I220_V, I225_K, I225_K2
     I226_LMVP, I225_IT, I226_LM, I226_V, I226_IT, I221_V, I226_BLANK_NVM, I225_BLANK_NVM];
 
 pub const CTRL: u64 = 0x00000; pub const STATUS: u64 = 0x00008; pub const CTRL_EXT: u64 = 0x00018;
+pub const EECD: u64 = 0x00010;
 pub const ICR: u64 = 0x01500; pub const IMS: u64 = 0x01508; pub const IMC: u64 = 0x0150c;
 pub const RCTL: u64 = 0x00100; pub const TCTL: u64 = 0x00400; pub const RAL0: u64 = 0x05400; pub const RAH0: u64 = 0x05404;
 pub const RDBAL0: u64 = 0x0c000; pub const RDBAH0: u64 = 0x0c004; pub const RDLEN0: u64 = 0x0c008; pub const RDH0: u64 = 0x0c010; pub const RDT0: u64 = 0x0c018;
@@ -18,6 +19,7 @@ pub const TDBAL0: u64 = 0x0e000; pub const TDBAH0: u64 = 0x0e004; pub const TDLE
 pub const TXDCTL0: u64 = 0x0e028;
 pub const CTRL_RST: u32 = 1 << 26; pub const CTRL_EXT_DRV_LOAD: u32 = 1 << 28; pub const RCTL_EN: u32 = 1 << 1; pub const RCTL_BAM: u32 = 1 << 15;
 pub const RCTL_SECRC: u32 = 1 << 26; pub const TCTL_EN: u32 = 1 << 1; pub const TCTL_PSP: u32 = 1 << 3;
+pub const EECD_AUTO_RD: u32 = 1 << 9;
 pub const ICR_TXDW: u32 = 1; pub const ICR_LSC: u32 = 1 << 2; pub const ICR_RXO: u32 = 1 << 6; pub const ICR_RXT0: u32 = 1 << 7;
 pub const IMS_DEFAULT: u32 = ICR_TXDW | ICR_LSC | ICR_RXO | ICR_RXT0; pub const RAH_AV: u32 = 1 << 31;
 pub const RXD_STAT_DD: u32 = 1;
