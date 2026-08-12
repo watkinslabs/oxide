@@ -60,6 +60,10 @@ impl Ahci {
                 );
             }
         }
+        // The HBA consumes the command header and table after PxCI.  Publish
+        // both DMA objects before that doorbell on non-coherent platforms.
+        pmm::dma::clean_to_device(h.wrapping_add(self.clb_pa), 32);
+        pmm::dma::clean_to_device(h.wrapping_add(self.ctba_pa), 4096);
         core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
         self.clear_command_interrupts();
         self.pw(regs::P_CI, COMMAND_SLOT_ZERO);
@@ -68,11 +72,17 @@ impl Ahci {
 
     fn issue_poll(&mut self, fis: &[u8; 20], write: bool, bytes: u32) -> bool {
         if !self.stage_command(fis, write, bytes, false) { return false; }
+        let h = hhdm();
+        if h == 0 { return false; }
         let deadline = now_ns().saturating_add(IO_TIMEOUT_NS);
         loop {
             if self.pr(regs::P_TFD) & regs::TFD_ERR != 0 { return false; }
             if self.pr(regs::P_CI) & COMMAND_SLOT_ZERO == 0 {
-                return self.pr(regs::P_TFD) & regs::TFD_ERR == 0;
+                let complete = self.pr(regs::P_TFD) & regs::TFD_ERR == 0;
+                if complete && !write && bytes != 0 {
+                    pmm::dma::invalidate_from_device(h.wrapping_add(self.data_pa), bytes as usize);
+                }
+                return complete;
             }
             if now_ns() >= deadline { return false; }
             core::hint::spin_loop();
