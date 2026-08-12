@@ -18,7 +18,7 @@ struct StorageDma {
 }
 
 /// Input context, output device context, and endpoint-zero transfer ring.
-pub struct AddressDeviceDma { bdf: pci::Bdf, input: DmaPage, output: DmaPage, ep0: DmaPage, descriptor: DmaPage, context_bytes: u8, speed: u8, topology: crate::context::DeviceTopology, slot: u8, device_protocol: u8, hub_descriptor: Option<crate::usb::HubDescriptor>, hub_needs_power: bool, hub_events: [u8; crate::usb::HUB_STATUS_MAX_BYTES], hub_events_len: u8, _hid: Option<crate::usb::HidBootInterface>, _hub: Option<crate::usb::HubInterface>, _storage: Option<crate::storage::MassStorageInterface>, hid_ring: Option<HidDma>, hub_ring: Option<HubDma>, storage_dma: Option<StorageDma>, ep0_ring: CommandRing }
+pub struct AddressDeviceDma { bdf: pci::Bdf, input: DmaPage, output: DmaPage, ep0: DmaPage, descriptor: DmaPage, context_bytes: u8, speed: u8, topology: crate::context::DeviceTopology, slot: u8, device_protocol: u8, hub_descriptor: Option<crate::usb::HubDescriptor>, hub_needs_power: bool, hub_events: [u8; crate::usb::HUB_STATUS_MAX_BYTES], hub_events_len: u8, _hid: Option<crate::usb::HidInterface>, hid_layout: Option<crate::hid_report::ReportLayout>, _hub: Option<crate::usb::HubInterface>, _storage: Option<crate::storage::MassStorageInterface>, hid_ring: Option<HidDma>, hub_ring: Option<HubDma>, storage_dma: Option<StorageDma>, ep0_ring: CommandRing }
 
 /// Maximum chained USB-storage transfer accepted by one retained endpoint ring.
 pub const STORAGE_MAX_TRANSFER_BYTES: usize = DmaPage::BYTES * crate::ring::COMMAND_USABLE_TRBS;
@@ -45,7 +45,7 @@ impl AddressDeviceDma {
         }
         input.clean_to_device(); output.clean_to_device(); ep0.clean_to_device();
         let ep0_ring = CommandRing::new(ep0.dma())?;
-        Some(Self { bdf, input, output, ep0, descriptor, context_bytes, speed, topology, slot: 0, device_protocol: 0, hub_descriptor: None, hub_needs_power: false, hub_events: [0; crate::usb::HUB_STATUS_MAX_BYTES], hub_events_len: 0, _hid: None, _hub: None, _storage: None, hid_ring: None, hub_ring: None, storage_dma: None, ep0_ring })
+        Some(Self { bdf, input, output, ep0, descriptor, context_bytes, speed, topology, slot: 0, device_protocol: 0, hub_descriptor: None, hub_needs_power: false, hub_events: [0; crate::usb::HUB_STATUS_MAX_BYTES], hub_events_len: 0, _hid: None, hid_layout: None, _hub: None, _storage: None, hid_ring: None, hub_ring: None, storage_dma: None, ep0_ring })
     }
 
     /// Input-context device DMA address for Address Device. # C: O(1)
@@ -70,9 +70,9 @@ impl AddressDeviceDma {
         for (offset, byte) in bytes.iter_mut().enumerate() { *byte = self.descriptor.read8(offset as u64)?; }
         crate::usb::configuration_header(&bytes)
     }
-    /// Parse and retain an eligible HID boot interface from the fetched configuration. # C: O(descriptor bytes)
-    pub fn discover_hid_boot(&mut self) -> Option<crate::usb::HidBootInterface> {
-        let hid = crate::usb::hid_boot_interface(&self.configuration_bytes()?)?;
+    /// Parse and retain one descriptor-selected HID interrupt interface. # C: O(descriptor bytes)
+    pub fn discover_hid(&mut self) -> Option<crate::usb::HidInterface> {
+        let hid = crate::usb::hid_interface(&self.configuration_bytes()?)?;
         self._hid = Some(hid);
         Some(hid)
     }
@@ -144,10 +144,20 @@ impl AddressDeviceDma {
     pub fn storage_configuration(&self) -> Option<u8> { self._storage.map(|storage| storage.configuration) }
     /// Selected transparent-SCSI Bulk-Only interface descriptor. # C: O(1)
     pub fn storage_interface(&self) -> Option<crate::storage::MassStorageInterface> { self._storage }
-    /// Selected HID boot interface descriptor. # C: O(1)
-    pub fn hid_interface(&self) -> Option<crate::usb::HidBootInterface> { self._hid }
-    /// HID boot protocol: 1 keyboard or 2 mouse. # C: O(1)
-    pub fn hid_protocol(&self) -> Option<u8> { self._hid.map(|hid| hid.protocol) }
+    /// Selected descriptor-driven HID interface descriptor. # C: O(1)
+    pub fn hid_interface(&self) -> Option<crate::usb::HidInterface> { self._hid }
+    /// Parse and retain the exact report descriptor completed in the descriptor page. # C: O(report bytes)
+    pub fn discover_hid_report(&mut self) -> Option<crate::hid_report::ReportLayout> {
+        let hid = self._hid?;
+        self.descriptor.invalidate_from_device();
+        let mut bytes = Vec::with_capacity(hid.report_bytes);
+        for offset in 0..hid.report_bytes { bytes.push(self.descriptor.read8(offset as u64)?); }
+        let layout = crate::hid_report::parse_report_descriptor(&bytes)?;
+        self.hid_layout = Some(layout);
+        Some(layout)
+    }
+    /// Validated descriptor-driven HID input layout. # C: O(1)
+    pub fn hid_layout(&self) -> Option<crate::hid_report::ReportLayout> { self.hid_layout }
     /// Selected hub interface descriptor. # C: O(1)
     pub fn hub_interface(&self) -> Option<crate::usb::HubInterface> { self._hub }
     /// Retained hub descriptor used to bound downstream-port control. # C: O(1)

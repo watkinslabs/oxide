@@ -1595,3 +1595,9 @@ Six lanes filed the same defect separately. The canonical row lives in
 | Status | Class | Sev | Issue | Evidence | Owner |
 |---|---|---|---|---|---|
 | FIXED F1004 | DEFECT | HIGH | xHCI event handling acknowledged USBSTS and advanced ERDP but left the primary interrupter pending bit asserted. Controllers that do not auto-clear that bit can stop signaling later USB input, hub, and storage events. The vector now acknowledges `IMAN.IP` with a posted-write flush after the event cause is observed and before event-ring consumption. | `drv_xhci::controller::tests::run_plan_uses_exact_controller_dma_pointer_encodings` pins the distinct IP/IE bits; `cargo test -p drv-xhci --lib -- --test-threads=1` (49 passed). | F1004 |
+
+### F1015-xhci-generic-hid-runtime
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED F1015 | MISSING | HIGH | The xHCI input path parsed generic HID report descriptors but discarded them before device publication, then selected only boot-subclass keyboard/mouse interfaces and forced Boot protocol. Native HID devices that publish their normal report format therefore had no input node; a boot device could also be switched away from the descriptor it had already advertised. The retained device state now owns the selected HID interface and parsed layout, fetches the report descriptor after configuration, derives advertised input capabilities from its usages, and decodes each interrupt report against that layout. | `cargo test -p drv-xhci --lib -- --test-threads=1` (53 passed), including descriptor request, parser, decoder, and endpoint-context contracts; native x86 kernel build in this lane compiles the target-only enumeration and input wiring. | F1015 |

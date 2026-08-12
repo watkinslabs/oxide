@@ -173,8 +173,8 @@ pub fn configure_endpoint_words(context_bytes: u8, output_slot: [u32; 8], speed:
     Some(words)
 }
 
-/// Configure Endpoint words for one HID interrupt-IN endpoint. # C: O(1)
-pub fn configure_hid_words(context_bytes: u8, output_slot: [u32; 8], speed: u8, hid: crate::usb::HidBootInterface, ring_pa: u64) -> Option<[ContextWord; 15]> {
+/// Configure Endpoint words for one descriptor-selected HID interrupt-IN endpoint. # C: O(1)
+pub fn configure_hid_words(context_bytes: u8, output_slot: [u32; 8], speed: u8, hid: crate::usb::HidInterface, ring_pa: u64) -> Option<[ContextWord; 15]> {
     configure_endpoint_words(context_bytes, output_slot, speed, &[EndpointConfig { address: hid.endpoint, max_packet: hid.max_packet, interval: hid.interval, kind: EndpointType::Interrupt, ring_pa }])?.try_into().ok()
 }
 
@@ -263,7 +263,7 @@ mod tests {
     }
     #[test]
     fn hid_context_uses_xhci_endpoint_id_and_linux_interval_encoding() {
-        let hid = crate::usb::HidBootInterface { configuration: 1, interface: 0, protocol: 1, endpoint: 0x81, max_packet: 8, interval: 10 };
+        let hid = crate::usb::HidInterface { configuration: 1, interface: 0, endpoint: 0x81, max_packet: 8, interval: 10, report_bytes: 52 };
         let words = configure_hid_words(64, [3, 4, 5, 6, 7, 8, 9, 10], 1, hid, 0x90_000).unwrap();
         assert_eq!(words[1], ContextWord { offset: 4, value: 1 | (1 << 3) });
         assert_eq!(words[2], ContextWord { offset: 64, value: (3 << 27) | 3 });
