@@ -47,6 +47,7 @@ fn register_pci_model_drivers() {
     drv::register_driver(&drv_nvme::NVME_DRIVER);
     drv::register_driver(&drv_ahci::AHCI_DRIVER);
     drv::register_driver(&drv_e1000::E1000_DRIVER);
+    drv::register_driver(&drv_rtl8125::RTL8125_DRIVER);
     #[cfg(target_arch = "x86_64")]
     drv::register_driver(&drv_bochs::BOCHS_DRIVER);
     drv::register_driver(&drv_xhci::XHCI_DRIVER);

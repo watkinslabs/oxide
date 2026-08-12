@@ -25,6 +25,14 @@ impl Rings {
     pub fn initialize_rx(&self) -> bool { for index in 0..regs::RING_COUNT { let va = hhdm(self.rx_desc_pa + (index * core::mem::size_of::<regs::RxDesc>()) as u64); // SAFETY: this retained descriptor backing is private until engine enable.
         unsafe { (va as *mut regs::RxDesc).write(regs::rx_descriptor(self.rx_data_dma + (index * regs::BUFFER_BYTES) as u64, index + 1 == regs::RING_COUNT)); } }
         pmm::dma::clean_to_device(hhdm(self.rx_desc_pa), regs::RING_BYTES); true }
+    /// Populate idle TX descriptors with retained device addresses. # C: O(ring bytes)
+    pub fn initialize_tx(&self) -> bool { for index in 0..regs::RING_COUNT { let va = hhdm(self.tx_desc_pa + (index * core::mem::size_of::<regs::TxDesc>()) as u64); // SAFETY: this retained descriptor backing is private until engine enable.
+        unsafe { (va as *mut regs::TxDesc).write(regs::TxDesc { opts1: if index + 1 == regs::RING_COUNT { regs::DESC_RING_END } else { 0 }, opts2: 0, addr: self.tx_data_dma + (index * regs::BUFFER_BYTES) as u64 }); } }
+        pmm::dma::clean_to_device(hhdm(self.tx_desc_pa), regs::RING_BYTES); true }
+    /// Return CPU virtual addresses for one retained TX descriptor and data slot. # C: O(1)
+    pub fn tx_slot(&self, index: usize) -> Option<(u64, u64)> { (index < regs::RING_COUNT).then_some((hhdm(self.tx_desc_pa + (index * core::mem::size_of::<regs::TxDesc>()) as u64), hhdm(self.tx_data_pa + (index * regs::BUFFER_BYTES) as u64))) }
+    /// Return CPU virtual addresses for one retained RX descriptor and data slot. # C: O(1)
+    pub fn rx_slot(&self, index: usize) -> Option<(u64, u64)> { (index < regs::RING_COUNT).then_some((hhdm(self.rx_desc_pa + (index * core::mem::size_of::<regs::RxDesc>()) as u64), hhdm(self.rx_data_pa + (index * regs::BUFFER_BYTES) as u64))) }
     /// Retire mappings before returning physical backing to PMM. # C: O(1)
     pub fn release(self) { let _ = iommu::unmap_dma(self.bdf, self.rx_desc_dma, PAGE); let _ = iommu::unmap_dma(self.bdf, self.tx_desc_dma, PAGE); let _ = iommu::unmap_dma(self.bdf, self.rx_data_dma, bytes(RX_ORDER)); let _ = iommu::unmap_dma(self.bdf, self.tx_data_dma, bytes(TX_ORDER)); free_all(self.rx_desc_pa, self.tx_desc_pa, self.rx_data_pa, self.tx_data_pa); }
 }

@@ -7,3 +7,7 @@ pub mod bringup;
 pub mod dma;
 #[cfg(target_os = "oxide-kernel")]
 mod dma_owner;
+#[cfg(target_os = "oxide-kernel")]
+mod imp;
+#[cfg(target_os = "oxide-kernel")]
+pub use imp::RTL8125_DRIVER;

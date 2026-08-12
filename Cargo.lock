@@ -378,9 +378,18 @@ dependencies = [
 name = "drv-rtl8125"
 version = "0.1.0"
 dependencies = [
+ "arch-irq",
+ "drv",
+ "hal-aarch64",
+ "hal-x86_64",
  "iommu",
+ "mmio-map",
+ "net",
  "pci",
+ "pci-irq",
  "pmm",
+ "sched",
+ "sync",
 ]
 
 [[package]]
