@@ -48,7 +48,6 @@ pub fn fbcon_flush_pixels(pixels: &[u8], rect: fbcon::kernel::FlushRect) {
     // length ctx.fb_bytes bounded the plan above, from `pixels` whose length
     // bounded it likewise; the plan's last touched byte is inside both.
     unsafe { copy_damage(pixels, ctx.fb_va as *mut u8, &plan); }
-    let cmd_buf_va_p = ctx.cmd_buf_va as *mut u8;
     let res_id = ctx.res_id;
     let (x, y, w, h, off) = (plan.x, plan.y, plan.w, plan.h, plan.dst_off);
     // The rectangle is `plan_copy`'s, already clipped to `ctx.w`/`ctx.h`, so the
@@ -57,14 +56,14 @@ pub fn fbcon_flush_pixels(pixels: &[u8], rect: fbcon::kernel::FlushRect) {
     // frame and CTRLQ are live and single-producer for the whole call, and the
     // frame was allocated 4 KiB by the probe that installed the ctx.
     unsafe {
-        if !super::runtime::retain_ctx_after_submit(ctx, submit_one(cmd_buf_va_p, ctx.cmd_buf_dma,
-            |buf| crate::encode_transfer_to_host_2d(buf, res_id, x, y, w, h, off),
-            ctx.ctrlq, ctx.hhdm)) {
+        let retired = super::runtime::submit_ctrl(ctx,
+            |buf| crate::encode_transfer_to_host_2d(buf, res_id, x, y, w, h, off));
+        if !super::runtime::retain_ctx_after_submit(ctx, retired) {
             return;
         }
-        let _ = super::runtime::retain_ctx_after_submit(ctx, submit_one(cmd_buf_va_p, ctx.cmd_buf_dma,
-            |buf| crate::encode_resource_flush(buf, res_id, x, y, w, h),
-            ctx.ctrlq, ctx.hhdm));
+        let retired = super::runtime::submit_ctrl(ctx,
+            |buf| crate::encode_resource_flush(buf, res_id, x, y, w, h));
+        let _ = super::runtime::retain_ctx_after_submit(ctx, retired);
     }
 }
 
@@ -116,20 +115,19 @@ pub fn blank_scanout_for_key(driver_key: fbdev::FbDriverKey) {
     // range is inside it; `CTX` is held and `quiesced` was checked, so the ctx
     // (and its run) cannot be torn down underneath this write.
     unsafe { core::ptr::write_bytes(ctx.fb_va as *mut u8, 0, ctx.fb_bytes as usize); }
-    let cmd_buf_va_p = ctx.cmd_buf_va as *mut u8;
     let (res_id, w, h) = (ctx.res_id, ctx.w, ctx.h);
     // SAFETY: `submit_one`'s contract — `CTX` is held, so this ctx's command
     // frame and CTRLQ are live and single-producer for the whole call, and the
     // frame was allocated 4 KiB by the probe that installed the ctx.
     unsafe {
-        if !super::runtime::retain_ctx_after_submit(ctx, submit_one(cmd_buf_va_p, ctx.cmd_buf_dma,
-            |buf| crate::encode_transfer_to_host_2d(buf, res_id, 0, 0, w, h, 0),
-            ctx.ctrlq, ctx.hhdm)) {
+        let retired = super::runtime::submit_ctrl(ctx,
+            |buf| crate::encode_transfer_to_host_2d(buf, res_id, 0, 0, w, h, 0));
+        if !super::runtime::retain_ctx_after_submit(ctx, retired) {
             return;
         }
-        let _ = super::runtime::retain_ctx_after_submit(ctx, submit_one(cmd_buf_va_p, ctx.cmd_buf_dma,
-            |buf| crate::encode_resource_flush(buf, res_id, 0, 0, w, h),
-            ctx.ctrlq, ctx.hhdm));
+        let retired = super::runtime::submit_ctrl(ctx,
+            |buf| crate::encode_resource_flush(buf, res_id, 0, 0, w, h));
+        let _ = super::runtime::retain_ctx_after_submit(ctx, retired);
     }
 }
 
@@ -142,7 +140,7 @@ pub fn unblank_scanout_for_key(driver_key: fbdev::FbDriverKey) {
 pub(super) fn install_scanout_ctx(
     device_key: virtio::VirtioChildDeviceKey,
     w: u32, h: u32, cfg_va: u64, fb_va: u64, fb_dma: u64, fb_map_bytes: usize, fb_bytes: u64, fb_order: pmm::Order, res_id: u32,
-    ctrlq: virtio::VirtQueueResource, cursorq: virtio::VirtQueueResource,
+    ctrlq: Option<virtio::VirtioSplitQueue>, cursorq: Option<virtio::VirtioSplitQueue>,
     cmd_buf_va: u64, cmd_buf_pa: u64, cmd_buf_dma: u64, bdf: pci::Bdf, hhdm: u64,
 ) -> bool {
     let mut ctxs = ctx_lock();

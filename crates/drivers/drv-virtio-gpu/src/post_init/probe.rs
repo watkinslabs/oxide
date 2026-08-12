@@ -11,13 +11,19 @@ pub fn get_display_info(
     drv_features: u64,
     resources: virtio::VirtioResources,
 ) -> bool {
-    let Some(ctrlq) = resources.require_queue_at_least(0, 4) else { return false };
-    let Some(cursorq) = resources.require_queue_at_least(1, 2) else { return false };
+    let Some(ctrlq_resource) = resources.require_queue_at_least(0, 4) else { return false };
+    let Some(cursorq_resource) = resources.require_queue_at_least(1, 2) else { return false };
     if !resources.common_cfg_valid() {
         return false;
     }
     let cfg_va = resources.cfg_va;
     let hhdm = resources.hhdm;
+    let mut ctrlq = match virtio::VirtioSplitQueue::new(ctrlq_resource, hhdm) {
+        Ok(queue) => Some(queue), Err(_) => return false,
+    };
+    let mut cursorq = match virtio::VirtioSplitQueue::new(cursorq_resource, hhdm) {
+        Ok(queue) => Some(queue), Err(_) => return false,
+    };
     let mut cmd_buf = match ProbeCommandBuffer::alloc(hhdm, bdf) {
         Some(buf) => buf,
         None => return false,
@@ -31,48 +37,9 @@ pub fn get_display_info(
         let req = core::slice::from_raw_parts_mut(cmd_buf.va, 24);
         crate::encode_get_display_info(req);
     }
-    let desc0 = (hhdm.wrapping_add(ctrlq.desc_pa)) as *mut u64;
-    // SAFETY: `desc_pa` is the ctrlq descriptor frame via HHDM, holding at
-    // least the two 16-byte entries written here (`program_queue` negotiates
-    // `size` down to one frame's worth); descriptor 0 is the 24-byte request and
-    // 1 the 408-byte reply at RESP_OFF, both inside the probe's command frame.
-    unsafe {
-        core::ptr::write_volatile(desc0.add(0), cmd_buf.dma);
-        let d0 = 24u64
-               | ((virtio::VRING_DESC_F_NEXT as u64) << 32)
-               | (1u64 << 48);
-        core::ptr::write_volatile(desc0.add(1), d0);
-        core::ptr::write_volatile(desc0.add(2), cmd_buf.dma + 0x200);
-        let d1 = 408u64 | ((virtio::VRING_DESC_F_WRITE as u64) << 32);
-        core::ptr::write_volatile(desc0.add(3), d1);
-    }
-    let avail = (hhdm.wrapping_add(ctrlq.driver_pa)) as *mut u16;
-    // SAFETY: ctrlq avail frame via HHDM; slot 0 (`ring[0]` at u16 index 2) is
-    // in bounds for any non-zero queue size, and this is the queue's first ever
-    // use so no other producer contends for it.
-    unsafe { core::ptr::write_volatile(avail.add(2), 0u16); }
-    core::sync::atomic::fence(Ordering::Release);
-    // SAFETY: same avail frame; `idx` is the aligned u16 at index 1, and the
-    // Release fence above ordered the ring[0] store before this publish, which
-    // is what hands descriptor head 0 to the device.
-    unsafe { core::ptr::write_volatile(avail.add(1), 1u16); }
-    core::sync::atomic::fence(Ordering::Release);
-    // SAFETY: `notify_va` is ctrlq's doorbell in the Device-attr notify BAR
-    // window, non-zero because `require_queue(0)` validated the resource; a u16
-    // store of the queue index is its defined access (Virtio 1.2 §4.1.4.4).
-    unsafe { core::ptr::write_volatile(ctrlq.notify_va as *mut u16, ctrlq.index); }
-    let used = (hhdm.wrapping_add(ctrlq.device_pa)) as *mut u16;
-    let mut polls = 0u32;
-    let retired = loop {
-        // SAFETY: ctrlq used frame via HHDM; `used.idx` is the aligned u16 at
-        // index 1 (Virtio 1.2 §2.7.8), inside the frame for any queue size. The
-        // volatile load re-reads the device's publish each iteration.
-        let idx = unsafe { core::ptr::read_volatile(used.add(1)) };
-        if idx >= 1 { break true; }
-        if polls > SUBMIT_POLL_BUDGET { break false; }
-        polls += 1;
-        core::hint::spin_loop();
-    };
+    // SAFETY: the frame is exclusively owned by this synchronous probe.  The
+    // shared queue owns descriptor allocation, publication, and retirement.
+    let retired = unsafe { submit_raw(cmd_buf.dma, 24, 408, ctrlq.as_mut().unwrap()) };
     if !retired {
         // The device never retired the descriptor, so it may still write the
         // reply into this frame. Freeing it would hand a physical address the
@@ -105,7 +72,7 @@ pub fn get_display_info(
     // and the display-info descriptor above was retired, so nothing else is in
     // flight on this queue — `fetch`'s documented contract.
     let edid = unsafe {
-        super::edid::fetch(drv_features, cmd_buf.va, cmd_buf.dma, ctrlq, hhdm,
+        super::edid::fetch(drv_features, cmd_buf.va, cmd_buf.dma, ctrlq.as_mut().unwrap(),
             &mut edid_timed_out)
     };
     if edid_timed_out {
@@ -147,7 +114,7 @@ pub fn get_display_info(
             setup_scanout(
                 device_key,
                 info.modes[0].r.width, info.modes[0].r.height,
-                cfg_va, ctrlq, cursorq, cmd_buf.va, cmd_buf.pa, cmd_buf.dma, bdf, hhdm,
+                cfg_va, &mut ctrlq, &mut cursorq, cmd_buf.va, cmd_buf.pa, cmd_buf.dma, bdf, hhdm,
             )
         };
         if !scanout_ok {
@@ -161,7 +128,7 @@ pub fn get_display_info(
     }
     match crate::install_with_drm_parent(crate::VirtioGpuDev {
         device_key, bdf, card_id: 0, cfg_va,
-        ctrlq, cursorq,
+        ctrlq: ctrlq_resource, cursorq: cursorq_resource,
         features_negotiated: drv_features,
         display: info,
         edid,
@@ -186,8 +153,8 @@ unsafe fn setup_scanout(
     device_key: virtio::VirtioChildDeviceKey,
     w: u32, h: u32,
     cfg_va: u64,
-    ctrlq: virtio::VirtQueueResource,
-    cursorq: virtio::VirtQueueResource,
+    ctrlq: &mut Option<virtio::VirtioSplitQueue>,
+    cursorq: &mut Option<virtio::VirtioSplitQueue>,
     cmd_buf_va: *mut u8, cmd_buf_pa: u64, cmd_buf_dma: u64, bdf: pci::Bdf,
     hhdm: u64,
 ) -> bool {
@@ -258,7 +225,7 @@ unsafe fn setup_scanout(
     if unsafe { !submit_one(cmd_buf_va, cmd_buf_dma,
         |buf| crate::encode_resource_create_2d(buf, res_id,
             crate::VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, w, h),
-        ctrlq, hhdm,
+        ctrlq.as_mut().unwrap(),
     ) } {
         return false;
     }
@@ -270,7 +237,7 @@ unsafe fn setup_scanout(
     if unsafe { !submit_one(cmd_buf_va, cmd_buf_dma,
         |buf| crate::encode_resource_attach_backing_one(
             buf, res_id, base_dma, fb_bytes as u32),
-        ctrlq, hhdm,
+        ctrlq.as_mut().unwrap(),
     ) } {
         return false;
     }
@@ -295,7 +262,7 @@ unsafe fn setup_scanout(
     // already retired and no other producer touches the queue.
     if unsafe { !submit_one(cmd_buf_va, cmd_buf_dma,
         |buf| crate::encode_set_scanout(buf, 0, res_id, 0, 0, w, h),
-        ctrlq, hhdm,
+        ctrlq.as_mut().unwrap(),
     ) } {
         return false;
     }
@@ -306,7 +273,7 @@ unsafe fn setup_scanout(
     // already retired and no other producer touches the queue.
     if unsafe { !submit_one(cmd_buf_va, cmd_buf_dma,
         |buf| crate::encode_transfer_to_host_2d(buf, res_id, 0, 0, w, h, 0),
-        ctrlq, hhdm,
+        ctrlq.as_mut().unwrap(),
     ) } {
         return false;
     }
@@ -317,7 +284,7 @@ unsafe fn setup_scanout(
     // already retired and no other producer touches the queue.
     if unsafe { !submit_one(cmd_buf_va, cmd_buf_dma,
         |buf| crate::encode_resource_flush(buf, res_id, 0, 0, w, h),
-        ctrlq, hhdm,
+        ctrlq.as_mut().unwrap(),
     ) } {
         return false;
     }
@@ -326,7 +293,7 @@ unsafe fn setup_scanout(
         device_key,
         w, h,
         cfg_va, hhdm.wrapping_add(base_pa), base_dma, fb_run.map_bytes, fb_bytes, fb_order, res_id,
-        ctrlq, cursorq, cmd_buf_va as u64, cmd_buf_pa, cmd_buf_dma, bdf, hhdm,
+        ctrlq.take(), cursorq.take(), cmd_buf_va as u64, cmd_buf_pa, cmd_buf_dma, bdf, hhdm,
     ) {
         return false;
     }
@@ -347,7 +314,7 @@ unsafe fn setup_scanout(
 /// Submit a single CTRLQ command via the encoder closure.
 pub(super) unsafe fn submit_one<F: FnOnce(&mut [u8]) -> usize>(
     buf_va: *mut u8, buf_dma: u64, encode: F,
-    ctrlq: virtio::VirtQueueResource, hhdm: u64,
+    ctrlq: &mut virtio::VirtioSplitQueue,
 ) -> bool {
     // Scrubbing the reply area first stops a stale header from an earlier
     // command being read back as this one's status.
@@ -364,7 +331,7 @@ pub(super) unsafe fn submit_one<F: FnOnce(&mut [u8]) -> usize>(
     // whose request area is 0x100 bytes (≥ the 64 described) and whose reply
     // area at RESP_OFF has room for NODATA_RESP_LEN; CTRLQ's VAs come from the
     // caller's validated queue resource.
-    unsafe { submit_raw(buf_dma, 64, NODATA_RESP_LEN, ctrlq, hhdm) }
+    unsafe { submit_raw(buf_dma, 64, NODATA_RESP_LEN, ctrlq) }
 }
 
 /// Response descriptor length for a command whose reply is a bare ctrl header.
@@ -377,7 +344,7 @@ pub(super) const RESP_OFF: u64 = 0x200;
 /// no response descriptor by specification.
 pub(super) unsafe fn submit_cursor_one<F: FnOnce(&mut [u8]) -> usize>(
     buf_va: *mut u8, buf_dma: u64, encode: F,
-    cursorq: virtio::VirtQueueResource, hhdm: u64,
+    cursorq: &mut virtio::VirtioSplitQueue,
 ) -> bool {
     let cursor_off = 0x100usize;
     // The cursor area 0x100..0x200 is disjoint from the CTRLQ request (0..0x100)
@@ -392,7 +359,7 @@ pub(super) unsafe fn submit_cursor_one<F: FnOnce(&mut [u8]) -> usize>(
         let req = core::slice::from_raw_parts_mut(buf_va.add(cursor_off), 0x100);
         let req_len = encode(req);
         if req_len == 0 || req_len > 0x100 { return false; }
-        submit_cursor_raw(buf_dma + cursor_off as u64, req_len, cursorq, hhdm)
+        submit_cursor_raw(buf_dma + cursor_off as u64, req_len, cursorq)
     }
 }
 
@@ -401,98 +368,25 @@ pub(super) unsafe fn submit_cursor_one<F: FnOnce(&mut [u8]) -> usize>(
 /// reply is larger than a bare header must say so or the device truncates it.
 pub(super) unsafe fn submit_raw(
     buf_dma: u64, req_len: usize, resp_len: usize,
-    ctrlq: virtio::VirtQueueResource, hhdm: u64,
+    ctrlq: &mut virtio::VirtioSplitQueue,
 ) -> bool {
-    let desc0 = (hhdm.wrapping_add(ctrlq.desc_pa)) as *mut u64;
-    // Descriptor 0 is the caller's request, 1 the device-writable reply at
-    // RESP_OFF; the caller guarantees both lie in its command frame.
-    // SAFETY: `desc_pa` is CTRLQ's descriptor frame via HHDM and entries 0/1 are
-    // its first 32 bytes; this probe is the queue's sole producer and the
-    // previous submission was retired before this one.
-    unsafe {
-        core::ptr::write_volatile(desc0.add(0), buf_dma);
-        let d0 = req_len as u64
-               | ((virtio::VRING_DESC_F_NEXT as u64) << 32)
-               | (1u64 << 48);
-        core::ptr::write_volatile(desc0.add(1), d0);
-        core::ptr::write_volatile(desc0.add(2), buf_dma + RESP_OFF);
-        let d1 = resp_len as u64 | ((virtio::VRING_DESC_F_WRITE as u64) << 32);
-        core::ptr::write_volatile(desc0.add(3), d1);
+    if ctrlq.submit(&[
+        virtio::SplitQueueSeg { dma: buf_dma, len: req_len as u32, device_writes: false },
+        virtio::SplitQueueSeg { dma: buf_dma + RESP_OFF, len: resp_len as u32, device_writes: true },
+    ]).is_err() { return false; }
+    for _ in 0..SUBMIT_POLL_BUDGET {
+        match ctrlq.pop_used() { Ok(Some(_)) => return true, Ok(None) => core::hint::spin_loop(), Err(_) => return false }
     }
-    let avail = (hhdm.wrapping_add(ctrlq.driver_pa)) as *mut u16;
-    // SAFETY: CTRLQ avail frame via HHDM; `idx` is the aligned u16 at index 1
-    // (Virtio 1.2 §2.7.6). Reading back the driver's own last publish is what
-    // makes this fn re-entrant across the probe's successive commands.
-    let cur_idx = unsafe { core::ptr::read_volatile(avail.add(1)) };
-    // SAFETY: same avail frame; the index is reduced mod `ctrlq.size`, which
-    // `program_queue` capped at one frame's worth of descriptors, so
-    // `2 + slot` is an in-bounds aligned u16 slot in `ring[]`.
-    unsafe { core::ptr::write_volatile(avail.add(2 + (cur_idx as usize % ctrlq.size as usize)), 0u16); }
-    core::sync::atomic::fence(Ordering::Release);
-    // SAFETY: same avail frame, aligned u16 `idx` at index 1; the Release fence
-    // above ordered the ring-slot store before this publish, which is what hands
-    // descriptor head 0 to the device.
-    unsafe { core::ptr::write_volatile(avail.add(1), cur_idx + 1); }
-    core::sync::atomic::fence(Ordering::Release);
-    // SAFETY: CTRLQ's doorbell in the Device-attr notify BAR window, validated
-    // non-zero when the queue resource was required; a u16 store of the queue
-    // index is its defined access, and the fence published the ring first.
-    unsafe { core::ptr::write_volatile(ctrlq.notify_va as *mut u16, ctrlq.index); }
-    let used = (hhdm.wrapping_add(ctrlq.device_pa)) as *mut u16;
-    let want = cur_idx + 1;
-    let mut polls = 0u32;
-    loop {
-        // SAFETY: CTRLQ used frame via HHDM; `used.idx` is the aligned u16 at
-        // index 1, inside the frame for any negotiated size. Volatile so each
-        // iteration re-reads what the device published.
-        let idx = unsafe { core::ptr::read_volatile(used.add(1)) };
-        if idx >= want || polls > SUBMIT_POLL_BUDGET { break; }
-        polls += 1;
-        core::hint::spin_loop();
-    }
-    polls <= SUBMIT_POLL_BUDGET
+    false
 }
 
 unsafe fn submit_cursor_raw(
     buf_dma: u64, req_len: usize,
-    cursorq: virtio::VirtQueueResource, hhdm: u64,
+    cursorq: &mut virtio::VirtioSplitQueue,
 ) -> bool {
-    let desc = (hhdm.wrapping_add(cursorq.desc_pa)) as *mut u64;
-    // Data-only: one read-only descriptor, no reply (Virtio 1.2 §5.7.6).
-    // SAFETY: CURSORQ's descriptor frame via HHDM; entry 0 is its first 16
-    // bytes. The caller guarantees `buf_dma..buf_dma+req_len` lies in the mapped command
-    // frame it owns and that no other producer uses this queue.
-    unsafe {
-        core::ptr::write_volatile(desc.add(0), buf_dma);
-        core::ptr::write_volatile(desc.add(1), req_len as u64);
+    if cursorq.submit(&[virtio::SplitQueueSeg { dma: buf_dma, len: req_len as u32, device_writes: false }]).is_err() { return false; }
+    for _ in 0..SUBMIT_POLL_BUDGET {
+        match cursorq.pop_used() { Ok(Some(_)) => return true, Ok(None) => core::hint::spin_loop(), Err(_) => return false }
     }
-    let avail = (hhdm.wrapping_add(cursorq.driver_pa)) as *mut u16;
-    // SAFETY: CURSORQ avail frame via HHDM; aligned u16 `idx` at index 1, read
-    // back so successive cursor commands advance the driver's own counter.
-    let cur_idx = unsafe { core::ptr::read_volatile(avail.add(1)) };
-    // SAFETY: same avail frame; the slot is reduced mod `cursorq.size`, capped
-    // by `program_queue` at one frame's worth, so `2 + slot` is in bounds.
-    unsafe { core::ptr::write_volatile(avail.add(2 + (cur_idx as usize % cursorq.size as usize)), 0u16); }
-    core::sync::atomic::fence(Ordering::Release);
-    // SAFETY: same avail frame, aligned u16 `idx`; the Release fence ordered the
-    // ring-slot store before this publish, which hands head 0 to the device.
-    unsafe { core::ptr::write_volatile(avail.add(1), cur_idx + 1); }
-    core::sync::atomic::fence(Ordering::Release);
-    // SAFETY: CURSORQ's doorbell in the Device-attr notify BAR window, validated
-    // non-zero when the queue resource was required; a u16 store of the queue
-    // index is its defined access, and the fence published the ring first.
-    unsafe { core::ptr::write_volatile(cursorq.notify_va as *mut u16, cursorq.index); }
-    let used = (hhdm.wrapping_add(cursorq.device_pa)) as *mut u16;
-    let want = cur_idx + 1;
-    let mut polls = 0u32;
-    loop {
-        // SAFETY: CURSORQ used frame via HHDM; `used.idx` is the aligned u16 at
-        // index 1, in bounds for any negotiated size. Volatile so each iteration
-        // re-reads the device's publish.
-        let idx = unsafe { core::ptr::read_volatile(used.add(1)) };
-        if idx >= want || polls > SUBMIT_POLL_BUDGET { break; }
-        polls += 1;
-        core::hint::spin_loop();
-    }
-    polls <= SUBMIT_POLL_BUDGET
+    false
 }
