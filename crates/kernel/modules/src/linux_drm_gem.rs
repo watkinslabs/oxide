@@ -29,6 +29,8 @@ const DRM_GEM_FUNCS_CLOSE_OFF: usize = 16;
 const DRM_GEM_FUNCS_FREE_OFF: usize = 0;
 const DRM_GEM_SHMEM_VADDR_OFF: usize = 432;
 const DRM_FB_SIZE: usize = 192;
+const DRM_FB_REFCOUNT_OFF: usize = 40;
+const DRM_FB_FREE_CB_OFF: usize = 48;
 const DRM_FB_FORMAT_OFF: usize = 72;
 const DRM_FB_FUNCS_OFF: usize = 80;
 const DRM_FB_PITCHES_OFF: usize = 88;
@@ -55,9 +57,32 @@ struct GemFile { next: u32, handles: Vec<GemHandle> }
 type GemClose = unsafe extern "C" fn(*mut c_void, *mut c_void);
 type GemFree = unsafe extern "C" fn(*mut c_void);
 type FbDestroy = unsafe extern "C" fn(*mut c_void);
+type ModeObjectFree = unsafe extern "C" fn(*mut c_void);
 
 static SHMEM_OBJECT_FUNCS: [Option<GemFree>; 3] = [Some(shmem_object_free), None, None];
 static GEM_FB_FUNCS: [Option<FbDestroy>; 3] = [Some(gem_fb_destroy), None, None];
+
+/// Retain one framebuffer reference through its embedded mode object. # C: O(1)
+pub(super) fn framebuffer_get(fb: *mut c_void) {
+    if fb.is_null() { return; }
+    // SAFETY: framebuffer callers hold a live reference; the embedded mode-object count is initialized at creation.
+    unsafe { let refs = read(fb.cast::<u8>().add(DRM_FB_REFCOUNT_OFF).cast::<i32>()); write(fb.cast::<u8>().add(DRM_FB_REFCOUNT_OFF).cast::<i32>(), refs.saturating_add(1)); }
+}
+
+/// Release one framebuffer reference and invoke its mode-object finalizer at zero. # C: O(1)
+pub(super) fn framebuffer_put(fb: *mut c_void) {
+    if fb.is_null() { return; }
+    // SAFETY: framebuffer callers hold exactly one reference; its finalizer receives the embedded kref field.
+    let refs = unsafe { read(fb.cast::<u8>().add(DRM_FB_REFCOUNT_OFF).cast::<i32>()) };
+    if refs <= 1 {
+        // SAFETY: creation installs the complete mode-object free callback before publication.
+        let free = unsafe { read(fb.cast::<u8>().add(DRM_FB_FREE_CB_OFF).cast::<Option<ModeObjectFree>>()) };
+        if let Some(free) = free { unsafe { free(fb.cast::<u8>().add(DRM_FB_REFCOUNT_OFF).cast()); } }
+    } else {
+        // SAFETY: this is the non-final decrement of the embedded mode-object reference count.
+        unsafe { write(fb.cast::<u8>().add(DRM_FB_REFCOUNT_OFF).cast::<i32>(), refs - 1); }
+    }
+}
 
 pub(super) fn export_symbols() {
     crate::symtab::export("drm_gem_private_object_init", drm_gem_private_object_init as *const () as usize, false);
@@ -221,7 +246,7 @@ pub(super) extern "C" fn drm_gem_fb_create_with_dirty(dev: *mut c_void, file: *m
     if fb.is_null() { return err_ptr(LINUX_EBUSY); }
     // SAFETY: cmd is a complete drm_mode_fb_cmd2 record whose scalar and plane arrays use these ABI offsets.
     unsafe {
-        write(fb.cast::<*mut c_void>(), dev); write(fb.add(DRM_FB_FORMAT_OFF).cast::<*const u8>(), info); write(fb.add(DRM_FB_FUNCS_OFF).cast::<*const Option<FbDestroy>>(), GEM_FB_FUNCS.as_ptr());
+        write(fb.cast::<*mut c_void>(), dev); write(fb.add(DRM_FB_REFCOUNT_OFF).cast::<i32>(), INITIAL_REFERENCE_COUNT); write(fb.add(DRM_FB_FREE_CB_OFF).cast::<Option<ModeObjectFree>>(), Some(gem_fb_mode_object_free)); write(fb.add(DRM_FB_FORMAT_OFF).cast::<*const u8>(), info); write(fb.add(DRM_FB_FUNCS_OFF).cast::<*const Option<FbDestroy>>(), GEM_FB_FUNCS.as_ptr());
         write(fb.add(DRM_FB_WIDTH_OFF).cast::<u32>(), read(cmd.add(DRM_FB_CMD_WIDTH_OFF).cast::<u32>())); write(fb.add(DRM_FB_HEIGHT_OFF).cast::<u32>(), read(cmd.add(DRM_FB_CMD_HEIGHT_OFF).cast::<u32>())); write(fb.add(DRM_FB_FLAGS_OFF).cast::<u32>(), read(cmd.add(DRM_FB_CMD_FLAGS_OFF).cast::<u32>())); write(fb.add(DRM_FB_MODIFIER_OFF).cast::<u64>(), read(cmd.add(DRM_FB_CMD_MODIFIERS_OFF).cast::<u64>()));
     }
     for plane in 0..planes {
@@ -291,6 +316,13 @@ unsafe extern "C" fn gem_fb_destroy(fb: *mut c_void) {
     unsafe { dealloc(fb.cast(), layout); }
 }
 
+unsafe extern "C" fn gem_fb_mode_object_free(kref: *mut c_void) {
+    if kref.is_null() { return; }
+    // SAFETY: kref is the drm_framebuffer embedded mode-object reference field at its verified offset.
+    let fb = unsafe { kref.cast::<u8>().sub(DRM_FB_REFCOUNT_OFF).cast::<c_void>() };
+    unsafe { gem_fb_destroy(fb); }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,7 +383,10 @@ mod tests {
         let info = format::drm_format_info(0x3432_5258).cast::<u8>(); let fb = drm_gem_fb_create_with_dirty(dev.as_mut_ptr().cast(), file.as_mut_ptr().cast(), info, cmd.as_ptr()); assert!(!fb.is_null());
         // SAFETY: successful creation retained the source GEM object in fb->obj[0].
         let object = unsafe { read(fb.cast::<u8>().add(DRM_FB_OBJECTS_OFF).cast::<*mut c_void>()) }; let handle = unsafe { read(dumb.as_ptr().add(DRM_DUMB_HANDLE_OFF).cast::<u32>()) };
+        framebuffer_get(fb); assert_eq!(unsafe { read(fb.cast::<u8>().add(DRM_FB_REFCOUNT_OFF).cast::<i32>()) }, 2); framebuffer_put(fb);
+        // SAFETY: one reference remains after the balanced temporary get/put pair.
+        assert_eq!(unsafe { read(fb.cast::<u8>().add(DRM_FB_REFCOUNT_OFF).cast::<i32>()) }, 1);
         assert_eq!(drm_gem_handle_delete(file.as_mut_ptr().cast(), handle), 0); assert!(!object.is_null());
-        unsafe { gem_fb_destroy(fb); } file_release(dev.as_mut_ptr().cast(), file.as_mut_ptr().cast());
+        framebuffer_put(fb); file_release(dev.as_mut_ptr().cast(), file.as_mut_ptr().cast());
     }
 }
