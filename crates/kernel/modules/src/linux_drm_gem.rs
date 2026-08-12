@@ -24,6 +24,7 @@ const DRM_GEM_HANDLE_COUNT_OFF: usize = 4;
 const DRM_GEM_DEVICE_OFF: usize = 8;
 const DRM_GEM_FILP_OFF: usize = 16;
 const DRM_GEM_SIZE_OFF: usize = 216;
+const DRM_GEM_IMPORT_ATTACH_OFF: usize = 240;
 const DRM_GEM_OBJECT_FUNCS_OFF: usize = 352;
 const DRM_GEM_FUNCS_CLOSE_OFF: usize = 16;
 const DRM_GEM_FUNCS_FREE_OFF: usize = 0;
@@ -49,10 +50,13 @@ const DRM_FB_CMD_OFFSETS_OFF: usize = 52;
 const DRM_FB_CMD_MODIFIERS_OFF: usize = 72;
 const DRM_FORMAT_PLANES_OFF: usize = 5;
 const INITIAL_REFERENCE_COUNT: i32 = 1;
+const DRM_FILE_PAGE_OFFSET_START: u64 = 0x1_00000;
 
 struct GemHandle { handle: u32, object: usize }
 
-struct GemFile { next: u32, handles: Vec<GemHandle> }
+struct GemMmapOffset { start: u64, pages: u64, object: usize }
+
+struct GemFile { next: u32, next_mmap_page: u64, handles: Vec<GemHandle>, mmap_offsets: Vec<GemMmapOffset> }
 
 type GemClose = unsafe extern "C" fn(*mut c_void, *mut c_void);
 type GemFree = unsafe extern "C" fn(*mut c_void);
@@ -91,6 +95,7 @@ pub(super) fn export_symbols() {
     crate::symtab::export("drm_gem_handle_delete", drm_gem_handle_delete as *const () as usize, false);
     crate::symtab::export("drm_gem_object_lookup", drm_gem_object_lookup as *const () as usize, false);
     crate::symtab::export("drm_gem_release", drm_gem_release as *const () as usize, false);
+    crate::symtab::export("drm_gem_dumb_map_offset", drm_gem_dumb_map_offset as *const () as usize, true);
     crate::symtab::export("drm_mode_size_dumb", drm_mode_size_dumb as *const () as usize, false);
     crate::symtab::export("drm_gem_shmem_dumb_create", drm_gem_shmem_dumb_create as *const () as usize, false);
     crate::symtab::export("drm_gem_fb_create_with_dirty", drm_gem_fb_create_with_dirty as *const () as usize, false);
@@ -105,7 +110,7 @@ pub(super) fn file_init(file: *mut c_void) -> bool {
     let raw = unsafe { alloc(layout).cast::<GemFile>() };
     if raw.is_null() { return false; }
     // SAFETY: raw is a newly allocated, properly aligned GemFile slot and is initialized exactly once.
-    unsafe { write(raw, GemFile { next: 1, handles: Vec::new() }); }
+    unsafe { write(raw, GemFile { next: 1, next_mmap_page: DRM_FILE_PAGE_OFFSET_START, handles: Vec::new(), mmap_offsets: Vec::new() }); }
     // SAFETY: file is the complete ABI-sized drm_file allocation; the xarray root
     // field is reserved for the file's object-IDR owner and starts zeroed at open.
     unsafe { write(file.cast::<u8>().add(DRM_FILE_OBJECT_IDR_HEAD_OFF).cast::<*mut GemFile>(), raw); }
@@ -190,6 +195,42 @@ pub(super) extern "C" fn drm_gem_object_lookup(file: *mut c_void, handle: u32) -
 
 /// Release all file-private GEM references. # C: O(N_handles)
 pub(super) extern "C" fn drm_gem_release(dev: *mut c_void, file: *mut c_void) { file_release(dev, file); }
+
+/// Allocate or return the file-authorized fake mmap offset for one GEM handle. # C: O(N_offsets)
+pub(super) extern "C" fn drm_gem_dumb_map_offset(file: *mut c_void, dev: *mut c_void, handle: u32, out: *mut u64) -> i32 {
+    if file.is_null() || dev.is_null() || out.is_null() { return -LINUX_EINVAL; }
+    let Some(state) = state(file) else { return -LINUX_EINVAL; };
+    let Some(entry) = state.handles.iter().find(|entry| entry.handle == handle) else { return -LINUX_EINVAL; };
+    let object = entry.object as *mut c_void;
+    // SAFETY: the file owns this handle; GEM identity and imported-object state are immutable across this lookup.
+    unsafe { if read(object.cast::<u8>().add(DRM_GEM_DEVICE_OFF).cast::<*mut c_void>()) != dev || !read(object.cast::<u8>().add(DRM_GEM_IMPORT_ATTACH_OFF).cast::<*mut c_void>()).is_null() { return -LINUX_EINVAL; } }
+    if let Some(entry) = state.mmap_offsets.iter().find(|entry| entry.object == object as usize) {
+        let Some(offset) = entry.start.checked_mul(PAGE_SIZE) else { return -LINUX_EBUSY; };
+        // SAFETY: an existing offset is stable for the object lifetime and belongs to this file's map-offset owner.
+        unsafe { write(out, offset); }
+        return 0;
+    }
+    // SAFETY: the GEM size is initialized before the handle becomes visible and remains fixed for its lifetime.
+    let size = unsafe { read(object.cast::<u8>().add(DRM_GEM_SIZE_OFF).cast::<usize>()) as u64 };
+    let Some(pages) = size.checked_add(PAGE_SIZE - 1).map(|value| value / PAGE_SIZE).filter(|pages| *pages != 0) else { return -LINUX_EINVAL; };
+    let start = state.next_mmap_page; let Some(next) = start.checked_add(pages) else { return -LINUX_EBUSY; };
+    let Some(offset) = start.checked_mul(PAGE_SIZE) else { return -LINUX_EBUSY; };
+    state.next_mmap_page = next; state.mmap_offsets.push(GemMmapOffset { start, pages, object: object as usize });
+    // SAFETY: the returned byte offset is page-aligned and names the exact newly allocated node start.
+    unsafe { write(out, offset); }
+    0
+}
+
+/// Look up an exact file-authorized GEM mmap node and retain its object. # C: O(N_offsets)
+pub(super) fn mmap_object_lookup(file: *mut c_void, start: u64, pages: u64) -> *mut c_void {
+    if pages == 0 { return core::ptr::null_mut(); }
+    let Some(state) = state(file) else { return core::ptr::null_mut(); };
+    let Some(entry) = state.mmap_offsets.iter().find(|entry| entry.start == start && pages <= entry.pages) else { return core::ptr::null_mut(); };
+    let object = entry.object as *mut c_void;
+    // SAFETY: this exact offset is owned by the file and lookup obtains one temporary GEM reference.
+    unsafe { let refs = read(object.cast::<u8>().add(DRM_GEM_REFCOUNT_OFF).cast::<i32>()); if refs <= 0 { return core::ptr::null_mut(); } write(object.cast::<u8>().add(DRM_GEM_REFCOUNT_OFF).cast::<i32>(), refs.saturating_add(1)); }
+    object
+}
 
 /// Calculate a page-mappable dumb-buffer pitch and size. # C: O(1)
 pub(super) extern "C" fn drm_mode_size_dumb(_dev: *mut c_void, args: *mut c_void, pitch_align: usize, size_align: usize) -> i32 {
@@ -341,7 +382,7 @@ mod tests {
     #[test]
     fn generic_gem_entry_points_are_module_exports() {
         export_symbols();
-        for name in ["drm_gem_private_object_init", "drm_gem_object_release", "drm_gem_handle_create", "drm_gem_handle_delete", "drm_gem_object_lookup", "drm_gem_release", "drm_mode_size_dumb", "drm_gem_shmem_dumb_create"] { assert!(crate::symtab::is_exported(name)); }
+        for name in ["drm_gem_private_object_init", "drm_gem_object_release", "drm_gem_handle_create", "drm_gem_handle_delete", "drm_gem_object_lookup", "drm_gem_release", "drm_gem_dumb_map_offset", "drm_mode_size_dumb", "drm_gem_shmem_dumb_create"] { assert!(crate::symtab::is_exported(name)); }
     }
 
     #[test]
@@ -369,6 +410,20 @@ mod tests {
         unsafe { assert_eq!(read(object.cast::<u8>().add(DRM_GEM_SIZE_OFF).cast::<usize>()), PAGE_SIZE as usize); assert!(!read(object.cast::<u8>().add(DRM_GEM_SHMEM_VADDR_OFF).cast::<*mut u8>()).is_null()); }
         object_put(object);
         assert_eq!(drm_gem_handle_delete(file.as_mut_ptr().cast(), handle), 0); assert!(drm_gem_object_lookup(file.as_mut_ptr().cast(), handle).is_null()); file_release(dev.as_mut_ptr().cast(), file.as_mut_ptr().cast());
+    }
+
+    #[test]
+    fn dumb_map_offset_is_file_authorized_stable_and_page_aligned() {
+        let mut file = [0u8; 416]; let mut dev = [0u8; 64]; let mut args = [0u8; 32]; let mut first = 0u64; let mut second = 0u64;
+        assert!(file_init(file.as_mut_ptr().cast()));
+        // SAFETY: args reserves drm_mode_create_dumb and receives one shmem object handle.
+        unsafe { write(args.as_mut_ptr().add(DRM_DUMB_HEIGHT_OFF).cast::<u32>(), 4); write(args.as_mut_ptr().add(DRM_DUMB_WIDTH_OFF).cast::<u32>(), 8); write(args.as_mut_ptr().add(DRM_DUMB_BPP_OFF).cast::<u32>(), 32); }
+        assert_eq!(drm_gem_shmem_dumb_create(file.as_mut_ptr().cast(), dev.as_mut_ptr().cast(), args.as_mut_ptr().cast()), 0);
+        let handle = unsafe { read(args.as_ptr().add(DRM_DUMB_HANDLE_OFF).cast::<u32>()) };
+        assert_eq!(drm_gem_dumb_map_offset(file.as_mut_ptr().cast(), dev.as_mut_ptr().cast(), handle, &mut first), 0); assert_ne!(first, 0); assert_eq!(first % PAGE_SIZE, 0);
+        assert_eq!(drm_gem_dumb_map_offset(file.as_mut_ptr().cast(), dev.as_mut_ptr().cast(), handle, &mut second), 0); assert_eq!(first, second);
+        let object = mmap_object_lookup(file.as_mut_ptr().cast(), first / PAGE_SIZE, 1); assert!(!object.is_null()); object_put(object);
+        assert!(mmap_object_lookup(file.as_mut_ptr().cast(), first / PAGE_SIZE + 1, 1).is_null()); assert_eq!(drm_gem_dumb_map_offset(file.as_mut_ptr().cast(), dev.as_mut_ptr().cast(), handle.wrapping_add(1), &mut second), -LINUX_EINVAL); file_release(dev.as_mut_ptr().cast(), file.as_mut_ptr().cast());
     }
 
     #[test]

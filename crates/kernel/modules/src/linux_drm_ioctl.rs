@@ -6,9 +6,12 @@ use alloc::vec;
 const LINUX_EACCES: i32 = 13;
 const LINUX_EFAULT: i32 = 14;
 const LINUX_ENOTTY: i32 = 25;
+const LINUX_ENOSYS: i32 = 38;
 const DRM_IOCTL_TYPE: u32 = b'd' as u32;
 const DRM_COMMAND_BASE: u32 = 0x40;
 const DRM_COMMAND_END: u32 = 0xa0;
+const DRM_IOCTL_MODE_CREATE_DUMB: u32 = 0xc020_64b2;
+const DRM_IOCTL_MODE_DESTROY_DUMB: u32 = 0xc004_64b4;
 const DRM_DRIVER_IOCTLS_OFF: usize = 176;
 const DRM_DRIVER_NUM_IOCTLS_OFF: usize = 184;
 const DRM_IOCTL_DESC_SIZE: usize = 24;
@@ -21,6 +24,11 @@ const DRM_FILE_MINOR_OFF: usize = 72;
 const DRM_LINUX_FILE_PRIVATE_OFF: usize = 24;
 const DRM_MINOR_TYPE_OFF: usize = 4;
 const DRM_MINOR_DEV_OFF: usize = 16;
+const DRM_DEVICE_DRIVER_OFF: usize = 56;
+const DRM_DRIVER_DUMB_CREATE_OFF: usize = 96;
+const DRM_DUMB_HANDLE_OFF: usize = 16;
+const DRM_DUMB_PITCH_OFF: usize = 20;
+const DRM_DUMB_SIZE_OFF: usize = 24;
 const DRM_MINOR_RENDER: u32 = 2;
 const DRM_AUTH: u32 = 1 << 0;
 const DRM_MASTER: u32 = 1 << 1;
@@ -29,6 +37,7 @@ const DRM_RENDER_ALLOW: u32 = 1 << 5;
 const IOC_WRITE: u32 = 1;
 const IOC_READ: u32 = 2;
 type DrmIoctl = unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> i32;
+type DrmDumbCreate = unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> i32;
 
 pub(super) fn export_symbols() {
     crate::symtab::export("drm_ioctl", drm_ioctl as *const () as usize, false);
@@ -42,15 +51,42 @@ pub(super) extern "C" fn drm_ioctl(filp: *mut c_void, cmd: u32, arg: usize) -> i
     // SAFETY: filp is the live external file object and private_data is its verified ABI field.
     let file = unsafe { read(filp.cast::<u8>().add(DRM_LINUX_FILE_PRIVATE_OFF).cast::<*mut c_void>()) };
     if file.is_null() { return -(LINUX_ENODEV as isize); }
-    let Some(desc) = lookup_driver_ioctl(file, cmd) else { return -(invalid_cmd(cmd) as isize); };
     let size = ioctl_size(cmd) as usize;
-    let dsize = ioctl_size(unsafe { read(desc.add(DRM_IOCTL_DESC_CMD_OFF).cast::<u32>()) }) as usize;
-    let bytes = core::cmp::max(size, dsize);
+    let desc = lookup_driver_ioctl(file, cmd);
+    if desc.is_none() && !is_core_ioctl(cmd) { return -(invalid_cmd(cmd) as isize); }
+    let bytes = desc.map(|desc| core::cmp::max(size, ioctl_size(unsafe { read(desc.add(DRM_IOCTL_DESC_CMD_OFF).cast::<u32>()) }) as usize)).unwrap_or(size);
     let mut data = vec![0u8; bytes];
     if ioctl_dir(cmd) & IOC_WRITE != 0 && copy_from_user(data.as_mut_ptr(), arg as *const u8, size) != 0 { return -(LINUX_EFAULT as isize); }
-    let rc = unsafe { invoke(file, desc, data.as_mut_ptr().cast()) };
+    let rc = match desc { Some(desc) => unsafe { invoke(file, desc, data.as_mut_ptr().cast()) }, None => core_ioctl(file, cmd, data.as_mut_ptr().cast()) };
     if ioctl_dir(cmd) & IOC_READ != 0 && copy_to_user(arg as *mut u8, data.as_ptr(), size) != 0 { return -(LINUX_EFAULT as isize); }
     rc as isize
+}
+
+fn is_core_ioctl(cmd: u32) -> bool { matches!(cmd, DRM_IOCTL_MODE_CREATE_DUMB | DRM_IOCTL_MODE_DESTROY_DUMB) }
+
+fn core_ioctl(file: *mut c_void, cmd: u32, data: *mut c_void) -> i32 {
+    match cmd {
+        DRM_IOCTL_MODE_CREATE_DUMB => dumb_create(file, data),
+        DRM_IOCTL_MODE_DESTROY_DUMB => {
+            // SAFETY: the checked ioctl payload is exactly drm_mode_destroy_dumb and starts with its handle.
+            let handle = unsafe { read(data.cast::<u32>()) };
+            gem::drm_gem_handle_delete(file, handle)
+        }
+        _ => -LINUX_ENOTTY,
+    }
+}
+
+fn dumb_create(file: *mut c_void, args: *mut c_void) -> i32 {
+    // SAFETY: file has a live minor/device relation and the driver field is fixed for the device lifetime.
+    let dev = unsafe { device_for_file(file) }; let driver = unsafe { read(dev.cast::<u8>().add(DRM_DEVICE_DRIVER_OFF).cast::<*const u8>()) };
+    if driver.is_null() { return -LINUX_ENODEV; }
+    // SAFETY: the driver callback slot has the external dumb-create ABI and is optional.
+    let create = unsafe { read(driver.add(DRM_DRIVER_DUMB_CREATE_OFF).cast::<Option<DrmDumbCreate>>()) };
+    let Some(create) = create else { return -LINUX_ENOSYS; };
+    // SAFETY: Linux resets output fields before giving a driver the user request, preventing stale output reuse on failure.
+    unsafe { write(args.cast::<u8>().add(DRM_DUMB_HANDLE_OFF).cast::<u32>(), 0); write(args.cast::<u8>().add(DRM_DUMB_PITCH_OFF).cast::<u32>(), 0); write(args.cast::<u8>().add(DRM_DUMB_SIZE_OFF).cast::<u64>(), 0); }
+    // SAFETY: callback receives the live drm_file, drm_device, and checked drm_mode_create_dumb payload.
+    unsafe { create(file, dev, args) }
 }
 
 /// Compat entry point for driver file-operations tables.
@@ -131,3 +167,28 @@ fn copy_from_user(dst: *mut u8, src: *const u8, len: usize) -> usize { if src.is
 fn copy_to_user(dst: *mut u8, src: *const u8, len: usize) -> usize { unsafe { uaccess::raw_copy_to_user(dst as u64, src, len) } }
 #[cfg(not(target_os = "oxide-kernel"))]
 fn copy_to_user(dst: *mut u8, src: *const u8, len: usize) -> usize { if dst.is_null() { return len; } unsafe { core::ptr::copy_nonoverlapping(src, dst, len); } 0 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::sync::atomic::{AtomicU32, Ordering};
+
+    static DUMB_CALLS: AtomicU32 = AtomicU32::new(0);
+
+    unsafe extern "C" fn create(file: *mut c_void, dev: *mut c_void, args: *mut c_void) -> i32 {
+        assert!(!file.is_null()); assert!(!dev.is_null());
+        // SAFETY: the core supplies a complete mutable dumb-create record with cleared output fields.
+        unsafe { assert_eq!(read(args.cast::<u8>().add(DRM_DUMB_HANDLE_OFF).cast::<u32>()), 0); assert_eq!(read(args.cast::<u8>().add(DRM_DUMB_PITCH_OFF).cast::<u32>()), 0); assert_eq!(read(args.cast::<u8>().add(DRM_DUMB_SIZE_OFF).cast::<u64>()), 0); write(args.cast::<u8>().add(DRM_DUMB_HANDLE_OFF).cast::<u32>(), 7); write(args.cast::<u8>().add(DRM_DUMB_PITCH_OFF).cast::<u32>(), 256); write(args.cast::<u8>().add(DRM_DUMB_SIZE_OFF).cast::<u64>(), 4096); }
+        DUMB_CALLS.fetch_add(1, Ordering::SeqCst); 0
+    }
+
+    #[test]
+    fn standard_dumb_create_clears_outputs_then_calls_the_driver() {
+        let _modules = crate::test_serial::claim(); let mut file = [0u8; 416]; let mut minor = [0u8; 64]; let mut dev = [0u8; 128]; let mut driver = [0u8; 128]; let mut args = [0xffu8; 32]; DUMB_CALLS.store(0, Ordering::SeqCst);
+        // SAFETY: arrays reserve the exact drm_file/minor/device/driver and create-dumb fields consumed by the core path.
+        unsafe { write(file.as_mut_ptr().add(DRM_FILE_MINOR_OFF).cast::<*mut u8>(), minor.as_mut_ptr()); write(minor.as_mut_ptr().add(DRM_MINOR_DEV_OFF).cast::<*mut c_void>(), dev.as_mut_ptr().cast()); write(dev.as_mut_ptr().add(DRM_DEVICE_DRIVER_OFF).cast::<*mut u8>(), driver.as_mut_ptr()); write(driver.as_mut_ptr().add(DRM_DRIVER_DUMB_CREATE_OFF).cast::<Option<DrmDumbCreate>>(), Some(create)); }
+        assert_eq!(core_ioctl(file.as_mut_ptr().cast(), DRM_IOCTL_MODE_CREATE_DUMB, args.as_mut_ptr().cast()), 0); assert_eq!(DUMB_CALLS.load(Ordering::SeqCst), 1);
+        // SAFETY: the callback wrote the result fields after the core cleared them.
+        unsafe { assert_eq!(read(args.as_ptr().add(DRM_DUMB_HANDLE_OFF).cast::<u32>()), 7); assert_eq!(read(args.as_ptr().add(DRM_DUMB_PITCH_OFF).cast::<u32>()), 256); assert_eq!(read(args.as_ptr().add(DRM_DUMB_SIZE_OFF).cast::<u64>()), 4096); }
+    }
+}
