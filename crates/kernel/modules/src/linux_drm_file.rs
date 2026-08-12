@@ -19,10 +19,19 @@ const DRM_LINUX_FILE_PRIVATE_OFF: usize = 24;
 const DRM_DEVICE_DRIVER_OFF: usize = 56;
 const DRM_DRIVER_OPEN_OFF: usize = 8;
 const DRM_DRIVER_POSTCLOSE_OFF: usize = 16;
+const DRM_FILE_EVENT_LIST_OFF: usize = 264;
+const DRM_PENDING_EVENT_EVENT_OFF: usize = 16;
+const DRM_EVENT_LENGTH_OFF: usize = 4;
+const LINUX_EAGAIN: isize = 11;
+const O_NONBLOCK: u32 = 0o4000;
+const EPOLLIN: u32 = 0x001;
+const EPOLLRDNORM: u32 = 0x040;
 
 pub(super) fn export_symbols() {
     crate::symtab::export("drm_open", drm_open as *const () as usize, false);
     crate::symtab::export("drm_release", drm_release as *const () as usize, false);
+    crate::symtab::export("drm_read", drm_read as *const () as usize, false);
+    crate::symtab::export("drm_poll", drm_poll as *const () as usize, false);
 }
 
 pub(super) extern "C" fn drm_open(inode: *mut c_void, filp: *mut c_void) -> i32 {
@@ -75,3 +84,34 @@ pub(super) extern "C" fn drm_release(_inode: *mut c_void, filp: *mut c_void) -> 
     unsafe { write(filp.cast::<u8>().add(DRM_LINUX_FILE_PRIVATE_OFF).cast::<*mut c_void>(), core::ptr::null_mut()); dealloc(file, Layout::from_size_align(DRM_FILE_SIZE, core::mem::align_of::<u64>()).unwrap()); }
     drm_dev_put(dev); 0
 }
+
+/// Consume queued DRM events in FIFO order from this file context. # C: O(bytes read)
+pub(super) extern "C" fn drm_read(filp: *mut c_void, buffer: *mut u8, count: usize, _offset: *mut i64) -> isize {
+    if filp.is_null() || buffer.is_null() { return -(LINUX_EINVAL as isize); }
+    // SAFETY: filp is the ABI-shaped external file and private_data is its DRM file context.
+    let file = unsafe { read(filp.cast::<u8>().add(DRM_LINUX_FILE_PRIVATE_OFF).cast::<*mut u8>()) }; if file.is_null() { return -(LINUX_ENODEV as isize); }
+    let mut done = 0usize;
+    loop {
+        let event = vblank_event::take_next(file);
+        if event.is_null() { return if done != 0 { done as isize } else if unsafe { read(filp.cast::<u8>().add(40).cast::<u32>()) } & O_NONBLOCK != 0 { -LINUX_EAGAIN } else { 0 }; }
+        // SAFETY: an event owns its payload pointer; pending-vblank events carry their compatible payload at offset 88.
+        let payload = unsafe { let payload = read(event.add(DRM_PENDING_EVENT_EVENT_OFF).cast::<*mut u8>()); if payload.is_null() { event.add(88) } else { payload } }; let length = unsafe { read(payload.add(DRM_EVENT_LENGTH_OFF).cast::<u32>()) as usize };
+        if length == 0 || length > count.saturating_sub(done) { vblank_event::put_first(file, event); return done as isize; }
+        if copy_to_user(unsafe { buffer.add(done) }, payload, length) != 0 { return if done == 0 { -(LINUX_EINVAL as isize) } else { done as isize }; }
+        done += length; crate::linux_alloc::kfree(event);
+    }
+}
+
+/// Report readable only when this DRM file has a completed event. # C: O(1)
+pub(super) extern "C" fn drm_poll(filp: *mut c_void, _wait: *mut c_void) -> u32 {
+    if filp.is_null() { return 0; }
+    // SAFETY: filp and its private_data point at the external Linux file and drm_file records.
+    let file = unsafe { read(filp.cast::<u8>().add(DRM_LINUX_FILE_PRIVATE_OFF).cast::<*mut u8>()) }; if file.is_null() { return 0; }
+    // SAFETY: event_list is an initialized list_head whose empty state self-links its first node.
+    unsafe { let head = file.add(DRM_FILE_EVENT_LIST_OFF); if read(head.cast::<*mut u8>()) == head { 0 } else { EPOLLIN | EPOLLRDNORM } }
+}
+
+#[cfg(target_os = "oxide-kernel")]
+fn copy_to_user(dst: *mut u8, src: *const u8, len: usize) -> usize { unsafe { uaccess::raw_copy_to_user(dst as u64, src, len) } }
+#[cfg(not(target_os = "oxide-kernel"))]
+fn copy_to_user(dst: *mut u8, src: *const u8, len: usize) -> usize { unsafe { core::ptr::copy_nonoverlapping(src, dst, len); } 0 }

@@ -153,7 +153,7 @@ extern "C" fn __kvmalloc_node_noprof(size: usize, flags: u32, _node: i32) -> *mu
     vmalloc::alloc(size, flags & GFP_ZERO != 0)
 }
 
-extern "C" fn kzalloc(size: usize, _flags: u32) -> *mut u8 {
+pub(crate) extern "C" fn kzalloc(size: usize, _flags: u32) -> *mut u8 {
     alloc_bytes(size, MIN_ALIGN, true)
 }
 
@@ -165,7 +165,7 @@ extern "C" fn kcalloc(n: usize, size: usize, flags: u32) -> *mut u8 {
     }
 }
 
-extern "C" fn kfree(ptr: *mut u8) {
+pub(crate) extern "C" fn kfree(ptr: *mut u8) {
     // SAFETY: the kfree KPI requires ptr to be NULL or the live result of this allocator's allocation surface.
     unsafe { free_bytes(ptr); }
 }
