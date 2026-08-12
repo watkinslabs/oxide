@@ -298,6 +298,7 @@ impl Nvme {
                 core::ptr::write_volatile(sq.add(base + i), *w);
             }
         }
+        pmm::dma::clean_to_device(h.wrapping_add(sq_pa).wrapping_add(u64::from(slot) * 64), 64);
         core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
 
         // Advance + ring the SQ tail doorbell.
@@ -331,6 +332,7 @@ impl Nvme {
                 (q.cq_head, q.cq_phase, q.entries)
             };
             let base = (head as usize) * 4; // 16-byte CQE = 4 dwords
+            pmm::dma::invalidate_from_device(h.wrapping_add(cq_pa).wrapping_add(u64::from(head) * 16), 16);
             // SAFETY: HHDM-mapped CQ frame we own; `head` is below this
             // queue's negotiated depth (at most 32), so the 4-dword CQE stays
             // in the frame; aligned loads read controller-written status/CID.
@@ -372,6 +374,7 @@ impl Nvme {
         cmd[10] = cns;                            // CDW10: CNS
         let status = self.submit(false, cmd)?;
         if status != 0 { return None; }
+        pmm::dma::invalidate_from_device(hhdm().wrapping_add(self.data_pa), PAGE as usize);
         Some(hhdm().wrapping_add(self.data_pa))
     }
 
@@ -443,6 +446,7 @@ impl Nvme {
                 core::ptr::write_volatile(sq.add(base + i), *word);
             }
         }
+        pmm::dma::clean_to_device(h.wrapping_add(q.sq_pa).wrapping_add(u64::from(q.sq_tail) * 64), 64);
         core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
         q.sq_tail = (q.sq_tail + 1) % q.entries;
         // SAFETY: sq_db_va is the I/O SQ tail doorbell in the owned BAR0 map;
@@ -459,6 +463,7 @@ impl Nvme {
         if h == 0 { return Some(0xFFFF); }
         let cq = h.wrapping_add(q.cq_pa) as *const u32;
         let base = (q.cq_head as usize) * 4;
+        pmm::dma::invalidate_from_device(h.wrapping_add(q.cq_pa).wrapping_add(u64::from(q.cq_head) * 16), 16);
         core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
         // SAFETY: HHDM-mapped I/O CQ frame owned by this controller; head is
         // bounded by queue depth and this reads the 16-byte CQE in-frame.
@@ -503,6 +508,7 @@ impl Nvme {
                 let list = h.wrapping_add(self.prp_list_pa) as *mut u64;
                 // SAFETY: this controller owns the 512-entry PRP-list page and entries never exceeds 511.
                 unsafe { for index in 0..entries { core::ptr::write_volatile(list.add(index), self.data_dma + (index as u64 + 1) * PAGE); } }
+                pmm::dma::clean_to_device(h.wrapping_add(self.prp_list_pa), entries * core::mem::size_of::<u64>());
                 core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
                 cmd[8] = self.prp_list_dma as u32;
                 cmd[9] = (self.prp_list_dma >> 32) as u32;

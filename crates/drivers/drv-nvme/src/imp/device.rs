@@ -68,6 +68,7 @@ impl NvmeBlk {
                     if write {
                         // SAFETY: the turn exclusively owns the one-page PRP bounce frame; len is chunk-bounded.
                         unsafe { for i in 0..len { core::ptr::write_volatile(bounce.add(i), req.buffer[off + i]); } }
+                        pmm::dma::clean_to_device(bounce as u64, len);
                     }
                     ctrl.rw_submit(write, lba, count - 1)
                 }
@@ -83,6 +84,7 @@ impl NvmeBlk {
                 ok = !self.unavailable() && status == Some(0);
                 if ok && !write {
                     let bounce = ctrl.prp_va() as *const u8;
+                    pmm::dma::invalidate_from_device(bounce as u64, len);
                     // SAFETY: a matching completed CQE establishes DMA completion; the turn still owns the bounce frame.
                     unsafe { for i in 0..len { req.buffer[off + i] = core::ptr::read_volatile(bounce.add(i)); } }
                 }
