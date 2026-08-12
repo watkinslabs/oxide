@@ -12,13 +12,8 @@ use crate::ring::{CommandRing, Trb, TRB_BYTES, TRBS_PER_SEGMENT};
 struct HidDma { ring: DmaPage, report: DmaPage, producer: CommandRing, pending: u64 }
 
 struct StorageDma {
-    _bulk_in_ring: DmaPage,
-    _bulk_out_ring: DmaPage,
-    _command: DmaPage,
-    _status: DmaPage,
-    _data: DmaPage,
-    _bulk_in_producer: CommandRing,
-    _bulk_out_producer: CommandRing,
+    bulk_in_ring: DmaPage, bulk_out_ring: DmaPage, command: DmaPage, status: DmaPage, data: DmaPage,
+    bulk_in_producer: CommandRing, bulk_out_producer: CommandRing,
 }
 
 /// Input context, output device context, and endpoint-zero transfer ring.
@@ -107,13 +102,7 @@ impl AddressDeviceDma {
         for word in words { if !self.input.write32(word.offset as u64, word.value) { return None; } }
         self.input.clean_to_device();
         self.storage_dma = Some(StorageDma {
-            _bulk_in_ring: bulk_in_ring,
-            _bulk_out_ring: bulk_out_ring,
-            _command: DmaPage::allocate(self.bdf)?,
-            _status: DmaPage::allocate(self.bdf)?,
-            _data: DmaPage::allocate(self.bdf)?,
-            _bulk_in_producer: bulk_in_producer,
-            _bulk_out_producer: bulk_out_producer,
+            bulk_in_ring, bulk_out_ring, command: DmaPage::allocate(self.bdf)?, status: DmaPage::allocate(self.bdf)?, data: DmaPage::allocate(self.bdf)?, bulk_in_producer, bulk_out_producer,
         });
         Some(true)
     }
@@ -127,6 +116,46 @@ impl AddressDeviceDma {
     pub fn hid_interface(&self) -> Option<crate::usb::HidBootInterface> { self._hid }
     /// HID boot protocol: 1 keyboard or 2 mouse. # C: O(1)
     pub fn hid_protocol(&self) -> Option<u8> { self._hid.map(|hid| hid.protocol) }
+    /// Publish the command-block wrapper for one Bulk-Only command. # C: O(CBW bytes)
+    pub fn submit_storage_cbw(&mut self, mmio: &Mmio, slot: u8, tag: u32, transfer_bytes: u32, device_to_host: bool, cdb: &[u8]) -> Option<u64> {
+        let storage = self._storage?;
+        let dma = self.storage_dma.as_mut()?;
+        let cbw = crate::storage::command_block(tag, transfer_bytes, device_to_host, 0, cdb)?;
+        for (offset, byte) in cbw.into_iter().enumerate() { if !dma.command.write8(offset as u64, byte) { return None; } }
+        dma.command.clean_to_device();
+        submit_transfer(mmio, slot, storage.bulk_out, &mut dma.bulk_out_producer, &dma.bulk_out_ring, dma.command.dma(), crate::storage::CBW_BYTES as u32)
+    }
+    /// Publish the data stage for a Bulk-Only command. # C: O(data bytes)
+    pub fn submit_storage_data(&mut self, mmio: &Mmio, slot: u8, length: u32, device_to_host: bool) -> Option<u64> {
+        let storage = self._storage?;
+        let dma = self.storage_dma.as_mut()?;
+        if length == 0 || length as u64 > 4096 { return None; }
+        let (endpoint, producer, ring) = if device_to_host { (storage.bulk_in, &mut dma.bulk_in_producer, &dma.bulk_in_ring) } else { (storage.bulk_out, &mut dma.bulk_out_producer, &dma.bulk_out_ring) };
+        submit_transfer(mmio, slot, endpoint, producer, ring, dma.data.dma(), length)
+    }
+    /// Publish the final IN command-status wrapper receive. # C: O(CSW bytes)
+    pub fn submit_storage_csw(&mut self, mmio: &Mmio, slot: u8) -> Option<u64> {
+        let storage = self._storage?;
+        let dma = self.storage_dma.as_mut()?;
+        submit_transfer(mmio, slot, storage.bulk_in, &mut dma.bulk_in_producer, &dma.bulk_in_ring, dma.status.dma(), crate::storage::CSW_BYTES as u32)
+    }
+    /// Read a completed data-stage payload after its matching IN completion. # C: O(data bytes)
+    pub fn storage_data(&self, length: usize) -> Option<Vec<u8>> {
+        if length > 4096 { return None; }
+        let dma = self.storage_dma.as_ref()?;
+        dma.data.invalidate_from_device();
+        let mut bytes = Vec::with_capacity(length);
+        for offset in 0..length { bytes.push(dma.data.read8(offset as u64)?); }
+        Some(bytes)
+    }
+    /// Read and validate a completed Bulk-Only command-status wrapper. # C: O(CSW bytes)
+    pub fn storage_csw(&self, tag: u32, transfer_bytes: u32) -> Option<(crate::storage::CswStatus, u32)> {
+        let dma = self.storage_dma.as_ref()?;
+        dma.status.invalidate_from_device();
+        let mut bytes = [0u8; crate::storage::CSW_BYTES];
+        for (offset, byte) in bytes.iter_mut().enumerate() { *byte = dma.status.read8(offset as u64)?; }
+        crate::storage::command_status(&bytes, tag, transfer_bytes)
+    }
     /// Enabled xHCI slot retained for this device. # C: O(1)
     pub fn slot(&self) -> u8 { self.slot }
     /// Physical root-hub port this slot was addressed through. # C: O(1)
@@ -217,4 +246,15 @@ fn transfer_ring(bdf: pci::Bdf) -> Option<(DmaPage, CommandRing)> {
     ring.clean_to_device();
     let producer = CommandRing::new(ring.dma())?;
     Some((ring, producer))
+}
+
+fn submit_transfer(mmio: &Mmio, slot: u8, endpoint: u8, producer: &mut CommandRing, ring: &DmaPage, buffer: u64, length: u32) -> Option<u64> {
+    let endpoint_id = (endpoint & 0x0f).checked_mul(2)?.checked_add(u8::from(endpoint & 0x80 != 0))?;
+    let trb = Trb::normal(buffer, length)?;
+    let (pa, _) = producer.push(trb);
+    let index = pa.checked_sub(ring.dma())?.checked_div(TRB_BYTES as u64)? as usize;
+    let written = producer.trb(index)?;
+    for (word, value) in written.dword.iter().enumerate() { if !ring.write32((index * TRB_BYTES + word * 4) as u64, *value) { return None; } }
+    ring.clean_to_device();
+    mmio.ring_endpoint_doorbell(slot, endpoint_id).then_some(pa)
 }

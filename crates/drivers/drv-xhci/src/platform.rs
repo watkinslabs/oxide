@@ -63,6 +63,16 @@ impl DmaPage {
         true
     }
 
+    /// Write one controller-visible byte within this exclusive DMA page. # C: O(1)
+    pub fn write8(&self, offset: u64, value: u8) -> bool {
+        if offset >= PAGE { return false; }
+        let Some(va) = hhdm().checked_add(self.pa).and_then(|base| base.checked_add(offset)) else { return false; };
+        // SAFETY: this DmaPage owns the direct-map memory and the byte offset
+        // is checked against its single allocated page before the DMA clean.
+        unsafe { write_volatile(va as *mut u8, value); }
+        true
+    }
+
     /// Read one controller-written byte from this exclusive DMA page. # C: O(1)
     pub fn read8(&self, offset: u64) -> Option<u8> {
         if offset >= PAGE { return None; }
