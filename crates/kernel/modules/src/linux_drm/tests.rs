@@ -155,7 +155,7 @@ fn mode_init_copies_values_but_zeros_list_linkage() {
 #[test]
 fn noedid_fallback_adds_the_reference_modes_with_both_bounds() {
     let _modules = crate::test_serial::claim(); let mut parent = LinuxDevice::new(); let dev = device(&mut parent, 2048); assert_eq!(drmm_mode_config_init(dev), 0); let mut connector = TestConnector([0; 2280]); let funcs = 1u8;
-    assert_eq!(connector::drm_connector_init(dev, connector.0.as_mut_ptr().cast(), (&funcs as *const u8).cast(), 11), 0); assert_eq!(mode::drm_add_modes_noedid(connector.0.as_mut_ptr().cast(), 1024, 768), 5); assert_eq!(DEVICES.lock()[0].connectors[0].modes.len(), 5);
+    assert_eq!(connector::drm_connector_init(dev, connector.0.as_mut_ptr().cast(), (&funcs as *const u8).cast(), 11), 0); assert_eq!(mode::drm_add_modes_noedid(connector.0.as_mut_ptr().cast(), 1024, 768), 5); assert_eq!(DEVICES.lock()[0].connectors[0].probed_modes.len(), 5);
     connector::drm_connector_cleanup(connector.0.as_mut_ptr().cast()); devres::release_device(&mut parent);
 }
 
@@ -163,7 +163,7 @@ fn noedid_fallback_adds_the_reference_modes_with_both_bounds() {
 fn preferred_mode_marks_each_matching_probed_mode() {
     let _modules = crate::test_serial::claim(); let mut parent = LinuxDevice::new(); let dev = device(&mut parent, 2048); assert_eq!(drmm_mode_config_init(dev), 0); let mut connector = TestConnector([0; 2280]); let funcs = 1u8;
     assert_eq!(connector::drm_connector_init(dev, connector.0.as_mut_ptr().cast(), (&funcs as *const u8).cast(), 11), 0); assert_eq!(mode::drm_add_modes_noedid(connector.0.as_mut_ptr().cast(), 640, 480), 1); mode::drm_set_preferred_mode(connector.0.as_mut_ptr().cast(), 640, 480);
-    let mode = DEVICES.lock()[0].connectors[0].modes[0]; assert_ne!(unsafe { *((mode as *const u8).add(62)) } & (1 << 3), 0); connector::drm_connector_cleanup(connector.0.as_mut_ptr().cast()); devres::release_device(&mut parent);
+    let mode = DEVICES.lock()[0].connectors[0].probed_modes[0]; assert_ne!(unsafe { *((mode as *const u8).add(62)) } & (1 << 3), 0); connector::drm_connector_cleanup(connector.0.as_mut_ptr().cast()); devres::release_device(&mut parent);
 }
 
 #[test]

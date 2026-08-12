@@ -120,7 +120,7 @@ pub(super) extern "C" fn drm_add_modes_noedid(connector: *mut c_void, max_h: u32
 pub(super) extern "C" fn drm_set_preferred_mode(connector: *mut c_void, hpref: i32, vpref: i32) {
     if connector.is_null() { return; } let dev = unsafe { *(connector.cast::<*mut c_void>()) }; let devices = DEVICES.lock();
     let Some(record) = devices.iter().find(|record| record.dev == dev as usize) else { return; }; let Some(entry) = record.connectors.iter().find(|entry| entry.ptr == connector as usize) else { return; };
-    for &mode in &entry.modes { unsafe { let ptr = mode as *mut u8; if *(ptr.add(DRM_DISPLAY_MODE_HDISPLAY_OFF).cast::<u16>()) as i32 == hpref && *(ptr.add(DRM_DISPLAY_MODE_VDISPLAY_OFF).cast::<u16>()) as i32 == vpref { let ty = ptr.add(DRM_DISPLAY_MODE_TYPE_OFF); write(ty, *ty | DRM_MODE_TYPE_PREFERRED); } } }
+    for &mode in &entry.probed_modes { unsafe { let ptr = mode as *mut u8; if *(ptr.add(DRM_DISPLAY_MODE_HDISPLAY_OFF).cast::<u16>()) as i32 == hpref && *(ptr.add(DRM_DISPLAY_MODE_VDISPLAY_OFF).cast::<u16>()) as i32 == vpref { let ty = ptr.add(DRM_DISPLAY_MODE_TYPE_OFF); write(ty, *ty | DRM_MODE_TYPE_PREFERRED); } } }
 }
 
 /// Move new probed modes into the connector's live mode list. # C: O(N_probed * N_modes)
