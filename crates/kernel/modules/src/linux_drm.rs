@@ -258,7 +258,7 @@ fn release_planes(rec: &mut DeviceAllocation) {
         // SAFETY: formats was allocated by drm_universal_plane_init with this exact layout.
         unsafe { dealloc(plane.formats as *mut u8, plane.layout); }
     }
-    if let Some((storage, layout)) = rec.vblank.take() { if storage != 0 { unsafe { dealloc(storage as *mut u8, layout); } } }
+    if let Some((storage, layout)) = rec.vblank.take() { if storage != 0 { vblank::cancel_storage(storage, layout.size()); unsafe { dealloc(storage as *mut u8, layout); } } }
 }
 
 /// Allocate per-CRTC vblank storage and publish it in the DRM device. # C: O(N_crtcs)
