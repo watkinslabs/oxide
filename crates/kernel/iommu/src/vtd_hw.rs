@@ -231,6 +231,32 @@ impl VtdRegisters {
         if !self.write32(GCMD, command | GCMD_TRANSLATION_ENABLE) { return false; }
         self.wait_status(GSTS_TRANSLATION_ENABLED, true)
     }
+    /// Disable DMA translation before discarding boot-owned root and context tables.
+    /// This is the VT-d `iommu_disable_translation()` transition Linux performs
+    /// while unwinding an unsuccessfully initialized DRHD. # C: O(poll limit)
+    pub fn disable_translation(&self) -> bool {
+        let Some(status) = self.read32(GSTS) else { return false; };
+        if status & GSTS_TRANSLATION_ENABLED == 0 { return true; }
+        let Some(command) = self.read32(GCMD) else { return false; };
+        if !self.write32(GCMD, command & !GCMD_TRANSLATION_ENABLE) { return false; }
+        self.wait_status(GSTS_TRANSLATION_ENABLED, false)
+    }
+    /// Drain and disable queued invalidation before its permanent ring is discarded.
+    /// This follows Linux's `dmar_disable_qi()` and is deliberately best effort
+    /// when called from a failed boot-path transition. # C: O(poll limit)
+    pub fn disable_queued_invalidation(&self) -> bool {
+        if !self.supports_queued_invalidation() { return true; }
+        let Some(status) = self.read32(GSTS) else { return false; };
+        if status & GSTS_QUEUED_INVALIDATION_ENABLED == 0 { return true; }
+        for _ in 0..POLL_LIMIT {
+            let (Some(head), Some(tail)) = (self.read64(IQH), self.read64(IQT)) else { return false; };
+            if head == tail { break; }
+            core::hint::spin_loop();
+        }
+        let Some(command) = self.read32(GCMD) else { return false; };
+        if !self.write32(GCMD, command & !GCMD_QUEUED_INVALIDATION_ENABLE) { return false; }
+        self.wait_status(GSTS_QUEUED_INVALIDATION_ENABLED, false)
+    }
     fn wait_status(&self, bit: u32, wanted: bool) -> bool {
         for _ in 0..POLL_LIMIT {
             let Some(status) = self.read32(GSTS) else { return false; };
