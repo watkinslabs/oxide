@@ -149,7 +149,7 @@ fn primary_open_assigns_one_authenticated_master_and_handoffs_on_close() {
 fn mode_config_initializes_each_object_list_once() {
     let _modules = crate::test_serial::claim(); let mut parent = LinuxDevice::new(); let dev = device(&mut parent, 2048); assert_eq!(drmm_mode_config_init(dev), 0); let config = dev.cast::<u8>().wrapping_add(DRM_MODE_CONFIG_OFF);
     // SAFETY: the mode config was initialized above, so every tracked list head is live.
-    unsafe { for off in MODE_CONFIG_LISTS { let head = config.add(off).cast::<*mut c_void>(); assert_eq!(*head, head.cast()); assert_eq!(*head.add(1), head.cast()); } }
+    unsafe { for off in MODE_CONFIG_LISTS { let head = config.add(off).cast::<*mut c_void>(); if off == MODE_CONFIG_PROPERTY_LIST_OFF { assert_ne!(*head, head.cast()); assert_ne!(*head.add(1), head.cast()); } else { assert_eq!(*head, head.cast()); assert_eq!(*head.add(1), head.cast()); } } }
     assert_eq!(drmm_mode_config_init(dev), -LINUX_EBUSY); devres::release_device(&mut parent);
 }
 
@@ -173,10 +173,10 @@ fn mode_objects_receive_reusable_ids_and_unregister_once() {
     let _modules = crate::test_serial::claim(); let mut parent = LinuxDevice::new(); let dev = device(&mut parent, 2048); assert_eq!(drmm_mode_config_init(dev), 0); let mut first = [0u8; 32]; let mut second = [0u8; 32];
     assert_eq!(drm_mode_object_add(dev, first.as_mut_ptr().cast(), 0xcccc_cccc), 0); assert_eq!(drm_mode_object_add(dev, second.as_mut_ptr().cast(), 0xdddd_dddd), 0);
     // SAFETY: successful creation initialized the first two u32 ABI fields of both objects.
-    unsafe { assert_eq!(*(first.as_ptr().cast::<u32>()), 1); assert_eq!(*(second.as_ptr().cast::<u32>()), 2); assert_eq!(*(first.as_ptr().add(DRM_MODE_OBJECT_TYPE_OFF).cast::<u32>()), 0xcccc_cccc); }
+    unsafe { assert_eq!(*(first.as_ptr().cast::<u32>()), 3); assert_eq!(*(second.as_ptr().cast::<u32>()), 4); assert_eq!(*(first.as_ptr().add(DRM_MODE_OBJECT_TYPE_OFF).cast::<u32>()), 0xcccc_cccc); }
     drm_mode_object_unregister(dev, first.as_mut_ptr().cast()); drm_mode_object_unregister(dev, first.as_mut_ptr().cast()); let mut reused = [0u8; 32]; assert_eq!(drm_mode_object_add(dev, reused.as_mut_ptr().cast(), 0), 0);
     // SAFETY: the lowest released object identifier is assigned to the new object.
-    assert_eq!(unsafe { *(reused.as_ptr().cast::<u32>()) }, 1); devres::release_device(&mut parent);
+    assert_eq!(unsafe { *(reused.as_ptr().cast::<u32>()) }, 3); devres::release_device(&mut parent);
 }
 
 #[test]
@@ -185,7 +185,7 @@ fn universal_plane_owns_formats_links_the_mode_list_and_cleans_up() {
     // SAFETY: plane has the verified drm_plane layout size and formats has two valid entries.
     assert_eq!(unsafe { drm_universal_plane_init(dev, plane.0.as_mut_ptr().cast(), 1, (&funcs as *const u8).cast(), formats.as_ptr(), formats.len() as u32, core::ptr::null(), 1, c"plane".as_ptr()) }, 0);
     // SAFETY: successful initialization populated the verified plane ABI fields.
-    unsafe { assert_eq!(*(plane.0.as_ptr().add(VERIFIED_DRM_PLANE_BASE_OFF).cast::<u32>()), 1); assert_eq!(*(plane.0.as_ptr().add(VERIFIED_DRM_PLANE_BASE_OFF + DRM_MODE_OBJECT_TYPE_OFF).cast::<u32>()), DRM_MODE_OBJECT_PLANE); assert_eq!(*(plane.0.as_ptr().add(VERIFIED_DRM_PLANE_POSSIBLE_CRTCS_OFF).cast::<u32>()), 1); assert_eq!(*(plane.0.as_ptr().add(VERIFIED_DRM_PLANE_FORMAT_COUNT_OFF).cast::<u32>()), 2); assert_eq!(*(plane.0.as_ptr().add(VERIFIED_DRM_PLANE_FUNCS_OFF).cast::<*const u8>()), &funcs); assert_eq!(*(plane.0.as_ptr().add(VERIFIED_DRM_PLANE_TYPE_OFF).cast::<i32>()), 1); assert_eq!(*(plane.0.as_ptr().add(VERIFIED_DRM_PLANE_INDEX_OFF).cast::<u32>()), 0); let copied = *(plane.0.as_ptr().add(VERIFIED_DRM_PLANE_FORMATS_OFF).cast::<*const u32>()); assert_ne!(copied, formats.as_ptr()); assert_eq!(*copied, formats[0]); }
+    unsafe { assert_eq!(*(plane.0.as_ptr().add(VERIFIED_DRM_PLANE_BASE_OFF).cast::<u32>()), 3); assert_eq!(*(plane.0.as_ptr().add(VERIFIED_DRM_PLANE_BASE_OFF + DRM_MODE_OBJECT_TYPE_OFF).cast::<u32>()), DRM_MODE_OBJECT_PLANE); assert_eq!(*(plane.0.as_ptr().add(VERIFIED_DRM_PLANE_POSSIBLE_CRTCS_OFF).cast::<u32>()), 1); assert_eq!(*(plane.0.as_ptr().add(VERIFIED_DRM_PLANE_FORMAT_COUNT_OFF).cast::<u32>()), 2); assert_eq!(*(plane.0.as_ptr().add(VERIFIED_DRM_PLANE_FUNCS_OFF).cast::<*const u8>()), &funcs); assert_eq!(*(plane.0.as_ptr().add(VERIFIED_DRM_PLANE_TYPE_OFF).cast::<i32>()), 1); assert_eq!(*(plane.0.as_ptr().add(VERIFIED_DRM_PLANE_INDEX_OFF).cast::<u32>()), 0); let copied = *(plane.0.as_ptr().add(VERIFIED_DRM_PLANE_FORMATS_OFF).cast::<*const u32>()); assert_ne!(copied, formats.as_ptr()); assert_eq!(*copied, formats[0]); }
     assert_eq!(DEVICES.lock()[0].planes.len(), 1); drm_plane_cleanup(plane.0.as_mut_ptr().cast()); assert_eq!(DEVICES.lock()[0].planes.len(), 0);
     let config = dev.cast::<u8>().wrapping_add(DRM_MODE_CONFIG_OFF);
     // SAFETY: cleanup reinitializes the removed plane link and decrements the device plane count.
@@ -200,7 +200,7 @@ fn crtc_links_legacy_planes_and_reverses_all_owned_state() {
     assert_eq!(unsafe { drm_universal_plane_init(dev, plane.0.as_mut_ptr().cast(), 0, core::ptr::null(), formats.as_ptr(), 1, core::ptr::null(), 1, c"plane".as_ptr()) }, 0); let mut crtc = TestCrtc([0; 1228]); assert_eq!(unsafe { drm_crtc_init_with_planes(dev, crtc.0.as_mut_ptr().cast(), plane.0.as_mut_ptr().cast(), core::ptr::null_mut(), (&funcs as *const u8).cast(), core::ptr::null()) }, 0);
     let config = dev.cast::<u8>().wrapping_add(DRM_MODE_CONFIG_OFF);
     // SAFETY: successful initialization populated these exact ABI fields and assigned the primary-plane CRTC mask.
-    unsafe { assert_eq!(*(crtc.0.as_ptr().add(DRM_CRTC_BASE_OFF).cast::<u32>()), 2); assert_eq!(*(crtc.0.as_ptr().add(DRM_CRTC_PRIMARY_OFF).cast::<*mut c_void>()), plane.0.as_mut_ptr().cast()); assert_eq!(*(plane.0.as_ptr().add(DRM_PLANE_POSSIBLE_CRTCS_OFF).cast::<u32>()), 1); assert_eq!(*(config.add(MODE_CONFIG_NUM_CRTC_OFF).cast::<i32>()), 1); }
+    unsafe { assert_eq!(*(crtc.0.as_ptr().add(DRM_CRTC_BASE_OFF).cast::<u32>()), 4); assert_eq!(*(crtc.0.as_ptr().add(DRM_CRTC_PRIMARY_OFF).cast::<*mut c_void>()), plane.0.as_mut_ptr().cast()); assert_eq!(*(plane.0.as_ptr().add(DRM_PLANE_POSSIBLE_CRTCS_OFF).cast::<u32>()), 1); assert_eq!(*(config.add(MODE_CONFIG_NUM_CRTC_OFF).cast::<i32>()), 1); }
     drm_crtc_cleanup(crtc.0.as_mut_ptr().cast()); assert_eq!(DEVICES.lock()[0].crtcs.len(), 0); unsafe { assert_eq!(*(config.add(MODE_CONFIG_NUM_CRTC_OFF).cast::<i32>()), 0); assert_eq!(*(crtc.0.as_ptr().add(DRM_CRTC_BASE_OFF).cast::<u32>()), 0); }
     drm_plane_cleanup(plane.0.as_mut_ptr().cast()); devres::release_device(&mut parent);
 }
@@ -211,7 +211,7 @@ fn encoder_links_the_mode_graph_with_a_typed_id_and_cleans_up() {
     // SAFETY: encoder reserves the verified ABI layout and receives a valid callback table address.
     assert_eq!(unsafe { drm_encoder_init(dev, encoder.0.as_mut_ptr().cast(), (&funcs as *const u8).cast(), 10, core::ptr::null()) }, 0); let config = dev.cast::<u8>().wrapping_add(DRM_MODE_CONFIG_OFF);
     // SAFETY: initialization assigned the core object type, type/index fields, and mode-config count.
-    unsafe { assert_eq!(*(encoder.0.as_ptr().add(DRM_ENCODER_BASE_OFF).cast::<u32>()), 1); assert_eq!(*(encoder.0.as_ptr().add(DRM_ENCODER_BASE_OFF + DRM_MODE_OBJECT_TYPE_OFF).cast::<u32>()), DRM_MODE_OBJECT_ENCODER); assert_eq!(*(encoder.0.as_ptr().add(DRM_ENCODER_TYPE_OFF).cast::<i32>()), 10); assert_eq!(*(config.add(MODE_CONFIG_NUM_ENCODER_OFF).cast::<i32>()), 1); }
+    unsafe { assert_eq!(*(encoder.0.as_ptr().add(DRM_ENCODER_BASE_OFF).cast::<u32>()), 3); assert_eq!(*(encoder.0.as_ptr().add(DRM_ENCODER_BASE_OFF + DRM_MODE_OBJECT_TYPE_OFF).cast::<u32>()), DRM_MODE_OBJECT_ENCODER); assert_eq!(*(encoder.0.as_ptr().add(DRM_ENCODER_TYPE_OFF).cast::<i32>()), 10); assert_eq!(*(config.add(MODE_CONFIG_NUM_ENCODER_OFF).cast::<i32>()), 1); }
     drm_encoder_cleanup(encoder.0.as_mut_ptr().cast()); assert_eq!(DEVICES.lock()[0].encoders.len(), 0); unsafe { assert_eq!(*(config.add(MODE_CONFIG_NUM_ENCODER_OFF).cast::<i32>()), 0); assert_eq!(*(encoder.0.as_ptr().add(DRM_ENCODER_BASE_OFF).cast::<u32>()), 0); } devres::release_device(&mut parent);
 }
 
@@ -219,7 +219,7 @@ fn encoder_links_the_mode_graph_with_a_typed_id_and_cleans_up() {
 fn connector_links_the_mode_graph_and_cleans_up() {
     let _modules = crate::test_serial::claim(); let mut parent = LinuxDevice::new(); let dev = device(&mut parent, 2048); assert_eq!(drmm_mode_config_init(dev), 0); let mut connector = TestConnector([0; 2280]); let funcs = 1u8;
     assert_eq!(connector::drm_connector_init(dev, connector.0.as_mut_ptr().cast(), (&funcs as *const u8).cast(), 11), 0); let config = dev.cast::<u8>().wrapping_add(DRM_MODE_CONFIG_OFF);
-    unsafe { assert_eq!(*(connector.0.as_ptr().add(connector::DRM_CONNECTOR_BASE_OFF).cast::<u32>()), 1); assert_eq!(*(connector.0.as_ptr().add(connector::DRM_CONNECTOR_BASE_OFF + DRM_MODE_OBJECT_TYPE_OFF).cast::<u32>()), connector::DRM_MODE_OBJECT_CONNECTOR); assert_eq!(*(connector.0.as_ptr().add(80).cast::<i32>()), 1); assert_ne!(*(connector.0.as_ptr().add(88).cast::<usize>()), 0); assert_eq!(*(config.add(VERIFIED_MODE_CONFIG_NUM_CONNECTOR_OFF).cast::<i32>()), 1); }
+    unsafe { assert_eq!(*(connector.0.as_ptr().add(connector::DRM_CONNECTOR_BASE_OFF).cast::<u32>()), 3); assert_eq!(*(connector.0.as_ptr().add(connector::DRM_CONNECTOR_BASE_OFF + DRM_MODE_OBJECT_TYPE_OFF).cast::<u32>()), connector::DRM_MODE_OBJECT_CONNECTOR); assert_eq!(*(connector.0.as_ptr().add(80).cast::<i32>()), 1); assert_ne!(*(connector.0.as_ptr().add(88).cast::<usize>()), 0); assert_eq!(*(config.add(VERIFIED_MODE_CONFIG_NUM_CONNECTOR_OFF).cast::<i32>()), 1); }
     connector::drm_connector_cleanup(connector.0.as_mut_ptr().cast()); assert_eq!(DEVICES.lock()[0].connectors.len(), 0); devres::release_device(&mut parent);
 }
 
