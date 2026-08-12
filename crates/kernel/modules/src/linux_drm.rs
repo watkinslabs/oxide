@@ -2,7 +2,7 @@
 
 extern crate alloc;
 
-use alloc::alloc::{alloc_zeroed, dealloc};
+use alloc::alloc::{alloc, alloc_zeroed, dealloc};
 use alloc::vec::Vec;
 use crate::linux_device::devres;
 use crate::linux_device::types::LinuxDevice;
@@ -19,12 +19,15 @@ struct DeviceAllocation {
     refs: usize,
     mode_config: bool,
     objects: Vec<ModeObjectRecord>,
+    planes: Vec<PlaneRecord>,
     put_pending: bool,
     unplugged: bool,
 }
 
 #[derive(Copy, Clone)]
 struct ModeObjectRecord { ptr: usize, id: u32 }
+
+struct PlaneRecord { ptr: usize, formats: usize, layout: Layout }
 
 static DEVICES: Spinlock<Vec<DeviceAllocation>, ModulesLockClass> = Spinlock::new(Vec::new());
 static GUARDS: Spinlock<Vec<(i32, usize)>, ModulesLockClass> = Spinlock::new(Vec::new());
@@ -59,6 +62,17 @@ const MODE_CONFIG_LISTS: [usize; 9] = [
 ];
 const DRM_MODE_OBJECT_ID_OFF: usize = 0;
 const DRM_MODE_OBJECT_TYPE_OFF: usize = 4;
+const MODE_CONFIG_NUM_TOTAL_PLANE_OFF: usize = 312;
+const DRM_PLANE_HEAD_OFF: usize = 8;
+const DRM_PLANE_BASE_OFF: usize = 88;
+const DRM_PLANE_POSSIBLE_CRTCS_OFF: usize = 120;
+const DRM_PLANE_FORMATS_OFF: usize = 128;
+const DRM_PLANE_FORMAT_COUNT_OFF: usize = 136;
+const DRM_PLANE_FUNCS_OFF: usize = 184;
+const DRM_PLANE_TYPE_OFF: usize = 200;
+const DRM_PLANE_INDEX_OFF: usize = 1224;
+const DRM_MODE_OBJECT_PLANE: u32 = 0xcccc_cccc;
+const MAX_KMS_OBJECTS: i32 = 32;
 
 /// Register the DRM core object-lifetime ABI.
 /// # C: O(1)
@@ -72,6 +86,8 @@ pub fn export_symbols() {
     crate::symtab::export("drmm_mode_config_init", drmm_mode_config_init as *const () as usize, false);
     crate::symtab::export("drm_mode_object_add", drm_mode_object_add as *const () as usize, false);
     crate::symtab::export("drm_mode_object_unregister", drm_mode_object_unregister as *const () as usize, false);
+    crate::symtab::export("drm_universal_plane_init", drm_universal_plane_init as *const () as usize, false);
+    crate::symtab::export("drm_plane_cleanup", drm_plane_cleanup as *const () as usize, false);
 }
 
 fn layout_for(size: usize) -> Option<Layout> {
@@ -115,7 +131,7 @@ extern "C" fn __devm_drm_dev_alloc(
     let dev = unsafe { base.add(offset) };
     initialize_device(dev, parent, driver, base);
     let dev = dev.cast::<c_void>();
-    DEVICES.lock().push(DeviceAllocation { dev: dev as usize, base: base as usize, layout, refs: 1, mode_config: false, objects: Vec::new(), put_pending: false, unplugged: false });
+    DEVICES.lock().push(DeviceAllocation { dev: dev as usize, base: base as usize, layout, refs: 1, mode_config: false, objects: Vec::new(), planes: Vec::new(), put_pending: false, unplugged: false });
     if devres::add_action_or_reset(parent, Some(devm_drm_dev_put), dev) != 0 { return core::ptr::null_mut(); }
     base.cast()
 }
@@ -124,7 +140,7 @@ extern "C" fn __devm_drm_dev_alloc(
 /// # C: O(N_devices)
 extern "C" fn drm_dev_put(dev: *mut c_void) {
     if dev.is_null() { return; }
-    let rec = {
+    let mut rec = {
         let mut devices = DEVICES.lock();
         let Some(pos) = devices.iter().position(|rec| rec.dev == dev as usize) else { return };
         if devices[pos].refs > 1 {
@@ -137,9 +153,17 @@ extern "C" fn drm_dev_put(dev: *mut c_void) {
         }
         devices.remove(pos)
     };
+    release_planes(&mut rec);
     // SAFETY: rec.base was returned by alloc_zeroed with rec.layout and was
     // removed from DEVICES first, so this exact allocation is released once.
     unsafe { dealloc(rec.base as *mut u8, rec.layout); }
+}
+
+fn release_planes(rec: &mut DeviceAllocation) {
+    for plane in rec.planes.drain(..) {
+        // SAFETY: formats was allocated by drm_universal_plane_init with this exact layout.
+        unsafe { dealloc(plane.formats as *mut u8, plane.layout); }
+    }
 }
 
 /// Take one lifetime reference held by the caller. # C: O(N_devices)
@@ -210,6 +234,72 @@ extern "C" fn drm_mode_object_unregister(dev: *mut c_void, object: *mut c_void) 
     }
 }
 
+/// Initialize a universal plane and attach it to the managed mode-config graph. # C: O(N_planes + formats)
+unsafe extern "C" fn drm_universal_plane_init(
+    dev: *mut c_void, plane: *mut c_void, possible_crtcs: u32, funcs: *const c_void,
+    formats: *const u32, format_count: u32, _modifiers: *const u64, plane_type: i32,
+    _name: *const core::ffi::c_char, mut _args: ...,
+) -> i32 {
+    if plane.is_null() || formats.is_null() || format_count == 0 || format_count > 64 { return -LINUX_ENODEV; }
+    let layout = match Layout::array::<u32>(format_count as usize) { Ok(v) => v, Err(_) => return -LINUX_EBUSY };
+    // SAFETY: layout describes exactly format_count u32 entries and formats is a caller-owned ABI array.
+    let copied = unsafe { alloc(layout) };
+    if copied.is_null() { return -LINUX_EBUSY; }
+    // SAFETY: copied covers format_count u32 values and formats identifies the input array required by the ABI.
+    unsafe { core::ptr::copy_nonoverlapping(formats, copied.cast::<u32>(), format_count as usize); }
+    if drm_mode_object_add(dev, unsafe { plane.cast::<u8>().add(DRM_PLANE_BASE_OFF).cast() }, DRM_MODE_OBJECT_PLANE) != 0 {
+        // SAFETY: copied has not been published and is released with the allocation layout above.
+        unsafe { dealloc(copied, layout); }
+        return -LINUX_ENODEV;
+    }
+    let mut devices = DEVICES.lock();
+    let Some(rec) = devices.iter_mut().find(|rec| rec.dev == dev as usize && rec.mode_config && !rec.put_pending && !rec.unplugged) else { return -LINUX_ENODEV; };
+    let config = dev.cast::<u8>().wrapping_add(DRM_MODE_CONFIG_OFF);
+    // SAFETY: the object was accepted by drm_mode_object_add and every plane/config offset is verified ABI layout.
+    unsafe {
+        let index = *(config.add(MODE_CONFIG_NUM_TOTAL_PLANE_OFF).cast::<i32>());
+        if index >= MAX_KMS_OBJECTS { return -LINUX_EBUSY; }
+        let head = plane.cast::<u8>().add(DRM_PLANE_HEAD_OFF).cast::<*mut c_void>();
+        let list = config.add(MODE_CONFIG_PLANE_LIST_OFF).cast::<*mut c_void>();
+        let tail = *list.add(1);
+        write(head, list.cast()); write(head.add(1), tail); write(tail as *mut *mut c_void, head.cast()); write(list.add(1), head.cast());
+        write(plane.cast::<u8>().cast::<*mut c_void>(), dev);
+        write(plane.cast::<u8>().add(DRM_PLANE_POSSIBLE_CRTCS_OFF).cast::<u32>(), possible_crtcs);
+        write(plane.cast::<u8>().add(DRM_PLANE_FORMATS_OFF).cast::<*mut u32>(), copied.cast());
+        write(plane.cast::<u8>().add(DRM_PLANE_FORMAT_COUNT_OFF).cast::<u32>(), format_count);
+        write(plane.cast::<u8>().add(DRM_PLANE_FUNCS_OFF).cast::<*const c_void>(), funcs);
+        write(plane.cast::<u8>().add(DRM_PLANE_TYPE_OFF).cast::<i32>(), plane_type);
+        write(plane.cast::<u8>().add(DRM_PLANE_INDEX_OFF).cast::<u32>(), index as u32);
+        write(config.add(MODE_CONFIG_NUM_TOTAL_PLANE_OFF).cast::<i32>(), index + 1);
+    }
+    rec.planes.push(PlaneRecord { ptr: plane as usize, formats: copied as usize, layout });
+    0
+}
+
+/// Detach a universal plane and release its copied format table. # C: O(N_planes + N_objects)
+extern "C" fn drm_plane_cleanup(plane: *mut c_void) {
+    if plane.is_null() { return; }
+    let dev = unsafe { *(plane.cast::<*mut c_void>()) };
+    let mut devices = DEVICES.lock();
+    let Some(rec) = devices.iter_mut().find(|rec| rec.dev == dev as usize) else { return; };
+    let Some(pos) = rec.planes.iter().position(|entry| entry.ptr == plane as usize) else { return; };
+    let entry = rec.planes.remove(pos);
+    let config = dev.cast::<u8>().wrapping_add(DRM_MODE_CONFIG_OFF);
+    // SAFETY: entry is the exact live plane record; its list links and counter share this device lock.
+    unsafe {
+        let head = plane.cast::<u8>().add(DRM_PLANE_HEAD_OFF).cast::<*mut c_void>();
+        let next = *head; let prev = *head.add(1);
+        write(prev.cast::<*mut c_void>(), next); write(next.cast::<*mut c_void>().add(1), prev);
+        write(head, head.cast()); write(head.add(1), head.cast());
+        let count = config.add(MODE_CONFIG_NUM_TOTAL_PLANE_OFF).cast::<i32>();
+        if *count > 0 { write(count, *count - 1); }
+        write(plane.cast::<*mut c_void>(), core::ptr::null_mut());
+        dealloc(entry.formats as *mut u8, entry.layout);
+    }
+    drop(devices);
+    drm_mode_object_unregister(dev, unsafe { plane.cast::<u8>().add(DRM_PLANE_BASE_OFF).cast() });
+}
+
 fn next_guard() -> i32 {
     loop {
         let id = NEXT_GUARD.fetch_add(1, Ordering::Relaxed);
@@ -239,11 +329,12 @@ extern "C" fn drm_dev_exit(idx: i32) {
         guards.remove(pos).1
     };
     DRAIN_WAIT.wake_all();
-    let rec = {
+    let mut rec = {
         let mut devices = DEVICES.lock();
         let Some(pos) = devices.iter().position(|rec| rec.dev == dev && rec.put_pending) else { return };
         devices.remove(pos)
     };
+    release_planes(&mut rec);
     // SAFETY: the final guard removed this pending allocation and the record
     // was atomically removed before its original allocation is released.
     unsafe { dealloc(rec.base as *mut u8, rec.layout); }
