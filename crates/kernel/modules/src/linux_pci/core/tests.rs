@@ -17,9 +17,8 @@ const TEST_BAR: i32 = 0;
 const TEST_BAR_IDX: usize = TEST_BAR as usize;
 const TEST_MAXLEN_UNBOUNDED: usize = 0;
 const TEST_VECTOR_COUNT: i32 = 1;
-const TEST_MSI_VECTOR_COUNT: i32 = 2;
+const TEST_MSI_VECTOR_COUNT: i32 = 1;
 const TEST_VECTOR_NR: u32 = 0;
-const TEST_VECTOR_NR_ONE: u32 = 1;
 const TEST_VENDOR: u16 = 0x1af4;
 const TEST_DEVICE: u16 = 0x1041;
 const TEST_CFG_DWORD_OFF: i32 = 0;
@@ -43,6 +42,7 @@ const TEST_PCIE_DEVCTL: usize = 0x48 / 4;
 const TEST_PCIE_READRQ_512: u16 = 0x2000;
 const TEST_MSIX_CAP: u8 = 0x50;
 const TEST_MSIX_TABLE_SIZE_MINUS_ONE: u16 = 7;
+const TEST_MSI_CAP: u8 = 0x48;
 
 static MODEL_PROBES: AtomicUsize = AtomicUsize::new(0);
 static MODEL_REMOVES: AtomicUsize = AtomicUsize::new(0);
@@ -214,23 +214,22 @@ fn selected_regions_use_the_linux_bar_mask_and_roll_back_on_conflict() {
 }
 
 #[test]
-fn msi_irq_vectors_allocate_and_free_arch_vectors() {
+fn msi_irq_vectors_program_and_release_the_pci_message() {
     let _modules = crate::test_serial::claim();
     let mut dev = test_dev();
+    dev.msi_cap = TEST_MSI_CAP;
+    cfg_set(&mut dev, (TEST_MSI_CAP / 4) as usize, pci::CAP_ID_MSI as u32 | (1 << 23));
     assert_eq!(
         pci_alloc_irq_vectors(&mut dev, TEST_MSI_VECTOR_COUNT, TEST_MSI_VECTOR_COUNT, PCI_IRQ_MSI),
         TEST_MSI_VECTOR_COUNT
     );
     let base = pci_irq_vector(&mut dev, TEST_VECTOR_NR);
     assert!(base > 0);
-    assert_eq!(pci_irq_vector(&mut dev, TEST_VECTOR_NR_ONE), base + 1);
+    assert_ne!(cfg_get(&mut dev, ((TEST_MSI_CAP + 4) / 4) as usize), 0);
+    assert_ne!(cfg_get(&mut dev, ((TEST_MSI_CAP + 12) / 4) as usize) & 0xffff, 0);
     pci_free_irq_vectors(&mut dev);
     assert_eq!(pci_irq_vector(&mut dev, TEST_VECTOR_NR), -LINUX_EINVAL);
-    assert_eq!(
-        pci_alloc_irq_vectors(&mut dev, TEST_MSI_VECTOR_COUNT, TEST_MSI_VECTOR_COUNT, PCI_IRQ_MSI),
-        TEST_MSI_VECTOR_COUNT
-    );
-    pci_free_irq_vectors(&mut dev);
+    assert_eq!(cfg_get(&mut dev, (TEST_MSI_CAP / 4) as usize) & pci::MSI_ENABLE, 0);
 }
 
 #[test]
