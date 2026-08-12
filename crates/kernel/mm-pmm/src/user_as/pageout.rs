@@ -311,5 +311,5 @@ pub fn flush_reclaim_mapping(mm: &AddressSpace, va: u64) {
             unsafe { hal_x86_64::flush_local_va(va); }
         }
     }
-    hal::tlb::shootdown_others_va(va, mm.cpumask());
+    hal::tlb::shootdown_others_va(va, mm.cpumask_full().as_words());
 }

@@ -37,7 +37,7 @@ pub const ALL: u64 = smp_call::ALL;
 /// a page the buddy is about to recycle.
 /// # C: O(popcount(targets)) + IPI round-trip
 #[inline]
-pub fn shootdown_others_va(va: u64, targets: u64) {
+pub fn shootdown_others_va(va: u64, targets: &[u64]) {
     smp_call::call_function_many(targets, CallKind::TlbFlush, va, true);
 }
 
@@ -46,6 +46,6 @@ pub fn shootdown_others_va(va: u64, targets: u64) {
 /// cost far more than one broadcast full flush).
 /// # C: O(popcount(targets)) + IPI round-trip
 #[inline]
-pub fn shootdown_others_all(targets: u64) {
+pub fn shootdown_others_all(targets: &[u64]) {
     shootdown_others_va(ALL, targets);
 }

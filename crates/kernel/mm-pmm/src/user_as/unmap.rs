@@ -272,7 +272,7 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
     // being discarded and then never hear that the range was discarded.
     let watchers = zap_watchers(addr, addr + len_aligned, vmm::UffdEventKind::Remove);
     // mm_cpumask snapshot for flush_tlb_others (read once, not per page).
-    let mask = current_mm_cpumask();
+    let mask = current_mm_cpumask_full();
     let mut va = addr;
     let end = addr + len_aligned;
     while va < end {
@@ -308,7 +308,7 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
             // frame after it returns to the allocator (use-after-free
             // aliasing). x86-only effect; no-op on UP / aarch64 / hosted.
             // cpumask-targeted (only CPUs that have this mm), not all online.
-            hal::tlb::shootdown_others_va(va, mask);
+            hal::tlb::shootdown_others_va(va, mask.as_words());
             // debug-fwm: free-while-mapped catch on the MADV_DONTNEED path.
             #[cfg(feature = "debug-fwm")]
             {
@@ -335,14 +335,14 @@ pub fn evict_pages_in_range(addr: u64, len: u64) -> i64 {
             // Swap PTEs are non-present and therefore invisible to `translate`.
             // Clear the exact leaf before dropping its slot reference so a fault
             // cannot resurrect a page whose VMA has been zapped.
-            hal::tlb::shootdown_others_va(va, mask);
+            hal::tlb::shootdown_others_va(va, mask.as_words());
             let _ = crate::swap::free_page(entry);
         } else if clear_current_pte_marker(va) {
             // The marker described contents this zap is discarding; it names
             // no frame and no swap slot, so nothing is released with it.
-            hal::tlb::shootdown_others_va(va, mask);
+            hal::tlb::shootdown_others_va(va, mask.as_words());
         } else if let Some(marker) = clear_current_migration_entry(va) {
-            hal::tlb::shootdown_others_va(va, mask);
+            hal::tlb::shootdown_others_va(va, mask.as_words());
             account_present_removed(va);
             if let Some(pa) = vmm::migration_drop_marker_mapping(marker) {
                 // SAFETY: removing this marker tears down precisely one
@@ -407,7 +407,7 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
     // between.
     let watchers = zap_watchers(range.start.as_u64(), range.end, vmm::UffdEventKind::Unmap);
     // mm_cpumask snapshot for flush_tlb_others (read once, not per page).
-    let mask = current_mm_cpumask();
+    let mask = current_mm_cpumask_full();
     let mut va = addr;
     let end = range.end;
     while va < end {
@@ -450,7 +450,7 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
             // same mm can't touch a freed+realloc'd frame through a stale TLB
             // entry. x86-only effect; no-op on UP / aarch64 / hosted.
             // cpumask-targeted (only CPUs that have this mm), not all online.
-            hal::tlb::shootdown_others_va(va, mask);
+            hal::tlb::shootdown_others_va(va, mask.as_words());
             // debug-fwm: free-while-mapped catch on the MUNMAP path. This dec is
             // about to (maybe) free `pa`. If its refcount is <=1 (this dec frees
             // it) yet a PEER address space still maps this VA→pa, the refcount
@@ -482,14 +482,14 @@ pub fn glue_munmap(addr: u64, len: u64) -> i64 {
             // `munmap` must release a non-present swap leaf exactly as it
             // releases a present anonymous leaf; otherwise memory.swap.current
             // remains charged after the mapping is gone.
-            hal::tlb::shootdown_others_va(va, mask);
+            hal::tlb::shootdown_others_va(va, mask.as_words());
             let _ = crate::swap::free_page(entry);
         } else if clear_current_pte_marker(va) {
             // The marker described contents this zap is discarding; it names
             // no frame and no swap slot, so nothing is released with it.
-            hal::tlb::shootdown_others_va(va, mask);
+            hal::tlb::shootdown_others_va(va, mask.as_words());
         } else if let Some(marker) = clear_current_migration_entry(va) {
-            hal::tlb::shootdown_others_va(va, mask);
+            hal::tlb::shootdown_others_va(va, mask.as_words());
             account_present_removed(va);
             if let Some(pa) = vmm::migration_drop_marker_mapping(marker) {
                 // SAFETY: marker removal transfers this original PTE ref.

@@ -14,46 +14,48 @@ use std::cell::RefCell;
 use super::mask::*;
 use super::queue::{CallQueues, SlotState};
 
+fn mask(word: u64) -> crate::CpuMask { crate::CpuMask::from_words(&[word]) }
+
 // ---------------------------------------------------------------- targets
 
 #[test]
 fn targets_exclude_the_caller() {
     // Every CPU requested, all online, caller is 2.
-    assert_eq!(targets_for(0b1111, 0b1111, 2), 0b1011);
+    assert_eq!(targets_for(mask(0b1111), mask(0b1111), 2), mask(0b1011));
 }
 
 #[test]
 fn targets_exclude_cpus_that_are_not_online() {
     // The mm names CPUs 0..3; only 0 and 1 have finished bring-up.
-    assert_eq!(targets_for(0b1111, 0b0011, 0), 0b0010);
+    assert_eq!(targets_for(mask(0b1111), mask(0b0011), 0), mask(0b0010));
 }
 
 #[test]
 fn targets_exclude_cpus_outside_the_requested_mask() {
     // Four CPUs online but the mm has only ever run on 0 and 3.
-    assert_eq!(targets_for(0b1001, 0b1111, 0), 0b1000);
+    assert_eq!(targets_for(mask(0b1001), mask(0b1111), 0), mask(0b1000));
 }
 
 #[test]
 fn an_empty_request_targets_nobody() {
-    assert_eq!(targets_for(0, 0b1111, 0), 0);
+    assert_eq!(targets_for(mask(0), mask(0b1111), 0), mask(0));
 }
 
 #[test]
 fn a_caller_alone_in_the_mask_targets_nobody() {
-    assert_eq!(targets_for(0b0100, 0b1111, 2), 0);
+    assert_eq!(targets_for(mask(0b0100), mask(0b1111), 2), mask(0));
 }
 
 #[test]
 fn an_out_of_range_caller_id_removes_nothing_and_panics_nothing() {
-    assert_eq!(targets_for(0b1111, 0b1111, 99), 0b1111);
+    assert_eq!(targets_for(mask(0b1111), mask(0b1111), 99), mask(0b1111));
 }
 
 #[test]
 fn drop_unreachable_clears_only_that_cpu() {
-    assert_eq!(drop_unreachable(0b1011, 1), 0b1001);
-    assert_eq!(drop_unreachable(0b1011, 2), 0b1011);
-    assert_eq!(drop_unreachable(0b1011, 64), 0b1011);
+    assert_eq!(drop_unreachable(mask(0b1011), 1), mask(0b1001));
+    assert_eq!(drop_unreachable(mask(0b1011), 2), mask(0b1011));
+    assert_eq!(drop_unreachable(mask(0b1011), 64), mask(0b1011));
 }
 
 #[test]

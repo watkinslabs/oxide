@@ -151,7 +151,7 @@ impl AddressSpace {
             // SAFETY: privileged TLB invalidation is legal at CPL=0/EL1.
             unsafe { M::flush_va(Va(t.va)); }
             if let Some(old) = replaced {
-                hal::tlb::shootdown_others_va(t.va, self.cpumask());
+                hal::tlb::shootdown_others_va(t.va, self.cpumask_full().as_words());
                 backing.huge_put_frame(old.0 & !(huge_bytes - 1));
             }
             return Ok(());
@@ -236,4 +236,3 @@ impl AddressSpace {
         Ok(())
     }
 }
-

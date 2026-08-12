@@ -73,7 +73,7 @@ pub(super) fn restore_swap_entry(
     // PageMeta+rmap+memcg ownership.  Only this successful path may admit it;
     // a stale swap-fault loser freed its provisional frame above.
     kassert!(crate::setup::admit_anon_lru(pa).is_ok(), "swapin anon lru admission invariant");
-    hal::tlb::shootdown_others_va(va_page, as_.cpumask());
+    hal::tlb::shootdown_others_va(va_page, as_.cpumask_full().as_words());
     // The present PTE is durable before releasing its old swap slot.
     let _ = crate::swap::free_page(entry);
     Ok(true)

@@ -19,20 +19,15 @@ pub(super) fn current_cpu_idx() -> usize {
     { 0 }
 }
 
-/// Snapshot the running task's mm `cpumask` (Linux `mm_cpumask`) for
-/// `flush_tlb_others` targeting at the PT-mutating glue sites. Returns 0
-/// when there is no current user task (boot context / kthread) — the
-/// shootdown then becomes a no-op, which is correct: no peer CPU holds a
-/// user mm that isn't the current one.
-/// # C: O(1)
+/// Full running-mm residency set for every TLB caller that can address CPUs
+/// beyond the low machine word. # C: O(words)
 #[inline]
-pub(super) fn current_mm_cpumask() -> u64 {
+pub(super) fn current_mm_cpumask_full() -> cpu::CpuMask {
     sched::live::current()
         // SAFETY: read-only borrow of the running task's mm slot; synchronous
-        // fault/syscall context owns that task slot, so execve cannot mutate it
-        // concurrently during this read.
-        .and_then(|c| unsafe { c.mm_ref() }.map(|m| m.cpumask()))
-        .unwrap_or(0)
+        // fault/syscall context owns that task slot while this snapshot forms.
+        .and_then(|c| unsafe { c.mm_ref() }.map(|m| m.cpumask_full()))
+        .unwrap_or_else(cpu::CpuMask::empty)
 }
 
 /// Initialise the global user AS, allocate its private page-table

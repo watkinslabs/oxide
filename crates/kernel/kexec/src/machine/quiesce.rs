@@ -16,10 +16,9 @@
 ///
 /// The caller is excluded because it is the one that performs the relocation:
 /// asking it to halt would stop the machine with the image un-copied.
-/// # C: O(1)
-pub fn stop_targets(online: u64, me: usize) -> u64 {
-    if me >= 64 { return online; }
-    online & !(1u64 << me)
+/// # C: O(words)
+pub fn stop_targets(online: cpu::CpuMask, me: usize) -> cpu::CpuMask {
+    online.without(cpu::CpuMask::of(me))
 }
 
 /// Whether every target has reported itself stopped.
@@ -28,12 +27,16 @@ pub fn stop_targets(online: u64, me: usize) -> u64 {
 /// its stop a timeout and proceeds regardless, because the alternative is a
 /// machine that hangs with a perfectly good image loaded — and it says so in
 /// the log rather than silently.
-/// # C: O(1)
-pub fn converged(stopped: u64, targets: u64) -> bool { targets & !stopped == 0 }
+/// # C: O(words)
+pub fn converged(stopped: cpu::CpuMask, targets: cpu::CpuMask) -> bool {
+    targets.without(stopped).is_empty()
+}
 
 /// CPUs still running when the wait gave up.
-/// # C: O(1)
-pub fn stragglers(stopped: u64, targets: u64) -> u64 { targets & !stopped }
+/// # C: O(words)
+pub fn stragglers(stopped: cpu::CpuMask, targets: cpu::CpuMask) -> cpu::CpuMask {
+    targets.without(stopped)
+}
 
 /// How long to wait for the other CPUs before relocating anyway, in
 /// nanoseconds. The reference waits one second for its reboot IPI.
@@ -43,32 +46,34 @@ pub const STOP_TIMEOUT_NS: u64 = 1_000_000_000;
 mod tests {
     use super::*;
 
+    fn mask(word: u64) -> cpu::CpuMask { cpu::CpuMask::from_words(&[word]) }
+
     #[test]
     fn the_relocating_cpu_is_never_asked_to_halt() {
-        assert_eq!(stop_targets(0b1111, 0), 0b1110);
-        assert_eq!(stop_targets(0b1111, 2), 0b1011);
+        assert_eq!(stop_targets(mask(0b1111), 0), mask(0b1110));
+        assert_eq!(stop_targets(mask(0b1111), 2), mask(0b1011));
     }
 
     #[test]
     fn a_uniprocessor_machine_has_nothing_to_stop() {
-        assert_eq!(stop_targets(0b1, 0), 0);
-        assert!(converged(0, 0));
+        assert_eq!(stop_targets(mask(0b1), 0), mask(0));
+        assert!(converged(mask(0), mask(0)));
     }
 
     #[test]
     fn convergence_needs_every_target_and_ignores_extras() {
-        assert!(!converged(0b0010, 0b0110));
-        assert!(converged(0b0110, 0b0110));
+        assert!(!converged(mask(0b0010), mask(0b0110)));
+        assert!(converged(mask(0b0110), mask(0b0110)));
         // A CPU that stopped for some other reason is not a target and must
         // not make an incomplete stop look complete.
-        assert!(converged(0b1110, 0b0110));
-        assert_eq!(stragglers(0b0010, 0b0110), 0b0100);
+        assert!(converged(mask(0b1110), mask(0b0110)));
+        assert_eq!(stragglers(mask(0b0010), mask(0b0110)), mask(0b0100));
     }
 
     #[test]
     fn an_out_of_range_cpu_index_never_clears_a_target() {
         // A CPU id past the mask width must not silently unmask bit 0.
-        assert_eq!(stop_targets(0b1111, 64), 0b1111);
+        assert_eq!(stop_targets(mask(0b1111), 64), mask(0b1111));
     }
 }
 
@@ -92,14 +97,14 @@ const STOP_SPIN_BUDGET: u64 = 200_000_000;
 #[cfg(target_os = "oxide-kernel")]
 /// # C: O(spin budget)
 pub fn stop_other_cpus() {
-    let online = cpu::smp::online_mask();
+    let online = cpu::smp::online_cpumask();
     #[cfg(target_arch = "x86_64")]
     let me = { use hal::CpuOps; hal_x86_64::X86CpuOps::current_cpu() as usize };
     #[cfg(target_arch = "aarch64")]
     let me = { use hal::CpuOps; hal_aarch64::ArmCpuOps::current_cpu() as usize };
     let targets = stop_targets(online, me);
-    if targets == 0 { return; }
-    hal::smp_call::call_function_many(targets, hal::smp_call::CallKind::Stop, 0, false);
+    if targets.is_empty() { return; }
+    hal::smp_call::call_function_many(targets.as_words(), hal::smp_call::CallKind::Stop, 0, false);
     // Between the request and the convergence wait, because those are two
     // different ways for this to stop making progress and the log has to tell
     // them apart: the request itself can block on a queue another CPU is not
@@ -107,7 +112,7 @@ pub fn stop_other_cpus() {
     klog::announce_emergency("kexec: stop requested");
     let mut spun = 0u64;
     while spun < STOP_SPIN_BUDGET {
-        if converged(hal::smp_call::stopped_mask(), targets) { return; }
+        if converged(cpu::CpuMask::from_words(&[hal::smp_call::stopped_mask()]), targets) { return; }
         core::hint::spin_loop();
         spun += 1;
     }

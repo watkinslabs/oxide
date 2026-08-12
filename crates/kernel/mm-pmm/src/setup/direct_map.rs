@@ -266,9 +266,9 @@ pub fn kernel_range_is_executable(va: u64, pages: u64) -> bool {
 #[cfg(target_os = "oxide-kernel")]
 pub fn flush_kernel_range(va: u64, len: u64) {
     if len == 0 { return; }
-    let targets = cpu::smp::online_mask();
-    if len <= hal::PAGE_SIZE_BYTES { hal::tlb::shootdown_others_va(va, targets); }
-    else { hal::tlb::shootdown_others_all(targets); }
+    let targets = cpu::smp::online_cpumask();
+    if len <= hal::PAGE_SIZE_BYTES { hal::tlb::shootdown_others_va(va, targets.as_words()); }
+    else { hal::tlb::shootdown_others_all(targets.as_words()); }
 }
 
 /// Flush the linear-map range covering one page of `pa`.

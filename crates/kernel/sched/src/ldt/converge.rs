@@ -26,12 +26,12 @@ pub trait LdtInstallOps {
     /// CPUs that may currently be running this mm — the reference's
     /// `mm_cpumask`. Read AFTER publication: a CPU that joins the mm later
     /// reads the already-published table, so it needs no call.
-    fn cpumask(&mut self) -> u64;
+    fn cpumask(&mut self) -> cpu::CpuMask;
 
     /// Reload LDTR on every CPU in `targets` AND on this one, returning only
     /// once each has finished. A caller that cannot wait must not call this
     /// function at all — the free below would be unguarded.
-    fn converge(&mut self, targets: u64);
+    fn converge(&mut self, targets: cpu::CpuMask);
 
     /// Release the displaced table.
     fn free_old(&mut self, old: Self::Old);
@@ -60,8 +60,8 @@ mod tests {
     impl LdtInstallOps for Fake {
         type Old = u32;
         fn publish(&mut self) -> u32 { self.log.push(Ev::Publish); 0x01D }
-        fn cpumask(&mut self) -> u64 { self.log.push(Ev::Cpumask); self.mask }
-        fn converge(&mut self, t: u64) { self.log.push(Ev::Converge(t)); }
+        fn cpumask(&mut self) -> cpu::CpuMask { self.log.push(Ev::Cpumask); cpu::CpuMask::from_words(&[self.mask]) }
+        fn converge(&mut self, t: cpu::CpuMask) { self.log.push(Ev::Converge(t.low_word())); }
         fn free_old(&mut self, _old: u32) { self.log.push(Ev::Free); }
     }
 

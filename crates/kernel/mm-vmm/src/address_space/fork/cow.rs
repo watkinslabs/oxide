@@ -335,7 +335,7 @@ impl AddressSpace {
         // hosted. One full flush beats a per-page IPI across the whole AS.
         // Target only the CPUs that have THIS mm loaded (the parent's
         // cpumask) per Linux flush_tlb_others — not every online CPU.
-        hal::tlb::shootdown_others_all(self.cpumask());
+        hal::tlb::shootdown_others_all(self.cpumask_full().as_words());
         let accounting = super::super::accounting::VmAccounting::from_vmas(new_root_pa, &dst);
         accounting.seed_ptes(&tally);
         // Linux `ldt_dup_context`: a private copy of the parent's descriptors.

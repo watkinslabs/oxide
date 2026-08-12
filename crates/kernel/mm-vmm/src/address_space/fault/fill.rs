@@ -135,7 +135,7 @@ impl AddressSpace {
                     // could touch a freed+realloc'd frame. Flush peers (this
                     // mm's cpumask only) BEFORE dropping our reference. No-op
                     // on UP / aarch64 / hosted.
-                    hal::tlb::shootdown_others_va(va_page, self.cpumask());
+                    hal::tlb::shootdown_others_va(va_page, self.cpumask_full().as_words());
                     dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
                 }
                 Ok(())
@@ -214,7 +214,7 @@ impl AddressSpace {
                     if replaced.is_none() { self.accounting.install_pte(&vma); }
                     if let Some(old) = replaced {
                         // Flush peers before releasing a displaced private frame.
-                        hal::tlb::shootdown_others_va(va_page, self.cpumask());
+                        hal::tlb::shootdown_others_va(va_page, self.cpumask_full().as_words());
                         dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
                     }
                     if around_ok && !matches!(access, FaultAccess::Write) {
@@ -522,7 +522,7 @@ impl AddressSpace {
                     // could touch a freed+realloc'd frame. Flush peers (this
                     // mm's cpumask only) BEFORE dropping our reference. No-op
                     // on UP / aarch64 / hosted.
-                    hal::tlb::shootdown_others_va(va_page, self.cpumask());
+                    hal::tlb::shootdown_others_va(va_page, self.cpumask_full().as_words());
                     dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
                 }
                 if around_ok && !matches!(access, FaultAccess::Write) {

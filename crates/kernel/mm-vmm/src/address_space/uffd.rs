@@ -166,10 +166,10 @@ impl AddressSpace {
     /// or a stale writable entry outlives a write-protect.
     /// # C: O((end - start) / 4096)
     pub fn uffd_shootdown_range(&self, start: u64, end: u64) {
-        let mask = self.cpumask();
+        let mask = self.cpumask_full();
         let mut va = start;
         while va < end {
-            hal::tlb::shootdown_others_va(va, mask);
+            hal::tlb::shootdown_others_va(va, mask.as_words());
             va += hal::PAGE_SIZE_BYTES;
         }
     }

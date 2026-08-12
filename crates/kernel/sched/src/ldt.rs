@@ -131,19 +131,19 @@ impl LdtInstallOps for Install<'_> {
         }
     }
 
-    fn cpumask(&mut self) -> u64 {
-        if self.err.is_some() { return 0; }
-        self.mm.cpumask()
+    fn cpumask(&mut self) -> cpu::CpuMask {
+        if self.err.is_some() { return cpu::CpuMask::empty(); }
+        self.mm.cpumask_full()
     }
 
-    fn converge(&mut self, targets: u64) {
+    fn converge(&mut self, targets: cpu::CpuMask) {
         if self.err.is_some() { return; }
         // This CPU runs the reload directly (the reference's SCF_RUN_LOCAL):
         // it is excluded from the target set, and the installing thread may
         // load the new selector on its next instruction.
         reload_current(self.mm);
         hal::smp_call::call_function_many(
-            targets,
+            targets.as_words(),
             hal::smp_call::CallKind::LdtReload,
             self.mm.root_pa(),
             true,

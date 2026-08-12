@@ -61,7 +61,7 @@ impl AddressSpace {
                 klog::write_raw(b" newzero_pa="); klog::write_hex_u64(pa);
                 klog::write_raw(b"\n");
             }
-            hal::tlb::shootdown_others_va(va_page, self.cpumask());
+            hal::tlb::shootdown_others_va(va_page, self.cpumask_full().as_words());
             dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
         }
         let idx = ((va_page - vma.start.as_u64()) / PAGE_SIZE_BYTES) as u32;

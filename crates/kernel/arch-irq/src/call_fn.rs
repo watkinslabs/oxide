@@ -124,29 +124,29 @@ unsafe fn send_ipi(logical_cpu: u32) -> bool {
 /// no other CPU — the common single-threaded-process case, which costs zero
 /// IPIs.
 /// # C: O(popcount(targets)) + IPI round-trip
-fn call_function_many(mask: u64, kind: u32, arg: u64, wait: bool) {
+fn call_function_many(mask: &[u64], kind: u32, arg: u64, wait: bool) {
     if cpu::smp::online_count() <= 1 { return; }
     let me = this_cpu();
-    let targets = targets_for(mask, cpu::smp::online_mask(), me);
-    if targets == 0 { return; }
+    let targets = targets_for(cpu::CpuMask::from_words(mask), cpu::smp::online_cpumask(), me);
+    if targets.is_empty() { return; }
 
     let mut pending = targets;
-    let mut c = 0u32;
-    while c < 64 {
-        if targets & (1u64 << c) != 0 {
-            let t = c as usize;
+    let mut c = 0usize;
+    while c < cpu::MAX_CPUS {
+        if targets.contains(c) {
+            let t = c;
             // Take this sender's descriptor for `t`, draining our own queue
             // while a previous call on it is outstanding: without that, two
             // CPUs each waiting to send to the other never progress.
             QUEUES.lock_slot(me, t, service);
             let need_ipi = QUEUES.push(me, t, kind, arg);
             // SAFETY: LAPIC enabled post-boot; target is an online CPU.
-            if need_ipi && !unsafe { send_ipi(c) } {
+            if need_ipi && !unsafe { send_ipi(c as u32) } {
                 // Never delivered. The entry is queued but nothing will drain
                 // it, so waiting is a hang for an acknowledgement that cannot
                 // arrive — and a CPU with no hardware id was never scheduled
                 // on, so it holds no stale state.
-                pending = drop_unreachable(pending, c);
+                pending = drop_unreachable(pending, c as u32);
             }
         }
         c += 1;
@@ -161,22 +161,22 @@ fn call_function_many(mask: u64, kind: u32, arg: u64, wait: bool) {
 /// The wait is unconditional, like the reference's: declaring the call missed
 /// and returning would let the caller free a page a peer still has a live
 /// translation for, or a descriptor table a peer's LDTR still names.
-fn wait_for(me: usize, pending: u64) {
+fn wait_for(me: usize, pending: cpu::CpuMask) {
     let t0 = now_ns();
     let mut fired: u32 = 0;
     let mut next_warn = t0.wrapping_add(STUCK_WARN_NS);
     let mut spins: u64 = 0;
     let mut next_spin_warn = STUCK_WARN_SPINS;
     loop {
-        let mut left = 0u64;
-        let mut c = 0u32;
-        while c < 64 {
-            if pending & (1u64 << c) != 0 && !QUEUES.is_complete(me, c as usize) {
-                left |= 1u64 << c;
+        let mut left = cpu::CpuMask::empty();
+        let mut c = 0usize;
+        while c < cpu::MAX_CPUS {
+            if pending.contains(c) && !QUEUES.is_complete(me, c) {
+                let _ = left.insert(c);
             }
             c += 1;
         }
-        if left == 0 { return; }
+        if left.is_empty() { return; }
         // Service our own queue: the CPU we are waiting for may in turn be
         // waiting for us.
         service();
@@ -203,7 +203,7 @@ fn now_ns() -> u64 { hal_x86_64::X86TimerOps::monotonic_ns().0 }
 /// — the wait continues.
 /// # C: O(popcount(left))
 #[cold]
-fn report_stuck(me: usize, left: u64, waited_ns: u64, spins: u64) {
+fn report_stuck(me: usize, left: cpu::CpuMask, waited_ns: u64, spins: u64) {
     klog::write_raw(b"[SMPCALL-STUCK] cpu=");
     klog::write_dec_u64(me as u64);
     klog::write_raw(b" waited_ms=");
@@ -211,16 +211,16 @@ fn report_stuck(me: usize, left: u64, waited_ns: u64, spins: u64) {
     klog::write_raw(b" spins=");
     klog::write_dec_u64(spins);
     klog::write_raw(b" pending=");
-    klog::write_hex_u64(left);
+    klog::write_hex_u64(left.low_word());
     klog::write_raw(b"\n");
-    let mut c = 0u32;
-    while c < 64 {
-        if left & (1u64 << c) != 0 {
+    let mut c = 0usize;
+    while c < cpu::MAX_CPUS {
+        if left.contains(c) {
             // SAFETY: LAPIC enabled post-boot; re-delivering the same fixed
             // vector to a CPU that still owes completion is idempotent
             // (`service()` is a no-op once its queue is empty).
-            unsafe { let _ = send_ipi(c); }
-            sched::diag::nmi::poke_cpu(c);
+            unsafe { let _ = send_ipi(c as u32); }
+            sched::diag::nmi::poke_cpu(c as u32);
         }
         c += 1;
     }

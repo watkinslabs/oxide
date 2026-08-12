@@ -26,5 +26,5 @@ fn zero_is_never_a_kind_so_an_empty_slot_cannot_decode() {
 fn the_hook_is_absent_in_the_hosted_harness_and_calls_are_no_ops() {
     assert!(!available());
     // Must not panic and must not require an arch.
-    call_function_many(0xFF, CallKind::TlbFlush, ALL, true);
+    call_function_many(&[0xFF], CallKind::TlbFlush, ALL, true);
 }
