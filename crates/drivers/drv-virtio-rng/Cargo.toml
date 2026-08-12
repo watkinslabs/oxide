@@ -9,7 +9,9 @@ path = "src/lib.rs"
 
 [dependencies]
 hal     = { path = "../../arch/hal" }
+iommu   = { path = "../../kernel/iommu" }
 klog    = { path = "../../shared/klog" }
+pci     = { path = "../../drivers/pci" }
 drv     = { path = "../../drivers/drv" }
 virtio  = { path = "../../drivers/virtio" }
 sync    = { path = "../../shared/sync" }

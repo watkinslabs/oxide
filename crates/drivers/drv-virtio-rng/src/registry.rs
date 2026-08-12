@@ -6,12 +6,14 @@ use crate::{consts::{BOUNCE_FRAME_BYTES, HWRNG_MAJOR, HWRNG_MINOR}, fill::fill_f
 
 pub(crate) struct RngState {
     pub device_key: virtio::VirtioChildDeviceKey,
+    pub bdf: pci::Bdf,
     pub cfg_va: u64,
     pub hhdm: u64,
     pub requestq: virtio::VirtQueueResource,
     pub avail_idx: u16,
     pub used_idx_seen: u16,
     pub bounce_pa: u64,
+    pub bounce_dma: u64,
     pub hwrng_dev: Arc<drv::Device>,
     pub shutdown: bool,
 }
@@ -34,6 +36,7 @@ pub fn present() -> bool {
 
 pub fn install(
     device_key: virtio::VirtioChildDeviceKey,
+    bdf: pci::Bdf,
     resources: virtio::VirtioResources,
 ) -> Option<usize> {
     let Some(requestq) = resources.require_queue(0) else {
@@ -43,6 +46,11 @@ pub fn install(
         return None;
     }
     let bounce_pa = pmm::setup::alloc_one_frame()?;
+    let Some(bounce_dma) = iommu::map_dma(bdf, bounce_pa, BOUNCE_FRAME_BYTES) else {
+        // SAFETY: mapping failed before a virtqueue descriptor could name the frame.
+        unsafe { pmm::setup::free_one_frame(bounce_pa); }
+        return None;
+    };
     let va = resources.hhdm.wrapping_add(bounce_pa) as *mut u8;
     // SAFETY: HHDM view of the frame `alloc_one_frame` just returned, so this
     // code is its only owner and no other mapping exists yet; the loop clears
@@ -68,18 +76,20 @@ pub fn install(
         .iter()
         .any(|record| record.lock().device_key == device_key)
     {
-        free_frame(bounce_pa);
+        free_dma_frame(bdf, bounce_pa, bounce_dma);
         return None;
     }
     let publish_hwrng = registry.active_key.is_none();
     let record = Arc::new(Spinlock::new(RngState {
         device_key,
+        bdf,
         cfg_va: resources.cfg_va,
         hhdm: resources.hhdm,
         requestq,
         avail_idx: used_seen,
         used_idx_seen: used_seen,
         bounce_pa,
+        bounce_dma,
         hwrng_dev: Arc::clone(&hwrng_dev),
         shutdown: false,
     }));
@@ -102,7 +112,7 @@ pub fn install(
         if let Some(record) = record {
             disarm_and_free(&record);
         } else {
-            free_frame(bounce_pa);
+            free_dma_frame(bdf, bounce_pa, bounce_dma);
         }
         return None;
     }
@@ -183,20 +193,21 @@ pub fn shutdown(device_key: virtio::VirtioChildDeviceKey) -> bool {
 /// the device as a WRITE descriptor.
 /// # C: O(1)
 pub(crate) fn disarm_and_free(record: &RngHandle) {
-    let bounce_pa = {
+    let (bdf, bounce_pa, bounce_dma) = {
         let mut ctx = record.lock();
         ctx.shutdown = true;
-        core::mem::replace(&mut ctx.bounce_pa, 0)
+        (ctx.bdf, core::mem::replace(&mut ctx.bounce_pa, 0),
+            core::mem::replace(&mut ctx.bounce_dma, 0))
     };
-    free_frame(bounce_pa);
+    free_dma_frame(bdf, bounce_pa, bounce_dma);
 }
 
-pub(crate) fn free_frame(pa: u64) {
-    if pa != 0 {
+pub(crate) fn free_dma_frame(bdf: pci::Bdf, pa: u64, dma: u64) {
+    if pa != 0 && dma != 0 && iommu::unmap_dma(bdf, dma, BOUNCE_FRAME_BYTES) {
         // SAFETY: `pa` came from `alloc_one_frame` for this record's bounce
         // buffer and reaches here only after the record was removed from the
         // registry (or marked shut down) with `bounce_pa` cleared under its
-        // lock, so no descriptor and no clone of the handle still names it.
+        // lock, and the mapping was retired before PMM reuse.
         unsafe { pmm::setup::free_one_frame(pa); }
     }
 }
