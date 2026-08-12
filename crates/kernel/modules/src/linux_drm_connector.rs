@@ -18,6 +18,9 @@ pub(super) const DRM_CONNECTOR_STATUS_DISCONNECTED: i32 = 2;
 pub(super) const DRM_CONNECTOR_STATUS_UNKNOWN: i32 = 3;
 pub(super) const DRM_CONNECTOR_POSSIBLE_ENCODERS_OFF: usize = 1736;
 const DRM_CONNECTOR_ENCODER_OFF: usize = 1744;
+const DRM_CONNECTOR_MODE_OBJECT_REFCOUNT_OFF: usize = 80;
+const DRM_CONNECTOR_MODE_OBJECT_FREE_CB_OFF: usize = 88;
+const DRM_CONNECTOR_DESTROY_OFF: usize = 64;
 pub(super) const MODE_CONFIG_NUM_CONNECTOR_OFF: usize = 236;
 pub(super) const DRM_MODE_OBJECT_CONNECTOR: u32 = 0xc0c0_c0c0;
 
@@ -27,6 +30,12 @@ pub(super) fn export_symbols() {
     crate::symtab::export("drm_connector_attach_encoder", drm_connector_attach_encoder as *const () as usize, false);
     crate::symtab::export("drm_connector_helper_add", drm_connector_helper_add as *const () as usize, false);
     crate::symtab::export("drm_helper_probe_detect", drm_helper_probe_detect as *const () as usize, false);
+}
+
+extern "C" fn connector_mode_object_release(kref: *mut c_void) {
+    if kref.is_null() { return; }
+    // SAFETY: kref is the embedded mode-object kref at connector+80, and Linux releases through funcs->destroy.
+    unsafe { let connector = kref.cast::<u8>().sub(DRM_CONNECTOR_MODE_OBJECT_REFCOUNT_OFF); let funcs = read(connector.add(DRM_CONNECTOR_FUNCS_OFF).cast::<*const u8>()); if funcs.is_null() { return; } let destroy = read(funcs.add(DRM_CONNECTOR_DESTROY_OFF).cast::<usize>()); if destroy != 0 { let callback: extern "C" fn(*mut c_void) = core::mem::transmute(destroy); callback(connector.cast()); } }
 }
 
 /// Attach a connector helper vtable. # C: O(1)
@@ -74,7 +83,7 @@ pub(super) extern "C" fn drm_connector_init(dev: *mut c_void, connector: *mut c_
     let index = unsafe { *(config.add(MODE_CONFIG_NUM_CONNECTOR_OFF).cast::<i32>()) };
     if index >= MAX_KMS_OBJECTS { unsafe { dealloc(name as *mut u8, layout); } drop(devices); drm_mode_object_unregister(dev, base); return -LINUX_EINVAL; }
     // SAFETY: connector and mode-config offsets are ABI-verified; list/count updates are serialized by DEVICES.
-    unsafe { let head = connector.cast::<u8>().add(DRM_CONNECTOR_HEAD_OFF).cast::<*mut c_void>(); let list = config.add(MODE_CONFIG_CONNECTOR_LIST_OFF).cast::<*mut c_void>(); let tail = *list.add(1); write(head, list.cast()); write(head.add(1), tail); write(tail as *mut *mut c_void, head.cast()); write(list.add(1), head.cast()); mode::initialize_mode_lists(connector.cast()); write(connector.cast::<*mut c_void>(), dev); write(connector.cast::<u8>().add(DRM_CONNECTOR_NAME_OFF).cast::<*mut u8>(), name as *mut u8); write(connector.cast::<u8>().add(DRM_CONNECTOR_FUNCS_OFF).cast::<*const c_void>(), funcs); write(connector.cast::<u8>().add(DRM_CONNECTOR_INDEX_OFF).cast::<u32>(), index as u32); write(connector.cast::<u8>().add(DRM_CONNECTOR_TYPE_OFF).cast::<i32>(), connector_type); write(connector.cast::<u8>().add(DRM_CONNECTOR_TYPE_ID_OFF).cast::<i32>(), index + 1); write(config.add(MODE_CONFIG_NUM_CONNECTOR_OFF).cast::<i32>(), index + 1); }
+    unsafe { let head = connector.cast::<u8>().add(DRM_CONNECTOR_HEAD_OFF).cast::<*mut c_void>(); let list = config.add(MODE_CONFIG_CONNECTOR_LIST_OFF).cast::<*mut c_void>(); let tail = *list.add(1); write(head, list.cast()); write(head.add(1), tail); write(tail as *mut *mut c_void, head.cast()); write(list.add(1), head.cast()); mode::initialize_mode_lists(connector.cast()); write(connector.cast::<*mut c_void>(), dev); write(connector.cast::<u8>().add(DRM_CONNECTOR_NAME_OFF).cast::<*mut u8>(), name as *mut u8); write(connector.cast::<u8>().add(DRM_CONNECTOR_FUNCS_OFF).cast::<*const c_void>(), funcs); write(connector.cast::<u8>().add(DRM_CONNECTOR_MODE_OBJECT_REFCOUNT_OFF).cast::<i32>(), 1); write(connector.cast::<u8>().add(DRM_CONNECTOR_MODE_OBJECT_FREE_CB_OFF).cast::<usize>(), connector_mode_object_release as *const () as usize); write(connector.cast::<u8>().add(DRM_CONNECTOR_INDEX_OFF).cast::<u32>(), index as u32); write(connector.cast::<u8>().add(DRM_CONNECTOR_TYPE_OFF).cast::<i32>(), connector_type); write(connector.cast::<u8>().add(DRM_CONNECTOR_TYPE_ID_OFF).cast::<i32>(), index + 1); write(config.add(MODE_CONFIG_NUM_CONNECTOR_OFF).cast::<i32>(), index + 1); }
     rec.connectors.push(ConnectorRecord { ptr: connector as usize, name, layout, modes: Vec::new(), probed_modes: Vec::new() }); 0
 }
 

@@ -27,6 +27,7 @@ use sync::{Spinlock, Modules as ModulesLockClass};
 #[path = "linux_drm_edid_owner.rs"] mod edid_owner;
 #[path = "linux_drm_edid_read.rs"] mod edid_read;
 #[path = "linux_drm_print.rs"] mod print;
+#[path = "linux_drm_mode_object_refs.rs"] mod mode_object_refs;
 
 struct DeviceAllocation {
     dev: usize,
@@ -161,6 +162,7 @@ pub fn export_symbols() {
     edid_owner::export_symbols();
     edid_read::export_symbols();
     print::export_symbols();
+    mode_object_refs::export_symbols();
 }
 
 fn layout_for(size: usize) -> Option<Layout> {
