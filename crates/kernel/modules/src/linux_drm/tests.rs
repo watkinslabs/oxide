@@ -54,7 +54,7 @@ fn mode_config_initializes_each_object_list_once() {
 fn invalid_embedded_offset_is_rejected_before_allocation() { let _modules = crate::test_serial::claim(); let mut parent = LinuxDevice::new(); assert!(__devm_drm_dev_alloc(&mut parent, core::ptr::null(), 8, 8).is_null()); }
 
 #[test]
-fn exports_lifetime_entry_points() { let _modules = crate::test_serial::claim(); export_symbols(); for name in ["__devm_drm_dev_alloc", "drm_dev_put", "drm_dev_get", "drm_dev_enter", "drm_dev_exit", "drm_dev_unplug", "drmm_mode_config_init", "drm_mode_object_add", "drm_mode_object_unregister", "drm_universal_plane_init", "drm_plane_cleanup", "drm_crtc_init_with_planes", "drm_crtc_cleanup", "drm_encoder_init", "drm_encoder_cleanup", "drm_connector_init", "drm_connector_cleanup", "drm_helper_probe_detect"] { assert!(crate::symtab::is_exported(name)); } }
+fn exports_lifetime_entry_points() { let _modules = crate::test_serial::claim(); export_symbols(); for name in ["__devm_drm_dev_alloc", "drm_dev_put", "drm_dev_get", "drm_dev_enter", "drm_dev_exit", "drm_dev_unplug", "drmm_mode_config_init", "drm_mode_object_add", "drm_mode_object_unregister", "drm_universal_plane_init", "drm_plane_cleanup", "drm_crtc_init_with_planes", "drm_crtc_cleanup", "drm_encoder_init", "drm_encoder_cleanup", "drm_connector_init", "drm_connector_cleanup", "drm_helper_probe_detect", "drm_helper_probe_single_connector_modes"] { assert!(crate::symtab::is_exported(name)); } }
 
 #[test]
 fn critical_section_token_is_released_once() { let _modules = crate::test_serial::claim(); let mut parent = LinuxDevice::new(); let dev = device(&mut parent, 256); let mut token = 0; assert!(drm_dev_enter(dev, &mut token)); drm_dev_exit(token); assert!(GUARDS.lock().is_empty()); devres::release_device(&mut parent); }
@@ -210,6 +210,14 @@ extern "C" fn helper_detect(_connector: *mut c_void, ctx: *mut c_void, force: bo
 fn helper_detect_precedes_connector_detect_callback() {
     let _modules = crate::test_serial::claim(); let mut connector = TestConnector([0; 2280]); let helper: [usize; 2] = [0, helper_detect as *const () as usize]; let funcs: [usize; 3] = [0, 0, test_detect as *const () as usize];
     unsafe { write(connector.0.as_mut_ptr().add(connector::DRM_CONNECTOR_FUNCS_OFF).cast::<*const c_void>(), funcs.as_ptr().cast()); } connector::drm_connector_helper_add(connector.0.as_mut_ptr().cast(), helper.as_ptr().cast()); assert_eq!(unsafe { connector::connector_detect(connector.0.as_mut_ptr().cast(), true) }, 2);
+}
+
+extern "C" fn add_one_mode(connector: *mut c_void) -> i32 { mode::drm_add_modes_noedid(connector, 640, 480) }
+
+#[test]
+fn helper_probe_publishes_driver_modes() {
+    let _modules = crate::test_serial::claim(); let mut parent = LinuxDevice::new(); let dev = device(&mut parent, 2048); let funcs: [usize; 3] = [0; 3]; let helper: [usize; 2] = [add_one_mode as *const () as usize, 0]; let mut connector = TestConnector([0; 2280]); assert_eq!(drmm_mode_config_init(dev), 0); assert_eq!(connector::drm_connector_init(dev, connector.0.as_mut_ptr().cast(), funcs.as_ptr().cast(), 11), 0); connector::drm_connector_helper_add(connector.0.as_mut_ptr().cast(), helper.as_ptr().cast());
+    assert_eq!(probe::drm_helper_probe_single_connector_modes(connector.0.as_mut_ptr().cast(), 640, 480), 1); assert_eq!(DEVICES.lock()[0].connectors[0].modes.len(), 1); assert_eq!(unsafe { connector.0.as_ptr().add(connector::DRM_CONNECTOR_STATUS_OFF).cast::<i32>().read() }, connector::DRM_CONNECTOR_STATUS_CONNECTED); connector::drm_connector_cleanup(connector.0.as_mut_ptr().cast()); devres::release_device(&mut parent);
 }
 
 #[test]
