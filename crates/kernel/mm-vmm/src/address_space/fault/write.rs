@@ -251,7 +251,7 @@ impl AddressSpace {
             // flush already happened in `M::map`; broadcast to the others.
             // No-op on UP / aarch64 / hosted. Target only the CPUs that
             // have this mm loaded (self.cpumask), per flush_tlb_others.
-            hal::tlb::shootdown_others_va(va_page, self.cpumask());
+            hal::tlb::shootdown_others_va(va_page, self.cpumask_full().as_words());
             // F157-A1: drop our reference to the displaced (formerly
             // W-stripped shared) frame. `M::map` above tore the old leaf down
             // and returned its PA; `dec_ref` chains into

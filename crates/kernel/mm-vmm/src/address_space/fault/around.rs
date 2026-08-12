@@ -91,7 +91,7 @@ impl AddressSpace {
             let replaced = unsafe { M::map(Va(va), Pa(frame.pa), flags, PageSize::P4K) };
             if replaced.is_none() { self.accounting.install_pte(vma); }
             if let Some(old) = replaced {
-                hal::tlb::shootdown_others_va(va, self.cpumask());
+                hal::tlb::shootdown_others_va(va, self.cpumask_full().as_words());
                 dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
             }
             va += PAGE_SIZE_BYTES;

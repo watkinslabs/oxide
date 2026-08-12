@@ -61,7 +61,7 @@ pub trait GatherOps {
     fn invalidate_local(&mut self, va: u64);
     /// Invalidate on the CPUs named in `targets` (the owning mm's cpumask)
     /// and wait for completion. No-op on aarch64 (hardware broadcast).
-    fn shootdown_others(&mut self, targets: u64);
+    fn shootdown_others(&mut self, targets: cpu::CpuMask);
     /// Release one frame's mapping reference, freeing it only if this was the
     /// last one. Called strictly after the invalidation that covers it.
     fn free_frame(&mut self, pa: u64);
@@ -71,7 +71,7 @@ pub trait GatherOps {
 pub struct TlbGather {
     pas: [u64; GATHER_BATCH_PAGES],
     n: usize,
-    cpumask: u64,
+    cpumask: cpu::CpuMask,
     tlb_dirty: bool,
 }
 
@@ -79,7 +79,7 @@ impl TlbGather {
     /// Open a gather against the mm whose `cpumask` (Linux `mm_cpumask`) names
     /// the CPUs that may hold its user TLB entries.
     /// # C: O(1)
-    pub fn new(cpumask: u64) -> Self {
+    pub fn new(cpumask: cpu::CpuMask) -> Self {
         Self { pas: [0; GATHER_BATCH_PAGES], n: 0, cpumask, tlb_dirty: false }
     }
 

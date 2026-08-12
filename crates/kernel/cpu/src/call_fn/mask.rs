@@ -13,9 +13,8 @@
 /// reference's `SCF_RUN_LOCAL`), so including itself would deadlock a
 /// waiting call against its own un-drained queue.
 /// # C: O(1)
-pub fn targets_for(requested: u64, online: u64, this_cpu: usize) -> u64 {
-    let self_bit = if this_cpu < 64 { 1u64 << this_cpu } else { 0 };
-    requested & online & !self_bit
+pub fn targets_for(requested: crate::CpuMask, online: crate::CpuMask, this_cpu: usize) -> crate::CpuMask {
+    requested.intersect(online).without(crate::CpuMask::of(this_cpu))
 }
 
 /// Drop a target that could not be reached (its logical id has no hardware
@@ -24,9 +23,9 @@ pub fn targets_for(requested: u64, online: u64, this_cpu: usize) -> u64 {
 /// hold stale state for an mm it was never able to run, because a CPU with
 /// no hardware id is not a CPU this kernel ever scheduled on.
 /// # C: O(1)
-pub fn drop_unreachable(pending: u64, cpu: u32) -> u64 {
-    if cpu >= 64 { return pending; }
-    pending & !(1u64 << cpu)
+pub fn drop_unreachable(mut pending: crate::CpuMask, cpu: u32) -> crate::CpuMask {
+    pending.remove(cpu as usize);
+    pending
 }
 
 /// Whether the stuck-wait escalation is due. The reference's stuck-call

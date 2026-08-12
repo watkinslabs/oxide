@@ -101,7 +101,7 @@ static HOOK: AtomicUsize = AtomicUsize::new(0);
 /// # SAFETY: caller is the boot path; `f` lives for the kernel lifetime and
 /// no other CPU can be issuing a cross-CPU call at install time.
 /// # C: O(1)
-pub unsafe fn set_call_hook(f: fn(u64, u32, u64, bool)) {
+pub unsafe fn set_call_hook(f: fn(&[u64], u32, u64, bool)) {
     HOOK.store(f as usize, Ordering::Release);
 }
 
@@ -122,12 +122,12 @@ pub fn available() -> bool { HOOK.load(Ordering::Acquire) != 0 }
 /// No-op before `set_call_hook` (UP boot, hosted harness) and on aarch64.
 /// # C: O(popcount(mask)) + IPI round-trip
 #[inline]
-pub fn call_function_many(mask: u64, kind: CallKind, arg: u64, wait: bool) {
+pub fn call_function_many(mask: &[u64], kind: CallKind, arg: u64, wait: bool) {
     let p = HOOK.load(Ordering::Acquire);
     if p == 0 { return; }
     // SAFETY: only `set_call_hook` writes HOOK, and only with a
-    // `fn(u64, u32, u64, bool)`; casting back to that same type is sound.
-    let f: fn(u64, u32, u64, bool) = unsafe { core::mem::transmute(p) };
+    // `fn(&[u64], u32, u64, bool)`; casting back to that same type is sound.
+    let f: fn(&[u64], u32, u64, bool) = unsafe { core::mem::transmute(p) };
     f(mask, kind.as_u32(), arg, wait);
 }
 

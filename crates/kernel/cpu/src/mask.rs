@@ -100,6 +100,22 @@ impl CpuMask {
 
     /// Low word for an unmigrated one-word caller. # C: O(1)
     pub const fn low_word(self) -> u64 { self.words[0] }
+
+    /// Borrow the canonical word-array representation for an architecture
+    /// consumer that cannot depend on the CPU crate. # C: O(1)
+    pub const fn as_words(&self) -> &[u64] { &self.words }
+
+    /// Copy a bounded external word slice into the canonical CPU-set shape.
+    /// Extra words are ignored; missing words are zero. # C: O(words)
+    pub fn from_words(words: &[u64]) -> Self {
+        let mut out = Self::empty();
+        let mut i = 0;
+        while i < CPU_MASK_WORDS {
+            if i < words.len() { out.words[i] = words[i]; }
+            i += 1;
+        }
+        out.intersect(Self::all())
+    }
 }
 
 /// Atomically published CPU set.  Online CPU publication only adds bits after

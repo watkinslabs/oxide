@@ -13,7 +13,7 @@ const PAGE: u64 = 4096;
 enum Ev {
     Tear(u64),
     Inval(u64),
-    Shoot(u64),
+    Shoot(cpu::CpuMask),
     Free(u64),
 }
 
@@ -39,7 +39,7 @@ impl GatherOps for Fake {
         Some(pa)
     }
     fn invalidate_local(&mut self, va: u64) { self.log.push(Ev::Inval(va)); }
-    fn shootdown_others(&mut self, targets: u64) { self.log.push(Ev::Shoot(targets)); }
+    fn shootdown_others(&mut self, targets: cpu::CpuMask) { self.log.push(Ev::Shoot(targets)); }
     fn free_frame(&mut self, pa: u64) { self.log.push(Ev::Free(pa)); }
 }
 
@@ -65,10 +65,12 @@ fn violating_free(log: &[Ev], pas_in_tear_order: &[u64]) -> Option<u64> {
 /// Frames `Fake::with_pages` hands out, in tear order.
 fn pas(n: u64) -> Vec<u64> { (0..n).map(|i| 0x10_0000 + i * PAGE).collect() }
 
+fn mask(word: u64) -> cpu::CpuMask { cpu::CpuMask::from_words(&[word]) }
+
 #[test]
 fn every_frame_is_invalidated_before_it_is_freed() {
     let mut f = Fake::with_pages(0x1000_0000, 8);
-    let mut g = TlbGather::new(0b110);
+    let mut g = TlbGather::new(mask(0b110));
     for i in 0..8 { g.unmap_one(&mut f, 0x1000_0000 + i * PAGE); }
     g.finish(&mut f);
     assert!(violating_free(&f.log, &pas(8)).is_none(),
@@ -78,7 +80,7 @@ fn every_frame_is_invalidated_before_it_is_freed() {
 #[test]
 fn no_frame_is_freed_before_the_first_shootdown() {
     let mut f = Fake::with_pages(0x2000_0000, 4);
-    let mut g = TlbGather::new(0b1010);
+    let mut g = TlbGather::new(mask(0b1010));
     for i in 0..4 { g.unmap_one(&mut f, 0x2000_0000 + i * PAGE); }
     g.finish(&mut f);
     let first_shoot = f.log.iter().position(|e| matches!(e, Ev::Shoot(_)));
@@ -93,18 +95,18 @@ fn no_frame_is_freed_before_the_first_shootdown() {
 fn shootdown_targets_the_owning_mm_cpumask() {
     const MASK: u64 = 0b1011_0000;
     let mut f = Fake::with_pages(0x3000_0000, 2);
-    let mut g = TlbGather::new(MASK);
+    let mut g = TlbGather::new(mask(MASK));
     for i in 0..2 { g.unmap_one(&mut f, 0x3000_0000 + i * PAGE); }
     g.finish(&mut f);
-    let shot: Vec<u64> = f.log.iter().filter_map(|e| match e { Ev::Shoot(m) => Some(*m), _ => None }).collect();
+    let shot: Vec<cpu::CpuMask> = f.log.iter().filter_map(|e| match e { Ev::Shoot(m) => Some(*m), _ => None }).collect();
     assert!(!shot.is_empty(), "no shootdown issued");
-    for m in shot { assert_eq!(m, MASK, "shootdown used the wrong cpumask"); }
+    for m in shot { assert_eq!(m, mask(MASK), "shootdown used the wrong cpumask"); }
 }
 
 #[test]
 fn absent_leaves_neither_invalidate_nor_free() {
     let mut f = Fake::with_pages(0x4000_0000, 1);
-    let mut g = TlbGather::new(0b10);
+    let mut g = TlbGather::new(mask(0b10));
     // Second VA is not present in the fake table.
     assert!(g.unmap_one(&mut f, 0x4000_0000));
     assert!(!g.unmap_one(&mut f, 0x4000_1000));
@@ -118,7 +120,7 @@ fn batch_boundary_still_flushes_before_freeing() {
     // Cross a full batch so the mid-loop forced flush is exercised.
     let n = GATHER_BATCH_PAGES as u64 + 3;
     let mut f = Fake::with_pages(0x5000_0000, n);
-    let mut g = TlbGather::new(0b110);
+    let mut g = TlbGather::new(mask(0b110));
     for i in 0..n { g.unmap_one(&mut f, 0x5000_0000 + i * PAGE); }
     g.finish(&mut f);
     assert!(violating_free(&f.log, &pas(n)).is_none(),
@@ -130,7 +132,7 @@ fn batch_boundary_still_flushes_before_freeing() {
 #[test]
 fn gather_holds_frames_until_a_flush() {
     let mut f = Fake::with_pages(0x6000_0000, 3);
-    let mut g = TlbGather::new(0b110);
+    let mut g = TlbGather::new(mask(0b110));
     for i in 0..3 { g.unmap_one(&mut f, 0x6000_0000 + i * PAGE); }
     assert_eq!(g.pending(), 3, "frames must be batched, not freed inline");
     assert!(!f.log.iter().any(|e| matches!(e, Ev::Free(_))),

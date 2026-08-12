@@ -141,7 +141,7 @@ pub unsafe fn write_foreign_user(root_pa: u64, va: u64, src: &[u8]) -> usize {
 /// down instead of drifting.
 /// # C: O(len/page) PT walks + O(pages/GATHER_BATCH_PAGES) shootdowns
 pub fn evict_foreign_pages_in_range(target: &AddressSpace, addr: u64, len: u64) -> i64 {
-    let (root_pa, cpumask) = (target.root_pa(), target.cpumask());
+    let (root_pa, cpumask) = (target.root_pa(), target.cpumask_full());
     use syscall::errno::Errno;
     if addr == 0 || len == 0 || (addr & PAGE_MASK) != 0 {
         return -(Errno::Einval.as_i32() as i64);
@@ -207,8 +207,8 @@ impl crate::tlb_gather::GatherOps for ForeignGatherOps<'_> {
     /// x86_64 only: IPI the CPUs holding the target mm and wait. aarch64
     /// leaves the hook unset (hardware TLBI broadcast already did it).
     /// # C: O(popcount(targets)) + IPI round-trip
-    fn shootdown_others(&mut self, targets: u64) {
-        hal::tlb::shootdown_others_all(targets);
+    fn shootdown_others(&mut self, targets: cpu::CpuMask) {
+        hal::tlb::shootdown_others_all(targets.as_words());
     }
 
     /// # C: O(1)
@@ -362,7 +362,7 @@ pub unsafe fn mprotect_pages(root_pa: u64, va: u64, len: usize, prot: VmaProt, p
     // hosted. No frame is freed here, so a post-loop broadcast is sufficient.
     // Target only the CPUs that have this mm loaded (cpumask), not every
     // online CPU, per Linux flush_tlb_others.
-    hal::tlb::shootdown_others_all(current_mm_cpumask());
+    hal::tlb::shootdown_others_all(current_mm_cpumask_full().as_words());
     #[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect"))]
     arm_mprotect_trace::record(&trace);
     #[cfg(all(target_arch = "aarch64", feature = "debug-arm-mprotect-detail"))]

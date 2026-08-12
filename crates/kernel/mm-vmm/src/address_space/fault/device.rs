@@ -38,7 +38,7 @@ impl AddressSpace {
         if let Some(old) = replaced {
             // GAP-1 (displaced-frame UAF): this fault displaced a present leaf;
             // flush peer CPUs for this mm before dropping the old reference.
-            hal::tlb::shootdown_others_va(va_page, self.cpumask());
+            hal::tlb::shootdown_others_va(va_page, self.cpumask_full().as_words());
             dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
         }
         inc_ref(pa);
@@ -79,7 +79,7 @@ impl AddressSpace {
         if let Some(old) = replaced {
             // A real PMM frame previously mapped at this VA still needs its
             // reference dropped; device PAs are ignored by the PMM callback.
-            hal::tlb::shootdown_others_va(va_page, self.cpumask());
+            hal::tlb::shootdown_others_va(va_page, self.cpumask_full().as_words());
             dec_ref(old.0 & !(PAGE_SIZE_BYTES - 1));
         }
         Ok(())
