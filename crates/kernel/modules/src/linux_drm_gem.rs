@@ -28,6 +28,24 @@ const DRM_GEM_OBJECT_FUNCS_OFF: usize = 352;
 const DRM_GEM_FUNCS_CLOSE_OFF: usize = 16;
 const DRM_GEM_FUNCS_FREE_OFF: usize = 0;
 const DRM_GEM_SHMEM_VADDR_OFF: usize = 432;
+const DRM_FB_SIZE: usize = 192;
+const DRM_FB_FORMAT_OFF: usize = 72;
+const DRM_FB_FUNCS_OFF: usize = 80;
+const DRM_FB_PITCHES_OFF: usize = 88;
+const DRM_FB_OFFSETS_OFF: usize = 104;
+const DRM_FB_MODIFIER_OFF: usize = 120;
+const DRM_FB_WIDTH_OFF: usize = 128;
+const DRM_FB_HEIGHT_OFF: usize = 132;
+const DRM_FB_FLAGS_OFF: usize = 136;
+const DRM_FB_OBJECTS_OFF: usize = 160;
+const DRM_FB_CMD_WIDTH_OFF: usize = 4;
+const DRM_FB_CMD_HEIGHT_OFF: usize = 8;
+const DRM_FB_CMD_FLAGS_OFF: usize = 16;
+const DRM_FB_CMD_HANDLES_OFF: usize = 20;
+const DRM_FB_CMD_PITCHES_OFF: usize = 36;
+const DRM_FB_CMD_OFFSETS_OFF: usize = 52;
+const DRM_FB_CMD_MODIFIERS_OFF: usize = 72;
+const DRM_FORMAT_PLANES_OFF: usize = 5;
 const INITIAL_REFERENCE_COUNT: i32 = 1;
 
 struct GemHandle { handle: u32, object: usize }
@@ -36,8 +54,10 @@ struct GemFile { next: u32, handles: Vec<GemHandle> }
 
 type GemClose = unsafe extern "C" fn(*mut c_void, *mut c_void);
 type GemFree = unsafe extern "C" fn(*mut c_void);
+type FbDestroy = unsafe extern "C" fn(*mut c_void);
 
 static SHMEM_OBJECT_FUNCS: [Option<GemFree>; 3] = [Some(shmem_object_free), None, None];
+static GEM_FB_FUNCS: [Option<FbDestroy>; 3] = [Some(gem_fb_destroy), None, None];
 
 pub(super) fn export_symbols() {
     crate::symtab::export("drm_gem_private_object_init", drm_gem_private_object_init as *const () as usize, false);
@@ -48,6 +68,7 @@ pub(super) fn export_symbols() {
     crate::symtab::export("drm_gem_release", drm_gem_release as *const () as usize, false);
     crate::symtab::export("drm_mode_size_dumb", drm_mode_size_dumb as *const () as usize, false);
     crate::symtab::export("drm_gem_shmem_dumb_create", drm_gem_shmem_dumb_create as *const () as usize, false);
+    crate::symtab::export("drm_gem_fb_create_with_dirty", drm_gem_fb_create_with_dirty as *const () as usize, false);
 }
 
 /// Initialize the exact `drm_file.object_idr` owner used by GEM handles.
@@ -135,7 +156,11 @@ pub(super) extern "C" fn drm_gem_handle_delete(file: *mut c_void, handle: u32) -
 /// Look up a handle owned by this DRM file. # C: O(N_handles)
 pub(super) extern "C" fn drm_gem_object_lookup(file: *mut c_void, handle: u32) -> *mut c_void {
     let Some(state) = state(file) else { return core::ptr::null_mut(); };
-    state.handles.iter().find(|entry| entry.handle == handle).map_or(core::ptr::null_mut(), |entry| entry.object as *mut c_void)
+    let Some(entry) = state.handles.iter().find(|entry| entry.handle == handle) else { return core::ptr::null_mut(); };
+    let object = entry.object as *mut c_void;
+    // SAFETY: the file owns one live handle reference and lookup obtains an additional temporary reference.
+    unsafe { let refs = read(object.cast::<u8>().add(DRM_GEM_REFCOUNT_OFF).cast::<i32>()); write(object.cast::<u8>().add(DRM_GEM_REFCOUNT_OFF).cast::<i32>(), refs.saturating_add(1)); }
+    object
 }
 
 /// Release all file-private GEM references. # C: O(N_handles)
@@ -184,6 +209,39 @@ pub(super) extern "C" fn drm_gem_shmem_dumb_create(file: *mut c_void, dev: *mut 
     object_put(object.cast()); 0
 }
 
+/// Build a GEM-backed framebuffer with the atomic dirty callback contract. # C: O(N_planes)
+pub(super) extern "C" fn drm_gem_fb_create_with_dirty(dev: *mut c_void, file: *mut c_void, info: *const u8, cmd: *const u8) -> *mut c_void {
+    if dev.is_null() || file.is_null() || info.is_null() || cmd.is_null() { return err_ptr(LINUX_EINVAL); }
+    // SAFETY: info is the external immutable format descriptor and num_planes is its verified byte field.
+    let planes = unsafe { *info.add(DRM_FORMAT_PLANES_OFF) as usize };
+    if planes == 0 || planes > 4 { return err_ptr(LINUX_EINVAL); }
+    let layout = Layout::from_size_align(DRM_FB_SIZE, core::mem::align_of::<u64>()).unwrap();
+    // SAFETY: framebuffer layout is the verified complete external DRM framebuffer object.
+    let fb = unsafe { alloc_zeroed(layout) };
+    if fb.is_null() { return err_ptr(LINUX_EBUSY); }
+    // SAFETY: cmd is a complete drm_mode_fb_cmd2 record whose scalar and plane arrays use these ABI offsets.
+    unsafe {
+        write(fb.cast::<*mut c_void>(), dev); write(fb.add(DRM_FB_FORMAT_OFF).cast::<*const u8>(), info); write(fb.add(DRM_FB_FUNCS_OFF).cast::<*const Option<FbDestroy>>(), GEM_FB_FUNCS.as_ptr());
+        write(fb.add(DRM_FB_WIDTH_OFF).cast::<u32>(), read(cmd.add(DRM_FB_CMD_WIDTH_OFF).cast::<u32>())); write(fb.add(DRM_FB_HEIGHT_OFF).cast::<u32>(), read(cmd.add(DRM_FB_CMD_HEIGHT_OFF).cast::<u32>())); write(fb.add(DRM_FB_FLAGS_OFF).cast::<u32>(), read(cmd.add(DRM_FB_CMD_FLAGS_OFF).cast::<u32>())); write(fb.add(DRM_FB_MODIFIER_OFF).cast::<u64>(), read(cmd.add(DRM_FB_CMD_MODIFIERS_OFF).cast::<u64>()));
+    }
+    for plane in 0..planes {
+        // SAFETY: plane is bounded by DRM_FORMAT_MAX_PLANES and all indexed cmd/fb fields lie in their fixed arrays.
+        let (handle, pitch, offset) = unsafe { (read(cmd.add(DRM_FB_CMD_HANDLES_OFF + plane * 4).cast::<u32>()), read(cmd.add(DRM_FB_CMD_PITCHES_OFF + plane * 4).cast::<u32>()), read(cmd.add(DRM_FB_CMD_OFFSETS_OFF + plane * 4).cast::<u32>())) };
+        let object = drm_gem_object_lookup(file, handle); if object.is_null() { unsafe { gem_fb_destroy(fb.cast()); } return err_ptr(LINUX_EINVAL); }
+        // SAFETY: format helper accepts the verified format object and plane index; command width/height are fixed scalar fields.
+        let (width, height, min_pitch) = unsafe { (read(cmd.add(DRM_FB_CMD_WIDTH_OFF).cast::<u32>()), read(cmd.add(DRM_FB_CMD_HEIGHT_OFF).cast::<u32>()), format::drm_format_info_min_pitch(info, plane as i32, read(cmd.add(DRM_FB_CMD_WIDTH_OFF).cast::<u32>()))) };
+        let required = (height as u64).saturating_sub(1).saturating_mul(pitch as u64).saturating_add(min_pitch).saturating_add(offset as u64);
+        // SAFETY: object is a live lookup reference and its size field is immutable for its lifetime.
+        if pitch < min_pitch as u32 || required > unsafe { read(object.cast::<u8>().add(DRM_GEM_SIZE_OFF).cast::<usize>()) as u64 } { object_put(object); unsafe { gem_fb_destroy(fb.cast()); } return err_ptr(LINUX_EINVAL); }
+        let _ = width;
+        // SAFETY: framebuffer plane arrays are bounded by the checked format-plane count.
+        unsafe { write(fb.add(DRM_FB_PITCHES_OFF + plane * 4).cast::<u32>(), pitch); write(fb.add(DRM_FB_OFFSETS_OFF + plane * 4).cast::<u32>(), offset); write(fb.add(DRM_FB_OBJECTS_OFF + plane * core::mem::size_of::<*mut c_void>()).cast::<*mut c_void>(), object); }
+    }
+    fb.cast()
+}
+
+fn err_ptr(errno: i32) -> *mut c_void { (-(errno as isize)) as usize as *mut c_void }
+
 fn align_up(value: u64, align: u64) -> Option<u64> { value.checked_add(align.checked_sub(1)?).map(|v| v / align * align) }
 
 fn release_handle(object: *mut c_void, file: *mut c_void) {
@@ -222,6 +280,15 @@ unsafe extern "C" fn shmem_object_free(object: *mut c_void) {
     if let Ok(layout) = Layout::from_size_align(size, PAGE_SIZE as usize) { unsafe { dealloc(backing, layout); } }
     let layout = Layout::from_size_align(DRM_GEM_SHMEM_OBJECT_SIZE, core::mem::align_of::<u64>()).unwrap();
     unsafe { dealloc(object.cast(), layout); }
+}
+
+unsafe extern "C" fn gem_fb_destroy(fb: *mut c_void) {
+    if fb.is_null() { return; }
+    // SAFETY: framebuffer is the allocation returned by drm_gem_fb_create_with_dirty; every non-null
+    // plane entry owns one lookup reference and must be returned before the framebuffer storage is freed.
+    unsafe { for plane in 0..4 { let object = read(fb.cast::<u8>().add(DRM_FB_OBJECTS_OFF + plane * core::mem::size_of::<*mut c_void>()).cast::<*mut c_void>()); if !object.is_null() { object_put(object); } } }
+    let layout = Layout::from_size_align(DRM_FB_SIZE, core::mem::align_of::<u64>()).unwrap();
+    unsafe { dealloc(fb.cast(), layout); }
 }
 
 #[cfg(test)]
@@ -268,6 +335,23 @@ mod tests {
         let object = drm_gem_object_lookup(file.as_mut_ptr().cast(), handle); assert!(!object.is_null());
         // SAFETY: object is live through its file handle and contains the shmem backing pointer.
         unsafe { assert_eq!(read(object.cast::<u8>().add(DRM_GEM_SIZE_OFF).cast::<usize>()), PAGE_SIZE as usize); assert!(!read(object.cast::<u8>().add(DRM_GEM_SHMEM_VADDR_OFF).cast::<*mut u8>()).is_null()); }
+        object_put(object);
         assert_eq!(drm_gem_handle_delete(file.as_mut_ptr().cast(), handle), 0); assert!(drm_gem_object_lookup(file.as_mut_ptr().cast(), handle).is_null()); file_release(dev.as_mut_ptr().cast(), file.as_mut_ptr().cast());
+    }
+
+    #[test]
+    fn gem_framebuffer_keeps_the_backing_object_after_handle_close() {
+        let mut file = [0u8; 416]; let mut dev = [0u8; 64]; let mut dumb = [0u8; 32]; let mut cmd = [0u8; 104];
+        assert!(file_init(file.as_mut_ptr().cast()));
+        // SAFETY: dumb reserves drm_mode_create_dumb and receives one shmem handle.
+        unsafe { write(dumb.as_mut_ptr().add(DRM_DUMB_HEIGHT_OFF).cast::<u32>(), 4); write(dumb.as_mut_ptr().add(DRM_DUMB_WIDTH_OFF).cast::<u32>(), 8); write(dumb.as_mut_ptr().add(DRM_DUMB_BPP_OFF).cast::<u32>(), 32); }
+        assert_eq!(drm_gem_shmem_dumb_create(file.as_mut_ptr().cast(), dev.as_mut_ptr().cast(), dumb.as_mut_ptr().cast()), 0);
+        // SAFETY: cmd reserves drm_mode_fb_cmd2 and is populated with matching dimensions/handle/pitch.
+        unsafe { let handle = read(dumb.as_ptr().add(DRM_DUMB_HANDLE_OFF).cast::<u32>()); write(cmd.as_mut_ptr().add(DRM_FB_CMD_WIDTH_OFF).cast::<u32>(), 8); write(cmd.as_mut_ptr().add(DRM_FB_CMD_HEIGHT_OFF).cast::<u32>(), 4); write(cmd.as_mut_ptr().add(DRM_FB_CMD_HANDLES_OFF).cast::<u32>(), handle); write(cmd.as_mut_ptr().add(DRM_FB_CMD_PITCHES_OFF).cast::<u32>(), 32); }
+        let info = format::drm_format_info(0x3432_5258).cast::<u8>(); let fb = drm_gem_fb_create_with_dirty(dev.as_mut_ptr().cast(), file.as_mut_ptr().cast(), info, cmd.as_ptr()); assert!(!fb.is_null());
+        // SAFETY: successful creation retained the source GEM object in fb->obj[0].
+        let object = unsafe { read(fb.cast::<u8>().add(DRM_FB_OBJECTS_OFF).cast::<*mut c_void>()) }; let handle = unsafe { read(dumb.as_ptr().add(DRM_DUMB_HANDLE_OFF).cast::<u32>()) };
+        assert_eq!(drm_gem_handle_delete(file.as_mut_ptr().cast(), handle), 0); assert!(!object.is_null());
+        unsafe { gem_fb_destroy(fb); } file_release(dev.as_mut_ptr().cast(), file.as_mut_ptr().cast());
     }
 }
