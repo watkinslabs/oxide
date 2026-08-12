@@ -53,7 +53,9 @@ fn streaming_map_checks_masks_and_directions() {
 
 #[test]
 fn mapping_error_returns_linux_enomem() {
+    assert_eq!(DMA_MAPPING_ERROR, u64::MAX);
     assert_eq!(dma_mapping_error(null_mut(), DMA_MAPPING_ERROR), -12);
+    assert_eq!(dma_mapping_error(null_mut(), 0), 0);
 }
 
 #[test]

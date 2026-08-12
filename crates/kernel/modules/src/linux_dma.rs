@@ -12,7 +12,9 @@ use core::sync::atomic::{compiler_fence, fence, Ordering};
 use crate::linux_alloc::{self, LinuxPage};
 pub(crate) use crate::linux_device::types::LinuxDevice;
 
-pub(crate) const DMA_MAPPING_ERROR: u64 = 0;
+/// Linux's `DMA_MAPPING_ERROR` is an all-ones `dma_addr_t`, never address 0.
+/// Zero is a valid device-visible address on direct-mapped platforms.
+pub(crate) const DMA_MAPPING_ERROR: u64 = u64::MAX;
 const LINUX_OK: i32 = 0;
 const LINUX_EIO: i32 = 5;
 pub(crate) const LINUX_EINVAL: i32 = 22;
