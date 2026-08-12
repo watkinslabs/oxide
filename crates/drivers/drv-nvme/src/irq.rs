@@ -13,7 +13,6 @@ const ENDPOINT_HANDLING: u8 = 3;
 struct Endpoint {
     state: AtomicU8,
     in_handler: AtomicU32,
-    complete: AtomicBool,
     wake: AtomicBool,
     irq_count: AtomicU64,
     cq_pa: AtomicU64, cq_head: AtomicU32, cq_phase: AtomicBool,
@@ -24,7 +23,6 @@ impl Endpoint {
         Self {
             state: AtomicU8::new(ENDPOINT_FREE),
             in_handler: AtomicU32::new(0),
-            complete: AtomicBool::new(false),
             wake: AtomicBool::new(false),
             irq_count: AtomicU64::new(0),
             cq_pa: AtomicU64::new(0), cq_head: AtomicU32::new(0), cq_phase: AtomicBool::new(true),
@@ -41,7 +39,6 @@ fn claim_endpoint() -> Option<usize> {
     for (idx, endpoint) in ENDPOINTS.iter().enumerate() {
         if endpoint.state.compare_exchange(ENDPOINT_FREE, ENDPOINT_SETUP, Ordering::AcqRel, Ordering::Acquire).is_err() { continue; }
         endpoint.in_handler.store(0, Ordering::Release);
-        endpoint.complete.store(false, Ordering::Release);
         endpoint.wake.store(false, Ordering::Release);
     endpoint.irq_count.store(0, Ordering::Release);
         endpoint.cq_pa.store(0, Ordering::Release);
@@ -52,7 +49,6 @@ fn claim_endpoint() -> Option<usize> {
 
 fn release_endpoint(idx: usize) {
     let endpoint = &ENDPOINTS[idx];
-    endpoint.complete.store(false, Ordering::Release);
     endpoint.wake.store(false, Ordering::Release);
     endpoint.state.store(ENDPOINT_FREE, Ordering::Release);
 }
@@ -74,7 +70,6 @@ fn hard_handler_for(idx: usize) {
             // the completion phase is read before any process-context reap.
             let status = unsafe { core::ptr::read_volatile((h + pa + u64::from(head) * 16 + 12) as *const u32) };
             if crate::regs::cqe_pending(status, phase) {
-                endpoint.complete.store(true, Ordering::Release);
                 endpoint.wake.store(true, Ordering::Release);
                 endpoint.irq_count.fetch_add(1, Ordering::Relaxed);
             }
@@ -112,16 +107,6 @@ impl IrqBinding {
     /// Controller-local NVMe vector number for CREATE I/O CQ. # C: O(1)
     pub(crate) fn vector(&self) -> u16 { 0 }
     pub(crate) fn configure_cq(&self, pa: u64, head: u32, phase: bool) { let e = &ENDPOINTS[self.endpoint]; e.cq_pa.store(pa, Ordering::Release); e.cq_head.store(head, Ordering::Release); e.cq_phase.store(phase, Ordering::Release); }
-
-    /// Reset software completion state before ringing the I/O SQ doorbell. # C: O(1)
-    pub(crate) fn prepare_command(&self) {
-        let endpoint = &ENDPOINTS[self.endpoint];
-        endpoint.wake.store(false, Ordering::Release);
-        endpoint.complete.store(false, Ordering::Release);
-    }
-
-    /// Observe the current command's interrupt completion. # C: O(1)
-    pub(crate) fn completed(&self) -> bool { ENDPOINTS[self.endpoint].complete.load(Ordering::Acquire) }
 
     /// Consume the hard-handler request for a process-safe wake. # C: O(1)
     pub(crate) fn take_wake(&self) -> bool { ENDPOINTS[self.endpoint].wake.swap(false, Ordering::AcqRel) }
