@@ -129,6 +129,12 @@ pub(super) extern "C" fn drm_connector_list_update(connector: *mut c_void) {
     let probed = core::mem::take(&mut entry.probed_modes); for mode in probed { if entry.modes.iter().any(|&old| unsafe { same_timing(old as *const u8, mode as *const u8) }) { unsafe { unlink_mode(mode as *mut c_void); dealloc(mode as *mut u8, mode_layout()); } } else { unsafe { unlink_mode(mode as *mut c_void); link_tail(connector.cast::<u8>().add(DRM_CONNECTOR_MODES_OFF), (mode as *mut u8).add(DRM_DISPLAY_MODE_HEAD_OFF)); } entry.modes.push(mode); } }
 }
 
+pub(super) unsafe fn connector_get_modes(connector: *mut c_void) -> i32 {
+    const HELPER_PRIVATE_OFF: usize = 2248;
+    // SAFETY: helper_private names a live helper vtable whose first member is the get_modes callback.
+    unsafe { let table = *(connector.cast::<u8>().add(HELPER_PRIVATE_OFF).cast::<*const c_void>()); if table.is_null() { return 0; } let callback = table.cast::<extern "C" fn(*mut c_void) -> i32>().read(); let count = callback(connector); if count < 0 { 0 } else { count } }
+}
+
 unsafe fn same_timing(left: *const u8, right: *const u8) -> bool {
     // SAFETY: both pointers are tracked complete display-mode allocations.
     unsafe { core::ptr::read_unaligned(left.cast::<i32>()) == core::ptr::read_unaligned(right.cast::<i32>()) && core::ptr::read_unaligned(left.add(DRM_DISPLAY_MODE_HDISPLAY_OFF).cast::<u16>()) == core::ptr::read_unaligned(right.add(DRM_DISPLAY_MODE_HDISPLAY_OFF).cast::<u16>()) && core::ptr::read_unaligned(left.add(DRM_DISPLAY_MODE_VDISPLAY_OFF).cast::<u16>()) == core::ptr::read_unaligned(right.add(DRM_DISPLAY_MODE_VDISPLAY_OFF).cast::<u16>()) && core::ptr::read_unaligned(left.add(DRM_DISPLAY_MODE_HTOTAL_OFF).cast::<u16>()) == core::ptr::read_unaligned(right.add(DRM_DISPLAY_MODE_HTOTAL_OFF).cast::<u16>()) && core::ptr::read_unaligned(left.add(DRM_DISPLAY_MODE_VTOTAL_OFF).cast::<u16>()) == core::ptr::read_unaligned(right.add(DRM_DISPLAY_MODE_VTOTAL_OFF).cast::<u16>()) }
