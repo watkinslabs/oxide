@@ -16,7 +16,7 @@
 ///
 /// The caller is excluded because it is the one that performs the relocation:
 /// asking it to halt would stop the machine with the image un-copied.
-/// # C: O(1)
+/// # C: O(words)
 pub fn stop_targets(online: cpu::CpuMask, me: usize) -> cpu::CpuMask {
     online.without(cpu::CpuMask::of(me))
 }
@@ -27,13 +27,13 @@ pub fn stop_targets(online: cpu::CpuMask, me: usize) -> cpu::CpuMask {
 /// its stop a timeout and proceeds regardless, because the alternative is a
 /// machine that hangs with a perfectly good image loaded — and it says so in
 /// the log rather than silently.
-/// # C: O(1)
+/// # C: O(words)
 pub fn converged(stopped: cpu::CpuMask, targets: cpu::CpuMask) -> bool {
     targets.without(stopped).is_empty()
 }
 
 /// CPUs still running when the wait gave up.
-/// # C: O(1)
+/// # C: O(words)
 pub fn stragglers(stopped: cpu::CpuMask, targets: cpu::CpuMask) -> cpu::CpuMask {
     targets.without(stopped)
 }
