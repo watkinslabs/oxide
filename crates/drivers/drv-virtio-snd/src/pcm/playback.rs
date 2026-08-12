@@ -39,7 +39,15 @@ pub(crate) fn pcm_set_params(
 }
 
 fn tx_period(ctx: &mut Ctx, stream_id: u32, pcm: &[u8]) -> bool {
-    let Some(txq) = ctx.txq else { return false };
+    let Some(mut txq) = ctx.txq.take() else { return false };
+    let result = tx_period_on_queue(ctx, &mut txq, stream_id, pcm);
+    ctx.txq = Some(txq);
+    result
+}
+
+fn tx_period_on_queue(
+    ctx: &mut Ctx, txq: &mut virtio::VirtioSplitQueue, stream_id: u32, pcm: &[u8],
+) -> bool {
     if ctx.tx_buf_pa == 0 || ctx.tx_scratch_pa == 0 { return false; }
     let h = ctx.hhdm;
     let n = pcm.len().min(SND_FRAME_BYTES);
@@ -53,58 +61,14 @@ fn tx_period(ctx: &mut Ctx, stream_id: u32, pcm: &[u8]) -> bool {
         core::ptr::write_volatile(xfer, stream_id);
         for i in 0..n { core::ptr::write_volatile(buf.add(i), pcm[i]); }
     }
-    let desc = h.wrapping_add(txq.desc_pa) as *mut u64;
-    // Chain 0 -> 1 -> 2: 4-byte header (read), n-byte payload (read), 8-byte
-    // status at tx_scratch_pa+16 (WRITE). Header and status share the scratch
-    // frame without overlapping; the device writes only the status span.
-    // SAFETY: HHDM-mapped txq descriptor table; six aligned u64 stores cover
-    // slots 0..2, inside the one-frame (256-entry) descriptor table.
-    unsafe {
-        core::ptr::write_volatile(desc.add(0), ctx.tx_scratch_pa);
-        core::ptr::write_volatile(
-            desc.add(1),
-            (SND_XFER_HDR_BYTES as u64) | ((VRING_DESC_F_NEXT as u64) << 32) | (1u64 << 48),
-        );
-        core::ptr::write_volatile(desc.add(2), ctx.tx_buf_pa);
-        core::ptr::write_volatile(
-            desc.add(3),
-            (n as u64) | ((VRING_DESC_F_NEXT as u64) << 32) | (2u64 << 48),
-        );
-        core::ptr::write_volatile(desc.add(4), ctx.tx_scratch_pa + SND_XFER_STATUS_OFF);
-        core::ptr::write_volatile(desc.add(5),
-            (SND_XFER_STATUS_BYTES as u64) | ((VRING_DESC_F_WRITE as u64) << 32));
-    }
-    let slot = (ctx.tx_avail_idx % txq.size) as usize;
-    let avail = h.wrapping_add(txq.driver_pa) as *mut u16;
-    // SAFETY: HHDM-mapped txq avail ring; ring[slot] is u16 index 2+slot with
-    // slot < txq.size (nonzero per require_queue, capped at one ring frame),
-    // idx is index 1, and the release fence publishes the descriptor chain and
-    // ring entry before the idx store the device polls.
-    let target = unsafe {
-        core::ptr::write_volatile(avail.add(2 + slot), 0u16);
-        core::sync::atomic::fence(Ordering::Release);
-        ctx.tx_avail_idx = ctx.tx_avail_idx.wrapping_add(1);
-        core::ptr::write_volatile(avail.add(1), ctx.tx_avail_idx);
-        ctx.tx_avail_idx
-    };
-    core::sync::atomic::fence(Ordering::Release);
-    // SAFETY: txq notify VA is the Device-attr MMIO window the transport
-    // mapped for this child; the kick is one aligned u16 store of the index.
-    unsafe { core::ptr::write_volatile(txq.notify_va as *mut u16, txq.index); }
-    let used = h.wrapping_add(txq.device_pa) as *const u16;
-    let mut polls = 0u32;
-    loop {
-        // SAFETY: HHDM-mapped txq used ring; aligned u16 load of used.idx at
-        // index 1, volatile because the device is what advances it.
-        let uidx = unsafe { core::ptr::read_volatile(used.add(1)) };
-        if uidx == target { return true; }
-        if polls >= TX_POLL_BUDGET { return false; }
-        if ctx.cfg_va != 0 {
-            let _ = virtio::read_status(ctx.cfg_va);
-        }
-        polls += 1;
-        core::hint::spin_loop();
-    }
+    // Linux submits the xfer header, audio payload, and status as one SG
+    // request.  The shared queue owns the descriptor chain and ring state.
+    let head = txq.submit(&[
+        virtio::SplitQueueSeg { dma: ctx.tx_scratch_pa, len: SND_XFER_HDR_BYTES as u32, device_writes: false },
+        virtio::SplitQueueSeg { dma: ctx.tx_buf_pa, len: n as u32, device_writes: false },
+        virtio::SplitQueueSeg { dma: ctx.tx_scratch_pa + SND_XFER_STATUS_OFF, len: SND_XFER_STATUS_BYTES as u32, device_writes: true },
+    ]).ok();
+    head.and_then(|head| super::wait_for_period_completion(txq, head, ctx.cfg_va)).is_some()
 }
 
 pub fn beep(hz: u32, ms: u32) -> bool { beep_diag(hz, ms) == 0 }

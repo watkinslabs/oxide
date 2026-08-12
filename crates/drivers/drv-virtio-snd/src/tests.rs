@@ -36,18 +36,6 @@ mod prepost;
         buf[off..off + EVENT_SIZE].copy_from_slice(&value.to_le_bytes());
     }
 
-    fn queue(index: u16) -> virtio::VirtQueueResource {
-        virtio::VirtQueueResource {
-            index,
-            size: 8,
-            desc_pa: 0,
-            driver_pa: 0,
-            device_pa: 0,
-            notify_va: 0,
-            notify_off: 0,
-        }
-    }
-
     fn ctx(device_key: DeviceKey) -> Ctx {
         Ctx {
             device_key,
@@ -69,7 +57,6 @@ mod prepost;
             out_ch_min: 1,
             out_ch_max: 2,
             txq: None,
-            tx_avail_idx: 0,
             tx_buf_pa: 0,
             tx_scratch_pa: 0,
             pcm_state: PcmState::Idle,
@@ -83,7 +70,6 @@ mod prepost;
             in_ch_min: 1,
             in_ch_max: 2,
             rxq: None,
-            rx_avail_idx: 0,
             rx_buf_pa: 0,
             rx_scratch_pa: 0,
             cap_state: PcmState::Idle,
@@ -102,8 +88,6 @@ mod prepost;
         c.tx_scratch_pa = test_frame_pa(base + 3);
         c.rx_buf_pa = test_frame_pa(base + 4);
         c.rx_scratch_pa = test_frame_pa(base + 5);
-        c.txq = Some(queue(2));
-        c.rxq = Some(queue(3));
         c
     }
 

@@ -1,7 +1,15 @@
 use super::*;
 
 fn rx_period(ctx: &mut Ctx, stream_id: u32, out: &mut [u8]) -> usize {
-    let Some(rxq) = ctx.rxq else { return 0 };
+    let Some(mut rxq) = ctx.rxq.take() else { return 0 };
+    let result = rx_period_on_queue(ctx, &mut rxq, stream_id, out);
+    ctx.rxq = Some(rxq);
+    result
+}
+
+fn rx_period_on_queue(
+    ctx: &mut Ctx, rxq: &mut virtio::VirtioSplitQueue, stream_id: u32, out: &mut [u8],
+) -> usize {
     if ctx.rx_buf_pa == 0 || ctx.rx_scratch_pa == 0 { return 0; }
     let h = ctx.hhdm;
     let n = out.len().min(SND_FRAME_BYTES);
@@ -10,66 +18,16 @@ fn rx_period(ctx: &mut Ctx, stream_id: u32, out: &mut [u8]) -> usize {
     // checked above) under the CTX lock; the request header is one aligned
     // u32 at offset 0 of that frame.
     unsafe { core::ptr::write_volatile(xfer, stream_id); }
-    let desc = h.wrapping_add(rxq.desc_pa) as *mut u64;
-    // Chain 0 -> 1 -> 2: 4-byte header (read), n-byte capture buffer (WRITE),
-    // 8-byte status at rx_scratch_pa+16 (WRITE). The two device-written spans
-    // are the driver's own frames and do not overlap the header.
-    // SAFETY: HHDM-mapped rxq descriptor table; six aligned u64 stores cover
-    // slots 0..2, inside the one-frame (256-entry) descriptor table.
-    unsafe {
-        core::ptr::write_volatile(desc.add(0), ctx.rx_scratch_pa);
-        core::ptr::write_volatile(
-            desc.add(1),
-            (SND_XFER_HDR_BYTES as u64) | ((VRING_DESC_F_NEXT as u64) << 32) | (1u64 << 48),
-        );
-        core::ptr::write_volatile(desc.add(2), ctx.rx_buf_pa);
-        core::ptr::write_volatile(
-            desc.add(3),
-            (n as u64)
-                | (((VRING_DESC_F_NEXT | VRING_DESC_F_WRITE) as u64) << 32)
-                | (2u64 << 48),
-        );
-        core::ptr::write_volatile(desc.add(4), ctx.rx_scratch_pa + SND_XFER_STATUS_OFF);
-        core::ptr::write_volatile(desc.add(5),
-            (SND_XFER_STATUS_BYTES as u64) | ((VRING_DESC_F_WRITE as u64) << 32));
-    }
-    let slot = (ctx.rx_avail_idx % rxq.size) as usize;
-    let avail = h.wrapping_add(rxq.driver_pa) as *mut u16;
-    // SAFETY: HHDM-mapped rxq avail ring; ring[slot] is u16 index 2+slot with
-    // slot < rxq.size (nonzero per require_queue, capped at one ring frame),
-    // idx is index 1, and the release fence publishes the descriptor chain and
-    // ring entry before the idx store the device polls.
-    let target = unsafe {
-        core::ptr::write_volatile(avail.add(2 + slot), 0u16);
-        core::sync::atomic::fence(Ordering::Release);
-        ctx.rx_avail_idx = ctx.rx_avail_idx.wrapping_add(1);
-        core::ptr::write_volatile(avail.add(1), ctx.rx_avail_idx);
-        ctx.rx_avail_idx
+    // The RX request has one driver-readable header and two device-writable
+    // segments, matching Linux's `virtqueue_add_sgs(vq, ..., 1, 2, ...)`.
+    let used_len = match rxq.submit(&[
+        virtio::SplitQueueSeg { dma: ctx.rx_scratch_pa, len: SND_XFER_HDR_BYTES as u32, device_writes: false },
+        virtio::SplitQueueSeg { dma: ctx.rx_buf_pa, len: n as u32, device_writes: true },
+        virtio::SplitQueueSeg { dma: ctx.rx_scratch_pa + SND_XFER_STATUS_OFF, len: SND_XFER_STATUS_BYTES as u32, device_writes: true },
+    ]).ok().and_then(|head| super::wait_for_period_completion(rxq, head, ctx.cfg_va)) {
+        Some(len) => len as usize,
+        None => return 0,
     };
-    core::sync::atomic::fence(Ordering::Release);
-    // SAFETY: rxq notify VA is the Device-attr MMIO window the transport
-    // mapped for this child; the kick is one aligned u16 store of the index.
-    unsafe { core::ptr::write_volatile(rxq.notify_va as *mut u16, rxq.index); }
-    let used16 = h.wrapping_add(rxq.device_pa) as *const u16;
-    let mut polls = 0u32;
-    loop {
-        // SAFETY: HHDM-mapped rxq used ring; aligned u16 load of used.idx at
-        // index 1, volatile because the device is what advances it.
-        let uidx = unsafe { core::ptr::read_volatile(used16.add(1)) };
-        if uidx == target { break; }
-        if polls >= TX_POLL_BUDGET { return 0; }
-        if ctx.cfg_va != 0 {
-            let _ = virtio::read_status(ctx.cfg_va);
-        }
-        polls += 1;
-        core::hint::spin_loop();
-    }
-    let elem = ((target.wrapping_sub(1)) % rxq.size) as usize;
-    let used32 = h.wrapping_add(rxq.device_pa) as *const u32;
-    // SAFETY: HHDM-mapped rxq used ring; ring[] starts at u32 index 1 with
-    // {id,len} elements, so element `elem`'s len is at 1+elem*2+1 and elem is
-    // reduced modulo rxq.size, keeping the load inside the ring frame.
-    let used_len = unsafe { core::ptr::read_volatile(used32.add(1 + elem * 2 + 1)) } as usize;
     // `used_len` is DEVICE-supplied: it bounds nothing until clamped to `n`,
     // which is both the capture buffer's own size and `out`'s length.
     let payload = used_len.saturating_sub(SND_XFER_STATUS_BYTES).min(n);
