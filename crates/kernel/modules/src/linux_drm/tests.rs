@@ -16,6 +16,8 @@ struct TestEncoder([u8; 128]);
 struct TestConnector([u8; 2280]);
 
 const VERIFIED_MODE_CONFIG_NUM_CONNECTOR_OFF: usize = 236;
+const VERIFIED_DRM_PLANE_TYPE_OFF: usize = 1224;
+const VERIFIED_DRM_PLANE_INDEX_OFF: usize = 1228;
 
 fn device(parent: &mut LinuxDevice, size: usize) -> *mut c_void {
     let container = __devm_drm_dev_alloc(parent, core::ptr::null(), size, 64);
@@ -84,7 +86,7 @@ fn universal_plane_owns_formats_links_the_mode_list_and_cleans_up() {
     // SAFETY: plane has the verified drm_plane layout size and formats has two valid entries.
     assert_eq!(unsafe { drm_universal_plane_init(dev, plane.0.as_mut_ptr().cast(), 1, core::ptr::null(), formats.as_ptr(), formats.len() as u32, core::ptr::null(), 1, c"plane".as_ptr()) }, 0);
     // SAFETY: successful initialization populated the verified plane ABI fields.
-    unsafe { assert_eq!(*(plane.0.as_ptr().add(DRM_PLANE_BASE_OFF).cast::<u32>()), 1); assert_eq!(*(plane.0.as_ptr().add(DRM_PLANE_BASE_OFF + DRM_MODE_OBJECT_TYPE_OFF).cast::<u32>()), DRM_MODE_OBJECT_PLANE); assert_eq!(*(plane.0.as_ptr().add(DRM_PLANE_FORMAT_COUNT_OFF).cast::<u32>()), 2); let copied = *(plane.0.as_ptr().add(DRM_PLANE_FORMATS_OFF).cast::<*const u32>()); assert_ne!(copied, formats.as_ptr()); assert_eq!(*copied, formats[0]); }
+    unsafe { assert_eq!(*(plane.0.as_ptr().add(DRM_PLANE_BASE_OFF).cast::<u32>()), 1); assert_eq!(*(plane.0.as_ptr().add(DRM_PLANE_BASE_OFF + DRM_MODE_OBJECT_TYPE_OFF).cast::<u32>()), DRM_MODE_OBJECT_PLANE); assert_eq!(*(plane.0.as_ptr().add(DRM_PLANE_FORMAT_COUNT_OFF).cast::<u32>()), 2); assert_eq!(*(plane.0.as_ptr().add(VERIFIED_DRM_PLANE_TYPE_OFF).cast::<i32>()), 1); assert_eq!(*(plane.0.as_ptr().add(VERIFIED_DRM_PLANE_INDEX_OFF).cast::<u32>()), 0); let copied = *(plane.0.as_ptr().add(DRM_PLANE_FORMATS_OFF).cast::<*const u32>()); assert_ne!(copied, formats.as_ptr()); assert_eq!(*copied, formats[0]); }
     assert_eq!(DEVICES.lock()[0].planes.len(), 1); drm_plane_cleanup(plane.0.as_mut_ptr().cast()); assert_eq!(DEVICES.lock()[0].planes.len(), 0);
     let config = dev.cast::<u8>().wrapping_add(DRM_MODE_CONFIG_OFF);
     // SAFETY: cleanup reinitializes the removed plane link and decrements the device plane count.
