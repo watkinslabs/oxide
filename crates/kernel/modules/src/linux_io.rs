@@ -28,6 +28,8 @@ pub fn export_symbols() {
     for (name, addr) in [
         ("ioremap",        ioremap        as *const () as usize),
         ("ioremap_nocache", ioremap       as *const () as usize),
+        ("devm_ioremap",   devm_ioremap   as *const () as usize),
+        ("devm_ioremap_wc", devm_ioremap_wc as *const () as usize),
         ("iounmap",        iounmap        as *const () as usize),
         ("readb",          readb          as *const () as usize),
         ("readw",          readw          as *const () as usize),
@@ -53,17 +55,38 @@ pub fn export_symbols() {
     ] { export(name, addr, false); }
 }
 
-extern "C" fn ioremap(phys: u64, size: usize) -> *mut c_void {
+fn ioremap_with(phys: u64, size: usize, wc: bool) -> *mut c_void {
     if size == 0 { return core::ptr::null_mut(); }
     let off = phys & (PAGE_SIZE - 1);
     let base = phys & PAGE_MASK;
     let total = match off.checked_add(size as u64) { Some(v) => v, None => return core::ptr::null_mut() };
     let n_pages = pages_for(total);
-    let base_va = map_mmio(base, n_pages);
+    let base_va = map_mmio(base, n_pages, wc);
     if base_va == 0 { return core::ptr::null_mut(); }
     let user_va = (base_va + off) as usize;
     IOREMAPS.lock().push(IoMapping { user_va, base_va, n_pages });
     user_va as *mut c_void
+}
+
+extern "C" fn ioremap(phys: u64, size: usize) -> *mut c_void { ioremap_with(phys, size, false) }
+
+unsafe extern "C" fn devm_iounmap_action(ptr: *mut c_void) { iounmap(ptr); }
+
+fn devm_map(dev: *mut crate::linux_device::types::LinuxDevice, phys: u64, size: usize, wc: bool) -> *mut c_void {
+    let ptr = ioremap_with(phys, size, wc);
+    if ptr.is_null() { return ptr; }
+    if crate::linux_device::devres::add_action_or_reset(dev, Some(devm_iounmap_action), ptr) != 0 {
+        return core::ptr::null_mut();
+    }
+    ptr
+}
+
+extern "C" fn devm_ioremap(dev: *mut crate::linux_device::types::LinuxDevice, phys: u64, size: usize) -> *mut c_void {
+    devm_map(dev, phys, size, false)
+}
+
+extern "C" fn devm_ioremap_wc(dev: *mut crate::linux_device::types::LinuxDevice, phys: u64, size: usize) -> *mut c_void {
+    devm_map(dev, phys, size, true)
 }
 
 extern "C" fn iounmap(addr: *mut c_void) {
@@ -160,13 +183,13 @@ fn pages_for(bytes: u64) -> u64 {
 }
 
 #[cfg(target_os = "oxide-kernel")]
-fn map_mmio(pa: u64, n_pages: u64) -> u64 {
+fn map_mmio(pa: u64, n_pages: u64, wc: bool) -> u64 {
     // SAFETY: exported ioremap is called by trusted kernel modules for owned device MMIO.
-    unsafe { mmio_map::map_pages(pa, n_pages) }
+    unsafe { if wc { mmio_map::map_pages_wc(pa, n_pages) } else { mmio_map::map_pages(pa, n_pages) } }
 }
 
 #[cfg(not(target_os = "oxide-kernel"))]
-fn map_mmio(pa: u64, _n_pages: u64) -> u64 { pa }
+fn map_mmio(pa: u64, _n_pages: u64, _wc: bool) -> u64 { pa }
 
 #[cfg(target_os = "oxide-kernel")]
 fn unmap_mmio(base_va: u64, n_pages: u64) {
@@ -280,6 +303,18 @@ mod tests {
         assert_eq!(p as usize, phys as usize);
         assert_eq!(IOREMAPS.lock().len(), 1);
         iounmap(p);
+        assert_eq!(IOREMAPS.lock().len(), 0);
+    }
+
+    #[test]
+    fn devm_ioremap_unmaps_when_device_devres_releases() {
+        let _modules = crate::test_serial::claim();
+        let mut bytes = [0u8; PAGE_SIZE as usize];
+        let mut dev = crate::linux_device::types::LinuxDevice::new();
+        let p = devm_ioremap(&mut dev, bytes.as_mut_ptr() as u64, TEST_LEN);
+        assert!(!p.is_null());
+        assert_eq!(IOREMAPS.lock().len(), 1);
+        crate::linux_device::devres::release_device(&mut dev);
         assert_eq!(IOREMAPS.lock().len(), 0);
     }
 
