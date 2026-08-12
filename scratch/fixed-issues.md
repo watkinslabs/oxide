@@ -1,5 +1,11 @@
 # Fixed issues
 
+### F959-drm-fb-memcpy
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED F959 | MISSING | high | **The generic DRM framebuffer clip-copy helper required by shadow-buffered scanout drivers was absent.** Without it drivers can map their GEM shadow buffer but cannot transfer damaged rectangles into their display mapping through the standard helper. The exported helper now copies every format plane using framebuffer pitch and clip coordinates, derives the default destination pitch when omitted, and uses volatile I/O writes for I/O-memory destinations. | F959. Full helper contract and record layouts checked against the complete primary DRM implementation; `linux_drm::format_helper::tests::copies_the_clipped_xrgb_rows_with_framebuffer_pitch` verifies offset/pitch/row behavior and `fb_memcpy_is_a_module_export` verifies the external entry point. `cargo test -p modules linux_drm` 39 passed. | Chris Watkins |
+
 ### F958-drm-framebuffer-lifetime
 
 | Status | Class | Sev | Issue | Evidence | Owner |
