@@ -174,6 +174,14 @@ fn connector_list_update_moves_probed_modes_to_the_live_list() {
 }
 
 #[test]
+fn connector_list_update_merges_preferred_and_replaces_stale_modes() {
+    let _modules = crate::test_serial::claim(); let mut parent = LinuxDevice::new(); let dev = device(&mut parent, 2048); assert_eq!(drmm_mode_config_init(dev), 0); let mut connector = TestConnector([0; 2280]); let funcs = 1u8;
+    assert_eq!(connector::drm_connector_init(dev, connector.0.as_mut_ptr().cast(), (&funcs as *const u8).cast(), 11), 0); assert_eq!(mode::drm_add_modes_noedid(connector.0.as_mut_ptr().cast(), 640, 480), 1); mode::drm_connector_list_update(connector.0.as_mut_ptr().cast()); let old = DEVICES.lock()[0].connectors[0].modes[0] as *mut c_void; let preferred = mode::drm_mode_duplicate(dev, old); unsafe { write(preferred.cast::<u8>().add(62), mode::DRM_MODE_TYPE_PREFERRED); } mode::drm_mode_probed_add(connector.0.as_mut_ptr().cast(), preferred); mode::drm_connector_list_update(connector.0.as_mut_ptr().cast());
+    assert_eq!(DEVICES.lock()[0].connectors[0].modes.len(), 1); assert_ne!(unsafe { *((old as *const u8).add(62)) } & mode::DRM_MODE_TYPE_PREFERRED, 0); unsafe { write(old.cast::<u8>().add(mode::DRM_DISPLAY_MODE_STATUS_OFF).cast::<i32>(), mode::MODE_STATUS_STALE); } let replacement = mode::drm_mode_duplicate(dev, old); unsafe { write(replacement.cast::<u8>().add(62), mode::DRM_MODE_TYPE_USERDEF); write(replacement.cast::<u8>().add(mode::DRM_DISPLAY_MODE_STATUS_OFF).cast::<i32>(), 0); } mode::drm_mode_probed_add(connector.0.as_mut_ptr().cast(), replacement); mode::drm_connector_list_update(connector.0.as_mut_ptr().cast());
+    assert_eq!(unsafe { *((old as *const u8).add(62)) }, mode::DRM_MODE_TYPE_USERDEF); assert_ne!(unsafe { *((old as *const u8).add(mode::DRM_DISPLAY_MODE_STATUS_OFF).cast::<i32>()) }, mode::MODE_STATUS_STALE); connector::drm_connector_cleanup(connector.0.as_mut_ptr().cast()); devres::release_device(&mut parent);
+}
+
+#[test]
 fn connector_helper_add_publishes_the_helper_vtable() {
     let _modules = crate::test_serial::claim(); let mut parent = LinuxDevice::new(); let dev = device(&mut parent, 2048); assert_eq!(drmm_mode_config_init(dev), 0); let mut connector = TestConnector([0; 2280]); let funcs = 1u8; let helper = 2u8;
     assert_eq!(connector::drm_connector_init(dev, connector.0.as_mut_ptr().cast(), (&funcs as *const u8).cast(), 11), 0); connector::drm_connector_helper_add(connector.0.as_mut_ptr().cast(), (&helper as *const u8).cast()); assert_eq!(unsafe { *(connector.0.as_ptr().add(2248).cast::<*const u8>()) }, &helper as *const u8);

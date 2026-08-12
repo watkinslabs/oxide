@@ -11,10 +11,14 @@ const DRM_DISPLAY_MODE_VSCAN_OFF: usize = 22;
 const DRM_DISPLAY_MODE_FLAGS_OFF: usize = 24;
 const DRM_DISPLAY_MODE_NAME_OFF: usize = 80;
 const DRM_DISPLAY_MODE_NAME_LEN: usize = 32;
+pub(super) const DRM_DISPLAY_MODE_STATUS_OFF: usize = 112;
+const DRM_DISPLAY_MODE_ASPECT_RATIO_OFF: usize = 116;
 const DRM_MODE_FLAG_INTERLACE: u32 = 1 << 4;
 const DRM_MODE_FLAG_DBLSCAN: u32 = 1 << 5;
 const DRM_DISPLAY_MODE_TYPE_OFF: usize = 62;
-const DRM_MODE_TYPE_PREFERRED: u8 = 1 << 3;
+pub(super) const DRM_MODE_TYPE_PREFERRED: u8 = 1 << 3;
+pub(super) const DRM_MODE_TYPE_USERDEF: u8 = 1 << 5;
+pub(super) const MODE_STATUS_STALE: i32 = -3;
 pub(super) const DRM_CONNECTOR_MODES_OFF: usize = 168;
 pub(super) const DRM_CONNECTOR_PROBED_MODES_OFF: usize = 184;
 
@@ -126,7 +130,7 @@ pub(super) extern "C" fn drm_set_preferred_mode(connector: *mut c_void, hpref: i
 /// Move new probed modes into the connector's live mode list. # C: O(N_probed * N_modes)
 pub(super) extern "C" fn drm_connector_list_update(connector: *mut c_void) {
     if connector.is_null() { return; } let dev = unsafe { *(connector.cast::<*mut c_void>()) }; let mut devices = DEVICES.lock(); let Some(record) = devices.iter_mut().find(|record| record.dev == dev as usize) else { return; }; let Some(entry) = record.connectors.iter_mut().find(|entry| entry.ptr == connector as usize) else { return; };
-    let probed = core::mem::take(&mut entry.probed_modes); for mode in probed { if entry.modes.iter().any(|&old| unsafe { same_timing(old as *const u8, mode as *const u8) }) { unsafe { unlink_mode(mode as *mut c_void); dealloc(mode as *mut u8, mode_layout()); } } else { unsafe { unlink_mode(mode as *mut c_void); link_tail(connector.cast::<u8>().add(DRM_CONNECTOR_MODES_OFF), (mode as *mut u8).add(DRM_DISPLAY_MODE_HEAD_OFF)); } entry.modes.push(mode); } }
+    let probed = core::mem::take(&mut entry.probed_modes); for mode in probed { let found = entry.modes.iter().copied().find(|old| unsafe { modes_equal(*old as *const u8, mode as *const u8) }); if let Some(old) = found { unsafe { let old = old as *mut u8; let new = mode as *mut u8; if read(old.add(DRM_DISPLAY_MODE_STATUS_OFF).cast::<i32>()) == MODE_STATUS_STALE { drm_mode_copy(old.cast(), new.cast()); } else if read(old.add(DRM_DISPLAY_MODE_TYPE_OFF) as *const u8) & DRM_MODE_TYPE_PREFERRED == 0 && read(new.add(DRM_DISPLAY_MODE_TYPE_OFF) as *const u8) & DRM_MODE_TYPE_PREFERRED != 0 { let ty = new.add(DRM_DISPLAY_MODE_TYPE_OFF); write(ty, read(ty as *const u8) | read(old.add(DRM_DISPLAY_MODE_TYPE_OFF) as *const u8)); drm_mode_copy(old.cast(), new.cast()); } else { let ty = old.add(DRM_DISPLAY_MODE_TYPE_OFF); write(ty, read(ty as *const u8) | read(new.add(DRM_DISPLAY_MODE_TYPE_OFF) as *const u8)); } unlink_mode(new.cast()); dealloc(new, mode_layout()); } } else { unsafe { unlink_mode(mode as *mut c_void); link_tail(connector.cast::<u8>().add(DRM_CONNECTOR_MODES_OFF), (mode as *mut u8).add(DRM_DISPLAY_MODE_HEAD_OFF)); } entry.modes.push(mode); } }
 }
 
 pub(super) unsafe fn connector_get_modes(connector: *mut c_void) -> i32 {
@@ -135,9 +139,9 @@ pub(super) unsafe fn connector_get_modes(connector: *mut c_void) -> i32 {
     unsafe { let table = *(connector.cast::<u8>().add(HELPER_PRIVATE_OFF).cast::<*const c_void>()); if table.is_null() { return 0; } let callback = table.cast::<extern "C" fn(*mut c_void) -> i32>().read(); let count = callback(connector); if count < 0 { 0 } else { count } }
 }
 
-unsafe fn same_timing(left: *const u8, right: *const u8) -> bool {
+unsafe fn modes_equal(left: *const u8, right: *const u8) -> bool {
     // SAFETY: both pointers are tracked complete display-mode allocations.
-    unsafe { core::ptr::read_unaligned(left.cast::<i32>()) == core::ptr::read_unaligned(right.cast::<i32>()) && core::ptr::read_unaligned(left.add(DRM_DISPLAY_MODE_HDISPLAY_OFF).cast::<u16>()) == core::ptr::read_unaligned(right.add(DRM_DISPLAY_MODE_HDISPLAY_OFF).cast::<u16>()) && core::ptr::read_unaligned(left.add(DRM_DISPLAY_MODE_VDISPLAY_OFF).cast::<u16>()) == core::ptr::read_unaligned(right.add(DRM_DISPLAY_MODE_VDISPLAY_OFF).cast::<u16>()) && core::ptr::read_unaligned(left.add(DRM_DISPLAY_MODE_HTOTAL_OFF).cast::<u16>()) == core::ptr::read_unaligned(right.add(DRM_DISPLAY_MODE_HTOTAL_OFF).cast::<u16>()) && core::ptr::read_unaligned(left.add(DRM_DISPLAY_MODE_VTOTAL_OFF).cast::<u16>()) == core::ptr::read_unaligned(right.add(DRM_DISPLAY_MODE_VTOTAL_OFF).cast::<u16>()) }
+    unsafe { let lc = read(left.cast::<i32>()); let rc = read(right.cast::<i32>()); let clocks = if lc != 0 && rc != 0 { 1_000_000_000u64 / lc as u32 as u64 == 1_000_000_000u64 / rc as u32 as u64 } else { lc == rc }; clocks && [DRM_DISPLAY_MODE_HDISPLAY_OFF, 6, 8, DRM_DISPLAY_MODE_HTOTAL_OFF, 12, DRM_DISPLAY_MODE_VDISPLAY_OFF, 16, 18, DRM_DISPLAY_MODE_VTOTAL_OFF, DRM_DISPLAY_MODE_VSCAN_OFF].into_iter().all(|offset| read(left.add(offset).cast::<u16>()) == read(right.add(offset).cast::<u16>())) && read(left.add(DRM_DISPLAY_MODE_FLAGS_OFF).cast::<u32>()) == read(right.add(DRM_DISPLAY_MODE_FLAGS_OFF).cast::<u32>()) && read(left.add(DRM_DISPLAY_MODE_ASPECT_RATIO_OFF).cast::<i32>()) == read(right.add(DRM_DISPLAY_MODE_ASPECT_RATIO_OFF).cast::<i32>()) }
 }
 
 unsafe fn decimal(out: *mut u8, mut value: u32) -> usize {
