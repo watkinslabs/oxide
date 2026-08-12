@@ -1,5 +1,11 @@
 # Fixed issues
 
+### F1009-linux-dma-sg-sync-symbols
+
+| Status | Class | Sev | Issue | Evidence | Owner |
+|---|---|---|---|---|---|
+| FIXED F1009 | DEFECT | high | **The DMA facade exported non-Linux `dma_sync_sg_for_cpu` and `dma_sync_sg_for_device` names. Linux headers implement those APIs inline and external modules resolve the underlying `__dma_sync_sg_for_cpu` and `__dma_sync_sg_for_device` symbols instead, so modules using SG ownership transfers could not load.** The symbol table now exports the exact Linux names without changing the synchronization implementation. | F1009. `linux_dma_tests::export_symbols_registers_dma_surface` pins both linker-visible symbols; compared with target Linux `kernel/dma/mapping.c`. | Chris Watkins |
+
 ### F1008-linux-dma-sgtable-kpi
 
 | Status | Class | Sev | Issue | Evidence | Owner |
