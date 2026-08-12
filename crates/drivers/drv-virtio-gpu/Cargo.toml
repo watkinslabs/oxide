@@ -16,6 +16,7 @@ pci     = { path = "../../drivers/pci" }
 sync    = { path = "../../shared/sync" }
 drm     = { path = "../../drivers/drm" }
 pmm     = { path = "../../kernel/mm-pmm" }
+iommu   = { path = "../../kernel/iommu" }
 fbcon       = { path = "../../drivers/fbcon" }
 fbdev       = { path = "../../drivers/fbdev" }
 console     = { path = "../../kernel/console" }
